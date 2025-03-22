@@ -19,6 +19,5 @@ target_link_libraries(engine
 )
 
 # Add shaders as a dependency
-add_custom_target(compile_shaders ALL)
-compile_shaders(${SHADER_SOURCE_DIR} ${SHADER_BINARY_DIR} compile_shaders)
 add_dependencies(engine compile_shaders)
+

@@ -9,8 +9,11 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
         "${SOURCE_DIR}/*.rgen"
         "${SOURCE_DIR}/*.rchit"
         "${SOURCE_DIR}/*.rmiss"
-        "${SOURCE_DIR}/*.spv"
+        "${SOURCE_DIR}/*.hlsl"
+        "${SOURCE_DIR}/*.glsl"
     )
+
+    set(COMPILED_SHADERS "")
 
     foreach(SHADER ${SHADERS})
         get_filename_component(FILE_NAME ${SHADER} NAME)
@@ -27,5 +30,5 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
         list(APPEND COMPILED_SHADERS ${OUTPUT_FILE})
     endforeach()
 
-    add_custom_target(${TARGET_NAME} DEPENDS ${COMPILED_SHADERS})
+    set(COMPILED_SHADER_OUTPUTS ${COMPILED_SHADERS} PARENT_SCOPE)
 endfunction()

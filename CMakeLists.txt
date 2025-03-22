@@ -27,6 +27,11 @@ file(MAKE_DIRECTORY ${SHADER_BINARY_DIR})
 # Shader compilation rule (loaded from custom cmake file)
 include(cmake/CompileShaders.cmake)
 
+# Declare the target once globally
+compile_shaders(${SHADER_SOURCE_DIR} ${SHADER_BINARY_DIR} compile_shaders)
+add_custom_target(compile_shaders ALL DEPENDS ${COMPILED_SHADER_OUTPUTS})
+
+
 # Add subprojects
 add_subdirectory(engine)
 add_subdirectory(app)
