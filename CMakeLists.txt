@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.17)
-project(VulkanApp LANGUAGES CXX)
+project(VulkanToy LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,6 +31,7 @@ include(cmake/CompileShaders.cmake)
 compile_shaders(${SHADER_SOURCE_DIR} ${SHADER_BINARY_DIR} compile_shaders)
 add_custom_target(compile_shaders ALL DEPENDS ${COMPILED_SHADER_OUTPUTS})
 
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT App)
 
 # Add subprojects
 add_subdirectory(engine)
