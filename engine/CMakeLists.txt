@@ -12,12 +12,15 @@ target_include_directories(engine
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+
+
 target_link_libraries(engine
     PUBLIC
         Vulkan::Vulkan
         glfw
+        glm
+        #assimp
 )
 
-# Add shaders as a dependency
-add_dependencies(engine compile_shaders)
+
 

@@ -1,4 +1,4 @@
-function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
+﻿function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
     file(GLOB SHADERS
         "${SOURCE_DIR}/*.vert"
         "${SOURCE_DIR}/*.frag"
@@ -21,11 +21,15 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
 
         add_custom_command(
             OUTPUT ${OUTPUT_FILE}
-            COMMAND ${Vulkan_GLSLC_EXECUTABLE} -o ${OUTPUT_FILE} ${SHADER}
+            COMMAND ${CMAKE_COMMAND} -E echo "⏳ Compiling shader: ${SHADER}"
+            COMMAND ${GLSLC} -o ${OUTPUT_FILE} ${SHADER}
+            COMMAND ${CMAKE_COMMAND} -E echo "✅ Shader compiled: ${SHADER}"
             DEPENDS ${SHADER}
-            COMMENT "Compiling shader ${FILE_NAME}"
+            COMMENT "Compiling shader ${SHADER}"
             VERBATIM
         )
+
+
 
         list(APPEND COMPILED_SHADERS ${OUTPUT_FILE})
     endforeach()
