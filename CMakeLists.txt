@@ -22,7 +22,6 @@ FetchContent_MakeAvailable(glfw)
 FetchContent_Declare(
     glm
     GIT_REPOSITORY https://github.com/g-truc/glm.git
-    GIT_TAG        0.9.9.8  # or latest stable tag
 )
 FetchContent_MakeAvailable(glm)
 
@@ -54,8 +53,16 @@ include(cmake/CompileShaders.cmake)
 
 add_subdirectory(engine)
 add_subdirectory(app)
+# Shader compile outputs will be collected in this list
+set(COMPILED_SHADER_OUTPUTS)
 
-# After App target exists
-compile_shaders(${CMAKE_SOURCE_DIR}/App/shaders ${CMAKE_BINARY_DIR}/shaders compile_shaders)
-add_custom_target(compile_shaders_target ALL DEPENDS ${COMPILED_SHADER_OUTPUTS})
-add_dependencies(App compile_shaders_target)
+# Call after all targets exist
+compile_shaders(${CMAKE_SOURCE_DIR}/app/shaders ${CMAKE_BINARY_DIR}/shaders compile_shaders)
+
+# Ensure shaders are actually part of the build
+if(COMPILED_SHADER_OUTPUTS)
+    add_custom_target(compile_shaders_target ALL DEPENDS ${COMPILED_SHADER_OUTPUTS})
+    add_dependencies(App compile_shaders_target)
+else()
+    message(WARNING "No shaders found to compile!")
+endif()

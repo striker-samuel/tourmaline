@@ -21,11 +21,11 @@
 
         add_custom_command(
             OUTPUT ${OUTPUT_FILE}
-            COMMAND ${CMAKE_COMMAND} -E echo "⏳ Compiling shader: ${SHADER}"
-            COMMAND ${GLSLC} -o ${OUTPUT_FILE} ${SHADER}
-            COMMAND ${CMAKE_COMMAND} -E echo "✅ Shader compiled: ${SHADER}"
+            COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "⏳ Compiling shader: ${FILE_NAME}"
+            COMMAND cmd /c "${GLSLC} -o ${OUTPUT_FILE} ${SHADER}"
+            COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "✅ Compiled: ${FILE_NAME}"
             DEPENDS ${SHADER}
-            COMMENT "Compiling shader ${SHADER}"
+            COMMENT "Compiling shader ${FILE_NAME}"
             VERBATIM
         )
 

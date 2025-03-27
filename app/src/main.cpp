@@ -1,6 +1,5 @@
 #pragma once
 
-#include <glm/gtx/string_cast.hpp>
 
 #include <App/primitives.h>
 #include <App/camera.h>
@@ -108,6 +107,7 @@ public:
 		// OS takes cares of cleanup mate. If it doesn`t idc
 		//cleanup();
 	}
+
 
 private:
 
@@ -341,8 +341,8 @@ private:
 
 		test_tr.scale = glm::vec3(0.01f, 0.01f, 0.01f);
 
-		//Mesh m = Mesh("models/viking_room_two.obj", &test_tr);
-		MeshTwo m = MeshTwo("D:\\REPOS\\pearlshift\\assets\\NewSponza_Curtains_glTF.gltf");
+		Mesh m = Mesh("models/viking_room.obj", &test_tr);
+		//MeshTwo m = MeshTwo("D:\\REPOS\\pearlshift\\assets\\NewSponza_Curtains_glTF.gltf");
 		vertices = m.vertices;
 		indices = m.indices;
 
@@ -1535,6 +1535,7 @@ private:
 		UniformBufferObject ubo{};
 
 		// Set up the object's transform
+	
 		Transform tesssst = Transform{};
 		tesssst.translation = { 0, -1.f, 0.f };
 
@@ -1542,6 +1543,9 @@ private:
 		//ubo.model = getModelMatrix(&tesssst);
 		// Alternatively, for hierarchical transforms:
 		ubo.model = getWorldTransform(tesssst);
+	
+
+		//ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(10.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 
 		// Set up the projection matrix with a Vulkan-specific Y-axis inversion
 		ubo.proj = glm::perspective(glm::radians(main_camera.FOV), swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 10.0f);
