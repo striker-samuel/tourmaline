@@ -1,11 +1,14 @@
 #pragma once
 
-
 #include <App/primitives.h>
 #include <App/camera.h>
 #include <App/common.h>
 
 
+#include <Engine/Scene/scene.h>
+
+
+Scene ss = Scene{  };
 
 // CONSTANTS
 
@@ -13,7 +16,6 @@ const uint32_t WIDTH = 1280;
 const uint32_t HEIGHT = 720;
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
-
 
 // VALIDATION
 
