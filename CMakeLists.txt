@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.17)
 project(VulkanToy LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Vulkan
@@ -25,14 +25,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(glm)
 
-# ASSIMP (compiled C++ lib)
-FetchContent_Declare(
-    assimp
-    GIT_REPOSITORY https://github.com/assimp/assimp.git
-    GIT_TAG        v5.2.5  # or latest stable
-)
-FetchContent_MakeAvailable(assimp)
+# ASSIMP from local source
+set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_INSTALL OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "" FORCE)  # Let it use bundled zlib
+# Or: OFF, if you provide your own ZLIB
 
+add_subdirectory(external/assimp)
 
 # nlohmann::json (required for tinygltf)
 FetchContent_Declare(
@@ -42,6 +42,8 @@ FetchContent_Declare(
     GIT_TAG        master
 )
 FetchContent_MakeAvailable(nlohmann_json)
+add_subdirectory(external/json)
+
 
 # Shader compile support
 set(SHADER_SOURCE_DIR ${CMAKE_SOURCE_DIR}/shaders)
