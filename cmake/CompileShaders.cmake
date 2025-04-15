@@ -1,4 +1,9 @@
-﻿function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
+﻿
+
+set(GLSLC "C:/VulkanSDK/1.3.283.0/Bin/glslc.exe")
+
+
+function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
     file(GLOB SHADERS
         "${SOURCE_DIR}/*.vert"
         "${SOURCE_DIR}/*.frag"
