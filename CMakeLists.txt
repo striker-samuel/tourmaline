@@ -10,20 +10,12 @@ find_package(Vulkan REQUIRED)
 include(FetchContent)
 
 # GLFW
+add_subdirectory(external/glfw)
 
-FetchContent_Declare(
-    glfw
-    GIT_REPOSITORY https://github.com/glfw/glfw.git
-    GIT_TAG        3.3.8
-)
-FetchContent_MakeAvailable(glfw)
 
 # GLM (header-only)
-FetchContent_Declare(
-    glm
-    GIT_REPOSITORY https://github.com/g-truc/glm.git
-)
-FetchContent_MakeAvailable(glm)
+add_subdirectory(external/glm)
+
 
 # ASSIMP from local source
 set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -35,13 +27,6 @@ set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "" FORCE)  # Let it use bundled zlib
 add_subdirectory(external/assimp)
 
 # nlohmann::json (required for tinygltf)
-FetchContent_Declare(
-    nlohmann_json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    #GIT_TAG        v3.11.2  # or latest stable
-    GIT_TAG        master
-)
-FetchContent_MakeAvailable(nlohmann_json)
 add_subdirectory(external/json)
 
 
