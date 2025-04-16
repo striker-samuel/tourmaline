@@ -388,6 +388,13 @@ void dumpSceneToDot(const char* fileName, const Scene& scene, int* visited)
   fclose(f);
 }
 
+
+int getNodeLevel(const Scene& scene, int n) {
+  int level = -1;
+  for (int p = 0; p != -1; p = scene.hierarchy[p].parent, level++);
+  return level;
+}
+
 // A rather long algorithm (and the auxiliary routines) to delete a number of scene nodes from the hierarchy
 
 // Add an index to a sorted index array
