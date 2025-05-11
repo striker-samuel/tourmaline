@@ -14,6 +14,7 @@ set_target_properties(App PROPERTIES
 )
 
 
+
 add_custom_command(TARGET App POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:App>/textures
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:App>/models
