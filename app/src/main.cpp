@@ -1,12 +1,13 @@
 #pragma once
+#define GLM_ENABLE_EXPERIMENTAL
+#include <vulkan/vulkan.h>
+
 
 #include <Engine/requirements.h>
-
-
-
-#include <App/primitives.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
+
+#include <App/primitives.h>
 
 Scene ss = Scene{};
 
@@ -374,7 +375,7 @@ class PearlApplication {
 
     Transform test_tr = Transform{};
 
-    test_tr.scale = glm::vec3(0.01f, 0.01f, 0.01f);
+    test_tr.scale = glm::vec3(1.0f, 1.0f, 1.0f);
 
     Mesh m = Mesh("models/viking_room.obj", &test_tr);
     // MeshTwo m =
@@ -1622,6 +1623,9 @@ class PearlApplication {
     // Set up the object's transform
 
     Transform tesssst = Transform{};
+
+    //tesssst.scale = {1.0f, 1.0f, 1.0f};
+    tesssst.scale = {10, 10, 10};
     tesssst.translation = {0, -1.f, 0.f};
 
     // Compute the model matrix from the transform

@@ -23,7 +23,7 @@ class Camera {
   // Movement physics
   glm::vec3 velocity = glm::vec3(0.0f);
   glm::vec3 acceleration = glm::vec3(0.0f);
-  float maxSpeed = 0.25f;
+  float maxSpeed = 0.05f;
   float accelerationRate = 0.001f;
   float damping = 5.0f;
 

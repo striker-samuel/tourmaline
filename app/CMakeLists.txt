@@ -7,7 +7,10 @@ file(GLOB_RECURSE APP_SRC CONFIGURE_DEPENDS
 
 add_executable(App ${APP_SRC})
 message(STATUS "App source files: ${APP_SRC}")
-
+find_package(Vulkan REQUIRED)
+message(STATUS "Vulkan_FOUND: ${Vulkan_FOUND}")
+message(STATUS "Vulkan_INCLUDE_DIRS: ${Vulkan_INCLUDE_DIRS}")
+message(STATUS "Vulkan_LIBRARIES: ${Vulkan_LIBRARIES}")
 
 set_target_properties(App PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
