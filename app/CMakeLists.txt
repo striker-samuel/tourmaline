@@ -39,15 +39,12 @@ add_custom_command(TARGET App POST_BUILD
 target_include_directories(App
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${CMAKE_SOURCE_DIR}/external/tiny_obj_loader
-        ${CMAKE_SOURCE_DIR}/external/tinygltf
-        ${CMAKE_SOURCE_DIR}/external/stb_image
-        ${nlohmann_json_SOURCE_DIR}/single_include/nlohmann
 )
 
 target_link_libraries(App
     PRIVATE
         engine
+        Vulkan::Vulkan
         #nlohmann_json
 )
 

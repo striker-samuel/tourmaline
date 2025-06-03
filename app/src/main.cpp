@@ -1,13 +1,17 @@
 #pragma once
-#define GLM_ENABLE_EXPERIMENTAL
-#include <vulkan/vulkan.h>
+#define GLFW_INCLUDE_NONE
+#include <volk.h>
+#include <GLFW/glfw3.h>
+#define TINYOBJLOADER_IMPLEMENTATION
+#define TINYGLTF_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
 
-
-#include <Engine/requirements.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
-
-#include <App/primitives.h>
+#include <Engine/primitives.h>
+#include <Engine/requirements.h>
+#include <volk.h>
 
 Scene ss = Scene{};
 
@@ -77,6 +81,14 @@ class PearlApplication {
       std::cerr << "Failed to initialize GLFW\n";
       return false;
     }
+
+    if (volkInitialize() != VK_SUCCESS) {
+      std::cerr << "Failed to initialize Volk\n";
+      glfwTerminate();
+      return false;
+    };
+
+
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
@@ -263,8 +275,7 @@ class PearlApplication {
     main_camera.processMouseMovement(xOffset, yOffset);
   }
 
-  void handleKey(int key, int scancode, int action,
-                                   int mods) {
+  void handleKey(int key, int scancode, int action, int mods) {
     std::cout << "Key event: " << key << " action: " << action << "\n";
 
     auto keyToDirection = [](int key) -> std::string {
@@ -296,50 +307,6 @@ class PearlApplication {
     }
   }
 
-
-  // void handleKey(int key, int scancode, int action, int mods) {
-  //   std::cout << "Key pressed: " << key << "\n";
-
-  //  if (action == GLFW_PRESS || action == GLFW_REPEAT) {
-  //    // Save the key for later use
-  //    currentKey = key;
-
-  //    // Call camera's processKeyboard to update its position
-  //    // Forward (W or Up Arrow)
-  //    if (key == GLFW_KEY_W || key == GLFW_KEY_UP) {
-  //      main_camera.processKeyboardInput(
-  //          "FORWARD", delta_time);  // Simulate deltaTime for simplicity
-  //    }
-  //    // Backward (S or Down Arrow)
-  //    else if (key == GLFW_KEY_S || key == GLFW_KEY_DOWN) {
-  //      main_camera.processKeyboardInput(
-  //          "BACKWARD", delta_time);  // Simulate deltaTime for simplicity
-  //    }
-  //    // Left (A or Left Arrow)
-  //    else if (key == GLFW_KEY_A || key == GLFW_KEY_LEFT) {
-  //      main_camera.processKeyboardInput(
-  //          "LEFT",
-  //          delta_time);  // Simulate deltaTime for simplicity
-  //    }
-  //    // Right (D or Right Arrow)
-  //    else if (key == GLFW_KEY_D || key == GLFW_KEY_RIGHT) {
-  //      main_camera.processKeyboardInput(
-  //          "RIGHT",
-  //          delta_time);  // Simulate deltaTime for simplicity
-  //    }
-
-  //    std::cout << "Camera Position: " << main_camera.position[0] << ", "
-  //              << main_camera.position[1] << ", " << main_camera.position[2]
-  //              << std::endl;
-
-  //  } else if (action == GLFW_RELEASE) {
-  //    // Reset the current key when released (optional)
-  //    if (key == currentKey) {
-  //      currentKey = -1;
-  //    }
-  //  }
-  //}
-
   static void framebufferResizeCallback(GLFWwindow* window, int width,
                                         int height) {
     auto app =
@@ -360,7 +327,7 @@ class PearlApplication {
   }
 
   void pass() {
-    createRenderPass();
+    // createRenderPass();
 
     createDescriptorSetLayout();
     createGraphicsPipeline();
@@ -407,8 +374,6 @@ class PearlApplication {
                   << std::endl;
         last_camera_pos = main_camera.position;
       }
-
-    
 
       drawFrame();
     }
@@ -542,6 +507,8 @@ class PearlApplication {
     if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
       throw std::runtime_error("failed to create instance!");
     }
+
+    volkLoadInstance(instance);
   }
 
   void populateDebugMessengerCreateInfo(
@@ -641,6 +608,14 @@ class PearlApplication {
       createInfo.enabledLayerCount = 0;
     }
 
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeatures = {
+        .sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
+        .dynamicRendering = VK_TRUE,
+    };
+
+    createInfo.pNext = &dynamicRenderingFeatures;
+
     if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) !=
         VK_SUCCESS) {
       throw std::runtime_error("failed to create logical device!");
@@ -648,6 +623,8 @@ class PearlApplication {
 
     vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
     vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
+
+    volkLoadDevice(device);
   }
 
   void createSwapChain() {
@@ -778,10 +755,9 @@ class PearlApplication {
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
 
-
     renderPassInfo.dependencyCount = 0;
-    //renderPassInfo.dependencyCount = 1;
-    //renderPassInfo.pDependencies = &dependency;
+    // renderPassInfo.dependencyCount = 1;
+    // renderPassInfo.pDependencies = &dependency;
 
     if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) !=
         VK_SUCCESS) {
@@ -947,9 +923,20 @@ class PearlApplication {
     pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.layout = pipelineLayout;
 
-    // assert(renderPass != VK_NULL_HANDLE);
+    auto depth_format = findDepthFormat();
+    // Provide information for dynamic rendering
+    VkPipelineRenderingCreateInfoKHR pipeline_create{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR};
+    pipeline_create.pNext = VK_NULL_HANDLE;
+    pipeline_create.colorAttachmentCount = 1;
+    pipeline_create.pColorAttachmentFormats = &swapChainImageFormat;
+    pipeline_create.depthAttachmentFormat = depth_format;
+    pipeline_create.stencilAttachmentFormat = depth_format;
 
-    pipelineInfo.renderPass = renderPass;
+    // Use the pNext to point to the rendering create struct
+    VkGraphicsPipelineCreateInfo graphics_create{
+        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    pipelineInfo.renderPass = VK_NULL_HANDLE;
     pipelineInfo.subpass = 0;
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 
@@ -1531,24 +1518,33 @@ class PearlApplication {
       throw std::runtime_error("failed to begin recording command buffer!");
     }
 
-    VkRenderPassBeginInfo renderPassInfo{};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    VkRenderingAttachmentInfoKHR depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+    depthAttachment.imageView = depthImageView;
+    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.clearValue.depthStencil = {1.0f, 0};
 
-    // assert(renderPass != VK_NULL_HANDLE);
+    VkRenderingAttachmentInfoKHR colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+    colorAttachment.imageView = swapChainImageViews[imageIndex];  // actual view
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue = {{0.0f, 0.0f, 0.0f, 1.0f}};
 
-    renderPassInfo.renderPass = renderPass;
-    renderPassInfo.framebuffer = swapChainFramebuffers[imageIndex];
-    renderPassInfo.renderArea.offset = {0, 0};
-    renderPassInfo.renderArea.extent = swapChainExtent;
+    // Begin dynamic rendering
+    VkRenderingInfoKHR renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
+    renderingInfo.renderArea.offset = {0, 0};
+    renderingInfo.renderArea.extent = swapChainExtent;
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.pDepthAttachment = &depthAttachment;
 
-    std::array<VkClearValue, 2> clearValues{};
-    clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-    clearValues[1].depthStencil = {1.0f, 0};
-    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-    renderPassInfo.pClearValues = clearValues.data();
-
-    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo,
-                         VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBeginRenderingKHR(commandBuffer, &renderingInfo);
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       graphicsPipeline);
@@ -1580,7 +1576,8 @@ class PearlApplication {
     vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indices.size()), 1, 0,
                      0, 0);
 
-    vkCmdEndRenderPass(commandBuffer);
+    // vkCmdEndRenderPass(commandBuffer);
+    vkCmdEndRendering(commandBuffer);
 
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
       throw std::runtime_error("failed to record command buffer!");
@@ -1620,11 +1617,8 @@ class PearlApplication {
 
     UniformBufferObject ubo{};
 
-    // Set up the object's transform
-
     Transform tesssst = Transform{};
 
-    //tesssst.scale = {1.0f, 1.0f, 1.0f};
     tesssst.scale = {10, 10, 10};
     tesssst.translation = {0, -1.f, 0.f};
 

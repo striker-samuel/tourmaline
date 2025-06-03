@@ -1,6 +1,9 @@
 #pragma once
 
 
+#include <tiny_gltf.h>
+#include <tiny_obj_loader.h>
+
 #define GLFW_INCLUDE_VULKAN
 #define GLM_FORCE_RADIANS
 #define GLM_ENABLE_EXPERIMENTAL

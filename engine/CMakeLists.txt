@@ -7,15 +7,13 @@ file(GLOB_RECURSE ENGINE_SRC CONFIGURE_DEPENDS
 
 add_library(engine STATIC ${ENGINE_SRC})
 
-add_compile_definitions(
-    GLFW_INCLUDE_VULKAN
-    GLM_FORCE_RADIANS
-    GLM_ENABLE_EXPERIMENTAL
-)
-
 target_include_directories(engine
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/external/tiny_obj_loader
+        ${CMAKE_SOURCE_DIR}/external/tinygltf
+        ${CMAKE_SOURCE_DIR}/external/stb_image
+        ${nlohmann_json_SOURCE_DIR}/single_include/nlohmann
 )
 
 target_link_libraries(engine
@@ -23,6 +21,7 @@ target_link_libraries(engine
         Vulkan::Vulkan
         glfw
         glm
+        volk
 )
 
 

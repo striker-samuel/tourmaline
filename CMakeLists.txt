@@ -29,6 +29,8 @@ add_subdirectory(external/assimp)
 # nlohmann::json (required for tinygltf)
 add_subdirectory(external/json)
 
+add_subdirectory(external/volk)
+
 
 # Shader compile support
 set(SHADER_SOURCE_DIR ${CMAKE_SOURCE_DIR}/shaders)
