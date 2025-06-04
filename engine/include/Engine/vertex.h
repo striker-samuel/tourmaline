@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Engine/requirements.h>
+#include <Engine/vulkan_setup.h>
 
 
 struct Vertex {

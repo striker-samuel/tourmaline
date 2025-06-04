@@ -1,7 +1,8 @@
 #pragma once
-#define GLFW_INCLUDE_NONE
-#include <volk.h>
-#include <GLFW/glfw3.h>
+
+
+#include <Engine/vulkan_setup.h>
+
 #define TINYOBJLOADER_IMPLEMENTATION
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
@@ -11,9 +12,7 @@
 #include <Engine/Scene/scene.h>
 #include <Engine/primitives.h>
 #include <Engine/requirements.h>
-#include <volk.h>
 
-Scene ss = Scene{};
 
 // CONSTANTS
 
@@ -77,18 +76,16 @@ struct SwapChainSupportDetails {
 class PearlApplication {
  public:
   bool run() {
+  /*  if (volkInitialize() != VK_SUCCESS) {
+      std::cerr << "Failed to initialize Volk\n";
+      glfwTerminate();
+      return false;
+    };*/
+
     if (!glfwInit()) {
       std::cerr << "Failed to initialize GLFW\n";
       return false;
     }
-
-    if (volkInitialize() != VK_SUCCESS) {
-      std::cerr << "Failed to initialize Volk\n";
-      glfwTerminate();
-      return false;
-    };
-
-
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
