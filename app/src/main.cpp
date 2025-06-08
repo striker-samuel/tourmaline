@@ -76,11 +76,11 @@ struct SwapChainSupportDetails {
 class PearlApplication {
  public:
   bool run() {
-  /*  if (volkInitialize() != VK_SUCCESS) {
+    if (volkInitialize() != VK_SUCCESS) {
       std::cerr << "Failed to initialize Volk\n";
       glfwTerminate();
       return false;
-    };*/
+    };
 
     if (!glfwInit()) {
       std::cerr << "Failed to initialize GLFW\n";
@@ -1537,14 +1537,13 @@ class PearlApplication {
     renderingInfo.renderArea.offset = {0, 0};
     renderingInfo.renderArea.extent = swapChainExtent;
     renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.colorAttachmentCount= 1;
     renderingInfo.pColorAttachments = &colorAttachment;
     renderingInfo.pDepthAttachment = &depthAttachment;
 
     vkCmdBeginRenderingKHR(commandBuffer, &renderingInfo);
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      graphicsPipeline);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
     VkViewport viewport{};
     viewport.x = 0.0f;

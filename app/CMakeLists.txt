@@ -44,7 +44,7 @@ target_include_directories(App
 target_link_libraries(App
     PRIVATE
         engine
-        Vulkan::Vulkan
+        #Vulkan::Vulkan
         #nlohmann_json
 )
 
