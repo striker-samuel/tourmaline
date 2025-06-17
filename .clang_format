@@ -1,0 +1,8 @@
+BasedOnStyle: LLVM
+AlignAfterOpenBracket: Align
+AllowAllParametersOfDeclarationOnNextLine: false
+BinPackParameters: false
+BreakBeforeBraces: Allman
+BreakBeforeBinaryOperators: None
+ColumnLimit: 80
+PenaltyReturnTypeOnItsOwnLine: 1000

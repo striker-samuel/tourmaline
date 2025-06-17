@@ -1,6 +1,8 @@
 #pragma once
 
-#include <Engine/vulkan_setup.h>
+#include <Engine/Vulkan/vulkan_setup.h>
+#include <Engine/Vulkan/vulkan_helpers.h>
+#include <Engine/Vulkan/vulkan_data_structures.h>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #define TINYGLTF_IMPLEMENTATION
@@ -20,63 +22,24 @@ const uint32_t HEIGHT = 720;
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
-// VALIDATION
+CameraPositioner_FirstPerson cameraPositioner(
+	glm::vec3(0.0f, 0.0f, -2.0f),     // position
+	glm::vec3(0.0f, 0.0f, 1.0f),     // target (looking in +Z direction)
+	glm::vec3(0.0f, 1.0f, 0.0f)      // up vector
+);
 
-const std::vector<const char*> validationLayers = {
-"VK_LAYER_KHRONOS_validation" };
 
-const std::vector<const char*> deviceExtensions = {
-	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-	//VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
-};
 
-#ifdef NDEBUG
-const bool enableValidationLayers = false;
-#else
-const bool enableValidationLayers = true;
-#endif
+class BaseApp {
 
-VkResult CreateDebugUtilsMessengerEXT(
-	VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-	const VkAllocationCallbacks* pAllocator,
-	VkDebugUtilsMessengerEXT* pDebugMessenger) {
-	auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
-		instance, "vkCreateDebugUtilsMessengerEXT");
-	if (func != nullptr) {
-		return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
-	}
-	else {
-		return VK_ERROR_EXTENSION_NOT_PRESENT;
-	}
-}
 
-void DestroyDebugUtilsMessengerEXT(VkInstance instance,
-	VkDebugUtilsMessengerEXT debugMessenger,
-	const VkAllocationCallbacks* pAllocator) {
-	auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
-		instance, "vkDestroyDebugUtilsMessengerEXT");
-	if (func != nullptr) {
-		func(instance, debugMessenger, pAllocator);
-	}
-}
 
-struct QueueFamilyIndices {
-	std::optional<uint32_t> graphicsFamily;
-	std::optional<uint32_t> presentFamily;
-
-	bool isComplete() {
-		return graphicsFamily.has_value() && presentFamily.has_value();
-	}
-};
-
-struct SwapChainSupportDetails {
-	VkSurfaceCapabilitiesKHR capabilities;
-	std::vector<VkSurfaceFormatKHR> formats;
-	std::vector<VkPresentModeKHR> presentModes;
-};
-
-class PearlApplication {
 public:
+
+
+
+
+
 	bool run() {
 		if (volkInitialize() != VK_SUCCESS) {
 			std::cerr << "Failed to initialize Volk\n";
@@ -100,11 +63,11 @@ public:
 		}
 		glfwMakeContextCurrent(window);
 
-		glfwSetKeyCallback(window, PearlApplication::keyCallback);
-		glfwSetCursorPosCallback(window, PearlApplication::mouseCallback);
-		glfwSetMouseButtonCallback(window, PearlApplication::mouseButtonCallback);
+		glfwSetKeyCallback(window, BaseApp::keyCallback);
+		glfwSetCursorPosCallback(window, BaseApp::mouseCallback);
+		glfwSetMouseButtonCallback(window, BaseApp::mouseButtonCallback);
 		glfwSetScrollCallback(
-			window, PearlApplication::scrollCallback);  // Register scroll callback
+			window, BaseApp::scrollCallback);  // Register scroll callback
 
 		glfwSetWindowUserPointer(window, this);
 		glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
@@ -119,8 +82,10 @@ public:
 	}
 
 private:
-	Camera main_camera = Camera(glm::vec3(1.0f, 0.0f, 3.0f),
-		glm::vec3(0.0f, 1.0f, 0.0f), -90.0f, 0.0f);
+
+
+	Camera main_camera = Camera(cameraPositioner);
+
 	float delta_time;
 
 	// ----------- INSTANCE / APP -------------
@@ -185,7 +150,6 @@ private:
 
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
-	std::unordered_set<std::string> activeDirections;
 
 	glm::vec3 last_camera_pos;
 
@@ -199,8 +163,8 @@ private:
 	bool framebufferResized = false;
 
 	static void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
-		PearlApplication* app =
-			static_cast<PearlApplication*>(glfwGetWindowUserPointer(window));
+		BaseApp* app =
+			static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
 		if (app) {
 			app->handleMouseMovement(xpos, ypos);
 		}
@@ -208,8 +172,8 @@ private:
 
 	static void keyCallback(GLFWwindow* window, int key, int scancode, int action,
 		int mods) {
-		PearlApplication* app =
-			static_cast<PearlApplication*>(glfwGetWindowUserPointer(window));
+		BaseApp* app =
+			static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
 		if (app) {
 			app->handleKey(key, scancode, action, mods);  // Forward to the instance
 		}
@@ -217,8 +181,8 @@ private:
 
 	static void mouseButtonCallback(GLFWwindow* window, int button, int action,
 		int mods) {
-		PearlApplication* app =
-			static_cast<PearlApplication*>(glfwGetWindowUserPointer(window));
+		BaseApp* app =
+			static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
 		if (app) {
 			app->handleMouseButton(button, action, mods);
 		}
@@ -226,16 +190,14 @@ private:
 
 	static void scrollCallback(GLFWwindow* window, double xOffset,
 		double yOffset) {
-		PearlApplication* app =
-			static_cast<PearlApplication*>(glfwGetWindowUserPointer(window));
+		BaseApp* app =
+			static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
 		if (app) {
 			app->handleMouseScroll(xOffset, yOffset);
 		}
 	}
 
 	void handleMouseScroll(double xOffset, double yOffset) {
-		main_camera.processMouseScroll(static_cast<float>(yOffset));
-		std::cout << "Zoom level (FOV): " << main_camera.FOV << "\n";
 	}
 
 	// Handle mouse button press and release
@@ -252,26 +214,6 @@ private:
 
 	// Handle mouse movement
 	void handleMouseMovement(double xpos, double ypos) {
-		// Only process mouse movement if the left mouse button is pressed
-		if (!rightMousePressed) {
-			firstMouse =
-				true;  // Reset firstMouse when the left button is not pressed
-			return;
-		}
-
-		if (firstMouse) {
-			lastX = xpos;
-			lastY = ypos;
-			firstMouse = false;
-		}
-
-		float xOffset = xpos - lastX;
-		float yOffset =
-			lastY - ypos;  // Reversed: y-coordinates go from bottom to top
-		lastX = xpos;
-		lastY = ypos;
-
-		main_camera.processMouseMovement(xOffset, yOffset);
 	}
 
 	void handleKey(int key, int scancode, int action, int mods) {
@@ -299,18 +241,18 @@ private:
 		std::string direction = keyToDirection(key);
 		if (direction.empty()) return;
 
-		if (action == GLFW_PRESS) {
-			activeDirections.insert(direction);
-		}
-		else if (action == GLFW_RELEASE) {
-			activeDirections.erase(direction);
-		}
+		//if (action == GLFW_PRESS) {
+		//	activeDirections.insert(direction);
+		//}
+		//else if (action == GLFW_RELEASE) {
+		//	activeDirections.erase(direction);
+		//}
 	}
 
 	static void framebufferResizeCallback(GLFWwindow* window, int width,
 		int height) {
 		auto app =
-			reinterpret_cast<PearlApplication*>(glfwGetWindowUserPointer(window));
+			reinterpret_cast<BaseApp*>(glfwGetWindowUserPointer(window));
 		app->framebufferResized = true;
 	}
 
@@ -365,15 +307,8 @@ private:
 	void mainLoop() {
 		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
-			main_camera.processKeyboardInput(activeDirections);
-			main_camera.update(delta_time);
 
-			if (main_camera.position != last_camera_pos) {
-				std::cout << "Camera Position: " << main_camera.position.x << ", "
-					<< main_camera.position.y << ", " << main_camera.position.z
-					<< std::endl;
-				last_camera_pos = main_camera.position;
-			}
+
 
 			drawFrame();
 		}
@@ -910,8 +845,11 @@ private:
 
 	VkFormat findDepthFormat() {
 		return findSupportedFormat(
-			{ VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT,
-			 VK_FORMAT_D24_UNORM_S8_UINT },
+			{
+				//VK_FORMAT_D32_SFLOAT,
+				VK_FORMAT_D32_SFLOAT_S8_UINT,
+				VK_FORMAT_D24_UNORM_S8_UINT
+			},
 			VK_IMAGE_TILING_OPTIMAL,
 			VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
 	}
@@ -1459,6 +1397,33 @@ private:
 		renderingInfo.pColorAttachments = &colorAttachment;
 		renderingInfo.pDepthAttachment = &depthAttachment;
 
+
+		VkImageMemoryBarrier barrierToColorAttachment{};
+		barrierToColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrierToColorAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // or VK_IMAGE_LAYOUT_PRESENT_SRC_KHR if reusing
+		barrierToColorAttachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		barrierToColorAttachment.srcAccessMask = 0;  // No access before
+		barrierToColorAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		barrierToColorAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrierToColorAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrierToColorAttachment.image = swapChainImages[imageIndex];
+		barrierToColorAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrierToColorAttachment.subresourceRange.baseMipLevel = 0;
+		barrierToColorAttachment.subresourceRange.levelCount = 1;
+		barrierToColorAttachment.subresourceRange.baseArrayLayer = 0;
+		barrierToColorAttachment.subresourceRange.layerCount = 1;
+
+		vkCmdPipelineBarrier(
+			commandBuffer,
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &barrierToColorAttachment
+		);
+
+
 		vkCmdBeginRendering(commandBuffer, &renderingInfo);
 
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
@@ -1492,6 +1457,37 @@ private:
 
 		// vkCmdEndRenderPass(commandBuffer);
 		vkCmdEndRendering(commandBuffer);
+
+
+		//transitionImageLayout(
+		//	swapChainImages[currentFrame], VK_FORMAT_B8G8R8A8_SRGB, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+		//);
+
+		VkImageMemoryBarrier barrier{};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		barrier.dstAccessMask = 0;  // Nothing needs to read it before present
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = swapChainImages[imageIndex];
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.baseMipLevel = 0;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.baseArrayLayer = 0;
+		barrier.subresourceRange.layerCount = 1;
+
+		vkCmdPipelineBarrier(
+			commandBuffer,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // after rendering finishes
+			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,          // before presentation
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &barrier
+		);
+
 
 		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
 			throw std::runtime_error("failed to record command buffer!");
@@ -1545,9 +1541,7 @@ private:
 		// glm::vec3(0.0f, 0.0f, 1.0f));
 
 		// Set up the projection matrix with a Vulkan-specific Y-axis inversion
-		ubo.proj = glm::perspective(
-			glm::radians(main_camera.FOV),
-			swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 10.0f);
+		ubo.proj = main_camera.getProjMatrix();
 		ubo.proj[1][1] *= -1;
 
 		// Set up the view matrix from the camera
@@ -1837,7 +1831,7 @@ private:
 			throw std::runtime_error("failed to submit draw command buffer!");
 		}
 
-		// 2ST QUEUE
+		// 2ND QUEUE
 
 		VkPresentInfoKHR presentInfo{};
 		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -1871,7 +1865,7 @@ int main(int argc, const char* argv[]) {
 		std::cout << argv[0];
 	}
 
-	PearlApplication app;
+	BaseApp app;
 
 	try {
 		app.run();
