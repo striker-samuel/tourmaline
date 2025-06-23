@@ -29,6 +29,14 @@ public:
 	glm::vec3 getPosition() const { return positioner_->getPosition(); }
 	glm::mat4 getProjMatrix() const { return proj_; }
 
+	void setOrtho2D(float width, float height) {
+		proj_ = glm::ortho(0.0f, width, 0.0f, height, -1.0f, 1.0f);
+	}
+
+	void setPerspective(float fovY, float aspect, float zNear, float zFar) {
+		proj_ = glm::perspective(glm::radians(fovY), aspect, zNear, zFar);
+	}
+
 private:
 	const CameraPositionerInterface* positioner_;
 	glm::mat4 proj_;
@@ -126,6 +134,11 @@ public:
 		cameraPosition_ = pos;
 		cameraOrientation_ = glm::lookAt(pos, target, up);
 	}
+	glm::vec3 getForward() const {
+		const glm::mat4 rot = glm::mat4_cast(cameraOrientation_);
+		return -glm::vec3(rot[0][2], rot[1][2], rot[2][2]);
+	}
+
 
 public:
 	struct Movement

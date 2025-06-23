@@ -1,6 +1,6 @@
 #include <array>
 
-#include <Engine/vertex.h>
+#include <Engine/Renderer/vertex.h>
 
 
 // --- VERTEX ---

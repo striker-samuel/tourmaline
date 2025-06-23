@@ -11,16 +11,10 @@
 
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
-#include <Engine/primitives.h>
-#include <Engine/requirements.h>
+#include <Engine/Renderer/primitives.h>
+#include <Engine/common.h>
 
-
-// CONSTANTS
-
-const uint32_t WIDTH = 1280;
-const uint32_t HEIGHT = 720;
-
-const int MAX_FRAMES_IN_FLIGHT = 2;
+// -------------------------------------
 
 CameraPositioner_FirstPerson cameraPositioner(
 	glm::vec3(0.0f, 0.0f, -2.0f),     // position
@@ -30,67 +24,123 @@ CameraPositioner_FirstPerson cameraPositioner(
 
 
 
+
+
+struct Material {
+	int id;
+	int vert_shader_id;
+	int frag_shader_id;
+
+};
+
+
+class VulkanContext {
+
+public:
+
+	uint32_t WIDTH = 1280;
+	uint32_t HEIGHT = 720;
+	const int MAX_FRAMES_IN_FLIGHT = 2;
+
+
+	// Resources
+
+	int upload();
+	int createTexture();
+	int createMesh();
+	int createMaterial();
+	int createInstance();
+
+
+	// Render
+
+	void draw();
+	void update();
+
+
+
+private:
+
+
+
+
+};
+
+
+// -------------------------------------
+
+
+bool BaseApp::run() {
+
+
+	main_camera.setPerspective(45.0f, float(WIDTH) / float(HEIGHT), 0.1f, 100.0f);
+
+	if (volkInitialize() != VK_SUCCESS) {
+		std::cerr << "Failed to initialize Volk\n";
+		glfwTerminate();
+		return false;
+	};
+
+	if (!glfwInit()) {
+		std::cerr << "Failed to initialize GLFW\n";
+		return false;
+	}
+
+	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+	window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+
+	if (!window) {
+		std::cerr << "Failed to create GLFW window\n";
+		glfwTerminate();
+		return false;
+	}
+	glfwMakeContextCurrent(window);
+	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	glfwSetKeyCallback(window, BaseApp::keyCallback);
+	glfwSetCursorPosCallback(window, BaseApp::mouseCallback);
+	glfwSetMouseButtonCallback(window, BaseApp::mouseButtonCallback);
+	glfwSetScrollCallback(
+		window, BaseApp::scrollCallback);  // Register scroll callback
+
+	glfwSetWindowUserPointer(window, this);
+	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+
+	initVulkan();
+
+	pass();
+	mainLoop();
+
+	// OS takes cares of cleanup mate. If it doesn`t idc
+	// cleanup();
+
+
+};
+
+
 class BaseApp {
 
 
 
 public:
 
+	VulkanContext& vk_context;
 
+	bool run();
 
-
-
-	bool run() {
-		if (volkInitialize() != VK_SUCCESS) {
-			std::cerr << "Failed to initialize Volk\n";
-			glfwTerminate();
-			return false;
-		};
-
-		if (!glfwInit()) {
-			std::cerr << "Failed to initialize GLFW\n";
-			return false;
-		}
-
-		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-
-		window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
-
-		if (!window) {
-			std::cerr << "Failed to create GLFW window\n";
-			glfwTerminate();
-			return false;
-		}
-		glfwMakeContextCurrent(window);
-
-		glfwSetKeyCallback(window, BaseApp::keyCallback);
-		glfwSetCursorPosCallback(window, BaseApp::mouseCallback);
-		glfwSetMouseButtonCallback(window, BaseApp::mouseButtonCallback);
-		glfwSetScrollCallback(
-			window, BaseApp::scrollCallback);  // Register scroll callback
-
-		glfwSetWindowUserPointer(window, this);
-		glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
-
-		initVulkan();
-
-		pass();
-		mainLoop();
-
-		// OS takes cares of cleanup mate. If it doesn`t idc
-		// cleanup();
-	}
 
 private:
 
-
+#pragma region ===[ App / Core State ]===
 	Camera main_camera = Camera(cameraPositioner);
-
 	float delta_time;
+#pragma endregion
 
-	// ----------- INSTANCE / APP -------------
-	GLFWwindow* window;
+#pragma region ===[ GLFW / Window State ]===
+	GLFWwindow * window;
+#pragma endregion
 
+#pragma region ===[ Vulkan Instance / Device / Queues ]===
 	VkInstance instance;
 	VkDebugUtilsMessengerEXT debugMessenger;
 	VkSurfaceKHR surface;
@@ -98,156 +148,179 @@ private:
 	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 	VkDevice device;
 
-	// IMPL
-
 	VkQueue graphicsQueue;
 	VkQueue presentQueue;
+#pragma endregion
 
+#pragma region ===[ Swapchain ]===
 	VkSwapchainKHR swapChain;
 	std::vector<VkImage> swapChainImages;
 	VkFormat swapChainImageFormat;
 	VkExtent2D swapChainExtent;
 	std::vector<VkImageView> swapChainImageViews;
 	std::vector<VkFramebuffer> swapChainFramebuffers;
+#pragma endregion
 
-	//  --
-
-
+#pragma region ===[ Pipeline / Render Resources ]===
 	VkDescriptorSetLayout descriptorSetLayout;
 	VkPipelineLayout pipelineLayout;
 	VkPipeline graphicsPipeline;
 
 	VkCommandPool commandPool;
 
-	VkImage textureImage;
-	VkDeviceMemory textureImageMemory;
-	VkImageView textureImageView;
-	VkSampler textureSampler;
-
 	VkImage depthImage;
 	VkDeviceMemory depthImageMemory;
 	VkImageView depthImageView;
 
+	std::vector<VkCommandBuffer> commandBuffers;
+#pragma endregion
+
+#pragma region ===[ Texture Resources ]===
+	VkImage textureImage;
+	VkDeviceMemory textureImageMemory;
+	VkImageView textureImageView;
+	VkSampler textureSampler;
+#pragma endregion
+
+#pragma region ===[ Geometry Buffers ]===
 	VkBuffer vertexBuffer;
 	VkDeviceMemory vertexBufferMemory;
 	VkBuffer indexBuffer;
 	VkDeviceMemory indexBufferMemory;
 
+	std::vector<Vertex> vertices;
+	std::vector<uint32_t> indices;
+#pragma endregion
+
+#pragma region ===[ Uniforms / Descriptor Sets ]===
 	std::vector<VkBuffer> uniformBuffers;
 	std::vector<VkDeviceMemory> uniformBuffersMemory;
-
 	std::vector<void*> uniformBuffersMapped;
 
 	VkDescriptorPool descriptorPool;
 	std::vector<VkDescriptorSet> descriptorSets;
+#pragma endregion
 
-	std::vector<VkCommandBuffer> commandBuffers;
-
+#pragma region ===[ Synchronization Primitives ]===
 	std::vector<VkSemaphore> imageAvailableSemaphores;
 	std::vector<VkSemaphore> renderFinishedSemaphores;
 	std::vector<VkFence> inFlightFences;
 	uint32_t currentFrame = 0;
+#pragma endregion
 
-	std::vector<Vertex> vertices;
-	std::vector<uint32_t> indices;
-
+#pragma region ===[ Input / Camera State ]===
 	glm::vec3 last_camera_pos;
-
 	bool rightMousePressed = false;
-
 	bool firstMouse;
 	float lastX, lastY;
+	int currentKey = -1; // Keeps track of the currently pressed key (W, A, S, D)
+#pragma endregion
 
-	int currentKey = -1;  // Keeps track of the currently pressed key (W, A, S, D)
-
+#pragma region ===[ Flags / Resize Events ]===
 	bool framebufferResized = false;
+#pragma endregion
+
+
+
+
+	void populateDebugMessengerCreateInfo(
+		VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
+		createInfo = {};
+		createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+		createInfo.messageSeverity =
+			VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+			VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+			VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+		createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+			VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+			VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+		createInfo.pfnUserCallback = debugCallback;
+	}
+
 
 	static void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
-		BaseApp* app =
-			static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
-		if (app) {
-			app->handleMouseMovement(xpos, ypos);
-		}
+		auto* app = static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
+		if (app) app->handleMouseMovement(xpos, ypos);
 	}
 
-	static void keyCallback(GLFWwindow* window, int key, int scancode, int action,
-		int mods) {
-		BaseApp* app =
-			static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
-		if (app) {
-			app->handleKey(key, scancode, action, mods);  // Forward to the instance
-		}
+	static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+		auto* app = static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
+		if (app) app->handleKey(key, scancode, action, mods);
 	}
 
-	static void mouseButtonCallback(GLFWwindow* window, int button, int action,
-		int mods) {
-		BaseApp* app =
-			static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
-		if (app) {
-			app->handleMouseButton(button, action, mods);
-		}
+	static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+		auto* app = static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
+		if (app) app->handleMouseButton(button, action, mods);
 	}
 
-	static void scrollCallback(GLFWwindow* window, double xOffset,
-		double yOffset) {
-		BaseApp* app =
-			static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
-		if (app) {
-			app->handleMouseScroll(xOffset, yOffset);
-		}
+	static void scrollCallback(GLFWwindow* window, double xOffset, double yOffset) {
+		auto* app = static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
+		if (app) app->handleMouseScroll(xOffset, yOffset);
 	}
 
 	void handleMouseScroll(double xOffset, double yOffset) {
+		const float scrollSpeed = 1.0f;
+		glm::vec3 forward = cameraPositioner.getForward();
+		cameraPositioner.setPosition(
+			cameraPositioner.getPosition() + static_cast<float>(yOffset) * scrollSpeed * forward
+		);
 	}
 
-	// Handle mouse button press and release
+
+	void handleMouseMovement(double xpos, double ypos) {
+		if (!rightMousePressed) return;
+
+		glm::vec2 mousePos = glm::vec2(static_cast<float>(xpos), static_cast<float>(ypos));
+		cameraPositioner.update(0.0, mousePos, true); // We'll pass real deltaSeconds in mainLoop
+	}
+
+
 	void handleMouseButton(int button, int action, int mods) {
 		if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-			if (action == GLFW_PRESS) {
-				rightMousePressed = true;
-			}
-			else if (action == GLFW_RELEASE) {
-				rightMousePressed = false;
-			}
+			//rightMousePressed = (action == GLFW_PRESS);
+			//if (rightMousePressed) {
+			//	double x, y;
+			//	glfwGetCursorPos(window, &x, &y);
+			//	cameraPositioner.resetMousePosition(glm::vec2(x, y));
+			//}
 		}
 	}
 
-	// Handle mouse movement
-	void handleMouseMovement(double xpos, double ypos) {
-	}
 
 	void handleKey(int key, int scancode, int action, int mods) {
-		std::cout << "Key event: " << key << " action: " << action << "\n";
+		bool isPressed = action != GLFW_RELEASE;
 
-		auto keyToDirection = [](int key) -> std::string {
-			switch (key) {
-			case GLFW_KEY_W:
-			case GLFW_KEY_UP:
-				return "FORWARD";
-			case GLFW_KEY_S:
-			case GLFW_KEY_DOWN:
-				return "BACKWARD";
-			case GLFW_KEY_A:
-			case GLFW_KEY_LEFT:
-				return "LEFT";
-			case GLFW_KEY_D:
-			case GLFW_KEY_RIGHT:
-				return "RIGHT";
-			default:
-				return "";
-			}
-			};
-
-		std::string direction = keyToDirection(key);
-		if (direction.empty()) return;
-
-		//if (action == GLFW_PRESS) {
-		//	activeDirections.insert(direction);
-		//}
-		//else if (action == GLFW_RELEASE) {
-		//	activeDirections.erase(direction);
-		//}
+		switch (key) {
+		case GLFW_KEY_W:
+		case GLFW_KEY_UP:
+			cameraPositioner.movement_.forward_ = isPressed;
+			break;
+		case GLFW_KEY_S:
+		case GLFW_KEY_DOWN:
+			cameraPositioner.movement_.backward_ = isPressed;
+			break;
+		case GLFW_KEY_A:
+		case GLFW_KEY_LEFT:
+			cameraPositioner.movement_.left_ = isPressed;
+			break;
+		case GLFW_KEY_D:
+		case GLFW_KEY_RIGHT:
+			cameraPositioner.movement_.right_ = isPressed;
+			break;
+		case GLFW_KEY_Q:
+			cameraPositioner.movement_.down_ = isPressed;
+			break;
+		case GLFW_KEY_E:
+			cameraPositioner.movement_.up_ = isPressed;
+			break;
+		case GLFW_KEY_LEFT_SHIFT:
+			cameraPositioner.movement_.fastSpeed_ = isPressed;
+			break;
+		default:
+			break;
+		}
 	}
+
 
 	static void framebufferResizeCallback(GLFWwindow* window, int width,
 		int height) {
@@ -257,12 +330,157 @@ private:
 	}
 
 	void initVulkan() {
-		createInstance();
-		setupDebugMessenger();
-		createSurface();
 
-		pickPhysicalDevice();
-		createLogicalDevice();
+
+
+
+		{
+			if (enableValidationLayers && !checkValidationLayerSupport()) {
+				throw std::runtime_error(
+					"validation layers requested, but not available!");
+			}
+
+			VkApplicationInfo appInfo{};
+			appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+			appInfo.pApplicationName = "Hello Triangle";
+			appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+			appInfo.pEngineName = "No Engine";
+			appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+			appInfo.apiVersion = VK_API_VERSION_1_3;
+
+			VkInstanceCreateInfo createInfo{};
+			createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+			createInfo.pApplicationInfo = &appInfo;
+
+			auto extensions = getRequiredExtensions();
+			createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+			createInfo.ppEnabledExtensionNames = extensions.data();
+
+			if (enableValidationLayers) {
+				createInfo.enabledLayerCount =
+					static_cast<uint32_t>(validationLayers.size());
+				createInfo.ppEnabledLayerNames = validationLayers.data();
+
+				VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo;
+				populateDebugMessengerCreateInfo(debugCreateInfo);
+				createInfo.pNext = (void*)&debugCreateInfo;
+
+			}
+			else {
+				createInfo.enabledLayerCount = 0;
+				createInfo.pNext = nullptr;
+			}
+
+			if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
+				throw std::runtime_error("failed to create instance!");
+			}
+
+			volkLoadInstance(instance);
+
+		}
+
+		// Enable validation layers
+		{
+			if (!enableValidationLayers) return;
+
+			VkDebugUtilsMessengerCreateInfoEXT createInfo;
+			populateDebugMessengerCreateInfo(createInfo);
+
+			if (CreateDebugUtilsMessengerEXT(instance, &createInfo, nullptr,
+				&debugMessenger) != VK_SUCCESS) {
+				throw std::runtime_error("failed to set up debug messenger!");
+			}
+		}
+
+
+		// Create Surface
+		if (glfwCreateWindowSurface(instance, window, nullptr, &surface) !=
+			VK_SUCCESS) {
+			throw std::runtime_error("failed to create window surface!");
+		}
+
+		// Pick Device
+		uint32_t deviceCount = 0;
+		vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+
+		if (deviceCount == 0) {
+			throw std::runtime_error("failed to find GPUs with Vulkan support!");
+		}
+
+		std::vector<VkPhysicalDevice> devices(deviceCount);
+		vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+
+		for (const auto& device : devices) {
+			if (isDeviceSuitable(device)) {
+				physicalDevice = device;
+				break;
+			}
+		}
+
+		if (physicalDevice == VK_NULL_HANDLE) {
+			throw std::runtime_error("failed to find a suitable GPU!");
+		}
+
+		// Create Logical Device
+		{
+			QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
+
+			std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+			std::set<uint32_t> uniqueQueueFamilies = { indices.graphicsFamily.value(),
+													  indices.presentFamily.value() };
+
+			float queuePriority = 1.0f;
+			for (uint32_t queueFamily : uniqueQueueFamilies) {
+				VkDeviceQueueCreateInfo queueCreateInfo{};
+				queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+				queueCreateInfo.queueFamilyIndex = queueFamily;
+				queueCreateInfo.queueCount = 1;
+				queueCreateInfo.pQueuePriorities = &queuePriority;
+				queueCreateInfos.push_back(queueCreateInfo);
+			}
+
+			VkPhysicalDeviceFeatures deviceFeatures{
+				.samplerAnisotropy = VK_TRUE
+			};
+
+			VkDeviceCreateInfo createInfo{};
+			createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+
+			createInfo.queueCreateInfoCount =
+				static_cast<uint32_t>(queueCreateInfos.size());
+			createInfo.pQueueCreateInfos = queueCreateInfos.data();
+
+			createInfo.pEnabledFeatures = &deviceFeatures;
+
+			createInfo.enabledExtensionCount =
+				static_cast<uint32_t>(deviceExtensions.size());
+			createInfo.ppEnabledExtensionNames = deviceExtensions.data();
+
+			if (enableValidationLayers) {
+				createInfo.enabledLayerCount =
+					static_cast<uint32_t>(validationLayers.size());
+				createInfo.ppEnabledLayerNames = validationLayers.data();
+			}
+			else {
+				createInfo.enabledLayerCount = 0;
+			}
+
+			VkPhysicalDeviceVulkan13Features vulkan13Features{};
+			vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+			vulkan13Features.dynamicRendering = VK_TRUE;
+
+			createInfo.pNext = &vulkan13Features;
+
+			if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) !=
+				VK_SUCCESS) {
+				throw std::runtime_error("failed to create logical device!");
+			}
+
+			volkLoadDevice(device);
+
+			vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
+			vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
+		}
 
 		createSwapChain();
 		createSwapchainImageViews();
@@ -305,9 +523,19 @@ private:
 	}
 
 	void mainLoop() {
+
+		auto lastTime = std::chrono::high_resolution_clock::now();
+
 		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
 
+			auto now = std::chrono::high_resolution_clock::now();
+			float delta = std::chrono::duration<float>(now - lastTime).count();
+			lastTime = now;
+
+			double x, y;
+			glfwGetCursorPos(window, &x, &y);
+			cameraPositioner.update(delta, glm::vec2(x, y), rightMousePressed);
 
 
 			drawFrame();
@@ -403,65 +631,6 @@ private:
 		//createFramebuffers();
 	}
 
-	void createInstance() {
-		if (enableValidationLayers && !checkValidationLayerSupport()) {
-			throw std::runtime_error(
-				"validation layers requested, but not available!");
-		}
-
-		VkApplicationInfo appInfo{};
-		appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-		appInfo.pApplicationName = "Hello Triangle";
-		appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-		appInfo.pEngineName = "No Engine";
-		appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-		appInfo.apiVersion = VK_API_VERSION_1_3;
-
-		VkInstanceCreateInfo createInfo{};
-		createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-		createInfo.pApplicationInfo = &appInfo;
-
-		auto extensions = getRequiredExtensions();
-		createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
-		createInfo.ppEnabledExtensionNames = extensions.data();
-
-		VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
-		if (enableValidationLayers) {
-			createInfo.enabledLayerCount =
-				static_cast<uint32_t>(validationLayers.size());
-			createInfo.ppEnabledLayerNames = validationLayers.data();
-
-			populateDebugMessengerCreateInfo(debugCreateInfo);
-			//createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debugCreateInfo;
-			createInfo.pNext = (void*)&debugCreateInfo;
-
-		}
-		else {
-			createInfo.enabledLayerCount = 0;
-			createInfo.pNext = nullptr;
-		}
-
-		if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create instance!");
-		}
-
-		volkLoadInstance(instance);
-	}
-
-	void populateDebugMessengerCreateInfo(
-		VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
-		createInfo = {};
-		createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-		createInfo.messageSeverity =
-			VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-			VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-			VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-		createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-			VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-			VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-		createInfo.pfnUserCallback = debugCallback;
-	}
-
 	void setupDebugMessenger() {
 		if (!enableValidationLayers) return;
 
@@ -474,94 +643,13 @@ private:
 		}
 	}
 
-	void createSurface() {
-		if (glfwCreateWindowSurface(instance, window, nullptr, &surface) !=
-			VK_SUCCESS) {
-			throw std::runtime_error("failed to create window surface!");
-		}
-	}
 
 	void pickPhysicalDevice() {
-		uint32_t deviceCount = 0;
-		vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
 
-		if (deviceCount == 0) {
-			throw std::runtime_error("failed to find GPUs with Vulkan support!");
-		}
-
-		std::vector<VkPhysicalDevice> devices(deviceCount);
-		vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
-
-		for (const auto& device : devices) {
-			if (isDeviceSuitable(device)) {
-				physicalDevice = device;
-				break;
-			}
-		}
-
-		if (physicalDevice == VK_NULL_HANDLE) {
-			throw std::runtime_error("failed to find a suitable GPU!");
-		}
 	}
 
 	void createLogicalDevice() {
-		QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
-
-		std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-		std::set<uint32_t> uniqueQueueFamilies = { indices.graphicsFamily.value(),
-												  indices.presentFamily.value() };
-
-		float queuePriority = 1.0f;
-		for (uint32_t queueFamily : uniqueQueueFamilies) {
-			VkDeviceQueueCreateInfo queueCreateInfo{};
-			queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-			queueCreateInfo.queueFamilyIndex = queueFamily;
-			queueCreateInfo.queueCount = 1;
-			queueCreateInfo.pQueuePriorities = &queuePriority;
-			queueCreateInfos.push_back(queueCreateInfo);
-		}
-
-		VkPhysicalDeviceFeatures deviceFeatures{};
-		deviceFeatures.samplerAnisotropy = VK_TRUE;
-
-		VkDeviceCreateInfo createInfo{};
-		createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-
-		createInfo.queueCreateInfoCount =
-			static_cast<uint32_t>(queueCreateInfos.size());
-		createInfo.pQueueCreateInfos = queueCreateInfos.data();
-
-		createInfo.pEnabledFeatures = &deviceFeatures;
-
-		createInfo.enabledExtensionCount =
-			static_cast<uint32_t>(deviceExtensions.size());
-		createInfo.ppEnabledExtensionNames = deviceExtensions.data();
-
-		if (enableValidationLayers) {
-			createInfo.enabledLayerCount =
-				static_cast<uint32_t>(validationLayers.size());
-			createInfo.ppEnabledLayerNames = validationLayers.data();
-		}
-		else {
-			createInfo.enabledLayerCount = 0;
-		}
-
-		VkPhysicalDeviceVulkan13Features vulkan13Features{};
-		vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-		vulkan13Features.dynamicRendering = VK_TRUE;
-
-		createInfo.pNext = &vulkan13Features;
-
-		if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) !=
-			VK_SUCCESS) {
-			throw std::runtime_error("failed to create logical device!");
-		}
-
-
-		volkLoadDevice(device);
-
-		vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
-		vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
+	
 
 	}
 
@@ -1529,22 +1617,12 @@ private:
 
 		Transform tesssst = Transform{};
 
-		tesssst.scale = { 10, 10, 10 };
+		tesssst.scale = { 10, 10, -10 };
 		tesssst.translation = { 0, -1.f, 0.f };
-
-		// Compute the model matrix from the transform
-		// ubo.model = getModelMatrix(&tesssst);
-		// Alternatively, for hierarchical transforms:
 		ubo.model = getWorldTransform(tesssst);
-
-		// ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(10.0f),
-		// glm::vec3(0.0f, 0.0f, 1.0f));
-
-		// Set up the projection matrix with a Vulkan-specific Y-axis inversion
 		ubo.proj = main_camera.getProjMatrix();
-		ubo.proj[1][1] *= -1;
+		//ubo.proj[1][1] *= -1;
 
-		// Set up the view matrix from the camera
 		ubo.view = main_camera.getViewMatrix();
 
 		memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
