@@ -66,7 +66,7 @@ private:
 
 // -------------------------------------
 
-class BaseApp {
+class TestApplication {
 
 
 
@@ -114,7 +114,7 @@ private:
 	VkPipelineLayout pipelineLayout;
 	VkPipeline graphicsPipeline;
 
-	VkCommandPool commandPool;
+	VkCommandPool graphicsCommandPool;
 
 	VkImage depthImage;
 	VkDeviceMemory depthImageMemory;
@@ -187,22 +187,22 @@ private:
 
 
 	static void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
-		auto* app = static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
+		auto* app = static_cast<TestApplication*>(glfwGetWindowUserPointer(window));
 		if (app) app->handleMouseMovement(xpos, ypos);
 	}
 
 	static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-		auto* app = static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
+		auto* app = static_cast<TestApplication*>(glfwGetWindowUserPointer(window));
 		if (app) app->handleKey(key, scancode, action, mods);
 	}
 
 	static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
-		auto* app = static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
+		auto* app = static_cast<TestApplication*>(glfwGetWindowUserPointer(window));
 		if (app) app->handleMouseButton(button, action, mods);
 	}
 
 	static void scrollCallback(GLFWwindow* window, double xOffset, double yOffset) {
-		auto* app = static_cast<BaseApp*>(glfwGetWindowUserPointer(window));
+		auto* app = static_cast<TestApplication*>(glfwGetWindowUserPointer(window));
 		if (app) app->handleMouseScroll(xOffset, yOffset);
 	}
 
@@ -273,14 +273,11 @@ private:
 	static void framebufferResizeCallback(GLFWwindow* window, int width,
 		int height) {
 		auto app =
-			reinterpret_cast<BaseApp*>(glfwGetWindowUserPointer(window));
+			reinterpret_cast<TestApplication*>(glfwGetWindowUserPointer(window));
 		app->framebufferResized = true;
 	}
 
 	void initVulkan() {
-
-
-
 
 		{
 			if (enableValidationLayers && !checkValidationLayerSupport()) {
@@ -436,16 +433,30 @@ private:
 
 	void start() {
 
-		
-		createCommandPool();
+
+
+		//
+		QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+
+		VkCommandPoolCreateInfo poolInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
+		};
+
+		if (vkCreateCommandPool(device, &poolInfo, nullptr, &graphicsCommandPool) !=
+			VK_SUCCESS) {
+			throw std::runtime_error("failed to create graphics command pool!");
+		}
 
 		Transform test_tr = Transform{};
 
 		test_tr.scale = glm::vec3(1.0f, 1.0f, 1.0f);
 
-		Mesh m = Mesh("models/viking_room.obj", &test_tr);
-		// MeshTwo m =
-		// MeshTwo("D:\\REPOS\\pearlshift\\assets\\NewSponza_Curtains_glTF.gltf");
+		Mesh m = Mesh(
+			"models/viking_room.obj",
+			&test_tr
+		);
 		vertices = m.vertices;
 		indices = m.indices;
 
@@ -557,7 +568,7 @@ private:
 			vkDestroyFence(device, inFlightFences[i], nullptr);
 		}
 
-		vkDestroyCommandPool(device, commandPool, nullptr);
+		vkDestroyCommandPool(device, graphicsCommandPool, nullptr);
 
 		vkDestroyDevice(device, nullptr);
 
@@ -903,19 +914,6 @@ private:
 			createImageView(depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
 	}
 
-	void createCommandPool() {
-		QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
-
-		VkCommandPoolCreateInfo poolInfo{};
-		poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-		poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-		poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
-
-		if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) !=
-			VK_SUCCESS) {
-			throw std::runtime_error("failed to create graphics command pool!");
-		}
-	}
 
 	void createTextureImage(std::string texture_path) {
 		int texWidth, texHeight, texChannels;
@@ -1326,7 +1324,7 @@ private:
 		VkCommandBufferAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		allocInfo.commandPool = commandPool;
+		allocInfo.commandPool = graphicsCommandPool;
 		allocInfo.commandBufferCount = 1;
 
 		VkCommandBuffer commandBuffer;
@@ -1352,7 +1350,7 @@ private:
 		vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
 		vkQueueWaitIdle(graphicsQueue);
 
-		vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+		vkFreeCommandBuffers(device, graphicsCommandPool, 1, &commandBuffer);
 	}
 
 	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
@@ -1385,7 +1383,7 @@ private:
 
 		VkCommandBufferAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-		allocInfo.commandPool = commandPool;
+		allocInfo.commandPool = graphicsCommandPool;
 		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 		allocInfo.commandBufferCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
 
@@ -1879,7 +1877,7 @@ private:
 
 
 
-bool BaseApp::run() {
+bool TestApplication::run() {
 
 
 	main_camera.setPerspective(45.0f, float(WIDTH) / float(HEIGHT), 0.1f, 100.0f);
@@ -1906,11 +1904,11 @@ bool BaseApp::run() {
 	}
 	glfwMakeContextCurrent(window);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-	glfwSetKeyCallback(window, BaseApp::keyCallback);
-	glfwSetCursorPosCallback(window, BaseApp::mouseCallback);
-	glfwSetMouseButtonCallback(window, BaseApp::mouseButtonCallback);
+	glfwSetKeyCallback(window, TestApplication::keyCallback);
+	glfwSetCursorPosCallback(window, TestApplication::mouseCallback);
+	glfwSetMouseButtonCallback(window, TestApplication::mouseButtonCallback);
 	glfwSetScrollCallback(
-		window, BaseApp::scrollCallback);  // Register scroll callback
+		window, TestApplication::scrollCallback);  // Register scroll callback
 
 	glfwSetWindowUserPointer(window, this);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
@@ -1937,7 +1935,7 @@ int main(int argc, const char* argv[]) {
 		std::cout << argv[0];
 	}
 
-	BaseApp app;
+	TestApplication app;
 
 	try {
 		app.run();
