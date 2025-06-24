@@ -3,7 +3,7 @@
 #include <assert.h>
 #include <algorithm>
 
-#include "Engine/requirements.h"
+#include "Engine/common.h"
 #include "glm/gtx/euler_angles.hpp"
 
 class CameraPositionerInterface

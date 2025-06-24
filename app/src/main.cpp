@@ -23,7 +23,9 @@ CameraPositioner_FirstPerson cameraPositioner(
 );
 
 
-
+static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+static constexpr uint32_t WIDTH = 1280;
+static constexpr uint32_t HEIGHT = 720;
 
 
 struct Material {
@@ -33,14 +35,9 @@ struct Material {
 
 };
 
-
 class VulkanContext {
 
 public:
-
-	uint32_t WIDTH = 1280;
-	uint32_t HEIGHT = 720;
-	const int MAX_FRAMES_IN_FLIGHT = 2;
 
 
 	// Resources
@@ -108,12 +105,14 @@ bool BaseApp::run() {
 
 	initVulkan();
 
+	start();
+
 	pass();
 	mainLoop();
 
-	// OS takes cares of cleanup mate. If it doesn`t idc
-	// cleanup();
 
+	// It is bothersome but when dealing with the GPU it is proper manners to clean up. Its not as cut and dry as leaving it to the OS.
+	cleanup();
 
 };
 
@@ -124,7 +123,8 @@ class BaseApp {
 
 public:
 
-	VulkanContext& vk_context;
+	//VulkanContext& vk_context;
+
 
 	bool run();
 
@@ -172,7 +172,7 @@ private:
 	VkDeviceMemory depthImageMemory;
 	VkImageView depthImageView;
 
-	std::vector<VkCommandBuffer> commandBuffers;
+	VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
 #pragma endregion
 
 #pragma region ===[ Texture Resources ]===
@@ -193,8 +193,8 @@ private:
 #pragma endregion
 
 #pragma region ===[ Uniforms / Descriptor Sets ]===
-	std::vector<VkBuffer> uniformBuffers;
-	std::vector<VkDeviceMemory> uniformBuffersMemory;
+	VkBuffer uniformBuffers[MAX_FRAMES_IN_FLIGHT];
+	VkDeviceMemory uniformBuffersMemory[MAX_FRAMES_IN_FLIGHT];
 	std::vector<void*> uniformBuffersMapped;
 
 	VkDescriptorPool descriptorPool;
@@ -202,9 +202,9 @@ private:
 #pragma endregion
 
 #pragma region ===[ Synchronization Primitives ]===
-	std::vector<VkSemaphore> imageAvailableSemaphores;
-	std::vector<VkSemaphore> renderFinishedSemaphores;
-	std::vector<VkFence> inFlightFences;
+	VkSemaphore imageAvailableSemaphores[MAX_FRAMES_IN_FLIGHT];
+	VkSemaphore renderFinishedSemaphores[MAX_FRAMES_IN_FLIGHT];
+	VkFence inFlightFences[MAX_FRAMES_IN_FLIGHT];
 	uint32_t currentFrame = 0;
 #pragma endregion
 
@@ -442,6 +442,7 @@ private:
 			VkPhysicalDeviceFeatures deviceFeatures{
 				.samplerAnisotropy = VK_TRUE
 			};
+			deviceFeatures.samplerAnisotropy = VK_TRUE;
 
 			VkDeviceCreateInfo createInfo{};
 			createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -486,19 +487,10 @@ private:
 		createSwapchainImageViews();
 	}
 
-	void pass() {
-		// createRenderPass();
 
-		createDescriptorSetLayout();
-		createGraphicsPipeline();
+	void start() {
 
-		createCommandPool();
-		createDepthResources();
-		//createFramebuffers();
 
-		createTextureImage("textures/viking_room.png");
-		createTextureImageView();
-		createTextureSampler();
 
 		Transform test_tr = Transform{};
 
@@ -510,10 +502,32 @@ private:
 		vertices = m.vertices;
 		indices = m.indices;
 
+
+
 		createVertexBuffer();
 		createIndexBuffer();
-
 		createUniformBuffers();
+
+	}
+
+	void pass() {
+
+
+
+		// These should be done per needed render graph.
+		createDescriptorSetLayout();
+		createGraphicsPipeline();
+		createCommandPool();
+
+		createDepthResources();
+		createTextureImage("textures/viking_room.png");
+		createTextureImageView();
+		createTextureSampler();
+
+
+
+
+
 
 		createDescriptorPool();
 		createDescriptorSets();
@@ -628,7 +642,6 @@ private:
 		createSwapChain();
 		createSwapchainImageViews();
 		createDepthResources();
-		//createFramebuffers();
 	}
 
 	void setupDebugMessenger() {
@@ -644,14 +657,6 @@ private:
 	}
 
 
-	void pickPhysicalDevice() {
-
-	}
-
-	void createLogicalDevice() {
-	
-
-	}
 
 	void createSwapChain() {
 		SwapChainSupportDetails swapChainSupport =
@@ -703,8 +708,6 @@ private:
 			throw std::runtime_error("failed to create swap chain!");
 		}
 
-		// First we get the count into &imageCount, we rezise, and then pull data
-		// into swapChainImages
 		vkGetSwapchainImagesKHR(device, swapChain, &imageCount, nullptr);
 		swapChainImages.resize(imageCount);
 		vkGetSwapchainImagesKHR(device, swapChain, &imageCount,
@@ -1261,9 +1264,6 @@ private:
 	void createUniformBuffers() {
 		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
 
-		uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
-		uniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
-		uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 			createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
@@ -1437,15 +1437,14 @@ private:
 	}
 
 	void createCommandBuffers() {
-		commandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
 
 		VkCommandBufferAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 		allocInfo.commandPool = commandPool;
 		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		allocInfo.commandBufferCount = (uint32_t)commandBuffers.size();
+		allocInfo.commandBufferCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
 
-		if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data()) !=
+		if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers) !=
 			VK_SUCCESS) {
 			throw std::runtime_error("failed to allocate command buffers!");
 		}
@@ -1583,9 +1582,6 @@ private:
 	}
 
 	void createSyncObjects() {
-		imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-		renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-		inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
 
 		VkSemaphoreCreateInfo semaphoreInfo{};
 		semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -1595,12 +1591,10 @@ private:
 		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-			if (vkCreateSemaphore(device, &semaphoreInfo, nullptr,
-				&imageAvailableSemaphores[i]) != VK_SUCCESS ||
-				vkCreateSemaphore(device, &semaphoreInfo, nullptr,
-					&renderFinishedSemaphores[i]) != VK_SUCCESS ||
-				vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) !=
-				VK_SUCCESS) {
+			if (
+				vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
+				vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
+				vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
 				throw std::runtime_error(
 					"failed to create synchronization objects for a frame!");
 			}
@@ -1920,7 +1914,6 @@ private:
 		VkSwapchainKHR swapChains[] = { swapChain };
 		presentInfo.swapchainCount = 1;
 		presentInfo.pSwapchains = swapChains;
-
 		presentInfo.pImageIndices = &imageIndex;
 
 		result = vkQueuePresentKHR(presentQueue, &presentInfo);
