@@ -66,57 +66,6 @@ private:
 
 // -------------------------------------
 
-
-bool BaseApp::run() {
-
-
-	main_camera.setPerspective(45.0f, float(WIDTH) / float(HEIGHT), 0.1f, 100.0f);
-
-	if (volkInitialize() != VK_SUCCESS) {
-		std::cerr << "Failed to initialize Volk\n";
-		glfwTerminate();
-		return false;
-	};
-
-	if (!glfwInit()) {
-		std::cerr << "Failed to initialize GLFW\n";
-		return false;
-	}
-
-	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-
-	window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
-
-	if (!window) {
-		std::cerr << "Failed to create GLFW window\n";
-		glfwTerminate();
-		return false;
-	}
-	glfwMakeContextCurrent(window);
-	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-	glfwSetKeyCallback(window, BaseApp::keyCallback);
-	glfwSetCursorPosCallback(window, BaseApp::mouseCallback);
-	glfwSetMouseButtonCallback(window, BaseApp::mouseButtonCallback);
-	glfwSetScrollCallback(
-		window, BaseApp::scrollCallback);  // Register scroll callback
-
-	glfwSetWindowUserPointer(window, this);
-	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
-
-	initVulkan();
-
-	start();
-
-	pass();
-	mainLoop();
-
-
-	// It is bothersome but when dealing with the GPU it is proper manners to clean up. Its not as cut and dry as leaving it to the OS.
-	cleanup();
-
-};
-
-
 class BaseApp {
 
 
@@ -124,7 +73,6 @@ class BaseApp {
 public:
 
 	//VulkanContext& vk_context;
-
 
 	bool run();
 
@@ -195,10 +143,10 @@ private:
 #pragma region ===[ Uniforms / Descriptor Sets ]===
 	VkBuffer uniformBuffers[MAX_FRAMES_IN_FLIGHT];
 	VkDeviceMemory uniformBuffersMemory[MAX_FRAMES_IN_FLIGHT];
-	std::vector<void*> uniformBuffersMapped;
+	void* uniformBuffersMapped[MAX_FRAMES_IN_FLIGHT];
 
 	VkDescriptorPool descriptorPool;
-	std::vector<VkDescriptorSet> descriptorSets;
+	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT];
 #pragma endregion
 
 #pragma region ===[ Synchronization Primitives ]===
@@ -379,9 +327,7 @@ private:
 
 		}
 
-		// Enable validation layers
-		{
-			if (!enableValidationLayers) return;
+		if (enableValidationLayers) {
 
 			VkDebugUtilsMessengerCreateInfoEXT createInfo;
 			populateDebugMessengerCreateInfo(createInfo);
@@ -490,7 +436,8 @@ private:
 
 	void start() {
 
-
+		
+		createCommandPool();
 
 		Transform test_tr = Transform{};
 
@@ -517,7 +464,6 @@ private:
 		// These should be done per needed render graph.
 		createDescriptorSetLayout();
 		createGraphicsPipeline();
-		createCommandPool();
 
 		createDepthResources();
 		createTextureImage("textures/viking_room.png");
@@ -1305,8 +1251,7 @@ private:
 		allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
 		allocInfo.pSetLayouts = layouts.data();
 
-		descriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
-		if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data()) !=
+		if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets) !=
 			VK_SUCCESS) {
 			throw std::runtime_error("failed to allocate descriptor sets!");
 		}
@@ -1930,6 +1875,62 @@ private:
 		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 };
+
+
+
+
+bool BaseApp::run() {
+
+
+	main_camera.setPerspective(45.0f, float(WIDTH) / float(HEIGHT), 0.1f, 100.0f);
+
+	if (volkInitialize() != VK_SUCCESS) {
+		std::cerr << "Failed to initialize Volk\n";
+		glfwTerminate();
+		return false;
+	};
+
+	if (!glfwInit()) {
+		std::cerr << "Failed to initialize GLFW\n";
+		return false;
+	}
+
+	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+	window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+
+	if (!window) {
+		std::cerr << "Failed to create GLFW window\n";
+		glfwTerminate();
+		return false;
+	}
+	glfwMakeContextCurrent(window);
+	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	glfwSetKeyCallback(window, BaseApp::keyCallback);
+	glfwSetCursorPosCallback(window, BaseApp::mouseCallback);
+	glfwSetMouseButtonCallback(window, BaseApp::mouseButtonCallback);
+	glfwSetScrollCallback(
+		window, BaseApp::scrollCallback);  // Register scroll callback
+
+	glfwSetWindowUserPointer(window, this);
+	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+
+	initVulkan();
+
+	start();
+
+	pass();
+	mainLoop();
+
+
+	// It is bothersome but when dealing with the GPU it is proper manners to clean up. Its not as cut and dry as leaving it to the OS.
+	cleanup();
+
+	return true;
+
+};
+
+
 
 int main(int argc, const char* argv[]) {
 	if (argc > 1) {
