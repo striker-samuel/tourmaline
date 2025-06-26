@@ -37,6 +37,7 @@ struct Material {
 };
 
 
+
 std::vector<Vertex> quad_vertices = {
 	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
 	{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
@@ -50,10 +51,33 @@ std::vector<uint32_t> quad_indices = {
 
 Mesh Quad = Mesh(quad_vertices, quad_indices);
 
+Material default_material{
+	1,
+	1,
+	1,
+};
+
+
+int vertex_shader_count = 10;
+int frag_shader_count = 10;
+VkShaderModule vertex_shaders[10];
+VkShaderModule frag_shaders[10];
+
+class VulkanView {
+	
+public:
+
+	Camera camera_;
+
+private:
+
+
+};
+
+
 class VulkanContext {
 
 public:
-
 
 	// Resources
 
@@ -471,6 +495,15 @@ private:
 		createIndexBuffer();
 		createUniformBuffers();
 
+		auto vertShaderCode = readFile("shaders/example.vert.spv");
+		auto fragShaderCode = readFile("shaders/example.frag.spv");
+
+		VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+		VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+		vertex_shaders[0] = vertShaderModule;
+		frag_shaders[0] = fragShaderModule;
+
 	}
 
 	void pass() {
@@ -723,25 +756,23 @@ private:
 	}
 
 	void createGraphicsPipeline() {
-		// NO MAT SYSTEM!!!!
-		auto vertShaderCode = readFile("shaders/example.vert.spv");
-		auto fragShaderCode = readFile("shaders/example.frag.spv");
 
-		VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
-		VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+		VkShaderModule vert = vertex_shaders[0];
+		VkShaderModule frag = frag_shaders[0];
 
 		VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
 		vertShaderStageInfo.sType =
 			VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-		vertShaderStageInfo.module = vertShaderModule;
+		vertShaderStageInfo.module = vert;
 		vertShaderStageInfo.pName = "main";
 
 		VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
 		fragShaderStageInfo.sType =
 			VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-		fragShaderStageInfo.module = fragShaderModule;
+		fragShaderStageInfo.module = frag;
 		fragShaderStageInfo.pName = "main";
 
 		VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
@@ -868,8 +899,15 @@ private:
 			throw std::runtime_error("failed to create graphics pipeline!");
 		}
 
-		vkDestroyShaderModule(device, fragShaderModule, nullptr);
-		vkDestroyShaderModule(device, vertShaderModule, nullptr);
+
+		for (int i = 0; i < vertex_shader_count; i++) {
+			vkDestroyShaderModule(device, vertex_shaders[i], nullptr);
+		}
+
+		for (int i = 0; i < frag_shader_count; i++) {
+			vkDestroyShaderModule(device, frag_shaders[i], nullptr);
+		}
+
 	}
 
 
