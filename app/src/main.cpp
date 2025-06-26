@@ -28,12 +28,27 @@ static constexpr uint32_t WIDTH = 1280;
 static constexpr uint32_t HEIGHT = 720;
 
 
+// TRASH
+
 struct Material {
 	int id;
 	int vert_shader_id;
 	int frag_shader_id;
-
 };
+
+
+std::vector<Vertex> quad_vertices = {
+	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+	{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+	{{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+	{{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
+};
+
+std::vector<uint32_t> quad_indices = {
+	0, 1, 2, 2, 3, 0
+};
+
+Mesh Quad = Mesh(quad_vertices, quad_indices);
 
 class VulkanContext {
 
@@ -102,11 +117,16 @@ private:
 
 #pragma region ===[ Swapchain ]===
 	VkSwapchainKHR swapChain;
-	std::vector<VkImage> swapChainImages;
+
+	uint32_t swapchainImageCount;
+	VkImage* swapChainImages;
+	VkImageView* swapChainImageViews;
+	VkFramebuffer* swapChainFrameBuffers;
+
 	VkFormat swapChainImageFormat;
 	VkExtent2D swapChainExtent;
-	std::vector<VkImageView> swapChainImageViews;
-	std::vector<VkFramebuffer> swapChainFramebuffers;
+
+
 #pragma endregion
 
 #pragma region ===[ Pipeline / Render Resources ]===
@@ -150,8 +170,8 @@ private:
 #pragma endregion
 
 #pragma region ===[ Synchronization Primitives ]===
+	VkSemaphore * renderFinishedSemaphores;
 	VkSemaphore imageAvailableSemaphores[MAX_FRAMES_IN_FLIGHT];
-	VkSemaphore renderFinishedSemaphores[MAX_FRAMES_IN_FLIGHT];
 	VkFence inFlightFences[MAX_FRAMES_IN_FLIGHT];
 	uint32_t currentFrame = 0;
 #pragma endregion
@@ -169,14 +189,12 @@ private:
 #pragma endregion
 
 
-
-
 	void populateDebugMessengerCreateInfo(
 		VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
 		createInfo = {};
 		createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
 		createInfo.messageSeverity =
-			VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+			//VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
 			VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
 			VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
 		createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
@@ -433,9 +451,6 @@ private:
 
 	void start() {
 
-
-
-		//
 		QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
 
 		VkCommandPoolCreateInfo poolInfo{
@@ -449,18 +464,8 @@ private:
 			throw std::runtime_error("failed to create graphics command pool!");
 		}
 
-		Transform test_tr = Transform{};
-
-		test_tr.scale = glm::vec3(1.0f, 1.0f, 1.0f);
-
-		Mesh m = Mesh(
-			"models/viking_room.obj",
-			&test_tr
-		);
-		vertices = m.vertices;
-		indices = m.indices;
-
-
+		vertices = Quad.vertices;
+		indices = Quad.indices;
 
 		createVertexBuffer();
 		createIndexBuffer();
@@ -470,9 +475,6 @@ private:
 
 	void pass() {
 
-
-
-		// These should be done per needed render graph.
 		createDescriptorSetLayout();
 		createGraphicsPipeline();
 
@@ -480,11 +482,6 @@ private:
 		createTextureImage("textures/viking_room.png");
 		createTextureImageView();
 		createTextureSampler();
-
-
-
-
-
 
 		createDescriptorPool();
 		createDescriptorSets();
@@ -516,17 +513,23 @@ private:
 	}
 
 	void cleanupSwapChain() {
+
 		vkDestroyImageView(device, depthImageView, nullptr);
 		vkDestroyImage(device, depthImage, nullptr);
 		vkFreeMemory(device, depthImageMemory, nullptr);
 
-		for (auto framebuffer : swapChainFramebuffers) {
-			vkDestroyFramebuffer(device, framebuffer, nullptr);
+		// Destroy framebuffers
+		for (uint32_t i = 0; i < swapchainImageCount; ++i) {
+			vkDestroyFramebuffer(device, swapChainFrameBuffers[i], nullptr);
 		}
+		delete[] swapChainFrameBuffers;
+		swapChainFrameBuffers = nullptr;
 
-		for (auto imageView : swapChainImageViews) {
-			vkDestroyImageView(device, imageView, nullptr);
+		for (uint32_t i = 0; i < swapchainImageCount; ++i) {
+			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
 		}
+		delete[] swapChainImageViews;
+		swapChainImageViews = nullptr;
 
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
@@ -625,17 +628,22 @@ private:
 			chooseSwapPresentMode(swapChainSupport.presentModes);
 		VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
 
-		uint32_t imageCount = swapChainSupport.capabilities.minImageCount + 1;
+		swapchainImageCount = swapChainSupport.capabilities.minImageCount + 1;
+
+		swapChainImages = new VkImage[swapchainImageCount];
+		swapChainFrameBuffers = new VkFramebuffer[swapchainImageCount];
+		swapChainImageViews = new VkImageView[swapchainImageCount];
+
 		if (swapChainSupport.capabilities.maxImageCount > 0 &&
-			imageCount > swapChainSupport.capabilities.maxImageCount) {
-			imageCount = swapChainSupport.capabilities.maxImageCount;
+			swapchainImageCount > swapChainSupport.capabilities.maxImageCount) {
+			swapchainImageCount = swapChainSupport.capabilities.maxImageCount;
 		}
 
 		VkSwapchainCreateInfoKHR createInfo{};
 		createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
 		createInfo.surface = surface;
 
-		createInfo.minImageCount = imageCount;
+		createInfo.minImageCount = swapchainImageCount;
 		createInfo.imageFormat = surfaceFormat.format;
 		createInfo.imageColorSpace = surfaceFormat.colorSpace;
 		createInfo.imageExtent = extent;
@@ -665,26 +673,26 @@ private:
 			throw std::runtime_error("failed to create swap chain!");
 		}
 
-		vkGetSwapchainImagesKHR(device, swapChain, &imageCount, nullptr);
-		swapChainImages.resize(imageCount);
-		vkGetSwapchainImagesKHR(device, swapChain, &imageCount,
-			swapChainImages.data());
+		vkGetSwapchainImagesKHR(device, swapChain, &swapchainImageCount, nullptr);
+		vkGetSwapchainImagesKHR(device, swapChain, &swapchainImageCount, swapChainImages);
+		renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
 
 		swapChainImageFormat = surfaceFormat.format;
 		swapChainExtent = extent;
 	}
 
 	void createSwapchainImageViews() {
-		swapChainImageViews.resize(swapChainImages.size());
 
-		for (size_t i = 0; i < swapChainImages.size(); i++) {
+		for (uint32_t i = 0; i < swapchainImageCount; ++i) {
 			swapChainImageViews[i] = createImageView(
-				swapChainImages[i], swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT);
+				swapChainImages[i], swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT
+			);
 		}
+
 	}
 
 	void createDescriptorSetLayout() {
-		// BINDING 0
+
 		VkDescriptorSetLayoutBinding uboLayoutBinding{};
 		uboLayoutBinding.binding = 0;
 		uboLayoutBinding.descriptorCount = 1;
@@ -692,7 +700,6 @@ private:
 		uboLayoutBinding.pImmutableSamplers = nullptr;
 		uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-		// BINDING 1
 		VkDescriptorSetLayoutBinding samplerLayoutBinding{};
 		samplerLayoutBinding.binding = 1;
 		samplerLayoutBinding.descriptorCount = 1;
@@ -1533,10 +1540,19 @@ private:
 		fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
+		VkSemaphoreCreateInfo semInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+
+		for (uint32_t i = 0; i < swapchainImageCount; i++) {
+			if (vkCreateSemaphore(device, &semInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS) {
+				throw std::runtime_error("failed to create render-finished semaphore!");
+			}
+		}
+
+
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 			if (
 				vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
-				vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
+				//vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
 				vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
 				throw std::runtime_error(
 					"failed to create synchronization objects for a frame!");
@@ -1551,15 +1567,13 @@ private:
 			.count();
 
 		UniformBufferObject ubo{};
-
 		Transform tesssst = Transform{};
 
 		tesssst.scale = { 10, 10, -10 };
 		tesssst.translation = { 0, -1.f, 0.f };
+
 		ubo.model = getWorldTransform(tesssst);
 		ubo.proj = main_camera.getProjMatrix();
-		//ubo.proj[1][1] *= -1;
-
 		ubo.view = main_camera.getViewMatrix();
 
 		memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
@@ -1822,7 +1836,6 @@ private:
 			/*VkCommandBufferResetFlagBits*/ 0);
 		recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
 
-		// 1ST QUEUE
 
 		VkSubmitInfo submitInfo{};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1846,7 +1859,6 @@ private:
 			throw std::runtime_error("failed to submit draw command buffer!");
 		}
 
-		// 2ND QUEUE
 
 		VkPresentInfoKHR presentInfo{};
 		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -1878,7 +1890,6 @@ private:
 
 
 bool TestApplication::run() {
-
 
 	main_camera.setPerspective(45.0f, float(WIDTH) / float(HEIGHT), 0.1f, 100.0f);
 

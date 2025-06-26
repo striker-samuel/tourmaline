@@ -210,6 +210,12 @@ public:
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
 
+
+	Mesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices) {
+		this->vertices = vertices;
+		this->indices = indices;
+	}
+
 	Mesh(std::string model_path, Transform* parent = nullptr) {
 		transform = parent;
 
