@@ -1,5 +1,6 @@
 #pragma once
 
+#include <pool.h>
 #include <Engine/Vulkan/vulkan_setup.h>
 #include <Engine/Vulkan/vulkan_helpers.h>
 #include <Engine/Vulkan/vulkan_data_structures.h>
@@ -36,6 +37,11 @@ struct Material {
 	int frag_shader_id;
 };
 
+//struct InstanceData {
+//	int MeshID;
+//	int 
+//};
+
 
 
 std::vector<Vertex> quad_vertices = {
@@ -63,8 +69,15 @@ int frag_shader_count = 10;
 VkShaderModule vertex_shaders[10];
 VkShaderModule frag_shaders[10];
 
+
+
+
+
+// I disambiguate to have multiple cameras or views/render targets reuse the same context!
 class VulkanView {
 	
+
+
 public:
 
 	Camera camera_;
@@ -74,7 +87,7 @@ private:
 
 };
 
-
+// GPU Vulkan state, resources / etc
 class VulkanContext {
 
 public:
@@ -82,6 +95,7 @@ public:
 	// Resources
 
 	int upload();
+
 	int createTexture();
 	int createMesh();
 	int createMaterial();
@@ -331,7 +345,7 @@ private:
 			appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
 			appInfo.pApplicationName = "Hello Triangle";
 			appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-			appInfo.pEngineName = "No Engine";
+			appInfo.pEngineName = "Sam2025Vulkan_one_three";
 			appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
 			appInfo.apiVersion = VK_API_VERSION_1_3;
 
@@ -1586,7 +1600,6 @@ private:
 			}
 		}
 
-
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 			if (
 				vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
@@ -1982,6 +1995,24 @@ bool TestApplication::run() {
 int main(int argc, const char* argv[]) {
 	if (argc > 1) {
 		std::cout << argv[0];
+	}
+
+	constexpr size_t poolCapacity = 1024 * 1024;
+	constexpr size_t blockSize = 64;
+
+	VirtualPool<Enemy, poolCapacity, blockSize> enemyPool;
+
+	Handle<Enemy> h1 = enemyPool.create(Enemy(100));
+	Handle<Enemy> h2 = enemyPool.create(Enemy(200));
+
+	if (Enemy* e = enemyPool.get(h1)) {
+		std::cout << "h1 health: " << e->health << "\n";
+	}
+
+	enemyPool.destroy(h1);
+
+	if (!enemyPool.get(h1)) {
+		std::cout << "h1 handle is now invalid.\n";
 	}
 
 	TestApplication app;
