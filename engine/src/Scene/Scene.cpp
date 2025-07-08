@@ -108,11 +108,6 @@ void loadScene(const char* fileName, Scene& scene)
 {
   FILE* f = fopen(fileName, "rb");
 
-  if (!f) {
-    printf("Cannot open scene file '%s'. Please run SceneConverter from Chapter7 and/or MergeMeshes from Chapter 9", fileName);
-    return;
-  }
-
   uint32_t sz = 0;
   fread(&sz, sizeof(sz), 1, f);
 

@@ -2,9 +2,6 @@
 
 #include <Engine/Renderer/vertex.h>
 
-
-// --- VERTEX ---
-
 VkVertexInputBindingDescription Vertex::getBindingDescription() {
 	VkVertexInputBindingDescription bindingDescription{};
 	bindingDescription.binding = 0;
