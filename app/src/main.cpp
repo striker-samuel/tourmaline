@@ -39,6 +39,8 @@
 static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 static constexpr uint32_t WIDTH = 1280;
 static constexpr uint32_t HEIGHT = 720;
+static constexpr uint32_t MAX_INSTANCES = 256;
+
 
 struct StandardBRDFMatAttachment {
 	//texture handles to imageview
@@ -113,35 +115,50 @@ public:
 
 private:
 
+	InstanceData instance_data_[MAX_INSTANCES];
+
 	VmaAllocator app_allocator_;
 
-	VmaAllocation static_vertex_allocation;
-	VmaAllocation static_index_allocation;
+	
+	VkBuffer static_vertex_buffer_;
+	VmaAllocation static_vertex_allocation_;
+
+	
+	VkBuffer static_index_buffer_;
+	VmaAllocation static_index_allocation_;
+	
+	VkBuffer indirect_drawing_data_buffer_;
+	VmaAllocation  indirect_drawing_data_allocation_;
 
 	VkFence f_level_ready_;
 
+	// _---------------
+
+	VkQueue graphicsQueue_;
+	
+	VkQueue computeQueue_;
+	VkQueue presentQueue_;
+	VkQueue transferQueue_;
+
+
+	// This is clearly hardcoded to hold just one texture image, view, and smapler. Pending Material System!
 	VkImage textureImage;
 	VkImageView textureImageView;
 	VkSampler texture_sampler;
 
-	// SSDumb setup
-	VkBuffer static_vertex_buffer_;
-	VkBuffer static_index_buffer_;
-
-	VkQueue graphicsQueue_;
-	VkQueue computeQueue_;
-	VkQueue presentQueue_;
-	VkQueue transferQueue;
 
 #pragma region ===[ App / Core State ]===
+
+	float delta_time_;
+
 	Camera camera_ = Camera(cameraPositioner);
 	Scene* scene_;
-	float delta_time_;
+
 #pragma endregion
 
 #pragma region ===[ Swapchain ]===
-	VkSwapchainKHR swapChain;
 
+	VkSwapchainKHR swapChain;
 	uint32_t swapchainImageCount;
 	VkImage* swapChainImages;
 	VkImageView* swapChainImageViews;
@@ -1248,7 +1265,6 @@ private:
 		renderingInfo.pColorAttachments = &colorAttachment;
 		renderingInfo.pDepthAttachment = &depthAttachment;
 
-
 		VkImageMemoryBarrier barrierToColorAttachment{};
 		barrierToColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 		barrierToColorAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // or VK_IMAGE_LAYOUT_PRESENT_SRC_KHR if reusing
@@ -1313,10 +1329,9 @@ private:
 			0
 		);
 
-		// vkCmdEndRenderPass(commandBuffer);
 		vkCmdEndRendering(commandBuffer);
 
-
+		// Not neeeded with dynamic renderinng because attachment info is simplified from renderpass system, simplifying attachment layouts away.
 		//transitionImageLayout(
 		//	swapChainImages[currentFrame], VK_FORMAT_B8G8R8A8_SRGB, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
 		//);
@@ -1572,7 +1587,7 @@ bool VulkanApp::run() {
 			&static_vertex_buffer_info,
 			&vertex_alloc_info,
 			&static_vertex_buffer_,
-			&static_vertex_allocation,
+			&static_vertex_allocation_,
 			nullptr
 		);
 
@@ -1636,7 +1651,7 @@ bool VulkanApp::run() {
 			&static_index_buffer_info,
 			&static_index_info,
 			&static_index_buffer_,
-			&static_index_allocation,
+			&static_index_allocation_,
 			nullptr
 		);
 

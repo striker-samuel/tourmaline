@@ -27,10 +27,10 @@ struct MeshData {
 
 struct InstanceData {
 	float transform[16];
-	uint32_t meshIndex;
-	uint32_t materialIndex;
-	uint32_t LOD;
-	uint32_t indexOffset;
+	//uint32_t meshIndex;
+	//uint32_t indexOffset;
+	//uint32_t materialIndex;
+	//uint32_t LOD;
 };
 
 struct UniformBufferObject {
