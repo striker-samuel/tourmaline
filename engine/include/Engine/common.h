@@ -9,3 +9,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/hash.hpp>
+
+
+// TYPE ALIASES
+typedef glm::vec3 Vector3;

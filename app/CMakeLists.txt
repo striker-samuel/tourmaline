@@ -35,7 +35,6 @@ add_custom_command(TARGET App POST_BUILD
 )
 
 
-
 target_include_directories(App
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -12,7 +12,6 @@ include(FetchContent)
 # GLFW
 add_subdirectory(external/glfw)
 
-
 # GLM (header-only)
 add_subdirectory(external/glm)
 
@@ -28,9 +27,7 @@ add_subdirectory(external/assimp)
 
 # nlohmann::json (required for tinygltf)
 add_subdirectory(external/json)
-
 add_subdirectory(external/volk)
-
 
 # Shader compile support
 set(SHADER_SOURCE_DIR ${CMAKE_SOURCE_DIR}/shaders)

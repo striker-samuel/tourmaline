@@ -14,6 +14,7 @@ target_include_directories(engine
         ${CMAKE_SOURCE_DIR}/external/tinygltf
         ${CMAKE_SOURCE_DIR}/external/stb_image
         ${nlohmann_json_SOURCE_DIR}/single_include/nlohmann
+        ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator
 )
 
 target_link_libraries(engine
@@ -22,6 +23,7 @@ target_link_libraries(engine
         glfw
         glm
         volk
+  #       VulkanMemoryAllocator
 )
 
 

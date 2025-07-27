@@ -1,39 +1,41 @@
 #pragma once
 
 #include <vector>
+#include <string>
+#include <iostream>
+#include <fstream>
 #include <limits.h>
-// Using this just for swapExtent. platform depenpant. should make a porper file for platform abstraction instead
+#include <optional>
 
+#include <array>
+#include <set>
+#include <stdexcept>
+#include <algorithm>
+#include <cstring>
+#include <GLFW/glfw3.h>
 
-// This has nothing to do with vulkan obv. should be moved
-static std::vector<char> readFile(const std::string& filename) {
-	std::ifstream file(filename, std::ios::ate | std::ios::binary);
-
-	if (!file.is_open()) {
-		throw std::runtime_error("failed to open file! " + filename);
-	}
-
-	size_t fileSize = (size_t)file.tellg();
-	std::vector<char> buffer(fileSize);
-
-	file.seekg(0);
-	file.read(buffer.data(), fileSize);
-
-	file.close();
-
-	return buffer;
-}
-
-
+#include <vulkan/vulkan.h>
 
 const std::vector<const char*> validationLayers = {
 "VK_LAYER_KHRONOS_validation" };
 
 const std::vector<const char*> deviceExtensions = {
 	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-	// Commented out - Vk1.3 promoted baybeeee
+	// Not needed -- Vk1.3 promoted baybeeee
 	//VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
 };
+
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL
+debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+	VkDebugUtilsMessageTypeFlagsEXT messageType,
+	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+	void* pUserData) {
+	std::cerr << "---------------- Vulkan Validation ----------------\n";
+	std::cerr << "Message: " << pCallbackData->pMessage << "\n";
+	std::cerr << "\n";  // <--- Blank line for separation
+	return VK_FALSE;
+}
 
 //Maybe this should be defined else intead of this header.
 #ifdef NDEBUG
@@ -41,6 +43,21 @@ const bool enableValidationLayers = false;
 #else
 const bool enableValidationLayers = true;
 #endif
+
+struct QueueFamilyIndices {
+	std::optional<uint32_t> graphicsFamily;
+	std::optional<uint32_t> presentFamily;
+
+	bool isComplete() {
+		return graphicsFamily.has_value() && presentFamily.has_value();
+	}
+};
+
+struct SwapChainSupportDetails {
+	VkSurfaceCapabilitiesKHR capabilities;
+	std::vector<VkSurfaceFormatKHR> formats;
+	std::vector<VkPresentModeKHR> presentModes;
+};
 
 VkResult CreateDebugUtilsMessengerEXT(
 	VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
@@ -95,7 +112,8 @@ VkFormat findSupportedFormat(
 	VkPhysicalDevice physicalDevice,
 	const std::vector<VkFormat>& candidates,
 	VkImageTiling tiling,
-	VkFormatFeatureFlags features) {
+	VkFormatFeatureFlags features
+) {
 	for (VkFormat format : candidates) {
 		VkFormatProperties props;
 		vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &props);
@@ -119,7 +137,6 @@ bool hasStencilComponent(VkFormat format) {
 }
 
 
-
 // I should implement promotion other ways. Shadows may run other depthfmt also.
 // Maybe should be const. just checked for availability at device, error out if not found.
 VkFormat findDepthFormat(
@@ -128,7 +145,7 @@ VkFormat findDepthFormat(
 	return findSupportedFormat(
 		physicalDevice,
 		{
-			//VK_FORMAT_D32_SFLOAT,
+			//VK_FORMAT_D32_SFLOAT // no stencil!
 			VK_FORMAT_D32_SFLOAT_S8_UINT,
 			VK_FORMAT_D24_UNORM_S8_UINT
 		},
@@ -140,6 +157,9 @@ VkFormat findDepthFormat(
 // HMMMMMMMMMMMM. Seems questionable to abstract awya memory choosing.
 // Maybe I should have profiles with demotion to a compatible defualt
 // or even look into Vulkan profiles.
+
+// VMA will choose for me now ;)
+
 uint32_t findMemoryType(
 	VkPhysicalDevice physicalDevice,
 	uint32_t typeFilter,
@@ -159,7 +179,25 @@ uint32_t findMemoryType(
 	throw std::runtime_error("failed to find suitable memory type!");
 }
 
+VkShaderModule createShaderModule(VkDevice device, const std::vector<char>& code) {
+	VkShaderModuleCreateInfo createInfo{};
+	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	createInfo.codeSize = code.size();
+
+	createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+	VkShaderModule shaderModule;
+	if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) !=
+		VK_SUCCESS) {
+		throw std::runtime_error("failed to create shader module!");
+	}
+
+	return shaderModule;
+}
+
+
 SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
+
 	SwapChainSupportDetails details;
 
 	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface,
@@ -188,39 +226,6 @@ SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurface
 	return details;
 }
 
-bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface) {
-	QueueFamilyIndices indices = findQueueFamilies(device);
-
-	bool extensionsSupported = checkDeviceExtensionSupport(device);
-
-	bool swapChainAdequate = false;
-	if (extensionsSupported) {
-		SwapChainSupportDetails swapChainSupport = querySwapChainSupport(device, surface);
-		swapChainAdequate = !swapChainSupport.formats.empty() &&
-			!swapChainSupport.presentModes.empty();
-	}
-
-	return indices.isComplete() && extensionsSupported && swapChainAdequate;
-}
-
-bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
-	uint32_t extensionCount;
-	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
-		nullptr);
-
-	std::vector<VkExtensionProperties> availableExtensions(extensionCount);
-	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
-		availableExtensions.data());
-
-	std::set<std::string> requiredExtensions(deviceExtensions.begin(),
-		deviceExtensions.end());
-
-	for (const auto& extension : availableExtensions) {
-		requiredExtensions.erase(extension.extensionName);
-	}
-
-	return requiredExtensions.empty();
-}
 
 QueueFamilyIndices findQueueFamilies(
 	VkPhysicalDevice device,
@@ -233,7 +238,9 @@ QueueFamilyIndices findQueueFamilies(
 		nullptr);
 
 	std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount,
+	vkGetPhysicalDeviceQueueFamilyProperties(
+		device,
+		&queueFamilyCount,
 		queueFamilies.data());
 
 	int i = 0;
@@ -257,6 +264,40 @@ QueueFamilyIndices findQueueFamilies(
 	}
 
 	return indices;
+}
+
+bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
+	uint32_t extensionCount;
+	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
+		nullptr);
+
+	std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
+		availableExtensions.data());
+
+	std::set<std::string> requiredExtensions(deviceExtensions.begin(),
+		deviceExtensions.end());
+
+	for (const auto& extension : availableExtensions) {
+		requiredExtensions.erase(extension.extensionName);
+	}
+
+	return requiredExtensions.empty();
+}
+
+bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface) {
+	QueueFamilyIndices indices = findQueueFamilies(device, surface);
+
+	bool extensionsSupported = checkDeviceExtensionSupport(device);
+
+	bool swapChainAdequate = false;
+	if (extensionsSupported) {
+		SwapChainSupportDetails swapChainSupport = querySwapChainSupport(device, surface);
+		swapChainAdequate = !swapChainSupport.formats.empty() &&
+			!swapChainSupport.presentModes.empty();
+	}
+
+	return indices.isComplete() && extensionsSupported && swapChainAdequate;
 }
 
 
@@ -339,7 +380,7 @@ void populateDebugMessengerCreateInfo(
 	createInfo.pfnUserCallback = debugCallback;
 }
 
-void createDescriptorSetLayout(VkDevice device, VkDescriptorSetLayout descriptorSetLayout) {
+void createDescriptorSetLayout(VkDevice device, VkDescriptorSetLayout* descriptorSetLayout) {
 
 	VkDescriptorSetLayoutBinding uboLayoutBinding{};
 	uboLayoutBinding.binding = 0;
@@ -365,19 +406,9 @@ void createDescriptorSetLayout(VkDevice device, VkDescriptorSetLayout descriptor
 	layoutInfo.pBindings = bindings.data();
 
 	if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
-		&descriptorSetLayout) != VK_SUCCESS) {
+		descriptorSetLayout) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create descriptor set layout!");
 	}
 }
 
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL
-debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-	VkDebugUtilsMessageTypeFlagsEXT messageType,
-	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-	void* pUserData) {
-	std::cerr << "---------------- Vulkan Validation ----------------\n";
-	std::cerr << "Message: " << pCallbackData->pMessage << "\n";
-	std::cerr << "\n";  // <--- Blank line for separation
-	return VK_FALSE;
-}
