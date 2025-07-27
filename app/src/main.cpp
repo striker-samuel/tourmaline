@@ -162,7 +162,6 @@ private:
 	uint32_t swapchainImageCount;
 	VkImage* swapChainImages;
 	VkImageView* swapChainImageViews;
-	VkFramebuffer* swapChainFrameBuffers;
 
 	VkFormat swapChainImageFormat;
 	VkExtent2D swapChainExtent;
@@ -480,12 +479,12 @@ private:
 		//vkDestroyImage(device, main_depthImage, nullptr);
 		//vkFreeMemory(device, main_depthImageMemory, nullptr);
 
-		// Destroy framebuffers
-		for (uint32_t i = 0; i < swapchainImageCount; ++i) {
-			vkDestroyFramebuffer(device, swapChainFrameBuffers[i], nullptr);
-		}
-		delete[] swapChainFrameBuffers;
-		swapChainFrameBuffers = nullptr;
+		//// Destroy framebuffers
+		//for (uint32_t i = 0; i < swapchainImageCount; ++i) {
+		//	vkDestroyFramebuffer(device, swapChainFrameBuffers[i], nullptr);
+		//}
+		//delete[] swapChainFrameBuffers;
+		//swapChainFrameBuffers = nullptr;
 
 		for (uint32_t i = 0; i < swapchainImageCount; ++i) {
 			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
@@ -537,7 +536,7 @@ private:
 
 		swapchainImageCount = swapChainSupport.capabilities.minImageCount + 1;
 		swapChainImages = new VkImage[swapchainImageCount];
-		swapChainFrameBuffers = new VkFramebuffer[swapchainImageCount];
+		//swapChainFrameBuffers = new VkFramebuffer[swapchainImageCount];
 		swapChainImageViews = new VkImageView[swapchainImageCount];
 
 		if (swapChainSupport.capabilities.maxImageCount > 0 &&
