@@ -42,67 +42,21 @@ static constexpr uint32_t HEIGHT = 720;
 static constexpr uint32_t MAX_INSTANCES = 256;
 
 
-struct StandardBRDFMatAttachment {
-	//texture handles to imageview
+
+struct UniformBufferAllocation {
+	VkBuffer buffer;
+	VmaAllocation alloc;
+	VmaAllocationInfo allocInfo;
+	VkDeviceSize size;
+	// Did it end in mappable memory? This is important to know for proper upload. Discard the bool in the future use 
+	VkMemoryPropertyFlags memory_flags;
+
+
+	bool is_mapapble() {
+		return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+	}
+
 };
-
-struct GPUMaterial {
-
-	int vert_shader_id;
-	int frag_shader_id;
-	//attachments?
-	// or maybe descriptor format abstraction. and flags. like opaque transparent/else
-};
-
-CameraPositioner_FirstPerson cameraPositioner(
-	glm::vec3(0.0f, 0.0f, -10.0f), // position
-	glm::vec3(0.0f, 0.0f, 1.0f),  // target (looking in +Z direction)
-	glm::vec3(0.0f, 1.0f, 0.0f)   // up vector
-);
-
-std::vector<Vertex> quad_vertices = {
-	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-	{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-	{{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-	{{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
-};
-
-std::vector<uint32_t> quad_indices = {
-	0, 1, 2, 2, 3, 0
-};
-
-// ???
-struct GPULight {
-	// Maybe we dont need scale and can compress there. Myabe not worth it cuz breaks homogeneus coords
-	glm::mat4 transform;
-	//type
-	//cone
-	//color
-	//intensity
-} DefaultLight;
-
-struct Mesh {
-	std::vector<Vertex> vertices;
-	std::vector<uint32_t> indices;
-};
-
-Mesh Quad = Mesh(quad_vertices, quad_indices);
-
-// Statements 
-// Forward+ . Maybe tiled deferred shadows in future
-// Just static geo. Dont focus on streaming yet
-// Dynamic Rendering
-// Under 10 Materials Definitions. MAterial is stages, pipeline blend, depth conf, vert and shader. attachment slots desc. No more
-// Mateials. 
-// Simple standwardSurface (Default),
-// Unlit, own frag
-// Anisotropic, Own brdf
-// SubSurface, Maybe needs depth bias.
-// Translucent, needs blending
-// Hair, needs blending/ own brdf
-// Cloth, sheen.
-// Maybe more...
-
 
 class VulkanApp {
 
@@ -116,26 +70,22 @@ public:
 private:
 
 	InstanceData instance_data_[MAX_INSTANCES];
+	uint32_t instance_count_ = 100;
 
 	VmaAllocator app_allocator_;
 
-	
 	VkBuffer static_vertex_buffer_;
 	VmaAllocation static_vertex_allocation_;
 
-	
 	VkBuffer static_index_buffer_;
 	VmaAllocation static_index_allocation_;
-	
-	VkBuffer indirect_drawing_data_buffer_;
-	VmaAllocation  indirect_drawing_data_allocation_;
 
 	VkFence f_level_ready_;
 
 	// _---------------
 
 	VkQueue graphicsQueue_;
-	
+
 	VkQueue computeQueue_;
 	VkQueue presentQueue_;
 	VkQueue transferQueue_;
@@ -203,11 +153,8 @@ private:
 
 #pragma region ===[ Uniforms / Descriptor Sets ]===
 
-	VkBuffer uniformBuffers[MAX_FRAMES_IN_FLIGHT];
-	VmaAllocation uniformBuffersAllocations[MAX_FRAMES_IN_FLIGHT];
-	bool uniforms_in_mappable_memory;
-	VkDeviceMemory uniformBuffersMemory[MAX_FRAMES_IN_FLIGHT];
-	void* uniformBuffersMapped[MAX_FRAMES_IN_FLIGHT];
+	UniformBufferAllocation uniforms_[MAX_FRAMES_IN_FLIGHT];
+	UniformBufferAllocation instanceDataUniforms_[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
 
@@ -246,8 +193,12 @@ private:
 
 	void initVulkanApp();
 
-	void updateUniformBuffer(uint32_t currentImage) {
+	// Could be made generic to this right?
+	void updateUniforms(uint32_t currentImage, UniformBufferAllocation ufa[], void* data, VkDeviceSize data_size) {
 
+	}
+
+	void updateUniformBuffer(uint32_t currentImage) {
 
 		// THIS MUST REMAIN HERE. SENSITIVE TO LAG OTHERWISE
 		static auto startTime = std::chrono::high_resolution_clock::now();
@@ -256,25 +207,28 @@ private:
 			currentTime - startTime)
 			.count();
 
-		UniformBufferObject ubo{
+		UniformBufferObject default_ubo{
 			.model = glm::mat4(1.0f),
 			.view = camera_.getViewMatrix(),
 			.proj = camera_.getProjMatrix(),
 		};
 
-		// Naif version
-		//memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
-
 		VkResult result;
 
 		// This is bad, will stall. Frame update should use same command buffer for all update operations.
+		// FrameGraph! FrameGraph!
 		VkCommandBuffer cmdBuf = beginSingleTimeCommands();
 
-		if (uniforms_in_mappable_memory)
+		if (uniforms_[currentImage].is_mapapble())
 		{
 			// The Allocation ended up in a mappable memory.
 			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-			result = vmaCopyMemoryToAllocation(app_allocator_, &ubo, uniformBuffersAllocations[currentImage], 0, sizeof(UniformBufferObject));
+			result = vmaCopyMemoryToAllocation(
+				app_allocator_,
+				&default_ubo,
+				uniforms_[currentImage].alloc,
+				0,
+				sizeof(UniformBufferObject));
 
 			assert(result == VK_SUCCESS);
 
@@ -283,9 +237,7 @@ private:
 			bufMemBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
 			bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			// Dont feel confortable with this. Do i need to take track at app domain of both alloc and buffer? Who knows.
-			bufMemBarrier.buffer = uniformBuffers[currentImage];
-			//bufMemBarrier.buffer = uniformBuffersAllocations[currentImage].
+			bufMemBarrier.buffer = uniforms_[currentImage].buffer;
 			bufMemBarrier.offset = 0;
 			bufMemBarrier.size = VK_WHOLE_SIZE;
 
@@ -313,7 +265,12 @@ private:
 			// Check result...
 
 			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-			result = vmaCopyMemoryToAllocation(app_allocator_, &ubo, stagingAlloc, 0, sizeof(UniformBufferObject));
+			result = vmaCopyMemoryToAllocation(app_allocator_,
+				&default_ubo,
+				stagingAlloc,
+				0,
+				sizeof(UniformBufferObject)
+			);
 
 			assert(result != VK_FALSE);
 
@@ -336,21 +293,33 @@ private:
 				sizeof(UniformBufferObject), // size
 			};
 
-			vkCmdCopyBuffer(cmdBuf, stagingBuf, uniformBuffers[currentImage], 1, &bufCopy);
+			vkCmdCopyBuffer(cmdBuf, stagingBuf, uniforms_[currentImage].buffer, 1, &bufCopy);
 
 			VkBufferMemoryBarrier bufMemBarrier2 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
 			bufMemBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 			bufMemBarrier2.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT; // We created a uniform buffer
 			bufMemBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			bufMemBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier2.buffer = uniformBuffers[currentImage];
+			bufMemBarrier2.buffer = uniforms_[currentImage].buffer;
 			bufMemBarrier2.offset = 0;
 			bufMemBarrier2.size = VK_WHOLE_SIZE;
 
 			// Make sure copying from staging buffer to the actual buffer has finished by inserting a buffer memory barrier.
-			vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-				0, 0, nullptr, 1, &bufMemBarrier2, 0, nullptr);
+			vkCmdPipelineBarrier(
+				cmdBuf,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+				0,
+				0,
+				nullptr,
+				1,
+				&bufMemBarrier2,
+				0,
+				nullptr
+			);
 		}
+
+		endSingleTimeCommands(cmdBuf);
 	}
 
 #pragma region ===[ Events ]===
@@ -391,18 +360,16 @@ private:
 		cameraPositioner.update(0.0, mousePos, true); // We'll pass real deltaSeconds in mainLoop
 	}
 
-
 	void handleMouseButton(int button, int action, int mods) {
 		if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-			//rightMousePressed = (action == GLFW_PRESS);
-			//if (rightMousePressed) {
-			//	double x, y;
-			//	glfwGetCursorPos(window, &x, &y);
-			//	cameraPositioner.resetMousePosition(glm::vec2(x, y));
-			//}
+			rightMousePressed = (action == GLFW_PRESS);
+			if (rightMousePressed) {
+				double x, y;
+				glfwGetCursorPos(window, &x, &y);
+				cameraPositioner.resetMousePosition(glm::vec2(x, y));
+			}
 		}
 	}
-
 
 	void handleKey(int key, int scancode, int action, int mods) {
 		bool isPressed = action != GLFW_RELEASE;
@@ -437,7 +404,6 @@ private:
 			break;
 		}
 	}
-
 
 	static void framebufferResizeCallback(GLFWwindow* window, int width,
 		int height) {
@@ -475,17 +441,6 @@ private:
 		vkDestroyImageView(device, main_depthImageView, nullptr);
 		vmaDestroyImage(app_allocator_, main_depthImage, main_d_alloc);
 
-		// Changed to VMA
-		//vkDestroyImage(device, main_depthImage, nullptr);
-		//vkFreeMemory(device, main_depthImageMemory, nullptr);
-
-		//// Destroy framebuffers
-		//for (uint32_t i = 0; i < swapchainImageCount; ++i) {
-		//	vkDestroyFramebuffer(device, swapChainFrameBuffers[i], nullptr);
-		//}
-		//delete[] swapChainFrameBuffers;
-		//swapChainFrameBuffers = nullptr;
-
 		for (uint32_t i = 0; i < swapchainImageCount; ++i) {
 			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
 		}
@@ -496,6 +451,9 @@ private:
 	}
 
 	void recreateSwapChain() {
+
+		// Source new state
+
 		int width = 0, height = 0;
 		glfwGetFramebufferSize(window, &width, &height);
 		while (width == 0 || height == 0) {
@@ -505,8 +463,8 @@ private:
 
 		vkDeviceWaitIdle(device);
 
+		//
 		cleanupSwapChain();
-
 		createSwapChain();
 		createSwapchainImageViews();
 		createDepthResources();
@@ -536,7 +494,6 @@ private:
 
 		swapchainImageCount = swapChainSupport.capabilities.minImageCount + 1;
 		swapChainImages = new VkImage[swapchainImageCount];
-		//swapChainFrameBuffers = new VkFramebuffer[swapchainImageCount];
 		swapChainImageViews = new VkImageView[swapchainImageCount];
 
 		if (swapChainSupport.capabilities.maxImageCount > 0 &&
@@ -764,6 +721,8 @@ private:
 		createImageView(main_depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, main_depthImageView);
 	}
 
+	// --------------------------
+
 	void createTextureImage(std::string texture_path) {
 		int texWidth, texHeight, texChannels;
 
@@ -815,9 +774,6 @@ private:
 		vkFreeMemory(device, stagingBufferMemory, nullptr);
 
 	}
-
-
-
 
 	void createTextureImageView(const VkImage& textureImage, VkImageView& textureImageView) {
 		createImageView(
@@ -1010,27 +966,15 @@ private:
 		endSingleTimeCommands(commandBuffer);
 	}
 
-	void createUniformBuffers() {
+	// --------------------------
 
-		// TODO: This should cover for all instanceData UBOs! not just the one.
-		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
 
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
-			//createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-			//	VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-			//	VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			//	uniformBuffers[i], uniformBuffersMemory[i]);
 
-			//vkMapMemory(device, uniformBuffersMemory[i], 0, bufferSize, 0,
-			//	&uniformBuffersMapped[i]);
+	void createUniformBuffer(VkDeviceSize size, VmaAllocation& alloc, VkBuffer& buffer, VmaAllocationInfo& allocInfo, VkMemoryPropertyFlags& memory_flags) {
 
-			// Lets use VMA
-			// with this approach:
-			// https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/usage_patterns.html
-
-			VkBufferCreateInfo bufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-			bufCreateInfo.size = bufferSize;
+		VkBufferCreateInfo bufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+			bufCreateInfo.size = size;
 			bufCreateInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
 			// Not sure if i can extract this from the loop
@@ -1040,40 +984,128 @@ private:
 				VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT |
 				VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
-			VmaAllocation alloc;
-			VmaAllocationInfo allocInfo;
 			VkResult result = vmaCreateBuffer(
 				app_allocator_,
 				&bufCreateInfo,
 				&allocCreateInfo,
-				&uniformBuffers[i],
+				&buffer,
 				&alloc,
 				&allocInfo
 			);
 
+			vmaGetAllocationMemoryProperties(app_allocator_, alloc, &memory_flags);
 
-			VkMemoryPropertyFlags memPropFlags;
-			// This is not sound logic with the loop. Im assuming it will be the same in each iteration.
-			vmaGetAllocationMemoryProperties(app_allocator_, alloc, &memPropFlags);
-			uniformBuffersAllocations[i] = alloc;
-			this->uniforms_in_mappable_memory = memPropFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+	}
+
+
+	void createInstanceDataBuffers() {
+
+		VkDeviceSize bufferSize = sizeof(InstanceData) * MAX_INSTANCES;
+
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+
+			instanceDataUniforms_[i].size = bufferSize;
+			createUniformBuffer(
+				bufferSize,
+				instanceDataUniforms_[i].alloc,
+				instanceDataUniforms_[i].buffer,
+				instanceDataUniforms_[i].allocInfo,
+				instanceDataUniforms_[i].memory_flags
+				);
+
+			// I dont like how I cant leave UniformBufferAllocation in a valid state easily if I dont fill every proper field. Need a better Solution
 
 		}
 	}
 
+	void createUniformBuffers() {
+
+		VkDeviceSize bufferSize = sizeof(UniformBufferObject) * MAX_INSTANCES;
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+
+			uniforms_[i].size = bufferSize;
+			createUniformBuffer(
+				bufferSize,
+				uniforms_[i].alloc,
+				uniforms_[i].buffer,
+				uniforms_[i].allocInfo,
+				uniforms_[i].memory_flags
+				);
+
+			// I dont like how I cant leave UniformBufferAllocation in a valid state easily if I dont fill every proper field. Need a better Solution
+
+		}
+	}
+
+	void createDescriptorSetLayout(VkDevice device, VkDescriptorSetLayout* descriptorSetLayout) {
+
+		VkDescriptorSetLayoutBinding viewProjUboBinding{};
+		viewProjUboBinding.binding = 0;
+		viewProjUboBinding.descriptorCount = 1;
+		viewProjUboBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		viewProjUboBinding.pImmutableSamplers = nullptr;
+		viewProjUboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+		VkDescriptorSetLayoutBinding instanceDataBinding{};
+		instanceDataBinding.binding = 1;
+		instanceDataBinding.descriptorCount = 1;
+		instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		instanceDataBinding.pImmutableSamplers = nullptr;
+		instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+		VkDescriptorSetLayoutBinding samplerLayoutBinding{};
+		samplerLayoutBinding.binding = 2;
+		samplerLayoutBinding.descriptorCount = 1;
+		samplerLayoutBinding.descriptorType =
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		samplerLayoutBinding.pImmutableSamplers = nullptr;
+		samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+		std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
+			viewProjUboBinding,
+			instanceDataBinding,
+			samplerLayoutBinding
+		};
+
+		VkDescriptorSetLayoutCreateInfo layoutInfo{};
+		layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+		layoutInfo.pBindings = bindings.data();
+
+		if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
+			descriptorSetLayout) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create descriptor set layout!");
+		}
+	}
+
 	void createDescriptorPool() {
-		std::array<VkDescriptorPoolSize, 2> poolSizes{};
+
+		// --------
+
+		std::array<VkDescriptorPoolSize, 3> poolSizes{};
+
 		poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		poolSizes[0].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
-		poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+
+		poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		poolSizes[1].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+
+
+		// ?? sampler should stay the smae, why allocate it again for each descriptor set. More research is needed
+		poolSizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		poolSizes[2].descriptorCount = MAX_FRAMES_IN_FLIGHT;
+
+
+		// --------
 
 		VkDescriptorPoolCreateInfo poolInfo{};
 		poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-		poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-		;
-		poolInfo.pPoolSizes = poolSizes.data();
 		poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+		poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+		poolInfo.pPoolSizes = poolSizes.data();
+
 
 		if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) !=
 			VK_SUCCESS) {
@@ -1082,10 +1114,13 @@ private:
 	}
 
 	void createDescriptorSets() {
+
 		std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT,
 			descriptorSetLayout);
+
 		VkDescriptorSetAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+
 		allocInfo.descriptorPool = descriptorPool;
 		allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
 		allocInfo.pSetLayouts = layouts.data();
@@ -1095,21 +1130,27 @@ private:
 			throw std::runtime_error("failed to allocate descriptor sets!");
 		}
 
-
-
-
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+
 			VkDescriptorBufferInfo bufferInfo{};
-			bufferInfo.buffer = uniformBuffers[i];
+			bufferInfo.buffer = uniforms_[i].buffer;
 			bufferInfo.offset = 0;
 			bufferInfo.range = sizeof(UniformBufferObject);
+
+			VkDescriptorBufferInfo instanceBufferInfo{
+				.buffer = instanceDataUniforms_[i].buffer,
+				.offset = 0,
+				// Decided to make separate bufffers instead
+				//.offset = sizeof(InstanceData)*i,
+				.range = sizeof(InstanceData),
+			};
 
 			VkDescriptorImageInfo imageInfo{};
 			imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			imageInfo.imageView = textureImageView;
 			imageInfo.sampler = texture_sampler;
 
-			std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+			std::array<VkWriteDescriptorSet, 3> descriptorWrites{};
 
 			descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			descriptorWrites[0].dstSet = descriptorSets[i];
@@ -1123,10 +1164,18 @@ private:
 			descriptorWrites[1].dstSet = descriptorSets[i];
 			descriptorWrites[1].dstBinding = 1;
 			descriptorWrites[1].dstArrayElement = 0;
-			descriptorWrites[1].descriptorType =
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 			descriptorWrites[1].descriptorCount = 1;
-			descriptorWrites[1].pImageInfo = &imageInfo;
+			descriptorWrites[1].pBufferInfo = &instanceBufferInfo;
+
+			descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			descriptorWrites[2].dstSet = descriptorSets[i];
+			descriptorWrites[2].dstBinding = 2;
+			descriptorWrites[2].dstArrayElement = 0;
+			descriptorWrites[2].descriptorType =
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			descriptorWrites[2].descriptorCount = 1;
+			descriptorWrites[2].pImageInfo = &imageInfo;
 
 			vkUpdateDescriptorSets(device,
 				static_cast<uint32_t>(descriptorWrites.size()),
@@ -1289,9 +1338,12 @@ private:
 			1, &barrierToColorAttachment
 		);
 
-
 		vkCmdBeginRendering(commandBuffer, &renderingInfo);
-		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+		vkCmdBindPipeline(
+			commandBuffer,
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			graphicsPipeline
+		);
 
 		VkViewport viewport{};
 		viewport.x = 0.0f;
@@ -1311,9 +1363,16 @@ private:
 		VkDeviceSize offsets[] = { 0 };
 
 		vkCmdBindVertexBuffers(
-			commandBuffer, 0, 1, vertexBuffers, offsets
+			commandBuffer,
+			0,
+			1,
+			vertexBuffers,
+			offsets
 		);
-		vkCmdBindIndexBuffer(commandBuffer, static_index_buffer_, 0, VK_INDEX_TYPE_UINT32);
+		vkCmdBindIndexBuffer(commandBuffer,
+			static_index_buffer_,
+			0,
+			VK_INDEX_TYPE_UINT32);
 
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
 			pipelineLayout, 0, 1, &descriptorSets[currentFrame],
@@ -1321,11 +1380,11 @@ private:
 
 		vkCmdDrawIndexed(
 			commandBuffer,
-			static_cast<uint32_t>(Quad.indices.size()),
-			1,
-			0,
-			0,
-			0
+			static_cast<uint32_t>(Quad.indices.size()), //indexCount
+			instance_count_, //instanceCount
+			0, //firstIndex
+			0, //vertexOffset
+			0 //firstInstance. Change this so shader acces keeps 0index but we can manipulate view from command side
 		);
 
 		vkCmdEndRendering(commandBuffer);
@@ -1514,9 +1573,7 @@ bool VulkanApp::run() {
 	glfwSetWindowUserPointer(window, this);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
-
 	initVulkanApp();
-
 
 	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
 
@@ -1660,6 +1717,12 @@ bool VulkanApp::run() {
 	}
 
 	createUniformBuffers();
+	createInstanceDataBuffers();
+
+	//
+	createCommandBuffers();
+	createSyncObjects();
+
 
 	// this doenst use a shader cache pretty rough!
 	auto vertShaderCode = readFile("shaders/example.vert.spv");
@@ -1668,7 +1731,8 @@ bool VulkanApp::run() {
 	VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
 
-	//VkDescriptorSetLayout descriptorSetLayout;
+
+
 	createDescriptorSetLayout(
 		device,
 		&descriptorSetLayout
@@ -1683,6 +1747,8 @@ bool VulkanApp::run() {
 	);
 
 
+	//
+
 	createDepthResources();
 	createTextureImage("textures/viking_room.png");
 	createTextureImageView(
@@ -1695,12 +1761,10 @@ bool VulkanApp::run() {
 	);
 
 
+
 	createDescriptorPool();
 	createDescriptorSets();
-	
-	createCommandBuffers();
 
-	createSyncObjects();
 
 	// -------------------------------
 
@@ -1873,8 +1937,8 @@ void VulkanApp::initVulkanApp() {
 		VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT;
 
 
-// This next flag is to get handles. To interporate resources between instances, or even between Vulkan and Dx or things like that.
-// VMA_ALLOCATOR_CREATE_KHR_EXTERNAL_MEMORY_WIN32_BIT
+	// This next flag is to get handles. To interporate resources between instances, or even between Vulkan and Dx or things like that.
+	// VMA_ALLOCATOR_CREATE_KHR_EXTERNAL_MEMORY_WIN32_BIT
 
 	VmaVulkanFunctions vulkanFunctions;
 	VkResult res = vmaImportVulkanFunctionsFromVolk(&allocatorCreateInfo, &vulkanFunctions);
