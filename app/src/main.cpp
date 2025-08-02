@@ -70,7 +70,7 @@ public:
 private:
 
 	InstanceData instance_data_[MAX_INSTANCES];
-	uint32_t instance_count_ = 100;
+	uint32_t instance_count_ = 10;
 
 	VmaAllocator app_allocator_;
 
@@ -323,6 +323,18 @@ private:
 	}
 
 
+	// Synthetic data for InstanceData tests!
+	void fabricateInstanceData(InstanceData* data) {
+
+
+		for (int n = 0; n < instance_count_; n++) {
+
+			data[n].transform[12] = 1 + (n*1.23+1);
+
+		};
+
+	}
+
 	void updateInstanceBuffer(uint32_t currentImage) {
 
 		// THIS MUST REMAIN HERE. SENSITIVE TO LAG OTHERWISE
@@ -332,8 +344,9 @@ private:
 			currentTime - startTime)
 			.count();
 
-		InstanceData default_instance_data{};
 		InstanceData data[MAX_INSTANCES];
+
+		fabricateInstanceData(data);
 
 		VkResult result;
 
@@ -347,10 +360,11 @@ private:
 			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
 			result = vmaCopyMemoryToAllocation(
 				app_allocator_,
-				&data,
+				data,
 				instanceDataUniforms_[currentImage].alloc,
 				0,
-				sizeof(InstanceData));
+				sizeof(InstanceData) * MAX_INSTANCES
+				);
 
 			assert(result == VK_SUCCESS);
 
@@ -390,7 +404,7 @@ private:
 
 			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
 			result = vmaCopyMemoryToAllocation(app_allocator_,
-				&data,
+				data,	 // We should push id * mi
 				stagingAlloc,
 				0,
 				sizeof(InstanceData) * MAX_INSTANCES
@@ -1098,26 +1112,26 @@ private:
 	void createUniformBuffer(VkDeviceSize size, VmaAllocation& alloc, VkBuffer& buffer, VmaAllocationInfo& allocInfo, VkMemoryPropertyFlags& memory_flags) {
 
 		VkBufferCreateInfo bufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-			bufCreateInfo.size = size;
-			bufCreateInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		bufCreateInfo.size = size;
+		bufCreateInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-			// Not sure if i can extract this from the loop
-			VmaAllocationCreateInfo allocCreateInfo = {};
-			allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-			allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-				VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT |
-				VMA_ALLOCATION_CREATE_MAPPED_BIT;
+		// Not sure if i can extract this from the loop
+		VmaAllocationCreateInfo allocCreateInfo = {};
+		allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+		allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+			VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT |
+			VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
-			VkResult result = vmaCreateBuffer(
-				app_allocator_,
-				&bufCreateInfo,
-				&allocCreateInfo,
-				&buffer,
-				&alloc,
-				&allocInfo
-			);
+		VkResult result = vmaCreateBuffer(
+			app_allocator_,
+			&bufCreateInfo,
+			&allocCreateInfo,
+			&buffer,
+			&alloc,
+			&allocInfo
+		);
 
-			vmaGetAllocationMemoryProperties(app_allocator_, alloc, &memory_flags);
+		vmaGetAllocationMemoryProperties(app_allocator_, alloc, &memory_flags);
 
 	}
 
@@ -1135,7 +1149,7 @@ private:
 				instanceDataUniforms_[i].buffer,
 				instanceDataUniforms_[i].allocInfo,
 				instanceDataUniforms_[i].memory_flags
-				);
+			);
 
 			// I dont like how I cant leave UniformBufferAllocation in a valid state easily if I dont fill every proper field. Need a better Solution
 
@@ -1155,7 +1169,7 @@ private:
 				uniforms_[i].buffer,
 				uniforms_[i].allocInfo,
 				uniforms_[i].memory_flags
-				);
+			);
 
 			// I dont like how I cant leave UniformBufferAllocation in a valid state easily if I dont fill every proper field. Need a better Solution
 
@@ -1265,7 +1279,7 @@ private:
 				.offset = 0,
 				// Decided to make separate bufffers instead
 				//.offset = sizeof(InstanceData)*i,
-				.range = sizeof(InstanceData),
+				.range = sizeof(InstanceData)*MAX_INSTANCES,
 			};
 
 			VkDescriptorImageInfo imageInfo{};
@@ -1481,6 +1495,8 @@ private:
 		scissor.extent = swapChainExtent;
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+		//
+
 		VkBuffer vertexBuffers[] = { static_vertex_buffer_ };
 		VkDeviceSize offsets[] = { 0 };
 
@@ -1508,6 +1524,9 @@ private:
 			0, //vertexOffset
 			0 //firstInstance. Change this so shader acces keeps 0index but we can manipulate view from command side
 		);
+
+
+		//
 
 		vkCmdEndRendering(commandBuffer);
 
