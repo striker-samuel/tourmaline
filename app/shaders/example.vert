@@ -1,6 +1,7 @@
 #version 450
 
 layout(binding = 0) uniform VPBUFFER {
+    mat4 model;
     mat4 view;
     mat4 proj;
 } ubo;
@@ -20,6 +21,7 @@ layout(location = 1) out vec2 fragTexCoord;
 
 void main() {
     gl_Position = ubo.proj * ubo.view * instance.model * vec4(inPosition, 1.0);
+//    instance.model;
     fragColor = inColor;
     fragTexCoord = inTexCoord;
 }

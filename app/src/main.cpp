@@ -322,6 +322,133 @@ private:
 		endSingleTimeCommands(cmdBuf);
 	}
 
+
+	void updateInstanceBuffer(uint32_t currentImage) {
+
+		// THIS MUST REMAIN HERE. SENSITIVE TO LAG OTHERWISE
+		static auto startTime = std::chrono::high_resolution_clock::now();
+		auto currentTime = std::chrono::high_resolution_clock::now();
+		delta_time_ = std::chrono::duration<float, std::chrono::seconds::period>(
+			currentTime - startTime)
+			.count();
+
+		InstanceData default_instance_data{};
+		InstanceData data[MAX_INSTANCES];
+
+		VkResult result;
+
+		// This is bad, will stall. Frame update should use same command buffer for all update operations.
+		// FrameGraph! FrameGraph!
+		VkCommandBuffer cmdBuf = beginSingleTimeCommands();
+
+		if (instanceDataUniforms_[currentImage].is_mapapble())
+		{
+			// The Allocation ended up in a mappable memory.
+			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
+			result = vmaCopyMemoryToAllocation(
+				app_allocator_,
+				&data,
+				instanceDataUniforms_[currentImage].alloc,
+				0,
+				sizeof(InstanceData));
+
+			assert(result == VK_SUCCESS);
+
+			VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+			bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+			bufMemBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+			bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufMemBarrier.buffer = instanceDataUniforms_[currentImage].buffer;
+			bufMemBarrier.offset = 0;
+			bufMemBarrier.size = VK_WHOLE_SIZE;
+
+			// It's important to insert a buffer memory barrier here to ensure writing to the buffer has finished.
+			vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+				0, 0, nullptr, 1, &bufMemBarrier, 0, nullptr);
+		}
+		else
+		{
+			// Allocation ended up in a non-mappable memory - a transfer using a staging buffer is required.
+			VkBufferCreateInfo stagingBufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+			stagingBufCreateInfo.size = sizeof(InstanceData) * MAX_INSTANCES;
+			stagingBufCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+			VmaAllocationCreateInfo stagingAllocCreateInfo = {};
+			stagingAllocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+			stagingAllocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+				VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+			VkBuffer stagingBuf;
+			VmaAllocation stagingAlloc;
+			VmaAllocationInfo stagingAllocInfo;
+			result = vmaCreateBuffer(app_allocator_, &stagingBufCreateInfo, &stagingAllocCreateInfo,
+				&stagingBuf, &stagingAlloc, &stagingAllocInfo);
+
+			assert(result != VK_FALSE);
+
+
+			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
+			result = vmaCopyMemoryToAllocation(app_allocator_,
+				&data,
+				stagingAlloc,
+				0,
+				sizeof(InstanceData) * MAX_INSTANCES
+			);
+
+			assert(result != VK_FALSE);
+
+			VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+			bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+			bufMemBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufMemBarrier.buffer = stagingBuf;
+			bufMemBarrier.offset = 0;
+			bufMemBarrier.size = VK_WHOLE_SIZE;
+
+			// Insert a buffer memory barrier to make sure writing to the staging buffer has finished.
+			vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				0, 0, nullptr, 1, &bufMemBarrier, 0, nullptr);
+
+			VkBufferCopy bufCopy = {
+				0, // srcOffset
+				0, // dstOffset,
+				sizeof(InstanceData) * MAX_INSTANCES, // size
+			};
+
+			vkCmdCopyBuffer(cmdBuf, stagingBuf, instanceDataUniforms_[currentImage].buffer, 1, &bufCopy);
+
+			VkBufferMemoryBarrier bufMemBarrier2 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+			bufMemBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			bufMemBarrier2.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT; // We created a uniform buffer
+			bufMemBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufMemBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufMemBarrier2.buffer = instanceDataUniforms_[currentImage].buffer;
+			bufMemBarrier2.offset = 0;
+			bufMemBarrier2.size = VK_WHOLE_SIZE;
+
+			// Make sure copying from staging buffer to the actual buffer has finished by inserting a buffer memory barrier.
+			vkCmdPipelineBarrier(
+				cmdBuf,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+				0,
+				0,
+				nullptr,
+				1,
+				&bufMemBarrier2,
+				0,
+				nullptr
+			);
+		}
+
+		endSingleTimeCommands(cmdBuf);
+	}
+
+
+
+
 #pragma region ===[ Events ]===
 
 	static void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
@@ -968,9 +1095,6 @@ private:
 
 	// --------------------------
 
-
-
-
 	void createUniformBuffer(VkDeviceSize size, VmaAllocation& alloc, VkBuffer& buffer, VmaAllocationInfo& allocInfo, VkMemoryPropertyFlags& memory_flags) {
 
 		VkBufferCreateInfo bufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -996,7 +1120,6 @@ private:
 			vmaGetAllocationMemoryProperties(app_allocator_, alloc, &memory_flags);
 
 	}
-
 
 	void createInstanceDataBuffers() {
 
@@ -1264,7 +1387,6 @@ private:
 		endSingleTimeCommands(commandBuffer);
 	}
 
-
 	void createCommandBuffers() {
 
 		VkCommandBufferAllocateInfo allocInfo{};
@@ -1473,6 +1595,7 @@ private:
 		}
 
 		updateUniformBuffer(currentFrame);
+		updateInstanceBuffer(currentFrame);
 
 		vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
