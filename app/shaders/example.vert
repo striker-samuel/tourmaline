@@ -6,7 +6,7 @@ const int MAX_INSTANCES = 256;
 
 
 layout(binding = 0) uniform VPBUFFER {
-    mat4 model;
+//    mat4 model;
     mat4 view;
     mat4 proj;
 } ubo;

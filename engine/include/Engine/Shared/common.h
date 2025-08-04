@@ -1,6 +1,5 @@
 #pragma once
 
-
 #include <tiny_gltf.h>
 #include <tiny_obj_loader.h>
 
@@ -10,6 +9,4 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/hash.hpp>
 
-
-// TYPE ALIASES
 typedef glm::vec3 Vector3;

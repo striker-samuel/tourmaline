@@ -14,13 +14,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include <Engine/common.h>
+#include <Engine/Shared/common.h>
 #include <Engine/Vulkan/vulkan_setup.h>
 #include <Engine/Renderer/vertex.h>
-
-struct StandardBRDFMatAttachment {
-	//texture handles to imageview
-};
 
 // Statements 
 // Forward+ . Maybe tiled deferred shadows in future
@@ -51,6 +47,9 @@ CameraPositioner_FirstPerson cameraPositioner(
 	glm::vec3(0.0f, 1.0f, 0.0f)   // up vector
 );
 
+
+// QUAD
+
 std::vector<Vertex> quad_vertices = {
 	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
 	{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
@@ -62,14 +61,6 @@ std::vector<uint32_t> quad_indices = {
 	0, 1, 2, 2, 3, 0
 };
 
-struct GPULight {
-	// Maybe we dont need scale and can compact here.
-	glm::mat4 transform;
-	//type
-	//cone
-	//color
-	//intensity
-} DefaultLight;
 
 struct Mesh {
 	std::vector<Vertex> vertices;
@@ -87,6 +78,7 @@ struct MeshData {
 struct InstanceData {
 
 	// Identity Matrix initialization
+	alignas(16)
 	float transform[16] = {
 		1.0f, 0.0f, 0.0f, 0.0f,
 		0.0f, 1.0f, 0.0f, 0.0f,
@@ -100,10 +92,19 @@ struct InstanceData {
 };
 
 struct UniformBufferObject {
-	alignas(16) glm::mat4 model;
+	//alignas(16) glm::mat4 model;
 	alignas(16) glm::mat4 view;
 	alignas(16) glm::mat4 proj;
 };
+
+struct GPULight {
+	// Maybe we dont need scale and can compact here.
+	glm::mat4 transform;
+	//type
+	//cone
+	//color
+	//intensity
+} DefaultLight;
 
 //Down like to use char for this.
 typedef struct Color4 {
@@ -114,3 +115,42 @@ typedef struct Color4 {
 };
 
 // ---------------------------------
+
+enum PipelineSetting {
+	DEPTH_ENABLED
+};
+
+
+struct MaterialDefinition {
+	// CPU SIDE. MATERIALS ARE CPU SIDE ABSTRACTIONS!
+
+	VkShaderModule vert;
+	VkShaderModule frag;
+	
+	VkImageView imageView;
+	VkSampler sampler;
+
+	// Pipeline setup
+	std::array<PipelineSetting, 1> pipeline_settings = {
+		{
+			DEPTH_ENABLED
+		}
+	};
+};
+
+//
+
+struct UniformBufferAllocation {
+	VkBuffer buffer;
+	VmaAllocation alloc;
+	VmaAllocationInfo allocInfo;
+	VkDeviceSize size;
+	// Did it end in mappable memory? This is important to know for proper upload. Discard the bool in the future use 
+	VkMemoryPropertyFlags memory_flags;
+
+
+	bool is_mapapble() {
+		return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+	}
+
+};

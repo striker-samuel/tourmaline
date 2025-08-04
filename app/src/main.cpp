@@ -2,7 +2,6 @@
 
 // hardcoded test scene
 #include <scene_1.h>
-
 #include <cassert>
 
 // ---- SETUP -----
@@ -10,14 +9,14 @@
 #include <Engine/Vulkan/vulkan_setup.h>
 
 #define VMA_IMPLEMENTATION
-// Vulkan Memory Allocator
 
 #define VMA_VULKAN_VERSION 1004000 // Vulkan 1.4
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
 #include <vk_mem_alloc.h>
 
-#define TINYOBJLOADER_IMPLEMENTATION
+// Do I care for tinyObj really?
+//#define TINYOBJLOADER_IMPLEMENTATION
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -29,45 +28,35 @@
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Renderer/primitives.h>
-#include <Engine/common.h>
+#include <Engine/Shared/common.h>
 
 // Moved readFile here. readFile rnow is just used to read shader files
 #include <Engine/fileIO.h>
 
-// -------------------------------------
-
-static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 static constexpr uint32_t WIDTH = 1280;
 static constexpr uint32_t HEIGHT = 720;
-static constexpr uint32_t MAX_INSTANCES = 256;
+
+static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
 
+// Yes, I'm hardcapping here for development.
+static constexpr uint32_t MAX_INSTANCES = 1000;
+static constexpr uint32_t MAX_MESHES = 1000;
+static constexpr uint32_t MAX_TEXTURES = 4096;
+static constexpr uint32_t MAX_MATERIAL_INSTANCES = 1000;
 
-struct UniformBufferAllocation {
-	VkBuffer buffer;
-	VmaAllocation alloc;
-	VmaAllocationInfo allocInfo;
-	VkDeviceSize size;
-	// Did it end in mappable memory? This is important to know for proper upload. Discard the bool in the future use 
-	VkMemoryPropertyFlags memory_flags;
-
-
-	bool is_mapapble() {
-		return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-	}
-
-};
 
 class VulkanApp {
 
 
 public:
 
-
 	bool run();
 
-
 private:
+
+
+	MaterialDefinition default_mat_def_;
 
 	InstanceData instance_data_[MAX_INSTANCES];
 	uint32_t instance_count_ = 10;
@@ -80,6 +69,7 @@ private:
 	VkBuffer static_index_buffer_;
 	VmaAllocation static_index_allocation_;
 
+	// I doubt this is really needed.
 	VkFence f_level_ready_;
 
 	// _---------------
@@ -89,13 +79,6 @@ private:
 	VkQueue computeQueue_;
 	VkQueue presentQueue_;
 	VkQueue transferQueue_;
-
-
-	// This is clearly hardcoded to hold just one texture image, view, and smapler. Pending Material System!
-	VkImage textureImage;
-	VkImageView textureImageView;
-	VkSampler texture_sampler;
-
 
 #pragma region ===[ App / Core State ]===
 
@@ -125,13 +108,14 @@ private:
 
 #pragma region ===[ Texture Resources ]===
 
-	VkImage * textureImages;
-	VkImageView* textureImageViews;
-	VkSampler* textureSamplers;
+	// Lets do arrays of MAX_TEXTURES.
+	//VkImage* textureImages;
+	//VkImageView* textureImageViews;
+	//VkSampler* textureSamplers;
 
 #pragma endregion
 
-#pragma region ===[ Graphs ]===
+#pragma region ===[ Descriptors ]===
 
 	VkDescriptorPool descriptorPool;
 	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT];
@@ -191,12 +175,8 @@ private:
 #pragma endregion
 
 
+
 	void initVulkanApp();
-
-	// Could be made generic to this right?
-	void updateUniforms(uint32_t currentImage, UniformBufferAllocation ufa[], void* data, VkDeviceSize data_size) {
-
-	}
 
 	void updateUniformBuffer(uint32_t currentImage) {
 
@@ -208,15 +188,16 @@ private:
 			.count();
 
 		UniformBufferObject default_ubo{
-			.model = glm::mat4(1.0f),
+			//.model = glm::mat4(1.0f),
 			.view = camera_.getViewMatrix(),
 			.proj = camera_.getProjMatrix(),
 		};
 
 		VkResult result;
 
-		// This is bad, will stall. Frame update should use same command buffer for all update operations.
-		// FrameGraph! FrameGraph!
+		// Starting and ending SingleTimeCommands for gpu setup needs to come back to CPU
+		// FrameGraph! FrameGraph! A framegraph could let me write all comands, fence them and do first upload together.
+		// Could not be faster tho. Who knows
 		VkCommandBuffer cmdBuf = beginSingleTimeCommands();
 
 		if (uniforms_[currentImage].is_mapapble())
@@ -322,9 +303,8 @@ private:
 		endSingleTimeCommands(cmdBuf);
 	}
 
-
 	// Synthetic data for InstanceData tests!
-	void fabricateInstanceData(InstanceData* data) {
+	void FabricateInstanceData(InstanceData* data) {
 
 
 		for (int n = 0; n < instance_count_; n++) {
@@ -335,7 +315,7 @@ private:
 
 	}
 
-	void updateInstanceBuffer(uint32_t currentImage) {
+	void UpdateInstanceBuffer(uint32_t currentImage) {
 
 		// THIS MUST REMAIN HERE. SENSITIVE TO LAG OTHERWISE
 		static auto startTime = std::chrono::high_resolution_clock::now();
@@ -344,9 +324,9 @@ private:
 			currentTime - startTime)
 			.count();
 
-		InstanceData data[MAX_INSTANCES];
-
-		fabricateInstanceData(data);
+		// Moved this to the HEAP. This will be state of the app instead of being fabricated here anyways.
+		InstanceData* data = new InstanceData[MAX_INSTANCES];
+		FabricateInstanceData(data);
 
 		VkResult result;
 
@@ -458,12 +438,17 @@ private:
 		}
 
 		endSingleTimeCommands(cmdBuf);
+		delete[] data;
 	}
 
+	void UploadScene();
 
+	bool UploadMesh(Mesh* mesh) {
+		// s
 
+	};
 
-#pragma region ===[ Events ]===
+#pragma region ===[ Input ]===
 
 	static void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
 		auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
@@ -492,7 +477,6 @@ private:
 			cameraPositioner.getPosition() + static_cast<float>(yOffset) * scrollSpeed * forward
 		);
 	}
-
 
 	void handleMouseMovement(double xpos, double ypos) {
 		if (!rightMousePressed) return;
@@ -864,7 +848,7 @@ private:
 
 	// --------------------------
 
-	void createTextureImage(std::string texture_path) {
+	void createTextureImage(std::string texture_path, VkImage& texture_image) {
 		int texWidth, texHeight, texChannels;
 
 		stbi_uc* pixels = stbi_load(texture_path.c_str(), &texWidth, &texHeight,
@@ -897,19 +881,27 @@ private:
 			VK_IMAGE_TILING_OPTIMAL,
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-			textureImage
+			texture_image
 		);
 
-
-		transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB,
+		transitionImageLayout(
+			texture_image,
+			VK_FORMAT_R8G8B8A8_SRGB,
 			VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-		copyBufferToImage(stagingBuffer, textureImage,
+
+		copyBufferToImage(stagingBuffer,
+			texture_image,
 			static_cast<uint32_t>(texWidth),
-			static_cast<uint32_t>(texHeight));
-		transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB,
+			static_cast<uint32_t>(texHeight)
+		);
+
+		transitionImageLayout(
+			texture_image,
+			VK_FORMAT_R8G8B8A8_SRGB,
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		);
 
 		vkDestroyBuffer(device, stagingBuffer, nullptr);
 		vkFreeMemory(device, stagingBufferMemory, nullptr);
@@ -1219,21 +1211,13 @@ private:
 
 	void createDescriptorPool() {
 
-		// --------
-
-		std::array<VkDescriptorPoolSize, 3> poolSizes{};
-
-		poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		poolSizes[0].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
-
-		poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		poolSizes[1].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
-
-
-		// ?? sampler should stay the smae, why allocate it again for each descriptor set. More research is needed
-		poolSizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		poolSizes[2].descriptorCount = MAX_FRAMES_IN_FLIGHT;
-
+		// This is just how many dsc of each type are allowed in the pool. Has no bearing with layouts
+		// except for simple compat.
+		std::array<VkDescriptorPoolSize, 3> poolSizes = { {
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,        100 },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,        100 },
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
+		} };
 
 		// --------
 
@@ -1250,20 +1234,36 @@ private:
 		}
 	}
 
-	void createDescriptorSets() {
+
+	// we shoudl have separate sets 
+	//Set Index	Concern	Frequency of Update	Example Resources
+	//	0	Frame - level / Pass - level	Once per frame	Camera UBO(view / proj), lights UBO, environment maps
+	//	1	Object - level / Draw - call - level	Once per object	Model matrix UBO(or dynamic UBO), per - object parameters
+	//	2	Material - level	Rarely(per material)	Material UBO(e.g.roughness / metallic factors), textures, samplers
+	//	3 + Less common / Optional	As needed	Shadow maps, decals, particle data, etc.
+
+	void createDescriptorSets(MaterialDefinition material) {
 
 		std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT,
 			descriptorSetLayout);
 
 		VkDescriptorSetAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-
 		allocInfo.descriptorPool = descriptorPool;
 		allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
 		allocInfo.pSetLayouts = layouts.data();
 
-		if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets) !=
-			VK_SUCCESS) {
+		// --
+
+		VkResult result = vkAllocateDescriptorSets(device, &allocInfo, descriptorSets);
+
+		if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
+			//Rotate the pool. try again
+		}
+
+		// --
+
+		if (result != VK_SUCCESS) {
 			throw std::runtime_error("failed to allocate descriptor sets!");
 		}
 
@@ -1277,15 +1277,13 @@ private:
 			VkDescriptorBufferInfo instanceBufferInfo{
 				.buffer = instanceDataUniforms_[i].buffer,
 				.offset = 0,
-				// Decided to make separate bufffers instead
-				//.offset = sizeof(InstanceData)*i,
-				.range = sizeof(InstanceData)*MAX_INSTANCES,
+				.range = sizeof(InstanceData) * MAX_INSTANCES,
 			};
 
 			VkDescriptorImageInfo imageInfo{};
 			imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			imageInfo.imageView = textureImageView;
-			imageInfo.sampler = texture_sampler;
+			imageInfo.imageView = material.imageView;
+			imageInfo.sampler = material.sampler;
 
 			std::array<VkWriteDescriptorSet, 3> descriptorWrites{};
 
@@ -1613,15 +1611,17 @@ private:
 			throw std::runtime_error("failed to acquire swap chain image!");
 		}
 
+		// BATCH PER MESH, SHADER, INSTANCE
+
 		updateUniformBuffer(currentFrame);
-		updateInstanceBuffer(currentFrame);
+		UpdateInstanceBuffer(currentFrame);
 
 		vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
 		vkResetCommandBuffer(commandBuffers[currentFrame],
 			/*VkCommandBufferResetFlagBits*/ 0);
-		recordDraw(commandBuffers[currentFrame], imageIndex);
 
+		recordDraw(commandBuffers[currentFrame], imageIndex);
 
 		VkSubmitInfo submitInfo{};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1678,59 +1678,9 @@ private:
 };
 
 
-bool VulkanApp::run() {
+void VulkanApp::UploadScene() {
 
-	camera_.setPerspective(45.0f, float(WIDTH) / float(HEIGHT), 0.1f, 100.0f);
-
-	// ---------------
-
-	if (volkInitialize() != VK_SUCCESS) {
-		std::cerr << "Failed to initialize Volk\n";
-		glfwTerminate();
-		return false;
-	};
-
-	if (!glfwInit()) {
-		std::cerr << "Failed to initialize GLFW\n";
-		return false;
-	}
-
-	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-
-	window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
-
-	if (!window) {
-		std::cerr << "Failed to create GLFW window\n";
-		glfwTerminate();
-		return false;
-	}
-	glfwMakeContextCurrent(window);
-	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-	glfwSetKeyCallback(window, VulkanApp::keyCallback);
-	glfwSetCursorPosCallback(window, VulkanApp::mouseCallback);
-	glfwSetMouseButtonCallback(window, VulkanApp::mouseButtonCallback);
-	glfwSetScrollCallback(
-		window, VulkanApp::scrollCallback);  // Register scroll callback
-
-	glfwSetWindowUserPointer(window, this);
-	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
-
-	initVulkanApp();
-
-	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
-
-	VkCommandPoolCreateInfo poolInfo{
-		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-		.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
-	};
-
-	if (vkCreateCommandPool(device, &poolInfo, nullptr, &graphicsCommandPool) !=
-		VK_SUCCESS) {
-		throw std::runtime_error("failed to create graphics command pool!");
-	}
-
-	// Static vertex list upload
+	// Create static_tris_buffer and upload tris data
 	{
 		// This shouldnt be fixed to single mesh
 		VkDeviceSize bufferSize = sizeof(Vertex) * Quad.vertices.size();
@@ -1794,12 +1744,11 @@ bool VulkanApp::run() {
 		vmaDestroyBuffer(app_allocator_, staging_buffer, staging_buffer_allocation);
 	}
 
-	// Create Index Buffer
+	// Create static_index_buffer and upload index data
 	{
 		// This shouldnt be fixed to single mesh
 		VkDeviceSize bufferSize = sizeof(uint32_t) * Quad.indices.size();
 		assert((bufferSize > 0, "Vertex buffer size was 0"));
-
 
 		VmaAllocation staging_buffer_allocation;
 		VkBuffer staging_buffer;
@@ -1858,13 +1807,73 @@ bool VulkanApp::run() {
 		vmaDestroyBuffer(app_allocator_, staging_buffer, staging_buffer_allocation);
 	}
 
+}
+
+
+bool VulkanApp::run() {
+
+	camera_.setPerspective(45.0f, float(WIDTH) / float(HEIGHT), 0.1f, 100.0f);
+
+	// ---------------
+
+	if (volkInitialize() != VK_SUCCESS) {
+		std::cerr << "Failed to initialize Volk\n";
+		glfwTerminate();
+		return false;
+	};
+
+	if (!glfwInit()) {
+		std::cerr << "Failed to initialize GLFW\n";
+		return false;
+	}
+
+	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+	window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+
+	if (!window) {
+		std::cerr << "Failed to create GLFW window\n";
+		glfwTerminate();
+		return false;
+	}
+	glfwMakeContextCurrent(window);
+	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	glfwSetKeyCallback(window, VulkanApp::keyCallback);
+	glfwSetCursorPosCallback(window, VulkanApp::mouseCallback);
+	glfwSetMouseButtonCallback(window, VulkanApp::mouseButtonCallback);
+	glfwSetScrollCallback(
+		window, VulkanApp::scrollCallback);  // Register scroll callback
+
+	glfwSetWindowUserPointer(window, this);
+	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+
+	initVulkanApp();
+
+	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
+
+	VkCommandPoolCreateInfo poolInfo{
+		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+		.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
+	};
+
+	if (vkCreateCommandPool(device, &poolInfo, nullptr, &graphicsCommandPool) !=
+		VK_SUCCESS) {
+		throw std::runtime_error("failed to create graphics command pool!");
+	}
+
+	UploadScene();
+
+	// FIXED SIZES
 	createUniformBuffers();
 	createInstanceDataBuffers();
 
-	//
 	createCommandBuffers();
 	createSyncObjects();
+	createDepthResources();
 
+	// MATERIAL
+	// -------------------------------------------------------------------------------------
 
 	// this doenst use a shader cache pretty rough!
 	auto vertShaderCode = readFile("shaders/example.vert.spv");
@@ -1873,13 +1882,14 @@ bool VulkanApp::run() {
 	VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
 
+	default_mat_def_.frag = fragShaderModule;
+	default_mat_def_.frag = vertShaderModule;
 
 
 	createDescriptorSetLayout(
 		device,
 		&descriptorSetLayout
 	);
-
 
 	createGraphicsPipeline(
 		vertShaderModule,
@@ -1888,27 +1898,27 @@ bool VulkanApp::run() {
 		&pipelineLayout
 	);
 
+	VkImage textureImage;
 
-	//
+	createTextureImage(
+		"textures/viking_room.png",
+		textureImage
+	);
 
-	createDepthResources();
-	createTextureImage("textures/viking_room.png");
 	createTextureImageView(
 		textureImage,
-		textureImageView
+		default_mat_def_.imageView
 	);
 
 	createTextureSampler(
-		texture_sampler
+		default_mat_def_.sampler
 	);
 
+	createDescriptorPool(); // Pool has the shape of the material!. Also 
+	createDescriptorSets(default_mat_def_);
 
+	// -------------------------------------------------------------------------------------
 
-	createDescriptorPool();
-	createDescriptorSets();
-
-
-	// -------------------------------
 
 	mainLoop();
 

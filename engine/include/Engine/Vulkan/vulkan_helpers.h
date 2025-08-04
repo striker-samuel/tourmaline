@@ -1,5 +1,6 @@
 #pragma once
 
+// Factor Vector out. Use fixed length arrays.
 #include <vector>
 #include <string>
 #include <iostream>
@@ -9,12 +10,18 @@
 
 #include <array>
 #include <set>
+
+// Dont like exceptions :/
 #include <stdexcept>
 #include <algorithm>
 #include <cstring>
-#include <GLFW/glfw3.h>
 
-#include <vulkan/vulkan.h>
+
+// HMMMMMMMMMMMMMMMMMMMMMMMMM. Don't like this vulkan.h includ here. Im using Volk on the same comp unit
+//#include <GLFW/glfw3.h>
+//#include <vulkan/vulkan.h>
+#include <Engine/Vulkan/vulkan_setup.h>
+
 
 const std::vector<const char*> validationLayers = {
 "VK_LAYER_KHRONOS_validation" };
@@ -24,7 +31,6 @@ const std::vector<const char*> deviceExtensions = {
 	// Not needed -- Vk1.3 promoted baybeeee
 	//VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
 };
-
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL
 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -37,7 +43,6 @@ debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 	return VK_FALSE;
 }
 
-//Maybe this should be defined else intead of this header.
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
 #else
@@ -379,4 +384,5 @@ void populateDebugMessengerCreateInfo(
 		VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
 	createInfo.pfnUserCallback = debugCallback;
 }
+
 
