@@ -2,8 +2,8 @@
 // pull in the Vulkan-GLSL built-ins (gl_VertexIndex, gl_InstanceIndex, etc.)
 #extension GL_KHR_vulkan_glsl : enable
 
+// This should be a define symbol in cmake land. then pass it onto build glslc. and to cpp build :)
 const int MAX_INSTANCES = 256;
-
 
 layout(binding = 0) uniform VPBUFFER {
 //    mat4 model;

@@ -38,6 +38,8 @@ static constexpr uint32_t HEIGHT = 720;
 
 static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
+static constexpr float near_clip = 0.0001f;
+static constexpr float far_clip = 100.0f;
 
 // Yes, I'm hardcapping here for development.
 static constexpr uint32_t MAX_INSTANCES = 1000;
@@ -243,7 +245,6 @@ private:
 			VmaAllocationInfo stagingAllocInfo;
 			result = vmaCreateBuffer(app_allocator_, &stagingBufCreateInfo, &stagingAllocCreateInfo,
 				&stagingBuf, &stagingAlloc, &stagingAllocInfo);
-			// Check result...
 
 			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
 			result = vmaCopyMemoryToAllocation(app_allocator_,
@@ -443,11 +444,6 @@ private:
 
 	void UploadScene();
 
-	bool UploadMesh(Mesh* mesh) {
-		// s
-
-	};
-
 #pragma region ===[ Input ]===
 
 	static void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
@@ -480,19 +476,18 @@ private:
 
 	void handleMouseMovement(double xpos, double ypos) {
 		if (!rightMousePressed) return;
-
 		glm::vec2 mousePos = glm::vec2(static_cast<float>(xpos), static_cast<float>(ypos));
-		cameraPositioner.update(0.0, mousePos, true); // We'll pass real deltaSeconds in mainLoop
+		cameraPositioner.update(delta_time_/1000, mousePos, true); // We'll pass real deltaSeconds in mainLoop
 	}
 
 	void handleMouseButton(int button, int action, int mods) {
 		if (button == GLFW_MOUSE_BUTTON_RIGHT) {
 			rightMousePressed = (action == GLFW_PRESS);
-			if (rightMousePressed) {
-				double x, y;
-				glfwGetCursorPos(window, &x, &y);
-				cameraPositioner.resetMousePosition(glm::vec2(x, y));
-			}
+			//if (rightMousePressed) {
+			//	double x, y;
+			//	glfwGetCursorPos(window, &x, &y);
+			//	cameraPositioner.resetMousePosition(glm::vec2(x, y));
+			//}
 		}
 	}
 
@@ -562,6 +557,7 @@ private:
 	}
 
 	void cleanupSwapChain() {
+		// IM SURE IM LEAKING HERE!
 
 		vkDestroyImageView(device, main_depthImageView, nullptr);
 		vmaDestroyImage(app_allocator_, main_depthImage, main_d_alloc);
@@ -570,14 +566,14 @@ private:
 			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
 		}
 		delete[] swapChainImageViews;
+
+		delete[] swapChainImages;
 		swapChainImageViews = nullptr;
 
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
 
 	void recreateSwapChain() {
-
-		// Source new state
 
 		int width = 0, height = 0;
 		glfwGetFramebufferSize(window, &width, &height);
@@ -588,11 +584,14 @@ private:
 
 		vkDeviceWaitIdle(device);
 
-		//
 		cleanupSwapChain();
 		createSwapChain();
 		createSwapchainImageViews();
 		createDepthResources();
+
+		// ---- update camera projection to match new size ----
+		float newAspect = float(width) / float(height);
+		camera_.setPerspective(45.0f, newAspect, near_clip, far_clip);
 	}
 
 	void setupDebugMessenger() {
@@ -662,7 +661,6 @@ private:
 
 		vkGetSwapchainImagesKHR(device, swapChain, &swapchainImageCount, nullptr);
 		vkGetSwapchainImagesKHR(device, swapChain, &swapchainImageCount, swapChainImages);
-		renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
 
 		swapChainImageFormat = surfaceFormat.format;
 		swapChainExtent = extent;
@@ -1812,7 +1810,7 @@ void VulkanApp::UploadScene() {
 
 bool VulkanApp::run() {
 
-	camera_.setPerspective(45.0f, float(WIDTH) / float(HEIGHT), 0.1f, 100.0f);
+	camera_.setPerspective(45.0f, float(WIDTH) / float(HEIGHT), near_clip, far_clip);
 
 	// ---------------
 
@@ -1837,7 +1835,7 @@ bool VulkanApp::run() {
 		return false;
 	}
 	glfwMakeContextCurrent(window);
-	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	//glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	glfwSetKeyCallback(window, VulkanApp::keyCallback);
 	glfwSetCursorPosCallback(window, VulkanApp::mouseCallback);
 	glfwSetMouseButtonCallback(window, VulkanApp::mouseButtonCallback);
@@ -2100,6 +2098,7 @@ void VulkanApp::initVulkanApp() {
 
 
 	createSwapChain();
+	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
 	createSwapchainImageViews();
 
 
