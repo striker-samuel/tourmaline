@@ -3,7 +3,7 @@
 #include <Engine/Shared/common.h>
 #include <Engine/Vulkan/vulkan_setup.h>
 
-
+//32 aligned
 struct Vertex {
 	glm::vec3 pos;
 	glm::vec3 color;

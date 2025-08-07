@@ -34,9 +34,9 @@
 // Maybe more...
 
 struct GPUMaterial {
-
 	int vert_shader_id;
 	int frag_shader_id;
+
 	//attachments?
 	// or maybe descriptor format abstraction. and flags. like opaque transparent/else
 };
@@ -46,9 +46,6 @@ CameraPositioner_FirstPerson cameraPositioner(
 	glm::vec3(0.0f, 0.0f, 1.0f),  // target (looking in +Z direction)
 	glm::vec3(0.0f, 1.0f, 0.0f)   // up vector
 );
-
-
-// QUAD
 
 std::vector<Vertex> quad_vertices = {
 	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
@@ -61,19 +58,14 @@ std::vector<uint32_t> quad_indices = {
 	0, 1, 2, 2, 3, 0
 };
 
-
 struct Mesh {
+
+	// Vertex is 3fpos 3fnormal 2fuv. no color.
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
 };
 
 Mesh Quad = Mesh(quad_vertices, quad_indices);
-
-struct MeshData {
-	std::vector<glm::vec3> vertices;
-	std::vector<glm::vec3> normals;
-	std::vector<uint32_t> indices;
-};
 
 struct InstanceData {
 

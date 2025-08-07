@@ -1,5 +1,7 @@
 #pragma once
 
+# define ENGINE_NAME "VulkanToy"
+
 // hardcoded test scene
 #include <scene_1.h>
 #include <cassert>
@@ -15,7 +17,8 @@
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
 #include <vk_mem_alloc.h>
 
-// Do I care for tinyObj really?
+// Do I care for tinyObj really? Obj is simpler but carries no anim data.
+// Packing Data shoulb be custom format
 //#define TINYOBJLOADER_IMPLEMENTATION
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
@@ -41,6 +44,10 @@ static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 static constexpr float near_clip = 0.0001f;
 static constexpr float far_clip = 100.0f;
 
+// 256 MiB
+constexpr std::size_t static_vertex_buffer_size = 256ULL << 20;
+constexpr std::size_t static_index_buffer_size = 256ULL << 20;
+
 // Yes, I'm hardcapping here for development.
 static constexpr uint32_t MAX_INSTANCES = 1000;
 static constexpr uint32_t MAX_MESHES = 1000;
@@ -48,10 +55,51 @@ static constexpr uint32_t MAX_TEXTURES = 4096;
 static constexpr uint32_t MAX_MATERIAL_INSTANCES = 1000;
 
 
+
+struct GpuMesh {
+	
+	uint32_t index_start;
+	uint32_t index_count;
+	uint32_t vertexOffset;
+	
+};
+
+class Context {
+
+
+public:
+
+	// Reserve meemory. 
+	bool initialize();
+	bool uploadMesh(Mesh mesh);
+	bool createInstance(int mesh_handle, InstanceData data);
+
+private:
+	
+	GpuMesh meshes_[MAX_MESHES];
+
+};
+
+bool Context::uploadMesh(Mesh mesh) {
+
+
+	// Upload mesh
+
+	return false;
+};
+
+
+//bool Context::createInstance(Mesh mesh, InstanceData data) {
+//}
+
 class VulkanApp {
 
 
 public:
+
+
+	int width_ = WIDTH;
+	int height_ = HEIGHT;
 
 	bool run();
 
@@ -175,8 +223,6 @@ private:
 #pragma region ===[ Flags / Resize Events ]===
 	bool framebufferResized = false;
 #pragma endregion
-
-
 
 	void initVulkanApp();
 
@@ -476,19 +522,21 @@ private:
 
 	void handleMouseMovement(double xpos, double ypos) {
 		if (!rightMousePressed) return;
-		glm::vec2 mousePos = glm::vec2(static_cast<float>(xpos), static_cast<float>(ypos));
-		cameraPositioner.update(delta_time_/1000, mousePos, true); // We'll pass real deltaSeconds in mainLoop
+
+		glm::vec2 mousePos = glm::vec2(
+			static_cast<float>(xpos)/width_,
+			static_cast<float>(ypos)/height_
+		);
+		cameraPositioner.update(delta_time_/1000,
+			mousePos,
+			true
+		); 
 	}
 
 	void handleMouseButton(int button, int action, int mods) {
 		if (button == GLFW_MOUSE_BUTTON_RIGHT) {
 			rightMousePressed = (action == GLFW_PRESS);
-			//if (rightMousePressed) {
-			//	double x, y;
-			//	glfwGetCursorPos(window, &x, &y);
-			//	cameraPositioner.resetMousePosition(glm::vec2(x, y));
-			//}
-		}
+			}
 	}
 
 	void handleKey(int key, int scancode, int action, int mods) {
@@ -512,6 +560,7 @@ private:
 			cameraPositioner.movement_.right_ = isPressed;
 			break;
 		case GLFW_KEY_Q:
+		case GLFW_KEY_SPACE:
 			cameraPositioner.movement_.down_ = isPressed;
 			break;
 		case GLFW_KEY_E:
@@ -547,7 +596,7 @@ private:
 
 			double x, y;
 			glfwGetCursorPos(window, &x, &y);
-			cameraPositioner.update(delta, glm::vec2(x, y), rightMousePressed);
+			cameraPositioner.update(delta, glm::vec2(x/width_, y/height_), rightMousePressed);
 
 
 			drawFrame();
@@ -581,6 +630,9 @@ private:
 			glfwGetFramebufferSize(window, &width, &height);
 			glfwWaitEvents();
 		}
+
+		width_ = width;
+		height_= height;
 
 		vkDeviceWaitIdle(device);
 
@@ -1232,8 +1284,7 @@ private:
 		}
 	}
 
-
-	// we shoudl have separate sets 
+	// We should have separate sets
 	//Set Index	Concern	Frequency of Update	Example Resources
 	//	0	Frame - level / Pass - level	Once per frame	Camera UBO(view / proj), lights UBO, environment maps
 	//	1	Object - level / Draw - call - level	Once per object	Model matrix UBO(or dynamic UBO), per - object parameters
@@ -1810,7 +1861,7 @@ void VulkanApp::UploadScene() {
 
 bool VulkanApp::run() {
 
-	camera_.setPerspective(45.0f, float(WIDTH) / float(HEIGHT), near_clip, far_clip);
+	camera_.setPerspective(45.0f, float(width_) / float(height_), near_clip, far_clip);
 
 	// ---------------
 
@@ -1827,7 +1878,7 @@ bool VulkanApp::run() {
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-	window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+	window = glfwCreateWindow(width_, height_, "Vulkan", nullptr, nullptr);
 
 	if (!window) {
 		std::cerr << "Failed to create GLFW window\n";
@@ -1836,6 +1887,7 @@ bool VulkanApp::run() {
 	}
 	glfwMakeContextCurrent(window);
 	//glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	glfwSetWindowTitle(window, ENGINE_NAME);
 	glfwSetKeyCallback(window, VulkanApp::keyCallback);
 	glfwSetCursorPosCallback(window, VulkanApp::mouseCallback);
 	glfwSetMouseButtonCallback(window, VulkanApp::mouseButtonCallback);
