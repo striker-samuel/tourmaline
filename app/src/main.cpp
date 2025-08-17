@@ -1,5 +1,4 @@
 #pragma once
-
 # define ENGINE_NAME "VulkanToy"
 
 // hardcoded test scene
@@ -27,11 +26,14 @@
 // ------------------------------------
 
 #include <Engine/Vulkan/vulkan_helpers.h>
+//#include <Engine/Memory/pool.h>
 
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Renderer/primitives.h>
 #include <Engine/Shared/common.h>
+
+#include <Engine/Memory/context.h>
 
 // Moved readFile here. readFile rnow is just used to read shader files
 #include <Engine/fileIO.h>
@@ -55,48 +57,9 @@ static constexpr uint32_t MAX_TEXTURES = 4096;
 static constexpr uint32_t MAX_MATERIAL_INSTANCES = 1000;
 
 
-
-struct GpuMesh {
-	
-	uint32_t index_start;
-	uint32_t index_count;
-	uint32_t vertexOffset;
-	
-};
-
-class Context {
-
-
-public:
-
-	// Reserve meemory. 
-	bool initialize();
-	bool uploadMesh(Mesh mesh);
-	bool createInstance(int mesh_handle, InstanceData data);
-
-private:
-	
-	GpuMesh meshes_[MAX_MESHES];
-
-};
-
-bool Context::uploadMesh(Mesh mesh) {
-
-
-	// Upload mesh
-
-	return false;
-};
-
-
-//bool Context::createInstance(Mesh mesh, InstanceData data) {
-//}
-
 class VulkanApp {
 
-
 public:
-
 
 	int width_ = WIDTH;
 	int height_ = HEIGHT;
@@ -104,7 +67,6 @@ public:
 	bool run();
 
 private:
-
 
 	MaterialDefinition default_mat_def_;
 
@@ -125,7 +87,6 @@ private:
 	// _---------------
 
 	VkQueue graphicsQueue_;
-
 	VkQueue computeQueue_;
 	VkQueue presentQueue_;
 	VkQueue transferQueue_;
@@ -200,7 +161,8 @@ private:
 	VkPipeline graphicsPipeline;
 	// *
 
-	VkCommandPool graphicsCommandPool;
+	// We separate command pools for each frames becuase its cheaper to reset them this way
+	VkCommandPool framesCommandPool[MAX_FRAMES_IN_FLIGHT];
 	VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
@@ -248,104 +210,7 @@ private:
 		// Could not be faster tho. Who knows
 		VkCommandBuffer cmdBuf = beginSingleTimeCommands();
 
-		if (uniforms_[currentImage].is_mapapble())
-		{
-			// The Allocation ended up in a mappable memory.
-			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-			result = vmaCopyMemoryToAllocation(
-				app_allocator_,
-				&default_ubo,
-				uniforms_[currentImage].alloc,
-				0,
-				sizeof(UniformBufferObject));
-
-			assert(result == VK_SUCCESS);
-
-			VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-			bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-			bufMemBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-			bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier.buffer = uniforms_[currentImage].buffer;
-			bufMemBarrier.offset = 0;
-			bufMemBarrier.size = VK_WHOLE_SIZE;
-
-			// It's important to insert a buffer memory barrier here to ensure writing to the buffer has finished.
-			vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-				0, 0, nullptr, 1, &bufMemBarrier, 0, nullptr);
-		}
-		else
-		{
-			// Allocation ended up in a non-mappable memory - a transfer using a staging buffer is required.
-			VkBufferCreateInfo stagingBufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-			stagingBufCreateInfo.size = 65536;
-			stagingBufCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-			VmaAllocationCreateInfo stagingAllocCreateInfo = {};
-			stagingAllocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-			stagingAllocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-				VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-			VkBuffer stagingBuf;
-			VmaAllocation stagingAlloc;
-			VmaAllocationInfo stagingAllocInfo;
-			result = vmaCreateBuffer(app_allocator_, &stagingBufCreateInfo, &stagingAllocCreateInfo,
-				&stagingBuf, &stagingAlloc, &stagingAllocInfo);
-
-			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-			result = vmaCopyMemoryToAllocation(app_allocator_,
-				&default_ubo,
-				stagingAlloc,
-				0,
-				sizeof(UniformBufferObject)
-			);
-
-			assert(result != VK_FALSE);
-
-			VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-			bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-			bufMemBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-			bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier.buffer = stagingBuf;
-			bufMemBarrier.offset = 0;
-			bufMemBarrier.size = VK_WHOLE_SIZE;
-
-			// Insert a buffer memory barrier to make sure writing to the staging buffer has finished.
-			vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-				0, 0, nullptr, 1, &bufMemBarrier, 0, nullptr);
-
-			VkBufferCopy bufCopy = {
-				0, // srcOffset
-				0, // dstOffset,
-				sizeof(UniformBufferObject), // size
-			};
-
-			vkCmdCopyBuffer(cmdBuf, stagingBuf, uniforms_[currentImage].buffer, 1, &bufCopy);
-
-			VkBufferMemoryBarrier bufMemBarrier2 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-			bufMemBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			bufMemBarrier2.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT; // We created a uniform buffer
-			bufMemBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier2.buffer = uniforms_[currentImage].buffer;
-			bufMemBarrier2.offset = 0;
-			bufMemBarrier2.size = VK_WHOLE_SIZE;
-
-			// Make sure copying from staging buffer to the actual buffer has finished by inserting a buffer memory barrier.
-			vkCmdPipelineBarrier(
-				cmdBuf,
-				VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-				0,
-				0,
-				nullptr,
-				1,
-				&bufMemBarrier2,
-				0,
-				nullptr
-			);
-		}
+		UploadDataToUBO(uniforms_[currentImage], &default_ubo, cmdBuf);
 
 		endSingleTimeCommands(cmdBuf);
 	}
@@ -359,6 +224,126 @@ private:
 			data[n].transform[12] = 1 + (n*1.23+1);
 
 		};
+
+	}
+
+	// This should be part of context. Ctx - upload
+	// Maybe should generalise this.
+	void UploadDataToUBO(UniformBufferAllocation& ubo, void* data, VkCommandBuffer& cmdBuf) {
+
+		VkResult result;
+
+		if (ubo.is_mapapble())
+			{
+				// The Allocation ended up in a mappable memory.
+				// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
+				result = vmaCopyMemoryToAllocation(
+					app_allocator_,
+					data,
+					ubo.alloc,
+					0,
+					sizeof(InstanceData) * MAX_INSTANCES
+					);
+
+				assert(result == VK_SUCCESS);
+
+				VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+				bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+				bufMemBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+				bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				bufMemBarrier.buffer =ubo.buffer;
+				bufMemBarrier.offset = 0;
+				bufMemBarrier.size = VK_WHOLE_SIZE;
+
+				// It's important to insert a buffer memory barrier here to ensure writing to the buffer has finished.
+				vkCmdPipelineBarrier(cmdBuf,
+					VK_PIPELINE_STAGE_HOST_BIT,
+					VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+					0,
+					0,
+					nullptr,
+					1,
+					&bufMemBarrier,
+					0,
+					nullptr);
+			}
+			else
+			{
+				// Allocation ended up in a non-mappable memory - a transfer using a staging buffer is required.
+				VkBufferCreateInfo stagingBufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+				stagingBufCreateInfo.size = sizeof(InstanceData) * MAX_INSTANCES;
+				stagingBufCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+				VmaAllocationCreateInfo stagingAllocCreateInfo = {};
+				stagingAllocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+				stagingAllocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+					VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+				VkBuffer stagingBuf;
+				VmaAllocation stagingAlloc;
+				VmaAllocationInfo stagingAllocInfo;
+				result = vmaCreateBuffer(app_allocator_, &stagingBufCreateInfo, &stagingAllocCreateInfo,
+					&stagingBuf, &stagingAlloc, &stagingAllocInfo);
+
+				assert(result != VK_FALSE);
+
+
+				// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
+				result = vmaCopyMemoryToAllocation(app_allocator_,
+					data,	 // We should push id * mi
+					stagingAlloc,
+					0,
+					sizeof(InstanceData) * MAX_INSTANCES
+				);
+
+				assert(result != VK_FALSE);
+
+				VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+				bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+				bufMemBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+				bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				bufMemBarrier.buffer = stagingBuf;
+				bufMemBarrier.offset = 0;
+				bufMemBarrier.size = VK_WHOLE_SIZE;
+
+				// Insert a buffer memory barrier to make sure writing to the staging buffer has finished.
+				vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+					0, 0, nullptr, 1, &bufMemBarrier, 0, nullptr);
+
+				VkBufferCopy bufCopy = {
+					0, // srcOffset
+					0, // dstOffset,
+					sizeof(InstanceData) * MAX_INSTANCES, // size
+				};
+
+				vkCmdCopyBuffer(cmdBuf, stagingBuf, ubo.buffer, 1, &bufCopy);
+
+				VkBufferMemoryBarrier bufMemBarrier2 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+				bufMemBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				bufMemBarrier2.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT; // We created a uniform buffer
+				bufMemBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				bufMemBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				bufMemBarrier2.buffer = ubo.buffer;
+				bufMemBarrier2.offset = 0;
+				bufMemBarrier2.size = VK_WHOLE_SIZE;
+
+				// Make sure copying from staging buffer to the actual buffer has finished by inserting a buffer memory barrier.
+				vkCmdPipelineBarrier(
+					cmdBuf,
+					VK_PIPELINE_STAGE_TRANSFER_BIT,
+					VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+					0,
+					0,
+					nullptr,
+					1,
+					&bufMemBarrier2,
+					0,
+					nullptr
+				);
+			}
+
 
 	}
 
@@ -381,109 +366,7 @@ private:
 		// FrameGraph! FrameGraph!
 		VkCommandBuffer cmdBuf = beginSingleTimeCommands();
 
-		if (instanceDataUniforms_[currentImage].is_mapapble())
-		{
-			// The Allocation ended up in a mappable memory.
-			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-			result = vmaCopyMemoryToAllocation(
-				app_allocator_,
-				data,
-				instanceDataUniforms_[currentImage].alloc,
-				0,
-				sizeof(InstanceData) * MAX_INSTANCES
-				);
-
-			assert(result == VK_SUCCESS);
-
-			VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-			bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-			bufMemBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-			bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier.buffer = instanceDataUniforms_[currentImage].buffer;
-			bufMemBarrier.offset = 0;
-			bufMemBarrier.size = VK_WHOLE_SIZE;
-
-			// It's important to insert a buffer memory barrier here to ensure writing to the buffer has finished.
-			vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-				0, 0, nullptr, 1, &bufMemBarrier, 0, nullptr);
-		}
-		else
-		{
-			// Allocation ended up in a non-mappable memory - a transfer using a staging buffer is required.
-			VkBufferCreateInfo stagingBufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-			stagingBufCreateInfo.size = sizeof(InstanceData) * MAX_INSTANCES;
-			stagingBufCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-			VmaAllocationCreateInfo stagingAllocCreateInfo = {};
-			stagingAllocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-			stagingAllocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-				VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-			VkBuffer stagingBuf;
-			VmaAllocation stagingAlloc;
-			VmaAllocationInfo stagingAllocInfo;
-			result = vmaCreateBuffer(app_allocator_, &stagingBufCreateInfo, &stagingAllocCreateInfo,
-				&stagingBuf, &stagingAlloc, &stagingAllocInfo);
-
-			assert(result != VK_FALSE);
-
-
-			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-			result = vmaCopyMemoryToAllocation(app_allocator_,
-				data,	 // We should push id * mi
-				stagingAlloc,
-				0,
-				sizeof(InstanceData) * MAX_INSTANCES
-			);
-
-			assert(result != VK_FALSE);
-
-			VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-			bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-			bufMemBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-			bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier.buffer = stagingBuf;
-			bufMemBarrier.offset = 0;
-			bufMemBarrier.size = VK_WHOLE_SIZE;
-
-			// Insert a buffer memory barrier to make sure writing to the staging buffer has finished.
-			vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-				0, 0, nullptr, 1, &bufMemBarrier, 0, nullptr);
-
-			VkBufferCopy bufCopy = {
-				0, // srcOffset
-				0, // dstOffset,
-				sizeof(InstanceData) * MAX_INSTANCES, // size
-			};
-
-			vkCmdCopyBuffer(cmdBuf, stagingBuf, instanceDataUniforms_[currentImage].buffer, 1, &bufCopy);
-
-			VkBufferMemoryBarrier bufMemBarrier2 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-			bufMemBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			bufMemBarrier2.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT; // We created a uniform buffer
-			bufMemBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier2.buffer = instanceDataUniforms_[currentImage].buffer;
-			bufMemBarrier2.offset = 0;
-			bufMemBarrier2.size = VK_WHOLE_SIZE;
-
-			// Make sure copying from staging buffer to the actual buffer has finished by inserting a buffer memory barrier.
-			vkCmdPipelineBarrier(
-				cmdBuf,
-				VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-				0,
-				0,
-				nullptr,
-				1,
-				&bufMemBarrier2,
-				0,
-				nullptr
-			);
-		}
-
+		UploadDataToUBO(instanceDataUniforms_[currentImage], data, cmdBuf);
 		endSingleTimeCommands(cmdBuf);
 		delete[] data;
 	}
@@ -596,8 +479,9 @@ private:
 
 			double x, y;
 			glfwGetCursorPos(window, &x, &y);
-			cameraPositioner.update(delta, glm::vec2(x/width_, y/height_), rightMousePressed);
-
+			cameraPositioner.update(delta,
+				glm::vec2(x/width_, y/height_),
+				rightMousePressed);
 
 			drawFrame();
 		}
@@ -606,7 +490,6 @@ private:
 	}
 
 	void cleanupSwapChain() {
-		// IM SURE IM LEAKING HERE!
 
 		vkDestroyImageView(device, main_depthImageView, nullptr);
 		vmaDestroyImage(app_allocator_, main_depthImage, main_d_alloc);
@@ -1409,7 +1292,7 @@ private:
 		VkCommandBufferAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		allocInfo.commandPool = graphicsCommandPool;
+		allocInfo.commandPool = framesCommandPool[currentFrame];
 		allocInfo.commandBufferCount = 1;
 
 		VkCommandBuffer commandBuffer;
@@ -1435,7 +1318,7 @@ private:
 		vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE);
 		vkQueueWaitIdle(graphicsQueue_);
 
-		vkFreeCommandBuffers(device, graphicsCommandPool, 1, &commandBuffer);
+		vkFreeCommandBuffers(device, framesCommandPool[currentFrame], 1, &commandBuffer);
 	}
 
 	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
@@ -1452,7 +1335,7 @@ private:
 
 		VkCommandBufferAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-		allocInfo.commandPool = graphicsCommandPool;
+		allocInfo.commandPool = framesCommandPool[currentFrame];
 		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 		allocInfo.commandBufferCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
 
@@ -1652,6 +1535,7 @@ private:
 			device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame],
 			VK_NULL_HANDLE, &imageIndex);
 
+
 		if (result == VK_ERROR_OUT_OF_DATE_KHR) {
 			recreateSwapChain();
 			return;
@@ -1667,8 +1551,11 @@ private:
 
 		vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
-		vkResetCommandBuffer(commandBuffers[currentFrame],
-			/*VkCommandBufferResetFlagBits*/ 0);
+
+		vkResetCommandPool(device,framesCommandPool[currentFrame], 0);
+
+		//vkResetCommandBuffer(commandBuffers[currentFrame],
+		//	/*VkCommandBufferResetFlagBits*/ 0);
 
 		recordDraw(commandBuffers[currentFrame], imageIndex);
 
@@ -1907,10 +1794,13 @@ bool VulkanApp::run() {
 		.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
 	};
 
-	if (vkCreateCommandPool(device, &poolInfo, nullptr, &graphicsCommandPool) !=
-		VK_SUCCESS) {
-		throw std::runtime_error("failed to create graphics command pool!");
-	}
+	for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
+		if (vkCreateCommandPool(device, &poolInfo, nullptr, &framesCommandPool[fn]) !=
+			VK_SUCCESS) {
+			throw std::runtime_error("failed to create graphics command pool!");
+		}
+	}	
+
 
 	UploadScene();
 
@@ -2162,9 +2052,7 @@ int main(int argc, const char* argv[]) {
 		std::cout << argv[0];
 	}
 
-
 	VulkanApp app;
-
 	try {
 		app.run();
 	}

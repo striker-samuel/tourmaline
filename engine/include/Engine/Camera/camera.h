@@ -172,12 +172,13 @@ public:
 	float maxSpeed_ = 10.0f;
 	float fastCoef_ = 10.0f;
 
+	glm::vec3 cameraPosition_ = glm::vec3(0.0f, 10.0f, 10.0f);
+
 private:
 	glm::vec2 mousePos_ = glm::vec2(0);
-	glm::vec3 cameraPosition_ = glm::vec3(0.0f, 10.0f, 10.0f);
 	glm::quat cameraOrientation_ = glm::quat(glm::vec3(0));
 	glm::vec3 moveSpeed_ = glm::vec3(0.0f);
-	glm::vec3 up_ = glm::vec3(0.0f, 0.0f, 1.0f);
+	glm::vec3 up_ = glm::vec3(0.0f, 1.0f, 0.0f);
 };
 
 //class CameraPositioner_MoveTo final : public CameraPositionerInterface

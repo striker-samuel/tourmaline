@@ -33,13 +33,6 @@
 // Cloth, sheen.
 // Maybe more...
 
-struct GPUMaterial {
-	int vert_shader_id;
-	int frag_shader_id;
-
-	//attachments?
-	// or maybe descriptor format abstraction. and flags. like opaque transparent/else
-};
 
 CameraPositioner_FirstPerson cameraPositioner(
 	glm::vec3(0.0f, 0.0f, -10.0f), // position
@@ -67,16 +60,18 @@ struct Mesh {
 
 Mesh Quad = Mesh(quad_vertices, quad_indices);
 
+// We hit the masUBOsize limit fast. Be careful. We may need to encode better.
+// Maybe we can get away with float12 with implied 0,0,0,1 last row.
 struct InstanceData {
-
 	// Identity Matrix initialization
-	alignas(16)
-	float transform[16] = {
-		1.0f, 0.0f, 0.0f, 0.0f,
-		0.0f, 1.0f, 0.0f, 0.0f,
-		0.0f, 0.0f, 1.0f, 0.0f,
-		0.0f, 0.0f, 0.0f, 1.0f
+	//alignas(16)
+		float transform[16] = {
+			1.0f, 0.0f, 0.0f, 0.0f,
+			0.0f, 1.0f, 0.0f, 0.0f,
+			0.0f, 0.0f, 1.0f, 0.0f,
+			0.0f, 0.0f, 0.0f, 1.0f
 	};
+	//float4 color = {1.0f, 1.0f, 1.0f, 1.0f};
 	//uint32_t meshIndex;
 	//uint32_t indexOffset;
 	//uint32_t materialIndex;
@@ -109,7 +104,8 @@ typedef struct Color4 {
 // ---------------------------------
 
 enum PipelineSetting {
-	DEPTH_ENABLED
+	DEPTH_ENABLED,
+	BACK_CULLING_ENABLED
 };
 
 
@@ -118,19 +114,17 @@ struct MaterialDefinition {
 
 	VkShaderModule vert;
 	VkShaderModule frag;
-	
+
 	VkImageView imageView;
 	VkSampler sampler;
 
 	// Pipeline setup
 	std::array<PipelineSetting, 1> pipeline_settings = {
 		{
-			DEPTH_ENABLED
+			DEPTH_ENABLED,
 		}
 	};
 };
-
-//
 
 struct UniformBufferAllocation {
 	VkBuffer buffer;
