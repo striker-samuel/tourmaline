@@ -221,7 +221,7 @@ private:
 
 		for (int n = 0; n < instance_count_; n++) {
 
-			data[n].transform[12] = 1 + (n*1.23+1);
+			data[n].transform[12] = 1 + (n * 1.23 + 1);
 
 		};
 
@@ -234,115 +234,115 @@ private:
 		VkResult result;
 
 		if (ubo.is_mapapble())
-			{
-				// The Allocation ended up in a mappable memory.
-				// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-				result = vmaCopyMemoryToAllocation(
-					app_allocator_,
-					data,
-					ubo.alloc,
-					0,
-					sizeof(InstanceData) * MAX_INSTANCES
-					);
+		{
+			// The Allocation ended up in a mappable memory.
+			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
+			result = vmaCopyMemoryToAllocation(
+				app_allocator_,
+				data,
+				ubo.alloc,
+				0,
+				sizeof(InstanceData) * MAX_INSTANCES
+			);
 
-				assert(result == VK_SUCCESS);
+			assert(result == VK_SUCCESS);
 
-				VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-				bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-				bufMemBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-				bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				bufMemBarrier.buffer =ubo.buffer;
-				bufMemBarrier.offset = 0;
-				bufMemBarrier.size = VK_WHOLE_SIZE;
+			VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+			bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+			bufMemBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+			bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufMemBarrier.buffer = ubo.buffer;
+			bufMemBarrier.offset = 0;
+			bufMemBarrier.size = VK_WHOLE_SIZE;
 
-				// It's important to insert a buffer memory barrier here to ensure writing to the buffer has finished.
-				vkCmdPipelineBarrier(cmdBuf,
-					VK_PIPELINE_STAGE_HOST_BIT,
-					VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-					0,
-					0,
-					nullptr,
-					1,
-					&bufMemBarrier,
-					0,
-					nullptr);
-			}
-			else
-			{
-				// Allocation ended up in a non-mappable memory - a transfer using a staging buffer is required.
-				VkBufferCreateInfo stagingBufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-				stagingBufCreateInfo.size = sizeof(InstanceData) * MAX_INSTANCES;
-				stagingBufCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+			// It's important to insert a buffer memory barrier here to ensure writing to the buffer has finished.
+			vkCmdPipelineBarrier(cmdBuf,
+				VK_PIPELINE_STAGE_HOST_BIT,
+				VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+				0,
+				0,
+				nullptr,
+				1,
+				&bufMemBarrier,
+				0,
+				nullptr);
+		}
+		else
+		{
+			// Allocation ended up in a non-mappable memory - a transfer using a staging buffer is required.
+			VkBufferCreateInfo stagingBufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+			stagingBufCreateInfo.size = sizeof(InstanceData) * MAX_INSTANCES;
+			stagingBufCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
-				VmaAllocationCreateInfo stagingAllocCreateInfo = {};
-				stagingAllocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-				stagingAllocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-					VMA_ALLOCATION_CREATE_MAPPED_BIT;
+			VmaAllocationCreateInfo stagingAllocCreateInfo = {};
+			stagingAllocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+			stagingAllocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+				VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
-				VkBuffer stagingBuf;
-				VmaAllocation stagingAlloc;
-				VmaAllocationInfo stagingAllocInfo;
-				result = vmaCreateBuffer(app_allocator_, &stagingBufCreateInfo, &stagingAllocCreateInfo,
-					&stagingBuf, &stagingAlloc, &stagingAllocInfo);
+			VkBuffer stagingBuf;
+			VmaAllocation stagingAlloc;
+			VmaAllocationInfo stagingAllocInfo;
+			result = vmaCreateBuffer(app_allocator_, &stagingBufCreateInfo, &stagingAllocCreateInfo,
+				&stagingBuf, &stagingAlloc, &stagingAllocInfo);
 
-				assert(result != VK_FALSE);
+			assert(result != VK_FALSE);
 
 
-				// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-				result = vmaCopyMemoryToAllocation(app_allocator_,
-					data,	 // We should push id * mi
-					stagingAlloc,
-					0,
-					sizeof(InstanceData) * MAX_INSTANCES
-				);
+			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
+			result = vmaCopyMemoryToAllocation(app_allocator_,
+				data,	 // We should push id * mi
+				stagingAlloc,
+				0,
+				sizeof(InstanceData) * MAX_INSTANCES
+			);
 
-				assert(result != VK_FALSE);
+			assert(result != VK_FALSE);
 
-				VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-				bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-				bufMemBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-				bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				bufMemBarrier.buffer = stagingBuf;
-				bufMemBarrier.offset = 0;
-				bufMemBarrier.size = VK_WHOLE_SIZE;
+			VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+			bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+			bufMemBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufMemBarrier.buffer = stagingBuf;
+			bufMemBarrier.offset = 0;
+			bufMemBarrier.size = VK_WHOLE_SIZE;
 
-				// Insert a buffer memory barrier to make sure writing to the staging buffer has finished.
-				vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-					0, 0, nullptr, 1, &bufMemBarrier, 0, nullptr);
+			// Insert a buffer memory barrier to make sure writing to the staging buffer has finished.
+			vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				0, 0, nullptr, 1, &bufMemBarrier, 0, nullptr);
 
-				VkBufferCopy bufCopy = {
-					0, // srcOffset
-					0, // dstOffset,
-					sizeof(InstanceData) * MAX_INSTANCES, // size
-				};
+			VkBufferCopy bufCopy = {
+				0, // srcOffset
+				0, // dstOffset,
+				sizeof(InstanceData) * MAX_INSTANCES, // size
+			};
 
-				vkCmdCopyBuffer(cmdBuf, stagingBuf, ubo.buffer, 1, &bufCopy);
+			vkCmdCopyBuffer(cmdBuf, stagingBuf, ubo.buffer, 1, &bufCopy);
 
-				VkBufferMemoryBarrier bufMemBarrier2 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-				bufMemBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-				bufMemBarrier2.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT; // We created a uniform buffer
-				bufMemBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				bufMemBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				bufMemBarrier2.buffer = ubo.buffer;
-				bufMemBarrier2.offset = 0;
-				bufMemBarrier2.size = VK_WHOLE_SIZE;
+			VkBufferMemoryBarrier bufMemBarrier2 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+			bufMemBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			bufMemBarrier2.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT; // We created a uniform buffer
+			bufMemBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufMemBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			bufMemBarrier2.buffer = ubo.buffer;
+			bufMemBarrier2.offset = 0;
+			bufMemBarrier2.size = VK_WHOLE_SIZE;
 
-				// Make sure copying from staging buffer to the actual buffer has finished by inserting a buffer memory barrier.
-				vkCmdPipelineBarrier(
-					cmdBuf,
-					VK_PIPELINE_STAGE_TRANSFER_BIT,
-					VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-					0,
-					0,
-					nullptr,
-					1,
-					&bufMemBarrier2,
-					0,
-					nullptr
-				);
-			}
+			// Make sure copying from staging buffer to the actual buffer has finished by inserting a buffer memory barrier.
+			vkCmdPipelineBarrier(
+				cmdBuf,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+				0,
+				0,
+				nullptr,
+				1,
+				&bufMemBarrier2,
+				0,
+				nullptr
+			);
+		}
 
 
 	}
@@ -407,19 +407,19 @@ private:
 		if (!rightMousePressed) return;
 
 		glm::vec2 mousePos = glm::vec2(
-			static_cast<float>(xpos)/width_,
-			static_cast<float>(ypos)/height_
+			static_cast<float>(xpos) / width_,
+			static_cast<float>(ypos) / height_
 		);
-		cameraPositioner.update(delta_time_/1000,
+		cameraPositioner.update(delta_time_ / 1000,
 			mousePos,
 			true
-		); 
+		);
 	}
 
 	void handleMouseButton(int button, int action, int mods) {
 		if (button == GLFW_MOUSE_BUTTON_RIGHT) {
 			rightMousePressed = (action == GLFW_PRESS);
-			}
+		}
 	}
 
 	void handleKey(int key, int scancode, int action, int mods) {
@@ -480,7 +480,7 @@ private:
 			double x, y;
 			glfwGetCursorPos(window, &x, &y);
 			cameraPositioner.update(delta,
-				glm::vec2(x/width_, y/height_),
+				glm::vec2(x / width_, y / height_),
 				rightMousePressed);
 
 			drawFrame();
@@ -515,7 +515,7 @@ private:
 		}
 
 		width_ = width;
-		height_= height;
+		height_ = height;
 
 		vkDeviceWaitIdle(device);
 
@@ -718,10 +718,18 @@ private:
 			static_cast<uint32_t>(dynamicStates.size());
 		dynamicState.pDynamicStates = dynamicStates.data();
 
+		VkPushConstantRange pcRange{};
+		pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+		pcRange.offset = 0;
+		pcRange.size = sizeof(glm::mat4) * 2; // view + proj
+
 		VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
 		pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 		pipelineLayoutInfo.setLayoutCount = 1;
 		pipelineLayoutInfo.pSetLayouts = descriptorSetLayout;
+
+		pipelineLayoutInfo.pushConstantRangeCount = 1;
+		pipelineLayoutInfo.pPushConstantRanges = &pcRange;
 
 		if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr,
 			pipelineLayout) != VK_SUCCESS) {
@@ -1411,6 +1419,23 @@ private:
 			graphicsPipeline
 		);
 
+		struct vp {
+			alignas(16) glm::mat4 view;
+			alignas(16) glm::mat4 proj;
+		} VP;
+
+		VP.view = camera_.getViewMatrix();
+		VP.proj = camera_.getProjMatrix();
+
+		vkCmdPushConstants(
+			commandBuffers[currentFrame],
+			pipelineLayout,
+			VK_SHADER_STAGE_VERTEX_BIT,
+			0,
+			sizeof(vp),
+			&VP
+		);
+
 		VkViewport viewport{};
 		viewport.x = 0.0f;
 		viewport.y = 0.0f;
@@ -1516,7 +1541,7 @@ private:
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 			if (
 				vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
-				//vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
+				//vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
 				vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
 				throw std::runtime_error(
 					"failed to create synchronization objects for a frame!");
@@ -1546,13 +1571,13 @@ private:
 
 		// BATCH PER MESH, SHADER, INSTANCE
 
+		// We should check for size and promote or demote from pushconstants -> ubo -> ssbo.
 		updateUniformBuffer(currentFrame);
 		UpdateInstanceBuffer(currentFrame);
 
+
 		vkResetFences(device, 1, &inFlightFences[currentFrame]);
-
-
-		vkResetCommandPool(device,framesCommandPool[currentFrame], 0);
+		vkResetCommandPool(device, framesCommandPool[currentFrame], 0);
 
 		//vkResetCommandBuffer(commandBuffers[currentFrame],
 		//	/*VkCommandBufferResetFlagBits*/ 0);
@@ -1799,7 +1824,7 @@ bool VulkanApp::run() {
 			VK_SUCCESS) {
 			throw std::runtime_error("failed to create graphics command pool!");
 		}
-	}	
+	}
 
 
 	UploadScene();
