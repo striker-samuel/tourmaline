@@ -38,6 +38,9 @@
 // Moved readFile here. readFile rnow is just used to read shader files
 #include <Engine/fileIO.h>
 
+// Default Scene is here
+#include <scene_1.h>
+
 static constexpr uint32_t WIDTH = 1280;
 static constexpr uint32_t HEIGHT = 720;
 
@@ -57,6 +60,19 @@ static constexpr uint32_t MAX_TEXTURES = 4096;
 static constexpr uint32_t MAX_MATERIAL_INSTANCES = 1000;
 
 
+
+class Pool {
+
+public:
+	std::vector<Mesh> meshes_ = { Quad, Triangle };
+	//std::vector <Material> materials_;
+
+	Pool() {
+		meshes_.reserve(MAX_MESHES);
+	}
+
+};
+
 class VulkanApp {
 
 public:
@@ -68,6 +84,9 @@ public:
 
 private:
 
+	Pool test_pool_;
+
+	Scene* scene_ = &default_scene;
 	MaterialDefinition default_mat_def_;
 
 	InstanceData instance_data_[MAX_INSTANCES];
@@ -96,7 +115,7 @@ private:
 	float delta_time_;
 
 	Camera camera_ = Camera(cameraPositioner);
-	Scene* scene_;
+	//Scene* scene_;
 
 #pragma endregion
 
@@ -1467,18 +1486,31 @@ private:
 			0,
 			VK_INDEX_TYPE_UINT32);
 
-		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-			pipelineLayout, 0, 1, &descriptorSets[currentFrame],
-			0, nullptr);
-
-		vkCmdDrawIndexed(
+		vkCmdBindDescriptorSets(
 			commandBuffer,
-			static_cast<uint32_t>(Quad.indices.size()), //indexCount
-			instance_count_, //instanceCount
-			0, //firstIndex
-			0, //vertexOffset
-			0 //firstInstance. Change this so shader acces keeps 0index but we can manipulate view from command side
-		);
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			pipelineLayout,
+			0,
+			1,
+			&descriptorSets[currentFrame],
+			0,
+			nullptr);
+
+
+		for (int i = 0; i < test_pool_.meshes_.size(); i++) {
+
+			auto mesh_ = test_pool_.meshes_[i];
+
+			vkCmdDrawIndexed(
+				commandBuffer,
+				static_cast<uint32_t>(mesh_.indices.size()), //indexCount
+					3, //instanceCount
+					mesh_.first_index, //firstIndex
+					mesh_.vert_offset, //vertexOffset
+					i*3 //firstInstance. Change this so shader acces keeps 0index but we can manipulate view from command side
+					);
+		}
+
 
 
 		//
@@ -1639,133 +1671,128 @@ private:
 };
 
 
+
+
+
 void VulkanApp::UploadScene() {
 
-	// Create static_tris_buffer and upload tris data
-	{
-		// This shouldnt be fixed to single mesh
-		VkDeviceSize bufferSize = sizeof(Vertex) * Quad.vertices.size();
-		assert((bufferSize > 0, "Vertex buffer size was 0"));
+	// First node.
+	addNode(*scene_, 0, 0);
+	// Mesh = 0 is Quad
+	scene_->meshForNode[0] = 0;
 
+	addNode(*scene_, 0, 0);
+	scene_->meshForNode[1] = 1;
 
-		VmaAllocation staging_buffer_allocation;
-		VkBuffer staging_buffer;
-		VkBufferCreateInfo staging_buffer_info = {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = sizeof(Vertex) * Quad.vertices.size(),
-			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		};
+	uint32_t static_vertex_buffer_size = 0;
+	uint32_t static_index_buffer_size = 0;
 
+	for (int node = 0; node < scene_->hierarchy.size(); node++) {
 
-		VmaAllocationCreateInfo stage_alloc_info = {};
-		stage_alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
-		stage_alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+		static_vertex_buffer_size += sizeof(Vertex) * test_pool_.meshes_[node].vertices.size();
+		static_vertex_buffer_size += sizeof(uint32_t) * test_pool_.meshes_[node].indices.size();
 
-		vmaCreateBuffer(
-			app_allocator_,
-			&staging_buffer_info,
-			&stage_alloc_info,
-			&staging_buffer,
-			&staging_buffer_allocation,
-			nullptr
-		);
-
-		// Be of note we can get size of alloc, just with the alloc handle
-		//staging_buffer_allocation->GetSize();
-
-		vmaCopyMemoryToAllocation(
-			app_allocator_,
-			Quad.vertices.data(),
-			staging_buffer_allocation,
-			0,
-			bufferSize
-		);
-
-
-		VkBufferCreateInfo static_vertex_buffer_info = {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = sizeof(Vertex) * Quad.vertices.size(),
-			.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-		};
-
-		VmaAllocationCreateInfo vertex_alloc_info = {
-			.usage = VMA_MEMORY_USAGE_GPU_ONLY
-		};
-
-		vmaCreateBuffer(app_allocator_,
-			&static_vertex_buffer_info,
-			&vertex_alloc_info,
-			&static_vertex_buffer_,
-			&static_vertex_allocation_,
-			nullptr
-		);
-
-
-		copyBuffer(staging_buffer, static_vertex_buffer_, bufferSize);
-		vmaDestroyBuffer(app_allocator_, staging_buffer, staging_buffer_allocation);
 	}
 
-	// Create static_index_buffer and upload index data
+	// Compute totals and write per-mesh offsets (skip slot 0 = empty)
+	VkDeviceSize totalVertexBytes = 0;
+	VkDeviceSize totalIndexBytes = 0;
+
+	uint32_t runningVertexOffset = 0; // in vertices
+	uint32_t runningFirstIndex = 0; // in indices
+
+	for (int i = 0; i < test_pool_.meshes_.size(); ++i) {
+		auto& m = test_pool_.meshes_[i];
+
+		m.vert_offset = runningVertexOffset;         // elements, not bytes
+		m.first_index = runningFirstIndex;           // elements, not bytes
+
+		totalVertexBytes += sizeof(Vertex) * m.vertices.size();
+		totalIndexBytes += sizeof(uint32_t) * m.indices.size();
+
+		runningVertexOffset += static_cast<uint32_t>(m.vertices.size());
+		runningFirstIndex += static_cast<uint32_t>(m.indices.size());
+	}
+
+	// Create GPU static buffers (DST)
 	{
-		// This shouldnt be fixed to single mesh
-		VkDeviceSize bufferSize = sizeof(uint32_t) * Quad.indices.size();
-		assert((bufferSize > 0, "Vertex buffer size was 0"));
-
-		VmaAllocation staging_buffer_allocation;
-		VkBuffer staging_buffer;
-		VkBufferCreateInfo staging_buffer_info = {
+		assert(totalVertexBytes > 0 && "Vertex buffer size was 0");
+		VkBufferCreateInfo vbInfo{
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = sizeof(Vertex) * Quad.indices.size(),
-			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			.size = totalVertexBytes,
+			.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 		};
-
-
-		VmaAllocationCreateInfo stage_alloc_info = {};
-		stage_alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
-		stage_alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-
-		vmaCreateBuffer(
-			app_allocator_,
-			&staging_buffer_info,
-			&stage_alloc_info,
-			&staging_buffer,
-			&staging_buffer_allocation,
-			nullptr
-		);
-
-		// Be of note we can get size of alloc, just with the alloc handle
-		//staging_buffer_allocation->GetSize();
-
-		vmaCopyMemoryToAllocation(
-			app_allocator_,
-			Quad.indices.data(),
-			staging_buffer_allocation,
-			0,
-			bufferSize
-		);
-
-
-		VkBufferCreateInfo static_index_buffer_info = {
+		VmaAllocationCreateInfo vbAlloc{ .usage = VMA_MEMORY_USAGE_GPU_ONLY };
+		vmaCreateBuffer(app_allocator_, &vbInfo, &vbAlloc,
+			&static_vertex_buffer_, &static_vertex_allocation_, nullptr);
+	}
+	{
+		assert(totalIndexBytes > 0 && "Index buffer size was 0");
+		VkBufferCreateInfo ibInfo{
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = bufferSize,
+			.size = totalIndexBytes,
 			.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 		};
+		VmaAllocationCreateInfo ibAlloc{ .usage = VMA_MEMORY_USAGE_GPU_ONLY };
+		vmaCreateBuffer(app_allocator_, &ibInfo, &ibAlloc,
+			&static_index_buffer_, &static_index_allocation_, nullptr);
+	}
 
-		VmaAllocationCreateInfo static_index_info = {
-			.usage = VMA_MEMORY_USAGE_GPU_ONLY
+	// Staging + upload: VERTICES
+	{
+		VkBuffer stagingBuf; VmaAllocation stagingAlloc;
+		VkBufferCreateInfo sInfo{
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = totalVertexBytes,
+			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 		};
+		VmaAllocationCreateInfo sAlloc{};
+		sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+		sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 
-		vmaCreateBuffer(app_allocator_,
-			&static_index_buffer_info,
-			&static_index_info,
-			&static_index_buffer_,
-			&static_index_allocation_,
-			nullptr
-		);
+		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
+		VkDeviceSize curr = 0; // byte offset
+		for (int i = 0; i < test_pool_.meshes_.size(); ++i) {
+			const auto& m = test_pool_.meshes_[i];
+			const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
+			if (bytes == 0) continue;
 
-		copyBuffer(staging_buffer, static_index_buffer_, bufferSize);
-		vmaDestroyBuffer(app_allocator_, staging_buffer, staging_buffer_allocation);
+			vmaCopyMemoryToAllocation(app_allocator_, m.vertices.data(), stagingAlloc, curr, bytes);
+			curr += bytes;
+		}
+
+		copyBuffer(stagingBuf, static_vertex_buffer_, totalVertexBytes);
+		vmaDestroyBuffer(app_allocator_, stagingBuf, stagingAlloc);
+	}
+
+	// Staging + upload: INDICES
+	{
+		VkBuffer stagingBuf; VmaAllocation stagingAlloc;
+		VkBufferCreateInfo sInfo{
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = totalIndexBytes,
+			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		};
+		VmaAllocationCreateInfo sAlloc{};
+		sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+		sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
+
+		VkDeviceSize curr = 0; // byte offset
+		for (int i = 0; i < test_pool_.meshes_.size(); ++i) {
+			const auto& m = test_pool_.meshes_[i];
+			const VkDeviceSize bytes = sizeof(uint32_t) * m.indices.size();
+			if (bytes == 0) continue;
+
+			// Indices remain local (0-based). We won't rewrite them here.
+			vmaCopyMemoryToAllocation(app_allocator_, m.indices.data(), stagingAlloc, curr, bytes);
+			curr += bytes;
+		}
+
+		copyBuffer(stagingBuf, static_index_buffer_, totalIndexBytes);
+		vmaDestroyBuffer(app_allocator_, stagingBuf, stagingAlloc);
 	}
 
 }
@@ -2053,7 +2080,6 @@ void VulkanApp::initVulkanApp() {
 		VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT |
 		VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT;
 
-
 	// This next flag is to get handles. To interporate resources between instances, or even between Vulkan and Dx or things like that.
 	// VMA_ALLOCATOR_CREATE_KHR_EXTERNAL_MEMORY_WIN32_BIT
 
@@ -2068,8 +2094,6 @@ void VulkanApp::initVulkanApp() {
 	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
 	createSwapchainImageViews();
 
-
-	//assert(false);
 }
 
 int main(int argc, const char* argv[]) {

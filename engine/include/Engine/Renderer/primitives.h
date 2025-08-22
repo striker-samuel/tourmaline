@@ -47,18 +47,35 @@ std::vector<Vertex> quad_vertices = {
 	{{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
 };
 
+
+std::vector<Vertex> triangle_vertices = {
+	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+	{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+	{{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+	//{{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
+};
+
 std::vector<uint32_t> quad_indices = {
 	0, 1, 2, 2, 3, 0
 };
 
-struct Mesh {
+std::vector<uint32_t> triangle_indices = {
+	0, 1, 2
+};
 
+
+struct Mesh {
 	// Vertex is 3fpos 3fnormal 2fuv. no color.
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
+
+	uint32_t first_index = 0;
+	uint32_t vert_offset = 0;
+
 };
 
 Mesh Quad = Mesh(quad_vertices, quad_indices);
+Mesh Triangle = Mesh(triangle_vertices, triangle_indices);
 
 // We hit the masUBOsize limit fast. Be careful. We may need to encode better.
 // Maybe we can get away with float12 with implied 0,0,0,1 last row.
