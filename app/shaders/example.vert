@@ -5,16 +5,17 @@
 #define MAX_INSTANCES 256
 #endif
 
-layout(push_constant) uniform PC {
+layout(push_constant) uniform PushConsts {
     mat4 view;
     mat4 proj;
+    int material_index;
 } pc;
 
 
-layout(set = 0, binding = 0) uniform VPBUFFER {
-    mat4 view;
-    mat4 proj;
-} ubo;
+//layout(set = 0, binding = 0) uniform VPBUFFER {
+//    mat4 view;
+//    mat4 proj;
+//} ubo;
 
 layout(set = 0, binding = 1, std140) uniform InstanceData {
     mat4 model[MAX_INSTANCES];

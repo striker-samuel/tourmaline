@@ -4,8 +4,18 @@ layout(location = 1) in vec2 fragTexCoord;
 
 layout(location = 0) out vec4 outColor;
 
-layout(binding=2) uniform sampler2D texSampler;
+//layout(binding=2) uniform sampler2D texSampler;
+const int MAX_MATERIALS = 100;
+
+layout(binding = 2) uniform sampler2D materials[MAX_MATERIALS];
+
+layout(push_constant) uniform PushConsts {
+    mat4 view;
+    mat4 proj;
+    int material_index;
+} pc;
+
 
 void main() {
-    outColor = texture(texSampler, fragTexCoord);
+    outColor = texture(materials[pc.material_index], fragTexCoord);
 }

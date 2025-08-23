@@ -58,17 +58,61 @@ static constexpr uint32_t MAX_INSTANCES = 1000;
 static constexpr uint32_t MAX_MESHES = 1000;
 static constexpr uint32_t MAX_TEXTURES = 4096;
 static constexpr uint32_t MAX_MATERIAL_INSTANCES = 1000;
+static constexpr uint32_t MAX_MATERIALS = 1000;
 
+
+// Initialized with crude defaults;
+struct RasterSettings {
+	uint32_t depthClampEnable = VK_FALSE;
+	uint32_t rasterizerDiscardEnable = VK_FALSE;
+	uint32_t polygonMode = VK_POLYGON_MODE_FILL;
+	uint32_t lineWidth = 1.0f;
+	uint32_t cullMode = VK_CULL_MODE_BACK_BIT;
+	uint32_t frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	uint32_t depthBiasEnable = VK_FALSE;
+};
+
+
+//CPU Side struct
+struct Material {
+
+	VkShaderModule vert;
+	VkShaderModule frag;
+	RasterSettings raster_settings;
+	uint32_t diffuse;
+
+} default_material;
+
+
+// Gpu Side
+struct MaterialValues {
+	glm::vec4 ambient = glm::vec4(0.0f);
+	glm::vec4 diffuse = glm::vec4(0.0f);
+	uint32_t texAmbient = 0;
+	uint32_t texDiffuse = 0;
+	uint32_t texAlpha = 0;
+	uint32_t padding[1];
+};
+
+static_assert(sizeof(MaterialValues) % 16 == 0);
+
+auto first_mat = MaterialDefinition{};
+auto second_mat = MaterialDefinition{};
 
 
 class Pool {
 
 public:
 	std::vector<Mesh> meshes_ = { Quad, Triangle };
-	//std::vector <Material> materials_;
+	std::vector<MaterialDefinition> materials_{ first_mat, second_mat };
+	std::vector<VkDescriptorSet> mat_descs_{};
+
 
 	Pool() {
 		meshes_.reserve(MAX_MESHES);
+
+		materials_.reserve(MAX_MATERIALS);
+		mat_descs_.reserve(MAX_MATERIALS);
 	}
 
 };
@@ -87,7 +131,6 @@ private:
 	Pool test_pool_;
 
 	Scene* scene_ = &default_scene;
-	MaterialDefinition default_mat_def_;
 
 	InstanceData instance_data_[MAX_INSTANCES];
 	uint32_t instance_count_ = 10;
@@ -204,6 +247,8 @@ private:
 #pragma region ===[ Flags / Resize Events ]===
 	bool framebufferResized = false;
 #pragma endregion
+	
+	float dur;
 
 	void initVulkanApp();
 
@@ -215,6 +260,8 @@ private:
 		delta_time_ = std::chrono::duration<float, std::chrono::seconds::period>(
 			currentTime - startTime)
 			.count();
+
+		dur = float((currentTime-startTime).count());
 
 		UniformBufferObject default_ubo{
 			//.model = glm::mat4(1.0f),
@@ -237,12 +284,21 @@ private:
 	// Synthetic data for InstanceData tests!
 	void FabricateInstanceData(InstanceData* data) {
 
+		auto easeOutBounce = [](float x) -> float {
+			if (x < 1.0f / 2.75f)               return 7.5625f * x * x;
+			else if (x < 2.0f / 2.75f) { x -= 1.5f / 2.75f;  return 7.5625f * x * x + 0.75f; }
+			else if (x < 2.5f / 2.75f) { x -= 2.25f / 2.75f; return 7.5625f * x * x + 0.9375f; }
+			else { x -= 2.625f / 2.75f; return 7.5625f * x * x + 0.984375f; }
+			};
 
 		for (int n = 0; n < instance_count_; n++) {
 
-			data[n].transform[12] = 1 + (n * 1.23 + 1);
-
-		};
+			data[n].transform[12] = 1 + (n * 1.23);
+			//float period = 10.8f; // seconds per bounce (slower = larger)
+			//float k = std::fmod(dur + n * 0.25f, period) / period; // 0..1 phase
+			//float y = 0.3f * easeOutBounce(k); // amplitude
+			//data[n].transform[13] = sin(dur*0.00004); // bounces upward from 0		};
+		}
 
 	}
 
@@ -728,8 +784,10 @@ private:
 		colorBlending.blendConstants[2] = 0.0f;
 		colorBlending.blendConstants[3] = 0.0f;
 
-		std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT,
-													 VK_DYNAMIC_STATE_SCISSOR };
+		std::vector<VkDynamicState> dynamicStates = {
+			VK_DYNAMIC_STATE_VIEWPORT,
+			VK_DYNAMIC_STATE_SCISSOR
+		};
 
 		VkPipelineDynamicStateCreateInfo dynamicState{};
 		dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
@@ -737,20 +795,35 @@ private:
 			static_cast<uint32_t>(dynamicStates.size());
 		dynamicState.pDynamicStates = dynamicStates.data();
 
+		struct PushConstants {
+			glm::mat4 view;
+			glm::mat4 proj;
+			int material_index;
+			uint32_t     _pad0[3];            // pad so sizeof(...) == 144 (16-byte multiple)
+		};
+
+		// One push constant range, covers all stages
 		VkPushConstantRange pcRange{};
-		pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+		pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 		pcRange.offset = 0;
-		pcRange.size = sizeof(glm::mat4) * 2; // view + proj
+		pcRange.size = sizeof(PushConstants);
 
-		VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-		pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-		pipelineLayoutInfo.setLayoutCount = 1;
-		pipelineLayoutInfo.pSetLayouts = descriptorSetLayout;
+		VkPipelineLayoutCreateInfo layoutInfo{};
+		layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+		layoutInfo.setLayoutCount = 1;
+		layoutInfo.pSetLayouts = descriptorSetLayout;
+		layoutInfo.pushConstantRangeCount = 1;
+		layoutInfo.pPushConstantRanges = &pcRange;
 
-		pipelineLayoutInfo.pushConstantRangeCount = 1;
-		pipelineLayoutInfo.pPushConstantRanges = &pcRange;
+		//VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+		//pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+		//pipelineLayoutInfo.setLayoutCount = 1;
+		//pipelineLayoutInfo.pSetLayouts = descriptorSetLayout;
 
-		if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr,
+		//pipelineLayoutInfo.pushConstantRangeCount = 2;
+		//pipelineLayoutInfo.pPushConstantRanges = pcRanges;
+
+		if (vkCreatePipelineLayout(device, &layoutInfo, nullptr,
 			pipelineLayout) != VK_SUCCESS) {
 			throw std::runtime_error("failed to create pipeline layout!");
 		}
@@ -808,7 +881,7 @@ private:
 
 	// --------------------------
 
-	void createTextureImage(std::string texture_path, VkImage& texture_image) {
+	void createTextureImage(std::string texture_path, VkImage* texture_image) {
 		int texWidth, texHeight, texChannels;
 
 		stbi_uc* pixels = stbi_load(texture_path.c_str(), &texWidth, &texHeight,
@@ -841,23 +914,23 @@ private:
 			VK_IMAGE_TILING_OPTIMAL,
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-			texture_image
+			*texture_image
 		);
 
 		transitionImageLayout(
-			texture_image,
+			*texture_image,
 			VK_FORMAT_R8G8B8A8_SRGB,
 			VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
 		copyBufferToImage(stagingBuffer,
-			texture_image,
+			*texture_image,
 			static_cast<uint32_t>(texWidth),
 			static_cast<uint32_t>(texHeight)
 		);
 
 		transitionImageLayout(
-			texture_image,
+			*texture_image,
 			VK_FORMAT_R8G8B8A8_SRGB,
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
@@ -868,16 +941,16 @@ private:
 
 	}
 
-	void createTextureImageView(const VkImage& textureImage, VkImageView& textureImageView) {
+	void createTextureImageView(const VkImage* textureImage, VkImageView* textureImageView) {
 		createImageView(
-			textureImage,
+			*textureImage,
 			VK_FORMAT_R8G8B8A8_SRGB,
 			VK_IMAGE_ASPECT_COLOR_BIT,
-			textureImageView
+			*textureImageView
 		);
 	}
 
-	void createTextureSampler(VkSampler& textureSampler) {
+	void createTextureSampler(VkSampler* textureSampler) {
 		VkSamplerCreateInfo samplerInfo{};
 		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 		samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -904,7 +977,7 @@ private:
 		samplerInfo.minLod = 0.0f;
 		samplerInfo.maxLod = 0.0f;
 
-		if (vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) !=
+		if (vkCreateSampler(device, &samplerInfo, nullptr, textureSampler) !=
 			VK_SUCCESS) {
 			throw std::runtime_error("failed to create texture sampler!");
 		}
@@ -1130,13 +1203,17 @@ private:
 
 	void createDescriptorSetLayout(VkDevice device, VkDescriptorSetLayout* descriptorSetLayout) {
 
-		VkDescriptorSetLayoutBinding viewProjUboBinding{};
-		viewProjUboBinding.binding = 0;
-		viewProjUboBinding.descriptorCount = 1;
-		viewProjUboBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		viewProjUboBinding.pImmutableSamplers = nullptr;
-		viewProjUboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
+		// We are using push contants for view proj now.
+		//VkDescriptorSetLayoutBinding viewProjUboBinding{};
+		//viewProjUboBinding.binding = 0;
+		//viewProjUboBinding.descriptorCount = 1;
+		//viewProjUboBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+
+		//viewProjUboBinding.pImmutableSamplers = nullptr;
+		//viewProjUboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+		//model m still goes through here. we could compact away last row.
 		VkDescriptorSetLayoutBinding instanceDataBinding{};
 		instanceDataBinding.binding = 1;
 		instanceDataBinding.descriptorCount = 1;
@@ -1146,14 +1223,14 @@ private:
 
 		VkDescriptorSetLayoutBinding samplerLayoutBinding{};
 		samplerLayoutBinding.binding = 2;
-		samplerLayoutBinding.descriptorCount = 1;
+		samplerLayoutBinding.descriptorCount = MAX_MATERIALS;
 		samplerLayoutBinding.descriptorType =
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		samplerLayoutBinding.pImmutableSamplers = nullptr;
 		samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-		std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
-			viewProjUboBinding,
+		std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
+			//viewProjUboBinding,
 			instanceDataBinding,
 			samplerLayoutBinding
 		};
@@ -1174,6 +1251,8 @@ private:
 		// This is just how many dsc of each type are allowed in the pool. Has no bearing with layouts
 		// except for simple compat.
 		std::array<VkDescriptorPoolSize, 3> poolSizes = { {
+				// We should need these one anymore once we move InstanceData to ssbo. Maybe instance data is promoted to ubo
+				// in cases where it can work. Also we are adding an indirect mapping for instanceData with a table.
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,        100 },
 			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,        100 },
 			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
@@ -1201,7 +1280,7 @@ private:
 	//	2	Material - level	Rarely(per material)	Material UBO(e.g.roughness / metallic factors), textures, samplers
 	//	3 + Less common / Optional	As needed	Shadow maps, decals, particle data, etc.
 
-	void createDescriptorSets(MaterialDefinition material) {
+	void createDescriptorSets() {
 
 		std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT,
 			descriptorSetLayout);
@@ -1228,10 +1307,10 @@ private:
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
-			VkDescriptorBufferInfo bufferInfo{};
-			bufferInfo.buffer = uniforms_[i].buffer;
-			bufferInfo.offset = 0;
-			bufferInfo.range = sizeof(UniformBufferObject);
+			//VkDescriptorBufferInfo bufferInfo{};
+			//bufferInfo.buffer = uniforms_[i].buffer;
+			//bufferInfo.offset = 0;
+			//bufferInfo.range = sizeof(UniformBufferObject);
 
 			VkDescriptorBufferInfo instanceBufferInfo{
 				.buffer = instanceDataUniforms_[i].buffer,
@@ -1239,37 +1318,40 @@ private:
 				.range = sizeof(InstanceData) * MAX_INSTANCES,
 			};
 
-			VkDescriptorImageInfo imageInfo{};
-			imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			imageInfo.imageView = material.imageView;
-			imageInfo.sampler = material.sampler;
+			//VkDescriptorImageInfo imageInfo{};
+			//imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			//imageInfo.imageView = material.imageView;
+			//imageInfo.sampler = material.sampler;
 
-			std::array<VkWriteDescriptorSet, 3> descriptorWrites{};
+			std::array<VkWriteDescriptorSet, 1> descriptorWrites{};
+
+			// Removed
+			//descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			//descriptorWrites[0].dstSet = descriptorSets[i];
+			//descriptorWrites[0].dstBinding = 0;
+			//descriptorWrites[0].dstArrayElement = 0;
+			//descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			//descriptorWrites[0].descriptorCount = 1;
+			//descriptorWrites[0].pBufferInfo = &bufferInfo;
 
 			descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			descriptorWrites[0].dstSet = descriptorSets[i];
-			descriptorWrites[0].dstBinding = 0;
+			descriptorWrites[0].dstBinding = 1;
 			descriptorWrites[0].dstArrayElement = 0;
 			descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 			descriptorWrites[0].descriptorCount = 1;
-			descriptorWrites[0].pBufferInfo = &bufferInfo;
+			descriptorWrites[0].pBufferInfo = &instanceBufferInfo;
 
-			descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[1].dstSet = descriptorSets[i];
-			descriptorWrites[1].dstBinding = 1;
-			descriptorWrites[1].dstArrayElement = 0;
-			descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			descriptorWrites[1].descriptorCount = 1;
-			descriptorWrites[1].pBufferInfo = &instanceBufferInfo;
 
-			descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[2].dstSet = descriptorSets[i];
-			descriptorWrites[2].dstBinding = 2;
-			descriptorWrites[2].dstArrayElement = 0;
-			descriptorWrites[2].descriptorType =
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			descriptorWrites[2].descriptorCount = 1;
-			descriptorWrites[2].pImageInfo = &imageInfo;
+			// This one depends on material.
+			//descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			//descriptorWrites[2].dstSet = descriptorSets[i];
+			//descriptorWrites[2].dstBinding = 2;
+			//descriptorWrites[2].dstArrayElement = 0;
+			//descriptorWrites[2].descriptorType =
+			//	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			//descriptorWrites[2].descriptorCount = 1;
+			//descriptorWrites[2].pImageInfo = &imageInfo;
 
 			vkUpdateDescriptorSets(device,
 				static_cast<uint32_t>(descriptorWrites.size()),
@@ -1373,6 +1455,31 @@ private:
 	}
 
 	void recordDraw(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+
+
+		// ---- Update descriptor set once with all materials ----
+		std::vector<VkDescriptorImageInfo> infos;
+		infos.reserve(test_pool_.materials_.size());
+
+		for (auto& mat : test_pool_.materials_) {
+			VkDescriptorImageInfo info{};
+			info.sampler = mat.sampler;
+			info.imageView = mat.imageView;
+			info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			infos.push_back(info);
+		}
+
+		VkWriteDescriptorSet write{};
+		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		write.dstSet = descriptorSets[currentFrame];
+		write.dstBinding = 2; // binding for materials[]
+		write.dstArrayElement = 0;
+		write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		write.descriptorCount = static_cast<uint32_t>(infos.size());
+		write.pImageInfo = infos.data();
+
+		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+
 		VkCommandBufferBeginInfo beginInfo{};
 		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
@@ -1438,22 +1545,6 @@ private:
 			graphicsPipeline
 		);
 
-		struct vp {
-			alignas(16) glm::mat4 view;
-			alignas(16) glm::mat4 proj;
-		} VP;
-
-		VP.view = camera_.getViewMatrix();
-		VP.proj = camera_.getProjMatrix();
-
-		vkCmdPushConstants(
-			commandBuffers[currentFrame],
-			pipelineLayout,
-			VK_SHADER_STAGE_VERTEX_BIT,
-			0,
-			sizeof(vp),
-			&VP
-		);
 
 		VkViewport viewport{};
 		viewport.x = 0.0f;
@@ -1496,22 +1587,41 @@ private:
 			0,
 			nullptr);
 
+		std::vector<VkDescriptorImageInfo> imageInfos;
+		imageInfos.reserve(test_pool_.materials_.size());
+
+		struct vp {
+			alignas(16) glm::mat4 view; ;
+			alignas(16) glm::mat4 proj;
+			uint32_t mat_index = 0;
+		} VPM;
+
+		VPM.view = camera_.getViewMatrix();
+		VPM.proj = camera_.getProjMatrix();
 
 		for (int i = 0; i < test_pool_.meshes_.size(); i++) {
 
 			auto mesh_ = test_pool_.meshes_[i];
+			VPM.mat_index = mesh_.material_index;
+			vkCmdPushConstants(
+				commandBuffers[currentFrame],
+				pipelineLayout,
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				0,
+				sizeof(vp),
+				&VPM
+			);
 
 			vkCmdDrawIndexed(
 				commandBuffer,
 				static_cast<uint32_t>(mesh_.indices.size()), //indexCount
-					3, //instanceCount
-					mesh_.first_index, //firstIndex
-					mesh_.vert_offset, //vertexOffset
-					i*3 //firstInstance. Change this so shader acces keeps 0index but we can manipulate view from command side
-					);
+				3, //instanceCount
+				mesh_.first_index, //firstIndex
+				mesh_.vert_offset, //vertexOffset
+				i * 3 //firstInstance. Change this so shader acces keeps 0index but we can manipulate view from command side
+			);
 		}
-
-
+		//}
 
 		//
 
@@ -1680,9 +1790,10 @@ void VulkanApp::UploadScene() {
 	addNode(*scene_, 0, 0);
 	// Mesh = 0 is Quad
 	scene_->meshForNode[0] = 0;
+	scene_->materialForNode[0] = 0;
 
 	addNode(*scene_, 0, 0);
-	scene_->meshForNode[1] = 1;
+	scene_->meshForNode[1] = 1;	scene_->materialForNode[1] = 1;
 
 	uint32_t static_vertex_buffer_size = 0;
 	uint32_t static_index_buffer_size = 0;
@@ -1874,8 +1985,11 @@ bool VulkanApp::run() {
 	VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
 
-	default_mat_def_.frag = fragShaderModule;
-	default_mat_def_.frag = vertShaderModule;
+	test_pool_.materials_[0].frag = fragShaderModule;
+	test_pool_.materials_[0].vert = vertShaderModule;
+
+	test_pool_.materials_[1].frag = fragShaderModule;
+	test_pool_.materials_[1].vert = vertShaderModule;
 
 
 	createDescriptorSetLayout(
@@ -1890,24 +2004,42 @@ bool VulkanApp::run() {
 		&pipelineLayout
 	);
 
-	VkImage textureImage;
+
 
 	createTextureImage(
 		"textures/viking_room.png",
-		textureImage
+		&test_pool_.materials_[0].image
 	);
 
+	createTextureImage(
+		"textures/texture.jpg",
+		&test_pool_.materials_[1].image
+	);
+
+
 	createTextureImageView(
-		textureImage,
-		default_mat_def_.imageView
+		&test_pool_.materials_[0].image,
+		&test_pool_.materials_[0].imageView
+	);
+
+
+	createTextureImageView(
+		&test_pool_.materials_[1].image,
+		&test_pool_.materials_[1].imageView
+	);
+
+
+	createTextureSampler(
+		&test_pool_.materials_[0].sampler
 	);
 
 	createTextureSampler(
-		default_mat_def_.sampler
+		&test_pool_.materials_[1].sampler
 	);
 
+
 	createDescriptorPool(); // Pool has the shape of the material!. Also 
-	createDescriptorSets(default_mat_def_);
+	createDescriptorSets();
 
 	// -------------------------------------------------------------------------------------
 

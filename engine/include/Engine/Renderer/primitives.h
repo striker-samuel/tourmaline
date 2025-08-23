@@ -71,11 +71,12 @@ struct Mesh {
 
 	uint32_t first_index = 0;
 	uint32_t vert_offset = 0;
+	uint32_t material_index = 0;
 
 };
 
-Mesh Quad = Mesh(quad_vertices, quad_indices);
-Mesh Triangle = Mesh(triangle_vertices, triangle_indices);
+Mesh Quad = Mesh(quad_vertices, quad_indices, 0,0,0);
+Mesh Triangle = Mesh(triangle_vertices, triangle_indices,0,0,1);
 
 // We hit the masUBOsize limit fast. Be careful. We may need to encode better.
 // Maybe we can get away with float12 with implied 0,0,0,1 last row.
@@ -119,7 +120,7 @@ typedef struct Color4 {
 };
 
 // ---------------------------------
-
+//
 enum PipelineSetting {
 	DEPTH_ENABLED,
 	BACK_CULLING_ENABLED
@@ -127,15 +128,15 @@ enum PipelineSetting {
 
 
 struct MaterialDefinition {
-	// CPU SIDE. MATERIALS ARE CPU SIDE ABSTRACTIONS!
 
 	VkShaderModule vert;
 	VkShaderModule frag;
 
+	// This is bad. Should be an index to a pool of VkImages.
+	VkImage image;
 	VkImageView imageView;
 	VkSampler sampler;
 
-	// Pipeline setup
 	std::array<PipelineSetting, 1> pipeline_settings = {
 		{
 			DEPTH_ENABLED,
