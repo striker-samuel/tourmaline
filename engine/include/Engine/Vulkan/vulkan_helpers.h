@@ -16,15 +16,11 @@
 #include <algorithm>
 #include <cstring>
 
-
-// HMMMMMMMMMMMMMMMMMMMMMMMMM. Don't like this vulkan.h includ here. Im using Volk on the same comp unit
-//#include <GLFW/glfw3.h>
-//#include <vulkan/vulkan.h>
 #include <Engine/Vulkan/vulkan_setup.h>
 
-
 const std::vector<const char*> validationLayers = {
-"VK_LAYER_KHRONOS_validation" };
+	"VK_LAYER_KHRONOS_validation",
+};
 
 const std::vector<const char*> deviceExtensions = {
 	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -158,12 +154,6 @@ VkFormat findDepthFormat(
 		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
 }
 
-
-// HMMMMMMMMMMMM. Seems questionable to abstract awya memory choosing.
-// Maybe I should have profiles with demotion to a compatible defualt
-// or even look into Vulkan profiles.
-
-// VMA will choose for me now ;)
 
 uint32_t findMemoryType(
 	VkPhysicalDevice physicalDevice,

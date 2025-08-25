@@ -54,6 +54,10 @@ public:
 		, cameraOrientation_(glm::lookAt(pos, target, up))
 		, up_(up)
 	{
+
+		starting_cameraOrientation = cameraOrientation_;
+		starting_pos = cameraPosition_;
+		starting_up = up_;
 	}
 
 	void update(double deltaSeconds, const glm::vec2& mousePos, bool mousePressed)
@@ -149,6 +153,12 @@ public:
 		return -glm::vec3(rot[0][2], rot[1][2], rot[2][2]);
 	}
 
+	void reset() {
+		cameraOrientation_ = starting_cameraOrientation;
+		cameraPosition_ = starting_pos;
+		up_ = starting_up;
+	}	
+
 
 public:
 	struct Movement
@@ -179,6 +189,11 @@ private:
 	glm::quat cameraOrientation_ = glm::quat(glm::vec3(0));
 	glm::vec3 moveSpeed_ = glm::vec3(0.0f);
 	glm::vec3 up_ = glm::vec3(0.0f, 1.0f, 0.0f);
+	
+
+	glm::vec3 starting_pos;
+	glm::quat starting_cameraOrientation;
+	glm::vec3 starting_up;
 };
 
 //class CameraPositioner_MoveTo final : public CameraPositionerInterface

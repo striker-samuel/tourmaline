@@ -61,6 +61,20 @@ static constexpr uint32_t MAX_MATERIAL_INSTANCES = 1000;
 static constexpr uint32_t MAX_MATERIALS = 1000;
 
 
+struct alignas(16) IndexSlot {
+	uint32_t idx;      // put the 16-bit value here (zero-extend)
+	uint32_t pad[3];   // 16 bytes total per element
+};
+static_assert(sizeof(IndexSlot) % 16 == 0);
+
+
+struct PushConstants {
+	glm::mat4 view;
+	glm::mat4 proj;
+	int material_index;
+	uint32_t     _pad0[3];            // pad so sizeof(...) == 144 (16-byte multiple)
+};
+
 // Initialized with crude defaults;
 struct RasterSettings {
 	uint32_t depthClampEnable = VK_FALSE;
@@ -96,21 +110,18 @@ struct MaterialValues {
 
 static_assert(sizeof(MaterialValues) % 16 == 0);
 
-auto first_mat = MaterialDefinition{};
-auto second_mat = MaterialDefinition{};
 
 
 class Pool {
 
 public:
 	std::vector<Mesh> meshes_ = { Quad, Triangle };
-	std::vector<MaterialDefinition> materials_{ first_mat, second_mat };
+	std::vector<MaterialDefinition> materials_{};
 	std::vector<VkDescriptorSet> mat_descs_{};
 
 
 	Pool() {
 		meshes_.reserve(MAX_MESHES);
-
 		materials_.reserve(MAX_MATERIALS);
 		mat_descs_.reserve(MAX_MATERIALS);
 	}
@@ -191,7 +202,7 @@ private:
 #pragma region ===[ Descriptors ]===
 
 	VkDescriptorPool descriptorPool;
-	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT];
+	VkDescriptorSet frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
 
@@ -212,6 +223,7 @@ private:
 
 	UniformBufferAllocation uniforms_[MAX_FRAMES_IN_FLIGHT];
 	UniformBufferAllocation instanceDataUniforms_[MAX_FRAMES_IN_FLIGHT];
+	UniformBufferAllocation instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
 
@@ -247,180 +259,216 @@ private:
 #pragma region ===[ Flags / Resize Events ]===
 	bool framebufferResized = false;
 #pragma endregion
-	
-	float dur;
 
 	void initVulkanApp();
 
-	void updateUniformBuffer(uint32_t currentImage) {
+	void UpdateDeltaTime() {
 
-		// THIS MUST REMAIN HERE. SENSITIVE TO LAG OTHERWISE
+		// Its a bad idea to have this across the fucntion border
 		static auto startTime = std::chrono::high_resolution_clock::now();
 		auto currentTime = std::chrono::high_resolution_clock::now();
 		delta_time_ = std::chrono::duration<float, std::chrono::seconds::period>(
 			currentTime - startTime)
 			.count();
-
-		dur = float((currentTime-startTime).count());
-
-		UniformBufferObject default_ubo{
-			//.model = glm::mat4(1.0f),
-			.view = camera_.getViewMatrix(),
-			.proj = camera_.getProjMatrix(),
-		};
-
-		VkResult result;
-
-		// Starting and ending SingleTimeCommands for gpu setup needs to come back to CPU
-		// FrameGraph! FrameGraph! A framegraph could let me write all comands, fence them and do first upload together.
-		// Could not be faster tho. Who knows
-		VkCommandBuffer cmdBuf = beginSingleTimeCommands();
-
-		UploadDataToUBO(uniforms_[currentImage], &default_ubo, cmdBuf);
-
-		endSingleTimeCommands(cmdBuf);
 	}
 
-	// Synthetic data for InstanceData tests!
-	void FabricateInstanceData(InstanceData* data) {
+	void UpdateUniformBuffer(uint32_t currentImage) {
+		//dur = float((currentTime - startTime).count());
 
-		auto easeOutBounce = [](float x) -> float {
-			if (x < 1.0f / 2.75f)               return 7.5625f * x * x;
-			else if (x < 2.0f / 2.75f) { x -= 1.5f / 2.75f;  return 7.5625f * x * x + 0.75f; }
-			else if (x < 2.5f / 2.75f) { x -= 2.25f / 2.75f; return 7.5625f * x * x + 0.9375f; }
-			else { x -= 2.625f / 2.75f; return 7.5625f * x * x + 0.984375f; }
-			};
+		//UniformBufferObject default_ubo{
+		//	//.model = glm::mat4(1.0f),
+		//	.view = camera_.getViewMatrix(),
+		//	.proj = camera_.getProjMatrix(),
+		//};
 
-		for (int n = 0; n < instance_count_; n++) {
+		//VkResult result;
 
-			data[n].transform[12] = 1 + (n * 1.23);
-			//float period = 10.8f; // seconds per bounce (slower = larger)
-			//float k = std::fmod(dur + n * 0.25f, period) / period; // 0..1 phase
-			//float y = 0.3f * easeOutBounce(k); // amplitude
-			//data[n].transform[13] = sin(dur*0.00004); // bounces upward from 0		};
-		}
+		//// Starting and ending SingleTimeCommands for gpu setup needs to come back to CPU
+		//// FrameGraph! FrameGraph! A framegraph could let me write all comands, fence them and do first upload together.
+		//// Could not be faster tho. Who knows
+		//VkCommandBuffer cmdBuf = beginSingleTimeCommands();
 
+		//UploadDataToUBO(
+		//	uniforms_[currentImage],
+		//	&default_ubo,
+		//	sizeof(InstanceData) * MAX_INSTANCES,
+		//	cmdBuf);
+
+		//endSingleTimeCommands(cmdBuf);
 	}
 
-	// This should be part of context. Ctx - upload
-	// Maybe should generalise this.
-	void UploadDataToUBO(UniformBufferAllocation& ubo, void* data, VkCommandBuffer& cmdBuf) {
+	enum class BufferRole { UBO, SSBO };
+
+	void UploadDataToBuffer(
+		UniformBufferAllocation& ubo,
+		void* data,
+		size_t dataSize,
+		VkCommandBuffer& cmdBuf,
+		BufferRole role,
+		VkPipelineStageFlags dstStages // e.g. VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
+	) {
+		const VkAccessFlags dstAccess =
+			(role == BufferRole::UBO) ? VK_ACCESS_UNIFORM_READ_BIT
+			: VK_ACCESS_SHADER_READ_BIT;
 
 		VkResult result;
-
-		if (ubo.is_mapapble())
-		{
-			// The Allocation ended up in a mappable memory.
-			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-			result = vmaCopyMemoryToAllocation(
-				app_allocator_,
-				data,
-				ubo.alloc,
-				0,
-				sizeof(InstanceData) * MAX_INSTANCES
-			);
-
+		if (ubo.is_mapapble()) {
+			result = vmaCopyMemoryToAllocation(app_allocator_, data, ubo.alloc, 0, dataSize);
 			assert(result == VK_SUCCESS);
 
-			VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-			bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-			bufMemBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-			bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier.buffer = ubo.buffer;
-			bufMemBarrier.offset = 0;
-			bufMemBarrier.size = VK_WHOLE_SIZE;
+			VkBufferMemoryBarrier b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+			b.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+			b.dstAccessMask = dstAccess;
+			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.buffer = ubo.buffer;
+			b.offset = 0;
+			b.size = VK_WHOLE_SIZE;
 
-			// It's important to insert a buffer memory barrier here to ensure writing to the buffer has finished.
 			vkCmdPipelineBarrier(cmdBuf,
 				VK_PIPELINE_STAGE_HOST_BIT,
-				VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-				0,
-				0,
-				nullptr,
-				1,
-				&bufMemBarrier,
-				0,
-				nullptr);
+				dstStages, 0, 0, nullptr, 1, &b, 0, nullptr);
 		}
-		else
-		{
-			// Allocation ended up in a non-mappable memory - a transfer using a staging buffer is required.
-			VkBufferCreateInfo stagingBufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-			stagingBufCreateInfo.size = sizeof(InstanceData) * MAX_INSTANCES;
-			stagingBufCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		else {
+			VkBufferMemoryBarrier b2{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+			b2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			b2.dstAccessMask = dstAccess;
+			b2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b2.buffer = ubo.buffer;
+			b2.offset = 0;
+			b2.size = VK_WHOLE_SIZE;
 
-			VmaAllocationCreateInfo stagingAllocCreateInfo = {};
-			stagingAllocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-			stagingAllocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-				VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-			VkBuffer stagingBuf;
-			VmaAllocation stagingAlloc;
-			VmaAllocationInfo stagingAllocInfo;
-			result = vmaCreateBuffer(app_allocator_, &stagingBufCreateInfo, &stagingAllocCreateInfo,
-				&stagingBuf, &stagingAlloc, &stagingAllocInfo);
-
-			assert(result != VK_FALSE);
-
-
-			// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-			result = vmaCopyMemoryToAllocation(app_allocator_,
-				data,	 // We should push id * mi
-				stagingAlloc,
-				0,
-				sizeof(InstanceData) * MAX_INSTANCES
-			);
-
-			assert(result != VK_FALSE);
-
-			VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-			bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-			bufMemBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-			bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier.buffer = stagingBuf;
-			bufMemBarrier.offset = 0;
-			bufMemBarrier.size = VK_WHOLE_SIZE;
-
-			// Insert a buffer memory barrier to make sure writing to the staging buffer has finished.
-			vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-				0, 0, nullptr, 1, &bufMemBarrier, 0, nullptr);
-
-			VkBufferCopy bufCopy = {
-				0, // srcOffset
-				0, // dstOffset,
-				sizeof(InstanceData) * MAX_INSTANCES, // size
-			};
-
-			vkCmdCopyBuffer(cmdBuf, stagingBuf, ubo.buffer, 1, &bufCopy);
-
-			VkBufferMemoryBarrier bufMemBarrier2 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-			bufMemBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			bufMemBarrier2.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT; // We created a uniform buffer
-			bufMemBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			bufMemBarrier2.buffer = ubo.buffer;
-			bufMemBarrier2.offset = 0;
-			bufMemBarrier2.size = VK_WHOLE_SIZE;
-
-			// Make sure copying from staging buffer to the actual buffer has finished by inserting a buffer memory barrier.
-			vkCmdPipelineBarrier(
-				cmdBuf,
+			vkCmdPipelineBarrier(cmdBuf,
 				VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-				0,
-				0,
-				nullptr,
-				1,
-				&bufMemBarrier2,
-				0,
-				nullptr
-			);
+				dstStages,
+				0, 0, nullptr, 1, &b2, 0, nullptr);
 		}
-
-
 	}
+
+
+	//void UploadDataToUBO(
+	//	UniformBufferAllocation& ubo,
+	//	void* data,
+	//	size_t dataSize,
+	//	VkCommandBuffer& cmdBuf
+	//) {
+
+	//	VkResult result;
+
+	//	if (ubo.is_mapapble())
+	//	{
+	//		// The Allocation ended up in a mappable memory.
+	//		// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
+	//		result = vmaCopyMemoryToAllocation(
+	//			app_allocator_,
+	//			data,
+	//			ubo.alloc,
+	//			0,
+	//			dataSize
+	//		);
+
+	//		assert(result == VK_SUCCESS);
+
+	//		VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+	//		bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+	//		bufMemBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+	//		bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	//		bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	//		bufMemBarrier.buffer = ubo.buffer;
+	//		bufMemBarrier.offset = 0;
+	//		bufMemBarrier.size = VK_WHOLE_SIZE;
+
+	//		// It's important to insert a buffer memory barrier here to ensure writing to the buffer has finished.
+	//		vkCmdPipelineBarrier(cmdBuf,
+	//			VK_PIPELINE_STAGE_HOST_BIT,
+	//			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+	//			0,
+	//			0,
+	//			nullptr,
+	//			1,
+	//			&bufMemBarrier,
+	//			0,
+	//			nullptr);
+	//	}
+	//	else
+	//	{
+	//		// Allocation ended up in a non-mappable memory - a transfer using a staging buffer is required.
+	//		VkBufferCreateInfo stagingBufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	//		stagingBufCreateInfo.size = sizeof(InstanceData) * MAX_INSTANCES;
+	//		stagingBufCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+	//		VmaAllocationCreateInfo stagingAllocCreateInfo = {};
+	//		stagingAllocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+	//		stagingAllocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+	//			VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+	//		VkBuffer stagingBuf;
+	//		VmaAllocation stagingAlloc;
+	//		VmaAllocationInfo stagingAllocInfo;
+	//		result = vmaCreateBuffer(app_allocator_, &stagingBufCreateInfo, &stagingAllocCreateInfo,
+	//			&stagingBuf, &stagingAlloc, &stagingAllocInfo);
+
+	//		assert(result != VK_FALSE);
+
+
+	//		// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
+	//		result = vmaCopyMemoryToAllocation(app_allocator_,
+	//			data,	 // We should push id * mi
+	//			stagingAlloc,
+	//			0,
+	//			dataSize
+	//		);
+
+	//		assert(result != VK_FALSE);
+
+	//		VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+	//		bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+	//		bufMemBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+	//		bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	//		bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	//		bufMemBarrier.buffer = stagingBuf;
+	//		bufMemBarrier.offset = 0;
+	//		bufMemBarrier.size = VK_WHOLE_SIZE;
+
+	//		// Insert a buffer memory barrier to make sure writing to the staging buffer has finished.
+	//		vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+	//			0, 0, nullptr, 1, &bufMemBarrier, 0, nullptr);
+
+	//		VkBufferCopy bufCopy = {
+	//			0, // srcOffset
+	//			0, // dstOffset,
+	//			dataSize, // size
+	//		};
+
+	//		vkCmdCopyBuffer(cmdBuf, stagingBuf, ubo.buffer, 1, &bufCopy);
+
+	//		VkBufferMemoryBarrier bufMemBarrier2 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+	//		bufMemBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	//		bufMemBarrier2.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT; // We created a uniform buffer
+	//		bufMemBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	//		bufMemBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	//		bufMemBarrier2.buffer = ubo.buffer;
+	//		bufMemBarrier2.offset = 0;
+	//		bufMemBarrier2.size = VK_WHOLE_SIZE;
+
+	//		// Make sure copying from staging buffer to the actual buffer has finished by inserting a buffer memory barrier.
+	//		vkCmdPipelineBarrier(
+	//			cmdBuf,
+	//			VK_PIPELINE_STAGE_TRANSFER_BIT,
+	//			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+	//			0,
+	//			0,
+	//			nullptr,
+	//			1,
+	//			&bufMemBarrier2,
+	//			0,
+	//			nullptr
+	//		);
+	//	}
+
+
+	//}
 
 	void UpdateInstanceBuffer(uint32_t currentImage) {
 
@@ -433,7 +481,24 @@ private:
 
 		// Moved this to the HEAP. This will be state of the app instead of being fabricated here anyways.
 		InstanceData* data = new InstanceData[MAX_INSTANCES];
-		FabricateInstanceData(data);
+		int i = 0;
+		for (const glm::mat4 tr : scene_->globalTransform) {
+			std::memcpy(
+				data[i].transform,
+				glm::value_ptr(tr),
+				sizeof(float) * 16);
+			i++;
+		}
+
+		std::array<uint16_t, MAX_INSTANCES> indexData = {};
+		for (uint16_t index = 0; index < MAX_INSTANCES; index++) {
+			indexData[index] = index;
+		}
+
+		std::vector<IndexSlot> padded(MAX_INSTANCES);
+		for (size_t i = 0; i < MAX_INSTANCES; ++i) {
+			padded[i].idx = static_cast<uint32_t>(indexData[i]); // zero-extend
+		}
 
 		VkResult result;
 
@@ -441,11 +506,21 @@ private:
 		// FrameGraph! FrameGraph!
 		VkCommandBuffer cmdBuf = beginSingleTimeCommands();
 
-		UploadDataToUBO(instanceDataUniforms_[currentImage], data, cmdBuf);
+		// Right now the mapping is redundadnt 
+
+		UploadDataToBuffer(instanceIndexUniforms_[currentImage], padded.data(),
+			sizeof(IndexSlot) * MAX_INSTANCES, cmdBuf,
+			BufferRole::UBO, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+
+		UploadDataToBuffer(instanceDataUniforms_[currentImage], data,
+			sizeof(InstanceData) * MAX_INSTANCES, cmdBuf,
+			BufferRole::SSBO, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+
 		endSingleTimeCommands(cmdBuf);
 		delete[] data;
 	}
 
+	void LoadScene();
 	void UploadScene();
 
 #pragma region ===[ Input ]===
@@ -501,6 +576,9 @@ private:
 		bool isPressed = action != GLFW_RELEASE;
 
 		switch (key) {
+		case GLFW_KEY_R:
+		case GLFW_KEY_F:
+			cameraPositioner.reset();
 		case GLFW_KEY_W:
 		case GLFW_KEY_UP:
 			cameraPositioner.movement_.forward_ = isPressed;
@@ -557,6 +635,16 @@ private:
 			cameraPositioner.update(delta,
 				glm::vec2(x / width_, y / height_),
 				rightMousePressed);
+
+			// Synthetic movement
+
+			for (size_t i = 0; i < scene_->localTransform.size(); ++i) {
+				glm::mat4& local = scene_->localTransform[i];
+				float phase = std::sin(i + delta_time_ * 1.35f);  // staggered phases
+				local[3][0] = static_cast<float>(i) * 1.4f + phase;
+				markAsChanged(*scene_, i);
+			}
+			recalculateGlobalTransforms(*scene_);
 
 			drawFrame();
 		}
@@ -794,13 +882,6 @@ private:
 		dynamicState.dynamicStateCount =
 			static_cast<uint32_t>(dynamicStates.size());
 		dynamicState.pDynamicStates = dynamicStates.data();
-
-		struct PushConstants {
-			glm::mat4 view;
-			glm::mat4 proj;
-			int material_index;
-			uint32_t     _pad0[3];            // pad so sizeof(...) == 144 (16-byte multiple)
-		};
 
 		// One push constant range, covers all stages
 		VkPushConstantRange pcRange{};
@@ -1134,11 +1215,17 @@ private:
 
 	// --------------------------
 
-	void createUniformBuffer(VkDeviceSize size, VmaAllocation& alloc, VkBuffer& buffer, VmaAllocationInfo& allocInfo, VkMemoryPropertyFlags& memory_flags) {
+	void createUniformBuffer(
+		VkBufferCreateInfo buffer_create_info,
+		VmaAllocation& alloc,
+		VkBuffer& buffer,
+		VmaAllocationInfo& allocInfo,
+		VkMemoryPropertyFlags& memory_flags
+	) {
 
-		VkBufferCreateInfo bufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-		bufCreateInfo.size = size;
-		bufCreateInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		//VkBufferCreateInfo bufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		//bufCreateInfo.size = size;
+		//bufCreateInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
 		// Not sure if i can extract this from the loop
 		VmaAllocationCreateInfo allocCreateInfo = {};
@@ -1149,7 +1236,7 @@ private:
 
 		VkResult result = vmaCreateBuffer(
 			app_allocator_,
-			&bufCreateInfo,
+			&buffer_create_info,
 			&allocCreateInfo,
 			&buffer,
 			&alloc,
@@ -1162,14 +1249,34 @@ private:
 
 	void createInstanceDataBuffers() {
 
-		VkDeviceSize bufferSize = sizeof(InstanceData) * MAX_INSTANCES;
+		//VkDeviceSize bufferSize = sizeof(InstanceData) * MAX_INSTANCES;
+
+		VkBufferCreateInfo instIndexBufInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		instIndexBufInfo.size = sizeof(IndexSlot) * MAX_INSTANCES;
+		instIndexBufInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+
+		VkBufferCreateInfo instDataBufInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		instDataBufInfo.size = sizeof(InstanceData) * MAX_INSTANCES;
+		instDataBufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+
+			createUniformBuffer(
+				instIndexBufInfo,
+				instanceIndexUniforms_[i].alloc,
+				instanceIndexUniforms_[i].buffer,
+				instanceIndexUniforms_[i].allocInfo,
+				instanceIndexUniforms_[i].memory_flags
+			);
+
+		}
 
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
-			instanceDataUniforms_[i].size = bufferSize;
 			createUniformBuffer(
-				bufferSize,
+				instDataBufInfo,
 				instanceDataUniforms_[i].alloc,
 				instanceDataUniforms_[i].buffer,
 				instanceDataUniforms_[i].allocInfo,
@@ -1183,13 +1290,16 @@ private:
 
 	void createUniformBuffers() {
 
-		VkDeviceSize bufferSize = sizeof(UniformBufferObject) * MAX_INSTANCES;
+		VkBufferCreateInfo bufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		bufCreateInfo.size = sizeof(UniformBufferObject) * MAX_INSTANCES;
+		bufCreateInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
-			uniforms_[i].size = bufferSize;
+			uniforms_[i].size = sizeof(UniformBufferObject) * MAX_INSTANCES;
 			createUniformBuffer(
-				bufferSize,
+				bufCreateInfo,
 				uniforms_[i].alloc,
 				uniforms_[i].buffer,
 				uniforms_[i].allocInfo,
@@ -1204,20 +1314,17 @@ private:
 	void createDescriptorSetLayout(VkDevice device, VkDescriptorSetLayout* descriptorSetLayout) {
 
 
-		// We are using push contants for view proj now.
-		//VkDescriptorSetLayoutBinding viewProjUboBinding{};
-		//viewProjUboBinding.binding = 0;
-		//viewProjUboBinding.descriptorCount = 1;
-		//viewProjUboBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		VkDescriptorSetLayoutBinding instanceIndexBinding{};
+		instanceIndexBinding.binding = 0;
+		instanceIndexBinding.descriptorCount = 1;
+		instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		instanceIndexBinding.pImmutableSamplers = nullptr;
+		instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-		//viewProjUboBinding.pImmutableSamplers = nullptr;
-		//viewProjUboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
-		//model m still goes through here. we could compact away last row.
 		VkDescriptorSetLayoutBinding instanceDataBinding{};
 		instanceDataBinding.binding = 1;
 		instanceDataBinding.descriptorCount = 1;
-		instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		instanceDataBinding.pImmutableSamplers = nullptr;
 		instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
@@ -1229,8 +1336,8 @@ private:
 		samplerLayoutBinding.pImmutableSamplers = nullptr;
 		samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-		std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
-			//viewProjUboBinding,
+		std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
+			instanceIndexBinding,
 			instanceDataBinding,
 			samplerLayoutBinding
 		};
@@ -1293,13 +1400,12 @@ private:
 
 		// --
 
-		VkResult result = vkAllocateDescriptorSets(device, &allocInfo, descriptorSets);
+		VkResult result = vkAllocateDescriptorSets(device, &allocInfo, frameDescriptorSets);
 
 		if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
-			//Rotate the pool. try again
+			// Rotate the descriptor pool. try again
+			// Manage live dspools. defrag
 		}
-
-		// --
 
 		if (result != VK_SUCCESS) {
 			throw std::runtime_error("failed to allocate descriptor sets!");
@@ -1307,51 +1413,36 @@ private:
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
-			//VkDescriptorBufferInfo bufferInfo{};
-			//bufferInfo.buffer = uniforms_[i].buffer;
-			//bufferInfo.offset = 0;
-			//bufferInfo.range = sizeof(UniformBufferObject);
-
+			VkDescriptorBufferInfo instanceIndexBufferInfo{
+				.buffer = instanceIndexUniforms_[i].buffer,
+				.offset = 0,
+				.range = sizeof(uint16_t) * MAX_INSTANCES,
+				//.range = VK_WHOLE_SIZE
+			};
 			VkDescriptorBufferInfo instanceBufferInfo{
 				.buffer = instanceDataUniforms_[i].buffer,
 				.offset = 0,
+
 				.range = sizeof(InstanceData) * MAX_INSTANCES,
 			};
 
-			//VkDescriptorImageInfo imageInfo{};
-			//imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			//imageInfo.imageView = material.imageView;
-			//imageInfo.sampler = material.sampler;
-
-			std::array<VkWriteDescriptorSet, 1> descriptorWrites{};
-
-			// Removed
-			//descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			//descriptorWrites[0].dstSet = descriptorSets[i];
-			//descriptorWrites[0].dstBinding = 0;
-			//descriptorWrites[0].dstArrayElement = 0;
-			//descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			//descriptorWrites[0].descriptorCount = 1;
-			//descriptorWrites[0].pBufferInfo = &bufferInfo;
+			std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
 
 			descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[0].dstSet = descriptorSets[i];
-			descriptorWrites[0].dstBinding = 1;
+			descriptorWrites[0].dstSet = frameDescriptorSets[i];
+			descriptorWrites[0].dstBinding = 0;
 			descriptorWrites[0].dstArrayElement = 0;
 			descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 			descriptorWrites[0].descriptorCount = 1;
-			descriptorWrites[0].pBufferInfo = &instanceBufferInfo;
+			descriptorWrites[0].pBufferInfo = &instanceIndexBufferInfo;
 
-
-			// This one depends on material.
-			//descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			//descriptorWrites[2].dstSet = descriptorSets[i];
-			//descriptorWrites[2].dstBinding = 2;
-			//descriptorWrites[2].dstArrayElement = 0;
-			//descriptorWrites[2].descriptorType =
-			//	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			//descriptorWrites[2].descriptorCount = 1;
-			//descriptorWrites[2].pImageInfo = &imageInfo;
+			descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			descriptorWrites[1].dstSet = frameDescriptorSets[i];
+			descriptorWrites[1].dstBinding = 1;
+			descriptorWrites[1].dstArrayElement = 0;
+			descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			descriptorWrites[1].descriptorCount = 1;
+			descriptorWrites[1].pBufferInfo = &instanceBufferInfo;
 
 			vkUpdateDescriptorSets(device,
 				static_cast<uint32_t>(descriptorWrites.size()),
@@ -1380,6 +1471,9 @@ private:
 		vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
 
 		VkMemoryAllocateInfo allocInfo{};
+
+		// This should be moved to VMA
+
 		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		allocInfo.allocationSize = memRequirements.size;
 		allocInfo.memoryTypeIndex =
@@ -1388,6 +1482,7 @@ private:
 				memRequirements.memoryTypeBits,
 				properties
 			);
+
 
 		if (vkAllocateMemory(device, &allocInfo, nullptr, &bufferMemory) !=
 			VK_SUCCESS) {
@@ -1471,7 +1566,7 @@ private:
 
 		VkWriteDescriptorSet write{};
 		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		write.dstSet = descriptorSets[currentFrame];
+		write.dstSet = frameDescriptorSets[currentFrame];
 		write.dstBinding = 2; // binding for materials[]
 		write.dstArrayElement = 0;
 		write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1560,8 +1655,6 @@ private:
 		scissor.extent = swapChainExtent;
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-		//
-
 		VkBuffer vertexBuffers[] = { static_vertex_buffer_ };
 		VkDeviceSize offsets[] = { 0 };
 
@@ -1583,47 +1676,47 @@ private:
 			pipelineLayout,
 			0,
 			1,
-			&descriptorSets[currentFrame],
+			&frameDescriptorSets[currentFrame],
 			0,
 			nullptr);
 
 		std::vector<VkDescriptorImageInfo> imageInfos;
 		imageInfos.reserve(test_pool_.materials_.size());
 
-		struct vp {
-			alignas(16) glm::mat4 view; ;
-			alignas(16) glm::mat4 proj;
-			uint32_t mat_index = 0;
-		} VPM;
 
-		VPM.view = camera_.getViewMatrix();
-		VPM.proj = camera_.getProjMatrix();
+		PushConstants pc = {  };
+		pc.view = camera_.getViewMatrix();
+		pc.proj = camera_.getProjMatrix();
 
-		for (int i = 0; i < test_pool_.meshes_.size(); i++) {
+		// Well need ned pc range for mat_values.
+		// Mat values point to texture slots. contant data.
+		// Vert/Frag programs need to be binded before this
+		// I would like to encode in mat constructs also raster settings.
+		//MaterialValues mat_values_;
 
-			auto mesh_ = test_pool_.meshes_[i];
-			VPM.mat_index = mesh_.material_index;
+		for (int i = 0; i < scene_->hierarchy.size(); i++) {
+
+			auto mesh_ = test_pool_.meshes_[scene_->materialForNode[i]];
+			pc.material_index = scene_->materialForNode[i];
+
 			vkCmdPushConstants(
 				commandBuffers[currentFrame],
 				pipelineLayout,
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 				0,
-				sizeof(vp),
-				&VPM
+				sizeof(pc),
+				&pc
 			);
 
 			vkCmdDrawIndexed(
 				commandBuffer,
 				static_cast<uint32_t>(mesh_.indices.size()), //indexCount
-				3, //instanceCount
+				1, //instanceCount
 				mesh_.first_index, //firstIndex
 				mesh_.vert_offset, //vertexOffset
-				i * 3 //firstInstance. Change this so shader acces keeps 0index but we can manipulate view from command side
+				i //firstInstance. Change this so shader acces keeps 0index but we can manipulate view from command side
 			);
 		}
-		//}
-
-		//
 
 		vkCmdEndRendering(commandBuffer);
 
@@ -1714,7 +1807,8 @@ private:
 		// BATCH PER MESH, SHADER, INSTANCE
 
 		// We should check for size and promote or demote from pushconstants -> ubo -> ssbo.
-		updateUniformBuffer(currentFrame);
+		UpdateDeltaTime();
+		UpdateUniformBuffer(currentFrame);
 		UpdateInstanceBuffer(currentFrame);
 
 
@@ -1780,20 +1874,119 @@ private:
 	}
 };
 
-
-
-
-
-void VulkanApp::UploadScene() {
-
+void VulkanApp::LoadScene() {
 	// First node.
-	addNode(*scene_, 0, 0);
-	// Mesh = 0 is Quad
+
+	//rootNode
+	addNode(*scene_, -1, 0);
+	addNode(*scene_, 0, 1);
+	addNode(*scene_, 0, 1);
+
+	//std::cout << std::filesystem::current_path() << std::endl;
+
+	Mesh mesh_;
+	auto a_ = MeshLoad("models/avocado_gltf/Avocado.gltf");
+	mesh_.indices = a_.indices;
+	mesh_.vertices = a_.vertices;
+
+	test_pool_.meshes_.push_back(mesh_);
+
 	scene_->meshForNode[0] = 0;
 	scene_->materialForNode[0] = 0;
 
-	addNode(*scene_, 0, 0);
-	scene_->meshForNode[1] = 1;	scene_->materialForNode[1] = 1;
+
+	scene_->meshForNode[1] = 1;
+	scene_->materialForNode[1] = 1;
+
+
+	scene_->meshForNode[2] = 2;
+	scene_->materialForNode[2] = 2;
+
+	scene_->localTransform[2][0][0] = 10;
+	scene_->localTransform[2][1][1] = 10;
+	scene_->localTransform[2][2][2] = 10;
+
+	auto vertShaderCode = readFile("shaders/example.vert.spv");
+	auto fragShaderCode = readFile("shaders/example.frag.spv");
+
+	VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
+	VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
+
+	test_pool_.materials_.push_back(MaterialDefinition{});
+	test_pool_.materials_.push_back(MaterialDefinition{});
+	test_pool_.materials_.push_back(MaterialDefinition{});
+
+	test_pool_.materials_[0].frag = fragShaderModule;
+	test_pool_.materials_[0].vert = vertShaderModule;
+
+	test_pool_.materials_[1].frag = fragShaderModule;
+	test_pool_.materials_[1].vert = fragShaderModule;
+
+	test_pool_.materials_[2].frag = vertShaderModule;
+	test_pool_.materials_[2].vert = vertShaderModule;
+
+
+	createDescriptorSetLayout(
+		device,
+		&descriptorSetLayout
+	);
+
+	createGraphicsPipeline(
+		vertShaderModule,
+		fragShaderModule,
+		&descriptorSetLayout,
+		&pipelineLayout
+	);
+
+	createTextureImage(
+		"textures/viking_room.png",
+		&test_pool_.materials_[0].image
+	);
+
+	createTextureImage(
+		"textures/texture.jpg",
+		&test_pool_.materials_[1].image
+	);
+	createTextureImage(
+		"models/avocado_gltf/Avocado_baseColor.png",
+		&test_pool_.materials_[2].image
+	);
+
+
+	createTextureImageView(
+		&test_pool_.materials_[0].image,
+		&test_pool_.materials_[0].imageView
+	);
+
+
+	createTextureImageView(
+		&test_pool_.materials_[1].image,
+		&test_pool_.materials_[1].imageView
+	);
+
+	createTextureImageView(
+		&test_pool_.materials_[2].image,
+		&test_pool_.materials_[2].imageView
+	);
+
+
+	createTextureSampler(
+		&test_pool_.materials_[0].sampler
+	);
+
+	createTextureSampler(
+		&test_pool_.materials_[1].sampler
+	);
+
+	createTextureSampler(
+		&test_pool_.materials_[2].sampler
+	);
+
+
+}
+
+void VulkanApp::UploadScene() {
+
 
 	uint32_t static_vertex_buffer_size = 0;
 	uint32_t static_index_buffer_size = 0;
@@ -1964,7 +2157,7 @@ bool VulkanApp::run() {
 		}
 	}
 
-
+	LoadScene();
 	UploadScene();
 
 	// FIXED SIZES
@@ -1978,66 +2171,7 @@ bool VulkanApp::run() {
 	// MATERIAL
 	// -------------------------------------------------------------------------------------
 
-	// this doenst use a shader cache pretty rough!
-	auto vertShaderCode = readFile("shaders/example.vert.spv");
-	auto fragShaderCode = readFile("shaders/example.frag.spv");
-
-	VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
-	VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
-
-	test_pool_.materials_[0].frag = fragShaderModule;
-	test_pool_.materials_[0].vert = vertShaderModule;
-
-	test_pool_.materials_[1].frag = fragShaderModule;
-	test_pool_.materials_[1].vert = vertShaderModule;
-
-
-	createDescriptorSetLayout(
-		device,
-		&descriptorSetLayout
-	);
-
-	createGraphicsPipeline(
-		vertShaderModule,
-		fragShaderModule,
-		&descriptorSetLayout,
-		&pipelineLayout
-	);
-
-
-
-	createTextureImage(
-		"textures/viking_room.png",
-		&test_pool_.materials_[0].image
-	);
-
-	createTextureImage(
-		"textures/texture.jpg",
-		&test_pool_.materials_[1].image
-	);
-
-
-	createTextureImageView(
-		&test_pool_.materials_[0].image,
-		&test_pool_.materials_[0].imageView
-	);
-
-
-	createTextureImageView(
-		&test_pool_.materials_[1].image,
-		&test_pool_.materials_[1].imageView
-	);
-
-
-	createTextureSampler(
-		&test_pool_.materials_[0].sampler
-	);
-
-	createTextureSampler(
-		&test_pool_.materials_[1].sampler
-	);
-
-
+	// this doenst use a shader cache
 	createDescriptorPool(); // Pool has the shape of the material!. Also 
 	createDescriptorSets();
 
@@ -2064,7 +2198,7 @@ void VulkanApp::initVulkanApp() {
 
 		VkApplicationInfo appInfo{};
 		appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-		appInfo.pApplicationName = "Hello Triangle";
+		appInfo.pApplicationName = "VulkanToy";
 		appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
 		appInfo.pEngineName = "Sam2025Vulkan_one_three";
 		appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);

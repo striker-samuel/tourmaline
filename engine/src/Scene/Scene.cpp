@@ -383,7 +383,6 @@ void dumpSceneToDot(const char* fileName, const Scene& scene, int* visited)
   fclose(f);
 }
 
-
 int getNodeLevel(const Scene& scene, int n) {
   int level = -1;
   for (int p = 0; p != -1; p = scene.hierarchy[p].parent, level++);
