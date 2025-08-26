@@ -34,7 +34,8 @@ public:
 	}
 
 	void setPerspective(float fovY, float aspect, float zNear, float zFar) {
-		proj_ = glm::perspective(glm::radians(fovY), aspect, zNear, zFar);
+		// RH_ZO = Right-Handed, Zero-to-One (Vulkan)
+		proj_ = glm::perspectiveRH_ZO(glm::radians(fovY), aspect, zNear, zFar);
 	}
 
 private:
@@ -67,7 +68,7 @@ public:
 			const glm::vec2 delta = mousePos - mousePos_;
 			glm::vec2 frameDelta = delta * static_cast<float>(deltaSeconds);
 			const glm::quat deltaQuat = glm::quat(glm::vec3(
-				-rotationSpeed_ * frameDelta.y,
+				rotationSpeed_ * frameDelta.y,
 				rotationSpeed_ * frameDelta.x,
 				0.0f));
 

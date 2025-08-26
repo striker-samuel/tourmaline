@@ -1,4 +1,7 @@
 #pragma once
+#define GLM_FORCE_RADIANS
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+
 # define ENGINE_NAME "VulkanToy"
 
 // hardcoded test scene
@@ -31,6 +34,7 @@
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Renderer/primitives.h>
+#include <Engine/Utils/gltf.h>
 #include <Engine/Shared/common.h>
 
 #include <Engine/Memory/context.h>
@@ -169,7 +173,6 @@ private:
 	float delta_time_;
 
 	Camera camera_ = Camera(cameraPositioner);
-	//Scene* scene_;
 
 #pragma endregion
 
@@ -346,130 +349,6 @@ private:
 		}
 	}
 
-
-	//void UploadDataToUBO(
-	//	UniformBufferAllocation& ubo,
-	//	void* data,
-	//	size_t dataSize,
-	//	VkCommandBuffer& cmdBuf
-	//) {
-
-	//	VkResult result;
-
-	//	if (ubo.is_mapapble())
-	//	{
-	//		// The Allocation ended up in a mappable memory.
-	//		// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-	//		result = vmaCopyMemoryToAllocation(
-	//			app_allocator_,
-	//			data,
-	//			ubo.alloc,
-	//			0,
-	//			dataSize
-	//		);
-
-	//		assert(result == VK_SUCCESS);
-
-	//		VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-	//		bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-	//		bufMemBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-	//		bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	//		bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	//		bufMemBarrier.buffer = ubo.buffer;
-	//		bufMemBarrier.offset = 0;
-	//		bufMemBarrier.size = VK_WHOLE_SIZE;
-
-	//		// It's important to insert a buffer memory barrier here to ensure writing to the buffer has finished.
-	//		vkCmdPipelineBarrier(cmdBuf,
-	//			VK_PIPELINE_STAGE_HOST_BIT,
-	//			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-	//			0,
-	//			0,
-	//			nullptr,
-	//			1,
-	//			&bufMemBarrier,
-	//			0,
-	//			nullptr);
-	//	}
-	//	else
-	//	{
-	//		// Allocation ended up in a non-mappable memory - a transfer using a staging buffer is required.
-	//		VkBufferCreateInfo stagingBufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	//		stagingBufCreateInfo.size = sizeof(InstanceData) * MAX_INSTANCES;
-	//		stagingBufCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-	//		VmaAllocationCreateInfo stagingAllocCreateInfo = {};
-	//		stagingAllocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-	//		stagingAllocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-	//			VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-	//		VkBuffer stagingBuf;
-	//		VmaAllocation stagingAlloc;
-	//		VmaAllocationInfo stagingAllocInfo;
-	//		result = vmaCreateBuffer(app_allocator_, &stagingBufCreateInfo, &stagingAllocCreateInfo,
-	//			&stagingBuf, &stagingAlloc, &stagingAllocInfo);
-
-	//		assert(result != VK_FALSE);
-
-
-	//		// Calling vmaCopyMemoryToAllocation() does vmaMapMemory(), memcpy(), vmaUnmapMemory(), and vmaFlushAllocation().
-	//		result = vmaCopyMemoryToAllocation(app_allocator_,
-	//			data,	 // We should push id * mi
-	//			stagingAlloc,
-	//			0,
-	//			dataSize
-	//		);
-
-	//		assert(result != VK_FALSE);
-
-	//		VkBufferMemoryBarrier bufMemBarrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-	//		bufMemBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-	//		bufMemBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
-	//		bufMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	//		bufMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	//		bufMemBarrier.buffer = stagingBuf;
-	//		bufMemBarrier.offset = 0;
-	//		bufMemBarrier.size = VK_WHOLE_SIZE;
-
-	//		// Insert a buffer memory barrier to make sure writing to the staging buffer has finished.
-	//		vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-	//			0, 0, nullptr, 1, &bufMemBarrier, 0, nullptr);
-
-	//		VkBufferCopy bufCopy = {
-	//			0, // srcOffset
-	//			0, // dstOffset,
-	//			dataSize, // size
-	//		};
-
-	//		vkCmdCopyBuffer(cmdBuf, stagingBuf, ubo.buffer, 1, &bufCopy);
-
-	//		VkBufferMemoryBarrier bufMemBarrier2 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-	//		bufMemBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	//		bufMemBarrier2.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT; // We created a uniform buffer
-	//		bufMemBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	//		bufMemBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	//		bufMemBarrier2.buffer = ubo.buffer;
-	//		bufMemBarrier2.offset = 0;
-	//		bufMemBarrier2.size = VK_WHOLE_SIZE;
-
-	//		// Make sure copying from staging buffer to the actual buffer has finished by inserting a buffer memory barrier.
-	//		vkCmdPipelineBarrier(
-	//			cmdBuf,
-	//			VK_PIPELINE_STAGE_TRANSFER_BIT,
-	//			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-	//			0,
-	//			0,
-	//			nullptr,
-	//			1,
-	//			&bufMemBarrier2,
-	//			0,
-	//			nullptr
-	//		);
-	//	}
-
-
-	//}
-
 	void UpdateInstanceBuffer(uint32_t currentImage) {
 
 		// THIS MUST REMAIN HERE. SENSITIVE TO LAG OTHERWISE
@@ -597,10 +476,10 @@ private:
 			break;
 		case GLFW_KEY_Q:
 		case GLFW_KEY_SPACE:
-			cameraPositioner.movement_.down_ = isPressed;
+			cameraPositioner.movement_.up_ = isPressed;
 			break;
 		case GLFW_KEY_E:
-			cameraPositioner.movement_.up_ = isPressed;
+			cameraPositioner.movement_.down_ = isPressed;
 			break;
 		case GLFW_KEY_LEFT_SHIFT:
 			cameraPositioner.movement_.fastSpeed_ = isPressed;
@@ -638,7 +517,7 @@ private:
 
 			// Synthetic movement
 
-			for (size_t i = 0; i < scene_->localTransform.size(); ++i) {
+			for (size_t i = 0; i < scene_->localTransform.size()-1; ++i) {
 				glm::mat4& local = scene_->localTransform[i];
 				float phase = std::sin(i + delta_time_ * 1.35f);  // staggered phases
 				local[3][0] = static_cast<float>(i) * 1.4f + phase;
@@ -1641,14 +1520,17 @@ private:
 		);
 
 
-		VkViewport viewport{};
-		viewport.x = 0.0f;
-		viewport.y = 0.0f;
-		viewport.width = (float)swapChainExtent.width;
-		viewport.height = (float)swapChainExtent.height;
-		viewport.minDepth = 0.0f;
-		viewport.maxDepth = 1.0f;
-		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+		// Flipped because of this :)
+		// https://www.saschawillems.de/blog/2019/03/29/flipping-the-vulkan-viewport/
+		VkViewport vp{};
+		vp.x = 0.0f;
+		vp.y = (float)swapChainExtent.height;
+		vp.width = (float)swapChainExtent.width;
+		vp.height = -(float)swapChainExtent.height;
+		vp.minDepth = 0.0f;
+		vp.maxDepth = 1.0f;
+		vkCmdSetViewport(commandBuffer, 0, 1, &vp);
 
 		VkRect2D scissor{};
 		scissor.offset = { 0, 0 };
@@ -1885,7 +1767,7 @@ void VulkanApp::LoadScene() {
 	//std::cout << std::filesystem::current_path() << std::endl;
 
 	Mesh mesh_;
-	auto a_ = MeshLoad("models/avocado_gltf/Avocado.gltf");
+	auto a_ = GltfMesh("models/avocado_gltf/Avocado.gltf");
 	mesh_.indices = a_.indices;
 	mesh_.vertices = a_.vertices;
 
@@ -1897,14 +1779,13 @@ void VulkanApp::LoadScene() {
 
 	scene_->meshForNode[1] = 1;
 	scene_->materialForNode[1] = 1;
-
-
+	
 	scene_->meshForNode[2] = 2;
 	scene_->materialForNode[2] = 2;
 
-	scene_->localTransform[2][0][0] = 10;
-	scene_->localTransform[2][1][1] = 10;
-	scene_->localTransform[2][2][2] = 10;
+	scene_->localTransform[2][0][0] = 100;
+	scene_->localTransform[2][1][1] = 100;
+	scene_->localTransform[2][2][2] = 100;
 
 	auto vertShaderCode = readFile("shaders/example.vert.spv");
 	auto fragShaderCode = readFile("shaders/example.frag.spv");

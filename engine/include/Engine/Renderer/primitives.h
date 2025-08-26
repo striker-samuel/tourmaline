@@ -36,32 +36,35 @@
 
 CameraPositioner_FirstPerson cameraPositioner(
 	glm::vec3(0.0f, 0.0f, -10.0f), // position
-	glm::vec3(0.0f, 0.0f, 1.0f),  // target (looking in +Z direction)
+	glm::vec3(0.0f, 0.0f, -1.0f),  // target (looking in +Z direction)
 	glm::vec3(0.0f, 1.0f, 0.0f)   // up vector
 );
 
-std::vector<Vertex> quad_vertices = {
-	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-	{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-	{{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-	{{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
+
+// Quad (two triangles), CCW
+const std::vector<Vertex> quad_vertices = {
+	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}}, // v0
+	{{ 0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}}, // v1
+	{{ 0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}}, // v2
+	{{-0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}, // v3
 };
 
-
-std::vector<Vertex> triangle_vertices = {
-	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-	{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-	{{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-	//{{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
+const std::vector<uint32_t> quad_indices_ccw = {
+	0, 1, 2,   // tri 1 (CCW)
+	2, 3, 0    // tri 2 (CCW)
 };
 
-std::vector<uint32_t> quad_indices = {
-	0, 1, 2, 2, 3, 0
+// Triangle, CCW
+const std::vector<Vertex> triangle_vertices = {
+	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}}, // v0
+	{{ 0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}}, // v1
+	{{ 0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}}, // v2
 };
 
-std::vector<uint32_t> triangle_indices = {
-	0, 1, 2
+const std::vector<uint32_t> triangle_indices_ccw = {
+	0, 1, 2    // CCW
 };
+
 
 
 struct Mesh {
@@ -74,8 +77,8 @@ struct Mesh {
 
 };
 
-Mesh Quad = Mesh(quad_vertices, quad_indices, 0,0);
-Mesh Triangle = Mesh(triangle_vertices, triangle_indices,0,0);
+Mesh Quad = Mesh(quad_vertices, quad_indices_ccw, 0,0);
+Mesh Triangle = Mesh(triangle_vertices, triangle_indices_ccw,0,0);
 
 // We hit the masUBOsize limit fast. Be careful. We may need to encode better.
 // Maybe we can get away with float12 with implied 0,0,0,1 last row.
@@ -240,63 +243,4 @@ bool loadModel(tinygltf::Model& model, const char* filename) {
 
 	return res;
 }
-
-class MeshLoad {
-public:
-	std::vector<Vertex> vertices;
-	std::vector<uint32_t> indices;
-	std::vector<glm::vec3> normals;
-	std::vector<glm::vec2> uvs;
-	tinygltf::Model gltfModel;
-
-	MeshLoad(std::string model_path) {
-		std::string warn, err;
-
-		if (!loadModel(gltfModel, model_path.c_str())) {
-			throw std::runtime_error(warn + err);
-		}
-
-		// std::unordered_map<Vertex, uint32_t> uniqueVertices{};
-
-		for (const auto& mesh : gltfModel.meshes) {
-			for (const auto& primitive : mesh.primitives) {
-
-				const size_t baseVertex = vertices.size();
-				// Extract vertices
-				auto& posAcc = gltfModel.accessors[primitive.attributes.at("POSITION")];
-				for (size_t i = 0; i < posAcc.count; ++i) {
-					Vertex v{};
-					v.pos = readVec3F(gltfModel, posAcc, i);
-					v.color = { 1.0f, 1.0f, 1.0f };
-					v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
-					vertices.push_back(v);
-				}
-
-				if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end()) {
-					auto& uvAcc = gltfModel.accessors[it->second];
-					for (size_t i = 0; i < uvAcc.count && i < vertices.size(); ++i) {
-						glm::vec2 uv = readVec2F(gltfModel, uvAcc, i);
-						vertices[i].texCoord = uv; // flip V if your shader expects it: uv.y = 1.0f - uv.y;
-					}
-				}
-
-				if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end()) {
-					auto& nAcc = gltfModel.accessors[it->second];
-					normals.reserve(nAcc.count);
-					for (size_t i = 0; i < nAcc.count; ++i) {
-						normals.push_back(readVec3F(gltfModel, nAcc, i));
-					}
-				}
-
-				if (primitive.indices >= 0) {
-					auto& idxAcc = gltfModel.accessors[primitive.indices];
-					for (size_t i = 0; i < idxAcc.count; ++i) {
-						indices.push_back(baseVertex + readIndex(gltfModel, idxAcc, i));
-					}
-				}
-				
-			}
-		}
-	}
-};
 
