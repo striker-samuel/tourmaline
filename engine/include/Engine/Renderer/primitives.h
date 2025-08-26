@@ -260,6 +260,8 @@ public:
 
 		for (const auto& mesh : gltfModel.meshes) {
 			for (const auto& primitive : mesh.primitives) {
+
+				const size_t baseVertex = vertices.size();
 				// Extract vertices
 				auto& posAcc = gltfModel.accessors[primitive.attributes.at("POSITION")];
 				for (size_t i = 0; i < posAcc.count; ++i) {
@@ -288,9 +290,8 @@ public:
 
 				if (primitive.indices >= 0) {
 					auto& idxAcc = gltfModel.accessors[primitive.indices];
-					indices.reserve(indices.size() + idxAcc.count);
 					for (size_t i = 0; i < idxAcc.count; ++i) {
-						indices.push_back(readIndex(gltfModel, idxAcc, i));
+						indices.push_back(baseVertex + readIndex(gltfModel, idxAcc, i));
 					}
 				}
 				
