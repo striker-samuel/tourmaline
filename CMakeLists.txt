@@ -38,16 +38,16 @@ file(MAKE_DIRECTORY ${SHADER_BINARY_DIR})
 include(cmake/CompileShaders.cmake)
 
 # ---- ImGui as a static library ----
-set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui)
+#set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui)
 
-add_library(imgui STATIC
-    ${IMGUI_DIR}/imgui.cpp
-    ${IMGUI_DIR}/imgui_draw.cpp
-    ${IMGUI_DIR}/imgui_tables.cpp
-    ${IMGUI_DIR}/imgui_widgets.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
-)
+#add_library(imgui STATIC
+#    ${IMGUI_DIR}/imgui.cpp
+#    ${IMGUI_DIR}/imgui_draw.cpp
+#   ${IMGUI_DIR}/imgui_tables.cpp
+#    ${IMGUI_DIR}/imgui_widgets.cpp
+#    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+#    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+#)
 
 
 add_subdirectory(engine)

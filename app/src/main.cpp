@@ -1,11 +1,9 @@
 #pragma once
 #define GLM_FORCE_RADIANS
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 
 # define ENGINE_NAME "VulkanToy"
 
 #include <cassert>
-#include <imgui.h>
 
 // ---- SETUP -----
 
@@ -47,10 +45,6 @@ static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
 static constexpr float near_clip = 0.01f;
 static constexpr float far_clip = 100.0f;
-
-//// 256 MiB
-//constexpr std::size_t static_vertex_buffer_size = 256ULL << 20;
-//constexpr std::size_t static_index_buffer_size = 256ULL << 20;
 
 // Yes, I'm hardcapping here for development.
 static constexpr uint32_t MAX_INSTANCES = 1000;
@@ -271,28 +265,6 @@ private:
 	}
 
 	void UpdateUniformBuffer(uint32_t currentImage) {
-		//dur = float((currentTime - startTime).count());
-
-		//UniformBufferObject default_ubo{
-		//	//.model = glm::mat4(1.0f),
-		//	.view = camera_.getViewMatrix(),
-		//	.proj = camera_.getProjMatrix(),
-		//};
-
-		//VkResult result;
-
-		//// Starting and ending SingleTimeCommands for gpu setup needs to come back to CPU
-		//// FrameGraph! FrameGraph! A framegraph could let me write all comands, fence them and do first upload together.
-		//// Could not be faster tho. Who knows
-		//VkCommandBuffer cmdBuf = beginSingleTimeCommands();
-
-		//UploadDataToUBO(
-		//	uniforms_[currentImage],
-		//	&default_ubo,
-		//	sizeof(InstanceData) * MAX_INSTANCES,
-		//	cmdBuf);
-
-		//endSingleTimeCommands(cmdBuf);
 	}
 
 	enum class BufferRole { UBO, SSBO };
@@ -356,7 +328,8 @@ private:
 		// Moved this to the HEAP. This will be state of the app instead of being fabricated here anyways.
 		InstanceData* data = new InstanceData[MAX_INSTANCES];
 		int i = 0;
-		for (const glm::mat4 tr : scene_->globalTransform) {
+		//for (const glm::mat4 tr : scene_->globalTransform) {
+		for (const glm::mat4 tr : scene_->localTransform) {
 			std::memcpy(
 				data[i].transform,
 				glm::value_ptr(tr),
@@ -511,6 +484,8 @@ private:
 				rightMousePressed);
 
 			// Synthetic movement
+			std::cout << camera_.getPosition() << std::endl;
+
 
 			for (size_t i = 0; i < scene_->localTransform.size(); ++i) {
 				glm::mat4& local = scene_->localTransform[i];
