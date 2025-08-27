@@ -4,8 +4,6 @@
 
 # define ENGINE_NAME "VulkanToy"
 
-// hardcoded test scene
-#include <scene_1.h>
 #include <cassert>
 
 // ---- SETUP -----
@@ -19,9 +17,6 @@
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
 #include <vk_mem_alloc.h>
 
-// Do I care for tinyObj really? Obj is simpler but carries no anim data.
-// Packing Data shoulb be custom format
-//#define TINYOBJLOADER_IMPLEMENTATION
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -42,20 +37,19 @@
 // Moved readFile here. readFile rnow is just used to read shader files
 #include <Engine/fileIO.h>
 
-// Default Scene is here
-#include <scene_1.h>
+Scene default_scene = Scene();
 
 static constexpr uint32_t WIDTH = 1280;
 static constexpr uint32_t HEIGHT = 720;
 
 static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
-static constexpr float near_clip = 0.0001f;
+static constexpr float near_clip = 0.01f;
 static constexpr float far_clip = 100.0f;
 
-// 256 MiB
-constexpr std::size_t static_vertex_buffer_size = 256ULL << 20;
-constexpr std::size_t static_index_buffer_size = 256ULL << 20;
+//// 256 MiB
+//constexpr std::size_t static_vertex_buffer_size = 256ULL << 20;
+//constexpr std::size_t static_index_buffer_size = 256ULL << 20;
 
 // Yes, I'm hardcapping here for development.
 static constexpr uint32_t MAX_INSTANCES = 1000;
@@ -76,7 +70,7 @@ struct PushConstants {
 	glm::mat4 view;
 	glm::mat4 proj;
 	int material_index;
-	uint32_t     _pad0[3];            // pad so sizeof(...) == 144 (16-byte multiple)
+	uint32_t     _pad0[3];
 };
 
 // Initialized with crude defaults;
@@ -519,7 +513,7 @@ private:
 
 			for (size_t i = 0; i < scene_->localTransform.size()-1; ++i) {
 				glm::mat4& local = scene_->localTransform[i];
-				float phase = std::sin(i + delta_time_ * 1.35f);  // staggered phases
+				float phase = std::sin(i + delta_time_ * 0.35f);  // staggered phases
 				local[3][0] = static_cast<float>(i) * 1.4f + phase;
 				markAsChanged(*scene_, i);
 			}
@@ -1578,7 +1572,9 @@ private:
 
 		for (int i = 0; i < scene_->hierarchy.size(); i++) {
 
-			auto mesh_ = test_pool_.meshes_[scene_->materialForNode[i]];
+
+			auto mesh_idx = scene_->meshForNode[i];
+			auto mesh_ = test_pool_.meshes_[mesh_idx];
 			pc.material_index = scene_->materialForNode[i];
 
 			vkCmdPushConstants(
@@ -1771,13 +1767,22 @@ void VulkanApp::LoadScene() {
 	mesh_.indices = a_.indices;
 	mesh_.vertices = a_.vertices;
 
+	Mesh mesh_2;
+	auto b_ = GltfMesh("models/BoomBox/BoomBox.gltf");
+	mesh_2.indices = b_.indices;
+	mesh_2.vertices = b_.vertices;
+
 	test_pool_.meshes_.push_back(mesh_);
+	test_pool_.meshes_.push_back(mesh_2);
+
+	auto m_m = scene_->localTransform[0];
 
 	scene_->meshForNode[0] = 0;
 	scene_->materialForNode[0] = 0;
+	scene_->localTransform[0] = glm::translate(m_m, glm::vec3(5, 0, 0)
+	);
 
-
-	scene_->meshForNode[1] = 1;
+	scene_->meshForNode[1] = 3;
 	scene_->materialForNode[1] = 1;
 	
 	scene_->meshForNode[2] = 2;
@@ -1786,6 +1791,10 @@ void VulkanApp::LoadScene() {
 	scene_->localTransform[2][0][0] = 100;
 	scene_->localTransform[2][1][1] = 100;
 	scene_->localTransform[2][2][2] = 100;
+
+	scene_->localTransform[1][0][0] = 100;
+	scene_->localTransform[1][1][1] = 100;
+	scene_->localTransform[1][2][2] = 100;
 
 	auto vertShaderCode = readFile("shaders/example.vert.spv");
 	auto fragShaderCode = readFile("shaders/example.frag.spv");

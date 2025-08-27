@@ -36,22 +36,22 @@
 
 CameraPositioner_FirstPerson cameraPositioner(
 	glm::vec3(0.0f, 0.0f, -10.0f), // position
-	glm::vec3(0.0f, 0.0f, -1.0f),  // target (looking in +Z direction)
+	glm::vec3(0.0f, 0.0f, 1.0f),  // 	
 	glm::vec3(0.0f, 1.0f, 0.0f)   // up vector
 );
 
 
 // Quad (two triangles), CCW
 const std::vector<Vertex> quad_vertices = {
-	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}}, // v0
-	{{ 0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}}, // v1
-	{{ 0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}}, // v2
-	{{-0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}, // v3
+	{{0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}}, // v0
+	{{-0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}}, // v1
+	{{ -0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}}, // v2
+	{{0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}, // v3
 };
 
 const std::vector<uint32_t> quad_indices_ccw = {
-	0, 1, 2,   // tri 1 (CCW)
-	2, 3, 0    // tri 2 (CCW)
+	0, 1, 2,
+	2, 3, 0
 };
 
 // Triangle, CCW
@@ -62,7 +62,7 @@ const std::vector<Vertex> triangle_vertices = {
 };
 
 const std::vector<uint32_t> triangle_indices_ccw = {
-	0, 1, 2    // CCW
+	0, 1, 2
 };
 
 
@@ -77,19 +77,19 @@ struct Mesh {
 
 };
 
-Mesh Quad = Mesh(quad_vertices, quad_indices_ccw, 0,0);
-Mesh Triangle = Mesh(triangle_vertices, triangle_indices_ccw,0,0);
+Mesh Quad = Mesh(quad_vertices, quad_indices_ccw, 0, 0);
+Mesh Triangle = Mesh(triangle_vertices, triangle_indices_ccw, 0, 0);
 
 // We hit the masUBOsize limit fast. Be careful. We may need to encode better.
 // Maybe we can get away with float12 with implied 0,0,0,1 last row.
 struct InstanceData {
 	// Identity Matrix initialization
 	//alignas(16)
-		float transform[16] = {
-			1.0f, 0.0f, 0.0f, 0.0f,
-			0.0f, 1.0f, 0.0f, 0.0f,
-			0.0f, 0.0f, 1.0f, 0.0f,
-			0.0f, 0.0f, 0.0f, 1.0f
+	float transform[16] = {
+		1.0f, 0.0f, 0.0f, 0.0f,
+		0.0f, 1.0f, 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		0.0f, 0.0f, 0.0f, 1.0f
 	};
 	//float4 color = {1.0f, 1.0f, 1.0f, 1.0f};
 	//uint32_t meshIndex;

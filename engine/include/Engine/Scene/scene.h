@@ -99,3 +99,6 @@ void mergeScenes(
 
 // Delete a collection of nodes from a scenegraph
 void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete);
+
+
+

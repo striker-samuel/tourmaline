@@ -1,5 +1,4 @@
 #version 450
-#extension GL_KHR_vulkan_glsl : enable
 
 // Override at compile time with: glslc -DMAX_INSTANCES=... ...
 #ifndef MAX_INSTANCES
