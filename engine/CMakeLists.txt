@@ -5,6 +5,8 @@ file(GLOB_RECURSE ENGINE_SRC CONFIGURE_DEPENDS
     include/Engine/*.h
 )
 
+
+
 add_library(engine STATIC ${ENGINE_SRC})
 
 target_include_directories(engine
@@ -17,12 +19,15 @@ target_include_directories(engine
         ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator
 )
 
+
+
 target_link_libraries(engine
     PUBLIC
   #      Vulkan::Vulkan
         glfw
         glm
         volk
+        imgui
   #       VulkanMemoryAllocator
 )
 

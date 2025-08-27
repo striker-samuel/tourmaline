@@ -5,6 +5,7 @@
 # define ENGINE_NAME "VulkanToy"
 
 #include <cassert>
+#include <imgui.h>
 
 // ---- SETUP -----
 
@@ -511,7 +512,7 @@ private:
 
 			// Synthetic movement
 
-			for (size_t i = 0; i < scene_->localTransform.size()-1; ++i) {
+			for (size_t i = 0; i < scene_->localTransform.size(); ++i) {
 				glm::mat4& local = scene_->localTransform[i];
 				float phase = std::sin(i + delta_time_ * 0.35f);  // staggered phases
 				local[3][0] = static_cast<float>(i) * 1.4f + phase;
@@ -520,6 +521,7 @@ private:
 			recalculateGlobalTransforms(*scene_);
 
 			drawFrame();
+
 		}
 
 		vkDeviceWaitIdle(device);
@@ -1519,9 +1521,10 @@ private:
 		// https://www.saschawillems.de/blog/2019/03/29/flipping-the-vulkan-viewport/
 		VkViewport vp{};
 		vp.x = 0.0f;
-		vp.y = (float)swapChainExtent.height;
+		vp.y = 0.0f;
+		//vp.y = (float)swapChainExtent.height;
 		vp.width = (float)swapChainExtent.width;
-		vp.height = -(float)swapChainExtent.height;
+		vp.height = (float)swapChainExtent.height;
 		vp.minDepth = 0.0f;
 		vp.maxDepth = 1.0f;
 		vkCmdSetViewport(commandBuffer, 0, 1, &vp);
@@ -1563,6 +1566,7 @@ private:
 		PushConstants pc = {  };
 		pc.view = camera_.getViewMatrix();
 		pc.proj = camera_.getProjMatrix();
+		pc.proj[1] *= -1;
 
 		// Well need ned pc range for mat_values.
 		// Mat values point to texture slots. contant data.
@@ -1779,8 +1783,7 @@ void VulkanApp::LoadScene() {
 
 	scene_->meshForNode[0] = 0;
 	scene_->materialForNode[0] = 0;
-	scene_->localTransform[0] = glm::translate(m_m, glm::vec3(5, 0, 0)
-	);
+	//scene_->localTransform[0] = glm::translate(m_m, glm::vec3(5, 0, 0));
 
 	scene_->meshForNode[1] = 3;
 	scene_->materialForNode[1] = 1;

@@ -56,7 +56,8 @@ public:
 		, up_(up)
 	{
 
-		starting_cameraOrientation = cameraOrientation_;
+		glm::mat4 view = glm::lookAt(pos, target, up);
+		cameraOrientation_ = glm::quat_cast(glm::mat3(view)); // only rotation
 		starting_pos = cameraPosition_;
 		starting_up = up_;
 	}

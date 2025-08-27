@@ -35,18 +35,18 @@
 
 
 CameraPositioner_FirstPerson cameraPositioner(
-	glm::vec3(0.0f, 0.0f, -10.0f), // position
-	glm::vec3(0.0f, 0.0f, 1.0f),  // 	
-	glm::vec3(0.0f, 1.0f, 0.0f)   // up vector
+	glm::vec3(0.0f, 0.0f, 5.0f), //pos
+	glm::vec3(0.0f, 0.0f, -1.0f), //target
+	glm::vec3(0.0f, 1.0f, 0.0f) //up
 );
 
 
 // Quad (two triangles), CCW
 const std::vector<Vertex> quad_vertices = {
-	{{0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}}, // v0
-	{{-0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}}, // v1
-	{{ -0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}}, // v2
-	{{0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}, // v3
+	{{7.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+	{{-0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+	{{ -0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+	{{0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
 };
 
 const std::vector<uint32_t> quad_indices_ccw = {
