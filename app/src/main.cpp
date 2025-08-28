@@ -425,6 +425,7 @@ private:
 		case GLFW_KEY_R:
 		case GLFW_KEY_F:
 			cameraPositioner.reset();
+			break;
 		case GLFW_KEY_W:
 		case GLFW_KEY_UP:
 			cameraPositioner.movement_.forward_ = isPressed;
