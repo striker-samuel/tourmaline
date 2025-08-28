@@ -34,7 +34,7 @@ public:
 	}
 
 	void setPerspective(float fovY, float aspect, float zNear, float zFar) {
-		proj_ = glm::perspective(glm::radians(fovY), aspect, zNear, zFar);
+		proj_ = glm::perspectiveRH_ZO(glm::radians(fovY), aspect, zNear, zFar);
 	}
 
 private:
@@ -50,14 +50,15 @@ class CameraPositioner_FirstPerson final : public CameraPositionerInterface
 public:
 	CameraPositioner_FirstPerson() = default;
 	CameraPositioner_FirstPerson(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up)
-		: cameraPosition_(pos)
-		, cameraOrientation_(glm::lookAt(pos, target, up))
-		, up_(up)
 	{
 
+		glm::vec3 dir = glm::normalize(target - pos);
+		cameraOrientation_ = glm::quatLookAt(dir, glm::vec3(0, 1, 0));
+
+
 		starting_cameraOrientation = cameraOrientation_;
-		starting_pos = cameraPosition_;
-		starting_up = up_;
+		cameraPosition_, starting_pos = pos;
+		up_, starting_up = up;
 	}
 
 	void update(double deltaSeconds, const glm::vec2& mousePos, bool mousePressed)

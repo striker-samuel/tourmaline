@@ -28,14 +28,14 @@
 // Unlit, own frag
 // Anisotropic, Own brdf
 // SubSurface, Maybe needs depth bias.
-// Translucent, needs blending
+// Translucent, needs blendin
 // Hair, needs blending/ own brdf
 // Cloth, sheen.
 // Maybe more...
 
 
 CameraPositioner_FirstPerson cameraPositioner(
-	glm::vec3(0.0f, 0.0f, 5.0f), //pos
+	glm::vec3(0.0f, 0.0f, -1.0f), //pos
 	glm::vec3(0.0f, 0.0f, 0.0f), //target
 	glm::vec3(0.0f, 1.0f, 0.0f) //up
 );

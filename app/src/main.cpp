@@ -405,7 +405,7 @@ private:
 
 		glm::vec2 mousePos = glm::vec2(
 			static_cast<float>(xpos) / width_,
-			static_cast<float>(ypos) / height_
+			static_cast<float>(ypos) / -height_
 		);
 		cameraPositioner.update(delta_time_ / 1000,
 			mousePos,
@@ -480,7 +480,7 @@ private:
 			double x, y;
 			glfwGetCursorPos(window, &x, &y);
 			cameraPositioner.update(delta,
-				glm::vec2(x / width_, y / height_),
+				glm::vec2(x / width_, y / -height_),
 				rightMousePressed);
 
 			// Synthetic movement
@@ -1497,7 +1497,6 @@ private:
 		VkViewport vp{};
 		vp.x = 0.0f;
 		vp.y = 0.0f;
-		//vp.y = (float)swapChainExtent.height;
 		vp.width = (float)swapChainExtent.width;
 		vp.height = (float)swapChainExtent.height;
 		vp.minDepth = 0.0f;
@@ -1541,7 +1540,7 @@ private:
 		PushConstants pc = {  };
 		pc.view = camera_.getViewMatrix();
 		pc.proj = camera_.getProjMatrix();
-		pc.proj[1] *= -1;
+		//pc.proj[1] *= -1;
 
 		// Well need ned pc range for mat_values.
 		// Mat values point to texture slots. contant data.
