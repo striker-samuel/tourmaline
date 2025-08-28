@@ -34,16 +34,6 @@
 // Maybe more...
 
 
-
-
-CameraPositioner_FirstPerson cameraPositioner(
-	glm::vec3(0.0f, 0.0f, 6.0f), //pos
-	glm::vec3(0.0f, 0.0f, 0.0f), //target
-	glm::vec3(0.0f, 1.0f, 0.0f) //up
-);
-
-
-
 const std::vector<Vertex> quad_vertices = {
 	{{7.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
 	{{0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},

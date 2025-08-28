@@ -4,7 +4,7 @@
 #include <algorithm>
 
 #include "Engine/Shared/common.h"
-//#include "glm/gtx/euler_angles.hpp"
+
 class CameraPositionerInterface
 {
 public:
@@ -193,3 +193,11 @@ private:
 	glm::quat starting_cameraOrientation;
 	glm::vec3 starting_up;
 };
+
+CameraPositioner_FirstPerson cameraPositioner(
+	glm::vec3(0.0f, 5.0f, 16.0f), //pos
+	glm::vec3(0.0f, 0.0f, 0.0f), //target
+	glm::vec3(0.0f, 1.0f, 0.0f) //up
+);
+
+

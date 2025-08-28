@@ -1,5 +1,4 @@
 #pragma once
-#define GLM_FORCE_RADIANS
 
 # define ENGINE_NAME "VulkanToy"
 
