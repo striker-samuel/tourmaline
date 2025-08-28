@@ -1540,7 +1540,7 @@ private:
 		PushConstants pc = {  };
 		pc.view = camera_.getViewMatrix();
 		pc.proj = camera_.getProjMatrix();
-		//pc.proj[1] *= -1;
+		pc.proj[1][1] *= -1;
 
 		// Well need ned pc range for mat_values.
 		// Mat values point to texture slots. contant data.
@@ -1755,7 +1755,7 @@ void VulkanApp::LoadScene() {
 
 	auto m_m = scene_->localTransform[0];
 
-	scene_->meshForNode[0] = 0;
+	scene_->meshForNode[0] = 1;
 	scene_->materialForNode[0] = 0;
 	//scene_->localTransform[0] = glm::translate(m_m, glm::vec3(5, 0, 0));
 
