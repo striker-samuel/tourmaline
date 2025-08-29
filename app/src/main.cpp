@@ -10,7 +10,7 @@
 
 #define VMA_IMPLEMENTATION
 
-#define VMA_VULKAN_VERSION 1004000 // Vulkan 1.4
+#define VMA_VULKAN_VERSION 1003800 // Vulkan 1.4
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
 #include <vk_mem_alloc.h>
@@ -353,7 +353,6 @@ private:
 		VkCommandBuffer cmdBuf = beginSingleTimeCommands();
 
 		// Right now the mapping is redundadnt 
-
 		UploadDataToBuffer(instanceIndexUniforms_[currentImage], padded.data(),
 			sizeof(IndexSlot) * MAX_INSTANCES, cmdBuf,
 			BufferRole::UBO, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
@@ -642,14 +641,14 @@ private:
 			VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
 		vertShaderStageInfo.module = vert;
-		vertShaderStageInfo.pName = "main";
+		vertShaderStageInfo.pName = "mainVS";
 
 		VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
 		fragShaderStageInfo.sType =
 			VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
 		fragShaderStageInfo.module = frag;
-		fragShaderStageInfo.pName = "main";
+		fragShaderStageInfo.pName = "mainPS";
 
 		VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
 														  fragShaderStageInfo };
@@ -1773,8 +1772,8 @@ void VulkanApp::LoadScene() {
 	scene_->localTransform[1][1][1] = 100;
 	scene_->localTransform[1][2][2] = 100;
 
-	auto vertShaderCode = readFile("shaders/example.vert.spv");
-	auto fragShaderCode = readFile("shaders/example.frag.spv");
+	auto vertShaderCode = readFile("shaders/example.vert.hlsl.spv");
+	auto fragShaderCode = readFile("shaders/example.frag.hlsl.spv");
 
 	VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);

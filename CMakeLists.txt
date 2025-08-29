@@ -56,7 +56,10 @@ add_subdirectory(app)
 set(COMPILED_SHADER_OUTPUTS)
 
 # Call after all targets exist
-compile_shaders(${CMAKE_SOURCE_DIR}/app/shaders ${CMAKE_BINARY_DIR}/shaders compile_shaders)
+compile_shaders(
+  "${CMAKE_CURRENT_SOURCE_DIR}/app/shaders"
+  "${CMAKE_CURRENT_BINARY_DIR}/shaders"
+  app)
 
 # Ensure shaders are actually part of the build
 if(COMPILED_SHADER_OUTPUTS)
