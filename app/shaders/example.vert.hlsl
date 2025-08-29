@@ -21,16 +21,23 @@ struct PushConsts
 [[vk::push_constant]]
 ConstantBuffer<PushConsts> pc;
 
-// --- Index UBO (GLSL: layout(set=0, binding=0, std140) uniform IndexUBO { uint indices[MAX_INSTANCES]; } inn; )
-cbuffer IndexUBO : register(b0, space0)
+// std140 array element for a scalar: 16 bytes
+struct IndexStd140
 {
-    uint indices[MAX_INSTANCES];
+    uint i;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
 };
 
-// --- Instance data buffer with model matrices
-// GLSL SSBO (read-only in your shader) -> HLSL StructuredBuffer
-// GLSL: layout(set=0, binding=1, std140) buffer InstanceData { mat4 model[MAX_INSTANCES]; } instance;
-StructuredBuffer<float4x4> instanceModel : register(t1, space0);
+cbuffer IndexUBO : register(b0, space0)
+{
+    IndexStd140 indicesStd140[MAX_INSTANCES];
+}
+
+// Explicit Vulkan binding (set=0, binding=1)
+[[vk::binding(1, 0)]]
+StructuredBuffer<float4x4> instanceModel;
 
 // --- Vertex I/O
 // GLSL: layout(location=0/1/2) in ... ; and location 0/1 out ...
@@ -41,6 +48,8 @@ struct VSIn
     float2 inTexCoord : TEXCOORD0; // location 2
     uint instanceID : SV_InstanceID; // gl_InstanceIndex
 };
+
+
 
 struct VSOut
 {
@@ -55,13 +64,13 @@ VSOut mainVS(VSIn IN)
 
     // Find which instance's model matrix to use:
     // GLSL: instance.model[inn.indices[gl_InstanceIndex]]
-    uint idx = indices[IN.instanceID];
-    float4x4 M = instanceModel[idx];
+    uint idx = indicesStd140[IN.instanceID].i;
 
     // Position transform:
     // GLSL: pc.proj * pc.view * M * vec4(inPosition, 1.0)
     float4 world = float4(IN.inPosition, 1.0f);
-    float4 clip = mul(pc.proj, mul(pc.view, mul(M, world)));
+    float4x4 model = instanceModel[idx];
+    float4 clip = mul(pc.proj, mul(pc.view, mul(model, world)));
 
     OUT.pos = clip;
     OUT.fragColor = IN.inColor;

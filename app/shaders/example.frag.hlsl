@@ -19,11 +19,8 @@ struct PushConsts
 [[vk::push_constant]]
 ConstantBuffer<PushConsts> pc;
 
-// In GLSL you had a combined sampler2D array at binding=2.
-// In HLSL, textures and samplers are separate objects.
-// Map it to a Texture2D array + a sampler.
-Texture2D gMaterials[MAX_MATERIALS] : register(t2, space0); // set=0, binding=2
-SamplerState gSampler : register(s0, space0); // choose a set/binding you use for your sampler
+[[vk::binding(2,0)]] Texture2D materialTex[MAX_MATERIALS];
+[[vk::binding(3,0)]] SamplerState materialSamp[MAX_MATERIALS];
 
 struct PSIn
 {
@@ -42,7 +39,7 @@ PSOut mainPS(PSIn IN)
 
     // pc.material_index is uniform (push constant), so no NonUniformResourceIndex needed.
     uint idx = (uint) pc.material_index;
-    OUT.outColor = gMaterials[idx].Sample(gSampler, IN.fragTexCoord);
+    OUT.outColor = materialTex[idx].Sample(materialSamp[idx], IN.fragTexCoord);
 
     return OUT;
 }

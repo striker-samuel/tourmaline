@@ -1177,18 +1177,28 @@ private:
 		instanceDataBinding.pImmutableSamplers = nullptr;
 		instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-		VkDescriptorSetLayoutBinding samplerLayoutBinding{};
-		samplerLayoutBinding.binding = 2;
-		samplerLayoutBinding.descriptorCount = MAX_MATERIALS;
-		samplerLayoutBinding.descriptorType =
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		samplerLayoutBinding.pImmutableSamplers = nullptr;
-		samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		// sampled image array
+		VkDescriptorSetLayoutBinding texBinding{};
+		texBinding.binding = 2;
+		texBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		texBinding.descriptorCount = MAX_MATERIALS;
+		texBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-		std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
+		// one sampler (or an array if you really need multiple)
+		VkDescriptorSetLayoutBinding sampBinding{};
+		sampBinding.binding = 3;
+		sampBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+		// sampler is the same for all current textures now.
+		// this is not optimal
+		//sampBinding.descriptorCount = 1;
+		sampBinding.descriptorCount = MAX_MATERIALS;
+		sampBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+		std::array<VkDescriptorSetLayoutBinding, 4> bindings = {
 			instanceIndexBinding,
 			instanceDataBinding,
-			samplerLayoutBinding
+			texBinding,
+			sampBinding,
 		};
 
 		VkDescriptorSetLayoutCreateInfo layoutInfo{};
@@ -1206,12 +1216,14 @@ private:
 
 		// This is just how many dsc of each type are allowed in the pool. Has no bearing with layouts
 		// except for simple compat.
-		std::array<VkDescriptorPoolSize, 3> poolSizes = { {
+		std::array<VkDescriptorPoolSize, 5> poolSizes = { {
 				// We should need these one anymore once we move InstanceData to ssbo. Maybe instance data is promoted to ubo
 				// in cases where it can work. Also we are adding an indirect mapping for instanceData with a table.
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,        100 },
 			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,        100 },
 			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
+			{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 100},
+			{ VK_DESCRIPTOR_TYPE_SAMPLER, 100},
 		} };
 
 		// --------
@@ -1401,28 +1413,52 @@ private:
 	void recordDraw(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
 
 
-		// ---- Update descriptor set once with all materials ----
-		std::vector<VkDescriptorImageInfo> infos;
-		infos.reserve(test_pool_.materials_.size());
+		const uint32_t materialCount = static_cast<uint32_t>(test_pool_.materials_.size());
 
-		for (auto& mat : test_pool_.materials_) {
-			VkDescriptorImageInfo info{};
-			info.sampler = mat.sampler;
-			info.imageView = mat.imageView;
-			info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			infos.push_back(info);
+		// --- Build image infos (sampled images) ---
+		std::vector<VkDescriptorImageInfo> imageInfos;
+		imageInfos.reserve(materialCount);
+		for (const auto& mat : test_pool_.materials_) {
+			VkDescriptorImageInfo ii{};
+			ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
+			ii.imageView = mat.imageView;
+			ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			imageInfos.push_back(ii);
 		}
 
-		VkWriteDescriptorSet write{};
-		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		write.dstSet = frameDescriptorSets[currentFrame];
-		write.dstBinding = 2; // binding for materials[]
-		write.dstArrayElement = 0;
-		write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		write.descriptorCount = static_cast<uint32_t>(infos.size());
-		write.pImageInfo = infos.data();
+		// --- Build sampler infos ---
+		std::vector<VkDescriptorImageInfo> samplerInfos;
+		samplerInfos.reserve(materialCount);
+		for (const auto& mat : test_pool_.materials_) {
+			VkDescriptorImageInfo si{};
+			si.sampler = mat.sampler;
+			si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
+			si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
+			samplerInfos.push_back(si);
+		}
 
-		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+		// --- Two writes: images at binding 2, samplers at binding 3 ---
+		VkWriteDescriptorSet writes[2]{};
+
+		// Sampled image array (binding 2)
+		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[0].dstSet = frameDescriptorSets[currentFrame];
+		writes[0].dstBinding = 2;
+		writes[0].dstArrayElement = 0;
+		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		writes[0].descriptorCount = materialCount;
+		writes[0].pImageInfo = imageInfos.data();
+
+		// Sampler array (binding 3)
+		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[1].dstSet = frameDescriptorSets[currentFrame];
+		writes[1].dstBinding = 3;
+		writes[1].dstArrayElement = 0;
+		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+		writes[1].descriptorCount = materialCount;   // or 1 if you use a single shared sampler
+		writes[1].pImageInfo = samplerInfos.data();
+
+		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
 		VkCommandBufferBeginInfo beginInfo{};
 		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1531,9 +1567,6 @@ private:
 			&frameDescriptorSets[currentFrame],
 			0,
 			nullptr);
-
-		std::vector<VkDescriptorImageInfo> imageInfos;
-		imageInfos.reserve(test_pool_.materials_.size());
 
 
 		PushConstants pc = {  };
@@ -1760,7 +1793,7 @@ void VulkanApp::LoadScene() {
 
 	scene_->meshForNode[1] = 3;
 	scene_->materialForNode[1] = 1;
-	
+
 	scene_->meshForNode[2] = 2;
 	scene_->materialForNode[2] = 2;
 
