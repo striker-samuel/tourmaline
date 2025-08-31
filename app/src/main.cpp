@@ -341,9 +341,9 @@ private:
 			indexData[index] = index;
 		}
 
-		std::vector<IndexSlot> padded(MAX_INSTANCES);
+		std::vector<IndexSlot> idnexSlotData(MAX_INSTANCES);
 		for (size_t i = 0; i < MAX_INSTANCES; ++i) {
-			padded[i].idx = static_cast<uint32_t>(indexData[i]); // zero-extend
+			idnexSlotData[i].idx = static_cast<uint32_t>(indexData[i]); // zero-extend
 		}
 
 		VkResult result;
@@ -352,8 +352,14 @@ private:
 		// FrameGraph! FrameGraph!
 		VkCommandBuffer cmdBuf = beginSingleTimeCommands();
 
+
+
+
+		static_assert(sizeof(IndexSlot) * MAX_INSTANCES < (1 << 16),
+			"Instance buffer too large for 64KB UBO limit");
+
 		// Right now the mapping is redundadnt 
-		UploadDataToBuffer(instanceIndexUniforms_[currentImage], padded.data(),
+		UploadDataToBuffer(instanceIndexUniforms_[currentImage], idnexSlotData.data(),
 			sizeof(IndexSlot) * MAX_INSTANCES, cmdBuf,
 			BufferRole::UBO, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
 
@@ -482,10 +488,9 @@ private:
 				glm::vec2(x / width_, y / -height_),
 				rightMousePressed);
 
+			//std::cout << camera_.getPosition() << std::endl;
+
 			// Synthetic movement
-			std::cout << camera_.getPosition() << std::endl;
-
-
 			for (size_t i = 0; i < scene_->localTransform.size(); ++i) {
 				glm::mat4& local = scene_->localTransform[i];
 				float phase = std::sin(i + delta_time_ * 0.35f);  // staggered phases
@@ -699,7 +704,9 @@ private:
 			VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 		depthStencil.depthTestEnable = VK_TRUE;
 		depthStencil.depthWriteEnable = VK_TRUE;
-		depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+
+		//depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+		depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
 		depthStencil.depthBoundsTestEnable = VK_FALSE;
 		depthStencil.stencilTestEnable = VK_FALSE;
 
@@ -893,9 +900,20 @@ private:
 		VkPhysicalDeviceProperties properties{};
 		vkGetPhysicalDeviceProperties(physicalDevice, &properties);
 
+		std::cout << "maxUniformBufferRange = "
+			<< properties.limits.maxUniformBufferRange << " bytes\n";
+
+		std::cout << "minUniformBufferOffsetAlignment = "
+			<< properties.limits.minUniformBufferOffsetAlignment << " bytes\n";
+
+		std::cout << "maxStorageBufferRange = "
+			<< properties.limits.maxStorageBufferRange << " bytes\n";
+
 		samplerInfo.anisotropyEnable = VK_TRUE;
 		samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
 		samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+
+		assert(properties.limits.maxUniformBufferRange >= 1 << 16);
 
 		samplerInfo.unnormalizedCoordinates = VK_FALSE;
 		samplerInfo.compareEnable = VK_FALSE;
@@ -1277,7 +1295,8 @@ private:
 			VkDescriptorBufferInfo instanceIndexBufferInfo{
 				.buffer = instanceIndexUniforms_[i].buffer,
 				.offset = 0,
-				.range = sizeof(uint16_t) * MAX_INSTANCES,
+				.range = sizeof(IndexSlot) * MAX_INSTANCES
+				//.range = sizeof(uint16_t) * MAX_INSTANCES,
 				//.range = VK_WHOLE_SIZE
 			};
 			VkDescriptorBufferInfo instanceBufferInfo{
@@ -1473,7 +1492,9 @@ private:
 		depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
 		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		depthAttachment.clearValue.depthStencil = { 1.0f, 0 };
+		//depthAttachment.clearValue.depthStencil = { 1.0f, 0 };
+		//Lets do reverse z
+		depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
 
 		VkRenderingAttachmentInfoKHR colorAttachment{};
 		colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
@@ -2028,7 +2049,7 @@ bool VulkanApp::run() {
 		return false;
 	}
 	glfwMakeContextCurrent(window);
-	//glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	glfwSetWindowTitle(window, ENGINE_NAME);
 	glfwSetKeyCallback(window, VulkanApp::keyCallback);
 	glfwSetCursorPosCallback(window, VulkanApp::mouseCallback);

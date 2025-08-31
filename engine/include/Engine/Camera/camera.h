@@ -5,6 +5,16 @@
 
 #include "Engine/Shared/common.h"
 
+glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear)
+{
+	float f = 1.0f / tan(fovY_radians / 2.0f);
+	return glm::mat4(
+		f / aspectWbyH, 0.0f, 0.0f, 0.0f,
+		0.0f, f, 0.0f, 0.0f,
+		0.0f, 0.0f, 0.0f, -1.0f,
+		0.0f, 0.0f, zNear, 0.0f);
+}
+
 class CameraPositionerInterface
 {
 public:
@@ -28,13 +38,13 @@ public:
 	glm::vec3 getPosition() const { return positioner_->getPosition(); }
 	glm::mat4 getProjMatrix() const { return proj_; }
 
-	//void setOrtho2D(float width, float height) {
-	//	proj_ = glm::ortho(0.0f, width, 0.0f, height, -1.0f, 1.0f);
-	//}
+	void setOrtho2D(float width, float height) {
+		proj_ = glm::ortho(0.0f, width, 0.0f, height, -1.0f, 1.0f);
+	}
 
 	void setPerspective(float fovY, float aspect, float zNear, float zFar) {
-		//proj_ = glm::perspectiveRH_ZO(glm::radians(fovY), aspect, zNear, zFar);
-		proj_ = glm::perspective(glm::radians(fovY), aspect, zNear, zFar);
+		//proj_ = glm::perspective(glm::radians(fovY), aspect, zNear, zFar);
+		proj_ = MakeInfReversedZProjRH(fovY, aspect, zNear);
 	}
 
 private:
@@ -178,7 +188,7 @@ public:
 	float acceleration_ = 15.0f;
 	float damping_ = 0.2f;
 	float maxSpeed_ = 10.0f;
-	float fastCoef_ = 10.0f;
+	float fastCoef_ = 5.0f;
 
 	glm::vec3 cameraPosition_;
 
