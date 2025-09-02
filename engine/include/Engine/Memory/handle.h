@@ -1,9 +1,6 @@
-
 #include <stdint.h>
 
-//class Context;
-
-
+// Lifted from LightweightVk.
 
 // Non-ref counted handles; based on:
 // https://enginearchitecture.realtimerendering.com/downloads/reac2023_modern_mobile_rendering_at_hypehype.pdf
@@ -51,6 +48,7 @@ private:
 static_assert(sizeof(Handle<class Foo>) == sizeof(uint64_t));
 
 // specialized with dummy structs for type safety
+using ImageHandle = Handle<struct Image>;
 //using ComputePipelineHandle = lvk::Handle<struct ComputePipeline>;
 //using RenderPipelineHandle = lvk::Handle<struct RenderPipeline>;
 //using RayTracingPipelineHandle = lvk::Handle<struct RayTracingPipeline>;

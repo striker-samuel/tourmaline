@@ -122,8 +122,13 @@ public:
 				for (size_t i = 0; i < posAcc.count; ++i) {
 					Vertex v{};
 					v.pos = readVec3F(gltfModel, posAcc, i);
+
+
+					// We need to do this because my coords system differs from gltf
 					v.pos[0] *= -1;
 					v.pos[2] *= -1; 
+					
+					
 					v.color = { 1.0f, 1.0f, 1.0f };
 					v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
 					vertices.push_back(v);

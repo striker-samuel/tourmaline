@@ -56,6 +56,8 @@ static constexpr uint32_t MAX_MATERIAL_INSTANCES = 1000;
 static constexpr uint32_t MAX_MATERIALS = 1000;
 
 
+// Dont like thys. currently limited by the 16 byte stride.
+// Maybe i could do away with it but that needs ext checking and enalbing and mods in shader code
 struct alignas(16) IndexSlot {
 	uint32_t idx;      // put the 16-bit value here (zero-extend)
 	uint32_t pad[3];   // 16 bytes total per element
@@ -82,18 +84,14 @@ struct RasterSettings {
 };
 
 
-//CPU Side struct
 struct Material {
 
 	VkShaderModule vert;
 	VkShaderModule frag;
 	RasterSettings raster_settings;
-	uint32_t diffuse;
 
-} default_material;
+};
 
-
-// Gpu Side
 struct MaterialValues {
 	glm::vec4 ambient = glm::vec4(0.0f);
 	glm::vec4 diffuse = glm::vec4(0.0f);
@@ -105,23 +103,14 @@ struct MaterialValues {
 
 static_assert(sizeof(MaterialValues) % 16 == 0);
 
-
-
-struct Texture {
-	VkImage image;
-	VkImage view;
-
-};
-
-
-using ImageHandle = Handle<struct Image>;
-
 class Context {
 
 	VmaAllocator* allocator_;
-	VmaPool pool_;
+	VmaPool G_ImagesPool;
+
 public:
-	Pool<Image, VkImage> imagePool;
+
+	Pool<Image, VkImage> C_ImagePool;
 
 	Context(VmaAllocator* allocator) {
 		allocator_ = allocator;
@@ -134,18 +123,17 @@ public:
 		pci.maxBlockCount = 0;                         // 0 = no explicit upper limit
 		// pci.flags = VMA_POOL_CREATE_IGNORE_BUFFER_IMAGE_GRANULARITY_BIT; // if you know what you’re doing
 
-		if (vmaCreatePool(*allocator_, &pci, &pool_) != VK_SUCCESS) {
+		if (vmaCreatePool(*allocator_, &pci, &G_ImagesPool) != VK_SUCCESS) {
 			throw std::runtime_error("vmaCreatePool failed.");
 		}
 	};
 	~Context() {};
 
-
-	ImageHandle createTextureImage(std::string image_path);
+	ImageHandle createTextureImage(std::string image_path, VkFormat format);
 
 };
 
-ImageHandle Context::createTextureImage(std::string image_path) {
+ImageHandle Context::createTextureImage(std::string image_path, VkFormat format) {
 
 	int texWidth, texHeight, texChannels;
 
@@ -160,7 +148,7 @@ ImageHandle Context::createTextureImage(std::string image_path) {
 
 	VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	imgCI.imageType = VK_IMAGE_TYPE_2D;
-	imgCI.format = VK_FORMAT_R8G8B8A8_UNORM;               // pick your format
+	imgCI.format = format;               // pick your format
 	imgCI.extent = { static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1 };                      // width, height, depth
 	imgCI.mipLevels = 1;                                      // >1 if you want mipmaps
 	imgCI.arrayLayers = 1;                                      // >1 for arrays/cubemaps
@@ -173,7 +161,7 @@ ImageHandle Context::createTextureImage(std::string image_path) {
 
 	VmaAllocationCreateInfo aCI{};
 	aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
-	aCI.pool = pool_;                      // <--- CRITICAL: place this allocation in the pool
+	aCI.pool = G_ImagesPool;                      // <--- CRITICAL: place this allocation in the pool
 
 	VkImage image = VK_NULL_HANDLE;
 	VmaAllocation alloc = VK_NULL_HANDLE;
@@ -184,7 +172,7 @@ ImageHandle Context::createTextureImage(std::string image_path) {
 		throw std::runtime_error("vmaCreateImage (in pool) failed");
 	}
 
-	ImageHandle imgHandle = imagePool.create(std::move(image));
+	ImageHandle imgHandle = C_ImagePool.create(std::move(image));
 
 	return imgHandle;
 
@@ -922,7 +910,7 @@ private:
 
 	// --------------------------
 
-	ImageHandle createTextureImage(std::string texture_path) {
+	ImageHandle createTextureImage(std::string texture_path, VkFormat format) {
 		int texWidth, texHeight, texChannels;
 
 		stbi_uc* pixels = stbi_load(texture_path.c_str(), &texWidth, &texHeight,
@@ -949,8 +937,8 @@ private:
 		stbi_image_free(pixels);
 
 
-		auto imghandle = context->createTextureImage(texture_path);
-		auto texture_image = context->imagePool.get(imghandle);
+		auto imghandle = context->createTextureImage(texture_path, format);
+		auto texture_image = context->C_ImagePool.get(imghandle);
 
 		//createImage(
 		//	texWidth,
@@ -987,10 +975,11 @@ private:
 
 	}
 
-	void createTextureImageView(const VkImage* textureImage, VkImageView* textureImageView) {
+	void createTextureImageView(const VkImage* textureImage, VkImageView* textureImageView, VkFormat format) {
 		createImageView(
 			*textureImage,
-			VK_FORMAT_R8G8B8A8_SRGB,
+			format,
+			//VK_FORMAT_R8G8B8A8_SRGB,
 			VK_IMAGE_ASPECT_COLOR_BIT,
 			*textureImageView
 		);
@@ -1972,31 +1961,37 @@ void VulkanApp::LoadScene() {
 	);
 
 	auto image1 = createTextureImage(
-		"textures/viking_room.png"
+		"textures/viking_room.png",
+		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 	auto image2 = createTextureImage(
-		"textures/texture.jpg"
+		"textures/texture.jpg",
+		VK_FORMAT_R8G8B8A8_SRGB
 	);
 	auto image3 = createTextureImage(
-		"models/avocado_gltf/Avocado_baseColor.png"
+		"models/avocado_gltf/Avocado_baseColor.png",
+		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 
 	createTextureImageView(
-		context->imagePool.get(image1),
-		&test_pool_.materials_[0].imageView
+		context->C_ImagePool.get(image1),
+		&test_pool_.materials_[0].imageView,
+		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 
 	createTextureImageView(
-		context->imagePool.get(image2),
-		&test_pool_.materials_[1].imageView
+		context->C_ImagePool.get(image2),
+		&test_pool_.materials_[1].imageView,
+		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 	createTextureImageView(
-		context->imagePool.get(image3),
-		&test_pool_.materials_[2].imageView
+		context->C_ImagePool.get(image3),
+		&test_pool_.materials_[2].imageView,
+		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 
