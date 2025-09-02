@@ -1,4 +1,9 @@
-class Context;
+
+#include <stdint.h>
+
+//class Context;
+
+
 
 // Non-ref counted handles; based on:
 // https://enginearchitecture.realtimerendering.com/downloads/reac2023_modern_mobile_rendering_at_hypehype.pdf
@@ -67,69 +72,69 @@ static_assert(sizeof(Handle<class Foo>) == sizeof(uint64_t));
 //void destroy(lvk::Context* ctx, lvk::QueryPoolHandle handle);
 //void destroy(lvk::Context* ctx, lvk::AccelStructHandle handle);
 
-template<typename HandleType>
-class Holder final {
-public:
-    Holder() = default;
-    Holder(lvk::Context* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
-    ~Holder() {
-        lvk::destroy(ctx_, handle_);
-    }
-    Holder(const Holder&) = delete;
-    Holder(Holder&& other) : ctx_(other.ctx_), handle_(other.handle_) {
-        other.ctx_ = nullptr;
-        other.handle_ = HandleType{};
-    }
-    Holder& operator=(const Holder&) = delete;
-    Holder& operator=(Holder&& other) {
-        std::swap(ctx_, other.ctx_);
-        std::swap(handle_, other.handle_);
-        return *this;
-    }
-    Holder& operator=(std::nullptr_t) {
-        this->reset();
-        return *this;
-    }
-
-    inline operator HandleType() const {
-        return handle_;
-    }
-
-    bool valid() const {
-        return handle_.valid();
-    }
-
-    bool empty() const {
-        return handle_.empty();
-    }
-
-    void reset() {
-        lvk::destroy(ctx_, handle_);
-        ctx_ = nullptr;
-        handle_ = HandleType{};
-    }
-
-    HandleType release() {
-        ctx_ = nullptr;
-        return std::exchange(handle_, HandleType{});
-    }
-
-    uint32_t gen() const {
-        return handle_.gen();
-    }
-    uint32_t index() const {
-        return handle_.index();
-    }
-    void* indexAsVoid() const {
-        return handle_.indexAsVoid();
-    }
-
-private:
-    lvk::Context* ctx_ = nullptr;
-    HandleType handle_ = {};
-};
-
-
-// type specialization with dummy structs. lifted from lightweightVk
-using BufferHandle = lvk::Handle<struct Buffer>;
-
+//template<typename HandleType>
+//class Holder final {
+//public:
+//    Holder() = default;
+//    Holder(lvk::Context* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
+//    ~Holder() {
+//        lvk::destroy(ctx_, handle_);
+//    }
+//    Holder(const Holder&) = delete;
+//    Holder(Holder&& other) : ctx_(other.ctx_), handle_(other.handle_) {
+//        other.ctx_ = nullptr;
+//        other.handle_ = HandleType{};
+//    }
+//    Holder& operator=(const Holder&) = delete;
+//    Holder& operator=(Holder&& other) {
+//        std::swap(ctx_, other.ctx_);
+//        std::swap(handle_, other.handle_);
+//        return *this;
+//    }
+//    Holder& operator=(std::nullptr_t) {
+//        this->reset();
+//        return *this;
+//    }
+//
+//    inline operator HandleType() const {
+//        return handle_;
+//    }
+//
+//    bool valid() const {
+//        return handle_.valid();
+//    }
+//
+//    bool empty() const {
+//        return handle_.empty();
+//    }
+//
+//    void reset() {
+//        lvk::destroy(ctx_, handle_);
+//        ctx_ = nullptr;
+//        handle_ = HandleType{};
+//    }
+//
+//    HandleType release() {
+//        ctx_ = nullptr;
+//        return std::exchange(handle_, HandleType{});
+//    }
+//
+//    uint32_t gen() const {
+//        return handle_.gen();
+//    }
+//    uint32_t index() const {
+//        return handle_.index();
+//    }
+//    void* indexAsVoid() const {
+//        return handle_.indexAsVoid();
+//    }
+//
+//private:
+//    lvk::Context* ctx_ = nullptr;
+//    HandleType handle_ = {};
+//};
+//
+//
+//// type specialization with dummy structs. lifted from lightweightVk
+//using BufferHandle = lvk::Handle<struct Buffer>;
+//

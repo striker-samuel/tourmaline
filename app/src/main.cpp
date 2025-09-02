@@ -1,5 +1,7 @@
 #pragma once
-
+#define VMA_DEBUG_INITIALIZE_ALLOCATIONS 1
+#define VMA_DEBUG_DETECT_CORRUPTION 1
+#define VMA_ASSERT(expr) assert(expr)
 # define ENGINE_NAME "VulkanToy"
 
 #include <cassert>
@@ -22,7 +24,8 @@
 // ------------------------------------
 
 #include <Engine/Vulkan/vulkan_helpers.h>
-//#include <Engine/Memory/pool.h>
+#include <Engine/Memory/handle.h>
+#include <Engine/Memory/pool.h>
 
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
@@ -104,7 +107,106 @@ static_assert(sizeof(MaterialValues) % 16 == 0);
 
 
 
-class Pool {
+struct Texture {
+	VkImage image;
+	VkImage view;
+
+};
+
+
+using ImageHandle = Handle<struct Image>;
+
+class Context {
+
+	VmaAllocator* allocator_;
+	VmaPool pool_;
+public:
+	Pool<Image, VkImage> imagePool;
+
+	Context(VmaAllocator* allocator) {
+		allocator_ = allocator;
+
+		VmaPoolCreateInfo pci{};
+		pci.memoryTypeIndex = 0;
+		//pci.memoryTypeIndex = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+		pci.blockSize = 64 * 1024 * 1024;          // 64 MB blocks (tune for your content)
+		pci.minBlockCount = 1;                         // start with one block
+		pci.maxBlockCount = 0;                         // 0 = no explicit upper limit
+		// pci.flags = VMA_POOL_CREATE_IGNORE_BUFFER_IMAGE_GRANULARITY_BIT; // if you know what you’re doing
+
+		if (vmaCreatePool(*allocator_, &pci, &pool_) != VK_SUCCESS) {
+			throw std::runtime_error("vmaCreatePool failed.");
+		}
+	};
+	~Context() {};
+
+
+	ImageHandle createTextureImage(std::string image_path);
+
+};
+
+ImageHandle Context::createTextureImage(std::string image_path) {
+
+	int texWidth, texHeight, texChannels;
+
+	stbi_uc* pixels = stbi_load(image_path.c_str(), &texWidth, &texHeight,
+		&texChannels, STBI_rgb_alpha);
+
+	VkDeviceSize imageSize = texWidth * texHeight * 4;
+
+	if (!pixels) {
+		throw std::runtime_error("failed to load texture image!");
+	}
+
+	VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	imgCI.imageType = VK_IMAGE_TYPE_2D;
+	imgCI.format = VK_FORMAT_R8G8B8A8_UNORM;               // pick your format
+	imgCI.extent = { static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1 };                      // width, height, depth
+	imgCI.mipLevels = 1;                                      // >1 if you want mipmaps
+	imgCI.arrayLayers = 1;                                      // >1 for arrays/cubemaps
+	imgCI.samples = VK_SAMPLE_COUNT_1_BIT;                  // MSAA? set >1
+	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;                // GPU-friendly
+	imgCI.usage = VK_IMAGE_USAGE_SAMPLED_BIT              // sample as texture
+		| VK_IMAGE_USAGE_TRANSFER_DST_BIT;        // upload via copy
+	imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	imgCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;              // we’ll transition later. Well jus use transition General always
+
+	VmaAllocationCreateInfo aCI{};
+	aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
+	aCI.pool = pool_;                      // <--- CRITICAL: place this allocation in the pool
+
+	VkImage image = VK_NULL_HANDLE;
+	VmaAllocation alloc = VK_NULL_HANDLE;
+	VmaAllocationInfo allocInfo{};
+
+	VkResult res = vmaCreateImage(*allocator_, &imgCI, &aCI, &image, &alloc, &allocInfo);
+	if (res != VK_SUCCESS) {
+		throw std::runtime_error("vmaCreateImage (in pool) failed");
+	}
+
+	ImageHandle imgHandle = imagePool.create(std::move(image));
+
+	return imgHandle;
+
+}
+
+//
+//struct Result {
+//	enum class Code {
+//		Ok,
+//		Fail,
+//		Out
+//	};
+//
+//	Code code = Code::Ok;
+//	const char* message = "";
+//	explicit Result() = default;
+//	explicit Result(Code code, const char* message = "") : code(code), message(message) {}
+//
+//};
+//
+
+class StupidPool {
 
 public:
 	std::vector<Mesh> meshes_ = { Quad, Triangle };
@@ -112,13 +214,14 @@ public:
 	std::vector<VkDescriptorSet> mat_descs_{};
 
 
-	Pool() {
+	StupidPool() {
 		meshes_.reserve(MAX_MESHES);
 		materials_.reserve(MAX_MATERIALS);
 		mat_descs_.reserve(MAX_MATERIALS);
 	}
 
 };
+
 
 class VulkanApp {
 
@@ -131,7 +234,8 @@ public:
 
 private:
 
-	Pool test_pool_;
+	StupidPool test_pool_;
+	Context* context;
 
 	Scene* scene_ = &default_scene;
 
@@ -139,6 +243,8 @@ private:
 	uint32_t instance_count_ = 10;
 
 	VmaAllocator app_allocator_;
+
+	// 
 
 	VkBuffer static_vertex_buffer_;
 	VmaAllocation static_vertex_allocation_;
@@ -346,14 +452,11 @@ private:
 			idnexSlotData[i].idx = static_cast<uint32_t>(indexData[i]); // zero-extend
 		}
 
-		VkResult result;
+		VkResult result{};
 
 		// This is bad, will stall. Frame update should use same command buffer for all update operations.
 		// FrameGraph! FrameGraph!
 		VkCommandBuffer cmdBuf = beginSingleTimeCommands();
-
-
-
 
 		static_assert(sizeof(IndexSlot) * MAX_INSTANCES < (1 << 16),
 			"Instance buffer too large for 64KB UBO limit");
@@ -372,7 +475,7 @@ private:
 	}
 
 	void LoadScene();
-	void UploadScene();
+	void UploadMeshData();
 
 #pragma region ===[ Input ]===
 
@@ -803,7 +906,8 @@ private:
 	void createDepthResources() {
 		VkFormat depthFormat = findDepthFormat(physicalDevice);
 
-		main_d_alloc = createImage(
+		//main_d_alloc = 
+		createImage(
 			swapChainExtent.width,
 			swapChainExtent.height,
 			depthFormat,
@@ -818,7 +922,7 @@ private:
 
 	// --------------------------
 
-	void createTextureImage(std::string texture_path, VkImage* texture_image) {
+	ImageHandle createTextureImage(std::string texture_path) {
 		int texWidth, texHeight, texChannels;
 
 		stbi_uc* pixels = stbi_load(texture_path.c_str(), &texWidth, &texHeight,
@@ -844,15 +948,19 @@ private:
 
 		stbi_image_free(pixels);
 
-		createImage(
-			texWidth,
-			texHeight,
-			VK_FORMAT_R8G8B8A8_SRGB,
-			VK_IMAGE_TILING_OPTIMAL,
-			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-			*texture_image
-		);
+
+		auto imghandle = context->createTextureImage(texture_path);
+		auto texture_image = context->imagePool.get(imghandle);
+
+		//createImage(
+		//	texWidth,
+		//	texHeight,
+		//	VK_FORMAT_R8G8B8A8_SRGB,
+		//	VK_IMAGE_TILING_OPTIMAL,
+		//	VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		//	VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		//	*texture_image
+		//);
 
 		transitionImageLayout(
 			*texture_image,
@@ -875,6 +983,7 @@ private:
 
 		vkDestroyBuffer(device, stagingBuffer, nullptr);
 		vkFreeMemory(device, stagingBufferMemory, nullptr);
+		return imghandle;
 
 	}
 
@@ -899,15 +1008,6 @@ private:
 
 		VkPhysicalDeviceProperties properties{};
 		vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-
-		std::cout << "maxUniformBufferRange = "
-			<< properties.limits.maxUniformBufferRange << " bytes\n";
-
-		std::cout << "minUniformBufferOffsetAlignment = "
-			<< properties.limits.minUniformBufferOffsetAlignment << " bytes\n";
-
-		std::cout << "maxStorageBufferRange = "
-			<< properties.limits.maxStorageBufferRange << " bytes\n";
 
 		samplerInfo.anisotropyEnable = VK_TRUE;
 		samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
@@ -958,7 +1058,7 @@ private:
 
 	}
 
-	VmaAllocation createImage(
+	void createImage(
 		uint32_t width,
 		uint32_t height,
 		VkFormat format,
@@ -967,6 +1067,7 @@ private:
 		VkMemoryPropertyFlags properties,
 		VkImage& image
 	) {
+
 
 		VkImageCreateInfo imgCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 		imgCreateInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -990,7 +1091,7 @@ private:
 
 		VmaAllocation alloc;
 		vmaCreateImage(app_allocator_, &imgCreateInfo, &allocCreateInfo, &image, &alloc, nullptr);
-		return alloc;
+		//return alloc;
 	}
 
 	void transitionImageLayout(VkImage image, VkFormat format,
@@ -1783,6 +1884,19 @@ private:
 	}
 };
 
+//
+//Handle<Material> VulkanApp::createMaterial() {
+//
+//}
+//
+//Handle<Instance> VulkanApp::createInstance() {
+//	trasnform.
+//	mesh->search in hash map.upload if it doesnt exist;
+//	material-> 
+//
+//	ctx-> createInstnace(mesh_id, material)
+//}
+
 void VulkanApp::LoadScene() {
 	// First node.
 
@@ -1810,7 +1924,6 @@ void VulkanApp::LoadScene() {
 
 	scene_->meshForNode[0] = 1;
 	scene_->materialForNode[0] = 0;
-	//scene_->localTransform[0] = glm::translate(m_m, glm::vec3(5, 0, 0));
 
 	scene_->meshForNode[1] = 3;
 	scene_->materialForNode[1] = 1;
@@ -1858,34 +1971,31 @@ void VulkanApp::LoadScene() {
 		&pipelineLayout
 	);
 
-	createTextureImage(
-		"textures/viking_room.png",
-		&test_pool_.materials_[0].image
+	auto image1 = createTextureImage(
+		"textures/viking_room.png"
 	);
 
-	createTextureImage(
-		"textures/texture.jpg",
-		&test_pool_.materials_[1].image
+	auto image2 = createTextureImage(
+		"textures/texture.jpg"
 	);
-	createTextureImage(
-		"models/avocado_gltf/Avocado_baseColor.png",
-		&test_pool_.materials_[2].image
+	auto image3 = createTextureImage(
+		"models/avocado_gltf/Avocado_baseColor.png"
 	);
 
 
 	createTextureImageView(
-		&test_pool_.materials_[0].image,
+		context->imagePool.get(image1),
 		&test_pool_.materials_[0].imageView
 	);
 
 
 	createTextureImageView(
-		&test_pool_.materials_[1].image,
+		context->imagePool.get(image2),
 		&test_pool_.materials_[1].imageView
 	);
 
 	createTextureImageView(
-		&test_pool_.materials_[2].image,
+		context->imagePool.get(image3),
 		&test_pool_.materials_[2].imageView
 	);
 
@@ -1905,8 +2015,9 @@ void VulkanApp::LoadScene() {
 
 }
 
-void VulkanApp::UploadScene() {
-
+void VulkanApp::UploadMeshData() {
+	// Upload Mesh data
+	// query meshes for upload.
 
 	uint32_t static_vertex_buffer_size = 0;
 	uint32_t static_index_buffer_size = 0;
@@ -2024,7 +2135,6 @@ void VulkanApp::UploadScene() {
 
 bool VulkanApp::run() {
 
-	camera_.setPerspective(45.0f, float(width_) / float(height_), near_clip, far_clip);
 
 	// ---------------
 
@@ -2060,7 +2170,12 @@ bool VulkanApp::run() {
 	glfwSetWindowUserPointer(window, this);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
+	// Pick physical device, create logical device, gather queus. Create VMA allocator
 	initVulkanApp();
+
+	createSwapChain();
+	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
+	createSwapchainImageViews();
 
 	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
 
@@ -2077,10 +2192,16 @@ bool VulkanApp::run() {
 		}
 	}
 
-	LoadScene();
-	UploadScene();
+	// ----
 
-	// FIXED SIZES
+	camera_.setPerspective(45.0f, float(width_) / float(height_), near_clip, far_clip);
+
+	LoadScene();
+
+	// This shoudl be moved to ctx
+
+	UploadMeshData();
+
 	createUniformBuffers();
 	createInstanceDataBuffers();
 
@@ -2195,6 +2316,24 @@ void VulkanApp::initVulkanApp() {
 		throw std::runtime_error("failed to find a suitable GPU!");
 	}
 
+	VkPhysicalDeviceProperties properties{};
+	vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+
+#ifndef DEBUG
+
+	std::cout << "----DEVICE INFO-----" << std::endl;
+
+	std::cout << "	maxUniformBufferRange = "
+		<< properties.limits.maxUniformBufferRange << " bytes\n";
+
+	std::cout << "	minUniformBufferOffsetAlignment = "
+		<< properties.limits.minUniformBufferOffsetAlignment << " bytes\n";
+
+	std::cout << "	maxStorageBufferRange = "
+		<< properties.limits.maxStorageBufferRange << " bytes\n\n";
+#endif
+
+
 	// Create Logical Device
 	{
 		QueueFamilyIndices indices = findQueueFamilies(physicalDevice, surface);
@@ -2274,12 +2413,9 @@ void VulkanApp::initVulkanApp() {
 	allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
 
 	res = vmaCreateAllocator(&allocatorCreateInfo, &app_allocator_);
+	assert(res == VK_SUCCESS);
 
-
-	createSwapChain();
-	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
-	createSwapchainImageViews();
-
+	context = new Context(&app_allocator_); // remember to delete it on shutdown
 }
 
 int main(int argc, const char* argv[]) {
@@ -2287,7 +2423,7 @@ int main(int argc, const char* argv[]) {
 		std::cout << argv[0];
 	}
 
-	VulkanApp app;
+	VulkanApp app = VulkanApp();
 	try {
 		app.run();
 	}
