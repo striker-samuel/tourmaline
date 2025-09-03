@@ -39,7 +39,8 @@ PSOut mainPS(PSIn IN)
 
     // pc.material_index is uniform (push constant), so no NonUniformResourceIndex needed.
     uint idx = (uint) pc.material_index;
-    OUT.outColor = materialTex[idx].Sample(materialSamp[idx], IN.fragTexCoord);
+    OUT.outColor = float4(IN.fragColor.x, IN.fragColor.y, IN.fragColor.z, 1.0f);
+    //OUT.outColor = materialTex[idx].Sample(materialSamp[idx], IN.fragTexCoord);
 
     return OUT;
 }

@@ -71,6 +71,7 @@ struct Mesh {
 Mesh Quad = Mesh(quad_vertices, quad_indices_ccw, 0, 0);
 Mesh Triangle = Mesh(triangle_vertices, triangle_indices_ccw, 0, 0);
 
+
 // We hit the masUBOsize limit fast. Be careful. We may need to encode better.
 // Maybe we can get away with float12 with implied 0,0,0,1 last row.
 struct InstanceData {
@@ -82,7 +83,7 @@ struct InstanceData {
 		0.0f, 0.0f, 1.0f, 0.0f,
 		0.0f, 0.0f, 0.0f, 1.0f
 	};
-	//float4 color = {1.0f, 1.0f, 1.0f, 1.0f};
+	glm::float4 color = {1.0f, 1.0f, 1.0f, 1.0f};
 	//uint32_t meshIndex;
 	//uint32_t indexOffset;
 	//uint32_t materialIndex;

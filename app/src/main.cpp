@@ -427,6 +427,9 @@ private:
 				data[i].transform,
 				glm::value_ptr(tr),
 				sizeof(float) * 16);
+
+			data[i].color = { i*20,i,i,i };
+
 			i++;
 		}
 
@@ -1386,13 +1389,10 @@ private:
 				.buffer = instanceIndexUniforms_[i].buffer,
 				.offset = 0,
 				.range = sizeof(IndexSlot) * MAX_INSTANCES
-				//.range = sizeof(uint16_t) * MAX_INSTANCES,
-				//.range = VK_WHOLE_SIZE
 			};
 			VkDescriptorBufferInfo instanceBufferInfo{
 				.buffer = instanceDataUniforms_[i].buffer,
 				.offset = 0,
-
 				.range = sizeof(InstanceData) * MAX_INSTANCES,
 			};
 

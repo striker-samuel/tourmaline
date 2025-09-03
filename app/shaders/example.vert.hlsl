@@ -35,9 +35,16 @@ cbuffer IndexUBO : register(b0, space0)
     IndexStd140 indicesStd140[MAX_INSTANCES];
 }
 
+// This can easily get outdated. Be careful.
+struct InstanceData
+{
+    float4x4 transform;
+    float4 color;
+};
+
 // Explicit Vulkan binding (set=0, binding=1)
 [[vk::binding(1, 0)]]
-StructuredBuffer<float4x4> instanceModel;
+StructuredBuffer<InstanceData> instance_data;
 
 // --- Vertex I/O
 // GLSL: layout(location=0/1/2) in ... ; and location 0/1 out ...
@@ -69,11 +76,12 @@ VSOut mainVS(VSIn IN)
     // Position transform:
     // GLSL: pc.proj * pc.view * M * vec4(inPosition, 1.0)
     float4 world = float4(IN.inPosition, 1.0f);
-    float4x4 model = instanceModel[idx];
+    float4x4 model = instance_data[idx].transform;
     float4 clip = mul(pc.proj, mul(pc.view, mul(model, world)));
 
     OUT.pos = clip;
-    OUT.fragColor = IN.inColor;
+    OUT.fragColor = instance_data[idx].color;
+    //OUT.fragColor = IN.inColor;
     OUT.fragTexCoord = IN.inTexCoord;
     return OUT;
 }
