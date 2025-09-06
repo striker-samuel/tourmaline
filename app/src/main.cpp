@@ -38,15 +38,13 @@
 // Moved readFile here. readFile rnow is just used to read shader files
 #include <Engine/fileIO.h>
 
-Scene default_scene = Scene();
-
 static constexpr uint32_t WIDTH = 1280;
 static constexpr uint32_t HEIGHT = 720;
 
 static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
-static constexpr float near_clip = 0.01f;
-static constexpr float far_clip = 100.0f;
+static constexpr float default_near_clip = 0.01f;
+static constexpr float default_far_clip = 100.0f;
 
 // Yes, I'm hardcapping here for development.
 static constexpr uint32_t MAX_INSTANCES = 1000;
@@ -54,6 +52,16 @@ static constexpr uint32_t MAX_MESHES = 1000;
 static constexpr uint32_t MAX_TEXTURES = 4096;
 static constexpr uint32_t MAX_MATERIAL_INSTANCES = 1000;
 static constexpr uint32_t MAX_MATERIALS = 1000;
+
+
+struct HostInstance {
+
+	// We can just use Handles, reserve untyped uint32_t indexing for GPU structs
+	/*uint32_t*/ MeshHandle mesh;
+	MaterialInstanceHandle material;
+	uint32_t scene_node;
+	// named?
+};
 
 
 // Dont like thys. currently limited by the 16 byte stride.
@@ -64,13 +72,33 @@ struct alignas(16) IndexSlot {
 };
 static_assert(sizeof(IndexSlot) % 16 == 0);
 
-
 struct PushConstants {
 	glm::mat4 view;
 	glm::mat4 proj;
-	int material_index;
+	// The MaterialPipeline should be binded to desired material. This only gets us bindless addresing of the instnanceSlots.
+	// A single MaterialModel. shader code, layout , rastersettings, can have many instancs with individual image attachments and constants.
+	int material_instance_index;
 	uint32_t     _pad0[3];
 };
+
+// Lets go with uniform_layouts ext. GENERAL and UNDEFINED
+struct Texture {
+
+	VmaAllocation allocation;
+	VkImage image;
+	VkImageView imageView;
+
+	// This is far from good.
+	VkSampler sampler;
+	// Other properties and attributes
+
+	// I could use debug name
+	// Srgb/lienar others
+	VkFormat format;
+
+};
+
+
 
 // Initialized with crude defaults;
 struct RasterSettings {
@@ -81,59 +109,158 @@ struct RasterSettings {
 	uint32_t cullMode = VK_CULL_MODE_BACK_BIT;
 	uint32_t frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	uint32_t depthBiasEnable = VK_FALSE;
+} default_raster_settings;
+
+
+// There a reserved of madnatory layout part around pc range and IsntanceData ssbo. For ViewProj, IntanceData (Lod, mesh)
+// Can we encode this in a struct. Dont need to cover all cases. Use provided if needed.
+struct PipelineLayout {
+
 };
 
 
-struct Material {
-
+// Materials aabstractions area really PipelineObjets. Raster conf, shader objs, descriptorlayout. 
+// MaterialAttachments must match desc layout, adn MaterialConstants pc layout
+// So we bake the POS. VkPipelineCache not implemented now
+struct MaterialPipeline {
+	RasterSettings raster_settings;
 	VkShaderModule vert;
 	VkShaderModule frag;
-	RasterSettings raster_settings;
-
+	PipelineLayout layout; // This should resolve to VkDescriptorLayout
 };
 
-struct MaterialValues {
+
+// Im not covinved by this at all;
+struct MaterialAttachment {
+	uint32_t slot;
+	TextureHandle tex;
+	//useType
+};
+
+// This gets uploaded to Device. stride contraints. no Handles!
+// This will go with pushcontants. May require specialization per shader model
+struct MaterialPushConstants {
 	glm::vec4 ambient = glm::vec4(0.0f);
 	glm::vec4 diffuse = glm::vec4(0.0f);
-	uint32_t texAmbient = 0;
+	uint32_t texAmbient = 0; // this are not index to textures. for now at least;
 	uint32_t texDiffuse = 0;
 	uint32_t texAlpha = 0;
 	uint32_t padding[1];
+} default_mat_pc;
+
+static_assert(sizeof(MaterialPushConstants) % 16 == 0);
+
+
+struct MaterialInstance {
+	//MaterialPipelineHandle pipeline;
+	//MaterialPushConstants pv_values;
+	MaterialAttachment attached[5];
 };
 
-static_assert(sizeof(MaterialValues) % 16 == 0);
+
+
+struct DeviceBufferDesc {
+	VkBuffer buffer;
+	VmaAllocation alloc;
+	VmaAllocationInfo allocInfo;
+	VkDeviceSize size;
+	// Did it end in mappable memory? This is important to know for proper upload. Discard the bool in the future use 
+	VkMemoryPropertyFlags memory_flags;
+
+
+	// Helpers to interrogate buffer
+	bool is_mapapble() {
+		return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+	}
+
+};
+
 
 class Context {
 
+	// 1 allocator per device. Device is implicit in allocator...
 	VmaAllocator* allocator_;
-	VmaPool G_ImagesPool;
+
+	// These three things are primary citizens of Device Memory Residency
+	VmaPool D_ImagesPool;
+	VmaPool D_ShaderPool;
+
+	// Skinned. Static. Dynamic ->
+	VmaPool D_DynamicMeshPool;
+
 
 public:
 
-	Pool<Image, VkImage> C_ImagePool;
+	// We neeed VkDescriptorPool pools here
+	// We move from VkDp to another because its cheaper to reset them than to evict particular sets.
+	// Same with CommandPools. I have a stupid simple design now with just 1 CommandPool.
+	Pool<Buffer, DeviceBufferDesc> buffersPool_;
+	Pool<Texture, Texture> texturesPool_;
+
+	Pool<MaterialPipeline, MaterialPipeline> matPipePool_;
+	Pool<MaterialInstance, MaterialInstance> materialInstancesPool_;
 
 	Context(VmaAllocator* allocator) {
 		allocator_ = allocator;
+
+		// Lets reserve upfront.
+		texturesPool_.objects_.reserve(MAX_TEXTURES);
+		// This is a small reservation. just testing 
+		buffersPool_.objects_.reserve(1000);
+
+
+		InitializeDeviceVmaPools();
+
+	};
+	~Context() {};
+
+	void InitializeDeviceVmaPools() {
 
 		VmaPoolCreateInfo pci{};
 		pci.memoryTypeIndex = 0;
 		//pci.memoryTypeIndex = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 		pci.blockSize = 64 * 1024 * 1024;          // 64 MB blocks (tune for your content)
 		pci.minBlockCount = 1;                         // start with one block
-		pci.maxBlockCount = 0;                         // 0 = no explicit upper limit
+		pci.maxBlockCount = 0;                         // 0 = no explicit upper limit. // Ill not specify nothing here. My Host pool has limited slots already :9
 		// pci.flags = VMA_POOL_CREATE_IGNORE_BUFFER_IMAGE_GRANULARITY_BIT; // if you know what you’re doing
 
-		if (vmaCreatePool(*allocator_, &pci, &G_ImagesPool) != VK_SUCCESS) {
+		if (vmaCreatePool(*allocator_, &pci, &D_ImagesPool) != VK_SUCCESS) {
 			throw std::runtime_error("vmaCreatePool failed.");
 		}
-	};
-	~Context() {};
+	}
 
-	ImageHandle createTextureImage(std::string image_path, VkFormat format);
+	TextureHandle createTextureImage(std::string image_path, VkFormat format);
+	BufferHandle createBuffer();
+	MaterialPipelineHandle createMaterialPipeline(MaterialPipeline mat_pipeline);
+	MaterialInstanceHandle createMaterialInstance();
+};
+
+
+// Need device allcoation freeing
+
+void destroy(Context* ctx, TextureHandle handle) {
+
+	// We need to free from device pool.
+	ctx->texturesPool_.destroy(handle);
+};
+
+void destroy(Context* ctx, BufferHandle handle) {
+
+	// We need to freee device allocation
+	ctx->buffersPool_.destroy(handle);
 
 };
 
-ImageHandle Context::createTextureImage(std::string image_path, VkFormat format) {
+
+MaterialInstanceHandle Context::createMaterialInstance() {
+	auto r = materialInstancesPool_.create(std::move(MaterialInstance{}));
+		return r;
+
+
+};
+
+
+TextureHandle Context::createTextureImage(std::string image_path, VkFormat format) {
 
 	int texWidth, texHeight, texChannels;
 
@@ -161,7 +288,7 @@ ImageHandle Context::createTextureImage(std::string image_path, VkFormat format)
 
 	VmaAllocationCreateInfo aCI{};
 	aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
-	aCI.pool = G_ImagesPool;                      // <--- CRITICAL: place this allocation in the pool
+	aCI.pool = D_ImagesPool;                      // <--- CRITICAL: place this allocation in the pool
 
 	VkImage image = VK_NULL_HANDLE;
 	VmaAllocation alloc = VK_NULL_HANDLE;
@@ -172,39 +299,36 @@ ImageHandle Context::createTextureImage(std::string image_path, VkFormat format)
 		throw std::runtime_error("vmaCreateImage (in pool) failed");
 	}
 
-	ImageHandle imgHandle = C_ImagePool.create(std::move(image));
+
+	Texture tex{};
+	tex.allocation = alloc;
+	tex.format = format;
+	tex.image = image;
+	//tex.imageView
+
+	TextureHandle imgHandle = texturesPool_.create(std::move(tex));
 
 	return imgHandle;
 
 }
 
-//
-//struct Result {
-//	enum class Code {
-//		Ok,
-//		Fail,
-//		Out
-//	};
-//
-//	Code code = Code::Ok;
-//	const char* message = "";
-//	explicit Result() = default;
-//	explicit Result(Code code, const char* message = "") : code(code), message(message) {}
-//
-//};
-//
+BufferHandle Context::createBuffer() {
+
+	DeviceBufferDesc bd = {  };
+	auto a = buffersPool_.create(std::move(bd));
+	return a;
+}
+
 
 class StupidPool {
 
 public:
 	std::vector<Mesh> meshes_ = { Quad, Triangle };
-	std::vector<MaterialDefinition> materials_{};
 	std::vector<VkDescriptorSet> mat_descs_{};
 
 
 	StupidPool() {
 		meshes_.reserve(MAX_MESHES);
-		materials_.reserve(MAX_MATERIALS);
 		mat_descs_.reserve(MAX_MATERIALS);
 	}
 
@@ -225,14 +349,16 @@ private:
 	StupidPool test_pool_;
 	Context* context;
 
-	Scene* scene_ = &default_scene;
+
+	//  Defaulting to empty scene
+	Scene* scene_ = new Scene();
 
 	InstanceData instance_data_[MAX_INSTANCES];
 	uint32_t instance_count_ = 10;
 
+	// 1 allotore per device and instance. =)
+	// So just one
 	VmaAllocator app_allocator_;
-
-	// 
 
 	VkBuffer static_vertex_buffer_;
 	VmaAllocation static_vertex_allocation_;
@@ -254,6 +380,10 @@ private:
 
 	float delta_time_;
 
+	// This is bad. We coupled View with app...
+	// Although i like the single cameraView model for an app. Lets not complicate setup
+	// I dont want to stablish layouts for multicamera view. then compose ui on top
+	// Memory was already split to Context.
 	Camera camera_ = Camera(cameraPositioner);
 
 #pragma endregion
@@ -275,15 +405,6 @@ private:
 	VkImageView main_depthImageView;
 	VmaAllocation main_d_alloc;
 
-#pragma region ===[ Texture Resources ]===
-
-	// Lets do arrays of MAX_TEXTURES.
-	//VkImage* textureImages;
-	//VkImageView* textureImageViews;
-	//VkSampler* textureSamplers;
-
-#pragma endregion
-
 #pragma region ===[ Descriptors ]===
 
 	VkDescriptorPool descriptorPool;
@@ -304,32 +425,38 @@ private:
 	VkDevice device;
 #pragma endregion
 
-#pragma region ===[ Uniforms / Descriptor Sets ]===
 
-	UniformBufferAllocation uniforms_[MAX_FRAMES_IN_FLIGHT];
-	UniformBufferAllocation instanceDataUniforms_[MAX_FRAMES_IN_FLIGHT];
-	UniformBufferAllocation instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
+	// We need to move this to context;
+
+#pragma region ===[ Uniforms / Descriptor Sets ]==
+	DeviceBufferDesc uniforms_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferDesc instanceDataUniforms_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferDesc instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
 
-#pragma region ===[ Pipeline / Render Resources ]===
 
+	// We need to move these to context. Aslo, Material Abstraction;
 	// These are not single objects! Should be made pools. 
 	VkDescriptorSetLayout descriptorSetLayout;
 	VkPipelineLayout pipelineLayout;
 	VkPipeline graphicsPipeline;
 	// *
 
+#pragma region ===[ Pipeline / Render Resources ]===
 	// We separate command pools for each frames becuase its cheaper to reset them this way
 	VkCommandPool framesCommandPool[MAX_FRAMES_IN_FLIGHT];
 	VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
 
+	// Ok, yes. lets do sync on app code. No framegraph yet :)
 #pragma region ===[ Synchronization Primitives ]===
+
 	VkSemaphore * renderFinishedSemaphores;
 	VkSemaphore imageAvailableSemaphores[MAX_FRAMES_IN_FLIGHT];
 	VkFence inFlightFences[MAX_FRAMES_IN_FLIGHT];
+
 	uint32_t currentFrame = 0;
 #pragma endregion
 
@@ -363,7 +490,7 @@ private:
 	enum class BufferRole { UBO, SSBO };
 
 	void UploadDataToBuffer(
-		UniformBufferAllocation& ubo,
+		DeviceBufferDesc& bufDesc,
 		void* data,
 		size_t dataSize,
 		VkCommandBuffer& cmdBuf,
@@ -375,8 +502,8 @@ private:
 			: VK_ACCESS_SHADER_READ_BIT;
 
 		VkResult result;
-		if (ubo.is_mapapble()) {
-			result = vmaCopyMemoryToAllocation(app_allocator_, data, ubo.alloc, 0, dataSize);
+		if (bufDesc.is_mapapble()) {
+			result = vmaCopyMemoryToAllocation(app_allocator_, data, bufDesc.alloc, 0, dataSize);
 			assert(result == VK_SUCCESS);
 
 			VkBufferMemoryBarrier b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
@@ -384,7 +511,7 @@ private:
 			b.dstAccessMask = dstAccess;
 			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			b.buffer = ubo.buffer;
+			b.buffer = bufDesc.buffer;
 			b.offset = 0;
 			b.size = VK_WHOLE_SIZE;
 
@@ -398,7 +525,7 @@ private:
 			b2.dstAccessMask = dstAccess;
 			b2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			b2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			b2.buffer = ubo.buffer;
+			b2.buffer = bufDesc.buffer;
 			b2.offset = 0;
 			b2.size = VK_WHOLE_SIZE;
 
@@ -428,7 +555,7 @@ private:
 				glm::value_ptr(tr),
 				sizeof(float) * 16);
 
-			data[i].color = { i*20,i,i,i };
+			data[i].color = { i * 0.20f,0.3f,-i * 0.7f,1.0f };
 
 			i++;
 		}
@@ -637,7 +764,7 @@ private:
 
 		// ---- update camera projection to match new size ----
 		float newAspect = float(width) / float(height);
-		camera_.setPerspective(45.0f, newAspect, near_clip, far_clip);
+		camera_.setPerspective(45.0f, newAspect, default_near_clip, default_far_clip);
 	}
 
 	void setupDebugMessenger() {
@@ -913,7 +1040,7 @@ private:
 
 	// --------------------------
 
-	ImageHandle createTextureImage(std::string texture_path, VkFormat format) {
+	TextureHandle createTextureImage(std::string texture_path, VkFormat format) {
 		int texWidth, texHeight, texChannels;
 
 		stbi_uc* pixels = stbi_load(texture_path.c_str(), &texWidth, &texHeight,
@@ -940,8 +1067,8 @@ private:
 		stbi_image_free(pixels);
 
 
-		auto imghandle = context->createTextureImage(texture_path, format);
-		auto texture_image = context->C_ImagePool.get(imghandle);
+		auto texHandle = context->createTextureImage(texture_path, format);
+		auto texture_image = context->texturesPool_.get(texHandle);
 
 		//createImage(
 		//	texWidth,
@@ -954,19 +1081,20 @@ private:
 		//);
 
 		transitionImageLayout(
-			*texture_image,
+			texture_image->image,
 			VK_FORMAT_R8G8B8A8_SRGB,
 			VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
 		copyBufferToImage(stagingBuffer,
-			*texture_image,
+			texture_image->image,
 			static_cast<uint32_t>(texWidth),
 			static_cast<uint32_t>(texHeight)
 		);
 
+		// We shoudl go just to general really;
 		transitionImageLayout(
-			*texture_image,
+			texture_image->image,
 			VK_FORMAT_R8G8B8A8_SRGB,
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
@@ -974,7 +1102,7 @@ private:
 
 		vkDestroyBuffer(device, stagingBuffer, nullptr);
 		vkFreeMemory(device, stagingBufferMemory, nullptr);
-		return imghandle;
+		return texHandle;
 
 	}
 
@@ -1251,13 +1379,20 @@ private:
 	void createUniformBuffers() {
 
 		VkBufferCreateInfo bufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-		bufCreateInfo.size = sizeof(UniformBufferObject) * MAX_INSTANCES;
+		bufCreateInfo.size = sizeof(ViewProjUniform) * MAX_INSTANCES;
 		bufCreateInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+
 
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
-			uniforms_[i].size = sizeof(UniformBufferObject) * MAX_INSTANCES;
+
+
+			auto buf = context->createBuffer();
+
+
+			//uniforms_[i].size = sizeof(ViewProjUniform) * MAX_INSTANCES;
 			createUniformBuffer(
 				bufCreateInfo,
 				uniforms_[i].alloc,
@@ -1265,8 +1400,6 @@ private:
 				uniforms_[i].allocInfo,
 				uniforms_[i].memory_flags
 			);
-
-			// I dont like how I cant leave UniformBufferAllocation in a valid state easily if I dont fill every proper field. Need a better Solution
 
 		}
 	}
@@ -1519,18 +1652,25 @@ private:
 		}
 	}
 
-	void recordDraw(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
 
 
-		const uint32_t materialCount = static_cast<uint32_t>(test_pool_.materials_.size());
+	void updateMatrialsSets() {
+
+		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstancesPool_.numObjects());
+
+		// This supposes still 1 image, 1 sampler peer material. WRONG
 
 		// --- Build image infos (sampled images) ---
 		std::vector<VkDescriptorImageInfo> imageInfos;
 		imageInfos.reserve(materialCount);
-		for (const auto& mat : test_pool_.materials_) {
+		for (auto mat_instance : context->materialInstancesPool_.objects_) {
+
+			auto tex = context->texturesPool_.get(mat_instance.obj_.attached[0].tex);
+
+
 			VkDescriptorImageInfo ii{};
 			ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-			ii.imageView = mat.imageView;
+			ii.imageView = tex->imageView;
 			ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			imageInfos.push_back(ii);
 		}
@@ -1538,9 +1678,12 @@ private:
 		// --- Build sampler infos ---
 		std::vector<VkDescriptorImageInfo> samplerInfos;
 		samplerInfos.reserve(materialCount);
-		for (const auto& mat : test_pool_.materials_) {
+		for (const auto& mat_instance : context->materialInstancesPool_.objects_) {
+
+			auto tex = context->texturesPool_.get(mat_instance.obj_.attached[0].tex);
+
 			VkDescriptorImageInfo si{};
-			si.sampler = mat.sampler;
+			si.sampler = tex->sampler;
 			si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
 			si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
 			samplerInfos.push_back(si);
@@ -1568,6 +1711,23 @@ private:
 		writes[1].pImageInfo = samplerInfos.data();
 
 		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+
+	}
+
+	//void bindMaterialPipeline(VkCommandBuffer commandBuffer, uint32_t imageIndex /*,MaterialPipelineHandle& mat_pipe*/) {
+
+	//	//VkPipeline pipeline;
+	//	//VkDescriptorSetLayout layout;
+
+	//	vkCmdBindPipeline(
+	//		commandBuffer,
+	//		VK_PIPELINE_BIND_POINT_GRAPHICS,
+	//		graphicsPipeline
+	//	);
+
+	//}
+
+	void recordDraw(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
 
 		VkCommandBufferBeginInfo beginInfo{};
 		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1630,12 +1790,14 @@ private:
 		);
 
 		vkCmdBeginRendering(commandBuffer, &renderingInfo);
+
 		vkCmdBindPipeline(
 			commandBuffer,
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
 			graphicsPipeline
 		);
 
+		updateMatrialsSets();
 
 
 		// Flipped because of this :)
@@ -1696,7 +1858,7 @@ private:
 
 			auto mesh_idx = scene_->meshForNode[i];
 			auto mesh_ = test_pool_.meshes_[mesh_idx];
-			pc.material_index = scene_->materialForNode[i];
+			pc.material_instance_index = scene_->materialForNode[i];
 
 			vkCmdPushConstants(
 				commandBuffers[currentFrame],
@@ -1915,10 +2077,10 @@ void VulkanApp::LoadScene() {
 	scene_->materialForNode[0] = 0;
 
 	scene_->meshForNode[1] = 3;
-	scene_->materialForNode[1] = 1;
+	scene_->materialForNode[1] = 0;
 
 	scene_->meshForNode[2] = 2;
-	scene_->materialForNode[2] = 2;
+	scene_->materialForNode[2] = 0;
 
 	scene_->localTransform[2][0][0] = 100;
 	scene_->localTransform[2][1][1] = 100;
@@ -1929,23 +2091,12 @@ void VulkanApp::LoadScene() {
 	scene_->localTransform[1][2][2] = 100;
 
 	auto vertShaderCode = readFile("shaders/example.vert.hlsl.spv");
+	auto vertColorFragCode = readFile("shaders/vertex_color.frag.hlsl.spv");
 	auto fragShaderCode = readFile("shaders/example.frag.hlsl.spv");
 
 	VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
-
-	test_pool_.materials_.push_back(MaterialDefinition{});
-	test_pool_.materials_.push_back(MaterialDefinition{});
-	test_pool_.materials_.push_back(MaterialDefinition{});
-
-	test_pool_.materials_[0].frag = fragShaderModule;
-	test_pool_.materials_[0].vert = vertShaderModule;
-
-	test_pool_.materials_[1].frag = fragShaderModule;
-	test_pool_.materials_[1].vert = fragShaderModule;
-
-	test_pool_.materials_[2].frag = vertShaderModule;
-	test_pool_.materials_[2].vert = vertShaderModule;
+	VkShaderModule vertexColorFrag = createShaderModule(device, vertColorFragCode);
 
 
 	createDescriptorSetLayout(
@@ -1976,37 +2127,60 @@ void VulkanApp::LoadScene() {
 
 
 	createTextureImageView(
-		context->C_ImagePool.get(image1),
-		&test_pool_.materials_[0].imageView,
+		&context->texturesPool_.get(image1)->image,
+		&context->texturesPool_.get(image1)->imageView,
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 
 	createTextureImageView(
-		context->C_ImagePool.get(image2),
-		&test_pool_.materials_[1].imageView,
+		&context->texturesPool_.get(image2)->image,
+		&context->texturesPool_.get(image2)->imageView,
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 	createTextureImageView(
-		context->C_ImagePool.get(image3),
-		&test_pool_.materials_[2].imageView,
+		&context->texturesPool_.get(image3)->image,
+		&context->texturesPool_.get(image3)->imageView,
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 
 	createTextureSampler(
-		&test_pool_.materials_[0].sampler
+		&context->texturesPool_.get(image1)->sampler
 	);
 
 	createTextureSampler(
-		&test_pool_.materials_[1].sampler
+		&context->texturesPool_.get(image2)->sampler
 	);
 
 	createTextureSampler(
-		&test_pool_.materials_[2].sampler
+		&context->texturesPool_.get(image3)->sampler
 	);
 
+	//auto tex_1 = context->texturesPool_.get(image1);
+	//auto tex_2 = context->texturesPool_.get(image2);
+	//auto tex_3 = context->texturesPool_.get(image3);
+
+	MaterialInstance mat_1 = {
+		.attached = {
+			{
+				0,
+				image1,
+			}
+		}
+	};
+
+	context->materialInstancesPool_.create(std::move(mat_1));
+
+	//test_pool_.materials_[0].frag = vertexColorFrag;
+	//test_pool_.materials_[0].vert = vertShaderModule;
+
+	//test_pool_.materials_[1].frag = fragShaderModule;
+	//test_pool_.materials_[1].vert = fragShaderModule;
+
+	//test_pool_.materials_[2].frag = vertShaderModule;
+	//test_pool_.materials_[2].vert = vertShaderModule;
 
 }
 
@@ -2053,8 +2227,15 @@ void VulkanApp::UploadMeshData() {
 			.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 		};
 		VmaAllocationCreateInfo vbAlloc{ .usage = VMA_MEMORY_USAGE_GPU_ONLY };
-		vmaCreateBuffer(app_allocator_, &vbInfo, &vbAlloc,
-			&static_vertex_buffer_, &static_vertex_allocation_, nullptr);
+
+		vmaCreateBuffer(
+			app_allocator_,
+			&vbInfo,
+			&vbAlloc,
+			&static_vertex_buffer_,
+			&static_vertex_allocation_,
+			nullptr
+		);
 	}
 	{
 		assert(totalIndexBytes > 0 && "Index buffer size was 0");
@@ -2189,7 +2370,7 @@ bool VulkanApp::run() {
 
 	// ----
 
-	camera_.setPerspective(45.0f, float(width_) / float(height_), near_clip, far_clip);
+	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
 
 	LoadScene();
 
@@ -2429,3 +2610,22 @@ int main(int argc, const char* argv[]) {
 
 	return EXIT_SUCCESS;
 }
+
+
+// DUMP!
+
+// We can type result to have a custom interface. I dont think i need it . This is not a RHI or API with aa cerefully designed interface.
+//struct Result {
+//	enum class Code {
+//		Ok,
+//		Fail,
+//		Out
+//	};
+//
+//	Code code = Code::Ok;
+//	const char* message = "";
+//	explicit Result() = default;
+//	explicit Result(Code code, const char* message = "") : code(code), message(message) {}
+//
+//};
+//

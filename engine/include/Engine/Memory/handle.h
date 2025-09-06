@@ -1,5 +1,7 @@
 #include <stdint.h>
 
+class Context;
+
 // Lifted from LightweightVk.
 
 // Non-ref counted handles; based on:
@@ -47,17 +49,46 @@ private:
 
 static_assert(sizeof(Handle<class Foo>) == sizeof(uint64_t));
 
+
+using ShaderModuleHandle = Handle<struct ShaderModule>;
+using BufferHandle = Handle<struct Buffer>;
+using TextureHandle = Handle<struct Texture>;
+using SamplerHandle = Handle<struct Sampler>;
+using MaterialPipelineHandle = Handle<struct MaterialPipeline>;
+using MaterialInstanceHandle = Handle<struct MaterialInstance>;
+
+
+// this live hostSide too but defines device mesh abstraction
+struct MeshDrawInfo {
+	
+
+	// I also need the alloc and more righ
+
+	// Do not think about LODS here
+	// range for drawing.
+	uint32_t first_index = 0;
+	uint32_t vert_offset = 0;
+
+};
+// This is not an 
+using MeshHandle = Handle<struct MeshDrawInfo>;
+//using MeshHandle = Handle<DeviceMesh>;
+
 // specialized with dummy structs for type safety
-using ImageHandle = Handle<struct Image>;
+//using ImageHandle = Handle<struct Image>;
 //using ComputePipelineHandle = lvk::Handle<struct ComputePipeline>;
 //using RenderPipelineHandle = lvk::Handle<struct RenderPipeline>;
 //using RayTracingPipelineHandle = lvk::Handle<struct RayTracingPipeline>;
-//using ShaderModuleHandle = lvk::Handle<struct ShaderModule>;
 //using SamplerHandle = lvk::Handle<struct Sampler>;
 //using BufferHandle = lvk::Handle<struct Buffer>;
 //using TextureHandle = lvk::Handle<struct Texture>;
 //using QueryPoolHandle = lvk::Handle<struct QueryPool>;
 //using AccelStructHandle = lvk::Handle<struct AccelerationStructure>;
+
+void destroy(Context* ctx, ShaderModuleHandle handle);
+void destroy(Context* ctx, BufferHandle handle);
+void destroy(Context* ctx, TextureHandle handle);
+void destroy(Context* ctx, SamplerHandle handle);
 
 // forward declarations to access incomplete type IContext
 //void destroy(lvk::Context* ctx, lvk::ComputePipelineHandle handle);
