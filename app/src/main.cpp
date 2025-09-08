@@ -27,20 +27,24 @@
 #include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
 
+#include <Engine/Shared/common.h>
+
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Renderer/primitives.h>
 #include <Engine/Utils/gltf.h>
-#include <Engine/Shared/common.h>
-
 #include <Engine/Memory/context.h>
 
-// Moved readFile here. readFile rnow is just used to read shader files
+// Moved readFile here. readFile rnow is just used to read shader files.
+// this should go to Platform layer. This is windows first for the foreseable future
 #include <Engine/fileIO.h>
+
+// ------------------------------------
 
 static constexpr uint32_t WIDTH = 1280;
 static constexpr uint32_t HEIGHT = 720;
 
+// Double buffering :)
 static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
 static constexpr float default_near_clip = 0.01f;
@@ -53,6 +57,9 @@ static constexpr uint32_t MAX_TEXTURES = 4096;
 static constexpr uint32_t MAX_MATERIAL_INSTANCES = 1000;
 static constexpr uint32_t MAX_MATERIALS = 1000;
 
+// ------------------------------------
+
+enum class BufferRole { UBO, SSBO };
 
 struct HostInstance {
 
@@ -62,7 +69,6 @@ struct HostInstance {
 	uint32_t scene_node;
 	// named?
 };
-
 
 // Dont like thys. currently limited by the 16 byte stride.
 // Maybe i could do away with it but that needs ext checking and enalbing and mods in shader code
@@ -98,8 +104,6 @@ struct Texture {
 
 };
 
-
-
 // Initialized with crude defaults;
 struct RasterSettings {
 	uint32_t depthClampEnable = VK_FALSE;
@@ -111,26 +115,31 @@ struct RasterSettings {
 	uint32_t depthBiasEnable = VK_FALSE;
 } default_raster_settings;
 
-
-// There a reserved of madnatory layout part around pc range and IsntanceData ssbo. For ViewProj, IntanceData (Lod, mesh)
-// Can we encode this in a struct. Dont need to cover all cases. Use provided if needed.
-struct PipelineLayout {
-
-};
-
-
 // Materials aabstractions area really PipelineObjets. Raster conf, shader objs, descriptorlayout. 
 // MaterialAttachments must match desc layout, adn MaterialConstants pc layout
 // So we bake the POS. VkPipelineCache not implemented now
+// Another name fot his could be MatModel?
 struct MaterialPipeline {
+
 	RasterSettings raster_settings;
-	VkShaderModule vert;
-	VkShaderModule frag;
-	PipelineLayout layout; // This should resolve to VkDescriptorLayout
+	ShaderModuleHandle vert;
+	ShaderModuleHandle frag;
+	// PC ranges
 };
 
+struct Pipeline {
+	// These down here are state
+	//PipelineLayout layout; // This should resolve to VkDescriptorLayout
 
-// Im not covinved by this at all;
+	// Lets go natural Vulkan for this atm
+	VkDescriptorSetLayout setLayout;
+
+	// This is descriptors set lyt + pc ranges
+	VkPipelineLayout pipeLayout;
+	VkPipeline pipeline;
+};
+
+// Im not convinced by this at all;
 struct MaterialAttachment {
 	uint32_t slot;
 	TextureHandle tex;
@@ -150,14 +159,13 @@ struct MaterialPushConstants {
 
 static_assert(sizeof(MaterialPushConstants) % 16 == 0);
 
-
+// MatModels or MatPipelines can have several instnaces with different vlaues for constans and textures.
+// Raster state, vert, frag, blending and more stay ther same.
 struct MaterialInstance {
 	//MaterialPipelineHandle pipeline;
 	//MaterialPushConstants pv_values;
 	MaterialAttachment attached[5];
 };
-
-
 
 struct DeviceBufferDesc {
 	VkBuffer buffer;
@@ -167,19 +175,19 @@ struct DeviceBufferDesc {
 	// Did it end in mappable memory? This is important to know for proper upload. Discard the bool in the future use 
 	VkMemoryPropertyFlags memory_flags;
 
-
 	// Helpers to interrogate buffer
-	bool is_mapapble() {
+	bool is_mapapble() const {
 		return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 	}
 
 };
 
-
+// This style of handling things is lifted up from LightweightVk.
 class Context {
 
 	// 1 allocator per device. Device is implicit in allocator...
 	VmaAllocator* allocator_;
+	VkDevice* device_;
 
 	// These three things are primary citizens of Device Memory Residency
 	VmaPool D_ImagesPool;
@@ -191,20 +199,28 @@ class Context {
 
 public:
 
+	
 	// We neeed VkDescriptorPool pools here
 	// We move from VkDp to another because its cheaper to reset them than to evict particular sets.
 	// Same with CommandPools. I have a stupid simple design now with just 1 CommandPool.
 	Pool<Buffer, DeviceBufferDesc> buffersPool_;
 	Pool<Texture, Texture> texturesPool_;
 
-	Pool<MaterialPipeline, MaterialPipeline> matPipePool_;
-	Pool<MaterialInstance, MaterialInstance> materialInstancesPool_;
+
+	Pool<DescriptorPool, VkDescriptorPool> dpp_;
+	Pool<DescriptorLayout, VkDescriptorSetLayout> dlp_;
+	Pool<MaterialPipeline, MaterialPipeline> materialPipelinePool_;
+	Pool<MaterialInstance, MaterialInstance> materialInstancePool_;
+
+	Pool<ShaderModule, VkShaderModule> shaderModulePool_;
 
 	Context(VmaAllocator* allocator) {
 		allocator_ = allocator;
 
 		// Lets reserve upfront.
 		texturesPool_.objects_.reserve(MAX_TEXTURES);
+
+		materialPipelinePool_.objects_.reserve(1000);
 		// This is a small reservation. just testing 
 		buffersPool_.objects_.reserve(1000);
 
@@ -212,6 +228,7 @@ public:
 		InitializeDeviceVmaPools();
 
 	};
+	// Maybe destructor should clear the vmaPools. Device side allocations are not managed as clear by the OS.
 	~Context() {};
 
 	void InitializeDeviceVmaPools() {
@@ -230,35 +247,127 @@ public:
 	}
 
 	TextureHandle createTextureImage(std::string image_path, VkFormat format);
-	BufferHandle createBuffer();
-	MaterialPipelineHandle createMaterialPipeline(MaterialPipeline mat_pipeline);
-	MaterialInstanceHandle createMaterialInstance();
+	DescriptorLayoutHandle createDescriptorLayout();
+	DescriptorPoolHandle createDescriptorPool();
+	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settigns, VkPipelineLayout t_pipe_layout);
 };
 
 
-// Need device allcoation freeing
+// Creation
 
-void destroy(Context* ctx, TextureHandle handle) {
+// This should be specialized for each MaterialModel
+DescriptorLayoutHandle Context::createDescriptorLayout(){
 
-	// We need to free from device pool.
-	ctx->texturesPool_.destroy(handle);
-};
+	VkDescriptorSetLayoutBinding instanceIndexBinding{};
+	instanceIndexBinding.binding = 0;
+	instanceIndexBinding.descriptorCount = 1;
+	instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	instanceIndexBinding.pImmutableSamplers = nullptr;
+	instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-void destroy(Context* ctx, BufferHandle handle) {
+	VkDescriptorSetLayoutBinding instanceDataBinding{};
+	instanceDataBinding.binding = 1;
+	instanceDataBinding.descriptorCount = 1;
+	instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	instanceDataBinding.pImmutableSamplers = nullptr;
+	instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-	// We need to freee device allocation
-	ctx->buffersPool_.destroy(handle);
+	// sampled image array
+	VkDescriptorSetLayoutBinding texBinding{};
+	texBinding.binding = 2;
+	texBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	texBinding.descriptorCount = MAX_TEXTURES;
+	texBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-};
+	// one sampler (or an array if you really need multiple)
+	VkDescriptorSetLayoutBinding sampBinding{};
+	sampBinding.binding = 3;
+	sampBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+	sampBinding.descriptorCount = MAX_TEXTURES;
+	sampBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	std::array<VkDescriptorSetLayoutBinding, 4> bindings = {
+		instanceIndexBinding,
+		instanceDataBinding,
+		//
+		texBinding,
+		sampBinding,
+	};
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo{};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+	layoutInfo.pBindings = bindings.data();
+
+	VkDescriptorSetLayout descriptorSetLayout;
+
+	if (vkCreateDescriptorSetLayout(*device_, &layoutInfo, nullptr,
+		&descriptorSetLayout) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create descriptor set layout!");
+	}
+
+	auto r = dlp_.create(std::move(descriptorSetLayout));
+	return r;
+
+}
+
+DescriptorPoolHandle Context::createDescriptorPool() {
+
+	// This is just how many dsc of each type are allowed in the pool. Has no bearing with layouts
+	// except for compat. -> You need slots for type if layout uses type.
+	std::array<VkDescriptorPoolSize, 5> poolSizes = { {
+			// We should not need these one anymore once we move InstanceData to ssbo. Maybe instance data is promoted to ubo
+			// in cases where it can work. Also we are adding an indirect mapping for instanceData with a table.
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,        100 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,        100 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 100},
+		{ VK_DESCRIPTOR_TYPE_SAMPLER, 100},
+	} };
+
+	VkDescriptorPoolCreateInfo poolInfo{};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	// no no, this is bad
+	//poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+	poolInfo.maxSets = 1000;
+	poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+	poolInfo.pPoolSizes = poolSizes.data();
+
+	VkDescriptorPool dpool;
+	if (vkCreateDescriptorPool(*device_, &poolInfo, nullptr, &dpool) !=
+		VK_SUCCESS) {
+		throw std::runtime_error("failed to create descriptor pool!");
+	}
+	auto r = dpp_.create(std::move(dpool));
+	return r;
+
+}
 
 
-MaterialInstanceHandle Context::createMaterialInstance() {
-	auto r = materialInstancesPool_.create(std::move(MaterialInstance{}));
-		return r;
+MaterialPipelineHandle Context::createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settigns, VkPipelineLayout t_pipe_layout) {
+
+	// We ure using native VkPipelineLayout to ease things for now so we dont have to formalize a way to describe that.
 
 
-};
+	MaterialPipeline mat_pipe = {};
+	mat_pipe.raster_settings = default_raster_settings;
+	mat_pipe.frag = frag;
+	mat_pipe.vert = vert;
 
+
+	//mat_pipe.setLayout
+
+
+	auto r = materialPipelinePool_.create(std::move(mat_pipe));
+	return r;
+
+}
+//
+//MaterialInstanceHandle Context::createMaterialInstance() {
+//	auto r = materialInstancesPool_.create(std::move(MaterialInstance{}));
+//	return r;
+//};
+//
 
 TextureHandle Context::createTextureImage(std::string image_path, VkFormat format) {
 
@@ -312,28 +421,29 @@ TextureHandle Context::createTextureImage(std::string image_path, VkFormat forma
 
 }
 
-BufferHandle Context::createBuffer() {
+//BufferHandle Context::createBuffer() {
+//
+//	DeviceBufferDesc bd = {  };
+//	auto a = buffersPool_.create(std::move(bd));
+//	return a;
+//}
 
-	DeviceBufferDesc bd = {  };
-	auto a = buffersPool_.create(std::move(bd));
-	return a;
-}
+// DELETION ---------------------------------------------------------------------------------------------------
 
+// Need device allcoation freeing
 
-class StupidPool {
+void destroy(Context* ctx, TextureHandle handle) {
 
-public:
-	std::vector<Mesh> meshes_ = { Quad, Triangle };
-	std::vector<VkDescriptorSet> mat_descs_{};
-
-
-	StupidPool() {
-		meshes_.reserve(MAX_MESHES);
-		mat_descs_.reserve(MAX_MATERIALS);
-	}
-
+	// We need to free from device pool.
+	ctx->texturesPool_.destroy(handle);
 };
 
+void destroy(Context* ctx, BufferHandle handle) {
+
+	// We need to freee device allocation
+	ctx->buffersPool_.destroy(handle);
+
+};
 
 class VulkanApp {
 
@@ -342,13 +452,12 @@ public:
 	int width_ = WIDTH;
 	int height_ = HEIGHT;
 
-	bool run();
+	bool Run();
 
 private:
 
-	StupidPool test_pool_;
+	std::vector<Mesh> meshes_ = { Quad, Triangle };
 	Context* context;
-
 
 	//  Defaulting to empty scene
 	Scene* scene_ = new Scene();
@@ -356,7 +465,7 @@ private:
 	InstanceData instance_data_[MAX_INSTANCES];
 	uint32_t instance_count_ = 10;
 
-	// 1 allotore per device and instance. =)
+	// 1 allocator per device and instance. =)
 	// So just one
 	VmaAllocator app_allocator_;
 
@@ -397,6 +506,7 @@ private:
 
 	VkFormat swapChainImageFormat;
 	VkExtent2D swapChainExtent;
+
 #pragma endregion
 
 	// Main depth image is the one for the main view.
@@ -407,8 +517,7 @@ private:
 
 #pragma region ===[ Descriptors ]===
 
-	VkDescriptorPool descriptorPool;
-	VkDescriptorSet frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
+	//VkDescriptorSet frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
 
@@ -425,23 +534,21 @@ private:
 	VkDevice device;
 #pragma endregion
 
-
 	// We need to move this to context;
-
 #pragma region ===[ Uniforms / Descriptor Sets ]==
+
+
+	// These should be moved to Context
 	DeviceBufferDesc uniforms_[MAX_FRAMES_IN_FLIGHT];
 	DeviceBufferDesc instanceDataUniforms_[MAX_FRAMES_IN_FLIGHT];
 	DeviceBufferDesc instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
 
+	// Like so!
+	//BufferHandle h_uniforms_[MAX_FRAMES_IN_FLIGHT];
+	//BufferHandle h_instanceDataUniforms_[MAX_FRAMES_IN_FLIGHT];
+	//BufferHandle h_instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
+
 #pragma endregion
-
-
-	// We need to move these to context. Aslo, Material Abstraction;
-	// These are not single objects! Should be made pools. 
-	VkDescriptorSetLayout descriptorSetLayout;
-	VkPipelineLayout pipelineLayout;
-	VkPipeline graphicsPipeline;
-	// *
 
 #pragma region ===[ Pipeline / Render Resources ]===
 	// We separate command pools for each frames becuase its cheaper to reset them this way
@@ -472,22 +579,26 @@ private:
 	bool framebufferResized = false;
 #pragma endregion
 
-	void initVulkanApp();
+
+	void InitVulkanApp();
+	static void mouseCallback(GLFWwindow* window, double xpos, double ypos);
+	static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
+	void LoadScene();
+	void UploadMeshData();
+
+	/// <summary>
+	/// 
+	/// </summary>
 
 	void UpdateDeltaTime() {
 
-		// Its a bad idea to have this across the fucntion border
+		// Its a bad idea to have this across the fucntion border. Latency sensitive.
 		static auto startTime = std::chrono::high_resolution_clock::now();
 		auto currentTime = std::chrono::high_resolution_clock::now();
 		delta_time_ = std::chrono::duration<float, std::chrono::seconds::period>(
 			currentTime - startTime)
 			.count();
 	}
-
-	void UpdateUniformBuffer(uint32_t currentImage) {
-	}
-
-	enum class BufferRole { UBO, SSBO };
 
 	void UploadDataToBuffer(
 		DeviceBufferDesc& bufDesc,
@@ -592,103 +703,9 @@ private:
 		delete[] data;
 	}
 
-	void LoadScene();
-	void UploadMeshData();
+#pragma region ===[ Input ]==
 
-#pragma region ===[ Input ]===
 
-	static void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
-		auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-		if (app) app->handleMouseMovement(xpos, ypos);
-	}
-
-	static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-		auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-		if (app) app->handleKey(key, scancode, action, mods);
-	}
-
-	static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
-		auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-		if (app) app->handleMouseButton(button, action, mods);
-	}
-
-	static void scrollCallback(GLFWwindow* window, double xOffset, double yOffset) {
-		auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-		if (app) app->handleMouseScroll(xOffset, yOffset);
-	}
-
-	void handleMouseScroll(double xOffset, double yOffset) {
-		const float scrollSpeed = 1.0f;
-		glm::vec3 forward = cameraPositioner.getForward();
-		cameraPositioner.setPosition(
-			cameraPositioner.getPosition() + static_cast<float>(yOffset) * scrollSpeed * forward
-		);
-	}
-
-	void handleMouseMovement(double xpos, double ypos) {
-		if (!rightMousePressed) return;
-
-		glm::vec2 mousePos = glm::vec2(
-			static_cast<float>(xpos) / width_,
-			static_cast<float>(ypos) / -height_
-		);
-		cameraPositioner.update(delta_time_ / 1000,
-			mousePos,
-			true
-		);
-	}
-
-	void handleMouseButton(int button, int action, int mods) {
-		if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-			rightMousePressed = (action == GLFW_PRESS);
-		}
-	}
-
-	void handleKey(int key, int scancode, int action, int mods) {
-		bool isPressed = action != GLFW_RELEASE;
-
-		switch (key) {
-		case GLFW_KEY_R:
-		case GLFW_KEY_F:
-			cameraPositioner.reset();
-			break;
-		case GLFW_KEY_W:
-		case GLFW_KEY_UP:
-			cameraPositioner.movement_.forward_ = isPressed;
-			break;
-		case GLFW_KEY_S:
-		case GLFW_KEY_DOWN:
-			cameraPositioner.movement_.backward_ = isPressed;
-			break;
-		case GLFW_KEY_A:
-		case GLFW_KEY_LEFT:
-			cameraPositioner.movement_.left_ = isPressed;
-			break;
-		case GLFW_KEY_D:
-		case GLFW_KEY_RIGHT:
-			cameraPositioner.movement_.right_ = isPressed;
-			break;
-		case GLFW_KEY_Q:
-		case GLFW_KEY_SPACE:
-			cameraPositioner.movement_.up_ = isPressed;
-			break;
-		case GLFW_KEY_E:
-			cameraPositioner.movement_.down_ = isPressed;
-			break;
-		case GLFW_KEY_LEFT_SHIFT:
-			cameraPositioner.movement_.fastSpeed_ = isPressed;
-			break;
-		default:
-			break;
-		}
-	}
-
-	static void framebufferResizeCallback(GLFWwindow* window, int width,
-		int height) {
-		auto app =
-			reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-		app->framebufferResized = true;
-	}
 
 #pragma endregion
 
@@ -854,177 +871,9 @@ private:
 
 	}
 
-	void createGraphicsPipeline(
-		VkShaderModule vert,
-		VkShaderModule frag,
-		VkDescriptorSetLayout* descriptorSetLayout,
-		VkPipelineLayout* pipelineLayout
-	) {
-
-
-		VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-		vertShaderStageInfo.sType =
-			VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-		vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-		vertShaderStageInfo.module = vert;
-		vertShaderStageInfo.pName = "mainVS";
-
-		VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
-		fragShaderStageInfo.sType =
-			VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-		fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-		fragShaderStageInfo.module = frag;
-		fragShaderStageInfo.pName = "mainPS";
-
-		VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
-														  fragShaderStageInfo };
-
-		VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-		vertexInputInfo.sType =
-			VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-		auto bindingDescription = Vertex::getBindingDescription();
-		auto attributeDescriptions = Vertex::getAttributeDescriptions();
-
-		vertexInputInfo.vertexBindingDescriptionCount = 1;
-		vertexInputInfo.vertexAttributeDescriptionCount =
-			static_cast<uint32_t>(attributeDescriptions.size());
-		vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-		vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
-
-		VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-		inputAssembly.sType =
-			VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-		inputAssembly.primitiveRestartEnable = VK_FALSE;
-
-		VkPipelineViewportStateCreateInfo viewportState{};
-		viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-		viewportState.viewportCount = 1;
-		viewportState.scissorCount = 1;
-
-		VkPipelineRasterizationStateCreateInfo rasterizer{};
-		rasterizer.sType =
-			VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-		rasterizer.depthClampEnable = VK_FALSE;
-		rasterizer.rasterizerDiscardEnable = VK_FALSE;
-		rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-		rasterizer.lineWidth = 1.0f;
-		rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-		rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-		rasterizer.depthBiasEnable = VK_FALSE;
-
-		VkPipelineMultisampleStateCreateInfo multisampling{};
-		multisampling.sType =
-			VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-		multisampling.sampleShadingEnable = VK_FALSE;
-		multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-		VkPipelineDepthStencilStateCreateInfo depthStencil{};
-		depthStencil.sType =
-			VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-		depthStencil.depthTestEnable = VK_TRUE;
-		depthStencil.depthWriteEnable = VK_TRUE;
-
-		//depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-		depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
-		depthStencil.depthBoundsTestEnable = VK_FALSE;
-		depthStencil.stencilTestEnable = VK_FALSE;
-
-		VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-		colorBlendAttachment.colorWriteMask =
-			VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-			VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-		colorBlendAttachment.blendEnable = VK_FALSE;
-
-		VkPipelineColorBlendStateCreateInfo colorBlending{};
-		colorBlending.sType =
-			VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-		colorBlending.logicOpEnable = VK_FALSE;
-		colorBlending.logicOp = VK_LOGIC_OP_COPY;
-		colorBlending.attachmentCount = 1;
-		colorBlending.pAttachments = &colorBlendAttachment;
-		colorBlending.blendConstants[0] = 0.0f;
-		colorBlending.blendConstants[1] = 0.0f;
-		colorBlending.blendConstants[2] = 0.0f;
-		colorBlending.blendConstants[3] = 0.0f;
-
-		std::vector<VkDynamicState> dynamicStates = {
-			VK_DYNAMIC_STATE_VIEWPORT,
-			VK_DYNAMIC_STATE_SCISSOR
-		};
-
-		VkPipelineDynamicStateCreateInfo dynamicState{};
-		dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-		dynamicState.dynamicStateCount =
-			static_cast<uint32_t>(dynamicStates.size());
-		dynamicState.pDynamicStates = dynamicStates.data();
-
-		// One push constant range, covers all stages
-		VkPushConstantRange pcRange{};
-		pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-		pcRange.offset = 0;
-		pcRange.size = sizeof(PushConstants);
-
-		VkPipelineLayoutCreateInfo layoutInfo{};
-		layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-		layoutInfo.setLayoutCount = 1;
-		layoutInfo.pSetLayouts = descriptorSetLayout;
-		layoutInfo.pushConstantRangeCount = 1;
-		layoutInfo.pPushConstantRanges = &pcRange;
-
-		//VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-		//pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-		//pipelineLayoutInfo.setLayoutCount = 1;
-		//pipelineLayoutInfo.pSetLayouts = descriptorSetLayout;
-
-		//pipelineLayoutInfo.pushConstantRangeCount = 2;
-		//pipelineLayoutInfo.pPushConstantRanges = pcRanges;
-
-		if (vkCreatePipelineLayout(device, &layoutInfo, nullptr,
-			pipelineLayout) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create pipeline layout!");
-		}
-
-		auto depth_format = findDepthFormat(physicalDevice);
-
-		// Provide information for dynamic rendering
-		VkPipelineRenderingCreateInfo pipeline_create{
-			VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
-		pipeline_create.pNext = VK_NULL_HANDLE;
-		pipeline_create.colorAttachmentCount = 1;
-		pipeline_create.pColorAttachmentFormats = &swapChainImageFormat;
-		pipeline_create.depthAttachmentFormat = depth_format;
-		pipeline_create.stencilAttachmentFormat = depth_format;
-
-
-		VkGraphicsPipelineCreateInfo pipelineInfo{};
-		pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-		pipelineInfo.stageCount = 2;
-		pipelineInfo.pStages = shaderStages;
-		pipelineInfo.pVertexInputState = &vertexInputInfo;
-		pipelineInfo.pInputAssemblyState = &inputAssembly;
-		pipelineInfo.pViewportState = &viewportState;
-		pipelineInfo.pRasterizationState = &rasterizer;
-		pipelineInfo.pMultisampleState = &multisampling;
-		pipelineInfo.pColorBlendState = &colorBlending;
-		pipelineInfo.pDynamicState = &dynamicState;
-		pipelineInfo.pDepthStencilState = &depthStencil;
-		pipelineInfo.layout = *pipelineLayout;
-		pipelineInfo.pNext = &pipeline_create;
-
-
-		if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo,
-			nullptr, &graphicsPipeline) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create graphics pipeline!");
-		}
-
-	}
-
 	void createDepthResources() {
 		VkFormat depthFormat = findDepthFormat(physicalDevice);
 
-		//main_d_alloc = 
 		createImage(
 			swapChainExtent.width,
 			swapChainExtent.height,
@@ -1178,6 +1027,7 @@ private:
 
 	}
 
+	// Obly used now for depthImage.
 	void createImage(
 		uint32_t width,
 		uint32_t height,
@@ -1376,123 +1226,17 @@ private:
 		}
 	}
 
-	void createUniformBuffers() {
-
-		VkBufferCreateInfo bufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-		bufCreateInfo.size = sizeof(ViewProjUniform) * MAX_INSTANCES;
-		bufCreateInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
-
-
-
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-
-
-
-			auto buf = context->createBuffer();
-
-
-			//uniforms_[i].size = sizeof(ViewProjUniform) * MAX_INSTANCES;
-			createUniformBuffer(
-				bufCreateInfo,
-				uniforms_[i].alloc,
-				uniforms_[i].buffer,
-				uniforms_[i].allocInfo,
-				uniforms_[i].memory_flags
-			);
-
-		}
-	}
-
-	void createDescriptorSetLayout(VkDevice device, VkDescriptorSetLayout* descriptorSetLayout) {
-
-
-		VkDescriptorSetLayoutBinding instanceIndexBinding{};
-		instanceIndexBinding.binding = 0;
-		instanceIndexBinding.descriptorCount = 1;
-		instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		instanceIndexBinding.pImmutableSamplers = nullptr;
-		instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
-		VkDescriptorSetLayoutBinding instanceDataBinding{};
-		instanceDataBinding.binding = 1;
-		instanceDataBinding.descriptorCount = 1;
-		instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		instanceDataBinding.pImmutableSamplers = nullptr;
-		instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
-		// sampled image array
-		VkDescriptorSetLayoutBinding texBinding{};
-		texBinding.binding = 2;
-		texBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		texBinding.descriptorCount = MAX_MATERIALS;
-		texBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-		// one sampler (or an array if you really need multiple)
-		VkDescriptorSetLayoutBinding sampBinding{};
-		sampBinding.binding = 3;
-		sampBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-		// sampler is the same for all current textures now.
-		// this is not optimal
-		//sampBinding.descriptorCount = 1;
-		sampBinding.descriptorCount = MAX_MATERIALS;
-		sampBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-		std::array<VkDescriptorSetLayoutBinding, 4> bindings = {
-			instanceIndexBinding,
-			instanceDataBinding,
-			texBinding,
-			sampBinding,
-		};
-
-		VkDescriptorSetLayoutCreateInfo layoutInfo{};
-		layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-		layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-		layoutInfo.pBindings = bindings.data();
-
-		if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
-			descriptorSetLayout) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create descriptor set layout!");
-		}
-	}
-
-	void createDescriptorPool() {
-
-		// This is just how many dsc of each type are allowed in the pool. Has no bearing with layouts
-		// except for simple compat.
-		std::array<VkDescriptorPoolSize, 5> poolSizes = { {
-				// We should need these one anymore once we move InstanceData to ssbo. Maybe instance data is promoted to ubo
-				// in cases where it can work. Also we are adding an indirect mapping for instanceData with a table.
-			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,        100 },
-			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,        100 },
-			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
-			{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 100},
-			{ VK_DESCRIPTOR_TYPE_SAMPLER, 100},
-		} };
-
-		// --------
-
-		VkDescriptorPoolCreateInfo poolInfo{};
-		poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-		poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
-		poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-		poolInfo.pPoolSizes = poolSizes.data();
-
-
-		if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) !=
-			VK_SUCCESS) {
-			throw std::runtime_error("failed to create descriptor pool!");
-		}
-	}
-
 	// We should have separate sets
 	//Set Index	Concern	Frequency of Update	Example Resources
 	//	0	Frame - level / Pass - level	Once per frame	Camera UBO(view / proj), lights UBO, environment maps
 	//	1	Object - level / Draw - call - level	Once per object	Model matrix UBO(or dynamic UBO), per - object parameters
 	//	2	Material - level	Rarely(per material)	Material UBO(e.g.roughness / metallic factors), textures, samplers
 	//	3 + Less common / Optional	As needed	Shadow maps, decals, particle data, etc.
-
-	void createDescriptorSets() {
+	void createDescriptorSets(
+		VkDescriptorSetLayout descriptorSetLayout,
+		VkDescriptorPool descriptorPool,
+		VkDescriptorSet frameDescriptorSets[]
+	) {
 
 		std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT,
 			descriptorSetLayout);
@@ -1502,8 +1246,6 @@ private:
 		allocInfo.descriptorPool = descriptorPool;
 		allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
 		allocInfo.pSetLayouts = layouts.data();
-
-		// --
 
 		VkResult result = vkAllocateDescriptorSets(device, &allocInfo, frameDescriptorSets);
 
@@ -1515,6 +1257,10 @@ private:
 		if (result != VK_SUCCESS) {
 			throw std::runtime_error("failed to allocate descriptor sets!");
 		}
+	}
+
+	void UploadDescriptorSets(VkDescriptorSet frameDescriptorSets[])
+	{
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
@@ -1549,7 +1295,10 @@ private:
 
 			vkUpdateDescriptorSets(device,
 				static_cast<uint32_t>(descriptorWrites.size()),
-				descriptorWrites.data(), 0, nullptr);
+				descriptorWrites.data(),
+				0,
+				nullptr
+			);
 		}
 	}
 
@@ -1595,48 +1344,6 @@ private:
 		vkBindBufferMemory(device, buffer, bufferMemory, 0);
 	}
 
-	VkCommandBuffer beginSingleTimeCommands() {
-		VkCommandBufferAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		allocInfo.commandPool = framesCommandPool[currentFrame];
-		allocInfo.commandBufferCount = 1;
-
-		VkCommandBuffer commandBuffer;
-		vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
-
-		VkCommandBufferBeginInfo beginInfo{};
-		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-		beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-		vkBeginCommandBuffer(commandBuffer, &beginInfo);
-
-		return commandBuffer;
-	}
-
-	void endSingleTimeCommands(VkCommandBuffer commandBuffer) {
-		vkEndCommandBuffer(commandBuffer);
-
-		VkSubmitInfo submitInfo{};
-		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers = &commandBuffer;
-
-		vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE);
-		vkQueueWaitIdle(graphicsQueue_);
-
-		vkFreeCommandBuffers(device, framesCommandPool[currentFrame], 1, &commandBuffer);
-	}
-
-	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
-		VkCommandBuffer commandBuffer = beginSingleTimeCommands();
-
-		VkBufferCopy copyRegion{};
-		copyRegion.size = size;
-		vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
-
-		endSingleTimeCommands(commandBuffer);
-	}
 
 	void createCommandBuffers() {
 
@@ -1652,9 +1359,7 @@ private:
 		}
 	}
 
-
-
-	void updateMatrialsSets() {
+	void updateMaterialSets() {
 
 		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstancesPool_.numObjects());
 
@@ -1713,19 +1418,6 @@ private:
 		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
 	}
-
-	//void bindMaterialPipeline(VkCommandBuffer commandBuffer, uint32_t imageIndex /*,MaterialPipelineHandle& mat_pipe*/) {
-
-	//	//VkPipeline pipeline;
-	//	//VkDescriptorSetLayout layout;
-
-	//	vkCmdBindPipeline(
-	//		commandBuffer,
-	//		VK_PIPELINE_BIND_POINT_GRAPHICS,
-	//		graphicsPipeline
-	//	);
-
-	//}
 
 	void recordDraw(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
 
@@ -1791,15 +1483,6 @@ private:
 
 		vkCmdBeginRendering(commandBuffer, &renderingInfo);
 
-		vkCmdBindPipeline(
-			commandBuffer,
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			graphicsPipeline
-		);
-
-		updateMatrialsSets();
-
-
 		// Flipped because of this :)
 		// https://www.saschawillems.de/blog/2019/03/29/flipping-the-vulkan-viewport/
 		VkViewport vp{};
@@ -1831,6 +1514,25 @@ private:
 			0,
 			VK_INDEX_TYPE_UINT32);
 
+
+
+		// VkCmdBindPipeline does force order. no draw command will jump over pipeline bind changes.
+		// Maybe I should macro this... But i like 'pure' syntax
+		for (int i = 0; i < context->materialPipelinePool_.numObjects(); i++) {
+			if (i > 1) {
+				assert(false);
+			}
+		}
+
+		vkCmdBindPipeline(
+			commandBuffer,
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			mat_pipeline.pipeline
+		);
+
+		// Per mat-instance
+		updateMaterialSets();
+
 		vkCmdBindDescriptorSets(
 			commandBuffer,
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1852,12 +1554,11 @@ private:
 		// Vert/Frag programs need to be binded before this
 		// I would like to encode in mat constructs also raster settings.
 		//MaterialValues mat_values_;
-
 		for (int i = 0; i < scene_->hierarchy.size(); i++) {
 
 
 			auto mesh_idx = scene_->meshForNode[i];
-			auto mesh_ = test_pool_.meshes_[mesh_idx];
+			auto mesh_ = meshes_[mesh_idx];
 			pc.material_instance_index = scene_->materialForNode[i];
 
 			vkCmdPushConstants(
@@ -1969,9 +1670,7 @@ private:
 
 		// We should check for size and promote or demote from pushconstants -> ubo -> ssbo.
 		UpdateDeltaTime();
-		UpdateUniformBuffer(currentFrame);
 		UpdateInstanceBuffer(currentFrame);
-
 
 		vkResetFences(device, 1, &inFlightFences[currentFrame]);
 		vkResetCommandPool(device, framesCommandPool[currentFrame], 0);
@@ -2033,23 +1732,26 @@ private:
 
 		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
+
+	// ui
+
+	static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
+	static void scrollCallback(GLFWwindow* window, double xOffset, double yOffset);
+	void handleMouseScroll(double xOffset, double yOffset);
+	void handleMouseMovement(double xpos, double ypos);
+	void handleMouseButton(int button, int action, int mods);
+	void handleKey(int key, int scancode, int action, int mods);
+	static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+
+	// utils
+
+	VkCommandBuffer beginSingleTimeCommands();
+	void endSingleTimeCommands(VkCommandBuffer commandBuffer);
+	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
+
 };
 
-//
-//Handle<Material> VulkanApp::createMaterial() {
-//
-//}
-//
-//Handle<Instance> VulkanApp::createInstance() {
-//	trasnform.
-//	mesh->search in hash map.upload if it doesnt exist;
-//	material-> 
-//
-//	ctx-> createInstnace(mesh_id, material)
-//}
-
 void VulkanApp::LoadScene() {
-	// First node.
 
 	//rootNode
 	addNode(*scene_, -1, 0);
@@ -2068,8 +1770,8 @@ void VulkanApp::LoadScene() {
 	mesh_2.indices = b_.indices;
 	mesh_2.vertices = b_.vertices;
 
-	test_pool_.meshes_.push_back(mesh_);
-	test_pool_.meshes_.push_back(mesh_2);
+	meshes_.push_back(mesh_);
+	meshes_.push_back(mesh_2);
 
 	auto m_m = scene_->localTransform[0];
 
@@ -2097,19 +1799,6 @@ void VulkanApp::LoadScene() {
 	VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
 	VkShaderModule vertexColorFrag = createShaderModule(device, vertColorFragCode);
-
-
-	createDescriptorSetLayout(
-		device,
-		&descriptorSetLayout
-	);
-
-	createGraphicsPipeline(
-		vertShaderModule,
-		fragShaderModule,
-		&descriptorSetLayout,
-		&pipelineLayout
-	);
 
 	auto image1 = createTextureImage(
 		"textures/viking_room.png",
@@ -2158,29 +1847,27 @@ void VulkanApp::LoadScene() {
 		&context->texturesPool_.get(image3)->sampler
 	);
 
-	//auto tex_1 = context->texturesPool_.get(image1);
-	//auto tex_2 = context->texturesPool_.get(image2);
-	//auto tex_3 = context->texturesPool_.get(image3);
+	// Diferent Material Pipelines.Models
+	// MaterialPipeline
+	createDescriptorSetLayout();
 
-	MaterialInstance mat_1 = {
-		.attached = {
-			{
-				0,
-				image1,
-			}
-		}
-	};
+	createGraphicsPipeline(
+		vertShaderModule,
+		fragShaderModule,
+		//&appDl,
+		&pipelineLayout
+	);
 
-	context->materialInstancesPool_.create(std::move(mat_1));
+	//MaterialInstance mat_1 = {
+	//	.attached = {
+	//		{
+	//			0,
+	//			image1,
+	//		}
+	//	}
+	//};
 
-	//test_pool_.materials_[0].frag = vertexColorFrag;
-	//test_pool_.materials_[0].vert = vertShaderModule;
-
-	//test_pool_.materials_[1].frag = fragShaderModule;
-	//test_pool_.materials_[1].vert = fragShaderModule;
-
-	//test_pool_.materials_[2].frag = vertShaderModule;
-	//test_pool_.materials_[2].vert = vertShaderModule;
+	//context->materialInstancesPool_.create(std::move(mat_1));
 
 }
 
@@ -2193,8 +1880,8 @@ void VulkanApp::UploadMeshData() {
 
 	for (int node = 0; node < scene_->hierarchy.size(); node++) {
 
-		static_vertex_buffer_size += sizeof(Vertex) * test_pool_.meshes_[node].vertices.size();
-		static_vertex_buffer_size += sizeof(uint32_t) * test_pool_.meshes_[node].indices.size();
+		static_vertex_buffer_size += sizeof(Vertex) * meshes_[node].vertices.size();
+		static_vertex_buffer_size += sizeof(uint32_t) * meshes_[node].indices.size();
 
 	}
 
@@ -2205,8 +1892,8 @@ void VulkanApp::UploadMeshData() {
 	uint32_t runningVertexOffset = 0; // in vertices
 	uint32_t runningFirstIndex = 0; // in indices
 
-	for (int i = 0; i < test_pool_.meshes_.size(); ++i) {
-		auto& m = test_pool_.meshes_[i];
+	for (int i = 0; i < meshes_.size(); ++i) {
+		auto& m = meshes_[i];
 
 		m.vert_offset = runningVertexOffset;         // elements, not bytes
 		m.first_index = runningFirstIndex;           // elements, not bytes
@@ -2264,8 +1951,8 @@ void VulkanApp::UploadMeshData() {
 		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
 		VkDeviceSize curr = 0; // byte offset
-		for (int i = 0; i < test_pool_.meshes_.size(); ++i) {
-			const auto& m = test_pool_.meshes_[i];
+		for (int i = 0; i < meshes_.size(); ++i) {
+			const auto& m = meshes_[i];
 			const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
 			if (bytes == 0) continue;
 
@@ -2292,8 +1979,8 @@ void VulkanApp::UploadMeshData() {
 		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
 		VkDeviceSize curr = 0; // byte offset
-		for (int i = 0; i < test_pool_.meshes_.size(); ++i) {
-			const auto& m = test_pool_.meshes_[i];
+		for (int i = 0; i < meshes_.size(); ++i) {
+			const auto& m = meshes_[i];
 			const VkDeviceSize bytes = sizeof(uint32_t) * m.indices.size();
 			if (bytes == 0) continue;
 
@@ -2308,17 +1995,15 @@ void VulkanApp::UploadMeshData() {
 
 }
 
-
-bool VulkanApp::run() {
-
-
-	// ---------------
+bool VulkanApp::Run() {
 
 	if (volkInitialize() != VK_SUCCESS) {
 		std::cerr << "Failed to initialize Volk\n";
 		glfwTerminate();
 		return false;
 	};
+
+	// GLFW;
 
 	if (!glfwInit()) {
 		std::cerr << "Failed to initialize GLFW\n";
@@ -2346,8 +2031,10 @@ bool VulkanApp::run() {
 	glfwSetWindowUserPointer(window, this);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
-	// Pick physical device, create logical device, gather queus. Create VMA allocator
-	initVulkanApp();
+	// 
+
+	// Pick physical device, create logical device, get queues from physdevice. Create VMA allocator
+	InitVulkanApp();
 
 	createSwapChain();
 	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
@@ -2372,28 +2059,20 @@ bool VulkanApp::run() {
 
 	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
 
+	// APP DATA
 	LoadScene();
-
-	// This shoudl be moved to ctx
-
 	UploadMeshData();
 
-	createUniformBuffers();
+	// named uniformBufferss. because of one uf per frame. contained ViewProj. useless now. -> Passed trough pc
+	//createUniformBuffers();
+
 	createInstanceDataBuffers();
 
+
+	// FRAME GRAPH
 	createCommandBuffers();
 	createSyncObjects();
 	createDepthResources();
-
-	// MATERIAL
-	// -------------------------------------------------------------------------------------
-
-	// this doenst use a shader cache
-	createDescriptorPool(); // Pool has the shape of the material!. Also 
-	createDescriptorSets();
-
-	// -------------------------------------------------------------------------------------
-
 
 	mainLoop();
 
@@ -2404,8 +2083,7 @@ bool VulkanApp::run() {
 
 };
 
-
-void VulkanApp::initVulkanApp() {
+void VulkanApp::InitVulkanApp() {
 
 	{
 		if (enableValidationLayers && !checkValidationLayerSupport()) {
@@ -2509,7 +2187,6 @@ void VulkanApp::initVulkanApp() {
 		<< properties.limits.maxStorageBufferRange << " bytes\n\n";
 #endif
 
-
 	// Create Logical Device
 	{
 		QueueFamilyIndices indices = findQueueFamilies(physicalDevice, surface);
@@ -2590,9 +2267,348 @@ void VulkanApp::initVulkanApp() {
 
 	res = vmaCreateAllocator(&allocatorCreateInfo, &app_allocator_);
 	assert(res == VK_SUCCESS);
-
 	context = new Context(&app_allocator_); // remember to delete it on shutdown
 }
+
+void createDescriptorSetLayout(VkDevice* device, VkDescriptorSetLayout* descriptorSetLayout) {
+
+	}
+
+void createGraphicsPipeline(
+	VkDevice* device,
+	VkShaderModule vert,
+	VkShaderModule frag,
+	VkPipelineLayout* pipelineLayout,
+	VkFormat depth_format,
+	VkFormat swapchainImageFormat,
+	VkPipeline graphicsPipeline
+) {
+
+	// SHADER
+
+	VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+	vertShaderStageInfo.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+	vertShaderStageInfo.module = vert;
+	vertShaderStageInfo.pName = "mainVS";
+
+	VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+	fragShaderStageInfo.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	fragShaderStageInfo.module = frag;
+	fragShaderStageInfo.pName = "mainPS";
+
+	VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
+													  fragShaderStageInfo };
+
+	//
+
+	// VERTEX FORMAT
+
+	VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+	vertexInputInfo.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+	auto bindingDescription = Vertex::getBindingDescription();
+	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+	vertexInputInfo.vertexBindingDescriptionCount = 1;
+	vertexInputInfo.vertexAttributeDescriptionCount =
+		static_cast<uint32_t>(attributeDescriptions.size());
+	vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+	vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+	inputAssembly.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+	// 
+
+	VkPipelineViewportStateCreateInfo viewportState{};
+	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewportState.viewportCount = 1;
+	viewportState.scissorCount = 1;
+
+	//
+
+	VkPipelineRasterizationStateCreateInfo rasterizer{};
+	rasterizer.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rasterizer.depthClampEnable = VK_FALSE;
+	rasterizer.rasterizerDiscardEnable = VK_FALSE;
+	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+	rasterizer.lineWidth = 1.0f;
+	rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	rasterizer.depthBiasEnable = VK_FALSE;
+
+	//
+
+	VkPipelineMultisampleStateCreateInfo multisampling{};
+	multisampling.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	multisampling.sampleShadingEnable = VK_FALSE;
+	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	//
+
+	VkPipelineDepthStencilStateCreateInfo depthStencil{};
+	depthStencil.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	depthStencil.depthTestEnable = VK_TRUE;
+	depthStencil.depthWriteEnable = VK_TRUE;
+	depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
+	depthStencil.depthBoundsTestEnable = VK_FALSE;
+	depthStencil.stencilTestEnable = VK_FALSE;
+
+	//
+
+	VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+	colorBlendAttachment.colorWriteMask =
+		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+		VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	colorBlendAttachment.blendEnable = VK_FALSE;
+
+	VkPipelineColorBlendStateCreateInfo colorBlending{};
+	colorBlending.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	colorBlending.logicOpEnable = VK_FALSE;
+	colorBlending.logicOp = VK_LOGIC_OP_COPY;
+	colorBlending.attachmentCount = 1;
+	colorBlending.pAttachments = &colorBlendAttachment;
+	colorBlending.blendConstants[0] = 0.0f;
+	colorBlending.blendConstants[1] = 0.0f;
+	colorBlending.blendConstants[2] = 0.0f;
+	colorBlending.blendConstants[3] = 0.0f;
+
+
+	// These two are elemental. There are extensions for almost anything do. Maybe it is woth to go all in dynamic state.
+	std::vector<VkDynamicState> dynamicStates = {
+		VK_DYNAMIC_STATE_VIEWPORT,
+		VK_DYNAMIC_STATE_SCISSOR
+	};
+
+	VkPipelineDynamicStateCreateInfo dynamicState{};
+	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamicState.dynamicStateCount =
+		static_cast<uint32_t>(dynamicStates.size());
+	dynamicState.pDynamicStates = dynamicStates.data();
+
+#pragma region ---[Push Constants]---
+
+	// One push constant range, covers all stages
+	VkPushConstantRange pcRange{};
+	pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+	pcRange.offset = 0;
+	pcRange.size = sizeof(PushConstants);
+
+	VkPushConstantRange material_constants_range_pc{};
+	material_constants_range_pc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	material_constants_range_pc.offset = sizeof(PushConstants);
+	// Im generalising here, but maybe I do different structs for diffrernt materialModels, pipelines
+	material_constants_range_pc.size = sizeof(MaterialPushConstants);
+
+	VkPushConstantRange pcs[2] = {
+		pcRange, material_constants_range_pc
+	};
+
+	VkPipelineLayoutCreateInfo layoutInfo{};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	layoutInfo.setLayoutCount = 1;
+	layoutInfo.pSetLayouts = {
+
+	};
+	layoutInfo.pushConstantRangeCount = 2;
+	layoutInfo.pPushConstantRanges = pcs;
+
+	if (vkCreatePipelineLayout(*device, &layoutInfo, nullptr,
+		pipelineLayout) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create pipeline layout!");
+	}
+
+#pragma endregion
+
+	// Provide information for dynamic rendering
+	VkPipelineRenderingCreateInfo pipeline_create{
+		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+	pipeline_create.pNext = VK_NULL_HANDLE;
+
+	// We are using the single color buffer out.
+	pipeline_create.colorAttachmentCount = 1;
+	pipeline_create.pColorAttachmentFormats = &swapchainImageFormat;
+
+	pipeline_create.depthAttachmentFormat = depth_format;
+	pipeline_create.stencilAttachmentFormat = depth_format;
+
+
+	VkGraphicsPipelineCreateInfo pipelineInfo{};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pipelineInfo.stageCount = 2;
+	pipelineInfo.pStages = shaderStages;
+	pipelineInfo.pVertexInputState = &vertexInputInfo;
+	pipelineInfo.pInputAssemblyState = &inputAssembly;
+	pipelineInfo.pViewportState = &viewportState;
+	pipelineInfo.pRasterizationState = &rasterizer;
+	pipelineInfo.pMultisampleState = &multisampling;
+	pipelineInfo.pColorBlendState = &colorBlending;
+	pipelineInfo.pDynamicState = &dynamicState;
+	pipelineInfo.pDepthStencilState = &depthStencil;
+	pipelineInfo.layout = *pipelineLayout;
+	pipelineInfo.pNext = &pipeline_create;
+
+
+	if (vkCreateGraphicsPipelines(*device, VK_NULL_HANDLE, 1, &pipelineInfo,
+		nullptr, &graphicsPipeline) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create graphics pipeline!");
+	}
+
+}
+
+// UI
+
+void VulkanApp::mouseCallback(GLFWwindow* window, double xpos, double ypos) {
+	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+	if (app) app->handleMouseMovement(xpos, ypos);
+}
+
+void VulkanApp::keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+	if (app) app->handleKey(key, scancode, action, mods);
+}
+
+void VulkanApp::mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+	if (app) app->handleMouseButton(button, action, mods);
+}
+
+void VulkanApp::scrollCallback(GLFWwindow* window, double xOffset, double yOffset) {
+	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+	if (app) app->handleMouseScroll(xOffset, yOffset);
+}
+
+void VulkanApp::handleMouseScroll(double xOffset, double yOffset) {
+	const float scrollSpeed = 1.0f;
+	glm::vec3 forward = cameraPositioner.getForward();
+	cameraPositioner.setPosition(
+		cameraPositioner.getPosition() + static_cast<float>(yOffset) * scrollSpeed * forward
+	);
+}
+
+void VulkanApp::handleMouseMovement(double xpos, double ypos) {
+	if (!rightMousePressed) return;
+
+	glm::vec2 mousePos = glm::vec2(
+		static_cast<float>(xpos) / width_,
+		static_cast<float>(ypos) / -height_
+	);
+	cameraPositioner.update(delta_time_ / 1000,
+		mousePos,
+		true
+	);
+}
+
+void VulkanApp::handleMouseButton(int button, int action, int mods) {
+	if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+		rightMousePressed = (action == GLFW_PRESS);
+	}
+}
+
+void VulkanApp::handleKey(int key, int scancode, int action, int mods) {
+	bool isPressed = action != GLFW_RELEASE;
+
+	switch (key) {
+	case GLFW_KEY_R:
+	case GLFW_KEY_F:
+		cameraPositioner.reset();
+		break;
+	case GLFW_KEY_W:
+	case GLFW_KEY_UP:
+		cameraPositioner.movement_.forward_ = isPressed;
+		break;
+	case GLFW_KEY_S:
+	case GLFW_KEY_DOWN:
+		cameraPositioner.movement_.backward_ = isPressed;
+		break;
+	case GLFW_KEY_A:
+	case GLFW_KEY_LEFT:
+		cameraPositioner.movement_.left_ = isPressed;
+		break;
+	case GLFW_KEY_D:
+	case GLFW_KEY_RIGHT:
+		cameraPositioner.movement_.right_ = isPressed;
+		break;
+	case GLFW_KEY_Q:
+	case GLFW_KEY_SPACE:
+		cameraPositioner.movement_.up_ = isPressed;
+		break;
+	case GLFW_KEY_E:
+		cameraPositioner.movement_.down_ = isPressed;
+		break;
+	case GLFW_KEY_LEFT_SHIFT:
+		cameraPositioner.movement_.fastSpeed_ = isPressed;
+		break;
+	default:
+		break;
+	}
+}
+
+void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
+	int height) {
+	auto app =
+		reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+	app->framebufferResized = true;
+}
+
+//
+
+VkCommandBuffer VulkanApp::beginSingleTimeCommands() {
+	VkCommandBufferAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocInfo.commandPool = framesCommandPool[currentFrame];
+	allocInfo.commandBufferCount = 1;
+
+	VkCommandBuffer commandBuffer;
+	vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+	VkCommandBufferBeginInfo beginInfo{};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+	vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+	return commandBuffer;
+}
+
+void VulkanApp::endSingleTimeCommands(VkCommandBuffer commandBuffer) {
+	vkEndCommandBuffer(commandBuffer);
+
+	VkSubmitInfo submitInfo{};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &commandBuffer;
+
+	vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE);
+	vkQueueWaitIdle(graphicsQueue_);
+
+	vkFreeCommandBuffers(device, framesCommandPool[currentFrame], 1, &commandBuffer);
+}
+
+void VulkanApp::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+	VkBufferCopy copyRegion{};
+	copyRegion.size = size;
+	vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+	endSingleTimeCommands(commandBuffer);
+}
+
+//
 
 int main(int argc, const char* argv[]) {
 	if (argc > 1) {
@@ -2601,7 +2617,7 @@ int main(int argc, const char* argv[]) {
 
 	VulkanApp app = VulkanApp();
 	try {
-		app.run();
+		app.Run();
 	}
 	catch (const std::exception& e) {
 		std::cerr << e.what() << std::endl;
@@ -2610,22 +2626,3 @@ int main(int argc, const char* argv[]) {
 
 	return EXIT_SUCCESS;
 }
-
-
-// DUMP!
-
-// We can type result to have a custom interface. I dont think i need it . This is not a RHI or API with aa cerefully designed interface.
-//struct Result {
-//	enum class Code {
-//		Ok,
-//		Fail,
-//		Out
-//	};
-//
-//	Code code = Code::Ok;
-//	const char* message = "";
-//	explicit Result() = default;
-//	explicit Result(Code code, const char* message = "") : code(code), message(message) {}
-//
-//};
-//

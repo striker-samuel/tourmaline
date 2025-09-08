@@ -17,6 +17,7 @@
 #include <cstring>
 
 #include <Engine/Vulkan/vulkan_setup.h>
+#include <Engine/Renderer/primitives.h>
 
 const std::vector<const char*> validationLayers = {
 	"VK_LAYER_KHRONOS_validation",
@@ -374,5 +375,4 @@ void populateDebugMessengerCreateInfo(
 		VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
 	createInfo.pfnUserCallback = debugCallback;
 }
-
 

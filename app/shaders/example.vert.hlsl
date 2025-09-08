@@ -7,7 +7,7 @@
 #endif
 
 // --- Push constants (GLSL: layout(push_constant) uniform PushConsts { ... } pc; )
-struct PushConsts
+struct DefaultPushConsts
 {
     float4x4 view;
     float4x4 proj;
@@ -16,6 +16,18 @@ struct PushConsts
     int padding1;
     int padding2;
 };
+
+struct PushConsts{
+
+    DefaultPushConsts viewproj;
+    float4 ambient;
+    float4 diffuse;
+    int texAmbient;
+	int texDiffuse;
+	int texAlpha;
+	int padding[1];
+};
+
 
 // Tell DXC this ConstantBuffer is a Vulkan push-constant block.
 [[vk::push_constant]]
@@ -74,10 +86,10 @@ VSOut mainVS(VSIn IN)
     uint idx = indicesStd140[IN.instanceID].i;
 
     // Position transform:
-    // GLSL: pc.proj * pc.view * M * vec4(inPosition, 1.0)
+    // GLSL: pc.viewproj.proj * pc.viewproj.view * M * vec4(inPosition, 1.0)
     float4 world = float4(IN.inPosition, 1.0f);
     float4x4 model = instance_data[idx].transform;
-    float4 clip = mul(pc.proj, mul(pc.view, mul(model, world)));
+    float4 clip = mul(pc.viewproj.proj, mul(pc.viewproj.view, mul(model, world)));
 
     OUT.pos = clip;
     OUT.fragColor = instance_data[idx].color;

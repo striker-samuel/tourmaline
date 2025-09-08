@@ -56,7 +56,8 @@ using TextureHandle = Handle<struct Texture>;
 using SamplerHandle = Handle<struct Sampler>;
 using MaterialPipelineHandle = Handle<struct MaterialPipeline>;
 using MaterialInstanceHandle = Handle<struct MaterialInstance>;
-
+using DescriptorPoolHandle = Handle<struct DescriptorPool>;
+using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
 
 // this live hostSide too but defines device mesh abstraction
 struct MeshDrawInfo {
