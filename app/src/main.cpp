@@ -124,26 +124,15 @@ struct MaterialPipeline {
 	RasterSettings raster_settings;
 	ShaderModuleHandle vert;
 	ShaderModuleHandle frag;
-	// PC ranges
-};
 
-struct Pipeline {
-	// These down here are state
-	//PipelineLayout layout; // This should resolve to VkDescriptorLayout
-
-	// Lets go natural Vulkan for this atm
-	VkDescriptorSetLayout setLayout;
-
-	// This is descriptors set lyt + pc ranges
-	VkPipelineLayout pipeLayout;
+	VkDescriptorSetLayout* layout;
 	VkPipeline pipeline;
 };
 
 // Im not convinced by this at all;
 struct MaterialAttachment {
-	uint32_t slot;
-	TextureHandle tex;
-	//useType
+	uint32_t slot = 0;
+	TextureHandle tex = {};
 };
 
 // This gets uploaded to Device. stride contraints. no Handles!
@@ -162,9 +151,16 @@ static_assert(sizeof(MaterialPushConstants) % 16 == 0);
 // MatModels or MatPipelines can have several instnaces with different vlaues for constans and textures.
 // Raster state, vert, frag, blending and more stay ther same.
 struct MaterialInstance {
-	//MaterialPipelineHandle pipeline;
+
+	MaterialPipelineHandle pipeline;
 	//MaterialPushConstants pv_values;
-	MaterialAttachment attached[5];
+	MaterialAttachment attached[5] = {  };
+
+};
+
+
+struct MaterialDescriptorSets {
+	VkDescriptorSet set;
 };
 
 struct DeviceBufferDesc {
@@ -199,7 +195,7 @@ class Context {
 
 public:
 
-	
+
 	// We neeed VkDescriptorPool pools here
 	// We move from VkDp to another because its cheaper to reset them than to evict particular sets.
 	// Same with CommandPools. I have a stupid simple design now with just 1 CommandPool.
@@ -210,7 +206,7 @@ public:
 	Pool<DescriptorPool, VkDescriptorPool> dpp_;
 	Pool<DescriptorLayout, VkDescriptorSetLayout> dlp_;
 	Pool<MaterialPipeline, MaterialPipeline> materialPipelinePool_;
-	Pool<MaterialInstance, MaterialInstance> materialInstancePool_;
+	Pool<MaterialInstance, MaterialInstance> materialInstancesPool_;
 
 	Pool<ShaderModule, VkShaderModule> shaderModulePool_;
 
@@ -252,11 +248,7 @@ public:
 	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settigns, VkPipelineLayout t_pipe_layout);
 };
 
-
-// Creation
-
-// This should be specialized for each MaterialModel
-DescriptorLayoutHandle Context::createDescriptorLayout(){
+DescriptorLayoutHandle Context::createDescriptorLayout() {
 
 	VkDescriptorSetLayoutBinding instanceIndexBinding{};
 	instanceIndexBinding.binding = 0;
@@ -347,27 +339,20 @@ DescriptorPoolHandle Context::createDescriptorPool() {
 MaterialPipelineHandle Context::createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settigns, VkPipelineLayout t_pipe_layout) {
 
 	// We ure using native VkPipelineLayout to ease things for now so we dont have to formalize a way to describe that.
-
-
 	MaterialPipeline mat_pipe = {};
 	mat_pipe.raster_settings = default_raster_settings;
 	mat_pipe.frag = frag;
 	mat_pipe.vert = vert;
 
-
-	//mat_pipe.setLayout
+	auto layout_h = createDescriptorLayout();
+	auto lyt = dlp_.get(layout_h);
+	mat_pipe.layout = lyt;
 
 
 	auto r = materialPipelinePool_.create(std::move(mat_pipe));
 	return r;
 
 }
-//
-//MaterialInstanceHandle Context::createMaterialInstance() {
-//	auto r = materialInstancesPool_.create(std::move(MaterialInstance{}));
-//	return r;
-//};
-//
 
 TextureHandle Context::createTextureImage(std::string image_path, VkFormat format) {
 
@@ -515,12 +500,6 @@ private:
 	VkImageView main_depthImageView;
 	VmaAllocation main_d_alloc;
 
-#pragma region ===[ Descriptors ]===
-
-	//VkDescriptorSet frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
-
-#pragma endregion
-
 #pragma region ===[ GLFW / Window State ]===
 	GLFWwindow * window;
 #pragma endregion
@@ -536,7 +515,6 @@ private:
 
 	// We need to move this to context;
 #pragma region ===[ Uniforms / Descriptor Sets ]==
-
 
 	// These should be moved to Context
 	DeviceBufferDesc uniforms_[MAX_FRAMES_IN_FLIGHT];
@@ -1325,7 +1303,6 @@ private:
 		VkMemoryAllocateInfo allocInfo{};
 
 		// This should be moved to VMA
-
 		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		allocInfo.allocationSize = memRequirements.size;
 		allocInfo.memoryTypeIndex =
@@ -1344,7 +1321,6 @@ private:
 		vkBindBufferMemory(device, buffer, bufferMemory, 0);
 	}
 
-
 	void createCommandBuffers() {
 
 		VkCommandBufferAllocateInfo allocInfo{};
@@ -1359,6 +1335,7 @@ private:
 		}
 	}
 
+	// This needs a complete refactor
 	void updateMaterialSets() {
 
 		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstancesPool_.numObjects());
@@ -1394,28 +1371,28 @@ private:
 			samplerInfos.push_back(si);
 		}
 
-		// --- Two writes: images at binding 2, samplers at binding 3 ---
-		VkWriteDescriptorSet writes[2]{};
+		//// --- Two writes: images at binding 2, samplers at binding 3 ---
+		//VkWriteDescriptorSet writes[2]{};
 
-		// Sampled image array (binding 2)
-		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[0].dstSet = frameDescriptorSets[currentFrame];
-		writes[0].dstBinding = 2;
-		writes[0].dstArrayElement = 0;
-		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		writes[0].descriptorCount = materialCount;
-		writes[0].pImageInfo = imageInfos.data();
+		//// Sampled image array (binding 2)
+		//writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		//writes[0].dstSet = materialSets[0];
+		//	writes[0].dstBinding = 2;
+		//writes[0].dstArrayElement = 0;
+		//writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		//writes[0].descriptorCount = materialCount;
+		//writes[0].pImageInfo = imageInfos.data();
 
-		// Sampler array (binding 3)
-		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[1].dstSet = frameDescriptorSets[currentFrame];
-		writes[1].dstBinding = 3;
-		writes[1].dstArrayElement = 0;
-		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-		writes[1].descriptorCount = materialCount;   // or 1 if you use a single shared sampler
-		writes[1].pImageInfo = samplerInfos.data();
+		//// Sampler array (binding 3)
+		//writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		//writes[1].dstSet = materialSets[1],
+		//	writes[1].dstBinding = 3;
+		//writes[1].dstArrayElement = 0;
+		//writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+		//writes[1].descriptorCount = materialCount;   // or 1 if you use a single shared sampler
+		//writes[1].pImageInfo = samplerInfos.data();
 
-		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+		//vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
 	}
 
@@ -1524,24 +1501,25 @@ private:
 			}
 		}
 
-		vkCmdBindPipeline(
-			commandBuffer,
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			mat_pipeline.pipeline
-		);
 
-		// Per mat-instance
-		updateMaterialSets();
+		//vkCmdBindPipeline(
+		//	commandBuffer,
+		//	VK_PIPELINE_BIND_POINT_GRAPHICS,
+		//	mat_pipeline.pipeline
+		//);
 
-		vkCmdBindDescriptorSets(
-			commandBuffer,
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			pipelineLayout,
-			0,
-			1,
-			&frameDescriptorSets[currentFrame],
-			0,
-			nullptr);
+		//// Per mat-instance
+		//updateMaterialSets();
+
+		//vkCmdBindDescriptorSets(
+		//	commandBuffer,
+		//	VK_PIPELINE_BIND_POINT_GRAPHICS,
+		//	pipelineLayout,
+		//	0,
+		//	1,
+		//	&materialSets[currentMaterial],
+		//	0,
+		//	nullptr);
 
 
 		PushConstants pc = {  };
@@ -1554,31 +1532,44 @@ private:
 		// Vert/Frag programs need to be binded before this
 		// I would like to encode in mat constructs also raster settings.
 		//MaterialValues mat_values_;
+
+
 		for (int i = 0; i < scene_->hierarchy.size(); i++) {
 
 
 			auto mesh_idx = scene_->meshForNode[i];
 			auto mesh_ = meshes_[mesh_idx];
-			pc.material_instance_index = scene_->materialForNode[i];
+			auto material_instance_index =  scene_->materialForNode[i];
+			pc.material_instance_index = material_instance_index;
+			auto mat_h = context->materialInstancesPool_.getHandle(material_instance_index);
+			auto mat = context->materialInstancesPool_.get(mat_h);
 
-			vkCmdPushConstants(
-				commandBuffers[currentFrame],
-				pipelineLayout,
-				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-				0,
-				sizeof(pc),
-				&pc
-			);
 
-			vkCmdDrawIndexed(
-				commandBuffer,
-				static_cast<uint32_t>(mesh_.indices.size()), //indexCount
-				1, //instanceCount
-				mesh_.first_index, //firstIndex
-				mesh_.vert_offset, //vertexOffset
-				i //firstInstance. Change this so shader acces keeps 0index but we can manipulate view from command side
-			);
 		}
+
+
+
+		//for material
+		//{
+
+		//	vkCmdPushConstants(
+		//		commandBuffers[currentFrame],
+		//		pipelineLayout,
+		//		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		//		0,
+		//		sizeof(pc),
+		//		&pc
+		//	);
+
+		//	vkCmdDrawIndexed(
+		//		commandBuffer,
+		//		static_cast<uint32_t>(mesh_.indices.size()), //indexCount
+		//		1, //instanceCount
+		//		mesh_.first_index, //firstIndex
+		//		mesh_.vert_offset, //vertexOffset
+		//		i //firstInstance. Change this so shader acces keeps 0index but we can manipulate view from command side
+		//	);
+		//}
 
 		vkCmdEndRendering(commandBuffer);
 
@@ -1792,6 +1783,12 @@ void VulkanApp::LoadScene() {
 	scene_->localTransform[1][1][1] = 100;
 	scene_->localTransform[1][2][2] = 100;
 
+
+	// These all shpuld be MaterialCode
+
+
+	//MatModel
+
 	auto vertShaderCode = readFile("shaders/example.vert.hlsl.spv");
 	auto vertColorFragCode = readFile("shaders/vertex_color.frag.hlsl.spv");
 	auto fragShaderCode = readFile("shaders/example.frag.hlsl.spv");
@@ -1849,14 +1846,14 @@ void VulkanApp::LoadScene() {
 
 	// Diferent Material Pipelines.Models
 	// MaterialPipeline
-	createDescriptorSetLayout();
+	//createDescriptorSetLayout();
 
-	createGraphicsPipeline(
-		vertShaderModule,
-		fragShaderModule,
-		//&appDl,
-		&pipelineLayout
-	);
+	//createGraphicsPipeline(
+	//	vertShaderModule,
+	//	fragShaderModule,
+	//	//&appDl,
+	//	&pipelineLayout
+	//);
 
 	//MaterialInstance mat_1 = {
 	//	.attached = {
@@ -2272,7 +2269,7 @@ void VulkanApp::InitVulkanApp() {
 
 void createDescriptorSetLayout(VkDevice* device, VkDescriptorSetLayout* descriptorSetLayout) {
 
-	}
+}
 
 void createGraphicsPipeline(
 	VkDevice* device,
@@ -2302,8 +2299,6 @@ void createGraphicsPipeline(
 
 	VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
 													  fragShaderStageInfo };
-
-	//
 
 	// VERTEX FORMAT
 

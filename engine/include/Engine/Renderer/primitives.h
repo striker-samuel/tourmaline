@@ -18,22 +18,6 @@
 #include <Engine/Vulkan/vulkan_setup.h>
 #include <Engine/Renderer/vertex.h>
 
-// Statements 
-// Forward+ . Maybe tiled deferred shadows in future
-// Just static geo. Dont focus on streaming yet
-// Dynamic Rendering
-// Under 10 Materials Definitions. MAterial is stages, pipeline blend, depth conf, vert and shader. attachment slots desc. No more
-// Mateials. 
-// Simple standwardSurface (Default),
-// Unlit, own frag
-// Anisotropic, Own brdf
-// SubSurface, Maybe needs depth bias.
-// Translucent, needs blendin
-// Hair, needs blending/ own brdf
-// Cloth, sheen.
-// Maybe more...
-
-
 const std::vector<Vertex> quad_vertices = {
 	{{7.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
 	{{0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
@@ -55,10 +39,6 @@ const std::vector<Vertex> triangle_vertices = {
 const std::vector<uint32_t> triangle_indices_ccw = {
 	0, 1, 2
 };
-
-
-
-
 
 
 // Host side Mesh. Just for loading .. Deleted after
@@ -88,7 +68,7 @@ struct InstanceData {
 		0.0f, 0.0f, 1.0f, 0.0f,
 		0.0f, 0.0f, 0.0f, 1.0f
 	};
-	glm::float4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
+	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
 	//uint32_t meshIndex;
 	//uint32_t indexOffset;
 	//uint32_t materialIndex; // This is the device side for Instacnce abstaction. Material is CPU SIDE. this souldnt be added back
