@@ -60,17 +60,24 @@ static constexpr uint32_t MAX_MATERIALS = 1000;
 // ------------------------------------
 
 enum class BufferRole { UBO, SSBO };
+std::vector<Mesh> meshes = { Quad, Triangle };
 
+// ------------------------------------
+
+
+// Scene Hieracrhy manages transform
 struct HostInstance {
-
 	// We can just use Handles, reserve untyped uint32_t indexing for GPU structs
 	/*uint32_t*/ MeshHandle mesh;
 	MaterialInstanceHandle material;
 	uint32_t scene_node;
-	// named?
+	uint32_t LOD;
 };
 
-// Dont like thys. currently limited by the 16 byte stride.
+
+// ------------------------------------------------------------------------------------------------
+
+// Dont like this. currently limited by the 16 byte stride.
 // Maybe i could do away with it but that needs ext checking and enalbing and mods in shader code
 struct alignas(16) IndexSlot {
 	uint32_t idx;      // put the 16-bit value here (zero-extend)
@@ -87,13 +94,17 @@ struct PushConstants {
 	uint32_t     _pad0[3];
 };
 
+// ------------------------------------------------------------------------------------------------
+
 // Lets go with uniform_layouts ext. GENERAL and UNDEFINED
 struct Texture {
 
+	// to be able to free. or queryu memory info. Could be moved really.
 	VmaAllocation allocation;
+	VmaAllocationInfo allocInfo;
+
 	VkImage image;
 	VkImageView imageView;
-
 	// This is far from good.
 	VkSampler sampler;
 	// Other properties and attributes
@@ -121,29 +132,37 @@ struct RasterSettings {
 // Another name fot his could be MatModel?
 struct MaterialPipeline {
 
+
+	// We need to hash these tree. but wont do it now
 	RasterSettings raster_settings;
 	ShaderModuleHandle vert;
 	ShaderModuleHandle frag;
 
-	VkDescriptorSetLayout* layout;
+	// Lets not complitcate this for now. same footprint for everyone. 
+	//VkDescriptorSetLayout* layout;
+
+	// Lets just hold this here for now
+	VkPipelineLayout plyt;
+
 	VkPipeline pipeline;
 };
 
-// Im not convinced by this at all;
-struct MaterialAttachment {
-	uint32_t slot = 0;
-	TextureHandle tex = {};
-};
 
 // This gets uploaded to Device. stride contraints. no Handles!
 // This will go with pushcontants. May require specialization per shader model
 struct MaterialPushConstants {
+
+	// Color *=
 	glm::vec4 ambient = glm::vec4(0.0f);
 	glm::vec4 diffuse = glm::vec4(0.0f);
-	uint32_t texAmbient = 0; // this are not index to textures. for now at least;
+
+
+	// Index to bindless texture array. Doing this like so obviously makes it so we only have one def for material texture slots
+	uint32_t texAmbient = 0;
 	uint32_t texDiffuse = 0;
 	uint32_t texAlpha = 0;
 	uint32_t padding[1];
+
 } default_mat_pc;
 
 static_assert(sizeof(MaterialPushConstants) % 16 == 0);
@@ -151,11 +170,8 @@ static_assert(sizeof(MaterialPushConstants) % 16 == 0);
 // MatModels or MatPipelines can have several instnaces with different vlaues for constans and textures.
 // Raster state, vert, frag, blending and more stay ther same.
 struct MaterialInstance {
-
 	MaterialPipelineHandle pipeline;
-	//MaterialPushConstants pv_values;
-	MaterialAttachment attached[5] = {  };
-
+	MaterialPushConstants values = {};
 };
 
 
@@ -186,7 +202,7 @@ class Context {
 	VkDevice* device_;
 
 	// These three things are primary citizens of Device Memory Residency
-	VmaPool D_ImagesPool;
+	VmaPool D_2DImagesPool;
 	VmaPool D_ShaderPool;
 
 	// Skinned. Static. Dynamic ->
@@ -200,13 +216,18 @@ public:
 	// We move from VkDp to another because its cheaper to reset them than to evict particular sets.
 	// Same with CommandPools. I have a stupid simple design now with just 1 CommandPool.
 	Pool<Buffer, DeviceBufferDesc> buffersPool_;
-	Pool<Texture, Texture> texturesPool_;
-
+	Pool<Texture, Texture> texturesPool2D_;
 
 	Pool<DescriptorPool, VkDescriptorPool> dpp_;
 	Pool<DescriptorLayout, VkDescriptorSetLayout> dlp_;
 	Pool<MaterialPipeline, MaterialPipeline> materialPipelinePool_;
 	Pool<MaterialInstance, MaterialInstance> materialInstancesPool_;
+
+
+
+	// Lets go raw for the moment. Handles help with invalidation. We are going static still
+	std::vector<VkSampler> samplers;
+	//std::vector<VkPipeline> pipelines;
 
 	Pool<ShaderModule, VkShaderModule> shaderModulePool_;
 
@@ -214,9 +235,9 @@ public:
 		allocator_ = allocator;
 
 		// Lets reserve upfront.
-		texturesPool_.objects_.reserve(MAX_TEXTURES);
+		texturesPool2D_.objects_.reserve(MAX_TEXTURES);
 
-		materialPipelinePool_.objects_.reserve(1000);
+		//materialPipelinePool_.objects_.reserve(1000);
 		// This is a small reservation. just testing 
 		buffersPool_.objects_.reserve(1000);
 
@@ -237,19 +258,24 @@ public:
 		pci.maxBlockCount = 0;                         // 0 = no explicit upper limit. // Ill not specify nothing here. My Host pool has limited slots already :9
 		// pci.flags = VMA_POOL_CREATE_IGNORE_BUFFER_IMAGE_GRANULARITY_BIT; // if you know what you’re doing
 
-		if (vmaCreatePool(*allocator_, &pci, &D_ImagesPool) != VK_SUCCESS) {
+		if (vmaCreatePool(*allocator_, &pci, &D_2DImagesPool) != VK_SUCCESS) {
 			throw std::runtime_error("vmaCreatePool failed.");
 		}
 	}
 
+	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
+	MaterialInstanceHandle createMaterialInstance(MaterialPipelineHandle mat_pipeline);
+
 	TextureHandle createTextureImage(std::string image_path, VkFormat format);
+	ShaderModuleHandle createShaderModule(std::vector<char> code);
 	DescriptorLayoutHandle createDescriptorLayout();
 	DescriptorPoolHandle createDescriptorPool();
-	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settigns, VkPipelineLayout t_pipe_layout);
 };
 
-DescriptorLayoutHandle Context::createDescriptorLayout() {
 
+// Lets just use 1 layout for now. We will need more shapes for shadows and others is my guess.
+DescriptorLayoutHandle Context::createDescriptorLayout() {
+	// INDEX DATA
 	VkDescriptorSetLayoutBinding instanceIndexBinding{};
 	instanceIndexBinding.binding = 0;
 	instanceIndexBinding.descriptorCount = 1;
@@ -264,25 +290,23 @@ DescriptorLayoutHandle Context::createDescriptorLayout() {
 	instanceDataBinding.pImmutableSamplers = nullptr;
 	instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-	// sampled image array
-	VkDescriptorSetLayoutBinding texBinding{};
-	texBinding.binding = 2;
-	texBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-	texBinding.descriptorCount = MAX_TEXTURES;
-	texBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	VkDescriptorSetLayoutBinding sampledImageBinding{};
+	sampledImageBinding.binding = 2;
+	sampledImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	sampledImageBinding.descriptorCount = MAX_TEXTURES;
+	sampledImageBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	// one sampler (or an array if you really need multiple)
 	VkDescriptorSetLayoutBinding sampBinding{};
 	sampBinding.binding = 3;
 	sampBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-	sampBinding.descriptorCount = MAX_TEXTURES;
+	sampBinding.descriptorCount = samplers.size();
 	sampBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 	std::array<VkDescriptorSetLayoutBinding, 4> bindings = {
 		instanceIndexBinding,
 		instanceDataBinding,
 		//
-		texBinding,
+		sampledImageBinding,
 		sampBinding,
 	};
 
@@ -335,8 +359,7 @@ DescriptorPoolHandle Context::createDescriptorPool() {
 
 }
 
-
-MaterialPipelineHandle Context::createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settigns, VkPipelineLayout t_pipe_layout) {
+MaterialPipelineHandle Context::createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat) {
 
 	// We ure using native VkPipelineLayout to ease things for now so we dont have to formalize a way to describe that.
 	MaterialPipeline mat_pipe = {};
@@ -344,14 +367,34 @@ MaterialPipelineHandle Context::createMaterialPipeline(ShaderModuleHandle vert, 
 	mat_pipe.frag = frag;
 	mat_pipe.vert = vert;
 
+	// We are reusing same layout always. its should be a map from our layour app def -> vklayout really
 	auto layout_h = createDescriptorLayout();
 	auto lyt = dlp_.get(layout_h);
-	mat_pipe.layout = lyt;
 
+	auto v = shaderModulePool_.get(vert);
+	auto f = shaderModulePool_.get(frag);
 
-	auto r = materialPipelinePool_.create(std::move(mat_pipe));
-	return r;
+	createGraphicsPipeline(
+		device_,
+		*v,
+		*f,
+		&mat_pipe.plyt,
+		depth_format,
+		swapchainImageFormat,
+		mat_pipe.pipeline
+	);
 
+	return materialPipelinePool_.create(std::move(mat_pipe));
+
+}
+
+MaterialInstanceHandle Context::createMaterialInstance(MaterialPipelineHandle mat_pipeline)
+{
+
+	MaterialInstance mat_instance = {};
+	mat_instance.pipeline = mat_pipeline;
+
+	return materialInstancesPool_.create(std::move(mat_instance));
 }
 
 TextureHandle Context::createTextureImage(std::string image_path, VkFormat format) {
@@ -382,7 +425,7 @@ TextureHandle Context::createTextureImage(std::string image_path, VkFormat forma
 
 	VmaAllocationCreateInfo aCI{};
 	aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
-	aCI.pool = D_ImagesPool;                      // <--- CRITICAL: place this allocation in the pool
+	aCI.pool = D_2DImagesPool;                      // <--- CRITICAL: place this allocation in the pool
 
 	VkImage image = VK_NULL_HANDLE;
 	VmaAllocation alloc = VK_NULL_HANDLE;
@@ -400,27 +443,34 @@ TextureHandle Context::createTextureImage(std::string image_path, VkFormat forma
 	tex.image = image;
 	//tex.imageView
 
-	TextureHandle imgHandle = texturesPool_.create(std::move(tex));
+	TextureHandle imgHandle = texturesPool2D_.create(std::move(tex));
 
 	return imgHandle;
 
 }
 
-//BufferHandle Context::createBuffer() {
-//
-//	DeviceBufferDesc bd = {  };
-//	auto a = buffersPool_.create(std::move(bd));
-//	return a;
-//}
+ShaderModuleHandle Context::createShaderModule(std::vector<char> code) {
+
+	auto shader = createDeviceShaderModule(
+		*device_,
+		std::move(code)
+	);
+
+	return shaderModulePool_.create(std::move(shader)); w
+
+};
+
+
+
+
 
 // DELETION ---------------------------------------------------------------------------------------------------
 
-// Need device allcoation freeing
-
+// Need device allocation freeing
 void destroy(Context* ctx, TextureHandle handle) {
 
 	// We need to free from device pool.
-	ctx->texturesPool_.destroy(handle);
+	ctx->texturesPool2D_.destroy(handle);
 };
 
 void destroy(Context* ctx, BufferHandle handle) {
@@ -441,7 +491,7 @@ public:
 
 private:
 
-	std::vector<Mesh> meshes_ = { Quad, Triangle };
+
 	Context* context;
 
 	//  Defaulting to empty scene
@@ -559,14 +609,8 @@ private:
 
 
 	void InitVulkanApp();
-	static void mouseCallback(GLFWwindow* window, double xpos, double ypos);
-	static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
 	void LoadScene();
 	void UploadMeshData();
-
-	/// <summary>
-	/// 
-	/// </summary>
 
 	void UpdateDeltaTime() {
 
@@ -895,7 +939,7 @@ private:
 
 
 		auto texHandle = context->createTextureImage(texture_path, format);
-		auto texture_image = context->texturesPool_.get(texHandle);
+		auto texture_image = context->texturesPool2D_.get(texHandle);
 
 		//createImage(
 		//	texWidth,
@@ -1347,7 +1391,7 @@ private:
 		imageInfos.reserve(materialCount);
 		for (auto mat_instance : context->materialInstancesPool_.objects_) {
 
-			auto tex = context->texturesPool_.get(mat_instance.obj_.attached[0].tex);
+			auto tex = context->texturesPool2D_.get(mat_instance.obj_.attached[0].tex);
 
 
 			VkDescriptorImageInfo ii{};
@@ -1362,7 +1406,7 @@ private:
 		samplerInfos.reserve(materialCount);
 		for (const auto& mat_instance : context->materialInstancesPool_.objects_) {
 
-			auto tex = context->texturesPool_.get(mat_instance.obj_.attached[0].tex);
+			auto tex = context->texturesPool2D_.get(mat_instance.obj_.attached[0].tex);
 
 			VkDescriptorImageInfo si{};
 			si.sampler = tex->sampler;
@@ -1539,7 +1583,7 @@ private:
 
 			auto mesh_idx = scene_->meshForNode[i];
 			auto mesh_ = meshes_[mesh_idx];
-			auto material_instance_index =  scene_->materialForNode[i];
+			auto material_instance_index = scene_->materialForNode[i];
 			pc.material_instance_index = material_instance_index;
 			auto mat_h = context->materialInstancesPool_.getHandle(material_instance_index);
 			auto mat = context->materialInstancesPool_.get(mat_h);
@@ -1724,21 +1768,29 @@ private:
 		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
+
+
 	// ui
 
 	static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 	static void scrollCallback(GLFWwindow* window, double xOffset, double yOffset);
+	static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+	static void mouseCallback(GLFWwindow* window, double xpos, double ypos);
+	static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
+
 	void handleMouseScroll(double xOffset, double yOffset);
 	void handleMouseMovement(double xpos, double ypos);
 	void handleMouseButton(int button, int action, int mods);
 	void handleKey(int key, int scancode, int action, int mods);
-	static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 
 	// utils
-
 	VkCommandBuffer beginSingleTimeCommands();
 	void endSingleTimeCommands(VkCommandBuffer commandBuffer);
 	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
+
+	// TEMP
+	std::vector<MaterialInstanceHandle> material_instance_handles;
+	std::vector<MaterialPipelineHandle> material_pipe_handles;
 
 };
 
@@ -1761,8 +1813,9 @@ void VulkanApp::LoadScene() {
 	mesh_2.indices = b_.indices;
 	mesh_2.vertices = b_.vertices;
 
-	meshes_.push_back(mesh_);
-	meshes_.push_back(mesh_2);
+	// this is crap. just for testing 
+	meshes.push_back(mesh_);
+	meshes.push_back(mesh_2);
 
 	auto m_m = scene_->localTransform[0];
 
@@ -1783,19 +1836,30 @@ void VulkanApp::LoadScene() {
 	scene_->localTransform[1][1][1] = 100;
 	scene_->localTransform[1][2][2] = 100;
 
-
-	// These all shpuld be MaterialCode
-
-
-	//MatModel
-
 	auto vertShaderCode = readFile("shaders/example.vert.hlsl.spv");
 	auto vertColorFragCode = readFile("shaders/vertex_color.frag.hlsl.spv");
 	auto fragShaderCode = readFile("shaders/example.frag.hlsl.spv");
 
-	VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
-	VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
-	VkShaderModule vertexColorFrag = createShaderModule(device, vertColorFragCode);
+	//VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
+	//VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
+	//VkShaderModule vertexColorFrag = createShaderModule(device, vertColorFragCode);
+
+	auto vertHandle = context->createShaderModule(
+		vertShaderCode
+	);
+	auto fragHandle = context->createShaderModule(
+		fragShaderCode
+	);
+
+	auto def_pipe = context->createMaterialPipeline(
+		vertHandle,
+		fragHandle,
+		default_raster_settings,
+		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
+		swapChainImageFormat
+	);
+
+	material_pipe_handles.push_back(def_pipe);
 
 	auto image1 = createTextureImage(
 		"textures/viking_room.png",
@@ -1813,58 +1877,36 @@ void VulkanApp::LoadScene() {
 
 
 	createTextureImageView(
-		&context->texturesPool_.get(image1)->image,
-		&context->texturesPool_.get(image1)->imageView,
+		&context->texturesPool2D_.get(image1)->image,
+		&context->texturesPool2D_.get(image1)->imageView,
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 
 	createTextureImageView(
-		&context->texturesPool_.get(image2)->image,
-		&context->texturesPool_.get(image2)->imageView,
+		&context->texturesPool2D_.get(image2)->image,
+		&context->texturesPool2D_.get(image2)->imageView,
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 	createTextureImageView(
-		&context->texturesPool_.get(image3)->image,
-		&context->texturesPool_.get(image3)->imageView,
+		&context->texturesPool2D_.get(image3)->image,
+		&context->texturesPool2D_.get(image3)->imageView,
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 
 	createTextureSampler(
-		&context->texturesPool_.get(image1)->sampler
+		&context->texturesPool2D_.get(image1)->sampler
 	);
 
 	createTextureSampler(
-		&context->texturesPool_.get(image2)->sampler
+		&context->texturesPool2D_.get(image2)->sampler
 	);
 
 	createTextureSampler(
-		&context->texturesPool_.get(image3)->sampler
+		&context->texturesPool2D_.get(image3)->sampler
 	);
-
-	// Diferent Material Pipelines.Models
-	// MaterialPipeline
-	//createDescriptorSetLayout();
-
-	//createGraphicsPipeline(
-	//	vertShaderModule,
-	//	fragShaderModule,
-	//	//&appDl,
-	//	&pipelineLayout
-	//);
-
-	//MaterialInstance mat_1 = {
-	//	.attached = {
-	//		{
-	//			0,
-	//			image1,
-	//		}
-	//	}
-	//};
-
-	//context->materialInstancesPool_.create(std::move(mat_1));
 
 }
 
@@ -2229,11 +2271,22 @@ void VulkanApp::InitVulkanApp() {
 			createInfo.enabledLayerCount = 0;
 		}
 
+
+		// Descriptor indexing (core, not EXT)
+		VkPhysicalDeviceDescriptorIndexingFeatures descIdx{};
+		descIdx.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+		// Enable what you actually need:
+		descIdx.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+		descIdx.descriptorBindingPartiallyBound = VK_TRUE;
+		descIdx.runtimeDescriptorArray = VK_TRUE;
+		descIdx.descriptorBindingVariableDescriptorCount = VK_TRUE;
+
 		VkPhysicalDeviceVulkan13Features vulkan13Features{};
 		vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 		vulkan13Features.dynamicRendering = VK_TRUE;
-
+		vulkan13Features.pNext = &descIdx;
 		createInfo.pNext = &vulkan13Features;
+
 
 		if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) !=
 			VK_SUCCESS) {
@@ -2278,7 +2331,7 @@ void createGraphicsPipeline(
 	VkPipelineLayout* pipelineLayout,
 	VkFormat depth_format,
 	VkFormat swapchainImageFormat,
-	VkPipeline graphicsPipeline
+	VkPipeline& graphicsPipeline
 ) {
 
 	// SHADER

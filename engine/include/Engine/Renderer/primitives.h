@@ -69,10 +69,10 @@ struct InstanceData {
 		0.0f, 0.0f, 0.0f, 1.0f
 	};
 	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
-	//uint32_t meshIndex;
-	//uint32_t indexOffset;
-	//uint32_t materialIndex; // This is the device side for Instacnce abstaction. Material is CPU SIDE. this souldnt be added back
-	//uint32_t LOD;
+	//uint32_t meshindex;
+	//uint32_t indexoffset;
+	//uint32_t materialindex; // this is the device side for instacnce abstaction. material is cpu side. this souldnt be added back
+	//uint32_t lod;
 };
 
 static_assert(sizeof(InstanceData) % 16 == 0);

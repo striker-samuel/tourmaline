@@ -61,8 +61,6 @@ using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
 
 // this live hostSide too but defines device mesh abstraction
 struct MeshDrawInfo {
-	
-
 	// I also need the alloc and more righ
 
 	// Do not think about LODS here

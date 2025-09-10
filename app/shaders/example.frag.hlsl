@@ -1,9 +1,6 @@
 // =============================================
 // HLSL (for Vulkan via DXC) port of your GLSL FS
 // =============================================
-#ifndef MAX_MATERIALS
-#define MAX_MATERIALS 100
-#endif
 
 // Push constants (same layout/size as VS)
 struct PushConsts
@@ -19,8 +16,9 @@ struct PushConsts
 [[vk::push_constant]]
 ConstantBuffer<PushConsts> pc;
 
-[[vk::binding(2,0)]] Texture2D materialTex[MAX_MATERIALS];
-[[vk::binding(3,0)]] SamplerState materialSamp[MAX_MATERIALS];
+//runtimeDescriptorArray No need to specify size
+[[vk::binding(2,0)]] Texture2D materialTex[];
+[[vk::binding(3,0)]] SamplerState materialSamp[];
 
 struct PSIn
 {

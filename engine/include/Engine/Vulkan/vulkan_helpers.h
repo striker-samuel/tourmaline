@@ -175,7 +175,7 @@ uint32_t findMemoryType(
 	throw std::runtime_error("failed to find suitable memory type!");
 }
 
-VkShaderModule createShaderModule(VkDevice device, const std::vector<char>& code) {
+VkShaderModule createDeviceShaderModule(VkDevice device, const std::vector<char>& code) {
 	VkShaderModuleCreateInfo createInfo{};
 	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
 	createInfo.codeSize = code.size();
