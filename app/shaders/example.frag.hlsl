@@ -1,43 +1,41 @@
-// =============================================
-// HLSL (for Vulkan via DXC) port of your GLSL FS
-// =============================================
-
-// Push constants (same layout/size as VS)
-struct PushConsts
+[[vk::push_constant]]
+struct PC_All
 {
     float4x4 view;
     float4x4 proj;
-    int material_index;
-    int _pad0;
-    int _pad1;
-    int _pad2;
-};
+    int material_instance_index;
+    int3 _pad0; // 16B pad to keep 16-byte alignment
 
-[[vk::push_constant]]
-ConstantBuffer<PushConsts> pc;
+    float4 ambient;
+    float4 diffuse;
+    uint texAmbient;
+    uint texDiffuse;
+    uint texAlpha;
+    uint _pad1; // keep size at 192 bytes total
+} pc;
 
-//runtimeDescriptorArray No need to specify size
-[[vk::binding(2,0)]] Texture2D materialTex[];
-[[vk::binding(3,0)]] SamplerState materialSamp[];
+[[vk::binding(2,0)]] Texture2D materialTex[]; // sampled images
+[[vk::binding(3,0)]] SamplerState materialSamp[]; // samplers
 
 struct PSIn
 {
-    float3 fragColor : COLOR0; // layout(location=0) in
-    float2 fragTexCoord : TEXCOORD0; // layout(location=1) in
+    float3 color : COLOR0;
+    float2 uv : TEXCOORD0;
 };
-
 struct PSOut
 {
-    float4 outColor : SV_Target; // layout(location=0) out
+    float4 outColor : SV_Target;
 };
 
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
 
-    // pc.material_index is uniform (push constant), so no NonUniformResourceIndex needed.
-    uint idx = (uint) pc.material_index;
-    OUT.outColor = materialTex[idx].Sample(materialSamp[idx], IN.fragTexCoord);
+    // Index is uniform per draw (push constants), so nonuniform isn’t required.
+    uint texIdx = pc.texDiffuse;
+
+    OUT.outColor = materialTex[texIdx].Sample(materialSamp[0], IN.uv);
+    // If you really want per-texture samplers too, use materialSamp[pc.texAmbient] or similar.
 
     return OUT;
 }

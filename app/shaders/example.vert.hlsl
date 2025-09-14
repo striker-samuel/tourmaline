@@ -6,32 +6,48 @@
 #define MAX_INSTANCES 1000
 #endif
 
-// --- Push constants (GLSL: layout(push_constant) uniform PushConsts { ... } pc; )
-struct DefaultPushConsts
+[[vk::push_constant]]
+struct PC_All
 {
     float4x4 view;
     float4x4 proj;
-    int material_index;
-    int padding0;
-    int padding1;
-    int padding2;
-};
+    int material_instance_index;
+    int3 _pad0; // 16B pad to keep 16-byte alignment
 
-struct PushConsts{
-
-    DefaultPushConsts viewproj;
     float4 ambient;
     float4 diffuse;
-    int texAmbient;
-	int texDiffuse;
-	int texAlpha;
-	int padding[1];
+    uint texAmbient;
+    uint texDiffuse;
+    uint texAlpha;
+    uint _pad1; // keep size at 192 bytes total
+} pc;
+
+[[vk::binding(2,0)]] Texture2D materialTex[]; // sampled images
+[[vk::binding(3,0)]] SamplerState materialSamp[]; // samplers
+
+struct PSIn
+{
+    float3 color : COLOR0;
+    float2 uv : TEXCOORD0;
+};
+struct PSOut
+{
+    float4 outColor : SV_Target;
 };
 
+PSOut mainPS(PSIn IN)
+{
+    PSOut OUT;
 
-// Tell DXC this ConstantBuffer is a Vulkan push-constant block.
-[[vk::push_constant]]
-ConstantBuffer<PushConsts> pc;
+    // Index is uniform per draw (push constants), so nonuniform isn’t required.
+    uint texIdx = pc.texDiffuse;
+
+    OUT.outColor = materialTex[texIdx].Sample(materialSamp[0], IN.uv);
+    // If you really want per-texture samplers too, use materialSamp[pc.texAmbient] or similar.
+
+    return OUT;
+}
+
 
 // std140 array element for a scalar: 16 bytes
 struct IndexStd140
@@ -89,7 +105,7 @@ VSOut mainVS(VSIn IN)
     // GLSL: pc.viewproj.proj * pc.viewproj.view * M * vec4(inPosition, 1.0)
     float4 world = float4(IN.inPosition, 1.0f);
     float4x4 model = instance_data[idx].transform;
-    float4 clip = mul(pc.viewproj.proj, mul(pc.viewproj.view, mul(model, world)));
+    float4 clip = mul(pc.proj, mul(pc.view, mul(model, world)));
 
     OUT.pos = clip;
     OUT.fragColor = instance_data[idx].color;

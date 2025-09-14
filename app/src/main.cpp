@@ -64,7 +64,6 @@ std::vector<Mesh> meshes = { Quad, Triangle };
 
 // ------------------------------------
 
-
 // Scene Hieracrhy manages transform
 struct HostInstance {
 	// We can just use Handles, reserve untyped uint32_t indexing for GPU structs
@@ -73,7 +72,6 @@ struct HostInstance {
 	uint32_t scene_node;
 	uint32_t LOD;
 };
-
 
 // ------------------------------------------------------------------------------------------------
 
@@ -132,7 +130,6 @@ struct RasterSettings {
 // Another name fot his could be MatModel?
 struct MaterialPipeline {
 
-
 	// We need to hash these tree. but wont do it now
 	RasterSettings raster_settings;
 	ShaderModuleHandle vert;
@@ -140,13 +137,15 @@ struct MaterialPipeline {
 
 	// Lets not complitcate this for now. same footprint for everyone. 
 	//VkDescriptorSetLayout* layout;
-
+	// 
 	// Lets just hold this here for now
 	VkPipelineLayout plyt;
 
+	// Bindless, so material descriptors sets are at this level instead of binding per instnace, so;
+	// Invalid initialzoiation!.
+	DescriptorSetHandle ds;
 	VkPipeline pipeline;
 };
-
 
 // This gets uploaded to Device. stride contraints. no Handles!
 // This will go with pushcontants. May require specialization per shader model
@@ -174,11 +173,6 @@ struct MaterialInstance {
 	MaterialPushConstants values = {};
 };
 
-
-struct MaterialDescriptorSets {
-	VkDescriptorSet set;
-};
-
 struct DeviceBufferDesc {
 	VkBuffer buffer;
 	VmaAllocation alloc;
@@ -194,6 +188,220 @@ struct DeviceBufferDesc {
 
 };
 
+struct DescriptorSet {
+	DescriptorLayoutHandle layout;
+	VkDescriptorSet set;
+};
+
+void createGraphicsPipeline(
+	VkDevice* device,
+	VkShaderModule vert,
+	VkShaderModule frag,
+	VkPipelineLayout* pipelineLayout,
+	VkDescriptorSetLayout* descriptorSetLayouts,
+	VkFormat depth_format,
+	VkFormat swapchainImageFormat,
+	VkPipeline& graphicsPipeline
+) {
+
+	// SHADER
+
+	VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+	vertShaderStageInfo.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+	vertShaderStageInfo.module = vert;
+	vertShaderStageInfo.pName = "mainVS";
+
+	VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+	fragShaderStageInfo.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	fragShaderStageInfo.module = frag;
+	fragShaderStageInfo.pName = "mainPS";
+
+	VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
+													  fragShaderStageInfo };
+
+	// VERTEX FORMAT
+
+	VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+	vertexInputInfo.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+	auto bindingDescription = Vertex::getBindingDescription();
+	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+	vertexInputInfo.vertexBindingDescriptionCount = 1;
+	vertexInputInfo.vertexAttributeDescriptionCount =
+		static_cast<uint32_t>(attributeDescriptions.size());
+	vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+	vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+	inputAssembly.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+	// 
+
+	VkPipelineViewportStateCreateInfo viewportState{};
+	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewportState.viewportCount = 1;
+	viewportState.scissorCount = 1;
+
+	//
+
+	VkPipelineRasterizationStateCreateInfo rasterizer{};
+	rasterizer.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rasterizer.depthClampEnable = VK_FALSE;
+	rasterizer.rasterizerDiscardEnable = VK_FALSE;
+	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+	rasterizer.lineWidth = 1.0f;
+	rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	rasterizer.depthBiasEnable = VK_FALSE;
+
+	//
+
+	VkPipelineMultisampleStateCreateInfo multisampling{};
+	multisampling.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	multisampling.sampleShadingEnable = VK_FALSE;
+	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	//
+
+	VkPipelineDepthStencilStateCreateInfo depthStencil{};
+	depthStencil.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	depthStencil.depthTestEnable = VK_TRUE;
+	depthStencil.depthWriteEnable = VK_TRUE;
+	depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
+	depthStencil.depthBoundsTestEnable = VK_FALSE;
+	depthStencil.stencilTestEnable = VK_FALSE;
+
+	//
+
+	VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+	colorBlendAttachment.colorWriteMask =
+		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+		VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	colorBlendAttachment.blendEnable = VK_FALSE;
+
+	VkPipelineColorBlendStateCreateInfo colorBlending{};
+	colorBlending.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	colorBlending.logicOpEnable = VK_FALSE;
+	colorBlending.logicOp = VK_LOGIC_OP_COPY;
+	colorBlending.attachmentCount = 1;
+	colorBlending.pAttachments = &colorBlendAttachment;
+	colorBlending.blendConstants[0] = 0.0f;
+	colorBlending.blendConstants[1] = 0.0f;
+	colorBlending.blendConstants[2] = 0.0f;
+	colorBlending.blendConstants[3] = 0.0f;
+
+
+	// These two are elemental. There are extensions for almost anything do. Maybe it is woth to go all in dynamic state.
+	std::vector<VkDynamicState> dynamicStates = {
+		VK_DYNAMIC_STATE_VIEWPORT,
+		VK_DYNAMIC_STATE_SCISSOR
+	};
+
+	VkPipelineDynamicStateCreateInfo dynamicState{};
+	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamicState.dynamicStateCount =
+		static_cast<uint32_t>(dynamicStates.size());
+	dynamicState.pDynamicStates = dynamicStates.data();
+
+#pragma region ---[Push Constants]---
+
+	//// One push constant range, covers all stages
+	//VkPushConstantRange pcRange{};
+	//pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+	//pcRange.offset = 0;
+	//pcRange.size = sizeof(PushConstants);
+
+	//VkPushConstantRange material_constants_range_pc{};
+	//material_constants_range_pc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	//material_constants_range_pc.offset = sizeof(PushConstants);
+	//// Im generalising here, but maybe I do different structs for diffrernt materialModels, pipelines
+	//material_constants_range_pc.size = sizeof(MaterialPushConstants);
+
+	//VkPushConstantRange pcs[2] = {
+	//	pcRange, material_constants_range_pc
+	//};
+
+	//VkPipelineLayoutCreateInfo layoutInfo{};
+
+	//layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	//layoutInfo.setLayoutCount = 1;
+	//layoutInfo.pSetLayouts = {
+	//	descriptorSetLayouts
+	//};
+	//layoutInfo.pushConstantRangeCount = 2;
+	//layoutInfo.pPushConstantRanges = pcs;
+
+	// total = sizeof(PushConstants) (144) + sizeof(MaterialPushConstants) (48) = 192
+	constexpr uint32_t kPC_Total = 192;
+
+	VkPushConstantRange range{};
+	range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+	range.offset = 0;
+	range.size = kPC_Total;
+
+	VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	layoutInfo.setLayoutCount = 1;
+	layoutInfo.pSetLayouts = &descriptorSetLayouts[0];
+	layoutInfo.pushConstantRangeCount = 1;
+	layoutInfo.pPushConstantRanges = &range;
+
+
+	if (vkCreatePipelineLayout(*device, &layoutInfo, nullptr,
+		pipelineLayout) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create pipeline layout!");
+	}
+
+#pragma endregion
+
+	// Provide information for dynamic rendering
+	VkPipelineRenderingCreateInfo pipeline_create{
+		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+	pipeline_create.pNext = VK_NULL_HANDLE;
+
+	// We are using the single color buffer out.
+	pipeline_create.colorAttachmentCount = 1;
+	pipeline_create.pColorAttachmentFormats = &swapchainImageFormat;
+
+	pipeline_create.depthAttachmentFormat = depth_format;
+	pipeline_create.stencilAttachmentFormat = depth_format;
+
+	VkGraphicsPipelineCreateInfo pipelineInfo{};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pipelineInfo.stageCount = 2;
+	pipelineInfo.pStages = shaderStages;
+	pipelineInfo.pVertexInputState = &vertexInputInfo;
+	pipelineInfo.pInputAssemblyState = &inputAssembly;
+	pipelineInfo.pViewportState = &viewportState;
+	pipelineInfo.pRasterizationState = &rasterizer;
+	pipelineInfo.pMultisampleState = &multisampling;
+	pipelineInfo.pColorBlendState = &colorBlending;
+	pipelineInfo.pDynamicState = &dynamicState;
+	pipelineInfo.pDepthStencilState = &depthStencil;
+	pipelineInfo.layout = *pipelineLayout;
+	pipelineInfo.pNext = &pipeline_create;
+
+	if (vkCreateGraphicsPipelines(*device, VK_NULL_HANDLE, 1, &pipelineInfo,
+		nullptr, &graphicsPipeline) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create graphics pipeline!");
+	}
+
+}
+
+
+
 // This style of handling things is lifted up from LightweightVk.
 class Context {
 
@@ -208,9 +416,10 @@ class Context {
 	// Skinned. Static. Dynamic ->
 	VmaPool D_DynamicMeshPool;
 
-
 public:
 
+	DescriptorPoolHandle default_pool;
+	DescriptorLayoutHandle default_lyt;
 
 	// We neeed VkDescriptorPool pools here
 	// We move from VkDp to another because its cheaper to reset them than to evict particular sets.
@@ -218,21 +427,18 @@ public:
 	Pool<Buffer, DeviceBufferDesc> buffersPool_;
 	Pool<Texture, Texture> texturesPool2D_;
 
+
+	Pool<DescriptorSet, DescriptorSet> dds;
 	Pool<DescriptorPool, VkDescriptorPool> dpp_;
 	Pool<DescriptorLayout, VkDescriptorSetLayout> dlp_;
 	Pool<MaterialPipeline, MaterialPipeline> materialPipelinePool_;
 	Pool<MaterialInstance, MaterialInstance> materialInstancesPool_;
 
-
-
-	// Lets go raw for the moment. Handles help with invalidation. We are going static still
-	std::vector<VkSampler> samplers;
-	//std::vector<VkPipeline> pipelines;
-
 	Pool<ShaderModule, VkShaderModule> shaderModulePool_;
 
-	Context(VmaAllocator* allocator) {
+	Context(VmaAllocator* allocator, VkDevice* device) {
 		allocator_ = allocator;
+		device_ = device;
 
 		// Lets reserve upfront.
 		texturesPool2D_.objects_.reserve(MAX_TEXTURES);
@@ -241,8 +447,12 @@ public:
 		// This is a small reservation. just testing 
 		buffersPool_.objects_.reserve(1000);
 
-
 		InitializeDeviceVmaPools();
+
+		// Lets have one dpool
+		default_pool = createDescriptorPool();
+		default_lyt = createDescriptorLayout();
+
 
 	};
 	// Maybe destructor should clear the vmaPools. Device side allocations are not managed as clear by the OS.
@@ -270,8 +480,77 @@ public:
 	ShaderModuleHandle createShaderModule(std::vector<char> code);
 	DescriptorLayoutHandle createDescriptorLayout();
 	DescriptorPoolHandle createDescriptorPool();
+	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
+
+	void UpdateDescriptorSet(DescriptorSetHandle, void* data, uint32_t size);
+
 };
 
+//void Context::UpdateDescriptorSet(DescriptorSetHandle, void* data, uint32_t size) {
+//
+//	// this depends on lyt as we see.
+//	std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+//
+//	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+//	descriptorWrites[0].dstSet = frameDescriptorSets[i];
+//	descriptorWrites[0].dstBinding = 0;
+//	descriptorWrites[0].dstArrayElement = 0;
+//	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+//	descriptorWrites[0].descriptorCount = 1;
+//	descriptorWrites[0].pBufferInfo = &instanceIndexBufferInfo;
+//
+//	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+//	descriptorWrites[1].dstSet = frameDescriptorSets[i];
+//	descriptorWrites[1].dstBinding = 1;
+//	descriptorWrites[1].dstArrayElement = 0;
+//	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+//	descriptorWrites[1].descriptorCount = 1;
+//	descriptorWrites[1].pBufferInfo = &instanceBufferInfo;
+//
+//	vkUpdateDescriptorSets(device,
+//		static_cast<uint32_t>(descriptorWrites.size()),
+//		descriptorWrites.data(),
+//		0,
+//		nullptr
+//	);
+//}
+
+DescriptorSetHandle Context::createDescriptorSet(
+	DescriptorLayoutHandle lyt
+) {
+	// Lets make pool selection automatic
+	auto descriptorPool = dpp_.get(default_pool);
+	auto layout = dlp_.get(lyt);
+
+	std::array<VkDescriptorSetLayout, 1> layouts = {
+		*layout
+	};
+
+	VkDescriptorSetAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	// This needs to be implemented using rotating pools.
+	allocInfo.descriptorPool = *descriptorPool;
+	allocInfo.descriptorSetCount = 1;
+	//allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+
+	allocInfo.pSetLayouts = layouts.data();
+
+	DescriptorSet ds;
+	VkResult result = vkAllocateDescriptorSets(*device_, &allocInfo, &ds.set);
+	ds.layout = lyt;
+
+	if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
+		// Rotate the descriptor pool. try again
+		// Manage live dspools. defrag
+	}
+
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("failed to allocate descriptor sets!");
+	}
+
+	return dds.create(std::move(ds));
+
+}
 
 // Lets just use 1 layout for now. We will need more shapes for shadows and others is my guess.
 DescriptorLayoutHandle Context::createDescriptorLayout() {
@@ -299,7 +578,7 @@ DescriptorLayoutHandle Context::createDescriptorLayout() {
 	VkDescriptorSetLayoutBinding sampBinding{};
 	sampBinding.binding = 3;
 	sampBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-	sampBinding.descriptorCount = samplers.size();
+	sampBinding.descriptorCount = MAX_TEXTURES;
 	sampBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 	std::array<VkDescriptorSetLayoutBinding, 4> bindings = {
@@ -310,10 +589,29 @@ DescriptorLayoutHandle Context::createDescriptorLayout() {
 		sampBinding,
 	};
 
+	// Per-binding flags — same size as bindings[]
+	std::array<VkDescriptorBindingFlags, 4> bindingFlags = {
+		0,
+		0,
+		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
+		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT // bindless samplers
+	};
+
+	// Chain flags struct
+	VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
+	bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+	bindless_flags.pNext = nullptr;
+	bindless_flags.bindingCount = static_cast<uint32_t>(bindingFlags.size());
+	bindless_flags.pBindingFlags = bindingFlags.data();
+
 	VkDescriptorSetLayoutCreateInfo layoutInfo{};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
 	layoutInfo.pBindings = bindings.data();
+	layoutInfo.pNext = &bindless_flags;
+	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
 
 	VkDescriptorSetLayout descriptorSetLayout;
 
@@ -329,23 +627,29 @@ DescriptorLayoutHandle Context::createDescriptorLayout() {
 
 DescriptorPoolHandle Context::createDescriptorPool() {
 
-	// This is just how many dsc of each type are allowed in the pool. Has no bearing with layouts
-	// except for compat. -> You need slots for type if layout uses type.
-	std::array<VkDescriptorPoolSize, 5> poolSizes = { {
-			// We should not need these one anymore once we move InstanceData to ssbo. Maybe instance data is promoted to ubo
-			// in cases where it can work. Also we are adding an indirect mapping for instanceData with a table.
-		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,        100 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,        100 },
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
-		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 100},
-		{ VK_DESCRIPTOR_TYPE_SAMPLER, 100},
+	// How many bindless sets will reference textures from this pool?
+	const uint32_t bindless_sets = MAX_FRAMES_IN_FLIGHT;     // you bind one per-frame set
+	const uint32_t max_textures = MAX_TEXTURES;             // your declared maximum
+	uint32_t max_samplers = (texturesPool2D_.objects_.size() > 1u) ? static_cast<uint32_t>(texturesPool2D_.objects_.size()) : 1u;
+
+	// Total descriptors we may write across all those sets
+	const uint32_t total_sampled_images = bindless_sets * max_textures;
+	const uint32_t total_samplers = bindless_sets * max_samplers;
+
+	// If you still use COMBINED_IMAGE_SAMPLER elsewhere, keep it; otherwise you can drop it.
+	std::array<VkDescriptorPoolSize, 4> poolSizes = { {
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         2u * MAX_FRAMES_IN_FLIGHT }, // instance index UBO, etc.
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         2u * MAX_FRAMES_IN_FLIGHT }, // instance SSBO, etc.
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          total_sampled_images },      // bindless images
+		{ VK_DESCRIPTOR_TYPE_SAMPLER,                total_samplers },            // bindless samplers
 	} };
 
 	VkDescriptorPoolCreateInfo poolInfo{};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	// no no, this is bad
-	//poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
 	poolInfo.maxSets = 1000;
+	poolInfo.flags =
+		VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;    // required because layout uses UPDATE_AFTER_BIND
+	//VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;   // optional, if you want to free sets
 	poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
 	poolInfo.pPoolSizes = poolSizes.data();
 
@@ -367,18 +671,25 @@ MaterialPipelineHandle Context::createMaterialPipeline(ShaderModuleHandle vert, 
 	mat_pipe.frag = frag;
 	mat_pipe.vert = vert;
 
-	// We are reusing same layout always. its should be a map from our layour app def -> vklayout really
-	auto layout_h = createDescriptorLayout();
-	auto lyt = dlp_.get(layout_h);
-
 	auto v = shaderModulePool_.get(vert);
 	auto f = shaderModulePool_.get(frag);
+
+	// Lets use default
+	auto def_lyt = dlp_.get(default_lyt);
+
+	std::array<VkDescriptorSetLayout, 1> lyts = {
+		*def_lyt
+		// Thats the default. we need at least that for Instance Data.
+		// We could add a second lyt ot have different layoitus per MaterialModel/MaterialPipeline
+		//mat_pipe.lyt
+	};
 
 	createGraphicsPipeline(
 		device_,
 		*v,
 		*f,
 		&mat_pipe.plyt,
+		def_lyt,
 		depth_format,
 		swapchainImageFormat,
 		mat_pipe.pipeline
@@ -390,7 +701,6 @@ MaterialPipelineHandle Context::createMaterialPipeline(ShaderModuleHandle vert, 
 
 MaterialInstanceHandle Context::createMaterialInstance(MaterialPipelineHandle mat_pipeline)
 {
-
 	MaterialInstance mat_instance = {};
 	mat_instance.pipeline = mat_pipeline;
 
@@ -456,15 +766,9 @@ ShaderModuleHandle Context::createShaderModule(std::vector<char> code) {
 		std::move(code)
 	);
 
-	return shaderModulePool_.create(std::move(shader)); w
+	return shaderModulePool_.create(std::move(shader));
 
 };
-
-
-
-
-
-// DELETION ---------------------------------------------------------------------------------------------------
 
 // Need device allocation freeing
 void destroy(Context* ctx, TextureHandle handle) {
@@ -494,6 +798,8 @@ private:
 
 	Context* context;
 
+	DescriptorSetHandle frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
+
 	//  Defaulting to empty scene
 	Scene* scene_ = new Scene();
 
@@ -512,6 +818,7 @@ private:
 
 	// I doubt this is really needed.
 	VkFence f_level_ready_;
+
 
 	// _---------------
 
@@ -609,6 +916,7 @@ private:
 
 
 	void InitVulkanApp();
+	void CreateDefaultMaterialPipeline();
 	void LoadScene();
 	void UploadMeshData();
 
@@ -1248,42 +1556,10 @@ private:
 		}
 	}
 
-	// We should have separate sets
-	//Set Index	Concern	Frequency of Update	Example Resources
-	//	0	Frame - level / Pass - level	Once per frame	Camera UBO(view / proj), lights UBO, environment maps
-	//	1	Object - level / Draw - call - level	Once per object	Model matrix UBO(or dynamic UBO), per - object parameters
-	//	2	Material - level	Rarely(per material)	Material UBO(e.g.roughness / metallic factors), textures, samplers
-	//	3 + Less common / Optional	As needed	Shadow maps, decals, particle data, etc.
-	void createDescriptorSets(
-		VkDescriptorSetLayout descriptorSetLayout,
-		VkDescriptorPool descriptorPool,
-		VkDescriptorSet frameDescriptorSets[]
-	) {
 
-		std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT,
-			descriptorSetLayout);
 
-		VkDescriptorSetAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		allocInfo.descriptorPool = descriptorPool;
-		allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
-		allocInfo.pSetLayouts = layouts.data();
-
-		VkResult result = vkAllocateDescriptorSets(device, &allocInfo, frameDescriptorSets);
-
-		if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
-			// Rotate the descriptor pool. try again
-			// Manage live dspools. defrag
-		}
-
-		if (result != VK_SUCCESS) {
-			throw std::runtime_error("failed to allocate descriptor sets!");
-		}
-	}
-
-	void UploadDescriptorSets(VkDescriptorSet frameDescriptorSets[])
+	void UploadDefaultDescriptorSets()  // no params; uses frameDescriptorSets[]
 	{
-
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
 			VkDescriptorBufferInfo instanceIndexBufferInfo{
@@ -1294,35 +1570,77 @@ private:
 			VkDescriptorBufferInfo instanceBufferInfo{
 				.buffer = instanceDataUniforms_[i].buffer,
 				.offset = 0,
-				.range = sizeof(InstanceData) * MAX_INSTANCES,
+				.range = sizeof(InstanceData) * MAX_INSTANCES
 			};
 
-			std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+			auto setHandle = frameDescriptorSets[i];
+			auto setObj = context->dds.get(setHandle);
+			VkDescriptorSet vkSet = setObj->set;
 
-			descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[0].dstSet = frameDescriptorSets[i];
-			descriptorWrites[0].dstBinding = 0;
-			descriptorWrites[0].dstArrayElement = 0;
-			descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			descriptorWrites[0].descriptorCount = 1;
-			descriptorWrites[0].pBufferInfo = &instanceIndexBufferInfo;
+			VkWriteDescriptorSet writes[2]{};
 
-			descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[1].dstSet = frameDescriptorSets[i];
-			descriptorWrites[1].dstBinding = 1;
-			descriptorWrites[1].dstArrayElement = 0;
-			descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-			descriptorWrites[1].descriptorCount = 1;
-			descriptorWrites[1].pBufferInfo = &instanceBufferInfo;
+			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[0].dstSet = vkSet;
+			writes[0].dstBinding = 0; // UBO
+			writes[0].dstArrayElement = 0;
+			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			writes[0].descriptorCount = 1;
+			writes[0].pBufferInfo = &instanceIndexBufferInfo;
 
-			vkUpdateDescriptorSets(device,
-				static_cast<uint32_t>(descriptorWrites.size()),
-				descriptorWrites.data(),
-				0,
-				nullptr
-			);
+			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[1].dstSet = vkSet;
+			writes[1].dstBinding = 1; // SSBO
+			writes[1].dstArrayElement = 0;
+			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			writes[1].descriptorCount = 1;
+			writes[1].pBufferInfo = &instanceBufferInfo;
+
+			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 		}
 	}
+
+	//void UploadDefaultDescriptorSets(VkDescriptorSet frameDescriptorSets[])
+	//{
+
+	//	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+
+	//		VkDescriptorBufferInfo instanceIndexBufferInfo{
+	//			.buffer = instanceIndexUniforms_[i].buffer,
+	//			.offset = 0,
+	//			.range = sizeof(IndexSlot) * MAX_INSTANCES
+	//		};
+	//		VkDescriptorBufferInfo instanceBufferInfo{
+	//			.buffer = instanceDataUniforms_[i].buffer,
+	//			.offset = 0,
+	//			.range = sizeof(InstanceData) * MAX_INSTANCES,
+	//		};
+
+	//		std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+
+	//		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	//		descriptorWrites[0].dstSet = frameDescriptorSets[i];
+	//		descriptorWrites[0].dstBinding = 0;
+	//		descriptorWrites[0].dstArrayElement = 0;
+	//		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	//		descriptorWrites[0].descriptorCount = 1;
+	//		descriptorWrites[0].pBufferInfo = &instanceIndexBufferInfo;
+
+	//		descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	//		descriptorWrites[1].dstSet = frameDescriptorSets[i];
+	//		descriptorWrites[1].dstBinding = 1;
+	//		descriptorWrites[1].dstArrayElement = 0;
+	//		descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	//		descriptorWrites[1].descriptorCount = 1;
+	//		descriptorWrites[1].pBufferInfo = &instanceBufferInfo;
+
+	//		vkUpdateDescriptorSets(device,
+	//			static_cast<uint32_t>(descriptorWrites.size()),
+	//			descriptorWrites.data(),
+	//			0,
+	//			nullptr
+	//		);
+	//	}
+	//}
 
 	void createBuffer(
 		VkDeviceSize size,
@@ -1379,64 +1697,62 @@ private:
 		}
 	}
 
-	// This needs a complete refactor
-	void updateMaterialSets() {
+	void UpdateBindlessTextures() {
 
 		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstancesPool_.numObjects());
 
-		// This supposes still 1 image, 1 sampler peer material. WRONG
-
 		// --- Build image infos (sampled images) ---
 		std::vector<VkDescriptorImageInfo> imageInfos;
-		imageInfos.reserve(materialCount);
-		for (auto mat_instance : context->materialInstancesPool_.objects_) {
+		std::vector<VkDescriptorImageInfo> samplerInfos;
 
-			auto tex = context->texturesPool2D_.get(mat_instance.obj_.attached[0].tex);
+		int count = (context->texturesPool2D_.numObjects());
+		imageInfos.reserve(count);
+		samplerInfos.reserve(count);
 
+		for (int i = 0; i < count; i++)
+		{
+			auto tex = context->texturesPool2D_.objects_[i].obj_;
 
 			VkDescriptorImageInfo ii{};
 			ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-			ii.imageView = tex->imageView;
+			ii.imageView = tex.imageView;
 			ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			imageInfos.push_back(ii);
-		}
-
-		// --- Build sampler infos ---
-		std::vector<VkDescriptorImageInfo> samplerInfos;
-		samplerInfos.reserve(materialCount);
-		for (const auto& mat_instance : context->materialInstancesPool_.objects_) {
-
-			auto tex = context->texturesPool2D_.get(mat_instance.obj_.attached[0].tex);
 
 			VkDescriptorImageInfo si{};
-			si.sampler = tex->sampler;
+			si.sampler = tex.sampler;
 			si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
 			si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
 			samplerInfos.push_back(si);
+		};
+
+		//// --- Two writes: images at index 2, samplers at index 3 ---
+		VkWriteDescriptorSet writes[2]{};
+
+		for (auto setHandle : frameDescriptorSets)
+		{
+
+			auto set = context->dds.get(setHandle);
+
+			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[0].dstSet = set->set;
+			writes[0].dstBinding = 2;
+			writes[0].dstArrayElement = 0;
+			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			writes[0].descriptorCount = imageInfos.size();
+			writes[0].pImageInfo = imageInfos.data();
+
+			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[1].dstSet = set->set;
+			writes[1].dstBinding = 3;
+			writes[1].dstArrayElement = 0;
+			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+			writes[1].descriptorCount = samplerInfos.size();   // or 1 if you use a single shared sampler
+			writes[1].pImageInfo = samplerInfos.data();
+
+			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+
 		}
-
-		//// --- Two writes: images at binding 2, samplers at binding 3 ---
-		//VkWriteDescriptorSet writes[2]{};
-
-		//// Sampled image array (binding 2)
-		//writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		//writes[0].dstSet = materialSets[0];
-		//	writes[0].dstBinding = 2;
-		//writes[0].dstArrayElement = 0;
-		//writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		//writes[0].descriptorCount = materialCount;
-		//writes[0].pImageInfo = imageInfos.data();
-
-		//// Sampler array (binding 3)
-		//writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		//writes[1].dstSet = materialSets[1],
-		//	writes[1].dstBinding = 3;
-		//writes[1].dstArrayElement = 0;
-		//writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-		//writes[1].descriptorCount = materialCount;   // or 1 if you use a single shared sampler
-		//writes[1].pImageInfo = samplerInfos.data();
-
-		//vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
 	}
 
@@ -1533,9 +1849,8 @@ private:
 		vkCmdBindIndexBuffer(commandBuffer,
 			static_index_buffer_,
 			0,
-			VK_INDEX_TYPE_UINT32);
-
-
+			VK_INDEX_TYPE_UINT32)
+			;
 
 		// VkCmdBindPipeline does force order. no draw command will jump over pipeline bind changes.
 		// Maybe I should macro this... But i like 'pure' syntax
@@ -1545,75 +1860,64 @@ private:
 			}
 		}
 
+		for (auto mat_pipe_entry : context->materialPipelinePool_.objects_) {
 
-		//vkCmdBindPipeline(
-		//	commandBuffer,
-		//	VK_PIPELINE_BIND_POINT_GRAPHICS,
-		//	mat_pipeline.pipeline
-		//);
+			vkCmdBindPipeline(
+				commandBuffer,
+				VK_PIPELINE_BIND_POINT_GRAPHICS,
+				mat_pipe_entry.obj_.pipeline
+			);
 
-		//// Per mat-instance
-		//updateMaterialSets();
+			auto sets = context->dds.get(frameDescriptorSets[currentFrame]);
+			auto pipe_lyt = mat_pipe_entry.obj_.plyt;
 
-		//vkCmdBindDescriptorSets(
-		//	commandBuffer,
-		//	VK_PIPELINE_BIND_POINT_GRAPHICS,
-		//	pipelineLayout,
-		//	0,
-		//	1,
-		//	&materialSets[currentMaterial],
-		//	0,
-		//	nullptr);
+			vkCmdBindDescriptorSets(
+				commandBuffer,
+				VK_PIPELINE_BIND_POINT_GRAPHICS,
+				pipe_lyt,
+				0,
+				1,
+				&sets->set,
+				0,
+				nullptr);
 
+			PushConstants pc{};
+			pc.view = camera_.getViewMatrix();
+			pc.proj = camera_.getProjMatrix();
+			pc.proj[1][1] *= -1;
 
-		PushConstants pc = {  };
-		pc.view = camera_.getViewMatrix();
-		pc.proj = camera_.getProjMatrix();
-		pc.proj[1][1] *= -1;
+			MaterialPushConstants pcm{};
 
-		// Well need ned pc range for mat_values.
-		// Mat values point to texture slots. contant data.
-		// Vert/Frag programs need to be binded before this
-		// I would like to encode in mat constructs also raster settings.
-		//MaterialValues mat_values_;
+			for (int i = 0; i < scene_->hierarchy.size(); i++) {
 
+				auto mesh_idx = scene_->meshForNode[i];
+				auto mesh_ = meshes[mesh_idx];
+				auto material_instance_index = scene_->materialForNode[i];
+				pc.material_instance_index = material_instance_index;
+				pcm.texDiffuse = i;
 
-		for (int i = 0; i < scene_->hierarchy.size(); i++) {
+				// pack both into one POD
+				struct PC_All {
+					PushConstants pc;               // 144
+					MaterialPushConstants mpc;      // 48
+				};
+				PC_All all{ pc, pcm };
 
+				// I could split this
+				vkCmdPushConstants(commandBuffer, pipe_lyt,
+					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+					0, sizeof(PC_All), &all);
 
-			auto mesh_idx = scene_->meshForNode[i];
-			auto mesh_ = meshes_[mesh_idx];
-			auto material_instance_index = scene_->materialForNode[i];
-			pc.material_instance_index = material_instance_index;
-			auto mat_h = context->materialInstancesPool_.getHandle(material_instance_index);
-			auto mat = context->materialInstancesPool_.get(mat_h);
-
-
+				vkCmdDrawIndexed(
+					commandBuffer,
+					static_cast<uint32_t>(mesh_.indices.size()), //indexCount
+					1, //instanceCount
+					mesh_.first_index, //firstIndex
+					mesh_.vert_offset, //vertexOffset
+					i
+				);
+			}
 		}
-
-
-
-		//for material
-		//{
-
-		//	vkCmdPushConstants(
-		//		commandBuffers[currentFrame],
-		//		pipelineLayout,
-		//		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-		//		0,
-		//		sizeof(pc),
-		//		&pc
-		//	);
-
-		//	vkCmdDrawIndexed(
-		//		commandBuffer,
-		//		static_cast<uint32_t>(mesh_.indices.size()), //indexCount
-		//		1, //instanceCount
-		//		mesh_.first_index, //firstIndex
-		//		mesh_.vert_offset, //vertexOffset
-		//		i //firstInstance. Change this so shader acces keeps 0index but we can manipulate view from command side
-		//	);
-		//}
 
 		vkCmdEndRendering(commandBuffer);
 
@@ -1713,6 +2017,9 @@ private:
 		//vkResetCommandBuffer(commandBuffers[currentFrame],
 		//	/*VkCommandBufferResetFlagBits*/ 0);
 
+		UploadDefaultDescriptorSets();
+		UpdateBindlessTextures();
+
 		recordDraw(commandBuffers[currentFrame], imageIndex);
 
 		VkSubmitInfo submitInfo{};
@@ -1768,10 +2075,7 @@ private:
 		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
-
-
-	// ui
-
+	// UI
 	static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 	static void scrollCallback(GLFWwindow* window, double xOffset, double yOffset);
 	static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
@@ -1793,6 +2097,34 @@ private:
 	std::vector<MaterialPipelineHandle> material_pipe_handles;
 
 };
+
+void VulkanApp::CreateDefaultMaterialPipeline() {
+
+	auto vertShaderCode = readFile("shaders/example.vert.hlsl.spv");
+	auto vertColorFragCode = readFile("shaders/vertex_color.frag.hlsl.spv");
+	auto fragShaderCode = readFile("shaders/example.frag.hlsl.spv");
+
+	//VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
+	//VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
+	//VkShaderModule vertexColorFrag = createShaderModule(device, vertColorFragCode);
+
+	auto vertHandle = context->createShaderModule(
+		vertShaderCode
+	);
+	auto fragHandle = context->createShaderModule(
+		fragShaderCode
+	);
+
+	auto def_pipe = context->createMaterialPipeline(
+		vertHandle,
+		fragHandle,
+		default_raster_settings,
+		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
+		swapChainImageFormat
+	);
+
+	material_pipe_handles.push_back(def_pipe);
+}
 
 void VulkanApp::LoadScene() {
 
@@ -1823,10 +2155,10 @@ void VulkanApp::LoadScene() {
 	scene_->materialForNode[0] = 0;
 
 	scene_->meshForNode[1] = 3;
-	scene_->materialForNode[1] = 0;
+	scene_->materialForNode[1] = 1;
 
 	scene_->meshForNode[2] = 2;
-	scene_->materialForNode[2] = 0;
+	scene_->materialForNode[2] = 2;
 
 	scene_->localTransform[2][0][0] = 100;
 	scene_->localTransform[2][1][1] = 100;
@@ -1835,31 +2167,6 @@ void VulkanApp::LoadScene() {
 	scene_->localTransform[1][0][0] = 100;
 	scene_->localTransform[1][1][1] = 100;
 	scene_->localTransform[1][2][2] = 100;
-
-	auto vertShaderCode = readFile("shaders/example.vert.hlsl.spv");
-	auto vertColorFragCode = readFile("shaders/vertex_color.frag.hlsl.spv");
-	auto fragShaderCode = readFile("shaders/example.frag.hlsl.spv");
-
-	//VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
-	//VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
-	//VkShaderModule vertexColorFrag = createShaderModule(device, vertColorFragCode);
-
-	auto vertHandle = context->createShaderModule(
-		vertShaderCode
-	);
-	auto fragHandle = context->createShaderModule(
-		fragShaderCode
-	);
-
-	auto def_pipe = context->createMaterialPipeline(
-		vertHandle,
-		fragHandle,
-		default_raster_settings,
-		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
-		swapChainImageFormat
-	);
-
-	material_pipe_handles.push_back(def_pipe);
 
 	auto image1 = createTextureImage(
 		"textures/viking_room.png",
@@ -1908,6 +2215,17 @@ void VulkanApp::LoadScene() {
 		&context->texturesPool2D_.get(image3)->sampler
 	);
 
+
+	auto material_pipe_0 = context->materialPipelinePool_.getHandle(0);
+
+	context->createMaterialInstance(material_pipe_0);
+	auto mat2_h = context->createMaterialInstance(material_pipe_0);
+	context->createMaterialInstance(material_pipe_0);
+
+	//context->createMaterialInstance(material_pipe_0);
+	//context->createMaterialInstance(material_pipe_0);
+
+
 }
 
 void VulkanApp::UploadMeshData() {
@@ -1919,8 +2237,8 @@ void VulkanApp::UploadMeshData() {
 
 	for (int node = 0; node < scene_->hierarchy.size(); node++) {
 
-		static_vertex_buffer_size += sizeof(Vertex) * meshes_[node].vertices.size();
-		static_vertex_buffer_size += sizeof(uint32_t) * meshes_[node].indices.size();
+		static_vertex_buffer_size += sizeof(Vertex) * meshes[node].vertices.size();
+		static_vertex_buffer_size += sizeof(uint32_t) * meshes[node].indices.size();
 
 	}
 
@@ -1931,8 +2249,8 @@ void VulkanApp::UploadMeshData() {
 	uint32_t runningVertexOffset = 0; // in vertices
 	uint32_t runningFirstIndex = 0; // in indices
 
-	for (int i = 0; i < meshes_.size(); ++i) {
-		auto& m = meshes_[i];
+	for (int i = 0; i < meshes.size(); ++i) {
+		auto& m = meshes[i];
 
 		m.vert_offset = runningVertexOffset;         // elements, not bytes
 		m.first_index = runningFirstIndex;           // elements, not bytes
@@ -1990,8 +2308,8 @@ void VulkanApp::UploadMeshData() {
 		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
 		VkDeviceSize curr = 0; // byte offset
-		for (int i = 0; i < meshes_.size(); ++i) {
-			const auto& m = meshes_[i];
+		for (int i = 0; i < meshes.size(); ++i) {
+			const auto& m = meshes[i];
 			const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
 			if (bytes == 0) continue;
 
@@ -2018,8 +2336,8 @@ void VulkanApp::UploadMeshData() {
 		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
 		VkDeviceSize curr = 0; // byte offset
-		for (int i = 0; i < meshes_.size(); ++i) {
-			const auto& m = meshes_[i];
+		for (int i = 0; i < meshes.size(); ++i) {
+			const auto& m = meshes[i];
 			const VkDeviceSize bytes = sizeof(uint32_t) * m.indices.size();
 			if (bytes == 0) continue;
 
@@ -2070,8 +2388,6 @@ bool VulkanApp::Run() {
 	glfwSetWindowUserPointer(window, this);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
-	// 
-
 	// Pick physical device, create logical device, get queues from physdevice. Create VMA allocator
 	InitVulkanApp();
 
@@ -2094,24 +2410,24 @@ bool VulkanApp::Run() {
 		}
 	}
 
-	// ----
+	// createDescriptorSets. Create menas allocating. no data is present there still
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		frameDescriptorSets[i] = context->createDescriptorSet(
+			context->default_lyt
+		);
+	}
 
 	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
 
-	// APP DATA
-	LoadScene();
-	UploadMeshData();
-
-	// named uniformBufferss. because of one uf per frame. contained ViewProj. useless now. -> Passed trough pc
-	//createUniformBuffers();
-
 	createInstanceDataBuffers();
-
-
-	// FRAME GRAPH
 	createCommandBuffers();
 	createSyncObjects();
 	createDepthResources();
+
+	CreateDefaultMaterialPipeline();
+	LoadScene();
+	UploadMeshData();
+	UpdateBindlessTextures();
 
 	mainLoop();
 
@@ -2279,6 +2595,9 @@ void VulkanApp::InitVulkanApp() {
 		descIdx.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 		descIdx.descriptorBindingPartiallyBound = VK_TRUE;
 		descIdx.runtimeDescriptorArray = VK_TRUE;
+		descIdx.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+
+		// Maybe I dont want this one
 		descIdx.descriptorBindingVariableDescriptorCount = VK_TRUE;
 
 		VkPhysicalDeviceVulkan13Features vulkan13Features{};
@@ -2317,207 +2636,8 @@ void VulkanApp::InitVulkanApp() {
 
 	res = vmaCreateAllocator(&allocatorCreateInfo, &app_allocator_);
 	assert(res == VK_SUCCESS);
-	context = new Context(&app_allocator_); // remember to delete it on shutdown
+	context = new Context(&app_allocator_, &device); // remember to delete it on shutdown
 }
-
-void createDescriptorSetLayout(VkDevice* device, VkDescriptorSetLayout* descriptorSetLayout) {
-
-}
-
-void createGraphicsPipeline(
-	VkDevice* device,
-	VkShaderModule vert,
-	VkShaderModule frag,
-	VkPipelineLayout* pipelineLayout,
-	VkFormat depth_format,
-	VkFormat swapchainImageFormat,
-	VkPipeline& graphicsPipeline
-) {
-
-	// SHADER
-
-	VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-	vertShaderStageInfo.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-	vertShaderStageInfo.module = vert;
-	vertShaderStageInfo.pName = "mainVS";
-
-	VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
-	fragShaderStageInfo.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	fragShaderStageInfo.module = frag;
-	fragShaderStageInfo.pName = "mainPS";
-
-	VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
-													  fragShaderStageInfo };
-
-	// VERTEX FORMAT
-
-	VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-	vertexInputInfo.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-	auto bindingDescription = Vertex::getBindingDescription();
-	auto attributeDescriptions = Vertex::getAttributeDescriptions();
-
-	vertexInputInfo.vertexBindingDescriptionCount = 1;
-	vertexInputInfo.vertexAttributeDescriptionCount =
-		static_cast<uint32_t>(attributeDescriptions.size());
-	vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-	vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
-
-	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-	inputAssembly.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-	inputAssembly.primitiveRestartEnable = VK_FALSE;
-
-	// 
-
-	VkPipelineViewportStateCreateInfo viewportState{};
-	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-	viewportState.viewportCount = 1;
-	viewportState.scissorCount = 1;
-
-	//
-
-	VkPipelineRasterizationStateCreateInfo rasterizer{};
-	rasterizer.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-	rasterizer.depthClampEnable = VK_FALSE;
-	rasterizer.rasterizerDiscardEnable = VK_FALSE;
-	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-	rasterizer.lineWidth = 1.0f;
-	rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-	rasterizer.depthBiasEnable = VK_FALSE;
-
-	//
-
-	VkPipelineMultisampleStateCreateInfo multisampling{};
-	multisampling.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-	multisampling.sampleShadingEnable = VK_FALSE;
-	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-	//
-
-	VkPipelineDepthStencilStateCreateInfo depthStencil{};
-	depthStencil.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-	depthStencil.depthTestEnable = VK_TRUE;
-	depthStencil.depthWriteEnable = VK_TRUE;
-	depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
-	depthStencil.depthBoundsTestEnable = VK_FALSE;
-	depthStencil.stencilTestEnable = VK_FALSE;
-
-	//
-
-	VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-	colorBlendAttachment.colorWriteMask =
-		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-		VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	colorBlendAttachment.blendEnable = VK_FALSE;
-
-	VkPipelineColorBlendStateCreateInfo colorBlending{};
-	colorBlending.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-	colorBlending.logicOpEnable = VK_FALSE;
-	colorBlending.logicOp = VK_LOGIC_OP_COPY;
-	colorBlending.attachmentCount = 1;
-	colorBlending.pAttachments = &colorBlendAttachment;
-	colorBlending.blendConstants[0] = 0.0f;
-	colorBlending.blendConstants[1] = 0.0f;
-	colorBlending.blendConstants[2] = 0.0f;
-	colorBlending.blendConstants[3] = 0.0f;
-
-
-	// These two are elemental. There are extensions for almost anything do. Maybe it is woth to go all in dynamic state.
-	std::vector<VkDynamicState> dynamicStates = {
-		VK_DYNAMIC_STATE_VIEWPORT,
-		VK_DYNAMIC_STATE_SCISSOR
-	};
-
-	VkPipelineDynamicStateCreateInfo dynamicState{};
-	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamicState.dynamicStateCount =
-		static_cast<uint32_t>(dynamicStates.size());
-	dynamicState.pDynamicStates = dynamicStates.data();
-
-#pragma region ---[Push Constants]---
-
-	// One push constant range, covers all stages
-	VkPushConstantRange pcRange{};
-	pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-	pcRange.offset = 0;
-	pcRange.size = sizeof(PushConstants);
-
-	VkPushConstantRange material_constants_range_pc{};
-	material_constants_range_pc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	material_constants_range_pc.offset = sizeof(PushConstants);
-	// Im generalising here, but maybe I do different structs for diffrernt materialModels, pipelines
-	material_constants_range_pc.size = sizeof(MaterialPushConstants);
-
-	VkPushConstantRange pcs[2] = {
-		pcRange, material_constants_range_pc
-	};
-
-	VkPipelineLayoutCreateInfo layoutInfo{};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	layoutInfo.setLayoutCount = 1;
-	layoutInfo.pSetLayouts = {
-
-	};
-	layoutInfo.pushConstantRangeCount = 2;
-	layoutInfo.pPushConstantRanges = pcs;
-
-	if (vkCreatePipelineLayout(*device, &layoutInfo, nullptr,
-		pipelineLayout) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create pipeline layout!");
-	}
-
-#pragma endregion
-
-	// Provide information for dynamic rendering
-	VkPipelineRenderingCreateInfo pipeline_create{
-		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
-	pipeline_create.pNext = VK_NULL_HANDLE;
-
-	// We are using the single color buffer out.
-	pipeline_create.colorAttachmentCount = 1;
-	pipeline_create.pColorAttachmentFormats = &swapchainImageFormat;
-
-	pipeline_create.depthAttachmentFormat = depth_format;
-	pipeline_create.stencilAttachmentFormat = depth_format;
-
-
-	VkGraphicsPipelineCreateInfo pipelineInfo{};
-	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-	pipelineInfo.stageCount = 2;
-	pipelineInfo.pStages = shaderStages;
-	pipelineInfo.pVertexInputState = &vertexInputInfo;
-	pipelineInfo.pInputAssemblyState = &inputAssembly;
-	pipelineInfo.pViewportState = &viewportState;
-	pipelineInfo.pRasterizationState = &rasterizer;
-	pipelineInfo.pMultisampleState = &multisampling;
-	pipelineInfo.pColorBlendState = &colorBlending;
-	pipelineInfo.pDynamicState = &dynamicState;
-	pipelineInfo.pDepthStencilState = &depthStencil;
-	pipelineInfo.layout = *pipelineLayout;
-	pipelineInfo.pNext = &pipeline_create;
-
-
-	if (vkCreateGraphicsPipelines(*device, VK_NULL_HANDLE, 1, &pipelineInfo,
-		nullptr, &graphicsPipeline) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create graphics pipeline!");
-	}
-
-}
-
-// UI
-
 void VulkanApp::mouseCallback(GLFWwindow* window, double xpos, double ypos) {
 	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
 	if (app) app->handleMouseMovement(xpos, ypos);
@@ -2611,8 +2731,6 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 	app->framebufferResized = true;
 }
 
-//
-
 VkCommandBuffer VulkanApp::beginSingleTimeCommands() {
 	VkCommandBufferAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -2655,8 +2773,6 @@ void VulkanApp::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize 
 
 	endSingleTimeCommands(commandBuffer);
 }
-
-//
 
 int main(int argc, const char* argv[]) {
 	if (argc > 1) {

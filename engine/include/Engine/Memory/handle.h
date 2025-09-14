@@ -57,6 +57,7 @@ using SamplerHandle = Handle<struct Sampler>;
 using MaterialPipelineHandle = Handle<struct MaterialPipeline>;
 using MaterialInstanceHandle = Handle<struct MaterialInstance>;
 using DescriptorPoolHandle = Handle<struct DescriptorPool>;
+using DescriptorSetHandle = Handle<struct DescriptorSet>;
 using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
 
 // this live hostSide too but defines device mesh abstraction
