@@ -61,7 +61,7 @@ static constexpr uint32_t MAX_MATERIALS = 1000;
 
 enum class BufferRole { UBO, SSBO };
 // This is ok, but other messes should go to a pool for staging, then deleted after GPU upload;
-std::vector<LoadedMesh> meshes = { Quad, Triangle };
+std::vector<LoadedMesh> loaded_meshes_ = { Quad, Triangle };
 
 // ------------------------------------
 
@@ -73,7 +73,6 @@ std::vector<LoadedMesh> meshes = { Quad, Triangle };
 //	uint32_t scene_node;
 //	uint32_t LOD;
 //};
-
 
 // ------------------------------------------------------------------------------------------------
 
@@ -94,10 +93,8 @@ struct PushConstants {
 	uint32_t     _pad0[3];
 };
 
-
 // ------------------------------------------------------------------------------------------------
-
-
+// 
 // This is the neeeded Host side state to manage meshes.
 struct Mesh {
 
@@ -334,7 +331,6 @@ void createGraphicsPipeline(
 	colorBlending.blendConstants[2] = 0.0f;
 	colorBlending.blendConstants[3] = 0.0f;
 
-
 	// These two are elemental. There are extensions for almost anything do. Maybe it is woth to go all in dynamic state.
 	std::vector<VkDynamicState> dynamicStates = {
 		VK_DYNAMIC_STATE_VIEWPORT,
@@ -349,33 +345,6 @@ void createGraphicsPipeline(
 
 #pragma region ---[Push Constants]---
 
-	//// One push constant range, covers all stages
-	//VkPushConstantRange pcRange{};
-	//pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-	//pcRange.offset = 0;
-	//pcRange.size = sizeof(PushConstants);
-
-	//VkPushConstantRange material_constants_range_pc{};
-	//material_constants_range_pc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	//material_constants_range_pc.offset = sizeof(PushConstants);
-	//// Im generalising here, but maybe I do different structs for diffrernt materialModels, pipelines
-	//material_constants_range_pc.size = sizeof(MaterialPushConstants);
-
-	//VkPushConstantRange pcs[2] = {
-	//	pcRange, material_constants_range_pc
-	//};
-
-	//VkPipelineLayoutCreateInfo layoutInfo{};
-
-	//layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	//layoutInfo.setLayoutCount = 1;
-	//layoutInfo.pSetLayouts = {
-	//	descriptorSetLayouts
-	//};
-	//layoutInfo.pushConstantRangeCount = 2;
-	//layoutInfo.pPushConstantRanges = pcs;
-
-	// total = sizeof(PushConstants) (144) + sizeof(MaterialPushConstants) (48) = 192
 	constexpr uint32_t kPC_Total = 192;
 
 	VkPushConstantRange range{};
@@ -444,10 +413,10 @@ class Context {
 	VmaPool D_2DImagesPool;
 	VmaPool D_ShaderPool;
 
-	// Skinned. Static. Dynamic ->
+	// Different pools for differnet uses: ...Skinned. Static. Dynamic
 	VmaPool D_geo;
 	VmaPool D_DynamicMeshPool;
-
+	VmaPool D_StagingPool;
 
 public:
 
@@ -457,7 +426,7 @@ public:
 	// We neeed VkDescriptorPool pools here
 	// We move from VkDp to another because its cheaper to reset them than to evict particular sets.
 	// Same with CommandPools. I have a stupid simple design now with just 1 CommandPool.
-	Pool<Buffer, DeviceBufferDescription> buffers_;
+	Pool<DeviceBufferDescription, DeviceBufferDescription> buffers_;
 	Pool<Texture, Texture> textures_;
 	Pool<Mesh, Mesh> meshes_;
 
@@ -496,28 +465,68 @@ public:
 
 	void InitializeDeviceVmaPools() {
 
-		VmaPoolCreateInfo pci{};
-		pci.memoryTypeIndex = 0;
-		//pci.memoryTypeIndex = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-		pci.blockSize = 64 * 1024 * 1024;          // 64 MB blocks (tune for your content)
-		pci.minBlockCount = 1;                         // start with one block
-		pci.maxBlockCount = 0;                         // 0 = no explicit upper limit. // Ill not specify nothing here. My Host pool has limited slots already :9
-		// pci.flags = VMA_POOL_CREATE_IGNORE_BUFFER_IMAGE_GRANULARITY_BIT; // if you know what you’re doing
+		// DEVICE-LOCAL pool for 2D images
+		{
+			VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+			imgCI.imageType = VK_IMAGE_TYPE_2D;
+			imgCI.format = VK_FORMAT_R8G8B8A8_UNORM;
+			imgCI.extent = { 4, 4, 1 };
+			imgCI.mipLevels = 1;
+			imgCI.arrayLayers = 1;
+			imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
+			imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+			imgCI.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
-		if (vmaCreatePool(*allocator_, &pci, &D_2DImagesPool) != VK_SUCCESS) {
-			throw std::runtime_error("vmaCreatePool failed.");
+			VmaAllocationCreateInfo aCI{};
+			aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+			uint32_t typeIndex = UINT32_MAX;
+			VK_CHECK(vmaFindMemoryTypeIndexForImageInfo(*allocator_, &imgCI, &aCI, &typeIndex));
+
+			VmaPoolCreateInfo pci{};
+			pci.memoryTypeIndex = typeIndex;
+			pci.blockSize = 64 * 1024 * 1024;
+			VK_CHECK(vmaCreatePool(*allocator_, &pci, &D_2DImagesPool));
 		}
 
-		VmaPoolCreateInfo static_geo_pool{
-			.memoryTypeIndex = 0,
-			.blockSize = 64 * 1024 * 1024,
-			.minBlockCount = 1,
-			.maxBlockCount = 0
-		};
+		// DEVICE-LOCAL pool for static geometry buffers
+		{
+			VkBufferCreateInfo bufCI{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+			bufCI.size = 64 * 1024; // dummy
+			bufCI.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-		if (vmaCreatePool(*allocator_, &static_geo_pool, &D_geo) != VK_SUCCESS) {
-			throw std::runtime_error("vmaCreatePool failed.");
+			VmaAllocationCreateInfo aCI{};
+			aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+			uint32_t typeIndex = UINT32_MAX;
+			VK_CHECK(vmaFindMemoryTypeIndexForBufferInfo(*allocator_, &bufCI, &aCI, &typeIndex));
+
+			VmaPoolCreateInfo pci{};
+			pci.memoryTypeIndex = typeIndex;
+			pci.blockSize = 64 * 1024 * 1024;
+			VK_CHECK(vmaCreatePool(*allocator_, &pci, &D_geo));
 		}
+
+		{
+			VkBufferCreateInfo bufCI{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+			bufCI.size = 64 * 1024;
+			bufCI.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+			VmaAllocationCreateInfo aCI{};
+			aCI.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+				| VMA_ALLOCATION_CREATE_MAPPED_BIT;
+			aCI.usage = VMA_MEMORY_USAGE_AUTO;
+
+			uint32_t typeIndex = UINT32_MAX;
+			vmaFindMemoryTypeIndexForBufferInfo(*allocator_, &bufCI, &aCI, &typeIndex);
+
+			VmaPoolCreateInfo pci{};
+			pci.memoryTypeIndex = typeIndex; // host-visible & host-coherent type
+			pci.blockSize = 32 * 1024 * 1024;
+			VK_CHECK(vmaCreatePool(*allocator_, &pci, &D_StagingPool));
+		}
+
+
 	}
 
 	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
@@ -530,9 +539,7 @@ public:
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
 	DeviceBufferDescriptionHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
-	void UploadDataToBuffer(DeviceBufferDescriptionHandle buffer, void* data, size_t size);
-
-	//void UpdateDescriptorSet(DescriptorSetHandle, void* data, uint32_t size);
+	void UploadDataToBuffer(VkCommandBuffer cmdBuf, DeviceBufferDescriptionHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages);
 
 };
 
@@ -602,57 +609,52 @@ DescriptorSetHandle Context::createDescriptorSet(
 
 }
 
-DeviceBufferDescriptionHandle Context::createBuffer(
-	uint32_t size,
-	VmaMemoryUsage vma_usage,
-	VkBufferUsageFlags usage_flags
-)
-{
-	DeviceBufferDescription bufferDesc = {};
+DeviceBufferDescriptionHandle Context::createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags) {
+	DeviceBufferDescription desc{};
 
-	{
-		assert(size > 0 && "size was 0");
-		VkBufferCreateInfo vbInfo{
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = size,
-			.usage = usage_flags
-			//.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-		};
-		VmaAllocationCreateInfo vbAlloc{ .usage = VMA_MEMORY_USAGE_GPU_ONLY };
+	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	ci.size = size;
+	ci.usage = usage_flags;
+	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-		vmaCreateBuffer(
-			*allocator_,
-			&vbInfo,
-			&vbAlloc,
-			&bufferDesc.buffer,
-			&bufferDesc.alloc,
-			&bufferDesc.allocInfo
-		);
-	}
+	VmaAllocationCreateInfo aci{};
+	aci.usage = vma_usage;
+	// Optionally choose pools here based on usage_flags/usage
 
-	return DeviceBufferDescriptionHandle(std::move(bufferDesc));
+	// i need to assert this!
+	vmaCreateBuffer(*allocator_, &ci, &aci, &desc.buffer, &desc.alloc, &desc.allocInfo);
+
+	// Query memory properties to know if it’s host-visible:
+	VkMemoryPropertyFlags props{};
+	vmaGetAllocationMemoryProperties(*allocator_, desc.alloc, &props);
+	desc.memory_flags = props;
+
+	// Infer role from usage flags
+	if (usage_flags & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) desc.role = BufferRole::UBO;
+	else if (usage_flags & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) desc.role = BufferRole::SSBO;
+	else desc.role = BufferRole::SSBO; // default or add a "Other" role
+
+	return buffers_.create(std::move(desc));
 }
-
-
-//void Context::AddCommand(){}
 
 void Context::UploadDataToBuffer(
 	VkCommandBuffer cmdBuf,
 	DeviceBufferDescriptionHandle buffer,
 	void* data,
-	size_t dataSize) {
-
+	size_t dataSize,
+	VkPipelineStageFlags dstStages)
+{
 	DeviceBufferDescription* bufferDesc = buffers_.get(buffer);
-
 	const VkAccessFlags dstAccess =
 		(bufferDesc->role == BufferRole::UBO) ? VK_ACCESS_UNIFORM_READ_BIT
 		: VK_ACCESS_SHADER_READ_BIT;
 
-	VkResult result;
 	if (bufferDesc->is_mapapble()) {
-		result = vmaCopyMemoryToAllocation(*allocator_, data, bufferDesc->alloc, 0, dataSize);
+		// Direct copy into mapped allocation
+		VkResult result = vmaCopyMemoryToAllocation(*allocator_, data, bufferDesc->alloc, 0, dataSize);
 		assert(result == VK_SUCCESS);
 
+		// Host write -> shader read
 		VkBufferMemoryBarrier b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
 		b.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
 		b.dstAccessMask = dstAccess;
@@ -662,41 +664,18 @@ void Context::UploadDataToBuffer(
 		b.offset = 0;
 		b.size = VK_WHOLE_SIZE;
 
-		vkCmdPipelineBarrier(cmdBuf,
+		vkCmdPipelineBarrier(
+			cmdBuf,
 			VK_PIPELINE_STAGE_HOST_BIT,
 			dstStages,
 			0,
-			0,
-			nullptr,
-			1,
-			&b,
-			0,
-			nullptr);
-	}
-	else {
-
-		VkBufferMemoryBarrier b2{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-		b2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		b2.dstAccessMask = dstAccess;
-		b2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		b2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		b2.buffer = bufDesc.buffer;
-		b2.offset = 0;
-		b2.size = VK_WHOLE_SIZE;
-
-		vkCmdPipelineBarrier(cmdBuf,
-			VK_PIPELINE_STAGE_TRANSFER_BIT,
-			dstStages,
-			0,
-			0,
-			nullptr,
-			1,
-			&b2,
-			0,
-			nullptr
-		);
+			0, nullptr,
+			1, &b,
+			0, nullptr);
+		return;
 	}
 
+	// Device-local path: stage the caller's data
 	VkBuffer stagingBuf; VmaAllocation stagingAlloc;
 	VkBufferCreateInfo sInfo{
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -706,31 +685,39 @@ void Context::UploadDataToBuffer(
 	VmaAllocationCreateInfo sAlloc{};
 	sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
 	sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-	sAlloc.pool = D_geo;
+	sAlloc.pool = D_StagingPool;
 
 	vmaCreateBuffer(*allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
-	VkDeviceSize curr = 0; // byte offset
-	for (int i = 0; i < meshes.size(); ++i) {
-		const auto& m = meshes[i];
-		const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
-		if (bytes == 0) continue;
+	// Fill the staging buffer with the *provided* data
+	VkResult result = vmaCopyMemoryToAllocation(*allocator_, data, stagingAlloc, 0, dataSize);
+	assert(result == VK_SUCCESS);
 
-		vmaCopyMemoryToAllocation(
-			*allocator_,
-			m.vertices.data(),
-			stagingAlloc,
-			curr,
-			bytes
-		);
-		curr += bytes;
-	}
+	// Copy staging -> dst
+	VkBufferCopy copyRegion{ .size = dataSize };
+	vkCmdCopyBuffer(cmdBuf, stagingBuf, bufferDesc->buffer, 1, &copyRegion);
 
-	//copyBuffer(stagingBuf, static_vertex_buffer_, totalVertexBytes);
+	// Make the copy visible to shaders
+	VkBufferMemoryBarrier b2{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+	b2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	b2.dstAccessMask = dstAccess;
+	b2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	b2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	b2.buffer = bufferDesc->buffer;
+	b2.offset = 0;
+	b2.size = VK_WHOLE_SIZE;
+
+	vkCmdPipelineBarrier(
+		cmdBuf,
+		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		dstStages,
+		0,
+		0, nullptr,
+		1, &b2,
+		0, nullptr);
+
 	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
-
 }
-
 
 // Lets just use 1 layout for now. We will need more shapes for shadows and others is my guess.
 DescriptorLayoutHandle Context::createDescriptorLayout() {
@@ -926,7 +913,6 @@ TextureHandle Context::createTextureImage(std::string image_path, VkFormat forma
 		throw std::runtime_error("vmaCreateImage (in pool) failed");
 	}
 
-
 	Texture tex{};
 	tex.allocation = alloc;
 	tex.format = format;
@@ -957,7 +943,7 @@ void destroy(Context* ctx, TextureHandle handle) {
 	ctx->textures_.destroy(handle);
 };
 
-void destroy(Context* ctx, BufferHandle handle) {
+void destroy(Context* ctx, DeviceBufferDescriptionHandle handle) {
 
 	// We need to freee device allocation
 	ctx->buffers_.destroy(handle);
@@ -1054,14 +1040,9 @@ private:
 #pragma region ===[ Uniforms / Descriptor Sets ]==
 
 	// These should be moved to Context
-	DeviceBufferDescription uniforms_[MAX_FRAMES_IN_FLIGHT];
-	DeviceBufferDescription instanceDataUniforms_[MAX_FRAMES_IN_FLIGHT];
-	DeviceBufferDescription instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
-
-	// Like so!
-	//BufferHandle h_uniforms_[MAX_FRAMES_IN_FLIGHT];
-	//BufferHandle h_instanceDataUniforms_[MAX_FRAMES_IN_FLIGHT];
-	//BufferHandle h_instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferDescriptionHandle uniforms_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferDescriptionHandle instanceDataUniforms_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferDescriptionHandle instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
 
@@ -1110,53 +1091,6 @@ private:
 			.count();
 	}
 
-	void UploadDataToBuffer(
-		DeviceBufferDescription& bufDesc,
-		void* data,
-		size_t dataSize,
-		VkCommandBuffer& cmdBuf,
-		BufferRole role,
-		VkPipelineStageFlags dstStages // e.g. VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
-	) {
-		const VkAccessFlags dstAccess =
-			(role == BufferRole::UBO) ? VK_ACCESS_UNIFORM_READ_BIT
-			: VK_ACCESS_SHADER_READ_BIT;
-
-		VkResult result;
-		if (bufDesc.is_mapapble()) {
-			result = vmaCopyMemoryToAllocation(app_allocator_, data, bufDesc.alloc, 0, dataSize);
-			assert(result == VK_SUCCESS);
-
-			VkBufferMemoryBarrier b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-			b.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-			b.dstAccessMask = dstAccess;
-			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			b.buffer = bufDesc.buffer;
-			b.offset = 0;
-			b.size = VK_WHOLE_SIZE;
-
-			vkCmdPipelineBarrier(cmdBuf,
-				VK_PIPELINE_STAGE_HOST_BIT,
-				dstStages, 0, 0, nullptr, 1, &b, 0, nullptr);
-		}
-		else {
-			VkBufferMemoryBarrier b2{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-			b2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			b2.dstAccessMask = dstAccess;
-			b2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			b2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			b2.buffer = bufDesc.buffer;
-			b2.offset = 0;
-			b2.size = VK_WHOLE_SIZE;
-
-			vkCmdPipelineBarrier(cmdBuf,
-				VK_PIPELINE_STAGE_TRANSFER_BIT,
-				dstStages,
-				0, 0, nullptr, 1, &b2, 0, nullptr);
-		}
-	}
-
 	void UpdateInstanceBuffer(uint32_t currentImage) {
 
 		// THIS MUST REMAIN HERE. SENSITIVE TO LAG OTHERWISE
@@ -1186,9 +1120,9 @@ private:
 			indexData[index] = index;
 		}
 
-		std::vector<IndexSlot> idnexSlotData(MAX_INSTANCES);
+		std::vector<IndexSlot> indexSlotData(MAX_INSTANCES);
 		for (size_t i = 0; i < MAX_INSTANCES; ++i) {
-			idnexSlotData[i].idx = static_cast<uint32_t>(indexData[i]); // zero-extend
+			indexSlotData[i].idx = static_cast<uint32_t>(indexData[i]); // zero-extend
 		}
 
 		VkResult result{};
@@ -1200,24 +1134,25 @@ private:
 		static_assert(sizeof(IndexSlot) * MAX_INSTANCES < (1 << 16),
 			"Instance buffer too large for 64KB UBO limit");
 
-		// Right now the mapping is redundadnt 
-		UploadDataToBuffer(instanceIndexUniforms_[currentImage], idnexSlotData.data(),
-			sizeof(IndexSlot) * MAX_INSTANCES, cmdBuf,
-			BufferRole::UBO, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+		context->UploadDataToBuffer(
+			cmdBuf,
+			instanceIndexUniforms_[currentImage],
+			indexSlotData.data(),
+			sizeof(IndexSlot) * MAX_INSTANCES,
+			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
+		);
 
-		UploadDataToBuffer(instanceDataUniforms_[currentImage], data,
-			sizeof(InstanceData) * MAX_INSTANCES, cmdBuf,
-			BufferRole::SSBO, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+		context->UploadDataToBuffer(
+			cmdBuf,
+			instanceDataUniforms_[currentImage],
+			data,
+			sizeof(InstanceData) * MAX_INSTANCES,
+			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
+		);
 
 		endSingleTimeCommands(cmdBuf);
 		delete[] data;
 	}
-
-#pragma region ===[ Input ]==
-
-
-
-#pragma endregion
 
 	void mainLoop() {
 
@@ -1381,6 +1316,7 @@ private:
 
 	}
 
+
 	void createDepthResources() {
 		VkFormat depthFormat = findDepthFormat(physicalDevice);
 
@@ -1392,6 +1328,7 @@ private:
 			VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 			main_depthImage
+			//main_d_alloc
 		);
 
 		createImageView(main_depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, main_depthImageView);
@@ -1418,7 +1355,8 @@ private:
 			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
 			VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			stagingBuffer, stagingBufferMemory);
+			stagingBuffer,
+			stagingBufferMemory);
 
 		void* data;
 		vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
@@ -1426,7 +1364,6 @@ private:
 		vkUnmapMemory(device, stagingBufferMemory);
 
 		stbi_image_free(pixels);
-
 
 		auto texHandle = context->createTextureImage(texture_path, format);
 		auto texture_image = context->textures_.get(texHandle);
@@ -1502,7 +1439,6 @@ private:
 
 		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 		samplerInfo.mipLodBias = 0.0f;
-		samplerInfo.mipLodBias = 0.0f;
 		samplerInfo.minLod = 0.0f;
 		samplerInfo.maxLod = 0.0f;
 
@@ -1531,14 +1467,12 @@ private:
 		viewInfo.subresourceRange.baseArrayLayer = 0;
 		viewInfo.subresourceRange.layerCount = 1;
 
-
 		if (vkCreateImageView(device, &viewInfo, nullptr, &imageView) !=
 			VK_SUCCESS) {
 			throw std::runtime_error("failed to create texture image view!");
 		}
 
 	}
-
 	// Obly used now for depthImage.
 	void createImage(
 		uint32_t width,
@@ -1575,6 +1509,42 @@ private:
 		vmaCreateImage(app_allocator_, &imgCreateInfo, &allocCreateInfo, &image, &alloc, nullptr);
 		//return alloc;
 	}
+
+	//// Obly used now for depthImage.
+	//void createImage(
+	//	uint32_t width,
+	//	uint32_t height,
+	//	VkFormat format,
+	//	VkImageTiling tiling,
+	//	VkImageUsageFlags usage,
+	//	VkMemoryPropertyFlags properties,
+	//	VkImage& image,
+	//	VmaAllocation& allocation
+	//) {
+
+	//	VkImageCreateInfo imgCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	//	imgCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+	//	imgCreateInfo.extent.width = width;
+	//	imgCreateInfo.extent.height = height;
+	//	imgCreateInfo.extent.depth = 1;
+	//	imgCreateInfo.mipLevels = 1;
+	//	imgCreateInfo.arrayLayers = 1;
+	//	imgCreateInfo.format = format;
+	//	imgCreateInfo.tiling = tiling;
+	//	//imgCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+	//	imgCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	//	//imgCreateInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	//	imgCreateInfo.usage = usage;
+	//	imgCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+
+	//	VmaAllocationCreateInfo allocCreateInfo = {};
+	//	allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+	//	allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+	//	allocCreateInfo.priority = 1.0f;
+
+	//	VmaAllocation alloc;
+	//	VK_CHECK(vmaCreateImage(app_allocator_, &imgCreateInfo, &allocCreateInfo, &image, &allocation, nullptr));
+	//}
 
 	void transitionImageLayout(VkImage image, VkFormat format,
 		VkImageLayout oldLayout, VkImageLayout newLayout) {
@@ -1663,94 +1633,39 @@ private:
 		endSingleTimeCommands(commandBuffer);
 	}
 
-	// --------------------------
-
-	void createUniformBuffer(
-		VkBufferCreateInfo buffer_create_info,
-		VmaAllocation& alloc,
-		VkBuffer& buffer,
-		VmaAllocationInfo& allocInfo,
-		VkMemoryPropertyFlags& memory_flags
-	) {
-
-		//VkBufferCreateInfo bufCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-		//bufCreateInfo.size = size;
-		//bufCreateInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
-		// Not sure if i can extract this from the loop
-		VmaAllocationCreateInfo allocCreateInfo = {};
-		allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-		allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-			VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT |
-			VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-		VkResult result = vmaCreateBuffer(
-			app_allocator_,
-			&buffer_create_info,
-			&allocCreateInfo,
-			&buffer,
-			&alloc,
-			&allocInfo
-		);
-
-		vmaGetAllocationMemoryProperties(app_allocator_, alloc, &memory_flags);
-
-	}
-
 	void createInstanceDataBuffers() {
 
-		//VkDeviceSize bufferSize = sizeof(InstanceData) * MAX_INSTANCES;
-
-		VkBufferCreateInfo instIndexBufInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-		instIndexBufInfo.size = sizeof(IndexSlot) * MAX_INSTANCES;
-		instIndexBufInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
-
-		VkBufferCreateInfo instDataBufInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-		instDataBufInfo.size = sizeof(InstanceData) * MAX_INSTANCES;
-		instDataBufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
-			createUniformBuffer(
-				instIndexBufInfo,
-				instanceIndexUniforms_[i].alloc,
-				instanceIndexUniforms_[i].buffer,
-				instanceIndexUniforms_[i].allocInfo,
-				instanceIndexUniforms_[i].memory_flags
+			instanceIndexUniforms_[i] = context->createBuffer(
+				sizeof(IndexSlot) * MAX_INSTANCES,
+				// Just using this ftm:
+				VMA_MEMORY_USAGE_AUTO,
+				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			);
-
-		}
-
-
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-
-			createUniformBuffer(
-				instDataBufInfo,
-				instanceDataUniforms_[i].alloc,
-				instanceDataUniforms_[i].buffer,
-				instanceDataUniforms_[i].allocInfo,
-				instanceDataUniforms_[i].memory_flags
+			instanceDataUniforms_[i] = context->createBuffer(
+				sizeof(InstanceData) * MAX_INSTANCES,
+				VMA_MEMORY_USAGE_AUTO,
+				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			);
-
-			// I dont like how I cant leave UniformBufferAllocation in a valid state easily if I dont fill every proper field. Need a better Solution
-
 		}
 	}
-
-
 
 	void UploadDefaultDescriptorSets()  // no params; uses frameDescriptorSets[]
 	{
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
+
+			auto ii_data = context->buffers_.get(instanceIndexUniforms_[i]);
+			auto id_data = context->buffers_.get(instanceDataUniforms_[i]);
+
 			VkDescriptorBufferInfo instanceIndexBufferInfo{
-				.buffer = instanceIndexUniforms_[i].buffer,
+				.buffer = ii_data->buffer,
 				.offset = 0,
 				.range = sizeof(IndexSlot) * MAX_INSTANCES
 			};
 			VkDescriptorBufferInfo instanceBufferInfo{
-				.buffer = instanceDataUniforms_[i].buffer,
+				.buffer = id_data->buffer,
 				.offset = 0,
 				.range = sizeof(InstanceData) * MAX_INSTANCES
 			};
@@ -1780,7 +1695,6 @@ private:
 			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 		}
 	}
-
 
 	void createBuffer(
 		VkDeviceSize size,
@@ -1824,16 +1738,12 @@ private:
 	}
 
 	void createCommandBuffers() {
-
-		VkCommandBufferAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-		allocInfo.commandPool = framesCommandPool[currentFrame];
-		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		allocInfo.commandBufferCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
-
-		if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers) !=
-			VK_SUCCESS) {
-			throw std::runtime_error("failed to allocate command buffers!");
+		for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+			VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+			ai.commandPool = framesCommandPool[i];
+			ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+			ai.commandBufferCount = 1;
+			VK_CHECK(vkAllocateCommandBuffers(device, &ai, &commandBuffers[i]));
 		}
 	}
 
@@ -1893,6 +1803,21 @@ private:
 			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
 		}
+
+		//const uint32_t imgCount = std::min<uint32_t>(imageInfos.size(), MAX_TEXTURES);
+		//const uint32_t samCount = std::min<uint32_t>(samplerInfos.size(), MAX_TEXTURES);
+
+		//if (imgCount > 0) {
+		//	writes[0].descriptorCount = imgCount;
+		//	// ...
+		//	vkUpdateDescriptorSets(device, 1, &writes[0], 0, nullptr);
+		//}
+		//if (samCount > 0) {
+		//	writes[1].descriptorCount = samCount;
+		//	// ...
+		//	vkUpdateDescriptorSets(device, 1, &writes[1], 0, nullptr);
+		//}
+
 
 	}
 
@@ -2022,7 +1947,7 @@ private:
 
 			for (int i = 0; i < scene_->hierarchy.size(); i++) {
 
-				auto mesh_ = meshes[scene_->meshForNode[i]];
+				auto mesh_ = loaded_meshes_[scene_->meshForNode[i]];
 				auto material_instance_index = scene_->materialForNode[i];
 				pc.material_instance_index = material_instance_index;
 
@@ -2035,9 +1960,12 @@ private:
 				PC_All all{ pc, pcm };
 
 				// I could split this.
-				vkCmdPushConstants(commandBuffer, pipe_lyt,
+				vkCmdPushConstants(
+					commandBuffer,
+					pipe_lyt,
 					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-					0, sizeof(PC_All), &all);
+					0,
+					sizeof(PC_All), &all);
 
 				vkCmdDrawIndexed(
 					commandBuffer,
@@ -2277,8 +2205,8 @@ void VulkanApp::LoadScene() {
 	mesh_2.vertices = b_.vertices;
 
 	// this is crap. just for testing 
-	meshes.push_back(mesh_);
-	meshes.push_back(mesh_2);
+	loaded_meshes_.push_back(mesh_);
+	loaded_meshes_.push_back(mesh_2);
 
 	auto m_m = scene_->localTransform[0];
 
@@ -2371,8 +2299,8 @@ void VulkanApp::UploadMeshData() {
 
 	for (int node = 0; node < scene_->hierarchy.size(); node++) {
 
-		static_vertex_buffer_size += sizeof(Vertex) * meshes[node].vertices.size();
-		static_vertex_buffer_size += sizeof(uint32_t) * meshes[node].indices.size();
+		static_vertex_buffer_size += sizeof(Vertex) * loaded_meshes_[node].vertices.size();
+		static_vertex_buffer_size += sizeof(uint32_t) * loaded_meshes_[node].indices.size();
 
 	}
 
@@ -2383,9 +2311,8 @@ void VulkanApp::UploadMeshData() {
 	uint32_t runningVertexOffset = 0; // in vertices
 	uint32_t runningFirstIndex = 0; // in indices
 
-	for (int i = 0; i < meshes.size(); ++i) {
-		LoadedMeshs& m = meshes[i];
-
+	for (int i = 0; i < loaded_meshes_.size(); ++i) {
+		LoadedMesh& m = loaded_meshes_[i];
 
 		// this is not correct
 		m.vert_offset = runningVertexOffset;         // elements, not bytes
@@ -2444,8 +2371,8 @@ void VulkanApp::UploadMeshData() {
 		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
 		VkDeviceSize curr = 0; // byte offset
-		for (int i = 0; i < meshes.size(); ++i) {
-			const auto& m = meshes[i];
+		for (int i = 0; i < loaded_meshes_.size(); ++i) {
+			const auto& m = loaded_meshes_[i];
 			const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
 			if (bytes == 0) continue;
 
@@ -2472,8 +2399,8 @@ void VulkanApp::UploadMeshData() {
 		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
 		VkDeviceSize curr = 0; // byte offset
-		for (int i = 0; i < meshes.size(); ++i) {
-			const auto& m = meshes[i];
+		for (int i = 0; i < loaded_meshes_.size(); ++i) {
+			const auto& m = loaded_meshes_[i];
 			const VkDeviceSize bytes = sizeof(uint32_t) * m.indices.size();
 			if (bytes == 0) continue;
 

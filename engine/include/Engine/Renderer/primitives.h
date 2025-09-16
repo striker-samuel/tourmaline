@@ -46,12 +46,13 @@ struct LoadedMesh {
 	// Vertex is 3fpos 3fnormal 2fuv. no color.
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
-	// materials!
+	// materials!	
+	uint32_t first_index = 0;
+	uint32_t vert_offset = 0;
 };
 
-LoadedMesh Quad = LoadedMesh(quad_vertices, quad_indices_ccw, 0, 0);
-LoadedMesh Triangle = LoadedMesh(triangle_vertices, triangle_indices_ccw, 0, 0);
-
+LoadedMesh Quad = LoadedMesh(quad_vertices, quad_indices_ccw);
+LoadedMesh Triangle = LoadedMesh(triangle_vertices, triangle_indices_ccw);
 
 // We hit the masUBOsize limit fast. Be careful. We may need to encode better.
 // Maybe we can get away with float12 with implied 0,0,0,1 last row.

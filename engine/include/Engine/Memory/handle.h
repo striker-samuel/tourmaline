@@ -49,7 +49,6 @@ private:
 
 static_assert(sizeof(Handle<class Foo>) == sizeof(uint64_t));
 
-
 using ShaderModuleHandle = Handle<struct ShaderModule>;
 using BufferHandle = Handle<struct Buffer>;
 using TextureHandle = Handle<struct Texture>;
@@ -59,21 +58,7 @@ using MaterialInstanceHandle = Handle<struct MaterialInstance>;
 using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 using DescriptorSetHandle = Handle<struct DescriptorSet>;
 using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
-using DeviceBufferDescriptionHandle = Handle<struct DeviceBufferDescription>
-
-// this live hostSide too but defines device mesh abstraction
-struct MeshDrawInfo {
-	// I also need the alloc and more righ
-
-	// Do not think about LODS here
-	// range for drawing.
-	uint32_t first_index = 0;
-	uint32_t vert_offset = 0;
-
-};
-// This is not an 
-using MeshHandle = Handle<struct MeshDrawInfo>;
-//using MeshHandle = Handle<DeviceMesh>;
+using DeviceBufferDescriptionHandle = Handle<struct DeviceBufferDescription>;
 
 // specialized with dummy structs for type safety
 //using ImageHandle = Handle<struct Image>;
