@@ -120,7 +120,7 @@ void loadScene(const char* fileName, Scene& scene)
   fread(scene.globalTransform.data(), sizeof(glm::mat4), sz, f);
   fread(scene.hierarchy.data(), sizeof(Hierarchy), sz, f);
 
-  // Mesh for node [index to some list of buffers]
+  // LoadedMesh for node [index to some list of buffers]
   loadMap(f, scene.materialForNode);
   loadMap(f, scene.meshForNode);
 
@@ -160,7 +160,7 @@ void saveScene(const char* fileName, const Scene& scene)
   fwrite(scene.globalTransform.data(), sizeof(glm::mat4), sz, f);
   fwrite(scene.hierarchy.data(), sizeof(Hierarchy), sz, f);
 
-  // Mesh for node [index to some list of buffers]
+  // LoadedMesh for node [index to some list of buffers]
   saveMap(f, scene.materialForNode);
   saveMap(f, scene.meshForNode);
 

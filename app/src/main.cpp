@@ -60,18 +60,20 @@ static constexpr uint32_t MAX_MATERIALS = 1000;
 // ------------------------------------
 
 enum class BufferRole { UBO, SSBO };
-std::vector<Mesh> meshes = { Quad, Triangle };
+// This is ok, but other messes should go to a pool for staging, then deleted after GPU upload;
+std::vector<LoadedMesh> meshes = { Quad, Triangle };
 
 // ------------------------------------
 
-// Scene Hieracrhy manages transform
-struct HostInstance {
-	// We can just use Handles, reserve untyped uint32_t indexing for GPU structs
-	/*uint32_t*/ MeshHandle mesh;
-	MaterialInstanceHandle material;
-	uint32_t scene_node;
-	uint32_t LOD;
-};
+//// Scene Hieracrhy manages transform
+//struct HostInstance {
+//	// We can just use Handles, reserve untyped uint32_t indexing for GPU structs
+//	/*uint32_t*/ MeshHandle mesh;
+//	MaterialInstanceHandle material;
+//	uint32_t scene_node;
+//	uint32_t LOD;
+//};
+
 
 // ------------------------------------------------------------------------------------------------
 
@@ -92,7 +94,33 @@ struct PushConstants {
 	uint32_t     _pad0[3];
 };
 
+
 // ------------------------------------------------------------------------------------------------
+
+
+// This is the neeeded Host side state to manage meshes.
+struct Mesh {
+
+	VmaAllocation allocation;
+	VmaAllocationInfo allocInfo;
+	// Im gonna have a standard format so no propreties for selecting tri, fan, or else
+	// Static meshes are an open question yet. But my guesss is better to do that when i have the VFS, and the DAM, scene format and everything.
+	// this app still does not distinguish between runtime, and else;
+
+	uint32_t first_index = 0;
+	uint32_t vert_offset = 0;
+
+	// LOD should choose first index and voffset but lets keep this like this.... its not that clear yer how to manage that properly
+	uint32_t LOD;
+
+	// I prefer to manage material + attachentes via MaterialInstanceInstead.
+	// but maybe i could have a ref for ez acces here?
+	//MaterialInstanceHandle material_instance;
+
+	// Maybe name
+	//uint32_t name;
+
+};
 
 // Lets go with uniform_layouts ext. GENERAL and UNDEFINED
 struct Texture {
@@ -173,14 +201,17 @@ struct MaterialInstance {
 	MaterialPushConstants values = {};
 };
 
-struct DeviceBufferDesc {
+struct DeviceBufferDescription {
+
 	VkBuffer buffer;
 	VmaAllocation alloc;
 	VmaAllocationInfo allocInfo;
-	VkDeviceSize size;
+	BufferRole role;
+	// size already in allocInfo
+	//VkDeviceSize size;
+
 	// Did it end in mappable memory? This is important to know for proper upload. Discard the bool in the future use 
 	VkMemoryPropertyFlags memory_flags;
-
 	// Helpers to interrogate buffer
 	bool is_mapapble() const {
 		return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
@@ -414,23 +445,28 @@ class Context {
 	VmaPool D_ShaderPool;
 
 	// Skinned. Static. Dynamic ->
+	VmaPool D_geo;
 	VmaPool D_DynamicMeshPool;
+
 
 public:
 
-	DescriptorPoolHandle default_pool;
-	DescriptorLayoutHandle default_lyt;
+	DescriptorPoolHandle default_descriptor_pool;
+	DescriptorLayoutHandle default_descriptorLayout;
 
 	// We neeed VkDescriptorPool pools here
 	// We move from VkDp to another because its cheaper to reset them than to evict particular sets.
 	// Same with CommandPools. I have a stupid simple design now with just 1 CommandPool.
-	Pool<Buffer, DeviceBufferDesc> buffersPool_;
-	Pool<Texture, Texture> texturesPool2D_;
+	Pool<Buffer, DeviceBufferDescription> buffers_;
+	Pool<Texture, Texture> textures_;
+	Pool<Mesh, Mesh> meshes_;
 
 
-	Pool<DescriptorSet, DescriptorSet> dds;
-	Pool<DescriptorPool, VkDescriptorPool> dpp_;
-	Pool<DescriptorLayout, VkDescriptorSetLayout> dlp_;
+	// These two have confusing names;
+	Pool<DescriptorSet, DescriptorSet> descriptrorSetPool_;
+	Pool<DescriptorPool, VkDescriptorPool> descriptorSetPoolPool_;
+
+	Pool<DescriptorLayout, VkDescriptorSetLayout> descriptorSetLayoutPool_;
 	Pool<MaterialPipeline, MaterialPipeline> materialPipelinePool_;
 	Pool<MaterialInstance, MaterialInstance> materialInstancesPool_;
 
@@ -441,17 +477,17 @@ public:
 		device_ = device;
 
 		// Lets reserve upfront.
-		texturesPool2D_.objects_.reserve(MAX_TEXTURES);
+		textures_.objects_.reserve(MAX_TEXTURES);
 
 		//materialPipelinePool_.objects_.reserve(1000);
 		// This is a small reservation. just testing 
-		buffersPool_.objects_.reserve(1000);
+		buffers_.objects_.reserve(1000);
 
 		InitializeDeviceVmaPools();
 
 		// Lets have one dpool
-		default_pool = createDescriptorPool();
-		default_lyt = createDescriptorLayout();
+		default_descriptor_pool = createDescriptorPool();
+		default_descriptorLayout = createDescriptorLayout();
 
 
 	};
@@ -471,6 +507,17 @@ public:
 		if (vmaCreatePool(*allocator_, &pci, &D_2DImagesPool) != VK_SUCCESS) {
 			throw std::runtime_error("vmaCreatePool failed.");
 		}
+
+		VmaPoolCreateInfo static_geo_pool{
+			.memoryTypeIndex = 0,
+			.blockSize = 64 * 1024 * 1024,
+			.minBlockCount = 1,
+			.maxBlockCount = 0
+		};
+
+		if (vmaCreatePool(*allocator_, &static_geo_pool, &D_geo) != VK_SUCCESS) {
+			throw std::runtime_error("vmaCreatePool failed.");
+		}
 	}
 
 	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
@@ -481,8 +528,11 @@ public:
 	DescriptorLayoutHandle createDescriptorLayout();
 	DescriptorPoolHandle createDescriptorPool();
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
+	DeviceBufferDescriptionHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
-	void UpdateDescriptorSet(DescriptorSetHandle, void* data, uint32_t size);
+	void UploadDataToBuffer(DeviceBufferDescriptionHandle buffer, void* data, size_t size);
+
+	//void UpdateDescriptorSet(DescriptorSetHandle, void* data, uint32_t size);
 
 };
 
@@ -519,8 +569,8 @@ DescriptorSetHandle Context::createDescriptorSet(
 	DescriptorLayoutHandle lyt
 ) {
 	// Lets make pool selection automatic
-	auto descriptorPool = dpp_.get(default_pool);
-	auto layout = dlp_.get(lyt);
+	auto descriptorPool = descriptorSetPoolPool_.get(default_descriptor_pool);
+	auto layout = descriptorSetLayoutPool_.get(lyt);
 
 	std::array<VkDescriptorSetLayout, 1> layouts = {
 		*layout
@@ -548,9 +598,139 @@ DescriptorSetHandle Context::createDescriptorSet(
 		throw std::runtime_error("failed to allocate descriptor sets!");
 	}
 
-	return dds.create(std::move(ds));
+	return descriptrorSetPool_.create(std::move(ds));
 
 }
+
+DeviceBufferDescriptionHandle Context::createBuffer(
+	uint32_t size,
+	VmaMemoryUsage vma_usage,
+	VkBufferUsageFlags usage_flags
+)
+{
+	DeviceBufferDescription bufferDesc = {};
+
+	{
+		assert(size > 0 && "size was 0");
+		VkBufferCreateInfo vbInfo{
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = size,
+			.usage = usage_flags
+			//.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		};
+		VmaAllocationCreateInfo vbAlloc{ .usage = VMA_MEMORY_USAGE_GPU_ONLY };
+
+		vmaCreateBuffer(
+			*allocator_,
+			&vbInfo,
+			&vbAlloc,
+			&bufferDesc.buffer,
+			&bufferDesc.alloc,
+			&bufferDesc.allocInfo
+		);
+	}
+
+	return DeviceBufferDescriptionHandle(std::move(bufferDesc));
+}
+
+
+//void Context::AddCommand(){}
+
+void Context::UploadDataToBuffer(
+	VkCommandBuffer cmdBuf,
+	DeviceBufferDescriptionHandle buffer,
+	void* data,
+	size_t dataSize) {
+
+	DeviceBufferDescription* bufferDesc = buffers_.get(buffer);
+
+	const VkAccessFlags dstAccess =
+		(bufferDesc->role == BufferRole::UBO) ? VK_ACCESS_UNIFORM_READ_BIT
+		: VK_ACCESS_SHADER_READ_BIT;
+
+	VkResult result;
+	if (bufferDesc->is_mapapble()) {
+		result = vmaCopyMemoryToAllocation(*allocator_, data, bufferDesc->alloc, 0, dataSize);
+		assert(result == VK_SUCCESS);
+
+		VkBufferMemoryBarrier b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+		b.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+		b.dstAccessMask = dstAccess;
+		b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b.buffer = bufferDesc->buffer;
+		b.offset = 0;
+		b.size = VK_WHOLE_SIZE;
+
+		vkCmdPipelineBarrier(cmdBuf,
+			VK_PIPELINE_STAGE_HOST_BIT,
+			dstStages,
+			0,
+			0,
+			nullptr,
+			1,
+			&b,
+			0,
+			nullptr);
+	}
+	else {
+
+		VkBufferMemoryBarrier b2{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+		b2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		b2.dstAccessMask = dstAccess;
+		b2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b2.buffer = bufDesc.buffer;
+		b2.offset = 0;
+		b2.size = VK_WHOLE_SIZE;
+
+		vkCmdPipelineBarrier(cmdBuf,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			dstStages,
+			0,
+			0,
+			nullptr,
+			1,
+			&b2,
+			0,
+			nullptr
+		);
+	}
+
+	VkBuffer stagingBuf; VmaAllocation stagingAlloc;
+	VkBufferCreateInfo sInfo{
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = dataSize,
+		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+	};
+	VmaAllocationCreateInfo sAlloc{};
+	sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+	sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+	sAlloc.pool = D_geo;
+
+	vmaCreateBuffer(*allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
+
+	VkDeviceSize curr = 0; // byte offset
+	for (int i = 0; i < meshes.size(); ++i) {
+		const auto& m = meshes[i];
+		const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
+		if (bytes == 0) continue;
+
+		vmaCopyMemoryToAllocation(
+			*allocator_,
+			m.vertices.data(),
+			stagingAlloc,
+			curr,
+			bytes
+		);
+		curr += bytes;
+	}
+
+	//copyBuffer(stagingBuf, static_vertex_buffer_, totalVertexBytes);
+	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
+
+}
+
 
 // Lets just use 1 layout for now. We will need more shapes for shadows and others is my guess.
 DescriptorLayoutHandle Context::createDescriptorLayout() {
@@ -620,7 +800,7 @@ DescriptorLayoutHandle Context::createDescriptorLayout() {
 		throw std::runtime_error("failed to create descriptor set layout!");
 	}
 
-	auto r = dlp_.create(std::move(descriptorSetLayout));
+	auto r = descriptorSetLayoutPool_.create(std::move(descriptorSetLayout));
 	return r;
 
 }
@@ -630,7 +810,7 @@ DescriptorPoolHandle Context::createDescriptorPool() {
 	// How many bindless sets will reference textures from this pool?
 	const uint32_t bindless_sets = MAX_FRAMES_IN_FLIGHT;     // you bind one per-frame set
 	const uint32_t max_textures = MAX_TEXTURES;             // your declared maximum
-	uint32_t max_samplers = (texturesPool2D_.objects_.size() > 1u) ? static_cast<uint32_t>(texturesPool2D_.objects_.size()) : 1u;
+	uint32_t max_samplers = (textures_.objects_.size() > 1u) ? static_cast<uint32_t>(textures_.objects_.size()) : 1u;
 
 	// Total descriptors we may write across all those sets
 	const uint32_t total_sampled_images = bindless_sets * max_textures;
@@ -658,7 +838,7 @@ DescriptorPoolHandle Context::createDescriptorPool() {
 		VK_SUCCESS) {
 		throw std::runtime_error("failed to create descriptor pool!");
 	}
-	auto r = dpp_.create(std::move(dpool));
+	auto r = descriptorSetPoolPool_.create(std::move(dpool));
 	return r;
 
 }
@@ -675,7 +855,7 @@ MaterialPipelineHandle Context::createMaterialPipeline(ShaderModuleHandle vert, 
 	auto f = shaderModulePool_.get(frag);
 
 	// Lets use default
-	auto def_lyt = dlp_.get(default_lyt);
+	auto def_lyt = descriptorSetLayoutPool_.get(default_descriptorLayout);
 
 	std::array<VkDescriptorSetLayout, 1> lyts = {
 		*def_lyt
@@ -753,7 +933,7 @@ TextureHandle Context::createTextureImage(std::string image_path, VkFormat forma
 	tex.image = image;
 	//tex.imageView
 
-	TextureHandle imgHandle = texturesPool2D_.create(std::move(tex));
+	TextureHandle imgHandle = textures_.create(std::move(tex));
 
 	return imgHandle;
 
@@ -774,13 +954,13 @@ ShaderModuleHandle Context::createShaderModule(std::vector<char> code) {
 void destroy(Context* ctx, TextureHandle handle) {
 
 	// We need to free from device pool.
-	ctx->texturesPool2D_.destroy(handle);
+	ctx->textures_.destroy(handle);
 };
 
 void destroy(Context* ctx, BufferHandle handle) {
 
 	// We need to freee device allocation
-	ctx->buffersPool_.destroy(handle);
+	ctx->buffers_.destroy(handle);
 
 };
 
@@ -874,9 +1054,9 @@ private:
 #pragma region ===[ Uniforms / Descriptor Sets ]==
 
 	// These should be moved to Context
-	DeviceBufferDesc uniforms_[MAX_FRAMES_IN_FLIGHT];
-	DeviceBufferDesc instanceDataUniforms_[MAX_FRAMES_IN_FLIGHT];
-	DeviceBufferDesc instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferDescription uniforms_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferDescription instanceDataUniforms_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferDescription instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
 
 	// Like so!
 	//BufferHandle h_uniforms_[MAX_FRAMES_IN_FLIGHT];
@@ -931,7 +1111,7 @@ private:
 	}
 
 	void UploadDataToBuffer(
-		DeviceBufferDesc& bufDesc,
+		DeviceBufferDescription& bufDesc,
 		void* data,
 		size_t dataSize,
 		VkCommandBuffer& cmdBuf,
@@ -1233,7 +1413,9 @@ private:
 
 		VkBuffer stagingBuffer;
 		VkDeviceMemory stagingBufferMemory;
-		createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		createBuffer(
+			imageSize,
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
 			VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 			stagingBuffer, stagingBufferMemory);
@@ -1247,7 +1429,7 @@ private:
 
 
 		auto texHandle = context->createTextureImage(texture_path, format);
-		auto texture_image = context->texturesPool2D_.get(texHandle);
+		auto texture_image = context->textures_.get(texHandle);
 
 		//createImage(
 		//	texWidth,
@@ -1574,7 +1756,7 @@ private:
 			};
 
 			auto setHandle = frameDescriptorSets[i];
-			auto setObj = context->dds.get(setHandle);
+			auto setObj = context->descriptrorSetPool_.get(setHandle);
 			VkDescriptorSet vkSet = setObj->set;
 
 			VkWriteDescriptorSet writes[2]{};
@@ -1599,48 +1781,6 @@ private:
 		}
 	}
 
-	//void UploadDefaultDescriptorSets(VkDescriptorSet frameDescriptorSets[])
-	//{
-
-	//	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-
-	//		VkDescriptorBufferInfo instanceIndexBufferInfo{
-	//			.buffer = instanceIndexUniforms_[i].buffer,
-	//			.offset = 0,
-	//			.range = sizeof(IndexSlot) * MAX_INSTANCES
-	//		};
-	//		VkDescriptorBufferInfo instanceBufferInfo{
-	//			.buffer = instanceDataUniforms_[i].buffer,
-	//			.offset = 0,
-	//			.range = sizeof(InstanceData) * MAX_INSTANCES,
-	//		};
-
-	//		std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
-
-	//		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	//		descriptorWrites[0].dstSet = frameDescriptorSets[i];
-	//		descriptorWrites[0].dstBinding = 0;
-	//		descriptorWrites[0].dstArrayElement = 0;
-	//		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	//		descriptorWrites[0].descriptorCount = 1;
-	//		descriptorWrites[0].pBufferInfo = &instanceIndexBufferInfo;
-
-	//		descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	//		descriptorWrites[1].dstSet = frameDescriptorSets[i];
-	//		descriptorWrites[1].dstBinding = 1;
-	//		descriptorWrites[1].dstArrayElement = 0;
-	//		descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	//		descriptorWrites[1].descriptorCount = 1;
-	//		descriptorWrites[1].pBufferInfo = &instanceBufferInfo;
-
-	//		vkUpdateDescriptorSets(device,
-	//			static_cast<uint32_t>(descriptorWrites.size()),
-	//			descriptorWrites.data(),
-	//			0,
-	//			nullptr
-	//		);
-	//	}
-	//}
 
 	void createBuffer(
 		VkDeviceSize size,
@@ -1705,13 +1845,13 @@ private:
 		std::vector<VkDescriptorImageInfo> imageInfos;
 		std::vector<VkDescriptorImageInfo> samplerInfos;
 
-		int count = (context->texturesPool2D_.numObjects());
+		int count = (context->textures_.numObjects());
 		imageInfos.reserve(count);
 		samplerInfos.reserve(count);
 
 		for (int i = 0; i < count; i++)
 		{
-			auto tex = context->texturesPool2D_.objects_[i].obj_;
+			auto tex = context->textures_.objects_[i].obj_;
 
 			VkDescriptorImageInfo ii{};
 			ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
@@ -1732,7 +1872,7 @@ private:
 		for (auto setHandle : frameDescriptorSets)
 		{
 
-			auto set = context->dds.get(setHandle);
+			auto set = context->descriptrorSetPool_.get(setHandle);
 
 			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			writes[0].dstSet = set->set;
@@ -1852,13 +1992,7 @@ private:
 			VK_INDEX_TYPE_UINT32)
 			;
 
-		// VkCmdBindPipeline does force order. no draw command will jump over pipeline bind changes.
-		// Maybe I should macro this... But i like 'pure' syntax
-		for (int i = 0; i < context->materialPipelinePool_.numObjects(); i++) {
-			if (i > 1) {
-				assert(false);
-			}
-		}
+		// I need to batch per materialpipe
 
 		for (auto mat_pipe_entry : context->materialPipelinePool_.objects_) {
 
@@ -1868,7 +2002,7 @@ private:
 				mat_pipe_entry.obj_.pipeline
 			);
 
-			auto sets = context->dds.get(frameDescriptorSets[currentFrame]);
+			auto sets = context->descriptrorSetPool_.get(frameDescriptorSets[currentFrame]);
 			auto pipe_lyt = mat_pipe_entry.obj_.plyt;
 
 			vkCmdBindDescriptorSets(
@@ -1886,24 +2020,21 @@ private:
 			pc.proj = camera_.getProjMatrix();
 			pc.proj[1][1] *= -1;
 
-			MaterialPushConstants pcm{};
-
 			for (int i = 0; i < scene_->hierarchy.size(); i++) {
 
-				auto mesh_idx = scene_->meshForNode[i];
-				auto mesh_ = meshes[mesh_idx];
+				auto mesh_ = meshes[scene_->meshForNode[i]];
 				auto material_instance_index = scene_->materialForNode[i];
 				pc.material_instance_index = material_instance_index;
-				pcm.texDiffuse = i;
 
-				// pack both into one POD
+				MaterialPushConstants pcm = context->materialInstancesPool_.objects_[material_instance_index].obj_.values;
+
 				struct PC_All {
 					PushConstants pc;               // 144
 					MaterialPushConstants mpc;      // 48
 				};
 				PC_All all{ pc, pcm };
 
-				// I could split this
+				// I could split this.
 				vkCmdPushConstants(commandBuffer, pipe_lyt,
 					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 					0, sizeof(PC_All), &all);
@@ -2135,12 +2266,12 @@ void VulkanApp::LoadScene() {
 
 	//std::cout << std::filesystem::current_path() << std::endl;
 
-	Mesh mesh_;
+	LoadedMesh mesh_;
 	auto a_ = GltfMesh("models/avocado_gltf/Avocado.gltf");
 	mesh_.indices = a_.indices;
 	mesh_.vertices = a_.vertices;
 
-	Mesh mesh_2;
+	LoadedMesh mesh_2;
 	auto b_ = GltfMesh("models/BoomBox/BoomBox.gltf");
 	mesh_2.indices = b_.indices;
 	mesh_2.vertices = b_.vertices;
@@ -2184,35 +2315,35 @@ void VulkanApp::LoadScene() {
 
 
 	createTextureImageView(
-		&context->texturesPool2D_.get(image1)->image,
-		&context->texturesPool2D_.get(image1)->imageView,
+		&context->textures_.get(image1)->image,
+		&context->textures_.get(image1)->imageView,
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 
 	createTextureImageView(
-		&context->texturesPool2D_.get(image2)->image,
-		&context->texturesPool2D_.get(image2)->imageView,
+		&context->textures_.get(image2)->image,
+		&context->textures_.get(image2)->imageView,
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 	createTextureImageView(
-		&context->texturesPool2D_.get(image3)->image,
-		&context->texturesPool2D_.get(image3)->imageView,
+		&context->textures_.get(image3)->image,
+		&context->textures_.get(image3)->imageView,
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
 
 	createTextureSampler(
-		&context->texturesPool2D_.get(image1)->sampler
+		&context->textures_.get(image1)->sampler
 	);
 
 	createTextureSampler(
-		&context->texturesPool2D_.get(image2)->sampler
+		&context->textures_.get(image2)->sampler
 	);
 
 	createTextureSampler(
-		&context->texturesPool2D_.get(image3)->sampler
+		&context->textures_.get(image3)->sampler
 	);
 
 
@@ -2221,6 +2352,9 @@ void VulkanApp::LoadScene() {
 	context->createMaterialInstance(material_pipe_0);
 	auto mat2_h = context->createMaterialInstance(material_pipe_0);
 	context->createMaterialInstance(material_pipe_0);
+
+
+	context->materialInstancesPool_.get(mat2_h)->values.texDiffuse = 1;
 
 	//context->createMaterialInstance(material_pipe_0);
 	//context->createMaterialInstance(material_pipe_0);
@@ -2250,8 +2384,10 @@ void VulkanApp::UploadMeshData() {
 	uint32_t runningFirstIndex = 0; // in indices
 
 	for (int i = 0; i < meshes.size(); ++i) {
-		auto& m = meshes[i];
+		LoadedMeshs& m = meshes[i];
 
+
+		// this is not correct
 		m.vert_offset = runningVertexOffset;         // elements, not bytes
 		m.first_index = runningFirstIndex;           // elements, not bytes
 
@@ -2413,7 +2549,7 @@ bool VulkanApp::Run() {
 	// createDescriptorSets. Create menas allocating. no data is present there still
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		frameDescriptorSets[i] = context->createDescriptorSet(
-			context->default_lyt
+			context->default_descriptorLayout
 		);
 	}
 

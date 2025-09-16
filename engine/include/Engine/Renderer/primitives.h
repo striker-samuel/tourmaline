@@ -41,19 +41,16 @@ const std::vector<uint32_t> triangle_indices_ccw = {
 };
 
 
-// Host side Mesh. Just for loading .. Deleted after
-struct Mesh {
+// Host side LoadedMesh. Just for loading .. Deleted after
+struct LoadedMesh {
 	// Vertex is 3fpos 3fnormal 2fuv. no color.
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
-
-	uint32_t first_index = 0;
-	uint32_t vert_offset = 0;
-
+	// materials!
 };
 
-Mesh Quad = Mesh(quad_vertices, quad_indices_ccw, 0, 0);
-Mesh Triangle = Mesh(triangle_vertices, triangle_indices_ccw, 0, 0);
+LoadedMesh Quad = LoadedMesh(quad_vertices, quad_indices_ccw, 0, 0);
+LoadedMesh Triangle = LoadedMesh(triangle_vertices, triangle_indices_ccw, 0, 0);
 
 
 // We hit the masUBOsize limit fast. Be careful. We may need to encode better.

@@ -3,7 +3,7 @@
 //
 //// Lets not do LODs yet.
 //struct MeshGpu {
-//	// Mesh Fields.
+//	// LoadedMesh Fields.
 //	uint32_t index_count;
 //	VkBuffer buffer;
 //};
@@ -146,7 +146,7 @@
 //		LVK_ASSERT(buf.vkDeviceAddress_);
 //	}
 //
-//	return buffersPool_.create(std::move(buf));
+//	return buffers_.create(std::move(buf));
 //}
 //
 //
@@ -171,12 +171,12 @@
 //	//bool createMaterial();
 //	//bool createShaderModule();
 //
-//	Pool<lvk::Buffer, lvk::VulkanBuffer> buffersPool_;
+//	Pool<lvk::Buffer, lvk::VulkanBuffer> buffers_;
 //
 //};
 //
 //Context::() {
-//	buffersPool_.objects_.reserve(256);
+//	buffers_.objects_.reserve(256);
 //}
 //
 //
