@@ -793,41 +793,29 @@ DescriptorLayoutHandle Context::createDescriptorLayout() {
 }
 
 DescriptorPoolHandle Context::createDescriptorPool() {
+	const uint32_t bindless_sets = MAX_FRAMES_IN_FLIGHT;
+	const uint32_t max_textures = MAX_TEXTURES;
 
-	// How many bindless sets will reference textures from this pool?
-	const uint32_t bindless_sets = MAX_FRAMES_IN_FLIGHT;     // you bind one per-frame set
-	const uint32_t max_textures = MAX_TEXTURES;             // your declared maximum
-	uint32_t max_samplers = (textures_.objects_.size() > 1u) ? static_cast<uint32_t>(textures_.objects_.size()) : 1u;
-
-	// Total descriptors we may write across all those sets
 	const uint32_t total_sampled_images = bindless_sets * max_textures;
-	const uint32_t total_samplers = bindless_sets * max_samplers;
+	const uint32_t total_samplers = bindless_sets * max_textures;
 
-	// If you still use COMBINED_IMAGE_SAMPLER elsewhere, keep it; otherwise you can drop it.
 	std::array<VkDescriptorPoolSize, 4> poolSizes = { {
-		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         2u * MAX_FRAMES_IN_FLIGHT }, // instance index UBO, etc.
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         2u * MAX_FRAMES_IN_FLIGHT }, // instance SSBO, etc.
-		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          total_sampled_images },      // bindless images
-		{ VK_DESCRIPTOR_TYPE_SAMPLER,                total_samplers },            // bindless samplers
+	  { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,   2u * MAX_FRAMES_IN_FLIGHT },
+	  { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   2u * MAX_FRAMES_IN_FLIGHT },
+	  { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    total_sampled_images      },
+	  { VK_DESCRIPTOR_TYPE_SAMPLER,          total_samplers            },
 	} };
 
-	VkDescriptorPoolCreateInfo poolInfo{};
+	VkDescriptorPoolCreateInfo poolInfo{ };
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.maxSets = 1000;
-	poolInfo.flags =
-		VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;    // required because layout uses UPDATE_AFTER_BIND
-	//VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;   // optional, if you want to free sets
+	poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT; // required
 	poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
 	poolInfo.pPoolSizes = poolSizes.data();
 
 	VkDescriptorPool dpool;
-	if (vkCreateDescriptorPool(*device_, &poolInfo, nullptr, &dpool) !=
-		VK_SUCCESS) {
-		throw std::runtime_error("failed to create descriptor pool!");
-	}
-	auto r = descriptorSetPoolPool_.create(std::move(dpool));
-	return r;
-
+	VK_CHECK(vkCreateDescriptorPool(*device_, &poolInfo, nullptr, &dpool));
+	return descriptorSetPoolPool_.create(std::move(dpool));
 }
 
 MaterialPipelineHandle Context::createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat) {
@@ -1738,14 +1726,28 @@ private:
 	}
 
 	void createCommandBuffers() {
-		for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-			VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-			ai.commandPool = framesCommandPool[i];
-			ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-			ai.commandBufferCount = 1;
-			VK_CHECK(vkAllocateCommandBuffers(device, &ai, &commandBuffers[i]));
+
+		VkCommandBufferAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		allocInfo.commandPool = framesCommandPool[currentFrame];
+		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		allocInfo.commandBufferCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+
+		if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers) !=
+			VK_SUCCESS) {
+			throw std::runtime_error("failed to allocate command buffers!");
 		}
 	}
+
+	//void createCommandBuffers() {
+	//	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+	//		VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+	//		ai.commandPool = framesCommandPool[i];
+	//		ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	//		ai.commandBufferCount = 1;
+	//		VK_CHECK(vkAllocateCommandBuffers(device, &ai, &commandBuffers[i]));
+	//	}
+	//}
 
 	void UpdateBindlessTextures() {
 
@@ -2297,11 +2299,11 @@ void VulkanApp::UploadMeshData() {
 	uint32_t static_vertex_buffer_size = 0;
 	uint32_t static_index_buffer_size = 0;
 
-	for (int node = 0; node < scene_->hierarchy.size(); node++) {
-
-		static_vertex_buffer_size += sizeof(Vertex) * loaded_meshes_[node].vertices.size();
-		static_vertex_buffer_size += sizeof(uint32_t) * loaded_meshes_[node].indices.size();
-
+	for (int node = 0; node < static_cast<int>(scene_->hierarchy.size()); ++node) {
+		int mIdx = scene_->meshForNode[node];
+		const auto& m = loaded_meshes_[mIdx];
+		static_vertex_buffer_size += static_cast<uint32_t>(sizeof(Vertex) * m.vertices.size());
+		static_index_buffer_size += static_cast<uint32_t>(sizeof(uint32_t) * m.indices.size());
 	}
 
 	// Compute totals and write per-mesh offsets (skip slot 0 = empty)
