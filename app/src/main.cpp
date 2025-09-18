@@ -376,7 +376,7 @@ void createGraphicsPipeline(
 	pipeline_create.pColorAttachmentFormats = &swapchainImageFormat;
 
 	pipeline_create.depthAttachmentFormat = depth_format;
-	pipeline_create.stencilAttachmentFormat = depth_format;
+	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo{};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
