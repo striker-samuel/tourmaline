@@ -400,7 +400,38 @@ void createGraphicsPipeline(
 
 }
 
+VkCommandBuffer bstCommand(VkDevice device, VkCommandPool commandPool) {
+	VkCommandBufferAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocInfo.commandPool = commandPool;
+	allocInfo.commandBufferCount = 1;
 
+	VkCommandBuffer commandBuffer;
+	vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+	VkCommandBufferBeginInfo beginInfo{};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+	vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+	return commandBuffer;
+}
+
+void endstcommand(VkDevice device, VkCommandBuffer commandBuffer, VkQueue queue, VkCommandPool commandPool) {
+	vkEndCommandBuffer(commandBuffer);
+
+	VkSubmitInfo submitInfo{};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &commandBuffer;
+
+	vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+	vkQueueWaitIdle(queue);
+
+	vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+}
 
 // This style of handling things is lifted up from LightweightVk.
 class Context {
@@ -422,6 +453,9 @@ public:
 
 	DescriptorPoolHandle default_descriptor_pool;
 	DescriptorLayoutHandle default_descriptorLayout;
+
+	VkCommandPool default_command_pool;
+	VkQueue default_queue;
 
 	// We neeed VkDescriptorPool pools here
 	// We move from VkDp to another because its cheaper to reset them than to evict particular sets.
@@ -457,6 +491,20 @@ public:
 		// Lets have one dpool
 		default_descriptor_pool = createDescriptorPool();
 		default_descriptorLayout = createDescriptorLayout();
+
+		VkCommandPoolCreateInfo poolInfo{
+		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+		.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
+		};
+
+		for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
+			if (vkCreateCommandPool(*device_, &poolInfo, nullptr, &default_command_pool) !=
+				VK_SUCCESS) {
+				throw std::runtime_error("failed to create graphics command pool!");
+			}
+		}
+
 
 
 	};
@@ -539,7 +587,7 @@ public:
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
 	DeviceBufferDescriptionHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
-	void UploadDataToBuffer(VkCommandBuffer cmdBuf, DeviceBufferDescriptionHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages);
+	void UploadDataToBuffer(DeviceBufferDescriptionHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages);
 
 };
 
@@ -638,7 +686,6 @@ DeviceBufferDescriptionHandle Context::createBuffer(uint32_t size, VmaMemoryUsag
 }
 
 void Context::UploadDataToBuffer(
-	VkCommandBuffer cmdBuf,
 	DeviceBufferDescriptionHandle buffer,
 	void* data,
 	size_t dataSize,
@@ -648,6 +695,8 @@ void Context::UploadDataToBuffer(
 	const VkAccessFlags dstAccess =
 		(bufferDesc->role == BufferRole::UBO) ? VK_ACCESS_UNIFORM_READ_BIT
 		: VK_ACCESS_SHADER_READ_BIT;
+
+	VkCommandBuffer tmpBuf = bstCommand(*device_, default_command_pool);
 
 	if (bufferDesc->is_mapapble()) {
 		// Direct copy into mapped allocation
@@ -665,7 +714,7 @@ void Context::UploadDataToBuffer(
 		b.size = VK_WHOLE_SIZE;
 
 		vkCmdPipelineBarrier(
-			cmdBuf,
+			tmpBuf,
 			VK_PIPELINE_STAGE_HOST_BIT,
 			dstStages,
 			0,
@@ -693,9 +742,10 @@ void Context::UploadDataToBuffer(
 	VkResult result = vmaCopyMemoryToAllocation(*allocator_, data, stagingAlloc, 0, dataSize);
 	assert(result == VK_SUCCESS);
 
+
 	// Copy staging -> dst
 	VkBufferCopy copyRegion{ .size = dataSize };
-	vkCmdCopyBuffer(cmdBuf, stagingBuf, bufferDesc->buffer, 1, &copyRegion);
+	vkCmdCopyBuffer(tmpBuf, stagingBuf, bufferDesc->buffer, 1, &copyRegion);
 
 	// Make the copy visible to shaders
 	VkBufferMemoryBarrier b2{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
@@ -708,7 +758,7 @@ void Context::UploadDataToBuffer(
 	b2.size = VK_WHOLE_SIZE;
 
 	vkCmdPipelineBarrier(
-		cmdBuf,
+		tmpBuf,
 		VK_PIPELINE_STAGE_TRANSFER_BIT,
 		dstStages,
 		0,
@@ -716,6 +766,8 @@ void Context::UploadDataToBuffer(
 		1, &b2,
 		0, nullptr);
 
+
+	endstcommand(device_, tmpBuf, default_queue, default_command_pool);
 	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
 }
 
@@ -1304,7 +1356,6 @@ private:
 
 	}
 
-
 	void createDepthResources() {
 		VkFormat depthFormat = findDepthFormat(physicalDevice);
 
@@ -1316,10 +1367,12 @@ private:
 			VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 			main_depthImage
-			//main_d_alloc
 		);
 
 		createImageView(main_depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, main_depthImageView);
+
+		transitionImageLayout(main_depthImage, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
 	}
 
 	// --------------------------
@@ -1482,9 +1535,7 @@ private:
 		imgCreateInfo.arrayLayers = 1;
 		imgCreateInfo.format = format;
 		imgCreateInfo.tiling = tiling;
-		//imgCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
 		imgCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		//imgCreateInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 		imgCreateInfo.usage = usage;
 		imgCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
@@ -1805,21 +1856,6 @@ private:
 			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
 		}
-
-		//const uint32_t imgCount = std::min<uint32_t>(imageInfos.size(), MAX_TEXTURES);
-		//const uint32_t samCount = std::min<uint32_t>(samplerInfos.size(), MAX_TEXTURES);
-
-		//if (imgCount > 0) {
-		//	writes[0].descriptorCount = imgCount;
-		//	// ...
-		//	vkUpdateDescriptorSets(device, 1, &writes[0], 0, nullptr);
-		//}
-		//if (samCount > 0) {
-		//	writes[1].descriptorCount = samCount;
-		//	// ...
-		//	vkUpdateDescriptorSets(device, 1, &writes[1], 0, nullptr);
-		//}
-
 
 	}
 
@@ -2797,36 +2833,12 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 }
 
 VkCommandBuffer VulkanApp::beginSingleTimeCommands() {
-	VkCommandBufferAllocateInfo allocInfo{};
-	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	allocInfo.commandPool = framesCommandPool[currentFrame];
-	allocInfo.commandBufferCount = 1;
-
-	VkCommandBuffer commandBuffer;
-	vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
-
-	VkCommandBufferBeginInfo beginInfo{};
-	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-	vkBeginCommandBuffer(commandBuffer, &beginInfo);
-
-	return commandBuffer;
+	return bstCommand(device, framesCommandPool[currentFrame]);
 }
 
 void VulkanApp::endSingleTimeCommands(VkCommandBuffer commandBuffer) {
-	vkEndCommandBuffer(commandBuffer);
+	endstcommand(device, commandBuffer, graphicsQueue_, framesCommandPool[currentFrame]);
 
-	VkSubmitInfo submitInfo{};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &commandBuffer;
-
-	vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE);
-	vkQueueWaitIdle(graphicsQueue_);
-
-	vkFreeCommandBuffers(device, framesCommandPool[currentFrame], 1, &commandBuffer);
 }
 
 void VulkanApp::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
