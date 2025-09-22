@@ -475,7 +475,8 @@ public:
 
 	Pool<ShaderModule, VkShaderModule> shaderModulePool_;
 
-	Context(VmaAllocator* allocator, VkDevice* device) {
+	Context(VmaAllocator* allocator, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface){
+
 		allocator_ = allocator;
 		device_ = device;
 
@@ -492,11 +493,15 @@ public:
 		default_descriptor_pool = createDescriptorPool();
 		default_descriptorLayout = createDescriptorLayout();
 
+		QueueFamilyIndices indices = findQueueFamilies(*physicalDevice, surface);
+
 		VkCommandPoolCreateInfo poolInfo{
 		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-		.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
+		.queueFamilyIndex = indices.graphicsFamily.value()
 		};
+
+		vkGetDeviceQueue(*device_, indices.graphicsFamily.value(), 0, &default_queue);
 
 		for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
 			if (vkCreateCommandPool(*device_, &poolInfo, nullptr, &default_command_pool) !=
@@ -721,6 +726,8 @@ void Context::UploadDataToBuffer(
 			0, nullptr,
 			1, &b,
 			0, nullptr);
+
+		endstcommand(*device_, tmpBuf, default_queue, default_command_pool);
 		return;
 	}
 
@@ -741,7 +748,6 @@ void Context::UploadDataToBuffer(
 	// Fill the staging buffer with the *provided* data
 	VkResult result = vmaCopyMemoryToAllocation(*allocator_, data, stagingAlloc, 0, dataSize);
 	assert(result == VK_SUCCESS);
-
 
 	// Copy staging -> dst
 	VkBufferCopy copyRegion{ .size = dataSize };
@@ -767,7 +773,7 @@ void Context::UploadDataToBuffer(
 		0, nullptr);
 
 
-	endstcommand(device_, tmpBuf, default_queue, default_command_pool);
+	endstcommand(*device_, tmpBuf, default_queue, default_command_pool);
 	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
 }
 
@@ -1175,7 +1181,6 @@ private:
 			"Instance buffer too large for 64KB UBO limit");
 
 		context->UploadDataToBuffer(
-			cmdBuf,
 			instanceIndexUniforms_[currentImage],
 			indexSlotData.data(),
 			sizeof(IndexSlot) * MAX_INSTANCES,
@@ -1183,7 +1188,6 @@ private:
 		);
 
 		context->UploadDataToBuffer(
-			cmdBuf,
 			instanceDataUniforms_[currentImage],
 			data,
 			sizeof(InstanceData) * MAX_INSTANCES,
@@ -1549,41 +1553,6 @@ private:
 		//return alloc;
 	}
 
-	//// Obly used now for depthImage.
-	//void createImage(
-	//	uint32_t width,
-	//	uint32_t height,
-	//	VkFormat format,
-	//	VkImageTiling tiling,
-	//	VkImageUsageFlags usage,
-	//	VkMemoryPropertyFlags properties,
-	//	VkImage& image,
-	//	VmaAllocation& allocation
-	//) {
-
-	//	VkImageCreateInfo imgCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-	//	imgCreateInfo.imageType = VK_IMAGE_TYPE_2D;
-	//	imgCreateInfo.extent.width = width;
-	//	imgCreateInfo.extent.height = height;
-	//	imgCreateInfo.extent.depth = 1;
-	//	imgCreateInfo.mipLevels = 1;
-	//	imgCreateInfo.arrayLayers = 1;
-	//	imgCreateInfo.format = format;
-	//	imgCreateInfo.tiling = tiling;
-	//	//imgCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-	//	imgCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	//	//imgCreateInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-	//	imgCreateInfo.usage = usage;
-	//	imgCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-
-	//	VmaAllocationCreateInfo allocCreateInfo = {};
-	//	allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-	//	allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-	//	allocCreateInfo.priority = 1.0f;
-
-	//	VmaAllocation alloc;
-	//	VK_CHECK(vmaCreateImage(app_allocator_, &imgCreateInfo, &allocCreateInfo, &image, &allocation, nullptr));
-	//}
 
 	void transitionImageLayout(VkImage image, VkFormat format,
 		VkImageLayout oldLayout, VkImageLayout newLayout) {
@@ -2737,7 +2706,7 @@ void VulkanApp::InitVulkanApp() {
 
 	res = vmaCreateAllocator(&allocatorCreateInfo, &app_allocator_);
 	assert(res == VK_SUCCESS);
-	context = new Context(&app_allocator_, &device); // remember to delete it on shutdown
+	context = new Context(&app_allocator_, &device, &physicalDevice, surface); // remember to delete it on shutdown
 }
 void VulkanApp::mouseCallback(GLFWwindow* window, double xpos, double ypos) {
 	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
