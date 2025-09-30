@@ -3,7 +3,7 @@
 //
 //// Lets not do LODs yet.
 //struct MeshGpu {
-//	// LoadedMesh Fields.
+//	// MeshData Fields.
 //	uint32_t index_count;
 //	VkBuffer buffer;
 //};

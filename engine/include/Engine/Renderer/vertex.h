@@ -9,6 +9,10 @@ struct Vertex {
 	glm::vec3 color;
 	glm::vec2 texCoord;
 
+	// we store only 2 normals, and rebuild the orthogonal thirs missing one in shader if needed.
+	// Not implemented yet
+	//glm::vec2 normals;
+
 	static VkVertexInputBindingDescription getBindingDescription(); 
 	static std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions();
 

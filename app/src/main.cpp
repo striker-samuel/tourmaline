@@ -61,376 +61,23 @@ static constexpr uint32_t MAX_MATERIALS = 1000;
 
 enum class BufferRole { UBO, SSBO };
 // This is ok, but other messes should go to a pool for staging, then deleted after GPU upload;
-std::vector<LoadedMesh> loaded_meshes_ = { Quad, Triangle };
+//std::vector<MeshData> default_mesh_data = { Quad, Triangle };
 
-// ------------------------------------
+// Crap I will delete later
+Scene createTestScene() {
 
-//// Scene Hieracrhy manages transform
-//struct HostInstance {
-//	// We can just use Handles, reserve untyped uint32_t indexing for GPU structs
-//	/*uint32_t*/ MeshHandle mesh;
-//	MaterialInstanceHandle material;
-//	uint32_t scene_node;
-//	uint32_t LOD;
-//};
+	Scene scene;
+	//rootNode
+	addNode(scene, -1, 0);
 
-// ------------------------------------------------------------------------------------------------
+	// two children
+	//addNode(*scene_, 0, 1);
+	//addNode(*scene_, 0, 1);
 
-// Dont like this. currently limited by the 16 byte stride.
-// Maybe i could do away with it but that needs ext checking and enalbing and mods in shader code
-struct alignas(16) IndexSlot {
-	uint32_t idx;      // put the 16-bit value here (zero-extend)
-	uint32_t pad[3];   // 16 bytes total per element
-};
-static_assert(sizeof(IndexSlot) % 16 == 0);
+	scene.meshForNode[0] = 0;
+	scene.materialForNode[0] = 0;
 
-struct PushConstants {
-	glm::mat4 view;
-	glm::mat4 proj;
-	// The MaterialPipeline should be binded to desired material. This only gets us bindless addresing of the instnanceSlots.
-	// A single MaterialModel. shader code, layout , rastersettings, can have many instancs with individual image attachments and constants.
-	int material_instance_index;
-	uint32_t     _pad0[3];
-};
-
-// ------------------------------------------------------------------------------------------------
-// 
-// This is the neeeded Host side state to manage meshes.
-struct Mesh {
-
-	VmaAllocation allocation;
-	VmaAllocationInfo allocInfo;
-	// Im gonna have a standard format so no propreties for selecting tri, fan, or else
-	// Static meshes are an open question yet. But my guesss is better to do that when i have the VFS, and the DAM, scene format and everything.
-	// this app still does not distinguish between runtime, and else;
-
-	uint32_t first_index = 0;
-	uint32_t vert_offset = 0;
-
-	// LOD should choose first index and voffset but lets keep this like this.... its not that clear yer how to manage that properly
-	uint32_t LOD;
-
-	// I prefer to manage material + attachentes via MaterialInstanceInstead.
-	// but maybe i could have a ref for ez acces here?
-	//MaterialInstanceHandle material_instance;
-
-	// Maybe name
-	//uint32_t name;
-
-};
-
-// Lets go with uniform_layouts ext. GENERAL and UNDEFINED
-struct Texture {
-
-	// to be able to free. or queryu memory info. Could be moved really.
-	VmaAllocation allocation;
-	VmaAllocationInfo allocInfo;
-
-	VkImage image;
-	VkImageView imageView;
-	// This is far from good.
-	VkSampler sampler;
-	// Other properties and attributes
-
-	// I could use debug name
-	// Srgb/lienar others
-	VkFormat format;
-
-};
-
-// Initialized with crude defaults;
-struct RasterSettings {
-	uint32_t depthClampEnable = VK_FALSE;
-	uint32_t rasterizerDiscardEnable = VK_FALSE;
-	uint32_t polygonMode = VK_POLYGON_MODE_FILL;
-	uint32_t lineWidth = 1.0f;
-	uint32_t cullMode = VK_CULL_MODE_BACK_BIT;
-	uint32_t frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-	uint32_t depthBiasEnable = VK_FALSE;
-} default_raster_settings;
-
-// Materials aabstractions area really PipelineObjets. Raster conf, shader objs, descriptorlayout. 
-// MaterialAttachments must match desc layout, adn MaterialConstants pc layout
-// So we bake the POS. VkPipelineCache not implemented now
-// Another name fot his could be MatModel?
-struct MaterialPipeline {
-
-	// We need to hash these tree. but wont do it now
-	RasterSettings raster_settings;
-	ShaderModuleHandle vert;
-	ShaderModuleHandle frag;
-
-	// Lets not complitcate this for now. same footprint for everyone. 
-	//VkDescriptorSetLayout* layout;
-	// 
-	// Lets just hold this here for now
-	VkPipelineLayout plyt;
-
-	// Bindless, so material descriptors sets are at this level instead of binding per instnace, so;
-	// Invalid initialzoiation!.
-	DescriptorSetHandle ds;
-	VkPipeline pipeline;
-};
-
-// This gets uploaded to Device. stride contraints. no Handles!
-// This will go with pushcontants. May require specialization per shader model
-struct MaterialPushConstants {
-
-	// Color *=
-	glm::vec4 ambient = glm::vec4(0.0f);
-	glm::vec4 diffuse = glm::vec4(0.0f);
-
-
-	// Index to bindless texture array. Doing this like so obviously makes it so we only have one def for material texture slots
-	uint32_t texAmbient = 0;
-	uint32_t texDiffuse = 0;
-	uint32_t texAlpha = 0;
-	uint32_t padding[1];
-
-} default_mat_pc;
-
-static_assert(sizeof(MaterialPushConstants) % 16 == 0);
-
-// MatModels or MatPipelines can have several instnaces with different vlaues for constans and textures.
-// Raster state, vert, frag, blending and more stay ther same.
-struct MaterialInstance {
-	MaterialPipelineHandle pipeline;
-	MaterialPushConstants values = {};
-};
-
-struct DeviceBufferDescription {
-
-	VkBuffer buffer;
-	VmaAllocation alloc;
-	VmaAllocationInfo allocInfo;
-	BufferRole role;
-	// size already in allocInfo
-	//VkDeviceSize size;
-
-	// Did it end in mappable memory? This is important to know for proper upload. Discard the bool in the future use 
-	VkMemoryPropertyFlags memory_flags;
-	// Helpers to interrogate buffer
-	bool is_mapapble() const {
-		return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-	}
-
-};
-
-struct DescriptorSet {
-	DescriptorLayoutHandle layout;
-	VkDescriptorSet set;
-};
-
-void createGraphicsPipeline(
-	VkDevice* device,
-	VkShaderModule vert,
-	VkShaderModule frag,
-	VkPipelineLayout* pipelineLayout,
-	VkDescriptorSetLayout* descriptorSetLayouts,
-	VkFormat depth_format,
-	VkFormat swapchainImageFormat,
-	VkPipeline& graphicsPipeline
-) {
-
-	// SHADER
-
-	VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-	vertShaderStageInfo.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-	vertShaderStageInfo.module = vert;
-	vertShaderStageInfo.pName = "mainVS";
-
-	VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
-	fragShaderStageInfo.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	fragShaderStageInfo.module = frag;
-	fragShaderStageInfo.pName = "mainPS";
-
-	VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
-													  fragShaderStageInfo };
-
-	// VERTEX FORMAT
-
-	VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-	vertexInputInfo.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-	auto bindingDescription = Vertex::getBindingDescription();
-	auto attributeDescriptions = Vertex::getAttributeDescriptions();
-
-	vertexInputInfo.vertexBindingDescriptionCount = 1;
-	vertexInputInfo.vertexAttributeDescriptionCount =
-		static_cast<uint32_t>(attributeDescriptions.size());
-	vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-	vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
-
-	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-	inputAssembly.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-	inputAssembly.primitiveRestartEnable = VK_FALSE;
-
-	// 
-
-	VkPipelineViewportStateCreateInfo viewportState{};
-	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-	viewportState.viewportCount = 1;
-	viewportState.scissorCount = 1;
-
-	//
-
-	VkPipelineRasterizationStateCreateInfo rasterizer{};
-	rasterizer.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-	rasterizer.depthClampEnable = VK_FALSE;
-	rasterizer.rasterizerDiscardEnable = VK_FALSE;
-	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-	rasterizer.lineWidth = 1.0f;
-	rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-	rasterizer.depthBiasEnable = VK_FALSE;
-
-	//
-
-	VkPipelineMultisampleStateCreateInfo multisampling{};
-	multisampling.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-	multisampling.sampleShadingEnable = VK_FALSE;
-	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-	//
-
-	VkPipelineDepthStencilStateCreateInfo depthStencil{};
-	depthStencil.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-	depthStencil.depthTestEnable = VK_TRUE;
-	depthStencil.depthWriteEnable = VK_TRUE;
-	depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
-	depthStencil.depthBoundsTestEnable = VK_FALSE;
-	depthStencil.stencilTestEnable = VK_FALSE;
-
-	//
-
-	VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-	colorBlendAttachment.colorWriteMask =
-		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-		VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	colorBlendAttachment.blendEnable = VK_FALSE;
-
-	VkPipelineColorBlendStateCreateInfo colorBlending{};
-	colorBlending.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-	colorBlending.logicOpEnable = VK_FALSE;
-	colorBlending.logicOp = VK_LOGIC_OP_COPY;
-	colorBlending.attachmentCount = 1;
-	colorBlending.pAttachments = &colorBlendAttachment;
-	colorBlending.blendConstants[0] = 0.0f;
-	colorBlending.blendConstants[1] = 0.0f;
-	colorBlending.blendConstants[2] = 0.0f;
-	colorBlending.blendConstants[3] = 0.0f;
-
-	// These two are elemental. There are extensions for almost anything do. Maybe it is woth to go all in dynamic state.
-	std::vector<VkDynamicState> dynamicStates = {
-		VK_DYNAMIC_STATE_VIEWPORT,
-		VK_DYNAMIC_STATE_SCISSOR
-	};
-
-	VkPipelineDynamicStateCreateInfo dynamicState{};
-	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamicState.dynamicStateCount =
-		static_cast<uint32_t>(dynamicStates.size());
-	dynamicState.pDynamicStates = dynamicStates.data();
-
-#pragma region ---[Push Constants]---
-
-	constexpr uint32_t kPC_Total = 192;
-
-	VkPushConstantRange range{};
-	range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-	range.offset = 0;
-	range.size = kPC_Total;
-
-	VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-	layoutInfo.setLayoutCount = 1;
-	layoutInfo.pSetLayouts = &descriptorSetLayouts[0];
-	layoutInfo.pushConstantRangeCount = 1;
-	layoutInfo.pPushConstantRanges = &range;
-
-
-	if (vkCreatePipelineLayout(*device, &layoutInfo, nullptr,
-		pipelineLayout) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create pipeline layout!");
-	}
-
-#pragma endregion
-
-	// Provide information for dynamic rendering
-	VkPipelineRenderingCreateInfo pipeline_create{
-		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
-	pipeline_create.pNext = VK_NULL_HANDLE;
-
-	// We are using the single color buffer out.
-	pipeline_create.colorAttachmentCount = 1;
-	pipeline_create.pColorAttachmentFormats = &swapchainImageFormat;
-
-	pipeline_create.depthAttachmentFormat = depth_format;
-	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
-
-	VkGraphicsPipelineCreateInfo pipelineInfo{};
-	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-	pipelineInfo.stageCount = 2;
-	pipelineInfo.pStages = shaderStages;
-	pipelineInfo.pVertexInputState = &vertexInputInfo;
-	pipelineInfo.pInputAssemblyState = &inputAssembly;
-	pipelineInfo.pViewportState = &viewportState;
-	pipelineInfo.pRasterizationState = &rasterizer;
-	pipelineInfo.pMultisampleState = &multisampling;
-	pipelineInfo.pColorBlendState = &colorBlending;
-	pipelineInfo.pDynamicState = &dynamicState;
-	pipelineInfo.pDepthStencilState = &depthStencil;
-	pipelineInfo.layout = *pipelineLayout;
-	pipelineInfo.pNext = &pipeline_create;
-
-	if (vkCreateGraphicsPipelines(*device, VK_NULL_HANDLE, 1, &pipelineInfo,
-		nullptr, &graphicsPipeline) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create graphics pipeline!");
-	}
-
-}
-
-VkCommandBuffer bstCommand(VkDevice device, VkCommandPool commandPool) {
-	VkCommandBufferAllocateInfo allocInfo{};
-	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	allocInfo.commandPool = commandPool;
-	allocInfo.commandBufferCount = 1;
-
-	VkCommandBuffer commandBuffer;
-	vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
-
-	VkCommandBufferBeginInfo beginInfo{};
-	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-	vkBeginCommandBuffer(commandBuffer, &beginInfo);
-
-	return commandBuffer;
-}
-
-void endstcommand(VkDevice device, VkCommandBuffer commandBuffer, VkQueue queue, VkCommandPool commandPool) {
-	vkEndCommandBuffer(commandBuffer);
-
-	VkSubmitInfo submitInfo{};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &commandBuffer;
-
-	vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
-	vkQueueWaitIdle(queue);
-
-	vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+	return scene;
 }
 
 // This style of handling things is lifted up from LightweightVk.
@@ -462,7 +109,7 @@ public:
 	// Same with CommandPools. I have a stupid simple design now with just 1 CommandPool.
 	Pool<DeviceBufferDescription, DeviceBufferDescription> buffers_;
 	Pool<Texture, Texture> textures_;
-	Pool<Mesh, Mesh> meshes_;
+	Pool<DynamicMesh, DynamicMesh> meshes_;
 
 
 	// These two have confusing names;
@@ -475,7 +122,7 @@ public:
 
 	Pool<ShaderModule, VkShaderModule> shaderModulePool_;
 
-	Context(VmaAllocator* allocator, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface){
+	Context(VmaAllocator* allocator, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface) {
 
 		allocator_ = allocator;
 		device_ = device;
@@ -514,7 +161,10 @@ public:
 
 	};
 	// Maybe destructor should clear the vmaPools. Device side allocations are not managed as clear by the OS.
-	~Context() {};
+	~Context(
+
+
+	) {};
 
 	void InitializeDeviceVmaPools() {
 
@@ -582,48 +232,30 @@ public:
 
 	}
 
+
+	// Resource creation
+
+	ShaderModuleHandle createShaderModule(std::vector<char> code);
 	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
 	MaterialInstanceHandle createMaterialInstance(MaterialPipelineHandle mat_pipeline);
 
-	TextureHandle createTextureImage(std::string image_path, VkFormat format);
-	ShaderModuleHandle createShaderModule(std::vector<char> code);
+
 	DescriptorLayoutHandle createDescriptorLayout();
 	DescriptorPoolHandle createDescriptorPool();
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
-	DeviceBufferDescriptionHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
-	void UploadDataToBuffer(DeviceBufferDescriptionHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages);
+	DeviceBufferDescriptionHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
+	TextureHandle createTextureImage(std::string image_path, VkFormat format);
+
+	// Ideally we would expose resource deletion to the app too right. 
+	// LightweightVk goes with Holder construct to delete when no refs. I quite dont like that or RAII really.
+	// Lets not do this 'yet'
+
+	
+	// Resource Manipulation
+	void UploadDataToBuffer(DeviceBufferDescriptionHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
 
 };
-
-//void Context::UpdateDescriptorSet(DescriptorSetHandle, void* data, uint32_t size) {
-//
-//	// this depends on lyt as we see.
-//	std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
-//
-//	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-//	descriptorWrites[0].dstSet = frameDescriptorSets[i];
-//	descriptorWrites[0].dstBinding = 0;
-//	descriptorWrites[0].dstArrayElement = 0;
-//	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-//	descriptorWrites[0].descriptorCount = 1;
-//	descriptorWrites[0].pBufferInfo = &instanceIndexBufferInfo;
-//
-//	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-//	descriptorWrites[1].dstSet = frameDescriptorSets[i];
-//	descriptorWrites[1].dstBinding = 1;
-//	descriptorWrites[1].dstArrayElement = 0;
-//	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-//	descriptorWrites[1].descriptorCount = 1;
-//	descriptorWrites[1].pBufferInfo = &instanceBufferInfo;
-//
-//	vkUpdateDescriptorSets(device,
-//		static_cast<uint32_t>(descriptorWrites.size()),
-//		descriptorWrites.data(),
-//		0,
-//		nullptr
-//	);
-//}
 
 DescriptorSetHandle Context::createDescriptorSet(
 	DescriptorLayoutHandle lyt
@@ -662,7 +294,11 @@ DescriptorSetHandle Context::createDescriptorSet(
 
 }
 
-DeviceBufferDescriptionHandle Context::createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags) {
+DeviceBufferDescriptionHandle Context::createBuffer(
+	uint32_t size,
+	VmaMemoryUsage vma_usage,
+	VkBufferUsageFlags usage_flags
+) {
 	DeviceBufferDescription desc{};
 
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -674,18 +310,21 @@ DeviceBufferDescriptionHandle Context::createBuffer(uint32_t size, VmaMemoryUsag
 	aci.usage = vma_usage;
 	// Optionally choose pools here based on usage_flags/usage
 
-	// i need to assert this!
-	vmaCreateBuffer(*allocator_, &ci, &aci, &desc.buffer, &desc.alloc, &desc.allocInfo);
+	VK_CHECK(vmaCreateBuffer(*allocator_,
+		&ci,
+		&aci,
+		&desc.buffer,
+		&desc.alloc,
+		&desc.allocInfo)
+	);
 
 	// Query memory properties to know if it’s host-visible:
 	VkMemoryPropertyFlags props{};
 	vmaGetAllocationMemoryProperties(*allocator_, desc.alloc, &props);
 	desc.memory_flags = props;
 
-	// Infer role from usage flags
-	if (usage_flags & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) desc.role = BufferRole::UBO;
-	else if (usage_flags & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) desc.role = BufferRole::SSBO;
-	else desc.role = BufferRole::SSBO; // default or add a "Other" role
+	// Lets go plain usageflags here
+	desc.usage = usage_flags;
 
 	return buffers_.create(std::move(desc));
 }
@@ -694,12 +333,15 @@ void Context::UploadDataToBuffer(
 	DeviceBufferDescriptionHandle buffer,
 	void* data,
 	size_t dataSize,
-	VkPipelineStageFlags dstStages)
-{
+	VkPipelineStageFlags dstStages,
+	VkAccessFlags dstAccess
+) {
 	DeviceBufferDescription* bufferDesc = buffers_.get(buffer);
-	const VkAccessFlags dstAccess =
-		(bufferDesc->role == BufferRole::UBO) ? VK_ACCESS_UNIFORM_READ_BIT
-		: VK_ACCESS_SHADER_READ_BIT;
+
+	// Since Im not subclassing/specializing buffers I retired this.
+	//const VkAccessFlags dstAccess =
+	//	(bufferDesc->role & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? VK_ACCESS_UNIFORM_READ_BIT
+	//	: VK_ACCESS_SHADER_READ_BIT;
 
 	VkCommandBuffer tmpBuf = bstCommand(*device_, default_command_pool);
 
@@ -933,11 +575,14 @@ TextureHandle Context::createTextureImage(std::string image_path, VkFormat forma
 		throw std::runtime_error("failed to load texture image!");
 	}
 
+	uint32_t mipLevels = static_cast<uint32_t>(
+		std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
+
 	VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	imgCI.imageType = VK_IMAGE_TYPE_2D;
 	imgCI.format = format;               // pick your format
 	imgCI.extent = { static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1 };                      // width, height, depth
-	imgCI.mipLevels = 1;                                      // >1 if you want mipmaps
+	imgCI.mipLevels = mipLevels;                                      // >1 if you want mipmaps
 	imgCI.arrayLayers = 1;                                      // >1 for arrays/cubemaps
 	imgCI.samples = VK_SAMPLE_COUNT_1_BIT;                  // MSAA? set >1
 	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;                // GPU-friendly
@@ -996,6 +641,8 @@ void destroy(Context* ctx, DeviceBufferDescriptionHandle handle) {
 
 };
 
+
+
 class VulkanApp {
 
 public:
@@ -1009,30 +656,16 @@ private:
 
 
 	Context* context;
-
 	DescriptorSetHandle frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
+	
+	Scene scene_ = createTestScene();
 
-	//  Defaulting to empty scene
-	Scene* scene_ = new Scene();
-
-	InstanceData instance_data_[MAX_INSTANCES];
-	uint32_t instance_count_ = 10;
-
-	// 1 allocator per device and instance. =)
-	// So just one
 	VmaAllocator app_allocator_;
 
 	VkBuffer static_vertex_buffer_;
 	VmaAllocation static_vertex_allocation_;
-
 	VkBuffer static_index_buffer_;
 	VmaAllocation static_index_allocation_;
-
-	// I doubt this is really needed.
-	VkFence f_level_ready_;
-
-
-	// _---------------
 
 	VkQueue graphicsQueue_;
 	VkQueue computeQueue_;
@@ -1087,7 +720,7 @@ private:
 
 	// These should be moved to Context
 	DeviceBufferDescriptionHandle uniforms_[MAX_FRAMES_IN_FLIGHT];
-	DeviceBufferDescriptionHandle instanceDataUniforms_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferDescriptionHandle instanceDataStorages_[MAX_FRAMES_IN_FLIGHT];
 	DeviceBufferDescriptionHandle instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
@@ -1123,9 +756,11 @@ private:
 
 
 	void InitVulkanApp();
+
 	void CreateDefaultMaterialPipeline();
-	void LoadScene();
-	void UploadMeshData();
+	
+	void UploadScene(Scene& scene);
+	void UploadStaticMeshData(std::vector<MeshData>& mesh_data);
 
 	void UpdateDeltaTime() {
 
@@ -1137,66 +772,7 @@ private:
 			.count();
 	}
 
-	void UpdateInstanceBuffer(uint32_t currentImage) {
-
-		// THIS MUST REMAIN HERE. SENSITIVE TO LAG OTHERWISE
-		static auto startTime = std::chrono::high_resolution_clock::now();
-		auto currentTime = std::chrono::high_resolution_clock::now();
-		delta_time_ = std::chrono::duration<float, std::chrono::seconds::period>(
-			currentTime - startTime)
-			.count();
-
-		// Moved this to the HEAP. This will be state of the app instead of being fabricated here anyways.
-		InstanceData* data = new InstanceData[MAX_INSTANCES];
-		int i = 0;
-		//for (const glm::mat4 tr : scene_->globalTransform) {
-		for (const glm::mat4 tr : scene_->localTransform) {
-			std::memcpy(
-				data[i].transform,
-				glm::value_ptr(tr),
-				sizeof(float) * 16);
-
-			data[i].color = { i * 0.20f,0.3f,-i * 0.7f,1.0f };
-
-			i++;
-		}
-
-		std::array<uint16_t, MAX_INSTANCES> indexData = {};
-		for (uint16_t index = 0; index < MAX_INSTANCES; index++) {
-			indexData[index] = index;
-		}
-
-		std::vector<IndexSlot> indexSlotData(MAX_INSTANCES);
-		for (size_t i = 0; i < MAX_INSTANCES; ++i) {
-			indexSlotData[i].idx = static_cast<uint32_t>(indexData[i]); // zero-extend
-		}
-
-		VkResult result{};
-
-		// This is bad, will stall. Frame update should use same command buffer for all update operations.
-		// FrameGraph! FrameGraph!
-		VkCommandBuffer cmdBuf = beginSingleTimeCommands();
-
-		static_assert(sizeof(IndexSlot) * MAX_INSTANCES < (1 << 16),
-			"Instance buffer too large for 64KB UBO limit");
-
-		context->UploadDataToBuffer(
-			instanceIndexUniforms_[currentImage],
-			indexSlotData.data(),
-			sizeof(IndexSlot) * MAX_INSTANCES,
-			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
-		);
-
-		context->UploadDataToBuffer(
-			instanceDataUniforms_[currentImage],
-			data,
-			sizeof(InstanceData) * MAX_INSTANCES,
-			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
-		);
-
-		endSingleTimeCommands(cmdBuf);
-		delete[] data;
-	}
+	void UpdateInstanceBuffer(uint32_t currentImage);
 
 	void mainLoop() {
 
@@ -1651,7 +1227,7 @@ private:
 				VMA_MEMORY_USAGE_AUTO,
 				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			);
-			instanceDataUniforms_[i] = context->createBuffer(
+			instanceDataStorages_[i] = context->createBuffer(
 				sizeof(InstanceData) * MAX_INSTANCES,
 				VMA_MEMORY_USAGE_AUTO,
 				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
@@ -1665,7 +1241,7 @@ private:
 
 
 			auto ii_data = context->buffers_.get(instanceIndexUniforms_[i]);
-			auto id_data = context->buffers_.get(instanceDataUniforms_[i]);
+			auto id_data = context->buffers_.get(instanceDataStorages_[i]);
 
 			VkDescriptorBufferInfo instanceIndexBufferInfo{
 				.buffer = ii_data->buffer,
@@ -1828,14 +1404,14 @@ private:
 
 	}
 
-	void recordDraw(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+	// Batch together same materialPipe meshes.
+	void batchDraws() {
 
-		VkCommandBufferBeginInfo beginInfo{};
-		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	}
 
-		if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-			throw std::runtime_error("failed to begin recording command buffer!");
-		}
+
+	VkRenderingInfoKHR buildRenderingInfo(uint32_t imageIndex) {
+
 
 		VkRenderingAttachmentInfoKHR depthAttachment{};
 		depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
@@ -1865,6 +1441,19 @@ private:
 		renderingInfo.pColorAttachments = &colorAttachment;
 		renderingInfo.pDepthAttachment = &depthAttachment;
 
+		return renderingInfo;
+
+	}
+
+	void recordDraw(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+
+		VkCommandBufferBeginInfo beginInfo{};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+		if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+			throw std::runtime_error("failed to begin recording command buffer!");
+		}
+
 		VkImageMemoryBarrier barrierToColorAttachment{};
 		barrierToColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 		barrierToColorAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // or VK_IMAGE_LAYOUT_PRESENT_SRC_KHR if reusing
@@ -1890,8 +1479,11 @@ private:
 			1, &barrierToColorAttachment
 		);
 
+		auto renderingInfo = buildRenderingInfo(imageIndex);
+
 		vkCmdBeginRendering(commandBuffer, &renderingInfo);
 
+		// VIEWPORT
 		// Flipped because of this :)
 		// https://www.saschawillems.de/blog/2019/03/29/flipping-the-vulkan-viewport/
 		VkViewport vp{};
@@ -1903,6 +1495,7 @@ private:
 		vp.maxDepth = 1.0f;
 		vkCmdSetViewport(commandBuffer, 0, 1, &vp);
 
+		// SCISSOR.
 		VkRect2D scissor{};
 		scissor.offset = { 0, 0 };
 		scissor.extent = swapChainExtent;
@@ -1925,7 +1518,6 @@ private:
 			;
 
 		// I need to batch per materialpipe
-
 		for (auto mat_pipe_entry : context->materialPipelinePool_.objects_) {
 
 			vkCmdBindPipeline(
@@ -1954,7 +1546,9 @@ private:
 
 			for (int i = 0; i < scene_->hierarchy.size(); i++) {
 
-				auto mesh_ = loaded_meshes_[scene_->meshForNode[i]];
+				auto mesh_ = mesh_data_[scene_->meshForNode[i]];
+
+
 				auto material_instance_index = scene_->materialForNode[i];
 				pc.material_instance_index = material_instance_index;
 
@@ -1986,11 +1580,6 @@ private:
 		}
 
 		vkCmdEndRendering(commandBuffer);
-
-		// Not neeeded with dynamic renderinng because attachment info is simplified from renderpass system, simplifying attachment layouts away.
-		//transitionImageLayout(
-		//	swapChainImages[currentFrame], VK_FORMAT_B8G8R8A8_SRGB, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-		//);
 
 		VkImageMemoryBarrier barrier{};
 		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -2053,93 +1642,7 @@ private:
 
 	// ---------------------------------------------------------------------------
 
-	void drawFrame() {
-		vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE,
-			UINT64_MAX);
-
-		uint32_t imageIndex;
-		VkResult result = vkAcquireNextImageKHR(
-			device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame],
-			VK_NULL_HANDLE, &imageIndex);
-
-
-		if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-			recreateSwapChain();
-			return;
-		}
-		else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-			throw std::runtime_error("failed to acquire swap chain image!");
-		}
-
-		// BATCH PER MESH, SHADER, INSTANCE
-
-		// We should check for size and promote or demote from pushconstants -> ubo -> ssbo.
-		UpdateDeltaTime();
-		UpdateInstanceBuffer(currentFrame);
-
-		vkResetFences(device, 1, &inFlightFences[currentFrame]);
-		vkResetCommandPool(device, framesCommandPool[currentFrame], 0);
-
-		//vkResetCommandBuffer(commandBuffers[currentFrame],
-		//	/*VkCommandBufferResetFlagBits*/ 0);
-
-		UploadDefaultDescriptorSets();
-		UpdateBindlessTextures();
-
-		recordDraw(commandBuffers[currentFrame], imageIndex);
-
-		VkSubmitInfo submitInfo{};
-		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-		VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
-		VkPipelineStageFlags waitStages[] = {
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-		submitInfo.waitSemaphoreCount = 1;
-		submitInfo.pWaitSemaphores = waitSemaphores;
-		submitInfo.pWaitDstStageMask = waitStages;
-
-		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
-
-		VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
-		submitInfo.signalSemaphoreCount = 1;
-		submitInfo.pSignalSemaphores = signalSemaphores;
-
-		if (
-			vkQueueSubmit(
-				graphicsQueue_,
-				1,
-				&submitInfo,
-				inFlightFences[currentFrame]) != VK_SUCCESS
-			) {
-			throw std::runtime_error("failed to submit draw command buffer!");
-		}
-
-
-		VkPresentInfoKHR presentInfo{};
-		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
-		presentInfo.waitSemaphoreCount = 1;
-		presentInfo.pWaitSemaphores = signalSemaphores;
-
-		VkSwapchainKHR swapChains[] = { swapChain };
-		presentInfo.swapchainCount = 1;
-		presentInfo.pSwapchains = swapChains;
-		presentInfo.pImageIndices = &imageIndex;
-
-		result = vkQueuePresentKHR(presentQueue_, &presentInfo);
-
-		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
-			framebufferResized) {
-			framebufferResized = false;
-			recreateSwapChain();
-		}
-		else if (result != VK_SUCCESS) {
-			throw std::runtime_error("failed to present swap chain image!");
-		}
-
-		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-	}
+	void drawFrame();
 
 	// UI
 	static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
@@ -2163,6 +1666,8 @@ private:
 	std::vector<MaterialPipelineHandle> material_pipe_handles;
 
 };
+
+
 
 void VulkanApp::CreateDefaultMaterialPipeline() {
 
@@ -2192,62 +1697,21 @@ void VulkanApp::CreateDefaultMaterialPipeline() {
 	material_pipe_handles.push_back(def_pipe);
 }
 
-void VulkanApp::LoadScene() {
+// If theres only one I probably could go with argv
+std::vector<std::string> gltf_meshes_paths = {
+	"models/Sponza/sponza.gltf" // Index 0
+};
 
-	//rootNode
-	addNode(*scene_, -1, 0);
-	addNode(*scene_, 0, 1);
-	addNode(*scene_, 0, 1);
+void VulkanApp::UploadScene(Scene& scene) {
 
-	//std::cout << std::filesystem::current_path() << std::endl;
+	for (auto mesh_id : scene.meshForNode) {
 
-	LoadedMesh mesh_;
-	auto a_ = GltfMesh("models/avocado_gltf/Avocado.gltf");
-	mesh_.indices = a_.indices;
-	mesh_.vertices = a_.vertices;
-
-	LoadedMesh mesh_2;
-	auto b_ = GltfMesh("models/BoomBox/BoomBox.gltf");
-	mesh_2.indices = b_.indices;
-	mesh_2.vertices = b_.vertices;
-
-	// this is crap. just for testing 
-	loaded_meshes_.push_back(mesh_);
-	loaded_meshes_.push_back(mesh_2);
-
-	auto m_m = scene_->localTransform[0];
-
-	scene_->meshForNode[0] = 1;
-	scene_->materialForNode[0] = 0;
-
-	scene_->meshForNode[1] = 3;
-	scene_->materialForNode[1] = 1;
-
-	scene_->meshForNode[2] = 2;
-	scene_->materialForNode[2] = 2;
-
-	scene_->localTransform[2][0][0] = 100;
-	scene_->localTransform[2][1][1] = 100;
-	scene_->localTransform[2][2][2] = 100;
-
-	scene_->localTransform[1][0][0] = 100;
-	scene_->localTransform[1][1][1] = 100;
-	scene_->localTransform[1][2][2] = 100;
+	}
 
 	auto image1 = createTextureImage(
 		"textures/viking_room.png",
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
-
-	auto image2 = createTextureImage(
-		"textures/texture.jpg",
-		VK_FORMAT_R8G8B8A8_SRGB
-	);
-	auto image3 = createTextureImage(
-		"models/avocado_gltf/Avocado_baseColor.png",
-		VK_FORMAT_R8G8B8A8_SRGB
-	);
-
 
 	createTextureImageView(
 		&context->textures_.get(image1)->image,
@@ -2255,30 +1719,8 @@ void VulkanApp::LoadScene() {
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
-
-	createTextureImageView(
-		&context->textures_.get(image2)->image,
-		&context->textures_.get(image2)->imageView,
-		VK_FORMAT_R8G8B8A8_SRGB
-	);
-
-	createTextureImageView(
-		&context->textures_.get(image3)->image,
-		&context->textures_.get(image3)->imageView,
-		VK_FORMAT_R8G8B8A8_SRGB
-	);
-
-
 	createTextureSampler(
 		&context->textures_.get(image1)->sampler
-	);
-
-	createTextureSampler(
-		&context->textures_.get(image2)->sampler
-	);
-
-	createTextureSampler(
-		&context->textures_.get(image3)->sampler
 	);
 
 
@@ -2291,39 +1733,38 @@ void VulkanApp::LoadScene() {
 
 	context->materialInstancesPool_.get(mat2_h)->values.texDiffuse = 1;
 
-	//context->createMaterialInstance(material_pipe_0);
-	//context->createMaterialInstance(material_pipe_0);
-
-
 }
 
-void VulkanApp::UploadMeshData() {
-	// Upload Mesh data
-	// query meshes for upload.
+void VulkanApp::UploadStaticMeshData(std::vector<MeshData>& mesh_data) {
 
 	uint32_t static_vertex_buffer_size = 0;
 	uint32_t static_index_buffer_size = 0;
 
-	for (int node = 0; node < static_cast<int>(scene_->hierarchy.size()); ++node) {
-		int mIdx = scene_->meshForNode[node];
-		const auto& m = loaded_meshes_[mIdx];
-		static_vertex_buffer_size += static_cast<uint32_t>(sizeof(Vertex) * m.vertices.size());
-		static_index_buffer_size += static_cast<uint32_t>(sizeof(uint32_t) * m.indices.size());
-	}
+	assert(mesh_data.size() > 0);
 
-	// Compute totals and write per-mesh offsets (skip slot 0 = empty)
+	//// Compute totals and write per-mesh offsets (skip slot 0 = empty)
 	VkDeviceSize totalVertexBytes = 0;
 	VkDeviceSize totalIndexBytes = 0;
+
+	//for (int node = 0; node < static_cast<int>(scene_->hierarchy.size()); ++node) {
+	//	int mIdx = scene_->meshForNode[node];
+	//	const auto& m = mesh_data_[mIdx];
+	//	totalVerte += static_cast<uint32_t>(sizeof(Vertex) * m.vertices.size());
+	//	static_index_buffer_size += static_cast<uint32_t>(sizeof(uint32_t) * m.indices.size());
+	//}
+
 
 	uint32_t runningVertexOffset = 0; // in vertices
 	uint32_t runningFirstIndex = 0; // in indices
 
-	for (int i = 0; i < loaded_meshes_.size(); ++i) {
-		LoadedMesh& m = loaded_meshes_[i];
+	for (int i = 0; i < mesh_data.size(); ++i) {
+
 
 		// this is not correct
-		m.vert_offset = runningVertexOffset;         // elements, not bytes
-		m.first_index = runningFirstIndex;           // elements, not bytes
+		//m.vert_offset = runningVertexOffset;         // elements, not bytes
+		//m.first_index = runningFirstIndex;           // elements, not bytes
+
+		auto& m = mesh_data[i];
 
 		totalVertexBytes += sizeof(Vertex) * m.vertices.size();
 		totalIndexBytes += sizeof(uint32_t) * m.indices.size();
@@ -2332,9 +1773,10 @@ void VulkanApp::UploadMeshData() {
 		runningFirstIndex += static_cast<uint32_t>(m.indices.size());
 	}
 
-	// Create GPU static buffers (DST)
+
+	//Create GPU static buffers(DST)
 	{
-		assert(totalVertexBytes > 0 && "Vertex buffer size was 0");
+		//assert(totalVertexBytes > 0 && "Vertex buffer size was 0");
 		VkBufferCreateInfo vbInfo{
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = totalVertexBytes,
@@ -2352,7 +1794,7 @@ void VulkanApp::UploadMeshData() {
 		);
 	}
 	{
-		assert(totalIndexBytes > 0 && "Index buffer size was 0");
+		//assert(totalIndexBytes > 0 && "Index buffer size was 0");
 		VkBufferCreateInfo ibInfo{
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = totalIndexBytes,
@@ -2378,8 +1820,8 @@ void VulkanApp::UploadMeshData() {
 		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
 		VkDeviceSize curr = 0; // byte offset
-		for (int i = 0; i < loaded_meshes_.size(); ++i) {
-			const auto& m = loaded_meshes_[i];
+		for (int i = 0; i < mesh_data_.size(); ++i) {
+			const auto& m = mesh_data_[i];
 			const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
 			if (bytes == 0) continue;
 
@@ -2406,8 +1848,8 @@ void VulkanApp::UploadMeshData() {
 		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
 		VkDeviceSize curr = 0; // byte offset
-		for (int i = 0; i < loaded_meshes_.size(); ++i) {
-			const auto& m = loaded_meshes_[i];
+		for (int i = 0; i < mesh_data_.size(); ++i) {
+			const auto& m = mesh_data_[i];
 			const VkDeviceSize bytes = sizeof(uint32_t) * m.indices.size();
 			if (bytes == 0) continue;
 
@@ -2420,6 +1862,72 @@ void VulkanApp::UploadMeshData() {
 		vmaDestroyBuffer(app_allocator_, stagingBuf, stagingAlloc);
 	}
 
+}
+
+inline void VulkanApp::UpdateInstanceBuffer(uint32_t currentImage) {
+
+	// THIS MUST REMAIN HERE. SENSITIVE TO LAG OTHERWISE
+	static auto startTime = std::chrono::high_resolution_clock::now();
+	auto currentTime = std::chrono::high_resolution_clock::now();
+	delta_time_ = std::chrono::duration<float, std::chrono::seconds::period>(
+		currentTime - startTime)
+		.count();
+
+	// Moved this to the HEAP. This will be state of the app instead of being fabricated here anyways.
+	InstanceData* data = new InstanceData[MAX_INSTANCES];
+	int i = 0;
+	//for (const glm::mat4 tr : scene_->globalTransform) {
+	for (const glm::mat4 tr : scene_.localTransform) {
+		std::memcpy(
+			data[i].transform,
+			glm::value_ptr(tr),
+			sizeof(float) * 16);
+
+		data[i].color = { i * 0.20f,0.3f,-i * 0.7f,1.0f };
+
+		i++;
+	}
+
+	std::array<uint16_t, MAX_INSTANCES> indexData = {};
+	for (uint16_t index = 0; index < MAX_INSTANCES; index++) {
+		indexData[index] = index;
+	}
+
+	std::vector<IndexSlot> indexSlotData(MAX_INSTANCES);
+	for (size_t i = 0; i < MAX_INSTANCES; ++i) {
+		indexSlotData[i].idx = static_cast<uint32_t>(indexData[i]); // zero-extend
+	}
+
+	VkResult result{};
+
+	// This is bad, will stall. Frame update should use same command buffer for all update operations.
+	// FrameGraph! FrameGraph!
+	VkCommandBuffer cmdBuf = beginSingleTimeCommands();
+
+	static_assert(sizeof(IndexSlot) * MAX_INSTANCES < (1 << 16),
+		"Instance buffer too large for 64KB UBO limit");
+
+	context->UploadDataToBuffer(
+		instanceIndexUniforms_[currentImage],
+		indexSlotData.data(),
+		sizeof(IndexSlot) * MAX_INSTANCES,
+		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		// This could be simplified really to 
+		VK_ACCESS_SHADER_READ_BIT
+		//VK_ACCESS_UNIFORM_READ_BIT
+
+	);
+
+	context->UploadDataToBuffer(
+		instanceDataStorages_[currentImage],
+		data,
+		sizeof(InstanceData) * MAX_INSTANCES,
+		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		VK_ACCESS_SHADER_READ_BIT
+	);
+
+	endSingleTimeCommands(cmdBuf);
+	delete[] data;
 }
 
 bool VulkanApp::Run() {
@@ -2495,8 +2003,7 @@ bool VulkanApp::Run() {
 	createDepthResources();
 
 	CreateDefaultMaterialPipeline();
-	LoadScene();
-	UploadMeshData();
+	UploadScene();
 	UpdateBindlessTextures();
 
 	mainLoop();
@@ -2716,6 +2223,94 @@ void VulkanApp::mouseCallback(GLFWwindow* window, double xpos, double ypos) {
 void VulkanApp::keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
 	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
 	if (app) app->handleKey(key, scancode, action, mods);
+}
+
+inline void VulkanApp::drawFrame() {
+	vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE,
+		UINT64_MAX);
+
+	uint32_t imageIndex;
+	VkResult result = vkAcquireNextImageKHR(
+		device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame],
+		VK_NULL_HANDLE, &imageIndex);
+
+
+	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+		recreateSwapChain();
+		return;
+	}
+	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+		throw std::runtime_error("failed to acquire swap chain image!");
+	}
+
+	// BATCH PER MESH, SHADER, INSTANCE
+
+	// We should check for size and promote or demote from pushconstants -> ubo -> ssbo.
+	UpdateDeltaTime();
+	UpdateInstanceBuffer(currentFrame);
+
+	vkResetFences(device, 1, &inFlightFences[currentFrame]);
+	vkResetCommandPool(device, framesCommandPool[currentFrame], 0);
+
+	//vkResetCommandBuffer(commandBuffers[currentFrame],
+	//	/*VkCommandBufferResetFlagBits*/ 0);
+
+	UploadDefaultDescriptorSets();
+	UpdateBindlessTextures();
+
+	recordDraw(commandBuffers[currentFrame], imageIndex);
+
+	VkSubmitInfo submitInfo{};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+	VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
+	VkPipelineStageFlags waitStages[] = {
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	submitInfo.waitSemaphoreCount = 1;
+	submitInfo.pWaitSemaphores = waitSemaphores;
+	submitInfo.pWaitDstStageMask = waitStages;
+
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
+
+	VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
+	submitInfo.signalSemaphoreCount = 1;
+	submitInfo.pSignalSemaphores = signalSemaphores;
+
+	if (
+		vkQueueSubmit(
+			graphicsQueue_,
+			1,
+			&submitInfo,
+			inFlightFences[currentFrame]) != VK_SUCCESS
+		) {
+		throw std::runtime_error("failed to submit draw command buffer!");
+	}
+
+
+	VkPresentInfoKHR presentInfo{};
+	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+	presentInfo.waitSemaphoreCount = 1;
+	presentInfo.pWaitSemaphores = signalSemaphores;
+
+	VkSwapchainKHR swapChains[] = { swapChain };
+	presentInfo.swapchainCount = 1;
+	presentInfo.pSwapchains = swapChains;
+	presentInfo.pImageIndices = &imageIndex;
+
+	result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+
+	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
+		framebufferResized) {
+		framebufferResized = false;
+		recreateSwapChain();
+	}
+	else if (result != VK_SUCCESS) {
+		throw std::runtime_error("failed to present swap chain image!");
+	}
+
+	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 void VulkanApp::mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {

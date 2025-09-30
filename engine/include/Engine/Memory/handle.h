@@ -59,6 +59,7 @@ using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 using DescriptorSetHandle = Handle<struct DescriptorSet>;
 using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
 using DeviceBufferDescriptionHandle = Handle<struct DeviceBufferDescription>;
+using StaticGeoMeshRangeHandle = Handle<struct StaticGeoMeshRange>;
 
 // specialized with dummy structs for type safety
 //using ImageHandle = Handle<struct Image>;

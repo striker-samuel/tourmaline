@@ -41,7 +41,7 @@ struct Scene {
 	// Hierarchy component
 	std::vector<Hierarchy> hierarchy;
 
-	// LoadedMesh component: which LoadedMesh belongs to which node (Node -> LoadedMesh)
+	// MeshData component: which MeshData belongs to which node (Node -> MeshData)
 	std::unordered_map<uint32_t, uint32_t> meshForNode;
 
 	// Material component: which material belongs to which node (Node -> Material)
