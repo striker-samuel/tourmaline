@@ -759,7 +759,7 @@ private:
 
 	void CreateDefaultMaterialPipeline();
 	
-	void UploadScene(Scene& scene);
+	void UploadScene();
 	void UploadStaticMeshData(std::vector<MeshData>& mesh_data);
 
 	void UpdateDeltaTime() {
@@ -1404,12 +1404,6 @@ private:
 
 	}
 
-	// Batch together same materialPipe meshes.
-	void batchDraws() {
-
-	}
-
-
 	VkRenderingInfoKHR buildRenderingInfo(uint32_t imageIndex) {
 
 
@@ -1702,9 +1696,22 @@ std::vector<std::string> gltf_meshes_paths = {
 	"models/Sponza/sponza.gltf" // Index 0
 };
 
-void VulkanApp::UploadScene(Scene& scene) {
+void VulkanApp::UploadScene() {
 
-	for (auto mesh_id : scene.meshForNode) {
+	// This is crude. but lets get this working already
+	std::vector<MeshData> data_to_upload;
+
+	for (auto node : scene_.hierarchy) {
+
+	}
+
+	for (uin32_t mesh_id : scene_.meshForNode) {
+
+
+		auto a = gltf_meshes_paths[mesh_id];
+
+		GltfModel model = GltfModel(gltf_meshes_paths[mesh_id]);
+
 
 	}
 

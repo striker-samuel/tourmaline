@@ -13,6 +13,9 @@ using glm::mat4;
 
 constexpr const int MAX_NODE_LEVEL = 16;
 
+
+// This was lifted from https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan
+
 struct Hierarchy {
 	// parent for this node (or -1 for root)
 	int parent = -1;
