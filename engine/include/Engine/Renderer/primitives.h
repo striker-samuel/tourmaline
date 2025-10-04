@@ -40,7 +40,6 @@ const std::vector<uint32_t> triangle_indices_ccw = {
 	0, 1, 2
 };
 
-
 struct MeshData {
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
@@ -85,15 +84,6 @@ struct ViewProjUniform {
 //	//intensity
 //} DefaultLight;
 
-//Down like to use char for this.
-typedef struct Color4 {
-	unsigned char r;  // Color red value
-	unsigned char g;  // Color green value
-	unsigned char b;  // Color blue value
-	unsigned char a;  // Color alpha value
-};
-
-
 // Dont like this. currently limited by the 16 byte stride.
 // Maybe i could do away with it but that needs ext checking and enalbing and mods in shader code
 struct alignas(16) IndexSlot {
@@ -109,6 +99,17 @@ struct PushConstants {
 	// A single MaterialModel. shader code, layout , rastersettings, can have many instancs with individual image attachments and constants.
 	int material_instance_index;
 	uint32_t     _pad0[3];
+};
+
+// Lets just assume offsets into the static index/vertex buffers for now :)
+struct DrawSet{
+	uint32_t first_index = 0;
+	uint32_t vert_offset = 0;
+	uint32_t index_count = 0;
+
+	// This is handled scene side
+	//uint32_t material_index = 0;
+
 };
 
 // ------------------------------------------------------------------------------------------------
