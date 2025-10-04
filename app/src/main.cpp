@@ -57,6 +57,148 @@ static constexpr uint32_t MAX_TEXTURES = 4096;
 static constexpr uint32_t MAX_MATERIAL_INSTANCES = 1000;
 static constexpr uint32_t MAX_MATERIALS = 1000;
 
+
+// Lets just assume offsets into the static index/vertex buffers for now :)
+struct DrawSet{
+	uint32_t first_index = 0;
+	uint32_t vert_offset = 0;
+	uint32_t index_count = 0;
+
+	// This is handled scene side
+	//uint32_t material_index = 0;
+
+};
+
+// ------------------------------------------------------------------------------------------------
+// 
+// This is the neeeded Host side state to manage meshes.
+// This is whats needed for the geometry part of the drawcall. Materials are codified per sceneNode.
+struct DynamicMesh {
+
+	VmaAllocation allocation;
+	VmaAllocationInfo allocInfo;
+	// Im gonna have a standard format so no propreties for selecting tri, fan, or else
+
+	uint32_t first_index = 0;
+	uint32_t vert_offset = 0;
+	uint32_t index_count = 0;
+
+	// LOD should choose first index and voffset but lets keep this like this.... its not that clear yet to me how to manage that properly
+	uint32_t LOD;
+
+	// I prefer to manage material + attachentes via MaterialInstanceInstead.
+	// but maybe i could have a ref for ez acces here?
+	//MaterialInstanceHandle material_instance;
+
+	// Maybe name
+	//uint32_t name;
+
+};
+
+// Lets go with uniform_layouts ext. GENERAL and UNDEFINED
+struct Texture {
+
+	// to be able to free. or queryu memory info. Could be moved really.
+	VmaAllocation allocation;
+	VmaAllocationInfo allocInfo;
+
+	VkImage image;
+	VkImageView imageView;
+	// This is far from good.
+	VkSampler sampler;
+	// Other properties and attributes
+
+	// I could use debug name
+	// Srgb/lienar others
+	VkFormat format;
+
+};
+
+// Initialized with crude defaults;
+struct RasterSettings {
+	uint32_t depthClampEnable = VK_FALSE;
+	uint32_t rasterizerDiscardEnable = VK_FALSE;
+	uint32_t polygonMode = VK_POLYGON_MODE_FILL;
+	uint32_t lineWidth = 1.0f;
+	uint32_t cullMode = VK_CULL_MODE_BACK_BIT;
+	uint32_t frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	uint32_t depthBiasEnable = VK_FALSE;
+} default_raster_settings;
+
+// Materials aabstractions area really PipelineObjets. Raster conf, shader objs, descriptorlayout. 
+// MaterialAttachments must match desc layout, adn MaterialConstants pc layout
+// So we bake the POS. VkPipelineCache not implemented now
+// Another name fot his could be MatModel?
+struct MaterialPipeline {
+
+	// We need to hash these tree. but wont do it now
+	RasterSettings raster_settings;
+	ShaderModuleHandle vert;
+	ShaderModuleHandle frag;
+
+	// Lets not complitcate this for now. same footprint/layout for everyone. 
+	//VkDescriptorSetLayout* layout;
+	// 
+	// Lets just hold this here for now
+	VkPipelineLayout plyt;
+
+	// Bindless, so material descriptors sets are at this level instead of binding per instnace, so;
+	// Invalid initialization!
+	DescriptorSetHandle ds;
+	VkPipeline pipeline;
+};
+
+// This gets uploaded to Device. stride contraints!
+// This will go with pushcontants. May require specialization per shader model
+struct MaterialPushConstants {
+
+	// Color *=
+	glm::vec4 ambient = glm::vec4(0.0f);
+	glm::vec4 diffuse = glm::vec4(0.0f);
+
+
+	// Index to bindless texture array. Doing this like so obviously makes it so we only have one def for material texture slots
+	uint32_t texAmbient = 0;
+	uint32_t texDiffuse = 0;
+	uint32_t texAlpha = 0;
+	uint32_t padding[1];
+
+} default_mat_pc;
+
+static_assert(sizeof(MaterialPushConstants) % 16 == 0);
+
+// MatModels or MatPipelines can have several instances with different vlaues for constans and textures.
+// Raster state, vert, frag, blending and more stay the same.
+struct MaterialInstance {
+	MaterialPipelineHandle pipeline;
+	MaterialPushConstants values = {};
+};
+
+
+// Buffer state.
+struct DeviceBufferDescription {
+
+	VkBuffer buffer;
+	VmaAllocation alloc;
+	VmaAllocationInfo allocInfo;
+	VkBufferUsageFlags usage;
+
+	// Did it end in mappable memory? This is important to know for proper upload. Discard the bool in the future use 
+	VkMemoryPropertyFlags memory_flags;
+	// Helpers to interrogate buffer
+	bool is_mapapble() const {
+		return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+	}
+
+};
+
+struct DescriptorSet {
+	DescriptorLayoutHandle layout;
+	VkDescriptorSet set;
+};
+
+
+
 // ------------------------------------
 // 
 // Crap I will delete later
@@ -665,6 +807,7 @@ private:
 
 	VkBuffer static_vertex_buffer_;
 	VmaAllocation static_vertex_allocation_;
+
 	VkBuffer static_index_buffer_;
 	VmaAllocation static_index_allocation_;
 
@@ -1409,41 +1552,6 @@ private:
 
 	}
 
-	VkRenderingInfoKHR buildRenderingInfo(uint32_t imageIndex) {
-
-
-		VkRenderingAttachmentInfoKHR depthAttachment{};
-		depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-		depthAttachment.imageView = main_depthImageView;
-		depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		//depthAttachment.clearValue.depthStencil = { 1.0f, 0 };
-		//Lets do reverse z
-		depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
-
-		VkRenderingAttachmentInfoKHR colorAttachment{};
-		colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-		colorAttachment.imageView = swapChainImageViews[imageIndex];  // actual view
-		colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-		colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
-
-		// Begin dynamic rendering
-		VkRenderingInfoKHR renderingInfo{};
-		renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
-		renderingInfo.renderArea.offset = { 0, 0 };
-		renderingInfo.renderArea.extent = swapChainExtent;
-		renderingInfo.layerCount = 1;
-		renderingInfo.colorAttachmentCount = 1;
-		renderingInfo.pColorAttachments = &colorAttachment;
-		renderingInfo.pDepthAttachment = &depthAttachment;
-
-		return renderingInfo;
-
-	}
-
 	void recordDraw(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
 
 		VkCommandBufferBeginInfo beginInfo{};
@@ -1478,7 +1586,35 @@ private:
 			1, &barrierToColorAttachment
 		);
 
-		auto renderingInfo = buildRenderingInfo(imageIndex);
+		VkRenderingAttachmentInfoKHR depthAttachment{};
+		depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+		depthAttachment.imageView = main_depthImageView;
+		depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		//depthAttachment.clearValue.depthStencil = { 1.0f, 0 };
+		//Lets do reverse z
+		depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
+
+		VkRenderingAttachmentInfoKHR colorAttachment{};
+		colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+		colorAttachment.imageView = swapChainImageViews[imageIndex];  // actual view
+		colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
+
+		// Begin dynamic rendering
+		VkRenderingInfoKHR renderingInfo{};
+		renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
+		renderingInfo.renderArea.offset = { 0, 0 };
+		renderingInfo.renderArea.extent = swapChainExtent;
+		renderingInfo.layerCount = 1;
+		renderingInfo.colorAttachmentCount = 1;
+		renderingInfo.pColorAttachments = &colorAttachment;
+		renderingInfo.pDepthAttachment = &depthAttachment;
+
+
 
 		vkCmdBeginRendering(commandBuffer, &renderingInfo);
 
@@ -1713,6 +1849,7 @@ void VulkanApp::UploadScene() {
 		if (already_uploaded.contains(i)) {
 			continue;
 		}
+		already_uploaded.insert(i);
 
 		// this one to many relation breaks our scene mesh assignment but lets rool with this for the moment
 		// Material id is the same story
@@ -1769,6 +1906,10 @@ void VulkanApp::CreateStaticGeoBuffers() {
 		VMA_MEMORY_USAGE_GPU_ONLY,
 		VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 	);
+
+
+	static_vertex_buffer_ = context->buffers_.get(vbh)->buffer;
+	static_index_buffer_ = context->buffers_.get(ibh)->buffer;
 
 }
 
@@ -1853,7 +1994,7 @@ std::vector<DrawSet> VulkanApp::UploadStaticMeshData(std::vector<MeshData>& mesh
 			curr += bytes;
 		}
 
-		copyBuffer(stagingBuf, static_index_buffer_, needed_vertexBytes_for_staging);
+		copyBuffer(stagingBuf, static_index_buffer_, needed_indexBytes_for_staging);
 		vmaDestroyBuffer(app_allocator_, stagingBuf, stagingAlloc);
 	}
 

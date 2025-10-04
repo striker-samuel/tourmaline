@@ -13,9 +13,9 @@
 #include <vector>
 #include <string>
 
-#include <tiny_gltf.h>
 
 #include <Engine/Renderer/vertex.h>
+#include <Engine/Renderer/primitives.h>
 
 
 static inline size_t gltfElementSize(const tinygltf::Accessor& a) {
@@ -258,14 +258,6 @@ std::vector<GltfMaterial> ExtractMaterials(const tinygltf::Model& model)
 	return out;
 }
 
-struct MeshData {
-	std::vector<Vertex> vertices;
-	std::vector<uint32_t> indices;
-	int materialIndex = -1;       // primitive.material (or -1)
-	//int mode = TINYGLTF_MODE_TRIANGLES; // primitive.mode
-	//std::string name;             // optional
-};
-
 // Models contains scenes, scenes contain meshes, and meshes: primitives.
 class GltfModel {
 
@@ -275,7 +267,7 @@ private:
 
 public:
 
-	std::vector<tinygltf::Material> mats_;
+	std::vector<tinygltf::Material> materials_;
 	std::vector<MeshData> mesh_data;
 
 	GltfModel(std::string model_path) {
@@ -292,8 +284,7 @@ public:
 		for (const auto& mesh : gltfModel.meshes) {
 			for (const auto& primitive : mesh.primitives) {
 
-
-				if (primitive.mode == TINYGLTF_MODE_TRIANGLES) {
+				if (primitive.mode != TINYGLTF_MODE_TRIANGLES) {
 					continue;
 				}
 

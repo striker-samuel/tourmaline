@@ -49,6 +49,18 @@ include(cmake/CompileShaders.cmake)
 #    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
 #)
 
+option(TRACE_INCLUDES "Print header include tree while compiling" OFF)
+
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+  if (TRACE_INCLUDES)
+    add_compile_options(-H)        # GCC/Clang: show include stack
+  endif()
+elseif (MSVC)
+  if (TRACE_INCLUDES)
+    add_compile_options(/showIncludes)  # MSVC: show include stack
+  endif()
+endif()
+
 
 add_subdirectory(engine)
 add_subdirectory(app)
