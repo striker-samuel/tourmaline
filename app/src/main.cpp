@@ -1873,10 +1873,7 @@ void VulkanApp::UploadScene() {
 	}
 
 
-
-
-	for (auto material_data : ExtractMaterials(loaded_gltf.gltfModel) {
-		material_data.
+	for (auto material_data : ExtractMaterials(loaded_gltf.gltfModel)) {
 	}
 	
 	
