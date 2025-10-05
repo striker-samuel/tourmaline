@@ -263,11 +263,10 @@ class GltfModel {
 
 private:
 
-	tinygltf::Model gltfModel;
 
 public:
 
-	std::vector<tinygltf::Material> materials_;
+	tinygltf::Model gltfModel;
 	std::vector<MeshData> mesh_data;
 
 	GltfModel(std::string model_path) {
@@ -278,8 +277,9 @@ public:
 		}
 
 		std::cout << gltfModel.meshes.size() << std::endl;
-		// GltfMeshses are split into primitves. primitives are what would be faceSets in maya. Collections of primitives like tris, faces...
-		// that share material, mode, geo
+		for (const auto& node : gltfModel.nodes) {
+
+		}
 
 		for (const auto& mesh : gltfModel.meshes) {
 			for (const auto& primitive : mesh.primitives) {

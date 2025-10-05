@@ -199,6 +199,11 @@ struct DescriptorSet {
 
 
 
+// If theres only one I probably could go with argv
+std::vector<std::string> gltf_meshes_paths = {
+	"models/Sponza/sponza.gltf" // Index 0
+};
+
 // ------------------------------------
 // 
 // Crap I will delete later
@@ -206,14 +211,21 @@ Scene createTestScene() {
 
 	Scene scene;
 	//rootNode
-	addNode(scene, -1, 0);
+	//addNode(scene, -1, 0);
 
 	// two children
 	//addNode(*scene_, 0, 1);
 	//addNode(*scene_, 0, 1);
 
-	scene.meshForNode[0] = 0;
-	scene.materialForNode[0] = 0;
+	int counter = 0;
+	GltfModel loaded_gltf = GltfModel(gltf_meshes_paths[0]);
+	for (auto mesh_data : loaded_gltf.mesh_data) {
+		addNode(scene, -1, 0);
+		scene.meshForNode[counter] = counter;
+		//scene.materialForNode[counter] = mesh_data.materialIndex;
+		scene.materialForNode[counter] = 0;
+		counter++;
+	}
 
 	return scene;
 }
@@ -940,14 +952,14 @@ private:
 				rightMousePressed);
 
 			//std::cout << camera_.getPosition() << std::endl;
-
 			// Synthetic movement
-			for (size_t i = 0; i < scene_.localTransform.size(); ++i) {
-				glm::mat4& local = scene_.localTransform[i];
-				float phase = std::sin(i + delta_time_ * 0.35f);  // staggered phases
-				local[3][0] = static_cast<float>(i) * 1.4f + phase;
-				markAsChanged(scene_, i);
-			}
+			//for (size_t i = 0; i < scene_.localTransform.size(); ++i) {
+			//	glm::mat4& local = scene_.localTransform[i];
+			//	float phase = std::sin(i + delta_time_ * 0.35f);  // staggered phases
+			//	local[3][0] = static_cast<float>(i) * 1.4f + phase;
+			//	markAsChanged(scene_, i);
+			//}
+
 			recalculateGlobalTransforms(scene_);
 
 			drawFrame();
@@ -1681,12 +1693,18 @@ private:
 
 			for (int i = 0; i < scene_.hierarchy.size(); i++) {
 
-				// This is so WRONG!
-				auto draw_set = static_draw_sets[scene_.meshForNode[i]];
+				//auto draw_set = static_draw_sets[scene_.meshForNode[i]];
+				const auto& draw_set = static_draw_sets[i];
+
 				auto material_instance_index = scene_.materialForNode[i];
+				if (!context->materialInstancesPool_.getHandle(material_instance_index).valid()) {
+					material_instance_index = 0;
+				}
+
 				pc.material_instance_index = material_instance_index;
 
-				MaterialPushConstants pcm = context->materialInstancesPool_.objects_[material_instance_index].obj_.values;
+				MaterialPushConstants pcm =
+					context->materialInstancesPool_.objects_[material_instance_index].obj_.values;
 
 				struct PC_All {
 					PushConstants pc;               // 144
@@ -1694,7 +1712,6 @@ private:
 				};
 				PC_All all{ pc, pcm };
 
-				// I could split this.
 				vkCmdPushConstants(
 					commandBuffer,
 					pipe_lyt,
@@ -1704,10 +1721,11 @@ private:
 
 				vkCmdDrawIndexed(
 					commandBuffer,
-					static_cast<uint32_t>(draw_set.index_count), //indexCount
+					draw_set.index_count, //indexCount
 					1, //instanceCount
 					draw_set.first_index, //firstIndex
-					draw_set.vert_offset, //vertexOffset
+					draw_set.vert_offset,
+					//0,
 					i
 				);
 			}
@@ -1831,33 +1849,36 @@ void VulkanApp::CreateDefaultMaterialPipeline() {
 	material_pipe_handles.push_back(def_pipe);
 }
 
-// If theres only one I probably could go with argv
-std::vector<std::string> gltf_meshes_paths = {
-	"models/Sponza/sponza.gltf" // Index 0
-};
-
 
 void VulkanApp::UploadScene() {
 
 	// This is crude. but lets get this working already
 	std::vector<MeshData> data_to_upload;
-
 	std::set<uint32_t> already_uploaded;
-	for (int i = 0; i < scene_.hierarchy.size(); i++) {
+	//for (int i = 0; i < scene_.hierarchy.size(); i++) {
 
-		auto mesh_id = scene_.meshForNode[i];
-		if (already_uploaded.contains(i)) {
-			continue;
-		}
-		already_uploaded.insert(i);
+	//	auto mesh_id = scene_.meshForNode[i];
+	//	if (already_uploaded.contains(i)) {
+	//		continue;
+	//	}
+	//	already_uploaded.insert(i);
 
-		// this one to many relation breaks our scene mesh assignment but lets rool with this for the moment
-		// Material id is the same story
-		GltfModel loaded_gltf = GltfModel(gltf_meshes_paths[mesh_id]);
-		for (auto mesh_data : loaded_gltf.mesh_data) {
-			data_to_upload.push_back(std::move(mesh_data));
-		}
+
+
+
+
+	const GltfModel loaded_gltf = GltfModel(gltf_meshes_paths[0]);
+	for (auto mesh_data : loaded_gltf.mesh_data) {
+		data_to_upload.push_back(std::move(mesh_data));
 	}
+
+
+
+
+	for (auto material_data : ExtractMaterials(loaded_gltf.gltfModel) {
+		material_data.
+	}
+	
 	
 	static_draw_sets = UploadStaticMeshData(data_to_upload);
 
@@ -1912,28 +1933,110 @@ void VulkanApp::CreateStaticGeoBuffers() {
 	static_index_buffer_ = context->buffers_.get(ibh)->buffer;
 
 }
+//
+//std::vector<DrawSet> VulkanApp::UploadStaticMeshData(std::vector<MeshData>& mesh_data) {
+//	// THIS IS NOT WELL SUITED YET TO BE CALLED MORE THAN ONCE. THERES NO TRACKING OF V, I OFFSETS!!!
+//	assert(mesh_data.size() > 0);
+//
+//	uint32_t needed_vertexBytes_for_staging = 0;
+//	uint32_t needed_indexBytes_for_staging = 0;
+//	
+//	std::vector<DrawSet> mesh_draw_list = {};
+//
+//	for (int i = 0; i < mesh_data.size(); ++i) {
+//
+//		auto& m = mesh_data[i];
+//
+//		needed_vertexBytes_for_staging += sizeof(Vertex) * m.vertices.size();
+//		needed_indexBytes_for_staging += sizeof(uint32_t) * m.indices.size();
+//
+//		//runningVertexOffset += static_cast<uint32_t>(m.vertices.size());
+//		//runningFirstIndex += static_cast<uint32_t>(m.indices.size());
+//	}
+//
+//	// Staging + upload: VERTICES
+//	{
+//		VkBuffer stagingBuf; VmaAllocation stagingAlloc;
+//		VkBufferCreateInfo sInfo{
+//			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+//			.size = needed_vertexBytes_for_staging,
+//			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+//		};
+//		VmaAllocationCreateInfo sAlloc{};
+//		sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+//		sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+//
+//		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
+//
+//		VkDeviceSize curr = 0; // byte offset
+//		for (int i = 0; i < mesh_data.size(); ++i) {
+//			const auto& m = mesh_data[i];
+//
+//			const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
+//			if (bytes == 0) continue;
+//
+//			DrawSet ds;
+//			ds.vert_offset = curr;
+//			mesh_draw_list.push_back(std::move(ds));
+//
+//			vmaCopyMemoryToAllocation(app_allocator_, m.vertices.data(), stagingAlloc, curr, bytes);
+//			curr += bytes;
+//		}
+//
+//		copyBuffer(stagingBuf, static_vertex_buffer_, needed_vertexBytes_for_staging);
+//		vmaDestroyBuffer(app_allocator_, stagingBuf, stagingAlloc);
+//	}
+//
+//	// Staging + upload: INDICES
+//	{
+//		VkBuffer stagingBuf; VmaAllocation stagingAlloc;
+//		VkBufferCreateInfo sInfo{
+//			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+//			.size = needed_indexBytes_for_staging,
+//			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+//		};
+//		VmaAllocationCreateInfo sAlloc{};
+//		sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+//		sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+//
+//		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
+//
+//		VkDeviceSize curr = 0; // byte offset
+//		for (int i = 0; i < mesh_data.size(); ++i) {
+//			const auto& m = mesh_data[i];
+//			const VkDeviceSize bytes = sizeof(uint32_t) * m.indices.size();
+//			if (bytes == 0) continue;
+//
+//			mesh_draw_list[i].index_count = m.indices.size();
+//			mesh_draw_list[i].first_index = curr;
+//
+//			// Indices remain local (0-based). We won't rewrite them here.
+//			vmaCopyMemoryToAllocation(app_allocator_, m.indices.data(), stagingAlloc, curr, bytes);
+//			curr += bytes;
+//		}
+//
+//		copyBuffer(stagingBuf, static_index_buffer_, needed_indexBytes_for_staging);
+//		vmaDestroyBuffer(app_allocator_, stagingBuf, stagingAlloc);
+//	}
+//
+//	return mesh_draw_list;
+//
+//}
 
 std::vector<DrawSet> VulkanApp::UploadStaticMeshData(std::vector<MeshData>& mesh_data) {
-	// THIS IS NOT WELL SUITED YET TO BE CALLED MORE THAN ONCE. THERES NO TRACKING OF V, I OFFSETS!!!
-	assert(mesh_data.size() > 0);
+	assert(!mesh_data.empty());
 
-	uint32_t needed_vertexBytes_for_staging = 0;
-	uint32_t needed_indexBytes_for_staging = 0;
-	
-	std::vector<DrawSet> mesh_draw_list = {};
+	VkDeviceSize needed_vertexBytes_for_staging = 0;
+	VkDeviceSize needed_indexBytes_for_staging = 0;
 
-	for (int i = 0; i < mesh_data.size(); ++i) {
+	std::vector<DrawSet> mesh_draw_list(mesh_data.size()); // keep 1:1 with mesh_data
 
-		auto& m = mesh_data[i];
-
-		needed_vertexBytes_for_staging += sizeof(Vertex) * m.vertices.size();
-		needed_indexBytes_for_staging += sizeof(uint32_t) * m.indices.size();
-
-		//runningVertexOffset += static_cast<uint32_t>(m.vertices.size());
-		//runningFirstIndex += static_cast<uint32_t>(m.indices.size());
+	for (size_t i = 0; i < mesh_data.size(); ++i) {
+		needed_vertexBytes_for_staging += sizeof(Vertex) * mesh_data[i].vertices.size();
+		needed_indexBytes_for_staging += sizeof(uint32_t) * mesh_data[i].indices.size();
 	}
 
-	// Staging + upload: VERTICES
+	// VERTICES
 	{
 		VkBuffer stagingBuf; VmaAllocation stagingAlloc;
 		VkBufferCreateInfo sInfo{
@@ -1947,26 +2050,25 @@ std::vector<DrawSet> VulkanApp::UploadStaticMeshData(std::vector<MeshData>& mesh
 
 		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
-		VkDeviceSize curr = 0; // byte offset
-		for (int i = 0; i < mesh_data.size(); ++i) {
+		VkDeviceSize currBytes = 0;
+		uint32_t currVerts = 0;
+		for (size_t i = 0; i < mesh_data.size(); ++i) {
 			const auto& m = mesh_data[i];
-
 			const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
-			if (bytes == 0) continue;
 
-			DrawSet ds;
-			ds.vert_offset = curr;
-			mesh_draw_list.push_back(std::move(ds));
-
-			vmaCopyMemoryToAllocation(app_allocator_, m.vertices.data(), stagingAlloc, curr, bytes);
-			curr += bytes;
+			mesh_draw_list[i].vert_offset = currVerts;           // BYTES
+			if (bytes) {
+				vmaCopyMemoryToAllocation(app_allocator_, m.vertices.data(), stagingAlloc, currBytes, bytes);
+				currBytes += bytes;
+				currVerts += static_cast<uint32_t>(m.vertices.size());
+			}
 		}
 
 		copyBuffer(stagingBuf, static_vertex_buffer_, needed_vertexBytes_for_staging);
 		vmaDestroyBuffer(app_allocator_, stagingBuf, stagingAlloc);
 	}
 
-	// Staging + upload: INDICES
+	// INDICES
 	{
 		VkBuffer stagingBuf; VmaAllocation stagingAlloc;
 		VkBufferCreateInfo sInfo{
@@ -1980,18 +2082,18 @@ std::vector<DrawSet> VulkanApp::UploadStaticMeshData(std::vector<MeshData>& mesh
 
 		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
-		VkDeviceSize curr = 0; // byte offset
-		for (int i = 0; i < mesh_data.size(); ++i) {
+		VkDeviceSize currBytes = 0; // byte offset
+		for (size_t i = 0; i < mesh_data.size(); ++i) {
 			const auto& m = mesh_data[i];
 			const VkDeviceSize bytes = sizeof(uint32_t) * m.indices.size();
-			if (bytes == 0) continue;
 
-			mesh_draw_list[i].index_count = m.indices.size();
-			mesh_draw_list[i].first_index = curr;
+			mesh_draw_list[i].index_count = static_cast<uint32_t>(m.indices.size());
+			mesh_draw_list[i].first_index = static_cast<uint32_t>(currBytes / sizeof(uint32_t)); // ELEMENTS
 
-			// Indices remain local (0-based). We won't rewrite them here.
-			vmaCopyMemoryToAllocation(app_allocator_, m.indices.data(), stagingAlloc, curr, bytes);
-			curr += bytes;
+			if (bytes) {
+				vmaCopyMemoryToAllocation(app_allocator_, m.indices.data(), stagingAlloc, currBytes, bytes);
+				currBytes += bytes;
+			}
 		}
 
 		copyBuffer(stagingBuf, static_index_buffer_, needed_indexBytes_for_staging);
@@ -1999,7 +2101,6 @@ std::vector<DrawSet> VulkanApp::UploadStaticMeshData(std::vector<MeshData>& mesh
 	}
 
 	return mesh_draw_list;
-
 }
 
 inline void VulkanApp::UpdateInstanceBuffer(uint32_t currentImage) {

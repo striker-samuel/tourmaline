@@ -43,7 +43,7 @@ const std::vector<uint32_t> triangle_indices_ccw = {
 struct MeshData {
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
-	int materialIndex = -1;       // primitive.material (or -1)
+	uint32_t materialIndex = 0;       // primitive.material (or -1)
 };
 
 MeshData Quad = MeshData(quad_vertices, quad_indices_ccw);
