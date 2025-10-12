@@ -185,10 +185,10 @@ public:
 public:
 	float mouseSpeed_ = 500.0f;
 	float rotationSpeed_ = 500.f;
-	float acceleration_ = 15.0f;
-	float damping_ = 0.2f;
-	float maxSpeed_ = 10.0f;
-	float fastCoef_ = 5.0f;
+	float acceleration_ = 50.0f;
+	float damping_ = 0.5f;
+	float maxSpeed_ = 100.0f;
+	float fastCoef_ = 10.0f;
 
 	glm::vec3 cameraPosition_;
 

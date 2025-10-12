@@ -59,13 +59,13 @@ static constexpr uint32_t MAX_MATERIALS = 1000;
 
 
 // Lets just assume offsets into the static index/vertex buffers for now :)
-struct DrawSet{
+struct DrawSet {
 	uint32_t first_index = 0;
 	uint32_t vert_offset = 0;
 	uint32_t index_count = 0;
 
-	// This is handled scene side
-	//uint32_t material_index = 0;
+	// This is handled scene side. This is just temp
+	uint32_t material_index = 0;
 
 };
 
@@ -314,7 +314,8 @@ public:
 	~Context(
 
 
-	) {};
+	) {
+	};
 
 	void InitializeDeviceVmaPools() {
 
@@ -388,12 +389,13 @@ public:
 	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
 	MaterialInstanceHandle createMaterialInstance(MaterialPipelineHandle mat_pipeline);
 
+	TextureHandle createTextureImage(int texWidth, int texHeight, int texChannels, VkFormat format);
+
 	DescriptorLayoutHandle createDescriptorLayout();
 	DescriptorPoolHandle createDescriptorPool();
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
 
 	DeviceBufferDescriptionHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
-	TextureHandle createTextureImage(std::string image_path, VkFormat format);
 
 	// Ideally we would expose resource deletion to the app too right. 
 	// LightweightVk goes with Holder construct to delete when no refs. I quite dont like that or RAII really.
@@ -709,18 +711,8 @@ MaterialInstanceHandle Context::createMaterialInstance(MaterialPipelineHandle ma
 	return materialInstancesPool_.create(std::move(mat_instance));
 }
 
-TextureHandle Context::createTextureImage(std::string image_path, VkFormat format) {
+TextureHandle Context::createTextureImage(int texWidth, int texHeight, int texChannels, VkFormat format) {
 
-	int texWidth, texHeight, texChannels;
-
-	stbi_uc* pixels = stbi_load(image_path.c_str(), &texWidth, &texHeight,
-		&texChannels, STBI_rgb_alpha);
-
-	VkDeviceSize imageSize = texWidth * texHeight * 4;
-
-	if (!pixels) {
-		throw std::runtime_error("failed to load texture image!");
-	}
 
 	uint32_t mipLevels = static_cast<uint32_t>(
 		std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
@@ -812,7 +804,7 @@ private:
 
 	Context* context;
 	DescriptorSetHandle frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
-	
+
 	Scene scene_ = createTestScene();
 
 	VmaAllocator app_allocator_;
@@ -910,16 +902,14 @@ private:
 	bool framebufferResized = false;
 #pragma endregion
 
-
+	MaterialInstanceHandle CreateDiffuseMaterial(std::string image_path);
 	void InitVulkanApp();
 
 	void CreateDefaultMaterialPipeline();
-	
+
 	void UploadScene();
 	void CreateStaticGeoBuffers();
 
-	DrawSet CreateStaticDrawSet(MeshData* data);
-	
 	std::vector<DrawSet> UploadStaticMeshData(std::vector<MeshData>& mesh_data);
 
 	void UpdateDeltaTime() {
@@ -1139,25 +1129,14 @@ private:
 			stagingBuffer,
 			stagingBufferMemory);
 
+
 		void* data;
 		vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
 		memcpy(data, pixels, static_cast<size_t>(imageSize));
 		vkUnmapMemory(device, stagingBufferMemory);
 
-		stbi_image_free(pixels);
-
-		auto texHandle = context->createTextureImage(texture_path, format);
+		auto texHandle = context->createTextureImage( texWidth, texHeight, texChannels, format);
 		auto texture_image = context->textures_.get(texHandle);
-
-		//createImage(
-		//	texWidth,
-		//	texHeight,
-		//	VK_FORMAT_R8G8B8A8_SRGB,
-		//	VK_IMAGE_TILING_OPTIMAL,
-		//	VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-		//	VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-		//	*texture_image
-		//);
 
 		transitionImageLayout(
 			texture_image->image,
@@ -1171,7 +1150,7 @@ private:
 			static_cast<uint32_t>(texHeight)
 		);
 
-		// We shoudl go just to general really;
+		// We should go just to general really;
 		transitionImageLayout(
 			texture_image->image,
 			VK_FORMAT_R8G8B8A8_SRGB,
@@ -1179,8 +1158,6 @@ private:
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		);
 
-		vkDestroyBuffer(device, stagingBuffer, nullptr);
-		vkFreeMemory(device, stagingBufferMemory, nullptr);
 		return texHandle;
 
 	}
@@ -1626,8 +1603,6 @@ private:
 		renderingInfo.pColorAttachments = &colorAttachment;
 		renderingInfo.pDepthAttachment = &depthAttachment;
 
-
-
 		vkCmdBeginRendering(commandBuffer, &renderingInfo);
 
 		// VIEWPORT
@@ -1696,15 +1671,16 @@ private:
 				//auto draw_set = static_draw_sets[scene_.meshForNode[i]];
 				const auto& draw_set = static_draw_sets[i];
 
-				auto material_instance_index = scene_.materialForNode[i];
-				if (!context->materialInstancesPool_.getHandle(material_instance_index).valid()) {
-					material_instance_index = 0;
-				}
+				//auto material_instance_index = scene_.materialForNode[i];
+				//if (!context->materialInstancesPool_.getHandle(material_instance_index).valid()) {
+				//	material_instance_index = 0;
+				//}
 
-				pc.material_instance_index = material_instance_index;
+				//int material_instance_index = ;
+				pc.material_instance_index = draw_set.material_index;
 
 				MaterialPushConstants pcm =
-					context->materialInstancesPool_.objects_[material_instance_index].obj_.values;
+					context->materialInstancesPool_.objects_[draw_set.material_index].obj_.values;
 
 				struct PC_All {
 					PushConstants pc;               // 144
@@ -1852,20 +1828,8 @@ void VulkanApp::CreateDefaultMaterialPipeline() {
 
 void VulkanApp::UploadScene() {
 
-	// This is crude. but lets get this working already
 	std::vector<MeshData> data_to_upload;
 	std::set<uint32_t> already_uploaded;
-	//for (int i = 0; i < scene_.hierarchy.size(); i++) {
-
-	//	auto mesh_id = scene_.meshForNode[i];
-	//	if (already_uploaded.contains(i)) {
-	//		continue;
-	//	}
-	//	already_uploaded.insert(i);
-
-
-
-
 
 	const GltfModel loaded_gltf = GltfModel(gltf_meshes_paths[0]);
 	for (auto mesh_data : loaded_gltf.mesh_data) {
@@ -1873,14 +1837,43 @@ void VulkanApp::UploadScene() {
 	}
 
 
-	for (auto material_data : ExtractMaterials(loaded_gltf.gltfModel)) {
+	std::unordered_map<std::string, int> already_assigned_;
+	int j = 0;
+
+	for (const auto& mesh : loaded_gltf.gltfModel.meshes) {
+		for (auto& primitive : mesh.primitives) {
+			auto path = baseColorPathFor(loaded_gltf.gltfModel, primitive, "./_extracted_textures");
+			if (path) {
+				if (already_assigned_.contains(*path)) {
+					data_to_upload[j].materialIndex = already_assigned_[*path];
+				}
+				else {
+					// Create and use the real handle index
+					MaterialInstanceHandle mat_h = CreateDiffuseMaterial("models/sponza/" + *path);
+
+					const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
+					already_assigned_[*path] = idx;
+					data_to_upload[j].materialIndex = idx;  // <-- assign for the *first* occurrence
+				}
+			}
+			else {
+				std::cout << "Primitive has no baseColor texture (or embedded not extracted).\n";
+				// consider setting a default/fallback material index here
+			}
+			j++;
+		}
 	}
-	
-	
+
 	static_draw_sets = UploadStaticMeshData(data_to_upload);
 
+}
+
+
+ MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) {
+
 	auto image1 = createTextureImage(
-		"textures/viking_room.png",
+		image_path,
+		//"textures/viking_room.png",
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
@@ -1894,15 +1887,10 @@ void VulkanApp::UploadScene() {
 		&context->textures_.get(image1)->sampler
 	);
 
-
 	auto material_pipe_0 = context->materialPipelinePool_.getHandle(0);
-
-	context->createMaterialInstance(material_pipe_0);
-	auto mat2_h = context->createMaterialInstance(material_pipe_0);
-	context->createMaterialInstance(material_pipe_0);
-
-
-	context->materialInstancesPool_.get(mat2_h)->values.texDiffuse = 1;
+	auto mat_h = context->createMaterialInstance(material_pipe_0);
+	context->materialInstancesPool_.get(mat_h)->values.texDiffuse = image1.index();
+	return mat_h;
 
 }
 
@@ -1920,7 +1908,7 @@ void VulkanApp::CreateStaticGeoBuffers() {
 	);
 
 	auto ibh = context->createBuffer(
-		totalVertexBytes,
+		totalIndexBytes,
 		VMA_MEMORY_USAGE_GPU_ONLY,
 		VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 	);
@@ -1930,95 +1918,6 @@ void VulkanApp::CreateStaticGeoBuffers() {
 	static_index_buffer_ = context->buffers_.get(ibh)->buffer;
 
 }
-//
-//std::vector<DrawSet> VulkanApp::UploadStaticMeshData(std::vector<MeshData>& mesh_data) {
-//	// THIS IS NOT WELL SUITED YET TO BE CALLED MORE THAN ONCE. THERES NO TRACKING OF V, I OFFSETS!!!
-//	assert(mesh_data.size() > 0);
-//
-//	uint32_t needed_vertexBytes_for_staging = 0;
-//	uint32_t needed_indexBytes_for_staging = 0;
-//	
-//	std::vector<DrawSet> mesh_draw_list = {};
-//
-//	for (int i = 0; i < mesh_data.size(); ++i) {
-//
-//		auto& m = mesh_data[i];
-//
-//		needed_vertexBytes_for_staging += sizeof(Vertex) * m.vertices.size();
-//		needed_indexBytes_for_staging += sizeof(uint32_t) * m.indices.size();
-//
-//		//runningVertexOffset += static_cast<uint32_t>(m.vertices.size());
-//		//runningFirstIndex += static_cast<uint32_t>(m.indices.size());
-//	}
-//
-//	// Staging + upload: VERTICES
-//	{
-//		VkBuffer stagingBuf; VmaAllocation stagingAlloc;
-//		VkBufferCreateInfo sInfo{
-//			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-//			.size = needed_vertexBytes_for_staging,
-//			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-//		};
-//		VmaAllocationCreateInfo sAlloc{};
-//		sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
-//		sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-//
-//		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
-//
-//		VkDeviceSize curr = 0; // byte offset
-//		for (int i = 0; i < mesh_data.size(); ++i) {
-//			const auto& m = mesh_data[i];
-//
-//			const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
-//			if (bytes == 0) continue;
-//
-//			DrawSet ds;
-//			ds.vert_offset = curr;
-//			mesh_draw_list.push_back(std::move(ds));
-//
-//			vmaCopyMemoryToAllocation(app_allocator_, m.vertices.data(), stagingAlloc, curr, bytes);
-//			curr += bytes;
-//		}
-//
-//		copyBuffer(stagingBuf, static_vertex_buffer_, needed_vertexBytes_for_staging);
-//		vmaDestroyBuffer(app_allocator_, stagingBuf, stagingAlloc);
-//	}
-//
-//	// Staging + upload: INDICES
-//	{
-//		VkBuffer stagingBuf; VmaAllocation stagingAlloc;
-//		VkBufferCreateInfo sInfo{
-//			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-//			.size = needed_indexBytes_for_staging,
-//			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-//		};
-//		VmaAllocationCreateInfo sAlloc{};
-//		sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
-//		sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-//
-//		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
-//
-//		VkDeviceSize curr = 0; // byte offset
-//		for (int i = 0; i < mesh_data.size(); ++i) {
-//			const auto& m = mesh_data[i];
-//			const VkDeviceSize bytes = sizeof(uint32_t) * m.indices.size();
-//			if (bytes == 0) continue;
-//
-//			mesh_draw_list[i].index_count = m.indices.size();
-//			mesh_draw_list[i].first_index = curr;
-//
-//			// Indices remain local (0-based). We won't rewrite them here.
-//			vmaCopyMemoryToAllocation(app_allocator_, m.indices.data(), stagingAlloc, curr, bytes);
-//			curr += bytes;
-//		}
-//
-//		copyBuffer(stagingBuf, static_index_buffer_, needed_indexBytes_for_staging);
-//		vmaDestroyBuffer(app_allocator_, stagingBuf, stagingAlloc);
-//	}
-//
-//	return mesh_draw_list;
-//
-//}
 
 std::vector<DrawSet> VulkanApp::UploadStaticMeshData(std::vector<MeshData>& mesh_data) {
 	assert(!mesh_data.empty());
@@ -2086,6 +1985,10 @@ std::vector<DrawSet> VulkanApp::UploadStaticMeshData(std::vector<MeshData>& mesh
 
 			mesh_draw_list[i].index_count = static_cast<uint32_t>(m.indices.size());
 			mesh_draw_list[i].first_index = static_cast<uint32_t>(currBytes / sizeof(uint32_t)); // ELEMENTS
+
+
+			// MAT!
+			mesh_draw_list[i].material_index = m.materialIndex;
 
 			if (bytes) {
 				vmaCopyMemoryToAllocation(app_allocator_, m.indices.data(), stagingAlloc, currBytes, bytes);

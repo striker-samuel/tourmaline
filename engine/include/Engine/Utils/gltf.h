@@ -13,9 +13,130 @@
 #include <vector>
 #include <string>
 
-
 #include <Engine/Renderer/vertex.h>
 #include <Engine/Renderer/primitives.h>
+
+#include <optional>
+#include <string>
+#include <fstream>
+
+// Tiny utility
+static inline bool starts_with(const std::string& s, const char* prefix) {
+	return s.rfind(prefix, 0) == 0;
+}
+
+// Choose a file extension from a mimeType (very crude)
+static inline std::string ext_from_mime(const std::string& mime) {
+	if (mime == "image/png")  return ".png";
+	if (mime == "image/jpeg") return ".jpg";
+	if (mime == "image/jpg")  return ".jpg";
+	if (mime == "image/bmp")  return ".bmp";
+	if (mime == "image/gif")  return ".gif";
+	if (mime == "image/webp") return ".webp";
+	return ".bin";
+}
+
+// Writes bytes to path (throws on failure)
+static inline std::string write_bytes(const std::string& path, const std::vector<unsigned char>& bytes) {
+	std::ofstream f(path, std::ios::binary);
+	if (!f) throw std::runtime_error("Failed to open " + path + " for writing");
+	f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+	if (!f) throw std::runtime_error("Failed to write all bytes to " + path);
+	return path;
+}
+
+/**
+ * Return the base color (diffuse) texture path for a primitive's assigned material.
+ * - If the texture comes from an external file, returns its URI (relative to the glTF).
+ * - If the texture is embedded (data URI or GLB bufferView):
+ *     - If extract_dir is non-empty, the image bytes are written there and the written path is returned.
+ *     - Otherwise, returns std::nullopt.
+ *
+ * This is intentionally "crude": no KHR_texture_transform, no search path resolving, etc.
+ */
+static std::optional<std::string>
+PrimitiveBaseColorImagePath(const tinygltf::Model& model,
+	const tinygltf::Primitive& primitive,
+	const std::string& extract_dir = std::string())
+{
+	// No material => no texture
+	if (primitive.material < 0 || primitive.material >= static_cast<int>(model.materials.size()))
+		return std::nullopt;
+
+	const tinygltf::Material& mat = model.materials[primitive.material];
+
+	// No baseColor texture declared
+	const auto& bc = mat.pbrMetallicRoughness.baseColorTexture;
+	if (bc.index < 0 || bc.index >= static_cast<int>(model.textures.size()))
+		return std::nullopt;
+
+	const tinygltf::Texture& tex = model.textures[bc.index];
+
+	// Texture must point to an image
+	if (tex.source < 0 || tex.source >= static_cast<int>(model.images.size()))
+		return std::nullopt;
+
+	const tinygltf::Image& img = model.images[tex.source];
+
+	// Case 1: External file via URI
+	if (!img.uri.empty() && !starts_with(img.uri, "data:")) {
+		// This is the path you can feed to your loader; it’s relative to the glTF file location.
+		return img.uri;
+	}
+
+	// Case 2: Embedded (data URI or GLB bufferView). TinyGLTF has already decoded bytes into img.image.
+	if (!img.image.empty()) {
+		if (extract_dir.empty()) {
+			// Caller didn’t ask us to extract; return nothing.
+			return std::nullopt;
+		}
+
+		// Decide a crude filename
+		std::string base = img.name.empty() ? "baseColor_" + std::to_string(tex.source) : img.name;
+		// sanitize very lightly (avoid slashes)
+		for (auto& c : base) if (c == '/' || c == '\\') c = '_';
+
+		std::string ext;
+		if (!img.mimeType.empty()) {
+			ext = ext_from_mime(img.mimeType);
+		}
+		else if (!img.uri.empty() && starts_with(img.uri, "data:")) {
+			// Try to parse mime from data URI header: data:image/png;base64,...
+			auto commaPos = img.uri.find(';');
+			auto colonPos = img.uri.find(':');
+			if (colonPos != std::string::npos && commaPos != std::string::npos && commaPos > colonPos + 1) {
+				ext = ext_from_mime(img.uri.substr(colonPos + 1, commaPos - (colonPos + 1)));
+			}
+			else {
+				ext = ".bin";
+			}
+		}
+		else if (!img.mimeType.empty()) {
+			ext = ext_from_mime(img.mimeType);
+		}
+		else {
+			// As a last resort, try the original URI’s extension (if any)
+			ext = ".bin";
+		}
+
+		std::string outPath = extract_dir;
+		if (!outPath.empty() && outPath.back() != '/' && outPath.back() != '\\')
+			outPath += '/';
+		outPath += base + ext;
+
+		try {
+			return write_bytes(outPath, img.image);
+		}
+		catch (const std::exception& e) {
+			std::cerr << "Failed to extract embedded image: " << e.what() << std::endl;
+			return std::nullopt;
+		}
+	}
+
+	// If we get here, we didn’t find a usable path/bytes
+	return std::nullopt;
+}
+
 
 
 static inline size_t gltfElementSize(const tinygltf::Accessor& a) {
@@ -258,6 +379,8 @@ std::vector<GltfMaterial> ExtractMaterials(const tinygltf::Model& model)
 	return out;
 }
 
+
+
 // Models contains scenes, scenes contain meshes, and meshes: primitives.
 class GltfModel {
 
@@ -268,6 +391,7 @@ public:
 
 	tinygltf::Model gltfModel;
 	std::vector<MeshData> mesh_data;
+
 
 	GltfModel(std::string model_path) {
 		std::string warn, err;
@@ -340,3 +464,9 @@ public:
 		}
 	}
 };
+
+std::optional<std::string>
+	baseColorPathFor(const tinygltf::Model& gltfModel, const tinygltf::Primitive& prim, const std::string& extract_dir = std::string()) {
+	return PrimitiveBaseColorImagePath(gltfModel, prim, extract_dir);
+}
+
