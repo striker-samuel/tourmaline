@@ -12,7 +12,7 @@
 
 #define VMA_IMPLEMENTATION
 
-#define VMA_VULKAN_VERSION 1003800 // Vulkan 1.4
+#define VMA_VULKAN_VERSION 1003800
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
 #include <vk_mem_alloc.h>
@@ -98,19 +98,16 @@ struct DynamicMesh {
 // Lets go with uniform_layouts ext. GENERAL and UNDEFINED
 struct Texture {
 
-	// to be able to free. or queryu memory info. Could be moved really.
 	VmaAllocation allocation;
 	VmaAllocationInfo allocInfo;
 
 	VkImage image;
 	VkImageView imageView;
-	// This is far from good.
 	VkSampler sampler;
 	// Other properties and attributes
 
-	// I could use debug name
-	// Srgb/lienar others
 	VkFormat format;
+	int mipLevels = 1;
 
 };
 
@@ -197,8 +194,6 @@ struct DescriptorSet {
 	VkDescriptorSet set;
 };
 
-
-
 // If theres only one I probably could go with argv
 std::vector<std::string> gltf_meshes_paths = {
 	"models/Sponza/sponza.gltf" // Index 0
@@ -230,12 +225,53 @@ Scene createTestScene() {
 	return scene;
 }
 
+
+
+
+void createSampler(
+	const VkPhysicalDevice& physicalDevice,
+	const VkDevice& device,
+	VkSampler& sampler
+) {
+	VkSamplerCreateInfo samplerInfo{};
+	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	samplerInfo.magFilter = VK_FILTER_LINEAR;
+	samplerInfo.minFilter = VK_FILTER_LINEAR;
+
+	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+
+	VkPhysicalDeviceProperties properties{};
+	vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+
+	samplerInfo.anisotropyEnable = VK_TRUE;
+	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+
+	assert(properties.limits.maxUniformBufferRange >= 1 << 16);
+
+	samplerInfo.unnormalizedCoordinates = VK_FALSE;
+	samplerInfo.compareEnable = VK_FALSE;
+	samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+
+	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	samplerInfo.mipLodBias = 0.0f;
+	samplerInfo.minLod = 0.0f;
+	samplerInfo.maxLod = 0.0f;
+
+	VK_CHECK(vkCreateSampler(device, &samplerInfo, nullptr, &sampler));
+
+}
+
+
 // This style of handling things is lifted up from LightweightVk.
 class Context {
 
 	// 1 allocator per device. Device is implicit in allocator...
 	VmaAllocator* allocator_;
 	VkDevice* device_;
+	VkPhysicalDevice* physicalDevice_;
 
 	// These three things are primary citizens of Device Memory Residency
 	VmaPool D_2DImagesPool;
@@ -253,6 +289,7 @@ public:
 
 	VkCommandPool default_command_pool;
 	VkQueue default_queue;
+	VkSampler default_sampler;
 
 	// We neeed VkDescriptorPool pools here
 	// We move from VkDp to another because its cheaper to reset them than to evict particular sets.
@@ -276,6 +313,9 @@ public:
 
 		allocator_ = allocator;
 		device_ = device;
+		physicalDevice_ = physicalDevice;
+
+		createSampler(*physicalDevice_, *device_, default_sampler);
 
 		// Lets reserve upfront.
 		textures_.objects_.reserve(MAX_TEXTURES);
@@ -329,7 +369,9 @@ public:
 			imgCI.arrayLayers = 1;
 			imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
 			imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
-			imgCI.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+			imgCI.usage = VK_IMAGE_USAGE_SAMPLED_BIT
+				| VK_IMAGE_USAGE_TRANSFER_DST_BIT
+				| VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // for vkCmdBlitImage when building mips
 
 			VmaAllocationCreateInfo aCI{};
 			aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
@@ -389,7 +431,10 @@ public:
 	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
 	MaterialInstanceHandle createMaterialInstance(MaterialPipelineHandle mat_pipeline);
 
-	TextureHandle createTextureImage(int texWidth, int texHeight, int texChannels, VkFormat format);
+	void createImage(int texWidth, int texHeight, int texChannels, VkFormat format, VkImage& image);
+	void createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, VkImageView& imageView);
+
+	TextureHandle createTexture(int texWidth, int texHeight, int texChannels, VkFormat format, VkImageAspectFlagBits aspectFlags, void* data);
 
 	DescriptorLayoutHandle createDescriptorLayout();
 	DescriptorPoolHandle createDescriptorPool();
@@ -405,6 +450,44 @@ public:
 	void UploadDataToBuffer(DeviceBufferDescriptionHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
 
 };
+//
+//struct ImageView {
+//	ImageHandle image;
+//	VkImageView view;
+//	VkImageViewType type;
+//
+//	// Subresource fields
+//	VkImageAspectFlags aspectMask;
+//	uint32_t baseMipLevel;
+//	uint32_t levelCount;
+//	uint32_t baseArrayLayer;
+//	uint32_t layerCount;
+//};
+
+// This maybe should be moved out of Context really;
+void Context::createImageView(VkImage image,
+	VkFormat format,
+	VkImageAspectFlags aspectFlags,
+	//int mipLevels,
+	VkImageView& imageView
+) {
+	VkImageViewCreateInfo viewInfo{};
+	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	viewInfo.image = image;
+	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	viewInfo.format = format;
+
+
+	viewInfo.subresourceRange.aspectMask = aspectFlags;
+	viewInfo.subresourceRange.baseMipLevel = 0;
+	viewInfo.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
+	//viewInfo.subresourceRange.levelCount = mipLevels;
+	viewInfo.subresourceRange.baseArrayLayer = 0;
+	viewInfo.subresourceRange.layerCount = 1;
+
+	VK_CHECK(vkCreateImageView(*device_, &viewInfo, nullptr, &imageView));
+
+}
 
 DescriptorSetHandle Context::createDescriptorSet(
 	DescriptorLayoutHandle lyt
@@ -711,7 +794,37 @@ MaterialInstanceHandle Context::createMaterialInstance(MaterialPipelineHandle ma
 	return materialInstancesPool_.create(std::move(mat_instance));
 }
 
-TextureHandle Context::createTextureImage(int texWidth, int texHeight, int texChannels, VkFormat format) {
+TextureHandle Context::createTexture(
+	int texWidth,
+	int texHeight,
+	int texChannels,
+	VkFormat format,
+	VkImageAspectFlagBits aspectFlags,
+	void* data
+) {
+	// Create image
+	uint32_t mipLevels = static_cast<uint32_t>(
+		std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
+
+	//VkImage
+	VkImage image = VK_NULL_HANDLE;
+	VmaAllocation alloc = VK_NULL_HANDLE;
+
+	Texture tex{};
+	tex.allocation = alloc;
+	tex.format = format;
+	tex.image = image;
+	tex.mipLevels = mipLevels;
+
+	createImage(texWidth, texHeight, texChannels, format,tex.image);
+	createImageView(tex.image, format, aspectFlags, tex.imageView);
+	//createSampler(*physicalDevice_, *device_, tex.sampler);
+	tex.sampler = default_sampler;
+
+	return textures_.create(std::move(tex));
+}
+
+void Context::createImage(int texWidth, int texHeight, int texChannels, VkFormat format, VkImage& image) {
 
 
 	uint32_t mipLevels = static_cast<uint32_t>(
@@ -729,12 +842,15 @@ TextureHandle Context::createTextureImage(int texWidth, int texHeight, int texCh
 		| VK_IMAGE_USAGE_TRANSFER_DST_BIT;        // upload via copy
 	imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	imgCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;              // we’ll transition later. Well jus use transition General always
+	imgCI.mipLevels = mipLevels;
+	imgCI.usage = VK_IMAGE_USAGE_SAMPLED_BIT
+		| VK_IMAGE_USAGE_TRANSFER_DST_BIT
+		| VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // for vkCmdBlitImage when building mips
 
 	VmaAllocationCreateInfo aCI{};
 	aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
 	aCI.pool = D_2DImagesPool;                      // <--- CRITICAL: place this allocation in the pool
 
-	VkImage image = VK_NULL_HANDLE;
 	VmaAllocation alloc = VK_NULL_HANDLE;
 	VmaAllocationInfo allocInfo{};
 
@@ -742,16 +858,6 @@ TextureHandle Context::createTextureImage(int texWidth, int texHeight, int texCh
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("vmaCreateImage (in pool) failed");
 	}
-
-	Texture tex{};
-	tex.allocation = alloc;
-	tex.format = format;
-	tex.image = image;
-	//tex.imageView
-
-	TextureHandle imgHandle = textures_.create(std::move(tex));
-
-	return imgHandle;
 
 }
 
@@ -780,8 +886,6 @@ void destroy(Context* ctx, DeviceBufferDescriptionHandle handle) {
 
 };
 
-
-
 class VulkanApp {
 
 public:
@@ -793,14 +897,10 @@ public:
 
 private:
 
-
-	// MESH UPLOAD CRUDE IMPL
-
+	// This really crude. Just temp
 	BufferHandle index_bfh;
 	BufferHandle vertex_bfh;
 	std::vector<DrawSet> static_draw_sets;
-
-	//
 
 	Context* context;
 	DescriptorSetHandle frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
@@ -941,22 +1041,27 @@ private:
 				glm::vec2(x / width_, y / -height_),
 				rightMousePressed);
 
-			//std::cout << camera_.getPosition() << std::endl;
-			// Synthetic movement
-			//for (size_t i = 0; i < scene_.localTransform.size(); ++i) {
-			//	glm::mat4& local = scene_.localTransform[i];
-			//	float phase = std::sin(i + delta_time_ * 0.35f);  // staggered phases
-			//	local[3][0] = static_cast<float>(i) * 1.4f + phase;
-			//	markAsChanged(scene_, i);
-			//}
+			Update();
 
 			recalculateGlobalTransforms(scene_);
-
 			drawFrame();
 
 		}
 
 		vkDeviceWaitIdle(device);
+	}
+
+
+	void Update() {
+			std::cout << camera_.getPosition() << std::endl;
+			//Synthetic movement
+			for (size_t i = 0; i < scene_.localTransform.size(); ++i) {
+				glm::mat4& local = scene_.localTransform[i];
+				float phase = std::sin(i + delta_time_ * 0.35f);  // staggered phases
+				local[3][0] = static_cast<float>(i) * 10.4f + phase;
+				markAsChanged(scene_, i);
+			}
+
 	}
 
 	void cleanupSwapChain() {
@@ -1135,7 +1240,7 @@ private:
 		memcpy(data, pixels, static_cast<size_t>(imageSize));
 		vkUnmapMemory(device, stagingBufferMemory);
 
-		auto texHandle = context->createTextureImage( texWidth, texHeight, texChannels, format);
+		auto texHandle = context->createTexture(texWidth, texHeight, texChannels, format, VK_IMAGE_ASPECT_COLOR_BIT, NULL);
 		auto texture_image = context->textures_.get(texHandle);
 
 		transitionImageLayout(
@@ -1170,41 +1275,6 @@ private:
 			VK_IMAGE_ASPECT_COLOR_BIT,
 			*textureImageView
 		);
-	}
-
-	void createTextureSampler(VkSampler* textureSampler) {
-		VkSamplerCreateInfo samplerInfo{};
-		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-		samplerInfo.magFilter = VK_FILTER_LINEAR;
-		samplerInfo.minFilter = VK_FILTER_LINEAR;
-
-		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-
-		VkPhysicalDeviceProperties properties{};
-		vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-
-		samplerInfo.anisotropyEnable = VK_TRUE;
-		samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-		samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-
-		assert(properties.limits.maxUniformBufferRange >= 1 << 16);
-
-		samplerInfo.unnormalizedCoordinates = VK_FALSE;
-		samplerInfo.compareEnable = VK_FALSE;
-		samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-
-		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-		samplerInfo.mipLodBias = 0.0f;
-		samplerInfo.minLod = 0.0f;
-		samplerInfo.maxLod = 0.0f;
-
-		if (vkCreateSampler(device, &samplerInfo, nullptr, textureSampler) !=
-			VK_SUCCESS) {
-			throw std::runtime_error("failed to create texture sampler!");
-		}
-
 	}
 
 	void createImageView(
@@ -1869,7 +1939,7 @@ void VulkanApp::UploadScene() {
 }
 
 
- MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) {
+MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) {
 
 	auto image1 = createTextureImage(
 		image_path,
@@ -1883,9 +1953,17 @@ void VulkanApp::UploadScene() {
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
 
-	createTextureSampler(
-		&context->textures_.get(image1)->sampler
+	createSampler(
+		physicalDevice,
+		device,
+		context->textures_.get(image1)->sampler
 	);
+
+
+	//diffuse_texture_handle = context->createTexture(
+
+	//);
+
 
 	auto material_pipe_0 = context->materialPipelinePool_.getHandle(0);
 	auto mat_h = context->createMaterialInstance(material_pipe_0);
