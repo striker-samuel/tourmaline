@@ -1,3 +1,5 @@
+#pragma once
+
 #include <stdint.h>
 
 class Context;
@@ -49,6 +51,7 @@ private:
 
 static_assert(sizeof(Handle<class Foo>) == sizeof(uint64_t));
 
+// specialized with dummy structs for type safety
 using ShaderModuleHandle = Handle<struct ShaderModule>;
 using BufferHandle = Handle<struct Buffer>;
 using TextureHandle = Handle<struct Texture>;
@@ -60,17 +63,6 @@ using DescriptorSetHandle = Handle<struct DescriptorSet>;
 using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
 using DeviceBufferDescriptionHandle = Handle<struct DeviceBufferDescription>;
 using StaticGeoMeshRangeHandle = Handle<struct StaticGeoMeshRange>;
-
-// specialized with dummy structs for type safety
-//using ImageHandle = Handle<struct Image>;
-//using ComputePipelineHandle = lvk::Handle<struct ComputePipeline>;
-//using RenderPipelineHandle = lvk::Handle<struct RenderPipeline>;
-//using RayTracingPipelineHandle = lvk::Handle<struct RayTracingPipeline>;
-//using SamplerHandle = lvk::Handle<struct Sampler>;
-//using BufferHandle = lvk::Handle<struct Buffer>;
-//using TextureHandle = lvk::Handle<struct Texture>;
-//using QueryPoolHandle = lvk::Handle<struct QueryPool>;
-//using AccelStructHandle = lvk::Handle<struct AccelerationStructure>;
 
 void destroy(Context* ctx, ShaderModuleHandle handle);
 void destroy(Context* ctx, BufferHandle handle);

@@ -76,15 +76,6 @@ struct ViewProjUniform {
 	alignas(16) glm::mat4 proj;
 };
 
-//struct GPULight {
-//	// Maybe we dont need scale and can compact here.
-//	glm::mat4 transform;
-//	//type
-//	//cone
-//	//color
-//	//intensity
-//} DefaultLight;
-
 // Dont like this. currently limited by the 16 byte stride.
 // Maybe i could do away with it but that needs ext checking and enalbing and mods in shader code
 struct alignas(16) IndexSlot {
@@ -100,4 +91,103 @@ struct PushConstants {
 	// A single MaterialModel. shader code, layout , rastersettings, can have many instancs with individual image attachments and constants.
 	int material_instance_index;
 	uint32_t     _pad0[3];
+};
+
+// Lets just assume offsets into the static index/vertex buffers for now :)
+struct DrawSet {
+	uint32_t first_index = 0;
+	uint32_t vert_offset = 0;
+	uint32_t index_count = 0;
+
+	// This is handled scene side. This is just temp
+	uint32_t material_index = 0;
+
+};
+
+// ------------------------------------------------------------------------------------------------
+// This is the neeeded Host side state to manage meshes.
+// This is whats needed for the geometry part of the drawcall. Materials are codified per sceneNode.
+struct DynamicMesh {
+
+	VmaAllocation allocation;
+	VmaAllocationInfo allocInfo;
+	// Im gonna have a standard format so no propreties for selecting tri, fan, or else
+
+	uint32_t first_index = 0;
+	uint32_t vert_offset = 0;
+	uint32_t index_count = 0;
+
+	// LOD should choose first index and voffset but lets keep this like this.... its not that clear yet to me how to manage that properly
+	uint32_t LOD;
+
+	// I prefer to manage material + attachentes via MaterialInstanceInstead.
+	// but maybe i could have a ref for ez acces here?
+	//MaterialInstanceHandle material_instance;
+
+	// Maybe name
+	//uint32_t name;
+
+};
+
+// Lets go with uniform_layouts ext. GENERAL and UNDEFINED
+struct Texture {
+
+	VmaAllocation allocation;
+	VmaAllocationInfo allocInfo;
+
+	VkImage image;
+	VkImageView imageView;
+	VkSampler sampler;
+	// Other properties and attributes
+
+	VkFormat format;
+	int mipLevels = 1;
+
+};
+
+// Initialized with crude defaults;
+struct RasterSettings {
+	uint32_t depthClampEnable = VK_FALSE;
+	uint32_t rasterizerDiscardEnable = VK_FALSE;
+	uint32_t polygonMode = VK_POLYGON_MODE_FILL;
+	uint32_t lineWidth = 1.0f;
+	uint32_t cullMode = VK_CULL_MODE_BACK_BIT;
+	uint32_t frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	uint32_t depthBiasEnable = VK_FALSE;
+} default_raster_settings;
+
+// This gets uploaded to Device. stride contraints!
+// This will go with pushcontants. May require specialization per shader model
+struct MaterialPushConstants {
+
+	// Color *=
+	glm::vec4 ambient = glm::vec4(0.0f);
+	glm::vec4 diffuse = glm::vec4(0.0f);
+
+
+	// Index to bindless texture array. Doing this like so obviously makes it so we only have one def for material texture slots
+	uint32_t texAmbient = 0;
+	uint32_t texDiffuse = 0;
+	uint32_t texAlpha = 0;
+	uint32_t padding[1];
+
+} default_mat_pc;
+
+static_assert(sizeof(MaterialPushConstants) % 16 == 0);
+
+// Buffer state.
+struct DeviceBufferDescription {
+
+	VkBuffer buffer;
+	VmaAllocation alloc;
+	VmaAllocationInfo allocInfo;
+	VkBufferUsageFlags usage;
+
+	// Did it end in mappable memory? This is important to know for proper upload. Discard the bool in the future use 
+	VkMemoryPropertyFlags memory_flags;
+	// Helpers to interrogate buffer
+	bool is_mapapble() const {
+		return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+	}
+
 };

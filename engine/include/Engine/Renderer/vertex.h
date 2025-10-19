@@ -22,7 +22,6 @@ struct Vertex {
 
 };
 
-
 namespace std {
 	template<> struct hash<Vertex> {
 		size_t operator()(Vertex const& vertex) const {
