@@ -2,7 +2,6 @@
 
 #include <engine/Vulkan/vulkan_setup.h>
 
-
 void createSampler(
 	const VkPhysicalDevice& physicalDevice,
 	const VkDevice& device,
@@ -24,6 +23,8 @@ void createSampler(
 	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
 	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
 
+	// This is a hardware/spec limit. Thats why im asserting here...
+	// Maybe we can query gpu capabilities to give better paths to more powerful devices.
 	assert(properties.limits.maxUniformBufferRange >= 1 << 16);
 
 	samplerInfo.unnormalizedCoordinates = VK_FALSE;

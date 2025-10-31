@@ -63,6 +63,9 @@ class Context {
 	VmaPool D_DynamicMeshPool;
 	VmaPool D_StagingPool;
 
+	// Im gonna need a custom str type... lets use std::string for now.
+	std::unordered_map<std::string, VkSampler> samplers;
+
 public:
 
 	DescriptorPoolHandle default_descriptor_pool;
@@ -70,7 +73,6 @@ public:
 
 	VkCommandPool default_command_pool;
 	VkQueue default_queue;
-	VkSampler default_sampler;
 
 	// We neeed VkDescriptorPool pools here
 	// We move from VkDp to another because its cheaper to reset them than to evict particular sets.
@@ -96,7 +98,10 @@ public:
 		device_ = device;
 		physicalDevice_ = physicalDevice;
 
+		VkSampler default_sampler;
 		createSampler(*physicalDevice_, *device_, default_sampler);
+		// Samplers are driver objs. can be copied like this np.
+		samplers["default"] = default_sampler;
 
 		// Lets reserve upfront.
 		textures_.objects_.reserve(MAX_TEXTURES);
@@ -210,6 +215,8 @@ public:
 	ShaderModuleHandle createShaderModule(std::vector<char> code);
 	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
 	MaterialInstanceHandle createMaterialInstance(MaterialPipelineHandle mat_pipeline);
+
+	void getAppropiateSampler(Texture& texture);
 
 	void createImage(int texWidth, int texHeight, VkFormat format, VkImage& image, VmaAllocation& alloc);
 	void createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, VkImageView& imageView);
@@ -683,7 +690,12 @@ TextureHandle Context::createTexture(
 	VkImageAspectFlagBits aspectFlags,
 	void* data
 ) {
-	// Create image
+
+
+	// Textures need specialization for each usage... like diffuse, normal whatevs. 2D, 3D.....
+	// Specialization should be achieved with an App defined data structure that exposes needed determining factors.
+	// This will be slowly built while making a trye app.
+
 	uint32_t mipLevels = static_cast<uint32_t>(
 		std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
 
@@ -748,11 +760,24 @@ TextureHandle Context::createTexture(
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
 
-	//createSampler(*physicalDevice_, *device_, tex.sampler);
-	tex.sampler = default_sampler;
+
+	getAppropiateSampler(tex);
 
 	return textures_.create(std::move(tex));
 }
+
+
+void Context::getAppropiateSampler(Texture& texture) {
+
+
+	//VkSampler _sampler;
+	//createSampler(*physicalDevice_, *device_, _sampler);
+
+
+	// We should try to define here which sampler would work for this texture. Sepecialization.
+	texture.sampler = samplers["default"];
+
+};
 
 void Context::createImage(int texWidth, int texHeight, VkFormat format, VkImage& image, VmaAllocation& alloc) {
 

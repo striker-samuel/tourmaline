@@ -134,19 +134,26 @@ enum TextureLyt {
 	GENERAL
 };
 
+enum TextureType {
+	DIFFUSE
+};
+
 // Lets go with uniform_layouts ext. GENERAL and UNDEFINED
 struct Texture {
 
+	// Mem	
 	VmaAllocation allocation;
 	VmaAllocationInfo allocInfo;
 
-	VkImage image;
 	TextureLyt image_lyt = DST;
+	TextureType texture_type = DIFFUSE;
+
+	VkImage image;
 	VkImageView imageView;
 	VkSampler sampler;
-	// Other properties and attributes
-
 	VkFormat format;
+
+	// Mip Level 0 is base. But an image with only base mip has mipLevels 1
 	int mipLevels = 1;
 
 };
