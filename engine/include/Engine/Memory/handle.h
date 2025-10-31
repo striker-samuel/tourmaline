@@ -61,7 +61,7 @@ using MaterialInstanceHandle = Handle<struct MaterialInstance>;
 using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 using DescriptorSetHandle = Handle<struct DescriptorSet>;
 using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
-using DeviceBufferDescriptionHandle = Handle<struct DeviceBufferDescription>;
+using DeviceBufferDescriptionHandle = Handle<struct BufferDescription>;
 using StaticGeoMeshRangeHandle = Handle<struct StaticGeoMeshRange>;
 
 void destroy(Context* ctx, ShaderModuleHandle handle);

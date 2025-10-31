@@ -554,7 +554,9 @@ void createGraphicsPipeline(
 
 }
 
-VkCommandBuffer bstCommand(VkDevice device, VkCommandPool commandPool) {
+VkCommandBuffer beginSingleTimeCommands(
+	VkDevice device,
+	VkCommandPool commandPool) {
 	VkCommandBufferAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -573,7 +575,7 @@ VkCommandBuffer bstCommand(VkDevice device, VkCommandPool commandPool) {
 	return commandBuffer;
 }
 
-void endstcommand(VkDevice device, VkCommandBuffer commandBuffer, VkQueue queue, VkCommandPool commandPool) {
+void endSingleTimeCommands(VkDevice device, VkCommandBuffer commandBuffer, VkQueue queue, VkCommandPool commandPool) {
 	vkEndCommandBuffer(commandBuffer);
 
 	VkSubmitInfo submitInfo{};

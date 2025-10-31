@@ -166,6 +166,7 @@ private:
 
 #pragma region ===[ Pipeline / Render Resources ]===
 	// We separate command pools for each frames becuase its cheaper to reset them this way
+
 	VkCommandPool framesCommandPool[MAX_FRAMES_IN_FLIGHT];
 	VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
 
@@ -250,15 +251,14 @@ private:
 	}
 
 	void Update() {
-			//std::cout << camera_.getPosition() << std::endl;
-			////Synthetic movement
-			//for (size_t i = 0; i < scene_.localTransform.size(); ++i) {
-			//	glm::mat4& local = scene_.localTransform[i];
-			//	float phase = std::sin(i + delta_time_ * 0.35f);  // staggered phases
-			//	local[3][0] = static_cast<float>(i) * 10.4f + phase;
-			//	markAsChanged(scene_, i);
-			//}
-
+		//std::cout << camera_.getPosition() << std::endl;
+		////Synthetic movement
+		//for (size_t i = 0; i < scene_.localTransform.size(); ++i) {
+		//	glm::mat4& local = scene_.localTransform[i];
+		//	float phase = std::sin(i + delta_time_ * 0.35f);  // staggered phases
+		//	local[3][0] = static_cast<float>(i) * 10.4f + phase;
+		//	markAsChanged(scene_, i);
+		//}
 	}
 
 	void cleanupSwapChain() {
@@ -409,70 +409,36 @@ private:
 
 	// --------------------------
 
-	TextureHandle createTextureImage(std::string texture_path, VkFormat format) {
+	TextureHandle createTexture(std::string texture_path, VkFormat format) {
 		int texWidth, texHeight, texChannels;
 
 		stbi_uc* pixels = stbi_load(texture_path.c_str(), &texWidth, &texHeight,
 			&texChannels, STBI_rgb_alpha);
 
-		VkDeviceSize imageSize = texWidth * texHeight * 4;
 
 		if (!pixels) {
 			throw std::runtime_error("failed to load texture image!");
 		}
 
-		VkBuffer stagingBuffer;
-		VkDeviceMemory stagingBufferMemory;
-		createBuffer(
-			imageSize,
-			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-			VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			stagingBuffer,
-			stagingBufferMemory);
-
-
-		void* data;
-		vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
-		memcpy(data, pixels, static_cast<size_t>(imageSize));
-		vkUnmapMemory(device, stagingBufferMemory);
-
-		auto texHandle = context->createTexture(texWidth, texHeight, texChannels, format, VK_IMAGE_ASPECT_COLOR_BIT, NULL);
-		auto texture_image = context->textures_.get(texHandle);
-
-		transitionImageLayout(
-			texture_image->image,
-			VK_FORMAT_R8G8B8A8_SRGB,
-			VK_IMAGE_LAYOUT_UNDEFINED,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-		copyBufferToImage(stagingBuffer,
-			texture_image->image,
-			static_cast<uint32_t>(texWidth),
-			static_cast<uint32_t>(texHeight)
-		);
-
-		// We should go just to general really;
-		transitionImageLayout(
-			texture_image->image,
-			VK_FORMAT_R8G8B8A8_SRGB,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		);
+		// Lets for texChannels to 4 for now.
+		texChannels = 4;
+		auto texHandle = context->createTexture(texWidth, texHeight, texChannels, format, VK_IMAGE_ASPECT_COLOR_BIT, pixels);
 
 		return texHandle;
 
 	}
 
-	void createTextureImageView(const VkImage* textureImage, VkImageView* textureImageView, VkFormat format) {
-		createImageView(
-			*textureImage,
-			format,
-			//VK_FORMAT_R8G8B8A8_SRGB,
-			VK_IMAGE_ASPECT_COLOR_BIT,
-			*textureImageView
-		);
-	}
+	//void createTextureImageView(
+	//	const VkImage* textureImage,
+	//	VkImageView* textureImageView, VkFormat format) {
+	//	createImageView(
+	//		*textureImage,
+	//		format,
+	//		//VK_FORMAT_R8G8B8A8_SRGB,
+	//		VK_IMAGE_ASPECT_COLOR_BIT,
+	//		*textureImageView
+	//	);
+	//}
 
 	void createImageView(
 		VkImage image,
@@ -534,9 +500,13 @@ private:
 	}
 
 
-	void transitionImageLayout(VkImage image, VkFormat format,
-		VkImageLayout oldLayout, VkImageLayout newLayout) {
-		VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+	void transitionImageLayout(
+		VkImage image,
+		VkFormat format,
+		VkImageLayout oldLayout,
+		VkImageLayout newLayout
+	) {
+		VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, context->default_command_pool);
 
 		VkImageMemoryBarrier barrier{};
 		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -597,12 +567,12 @@ private:
 		vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0,
 			nullptr, 0, nullptr, 1, &barrier);
 
-		endSingleTimeCommands(commandBuffer);
+		endSingleTimeCommands(device, commandBuffer, graphicsQueue_, context->default_command_pool);
 	}
 
 	void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width,
 		uint32_t height) {
-		VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+		VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, context->default_command_pool);
 
 		VkBufferImageCopy region{};
 		region.bufferOffset = 0;
@@ -618,7 +588,7 @@ private:
 		vkCmdCopyBufferToImage(commandBuffer, buffer, image,
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-		endSingleTimeCommands(commandBuffer);
+		endSingleTimeCommands(device, commandBuffer, graphicsQueue_, context->default_command_pool);
 	}
 
 	void createInstanceDataBuffers() {
@@ -1052,8 +1022,6 @@ private:
 	void handleKey(int key, int scancode, int action, int mods);
 
 	// utils
-	VkCommandBuffer beginSingleTimeCommands();
-	void endSingleTimeCommands(VkCommandBuffer commandBuffer);
 	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 
 	// TEMP
@@ -1134,30 +1102,12 @@ void VulkanApp::UploadScene() {
 
 MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) {
 
-	auto image1 = createTextureImage(
+	auto image1 = createTexture(
 		image_path,
 		//"textures/viking_room.png",
 		VK_FORMAT_R8G8B8A8_SRGB
 	);
-
-	createTextureImageView(
-		&context->textures_.get(image1)->image,
-		&context->textures_.get(image1)->imageView,
-		VK_FORMAT_R8G8B8A8_SRGB
-	);
-
-	createSampler(
-		physicalDevice,
-		device,
-		context->textures_.get(image1)->sampler
-	);
-
-
-	//diffuse_texture_handle = context->createTexture(
-
-	//);
-
-
+	
 	auto material_pipe_0 = context->materialPipelinePool_.getHandle(0);
 	auto mat_h = context->createMaterialInstance(material_pipe_0);
 	context->materialInstancesPool_.get(mat_h)->values.texDiffuse = image1.index();
@@ -1312,7 +1262,7 @@ inline void VulkanApp::UpdateInstanceBuffer(uint32_t currentImage) {
 
 	// This is bad, will stall. Frame update should use same command buffer for all update operations.
 	// FrameGraph! FrameGraph!
-	VkCommandBuffer cmdBuf = beginSingleTimeCommands();
+	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, context->default_command_pool);
 
 	static_assert(sizeof(IndexSlot) * MAX_INSTANCES < (1 << 16),
 		"Instance buffer too large for 64KB UBO limit");
@@ -1336,7 +1286,7 @@ inline void VulkanApp::UpdateInstanceBuffer(uint32_t currentImage) {
 		VK_ACCESS_SHADER_READ_BIT
 	);
 
-	endSingleTimeCommands(cmdBuf);
+	endSingleTimeCommands(device, cmdBuf, graphicsQueue_, context->default_command_pool);
 	delete[] data;
 }
 
@@ -1808,23 +1758,14 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 	app->framebufferResized = true;
 }
 
-VkCommandBuffer VulkanApp::beginSingleTimeCommands() {
-	return bstCommand(device, framesCommandPool[currentFrame]);
-}
-
-void VulkanApp::endSingleTimeCommands(VkCommandBuffer commandBuffer) {
-	endstcommand(device, commandBuffer, graphicsQueue_, framesCommandPool[currentFrame]);
-
-}
-
 void VulkanApp::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, context->default_command_pool);
 
 	VkBufferCopy copyRegion{};
 	copyRegion.size = size;
 	vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
 
-	endSingleTimeCommands(commandBuffer);
+	endSingleTimeCommands(device, commandBuffer, graphicsQueue_, context->default_command_pool);
 }
 
 int main(int argc, const char* argv[]) {

@@ -14,7 +14,7 @@ struct DescriptorSet {
 	VkDescriptorSet set;
 };
 
-// Materials aabstractions area really PipelineObjets. Raster conf, shader objs, descriptorlayout. 
+// Materials abstractions area really PipelineObjets. Raster conf, shader objs, descriptorlayout. 
 // MaterialAttachments must match desc layout, adn MaterialConstants pc layout
 // So we bake the POS. VkPipelineCache not implemented now
 // Another name fot his could be MatModel?
@@ -75,7 +75,7 @@ public:
 	// We neeed VkDescriptorPool pools here
 	// We move from VkDp to another because its cheaper to reset them than to evict particular sets.
 	// Same with CommandPools. I have a stupid simple design now with just 1 CommandPool.
-	Pool<DeviceBufferDescription, DeviceBufferDescription> buffers_;
+	Pool<BufferDescription, BufferDescription> buffers_;
 	Pool<Texture, Texture> textures_;
 	Pool<DynamicMesh, DynamicMesh> meshes_;
 
@@ -204,13 +204,22 @@ public:
 	}
 
 	// Resource creation
+	DeviceBufferDescriptionHandle CreateStagingBuffer(VkDeviceSize size);
+	DeviceBufferDescriptionHandle CreateStagingBuffer(const void* srcData, VkDeviceSize size);
 
 	ShaderModuleHandle createShaderModule(std::vector<char> code);
 	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
 	MaterialInstanceHandle createMaterialInstance(MaterialPipelineHandle mat_pipeline);
 
-	void createImage(int texWidth, int texHeight, int texChannels, VkFormat format, VkImage& image);
+	void createImage(int texWidth, int texHeight, VkFormat format, VkImage& image, VmaAllocation& alloc);
 	void createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, VkImageView& imageView);
+
+	void UploadToImage(VkImage& image, void* data);
+
+	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+
+	VkCommandBuffer GetCommandBuffer();
+	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
 
 	TextureHandle createTexture(int texWidth, int texHeight, int texChannels, VkFormat format, VkImageAspectFlagBits aspectFlags, void* data);
 
@@ -296,7 +305,7 @@ DeviceBufferDescriptionHandle Context::createBuffer(
 	VmaMemoryUsage vma_usage,
 	VkBufferUsageFlags usage_flags
 ) {
-	DeviceBufferDescription desc{};
+	BufferDescription desc{};
 
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	ci.size = size;
@@ -333,14 +342,14 @@ void Context::UploadDataToBuffer(
 	VkPipelineStageFlags dstStages,
 	VkAccessFlags dstAccess
 ) {
-	DeviceBufferDescription* bufferDesc = buffers_.get(buffer);
+	BufferDescription* bufferDesc = buffers_.get(buffer);
 
 	// Since Im not subclassing/specializing buffers I retired this.
 	//const VkAccessFlags dstAccess =
 	//	(bufferDesc->role & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? VK_ACCESS_UNIFORM_READ_BIT
 	//	: VK_ACCESS_SHADER_READ_BIT;
 
-	VkCommandBuffer tmpBuf = bstCommand(*device_, default_command_pool);
+	VkCommandBuffer tmpBuf = beginSingleTimeCommands(*device_, default_command_pool);
 
 	if (bufferDesc->is_mapapble()) {
 		// Direct copy into mapped allocation
@@ -366,7 +375,7 @@ void Context::UploadDataToBuffer(
 			1, &b,
 			0, nullptr);
 
-		endstcommand(*device_, tmpBuf, default_queue, default_command_pool);
+		endSingleTimeCommands(*device_, tmpBuf, default_queue, default_command_pool);
 		return;
 	}
 
@@ -412,7 +421,7 @@ void Context::UploadDataToBuffer(
 		0, nullptr);
 
 
-	endstcommand(*device_, tmpBuf, default_queue, default_command_pool);
+	endSingleTimeCommands(*device_, tmpBuf, default_queue, default_command_pool);
 	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
 }
 
@@ -559,6 +568,113 @@ MaterialInstanceHandle Context::createMaterialInstance(MaterialPipelineHandle ma
 	return materialInstancesPool_.create(std::move(mat_instance));
 }
 
+
+//void Context::GetStagingBuffer() {}
+//
+
+void Context::UploadToImage(VkImage& image, void* data) {
+
+}
+
+void Context::TransitionImageLayout(
+	VkImage image,
+	VkFormat format,
+	VkImageLayout oldLayout,
+	VkImageLayout newLayout
+) {
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(*device_, default_command_pool);
+
+	VkImageMemoryBarrier barrier{};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.oldLayout = oldLayout;
+	barrier.newLayout = newLayout;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = image;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.baseMipLevel = 0;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.baseArrayLayer = 0;
+	barrier.subresourceRange.layerCount = 1;
+
+	if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+
+		if (hasStencilComponent(format)) {
+			barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+		}
+	}
+	else {
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	}
+
+	VkPipelineStageFlags sourceStage;
+	VkPipelineStageFlags destinationStage;
+
+	if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+		newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+		barrier.srcAccessMask = 0;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+		sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	}
+	else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
+		newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+		sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+	}
+	else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+		newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+		barrier.srcAccessMask = 0;
+		barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+		sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+	}
+	else {
+		throw std::invalid_argument("unsupported layout transition!");
+	}
+
+	vkCmdPipelineBarrier(
+		commandBuffer,
+		sourceStage,
+		destinationStage,
+		0,
+		0,
+		nullptr,
+		0,
+		nullptr,
+		1,
+		&barrier
+	);
+
+	endSingleTimeCommands(*device_,
+		commandBuffer,
+		default_queue,
+		default_command_pool
+	);
+}
+
+VkCommandBuffer Context::GetCommandBuffer() {
+	return beginSingleTimeCommands(*device_,
+		default_command_pool);
+
+}
+void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue) {
+	endSingleTimeCommands(
+		*device_,
+		cmdBuf,
+		queue,
+		pool
+	);
+}
+
+
 TextureHandle Context::createTexture(
 	int texWidth,
 	int texHeight,
@@ -571,35 +687,84 @@ TextureHandle Context::createTexture(
 	uint32_t mipLevels = static_cast<uint32_t>(
 		std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
 
-	//VkImage
-	VkImage image = VK_NULL_HANDLE;
-	VmaAllocation alloc = VK_NULL_HANDLE;
-
 	Texture tex{};
-	tex.allocation = alloc;
+	tex.allocation = VK_NULL_HANDLE;
+	tex.image = VK_NULL_HANDLE;
 	tex.format = format;
-	tex.image = image;
 	tex.mipLevels = mipLevels;
 
-	createImage(texWidth, texHeight, texChannels, format,tex.image);
+	createImage(texWidth, texHeight, format, tex.image, tex.allocation);
 	createImageView(tex.image, format, aspectFlags, tex.imageView);
+
+	// We could use texChannels=4 fixed
+	VkDeviceSize imageSize = texWidth * texHeight * texChannels;
+
+	auto staging_bfh = CreateStagingBuffer(
+		imageSize
+	);
+
+	auto* staging = buffers_.get(staging_bfh);
+
+	void* mapped = nullptr;
+	VK_CHECK(vmaMapMemory(*allocator_, staging->alloc, &mapped));
+	std::memcpy(mapped, data, static_cast<size_t>(imageSize));
+	vmaUnmapMemory(*allocator_, staging->alloc);
+
+	TransitionImageLayout(
+		tex.image,
+		VK_FORMAT_R8G8B8A8_SRGB,
+		VK_IMAGE_LAYOUT_UNDEFINED,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+	auto cmdBuf = beginSingleTimeCommands(*device_,
+		default_command_pool);
+
+	VkBufferImageCopy region{};
+	region.bufferOffset = 0;
+	region.bufferRowLength = 0;
+	region.bufferImageHeight = 0;
+	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.imageSubresource.mipLevel = 0;
+	region.imageSubresource.baseArrayLayer = 0;
+	region.imageSubresource.layerCount = 1;
+	region.imageOffset = { 0, 0, 0 };
+	region.imageExtent = { static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1 };
+
+	vkCmdCopyBufferToImage(cmdBuf, staging->buffer, tex.image,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+	endSingleTimeCommands(
+		*device_,
+		cmdBuf,
+		default_queue,
+		default_command_pool
+	);
+
+	TransitionImageLayout(
+		tex.image,
+		VK_FORMAT_R8G8B8A8_SRGB,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		//VK_IMAGE_LAYOUT_GENERAL
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+	);
+
 	//createSampler(*physicalDevice_, *device_, tex.sampler);
 	tex.sampler = default_sampler;
 
 	return textures_.create(std::move(tex));
 }
 
-void Context::createImage(int texWidth, int texHeight, int texChannels, VkFormat format, VkImage& image) {
+void Context::createImage(int texWidth, int texHeight, VkFormat format, VkImage& image, VmaAllocation& alloc) {
 
-
-	uint32_t mipLevels = static_cast<uint32_t>(
-		std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
+	//uint32_t mipLevels = static_cast<uint32_t>(
+	//	std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
 
 	VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	imgCI.imageType = VK_IMAGE_TYPE_2D;
 	imgCI.format = format;               // pick your format
 	imgCI.extent = { static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1 };                      // width, height, depth
-	imgCI.mipLevels = mipLevels;                                      // >1 if you want mipmaps
+	//imgCI.mipLevels = mipLevels;                                      // >1 if you want mipmaps
+	imgCI.mipLevels = 1;                                      // >1 if you want mipmaps
 	imgCI.arrayLayers = 1;                                      // >1 for arrays/cubemaps
 	imgCI.samples = VK_SAMPLE_COUNT_1_BIT;                  // MSAA? set >1
 	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;                // GPU-friendly
@@ -607,7 +772,6 @@ void Context::createImage(int texWidth, int texHeight, int texChannels, VkFormat
 		| VK_IMAGE_USAGE_TRANSFER_DST_BIT;        // upload via copy
 	imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	imgCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;              // we’ll transition later. Well jus use transition General always
-	imgCI.mipLevels = mipLevels;
 	imgCI.usage = VK_IMAGE_USAGE_SAMPLED_BIT
 		| VK_IMAGE_USAGE_TRANSFER_DST_BIT
 		| VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // for vkCmdBlitImage when building mips
@@ -616,7 +780,7 @@ void Context::createImage(int texWidth, int texHeight, int texChannels, VkFormat
 	aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
 	aCI.pool = D_2DImagesPool;                      // <--- CRITICAL: place this allocation in the pool
 
-	VmaAllocation alloc = VK_NULL_HANDLE;
+	//VmaAllocation alloc = VK_NULL_HANDLE;
 	VmaAllocationInfo allocInfo{};
 
 	VkResult res = vmaCreateImage(*allocator_, &imgCI, &aCI, &image, &alloc, &allocInfo);
@@ -625,6 +789,72 @@ void Context::createImage(int texWidth, int texHeight, int texChannels, VkFormat
 	}
 
 }
+
+// Creates a host-visible, coherent staging buffer suitable for uploads.
+// The buffer is created with VK_BUFFER_USAGE_TRANSFER_SRC_BIT so it can be
+// copied into images/buffers via vkCmdCopy*.
+//
+// Overload A: just create the buffer
+DeviceBufferDescriptionHandle Context::CreateStagingBuffer(VkDeviceSize size)
+{
+	BufferDescription desc{};
+
+	// 1) Describe the buffer itself
+	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	ci.size = size;                          // VkDeviceSize
+	ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT; // staging = copy source
+	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+	// 2) Describe how we want the allocation
+	VmaAllocationCreateInfo aci{};
+	aci.usage = VMA_MEMORY_USAGE_AUTO; // modern VMA: let it pick a good type
+	// Tell VMA we intend to write from the CPU sequentially
+	aci.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+	// Belt & suspenders: force host-visible + coherent
+	aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+		VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+	// 3) Create buffer + allocation
+	VK_CHECK(vmaCreateBuffer(*allocator_, &ci, &aci,
+		&desc.buffer, &desc.alloc, &desc.allocInfo));
+
+	// 4) Cache memory properties for quick checks/debug
+	VkMemoryPropertyFlags props{};
+	vmaGetAllocationMemoryProperties(*allocator_, desc.alloc, &props);
+	desc.memory_flags = props;
+	desc.usage = ci.usage;
+
+	// Safety: make sure we got what we asked for
+	// (You can convert to your own assert/log system)
+	if ((props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
+		// This should never happen given requiredFlags, but check anyway.
+		// Handle error as appropriate for your engine:
+		// throw/abort/log + destroy
+	}
+
+	return buffers_.create(std::move(desc));
+}
+
+// Overload B: create and upload data immediately
+DeviceBufferDescriptionHandle Context::CreateStagingBuffer(const void* srcData,
+	VkDeviceSize size)
+{
+	auto handle = CreateStagingBuffer(size);
+	auto* buf = buffers_.get(handle);
+
+	void* mapped = nullptr;
+	VK_CHECK(vmaMapMemory(*allocator_, buf->alloc, &mapped));
+
+	// NOTE: memcpy(dst <- src)
+	std::memcpy(mapped, srcData, static_cast<size_t>(size));
+
+	// HOST_COHERENT means we don't need vmaFlushAllocation.
+	// If you drop HOST_COHERENT in the future, call vmaFlushAllocation here.
+	vmaUnmapMemory(*allocator_, buf->alloc);
+
+	return handle;
+}
+
 
 ShaderModuleHandle Context::createShaderModule(std::vector<char> code) {
 

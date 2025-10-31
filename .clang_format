@@ -6,3 +6,27 @@ BreakBeforeBraces: Allman
 BreakBeforeBinaryOperators: None
 ColumnLimit: 80
 PenaltyReturnTypeOnItsOwnLine: 1000
+
+
+# Indentation
+IndentWidth: 4
+ContinuationIndentWidth: 4
+
+# Put one parameter/argument per line (no bin-packing)
+BinPackParameters: false
+BinPackArguments: false
+AllowAllParametersOfDeclarationOnNextLine: false
+
+# Keep the opening paren after the function name, then break after it
+# (clang-format will break after '(' when there are multiple params)
+ColumnLimit: 100   # adjust; keeping this reasonable encourages the break
+
+# Brace style: ") {" on the same line
+BreakBeforeBraces: Attach
+
+# Usual paren spacing
+SpaceBeforeParens: ControlStatements
+
+# Optional nice-to-haves
+PointerAlignment: Left
+AllowShortFunctionsOnASingleLine: Empty

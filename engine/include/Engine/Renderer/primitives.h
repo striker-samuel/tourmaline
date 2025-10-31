@@ -129,6 +129,11 @@ struct DynamicMesh {
 
 };
 
+enum TextureLyt {
+	DST,
+	GENERAL
+};
+
 // Lets go with uniform_layouts ext. GENERAL and UNDEFINED
 struct Texture {
 
@@ -136,6 +141,7 @@ struct Texture {
 	VmaAllocationInfo allocInfo;
 
 	VkImage image;
+	TextureLyt image_lyt = DST;
 	VkImageView imageView;
 	VkSampler sampler;
 	// Other properties and attributes
@@ -176,7 +182,7 @@ struct MaterialPushConstants {
 static_assert(sizeof(MaterialPushConstants) % 16 == 0);
 
 // Buffer state.
-struct DeviceBufferDescription {
+struct BufferDescription {
 
 	VkBuffer buffer;
 	VmaAllocation alloc;
