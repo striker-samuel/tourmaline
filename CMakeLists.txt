@@ -15,6 +15,8 @@ add_subdirectory(external/glfw)
 # GLM (header-only)
 add_subdirectory(external/glm)
 
+list(APPEND CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/external/ktx")
+find_package(ktx CONFIG REQUIRED)
 
 # ASSIMP from local source
 set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)

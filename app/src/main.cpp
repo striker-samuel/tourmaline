@@ -38,8 +38,13 @@
 #include <Engine/Scene/scene.h>
 
 #include <Engine/Renderer/primitives.h>
+//#include <Engine/Renderer/utils.h>
 
 #include <Engine/Utils/gltf.h>
+
+#include <ktx.h>
+#include <ktxvulkan.h>
+
 
 // Moved readFile here. readFile rnow is just used to read shader files.
 // this should go to Platform layer. This is windows first for the foreseable future
@@ -51,31 +56,24 @@ std::vector<std::string> gltf_meshes_paths = {
 	"models/Sponza/sponza.gltf" // Index 0
 };
 
-// ------------------------------------
-// 
-// Crap I will delete later
-Scene createTestScene() {
+Scene getSceneFromGltf(const GltfModel& gltf_model) {
 
 	Scene scene;
-	//rootNode
-	//addNode(scene, -1, 0);
-
-	// two children
-	//addNode(*scene_, 0, 1);
-	//addNode(*scene_, 0, 1);
 
 	int counter = 0;
-	GltfModel loaded_gltf = GltfModel(gltf_meshes_paths[0]);
-	for (auto mesh_data : loaded_gltf.mesh_data) {
+	for (auto mesh_data : gltf_model.mesh_data) {
 		addNode(scene, -1, 0);
 		scene.meshForNode[counter] = counter;
-		//scene.materialForNode[counter] = mesh_data.materialIndex;
+
+		// This is obv not ok...
 		scene.materialForNode[counter] = 0;
 		counter++;
 	}
 
 	return scene;
 }
+
+// This shouldnt be here
 
 class VulkanApp {
 
@@ -96,7 +94,7 @@ private:
 	Context* context;
 	DescriptorSetHandle frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
 
-	Scene scene_ = createTestScene();
+	Scene scene_ = getSceneFromGltf(gltf_meshes_paths[0]);
 
 	VmaAllocator app_allocator_;
 

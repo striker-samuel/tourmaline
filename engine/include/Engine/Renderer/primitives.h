@@ -104,6 +104,9 @@ struct DrawSet {
 
 };
 
+
+std::unordered_map<uint32_t, std::string> mesh_names;
+
 // ------------------------------------------------------------------------------------------------
 // This is the neeeded Host side state to manage meshes.
 // This is whats needed for the geometry part of the drawcall. Materials are codified per sceneNode.

@@ -6,7 +6,6 @@ file(GLOB_RECURSE ENGINE_SRC CONFIGURE_DEPENDS
 )
 
 
-
 add_library(engine STATIC ${ENGINE_SRC})
 
 target_include_directories(engine
@@ -17,18 +16,16 @@ target_include_directories(engine
         ${CMAKE_SOURCE_DIR}/external/stb_image
         ${nlohmann_json_SOURCE_DIR}/single_include/nlohmann
         ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator
+   
 )
-
-
 
 target_link_libraries(engine
     PUBLIC
-  #      Vulkan::Vulkan
         glfw
         glm
         volk
+        KTX::ktx
         #imgui
-  #       VulkanMemoryAllocator
 )
 
 

@@ -43,6 +43,7 @@ target_include_directories(App
 target_link_libraries(App
     PRIVATE
         engine
+        KTX::ktx
         #Vulkan::Vulkan
         #nlohmann_json
 )
