@@ -132,14 +132,14 @@ struct DynamicMesh {
 
 };
 
-enum TextureLyt {
-	DST,
-	GENERAL
-};
+//enum TextureLyt {
+//	DST,
+//	GENERAL
+//};
 
-enum TextureType {
-	DIFFUSE
-};
+//enum TextureType {
+//	DIFFUSE
+//};
 
 // Lets go with uniform_layouts ext. GENERAL and UNDEFINED
 struct Texture {
@@ -148,16 +148,17 @@ struct Texture {
 	VmaAllocation allocation;
 	VmaAllocationInfo allocInfo;
 
-	TextureLyt image_lyt = DST;
-	TextureType texture_type = DIFFUSE;
+	//TextureLyt image_lyt = DST;
+	//TextureType texture_type = DIFFUSE;
 
+	VkDeviceMemory deviceMemory;
 	VkImage image;
 	VkImageView imageView;
 	VkSampler sampler;
 	VkFormat format;
 
 	// Mip Level 0 is base. But an image with only base mip has mipLevels 1
-	int mipLevels = 1;
+	//int mipLevels = 1;
 
 };
 

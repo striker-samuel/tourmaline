@@ -5,7 +5,8 @@
 void createSampler(
 	const VkPhysicalDevice& physicalDevice,
 	const VkDevice& device,
-	VkSampler& sampler
+	VkSampler& sampler,
+	int levelCount
 ) {
 	VkSamplerCreateInfo samplerInfo{};
 	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -34,7 +35,8 @@ void createSampler(
 	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 	samplerInfo.mipLodBias = 0.0f;
 	samplerInfo.minLod = 0.0f;
-	samplerInfo.maxLod = 0.0f;
+	//samplerInfo.maxLod = 0.0f;
+	samplerInfo.maxLod = float(levelCount - 1);
 
 	VK_CHECK(vkCreateSampler(device, &samplerInfo, nullptr, &sampler));
 

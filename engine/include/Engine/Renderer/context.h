@@ -9,6 +9,9 @@
 #include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
 
+#include <ktx.h>
+#include <ktxvulkan.h>
+
 struct DescriptorSet {
 	DescriptorLayoutHandle layout;
 	VkDescriptorSet set;
@@ -48,6 +51,9 @@ struct MaterialInstance {
 
 // This style of handling things is lifted up from LightweightVk.
 class Context {
+
+
+	ktxVulkanDeviceInfo* ktx_vdi = NULL;
 
 	// 1 allocator per device. Device is implicit in allocator...
 	VmaAllocator* allocator_;
@@ -99,7 +105,10 @@ public:
 		physicalDevice_ = physicalDevice;
 
 		VkSampler default_sampler;
-		createSampler(*physicalDevice_, *device_, default_sampler);
+
+		// from ChatGpt, may not be true: you can set a generic sampler with a big maxLod like 100, and reuse it for all your textures of any mip count.
+		// The driver will clamp dynamically per texture.
+		createSampler(*physicalDevice_, *device_, default_sampler, 100);
 		// Samplers are driver objs. can be copied like this np.
 		samplers["default"] = default_sampler;
 
@@ -132,6 +141,15 @@ public:
 				throw std::runtime_error("failed to create graphics command pool!");
 			}
 		}
+
+		ktx_vdi = ktxVulkanDeviceInfo_Create(
+			*physicalDevice_,
+			*device_,
+			default_queue,
+			default_command_pool,
+			NULL
+		);
+
 	};
 	// Maybe destructor should clear the vmaPools. Device side allocations are not managed as clear by the OS.
 	~Context(
@@ -216,10 +234,11 @@ public:
 	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
 	MaterialInstanceHandle createMaterialInstance(MaterialPipelineHandle mat_pipeline);
 
-	void getAppropiateSampler(Texture& texture);
+
+	void getAppropriateSampler(Texture& texture);
 
 	void createImage(int texWidth, int texHeight, VkFormat format, VkImage& image, VmaAllocation& alloc);
-	void createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, VkImageView& imageView);
+	void createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, VkImageView& imageView);
 
 	void UploadToImage(VkImage& image, void* data);
 
@@ -228,6 +247,7 @@ public:
 	VkCommandBuffer GetCommandBuffer();
 	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
 
+	TextureHandle createTexture(ktxTexture2& texture);
 	TextureHandle createTexture(int texWidth, int texHeight, int texChannels, VkFormat format, VkImageAspectFlagBits aspectFlags, void* data);
 
 	DescriptorLayoutHandle createDescriptorLayout();
@@ -249,7 +269,7 @@ public:
 void Context::createImageView(VkImage image,
 	VkFormat format,
 	VkImageAspectFlags aspectFlags,
-	//int mipLevels,
+	int levelCount,
 	VkImageView& imageView
 ) {
 	VkImageViewCreateInfo viewInfo{};
@@ -262,7 +282,7 @@ void Context::createImageView(VkImage image,
 	viewInfo.subresourceRange.aspectMask = aspectFlags;
 	viewInfo.subresourceRange.baseMipLevel = 0;
 	viewInfo.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
-	//viewInfo.subresourceRange.levelCount = mipLevels;
+	viewInfo.subresourceRange.levelCount = levelCount;
 	viewInfo.subresourceRange.baseArrayLayer = 0;
 	viewInfo.subresourceRange.layerCount = 1;
 
@@ -682,99 +702,93 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 }
 
 
-TextureHandle Context::createTexture(
-	int texWidth,
-	int texHeight,
-	int texChannels,
-	VkFormat format,
-	VkImageAspectFlagBits aspectFlags,
-	void* data
-) {
+//static bool supports(VkPhysicalDevice pd, VkFormat fmt, VkFormatFeatureFlags feats) {
+//	VkFormatProperties p{}; vkGetPhysicalDeviceFormatProperties(pd, fmt, &p);
+//	return (p.optimalTilingFeatures & feats) == feats;
+//}
+//
+//static ktx_transcode_fmt_e pickTarget(VkPhysicalDevice pd) {
+//	const auto need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT; // what upload ultimately needs
+//	if (supports(pd, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, need)) return KTX_TTF_ASTC_4x4_RGBA;
+//	if (supports(pd, VK_FORMAT_BC7_UNORM_BLOCK, need)) return KTX_TTF_BC7_RGBA;
+//	if (supports(pd, VK_FORMAT_BC3_UNORM_BLOCK, need)) return KTX_TTF_BC3_RGBA;
+//	return KTX_TTF_RGBA32; // uncompressed fallback (always works)
+//}
 
 
-	// Textures need specialization for each usage... like diffuse, normal whatevs. 2D, 3D.....
-	// Specialization should be achieved with an App defined data structure that exposes needed determining factors.
-	// This will be slowly built while making a trye app.
+TextureHandle Context::createTexture(ktxTexture2& texture) {
 
-	uint32_t mipLevels = static_cast<uint32_t>(
-		std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
+	if (ktxTexture2_NeedsTranscoding(&texture)) {
+		//auto target = pickTarget(*physicalDevice_);
+		KTX_error_code tr = ktxTexture2_TranscodeBasis(&texture, KTX_TTF_BC7_RGBA, 0);
+		if (tr != KTX_SUCCESS) throw std::runtime_error(ktxErrorString(tr));
+	}
 
-	Texture tex{};
-	tex.allocation = VK_NULL_HANDLE;
-	tex.image = VK_NULL_HANDLE;
-	tex.format = format;
-	tex.mipLevels = mipLevels;
+	// they should be generated with the py script
+	texture.generateMipmaps = KTX_FALSE;
 
-	createImage(texWidth, texHeight, format, tex.image, tex.allocation);
-	createImageView(tex.image, format, aspectFlags, tex.imageView);
+	const VkImageUsageFlags usage =
+		VK_IMAGE_USAGE_SAMPLED_BIT |           // <-- required for sampling
+		VK_IMAGE_USAGE_TRANSFER_DST_BIT |      // <-- required for the copy
+		(texture.generateMipmaps ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0); // for blit chain. this needs linear format.
 
-	// We could use texChannels=4 fixed
-	VkDeviceSize imageSize = texWidth * texHeight * texChannels;
 
-	auto staging_bfh = CreateStagingBuffer(
-		imageSize
-	);
-
-	auto* staging = buffers_.get(staging_bfh);
-
-	void* mapped = nullptr;
-	VK_CHECK(vmaMapMemory(*allocator_, staging->alloc, &mapped));
-	std::memcpy(mapped, data, static_cast<size_t>(imageSize));
-	vmaUnmapMemory(*allocator_, staging->alloc);
-
-	TransitionImageLayout(
-		tex.image,
-		VK_FORMAT_R8G8B8A8_SRGB,
-		VK_IMAGE_LAYOUT_UNDEFINED,
-		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-	auto cmdBuf = beginSingleTimeCommands(*device_,
-		default_command_pool);
-
-	VkBufferImageCopy region{};
-	region.bufferOffset = 0;
-	region.bufferRowLength = 0;
-	region.bufferImageHeight = 0;
-	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	region.imageSubresource.mipLevel = 0;
-	region.imageSubresource.baseArrayLayer = 0;
-	region.imageSubresource.layerCount = 1;
-	region.imageOffset = { 0, 0, 0 };
-	region.imageExtent = { static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1 };
-
-	vkCmdCopyBufferToImage(cmdBuf, staging->buffer, tex.image,
-		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-	endSingleTimeCommands(
-		*device_,
-		cmdBuf,
-		default_queue,
-		default_command_pool
-	);
-
-	TransitionImageLayout(
-		tex.image,
-		VK_FORMAT_R8G8B8A8_SRGB,
-		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		//VK_IMAGE_LAYOUT_GENERAL
+	ktxVulkanTexture vk_tex{};
+	KTX_error_code kr = ktxTexture2_VkUploadEx(
+		&texture,
+		ktx_vdi,
+		&vk_tex,
+		VK_IMAGE_TILING_OPTIMAL,
+		usage,
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 	);
+	if (kr != KTX_SUCCESS) {
+
+		VkFormat fmt = ktxTexture2_GetVkFormat(&texture);
+		char msg[256];
+		snprintf(msg, sizeof(msg), "ktxTexture2_VkUploadEx failed (%s), VkFormat=%d, %ux%u, levels=%u, layers=%u",
+			ktxErrorString(kr), (int)fmt, texture.baseWidth, texture.baseHeight,
+			texture.numLevels, texture.numLayers);
+		throw std::runtime_error(msg);
+	}
+
+	// 3) Build your view/sampler from the format actually created.
+	Texture ctx_tex{};
+	ctx_tex.image = vk_tex.image;
+
+	auto aspect = (vk_tex.imageFormat == VK_FORMAT_D16_UNORM || vk_tex.imageFormat == VK_FORMAT_D32_SFLOAT ||
+		vk_tex.imageFormat == VK_FORMAT_X8_D24_UNORM_PACK32)
+		? VK_IMAGE_ASPECT_DEPTH_BIT
+		: (vk_tex.imageFormat == VK_FORMAT_S8_UINT)
+		? VK_IMAGE_ASPECT_STENCIL_BIT
+		: (vk_tex.imageFormat == VK_FORMAT_D24_UNORM_S8_UINT || vk_tex.imageFormat == VK_FORMAT_D32_SFLOAT_S8_UINT)
+		? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
+		: VK_IMAGE_ASPECT_COLOR_BIT;
+
+	createImageView(ctx_tex.image, vk_tex.imageFormat, aspect, texture.numLevels, ctx_tex.imageView);
+	//getAppropriateSampler(ctx_tex);
+
+	VkSampler new_samp;
+	createSampler(*physicalDevice_, *device_, new_samp, texture.numLevels);
+	ctx_tex.sampler = new_samp;
 
 
-	getAppropiateSampler(tex);
+	// Later, when destroying:
+	// ktxVulkanTexture_Destruct(&vk_tex, device_, nullptr);
 
-	return textures_.create(std::move(tex));
+	return textures_.create(std::move(ctx_tex));
 }
 
-
-void Context::getAppropiateSampler(Texture& texture) {
+void Context::getAppropriateSampler(Texture& texture) {
 
 
 	//VkSampler _sampler;
 	//createSampler(*physicalDevice_, *device_, _sampler);
-
-
-	// We should try to define here which sampler would work for this texture. Sepecialization.
+	// 
+	// 
+	// 
+	// We sho
+	// uld try to define here which sampler would work for this texture. Sepecialization.
 	texture.sampler = samplers["default"];
 
 };
