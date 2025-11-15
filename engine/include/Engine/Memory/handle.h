@@ -51,34 +51,6 @@ private:
 
 static_assert(sizeof(Handle<class Foo>) == sizeof(uint64_t));
 
-// specialized with dummy structs for type safety
-using ShaderModuleHandle = Handle<struct ShaderModule>;
-using BufferHandle = Handle<struct Buffer>;
-using TextureHandle = Handle<struct Texture>;
-using SamplerHandle = Handle<struct Sampler>;
-using MaterialPipelineHandle = Handle<struct MaterialPipeline>;
-using MaterialInstanceHandle = Handle<struct MaterialInstance>;
-using DescriptorPoolHandle = Handle<struct DescriptorPool>;
-using DescriptorSetHandle = Handle<struct DescriptorSet>;
-using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
-using DeviceBufferDescriptionHandle = Handle<struct BufferDescription>;
-using StaticGeoMeshRangeHandle = Handle<struct StaticGeoMeshRange>;
-
-void destroy(Context* ctx, ShaderModuleHandle handle);
-void destroy(Context* ctx, BufferHandle handle);
-void destroy(Context* ctx, TextureHandle handle);
-void destroy(Context* ctx, SamplerHandle handle);
-
-// forward declarations to access incomplete type IContext
-//void destroy(lvk::Context* ctx, lvk::ComputePipelineHandle handle);
-//void destroy(lvk::Context* ctx, lvk::RenderPipelineHandle handle);
-//void destroy(lvk::Context* ctx, lvk::RayTracingPipelineHandle handle);
-//void destroy(lvk::Context* ctx, lvk::ShaderModuleHandle handle);
-//void destroy(lvk::Context* ctx, lvk::SamplerHandle handle);
-//void destroy(lvk::Context* ctx, lvk::BufferHandle handle);
-//void destroy(lvk::Context* ctx, lvk::TextureHandle handle);
-//void destroy(lvk::Context* ctx, lvk::QueryPoolHandle handle);
-//void destroy(lvk::Context* ctx, lvk::AccelStructHandle handle);
 
 //template<typename HandleType>
 //class Holder final {

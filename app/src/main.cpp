@@ -10,17 +10,28 @@
 
 #include <Engine/Vulkan/vulkan_setup.h>
 
+//#define IMGUI_IMPL_VULKAN_HAS_DYNAMIC_RENDERING
+//#define IMGUI_IMPL_VULKAN_USE_VOLK
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_vulkan.h"
+
+
 #define VMA_IMPLEMENTATION
 
 #define VMA_VULKAN_VERSION 1003800
+
+// We use volk so we need thes defs.
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+
 #include <vk_mem_alloc.h>
 
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 
+// We are using ktx for textures. also I dont want tinygltf to load texture data, just scene data.
 #define TINYGLTF_NO_STB_IMAGE
 #define TINYGLTF_NO_EXTERNAL_IMAGE
 
@@ -49,6 +60,10 @@
 // this should go to Platform layer. This is windows first for the foreseable future
 #include <Engine/fileIO.h>
 
+//static ImGui_ImplVulkanH_Window g_MainWindowData;
+//static uint32_t                 g_MinImageCount = 2;
+//static bool                     g_SwapChainRebuild = false;
+//
 // ------------------------------------
 // If theres only one I probably could go with argv
 std::vector<std::string> gltf_meshes_paths = {
@@ -81,15 +96,15 @@ public:
 	int width_ = WIDTH;
 	int height_ = HEIGHT;
 
+	void InitializeImGui();
 	bool Run();
 
 private:
 
-	// This really crude. Just temp
-	BufferHandle index_bfh;
-	BufferHandle vertex_bfh;
 	std::vector<DrawSet> static_draw_sets;
 
+
+	ImGuiContext* imgui_ctx;
 	Context* context;
 	DescriptorSetHandle frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
 
@@ -97,16 +112,10 @@ private:
 
 	VmaAllocator app_allocator_;
 
-	VkBuffer static_vertex_buffer_;
-	VmaAllocation static_vertex_allocation_;
-
-	VkBuffer static_index_buffer_;
-	VmaAllocation static_index_allocation_;
-
 	VkQueue graphicsQueue_;
-	VkQueue computeQueue_;
+	//VkQueue computeQueue_;
 	VkQueue presentQueue_;
-	VkQueue transferQueue_;
+	//VkQueue transferQueue_;
 
 #pragma region ===[ App / Core State ]===
 
@@ -155,9 +164,9 @@ private:
 #pragma region ===[ Uniforms / Descriptor Sets ]==
 
 	// These should be moved to Context
-	DeviceBufferDescriptionHandle uniforms_[MAX_FRAMES_IN_FLIGHT];
-	DeviceBufferDescriptionHandle instanceDataStorages_[MAX_FRAMES_IN_FLIGHT];
-	DeviceBufferDescriptionHandle instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferHandle uniforms_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferHandle instanceDataStorages_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferHandle instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
 
@@ -193,14 +202,8 @@ private:
 
 	MaterialInstanceHandle CreateDiffuseMaterial(std::string image_path);
 	void InitVulkanApp();
-
 	void CreateDefaultMaterialPipeline();
-
 	void UploadScene();
-	void CreateStaticGeoBuffers();
-
-	std::vector<DrawSet> UploadStaticMeshData(std::vector<MeshData>& mesh_data);
-
 	void UpdateDeltaTime() {
 
 		// Its a bad idea to have this across the fucntion border. Latency sensitive.
@@ -212,6 +215,28 @@ private:
 	}
 
 	void UpdateInstanceBuffer(uint32_t currentImage);
+
+	void UiPass() {
+
+		ImGui_ImplVulkan_NewFrame();
+		//ImGui_ImplWin32_NewFrame();
+		ImGui::NewFrame();
+
+		// Get background draw list (renders behind all windows)
+		ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
+
+		// Define a rectangle area in screen coordinates (pixels)
+		ImVec2 p0(100, 100);  // top-left corner
+		ImVec2 p1(300, 300);  // bottom-right corner
+
+		// Draw a filled white rectangle with no border
+		draw_list->AddRectFilled(p0, p1, IM_COL32(255, 255, 255, 255));
+
+		// (optional) Draw an outline
+		// draw_list->AddRect(p0, p1, IM_COL32(0, 0, 0, 25
+
+
+	}
 
 	void mainLoop() {
 
@@ -231,10 +256,13 @@ private:
 				glm::vec2(x / width_, y / -height_),
 				rightMousePressed);
 
+
 			EarlyUpdate();
 			Update();
+			LateUpdate();
 
-			recalculateGlobalTransforms(scene_);
+			//UiPass();
+
 			drawFrame();
 
 		}
@@ -256,6 +284,12 @@ private:
 		//	local[3][0] = static_cast<float>(i) * 10.4f + phase;
 		//	markAsChanged(scene_, i);
 		//}
+	}
+
+	void LateUpdate() {
+
+		recalculateGlobalTransforms(scene_);
+
 	}
 
 	void cleanupSwapChain() {
@@ -319,14 +353,12 @@ private:
 			chooseSwapPresentMode(swapChainSupport.presentModes);
 		VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities, window);
 
-		swapchainImageCount = swapChainSupport.capabilities.minImageCount + 1;
-		swapChainImages = new VkImage[swapchainImageCount];
-		swapChainImageViews = new VkImageView[swapchainImageCount];
-
 		if (swapChainSupport.capabilities.maxImageCount > 0 &&
 			swapchainImageCount > swapChainSupport.capabilities.maxImageCount) {
 			swapchainImageCount = swapChainSupport.capabilities.maxImageCount;
 		}
+		swapChainImages = new VkImage[swapchainImageCount];
+		swapChainImageViews = new VkImageView[swapchainImageCount];
 
 		VkSwapchainCreateInfoKHR createInfo{};
 		createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
@@ -376,7 +408,7 @@ private:
 			VkImageView view_;
 
 			createImageView(
-				swapChainImages[i], swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, view_,1
+				swapChainImages[i], swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, view_, 1
 			);
 
 			swapChainImageViews[i] = view_;
@@ -419,7 +451,7 @@ private:
 		}
 
 		// if you want mips generated by the ktx library:
-		ktxTex->generateMipmaps = KTX_TRUE;
+		//ktxTex->generateMipmaps = KTX_TRUE;
 
 		// now upload to vulkan
 		auto texHandle = context->createTexture(*ktxTex);
@@ -489,6 +521,17 @@ private:
 		VmaAllocation alloc;
 		vmaCreateImage(app_allocator_, &imgCreateInfo, &allocCreateInfo, &image, &alloc, nullptr);
 		//return alloc;
+	}
+
+
+
+	VkCommandBuffer beginCommands() {
+		VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, context->default_command_pool);
+		return commandBuffer;
+	}
+
+	void endCommands(VkCommandBuffer commandBuffer) {
+		endSingleTimeCommands(device, commandBuffer, graphicsQueue_, context->default_command_pool);
 	}
 
 
@@ -770,6 +813,37 @@ private:
 
 	}
 
+
+	void populateRenderingInfo(VkRenderingInfoKHR& renderingInfo, uint32_t imageIndex) {
+		VkRenderingAttachmentInfoKHR depthAttachment{};
+		depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+		depthAttachment.imageView = main_depthImageView;
+		depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		//depthAttachment.clearValue.depthStencil = { 1.0f, 0 };
+		//Lets do reverse z
+		depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
+
+		VkRenderingAttachmentInfoKHR colorAttachment{};
+		colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+		colorAttachment.imageView = swapChainImageViews[imageIndex];  // actual view
+		colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
+
+		// Begin dynamic rendering
+		//VkRenderingInfoKHR renderingInfo{};
+		renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
+		renderingInfo.renderArea.offset = { 0, 0 };
+		renderingInfo.renderArea.extent = swapChainExtent;
+		renderingInfo.layerCount = 1;
+		renderingInfo.colorAttachmentCount = 1;
+		renderingInfo.pColorAttachments = &colorAttachment;
+		renderingInfo.pDepthAttachment = &depthAttachment;
+	}
+
 	void recordDraw(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
 
 		VkCommandBufferBeginInfo beginInfo{};
@@ -804,34 +878,9 @@ private:
 			1, &barrierToColorAttachment
 		);
 
-		VkRenderingAttachmentInfoKHR depthAttachment{};
-		depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-		depthAttachment.imageView = main_depthImageView;
-		depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		//depthAttachment.clearValue.depthStencil = { 1.0f, 0 };
-		//Lets do reverse z
-		depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
 
-		VkRenderingAttachmentInfoKHR colorAttachment{};
-		colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-		colorAttachment.imageView = swapChainImageViews[imageIndex];  // actual view
-		colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-		colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
-
-		// Begin dynamic rendering
-		VkRenderingInfoKHR renderingInfo{};
-		renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
-		renderingInfo.renderArea.offset = { 0, 0 };
-		renderingInfo.renderArea.extent = swapChainExtent;
-		renderingInfo.layerCount = 1;
-		renderingInfo.colorAttachmentCount = 1;
-		renderingInfo.pColorAttachments = &colorAttachment;
-		renderingInfo.pDepthAttachment = &depthAttachment;
-
+		VkRenderingInfoKHR renderingInfo;
+		populateRenderingInfo(renderingInfo, imageIndex);
 		vkCmdBeginRendering(commandBuffer, &renderingInfo);
 
 		// VIEWPORT
@@ -852,7 +901,10 @@ private:
 		scissor.extent = swapChainExtent;
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-		VkBuffer vertexBuffers[] = { static_vertex_buffer_ };
+		auto vbh = context->buffers_.get(context->vertex_buffer);
+		auto ibh = context->buffers_.get(context->index_buffer);
+
+		VkBuffer vertexBuffers[] = { vbh->buffer };
 		VkDeviceSize offsets[] = { 0 };
 
 		vkCmdBindVertexBuffers(
@@ -863,7 +915,7 @@ private:
 			offsets
 		);
 		vkCmdBindIndexBuffer(commandBuffer,
-			static_index_buffer_,
+			ibh->buffer,
 			0,
 			VK_INDEX_TYPE_UINT32)
 			;
@@ -897,15 +949,7 @@ private:
 
 			for (int i = 0; i < scene_.hierarchy.size(); i++) {
 
-				//auto draw_set = static_draw_sets[scene_.meshForNode[i]];
-				const auto& draw_set = static_draw_sets[i];
-
-				//auto material_instance_index = scene_.materialForNode[i];
-				//if (!context->materialInstancesPool_.getHandle(material_instance_index).valid()) {
-				//	material_instance_index = 0;
-				//}
-
-				//int material_instance_index = ;
+				auto draw_set = static_draw_sets[scene_.meshForNode[i]];
 				pc.material_instance_index = draw_set.material_index;
 
 				MaterialPushConstants pcm =
@@ -921,20 +965,35 @@ private:
 					commandBuffer,
 					pipe_lyt,
 					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-					0,
-					sizeof(PC_All), &all);
+					0, //offset to start of the range to push
+					sizeof(PC_All), // size to push
+					&all
+				);
 
 				vkCmdDrawIndexed(
 					commandBuffer,
 					draw_set.index_count, //indexCount
 					1, //instanceCount
-					draw_set.first_index, //firstIndex
-					draw_set.vert_offset,
-					//0,
-					i
+					draw_set.first_index, //firstIndex, like offset but its just instead on index size times, just index n
+					draw_set.vert_offset, //offsetIntoVertexBuffer
+					i // instanceId
 				);
 			}
 		}
+
+
+		int width = 0, height = 0;
+		glfwGetFramebufferSize(window, &width, &height);
+
+		ImGuiIO& io = ImGui::GetIO();
+		io.DisplaySize = ImVec2((float)width, (float)height);
+		io.DeltaTime = delta_time_;
+
+		ImGui::Render();
+
+		// Record the ImGui draw data into your Vulkan command buffer.
+		// You must already be inside a render pass (or dynamic rendering block)
+		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 
 		vkCmdEndRendering(commandBuffer);
 
@@ -967,6 +1026,8 @@ private:
 		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
 			throw std::runtime_error("failed to record command buffer!");
 		}
+
+
 	}
 
 	void createSyncObjects() {
@@ -1060,7 +1121,6 @@ void VulkanApp::UploadScene() {
 		data_to_upload.push_back(std::move(mesh_data));
 	}
 
-
 	std::unordered_map<std::string, int> already_assigned_;
 	int j = 0;
 
@@ -1088,7 +1148,7 @@ void VulkanApp::UploadScene() {
 		}
 	}
 
-	static_draw_sets = UploadStaticMeshData(data_to_upload);
+	static_draw_sets = context->UploadStaticMeshData(data_to_upload);
 
 }
 
@@ -1099,7 +1159,8 @@ MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) 
 		//"textures/viking_room.png",
 		//VK_FORMAT_R8G8B8A8_SRGB
 	);
-	
+
+	//
 	auto material_pipe_0 = context->materialPipelinePool_.getHandle(0);
 	auto mat_h = context->createMaterialInstance(material_pipe_0);
 	context->materialInstancesPool_.get(mat_h)->values.texDiffuse = image1.index();
@@ -1107,114 +1168,6 @@ MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) 
 
 }
 
-void VulkanApp::CreateStaticGeoBuffers() {
-
-	// Lets just default this like so
-	uint32_t totalVertexBytes = 512u * 1024u * 1024u;
-	uint32_t totalIndexBytes = 512u * 1024u * 1024u;
-
-
-	auto vbh = context->createBuffer(
-		totalVertexBytes,
-		VMA_MEMORY_USAGE_GPU_ONLY,
-		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-	);
-
-	auto ibh = context->createBuffer(
-		totalIndexBytes,
-		VMA_MEMORY_USAGE_GPU_ONLY,
-		VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-	);
-
-
-	static_vertex_buffer_ = context->buffers_.get(vbh)->buffer;
-	static_index_buffer_ = context->buffers_.get(ibh)->buffer;
-
-}
-
-std::vector<DrawSet> VulkanApp::UploadStaticMeshData(std::vector<MeshData>& mesh_data) {
-	assert(!mesh_data.empty());
-
-	VkDeviceSize needed_vertexBytes_for_staging = 0;
-	VkDeviceSize needed_indexBytes_for_staging = 0;
-
-	std::vector<DrawSet> mesh_draw_list(mesh_data.size()); // keep 1:1 with mesh_data
-
-	for (size_t i = 0; i < mesh_data.size(); ++i) {
-		needed_vertexBytes_for_staging += sizeof(Vertex) * mesh_data[i].vertices.size();
-		needed_indexBytes_for_staging += sizeof(uint32_t) * mesh_data[i].indices.size();
-	}
-
-	// VERTICES
-	{
-		VkBuffer stagingBuf; VmaAllocation stagingAlloc;
-		VkBufferCreateInfo sInfo{
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = needed_vertexBytes_for_staging,
-			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		};
-		VmaAllocationCreateInfo sAlloc{};
-		sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
-		sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-
-		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
-
-		VkDeviceSize currBytes = 0;
-		uint32_t currVerts = 0;
-		for (size_t i = 0; i < mesh_data.size(); ++i) {
-			const auto& m = mesh_data[i];
-			const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
-
-			mesh_draw_list[i].vert_offset = currVerts;           // BYTES
-			if (bytes) {
-				vmaCopyMemoryToAllocation(app_allocator_, m.vertices.data(), stagingAlloc, currBytes, bytes);
-				currBytes += bytes;
-				currVerts += static_cast<uint32_t>(m.vertices.size());
-			}
-		}
-
-		copyBuffer(stagingBuf, static_vertex_buffer_, needed_vertexBytes_for_staging);
-		vmaDestroyBuffer(app_allocator_, stagingBuf, stagingAlloc);
-	}
-
-	// INDICES
-	{
-		VkBuffer stagingBuf; VmaAllocation stagingAlloc;
-		VkBufferCreateInfo sInfo{
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = needed_indexBytes_for_staging,
-			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		};
-		VmaAllocationCreateInfo sAlloc{};
-		sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
-		sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-
-		vmaCreateBuffer(app_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
-
-		VkDeviceSize currBytes = 0; // byte offset
-		for (size_t i = 0; i < mesh_data.size(); ++i) {
-			const auto& m = mesh_data[i];
-			const VkDeviceSize bytes = sizeof(uint32_t) * m.indices.size();
-
-			mesh_draw_list[i].index_count = static_cast<uint32_t>(m.indices.size());
-			mesh_draw_list[i].first_index = static_cast<uint32_t>(currBytes / sizeof(uint32_t)); // ELEMENTS
-
-
-			// MAT!
-			mesh_draw_list[i].material_index = m.materialIndex;
-
-			if (bytes) {
-				vmaCopyMemoryToAllocation(app_allocator_, m.indices.data(), stagingAlloc, currBytes, bytes);
-				currBytes += bytes;
-			}
-		}
-
-		copyBuffer(stagingBuf, static_index_buffer_, needed_indexBytes_for_staging);
-		vmaDestroyBuffer(app_allocator_, stagingBuf, stagingAlloc);
-	}
-
-	return mesh_draw_list;
-}
 
 inline void VulkanApp::UpdateInstanceBuffer(uint32_t currentImage) {
 
@@ -1282,6 +1235,67 @@ inline void VulkanApp::UpdateInstanceBuffer(uint32_t currentImage) {
 	delete[] data;
 }
 
+
+void VulkanApp::InitializeImGui() {
+
+	// Setup Dear ImGui context
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGuiIO& io = ImGui::GetIO(); (void)io;
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Control	ImGui::SetCurrentContext(imgui_ctx);
+
+	// Clipboard via GLFW (optional but nice)
+	io.SetClipboardTextFn = [](void*, const char* text) { glfwSetClipboardString(nullptr, text); };
+	io.GetClipboardTextFn = [](void*) { return glfwGetClipboardString(nullptr); };
+
+	auto im_dp = context->descriptorSetPoolPool_.get(context->imgui_descriptor_pool);
+
+	SwapChainSupportDetails swapChainSupport =
+		querySwapChainSupport(physicalDevice, surface);
+
+	uint32_t desired = DESIRED_SWAPCHAING_IMAGE_COUNT; // triple buffering target
+	uint32_t minReq = swapChainSupport.capabilities.minImageCount;
+	uint32_t maxReq = swapChainSupport.capabilities.maxImageCount; // 0 means "no maximum"
+
+	swapchainImageCount = std::max(minReq, desired);
+	if (maxReq != 0) swapchainImageCount = std::min(swapchainImageCount, maxReq);
+
+
+	// Provide information for dynamic rendering
+	VkPipelineRenderingCreateInfo pipeline_create{
+		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+	pipeline_create.pNext = VK_NULL_HANDLE;
+
+	// We are using the single color buffer out.
+	pipeline_create.colorAttachmentCount = 1;
+	pipeline_create.pColorAttachmentFormats = &swapChainImageFormat;
+
+	pipeline_create.depthAttachmentFormat = findDepthFormat(physicalDevice);
+	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
+	ImGui_ImplVulkan_InitInfo info{};
+	info.Instance = instance;
+	info.PhysicalDevice = physicalDevice;
+	info.Device = device;
+	info.Queue = graphicsQueue_;
+	info.DescriptorPool = *im_dp;
+	info.MinImageCount = minReq;
+	info.ImageCount = swapchainImageCount;
+	info.UseDynamicRendering = true,
+	info.PipelineRenderingCreateInfo = pipeline_create;
+
+	//PipelineInfoMain.PipelineRenderingCreateInfo structure.
+	ImGui_ImplVulkan_Init(&info  /* oUseDynamicRendering=true */);
+
+	//// Upload font texture once
+	//VkCommandBuffer cmd = beginCommands();
+	//ImGui_ImplVulkan_CreateFontsTexture(cmd);
+	//EndSubmitAndWait(cmd);
+	//ImGui_ImplVulkan_DestroyFontUploadObjects();
+
+}
+
 bool VulkanApp::Run() {
 
 	if (volkInitialize() != VK_SUCCESS) {
@@ -1320,6 +1334,7 @@ bool VulkanApp::Run() {
 
 	// Pick physical device, create logical device, get queues from physdevice. Create VMA allocator
 	InitVulkanApp();
+	InitializeImGui();
 
 	createSwapChain();
 	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
@@ -1355,7 +1370,6 @@ bool VulkanApp::Run() {
 	createDepthResources();
 
 	CreateDefaultMaterialPipeline();
-	CreateStaticGeoBuffers();
 	UploadScene();
 	UpdateBindlessTextures();
 
@@ -1492,7 +1506,7 @@ void VulkanApp::InitVulkanApp() {
 			queueCreateInfos.push_back(queueCreateInfo);
 		}
 
-		
+
 		// Descriptor indexing (core, not EXT)
 		VkPhysicalDeviceDescriptorIndexingFeatures descIdx{};
 		descIdx.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
@@ -1789,3 +1803,4 @@ int main(int argc, const char* argv[]) {
 
 	return EXIT_SUCCESS;
 }
+////////

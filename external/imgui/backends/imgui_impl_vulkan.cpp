@@ -118,6 +118,19 @@ void ImGui_ImplVulkanH_DestroyFrameSemaphores(VkDevice device, ImGui_ImplVulkanH
 void ImGui_ImplVulkanH_CreateWindowSwapChain(VkPhysicalDevice physical_device, VkDevice device, ImGui_ImplVulkanH_Window* wd, const VkAllocationCallbacks* allocator, int w, int h, uint32_t min_image_count);
 void ImGui_ImplVulkanH_CreateWindowCommandBuffers(VkPhysicalDevice physical_device, VkDevice device, ImGui_ImplVulkanH_Window* wd, uint32_t queue_family, const VkAllocationCallbacks* allocator);
 
+// Debug: what does the preprocessor see here?
+#if defined(VOLK_H_)
+#   pragma message("VOLK_H_ is defined here")
+#else
+#   pragma message("VOLK_H_ is NOT defined here")
+#endif
+
+#if defined(VK_NO_PROTOTYPES)
+#   pragma message("VK_NO_PROTOTYPES is defined here")
+#else
+#   pragma message("VK_NO_PROTOTYPES is NOT defined here")
+#endif
+
 // Vulkan prototypes for use with custom loaders
 // (see description of IMGUI_IMPL_VULKAN_NO_PROTOTYPES in imgui_impl_vulkan.h
 #if defined(VK_NO_PROTOTYPES) && !defined(VOLK_H_)

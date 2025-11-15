@@ -12,6 +12,30 @@
 #include <ktx.h>
 #include <ktxvulkan.h>
 
+
+// ----------------------------------------------------------
+
+
+// specialized with dummy structs for type safety
+using ShaderModuleHandle = Handle<struct ShaderModule>;
+//using BufferHandle = Handle<struct Buffer>;
+using TextureHandle = Handle<struct Texture>;
+//using SamplerHandle = Handle<struct Sampler>;
+using MaterialPipelineHandle = Handle<struct MaterialPipeline>;
+using MaterialInstanceHandle = Handle<struct MaterialInstance>;
+using DescriptorPoolHandle = Handle<struct DescriptorPool>;
+using DescriptorSetHandle = Handle<struct DescriptorSet>;
+using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
+using DeviceBufferHandle = Handle<struct BufferDescription>;
+//using MeshRangeHandle = Handle<struct MeshRange>;
+using DrawSetHandle = Handle<struct DrawSet>;
+
+void destroy(Context* ctx, ShaderModuleHandle handle);
+void destroy(Context* ctx, DeviceBufferHandle handle);
+void destroy(Context* ctx, TextureHandle handle);
+
+// ----------------------------------------------------------
+
 struct DescriptorSet {
 	DescriptorLayoutHandle layout;
 	VkDescriptorSet set;
@@ -52,13 +76,9 @@ struct MaterialInstance {
 // This style of handling things is lifted up from LightweightVk.
 class Context {
 
-
+	// This is for ktx texture operations.
+	// We could lift the concept for context. instead of habing members for device, physDevice and else
 	ktxVulkanDeviceInfo* ktx_vdi = NULL;
-
-	// 1 allocator per device. Device is implicit in allocator...
-	VmaAllocator* allocator_;
-	VkDevice* device_;
-	VkPhysicalDevice* physicalDevice_;
 
 	// These three things are primary citizens of Device Memory Residency
 	VmaPool D_2DImagesPool;
@@ -74,19 +94,27 @@ class Context {
 
 public:
 
+	VmaAllocator* allocator_;
+	VkDevice* device_;
+	VkPhysicalDevice* physicalDevice_;
+
+	// lets just go monolithic with this for now. no skinned/ dynamic/ static distinctions yet
+	VmaVirtualBlock vertex_blk;
+	VmaVirtualBlock index_blk;
+	DeviceBufferHandle vertex_buffer;
+	DeviceBufferHandle index_buffer;
+
 	DescriptorPoolHandle default_descriptor_pool;
+	DescriptorPoolHandle imgui_descriptor_pool;
 	DescriptorLayoutHandle default_descriptorLayout;
 
 	VkCommandPool default_command_pool;
 	VkQueue default_queue;
+	VkQueue transfer_queue;
 
-	// We neeed VkDescriptorPool pools here
-	// We move from VkDp to another because its cheaper to reset them than to evict particular sets.
-	// Same with CommandPools. I have a stupid simple design now with just 1 CommandPool.
 	Pool<BufferDescription, BufferDescription> buffers_;
 	Pool<Texture, Texture> textures_;
-	Pool<DynamicMesh, DynamicMesh> meshes_;
-
+	Pool<DrawSet, DrawSet> meshes_;
 
 	// These two have confusing names;
 	Pool<DescriptorSet, DescriptorSet> descriptrorSetPool_;
@@ -120,9 +148,11 @@ public:
 		buffers_.objects_.reserve(1000);
 
 		InitializeDeviceVmaPools();
+		InitalizeGeoBuffers();
 
 		// Lets have one dpool
 		default_descriptor_pool = createDescriptorPool();
+		imgui_descriptor_pool = createDescriptorPool();
 		default_descriptorLayout = createDescriptorLayout();
 
 		QueueFamilyIndices indices = findQueueFamilies(*physicalDevice, surface);
@@ -135,6 +165,9 @@ public:
 
 		vkGetDeviceQueue(*device_, indices.graphicsFamily.value(), 0, &default_queue);
 
+		// This should pick transfer over graphics
+		vkGetDeviceQueue(*device_, indices.graphicsFamily.value(), 0, &transfer_queue);
+
 		for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
 			if (vkCreateCommandPool(*device_, &poolInfo, nullptr, &default_command_pool) !=
 				VK_SUCCESS) {
@@ -145,7 +178,7 @@ public:
 		ktx_vdi = ktxVulkanDeviceInfo_Create(
 			*physicalDevice_,
 			*device_,
-			default_queue,
+			transfer_queue, // this maybe should be transfer queue. we only use ktx to upload tex. no blitting for mipmaps, which are generated offline.
 			default_command_pool,
 			NULL
 		);
@@ -153,10 +186,59 @@ public:
 	};
 	// Maybe destructor should clear the vmaPools. Device side allocations are not managed as clear by the OS.
 	~Context(
-
-
 	) {
+		CleanUp();
 	};
+
+
+	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
+		copyBuffer(srcBuffer, dstBuffer, size, 0, 0);
+	}
+
+	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset) {
+
+		VkCommandBuffer commandBuffer = beginSingleTimeCommands(*device_, default_command_pool);
+
+		VkBufferCopy copyRegion{};
+		copyRegion.size = size;
+		copyRegion.srcOffset = srcOffset;
+		copyRegion.dstOffset = dstOffset;
+		vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+		endSingleTimeCommands(*device_, commandBuffer, default_queue, default_command_pool);
+	}
+
+
+	void InitalizeGeoBuffers() {
+
+		// Lets just default this like so
+		uint32_t totalVertexBytes = 512u * 1024u * 1024u;
+		// index buffer shpuld be smaller in reality. dont know appropiate heuristics for this yet. that needs to wait
+		// for proper research/profiling.
+		uint32_t totalIndexBytes = 512u * 1024u * 1024u;
+
+		this->vertex_buffer = createBuffer(
+			totalVertexBytes,
+			VMA_MEMORY_USAGE_GPU_ONLY,
+			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		);
+
+		this->index_buffer = createBuffer(
+			totalIndexBytes,
+			VMA_MEMORY_USAGE_GPU_ONLY,
+			VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		);
+
+
+		VmaVirtualBlockCreateInfo ci{};
+		ci.size = totalIndexBytes;
+		VK_CHECK(vmaCreateVirtualBlock(&ci, &index_blk));
+
+		VmaVirtualBlockCreateInfo cv{};
+		cv.size = totalVertexBytes;
+		VK_CHECK(vmaCreateVirtualBlock(&cv, &vertex_blk));
+
+	}
 
 	void InitializeDeviceVmaPools() {
 
@@ -227,43 +309,44 @@ public:
 	}
 
 	// Resource creation
-	DeviceBufferDescriptionHandle CreateStagingBuffer(VkDeviceSize size);
-	DeviceBufferDescriptionHandle CreateStagingBuffer(const void* srcData, VkDeviceSize size);
-
+	DeviceBufferHandle CreateStagingBuffer(VkDeviceSize size);
+	DeviceBufferHandle CreateStagingBuffer(const void* srcData, VkDeviceSize size);
 	ShaderModuleHandle createShaderModule(std::vector<char> code);
 	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
 	MaterialInstanceHandle createMaterialInstance(MaterialPipelineHandle mat_pipeline);
 
-
-	void getAppropriateSampler(Texture& texture);
-
-	void createImage(int texWidth, int texHeight, VkFormat format, VkImage& image, VmaAllocation& alloc);
-	void createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, VkImageView& imageView);
-
-	void UploadToImage(VkImage& image, void* data);
-
-	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
-
 	VkCommandBuffer GetCommandBuffer();
 	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
 
+	void createImage(int texWidth, int texHeight, VkFormat format, VkImage& image, VmaAllocation& alloc);
+	void createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, VkImageView& imageView);
 	TextureHandle createTexture(ktxTexture2& texture);
-	TextureHandle createTexture(int texWidth, int texHeight, int texChannels, VkFormat format, VkImageAspectFlagBits aspectFlags, void* data);
+
 
 	DescriptorLayoutHandle createDescriptorLayout();
 	DescriptorPoolHandle createDescriptorPool();
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
+	DeviceBufferHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
-	DeviceBufferDescriptionHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
+	DrawSetHandle UploadMesh(MeshData& mesh_data);
+	std::vector<DrawSet> UploadStaticMeshData(std::vector<MeshData>& mesh_data);
 
-	// Ideally we would expose resource deletion to the app too right. 
-	// LightweightVk goes with Holder construct to delete when no refs. I quite dont like that or RAII really.
-	// Lets not do this 'yet'
-	// 
-	// Resource Manipulation
-	void UploadDataToBuffer(DeviceBufferDescriptionHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
+	void UploadDataToBuffer(DeviceBufferHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
+
+	void getAppropriateSampler(Texture& texture);
+	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+
+	void CleanUp();
 
 };
+
+
+void Context::CleanUp() {
+	vmaDestroyVirtualBlock(index_blk);
+	vmaDestroyVirtualBlock(vertex_blk);
+	//vmaDestroyPool();//
+}
+
 
 // This maybe should be moved out of Context really;
 void Context::createImageView(VkImage image,
@@ -327,7 +410,7 @@ DescriptorSetHandle Context::createDescriptorSet(
 
 }
 
-DeviceBufferDescriptionHandle Context::createBuffer(
+DeviceBufferHandle Context::createBuffer(
 	uint32_t size,
 	VmaMemoryUsage vma_usage,
 	VkBufferUsageFlags usage_flags
@@ -363,7 +446,7 @@ DeviceBufferDescriptionHandle Context::createBuffer(
 }
 
 void Context::UploadDataToBuffer(
-	DeviceBufferDescriptionHandle buffer,
+	DeviceBufferHandle buffer,
 	void* data,
 	size_t dataSize,
 	VkPipelineStageFlags dstStages,
@@ -449,6 +532,8 @@ void Context::UploadDataToBuffer(
 
 
 	endSingleTimeCommands(*device_, tmpBuf, default_queue, default_command_pool);
+
+	// we could maybe delay this
 	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
 }
 
@@ -595,14 +680,6 @@ MaterialInstanceHandle Context::createMaterialInstance(MaterialPipelineHandle ma
 	return materialInstancesPool_.create(std::move(mat_instance));
 }
 
-
-//void Context::GetStagingBuffer() {}
-//
-
-void Context::UploadToImage(VkImage& image, void* data) {
-
-}
-
 void Context::TransitionImageLayout(
 	VkImage image,
 	VkFormat format,
@@ -715,11 +792,12 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 //	return KTX_TTF_RGBA32; // uncompressed fallback (always works)
 //}
 
-
 TextureHandle Context::createTexture(ktxTexture2& texture) {
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
 		//auto target = pickTarget(*physicalDevice_);
+
+		// This is hardcoded to BC7. it is not appropiate for other than diffuse.
 		KTX_error_code tr = ktxTexture2_TranscodeBasis(&texture, KTX_TTF_BC7_RGBA, 0);
 		if (tr != KTX_SUCCESS) throw std::runtime_error(ktxErrorString(tr));
 	}
@@ -765,19 +843,25 @@ TextureHandle Context::createTexture(ktxTexture2& texture) {
 		? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
 		: VK_IMAGE_ASPECT_COLOR_BIT;
 
+	// Lets do this for the moment. DEPTH is 
+	assert(aspect == VK_IMAGE_ASPECT_COLOR_BIT);
+
 	createImageView(ctx_tex.image, vk_tex.imageFormat, aspect, texture.numLevels, ctx_tex.imageView);
-	//getAppropriateSampler(ctx_tex);
+	getAppropriateSampler(ctx_tex);
 
-	VkSampler new_samp;
-	createSampler(*physicalDevice_, *device_, new_samp, texture.numLevels);
-	ctx_tex.sampler = new_samp;
-
+	//VkSampler new_samp;
+	//createSampler(*physicalDevice_, *device_, new_samp, texture.numLevels);
+	//ctx_tex.sampler = new_samp;
 
 	// Later, when destroying:
 	// ktxVulkanTexture_Destruct(&vk_tex, device_, nullptr);
-
 	return textures_.create(std::move(ctx_tex));
 }
+
+
+struct SamplerRequirements {
+
+};
 
 void Context::getAppropriateSampler(Texture& texture) {
 
@@ -829,12 +913,199 @@ void Context::createImage(int texWidth, int texHeight, VkFormat format, VkImage&
 
 }
 
+DrawSetHandle Context::UploadMesh(MeshData& mesh_data) {
+	// Assumptions:
+	// - One big GPU index buffer (ib) and one big GPU vertex buffer (vb) already exist.
+	// - vmaVirtualAllocate() is used over virtual blocks 'index_blk' and 'vertex_blk'
+	//   which correspond 1:1 to those big buffers.
+	// - copyBuffer(src, dst, size, srcOffset, dstOffset) -> if your helper
+	//   doesn't take offsets yet, add them. You need dstOffset at least.
+
+	auto ib = buffers_.get(index_buffer);
+	auto vb = buffers_.get(vertex_buffer);
+
+	// ---------- INDEX BUFFER ----------
+	using IndexT = uint32_t;                       // you said your pipeline uses VK_INDEX_TYPE_UINT32
+	const VkDeviceSize indexBytes = sizeof(IndexT) *
+		static_cast<VkDeviceSize>(mesh_data.indices.size());
+
+	VmaVirtualAllocationCreateInfo aIdx{};
+	aIdx.size = indexBytes;
+	aIdx.alignment = sizeof(IndexT);               // at least 4; pick something safe for your copies
+
+	VmaVirtualAllocation index_alloc{};
+	VkDeviceSize index_offset = 0;                 // byte offset into the big index buffer
+
+	if (vmaVirtualAllocate(index_blk, &aIdx, &index_alloc, &index_offset) != VK_SUCCESS) {
+		// handle: out of virtual space
+		// (return invalid handle or throw)
+		return {};
+	}
+
+	// stage & copy indices
+	{
+		auto staging_h = CreateStagingBuffer(mesh_data.indices.data(), indexBytes);
+		auto staging = buffers_.get(staging_h);
+
+		// IMPORTANT: copy into the correct region of the big buffer
+		copyBuffer(staging->buffer, ib->buffer, indexBytes, /*srcOffset=*/0, /*dstOffset=*/index_offset);
+
+		destroy(this, staging_h);
+	}
+
+	// ---------- VERTEX BUFFER ----------
+	const VkDeviceSize vertexBytes = sizeof(Vertex) *
+		static_cast<VkDeviceSize>(mesh_data.vertices.size());
+
+	VmaVirtualAllocationCreateInfo aVtx{};
+	aVtx.size = vertexBytes;
+	aVtx.alignment = alignof(Vertex);              // or a conservative power-of-two (e.g., 16/32)
+
+	VmaVirtualAllocation vertex_alloc{};
+	VkDeviceSize vertex_offset = 0;                // byte offset into the big vertex buffer
+
+	if (vmaVirtualAllocate(vertex_blk, &aVtx, &vertex_alloc, &vertex_offset) != VK_SUCCESS) {
+		// roll back the index alloc if you want strong exception safety
+		vmaVirtualFree(index_blk, index_alloc);
+		return {};
+	}
+
+	// stage & copy vertices
+	{
+		auto staging_h = CreateStagingBuffer(mesh_data.vertices.data(), vertexBytes);
+		auto staging = buffers_.get(staging_h);
+
+		copyBuffer(staging->buffer, vb->buffer, vertexBytes, /*srcOffset=*/0, /*dstOffset=*/vertex_offset);
+
+		destroy(this, staging_h);
+	}
+
+	// ---------- DRAWSET ----------
+	DrawSet ds{};
+	ds.first_index = static_cast<uint32_t>(index_offset / sizeof(IndexT)); // index *units*
+	ds.index_count = static_cast<uint32_t>(mesh_data.indices.size());
+
+	// If you intend to pass this to vkCmdDrawIndexed as 'vertexOffset' (baseVertex),
+	// it must be in *vertex units*, not bytes:
+	ds.vert_offset = static_cast<int32_t>(vertex_offset / sizeof(Vertex));
+
+	// Keep the virtual allocations so you can free them when destroying the mesh
+	//ds.index_alloc = index_alloc;   // add these fields if you don’t have them yet
+	//ds.vertex_alloc = vertex_alloc;
+	//ds.ib_offset = index_offset;  // optional: useful when binding
+	//ds.vb_offset = vertex_offset; // optional
+
+	// Note: ensure proper pipeline barriers or your copy helper does it.
+	// At minimum: transfer -> vertex/index read access & appropriate stages.
+
+	return meshes_.create(std::move(ds));
+}
+
+
+std::vector<DrawSet> Context::UploadStaticMeshData(std::vector<MeshData>& mesh_data) {
+	assert(!mesh_data.empty());
+
+	std::vector<DrawSet> mesh_draw_list;
+	mesh_draw_list.reserve(mesh_data.size()); // keep 1:1 with mesh_data
+
+	int i = 0;
+	for (auto mesh : mesh_data) {
+		auto h = UploadMesh(mesh);
+		auto ds = meshes_.get(h);
+		ds->material_index = mesh_data[i].materialIndex;
+		mesh_draw_list.push_back(*ds);
+		i++;
+	}
+	return mesh_draw_list;
+
+	//VkDeviceSize needed_vertexBytes_for_staging = 0;
+	//VkDeviceSize needed_indexBytes_for_staging = 0;
+
+	//std::vector<DrawSet> mesh_draw_list(mesh_data.size()); // keep 1:1 with mesh_data
+
+	//for (size_t i = 0; i < mesh_data.size(); ++i) {
+	//	needed_vertexBytes_for_staging += sizeof(Vertex) * mesh_data[i].vertices.size();
+	//	needed_indexBytes_for_staging += sizeof(uint32_t) * mesh_data[i].indices.size();
+	//}
+
+	//// VERTICES
+	//{
+	//	VkBuffer stagingBuf; VmaAllocation stagingAlloc;
+	//	VkBufferCreateInfo sInfo{
+	//		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+	//		.size = needed_vertexBytes_for_staging,
+	//		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+	//	};
+	//	VmaAllocationCreateInfo sAlloc{};
+	//	sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+	//	sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+	//	vmaCreateBuffer(*allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
+
+	//	VkDeviceSize currBytes = 0;
+	//	uint32_t currVerts = 0;
+	//	for (size_t i = 0; i < mesh_data.size(); ++i) {
+	//		const auto& m = mesh_data[i];
+	//		const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
+
+	//		mesh_draw_list[i].vert_offset = currVerts;           // BYTES
+	//		if (bytes) {
+	//			vmaCopyMemoryToAllocation(*allocator_, m.vertices.data(), stagingAlloc, currBytes, bytes);
+	//			currBytes += bytes;
+	//			currVerts += static_cast<uint32_t>(m.vertices.size());
+	//		}
+	//	}
+
+	//	auto vb = buffers_.get(vertex_buffer);
+	//	copyBuffer(stagingBuf, vb->buffer, needed_vertexBytes_for_staging);
+	//	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
+	//}
+
+	//// INDICES
+	//{
+	//	VkBuffer stagingBuf; VmaAllocation stagingAlloc;
+	//	VkBufferCreateInfo sInfo{
+	//		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+	//		.size = needed_indexBytes_for_staging,
+	//		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+	//	};
+	//	VmaAllocationCreateInfo sAlloc{};
+	//	sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+	//	sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+	//	vmaCreateBuffer(*allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
+
+	//	VkDeviceSize currBytes = 0; // byte offset
+	//	for (size_t i = 0; i < mesh_data.size(); ++i) {
+	//		const auto& m = mesh_data[i];
+	//		const VkDeviceSize bytes = sizeof(uint32_t) * m.indices.size();
+
+	//		mesh_draw_list[i].index_count = static_cast<uint32_t>(m.indices.size());
+	//		mesh_draw_list[i].first_index = static_cast<uint32_t>(currBytes / sizeof(uint32_t)); // ELEMENTS
+
+
+	//		// MAT!
+	//		mesh_draw_list[i].material_index = m.materialIndex;
+
+	//		if (bytes) {
+	//			vmaCopyMemoryToAllocation(*allocator_, m.indices.data(), stagingAlloc, currBytes, bytes);
+	//			currBytes += bytes;
+	//		}
+	//	}
+
+	//	auto ib = buffers_.get(index_buffer);
+	//	copyBuffer(stagingBuf, ib->buffer, needed_indexBytes_for_staging);
+	//	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
+	//}
+
+}
+
 // Creates a host-visible, coherent staging buffer suitable for uploads.
 // The buffer is created with VK_BUFFER_USAGE_TRANSFER_SRC_BIT so it can be
 // copied into images/buffers via vkCmdCopy*.
 //
 // Overload A: just create the buffer
-DeviceBufferDescriptionHandle Context::CreateStagingBuffer(VkDeviceSize size)
+DeviceBufferHandle Context::CreateStagingBuffer(VkDeviceSize size)
 {
 	BufferDescription desc{};
 
@@ -874,8 +1145,7 @@ DeviceBufferDescriptionHandle Context::CreateStagingBuffer(VkDeviceSize size)
 	return buffers_.create(std::move(desc));
 }
 
-// Overload B: create and upload data immediately
-DeviceBufferDescriptionHandle Context::CreateStagingBuffer(const void* srcData,
+DeviceBufferHandle Context::CreateStagingBuffer(const void* srcData,
 	VkDeviceSize size)
 {
 	auto handle = CreateStagingBuffer(size);
@@ -894,7 +1164,6 @@ DeviceBufferDescriptionHandle Context::CreateStagingBuffer(const void* srcData,
 	return handle;
 }
 
-
 ShaderModuleHandle Context::createShaderModule(std::vector<char> code) {
 
 	auto shader = createDeviceShaderModule(
@@ -906,17 +1175,37 @@ ShaderModuleHandle Context::createShaderModule(std::vector<char> code) {
 
 };
 
-// Need device allocation freeing
-void destroy(Context* ctx, TextureHandle handle) {
+void destroy(Context* ctx, ShaderModuleHandle handle) {
+	assert(handle.valid());
+	auto sm = ctx->shaderModulePool_.get(handle);
+	vkDestroyShaderModule(*ctx->device_, *sm, NULL);
+	ctx->shaderModulePool_.destroy(handle);
+};
 
-	// We need to free from device pool.
+
+void destroy(Context* ctx, TextureHandle handle) {
+	assert(handle.valid());
+	auto tex = ctx->textures_.get(handle);
+
+
+	// Lets not manage samplers just this soon. we have a default one with use for every texture rnow anyways.
+	//if (tex->owns_sampler) {
+	//	vkDestroySampler(*ctx->device_, tex->sampler, nullptr);
+	//	// this is not needed its just a pattern for preventing use after free.
+	//	//tex->sampler = VK_NULL_HANDLE;
+	//}
+
+	// Im pairing imageViews 1 to 1 with iamges. so lets free that
+	vkDestroyImageView(*ctx->device_, tex->imageView, nullptr);
+	vmaDestroyImage(*ctx->allocator_, tex->image, tex->alloc);
+
 	ctx->textures_.destroy(handle);
 };
 
-void destroy(Context* ctx, DeviceBufferDescriptionHandle handle) {
-
-	// We need to freee device allocation
+void destroy(Context* ctx, DeviceBufferHandle handle) {
+	assert(handle.valid());
+	auto db = ctx->buffers_.get(handle);
+	vmaDestroyBuffer(*ctx->allocator_, db->buffer, db->alloc);
 	ctx->buffers_.destroy(handle);
-
 };
 

@@ -95,13 +95,17 @@ struct PushConstants {
 
 // Lets just assume offsets into the static index/vertex buffers for now :)
 struct DrawSet {
+	//static doesn't go here- Instead static sets are baked into large draw sets. static is just to skip hierarchy transform updates.
+	// Maybe for coherency for optimization
+
 	uint32_t first_index = 0;
+
+	// this is size
 	uint32_t vert_offset = 0;
 	uint32_t index_count = 0;
 
 	// This is handled scene side. This is just temp
 	uint32_t material_index = 0;
-
 };
 
 
@@ -145,7 +149,7 @@ struct DynamicMesh {
 struct Texture {
 
 	// Mem	
-	VmaAllocation allocation;
+	VmaAllocation alloc;
 	VmaAllocationInfo allocInfo;
 
 	//TextureLyt image_lyt = DST;
@@ -157,6 +161,12 @@ struct Texture {
 	VkSampler sampler;
 	VkFormat format;
 
+
+	// Texrture entry may own sampler. 
+	bool owns_sampler;
+
+
+	// This could provide useful but lets not put this here yet.
 	// Mip Level 0 is base. But an image with only base mip has mipLevels 1
 	//int mipLevels = 1;
 

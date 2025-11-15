@@ -51,6 +51,9 @@ target_link_libraries(App
     PRIVATE
         engine
         KTX::ktx
+        #imgui_core
+        #imgui_backend_glfw
+        #imgui_backend_vulkan
         #Vulkan::Vulkan
         #nlohmann_json
 )

@@ -5,6 +5,7 @@ static constexpr uint32_t HEIGHT = 720;
 
 // Double buffering :)
 static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+static constexpr int DESIRED_SWAPCHAING_IMAGE_COUNT = 2;
 
 static constexpr float default_near_clip = 0.01f;
 static constexpr float default_far_clip = 100.0f;

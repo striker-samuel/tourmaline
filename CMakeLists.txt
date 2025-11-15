@@ -39,18 +39,6 @@ file(MAKE_DIRECTORY ${SHADER_BINARY_DIR})
 # Shader compilation rule (loaded from custom cmake file)
 include(cmake/CompileShaders.cmake)
 
-# ---- ImGui as a static library ----
-#set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui)
-
-#add_library(imgui STATIC
-#    ${IMGUI_DIR}/imgui.cpp
-#    ${IMGUI_DIR}/imgui_draw.cpp
-#   ${IMGUI_DIR}/imgui_tables.cpp
-#    ${IMGUI_DIR}/imgui_widgets.cpp
-#    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
-#    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
-#)
-
 option(TRACE_INCLUDES "Print header include tree while compiling" OFF)
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -63,7 +51,7 @@ elseif (MSVC)
   endif()
 endif()
 
-
+add_subdirectory(external/imgui)
 add_subdirectory(engine)
 add_subdirectory(app)
 # Shader compile outputs will be collected in this list
