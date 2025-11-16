@@ -121,10 +121,7 @@ private:
 
 	float delta_time_;
 
-	// This is bad. We coupled View with app...
-	// Although i like the single cameraView model for an app. Lets not complicate setup
-	// I dont want to stablish layouts for multicamera view. then compose ui on top
-	// Memory was already split to Context.
+	// This is bad. We coupled Camera/View with app... So we cant do multipanel/multiview.
 	Camera camera_ = Camera(cameraPositioner);
 
 #pragma endregion
@@ -206,7 +203,6 @@ private:
 	void UploadScene();
 	void UpdateDeltaTime() {
 
-		// Its a bad idea to have this across the fucntion border. Latency sensitive.
 		static auto startTime = std::chrono::high_resolution_clock::now();
 		auto currentTime = std::chrono::high_resolution_clock::now();
 		delta_time_ = std::chrono::duration<float, std::chrono::seconds::period>(
@@ -218,8 +214,14 @@ private:
 
 	void UiPass() {
 
+		int width = 0, height = 0;
+		glfwGetFramebufferSize(window, &width, &height);
+
+		ImGuiIO& io = ImGui::GetIO();
+		io.DisplaySize = ImVec2((float)width, (float)height);
+		io.DeltaTime = delta_time_;
+
 		ImGui_ImplVulkan_NewFrame();
-		//ImGui_ImplWin32_NewFrame();
 		ImGui::NewFrame();
 
 		// Get background draw list (renders behind all windows)
@@ -260,8 +262,6 @@ private:
 			EarlyUpdate();
 			Update();
 			LateUpdate();
-
-			//UiPass();
 
 			drawFrame();
 
@@ -878,9 +878,33 @@ private:
 			1, &barrierToColorAttachment
 		);
 
+		VkRenderingAttachmentInfoKHR depthAttachment{};
+		depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+		depthAttachment.imageView = main_depthImageView;
+		depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		//depthAttachment.clearValue.depthStencil = { 1.0f, 0 };
+		//Lets do reverse z
+		depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
 
-		VkRenderingInfoKHR renderingInfo;
-		populateRenderingInfo(renderingInfo, imageIndex);
+		VkRenderingAttachmentInfoKHR colorAttachment{};
+		colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+		colorAttachment.imageView = swapChainImageViews[imageIndex];  // actual view
+		colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
+
+		VkRenderingInfoKHR renderingInfo{};
+		renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
+		renderingInfo.renderArea.offset = { 0, 0 };
+		renderingInfo.renderArea.extent = swapChainExtent;
+		renderingInfo.layerCount = 1;
+		renderingInfo.colorAttachmentCount = 1;
+		renderingInfo.pColorAttachments = &colorAttachment;
+		renderingInfo.pDepthAttachment = &depthAttachment;
+
 		vkCmdBeginRendering(commandBuffer, &renderingInfo);
 
 		// VIEWPORT
@@ -982,13 +1006,6 @@ private:
 		}
 
 
-		int width = 0, height = 0;
-		glfwGetFramebufferSize(window, &width, &height);
-
-		ImGuiIO& io = ImGui::GetIO();
-		io.DisplaySize = ImVec2((float)width, (float)height);
-		io.DeltaTime = delta_time_;
-
 		ImGui::Render();
 
 		// Record the ImGui draw data into your Vulkan command buffer.
@@ -1026,7 +1043,6 @@ private:
 		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
 			throw std::runtime_error("failed to record command buffer!");
 		}
-
 
 	}
 
@@ -1273,9 +1289,11 @@ void VulkanApp::InitializeImGui() {
 
 	pipeline_create.depthAttachmentFormat = findDepthFormat(physicalDevice);
 	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+    ImGui_ImplGlfw_InitForVulkan(window, true);
 
 	ImGui_ImplVulkan_InitInfo info{};
 	info.Instance = instance;
+	info.ApiVersion = VK_API_VERSION_1_3;              
 	info.PhysicalDevice = physicalDevice;
 	info.Device = device;
 	info.Queue = graphicsQueue_;
@@ -1334,11 +1352,22 @@ bool VulkanApp::Run() {
 
 	// Pick physical device, create logical device, get queues from physdevice. Create VMA allocator
 	InitVulkanApp();
-	InitializeImGui();
 
+
+
+	SwapChainSupportDetails swapChainSupport =
+			querySwapChainSupport(physicalDevice, surface);
+	VkSurfaceFormatKHR surfaceFormat =
+		chooseSwapSurfaceFormat(swapChainSupport.formats);
+
+	swapChainImageFormat = surfaceFormat.format;
+
+	InitializeImGui();
 	createSwapChain();
 	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
 	createSwapchainImageViews();
+
+
 
 	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
 
@@ -1624,8 +1653,6 @@ inline void VulkanApp::drawFrame() {
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
 
-	// BATCH PER MESH, SHADER, INSTANCE
-
 	// We should check for size and promote or demote from pushconstants -> ubo -> ssbo.
 	UpdateDeltaTime();
 	UpdateInstanceBuffer(currentFrame);
@@ -1638,6 +1665,8 @@ inline void VulkanApp::drawFrame() {
 
 	UploadDefaultDescriptorSets();
 	UpdateBindlessTextures();
+
+	UiPass();
 
 	recordDraw(commandBuffers[currentFrame], imageIndex);
 
