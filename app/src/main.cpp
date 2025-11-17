@@ -10,6 +10,7 @@
 
 #include <Engine/Vulkan/vulkan_setup.h>
 
+// This needed to be defined elsewhere so al cop units got em the same, as they affect data structures.
 //#define IMGUI_IMPL_VULKAN_HAS_DYNAMIC_RENDERING
 //#define IMGUI_IMPL_VULKAN_USE_VOLK
 #include "imgui.h"
@@ -63,27 +64,37 @@
 //static ImGui_ImplVulkanH_Window g_MainWindowData;
 //static uint32_t                 g_MinImageCount = 2;
 //static bool                     g_SwapChainRebuild = false;
-//
+///
 // ------------------------------------
 // If theres only one I probably could go with argv
 std::vector<std::string> gltf_meshes_paths = {
 	"models/Sponza/sponza.gltf" // Index 0
 };
 
+// 1 UNIT = 1 M
+
 Scene getSceneFromGltf(const GltfModel& gltf_model) {
 
 	Scene scene;
 
-	int counter = 0;
-	for (auto mesh_data : gltf_model.mesh_data) {
-		addNode(scene, -1, 0);
-		scene.meshForNode[counter] = counter;
+	// adding top parent to apply scale here
 
-		// This is obv not ok...
-		scene.materialForNode[counter] = 0;
-		counter++;
+	// top parent
+	int root = addNode(scene, -1, 0);
+
+	int meshIndex = 0;
+	for (auto& mesh_data : gltf_model.mesh_data) {
+		int node = addNode(scene, root, 1); // child of root
+		scene.meshForNode[node] = meshIndex;
+
+		// TODO: set real material index from mesh_data
+		scene.materialForNode[node] = 0;
+
+		meshIndex++;
 	}
 
+	scene.localTransform[0] = glm::scale(glm::mat4(1.0f), glm::vec3(0.008f)/*, glm::vec3(0.008f)*/);
+	markAsChanged(scene, 0);
 	return scene;
 }
 
@@ -119,7 +130,8 @@ private:
 
 #pragma region ===[ App / Core State ]===
 
-	float delta_time_;
+	float delta_time_s;
+	float time_since_start_s;
 
 	// This is bad. We coupled Camera/View with app... So we cant do multipanel/multiview.
 	Camera camera_ = Camera(cameraPositioner);
@@ -203,62 +215,40 @@ private:
 	void UploadScene();
 	void UpdateDeltaTime() {
 
+		static auto lastFrameTime = std::chrono::high_resolution_clock::now();
 		static auto startTime = std::chrono::high_resolution_clock::now();
 		auto currentTime = std::chrono::high_resolution_clock::now();
-		delta_time_ = std::chrono::duration<float, std::chrono::seconds::period>(
-			currentTime - startTime)
-			.count();
+
+		time_since_start_s = std::chrono::duration<float, std::chrono::seconds::period>(
+			currentTime - startTime).count();
+
+		delta_time_s = std::chrono::duration<float, std::chrono::seconds::period>(
+			currentTime - lastFrameTime).count();
+
+		lastFrameTime = currentTime;
 	}
+
+	void CleanUp();
 
 	void UpdateInstanceBuffer(uint32_t currentImage);
 
 	void UiPass() {
-
-		int width = 0, height = 0;
-		glfwGetFramebufferSize(window, &width, &height);
-
-		ImGuiIO& io = ImGui::GetIO();
-		io.DisplaySize = ImVec2((float)width, (float)height);
-		io.DeltaTime = delta_time_;
-
 		ImGui_ImplVulkan_NewFrame();
+		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
-		// Get background draw list (renders behind all windows)
-		ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
-
-		// Define a rectangle area in screen coordinates (pixels)
-		ImVec2 p0(100, 100);  // top-left corner
-		ImVec2 p1(300, 300);  // bottom-right corner
-
-		// Draw a filled white rectangle with no border
-		draw_list->AddRectFilled(p0, p1, IM_COL32(255, 255, 255, 255));
-
-		// (optional) Draw an outline
-		// draw_list->AddRect(p0, p1, IM_COL32(0, 0, 0, 25
-
+		ImGuiIO& io = ImGui::GetIO();
+		ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
+			1000.0f / io.Framerate, io.Framerate);
 
 	}
 
 	void mainLoop() {
 
-		auto lastTime = std::chrono::high_resolution_clock::now();
-
 		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
 
-			auto now = std::chrono::high_resolution_clock::now();
-			float delta = std::chrono::duration<float>(now - lastTime).count();
-			lastTime = now;
-
-			double x, y;
-			glfwGetCursorPos(window, &x, &y);
-
-			cameraPositioner.update(delta,
-				glm::vec2(x / width_, y / -height_),
-				rightMousePressed);
-
-
+			CameraUpdate();
 			EarlyUpdate();
 			Update();
 			LateUpdate();
@@ -267,15 +257,27 @@ private:
 
 		}
 
+		// This holds. cpu. until queue completion. presentations is done by presetnQueue
 		vkDeviceWaitIdle(device);
 	}
 
+	void CameraUpdate() {
+		double x, y;
+		glfwGetCursorPos(window, &x, &y);
+
+		cameraPositioner.update(delta_time_s,
+			glm::vec2(x / width_, y / -height_),
+			rightMousePressed);
+
+	}
 
 	void EarlyUpdate() {
 
 	}
 
 	void Update() {
+
+
 		//std::cout << camera_.getPosition() << std::endl;
 		////Synthetic movement
 		//for (size_t i = 0; i < scene_.localTransform.size(); ++i) {
@@ -345,12 +347,16 @@ private:
 	}
 
 	void createSwapChain() {
+
 		SwapChainSupportDetails swapChainSupport =
 			querySwapChainSupport(physicalDevice, surface);
 		VkSurfaceFormatKHR surfaceFormat =
 			chooseSwapSurfaceFormat(swapChainSupport.formats);
-		VkPresentModeKHR presentMode =
-			chooseSwapPresentMode(swapChainSupport.presentModes);
+
+		//VkPresentModeKHR presentMode =
+		//	chooseSwapPresentMode(swapChainSupport.presentModes);
+		VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+
 		VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities, window);
 
 		if (swapChainSupport.capabilities.maxImageCount > 0 &&
@@ -436,33 +442,6 @@ private:
 
 	// --------------------------
 
-	TextureHandle createTexture(std::string texture_path) {
-
-		ktxTexture2* ktxTex = nullptr;
-		KTX_error_code res = ktxTexture2_CreateFromNamedFile(
-			texture_path.c_str(),
-			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
-			&ktxTex
-		);
-
-		if (res != KTX_SUCCESS) {
-			// do error
-			throw std::runtime_error("KTX load failed");
-		}
-
-		// if you want mips generated by the ktx library:
-		//ktxTex->generateMipmaps = KTX_TRUE;
-
-		// now upload to vulkan
-		auto texHandle = context->createTexture(*ktxTex);
-
-		// free after upload
-		ktxTexture2_Destroy(ktxTex);
-
-		return texHandle;
-
-	}
-
 	void createImageView(
 		VkImage image,
 		VkFormat format,
@@ -498,7 +477,6 @@ private:
 		VkMemoryPropertyFlags properties,
 		VkImage& image
 	) {
-
 
 		VkImageCreateInfo imgCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 		imgCreateInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -1064,9 +1042,9 @@ private:
 		}
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+
 			if (
 				vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
-				//vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
 				vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
 				throw std::runtime_error(
 					"failed to create synchronization objects for a frame!");
@@ -1170,16 +1148,29 @@ void VulkanApp::UploadScene() {
 
 MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) {
 
-	auto image1 = createTexture(
-		image_path
-		//"textures/viking_room.png",
-		//VK_FORMAT_R8G8B8A8_SRGB
+	ktxTexture2* ktxTex = nullptr;
+	KTX_error_code res = ktxTexture2_CreateFromNamedFile(
+		image_path.c_str(),
+		KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
+		&ktxTex
 	);
 
-	//
+	if (res != KTX_SUCCESS) {
+		// do error
+		throw std::runtime_error("KTX load failed");
+	}
+
+	// if you want mips generated by the ktx library:
+	// I just generated them offline ;=)
+	//ktxTex->generateMipmaps = KTX_TRUE;
+	auto texHandle = context->createTexture(*ktxTex);
+
+	// free after upload
+	ktxTexture2_Destroy(ktxTex);
+
 	auto material_pipe_0 = context->materialPipelinePool_.getHandle(0);
 	auto mat_h = context->createMaterialInstance(material_pipe_0);
-	context->materialInstancesPool_.get(mat_h)->values.texDiffuse = image1.index();
+	context->materialInstancesPool_.get(mat_h)->values.texDiffuse = texHandle.index();
 	return mat_h;
 
 }
@@ -1187,18 +1178,11 @@ MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) 
 
 inline void VulkanApp::UpdateInstanceBuffer(uint32_t currentImage) {
 
-	// THIS MUST REMAIN HERE. SENSITIVE TO LAG OTHERWISE
-	static auto startTime = std::chrono::high_resolution_clock::now();
-	auto currentTime = std::chrono::high_resolution_clock::now();
-	delta_time_ = std::chrono::duration<float, std::chrono::seconds::period>(
-		currentTime - startTime)
-		.count();
-
 	// Moved this to the HEAP. This will be state of the app instead of being fabricated here anyways.
 	InstanceData* data = new InstanceData[MAX_INSTANCES];
 	int i = 0;
-	//for (const glm::mat4 tr : scene_->globalTransform) {
-	for (const glm::mat4 tr : scene_.localTransform) {
+	for (const glm::mat4 tr : scene_.globalTransform) {
+	//for (const glm::mat4 tr : scene_.localTransform) {
 		std::memcpy(
 			data[i].transform,
 			glm::value_ptr(tr),
@@ -1258,7 +1242,7 @@ void VulkanApp::InitializeImGui() {
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 	ImGuiIO& io = ImGui::GetIO(); (void)io;
-	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+	//io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Control	ImGui::SetCurrentContext(imgui_ctx);
 
 	// Clipboard via GLFW (optional but nice)
@@ -1289,11 +1273,11 @@ void VulkanApp::InitializeImGui() {
 
 	pipeline_create.depthAttachmentFormat = findDepthFormat(physicalDevice);
 	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
-    ImGui_ImplGlfw_InitForVulkan(window, true);
+	ImGui_ImplGlfw_InitForVulkan(window, /*install callbacks*/ false);
 
 	ImGui_ImplVulkan_InitInfo info{};
 	info.Instance = instance;
-	info.ApiVersion = VK_API_VERSION_1_3;              
+	info.ApiVersion = VK_API_VERSION_1_3;
 	info.PhysicalDevice = physicalDevice;
 	info.Device = device;
 	info.Queue = graphicsQueue_;
@@ -1301,7 +1285,7 @@ void VulkanApp::InitializeImGui() {
 	info.MinImageCount = minReq;
 	info.ImageCount = swapchainImageCount;
 	info.UseDynamicRendering = true,
-	info.PipelineRenderingCreateInfo = pipeline_create;
+		info.PipelineRenderingCreateInfo = pipeline_create;
 
 	//PipelineInfoMain.PipelineRenderingCreateInfo structure.
 	ImGui_ImplVulkan_Init(&info  /* oUseDynamicRendering=true */);
@@ -1353,10 +1337,8 @@ bool VulkanApp::Run() {
 	// Pick physical device, create logical device, get queues from physdevice. Create VMA allocator
 	InitVulkanApp();
 
-
-
 	SwapChainSupportDetails swapChainSupport =
-			querySwapChainSupport(physicalDevice, surface);
+		querySwapChainSupport(physicalDevice, surface);
 	VkSurfaceFormatKHR surfaceFormat =
 		chooseSwapSurfaceFormat(swapChainSupport.formats);
 
@@ -1366,8 +1348,6 @@ bool VulkanApp::Run() {
 	createSwapChain();
 	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
 	createSwapchainImageViews();
-
-
 
 	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
 
@@ -1404,13 +1384,24 @@ bool VulkanApp::Run() {
 
 	mainLoop();
 
-	//cleanup();
-	vmaDestroyAllocator(app_allocator_);
+	CleanUp();
 
 	return true;
 
 };
 
+
+void Initialize() {
+
+}
+
+void VulkanApp::CleanUp() {
+
+
+	vmaDestroyAllocator(app_allocator_);
+	context->CleanUp();
+
+}
 
 
 void VulkanApp::InitVulkanApp() {
@@ -1742,16 +1733,16 @@ void VulkanApp::handleMouseScroll(double xOffset, double yOffset) {
 }
 
 void VulkanApp::handleMouseMovement(double xpos, double ypos) {
-	if (!rightMousePressed) return;
+	//if (!rightMousePressed) return;
 
-	glm::vec2 mousePos = glm::vec2(
-		static_cast<float>(xpos) / width_,
-		static_cast<float>(ypos) / -height_
-	);
-	cameraPositioner.update(delta_time_ / 1000,
-		mousePos,
-		true
-	);
+	//glm::vec2 mousePos = glm::vec2(
+	//	static_cast<float>(xpos) / width_,
+	//	static_cast<float>(ypos) / -height_
+	//);
+	//cameraPositioner.update(delta_time_s,
+	//	mousePos,
+	//	true
+	//);
 }
 
 void VulkanApp::handleMouseButton(int button, int action, int mods) {
@@ -1832,4 +1823,3 @@ int main(int argc, const char* argv[]) {
 
 	return EXIT_SUCCESS;
 }
-////////

@@ -52,9 +52,6 @@ private:
 	glm::mat4 proj_;
 };
 
-
-// ....
-
 class CameraPositioner_FirstPerson final : public CameraPositionerInterface
 {
 public:
@@ -64,6 +61,10 @@ public:
 		, cameraOrientation_(glm::lookAt(pos, target, up))
 		, up_(up)
 	{
+		// store starting values for reset()
+		starting_pos = cameraPosition_;
+		starting_cameraOrientation = cameraOrientation_;
+		starting_up = up_;
 	}
 
 
@@ -182,22 +183,20 @@ public:
 
 	} movement_;
 
-public:
-	float mouseSpeed_ = 500.0f;
-	float rotationSpeed_ = 500.f;
-	float acceleration_ = 50.0f;
-	float damping_ = 0.5f;
-	float maxSpeed_ = 100.0f;
-	float fastCoef_ = 10.0f;
+	//rotationSpeed is in radians per second per NDC mouse unit
+	float rotationSpeed_ = 50.0f;
+
+	float damping_ = 0.5f; // seconds, time constant for velocity decay when no input
+	float acceleration_ = 2.4f; // meters/sec², how fast speed builds while moving
+	
+	float maxSpeed_ = 2.0f; //m/s
+	float fastCoef_ = 4.0f; // raw multiplier
 
 	glm::vec3 cameraPosition_;
-
-private:
+	glm::vec3 moveSpeed_ = glm::vec3(0.0f);
 	glm::vec2 mousePos_ = glm::vec2(0);
 	glm::quat cameraOrientation_ = glm::quat(glm::vec3(0));
-	glm::vec3 moveSpeed_ = glm::vec3(0.0f);
 	glm::vec3 up_ = glm::vec3(0.0f, 1.0f, 0.0f);
-
 
 	glm::vec3 starting_pos;
 	glm::quat starting_cameraOrientation;
@@ -205,8 +204,8 @@ private:
 };
 
 CameraPositioner_FirstPerson cameraPositioner(
-	glm::vec3(0.0f, 5.0f, 16.0f), //pos
-	glm::vec3(0.0f, 0.0f, 0.0f), //target
+	glm::vec3(0.0f, 1.0f, 1.0f), //pos
+	glm::vec3(0.0f, 1.0f, 0.0f), //target
 	glm::vec3(0.0f, 1.0f, 0.0f) //up
 );
 

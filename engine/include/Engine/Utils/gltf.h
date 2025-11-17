@@ -422,7 +422,6 @@ public:
 					Vertex v{};
 					v.pos = readVec3F(gltfModel, posAcc, i);
 
-
 					// We need to do this because my coords system differs from gltf
 					v.pos[0] *= -1;
 					v.pos[2] *= -1; 
