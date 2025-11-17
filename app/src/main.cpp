@@ -1,14 +1,14 @@
 #pragma once
-#define VMA_DEBUG_INITIALIZE_ALLOCATIONS 1
-#define VMA_DEBUG_DETECT_CORRUPTION 1
-#define VMA_ASSERT(expr) assert(expr)
-# define ENGINE_NAME "VulkanToy"
 
 #include <cassert>
 
 // ---- SETUP -----
 
+// Volk. Glm
 #include <Engine/Vulkan/vulkan_setup.h>
+
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
 
 // This needed to be defined elsewhere so al cop units got em the same, as they affect data structures.
 //#define IMGUI_IMPL_VULKAN_HAS_DYNAMIC_RENDERING
@@ -16,15 +16,6 @@
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
-
-
-#define VMA_IMPLEMENTATION
-
-#define VMA_VULKAN_VERSION 1003800
-
-// We use volk so we need thes defs.
-#define VMA_STATIC_VULKAN_FUNCTIONS 0
-#define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
 
 #include <vk_mem_alloc.h>
 
@@ -36,7 +27,7 @@
 #define TINYGLTF_NO_STB_IMAGE
 #define TINYGLTF_NO_EXTERNAL_IMAGE
 
-// ------------------------------------
+// --------------ENGINE--------------------
 
 #include <Engine/Vulkan/vulkan_helpers.h>
 #include <Engine/Vulkan/vulkan_funs.h>
@@ -47,13 +38,13 @@
 #include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
 
+// Include glm/else.
 #include <Engine/Shared/common.h>
 
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
 
 #include <Engine/Renderer/primitives.h>
-//#include <Engine/Renderer/utils.h>
 
 #include <Engine/Utils/gltf.h>
 
@@ -61,17 +52,17 @@
 // this should go to Platform layer. This is windows first for the foreseable future
 #include <Engine/fileIO.h>
 
-//static ImGui_ImplVulkanH_Window g_MainWindowData;
-//static uint32_t                 g_MinImageCount = 2;
-//static bool                     g_SwapChainRebuild = false;
-///
+// --------------APP--------------------
+
+#include <App/utils.h>
+
+
+
 // ------------------------------------
 // If theres only one I probably could go with argv
 std::vector<std::string> gltf_meshes_paths = {
 	"models/Sponza/sponza.gltf" // Index 0
 };
-
-// 1 UNIT = 1 M
 
 Scene getSceneFromGltf(const GltfModel& gltf_model) {
 
@@ -98,7 +89,6 @@ Scene getSceneFromGltf(const GltfModel& gltf_model) {
 	return scene;
 }
 
-// This shouldnt be here
 
 class VulkanApp {
 

@@ -1,8 +1,19 @@
 #pragma once
 
+
+#define VMA_DEBUG_INITIALIZE_ALLOCATIONS 1
+#define VMA_DEBUG_DETECT_CORRUPTION 1
+#define VMA_ASSERT(expr) assert(expr)
+# define ENGINE_NAME "VulkanToy"
+
 #include <volk.h>
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
+
+#define VMA_IMPLEMENTATION
+#define VMA_VULKAN_VERSION 1003800
+
+// We use Volk. so we need to say to vulkan to leave protoypes like this. for VMA
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
 
 inline const char* vkResultToString(VkResult result) {
     switch (result) {
