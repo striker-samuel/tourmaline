@@ -76,6 +76,7 @@ struct MaterialInstance {
 // This style of handling things is lifted up from LightweightVk.
 class Context {
 
+	VkInstance* instance_;
 	// This is for ktx texture operations.
 	// We could lift the concept for context. instead of habing members for device, physDevice and else
 	ktxVulkanDeviceInfo* ktx_vdi = NULL;
@@ -94,6 +95,7 @@ class Context {
 
 public:
 
+	VmaAllocator allocator;
 	VmaAllocator* allocator_;
 	VkDevice* device_;
 	VkPhysicalDevice* physicalDevice_;
@@ -126,9 +128,28 @@ public:
 
 	Pool<ShaderModule, VkShaderModule> shaderModulePool_;
 
-	Context(VmaAllocator* allocator, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface) {
+	Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface) {
 
-		allocator_ = allocator;
+		VmaAllocatorCreateInfo allocatorCreateInfo = {};
+		allocatorCreateInfo.physicalDevice = *physicalDevice;
+		allocatorCreateInfo.device = *device;
+		allocatorCreateInfo.instance = instance;
+		allocatorCreateInfo.vulkanApiVersion = VK_API_VERSION_1_3;
+		allocatorCreateInfo.flags =
+			VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT |
+			VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT;
+
+		// This next flag is to get handles. To interporate resources between instances, or even between Vulkan and Dx or things like that.
+		// VMA_ALLOCATOR_CREATE_KHR_EXTERNAL_MEMORY_WIN32_BIT
+
+		VmaVulkanFunctions vulkanFunctions;
+		VkResult res = vmaImportVulkanFunctionsFromVolk(&allocatorCreateInfo, &vulkanFunctions);
+		allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
+
+		res = vmaCreateAllocator(&allocatorCreateInfo, &allocator);
+		assert(res == VK_SUCCESS);
+
+		allocator_ = &allocator;
 		device_ = device;
 		physicalDevice_ = physicalDevice;
 
@@ -336,9 +357,18 @@ public:
 	void getAppropriateSampler(Texture& texture);
 	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 
+
+	// 
+	VkQueue GetGraphicsQueue();
+
+	// END
 	void CleanUp();
 
 };
+
+VkQueue Context::GetGraphicsQueue() {
+	return default_queue;
+}
 
 
 void Context::CleanUp() {

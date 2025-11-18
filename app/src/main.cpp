@@ -104,18 +104,17 @@ private:
 
 	std::vector<DrawSet> static_draw_sets;
 
-
-	ImGuiContext* imgui_ctx;
 	Context* context;
-	DescriptorSetHandle frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
+	ImGuiContext* imgui_ctx;
 
 	Scene scene_ = getSceneFromGltf(gltf_meshes_paths[0]);
 
-	VmaAllocator app_allocator_;
+	DescriptorSetHandle frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
 
-	VkQueue graphicsQueue_;
-	//VkQueue computeQueue_;
+	// Presnt still on app side. moved the rest to cotnext
 	VkQueue presentQueue_;
+	//VkQueue graphicsQueue_;
+	//VkQueue computeQueue_;
 	//VkQueue transferQueue_;
 
 #pragma region ===[ App / Core State ]===
@@ -159,10 +158,8 @@ private:
 	VkDevice device;
 #pragma endregion
 
-	// We need to move this to context;
 #pragma region ===[ Uniforms / Descriptor Sets ]==
 
-	// These should be moved to Context
 	DeviceBufferHandle uniforms_[MAX_FRAMES_IN_FLIGHT];
 	DeviceBufferHandle instanceDataStorages_[MAX_FRAMES_IN_FLIGHT];
 	DeviceBufferHandle instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
@@ -218,8 +215,6 @@ private:
 		lastFrameTime = currentTime;
 	}
 
-	void CleanUp();
-
 	void UpdateInstanceBuffer(uint32_t currentImage);
 
 	void UiPass() {
@@ -233,7 +228,7 @@ private:
 
 	}
 
-	void mainLoop() {
+	void MainLoop() {
 
 		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
@@ -243,7 +238,7 @@ private:
 			Update();
 			LateUpdate();
 
-			drawFrame();
+			DrawFrame();
 
 		}
 
@@ -287,7 +282,7 @@ private:
 	void cleanupSwapChain() {
 
 		vkDestroyImageView(device, main_depthImageView, nullptr);
-		vmaDestroyImage(app_allocator_, main_depthImage, main_d_alloc);
+		vmaDestroyImage(*context->allocator_, main_depthImage, main_d_alloc);
 
 		for (uint32_t i = 0; i < swapchainImageCount; ++i) {
 			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
@@ -430,6 +425,7 @@ private:
 
 	}
 
+	void CleanUp();
 	// --------------------------
 
 	void createImageView(
@@ -457,7 +453,7 @@ private:
 		}
 
 	}
-	// Obly used now for depthImage.
+	// Obly used now for depthImage. Im gonnad need to add supprot for this on context.... for shadowmpas.
 	void createImage(
 		uint32_t width,
 		uint32_t height,
@@ -487,21 +483,9 @@ private:
 		allocCreateInfo.priority = 1.0f;
 
 		VmaAllocation alloc;
-		vmaCreateImage(app_allocator_, &imgCreateInfo, &allocCreateInfo, &image, &alloc, nullptr);
+		vmaCreateImage(*context->allocator_, &imgCreateInfo, &allocCreateInfo, &image, &alloc, nullptr);
 		//return alloc;
 	}
-
-
-
-	VkCommandBuffer beginCommands() {
-		VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, context->default_command_pool);
-		return commandBuffer;
-	}
-
-	void endCommands(VkCommandBuffer commandBuffer) {
-		endSingleTimeCommands(device, commandBuffer, graphicsQueue_, context->default_command_pool);
-	}
-
 
 	void transitionImageLayout(
 		VkImage image,
@@ -570,31 +554,10 @@ private:
 		vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0,
 			nullptr, 0, nullptr, 1, &barrier);
 
-		endSingleTimeCommands(device, commandBuffer, graphicsQueue_, context->default_command_pool);
+		endSingleTimeCommands(device, commandBuffer, context->default_queue, context->default_command_pool);
 	}
 
-	void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width,
-		uint32_t height) {
-		VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, context->default_command_pool);
-
-		VkBufferImageCopy region{};
-		region.bufferOffset = 0;
-		region.bufferRowLength = 0;
-		region.bufferImageHeight = 0;
-		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		region.imageSubresource.mipLevel = 0;
-		region.imageSubresource.baseArrayLayer = 0;
-		region.imageSubresource.layerCount = 1;
-		region.imageOffset = { 0, 0, 0 };
-		region.imageExtent = { width, height, 1 };
-
-		vkCmdCopyBufferToImage(commandBuffer, buffer, image,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-		endSingleTimeCommands(device, commandBuffer, graphicsQueue_, context->default_command_pool);
-	}
-
-	void createInstanceDataBuffers() {
+	void CreateInstanceDataBuffers() {
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
@@ -615,7 +578,6 @@ private:
 	void UploadDefaultDescriptorSets()  // no params; uses frameDescriptorSets[]
 	{
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-
 
 			auto ii_data = context->buffers_.get(instanceIndexUniforms_[i]);
 			auto id_data = context->buffers_.get(instanceDataStorages_[i]);
@@ -657,48 +619,7 @@ private:
 		}
 	}
 
-	void createBuffer(
-		VkDeviceSize size,
-		VkBufferUsageFlags usage,
-		VkMemoryPropertyFlags properties,
-		VkBuffer& buffer,
-		VkDeviceMemory& bufferMemory
-	) {
-		VkBufferCreateInfo bufferInfo{};
-		bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-		bufferInfo.size = size;
-		bufferInfo.usage = usage;
-		bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-		if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create buffer!");
-		}
-
-		VkMemoryRequirements memRequirements;
-		vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
-
-		VkMemoryAllocateInfo allocInfo{};
-
-		// This should be moved to VMA
-		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		allocInfo.allocationSize = memRequirements.size;
-		allocInfo.memoryTypeIndex =
-			findMemoryType(
-				physicalDevice,
-				memRequirements.memoryTypeBits,
-				properties
-			);
-
-
-		if (vkAllocateMemory(device, &allocInfo, nullptr, &bufferMemory) !=
-			VK_SUCCESS) {
-			throw std::runtime_error("failed to allocate buffer memory!");
-		}
-
-		vkBindBufferMemory(device, buffer, bufferMemory, 0);
-	}
-
-	void createCommandBuffers() {
+	void CreateFrameCommandBuffers() {
 
 		VkCommandBufferAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -711,16 +632,6 @@ private:
 			throw std::runtime_error("failed to allocate command buffers!");
 		}
 	}
-
-	//void createCommandBuffers() {
-	//	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-	//		VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-	//		ai.commandPool = framesCommandPool[i];
-	//		ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	//		ai.commandBufferCount = 1;
-	//		VK_CHECK(vkAllocateCommandBuffers(device, &ai, &commandBuffers[i]));
-	//	}
-	//}
 
 	void UpdateBindlessTextures() {
 
@@ -781,38 +692,7 @@ private:
 
 	}
 
-
-	void populateRenderingInfo(VkRenderingInfoKHR& renderingInfo, uint32_t imageIndex) {
-		VkRenderingAttachmentInfoKHR depthAttachment{};
-		depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-		depthAttachment.imageView = main_depthImageView;
-		depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		//depthAttachment.clearValue.depthStencil = { 1.0f, 0 };
-		//Lets do reverse z
-		depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
-
-		VkRenderingAttachmentInfoKHR colorAttachment{};
-		colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-		colorAttachment.imageView = swapChainImageViews[imageIndex];  // actual view
-		colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-		colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
-
-		// Begin dynamic rendering
-		//VkRenderingInfoKHR renderingInfo{};
-		renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
-		renderingInfo.renderArea.offset = { 0, 0 };
-		renderingInfo.renderArea.extent = swapChainExtent;
-		renderingInfo.layerCount = 1;
-		renderingInfo.colorAttachmentCount = 1;
-		renderingInfo.pColorAttachments = &colorAttachment;
-		renderingInfo.pDepthAttachment = &depthAttachment;
-	}
-
-	void recordDraw(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+	void RecordCommandsForFrame(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
 
 		VkCommandBufferBeginInfo beginInfo{};
 		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1014,7 +894,7 @@ private:
 
 	}
 
-	void createSyncObjects() {
+	void CreateRenderSyncObjects() {
 
 		VkSemaphoreCreateInfo semaphoreInfo{};
 		semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -1042,9 +922,7 @@ private:
 		}
 	}
 
-	// ---------------------------------------------------------------------------
-
-	void drawFrame();
+	void DrawFrame();
 
 	// UI
 	static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
@@ -1059,171 +937,13 @@ private:
 	void handleKey(int key, int scancode, int action, int mods);
 
 	// utils
-	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
+	//void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 
 	// TEMP
 	std::vector<MaterialInstanceHandle> material_instance_handles;
 	std::vector<MaterialPipelineHandle> material_pipe_handles;
 
 };
-
-void VulkanApp::CreateDefaultMaterialPipeline() {
-
-	auto vertShaderCode = readFile("shaders/example.vert.hlsl.spv");
-	auto vertColorFragCode = readFile("shaders/vertex_color.frag.hlsl.spv");
-	auto fragShaderCode = readFile("shaders/example.frag.hlsl.spv");
-
-	//VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
-	//VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
-	//VkShaderModule vertexColorFrag = createShaderModule(device, vertColorFragCode);
-
-	auto vertHandle = context->createShaderModule(
-		vertShaderCode
-	);
-	auto fragHandle = context->createShaderModule(
-		fragShaderCode
-	);
-
-	auto def_pipe = context->createMaterialPipeline(
-		vertHandle,
-		fragHandle,
-		default_raster_settings,
-		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
-		swapChainImageFormat
-	);
-
-	material_pipe_handles.push_back(def_pipe);
-}
-
-void VulkanApp::UploadScene() {
-
-	std::vector<MeshData> data_to_upload;
-	std::set<uint32_t> already_uploaded;
-
-	const GltfModel loaded_gltf = GltfModel(gltf_meshes_paths[0]);
-	for (auto mesh_data : loaded_gltf.mesh_data) {
-		data_to_upload.push_back(std::move(mesh_data));
-	}
-
-	std::unordered_map<std::string, int> already_assigned_;
-	int j = 0;
-
-	for (const auto& mesh : loaded_gltf.gltfModel.meshes) {
-		for (auto& primitive : mesh.primitives) {
-			auto path = baseColorPathFor(loaded_gltf.gltfModel, primitive, "./_extracted_textures");
-			if (path) {
-				if (already_assigned_.contains(*path)) {
-					data_to_upload[j].materialIndex = already_assigned_[*path];
-				}
-				else {
-					// Create and use the real handle index
-					MaterialInstanceHandle mat_h = CreateDiffuseMaterial("models/sponza/" + *path);
-
-					const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
-					already_assigned_[*path] = idx;
-					data_to_upload[j].materialIndex = idx;  // <-- assign for the *first* occurrence
-				}
-			}
-			else {
-				std::cout << "Primitive has no baseColor texture (or embedded not extracted).\n";
-				// consider setting a default/fallback material index here
-			}
-			j++;
-		}
-	}
-
-	static_draw_sets = context->UploadStaticMeshData(data_to_upload);
-
-}
-
-MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) {
-
-	ktxTexture2* ktxTex = nullptr;
-	KTX_error_code res = ktxTexture2_CreateFromNamedFile(
-		image_path.c_str(),
-		KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
-		&ktxTex
-	);
-
-	if (res != KTX_SUCCESS) {
-		// do error
-		throw std::runtime_error("KTX load failed");
-	}
-
-	// if you want mips generated by the ktx library:
-	// I just generated them offline ;=)
-	//ktxTex->generateMipmaps = KTX_TRUE;
-	auto texHandle = context->createTexture(*ktxTex);
-
-	// free after upload
-	ktxTexture2_Destroy(ktxTex);
-
-	auto material_pipe_0 = context->materialPipelinePool_.getHandle(0);
-	auto mat_h = context->createMaterialInstance(material_pipe_0);
-	context->materialInstancesPool_.get(mat_h)->values.texDiffuse = texHandle.index();
-	return mat_h;
-
-}
-
-
-inline void VulkanApp::UpdateInstanceBuffer(uint32_t currentImage) {
-
-	// Moved this to the HEAP. This will be state of the app instead of being fabricated here anyways.
-	InstanceData* data = new InstanceData[MAX_INSTANCES];
-	int i = 0;
-	for (const glm::mat4 tr : scene_.globalTransform) {
-	//for (const glm::mat4 tr : scene_.localTransform) {
-		std::memcpy(
-			data[i].transform,
-			glm::value_ptr(tr),
-			sizeof(float) * 16);
-
-		data[i].color = { i * 0.20f,0.3f,-i * 0.7f,1.0f };
-
-		i++;
-	}
-
-	std::array<uint16_t, MAX_INSTANCES> indexData = {};
-	for (uint16_t index = 0; index < MAX_INSTANCES; index++) {
-		indexData[index] = index;
-	}
-
-	std::vector<IndexSlot> indexSlotData(MAX_INSTANCES);
-	for (size_t i = 0; i < MAX_INSTANCES; ++i) {
-		indexSlotData[i].idx = static_cast<uint32_t>(indexData[i]); // zero-extend
-	}
-
-	VkResult result{};
-
-	// This is bad, will stall. Frame update should use same command buffer for all update operations.
-	// FrameGraph! FrameGraph!
-	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, context->default_command_pool);
-
-	static_assert(sizeof(IndexSlot) * MAX_INSTANCES < (1 << 16),
-		"Instance buffer too large for 64KB UBO limit");
-
-	context->UploadDataToBuffer(
-		instanceIndexUniforms_[currentImage],
-		indexSlotData.data(),
-		sizeof(IndexSlot) * MAX_INSTANCES,
-		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-		// This could be simplified really to 
-		VK_ACCESS_SHADER_READ_BIT
-		//VK_ACCESS_UNIFORM_READ_BIT
-
-	);
-
-	context->UploadDataToBuffer(
-		instanceDataStorages_[currentImage],
-		data,
-		sizeof(InstanceData) * MAX_INSTANCES,
-		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-		VK_ACCESS_SHADER_READ_BIT
-	);
-
-	endSingleTimeCommands(device, cmdBuf, graphicsQueue_, context->default_command_pool);
-	delete[] data;
-}
 
 
 void VulkanApp::InitializeImGui() {
@@ -1270,7 +990,7 @@ void VulkanApp::InitializeImGui() {
 	info.ApiVersion = VK_API_VERSION_1_3;
 	info.PhysicalDevice = physicalDevice;
 	info.Device = device;
-	info.Queue = graphicsQueue_;
+	info.Queue = context->default_queue;
 	info.DescriptorPool = *im_dp;
 	info.MinImageCount = minReq;
 	info.ImageCount = swapchainImageCount;
@@ -1288,111 +1008,9 @@ void VulkanApp::InitializeImGui() {
 
 }
 
-bool VulkanApp::Run() {
-
-	if (volkInitialize() != VK_SUCCESS) {
-		std::cerr << "Failed to initialize Volk\n";
-		glfwTerminate();
-		return false;
-	};
-
-	// GLFW;
-
-	if (!glfwInit()) {
-		std::cerr << "Failed to initialize GLFW\n";
-		return false;
-	}
-
-	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-
-	window = glfwCreateWindow(width_, height_, "Vulkan", nullptr, nullptr);
-
-	if (!window) {
-		std::cerr << "Failed to create GLFW window\n";
-		glfwTerminate();
-		return false;
-	}
-	glfwMakeContextCurrent(window);
-	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-	glfwSetWindowTitle(window, ENGINE_NAME);
-	glfwSetKeyCallback(window, VulkanApp::keyCallback);
-	glfwSetCursorPosCallback(window, VulkanApp::mouseCallback);
-	glfwSetMouseButtonCallback(window, VulkanApp::mouseButtonCallback);
-	glfwSetScrollCallback(
-		window, VulkanApp::scrollCallback);  // Register scroll callback
-
-	glfwSetWindowUserPointer(window, this);
-	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
-
-	// Pick physical device, create logical device, get queues from physdevice. Create VMA allocator
-	InitVulkanApp();
-
-	SwapChainSupportDetails swapChainSupport =
-		querySwapChainSupport(physicalDevice, surface);
-	VkSurfaceFormatKHR surfaceFormat =
-		chooseSwapSurfaceFormat(swapChainSupport.formats);
-
-	swapChainImageFormat = surfaceFormat.format;
-
-	InitializeImGui();
-	createSwapChain();
-	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
-	createSwapchainImageViews();
-
-	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
-
-	VkCommandPoolCreateInfo poolInfo{
-		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-		.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
-	};
-
-	for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
-		if (vkCreateCommandPool(device, &poolInfo, nullptr, &framesCommandPool[fn]) !=
-			VK_SUCCESS) {
-			throw std::runtime_error("failed to create graphics command pool!");
-		}
-	}
-
-	// createDescriptorSets. Create menas allocating. no data is present there still
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		frameDescriptorSets[i] = context->createDescriptorSet(
-			context->default_descriptorLayout
-		);
-	}
-
-	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
-
-	createInstanceDataBuffers();
-	createCommandBuffers();
-	createSyncObjects();
-	createDepthResources();
-
-	CreateDefaultMaterialPipeline();
-	UploadScene();
-	UpdateBindlessTextures();
-
-	mainLoop();
-
-	CleanUp();
-
-	return true;
-
-};
-
-
 void Initialize() {
 
 }
-
-void VulkanApp::CleanUp() {
-
-
-	vmaDestroyAllocator(app_allocator_);
-	context->CleanUp();
-
-}
-
 
 void VulkanApp::InitVulkanApp() {
 
@@ -1574,7 +1192,7 @@ void VulkanApp::InitVulkanApp() {
 
 		volkLoadDevice(device);
 
-		vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue_);
+		//vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue_);
 		vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue_);
 
 		// Assert for BC7
@@ -1585,26 +1203,106 @@ void VulkanApp::InitVulkanApp() {
 
 	}
 
-	VmaAllocatorCreateInfo allocatorCreateInfo = {};
-	allocatorCreateInfo.physicalDevice = physicalDevice;
-	allocatorCreateInfo.device = device;
-	allocatorCreateInfo.instance = instance;
-	allocatorCreateInfo.vulkanApiVersion = VK_API_VERSION_1_3;
-	allocatorCreateInfo.flags =
-		VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT |
-		VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT;
-
-	// This next flag is to get handles. To interporate resources between instances, or even between Vulkan and Dx or things like that.
-	// VMA_ALLOCATOR_CREATE_KHR_EXTERNAL_MEMORY_WIN32_BIT
-
-	VmaVulkanFunctions vulkanFunctions;
-	VkResult res = vmaImportVulkanFunctionsFromVolk(&allocatorCreateInfo, &vulkanFunctions);
-	allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
-
-	res = vmaCreateAllocator(&allocatorCreateInfo, &app_allocator_);
-	assert(res == VK_SUCCESS);
-	context = new Context(&app_allocator_, &device, &physicalDevice, surface); // remember to delete it on shutdown
+	context = new Context(instance, &device, &physicalDevice, surface); // remember to delete it on shutdown
 }
+
+bool VulkanApp::Run() {
+
+	if (volkInitialize() != VK_SUCCESS) {
+		std::cerr << "Failed to initialize Volk\n";
+		glfwTerminate();
+		return false;
+	};
+
+	// GLFW;
+
+	if (!glfwInit()) {
+		std::cerr << "Failed to initialize GLFW\n";
+		return false;
+	}
+
+	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+	window = glfwCreateWindow(width_, height_, "Vulkan", nullptr, nullptr);
+
+	if (!window) {
+		std::cerr << "Failed to create GLFW window\n";
+		glfwTerminate();
+		return false;
+	}
+	glfwMakeContextCurrent(window);
+	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	glfwSetWindowTitle(window, ENGINE_NAME);
+	glfwSetKeyCallback(window, VulkanApp::keyCallback);
+	glfwSetCursorPosCallback(window, VulkanApp::mouseCallback);
+	glfwSetMouseButtonCallback(window, VulkanApp::mouseButtonCallback);
+	glfwSetScrollCallback(
+		window, VulkanApp::scrollCallback);  // Register scroll callback
+
+	glfwSetWindowUserPointer(window, this);
+	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+
+	// Pick physical device, create logical device, get queues from physdevice. Create VMA allocator
+	InitVulkanApp();
+
+	SwapChainSupportDetails swapChainSupport =
+		querySwapChainSupport(physicalDevice, surface);
+	VkSurfaceFormatKHR surfaceFormat =
+		chooseSwapSurfaceFormat(swapChainSupport.formats);
+
+	swapChainImageFormat = surfaceFormat.format;
+
+	InitializeImGui();
+	createSwapChain();
+	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
+	createSwapchainImageViews();
+
+	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
+
+	VkCommandPoolCreateInfo poolInfo{
+		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+		.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
+	};
+
+	for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
+		if (vkCreateCommandPool(device, &poolInfo, nullptr, &framesCommandPool[fn]) !=
+			VK_SUCCESS) {
+			throw std::runtime_error("failed to create graphics command pool!");
+		}
+	}
+
+	// createDescriptorSets. Create menas allocating. no data is present there still
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		frameDescriptorSets[i] = context->createDescriptorSet(
+			context->default_descriptorLayout
+		);
+	}
+
+	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
+
+
+	// This is pipeline setup always required.
+	CreateInstanceDataBuffers();
+	CreateFrameCommandBuffers();
+	CreateRenderSyncObjects();
+	createDepthResources();
+
+	// We create a default material on context. materials index 0 for default. This will be our no/shader/texture error material
+	CreateDefaultMaterialPipeline();
+
+	//
+	UploadScene();
+
+	MainLoop();
+
+	CleanUp();
+
+	return true;
+
+};
+
+#pragma region ===[ Callbacks ]===
 
 void VulkanApp::mouseCallback(GLFWwindow* window, double xpos, double ypos) {
 	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
@@ -1614,94 +1312,6 @@ void VulkanApp::mouseCallback(GLFWwindow* window, double xpos, double ypos) {
 void VulkanApp::keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
 	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
 	if (app) app->handleKey(key, scancode, action, mods);
-}
-
-inline void VulkanApp::drawFrame() {
-	vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE,
-		UINT64_MAX);
-
-	uint32_t imageIndex;
-	VkResult result = vkAcquireNextImageKHR(
-		device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame],
-		VK_NULL_HANDLE, &imageIndex);
-
-
-	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-		recreateSwapChain();
-		return;
-	}
-	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-		throw std::runtime_error("failed to acquire swap chain image!");
-	}
-
-	// We should check for size and promote or demote from pushconstants -> ubo -> ssbo.
-	UpdateDeltaTime();
-	UpdateInstanceBuffer(currentFrame);
-
-	vkResetFences(device, 1, &inFlightFences[currentFrame]);
-	vkResetCommandPool(device, framesCommandPool[currentFrame], 0);
-
-	//vkResetCommandBuffer(commandBuffers[currentFrame],
-	//	/*VkCommandBufferResetFlagBits*/ 0);
-
-	UploadDefaultDescriptorSets();
-	UpdateBindlessTextures();
-
-	UiPass();
-
-	recordDraw(commandBuffers[currentFrame], imageIndex);
-
-	VkSubmitInfo submitInfo{};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-	VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
-	VkPipelineStageFlags waitStages[] = {
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	submitInfo.waitSemaphoreCount = 1;
-	submitInfo.pWaitSemaphores = waitSemaphores;
-	submitInfo.pWaitDstStageMask = waitStages;
-
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
-
-	VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
-	submitInfo.signalSemaphoreCount = 1;
-	submitInfo.pSignalSemaphores = signalSemaphores;
-
-	if (
-		vkQueueSubmit(
-			graphicsQueue_,
-			1,
-			&submitInfo,
-			inFlightFences[currentFrame]) != VK_SUCCESS
-		) {
-		throw std::runtime_error("failed to submit draw command buffer!");
-	}
-
-
-	VkPresentInfoKHR presentInfo{};
-	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
-	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = signalSemaphores;
-
-	VkSwapchainKHR swapChains[] = { swapChain };
-	presentInfo.swapchainCount = 1;
-	presentInfo.pSwapchains = swapChains;
-	presentInfo.pImageIndices = &imageIndex;
-
-	result = vkQueuePresentKHR(presentQueue_, &presentInfo);
-
-	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
-		framebufferResized) {
-		framebufferResized = false;
-		recreateSwapChain();
-	}
-	else if (result != VK_SUCCESS) {
-		throw std::runtime_error("failed to present swap chain image!");
-	}
-
-	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 void VulkanApp::mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
@@ -1787,14 +1397,258 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 	app->framebufferResized = true;
 }
 
-void VulkanApp::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, context->default_command_pool);
+#pragma endregion
 
-	VkBufferCopy copyRegion{};
-	copyRegion.size = size;
-	vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+inline void VulkanApp::DrawFrame() {
+	vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE,
+		UINT64_MAX);
 
-	endSingleTimeCommands(device, commandBuffer, graphicsQueue_, context->default_command_pool);
+	uint32_t imageIndex;
+	VkResult result = vkAcquireNextImageKHR(
+		device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame],
+		VK_NULL_HANDLE, &imageIndex);
+
+
+	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+		recreateSwapChain();
+		return;
+	}
+	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+		throw std::runtime_error("failed to acquire swap chain image!");
+	}
+
+	// We should check for size and promote or demote from pushconstants -> ubo -> ssbo.
+	UpdateDeltaTime();
+	UpdateInstanceBuffer(currentFrame);
+
+	vkResetFences(device, 1, &inFlightFences[currentFrame]);
+	vkResetCommandPool(device, framesCommandPool[currentFrame], 0);
+
+	//vkResetCommandBuffer(commandBuffers[currentFrame],
+	//	/*VkCommandBufferResetFlagBits*/ 0);
+
+	UploadDefaultDescriptorSets();
+	UpdateBindlessTextures();
+
+	UiPass();
+
+	RecordCommandsForFrame(commandBuffers[currentFrame], imageIndex);
+
+	VkSubmitInfo submitInfo{};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+	VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
+	VkPipelineStageFlags waitStages[] = {
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	submitInfo.waitSemaphoreCount = 1;
+	submitInfo.pWaitSemaphores = waitSemaphores;
+	submitInfo.pWaitDstStageMask = waitStages;
+
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
+
+	VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
+	submitInfo.signalSemaphoreCount = 1;
+	submitInfo.pSignalSemaphores = signalSemaphores;
+
+	if (
+		vkQueueSubmit(
+			context->default_queue,
+			1,
+			&submitInfo,
+			inFlightFences[currentFrame]) != VK_SUCCESS
+		) {
+		throw std::runtime_error("failed to submit draw command buffer!");
+	}
+
+
+	VkPresentInfoKHR presentInfo{};
+	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+	presentInfo.waitSemaphoreCount = 1;
+	presentInfo.pWaitSemaphores = signalSemaphores;
+
+	VkSwapchainKHR swapChains[] = { swapChain };
+	presentInfo.swapchainCount = 1;
+	presentInfo.pSwapchains = swapChains;
+	presentInfo.pImageIndices = &imageIndex;
+
+	result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+
+	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
+		framebufferResized) {
+		framebufferResized = false;
+		recreateSwapChain();
+	}
+	else if (result != VK_SUCCESS) {
+		throw std::runtime_error("failed to present swap chain image!");
+	}
+
+	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+}
+
+void VulkanApp::CreateDefaultMaterialPipeline() {
+
+	auto vertShaderCode = readFile("shaders/example.vert.hlsl.spv");
+	auto vertColorFragCode = readFile("shaders/vertex_color.frag.hlsl.spv");
+	auto fragShaderCode = readFile("shaders/example.frag.hlsl.spv");
+
+	//VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
+	//VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
+	//VkShaderModule vertexColorFrag = createShaderModule(device, vertColorFragCode);
+
+	auto vertHandle = context->createShaderModule(
+		vertShaderCode
+	);
+	auto fragHandle = context->createShaderModule(
+		fragShaderCode
+	);
+
+	auto def_pipe = context->createMaterialPipeline(
+		vertHandle,
+		fragHandle,
+		default_raster_settings,
+		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
+		swapChainImageFormat
+	);
+
+	material_pipe_handles.push_back(def_pipe);
+}
+
+MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) {
+
+	ktxTexture2* ktxTex = nullptr;
+	KTX_error_code res = ktxTexture2_CreateFromNamedFile(
+		image_path.c_str(),
+		KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
+		&ktxTex
+	);
+
+	if (res != KTX_SUCCESS) {
+		// do error
+		throw std::runtime_error("KTX load failed");
+	}
+
+	// if you want mips generated by the ktx library:
+	// I just generated them offline ;=)
+	//ktxTex->generateMipmaps = KTX_TRUE;
+	auto texHandle = context->createTexture(*ktxTex);
+
+	// free after upload
+	ktxTexture2_Destroy(ktxTex);
+
+	auto material_pipe_0 = context->materialPipelinePool_.getHandle(0);
+	auto mat_h = context->createMaterialInstance(material_pipe_0);
+	context->materialInstancesPool_.get(mat_h)->values.texDiffuse = texHandle.index();
+	return mat_h;
+
+}
+
+inline void VulkanApp::UpdateInstanceBuffer(uint32_t currentImage) {
+
+	// Moved this to the HEAP. This will be state of the app instead of being fabricated here anyways.
+	InstanceData* data = new InstanceData[MAX_INSTANCES];
+	int i = 0;
+	for (const glm::mat4 tr : scene_.globalTransform) {
+		//for (const glm::mat4 tr : scene_.localTransform) {
+		std::memcpy(
+			data[i].transform,
+			glm::value_ptr(tr),
+			sizeof(float) * 16);
+
+		data[i].color = { i * 0.20f,0.3f,-i * 0.7f,1.0f };
+
+		i++;
+	}
+
+	std::array<uint16_t, MAX_INSTANCES> indexData = {};
+	for (uint16_t index = 0; index < MAX_INSTANCES; index++) {
+		indexData[index] = index;
+	}
+
+	std::vector<IndexSlot> indexSlotData(MAX_INSTANCES);
+	for (size_t i = 0; i < MAX_INSTANCES; ++i) {
+		indexSlotData[i].idx = static_cast<uint32_t>(indexData[i]); // zero-extend
+	}
+
+	VkResult result{};
+
+	// This is bad, will stall. Frame update should use same command buffer for all update operations.
+	// FrameGraph! FrameGraph!
+	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, context->default_command_pool);
+
+	static_assert(sizeof(IndexSlot) * MAX_INSTANCES < (1 << 16),
+		"Instance buffer too large for 64KB UBO limit");
+
+	context->UploadDataToBuffer(
+		instanceIndexUniforms_[currentImage],
+		indexSlotData.data(),
+		sizeof(IndexSlot) * MAX_INSTANCES,
+		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		// This could be simplified really to 
+		VK_ACCESS_SHADER_READ_BIT
+		//VK_ACCESS_UNIFORM_READ_BIT
+
+	);
+
+	context->UploadDataToBuffer(
+		instanceDataStorages_[currentImage],
+		data,
+		sizeof(InstanceData) * MAX_INSTANCES,
+		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		VK_ACCESS_SHADER_READ_BIT
+	);
+
+	endSingleTimeCommands(device, cmdBuf, context->default_queue, context->default_command_pool);
+	delete[] data;
+}
+
+void VulkanApp::UploadScene() {
+
+	std::vector<MeshData> data_to_upload;
+	std::set<uint32_t> already_uploaded;
+
+	const GltfModel loaded_gltf = GltfModel(gltf_meshes_paths[0]);
+	for (auto mesh_data : loaded_gltf.mesh_data) {
+		data_to_upload.push_back(std::move(mesh_data));
+	}
+
+	std::unordered_map<std::string, int> already_assigned_;
+	int j = 0;
+
+	for (const auto& mesh : loaded_gltf.gltfModel.meshes) {
+		for (auto& primitive : mesh.primitives) {
+			auto path = baseColorPathFor(loaded_gltf.gltfModel, primitive, "./_extracted_textures");
+			if (path) {
+				if (already_assigned_.contains(*path)) {
+					data_to_upload[j].materialIndex = already_assigned_[*path];
+				}
+				else {
+					// Create and use the real handle index
+					MaterialInstanceHandle mat_h = CreateDiffuseMaterial("models/sponza/" + *path);
+
+					const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
+					already_assigned_[*path] = idx;
+					data_to_upload[j].materialIndex = idx;  // <-- assign for the *first* occurrence
+				}
+			}
+			else {
+				std::cout << "Primitive has no baseColor texture (or embedded not extracted).\n";
+				// consider setting a default/fallback material index here
+			}
+			j++;
+		}
+	}
+
+	static_draw_sets = context->UploadStaticMeshData(data_to_upload);
+	UpdateBindlessTextures();
+
+}
+
+void VulkanApp::CleanUp() {
+
+	context->CleanUp();
+
 }
 
 int main(int argc, const char* argv[]) {

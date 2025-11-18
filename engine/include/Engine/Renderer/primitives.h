@@ -70,6 +70,28 @@ struct InstanceData {
 
 static_assert(sizeof(InstanceData) % 16 == 0);
 
+// Lighting
+
+typedef enum LightType {
+    LIGHT_TYPE_SPOT = 0,
+} LightType;
+
+struct Light {
+	float transform[16] = {
+		1.0f, 0.0f, 0.0f, 0.0f,
+		0.0f, 1.0f, 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		0.0f, 0.0f, 0.0f, 1.0f
+	};
+	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
+	LightType type;
+	int _pad[3];
+
+};
+static_assert(sizeof(Light) % 16 == 0);
+
+/// --------------------------------------
+
 struct ViewProjUniform {
 	//alignas(16) glm::mat4 model;
 	alignas(16) glm::mat4 view;
@@ -111,40 +133,6 @@ struct DrawSet {
 
 std::unordered_map<uint32_t, std::string> mesh_names;
 
-// ------------------------------------------------------------------------------------------------
-// This is the neeeded Host side state to manage meshes.
-// This is whats needed for the geometry part of the drawcall. Materials are codified per sceneNode.
-struct DynamicMesh {
-
-	VmaAllocation allocation;
-	VmaAllocationInfo allocInfo;
-	// Im gonna have a standard format so no propreties for selecting tri, fan, or else
-
-	uint32_t first_index = 0;
-	uint32_t vert_offset = 0;
-	uint32_t index_count = 0;
-
-	// LOD should choose first index and voffset but lets keep this like this.... its not that clear yet to me how to manage that properly
-	uint32_t LOD;
-
-	// I prefer to manage material + attachentes via MaterialInstanceInstead.
-	// but maybe i could have a ref for ez acces here?
-	//MaterialInstanceHandle material_instance;
-
-	// Maybe name
-	//uint32_t name;
-
-};
-
-//enum TextureLyt {
-//	DST,
-//	GENERAL
-//};
-
-//enum TextureType {
-//	DIFFUSE
-//};
-
 // Lets go with uniform_layouts ext. GENERAL and UNDEFINED
 struct Texture {
 
@@ -152,23 +140,14 @@ struct Texture {
 	VmaAllocation alloc;
 	VmaAllocationInfo allocInfo;
 
-	//TextureLyt image_lyt = DST;
-	//TextureType texture_type = DIFFUSE;
-
 	VkDeviceMemory deviceMemory;
 	VkImage image;
 	VkImageView imageView;
 	VkSampler sampler;
 	VkFormat format;
 
-
-	// Texrture entry may own sampler. 
+	// Texture entry may own sampler. 
 	bool owns_sampler;
-
-
-	// This could provide useful but lets not put this here yet.
-	// Mip Level 0 is base. But an image with only base mip has mipLevels 1
-	//int mipLevels = 1;
 
 };
 
