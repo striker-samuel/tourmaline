@@ -20,6 +20,7 @@
 using ShaderModuleHandle = Handle<struct ShaderModule>;
 //using BufferHandle = Handle<struct Buffer>;
 using TextureHandle = Handle<struct Texture>;
+using ImageHandle = Handle<struct Image>;
 //using SamplerHandle = Handle<struct Sampler>;
 using MaterialPipelineHandle = Handle<struct MaterialPipeline>;
 using MaterialInstanceHandle = Handle<struct MaterialInstance>;
@@ -33,12 +34,17 @@ using DrawSetHandle = Handle<struct DrawSet>;
 void destroy(Context* ctx, ShaderModuleHandle handle);
 void destroy(Context* ctx, DeviceBufferHandle handle);
 void destroy(Context* ctx, TextureHandle handle);
+void destroy(Context* ctx, ImageHandle handle);
 
 // ----------------------------------------------------------
 
 struct DescriptorSet {
 	DescriptorLayoutHandle layout;
 	VkDescriptorSet set;
+};
+
+struct SamplerRequirements {
+
 };
 
 // Materials abstractions area really PipelineObjets. Raster conf, shader objs, descriptorlayout. 
@@ -71,6 +77,27 @@ struct MaterialInstance {
 	MaterialPushConstants values = {};
 };
 
+
+// Lets forget about validation/ typing in any way. No depth/color, sample/write specialization yet in any shape or form.
+struct Image {
+	VkImage image;
+	VmaAllocation alloc;
+
+	// I save these up becuase VkImage is just an opaque handle.
+	VkImageLayout layout;
+	VkFormat format;
+	VkImageUsageFlags usage;
+	uint32_t arrayLayers; // DepthImage will have each cascae in diff index.
+	uint32_t levels;
+};
+
+
+struct ShadowMap {
+	Image image;
+	VkImageView imageView;
+	VkSampler sampler;
+	bool owns_sampler = true;
+};
 
 
 // This style of handling things is lifted up from LightweightVk.
@@ -117,6 +144,7 @@ public:
 	Pool<BufferDescription, BufferDescription> buffers_;
 	Pool<Texture, Texture> textures_;
 	Pool<DrawSet, DrawSet> meshes_;
+	Pool<Image, Image> images_;
 
 	// These two have confusing names;
 	Pool<DescriptorSet, DescriptorSet> descriptrorSetPool_;
@@ -211,7 +239,6 @@ public:
 		CleanUp();
 	};
 
-
 	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
 		copyBuffer(srcBuffer, dstBuffer, size, 0, 0);
 	}
@@ -228,7 +255,6 @@ public:
 
 		endSingleTimeCommands(*device_, commandBuffer, default_queue, default_command_pool);
 	}
-
 
 	void InitalizeGeoBuffers() {
 
@@ -339,10 +365,11 @@ public:
 	VkCommandBuffer GetCommandBuffer();
 	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
 
-	void createImage(int texWidth, int texHeight, VkFormat format, VkImage& image, VmaAllocation& alloc);
-	void createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, VkImageView& imageView);
-	TextureHandle createTexture(ktxTexture2& texture);
+	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
+	ImageHandle CreateCascadedShadowMapsDepthImage(int texWidth, int texHeight, int cascades);
+	TextureHandle CreateTexture(ktxTexture2& texture);
 
+	void createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, VkImageView& imageView);
 
 	DescriptorLayoutHandle createDescriptorLayout();
 	DescriptorPoolHandle createDescriptorPool();
@@ -350,13 +377,15 @@ public:
 	DeviceBufferHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
 	DrawSetHandle UploadMesh(MeshData& mesh_data);
-	std::vector<DrawSet> UploadStaticMeshData(std::vector<MeshData>& mesh_data);
+	std::vector<DrawSet> BatchUploadMeshData(std::vector<MeshData>& mesh_data);
 
 	void UploadDataToBuffer(DeviceBufferHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
-
+	
 	void getAppropriateSampler(Texture& texture);
-	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 
+	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+	//void TransitionImageLayout(ImageHandle image_handle, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+	void TransitionImageLayout(ImageHandle image_handle, VkImageLayout oldLayout, VkImageLayout newLayout);
 
 	// 
 	VkQueue GetGraphicsQueue();
@@ -372,6 +401,9 @@ VkQueue Context::GetGraphicsQueue() {
 
 
 void Context::CleanUp() {
+
+	// Clear Pools.
+	// Clear VmaPools.
 	vmaDestroyVirtualBlock(index_blk);
 	vmaDestroyVirtualBlock(vertex_blk);
 	//vmaDestroyPool();//
@@ -406,7 +438,7 @@ void Context::createImageView(VkImage image,
 DescriptorSetHandle Context::createDescriptorSet(
 	DescriptorLayoutHandle lyt
 ) {
-	// Lets make pool selection automatic
+	// Pools should be rolled over on fail, get new pool. then discard FIFO
 	auto descriptorPool = descriptorSetPoolPool_.get(default_descriptor_pool);
 	auto layout = descriptorSetLayoutPool_.get(lyt);
 
@@ -596,22 +628,32 @@ DescriptorLayoutHandle Context::createDescriptorLayout() {
 	sampBinding.descriptorCount = MAX_TEXTURES;
 	sampBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	std::array<VkDescriptorSetLayoutBinding, 4> bindings = {
+	VkDescriptorSetLayoutBinding lightBinding{};
+	lightBinding.binding = 4;
+	lightBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	//lightBinding.descriptorCount = MAX_LIGHTS;
+	lightBinding.descriptorCount = 1;
+	lightBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+
+	std::array<VkDescriptorSetLayoutBinding, 5> bindings = {
 		instanceIndexBinding,
 		instanceDataBinding,
 		//
 		sampledImageBinding,
 		sampBinding,
+		lightBinding
 	};
 
 	// Per-binding flags — same size as bindings[]
-	std::array<VkDescriptorBindingFlags, 4> bindingFlags = {
+	std::array<VkDescriptorBindingFlags, 5> bindingFlags = {
 		0,
 		0,
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT // bindless samplers
+		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
+		0
 	};
 
 	// Chain flags struct
@@ -711,7 +753,27 @@ MaterialInstanceHandle Context::createMaterialInstance(MaterialPipelineHandle ma
 }
 
 void Context::TransitionImageLayout(
+	ImageHandle image_handle,
+	//VkFormat format,
+	VkImageLayout oldLayout,
+	VkImageLayout newLayout
+
+) {
+	assert(image_handle.valid() && "Image handle was not valid");
+	auto image = images_.get(image_handle);
+
+	TransitionImageLayout(
+		image->image,
+		image->format,
+		oldLayout,
+		newLayout
+	);
+
+}
+
+void Context::TransitionImageLayout(
 	VkImage image,
+	// Atm format is only being used for stencil comp check. 
 	VkFormat format,
 	VkImageLayout oldLayout,
 	VkImageLayout newLayout
@@ -799,6 +861,7 @@ VkCommandBuffer Context::GetCommandBuffer() {
 		default_command_pool);
 
 }
+
 void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue) {
 	endSingleTimeCommands(
 		*device_,
@@ -809,20 +872,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 }
 
 
-//static bool supports(VkPhysicalDevice pd, VkFormat fmt, VkFormatFeatureFlags feats) {
-//	VkFormatProperties p{}; vkGetPhysicalDeviceFormatProperties(pd, fmt, &p);
-//	return (p.optimalTilingFeatures & feats) == feats;
-//}
-//
-//static ktx_transcode_fmt_e pickTarget(VkPhysicalDevice pd) {
-//	const auto need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT; // what upload ultimately needs
-//	if (supports(pd, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, need)) return KTX_TTF_ASTC_4x4_RGBA;
-//	if (supports(pd, VK_FORMAT_BC7_UNORM_BLOCK, need)) return KTX_TTF_BC7_RGBA;
-//	if (supports(pd, VK_FORMAT_BC3_UNORM_BLOCK, need)) return KTX_TTF_BC3_RGBA;
-//	return KTX_TTF_RGBA32; // uncompressed fallback (always works)
-//}
-
-TextureHandle Context::createTexture(ktxTexture2& texture) {
+TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
 		//auto target = pickTarget(*physicalDevice_);
@@ -839,7 +889,6 @@ TextureHandle Context::createTexture(ktxTexture2& texture) {
 		VK_IMAGE_USAGE_SAMPLED_BIT |           // <-- required for sampling
 		VK_IMAGE_USAGE_TRANSFER_DST_BIT |      // <-- required for the copy
 		(texture.generateMipmaps ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0); // for blit chain. this needs linear format.
-
 
 	ktxVulkanTexture vk_tex{};
 	KTX_error_code kr = ktxTexture2_VkUploadEx(
@@ -879,67 +928,89 @@ TextureHandle Context::createTexture(ktxTexture2& texture) {
 	createImageView(ctx_tex.image, vk_tex.imageFormat, aspect, texture.numLevels, ctx_tex.imageView);
 	getAppropriateSampler(ctx_tex);
 
-	//VkSampler new_samp;
-	//createSampler(*physicalDevice_, *device_, new_samp, texture.numLevels);
-	//ctx_tex.sampler = new_samp;
-
 	// Later, when destroying:
 	// ktxVulkanTexture_Destruct(&vk_tex, device_, nullptr);
+
 	return textures_.create(std::move(ctx_tex));
 }
-
-
-struct SamplerRequirements {
-
-};
 
 void Context::getAppropriateSampler(Texture& texture) {
 
 
 	//VkSampler _sampler;
 	//createSampler(*physicalDevice_, *device_, _sampler);
-	// 
-	// 
-	// 
-	// We sho
+	// We should
 	// uld try to define here which sampler would work for this texture. Sepecialization.
 	texture.sampler = samplers["default"];
 
 };
 
-void Context::createImage(int texWidth, int texHeight, VkFormat format, VkImage& image, VmaAllocation& alloc) {
+// Good defaults preset for DepthImageCreation.
+ImageHandle Context::CreateCascadedShadowMapsDepthImage(int texWidth, int texHeight, int cascades) {
 
-	//uint32_t mipLevels = static_cast<uint32_t>(
-	//	std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
+	//VkFormat depth_format = VK_FORMAT_D32_SFLOAT; // I dont need stencil, so lets hardcode this for the moment here. /*findDepthFormat(*physicalDevice_);*/
+	VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT // sample as texture
+		| VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+    // Levels just 1. No mipmaps for shadow maps images. 
+	ImageHandle image_handle =  CreateImage(texWidth, texHeight, VK_FORMAT_D32_SFLOAT, usage, 1, cascades);
+
+	auto image = images_.get(image_handle);
+
+	TransitionImageLayout(
+		image_handle,
+		VK_IMAGE_LAYOUT_UNDEFINED,
+		VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+	);
+
+	image->layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+
+	return image_handle;
+};
+
+ImageHandle Context::CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers) {
+
+	Image image = {};
+
+	//VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT // sample as texture
+	//	| VK_IMAGE_USAGE_TRANSFER_DST_BIT; // upload via copy // I dont need this for depth
+	//VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
 
 	VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	imgCI.imageType = VK_IMAGE_TYPE_2D;
 	imgCI.format = format;               // pick your format
-	imgCI.extent = { static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1 };                      // width, height, depth
-	//imgCI.mipLevels = mipLevels;                                      // >1 if you want mipmaps
-	imgCI.mipLevels = 1;                                      // >1 if you want mipmaps
-	imgCI.arrayLayers = 1;                                      // >1 for arrays/cubemaps
+	imgCI.extent = { static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1 }; // width, height, depth
+	imgCI.mipLevels = levels;                                      // >1 if you want mipmaps
+	imgCI.usage = usage;
+	imgCI.arrayLayers = arrayLayers;                                      // >1 for arrays/cubemaps
+
 	imgCI.samples = VK_SAMPLE_COUNT_1_BIT;                  // MSAA? set >1
 	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;                // GPU-friendly
-	imgCI.usage = VK_IMAGE_USAGE_SAMPLED_BIT              // sample as texture
-		| VK_IMAGE_USAGE_TRANSFER_DST_BIT;        // upload via copy
+
+	// Queue exclusivity on by default.
 	imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	imgCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;              // we’ll transition later. Well jus use transition General always
-	imgCI.usage = VK_IMAGE_USAGE_SAMPLED_BIT
-		| VK_IMAGE_USAGE_TRANSFER_DST_BIT
-		| VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // for vkCmdBlitImage when building mips
 
-	VmaAllocationCreateInfo aCI{};
-	aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
-	aCI.pool = D_2DImagesPool;                      // <--- CRITICAL: place this allocation in the pool
+	VmaAllocationCreateInfo allocation_create_info{};
+	allocation_create_info.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
+	allocation_create_info.pool = D_2DImagesPool;
 
 	//VmaAllocation alloc = VK_NULL_HANDLE;
 	VmaAllocationInfo allocInfo{};
 
-	VkResult res = vmaCreateImage(*allocator_, &imgCI, &aCI, &image, &alloc, &allocInfo);
+	image.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	image.format = format;
+	image.levels = levels;
+	// Lets store usage. 
+	image.usage = usage;
+	image.arrayLayers = arrayLayers;
+
+	VkResult res = vmaCreateImage(*allocator_, &imgCI, &allocation_create_info, &image.image, &image.alloc, &allocInfo);
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("vmaCreateImage (in pool) failed");
 	}
+
+	return images_.create(std::move(image));
 
 }
 
@@ -1031,8 +1102,7 @@ DrawSetHandle Context::UploadMesh(MeshData& mesh_data) {
 	return meshes_.create(std::move(ds));
 }
 
-
-std::vector<DrawSet> Context::UploadStaticMeshData(std::vector<MeshData>& mesh_data) {
+std::vector<DrawSet> Context::BatchUploadMeshData(std::vector<MeshData>& mesh_data) {
 	assert(!mesh_data.empty());
 
 	std::vector<DrawSet> mesh_draw_list;
@@ -1212,11 +1282,9 @@ void destroy(Context* ctx, ShaderModuleHandle handle) {
 	ctx->shaderModulePool_.destroy(handle);
 };
 
-
 void destroy(Context* ctx, TextureHandle handle) {
 	assert(handle.valid());
 	auto tex = ctx->textures_.get(handle);
-
 
 	// Lets not manage samplers just this soon. we have a default one with use for every texture rnow anyways.
 	//if (tex->owns_sampler) {
@@ -1230,7 +1298,11 @@ void destroy(Context* ctx, TextureHandle handle) {
 	vmaDestroyImage(*ctx->allocator_, tex->image, tex->alloc);
 
 	ctx->textures_.destroy(handle);
-};
+}
+inline void destroy(Context* ctx, ImageHandle handle)
+{
+}
+;
 
 void destroy(Context* ctx, DeviceBufferHandle handle) {
 	assert(handle.valid());

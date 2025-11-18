@@ -138,7 +138,6 @@ bool hasStencilComponent(VkFormat format) {
 		format == VK_FORMAT_D24_UNORM_S8_UINT;
 }
 
-
 // I should implement promotion other ways. Shadows may run other depthfmt also.
 // Maybe should be const. just checked for availability at device, error out if not found.
 VkFormat findDepthFormat(
@@ -154,7 +153,6 @@ VkFormat findDepthFormat(
 		VK_IMAGE_TILING_OPTIMAL,
 		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
 }
-
 
 uint32_t findMemoryType(
 	VkPhysicalDevice physicalDevice,
@@ -191,7 +189,6 @@ VkShaderModule createDeviceShaderModule(VkDevice device, const std::vector<char>
 	return shaderModule;
 }
 
-
 SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
 
 	SwapChainSupportDetails details;
@@ -221,7 +218,6 @@ SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurface
 
 	return details;
 }
-
 
 QueueFamilyIndices findQueueFamilies(
 	VkPhysicalDevice device,
@@ -295,7 +291,6 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface) {
 
 	return indices.isComplete() && extensionsSupported && swapChainAdequate;
 }
-
 
 VkSurfaceFormatKHR chooseSwapSurfaceFormat(
 	const std::vector<VkSurfaceFormatKHR>& availableFormats) {
@@ -588,4 +583,17 @@ void endSingleTimeCommands(VkDevice device, VkCommandBuffer commandBuffer, VkQue
 
 	vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }
+
+//static bool supports(VkPhysicalDevice pd, VkFormat fmt, VkFormatFeatureFlags feats) {
+//	VkFormatProperties p{}; vkGetPhysicalDeviceFormatProperties(pd, fmt, &p);
+//	return (p.optimalTilingFeatures & feats) == feats;
+//}
+//
+//static ktx_transcode_fmt_e pickTarget(VkPhysicalDevice pd) {
+//	const auto need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT; // what upload ultimately needs
+//	if (supports(pd, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, need)) return KTX_TTF_ASTC_4x4_RGBA;
+//	if (supports(pd, VK_FORMAT_BC7_UNORM_BLOCK, need)) return KTX_TTF_BC7_RGBA;
+//	if (supports(pd, VK_FORMAT_BC3_UNORM_BLOCK, need)) return KTX_TTF_BC3_RGBA;
+//	return KTX_TTF_RGBA32; // uncompressed fallback (always works)
+//}
 

@@ -73,7 +73,8 @@ static_assert(sizeof(InstanceData) % 16 == 0);
 // Lighting
 
 typedef enum LightType {
-    LIGHT_TYPE_SPOT = 0,
+    LIGHT_TYPE_POINT = 0,
+    LIGHT_TYPE_SPOT = 1,
 } LightType;
 
 struct Light {
@@ -83,10 +84,10 @@ struct Light {
 		0.0f, 0.0f, 1.0f, 0.0f,
 		0.0f, 0.0f, 0.0f, 1.0f
 	};
-	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
 	LightType type;
-	int _pad[3];
-
+	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
+	uint32_t intensity = 1.0f;
+	int _pad[2];
 };
 static_assert(sizeof(Light) % 16 == 0);
 

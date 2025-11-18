@@ -163,6 +163,7 @@ private:
 	DeviceBufferHandle uniforms_[MAX_FRAMES_IN_FLIGHT];
 	DeviceBufferHandle instanceDataStorages_[MAX_FRAMES_IN_FLIGHT];
 	DeviceBufferHandle instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
+	DeviceBufferHandle lightDataUniformBuffers[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
 
@@ -215,7 +216,8 @@ private:
 		lastFrameTime = currentTime;
 	}
 
-	void UpdateInstanceBuffer(uint32_t currentImage);
+	void UpdateInstanceBuffers(uint32_t currentImage);
+	void UpdateLightsBuffer(uint32_t currentImage);
 
 	void UiPass() {
 		ImGui_ImplVulkan_NewFrame();
@@ -421,7 +423,7 @@ private:
 		);
 
 		createImageView(main_depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, main_depthImageView, 1);
-		transitionImageLayout(main_depthImage, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+		context->TransitionImageLayout(main_depthImage, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
 	}
 
@@ -487,77 +489,7 @@ private:
 		//return alloc;
 	}
 
-	void transitionImageLayout(
-		VkImage image,
-		VkFormat format,
-		VkImageLayout oldLayout,
-		VkImageLayout newLayout
-	) {
-		VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, context->default_command_pool);
-
-		VkImageMemoryBarrier barrier{};
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.oldLayout = oldLayout;
-		barrier.newLayout = newLayout;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = image;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.baseMipLevel = 0;
-		barrier.subresourceRange.levelCount = 1;
-		barrier.subresourceRange.baseArrayLayer = 0;
-		barrier.subresourceRange.layerCount = 1;
-
-		if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-
-			if (hasStencilComponent(format)) {
-				barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
-			}
-		}
-		else {
-			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		}
-
-		VkPipelineStageFlags sourceStage;
-		VkPipelineStageFlags destinationStage;
-
-		if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
-			newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-			barrier.srcAccessMask = 0;
-			barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-			sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-			destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-		}
-		else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
-			newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-			sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-			destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-		}
-		else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
-			newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-			barrier.srcAccessMask = 0;
-			barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-			sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-			destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-		}
-		else {
-			throw std::invalid_argument("unsupported layout transition!");
-		}
-
-		vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0,
-			nullptr, 0, nullptr, 1, &barrier);
-
-		endSingleTimeCommands(device, commandBuffer, context->default_queue, context->default_command_pool);
-	}
-
-	void CreateInstanceDataBuffers() {
+	void CreateFrameDataBuffers() {
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
@@ -572,10 +504,17 @@ private:
 				VMA_MEMORY_USAGE_AUTO,
 				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			);
+
+			// Lights
+			lightDataUniformBuffers[i] = context->createBuffer(
+				sizeof(Light) * MAX_LIGHTS,
+				VMA_MEMORY_USAGE_AUTO,
+				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			);
 		}
 	}
 
-	void UploadDefaultDescriptorSets()  // no params; uses frameDescriptorSets[]
+	void UpdateDescriptorSets()  // no params; uses frameDescriptorSets[]
 	{
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
@@ -593,11 +532,18 @@ private:
 				.range = sizeof(InstanceData) * MAX_INSTANCES
 			};
 
+			auto light_data_bfd = context->buffers_.get(lightDataUniformBuffers[i]);
+			VkDescriptorBufferInfo lightDataBufferRangeInfo{
+				.buffer = light_data_bfd->buffer,
+				.offset = 0,
+				.range = sizeof(Light) * MAX_LIGHTS
+			};
+
 			auto setHandle = frameDescriptorSets[i];
 			auto setObj = context->descriptrorSetPool_.get(setHandle);
 			VkDescriptorSet vkSet = setObj->set;
 
-			VkWriteDescriptorSet writes[2]{};
+			VkWriteDescriptorSet writes[3]{};
 
 			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			writes[0].dstSet = vkSet;
@@ -614,6 +560,15 @@ private:
 			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			writes[1].descriptorCount = 1;
 			writes[1].pBufferInfo = &instanceBufferInfo;
+
+			// LIGHTS
+			writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[2].dstSet = vkSet;
+			writes[2].dstBinding = 4;
+			writes[2].dstArrayElement = 0;
+			writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			writes[2].descriptorCount = 1;
+			writes[2].pBufferInfo = &instanceBufferInfo;
 
 			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 		}
@@ -633,6 +588,7 @@ private:
 		}
 	}
 
+	// This could be done way more clever. 
 	void UpdateBindlessTextures() {
 
 		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstancesPool_.numObjects());
@@ -1283,7 +1239,7 @@ bool VulkanApp::Run() {
 
 
 	// This is pipeline setup always required.
-	CreateInstanceDataBuffers();
+	CreateFrameDataBuffers();
 	CreateFrameCommandBuffers();
 	CreateRenderSyncObjects();
 	createDepthResources();
@@ -1419,7 +1375,8 @@ inline void VulkanApp::DrawFrame() {
 
 	// We should check for size and promote or demote from pushconstants -> ubo -> ssbo.
 	UpdateDeltaTime();
-	UpdateInstanceBuffer(currentFrame);
+	UpdateInstanceBuffers(currentFrame);
+	UpdateLightsBuffer(currentFrame);
 
 	vkResetFences(device, 1, &inFlightFences[currentFrame]);
 	vkResetCommandPool(device, framesCommandPool[currentFrame], 0);
@@ -1427,7 +1384,7 @@ inline void VulkanApp::DrawFrame() {
 	//vkResetCommandBuffer(commandBuffers[currentFrame],
 	//	/*VkCommandBufferResetFlagBits*/ 0);
 
-	UploadDefaultDescriptorSets();
+	UpdateDescriptorSets();
 	UpdateBindlessTextures();
 
 	UiPass();
@@ -1532,7 +1489,7 @@ MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) 
 	// if you want mips generated by the ktx library:
 	// I just generated them offline ;=)
 	//ktxTex->generateMipmaps = KTX_TRUE;
-	auto texHandle = context->createTexture(*ktxTex);
+	auto texHandle = context->CreateTexture(*ktxTex);
 
 	// free after upload
 	ktxTexture2_Destroy(ktxTex);
@@ -1544,7 +1501,7 @@ MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) 
 
 }
 
-inline void VulkanApp::UpdateInstanceBuffer(uint32_t currentImage) {
+inline void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 
 	// Moved this to the HEAP. This will be state of the app instead of being fabricated here anyways.
 	InstanceData* data = new InstanceData[MAX_INSTANCES];
@@ -1603,6 +1560,39 @@ inline void VulkanApp::UpdateInstanceBuffer(uint32_t currentImage) {
 	delete[] data;
 }
 
+void VulkanApp::UpdateLightsBuffer(uint32_t currentImage) {
+
+	Light* data = new Light[MAX_LIGHTS];
+
+	glm::mat4 light_pos = glm::translate(glm::mat4(1.0f), glm::vec3(0.f, 2.0f, 1.0f));
+
+	std::memcpy(
+		data[0].transform,
+		glm::value_ptr(light_pos),
+		sizeof(float) * 16);
+
+	data[0].color = { 1.0f, .2f, 0.2f, 1.0f };
+
+	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, context->default_command_pool);
+
+	static_assert(sizeof(Light) * MAX_LIGHTS < (1 << 16),
+		"Light buffer too large for 64KB UBO limit");
+
+	context->UploadDataToBuffer(
+		lightDataUniformBuffers[currentImage],
+		data,
+		sizeof(Light) * MAX_LIGHTS,
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		VK_ACCESS_SHADER_READ_BIT
+		//VK_ACCESS_UNIFORM_READ_BIT 
+
+	);
+
+	endSingleTimeCommands(device, cmdBuf, context->default_queue, context->default_command_pool);
+	delete[] data;
+
+}
+
 void VulkanApp::UploadScene() {
 
 	std::vector<MeshData> data_to_upload;
@@ -1640,7 +1630,7 @@ void VulkanApp::UploadScene() {
 		}
 	}
 
-	static_draw_sets = context->UploadStaticMeshData(data_to_upload);
+	static_draw_sets = context->BatchUploadMeshData(data_to_upload);
 	UpdateBindlessTextures();
 
 }

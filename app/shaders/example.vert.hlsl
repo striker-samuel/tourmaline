@@ -1,5 +1,5 @@
 // =============================================
-// HLSL (for Vulkan via DXC) port of your GLSL
+// HLSL (for Vulkan via DXC)
 // =============================================
 
 #ifndef MAX_INSTANCES
@@ -86,11 +86,20 @@ struct VSIn
 
 
 
+//struct VSOut
+//{
+//    float4 pos : SV_Position; // gl_Position
+//    float3 fragColor : COLOR0; // layout(location=0) out
+//    float2 fragTexCoord : TEXCOORD0; // layout(location=1) out
+//};
+
 struct VSOut
 {
-    float4 pos : SV_Position; // gl_Position
-    float3 fragColor : COLOR0; // layout(location=0) out
-    float2 fragTexCoord : TEXCOORD0; // layout(location=1) out
+    float4 pos : SV_Position;
+    float3 color : COLOR0;
+    float2 uv : TEXCOORD0;
+    float3 worldPos : TEXCOORD1;
+    float3 normal : TEXCOORD2;
 };
 
 VSOut mainVS(VSIn IN)
@@ -108,8 +117,8 @@ VSOut mainVS(VSIn IN)
     float4 clip = mul(pc.proj, mul(pc.view, mul(model, world)));
 
     OUT.pos = clip;
-    OUT.fragColor = instance_data[idx].color;
+    OUT.color = instance_data[idx].color;
     //OUT.fragColor = IN.inColor;
-    OUT.fragTexCoord = IN.inTexCoord;
+    OUT.uv = IN.inTexCoord;
     return OUT;
 }
