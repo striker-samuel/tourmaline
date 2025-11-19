@@ -78,6 +78,7 @@ typedef enum LightType {
 } LightType;
 
 struct Light {
+	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
 	float transform[16] = {
 		1.0f, 0.0f, 0.0f, 0.0f,
 		0.0f, 1.0f, 0.0f, 0.0f,
@@ -85,9 +86,9 @@ struct Light {
 		0.0f, 0.0f, 0.0f, 1.0f
 	};
 	LightType type;
-	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
-	uint32_t intensity = 1.0f;
+	float intensity = 1.0f;
 	int _pad[2];
+	int _pad2[8];
 };
 static_assert(sizeof(Light) % 16 == 0);
 
@@ -168,14 +169,14 @@ struct RasterSettings {
 struct MaterialPushConstants {
 
 	// Color *=
-	glm::vec4 ambient = glm::vec4(0.0f);
-	glm::vec4 diffuse = glm::vec4(0.0f);
+	glm::vec4 ambient = glm::vec4(.3f);
+	glm::vec4 diffuse = glm::vec4(1.0f);
 
 
 	// Index to bindless texture array. Doing this like so obviously makes it so we only have one def for material texture slots
-	uint32_t texAmbient = 0;
-	uint32_t texDiffuse = 0;
-	uint32_t texAlpha = 0;
+	uint32_t texAmbient = 1;
+	uint32_t texDiffuse = 1;
+	uint32_t texAlpha = 1;
 	uint32_t padding[1];
 
 } default_mat_pc;

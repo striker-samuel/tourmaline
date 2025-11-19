@@ -380,7 +380,7 @@ public:
 	std::vector<DrawSet> BatchUploadMeshData(std::vector<MeshData>& mesh_data);
 
 	void UploadDataToBuffer(DeviceBufferHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
-	
+
 	void getAppropriateSampler(Texture& texture);
 
 	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
@@ -654,6 +654,8 @@ DescriptorLayoutHandle Context::createDescriptorLayout() {
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
 		0
+		//	VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+		//	VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // lightdata. 
 	};
 
 	// Chain flags struct
@@ -677,8 +679,7 @@ DescriptorLayoutHandle Context::createDescriptorLayout() {
 		throw std::runtime_error("failed to create descriptor set layout!");
 	}
 
-	auto r = descriptorSetLayoutPool_.create(std::move(descriptorSetLayout));
-	return r;
+	return descriptorSetLayoutPool_.create(std::move(descriptorSetLayout));
 
 }
 
@@ -952,8 +953,8 @@ ImageHandle Context::CreateCascadedShadowMapsDepthImage(int texWidth, int texHei
 	VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT // sample as texture
 		| VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
-    // Levels just 1. No mipmaps for shadow maps images. 
-	ImageHandle image_handle =  CreateImage(texWidth, texHeight, VK_FORMAT_D32_SFLOAT, usage, 1, cascades);
+	// Levels just 1. No mipmaps for shadow maps images. 
+	ImageHandle image_handle = CreateImage(texWidth, texHeight, VK_FORMAT_D32_SFLOAT, usage, 1, cascades);
 
 	auto image = images_.get(image_handle);
 

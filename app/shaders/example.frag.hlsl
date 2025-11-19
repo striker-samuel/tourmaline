@@ -16,17 +16,25 @@ struct PC_All
 
 struct Light
 {
-    float4x4 transform; // use transform[3].xyz as world-space position
-    int type; // 0 = point (assumed)
     float4 color; // RGB color, A unused
-    double intensity; // we’ll cast to float
+    float4x4 transform; // use transform[3].xyz as world-space position
+    int type; // 0 = point (assumed) //32
+    float intensity; // we’ll cast to float
     int _pad[2];
+    int _pad2[8];
 };
 
+#ifndef MAX_LIGHTS
+#define MAX_LIGHTS 10
+#endif
 
 [[vk::binding(2,0)]] Texture2D materialTex[]; // sampled images
 [[vk::binding(3,0)]] SamplerState materialSamp[]; // samplers
-[[vk::binding(4,0)]] StructuredBuffer<Light> light_data;
+[[vk::binding(4, 0)]]
+cbuffer Lights
+{
+    Light g_Lights[MAX_LIGHTS]; // or a struct containing them
+};
 
 struct PSIn
 {
@@ -49,19 +57,20 @@ float3 EvaluatePointLight(Light light, float3 worldPos, float3 N, float3 baseCol
     float3 lightPos = light.transform[3].xyz;
 
     float3 toLight = lightPos - worldPos;
-    float distSq = dot(toLight, toLight) + 1e-4f;
+    float distSq = dot(toLight, toLight);
+    distSq = max(distSq, 1e-4f);
+
     float3 L = toLight * rsqrt(distSq); // normalize
 
-    float NdotL = max(dot(N, L), 0.0f);
-
-    // Simple inverse-square attenuation with a small bias to avoid extreme falloff
-    float attenuation = 1.0f / (distSq + 1.0f);
+    float NdotL = saturate(dot(N, L)); // [0,1]
+    float attenuation = 1.0f / distSq; // inverse-square
 
     float intensity = (float) light.intensity;
     float3 lightColor = light.color.rgb;
 
     return baseColor * lightColor * intensity * NdotL * attenuation;
 }
+
 
 
 PSOut mainPS(PSIn IN)
@@ -74,7 +83,7 @@ PSOut mainPS(PSIn IN)
 
     // Base material color (vertex color * material diffuse * texture)
     float3 baseColor = IN.color * pc.diffuse.rgb * texSample.rgb;
-
+    
     // Ambient term
     float3 ambient = pc.ambient.rgb * texSample.rgb;
 
@@ -87,7 +96,7 @@ PSOut mainPS(PSIn IN)
     [loop]
     for (uint i = 0; i < 1; ++i)
     {
-        Light light = light_data[i];
+        Light light = g_Lights[i];
 
         // Assume type == 0 is point light
         if (light.type != 0)

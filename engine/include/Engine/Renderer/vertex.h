@@ -8,13 +8,14 @@ struct Vertex {
 	glm::vec3 pos;
 	glm::vec3 color;
 	glm::vec2 texCoord;
+	glm::vec3 normal;
 
 	// we store only 2 normals, and rebuild the orthogonal thirs missing one in shader if needed.
 	// Not implemented yet
 	//glm::vec2 normals;
 
 	static VkVertexInputBindingDescription getBindingDescription(); 
-	static std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions();
+	static std::array<VkVertexInputAttributeDescription, 4> getAttributeDescriptions();
 
 	bool operator==(const Vertex& other) const {
 		return pos == other.pos && color == other.color && texCoord == other.texCoord;

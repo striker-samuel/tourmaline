@@ -84,15 +84,6 @@ struct VSIn
     uint instanceID : SV_InstanceID; // gl_InstanceIndex
 };
 
-
-
-//struct VSOut
-//{
-//    float4 pos : SV_Position; // gl_Position
-//    float3 fragColor : COLOR0; // layout(location=0) out
-//    float2 fragTexCoord : TEXCOORD0; // layout(location=1) out
-//};
-
 struct VSOut
 {
     float4 pos : SV_Position;
@@ -117,7 +108,8 @@ VSOut mainVS(VSIn IN)
     float4 clip = mul(pc.proj, mul(pc.view, mul(model, world)));
 
     OUT.pos = clip;
-    OUT.color = instance_data[idx].color;
+    //OUT.color = instance_data[idx].color;
+    OUT.color = float3(1.0f, 1.0f, 1.0f);
     //OUT.fragColor = IN.inColor;
     OUT.uv = IN.inTexCoord;
     return OUT;

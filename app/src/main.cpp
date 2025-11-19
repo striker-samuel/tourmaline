@@ -568,9 +568,9 @@ private:
 			writes[2].dstArrayElement = 0;
 			writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 			writes[2].descriptorCount = 1;
-			writes[2].pBufferInfo = &instanceBufferInfo;
+			writes[2].pBufferInfo = &lightDataBufferRangeInfo;
 
-			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+			vkUpdateDescriptorSets(device, 3 /*descitprorWriteCount*/, writes, 0, nullptr);
 		}
 	}
 
@@ -1249,6 +1249,12 @@ bool VulkanApp::Run() {
 
 	//
 	UploadScene();
+	// Lets fake intialize like this
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		UpdateLightsBuffer(i);
+	}
+
+	//UpdateLightsBuffer(currentFrame);
 
 	MainLoop();
 
@@ -1376,7 +1382,8 @@ inline void VulkanApp::DrawFrame() {
 	// We should check for size and promote or demote from pushconstants -> ubo -> ssbo.
 	UpdateDeltaTime();
 	UpdateInstanceBuffers(currentFrame);
-	UpdateLightsBuffer(currentFrame);
+
+	
 
 	vkResetFences(device, 1, &inFlightFences[currentFrame]);
 	vkResetCommandPool(device, framesCommandPool[currentFrame], 0);
@@ -1564,14 +1571,15 @@ void VulkanApp::UpdateLightsBuffer(uint32_t currentImage) {
 
 	Light* data = new Light[MAX_LIGHTS];
 
-	glm::mat4 light_pos = glm::translate(glm::mat4(1.0f), glm::vec3(0.f, 2.0f, 1.0f));
-
+	glm::mat4 light_pos = glm::translate(glm::mat4(1.0f), glm::vec3(1.f, 1.0f, 1.0f));
 	std::memcpy(
 		data[0].transform,
 		glm::value_ptr(light_pos),
 		sizeof(float) * 16);
-
 	data[0].color = { 1.0f, .2f, 0.2f, 1.0f };
+	data[0].intensity = 100.0f;
+	data[0].type = LIGHT_TYPE_POINT;
+
 
 	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, context->default_command_pool);
 
