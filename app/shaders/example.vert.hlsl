@@ -27,12 +27,20 @@ struct PC_All
 
 struct PSIn
 {
-    float3 color : COLOR0;
-    float2 uv : TEXCOORD0;
+    [[vk::location(0)]] float3 position : POSITION;
+    [[vk::location(1)]] float3 color : COLOR0;
+    [[vk::location(2)]] float2 uv : TEXCOORD0;
+    [[vk::location(3)]] float3 normal : NORMAL;
+    uint instanceID : SV_InstanceID;
 };
+
 struct PSOut
 {
-    float4 outColor : SV_Target;
+    float4 pos : SV_Position;
+    float3 outColor : COLOR0;
+    float2 uv : TEXCOORD0;
+    float3 worldPos : TEXCOORD1;
+    float3 normal : TEXCOORD2;
 };
 
 PSOut mainPS(PSIn IN)
@@ -81,6 +89,7 @@ struct VSIn
     float3 inPosition : POSITION; // location 0
     float3 inColor : COLOR0; // location 1
     float2 inTexCoord : TEXCOORD0; // location 2
+    float3 inNormal : NORMAL;
     uint instanceID : SV_InstanceID; // gl_InstanceIndex
 };
 
@@ -97,20 +106,24 @@ VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
 
-    // Find which instance's model matrix to use:
-    // GLSL: instance.model[inn.indices[gl_InstanceIndex]]
     uint idx = indicesStd140[IN.instanceID].i;
-
-    // Position transform:
-    // GLSL: pc.viewproj.proj * pc.viewproj.view * M * vec4(inPosition, 1.0)
-    float4 world = float4(IN.inPosition, 1.0f);
     float4x4 model = instance_data[idx].transform;
-    float4 clip = mul(pc.proj, mul(pc.view, mul(model, world)));
 
+    // World position
+    float4 world = mul(model, float4(IN.inPosition, 1.0));
+    OUT.worldPos = world.xyz;
+
+    // View / projection
+    float4 viewPos = mul(pc.view, world);
+    float4 clip = mul(pc.proj, viewPos);
     OUT.pos = clip;
-    //OUT.color = instance_data[idx].color;
+
     OUT.color = float3(1.0f, 1.0f, 1.0f);
-    //OUT.fragColor = IN.inColor;
     OUT.uv = IN.inTexCoord;
+
+    // Properly transform normal to world space
+    float3 worldNormal = mul((float3x3) model, IN.inNormal);
+    OUT.normal = normalize(worldNormal);
+
     return OUT;
 }

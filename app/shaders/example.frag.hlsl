@@ -16,24 +16,26 @@ struct PC_All
 
 struct Light
 {
-    float4 color; // RGB color, A unused
-    float4x4 transform; // use transform[3].xyz as world-space position
-    int type; // 0 = point (assumed) //32
-    float intensity; // we’ll cast to float
-    int _pad[2];
-    int _pad2[8];
+    float4 color; // 16B
+
+    float3 position; // 12B
+    float _pad0; // 4B = pad to 16B
+
+    float3 direction; // 12B
+    float intensity; // 4B
+    
+    int type; // 4B
+    float3 _pad2; // 8B (round struct to 16B multiple)
 };
 
-#ifndef MAX_LIGHTS
 #define MAX_LIGHTS 10
-#endif
 
 [[vk::binding(2,0)]] Texture2D materialTex[]; // sampled images
 [[vk::binding(3,0)]] SamplerState materialSamp[]; // samplers
 [[vk::binding(4, 0)]]
 cbuffer Lights
 {
-    Light g_Lights[MAX_LIGHTS]; // or a struct containing them
+    Light g_Lights[10]; // or a struct containing them
 };
 
 struct PSIn
@@ -48,29 +50,31 @@ struct PSOut
     float4 outColor : SV_Target;
 };
 
-// -----------------------------------------------------------------------------
-// Helper: compute point-light contribution
-// -----------------------------------------------------------------------------
 float3 EvaluatePointLight(Light light, float3 worldPos, float3 N, float3 baseColor)
 {
-    // Light position from transform matrix
-    float3 lightPos = light.transform[3].xyz;
+    // Use explicit position stored in the struct
+    float3 lightPos = light.position;
 
+    // Vector to light
     float3 toLight = lightPos - worldPos;
-    float distSq = dot(toLight, toLight);
-    distSq = max(distSq, 1e-4f);
+    float distSq = max(dot(toLight, toLight), 1e-4f);
 
-    float3 L = toLight * rsqrt(distSq); // normalize
+    // Direction to light
+    float3 L = toLight * rsqrt(distSq);
 
-    float NdotL = saturate(dot(N, L)); // [0,1]
-    float attenuation = 1.0f / distSq; // inverse-square
+    // Lambert term
+    float NdotL = saturate(dot(N, L));
 
-    float intensity = (float) light.intensity;
+    // Inverse-square attenuation
+    float attenuation = 1.0f / distSq;
+
+    // Light parameters
     float3 lightColor = light.color.rgb;
+    float intensity = light.intensity;
 
-    return baseColor * lightColor * intensity * NdotL * attenuation;
+    // Final contribution
+    return baseColor * lightColor * intensity * /*NdotL*/1 * attenuation;
 }
-
 
 
 PSOut mainPS(PSIn IN)

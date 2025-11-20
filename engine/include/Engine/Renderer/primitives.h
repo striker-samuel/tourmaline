@@ -71,26 +71,25 @@ struct InstanceData {
 static_assert(sizeof(InstanceData) % 16 == 0);
 
 // Lighting
-
 typedef enum LightType {
-    LIGHT_TYPE_POINT = 0,
-    LIGHT_TYPE_SPOT = 1,
+	LIGHT_TYPE_POINT = 0,
+	LIGHT_TYPE_SPOT = 1,
 } LightType;
 
-struct Light {
-	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
-	float transform[16] = {
-		1.0f, 0.0f, 0.0f, 0.0f,
-		0.0f, 1.0f, 0.0f, 0.0f,
-		0.0f, 0.0f, 1.0f, 0.0f,
-		0.0f, 0.0f, 0.0f, 1.0f
-	};
-	LightType type;
-	float intensity = 1.0f;
-	int _pad[2];
-	int _pad2[8];
+struct alignas(16) Light {
+	glm::vec4 color = glm::vec4(1.0f);       // offset 0,  size 16
+
+	float position[3] = { 0.0f,0.0f,0.0f };     // offset 16, size 12
+	float _pad0;           // offset 28, size 4  -> total 32
+
+	float direction[3] = { 0.0f,0.0f,0.0f };    // offset 32, size 12
+	float intensity = 1.0f;       // offset 44, size 4  -> total 48
+
+	int   type = LIGHT_TYPE_POINT;            // offset 48, size 4
+	int   _pad1[3];        // offset 52, size 12 -> total 64
 };
-static_assert(sizeof(Light) % 16 == 0);
+
+static_assert(sizeof(Light) == 64, "CPU Light must match GPU stride 64");
 
 /// --------------------------------------
 
@@ -169,7 +168,7 @@ struct RasterSettings {
 struct MaterialPushConstants {
 
 	// Color *=
-	glm::vec4 ambient = glm::vec4(.3f);
+	glm::vec4 ambient = glm::vec4(0.0f);
 	glm::vec4 diffuse = glm::vec4(1.0f);
 
 

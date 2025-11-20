@@ -1567,21 +1567,28 @@ inline void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 	delete[] data;
 }
 
+
 void VulkanApp::UpdateLightsBuffer(uint32_t currentImage) {
 
 	Light* data = new Light[MAX_LIGHTS];
 
-	glm::mat4 light_pos = glm::translate(glm::mat4(1.0f), glm::vec3(1.f, 1.0f, 1.0f));
-	std::memcpy(
-		data[0].transform,
-		glm::value_ptr(light_pos),
-		sizeof(float) * 16);
+	data[0].position[0] = .0f;
+	data[0].position[1] = 1.0f;
+	data[0].position[2] = .0f;
+
+	data[0].direction[0] = .0f;
+	data[0].direction[1] = .0f;
+	data[0].direction[2] = .0f;
+
 	data[0].color = { 1.0f, .2f, 0.2f, 1.0f };
-	data[0].intensity = 100.0f;
+	data[0].intensity = 1.0f;
 	data[0].type = LIGHT_TYPE_POINT;
 
-
 	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, context->default_command_pool);
+
+
+	std::cout << sizeof(Light) << std::endl;
+	std::cout << sizeof(Light) * MAX_LIGHTS << std::endl;
 
 	static_assert(sizeof(Light) * MAX_LIGHTS < (1 << 16),
 		"Light buffer too large for 64KB UBO limit");
