@@ -1568,21 +1568,47 @@ inline void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 }
 
 
+struct RGB { float r, g, b; };
+
+RGB hsv2rgb(float h, float s, float v)
+{
+	float c = v * s;
+	float x = c * (1.0f - fabsf(fmodf(h * 6.0f, 2.0f) - 1.0f));
+	float m = v - c;
+
+	float r, g, b;
+	if (h < 1.0f / 6.0f) { r = c; g = x; b = 0; }
+	else if (h < 2.0f / 6.0f) { r = x; g = c; b = 0; }
+	else if (h < 3.0f / 6.0f) { r = 0; g = c; b = x; }
+	else if (h < 4.0f / 6.0f) { r = 0; g = x; b = c; }
+	else if (h < 5.0f / 6.0f) { r = x; g = 0; b = c; }
+	else { r = c; g = 0; b = x; }
+
+	return { r + m, g + m, b + m };
+}
+
+
 void VulkanApp::UpdateLightsBuffer(uint32_t currentImage) {
 
 	Light* data = new Light[MAX_LIGHTS];
 
-	data[0].position[0] = .0f;
-	data[0].position[1] = 1.0f;
-	data[0].position[2] = .0f;
 
-	data[0].direction[0] = .0f;
-	data[0].direction[1] = .0f;
-	data[0].direction[2] = .0f;
+	for (int i = 0; i < MAX_LIGHTS; i++) {
+		data[i].position[0] = 3.0f * i;
+		data[i].position[1] = 1.0f;
+		data[i].position[2] = 1.0f;
 
-	data[0].color = { 1.0f, .2f, 0.2f, 1.0f };
-	data[0].intensity = 1.0f;
-	data[0].type = LIGHT_TYPE_POINT;
+		data[i].direction[0] = .0f;
+		data[i].direction[1] = .0f;
+		data[i].direction[2] = .0f;
+
+		float hue = float(i) / float(MAX_LIGHTS);
+		RGB rgb = hsv2rgb(hue, 1.0f, 1.0f);
+
+		data[i].color = { rgb.r, rgb.g, rgb.b, 1.0f };
+		data[i].intensity = 1.0f;
+		data[i].type = LIGHT_TYPE_POINT;
+	}
 
 	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, context->default_command_pool);
 

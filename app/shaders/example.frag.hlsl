@@ -98,7 +98,7 @@ PSOut mainPS(PSIn IN)
     float3 litColor = ambient;
 
     [loop]
-    for (uint i = 0; i < 1; ++i)
+    for (uint i = 0; i < MAX_LIGHTS; ++i)
     {
         Light light = g_Lights[i];
 

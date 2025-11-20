@@ -157,7 +157,7 @@ struct RasterSettings {
 	uint32_t depthClampEnable = VK_FALSE;
 	uint32_t rasterizerDiscardEnable = VK_FALSE;
 	uint32_t polygonMode = VK_POLYGON_MODE_FILL;
-	uint32_t lineWidth = 1.0f;
+	float lineWidth = 1.0f;
 	uint32_t cullMode = VK_CULL_MODE_BACK_BIT;
 	uint32_t frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	uint32_t depthBiasEnable = VK_FALSE;
