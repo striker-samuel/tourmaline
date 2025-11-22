@@ -25,7 +25,8 @@ struct Light
     float intensity; // 4B
     
     int type; // 4B
-    float3 _pad2; // 8B (round struct to 16B multiple)
+    float innerAngle;
+    float outerAngle;
 };
 
 #define MAX_LIGHTS 10
@@ -49,6 +50,33 @@ struct PSOut
 {
     float4 outColor : SV_Target;
 };
+
+float3 EvaluateSpotLight(Light light, float3 worldPos, float3 N, float3 baseColor)
+{
+    float3 toLight = light.position - worldPos;
+    float distSq = max(dot(toLight, toLight), 1e-4f);
+    float3 L = toLight * rsqrt(distSq);
+
+    float NdotL = saturate(dot(N, L));
+
+    float attenuation = 1.0f / distSq;
+
+    float spotCos = dot(L, -light.direction);
+
+    float inner = cos(light.innerAngle);
+    float outer = cos(light.outerAngle);
+
+    // Compute spot factor (0..1)
+    float spotFactor = saturate((spotCos - outer) / (inner - outer));
+
+    // Optional: smoothstep for softer edge
+    // float spotFactor = saturate(smoothstep(outer, inner, spotCos));
+
+    float3 lightColor = light.color.rgb * light.intensity;
+
+    return baseColor * lightColor * NdotL * attenuation * spotFactor;
+}
+
 
 float3 EvaluatePointLight(Light light, float3 worldPos, float3 N, float3 baseColor)
 {
@@ -102,11 +130,15 @@ PSOut mainPS(PSIn IN)
     {
         Light light = g_Lights[i];
 
-        // Assume type == 0 is point light
-        if (light.type != 0)
-            continue;
+        if (light.type == 0)
+        {
+            litColor += EvaluatePointLight(light, IN.worldPos, N, baseColor);
+        }
+        else
+        {
+            litColor += EvaluateSpotLight(light, IN.worldPos, N, baseColor);
+        }
 
-        litColor += EvaluatePointLight(light, IN.worldPos, N, baseColor);
     }
 
     OUT.outColor = float4(litColor, texSample.a);

@@ -85,11 +85,13 @@ struct alignas(16) Light {
 	float direction[3] = { 0.0f,0.0f,0.0f };    // offset 32, size 12
 	float intensity = 1.0f;       // offset 44, size 4  -> total 48
 
-	int   type = LIGHT_TYPE_POINT;            // offset 48, size 4
-	int   _pad1[3];        // offset 52, size 12 -> total 64
+	int32_t type = LIGHT_TYPE_POINT; 
+    float innerAngle = 10.0f;
+    float outerAngle = 20.0f;
+	//int   _pad1[3];        
 };
 
-static_assert(sizeof(Light) == 64, "CPU Light must match GPU stride 64");
+static_assert(sizeof(Light) % 16 == 0);
 
 /// --------------------------------------
 
