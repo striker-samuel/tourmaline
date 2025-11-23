@@ -28,6 +28,8 @@ x86/
 [Aa][Rr][Mm]64/
 bld/
 [Bb]in/
+# Needed to add this to move ktx with the repo :)
+!external/ktx/bin/
 [Oo]bj/
 [Oo]ut/
 [Ll]og/
