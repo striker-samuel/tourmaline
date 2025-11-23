@@ -56,8 +56,6 @@
 
 #include <App/utils.h>
 
-
-
 // ------------------------------------
 // If theres only one I probably could go with argv
 std::vector<std::string> gltf_meshes_paths = {
@@ -89,6 +87,25 @@ Scene getSceneFromGltf(const GltfModel& gltf_model) {
 	return scene;
 }
 
+struct RGB { float r, g, b; };
+
+RGB hsv2rgb(float h, float s, float v)
+{
+	float c = v * s;
+	float x = c * (1.0f - fabsf(fmodf(h * 6.0f, 2.0f) - 1.0f));
+	float m = v - c;
+
+	float r, g, b;
+	if (h < 1.0f / 6.0f) { r = c; g = x; b = 0; }
+	else if (h < 2.0f / 6.0f) { r = x; g = c; b = 0; }
+	else if (h < 3.0f / 6.0f) { r = 0; g = c; b = x; }
+	else if (h < 4.0f / 6.0f) { r = 0; g = x; b = c; }
+	else if (h < 5.0f / 6.0f) { r = x; g = 0; b = c; }
+	else { r = c; g = 0; b = x; }
+
+	return { r + m, g + m, b + m };
+}
+
 void FabricateLightData(Light* data) {
 
 	//Light* data = new Light[MAX_LIGHTS];
@@ -118,24 +135,6 @@ void FabricateLightData(Light* data) {
 
 }
 
-struct RGB { float r, g, b; };
-
-RGB hsv2rgb(float h, float s, float v)
-{
-	float c = v * s;
-	float x = c * (1.0f - fabsf(fmodf(h * 6.0f, 2.0f) - 1.0f));
-	float m = v - c;
-
-	float r, g, b;
-	if (h < 1.0f / 6.0f) { r = c; g = x; b = 0; }
-	else if (h < 2.0f / 6.0f) { r = x; g = c; b = 0; }
-	else if (h < 3.0f / 6.0f) { r = 0; g = c; b = x; }
-	else if (h < 4.0f / 6.0f) { r = 0; g = x; b = c; }
-	else if (h < 5.0f / 6.0f) { r = x; g = 0; b = c; }
-	else { r = c; g = 0; b = x; }
-
-	return { r + m, g + m, b + m };
-}
 
 class VulkanApp {
 
@@ -144,12 +143,28 @@ public:
 	int width_ = WIDTH;
 	int height_ = HEIGHT;
 
-	void InitializeImGui();
-	bool Run();
+	bool Initialize();
+	bool Run() {
+
+		bool result = Initialize();
+		assert(result && "Failed to initialize");
+		Start();
+		MainLoop();
+		CleanUp();
+
+		return true;
+
+	};
+	void Start();
+
+
+	// Initial ShadowMap implementation.
+	void UpdateLights();
+	void RenderShadows();
+	Light* lights = new Light[MAX_LIGHTS];
+	std::unordered_map<uint32_t, ShadowMapHandle> light_to_shadowmap;
 
 private:
-
-	std::vector<DrawSet> static_draw_sets;
 
 	Context* context;
 	ImGuiContext* imgui_ctx;
@@ -222,7 +237,6 @@ private:
 
 #pragma endregion
 
-	// Ok, yes. lets do sync on app code. No framegraph yet :)
 #pragma region ===[ Synchronization Primitives ]===
 
 	VkSemaphore * renderFinishedSemaphores;
@@ -243,10 +257,10 @@ private:
 	bool framebufferResized = false;
 #pragma endregion
 
-	MaterialInstanceHandle CreateDiffuseMaterial(std::string image_path);
+
 	void InitVulkanApp();
-	void CreateDefaultMaterialPipeline();
-	void UploadScene();
+	void InitializeImGui();
+
 	void UpdateDeltaTime() {
 
 		static auto lastFrameTime = std::chrono::high_resolution_clock::now();
@@ -261,6 +275,8 @@ private:
 
 		lastFrameTime = currentTime;
 	}
+
+	void UploadScene();
 
 	void UpdateInstanceBuffers(uint32_t currentImage);
 
@@ -277,6 +293,13 @@ private:
 
 	}
 
+	// Thsese are really helpers. not critical.
+	void CreateDefaultMaterialPipeline();
+	MaterialInstanceHandle CreateDiffuseMaterial(std::string image_path);
+
+
+
+#pragma region MainLoop
 	void MainLoop() {
 
 		while (!glfwWindowShouldClose(window)) {
@@ -295,6 +318,11 @@ private:
 		vkDeviceWaitIdle(device);
 	}
 
+#pragma endregion
+
+
+#pragma region Events
+
 	void CameraUpdate() {
 		double x, y;
 		glfwGetCursorPos(window, &x, &y);
@@ -310,7 +338,6 @@ private:
 	}
 
 	void Update() {
-
 
 		//std::cout << camera_.getPosition() << std::endl;
 		////Synthetic movement
@@ -328,21 +355,7 @@ private:
 
 	}
 
-	void cleanupSwapChain() {
-
-		vkDestroyImageView(device, main_depthImageView, nullptr);
-		vmaDestroyImage(*context->allocator_, main_depthImage, main_d_alloc);
-
-		for (uint32_t i = 0; i < swapchainImageCount; ++i) {
-			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
-		}
-		delete[] swapChainImageViews;
-
-		delete[] swapChainImages;
-		swapChainImageViews = nullptr;
-
-		vkDestroySwapchainKHR(device, swapChain, nullptr);
-	}
+#pragma endregion
 
 	void recreateSwapChain() {
 
@@ -361,7 +374,7 @@ private:
 		cleanupSwapChain();
 		createSwapChain();
 		createSwapchainImageViews();
-		createDepthResources();
+		CreateDepthResources();
 
 		// ---- update camera projection to match new size ----
 		float newAspect = float(width) / float(height);
@@ -456,7 +469,7 @@ private:
 
 	}
 
-	void createDepthResources() {
+	void CreateDepthResources() {
 		VkFormat depthFormat = findDepthFormat(physicalDevice);
 
 		createImage(
@@ -472,6 +485,23 @@ private:
 		createImageView(main_depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, main_depthImageView, 1);
 		context->TransitionImageLayout(main_depthImage, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
+	}
+
+	// Cleanup
+	void cleanupSwapChain() {
+
+		vkDestroyImageView(device, main_depthImageView, nullptr);
+		vmaDestroyImage(*context->allocator_, main_depthImage, main_d_alloc);
+
+		for (uint32_t i = 0; i < swapchainImageCount; ++i) {
+			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
+		}
+		delete[] swapChainImageViews;
+
+		delete[] swapChainImages;
+		swapChainImageViews = nullptr;
+
+		vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
 
 	void CleanUp();
@@ -561,64 +591,78 @@ private:
 		}
 	}
 
-	void UpdateDescriptorSets()  // no params; uses frameDescriptorSets[]
+	void UpdateInstanceDescriptorSets(uint32_t currentFrame)
 	{
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
 
-			auto ii_data = context->buffers_.get(instanceIndexUniforms_[i]);
-			auto id_data = context->buffers_.get(instanceDataStorages_[i]);
+		auto ii_data = context->buffers_.get(instanceIndexUniforms_[currentFrame]);
+		auto id_data = context->buffers_.get(instanceDataStorages_[currentFrame]);
 
-			VkDescriptorBufferInfo instanceIndexBufferInfo{
-				.buffer = ii_data->buffer,
-				.offset = 0,
-				.range = sizeof(IndexSlot) * MAX_INSTANCES
-			};
-			VkDescriptorBufferInfo instanceBufferInfo{
-				.buffer = id_data->buffer,
-				.offset = 0,
-				.range = sizeof(InstanceData) * MAX_INSTANCES
-			};
+		VkDescriptorBufferInfo instanceIndexBufferInfo{
+			.buffer = ii_data->buffer,
+			.offset = 0,
+			.range = sizeof(IndexSlot) * MAX_INSTANCES
+		};
+		VkDescriptorBufferInfo instanceBufferInfo{
+			.buffer = id_data->buffer,
+			.offset = 0,
+			.range = sizeof(InstanceData) * MAX_INSTANCES
+		};
 
-			auto light_data_bfd = context->buffers_.get(lightDataUniformBuffers[i]);
-			VkDescriptorBufferInfo lightDataBufferRangeInfo{
-				.buffer = light_data_bfd->buffer,
-				.offset = 0,
-				.range = sizeof(Light) * MAX_LIGHTS
-			};
+		auto setHandle = frameDescriptorSets[currentFrame];
+		auto setObj = context->descriptrorSetPool_.get(setHandle);
+		VkDescriptorSet vkSet = setObj->set;
 
-			auto setHandle = frameDescriptorSets[i];
-			auto setObj = context->descriptrorSetPool_.get(setHandle);
-			VkDescriptorSet vkSet = setObj->set;
+		VkWriteDescriptorSet writes[3]{};
 
-			VkWriteDescriptorSet writes[3]{};
+		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[0].dstSet = vkSet;
+		writes[0].dstBinding = 0; // UBO
+		writes[0].dstArrayElement = 0;
+		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		writes[0].descriptorCount = 1;
+		writes[0].pBufferInfo = &instanceIndexBufferInfo;
 
-			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writes[0].dstSet = vkSet;
-			writes[0].dstBinding = 0; // UBO
-			writes[0].dstArrayElement = 0;
-			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			writes[0].descriptorCount = 1;
-			writes[0].pBufferInfo = &instanceIndexBufferInfo;
+		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[1].dstSet = vkSet;
+		writes[1].dstBinding = 1; // SSBO
+		writes[1].dstArrayElement = 0;
+		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		writes[1].descriptorCount = 1;
+		writes[1].pBufferInfo = &instanceBufferInfo;
 
-			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writes[1].dstSet = vkSet;
-			writes[1].dstBinding = 1; // SSBO
-			writes[1].dstArrayElement = 0;
-			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-			writes[1].descriptorCount = 1;
-			writes[1].pBufferInfo = &instanceBufferInfo;
+		vkUpdateDescriptorSets(device, 2 /*descitprorWriteCount*/, writes, 0, nullptr);
 
-			// LIGHTS
-			writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writes[2].dstSet = vkSet;
-			writes[2].dstBinding = 4;
-			writes[2].dstArrayElement = 0;
-			writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			writes[2].descriptorCount = 1;
-			writes[2].pBufferInfo = &lightDataBufferRangeInfo;
+	}
 
-			vkUpdateDescriptorSets(device, 3 /*descitprorWriteCount*/, writes, 0, nullptr);
-		}
+	void UpdateLightDescriptorSets(uint32_t currentFrame) {
+
+		assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
+
+		auto light_data_bfd = context->buffers_.get(lightDataUniformBuffers[currentFrame]);
+		VkDescriptorBufferInfo lightDataBufferRangeInfo{
+			.buffer = light_data_bfd->buffer,
+			.offset = 0,
+			.range = sizeof(Light) * MAX_LIGHTS
+		};
+
+		auto setHandle = frameDescriptorSets[currentFrame];
+		auto setObj = context->descriptrorSetPool_.get(setHandle);
+		VkDescriptorSet vkSet = setObj->set;
+
+		VkWriteDescriptorSet writes[1]{};
+
+		// LIGHTS
+		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[0].dstSet = vkSet;
+		writes[0].dstBinding = 4;
+		writes[0].dstArrayElement = 0;
+		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		writes[0].descriptorCount = 1;
+		writes[0].pBufferInfo = &lightDataBufferRangeInfo;
+
+		vkUpdateDescriptorSets(device, 1 /*descitprorWriteCount*/, writes, 0, nullptr);
+
 	}
 
 	void CreateFrameCommandBuffers() {
@@ -636,7 +680,7 @@ private:
 	}
 
 	// This could be done way more clever. 
-	void UpdateBindlessTextures() {
+	void UpdateBindlessTextures(uint32_t currentFrame) {
 
 		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstancesPool_.numObjects());
 
@@ -668,30 +712,32 @@ private:
 		//// --- Two writes: images at index 2, samplers at index 3 ---
 		VkWriteDescriptorSet writes[2]{};
 
-		for (auto setHandle : frameDescriptorSets)
-		{
+		auto setHandle = frameDescriptorSets[currentFrame];
 
-			auto set = context->descriptrorSetPool_.get(setHandle);
+		//for (auto setHandle : frameDescriptorSets)
+		//{
 
-			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writes[0].dstSet = set->set;
-			writes[0].dstBinding = 2;
-			writes[0].dstArrayElement = 0;
-			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-			writes[0].descriptorCount = imageInfos.size();
-			writes[0].pImageInfo = imageInfos.data();
+		auto set = context->descriptrorSetPool_.get(setHandle);
 
-			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writes[1].dstSet = set->set;
-			writes[1].dstBinding = 3;
-			writes[1].dstArrayElement = 0;
-			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-			writes[1].descriptorCount = samplerInfos.size();   // or 1 if you use a single shared sampler
-			writes[1].pImageInfo = samplerInfos.data();
+		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[0].dstSet = set->set;
+		writes[0].dstBinding = 2;
+		writes[0].dstArrayElement = 0;
+		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		writes[0].descriptorCount = imageInfos.size();
+		writes[0].pImageInfo = imageInfos.data();
 
-			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[1].dstSet = set->set;
+		writes[1].dstBinding = 3;
+		writes[1].dstArrayElement = 0;
+		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+		writes[1].descriptorCount = samplerInfos.size();   // or 1 if you use a single shared sampler
+		writes[1].pImageInfo = samplerInfos.data();
 
-		}
+		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+
+		//}
 
 	}
 
@@ -795,8 +841,13 @@ private:
 			VK_INDEX_TYPE_UINT32)
 			;
 
-		// I need to batch per materialpipe
-		for (auto mat_pipe_entry : context->materialPipelinePool_.objects_) {
+
+		PushConstants pc{};
+		pc.view = camera_.getViewMatrix();
+		pc.proj = camera_.getProjMatrix();
+		pc.proj[1][1] *= -1;
+
+		for (auto mat_pipe_entry : context->pipelinesPool_.objects_) {
 
 			vkCmdBindPipeline(
 				commandBuffer,
@@ -817,18 +868,20 @@ private:
 				0,
 				nullptr);
 
-			PushConstants pc{};
-			pc.view = camera_.getViewMatrix();
-			pc.proj = camera_.getProjMatrix();
-			pc.proj[1][1] *= -1;
-
 			for (int i = 0; i < scene_.hierarchy.size(); i++) {
 
-				auto draw_set = static_draw_sets[scene_.meshForNode[i]];
-				pc.material_instance_index = draw_set.material_index;
+				auto draw_set_h = context->meshes_.getHandle(scene_.meshForNode[i]);
+				auto draw_set = context->meshes_.get(draw_set_h);
+
+				// Need to find why this doesn't work.
+				//uint32_t material_index = scene_.materialForNode[i];
+				//assert(material_index == draw_set->material_index);
+
+				uint32_t material_index = draw_set->material_index;
+				pc.material_instance_index = material_index;
 
 				MaterialPushConstants pcm =
-					context->materialInstancesPool_.objects_[draw_set.material_index].obj_.values;
+					context->materialInstancesPool_.objects_[material_index].obj_.values;
 
 				struct PC_All {
 					PushConstants pc;               // 144
@@ -847,10 +900,10 @@ private:
 
 				vkCmdDrawIndexed(
 					commandBuffer,
-					draw_set.index_count, //indexCount
+					draw_set->index_count, //indexCount
 					1, //instanceCount
-					draw_set.first_index, //firstIndex, like offset but its just instead on index size times, just index n
-					draw_set.vert_offset, //offsetIntoVertexBuffer
+					draw_set->first_index, //firstIndex, like offset but its just instead on index size times, just index n
+					draw_set->vert_offset, //offsetIntoVertexBuffer
 					i // instanceId
 				);
 			}
@@ -941,13 +994,7 @@ private:
 
 	// utils
 	//void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
-
-	// TEMP
-	std::vector<MaterialInstanceHandle> material_instance_handles;
-	std::vector<MaterialPipelineHandle> material_pipe_handles;
-
 };
-
 
 void VulkanApp::InitializeImGui() {
 
@@ -1209,7 +1256,8 @@ void VulkanApp::InitVulkanApp() {
 	context = new Context(instance, &device, &physicalDevice, surface); // remember to delete it on shutdown
 }
 
-bool VulkanApp::Run() {
+
+bool VulkanApp::Initialize() {
 
 	if (volkInitialize() != VK_SUCCESS) {
 		std::cerr << "Failed to initialize Volk\n";
@@ -1256,10 +1304,13 @@ bool VulkanApp::Run() {
 	swapChainImageFormat = surfaceFormat.format;
 
 	InitializeImGui();
+
+	// SwapChain
 	createSwapChain();
 	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
 	createSwapchainImageViews();
 
+	// Queues.
 	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
 
 	VkCommandPoolCreateInfo poolInfo{
@@ -1275,41 +1326,12 @@ bool VulkanApp::Run() {
 		}
 	}
 
-	// createDescriptorSets. Create menas allocating. no data is present there still
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		frameDescriptorSets[i] = context->createDescriptorSet(
-			context->default_descriptorLayout
-		);
-	}
-
-	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
-
-
-	// This is pipeline setup always required.
-	CreateFrameDataBuffers();
 	CreateFrameCommandBuffers();
 	CreateRenderSyncObjects();
-	createDepthResources();
+	CreateDepthResources();
 
-	// We create a default material on context. materials index 0 for default. This will be our no/shader/texture error material
-	CreateDefaultMaterialPipeline();
 
-	//
-	UploadScene();
-	// Lets fake intialize like this
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		UpdateLightsBuffer(i);
-	}
-
-	//UpdateLightsBuffer(currentFrame);
-
-	MainLoop();
-
-	CleanUp();
-
-	return true;
-
-};
+}
 
 #pragma region ===[ Callbacks ]===
 
@@ -1409,6 +1431,7 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 #pragma endregion
 
 inline void VulkanApp::DrawFrame() {
+
 	vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE,
 		UINT64_MAX);
 
@@ -1426,75 +1449,90 @@ inline void VulkanApp::DrawFrame() {
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
 
-	// We should check for size and promote or demote from pushconstants -> ubo -> ssbo.
 	UpdateDeltaTime();
-	UpdateInstanceBuffers(currentFrame);
-
-
 
 	vkResetFences(device, 1, &inFlightFences[currentFrame]);
-	vkResetCommandPool(device, framesCommandPool[currentFrame], 0);
 
+	// Resetting entire pool is faster and better. I have split pools per frame so no biggie.
 	//vkResetCommandBuffer(commandBuffers[currentFrame],
 	//	/*VkCommandBufferResetFlagBits*/ 0);
+	vkResetCommandPool(device, framesCommandPool[currentFrame], 0);
 
-	UpdateDescriptorSets();
-	UpdateBindlessTextures();
+
+#pragma region GPU_UPDATE
+
+	// We should check for size and promote or demote from pushconstants -> ubo -> ssbo. Or not.
+	// This method goes absolutley independent using iths on commandPool. We could maybe chain this to framesCommandPool[curretFrame]
+	// As this is an upload to Gpu maybe transferque is better for this.
+	UpdateInstanceBuffers(currentFrame);
+
+	UpdateInstanceDescriptorSets(currentFrame);
+	UpdateLightDescriptorSets(currentFrame);
+	UpdateBindlessTextures(currentFrame);
+
+#pragma endregion
 
 	UiPass();
 
 	RecordCommandsForFrame(commandBuffers[currentFrame], imageIndex);
 
-	VkSubmitInfo submitInfo{};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	// Submit Frame 
+	{
 
-	VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
-	VkPipelineStageFlags waitStages[] = {
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	submitInfo.waitSemaphoreCount = 1;
-	submitInfo.pWaitSemaphores = waitSemaphores;
-	submitInfo.pWaitDstStageMask = waitStages;
+		VkSubmitInfo submitInfo{};
+		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
+		VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
+		VkPipelineStageFlags waitStages[] = {
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+		submitInfo.waitSemaphoreCount = 1;
+		submitInfo.pWaitSemaphores = waitSemaphores;
+		submitInfo.pWaitDstStageMask = waitStages;
 
-	VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
-	submitInfo.signalSemaphoreCount = 1;
-	submitInfo.pSignalSemaphores = signalSemaphores;
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
 
-	if (
-		vkQueueSubmit(
-			context->default_queue,
-			1,
-			&submitInfo,
-			inFlightFences[currentFrame]) != VK_SUCCESS
-		) {
-		throw std::runtime_error("failed to submit draw command buffer!");
+		VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
+		submitInfo.signalSemaphoreCount = 1;
+		submitInfo.pSignalSemaphores = signalSemaphores;
+
+		if (
+			vkQueueSubmit(
+				context->default_queue,
+				1,
+				&submitInfo,
+				inFlightFences[currentFrame]) != VK_SUCCESS
+			) {
+			throw std::runtime_error("failed to submit draw command buffer!");
+		}
+
+
+		VkPresentInfoKHR presentInfo{};
+		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+		presentInfo.waitSemaphoreCount = 1;
+		presentInfo.pWaitSemaphores = signalSemaphores;
+
+		VkSwapchainKHR swapChains[] = { swapChain };
+		presentInfo.swapchainCount = 1;
+		presentInfo.pSwapchains = swapChains;
+		presentInfo.pImageIndices = &imageIndex;
+
+		result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+
+		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
+			framebufferResized) {
+			framebufferResized = false;
+			recreateSwapChain();
+		}
+		else if (result != VK_SUCCESS) {
+			throw std::runtime_error("failed to present swap chain image!");
+		}
+
+
 	}
 
-
-	VkPresentInfoKHR presentInfo{};
-	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
-	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = signalSemaphores;
-
-	VkSwapchainKHR swapChains[] = { swapChain };
-	presentInfo.swapchainCount = 1;
-	presentInfo.pSwapchains = swapChains;
-	presentInfo.pImageIndices = &imageIndex;
-
-	result = vkQueuePresentKHR(presentQueue_, &presentInfo);
-
-	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
-		framebufferResized) {
-		framebufferResized = false;
-		recreateSwapChain();
-	}
-	else if (result != VK_SUCCESS) {
-		throw std::runtime_error("failed to present swap chain image!");
-	}
-
+	// Update current frame
 	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
@@ -1508,14 +1546,14 @@ void VulkanApp::CreateDefaultMaterialPipeline() {
 	//VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
 	//VkShaderModule vertexColorFrag = createShaderModule(device, vertColorFragCode);
 
-	auto vertHandle = context->createShaderModule(
+	auto vertHandle = context->CreateShaderModule(
 		vertShaderCode
 	);
-	auto fragHandle = context->createShaderModule(
+	auto fragHandle = context->CreateShaderModule(
 		fragShaderCode
 	);
 
-	auto def_pipe = context->createMaterialPipeline(
+	auto def_pipe = context->CreateMaterialPipeline(
 		vertHandle,
 		fragHandle,
 		default_raster_settings,
@@ -1523,7 +1561,6 @@ void VulkanApp::CreateDefaultMaterialPipeline() {
 		swapChainImageFormat
 	);
 
-	material_pipe_handles.push_back(def_pipe);
 }
 
 MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) {
@@ -1548,8 +1585,10 @@ MaterialInstanceHandle VulkanApp::CreateDiffuseMaterial(std::string image_path) 
 	// free after upload
 	ktxTexture2_Destroy(ktxTex);
 
-	auto material_pipe_0 = context->materialPipelinePool_.getHandle(0);
-	auto mat_h = context->createMaterialInstance(material_pipe_0);
+	auto material_pipe_0 = context->pipelinesPool_.getHandle(0);
+	assert(material_pipe_0.valid());
+
+	auto mat_h = context->CreateMaterialInstance(material_pipe_0);
 	context->materialInstancesPool_.get(mat_h)->values.texDiffuse = texHandle.index();
 	return mat_h;
 
@@ -1616,19 +1655,14 @@ inline void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 
 void VulkanApp::UpdateLightsBuffer(uint32_t currentImage) {
 
-
 	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, context->default_command_pool);
-
-
-	std::cout << sizeof(Light) << std::endl;
-	std::cout << sizeof(Light) * MAX_LIGHTS << std::endl;
 
 	static_assert(sizeof(Light) * MAX_LIGHTS < (1 << 16),
 		"Light buffer too large for 64KB UBO limit");
 
 	context->UploadDataToBuffer(
 		lightDataUniformBuffers[currentImage],
-		data,
+		lights,
 		sizeof(Light) * MAX_LIGHTS,
 		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 		VK_ACCESS_SHADER_READ_BIT
@@ -1637,7 +1671,7 @@ void VulkanApp::UpdateLightsBuffer(uint32_t currentImage) {
 	);
 
 	endSingleTimeCommands(device, cmdBuf, context->default_queue, context->default_command_pool);
-	delete[] data;
+	//delete[] lights;
 
 }
 
@@ -1669,6 +1703,11 @@ void VulkanApp::UploadScene() {
 					already_assigned_[*path] = idx;
 					data_to_upload[j].materialIndex = idx;  // <-- assign for the *first* occurrence
 				}
+
+
+				// Crude patch
+				//scene_.materialForNode[j] = data_to_upload[j].materialIndex;
+
 			}
 			else {
 				std::cout << "Primitive has no baseColor texture (or embedded not extracted).\n";
@@ -1678,14 +1717,49 @@ void VulkanApp::UploadScene() {
 		}
 	}
 
-	static_draw_sets = context->BatchUploadMeshData(data_to_upload);
-	UpdateBindlessTextures();
+	auto upload_result = context->BatchUploadMeshData(data_to_upload);
+
+
+	for (auto ds : upload_result) {
+		context->meshes_.create(std::move(ds));
+	}
 
 }
 
 void VulkanApp::CleanUp() {
 
 	context->CleanUp();
+
+}
+
+void VulkanApp::Start() {
+
+	FabricateLightData(lights);
+	for (int i = 0; i < MAX_LIGHTS; i++) {
+		if (i == 0) {
+			auto sm_h = context->CreateShadowMap();
+			lights[i].shadow_map_index = sm_h.index();
+		}
+	}
+
+	CreateDefaultMaterialPipeline();
+	// This is part of the framegraph really....
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		frameDescriptorSets[i] = context->createDescriptorSet(
+			context->default_descriptorLayout
+		);
+	}
+
+	// This is pipeline setup always required.
+	CreateFrameDataBuffers();
+	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
+
+	UploadScene();
+	//UpdateBindlessTextures();
+	// Lets fake intialize like this
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		UpdateLightsBuffer(i);
+	}
 
 }
 

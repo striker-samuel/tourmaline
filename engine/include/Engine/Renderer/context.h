@@ -21,14 +21,15 @@ using ShaderModuleHandle = Handle<struct ShaderModule>;
 //using BufferHandle = Handle<struct Buffer>;
 using TextureHandle = Handle<struct Texture>;
 using ImageHandle = Handle<struct Image>;
-//using SamplerHandle = Handle<struct Sampler>;
-using MaterialPipelineHandle = Handle<struct MaterialPipeline>;
+using ImageViewHandle = Handle<struct ImageView>;
+using ShadowMapHandle = Handle<struct ShadowMap>;
+
 using MaterialInstanceHandle = Handle<struct MaterialInstance>;
 using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 using DescriptorSetHandle = Handle<struct DescriptorSet>;
 using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
 using DeviceBufferHandle = Handle<struct BufferDescription>;
-//using MeshRangeHandle = Handle<struct MeshRange>;
+using PipelineHandle = Handle<struct Pipeline>;
 using DrawSetHandle = Handle<struct DrawSet>;
 
 void destroy(Context* ctx, ShaderModuleHandle handle);
@@ -47,13 +48,7 @@ struct SamplerRequirements {
 
 };
 
-// Materials abstractions area really PipelineObjets. Raster conf, shader objs, descriptorlayout. 
-// MaterialAttachments must match desc layout, adn MaterialConstants pc layout
-// So we bake the POS. VkPipelineCache not implemented now
-// Another name fot his could be MatModel?
-struct MaterialPipeline {
-
-	// We need to hash these tree. but wont do it now
+struct Pipeline {
 	RasterSettings raster_settings;
 	ShaderModuleHandle vert;
 	ShaderModuleHandle frag;
@@ -68,15 +63,14 @@ struct MaterialPipeline {
 	// Invalid initialization!
 	DescriptorSetHandle ds;
 	VkPipeline pipeline;
-};
 
+};
 // MatModels or MatPipelines can have several instances with different vlaues for constans and textures.
 // Raster state, vert, frag, blending and more stay the same.
 struct MaterialInstance {
-	MaterialPipelineHandle pipeline;
+	PipelineHandle pipeline;
 	MaterialPushConstants values = {};
 };
-
 
 // Lets forget about validation/ typing in any way. No depth/color, sample/write specialization yet in any shape or form.
 struct Image {
@@ -91,14 +85,13 @@ struct Image {
 	uint32_t levels;
 };
 
-
 struct ShadowMap {
+	uint32_t light;
 	Image image;
 	VkImageView imageView;
 	VkSampler sampler;
 	bool owns_sampler = true;
 };
-
 
 // This style of handling things is lifted up from LightweightVk.
 class Context {
@@ -119,6 +112,7 @@ class Context {
 
 	// Im gonna need a custom str type... lets use std::string for now.
 	std::unordered_map<std::string, VkSampler> samplers;
+
 
 public:
 
@@ -145,13 +139,14 @@ public:
 	Pool<Texture, Texture> textures_;
 	Pool<DrawSet, DrawSet> meshes_;
 	Pool<Image, Image> images_;
+	Pool<ShadowMap, ShadowMap> shadowmaps_;
 
 	// These two have confusing names;
 	Pool<DescriptorSet, DescriptorSet> descriptrorSetPool_;
 	Pool<DescriptorPool, VkDescriptorPool> descriptorSetPoolPool_;
 
 	Pool<DescriptorLayout, VkDescriptorSetLayout> descriptorSetLayoutPool_;
-	Pool<MaterialPipeline, MaterialPipeline> materialPipelinePool_;
+	Pool<Pipeline, Pipeline> pipelinesPool_;
 	Pool<MaterialInstance, MaterialInstance> materialInstancesPool_;
 
 	Pool<ShaderModule, VkShaderModule> shaderModulePool_;
@@ -188,6 +183,12 @@ public:
 		createSampler(*physicalDevice_, *device_, default_sampler, 100);
 		// Samplers are driver objs. can be copied like this np.
 		samplers["default"] = default_sampler;
+
+
+		VkSampler default_shadow_sampler;
+		createSampler(*physicalDevice_, *device_, default_shadow_sampler, 1);
+		// Samplers are driver objs. can be copied like this np.
+		samplers["default_shadow"] = default_shadow_sampler;
 
 		// Lets reserve upfront.
 		textures_.objects_.reserve(MAX_TEXTURES);
@@ -358,9 +359,12 @@ public:
 	// Resource creation
 	DeviceBufferHandle CreateStagingBuffer(VkDeviceSize size);
 	DeviceBufferHandle CreateStagingBuffer(const void* srcData, VkDeviceSize size);
-	ShaderModuleHandle createShaderModule(std::vector<char> code);
-	MaterialPipelineHandle createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
-	MaterialInstanceHandle createMaterialInstance(MaterialPipelineHandle mat_pipeline);
+	ShaderModuleHandle CreateShaderModule(std::vector<char> code);
+
+	PipelineHandle CreatePipeline(RasterSettings raster_settings, ShaderModuleHandle vert, ShaderModuleHandle frag, VkFormat depth_format, VkFormat swapchainImageFormat);
+
+	PipelineHandle CreateMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
+	MaterialInstanceHandle CreateMaterialInstance(PipelineHandle mat_pipeline);
 
 	VkCommandBuffer GetCommandBuffer();
 	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
@@ -368,8 +372,9 @@ public:
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
 	ImageHandle CreateCascadedShadowMapsDepthImage(int texWidth, int texHeight, int cascades);
 	TextureHandle CreateTexture(ktxTexture2& texture);
+	ShadowMapHandle CreateShadowMap();
 
-	void createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, VkImageView& imageView);
+	void CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, VkImageView& imageView);
 
 	DescriptorLayoutHandle createDescriptorLayout();
 	DescriptorPoolHandle createDescriptorPool();
@@ -381,14 +386,13 @@ public:
 
 	void UploadDataToBuffer(DeviceBufferHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
 
-	void getAppropriateSampler(Texture& texture);
-
 	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 	//void TransitionImageLayout(ImageHandle image_handle, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 	void TransitionImageLayout(ImageHandle image_handle, VkImageLayout oldLayout, VkImageLayout newLayout);
 
 	// 
 	VkQueue GetGraphicsQueue();
+	void getAppropriateSampler(Texture& texture);
 
 	// END
 	void CleanUp();
@@ -399,7 +403,6 @@ VkQueue Context::GetGraphicsQueue() {
 	return default_queue;
 }
 
-
 void Context::CleanUp() {
 
 	// Clear Pools.
@@ -409,9 +412,9 @@ void Context::CleanUp() {
 	//vmaDestroyPool();//
 }
 
-
 // This maybe should be moved out of Context really;
-void Context::createImageView(VkImage image,
+void Context::CreateImageView(
+	VkImage image,
 	VkFormat format,
 	VkImageAspectFlags aspectFlags,
 	int levelCount,
@@ -635,11 +638,9 @@ DescriptorLayoutHandle Context::createDescriptorLayout() {
 	lightBinding.descriptorCount = 1;
 	lightBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-
 	std::array<VkDescriptorSetLayoutBinding, 5> bindings = {
 		instanceIndexBinding,
 		instanceDataBinding,
-		//
 		sampledImageBinding,
 		sampBinding,
 		lightBinding
@@ -653,9 +654,9 @@ DescriptorLayoutHandle Context::createDescriptorLayout() {
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
-		0
+		0 // lightData.
 		//	VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-		//	VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // lightdata. 
+		//	VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // . 
 	};
 
 	// Chain flags struct
@@ -709,43 +710,204 @@ DescriptorPoolHandle Context::createDescriptorPool() {
 	return descriptorSetPoolPool_.create(std::move(dpool));
 }
 
-MaterialPipelineHandle Context::createMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat) {
+
+PipelineHandle Context::CreatePipeline(
+	RasterSettings raster_settings,
+	ShaderModuleHandle vert,
+	ShaderModuleHandle frag,
+	VkFormat depth_format,
+	VkFormat swapchainImageFormat
+) {
 
 	// We ure using native VkPipelineLayout to ease things for now so we dont have to formalize a way to describe that.
-	MaterialPipeline mat_pipe = {};
-	mat_pipe.raster_settings = default_raster_settings;
-	mat_pipe.frag = frag;
-	mat_pipe.vert = vert;
+	Pipeline pipeline = {};
+	pipeline.raster_settings = default_raster_settings;
+	pipeline.frag = frag;
+	pipeline.vert = vert;
 
 	auto v = shaderModulePool_.get(vert);
 	auto f = shaderModulePool_.get(frag);
 
 	// Lets use default
 	auto def_lyt = descriptorSetLayoutPool_.get(default_descriptorLayout);
+	auto descriptorSetLayout = def_lyt;
 
-	std::array<VkDescriptorSetLayout, 1> lyts = {
-		*def_lyt
-		// Thats the default. we need at least that for Instance Data.
-		// We could add a second lyt ot have different layoitus per MaterialModel/MaterialPipeline
-		//mat_pipe.lyt
+	// SHADER
+	VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+	vertShaderStageInfo.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+	vertShaderStageInfo.module = *v;
+	vertShaderStageInfo.pName = "mainVS";
+
+	VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+	fragShaderStageInfo.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	fragShaderStageInfo.module = *f;
+	fragShaderStageInfo.pName = "mainPS";
+
+	VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
+													  fragShaderStageInfo };
+
+	// VERTEX FORMAT
+
+	VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+	vertexInputInfo.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+	auto bindingDescription = Vertex::getBindingDescription();
+	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+	vertexInputInfo.vertexBindingDescriptionCount = 1;
+	vertexInputInfo.vertexAttributeDescriptionCount =
+		static_cast<uint32_t>(attributeDescriptions.size());
+	vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+	vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+	inputAssembly.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+	// 
+
+	VkPipelineViewportStateCreateInfo viewportState{};
+	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewportState.viewportCount = 1;
+	viewportState.scissorCount = 1;
+
+	//
+
+	VkPipelineRasterizationStateCreateInfo rasterizer{};
+	rasterizer.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rasterizer.depthClampEnable = VK_FALSE;
+	rasterizer.rasterizerDiscardEnable = VK_FALSE;
+	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+	rasterizer.lineWidth = 1.0f;
+	rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	rasterizer.depthBiasEnable = VK_FALSE;
+
+	//
+
+	VkPipelineMultisampleStateCreateInfo multisampling{};
+	multisampling.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	multisampling.sampleShadingEnable = VK_FALSE;
+	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	//
+
+	VkPipelineDepthStencilStateCreateInfo depthStencil{};
+	depthStencil.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	depthStencil.depthTestEnable = VK_TRUE;
+	depthStencil.depthWriteEnable = VK_TRUE;
+	depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
+	depthStencil.depthBoundsTestEnable = VK_FALSE;
+	depthStencil.stencilTestEnable = VK_FALSE;
+
+	//
+
+	VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+	colorBlendAttachment.colorWriteMask =
+		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+		VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	colorBlendAttachment.blendEnable = VK_FALSE;
+
+	VkPipelineColorBlendStateCreateInfo colorBlending{};
+	colorBlending.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	colorBlending.logicOpEnable = VK_FALSE;
+	colorBlending.logicOp = VK_LOGIC_OP_COPY;
+	colorBlending.attachmentCount = 1;
+	colorBlending.pAttachments = &colorBlendAttachment;
+	colorBlending.blendConstants[0] = 0.0f;
+	colorBlending.blendConstants[1] = 0.0f;
+	colorBlending.blendConstants[2] = 0.0f;
+	colorBlending.blendConstants[3] = 0.0f;
+
+	// These two are elemental. There are extensions for almost anything do. Maybe it is woth to go all in dynamic state.
+	std::vector<VkDynamicState> dynamicStates = {
+		VK_DYNAMIC_STATE_VIEWPORT,
+		VK_DYNAMIC_STATE_SCISSOR
 	};
 
-	createGraphicsPipeline(
-		device_,
-		*v,
-		*f,
-		&mat_pipe.plyt,
-		def_lyt,
-		depth_format,
-		swapchainImageFormat,
-		mat_pipe.pipeline
-	);
+	VkPipelineDynamicStateCreateInfo dynamicState{};
+	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamicState.dynamicStateCount =
+		static_cast<uint32_t>(dynamicStates.size());
+	dynamicState.pDynamicStates = dynamicStates.data();
 
-	return materialPipelinePool_.create(std::move(mat_pipe));
+#pragma region ---[Push Constants]---
+
+	constexpr uint32_t kPC_Total = 192;
+
+	VkPushConstantRange range{};
+	range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+	range.offset = 0;
+	range.size = kPC_Total;
+
+	VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	layoutInfo.setLayoutCount = 1;
+	layoutInfo.pSetLayouts = descriptorSetLayout;
+	layoutInfo.pushConstantRangeCount = 1;
+	layoutInfo.pPushConstantRanges = &range;
+
+
+	if (vkCreatePipelineLayout(*device_, &layoutInfo, nullptr,
+		&pipeline.plyt) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create pipeline layout!");
+	}
+
+#pragma endregion
+
+	// Provide information for dynamic rendering
+	VkPipelineRenderingCreateInfo pipeline_create{
+		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+	pipeline_create.pNext = VK_NULL_HANDLE;
+
+	// We are using the single color buffer out.
+	pipeline_create.colorAttachmentCount = 1;
+	pipeline_create.pColorAttachmentFormats = &swapchainImageFormat;
+
+	pipeline_create.depthAttachmentFormat = depth_format;
+	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
+	VkGraphicsPipelineCreateInfo pipelineInfo{};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pipelineInfo.stageCount = 2;
+	pipelineInfo.pStages = shaderStages;
+	pipelineInfo.pVertexInputState = &vertexInputInfo;
+	pipelineInfo.pInputAssemblyState = &inputAssembly;
+	pipelineInfo.pViewportState = &viewportState;
+	pipelineInfo.pRasterizationState = &rasterizer;
+	pipelineInfo.pMultisampleState = &multisampling;
+	pipelineInfo.pColorBlendState = &colorBlending;
+	pipelineInfo.pDynamicState = &dynamicState;
+	pipelineInfo.pDepthStencilState = &depthStencil;
+	pipelineInfo.layout = pipeline.plyt;
+	pipelineInfo.pNext = &pipeline_create;
+
+	if (vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipelineInfo,
+		nullptr, &pipeline.pipeline) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create graphics pipeline!");
+	}
+
+	return pipelinesPool_.create(std::move(pipeline));
+}
+
+PipelineHandle Context::CreateMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat) {
+
+	return CreatePipeline(raster_settings, vert, frag, depth_format, swapchainImageFormat);
 
 }
 
-MaterialInstanceHandle Context::createMaterialInstance(MaterialPipelineHandle mat_pipeline)
+MaterialInstanceHandle Context::CreateMaterialInstance(PipelineHandle mat_pipeline)
 {
 	MaterialInstance mat_instance = {};
 	mat_instance.pipeline = mat_pipeline;
@@ -872,6 +1034,16 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	);
 }
 
+void Context::getAppropriateSampler(Texture& texture) {
+
+
+	//VkSampler _sampler;
+	//createSampler(*physicalDevice_, *device_, _sampler);
+	// We should
+	// uld try to define here which sampler would work for this texture. Sepecialization.
+	texture.sampler = samplers["default"];
+
+};
 
 TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 
@@ -926,7 +1098,7 @@ TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 	// Lets do this for the moment. DEPTH is 
 	assert(aspect == VK_IMAGE_ASPECT_COLOR_BIT);
 
-	createImageView(ctx_tex.image, vk_tex.imageFormat, aspect, texture.numLevels, ctx_tex.imageView);
+	CreateImageView(ctx_tex.image, vk_tex.imageFormat, aspect, texture.numLevels, ctx_tex.imageView);
 	getAppropriateSampler(ctx_tex);
 
 	// Later, when destroying:
@@ -935,16 +1107,13 @@ TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 	return textures_.create(std::move(ctx_tex));
 }
 
-void Context::getAppropriateSampler(Texture& texture) {
+inline ShadowMapHandle Context::CreateShadowMap()
+{
+	ShadowMap sm;
 
+	return shadowmaps_.create(std::move(sm));
 
-	//VkSampler _sampler;
-	//createSampler(*physicalDevice_, *device_, _sampler);
-	// We should
-	// uld try to define here which sampler would work for this texture. Sepecialization.
-	texture.sampler = samplers["default"];
-
-};
+}
 
 // Good defaults preset for DepthImageCreation.
 ImageHandle Context::CreateCascadedShadowMapsDepthImage(int texWidth, int texHeight, int cascades) {
@@ -1119,86 +1288,6 @@ std::vector<DrawSet> Context::BatchUploadMeshData(std::vector<MeshData>& mesh_da
 	}
 	return mesh_draw_list;
 
-	//VkDeviceSize needed_vertexBytes_for_staging = 0;
-	//VkDeviceSize needed_indexBytes_for_staging = 0;
-
-	//std::vector<DrawSet> mesh_draw_list(mesh_data.size()); // keep 1:1 with mesh_data
-
-	//for (size_t i = 0; i < mesh_data.size(); ++i) {
-	//	needed_vertexBytes_for_staging += sizeof(Vertex) * mesh_data[i].vertices.size();
-	//	needed_indexBytes_for_staging += sizeof(uint32_t) * mesh_data[i].indices.size();
-	//}
-
-	//// VERTICES
-	//{
-	//	VkBuffer stagingBuf; VmaAllocation stagingAlloc;
-	//	VkBufferCreateInfo sInfo{
-	//		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-	//		.size = needed_vertexBytes_for_staging,
-	//		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-	//	};
-	//	VmaAllocationCreateInfo sAlloc{};
-	//	sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
-	//	sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-
-	//	vmaCreateBuffer(*allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
-
-	//	VkDeviceSize currBytes = 0;
-	//	uint32_t currVerts = 0;
-	//	for (size_t i = 0; i < mesh_data.size(); ++i) {
-	//		const auto& m = mesh_data[i];
-	//		const VkDeviceSize bytes = sizeof(Vertex) * m.vertices.size();
-
-	//		mesh_draw_list[i].vert_offset = currVerts;           // BYTES
-	//		if (bytes) {
-	//			vmaCopyMemoryToAllocation(*allocator_, m.vertices.data(), stagingAlloc, currBytes, bytes);
-	//			currBytes += bytes;
-	//			currVerts += static_cast<uint32_t>(m.vertices.size());
-	//		}
-	//	}
-
-	//	auto vb = buffers_.get(vertex_buffer);
-	//	copyBuffer(stagingBuf, vb->buffer, needed_vertexBytes_for_staging);
-	//	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
-	//}
-
-	//// INDICES
-	//{
-	//	VkBuffer stagingBuf; VmaAllocation stagingAlloc;
-	//	VkBufferCreateInfo sInfo{
-	//		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-	//		.size = needed_indexBytes_for_staging,
-	//		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-	//	};
-	//	VmaAllocationCreateInfo sAlloc{};
-	//	sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
-	//	sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-
-	//	vmaCreateBuffer(*allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
-
-	//	VkDeviceSize currBytes = 0; // byte offset
-	//	for (size_t i = 0; i < mesh_data.size(); ++i) {
-	//		const auto& m = mesh_data[i];
-	//		const VkDeviceSize bytes = sizeof(uint32_t) * m.indices.size();
-
-	//		mesh_draw_list[i].index_count = static_cast<uint32_t>(m.indices.size());
-	//		mesh_draw_list[i].first_index = static_cast<uint32_t>(currBytes / sizeof(uint32_t)); // ELEMENTS
-
-
-	//		// MAT!
-	//		mesh_draw_list[i].material_index = m.materialIndex;
-
-	//		if (bytes) {
-	//			vmaCopyMemoryToAllocation(*allocator_, m.indices.data(), stagingAlloc, currBytes, bytes);
-	//			currBytes += bytes;
-	//		}
-	//	}
-
-	//	auto ib = buffers_.get(index_buffer);
-	//	copyBuffer(stagingBuf, ib->buffer, needed_indexBytes_for_staging);
-	//	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
-	//}
-
 }
 
 // Creates a host-visible, coherent staging buffer suitable for uploads.
@@ -1265,7 +1354,7 @@ DeviceBufferHandle Context::CreateStagingBuffer(const void* srcData,
 	return handle;
 }
 
-ShaderModuleHandle Context::createShaderModule(std::vector<char> code) {
+ShaderModuleHandle Context::CreateShaderModule(std::vector<char> code) {
 
 	auto shader = createDeviceShaderModule(
 		*device_,

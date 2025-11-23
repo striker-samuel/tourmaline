@@ -88,7 +88,8 @@ struct alignas(16) Light {
 	int32_t type = LIGHT_TYPE_POINT; 
     float innerAngle = 10.0f;
     float outerAngle = 20.0f;
-	//int   _pad1[3];        
+	// -1 no shadow map. else context->shadowmaps.id.
+	int shadow_map_index = -1;
 };
 
 static_assert(sizeof(Light) % 16 == 0);

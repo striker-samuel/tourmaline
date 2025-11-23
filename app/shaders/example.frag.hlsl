@@ -1,3 +1,7 @@
+#ifndef MAX_LIGHTS
+#define MAX_LIGHTS 10
+#endif
+
 [[vk::push_constant]]
 struct PC_All
 {
@@ -27,9 +31,9 @@ struct Light
     int type; // 4B
     float innerAngle;
     float outerAngle;
+    int shadow_map_index;
 };
 
-#define MAX_LIGHTS 10
 
 [[vk::binding(2,0)]] Texture2D materialTex[]; // sampled images
 [[vk::binding(3,0)]] SamplerState materialSamp[]; // samplers
@@ -137,9 +141,17 @@ PSOut mainPS(PSIn IN)
         else
         {
             litColor += EvaluateSpotLight(light, IN.worldPos, N, baseColor);
+            if (light.shadow_map_index != -1)
+            {
+                //Sample into shadowmap with id.
+                // Alter color base on shadow. 
+            }
+
         }
+        
 
     }
+    
 
     OUT.outColor = float4(litColor, texSample.a);
 
