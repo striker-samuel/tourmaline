@@ -82,6 +82,7 @@ float3 EvaluateSpotLight(Light light, float3 worldPos, float3 N, float3 baseColo
 }
 
 
+// Pure lambertian
 float3 EvaluatePointLight(Light light, float3 worldPos, float3 N, float3 baseColor)
 {
     // Use explicit position stored in the struct
@@ -105,7 +106,11 @@ float3 EvaluatePointLight(Light light, float3 worldPos, float3 N, float3 baseCol
     float intensity = light.intensity;
 
     // Final contribution
-    return baseColor * lightColor * intensity * /*NdotL*/1 * attenuation;
+    return baseColor * lightColor * intensity * NdotL * attenuation;
+    
+    // NormalsDebug
+    //return (dot(N, L) > 0) ? float3(1, 0, 0) : float3(0, 0, 1);
+
 }
 
 

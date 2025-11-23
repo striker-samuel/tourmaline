@@ -113,7 +113,7 @@ void FabricateLightData(Light* data) {
 	for (int i = 0; i < MAX_LIGHTS; i++) {
 		data[i].position[0] = 3.0f * i;
 		data[i].position[1] = 1.0f;
-		data[i].position[2] = 1.0f;
+		data[i].position[2] = 0.0f;
 
 		data[i].direction[0] = .0f;
 		data[i].direction[1] = .0f;
@@ -159,7 +159,24 @@ public:
 
 
 	// Initial ShadowMap implementation.
-	void UpdateLights();
+
+	//void InitializeShadowMaps() {
+
+	//	for (int i = 0; i < MAX_LIGHTS; i++) {
+	//		auto l = lights[i];
+
+	//		if (l.type == LIGHT_TYPE_SPOT) {
+	//			if (l.shadow_map_index == -1) {
+
+	//				context->CreateCascadedShadowMapsDepthImage(400, 400, 1);
+
+
+	//			}
+	//		}
+
+	//	}
+
+	//}
 	void RenderShadows();
 	Light* lights = new Light[MAX_LIGHTS];
 	std::unordered_map<uint32_t, ShadowMapHandle> light_to_shadowmap;
@@ -280,23 +297,28 @@ private:
 
 	void UpdateInstanceBuffers(uint32_t currentImage);
 
-	void UpdateLightsBuffer(uint32_t currentImage);
+	void UpdateLightsBuffers(uint32_t currentImage);
 
 	void UiPass() {
+
+		// These all 3 are needed for initialization.
 		ImGui_ImplVulkan_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
+
+		// UI Here
 		ImGuiIO& io = ImGui::GetIO();
 		ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
 			1000.0f / io.Framerate, io.Framerate);
+
+
 
 	}
 
 	// Thsese are really helpers. not critical.
 	void CreateDefaultMaterialPipeline();
 	MaterialInstanceHandle CreateDiffuseMaterial(std::string image_path);
-
 
 
 #pragma region MainLoop
@@ -1451,6 +1473,18 @@ inline void VulkanApp::DrawFrame() {
 
 	UpdateDeltaTime();
 
+	// We should check for size and promote or demote from pushconstants -> ubo -> ssbo. Or not.
+	// This method goes absolutley independent using iths on commandPool. We could maybe chain this to framesCommandPool[curretFrame]
+	// As this is an upload to Gpu maybe transferque is better for this.
+	UpdateInstanceBuffers(currentFrame);
+	// Moving this after the reset prompts this validation error. Why?
+	//---------------- Vulkan Validation ----------------
+	//Message: Validation Error: [ VUID-vkResetCommandPool-commandPool-00040 ] Object 0: handle = 0x1a3033b7f00,
+	// type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0x95a125000000001a, type = VK_OBJECT_TYPE_COMMAND_POOL;
+	// | MessageID = 0xb53e2331 | vkResetCommandPool():  (VkCommandBuffer 0x1a3033b7f00[]) is in use.
+	// The Vulkan spec states: All VkCommandBuffer objects allocated from commandPool must not be in the pending state (https://vulkan.lunarg.com/doc/view/1.3.283.0/windows/1.3-extensions/vkspec.html#VUID-vkResetCommandPool-commandPool-00040)
+
+
 	vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
 	// Resetting entire pool is faster and better. I have split pools per frame so no biggie.
@@ -1461,11 +1495,8 @@ inline void VulkanApp::DrawFrame() {
 
 #pragma region GPU_UPDATE
 
-	// We should check for size and promote or demote from pushconstants -> ubo -> ssbo. Or not.
-	// This method goes absolutley independent using iths on commandPool. We could maybe chain this to framesCommandPool[curretFrame]
-	// As this is an upload to Gpu maybe transferque is better for this.
-	UpdateInstanceBuffers(currentFrame);
 
+	UpdateLightsBuffers(currentFrame);
 	UpdateInstanceDescriptorSets(currentFrame);
 	UpdateLightDescriptorSets(currentFrame);
 	UpdateBindlessTextures(currentFrame);
@@ -1625,7 +1656,7 @@ inline void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 
 	// This is bad, will stall. Frame update should use same command buffer for all update operations.
 	// FrameGraph! FrameGraph!
-	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, context->default_command_pool);
+	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, framesCommandPool[currentImage]);
 
 	static_assert(sizeof(IndexSlot) * MAX_INSTANCES < (1 << 16),
 		"Instance buffer too large for 64KB UBO limit");
@@ -1649,13 +1680,13 @@ inline void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 		VK_ACCESS_SHADER_READ_BIT
 	);
 
-	endSingleTimeCommands(device, cmdBuf, context->default_queue, context->default_command_pool);
+	endSingleTimeCommands(device, cmdBuf, context->default_queue, framesCommandPool[currentImage]);
 	delete[] data;
 }
 
-void VulkanApp::UpdateLightsBuffer(uint32_t currentImage) {
+void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
 
-	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, context->default_command_pool);
+	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, framesCommandPool[currentImage]);
 
 	static_assert(sizeof(Light) * MAX_LIGHTS < (1 << 16),
 		"Light buffer too large for 64KB UBO limit");
@@ -1670,7 +1701,7 @@ void VulkanApp::UpdateLightsBuffer(uint32_t currentImage) {
 
 	);
 
-	endSingleTimeCommands(device, cmdBuf, context->default_queue, context->default_command_pool);
+	endSingleTimeCommands(device, cmdBuf, context->default_queue, framesCommandPool[currentImage]);
 	//delete[] lights;
 
 }
@@ -1735,12 +1766,12 @@ void VulkanApp::CleanUp() {
 void VulkanApp::Start() {
 
 	FabricateLightData(lights);
-	for (int i = 0; i < MAX_LIGHTS; i++) {
-		if (i == 0) {
-			auto sm_h = context->CreateShadowMap();
-			lights[i].shadow_map_index = sm_h.index();
-		}
-	}
+	//for (int i = 0; i < MAX_LIGHTS; i++) {
+	//	if (i == 0) {
+	//		auto sm_h = context->CreateShadowMap();
+	//		lights[i].shadow_map_index = sm_h.index();
+	//	}
+	//}
 
 	CreateDefaultMaterialPipeline();
 	// This is part of the framegraph really....
@@ -1755,11 +1786,6 @@ void VulkanApp::Start() {
 	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
 
 	UploadScene();
-	//UpdateBindlessTextures();
-	// Lets fake intialize like this
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		UpdateLightsBuffer(i);
-	}
 
 }
 

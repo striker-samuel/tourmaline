@@ -429,6 +429,7 @@ public:
 					
 					v.color = { 1.0f, 1.0f, 1.0f };
 					v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
+					v.normal = { 0.0f, 1.0f, 0.0f }; // will replace if normals provided
 					data_.vertices.push_back(v);
 				}
 
@@ -443,8 +444,13 @@ public:
 				if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end()) {
 					auto& nAcc = gltfModel.accessors[it->second];
 					for (size_t i = 0; i < nAcc.count && i < data_.vertices.size(); ++i) {
-						glm::vec3 normals = readVec3F(gltfModel, nAcc, i); // This could be optimized to pack only 2f for normals. and build 3rd axis on shader.
-						data_.vertices[i].normal = normals; 
+						glm::vec3 n = readVec3F(gltfModel, nAcc, i);
+
+						// Apply the same transform as positions (180º around Y)
+						n.x *= -1.0f;
+						n.z *= -1.0f;
+
+						data_.vertices[i].normal = glm::normalize(n);
 					}
 				}
 

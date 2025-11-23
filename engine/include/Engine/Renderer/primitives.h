@@ -174,7 +174,6 @@ struct MaterialPushConstants {
 	glm::vec4 ambient = glm::vec4(0.0f);
 	glm::vec4 diffuse = glm::vec4(1.0f);
 
-
 	// Index to bindless texture array. Doing this like so obviously makes it so we only have one def for material texture slots
 	uint32_t texAmbient = 1;
 	uint32_t texDiffuse = 1;

@@ -23,6 +23,7 @@ using TextureHandle = Handle<struct Texture>;
 using ImageHandle = Handle<struct Image>;
 using ImageViewHandle = Handle<struct ImageView>;
 using ShadowMapHandle = Handle<struct ShadowMap>;
+using SamplerHandle = Handle<struct Sampler>;
 
 using MaterialInstanceHandle = Handle<struct MaterialInstance>;
 using DescriptorPoolHandle = Handle<struct DescriptorPool>;
@@ -87,11 +88,16 @@ struct Image {
 
 struct ShadowMap {
 	uint32_t light;
-	Image image;
-	VkImageView imageView;
-	VkSampler sampler;
+	uint32_t cascades; 
+	ImageHandle image;
+	SamplerHandle sampler;
 	bool owns_sampler = true;
+	ImageViewHandle sampleView;
+
+	// Rendering is done better with separate N views, 1 per layer/cascade. 
+	std::vector<ImageViewHandle> renderViews;
 };
+
 
 // This style of handling things is lifted up from LightweightVk.
 class Context {
@@ -111,7 +117,7 @@ class Context {
 	VmaPool D_StagingPool;
 
 	// Im gonna need a custom str type... lets use std::string for now.
-	std::unordered_map<std::string, VkSampler> samplers;
+	std::unordered_map<std::string, SamplerHandle> samplers;
 
 
 public:
@@ -139,7 +145,9 @@ public:
 	Pool<Texture, Texture> textures_;
 	Pool<DrawSet, DrawSet> meshes_;
 	Pool<Image, Image> images_;
+	Pool<ImageView, VkImageView> imageViews_;
 	Pool<ShadowMap, ShadowMap> shadowmaps_;
+	Pool<Sampler, VkSampler> samplers_;
 
 	// These two have confusing names;
 	Pool<DescriptorSet, DescriptorSet> descriptrorSetPool_;
@@ -180,15 +188,10 @@ public:
 
 		// from ChatGpt, may not be true: you can set a generic sampler with a big maxLod like 100, and reuse it for all your textures of any mip count.
 		// The driver will clamp dynamically per texture.
-		createSampler(*physicalDevice_, *device_, default_sampler, 100);
-		// Samplers are driver objs. can be copied like this np.
-		samplers["default"] = default_sampler;
+		samplers["default"] = CreateSampler(100);
 
-
-		VkSampler default_shadow_sampler;
-		createSampler(*physicalDevice_, *device_, default_shadow_sampler, 1);
 		// Samplers are driver objs. can be copied like this np.
-		samplers["default_shadow"] = default_shadow_sampler;
+		samplers["default_shadow"] = CreateSampler(1);
 
 		// Lets reserve upfront.
 		textures_.objects_.reserve(MAX_TEXTURES);
@@ -371,6 +374,7 @@ public:
 
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
 	ImageHandle CreateCascadedShadowMapsDepthImage(int texWidth, int texHeight, int cascades);
+	SamplerHandle CreateSampler(uint32_t levelCount);
 	TextureHandle CreateTexture(ktxTexture2& texture);
 	ShadowMapHandle CreateShadowMap();
 
@@ -397,6 +401,7 @@ public:
 	// END
 	void CleanUp();
 
+
 };
 
 VkQueue Context::GetGraphicsQueue() {
@@ -410,6 +415,16 @@ void Context::CleanUp() {
 	vmaDestroyVirtualBlock(index_blk);
 	vmaDestroyVirtualBlock(vertex_blk);
 	//vmaDestroyPool();//
+}
+
+
+SamplerHandle Context::CreateSampler(uint32_t levelCount) {
+
+	VkSampler sampler_;
+	createSampler(*physicalDevice_, *device_, sampler_, levelCount);
+
+	return samplers_.create(std::move(sampler_));
+
 }
 
 // This maybe should be moved out of Context really;
@@ -438,7 +453,7 @@ void Context::CreateImageView(
 
 }
 
-DescriptorSetHandle Context::createDescriptorSet(
+[[nodiscard]] DescriptorSetHandle Context::createDescriptorSet(
 	DescriptorLayoutHandle lyt
 ) {
 	// Pools should be rolled over on fail, get new pool. then discard FIFO
@@ -475,7 +490,7 @@ DescriptorSetHandle Context::createDescriptorSet(
 
 }
 
-DeviceBufferHandle Context::createBuffer(
+[[nodiscard]] DeviceBufferHandle Context::createBuffer(
 	uint32_t size,
 	VmaMemoryUsage vma_usage,
 	VkBufferUsageFlags usage_flags
@@ -603,7 +618,7 @@ void Context::UploadDataToBuffer(
 }
 
 // Lets just use 1 layout for now. We will need more shapes for shadows and others is my guess.
-DescriptorLayoutHandle Context::createDescriptorLayout() {
+[[nodiscard]] DescriptorLayoutHandle Context::createDescriptorLayout() {
 	// INDEX DATA
 	VkDescriptorSetLayoutBinding instanceIndexBinding{};
 	instanceIndexBinding.binding = 0;
@@ -684,7 +699,7 @@ DescriptorLayoutHandle Context::createDescriptorLayout() {
 
 }
 
-DescriptorPoolHandle Context::createDescriptorPool() {
+[[nodiscard]] DescriptorPoolHandle Context::createDescriptorPool() {
 	const uint32_t bindless_sets = MAX_FRAMES_IN_FLIGHT;
 	const uint32_t max_textures = MAX_TEXTURES;
 
@@ -710,8 +725,7 @@ DescriptorPoolHandle Context::createDescriptorPool() {
 	return descriptorSetPoolPool_.create(std::move(dpool));
 }
 
-
-PipelineHandle Context::CreatePipeline(
+[[nodiscard]] PipelineHandle Context::CreatePipeline(
 	RasterSettings raster_settings,
 	ShaderModuleHandle vert,
 	ShaderModuleHandle frag,
@@ -901,13 +915,13 @@ PipelineHandle Context::CreatePipeline(
 	return pipelinesPool_.create(std::move(pipeline));
 }
 
-PipelineHandle Context::CreateMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat) {
+[[nodiscard]] PipelineHandle Context::CreateMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat) {
 
 	return CreatePipeline(raster_settings, vert, frag, depth_format, swapchainImageFormat);
 
 }
 
-MaterialInstanceHandle Context::CreateMaterialInstance(PipelineHandle mat_pipeline)
+[[nodiscard]] MaterialInstanceHandle Context::CreateMaterialInstance(PipelineHandle mat_pipeline)
 {
 	MaterialInstance mat_instance = {};
 	mat_instance.pipeline = mat_pipeline;
@@ -996,6 +1010,8 @@ void Context::TransitionImageLayout(
 		destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 	}
 	else {
+
+		assert(false);
 		throw std::invalid_argument("unsupported layout transition!");
 	}
 
@@ -1041,11 +1057,13 @@ void Context::getAppropriateSampler(Texture& texture) {
 	//createSampler(*physicalDevice_, *device_, _sampler);
 	// We should
 	// uld try to define here which sampler would work for this texture. Sepecialization.
-	texture.sampler = samplers["default"];
+
+	auto sh = samplers["default"];
+	texture.sampler = *samplers_.get(sh);
 
 };
 
-TextureHandle Context::CreateTexture(ktxTexture2& texture) {
+[[nodiscard]] TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
 		//auto target = pickTarget(*physicalDevice_);
@@ -1107,16 +1125,18 @@ TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 	return textures_.create(std::move(ctx_tex));
 }
 
-inline ShadowMapHandle Context::CreateShadowMap()
+[[nodiscard]] ShadowMapHandle Context::CreateShadowMap()
 {
 	ShadowMap sm;
+	sm.image = CreateCascadedShadowMapsDepthImage(400,400, 1);
+	//sm.imageView = CreateImageView();
 
 	return shadowmaps_.create(std::move(sm));
 
 }
 
 // Good defaults preset for DepthImageCreation.
-ImageHandle Context::CreateCascadedShadowMapsDepthImage(int texWidth, int texHeight, int cascades) {
+[[nodiscard]] ImageHandle Context::CreateCascadedShadowMapsDepthImage(int texWidth, int texHeight, int cascades) {
 
 	//VkFormat depth_format = VK_FORMAT_D32_SFLOAT; // I dont need stencil, so lets hardcode this for the moment here. /*findDepthFormat(*physicalDevice_);*/
 	VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT // sample as texture
@@ -1138,7 +1158,7 @@ ImageHandle Context::CreateCascadedShadowMapsDepthImage(int texWidth, int texHei
 	return image_handle;
 };
 
-ImageHandle Context::CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers) {
+[[nodiscard]] ImageHandle Context::CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers) {
 
 	Image image = {};
 
@@ -1184,7 +1204,7 @@ ImageHandle Context::CreateImage(int texWidth, int texHeight, VkFormat format, V
 
 }
 
-DrawSetHandle Context::UploadMesh(MeshData& mesh_data) {
+[[nodiscard]] DrawSetHandle Context::UploadMesh(MeshData& mesh_data) {
 	// Assumptions:
 	// - One big GPU index buffer (ib) and one big GPU vertex buffer (vb) already exist.
 	// - vmaVirtualAllocate() is used over virtual blocks 'index_blk' and 'vertex_blk'
@@ -1272,7 +1292,7 @@ DrawSetHandle Context::UploadMesh(MeshData& mesh_data) {
 	return meshes_.create(std::move(ds));
 }
 
-std::vector<DrawSet> Context::BatchUploadMeshData(std::vector<MeshData>& mesh_data) {
+[[nodiscard]] std::vector<DrawSet> Context::BatchUploadMeshData(std::vector<MeshData>& mesh_data) {
 	assert(!mesh_data.empty());
 
 	std::vector<DrawSet> mesh_draw_list;
@@ -1295,7 +1315,7 @@ std::vector<DrawSet> Context::BatchUploadMeshData(std::vector<MeshData>& mesh_da
 // copied into images/buffers via vkCmdCopy*.
 //
 // Overload A: just create the buffer
-DeviceBufferHandle Context::CreateStagingBuffer(VkDeviceSize size)
+[[nodiscard]] DeviceBufferHandle Context::CreateStagingBuffer(VkDeviceSize size)
 {
 	BufferDescription desc{};
 
@@ -1335,7 +1355,7 @@ DeviceBufferHandle Context::CreateStagingBuffer(VkDeviceSize size)
 	return buffers_.create(std::move(desc));
 }
 
-DeviceBufferHandle Context::CreateStagingBuffer(const void* srcData,
+[[nodiscard]] DeviceBufferHandle Context::CreateStagingBuffer(const void* srcData,
 	VkDeviceSize size)
 {
 	auto handle = CreateStagingBuffer(size);
@@ -1354,7 +1374,7 @@ DeviceBufferHandle Context::CreateStagingBuffer(const void* srcData,
 	return handle;
 }
 
-ShaderModuleHandle Context::CreateShaderModule(std::vector<char> code) {
+[[nodiscard]] ShaderModuleHandle Context::CreateShaderModule(std::vector<char> code) {
 
 	auto shader = createDeviceShaderModule(
 		*device_,
@@ -1365,13 +1385,14 @@ ShaderModuleHandle Context::CreateShaderModule(std::vector<char> code) {
 
 };
 
+// Destrcutors
+
 void destroy(Context* ctx, ShaderModuleHandle handle) {
 	assert(handle.valid());
 	auto sm = ctx->shaderModulePool_.get(handle);
 	vkDestroyShaderModule(*ctx->device_, *sm, NULL);
 	ctx->shaderModulePool_.destroy(handle);
 };
-
 void destroy(Context* ctx, TextureHandle handle) {
 	assert(handle.valid());
 	auto tex = ctx->textures_.get(handle);
@@ -1389,11 +1410,9 @@ void destroy(Context* ctx, TextureHandle handle) {
 
 	ctx->textures_.destroy(handle);
 }
-inline void destroy(Context* ctx, ImageHandle handle)
+void destroy(Context* ctx, ImageHandle handle)
 {
 }
-;
-
 void destroy(Context* ctx, DeviceBufferHandle handle) {
 	assert(handle.valid());
 	auto db = ctx->buffers_.get(handle);
