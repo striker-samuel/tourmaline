@@ -156,30 +156,10 @@ public:
 
 	};
 	void Start();
-
-
-	// Initial ShadowMap implementation.
-
-	//void InitializeShadowMaps() {
-
-	//	for (int i = 0; i < MAX_LIGHTS; i++) {
-	//		auto l = lights[i];
-
-	//		if (l.type == LIGHT_TYPE_SPOT) {
-	//			if (l.shadow_map_index == -1) {
-
-	//				context->CreateCascadedShadowMapsDepthImage(400, 400, 1);
-
-
-	//			}
-	//		}
-
-	//	}
-
-	//}
 	void RenderShadows();
 	Light* lights = new Light[MAX_LIGHTS];
 	std::unordered_map<uint32_t, ShadowMapHandle> light_to_shadowmap;
+	PipelineHandle shadow_pipeline;
 
 private:
 
@@ -189,6 +169,9 @@ private:
 	Scene scene_ = getSceneFromGltf(gltf_meshes_paths[0]);
 
 	DescriptorSetHandle frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
+
+	//SW
+	DescriptorSetHandle shadowFrameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
 
 	// Presnt still on app side. moved the rest to cotnext
 	VkQueue presentQueue_;
@@ -294,9 +277,7 @@ private:
 	}
 
 	void UploadScene();
-
 	void UpdateInstanceBuffers(uint32_t currentImage);
-
 	void UpdateLightsBuffers(uint32_t currentImage);
 
 	void UiPass() {
@@ -317,7 +298,7 @@ private:
 	}
 
 	// Thsese are really helpers. not critical.
-	void CreateDefaultMaterialPipeline();
+	void CreatePipelines();
 	MaterialInstanceHandle CreateDiffuseMaterial(std::string image_path);
 
 
@@ -630,31 +611,103 @@ private:
 			.offset = 0,
 			.range = sizeof(InstanceData) * MAX_INSTANCES
 		};
+		{
+			auto setHandle = frameDescriptorSets[currentFrame];
+			auto setObj = context->descriptrorSetPool_.get(setHandle);
+			VkDescriptorSet vkSet = setObj->set;
 
+			VkWriteDescriptorSet writes[3]{};
+
+			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[0].dstSet = vkSet;
+			writes[0].dstBinding = 0; // UBO
+			writes[0].dstArrayElement = 0;
+			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			writes[0].descriptorCount = 1;
+			writes[0].pBufferInfo = &instanceIndexBufferInfo;
+
+			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[1].dstSet = vkSet;
+			writes[1].dstBinding = 1; // SSBO
+			writes[1].dstArrayElement = 0;
+			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			writes[1].descriptorCount = 1;
+			writes[1].pBufferInfo = &instanceBufferInfo;
+
+			vkUpdateDescriptorSets(device, 2 /*descitprorWriteCount*/, writes, 0, nullptr);
+
+		}
+
+		{
+
+			auto setHandle = shadowFrameDescriptorSets[currentFrame];
+			auto setObj = context->descriptrorSetPool_.get(setHandle);
+			VkDescriptorSet vkSet = setObj->set;
+
+			VkWriteDescriptorSet writes[3]{};
+
+			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[0].dstSet = vkSet;
+			writes[0].dstBinding = 0; // UBO
+			writes[0].dstArrayElement = 0;
+			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			writes[0].descriptorCount = 1;
+			writes[0].pBufferInfo = &instanceIndexBufferInfo;
+
+			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[1].dstSet = vkSet;
+			writes[1].dstBinding = 1; // SSBO
+			writes[1].dstArrayElement = 0;
+			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			writes[1].descriptorCount = 1;
+			writes[1].pBufferInfo = &instanceBufferInfo;
+
+			vkUpdateDescriptorSets(device, 2 /*descitprorWriteCount*/, writes, 0, nullptr);
+
+
+		}
+	}
+
+	void UpdateShadowMapDescriptorSets(uint32_t currentFrame)
+	{
+		// 1) Grab the shadowmap object from your pool
+		auto smh = context->shadowmaps_.getHandle(lights[0].shadow_map_index);
+		auto sm = context->shadowmaps_.get(smh);
+
+		// 2) Get the image view for the depth layer we rendered into
+		VkImageView shadowView = *context->imageViews_.get(sm->renderViews[0]);
+
+		// 3) Choose a sampler for sampling the depth map
+		//    (you probably have one in your context, or create a dedicated "shadowSampler")
+
+		auto sam = context->samplers["default_shadow"];
+		VkSampler shadowSampler = *context->samplers_.get(sam);
+
+		// 4) Fill VkDescriptorImageInfo
+		VkDescriptorImageInfo shadowImageInfo{};
+		shadowImageInfo.sampler = shadowSampler;
+		shadowImageInfo.imageView = shadowView;
+		shadowImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		// 5) Which set are we updating?
+		//    Usually this is the *main* frame descriptor set (not the shadow pass one),
+		//    because we sample the shadow map in the lighting pass.
 		auto setHandle = frameDescriptorSets[currentFrame];
 		auto setObj = context->descriptrorSetPool_.get(setHandle);
 		VkDescriptorSet vkSet = setObj->set;
 
-		VkWriteDescriptorSet writes[3]{};
+		// 6) Prepare the write
+		VkWriteDescriptorSet write{};
+		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		write.dstSet = vkSet;
+		write.dstBinding = 5; // binding index for shadow map combined sampler
+		write.dstArrayElement = 0;
+		write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		write.descriptorCount = 1;
+		write.pImageInfo = &shadowImageInfo;
 
-		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[0].dstSet = vkSet;
-		writes[0].dstBinding = 0; // UBO
-		writes[0].dstArrayElement = 0;
-		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		writes[0].descriptorCount = 1;
-		writes[0].pBufferInfo = &instanceIndexBufferInfo;
-
-		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[1].dstSet = vkSet;
-		writes[1].dstBinding = 1; // SSBO
-		writes[1].dstArrayElement = 0;
-		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		writes[1].descriptorCount = 1;
-		writes[1].pBufferInfo = &instanceBufferInfo;
-
-		vkUpdateDescriptorSets(device, 2 /*descitprorWriteCount*/, writes, 0, nullptr);
-
+		// 7) Update
+		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 	}
 
 	void UpdateLightDescriptorSets(uint32_t currentFrame) {
@@ -759,18 +812,194 @@ private:
 
 		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
-		//}
+	}
+
+	void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer, uint32_t /*imageIndex*/)
+	{
+
+		// Example: one light, one shadowmap
+		auto smh = context->shadowmaps_.getHandle(lights[0].shadow_map_index);
+		auto sm = context->shadowmaps_.get(smh);
+
+		VkImage shadowImage = context->images_.get(sm->image)->image;
+		VkImageView shadowView = *context->imageViews_.get(sm->renderViews[0]);
+		VkExtent2D shadowExtent = { 400,400 };           // e.g. { width, height }
+
+		// 1) Transition depth image to DEPTH_ATTACHMENT_OPTIMAL
+		{
+			VkImageMemoryBarrier barrier{};
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // or SHADER_READ_ONLY_OPTIMAL if reused
+			barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = shadowImage;
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			barrier.subresourceRange.baseMipLevel = 0;
+			barrier.subresourceRange.levelCount = 1;
+			barrier.subresourceRange.baseArrayLayer = 0;     // or layer if using array
+			barrier.subresourceRange.layerCount = 1;
+
+			barrier.srcAccessMask = 0;                       // nothing before
+			barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+			vkCmdPipelineBarrier(
+				commandBuffer,
+				VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+				0,
+				0, nullptr,
+				0, nullptr,
+				1, &barrier
+			);
+		}
+
+		// 2) Begin dynamic rendering with depth-only
+		VkRenderingAttachmentInfoKHR depthAttachment{};
+		depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+		depthAttachment.imageView = shadowView;
+		depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;   // we want to sample this later
+
+		VkClearValue clearDepth{};
+		clearDepth.depthStencil.depth = 0.0f;   // same as your main pass
+		depthAttachment.clearValue = clearDepth;
+
+		VkRenderingInfoKHR renderingInfo{};
+		renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
+		renderingInfo.renderArea.offset = { 0, 0 };
+		renderingInfo.renderArea.extent = shadowExtent;           // shadow map size
+		renderingInfo.layerCount = 1;
+		renderingInfo.colorAttachmentCount = 0;                      // depth-only
+		renderingInfo.pColorAttachments = nullptr;
+		renderingInfo.pDepthAttachment = &depthAttachment;
+		renderingInfo.pStencilAttachment = nullptr;
+
+		vkCmdBeginRendering(commandBuffer, &renderingInfo);
+
+		// 3) Viewport & scissor
+		VkViewport vp{};
+		vp.x = 0.0f;
+		vp.y = 0.0f;
+		vp.width = static_cast<float>(shadowExtent.width);
+		vp.height = static_cast<float>(shadowExtent.height);
+		vp.minDepth = 0.0f;
+		vp.maxDepth = 1.0f;
+		vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+
+		VkRect2D scissor{};
+		scissor.offset = { 0, 0 };
+		scissor.extent = shadowExtent;
+		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+		// 4) Bind buffers
+		auto vbh = context->buffers_.get(context->vertex_buffer);
+		auto ibh = context->buffers_.get(context->index_buffer);
+
+		VkBuffer vertexBuffers[] = { vbh->buffer };
+		VkDeviceSize offsets[] = { 0 };
+
+		vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+		vkCmdBindIndexBuffer(commandBuffer, ibh->buffer, 0, VK_INDEX_TYPE_UINT32);
+
+		// 5) Shadow pipeline & descriptors
+		auto s_pipeline = context->pipelinesPool_.get(shadow_pipeline);
+		auto pipe_lyt = s_pipeline->plyt;
+
+		vkCmdBindPipeline(
+			commandBuffer,
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			s_pipeline->pipeline
+		);
+
+		// this is wrong!
+		auto sets = context->descriptrorSetPool_.get(shadowFrameDescriptorSets[currentFrame]);
+
+		vkCmdBindDescriptorSets(
+			commandBuffer,
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			pipe_lyt,
+			0,
+			1,
+			&sets->set,
+			0,
+			nullptr
+		);
+
+		// 6) Push constants with light view/proj (instead of camera_)
+		PushConstants pc{};
+		pc.view = GetLightView(lights[0]);
+		pc.proj = GetLightProj(lights[0], /*aspect*/ 1.0f, /*near*/ 0.1f, /*far*/ 100.0f);
+		//pc.proj[1][1] *= -1;
+
+		struct PC_All {
+			PushConstants pc;               // 144
+			MaterialPushConstants mpc;      // 48 (can be empty for shadow)
+		};
+		PC_All all{ pc, MaterialPushConstants{} };
+
+		// even if pipeline has only VS, including FRAGMENT here is fine; it's just unused
+		vkCmdPushConstants(
+			commandBuffer,
+			pipe_lyt,
+			VK_SHADER_STAGE_VERTEX_BIT, // | VK_SHADER_STAGE_FRAGMENT_BIT if you want
+			0,
+			sizeof(PC_All),
+			&all
+		);
+
+		// 7) Draw scene from light POV
+		for (int i = 0; i < static_cast<int>(scene_.hierarchy.size()); ++i) {
+			auto draw_set_h = context->meshes_.getHandle(scene_.meshForNode[i]);
+			auto draw_set = context->meshes_.get(draw_set_h);
+
+			// if per-object constants are needed, update and push here
+
+			vkCmdDrawIndexed(
+				commandBuffer,
+				draw_set->index_count,
+				1,
+				draw_set->first_index,
+				draw_set->vert_offset,
+				i
+			);
+		}
+
+		vkCmdEndRendering(commandBuffer);
+
+		// 8) Transition depth image for sampling in main pass
+		{
+			VkImageMemoryBarrier barrier{};
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = shadowImage;
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			barrier.subresourceRange.baseMipLevel = 0;
+			barrier.subresourceRange.levelCount = 1;
+			barrier.subresourceRange.baseArrayLayer = 0;
+			barrier.subresourceRange.layerCount = 1;
+
+			barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+			vkCmdPipelineBarrier(
+				commandBuffer,
+				VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				0,
+				0, nullptr,
+				0, nullptr,
+				1, &barrier
+			);
+		}
 
 	}
 
 	void RecordCommandsForFrame(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
-
-		VkCommandBufferBeginInfo beginInfo{};
-		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-		if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-			throw std::runtime_error("failed to begin recording command buffer!");
-		}
 
 		VkImageMemoryBarrier barrierToColorAttachment{};
 		barrierToColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -863,13 +1092,20 @@ private:
 			VK_INDEX_TYPE_UINT32)
 			;
 
-
 		PushConstants pc{};
 		pc.view = camera_.getViewMatrix();
 		pc.proj = camera_.getProjMatrix();
 		pc.proj[1][1] *= -1;
 
+
+
+
+		// I long ago did this to be able to run trough different pipeline setuops like transparency and else. Amay be wrong and dumb
 		for (auto mat_pipe_entry : context->pipelinesPool_.objects_) {
+
+			if (mat_pipe_entry.obj_.type != PIPELINE_MATERIAL) {
+				continue;
+			}
 
 			vkCmdBindPipeline(
 				commandBuffer,
@@ -964,11 +1200,6 @@ private:
 			0, nullptr,
 			1, &barrier
 		);
-
-
-		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-			throw std::runtime_error("failed to record command buffer!");
-		}
 
 	}
 
@@ -1495,8 +1726,8 @@ inline void VulkanApp::DrawFrame() {
 
 #pragma region GPU_UPDATE
 
-
 	UpdateLightsBuffers(currentFrame);
+	UpdateShadowMapDescriptorSets(currentFrame);
 	UpdateInstanceDescriptorSets(currentFrame);
 	UpdateLightDescriptorSets(currentFrame);
 	UpdateBindlessTextures(currentFrame);
@@ -1505,7 +1736,20 @@ inline void VulkanApp::DrawFrame() {
 
 	UiPass();
 
+	VkCommandBufferBeginInfo beginInfo{};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+	if (vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo) != VK_SUCCESS) {
+		throw std::runtime_error("failed to begin recording command buffer!");
+	}
+
+	RecordCommandsForFrameShadowMaps(commandBuffers[currentFrame], imageIndex);
 	RecordCommandsForFrame(commandBuffers[currentFrame], imageIndex);
+
+	if (vkEndCommandBuffer(commandBuffers[currentFrame]) != VK_SUCCESS) {
+		throw std::runtime_error("failed to record command buffer!");
+	}
+
 
 	// Submit Frame 
 	{
@@ -1567,7 +1811,7 @@ inline void VulkanApp::DrawFrame() {
 	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-void VulkanApp::CreateDefaultMaterialPipeline() {
+void VulkanApp::CreatePipelines() {
 
 	auto vertShaderCode = readFile("shaders/example.vert.hlsl.spv");
 	auto vertColorFragCode = readFile("shaders/vertex_color.frag.hlsl.spv");
@@ -1591,6 +1835,8 @@ void VulkanApp::CreateDefaultMaterialPipeline() {
 		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
 		swapChainImageFormat
 	);
+
+	shadow_pipeline = context->CreateShadowPipeline(vertHandle);
 
 }
 
@@ -1766,18 +2012,29 @@ void VulkanApp::CleanUp() {
 void VulkanApp::Start() {
 
 	FabricateLightData(lights);
-	//for (int i = 0; i < MAX_LIGHTS; i++) {
-	//	if (i == 0) {
-	//		auto sm_h = context->CreateShadowMap();
-	//		lights[i].shadow_map_index = sm_h.index();
-	//	}
-	//}
+	for (int i = 0; i < MAX_LIGHTS; i++) {
+		if (i == 0) {
 
-	CreateDefaultMaterialPipeline();
-	// This is part of the framegraph really....
+			lights[i].position[0] = 1.0f;
+			lights[i].position[1] = 3.0f;
+			lights[i].position[2] = 5.0f;
+
+			lights[i].direction[0] = 4.0f;
+			lights[i].direction[1] = 3.0f;
+			lights[i].direction[2] = 5.0f;
+
+			auto sm_h = context->CreateShadowMap();
+			lights[i].shadow_map_index = sm_h.index();
+		}
+	}
+
+	CreatePipelines();
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		frameDescriptorSets[i] = context->createDescriptorSet(
 			context->default_descriptorLayout
+		);
+		shadowFrameDescriptorSets[i] = context->createDescriptorSet(
+			context->default_shadow_descriptorLayout
 		);
 	}
 

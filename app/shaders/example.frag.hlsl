@@ -42,6 +42,8 @@ cbuffer Lights
 {
     Light g_Lights[10]; // or a struct containing them
 };
+[[vk::binding(5, 0)]]
+Texture2D shadowMapTex; // + combined sampler layout in SPIR-V
 
 struct PSIn
 {
@@ -54,6 +56,36 @@ struct PSOut
 {
     float4 outColor : SV_Target;
 };
+
+//float ShadowFactor(float3 worldPos)
+//{
+//    // Transform world position into light clip space
+//    float4 lightClip = mul(lightViewProj, float4(worldPos, 1.0f));
+
+//    // Perspective divide
+//    float3 ndc = lightClip.xyz / lightClip.w;
+
+//    // NDC [-1,1] --> UV [0,1]
+//    float2 shadowUV = ndc.xy * 0.5f + 0.5f;
+
+//    // If outside the shadow map, treat as lit
+//    if (shadowUV.x < 0.0f || shadowUV.x > 1.0f ||
+//        shadowUV.y < 0.0f || shadowUV.y > 1.0f ||
+//        ndc.z < 0.0f || ndc.z > 1.0f)
+//    {
+//        return 1.0f;
+//    }
+
+//    // Sample depth from shadow map
+//    float shadowDepth = shadowMapTex.Sample(shadowMapSamp, shadowUV).r;
+
+//    // Bias to reduce acne
+//    float bias = 0.001f;
+
+//    // If current depth is greater than stored depth, we’re in shadow
+//    float currentDepth = ndc.z;
+//    return (currentDepth - bias > shadowDepth) ? 0.0f : 1.0f;
+//}
 
 float3 EvaluateSpotLight(Light light, float3 worldPos, float3 N, float3 baseColor)
 {
@@ -131,6 +163,7 @@ PSOut mainPS(PSIn IN)
     // Normalized normal
     float3 N = normalize(IN.normal);
 
+    //float shadow = ShadowFactor(IN.worldPos);
     // Accumulate lighting
     float3 litColor = ambient;
 
@@ -154,9 +187,11 @@ PSOut mainPS(PSIn IN)
 
         }
         
-
+        //if (i == 0)
+        //{
+        //    litColor * shadow;
+        //}
     }
-    
 
     OUT.outColor = float4(litColor, texSample.a);
 

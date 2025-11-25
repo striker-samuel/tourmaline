@@ -13,12 +13,10 @@
 #include <ktxvulkan.h>
 
 
+
 // ----------------------------------------------------------
-
-
 // specialized with dummy structs for type safety
 using ShaderModuleHandle = Handle<struct ShaderModule>;
-//using BufferHandle = Handle<struct Buffer>;
 using TextureHandle = Handle<struct Texture>;
 using ImageHandle = Handle<struct Image>;
 using ImageViewHandle = Handle<struct ImageView>;
@@ -49,6 +47,14 @@ struct SamplerRequirements {
 
 };
 
+
+typedef enum PipelineType {
+	PIPELINE_UNDEFINED = 0,
+	PIPELINE_MATERIAL = 1,
+	PIPELINE_SHADOW = 2
+} PipelineType;
+
+
 struct Pipeline {
 	RasterSettings raster_settings;
 	ShaderModuleHandle vert;
@@ -64,6 +70,8 @@ struct Pipeline {
 	// Invalid initialization!
 	DescriptorSetHandle ds;
 	VkPipeline pipeline;
+
+	PipelineType type = PIPELINE_UNDEFINED;
 
 };
 // MatModels or MatPipelines can have several instances with different vlaues for constans and textures.
@@ -88,7 +96,7 @@ struct Image {
 
 struct ShadowMap {
 	uint32_t light;
-	uint32_t cascades; 
+	uint32_t cascades;
 	ImageHandle image;
 	SamplerHandle sampler;
 	bool owns_sampler = true;
@@ -97,7 +105,6 @@ struct ShadowMap {
 	// Rendering is done better with separate N views, 1 per layer/cascade. 
 	std::vector<ImageViewHandle> renderViews;
 };
-
 
 // This style of handling things is lifted up from LightweightVk.
 class Context {
@@ -116,11 +123,11 @@ class Context {
 	VmaPool D_DynamicMeshPool;
 	VmaPool D_StagingPool;
 
+public:
+
 	// Im gonna need a custom str type... lets use std::string for now.
 	std::unordered_map<std::string, SamplerHandle> samplers;
 
-
-public:
 
 	VmaAllocator allocator;
 	VmaAllocator* allocator_;
@@ -136,6 +143,9 @@ public:
 	DescriptorPoolHandle default_descriptor_pool;
 	DescriptorPoolHandle imgui_descriptor_pool;
 	DescriptorLayoutHandle default_descriptorLayout;
+
+	// Added for shadowmaps.
+	DescriptorLayoutHandle default_shadow_descriptorLayout;
 
 	VkCommandPool default_command_pool;
 	VkQueue default_queue;
@@ -207,6 +217,7 @@ public:
 		default_descriptor_pool = createDescriptorPool();
 		imgui_descriptor_pool = createDescriptorPool();
 		default_descriptorLayout = createDescriptorLayout();
+		default_shadow_descriptorLayout = CreateShadowMapsDescriptorSetLayout();
 
 		QueueFamilyIndices indices = findQueueFamilies(*physicalDevice, surface);
 
@@ -359,18 +370,15 @@ public:
 
 	}
 
-	// Resource creation
+	// RESOURCE CREATION
+
 	DeviceBufferHandle CreateStagingBuffer(VkDeviceSize size);
 	DeviceBufferHandle CreateStagingBuffer(const void* srcData, VkDeviceSize size);
 	ShaderModuleHandle CreateShaderModule(std::vector<char> code);
 
 	PipelineHandle CreatePipeline(RasterSettings raster_settings, ShaderModuleHandle vert, ShaderModuleHandle frag, VkFormat depth_format, VkFormat swapchainImageFormat);
-
+	PipelineHandle CreateShadowPipeline(ShaderModuleHandle vert);
 	PipelineHandle CreateMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
-	MaterialInstanceHandle CreateMaterialInstance(PipelineHandle mat_pipeline);
-
-	VkCommandBuffer GetCommandBuffer();
-	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
 
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
 	ImageHandle CreateCascadedShadowMapsDepthImage(int texWidth, int texHeight, int cascades);
@@ -378,47 +386,42 @@ public:
 	TextureHandle CreateTexture(ktxTexture2& texture);
 	ShadowMapHandle CreateShadowMap();
 
-	void CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, VkImageView& imageView);
+	MaterialInstanceHandle CreateMaterialInstance(PipelineHandle mat_pipeline);
 
 	DescriptorLayoutHandle createDescriptorLayout();
+	DescriptorLayoutHandle CreateShadowMapsDescriptorSetLayout();
 	DescriptorPoolHandle createDescriptorPool();
+
+	ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount);
+	ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount);
+
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
+	DescriptorSetHandle createShadowMapDescriptorSet(DescriptorLayoutHandle lyt);
 	DeviceBufferHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
 	DrawSetHandle UploadMesh(MeshData& mesh_data);
 	std::vector<DrawSet> BatchUploadMeshData(std::vector<MeshData>& mesh_data);
+	//std::vector<DrawSetHandle> BatchUploadMeshData(std::vector<MeshData>& mesh_data); // This is missing implementation.
+
+	// HELPERS.
+	VkCommandBuffer GetCommandBuffer();
+	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
 
 	void UploadDataToBuffer(DeviceBufferHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
 
 	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
-	//void TransitionImageLayout(ImageHandle image_handle, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 	void TransitionImageLayout(ImageHandle image_handle, VkImageLayout oldLayout, VkImageLayout newLayout);
 
-	// 
 	VkQueue GetGraphicsQueue();
 	void getAppropriateSampler(Texture& texture);
 
 	// END
 	void CleanUp();
 
-
 };
 
-VkQueue Context::GetGraphicsQueue() {
-	return default_queue;
-}
 
-void Context::CleanUp() {
-
-	// Clear Pools.
-	// Clear VmaPools.
-	vmaDestroyVirtualBlock(index_blk);
-	vmaDestroyVirtualBlock(vertex_blk);
-	//vmaDestroyPool();//
-}
-
-
-SamplerHandle Context::CreateSampler(uint32_t levelCount) {
+[[nodiscard]] SamplerHandle Context::CreateSampler(uint32_t levelCount) {
 
 	VkSampler sampler_;
 	createSampler(*physicalDevice_, *device_, sampler_, levelCount);
@@ -427,29 +430,61 @@ SamplerHandle Context::CreateSampler(uint32_t levelCount) {
 
 }
 
-// This maybe should be moved out of Context really;
-void Context::CreateImageView(
+[[nodiscard]] ImageViewHandle  Context::CreateImageView(
+	VkImage image,
+	VkFormat format,
+	VkImageAspectFlags aspectFlags,
+	int levelCount
+) {
+
+	return CreateImageView(
+		image,
+		format,
+		aspectFlags,
+		levelCount,
+		0,
+		1
+	);
+
+
+}
+
+[[nodiscard]] ImageViewHandle  Context::CreateImageView(
 	VkImage image,
 	VkFormat format,
 	VkImageAspectFlags aspectFlags,
 	int levelCount,
-	VkImageView& imageView
+	int baseArrayLayer,
+	int layerCount
 ) {
+
+	VkImageView imageView;
+	VkImageViewType viewType = (layerCount > 1) ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+
 	VkImageViewCreateInfo viewInfo{};
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	viewInfo.image = image;
-	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	viewInfo.viewType = viewType;
 	viewInfo.format = format;
 
 
 	viewInfo.subresourceRange.aspectMask = aspectFlags;
 	viewInfo.subresourceRange.baseMipLevel = 0;
-	viewInfo.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
+	//viewInfo.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
 	viewInfo.subresourceRange.levelCount = levelCount;
-	viewInfo.subresourceRange.baseArrayLayer = 0;
-	viewInfo.subresourceRange.layerCount = 1;
+	viewInfo.subresourceRange.baseArrayLayer = baseArrayLayer;
+	viewInfo.subresourceRange.layerCount = layerCount;
+
+	// Lets default this like that ourselves.
+	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
 	VK_CHECK(vkCreateImageView(*device_, &viewInfo, nullptr, &imageView));
+
+	return imageViews_.create(std::move(imageView));
+
 
 }
 
@@ -489,6 +524,43 @@ void Context::CreateImageView(
 	return descriptrorSetPool_.create(std::move(ds));
 
 }
+
+//[[nodiscard]] DescriptorSetHandle Context::createShadowMapDescriptorSet(
+//	DescriptorLayoutHandle lyt
+//) {
+//	// Pools should be rolled over on fail, get new pool. then discard FIFO
+//	auto descriptorPool = descriptorSetPoolPool_.get(default_descriptor_pool);
+//	auto layout = descriptorSetLayoutPool_.get(lyt);
+//
+//	std::array<VkDescriptorSetLayout, 1> layouts = {
+//		*layout
+//	};
+//
+//	VkDescriptorSetAllocateInfo allocInfo{};
+//	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+//	// This needs to be implemented using rotating pools.
+//	allocInfo.descriptorPool = *descriptorPool;
+//	allocInfo.descriptorSetCount = 1;
+//	//allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+//
+//	allocInfo.pSetLayouts = layouts.data();
+//
+//	DescriptorSet ds;
+//	VkResult result = vkAllocateDescriptorSets(*device_, &allocInfo, &ds.set);
+//	ds.layout = lyt;
+//
+//	if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
+//		// Rotate the descriptor pool. try again
+//		// Manage live dspools. defrag
+//	}
+//
+//	if (result != VK_SUCCESS) {
+//		throw std::runtime_error("failed to allocate descriptor sets!");
+//	}
+//
+//	return descriptrorSetPool_.create(std::move(ds));
+//
+//}
 
 [[nodiscard]] DeviceBufferHandle Context::createBuffer(
 	uint32_t size,
@@ -617,7 +689,66 @@ void Context::UploadDataToBuffer(
 	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
 }
 
-// Lets just use 1 layout for now. We will need more shapes for shadows and others is my guess.
+[[nodiscad]] DescriptorLayoutHandle Context::CreateShadowMapsDescriptorSetLayout() {
+	// INDEX DATA
+	VkDescriptorSetLayoutBinding instanceIndexBinding{};
+	instanceIndexBinding.binding = 0;
+	instanceIndexBinding.descriptorCount = 1;
+	instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	instanceIndexBinding.pImmutableSamplers = nullptr;
+	instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+	VkDescriptorSetLayoutBinding instanceDataBinding{};
+	instanceDataBinding.binding = 1;
+	instanceDataBinding.descriptorCount = 1;
+	instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	instanceDataBinding.pImmutableSamplers = nullptr;
+	instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+	VkDescriptorSetLayoutBinding lightBinding{};
+	lightBinding.binding = 2;
+	lightBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	lightBinding.descriptorCount = 1;
+	lightBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+	std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
+		instanceIndexBinding,
+		instanceDataBinding,
+		lightBinding
+	};
+
+	// Per-binding flags — same size as bindings[]
+	//std::array<VkDescriptorBindingFlags, 3> bindingFlags = {
+	//	0,// instanceUBO
+	//	0,// instanceSSBO
+	//	0 // lightData.
+	//};
+
+	//VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
+	//bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+	//bindless_flags.pNext = nullptr;
+	//bindless_flags.bindingCount = static_cast<uint32_t>(bindingFlags.size());
+	//bindless_flags.pBindingFlags = bindingFlags.data();
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo{};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+	layoutInfo.pBindings = bindings.data();
+	//layoutInfo.pNext = &bindless_flags;
+	//layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+
+	VkDescriptorSetLayout descriptorSetLayout;
+
+	if (vkCreateDescriptorSetLayout(*device_, &layoutInfo, nullptr,
+		&descriptorSetLayout) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create descriptor set layout!");
+	}
+
+	return descriptorSetLayoutPool_.create(std::move(descriptorSetLayout));
+}
+
+
+// Main Pipeline Layout..
 [[nodiscard]] DescriptorLayoutHandle Context::createDescriptorLayout() {
 	// INDEX DATA
 	VkDescriptorSetLayoutBinding instanceIndexBinding{};
@@ -653,25 +784,34 @@ void Context::UploadDataToBuffer(
 	lightBinding.descriptorCount = 1;
 	lightBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	std::array<VkDescriptorSetLayoutBinding, 5> bindings = {
+	VkDescriptorSetLayoutBinding shadowMapBinding{};
+	shadowMapBinding.binding = 5;   // next free binding
+	shadowMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	shadowMapBinding.descriptorCount = 1;   // one 2D array texture
+	shadowMapBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	shadowMapBinding.pImmutableSamplers = nullptr;
+
+	std::array<VkDescriptorSetLayoutBinding, 6> bindings = {
 		instanceIndexBinding,
 		instanceDataBinding,
 		sampledImageBinding,
 		sampBinding,
-		lightBinding
+		lightBinding,
+		shadowMapBinding
 	};
 
 	// Per-binding flags — same size as bindings[]
-	std::array<VkDescriptorBindingFlags, 5> bindingFlags = {
+	std::array<VkDescriptorBindingFlags, 6> bindingFlags = {
 		0,
 		0,
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
-		0 // lightData.
+		0, // lightData.
 		//	VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		//	VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // . 
+		0
 	};
 
 	// Chain flags struct
@@ -725,6 +865,165 @@ void Context::UploadDataToBuffer(
 	return descriptorSetPoolPool_.create(std::move(dpool));
 }
 
+[[nodiscard]] PipelineHandle Context::CreateShadowPipeline(ShaderModuleHandle vert) {
+
+	// We ure using native VkPipelineLayout to ease things for now so we dont have to formalize a way to describe that.
+	Pipeline pipeline = {};
+	//pipeline.raster_settings = default_raster_settings;
+	//pipeline.frag = ;
+	pipeline.vert = vert;
+	pipeline.type = PIPELINE_SHADOW;
+
+	constexpr float depthBiasConstant = 0.01f;
+	constexpr float depthBiasSlope = 0.01f;
+
+	// Lets use default
+	auto shadow_def_lyt = descriptorSetLayoutPool_.get(default_shadow_descriptorLayout);
+	auto descriptorSetLayout = shadow_def_lyt;
+
+	auto v = shaderModulePool_.get(vert);
+	VkPipelineShaderStageCreateInfo vertStage{};
+	vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+	vertStage.module = *v;
+	vertStage.pName = "mainVS";
+
+	VkPipelineShaderStageCreateInfo shaderStages[] = { vertStage };
+
+	//VERTEX Duplicated from CreatePipeline... this needs updating too if it were to change.
+
+	auto bindingDescription = Vertex::getBindingDescription();
+	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+	VkPipelineVertexInputStateCreateInfo vertexInput{};
+	vertexInput.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	vertexInput.vertexBindingDescriptionCount = 1;
+	vertexInput.vertexAttributeDescriptionCount =
+		static_cast<uint32_t>(attributeDescriptions.size());
+	vertexInput.pVertexBindingDescriptions = &bindingDescription;
+	vertexInput.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+	inputAssembly.sType =
+		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+	// 3. Viewport & scissor (or mark as dynamic)
+	VkPipelineViewportStateCreateInfo viewportState{};
+	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewportState.viewportCount = 1;
+	//viewportState.pViewports = &viewport; // or null if dynamic // We are going dynamic
+	viewportState.scissorCount = 1;
+	//viewportState.pScissors = &scissor;  // or null if dynamic
+
+	VkPipelineRasterizationStateCreateInfo raster{};
+	raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	raster.polygonMode = VK_POLYGON_MODE_FILL;
+	raster.cullMode = VK_CULL_MODE_BACK_BIT;  // or FRONT/BOTH depending on your needs
+	raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	raster.depthClampEnable = VK_FALSE;
+	raster.rasterizerDiscardEnable = VK_FALSE;               // IMPORTANT: must be FALSE or nothing is rasterized
+	raster.depthBiasEnable = VK_TRUE;                // usually TRUE for shadow acne fix
+	raster.depthBiasConstantFactor = depthBiasConstant;
+	raster.depthBiasSlopeFactor = depthBiasSlope;
+	raster.lineWidth = 1.0f;
+
+	// 5. Multisampling
+	VkPipelineMultisampleStateCreateInfo ms{};
+	ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	// 6. Depth-stencil
+	VkPipelineDepthStencilStateCreateInfo depthStencil{};
+	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	depthStencil.depthTestEnable = VK_TRUE;
+	depthStencil.depthWriteEnable = VK_TRUE;
+	depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
+	depthStencil.depthBoundsTestEnable = VK_FALSE;
+	depthStencil.stencilTestEnable = VK_FALSE;
+
+	//depthStencil.depthTestEnable = VK_TRUE;
+	//depthStencil.depthWriteEnable = VK_TRUE;
+	//depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+	// 7. Color blend: **no color attachments**
+	VkPipelineColorBlendStateCreateInfo colorBlend{};
+	colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	colorBlend.attachmentCount = 0;
+	colorBlend.pAttachments = nullptr;
+
+	std::vector<VkDynamicState> dynamicStates = {
+		VK_DYNAMIC_STATE_VIEWPORT,
+		VK_DYNAMIC_STATE_SCISSOR
+	};
+
+	VkPipelineDynamicStateCreateInfo dynamicState{};
+	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamicState.dynamicStateCount =
+		static_cast<uint32_t>(dynamicStates.size());
+	dynamicState.pDynamicStates = dynamicStates.data();
+
+
+	// DYNAMIC RENDERING INFO.
+
+	// Provide information for dynamic rendering
+	VkPipelineRenderingCreateInfo dynamic_rendering_pipeline_info{
+		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+	dynamic_rendering_pipeline_info.pNext = VK_NULL_HANDLE;
+
+	dynamic_rendering_pipeline_info.depthAttachmentFormat = SHADOWMAP_DEPTH_FORMAT;
+	dynamic_rendering_pipeline_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
+
+#pragma region ---[Push Constants]---
+
+	constexpr uint32_t kPC_Total = 192;
+
+	VkPushConstantRange range{};
+	range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	range.offset = 0;
+	range.size = kPC_Total;
+
+	VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	layoutInfo.setLayoutCount = 1;
+	layoutInfo.pSetLayouts = descriptorSetLayout;
+	layoutInfo.pushConstantRangeCount = 1;
+	layoutInfo.pPushConstantRanges = &range;
+
+	if (vkCreatePipelineLayout(*device_, &layoutInfo, nullptr,
+		&pipeline.plyt) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create pipeline layout!");
+	}
+
+#pragma endregion
+
+	// 9. Finally, the pipeline create info
+	VkGraphicsPipelineCreateInfo pipeCI{};
+	pipeCI.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pipeCI.stageCount = 1;                          // <— ONLY vertex stage
+	pipeCI.pStages = shaderStages;
+
+	pipeCI.pVertexInputState = &vertexInput;
+	pipeCI.pInputAssemblyState = &inputAssembly;
+	pipeCI.pViewportState = &viewportState;
+	pipeCI.pRasterizationState = &raster;
+	pipeCI.pMultisampleState = &ms;
+	pipeCI.pDepthStencilState = &depthStencil;
+	pipeCI.pColorBlendState = &colorBlend;
+	pipeCI.pDynamicState = &dynamicState;
+
+	pipeCI.layout = pipeline.plyt;
+	pipeCI.subpass = 0;
+	pipeCI.pNext = &dynamic_rendering_pipeline_info;
+
+	vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipeCI, nullptr, &pipeline.pipeline);
+
+	return pipelinesPool_.create(std::move(pipeline));
+
+}
+
 [[nodiscard]] PipelineHandle Context::CreatePipeline(
 	RasterSettings raster_settings,
 	ShaderModuleHandle vert,
@@ -738,6 +1037,7 @@ void Context::UploadDataToBuffer(
 	pipeline.raster_settings = default_raster_settings;
 	pipeline.frag = frag;
 	pipeline.vert = vert;
+	pipeline.type = PIPELINE_MATERIAL;
 
 	auto v = shaderModulePool_.get(vert);
 	auto f = shaderModulePool_.get(frag);
@@ -785,14 +1085,14 @@ void Context::UploadDataToBuffer(
 	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	inputAssembly.primitiveRestartEnable = VK_FALSE;
 
-	// 
+	// VIEWPORT
 
 	VkPipelineViewportStateCreateInfo viewportState{};
 	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 	viewportState.viewportCount = 1;
 	viewportState.scissorCount = 1;
 
-	//
+	// RASTERIZER
 
 	VkPipelineRasterizationStateCreateInfo rasterizer{};
 	rasterizer.sType =
@@ -805,7 +1105,7 @@ void Context::UploadDataToBuffer(
 	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	rasterizer.depthBiasEnable = VK_FALSE;
 
-	//
+	// MULTISAMPLING
 
 	VkPipelineMultisampleStateCreateInfo multisampling{};
 	multisampling.sType =
@@ -813,7 +1113,7 @@ void Context::UploadDataToBuffer(
 	multisampling.sampleShadingEnable = VK_FALSE;
 	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-	//
+	// STENCIL
 
 	VkPipelineDepthStencilStateCreateInfo depthStencil{};
 	depthStencil.sType =
@@ -824,7 +1124,7 @@ void Context::UploadDataToBuffer(
 	depthStencil.depthBoundsTestEnable = VK_FALSE;
 	depthStencil.stencilTestEnable = VK_FALSE;
 
-	//
+	// COLORBLEND
 
 	VkPipelineColorBlendAttachmentState colorBlendAttachment{};
 	colorBlendAttachment.colorWriteMask =
@@ -843,6 +1143,8 @@ void Context::UploadDataToBuffer(
 	colorBlending.blendConstants[1] = 0.0f;
 	colorBlending.blendConstants[2] = 0.0f;
 	colorBlending.blendConstants[3] = 0.0f;
+
+	// DYNAMIC STATES
 
 	// These two are elemental. There are extensions for almost anything do. Maybe it is woth to go all in dynamic state.
 	std::vector<VkDynamicState> dynamicStates = {
@@ -871,7 +1173,6 @@ void Context::UploadDataToBuffer(
 	layoutInfo.pushConstantRangeCount = 1;
 	layoutInfo.pPushConstantRanges = &range;
 
-
 	if (vkCreatePipelineLayout(*device_, &layoutInfo, nullptr,
 		&pipeline.plyt) != VK_SUCCESS) {
 		throw std::runtime_error("failed to create pipeline layout!");
@@ -880,16 +1181,16 @@ void Context::UploadDataToBuffer(
 #pragma endregion
 
 	// Provide information for dynamic rendering
-	VkPipelineRenderingCreateInfo pipeline_create{
+	VkPipelineRenderingCreateInfo dynamic_rendering_pipeline_info{
 		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
-	pipeline_create.pNext = VK_NULL_HANDLE;
+	dynamic_rendering_pipeline_info.pNext = VK_NULL_HANDLE;
 
 	// We are using the single color buffer out.
-	pipeline_create.colorAttachmentCount = 1;
-	pipeline_create.pColorAttachmentFormats = &swapchainImageFormat;
+	dynamic_rendering_pipeline_info.colorAttachmentCount = 1;
+	dynamic_rendering_pipeline_info.pColorAttachmentFormats = &swapchainImageFormat;
 
-	pipeline_create.depthAttachmentFormat = depth_format;
-	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+	dynamic_rendering_pipeline_info.depthAttachmentFormat = depth_format;
+	dynamic_rendering_pipeline_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo{};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -904,7 +1205,7 @@ void Context::UploadDataToBuffer(
 	pipelineInfo.pDynamicState = &dynamicState;
 	pipelineInfo.pDepthStencilState = &depthStencil;
 	pipelineInfo.layout = pipeline.plyt;
-	pipelineInfo.pNext = &pipeline_create;
+	pipelineInfo.pNext = &dynamic_rendering_pipeline_info;
 
 	if (vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipelineInfo,
 		nullptr, &pipeline.pipeline) != VK_SUCCESS)
@@ -970,7 +1271,7 @@ void Context::TransitionImageLayout(
 	barrier.subresourceRange.baseArrayLayer = 0;
 	barrier.subresourceRange.layerCount = 1;
 
-	if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+	if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
 		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 
 		if (hasStencilComponent(format)) {
@@ -1002,6 +1303,8 @@ void Context::TransitionImageLayout(
 	}
 	else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
 		newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+
+		// Swapchain depth
 		barrier.srcAccessMask = 0;
 		barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
 			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
@@ -1009,10 +1312,22 @@ void Context::TransitionImageLayout(
 		sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 		destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 	}
+	else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+		newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
+
+		// ShadowMaps
+		barrier.srcAccessMask = 0;
+		barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+		sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+	}
+
 	else {
 
-		assert(false);
-		throw std::invalid_argument("unsupported layout transition!");
+		assert(false); // This so i have easy acces to call stack.
+		//throw std::invalid_argument("unsupported layout transition!");
 	}
 
 	vkCmdPipelineBarrier(
@@ -1116,7 +1431,9 @@ void Context::getAppropriateSampler(Texture& texture) {
 	// Lets do this for the moment. DEPTH is 
 	assert(aspect == VK_IMAGE_ASPECT_COLOR_BIT);
 
-	CreateImageView(ctx_tex.image, vk_tex.imageFormat, aspect, texture.numLevels, ctx_tex.imageView);
+	auto view_handle = CreateImageView(ctx_tex.image, vk_tex.imageFormat, aspect, texture.numLevels);
+	ctx_tex.imageView = *imageViews_.get(view_handle);
+
 	getAppropriateSampler(ctx_tex);
 
 	// Later, when destroying:
@@ -1128,8 +1445,37 @@ void Context::getAppropriateSampler(Texture& texture) {
 [[nodiscard]] ShadowMapHandle Context::CreateShadowMap()
 {
 	ShadowMap sm;
-	sm.image = CreateCascadedShadowMapsDepthImage(400,400, 1);
-	//sm.imageView = CreateImageView();
+	sm.cascades = 1;
+	sm.image = CreateCascadedShadowMapsDepthImage(400, 400, 1);
+
+
+	auto image = images_.get(sm.image);
+	// These are the individual views for use as depth render attachment in the pipeline.
+	for (int i = 0; i < sm.cascades; i++) {
+
+		auto view = CreateImageView(
+			image->image, // Function signature should be changed to ImageHandle instead of plain VkImage. 
+			image->format,
+			//VK_FORMAT_D32_SFLOAT, // Copied from CreateCascadedShadowMapsDepthImage. Need to checlk froamt availabilty and track it, probably...,
+			VK_IMAGE_ASPECT_DEPTH_BIT,
+			1
+		);
+
+		sm.renderViews.push_back(
+			view
+		);
+
+	}
+
+	// We also need the sample view for shader use. 
+	sm.sampleView = CreateImageView(
+		image->image,
+		image->format,
+		VK_IMAGE_ASPECT_DEPTH_BIT,
+		1, // levels = MIPS
+		0,
+		sm.cascades // layerCount. Layers = ARRAY
+	);
 
 	return shadowmaps_.create(std::move(sm));
 
@@ -1143,7 +1489,7 @@ void Context::getAppropriateSampler(Texture& texture) {
 		| VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
 	// Levels just 1. No mipmaps for shadow maps images. 
-	ImageHandle image_handle = CreateImage(texWidth, texHeight, VK_FORMAT_D32_SFLOAT, usage, 1, cascades);
+	ImageHandle image_handle = CreateImage(texWidth, texHeight, SHADOWMAP_DEPTH_FORMAT, usage, 1, cascades);
 
 	auto image = images_.get(image_handle);
 
@@ -1385,7 +1731,13 @@ void Context::getAppropriateSampler(Texture& texture) {
 
 };
 
-// Destrcutors
+// HELPERS
+
+VkQueue Context::GetGraphicsQueue() {
+	return default_queue;
+}
+
+// DESTRUCTORS
 
 void destroy(Context* ctx, ShaderModuleHandle handle) {
 	assert(handle.valid());
@@ -1419,4 +1771,15 @@ void destroy(Context* ctx, DeviceBufferHandle handle) {
 	vmaDestroyBuffer(*ctx->allocator_, db->buffer, db->alloc);
 	ctx->buffers_.destroy(handle);
 };
+
+// END
+
+void Context::CleanUp() {
+
+	// Clear Pools.
+	// Clear VmaPools.
+	vmaDestroyVirtualBlock(index_blk);
+	vmaDestroyVirtualBlock(vertex_blk);
+	//vmaDestroyPool();//
+}
 
