@@ -80,14 +80,16 @@ struct alignas(16) Light {
 	glm::vec4 color = glm::vec4(1.0f);       // offset 0,  size 16
 
 	float position[3] = { 0.0f,0.0f,0.0f };     // offset 16, size 12
-	float _pad0;           // offset 28, size 4  -> total 32
+	int32_t flags = 0;
+	//float _pad0;           // offset 28, size 4  -> total 32
 
 	float direction[3] = { 0.0f,0.0f,0.0f };    // offset 32, size 12
 	float intensity = 1.0f;       // offset 44, size 4  -> total 48
 
-	int32_t type = LIGHT_TYPE_POINT; 
-    float innerAngle = 10.0f;
-    float outerAngle = 20.0f;
+	int32_t type = LIGHT_TYPE_POINT;
+	// in radians!
+	float innerAngle = glm::radians(10.0f);
+	float outerAngle = glm::radians(20.0f);
 	// -1 no shadow map. else context->shadowmaps.id.
 	int shadow_map_index = -1;
 };
@@ -241,7 +243,7 @@ inline glm::mat4 GetLightProj(
 	// For spot lights, use outerAngle to define the FOV
 	if (l.type == LIGHT_TYPE_SPOT) {
 		// outerAngle is in degrees in your struct; FOV = 2 * outerAngle
-		float fovRadians = glm::radians(l.outerAngle * 2.0f);
+		float fovRadians = l.outerAngle * 2.0f;
 		return glm::perspective(fovRadians, aspect, nearPlane, farPlane);
 	}
 

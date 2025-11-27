@@ -128,7 +128,6 @@ public:
 	// Im gonna need a custom str type... lets use std::string for now.
 	std::unordered_map<std::string, SamplerHandle> samplers;
 
-
 	VmaAllocator allocator;
 	VmaAllocator* allocator_;
 	VkDevice* device_;
@@ -201,7 +200,7 @@ public:
 		samplers["default"] = CreateSampler(100);
 
 		// Samplers are driver objs. can be copied like this np.
-		samplers["default_shadow"] = CreateSampler(1);
+		samplers["default_shadow"] = CreateShadowSampler(1);
 
 		// Lets reserve upfront.
 		textures_.objects_.reserve(MAX_TEXTURES);
@@ -383,8 +382,11 @@ public:
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
 	ImageHandle CreateCascadedShadowMapsDepthImage(int texWidth, int texHeight, int cascades);
 	SamplerHandle CreateSampler(uint32_t levelCount);
+	SamplerHandle CreateShadowSampler(uint32_t levelCount);
 	TextureHandle CreateTexture(ktxTexture2& texture);
 	ShadowMapHandle CreateShadowMap();
+
+	ShadowMapHandle CreateBlankShadowMap();
 
 	MaterialInstanceHandle CreateMaterialInstance(PipelineHandle mat_pipeline);
 
@@ -392,7 +394,7 @@ public:
 	DescriptorLayoutHandle CreateShadowMapsDescriptorSetLayout();
 	DescriptorPoolHandle createDescriptorPool();
 
-	ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount);
+	ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType);
 	ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount);
 
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
@@ -424,11 +426,21 @@ public:
 [[nodiscard]] SamplerHandle Context::CreateSampler(uint32_t levelCount) {
 
 	VkSampler sampler_;
-	createSampler(*physicalDevice_, *device_, sampler_, levelCount);
+	createSampler(*physicalDevice_, *device_, sampler_, levelCount, VK_COMPARE_OP_ALWAYS);
 
 	return samplers_.create(std::move(sampler_));
 
 }
+
+[[nodiscard]] SamplerHandle Context::CreateShadowSampler(uint32_t levelCount) {
+
+	VkSampler sampler_;
+	createSampler(*physicalDevice_, *device_, sampler_, levelCount, VK_COMPARE_OP_GREATER_OR_EQUAL);
+
+	return samplers_.create(std::move(sampler_));
+
+}
+
 
 [[nodiscard]] ImageViewHandle  Context::CreateImageView(
 	VkImage image,
@@ -443,7 +455,8 @@ public:
 		aspectFlags,
 		levelCount,
 		0,
-		1
+		1,
+		VK_IMAGE_VIEW_TYPE_2D // Lets default to this. im only using 2D arrays for cascades in shadow maps for the moment
 	);
 
 
@@ -455,13 +468,14 @@ public:
 	VkImageAspectFlags aspectFlags,
 	int levelCount,
 	int baseArrayLayer,
-	int layerCount
+	int layerCount,
+	VkImageViewType viewType
 ) {
 
 	VkImageView imageView;
 
 	// this leaks 2D_ARRAY_IMAGES with 1 layer. triggers validation error!
-	VkImageViewType viewType = (layerCount > 1) ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+	//VkImageViewType viewType = (layerCount > 1) ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
 
 	VkImageViewCreateInfo viewInfo{};
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -950,7 +964,9 @@ void Context::UploadDataToBuffer(
 	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 	depthStencil.depthTestEnable = VK_TRUE;
 	depthStencil.depthWriteEnable = VK_TRUE;
-	depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
+
+	// Changed 
+	depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 	depthStencil.depthBoundsTestEnable = VK_FALSE;
 	depthStencil.stencilTestEnable = VK_FALSE;
 
@@ -1468,6 +1484,50 @@ void Context::getAppropriateSampler(Texture& texture) {
 			image->format,
 			//VK_FORMAT_D32_SFLOAT, // Copied from CreateCascadedShadowMapsDepthImage. Need to checlk froamt availabilty and track it, probably...,
 			VK_IMAGE_ASPECT_DEPTH_BIT,
+			1,
+			0,
+			1,
+			VK_IMAGE_VIEW_TYPE_2D_ARRAY
+
+		);
+
+		sm.renderViews.push_back(
+			view
+		);
+
+	}
+
+	// We also need the sample view for shader use. 
+	sm.sampleView = CreateImageView(
+		image->image,
+		image->format,
+		VK_IMAGE_ASPECT_DEPTH_BIT,
+		1, // levels = MIPS
+		0,
+		sm.cascades, // layerCount. Layers = ARRAY
+		VK_IMAGE_VIEW_TYPE_2D_ARRAY
+	);
+
+	return shadowmaps_.create(std::move(sm));
+
+}
+
+[[nodiscard]] ShadowMapHandle Context::CreateBlankShadowMap()
+{
+	ShadowMap sm;
+	sm.cascades = 1;
+	sm.image = CreateCascadedShadowMapsDepthImage(1, 1, 1);
+
+
+	auto image = images_.get(sm.image);
+	// These are the individual views for use as depth render attachment in the pipeline.
+	for (int i = 0; i < sm.cascades; i++) {
+
+		auto view = CreateImageView(
+			image->image, // Function signature should be changed to ImageHandle instead of plain VkImage. 
+			image->format,
+			//VK_FORMAT_D32_SFLOAT, // Copied from CreateCascadedShadowMapsDepthImage. Need to checlk froamt availabilty and track it, probably...,
+			VK_IMAGE_ASPECT_DEPTH_BIT,
 			1
 		);
 
@@ -1484,12 +1544,15 @@ void Context::getAppropriateSampler(Texture& texture) {
 		VK_IMAGE_ASPECT_DEPTH_BIT,
 		1, // levels = MIPS
 		0,
-		sm.cascades // layerCount. Layers = ARRAY
+		sm.cascades, // layerCount. Layers = ARRAY
+		VK_IMAGE_VIEW_TYPE_2D_ARRAY
 	);
 
 	return shadowmaps_.create(std::move(sm));
 
 }
+
+
 
 // Good defaults preset for DepthImageCreation.
 [[nodiscard]] ImageHandle Context::CreateCascadedShadowMapsDepthImage(int texWidth, int texHeight, int cascades) {

@@ -25,7 +25,8 @@ struct Light
     float4 color; // 16B
 
     float3 position; // 12B
-    float _pad0; // 4B = pad to 16B
+    int flags;
+    //float _pad0; // 4B = pad to 16B
 
     float3 direction; // 12B
     float intensity; // 4B
@@ -46,6 +47,8 @@ cbuffer Lights
 };
 
 
+
+// iamgeViews to the shadowMap
 [[vk::binding(5, 0)]]
 Texture2DArray gShadowMaps;
 
@@ -63,6 +66,20 @@ struct PSOut
 {
     float4 outColor : SV_Target;
 };
+
+
+
+float4x4 GetLightViewProj(Light light)
+{
+    float4x4 lightView = GetLightView(light.position, light.direction);
+    float4x4 lightProj = GetLightProj(light.outerAngle, 1.0f, 0.1f, 100.0f);
+    lightProj[1][1] *= -1.0f;
+            //lightProj[2][3] = -1;
+    float4x4 lightViewProj = mul(lightProj, lightView); // proj * view
+    
+    return lightViewProj;
+
+}
 
 
 //float PCFShadow(float2 uv, float currentDepth, Texture2D map, SamplerState samp)
@@ -84,30 +101,40 @@ struct PSOut
 //}
 
 
-float GetShadowFactor(float3 worldPos, Light light, float4x4 lightViewProj)
+float GetShadowFactor(float3 worldPos, Light light)
 {
-    float4 clip = mul(lightViewProj, float4(worldPos, 1.0));
-    float3 ndc = clip.xyz / clip.w;
+    // Transform world position into the light's clip space
+    float4 clip = mul(GetLightViewProj(light), float4(worldPos, 1.0));
+    float3 ndc = clip.xyz / clip.w; // NDC: x,y in [-1,1], z in [0,1] (Vulkan-style)
 
+    // If behind near / beyond far in clip space, treat as lit (no shadow)
+    // Still valid for reversed Z: ndc.z in (0,1) is the valid range.
     if (ndc.z <= 0.0f || ndc.z >= 1.0f)
         return 1.0f;
 
+    // NDC xy [-1,1] -> [0,1] UVs
     float2 uv = ndc.xy * 0.5f + 0.5f;
-    if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
-        return 1.0f;
+    // Outside the shadow map => lit
+    //if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
+    //    return 1.0f;
 
+    // Sample depth from the shadow map array
     float depth = gShadowMaps.Sample(gShadowSampler, float3(uv, light.shadow_map_index)).r;
 
-    float bias = 0.001f;
-    return (ndc.z - bias > depth) ? 0.0f : 1.0f;
+    // Reversed-Z comparison:
+    //  - Standard Z: closer => smaller depth, test: (ndc.z - bias <= depth)
+    //  - Reversed Z: closer => larger depth, test: (ndc.z + bias >= depth)
+    const float bias = 0.001f;
+
+    return (ndc.z + bias <= depth) ? 1.0f : 0.0f;
 }
 
 float3 EvaluateSpotLight(
     Light light,
     float3 worldPos,
     float3 N,
-    float3 baseColor,
-    float4x4 lightViewProj)
+    float3 baseColor
+    )
 {
     // Vector from point to light
     float3 toLight = light.position - worldPos;
@@ -129,7 +156,7 @@ float3 EvaluateSpotLight(
     // (cone axis points *out* of the light, so use -lightDir)
     float spotCos = dot(L, -lightDir);
 
-    // Assume innerAngle / outerAngle are in radians
+    // Assume innerAngle / outerAngle are in radians. They indeed are.
     float innerCos = cos(light.innerAngle);
     float outerCos = cos(light.outerAngle);
 
@@ -140,15 +167,16 @@ float3 EvaluateSpotLight(
     // float spotFactor = saturate(smoothstep(outerCos, innerCos, spotCos));
 
     // Shadow factor (1 = lit, 0 = fully shadowed)
-    float shadow = 1.0f;
+    float shadow = 1.0;
     if (light.shadow_map_index >= 0)
     {
-        shadow = GetShadowFactor(worldPos, light, lightViewProj);
+        shadow = GetShadowFactor(worldPos, light);
     }
 
     float3 lightColor = light.color.rgb * light.intensity;
-
+    
     return baseColor * lightColor * NdotL * attenuation * spotFactor * shadow;
+    
 }
 
 // Pure lambertian
@@ -182,7 +210,6 @@ float3 EvaluatePointLight(Light light, float3 worldPos, float3 N, float3 baseCol
 
 }
 
-
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
@@ -207,7 +234,8 @@ PSOut mainPS(PSIn IN)
     float3 litColor = ambient;
 
     [loop]
-    for (uint i = 0; i < MAX_LIGHTS; ++i)
+    //for (uint i = 0; i < MAX_LIGHTS; ++i)
+    for (uint i = 0; i < 1; ++i)
     {
         Light light = g_Lights[i];
 
@@ -217,16 +245,11 @@ PSOut mainPS(PSIn IN)
         }
         else
         {
-            float4x4 lightView = GetLightView(light.position, light.direction);
-            float4x4 lightProj = GetLightProj(light.outerAngle, 1.0f, 0.1f, 100.0f);
-            float4x4 lightViewProj = mul(lightProj, lightView); // proj * view
-
-            litColor += EvaluateSpotLight(light, IN.worldPos, N, baseColor, lightViewProj);
+            litColor += EvaluateSpotLight(light, IN.worldPos, N, baseColor);
 
         }
-        
     }
-
+    
     OUT.
         outColor = float4(litColor, texSample.a);
 

@@ -123,13 +123,14 @@ void FabricateLightData(Light* data) {
 		RGB rgb = hsv2rgb(hue, 1.0f, 1.0f);
 
 		data[i].color = { rgb.r, rgb.g, rgb.b, 1.0f };
-		data[i].intensity = 1.0f;
+		//data[i].intensity = 1.0f;
+		data[i].intensity = .0f;
 		data[i].type = LIGHT_TYPE_POINT;
 		if (i % 2 == 1) {
 			data[i].type = LIGHT_TYPE_SPOT;
 			data[i].position[1] = 3.0f;
 			data[i].position[0] = 2.0f;
-			data[i].direction[3] = 3.0f;
+			data[i].position[2] = 3.0f;
 		}
 	}
 
@@ -293,7 +294,62 @@ private:
 		ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
 			1000.0f / io.Framerate, io.Framerate);
 
+		// --- Debug: draw light dots in screen space ---
 
+		ImDrawList* drawList = ImGui::GetForegroundDrawList();
+
+		glm::mat4 view = camera_.getViewMatrix();
+		glm::mat4 proj = camera_.getProjMatrix();
+		proj[1][1] *= -1.0f;  // match your main pass
+
+		for (int i = 0; i < MAX_LIGHTS; ++i) {
+
+			if (lights[i].intensity <= 0.0f)
+				continue;
+
+			glm::vec3 worldPos(
+				lights[i].position[0],
+				lights[i].position[1],
+				lights[i].position[2]
+			);
+
+			glm::vec4 clip = proj * view * glm::vec4(worldPos, 1.0f);
+			if (clip.w <= 0.0f)
+				continue;
+
+			glm::vec3 ndc = glm::vec3(clip) / clip.w; // [-1,1]
+
+			if (ndc.x < -1.0f || ndc.x > 1.0f ||
+				ndc.y < -1.0f || ndc.y > 1.0f ||
+				ndc.z < 0.0f || ndc.z > 1.0f)
+				continue;
+
+			// Map NDC -> ImGui screen space (origin top-left)
+			const float sx = (ndc.x * 0.5f + 0.5f) * io.DisplaySize.x;
+			const float sy = (ndc.y * 0.5f + 0.5f) * io.DisplaySize.y;  // <- no extra flip
+
+			float r = lights[i].color[0];
+			float g = lights[i].color[1];
+			float b = lights[i].color[2];
+			if (r == 0.0f && g == 0.0f && b == 0.0f) {
+				r = 1.0f; g = 1.0f; b = 0.0f;
+			}
+
+			ImU32 col = IM_COL32(
+				(int)(glm::clamp(r, 0.0f, 1.0f) * 255.0f),
+				(int)(glm::clamp(g, 0.0f, 1.0f) * 255.0f),
+				(int)(glm::clamp(b, 0.0f, 1.0f) * 255.0f),
+				255
+			);
+
+			const float radius = 6.0f;
+			drawList->AddCircleFilled(ImVec2(sx, sy), radius, col, 12);
+
+			// Optional label
+			 drawList->AddText(ImVec2(sx + radius + 2.0f, sy - radius),
+			                   IM_COL32(255, 255, 255, 255),
+			                   std::to_string(i).c_str());
+		}
 
 	}
 
@@ -644,7 +700,7 @@ private:
 			auto setObj = context->descriptrorSetPool_.get(setHandle);
 			VkDescriptorSet vkSet = setObj->set;
 
-			VkWriteDescriptorSet writes[3]{};
+			VkWriteDescriptorSet writes[2]{};
 
 			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			writes[0].dstSet = vkSet;
@@ -682,9 +738,7 @@ private:
 
 		for (int i = 0; i < MAX_LIGHTS; i++)
 		{
-			auto tex = context->textures_.objects_[i].obj_;
-
-			if (lights[i].shadow_map_index == -1) 
+			if (lights[i].shadow_map_index == -1)
 			{
 				VkDescriptorImageInfo ii{};
 				ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
@@ -896,7 +950,7 @@ private:
 		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;   // we want to sample this later
 
 		VkClearValue clearDepth{};
-		clearDepth.depthStencil.depth = 0.0f;   // same as your main pass
+		clearDepth.depthStencil.depth = 1.0f;   // same as your main pass
 		depthAttachment.clearValue = clearDepth;
 
 		VkRenderingInfoKHR renderingInfo{};
@@ -946,7 +1000,6 @@ private:
 			s_pipeline->pipeline
 		);
 
-		// this is wrong!
 		auto sets = context->descriptrorSetPool_.get(shadowFrameDescriptorSets[currentFrame]);
 
 		vkCmdBindDescriptorSets(
@@ -964,7 +1017,7 @@ private:
 		PushConstants pc{};
 		pc.view = GetLightView(lights[0]);
 		pc.proj = GetLightProj(lights[0], /*aspect*/ 1.0f, /*near*/ 0.1f, /*far*/ 100.0f);
-		//pc.proj[1][1] *= -1;
+		pc.proj[1][1] *= -1;
 
 		struct PC_All {
 			PushConstants pc;               // 144
@@ -1129,9 +1182,6 @@ private:
 		pc.view = camera_.getViewMatrix();
 		pc.proj = camera_.getProjMatrix();
 		pc.proj[1][1] *= -1;
-
-
-
 
 		// I long ago did this to be able to run trough different pipeline setuops like transparency and else. Amay be wrong and dumb
 		for (auto mat_pipe_entry : context->pipelinesPool_.objects_) {
@@ -2048,13 +2098,23 @@ void VulkanApp::Start() {
 	for (int i = 0; i < MAX_LIGHTS; i++) {
 		if (i == 0) {
 
-			lights[i].position[0] = 1.0f;
-			lights[i].position[1] = 3.0f;
-			lights[i].position[2] = 5.0f;
-
-			lights[i].direction[0] = 4.0f;
-			lights[i].direction[1] = 3.0f;
+			lights[i].position[0] = 0.0f;
+			lights[i].position[1] = 2.0f;
+			lights[i].position[2] = -1.0f;
+			lights[i].direction[0] = 0.0f;
+			lights[i].direction[1] = 1.0f;
 			lights[i].direction[2] = 5.0f;
+
+			lights[i].intensity = 10.0f;
+
+			lights[i].color[0] = 1.0f;
+			lights[i].color[1] = 1.0f;
+			lights[i].color[2] = 1.0f;
+
+			lights[i].flags = 1 << 10;
+			lights[i].type = LIGHT_TYPE_SPOT;
+			lights[i].innerAngle = glm::radians(10.0f);
+			lights[i].outerAngle = glm::radians(20.0f);
 
 			auto sm_h = context->CreateShadowMap();
 			lights[i].shadow_map_index = sm_h.index();
