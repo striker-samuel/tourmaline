@@ -1,3 +1,5 @@
+#include "shader_utils.h"
+
 #ifndef MAX_LIGHTS
 #define MAX_LIGHTS 10
 #endif
@@ -42,8 +44,13 @@ cbuffer Lights
 {
     Light g_Lights[10]; // or a struct containing them
 };
+
+
 [[vk::binding(5, 0)]]
-Texture2D shadowMapTex; // + combined sampler layout in SPIR-V
+Texture2DArray gShadowMaps;
+
+[[vk::binding(6, 0)]]
+SamplerState gShadowSampler;
 
 struct PSIn
 {
@@ -57,62 +64,92 @@ struct PSOut
     float4 outColor : SV_Target;
 };
 
-//float ShadowFactor(float3 worldPos)
+
+//float PCFShadow(float2 uv, float currentDepth, Texture2D map, SamplerState samp)
 //{
-//    // Transform world position into light clip space
-//    float4 lightClip = mul(lightViewProj, float4(worldPos, 1.0f));
+//    float sum = 0;
+//    float2 texel = float2(1.0 / SHADOW_RES, 1.0 / SHADOW_RES);
 
-//    // Perspective divide
-//    float3 ndc = lightClip.xyz / lightClip.w;
-
-//    // NDC [-1,1] --> UV [0,1]
-//    float2 shadowUV = ndc.xy * 0.5f + 0.5f;
-
-//    // If outside the shadow map, treat as lit
-//    if (shadowUV.x < 0.0f || shadowUV.x > 1.0f ||
-//        shadowUV.y < 0.0f || shadowUV.y > 1.0f ||
-//        ndc.z < 0.0f || ndc.z > 1.0f)
+//    [unroll]
+//    for (int x = 0; x < 2; ++x)
 //    {
-//        return 1.0f;
+//        [unroll]
+//        for (int y = 0; y < 2; ++y)
+//        {
+//            float d = map.Sample(samp, uv + float2(x, y) * texel).r;
+//            sum += currentDepth > d ? 0.0 : 1.0;
+//        }
 //    }
-
-//    // Sample depth from shadow map
-//    float shadowDepth = shadowMapTex.Sample(shadowMapSamp, shadowUV).r;
-
-//    // Bias to reduce acne
-//    float bias = 0.001f;
-
-//    // If current depth is greater than stored depth, we’re in shadow
-//    float currentDepth = ndc.z;
-//    return (currentDepth - bias > shadowDepth) ? 0.0f : 1.0f;
+//    return sum * 0.25;
 //}
 
-float3 EvaluateSpotLight(Light light, float3 worldPos, float3 N, float3 baseColor)
+
+float GetShadowFactor(float3 worldPos, Light light, float4x4 lightViewProj)
 {
+    float4 clip = mul(lightViewProj, float4(worldPos, 1.0));
+    float3 ndc = clip.xyz / clip.w;
+
+    if (ndc.z <= 0.0f || ndc.z >= 1.0f)
+        return 1.0f;
+
+    float2 uv = ndc.xy * 0.5f + 0.5f;
+    if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
+        return 1.0f;
+
+    float depth = gShadowMaps.Sample(gShadowSampler, float3(uv, light.shadow_map_index)).r;
+
+    float bias = 0.001f;
+    return (ndc.z - bias > depth) ? 0.0f : 1.0f;
+}
+
+float3 EvaluateSpotLight(
+    Light light,
+    float3 worldPos,
+    float3 N,
+    float3 baseColor,
+    float4x4 lightViewProj)
+{
+    // Vector from point to light
     float3 toLight = light.position - worldPos;
     float distSq = max(dot(toLight, toLight), 1e-4f);
-    float3 L = toLight * rsqrt(distSq);
+    float3 L = toLight * rsqrt(distSq); // normalize
 
+    // Lambert term
     float NdotL = saturate(dot(N, L));
+    if (NdotL <= 0.0f)
+        return 0.0.xxx;
 
+    // Inverse square attenuation
     float attenuation = 1.0f / distSq;
 
-    float spotCos = dot(L, -light.direction);
+    // Make sure light.direction is treated as normalized
+    float3 lightDir = normalize(light.direction);
 
-    float inner = cos(light.innerAngle);
-    float outer = cos(light.outerAngle);
+    // Cosine of angle between cone axis and point
+    // (cone axis points *out* of the light, so use -lightDir)
+    float spotCos = dot(L, -lightDir);
 
-    // Compute spot factor (0..1)
-    float spotFactor = saturate((spotCos - outer) / (inner - outer));
+    // Assume innerAngle / outerAngle are in radians
+    float innerCos = cos(light.innerAngle);
+    float outerCos = cos(light.outerAngle);
 
-    // Optional: smoothstep for softer edge
-    // float spotFactor = saturate(smoothstep(outer, inner, spotCos));
+    // Avoid divide-by-zero if inner == outer
+    float denom = max(innerCos - outerCos, 1e-4f);
+    float spotFactor = saturate((spotCos - outerCos) / denom);
+    // If you want softer edge:
+    // float spotFactor = saturate(smoothstep(outerCos, innerCos, spotCos));
+
+    // Shadow factor (1 = lit, 0 = fully shadowed)
+    float shadow = 1.0f;
+    if (light.shadow_map_index >= 0)
+    {
+        shadow = GetShadowFactor(worldPos, light, lightViewProj);
+    }
 
     float3 lightColor = light.color.rgb * light.intensity;
 
-    return baseColor * lightColor * NdotL * attenuation * spotFactor;
+    return baseColor * lightColor * NdotL * attenuation * spotFactor * shadow;
 }
-
 
 // Pure lambertian
 float3 EvaluatePointLight(Light light, float3 worldPos, float3 N, float3 baseColor)
@@ -149,6 +186,8 @@ float3 EvaluatePointLight(Light light, float3 worldPos, float3 N, float3 baseCol
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
+    float4x4 lightView;
+    float4x4 lightViewProj;
 
     // Diffuse texture lookup
     uint texIdx = pc.texDiffuse; // uniform per draw via push constants
@@ -178,22 +217,18 @@ PSOut mainPS(PSIn IN)
         }
         else
         {
-            litColor += EvaluateSpotLight(light, IN.worldPos, N, baseColor);
-            if (light.shadow_map_index != -1)
-            {
-                //Sample into shadowmap with id.
-                // Alter color base on shadow. 
-            }
+            float4x4 lightView = GetLightView(light.position, light.direction);
+            float4x4 lightProj = GetLightProj(light.outerAngle, 1.0f, 0.1f, 100.0f);
+            float4x4 lightViewProj = mul(lightProj, lightView); // proj * view
+
+            litColor += EvaluateSpotLight(light, IN.worldPos, N, baseColor, lightViewProj);
 
         }
         
-        //if (i == 0)
-        //{
-        //    litColor * shadow;
-        //}
     }
 
-    OUT.outColor = float4(litColor, texSample.a);
+    OUT.
+        outColor = float4(litColor, texSample.a);
 
     return OUT;
 }

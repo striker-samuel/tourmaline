@@ -670,44 +670,76 @@ private:
 
 	void UpdateShadowMapDescriptorSets(uint32_t currentFrame)
 	{
-		// 1) Grab the shadowmap object from your pool
-		auto smh = context->shadowmaps_.getHandle(lights[0].shadow_map_index);
-		auto sm = context->shadowmaps_.get(smh);
-
-		// 2) Get the image view for the depth layer we rendered into
-		VkImageView shadowView = *context->imageViews_.get(sm->renderViews[0]);
-
-		// 3) Choose a sampler for sampling the depth map
-		//    (you probably have one in your context, or create a dedicated "shadowSampler")
 
 		auto sam = context->samplers["default_shadow"];
 		VkSampler shadowSampler = *context->samplers_.get(sam);
 
-		// 4) Fill VkDescriptorImageInfo
-		VkDescriptorImageInfo shadowImageInfo{};
-		shadowImageInfo.sampler = shadowSampler;
-		shadowImageInfo.imageView = shadowView;
-		shadowImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		std::vector<VkDescriptorImageInfo> imageInfos;
+		std::vector<VkDescriptorImageInfo> samplerInfos;
 
-		// 5) Which set are we updating?
-		//    Usually this is the *main* frame descriptor set (not the shadow pass one),
-		//    because we sample the shadow map in the lighting pass.
+		imageInfos.reserve(MAX_LIGHTS);
+		samplerInfos.reserve(MAX_LIGHTS);
+
+		for (int i = 0; i < MAX_LIGHTS; i++)
+		{
+			auto tex = context->textures_.objects_[i].obj_;
+
+			if (lights[i].shadow_map_index == -1) 
+			{
+				VkDescriptorImageInfo ii{};
+				ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
+				ii.imageView = VK_NULL_HANDLE;
+				ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				imageInfos.push_back(ii);
+
+				VkDescriptorImageInfo si{};
+				si.sampler = shadowSampler;
+				si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
+				si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
+				samplerInfos.push_back(si);
+
+				continue;
+			}
+
+			auto smh = context->shadowmaps_.getHandle(lights[i].shadow_map_index);
+			auto sm = context->shadowmaps_.get(smh);
+			VkImageView shadowView = *context->imageViews_.get(sm->renderViews[0]);
+
+			VkDescriptorImageInfo ii{};
+			ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
+			ii.imageView = shadowView;
+			ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			imageInfos.push_back(ii);
+
+			VkDescriptorImageInfo si{};
+			si.sampler = shadowSampler;
+			si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
+			si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
+			samplerInfos.push_back(si);
+		};
+
 		auto setHandle = frameDescriptorSets[currentFrame];
 		auto setObj = context->descriptrorSetPool_.get(setHandle);
 		VkDescriptorSet vkSet = setObj->set;
 
-		// 6) Prepare the write
-		VkWriteDescriptorSet write{};
-		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		write.dstSet = vkSet;
-		write.dstBinding = 5; // binding index for shadow map combined sampler
-		write.dstArrayElement = 0;
-		write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		write.descriptorCount = 1;
-		write.pImageInfo = &shadowImageInfo;
+		VkWriteDescriptorSet writes[2]{};
+		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[0].dstSet = vkSet;
+		writes[0].dstBinding = 5; // binding index for shadow map combined sampler
+		writes[0].dstArrayElement = 0;
+		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		writes[0].descriptorCount = MAX_LIGHTS;
+		writes[0].pImageInfo = imageInfos.data();
 
-		// 7) Update
-		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[1].dstSet = vkSet;
+		writes[1].dstBinding = 6; // binding index for shadow map combined sampler
+		writes[1].dstArrayElement = 0;
+		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+		writes[1].descriptorCount = MAX_LIGHTS;
+		writes[1].pImageInfo = samplerInfos.data();
+
+		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 	}
 
 	void UpdateLightDescriptorSets(uint32_t currentFrame) {
@@ -720,6 +752,7 @@ private:
 			.offset = 0,
 			.range = sizeof(Light) * MAX_LIGHTS
 		};
+
 
 		auto setHandle = frameDescriptorSets[currentFrame];
 		auto setObj = context->descriptrorSetPool_.get(setHandle);

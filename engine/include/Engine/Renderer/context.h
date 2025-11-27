@@ -459,6 +459,8 @@ public:
 ) {
 
 	VkImageView imageView;
+
+	// this leaks 2D_ARRAY_IMAGES with 1 layer. triggers validation error!
 	VkImageViewType viewType = (layerCount > 1) ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
 
 	VkImageViewCreateInfo viewInfo{};
@@ -786,22 +788,29 @@ void Context::UploadDataToBuffer(
 
 	VkDescriptorSetLayoutBinding shadowMapBinding{};
 	shadowMapBinding.binding = 5;   // next free binding
-	shadowMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	shadowMapBinding.descriptorCount = 1;   // one 2D array texture
+	shadowMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	shadowMapBinding.descriptorCount = MAX_LIGHTS;   // one 2D array texture
 	shadowMapBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	shadowMapBinding.pImmutableSamplers = nullptr;
 
-	std::array<VkDescriptorSetLayoutBinding, 6> bindings = {
+	VkDescriptorSetLayoutBinding shadowSamp{};
+	shadowSamp.binding = 6;
+	shadowSamp.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+	shadowSamp.descriptorCount = MAX_LIGHTS;
+	shadowSamp.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	std::array<VkDescriptorSetLayoutBinding, 7> bindings = {
 		instanceIndexBinding,
 		instanceDataBinding,
 		sampledImageBinding,
 		sampBinding,
 		lightBinding,
-		shadowMapBinding
+		shadowMapBinding,
+		shadowSamp
 	};
 
 	// Per-binding flags — same size as bindings[]
-	std::array<VkDescriptorBindingFlags, 6> bindingFlags = {
+	std::array<VkDescriptorBindingFlags, 7> bindingFlags = {
 		0,
 		0,
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
@@ -811,6 +820,7 @@ void Context::UploadDataToBuffer(
 		0, // lightData.
 		//	VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		//	VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // . 
+		0,
 		0
 	};
 
