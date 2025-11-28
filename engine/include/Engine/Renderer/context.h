@@ -415,7 +415,7 @@ public:
 	void TransitionImageLayout(ImageHandle image_handle, VkImageLayout oldLayout, VkImageLayout newLayout);
 
 	VkQueue GetGraphicsQueue();
-	void getAppropriateSampler(Texture& texture);
+	void GetAppropiateSampler(Texture& texture);
 
 	// END
 	void CleanUp();
@@ -958,6 +958,7 @@ void Context::UploadDataToBuffer(
 	VkPipelineMultisampleStateCreateInfo ms{};
 	ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	ms.sampleShadingEnable = VK_FALSE;
 
 	// 6. Depth-stencil
 	VkPipelineDepthStencilStateCreateInfo depthStencil{};
@@ -1044,6 +1045,8 @@ void Context::UploadDataToBuffer(
 	pipeCI.subpass = 0;
 	pipeCI.pNext = &dynamic_rendering_pipeline_info;
 
+
+	assert(pipeCI.pMultisampleState != nullptr);
 	vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipeCI, nullptr, &pipeline.pipeline);
 
 	return pipelinesPool_.create(std::move(pipeline));
@@ -1391,7 +1394,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	);
 }
 
-void Context::getAppropriateSampler(Texture& texture) {
+void Context::GetAppropiateSampler(Texture& texture) {
 
 
 	//VkSampler _sampler;
@@ -1460,7 +1463,7 @@ void Context::getAppropriateSampler(Texture& texture) {
 	auto view_handle = CreateImageView(ctx_tex.image, vk_tex.imageFormat, aspect, texture.numLevels);
 	ctx_tex.imageView = *imageViews_.get(view_handle);
 
-	getAppropriateSampler(ctx_tex);
+	GetAppropiateSampler(ctx_tex);
 
 	// Later, when destroying:
 	// ktxVulkanTexture_Destruct(&vk_tex, device_, nullptr);

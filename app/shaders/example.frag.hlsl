@@ -1,7 +1,7 @@
 #include "shader_utils.h"
 
 #ifndef MAX_LIGHTS
-#define MAX_LIGHTS 10
+#define MAX_LIGHTS 4
 #endif
 
 [[vk::push_constant]]
@@ -35,6 +35,7 @@ struct Light
     float innerAngle;
     float outerAngle;
     int shadow_map_index;
+    float4x4 lightVP;
 };
 
 
@@ -46,14 +47,12 @@ cbuffer Lights
     Light g_Lights[10]; // or a struct containing them
 };
 
-
-
 // iamgeViews to the shadowMap
 [[vk::binding(5, 0)]]
-Texture2DArray gShadowMaps;
+Texture2DArray gShadowMaps[];
 
 [[vk::binding(6, 0)]]
-SamplerState gShadowSampler;
+SamplerState gShadowSampler[];
 
 struct PSIn
 {
@@ -68,43 +67,43 @@ struct PSOut
 };
 
 
+// Shadow map resolution (must match your actual shadow map size)
+static const float SHADOW_RES = 2048.0; // or whatever you use
 
-float4x4 GetLightViewProj(Light light)
+float PCFShadow(float2 uv, float currentDepth, int layer, int shadowmap_index)
 {
-    float4x4 lightView = GetLightView(light.position, light.direction);
-    float4x4 lightProj = GetLightProj(light.outerAngle, 1.0f, 0.1f, 100.0f);
-    lightProj[1][1] *= -1.0f;
-            //lightProj[2][3] = -1;
-    float4x4 lightViewProj = mul(lightProj, lightView); // proj * view
-    
-    return lightViewProj;
+    float2 texelSize = 1.0 / float2(SHADOW_RES, SHADOW_RES);
 
+    float sum = 0.0;
+    int samples = 0;
+
+    // 3x3 kernel around uv
+    [unroll]
+    for (int x = -1; x <= 1; ++x)
+    {
+        [unroll]
+        for (int y = -1; y <= 1; ++y)
+        {
+            float2 offset = float2(x, y) * texelSize;
+            float3 uvw = float3(uv + offset, layer);
+
+            float d = gShadowMaps[shadowmap_index].Sample(gShadowSampler[shadowmap_index], uvw).r;
+
+            // Standard Z: closer => smaller depth
+            // Lit if receiver is not behind the occluder
+            const float bias = 0.001f;
+            sum += (currentDepth - bias <= d) ? 1.0f : 0.0f;
+            samples++;
+        }
+    }
+
+    return sum / samples; // 0..1 shadow factor
 }
-
-
-//float PCFShadow(float2 uv, float currentDepth, Texture2D map, SamplerState samp)
-//{
-//    float sum = 0;
-//    float2 texel = float2(1.0 / SHADOW_RES, 1.0 / SHADOW_RES);
-
-//    [unroll]
-//    for (int x = 0; x < 2; ++x)
-//    {
-//        [unroll]
-//        for (int y = 0; y < 2; ++y)
-//        {
-//            float d = map.Sample(samp, uv + float2(x, y) * texel).r;
-//            sum += currentDepth > d ? 0.0 : 1.0;
-//        }
-//    }
-//    return sum * 0.25;
-//}
-
 
 float GetShadowFactor(float3 worldPos, Light light)
 {
     // Transform world position into the light's clip space
-    float4 clip = mul(GetLightViewProj(light), float4(worldPos, 1.0));
+    float4 clip = mul(light.lightVP, float4(worldPos, 1.0));
     float3 ndc = clip.xyz / clip.w; // NDC: x,y in [-1,1], z in [0,1] (Vulkan-style)
 
     // If behind near / beyond far in clip space, treat as lit (no shadow)
@@ -115,18 +114,20 @@ float GetShadowFactor(float3 worldPos, Light light)
     // NDC xy [-1,1] -> [0,1] UVs
     float2 uv = ndc.xy * 0.5f + 0.5f;
     // Outside the shadow map => lit
-    //if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
-    //    return 1.0f;
-
+    if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
+        return 1.0f;
+    
     // Sample depth from the shadow map array
-    float depth = gShadowMaps.Sample(gShadowSampler, float3(uv, light.shadow_map_index)).r;
+    float depth = gShadowMaps[light.shadow_map_index].Sample(gShadowSampler[light.shadow_map_index], float3(uv, light.shadow_map_index)).r;
 
-    // Reversed-Z comparison:
-    //  - Standard Z: closer => smaller depth, test: (ndc.z - bias <= depth)
-    //  - Reversed Z: closer => larger depth, test: (ndc.z + bias >= depth)
     const float bias = 0.001f;
+    if (ndc.z < 0.0f || ndc.z > 1.0f)
+        return 1.0f;
+    
+    float currentDepth = ndc.z;
+    return PCFShadow(uv, currentDepth, 0, light.shadow_map_index);
 
-    return (ndc.z + bias <= depth) ? 1.0f : 0.0f;
+    //return (ndc.z - bias <= depth) ? 1.0f : 0.0f;
 }
 
 float3 EvaluateSpotLight(
@@ -234,8 +235,7 @@ PSOut mainPS(PSIn IN)
     float3 litColor = ambient;
 
     [loop]
-    //for (uint i = 0; i < MAX_LIGHTS; ++i)
-    for (uint i = 0; i < 1; ++i)
+    for (uint i = 0; i < MAX_LIGHTS; ++i)
     {
         Light light = g_Lights[i];
 
@@ -250,8 +250,11 @@ PSOut mainPS(PSIn IN)
         }
     }
     
+    //float depth = gShadowMaps.Sample(gShadowSampler, float3(IN.uv, g_Lights[0].shadow_map_index)).r;
+    //depth = (1 - depth) * 20;
+    
     OUT.
-        outColor = float4(litColor, texSample.a);
+        outColor = float4(litColor.rgb, texSample.a);
 
     return OUT;
 }

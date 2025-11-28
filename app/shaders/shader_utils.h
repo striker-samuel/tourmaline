@@ -35,7 +35,7 @@ float4x4 GetLightView(float3 lightPos, float3 lightDir)
 
 float4x4 GetLightProj(float outerAngle, float aspect, float nearZ, float farZ)
 {
-    float fov = radians(outerAngle * 2.0); // cone opening
+    float fov = outerAngle * 2.0; // cone opening
     return mul(
         float4x4(
             1 / tan(fov / 2.0), 0, 0, 0,

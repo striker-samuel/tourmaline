@@ -92,6 +92,7 @@ struct alignas(16) Light {
 	float outerAngle = glm::radians(20.0f);
 	// -1 no shadow map. else context->shadowmaps.id.
 	int shadow_map_index = -1;
+	float lightVP[16] = {};
 };
 
 static_assert(sizeof(Light) % 16 == 0);

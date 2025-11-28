@@ -108,14 +108,12 @@ RGB hsv2rgb(float h, float s, float v)
 
 void FabricateLightData(Light* data) {
 
-	//Light* data = new Light[MAX_LIGHTS];
-
 	for (int i = 0; i < MAX_LIGHTS; i++) {
 		data[i].position[0] = 3.0f * i;
 		data[i].position[1] = 1.0f;
 		data[i].position[2] = 0.0f;
 
-		data[i].direction[0] = .0f;
+		data[i].direction[0] = 4.0f;
 		data[i].direction[1] = .0f;
 		data[i].direction[2] = .0f;
 
@@ -123,14 +121,16 @@ void FabricateLightData(Light* data) {
 		RGB rgb = hsv2rgb(hue, 1.0f, 1.0f);
 
 		data[i].color = { rgb.r, rgb.g, rgb.b, 1.0f };
-		//data[i].intensity = 1.0f;
-		data[i].intensity = .0f;
-		data[i].type = LIGHT_TYPE_POINT;
+		data[i].intensity = 1.0f;
+		//data[i].intensity = .0f;
+		data[i].type = LIGHT_TYPE_SPOT;
 		if (i % 2 == 1) {
-			data[i].type = LIGHT_TYPE_SPOT;
-			data[i].position[1] = 3.0f;
-			data[i].position[0] = 2.0f;
-			data[i].position[2] = 3.0f;
+			data[i].type = LIGHT_TYPE_POINT;
+			data[i].intensity = .0f;
+			//	data[i].position[1] = 3.0f;
+			//	data[i].position[0] = 2.0f;
+			//	data[i].position[2] = 3.0f;
+			//}
 		}
 	}
 
@@ -346,9 +346,9 @@ private:
 			drawList->AddCircleFilled(ImVec2(sx, sy), radius, col, 12);
 
 			// Optional label
-			 drawList->AddText(ImVec2(sx + radius + 2.0f, sy - radius),
-			                   IM_COL32(255, 255, 255, 255),
-			                   std::to_string(i).c_str());
+			drawList->AddText(ImVec2(sx + radius + 2.0f, sy - radius),
+				IM_COL32(255, 255, 255, 255),
+				std::to_string(i).c_str());
 		}
 
 	}
@@ -397,6 +397,11 @@ private:
 	}
 
 	void Update() {
+
+		//for (int i = 0; i < MAX_LIGHTS; i++) {
+		//	float phase = std::sin(i + delta_time_s * 200);  // staggered phases
+		//	lights[i].position[2] = static_cast<float>(i) + phase;
+		//}
 
 		//std::cout << camera_.getPosition() << std::endl;
 		////Synthetic movement
@@ -740,9 +745,16 @@ private:
 		{
 			if (lights[i].shadow_map_index == -1)
 			{
+				auto smh = context->shadowmaps_.getHandle(lights[0].shadow_map_index);
+				auto sm = context->shadowmaps_.get(smh);
+				VkImageView shadowView = *context->imageViews_.get(sm->renderViews[0]);
+
 				VkDescriptorImageInfo ii{};
 				ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-				ii.imageView = VK_NULL_HANDLE;
+
+				// imageView VK_NULL_HANDLE prompts validation error. - lets just use the same imageVIew again and again
+				//ii.imageView = VK_NULL_HANDLE;
+				ii.imageView = shadowView;
 				ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				imageInfos.push_back(ii);
 
@@ -754,22 +766,26 @@ private:
 
 				continue;
 			}
+			else {
 
-			auto smh = context->shadowmaps_.getHandle(lights[i].shadow_map_index);
-			auto sm = context->shadowmaps_.get(smh);
-			VkImageView shadowView = *context->imageViews_.get(sm->renderViews[0]);
+				auto smh = context->shadowmaps_.getHandle(lights[i].shadow_map_index);
+				auto sm = context->shadowmaps_.get(smh);
+				VkImageView shadowView = *context->imageViews_.get(sm->renderViews[0]);
 
-			VkDescriptorImageInfo ii{};
-			ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-			ii.imageView = shadowView;
-			ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			imageInfos.push_back(ii);
+				VkDescriptorImageInfo ii{};
+				ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
+				ii.imageView = shadowView;
+				ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				imageInfos.push_back(ii);
 
-			VkDescriptorImageInfo si{};
-			si.sampler = shadowSampler;
-			si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
-			si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
-			samplerInfos.push_back(si);
+				VkDescriptorImageInfo si{};
+				si.sampler = shadowSampler;
+				si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
+				si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
+				samplerInfos.push_back(si);
+
+			}
+
 		};
 
 		auto setHandle = frameDescriptorSets[currentFrame];
@@ -904,184 +920,195 @@ private:
 	void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer, uint32_t /*imageIndex*/)
 	{
 
-		// Example: one light, one shadowmap
-		auto smh = context->shadowmaps_.getHandle(lights[0].shadow_map_index);
-		auto sm = context->shadowmaps_.get(smh);
 
-		VkImage shadowImage = context->images_.get(sm->image)->image;
-		VkImageView shadowView = *context->imageViews_.get(sm->renderViews[0]);
-		VkExtent2D shadowExtent = { 400,400 };           // e.g. { width, height }
+		for (int i = 0; i < MAX_LIGHTS; i++) {
 
-		// 1) Transition depth image to DEPTH_ATTACHMENT_OPTIMAL
-		{
-			VkImageMemoryBarrier barrier{};
-			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // or SHADER_READ_ONLY_OPTIMAL if reused
-			barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.image = shadowImage;
-			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-			barrier.subresourceRange.baseMipLevel = 0;
-			barrier.subresourceRange.levelCount = 1;
-			barrier.subresourceRange.baseArrayLayer = 0;     // or layer if using array
-			barrier.subresourceRange.layerCount = 1;
+			if (lights[i].shadow_map_index == -1) {
+				continue;
+			}
 
-			barrier.srcAccessMask = 0;                       // nothing before
-			barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			auto light = lights[i];
 
-			vkCmdPipelineBarrier(
+			// Example: one light, one shadowmap
+			auto smh = context->shadowmaps_.getHandle(light.shadow_map_index);
+			auto sm = context->shadowmaps_.get(smh);
+
+			VkImage shadowImage = context->images_.get(sm->image)->image;
+			VkImageView shadowView = *context->imageViews_.get(sm->renderViews[0]);
+			VkExtent2D shadowExtent = { 400,400 };           // e.g. { width, height }
+
+			// 1) Transition depth image to DEPTH_ATTACHMENT_OPTIMAL
+			{
+				VkImageMemoryBarrier barrier{};
+				barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // or SHADER_READ_ONLY_OPTIMAL if reused
+				barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				barrier.image = shadowImage;
+				barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+				barrier.subresourceRange.baseMipLevel = 0;
+				barrier.subresourceRange.levelCount = 1;
+				barrier.subresourceRange.baseArrayLayer = 0;     // or layer if using array
+				barrier.subresourceRange.layerCount = 1;
+
+				barrier.srcAccessMask = 0;                       // nothing before
+				barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+				vkCmdPipelineBarrier(
+					commandBuffer,
+					VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+					VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+					0,
+					0, nullptr,
+					0, nullptr,
+					1, &barrier
+				);
+			}
+
+			// 2) Begin dynamic rendering with depth-only
+			VkRenderingAttachmentInfoKHR depthAttachment{};
+			depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+			depthAttachment.imageView = shadowView;
+			depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+			depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+			depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;   // we want to sample this later
+
+			VkClearValue clearDepth{};
+			clearDepth.depthStencil.depth = 1.0f;   // same as your main pass
+			depthAttachment.clearValue = clearDepth;
+
+			VkRenderingInfoKHR renderingInfo{};
+			renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
+			renderingInfo.renderArea.offset = { 0, 0 };
+			renderingInfo.renderArea.extent = shadowExtent;           // shadow map size
+			renderingInfo.layerCount = 1;
+			renderingInfo.colorAttachmentCount = 0;                      // depth-only
+			renderingInfo.pColorAttachments = nullptr;
+			renderingInfo.pDepthAttachment = &depthAttachment;
+			renderingInfo.pStencilAttachment = nullptr;
+
+			vkCmdBeginRendering(commandBuffer, &renderingInfo);
+
+			// 3) Viewport & scissor
+			VkViewport vp{};
+			vp.x = 0.0f;
+			vp.y = 0.0f;
+			vp.width = static_cast<float>(shadowExtent.width);
+			vp.height = static_cast<float>(shadowExtent.height);
+			vp.minDepth = 0.0f;
+			vp.maxDepth = 1.0f;
+			vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+
+			VkRect2D scissor{};
+			scissor.offset = { 0, 0 };
+			scissor.extent = shadowExtent;
+			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+			// 4) Bind buffers
+			auto vbh = context->buffers_.get(context->vertex_buffer);
+			auto ibh = context->buffers_.get(context->index_buffer);
+
+			VkBuffer vertexBuffers[] = { vbh->buffer };
+			VkDeviceSize offsets[] = { 0 };
+
+			vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+			vkCmdBindIndexBuffer(commandBuffer, ibh->buffer, 0, VK_INDEX_TYPE_UINT32);
+
+			// 5) Shadow pipeline & descriptors
+			auto s_pipeline = context->pipelinesPool_.get(shadow_pipeline);
+			auto pipe_lyt = s_pipeline->plyt;
+
+			vkCmdBindPipeline(
 				commandBuffer,
-				VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-				0,
-				0, nullptr,
-				0, nullptr,
-				1, &barrier
+				VK_PIPELINE_BIND_POINT_GRAPHICS,
+				s_pipeline->pipeline
 			);
-		}
 
-		// 2) Begin dynamic rendering with depth-only
-		VkRenderingAttachmentInfoKHR depthAttachment{};
-		depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-		depthAttachment.imageView = shadowView;
-		depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;   // we want to sample this later
+			auto sets = context->descriptrorSetPool_.get(shadowFrameDescriptorSets[currentFrame]);
 
-		VkClearValue clearDepth{};
-		clearDepth.depthStencil.depth = 1.0f;   // same as your main pass
-		depthAttachment.clearValue = clearDepth;
-
-		VkRenderingInfoKHR renderingInfo{};
-		renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
-		renderingInfo.renderArea.offset = { 0, 0 };
-		renderingInfo.renderArea.extent = shadowExtent;           // shadow map size
-		renderingInfo.layerCount = 1;
-		renderingInfo.colorAttachmentCount = 0;                      // depth-only
-		renderingInfo.pColorAttachments = nullptr;
-		renderingInfo.pDepthAttachment = &depthAttachment;
-		renderingInfo.pStencilAttachment = nullptr;
-
-		vkCmdBeginRendering(commandBuffer, &renderingInfo);
-
-		// 3) Viewport & scissor
-		VkViewport vp{};
-		vp.x = 0.0f;
-		vp.y = 0.0f;
-		vp.width = static_cast<float>(shadowExtent.width);
-		vp.height = static_cast<float>(shadowExtent.height);
-		vp.minDepth = 0.0f;
-		vp.maxDepth = 1.0f;
-		vkCmdSetViewport(commandBuffer, 0, 1, &vp);
-
-		VkRect2D scissor{};
-		scissor.offset = { 0, 0 };
-		scissor.extent = shadowExtent;
-		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-
-		// 4) Bind buffers
-		auto vbh = context->buffers_.get(context->vertex_buffer);
-		auto ibh = context->buffers_.get(context->index_buffer);
-
-		VkBuffer vertexBuffers[] = { vbh->buffer };
-		VkDeviceSize offsets[] = { 0 };
-
-		vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-		vkCmdBindIndexBuffer(commandBuffer, ibh->buffer, 0, VK_INDEX_TYPE_UINT32);
-
-		// 5) Shadow pipeline & descriptors
-		auto s_pipeline = context->pipelinesPool_.get(shadow_pipeline);
-		auto pipe_lyt = s_pipeline->plyt;
-
-		vkCmdBindPipeline(
-			commandBuffer,
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			s_pipeline->pipeline
-		);
-
-		auto sets = context->descriptrorSetPool_.get(shadowFrameDescriptorSets[currentFrame]);
-
-		vkCmdBindDescriptorSets(
-			commandBuffer,
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			pipe_lyt,
-			0,
-			1,
-			&sets->set,
-			0,
-			nullptr
-		);
-
-		// 6) Push constants with light view/proj (instead of camera_)
-		PushConstants pc{};
-		pc.view = GetLightView(lights[0]);
-		pc.proj = GetLightProj(lights[0], /*aspect*/ 1.0f, /*near*/ 0.1f, /*far*/ 100.0f);
-		pc.proj[1][1] *= -1;
-
-		struct PC_All {
-			PushConstants pc;               // 144
-			MaterialPushConstants mpc;      // 48 (can be empty for shadow)
-		};
-		PC_All all{ pc, MaterialPushConstants{} };
-
-		// even if pipeline has only VS, including FRAGMENT here is fine; it's just unused
-		vkCmdPushConstants(
-			commandBuffer,
-			pipe_lyt,
-			VK_SHADER_STAGE_VERTEX_BIT, // | VK_SHADER_STAGE_FRAGMENT_BIT if you want
-			0,
-			sizeof(PC_All),
-			&all
-		);
-
-		// 7) Draw scene from light POV
-		for (int i = 0; i < static_cast<int>(scene_.hierarchy.size()); ++i) {
-			auto draw_set_h = context->meshes_.getHandle(scene_.meshForNode[i]);
-			auto draw_set = context->meshes_.get(draw_set_h);
-
-			// if per-object constants are needed, update and push here
-
-			vkCmdDrawIndexed(
+			vkCmdBindDescriptorSets(
 				commandBuffer,
-				draw_set->index_count,
+				VK_PIPELINE_BIND_POINT_GRAPHICS,
+				pipe_lyt,
+				0,
 				1,
-				draw_set->first_index,
-				draw_set->vert_offset,
-				i
-			);
-		}
-
-		vkCmdEndRendering(commandBuffer);
-
-		// 8) Transition depth image for sampling in main pass
-		{
-			VkImageMemoryBarrier barrier{};
-			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.image = shadowImage;
-			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-			barrier.subresourceRange.baseMipLevel = 0;
-			barrier.subresourceRange.levelCount = 1;
-			barrier.subresourceRange.baseArrayLayer = 0;
-			barrier.subresourceRange.layerCount = 1;
-
-			barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-			vkCmdPipelineBarrier(
-				commandBuffer,
-				VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				&sets->set,
 				0,
-				0, nullptr,
-				0, nullptr,
-				1, &barrier
+				nullptr
 			);
+
+			// 6) Push constants with light view/proj (instead of camera_)
+			PushConstants pc{};
+			pc.view = GetLightView(light);
+			pc.proj = GetLightProj(light, /*aspect*/ 1.0f, /*near*/ 0.1f, /*far*/ 100.0f);
+			pc.proj[1][1] *= -1;
+
+			struct PC_All {
+				PushConstants pc;               // 144
+				MaterialPushConstants mpc;      // 48 (can be empty for shadow)
+			};
+			PC_All all{ pc, MaterialPushConstants{} };
+
+			// even if pipeline has only VS, including FRAGMENT here is fine; it's just unused
+			vkCmdPushConstants(
+				commandBuffer,
+				pipe_lyt,
+				VK_SHADER_STAGE_VERTEX_BIT, // | VK_SHADER_STAGE_FRAGMENT_BIT if you want
+				0,
+				sizeof(PC_All),
+				&all
+			);
+
+			// 7) Draw scene from light POV
+			for (int i = 0; i < static_cast<int>(scene_.hierarchy.size()); ++i) {
+				auto draw_set_h = context->meshes_.getHandle(scene_.meshForNode[i]);
+				auto draw_set = context->meshes_.get(draw_set_h);
+
+				// if per-object constants are needed, update and push here
+
+				vkCmdDrawIndexed(
+					commandBuffer,
+					draw_set->index_count,
+					1,
+					draw_set->first_index,
+					draw_set->vert_offset,
+					i
+				);
+			}
+
+			vkCmdEndRendering(commandBuffer);
+
+			// 8) Transition depth image for sampling in main pass
+			{
+				VkImageMemoryBarrier barrier{};
+				barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+				barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				barrier.image = shadowImage;
+				barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+				barrier.subresourceRange.baseMipLevel = 0;
+				barrier.subresourceRange.levelCount = 1;
+				barrier.subresourceRange.baseArrayLayer = 0;
+				barrier.subresourceRange.layerCount = 1;
+
+				barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+				barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+				vkCmdPipelineBarrier(
+					commandBuffer,
+					VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+					0,
+					0, nullptr,
+					0, nullptr,
+					1, &barrier
+				);
+			}
 		}
+
 
 	}
 
@@ -2020,6 +2047,19 @@ void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
 	static_assert(sizeof(Light) * MAX_LIGHTS < (1 << 16),
 		"Light buffer too large for 64KB UBO limit");
 
+	for (int i = 0; i < MAX_LIGHTS; i++)
+	{
+
+		auto proj = GetLightProj(lights[i]);
+		proj[1][1] *= -1;
+
+		auto lvp = proj * GetLightView(lights[i]);
+		std::memcpy(
+			lights[i].lightVP,
+			glm::value_ptr(lvp),
+			sizeof(float) * 16);
+	}
+
 	context->UploadDataToBuffer(
 		lightDataUniformBuffers[currentImage],
 		lights,
@@ -2096,23 +2136,10 @@ void VulkanApp::Start() {
 
 	FabricateLightData(lights);
 	for (int i = 0; i < MAX_LIGHTS; i++) {
-		if (i == 0) {
 
-			lights[i].position[0] = 0.0f;
-			lights[i].position[1] = 2.0f;
-			lights[i].position[2] = -1.0f;
-			lights[i].direction[0] = 0.0f;
-			lights[i].direction[1] = 1.0f;
-			lights[i].direction[2] = 5.0f;
+		if (lights[i].type == LIGHT_TYPE_SPOT) {
 
 			lights[i].intensity = 10.0f;
-
-			lights[i].color[0] = 1.0f;
-			lights[i].color[1] = 1.0f;
-			lights[i].color[2] = 1.0f;
-
-			lights[i].flags = 1 << 10;
-			lights[i].type = LIGHT_TYPE_SPOT;
 			lights[i].innerAngle = glm::radians(10.0f);
 			lights[i].outerAngle = glm::radians(20.0f);
 
