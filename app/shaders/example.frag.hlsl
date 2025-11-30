@@ -1,8 +1,4 @@
-#include "shader_utils.h"
-
-#ifndef MAX_LIGHTS
-#define MAX_LIGHTS 10
-#endif
+#include "common.h"
 
 [[vk::push_constant]]
 struct PC_All
@@ -19,25 +15,6 @@ struct PC_All
     uint texAlpha;
     uint _pad1; // keep size at 192 bytes total
 } pc;
-
-struct Light
-{
-    float4 color; // 16B
-
-    float3 position; // 12B
-    int flags;
-    //float _pad0; // 4B = pad to 16B
-
-    float3 direction; // 12B
-    float intensity; // 4B
-    
-    int type; // 4B
-    float innerAngle;
-    float outerAngle;
-    int shadow_map_index;
-    float4x4 lightVP;
-};
-
 
 [[vk::binding(2,0)]] Texture2D materialTex[]; // sampled images
 [[vk::binding(3,0)]] SamplerState materialSamp[]; // samplers
@@ -65,10 +42,6 @@ struct PSOut
 {
     float4 outColor : SV_Target;
 };
-
-
-// Shadow map resolution (must match your actual shadow map size)
-static const float SHADOW_RES = 2048.0; // or whatever you use
 
 float PCFShadow(float2 uv, float currentDepth, int layer, int shadowmap_index)
 {

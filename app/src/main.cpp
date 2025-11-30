@@ -156,9 +156,8 @@ public:
 
 	};
 	void Start();
-	void RenderShadows();
-	std::array<Light, MAX_LIGHTS> lights;
-	std::unordered_map<uint32_t, ShadowMapHandle> light_to_shadowmap;
+
+	std::array<Light, MAX_LIGHTS> lights; // lets move this to the scene tree.
 	PipelineHandle shadow_pipeline;
 
 private:
@@ -439,6 +438,7 @@ private:
 		cleanupSwapChain();
 		createSwapChain();
 		createSwapchainImageViews();
+
 		CreateDepthResources();
 
 		// ---- update camera projection to match new size ----

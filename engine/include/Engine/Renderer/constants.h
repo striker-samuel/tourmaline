@@ -17,6 +17,7 @@ static constexpr uint32_t MAX_INSTANCES = 1000;
 static constexpr uint32_t MAX_MESHES = 1000;
 static constexpr uint32_t MAX_LIGHTS = 10;
 static constexpr uint32_t MAX_TEXTURES = 4096;
+static constexpr uint32_t MAX_BUFFERS = 4096;
 static constexpr uint32_t MAX_MATERIAL_INSTANCES = 1000;
 static constexpr uint32_t MAX_MATERIALS = 1000;
 

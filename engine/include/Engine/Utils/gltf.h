@@ -175,7 +175,14 @@ static inline const uint8_t* gltfPtr(const tinygltf::Model& m,
 	return buf.data.data() + base + index * stride;
 }
 
-glm::vec3 readVec3F(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
+
+inline glm::vec3 readVec3ForientationFix(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
+	// Expect FLOAT VEC3
+	const float* p = reinterpret_cast<const float*>(gltfPtr(m, a, i));
+	return glm::vec3(p[0]*-1, p[1], p[2]*-1);
+}
+
+inline glm::vec3 readVec3F(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
 	// Expect FLOAT VEC3
 	const float* p = reinterpret_cast<const float*>(gltfPtr(m, a, i));
 	return glm::vec3(p[0], p[1], p[2]);
@@ -380,12 +387,7 @@ std::vector<GltfMaterial> ExtractMaterials(const tinygltf::Model& model)
 }
 
 
-
-// Models contains scenes, scenes contain meshes, and meshes: primitives.
 class GltfModel {
-
-private:
-
 
 public:
 
@@ -408,9 +410,7 @@ public:
 		for (const auto& mesh : gltfModel.meshes) {
 			for (const auto& primitive : mesh.primitives) {
 
-				if (primitive.mode != TINYGLTF_MODE_TRIANGLES) {
-					continue;
-				}
+				assert(primitive.mode == TINYGLTF_MODE_TRIANGLES);
 
 				MeshData data_;
 				data_.materialIndex = primitive.material;
@@ -420,13 +420,7 @@ public:
 				data_.vertices.reserve(posAcc.count);
 				for (size_t i = 0; i < posAcc.count; ++i) {
 					Vertex v{};
-					v.pos = readVec3F(gltfModel, posAcc, i);
-
-					// We need to do this because my coords system differs from gltf
-					v.pos[0] *= -1;
-					v.pos[2] *= -1; 
-					
-					
+					v.pos = readVec3ForientationFix(gltfModel, posAcc, i);
 					v.color = { 1.0f, 1.0f, 1.0f };
 					v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
 					v.normal = { 0.0f, 1.0f, 0.0f }; // will replace if normals provided
@@ -444,12 +438,7 @@ public:
 				if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end()) {
 					auto& nAcc = gltfModel.accessors[it->second];
 					for (size_t i = 0; i < nAcc.count && i < data_.vertices.size(); ++i) {
-						glm::vec3 n = readVec3F(gltfModel, nAcc, i);
-
-						// Apply the same transform as positions (180º around Y)
-						n.x *= -1.0f;
-						n.z *= -1.0f;
-
+						glm::vec3 n = readVec3ForientationFix(gltfModel, nAcc, i);
 						data_.vertices[i].normal = glm::normalize(n);
 					}
 				}
@@ -469,7 +458,7 @@ public:
 };
 
 std::optional<std::string>
-	baseColorPathFor(const tinygltf::Model& gltfModel, const tinygltf::Primitive& prim, const std::string& extract_dir = std::string()) {
+baseColorPathFor(const tinygltf::Model& gltfModel, const tinygltf::Primitive& prim, const std::string& extract_dir = std::string()) {
 	return PrimitiveBaseColorImagePath(gltfModel, prim, extract_dir);
 }
 

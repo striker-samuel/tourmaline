@@ -136,7 +136,13 @@ public:
 	// lets just go monolithic with this for now. no skinned/ dynamic/ static distinctions yet
 	VmaVirtualBlock vertex_blk;
 	VmaVirtualBlock index_blk;
+
+	// POS
 	DeviceBufferHandle vertex_buffer;
+	// COLOR
+	// NORMAL : TEXCOORD2
+	// UV
+
 	DeviceBufferHandle index_buffer;
 
 	DescriptorPoolHandle default_descriptor_pool;
@@ -207,7 +213,7 @@ public:
 
 		//materialPipelinePool_.objects_.reserve(1000);
 		// This is a small reservation. just testing 
-		buffers_.objects_.reserve(1000);
+		buffers_.objects_.reserve(MAX_BUFFERS);
 
 		InitializeDeviceVmaPools();
 		InitalizeGeoBuffers();
@@ -832,10 +838,10 @@ void Context::UploadDataToBuffer(
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
 		0, // lightData.
-		//	VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-		//	VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // . 
-		0,
-		0
+		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless shadowmap_images
+		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless shadowmap_samplers
 	};
 
 	// Chain flags struct

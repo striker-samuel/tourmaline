@@ -6,6 +6,8 @@
 #define MAX_INSTANCES 1000
 #endif
 
+
+
 [[vk::push_constant]]
 struct PC_All
 {
