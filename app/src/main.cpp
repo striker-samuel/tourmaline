@@ -126,14 +126,13 @@ void FabricateLightData(Light* data) {
 		data[i].type = LIGHT_TYPE_SPOT;
 		if (i % 2 == 1) {
 			data[i].type = LIGHT_TYPE_POINT;
-			data[i].intensity = .0f;
+			data[i].intensity = 1.0f;
 			//	data[i].position[1] = 3.0f;
 			//	data[i].position[0] = 2.0f;
 			//	data[i].position[2] = 3.0f;
 			//}
 		}
 	}
-
 }
 
 
@@ -158,7 +157,7 @@ public:
 	};
 	void Start();
 	void RenderShadows();
-	Light* lights = new Light[MAX_LIGHTS];
+	std::array<Light, MAX_LIGHTS> lights;
 	std::unordered_map<uint32_t, ShadowMapHandle> light_to_shadowmap;
 	PipelineHandle shadow_pipeline;
 
@@ -398,10 +397,11 @@ private:
 
 	void Update() {
 
-		//for (int i = 0; i < MAX_LIGHTS; i++) {
-		//	float phase = std::sin(i + delta_time_s * 200);  // staggered phases
-		//	lights[i].position[2] = static_cast<float>(i) + phase;
-		//}
+		for (int i = 0; i < MAX_LIGHTS; i++) {
+			float phase = std::sin(i + time_since_start_s * 0.35f);  // staggered phases
+			lights[i].position[2] = static_cast<float>(i) * 1 + phase;
+
+		}
 
 		//std::cout << camera_.getPosition() << std::endl;
 		////Synthetic movement
@@ -411,6 +411,7 @@ private:
 		//	local[3][0] = static_cast<float>(i) * 10.4f + phase;
 		//	markAsChanged(scene_, i);
 		//}
+
 	}
 
 	void LateUpdate() {
@@ -735,6 +736,8 @@ private:
 		auto sam = context->samplers["default_shadow"];
 		VkSampler shadowSampler = *context->samplers_.get(sam);
 
+		int shadowmap_count = 0;
+
 		std::vector<VkDescriptorImageInfo> imageInfos;
 		std::vector<VkDescriptorImageInfo> samplerInfos;
 
@@ -743,27 +746,9 @@ private:
 
 		for (int i = 0; i < MAX_LIGHTS; i++)
 		{
-			if (lights[i].shadow_map_index == -1)
+
+			if (lights[i].shadow_map_index < 0)
 			{
-				auto smh = context->shadowmaps_.getHandle(lights[0].shadow_map_index);
-				auto sm = context->shadowmaps_.get(smh);
-				VkImageView shadowView = *context->imageViews_.get(sm->renderViews[0]);
-
-				VkDescriptorImageInfo ii{};
-				ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-
-				// imageView VK_NULL_HANDLE prompts validation error. - lets just use the same imageVIew again and again
-				//ii.imageView = VK_NULL_HANDLE;
-				ii.imageView = shadowView;
-				ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				imageInfos.push_back(ii);
-
-				VkDescriptorImageInfo si{};
-				si.sampler = shadowSampler;
-				si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
-				si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
-				samplerInfos.push_back(si);
-
 				continue;
 			}
 			else {
@@ -784,6 +769,8 @@ private:
 				si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
 				samplerInfos.push_back(si);
 
+				shadowmap_count++;
+
 			}
 
 		};
@@ -798,7 +785,7 @@ private:
 		writes[0].dstBinding = 5; // binding index for shadow map combined sampler
 		writes[0].dstArrayElement = 0;
 		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		writes[0].descriptorCount = MAX_LIGHTS;
+		writes[0].descriptorCount = shadowmap_count;
 		writes[0].pImageInfo = imageInfos.data();
 
 		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -806,7 +793,7 @@ private:
 		writes[1].dstBinding = 6; // binding index for shadow map combined sampler
 		writes[1].dstArrayElement = 0;
 		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-		writes[1].descriptorCount = MAX_LIGHTS;
+		writes[1].descriptorCount = shadowmap_count;
 		writes[1].pImageInfo = samplerInfos.data();
 
 		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
@@ -2062,7 +2049,7 @@ void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
 
 	context->UploadDataToBuffer(
 		lightDataUniformBuffers[currentImage],
-		lights,
+		lights.data(),
 		sizeof(Light) * MAX_LIGHTS,
 		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 		VK_ACCESS_SHADER_READ_BIT
@@ -2134,7 +2121,7 @@ void VulkanApp::CleanUp() {
 
 void VulkanApp::Start() {
 
-	FabricateLightData(lights);
+	FabricateLightData(lights.data());
 	for (int i = 0; i < MAX_LIGHTS; i++) {
 
 		if (lights[i].type == LIGHT_TYPE_SPOT) {
