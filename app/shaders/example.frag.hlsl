@@ -1,7 +1,7 @@
 #include "shader_utils.h"
 
 #ifndef MAX_LIGHTS
-#define MAX_LIGHTS 4
+#define MAX_LIGHTS 10
 #endif
 
 [[vk::push_constant]]
