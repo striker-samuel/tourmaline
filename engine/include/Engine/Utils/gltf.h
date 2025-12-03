@@ -15,129 +15,54 @@
 
 #include <Engine/Renderer/vertex.h>
 #include <Engine/Renderer/primitives.h>
+#include <Engine/Renderer/context.h>
 
 #include <optional>
 #include <string>
 #include <fstream>
 
-// Tiny utility
+// DATA STRUCTURES
+
+struct GltfTextureRef {
+	int textureIndex = -1;   // index into model.textures
+	int imageIndex = -1;   // index into model.images  (model.textures[textureIndex].source)
+	int samplerIndex = -1;   // index into model.samplers (model.textures[textureIndex].sampler)
+	int texCoord = 0;    // which UV set
+	float scaleOrStrength = 1.0f; // normal scale or occlusion strength (when applicable)
+	bool valid() const { return textureIndex >= 0 && imageIndex >= 0; }
+};
+
+enum class AlphaMode { Opaque, Mask, Blend };
+
+struct GltfMaterial {
+	std::string name;
+
+	// PBR Metallic-Roughness core
+	std::array<double, 4> baseColorFactor{ 1.0,1.0,1.0,1.0 };
+	double metallicFactor = 1.0;
+	double roughnessFactor = 1.0;
+
+	std::optional<GltfTextureRef> baseColorTex;
+	std::optional<GltfTextureRef> metallicRoughnessTex;
+
+	// Other PBR textures/params
+	std::optional<GltfTextureRef> normalTex;     // scale in scaleOrStrength
+	std::optional<GltfTextureRef> occlusionTex;  // strength in scaleOrStrength
+	std::optional<GltfTextureRef> emissiveTex;
+	std::array<double, 3> emissiveFactor{ 0.0,0.0,0.0 };
+
+	// Rasterization rules
+	AlphaMode alphaMode = AlphaMode::Opaque;
+	double alphaCutoff = 0.5;
+	bool doubleSided = false;
+
+};
+
+// HELPERS
+
 static inline bool starts_with(const std::string& s, const char* prefix) {
 	return s.rfind(prefix, 0) == 0;
 }
-
-// Choose a file extension from a mimeType (very crude)
-static inline std::string ext_from_mime(const std::string& mime) {
-	if (mime == "image/png")  return ".png";
-	if (mime == "image/jpeg") return ".jpg";
-	if (mime == "image/jpg")  return ".jpg";
-	if (mime == "image/bmp")  return ".bmp";
-	if (mime == "image/gif")  return ".gif";
-	if (mime == "image/webp") return ".webp";
-	return ".bin";
-}
-
-// Writes bytes to path (throws on failure)
-static inline std::string write_bytes(const std::string& path, const std::vector<unsigned char>& bytes) {
-	std::ofstream f(path, std::ios::binary);
-	if (!f) throw std::runtime_error("Failed to open " + path + " for writing");
-	f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-	if (!f) throw std::runtime_error("Failed to write all bytes to " + path);
-	return path;
-}
-
-/**
- * Return the base color (diffuse) texture path for a primitive's assigned material.
- * - If the texture comes from an external file, returns its URI (relative to the glTF).
- * - If the texture is embedded (data URI or GLB bufferView):
- *     - If extract_dir is non-empty, the image bytes are written there and the written path is returned.
- *     - Otherwise, returns std::nullopt.
- *
- * This is intentionally "crude": no KHR_texture_transform, no search path resolving, etc.
- */
-static std::optional<std::string>
-PrimitiveBaseColorImagePath(const tinygltf::Model& model,
-	const tinygltf::Primitive& primitive,
-	const std::string& extract_dir = std::string())
-{
-	// No material => no texture
-	if (primitive.material < 0 || primitive.material >= static_cast<int>(model.materials.size()))
-		return std::nullopt;
-
-	const tinygltf::Material& mat = model.materials[primitive.material];
-
-	// No baseColor texture declared
-	const auto& bc = mat.pbrMetallicRoughness.baseColorTexture;
-	if (bc.index < 0 || bc.index >= static_cast<int>(model.textures.size()))
-		return std::nullopt;
-
-	const tinygltf::Texture& tex = model.textures[bc.index];
-
-	// Texture must point to an image
-	if (tex.source < 0 || tex.source >= static_cast<int>(model.images.size()))
-		return std::nullopt;
-
-	const tinygltf::Image& img = model.images[tex.source];
-
-	// Case 1: External file via URI
-	if (!img.uri.empty() && !starts_with(img.uri, "data:")) {
-		// This is the path you can feed to your loader; it’s relative to the glTF file location.
-		return img.uri;
-	}
-
-	// Case 2: Embedded (data URI or GLB bufferView). TinyGLTF has already decoded bytes into img.image.
-	if (!img.image.empty()) {
-		if (extract_dir.empty()) {
-			// Caller didn’t ask us to extract; return nothing.
-			return std::nullopt;
-		}
-
-		// Decide a crude filename
-		std::string base = img.name.empty() ? "baseColor_" + std::to_string(tex.source) : img.name;
-		// sanitize very lightly (avoid slashes)
-		for (auto& c : base) if (c == '/' || c == '\\') c = '_';
-
-		std::string ext;
-		if (!img.mimeType.empty()) {
-			ext = ext_from_mime(img.mimeType);
-		}
-		else if (!img.uri.empty() && starts_with(img.uri, "data:")) {
-			// Try to parse mime from data URI header: data:image/png;base64,...
-			auto commaPos = img.uri.find(';');
-			auto colonPos = img.uri.find(':');
-			if (colonPos != std::string::npos && commaPos != std::string::npos && commaPos > colonPos + 1) {
-				ext = ext_from_mime(img.uri.substr(colonPos + 1, commaPos - (colonPos + 1)));
-			}
-			else {
-				ext = ".bin";
-			}
-		}
-		else if (!img.mimeType.empty()) {
-			ext = ext_from_mime(img.mimeType);
-		}
-		else {
-			// As a last resort, try the original URI’s extension (if any)
-			ext = ".bin";
-		}
-
-		std::string outPath = extract_dir;
-		if (!outPath.empty() && outPath.back() != '/' && outPath.back() != '\\')
-			outPath += '/';
-		outPath += base + ext;
-
-		try {
-			return write_bytes(outPath, img.image);
-		}
-		catch (const std::exception& e) {
-			std::cerr << "Failed to extract embedded image: " << e.what() << std::endl;
-			return std::nullopt;
-		}
-	}
-
-	// If we get here, we didn’t find a usable path/bytes
-	return std::nullopt;
-}
-
-
 
 static inline size_t gltfElementSize(const tinygltf::Accessor& a) {
 	using namespace tinygltf;
@@ -175,11 +100,10 @@ static inline const uint8_t* gltfPtr(const tinygltf::Model& m,
 	return buf.data.data() + base + index * stride;
 }
 
-
 inline glm::vec3 readVec3ForientationFix(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
 	// Expect FLOAT VEC3
 	const float* p = reinterpret_cast<const float*>(gltfPtr(m, a, i));
-	return glm::vec3(p[0]*-1, p[1], p[2]*-1);
+	return glm::vec3(p[0] * -1, p[1], p[2] * -1);
 }
 
 inline glm::vec3 readVec3F(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
@@ -226,44 +150,23 @@ bool loadModel(tinygltf::Model& model, const char* filename) {
 
 	return res;
 }
+static std::optional<std::string> UriFromTexture(
+	const tinygltf::Model& model,
+	GltfTextureRef& texture_ref
+) {
 
-// Got this from ChatGpt
-struct GltfTextureRef {
-	int textureIndex = -1;   // index into model.textures
-	int imageIndex = -1;   // index into model.images  (model.textures[textureIndex].source)
-	int samplerIndex = -1;   // index into model.samplers (model.textures[textureIndex].sampler)
-	int texCoord = 0;    // which UV set
-	float scaleOrStrength = 1.0f; // normal scale or occlusion strength (when applicable)
-	bool valid() const { return textureIndex >= 0 && imageIndex >= 0; }
-};
+	const tinygltf::Image& img = model.images[texture_ref.imageIndex];
 
-enum class AlphaMode { Opaque, Mask, Blend };
+	// Case 1: External file via URI
+	if (!img.uri.empty() && !starts_with(img.uri, "data:")) {
+		// This is the path you can feed to your loader; it’s relative to the glTF file location.
+		return img.uri;
+	}
 
-struct GltfMaterial {
-	std::string name;
+	// If we get here, we didn’t find a usable path/bytes
+	return std::nullopt;
 
-	// PBR Metallic-Roughness core
-	std::array<double, 4> baseColorFactor{ 1.0,1.0,1.0,1.0 };
-	double metallicFactor = 1.0;
-	double roughnessFactor = 1.0;
-
-	std::optional<GltfTextureRef> baseColorTex;
-	std::optional<GltfTextureRef> metallicRoughnessTex;
-
-	// Other PBR textures/params
-	std::optional<GltfTextureRef> normalTex;     // scale in scaleOrStrength
-	std::optional<GltfTextureRef> occlusionTex;  // strength in scaleOrStrength
-	std::optional<GltfTextureRef> emissiveTex;
-	std::array<double, 3> emissiveFactor{ 0.0,0.0,0.0 };
-
-	// Rasterization rules
-	AlphaMode alphaMode = AlphaMode::Opaque;
-	double alphaCutoff = 0.5;
-	bool doubleSided = false;
-
-	// For app-specific uses
-	int gltfMaterialIndex = -1;
-};
+}
 
 static std::optional<GltfTextureRef> ResolveTexture(
 	const tinygltf::Model& model,
@@ -330,6 +233,97 @@ static AlphaMode ParseAlphaMode(const std::string& s) {
 	return AlphaMode::Opaque; // default or "OPAQUE"
 }
 
+class GltfModel {
+
+public:
+
+	tinygltf::Model gltfModel;
+	std::vector<MeshData> mesh_data;
+
+	GltfModel(std::string model_path) {
+		std::string warn, err;
+
+		if (!loadModel(gltfModel, model_path.c_str())) {
+			throw std::runtime_error(warn + err);
+		}
+
+		std::cout << gltfModel.meshes.size() << std::endl;
+		for (const auto& node : gltfModel.nodes) {
+
+		}
+
+		for (const auto& mesh : gltfModel.meshes) {
+
+			for (const auto& primitive : mesh.primitives) {
+
+				assert(primitive.mode == TINYGLTF_MODE_TRIANGLES);
+
+				MeshData data_;
+				data_.materialIndex = primitive.material;
+
+				// AABB. for culling 
+				{
+					auto it = primitive.attributes.find("POSITION");
+					if (it == primitive.attributes.end())
+						continue;
+
+					int accessorIndex = it->second;
+					const tinygltf::Accessor& accessor = gltfModel.accessors[accessorIndex];
+
+					// glTF stores AABB in the accessor
+					const std::vector<double>& min = accessor.minValues;
+					const std::vector<double>& max = accessor.maxValues;
+
+					glm::vec3 aabbMin(min[0], min[1], min[2]);
+					glm::vec3 aabbMax(max[0], max[1], max[2]);
+
+					data_.minBox = aabbMin;
+					data_.maxBox = aabbMax;
+				}
+
+
+				// Extract vertices
+				auto& posAcc = gltfModel.accessors[primitive.attributes.at("POSITION")];
+				data_.vertices.reserve(posAcc.count);
+				for (size_t i = 0; i < posAcc.count; ++i) {
+					Vertex v{};
+					v.pos = readVec3ForientationFix(gltfModel, posAcc, i);
+					v.color = { 1.0f, 1.0f, 1.0f };
+					v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
+					v.normal = { 0.0f, 1.0f, 0.0f }; // will replace if normals provided
+					data_.vertices.push_back(v);
+				}
+
+				if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end()) {
+					auto& uvAcc = gltfModel.accessors[it->second];
+					for (size_t i = 0; i < uvAcc.count && i < data_.vertices.size(); ++i) {
+						glm::vec2 uv = readVec2F(gltfModel, uvAcc, i);
+						data_.vertices[i].texCoord = uv; // flip V if your shader expects it: uv.y = 1.0f - uv.y;
+					}
+				}
+
+				if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end()) {
+					auto& nAcc = gltfModel.accessors[it->second];
+					for (size_t i = 0; i < nAcc.count && i < data_.vertices.size(); ++i) {
+						glm::vec3 n = readVec3ForientationFix(gltfModel, nAcc, i);
+						data_.vertices[i].normal = glm::normalize(n);
+					}
+				}
+
+				if (primitive.indices >= 0) {
+					auto& idxAcc = gltfModel.accessors[primitive.indices];
+					for (size_t i = 0; i < idxAcc.count; ++i) {
+						data_.indices.push_back(readIndex(gltfModel, idxAcc, i));
+					}
+				}
+
+				mesh_data.push_back(data_);
+
+			}
+		}
+	}
+};
+
 std::vector<GltfMaterial> ExtractMaterials(const tinygltf::Model& model)
 {
 	std::vector<GltfMaterial> out;
@@ -338,7 +332,6 @@ std::vector<GltfMaterial> ExtractMaterials(const tinygltf::Model& model)
 	for (int i = 0; i < (int)model.materials.size(); ++i) {
 		const tinygltf::Material& m = model.materials[i];
 		GltfMaterial mat{};
-		mat.gltfMaterialIndex = i;
 		mat.name = m.name;
 
 		// Core PBR factors
@@ -386,79 +379,72 @@ std::vector<GltfMaterial> ExtractMaterials(const tinygltf::Model& model)
 	return out;
 }
 
+MaterialInstanceHandle CreateMaterial(Context* ctx, const tinygltf::Model& model, int material) {
 
-class GltfModel {
+	auto mat = ExtractMaterials(model)[material];
+	auto color_uri = UriFromTexture(model, *mat.baseColorTex);
+	//auto color_uri = UriFromTexture(model, *mat.baseColorTex);
+	//auto color_uri = UriFromTexture(model, *mat.baseColorTex);
 
-public:
+	std::string root = "models/sponza/";
 
-	tinygltf::Model gltfModel;
-	std::vector<MeshData> mesh_data;
+	ktxTexture2* ktxTex = nullptr;
+	KTX_error_code res = ktxTexture2_CreateFromNamedFile(
+		(root + *color_uri).c_str(),
+		KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
+		&ktxTex
+	);
 
-
-	GltfModel(std::string model_path) {
-		std::string warn, err;
-
-		if (!loadModel(gltfModel, model_path.c_str())) {
-			throw std::runtime_error(warn + err);
-		}
-
-		std::cout << gltfModel.meshes.size() << std::endl;
-		for (const auto& node : gltfModel.nodes) {
-
-		}
-
-		for (const auto& mesh : gltfModel.meshes) {
-			for (const auto& primitive : mesh.primitives) {
-
-				assert(primitive.mode == TINYGLTF_MODE_TRIANGLES);
-
-				MeshData data_;
-				data_.materialIndex = primitive.material;
-
-				// Extract vertices
-				auto& posAcc = gltfModel.accessors[primitive.attributes.at("POSITION")];
-				data_.vertices.reserve(posAcc.count);
-				for (size_t i = 0; i < posAcc.count; ++i) {
-					Vertex v{};
-					v.pos = readVec3ForientationFix(gltfModel, posAcc, i);
-					v.color = { 1.0f, 1.0f, 1.0f };
-					v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
-					v.normal = { 0.0f, 1.0f, 0.0f }; // will replace if normals provided
-					data_.vertices.push_back(v);
-				}
-
-				if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end()) {
-					auto& uvAcc = gltfModel.accessors[it->second];
-					for (size_t i = 0; i < uvAcc.count && i < data_.vertices.size(); ++i) {
-						glm::vec2 uv = readVec2F(gltfModel, uvAcc, i);
-						data_.vertices[i].texCoord = uv; // flip V if your shader expects it: uv.y = 1.0f - uv.y;
-					}
-				}
-
-				if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end()) {
-					auto& nAcc = gltfModel.accessors[it->second];
-					for (size_t i = 0; i < nAcc.count && i < data_.vertices.size(); ++i) {
-						glm::vec3 n = readVec3ForientationFix(gltfModel, nAcc, i);
-						data_.vertices[i].normal = glm::normalize(n);
-					}
-				}
-
-				if (primitive.indices >= 0) {
-					auto& idxAcc = gltfModel.accessors[primitive.indices];
-					for (size_t i = 0; i < idxAcc.count; ++i) {
-						data_.indices.push_back(readIndex(gltfModel, idxAcc, i));
-					}
-				}
-
-				mesh_data.push_back(data_);
-
-			}
-		}
+	if (res != KTX_SUCCESS) {
+		throw std::runtime_error("KTX load failed");
 	}
-};
 
-std::optional<std::string>
-baseColorPathFor(const tinygltf::Model& gltfModel, const tinygltf::Primitive& prim, const std::string& extract_dir = std::string()) {
-	return PrimitiveBaseColorImagePath(gltfModel, prim, extract_dir);
+	auto colorTexHandle = ctx->CreateTexture(*ktxTex);
+
+	// free after upload
+	ktxTexture2_Destroy(ktxTex);
+
+	auto material_pipe_0 = ctx->pipelinesPool_.getHandle(0);
+	assert(material_pipe_0.valid());
+
+	auto mat_h = ctx->CreateMaterialInstance(material_pipe_0);
+	ctx->materialInstancesPool_.get(mat_h)->values.texDiffuse = colorTexHandle.index();
+	return mat_h;
+
 }
 
+std::vector<DrawSetHandle> UploadGltfToContext(Context* ctx, std::string gltf_model_path) {
+
+	std::vector<MeshData> data_to_upload;
+	std::set<uint32_t> already_uploaded;
+
+	const GltfModel loaded_gltf = GltfModel(gltf_model_path);
+	for (auto mesh_data : loaded_gltf.mesh_data) {
+		data_to_upload.push_back(std::move(mesh_data));
+	}
+
+	std::unordered_map<int, int> already_assigned_;
+	int j = 0;
+
+	for (auto& mesh : loaded_gltf.gltfModel.meshes) {
+		for (auto& primitive : mesh.primitives) {
+			if (already_assigned_.contains(primitive.material)) {
+				data_to_upload[j].materialIndex = already_assigned_[primitive.material];
+			}
+			else {
+				MaterialInstanceHandle mat_h = CreateMaterial(
+					ctx,
+					loaded_gltf.gltfModel,
+					primitive.material
+				);
+				const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
+				already_assigned_[primitive.material] = idx;
+				data_to_upload[j].materialIndex = idx;  // <-- assign for the *first* occurrence
+			}
+			j++;
+		}
+	}
+
+	return ctx->BatchUploadMeshData(data_to_upload);
+
+};

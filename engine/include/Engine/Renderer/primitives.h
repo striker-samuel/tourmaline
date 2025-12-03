@@ -43,6 +43,8 @@ const std::vector<uint32_t> triangle_indices_ccw = {
 struct MeshData {
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
+	glm::vec3 minBox;
+	glm::vec3 maxBox;
 	uint32_t materialIndex = 0;       // primitive.material (or -1)
 };
 

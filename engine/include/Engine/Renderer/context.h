@@ -13,7 +13,6 @@
 #include <ktxvulkan.h>
 
 
-
 // ----------------------------------------------------------
 // specialized with dummy structs for type safety
 using ShaderModuleHandle = Handle<struct ShaderModule>;
@@ -139,9 +138,12 @@ public:
 
 	// POS
 	DeviceBufferHandle vertex_buffer;
-	// COLOR
-	// NORMAL : TEXCOORD2
-	// UV
+
+	// Maybe ill change to no repacking for direct copy from gltf.
+	//DeviceBufferHandle vertex_pos_buffer;
+	//DeviceBufferHandle vertex_col_buffer;
+	//DeviceBufferHandle vertex_normal_buffer;
+	//DeviceBufferHandle vertex_uv_buffer;
 
 	DeviceBufferHandle index_buffer;
 
@@ -408,8 +410,7 @@ public:
 	DeviceBufferHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
 	DrawSetHandle UploadMesh(MeshData& mesh_data);
-	std::vector<DrawSet> BatchUploadMeshData(std::vector<MeshData>& mesh_data);
-	//std::vector<DrawSetHandle> BatchUploadMeshData(std::vector<MeshData>& mesh_data); // This is missing implementation.
+	std::vector<DrawSetHandle> BatchUploadMeshData(std::vector<MeshData>& mesh_data);
 
 	// HELPERS.
 	VkCommandBuffer GetCommandBuffer();
@@ -1720,7 +1721,7 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	return meshes_.create(std::move(ds));
 }
 
-[[nodiscard]] std::vector<DrawSet> Context::BatchUploadMeshData(std::vector<MeshData>& mesh_data) {
+[[nodiscard]] std::vector<DrawSetHandle> Context::BatchUploadMeshData(std::vector<MeshData>& mesh_data) {
 	assert(!mesh_data.empty());
 
 	std::vector<DrawSet> mesh_draw_list;
@@ -1734,7 +1735,13 @@ void Context::GetAppropiateSampler(Texture& texture) {
 		mesh_draw_list.push_back(*ds);
 		i++;
 	}
-	return mesh_draw_list;
+
+	std::vector<DrawSetHandle> dss;
+
+	for (auto ds : mesh_draw_list) {
+		dss.push_back(meshes_.create(std::move(ds)));
+	}
+	return dss;
 
 }
 
