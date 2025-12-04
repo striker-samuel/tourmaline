@@ -46,6 +46,7 @@
 
 #include <Engine/Renderer/primitives.h>
 
+#include <Engine/Formats/pak.h>
 #include <Engine/Utils/gltf.h>
 
 // Moved readFile here. readFile rnow is just used to read shader files.
@@ -145,6 +146,11 @@ public:
 
 	bool Initialize();
 	bool Run() {
+
+
+		WritePak();
+		ReadPak();
+
 
 		bool result = Initialize();
 		assert(result && "Failed to initialize");
@@ -1328,6 +1334,9 @@ private:
 
 	void DrawFrame();
 
+	void WritePak();
+	void ReadPak();
+
 	// UI
 	static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 	static void scrollCallback(GLFWwindow* window, double xOffset, double yOffset);
@@ -1907,32 +1916,10 @@ inline void VulkanApp::DrawFrame() {
 	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
+
+
 void VulkanApp::CreatePipelines() {
 
-	auto vertShaderCode = readFile("shaders/example.vert.hlsl.spv");
-	auto vertColorFragCode = readFile("shaders/vertex_color.frag.hlsl.spv");
-	auto fragShaderCode = readFile("shaders/example.frag.hlsl.spv");
-
-	//VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
-	//VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
-	//VkShaderModule vertexColorFrag = createShaderModule(device, vertColorFragCode);
-
-	auto vertHandle = context->CreateShaderModule(
-		vertShaderCode
-	);
-	auto fragHandle = context->CreateShaderModule(
-		fragShaderCode
-	);
-
-	auto def_pipe = context->CreateMaterialPipeline(
-		vertHandle,
-		fragHandle,
-		default_raster_settings,
-		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
-		swapChainImageFormat
-	);
-
-	shadow_pipeline = context->CreateShadowPipeline(vertHandle);
 
 }
 
@@ -2062,7 +2049,33 @@ void VulkanApp::Start() {
 		}
 	}
 
-	CreatePipelines();
+
+	// Create Pipelines
+	auto vertShaderCode = readFile("shaders/example.vert.hlsl.spv");
+	auto vertColorFragCode = readFile("shaders/vertex_color.frag.hlsl.spv");
+	auto fragShaderCode = readFile("shaders/example.frag.hlsl.spv");
+
+	auto vertHandle = context->CreateShaderModule(
+		vertShaderCode
+	);
+	auto fragHandle = context->CreateShaderModule(
+		fragShaderCode
+	);
+
+	// DEFAULT 
+
+	auto def_pipe = context->CreateMaterialPipeline(
+		vertHandle,
+		fragHandle,
+		default_raster_settings,
+		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
+		swapChainImageFormat
+	);
+
+	shadow_pipeline = context->CreateShadowPipeline(vertHandle);
+
+	//
+
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		frameDescriptorSets[i] = context->createDescriptorSet(
 			context->default_descriptorLayout
@@ -2077,6 +2090,72 @@ void VulkanApp::Start() {
 	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
 
 	UploadScene();
+
+}
+
+
+using ResourceMap = std::unordered_map<Uuid, ResourceLocation, UuidHash, UuidEq>;
+std::vector<std::unique_ptr<PakReader>> g_paks;
+ResourceMap g_resourceIndex;
+
+void RegisterPak(const std::string& pakPath)
+{
+	auto pak = std::make_unique<PakReader>(pakPath);
+	uint32_t pakIndex = static_cast<uint32_t>(g_paks.size());
+
+	const auto& header = pak->header();
+	pak->readTable(); // returns vector<PakFileTableEntry>
+	auto entries = pak->m_entries;
+
+	for (const auto& e : entries)
+	{
+		ResourceLocation loc;
+		loc.pak_id = pakIndex;
+		loc.offset = e.offset;
+		loc.size = e.compressed_size;
+		loc.flags = e.flags;
+
+		g_resourceIndex.emplace(e.uuid, loc);
+	}
+
+	g_paks.push_back(std::move(pak));
+}
+
+std::vector<char> LoadResource(const Uuid& id)
+{
+	auto it = g_resourceIndex.find(id);
+	if (it == g_resourceIndex.end())
+		throw std::runtime_error("Resource not found");
+
+	const auto& loc = it->second;
+	PakReader* pak = g_paks[loc.pak_id].get();
+
+	return pak->readData(loc);
+}
+
+void VulkanApp::WritePak() {
+
+	std::stringstream ss;
+	ss << "models/sponza/Sponza.gltf\n";
+	//ss << "models/sponza/b.ogg\n";
+
+	Pack(ss, "paks/data.pak");
+
+}
+
+void VulkanApp::ReadPak() {
+
+
+	RegisterPak("paks/data.pak");
+
+	//PakReader pak("paks/data.pak");
+
+	//for (std::size_t i = 0; i < pak.entries().size(); ++i)
+	//{
+	//	auto data = pak.readEntry(i);
+	//	// parse according to your format / flags
+	//}
+	//
 
 }
 

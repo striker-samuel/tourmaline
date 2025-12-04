@@ -3,7 +3,6 @@
 #include <fstream>
 #include <vector>
 
-// This has nothing to do with vulkan obviously. should be rearranged
 static std::vector<char> readFile(const std::string& filename) {
 	std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
