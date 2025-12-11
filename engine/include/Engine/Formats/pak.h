@@ -3,9 +3,10 @@
 #include <string>
 #include <strstream>
 #include <fStream>
-
-// .
 #include <filesystem>
+#include <vector>
+#include <iostream> // or your logging
+#include <Engine/Shared/common.h>
 
 
 std::filesystem::path ExpandPath(const std::string& path)
@@ -101,6 +102,23 @@ struct UuidEq
 };
 
 
+inline Uuid MakeUuidFromString(const std::string& s)
+{
+	Uuid u{};
+	// Use two 64-bit hashes to fill 16 bytes
+	std::hash<std::string> h;
+
+	uint64_t h1 = h(s);
+	uint64_t h2 = h(s + "#2"); // simple variation to get a second value
+
+	std::memcpy(u.bytes + 0, &h1, sizeof(h1));
+	std::memcpy(u.bytes + 8, &h2, sizeof(h2));
+
+	return u;
+}
+
+
+
 struct PakWriter
 {
 	std::vector<char> dataBuffer;
@@ -132,16 +150,22 @@ struct PakWriter
 
 
 	// optional: helper for std::vector<char>
-	uint32_t addEntryFromVector(const std::vector<char>& v,
-		uint32_t flags = 0)
+	uint32_t addEntryFromVector(
+		std::string& original_path,
+		const std::vector<char>& v,
+		uint32_t flags = 0
+		)
 	{
-		/*	return addEntryFromMemory(
-				v.data(),
-				static_cast<uint32_t>(v.size()),
-				Uuid(0),
 
-				flags
-			);*/
+		Uuid id = MakeUuidFromString(original_path); // or from content if you prefer
+
+		return addEntryFromMemory(
+			v.data(),
+			static_cast<uint32_t>(v.size()),
+			id,
+			original_path,
+			flags
+		);
 
 		return 0;
 	}
@@ -267,13 +291,15 @@ public:
 		if (!m_stream)
 			throw std::runtime_error("Failed to seek to pak file table");
 
+
+		assert(m_header.num_entries > 0);
+
 		m_entries.resize(m_header.num_entries);
 		m_stream.read(reinterpret_cast<char*>(m_entries.data()),
 			m_entries.size() * sizeof(PakFileTableEntry));
 		if (!m_stream)
 			throw std::runtime_error("Failed to read pak file table");
 	}
-
 
 	std::string m_path;
 	std::ifstream m_stream;
@@ -320,7 +346,7 @@ void Pack(std::istream& files, const std::string& output_pak_filepath)
 
 		// optional: detect type, set flags (MESH, TEXTURE, etc)
 		uint32_t flags = 0;
-		writer.addEntryFromVector(fileData, flags);
+		writer.addEntryFromVector(filePath, fileData, flags);
 	}
 
 	header.num_entries = static_cast<uint32_t>(writer.entries.size());
@@ -341,3 +367,4 @@ void Pack(std::istream& files, const std::string& output_pak_filepath)
 	out.write(writer.dataBuffer.data(), writer.dataBuffer.size());
 
 }
+

@@ -240,12 +240,24 @@ public:
 	tinygltf::Model gltfModel;
 	std::vector<MeshData> mesh_data;
 
+	GltfModel(tinygltf::Model& model) {
+		gltfModel = model;
+
+		BuildMeshData();
+	}
+
 	GltfModel(std::string model_path) {
 		std::string warn, err;
 
 		if (!loadModel(gltfModel, model_path.c_str())) {
 			throw std::runtime_error(warn + err);
 		}
+
+		BuildMeshData();
+
+	}
+
+	void BuildMeshData() {
 
 		std::cout << gltfModel.meshes.size() << std::endl;
 		for (const auto& node : gltfModel.nodes) {
@@ -321,6 +333,7 @@ public:
 
 			}
 		}
+
 	}
 };
 
@@ -412,6 +425,43 @@ MaterialInstanceHandle CreateMaterial(Context* ctx, const tinygltf::Model& model
 	return mat_h;
 
 }
+
+
+std::vector<DrawSetHandle> UploadGltfToContext(Context* ctx, const GltfModel& model) {
+
+	std::vector<MeshData> data_to_upload;
+	std::set<uint32_t> already_uploaded;
+
+	for (auto mesh_data : model.mesh_data) {
+		data_to_upload.push_back(std::move(mesh_data));
+	}
+
+	std::unordered_map<int, int> already_assigned_;
+	int j = 0;
+
+	for (auto& mesh : model.gltfModel.meshes) {
+		for (auto& primitive : mesh.primitives) {
+			if (already_assigned_.contains(primitive.material)) {
+				data_to_upload[j].materialIndex = already_assigned_[primitive.material];
+			}
+			else {
+				MaterialInstanceHandle mat_h = CreateMaterial(
+					ctx,
+					model.gltfModel,
+					primitive.material
+				);
+				const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
+				already_assigned_[primitive.material] = idx;
+				data_to_upload[j].materialIndex = idx;  // <-- assign for the *first* occurrence
+			}
+			j++;
+		}
+	}
+
+	return ctx->BatchUploadMeshData(data_to_upload);
+
+};
+
 
 std::vector<DrawSetHandle> UploadGltfToContext(Context* ctx, std::string gltf_model_path) {
 

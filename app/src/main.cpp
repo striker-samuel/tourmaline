@@ -57,6 +57,51 @@
 
 #include <App/utils.h>
 
+
+using ResourceMap = std::unordered_map<Uuid, ResourceLocation, UuidHash, UuidEq>;
+std::vector<std::unique_ptr<PakReader>> g_paks;
+ResourceMap g_resourceIndex;
+
+bool LoadGltfFromPak(const ResourceLocation& loc,
+	tinygltf::Model& model,
+	std::string& err,
+	std::string& warn)
+{
+	if (loc.pak_id >= g_paks.size())
+	{
+		err = "Invalid pak_id in ResourceLocation";
+		return false;
+	}
+
+	PakReader& pak = *g_paks[loc.pak_id];
+
+	// Just use the helper that already computes the absolute offset properly
+	std::vector<char> buffer;
+	try {
+		buffer = pak.readData(loc);
+	}
+	catch (const std::exception& e) {
+		err = e.what();
+		return false;
+	}
+
+	tinygltf::TinyGLTF loader;
+
+	std::string gltfText(buffer.data(), buffer.size());
+	const std::string base_dir = "";
+
+	std::cout.write(gltfText.data(),gltfText.size());
+	std::cout << "\n";
+
+	bool ok = loader.LoadASCIIFromString(&model,
+		&err,
+		&warn,
+		gltfText.c_str(),
+		static_cast<unsigned int>(gltfText.size()),
+		base_dir);
+	return ok;
+}
+
 // ------------------------------------
 // If theres only one I probably could go with argv
 std::vector<std::string> gltf_meshes_paths = {
@@ -149,8 +194,7 @@ public:
 
 
 		WritePak();
-		ReadPak();
-
+		RegisterPaks();
 
 		bool result = Initialize();
 		assert(result && "Failed to initialize");
@@ -1335,7 +1379,7 @@ private:
 	void DrawFrame();
 
 	void WritePak();
-	void ReadPak();
+	void RegisterPaks();
 
 	// UI
 	static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
@@ -2019,10 +2063,16 @@ void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
 
 void VulkanApp::UploadScene() {
 
-	// 
+
+	std::string err, warn;
+	tinygltf::Model model;
+
+	LoadGltfFromPak(g_resourceIndex.begin()->second, model, err, warn);
+
 	UploadGltfToContext(
 		context,
-		gltf_meshes_paths[0]
+		model
+		//gltf_meshes_paths[0]
 	);
 
 }
@@ -2093,11 +2143,6 @@ void VulkanApp::Start() {
 
 }
 
-
-using ResourceMap = std::unordered_map<Uuid, ResourceLocation, UuidHash, UuidEq>;
-std::vector<std::unique_ptr<PakReader>> g_paks;
-ResourceMap g_resourceIndex;
-
 void RegisterPak(const std::string& pakPath)
 {
 	auto pak = std::make_unique<PakReader>(pakPath);
@@ -2105,6 +2150,7 @@ void RegisterPak(const std::string& pakPath)
 
 	const auto& header = pak->header();
 	pak->readTable(); // returns vector<PakFileTableEntry>
+
 	auto entries = pak->m_entries;
 
 	for (const auto& e : entries)
@@ -2121,6 +2167,8 @@ void RegisterPak(const std::string& pakPath)
 	g_paks.push_back(std::move(pak));
 }
 
+
+
 std::vector<char> LoadResource(const Uuid& id)
 {
 	auto it = g_resourceIndex.find(id);
@@ -2128,7 +2176,7 @@ std::vector<char> LoadResource(const Uuid& id)
 		throw std::runtime_error("Resource not found");
 
 	const auto& loc = it->second;
-	PakReader* pak = g_paks[loc.pak_id].get();
+	auto& pak = g_paks[loc.pak_id];
 
 	return pak->readData(loc);
 }
@@ -2143,19 +2191,13 @@ void VulkanApp::WritePak() {
 
 }
 
-void VulkanApp::ReadPak() {
-
+void VulkanApp::RegisterPaks() {
 
 	RegisterPak("paks/data.pak");
-
-	//PakReader pak("paks/data.pak");
-
-	//for (std::size_t i = 0; i < pak.entries().size(); ++i)
-	//{
-	//	auto data = pak.readEntry(i);
-	//	// parse according to your format / flags
-	//}
-	//
+	//RegisterPak("paks/data.pak");
+	//RegisterPak("paks/data.pak");
+	//RegisterPak("paks/data.pak");
+	//RegisterPak("paks/data.pak");
 
 }
 
