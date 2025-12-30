@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <numeric>
 
+
+
 int addNode(Scene& scene, int parent, int level)
 {
   const int node = (int)scene.hierarchy.size();

@@ -3,28 +3,31 @@
 #include <Engine/Shared/common.h>
 #include <Engine/Vulkan/vulkan_setup.h>
 
+struct VertexPos {
+	glm::vec3 pos;
+};
 
-// Structuring vertices like thsi is not a good idea. Mehses are collections of vertices.
-// The GLTF stream has the different properties of verices in different streams. We can use those streams directly
-// in GPU. this is bad adn unnecesary if theres no need to address the vertices individually and if that need arised
-// there could be helpers to do that without needing to layout the data like this. 
-// 
-//32 aligned
+struct VertexShading {
+	glm::vec3 color;     // optional if you really want
+	glm::vec2 texCoord;
+	glm::vec3 normal; // Can be further optimized.
+
+	// Vertex format will include this by default
+	glm::vec4 tangent;   // optional: include only if you want normal mapping
+};
+
 struct Vertex {
 	glm::vec3 pos;
 	glm::vec3 color;
 	glm::vec2 texCoord;
-	glm::vec3 normal;
+	glm::vec3 normal; 
+	glm::vec4 tangent; // xyz + sign in w
 
-	// we store only 2 normals, and rebuild the orthogonal thirs missing one in shader if needed.
-	// Not implemented yet
-	//glm::vec2 normals;
-
-	static VkVertexInputBindingDescription getBindingDescription(); 
-	static std::array<VkVertexInputAttributeDescription, 4> getAttributeDescriptions();
+	static std::array<VkVertexInputBindingDescription, 2> getBindingDescription();
+	static std::array<VkVertexInputAttributeDescription, 5> getAttributeDescriptions();
 
 	bool operator==(const Vertex& other) const {
-		return pos == other.pos && color == other.color && texCoord == other.texCoord;
+		return pos == other.pos && color == other.color && texCoord == other.texCoord && other.tangent == tangent;
 	}
 
 };

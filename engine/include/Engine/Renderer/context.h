@@ -12,7 +12,6 @@
 #include <ktx.h>
 #include <ktxvulkan.h>
 
-
 // ----------------------------------------------------------
 // specialized with dummy structs for type safety
 using ShaderModuleHandle = Handle<struct ShaderModule>;
@@ -28,7 +27,8 @@ using DescriptorSetHandle = Handle<struct DescriptorSet>;
 using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
 using DeviceBufferHandle = Handle<struct BufferDescription>;
 using PipelineHandle = Handle<struct Pipeline>;
-using DrawSetHandle = Handle<struct DrawSet>;
+using DrawSetHandle = Handle<struct DrawRange>;
+using MeshDescHandle = Handle<struct GpuMeshDesc>;
 
 void destroy(Context* ctx, ShaderModuleHandle handle);
 void destroy(Context* ctx, DeviceBufferHandle handle);
@@ -46,13 +46,11 @@ struct SamplerRequirements {
 
 };
 
-
 typedef enum PipelineType {
 	PIPELINE_UNDEFINED = 0,
 	PIPELINE_MATERIAL = 1,
 	PIPELINE_SHADOW = 2
 } PipelineType;
-
 
 struct Pipeline {
 	RasterSettings raster_settings;
@@ -85,24 +83,30 @@ struct Image {
 	VkImage image;
 	VmaAllocation alloc;
 
-	// I save these up becuase VkImage is just an opaque handle.
-	VkImageLayout layout;
+	// Layout state cant be encoded here since it depends on the pipeline..
+	//VkImageLayout layout;
 	VkFormat format;
 	VkImageUsageFlags usage;
 	uint32_t arrayLayers; // DepthImage will have each cascae in diff index.
-	uint32_t levels;
+	uint32_t levels; // levels is Mips.
 };
 
 struct ShadowMap {
-	uint32_t light;
-	uint32_t cascades;
+	uint32_t cascades = 0;
 	ImageHandle image;
 	SamplerHandle sampler;
 	bool owns_sampler = true;
 	ImageViewHandle sampleView;
+	ImageViewHandle renderView;
 
-	// Rendering is done better with separate N views, 1 per layer/cascade. 
-	std::vector<ImageViewHandle> renderViews;
+
+	// if image has layers, for render attachment you need unambiguous view. thats the why of the vector
+//	std::vector<ImageViewHandle> renderViews; 
+
+
+	bool is_atlas() {
+		return this->cascades >= 1;
+	}
 };
 
 // This style of handling things is lifted up from LightweightVk.
@@ -136,16 +140,26 @@ public:
 	VmaVirtualBlock vertex_blk;
 	VmaVirtualBlock index_blk;
 
-	// POS
+	// Default geo
 	DeviceBufferHandle vertex_buffer;
-
-	// Maybe ill change to no repacking for direct copy from gltf.
-	//DeviceBufferHandle vertex_pos_buffer;
-	//DeviceBufferHandle vertex_col_buffer;
-	//DeviceBufferHandle vertex_normal_buffer;
-	//DeviceBufferHandle vertex_uv_buffer;
-
+	DeviceBufferHandle vertex_shading_buffer;
 	DeviceBufferHandle index_buffer;
+
+	// SKINNED 
+	//DeviceBufferHandle skinned_vertex_buffer;
+	//DeviceBufferHandle skinned_index_buffer;
+
+	// MESHLETS
+	DeviceBufferHandle meshlet_vertex_buffer;
+	DeviceBufferHandle meshlet_triangle_buffer;
+	DeviceBufferHandle meshlet_descriptions_buffer;
+
+	// This is a cpu side manager for allocations so I dont have to manage the allocations myself. Im lazy :P
+	VmaVirtualBlock mehslet_vertex_blk;
+	VmaVirtualBlock meshlet_triangle_blk;
+	VmaVirtualBlock neshlet_descriptions_blk;
+
+	// -------------------------------------
 
 	DescriptorPoolHandle default_descriptor_pool;
 	DescriptorPoolHandle imgui_descriptor_pool;
@@ -154,13 +168,20 @@ public:
 	// Added for shadowmaps.
 	DescriptorLayoutHandle default_shadow_descriptorLayout;
 
+	// Added for meshlets.
+	DescriptorLayoutHandle default_meshlet_descriptorLayout;
+
+	//PipelineHandle default_material_pipeline;
+
 	VkCommandPool default_command_pool;
 	VkQueue default_queue;
 	VkQueue transfer_queue;
 
 	Pool<BufferDescription, BufferDescription> buffers_;
 	Pool<Texture, Texture> textures_;
-	Pool<DrawSet, DrawSet> meshes_;
+
+	Pool<GpuMeshDesc, GpuMeshDesc> meshes_;
+	//	Pool<DrawSet, DrawSet> meshes_;
 	Pool<Image, Image> images_;
 	Pool<ImageView, VkImageView> imageViews_;
 	Pool<ShadowMap, ShadowMap> shadowmaps_;
@@ -215,6 +236,7 @@ public:
 
 		//materialPipelinePool_.objects_.reserve(1000);
 		// This is a small reservation. just testing 
+
 		buffers_.objects_.reserve(MAX_BUFFERS);
 
 		InitializeDeviceVmaPools();
@@ -225,6 +247,8 @@ public:
 		imgui_descriptor_pool = createDescriptorPool();
 		default_descriptorLayout = createDescriptorLayout();
 		default_shadow_descriptorLayout = CreateShadowMapsDescriptorSetLayout();
+		default_meshlet_descriptorLayout = CreateMeshletDescriptorLayout();
+		//		default_material_pipeline = CreateMaterialPipeline();
 
 		QueueFamilyIndices indices = findQueueFamilies(*physicalDevice, surface);
 
@@ -279,33 +303,91 @@ public:
 	}
 
 	void InitalizeGeoBuffers() {
+		{
 
-		// Lets just default this like so
-		uint32_t totalVertexBytes = 512u * 1024u * 1024u;
-		// index buffer shpuld be smaller in reality. dont know appropiate heuristics for this yet. that needs to wait
-		// for proper research/profiling.
-		uint32_t totalIndexBytes = 512u * 1024u * 1024u;
+			// Lets just default this like so
+			uint32_t totalVertexBytes = 512u * 1024u * 1024u;
+			// index buffer shpuld be smaller in reality. dont know appropiate heuristics for this yet. that needs to wait
+			// for proper research/profiling.
+			uint32_t totalIndexBytes = 512u * 1024u * 1024u;
 
-		this->vertex_buffer = createBuffer(
-			totalVertexBytes,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-		);
-
-		this->index_buffer = createBuffer(
-			totalIndexBytes,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-		);
+			this->vertex_buffer = createBuffer(
+				totalVertexBytes,
+				VMA_MEMORY_USAGE_GPU_ONLY,
+				VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			);
 
 
-		VmaVirtualBlockCreateInfo ci{};
-		ci.size = totalIndexBytes;
-		VK_CHECK(vmaCreateVirtualBlock(&ci, &index_blk));
+			this->vertex_shading_buffer = createBuffer(
+				totalVertexBytes,
+				VMA_MEMORY_USAGE_GPU_ONLY,
+				VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			);
 
-		VmaVirtualBlockCreateInfo cv{};
-		cv.size = totalVertexBytes;
-		VK_CHECK(vmaCreateVirtualBlock(&cv, &vertex_blk));
+			this->index_buffer = createBuffer(
+				totalIndexBytes,
+				VMA_MEMORY_USAGE_GPU_ONLY,
+				VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			);
+
+			VmaVirtualBlockCreateInfo ci{};
+			ci.size = totalIndexBytes;
+			VK_CHECK(vmaCreateVirtualBlock(&ci, &index_blk));
+
+			VmaVirtualBlockCreateInfo cv{};
+			cv.size = totalVertexBytes;
+			VK_CHECK(vmaCreateVirtualBlock(&cv, &vertex_blk));
+
+		}
+
+
+		{
+
+			// this all should be calculated on a MAX_MESHLETS or something.
+			uint32_t totalVertexBytes = 512u * 1024u * 1024u;
+			uint32_t totalTriangleBytes = 512u * 1024u * 1024u;
+			uint32_t totalDescriptionsBytes = 512u * 1024u * 1024u;
+
+			this->meshlet_vertex_buffer = createBuffer(
+				totalVertexBytes,
+				VMA_MEMORY_USAGE_GPU_ONLY,
+				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT 
+//				VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT   // optional, recommended
+			);
+
+			this->meshlet_triangle_buffer = createBuffer(
+				totalTriangleBytes,
+				VMA_MEMORY_USAGE_GPU_ONLY,
+				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT 
+//				VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT   // optional, recommended
+			);
+
+			// We need the mesh descriptions here tooo.
+
+			this->meshlet_triangle_buffer = createBuffer(
+				totalTriangleBytes,
+				VMA_MEMORY_USAGE_GPU_ONLY,
+				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT 
+//				VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT   // optional, recommended
+			);
+
+			VmaVirtualBlockCreateInfo cv{};
+			cv.size = totalVertexBytes;
+			VK_CHECK(vmaCreateVirtualBlock(&cv, &meshlet_triangle_blk));
+
+			VmaVirtualBlockCreateInfo ci{};
+			ci.size = totalTriangleBytes;
+			VK_CHECK(vmaCreateVirtualBlock(&ci, &mehslet_vertex_blk));
+
+			VmaVirtualBlockCreateInfo cd{};
+			cd.size = totalDescriptionsBytes;
+			VK_CHECK(vmaCreateVirtualBlock(&cd, &neshlet_descriptions_blk));
+
+		}
+
 
 	}
 
@@ -387,8 +469,11 @@ public:
 	PipelineHandle CreateShadowPipeline(ShaderModuleHandle vert);
 	PipelineHandle CreateMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
 
+	PipelineHandle GetAppropiatePipeline();
+
+	ImageHandle CreateShadowMapImage(int texWidth, int texHeight);
+
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
-	ImageHandle CreateCascadedShadowMapsDepthImage(int texWidth, int texHeight, int cascades);
 	SamplerHandle CreateSampler(uint32_t levelCount);
 	SamplerHandle CreateShadowSampler(uint32_t levelCount);
 	TextureHandle CreateTexture(ktxTexture2& texture);
@@ -398,19 +483,22 @@ public:
 
 	MaterialInstanceHandle CreateMaterialInstance(PipelineHandle mat_pipeline);
 
+
 	DescriptorLayoutHandle createDescriptorLayout();
 	DescriptorLayoutHandle CreateShadowMapsDescriptorSetLayout();
+	DescriptorLayoutHandle CreateMeshletDescriptorLayout();
+
 	DescriptorPoolHandle createDescriptorPool();
 
 	ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType);
+	ImageViewHandle CreateImageView(ImageHandle image, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType);
 	ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount);
 
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
-	DescriptorSetHandle createShadowMapDescriptorSet(DescriptorLayoutHandle lyt);
 	DeviceBufferHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
-	DrawSetHandle UploadMesh(MeshData& mesh_data);
-	std::vector<DrawSetHandle> BatchUploadMeshData(std::vector<MeshData>& mesh_data);
+	MeshDescHandle UploadMesh(MeshData& mesh_data);
+	std::vector<MeshDescHandle> BatchUploadMeshData(std::vector<MeshData>& mesh_data);
 
 	// HELPERS.
 	VkCommandBuffer GetCommandBuffer();
@@ -429,7 +517,6 @@ public:
 
 };
 
-
 [[nodiscard]] SamplerHandle Context::CreateSampler(uint32_t levelCount) {
 
 	VkSampler sampler_;
@@ -447,7 +534,6 @@ public:
 	return samplers_.create(std::move(sampler_));
 
 }
-
 
 [[nodiscard]] ImageViewHandle  Context::CreateImageView(
 	VkImage image,
@@ -468,6 +554,7 @@ public:
 
 
 }
+
 
 [[nodiscard]] ImageViewHandle  Context::CreateImageView(
 	VkImage image,
@@ -511,6 +598,30 @@ public:
 
 }
 
+[[nodiscard]] ImageViewHandle  Context::CreateImageView(
+	ImageHandle image,
+	VkImageAspectFlags aspectFlags,
+	int levelCount,
+	int baseArrayLayer,
+	int layerCount,
+	VkImageViewType viewType
+) {
+
+	auto img = images_.get(image);
+
+	return CreateImageView(
+		img->image,
+		img->format,
+		aspectFlags,
+		levelCount,
+		baseArrayLayer,
+		layerCount,
+		viewType
+	);
+
+}
+
+
 [[nodiscard]] DescriptorSetHandle Context::createDescriptorSet(
 	DescriptorLayoutHandle lyt
 ) {
@@ -547,43 +658,6 @@ public:
 	return descriptrorSetPool_.create(std::move(ds));
 
 }
-
-//[[nodiscard]] DescriptorSetHandle Context::createShadowMapDescriptorSet(
-//	DescriptorLayoutHandle lyt
-//) {
-//	// Pools should be rolled over on fail, get new pool. then discard FIFO
-//	auto descriptorPool = descriptorSetPoolPool_.get(default_descriptor_pool);
-//	auto layout = descriptorSetLayoutPool_.get(lyt);
-//
-//	std::array<VkDescriptorSetLayout, 1> layouts = {
-//		*layout
-//	};
-//
-//	VkDescriptorSetAllocateInfo allocInfo{};
-//	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-//	// This needs to be implemented using rotating pools.
-//	allocInfo.descriptorPool = *descriptorPool;
-//	allocInfo.descriptorSetCount = 1;
-//	//allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
-//
-//	allocInfo.pSetLayouts = layouts.data();
-//
-//	DescriptorSet ds;
-//	VkResult result = vkAllocateDescriptorSets(*device_, &allocInfo, &ds.set);
-//	ds.layout = lyt;
-//
-//	if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
-//		// Rotate the descriptor pool. try again
-//		// Manage live dspools. defrag
-//	}
-//
-//	if (result != VK_SUCCESS) {
-//		throw std::runtime_error("failed to allocate descriptor sets!");
-//	}
-//
-//	return descriptrorSetPool_.create(std::move(ds));
-//
-//}
 
 [[nodiscard]] DeviceBufferHandle Context::createBuffer(
 	uint32_t size,
@@ -770,6 +844,44 @@ void Context::UploadDataToBuffer(
 	return descriptorSetLayoutPool_.create(std::move(descriptorSetLayout));
 }
 
+// Lets just create a sample mehslet mesh shader
+[[nodiscard]] DescriptorLayoutHandle Context::CreateMeshletDescriptorLayout() {
+
+	VkDescriptorSetLayoutBinding b0{};
+	b0.binding = 0;
+	b0.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	b0.descriptorCount = 1;
+	b0.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT;
+
+	VkDescriptorSetLayoutBinding b1{};
+	b1.binding = 1;
+	b1.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	b1.descriptorCount = 1;
+	b1.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+
+	VkDescriptorSetLayoutBinding b2{};
+	b2.binding = 2;
+	b2.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	b2.descriptorCount = 1;
+	b2.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+
+	VkDescriptorSetLayoutBinding bindings[] = { b0, b1, b2 };
+
+	VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+	ci.bindingCount = uint32_t(std::size(bindings));
+	ci.pBindings = bindings;
+
+
+
+	VkDescriptorSetLayout descriptorSetLayout;
+	if (vkCreateDescriptorSetLayout(*device_, &ci, nullptr,
+		&descriptorSetLayout) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create descriptor set layout!");
+	}
+
+	return descriptorSetLayoutPool_.create(std::move(descriptorSetLayout));
+
+}
 
 // Main Pipeline Layout..
 [[nodiscard]] DescriptorLayoutHandle Context::createDescriptorLayout() {
@@ -929,10 +1041,11 @@ void Context::UploadDataToBuffer(
 	VkPipelineVertexInputStateCreateInfo vertexInput{};
 	vertexInput.sType =
 		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-	vertexInput.vertexBindingDescriptionCount = 1;
+
+	vertexInput.vertexBindingDescriptionCount = bindingDescription.size();
 	vertexInput.vertexAttributeDescriptionCount =
 		static_cast<uint32_t>(attributeDescriptions.size());
-	vertexInput.pVertexBindingDescriptions = &bindingDescription;
+	vertexInput.pVertexBindingDescriptions = bindingDescription.data();
 	vertexInput.pVertexAttributeDescriptions = attributeDescriptions.data();
 
 	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -1109,10 +1222,10 @@ void Context::UploadDataToBuffer(
 	auto bindingDescription = Vertex::getBindingDescription();
 	auto attributeDescriptions = Vertex::getAttributeDescriptions();
 
-	vertexInputInfo.vertexBindingDescriptionCount = 1;
+	vertexInputInfo.vertexBindingDescriptionCount = bindingDescription.size();
 	vertexInputInfo.vertexAttributeDescriptionCount =
 		static_cast<uint32_t>(attributeDescriptions.size());
-	vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+	vertexInputInfo.pVertexBindingDescriptions = bindingDescription.data();
 	vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
 	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -1252,11 +1365,21 @@ void Context::UploadDataToBuffer(
 	return pipelinesPool_.create(std::move(pipeline));
 }
 
-[[nodiscard]] PipelineHandle Context::CreateMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat) {
+[[nodiscard]] PipelineHandle Context::CreateMaterialPipeline(
+	ShaderModuleHandle vert,
+	ShaderModuleHandle frag,
+	RasterSettings raster_settings,
+	VkFormat depth_format,
+	VkFormat swapchainImageFormat
+) {
 
 	return CreatePipeline(raster_settings, vert, frag, depth_format, swapchainImageFormat);
 
 }
+
+//[[nodiscard]] PipelineHandle Context::GetAppropiatePipeline(/* reqs*/) {
+//	return default_material_pipeline;
+//}
 
 [[nodiscard]] MaterialInstanceHandle Context::CreateMaterialInstance(PipelineHandle mat_pipeline)
 {
@@ -1481,108 +1604,69 @@ void Context::GetAppropiateSampler(Texture& texture) {
 [[nodiscard]] ShadowMapHandle Context::CreateShadowMap()
 {
 	ShadowMap sm;
-	sm.cascades = 1;
-	sm.image = CreateCascadedShadowMapsDepthImage(400, 400, 1);
+	sm.cascades = 0;
+	auto image = CreateShadowMapImage(400, 400);
+	sm.image = image;
 
+	auto view = CreateImageView(
+		image,
+		//VK_FORMAT_D32_SFLOAT, // Copied from CreateCascadedShadowMapsDepthImage. Need to checlk froamt availabilty and track it, probably...,
+		VK_IMAGE_ASPECT_DEPTH_BIT,
+		1,
+		0,
+		1,
+		VK_IMAGE_VIEW_TYPE_2D_ARRAY
 
-	auto image = images_.get(sm.image);
-	// These are the individual views for use as depth render attachment in the pipeline.
-	for (int i = 0; i < sm.cascades; i++) {
+	);
 
-		auto view = CreateImageView(
-			image->image, // Function signature should be changed to ImageHandle instead of plain VkImage. 
-			image->format,
-			//VK_FORMAT_D32_SFLOAT, // Copied from CreateCascadedShadowMapsDepthImage. Need to checlk froamt availabilty and track it, probably...,
-			VK_IMAGE_ASPECT_DEPTH_BIT,
-			1,
-			0,
-			1,
-			VK_IMAGE_VIEW_TYPE_2D_ARRAY
+	sm.renderView = view;
+	sm.sampleView = view;
 
-		);
+	//auto image = images_.get(sm.image);
+	//// These are the individual views for use as depth render attachment in the pipeline.
+	//for (int i = 0; i < sm.cascades; i++) {
+	//	//sm.renderViews.push_back(
+	//	//	view
+	//	//);
 
-		sm.renderViews.push_back(
-			view
-		);
-
-	}
+	//}
 
 	// We also need the sample view for shader use. 
-	sm.sampleView = CreateImageView(
-		image->image,
-		image->format,
-		VK_IMAGE_ASPECT_DEPTH_BIT,
-		1, // levels = MIPS
-		0,
-		sm.cascades, // layerCount. Layers = ARRAY
-		VK_IMAGE_VIEW_TYPE_2D_ARRAY
-	);
+//	sm.sampleView = CreateImageView(
+//		image,
+//		VK_IMAGE_ASPECT_DEPTH_BIT,
+//		1, // levels = MIPS
+//		0,
+//		1,
+////		sm.cascades, // layerCount. Layers = ARRAY
+//		VK_IMAGE_VIEW_TYPE_2D_ARRAY
+//	);
 
 	return shadowmaps_.create(std::move(sm));
 
 }
 
-[[nodiscard]] ShadowMapHandle Context::CreateBlankShadowMap()
-{
-	ShadowMap sm;
-	sm.cascades = 1;
-	sm.image = CreateCascadedShadowMapsDepthImage(1, 1, 1);
-
-
-	auto image = images_.get(sm.image);
-	// These are the individual views for use as depth render attachment in the pipeline.
-	for (int i = 0; i < sm.cascades; i++) {
-
-		auto view = CreateImageView(
-			image->image, // Function signature should be changed to ImageHandle instead of plain VkImage. 
-			image->format,
-			//VK_FORMAT_D32_SFLOAT, // Copied from CreateCascadedShadowMapsDepthImage. Need to checlk froamt availabilty and track it, probably...,
-			VK_IMAGE_ASPECT_DEPTH_BIT,
-			1
-		);
-
-		sm.renderViews.push_back(
-			view
-		);
-
-	}
-
-	// We also need the sample view for shader use. 
-	sm.sampleView = CreateImageView(
-		image->image,
-		image->format,
-		VK_IMAGE_ASPECT_DEPTH_BIT,
-		1, // levels = MIPS
-		0,
-		sm.cascades, // layerCount. Layers = ARRAY
-		VK_IMAGE_VIEW_TYPE_2D_ARRAY
-	);
-
-	return shadowmaps_.create(std::move(sm));
-
-}
-
-
-
-// Good defaults preset for DepthImageCreation.
-[[nodiscard]] ImageHandle Context::CreateCascadedShadowMapsDepthImage(int texWidth, int texHeight, int cascades) {
+// this is ju
+[[nodiscard]] ImageHandle Context::CreateShadowMapImage(int texWidth, int texHeight /*int cascades*/) {
 
 	//VkFormat depth_format = VK_FORMAT_D32_SFLOAT; // I dont need stencil, so lets hardcode this for the moment here. /*findDepthFormat(*physicalDevice_);*/
 	VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT // sample as texture
 		| VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
 	// Levels just 1. No mipmaps for shadow maps images. 
-	ImageHandle image_handle = CreateImage(texWidth, texHeight, SHADOWMAP_DEPTH_FORMAT, usage, 1, cascades);
+	ImageHandle image_handle = CreateImage(texWidth,
+		texHeight, SHADOWMAP_DEPTH_FORMAT, usage, 1, 1);
 
 	auto image = images_.get(image_handle);
 
-	TransitionImageLayout(
-		image_handle,
-		VK_IMAGE_LAYOUT_UNDEFINED,
-		VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
-	);
+	// I dont really care beucase first op will be loadClear
+	//TransitionImageLayout(
+	//	image_handle,
+	//	VK_IMAGE_LAYOUT_UNDEFINED,
+	//	VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+	//);
 
-	image->layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+	//image->layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
 
 	return image_handle;
 };
@@ -1614,15 +1698,16 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	allocation_create_info.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
 	allocation_create_info.pool = D_2DImagesPool;
 
-	//VmaAllocation alloc = VK_NULL_HANDLE;
-	VmaAllocationInfo allocInfo{};
-
-	image.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	//	image.layout = VK_IMAGE_LAYOUT_UNDEFINED;
 	image.format = format;
 	image.levels = levels;
 	// Lets store usage. 
 	image.usage = usage;
 	image.arrayLayers = arrayLayers;
+
+
+	//VmaAllocation alloc = VK_NULL_HANDLE;
+	VmaAllocationInfo allocInfo{};
 
 	VkResult res = vmaCreateImage(*allocator_, &imgCI, &allocation_create_info, &image.image, &image.alloc, &allocInfo);
 	if (res != VK_SUCCESS) {
@@ -1633,7 +1718,7 @@ void Context::GetAppropiateSampler(Texture& texture) {
 
 }
 
-[[nodiscard]] DrawSetHandle Context::UploadMesh(MeshData& mesh_data) {
+[[nodiscard]] MeshDescHandle Context::UploadMesh(MeshData& mesh_data) {
 	// Assumptions:
 	// - One big GPU index buffer (ib) and one big GPU vertex buffer (vb) already exist.
 	// - vmaVirtualAllocate() is used over virtual blocks 'index_blk' and 'vertex_blk'
@@ -1695,13 +1780,14 @@ void Context::GetAppropiateSampler(Texture& texture) {
 		auto staging_h = CreateStagingBuffer(mesh_data.vertices.data(), vertexBytes);
 		auto staging = buffers_.get(staging_h);
 
-		copyBuffer(staging->buffer, vb->buffer, vertexBytes, /*srcOffset=*/0, /*dstOffset=*/vertex_offset);
+		copyBuffer(staging->buffer,
+			vb->buffer, vertexBytes, /*srcOffset=*/0, /*dstOffset=*/vertex_offset);
 
 		destroy(this, staging_h);
 	}
 
 	// ---------- DRAWSET ----------
-	DrawSet ds{};
+	DrawRange ds{};
 	ds.first_index = static_cast<uint32_t>(index_offset / sizeof(IndexT)); // index *units*
 	ds.index_count = static_cast<uint32_t>(mesh_data.indices.size());
 
@@ -1718,25 +1804,30 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	// Note: ensure proper pipeline barriers or your copy helper does it.
 	// At minimum: transfer -> vertex/index read access & appropriate stages.
 
-	return meshes_.create(std::move(ds));
+
+	GpuMeshDesc mesh_dec = {};
+	mesh_dec.lods = 1;
+	mesh_dec.lod_offsets = { 0 };
+	mesh_dec.sets = { std::move(ds) };
+
+	return meshes_.create(std::move(mesh_dec));
 }
 
-[[nodiscard]] std::vector<DrawSetHandle> Context::BatchUploadMeshData(std::vector<MeshData>& mesh_data) {
+[[nodiscard]] std::vector<MeshDescHandle> Context::BatchUploadMeshData(std::vector<MeshData>& mesh_data) {
 	assert(!mesh_data.empty());
 
-	std::vector<DrawSet> mesh_draw_list;
+	std::vector<GpuMeshDesc> mesh_draw_list;
 	mesh_draw_list.reserve(mesh_data.size()); // keep 1:1 with mesh_data
 
 	int i = 0;
 	for (auto mesh : mesh_data) {
 		auto h = UploadMesh(mesh);
 		auto ds = meshes_.get(h);
-		ds->material_index = mesh_data[i].materialIndex;
 		mesh_draw_list.push_back(*ds);
 		i++;
 	}
 
-	std::vector<DrawSetHandle> dss;
+	std::vector<MeshDescHandle> dss;
 
 	for (auto ds : mesh_draw_list) {
 		dss.push_back(meshes_.create(std::move(ds)));
@@ -1820,8 +1911,6 @@ void Context::GetAppropiateSampler(Texture& texture) {
 
 };
 
-// HELPERS
-
 VkQueue Context::GetGraphicsQueue() {
 	return default_queue;
 }
@@ -1871,4 +1960,81 @@ void Context::CleanUp() {
 	vmaDestroyVirtualBlock(vertex_blk);
 	//vmaDestroyPool();//
 }
+
+
+std::vector<MeshDescHandle> UploadMeshDataToContext(
+	Context* ctx,
+	const std::vector<MeshData> data
+) {
+
+	std::vector<MeshData> data_to_upload;
+	std::set<uint32_t> already_uploaded;
+
+	for (auto m : data) {
+		data_to_upload.push_back(std::move(m));
+	}
+
+	std::unordered_map<int, int> already_assigned_;
+	int j = 0;
+
+	//for (auto& mesh : model.gltfModel.meshes) {
+	//	for (auto& primitive : mesh.primitives) {
+	//		if (already_assigned_.contains(primitive.material)) {
+	//			data_to_upload[j].materialIndex = already_assigned_[primitive.material];
+	//		}
+	//		else {
+	//			MaterialInstanceHandle mat_h = CreateMaterial(
+	//				ctx,
+	//				model.gltfModel,
+	//				primitive.material
+	//			);
+	//			const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
+	//			already_assigned_[primitive.material] = idx;
+	//			data_to_upload[j].materialIndex = idx;  // <-- assign for the *first* occurrence
+	//		}
+	//		j++;
+	//	}
+	//}
+
+	return ctx->BatchUploadMeshData(data_to_upload);
+}
+
+
+//
+//std::vector<MeshDescHandle> UploadGltfToContext(
+//	Context* ctx,
+//	const GltfModel& model
+//) {
+//
+//	std::vector<MeshData> data_to_upload;
+//	std::set<uint32_t> already_uploaded;
+//
+//	for (auto mesh_data : model.mesh_data) {
+//		data_to_upload.push_back(std::move(mesh_data));
+//	}
+//
+//	std::unordered_map<int, int> already_assigned_;
+//	int j = 0;
+//
+//	for (auto& mesh : model.gltfModel.meshes) {
+//		for (auto& primitive : mesh.primitives) {
+//			if (already_assigned_.contains(primitive.material)) {
+//
+//			}
+//			else {
+//				MaterialInstanceHandle mat_h = CreateMaterialFromGltf(
+//					ctx,
+//					model.gltfModel,
+//					primitive.material
+//				);
+//				const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
+//				already_assigned_[primitive.material] = idx;
+//			}
+//			j++;
+//		}
+//	}
+//
+//	return ctx->BatchUploadMeshData(data_to_upload);
+//
+//};
 

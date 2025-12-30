@@ -24,8 +24,8 @@ struct PC_All
     uint _pad1; // keep size at 192 bytes total
 } pc;
 
-[[vk::binding(2,0)]] Texture2D materialTex[]; // sampled images
-[[vk::binding(3,0)]] SamplerState materialSamp[]; // samplers
+//[[vk::binding(2,0)]] Texture2D materialTex[]; // sampled images
+//[[vk::binding(3,0)]] SamplerState materialSamp[]; // samplers
 
 struct PSIn
 {
@@ -33,6 +33,8 @@ struct PSIn
     [[vk::location(1)]] float3 color : COLOR0;
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] float3 normal : NORMAL;
+    [[vk::location(4)]] float4 tangent : TANGENT;
+    
     uint instanceID : SV_InstanceID;
 };
 
@@ -52,7 +54,10 @@ PSOut mainPS(PSIn IN)
     // Index is uniform per draw (push constants), so nonuniform isn’t required.
     uint texIdx = pc.texDiffuse;
 
-    OUT.outColor = materialTex[texIdx].Sample(materialSamp[0], IN.uv);
+    
+    OUT.outColor = (1.0f, 1.0f, 1.0f);
+    
+    //OUT.outColor = materialTex[texIdx].Sample(materialSamp[0], IN.uv);
     // If you really want per-texture samplers too, use materialSamp[pc.texAmbient] or similar.
 
     return OUT;

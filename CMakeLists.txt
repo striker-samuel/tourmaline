@@ -9,6 +9,9 @@ find_package(Vulkan REQUIRED)
 
 include(FetchContent)
 
+# MeshOptimizer
+add_subdirectory(external/meshoptimizer)
+
 # GLFW
 add_subdirectory(external/glfw)
 
@@ -17,15 +20,6 @@ add_subdirectory(external/glm)
 
 list(APPEND CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/external/ktx")
 find_package(ktx CONFIG REQUIRED)
-
-# ASSIMP from local source
-set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(ASSIMP_INSTALL OFF CACHE BOOL "" FORCE)
-set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
-set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "" FORCE)  # Let it use bundled zlib
-# Or: OFF, if you provide your own ZLIB
-
-add_subdirectory(external/assimp)
 
 # nlohmann::json (required for tinygltf)
 add_subdirectory(external/json)

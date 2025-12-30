@@ -25,6 +25,7 @@
 
 // We are using ktx for textures. also I dont want tinygltf to load texture data, just scene data.
 #define TINYGLTF_NO_STB_IMAGE
+#define TINYGLTF_NO_STB_IMAGE_WRITE
 #define TINYGLTF_NO_EXTERNAL_IMAGE
 
 // --------------ENGINE--------------------
@@ -38,16 +39,18 @@
 #include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
 
-// Include glm/else.
 #include <Engine/Shared/common.h>
-
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
-
 #include <Engine/Renderer/primitives.h>
 
-#include <Engine/Formats/pak.h>
+//
 #include <Engine/Utils/gltf.h>
+#include <Engine/Formats/optimize.h>
+
+
+//
+#include <Engine/Formats/pak.h>
 
 // Moved readFile here. readFile rnow is just used to read shader files.
 // this should go to Platform layer. This is windows first for the foreseable future
@@ -56,51 +59,7 @@
 // --------------APP--------------------
 
 #include <App/utils.h>
-
-
-using ResourceMap = std::unordered_map<Uuid, ResourceLocation, UuidHash, UuidEq>;
-std::vector<std::unique_ptr<PakReader>> g_paks;
-ResourceMap g_resourceIndex;
-
-bool LoadGltfFromPak(const ResourceLocation& loc,
-	tinygltf::Model& model,
-	std::string& err,
-	std::string& warn)
-{
-	if (loc.pak_id >= g_paks.size())
-	{
-		err = "Invalid pak_id in ResourceLocation";
-		return false;
-	}
-
-	PakReader& pak = *g_paks[loc.pak_id];
-
-	// Just use the helper that already computes the absolute offset properly
-	std::vector<char> buffer;
-	try {
-		buffer = pak.readData(loc);
-	}
-	catch (const std::exception& e) {
-		err = e.what();
-		return false;
-	}
-
-	tinygltf::TinyGLTF loader;
-
-	std::string gltfText(buffer.data(), buffer.size());
-	const std::string base_dir = "";
-
-	std::cout.write(gltfText.data(),gltfText.size());
-	std::cout << "\n";
-
-	bool ok = loader.LoadASCIIFromString(&model,
-		&err,
-		&warn,
-		gltfText.c_str(),
-		static_cast<unsigned int>(gltfText.size()),
-		base_dir);
-	return ok;
-}
+#include <App/pak_methods.h>
 
 // ------------------------------------
 // If theres only one I probably could go with argv
@@ -108,30 +67,8 @@ std::vector<std::string> gltf_meshes_paths = {
 	"models/Sponza/sponza.gltf" // Index 0
 };
 
-Scene getSceneFromGltf(const GltfModel& gltf_model) {
 
-	Scene scene;
-
-	// adding top parent to apply scale here
-
-	// top parent
-	int root = addNode(scene, -1, 0);
-
-	int meshIndex = 0;
-	for (auto& mesh_data : gltf_model.mesh_data) {
-		int node = addNode(scene, root, 1); // child of root
-		scene.meshForNode[node] = meshIndex;
-
-		// TODO: set real material index from mesh_data
-		scene.materialForNode[node] = 0;
-
-		meshIndex++;
-	}
-
-	scene.localTransform[0] = glm::scale(glm::mat4(1.0f), glm::vec3(0.008f)/*, glm::vec3(0.008f)*/);
-	markAsChanged(scene, 0);
-	return scene;
-}
+// Debug LighData
 
 struct RGB { float r, g, b; };
 
@@ -152,7 +89,8 @@ RGB hsv2rgb(float h, float s, float v)
 	return { r + m, g + m, b + m };
 }
 
-void FabricateLightData(Light* data) {
+void FabricateLightData(Light* data)
+{
 
 	for (int i = 0; i < MAX_LIGHTS; i++) {
 		data[i].position[0] = 3.0f * i;
@@ -190,14 +128,13 @@ public:
 	int height_ = HEIGHT;
 
 	bool Initialize();
+	bool InitializeAppData();
 	bool Run() {
 
 
-		WritePak();
-		RegisterPaks();
-
 		bool result = Initialize();
 		assert(result && "Failed to initialize");
+
 		Start();
 		MainLoop();
 		CleanUp();
@@ -206,16 +143,20 @@ public:
 
 	};
 	void Start();
+	void LoadScene();
 
 	std::array<Light, MAX_LIGHTS> lights; // lets move this to the scene tree.
-	PipelineHandle shadow_pipeline;
+
+	PipelineHandle default_material_pipeline;
+	PipelineHandle default_shadow_pipeline;
 
 private:
 
 	Context* context;
 	ImGuiContext* imgui_ctx;
 
-	Scene scene_ = getSceneFromGltf(gltf_meshes_paths[0]);
+	//Scene scene_ = getSceneFromGltf(gltf_meshes_paths[0]);
+	Scene scene_ = {}; // empty scene initialize
 
 	DescriptorSetHandle frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
 
@@ -324,8 +265,6 @@ private:
 
 		lastFrameTime = currentTime;
 	}
-
-	void UploadScene();
 	void UpdateInstanceBuffers(uint32_t currentImage);
 	void UpdateLightsBuffers(uint32_t currentImage);
 
@@ -704,6 +643,46 @@ private:
 		}
 	}
 
+	void  UpdateMehsletsDescriptorSets(uint32_t currentFrame) {
+
+		//assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
+
+		//VkDescriptorBufferInfo meshletInfo{ meshletDescBuffer, 0, VK_WHOLE_SIZE };
+		//VkDescriptorBufferInfo vertexInfo{ vertexBuffer,     0, VK_WHOLE_SIZE };
+		//VkDescriptorBufferInfo triInfo{ triBuffer,        0, VK_WHOLE_SIZE };
+
+		//VkWriteDescriptorSet writes[3]{};
+
+		////auto setHandle = frameDescriptorSets[currentFrame];
+		////auto setObj = context->descriptrorSetPool_.get(setHandle);
+		////VkDescriptorSet vkSet = setObj->set;
+
+
+		//writes[0] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+		//writes[0].dstSet = vkSet;
+		//writes[0].dstBinding = 0;
+		//writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		//writes[0].descriptorCount = 1;
+		//writes[0].pBufferInfo = &meshletInfo;
+
+		//writes[1] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+		//writes[1].dstSet = vkSet;
+		//writes[1].dstBinding = 1;
+		//writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		//writes[1].descriptorCount = 1;
+		//writes[1].pBufferInfo = &vertexInfo;
+
+		//writes[2] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+		//writes[2].dstSet = vkSet;
+		//writes[2].dstBinding = 2;
+		//writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		//writes[2].descriptorCount = 1;
+		//writes[2].pBufferInfo = &triInfo;
+
+		//vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+
+	}
+
 	void UpdateInstanceDescriptorSets(uint32_t currentFrame)
 	{
 		assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
@@ -803,7 +782,7 @@ private:
 
 				auto smh = context->shadowmaps_.getHandle(lights[i].shadow_map_index);
 				auto sm = context->shadowmaps_.get(smh);
-				VkImageView shadowView = *context->imageViews_.get(sm->renderViews[0]);
+				VkImageView shadowView = *context->imageViews_.get(sm->renderView);
 
 				VkDescriptorImageInfo ii{};
 				ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
@@ -952,9 +931,9 @@ private:
 
 	}
 
-	void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer, uint32_t /*imageIndex*/)
-	{
 
+	void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+	{
 
 		for (int i = 0; i < MAX_LIGHTS; i++) {
 
@@ -967,20 +946,21 @@ private:
 			// Example: one light, one shadowmap
 			auto smh = context->shadowmaps_.getHandle(light.shadow_map_index);
 			auto sm = context->shadowmaps_.get(smh);
-
-			VkImage shadowImage = context->images_.get(sm->image)->image;
-			VkImageView shadowView = *context->imageViews_.get(sm->renderViews[0]);
+			// This could be bad. No per image. shadow. 
+			auto shadowImage = context->images_.get(sm->image);
+			VkImageView shadowView = *context->imageViews_.get(sm->renderView);
 			VkExtent2D shadowExtent = { 400,400 };           // e.g. { width, height }
 
 			// 1) Transition depth image to DEPTH_ATTACHMENT_OPTIMAL
 			{
 				VkImageMemoryBarrier barrier{};
 				barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-				barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // or SHADER_READ_ONLY_OPTIMAL if reused
+//				barrier.oldLayout = used_image ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // I do loadOp clear so this can be undefined no problem
 				barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
 				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				barrier.image = shadowImage;
+				barrier.image = shadowImage->image;
 				barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 				barrier.subresourceRange.baseMipLevel = 0;
 				barrier.subresourceRange.levelCount = 1;
@@ -1035,6 +1015,8 @@ private:
 			vp.maxDepth = 1.0f;
 			vkCmdSetViewport(commandBuffer, 0, 1, &vp);
 
+
+			// We should resize scissor to avoid unnecesary pixelinvokations
 			VkRect2D scissor{};
 			scissor.offset = { 0, 0 };
 			scissor.extent = shadowExtent;
@@ -1051,7 +1033,7 @@ private:
 			vkCmdBindIndexBuffer(commandBuffer, ibh->buffer, 0, VK_INDEX_TYPE_UINT32);
 
 			// 5) Shadow pipeline & descriptors
-			auto s_pipeline = context->pipelinesPool_.get(shadow_pipeline);
+			auto s_pipeline = context->pipelinesPool_.get(default_shadow_pipeline);
 			auto pipe_lyt = s_pipeline->plyt;
 
 			vkCmdBindPipeline(
@@ -1095,21 +1077,23 @@ private:
 				&all
 			);
 
-			// 7) Draw scene from light POV
 			for (int i = 0; i < static_cast<int>(scene_.hierarchy.size()); ++i) {
-				auto draw_set_h = context->meshes_.getHandle(scene_.meshForNode[i]);
-				auto draw_set = context->meshes_.get(draw_set_h);
+				auto mesh_desc_handle = context->meshes_.getHandle(scene_.meshForNode[i]);
+				auto mesh_desc = context->meshes_.get(mesh_desc_handle);
 
-				// if per-object constants are needed, update and push here
+				for (auto draw_set : mesh_desc->sets) {
 
-				vkCmdDrawIndexed(
-					commandBuffer,
-					draw_set->index_count,
-					1,
-					draw_set->first_index,
-					draw_set->vert_offset,
-					i
-				);
+					vkCmdDrawIndexed(
+						commandBuffer,
+						draw_set.index_count,
+						1,
+						draw_set.first_index,
+						draw_set.vert_offset,
+						i
+					);
+
+				}
+
 			}
 
 			vkCmdEndRendering(commandBuffer);
@@ -1122,7 +1106,7 @@ private:
 				barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				barrier.image = shadowImage;
+				barrier.image = shadowImage->image;
 				barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 				barrier.subresourceRange.baseMipLevel = 0;
 				barrier.subresourceRange.levelCount = 1;
@@ -1141,6 +1125,7 @@ private:
 					0, nullptr,
 					1, &barrier
 				);
+
 			}
 		}
 
@@ -1221,19 +1206,27 @@ private:
 		scissor.extent = swapChainExtent;
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+
 		auto vbh = context->buffers_.get(context->vertex_buffer);
+		auto vsbh = context->buffers_.get(context->vertex_shading_buffer);
 		auto ibh = context->buffers_.get(context->index_buffer);
 
-		VkBuffer vertexBuffers[] = { vbh->buffer };
-		VkDeviceSize offsets[] = { 0 };
+		// Old vertex format with no tangents.
+		//VkBuffer vertexBuffers[] = { vbh->buffer };
+		//VkDeviceSize offsets[] = { 0 };
+		//vkCmdBindVertexBuffers(
+		//	commandBuffer,
+		//	0,
+		//	1,
+		//	vertexBuffers,
+		//	offsets
+		//);
 
-		vkCmdBindVertexBuffers(
-			commandBuffer,
-			0,
-			1,
-			vertexBuffers,
-			offsets
-		);
+		VkBuffer bufs[] = { vbh->buffer, vsbh->buffer };
+		VkDeviceSize offs[] = { 0, 0 };
+		vkCmdBindVertexBuffers(commandBuffer, 0, 2, bufs, offs);
+
+
 		vkCmdBindIndexBuffer(commandBuffer,
 			ibh->buffer,
 			0,
@@ -1273,18 +1266,17 @@ private:
 
 			for (int i = 0; i < scene_.hierarchy.size(); i++) {
 
-				auto draw_set_h = context->meshes_.getHandle(scene_.meshForNode[i]);
-				auto draw_set = context->meshes_.get(draw_set_h);
+				auto mesh_desc = context->meshes_.get(
+					context->meshes_.getHandle(
+						scene_.meshForNode[i]
+					)
+				);
 
-				// Need to find why this doesn't work.
-				//uint32_t material_index = scene_.materialForNode[i];
-				//assert(material_index == draw_set->material_index);
-
-				uint32_t material_index = draw_set->material_index;
-				pc.material_instance_index = material_index;
+				auto material_instance_index = scene_.materialForNode[i];
+				pc.material_instance_index = material_instance_index;
 
 				MaterialPushConstants pcm =
-					context->materialInstancesPool_.objects_[material_index].obj_.values;
+					context->materialInstancesPool_.objects_[material_instance_index].obj_.values;
 
 				struct PC_All {
 					PushConstants pc;               // 144
@@ -1301,14 +1293,19 @@ private:
 					&all
 				);
 
-				vkCmdDrawIndexed(
-					commandBuffer,
-					draw_set->index_count, //indexCount
-					1, //instanceCount
-					draw_set->first_index, //firstIndex, like offset but its just instead on index size times, just index n
-					draw_set->vert_offset, //offsetIntoVertexBuffer
-					i // instanceId
-				);
+				for (auto draw_set : mesh_desc->sets) {
+
+					vkCmdDrawIndexed(
+						commandBuffer,
+						draw_set.index_count,
+						1,
+						draw_set.first_index, //firstIndex, like offset but its just instead on index size times, just index n
+						draw_set.vert_offset, //offsetIntoVertexBuffer
+						i // instanceId
+					);
+
+				}
+
 			}
 		}
 
@@ -1378,10 +1375,8 @@ private:
 
 	void DrawFrame();
 
-	void WritePak();
-	void RegisterPaks();
+	// UI EVENTS
 
-	// UI
 	static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 	static void scrollCallback(GLFWwindow* window, double xOffset, double yOffset);
 	static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
@@ -1393,8 +1388,6 @@ private:
 	void handleMouseButton(int button, int action, int mods);
 	void handleKey(int key, int scancode, int action, int mods);
 
-	// utils
-	//void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 };
 
 void VulkanApp::InitializeImGui() {
@@ -1456,10 +1449,6 @@ void VulkanApp::InitializeImGui() {
 	//ImGui_ImplVulkan_CreateFontsTexture(cmd);
 	//EndSubmitAndWait(cmd);
 	//ImGui_ImplVulkan_DestroyFontUploadObjects();
-
-}
-
-void Initialize() {
 
 }
 
@@ -1657,7 +1646,6 @@ void VulkanApp::InitVulkanApp() {
 	context = new Context(instance, &device, &physicalDevice, surface); // remember to delete it on shutdown
 }
 
-
 bool VulkanApp::Initialize() {
 
 	if (volkInitialize() != VK_SUCCESS) {
@@ -1731,6 +1719,19 @@ bool VulkanApp::Initialize() {
 	CreateRenderSyncObjects();
 	CreateDepthResources();
 
+	// 
+	CreateFrameDataBuffers();
+
+
+	return true;
+
+}
+
+bool VulkanApp::InitializeAppData() {
+	//WritePak();
+//	RegisterPaks();
+
+	return true;
 
 }
 
@@ -1850,10 +1851,14 @@ inline void VulkanApp::DrawFrame() {
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
 
+	// This is here to be as close as posible.
 	UpdateDeltaTime();
 
 	// We should check for size and promote or demote from pushconstants -> ubo -> ssbo. Or not.
-	// This method goes absolutley independent using iths on commandPool. We could maybe chain this to framesCommandPool[curretFrame]
+	// no, thsi is not as needed as I thougt
+	// 
+	// This method goes absolutley independent using this on commandPool.
+	// We could maybe chain this to framesCommandPool[curretFrame]
 	// As this is an upload to Gpu maybe transferque is better for this.
 	UpdateInstanceBuffers(currentFrame);
 	// Moving this after the reset prompts this validation error. Why?
@@ -1960,14 +1965,12 @@ inline void VulkanApp::DrawFrame() {
 	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-
-
 void VulkanApp::CreatePipelines() {
 
 
 }
 
-inline void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
+void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 
 	// Moved this to the HEAP. This will be state of the app instead of being fabricated here anyways.
 	InstanceData* data = new InstanceData[MAX_INSTANCES];
@@ -2061,22 +2064,6 @@ void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
 
 }
 
-void VulkanApp::UploadScene() {
-
-
-	std::string err, warn;
-	tinygltf::Model model;
-
-	LoadGltfFromPak(g_resourceIndex.begin()->second, model, err, warn);
-
-	UploadGltfToContext(
-		context,
-		model
-		//gltf_meshes_paths[0]
-	);
-
-}
-
 void VulkanApp::CleanUp() {
 
 	context->CleanUp();
@@ -2100,12 +2087,12 @@ void VulkanApp::Start() {
 	}
 
 
-	// Create Pipelines
-	auto vertShaderCode = readFile("shaders/example.vert.hlsl.spv");
-	auto vertColorFragCode = readFile("shaders/vertex_color.frag.hlsl.spv");
-	auto fragShaderCode = readFile("shaders/example.frag.hlsl.spv");
+	// PIPELINE CREATION
 
-	auto vertHandle = context->CreateShaderModule(
+	auto vertShaderCode = readFile("shaders/default.vert.hlsl.spv");
+	auto fragShaderCode = readFile("shaders/default.frag.hlsl.spv");
+
+	auto vert_shader_h = context->CreateShaderModule(
 		vertShaderCode
 	);
 	auto fragHandle = context->CreateShaderModule(
@@ -2114,17 +2101,15 @@ void VulkanApp::Start() {
 
 	// DEFAULT 
 
-	auto def_pipe = context->CreateMaterialPipeline(
-		vertHandle,
+	default_material_pipeline = context->CreateMaterialPipeline(
+		vert_shader_h,
 		fragHandle,
 		default_raster_settings,
 		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
 		swapChainImageFormat
 	);
 
-	shadow_pipeline = context->CreateShadowPipeline(vertHandle);
-
-	//
+	default_shadow_pipeline = context->CreateShadowPipeline(vert_shader_h);
 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		frameDescriptorSets[i] = context->createDescriptorSet(
@@ -2135,71 +2120,56 @@ void VulkanApp::Start() {
 		);
 	}
 
-	// This is pipeline setup always required.
-	CreateFrameDataBuffers();
+
+	LoadScene();
+
+}
+
+void VulkanApp::LoadScene() {
+
+	// Default camera.
 	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
 
-	UploadScene();
+	//Read default scene. 
 
 }
 
-void RegisterPak(const std::string& pakPath)
-{
-	auto pak = std::make_unique<PakReader>(pakPath);
-	uint32_t pakIndex = static_cast<uint32_t>(g_paks.size());
+//}
+//
+//
+//
+//void build_pak()
+//{
+//    spak::PakWriter w;
+//
+//
+//    // Add a mesh blob
+//	std::vector<char> meshBytes;
+//    w.addFromMemory("/scene1/meshes/mesh1.mesh", meshBytes.data(), (uint32_t)meshBytes.size());
+//
+//    // Add a texture file from disk under a VFS path
+//    w.addFile("/scene1/textures/albedo.ktx2", "C:/assets/albedo.ktx2", /*type=* / 2);
+//
+//    w.writeToFile("scene1.spak", /*content_version=* / 1);
+//}
+//
+//void runtime()
+//{
+//    spak::PakReader pak("scene1.spak");
+//
+//    spak::PakVfs vfs;
+//    vfs.mount(pak, "/", /*priority=* / 0);
+//
+//    auto bytes = vfs.readAll("/scene1/textures/albedo.ktx2");
+//}
+//
+//-----------------------------------------
+//tinygltf FsCallbacks mapping idea:
+//-----------------------------------------
+//- Your FsCallbacks::ReadWholeFile just calls vfs.readAll(path)
+//- ExpandFilePath can normalize paths to VFS style (NormalizeVfsPath)
+//*/
 
-	const auto& header = pak->header();
-	pak->readTable(); // returns vector<PakFileTableEntry>
-
-	auto entries = pak->m_entries;
-
-	for (const auto& e : entries)
-	{
-		ResourceLocation loc;
-		loc.pak_id = pakIndex;
-		loc.offset = e.offset;
-		loc.size = e.compressed_size;
-		loc.flags = e.flags;
-
-		g_resourceIndex.emplace(e.uuid, loc);
-	}
-
-	g_paks.push_back(std::move(pak));
-}
-
-
-
-std::vector<char> LoadResource(const Uuid& id)
-{
-	auto it = g_resourceIndex.find(id);
-	if (it == g_resourceIndex.end())
-		throw std::runtime_error("Resource not found");
-
-	const auto& loc = it->second;
-	auto& pak = g_paks[loc.pak_id];
-
-	return pak->readData(loc);
-}
-
-void VulkanApp::WritePak() {
-
-	std::stringstream ss;
-	ss << "models/sponza/Sponza.gltf\n";
-	//ss << "models/sponza/b.ogg\n";
-
-	Pack(ss, "paks/data.pak");
-
-}
-
-void VulkanApp::RegisterPaks() {
-
-	RegisterPak("paks/data.pak");
-	//RegisterPak("paks/data.pak");
-	//RegisterPak("paks/data.pak");
-	//RegisterPak("paks/data.pak");
-	//RegisterPak("paks/data.pak");
-
-}
 
 int main(int argc, const char* argv[]) {
 	if (argc > 1) {
@@ -2217,3 +2187,5 @@ int main(int argc, const char* argv[]) {
 
 	return EXIT_SUCCESS;
 }
+
+

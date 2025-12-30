@@ -40,12 +40,17 @@ const std::vector<uint32_t> triangle_indices_ccw = {
 	0, 1, 2
 };
 
+enum GPU_CULLING_MODE {
+	CPU_CULLING,
+	GPU_CULLING
+};
+
+// Could very well be called MeshStream or somthing like that. this is really ther Vertex stream + Index Stream
 struct MeshData {
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
-	glm::vec3 minBox;
+	glm::vec3 minBox; // im reading this directly from gltf.
 	glm::vec3 maxBox;
-	uint32_t materialIndex = 0;       // primitive.material (or -1)
 };
 
 MeshData Quad = MeshData(quad_vertices, quad_indices_ccw);
@@ -64,8 +69,6 @@ struct InstanceData {
 		0.0f, 0.0f, 0.0f, 1.0f
 	};
 	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
-	//uint32_t meshindex;
-	//uint32_t indexoffset;
 	//uint32_t materialindex; // this is the device side for instacnce abstaction. material is cpu side. this souldnt be added back
 	//uint32_t lod;
 };
@@ -120,25 +123,48 @@ struct PushConstants {
 	glm::mat4 proj;
 	// The MaterialPipeline should be binded to desired material. This only gets us bindless addresing of the instnanceSlots.
 	// A single MaterialModel. shader code, layout , rastersettings, can have many instancs with individual image attachments and constants.
-	int material_instance_index;
+	int material_instance_index; // This is for the mateiral instance contants such as albedo intensity. speculat intensity and such. 
 	uint32_t     _pad0[3];
 };
 
-// Lets just assume offsets into the static index/vertex buffers for now :)
-struct DrawSet {
-	//static doesn't go here- Instead static sets are baked into large draw sets. static is just to skip hierarchy transform updates.
-	// Maybe for coherency for optimization
-
+// This, at least for the momemt is equivalent to tinygtlf model.primitve. in our data model. 
+struct DrawRange {
 	uint32_t first_index = 0;
-
-	// this is size
 	uint32_t vert_offset = 0;
 	uint32_t index_count = 0;
-
-	// This is handled scene side. This is just temp
-	uint32_t material_index = 0;
 };
 
+struct GpuMeshDesc {
+
+    glm::vec3 aabbMin;
+    float     sphereRadius;
+    glm::vec3 aabbMax;
+	float     spherePad;
+
+	uint32_t lods = 1;
+	std::vector<uint32_t> lod_offsets;
+	std::vector<DrawRange> sets;
+
+};
+
+
+struct GPUMeshletDesc
+{
+    uint32_t vertOffset;
+    uint32_t vertCount;
+    uint32_t triOffset;     // offset into triIndex buffer (in "triangles", not bytes)
+    uint32_t triCount;
+
+    // Culling data
+    glm::vec3 aabbMin;
+    float     sphereRadius;
+    glm::vec3 aabbMax;
+    float     spherePad;    // or sphereCenter.w if you want vec4 center
+    glm::vec3 sphereCenter;
+    float     coneCutoff;   // optional
+    glm::vec3 coneAxis;     // optional
+    float     conePad;
+};
 
 std::unordered_map<uint32_t, std::string> mesh_names;
 

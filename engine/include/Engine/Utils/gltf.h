@@ -1,3 +1,5 @@
+#pragma once
+
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -16,10 +18,6 @@
 #include <Engine/Renderer/vertex.h>
 #include <Engine/Renderer/primitives.h>
 #include <Engine/Renderer/context.h>
-
-#include <optional>
-#include <string>
-#include <fstream>
 
 // DATA STRUCTURES
 
@@ -106,6 +104,12 @@ inline glm::vec3 readVec3ForientationFix(const tinygltf::Model& m, const tinyglt
 	return glm::vec3(p[0] * -1, p[1], p[2] * -1);
 }
 
+inline glm::vec4 readVec4F(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
+	// Expect FLOAT VEC4
+	const float* p = reinterpret_cast<const float*>(gltfPtr(m, a, i));
+	return glm::vec4(p[0], p[1], p[2], p[3]);
+}
+
 inline glm::vec3 readVec3F(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
 	// Expect FLOAT VEC3
 	const float* p = reinterpret_cast<const float*>(gltfPtr(m, a, i));
@@ -129,7 +133,8 @@ uint32_t readIndex(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t
 	}
 }
 
-bool loadModel(tinygltf::Model& model, const char* filename) {
+
+bool LoadModelFromAsciiFile(tinygltf::Model& model, const char* filename) {
 	tinygltf::TinyGLTF loader;
 	std::string err;
 	std::string warn;
@@ -150,25 +155,36 @@ bool loadModel(tinygltf::Model& model, const char* filename) {
 
 	return res;
 }
-static std::optional<std::string> UriFromTexture(
+
+static std::optional<std::filesystem::path> UriFromTexture(
+//	const std::filesystem::path& gltfPath,
 	const tinygltf::Model& model,
 	GltfTextureRef& texture_ref
 ) {
-
 	const tinygltf::Image& img = model.images[texture_ref.imageIndex];
 
-	// Case 1: External file via URI
+	// Case 1: External image via URI
 	if (!img.uri.empty() && !starts_with(img.uri, "data:")) {
-		// This is the path you can feed to your loader; it’s relative to the glTF file location.
-		return img.uri;
+
+
+
+		// this duty falls on the caller as of now .
+		//std::filesystem::path baseDir = gltfPath.parent_path();
+		//std::filesystem::path imagePath = baseDir / img.uri;
+		std::filesystem::path imagePath = img.uri;
+
+		return imagePath.lexically_normal();
+	}
+	else {
+
+		// Should I abort on internal image??? ....
+
 	}
 
-	// If we get here, we didn’t find a usable path/bytes
 	return std::nullopt;
-
 }
 
-static std::optional<GltfTextureRef> ResolveTexture(
+static std::optional<GltfTextureRef> GltfResolveTexture(
 	const tinygltf::Model& model,
 	const tinygltf::TextureInfo& texInfo)
 {
@@ -187,7 +203,7 @@ static std::optional<GltfTextureRef> ResolveTexture(
 	return out;
 }
 
-static std::optional<GltfTextureRef> ResolveNormalTexture(
+static std::optional<GltfTextureRef> GtlfResolveNormalTexture(
 	const tinygltf::Model& model,
 	const tinygltf::NormalTextureInfo& nrm)
 {
@@ -206,8 +222,7 @@ static std::optional<GltfTextureRef> ResolveNormalTexture(
 	if (out.imageIndex < 0) return std::nullopt;
 	return out;
 }
-
-static std::optional<GltfTextureRef> ResolveOcclusionTexture(
+static std::optional<GltfTextureRef> GLtfResolveOcclusionTexture(
 	const tinygltf::Model& model,
 	const tinygltf::OcclusionTextureInfo& occ)
 {
@@ -233,109 +248,100 @@ static AlphaMode ParseAlphaMode(const std::string& s) {
 	return AlphaMode::Opaque; // default or "OPAQUE"
 }
 
-class GltfModel {
 
-public:
+MeshData MeshDataFromPrimitive(
+	const tinygltf::Model& model,
+	const tinygltf::Primitive& primitive
+) {
+	MeshData data;
 
-	tinygltf::Model gltfModel;
-	std::vector<MeshData> mesh_data;
+	// AABB. for culling	
+	{
+		auto it = primitive.attributes.find("POSITION");
+		if (it == primitive.attributes.end())
+			return data;
 
-	GltfModel(tinygltf::Model& model) {
-		gltfModel = model;
+		int accessorIndex = it->second;
+		const tinygltf::Accessor& accessor = model.accessors[accessorIndex];
 
-		BuildMeshData();
-	}
+		if (accessor.minValues.size() >= 3 && accessor.maxValues.size() >= 3) {
 
-	GltfModel(std::string model_path) {
-		std::string warn, err;
+			// glTF stores AABB in the accessor
+			const std::vector<double>& min = accessor.minValues;
+			const std::vector<double>& max = accessor.maxValues;
 
-		if (!loadModel(gltfModel, model_path.c_str())) {
-			throw std::runtime_error(warn + err);
+			glm::vec3 aabbMin(min[0], min[1], min[2]);
+			glm::vec3 aabbMax(max[0], max[1], max[2]);
+
+			// Apply same conversion as positions
+			glm::vec3 c0(-aabbMin.x, aabbMin.y, -aabbMin.z);
+			glm::vec3 c1(-aabbMax.x, aabbMax.y, -aabbMax.z);
+
+			data.minBox = aabbMin;
+			data.maxBox = aabbMax;
 		}
+		else {
 
-		BuildMeshData();
+			// I wont handle this. just assert and fail. 
+			assert(false && "failed to get bb ");
 
-	}
-
-	void BuildMeshData() {
-
-		std::cout << gltfModel.meshes.size() << std::endl;
-		for (const auto& node : gltfModel.nodes) {
-
-		}
-
-		for (const auto& mesh : gltfModel.meshes) {
-
-			for (const auto& primitive : mesh.primitives) {
-
-				assert(primitive.mode == TINYGLTF_MODE_TRIANGLES);
-
-				MeshData data_;
-				data_.materialIndex = primitive.material;
-
-				// AABB. for culling 
-				{
-					auto it = primitive.attributes.find("POSITION");
-					if (it == primitive.attributes.end())
-						continue;
-
-					int accessorIndex = it->second;
-					const tinygltf::Accessor& accessor = gltfModel.accessors[accessorIndex];
-
-					// glTF stores AABB in the accessor
-					const std::vector<double>& min = accessor.minValues;
-					const std::vector<double>& max = accessor.maxValues;
-
-					glm::vec3 aabbMin(min[0], min[1], min[2]);
-					glm::vec3 aabbMax(max[0], max[1], max[2]);
-
-					data_.minBox = aabbMin;
-					data_.maxBox = aabbMax;
-				}
-
-
-				// Extract vertices
-				auto& posAcc = gltfModel.accessors[primitive.attributes.at("POSITION")];
-				data_.vertices.reserve(posAcc.count);
-				for (size_t i = 0; i < posAcc.count; ++i) {
-					Vertex v{};
-					v.pos = readVec3ForientationFix(gltfModel, posAcc, i);
-					v.color = { 1.0f, 1.0f, 1.0f };
-					v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
-					v.normal = { 0.0f, 1.0f, 0.0f }; // will replace if normals provided
-					data_.vertices.push_back(v);
-				}
-
-				if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end()) {
-					auto& uvAcc = gltfModel.accessors[it->second];
-					for (size_t i = 0; i < uvAcc.count && i < data_.vertices.size(); ++i) {
-						glm::vec2 uv = readVec2F(gltfModel, uvAcc, i);
-						data_.vertices[i].texCoord = uv; // flip V if your shader expects it: uv.y = 1.0f - uv.y;
-					}
-				}
-
-				if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end()) {
-					auto& nAcc = gltfModel.accessors[it->second];
-					for (size_t i = 0; i < nAcc.count && i < data_.vertices.size(); ++i) {
-						glm::vec3 n = readVec3ForientationFix(gltfModel, nAcc, i);
-						data_.vertices[i].normal = glm::normalize(n);
-					}
-				}
-
-				if (primitive.indices >= 0) {
-					auto& idxAcc = gltfModel.accessors[primitive.indices];
-					for (size_t i = 0; i < idxAcc.count; ++i) {
-						data_.indices.push_back(readIndex(gltfModel, idxAcc, i));
-					}
-				}
-
-				mesh_data.push_back(data_);
-
-			}
 		}
 
 	}
-};
+
+	// Extract vertices
+	auto& posAcc = model.accessors[primitive.attributes.at("POSITION")];
+	data.vertices.reserve(posAcc.count);
+	for (size_t i = 0; i < posAcc.count; ++i) {
+		Vertex v{};
+		v.pos = readVec3ForientationFix(model, posAcc, i);
+		v.color = { 1.0f, 1.0f, 1.0f };
+		v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
+		v.normal = { 0.0f, 1.0f, 0.0f }; // will replace if normals provided
+		v.tangent = { 1.0f, 0.0f,0.0f, 1.0f }; // zero out tangent by default too ;)
+		data.vertices.push_back(v);
+	}
+
+	if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end()) {
+		auto& uvAcc = model.accessors[it->second];
+		for (size_t i = 0; i < uvAcc.count && i < data.vertices.size(); ++i) {
+			glm::vec2 uv = readVec2F(model, uvAcc, i);
+			data.vertices[i].texCoord = uv; // flip V if your shader expects it: uv.y = 1.0f - uv.y;
+		}
+	}
+
+	if (auto it = primitive.attributes.find("TANGENT"); it != primitive.attributes.end()) {
+		auto& tangentAcc = model.accessors[it->second];
+		for (size_t i = 0; i < tangentAcc.count && i < data.vertices.size(); ++i) {
+			glm::vec4 tangent = readVec4F(model, tangentAcc, i);
+
+			// Space conversion to my engine. Same as pos
+			tangent.x *= -1.0f;
+			tangent.z *= -1.0f;
+
+			data.vertices[i].tangent = tangent;
+		}
+	}
+
+
+	if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end()) {
+		auto& nAcc = model.accessors[it->second];
+		for (size_t i = 0; i < nAcc.count && i < data.vertices.size(); ++i) {
+			glm::vec3 n = readVec3ForientationFix(model, nAcc, i);
+			data.vertices[i].normal = glm::normalize(n);
+		}
+	}
+
+	if (primitive.indices >= 0) {
+		auto& idxAcc = model.accessors[primitive.indices];
+		for (size_t i = 0; i < idxAcc.count; ++i) {
+			data.indices.push_back(readIndex(model, idxAcc, i));
+		}
+	}
+
+	return data;
+
+}
 
 std::vector<GltfMaterial> ExtractMaterials(const tinygltf::Model& model)
 {
@@ -355,19 +361,19 @@ std::vector<GltfMaterial> ExtractMaterials(const tinygltf::Model& model)
 		mat.roughnessFactor = m.pbrMetallicRoughness.roughnessFactor;
 
 		// Textures
-		if (auto t = ResolveTexture(model, m.pbrMetallicRoughness.baseColorTexture))
+		if (auto t = GltfResolveTexture(model, m.pbrMetallicRoughness.baseColorTexture))
 			mat.baseColorTex = *t;
 
-		if (auto t = ResolveTexture(model, m.pbrMetallicRoughness.metallicRoughnessTexture))
+		if (auto t = GltfResolveTexture(model, m.pbrMetallicRoughness.metallicRoughnessTexture))
 			mat.metallicRoughnessTex = *t;
 
-		if (auto t = ResolveNormalTexture(model, m.normalTexture))
+		if (auto t = GtlfResolveNormalTexture(model, m.normalTexture))
 			mat.normalTex = *t;
 
-		if (auto t = ResolveOcclusionTexture(model, m.occlusionTexture))
+		if (auto t = GLtfResolveOcclusionTexture(model, m.occlusionTexture))
 			mat.occlusionTex = *t;
 
-		if (auto t = ResolveTexture(model, m.emissiveTexture))
+		if (auto t = GltfResolveTexture(model, m.emissiveTexture))
 			mat.emissiveTex = *t;
 
 		if (m.emissiveFactor.size() == 3) {
@@ -392,109 +398,107 @@ std::vector<GltfMaterial> ExtractMaterials(const tinygltf::Model& model)
 	return out;
 }
 
-MaterialInstanceHandle CreateMaterial(Context* ctx, const tinygltf::Model& model, int material) {
-
-	auto mat = ExtractMaterials(model)[material];
-	auto color_uri = UriFromTexture(model, *mat.baseColorTex);
-	//auto color_uri = UriFromTexture(model, *mat.baseColorTex);
-	//auto color_uri = UriFromTexture(model, *mat.baseColorTex);
-
-	std::string root = "models/sponza/";
-
-	ktxTexture2* ktxTex = nullptr;
-	KTX_error_code res = ktxTexture2_CreateFromNamedFile(
-		(root + *color_uri).c_str(),
-		KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
-		&ktxTex
-	);
-
-	if (res != KTX_SUCCESS) {
-		throw std::runtime_error("KTX load failed");
+glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
+{
+	if (!n.matrix.empty()) {
+		glm::mat4 m(1.0f);
+		memcpy(glm::value_ptr(m), n.matrix.data(), sizeof(float) * 16);
+		return m;
 	}
 
-	auto colorTexHandle = ctx->CreateTexture(*ktxTex);
+	glm::vec3 t(0.0f);
+	glm::quat r(1, 0, 0, 0);
+	glm::vec3 s(1.0f);
 
-	// free after upload
-	ktxTexture2_Destroy(ktxTex);
+	if (!n.translation.empty())
+		t = glm::vec3(n.translation[0], n.translation[1], n.translation[2]);
 
-	auto material_pipe_0 = ctx->pipelinesPool_.getHandle(0);
-	assert(material_pipe_0.valid());
+	if (!n.rotation.empty())
+		r = glm::quat(
+			n.rotation[3],
+			n.rotation[0],
+			n.rotation[1],
+			n.rotation[2]
+		);
 
-	auto mat_h = ctx->CreateMaterialInstance(material_pipe_0);
-	ctx->materialInstancesPool_.get(mat_h)->values.texDiffuse = colorTexHandle.index();
-	return mat_h;
+	if (!n.scale.empty())
+		s = glm::vec3(n.scale[0], n.scale[1], n.scale[2]);
 
+	return glm::translate(glm::mat4(1.0f), t)
+		* glm::mat4_cast(r)
+		* glm::scale(glm::mat4(1.0f), s);
 }
 
 
-std::vector<DrawSetHandle> UploadGltfToContext(Context* ctx, const GltfModel& model) {
+void ImportNodeRecursive(
+	Scene& scene,
+	const tinygltf::Model& model,
+	int gltfNodeIndex,
+	int parentSceneNode,
+	int level
+) {
+	const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];
 
-	std::vector<MeshData> data_to_upload;
-	std::set<uint32_t> already_uploaded;
+	int sceneNode = addNode(scene, parentSceneNode, level);
 
-	for (auto mesh_data : model.mesh_data) {
-		data_to_upload.push_back(std::move(mesh_data));
+	// name
+	int nameIndex = (int)scene.nodeNames.size();
+	scene.nodeNames.push_back(gltfNode.name.empty() ? "Node" : gltfNode.name);
+	scene.nameForNode[sceneNode] = nameIndex;
+
+	// transform
+	scene.localTransform[sceneNode] = GetNodeLocalTransform(gltfNode);
+	scene.globalTransform[sceneNode] = glm::mat4(1.0f); // resolved later
+
+	// mesh (IMPORTANT: assumes mesh indices are GLOBAL already)
+	if (gltfNode.mesh >= 0) {
+		scene.meshForNode[sceneNode] = gltfNode.mesh;
 	}
 
-	std::unordered_map<int, int> already_assigned_;
-	int j = 0;
-
-	for (auto& mesh : model.gltfModel.meshes) {
-		for (auto& primitive : mesh.primitives) {
-			if (already_assigned_.contains(primitive.material)) {
-				data_to_upload[j].materialIndex = already_assigned_[primitive.material];
-			}
-			else {
-				MaterialInstanceHandle mat_h = CreateMaterial(
-					ctx,
-					model.gltfModel,
-					primitive.material
-				);
-				const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
-				already_assigned_[primitive.material] = idx;
-				data_to_upload[j].materialIndex = idx;  // <-- assign for the *first* occurrence
-			}
-			j++;
-		}
+	// children
+	for (int child : gltfNode.children) {
+		ImportNodeRecursive(
+			scene,
+			model,
+			child,
+			sceneNode,
+			level + 1
+		);
 	}
+}
 
-	return ctx->BatchUploadMeshData(data_to_upload);
+//MaterialInstanceHandle CreateMaterialFromGltf(
+//	Context* ctx,
+//	const tinygltf::Model& model,
+//	int material
+//) {
+//
+//	auto mat = ExtractMaterials(model)[material];
+//	auto color_uri = UriFromTexture(model, *mat.baseColorTex);
+//
+//	ktxTexture2* ktxTex = nullptr;
+//	KTX_error_code res = ktxTexture2_CreateFromNamedFile(
+//		(root + *color_uri).c_str(),
+//		KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
+//		&ktxTex
+//	);
+//
+//	if (res != KTX_SUCCESS) {
+//		throw std::runtime_error("KTX load failed");
+//	}
+//
+//	auto colorTexHandle = ctx->CreateTexture(*ktxTex);
+//	ktxTexture2_Destroy(ktxTex);
+//
+//	//auto material_pipe_0 = ctx->pipelinesPool_.getHandle(0);
+//	//assert(material_pipe_0.valid());
+//
+//	auto pipeline = ctx->default_material_pipeline;
+//	auto mat_h = ctx->CreateMaterialInstance(pipeline);
+//	ctx->materialInstancesPool_.get(mat_h)->values.texDiffuse = colorTexHandle.index();
+//	return mat_h;
+//
+//}
 
-};
 
 
-std::vector<DrawSetHandle> UploadGltfToContext(Context* ctx, std::string gltf_model_path) {
-
-	std::vector<MeshData> data_to_upload;
-	std::set<uint32_t> already_uploaded;
-
-	const GltfModel loaded_gltf = GltfModel(gltf_model_path);
-	for (auto mesh_data : loaded_gltf.mesh_data) {
-		data_to_upload.push_back(std::move(mesh_data));
-	}
-
-	std::unordered_map<int, int> already_assigned_;
-	int j = 0;
-
-	for (auto& mesh : loaded_gltf.gltfModel.meshes) {
-		for (auto& primitive : mesh.primitives) {
-			if (already_assigned_.contains(primitive.material)) {
-				data_to_upload[j].materialIndex = already_assigned_[primitive.material];
-			}
-			else {
-				MaterialInstanceHandle mat_h = CreateMaterial(
-					ctx,
-					loaded_gltf.gltfModel,
-					primitive.material
-				);
-				const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
-				already_assigned_[primitive.material] = idx;
-				data_to_upload[j].materialIndex = idx;  // <-- assign for the *first* occurrence
-			}
-			j++;
-		}
-	}
-
-	return ctx->BatchUploadMeshData(data_to_upload);
-
-};
