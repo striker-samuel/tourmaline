@@ -157,7 +157,7 @@ bool LoadModelFromAsciiFile(tinygltf::Model& model, const char* filename) {
 }
 
 static std::optional<std::filesystem::path> UriFromTexture(
-//	const std::filesystem::path& gltfPath,
+	//	const std::filesystem::path& gltfPath,
 	const tinygltf::Model& model,
 	GltfTextureRef& texture_ref
 ) {
@@ -249,11 +249,11 @@ static AlphaMode ParseAlphaMode(const std::string& s) {
 }
 
 
-MeshData MeshDataFromPrimitive(
+GeometryData MeshDataFromPrimitive(
 	const tinygltf::Model& model,
 	const tinygltf::Primitive& primitive
 ) {
-	MeshData data;
+	GeometryData data;
 
 	// AABB. for culling	
 	{
@@ -430,75 +430,183 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 }
 
 
+static int UploadPrimitiveAsMesh(
+	Context* ctx,
+	Scene& scene,
+	const tinygltf::Model& model,
+	const tinygltf::Primitive& primitive
+) {
+	auto mdata = MeshDataFromPrimitive(model, primitive);
+	auto mhandle = ctx->UploadMesh(mdata);
+	return mhandle.index();
+
+
+}
+
+MaterialInstanceHandle CreateMaterial(Context* ctx, const tinygltf::Model& model, int material, const char* texture_root) {
+
+	auto mat = ExtractMaterials(model)[material];
+	auto color_uri = UriFromTexture(model, *mat.baseColorTex);
+
+	ktxTexture2* ktxTex = nullptr;
+	KTX_error_code res = ktxTexture2_CreateFromNamedFile(
+		(texture_root / *color_uri).string().c_str(),
+		KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
+		&ktxTex
+	);
+
+	if (res != KTX_SUCCESS) {
+		throw std::runtime_error("KTX load failed");
+	}
+
+	auto colorTexHandle = ctx->CreateTexture(*ktxTex);
+
+	// free after upload
+	ktxTexture2_Destroy(ktxTex);
+
+	auto material_pipe_0 = ctx->pipelinesPool_.getHandle(0);
+	assert(material_pipe_0.valid());
+
+	auto mat_h = ctx->CreateMaterialInstance(material_pipe_0);
+	ctx->materialInstancesPool_.get(mat_h)->values.texDiffuse = colorTexHandle.index();
+	return mat_h;
+
+}
+
+
+
 void ImportNodeRecursive(
+	Context* ctx,
 	Scene& scene,
 	const tinygltf::Model& model,
 	int gltfNodeIndex,
 	int parentSceneNode,
-	int level
+	int level,
+	std::filesystem::path gltf_model_path
 ) {
 	const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];
 
-	int sceneNode = addNode(scene, parentSceneNode, level);
+	// Always create a "group" node that owns name + transform and preserves hierarchy.
+	const int groupNode = addNode(scene, parentSceneNode, level);
 
-	// name
-	int nameIndex = (int)scene.nodeNames.size();
-	scene.nodeNames.push_back(gltfNode.name.empty() ? "Node" : gltfNode.name);
-	scene.nameForNode[sceneNode] = nameIndex;
-
-	// transform
-	scene.localTransform[sceneNode] = GetNodeLocalTransform(gltfNode);
-	scene.globalTransform[sceneNode] = glm::mat4(1.0f); // resolved later
-
-	// mesh (IMPORTANT: assumes mesh indices are GLOBAL already)
-	if (gltfNode.mesh >= 0) {
-		scene.meshForNode[sceneNode] = gltfNode.mesh;
+	{
+		const int nameIndex = (int)scene.nodeNames.size();
+		scene.nodeNames.push_back(gltfNode.name.empty() ? "Node" : gltfNode.name);
+		scene.nameForNode[groupNode] = nameIndex;
 	}
 
-	// children
+	scene.localTransform[groupNode] = GetNodeLocalTransform(gltfNode);
+	scene.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
+
+	if (gltfNode.mesh >= 0) {
+		const tinygltf::Mesh& gltfMesh = model.meshes[gltfNode.mesh];
+		for (int primIndex = 0; primIndex < (int)gltfMesh.primitives.size(); ++primIndex) {
+
+			auto primitive = model.meshes[gltfNode.mesh].primitives[primIndex];
+			const int primNode = addNode(scene, groupNode, level + 1);
+
+			// name: "OriginalName_primX"
+			//{
+			//	const std::string baseName =
+			//		gltfNode.name.empty() ? "Node" : gltfNode.name;
+
+			//	const int nameIndex = (int)scene.nodeNames.size();
+			//	scene.nodeNames.push_back(baseName + "_prim" + std::to_string(primIndex));
+			//	scene.nameForNode[primNode] = nameIndex;
+			//}
+
+			scene.localTransform[primNode] = glm::mat4(1.0f);
+			scene.globalTransform[primNode] = glm::mat4(1.0f);
+			scene.meshForNode[primNode] = UploadPrimitiveAsMesh(ctx, scene, model, primitive);
+
+			MaterialInstanceHandle mat_h = CreateMaterial(
+				ctx,
+				model,
+				primitive.material,
+				gltf_model_path.parent_path().string().c_str()
+			);
+
+			scene.materialForNode[primNode] = mat_h.index();
+			markAsChanged(scene, primNode);
+
+			//if (already_assigned_.contains(primitive.material)) {
+			//	result_scene.materialForNode[j] = already_assigned_[primitive.material];
+			//}
+			//else {
+			//	MaterialInstanceHandle mat_h = CreateMaterial(
+			//		ctx,
+			//		model,
+			//		primitive.material,
+			//		gltf_model_path.parent_path().string().c_str()
+			//	);
+			//	const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
+			//	already_assigned_[primitive.material] = idx;
+			//	result_scene.materialForNode[j] = idx;
+			//}
+			//j++;
+
+		}
+	}
+
+	// children: recurse under the group node to preserve hierarchy
 	for (int child : gltfNode.children) {
-		ImportNodeRecursive(
-			scene,
-			model,
-			child,
-			sceneNode,
-			level + 1
-		);
+		ImportNodeRecursive(ctx, scene, model, child, groupNode, level + 1, gltf_model_path);
 	}
 }
 
-//MaterialInstanceHandle CreateMaterialFromGltf(
-//	Context* ctx,
-//	const tinygltf::Model& model,
-//	int material
-//) {
-//
-//	auto mat = ExtractMaterials(model)[material];
-//	auto color_uri = UriFromTexture(model, *mat.baseColorTex);
-//
-//	ktxTexture2* ktxTex = nullptr;
-//	KTX_error_code res = ktxTexture2_CreateFromNamedFile(
-//		(root + *color_uri).c_str(),
-//		KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
-//		&ktxTex
-//	);
-//
-//	if (res != KTX_SUCCESS) {
-//		throw std::runtime_error("KTX load failed");
-//	}
-//
-//	auto colorTexHandle = ctx->CreateTexture(*ktxTex);
-//	ktxTexture2_Destroy(ktxTex);
-//
-//	//auto material_pipe_0 = ctx->pipelinesPool_.getHandle(0);
-//	//assert(material_pipe_0.valid());
-//
-//	auto pipeline = ctx->default_material_pipeline;
-//	auto mat_h = ctx->CreateMaterialInstance(pipeline);
-//	ctx->materialInstancesPool_.get(mat_h)->values.texDiffuse = colorTexHandle.index();
-//	return mat_h;
-//
-//}
+void UploadGltfToContext(
+	Context* ctx,
+	std::filesystem::path gltf_model_path,
+	Scene& result_scene
+) {
 
+	std::vector<DrawRange> uploaded;
+	std::set<uint32_t> already_uploaded;
 
+	tinygltf::Model model;
+	LoadModelFromAsciiFile(model, gltf_model_path.string().c_str());
 
+	ImportNodeRecursive(
+		ctx,
+		result_scene,
+		model,
+		0,
+		0,
+		0,
+		gltf_model_path
+	);
+
+//	std::unordered_map<int, int> already_assigned_;
+	//int j = 0;
+
+	//for (const auto& mesh : model.meshes) {
+	//	for (const auto& primitive : mesh.primitives) {
+
+	//		auto mdata = MeshDataFromPrimitive(model, primitive);
+	//		ctx->UploadMesh(mdata);
+
+	//		if (already_assigned_.contains(primitive.material)) {
+	//			result_scene.materialForNode[j]= already_assigned_[primitive.material];
+	//		}
+	//		else {
+	//			MaterialInstanceHandle mat_h = CreateMaterial(
+	//				ctx,
+	//				model,
+	//				primitive.material,
+	//				gltf_model_path.parent_path().string().c_str()
+	//			);
+	//			const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
+	//			already_assigned_[primitive.material] = idx;
+	//			result_scene.materialForNode[j]= idx;
+	//		}
+	//		j++;
+	//	}
+	//}
+
+	//GpuMeshDesc mesh;
+	//mesh.lods = 0;
+	//mesh.lod_offsets = { 0 };
+	//mesh.sets = uploaded;
+	//ctx->meshes_.create(std::move(mesh));
+
+};

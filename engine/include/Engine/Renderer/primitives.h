@@ -46,15 +46,15 @@ enum GPU_CULLING_MODE {
 };
 
 // Could very well be called MeshStream or somthing like that. this is really ther Vertex stream + Index Stream
-struct MeshData {
+struct GeometryData {
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
 	glm::vec3 minBox; // im reading this directly from gltf.
 	glm::vec3 maxBox;
 };
 
-MeshData Quad = MeshData(quad_vertices, quad_indices_ccw);
-MeshData Triangle = MeshData(triangle_vertices, triangle_indices_ccw);
+GeometryData Quad = GeometryData(quad_vertices, quad_indices_ccw);
+GeometryData Triangle = GeometryData(triangle_vertices, triangle_indices_ccw);
 
 // We hit the masUBOsize limit fast. Be careful. We may need to encode better.
 // Maybe we can get away with float12 with implied 0,0,0,1 last row.
@@ -127,11 +127,11 @@ struct PushConstants {
 	uint32_t     _pad0[3];
 };
 
-// This, at least for the momemt is equivalent to tinygtlf model.primitve. in our data model. 
+// DrawRange / FaceSet / tinygltf::Primitive. 
 struct DrawRange {
-	uint32_t first_index = 0;
-	uint32_t vert_offset = 0;
 	uint32_t index_count = 0;
+	uint32_t first_index = 0;
+	int32_t  base_vertex = 0; // <-- THIS is the key
 };
 
 struct GpuMeshDesc {

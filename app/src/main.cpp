@@ -1015,21 +1015,23 @@ private:
 			vp.maxDepth = 1.0f;
 			vkCmdSetViewport(commandBuffer, 0, 1, &vp);
 
-
 			// We should resize scissor to avoid unnecesary pixelinvokations
 			VkRect2D scissor{};
 			scissor.offset = { 0, 0 };
 			scissor.extent = shadowExtent;
 			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-			// 4) Bind buffers
 			auto vbh = context->buffers_.get(context->vertex_buffer);
+			auto vsbh = context->buffers_.get(context->vertex_shading_buffer);
 			auto ibh = context->buffers_.get(context->index_buffer);
 
-			VkBuffer vertexBuffers[] = { vbh->buffer };
-			VkDeviceSize offsets[] = { 0 };
+			VkBuffer bufs[] = {
+				context->buffers_.get(context->vertex_buffer)->buffer,
+				context->buffers_.get(context->vertex_shading_buffer)->buffer
+			};
+			VkDeviceSize offs[] = { 0, 0 };
 
-			vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+			vkCmdBindVertexBuffers(commandBuffer, 0, 2, bufs, offs);
 			vkCmdBindIndexBuffer(commandBuffer, ibh->buffer, 0, VK_INDEX_TYPE_UINT32);
 
 			// 5) Shadow pipeline & descriptors
@@ -1088,11 +1090,12 @@ private:
 						draw_set.index_count,
 						1,
 						draw_set.first_index,
-						draw_set.vert_offset,
-						i
+						draw_set.base_vertex,
+						0
 					);
 
 				}
+
 
 			}
 
@@ -1206,32 +1209,18 @@ private:
 		scissor.extent = swapChainExtent;
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-
 		auto vbh = context->buffers_.get(context->vertex_buffer);
 		auto vsbh = context->buffers_.get(context->vertex_shading_buffer);
 		auto ibh = context->buffers_.get(context->index_buffer);
 
-		// Old vertex format with no tangents.
-		//VkBuffer vertexBuffers[] = { vbh->buffer };
-		//VkDeviceSize offsets[] = { 0 };
-		//vkCmdBindVertexBuffers(
-		//	commandBuffer,
-		//	0,
-		//	1,
-		//	vertexBuffers,
-		//	offsets
-		//);
-
-		VkBuffer bufs[] = { vbh->buffer, vsbh->buffer };
+		VkBuffer bufs[] = {
+			context->buffers_.get(context->vertex_buffer)->buffer,
+			context->buffers_.get(context->vertex_shading_buffer)->buffer
+		};
 		VkDeviceSize offs[] = { 0, 0 };
+
 		vkCmdBindVertexBuffers(commandBuffer, 0, 2, bufs, offs);
-
-
-		vkCmdBindIndexBuffer(commandBuffer,
-			ibh->buffer,
-			0,
-			VK_INDEX_TYPE_UINT32)
-			;
+		vkCmdBindIndexBuffer(commandBuffer, ibh->buffer, 0, VK_INDEX_TYPE_UINT32);
 
 		PushConstants pc{};
 		pc.view = camera_.getViewMatrix();
@@ -1299,11 +1288,11 @@ private:
 						commandBuffer,
 						draw_set.index_count,
 						1,
-						draw_set.first_index, //firstIndex, like offset but its just instead on index size times, just index n
-						draw_set.vert_offset, //offsetIntoVertexBuffer
-						i // instanceId
+						draw_set.first_index,
+						draw_set.base_vertex,
+						0
 					);
-
+				
 				}
 
 			}
@@ -2120,7 +2109,6 @@ void VulkanApp::Start() {
 		);
 	}
 
-
 	LoadScene();
 
 }
@@ -2130,7 +2118,10 @@ void VulkanApp::LoadScene() {
 	// Default camera.
 	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
 
-	//Read default scene. 
+	Scene imported_scene;
+	std::filesystem::path p(gltf_meshes_paths[0]);
+	UploadGltfToContext(context, p, imported_scene);
+	scene_ = imported_scene;
 
 }
 
