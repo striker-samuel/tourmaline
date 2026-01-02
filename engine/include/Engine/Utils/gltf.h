@@ -472,88 +472,109 @@ MaterialInstanceHandle CreateMaterial(Context* ctx, const tinygltf::Model& model
 
 }
 
-void ImportNodeRecursive(
-	Context* ctx,
-	Scene& scene,
-	const tinygltf::Model& model,
-	int gltfNodeIndex,
-	int parentSceneNode,
-	int level,
-	std::filesystem::path gltf_model_path // This is for crude texture discovery using this path + uri to find tex.
-) {
-	const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];
+uint32_t GetDefaultMaterialIndex(Context* ctx) {
+	return 0;
+}
 
-	// Always create a "group" node that owns name + transform and preserves hierarchy.
-	const int groupNode = addNode(scene, parentSceneNode, level);
+struct GltfToSceneImporter {
+	Context* ctx = nullptr;
+	Scene& scene;
+	const tinygltf::Model& model;
+	std::filesystem::path gltfModelPath; // full path to .gltf/.glb on disk
 
+	// Cache: glTF material index -> your runtime pool index.
+	// Sentinel indicates "not created yet".
+	static constexpr uint32_t kInvalidMat = 0xFFFFFFFFu;
+	std::vector<uint32_t> materialCache;
+
+	GltfToSceneImporter(
+		Context* inCtx,
+		Scene& inScene,
+		const tinygltf::Model& inModel,
+		std::filesystem::path inGltfModelPath
+	)
+		: ctx(inCtx)
+		, scene(inScene)
+		, model(inModel)
+		, gltfModelPath(std::move(inGltfModelPath))
+		, materialCache(inModel.materials.size(), kInvalidMat)
 	{
-		const int nameIndex = (int)scene.nodeNames.size();
-		scene.nodeNames.push_back(gltfNode.name.empty() ? "Node" : gltfNode.name);
-		scene.nameForNode[groupNode] = nameIndex;
 	}
 
-	scene.localTransform[groupNode] = GetNodeLocalTransform(gltfNode);
-	scene.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
+	// Returns your runtime material index (pool index) for a given glTF material index.
+	// Creates once and caches.
+	uint32_t getOrCreateMaterialIndex(int gltfMaterialIndex) {
+		if (gltfMaterialIndex < 0) {
+			return GetDefaultMaterialIndex(ctx);
+		}
 
+		// glTF guarantees material indices are within model.materials
+		// (assuming the file is valid). If you want belt-and-suspenders:
+		if ((size_t)gltfMaterialIndex >= materialCache.size()) {
+			return GetDefaultMaterialIndex(ctx);
+		}
 
-	if (gltfNode.mesh >= 0) {
-		const tinygltf::Mesh& gltfMesh = model.meshes[gltfNode.mesh];
+		uint32_t& slot = materialCache[(size_t)gltfMaterialIndex];
+		if (slot != kInvalidMat) {
+			return slot;
+		}
 
-		// Gltf models contain meshes that can contain several primitives. A primitive can have its onw material. My scene format makes 1 material per mesh needed, so here I unroll primitives into separate meshes. This breaks gltfNode to sceneNode index preservation. I do not care.
-		for (int primIndex = 0; primIndex < (int)gltfMesh.primitives.size(); ++primIndex) {
-			auto primitive = model.meshes[gltfNode.mesh].primitives[primIndex];
-			const int primNode = addNode(scene, groupNode, level + 1);
+		// NOTE: Avoid storing baseDir as a dangling c_str(). Build it here.
+		const std::string baseDir = gltfModelPath.parent_path().string();
 
-			// I dont really care for names in my scene at least for now. 
-			// name: "OriginalName_primX"
-			//{
-			//	const std::string baseName =
-			//		gltfNode.name.empty() ? "Node" : gltfNode.name;
+		MaterialInstanceHandle h = CreateMaterial(
+			ctx,
+			model,
+			gltfMaterialIndex,
+			baseDir.c_str()
+		);
 
-			//	const int nameIndex = (int)scene.nodeNames.size();
-			//	scene.nodeNames.push_back(baseName + "_prim" + std::to_string(primIndex));
-			//	scene.nameForNode[primNode] = nameIndex;
-			//}
+		slot = h.index();
+		return slot;
+	}
 
-			scene.localTransform[primNode] = glm::mat4(1.0f);
-			scene.globalTransform[primNode] = glm::mat4(1.0f);
-			scene.meshForNode[primNode] = UploadPrimitiveAsMesh(ctx, model, primitive);
+	void importNodeRecursive(int gltfNodeIndex, int parentSceneNode, int level) {
+		const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];
 
-			// This is bad beacuse we recreate the same materials over and over
-			MaterialInstanceHandle mat_h = CreateMaterial(
-				ctx,
-				model,
-				primitive.material,
-				gltf_model_path.parent_path().string().c_str()
-			);
+		// Always create a "group" node that owns name + transform and preserves hierarchy.
+		const int groupNode = addNode(scene, parentSceneNode, level);
 
-			scene.materialForNode[primNode] = mat_h.index();
-			markAsChanged(scene, primNode);
+		{
+			const int nameIndex = (int)scene.nodeNames.size();
+			scene.nodeNames.push_back(gltfNode.name.empty() ? "Node" : gltfNode.name);
+			scene.nameForNode[groupNode] = nameIndex;
+		}
 
-			//if (already_assigned_.contains(primitive.material)) {
-			//	result_scene.materialForNode[j] = already_assigned_[primitive.material];
-			//}
-			//else {
-			//	MaterialInstanceHandle mat_h = CreateMaterial(
-			//		ctx,
-			//		model,
-			//		primitive.material,
-			//		gltf_model_path.parent_path().string().c_str()
-			//	);
-			//	const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
-			//	already_assigned_[primitive.material] = idx;
-			//	result_scene.materialForNode[j] = idx;
-			//}
-			//j++;
+		scene.localTransform[groupNode] = GetNodeLocalTransform(gltfNode);
+		scene.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
 
+		// Unroll primitives into separate meshes (your current approach).
+		if (gltfNode.mesh >= 0) {
+			const tinygltf::Mesh& gltfMesh = model.meshes[gltfNode.mesh];
+
+			for (int primIndex = 0; primIndex < (int)gltfMesh.primitives.size(); ++primIndex) {
+				const tinygltf::Primitive& primitive = gltfMesh.primitives[primIndex];
+
+				const int primNode = addNode(scene, groupNode, level + 1);
+
+				scene.localTransform[primNode] = glm::mat4(1.0f);
+				scene.globalTransform[primNode] = glm::mat4(1.0f);
+
+				scene.meshForNode[primNode] = UploadPrimitiveAsMesh(ctx, model, primitive);
+
+				const uint32_t matIndex = getOrCreateMaterialIndex(primitive.material);
+				scene.materialForNode[primNode] = matIndex;
+
+				markAsChanged(scene, primNode);
+			}
+		}
+
+		// Recurse children under the group node to preserve hierarchy.
+		for (int child : gltfNode.children) {
+			importNodeRecursive(child, groupNode, level + 1);
 		}
 	}
-
-	// children: recurse under the group node to preserve hierarchy
-	for (int child : gltfNode.children) {
-		ImportNodeRecursive(ctx, scene, model, child, groupNode, level + 1, gltf_model_path);
-	}
-}
+};
 
 void UploadGltfToContext(
 	Context* ctx,
@@ -567,16 +588,8 @@ void UploadGltfToContext(
 	tinygltf::Model model;
 	LoadModelFromAsciiFile(model, gltf_model_path.string().c_str());
 
-	ImportNodeRecursive(
-		ctx,
-		result_scene,
-		model,
-		0,
-		0,
-		0,
-		gltf_model_path
-	);
-
+	GltfToSceneImporter importer(ctx, result_scene, model, std::move(gltf_model_path));
+	importer.importNodeRecursive(/*rootNodeIdx*/0, /*parentSceneNode=*/-1, /*level=*/0);
 
 	// This is needed or else scene will not carry transforms effectively
 	markAsChanged(result_scene, 0);
