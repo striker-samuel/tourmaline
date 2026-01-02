@@ -1021,18 +1021,19 @@ private:
 			scissor.extent = shadowExtent;
 			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-			auto vbh = context->buffers_.get(context->vertex_buffer);
-			auto vsbh = context->buffers_.get(context->vertex_shading_buffer);
-			auto ibh = context->buffers_.get(context->index_buffer);
+			// BIND
+//		auto& page = geometry_pages[draw.page_id];
+			auto& page = context->geometry_pages[0];
 
 			VkBuffer bufs[] = {
-				context->buffers_.get(context->vertex_buffer)->buffer,
-				context->buffers_.get(context->vertex_shading_buffer)->buffer
+				context->buffers_.get(page.vertexPosBuffer)->buffer,
+				context->buffers_.get(page.vertexShadingBuffer)->buffer
 			};
 			VkDeviceSize offs[] = { 0, 0 };
-
 			vkCmdBindVertexBuffers(commandBuffer, 0, 2, bufs, offs);
-			vkCmdBindIndexBuffer(commandBuffer, ibh->buffer, 0, VK_INDEX_TYPE_UINT32);
+
+			vkCmdBindIndexBuffer(commandBuffer, context->buffers_.get(page.indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
+
 
 			// 5) Shadow pipeline & descriptors
 			auto s_pipeline = context->pipelinesPool_.get(default_shadow_pipeline);
@@ -1209,18 +1210,20 @@ private:
 		scissor.extent = swapChainExtent;
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-		auto vbh = context->buffers_.get(context->vertex_buffer);
-		auto vsbh = context->buffers_.get(context->vertex_shading_buffer);
-		auto ibh = context->buffers_.get(context->index_buffer);
+		// BIND
+
+//		auto& page = geometry_pages[draw.page_id];
+		auto& page = context->geometry_pages[0];
 
 		VkBuffer bufs[] = {
-			context->buffers_.get(context->vertex_buffer)->buffer,
-			context->buffers_.get(context->vertex_shading_buffer)->buffer
+			context->buffers_.get(page.vertexPosBuffer)->buffer,
+			context->buffers_.get(page.vertexShadingBuffer)->buffer
 		};
 		VkDeviceSize offs[] = { 0, 0 };
-
 		vkCmdBindVertexBuffers(commandBuffer, 0, 2, bufs, offs);
-		vkCmdBindIndexBuffer(commandBuffer, ibh->buffer, 0, VK_INDEX_TYPE_UINT32);
+
+		vkCmdBindIndexBuffer(commandBuffer, context->buffers_.get(page.indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
+
 
 		PushConstants pc{};
 		pc.view = camera_.getViewMatrix();
@@ -2118,10 +2121,28 @@ void VulkanApp::LoadScene() {
 	// Default camera.
 	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
 
+	Scene merged;
+	std::vector<Scene> scs;
+
 	Scene imported_scene;
 	std::filesystem::path p(gltf_meshes_paths[0]);
 	UploadGltfToContext(context, p, imported_scene);
+
 	scene_ = imported_scene;
+
+	//Scene second_scene;
+	//std::filesystem::path p(gltf_meshes_paths[1]);
+	//UploadGltfToContext(context, p, second_scene);
+	//scene_ = imported_scene;
+
+
+	//scs.push_back(imported_scene);
+	//scs.push_back(second_scene);
+
+	//mergeScenes(merged, scs)
+
+	//scene_ = merged;
+
 
 }
 

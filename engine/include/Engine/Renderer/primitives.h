@@ -127,11 +127,24 @@ struct PushConstants {
 	uint32_t     _pad0[3];
 };
 
-// DrawRange / FaceSet / tinygltf::Primitive. 
+struct GeometryPageRef {
+	uint16_t page;      // which arena/page
+	uint16_t flags;     // optional (layout, etc.)
+};
+
 struct DrawRange {
-	uint32_t index_count = 0;
-	uint32_t first_index = 0;
-	int32_t  base_vertex = 0; // <-- THIS is the key
+	GeometryPageRef geo;
+
+	uint32_t index_count;
+
+	// Either:
+	uint32_t first_index;   // if IB bound at 0 for that page
+	int32_t  base_vertex;   // if VB bound at 0 for that page
+
+	// OR if you allow rebinding offsets:
+	VkDeviceSize ib_byte_offset;
+	VkDeviceSize vb0_byte_offset;
+	VkDeviceSize vb1_byte_offset;
 };
 
 struct GpuMeshDesc {
@@ -146,7 +159,6 @@ struct GpuMeshDesc {
 	std::vector<DrawRange> sets;
 
 };
-
 
 struct GPUMeshletDesc
 {

@@ -46,10 +46,28 @@ struct SamplerRequirements {
 
 };
 
+struct GeometryPage {
+
+	DeviceBufferHandle indexBuffer;
+	DeviceBufferHandle vertexPosBuffer;
+	DeviceBufferHandle vertexShadingBuffer;
+
+	//	uint32_t vertex_cursor = 0;   // per page
+	uint32_t max_vertices = 0;    // per page capacity in vertices
+
+	VmaVirtualBlock index_blk;         // bytes (as you already do)
+	VmaVirtualBlock vertex_units_blk;  // vertices (NEW)
+};
+
+// For Upload geometry context. we can distighuis between geo for eviction/streaming purposes. maybe other
+typedef enum GeoFlag {
+} GeoFlag;
+
+
 typedef enum PipelineType {
 	PIPELINE_UNDEFINED = 0,
-	PIPELINE_MATERIAL = 1,
-	PIPELINE_SHADOW = 2
+	PIPELINE_MATERIAL = 1 << 0,
+	PIPELINE_SHADOW = 1 << 2
 } PipelineType;
 
 struct Pipeline {
@@ -128,9 +146,13 @@ class Context {
 
 public:
 
-	uint32_t vertex_cursor = 0; 
+	// PAGE SYSTEM FOR GEO
+	std::vector<GeometryPage> geometry_pages;
+	uint32_t current_page = 0;
 
-	// Im gonna need a custom str type... lets use std::string for now.
+	// This will go in the fututre
+	uint32_t vertex_cursor = 0;
+
 	std::unordered_map<std::string, SamplerHandle> samplers;
 
 	VmaAllocator allocator;
@@ -158,9 +180,9 @@ public:
 	DeviceBufferHandle meshlet_descriptions_buffer;
 
 	// This is a cpu side manager for allocations so I dont have to manage the allocations myself. Im lazy :P
-	VmaVirtualBlock mehslet_vertex_blk;
-	VmaVirtualBlock meshlet_triangle_blk;
-	VmaVirtualBlock neshlet_descriptions_blk;
+	//VmaVirtualBlock mehslet_vertex_blk;
+	//VmaVirtualBlock meshlet_triangle_blk;
+	//VmaVirtualBlock neshlet_descriptions_blk;
 
 	// -------------------------------------
 
@@ -305,94 +327,109 @@ public:
 	}
 
 	void InitalizeGeoBuffers() {
+
 		{
 
-			// Lets just default this like so
 			uint32_t totalVertexBytes = 512u * 1024u * 1024u;
-			// index buffer shpuld be smaller in reality. dont know appropiate heuristics for this yet. that needs to wait
-			// for proper research/profiling.
 			uint32_t totalIndexBytes = 512u * 1024u * 1024u;
 
-			this->vertex_buffer = createBuffer(
+			// Create the actual GPU buffers (these are the page's buffers)
+			DeviceBufferHandle vb_pos = createBuffer(
 				totalVertexBytes,
 				VMA_MEMORY_USAGE_GPU_ONLY,
 				VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			);
 
-
-			this->vertex_shading_buffer = createBuffer(
+			DeviceBufferHandle vb_shd = createBuffer(
 				totalVertexBytes,
 				VMA_MEMORY_USAGE_GPU_ONLY,
 				VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			);
 
-			this->index_buffer = createBuffer(
+			DeviceBufferHandle ib = createBuffer(
 				totalIndexBytes,
 				VMA_MEMORY_USAGE_GPU_ONLY,
 				VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			);
 
-			VmaVirtualBlockCreateInfo ci{};
-			ci.size = totalIndexBytes;
-			VK_CHECK(vmaCreateVirtualBlock(&ci, &index_blk));
+			// Build a page that OWNS allocators for those buffers
+			GeometryPage page{};
+			page.vertexPosBuffer = vb_pos;
+			page.vertexShadingBuffer = vb_shd;
+			page.indexBuffer = ib;
 
-			VmaVirtualBlockCreateInfo cv{};
-			cv.size = totalVertexBytes;
-			VK_CHECK(vmaCreateVirtualBlock(&cv, &vertex_blk));
+			// Capacity in vertices must satisfy both streams
+			page.max_vertices = std::min(
+				totalVertexBytes / uint32_t(sizeof(VertexPos)),
+				totalVertexBytes / uint32_t(sizeof(VertexShading))
+			);
 
-			VmaVirtualBlockCreateInfo cvs{};
-			cvs.size = totalVertexBytes;
-			VK_CHECK(vmaCreateVirtualBlock(&cvs, &vertex_shading_blk));
+			// Index allocator (bytes)
+			{
+				VmaVirtualBlockCreateInfo ci{};
+				ci.size = totalIndexBytes;
+				VK_CHECK(vmaCreateVirtualBlock(&ci, &page.index_blk));
+			}
+
+			// Vertex allocator (VERTEX UNITS!)
+			{
+				VmaVirtualBlockCreateInfo vu{};
+				vu.size = page.max_vertices; // vertices, not bytes
+				VK_CHECK(vmaCreateVirtualBlock(&vu, &page.vertex_units_blk));
+			}
+
+			// Store + select as current
+			geometry_pages.push_back(std::move(page));
+			current_page = 0;
 
 		}
 
+		//{
 
-		{
+		//	// this all should be calculated on a MAX_MESHLETS or something.
+		//	uint32_t totalVertexBytes = 512u * 1024u * 1024u;
+		//	uint32_t totalTriangleBytes = 512u * 1024u * 1024u;
+		//	uint32_t totalDescriptionsBytes = 512u * 1024u * 1024u;
 
-			// this all should be calculated on a MAX_MESHLETS or something.
-			uint32_t totalVertexBytes = 512u * 1024u * 1024u;
-			uint32_t totalTriangleBytes = 512u * 1024u * 1024u;
-			uint32_t totalDescriptionsBytes = 512u * 1024u * 1024u;
+		//	this->meshlet_vertex_buffer = createBuffer(
+		//		totalVertexBytes,
+		//		VMA_MEMORY_USAGE_GPU_ONLY,
+		//		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+		//		VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		//		//				VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT   // optional, recommended
+		//	);
 
-			this->meshlet_vertex_buffer = createBuffer(
-				totalVertexBytes,
-				VMA_MEMORY_USAGE_GPU_ONLY,
-				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-				VK_BUFFER_USAGE_TRANSFER_DST_BIT 
-//				VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT   // optional, recommended
-			);
+		//	this->meshlet_triangle_buffer = createBuffer(
+		//		totalTriangleBytes,
+		//		VMA_MEMORY_USAGE_GPU_ONLY,
+		//		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+		//		VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		//		//				VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT   // optional, recommended
+		//	);
 
-			this->meshlet_triangle_buffer = createBuffer(
-				totalTriangleBytes,
-				VMA_MEMORY_USAGE_GPU_ONLY,
-				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-				VK_BUFFER_USAGE_TRANSFER_DST_BIT 
-//				VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT   // optional, recommended
-			);
+		//	// We need the mesh descriptions here tooo.
 
-			// We need the mesh descriptions here tooo.
+		//	this->meshlet_triangle_buffer = createBuffer(
+		//		totalTriangleBytes,
+		//		VMA_MEMORY_USAGE_GPU_ONLY,
+		//		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+		//		VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		//		//				VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT   // optional, recommended
+		//	);
 
-			this->meshlet_triangle_buffer = createBuffer(
-				totalTriangleBytes,
-				VMA_MEMORY_USAGE_GPU_ONLY,
-				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-				VK_BUFFER_USAGE_TRANSFER_DST_BIT 
-//				VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT   // optional, recommended
-			);
+		//	VmaVirtualBlockCreateInfo cv{};
+		//	cv.size = totalVertexBytes;
+		//	VK_CHECK(vmaCreateVirtualBlock(&cv, &meshlet_triangle_blk));
 
-			VmaVirtualBlockCreateInfo cv{};
-			cv.size = totalVertexBytes;
-			VK_CHECK(vmaCreateVirtualBlock(&cv, &meshlet_triangle_blk));
+		//	VmaVirtualBlockCreateInfo ci{};
+		//	ci.size = totalTriangleBytes;
+		//	VK_CHECK(vmaCreateVirtualBlock(&ci, &mehslet_vertex_blk));
 
-			VmaVirtualBlockCreateInfo ci{};
-			ci.size = totalTriangleBytes;
-			VK_CHECK(vmaCreateVirtualBlock(&ci, &mehslet_vertex_blk));
+		//	VmaVirtualBlockCreateInfo cd{};
+		//	cd.size = totalDescriptionsBytes;
+		//	VK_CHECK(vmaCreateVirtualBlock(&cd, &neshlet_descriptions_blk));
 
-			VmaVirtualBlockCreateInfo cd{};
-			cd.size = totalDescriptionsBytes;
-			VK_CHECK(vmaCreateVirtualBlock(&cd, &neshlet_descriptions_blk));
-
-		}
+		//}
 
 
 	}
@@ -501,10 +538,10 @@ public:
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
 	DeviceBufferHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
-	MeshDescHandle UploadMesh(GeometryData& mesh_data);
-	std::vector<MeshDescHandle> BatchUploadMeshData(std::vector<GeometryData>& mesh_data);
+	MeshDescHandle UploadVertexData(GeometryData& mesh_data);
+	//	std::vector<MeshDescHandle> BatchUploadMeshData(std::vector<GeometryData>& mesh_data);
 
-	// HELPERS.
+		// HELPERS.
 	VkCommandBuffer GetCommandBuffer();
 	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
 
@@ -1722,55 +1759,72 @@ void Context::GetAppropiateSampler(Texture& texture) {
 
 }
 
-[[nodiscard]] MeshDescHandle Context::UploadMesh(GeometryData& mesh_data)
+//[[nodiscard]] GeometryPage Context::CreateVertexDataPage() {
+//
+//}
+
+[[nodiscard]] MeshDescHandle Context::UploadVertexData(GeometryData& geometry_data)
 {
-	auto ib = buffers_.get(index_buffer);
-	auto vb0 = buffers_.get(vertex_buffer);          // binding 0: VertexPos
-	auto vb1 = buffers_.get(vertex_shading_buffer);  // binding 1: VertexShading
+	const uint32_t vcount = static_cast<uint32_t>(geometry_data.vertices.size());
+	auto& page = geometry_pages[current_page];
 
-	auto vcount = static_cast<uint32_t>(mesh_data.vertices.size());
-	uint32_t baseVertex = vertex_cursor;
-	vertex_cursor += vcount;
+	// ------------------------------------------
+	// 0) Allocate vertices from ONE vertex-units block
+	// ------------------------------------------
+	VmaVirtualAllocation vtx_alloc{};
+	VkDeviceSize baseVertex = 0; // <-- returned "offset" in VERTEX UNITS (not bytes)
 
-	// ----------------------------
-	// 1) INDICES (unchanged idea)
-	// ----------------------------
+	{
+		VmaVirtualAllocationCreateInfo aV{};
+		aV.size = vcount;     // vertex units
+		aV.alignment = 1;     // vertex units
+
+		if (vmaVirtualAllocate(page.vertex_units_blk, &aV, &vtx_alloc, &baseVertex) != VK_SUCCESS) {
+			// Not enough contiguous vertex space in this page (or fragmented)
+			return {};
+		}
+	}
+
+	// Derived byte offsets for each stream (for copy destinations)
+	const VkDeviceSize pos_byte_offset = baseVertex * sizeof(VertexPos);
+	const VkDeviceSize shd_byte_offset = baseVertex * sizeof(VertexShading);
+
+	// ------------------------------------------
+	// 1) INDICES (same idea as before)
+	// ------------------------------------------
 	using IndexT = uint32_t;
 	const VkDeviceSize indexBytes =
-		sizeof(IndexT) * static_cast<VkDeviceSize>(mesh_data.indices.size());
-
-	VmaVirtualAllocationCreateInfo aIdx{};
-	aIdx.size = indexBytes;
-	aIdx.alignment = sizeof(IndexT);
+		sizeof(IndexT) * static_cast<VkDeviceSize>(geometry_data.indices.size());
 
 	VmaVirtualAllocation index_alloc{};
 	VkDeviceSize index_offset_bytes = 0;
 
-	if (vmaVirtualAllocate(index_blk, &aIdx, &index_alloc, &index_offset_bytes) != VK_SUCCESS)
-		return {};
-
 	{
-		auto staging_h = CreateStagingBuffer(mesh_data.indices.data(), indexBytes);
+		VmaVirtualAllocationCreateInfo aIdx{};
+		aIdx.size = indexBytes;
+		aIdx.alignment = sizeof(IndexT);
+
+		if (vmaVirtualAllocate(page.index_blk /*or index_blk*/, &aIdx, &index_alloc, &index_offset_bytes) != VK_SUCCESS) {
+			// Roll back vertex allocation
+			vmaVirtualFree(page.vertex_units_blk, vtx_alloc);
+			return {};
+		}
+
+		auto staging_h = CreateStagingBuffer(geometry_data.indices.data(), indexBytes);
 		auto staging = buffers_.get(staging_h);
 
-		copyBuffer(staging->buffer, ib->buffer, indexBytes, 0, index_offset_bytes);
+		copyBuffer(staging->buffer, buffers_.get(page.indexBuffer)->buffer, indexBytes, 0, index_offset_bytes);
 		destroy(this, staging_h);
 	}
 
 	// ------------------------------------------
-	// 2) SPLIT VERTICES INTO TWO CPU ARRAYS
+	// 2) Split vertices into two CPU arrays
 	// ------------------------------------------
+	std::vector<VertexPos> pos(vcount);
+	std::vector<VertexShading> shd(vcount);
 
-	VkDeviceSize pos_byte_offset = baseVertex * sizeof(VertexPos);
-	VkDeviceSize shd_byte_offset = baseVertex * sizeof(VertexShading);
-
-	std::vector<VertexPos> pos;
-	std::vector<VertexShading> shd;
-	pos.resize(vcount);
-	shd.resize(vcount);
-
-	for (size_t i = 0; i < vcount; ++i) {
-		const Vertex& v = mesh_data.vertices[i];
+	for (uint32_t i = 0; i < vcount; ++i) {
+		const Vertex& v = geometry_data.vertices[i];
 
 		pos[i].pos = v.pos;
 
@@ -1781,75 +1835,55 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	}
 
 	// ------------------------------------------
-	// 3) ALLOCATE + UPLOAD POSITIONS (binding 0)
+	// 3) Upload positions to binding 0 buffer at derived offset
 	// ------------------------------------------
-	const VkDeviceSize posBytes =
-		sizeof(VertexPos) * static_cast<VkDeviceSize>(pos.size());
-
-	VmaVirtualAllocationCreateInfo aPos{};
-	aPos.size = posBytes;
-	aPos.alignment = alignof(VertexPos);
-
-	VmaVirtualAllocation pos_alloc{};
-
-	if (vmaVirtualAllocate(vertex_blk, &aPos, &pos_alloc, &pos_byte_offset) != VK_SUCCESS) {
-		vmaVirtualFree(index_blk, index_alloc);
-		return {};
-	}
-
 	{
-		auto staging = CreateStagingBuffer(pos.data(), pos.size() * sizeof(VertexPos));
+		const VkDeviceSize posBytes = sizeof(VertexPos) * static_cast<VkDeviceSize>(vcount);
+
+		auto staging_h = CreateStagingBuffer(pos.data(), posBytes);
+		auto staging = buffers_.get(staging_h);
+
 		copyBuffer(
-			buffers_.get(staging)->buffer,
-			buffers_.get(vertex_buffer)->buffer,
-			pos.size() * sizeof(VertexPos),
+			staging->buffer,
+			buffers_.get(page.vertexPosBuffer /*or vertex_buffer*/)->buffer,
+			posBytes,
 			0,
 			pos_byte_offset
 		);
-		destroy(this, staging);
+
+		destroy(this, staging_h);
 	}
 
-
 	// ------------------------------------------
-	// 4) ALLOCATE + UPLOAD SHADING (binding 1)
+	// 4) Upload shading to binding 1 buffer at derived offset
 	// ------------------------------------------
-	const VkDeviceSize shdBytes =
-		sizeof(VertexShading) * static_cast<VkDeviceSize>(shd.size());
-
-	VmaVirtualAllocationCreateInfo aShd{};
-	aShd.size = shdBytes;
-	aShd.alignment = alignof(VertexShading);
-
-	VmaVirtualAllocation shd_alloc{};
-
-	if (vmaVirtualAllocate(vertex_shading_blk, &aShd, &shd_alloc, &shd_byte_offset) != VK_SUCCESS) {
-		// roll back previous allocs
-		vmaVirtualFree(vertex_blk, pos_alloc);
-		vmaVirtualFree(index_blk, index_alloc);
-		return {};
-	}
-
 	{
-		auto staging = CreateStagingBuffer(shd.data(), shd.size() * sizeof(VertexShading));
+		const VkDeviceSize shdBytes = sizeof(VertexShading) * static_cast<VkDeviceSize>(vcount);
+
+		auto staging_h = CreateStagingBuffer(shd.data(), shdBytes);
+		auto staging = buffers_.get(staging_h);
+
 		copyBuffer(
-			buffers_.get(staging)->buffer,
-			buffers_.get(vertex_shading_buffer)->buffer,
-			shd.size() * sizeof(VertexShading),
+			staging->buffer,
+			buffers_.get(page.vertexShadingBuffer /*or vertex_shading_buffer*/)->buffer,
+			shdBytes,
 			0,
 			shd_byte_offset
 		);
-		destroy(this, staging);
+
+		destroy(this, staging_h);
 	}
 
-
-	// ----------------------------
-	// 5) DRAW RANGE
-	// ----------------------------
+	// ------------------------------------------
+	// 5) Draw range (bind-once style)
+	// ------------------------------------------
 	DrawRange ds{};
-	ds.index_count = static_cast<uint32_t>(mesh_data.indices.size());
-	ds.first_index = static_cast<uint32_t>(index_offset_bytes / sizeof(uint32_t));
+	ds.index_count = static_cast<uint32_t>(geometry_data.indices.size());
+	ds.first_index = static_cast<uint32_t>(index_offset_bytes / sizeof(IndexT));
 	ds.base_vertex = static_cast<int32_t>(baseVertex);
 
+	// IMPORTANT: store allocs somewhere if you want to free later.
+	// e.g. ds.vertex_alloc = vtx_alloc; ds.index_alloc = index_alloc; (requires fields)
 
 	GpuMeshDesc mesh_dec{};
 	mesh_dec.lods = 1;
@@ -1860,36 +1894,151 @@ void Context::GetAppropiateSampler(Texture& texture) {
 }
 
 
-
-
-[[nodiscard]] std::vector<MeshDescHandle> Context::BatchUploadMeshData(std::vector<GeometryData>& mesh_data) {
-	assert(!mesh_data.empty());
-
-	std::vector<GpuMeshDesc> mesh_draw_list;
-	mesh_draw_list.reserve(mesh_data.size()); // keep 1:1 with mesh_data
-
-	int i = 0;
-	for (auto mesh : mesh_data) {
-		auto h = UploadMesh(mesh);
-		auto ds = meshes_.get(h);
-		mesh_draw_list.push_back(*ds);
-		i++;
-	}
-
-	std::vector<MeshDescHandle> dss;
-
-	for (auto ds : mesh_draw_list) {
-		dss.push_back(meshes_.create(std::move(ds)));
-	}
-	return dss;
-
-}
-
-// Creates a host-visible, coherent staging buffer suitable for uploads.
-// The buffer is created with VK_BUFFER_USAGE_TRANSFER_SRC_BIT so it can be
-// copied into images/buffers via vkCmdCopy*.
+//[[nodiscard]] MeshDescHandle Context::UploadVertexData(GeometryData& geometry_data /*, uint32_t flags*/)
+//{
+//	//auto ib = buffers_.get(index_buffer);
+//	//auto vb0 = buffers_.get(vertex_buffer);          // binding 0: VertexPos
+//	//auto vb1 = buffers_.get(vertex_shading_buffer);  // binding 1: VertexShading
 //
-// Overload A: just create the buffer
+//	auto vcount = static_cast<uint32_t>(geometry_data.vertices.size());
+//	auto& page = geometry_pages[current_page];
+//
+//	if (page.vertex_cursor + vcount > page.max_vertices) {
+//		assert(false && "not implemented");
+//	}
+//
+//	uint32_t baseVertex = page.vertex_cursor;
+//	page.vertex_cursor += vcount;
+//
+//
+//	// ----------------------------
+//	// 1) INDICES (unchanged idea)
+//	// ----------------------------
+//	using IndexT = uint32_t;
+//	const VkDeviceSize indexBytes =
+//		sizeof(IndexT) * static_cast<VkDeviceSize>(geometry_data.indices.size());
+//
+//	VmaVirtualAllocationCreateInfo aIdx{};
+//	aIdx.size = indexBytes;
+//	aIdx.alignment = sizeof(IndexT);
+//
+//	VmaVirtualAllocation index_alloc{};
+//	VkDeviceSize index_offset_bytes = 0;
+//
+//	if (vmaVirtualAllocate(index_blk, &aIdx, &index_alloc, &index_offset_bytes) != VK_SUCCESS)
+//		return {};
+//
+//	{
+//		auto staging_h = CreateStagingBuffer(geometry_data.indices.data(), indexBytes);
+//		auto staging = buffers_.get(staging_h);
+//
+//		copyBuffer(staging->buffer, page.indexBuffer->buffer, indexBytes, 0, index_offset_bytes);
+//		destroy(this, staging_h);
+//	}
+//
+//	// ------------------------------------------
+//	// 2) SPLIT VERTICES INTO TWO CPU ARRAYS
+//	// ------------------------------------------
+//
+//	VkDeviceSize pos_byte_offset = baseVertex * sizeof(VertexPos);
+//	VkDeviceSize shd_byte_offset = baseVertex * sizeof(VertexShading);
+//
+//	std::vector<VertexPos> pos;
+//	std::vector<VertexShading> shd;
+//	pos.resize(vcount);
+//	shd.resize(vcount);
+//
+//	for (size_t i = 0; i < vcount; ++i) {
+//		const Vertex& v = geometry_data.vertices[i];
+//
+//		pos[i].pos = v.pos;
+//
+//		shd[i].color = v.color;
+//		shd[i].texCoord = v.texCoord;
+//		shd[i].normal = v.normal;
+//		shd[i].tangent = v.tangent;
+//	}
+//
+//	// ------------------------------------------
+//	// 3) ALLOCATE + UPLOAD POSITIONS (binding 0)
+//	// ------------------------------------------
+//	const VkDeviceSize posBytes =
+//		sizeof(VertexPos) * static_cast<VkDeviceSize>(pos.size());
+//
+//	VmaVirtualAllocationCreateInfo aPos{};
+//	aPos.size = posBytes;
+//	aPos.alignment = alignof(VertexPos);
+//
+//	VmaVirtualAllocation pos_alloc{};
+//
+//	if (vmaVirtualAllocate(vertex_blk, &aPos, &pos_alloc, &pos_byte_offset) != VK_SUCCESS) {
+//		vmaVirtualFree(index_blk, index_alloc);
+//		return {};
+//	}
+//
+//	{
+//		auto staging = CreateStagingBuffer(pos.data(), pos.size() * sizeof(VertexPos));
+//		copyBuffer(
+//			buffers_.get(staging)->buffer,
+//			buffers_.get(vertex_buffer)->buffer,
+//			pos.size() * sizeof(VertexPos),
+//			0,
+//			pos_byte_offset
+//		);
+//		destroy(this, staging);
+//	}
+//
+//
+//	// ------------------------------------------
+//	// 4) ALLOCATE + UPLOAD SHADING (binding 1)
+//	// ------------------------------------------
+//	const VkDeviceSize shdBytes =
+//		sizeof(VertexShading) * static_cast<VkDeviceSize>(shd.size());
+//
+//	VmaVirtualAllocationCreateInfo aShd{};
+//	aShd.size = shdBytes;
+//	aShd.alignment = alignof(VertexShading);
+//
+//	VmaVirtualAllocation shd_alloc{};
+//
+//	if (vmaVirtualAllocate(vertex_shading_blk, &aShd, &shd_alloc, &shd_byte_offset) != VK_SUCCESS) {
+//		// roll back previous allocs
+//		vmaVirtualFree(vertex_blk, pos_alloc);
+//		vmaVirtualFree(index_blk, index_alloc);
+//		return {};
+//	}
+//
+//	{
+//		auto staging = CreateStagingBuffer(shd.data(), shd.size() * sizeof(VertexShading));
+//		copyBuffer(
+//			buffers_.get(staging)->buffer,
+//			buffers_.get(vertex_shading_buffer)->buffer,
+//			shd.size() * sizeof(VertexShading),
+//			0,
+//			shd_byte_offset
+//		);
+//		destroy(this, staging);
+//	}
+//
+//
+//	// ----------------------------
+//	// 5) DRAW RANGE
+//	// ----------------------------
+//	DrawRange ds{};
+//	ds.index_count = static_cast<uint32_t>(geometry_data.indices.size());
+//	ds.first_index = static_cast<uint32_t>(index_offset_bytes / sizeof(uint32_t));
+//	ds.base_vertex = static_cast<int32_t>(baseVertex);
+//
+//
+//	GpuMeshDesc mesh_dec{};
+//	mesh_dec.lods = 1;
+//	mesh_dec.lod_offsets = { 0 };
+//	mesh_dec.sets = { ds };
+//
+//	return meshes_.create(std::move(mesh_dec));
+//}
+
+
 [[nodiscard]] DeviceBufferHandle Context::CreateStagingBuffer(VkDeviceSize size)
 {
 	BufferDescription desc{};
@@ -2005,86 +2154,8 @@ void Context::CleanUp() {
 
 	// Clear Pools.
 	// Clear VmaPools.
-	vmaDestroyVirtualBlock(index_blk);
-	vmaDestroyVirtualBlock(vertex_blk);
-	vmaDestroyVirtualBlock(vertex_shading_blk);
+	//vmaDestroyVirtualBlock(index_blk);
+	//vmaDestroyVirtualBlock(vertex_blk);
+	//vmaDestroyVirtualBlock(vertex_shading_blk);
 	//vmaDestroyPool();//
 }
-
-
-std::vector<MeshDescHandle> UploadMeshDataToContext(
-	Context* ctx,
-	const std::vector<GeometryData> data
-) {
-
-	std::vector<GeometryData> data_to_upload;
-	std::set<uint32_t> already_uploaded;
-
-	for (auto m : data) {
-		data_to_upload.push_back(std::move(m));
-	}
-
-	std::unordered_map<int, int> already_assigned_;
-	int j = 0;
-
-	//for (auto& mesh : model.gltfModel.meshes) {
-	//	for (auto& primitive : mesh.primitives) {
-	//		if (already_assigned_.contains(primitive.material)) {
-	//			data_to_upload[j].materialIndex = already_assigned_[primitive.material];
-	//		}
-	//		else {
-	//			MaterialInstanceHandle mat_h = CreateMaterial(
-	//				ctx,
-	//				model.gltfModel,
-	//				primitive.material
-	//			);
-	//			const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
-	//			already_assigned_[primitive.material] = idx;
-	//			data_to_upload[j].materialIndex = idx;  // <-- assign for the *first* occurrence
-	//		}
-	//		j++;
-	//	}
-	//}
-
-	return ctx->BatchUploadMeshData(data_to_upload);
-}
-
-
-//
-//std::vector<MeshDescHandle> UploadGltfToContext(
-//	Context* ctx,
-//	const GltfModel& model
-//) {
-//
-//	std::vector<MeshData> data_to_upload;
-//	std::set<uint32_t> already_uploaded;
-//
-//	for (auto mesh_data : model.mesh_data) {
-//		data_to_upload.push_back(std::move(mesh_data));
-//	}
-//
-//	std::unordered_map<int, int> already_assigned_;
-//	int j = 0;
-//
-//	for (auto& mesh : model.gltfModel.meshes) {
-//		for (auto& primitive : mesh.primitives) {
-//			if (already_assigned_.contains(primitive.material)) {
-//
-//			}
-//			else {
-//				MaterialInstanceHandle mat_h = CreateMaterialFromGltf(
-//					ctx,
-//					model.gltfModel,
-//					primitive.material
-//				);
-//				const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
-//				already_assigned_[primitive.material] = idx;
-//			}
-//			j++;
-//		}
-//	}
-//
-//	return ctx->BatchUploadMeshData(data_to_upload);
-//
-//};
-

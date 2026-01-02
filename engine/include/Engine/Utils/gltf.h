@@ -432,12 +432,11 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 
 static int UploadPrimitiveAsMesh(
 	Context* ctx,
-	Scene& scene,
 	const tinygltf::Model& model,
 	const tinygltf::Primitive& primitive
 ) {
 	auto mdata = MeshDataFromPrimitive(model, primitive);
-	auto mhandle = ctx->UploadMesh(mdata);
+	auto mhandle = ctx->UploadVertexData(mdata);
 	return mhandle.index();
 
 
@@ -473,8 +472,6 @@ MaterialInstanceHandle CreateMaterial(Context* ctx, const tinygltf::Model& model
 
 }
 
-
-
 void ImportNodeRecursive(
 	Context* ctx,
 	Scene& scene,
@@ -482,7 +479,7 @@ void ImportNodeRecursive(
 	int gltfNodeIndex,
 	int parentSceneNode,
 	int level,
-	std::filesystem::path gltf_model_path
+	std::filesystem::path gltf_model_path // This is for crude texture discovery using this path + uri to find tex.
 ) {
 	const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];
 
@@ -498,13 +495,16 @@ void ImportNodeRecursive(
 	scene.localTransform[groupNode] = GetNodeLocalTransform(gltfNode);
 	scene.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
 
+
 	if (gltfNode.mesh >= 0) {
 		const tinygltf::Mesh& gltfMesh = model.meshes[gltfNode.mesh];
-		for (int primIndex = 0; primIndex < (int)gltfMesh.primitives.size(); ++primIndex) {
 
+		// Gltf models contain meshes that can contain several primitives. A primitive can have its onw material. My scene format makes 1 material per mesh needed, so here I unroll primitives into separate meshes. This breaks gltfNode to sceneNode index preservation. I do not care.
+		for (int primIndex = 0; primIndex < (int)gltfMesh.primitives.size(); ++primIndex) {
 			auto primitive = model.meshes[gltfNode.mesh].primitives[primIndex];
 			const int primNode = addNode(scene, groupNode, level + 1);
 
+			// I dont really care for names in my scene at least for now. 
 			// name: "OriginalName_primX"
 			//{
 			//	const std::string baseName =
@@ -517,8 +517,9 @@ void ImportNodeRecursive(
 
 			scene.localTransform[primNode] = glm::mat4(1.0f);
 			scene.globalTransform[primNode] = glm::mat4(1.0f);
-			scene.meshForNode[primNode] = UploadPrimitiveAsMesh(ctx, scene, model, primitive);
+			scene.meshForNode[primNode] = UploadPrimitiveAsMesh(ctx, model, primitive);
 
+			// This is bad beacuse we recreate the same materials over and over
 			MaterialInstanceHandle mat_h = CreateMaterial(
 				ctx,
 				model,
@@ -576,37 +577,9 @@ void UploadGltfToContext(
 		gltf_model_path
 	);
 
-//	std::unordered_map<int, int> already_assigned_;
-	//int j = 0;
 
-	//for (const auto& mesh : model.meshes) {
-	//	for (const auto& primitive : mesh.primitives) {
-
-	//		auto mdata = MeshDataFromPrimitive(model, primitive);
-	//		ctx->UploadMesh(mdata);
-
-	//		if (already_assigned_.contains(primitive.material)) {
-	//			result_scene.materialForNode[j]= already_assigned_[primitive.material];
-	//		}
-	//		else {
-	//			MaterialInstanceHandle mat_h = CreateMaterial(
-	//				ctx,
-	//				model,
-	//				primitive.material,
-	//				gltf_model_path.parent_path().string().c_str()
-	//			);
-	//			const uint32_t idx = mat_h.index();  // <-- the pool index you actually use later
-	//			already_assigned_[primitive.material] = idx;
-	//			result_scene.materialForNode[j]= idx;
-	//		}
-	//		j++;
-	//	}
-	//}
-
-	//GpuMeshDesc mesh;
-	//mesh.lods = 0;
-	//mesh.lod_offsets = { 0 };
-	//mesh.sets = uploaded;
-	//ctx->meshes_.create(std::move(mesh));
+	// This is needed or else scene will not carry transforms effectively
+	markAsChanged(result_scene, 0);
+	recalculateGlobalTransforms(result_scene);
 
 };
