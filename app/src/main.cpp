@@ -654,7 +654,7 @@ private:
 		//VkWriteDescriptorSet writes[3]{};
 
 		////auto setHandle = frameDescriptorSets[currentFrame];
-		////auto setObj = context->descriptrorSetPool_.get(setHandle);
+		////auto setObj = context->descriptorSets_.get(setHandle);
 		////VkDescriptorSet vkSet = setObj->set;
 
 
@@ -702,7 +702,7 @@ private:
 		};
 		{
 			auto setHandle = frameDescriptorSets[currentFrame];
-			auto setObj = context->descriptrorSetPool_.get(setHandle);
+			auto setObj = context->descriptorSets_.get(setHandle);
 			VkDescriptorSet vkSet = setObj->set;
 
 			VkWriteDescriptorSet writes[3]{};
@@ -730,7 +730,7 @@ private:
 		{
 
 			auto setHandle = shadowFrameDescriptorSets[currentFrame];
-			auto setObj = context->descriptrorSetPool_.get(setHandle);
+			auto setObj = context->descriptorSets_.get(setHandle);
 			VkDescriptorSet vkSet = setObj->set;
 
 			VkWriteDescriptorSet writes[2]{};
@@ -803,7 +803,7 @@ private:
 		};
 
 		auto setHandle = frameDescriptorSets[currentFrame];
-		auto setObj = context->descriptrorSetPool_.get(setHandle);
+		auto setObj = context->descriptorSets_.get(setHandle);
 		VkDescriptorSet vkSet = setObj->set;
 
 		VkWriteDescriptorSet writes[2]{};
@@ -839,7 +839,7 @@ private:
 
 
 		auto setHandle = frameDescriptorSets[currentFrame];
-		auto setObj = context->descriptrorSetPool_.get(setHandle);
+		auto setObj = context->descriptorSets_.get(setHandle);
 		VkDescriptorSet vkSet = setObj->set;
 
 		VkWriteDescriptorSet writes[1]{};
@@ -874,7 +874,7 @@ private:
 	// This could be done way more clever. 
 	void UpdateBindlessTextures(uint32_t currentFrame) {
 
-		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstancesPool_.numObjects());
+		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstances_.numObjects());
 
 		// --- Build image infos (sampled images) ---
 		std::vector<VkDescriptorImageInfo> imageInfos;
@@ -909,7 +909,7 @@ private:
 		//for (auto setHandle : frameDescriptorSets)
 		//{
 
-		auto set = context->descriptrorSetPool_.get(setHandle);
+		auto set = context->descriptorSets_.get(setHandle);
 
 		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[0].dstSet = set->set;
@@ -929,6 +929,20 @@ private:
 
 		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
+	}
+
+	void BindVertex(VkCommandBuffer commandBuffer) {
+
+		auto page = context->geometry_pages.get(context->current_geometry_page);
+
+		VkBuffer bufs[] = {
+			context->buffers_.get(page->vertexPosBuffer)->buffer,
+			context->buffers_.get(page->vertexShadingBuffer)->buffer
+		};
+		VkDeviceSize offs[] = { 0, 0 };
+		vkCmdBindVertexBuffers(commandBuffer, 0, 2, bufs, offs);
+
+		vkCmdBindIndexBuffer(commandBuffer, context->buffers_.get(page->indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
 	}
 
 
@@ -955,7 +969,7 @@ private:
 			{
 				VkImageMemoryBarrier barrier{};
 				barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-//				barrier.oldLayout = used_image ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				//				barrier.oldLayout = used_image ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // I do loadOp clear so this can be undefined no problem
 				barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
 				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1021,22 +1035,10 @@ private:
 			scissor.extent = shadowExtent;
 			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-			// BIND
-//		auto& page = geometry_pages[draw.page_id];
-			auto& page = context->geometry_pages[0];
-
-			VkBuffer bufs[] = {
-				context->buffers_.get(page.vertexPosBuffer)->buffer,
-				context->buffers_.get(page.vertexShadingBuffer)->buffer
-			};
-			VkDeviceSize offs[] = { 0, 0 };
-			vkCmdBindVertexBuffers(commandBuffer, 0, 2, bufs, offs);
-
-			vkCmdBindIndexBuffer(commandBuffer, context->buffers_.get(page.indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
-
+			BindVertex(commandBuffer);
 
 			// 5) Shadow pipeline & descriptors
-			auto s_pipeline = context->pipelinesPool_.get(default_shadow_pipeline);
+			auto s_pipeline = context->pipelines_.get(default_shadow_pipeline);
 			auto pipe_lyt = s_pipeline->plyt;
 
 			vkCmdBindPipeline(
@@ -1045,7 +1047,7 @@ private:
 				s_pipeline->pipeline
 			);
 
-			auto sets = context->descriptrorSetPool_.get(shadowFrameDescriptorSets[currentFrame]);
+			auto sets = context->descriptorSets_.get(shadowFrameDescriptorSets[currentFrame]);
 
 			vkCmdBindDescriptorSets(
 				commandBuffer,
@@ -1211,19 +1213,7 @@ private:
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
 		// BIND
-
-//		auto& page = geometry_pages[draw.page_id];
-		auto& page = context->geometry_pages[0];
-
-		VkBuffer bufs[] = {
-			context->buffers_.get(page.vertexPosBuffer)->buffer,
-			context->buffers_.get(page.vertexShadingBuffer)->buffer
-		};
-		VkDeviceSize offs[] = { 0, 0 };
-		vkCmdBindVertexBuffers(commandBuffer, 0, 2, bufs, offs);
-
-		vkCmdBindIndexBuffer(commandBuffer, context->buffers_.get(page.indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
-
+		BindVertex(commandBuffer);
 
 		PushConstants pc{};
 		pc.view = camera_.getViewMatrix();
@@ -1231,7 +1221,7 @@ private:
 		pc.proj[1][1] *= -1;
 
 		// I long ago did this to be able to run trough different pipeline setuops like transparency and else. Amay be wrong and dumb
-		for (auto mat_pipe_entry : context->pipelinesPool_.objects_) {
+		for (auto mat_pipe_entry : context->pipelines_.objects_) {
 
 			if (mat_pipe_entry.obj_.type != PIPELINE_MATERIAL) {
 				continue;
@@ -1243,7 +1233,7 @@ private:
 				mat_pipe_entry.obj_.pipeline
 			);
 
-			auto sets = context->descriptrorSetPool_.get(frameDescriptorSets[currentFrame]);
+			auto sets = context->descriptorSets_.get(frameDescriptorSets[currentFrame]);
 			auto pipe_lyt = mat_pipe_entry.obj_.plyt;
 
 			vkCmdBindDescriptorSets(
@@ -1268,7 +1258,7 @@ private:
 				pc.material_instance_index = material_instance_index;
 
 				MaterialPushConstants pcm =
-					context->materialInstancesPool_.objects_[material_instance_index].obj_.values;
+					context->materialInstances_.objects_[material_instance_index].obj_.values;
 
 				struct PC_All {
 					PushConstants pc;               // 144
@@ -1295,7 +1285,7 @@ private:
 						draw_set.base_vertex,
 						0
 					);
-				
+
 				}
 
 			}
@@ -1395,7 +1385,7 @@ void VulkanApp::InitializeImGui() {
 	io.SetClipboardTextFn = [](void*, const char* text) { glfwSetClipboardString(nullptr, text); };
 	io.GetClipboardTextFn = [](void*) { return glfwGetClipboardString(nullptr); };
 
-	auto im_dp = context->descriptorSetPoolPool_.get(context->imgui_descriptor_pool);
+	auto im_dp = context->descriptorSetPools_.get(context->imgui_descriptor_pool);
 
 	SwapChainSupportDetails swapChainSupport =
 		querySwapChainSupport(physicalDevice, surface);

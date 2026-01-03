@@ -249,11 +249,11 @@ static AlphaMode ParseAlphaMode(const std::string& s) {
 }
 
 
-GeometryData MeshDataFromPrimitive(
+MeshUploadInput MeshDataFromPrimitive(
 	const tinygltf::Model& model,
 	const tinygltf::Primitive& primitive
 ) {
-	GeometryData data;
+	MeshUploadInput data;
 
 	// AABB. for culling	
 	{
@@ -277,8 +277,8 @@ GeometryData MeshDataFromPrimitive(
 			glm::vec3 c0(-aabbMin.x, aabbMin.y, -aabbMin.z);
 			glm::vec3 c1(-aabbMax.x, aabbMax.y, -aabbMax.z);
 
-			data.minBox = aabbMin;
-			data.maxBox = aabbMax;
+			data.aabb_min = aabbMin;
+			data.aabb_max = aabbMax;
 		}
 		else {
 
@@ -463,11 +463,11 @@ MaterialInstanceHandle CreateMaterial(Context* ctx, const tinygltf::Model& model
 	// free after upload
 	ktxTexture2_Destroy(ktxTex);
 
-	auto material_pipe_0 = ctx->pipelinesPool_.getHandle(0);
+	auto material_pipe_0 = ctx->pipelines_.getHandle(0);
 	assert(material_pipe_0.valid());
 
 	auto mat_h = ctx->CreateMaterialInstance(material_pipe_0);
-	ctx->materialInstancesPool_.get(mat_h)->values.texDiffuse = colorTexHandle.index();
+	ctx->materialInstances_.get(mat_h)->values.texDiffuse = colorTexHandle.index();
 	return mat_h;
 
 }

@@ -27,8 +27,9 @@ using DescriptorSetHandle = Handle<struct DescriptorSet>;
 using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
 using DeviceBufferHandle = Handle<struct BufferDescription>;
 using PipelineHandle = Handle<struct Pipeline>;
-//using DrawSetHandle = Handle<struct DrawRange>;
 using MeshDescHandle = Handle<struct GpuMeshDesc>;
+using GeometryPageHandle = Handle <struct GeometryPage>;
+
 
 void destroy(Context* ctx, ShaderModuleHandle handle);
 void destroy(Context* ctx, DeviceBufferHandle handle);
@@ -58,6 +59,35 @@ struct GeometryPage {
 	VmaVirtualBlock index_blk;         // bytes (as you already do)
 	VmaVirtualBlock vertex_units_blk;  // vertices (NEW)
 };
+
+struct DrawRange {
+	GeometryPageHandle page;
+
+	uint32_t index_count;
+
+	// Either:
+	uint32_t first_index;   // if IB bound at 0 for that page
+	int32_t  base_vertex;   // if VB bound at 0 for that page
+
+	// OR if you allow rebinding offsets:
+	VkDeviceSize ib_byte_offset;
+	VkDeviceSize vb0_byte_offset;
+	VkDeviceSize vb1_byte_offset;
+};
+
+struct GpuMeshDesc {
+
+	glm::vec3 aabbMin;
+	float     sphereRadius;
+	glm::vec3 aabbMax;
+	float     spherePad;
+
+	uint32_t lods = 1;
+	std::vector<uint32_t> lod_offsets;
+	std::vector<DrawRange> sets;
+
+};
+
 
 // For Upload geometry context. we can distighuis between geo for eviction/streaming purposes. maybe other
 typedef enum GeoFlag {
@@ -146,9 +176,6 @@ class Context {
 
 public:
 
-	// PAGE SYSTEM FOR GEO
-	std::vector<GeometryPage> geometry_pages;
-	uint32_t current_page = 0;
 
 	// This will go in the fututre
 	uint32_t vertex_cursor = 0;
@@ -211,15 +238,17 @@ public:
 	Pool<ShadowMap, ShadowMap> shadowmaps_;
 	Pool<Sampler, VkSampler> samplers_;
 
-	// These two have confusing names;
-	Pool<DescriptorSet, DescriptorSet> descriptrorSetPool_;
-	Pool<DescriptorPool, VkDescriptorPool> descriptorSetPoolPool_;
+	Pool < GeometryPage, GeometryPage> geometry_pages;
+	GeometryPageHandle current_geometry_page;
 
-	Pool<DescriptorLayout, VkDescriptorSetLayout> descriptorSetLayoutPool_;
-	Pool<Pipeline, Pipeline> pipelinesPool_;
-	Pool<MaterialInstance, MaterialInstance> materialInstancesPool_;
+	Pool<DescriptorSet, DescriptorSet> descriptorSets_;
+	Pool<DescriptorPool, VkDescriptorPool> descriptorSetPools_;
 
-	Pool<ShaderModule, VkShaderModule> shaderModulePool_;
+	Pool<DescriptorLayout, VkDescriptorSetLayout> descriptorSetLayouts_;
+	Pool<Pipeline, Pipeline> pipelines_;
+	Pool<MaterialInstance, MaterialInstance> materialInstances_;
+
+	Pool<ShaderModule, VkShaderModule> shaderModules_;
 
 	Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface) {
 
@@ -326,6 +355,7 @@ public:
 		endSingleTimeCommands(*device_, commandBuffer, default_queue, default_command_pool);
 	}
 
+
 	void InitalizeGeoBuffers() {
 
 		{
@@ -378,9 +408,8 @@ public:
 				VK_CHECK(vmaCreateVirtualBlock(&vu, &page.vertex_units_blk));
 			}
 
-			// Store + select as current
-			geometry_pages.push_back(std::move(page));
-			current_page = 0;
+
+			current_geometry_page = geometry_pages.create(std::move(page));
 
 		}
 
@@ -538,8 +567,8 @@ public:
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
 	DeviceBufferHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
-	MeshDescHandle UploadVertexData(GeometryData& mesh_data);
-	//	std::vector<MeshDescHandle> BatchUploadMeshData(std::vector<GeometryData>& mesh_data);
+	MeshDescHandle UploadVertexData(MeshUploadInput& mesh_data);
+	//	std::vector<MeshDescHandle> BatchUploadMeshData(std::vector<MeshUploadInput>& mesh_data);
 
 		// HELPERS.
 	VkCommandBuffer GetCommandBuffer();
@@ -592,7 +621,6 @@ public:
 		1,
 		VK_IMAGE_VIEW_TYPE_2D // Lets default to this. im only using 2D arrays for cascades in shadow maps for the moment
 	);
-
 
 }
 
@@ -667,8 +695,8 @@ public:
 	DescriptorLayoutHandle lyt
 ) {
 	// Pools should be rolled over on fail, get new pool. then discard FIFO
-	auto descriptorPool = descriptorSetPoolPool_.get(default_descriptor_pool);
-	auto layout = descriptorSetLayoutPool_.get(lyt);
+	auto descriptorPool = descriptorSetPools_.get(default_descriptor_pool);
+	auto layout = descriptorSetLayouts_.get(lyt);
 
 	std::array<VkDescriptorSetLayout, 1> layouts = {
 		*layout
@@ -696,7 +724,7 @@ public:
 		throw std::runtime_error("failed to allocate descriptor sets!");
 	}
 
-	return descriptrorSetPool_.create(std::move(ds));
+	return descriptorSets_.create(std::move(ds));
 
 }
 
@@ -882,7 +910,7 @@ void Context::UploadDataToBuffer(
 		throw std::runtime_error("failed to create descriptor set layout!");
 	}
 
-	return descriptorSetLayoutPool_.create(std::move(descriptorSetLayout));
+	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
 }
 
 // Lets just create a sample mehslet mesh shader
@@ -920,7 +948,7 @@ void Context::UploadDataToBuffer(
 		throw std::runtime_error("failed to create descriptor set layout!");
 	}
 
-	return descriptorSetLayoutPool_.create(std::move(descriptorSetLayout));
+	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
 
 }
 
@@ -1019,7 +1047,7 @@ void Context::UploadDataToBuffer(
 		throw std::runtime_error("failed to create descriptor set layout!");
 	}
 
-	return descriptorSetLayoutPool_.create(std::move(descriptorSetLayout));
+	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
 
 }
 
@@ -1046,7 +1074,7 @@ void Context::UploadDataToBuffer(
 
 	VkDescriptorPool dpool;
 	VK_CHECK(vkCreateDescriptorPool(*device_, &poolInfo, nullptr, &dpool));
-	return descriptorSetPoolPool_.create(std::move(dpool));
+	return descriptorSetPools_.create(std::move(dpool));
 }
 
 [[nodiscard]] PipelineHandle Context::CreateShadowPipeline(ShaderModuleHandle vert) {
@@ -1062,10 +1090,10 @@ void Context::UploadDataToBuffer(
 	constexpr float depthBiasSlope = 0.01f;
 
 	// Lets use default
-	auto shadow_def_lyt = descriptorSetLayoutPool_.get(default_shadow_descriptorLayout);
+	auto shadow_def_lyt = descriptorSetLayouts_.get(default_shadow_descriptorLayout);
 	auto descriptorSetLayout = shadow_def_lyt;
 
-	auto v = shaderModulePool_.get(vert);
+	auto v = shaderModules_.get(vert);
 	VkPipelineShaderStageCreateInfo vertStage{};
 	vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1210,7 +1238,7 @@ void Context::UploadDataToBuffer(
 	assert(pipeCI.pMultisampleState != nullptr);
 	vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipeCI, nullptr, &pipeline.pipeline);
 
-	return pipelinesPool_.create(std::move(pipeline));
+	return pipelines_.create(std::move(pipeline));
 
 }
 
@@ -1229,11 +1257,11 @@ void Context::UploadDataToBuffer(
 	pipeline.vert = vert;
 	pipeline.type = PIPELINE_MATERIAL;
 
-	auto v = shaderModulePool_.get(vert);
-	auto f = shaderModulePool_.get(frag);
+	auto v = shaderModules_.get(vert);
+	auto f = shaderModules_.get(frag);
 
 	// Lets use default
-	auto def_lyt = descriptorSetLayoutPool_.get(default_descriptorLayout);
+	auto def_lyt = descriptorSetLayouts_.get(default_descriptorLayout);
 	auto descriptorSetLayout = def_lyt;
 
 	// SHADER
@@ -1403,7 +1431,7 @@ void Context::UploadDataToBuffer(
 		throw std::runtime_error("failed to create graphics pipeline!");
 	}
 
-	return pipelinesPool_.create(std::move(pipeline));
+	return pipelines_.create(std::move(pipeline));
 }
 
 [[nodiscard]] PipelineHandle Context::CreateMaterialPipeline(
@@ -1427,7 +1455,7 @@ void Context::UploadDataToBuffer(
 	MaterialInstance mat_instance = {};
 	mat_instance.pipeline = mat_pipeline;
 
-	return materialInstancesPool_.create(std::move(mat_instance));
+	return materialInstances_.create(std::move(mat_instance));
 }
 
 void Context::TransitionImageLayout(
@@ -1687,7 +1715,6 @@ void Context::GetAppropiateSampler(Texture& texture) {
 
 }
 
-// this is ju
 [[nodiscard]] ImageHandle Context::CreateShadowMapImage(int texWidth, int texHeight /*int cascades*/) {
 
 	//VkFormat depth_format = VK_FORMAT_D32_SFLOAT; // I dont need stencil, so lets hardcode this for the moment here. /*findDepthFormat(*physicalDevice_);*/
@@ -1763,10 +1790,10 @@ void Context::GetAppropiateSampler(Texture& texture) {
 //
 //}
 
-[[nodiscard]] MeshDescHandle Context::UploadVertexData(GeometryData& geometry_data)
+[[nodiscard]] MeshDescHandle Context::UploadVertexData(MeshUploadInput& geometry_data)
 {
 	const uint32_t vcount = static_cast<uint32_t>(geometry_data.vertices.size());
-	auto& page = geometry_pages[current_page];
+	auto page = geometry_pages.get(current_geometry_page);
 
 	// ------------------------------------------
 	// 0) Allocate vertices from ONE vertex-units block
@@ -1779,7 +1806,7 @@ void Context::GetAppropiateSampler(Texture& texture) {
 		aV.size = vcount;     // vertex units
 		aV.alignment = 1;     // vertex units
 
-		if (vmaVirtualAllocate(page.vertex_units_blk, &aV, &vtx_alloc, &baseVertex) != VK_SUCCESS) {
+		if (vmaVirtualAllocate(page->vertex_units_blk, &aV, &vtx_alloc, &baseVertex) != VK_SUCCESS) {
 			// Not enough contiguous vertex space in this page (or fragmented)
 			return {};
 		}
@@ -1804,16 +1831,16 @@ void Context::GetAppropiateSampler(Texture& texture) {
 		aIdx.size = indexBytes;
 		aIdx.alignment = sizeof(IndexT);
 
-		if (vmaVirtualAllocate(page.index_blk /*or index_blk*/, &aIdx, &index_alloc, &index_offset_bytes) != VK_SUCCESS) {
+		if (vmaVirtualAllocate(page->index_blk /*or index_blk*/, &aIdx, &index_alloc, &index_offset_bytes) != VK_SUCCESS) {
 			// Roll back vertex allocation
-			vmaVirtualFree(page.vertex_units_blk, vtx_alloc);
+			vmaVirtualFree(page->vertex_units_blk, vtx_alloc);
 			return {};
 		}
 
 		auto staging_h = CreateStagingBuffer(geometry_data.indices.data(), indexBytes);
 		auto staging = buffers_.get(staging_h);
 
-		copyBuffer(staging->buffer, buffers_.get(page.indexBuffer)->buffer, indexBytes, 0, index_offset_bytes);
+		copyBuffer(staging->buffer, buffers_.get(page->indexBuffer)->buffer, indexBytes, 0, index_offset_bytes);
 		destroy(this, staging_h);
 	}
 
@@ -1845,7 +1872,7 @@ void Context::GetAppropiateSampler(Texture& texture) {
 
 		copyBuffer(
 			staging->buffer,
-			buffers_.get(page.vertexPosBuffer /*or vertex_buffer*/)->buffer,
+			buffers_.get(page->vertexPosBuffer /*or vertex_buffer*/)->buffer,
 			posBytes,
 			0,
 			pos_byte_offset
@@ -1865,7 +1892,7 @@ void Context::GetAppropiateSampler(Texture& texture) {
 
 		copyBuffer(
 			staging->buffer,
-			buffers_.get(page.vertexShadingBuffer /*or vertex_shading_buffer*/)->buffer,
+			buffers_.get(page->vertexShadingBuffer /*or vertex_shading_buffer*/)->buffer,
 			shdBytes,
 			0,
 			shd_byte_offset
@@ -1878,6 +1905,7 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	// 5) Draw range (bind-once style)
 	// ------------------------------------------
 	DrawRange ds{};
+	ds.page = current_geometry_page;
 	ds.index_count = static_cast<uint32_t>(geometry_data.indices.size());
 	ds.first_index = static_cast<uint32_t>(index_offset_bytes / sizeof(IndexT));
 	ds.base_vertex = static_cast<int32_t>(baseVertex);
@@ -1894,7 +1922,7 @@ void Context::GetAppropiateSampler(Texture& texture) {
 }
 
 
-//[[nodiscard]] MeshDescHandle Context::UploadVertexData(GeometryData& geometry_data /*, uint32_t flags*/)
+//[[nodiscard]] MeshDescHandle Context::UploadVertexData(MeshUploadInput& geometry_data /*, uint32_t flags*/)
 //{
 //	//auto ib = buffers_.get(index_buffer);
 //	//auto vb0 = buffers_.get(vertex_buffer);          // binding 0: VertexPos
@@ -2105,7 +2133,7 @@ void Context::GetAppropiateSampler(Texture& texture) {
 		std::move(code)
 	);
 
-	return shaderModulePool_.create(std::move(shader));
+	return shaderModules_.create(std::move(shader));
 
 };
 
@@ -2117,9 +2145,9 @@ VkQueue Context::GetGraphicsQueue() {
 
 void destroy(Context* ctx, ShaderModuleHandle handle) {
 	assert(handle.valid());
-	auto sm = ctx->shaderModulePool_.get(handle);
+	auto sm = ctx->shaderModules_.get(handle);
 	vkDestroyShaderModule(*ctx->device_, *sm, NULL);
-	ctx->shaderModulePool_.destroy(handle);
+	ctx->shaderModules_.destroy(handle);
 };
 void destroy(Context* ctx, TextureHandle handle) {
 	assert(handle.valid());

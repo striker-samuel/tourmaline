@@ -17,6 +17,16 @@
 #include <Engine/Shared/common.h>
 #include <Engine/Vulkan/vulkan_setup.h>
 #include <Engine/Renderer/vertex.h>
+#include <Engine/Renderer/light.h>
+
+struct MeshUploadInput {
+	std::vector<Vertex> vertices;
+	std::vector<uint32_t> indices;
+	glm::vec3 aabb_min; // im reading this directly from gltf.
+	glm::vec3 aabb_max;
+};
+
+// DEFAULT GEOS
 
 const std::vector<Vertex> quad_vertices = {
 	{{7.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
@@ -40,22 +50,23 @@ const std::vector<uint32_t> triangle_indices_ccw = {
 	0, 1, 2
 };
 
+MeshUploadInput Quad = MeshUploadInput(quad_vertices, quad_indices_ccw);
+MeshUploadInput Triangle = MeshUploadInput(triangle_vertices, triangle_indices_ccw);
+
+// 
+
+
+// Unused at this time
 enum GPU_CULLING_MODE {
 	CPU_CULLING,
 	GPU_CULLING
 };
 
-// Could very well be called MeshStream or somthing like that. this is really ther Vertex stream + Index Stream
-struct GeometryData {
-	std::vector<Vertex> vertices;
-	std::vector<uint32_t> indices;
-	glm::vec3 minBox; // im reading this directly from gltf.
-	glm::vec3 maxBox;
-};
 
-GeometryData Quad = GeometryData(quad_vertices, quad_indices_ccw);
-GeometryData Triangle = GeometryData(triangle_vertices, triangle_indices_ccw);
 
+// This is before I read : https://www.sebastianaaltonen.com/blog/no-graphics-api
+// It seeems going with SSBO by default might be not so bad.
+// 
 // We hit the masUBOsize limit fast. Be careful. We may need to encode better.
 // Maybe we can get away with float12 with implied 0,0,0,1 last row.
 // This is the exact footprint of the data uploaded to GPU. 
@@ -75,33 +86,7 @@ struct InstanceData {
 
 static_assert(sizeof(InstanceData) % 16 == 0);
 
-// Lighting
-typedef enum LightType {
-	LIGHT_TYPE_POINT = 0,
-	LIGHT_TYPE_SPOT = 1,
-} LightType;
-
-struct alignas(16) Light {
-	glm::vec4 color = glm::vec4(1.0f);       // offset 0,  size 16
-
-	float position[3] = { 0.0f,0.0f,0.0f };     // offset 16, size 12
-	int32_t flags = 0;
-	//float _pad0;           // offset 28, size 4  -> total 32
-
-	float direction[3] = { 0.0f,0.0f,0.0f };    // offset 32, size 12
-	float intensity = 1.0f;       // offset 44, size 4  -> total 48
-
-	int32_t type = LIGHT_TYPE_POINT;
-	// in radians!
-	float innerAngle = glm::radians(10.0f);
-	float outerAngle = glm::radians(20.0f);
-	// -1 no shadow map. else context->shadowmaps.id.
-	int shadow_map_index = -1;
-	float lightVP[16] = {};
-};
-
-static_assert(sizeof(Light) % 16 == 0);
-
+// 
 /// --------------------------------------
 
 struct ViewProjUniform {
@@ -132,53 +117,23 @@ struct GeometryPageRef {
 	uint16_t flags;     // optional (layout, etc.)
 };
 
-struct DrawRange {
-	GeometryPageRef geo;
-
-	uint32_t index_count;
-
-	// Either:
-	uint32_t first_index;   // if IB bound at 0 for that page
-	int32_t  base_vertex;   // if VB bound at 0 for that page
-
-	// OR if you allow rebinding offsets:
-	VkDeviceSize ib_byte_offset;
-	VkDeviceSize vb0_byte_offset;
-	VkDeviceSize vb1_byte_offset;
-};
-
-struct GpuMeshDesc {
-
-    glm::vec3 aabbMin;
-    float     sphereRadius;
-    glm::vec3 aabbMax;
-	float     spherePad;
-
-	uint32_t lods = 1;
-	std::vector<uint32_t> lod_offsets;
-	std::vector<DrawRange> sets;
-
-};
-
 struct GPUMeshletDesc
 {
-    uint32_t vertOffset;
-    uint32_t vertCount;
-    uint32_t triOffset;     // offset into triIndex buffer (in "triangles", not bytes)
-    uint32_t triCount;
+	uint32_t vertOffset;
+	uint32_t vertCount;
+	uint32_t triOffset;     // offset into triIndex buffer (in "triangles", not bytes)
+	uint32_t triCount;
 
-    // Culling data
-    glm::vec3 aabbMin;
-    float     sphereRadius;
-    glm::vec3 aabbMax;
-    float     spherePad;    // or sphereCenter.w if you want vec4 center
-    glm::vec3 sphereCenter;
-    float     coneCutoff;   // optional
-    glm::vec3 coneAxis;     // optional
-    float     conePad;
+	// Culling data
+	glm::vec3 aabbMin;
+	float     sphereRadius;
+	glm::vec3 aabbMax;
+	float     spherePad;    // or sphereCenter.w if you want vec4 center
+	glm::vec3 sphereCenter;
+	float     coneCutoff;   // optional
+	glm::vec3 coneAxis;     // optional
+	float     conePad;
 };
-
-std::unordered_map<uint32_t, std::string> mesh_names;
 
 // Lets go with uniform_layouts ext. GENERAL and UNDEFINED
 struct Texture {
@@ -243,54 +198,3 @@ struct BufferDescription {
 	}
 
 };
-
-
-template<typename T>
-inline float length2(const T& v) {
-	return glm::dot(v, v);
-}
-
-//#include <glm/glm.hpp>
-//#include <glm/gtc/matrix_transform.hpp>
-//
-// Convert your Light to a view matrix (for spot / "directional-like" usage)
-inline glm::mat4 GetLightView(const Light& l)
-{
-	glm::vec3 pos(l.position[0], l.position[1], l.position[2]);
-	glm::vec3 dir(l.direction[0], l.direction[1], l.direction[2]);
-
-	// Avoid zero-length direction
-	if (length2(dir) < 1e-6f)
-		dir = glm::vec3(0.0f, -1.0f, 0.0f); // default downwards
-
-	dir = glm::normalize(dir);
-
-	// Choose an up vector that isn't parallel to dir
-	glm::vec3 up(0.0f, 1.0f, 0.0f);
-	if (glm::abs(glm::dot(dir, up)) > 0.99f)
-		up = glm::vec3(0.0f, 0.0f, 1.0f);
-
-	return glm::lookAt(pos, pos + dir, up);
-}
-
-// Perspective projection for the light (spot light shadow map)
-inline glm::mat4 GetLightProj(
-	const Light& l,
-	float aspect = 1.0f,   // usually shadow map is square, so 1.0
-	float nearPlane = 0.1f,
-	float farPlane = 100.0f  // tweak per scene
-)
-{
-	// For spot lights, use outerAngle to define the FOV
-	if (l.type == LIGHT_TYPE_SPOT) {
-		// outerAngle is in degrees in your struct; FOV = 2 * outerAngle
-		float fovRadians = l.outerAngle * 2.0f;
-		return glm::perspective(fovRadians, aspect, nearPlane, farPlane);
-	}
-
-	// For point lights, this is only a placeholder if you *don't* do cubemap shadows.
-	// Proper point light shadows need 6 views + same projection.
-	float fovRadians = glm::radians(90.0f); // 90° for each cube face, if you go that route
-	return glm::perspective(fovRadians, 1.0f, nearPlane, farPlane);
-}
-
