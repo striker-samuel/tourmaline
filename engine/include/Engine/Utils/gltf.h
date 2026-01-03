@@ -596,3 +596,29 @@ void UploadGltfToContext(
 	recalculateGlobalTransforms(result_scene);
 
 };
+
+//
+//enum CAMERA_CONTROL {
+//	NONE,
+//	FIRST_PERSON,
+//	THIRD_PERSON,
+//	TOP,
+//};
+//
+//
+//Camera CameraFromGltfCamera(tinygltf::Model model, uint32_t nodeIndex) {
+//
+//	auto node = model.nodes[nodeIndex];
+//	auto cameraFromNode = model.cameras[node.camera];
+//	auto local = GetNodeLocalTransform(node);
+//
+//
+//	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
+//
+//
+//	out.setPerspective(
+//		camera.yfov,
+//		camera.aspectRatio,
+//		camera.znear,
+//		camera.zfar);
+//}

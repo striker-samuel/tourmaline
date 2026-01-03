@@ -203,10 +203,4 @@ public:
 	glm::vec3 starting_up;
 };
 
-CameraPositioner_FirstPerson cameraPositioner(
-	glm::vec3(0.0f, 1.0f, 0.0f), //pos
-	glm::vec3(0.0f, 1.0f, 1.0f), //target
-	glm::vec3(0.0f, 1.0f, 0.0f) //up
-);
-
 

@@ -48,18 +48,18 @@
 #include <Engine/Utils/gltf.h>
 #include <Engine/Formats/optimize.h>
 
-
 //
 #include <Engine/Formats/pak.h>
-
-// Moved readFile here. readFile rnow is just used to read shader files.
-// this should go to Platform layer. This is windows first for the foreseable future
-#include <Engine/fileIO.h>
+#include <Engine/platform.h>
 
 // --------------APP--------------------
 
 #include <App/utils.h>
 #include <App/pak_methods.h>
+
+// 
+
+#include <App/TestData/test_data_generators.h>
 
 // ------------------------------------
 // If theres only one I probably could go with argv
@@ -67,58 +67,11 @@ std::vector<std::string> gltf_meshes_paths = {
 	"models/Sponza/sponza.gltf" // Index 0
 };
 
-
-// Debug LighData
-
-struct RGB { float r, g, b; };
-
-RGB hsv2rgb(float h, float s, float v)
-{
-	float c = v * s;
-	float x = c * (1.0f - fabsf(fmodf(h * 6.0f, 2.0f) - 1.0f));
-	float m = v - c;
-
-	float r, g, b;
-	if (h < 1.0f / 6.0f) { r = c; g = x; b = 0; }
-	else if (h < 2.0f / 6.0f) { r = x; g = c; b = 0; }
-	else if (h < 3.0f / 6.0f) { r = 0; g = c; b = x; }
-	else if (h < 4.0f / 6.0f) { r = 0; g = x; b = c; }
-	else if (h < 5.0f / 6.0f) { r = x; g = 0; b = c; }
-	else { r = c; g = 0; b = x; }
-
-	return { r + m, g + m, b + m };
-}
-
-void FabricateLightData(Light* data)
-{
-
-	for (int i = 0; i < MAX_LIGHTS; i++) {
-		data[i].position[0] = 3.0f * i;
-		data[i].position[1] = 1.0f;
-		data[i].position[2] = 0.0f;
-
-		data[i].direction[0] = 4.0f;
-		data[i].direction[1] = .0f;
-		data[i].direction[2] = .0f;
-
-		float hue = float(i) / float(MAX_LIGHTS);
-		RGB rgb = hsv2rgb(hue, 1.0f, 1.0f);
-
-		data[i].color = { rgb.r, rgb.g, rgb.b, 1.0f };
-		data[i].intensity = 1.0f;
-		//data[i].intensity = .0f;
-		data[i].type = LIGHT_TYPE_SPOT;
-		if (i % 2 == 1) {
-			data[i].type = LIGHT_TYPE_POINT;
-			data[i].intensity = 1.0f;
-			//	data[i].position[1] = 3.0f;
-			//	data[i].position[0] = 2.0f;
-			//	data[i].position[2] = 3.0f;
-			//}
-		}
-	}
-}
-
+CameraPositioner_FirstPerson cameraPositioner(
+	glm::vec3(0.0f, 1.0f, 0.0f), //pos
+	glm::vec3(0.0f, 1.0f, 1.0f), //target
+	glm::vec3(0.0f, 1.0f, 0.0f) //up
+);
 
 class VulkanApp {
 
@@ -340,10 +293,9 @@ private:
 
 	}
 
-	// Thsese are really helpers. not critical.
-	void CreatePipelines();
 
 #pragma region MainLoop
+
 	void MainLoop() {
 
 		while (!glfwWindowShouldClose(window)) {
@@ -363,7 +315,6 @@ private:
 	}
 
 #pragma endregion
-
 
 #pragma region Events
 
@@ -389,14 +340,6 @@ private:
 
 		}
 
-		//std::cout << camera_.getPosition() << std::endl;
-		////Synthetic movement
-		//for (size_t i = 0; i < scene_.localTransform.size(); ++i) {
-		//	glm::mat4& local = scene_.localTransform[i];
-		//	float phase = std::sin(i + delta_time_ * 0.35f);  // staggered phases
-		//	local[3][0] = static_cast<float>(i) * 10.4f + phase;
-		//	markAsChanged(scene_, i);
-		//}
 
 	}
 
@@ -802,6 +745,11 @@ private:
 
 		};
 
+
+		if (shadowmap_count == 0) {
+			return;
+		}
+
 		auto setHandle = frameDescriptorSets[currentFrame];
 		auto setObj = context->descriptorSets_.get(setHandle);
 		VkDescriptorSet vkSet = setObj->set;
@@ -857,21 +805,7 @@ private:
 
 	}
 
-	void CreateFrameCommandBuffers() {
-
-		VkCommandBufferAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-		allocInfo.commandPool = framesCommandPool[currentFrame];
-		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		allocInfo.commandBufferCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
-
-		if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers) !=
-			VK_SUCCESS) {
-			throw std::runtime_error("failed to allocate command buffers!");
-		}
-	}
-
-	// This could be done way more clever. 
+	// This could be done way more clever. Only updating changed textures.
 	void UpdateBindlessTextures(uint32_t currentFrame) {
 
 		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstances_.numObjects());
@@ -944,7 +878,6 @@ private:
 
 		vkCmdBindIndexBuffer(commandBuffer, context->buffers_.get(page->indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
 	}
-
 
 	void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 	{
@@ -1060,7 +993,7 @@ private:
 				nullptr
 			);
 
-			// 6) Push constants with light view/proj (instead of camera_)
+			// 6) Push constants with light view/proj (instead of active_camera)
 			PushConstants pc{};
 			pc.view = GetLightView(light);
 			pc.proj = GetLightProj(light, /*aspect*/ 1.0f, /*near*/ 0.1f, /*far*/ 100.0f);
@@ -1697,7 +1630,20 @@ bool VulkanApp::Initialize() {
 		}
 	}
 
-	CreateFrameCommandBuffers();
+	//CreateFrameCommandBuffers();
+
+	VkCommandBufferAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocInfo.commandPool = framesCommandPool[currentFrame];
+	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocInfo.commandBufferCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+
+	if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers) !=
+		VK_SUCCESS) {
+		throw std::runtime_error("failed to allocate command buffers!");
+	}
+
+
 	CreateRenderSyncObjects();
 	CreateDepthResources();
 
@@ -1711,8 +1657,7 @@ bool VulkanApp::Initialize() {
 
 bool VulkanApp::InitializeAppData() {
 	//WritePak();
-//	RegisterPaks();
-
+	//RegisterPaks();
 	return true;
 
 }
@@ -1749,7 +1694,6 @@ void VulkanApp::handleMouseScroll(double xOffset, double yOffset) {
 
 void VulkanApp::handleMouseMovement(double xpos, double ypos) {
 	//if (!rightMousePressed) return;
-
 	//glm::vec2 mousePos = glm::vec2(
 	//	static_cast<float>(xpos) / width_,
 	//	static_cast<float>(ypos) / -height_
@@ -1947,26 +1891,15 @@ inline void VulkanApp::DrawFrame() {
 	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-void VulkanApp::CreatePipelines() {
-
-
-}
-
 void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 
-	// Moved this to the HEAP. This will be state of the app instead of being fabricated here anyways.
 	InstanceData* data = new InstanceData[MAX_INSTANCES];
 	int i = 0;
-	for (const glm::mat4 tr : scene_.globalTransform) {
-		//for (const glm::mat4 tr : scene_.localTransform) {
-		std::memcpy(
-			data[i].transform,
-			glm::value_ptr(tr),
-			sizeof(float) * 16);
 
-		data[i].color = { i * 0.20f,0.3f,-i * 0.7f,1.0f };
-
-		i++;
+	const auto& src = scene_.globalTransform;
+	for (size_t i = 0, n = src.size(); i < n; ++i) {
+		std::memcpy(data[i].transform, glm::value_ptr(src[i]), sizeof(float) * 16);
+		data[i].color = { float(i) * 0.20f, 0.3f, -float(i) * 0.7f, 1.0f };
 	}
 
 	std::array<uint16_t, MAX_INSTANCES> indexData = {};
@@ -2020,7 +1953,6 @@ void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
 
 	for (int i = 0; i < MAX_LIGHTS; i++)
 	{
-
 		auto proj = GetLightProj(lights[i]);
 		proj[1][1] *= -1;
 
@@ -2108,70 +2040,13 @@ void VulkanApp::Start() {
 
 void VulkanApp::LoadScene() {
 
-	// Default camera.
 	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
-
-	Scene merged;
-	std::vector<Scene> scs;
 
 	Scene imported_scene;
 	std::filesystem::path p(gltf_meshes_paths[0]);
 	UploadGltfToContext(context, p, imported_scene);
-
 	scene_ = imported_scene;
-
-	//Scene second_scene;
-	//std::filesystem::path p(gltf_meshes_paths[1]);
-	//UploadGltfToContext(context, p, second_scene);
-	//scene_ = imported_scene;
-
-
-	//scs.push_back(imported_scene);
-	//scs.push_back(second_scene);
-
-	//mergeScenes(merged, scs)
-
-	//scene_ = merged;
-
-
 }
-
-//}
-//
-//
-//
-//void build_pak()
-//{
-//    spak::PakWriter w;
-//
-//
-//    // Add a mesh blob
-//	std::vector<char> meshBytes;
-//    w.addFromMemory("/scene1/meshes/mesh1.mesh", meshBytes.data(), (uint32_t)meshBytes.size());
-//
-//    // Add a texture file from disk under a VFS path
-//    w.addFile("/scene1/textures/albedo.ktx2", "C:/assets/albedo.ktx2", /*type=* / 2);
-//
-//    w.writeToFile("scene1.spak", /*content_version=* / 1);
-//}
-//
-//void runtime()
-//{
-//    spak::PakReader pak("scene1.spak");
-//
-//    spak::PakVfs vfs;
-//    vfs.mount(pak, "/", /*priority=* / 0);
-//
-//    auto bytes = vfs.readAll("/scene1/textures/albedo.ktx2");
-//}
-//
-//-----------------------------------------
-//tinygltf FsCallbacks mapping idea:
-//-----------------------------------------
-//- Your FsCallbacks::ReadWholeFile just calls vfs.readAll(path)
-//- ExpandFilePath can normalize paths to VFS style (NormalizeVfsPath)
-//*/
-
 
 int main(int argc, const char* argv[]) {
 	if (argc > 1) {
