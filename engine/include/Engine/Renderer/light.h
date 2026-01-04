@@ -23,7 +23,6 @@ struct alignas(16) Light {
 	// in radians!
 	float innerAngle = glm::radians(10.0f);
 	float outerAngle = glm::radians(20.0f);
-	// -1 no shadow map. else context->shadowmaps.id.
 	int shadow_map_index = -1;
 	float lightVP[16] = {};
 };

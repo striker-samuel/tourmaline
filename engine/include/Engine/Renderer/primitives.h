@@ -198,3 +198,15 @@ struct BufferDescription {
 	}
 
 };
+
+struct CascadeMeta
+{
+	float lightVP[16];
+	float atlasScaleOffset[4]; // xy = scale, zw = offset (in [0,1])
+	float splitEnd;          // in view-space (positive) or in NDC
+	float bias;
+	float invAtlasSize[2];     // or invTileSize if you prefer
+	float _pad;
+};
+
+

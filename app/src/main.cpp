@@ -892,6 +892,10 @@ private:
 
 	ShadowMap GetShadowMapFromShadowMapIndex(uint32_t shadowmap_index, uint32_t currentFrame) {
 
+		assert(shadowmap_index >= 0);
+		assert(shadowmap_index < SHADOWMAP_SLOTS);
+		assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
+
 		auto shadowmap = context->shadowmaps_.get(shadowmaps[shadowmap_index].perFrame[currentFrame]);
 		return *shadowmap;
 
@@ -901,12 +905,12 @@ private:
 	{
 		for (int i = 0; i < MAX_LIGHTS; i++) {
 
-			if (lights[i].shadow_map_index == -1) {
-				continue;
-			}
+			auto& light = lights[i];
+			int smi = lights[i].shadow_map_index;
+			if (smi < 0) continue;
+			if (smi >= SHADOWMAP_SLOTS) continue; // or assert
+			auto sm = GetShadowMapFromShadowMapIndex(smi, currentFrame);
 
-			auto& light = lights[i]; // maybe straight copy is better who knows... Not me, not yet.
-			auto sm = GetShadowMapFromShadowMapIndex(light.shadow_map_index, currentFrame);
 			auto shadowMapImage = context->images_.get(sm.image);
 			VkImageView shadowMapRenderView = *context->imageViews_.get(sm.renderView);
 
