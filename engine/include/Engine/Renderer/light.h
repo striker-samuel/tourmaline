@@ -27,8 +27,11 @@ struct alignas(16) Light {
 	float lightVP[16] = {};
 };
 
+
 static_assert(sizeof(Light) % 16 == 0);
 
 glm::mat4 GetLightView(const Light& l);
 glm::mat4 GetLightProj(const Light& l, float aspect = 1.0f, float nearPlane = 0.1f, float farPlane = 100.0f);
+
+
 

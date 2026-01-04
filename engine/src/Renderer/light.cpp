@@ -26,6 +26,90 @@ glm::mat4 GetLightView(const Light& l)
 	return glm::lookAt(pos, pos + dir, up);
 }
 
+std::array<glm::vec3, 8> GetFrustumCornersWorldSpace(
+	const glm::mat4& proj,
+	const glm::mat4& view
+)
+{
+	const glm::mat4 inv = glm::inverse(proj * view);
+
+	std::array<glm::vec3, 8> corners;
+	int i = 0;
+
+	for (int x = 0; x < 2; ++x)
+		for (int y = 0; y < 2; ++y)
+			for (int z = 0; z < 2; ++z)
+			{
+				glm::vec4 pt = inv * glm::vec4(
+					2.0f * x - 1.0f,
+					2.0f * y - 1.0f,
+					2.0f * z - 1.0f,
+					1.0f
+				);
+				corners[i++] = glm::vec3(pt) / pt.w;
+			}
+
+	return corners;
+}
+
+glm::mat4 GetDirectionalLightOrthoVP(
+	const Light& l,
+	const glm::mat4& cameraView,
+	const glm::mat4& cameraProj
+)
+{
+	assert(l.type == LIGHT_TYPE_DIRECTIONAL);
+
+	if (l.type != LIGHT_TYPE_DIRECTIONAL)
+		return glm::mat4(1.0f); // safe-ish fallback (or return cached last-good VP)
+
+	glm::vec3 lightDir = glm::normalize(glm::vec3(
+		l.direction[0],
+		l.direction[1],
+		l.direction[2]
+	));
+
+	// Build light view matrix
+	glm::vec3 center = glm::vec3(0.0f);
+	auto corners = GetFrustumCornersWorldSpace(cameraProj, cameraView);
+	for (auto& c : corners)
+		center += c;
+	center /= corners.size();
+
+	glm::mat4 lightView = glm::lookAt(
+		center - lightDir * 100.0f,
+		center,
+		glm::vec3(0, 1, 0)
+	);
+
+	// Compute bounds in light space
+	glm::vec3 min(FLT_MAX);
+	glm::vec3 max(-FLT_MAX);
+
+	for (auto& c : corners)
+	{
+		glm::vec3 ls = glm::vec3(lightView * glm::vec4(c, 1.0));
+		min = glm::min(min, ls);
+		max = glm::max(max, ls);
+	}
+
+	// Optional: stabilize Z range
+	const float zMult = 10.0f;
+	if (min.z < 0) min.z *= zMult;
+	else           min.z /= zMult;
+	if (max.z < 0) max.z /= zMult;
+	else           max.z *= zMult;
+
+	glm::mat4 lightProj = glm::ortho(
+		min.x, max.x,
+		min.y, max.y,
+		min.z, max.z
+	);
+
+	return lightProj * lightView;
+}
+
+
 // Perspective projection for the light (spot light shadow map)
 glm::mat4 GetLightProj(
 	const Light& l,
