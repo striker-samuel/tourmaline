@@ -139,7 +139,7 @@
 //                                        to the xpos of the i+1'th char for a line of characters
 //                                        starting at character #n (i.e. accounts for kerning
 //                                        with previous char)
-//    STB_TEXTEDIT_KEYTOTEXT(k)         maps a keyboard input to an insertable character
+//    STB_TEXTEDIT_KEYTOTEXT(k)         perFrame a keyboard input to an insertable character
 //                                        (return type is int, -1 means not valid to insert)
 //                                        (not supported if you want to use UTF-8, see below)
 //    STB_TEXTEDIT_GETCHAR(obj,i)       returns the i'th character of obj, 0-based

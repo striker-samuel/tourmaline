@@ -12,6 +12,11 @@
 #include <ktx.h>
 #include <ktxvulkan.h>
 
+
+// This architecture is heavily inspired/ lifted from LightWeightVk.
+// 
+// The purpose of reimplementing something like this is to learn the correct mental model for Vulkan's topology.
+// 
 // ----------------------------------------------------------
 // specialized with dummy structs for type safety
 using ShaderModuleHandle = Handle<struct ShaderModule>;
@@ -43,7 +48,10 @@ struct DescriptorSet {
 	VkDescriptorSet set;
 };
 
+// This would be input for GetAppropiateSampler. The ideea is that requirements can solve for a VkSampler easily.
+// I don't know how worth is it tho, VkSamplers being driverside objs, maybe creating new ones is just simpler/faster/more convenient.
 struct SamplerRequirements {
+
 
 };
 
@@ -128,15 +136,22 @@ struct MaterialInstance {
 
 // Lets forget about validation/ typing in any way. No depth/color, sample/write specialization yet in any shape or form.
 struct Image {
+
 	VkImage image;
 	VmaAllocation alloc;
-
-	// Layout state cant be encoded here since it depends on the pipeline..
-	//VkImageLayout layout;
 	VkFormat format;
 	VkImageUsageFlags usage;
 	uint32_t arrayLayers; // DepthImage will have each cascae in diff index.
 	uint32_t levels; // levels is Mips.
+	uint32_t width, height;
+	uint32_t depth = 1; // lets just initialize this to 1. Used for volume textures. 
+	//VK_IMAGE_TYPE_3D
+
+	// Layout state cant be encoded here since it depends on the pipeline..
+	// This is state, the rest is properties. Thats the core problem. 
+	// Leaving this here to avoid future tentation.
+	//VkImageLayout layout;
+
 };
 
 struct ShadowMap {
@@ -146,11 +161,8 @@ struct ShadowMap {
 	bool owns_sampler = true;
 	ImageViewHandle sampleView;
 	ImageViewHandle renderView;
-
-
 	// if image has layers, for render attachment you need unambiguous view. thats the why of the vector
 //	std::vector<ImageViewHandle> renderViews; 
-
 
 	bool is_atlas() {
 		return this->cascades >= 1;
@@ -170,8 +182,9 @@ class Context {
 	VmaPool D_ShaderPool;
 
 	// Different pools for differnet uses: ...Skinned. Static. Dynamic
-	VmaPool D_geo;
-	VmaPool D_DynamicMeshPool;
+	//VmaPool D_geo;
+	//VmaPool D_DynamicMeshPool;
+
 	VmaPool D_StagingPool;
 
 public:
@@ -491,23 +504,23 @@ public:
 			VK_CHECK(vmaCreatePool(*allocator_, &pci, &D_2DImagesPool));
 		}
 
-		// DEVICE-LOCAL pool for static geometry buffers
-		{
-			VkBufferCreateInfo bufCI{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-			bufCI.size = 64 * 1024; // dummy
-			bufCI.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		//// DEVICE-LOCAL pool for static geometry buffers
+		//{
+		//	VkBufferCreateInfo bufCI{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		//	bufCI.size = 64 * 1024; // dummy
+		//	bufCI.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-			VmaAllocationCreateInfo aCI{};
-			aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+		//	VmaAllocationCreateInfo aCI{};
+		//	aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-			uint32_t typeIndex = UINT32_MAX;
-			VK_CHECK(vmaFindMemoryTypeIndexForBufferInfo(*allocator_, &bufCI, &aCI, &typeIndex));
+		//	uint32_t typeIndex = UINT32_MAX;
+		//	VK_CHECK(vmaFindMemoryTypeIndexForBufferInfo(*allocator_, &bufCI, &aCI, &typeIndex));
 
-			VmaPoolCreateInfo pci{};
-			pci.memoryTypeIndex = typeIndex;
-			pci.blockSize = 64 * 1024 * 1024;
-			VK_CHECK(vmaCreatePool(*allocator_, &pci, &D_geo));
-		}
+		//	VmaPoolCreateInfo pci{};
+		//	pci.memoryTypeIndex = typeIndex;
+		//	pci.blockSize = 64 * 1024 * 1024;
+		//	VK_CHECK(vmaCreatePool(*allocator_, &pci, &D_geo));
+		//}
 
 		{
 			VkBufferCreateInfo bufCI{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -540,19 +553,15 @@ public:
 	PipelineHandle CreatePipeline(RasterSettings raster_settings, ShaderModuleHandle vert, ShaderModuleHandle frag, VkFormat depth_format, VkFormat swapchainImageFormat);
 	PipelineHandle CreateShadowPipeline(ShaderModuleHandle vert);
 	PipelineHandle CreateMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
-
-	PipelineHandle GetAppropiatePipeline();
-
 	ImageHandle CreateShadowMapImage(int texWidth, int texHeight);
 
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
 	SamplerHandle CreateSampler(uint32_t levelCount);
 	SamplerHandle CreateShadowSampler(uint32_t levelCount);
 	TextureHandle CreateTexture(ktxTexture2& texture);
-	ShadowMapHandle CreateShadowMap();
+	ShadowMapHandle CreateShadowMap(int width, int height);
 
 	MaterialInstanceHandle CreateMaterialInstance(PipelineHandle mat_pipeline);
-
 
 	DescriptorLayoutHandle createDescriptorLayout();
 	DescriptorLayoutHandle CreateShadowMapsDescriptorSetLayout();
@@ -568,9 +577,7 @@ public:
 	DeviceBufferHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
 	MeshDescHandle UploadVertexData(MeshUploadInput& mesh_data);
-	//	std::vector<MeshDescHandle> BatchUploadMeshData(std::vector<MeshUploadInput>& mesh_data);
 
-		// HELPERS.
 	VkCommandBuffer GetCommandBuffer();
 	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
 
@@ -619,7 +626,7 @@ public:
 		levelCount,
 		0,
 		1,
-		VK_IMAGE_VIEW_TYPE_2D // Lets default to this. im only using 2D arrays for cascades in shadow maps for the moment
+		VK_IMAGE_VIEW_TYPE_2D // Lets default to this. im only using 2D arrays for cascades in shadow perFrame for the moment
 	);
 
 }
@@ -991,14 +998,14 @@ void Context::UploadDataToBuffer(
 	VkDescriptorSetLayoutBinding shadowMapBinding{};
 	shadowMapBinding.binding = 5;   // next free binding
 	shadowMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-	shadowMapBinding.descriptorCount = MAX_LIGHTS;   // one 2D array texture
+	shadowMapBinding.descriptorCount = SHADOWMAP_SLOTS;   // one 2D array texture
 	shadowMapBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	shadowMapBinding.pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutBinding shadowSamp{};
 	shadowSamp.binding = 6;
 	shadowSamp.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-	shadowSamp.descriptorCount = MAX_LIGHTS;
+	shadowSamp.descriptorCount = SHADOWMAP_SLOTS;
 	shadowSamp.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 	std::array<VkDescriptorSetLayoutBinding, 7> bindings = {
@@ -1606,6 +1613,10 @@ void Context::GetAppropiateSampler(Texture& texture) {
 
 };
 
+// At this moment the only texture input supported is ktxTextures. This is a big LIMITATION/HOLE
+// 
+// The complete reuqirements specification/nomenclatures are 
+// not yet formalized for this toy renderer. That will need to come later.
 [[nodiscard]] TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
@@ -1670,11 +1681,11 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	return textures_.create(std::move(ctx_tex));
 }
 
-[[nodiscard]] ShadowMapHandle Context::CreateShadowMap()
+[[nodiscard]] ShadowMapHandle Context::CreateShadowMap(int width = 400, int height = 400)
 {
 	ShadowMap sm;
 	sm.cascades = 0;
-	auto image = CreateShadowMapImage(400, 400);
+	auto image = CreateShadowMapImage(width, height);
 	sm.image = image;
 
 	auto view = CreateImageView(
@@ -1691,6 +1702,9 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	sm.renderView = view;
 	sm.sampleView = view;
 
+	// These are leftovers from 2D_ARRAY implementation for cascasdes.
+	// Moved to atlas images instead for per-cascde resolution flexibility reasons. 
+	
 	//auto image = images_.get(sm.image);
 	//// These are the individual views for use as depth render attachment in the pipeline.
 	//for (int i = 0; i < sm.cascades; i++) {
@@ -1699,17 +1713,16 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	//	//);
 
 	//}
-
 	// We also need the sample view for shader use. 
-//	sm.sampleView = CreateImageView(
-//		image,
-//		VK_IMAGE_ASPECT_DEPTH_BIT,
-//		1, // levels = MIPS
-//		0,
-//		1,
-////		sm.cascades, // layerCount. Layers = ARRAY
-//		VK_IMAGE_VIEW_TYPE_2D_ARRAY
-//	);
+	//	sm.sampleView = CreateImageView(
+	//		image,
+	//		VK_IMAGE_ASPECT_DEPTH_BIT,
+	//		1, // levels = MIPS
+	//		0,
+	//		1,
+	////		sm.cascades, // layerCount. Layers = ARRAY
+	//		VK_IMAGE_VIEW_TYPE_2D_ARRAY
+	//	);
 
 	return shadowmaps_.create(std::move(sm));
 
@@ -1721,7 +1734,7 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT // sample as texture
 		| VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
-	// Levels just 1. No mipmaps for shadow maps images. 
+	// Levels just 1. No mipmaps for shadow perFrame images. 
 	ImageHandle image_handle = CreateImage(texWidth,
 		texHeight, SHADOWMAP_DEPTH_FORMAT, usage, 1, 1);
 
@@ -1739,6 +1752,8 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	return image_handle;
 };
 
+// I don't like texHeight and texWidth with subscript tex. Images can be non textures...
+// Should be cleaned up later.
 [[nodiscard]] ImageHandle Context::CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers) {
 
 	Image image = {};
@@ -1769,6 +1784,8 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	//	image.layout = VK_IMAGE_LAYOUT_UNDEFINED;
 	image.format = format;
 	image.levels = levels;
+	image.width = texWidth;
+	image.height = texHeight;
 	// Lets store usage. 
 	image.usage = usage;
 	image.arrayLayers = arrayLayers;
@@ -1920,152 +1937,6 @@ void Context::GetAppropiateSampler(Texture& texture) {
 
 	return meshes_.create(std::move(mesh_dec));
 }
-
-
-//[[nodiscard]] MeshDescHandle Context::UploadVertexData(MeshUploadInput& geometry_data /*, uint32_t flags*/)
-//{
-//	//auto ib = buffers_.get(index_buffer);
-//	//auto vb0 = buffers_.get(vertex_buffer);          // binding 0: VertexPos
-//	//auto vb1 = buffers_.get(vertex_shading_buffer);  // binding 1: VertexShading
-//
-//	auto vcount = static_cast<uint32_t>(geometry_data.vertices.size());
-//	auto& page = geometry_pages[current_page];
-//
-//	if (page.vertex_cursor + vcount > page.max_vertices) {
-//		assert(false && "not implemented");
-//	}
-//
-//	uint32_t baseVertex = page.vertex_cursor;
-//	page.vertex_cursor += vcount;
-//
-//
-//	// ----------------------------
-//	// 1) INDICES (unchanged idea)
-//	// ----------------------------
-//	using IndexT = uint32_t;
-//	const VkDeviceSize indexBytes =
-//		sizeof(IndexT) * static_cast<VkDeviceSize>(geometry_data.indices.size());
-//
-//	VmaVirtualAllocationCreateInfo aIdx{};
-//	aIdx.size = indexBytes;
-//	aIdx.alignment = sizeof(IndexT);
-//
-//	VmaVirtualAllocation index_alloc{};
-//	VkDeviceSize index_offset_bytes = 0;
-//
-//	if (vmaVirtualAllocate(index_blk, &aIdx, &index_alloc, &index_offset_bytes) != VK_SUCCESS)
-//		return {};
-//
-//	{
-//		auto staging_h = CreateStagingBuffer(geometry_data.indices.data(), indexBytes);
-//		auto staging = buffers_.get(staging_h);
-//
-//		copyBuffer(staging->buffer, page.indexBuffer->buffer, indexBytes, 0, index_offset_bytes);
-//		destroy(this, staging_h);
-//	}
-//
-//	// ------------------------------------------
-//	// 2) SPLIT VERTICES INTO TWO CPU ARRAYS
-//	// ------------------------------------------
-//
-//	VkDeviceSize pos_byte_offset = baseVertex * sizeof(VertexPos);
-//	VkDeviceSize shd_byte_offset = baseVertex * sizeof(VertexShading);
-//
-//	std::vector<VertexPos> pos;
-//	std::vector<VertexShading> shd;
-//	pos.resize(vcount);
-//	shd.resize(vcount);
-//
-//	for (size_t i = 0; i < vcount; ++i) {
-//		const Vertex& v = geometry_data.vertices[i];
-//
-//		pos[i].pos = v.pos;
-//
-//		shd[i].color = v.color;
-//		shd[i].texCoord = v.texCoord;
-//		shd[i].normal = v.normal;
-//		shd[i].tangent = v.tangent;
-//	}
-//
-//	// ------------------------------------------
-//	// 3) ALLOCATE + UPLOAD POSITIONS (binding 0)
-//	// ------------------------------------------
-//	const VkDeviceSize posBytes =
-//		sizeof(VertexPos) * static_cast<VkDeviceSize>(pos.size());
-//
-//	VmaVirtualAllocationCreateInfo aPos{};
-//	aPos.size = posBytes;
-//	aPos.alignment = alignof(VertexPos);
-//
-//	VmaVirtualAllocation pos_alloc{};
-//
-//	if (vmaVirtualAllocate(vertex_blk, &aPos, &pos_alloc, &pos_byte_offset) != VK_SUCCESS) {
-//		vmaVirtualFree(index_blk, index_alloc);
-//		return {};
-//	}
-//
-//	{
-//		auto staging = CreateStagingBuffer(pos.data(), pos.size() * sizeof(VertexPos));
-//		copyBuffer(
-//			buffers_.get(staging)->buffer,
-//			buffers_.get(vertex_buffer)->buffer,
-//			pos.size() * sizeof(VertexPos),
-//			0,
-//			pos_byte_offset
-//		);
-//		destroy(this, staging);
-//	}
-//
-//
-//	// ------------------------------------------
-//	// 4) ALLOCATE + UPLOAD SHADING (binding 1)
-//	// ------------------------------------------
-//	const VkDeviceSize shdBytes =
-//		sizeof(VertexShading) * static_cast<VkDeviceSize>(shd.size());
-//
-//	VmaVirtualAllocationCreateInfo aShd{};
-//	aShd.size = shdBytes;
-//	aShd.alignment = alignof(VertexShading);
-//
-//	VmaVirtualAllocation shd_alloc{};
-//
-//	if (vmaVirtualAllocate(vertex_shading_blk, &aShd, &shd_alloc, &shd_byte_offset) != VK_SUCCESS) {
-//		// roll back previous allocs
-//		vmaVirtualFree(vertex_blk, pos_alloc);
-//		vmaVirtualFree(index_blk, index_alloc);
-//		return {};
-//	}
-//
-//	{
-//		auto staging = CreateStagingBuffer(shd.data(), shd.size() * sizeof(VertexShading));
-//		copyBuffer(
-//			buffers_.get(staging)->buffer,
-//			buffers_.get(vertex_shading_buffer)->buffer,
-//			shd.size() * sizeof(VertexShading),
-//			0,
-//			shd_byte_offset
-//		);
-//		destroy(this, staging);
-//	}
-//
-//
-//	// ----------------------------
-//	// 5) DRAW RANGE
-//	// ----------------------------
-//	DrawRange ds{};
-//	ds.index_count = static_cast<uint32_t>(geometry_data.indices.size());
-//	ds.first_index = static_cast<uint32_t>(index_offset_bytes / sizeof(uint32_t));
-//	ds.base_vertex = static_cast<int32_t>(baseVertex);
-//
-//
-//	GpuMeshDesc mesh_dec{};
-//	mesh_dec.lods = 1;
-//	mesh_dec.lod_offsets = { 0 };
-//	mesh_dec.sets = { ds };
-//
-//	return meshes_.create(std::move(mesh_dec));
-//}
-
 
 [[nodiscard]] DeviceBufferHandle Context::CreateStagingBuffer(VkDeviceSize size)
 {

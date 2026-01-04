@@ -224,7 +224,7 @@ static void buildPositionRemap(unsigned int* remap, unsigned int* wedge, const f
 	if (!wedge)
 		return;
 
-	// build wedge table: for each vertex, which other vertex is the next wedge that also maps to the same vertex?
+	// build wedge table: for each vertex, which other vertex is the next wedge that also perFrame to the same vertex?
 	// entries in table form a (cyclic) wedge loop per vertex; for manifold vertices, wedge[i] == remap[i] == i
 	for (size_t i = 0; i < vertex_count; ++i)
 		wedge[i] = unsigned(i);
@@ -462,7 +462,7 @@ static void classifyVertices(unsigned char* result, unsigned int* loop, unsigned
 			}
 			else
 			{
-				// more than one vertex maps to this one; we don't have classification available
+				// more than one vertex perFrame to this one; we don't have classification available
 				result[i] = Kind_Locked;
 				TRACESTATS(3);
 			}
@@ -2309,7 +2309,7 @@ size_t meshopt_simplifyEdge(unsigned int* destination, const unsigned int* indic
 	prepareEdgeAdjacency(adjacency, index_count, vertex_count, allocator);
 	updateEdgeAdjacency(adjacency, result, index_count, vertex_count, NULL);
 
-	// build position remap that maps each vertex to the one with identical position
+	// build position remap that perFrame each vertex to the one with identical position
 	// wedge table stores next vertex with identical position for each vertex
 	unsigned int* remap = allocator.allocate<unsigned int>(vertex_count);
 	unsigned int* wedge = allocator.allocate<unsigned int>(vertex_count);
@@ -2724,7 +2724,7 @@ size_t meshopt_simplifyPrune(unsigned int* destination, const unsigned int* indi
 	if (result != indices)
 		memcpy(result, indices, index_count * sizeof(unsigned int));
 
-	// build position remap that maps each vertex to the one with identical position
+	// build position remap that perFrame each vertex to the one with identical position
 	unsigned int* remap = allocator.allocate<unsigned int>(vertex_count);
 	buildPositionRemap(remap, NULL, vertex_positions_data, vertex_count, vertex_positions_stride, NULL, allocator);
 

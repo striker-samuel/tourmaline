@@ -73,6 +73,11 @@ CameraPositioner_FirstPerson cameraPositioner(
 	glm::vec3(0.0f, 1.0f, 0.0f) //up
 );
 
+
+struct ShadowMapSlot {
+	ShadowMapHandle perFrame[MAX_FRAMES_IN_FLIGHT];
+};
+
 class VulkanApp {
 
 public:
@@ -173,7 +178,6 @@ private:
 #pragma endregion
 
 #pragma region ===[ Pipeline / Render Resources ]===
-	// We separate command pools for each frames becuase its cheaper to reset them this way
 
 	VkCommandPool framesCommandPool[MAX_FRAMES_IN_FLIGHT];
 	VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
@@ -700,76 +704,72 @@ private:
 		}
 	}
 
+
 	void UpdateShadowMapDescriptorSets(uint32_t currentFrame)
 	{
-
 		auto sam = context->samplers["default_shadow"];
 		VkSampler shadowSampler = *context->samplers_.get(sam);
 
-		int shadowmap_count = 0;
+		std::array<VkDescriptorImageInfo, SHADOWMAP_SLOTS> imageInfos{};
+		std::array<VkDescriptorImageInfo, SHADOWMAP_SLOTS> samplerInfos{};
 
-		std::vector<VkDescriptorImageInfo> imageInfos;
-		std::vector<VkDescriptorImageInfo> samplerInfos;
-
-		imageInfos.reserve(MAX_LIGHTS);
-		samplerInfos.reserve(MAX_LIGHTS);
-
-		for (int i = 0; i < MAX_LIGHTS; i++)
+		for (uint32_t slot = 0; slot < SHADOWMAP_SLOTS; ++slot)
 		{
+			ShadowMapHandle h = shadowmaps[slot].perFrame[currentFrame];
+			ShadowMap* sm = context->shadowmaps_.get(h);
+			VkImageView view = *context->imageViews_.get(sm->renderView);
 
-			if (lights[i].shadow_map_index < 0)
-			{
-				continue;
-			}
-			else {
-
-				auto smh = context->shadowmaps_.getHandle(lights[i].shadow_map_index);
-				auto sm = context->shadowmaps_.get(smh);
-				VkImageView shadowView = *context->imageViews_.get(sm->renderView);
-
-				VkDescriptorImageInfo ii{};
-				ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-				ii.imageView = shadowView;
-				ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				imageInfos.push_back(ii);
-
-				VkDescriptorImageInfo si{};
-				si.sampler = shadowSampler;
-				si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
-				si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
-				samplerInfos.push_back(si);
-
-				shadowmap_count++;
-
-			}
-
-		};
+			imageInfos[slot] = VkDescriptorImageInfo{
+				.sampler = VK_NULL_HANDLE,
+				.imageView = view,
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			};
 
 
-		if (shadowmap_count == 0) {
-			return;
+			samplerInfos[slot] = VkDescriptorImageInfo{
+					.sampler = shadowSampler,
+					.imageView = VK_NULL_HANDLE,
+					.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED
+			};
+
 		}
 
+		//VkDescriptorImageInfo samplerInfo{
+		//	.sampler = shadowSampler,
+		//	.imageView = VK_NULL_HANDLE,
+		//	.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED
+		//};
+
 		auto setHandle = frameDescriptorSets[currentFrame];
-		auto setObj = context->descriptorSets_.get(setHandle);
-		VkDescriptorSet vkSet = setObj->set;
+		VkDescriptorSet vkSet = context->descriptorSets_.get(setHandle)->set;
 
 		VkWriteDescriptorSet writes[2]{};
+
 		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[0].dstSet = vkSet;
-		writes[0].dstBinding = 5; // binding index for shadow map combined sampler
+		writes[0].dstBinding = 5;
 		writes[0].dstArrayElement = 0;
 		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		writes[0].descriptorCount = shadowmap_count;
+		writes[0].descriptorCount = SHADOWMAP_SLOTS;
 		writes[0].pImageInfo = imageInfos.data();
+
 
 		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[1].dstSet = vkSet;
 		writes[1].dstBinding = 6; // binding index for shadow map combined sampler
 		writes[1].dstArrayElement = 0;
 		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-		writes[1].descriptorCount = shadowmap_count;
+		writes[1].descriptorCount = SHADOWMAP_SLOTS;
 		writes[1].pImageInfo = samplerInfos.data();
+
+
+		//writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		//writes[1].dstSet = vkSet;
+		//writes[1].dstBinding = 6;
+		//writes[1].dstArrayElement = 0;
+		//writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+		//writes[1].descriptorCount = 1;
+		//writes[1].pImageInfo = &samplerInfo;
 
 		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 	}
@@ -879,24 +879,38 @@ private:
 		vkCmdBindIndexBuffer(commandBuffer, context->buffers_.get(page->indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
 	}
 
-	void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer, uint32_t imageIndex)
-	{
+	std::array<ShadowMapSlot, SHADOWMAP_SLOTS> shadowmaps;
 
+	void IntializeShadowMaps() {
+		for (int i = 0; i < SHADOWMAP_SLOTS; i++) {
+			for (int j = 0; j < MAX_FRAMES_IN_FLIGHT; j++)
+			{
+				shadowmaps[i].perFrame[j] = context->CreateShadowMap();
+			}
+		}
+	}
+
+	ShadowMap GetShadowMapFromShadowMapIndex(uint32_t shadowmap_index, uint32_t currentFrame) {
+
+		auto shadowmap = context->shadowmaps_.get(shadowmaps[shadowmap_index].perFrame[currentFrame]);
+		return *shadowmap;
+
+	}
+
+	void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer)
+	{
 		for (int i = 0; i < MAX_LIGHTS; i++) {
 
 			if (lights[i].shadow_map_index == -1) {
 				continue;
 			}
 
-			auto light = lights[i];
+			auto& light = lights[i]; // maybe straight copy is better who knows... Not me, not yet.
+			auto sm = GetShadowMapFromShadowMapIndex(light.shadow_map_index, currentFrame);
+			auto shadowMapImage = context->images_.get(sm.image);
+			VkImageView shadowMapRenderView = *context->imageViews_.get(sm.renderView);
 
-			// Example: one light, one shadowmap
-			auto smh = context->shadowmaps_.getHandle(light.shadow_map_index);
-			auto sm = context->shadowmaps_.get(smh);
-			// This could be bad. No per image. shadow. 
-			auto shadowImage = context->images_.get(sm->image);
-			VkImageView shadowView = *context->imageViews_.get(sm->renderView);
-			VkExtent2D shadowExtent = { 400,400 };           // e.g. { width, height }
+			VkExtent2D shadowExtent = { shadowMapImage->width,shadowMapImage->height };           // e.g. { width, height }
 
 			// 1) Transition depth image to DEPTH_ATTACHMENT_OPTIMAL
 			{
@@ -907,7 +921,7 @@ private:
 				barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
 				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				barrier.image = shadowImage->image;
+				barrier.image = shadowMapImage->image;
 				barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 				barrier.subresourceRange.baseMipLevel = 0;
 				barrier.subresourceRange.levelCount = 1;
@@ -931,7 +945,7 @@ private:
 			// 2) Begin dynamic rendering with depth-only
 			VkRenderingAttachmentInfoKHR depthAttachment{};
 			depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-			depthAttachment.imageView = shadowView;
+			depthAttachment.imageView = shadowMapRenderView;
 			depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
 			depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 			depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;   // we want to sample this later
@@ -1045,7 +1059,7 @@ private:
 				barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				barrier.image = shadowImage->image;
+				barrier.image = shadowMapImage->image;
 				barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 				barrier.subresourceRange.baseMipLevel = 0;
 				barrier.subresourceRange.levelCount = 1;
@@ -1650,6 +1664,8 @@ bool VulkanApp::Initialize() {
 	// 
 	CreateFrameDataBuffers();
 
+	// All ShadowMap Slots images are created here directly on startup ;)
+	IntializeShadowMaps();
 
 	return true;
 
@@ -1823,7 +1839,7 @@ inline void VulkanApp::DrawFrame() {
 		throw std::runtime_error("failed to begin recording command buffer!");
 	}
 
-	RecordCommandsForFrameShadowMaps(commandBuffers[currentFrame], imageIndex);
+	RecordCommandsForFrameShadowMaps(commandBuffers[currentFrame]);
 	RecordCommandsForFrame(commandBuffers[currentFrame], imageIndex);
 
 	if (vkEndCommandBuffer(commandBuffers[currentFrame]) != VK_SUCCESS) {
@@ -1985,7 +2001,6 @@ void VulkanApp::CleanUp() {
 }
 
 void VulkanApp::Start() {
-
 	FabricateLightData(lights.data());
 	for (int i = 0; i < MAX_LIGHTS; i++) {
 
@@ -1994,12 +2009,10 @@ void VulkanApp::Start() {
 			lights[i].intensity = 10.0f;
 			lights[i].innerAngle = glm::radians(10.0f);
 			lights[i].outerAngle = glm::radians(20.0f);
-
-			auto sm_h = context->CreateShadowMap();
-			lights[i].shadow_map_index = sm_h.index();
+			//auto sm_h = context->CreateShadowMap();
+			//lights[i].shadow_map_index = sm_h.index();
 		}
 	}
-
 
 	// PIPELINE CREATION
 

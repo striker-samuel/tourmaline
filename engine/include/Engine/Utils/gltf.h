@@ -621,4 +621,4 @@ void UploadGltfToContext(
 //		camera.aspectRatio,
 //		camera.znear,
 //		camera.zfar);
-//}
+

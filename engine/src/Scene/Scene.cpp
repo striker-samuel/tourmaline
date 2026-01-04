@@ -473,7 +473,7 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
   eraseSelected(scene.localTransform, indicesToDelete);
   eraseSelected(scene.globalTransform, indicesToDelete);
 
-  // 4b) All the maps should change the key values with the newIndices[] array
+  // 4b) All the perFrame should change the key values with the newIndices[] array
   shiftMapIndices(scene.meshForNode, newIndices);
   shiftMapIndices(scene.materialForNode, newIndices);
   shiftMapIndices(scene.nameForNode, newIndices);

@@ -985,7 +985,7 @@ STBTT_DEF unsigned char * stbtt_GetCodepointSDF(const stbtt_fontinfo *info, floa
 //      offset outlines (e.g. to stroke the character border inside & outside,
 //      or only outside). For example, to fill outside the character up to 3 SDF
 //      pixels, you would compare against (180-36.0*3)/255 = 72/255. The above
-//      choice of variables maps a range from 5 pixels outside the shape to
+//      choice of variables perFrame a range from 5 pixels outside the shape to
 //      2 pixels inside the shape to 0..255; this is intended primarily for apply
 //      outside effects only (the interior range is needed to allow proper
 //      antialiasing of the font at *smaller* sizes)

@@ -53,7 +53,7 @@ struct meshopt_Stream
 /**
  * Generates a vertex remap table from the vertex buffer and an optional index buffer and returns number of unique vertices
  * As a result, all vertices that are binary equivalent map to the same (new) location, with no gaps in the resulting sequence.
- * Resulting remap table maps old vertices to new vertices and can be used in meshopt_remapVertexBuffer/meshopt_remapIndexBuffer.
+ * Resulting remap table perFrame old vertices to new vertices and can be used in meshopt_remapVertexBuffer/meshopt_remapIndexBuffer.
  * Note that binary equivalence considers all vertex_size bytes, including padding which should be zero-initialized.
  *
  * destination must contain enough space for the resulting remap table (vertex_count elements)
@@ -64,7 +64,7 @@ MESHOPTIMIZER_API size_t meshopt_generateVertexRemap(unsigned int* destination, 
 /**
  * Generates a vertex remap table from multiple vertex streams and an optional index buffer and returns number of unique vertices
  * As a result, all vertices that are binary equivalent map to the same (new) location, with no gaps in the resulting sequence.
- * Resulting remap table maps old vertices to new vertices and can be used in meshopt_remapVertexBuffer/meshopt_remapIndexBuffer.
+ * Resulting remap table perFrame old vertices to new vertices and can be used in meshopt_remapVertexBuffer/meshopt_remapIndexBuffer.
  * To remap vertex buffers, you will need to call meshopt_remapVertexBuffer for each vertex stream.
  * Note that binary equivalence considers all size bytes in each stream, including padding which should be zero-initialized.
  *
@@ -78,7 +78,7 @@ MESHOPTIMIZER_API size_t meshopt_generateVertexRemapMulti(unsigned int* destinat
  * Generates a vertex remap table from the vertex buffer and an optional index buffer and returns number of unique vertices
  * As a result, all vertices that are equivalent map to the same (new) location, with no gaps in the resulting sequence.
  * Equivalence is checked in two steps: vertex positions are compared for equality, and then the user-specified equality function is called (if provided).
- * Resulting remap table maps old vertices to new vertices and can be used in meshopt_remapVertexBuffer/meshopt_remapIndexBuffer.
+ * Resulting remap table perFrame old vertices to new vertices and can be used in meshopt_remapVertexBuffer/meshopt_remapIndexBuffer.
  *
  * destination must contain enough space for the resulting remap table (vertex_count elements)
  * indices can be NULL if the input is unindexed
@@ -125,7 +125,7 @@ MESHOPTIMIZER_API void meshopt_generateShadowIndexBuffer(unsigned int* destinati
 MESHOPTIMIZER_API void meshopt_generateShadowIndexBufferMulti(unsigned int* destination, const unsigned int* indices, size_t index_count, size_t vertex_count, const struct meshopt_Stream* streams, size_t stream_count);
 
 /**
- * Experimental: Generates a remap table that maps all vertices with the same position to the same (existing) index.
+ * Experimental: Generates a remap table that perFrame all vertices with the same position to the same (existing) index.
  * Similarly to meshopt_generateShadowIndexBuffer, this can be helpful to pre-process meshes for position-only rendering.
  * This can also be used to implement algorithms that require positional-only connectivity, such as hierarchical simplification.
  *
@@ -769,7 +769,7 @@ MESHOPTIMIZER_API size_t meshopt_partitionClusters(unsigned int* destination, co
 /**
  * Spatial sorter
  * Generates a remap table that can be used to reorder points for spatial locality.
- * Resulting remap table maps old vertices to new vertices and can be used in meshopt_remapVertexBuffer.
+ * Resulting remap table perFrame old vertices to new vertices and can be used in meshopt_remapVertexBuffer.
  *
  * destination must contain enough space for the resulting remap table (vertex_count elements)
  * vertex_positions should have float3 position in the first 12 bytes of each vertex
