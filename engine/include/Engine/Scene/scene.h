@@ -7,6 +7,8 @@
 #include <glm/glm.hpp>
 #include <glm/ext.hpp>
 
+#include <Engine/Renderer/light.h>
+
 using glm::mat4;
 
 // we do not define std::vector<Node*> Children - this is already present in the aiNode from assimp
@@ -53,6 +55,10 @@ struct Scene {
 	// Node name component: which name is assigned to the node (Node -> Name)
 	std::unordered_map<uint32_t, uint32_t> nameForNode;
 
+	// Lets add light support to the scene def
+	std::unordered_map<uint32_t, uint32_t> lightForNode;
+	std::vector<Light> lights;
+
 	// List of scene node names
 	std::vector<std::string> nodeNames;
 
@@ -97,7 +103,8 @@ void mergeScenes(
 	const std::vector<glm::mat4>& rootTransforms,
 	const std::vector<uint32_t>& meshCounts,
 	bool mergeMeshes = true,
-	bool mergeMaterials = true
+	bool mergeMaterials = true,
+	bool mergeLigths
 );
 
 // Delete a collection of nodes from a scenegraph

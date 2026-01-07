@@ -271,8 +271,14 @@ void mergeMaps(ItemMap& m, const ItemMap& otherMap, int indexOffset, int itemOff
   For the second use case we need two flags: 'mergeMeshes' and 'mergeMaterials' to avoid shifting mesh indices
 */
 void mergeScenes(
-    Scene& scene, const std::vector<Scene*>& scenes, const std::vector<glm::mat4>& rootTransforms, const std::vector<uint32_t>& meshCounts,
-    bool mergeMeshes, bool mergeMaterials)
+    Scene& scene,
+    const std::vector<Scene*>& scenes,
+    const std::vector<glm::mat4>& rootTransforms,
+    const std::vector<uint32_t>& meshCounts,
+    bool mergeMeshes,
+    bool mergeMaterials,
+    bool mergeLights
+)
 {
   // Create new root node
   scene.hierarchy = {
@@ -298,6 +304,7 @@ void mergeScenes(
   int meshOffs    = 0;
   int nameOffs    = (int)scene.nodeNames.size();
   int materialOfs = 0;
+  int lightOffs = 0;
   auto meshCount  = meshCounts.begin();
 
   if (!mergeMaterials)
@@ -313,6 +320,9 @@ void mergeScenes(
     mergeVectors(scene.nodeNames, s->nodeNames);
     if (mergeMaterials)
       mergeVectors(scene.materialNames, s->materialNames);
+    if (mergeLights)
+        mergeVectors(scene.lights, s->lights);
+        
 
     const int nodeCount = (int)s->hierarchy.size();
 
@@ -321,11 +331,13 @@ void mergeScenes(
     mergeMaps(scene.meshForNode, s->meshForNode, offs, mergeMeshes ? meshOffs : 0);
     mergeMaps(scene.materialForNode, s->materialForNode, offs, mergeMaterials ? materialOfs : 0);
     mergeMaps(scene.nameForNode, s->nameForNode, offs, nameOffs);
+    mergeMaps(scene.lightForNode, s->lightForNode, offs, mergeLights ? lightOffs : 0);
 
     offs += nodeCount;
 
     materialOfs += (int)s->materialNames.size();
     nameOffs += (int)s->nodeNames.size();
+    lightOffs += (int)s->lightForNode.size();
 
     if (mergeMeshes) {
       meshOffs += *meshCount;

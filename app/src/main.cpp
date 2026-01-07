@@ -4,29 +4,15 @@
 
 // ---- SETUP -----
 
-// Volk. Glm
 #include <Engine/Vulkan/vulkan_setup.h>
 
-//#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
-// This needed to be defined elsewhere so al cop units got em the same, as they affect data structures.
-//#define IMGUI_IMPL_VULKAN_HAS_DYNAMIC_RENDERING
-//#define IMGUI_IMPL_VULKAN_USE_VOLK
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 
 #include <vk_mem_alloc.h>
-
-//#define TINYGLTF_IMPLEMENTATION
-//#define STB_IMAGE_IMPLEMENTATION
-//#define STB_IMAGE_WRITE_IMPLEMENTATION
-//
-//// We are using ktx for textures. also I dont want tinygltf to load texture data, just scene data.
-//#define TINYGLTF_NO_STB_IMAGE
-//#define TINYGLTF_NO_STB_IMAGE_WRITE
-//#define TINYGLTF_NO_EXTERNAL_IMAGE
 #include <tiny_gltf.h>
 
 // --------------ENGINE--------------------
@@ -45,24 +31,17 @@
 #include <Engine/Scene/scene.h>
 #include <Engine/Renderer/primitives.h>
 
-//
 #include <Engine/Utils/gltf.h>
 #include <Engine/Formats/optimize.h>
 
-//
 #include <Engine/Formats/pak.h>
 #include <Engine/platform.h>
-
 
 // --------------APP--------------------
 
 // Not in use right now.
 //#include <App/pak_methods.h>
 
-
-
-
-// 
 
 #include <App/TestData/test_data_generators.h>
 
