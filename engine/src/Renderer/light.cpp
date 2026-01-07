@@ -1,8 +1,42 @@
 #include <Engine/Renderer/light.h>
 
+#include <array>
+#include <cfloat>
+#include <cmath>
+#include <algorithm>
+
+
 template<typename T>
 inline float length2(const T& v) {
 	return glm::dot(v, v);
+}
+
+glm::mat4 MakeOrthoRH_ZO(
+	float left, float right,
+	float bottom, float top,
+	float zNear, float zFar
+)
+{
+	// Maps:
+	//  x -> [-1, 1]
+	//  y -> [-1, 1]
+	//  z -> [ 0, 1]   (Vulkan ZO)
+	//
+	// Assumes right-handed view space where camera looks down -Z (GLM lookAt style).
+	// zNear/zFar are in the same space as your light-view transformed points.
+
+	const float rl = right - left;
+	const float tb = top - bottom;
+	const float fn = zFar - zNear;
+
+	glm::mat4 m(1.0f);
+	m[0][0] = 2.0f / rl;
+	m[1][1] = 2.0f / tb;
+	m[2][2] = -1.0f / fn;                 // note the minus (RH, looking down -Z)
+	m[3][0] = -(right + left) / rl;
+	m[3][1] = -(top + bottom) / tb;
+	m[3][2] = -zNear / fn;                // ZO: near->0, far->1
+	return m;
 }
 
 
@@ -26,92 +60,180 @@ glm::mat4 GetLightView(const Light& l)
 	return glm::lookAt(pos, pos + dir, up);
 }
 
-std::array<glm::vec3, 8> GetFrustumCornersWorldSpace(
+
+// Production-ish directional light VP fit for a camera frustum slice.
+// - Uses ray-based frustum corners (works with reverse-Z + infinite far camera)
+// - Enforces near/far ordering
+// - Removes zMult hacks
+// - Adds configurable Z padding
+// - Optional texel snapping for stability (reduces shimmering)
+//
+// Assumptions:
+// - cameraProj is the *actual* camera projection you render with (reverse-Z / infinite ok)
+// - shadowNear/shadowFar are *finite* distances along camera view rays (CSM slice range)
+// - outProj is built as a normal (non-reverse-Z) ortho by default; keep your shadow pass as
+//   clearDepth=1.0 and compare=LESS/LEQUAL.
+//
+// Notes:
+// - If you flip Y for Vulkan in your pipeline with proj[1][1]*=-1, do that AFTER calling this.
+
+static std::array<glm::vec3, 8> GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
 	const glm::mat4& proj,
-	const glm::mat4& view
+	const glm::mat4& view,
+	float nearDist,
+	float farDist
 )
 {
-	const glm::mat4 inv = glm::inverse(proj * view);
+	// Camera world transform
+	const glm::mat4 invView = glm::inverse(view);
+	const glm::vec3 camPos = glm::vec3(invView[3]); // translation column in GLM
 
-	std::array<glm::vec3, 8> corners;
-	int i = 0;
+	// Inverse projection to unproject clip -> view
+	const glm::mat4 invProj = glm::inverse(proj);
 
-	for (int x = 0; x < 2; ++x)
-		for (int y = 0; y < 2; ++y)
-			for (int z = 0; z < 2; ++z)
-			{
-				glm::vec4 pt = inv * glm::vec4(
-					2.0f * x - 1.0f,
-					2.0f * y - 1.0f,
-					2.0f * z - 1.0f,
-					1.0f
-				);
-				corners[i++] = glm::vec3(pt) / pt.w;
-			}
+	// NDC XY corners
+	const glm::vec2 ndcXY[4] = {
+		{-1.0f, -1.0f},
+		{ 1.0f, -1.0f},
+		{ 1.0f,  1.0f},
+		{-1.0f,  1.0f},
+	};
+
+	std::array<glm::vec3, 8> corners{};
+
+	for (int i = 0; i < 4; ++i)
+	{
+		// IMPORTANT:
+		// - w MUST be 1 (a point), not 0 (a direction).
+		// - For reverse-Z camera projections, the near plane maps to NDC.z = 1.
+		//   (Your MakeInfReversedZProjRH uses reverse-Z.)
+		const glm::vec4 clip(ndcXY[i].x, ndcXY[i].y, 1.0f, 1.0f);
+
+		glm::vec4 viewPt = invProj * clip;
+
+		viewPt /= viewPt.w;
+
+		glm::vec3 dirView = glm::vec3(viewPt);
+
+		dirView = glm::normalize(dirView);
+
+		// Transform direction to world (ignore translation)
+		glm::vec3 dirWorld = glm::normalize(glm::mat3(invView) * dirView);
+
+		corners[i + 0] = camPos + dirWorld * nearDist;
+		corners[i + 4] = camPos + dirWorld * farDist;
+	}
 
 	return corners;
 }
 
-glm::mat4 GetDirectionalLightOrthoVP(
+static glm::vec3 ChooseSafeUpForLookAt(const glm::vec3& forward /*normalized*/)
+{
+	glm::vec3 up(0.0f, 1.0f, 0.0f);
+	if (std::abs(glm::dot(forward, up)) > 0.99f)
+		up = glm::vec3(0.0f, 0.0f, 1.0f);
+	return up;
+}
+
+void GetDirectionalLightOrthoVP(
 	const Light& l,
 	const glm::mat4& cameraView,
-	const glm::mat4& cameraProj
+	const glm::mat4& cameraProj,
+	float shadowNear,
+	float shadowFar,
+	glm::mat4& outView,
+	glm::mat4& outProj,
+	// Optional quality/stability knobs:
+	float zPadding,  // world units padding along light Z (prevents clipping)
+	float xyPadding,   // world units padding in light X/Y (edge safety)
+	bool  enableTexelSnap,   // reduce shimmering
+	int   shadowMapRes    // used for snapping; set to your shadow map size
 )
 {
 	assert(l.type == LIGHT_TYPE_DIRECTIONAL);
-
 	if (l.type != LIGHT_TYPE_DIRECTIONAL)
-		return glm::mat4(1.0f); // safe-ish fallback (or return cached last-good VP)
+		return;
 
-	glm::vec3 lightDir = glm::normalize(glm::vec3(
-		l.direction[0],
-		l.direction[1],
-		l.direction[2]
-	));
+	if (!(shadowFar > shadowNear))
+		assert(false && "shadowFar was less than shadowNear");
+	//		return;
 
-	// Build light view matrix
-	glm::vec3 center = glm::vec3(0.0f);
-	auto corners = GetFrustumCornersWorldSpace(cameraProj, cameraView);
-	for (auto& c : corners)
-		center += c;
-	center /= corners.size();
+		// Normalize light direction
+	glm::vec3 lightDir = glm::normalize(glm::vec3(l.direction[0], l.direction[1], l.direction[2]));
 
-	glm::mat4 lightView = glm::lookAt(
-		center - lightDir * 100.0f,
+	// 8 corners of the camera frustum slice (works for reverse-Z + infinite far)
+	const auto corners = GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
+		cameraProj, cameraView, shadowNear, shadowFar
+	);
+
+	// Compute slice center
+	glm::vec3 center(0.0f);
+	for (const auto& c : corners) center += c;
+	center /= static_cast<float>(corners.size());
+
+	// Build light view matrix with a safe up vector
+	const glm::vec3 up = ChooseSafeUpForLookAt(lightDir);
+
+	// "Backoff" just needs to be large enough so the camera sees the fitted box.
+	// It does not affect the ortho extents since we compute them from transformed corners.
+	//const float lightBackoff = 100.0f;
+	const float lightBackoff = 100.0f;
+	
+	outView = glm::lookAt(
+		center - lightDir * lightBackoff,
 		center,
-		glm::vec3(0, 1, 0)
+		up
 	);
 
 	// Compute bounds in light space
-	glm::vec3 min(FLT_MAX);
-	glm::vec3 max(-FLT_MAX);
+	glm::vec3 minLS(FLT_MAX);
+	glm::vec3 maxLS(-FLT_MAX);
 
-	for (auto& c : corners)
+	for (const auto& c : corners)
 	{
-		glm::vec3 ls = glm::vec3(lightView * glm::vec4(c, 1.0));
-		min = glm::min(min, ls);
-		max = glm::max(max, ls);
+		const glm::vec3 ls = glm::vec3(outView * glm::vec4(c, 1.0f));
+		minLS = glm::min(minLS, ls);
+		maxLS = glm::max(maxLS, ls);
 	}
 
-	// Optional: stabilize Z range
-	const float zMult = 10.0f;
-	if (min.z < 0) min.z *= zMult;
-	else           min.z /= zMult;
-	if (max.z < 0) max.z /= zMult;
-	else           max.z *= zMult;
+	// Pad X/Y to avoid edge clipping (optional)
+	minLS.x -= xyPadding; maxLS.x += xyPadding;
+	minLS.y -= xyPadding; maxLS.y += xyPadding;
 
-	glm::mat4 lightProj = glm::ortho(
-		min.x, max.x,
-		min.y, max.y,
-		min.z, max.z
-	);
+	float minZ = minLS.z - zPadding; // most negative (farthest)
+	float maxZ = maxLS.z + zPadding; // least negative (closest)
 
-	return lightProj * lightView;
+	// Convert view-space Z (negative in front) to positive distances
+	float zNear = std::max(0.001f, -maxZ);       // closest distance
+	float zFar = std::max(zNear + 0.001f, -minZ); // farthest distance
+
+
+	// Optional: texel snapping in light space (stabilizes shadows during camera motion)
+	if (enableTexelSnap && shadowMapRes > 0)
+	{
+		const float width = (maxLS.x - minLS.x);
+		const float height = (maxLS.y - minLS.y);
+
+		// Prevent divide-by-zero
+		if (width > 1e-6f && height > 1e-6f)
+		{
+			const float worldUnitsPerTexelX = width / static_cast<float>(shadowMapRes);
+			const float worldUnitsPerTexelY = height / static_cast<float>(shadowMapRes);
+
+			minLS.x = std::floor(minLS.x / worldUnitsPerTexelX) * worldUnitsPerTexelX;
+			maxLS.x = std::floor(maxLS.x / worldUnitsPerTexelX) * worldUnitsPerTexelX;
+
+			minLS.y = std::floor(minLS.y / worldUnitsPerTexelY) * worldUnitsPerTexelY;
+			maxLS.y = std::floor(minLS.y / worldUnitsPerTexelY) * worldUnitsPerTexelY + height;
+			// (keep height consistent; avoids slow drift)
+		}
+	}
+
+	outProj = glm::orthoRH_ZO(minLS.x, maxLS.x, minLS.y, maxLS.y, zNear, zFar);
 }
 
-
 // Perspective projection for the light (spot light shadow map)
-glm::mat4 GetLightProj(
+glm::mat4 GetPerspectiveProjectionForLight(
 	const Light& l,
 	float aspect,
 	float nearPlane,
@@ -130,4 +252,16 @@ glm::mat4 GetLightProj(
 	float fovRadians = glm::radians(90.0f); // 90° for each cube face, if you go that route
 	return glm::perspective(fovRadians, 1.0f, nearPlane, farPlane);
 }
+
+glm::mat4 GetOrthoProjectionForLight(
+	const Light& l,
+	float width,
+	float height
+) {
+	assert(l.type == LIGHT_TYPE_DIRECTIONAL);
+	return glm::ortho(0.0f, width, 0.0f, height, -1.0f, 1.0f);
+
+}
+
+
 

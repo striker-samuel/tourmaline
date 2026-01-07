@@ -5,6 +5,7 @@
 
 #include "Engine/Shared/common.h"
 
+
 glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear)
 {
 	float f = 1.0f / tan(fovY_radians / 2.0f);

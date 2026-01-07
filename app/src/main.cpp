@@ -7,7 +7,7 @@
 // Volk. Glm
 #include <Engine/Vulkan/vulkan_setup.h>
 
-#define GLFW_INCLUDE_NONE
+//#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
 // This needed to be defined elsewhere so al cop units got em the same, as they affect data structures.
@@ -19,14 +19,15 @@
 
 #include <vk_mem_alloc.h>
 
-#define TINYGLTF_IMPLEMENTATION
-#define STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-
-// We are using ktx for textures. also I dont want tinygltf to load texture data, just scene data.
-#define TINYGLTF_NO_STB_IMAGE
-#define TINYGLTF_NO_STB_IMAGE_WRITE
-#define TINYGLTF_NO_EXTERNAL_IMAGE
+//#define TINYGLTF_IMPLEMENTATION
+//#define STB_IMAGE_IMPLEMENTATION
+//#define STB_IMAGE_WRITE_IMPLEMENTATION
+//
+//// We are using ktx for textures. also I dont want tinygltf to load texture data, just scene data.
+//#define TINYGLTF_NO_STB_IMAGE
+//#define TINYGLTF_NO_STB_IMAGE_WRITE
+//#define TINYGLTF_NO_EXTERNAL_IMAGE
+#include <tiny_gltf.h>
 
 // --------------ENGINE--------------------
 
@@ -52,10 +53,14 @@
 #include <Engine/Formats/pak.h>
 #include <Engine/platform.h>
 
+
 // --------------APP--------------------
 
 // Not in use right now.
 //#include <App/pak_methods.h>
+
+
+
 
 // 
 
@@ -72,11 +77,6 @@ CameraPositioner_FirstPerson cameraPositioner(
 	glm::vec3(0.0f, 1.0f, 1.0f), //target
 	glm::vec3(0.0f, 1.0f, 0.0f) //up
 );
-
-
-struct ShadowMapSlot {
-	ShadowMapHandle perFrame[MAX_FRAMES_IN_FLIGHT];
-};
 
 class VulkanApp {
 
@@ -903,10 +903,11 @@ private:
 
 	void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer)
 	{
+
 		for (int i = 0; i < MAX_LIGHTS; i++) {
 
 			auto& light = lights[i];
-			int smi = lights[i].shadow_map_index;
+			int smi = light.shadow_map_index;
 			if (smi < 0) continue;
 			if (smi >= SHADOWMAP_SLOTS) continue; // or assert
 			auto sm = GetShadowMapFromShadowMapIndex(smi, currentFrame);
@@ -955,7 +956,9 @@ private:
 			depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;   // we want to sample this later
 
 			VkClearValue clearDepth{};
-			clearDepth.depthStencil.depth = 1.0f;   // same as your main pass
+
+			// Normal Z Depth, unlike primary view.
+			clearDepth.depthStencil.depth = 1.0f;
 			depthAttachment.clearValue = clearDepth;
 
 			VkRenderingInfoKHR renderingInfo{};
@@ -1011,11 +1014,35 @@ private:
 				nullptr
 			);
 
-			// 6) Push constants with light view/proj (instead of active_camera)
 			PushConstants pc{};
-			pc.view = GetLightView(light);
-			pc.proj = GetLightProj(light, /*aspect*/ 1.0f, /*near*/ 0.1f, /*far*/ 100.0f);
-			pc.proj[1][1] *= -1;
+			if (light.type == LIGHT_TYPE_SPOT) {
+				pc.view = GetLightView(light);
+				pc.proj = GetPerspectiveProjectionForLight(light, /*aspect*/ 1.0f, /*near*/ 0.1f, /*far*/ 100.0f);
+				pc.proj[1][1] *= -1;
+			}
+			else if (light.type == LIGHT_TYPE_DIRECTIONAL) {
+				// One “single cascade” shadow distance:
+				GetDirectionalLightOrthoVP(
+					light,
+					camera_.getViewMatrix(),
+					camera_.getProjMatrix(),
+					/*shadowNear*/ 0.1f,
+					/*shadowFar*/  20.0f,
+					pc.view,
+					pc.proj,
+					/*zPadding*/  50.0f,
+					/*xyPadding*/ 0.0f,
+					/*snap*/      false,
+					/*res*/       shadowExtent.width
+				);
+
+				// Vulkan Y flip
+				pc.proj[1][1] *= -1.0f;
+
+			}
+			else {
+				assert(false && "No additional light types implemented yet!");
+			}
 
 			struct PC_All {
 				PushConstants pc;               // 144
@@ -1122,8 +1149,6 @@ private:
 		depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
 		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		//depthAttachment.clearValue.depthStencil = { 1.0f, 0 };
-		//Lets do reverse z
 		depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
 
 		VkRenderingAttachmentInfoKHR colorAttachment{};
@@ -1973,7 +1998,7 @@ void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
 
 	for (int i = 0; i < MAX_LIGHTS; i++)
 	{
-		auto proj = GetLightProj(lights[i]);
+		auto proj = GetPerspectiveProjectionForLight(lights[i]);
 		proj[1][1] *= -1;
 
 		auto lvp = proj * GetLightView(lights[i]);
@@ -2004,8 +2029,14 @@ void VulkanApp::CleanUp() {
 
 }
 
+
 void VulkanApp::Start() {
 	FabricateLightData(lights.data());
+
+	//	auto sm_h = context->CreateShadowMap();
+	lights[0].shadow_map_index = 0;
+	lights[1].shadow_map_index = 1;
+
 	for (int i = 0; i < MAX_LIGHTS; i++) {
 
 		if (lights[i].type == LIGHT_TYPE_SPOT) {
@@ -2013,8 +2044,6 @@ void VulkanApp::Start() {
 			lights[i].intensity = 10.0f;
 			lights[i].innerAngle = glm::radians(10.0f);
 			lights[i].outerAngle = glm::radians(20.0f);
-			//auto sm_h = context->CreateShadowMap();
-			//lights[i].shadow_map_index = sm_h.index();
 		}
 	}
 

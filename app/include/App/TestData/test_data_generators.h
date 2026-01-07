@@ -22,7 +22,25 @@ static RGB hsv2rgb(float h, float s, float v)
 void FabricateLightData(Light* data)
 {
 
-	for (int i = 0; i < MAX_LIGHTS; i++) {
+	// Directional Light is Light 0
+
+	data[0].type = LIGHT_TYPE_DIRECTIONAL;
+
+
+	// Directional light postiion is always 0	
+	data[0].position[0] = .0f;
+	data[0].position[1] = .0f;
+	data[0].position[2] = .0f;
+
+	data[0].direction[0] = -1.0f;
+	data[0].direction[1] = -1.0f;
+	data[0].direction[2] = .341f;
+	data[0].intensity = 10.0f;
+	data[0].shadow_map_index = -1;
+
+	data[0].color = { .3f, .3f, .3f,  1.0f };
+
+	for (int i = 1; i < /*MAX_LIGHTS*/ 2; i++) {
 		data[i].position[0] = 3.0f * i;
 		data[i].position[1] = 1.0f;
 		data[i].position[2] = 0.0f;
@@ -36,15 +54,16 @@ void FabricateLightData(Light* data)
 
 		data[i].color = { rgb.r, rgb.g, rgb.b, 1.0f };
 		data[i].intensity = 1.0f;
-		//data[i].intensity = .0f;
 		data[i].type = LIGHT_TYPE_SPOT;
-		if (i % 2 == 1) {
-			data[i].type = LIGHT_TYPE_POINT;
-			data[i].intensity = 1.0f;
-			//	data[i].position[1] = 3.0f;
-			//	data[i].position[0] = 2.0f;
-			//	data[i].position[2] = 3.0f;
-			//}
-		}
+		//data[i].intensity = .0f;
+		//data[i].type = LIGHT_TYPE_SPOT;
+		//if (i % 2 == 1) {
+		//	data[i].type = LIGHT_TYPE_POINT;
+		//	data[i].intensity = 1.0f;
+		//		data[i].position[1] = 3.0f;
+		//		data[i].position[0] = 2.0f;
+		//		data[i].position[2] = 3.0f;
+		//	}
+//		}
 	}
 }

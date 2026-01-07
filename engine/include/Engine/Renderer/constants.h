@@ -11,7 +11,7 @@ static constexpr VkFormat SHADOWMAP_DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 static constexpr int SHADOWMAP_SLOTS = 16;
 
 static constexpr float default_near_clip = 0.01f;
-static constexpr float default_far_clip = 100.0f;
+static constexpr float default_far_clip = 50.0f;
 
 // Yes, I'm hardcapping here for development.
 static constexpr uint32_t MAX_INSTANCES = 1000;

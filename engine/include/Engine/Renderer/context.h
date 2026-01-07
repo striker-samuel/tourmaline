@@ -154,6 +154,10 @@ struct Image {
 
 };
 
+struct ShadowMapSlot {
+	ShadowMapHandle perFrame[MAX_FRAMES_IN_FLIGHT];
+};
+
 struct ShadowMap {
 	uint32_t cascades = 0;
 	ImageHandle image;
@@ -606,7 +610,9 @@ public:
 [[nodiscard]] SamplerHandle Context::CreateShadowSampler(uint32_t levelCount) {
 
 	VkSampler sampler_;
-	createSampler(*physicalDevice_, *device_, sampler_, levelCount, VK_COMPARE_OP_GREATER_OR_EQUAL);
+
+	// Shadow Render is done on normal Z
+	createSampler(*physicalDevice_, *device_, sampler_, levelCount, VK_COMPARE_OP_LESS_OR_EQUAL);
 
 	return samplers_.create(std::move(sampler_));
 
@@ -884,10 +890,18 @@ void Context::UploadDataToBuffer(
 	lightBinding.descriptorCount = 1;
 	lightBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
+	// ShadowMetaUB
+	VkDescriptorSetLayoutBinding shadowMetaBinding{};
+	lightBinding.binding = 3;
+	lightBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	lightBinding.descriptorCount = 1;
+	lightBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
 	std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
 		instanceIndexBinding,
 		instanceDataBinding,
-		lightBinding
+		lightBinding,
+//		shadowMetaBinding
 	};
 
 	// Per-binding flags — same size as bindings[]
@@ -1688,6 +1702,9 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	auto image = CreateShadowMapImage(width, height);
 	sm.image = image;
 
+	auto arrayLayers = 1;
+	VkImageViewType viewType = (arrayLayers > 1) ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+
 	auto view = CreateImageView(
 		image,
 		//VK_FORMAT_D32_SFLOAT, // Copied from CreateCascadedShadowMapsDepthImage. Need to checlk froamt availabilty and track it, probably...,
@@ -1695,7 +1712,7 @@ void Context::GetAppropiateSampler(Texture& texture) {
 		1,
 		0,
 		1,
-		VK_IMAGE_VIEW_TYPE_2D_ARRAY
+		viewType
 
 	);
 
@@ -1704,7 +1721,7 @@ void Context::GetAppropiateSampler(Texture& texture) {
 
 	// These are leftovers from 2D_ARRAY implementation for cascasdes.
 	// Moved to atlas images instead for per-cascde resolution flexibility reasons. 
-	
+
 	//auto image = images_.get(sm.image);
 	//// These are the individual views for use as depth render attachment in the pipeline.
 	//for (int i = 0; i < sm.cascades; i++) {

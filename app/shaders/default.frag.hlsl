@@ -129,7 +129,6 @@ float3 EvaluatePointLight(Light light, float3 worldPos, float3 N, float3 baseCol
 }
 
 
-
 float3 EvaluateDirectLight(
     Light light,
     float3 worldPos,
@@ -137,54 +136,24 @@ float3 EvaluateDirectLight(
     float3 baseColor
 )
 {
-    // Early out: disabled / black lights etc. (optional)
-    // if (light.intensity <= 0.0f) return 0.0.xxx;
+    // Direction *from the point toward the light*
+    // If light.direction points "forward" from the light, use -direction.
+    float3 L = normalize(-light.direction);
 
-    // Vector from point to light
-    float3 toLight = light.position - worldPos;
-    float distSq = max(dot(toLight, toLight), 1e-4f);
-    float3 L = toLight * rsqrt(distSq);
-
-    // Lambert
     float NdotL = saturate(dot(N, L));
     if (NdotL <= 0.0f)
         return 0.0.xxx;
 
-    // Inverse square attenuation (common to point & spot)
-    float attenuation = 1.0f / distSq;
-
-    // Light color * intensity
     float3 lightColor = light.color.rgb * light.intensity;
 
-    // Default factors
-    float spotFactor = 1.0f;
     float shadow = 1.0f;
-
-    // Convention here: type==0 point, else spot (matches your existing code)
-    if (light.type != 0)
+    if (light.shadow_map_index >= 0)
     {
-        // Spot cone factor
-        float3 lightDir = normalize(light.direction);
-
-        // Cone axis points out of the light; L points from point to light => use -lightDir
-        float spotCos = dot(L, -lightDir);
-        float innerCos = cos(light.innerAngle);
-        float outerCos = cos(light.outerAngle);
-
-        float denom = max(innerCos - outerCos, 1e-4f);
-        spotFactor = saturate((spotCos - outerCos) / denom);
-
-        // Shadow (only if the light owns a shadow slot)
-        if (light.shadow_map_index >= 0)
-        {
-            shadow = GetShadowFactor(gShadowMaps, gShadowSampler, worldPos, light);
-        }
+        shadow = GetShadowFactor(gShadowMaps, gShadowSampler, worldPos, light);
     }
 
-    return baseColor * lightColor * NdotL * attenuation * spotFactor * shadow;
+    return baseColor * lightColor * NdotL * shadow;
 }
- 
-
 
 
 PSOut mainPS(PSIn IN)
@@ -240,5 +209,13 @@ PSOut mainPS(PSIn IN)
     OUT.
         outColor = float4(litColor.rgb, texSample.a);
 
+    
+    //float3 N = normalize(IN.normal);
+    //float3 L = normalize(-g_Lights[0].direction);
+    //float ndl = dot(N, L); // NOTE: not saturate yet
+    //OUT.outColor = float4(ndl.xxx * 0.5f + 0.5f, 1);
+    //return OUT;
+
+    
     return OUT;
 }

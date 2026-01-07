@@ -129,5 +129,9 @@ VSOut mainVS(VSIn IN)
     float3 worldNormal = mul((float3x3) model, IN.normal);
     OUT.normal = normalize(worldNormal);
 
+    //float4 clipA = mul(pc.proj, mul(pc.view, world)); // what you have
+    //float4 clipB = mul(mul(world, pc.view), pc.proj); // row-vector style
+    //OUT.pos = clipA; // try clipB if clipA is wrong
+
     return OUT;
 }

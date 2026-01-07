@@ -18,6 +18,24 @@ target_include_directories(engine
         ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator
 )
 
+
+target_compile_definitions(engine 
+    PUBLIC
+        GLM_FORCE_RADIANS
+        GLM_FORCE_DEPTH_ZERO_TO_ONE
+        GLM_ENABLE_EXPERIMENTAL
+
+
+        TINYGLTF_IMPLEMENTATION
+        #STB_IMAGE_IMPLEMENTATION
+        #STB_IMAGE_WRITE_IMPLEMENTATION
+
+        TINYGLTF_NO_STB_IMAGE
+        TINYGLTF_NO_STB_IMAGE_WRITE
+        TINYGLTF_NO_EXTERNAL_IMAGE
+        GLFW_INCLUDE_NONE
+)
+
 target_link_libraries(engine
     PUBLIC
         glfw
