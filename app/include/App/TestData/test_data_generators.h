@@ -19,51 +19,50 @@ static RGB hsv2rgb(float h, float s, float v)
 	return { r + m, g + m, b + m };
 }
 
-void FabricateLightData(Light* data)
+void FabricateLightData(std::vector<Light>& lights)
 {
 
-	// Directional Light is Light 0
+	Light light;
+	light.color = glm::vec4(1.0f);
+	light.position[0] = .0f;
+	light.position[1] = .0f;
 
-	data[0].type = LIGHT_TYPE_DIRECTIONAL;
+	light.position[2] = .0f;
+	light.direction[0] = -1.f;
+	light.direction[1] = -1.f;
+	light.direction[2] = 0.45f;
 
+	light.intensity = 1;
+	light.flags = 0;
+	light.type = LIGHT_TYPE_DIRECTIONAL;
+	light.shadow_map_index = 0;
+	lights.push_back(light);
 
-	// Directional light postiion is always 0	
-	data[0].position[0] = .0f;
-	data[0].position[1] = .0f;
-	data[0].position[2] = .0f;
+	for (int i = 1; i < 3; i++) {
 
-	data[0].direction[0] = -1.0f;
-	data[0].direction[1] = -1.0f;
-	data[0].direction[2] = .341f;
-	data[0].intensity = 10.0f;
-	data[0].shadow_map_index = -1;
+		Light new_l;
 
-	data[0].color = { .3f, .3f, .3f,  1.0f };
+		new_l.position[0] = 3.0f * i;
+		new_l.position[1] = 1.0f;
+		new_l.position[2] = 0.0f;
 
-	for (int i = 1; i < /*MAX_LIGHTS*/ 2; i++) {
-		data[i].position[0] = 3.0f * i;
-		data[i].position[1] = 1.0f;
-		data[i].position[2] = 0.0f;
-
-		data[i].direction[0] = 4.0f;
-		data[i].direction[1] = .0f;
-		data[i].direction[2] = .0f;
+		new_l.direction[0] = 4.0f;
+		new_l.direction[1] = .0f;
+		new_l.direction[2] = .0f;
 
 		float hue = float(i) / float(MAX_LIGHTS);
 		RGB rgb = hsv2rgb(hue, 1.0f, 1.0f);
 
-		data[i].color = { rgb.r, rgb.g, rgb.b, 1.0f };
-		data[i].intensity = 1.0f;
-		data[i].type = LIGHT_TYPE_SPOT;
-		//data[i].intensity = .0f;
-		//data[i].type = LIGHT_TYPE_SPOT;
-		//if (i % 2 == 1) {
-		//	data[i].type = LIGHT_TYPE_POINT;
-		//	data[i].intensity = 1.0f;
-		//		data[i].position[1] = 3.0f;
-		//		data[i].position[0] = 2.0f;
-		//		data[i].position[2] = 3.0f;
-		//	}
-//		}
+		new_l.color = { rgb.r, rgb.g, rgb.b, 1.0f };
+		new_l.intensity = 1.0f;
+		new_l.type = LIGHT_TYPE_SPOT;
+
+
+
+		light.shadow_map_index = i + 2;
+		lights.push_back(new_l);
+
 	}
+
+
 }

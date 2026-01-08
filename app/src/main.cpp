@@ -57,6 +57,8 @@ CameraPositioner_FirstPerson cameraPositioner(
 	glm::vec3(0.0f, 1.0f, 0.0f) //up
 );
 
+constexpr int NUM_CASCADES = 3;
+
 class VulkanApp {
 
 public:
@@ -82,7 +84,7 @@ public:
 	void Start();
 	void LoadScene();
 
-	std::array<Light, MAX_LIGHTS> lights; // lets move this to the scene tree.
+	std::vector<Light> lights;
 
 	PipelineHandle default_material_pipeline;
 	PipelineHandle default_shadow_pipeline;
@@ -225,15 +227,17 @@ private:
 		glm::mat4 proj = camera_.getProjMatrix();
 		proj[1][1] *= -1.0f;  // match your main pass
 
-		for (int i = 0; i < MAX_LIGHTS; ++i) {
 
-			if (lights[i].intensity <= 0.0f)
+		int n = 0;
+		for (auto light : lights) {
+
+			if (light.intensity <= 0.0f)
 				continue;
 
 			glm::vec3 worldPos(
-				lights[i].position[0],
-				lights[i].position[1],
-				lights[i].position[2]
+				light.position[0],
+				light.position[1],
+				light.position[2]
 			);
 
 			glm::vec4 clip = proj * view * glm::vec4(worldPos, 1.0f);
@@ -251,9 +255,9 @@ private:
 			const float sx = (ndc.x * 0.5f + 0.5f) * io.DisplaySize.x;
 			const float sy = (ndc.y * 0.5f + 0.5f) * io.DisplaySize.y;  // <- no extra flip
 
-			float r = lights[i].color[0];
-			float g = lights[i].color[1];
-			float b = lights[i].color[2];
+			float r = light.color[0];
+			float g = light.color[1];
+			float b = light.color[2];
 			if (r == 0.0f && g == 0.0f && b == 0.0f) {
 				r = 1.0f; g = 1.0f; b = 0.0f;
 			}
@@ -271,7 +275,8 @@ private:
 			// Optional label
 			drawList->AddText(ImVec2(sx + radius + 2.0f, sy - radius),
 				IM_COL32(255, 255, 255, 255),
-				std::to_string(i).c_str());
+				std::to_string(n).c_str());
+			n++;
 		}
 
 	}
@@ -317,12 +322,13 @@ private:
 
 	void Update() {
 
-		for (int i = 0; i < MAX_LIGHTS; i++) {
+		// fake animation
+		int i = 0;
+		for (auto light : lights) {
 			float phase = std::sin(i + time_since_start_s * 0.35f);  // staggered phases
-			lights[i].position[2] = static_cast<float>(i) * 1 + phase;
-
+			light.position[2] = static_cast<float>(i) * 1 + phase;
+			i++;
 		}
-
 
 	}
 
@@ -880,12 +886,114 @@ private:
 
 	}
 
+	void RecordCascadesForDirectionalLight(
+		Light& light,
+		VkCommandBuffer& commandBuffer,
+		ShadowMap& shadowmap,
+		VkPipelineLayout& pipe_lyt
+	) {
+
+
+		auto image = context->images_.get(shadowmap.image);
+
+		// ---- cascade split settings ----
+		const float cameraNear = 0.1f;   // ideally: camera_.nearPlane()
+		const float shadowFarMax = 20.0f;  // your old single-cascade far (tune this)
+		const float lambda = 0.5f;   // 0=linear, 1=log (0.5 common)
+
+		// ---- atlas tiling (2x2 for 4, 2x2 for <=4, 4x4 for 16, etc.) ----
+		const int gridDim = (int)std::ceil(std::sqrt((float)NUM_CASCADES));
+		const uint32_t tileW = image->width / gridDim;
+		const uint32_t tileH = image->height / gridDim;
+
+		// Precompute split ends in view-space depth
+		float splitEnds[NUM_CASCADES]{};
+		for (int c = 0; c < NUM_CASCADES; ++c) {
+			const float p = float(c + 1) / float(NUM_CASCADES);
+
+			const float logSplit = cameraNear * std::pow(shadowFarMax / cameraNear, p);
+			const float linSplit = cameraNear + (shadowFarMax - cameraNear) * p;
+
+			splitEnds[c] = linSplit + lambda * (logSplit - linSplit);
+		}
+
+		// Render each cascade
+		float prevSplit = cameraNear;
+		for (int c = 0; c < NUM_CASCADES; ++c) {
+
+			const float cascadeNear = prevSplit;
+			const float cascadeFar = splitEnds[c];
+			prevSplit = cascadeFar;
+
+			// --- atlas tile placement ---
+			const int tx = c % gridDim;
+			const int ty = c / gridDim;
+
+			VkViewport cvp{};
+			cvp.x = float(tx * tileW);
+			cvp.y = float(ty * tileH);
+			cvp.width = float(tileW);
+			cvp.height = float(tileH);
+			cvp.minDepth = 0.0f;
+			cvp.maxDepth = 1.0f;
+			vkCmdSetViewport(commandBuffer, 0, 1, &cvp);
+
+			VkRect2D cscissor{};
+			cscissor.offset = { int32_t(tx * tileW), int32_t(ty * tileH) };
+			cscissor.extent = { tileW, tileH };
+			vkCmdSetScissor(commandBuffer, 0, 1, &cscissor);
+
+			PushConstants pc{};
+			// --- compute per-cascade VP ---
+			GetDirectionalLightOrthoVP(
+				light,
+				camera_.getViewMatrix(),
+				camera_.getProjMatrix(),
+				cascadeNear,
+				cascadeFar,
+				pc.view,
+				pc.proj,
+				/*zPadding*/  50.0f,
+				/*xyPadding*/ 0.0f,
+				/*snap*/      false,
+				/*res*/       tileW  // important: snap resolution should match TILE res, not atlas res
+			);
+
+			// Vulkan Y flip
+			pc.proj[1][1] *= -1.0f;
+
+			vkCmdPushConstants(
+				commandBuffer,
+				pipe_lyt,
+				VK_SHADER_STAGE_VERTEX_BIT,
+				0,
+				sizeof(PushConstants),
+				&pc
+			);
+
+			for (int n = 0; n < static_cast<int>(scene_.hierarchy.size()); ++n) {
+				auto mesh_desc_handle = context->meshes_.getHandle(scene_.meshForNode[n]);
+				auto mesh_desc = context->meshes_.get(mesh_desc_handle);
+
+				for (auto draw_set : mesh_desc->sets) {
+					vkCmdDrawIndexed(
+						commandBuffer,
+						draw_set.index_count,
+						1,
+						draw_set.first_index,
+						draw_set.base_vertex,
+						0
+					);
+				}
+			}
+		}
+	}
+
 	void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer)
 	{
 
-		for (int i = 0; i < MAX_LIGHTS; i++) {
+		for (auto& light : lights) {
 
-			auto& light = lights[i];
 			int smi = light.shadow_map_index;
 			if (smi < 0) continue;
 			if (smi >= SHADOWMAP_SLOTS) continue; // or assert
@@ -970,7 +1078,7 @@ private:
 
 			BindVertex(commandBuffer);
 
-			// 5) Shadow pipeline & descriptors
+			// Shadow Pipelien depthCompare is LESS_OR_EQUAL
 			auto s_pipeline = context->pipelines_.get(default_shadow_pipeline);
 			auto pipe_lyt = s_pipeline->plyt;
 
@@ -993,14 +1101,49 @@ private:
 				nullptr
 			);
 
-			PushConstants pc{};
 			if (light.type == LIGHT_TYPE_SPOT) {
+
+				PushConstants pc{};
 				pc.view = GetLightView(light);
 				pc.proj = GetPerspectiveProjectionForLight(light, /*aspect*/ 1.0f, /*near*/ 0.1f, /*far*/ 100.0f);
 				pc.proj[1][1] *= -1;
+
+				vkCmdPushConstants(
+					commandBuffer,
+					pipe_lyt,
+					VK_SHADER_STAGE_VERTEX_BIT, // | VK_SHADER_STAGE_FRAGMENT_BIT if you want
+					0,
+					sizeof(PushConstants),
+					&pc
+				);
+
+				for (int i = 0; i < static_cast<int>(scene_.hierarchy.size()); ++i) {
+					auto mesh_desc_handle = context->meshes_.getHandle(scene_.meshForNode[i]);
+					auto mesh_desc = context->meshes_.get(mesh_desc_handle);
+
+					for (auto draw_set : mesh_desc->sets) {
+
+						vkCmdDrawIndexed(
+							commandBuffer,
+							draw_set.index_count,
+							1,
+							draw_set.first_index,
+							draw_set.base_vertex,
+							0
+						);
+
+					}
+
+				}
+
+
+
 			}
 			else if (light.type == LIGHT_TYPE_DIRECTIONAL) {
-				// One “single cascade” shadow distance:
+
+
+				PushConstants pc;
+
 				GetDirectionalLightOrthoVP(
 					light,
 					camera_.getViewMatrix(),
@@ -1018,45 +1161,47 @@ private:
 				// Vulkan Y flip
 				pc.proj[1][1] *= -1.0f;
 
-			}
-			else {
-				assert(false && "No additional light types implemented yet!");
-			}
+				vkCmdPushConstants(
+					commandBuffer,
+					pipe_lyt,
+					VK_SHADER_STAGE_VERTEX_BIT, // | VK_SHADER_STAGE_FRAGMENT_BIT if you want
+					0,
+					sizeof(PushConstants),
+					&pc
+				);
 
-			struct PC_All {
-				PushConstants pc;               // 144
-				MaterialPushConstants mpc;      // 48 (can be empty for shadow)
-			};
-			PC_All all{ pc, MaterialPushConstants{} };
+				for (int i = 0; i < static_cast<int>(scene_.hierarchy.size()); ++i) {
+					auto mesh_desc_handle = context->meshes_.getHandle(scene_.meshForNode[i]);
+					auto mesh_desc = context->meshes_.get(mesh_desc_handle);
 
-			// even if pipeline has only VS, including FRAGMENT here is fine; it's just unused
-			vkCmdPushConstants(
-				commandBuffer,
-				pipe_lyt,
-				VK_SHADER_STAGE_VERTEX_BIT, // | VK_SHADER_STAGE_FRAGMENT_BIT if you want
-				0,
-				sizeof(PC_All),
-				&all
-			);
+					for (auto draw_set : mesh_desc->sets) {
 
-			for (int i = 0; i < static_cast<int>(scene_.hierarchy.size()); ++i) {
-				auto mesh_desc_handle = context->meshes_.getHandle(scene_.meshForNode[i]);
-				auto mesh_desc = context->meshes_.get(mesh_desc_handle);
+						vkCmdDrawIndexed(
+							commandBuffer,
+							draw_set.index_count,
+							1,
+							draw_set.first_index,
+							draw_set.base_vertex,
+							0
+						);
 
-				for (auto draw_set : mesh_desc->sets) {
-
-					vkCmdDrawIndexed(
-						commandBuffer,
-						draw_set.index_count,
-						1,
-						draw_set.first_index,
-						draw_set.base_vertex,
-						0
-					);
+					}
 
 				}
 
+			}
+			//else if (light.type == LIGHT_TYPE_DIRECTIONAL) {
+			//	RecordCascadesForDirectionalLight(
+			//		light,
+			//		commandBuffer,
+			//		sm,
+			//		pipe_lyt
+			//	);
 
+			//
+			//}
+			else {
+				assert(false && "No additional light types implemented yet!");
 			}
 
 			vkCmdEndRendering(commandBuffer);
@@ -1975,12 +2120,44 @@ void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
 	static_assert(sizeof(Light) * MAX_LIGHTS < (1 << 16),
 		"Light buffer too large for 64KB UBO limit");
 
-	for (int i = 0; i < MAX_LIGHTS; i++)
+	for (int i = 0; i < lights.size(); i++)
 	{
-		auto proj = GetPerspectiveProjectionForLight(lights[i]);
-		proj[1][1] *= -1;
 
-		auto lvp = proj * GetLightView(lights[i]);
+		glm::mat4 lvp;
+
+		if (lights[i].type == LIGHT_TYPE_SPOT) {
+			auto proj = GetPerspectiveProjectionForLight(lights[i]);
+			proj[1][1] *= -1;
+			lvp = proj * GetLightView(lights[i]);
+		}
+		else if (lights[i].type == LIGHT_TYPE_DIRECTIONAL) {
+			glm::mat4 proj, view;
+
+			auto sm = GetShadowMapFromShadowMapIndex(lights[i].shadow_map_index, currentFrame);
+			auto shadowMapImage = context->images_.get(sm.image);
+
+			GetDirectionalLightOrthoVP(
+				lights[i],
+				camera_.getViewMatrix(),
+				camera_.getProjMatrix(),
+				/*shadowNear*/ 0.1f,
+				/*shadowFar*/  20.0f,
+				view,
+				proj,
+				/*zPadding*/  50.0f,
+				/*xyPadding*/ 0.0f,
+				/*snap*/      false,
+				/*res*/       shadowMapImage->width
+			);
+
+			proj[1][1] *= -1;
+			lvp = proj * view;
+
+		}
+		else {
+			assert(false);
+		}
+
 		std::memcpy(
 			lights[i].lightVP,
 			glm::value_ptr(lvp),
@@ -1990,7 +2167,7 @@ void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
 	context->UploadDataToBuffer(
 		lightDataUniformBuffers[currentImage],
 		lights.data(),
-		sizeof(Light) * MAX_LIGHTS,
+		sizeof(Light) * lights.size(),
 		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 		VK_ACCESS_SHADER_READ_BIT
 		//VK_ACCESS_UNIFORM_READ_BIT 
@@ -2010,21 +2187,23 @@ void VulkanApp::CleanUp() {
 
 
 void VulkanApp::Start() {
-	FabricateLightData(lights.data());
+	FabricateLightData(
+		lights
+	);
 
 	//	auto sm_h = context->CreateShadowMap();
-	lights[0].shadow_map_index = 0;
-	lights[1].shadow_map_index = 1;
+	//lights[0].shadow_map_index = 0;
+	//lights[1].shadow_map_index = 1;
 
-	for (int i = 0; i < MAX_LIGHTS; i++) {
+	//for (int i = 0; i < MAX_LIGHTS; i++) {
 
-		if (lights[i].type == LIGHT_TYPE_SPOT) {
+	//	if (lights[i].type == LIGHT_TYPE_SPOT) {
 
-			lights[i].intensity = 10.0f;
-			lights[i].innerAngle = glm::radians(10.0f);
-			lights[i].outerAngle = glm::radians(20.0f);
-		}
-	}
+	//		lights[i].intensity = 10.0f;
+	//		lights[i].innerAngle = glm::radians(10.0f);
+	//		lights[i].outerAngle = glm::radians(20.0f);
+	//	}
+	//}
 
 	// PIPELINE CREATION
 
@@ -2066,11 +2245,11 @@ void VulkanApp::Start() {
 void VulkanApp::LoadScene() {
 
 	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
-
 	Scene imported_scene;
 	std::filesystem::path p(gltf_meshes_paths[0]);
 	UploadGltfToContext(context, p, imported_scene);
 	scene_ = imported_scene;
+
 }
 
 int main(int argc, const char* argv[]) {

@@ -60,7 +60,7 @@ endfunction()
 function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
   # Normalize path (Windows-safe)
   file(TO_CMAKE_PATH "${SOURCE_DIR}" NORM_SOURCE_DIR)
-  message(STATUS "AAA ${NORM_SOURCE_DIR}")
+  message(STATUS "NORM_SOURCE_DIR ${NORM_SOURCE_DIR}")
 
   if(NOT EXISTS "${NORM_SOURCE_DIR}")
     message(FATAL_ERROR "[Shaders] SOURCE_DIR does not exist: ${NORM_SOURCE_DIR}")

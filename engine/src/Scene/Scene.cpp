@@ -291,8 +291,9 @@ void mergeScenes(
      }
   };
 
-  scene.nameForNode[0] = 0;
-  scene.nodeNames      = { "NewRoot" };
+  // I dont care about names for now at least.
+  //scene.nameForNode[0] = 0;
+  //scene.nodeNames      = { "NewRoot" };
 
   scene.localTransform.push_back(glm::mat4(1.f));
   scene.globalTransform.push_back(glm::mat4(1.f));

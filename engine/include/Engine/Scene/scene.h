@@ -104,7 +104,7 @@ void mergeScenes(
 	const std::vector<uint32_t>& meshCounts,
 	bool mergeMeshes = true,
 	bool mergeMaterials = true,
-	bool mergeLigths
+	bool mergeLigths = true
 );
 
 // Delete a collection of nodes from a scenegraph

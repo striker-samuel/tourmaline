@@ -901,7 +901,7 @@ void Context::UploadDataToBuffer(
 		instanceIndexBinding,
 		instanceDataBinding,
 		lightBinding,
-//		shadowMetaBinding
+		//		shadowMetaBinding
 	};
 
 	// Per-binding flags — same size as bindings[]
@@ -1110,9 +1110,6 @@ void Context::UploadDataToBuffer(
 	constexpr float depthBiasConstant = 0.01f;
 	constexpr float depthBiasSlope = 0.01f;
 
-	// Lets use default
-	auto shadow_def_lyt = descriptorSetLayouts_.get(default_shadow_descriptorLayout);
-	auto descriptorSetLayout = shadow_def_lyt;
 
 	auto v = shaderModules_.get(vert);
 	VkPipelineShaderStageCreateInfo vertStage{};
@@ -1216,12 +1213,14 @@ void Context::UploadDataToBuffer(
 
 #pragma region ---[Push Constants]---
 
-	constexpr uint32_t kPC_Total = 192;
 
 	VkPushConstantRange range{};
 	range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	range.offset = 0;
-	range.size = kPC_Total;
+	range.size = sizeof(PushConstants); // I dont need materialInstance pc for now. Maybe later ill do alphatested mats for non opaque geo
+
+	auto shadow_def_lyt = descriptorSetLayouts_.get(default_shadow_descriptorLayout);
+	auto descriptorSetLayout = shadow_def_lyt;
 
 	VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	layoutInfo.setLayoutCount = 1;
