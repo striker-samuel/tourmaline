@@ -18,8 +18,39 @@ add_subdirectory(external/glfw)
 # GLM (header-only)
 add_subdirectory(external/glm)
 
-list(APPEND CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/external/ktx")
+# --- KTX hinting --------------------------------------------------------------
+# Users can point CMake at KTX in several ways:
+#  1) -Dktx_DIR=/path/to/lib/cmake/ktx
+#  2) -DCMAKE_PREFIX_PATH=/path/to/prefix
+#  3) Env var KTX_ROOT=/path/to/prefix  (we'll translate it to CMAKE_PREFIX_PATH)
+#
+# A "prefix" typically contains: include/, lib/, and lib/cmake/ktx/ktxConfig.cmake
+
+if(NOT DEFINED KTX_ROOT AND DEFINED ENV{KTX_ROOT})
+  set(KTX_ROOT "$ENV{KTX_ROOT}")
+endif()
+
+if(DEFINED KTX_ROOT)
+  # Prepend so it wins over system installs
+  list(PREPEND CMAKE_PREFIX_PATH "${KTX_ROOT}")
+endif()
+
+# Now try to locate the config package
 find_package(ktx CONFIG REQUIRED)
+
+if(NOT ktx_FOUND)
+  message(FATAL_ERROR
+    "KTX not found.\n"
+    "Install KTX (KTX-Software) and make sure CMake can find ktxConfig.cmake.\n\n"
+    "You can point CMake to it using ONE of:\n"
+    "  - Set env var KTX_ROOT to the install prefix (contains include/ and lib/)\n"
+    "  - Pass -DCMAKE_PREFIX_PATH=<prefix>\n"
+    "  - Pass -Dktx_DIR=<prefix>/lib/cmake/ktx\n\n"
+    "Example (PowerShell):\n"
+    "  $env:KTX_ROOT='C:/SDKs/ktx'\n"
+    "  cmake -S . -B build\n"
+  )
+endif()
 
 # nlohmann::json (required for tinygltf)
 add_subdirectory(external/json)
