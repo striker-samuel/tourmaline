@@ -1,3 +1,7 @@
+// Portions Copyright (c) 2022 Packt
+// Modified by Samuel Martin, 2026
+// Licensed under the MIT License. See external/Mastering-Graphics-Programming-with-Vulkan/LICENSE.txt for details.
+
 #pragma once
 
 #include <algorithm>

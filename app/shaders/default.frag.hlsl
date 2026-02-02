@@ -20,6 +20,8 @@ struct PC_All
 [[vk::binding(2,0)]] Texture2D materialTex[]; // sampled images
 [[vk::binding(3,0)]] SamplerState materialSamp[]; // samplers
 [[vk::binding(4, 0)]]
+
+
 cbuffer Lights
 {
     Light g_Lights[10]; // or a struct containing them
@@ -29,7 +31,7 @@ cbuffer Lights
 Texture2D gShadowMaps[];
 
 [[vk::binding(6, 0)]]
-SamplerState gShadowSampler[];
+SamplerComparisonState gShadowSamplers[];
 
 struct PSIn
 {
@@ -88,7 +90,7 @@ float3 EvaluateSpotLight(
     float shadow = 1.0;
     if (light.shadow_map_index >= 0)
     {
-        shadow = GetShadowFactor(gShadowMaps, gShadowSampler, worldPos, light);
+        shadow = GetShadowFactor(gShadowMaps, gShadowSamplers, worldPos, light);
     }
 
     float3 lightColor = light.color.rgb * light.intensity;
@@ -149,7 +151,7 @@ float3 EvaluateDirectLight(
     float shadow = 1.0f;
     if (light.shadow_map_index >= 0)
     {
-        shadow = GetShadowFactor(gShadowMaps, gShadowSampler, worldPos, light);
+        shadow = GetShadowFactorODB(gShadowMaps, gShadowSamplers, worldPos, light, N);
     }
 
     return baseColor * lightColor * NdotL * shadow;

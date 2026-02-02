@@ -1,3 +1,7 @@
+// Portions Copyright (c) 2022 Packt
+// Modified by Samuel Martin, 2026
+// Licensed under the MIT License. See external/Mastering-Graphics-Programming-with-Vulkan/LICENSE.txt for details.
+
 #pragma once
 
 #include <string>
@@ -15,6 +19,20 @@ using glm::mat4;
 
 constexpr const int MAX_NODE_LEVEL = 16;
 
+
+//struct SceneLight {
+//
+//	glm::vec4 color = glm::vec4(1.0f);
+//	float position[3] = { 0.0f,0.0f,0.0f };
+//	int32_t flags = 0;
+//	float direction[3] = { 0.0f,0.0f,0.0f };
+//	float intensity = .0f;
+//	int32_t type = LIGHT_TYPE_POINT;
+//
+//	float innerAngle = glm::radians(10.0f);
+//	float outerAngle = glm::radians(20.0f);
+//};
+//
 
 // This was lifted from https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan
 
@@ -57,7 +75,8 @@ struct Scene {
 
 	// Lets add light support to the scene def
 	std::unordered_map<uint32_t, uint32_t> lightForNode;
-	std::vector<Light> lights;
+
+//	std::vector<struct Light> lights;
 
 	// List of scene node names
 	std::vector<std::string> nodeNames;

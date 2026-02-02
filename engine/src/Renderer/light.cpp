@@ -40,8 +40,7 @@ glm::mat4 MakeOrthoRH_ZO(
 }
 
 
-// Convert your Light to a view matrix (for spot / "directional-like" usage)
-glm::mat4 GetLightView(const Light& l)
+glm::mat4 GetSpotLightView(const SpotLight& l)
 {
 	glm::vec3 pos(l.position[0], l.position[1], l.position[2]);
 	glm::vec3 dir(l.direction[0], l.direction[1], l.direction[2]);
@@ -59,23 +58,6 @@ glm::mat4 GetLightView(const Light& l)
 
 	return glm::lookAt(pos, pos + dir, up);
 }
-
-
-// Production-ish directional light VP fit for a camera frustum slice.
-// - Uses ray-based frustum corners (works with reverse-Z + infinite far camera)
-// - Enforces near/far ordering
-// - Removes zMult hacks
-// - Adds configurable Z padding
-// - Optional texel snapping for stability (reduces shimmering)
-//
-// Assumptions:
-// - cameraProj is the *actual* camera projection you render with (reverse-Z / infinite ok)
-// - shadowNear/shadowFar are *finite* distances along camera view rays (CSM slice range)
-// - outProj is built as a normal (non-reverse-Z) ortho by default; keep your shadow pass as
-//   clearDepth=1.0 and compare=LESS/LEQUAL.
-//
-// Notes:
-// - If you flip Y for Vulkan in your pipeline with proj[1][1]*=-1, do that AFTER calling this.
 
 static std::array<glm::vec3, 8> GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
 	const glm::mat4& proj,
@@ -136,7 +118,7 @@ static glm::vec3 ChooseSafeUpForLookAt(const glm::vec3& forward /*normalized*/)
 }
 
 void GetDirectionalLightOrthoVP(
-	const Light& l,
+	const DirectionalLight& l,
 	const glm::mat4& cameraView,
 	const glm::mat4& cameraProj,
 	float shadowNear,
@@ -145,14 +127,12 @@ void GetDirectionalLightOrthoVP(
 	glm::mat4& outProj,
 	// Optional quality/stability knobs:
 	float zPadding,  // world units padding along light Z (prevents clipping)
-	float xyPadding,   // world units padding in light X/Y (edge safety)
+	//	float xyPadding,   // world units padding in light X/Y (edge safety)
 	bool  enableTexelSnap,   // reduce shimmering
 	int   shadowMapRes    // used for snapping; set to your shadow map size
 )
 {
-	assert(l.type == LIGHT_TYPE_DIRECTIONAL);
-	if (l.type != LIGHT_TYPE_DIRECTIONAL)
-		return;
+	float xyPadding = 0.1;
 
 	if (!(shadowFar > shadowNear))
 		assert(false && "shadowFar was less than shadowNear");
@@ -160,6 +140,10 @@ void GetDirectionalLightOrthoVP(
 
 		// Normalize light direction
 	glm::vec3 lightDir = glm::normalize(glm::vec3(l.direction[0], l.direction[1], l.direction[2]));
+
+
+	static auto prj = cameraProj;
+	static auto viw = cameraView;
 
 	// 8 corners of the camera frustum slice (works for reverse-Z + infinite far)
 	const auto corners = GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
@@ -171,97 +155,74 @@ void GetDirectionalLightOrthoVP(
 	for (const auto& c : corners) center += c;
 	center /= static_cast<float>(corners.size());
 
-	// Build light view matrix with a safe up vector
-	const glm::vec3 up = ChooseSafeUpForLookAt(lightDir);
+	float radius = 10.0f;          // <-- hardcoded shadow coverage radius in WORLD units
+	float zExtent = 100.0f;        // <-- depth coverage along light direction (world units)
+	float lightBackoff = zExtent * 0.5f; // just needs to be enough to see the box
+	glm::vec3 up = ChooseSafeUpForLookAt(lightDir);
 
-	// "Backoff" just needs to be large enough so the camera sees the fitted box.
-	// It does not affect the ortho extents since we compute them from transformed corners.
-	//const float lightBackoff = 100.0f;
-	const float lightBackoff = 100.0f;
-	
-	outView = glm::lookAt(
-		center - lightDir * lightBackoff,
-		center,
-		up
-	);
+	outView = glm::lookAt(center - lightDir * lightBackoff, center, up);
+	// Build a fixed-size box in LIGHT SPACE around the transformed center
+	glm::vec3 centerLS = glm::vec3(outView * glm::vec4(center, 1.0f));
 
-	// Compute bounds in light space
-	glm::vec3 minLS(FLT_MAX);
-	glm::vec3 maxLS(-FLT_MAX);
+	float width = 2.0f * radius;
+	float height = 2.0f * radius;
 
-	for (const auto& c : corners)
-	{
-		const glm::vec3 ls = glm::vec3(outView * glm::vec4(c, 1.0f));
-		minLS = glm::min(minLS, ls);
-		maxLS = glm::max(maxLS, ls);
-	}
-
-	// Pad X/Y to avoid edge clipping (optional)
-	minLS.x -= xyPadding; maxLS.x += xyPadding;
-	minLS.y -= xyPadding; maxLS.y += xyPadding;
-
-	float minZ = minLS.z - zPadding; // most negative (farthest)
-	float maxZ = maxLS.z + zPadding; // least negative (closest)
-
-	// Convert view-space Z (negative in front) to positive distances
-	float zNear = std::max(0.001f, -maxZ);       // closest distance
-	float zFar = std::max(zNear + 0.001f, -minZ); // farthest distance
-
-
-	// Optional: texel snapping in light space (stabilizes shadows during camera motion)
 	if (enableTexelSnap && shadowMapRes > 0)
 	{
-		const float width = (maxLS.x - minLS.x);
-		const float height = (maxLS.y - minLS.y);
+		const float unitsPerTexelX = width / float(shadowMapRes);
+		const float unitsPerTexelY = height / float(shadowMapRes);
 
-		// Prevent divide-by-zero
-		if (width > 1e-6f && height > 1e-6f)
-		{
-			const float worldUnitsPerTexelX = width / static_cast<float>(shadowMapRes);
-			const float worldUnitsPerTexelY = height / static_cast<float>(shadowMapRes);
+		// Snap the LIGHT-SPACE center to the texel grid
+		glm::vec2 snappedCenter;
+		snappedCenter.x = std::floor(centerLS.x / unitsPerTexelX) * unitsPerTexelX;
+		snappedCenter.y = std::floor(centerLS.y / unitsPerTexelY) * unitsPerTexelY;
 
-			minLS.x = std::floor(minLS.x / worldUnitsPerTexelX) * worldUnitsPerTexelX;
-			maxLS.x = std::floor(maxLS.x / worldUnitsPerTexelX) * worldUnitsPerTexelX;
+		glm::vec2 delta = snappedCenter - glm::vec2(centerLS.x, centerLS.y);
 
-			minLS.y = std::floor(minLS.y / worldUnitsPerTexelY) * worldUnitsPerTexelY;
-			maxLS.y = std::floor(minLS.y / worldUnitsPerTexelY) * worldUnitsPerTexelY + height;
-			// (keep height consistent; avoids slow drift)
-		}
+		// IMPORTANT: bake that delta into the VIEW matrix (light-space translation)
+		outView = glm::translate(glm::mat4(1.0f), glm::vec3(delta.x, delta.y, 0.0f)) * outView;
+
+		// Update centerLS to the snapped one (optional clarity)
+		centerLS.x = snappedCenter.x;
+		centerLS.y = snappedCenter.y;
 	}
 
-	outProj = glm::orthoRH_ZO(minLS.x, maxLS.x, minLS.y, maxLS.y, zNear, zFar);
+	// Now build min/max from (snapped) centerLS and FIXED extents
+	float minX = centerLS.x - radius;
+	float maxX = centerLS.x + radius;
+	float minY = centerLS.y - radius;
+	float maxY = centerLS.y + radius;
+
+	// Z: cover +/- zExtent/2 around centerLS.z
+	float minZ = centerLS.z - (zExtent * 0.5f);
+	float maxZ = centerLS.z + (zExtent * 0.5f);
+
+	// Convert view-space Z (negative in front) to positive distances for orthoRH_ZO
+	float zNear = std::max(0.001f, -maxZ);
+	float zFar = std::max(zNear + 0.001f, -minZ);
+
+	outProj = glm::orthoRH_ZO(minX, maxX, minY, maxY, zNear, zFar);
+
 }
 
-// Perspective projection for the light (spot light shadow map)
 glm::mat4 GetPerspectiveProjectionForLight(
-	const Light& l,
+	const SpotLight& l,
 	float aspect,
 	float nearPlane,
 	float farPlane
 )
 {
-	// For spot lights, use outerAngle to define the FOV
-	if (l.type == LIGHT_TYPE_SPOT) {
-		// outerAngle is in degrees in your struct; FOV = 2 * outerAngle
-		float fovRadians = l.outerAngle * 2.0f;
-		return glm::perspective(fovRadians, aspect, nearPlane, farPlane);
-	}
-
-	// For point lights, this is only a placeholder if you *don't* do cubemap shadows.
-	// Proper point light shadows need 6 views + same projection.
-	float fovRadians = glm::radians(90.0f); // 90° for each cube face, if you go that route
-	return glm::perspective(fovRadians, 1.0f, nearPlane, farPlane);
+	float fovRadians = l.outerAngle * 2.0f;
+	return glm::perspective(fovRadians, aspect, nearPlane, farPlane);
 }
 
-glm::mat4 GetOrthoProjectionForLight(
-	const Light& l,
-	float width,
-	float height
-) {
-	assert(l.type == LIGHT_TYPE_DIRECTIONAL);
-	return glm::ortho(0.0f, width, 0.0f, height, -1.0f, 1.0f);
-
-}
-
-
-
+//std::array<glm::mat4,6 > GetProjectionsForSpotLight(
+//	const PointLight& l,
+//	float aspect,
+//	float nearPlane,
+//	float farPlane
+//)
+//{
+//	float fovRadians = glm::radians(90.0f); // 90° for each cube face, if you go that route
+//	return glm::perspective(fovRadians, 1.0f, nearPlane, farPlane);
+//}

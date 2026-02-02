@@ -1,15 +1,12 @@
+// Portions Copyright (c) 2022 Packt
+// Modified by Samuel Martin, 2026
+// Licensed under the MIT License. See external/Mastering-Graphics-Programming-with-Vulkan/LICENSE.txt for details.
+
 #include <string.h>
 #include <string>
 #if !defined(__APPLE__)
 #include <malloc.h>
 #endif
-
-
-
-
-//#include <external/stb_image.h>
-//#include <ktx.h>
-//#include <ktx-software/lib/gl_format.h>
 
 #include <unordered_map>
 

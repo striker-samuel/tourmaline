@@ -315,10 +315,10 @@ public:
 		// Lets have one dpool
 		default_descriptor_pool = createDescriptorPool();
 		imgui_descriptor_pool = createDescriptorPool();
+
 		default_descriptorLayout = createDescriptorLayout();
 		default_shadow_descriptorLayout = CreateShadowMapsDescriptorSetLayout();
-		default_meshlet_descriptorLayout = CreateMeshletDescriptorLayout();
-		//		default_material_pipeline = CreateMaterialPipeline();
+		//default_meshlet_descriptorLayout = CreateMeshletDescriptorLayout();
 
 		QueueFamilyIndices indices = findQueueFamilies(*physicalDevice, surface);
 
@@ -587,7 +587,12 @@ public:
 
 	void UploadDataToBuffer(DeviceBufferHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
 
+
+
+	//
 	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+
+
 	void TransitionImageLayout(ImageHandle image_handle, VkImageLayout oldLayout, VkImageLayout newLayout);
 
 	VkQueue GetGraphicsQueue();
@@ -611,8 +616,26 @@ public:
 
 	VkSampler sampler_;
 
-	// Shadow Render is done on normal Z
-	createSampler(*physicalDevice_, *device_, sampler_, levelCount, VK_COMPARE_OP_LESS_OR_EQUAL);
+	VkSamplerCreateInfo sci{};
+	sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+
+	sci.magFilter = VK_FILTER_LINEAR;
+	sci.minFilter = VK_FILTER_LINEAR;
+	sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+	sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+	sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+	sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+
+	sci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+
+	sci.compareEnable = VK_TRUE;
+	sci.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+	VkSampler shadowCmpSampler;
+	vkCreateSampler(*device_, &sci, nullptr, &shadowCmpSampler);
+
+	VK_CHECK(vkCreateSampler(*device_, &sci, nullptr, &sampler_));
 
 	return samplers_.create(std::move(sampler_));
 
@@ -650,19 +673,16 @@ public:
 
 	VkImageView imageView;
 
-	// this leaks 2D_ARRAY_IMAGES with 1 layer. triggers validation error!
-	//VkImageViewType viewType = (layerCount > 1) ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
-
 	VkImageViewCreateInfo viewInfo{};
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	viewInfo.image = image;
 	viewInfo.viewType = viewType;
 	viewInfo.format = format;
 
-
 	viewInfo.subresourceRange.aspectMask = aspectFlags;
 	viewInfo.subresourceRange.baseMipLevel = 0;
 	//viewInfo.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
+	// VK_REMAINING_MIP_LEVELS is a special constant value used for image views to indicate that all remaining mipmap levels in an image after the base level should be included in the view.
 	viewInfo.subresourceRange.levelCount = levelCount;
 	viewInfo.subresourceRange.baseArrayLayer = baseArrayLayer;
 	viewInfo.subresourceRange.layerCount = layerCount;
@@ -975,7 +995,9 @@ void Context::UploadDataToBuffer(
 
 // Main Pipeline Layout..
 [[nodiscard]] DescriptorLayoutHandle Context::createDescriptorLayout() {
-	// INDEX DATA
+
+
+	// This is not used now really;
 	VkDescriptorSetLayoutBinding instanceIndexBinding{};
 	instanceIndexBinding.binding = 0;
 	instanceIndexBinding.descriptorCount = 1;
@@ -1107,9 +1129,9 @@ void Context::UploadDataToBuffer(
 	pipeline.vert = vert;
 	pipeline.type = PIPELINE_SHADOW;
 
-	constexpr float depthBiasConstant = 0.01f;
-	constexpr float depthBiasSlope = 0.01f;
-
+	// 16 bit depth
+	constexpr float depthBiasConstant = 0; // lets try  FFXVVI oriented depth bias
+	constexpr float depthBiasSlope = 1.0f;
 
 	auto v = shaderModules_.get(vert);
 	VkPipelineShaderStageCreateInfo vertStage{};
@@ -1152,10 +1174,12 @@ void Context::UploadDataToBuffer(
 	VkPipelineRasterizationStateCreateInfo raster{};
 	raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 	raster.polygonMode = VK_POLYGON_MODE_FILL;
-	raster.cullMode = VK_CULL_MODE_BACK_BIT;  // or FRONT/BOTH depending on your needs
+	raster.cullMode = VK_CULL_MODE_BACK_BIT; 
 	raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-	raster.depthClampEnable = VK_FALSE;
-	raster.rasterizerDiscardEnable = VK_FALSE;               // IMPORTANT: must be FALSE or nothing is rasterized
+
+	raster.depthClampEnable = VK_TRUE; // For shadow pipeline lets go witgh yes
+	raster.rasterizerDiscardEnable = VK_FALSE;
+
 	raster.depthBiasEnable = VK_TRUE;                // usually TRUE for shadow acne fix
 	raster.depthBiasConstantFactor = depthBiasConstant;
 	raster.depthBiasSlopeFactor = depthBiasSlope;
@@ -1694,7 +1718,7 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	return textures_.create(std::move(ctx_tex));
 }
 
-[[nodiscard]] ShadowMapHandle Context::CreateShadowMap(int width = 400, int height = 400)
+[[nodiscard]] ShadowMapHandle Context::CreateShadowMap(int width = 1024, int height = 1024)
 {
 	ShadowMap sm;
 	sm.cascades = 0;
@@ -1819,9 +1843,6 @@ void Context::GetAppropiateSampler(Texture& texture) {
 
 }
 
-//[[nodiscard]] GeometryPage Context::CreateVertexDataPage() {
-//
-//}
 
 [[nodiscard]] MeshDescHandle Context::UploadVertexData(MeshUploadInput& geometry_data)
 {

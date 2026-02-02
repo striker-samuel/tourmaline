@@ -39,9 +39,8 @@
 
 // --------------APP--------------------
 
-// Not in use right now.
-//#include <App/pak_methods.h>
-
+constexpr int NUM_CASCADES = 3;
+constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR; // Th
 
 #include <App/TestData/test_data_generators.h>
 
@@ -57,7 +56,15 @@ CameraPositioner_FirstPerson cameraPositioner(
 	glm::vec3(0.0f, 1.0f, 0.0f) //up
 );
 
-constexpr int NUM_CASCADES = 3;
+
+struct FrameData{
+	DescriptorSetHandle frameDescriptorSet;
+	DescriptorSetHandle frameShadowDescriptorSet;
+
+	DeviceBufferHandle frameInstancesDataBuffer;
+	DeviceBufferHandle frameLightsDataBuffer;
+};
+
 
 class VulkanApp {
 
@@ -84,29 +91,28 @@ public:
 	void Start();
 	void LoadScene();
 
-	std::vector<Light> lights;
-
 	PipelineHandle default_material_pipeline;
 	PipelineHandle default_shadow_pipeline;
+
+	std::array<ShadowMapSlot, SHADOWMAP_SLOTS> shadowmaps;
+
+	void IntializeShadowMaps() {
+		for (int i = 0; i < SHADOWMAP_SLOTS; i++) {
+			for (int j = 0; j < MAX_FRAMES_IN_FLIGHT; j++)
+			{
+				shadowmaps[i].perFrame[j] = context->CreateShadowMap();
+			}
+		}
+	}
 
 private:
 
 	Context* context;
 	ImGuiContext* imgui_ctx;
+	Scene scene_ = {}; // empty scene initialization
 
-	//Scene scene_ = getSceneFromGltf(gltf_meshes_paths[0]);
-	Scene scene_ = {}; // empty scene initialize
-
-	DescriptorSetHandle frameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
-
-	//SW
-	DescriptorSetHandle shadowFrameDescriptorSets[MAX_FRAMES_IN_FLIGHT];
-
-	// Presnt still on app side. moved the rest to cotnext
+	// App still has ownership over the present queue for the current moment.
 	VkQueue presentQueue_;
-	//VkQueue graphicsQueue_;
-	//VkQueue computeQueue_;
-	//VkQueue transferQueue_;
 
 #pragma region ===[ App / Core State ]===
 
@@ -130,10 +136,11 @@ private:
 
 #pragma endregion
 
-	// Main depth image is the one for the main view.
 	VkImage main_depthImage;
-	VkDeviceMemory main_depthImageMemory;
 	VkImageView main_depthImageView;
+
+	ImageHandle mainViewDepthImage;
+	ImageViewHandle mainViewDepthImageView;
 	VmaAllocation main_d_alloc;
 
 #pragma region ===[ GLFW / Window State ]===
@@ -151,43 +158,44 @@ private:
 
 #pragma region ===[ Uniforms / Descriptor Sets ]==
 
-	DeviceBufferHandle uniforms_[MAX_FRAMES_IN_FLIGHT];
-	DeviceBufferHandle instanceDataStorages_[MAX_FRAMES_IN_FLIGHT];
-	DeviceBufferHandle instanceIndexUniforms_[MAX_FRAMES_IN_FLIGHT];
-	DeviceBufferHandle lightDataUniformBuffers[MAX_FRAMES_IN_FLIGHT];
+	FrameData perFrameData[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
 
 #pragma region ===[ Pipeline / Render Resources ]===
 
-	VkCommandPool framesCommandPool[MAX_FRAMES_IN_FLIGHT];
+	VkCommandPool perFrameCommandPools[MAX_FRAMES_IN_FLIGHT];
 	VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
 
 #pragma region ===[ Synchronization Primitives ]===
 
-	VkSemaphore * renderFinishedSemaphores;
+	VkSemaphore * renderFinishedSemaphores; // this is swapchainImageCountSize. that count cant be known without a query thats why here lies a pointer.
 	VkSemaphore imageAvailableSemaphores[MAX_FRAMES_IN_FLIGHT];
 	VkFence inFlightFences[MAX_FRAMES_IN_FLIGHT];
 
 	uint32_t currentFrame = 0;
 #pragma endregion
 
-#pragma region ===[ Input / Camera State ]===
+#pragma region ===[ Input ]===
 	bool rightMousePressed = false;
 	bool firstMouse;
 	float lastX, lastY;
 	int currentKey = -1; // Keeps track of the currently pressed key (W, A, S, D)
 #pragma endregion
 
-#pragma region ===[ Flags / Resize Events ]===
+#pragma region ===[ Flags / Events ]===
 	bool framebufferResized = false;
 #pragma endregion
 
 
+#pragma region Initialization
+
 	void InitVulkanApp();
 	void InitializeImGui();
+#pragma endregion
+
 
 	void UpdateDeltaTime() {
 
@@ -219,65 +227,64 @@ private:
 		ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
 			1000.0f / io.Framerate, io.Framerate);
 
-		// --- Debug: draw light dots in screen space ---
-
 		ImDrawList* drawList = ImGui::GetForegroundDrawList();
 
-		glm::mat4 view = camera_.getViewMatrix();
-		glm::mat4 proj = camera_.getProjMatrix();
-		proj[1][1] *= -1.0f;  // match your main pass
 
+		// DEBUG DRAW POINTS OVER LIGHTS:
+		//glm::mat4 view = camera_.getViewMatrix();
+		//glm::mat4 proj = camera_.getProjMatrix();
+		//proj[1][1] *= -1.0f;  // match your main pass
 
-		int n = 0;
-		for (auto light : lights) {
+		//int n = 0;
+		//for (auto light : lights) {
 
-			if (light.intensity <= 0.0f)
-				continue;
+		//	if (light.intensity <= 0.0f)
+		//		continue;
 
-			glm::vec3 worldPos(
-				light.position[0],
-				light.position[1],
-				light.position[2]
-			);
+		//	glm::vec3 worldPos(
+		//		light.position[0],
+		//		light.position[1],
+		//		light.position[2]
+		//	);
 
-			glm::vec4 clip = proj * view * glm::vec4(worldPos, 1.0f);
-			if (clip.w <= 0.0f)
-				continue;
+		//	glm::vec4 clip = proj * view * glm::vec4(worldPos, 1.0f);
+		//	if (clip.w <= 0.0f)
+		//		continue;
 
-			glm::vec3 ndc = glm::vec3(clip) / clip.w; // [-1,1]
+		//	glm::vec3 ndc = glm::vec3(clip) / clip.w; // [-1,1]
 
-			if (ndc.x < -1.0f || ndc.x > 1.0f ||
-				ndc.y < -1.0f || ndc.y > 1.0f ||
-				ndc.z < 0.0f || ndc.z > 1.0f)
-				continue;
+		//	if (ndc.x < -1.0f || ndc.x > 1.0f ||
+		//		ndc.y < -1.0f || ndc.y > 1.0f ||
+		//		ndc.z < 0.0f || ndc.z > 1.0f)
+		//		continue;
 
-			// Map NDC -> ImGui screen space (origin top-left)
-			const float sx = (ndc.x * 0.5f + 0.5f) * io.DisplaySize.x;
-			const float sy = (ndc.y * 0.5f + 0.5f) * io.DisplaySize.y;  // <- no extra flip
+		//	// Map NDC -> ImGui screen space (origin top-left)
+		//	const float sx = (ndc.x * 0.5f + 0.5f) * io.DisplaySize.x;
+		//	const float sy = (ndc.y * 0.5f + 0.5f) * io.DisplaySize.y;  // <- no extra flip
 
-			float r = light.color[0];
-			float g = light.color[1];
-			float b = light.color[2];
-			if (r == 0.0f && g == 0.0f && b == 0.0f) {
-				r = 1.0f; g = 1.0f; b = 0.0f;
-			}
+		//	float r = light.color[0];
+		//	float g = light.color[1];
+		//	float b = light.color[2];
+		//	if (r == 0.0f && g == 0.0f && b == 0.0f) {
+		//		r = 1.0f; g = 1.0f; b = 0.0f;
+		//	}
 
-			ImU32 col = IM_COL32(
-				(int)(glm::clamp(r, 0.0f, 1.0f) * 255.0f),
-				(int)(glm::clamp(g, 0.0f, 1.0f) * 255.0f),
-				(int)(glm::clamp(b, 0.0f, 1.0f) * 255.0f),
-				255
-			);
+		//	ImU32 col = IM_COL32(
+		//		(int)(glm::clamp(r, 0.0f, 1.0f) * 255.0f),
+		//		(int)(glm::clamp(g, 0.0f, 1.0f) * 255.0f),
+		//		(int)(glm::clamp(b, 0.0f, 1.0f) * 255.0f),
+		//		255
+		//	);
 
-			const float radius = 6.0f;
-			drawList->AddCircleFilled(ImVec2(sx, sy), radius, col, 12);
+		//	const float radius = 6.0f;
+		//	drawList->AddCircleFilled(ImVec2(sx, sy), radius, col, 12);
 
-			// Optional label
-			drawList->AddText(ImVec2(sx + radius + 2.0f, sy - radius),
-				IM_COL32(255, 255, 255, 255),
-				std::to_string(n).c_str());
-			n++;
-		}
+		//	// Optional label
+		//	drawList->AddText(ImVec2(sx + radius + 2.0f, sy - radius),
+		//		IM_COL32(255, 255, 255, 255),
+		//		std::to_string(n).c_str());
+		//	n++;
+		//}
 
 	}
 
@@ -322,13 +329,17 @@ private:
 
 	void Update() {
 
-		// fake animation
-		int i = 0;
-		for (auto light : lights) {
-			float phase = std::sin(i + time_since_start_s * 0.35f);  // staggered phases
-			light.position[2] = static_cast<float>(i) * 1 + phase;
-			i++;
-		}
+		//// fake animation
+		//int i = 0;
+		//for (auto light : lights) {
+
+		//	if (light.type != LIGHT_TYPE_DIRECTIONAL) {
+		//		float phase = std::sin(i + time_since_start_s * 0.35f);  // staggered phases
+		//		light.position[2] = static_cast<float>(i) * 1 + phase;
+		//		i++;
+		//	}
+
+		//}
 
 	}
 
@@ -340,7 +351,19 @@ private:
 
 #pragma endregion
 
-	void recreateSwapChain() {
+	void SetupDebugMessenger() {
+		if (!enableValidationLayers) return;
+
+		VkDebugUtilsMessengerCreateInfoEXT createInfo;
+		populateDebugMessengerCreateInfo(createInfo);
+
+		if (CreateDebugUtilsMessengerEXT(instance, &createInfo, nullptr,
+			&debugMessenger) != VK_SUCCESS) {
+			throw std::runtime_error("failed to set up debug messenger!");
+		}
+	}
+
+	void RecreateSwapChain() {
 
 		int width = 0, height = 0;
 		glfwGetFramebufferSize(window, &width, &height);
@@ -355,8 +378,8 @@ private:
 		vkDeviceWaitIdle(device);
 
 		cleanupSwapChain();
-		createSwapChain();
-		createSwapchainImageViews();
+		CreateSwapChain();
+		CreateSwapchainImageViews();
 
 		CreateDepthResources();
 
@@ -365,19 +388,7 @@ private:
 		camera_.setPerspective(45.0f, newAspect, default_near_clip, default_far_clip);
 	}
 
-	void setupDebugMessenger() {
-		if (!enableValidationLayers) return;
-
-		VkDebugUtilsMessengerCreateInfoEXT createInfo;
-		populateDebugMessengerCreateInfo(createInfo);
-
-		if (CreateDebugUtilsMessengerEXT(instance, &createInfo, nullptr,
-			&debugMessenger) != VK_SUCCESS) {
-			throw std::runtime_error("failed to set up debug messenger!");
-		}
-	}
-
-	void createSwapChain() {
+	void CreateSwapChain() {
 
 		SwapChainSupportDetails swapChainSupport =
 			querySwapChainSupport(physicalDevice, surface);
@@ -386,7 +397,6 @@ private:
 
 		//VkPresentModeKHR presentMode =
 		//	chooseSwapPresentMode(swapChainSupport.presentModes);
-		VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 
 		VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities, window);
 
@@ -438,7 +448,7 @@ private:
 		swapChainExtent = extent;
 	}
 
-	void createSwapchainImageViews() {
+	void CreateSwapchainImageViews() {
 
 		for (uint32_t i = 0; i < swapchainImageCount; ++i) {
 
@@ -456,6 +466,24 @@ private:
 	void CreateDepthResources() {
 		VkFormat depthFormat = findDepthFormat(physicalDevice);
 
+		//mainViewDepthImage = context->CreateImage(
+		//	swapChainExtent.width,
+		//	swapChainExtent.height,
+		//	depthFormat,
+		//	VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+		//	0, //levels == mips. mainView depth should be 0 levels. 
+		//	1
+		//); // TILING IS ASSUMED OPTIMAL
+
+		//mainViewDepthImageView = context->CreateImageView(
+		//	mainViewDepthImage,
+		//	VK_IMAGE_ASPECT_DEPTH_BIT,
+		//	0,
+		//	0,
+		//	1, 
+		//	VK_IMAGE_VIEW_TYPE_2D
+		//);
+
 		createImage(
 			swapChainExtent.width,
 			swapChainExtent.height,
@@ -467,7 +495,9 @@ private:
 		);
 
 		createImageView(main_depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, main_depthImageView, 1);
-		context->TransitionImageLayout(main_depthImage, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+		context->TransitionImageLayout(mainViewDepthImage,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
 	}
 
@@ -489,7 +519,6 @@ private:
 	}
 
 	void CleanUp();
-	// --------------------------
 
 	void createImageView(
 		VkImage image,
@@ -550,24 +579,19 @@ private:
 		//return alloc;
 	}
 
+	// --------------------------
+
 	void CreateFrameDataBuffers() {
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
-			instanceIndexUniforms_[i] = context->createBuffer(
-				sizeof(IndexSlot) * MAX_INSTANCES,
-				// Just using this ftm:
-				VMA_MEMORY_USAGE_AUTO,
-				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			);
-			instanceDataStorages_[i] = context->createBuffer(
+			perFrameData[i].frameInstancesDataBuffer = context->createBuffer(
 				sizeof(InstanceData) * MAX_INSTANCES,
 				VMA_MEMORY_USAGE_AUTO,
 				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			);
 
-			// Lights
-			lightDataUniformBuffers[i] = context->createBuffer(
+			perFrameData[i].frameLightsDataBuffer = context->createBuffer(
 				sizeof(Light) * MAX_LIGHTS,
 				VMA_MEMORY_USAGE_AUTO,
 				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
@@ -575,123 +599,45 @@ private:
 		}
 	}
 
-	void  UpdateMehsletsDescriptorSets(uint32_t currentFrame) {
-
-		//assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
-
-		//VkDescriptorBufferInfo meshletInfo{ meshletDescBuffer, 0, VK_WHOLE_SIZE };
-		//VkDescriptorBufferInfo vertexInfo{ vertexBuffer,     0, VK_WHOLE_SIZE };
-		//VkDescriptorBufferInfo triInfo{ triBuffer,        0, VK_WHOLE_SIZE };
-
-		//VkWriteDescriptorSet writes[3]{};
-
-		////auto setHandle = frameDescriptorSets[currentFrame];
-		////auto setObj = context->descriptorSets_.get(setHandle);
-		////VkDescriptorSet vkSet = setObj->set;
-
-
-		//writes[0] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-		//writes[0].dstSet = vkSet;
-		//writes[0].dstBinding = 0;
-		//writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		//writes[0].descriptorCount = 1;
-		//writes[0].pBufferInfo = &meshletInfo;
-
-		//writes[1] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-		//writes[1].dstSet = vkSet;
-		//writes[1].dstBinding = 1;
-		//writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		//writes[1].descriptorCount = 1;
-		//writes[1].pBufferInfo = &vertexInfo;
-
-		//writes[2] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-		//writes[2].dstSet = vkSet;
-		//writes[2].dstBinding = 2;
-		//writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		//writes[2].descriptorCount = 1;
-		//writes[2].pBufferInfo = &triInfo;
-
-		//vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
-
-	}
-
-	void UpdateInstanceDescriptorSets(uint32_t currentFrame)
+	void UpdateMainViewFrameData(uint32_t currentFrame)
 	{
 		assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
 
-		auto ii_data = context->buffers_.get(instanceIndexUniforms_[currentFrame]);
-		auto id_data = context->buffers_.get(instanceDataStorages_[currentFrame]);
-
-		VkDescriptorBufferInfo instanceIndexBufferInfo{
-			.buffer = ii_data->buffer,
-			.offset = 0,
-			.range = sizeof(IndexSlot) * MAX_INSTANCES
-		};
+		auto instancesDataBufferHandle = context->buffers_.get(perFrameData[currentFrame].frameInstancesDataBuffer);
 		VkDescriptorBufferInfo instanceBufferInfo{
-			.buffer = id_data->buffer,
+			.buffer = instancesDataBufferHandle->buffer,
 			.offset = 0,
 			.range = sizeof(InstanceData) * MAX_INSTANCES
 		};
+
+
+		auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
+		auto setObj = context->descriptorSets_.get(setHandle);
+
 		{
-			auto setHandle = frameDescriptorSets[currentFrame];
-			auto setObj = context->descriptorSets_.get(setHandle);
 			VkDescriptorSet vkSet = setObj->set;
 
-			VkWriteDescriptorSet writes[3]{};
+			VkWriteDescriptorSet writes[1]{};
 
 			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			writes[0].dstSet = vkSet;
-			writes[0].dstBinding = 0; // UBO
+			writes[0].dstBinding = 1; // SSBO
 			writes[0].dstArrayElement = 0;
-			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			writes[0].descriptorCount = 1;
-			writes[0].pBufferInfo = &instanceIndexBufferInfo;
+			writes[0].pBufferInfo = &instanceBufferInfo;
 
-			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writes[1].dstSet = vkSet;
-			writes[1].dstBinding = 1; // SSBO
-			writes[1].dstArrayElement = 0;
-			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-			writes[1].descriptorCount = 1;
-			writes[1].pBufferInfo = &instanceBufferInfo;
-
-			vkUpdateDescriptorSets(device, 2 /*descitprorWriteCount*/, writes, 0, nullptr);
-
-		}
-
-		{
-
-			auto setHandle = shadowFrameDescriptorSets[currentFrame];
-			auto setObj = context->descriptorSets_.get(setHandle);
-			VkDescriptorSet vkSet = setObj->set;
-
-			VkWriteDescriptorSet writes[2]{};
-
-			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writes[0].dstSet = vkSet;
-			writes[0].dstBinding = 0; // UBO
-			writes[0].dstArrayElement = 0;
-			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			writes[0].descriptorCount = 1;
-			writes[0].pBufferInfo = &instanceIndexBufferInfo;
-
-			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writes[1].dstSet = vkSet;
-			writes[1].dstBinding = 1; // SSBO
-			writes[1].dstArrayElement = 0;
-			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-			writes[1].descriptorCount = 1;
-			writes[1].pBufferInfo = &instanceBufferInfo;
-
-			vkUpdateDescriptorSets(device, 2 /*descitprorWriteCount*/, writes, 0, nullptr);
-
+			vkUpdateDescriptorSets(device, 2 /*descriptorWriteCount*/, writes, 0, nullptr);
 
 		}
 	}
 
-
-	void UpdateShadowMapDescriptorSets(uint32_t currentFrame)
+	void UpdateMainViewShadowmapFrames(uint32_t currentFrame)
 	{
+		auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
+		auto setObj = context->descriptorSets_.get(setHandle);
+		VkDescriptorSet vkSet = setObj->set;
+
 		auto sam = context->samplers["default_shadow"];
 		VkSampler shadowSampler = *context->samplers_.get(sam);
 
@@ -710,7 +656,6 @@ private:
 				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			};
 
-
 			samplerInfos[slot] = VkDescriptorImageInfo{
 					.sampler = shadowSampler,
 					.imageView = VK_NULL_HANDLE,
@@ -718,15 +663,6 @@ private:
 			};
 
 		}
-
-		//VkDescriptorImageInfo samplerInfo{
-		//	.sampler = shadowSampler,
-		//	.imageView = VK_NULL_HANDLE,
-		//	.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED
-		//};
-
-		auto setHandle = frameDescriptorSets[currentFrame];
-		VkDescriptorSet vkSet = context->descriptorSets_.get(setHandle)->set;
 
 		VkWriteDescriptorSet writes[2]{};
 
@@ -747,15 +683,6 @@ private:
 		writes[1].descriptorCount = SHADOWMAP_SLOTS;
 		writes[1].pImageInfo = samplerInfos.data();
 
-
-		//writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		//writes[1].dstSet = vkSet;
-		//writes[1].dstBinding = 6;
-		//writes[1].dstArrayElement = 0;
-		//writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-		//writes[1].descriptorCount = 1;
-		//writes[1].pImageInfo = &samplerInfo;
-
 		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 	}
 
@@ -763,15 +690,14 @@ private:
 
 		assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
 
-		auto light_data_bfd = context->buffers_.get(lightDataUniformBuffers[currentFrame]);
+		auto light_data_bfd = context->buffers_.get(perFrameData->frameLightsDataBuffer);
 		VkDescriptorBufferInfo lightDataBufferRangeInfo{
 			.buffer = light_data_bfd->buffer,
 			.offset = 0,
 			.range = sizeof(Light) * MAX_LIGHTS
 		};
 
-
-		auto setHandle = frameDescriptorSets[currentFrame];
+		auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
 		auto setObj = context->descriptorSets_.get(setHandle);
 		VkDescriptorSet vkSet = setObj->set;
 
@@ -791,6 +717,7 @@ private:
 	}
 
 	// This could be done way more clever. Only updating changed textures.
+	// This may cause problems over the frame boundary if texture list changes...
 	void UpdateBindlessTextures(uint32_t currentFrame) {
 
 		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstances_.numObjects());
@@ -823,11 +750,7 @@ private:
 		//// --- Two writes: images at index 2, samplers at index 3 ---
 		VkWriteDescriptorSet writes[2]{};
 
-		auto setHandle = frameDescriptorSets[currentFrame];
-
-		//for (auto setHandle : frameDescriptorSets)
-		//{
-
+		auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
 		auto set = context->descriptorSets_.get(setHandle);
 
 		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -863,18 +786,9 @@ private:
 
 		vkCmdBindIndexBuffer(commandBuffer, context->buffers_.get(page->indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
 	}
-
-	std::array<ShadowMapSlot, SHADOWMAP_SLOTS> shadowmaps;
-
-	void IntializeShadowMaps() {
-		for (int i = 0; i < SHADOWMAP_SLOTS; i++) {
-			for (int j = 0; j < MAX_FRAMES_IN_FLIGHT; j++)
-			{
-				shadowmaps[i].perFrame[j] = context->CreateShadowMap();
-			}
-		}
-	}
-
+	
+	// shadowmaps are per frame
+	// This is a helper to get frame.slot shadowmap
 	ShadowMap GetShadowMapFromShadowMapIndex(uint32_t shadowmap_index, uint32_t currentFrame) {
 
 		assert(shadowmap_index >= 0);
@@ -887,7 +801,7 @@ private:
 	}
 
 	void RecordCascadesForDirectionalLight(
-		Light& light,
+		DirectionalLight& light,
 		VkCommandBuffer& commandBuffer,
 		ShadowMap& shadowmap,
 		VkPipelineLayout& pipe_lyt
@@ -945,21 +859,17 @@ private:
 
 			PushConstants pc{};
 			// --- compute per-cascade VP ---
+
 			GetDirectionalLightOrthoVP(
 				light,
 				camera_.getViewMatrix(),
 				camera_.getProjMatrix(),
-				cascadeNear,
-				cascadeFar,
-				pc.view,
-				pc.proj,
-				/*zPadding*/  50.0f,
-				/*xyPadding*/ 0.0f,
-				/*snap*/      false,
-				/*res*/       tileW  // important: snap resolution should match TILE res, not atlas res
+				0.1f, 20.0f,
+				pc.view, pc.proj,
+				/*zPadding*/ 50.0f,
+				/*snap*/ true,
+				/*res*/ tileW
 			);
-
-			// Vulkan Y flip
 			pc.proj[1][1] *= -1.0f;
 
 			vkCmdPushConstants(
@@ -989,258 +899,193 @@ private:
 		}
 	}
 
-	void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer)
-	{
+	//void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer)
+	//{
 
-		for (auto& light : lights) {
+	//	for (auto& spot : spotLights) {
 
-			int smi = light.shadow_map_index;
-			if (smi < 0) continue;
-			if (smi >= SHADOWMAP_SLOTS) continue; // or assert
-			auto sm = GetShadowMapFromShadowMapIndex(smi, currentFrame);
+	//		int smi = light.shadow_map_index;
+	//		if (smi < 0) continue;
+	//		if (smi >= SHADOWMAP_SLOTS) continue; // or assert
+	//		auto sm = GetShadowMapFromShadowMapIndex(smi, currentFrame);
 
-			auto shadowMapImage = context->images_.get(sm.image);
-			VkImageView shadowMapRenderView = *context->imageViews_.get(sm.renderView);
+	//		auto shadowMapImage = context->images_.get(sm.image);
+	//		VkImageView shadowMapRenderView = *context->imageViews_.get(sm.renderView);
 
-			VkExtent2D shadowExtent = { shadowMapImage->width,shadowMapImage->height };           // e.g. { width, height }
+	//		VkExtent2D shadowExtent = { shadowMapImage->width,shadowMapImage->height };           // e.g. { width, height }
 
-			// 1) Transition depth image to DEPTH_ATTACHMENT_OPTIMAL
-			{
-				VkImageMemoryBarrier barrier{};
-				barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-				//				barrier.oldLayout = used_image ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // I do loadOp clear so this can be undefined no problem
-				barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				barrier.image = shadowMapImage->image;
-				barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-				barrier.subresourceRange.baseMipLevel = 0;
-				barrier.subresourceRange.levelCount = 1;
-				barrier.subresourceRange.baseArrayLayer = 0;     // or layer if using array
-				barrier.subresourceRange.layerCount = 1;
+	//		{
+	//			VkImageMemoryBarrier barrier{};
+	//			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	//			//				barrier.oldLayout = used_image ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	//			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // I do loadOp clear so this can be undefined no problem
+	//			barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+	//			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	//			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	//			barrier.image = shadowMapImage->image;
+	//			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+	//			barrier.subresourceRange.baseMipLevel = 0;
+	//			barrier.subresourceRange.levelCount = 1;
+	//			barrier.subresourceRange.baseArrayLayer = 0;     // or layer if using array
+	//			barrier.subresourceRange.layerCount = 1;
 
-				barrier.srcAccessMask = 0;                       // nothing before
-				barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	//			barrier.srcAccessMask = 0;                       // nothing before
+	//			barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
-				vkCmdPipelineBarrier(
-					commandBuffer,
-					VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-					VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-					0,
-					0, nullptr,
-					0, nullptr,
-					1, &barrier
-				);
-			}
+	//			vkCmdPipelineBarrier(
+	//				commandBuffer,
+	//				VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+	//				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+	//				0,
+	//				0, nullptr,
+	//				0, nullptr,
+	//				1, &barrier
+	//			);
+	//		}
 
-			// 2) Begin dynamic rendering with depth-only
-			VkRenderingAttachmentInfoKHR depthAttachment{};
-			depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-			depthAttachment.imageView = shadowMapRenderView;
-			depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-			depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-			depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;   // we want to sample this later
+	//		VkRenderingAttachmentInfoKHR depthAttachment{};
+	//		depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+	//		depthAttachment.imageView = shadowMapRenderView;
+	//		depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+	//		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	//		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;   // we want to sample this later
 
-			VkClearValue clearDepth{};
+	//		VkClearValue clearDepth{};
 
-			// Normal Z Depth, unlike primary view.
-			clearDepth.depthStencil.depth = 1.0f;
-			depthAttachment.clearValue = clearDepth;
+	//		// Normal Z Depth, unlike primary view.
+	//		clearDepth.depthStencil.depth = 1.0f;
+	//		depthAttachment.clearValue = clearDepth;
 
-			VkRenderingInfoKHR renderingInfo{};
-			renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
-			renderingInfo.renderArea.offset = { 0, 0 };
-			renderingInfo.renderArea.extent = shadowExtent;           // shadow map size
-			renderingInfo.layerCount = 1;
-			renderingInfo.colorAttachmentCount = 0;                      // depth-only
-			renderingInfo.pColorAttachments = nullptr;
-			renderingInfo.pDepthAttachment = &depthAttachment;
-			renderingInfo.pStencilAttachment = nullptr;
+	//		VkRenderingInfoKHR renderingInfo{};
+	//		renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
+	//		renderingInfo.renderArea.offset = { 0, 0 };
+	//		renderingInfo.renderArea.extent = shadowExtent;           // shadow map size
+	//		renderingInfo.layerCount = 1;
+	//		renderingInfo.colorAttachmentCount = 0;                      // depth-only
+	//		renderingInfo.pColorAttachments = nullptr;
+	//		renderingInfo.pDepthAttachment = &depthAttachment;
+	//		renderingInfo.pStencilAttachment = nullptr;
 
-			vkCmdBeginRendering(commandBuffer, &renderingInfo);
+	//		vkCmdBeginRendering(commandBuffer, &renderingInfo);
 
-			// 3) Viewport & scissor
-			VkViewport vp{};
-			vp.x = 0.0f;
-			vp.y = 0.0f;
-			vp.width = static_cast<float>(shadowExtent.width);
-			vp.height = static_cast<float>(shadowExtent.height);
-			vp.minDepth = 0.0f;
-			vp.maxDepth = 1.0f;
-			vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+	//		VkViewport vp{};
+	//		vp.x = 0.0f;
+	//		vp.y = 0.0f;
+	//		vp.width = static_cast<float>(shadowExtent.width);
+	//		vp.height = static_cast<float>(shadowExtent.height);
+	//		vp.minDepth = 0.0f;
+	//		vp.maxDepth = 1.0f;
+	//		vkCmdSetViewport(commandBuffer, 0, 1, &vp);
 
-			// We should resize scissor to avoid unnecesary pixelinvokations
-			VkRect2D scissor{};
-			scissor.offset = { 0, 0 };
-			scissor.extent = shadowExtent;
-			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+	//		// We should resize scissor to avoid unnecesary pixelinvokations
+	//		VkRect2D scissor{};
+	//		scissor.offset = { 0, 0 };
+	//		scissor.extent = shadowExtent;
+	//		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-			BindVertex(commandBuffer);
+	//		BindVertex(commandBuffer);
 
-			// Shadow Pipelien depthCompare is LESS_OR_EQUAL
-			auto s_pipeline = context->pipelines_.get(default_shadow_pipeline);
-			auto pipe_lyt = s_pipeline->plyt;
+	//		// Shadow Pipelien depthCompare is LESS_OR_EQUAL
+	//		auto s_pipeline = context->pipelines_.get(default_shadow_pipeline);
+	//		auto pipe_lyt = s_pipeline->plyt;
 
-			vkCmdBindPipeline(
-				commandBuffer,
-				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				s_pipeline->pipeline
-			);
+	//		vkCmdBindPipeline(
+	//			commandBuffer,
+	//			VK_PIPELINE_BIND_POINT_GRAPHICS,
+	//			s_pipeline->pipeline
+	//		);
 
-			auto sets = context->descriptorSets_.get(shadowFrameDescriptorSets[currentFrame]);
+	//		auto sets = context->descriptorSets_.get(shadowFrameDescriptorSets[currentFrame]);
 
-			vkCmdBindDescriptorSets(
-				commandBuffer,
-				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				pipe_lyt,
-				0,
-				1,
-				&sets->set,
-				0,
-				nullptr
-			);
+	//		vkCmdBindDescriptorSets(
+	//			commandBuffer,
+	//			VK_PIPELINE_BIND_POINT_GRAPHICS,
+	//			pipe_lyt,
+	//			0,
+	//			1,
+	//			&sets->set,
+	//			0,
+	//			nullptr
+	//		);
 
-			if (light.type == LIGHT_TYPE_SPOT) {
+	//		if (light.type == LIGHT_TYPE_SPOT) {
 
-				PushConstants pc{};
-				pc.view = GetLightView(light);
-				pc.proj = GetPerspectiveProjectionForLight(light, /*aspect*/ 1.0f, /*near*/ 0.1f, /*far*/ 100.0f);
-				pc.proj[1][1] *= -1;
+	//			PushConstants pc{};
+	//			pc.view = GetSpotLightView(light);
+	//			pc.proj = GetPerspectiveProjectionForLight(light, /*aspect*/ 1.0f, /*near*/ 0.1f, /*far*/ 100.0f);
+	//			pc.proj[1][1] *= -1;
 
-				vkCmdPushConstants(
-					commandBuffer,
-					pipe_lyt,
-					VK_SHADER_STAGE_VERTEX_BIT, // | VK_SHADER_STAGE_FRAGMENT_BIT if you want
-					0,
-					sizeof(PushConstants),
-					&pc
-				);
+	//			vkCmdPushConstants(
+	//				commandBuffer,
+	//				pipe_lyt,
+	//				VK_SHADER_STAGE_VERTEX_BIT, // | VK_SHADER_STAGE_FRAGMENT_BIT if you want
+	//				0,
+	//				sizeof(PushConstants),
+	//				&pc
+	//			);
 
-				for (int i = 0; i < static_cast<int>(scene_.hierarchy.size()); ++i) {
-					auto mesh_desc_handle = context->meshes_.getHandle(scene_.meshForNode[i]);
-					auto mesh_desc = context->meshes_.get(mesh_desc_handle);
+	//			for (int i = 0; i < static_cast<int>(scene_.hierarchy.size()); ++i) {
+	//				auto mesh_desc_handle = context->meshes_.getHandle(scene_.meshForNode[i]);
+	//				auto mesh_desc = context->meshes_.get(mesh_desc_handle);
 
-					for (auto draw_set : mesh_desc->sets) {
+	//				for (auto draw_set : mesh_desc->sets) {
 
-						vkCmdDrawIndexed(
-							commandBuffer,
-							draw_set.index_count,
-							1,
-							draw_set.first_index,
-							draw_set.base_vertex,
-							0
-						);
+	//					vkCmdDrawIndexed(
+	//						commandBuffer,
+	//						draw_set.index_count,
+	//						1,
+	//						draw_set.first_index,
+	//						draw_set.base_vertex,
+	//						0
+	//					);
 
-					}
+	//				}
 
-				}
+	//			}
 
 
 
-			}
-			else if (light.type == LIGHT_TYPE_DIRECTIONAL) {
+	//		}
+	//		else {
+	//			assert(false && "Unsuported lightype");
+	//		}
+
+	//		vkCmdEndRendering(commandBuffer);
+
+	//		{
+	//			VkImageMemoryBarrier barrier{};
+	//			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	//			barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+	//			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	//			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	//			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	//			barrier.image = shadowMapImage->image;
+	//			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+	//			barrier.subresourceRange.baseMipLevel = 0;
+	//			barrier.subresourceRange.levelCount = 1;
+	//			barrier.subresourceRange.baseArrayLayer = 0;
+	//			barrier.subresourceRange.layerCount = 1;
+
+	//			barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	//			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+	//			vkCmdPipelineBarrier(
+	//				commandBuffer,
+	//				VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+	//				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+	//				0,
+	//				0, nullptr,
+	//				0, nullptr,
+	//				1, &barrier
+	//			);
+
+	//		}
+	//	}
 
 
-				PushConstants pc;
+	//}
 
-				GetDirectionalLightOrthoVP(
-					light,
-					camera_.getViewMatrix(),
-					camera_.getProjMatrix(),
-					/*shadowNear*/ 0.1f,
-					/*shadowFar*/  20.0f,
-					pc.view,
-					pc.proj,
-					/*zPadding*/  50.0f,
-					/*xyPadding*/ 0.0f,
-					/*snap*/      false,
-					/*res*/       shadowExtent.width
-				);
-
-				// Vulkan Y flip
-				pc.proj[1][1] *= -1.0f;
-
-				vkCmdPushConstants(
-					commandBuffer,
-					pipe_lyt,
-					VK_SHADER_STAGE_VERTEX_BIT, // | VK_SHADER_STAGE_FRAGMENT_BIT if you want
-					0,
-					sizeof(PushConstants),
-					&pc
-				);
-
-				for (int i = 0; i < static_cast<int>(scene_.hierarchy.size()); ++i) {
-					auto mesh_desc_handle = context->meshes_.getHandle(scene_.meshForNode[i]);
-					auto mesh_desc = context->meshes_.get(mesh_desc_handle);
-
-					for (auto draw_set : mesh_desc->sets) {
-
-						vkCmdDrawIndexed(
-							commandBuffer,
-							draw_set.index_count,
-							1,
-							draw_set.first_index,
-							draw_set.base_vertex,
-							0
-						);
-
-					}
-
-				}
-
-			}
-			//else if (light.type == LIGHT_TYPE_DIRECTIONAL) {
-			//	RecordCascadesForDirectionalLight(
-			//		light,
-			//		commandBuffer,
-			//		sm,
-			//		pipe_lyt
-			//	);
-
-			//
-			//}
-			else {
-				assert(false && "No additional light types implemented yet!");
-			}
-
-			vkCmdEndRendering(commandBuffer);
-
-			// 8) Transition depth image for sampling in main pass
-			{
-				VkImageMemoryBarrier barrier{};
-				barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-				barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-				barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				barrier.image = shadowMapImage->image;
-				barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-				barrier.subresourceRange.baseMipLevel = 0;
-				barrier.subresourceRange.levelCount = 1;
-				barrier.subresourceRange.baseArrayLayer = 0;
-				barrier.subresourceRange.layerCount = 1;
-
-				barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-				barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-				vkCmdPipelineBarrier(
-					commandBuffer,
-					VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-					0,
-					0, nullptr,
-					0, nullptr,
-					1, &barrier
-				);
-
-			}
-		}
-
-
-	}
-
-	void RecordCommandsForFrame(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+	void RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
 
 		VkImageMemoryBarrier barrierToColorAttachment{};
 		barrierToColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1333,7 +1178,7 @@ private:
 				mat_pipe_entry.obj_.pipeline
 			);
 
-			auto sets = context->descriptorSets_.get(frameDescriptorSets[currentFrame]);
+			auto sets = context->descriptorSets_.get(perFrameData[currentFrame].frameDescriptorSet);
 			auto pipe_lyt = mat_pipe_entry.obj_.plyt;
 
 			vkCmdBindDescriptorSets(
@@ -1777,9 +1622,9 @@ bool VulkanApp::Initialize() {
 	InitializeImGui();
 
 	// SwapChain
-	createSwapChain();
+	CreateSwapChain();
 	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
-	createSwapchainImageViews();
+	CreateSwapchainImageViews();
 
 	// Queues.
 	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
@@ -1791,7 +1636,7 @@ bool VulkanApp::Initialize() {
 	};
 
 	for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
-		if (vkCreateCommandPool(device, &poolInfo, nullptr, &framesCommandPool[fn]) !=
+		if (vkCreateCommandPool(device, &poolInfo, nullptr, &perFrameCommandPools[fn]) !=
 			VK_SUCCESS) {
 			throw std::runtime_error("failed to create graphics command pool!");
 		}
@@ -1801,7 +1646,7 @@ bool VulkanApp::Initialize() {
 
 	VkCommandBufferAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	allocInfo.commandPool = framesCommandPool[currentFrame];
+	allocInfo.commandPool = perFrameCommandPools[currentFrame];
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	allocInfo.commandBufferCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
 
@@ -1927,7 +1772,7 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 
 #pragma endregion
 
-inline void VulkanApp::DrawFrame() {
+void VulkanApp::DrawFrame() {
 
 	vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE,
 		UINT64_MAX);
@@ -1939,7 +1784,7 @@ inline void VulkanApp::DrawFrame() {
 
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-		recreateSwapChain();
+		RecreateSwapChain();
 		return;
 	}
 	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
@@ -1949,12 +1794,7 @@ inline void VulkanApp::DrawFrame() {
 	// This is here to be as close as posible.
 	UpdateDeltaTime();
 
-	// We should check for size and promote or demote from pushconstants -> ubo -> ssbo. Or not.
-	// no, thsi is not as needed as I thougt
-	// 
-	// This method goes absolutley independent using this on commandPool.
-	// We could maybe chain this to framesCommandPool[curretFrame]
-	// As this is an upload to Gpu maybe transferque is better for this.
+	// Update Device state
 	UpdateInstanceBuffers(currentFrame);
 	// Moving this after the reset prompts this validation error. Why?
 	//---------------- Vulkan Validation ----------------
@@ -1963,21 +1803,20 @@ inline void VulkanApp::DrawFrame() {
 	// | MessageID = 0xb53e2331 | vkResetCommandPool():  (VkCommandBuffer 0x1a3033b7f00[]) is in use.
 	// The Vulkan spec states: All VkCommandBuffer objects allocated from commandPool must not be in the pending state (https://vulkan.lunarg.com/doc/view/1.3.283.0/windows/1.3-extensions/vkspec.html#VUID-vkResetCommandPool-commandPool-00040)
 
-
 	vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
 	// Resetting entire pool is faster and better. I have split pools per frame so no biggie.
 	//vkResetCommandBuffer(commandBuffers[currentFrame],
 	//	/*VkCommandBufferResetFlagBits*/ 0);
-	vkResetCommandPool(device, framesCommandPool[currentFrame], 0);
+	vkResetCommandPool(device, perFrameCommandPools[currentFrame], 0);
 
 
 #pragma region GPU_UPDATE
 
 	// These are bandwitth heavy because im not tracking what needs updating in any way...
 	UpdateLightsBuffers(currentFrame);
-	UpdateShadowMapDescriptorSets(currentFrame);
-	UpdateInstanceDescriptorSets(currentFrame);
+	//UpdateShadowMapDescriptorSets(currentFrame);
+	//UpdateInstanceDescriptorSets(currentFrame);
 	UpdateLightDescriptorSets(currentFrame);
 	UpdateBindlessTextures(currentFrame);
 
@@ -1992,8 +1831,8 @@ inline void VulkanApp::DrawFrame() {
 		throw std::runtime_error("failed to begin recording command buffer!");
 	}
 
-	RecordCommandsForFrameShadowMaps(commandBuffers[currentFrame]);
-	RecordCommandsForFrame(commandBuffers[currentFrame], imageIndex);
+	//RecordCommandsForFrameShadowMaps(commandBuffers[currentFrame]);
+	RecordMainViewCommmandsForFrame(commandBuffers[currentFrame], imageIndex);
 
 	if (vkEndCommandBuffer(commandBuffers[currentFrame]) != VK_SUCCESS) {
 		throw std::runtime_error("failed to record command buffer!");
@@ -2047,7 +1886,7 @@ inline void VulkanApp::DrawFrame() {
 		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
 			framebufferResized) {
 			framebufferResized = false;
-			recreateSwapChain();
+			RecreateSwapChain();
 		}
 		else if (result != VK_SUCCESS) {
 			throw std::runtime_error("failed to present swap chain image!");
@@ -2069,113 +1908,81 @@ void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 	for (size_t i = 0, n = src.size(); i < n; ++i) {
 		std::memcpy(data[i].transform, glm::value_ptr(src[i]), sizeof(float) * 16);
 		data[i].color = { float(i) * 0.20f, 0.3f, -float(i) * 0.7f, 1.0f };
-	}
 
-	std::array<uint16_t, MAX_INSTANCES> indexData = {};
-	for (uint16_t index = 0; index < MAX_INSTANCES; index++) {
-		indexData[index] = index;
-	}
-
-	std::vector<IndexSlot> indexSlotData(MAX_INSTANCES);
-	for (size_t i = 0; i < MAX_INSTANCES; ++i) {
-		indexSlotData[i].idx = static_cast<uint32_t>(indexData[i]); // zero-extend
 	}
 
 	VkResult result{};
+	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
 
-	// This is bad, will stall. Frame update should use same command buffer for all update operations.
-	// FrameGraph! FrameGraph!
-	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, framesCommandPool[currentImage]);
-
-	static_assert(sizeof(IndexSlot) * MAX_INSTANCES < (1 << 16),
-		"Instance buffer too large for 64KB UBO limit");
+	auto instance_data_buffer_handle = perFrameData[currentImage].frameInstancesDataBuffer;
 
 	context->UploadDataToBuffer(
-		instanceIndexUniforms_[currentImage],
-		indexSlotData.data(),
-		sizeof(IndexSlot) * MAX_INSTANCES,
-		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-		// This could be simplified really to 
-		VK_ACCESS_SHADER_READ_BIT
-		//VK_ACCESS_UNIFORM_READ_BIT
-
-	);
-
-	context->UploadDataToBuffer(
-		instanceDataStorages_[currentImage],
+		instance_data_buffer_handle,
 		data,
 		sizeof(InstanceData) * MAX_INSTANCES,
 		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 		VK_ACCESS_SHADER_READ_BIT
 	);
 
-	endSingleTimeCommands(device, cmdBuf, context->default_queue, framesCommandPool[currentImage]);
+	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
 	delete[] data;
 }
 
 void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
 
-	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, framesCommandPool[currentImage]);
+	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
 
-	static_assert(sizeof(Light) * MAX_LIGHTS < (1 << 16),
-		"Light buffer too large for 64KB UBO limit");
+	//for (auto spot : spot_lights) {
 
-	for (int i = 0; i < lights.size(); i++)
-	{
+	//	auto proj = GetPerspectiveProjectionForLight(lights[i]);
+	//	proj[1][1] *= -1;
+	//	lvp = proj * GetLightView(lights[i]);
 
-		glm::mat4 lvp;
+	//	std::memcpy(
+	//		lights[i].lightVP,
+	//		glm::value_ptr(lvp),
+	//		sizeof(float) * 16);
+	//}
 
-		if (lights[i].type == LIGHT_TYPE_SPOT) {
-			auto proj = GetPerspectiveProjectionForLight(lights[i]);
-			proj[1][1] *= -1;
-			lvp = proj * GetLightView(lights[i]);
-		}
-		else if (lights[i].type == LIGHT_TYPE_DIRECTIONAL) {
-			glm::mat4 proj, view;
+	//for (auto dirl : directional_lights)
+	//{
 
-			auto sm = GetShadowMapFromShadowMapIndex(lights[i].shadow_map_index, currentFrame);
-			auto shadowMapImage = context->images_.get(sm.image);
+	//	glm::mat4 lvp;
 
-			GetDirectionalLightOrthoVP(
-				lights[i],
-				camera_.getViewMatrix(),
-				camera_.getProjMatrix(),
-				/*shadowNear*/ 0.1f,
-				/*shadowFar*/  20.0f,
-				view,
-				proj,
-				/*zPadding*/  50.0f,
-				/*xyPadding*/ 0.0f,
-				/*snap*/      false,
-				/*res*/       shadowMapImage->width
-			);
+	//	if (lights[i].type == LIGHT_TYPE_SPOT) {
+	//	}
+	//	else if (lights[i].type == LIGHT_TYPE_DIRECTIONAL) {
+	//		glm::mat4 proj, view;
 
-			proj[1][1] *= -1;
-			lvp = proj * view;
+	//		auto sm = GetShadowMapFromShadowMapIndex(lights[i].shadow_map_index, currentFrame);
+	//		auto shadowMapImage = context->images_.get(sm.image);
 
-		}
-		else {
-			assert(false);
-		}
+	//		GetDirectionalLightOrthoVP(
+	//			lights[i],
+	//			camera_.getViewMatrix(),
+	//			camera_.getProjMatrix(),
+	//			0.1f, 20.0f,
+	//			view, proj,
+	//			/*zPadding*/ 50.0f,
+	//			/*snap*/ true,
+	//			/*res*/ shadowMapImage->width
+	//		);
 
-		std::memcpy(
-			lights[i].lightVP,
-			glm::value_ptr(lvp),
-			sizeof(float) * 16);
-	}
+	//		proj[1][1] *= -1;
+	//		lvp = proj * view;
 
-	context->UploadDataToBuffer(
-		lightDataUniformBuffers[currentImage],
-		lights.data(),
-		sizeof(Light) * lights.size(),
-		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-		VK_ACCESS_SHADER_READ_BIT
-		//VK_ACCESS_UNIFORM_READ_BIT 
 
-	);
+	//context->UploadDataToBuffer(
+	//	lightDataUniformBuffers[currentImage],
+	//	lights.data(),
+	//	sizeof(Light) * lights.size(),
+	//	VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+	//	VK_ACCESS_SHADER_READ_BIT
+	//	//VK_ACCESS_UNIFORM_READ_BIT 
 
-	endSingleTimeCommands(device, cmdBuf, context->default_queue, framesCommandPool[currentImage]);
-	//delete[] lights;
+	//);
+
+	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
 
 }
 
@@ -2185,27 +1992,7 @@ void VulkanApp::CleanUp() {
 
 }
 
-
 void VulkanApp::Start() {
-	FabricateLightData(
-		lights
-	);
-
-	//	auto sm_h = context->CreateShadowMap();
-	//lights[0].shadow_map_index = 0;
-	//lights[1].shadow_map_index = 1;
-
-	//for (int i = 0; i < MAX_LIGHTS; i++) {
-
-	//	if (lights[i].type == LIGHT_TYPE_SPOT) {
-
-	//		lights[i].intensity = 10.0f;
-	//		lights[i].innerAngle = glm::radians(10.0f);
-	//		lights[i].outerAngle = glm::radians(20.0f);
-	//	}
-	//}
-
-	// PIPELINE CREATION
 
 	auto vertShaderCode = readFile("shaders/default.vert.hlsl.spv");
 	auto fragShaderCode = readFile("shaders/default.frag.hlsl.spv");
@@ -2230,12 +2017,14 @@ void VulkanApp::Start() {
 	default_shadow_pipeline = context->CreateShadowPipeline(vert_shader_h);
 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		frameDescriptorSets[i] = context->createDescriptorSet(
+
+
+		perFrameData[currentFrame].frameDescriptorSet = context->createDescriptorSet(
 			context->default_descriptorLayout
 		);
-		shadowFrameDescriptorSets[i] = context->createDescriptorSet(
-			context->default_shadow_descriptorLayout
-		);
+		//shadowFrameDescriptorSets[i] = context->createDescriptorSet(
+		//	context->default_shadow_descriptorLayout
+		//);
 	}
 
 	LoadScene();
@@ -2245,9 +2034,12 @@ void VulkanApp::Start() {
 void VulkanApp::LoadScene() {
 
 	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
+
+	// This will upload 
 	Scene imported_scene;
 	std::filesystem::path p(gltf_meshes_paths[0]);
 	UploadGltfToContext(context, p, imported_scene);
+
 	scene_ = imported_scene;
 
 }

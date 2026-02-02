@@ -50,11 +50,10 @@ const std::vector<uint32_t> triangle_indices_ccw = {
 	0, 1, 2
 };
 
-MeshUploadInput Quad = MeshUploadInput(quad_vertices, quad_indices_ccw);
-MeshUploadInput Triangle = MeshUploadInput(triangle_vertices, triangle_indices_ccw);
-
 // 
 
+MeshUploadInput Quad = MeshUploadInput(quad_vertices, quad_indices_ccw);
+MeshUploadInput Triangle = MeshUploadInput(triangle_vertices, triangle_indices_ccw);
 
 // Unused at this time
 enum GPU_CULLING_MODE {
@@ -62,9 +61,7 @@ enum GPU_CULLING_MODE {
 	GPU_CULLING
 };
 
-
-
-// This is before I read : https://www.sebastianaaltonen.com/blog/no-graphics-api
+// This was done before I read : https://www.sebastianaaltonen.com/blog/no-graphics-api
 // It seeems going with SSBO by default might be not so bad.
 // 
 // We hit the masUBOsize limit fast. Be careful. We may need to encode better.
@@ -153,7 +150,7 @@ struct Texture {
 
 };
 
-// Initialized with crude defaults;
+// Not really being used now really.
 struct RasterSettings {
 	uint32_t depthClampEnable = VK_FALSE;
 	uint32_t rasterizerDiscardEnable = VK_FALSE;
@@ -161,7 +158,12 @@ struct RasterSettings {
 	float lineWidth = 1.0f;
 	uint32_t cullMode = VK_CULL_MODE_BACK_BIT;
 	uint32_t frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+	// Depth bias for shadowmaps.
 	uint32_t depthBiasEnable = VK_FALSE;
+	uint32_t depthBiasConstant = 0.0f;
+	uint32_t depthBiasSlope = 1.0f; // This shoul be PCF radiues
+
 } default_raster_settings;
 
 // This gets uploaded to Device. stride contraints!
@@ -198,15 +200,3 @@ struct BufferDescription {
 	}
 
 };
-
-struct CascadeMeta
-{
-	float lightVP[16];
-	float atlasScaleOffset[4]; // xy = scale, zw = offset (in [0,1])
-	float splitEnd;          // in view-space (positive) or in NDC
-	float bias;
-	float invAtlasSize[2];     // or invTileSize if you prefer
-	float _pad;
-};
-
-

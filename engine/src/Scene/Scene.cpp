@@ -1,4 +1,8 @@
-﻿#include "Engine/Scene/scene.h"
+﻿// Portions Copyright (c) 2022 Packt
+// Modified by Samuel Martin, 2026
+// Licensed under the MIT License. See external/Mastering-Graphics-Programming-with-Vulkan/LICENSE.txt for details.
+
+#include "Engine/Scene/scene.h"
 #include "Engine/Scene/scene_utils.h"
 
 #include <algorithm>
@@ -321,8 +325,8 @@ void mergeScenes(
     mergeVectors(scene.nodeNames, s->nodeNames);
     if (mergeMaterials)
       mergeVectors(scene.materialNames, s->materialNames);
-    if (mergeLights)
-        mergeVectors(scene.lights, s->lights);
+    //if (mergeLights)
+    //    mergeVectors(scene.lights, s->lights);
         
 
     const int nodeCount = (int)s->hierarchy.size();
@@ -332,7 +336,7 @@ void mergeScenes(
     mergeMaps(scene.meshForNode, s->meshForNode, offs, mergeMeshes ? meshOffs : 0);
     mergeMaps(scene.materialForNode, s->materialForNode, offs, mergeMaterials ? materialOfs : 0);
     mergeMaps(scene.nameForNode, s->nameForNode, offs, nameOffs);
-    mergeMaps(scene.lightForNode, s->lightForNode, offs, mergeLights ? lightOffs : 0);
+    //mergeMaps(scene.lightForNode, s->lightForNode, offs, mergeLights ? lightOffs : 0);
 
     offs += nodeCount;
 

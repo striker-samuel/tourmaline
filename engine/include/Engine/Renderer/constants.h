@@ -7,7 +7,9 @@ static constexpr uint32_t HEIGHT = 720;
 static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 static constexpr int DESIRED_SWAPCHAING_IMAGE_COUNT = 2;
 
-static constexpr VkFormat SHADOWMAP_DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+//static constexpr VkFormat SHADOWMAP_DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+static constexpr VkFormat SHADOWMAP_DEPTH_FORMAT = VK_FORMAT_D16_UNORM;
+
 static constexpr int SHADOWMAP_SLOTS = 16;
 
 static constexpr float default_near_clip = 0.01f;
