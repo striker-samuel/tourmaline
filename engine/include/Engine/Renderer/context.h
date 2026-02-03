@@ -569,7 +569,7 @@ public:
 
 	DescriptorLayoutHandle createMainViewDescriptorLayout();
 	DescriptorLayoutHandle CreateShadowMapsDescriptorSetLayout();
-	DescriptorLayoutHandle CreateMeshletDescriptorLayout();
+	//DescriptorLayoutHandle CreateMeshletDescriptorLayout();
 
 	DescriptorPoolHandle createDescriptorPool();
 
@@ -893,7 +893,7 @@ void Context::UploadDataToBuffer(
 	VkDescriptorSetLayoutBinding instanceIndexBinding{};
 	instanceIndexBinding.binding = 0;
 	instanceIndexBinding.descriptorCount = 1;
-	instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	instanceIndexBinding.pImmutableSamplers = nullptr;
 	instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
@@ -954,54 +954,14 @@ void Context::UploadDataToBuffer(
 	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
 }
 
-// Lets just create a sample mehslet mesh shader
-[[nodiscard]] DescriptorLayoutHandle Context::CreateMeshletDescriptorLayout() {
-
-	VkDescriptorSetLayoutBinding b0{};
-	b0.binding = 0;
-	b0.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	b0.descriptorCount = 1;
-	b0.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT;
-
-	VkDescriptorSetLayoutBinding b1{};
-	b1.binding = 1;
-	b1.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	b1.descriptorCount = 1;
-	b1.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
-
-	VkDescriptorSetLayoutBinding b2{};
-	b2.binding = 2;
-	b2.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	b2.descriptorCount = 1;
-	b2.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
-
-	VkDescriptorSetLayoutBinding bindings[] = { b0, b1, b2 };
-
-	VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-	ci.bindingCount = uint32_t(std::size(bindings));
-	ci.pBindings = bindings;
-
-
-
-	VkDescriptorSetLayout descriptorSetLayout;
-	if (vkCreateDescriptorSetLayout(*device_, &ci, nullptr,
-		&descriptorSetLayout) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create descriptor set layout!");
-	}
-
-	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
-
-}
-
 [[nodiscard]] DescriptorLayoutHandle Context::createMainViewDescriptorLayout() {
 
-	// This is not used now really;
-	//VkDescriptorSetLayoutBinding instanceIndexBinding{};
-	//instanceIndexBinding.binding = 0;
-	//instanceIndexBinding.descriptorCount = 1;
-	//instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	//instanceIndexBinding.pImmutableSamplers = nullptr;
-	//instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	VkDescriptorSetLayoutBinding instanceIndexBinding{};
+	instanceIndexBinding.binding = 0;
+	instanceIndexBinding.descriptorCount = 1;
+	instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	instanceIndexBinding.pImmutableSamplers = nullptr;
+	instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
 	VkDescriptorSetLayoutBinding instanceDataBinding{};
 	instanceDataBinding.binding = 1;
@@ -1042,8 +1002,8 @@ void Context::UploadDataToBuffer(
 	shadowSamp.descriptorCount = SHADOWMAP_SLOTS;
 	shadowSamp.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	std::array<VkDescriptorSetLayoutBinding, 6> bindings = {
-		//instanceIndexBinding,
+	std::array<VkDescriptorSetLayoutBinding, 7> bindings = {
+		instanceIndexBinding,
 		instanceDataBinding,
 		sampledImageBinding,
 		sampBinding,
@@ -1053,8 +1013,8 @@ void Context::UploadDataToBuffer(
 	};
 
 	// Per-binding flags — same size as bindings[]
-	//std::array<VkDescriptorBindingFlags, 7> bindingFlags = {
-	std::array<VkDescriptorBindingFlags, 6> bindingFlags = {
+	std::array<VkDescriptorBindingFlags, 7> bindingFlags = {
+		0,
 		0,
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures

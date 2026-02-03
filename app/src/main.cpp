@@ -62,6 +62,7 @@ struct FrameData{
 	DescriptorSetHandle frameShadowDescriptorSet;
 
 	DeviceBufferHandle frameInstancesDataBuffer;
+	DeviceBufferHandle frameInstancesRemapBuffer;
 	DeviceBufferHandle frameLightsDataBuffer;
 };
 
@@ -329,6 +330,12 @@ private:
 
 	void Update() {
 
+
+		//int i = 3;
+		//float phase = std::sin(i + time_since_start_s * 0.35f);
+		//scene_.localTransform[15][3][1] = phase *10;
+		//markAsChanged(scene_, 15);
+
 		//// fake animation
 		//int i = 0;
 		//for (auto light : lights) {
@@ -591,6 +598,12 @@ private:
 				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			);
 
+			perFrameData[i].frameInstancesRemapBuffer = context->createBuffer(
+				sizeof(uint32_t) * MAX_INSTANCES,
+				VMA_MEMORY_USAGE_AUTO,
+				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			);
+
 			perFrameData[i].frameLightsDataBuffer = context->createBuffer(
 				sizeof(Light) * MAX_LIGHTS,
 				VMA_MEMORY_USAGE_AUTO,
@@ -603,6 +616,19 @@ private:
 	{
 		assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
 
+		auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
+		auto setObj = context->descriptorSets_.get(setHandle);
+		VkDescriptorSet vkSet = setObj->set;
+
+		// 
+
+		auto instancesRemapBufferHandle = context->buffers_.get(perFrameData[currentFrame].frameInstancesRemapBuffer);
+		VkDescriptorBufferInfo instanceRemapBufferInfo{
+			.buffer = instancesRemapBufferHandle->buffer,
+			.offset = 0,
+			.range = sizeof(uint32_t) * MAX_INSTANCES
+		};
+
 		auto instancesDataBufferHandle = context->buffers_.get(perFrameData[currentFrame].frameInstancesDataBuffer);
 		VkDescriptorBufferInfo instanceBufferInfo{
 			.buffer = instancesDataBufferHandle->buffer,
@@ -611,23 +637,29 @@ private:
 		};
 
 
-		auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
-		auto setObj = context->descriptorSets_.get(setHandle);
+		// 
 
 		{
-			VkDescriptorSet vkSet = setObj->set;
 
-			VkWriteDescriptorSet writes[1]{};
+			VkWriteDescriptorSet writes[2]{};
 
 			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			writes[0].dstSet = vkSet;
-			writes[0].dstBinding = 1; // SSBO
+			writes[0].dstBinding = 0; // SSBO
 			writes[0].dstArrayElement = 0;
 			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 			writes[0].descriptorCount = 1;
-			writes[0].pBufferInfo = &instanceBufferInfo;
+			writes[0].pBufferInfo = &instanceRemapBufferInfo;
 
-			vkUpdateDescriptorSets(device, 1 /*descriptorWriteCount*/, writes, 0, nullptr);
+			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[1].dstSet = vkSet;
+			writes[1].dstBinding = 1; // SSBO
+			writes[1].dstArrayElement = 0;
+			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			writes[1].descriptorCount = 1;
+			writes[1].pBufferInfo = &instanceBufferInfo;
+
+			vkUpdateDescriptorSets(device, 2 /*descriptorWriteCount*/, writes, 0, nullptr);
 
 		}
 	}
@@ -898,6 +930,7 @@ private:
 			}
 		}
 	}
+
 
 	//void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer)
 	//{
@@ -1796,7 +1829,6 @@ void VulkanApp::DrawFrame() {
 
 #pragma region GPU_UPDATE
 
-	// Update Device state
 	UpdateInstanceBuffers(currentFrame);
 
 	// Moving this after the reset prompts this validation error. Why?
@@ -1910,13 +1942,27 @@ void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 	for (size_t i = 0, n = src.size(); i < n; ++i) {
 		std::memcpy(data[i].transform, glm::value_ptr(src[i]), sizeof(float) * 16);
 		data[i].color = { float(i) * 0.20f, 0.3f, -float(i) * 0.7f, 1.0f };
+	}
 
+
+	std::array<uint32_t, MAX_INSTANCES> indexData = {};
+	for (uint32_t index = 0; index < MAX_INSTANCES; index++) {
+		indexData[index] = index;
 	}
 
 	VkResult result{};
 	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
 
 	auto instance_data_buffer_handle = perFrameData[currentImage].frameInstancesDataBuffer;
+	auto instance_remap_buffer_handle = perFrameData[currentImage].frameInstancesRemapBuffer;
+
+	context->UploadDataToBuffer(
+		instance_remap_buffer_handle,
+		indexData.data(),
+		sizeof(uint32_t) * MAX_INSTANCES,
+		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		VK_ACCESS_SHADER_READ_BIT
+	);
 
 	context->UploadDataToBuffer(
 		instance_data_buffer_handle,

@@ -65,7 +65,9 @@ struct InstanceData
     float4 color;
 };
 
-// Explicit Vulkan binding (set=0, binding=1)
+
+[[vk::binding(0, 0)]]
+StructuredBuffer<uint> g_InstanceRemap;
 [[vk::binding(1, 0)]]
 StructuredBuffer<InstanceData> instance_data;
 
@@ -95,8 +97,8 @@ VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
 
-    //uint idx = indicesStd140[IN.instanceID].i;
-    float4x4 model = instance_data[IN.instanceID].transform;
+    uint idx = g_InstanceRemap[IN.instanceID];
+    float4x4 model = instance_data[idx].transform;
 
     // World position
     float4 world = mul(model, float4(IN.position, 1.0));
