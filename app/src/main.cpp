@@ -496,7 +496,7 @@ private:
 
 		createImageView(main_depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, main_depthImageView, 1);
 
-		context->TransitionImageLayout(mainViewDepthImage,
+		context->TransitionImageLayout(main_depthImage, depthFormat,
 			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
 	}
@@ -627,7 +627,7 @@ private:
 			writes[0].descriptorCount = 1;
 			writes[0].pBufferInfo = &instanceBufferInfo;
 
-			vkUpdateDescriptorSets(device, 2 /*descriptorWriteCount*/, writes, 0, nullptr);
+			vkUpdateDescriptorSets(device, 1 /*descriptorWriteCount*/, writes, 0, nullptr);
 
 		}
 	}
@@ -1794,8 +1794,11 @@ void VulkanApp::DrawFrame() {
 	// This is here to be as close as posible.
 	UpdateDeltaTime();
 
+#pragma region GPU_UPDATE
+
 	// Update Device state
 	UpdateInstanceBuffers(currentFrame);
+
 	// Moving this after the reset prompts this validation error. Why?
 	//---------------- Vulkan Validation ----------------
 	//Message: Validation Error: [ VUID-vkResetCommandPool-commandPool-00040 ] Object 0: handle = 0x1a3033b7f00,
@@ -1811,12 +1814,11 @@ void VulkanApp::DrawFrame() {
 	vkResetCommandPool(device, perFrameCommandPools[currentFrame], 0);
 
 
-#pragma region GPU_UPDATE
 
 	// These are bandwitth heavy because im not tracking what needs updating in any way...
 	UpdateLightsBuffers(currentFrame);
 	//UpdateShadowMapDescriptorSets(currentFrame);
-	//UpdateInstanceDescriptorSets(currentFrame);
+	UpdateMainViewFrameData(currentFrame);
 	UpdateLightDescriptorSets(currentFrame);
 	UpdateBindlessTextures(currentFrame);
 
@@ -2018,10 +2020,10 @@ void VulkanApp::Start() {
 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
-
-		perFrameData[currentFrame].frameDescriptorSet = context->createDescriptorSet(
+		perFrameData[i].frameDescriptorSet = context->createDescriptorSet(
 			context->default_descriptorLayout
 		);
+
 		//shadowFrameDescriptorSets[i] = context->createDescriptorSet(
 		//	context->default_shadow_descriptorLayout
 		//);

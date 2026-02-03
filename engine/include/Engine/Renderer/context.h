@@ -316,7 +316,7 @@ public:
 		default_descriptor_pool = createDescriptorPool();
 		imgui_descriptor_pool = createDescriptorPool();
 
-		default_descriptorLayout = createDescriptorLayout();
+		default_descriptorLayout = createMainViewDescriptorLayout();
 		default_shadow_descriptorLayout = CreateShadowMapsDescriptorSetLayout();
 		//default_meshlet_descriptorLayout = CreateMeshletDescriptorLayout();
 
@@ -567,7 +567,7 @@ public:
 
 	MaterialInstanceHandle CreateMaterialInstance(PipelineHandle mat_pipeline);
 
-	DescriptorLayoutHandle createDescriptorLayout();
+	DescriptorLayoutHandle createMainViewDescriptorLayout();
 	DescriptorLayoutHandle CreateShadowMapsDescriptorSetLayout();
 	DescriptorLayoutHandle CreateMeshletDescriptorLayout();
 
@@ -993,17 +993,15 @@ void Context::UploadDataToBuffer(
 
 }
 
-// Main Pipeline Layout..
-[[nodiscard]] DescriptorLayoutHandle Context::createDescriptorLayout() {
-
+[[nodiscard]] DescriptorLayoutHandle Context::createMainViewDescriptorLayout() {
 
 	// This is not used now really;
-	VkDescriptorSetLayoutBinding instanceIndexBinding{};
-	instanceIndexBinding.binding = 0;
-	instanceIndexBinding.descriptorCount = 1;
-	instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	instanceIndexBinding.pImmutableSamplers = nullptr;
-	instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	//VkDescriptorSetLayoutBinding instanceIndexBinding{};
+	//instanceIndexBinding.binding = 0;
+	//instanceIndexBinding.descriptorCount = 1;
+	//instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	//instanceIndexBinding.pImmutableSamplers = nullptr;
+	//instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
 	VkDescriptorSetLayoutBinding instanceDataBinding{};
 	instanceDataBinding.binding = 1;
@@ -1044,8 +1042,8 @@ void Context::UploadDataToBuffer(
 	shadowSamp.descriptorCount = SHADOWMAP_SLOTS;
 	shadowSamp.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	std::array<VkDescriptorSetLayoutBinding, 7> bindings = {
-		instanceIndexBinding,
+	std::array<VkDescriptorSetLayoutBinding, 6> bindings = {
+		//instanceIndexBinding,
 		instanceDataBinding,
 		sampledImageBinding,
 		sampBinding,
@@ -1055,8 +1053,8 @@ void Context::UploadDataToBuffer(
 	};
 
 	// Per-binding flags — same size as bindings[]
-	std::array<VkDescriptorBindingFlags, 7> bindingFlags = {
-		0,
+	//std::array<VkDescriptorBindingFlags, 7> bindingFlags = {
+	std::array<VkDescriptorBindingFlags, 6> bindingFlags = {
 		0,
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
@@ -1177,7 +1175,7 @@ void Context::UploadDataToBuffer(
 	raster.cullMode = VK_CULL_MODE_BACK_BIT; 
 	raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
-	raster.depthClampEnable = VK_TRUE; // For shadow pipeline lets go witgh yes
+	raster.depthClampEnable = VK_FALSE; // Need to enable feature for VK_TRUE
 	raster.rasterizerDiscardEnable = VK_FALSE;
 
 	raster.depthBiasEnable = VK_TRUE;                // usually TRUE for shadow acne fix

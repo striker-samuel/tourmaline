@@ -58,21 +58,6 @@ PSOut mainPS(PSIn IN)
     return OUT;
 }
 
-
-// std140 array element for a scalar: 16 bytes
-struct IndexStd140
-{
-    uint i;
-    uint _pad0;
-    uint _pad1;
-    uint _pad2;
-};
-
-cbuffer IndexUBO : register(b0, space0)
-{
-    IndexStd140 indicesStd140[MAX_INSTANCES];
-}
-
 // This can easily get outdated. Be careful.
 struct InstanceData
 {
@@ -110,8 +95,8 @@ VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
 
-    uint idx = indicesStd140[IN.instanceID].i;
-    float4x4 model = instance_data[idx].transform;
+    //uint idx = indicesStd140[IN.instanceID].i;
+    float4x4 model = instance_data[IN.instanceID].transform;
 
     // World position
     float4 world = mul(model, float4(IN.position, 1.0));
