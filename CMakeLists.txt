@@ -79,19 +79,5 @@ endif()
 add_subdirectory(external/imgui)
 add_subdirectory(engine)
 add_subdirectory(app)
-# Shader compile outputs will be collected in this list
-set(COMPILED_SHADER_OUTPUTS)
 
-# Call after all targets exist
-compile_shaders(
-  "${CMAKE_CURRENT_SOURCE_DIR}/app/shaders"
-  "${CMAKE_CURRENT_BINARY_DIR}/shaders"
-  app)
 
-# Ensure shaders are actually part of the build
-if(COMPILED_SHADER_OUTPUTS)
-    add_custom_target(compile_shaders_target ALL DEPENDS ${COMPILED_SHADER_OUTPUTS})
-    add_dependencies(App compile_shaders_target)
-else()
-    message(WARNING "No shaders found to compile!")
-endif() 

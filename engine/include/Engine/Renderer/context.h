@@ -14,8 +14,7 @@
 
 
 // This architecture is heavily inspired/ lifted from LightWeightVk.
-// 
-// The purpose of reimplementing something like this is to learn the correct mental model for Vulkan's topology.
+// I used it as a base for my resource model. Will be changed as this evolves ;)
 // 
 // ----------------------------------------------------------
 // specialized with dummy structs for type safety
@@ -50,10 +49,10 @@ struct DescriptorSet {
 
 // This would be input for GetAppropiateSampler. The ideea is that requirements can solve for a VkSampler easily.
 // I don't know how worth is it tho, VkSamplers being driverside objs, maybe creating new ones is just simpler/faster/more convenient.
-struct SamplerRequirements {
-
-
-};
+//struct SamplerRequirements {
+//
+//
+//};
 
 struct GeometryPage {
 
@@ -95,7 +94,6 @@ struct GpuMeshDesc {
 	std::vector<DrawRange> sets;
 
 };
-
 
 // For Upload geometry context. we can distighuis between geo for eviction/streaming purposes. maybe other
 typedef enum GeoFlag {
@@ -1199,7 +1197,7 @@ void Context::UploadDataToBuffer(
 	VkPushConstantRange range{};
 	range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	range.offset = 0;
-	range.size = sizeof(PushConstants); // I dont need materialInstance pc for now. Maybe later ill do alphatested mats for non opaque geo
+	range.size = sizeof(MainViewPushConstants); // I dont need materialInstance pc for now. Maybe later ill do alphatested mats for non opaque geo
 
 	auto shadow_def_lyt = descriptorSetLayouts_.get(default_shadow_descriptorLayout);
 	auto descriptorSetLayout = shadow_def_lyt;
@@ -1380,12 +1378,10 @@ void Context::UploadDataToBuffer(
 
 #pragma region ---[Push Constants]---
 
-	constexpr uint32_t kPC_Total = 192;
-
 	VkPushConstantRange range{};
 	range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 	range.offset = 0;
-	range.size = kPC_Total;
+	range.size = sizeof(MainViewPushConstants) + sizeof(MaterialPushConstants);;
 
 	VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	layoutInfo.setLayoutCount = 1;

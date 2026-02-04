@@ -1,18 +1,26 @@
 ﻿project(App)
 
-file(GLOB_RECURSE APP_SRC CONFIGURE_DEPENDS
+file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS
     src/*.cpp
     include/App/*.h
 )
 
-add_executable(App ${APP_SRC})
+add_executable(App ${APP_SOURCES})
+
+set(APP_DIR         "${CMAKE_CURRENT_SOURCE_DIR}")   # F:/REPOS/vulkantoy/app
+set(APP_SHADERS_DIR "${APP_DIR}/shaders")
+set(APP_INCLUDE_DIR "${APP_DIR}/include")
+
+message(STATUS "APP_DIR = ${APP_DIR}")
+message(STATUS "APP_SHADERS_DIR = ${APP_SHADERS_DIR}")
+message(STATUS "APP_INCLUDE_DIR = ${APP_INCLUDE_DIR}")
+
 
 add_custom_command(TARGET App POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:KTX::ktx>"
         "$<TARGET_FILE_DIR:App>"
 )
-
 
 message(STATUS "App source files: ${APP_SRC}")
 find_package(Vulkan REQUIRED)
@@ -45,6 +53,7 @@ add_custom_command(TARGET App POST_BUILD
 target_include_directories(App
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+
 )
 
 target_link_libraries(App
@@ -60,3 +69,23 @@ target_link_libraries(App
 )
 
 
+# Shader compile outputs will be collected in this list
+set(COMPILED_SHADER_OUTPUTS)
+
+compile_shaders(
+  "${APP_SHADERS_DIR}"
+  "${CMAKE_BINARY_DIR}/shaders"
+  App
+  INCLUDE_DIRS
+    "${APP_SHADERS_DIR}"
+    "${APP_INCLUDE_DIR}"
+    "${APP_DIR}"
+)
+
+# Ensure shaders are actually part of the build
+if(COMPILED_SHADER_OUTPUTS)
+    add_custom_target(compile_shaders_target ALL DEPENDS ${COMPILED_SHADER_OUTPUTS})
+    add_dependencies(App compile_shaders_target)
+else()
+    message(WARNING "No shaders found to compile!")
+endif() 

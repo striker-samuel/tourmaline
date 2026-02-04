@@ -1,21 +1,5 @@
-#include "common.h"
-#include "light.h"
-
-[[vk::push_constant]]
-struct PC_All
-{
-    float4x4 view;
-    float4x4 proj;
-    int material_instance_index;
-    int3 _pad0; // 16B pad to keep 16-byte alignment
-
-    float4 ambient;
-    float4 diffuse;
-    uint texAmbient;
-    uint texDiffuse;
-    uint texAlpha;
-    uint _pad1; // keep size at 192 bytes total
-} pc;
+#include "light.hlsli"
+#include "common.hlsli"
 
 [[vk::binding(2,0)]] Texture2D materialTex[]; // sampled images
 [[vk::binding(3,0)]] SamplerState materialSamp[]; // samplers
@@ -47,7 +31,7 @@ struct PSOut
 
 
 // Here because symbols need to be defined before literal copy paste of include!
-#include "shadows.h"
+#include "shadows.hlsli"
 
 float3 EvaluateSpotLight(
     Light light,
@@ -165,7 +149,7 @@ PSOut mainPS(PSIn IN)
     float4x4 lightViewProj;
 
     // Diffuse texture lookup
-    uint texIdx = pc.texDiffuse; // uniform per draw via push constants
+    uint texIdx = pc.tex.x; // uniform per draw via push constants
     float4 texSample = materialTex[texIdx].Sample(materialSamp[0], IN.uv);
 
     // Base material color (vertex color * material diffuse * texture)

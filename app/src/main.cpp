@@ -236,7 +236,7 @@ private:
 		//glm::mat4 proj = camera_.getProjMatrix();
 		//proj[1][1] *= -1.0f;  // match your main pass
 
-		//int n = 0;
+		//int node = 0;
 		//for (auto light : lights) {
 
 		//	if (light.intensity <= 0.0f)
@@ -283,8 +283,8 @@ private:
 		//	// Optional label
 		//	drawList->AddText(ImVec2(sx + radius + 2.0f, sy - radius),
 		//		IM_COL32(255, 255, 255, 255),
-		//		std::to_string(n).c_str());
-		//	n++;
+		//		std::to_string(node).c_str());
+		//	node++;
 		//}
 
 	}
@@ -330,11 +330,10 @@ private:
 
 	void Update() {
 
-
-		//int i = 3;
+		int i = 3;
 		//float phase = std::sin(i + time_since_start_s * 0.35f);
-		//scene_.localTransform[15][3][1] = phase *10;
-		//markAsChanged(scene_, 15);
+		//scene_.localTransform[1][3][1] = phase *10;
+		//markAsChanged(scene_, 1);
 
 		//// fake animation
 		//int i = 0;
@@ -832,104 +831,116 @@ private:
 
 	}
 
-	void RecordCascadesForDirectionalLight(
-		DirectionalLight& light,
-		VkCommandBuffer& commandBuffer,
-		ShadowMap& shadowmap,
-		VkPipelineLayout& pipe_lyt
-	) {
+	//void RecordCascadesForDirectionalLight(
+	//	DirectionalLight& light,
+	//	VkCommandBuffer& commandBuffer,
+	//	ShadowMap& shadowmap,
+	//	VkPipelineLayout& pipe_lyt
+	//) {
 
 
-		auto image = context->images_.get(shadowmap.image);
+	//	auto image = context->images_.get(shadowmap.image);
 
-		// ---- cascade split settings ----
-		const float cameraNear = 0.1f;   // ideally: camera_.nearPlane()
-		const float shadowFarMax = 20.0f;  // your old single-cascade far (tune this)
-		const float lambda = 0.5f;   // 0=linear, 1=log (0.5 common)
+	//	// ---- cascade split settings ----
+	//	const float cameraNear = 0.1f;   // ideally: camera_.nearPlane()
+	//	const float shadowFarMax = 20.0f;  // your old single-cascade far (tune this)
+	//	const float lambda = 0.5f;   // 0=linear, 1=log (0.5 common)
 
-		// ---- atlas tiling (2x2 for 4, 2x2 for <=4, 4x4 for 16, etc.) ----
-		const int gridDim = (int)std::ceil(std::sqrt((float)NUM_CASCADES));
-		const uint32_t tileW = image->width / gridDim;
-		const uint32_t tileH = image->height / gridDim;
+	//	// ---- atlas tiling (2x2 for 4, 2x2 for <=4, 4x4 for 16, etc.) ----
+	//	const int gridDim = (int)std::ceil(std::sqrt((float)NUM_CASCADES));
+	//	const uint32_t tileW = image->width / gridDim;
+	//	const uint32_t tileH = image->height / gridDim;
 
-		// Precompute split ends in view-space depth
-		float splitEnds[NUM_CASCADES]{};
-		for (int c = 0; c < NUM_CASCADES; ++c) {
-			const float p = float(c + 1) / float(NUM_CASCADES);
+	//	// Precompute split ends in view-space depth
+	//	float splitEnds[NUM_CASCADES]{};
+	//	for (int c = 0; c < NUM_CASCADES; ++c) {
+	//		const float p = float(c + 1) / float(NUM_CASCADES);
 
-			const float logSplit = cameraNear * std::pow(shadowFarMax / cameraNear, p);
-			const float linSplit = cameraNear + (shadowFarMax - cameraNear) * p;
+	//		const float logSplit = cameraNear * std::pow(shadowFarMax / cameraNear, p);
+	//		const float linSplit = cameraNear + (shadowFarMax - cameraNear) * p;
 
-			splitEnds[c] = linSplit + lambda * (logSplit - linSplit);
-		}
+	//		splitEnds[c] = linSplit + lambda * (logSplit - linSplit);
+	//	}
 
-		// Render each cascade
-		float prevSplit = cameraNear;
-		for (int c = 0; c < NUM_CASCADES; ++c) {
+	//	// Render each cascade
+	//	float prevSplit = cameraNear;
+	//	for (int c = 0; c < NUM_CASCADES; ++c) {
 
-			const float cascadeNear = prevSplit;
-			const float cascadeFar = splitEnds[c];
-			prevSplit = cascadeFar;
+	//		const float cascadeNear = prevSplit;
+	//		const float cascadeFar = splitEnds[c];
+	//		prevSplit = cascadeFar;
 
-			// --- atlas tile placement ---
-			const int tx = c % gridDim;
-			const int ty = c / gridDim;
+	//		// --- atlas tile placement ---
+	//		const int tx = c % gridDim;
+	//		const int ty = c / gridDim;
 
-			VkViewport cvp{};
-			cvp.x = float(tx * tileW);
-			cvp.y = float(ty * tileH);
-			cvp.width = float(tileW);
-			cvp.height = float(tileH);
-			cvp.minDepth = 0.0f;
-			cvp.maxDepth = 1.0f;
-			vkCmdSetViewport(commandBuffer, 0, 1, &cvp);
+	//		VkViewport cvp{};
+	//		cvp.x = float(tx * tileW);
+	//		cvp.y = float(ty * tileH);
+	//		cvp.width = float(tileW);
+	//		cvp.height = float(tileH);
+	//		cvp.minDepth = 0.0f;
+	//		cvp.maxDepth = 1.0f;
+	//		vkCmdSetViewport(commandBuffer, 0, 1, &cvp);
 
-			VkRect2D cscissor{};
-			cscissor.offset = { int32_t(tx * tileW), int32_t(ty * tileH) };
-			cscissor.extent = { tileW, tileH };
-			vkCmdSetScissor(commandBuffer, 0, 1, &cscissor);
+	//		VkRect2D cscissor{};
+	//		cscissor.offset = { int32_t(tx * tileW), int32_t(ty * tileH) };
+	//		cscissor.extent = { tileW, tileH };
+	//		vkCmdSetScissor(commandBuffer, 0, 1, &cscissor);
 
-			PushConstants pc{};
-			// --- compute per-cascade VP ---
+	//		MainViewPushConstants pc{};
+	//		// --- compute per-cascade VP ---
 
-			GetDirectionalLightOrthoVP(
-				light,
-				camera_.getViewMatrix(),
-				camera_.getProjMatrix(),
-				0.1f, 20.0f,
-				pc.view, pc.proj,
-				/*zPadding*/ 50.0f,
-				/*snap*/ true,
-				/*res*/ tileW
-			);
-			pc.proj[1][1] *= -1.0f;
+	//		GetDirectionalLightOrthoVP(
+	//			light,
+	//			camera_.getViewMatrix(),
+	//			camera_.getProjMatrix(),
+	//			0.1f, 20.0f,
+	//			pc.view,
+	//			pc.proj,
+	//			/*zPadding*/ 50.0f,
+	//			/*snap*/ true,
+	//			/*res*/ tileW
+	//		);
+	//		pc.proj[1][1] *= -1.0f;
+	//		pc.model = glm::mat4(1.0f); //identity
 
-			vkCmdPushConstants(
-				commandBuffer,
-				pipe_lyt,
-				VK_SHADER_STAGE_VERTEX_BIT,
-				0,
-				sizeof(PushConstants),
-				&pc
-			);
+	//		vkCmdPushConstants(
+	//			commandBuffer,
+	//			pipe_lyt,
+	//			VK_SHADER_STAGE_VERTEX_BIT,
+	//			0,
+	//			sizeof(MainViewPushConstants),
+	//			&pc
+	//		);
 
-			for (int n = 0; n < static_cast<int>(scene_.hierarchy.size()); ++n) {
-				auto mesh_desc_handle = context->meshes_.getHandle(scene_.meshForNode[n]);
-				auto mesh_desc = context->meshes_.get(mesh_desc_handle);
+	//		for (int node = 0; node < static_cast<int>(scene_.hierarchy.size()); ++node) {
+	//			auto mesh_desc_handle = context->meshes_.getHandle(scene_.meshForNode[node]);
+	//			auto mesh_desc = context->meshes_.get(mesh_desc_handle);
+	//			for (auto& draw_set : mesh_desc->sets) {
 
-				for (auto draw_set : mesh_desc->sets) {
-					vkCmdDrawIndexed(
-						commandBuffer,
-						draw_set.index_count,
-						1,
-						draw_set.first_index,
-						draw_set.base_vertex,
-						0
-					);
-				}
-			}
-		}
-	}
+	//				auto& model_ = scene_.globalTransform[node];
+	//				vkCmdPushConstants(
+	//					commandBuffer,
+	//					pipe_lyt,
+	//					VK_SHADER_STAGE_VERTEX_BIT,
+	//					offsetof(MainViewPushConstants, model),
+	//					sizeof(glm::mat4),
+	//					glm::value_ptr(model_)
+	//				);
+
+	//				vkCmdDrawIndexed(
+	//					commandBuffer,
+	//					draw_set.index_count,
+	//					1,
+	//					draw_set.first_index,
+	//					draw_set.base_vertex,
+	//					0
+	//				);
+	//			}
+	//		}
+	//	}
+	//}
 
 
 	//void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer)
@@ -1043,7 +1054,7 @@ private:
 
 	//		if (light.type == LIGHT_TYPE_SPOT) {
 
-	//			PushConstants pc{};
+	//			MainViewPushConstants pc{};
 	//			pc.view = GetSpotLightView(light);
 	//			pc.proj = GetPerspectiveProjectionForLight(light, /*aspect*/ 1.0f, /*near*/ 0.1f, /*far*/ 100.0f);
 	//			pc.proj[1][1] *= -1;
@@ -1053,7 +1064,7 @@ private:
 	//				pipe_lyt,
 	//				VK_SHADER_STAGE_VERTEX_BIT, // | VK_SHADER_STAGE_FRAGMENT_BIT if you want
 	//				0,
-	//				sizeof(PushConstants),
+	//				sizeof(MainViewPushConstants),
 	//				&pc
 	//			);
 
@@ -1078,7 +1089,7 @@ private:
 
 
 
-	//		}
+	//		
 	//		else {
 	//			assert(false && "Unsuported lightype");
 	//		}
@@ -1193,10 +1204,12 @@ private:
 		// BIND
 		BindVertex(commandBuffer);
 
-		PushConstants pc{};
-		pc.view = camera_.getViewMatrix();
-		pc.proj = camera_.getProjMatrix();
-		pc.proj[1][1] *= -1;
+		MainViewPushConstants pc{};
+		//pc.view = camera_.getViewMatrix();
+		//pc.proj = camera_.getProjMatrix();
+		//pc.proj[1][1] *= -1;
+
+		pc.model = glm::mat4(1.0f);
 
 		// I long ago did this to be able to run trough different pipeline setuops like transparency and else. Amay be wrong and dumb
 		for (auto mat_pipe_entry : context->pipelines_.objects_) {
@@ -1233,13 +1246,13 @@ private:
 				);
 
 				auto material_instance_index = scene_.materialForNode[i];
-				pc.material_instance_index = material_instance_index;
+				pc.material_index = material_instance_index;
 
 				MaterialPushConstants pcm =
 					context->materialInstances_.objects_[material_instance_index].obj_.values;
 
 				struct PC_All {
-					PushConstants pc;               // 144
+					MainViewPushConstants pc;               // 144
 					MaterialPushConstants mpc;      // 48
 				};
 				PC_All all{ pc, pcm };
@@ -1253,7 +1266,17 @@ private:
 					&all
 				);
 
-				for (auto draw_set : mesh_desc->sets) {
+				for (auto& draw_set : mesh_desc->sets) {
+
+					auto& model_ = scene_.globalTransform[i];
+					vkCmdPushConstants(
+						commandBuffer,
+						pipe_lyt,
+						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+						offsetof(MainViewPushConstants, model),
+						sizeof(glm::mat4),
+						glm::value_ptr(model_)
+					);
 
 					vkCmdDrawIndexed(
 						commandBuffer,
@@ -1844,8 +1867,6 @@ void VulkanApp::DrawFrame() {
 	//vkResetCommandBuffer(commandBuffers[currentFrame],
 	//	/*VkCommandBufferResetFlagBits*/ 0);
 	vkResetCommandPool(device, perFrameCommandPools[currentFrame], 0);
-
-
 
 	// These are bandwitth heavy because im not tracking what needs updating in any way...
 	UpdateLightsBuffers(currentFrame);

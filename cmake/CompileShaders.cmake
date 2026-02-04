@@ -58,6 +58,10 @@ function(_detect_hlsl_stage_and_entry SHADER OUT_STAGE OUT_ENTRY OUT_PROFILE)
 endfunction()
 
 function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
+  set(options)
+  set(oneValueArgs)
+  set(multiValueArgs INCLUDE_DIRS)
+  cmake_parse_arguments(CS "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
   # Normalize path (Windows-safe)
   file(TO_CMAKE_PATH "${SOURCE_DIR}" NORM_SOURCE_DIR)
   message(STATUS "NORM_SOURCE_DIR ${NORM_SOURCE_DIR}")
@@ -81,7 +85,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
     "${NORM_SOURCE_DIR}/*.hs.hlsl"   "${NORM_SOURCE_DIR}/*.tesc.hlsl"
     "${NORM_SOURCE_DIR}/*.ds.hlsl"   "${NORM_SOURCE_DIR}/*.tese.hlsl"
     "${NORM_SOURCE_DIR}/*.rgen.hlsl" "${NORM_SOURCE_DIR}/*.rchit.hlsl"
-    "${NORM_SOURCE_DIR}/*.rmiss.hlsl""${NORM_SOURCE_DIR}/*.rahit.hlsl"
+    "${NORM_SOURCE_DIR}/*.rmiss.hlsl" "${NORM_SOURCE_DIR}/*.rahit.hlsl"
     "${NORM_SOURCE_DIR}/*.rint.hlsl" "${NORM_SOURCE_DIR}/*.rcall.hlsl"
   )
 
@@ -125,6 +129,13 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
             else()
                 list(APPEND _COMMON -O3 -Qstrip_debug)
             endif()
+
+	        if (CS_INCLUDE_DIRS)
+              foreach(INC ${CS_INCLUDE_DIRS})
+                    list(APPEND _COMMON -I "${INC}")
+                endforeach()
+            endif()
+
 
             # Only pass -E if we actually have an entry (not for lib_6_7)
             set(_ENTRY_FLAGS "")

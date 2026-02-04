@@ -6,21 +6,7 @@
 #define MAX_INSTANCES 1000
 #endif
 
-[[vk::push_constant]]
-struct PC_All
-{
-    float4x4 view;
-    float4x4 proj;
-    int material_instance_index;
-    int3 _pad0; // 16B pad to keep 16-byte alignment
-
-    float4 ambient;
-    float4 diffuse;
-    uint texAmbient;
-    uint texDiffuse;
-    uint texAlpha;
-    uint _pad1; // keep size at 192 bytes total
-} pc;
+#include "common.hlsli"
 
 // PixelShader/FragmentShader Input 
 struct PSIn
@@ -45,16 +31,11 @@ struct PSOut
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
-
     // Index is uniform per draw (push constants), so nonuniform isn’t required.
-    uint texIdx = pc.texDiffuse;
-
-    
+    uint texIdx = pc.tex.x;
     OUT.outColor = (1.0f, 1.0f, 1.0f);
-    
     //OUT.outColor = materialTex[texIdx].Sample(materialSamp[0], IN.uv);
     // If you really want per-texture samplers too, use materialSamp[pc.texAmbient] or similar.
-
     return OUT;
 }
 
@@ -93,27 +74,30 @@ struct VSOut
     [[vk::location(4)]] float4 tangent : TANGENT;
 };
 
+
+float4x4 view, proj = 1.0f;
+
 VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
 
-    uint idx = g_InstanceRemap[IN.instanceID];
-    float4x4 model = instance_data[idx].transform;
-
+    //uint idx = g_InstanceRemap[IN.instanceID];
+    //float4x4 model = instance_data[idx].transform;
+    
     // World position
-    float4 world = mul(model, float4(IN.position, 1.0));
+    float4 world = mul(pc.model, float4(IN.position, 1.0));
     OUT.worldPos = world.xyz;
 
     // View / projection
-    float4 viewPos = mul(pc.view, world);
-    float4 clip = mul(pc.proj, viewPos);
+    float4 viewPos = mul(view, world);
+    float4 clip = mul(proj, viewPos);
     OUT.pos = clip;
 
     OUT.color = float3(1.0f, 1.0f, 1.0f);
     OUT.uv = IN.uv;
 
     // Properly transform normal to world space
-    float3 worldNormal = mul((float3x3) model, IN.normal);
+    float3 worldNormal = mul((float3x3) pc.model, IN.normal);
     OUT.normal = normalize(worldNormal);
 
     //float4 clipA = mul(pc.proj, mul(pc.view, world)); // what you have

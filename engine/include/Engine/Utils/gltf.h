@@ -467,7 +467,7 @@ MaterialInstanceHandle CreateMaterial(Context* ctx, const tinygltf::Model& model
 	assert(material_pipe_0.valid());
 
 	auto mat_h = ctx->CreateMaterialInstance(material_pipe_0);
-	ctx->materialInstances_.get(mat_h)->values.texDiffuse = colorTexHandle.index();
+	ctx->materialInstances_.get(mat_h)->values.tex[0] = colorTexHandle.index();
 	return mat_h;
 
 }
