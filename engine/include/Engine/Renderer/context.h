@@ -12,6 +12,30 @@
 #include <ktx.h>
 #include <ktxvulkan.h>
 
+struct FrameUniforms
+{
+	glm::mat4 view;
+	glm::mat4 proj;
+	glm::mat4 viewProj;
+
+	glm::mat4 invView;
+	glm::mat4 invProj;
+	glm::mat4 invViewProj;
+
+	glm::vec3 cameraPos;
+	float     time;
+
+	glm::vec2 viewportSize;
+	glm::vec2 invViewportSize;
+
+	float nearPlane;
+	float farPlane;
+	float exposure;
+	float padding; // keep 16-byte alignment
+};
+
+static_assert(sizeof(FrameUniforms) % 16 == 0);
+
 
 // This architecture is heavily inspired/ lifted from LightWeightVk.
 // I used it as a base for my resource model. Will be changed as this evolves ;)
@@ -315,7 +339,7 @@ public:
 		imgui_descriptor_pool = createDescriptorPool();
 
 		default_descriptorLayout = createMainViewDescriptorLayout();
-		default_shadow_descriptorLayout = CreateShadowMapsDescriptorSetLayout();
+		//default_shadow_descriptorLayout = CreateShadowMapsDescriptorSetLayout();
 		//default_meshlet_descriptorLayout = CreateMeshletDescriptorLayout();
 
 		QueueFamilyIndices indices = findQueueFamilies(*physicalDevice, surface);
@@ -565,8 +589,11 @@ public:
 
 	MaterialInstanceHandle CreateMaterialInstance(PipelineHandle mat_pipeline);
 
+
+	// DescriptorLayouts
+	DescriptorLayoutHandle CreateTextureTableLayout();
 	DescriptorLayoutHandle createMainViewDescriptorLayout();
-	DescriptorLayoutHandle CreateShadowMapsDescriptorSetLayout();
+	//DescriptorLayoutHandle CreateShadowMapsDescriptorSetLayout();
 	//DescriptorLayoutHandle CreateMeshletDescriptorLayout();
 
 	DescriptorPoolHandle createDescriptorPool();
@@ -578,12 +605,14 @@ public:
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
 	DeviceBufferHandle createBuffer(uint32_t size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
+	void UploadDataToBuffer(DeviceBufferHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
+	void UploadDataToBuffer(DeviceBufferHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset, size_t dest_offset);
+
 	MeshDescHandle UploadVertexData(MeshUploadInput& mesh_data);
 
 	VkCommandBuffer GetCommandBuffer();
 	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
 
-	void UploadDataToBuffer(DeviceBufferHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
 
 
 
@@ -747,6 +776,9 @@ public:
 	ds.layout = lyt;
 
 	if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
+
+		assert(false && "oom pool");
+
 		// Rotate the descriptor pool. try again
 		// Manage live dspools. defrag
 	}
@@ -794,12 +826,34 @@ public:
 	return buffers_.create(std::move(desc));
 }
 
+
 void Context::UploadDataToBuffer(
 	DeviceBufferHandle buffer,
 	void* data,
 	size_t dataSize,
 	VkPipelineStageFlags dstStages,
 	VkAccessFlags dstAccess
+) {
+
+	return UploadDataToBuffer(
+		buffer,
+		data,
+		dataSize,
+		dstStages,
+		dstAccess,
+		0,
+		0
+	);
+}
+
+void Context::UploadDataToBuffer(
+	DeviceBufferHandle buffer,
+	void* data,
+	size_t dataSize,
+	VkPipelineStageFlags dstStages,
+	VkAccessFlags dstAccess,
+	size_t src_offset,
+	size_t dest_offset
 ) {
 	BufferDescription* bufferDesc = buffers_.get(buffer);
 
@@ -857,7 +911,10 @@ void Context::UploadDataToBuffer(
 	assert(result == VK_SUCCESS);
 
 	// Copy staging -> dst
-	VkBufferCopy copyRegion{ .size = dataSize };
+	VkBufferCopy copyRegion{
+		.srcOffset = src_offset,
+		.dstOffset = dest_offset,
+		.size = dataSize };
 	vkCmdCopyBuffer(tmpBuf, stagingBuf, bufferDesc->buffer, 1, &copyRegion);
 
 	// Make the copy visible to shaders
@@ -867,8 +924,10 @@ void Context::UploadDataToBuffer(
 	b2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	b2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	b2.buffer = bufferDesc->buffer;
-	b2.offset = 0;
-	b2.size = VK_WHOLE_SIZE;
+	//b2.offset = 0;
+	//b2.size = VK_WHOLE_SIZE;
+	b2.offset = dest_offset;
+	b2.size = dataSize;
 
 	vkCmdPipelineBarrier(
 		tmpBuf,
@@ -886,87 +945,107 @@ void Context::UploadDataToBuffer(
 	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
 }
 
-[[nodiscad]] DescriptorLayoutHandle Context::CreateShadowMapsDescriptorSetLayout() {
-	// INDEX DATA
-	VkDescriptorSetLayoutBinding instanceIndexBinding{};
-	instanceIndexBinding.binding = 0;
-	instanceIndexBinding.descriptorCount = 1;
-	instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	instanceIndexBinding.pImmutableSamplers = nullptr;
-	instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-	VkDescriptorSetLayoutBinding instanceDataBinding{};
-	instanceDataBinding.binding = 1;
-	instanceDataBinding.descriptorCount = 1;
-	instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	instanceDataBinding.pImmutableSamplers = nullptr;
-	instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+// I shold update this to not be a monolithic block instead resue the mainView framering buffers layout if useful 
+//[[nodiscad]] DescriptorLayoutHandle Context::CreateShadowMapsDescriptorSetLayout() {
+//	// INDEX DATA
+//	VkDescriptorSetLayoutBinding instanceIndexBinding{};
+//	instanceIndexBinding.binding = 0;
+//	instanceIndexBinding.descriptorCount = 1;
+//	instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+//	instanceIndexBinding.pImmutableSamplers = nullptr;
+//	instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+//
+//	VkDescriptorSetLayoutBinding instanceDataBinding{};
+//	instanceDataBinding.binding = 1;
+//	instanceDataBinding.descriptorCount = 1;
+//	instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+//	instanceDataBinding.pImmutableSamplers = nullptr;
+//	instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+//
+//	VkDescriptorSetLayoutBinding lightBinding{};
+//	lightBinding.binding = 2;
+//	lightBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+//	lightBinding.descriptorCount = 1;
+//	lightBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+//
+//	// ShadowMetaUB
+//	VkDescriptorSetLayoutBinding shadowMetaBinding{};
+//	lightBinding.binding = 3;
+//	lightBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+//	lightBinding.descriptorCount = 1;
+//	lightBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+//
+//	std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
+//		instanceIndexBinding,
+//		instanceDataBinding,
+//		lightBinding,
+//		//		shadowMetaBinding
+//	};
+//
+//	// Per-binding flags — same size as bindings[]
+//	//std::array<VkDescriptorBindingFlags, 3> bindingFlags = {
+//	//	0,// instanceUBO
+//	//	0,// instanceSSBO
+//	//	0 // lightData.
+//	//};
+//
+//	//VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
+//	//bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+//	//bindless_flags.pNext = nullptr;
+//	//bindless_flags.bindingCount = static_cast<uint32_t>(bindingFlags.size());
+//	//bindless_flags.pBindingFlags = bindingFlags.data();
+//
+//	VkDescriptorSetLayoutCreateInfo layoutInfo{};
+//	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+//	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+//	layoutInfo.pBindings = bindings.data();
+//	//layoutInfo.pNext = &bindless_flags;
+//	//layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+//
+//	VkDescriptorSetLayout descriptorSetLayout;
+//
+//	if (vkCreateDescriptorSetLayout(*device_, &layoutInfo, nullptr,
+//		&descriptorSetLayout) != VK_SUCCESS) {
+//		throw std::runtime_error("failed to create descriptor set layout!");
+//	}
+//
+//	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
+//}
 
-	VkDescriptorSetLayoutBinding lightBinding{};
-	lightBinding.binding = 2;
-	lightBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	lightBinding.descriptorCount = 1;
-	lightBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-	// ShadowMetaUB
-	VkDescriptorSetLayoutBinding shadowMetaBinding{};
-	lightBinding.binding = 3;
-	lightBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	lightBinding.descriptorCount = 1;
-	lightBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+// Could be a good model
 
-	std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
-		instanceIndexBinding,
-		instanceDataBinding,
-		lightBinding,
-		//		shadowMetaBinding
-	};
+//struct BindingDescription {
+//	VkDescriptorType type;
+//	VkDescriptorBindingFlags bindingFlags;
+//	//std::vector<VkSampler> inmutableSamplers;
+//};
+//
+//struct BindingDescriptionBound {
+//	int layuout_n, bind_n = 0;
+//};
+//
+//
+//struct PipelineLayoutDescription {
+//	//layouts;
+//	std::vector<BindingDescription> bindings;
+//
+//};
+//
+//
+//
+//[[nodiscard]] DescriptorLayoutHandle Context::createDescriptorLayout(PipelineLayoutDescription& pld) {
+//
+//
+//
+//}
 
-	// Per-binding flags — same size as bindings[]
-	//std::array<VkDescriptorBindingFlags, 3> bindingFlags = {
-	//	0,// instanceUBO
-	//	0,// instanceSSBO
-	//	0 // lightData.
-	//};
 
-	//VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
-	//bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-	//bindless_flags.pNext = nullptr;
-	//bindless_flags.bindingCount = static_cast<uint32_t>(bindingFlags.size());
-	//bindless_flags.pBindingFlags = bindingFlags.data();
 
-	VkDescriptorSetLayoutCreateInfo layoutInfo{};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-	layoutInfo.pBindings = bindings.data();
-	//layoutInfo.pNext = &bindless_flags;
-	//layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+[[nodiscard]] DescriptorLayoutHandle Context::CreateTextureTableLayout() {
 
-	VkDescriptorSetLayout descriptorSetLayout;
 
-	if (vkCreateDescriptorSetLayout(*device_, &layoutInfo, nullptr,
-		&descriptorSetLayout) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create descriptor set layout!");
-	}
-
-	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
-}
-
-[[nodiscard]] DescriptorLayoutHandle Context::createMainViewDescriptorLayout() {
-
-	VkDescriptorSetLayoutBinding instanceIndexBinding{};
-	instanceIndexBinding.binding = 0;
-	instanceIndexBinding.descriptorCount = 1;
-	instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	instanceIndexBinding.pImmutableSamplers = nullptr;
-	instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
-	VkDescriptorSetLayoutBinding instanceDataBinding{};
-	instanceDataBinding.binding = 1;
-	instanceDataBinding.descriptorCount = 1;
-	instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	instanceDataBinding.pImmutableSamplers = nullptr;
-	instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
 	VkDescriptorSetLayoutBinding sampledImageBinding{};
 	sampledImageBinding.binding = 2;
@@ -980,52 +1059,20 @@ void Context::UploadDataToBuffer(
 	sampBinding.descriptorCount = MAX_TEXTURES;
 	sampBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	VkDescriptorSetLayoutBinding lightBinding{};
-	lightBinding.binding = 4;
-	lightBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	//lightBinding.descriptorCount = MAX_LIGHTS;
-	lightBinding.descriptorCount = 1;
-	lightBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	VkDescriptorSetLayoutBinding shadowMapBinding{};
-	shadowMapBinding.binding = 5;   // next free binding
-	shadowMapBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-	shadowMapBinding.descriptorCount = SHADOWMAP_SLOTS;   // one 2D array texture
-	shadowMapBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	shadowMapBinding.pImmutableSamplers = nullptr;
-
-	VkDescriptorSetLayoutBinding shadowSamp{};
-	shadowSamp.binding = 6;
-	shadowSamp.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-	shadowSamp.descriptorCount = SHADOWMAP_SLOTS;
-	shadowSamp.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-	std::array<VkDescriptorSetLayoutBinding, 7> bindings = {
-		instanceIndexBinding,
-		instanceDataBinding,
+	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
 		sampledImageBinding,
 		sampBinding,
-		lightBinding,
-		shadowMapBinding,
-		shadowSamp
 	};
 
 	// Per-binding flags — same size as bindings[]
-	std::array<VkDescriptorBindingFlags, 7> bindingFlags = {
-		0,
-		0,
+	std::array<VkDescriptorBindingFlags, 2> bindingFlags = {
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
-		0, // lightData.
-		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless shadowmap_images
-		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless shadowmap_samplers
 	};
 
-	// Chain flags struct
 	VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
 	bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
 	bindless_flags.pNext = nullptr;
@@ -1037,6 +1084,78 @@ void Context::UploadDataToBuffer(
 	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
 	layoutInfo.pBindings = bindings.data();
 	layoutInfo.pNext = &bindless_flags;
+	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+
+	VkDescriptorSetLayout descriptorSetLayout;
+
+	if (vkCreateDescriptorSetLayout(*device_, &layoutInfo, nullptr,
+		&descriptorSetLayout) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create descriptor set layout!");
+	}
+
+	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
+
+
+}
+
+
+
+
+
+[[nodiscard]] DescriptorLayoutHandle Context::createMainViewDescriptorLayout() {
+
+	VkDescriptorSetLayoutBinding frameUniformsBinding{};
+	frameUniformsBinding.binding = 0;
+	frameUniformsBinding.descriptorCount = 1;
+	frameUniformsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+	frameUniformsBinding.pImmutableSamplers = nullptr;
+	frameUniformsBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	VkDescriptorSetLayoutBinding instanceDataBinding{};
+	instanceDataBinding.binding = 1;
+	instanceDataBinding.descriptorCount = 1;
+	instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+	instanceDataBinding.pImmutableSamplers = nullptr;
+	instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
+		frameUniformsBinding,
+		instanceDataBinding,
+		//sampledImageBinding,
+		//sampBinding,
+		//lightBinding,
+		//shadowMapBinding,
+		//shadowSamp
+	};
+
+	// Per-binding flags — same size as bindings[]
+	std::array<VkDescriptorBindingFlags, 2> bindingFlags = {
+		0,
+		0,
+		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
+		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
+		//0, // lightData.
+		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless shadowmap_images
+		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless shadowmap_samplers
+	};
+
+	// Chain flags struct
+	//VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
+	//bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+	//bindless_flags.pNext = nullptr;
+	//bindless_flags.bindingCount = static_cast<uint32_t>(bindingFlags.size());
+	//bindless_flags.pBindingFlags = bindingFlags.data();
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo{};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+	layoutInfo.pBindings = bindings.data();
+	layoutInfo.pNext = VK_NULL_HANDLE;
+	//layoutInfo.pNext = &bindless_flags;
 	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
 
 	VkDescriptorSetLayout descriptorSetLayout;
@@ -1236,11 +1355,32 @@ void Context::UploadDataToBuffer(
 
 
 	assert(pipeCI.pMultisampleState != nullptr);
+
+	std::cout << "creating Shadow Pipeline" << std::endl;
 	vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipeCI, nullptr, &pipeline.pipeline);
+	std::cout << "end creating shadow pipeline" << std::endl;
+
 
 	return pipelines_.create(std::move(pipeline));
 
 }
+
+//// Type specialization
+////using uint32_t = BindingType;
+//
+//
+//struct Bindign {
+//	uint32_t type :
+//};
+//struct PipelineLayout {
+//
+//	// PC
+//	std::vector<struct dummy> push_constants_block;
+//
+//	// SET LAYOUTS
+//	// dynamics first
+//};
+
 
 [[nodiscard]] PipelineHandle Context::CreatePipeline(
 	RasterSettings raster_settings,
@@ -1259,10 +1399,6 @@ void Context::UploadDataToBuffer(
 
 	auto v = shaderModules_.get(vert);
 	auto f = shaderModules_.get(frag);
-
-	// Lets use default
-	auto def_lyt = descriptorSetLayouts_.get(default_descriptorLayout);
-	auto descriptorSetLayout = def_lyt;
 
 	// SHADER
 	VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
@@ -1383,9 +1519,18 @@ void Context::UploadDataToBuffer(
 	range.offset = 0;
 	range.size = sizeof(MainViewPushConstants) + sizeof(MaterialPushConstants);;
 
+	std::array<VkDescriptorSetLayout, 2> layouts = {
+		rings_layout, 
+		texture_table_layout 
+	};
+
 	VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-	layoutInfo.setLayoutCount = 1;
-	layoutInfo.pSetLayouts = descriptorSetLayout;
+	
+	layoutInfo.setLayoutCount = layouts.size();
+	layoutInfo.pSetLayouts = layouts.data();
+
+	//layoutInfo.pSetLayouts = descriptorSetLayout;
+
 	layoutInfo.pushConstantRangeCount = 1;
 	layoutInfo.pPushConstantRanges = &range;
 

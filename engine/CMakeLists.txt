@@ -7,7 +7,7 @@ file(GLOB_RECURSE ENGINE_SRC CONFIGURE_DEPENDS
     ${CMAKE_SOURCE_DIR}/external/imgui/backends/imgui_impl_vulkan.cpp
 )
 
-add_library(engine STATIC ${ENGINE_SRC} "include/Engine/platform.h")
+add_library(engine STATIC ${ENGINE_SRC} "include/Engine/platform.h" "include/Engine/Renderer/renderer.h")
 
 target_include_directories(engine
     PUBLIC

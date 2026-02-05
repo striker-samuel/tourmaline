@@ -55,14 +55,9 @@ const std::vector<uint32_t> triangle_indices_ccw = {
 MeshUploadInput Quad = MeshUploadInput(quad_vertices, quad_indices_ccw);
 MeshUploadInput Triangle = MeshUploadInput(triangle_vertices, triangle_indices_ccw);
 
-// Unused at this time
-enum GPU_CULLING_MODE {
-	CPU_CULLING,
-	GPU_CULLING
-};
 
-struct InstanceData {
-	// Identity Matrix initialization
+struct DrawSetData {
+	// Identity Matrix initialization requires this ugly ass shit without goign into macros or else. 
 	//alignas(16)
 	float transform[16] = {
 		1.0f, 0.0f, 0.0f, 0.0f,
@@ -73,7 +68,7 @@ struct InstanceData {
 	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
 };
 
-static_assert(sizeof(InstanceData) % 16 == 0);
+static_assert(sizeof(DrawSetData) % 16 == 0);
 
 /// --------------------------------------
 

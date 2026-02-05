@@ -57,13 +57,32 @@ CameraPositioner_FirstPerson cameraPositioner(
 );
 
 
-struct FrameData{
-	DescriptorSetHandle frameDescriptorSet;
-	DescriptorSetHandle frameShadowDescriptorSet;
 
+//fot the global descriptor list you must track on host / cpu side, with texture_asset_id(the #id of the texture in the project) to the table id, track when the draw doesnt need it anymore and use the cpu table to partial udpate evict texture in the bindless table right
+struct TextureTable {
+};
+
+struct FrameResources {
+
+
+	// Sets cant have dynamic binding at the same time as update_after_bind
+	// So this for the ring buffers with dynamic offsets
+	DescriptorSetHandle frameDynamicDescriptorSet;
+	// and this for the texture slots. At least for the moment
+	DescriptorSetHandle frameDescriptorSet;
+
+	// I may need to go this way
+	//DescriptorSetHandle frameBindlessTexturTableDescriptorSet; 
+
+	DescriptorSetHandle frameShadowDescriptorSet;
+};
+
+struct FrameBuffers {
+
+	DeviceBufferHandle frameUniformsBuffer;
 	DeviceBufferHandle frameInstancesDataBuffer;
-	DeviceBufferHandle frameInstancesRemapBuffer;
 	DeviceBufferHandle frameLightsDataBuffer;
+
 };
 
 
@@ -159,7 +178,8 @@ private:
 
 #pragma region ===[ Uniforms / Descriptor Sets ]==
 
-	FrameData perFrameData[MAX_FRAMES_IN_FLIGHT];
+	FrameBuffers frameBuffers;
+	FrameResources perFrameData[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
 
@@ -212,6 +232,7 @@ private:
 
 		lastFrameTime = currentTime;
 	}
+	void UpdateFrameUniforms(uint32_t currentImage);
 	void UpdateInstanceBuffers(uint32_t currentImage);
 	void UpdateLightsBuffers(uint32_t currentImage);
 
@@ -589,72 +610,92 @@ private:
 
 	void CreateFrameDataBuffers() {
 
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		// Lets share buffer between in flight frames and offset into
+		// them instead.
+		//for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
-			perFrameData[i].frameInstancesDataBuffer = context->createBuffer(
-				sizeof(InstanceData) * MAX_INSTANCES,
-				VMA_MEMORY_USAGE_AUTO,
-				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			);
+		frameBuffers.frameUniformsBuffer = context->createBuffer(
+			sizeof(FrameUniforms) * MAX_FRAMES_IN_FLIGHT,
+			VMA_MEMORY_USAGE_AUTO,
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		);
 
-			perFrameData[i].frameInstancesRemapBuffer = context->createBuffer(
-				sizeof(uint32_t) * MAX_INSTANCES,
-				VMA_MEMORY_USAGE_AUTO,
-				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			);
+		// This may need to go the way of the dodo and move to something akin draw list structure. well see
+		frameBuffers.frameInstancesDataBuffer = context->createBuffer(
+			sizeof(DrawSetData) * MAX_INSTANCES * MAX_FRAMES_IN_FLIGHT,
+			VMA_MEMORY_USAGE_AUTO,
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		);
 
-			perFrameData[i].frameLightsDataBuffer = context->createBuffer(
-				sizeof(Light) * MAX_LIGHTS,
-				VMA_MEMORY_USAGE_AUTO,
-				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			);
-		}
+		frameBuffers.frameLightsDataBuffer = context->createBuffer(
+			sizeof(Light) * MAX_LIGHTS,
+			VMA_MEMORY_USAGE_AUTO,
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		);
+
+		//
 	}
 
-	void UpdateMainViewFrameData(uint32_t currentFrame)
+
+	// Set one and forget
+	// Use dynamciOffsets later to acces it
+	// Simple and elegant.
+
+	// We may formalize these to something like this right?
+	// I need to further study RHI abstracionts. and the topology of things like this. 
+
+	//struct ShaderResource {
+	//	uint32_t type; //UBO SSBO whatevs UBO DYNAMIC SIZE WHATEVS
+	//	// buffer
+	//	// perframe
+
+	//	// source
+	//	// update freq
+	//	std::vector getDynamicOffsets(); 
+
+	//};
+
+	void SetDescriptorSets()
 	{
-		assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
 
-		auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
-		auto setObj = context->descriptorSets_.get(setHandle);
-		VkDescriptorSet vkSet = setObj->set;
+		for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; ) {
 
-		// 
-
-		auto instancesRemapBufferHandle = context->buffers_.get(perFrameData[currentFrame].frameInstancesRemapBuffer);
-		VkDescriptorBufferInfo instanceRemapBufferInfo{
-			.buffer = instancesRemapBufferHandle->buffer,
-			.offset = 0,
-			.range = sizeof(uint32_t) * MAX_INSTANCES
-		};
-
-		auto instancesDataBufferHandle = context->buffers_.get(perFrameData[currentFrame].frameInstancesDataBuffer);
-		VkDescriptorBufferInfo instanceBufferInfo{
-			.buffer = instancesDataBufferHandle->buffer,
-			.offset = 0,
-			.range = sizeof(InstanceData) * MAX_INSTANCES
-		};
+			auto setHandle = perFrameData[frameIndex].frameDescriptorSet;
+			auto setObj = context->descriptorSets_.get(setHandle);
 
 
-		// 
+			VkDescriptorSet vkSet = setObj->set;
 
-		{
+			// FrameUniforms 
+			auto frameUniformsBufferHandle = context->buffers_.get(frameBuffers.frameUniformsBuffer);
+			VkDescriptorBufferInfo frameUniformsInfo{
+				.buffer = frameUniformsBufferHandle->buffer,
+				.offset = 0,
+				.range = sizeof(FrameUniforms) // this is the size of the window accesed per bind
+			};
 
+			// Quasi DrawData
+			auto instancesDataBufferHandle = context->buffers_.get(frameBuffers.frameInstancesDataBuffer);
+			VkDescriptorBufferInfo instanceBufferInfo{
+				.buffer = instancesDataBufferHandle->buffer,
+				.offset = 0,
+				.range = sizeof(DrawSetData) * MAX_INSTANCES
+			};
 			VkWriteDescriptorSet writes[2]{};
 
 			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			writes[0].dstSet = vkSet;
-			writes[0].dstBinding = 0; // SSBO
+			writes[0].dstBinding = 0; // UBO
 			writes[0].dstArrayElement = 0;
-			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 			writes[0].descriptorCount = 1;
-			writes[0].pBufferInfo = &instanceRemapBufferInfo;
+			writes[0].pBufferInfo = &frameUniformsInfo;
 
 			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			writes[1].dstSet = vkSet;
 			writes[1].dstBinding = 1; // SSBO
 			writes[1].dstArrayElement = 0;
-			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 			writes[1].descriptorCount = 1;
 			writes[1].pBufferInfo = &instanceBufferInfo;
 
@@ -663,92 +704,96 @@ private:
 		}
 	}
 
-	void UpdateMainViewShadowmapFrames(uint32_t currentFrame)
-	{
-		auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
-		auto setObj = context->descriptorSets_.get(setHandle);
-		VkDescriptorSet vkSet = setObj->set;
+	//void UpdateMainViewShadowmapFrames(uint32_t currentFrame)
+	//{
+	//	auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
+	//	auto setObj = context->descriptorSets_.get(setHandle);
+	//	VkDescriptorSet vkSet = setObj->set;
 
-		auto sam = context->samplers["default_shadow"];
-		VkSampler shadowSampler = *context->samplers_.get(sam);
+	//	auto sam = context->samplers["default_shadow"];
+	//	VkSampler shadowSampler = *context->samplers_.get(sam);
 
-		std::array<VkDescriptorImageInfo, SHADOWMAP_SLOTS> imageInfos{};
-		std::array<VkDescriptorImageInfo, SHADOWMAP_SLOTS> samplerInfos{};
+	//	std::array<VkDescriptorImageInfo, SHADOWMAP_SLOTS> imageInfos{};
+	//	std::array<VkDescriptorImageInfo, SHADOWMAP_SLOTS> samplerInfos{};
 
-		for (uint32_t slot = 0; slot < SHADOWMAP_SLOTS; ++slot)
-		{
-			ShadowMapHandle h = shadowmaps[slot].perFrame[currentFrame];
-			ShadowMap* sm = context->shadowmaps_.get(h);
-			VkImageView view = *context->imageViews_.get(sm->renderView);
+	//	for (uint32_t slot = 0; slot < SHADOWMAP_SLOTS; ++slot)
+	//	{
+	//		ShadowMapHandle h = shadowmaps[slot].perFrame[currentFrame];
+	//		ShadowMap* sm = context->shadowmaps_.get(h);
+	//		VkImageView view = *context->imageViews_.get(sm->renderView);
 
-			imageInfos[slot] = VkDescriptorImageInfo{
-				.sampler = VK_NULL_HANDLE,
-				.imageView = view,
-				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			};
+	//		imageInfos[slot] = VkDescriptorImageInfo{
+	//			.sampler = VK_NULL_HANDLE,
+	//			.imageView = view,
+	//			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+	//		};
 
-			samplerInfos[slot] = VkDescriptorImageInfo{
-					.sampler = shadowSampler,
-					.imageView = VK_NULL_HANDLE,
-					.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED
-			};
+	//		samplerInfos[slot] = VkDescriptorImageInfo{
+	//				.sampler = shadowSampler,
+	//				.imageView = VK_NULL_HANDLE,
+	//				.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED
+	//		};
 
-		}
+	//	}
 
-		VkWriteDescriptorSet writes[2]{};
+	//	VkWriteDescriptorSet writes[2]{};
 
-		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[0].dstSet = vkSet;
-		writes[0].dstBinding = 5;
-		writes[0].dstArrayElement = 0;
-		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		writes[0].descriptorCount = SHADOWMAP_SLOTS;
-		writes[0].pImageInfo = imageInfos.data();
+	//	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	//	writes[0].dstSet = vkSet;
+	//	writes[0].dstBinding = 5;
+	//	writes[0].dstArrayElement = 0;
+	//	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	//	writes[0].descriptorCount = SHADOWMAP_SLOTS;
+	//	writes[0].pImageInfo = imageInfos.data();
 
 
-		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[1].dstSet = vkSet;
-		writes[1].dstBinding = 6; // binding index for shadow map combined sampler
-		writes[1].dstArrayElement = 0;
-		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-		writes[1].descriptorCount = SHADOWMAP_SLOTS;
-		writes[1].pImageInfo = samplerInfos.data();
+	//	writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	//	writes[1].dstSet = vkSet;
+	//	writes[1].dstBinding = 6; // binding index for shadow map combined sampler
+	//	writes[1].dstArrayElement = 0;
+	//	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+	//	writes[1].descriptorCount = SHADOWMAP_SLOTS;
+	//	writes[1].pImageInfo = samplerInfos.data();
 
-		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
-	}
+	//	vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+	//}
 
-	void UpdateLightDescriptorSets(uint32_t currentFrame) {
+	//void UpdateLightDescriptorSets(uint32_t currentFrame) {
 
-		assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
+	//	assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
 
-		auto light_data_bfd = context->buffers_.get(perFrameData->frameLightsDataBuffer);
-		VkDescriptorBufferInfo lightDataBufferRangeInfo{
-			.buffer = light_data_bfd->buffer,
-			.offset = 0,
-			.range = sizeof(Light) * MAX_LIGHTS
-		};
+	//	auto light_data_bfd = context->buffers_.get(perFrameData->frameLightsDataBuffer);
+	//	VkDescriptorBufferInfo lightDataBufferRangeInfo{
+	//		.buffer = light_data_bfd->buffer,
+	//		.offset = 0,
+	//		.range = sizeof(Light) * MAX_LIGHTS
+	//	};
 
-		auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
-		auto setObj = context->descriptorSets_.get(setHandle);
-		VkDescriptorSet vkSet = setObj->set;
+	//	auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
+	//	auto setObj = context->descriptorSets_.get(setHandle);
+	//	VkDescriptorSet vkSet = setObj->set;
 
-		VkWriteDescriptorSet writes[1]{};
+	//	VkWriteDescriptorSet writes[1]{};
 
-		// LIGHTS
-		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[0].dstSet = vkSet;
-		writes[0].dstBinding = 4;
-		writes[0].dstArrayElement = 0;
-		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		writes[0].descriptorCount = 1;
-		writes[0].pBufferInfo = &lightDataBufferRangeInfo;
+	//	// LIGHTS
+	//	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	//	writes[0].dstSet = vkSet;
+	//	writes[0].dstBinding = 4;
+	//	writes[0].dstArrayElement = 0;
+	//	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	//	writes[0].descriptorCount = 1;
+	//	writes[0].pBufferInfo = &lightDataBufferRangeInfo;
 
-		vkUpdateDescriptorSets(device, 1 /*descitprorWriteCount*/, writes, 0, nullptr);
+	//	vkUpdateDescriptorSets(device, 1 /*descitprorWriteCount*/, writes, 0, nullptr);
 
-	}
+	//}
 
 	// This could be done way more clever. Only updating changed textures.
 	// This may cause problems over the frame boundary if texture list changes...
+	/// <summary>
+	///  This needs refactor to frameresources like 
+	/// </summary>
+	/// <param name="currentFrame"></param>
 	void UpdateBindlessTextures(uint32_t currentFrame) {
 
 		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstances_.numObjects());
@@ -817,7 +862,7 @@ private:
 
 		vkCmdBindIndexBuffer(commandBuffer, context->buffers_.get(page->indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
 	}
-	
+
 	// shadowmaps are per frame
 	// This is a helper to get frame.slot shadowmap
 	ShadowMap GetShadowMapFromShadowMapIndex(uint32_t shadowmap_index, uint32_t currentFrame) {
@@ -1224,18 +1269,32 @@ private:
 				mat_pipe_entry.obj_.pipeline
 			);
 
-			auto sets = context->descriptorSets_.get(perFrameData[currentFrame].frameDescriptorSet);
+			auto dynamic_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDynamicDescriptorSet);
+			auto update_after_bind_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDescriptorSet);
+
 			auto pipe_lyt = mat_pipe_entry.obj_.plyt;
+			auto instanceStride = sizeof(DrawSetData) * MAX_INSTANCES;
+
+			uint32_t dynamicOffsets[2] = {
+				imageIndex * sizeof(FrameUniforms),
+				imageIndex * instanceStride
+			};
+
+			VkDescriptorSet sets[2] = {
+				dynamic_set->set,
+				update_after_bind_set->set,
+			};
 
 			vkCmdBindDescriptorSets(
 				commandBuffer,
 				VK_PIPELINE_BIND_POINT_GRAPHICS,
 				pipe_lyt,
 				0,
-				1,
-				&sets->set,
-				0,
-				nullptr);
+				2,
+				sets,
+				2,
+				dynamicOffsets
+			);
 
 			for (int i = 0; i < scene_.hierarchy.size(); i++) {
 
@@ -1852,6 +1911,8 @@ void VulkanApp::DrawFrame() {
 
 #pragma region GPU_UPDATE
 
+
+	UpdateFrameUniforms(currentFrame);
 	UpdateInstanceBuffers(currentFrame);
 
 	// Moving this after the reset prompts this validation error. Why?
@@ -1871,8 +1932,8 @@ void VulkanApp::DrawFrame() {
 	// These are bandwitth heavy because im not tracking what needs updating in any way...
 	UpdateLightsBuffers(currentFrame);
 	//UpdateShadowMapDescriptorSets(currentFrame);
-	UpdateMainViewFrameData(currentFrame);
-	UpdateLightDescriptorSets(currentFrame);
+	//UpdateMainViewFrameData(currentFrame);
+	//UpdateLightDescriptorSets(currentFrame);
 	UpdateBindlessTextures(currentFrame);
 
 #pragma endregion
@@ -1954,9 +2015,38 @@ void VulkanApp::DrawFrame() {
 	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
+
+void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
+
+	auto view = camera_.getViewMatrix();
+	auto proj = camera_.getProjMatrix();
+
+	FrameUniforms data;
+	data.view = view;
+	data.proj = proj;
+	data.viewProj = view * proj;
+
+	VkResult result{};
+	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
+
+	context->UploadDataToBuffer(
+		frameBuffers.frameUniformsBuffer,
+		&data,
+		sizeof(FrameUniforms)/* * 1*/,
+		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		VK_ACCESS_SHADER_READ_BIT,
+		0,
+		currentImage * sizeof(FrameUniforms)
+	);
+
+	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
+
+
+}
+
 void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 
-	InstanceData* data = new InstanceData[MAX_INSTANCES];
+	DrawSetData* data = new DrawSetData[MAX_INSTANCES];
 	int i = 0;
 
 	const auto& src = scene_.globalTransform;
@@ -1965,32 +2055,20 @@ void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 		data[i].color = { float(i) * 0.20f, 0.3f, -float(i) * 0.7f, 1.0f };
 	}
 
-
-	std::array<uint32_t, MAX_INSTANCES> indexData = {};
-	for (uint32_t index = 0; index < MAX_INSTANCES; index++) {
-		indexData[index] = index;
-	}
-
 	VkResult result{};
 	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
 
-	auto instance_data_buffer_handle = perFrameData[currentImage].frameInstancesDataBuffer;
-	auto instance_remap_buffer_handle = perFrameData[currentImage].frameInstancesRemapBuffer;
-
-	context->UploadDataToBuffer(
-		instance_remap_buffer_handle,
-		indexData.data(),
-		sizeof(uint32_t) * MAX_INSTANCES,
-		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-		VK_ACCESS_SHADER_READ_BIT
-	);
+	auto instance_data_buffer_handle = frameBuffers.frameInstancesDataBuffer;
+	auto instance_data_buffer = context->buffers_.get(instance_data_buffer_handle);
 
 	context->UploadDataToBuffer(
 		instance_data_buffer_handle,
 		data,
-		sizeof(InstanceData) * MAX_INSTANCES,
+		sizeof(DrawSetData) * MAX_INSTANCES,
 		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-		VK_ACCESS_SHADER_READ_BIT
+		VK_ACCESS_SHADER_READ_BIT,
+		0,
+		0
 	);
 
 	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
@@ -2083,13 +2161,18 @@ void VulkanApp::Start() {
 		swapChainImageFormat
 	);
 
-	default_shadow_pipeline = context->CreateShadowPipeline(vert_shader_h);
+	//default_shadow_pipeline = context->CreateShadowPipeline(vert_shader_h);
 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+
+		perFrameData[i].frameDynamicDescriptorSet = context->createDescriptorSet(
+			context->default_descriptorLayout
+		);
 
 		perFrameData[i].frameDescriptorSet = context->createDescriptorSet(
 			context->default_descriptorLayout
 		);
+
 
 		//shadowFrameDescriptorSets[i] = context->createDescriptorSet(
 		//	context->default_shadow_descriptorLayout
@@ -2097,6 +2180,8 @@ void VulkanApp::Start() {
 	}
 
 	LoadScene();
+
+	SetDescriptorSets();
 
 }
 

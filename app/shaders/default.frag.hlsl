@@ -3,9 +3,8 @@
 
 [[vk::binding(2,0)]] Texture2D materialTex[]; // sampled images
 [[vk::binding(3,0)]] SamplerState materialSamp[]; // samplers
+
 [[vk::binding(4, 0)]]
-
-
 cbuffer Lights
 {
     Light g_Lights[10]; // or a struct containing them

@@ -1,43 +1,12 @@
-// =============================================
-// HLSL (for Vulkan via DXC)
-// =============================================
-
 #ifndef MAX_INSTANCES
 #define MAX_INSTANCES 1000
 #endif
 
 #include "common.hlsli"
 
-// PixelShader/FragmentShader Input 
-struct PSIn
-{
-    uint instanceID : SV_InstanceID;
-    [[vk::location(0)]] float3 color : COLOR0;
-    [[vk::location(1)]] float2 uv : TEXCOORD0;
-    [[vk::location(2)]] float3 worldPos : TEXCOORD1;
-    [[vk::location(3)]] float3 normal : TEXCOORD2;
-    [[vk::location(4)]] float4 tangent : TANGENT;
-};
 
-struct PSOut
-{
-    float4 pos : SV_Position;
-    float3 outColor : COLOR0;
-    float2 uv : TEXCOORD0;
-    float3 worldPos : TEXCOORD1;
-    float3 normal : TEXCOORD2;
-};
-
-PSOut mainPS(PSIn IN)
-{
-    PSOut OUT;
-    // Index is uniform per draw (push constants), so nonuniform isn’t required.
-    uint texIdx = pc.tex.x;
-    OUT.outColor = (1.0f, 1.0f, 1.0f);
-    //OUT.outColor = materialTex[texIdx].Sample(materialSamp[0], IN.uv);
-    // If you really want per-texture samplers too, use materialSamp[pc.texAmbient] or similar.
-    return OUT;
-}
+[[vk::binding(0, 0)]]
+ConstantBuffer<FrameUniforms> frame_res;
 
 // This can easily get outdated. Be careful.
 struct InstanceData
@@ -46,14 +15,9 @@ struct InstanceData
     float4 color;
 };
 
-
-[[vk::binding(0, 0)]]
-StructuredBuffer<uint> g_InstanceRemap;
 [[vk::binding(1, 0)]]
 StructuredBuffer<InstanceData> instance_data;
 
-// --- Vertex I/O
-// GLSL: layout(location=0/1/2) in ... ; and location 0/1 out ...
 struct VSIn
 {
     [[vk::location(0)]] float3 position : POSITION;
@@ -74,9 +38,6 @@ struct VSOut
     [[vk::location(4)]] float4 tangent : TANGENT;
 };
 
-
-float4x4 view, proj = 1.0f;
-
 VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
@@ -89,8 +50,8 @@ VSOut mainVS(VSIn IN)
     OUT.worldPos = world.xyz;
 
     // View / projection
-    float4 viewPos = mul(view, world);
-    float4 clip = mul(proj, viewPos);
+    float4 viewPos = mul(frame_res.view, world);
+    float4 clip = mul(frame_res.proj, viewPos);
     OUT.pos = clip;
 
     OUT.color = float3(1.0f, 1.0f, 1.0f);
