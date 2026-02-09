@@ -5,6 +5,7 @@
 
 #include <Engine/Renderer/primitives.h>
 #include <Engine/Renderer/constants.h>
+#include <Engine/Renderer/descriptions.h>
 
 #include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
@@ -12,6 +13,10 @@
 #include <ktx.h>
 #include <ktxvulkan.h>
 
+#include <algorithm>
+#include <array>
+
+static inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
 struct FrameUniforms
 {
 	glm::mat4 view;
@@ -36,12 +41,6 @@ struct FrameUniforms
 
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 
-
-// This architecture is heavily inspired/ lifted from LightWeightVk.
-// I used it as a base for my resource model. Will be changed as this evolves ;)
-// 
-// ----------------------------------------------------------
-// specialized with dummy structs for type safety
 using ShaderModuleHandle = Handle<struct ShaderModule>;
 using TextureHandle = Handle<struct Texture>;
 using ImageHandle = Handle<struct Image>;
@@ -57,26 +56,87 @@ using DeviceBufferHandle = Handle<struct BufferDescription>;
 using PipelineHandle = Handle<struct Pipeline>;
 using MeshDescHandle = Handle<struct GpuMeshDesc>;
 using GeometryPageHandle = Handle <struct GeometryPage>;
-
+using PipelineLayoutHandle = Handle<struct PipelineLayout>;
 
 void destroy(Context* ctx, ShaderModuleHandle handle);
 void destroy(Context* ctx, DeviceBufferHandle handle);
 void destroy(Context* ctx, TextureHandle handle);
 void destroy(Context* ctx, ImageHandle handle);
 
-// ----------------------------------------------------------
+#pragma region [--Descriptions/Keys--]
+
+struct SamplerKey {
+	// Enough to dedupe VkSampler objects in your cache
+	VkFilter mag = VK_FILTER_LINEAR;
+	VkFilter min = VK_FILTER_LINEAR;
+	VkSamplerMipmapMode mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	VkSamplerAddressMode u = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	VkSamplerAddressMode v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	VkSamplerAddressMode w = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	float maxLod = 1000.0f;
+	float maxAniso = 1.0f;
+	VkCompareOp compareOp = VK_COMPARE_OP_ALWAYS;
+	bool compareEnable = false;
+	// + whatever else you actually use
+
+	bool operator==(const SamplerKey&) const = default;
+};
+
+struct BindingDesc {
+	uint32_t binding = 0;                 // binding number inside the set
+
+	VkDescriptorType type{};
+	uint32_t count = 1;                   // descriptorCount
+	VkShaderStageFlags stages = 0;
+	VkDescriptorBindingFlags flags = 0;   // PARTIALLY_BOUND, UPDATE_AFTER_BIND, etc.
+
+	//std::vector<SamplerKey> immutableSamplers; // size must be == count if non-empty
+	std::vector<SamplerHandle> immutableSamplers; // size must be == count if non-empty
+};
+
+struct DescriptorSetLayoutDesc {
+	uint32_t set = 0;                     // set number in pipeline layout
+	VkDescriptorSetLayoutCreateFlags createFlags = 0; // e.g. UPDATE_AFTER_BIND_POOL_BIT
+	std::vector<BindingDesc> bindings;
+};
+
+struct PushConstantDesc {
+	VkShaderStageFlags stages = 0;
+	uint32_t offset = 0;
+	uint32_t size = 0;
+};
+
+struct PipelineLayoutDesc {
+	std::vector<DescriptorSetLayoutDesc> sets; // each has set index
+	std::vector<PushConstantDesc> pushConstants;
+};
+
+#pragma endregion
+
+#pragma region [--Resources--]
+
+// This structs should be named less generic, somethign like ToyPipeline could help to notice
+// this are part of my implementation surface and not Vulkans or other. 
+struct Pipeline {
+	ShaderModuleHandle vert;
+	ShaderModuleHandle frag;
+	DescriptorSetHandle ds;
+	PipelineLayoutHandle plyt;
+
+	VkPipeline pipeline;
+	//maybe name
+
+};
 
 struct DescriptorSet {
 	DescriptorLayoutHandle layout;
 	VkDescriptorSet set;
 };
 
-// This would be input for GetAppropiateSampler. The ideea is that requirements can solve for a VkSampler easily.
-// I don't know how worth is it tho, VkSamplers being driverside objs, maybe creating new ones is just simpler/faster/more convenient.
-//struct SamplerRequirements {
-//
-//
-//};
+struct PipelineLayout {
+	VkPipelineLayout layout = VK_NULL_HANDLE;
+	std::vector<DescriptorLayoutHandle> setLayouts; // keep handles for lifetime tracking
+};
 
 struct GeometryPage {
 
@@ -119,38 +179,6 @@ struct GpuMeshDesc {
 
 };
 
-// For Upload geometry context. we can distighuis between geo for eviction/streaming purposes. maybe other
-typedef enum GeoFlag {
-} GeoFlag;
-
-
-typedef enum PipelineType {
-	PIPELINE_UNDEFINED = 0,
-	PIPELINE_MATERIAL = 1 << 0,
-	PIPELINE_SHADOW = 1 << 2
-} PipelineType;
-
-struct Pipeline {
-	RasterSettings raster_settings;
-	ShaderModuleHandle vert;
-	ShaderModuleHandle frag;
-
-	// Lets not complitcate this for now. same footprint/layout for everyone. 
-	//VkDescriptorSetLayout* layout;
-	// 
-	// Lets just hold this here for now
-	VkPipelineLayout plyt;
-
-	// Bindless, so material descriptors sets are at this level instead of binding per instnace, so;
-	// Invalid initialization!
-	DescriptorSetHandle ds;
-	VkPipeline pipeline;
-
-	PipelineType type = PIPELINE_UNDEFINED;
-
-};
-// MatModels or MatPipelines can have several instances with different vlaues for constans and textures.
-// Raster state, vert, frag, blending and more stay the same.
 struct MaterialInstance {
 	PipelineHandle pipeline;
 	MaterialPushConstants values = {};
@@ -194,6 +222,11 @@ struct ShadowMap {
 		return this->cascades >= 1;
 	}
 };
+
+
+////
+
+#pragma endregion
 
 // This style of handling things is lifted up from LightweightVk.
 class Context {
@@ -276,6 +309,7 @@ public:
 	Pool<ImageView, VkImageView> imageViews_;
 	Pool<ShadowMap, ShadowMap> shadowmaps_;
 	Pool<Sampler, VkSampler> samplers_;
+	Pool<PipelineLayout, PipelineLayout> pipelineLayouts_;
 
 	Pool < GeometryPage, GeometryPage> geometry_pages;
 	GeometryPageHandle current_geometry_page;
@@ -338,7 +372,9 @@ public:
 		default_descriptor_pool = createDescriptorPool();
 		imgui_descriptor_pool = createDescriptorPool();
 
-		default_descriptorLayout = createMainViewDescriptorLayout();
+
+		// These are pipeline specific. 
+		//default_descriptorLayout = createMainViewDescriptorLayout();
 		//default_shadow_descriptorLayout = CreateShadowMapsDescriptorSetLayout();
 		//default_meshlet_descriptorLayout = CreateMeshletDescriptorLayout();
 
@@ -371,7 +407,6 @@ public:
 		);
 
 	};
-	// Maybe destructor should clear the vmaPools. Device side allocations are not managed as clear by the OS.
 	~Context(
 	) {
 		CleanUp();
@@ -393,7 +428,6 @@ public:
 
 		endSingleTimeCommands(*device_, commandBuffer, default_queue, default_command_pool);
 	}
-
 
 	void InitalizeGeoBuffers() {
 
@@ -576,28 +610,22 @@ public:
 	DeviceBufferHandle CreateStagingBuffer(const void* srcData, VkDeviceSize size);
 	ShaderModuleHandle CreateShaderModule(std::vector<char> code);
 
-	PipelineHandle CreatePipeline(RasterSettings raster_settings, ShaderModuleHandle vert, ShaderModuleHandle frag, VkFormat depth_format, VkFormat swapchainImageFormat);
-	PipelineHandle CreateShadowPipeline(ShaderModuleHandle vert);
-	PipelineHandle CreateMaterialPipeline(ShaderModuleHandle vert, ShaderModuleHandle frag, RasterSettings raster_settings, VkFormat depth_format, VkFormat swapchainImageFormat);
-	ImageHandle CreateShadowMapImage(int texWidth, int texHeight);
+	PipelineLayoutHandle createPipelineLayout(const PipelineLayoutDesc& descIn);
+	PipelineHandle CreatePipeline(RasterSettings raster_settings, PipelineLayoutDesc layoutDesc, ShaderModuleHandle vert, ShaderModuleHandle frag, VkFormat depth_format, VkFormat swapchainImageFormat);
 
+	ImageHandle CreateShadowMapImage(int texWidth, int texHeight);
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
 	SamplerHandle CreateSampler(uint32_t levelCount);
 	SamplerHandle CreateShadowSampler(uint32_t levelCount);
-	TextureHandle CreateTexture(ktxTexture2& texture);
+
+
+	TextureHandle CreateTexture(ktxTexture2& texture); // TextureSlotTable implementeation pendinde. 
 	ShadowMapHandle CreateShadowMap(int width, int height);
 
 	MaterialInstanceHandle CreateMaterialInstance(PipelineHandle mat_pipeline);
-
-
-	// DescriptorLayouts
-	DescriptorLayoutHandle CreateTextureTableLayout();
-	DescriptorLayoutHandle createMainViewDescriptorLayout();
-	//DescriptorLayoutHandle CreateShadowMapsDescriptorSetLayout();
-	//DescriptorLayoutHandle CreateMeshletDescriptorLayout();
+	DescriptorLayoutHandle createDescriptorLayout(const DescriptorSetLayoutDesc& descIn);
 
 	DescriptorPoolHandle createDescriptorPool();
-
 	ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType);
 	ImageViewHandle CreateImageView(ImageHandle image, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType);
 	ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount);
@@ -613,18 +641,11 @@ public:
 	VkCommandBuffer GetCommandBuffer();
 	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
 
-
-
-
-	//
 	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
-
-
 	void TransitionImageLayout(ImageHandle image_handle, VkImageLayout oldLayout, VkImageLayout newLayout);
 
+	SamplerHandle GetSampler(SamplerKey key);
 	VkQueue GetGraphicsQueue();
-	void GetAppropiateSampler(Texture& texture);
-
 	// END
 	void CleanUp();
 
@@ -660,8 +681,6 @@ public:
 	sci.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 
 	VkSampler shadowCmpSampler;
-	vkCreateSampler(*device_, &sci, nullptr, &shadowCmpSampler);
-
 	VK_CHECK(vkCreateSampler(*device_, &sci, nullptr, &sampler_));
 
 	return samplers_.create(std::move(sampler_));
@@ -825,7 +844,6 @@ public:
 
 	return buffers_.create(std::move(desc));
 }
-
 
 void Context::UploadDataToBuffer(
 	DeviceBufferHandle buffer,
@@ -1014,160 +1032,128 @@ void Context::UploadDataToBuffer(
 //}
 
 
-// Could be a good model
-
-//struct BindingDescription {
-//	VkDescriptorType type;
-//	VkDescriptorBindingFlags bindingFlags;
-//	//std::vector<VkSampler> inmutableSamplers;
-//};
-//
-//struct BindingDescriptionBound {
-//	int layuout_n, bind_n = 0;
-//};
-//
-//
-//struct PipelineLayoutDescription {
-//	//layouts;
-//	std::vector<BindingDescription> bindings;
-//
-//};
-//
-//
-//
 //[[nodiscard]] DescriptorLayoutHandle Context::createDescriptorLayout(PipelineLayoutDescription& pld) {
 //
 //
 //
 //}
+//
+//[[nodiscard]] DescriptorLayoutHandle Context::CreateTextureTableLayout() {
+//
+//
+//
+//	VkDescriptorSetLayoutBinding sampledImageBinding{};
+//	sampledImageBinding.binding = 2;
+//	sampledImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+//	sampledImageBinding.descriptorCount = MAX_TEXTURES;
+//	sampledImageBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+//
+//	VkDescriptorSetLayoutBinding sampBinding{};
+//	sampBinding.binding = 3;
+//	sampBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+//	sampBinding.descriptorCount = MAX_TEXTURES;
+//	sampBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+//
+//
+//	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
+//		sampledImageBinding,
+//		sampBinding,
+//	};
+//
+//	// Per-binding flags — same size as bindings[]
+//	std::array<VkDescriptorBindingFlags, 2> bindingFlags = {
+//		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+//		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
+//		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+//		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
+//	};
+//
+//	VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
+//	bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+//	bindless_flags.pNext = nullptr;
+//	bindless_flags.bindingCount = static_cast<uint32_t>(bindingFlags.size());
+//	bindless_flags.pBindingFlags = bindingFlags.data()rea
+//	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+//
+//	VkDescriptorSetLayout descriptorSetLayout;
+//
+//	if (vkCreateDescriptorSetLayout(*device_, &layoutInfo, nullptr,
+//		&descriptorSetLayout) != VK_SUCCESS) {
+//		throw std::runtime_error("failed to create descriptor set layout!");
+//	}
+//
+//	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
+//
+//
+//}
 
 
-
-[[nodiscard]] DescriptorLayoutHandle Context::CreateTextureTableLayout() {
-
-
-
-	VkDescriptorSetLayoutBinding sampledImageBinding{};
-	sampledImageBinding.binding = 2;
-	sampledImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-	sampledImageBinding.descriptorCount = MAX_TEXTURES;
-	sampledImageBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-	VkDescriptorSetLayoutBinding sampBinding{};
-	sampBinding.binding = 3;
-	sampBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-	sampBinding.descriptorCount = MAX_TEXTURES;
-	sampBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-
-	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
-		sampledImageBinding,
-		sampBinding,
-	};
-
-	// Per-binding flags — same size as bindings[]
-	std::array<VkDescriptorBindingFlags, 2> bindingFlags = {
-		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
-		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
-	};
-
-	VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
-	bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-	bindless_flags.pNext = nullptr;
-	bindless_flags.bindingCount = static_cast<uint32_t>(bindingFlags.size());
-	bindless_flags.pBindingFlags = bindingFlags.data();
-
-	VkDescriptorSetLayoutCreateInfo layoutInfo{};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-	layoutInfo.pBindings = bindings.data();
-	layoutInfo.pNext = &bindless_flags;
-	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-
-	VkDescriptorSetLayout descriptorSetLayout;
-
-	if (vkCreateDescriptorSetLayout(*device_, &layoutInfo, nullptr,
-		&descriptorSetLayout) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create descriptor set layout!");
-	}
-
-	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
-
-
-}
-
-
-
-
-
-[[nodiscard]] DescriptorLayoutHandle Context::createMainViewDescriptorLayout() {
-
-	VkDescriptorSetLayoutBinding frameUniformsBinding{};
-	frameUniformsBinding.binding = 0;
-	frameUniformsBinding.descriptorCount = 1;
-	frameUniformsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-	frameUniformsBinding.pImmutableSamplers = nullptr;
-	frameUniformsBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-
-	VkDescriptorSetLayoutBinding instanceDataBinding{};
-	instanceDataBinding.binding = 1;
-	instanceDataBinding.descriptorCount = 1;
-	instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
-	instanceDataBinding.pImmutableSamplers = nullptr;
-	instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
-	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
-		frameUniformsBinding,
-		instanceDataBinding,
-		//sampledImageBinding,
-		//sampBinding,
-		//lightBinding,
-		//shadowMapBinding,
-		//shadowSamp
-	};
-
-	// Per-binding flags — same size as bindings[]
-	std::array<VkDescriptorBindingFlags, 2> bindingFlags = {
-		0,
-		0,
-		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
-		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
-		//0, // lightData.
-		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless shadowmap_images
-		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless shadowmap_samplers
-	};
-
-	// Chain flags struct
-	//VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
-	//bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-	//bindless_flags.pNext = nullptr;
-	//bindless_flags.bindingCount = static_cast<uint32_t>(bindingFlags.size());
-	//bindless_flags.pBindingFlags = bindingFlags.data();
-
-	VkDescriptorSetLayoutCreateInfo layoutInfo{};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-	layoutInfo.pBindings = bindings.data();
-	layoutInfo.pNext = VK_NULL_HANDLE;
-	//layoutInfo.pNext = &bindless_flags;
-	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-
-	VkDescriptorSetLayout descriptorSetLayout;
-
-	if (vkCreateDescriptorSetLayout(*device_, &layoutInfo, nullptr,
-		&descriptorSetLayout) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create descriptor set layout!");
-	}
-
-	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
-
-}
+//[[nodiscard]] DescriptorLayoutHandle Context::createMainViewDescriptorLayout() {
+//
+//	VkDescriptorSetLayoutBinding frameUniformsBinding{};
+//	frameUniformsBinding.binding = 0;
+//	frameUniformsBinding.descriptorCount = 1;
+//	frameUniformsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+//	frameUniformsBinding.pImmutableSamplers = nullptr;
+//	frameUniformsBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+//
+//	VkDescriptorSetLayoutBinding instanceDataBinding{};
+//	instanceDataBinding.binding = 1;
+//	instanceDataBinding.descriptorCount = 1;
+//	instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+//	instanceDataBinding.pImmutableSamplers = nullptr;
+//	instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+//
+//	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
+//		frameUniformsBinding,
+//		instanceDataBinding,
+//		//sampledImageBinding,
+//		//sampBinding,
+//		//lightBinding,
+//		//shadowMapBinding,
+//		//shadowSamp
+//	};
+//
+//	// Per-binding flags — same size as bindings[]
+//	std::array<VkDescriptorBindingFlags, 2> bindingFlags = {
+//		0,
+//		0,
+//		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+//		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
+//		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+//		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
+//		//0, // lightData.
+//		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+//		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless shadowmap_images
+//		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+//		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless shadowmap_samplers
+//	};
+//
+//	// Chain flags struct
+//	//VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
+//	//bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+//	//bindless_flags.pNext = nullptr;
+//	//bindless_flags.bindingCount = static_cast<uint32_t>(bindingFlags.size());
+//	//bindless_flags.pBindingFlags = bindingFlags.data();
+//
+//	VkDescriptorSetLayoutCreateInfo layoutInfo{};
+//	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+//	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+//	layoutInfo.pBindings = bindings.data();
+//	layoutInfo.pNext = VK_NULL_HANDLE;
+//	//layoutInfo.pNext = &bindless_flags;
+//	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+//
+//	VkDescriptorSetLayout descriptorSetLayout;
+//
+//	if (vkCreateDescriptorSetLayout(*device_, &layoutInfo, nullptr,
+//		&descriptorSetLayout) != VK_SUCCESS) {
+//		throw std::runtime_error("failed to create descriptor set layout!");
+//	}
+//
+//	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
+//
+//}
 
 [[nodiscard]] DescriptorPoolHandle Context::createDescriptorPool() {
 	const uint32_t bindless_sets = MAX_FRAMES_IN_FLIGHT;
@@ -1195,208 +1181,276 @@ void Context::UploadDataToBuffer(
 	return descriptorSetPools_.create(std::move(dpool));
 }
 
-[[nodiscard]] PipelineHandle Context::CreateShadowPipeline(ShaderModuleHandle vert) {
+//[[nodiscard]] PipelineHandle Context::CreateShadowPipeline(ShaderModuleHandle vert) {
+//
+//	// We ure using native VkPipelineLayout to ease things for now so we dont have to formalize a way to describe that.
+//	Pipeline pipeline = {};
+//	//pipeline.raster_settings = default_raster_settings;
+//	//pipeline.frag = ;
+//	pipeline.vert = vert;
+//	pipeline.type = PIPELINE_SHADOW;
+//
+//	// 16 bit depth
+//	constexpr float depthBiasConstant = 0; // lets try  FFXVVI oriented depth bias
+//	constexpr float depthBiasSlope = 1.0f;
+//
+//	auto v = shaderModules_.get(vert);
+//	VkPipelineShaderStageCreateInfo vertStage{};
+//	vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+//	vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+//	vertStage.module = *v;
+//	vertStage.pName = "mainVS";
+//
+//	VkPipelineShaderStageCreateInfo shaderStages[] = { vertStage };
+//
+//	//VERTEX Duplicated from CreatePipeline... this needs updating too if it were to change.
+//
+//	auto bindingDescription = Vertex::getBindingDescription();
+//	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+//
+//	VkPipelineVertexInputStateCreateInfo vertexInput{};
+//	vertexInput.sType =
+//		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+//
+//	vertexInput.vertexBindingDescriptionCount = bindingDescription.size();
+//	vertexInput.vertexAttributeDescriptionCount =
+//		static_cast<uint32_t>(attributeDescriptions.size());
+//	vertexInput.pVertexBindingDescriptions = bindingDescription.data();
+//	vertexInput.pVertexAttributeDescriptions = attributeDescriptions.data();
+//
+//	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+//	inputAssembly.sType =
+//		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+//	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+//	inputAssembly.primitiveRestartEnable = VK_FALSE;
+//
+//	// 3. Viewport & scissor (or mark as dynamic)
+//	VkPipelineViewportStateCreateInfo viewportState{};
+//	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+//	viewportState.viewportCount = 1;
+//	//viewportState.pViewports = &viewport; // or null if dynamic // We are going dynamic
+//	viewportState.scissorCount = 1;
+//	//viewportState.pScissors = &scissor;  // or null if dynamic
+//
+//	VkPipelineRasterizationStateCreateInfo raster{};
+//	raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+//	raster.polygonMode = VK_POLYGON_MODE_FILL;
+//	raster.cullMode = VK_CULL_MODE_BACK_BIT; 
+//	raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+//
+//	raster.depthClampEnable = VK_FALSE; // Need to enable feature for VK_TRUE
+//	raster.rasterizerDiscardEnable = VK_FALSE;
+//
+//	raster.depthBiasEnable = VK_TRUE;                // usually TRUE for shadow acne fix
+//	raster.depthBiasConstantFactor = depthBiasConstant;
+//	raster.depthBiasSlopeFactor = depthBiasSlope;
+//	raster.lineWidth = 1.0f;
+//
+//	// 5. Multisampling
+//	VkPipelineMultisampleStateCreateInfo ms{};
+//	ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+//	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+//	ms.sampleShadingEnable = VK_FALSE;
+//
+//	// 6. Depth-stencil
+//	VkPipelineDepthStencilStateCreateInfo depthStencil{};
+//	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+//	depthStencil.depthTestEnable = VK_TRUE;
+//	depthStencil.depthWriteEnable = VK_TRUE;
+//
+//	// Changed 
+//	depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+//	depthStencil.depthBoundsTestEnable = VK_FALSE;
+//	depthStencil.stencilTestEnable = VK_FALSE;
+//
+//	//depthStencil.depthTestEnable = VK_TRUE;
+//	//depthStencil.depthWriteEnable = VK_TRUE;
+//	//depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+//
+//	// 7. Color blend: **no color attachments**
+//	VkPipelineColorBlendStateCreateInfo colorBlend{};
+//	colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+//	colorBlend.attachmentCount = 0;
+//	colorBlend.pAttachments = nullptr;
+//
+//	std::vector<VkDynamicState> dynamicStates = {
+//		VK_DYNAMIC_STATE_VIEWPORT,
+//		VK_DYNAMIC_STATE_SCISSOR
+//	};
+//
+//	VkPipelineDynamicStateCreateInfo dynamicState{};
+//	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+//	dynamicState.dynamicStateCount =
+//		static_cast<uint32_t>(dynamicStates.size());
+//	dynamicState.pDynamicStates = dynamicStates.data();
+//
+//
+//	// DYNAMIC RENDERING INFO.
+//
+//	// Provide information for dynamic rendering
+//	VkPipelineRenderingCreateInfo dynamic_rendering_pipeline_info{
+//		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+//	dynamic_rendering_pipeline_info.pNext = VK_NULL_HANDLE;
+//
+//	dynamic_rendering_pipeline_info.depthAttachmentFormat = SHADOWMAP_DEPTH_FORMAT;
+//	dynamic_rendering_pipeline_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+//
+//
+//#pragma region ---[Push Constants]---
+//
+//
+//	VkPushConstantRange range{};
+//	range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+//	range.offset = 0;
+//	range.size = sizeof(MainViewPushConstants); // I dont need materialInstance pc for now. Maybe later ill do alphatested mats for non opaque geo
+//
+//	auto shadow_def_lyt = descriptorSetLayouts_.get(default_shadow_descriptorLayout);
+//	auto descriptorSetLayout = shadow_def_lyt;
+//
+//	VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+//	layoutInfo.setLayoutCount = 1;
+//	layoutInfo.pSetLayouts = descriptorSetLayout;
+//	layoutInfo.pushConstantRangeCount = 1;
+//	layoutInfo.pPushConstantRanges = &range;
+//
+//	if (vkCreatePipelineLayout(*device_, &layoutInfo, nullptr,
+//		&pipeline.plyt) != VK_SUCCESS) {
+//		throw std::runtime_error("failed to create pipeline layout!");
+//	}
+//
+//#pragma endregion
+//
+//	// 9. Finally, the pipeline create info
+//	VkGraphicsPipelineCreateInfo pipeCI{};
+//	pipeCI.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+//	pipeCI.stageCount = 1;                          // <— ONLY vertex stage
+//	pipeCI.pStages = shaderStages;
+//
+//	pipeCI.pVertexInputState = &vertexInput;
+//	pipeCI.pInputAssemblyState = &inputAssembly;
+//	pipeCI.pViewportState = &viewportState;
+//	pipeCI.pRasterizationState = &raster;
+//	pipeCI.pMultisampleState = &ms;
+//	pipeCI.pDepthStencilState = &depthStencil;
+//	pipeCI.pColorBlendState = &colorBlend;
+//	pipeCI.pDynamicState = &dynamicState;
+//
+//	pipeCI.layout = pipeline.plyt;
+//	pipeCI.subpass = 0;
+//	pipeCI.pNext = &dynamic_rendering_pipeline_info;
+//
+//
+//	assert(pipeCI.pMultisampleState != nullptr);
+//
+//	std::cout << "creating Shadow Pipeline" << std::endl;
+//	vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipeCI, nullptr, &pipeline.pipeline);
+//	std::cout << "end creating shadow pipeline" << std::endl;
+//
+//
+//	return pipelines_.create(std::move(pipeline));
+//
+//}
 
-	// We ure using native VkPipelineLayout to ease things for now so we dont have to formalize a way to describe that.
-	Pipeline pipeline = {};
-	//pipeline.raster_settings = default_raster_settings;
-	//pipeline.frag = ;
-	pipeline.vert = vert;
-	pipeline.type = PIPELINE_SHADOW;
+PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& descIn)
+{
+	PipelineLayout out{};
+	out.layout = VK_NULL_HANDLE;
 
-	// 16 bit depth
-	constexpr float depthBiasConstant = 0; // lets try  FFXVVI oriented depth bias
-	constexpr float depthBiasSlope = 1.0f;
+	// ---- 1) Canonicalize sets (sort by set index)
+	std::vector<DescriptorSetLayoutDesc> sets = descIn.sets;
+	std::sort(sets.begin(), sets.end(),
+		[](const auto& a, const auto& b) { return a.set < b.set; });
 
-	auto v = shaderModules_.get(vert);
-	VkPipelineShaderStageCreateInfo vertStage{};
-	vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-	vertStage.module = *v;
-	vertStage.pName = "mainVS";
+	// ---- 2) Determine max set index and build VkDescriptorSetLayout array
+	uint32_t maxSet = 0;
+	for (const auto& s : sets) maxSet = std::max(maxSet, s.set);
 
-	VkPipelineShaderStageCreateInfo shaderStages[] = { vertStage };
+	// You can pick your own limit. Vulkan guarantees at least 4, often 8+.
+	// If you want "max 8 sets" like you did for push constants:
+	assert(maxSet < 8 && "Too many descriptor sets (max set index must be < 8)");
 
-	//VERTEX Duplicated from CreatePipeline... this needs updating too if it were to change.
+	const uint32_t setLayoutCount = (sets.empty()) ? 0u : (maxSet + 1);
 
-	auto bindingDescription = Vertex::getBindingDescription();
-	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+	std::array<VkDescriptorSetLayout, 8> vkSetLayouts{};
+	vkSetLayouts.fill(VK_NULL_HANDLE);
 
-	VkPipelineVertexInputStateCreateInfo vertexInput{};
-	vertexInput.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	out.setLayouts.clear();
+	out.setLayouts.reserve(sets.size());
 
-	vertexInput.vertexBindingDescriptionCount = bindingDescription.size();
-	vertexInput.vertexAttributeDescriptionCount =
-		static_cast<uint32_t>(attributeDescriptions.size());
-	vertexInput.pVertexBindingDescriptions = bindingDescription.data();
-	vertexInput.pVertexAttributeDescriptions = attributeDescriptions.data();
+	for (const auto& s : sets)
+	{
+		DescriptorLayoutHandle lytHandle = createDescriptorLayout(s);
+		out.setLayouts.push_back(lytHandle);
 
-	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-	inputAssembly.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-	inputAssembly.primitiveRestartEnable = VK_FALSE;
-
-	// 3. Viewport & scissor (or mark as dynamic)
-	VkPipelineViewportStateCreateInfo viewportState{};
-	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-	viewportState.viewportCount = 1;
-	//viewportState.pViewports = &viewport; // or null if dynamic // We are going dynamic
-	viewportState.scissorCount = 1;
-	//viewportState.pScissors = &scissor;  // or null if dynamic
-
-	VkPipelineRasterizationStateCreateInfo raster{};
-	raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-	raster.polygonMode = VK_POLYGON_MODE_FILL;
-	raster.cullMode = VK_CULL_MODE_BACK_BIT; 
-	raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-
-	raster.depthClampEnable = VK_FALSE; // Need to enable feature for VK_TRUE
-	raster.rasterizerDiscardEnable = VK_FALSE;
-
-	raster.depthBiasEnable = VK_TRUE;                // usually TRUE for shadow acne fix
-	raster.depthBiasConstantFactor = depthBiasConstant;
-	raster.depthBiasSlopeFactor = depthBiasSlope;
-	raster.lineWidth = 1.0f;
-
-	// 5. Multisampling
-	VkPipelineMultisampleStateCreateInfo ms{};
-	ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-	ms.sampleShadingEnable = VK_FALSE;
-
-	// 6. Depth-stencil
-	VkPipelineDepthStencilStateCreateInfo depthStencil{};
-	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-	depthStencil.depthTestEnable = VK_TRUE;
-	depthStencil.depthWriteEnable = VK_TRUE;
-
-	// Changed 
-	depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-	depthStencil.depthBoundsTestEnable = VK_FALSE;
-	depthStencil.stencilTestEnable = VK_FALSE;
-
-	//depthStencil.depthTestEnable = VK_TRUE;
-	//depthStencil.depthWriteEnable = VK_TRUE;
-	//depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-
-	// 7. Color blend: **no color attachments**
-	VkPipelineColorBlendStateCreateInfo colorBlend{};
-	colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-	colorBlend.attachmentCount = 0;
-	colorBlend.pAttachments = nullptr;
-
-	std::vector<VkDynamicState> dynamicStates = {
-		VK_DYNAMIC_STATE_VIEWPORT,
-		VK_DYNAMIC_STATE_SCISSOR
-	};
-
-	VkPipelineDynamicStateCreateInfo dynamicState{};
-	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamicState.dynamicStateCount =
-		static_cast<uint32_t>(dynamicStates.size());
-	dynamicState.pDynamicStates = dynamicStates.data();
-
-
-	// DYNAMIC RENDERING INFO.
-
-	// Provide information for dynamic rendering
-	VkPipelineRenderingCreateInfo dynamic_rendering_pipeline_info{
-		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
-	dynamic_rendering_pipeline_info.pNext = VK_NULL_HANDLE;
-
-	dynamic_rendering_pipeline_info.depthAttachmentFormat = SHADOWMAP_DEPTH_FORMAT;
-	dynamic_rendering_pipeline_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
-
-
-#pragma region ---[Push Constants]---
-
-
-	VkPushConstantRange range{};
-	range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-	range.offset = 0;
-	range.size = sizeof(MainViewPushConstants); // I dont need materialInstance pc for now. Maybe later ill do alphatested mats for non opaque geo
-
-	auto shadow_def_lyt = descriptorSetLayouts_.get(default_shadow_descriptorLayout);
-	auto descriptorSetLayout = shadow_def_lyt;
-
-	VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-	layoutInfo.setLayoutCount = 1;
-	layoutInfo.pSetLayouts = descriptorSetLayout;
-	layoutInfo.pushConstantRangeCount = 1;
-	layoutInfo.pPushConstantRanges = &range;
-
-	if (vkCreatePipelineLayout(*device_, &layoutInfo, nullptr,
-		&pipeline.plyt) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create pipeline layout!");
+		VkDescriptorSetLayout* vkLyt = descriptorSetLayouts_.get(lytHandle);
+		vkSetLayouts[s.set] = *vkLyt;
 	}
 
-#pragma endregion
+	// Optional policy: forbid gaps
+	// for (uint32_t i = 0; i < setLayoutCount; ++i)
+	//     assert(vkSetLayouts[i] != VK_NULL_HANDLE && "Descriptor set gap not allowed");
 
-	// 9. Finally, the pipeline create info
-	VkGraphicsPipelineCreateInfo pipeCI{};
-	pipeCI.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-	pipeCI.stageCount = 1;                          // <— ONLY vertex stage
-	pipeCI.pStages = shaderStages;
+	// ---- 3) Push constant ranges (max 8)
+	VkPushConstantRange ranges[8]{};
+	const uint32_t rangeCount = static_cast<uint32_t>(descIn.pushConstants.size());
+	assert(rangeCount <= 8 && "Max 8 push constant ranges");
 
-	pipeCI.pVertexInputState = &vertexInput;
-	pipeCI.pInputAssemblyState = &inputAssembly;
-	pipeCI.pViewportState = &viewportState;
-	pipeCI.pRasterizationState = &raster;
-	pipeCI.pMultisampleState = &ms;
-	pipeCI.pDepthStencilState = &depthStencil;
-	pipeCI.pColorBlendState = &colorBlend;
-	pipeCI.pDynamicState = &dynamicState;
+	// Decide explicit offsets vs packed offsets
+	bool anyExplicitOffset = false;
+	for (const auto& pc : descIn.pushConstants)
+		if (pc.offset != 0) { anyExplicitOffset = true; break; }
 
-	pipeCI.layout = pipeline.plyt;
-	pipeCI.subpass = 0;
-	pipeCI.pNext = &dynamic_rendering_pipeline_info;
+	uint32_t curr_off = 0;
 
+	for (uint32_t i = 0; i < rangeCount; ++i)
+	{
+		const auto& r = descIn.pushConstants[i];
 
-	assert(pipeCI.pMultisampleState != nullptr);
+		const uint32_t off = anyExplicitOffset ? r.offset : curr_off;
 
-	std::cout << "creating Shadow Pipeline" << std::endl;
-	vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipeCI, nullptr, &pipeline.pipeline);
-	std::cout << "end creating shadow pipeline" << std::endl;
+		assert(is_aligned4(off));
+		assert(is_aligned4(r.size));
+		assert(r.size > 0);
 
+		ranges[i] = VkPushConstantRange{
+			.stageFlags = r.stages,
+			.offset = off,
+			.size = r.size
+		};
 
-	return pipelines_.create(std::move(pipeline));
+		if (!anyExplicitOffset)
+			curr_off += r.size;
+	}
 
+	// ---- 4) Create VkPipelineLayout
+	VkPipelineLayoutCreateInfo ci{
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = setLayoutCount,
+		.pSetLayouts = setLayoutCount ? vkSetLayouts.data() : nullptr,
+		.pushConstantRangeCount = rangeCount,
+		.pPushConstantRanges = rangeCount ? ranges : nullptr,
+	};
+
+	VK_CHECK(vkCreatePipelineLayout(*device_, &ci, nullptr, &out.layout));
+
+	return pipelineLayouts_.create(std::move(out));
 }
 
-//// Type specialization
-////using uint32_t = BindingType;
-//
-//
-//struct Bindign {
-//	uint32_t type :
-//};
-//struct PipelineLayout {
-//
-//	// PC
-//	std::vector<struct dummy> push_constants_block;
-//
-//	// SET LAYOUTS
-//	// dynamics first
-//};
 
-
+//[[nodiscard]] PipelineHandle Context::CreatePipeline(
+//	PipelineDesc/Key key,
+//) {} Same but with key -> pipeline 
 [[nodiscard]] PipelineHandle Context::CreatePipeline(
 	RasterSettings raster_settings,
+	PipelineLayoutDesc layoutDesc,
 	ShaderModuleHandle vert,
 	ShaderModuleHandle frag,
 	VkFormat depth_format,
 	VkFormat swapchainImageFormat
 ) {
 
-	// We ure using native VkPipelineLayout to ease things for now so we dont have to formalize a way to describe that.
-	Pipeline pipeline = {};
-	pipeline.raster_settings = default_raster_settings;
-	pipeline.frag = frag;
-	pipeline.vert = vert;
-	pipeline.type = PIPELINE_MATERIAL;
 
+	Pipeline pipeline;
 	auto v = shaderModules_.get(vert);
 	auto f = shaderModules_.get(frag);
 
@@ -1418,7 +1472,7 @@ void Context::UploadDataToBuffer(
 	VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
 													  fragShaderStageInfo };
 
-	// VERTEX FORMAT
+	// VERTEX FORMAT. This is fixed and set beforehand
 
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
 	vertexInputInfo.sType =
@@ -1449,18 +1503,22 @@ void Context::UploadDataToBuffer(
 	// RASTERIZER
 
 	VkPipelineRasterizationStateCreateInfo rasterizer{};
+
 	rasterizer.sType =
 		VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-	rasterizer.depthClampEnable = VK_FALSE;
-	rasterizer.rasterizerDiscardEnable = VK_FALSE;
-	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-	rasterizer.lineWidth = 1.0f;
-	rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-	rasterizer.depthBiasEnable = VK_FALSE;
+
+
+	// This may be pretty sytupid, to encode raster_settings in a custom strutct with same members.
+	// May be good later for defining a common interface RHI like if i do a DirectX backend?. Should I keep it?
+	rasterizer.depthClampEnable = raster_settings.depthClampEnable;
+	rasterizer.rasterizerDiscardEnable = raster_settings.rasterizerDiscardEnable;
+	rasterizer.polygonMode = raster_settings.polygonMode;
+	rasterizer.lineWidth = raster_settings.lineWidth;
+	rasterizer.cullMode = raster_settings.cullMode;
+	rasterizer.frontFace = raster_settings.frontFace;
+	rasterizer.depthBiasEnable = raster_settings.depthBiasEnable;
 
 	// MULTISAMPLING
-
 	VkPipelineMultisampleStateCreateInfo multisampling{};
 	multisampling.sType =
 		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -1512,34 +1570,15 @@ void Context::UploadDataToBuffer(
 		static_cast<uint32_t>(dynamicStates.size());
 	dynamicState.pDynamicStates = dynamicStates.data();
 
-#pragma region ---[Push Constants]---
+#pragma region ---[LayoutDescription]---
 
-	VkPushConstantRange range{};
-	range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-	range.offset = 0;
-	range.size = sizeof(MainViewPushConstants) + sizeof(MaterialPushConstants);;
+	PipelineLayoutHandle plytHandle = createPipelineLayout(layoutDesc);
+	pipeline.plyt = plytHandle;
 
-	std::array<VkDescriptorSetLayout, 2> layouts = {
-		rings_layout, 
-		texture_table_layout 
-	};
-
-	VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-	
-	layoutInfo.setLayoutCount = layouts.size();
-	layoutInfo.pSetLayouts = layouts.data();
-
-	//layoutInfo.pSetLayouts = descriptorSetLayout;
-
-	layoutInfo.pushConstantRangeCount = 1;
-	layoutInfo.pPushConstantRanges = &range;
-
-	if (vkCreatePipelineLayout(*device_, &layoutInfo, nullptr,
-		&pipeline.plyt) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create pipeline layout!");
-	}
+	PipelineLayout* plytObj = pipelineLayouts_.get(plytHandle);
 
 #pragma endregion
+
 
 	// Provide information for dynamic rendering
 	VkPipelineRenderingCreateInfo dynamic_rendering_pipeline_info{
@@ -1565,7 +1604,7 @@ void Context::UploadDataToBuffer(
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicState;
 	pipelineInfo.pDepthStencilState = &depthStencil;
-	pipelineInfo.layout = pipeline.plyt;
+	pipelineInfo.layout = plytObj->layout;
 	pipelineInfo.pNext = &dynamic_rendering_pipeline_info;
 
 	if (vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipelineInfo,
@@ -1575,19 +1614,217 @@ void Context::UploadDataToBuffer(
 	}
 
 	return pipelines_.create(std::move(pipeline));
-}
 
-[[nodiscard]] PipelineHandle Context::CreateMaterialPipeline(
-	ShaderModuleHandle vert,
-	ShaderModuleHandle frag,
-	RasterSettings raster_settings,
-	VkFormat depth_format,
-	VkFormat swapchainImageFormat
-) {
-
-	return CreatePipeline(raster_settings, vert, frag, depth_format, swapchainImageFormat);
 
 }
+
+//
+//[[nodiscard]] PipelineHandle Context::CreatePipeline(
+//	RasterSettings raster_settings,
+//	ShaderModuleHandle vert,
+//	ShaderModuleHandle frag,
+//	VkFormat depth_format,
+//	VkFormat swapchainImageFormat
+//) {
+//
+//	// We ure using native VkPipelineLayout to ease things for now so we dont have to formalize a way to describe that.
+//	Pipeline pipeline = {};
+//	pipeline.raster_settings = default_raster_settings;
+//	pipeline.frag = frag;
+//	pipeline.vert = vert;
+//	pipeline.type = PIPELINE_MATERIAL;
+//
+//	auto v = shaderModules_.get(vert);
+//	auto f = shaderModules_.get(frag);
+//
+//	// SHADER
+//	VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+//	vertShaderStageInfo.sType =
+//		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+//	vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+//	vertShaderStageInfo.module = *v;
+//	vertShaderStageInfo.pName = "mainVS";
+//
+//	VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+//	fragShaderStageInfo.sType =
+//		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+//	fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+//	fragShaderStageInfo.module = *f;
+//	fragShaderStageInfo.pName = "mainPS";
+//
+//	VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
+//													  fragShaderStageInfo };
+//
+//	// VERTEX FORMAT
+//
+//	VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+//	vertexInputInfo.sType =
+//		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+//
+//	auto bindingDescription = Vertex::getBindingDescription();
+//	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+//
+//	vertexInputInfo.vertexBindingDescriptionCount = bindingDescription.size();
+//	vertexInputInfo.vertexAttributeDescriptionCount =
+//		static_cast<uint32_t>(attributeDescriptions.size());
+//	vertexInputInfo.pVertexBindingDescriptions = bindingDescription.data();
+//	vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+//
+//	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+//	inputAssembly.sType =
+//		VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+//	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+//	inputAssembly.primitiveRestartEnable = VK_FALSE;
+//
+//	// VIEWPORT
+//
+//	VkPipelineViewportStateCreateInfo viewportState{};
+//	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+//	viewportState.viewportCount = 1;
+//	viewportState.scissorCount = 1;
+//
+//	// RASTERIZER
+//
+//	VkPipelineRasterizationStateCreateInfo rasterizer{};
+//	rasterizer.sType =
+//		VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+//	rasterizer.depthClampEnable = VK_FALSE;
+//	rasterizer.rasterizerDiscardEnable = VK_FALSE;
+//	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+//	rasterizer.lineWidth = 1.0f;
+//	rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+//	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+//	rasterizer.depthBiasEnable = VK_FALSE;
+//
+//	// MULTISAMPLING
+//
+//	VkPipelineMultisampleStateCreateInfo multisampling{};
+//	multisampling.sType =
+//		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+//	multisampling.sampleShadingEnable = VK_FALSE;
+//	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+//
+//	// STENCIL
+//
+//	VkPipelineDepthStencilStateCreateInfo depthStencil{};
+//	depthStencil.sType =
+//		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+//	depthStencil.depthTestEnable = VK_TRUE;
+//	depthStencil.depthWriteEnable = VK_TRUE;
+//	depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
+//	depthStencil.depthBoundsTestEnable = VK_FALSE;
+//	depthStencil.stencilTestEnable = VK_FALSE;
+//
+//	// COLORBLEND
+//
+//	VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+//	colorBlendAttachment.colorWriteMask =
+//		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+//		VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+//	colorBlendAttachment.blendEnable = VK_FALSE;
+//
+//	VkPipelineColorBlendStateCreateInfo colorBlending{};
+//	colorBlending.sType =
+//		VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+//	colorBlending.logicOpEnable = VK_FALSE;
+//	colorBlending.logicOp = VK_LOGIC_OP_COPY;
+//	colorBlending.attachmentCount = 1;
+//	colorBlending.pAttachments = &colorBlendAttachment;
+//	colorBlending.blendConstants[0] = 0.0f;
+//	colorBlending.blendConstants[1] = 0.0f;
+//	colorBlending.blendConstants[2] = 0.0f;
+//	colorBlending.blendConstants[3] = 0.0f;
+//
+//	// DYNAMIC STATES
+//
+//	// These two are elemental. There are extensions for almost anything do. Maybe it is woth to go all in dynamic state.
+//	std::vector<VkDynamicState> dynamicStates = {
+//		VK_DYNAMIC_STATE_VIEWPORT,
+//		VK_DYNAMIC_STATE_SCISSOR
+//	};
+//
+//	VkPipelineDynamicStateCreateInfo dynamicState{};
+//	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+//	dynamicState.dynamicStateCount =
+//		static_cast<uint32_t>(dynamicStates.size());
+//	dynamicState.pDynamicStates = dynamicStates.data();
+//
+//#pragma region ---[Push Constants]---
+//
+	//VkPushConstantRange range{};
+	//range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+	//range.offset = 0;
+	//range.size = sizeof(MainViewPushConstants) + sizeof(MaterialPushConstants);;
+
+	//std::array<VkDescriptorSetLayout, 2> layouts = {
+	//	rings_layout, 
+	//	texture_table_layout 
+	//};
+
+	//VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	//
+	//layoutInfo.setLayoutCount = layouts.size();
+	//layoutInfo.pSetLayouts = layouts.data();
+
+	////layoutInfo.pSetLayouts = descriptorSetLayout;
+
+	//layoutInfo.pushConstantRangeCount = 1;
+	//layoutInfo.pPushConstantRanges = &range;
+//
+//	if (vkCreatePipelineLayout(*device_, &layoutInfo, nullptr,
+//		&pipeline.plyt) != VK_SUCCESS) {
+//		throw std::runtime_error("failed to create pipeline layout!");
+//	}
+//
+//#pragma endregion
+//
+//	// Provide information for dynamic rendering
+//	VkPipelineRenderingCreateInfo dynamic_rendering_pipeline_info{
+//		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+//	dynamic_rendering_pipeline_info.pNext = VK_NULL_HANDLE;
+//
+//	// We are using the single color buffer out.
+//	dynamic_rendering_pipeline_info.colorAttachmentCount = 1;
+//	dynamic_rendering_pipeline_info.pColorAttachmentFormats = &swapchainImageFormat;
+//
+//	dynamic_rendering_pipeline_info.depthAttachmentFormat = depth_format;
+//	dynamic_rendering_pipeline_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+//
+//	VkGraphicsPipelineCreateInfo pipelineInfo{};
+//	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+//	pipelineInfo.stageCount = 2;
+//	pipelineInfo.pStages = shaderStages;
+//	pipelineInfo.pVertexInputState = &vertexInputInfo;
+//	pipelineInfo.pInputAssemblyState = &inputAssembly;
+//	pipelineInfo.pViewportState = &viewportState;
+//	pipelineInfo.pRasterizationState = &rasterizer;
+//	pipelineInfo.pMultisampleState = &multisampling;
+//	pipelineInfo.pColorBlendState = &colorBlending;
+//	pipelineInfo.pDynamicState = &dynamicState;
+//	pipelineInfo.pDepthStencilState = &depthStencil;
+//	pipelineInfo.layout = pipeline.plyt;
+//	pipelineInfo.pNext = &dynamic_rendering_pipeline_info;
+//
+//	if (vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipelineInfo,
+//		nullptr, &pipeline.pipeline) != VK_SUCCESS)
+//	{
+//		throw std::runtime_error("failed to create graphics pipeline!");
+//	}
+//
+//	return pipelines_.create(std::move(pipeline));
+//}
+
+//[[nodiscard]] PipelineHandle Context::CreateMaterialPipeline(
+//	ShaderModuleHandle vert,
+//	ShaderModuleHandle frag,
+//	RasterSettings raster_settings,
+//	VkFormat depth_format,
+//	VkFormat swapchainImageFormat
+//) {
+//
+//	return CreatePipeline(raster_settings, vert, frag, depth_format, swapchainImageFormat);
+//
+//}
 
 //[[nodiscard]] PipelineHandle Context::GetAppropiatePipeline(/* reqs*/) {
 //	return default_material_pipeline;
@@ -1736,18 +1973,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	);
 }
 
-void Context::GetAppropiateSampler(Texture& texture) {
-
-
-	//VkSampler _sampler;
-	//createSampler(*physicalDevice_, *device_, _sampler);
-	// We should
-	// uld try to define here which sampler would work for this texture. Sepecialization.
-
-	auto sh = samplers["default"];
-	texture.sampler = *samplers_.get(sh);
-
-};
+[[nodiscard]] SamplerHandle Context::GetSampler(SamplerKey key) {}
 
 // At this moment the only texture input supported is ktxTextures. This is a big LIMITATION/HOLE
 // 
@@ -1808,8 +2034,8 @@ void Context::GetAppropiateSampler(Texture& texture) {
 
 	auto view_handle = CreateImageView(ctx_tex.image, vk_tex.imageFormat, aspect, texture.numLevels);
 	ctx_tex.imageView = *imageViews_.get(view_handle);
-
-	GetAppropiateSampler(ctx_tex);
+	auto sh = samplers["default"];
+	ctx_tex.sampler = *samplers_.get(sh);
 
 	// Later, when destroying:
 	// ktxVulkanTexture_Destruct(&vk_tex, device_, nullptr);
@@ -1941,7 +2167,6 @@ void Context::GetAppropiateSampler(Texture& texture) {
 	return images_.create(std::move(image));
 
 }
-
 
 [[nodiscard]] MeshDescHandle Context::UploadVertexData(MeshUploadInput& geometry_data)
 {
@@ -2144,6 +2369,91 @@ void Context::GetAppropiateSampler(Texture& texture) {
 
 };
 
+[[nodiscard]] DescriptorLayoutHandle Context::createDescriptorLayout(const DescriptorSetLayoutDesc& descIn)
+{
+	// 1) Canonicalize (copy then sort by binding)
+	DescriptorSetLayoutDesc desc = descIn;
+	std::sort(desc.bindings.begin(), desc.bindings.end(),
+		[](auto& a, auto& b) { return a.binding < b.binding; });
+
+	// 2) Compute a cache key (pseudo)
+	// LayoutKey key = Hash(desc);
+	// if (auto it = layoutCache.find(key); it != layoutCache.end()) return it->second;
+
+	// 3) Build VkDescriptorSetLayoutBinding array
+	std::vector<VkDescriptorSetLayoutBinding> vkBindings;
+	vkBindings.reserve(desc.bindings.size());
+
+	// IMPORTANT: pImmutableSamplers must point to memory that lives until vkCreateDescriptorSetLayout returns.
+	// We can keep a local vector-of-vectors of VkSampler pointers to stable storage.
+	std::vector<std::vector<VkSampler>> immutableSamplersStorage;
+	immutableSamplersStorage.reserve(desc.bindings.size());
+
+	std::vector<VkDescriptorBindingFlags> bindingFlags;
+	bindingFlags.reserve(desc.bindings.size());
+
+	for (const BindingDesc& b : desc.bindings)
+	{
+		VkDescriptorSetLayoutBinding vkB{};
+		vkB.binding = b.binding;
+		vkB.descriptorType = b.type;
+		vkB.descriptorCount = b.count;
+		vkB.stageFlags = b.stages;
+
+		// Immutable samplers: only valid for SAMPLER / COMBINED_IMAGE_SAMPLER
+		if (!b.immutableSamplers.empty())
+		{
+			// Validate sizes early (debug assert)
+			assert(b.immutableSamplers.size() == b.count);
+
+			immutableSamplersStorage.emplace_back();
+			auto& store = immutableSamplersStorage.back();
+			store.reserve(b.immutableSamplers.size());
+
+			for (SamplerHandle sh : b.immutableSamplers)
+				store.push_back(*samplers_.get(sh)); // you store VkSampler in pool
+
+			vkB.pImmutableSamplers = store.data();
+		}
+		else
+		{
+			vkB.pImmutableSamplers = nullptr;
+		}
+
+		vkBindings.push_back(vkB);
+		bindingFlags.push_back(b.flags);
+	}
+
+	// 4) Optional binding flags chain
+	VkDescriptorSetLayoutBindingFlagsCreateInfo flagsCI{
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO
+	};
+	flagsCI.bindingCount = (uint32_t)bindingFlags.size();
+	flagsCI.pBindingFlags = bindingFlags.data();
+
+	VkDescriptorSetLayoutCreateInfo ci{
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+	};
+	ci.flags = desc.createFlags;
+	ci.bindingCount = (uint32_t)vkBindings.size();
+	ci.pBindings = vkBindings.data();
+
+	// Only chain if you actually have non-zero flags; otherwise keep pNext null
+	bool anyFlags = false;
+	for (auto f : bindingFlags) if (f != 0) { anyFlags = true; break; }
+	ci.pNext = anyFlags ? &flagsCI : nullptr;
+
+	VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateDescriptorSetLayout(*device_, &ci, nullptr, &layout));
+
+	DescriptorLayoutHandle h = descriptorSetLayouts_.create(std::move(layout));
+
+	// 5) Cache it (pseudo)
+	// layoutCache[key] = h;
+
+	return h;
+}
+
 VkQueue Context::GetGraphicsQueue() {
 	return default_queue;
 }
@@ -2182,6 +2492,13 @@ void destroy(Context* ctx, DeviceBufferHandle handle) {
 	vmaDestroyBuffer(*ctx->allocator_, db->buffer, db->alloc);
 	ctx->buffers_.destroy(handle);
 };
+void destroy(Context* ctx, PipelineLayoutHandle h)
+{
+	assert(h.valid());
+	auto* pl = ctx->pipelineLayouts_.get(h);
+	if (pl->layout) vkDestroyPipelineLayout(*ctx->device_, pl->layout, nullptr);
+	ctx->pipelineLayouts_.destroy(h);
+}
 
 // END
 

@@ -24,3 +24,8 @@ static constexpr uint32_t MAX_BUFFERS = 4096;
 static constexpr uint32_t MAX_MATERIAL_INSTANCES = 1000;
 static constexpr uint32_t MAX_MATERIALS = 1000;
 
+
+
+static constexpr uint32_t MAX_PUSH_CONSTANTS = 8;
+//static constexpr uint32_t MAX_PUSH_CONSTANTS_SIZE = 64;
+

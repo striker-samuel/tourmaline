@@ -111,6 +111,7 @@ public:
 	void Start();
 	void LoadScene();
 
+
 	PipelineHandle default_material_pipeline;
 	PipelineHandle default_shadow_pipeline;
 
@@ -185,6 +186,7 @@ private:
 
 #pragma region ===[ Pipeline / Render Resources ]===
 
+	PipelineHandle main_view_pipeline;
 	VkCommandPool perFrameCommandPools[MAX_FRAMES_IN_FLIGHT];
 	VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
 
@@ -217,6 +219,7 @@ private:
 	void InitializeImGui();
 #pragma endregion
 
+	void CreateMainViewPipeline();
 
 	void UpdateDeltaTime() {
 
@@ -1259,9 +1262,9 @@ private:
 		// I long ago did this to be able to run trough different pipeline setuops like transparency and else. Amay be wrong and dumb
 		for (auto mat_pipe_entry : context->pipelines_.objects_) {
 
-			if (mat_pipe_entry.obj_.type != PIPELINE_MATERIAL) {
-				continue;
-			}
+			//if (mat_pipe_entry.obj_.type != PIPELINE_MATERIAL) {
+			//	continue;
+			//}
 
 			vkCmdBindPipeline(
 				commandBuffer,
@@ -2015,7 +2018,6 @@ void VulkanApp::DrawFrame() {
 	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-
 void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
 
 	auto view = camera_.getViewMatrix();
@@ -2141,6 +2143,9 @@ void VulkanApp::CleanUp() {
 
 void VulkanApp::Start() {
 
+
+	// Render Setup
+
 	auto vertShaderCode = readFile("shaders/default.vert.hlsl.spv");
 	auto fragShaderCode = readFile("shaders/default.frag.hlsl.spv");
 
@@ -2151,18 +2156,70 @@ void VulkanApp::Start() {
 		fragShaderCode
 	);
 
-	// DEFAULT 
+	PipelineLayoutDesc desc;
+	desc.sets = {
+		DescriptorSetLayoutDesc{
+			0, // set
+			VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, // createFlags
+			{
+				BindingDesc{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1,
+							VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, {} },
+				BindingDesc{ 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1,
+							VK_SHADER_STAGE_VERTEX_BIT, 0, {} },
+			}
+		},
+		DescriptorSetLayoutDesc{
+			.set = 1,
+			.createFlags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+			.bindings = {
+			BindingDesc{
+				.binding = 0,
+				.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+				.count = /* N */ 0, // <-- fill
+				.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
+				.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+						  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+				.immutableSamplers = {}
+			},
+		// Example bindless samplers
+		BindingDesc{
+			.binding = 1,
+			.type = VK_DESCRIPTOR_TYPE_SAMPLER,
+			.count = /* N */ 0, // <-- fill
+			.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
+			.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+					  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+			.immutableSamplers = {}
+		}
+		}
+	}
+	};
+	desc.pushConstants.push_back({
+		.stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		.offset = 0,
+		.size = uint32_t(sizeof(MainViewPushConstants) +
+						   sizeof(MaterialPushConstants)),
+		});
 
-	default_material_pipeline = context->CreateMaterialPipeline(
+	main_view_pipeline = context->CreatePipeline(
+		// Raster settings
+		{
+			.depthClampEnable = VK_FALSE, // needs to be enabled
+			.rasterizerDiscardEnable = VK_FALSE,
+			.polygonMode = VK_POLYGON_MODE_FILL,
+			.cullMode = VK_CULL_MODE_BACK_BIT,
+			.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE
+		},
+		desc,
 		vert_shader_h,
 		fragHandle,
-		default_raster_settings,
+		//default_raster_settings,
 		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
 		swapChainImageFormat
 	);
 
 	//default_shadow_pipeline = context->CreateShadowPipeline(vert_shader_h);
-
+	// This could very well be automated using my pipeline s..
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
 		perFrameData[i].frameDynamicDescriptorSet = context->createDescriptorSet(
@@ -2173,15 +2230,16 @@ void VulkanApp::Start() {
 			context->default_descriptorLayout
 		);
 
-
 		//shadowFrameDescriptorSets[i] = context->createDescriptorSet(
 		//	context->default_shadow_descriptorLayout
 		//);
 	}
+	SetDescriptorSets();
+
+
+	// True App
 
 	LoadScene();
-
-	SetDescriptorSets();
 
 }
 
