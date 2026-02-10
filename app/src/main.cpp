@@ -80,7 +80,7 @@ struct FrameResources {
 struct FrameBuffers {
 
 	DeviceBufferHandle frameUniformsBuffer;
-	DeviceBufferHandle frameInstancesDataBuffer;
+	DeviceBufferHandle frameDrawDataBuffer;
 	DeviceBufferHandle frameLightsDataBuffer;
 
 };
@@ -186,7 +186,7 @@ private:
 
 #pragma region ===[ Pipeline / Render Resources ]===
 
-	PipelineHandle main_view_pipeline;
+	PipelineHandle main_view_pipeline_h;
 	VkCommandPool perFrameCommandPools[MAX_FRAMES_IN_FLIGHT];
 	VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
 
@@ -219,8 +219,6 @@ private:
 	void InitializeImGui();
 #pragma endregion
 
-	void CreateMainViewPipeline();
-
 	void UpdateDeltaTime() {
 
 		static auto lastFrameTime = std::chrono::high_resolution_clock::now();
@@ -236,7 +234,7 @@ private:
 		lastFrameTime = currentTime;
 	}
 	void UpdateFrameUniforms(uint32_t currentImage);
-	void UpdateInstanceBuffers(uint32_t currentImage);
+	void UpdateDrawDataBuffers(uint32_t currentImage);
 	void UpdateLightsBuffers(uint32_t currentImage);
 
 	void UiPass() {
@@ -624,8 +622,8 @@ private:
 		);
 
 		// This may need to go the way of the dodo and move to something akin draw list structure. well see
-		frameBuffers.frameInstancesDataBuffer = context->createBuffer(
-			sizeof(DrawSetData) * MAX_INSTANCES * MAX_FRAMES_IN_FLIGHT,
+		frameBuffers.frameDrawDataBuffer = context->createBuffer(
+			sizeof(DrawSetData) * MAX_DRAWS * MAX_FRAMES_IN_FLIGHT,
 			VMA_MEMORY_USAGE_AUTO,
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 		);
@@ -678,11 +676,11 @@ private:
 			};
 
 			// Quasi DrawData
-			auto instancesDataBufferHandle = context->buffers_.get(frameBuffers.frameInstancesDataBuffer);
+			auto instancesDataBufferHandle = context->buffers_.get(frameBuffers.frameDrawDataBuffer);
 			VkDescriptorBufferInfo instanceBufferInfo{
 				.buffer = instancesDataBufferHandle->buffer,
 				.offset = 0,
-				.range = sizeof(DrawSetData) * MAX_INSTANCES
+				.range = sizeof(DrawSetData) * MAX_DRAWS
 			};
 			VkWriteDescriptorSet writes[2]{};
 
@@ -1276,7 +1274,7 @@ private:
 			auto update_after_bind_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDescriptorSet);
 
 			auto pipe_lyt = mat_pipe_entry.obj_.plyt;
-			auto instanceStride = sizeof(DrawSetData) * MAX_INSTANCES;
+			auto instanceStride = sizeof(DrawSetData) * MAX_DRAWS;
 
 			uint32_t dynamicOffsets[2] = {
 				imageIndex * sizeof(FrameUniforms),
@@ -1288,10 +1286,12 @@ private:
 				update_after_bind_set->set,
 			};
 
+			auto pipeline_layout = context->pipelineLayouts_.get(pipe_lyt);
+
 			vkCmdBindDescriptorSets(
 				commandBuffer,
 				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				pipe_lyt,
+				pipeline_layout->layout,
 				0,
 				2,
 				sets,
@@ -1321,7 +1321,7 @@ private:
 
 				vkCmdPushConstants(
 					commandBuffer,
-					pipe_lyt,
+					pipeline_layout->layout,
 					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 					0, //offset to start of the range to push
 					sizeof(PC_All), // size to push
@@ -1333,7 +1333,7 @@ private:
 					auto& model_ = scene_.globalTransform[i];
 					vkCmdPushConstants(
 						commandBuffer,
-						pipe_lyt,
+						pipeline_layout->layout,
 						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 						offsetof(MainViewPushConstants, model),
 						sizeof(glm::mat4),
@@ -1916,7 +1916,7 @@ void VulkanApp::DrawFrame() {
 
 
 	UpdateFrameUniforms(currentFrame);
-	UpdateInstanceBuffers(currentFrame);
+	UpdateDrawDataBuffers(currentFrame);
 
 	// Moving this after the reset prompts this validation error. Why?
 	//---------------- Vulkan Validation ----------------
@@ -1933,7 +1933,7 @@ void VulkanApp::DrawFrame() {
 	vkResetCommandPool(device, perFrameCommandPools[currentFrame], 0);
 
 	// These are bandwitth heavy because im not tracking what needs updating in any way...
-	UpdateLightsBuffers(currentFrame);
+	//UpdateLightsBuffers(currentFrame);
 	//UpdateShadowMapDescriptorSets(currentFrame);
 	//UpdateMainViewFrameData(currentFrame);
 	//UpdateLightDescriptorSets(currentFrame);
@@ -2046,9 +2046,9 @@ void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
 
 }
 
-void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
+void VulkanApp::UpdateDrawDataBuffers(uint32_t currentImage) {
 
-	DrawSetData* data = new DrawSetData[MAX_INSTANCES];
+	DrawSetData* data = new DrawSetData[MAX_DRAWS];
 	int i = 0;
 
 	const auto& src = scene_.globalTransform;
@@ -2060,13 +2060,13 @@ void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 	VkResult result{};
 	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
 
-	auto instance_data_buffer_handle = frameBuffers.frameInstancesDataBuffer;
-	auto instance_data_buffer = context->buffers_.get(instance_data_buffer_handle);
+	auto draw_data_buffer_handle = frameBuffers.frameDrawDataBuffer;
+	auto draw_data_buffer = context->buffers_.get(draw_data_buffer_handle);
 
 	context->UploadDataToBuffer(
-		instance_data_buffer_handle,
+		draw_data_buffer_handle,
 		data,
-		sizeof(DrawSetData) * MAX_INSTANCES,
+		sizeof(DrawSetData) * MAX_DRAWS,
 		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 		VK_ACCESS_SHADER_READ_BIT,
 		0,
@@ -2077,63 +2077,63 @@ void VulkanApp::UpdateInstanceBuffers(uint32_t currentImage) {
 	delete[] data;
 }
 
-void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
-
-	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
-
-	//for (auto spot : spot_lights) {
-
-	//	auto proj = GetPerspectiveProjectionForLight(lights[i]);
-	//	proj[1][1] *= -1;
-	//	lvp = proj * GetLightView(lights[i]);
-
-	//	std::memcpy(
-	//		lights[i].lightVP,
-	//		glm::value_ptr(lvp),
-	//		sizeof(float) * 16);
-	//}
-
-	//for (auto dirl : directional_lights)
-	//{
-
-	//	glm::mat4 lvp;
-
-	//	if (lights[i].type == LIGHT_TYPE_SPOT) {
-	//	}
-	//	else if (lights[i].type == LIGHT_TYPE_DIRECTIONAL) {
-	//		glm::mat4 proj, view;
-
-	//		auto sm = GetShadowMapFromShadowMapIndex(lights[i].shadow_map_index, currentFrame);
-	//		auto shadowMapImage = context->images_.get(sm.image);
-
-	//		GetDirectionalLightOrthoVP(
-	//			lights[i],
-	//			camera_.getViewMatrix(),
-	//			camera_.getProjMatrix(),
-	//			0.1f, 20.0f,
-	//			view, proj,
-	//			/*zPadding*/ 50.0f,
-	//			/*snap*/ true,
-	//			/*res*/ shadowMapImage->width
-	//		);
-
-	//		proj[1][1] *= -1;
-	//		lvp = proj * view;
-
-
-	//context->UploadDataToBuffer(
-	//	lightDataUniformBuffers[currentImage],
-	//	lights.data(),
-	//	sizeof(Light) * lights.size(),
-	//	VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-	//	VK_ACCESS_SHADER_READ_BIT
-	//	//VK_ACCESS_UNIFORM_READ_BIT 
-
-	//);
-
-	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
-
-}
+//void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
+//
+//	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
+//
+//	//for (auto spot : spot_lights) {
+//
+//	//	auto proj = GetPerspectiveProjectionForLight(lights[i]);
+//	//	proj[1][1] *= -1;
+//	//	lvp = proj * GetLightView(lights[i]);
+//
+//	//	std::memcpy(
+//	//		lights[i].lightVP,
+//	//		glm::value_ptr(lvp),
+//	//		sizeof(float) * 16);
+//	//}
+//
+//	//for (auto dirl : directional_lights)
+//	//{
+//
+//	//	glm::mat4 lvp;
+//
+//	//	if (lights[i].type == LIGHT_TYPE_SPOT) {
+//	//	}
+//	//	else if (lights[i].type == LIGHT_TYPE_DIRECTIONAL) {
+//	//		glm::mat4 proj, view;
+//
+//	//		auto sm = GetShadowMapFromShadowMapIndex(lights[i].shadow_map_index, currentFrame);
+//	//		auto shadowMapImage = context->images_.get(sm.image);
+//
+//	//		GetDirectionalLightOrthoVP(
+//	//			lights[i],
+//	//			camera_.getViewMatrix(),
+//	//			camera_.getProjMatrix(),
+//	//			0.1f, 20.0f,
+//	//			view, proj,
+//	//			/*zPadding*/ 50.0f,
+//	//			/*snap*/ true,
+//	//			/*res*/ shadowMapImage->width
+//	//		);
+//
+//	//		proj[1][1] *= -1;
+//	//		lvp = proj * view;
+//
+//
+//	//context->UploadDataToBuffer(
+//	//	lightDataUniformBuffers[currentImage],
+//	//	lights.data(),
+//	//	sizeof(Light) * lights.size(),
+//	//	VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+//	//	VK_ACCESS_SHADER_READ_BIT
+//	//	//VK_ACCESS_UNIFORM_READ_BIT 
+//
+//	//);
+//
+//	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
+//
+//}
 
 void VulkanApp::CleanUp() {
 
@@ -2173,9 +2173,9 @@ void VulkanApp::Start() {
 			.createFlags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
 			.bindings = {
 			BindingDesc{
-				.binding = 0,
+				.binding = 2,
 				.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-				.count = /* N */ 0, // <-- fill
+				.count = MAX_TEXTURES,
 				.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
 				.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 						  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -2183,9 +2183,9 @@ void VulkanApp::Start() {
 			},
 		// Example bindless samplers
 		BindingDesc{
-			.binding = 1,
+			.binding = 3,
 			.type = VK_DESCRIPTOR_TYPE_SAMPLER,
-			.count = /* N */ 0, // <-- fill
+			.count = MAX_TEXTURES,
 			.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
 			.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 					  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -2201,7 +2201,7 @@ void VulkanApp::Start() {
 						   sizeof(MaterialPushConstants)),
 		});
 
-	main_view_pipeline = context->CreatePipeline(
+	main_view_pipeline_h = context->CreatePipeline(
 		// Raster settings
 		{
 			.depthClampEnable = VK_FALSE, // needs to be enabled
@@ -2217,23 +2217,26 @@ void VulkanApp::Start() {
 		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
 		swapChainImageFormat
 	);
+	auto pipe_obj =  context->pipelines_.get(main_view_pipeline_h);
+	auto aa = context->pipelineLayouts_.get(pipe_obj->plyt);
+	auto bb = aa->setLayouts;
 
-	//default_shadow_pipeline = context->CreateShadowPipeline(vert_shader_h);
-	// This could very well be automated using my pipeline s..
+
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
 		perFrameData[i].frameDynamicDescriptorSet = context->createDescriptorSet(
-			context->default_descriptorLayout
+			bb[0]
 		);
 
 		perFrameData[i].frameDescriptorSet = context->createDescriptorSet(
-			context->default_descriptorLayout
+			bb[1]
 		);
 
 		//shadowFrameDescriptorSets[i] = context->createDescriptorSet(
 		//	context->default_shadow_descriptorLayout
 		//);
 	}
+
 	SetDescriptorSets();
 
 

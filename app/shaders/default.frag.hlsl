@@ -1,20 +1,20 @@
 #include "light.hlsli"
 #include "common.hlsli"
 
-[[vk::binding(2,0)]] Texture2D materialTex[]; // sampled images
-[[vk::binding(3,0)]] SamplerState materialSamp[]; // samplers
+[[vk::binding(2,1)]] Texture2D materialTex[]; // sampled images
+[[vk::binding(3,1)]] SamplerState materialSamp[]; // samplers
 
-[[vk::binding(4, 0)]]
-cbuffer Lights
-{
-    Light g_Lights[10]; // or a struct containing them
-};
+//[[vk::binding(4, 0)]]
+//cbuffer Lights
+//{
+//    Light g_Lights[10]; // or a struct containing them
+//};
 
-[[vk::binding(5, 0)]]
-Texture2D gShadowMaps[];
+//[[vk::binding(5, 0)]]
+//Texture2D gShadowMaps[];
 
-[[vk::binding(6, 0)]]
-SamplerComparisonState gShadowSamplers[];
+//[[vk::binding(6, 0)]]
+//SamplerComparisonState gShadowSamplers[];
 
 struct PSIn
 {
@@ -32,113 +32,113 @@ struct PSOut
 // Here because symbols need to be defined before literal copy paste of include!
 #include "shadows.hlsli"
 
-float3 EvaluateSpotLight(
-    Light light,
-    float3 worldPos,
-    float3 N,
-    float3 baseColor
-    )
-{
-    // Vector from point to light
-    float3 toLight = light.position - worldPos;
-    float distSq = max(dot(toLight, toLight), 1e-4f);
-    float3 L = toLight * rsqrt(distSq); // normalize
+//float3 EvaluateSpotLight(
+//    Light light,
+//    float3 worldPos,
+//    float3 N,
+//    float3 baseColor
+//    )
+//{
+//    // Vector from point to light
+//    float3 toLight = light.position - worldPos;
+//    float distSq = max(dot(toLight, toLight), 1e-4f);
+//    float3 L = toLight * rsqrt(distSq); // normalize
 
-    // Lambert term
-    float NdotL = saturate(dot(N, L));
-    if (NdotL <= 0.0f)
-        return 0.0.xxx;
+//    // Lambert term
+//    float NdotL = saturate(dot(N, L));
+//    if (NdotL <= 0.0f)
+//        return 0.0.xxx;
 
-    // Inverse square attenuation
-    float attenuation = 1.0f / distSq;
+//    // Inverse square attenuation
+//    float attenuation = 1.0f / distSq;
 
-    // Make sure light.direction is treated as normalized
-    float3 lightDir = normalize(light.direction);
+//    // Make sure light.direction is treated as normalized
+//    float3 lightDir = normalize(light.direction);
 
-    // Cosine of angle between cone axis and point
-    // (cone axis points *out* of the light, so use -lightDir)
-    float spotCos = dot(L, -lightDir);
+//    // Cosine of angle between cone axis and point
+//    // (cone axis points *out* of the light, so use -lightDir)
+//    float spotCos = dot(L, -lightDir);
 
-    // Assume innerAngle / outerAngle are in radians. They indeed are.
-    float innerCos = cos(light.innerAngle);
-    float outerCos = cos(light.outerAngle);
+//    // Assume innerAngle / outerAngle are in radians. They indeed are.
+//    float innerCos = cos(light.innerAngle);
+//    float outerCos = cos(light.outerAngle);
 
-    // Avoid divide-by-zero if inner == outer
-    float denom = max(innerCos - outerCos, 1e-4f);
-    float spotFactor = saturate((spotCos - outerCos) / denom);
-    // If you want softer edge:
-    // float spotFactor = saturate(smoothstep(outerCos, innerCos, spotCos));
+//    // Avoid divide-by-zero if inner == outer
+//    float denom = max(innerCos - outerCos, 1e-4f);
+//    float spotFactor = saturate((spotCos - outerCos) / denom);
+//    // If you want softer edge:
+//    // float spotFactor = saturate(smoothstep(outerCos, innerCos, spotCos));
 
-    // Shadow factor (1 = lit, 0 = fully shadowed)
-    float shadow = 1.0;
-    if (light.shadow_map_index >= 0)
-    {
-        shadow = GetShadowFactor(gShadowMaps, gShadowSamplers, worldPos, light);
-    }
+//    // Shadow factor (1 = lit, 0 = fully shadowed)
+//    float shadow = 1.0;
+//    if (light.shadow_map_index >= 0)
+//    {
+//        shadow = GetShadowFactor(gShadowMaps, gShadowSamplers, worldPos, light);
+//    }
 
-    float3 lightColor = light.color.rgb * light.intensity;
+//    float3 lightColor = light.color.rgb * light.intensity;
     
-    return baseColor * lightColor * NdotL * attenuation * spotFactor * shadow;
+//    return baseColor * lightColor * NdotL * attenuation * spotFactor * shadow;
     
-}
+//}
 
-// Pure lambertian
-float3 EvaluatePointLight(Light light, float3 worldPos, float3 N, float3 baseColor)
-{
-    // Use explicit position stored in the struct
-    float3 lightPos = light.position;
+//// Pure lambertian
+//float3 EvaluatePointLight(Light light, float3 worldPos, float3 N, float3 baseColor)
+//{
+//    // Use explicit position stored in the struct
+//    float3 lightPos = light.position;
 
-    // Vector to light
-    float3 toLight = lightPos - worldPos;
-    float distSq = max(dot(toLight, toLight), 1e-4f);
+//    // Vector to light
+//    float3 toLight = lightPos - worldPos;
+//    float distSq = max(dot(toLight, toLight), 1e-4f);
 
-    // Direction to light
-    float3 L = toLight * rsqrt(distSq);
+//    // Direction to light
+//    float3 L = toLight * rsqrt(distSq);
 
-    // Lambert term
-    float NdotL = saturate(dot(N, L));
+//    // Lambert term
+//    float NdotL = saturate(dot(N, L));
 
-    // Inverse-square attenuation
-    float attenuation = 1.0f / distSq;
+//    // Inverse-square attenuation
+//    float attenuation = 1.0f / distSq;
 
-    // Light parameters
-    float3 lightColor = light.color.rgb;
-    float intensity = light.intensity;
+//    // Light parameters
+//    float3 lightColor = light.color.rgb;
+//    float intensity = light.intensity;
 
-    // Final contribution
-    return baseColor * lightColor * intensity * NdotL * attenuation;
+//    // Final contribution
+//    return baseColor * lightColor * intensity * NdotL * attenuation;
     
-    // NormalsDebug
-    //return (dot(N, L) > 0) ? float3(1, 0, 0) : float3(0, 0, 1);
+//    // NormalsDebug
+//    //return (dot(N, L) > 0) ? float3(1, 0, 0) : float3(0, 0, 1);
 
-}
+//}
 
 
-float3 EvaluateDirectLight(
-    Light light,
-    float3 worldPos,
-    float3 N,
-    float3 baseColor
-)
-{
-    // Direction *from the point toward the light*
-    // If light.direction points "forward" from the light, use -direction.
-    float3 L = normalize(-light.direction);
+//float3 EvaluateDirectLight(
+//    Light light,
+//    float3 worldPos,
+//    float3 N,
+//    float3 baseColor
+//)
+//{
+//    // Direction *from the point toward the light*
+//    // If light.direction points "forward" from the light, use -direction.
+//    float3 L = normalize(-light.direction);
 
-    float NdotL = saturate(dot(N, L));
-    if (NdotL <= 0.0f)
-        return 0.0.xxx;
+//    float NdotL = saturate(dot(N, L));
+//    if (NdotL <= 0.0f)
+//        return 0.0.xxx;
 
-    float3 lightColor = light.color.rgb * light.intensity;
+//    float3 lightColor = light.color.rgb * light.intensity;
 
-    float shadow = 1.0f;
-    if (light.shadow_map_index >= 0)
-    {
-        shadow = GetShadowFactorODB(gShadowMaps, gShadowSamplers, worldPos, light, N);
-    }
+//    float shadow = 1.0f;
+//    if (light.shadow_map_index >= 0)
+//    {
+//        shadow = GetShadowFactorODB(gShadowMaps, gShadowSamplers, worldPos, light, N);
+//    }
 
-    return baseColor * lightColor * NdotL * shadow;
-}
+//    return baseColor * lightColor * NdotL * shadow;
+//}
 
 
 PSOut mainPS(PSIn IN)
@@ -164,29 +164,29 @@ PSOut mainPS(PSIn IN)
     // Accumulate lighting
     float3 litColor = ambient;
 
-    [loop]
-    for (uint i = 0; i < MAX_LIGHTS; ++i)
-    {
-        Light light = g_Lights[i];
+    //[loop]
+    //for (uint i = 0; i < MAX_LIGHTS; ++i)
+    //{
+    //    Light light = g_Lights[i];
 
-        if (light.type == 0)
-        {
-            litColor += EvaluatePointLight(light, IN.worldPos, N, baseColor);
-        }
-        else if (light.type == 1)
-        {
-            litColor += EvaluateSpotLight(light, IN.worldPos, N, baseColor);
+    //    if (light.type == 0)
+    //    {
+    //        litColor += EvaluatePointLight(light, IN.worldPos, N, baseColor);
+    //    }
+    //    else if (light.type == 1)
+    //    {
+    //        litColor += EvaluateSpotLight(light, IN.worldPos, N, baseColor);
 
-        }
-        else if (light.type == 2)
-        {
-            litColor += EvaluateDirectLight(light, IN.worldPos, N, baseColor);
-        }
-        else
-        {
-            continue;
-        }
-    }
+    //    }
+    //    else if (light.type == 2)
+    //    {
+    //        litColor += EvaluateDirectLight(light, IN.worldPos, N, baseColor);
+    //    }
+    //    else
+    //    {
+    //        continue;
+    //    }
+    //}
     
     //float depth = gShadowMaps.Sample(gShadowSampler, float3(IN.uv, g_Lights[0].shadow_map_index)).r;
     //depth = (1 - depth) * 20;

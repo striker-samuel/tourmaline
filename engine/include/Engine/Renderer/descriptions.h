@@ -94,8 +94,8 @@ struct RasterSettings {
 
 	// Depth bias for shadowmaps.
 	uint32_t depthBiasEnable = VK_FALSE;
-	uint32_t depthBiasConstant = 0.0f;
-	uint32_t depthBiasSlope = 1.0f; // This shoul be PCF radiues
+	float depthBiasConstant = 0.0f;
+	float depthBiasSlope = 1.0f; // This shoul be PCF radiues
 
 } default_raster_settings;
 

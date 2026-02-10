@@ -287,7 +287,6 @@ public:
 
 	DescriptorPoolHandle default_descriptor_pool;
 	DescriptorPoolHandle imgui_descriptor_pool;
-	DescriptorLayoutHandle default_descriptorLayout;
 
 	// Added for shadowmaps.
 	DescriptorLayoutHandle default_shadow_descriptorLayout;
@@ -1973,7 +1972,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	);
 }
 
-[[nodiscard]] SamplerHandle Context::GetSampler(SamplerKey key) {}
+//[[nodiscard]] SamplerHandle Context::GetSampler(SamplerKey key) {}
 
 // At this moment the only texture input supported is ktxTextures. This is a big LIMITATION/HOLE
 // 
