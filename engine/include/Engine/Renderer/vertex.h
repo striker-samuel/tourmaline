@@ -1,7 +1,9 @@
 #pragma once
 
 #include <Engine/Shared/common.h>
-#include <Engine/Vulkan/VulkanCommon.h>
+#include "volk.h"
+#include "vk_mem_alloc.h"
+
 
 struct VertexPos {
 	glm::vec3 pos;

@@ -2,10 +2,8 @@
 
 #include <cassert>
 
-// ---- SETUP -----
-
-#include <Engine/Vulkan/VulkanCommon.h>
-
+#include "volk.h"
+#include "vk_mem_alloc.h"
 #include <GLFW/glfw3.h>
 
 #include "imgui.h"
@@ -53,8 +51,6 @@ CameraPositioner_FirstPerson cameraPositioner(
 	glm::vec3(0.0f, 1.0f, 1.0f), //target
 	glm::vec3(0.0f, 1.0f, 0.0f) //up
 );
-
-
 
 //fot the global descriptor list you must track on host / cpu side, with texture_asset_id(the #id of the texture in the project) to the table id, track when the draw doesnt need it anymore and use the cpu table to partial udpate evict texture in the bindless table right
 struct TextureTable {
@@ -462,8 +458,9 @@ private:
 		createInfo.presentMode = presentMode;
 		createInfo.clipped = VK_TRUE;
 
-		if (vkCreateSwapchainKHR(device, &createInfo, nullptr, &swapChain) !=
-			VK_SUCCESS) {
+		VkResult r = vkCreateSwapchainKHR(device, &createInfo, nullptr, &swapChain);
+		if (r != VK_SUCCESS) {
+			std::cerr << "vkCreateSwapchainKHR failed: " << r << "\n";
 			throw std::runtime_error("failed to create swap chain!");
 		}
 
@@ -2267,5 +2264,3 @@ int main(int argc, const char* argv[]) {
 
 	return EXIT_SUCCESS;
 }
-
-

@@ -14,7 +14,6 @@
 #endif
 
 #include <glslang/Include/glslang_c_interface.h>
-//#include <vulkan/vulkan.h>
 
 bool endsWith(const char* s, const char* part);
 
