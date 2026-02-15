@@ -1,25 +1,6 @@
 #pragma once
 
-//#include <vector>
-//#include <string>
-//#include <iostream>
-//#include <fstream>
-//#include <limits.h>
-//#include <optional>
-//
-//#include <array>
-//#include <set>
-//
-//#include <stdexcept>
-//#include <algorithm>
-//#include <cstring>
-//
-//#include <Engine/Shared/common.h>
-//#include <Engine/Renderer/primitives.h>
-
 #include <Engine/Vulkan/vulkan_helpers.h>
-#include <Engine/Vulkan/vulkan_helpers.h>
-
 
 inline const char* vkResultToString(VkResult result) {
     switch (result) {
@@ -46,26 +27,6 @@ inline const char* vkResultToString(VkResult result) {
     }
 }
 
-//#define VK_CHECK(x)                                                     \
-//    do {                                                                \
-//        VkResult err = (x);                                             \
-//        if (err != VK_SUCCESS) {                                        \
-//            fprintf(stderr, "[Vulkan Error] %s:%d: %s\n",               \
-//                    __FILE__, __LINE__, vkResultToString(err));         \
-//            abort();                                                    \
-//        }                                                               \
-//    } while (0)
-
-const std::vector<const char*> validationLayers = {
-	"VK_LAYER_KHRONOS_validation",
-};
-
-const std::vector<const char*> deviceExtensions = {
-	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-	// Not needed -- Vk1.3 promoted baybeeee
-	//VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
-};
-
 static VKAPI_ATTR VkBool32 VKAPI_CALL
 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 	VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -76,27 +37,6 @@ debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 	std::cerr << "\n";  // <--- Blank line for separation
 	return VK_FALSE;
 }
-
-#ifdef NDEBUG
-const bool enableValidationLayers = false;
-#else
-const bool enableValidationLayers = true;
-#endif
-
-struct QueueFamilyIndices {
-	std::optional<uint32_t> graphicsFamily;
-	std::optional<uint32_t> presentFamily;
-
-	bool isComplete() {
-		return graphicsFamily.has_value() && presentFamily.has_value();
-	}
-};
-
-struct SwapChainSupportDetails {
-	VkSurfaceCapabilitiesKHR capabilities;
-	std::vector<VkSurfaceFormatKHR> formats;
-	std::vector<VkPresentModeKHR> presentModes;
-};
 
 VkResult CreateDebugUtilsMessengerEXT(
 	VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
