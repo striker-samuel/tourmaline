@@ -15,7 +15,7 @@ static constexpr int SHADOWMAP_SLOTS = 16;
 static constexpr float default_near_clip = 0.01f;
 static constexpr float default_far_clip = 50.0f;
 
-static constexpr uint32_t MAX_DRAWS = 1000;
+static constexpr uint32_t MAX_DRAWS = 1024;
 static constexpr uint32_t MAX_INSTANCES = 1000;
 static constexpr uint32_t MAX_MESHES = 1000;
 static constexpr uint32_t MAX_LIGHTS = 10;

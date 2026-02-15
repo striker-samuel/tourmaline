@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Engine/Shared/common.h> // Needede for vec3
+#include <Engine/Shared/common.h>
 #include <Engine/Renderer/vertex.h>
 
 struct MeshUploadInput {

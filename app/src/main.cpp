@@ -4,7 +4,7 @@
 
 // ---- SETUP -----
 
-#include <Engine/Vulkan/vulkan_setup.h>
+#include <Engine/Vulkan/VulkanCommon.h>
 
 #include <GLFW/glfw3.h>
 
@@ -12,13 +12,11 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 
-#include <vk_mem_alloc.h>
 #include <tiny_gltf.h>
 
 // --------------ENGINE--------------------
 
 #include <Engine/Vulkan/vulkan_helpers.h>
-#include <Engine/Vulkan/vulkan_funs.h>
 
 #include <Engine/Renderer/constants.h>
 #include <Engine/Renderer/context.h>
@@ -40,7 +38,7 @@
 // --------------APP--------------------
 
 constexpr int NUM_CASCADES = 3;
-constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR; // Th
+constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 
 #include <App/TestData/test_data_generators.h>
 
@@ -174,7 +172,7 @@ private:
 	VkSurfaceKHR surface;
 
 	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-	VkDevice device;
+	VkDevice device = VK_NULL_HANDLE;
 #pragma endregion
 
 #pragma region ===[ Uniforms / Descriptor Sets ]==
@@ -609,11 +607,8 @@ private:
 
 	// --------------------------
 
-	void CreateFrameDataBuffers() {
 
-		// Lets share buffer between in flight frames and offset into
-		// them instead.
-		//for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+	void CreateFrameDataBuffers() {
 
 		frameBuffers.frameUniformsBuffer = context->createBuffer(
 			sizeof(FrameUniforms) * MAX_FRAMES_IN_FLIGHT,
@@ -645,26 +640,14 @@ private:
 	// We may formalize these to something like this right?
 	// I need to further study RHI abstracionts. and the topology of things like this. 
 
-	//struct ShaderResource {
-	//	uint32_t type; //UBO SSBO whatevs UBO DYNAMIC SIZE WHATEVS
-	//	// buffer
-	//	// perframe
-
-	//	// source
-	//	// update freq
-	//	std::vector getDynamicOffsets(); 
-
-	//};
-
 	void SetDescriptorSets()
 	{
 
-		for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; ) {
+		// Dynamic
+		for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; frameIndex++) {
 
-			auto setHandle = perFrameData[frameIndex].frameDescriptorSet;
+			auto setHandle = perFrameData[frameIndex].frameDynamicDescriptorSet;
 			auto setObj = context->descriptorSets_.get(setHandle);
-
-
 			VkDescriptorSet vkSet = setObj->set;
 
 			// FrameUniforms 
@@ -675,10 +658,10 @@ private:
 				.range = sizeof(FrameUniforms) // this is the size of the window accesed per bind
 			};
 
-			// Quasi DrawData
-			auto instancesDataBufferHandle = context->buffers_.get(frameBuffers.frameDrawDataBuffer);
-			VkDescriptorBufferInfo instanceBufferInfo{
-				.buffer = instancesDataBufferHandle->buffer,
+			// Draw data
+			auto drawsDataBufferHandle = context->buffers_.get(frameBuffers.frameDrawDataBuffer);
+			VkDescriptorBufferInfo drawBufferInfo{
+				.buffer = drawsDataBufferHandle->buffer,
 				.offset = 0,
 				.range = sizeof(DrawSetData) * MAX_DRAWS
 			};
@@ -698,7 +681,7 @@ private:
 			writes[1].dstArrayElement = 0;
 			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 			writes[1].descriptorCount = 1;
-			writes[1].pBufferInfo = &instanceBufferInfo;
+			writes[1].pBufferInfo = &drawBufferInfo;
 
 			vkUpdateDescriptorSets(device, 2 /*descriptorWriteCount*/, writes, 0, nullptr);
 
@@ -795,7 +778,7 @@ private:
 	///  This needs refactor to frameresources like 
 	/// </summary>
 	/// <param name="currentFrame"></param>
-	void UpdateBindlessTextures(uint32_t currentFrame) {
+	void UpdateBindlessTexturesSets() {
 
 		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstances_.numObjects());
 
@@ -824,29 +807,33 @@ private:
 			samplerInfos.push_back(si);
 		};
 
-		//// --- Two writes: images at index 2, samplers at index 3 ---
-		VkWriteDescriptorSet writes[2]{};
 
-		auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
-		auto set = context->descriptorSets_.get(setHandle);
 
-		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[0].dstSet = set->set;
-		writes[0].dstBinding = 2;
-		writes[0].dstArrayElement = 0;
-		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		writes[0].descriptorCount = imageInfos.size();
-		writes[0].pImageInfo = imageInfos.data();
+		for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; frameIndex++) {
+			//// --- Two writes: images at index 2, samplers at index 3 ---
+			VkWriteDescriptorSet writes[2]{};
 
-		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[1].dstSet = set->set;
-		writes[1].dstBinding = 3;
-		writes[1].dstArrayElement = 0;
-		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-		writes[1].descriptorCount = samplerInfos.size();   // or 1 if you use a single shared sampler
-		writes[1].pImageInfo = samplerInfos.data();
+			auto setHandle = perFrameData[frameIndex].frameDescriptorSet;
+			auto set = context->descriptorSets_.get(setHandle);
 
-		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[0].dstSet = set->set;
+			writes[0].dstBinding = 2;
+			writes[0].dstArrayElement = 0;
+			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			writes[0].descriptorCount = imageInfos.size();
+			writes[0].pImageInfo = imageInfos.data();
+
+			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[1].dstSet = set->set;
+			writes[1].dstBinding = 3;
+			writes[1].dstArrayElement = 0;
+			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+			writes[1].descriptorCount = samplerInfos.size();   // or 1 if you use a single shared sampler
+			writes[1].pImageInfo = samplerInfos.data();
+
+			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+		}
 
 	}
 
@@ -1274,11 +1261,11 @@ private:
 			auto update_after_bind_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDescriptorSet);
 
 			auto pipe_lyt = mat_pipe_entry.obj_.plyt;
-			auto instanceStride = sizeof(DrawSetData) * MAX_DRAWS;
+			//auto drawStride = sizeof(DrawSetData) * MAX_DRAWS;
 
 			uint32_t dynamicOffsets[2] = {
 				imageIndex * sizeof(FrameUniforms),
-				imageIndex * instanceStride
+				imageIndex * sizeof(DrawSetData) * MAX_DRAWS
 			};
 
 			VkDescriptorSet sets[2] = {
@@ -1555,7 +1542,6 @@ void VulkanApp::InitVulkanApp() {
 		}
 	}
 
-
 	// Create Surface
 	if (glfwCreateWindowSurface(instance, window, nullptr, &surface) !=
 		VK_SUCCESS) {
@@ -1717,7 +1703,7 @@ bool VulkanApp::Initialize() {
 	}
 	glfwMakeContextCurrent(window);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-	glfwSetWindowTitle(window, ENGINE_NAME);
+	glfwSetWindowTitle(window, /*ENGINE_NAME*/ "VulkanBackend");
 	glfwSetKeyCallback(window, VulkanApp::keyCallback);
 	glfwSetCursorPosCallback(window, VulkanApp::mouseCallback);
 	glfwSetMouseButtonCallback(window, VulkanApp::mouseButtonCallback);
@@ -1895,6 +1881,7 @@ void VulkanApp::DrawFrame() {
 	vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE,
 		UINT64_MAX);
 
+
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(
 		device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame],
@@ -1908,6 +1895,8 @@ void VulkanApp::DrawFrame() {
 	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
+
+	std::cout << "draw" << std::endl;
 
 	// This is here to be as close as posible.
 	UpdateDeltaTime();
@@ -1937,7 +1926,7 @@ void VulkanApp::DrawFrame() {
 	//UpdateShadowMapDescriptorSets(currentFrame);
 	//UpdateMainViewFrameData(currentFrame);
 	//UpdateLightDescriptorSets(currentFrame);
-	UpdateBindlessTextures(currentFrame);
+	//UpdateBindlessTextures(currentFrame);
 
 #pragma endregion
 
@@ -1985,6 +1974,8 @@ void VulkanApp::DrawFrame() {
 				&submitInfo,
 				inFlightFences[currentFrame]) != VK_SUCCESS
 			) {
+
+			assert(false && "failed to submit draw");
 			throw std::runtime_error("failed to submit draw command buffer!");
 		}
 
@@ -2217,7 +2208,7 @@ void VulkanApp::Start() {
 		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
 		swapChainImageFormat
 	);
-	auto pipe_obj =  context->pipelines_.get(main_view_pipeline_h);
+	auto pipe_obj = context->pipelines_.get(main_view_pipeline_h);
 	auto aa = context->pipelineLayouts_.get(pipe_obj->plyt);
 	auto bb = aa->setLayouts;
 
@@ -2239,10 +2230,11 @@ void VulkanApp::Start() {
 
 	SetDescriptorSets();
 
-
-	// True App
-
+	// APP
 	LoadScene();
+
+	//UpdateBindlessTexturesSets();
+
 
 }
 

@@ -14,29 +14,29 @@
 #include <algorithm>
 #include <cstring>
 
-#include <Engine/Vulkan/vulkan_setup.h>
+#include <Engine/Shared/common.h>
 #include <Engine/Renderer/primitives.h>
 
-const std::vector<const char*> validationLayers = {
-	"VK_LAYER_KHRONOS_validation",
-};
+inline const char* vkResultToString(VkResult result);
 
-const std::vector<const char*> deviceExtensions = {
-	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-	// Not needed -- Vk1.3 promoted baybeeee
-	//VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
-};
+#define VK_CHECK(x)                                                     \
+    do {                                                                \
+        VkResult err = (x);                                             \
+        if (err != VK_SUCCESS) {                                        \
+            fprintf(stderr, "[Vulkan Error] %s:%d: %s\n",               \
+                    __FILE__, __LINE__, vkResultToString(err));         \
+            abort();                                                    \
+        }                                                               \
+    } while (0)
+
+const std::vector<const char*> validationLayers;
+const std::vector<const char*> deviceExtensions;
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL
 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 	VkDebugUtilsMessageTypeFlagsEXT messageType,
-	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-	void* pUserData) {
-	std::cerr << "---------------- Vulkan Validation ----------------\n";
-	std::cerr << "Message: " << pCallbackData->pMessage << "\n";
-	std::cerr << "\n";  // <--- Blank line for separation
-	return VK_FALSE;
-}
+	const VkDebugUtilsMessengerCallbackDataEXT * pCallbackData,
+	void* pUserData);
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -415,3 +415,45 @@ void endSingleTimeCommands(VkDevice device, VkCommandBuffer commandBuffer, VkQue
 //	return KTX_TTF_RGBA32; // uncompressed fallback (always works)
 //}
 
+void createSampler(
+	const VkPhysicalDevice& physicalDevice,
+	const VkDevice& device,
+	VkSampler& sampler,
+	int levelCount,
+	VkCompareOp compareOp
+
+) {
+	VkSamplerCreateInfo samplerInfo{};
+	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	samplerInfo.magFilter = VK_FILTER_LINEAR;
+	samplerInfo.minFilter = VK_FILTER_LINEAR;
+
+	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+
+	VkPhysicalDeviceProperties properties{};
+	vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+
+	samplerInfo.anisotropyEnable = VK_TRUE;
+	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+
+	// This is a hardware/spec limit. Thats why im asserting here...
+	// Maybe we can query gpu capabilities to give better paths to more powerful devices.
+	assert(properties.limits.maxUniformBufferRange >= 1 << 16);
+
+	samplerInfo.unnormalizedCoordinates = VK_FALSE;
+	samplerInfo.compareEnable = VK_FALSE;
+	//samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+	samplerInfo.compareOp = compareOp;
+
+	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	samplerInfo.mipLodBias = 0.0f;
+	samplerInfo.minLod = 0.0f;
+	//samplerInfo.maxLod = 0.0f;
+	samplerInfo.maxLod = float(levelCount - 1);
+
+	VK_CHECK(vkCreateSampler(device, &samplerInfo, nullptr, &sampler));
+
+}
