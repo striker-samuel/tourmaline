@@ -1,5 +1,241 @@
 #include <Engine/Renderer/context.h>
 
+static inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
+
+Context::Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface) {
+
+	VmaAllocatorCreateInfo allocatorCreateInfo = {};
+	allocatorCreateInfo.physicalDevice = *physicalDevice;
+	allocatorCreateInfo.device = *device;
+	allocatorCreateInfo.instance = instance;
+	allocatorCreateInfo.vulkanApiVersion = VK_API_VERSION_1_3;
+	allocatorCreateInfo.flags =
+		VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT |
+		VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT;
+
+	// This next flag is to get handles. To interporate resources between instances, or even between Vulkan and Dx or things like that.
+	// VMA_ALLOCATOR_CREATE_KHR_EXTERNAL_MEMORY_WIN32_BIT
+
+	VmaVulkanFunctions vulkanFunctions;
+	VkResult res = vmaImportVulkanFunctionsFromVolk(&allocatorCreateInfo, &vulkanFunctions);
+	allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
+
+	res = vmaCreateAllocator(&allocatorCreateInfo, &allocator);
+	assert(res == VK_SUCCESS);
+
+	allocator_ = &allocator;
+	device_ = device;
+	physicalDevice_ = physicalDevice;
+
+	VkSampler default_sampler;
+
+	// from ChatGpt, may not be true: you can set a generic sampler with a big maxLod like 100, and reuse it for all your textures of any mip count.
+	// The driver will clamp dynamically per texture.
+	samplers["default"] = CreateSampler(100);
+
+	// Samplers are driver objs. can be copied like this np.
+	samplers["default_shadow"] = CreateShadowSampler(1);
+
+	// Lets reserve upfront.
+	textures_.objects_.reserve(MAX_TEXTURES);
+
+	//materialPipelinePool_.objects_.reserve(1000);
+	// This is a small reservation. just testing 
+
+	buffers_.objects_.reserve(MAX_BUFFERS);
+
+	InitializeDeviceVmaPools();
+	InitalizeGeoBuffers();
+
+	// Lets have one dpool
+	default_descriptor_pool = createDescriptorPool();
+	imgui_descriptor_pool = createDescriptorPool();
+
+
+	// These are pipeline specific. 
+	//default_descriptorLayout = createMainViewDescriptorLayout();
+	//default_shadow_descriptorLayout = CreateShadowMapsDescriptorSetLayout();
+	//default_meshlet_descriptorLayout = CreateMeshletDescriptorLayout();
+
+	QueueFamilyIndices indices = findQueueFamilies(*physicalDevice, surface);
+
+	VkCommandPoolCreateInfo poolInfo{
+	.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+	.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+	.queueFamilyIndex = indices.graphicsFamily.value()
+	};
+
+	vkGetDeviceQueue(*device_, indices.graphicsFamily.value(), 0, &default_queue);
+
+	// This should pick transfer over graphics
+	vkGetDeviceQueue(*device_, indices.graphicsFamily.value(), 0, &transfer_queue);
+
+	for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
+		if (vkCreateCommandPool(*device_, &poolInfo, nullptr, &default_command_pool) !=
+			VK_SUCCESS) {
+			throw std::runtime_error("failed to create graphics command pool!");
+		}
+	}
+
+	ktx_vdi = ktxVulkanDeviceInfo_Create(
+		*physicalDevice_,
+		*device_,
+		transfer_queue, // this maybe should be transfer queue. we only use ktx to upload tex. no blitting for mipmaps, which are generated offline.
+		default_command_pool,
+		NULL
+	);
+
+};
+
+Context::~Context(
+) {
+	CleanUp();
+};
+
+void Context::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
+	copyBuffer(srcBuffer, dstBuffer, size, 0, 0);
+}
+
+void Context::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset) {
+
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(*device_, default_command_pool);
+
+	VkBufferCopy copyRegion{};
+	copyRegion.size = size;
+	copyRegion.srcOffset = srcOffset;
+	copyRegion.dstOffset = dstOffset;
+	vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+	endSingleTimeCommands(*device_, commandBuffer, default_queue, default_command_pool);
+}
+
+void Context::InitalizeGeoBuffers() {
+
+	{
+
+		uint32_t totalVertexBytes = 512u * 1024u * 1024u;
+		uint32_t totalIndexBytes = 512u * 1024u * 1024u;
+
+		// Create the actual GPU buffers (these are the page's buffers)
+		DeviceBufferHandle vb_pos = createBuffer(
+			totalVertexBytes,
+			VMA_MEMORY_USAGE_GPU_ONLY,
+			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		);
+
+		DeviceBufferHandle vb_shd = createBuffer(
+			totalVertexBytes,
+			VMA_MEMORY_USAGE_GPU_ONLY,
+			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		);
+
+		DeviceBufferHandle ib = createBuffer(
+			totalIndexBytes,
+			VMA_MEMORY_USAGE_GPU_ONLY,
+			VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+		);
+
+		// Build a page that OWNS allocators for those buffers
+		GeometryPage page{};
+		page.vertexPosBuffer = vb_pos;
+		page.vertexShadingBuffer = vb_shd;
+		page.indexBuffer = ib;
+
+		// Capacity in vertices must satisfy both streams
+		page.max_vertices = std::min(
+			totalVertexBytes / uint32_t(sizeof(VertexPos)),
+			totalVertexBytes / uint32_t(sizeof(VertexShading))
+		);
+
+		// Index allocator (bytes)
+		{
+			VmaVirtualBlockCreateInfo ci{};
+			ci.size = totalIndexBytes;
+			VK_CHECK(vmaCreateVirtualBlock(&ci, &page.index_blk));
+		}
+
+		// Vertex allocator (VERTEX UNITS!)
+		{
+			VmaVirtualBlockCreateInfo vu{};
+			vu.size = page.max_vertices; // vertices, not bytes
+			VK_CHECK(vmaCreateVirtualBlock(&vu, &page.vertex_units_blk));
+		}
+
+
+		current_geometry_page = geometry_pages.create(std::move(page));
+
+	}
+
+}
+
+void Context::InitializeDeviceVmaPools() {
+
+	// DEVICE-LOCAL pool for 2D images
+	{
+		VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+		imgCI.imageType = VK_IMAGE_TYPE_2D;
+		imgCI.format = VK_FORMAT_R8G8B8A8_UNORM;
+		imgCI.extent = { 4, 4, 1 };
+		imgCI.mipLevels = 1;
+		imgCI.arrayLayers = 1;
+		imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
+		imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+		imgCI.usage = VK_IMAGE_USAGE_SAMPLED_BIT
+			| VK_IMAGE_USAGE_TRANSFER_DST_BIT
+			| VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // for vkCmdBlitImage when building mips
+
+		VmaAllocationCreateInfo aCI{};
+		aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+		uint32_t typeIndex = UINT32_MAX;
+		VK_CHECK(vmaFindMemoryTypeIndexForImageInfo(*allocator_, &imgCI, &aCI, &typeIndex));
+
+		VmaPoolCreateInfo pci{};
+		pci.memoryTypeIndex = typeIndex;
+		pci.blockSize = 64 * 1024 * 1024;
+		VK_CHECK(vmaCreatePool(*allocator_, &pci, &D_2DImagesPool));
+	}
+
+	//// DEVICE-LOCAL pool for static geometry buffers
+	//{
+	//	VkBufferCreateInfo bufCI{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	//	bufCI.size = 64 * 1024; // dummy
+	//	bufCI.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+	//	VmaAllocationCreateInfo aCI{};
+	//	aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+	//	uint32_t typeIndex = UINT32_MAX;
+	//	VK_CHECK(vmaFindMemoryTypeIndexForBufferInfo(*allocator_, &bufCI, &aCI, &typeIndex));
+
+	//	VmaPoolCreateInfo pci{};
+	//	pci.memoryTypeIndex = typeIndex;
+	//	pci.blockSize = 64 * 1024 * 1024;
+	//	VK_CHECK(vmaCreatePool(*allocator_, &pci, &D_geo));
+	//}
+
+	{
+		VkBufferCreateInfo bufCI{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		bufCI.size = 64 * 1024;
+		bufCI.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+		VmaAllocationCreateInfo aCI{};
+		aCI.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+			| VMA_ALLOCATION_CREATE_MAPPED_BIT;
+		aCI.usage = VMA_MEMORY_USAGE_AUTO;
+
+		uint32_t typeIndex = UINT32_MAX;
+		vmaFindMemoryTypeIndexForBufferInfo(*allocator_, &bufCI, &aCI, &typeIndex);
+
+		VmaPoolCreateInfo pci{};
+		pci.memoryTypeIndex = typeIndex; // host-visible & host-coherent type
+		pci.blockSize = 32 * 1024 * 1024;
+		VK_CHECK(vmaCreatePool(*allocator_, &pci, &D_StagingPool));
+	}
+
+
+}
+
 [[nodiscard]] SamplerHandle Context::CreateSampler(uint32_t levelCount) {
 
 	VkSampler sampler_;
@@ -54,7 +290,6 @@
 	);
 
 }
-
 
 [[nodiscard]] ImageViewHandle  Context::CreateImageView(
 	VkImage image,

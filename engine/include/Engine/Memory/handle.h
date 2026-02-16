@@ -52,69 +52,82 @@ private:
 static_assert(sizeof(Handle<class Foo>) == sizeof(uint64_t));
 
 
-//template<typename HandleType>
-//class Holder final {
-//public:
-//    Holder() = default;
-//    Holder(lvk::Context* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
-//    ~Holder() {
-//        lvk::destroy(ctx_, handle_);
-//    }
-//    Holder(const Holder&) = delete;
-//    Holder(Holder&& other) : ctx_(other.ctx_), handle_(other.handle_) {
-//        other.ctx_ = nullptr;
-//        other.handle_ = HandleType{};
-//    }
-//    Holder& operator=(const Holder&) = delete;
-//    Holder& operator=(Holder&& other) {
-//        std::swap(ctx_, other.ctx_);
-//        std::swap(handle_, other.handle_);
-//        return *this;
-//    }
-//    Holder& operator=(std::nullptr_t) {
-//        this->reset();
-//        return *this;
-//    }
-//
-//    inline operator HandleType() const {
-//        return handle_;
-//    }
-//
-//    bool valid() const {
-//        return handle_.valid();
-//    }
-//
-//    bool empty() const {
-//        return handle_.empty();
-//    }
-//
-//    void reset() {
-//        lvk::destroy(ctx_, handle_);
-//        ctx_ = nullptr;
-//        handle_ = HandleType{};
-//    }
-//
-//    HandleType release() {
-//        ctx_ = nullptr;
-//        return std::exchange(handle_, HandleType{});
-//    }
-//
-//    uint32_t gen() const {
-//        return handle_.gen();
-//    }
-//    uint32_t index() const {
-//        return handle_.index();
-//    }
-//    void* indexAsVoid() const {
-//        return handle_.indexAsVoid();
-//    }
-//
-//private:
-//    lvk::Context* ctx_ = nullptr;
-//    HandleType handle_ = {};
-//};
-//
-//
-//// type specialization with dummy structs. lifted from lightweightVk
-//using BufferHandle = lvk::Handle<struct Buffer>;
-//
+template<typename HandleType>
+class Holder final {
+public:
+    Holder() = default;
+    Holder(Context* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
+    ~Holder() {
+        destroy(ctx_, handle_);
+    }
+    Holder(const Holder&) = delete;
+    Holder(Holder&& other) : ctx_(other.ctx_), handle_(other.handle_) {
+        other.ctx_ = nullptr;
+        other.handle_ = HandleType{};
+    }
+    Holder& operator=(const Holder&) = delete;
+    Holder& operator=(Holder&& other) {
+        std::swap(ctx_, other.ctx_);
+        std::swap(handle_, other.handle_);
+        return *this;
+    }
+    Holder& operator=(std::nullptr_t) {
+        this->reset();
+        return *this;
+    }
+
+    inline operator HandleType() const {
+        return handle_;
+    }
+
+    bool valid() const {
+        return handle_.valid();
+    }
+
+    bool empty() const {
+        return handle_.empty();
+    }
+
+    void reset() {
+        destroy(ctx_, handle_);
+        ctx_ = nullptr;
+        handle_ = HandleType{};
+    }
+
+    HandleType release() {
+        ctx_ = nullptr;
+        return std::exchange(handle_, HandleType{});
+    }
+
+    uint32_t gen() const {
+        return handle_.gen();
+    }
+    uint32_t index() const {
+        return handle_.index();
+    }
+    void* indexAsVoid() const {
+        return handle_.indexAsVoid();
+    }
+
+private:
+    Context* ctx_ = nullptr;
+    HandleType handle_ = {};
+};
+
+using ShaderModuleHandle = Handle<struct ShaderModule>;
+using TextureHandle = Handle<struct Texture>;
+using ImageHandle = Handle<struct Image>;
+using ImageViewHandle = Handle<struct ImageView>;
+using ShadowMapHandle = Handle<struct ShadowMap>;
+using SamplerHandle = Handle<struct Sampler>;
+using MaterialInstanceHandle = Handle<struct MaterialInstance>;
+using DescriptorPoolHandle = Handle<struct DescriptorPool>;
+using DescriptorSetHandle = Handle<struct DescriptorSet>;
+using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
+using DeviceBufferHandle = Handle<struct BufferDescription>;
+using PipelineHandle = Handle<struct Pipeline>;
+using MeshDescHandle = Handle<struct GpuMeshDesc>;
+using GeometryPageHandle = Handle <struct GeometryPage>;
+using PipelineLayoutHandle = Handle<struct PipelineLayout>;
+
+

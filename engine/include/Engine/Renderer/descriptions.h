@@ -40,3 +40,28 @@ struct MaterialPushConstants {
 
 static_assert(sizeof(MainViewPushConstants) % 16 == 0);
 static_assert(sizeof(MaterialPushConstants) % 16 == 0);
+
+struct FrameUniforms
+{
+	glm::mat4 view;
+	glm::mat4 proj;
+	glm::mat4 viewProj;
+
+	glm::mat4 invView;
+	glm::mat4 invProj;
+	glm::mat4 invViewProj;
+
+	glm::vec3 cameraPos;
+	float     time;
+
+	glm::vec2 viewportSize;
+	glm::vec2 invViewportSize;
+
+	float nearPlane;
+	float farPlane;
+	float exposure;
+	float padding; // keep 16-byte alignment
+};
+
+static_assert(sizeof(FrameUniforms) % 16 == 0);
+

@@ -35,10 +35,15 @@
 
 // --------------APP--------------------
 
+
 constexpr int NUM_CASCADES = 3;
 constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 
-#include <App/TestData/test_data_generators.h>
+//#include <App/TestData/test_data_generators.h>
+
+
+#include <Engine/Renderer/ringBinding.h>
+
 
 // ------------------------------------
 // If theres only one I probably could go with argv
@@ -53,11 +58,9 @@ CameraPositioner_FirstPerson cameraPositioner(
 );
 
 //fot the global descriptor list you must track on host / cpu side, with texture_asset_id(the #id of the texture in the project) to the table id, track when the draw doesnt need it anymore and use the cpu table to partial udpate evict texture in the bindless table right
-struct TextureTable {
-};
+struct TextureTable {};
 
 struct FrameResources {
-
 
 	// Sets cant have dynamic binding at the same time as update_after_bind
 	// So this for the ring buffers with dynamic offsets
@@ -71,18 +74,21 @@ struct FrameResources {
 	DescriptorSetHandle frameShadowDescriptorSet;
 };
 
-struct FrameBuffers {
-
-	DeviceBufferHandle frameUniformsBuffer;
-	DeviceBufferHandle frameDrawDataBuffer;
-	DeviceBufferHandle frameLightsDataBuffer;
-
-};
+//struct FrameBuffers {
+//
+//	DeviceBufferHandle frameUniformsBuffer;
+//	DeviceBufferHandle frameDrawDataBuffer;
+//	DeviceBufferHandle frameLightsDataBuffer;
+//
+//};
 
 
 class VulkanApp {
 
 public:
+
+	RingBinding<FrameUniforms, 1> frameUniformsBinding;
+	RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
 
 	int width_ = WIDTH;
 	int height_ = HEIGHT;
@@ -173,7 +179,7 @@ private:
 
 #pragma region ===[ Uniforms / Descriptor Sets ]==
 
-	FrameBuffers frameBuffers;
+	//FrameBuffers frameBuffers;
 	FrameResources perFrameData[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
@@ -229,7 +235,7 @@ private:
 	}
 	void UpdateFrameUniforms(uint32_t currentImage);
 	void UpdateDrawDataBuffers(uint32_t currentImage);
-	void UpdateLightsBuffers(uint32_t currentImage);
+	//void UpdateLightsBuffers(uint32_t currentImage);
 
 	void UiPass() {
 
@@ -604,39 +610,6 @@ private:
 
 	// --------------------------
 
-
-	void CreateFrameDataBuffers() {
-
-		frameBuffers.frameUniformsBuffer = context->createBuffer(
-			sizeof(FrameUniforms) * MAX_FRAMES_IN_FLIGHT,
-			VMA_MEMORY_USAGE_AUTO,
-			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-		);
-
-		// This may need to go the way of the dodo and move to something akin draw list structure. well see
-		frameBuffers.frameDrawDataBuffer = context->createBuffer(
-			sizeof(DrawSetData) * MAX_DRAWS * MAX_FRAMES_IN_FLIGHT,
-			VMA_MEMORY_USAGE_AUTO,
-			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-		);
-
-		frameBuffers.frameLightsDataBuffer = context->createBuffer(
-			sizeof(Light) * MAX_LIGHTS,
-			VMA_MEMORY_USAGE_AUTO,
-			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-		);
-
-		//
-	}
-
-
-	// Set one and forget
-	// Use dynamciOffsets later to acces it
-	// Simple and elegant.
-
-	// We may formalize these to something like this right?
-	// I need to further study RHI abstracionts. and the topology of things like this. 
-
 	void SetDescriptorSets()
 	{
 
@@ -648,7 +621,7 @@ private:
 			VkDescriptorSet vkSet = setObj->set;
 
 			// FrameUniforms 
-			auto frameUniformsBufferHandle = context->buffers_.get(frameBuffers.frameUniformsBuffer);
+			auto frameUniformsBufferHandle = context->buffers_.get(frameUniformsBinding.buffer_h);
 			VkDescriptorBufferInfo frameUniformsInfo{
 				.buffer = frameUniformsBufferHandle->buffer,
 				.offset = 0,
@@ -656,7 +629,7 @@ private:
 			};
 
 			// Draw data
-			auto drawsDataBufferHandle = context->buffers_.get(frameBuffers.frameDrawDataBuffer);
+			auto drawsDataBufferHandle = context->buffers_.get(drawDataBinding.buffer_h);
 			VkDescriptorBufferInfo drawBufferInfo{
 				.buffer = drawsDataBufferHandle->buffer,
 				.offset = 0,
@@ -1261,8 +1234,8 @@ private:
 			//auto drawStride = sizeof(DrawSetData) * MAX_DRAWS;
 
 			uint32_t dynamicOffsets[2] = {
-				imageIndex * sizeof(FrameUniforms),
-				imageIndex * sizeof(DrawSetData) * MAX_DRAWS
+				frameUniformsBinding.dynamicOffsetFrame(currentFrame),
+				drawDataBinding.dynamicOffsetFrame(currentFrame),
 			};
 
 			VkDescriptorSet sets[2] = {
@@ -1756,15 +1729,10 @@ bool VulkanApp::Initialize() {
 		throw std::runtime_error("failed to allocate command buffers!");
 	}
 
-
 	CreateRenderSyncObjects();
 	CreateDepthResources();
 
-	// 
-	CreateFrameDataBuffers();
-
-	// All ShadowMap Slots images are created here directly on startup ;)
-	IntializeShadowMaps();
+	//IntializeShadowMaps();
 
 	return true;
 
@@ -2020,13 +1988,13 @@ void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
 	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
 
 	context->UploadDataToBuffer(
-		frameBuffers.frameUniformsBuffer,
+		frameUniformsBinding.buffer_h,
 		&data,
 		sizeof(FrameUniforms)/* * 1*/,
 		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 		VK_ACCESS_SHADER_READ_BIT,
 		0,
-		currentImage * sizeof(FrameUniforms)
+		frameUniformsBinding.frameStride * currentImage
 	);
 
 	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
@@ -2048,7 +2016,7 @@ void VulkanApp::UpdateDrawDataBuffers(uint32_t currentImage) {
 	VkResult result{};
 	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
 
-	auto draw_data_buffer_handle = frameBuffers.frameDrawDataBuffer;
+	auto draw_data_buffer_handle = drawDataBinding.buffer_h;
 	auto draw_data_buffer = context->buffers_.get(draw_data_buffer_handle);
 
 	context->UploadDataToBuffer(
@@ -2058,7 +2026,7 @@ void VulkanApp::UpdateDrawDataBuffers(uint32_t currentImage) {
 		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 		VK_ACCESS_SHADER_READ_BIT,
 		0,
-		0
+		drawDataBinding.frameStride + currentImage
 	);
 
 	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
@@ -2144,16 +2112,38 @@ void VulkanApp::Start() {
 		fragShaderCode
 	);
 
+
+	//frameUniformsBinding = RingBinding<FrameUniforms, 1>();
+	frameUniformsBinding.init(
+		context,
+		0, //bindding #
+		MAX_FRAMES_IN_FLIGHT,
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+	);
+
+	drawDataBinding.init(
+		context,
+		1, //bindding #
+		MAX_FRAMES_IN_FLIGHT,
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
+	);
+
 	PipelineLayoutDesc desc;
 	desc.sets = {
 		DescriptorSetLayoutDesc{
 			0, // set
 			VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, // createFlags
 			{
-				BindingDesc{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1,
-							VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, {} },
-				BindingDesc{ 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1,
-							VK_SHADER_STAGE_VERTEX_BIT, 0, {} },
+			//BindingDesc{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1,
+			//			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, {} },
+			//BindingDesc{ 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1,
+			//			VK_SHADER_STAGE_VERTEX_BIT, 0, {} },
+
+frameUniformsBinding.bindingDesc(),
+drawDataBinding.bindingDesc(),
+
 			}
 		},
 		DescriptorSetLayoutDesc{
@@ -2208,7 +2198,6 @@ void VulkanApp::Start() {
 	auto pipe_obj = context->pipelines_.get(main_view_pipeline_h);
 	auto aa = context->pipelineLayouts_.get(pipe_obj->plyt);
 	auto bb = aa->setLayouts;
-
 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 
