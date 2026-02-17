@@ -61,27 +61,9 @@ CameraPositioner_FirstPerson cameraPositioner(
 struct TextureTable {};
 
 struct FrameResources {
-
-	// Sets cant have dynamic binding at the same time as update_after_bind
-	// So this for the ring buffers with dynamic offsets
-	DescriptorSetHandle frameDynamicDescriptorSet;
-	// and this for the texture slots. At least for the moment
 	DescriptorSetHandle frameDescriptorSet;
-
-	// I may need to go this way
-	//DescriptorSetHandle frameBindlessTexturTableDescriptorSet; 
-
-	DescriptorSetHandle frameShadowDescriptorSet;
+	DescriptorSetHandle frameDynamicDescriptorSet;
 };
-
-//struct FrameBuffers {
-//
-//	DeviceBufferHandle frameUniformsBuffer;
-//	DeviceBufferHandle frameDrawDataBuffer;
-//	DeviceBufferHandle frameLightsDataBuffer;
-//
-//};
-
 
 class VulkanApp {
 
@@ -179,7 +161,6 @@ private:
 
 #pragma region ===[ Uniforms / Descriptor Sets ]==
 
-	//FrameBuffers frameBuffers;
 	FrameResources perFrameData[MAX_FRAMES_IN_FLIGHT];
 
 #pragma endregion
@@ -1208,7 +1189,7 @@ private:
 		BindVertex(commandBuffer);
 
 		MainViewPushConstants pc{};
-		//pc.view = camera_.getViewMatrix();
+		//pc.view = camera_.getViewMatrix(); 
 		//pc.proj = camera_.getProjMatrix();
 		//pc.proj[1][1] *= -1;
 
@@ -1716,7 +1697,6 @@ bool VulkanApp::Initialize() {
 		}
 	}
 
-	//CreateFrameCommandBuffers();
 
 	VkCommandBufferAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -1982,6 +1962,7 @@ void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
 	FrameUniforms data;
 	data.view = view;
 	data.proj = proj;
+	data.proj[1][1] *= -1;
 	data.viewProj = view * proj;
 
 	VkResult result{};
@@ -1994,7 +1975,7 @@ void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
 		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 		VK_ACCESS_SHADER_READ_BIT,
 		0,
-		frameUniformsBinding.frameStride * currentImage
+		frameUniformsBinding.dynamicOffsetFrame(currentImage)
 	);
 
 	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
@@ -2010,7 +1991,8 @@ void VulkanApp::UpdateDrawDataBuffers(uint32_t currentImage) {
 	const auto& src = scene_.globalTransform;
 	for (size_t i = 0, n = src.size(); i < n; ++i) {
 		std::memcpy(data[i].transform, glm::value_ptr(src[i]), sizeof(float) * 16);
-		data[i].color = { float(i) * 0.20f, 0.3f, -float(i) * 0.7f, 1.0f };
+		data[i].color = {};
+		//data[i].color = { float(i) * 0.20f, 0.3f, -float(i) * 0.7f, 1.0f };
 	}
 
 	VkResult result{};
@@ -2026,7 +2008,7 @@ void VulkanApp::UpdateDrawDataBuffers(uint32_t currentImage) {
 		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 		VK_ACCESS_SHADER_READ_BIT,
 		0,
-		drawDataBinding.frameStride + currentImage
+		drawDataBinding.dynamicOffsetFrame(currentImage)
 	);
 
 	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
@@ -2112,13 +2094,11 @@ void VulkanApp::Start() {
 		fragShaderCode
 	);
 
-
-	//frameUniformsBinding = RingBinding<FrameUniforms, 1>();
 	frameUniformsBinding.init(
 		context,
 		0, //bindding #
 		MAX_FRAMES_IN_FLIGHT,
-		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
 	);
 
@@ -2126,7 +2106,7 @@ void VulkanApp::Start() {
 		context,
 		1, //bindding #
 		MAX_FRAMES_IN_FLIGHT,
-		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
 	);
 

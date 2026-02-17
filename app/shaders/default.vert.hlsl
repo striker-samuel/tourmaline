@@ -8,15 +8,14 @@
 [[vk::binding(0, 0)]]
 ConstantBuffer<FrameUniforms> frame_res;
 
-// This can easily get outdated. Be careful.
-struct InstanceData
+struct DrawSetData
 {
     float4x4 transform;
     float4 color;
 };
 
 [[vk::binding(1, 0)]]
-StructuredBuffer<InstanceData> instance_data;
+StructuredBuffer<DrawSetData> instance_data;
 
 struct VSIn
 {
