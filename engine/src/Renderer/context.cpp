@@ -978,10 +978,9 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 	VkPushConstantRange ranges[8]{};
 	const uint32_t rangeCount = static_cast<uint32_t>(descIn.pushConstants.size());
 
-	VkPhysicalDeviceProperties2 properties{
-	};
-	vkGetPhysicalDeviceProperties2(*physicalDevice_, &properties);
-	auto min_align = properties.properties.limits.minUniformBufferOffsetAlignment;
+	VkPhysicalDeviceProperties properties{};
+	vkGetPhysicalDeviceProperties(*physicalDevice_, &properties);
+	auto min_align = properties.limits.minUniformBufferOffsetAlignment;
 
 	assert(rangeCount <= 8 && "Max 8 push constant ranges");
 
