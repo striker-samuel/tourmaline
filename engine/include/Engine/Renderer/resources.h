@@ -76,43 +76,37 @@ struct MaterialInstance {
 	MaterialPushConstants values = {};
 };
 
-// Lets forget about validation/ typing in any way. No depth/color, sample/write specialization yet in any shape or form.
 struct Image {
 
 	VkImage image;
 	VmaAllocation alloc;
 	VkFormat format;
 	VkImageUsageFlags usage;
+
 	uint32_t arrayLayers; // DepthImage will have each cascae in diff index.
 	uint32_t levels; // levels is Mips.
 	uint32_t width, height;
 	uint32_t depth = 1; // lets just initialize this to 1. Used for volume textures. 
 	//VK_IMAGE_TYPE_3D
 
-	// Layout state cant be encoded here since it depends on the pipeline..
-	// This is state, the rest is properties. Thats the core problem. 
+	// Layout state cant be encoded here since it can mutate
 	// Leaving this here to avoid future tentation.
 	//VkImageLayout layout;
 
 };
+
 
 struct ShadowMapSlot {
 	ShadowMapHandle perFrame[MAX_FRAMES_IN_FLIGHT];
 };
 
 struct ShadowMap {
-	uint32_t cascades = 0;
 	ImageHandle image;
 	SamplerHandle sampler;
 	bool owns_sampler = true;
 	ImageViewHandle sampleView;
 	ImageViewHandle renderView;
-	// if image has layers, for render attachment you need unambiguous view. thats the why of the vector
-//	std::vector<ImageViewHandle> renderViews; 
 
-	bool is_atlas() {
-		return this->cascades >= 1;
-	}
 };
 
 

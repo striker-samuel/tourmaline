@@ -126,8 +126,8 @@ public:
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
 	DeviceBufferHandle createBuffer(VkDeviceSize size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
-	void UploadDataToBuffer(DeviceBufferHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
-	void UploadDataToBuffer(DeviceBufferHandle buffer, void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset, size_t dest_offset);
+	void UploadDataToBuffer(DeviceBufferHandle buffer,const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
+	void UploadDataToBuffer(DeviceBufferHandle buffer,const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset, size_t dest_offset);
 
 	MeshDescHandle UploadVertexData(MeshUploadInput& mesh_data);
 

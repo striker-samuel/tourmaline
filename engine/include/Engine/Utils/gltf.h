@@ -595,10 +595,7 @@ void UploadGltfToContext(
 	markAsChanged(result_scene, 0);
 	recalculateGlobalTransforms(result_scene);
 
-
-
 	// Import light from gltf missing 
 	// Import cameras from gltg missing too
-
 
 };

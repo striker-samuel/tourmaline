@@ -14,8 +14,9 @@ struct DrawSetData
     float4 color;
 };
 
+//Unused right now
 [[vk::binding(1, 0)]]
-StructuredBuffer<DrawSetData> instance_data;
+StructuredBuffer<DrawSetData> drawData;
 
 struct VSIn
 {
@@ -41,9 +42,6 @@ VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
 
-    //uint idx = g_InstanceRemap[IN.instanceID];
-    //float4x4 model = instance_data[idx].transform;
-    
     // World position
     float4 world = mul(pc.model, float4(IN.position, 1.0));
     OUT.worldPos = world.xyz;
@@ -59,10 +57,6 @@ VSOut mainVS(VSIn IN)
     // Properly transform normal to world space
     float3 worldNormal = mul((float3x3) pc.model, IN.normal);
     OUT.normal = normalize(worldNormal);
-
-    //float4 clipA = mul(pc.proj, mul(pc.view, world)); // what you have
-    //float4 clipB = mul(mul(world, pc.view), pc.proj); // row-vector style
-    //OUT.pos = clipA; // try clipB if clipA is wrong
 
     return OUT;
 }

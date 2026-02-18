@@ -14,23 +14,14 @@
 
 // --------------ENGINE--------------------
 
-#include <Engine/Vulkan/vulkan_helpers.h>
-
-#include <Engine/Renderer/constants.h>
 #include <Engine/Renderer/context.h>
 
-#include <Engine/Memory/handle.h>
-#include <Engine/Memory/pool.h>
+#include <Engine/Renderer/ringBinding.h>
 
-#include <Engine/Shared/common.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
-#include <Engine/Renderer/primitives.h>
 
 #include <Engine/Utils/gltf.h>
-#include <Engine/Formats/optimize.h>
-
-#include <Engine/Formats/pak.h>
 #include <Engine/platform.h>
 
 // --------------APP--------------------
@@ -42,7 +33,6 @@ constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 //#include <App/TestData/test_data_generators.h>
 
 
-#include <Engine/Renderer/ringBinding.h>
 
 
 // ------------------------------------
@@ -57,8 +47,6 @@ CameraPositioner_FirstPerson cameraPositioner(
 	glm::vec3(0.0f, 1.0f, 0.0f) //up
 );
 
-//fot the global descriptor list you must track on host / cpu side, with texture_asset_id(the #id of the texture in the project) to the table id, track when the draw doesnt need it anymore and use the cpu table to partial udpate evict texture in the bindless table right
-struct TextureTable {};
 
 struct FrameResources {
 	DescriptorSetHandle frameDescriptorSet;
@@ -71,7 +59,9 @@ public:
 
 	RingBinding<FrameUniforms, 1> frameUniformsBinding;
 	RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
+	RingBinding<Light, MAX_LIGHTS> frameLigthsBinding;
 
+	// These match swapchainImageDimensions.
 	int width_ = WIDTH;
 	int height_ = HEIGHT;
 
@@ -193,11 +183,11 @@ private:
 	bool framebufferResized = false;
 #pragma endregion
 
-
 #pragma region Initialization
 
 	void InitVulkanApp();
 	void InitializeImGui();
+
 #pragma endregion
 
 	void UpdateDeltaTime() {
@@ -292,7 +282,6 @@ private:
 
 	}
 
-
 #pragma region MainLoop
 
 	void MainLoop() {
@@ -300,11 +289,11 @@ private:
 		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
 
+			// Event loop
 			CameraUpdate();
 			EarlyUpdate();
-			Update();
+			Update(); // Main
 			LateUpdate();
-
 			DrawFrame();
 
 		}
@@ -328,7 +317,7 @@ private:
 	}
 
 	void EarlyUpdate() {
-
+		recalculateGlobalTransforms(scene_);
 	}
 
 	void Update() {
@@ -353,9 +342,6 @@ private:
 	}
 
 	void LateUpdate() {
-
-		recalculateGlobalTransforms(scene_);
-
 	}
 
 #pragma endregion
@@ -693,35 +679,6 @@ private:
 	//	vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 	//}
 
-	//void UpdateLightDescriptorSets(uint32_t currentFrame) {
-
-	//	assert(currentFrame < MAX_FRAMES_IN_FLIGHT);
-
-	//	auto light_data_bfd = context->buffers_.get(perFrameData->frameLightsDataBuffer);
-	//	VkDescriptorBufferInfo lightDataBufferRangeInfo{
-	//		.buffer = light_data_bfd->buffer,
-	//		.offset = 0,
-	//		.range = sizeof(Light) * MAX_LIGHTS
-	//	};
-
-	//	auto setHandle = perFrameData[currentFrame].frameDescriptorSet;
-	//	auto setObj = context->descriptorSets_.get(setHandle);
-	//	VkDescriptorSet vkSet = setObj->set;
-
-	//	VkWriteDescriptorSet writes[1]{};
-
-	//	// LIGHTS
-	//	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	//	writes[0].dstSet = vkSet;
-	//	writes[0].dstBinding = 4;
-	//	writes[0].dstArrayElement = 0;
-	//	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	//	writes[0].descriptorCount = 1;
-	//	writes[0].pBufferInfo = &lightDataBufferRangeInfo;
-
-	//	vkUpdateDescriptorSets(device, 1 /*descitprorWriteCount*/, writes, 0, nullptr);
-
-	//}
 
 	// This could be done way more clever. Only updating changed textures.
 	// This may cause problems over the frame boundary if texture list changes...
@@ -1848,16 +1805,12 @@ void VulkanApp::DrawFrame() {
 
 #pragma region GPU_UPDATE
 
-
+	// this is per frame scene state
 	UpdateFrameUniforms(currentFrame);
-	UpdateDrawDataBuffers(currentFrame);
 
-	// Moving this after the reset prompts this validation error. Why?
-	//---------------- Vulkan Validation ----------------
-	//Message: Validation Error: [ VUID-vkResetCommandPool-commandPool-00040 ] Object 0: handle = 0x1a3033b7f00,
-	// type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0x95a125000000001a, type = VK_OBJECT_TYPE_COMMAND_POOL;
-	// | MessageID = 0xb53e2331 | vkResetCommandPool():  (VkCommandBuffer 0x1a3033b7f00[]) is in use.
-	// The Vulkan spec states: All VkCommandBuffer objects allocated from commandPool must not be in the pending state (https://vulkan.lunarg.com/doc/view/1.3.283.0/windows/1.3-extensions/vkspec.html#VUID-vkResetCommandPool-commandPool-00040)
+	// Not reallly used right now is it
+	//UpdateDrawDataBuffers(currentFrame);
+
 
 	vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
@@ -1954,16 +1907,34 @@ void VulkanApp::DrawFrame() {
 	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
+// Updates perframe camera view settings. view, proj, invView... etc.
 void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
 
 	auto view = camera_.getViewMatrix();
 	auto proj = camera_.getProjMatrix();
+	proj[1][1] *= -1;
 
-	FrameUniforms data;
+	auto viewProj = view * proj;
+
+	FrameUniforms data{};
+	data.cameraPos = cameraPositioner.cameraPosition_;
+
 	data.view = view;
 	data.proj = proj;
-	data.proj[1][1] *= -1;
-	data.viewProj = view * proj;
+	data.viewProj = viewProj;
+
+	data.invView = glm::inverse(view);
+	data.invProj = glm::inverse(proj);
+	data.invViewProj = glm::inverse(viewProj);
+
+	data.time = 0.0f;
+	data.viewportSize = { width_, height_ };
+	data.invViewportSize = { 1 / width_, 1 / height_ };
+
+	// Not implemented for now
+	data.nearPlane = 0.f;
+	data.farPlane = 0.f;
+	data.exposure = 0.f;
 
 	VkResult result{};
 	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
@@ -1985,7 +1956,7 @@ void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
 
 void VulkanApp::UpdateDrawDataBuffers(uint32_t currentImage) {
 
-	DrawSetData* data = new DrawSetData[MAX_DRAWS];
+	std::array<DrawSetData, MAX_DRAWS> data;
 	int i = 0;
 
 	const auto& src = scene_.globalTransform;
@@ -1995,24 +1966,12 @@ void VulkanApp::UpdateDrawDataBuffers(uint32_t currentImage) {
 		//data[i].color = { float(i) * 0.20f, 0.3f, -float(i) * 0.7f, 1.0f };
 	}
 
-	VkResult result{};
-	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
-
-	auto draw_data_buffer_handle = drawDataBinding.buffer_h;
-	auto draw_data_buffer = context->buffers_.get(draw_data_buffer_handle);
-
-	context->UploadDataToBuffer(
-		draw_data_buffer_handle,
+	drawDataBinding.uploadData(
 		data,
-		sizeof(DrawSetData) * MAX_DRAWS,
+		currentImage,
 		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-		VK_ACCESS_SHADER_READ_BIT,
-		0,
-		drawDataBinding.dynamicOffsetFrame(currentImage)
+		VK_ACCESS_SHADER_READ_BIT
 	);
-
-	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
-	delete[] data;
 }
 
 //void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
@@ -2106,8 +2065,8 @@ void VulkanApp::Start() {
 		context,
 		1, //bindding #
 		MAX_FRAMES_IN_FLIGHT,
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, //bufferUsageFlags
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC //descriptorType
 	);
 
 	PipelineLayoutDesc desc;
@@ -2116,11 +2075,6 @@ void VulkanApp::Start() {
 			0, // set
 			VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, // createFlags
 			{
-			//BindingDesc{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1,
-			//			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, {} },
-			//BindingDesc{ 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1,
-			//			VK_SHADER_STAGE_VERTEX_BIT, 0, {} },
-
 frameUniformsBinding.bindingDesc(),
 drawDataBinding.bindingDesc(),
 
@@ -2199,8 +2153,7 @@ drawDataBinding.bindingDesc(),
 	// APP
 	LoadScene();
 
-	//UpdateBindlessTexturesSets();
-
+	UpdateBindlessTexturesSets();
 
 }
 

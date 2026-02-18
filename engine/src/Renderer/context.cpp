@@ -431,7 +431,7 @@ void Context::InitializeDeviceVmaPools() {
 
 void Context::UploadDataToBuffer(
 	DeviceBufferHandle buffer,
-	void* data,
+	const void* data,
 	size_t dataSize,
 	VkPipelineStageFlags dstStages,
 	VkAccessFlags dstAccess
@@ -450,7 +450,7 @@ void Context::UploadDataToBuffer(
 
 void Context::UploadDataToBuffer(
 	DeviceBufferHandle buffer,
-	void* data,
+	const void* data,
 	size_t dataSize,
 	VkPipelineStageFlags dstStages,
 	VkAccessFlags dstAccess,
@@ -471,7 +471,6 @@ void Context::UploadDataToBuffer(
 		VkResult result = vmaCopyMemoryToAllocation(*allocator_, data, bufferDesc->alloc, 0, dataSize);
 		assert(result == VK_SUCCESS);
 
-		// Host write -> shader read
 		VkBufferMemoryBarrier b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
 		b.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
 		b.dstAccessMask = dstAccess;
@@ -1634,10 +1633,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 
 [[nodiscard]] ShadowMapHandle Context::CreateShadowMap(int width, int height)
 {
-	ShadowMap sm;
-	sm.cascades = 0;
 	auto image = CreateShadowMapImage(width, height);
-	sm.image = image;
 
 	auto arrayLayers = 1;
 	VkImageViewType viewType = (arrayLayers > 1) ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
@@ -1653,30 +1649,11 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 
 	);
 
-	sm.renderView = view;
-	sm.sampleView = view;
-
-	// These are leftovers from 2D_ARRAY implementation for cascasdes.
-	// Moved to atlas images instead for per-cascde resolution flexibility reasons. 
-
-	//auto image = images_.get(sm.image);
-	//// These are the individual views for use as depth render attachment in the pipeline.
-	//for (int i = 0; i < sm.cascades; i++) {
-	//	//sm.renderViews.push_back(
-	//	//	view
-	//	//);
-
-	//}
-	// We also need the sample view for shader use. 
-	//	sm.sampleView = CreateImageView(
-	//		image,
-	//		VK_IMAGE_ASPECT_DEPTH_BIT,
-	//		1, // levels = MIPS
-	//		0,
-	//		1,
-	////		sm.cascades, // layerCount. Layers = ARRAY
-	//		VK_IMAGE_VIEW_TYPE_2D_ARRAY
-	//	);
+	ShadowMap sm{
+	.image = image,
+	.sampleView = view,
+	.renderView = view,
+	};
 
 	return shadowmaps_.create(std::move(sm));
 
@@ -2071,8 +2048,7 @@ void destroy(Context* ctx, TextureHandle handle) {
 	ctx->textures_.destroy(handle);
 }
 void destroy(Context* ctx, ImageHandle handle)
-{
-}
+{}
 void destroy(Context* ctx, DeviceBufferHandle handle) {
 	assert(handle.valid());
 	auto db = ctx->buffers_.get(handle);
@@ -2089,5 +2065,4 @@ void destroy(Context* ctx, PipelineLayoutHandle h)
 
 // END
 
-void Context::CleanUp() {
-}
+void Context::CleanUp() {}

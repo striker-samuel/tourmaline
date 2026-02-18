@@ -59,21 +59,25 @@ struct RingBinding
 		//mapped = context->getMappedPtr(buffer_h); // if persistently mapped
 	}
 
-	VkDescriptorSetLayoutBinding toVkLayoutBinding(
-		const std::vector<VkSampler>& resolvedImmutableSamplers
-	) const
-	{
-		VkDescriptorSetLayoutBinding b{};
-		b.binding = binding;
-		b.descriptorType = descriptorType;
-		b.descriptorCount = 1;
-		b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT;
-		b.pImmutableSamplers = resolvedImmutableSamplers.empty()
-			? nullptr
-			: resolvedImmutableSamplers.data();
-		return b;
+	void uploadData(
+		const std::array<T, MaxElems> &elems,
+		uint32_t ringIndex,
+		VkPipelineStageFlags dstStages,
+		VkAccessFlags dstAccess
+	) {
+
+		context->UploadDataToBuffer(
+			buffer_h,
+			elems.data(),
+			sizeof(T) * elems.size(),
+			dstStages,
+			dstAccess,
+			0,
+			dynamicOffsetFrame(ringIndex)
+		);
 
 	}
+
 
 	BindingDesc bindingDesc(
 		//const std::vector<VkSampler>& resolvedImmutableSamplers

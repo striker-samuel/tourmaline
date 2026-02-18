@@ -19,7 +19,6 @@ static_assert(sizeof(DrawSetData) % 16 == 0);
 
 /// --------------------------------------
 
-
 //// Specialized descirptios like these may go the way of the dodo or move to App 
 struct MainViewPushConstants {
 	glm::mat4 model;
@@ -64,4 +63,20 @@ struct FrameUniforms
 };
 
 static_assert(sizeof(FrameUniforms) % 16 == 0);
+
+//
+
+struct CascadeDescription
+{
+	glm::mat4 lightVP;
+	float splitEnd;        // view-space depth end for this cascade
+	float bias;
+	float normalBias;
+
+	glm::vec2 invShadowSize;  // 1/(atlasWidth, atlasHeight) OR 1/(tileWidth,tileHeight) depending how you do PCF
+	glm::vec2 uvScale;        // tile scale in atlas UV
+	glm::vec2 uvBias;         // tile offset in atlas UV
+	glm::vec2 uvClampMin;     // clamp inside tile (avoid bleeding)
+	glm::vec2 uvClampMax;
+};
 
