@@ -1,5 +1,7 @@
 #pragma once
 
+
+#define TINYGLTF_IMPLEMENTATION
 #include <Engine/App/app.h>
 
 // --------------APP--------------------

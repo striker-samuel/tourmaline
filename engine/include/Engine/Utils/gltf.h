@@ -14,6 +14,8 @@
 #include <unordered_map>
 #include <vector>
 #include <string>
+#include <filesystem>
+#include <tiny_gltf.h>
 
 #include <Engine/Renderer/vertex.h>
 #include <Engine/Renderer/primitives.h>
