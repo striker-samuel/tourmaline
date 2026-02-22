@@ -45,20 +45,18 @@ struct GeometryPage {
 
 struct DrawRange {
 	GeometryPageHandle page;
-
 	uint32_t index_count;
 
-	// Either:
-	uint32_t first_index;   // if IB bound at 0 for that page
-	int32_t  base_vertex;   // if VB bound at 0 for that page
+	uint32_t first_index; 
+	int32_t  base_vertex;   
 
-	// OR if you allow rebinding offsets:
-	VkDeviceSize ib_byte_offset;
-	VkDeviceSize vb0_byte_offset;
-	VkDeviceSize vb1_byte_offset;
+	//VkDeviceSize ib_byte_offset;
+	//VkDeviceSize vb0_byte_offset;
+	//VkDeviceSize vb1_byte_offset;
 };
 
-struct GpuMeshDesc {
+// This is currently the smallest primitive for geometry data.
+struct Geometry {
 
 	glm::vec3 aabbMin;
 	float     sphereRadius;

@@ -19,7 +19,6 @@
 #include <Engine/Renderer/primitives.h>
 #include <Engine/Renderer/context.h>
 
-// DATA STRUCTURES
 
 struct GltfTextureRef {
 	int textureIndex = -1;   // index into model.textures
@@ -279,6 +278,7 @@ MeshUploadInput MeshDataFromPrimitive(
 
 			data.aabb_min = aabbMin;
 			data.aabb_max = aabbMax;
+
 		}
 		else {
 

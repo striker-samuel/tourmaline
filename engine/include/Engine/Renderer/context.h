@@ -66,7 +66,7 @@ public:
 
 	Pool<BufferDescription, BufferDescription> buffers_;
 	Pool<Texture, Texture> textures_;
-	Pool<GpuMeshDesc, GpuMeshDesc> meshes_;
+	Pool<Geometry, Geometry> meshes_;
 	Pool<Image, Image> images_;
 	Pool<ImageView, VkImageView> imageViews_;
 	Pool<ShadowMap, ShadowMap> shadowmaps_;

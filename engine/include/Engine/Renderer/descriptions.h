@@ -3,6 +3,12 @@
 #include <Engine/Shared/common.h> // Needed for vec3
 #include <Engine/Renderer/vertex.h>
 
+
+enum CULLING_MODE {
+	GPU_CULLING,
+	CPU_CULLING
+};
+
 struct DrawSetData {
 	// Identity Matrix initialization requires this ugly ass shit without goign into macros or else. 
 	//alignas(16)
@@ -19,11 +25,8 @@ static_assert(sizeof(DrawSetData) % 16 == 0);
 
 /// --------------------------------------
 
-//// Specialized descirptios like these may go the way of the dodo or move to App 
 struct MainViewPushConstants {
 	glm::mat4 model;
-	//glm::mat4 view;
-	//glm::mat4 proj;
 	int material_index;
 	uint32_t     _pad0[3];
 };

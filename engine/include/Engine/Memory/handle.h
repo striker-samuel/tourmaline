@@ -126,7 +126,7 @@ using DescriptorSetHandle = Handle<struct DescriptorSet>;
 using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
 using DeviceBufferHandle = Handle<struct BufferDescription>;
 using PipelineHandle = Handle<struct Pipeline>;
-using MeshDescHandle = Handle<struct GpuMeshDesc>;
+using MeshDescHandle = Handle<struct Geometry>;
 using GeometryPageHandle = Handle <struct GeometryPage>;
 using PipelineLayoutHandle = Handle<struct PipelineLayout>;
 

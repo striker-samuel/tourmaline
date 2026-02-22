@@ -1857,7 +1857,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	// IMPORTANT: store allocs somewhere if you want to free later.
 	// e.g. ds.vertex_alloc = vtx_alloc; ds.index_alloc = index_alloc; (requires fields)
 
-	GpuMeshDesc mesh_dec{};
+	Geometry mesh_dec{};
 	mesh_dec.lods = 1;
 	mesh_dec.lod_offsets = { 0 };
 	mesh_dec.sets = { ds };

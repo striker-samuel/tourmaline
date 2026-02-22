@@ -8,7 +8,7 @@ file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS
 add_executable(App ${APP_SOURCES})
 
 set(APP_DIR         "${CMAKE_CURRENT_SOURCE_DIR}")   # F:/REPOS/vulkantoy/app
-set(APP_SHADERS_DIR "${APP_DIR}/shaders")
+set(APP_SHADERS_DIR "${APP_DIR}/content/shaders")
 set(APP_INCLUDE_DIR "${APP_DIR}/include")
 
 message(STATUS "APP_DIR = ${APP_DIR}")
@@ -35,17 +35,17 @@ set_target_properties(App PROPERTIES
 
 
 add_custom_command(TARGET App POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:App>/textures
-    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:App>/models
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:App>/content/textures
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:App>/content/models
 
 
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_SOURCE_DIR}/App/textures
-            $<TARGET_FILE_DIR:App>/textures
+            ${CMAKE_SOURCE_DIR}/App/content/textures
+            $<TARGET_FILE_DIR:App>/content/textures
 
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_SOURCE_DIR}/App/models
-            $<TARGET_FILE_DIR:App>/models
+            ${CMAKE_SOURCE_DIR}/App/content/models
+            $<TARGET_FILE_DIR:App>/content/models
 
     COMMENT "📦 Copying resource folders (shaders, textures, models) to App runtime directory"
 )
@@ -74,7 +74,7 @@ set(COMPILED_SHADER_OUTPUTS)
 
 compile_shaders(
   "${APP_SHADERS_DIR}"
-  "${CMAKE_BINARY_DIR}/shaders"
+  "${CMAKE_BINARY_DIR}/content/shaders"
   App
   INCLUDE_DIRS
     "${APP_SHADERS_DIR}"
