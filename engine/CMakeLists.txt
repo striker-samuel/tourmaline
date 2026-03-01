@@ -45,6 +45,7 @@ target_link_libraries(engine
         imgui_backend_glfw
         imgui_backend_vulkan
         meshoptimizer
+        #OptickCore
 )
 
 

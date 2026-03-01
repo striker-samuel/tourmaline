@@ -47,8 +47,8 @@ VSOut mainVS(VSIn IN)
     OUT.worldPos = world.xyz;
 
     // View / projection
-    float4 viewPos = mul(frame_res.view, world);
-    float4 clip = mul(frame_res.proj, viewPos);
+    //float4 viewPos = mul(frame_res.view, world);
+    float4 clip = mul(frame_res.viewProj, world);
     OUT.pos = clip;
 
     OUT.color = float3(1.0f, 1.0f, 1.0f);

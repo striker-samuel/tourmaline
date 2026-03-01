@@ -1861,6 +1861,8 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	mesh_dec.lods = 1;
 	mesh_dec.lod_offsets = { 0 };
 	mesh_dec.sets = { ds };
+	mesh_dec.aabbMin = geometry_data.aabb_min;
+	mesh_dec.aabbMax = geometry_data.aabb_max;
 
 	return meshes_.create(std::move(mesh_dec));
 }

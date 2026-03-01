@@ -60,6 +60,7 @@ target_link_libraries(App
     PRIVATE
         engine
         KTX::ktx
+        #OptickCore
         #meshoptimizer
         #imgui_core
         #imgui_backend_glfw

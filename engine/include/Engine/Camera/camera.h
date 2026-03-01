@@ -27,6 +27,7 @@ public:
 class Camera final
 {
 public:
+
 	explicit Camera(CameraPositionerInterface& positioner)
 		: positioner_(&positioner)
 	{
@@ -48,6 +49,7 @@ public:
 		//proj_ = glm::perspective(glm::radians(fovY), aspect, zNear, zFar);
 		proj_ = MakeInfReversedZProjRH(fovY, aspect, zNear);
 	}
+
 
 private:
 	const CameraPositionerInterface* positioner_;

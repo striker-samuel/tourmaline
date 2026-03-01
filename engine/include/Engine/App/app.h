@@ -1,8 +1,6 @@
-
 #pragma once
 
 #include <cassert>
-
 #include "volk.h"
 #include "vk_mem_alloc.h"
 #include <GLFW/glfw3.h>
@@ -20,7 +18,14 @@
 #include <Engine/Utils/gltf.h>
 #include <Engine/platform.h>
 
-// 
+/// <summary>
+/// 
+/// </summary>
+/// 
+/// 
+
+# include <Engine/Utils/bvh.h>
+
 constexpr int NUM_CASCADES = 3;
 constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 
@@ -29,12 +34,6 @@ constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf" // Index 0
 };
-
-CameraPositioner_FirstPerson cameraPositioner(
-	glm::vec3(0.0f, 1.0f, 0.0f), //pos
-	glm::vec3(0.0f, 1.0f, 1.0f), //target
-	glm::vec3(0.0f, 1.0f, 0.0f) //up
-);
 
 struct FrameResources {
 	DescriptorSetHandle frameDescriptorSet;
@@ -48,11 +47,6 @@ public:
 	RingBinding<FrameUniforms, 1> frameUniformsBinding;
 	RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
 	RingBinding<Light, MAX_LIGHTS> frameLigthsBinding;
-	//PipelineHandle default_material_pipeline;
-	//PipelineHandle default_shadow_pipeline;
-	//std::array<ShadowMapSlot, SHADOWMAP_SLOTS> shadowmaps;
-
-
 
 	// These match swapchainImageDimensions.
 	int width_ = WIDTH;
@@ -79,11 +73,10 @@ public:
 
 private:
 
-
-
 	Context* context;
 	ImGuiContext* imgui_ctx;
 	Scene scene_ = {}; // empty scene initialization
+	BvhTree tree_ = {};
 
 	// App still has ownership over the present queue for the current moment.
 	VkQueue presentQueue_;
@@ -93,8 +86,15 @@ private:
 	float delta_time_s;
 	float time_since_start_s;
 
-	// This is bad. We coupled Camera/View with app... So we cant do multipanel/multiview.
-	Camera camera_ = Camera(cameraPositioner);
+	Camera* camera_ = nullptr;
+	CameraPositioner_FirstPerson cameraPositioner =  CameraPositioner_FirstPerson(
+		glm::vec3(0.0f, 1.0f, 0.0f), //pos
+		glm::vec3(0.0f, 1.0f, 1.0f), //target
+		glm::vec3(0.0f, 1.0f, 0.0f) //up
+	);
+
+	//  culling debug
+	glm::mat4 frozenMainView = {};
 
 #pragma endregion
 
@@ -269,6 +269,9 @@ private:
 	void MainLoop() {
 
 		while (!glfwWindowShouldClose(window)) {
+
+			//OPTICK_FRAME("MainThread");
+
 			glfwPollEvents();
 
 			// Event loop
@@ -303,7 +306,7 @@ private:
 	}
 
 	void Update() {
-
+		//OPTICK_EVENT();
 		int i = 3;
 		//float phase = std::sin(i + time_since_start_s * 0.35f);
 		//scene_.localTransform[1][3][1] = phase *10;
@@ -362,7 +365,7 @@ private:
 
 		// ---- update camera projection to match new size ----
 		float newAspect = float(width) / float(height);
-		camera_.setPerspective(45.0f, newAspect, default_near_clip, default_far_clip);
+		camera_->setPerspective(45.0f, newAspect, default_near_clip, default_far_clip);
 	}
 
 	void CreateSwapChain() {
@@ -1061,6 +1064,8 @@ bool VulkanApp::Initialize() {
 	CreateRenderSyncObjects();
 	CreateDepthResources();
 
+	camera_ = new Camera(cameraPositioner);
+
 	//IntializeShadowMaps();
 
 	return true;
@@ -1302,11 +1307,11 @@ void VulkanApp::DrawFrame() {
 // Updates perframe camera view settings. view, proj, invView... etc.
 void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
 
-	auto view = camera_.getViewMatrix();
-	auto proj = camera_.getProjMatrix();
+	auto view = camera_->getViewMatrix();
+	auto proj = camera_->getProjMatrix();
 	proj[1][1] *= -1;
 
-	auto viewProj = view * proj;
+	auto viewProj = proj * view;
 
 	FrameUniforms data{};
 	data.cameraPos = cameraPositioner.cameraPosition_;
@@ -1433,7 +1438,7 @@ void VulkanApp::CleanUp() {
 
 void VulkanApp::LoadScene() {
 
-	camera_.setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
+	camera_->setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
 
 	// This will upload 
 	Scene imported_scene;
@@ -1441,6 +1446,7 @@ void VulkanApp::LoadScene() {
 	UploadGltfToContext(context, p, imported_scene);
 
 	scene_ = imported_scene;
+	tree_ = treeFromScene(context, scene_);
 
 }
 
@@ -1568,12 +1574,44 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 			dynamicOffsets
 		);
 
-		for (int i = 0; i < scene_.hierarchy.size(); i++) {
+
+		std::vector<int> visible;
+		glm::vec4 planes[6];
+		glm::vec4 corners[8];
+
+		auto view = camera_->getViewMatrix();
+		auto proj = camera_->getProjMatrix();
+		proj[1][1] *= -1;
+
+		auto viewProj = proj * view; // Freeze at first for debug
+
+		getFrustumPlanes(
+			viewProj,
+			planes
+		);
+
+		getFrustumCorners(
+			viewProj,
+			corners
+		);
+
+		frustumCullBVH(
+			tree_,
+			0,
+			planes,
+			corners,
+			visible
+		);
+		for (uint32_t primId : visible) {
+			uint32_t i = tree_.primToNode[primId];
+
+			auto it = scene_.meshForNode.find(i);
+			if (it == scene_.meshForNode.end()) continue;
+
+			uint32_t meshIndex = it->second;
 
 			auto mesh_desc = context->meshes_.get(
-				context->meshes_.getHandle(
-					scene_.meshForNode[i]
-				)
+				context->meshes_.getHandle(meshIndex)
 			);
 
 			auto material_instance_index = scene_.materialForNode[i];
@@ -1747,8 +1785,8 @@ void VulkanApp::RecordCascadesForDirectionalLight(
 		glm::mat4 view, proj;
 		GetDirectionalLightOrthoVP(
 			light,
-			camera_.getViewMatrix(),
-			camera_.getProjMatrix(),
+			camera_->getViewMatrix(),
+			camera_->getProjMatrix(),
 			0.1f, 20.0f,
 			view,
 			proj,
