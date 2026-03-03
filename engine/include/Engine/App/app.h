@@ -1326,7 +1326,7 @@ void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
 
 	data.time = 0.0f;
 	data.viewportSize = { width_, height_ };
-	data.invViewportSize = { 1 / width_, 1 / height_ };
+	data.invViewportSize = { 1.0f / width_, 1.0f / height_ };
 
 	// Not implemented for now
 	data.nearPlane = 0.f;
