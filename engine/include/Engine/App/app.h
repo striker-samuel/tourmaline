@@ -1526,18 +1526,46 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 	BindVertex(commandBuffer);
 
 	MainViewPushConstants pc{};
-	//pc.view = camera_.getViewMatrix(); 
-	//pc.proj = camera_.getProjMatrix();
-	//pc.proj[1][1] *= -1;
-
 	pc.model = glm::mat4(1.0f);
 
-	// I long ago did this to be able to run trough different pipeline setuops like transparency and else. Amay be wrong and dumb
-	for (auto mat_pipe_entry : context->pipelines_.objects_) {
+	//
+	auto dynamic_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDynamicDescriptorSet);
+	auto update_after_bind_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDescriptorSet);
 
-		//if (mat_pipe_entry.obj_.type != PIPELINE_MATERIAL) {
-		//	continue;
-		//}
+
+	uint32_t dynamicOffsets[2] = {
+		frameUniformsBinding.dynamicOffsetFrame(currentFrame),
+		drawDataBinding.dynamicOffsetFrame(currentFrame),
+	};
+
+	VkDescriptorSet sets[2] = {
+		dynamic_set->set,
+		update_after_bind_set->set,
+	};
+
+
+	// Pipeline layout is shared across all 
+	// Lets do this hacky thing for now
+	auto han = context->pipelines_.getHandle(0);
+	auto pipe_lyt = context->pipelines_.get(han)->plyt;
+	auto pipeline_layout = context->pipelineLayouts_.get(pipe_lyt);
+
+	vkCmdBindDescriptorSets(
+		commandBuffer,
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		pipeline_layout->layout,
+		0,
+		2,
+		sets,
+		2,
+		dynamicOffsets
+	);
+
+	// This is obviously hacky and wrong.
+
+	// Proper Material batching requires reordering drawsets or indirect drawing.
+	// We are doing neither.
+	for (auto mat_pipe_entry : context->pipelines_.objects_) {
 
 		vkCmdBindPipeline(
 			commandBuffer,
@@ -1545,38 +1573,8 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 			mat_pipe_entry.obj_.pipeline
 		);
 
-		auto dynamic_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDynamicDescriptorSet);
-		auto update_after_bind_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDescriptorSet);
-
-		auto pipe_lyt = mat_pipe_entry.obj_.plyt;
-		//auto drawStride = sizeof(DrawSetData) * MAX_DRAWS;
-
-		uint32_t dynamicOffsets[2] = {
-			frameUniformsBinding.dynamicOffsetFrame(currentFrame),
-			drawDataBinding.dynamicOffsetFrame(currentFrame),
-		};
-
-		VkDescriptorSet sets[2] = {
-			dynamic_set->set,
-			update_after_bind_set->set,
-		};
-
-		auto pipeline_layout = context->pipelineLayouts_.get(pipe_lyt);
-
-		vkCmdBindDescriptorSets(
-			commandBuffer,
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			pipeline_layout->layout,
-			0,
-			2,
-			sets,
-			2,
-			dynamicOffsets
-		);
-
-
 		std::vector<int> visible;
-		glm::vec4 planes[6];
+		glm::vec4 planes[5];
 		glm::vec4 corners[8];
 
 		auto view = camera_->getViewMatrix();
@@ -1585,23 +1583,27 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 
 		auto viewProj = proj * view; // Freeze at first for debug
 
-		getFrustumPlanes(
+		getFrustumPlanes_ZO_InfiniteFar(
 			viewProj,
+			camera_->getPosition(),
 			planes
 		);
 
-		getFrustumCorners(
-			viewProj,
-			corners
-		);
+		// I muted corners ftm
+		//getFrustumCorners(
+		//	viewProj,
+		//	corners
+		//);
 
 		frustumCullBVH(
 			tree_,
 			0,
 			planes,
+			5,
 			corners,
 			visible
 		);
+
 		for (uint32_t primId : visible) {
 			uint32_t i = tree_.primToNode[primId];
 

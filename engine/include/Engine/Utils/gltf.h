@@ -278,8 +278,12 @@ MeshUploadInput MeshDataFromPrimitive(
 			glm::vec3 c0(-aabbMin.x, aabbMin.y, -aabbMin.z);
 			glm::vec3 c1(-aabbMax.x, aabbMax.y, -aabbMax.z);
 
-			data.aabb_min = aabbMin;
-			data.aabb_max = aabbMax;
+			glm::vec3 mn = glm::min(c0, c1);
+			glm::vec3 mx = glm::max(c0, c1);
+
+			data.aabb_min = mn;
+			data.aabb_max = mx;
+
 
 		}
 		else {

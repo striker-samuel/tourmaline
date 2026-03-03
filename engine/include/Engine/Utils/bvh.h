@@ -1,6 +1,5 @@
 #pragma once
 
-#include <print>
 #include <vector>
 #include <cassert>
 #include <limits>
@@ -202,10 +201,8 @@ BvhTree treeFromScene(const Context* ctx, const Scene& scene) {
 		};
 		};
 
-	printf("hierarchy.size=%zu meshForNode.size=%zu\n",
-       scene.hierarchy.size(), scene.meshForNode.size());
-
 	for (int i = 0; i < (int)scene.hierarchy.size(); i++) {
+
 		auto it = scene.meshForNode.find(i);
 		if (it == scene.meshForNode.end())
 			continue;
@@ -264,17 +261,48 @@ BvhTree treeFromScene(const Context* ctx, const Scene& scene) {
 	return tree;
 }
 
-void getFrustumPlanes(glm::mat4 vp, glm::vec4* planes) {
-	using glm::vec4;
-	vp = glm::transpose(vp);
-	planes[0] = vec4(vp[3] + vp[0]); // left
-	planes[1] = vec4(vp[3] - vp[0]); // right
-	planes[2] = vec4(vp[3] + vp[1]); // bottom
-	planes[3] = vec4(vp[3] - vp[1]); // top
-	planes[4] = vec4(vp[3] + vp[2]); // near
-	planes[5] = vec4(vp[3] - vp[2]); // far
+static inline glm::vec4 normalizePlaneSafe(glm::vec4 p) {
+	float len = glm::length(glm::vec3(p));
+	return (len > 0.0f) ? (p / len) : p;
 }
 
+int getFrustumPlanes_ZO_InfiniteFar(
+	const glm::mat4& VP,
+	const glm::vec3& camPos,
+	glm::vec4 planes[6]
+)
+{
+	glm::vec4 r0 = glm::row(VP, 0);
+	glm::vec4 r1 = glm::row(VP, 1);
+	glm::vec4 r2 = glm::row(VP, 2);
+	glm::vec4 r3 = glm::row(VP, 3);
+
+	planes[0] = normalizePlaneSafe(r3 + r0); // left
+	planes[1] = normalizePlaneSafe(r3 - r0); // right
+	planes[2] = normalizePlaneSafe(r3 + r1); // bottom
+	planes[3] = normalizePlaneSafe(r3 - r1); // top
+
+	planes[4] = normalizePlaneSafe(r2);      // near: z >= 0 in ZO
+
+	return 5; // infinite far => no far plane
+}
+
+// This was wrong due to using infZ reversed on MainViewProj
+//void getFrustumPlanes(glm::mat4 vp, glm::vec4* planes) {
+//	using glm::vec4;
+//	vp = glm::transpose(vp);
+//	planes[0] = vec4(vp[3] + vp[0]); // left
+//	planes[1] = vec4(vp[3] - vp[0]); // right
+//	planes[2] = vec4(vp[3] + vp[1]); // bottom
+//	planes[3] = vec4(vp[3] - vp[1]); // top
+//	planes[4] = vec4(vp[3] + vp[2]); // near
+//	planes[5] = vec4(vp[3] - vp[2]); // far
+//}
+
+
+// this is not updated for reverzeZ, infiniteDistance
+// light.h has something like this too. 
+// they would need to be unified.
 void getFrustumCorners(
 	glm::mat4 vp, glm::vec4* points)
 {
@@ -283,7 +311,7 @@ void getFrustumCorners(
 	vec4(-1, -1, -1, 1), vec4(1, -1, -1, 1),
 	vec4(1, 1, -1, 1), vec4(-1, 1, -1, 1),
 	vec4(-1, -1, 1, 1), vec4(1, -1, 1, 1),
-	vec4(1, 1, 1, 1), vec4(-1, 1, 1, 1)
+	vec4(1, 1, 1, 1), vec4(-1, 1, 1, 1) // this is also bad
 	};
 	const glm::mat4 invVP = glm::inverse(vp);
 	for (int i = 0; i != 8; i++) {
@@ -291,82 +319,92 @@ void getFrustumCorners(
 		points[i] = q / q.w;
 	}
 }
-
-static inline bool aabbOutsidePlane(const Aabb& b, const glm::vec4& pl)
-{
-	// Pick vertex farthest along plane normal
-	glm::vec3 v;
-	v.x = (pl.x >= 0.0f) ? b.mx.x : b.mn.x;
-	v.y = (pl.y >= 0.0f) ? b.mx.y : b.mn.y;
-	v.z = (pl.z >= 0.0f) ? b.mx.z : b.mn.z;
-
-	// If the farthest point is still outside, box is fully outside
-	float s = pl.x * v.x + pl.y * v.y + pl.z * v.z + pl.z;
-	return s < 0.0f;
-}
-
 inline bool aabbInFrustum(
 	const glm::vec4* frustumPlanes,
-	const glm::vec4* frustumCorners,
+	int frustumPlaneCount,
 	const Aabb& box)
 {
-	using glm::dot;
+	for (int i = 0; i < frustumPlaneCount; ++i) {
+		const glm::vec4 p = frustumPlanes[i];
+		const glm::vec3 n(p.x, p.y, p.z);
 
-	for (int i = 0; i < 6; i++) {
-		int r = 0;
-		r += (dot(frustumPlanes[i], glm::vec4(box.mn.x, box.mn.y, box.mn.z, 1.0f)) < 0.0) ? 1 : 0;
-		r += (dot(frustumPlanes[i], glm::vec4(box.mx.x, box.mn.y, box.mn.z, 1.0f)) < 0.0) ? 1 : 0;
-		r += (dot(frustumPlanes[i], glm::vec4(box.mn.x, box.mx.y, box.mn.z, 1.0f)) < 0.0) ? 1 : 0;
-		r += (dot(frustumPlanes[i], glm::vec4(box.mx.x, box.mx.y, box.mn.z, 1.0f)) < 0.0) ? 1 : 0;
-		r += (dot(frustumPlanes[i], glm::vec4(box.mn.x, box.mn.y, box.mx.z, 1.0f)) < 0.0) ? 1 : 0;
-		r += (dot(frustumPlanes[i], glm::vec4(box.mx.x, box.mn.y, box.mx.z, 1.0f)) < 0.0) ? 1 : 0;
-		r += (dot(frustumPlanes[i], glm::vec4(box.mn.x, box.mx.y, box.mx.z, 1.0f)) < 0.0) ? 1 : 0;
-		r += (dot(frustumPlanes[i], glm::vec4(box.mx.x, box.mx.y, box.mx.z, 1.0f)) < 0.0) ? 1 : 0;
-		if (r == 8)
-			return false;
+		// pick the AABB vertex most in the direction of the plane normal
+		glm::vec3 v = box.mn;
+		if (n.x >= 0.0f) v.x = box.mx.x;
+		if (n.y >= 0.0f) v.y = box.mx.y;
+		if (n.z >= 0.0f) v.z = box.mx.z;
+
+		// signed distance: dot(n, v) + d
+		if (glm::dot(n, v) + p.w < 0.0f) {
+			return false; // completely outside this plane
+		}
 	}
-
-	// check frustum outside/inside box
-	int r = 0;
-	r = 0;
-	for (int i = 0; i < 8; i++)
-		r += ((frustumCorners[i].x > box.mx.x) ? 1 : 0);
-	if (r == 8)
-		return false;
-	r = 0;
-	for (int i = 0; i < 8; i++)
-		r += ((frustumCorners[i].x < box.mn.x) ? 1 : 0);
-	if (r == 8)
-		return false;
-	r = 0;
-	for (int i = 0; i < 8; i++)
-		r += ((frustumCorners[i].y > box.mx.y) ? 1 : 0);
-	if (r == 8)
-		return false;
-	r = 0;
-	for (int i = 0; i < 8; i++)
-		r += ((frustumCorners[i].y < box.mn.y) ? 1 : 0);
-	if (r == 8)
-		return false;
-	r = 0;
-	for (int i = 0; i < 8; i++)
-		r += ((frustumCorners[i].z > box.mx.z) ? 1 : 0);
-	if (r == 8)
-		return false;
-	r = 0;
-	for (int i = 0; i < 8; i++)
-		r += ((frustumCorners[i].z < box.mn.z) ? 1 : 0);
-	if (r == 8)
-		return false;
-
-	return true;
+	return true; // inside/intersecting all planes
 }
+
+//inline bool aabbInFrustum(
+//	const glm::vec4* frustumPlanes,
+//	int frustumPlaneCount, // if z axis is infinite we only need 5
+//	const glm::vec4* frustumCorners,
+//	const Aabb& box)
+//{
+//	using glm::dot;
+//
+//	for (int i = 0; i < frustumPlaneCount; ++i) {
+//
+//		glm::vec3 n(frustumPlanes[i]); // plane normal
+//		glm::vec3 p = box.mn;
+//		if (n.x >= 0) p.x = box.mx.x;
+//		if (n.y >= 0) p.y = box.mx.y;
+//		if (n.z >= 0) p.z = box.mx.z;
+//
+//		if (glm::dot(n, v) + p.w < 0.0f) {
+//			return false; // completely outside this plane
+//		}
+//	}
+//		// Lets skip corner text for now.
+//		//int r = 0;
+//		//r = 0;
+//		//for (int i = 0; i < 8; i++)
+//		//	r += ((frustumCorners[i].x > box.mx.x) ? 1 : 0);
+//		//if (r == 8)
+//		//	return false;
+//		//r = 0;
+//		//for (int i = 0; i < 8; i++)
+//		//	r += ((frustumCorners[i].x < box.mn.x) ? 1 : 0);
+//		//if (r == 8)
+//		//	return false;
+//		//r = 0;
+//		//for (int i = 0; i < 8; i++)
+//		//	r += ((frustumCorners[i].y > box.mx.y) ? 1 : 0);
+//		//if (r == 8)
+//		//	return false;
+//		//r = 0;
+//		//for (int i = 0; i < 8; i++)
+//		//	r += ((frustumCorners[i].y < box.mn.y) ? 1 : 0);
+//		//if (r == 8)
+//		//	return false;
+//		//r = 0;
+//		//for (int i = 0; i < 8; i++)
+//		//	r += ((frustumCorners[i].z > box.mx.z) ? 1 : 0);
+//		//if (r == 8)
+//		//	return false;
+//		//r = 0;
+//		//for (int i = 0; i < 8; i++)
+//		//	r += ((frustumCorners[i].z < box.mn.z) ? 1 : 0);
+//		//if (r == 8)
+//		//	return false;
+//
+//		return true;
+//	};
+//}
 
 void frustumCullBVH(
 	const BvhTree& tree,
     int rootIndex,
-    const glm::vec4 planes[6],
-    const glm::vec4 corners[8],
+    const glm::vec4* planes,
+	int planeCount,
+    const glm::vec4* corners,
     //std::vector<int>& outVisibleNodeIndices // Out
 	std::vector<int>& outVisiblePrimIndices
 ){
@@ -382,7 +420,12 @@ void frustumCullBVH(
         stack.pop_back();
 
         const BvhNode& n = tree.nodes[ni];
-        if (!aabbInFrustum(planes, corners, n.bounds)) continue;
+        if (!aabbInFrustum(
+			planes,
+			planeCount,
+			//corners,
+			n.bounds)
+			) continue;
 
         if (n.isLeaf()) {
 			for (uint32_t i = 0; i < n.count; ++i) {
