@@ -11,6 +11,10 @@ inline float length2(const T& v) {
 	return glm::dot(v, v);
 }
 
+
+
+// This should not be used. MainView will be perspective ftm.
+// Cascades or shadowmaps should neber
 glm::mat4 MakeOrthoRH_ZO(
 	float left, float right,
 	float bottom, float top,
@@ -60,18 +64,17 @@ glm::mat4 GetSpotLightView(const SpotLight& l)
 }
 
 static std::array<glm::vec3, 8> GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
-	const glm::mat4& proj,
-	const glm::mat4& view,
+	const glm::mat4& invProj,
+	const glm::mat4& invView,
 	float nearDist,
 	float farDist
 )
 {
-	// Camera world transform
-	const glm::mat4 invView = glm::inverse(view);
+	//// Camera world transform
+	//const glm::mat4 invView = glm::inverse(view);
+	//// Inverse projection to unproject clip -> view
+	//const glm::mat4 invProj = glm::inverse(proj);
 	const glm::vec3 camPos = glm::vec3(invView[3]); // translation column in GLM
-
-	// Inverse projection to unproject clip -> view
-	const glm::mat4 invProj = glm::inverse(proj);
 
 	// NDC XY corners
 	const glm::vec2 ndcXY[4] = {

@@ -10,12 +10,12 @@ struct VertexPos {
 };
 
 struct VertexShading {
-	glm::vec3 color;     // optional if you really want
+	glm::vec3 color;
 	glm::vec2 texCoord;
-	glm::vec3 normal; // Can be further optimized.
-
-	// Vertex format will include this by default
-	glm::vec4 tangent;   // optional: include only if you want normal mapping
+	glm::vec3 normal;
+	glm::vec4 tangent;
+	// for normal mapping. We have a global vertex format right now so its on by default.
+	// We will specialize vertex formats when the need arise.
 };
 
 struct Vertex {

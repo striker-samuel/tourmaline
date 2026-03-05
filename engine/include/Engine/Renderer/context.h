@@ -111,7 +111,6 @@ public:
 	SamplerHandle CreateSampler(uint32_t levelCount);
 	SamplerHandle CreateShadowSampler(uint32_t levelCount);
 
-
 	TextureHandle CreateTexture(ktxTexture2& texture); // TextureSlotTable implementeation pendinde. 
 	ShadowMapHandle CreateShadowMap(int width = 1024, int height = 1024);
 

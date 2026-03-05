@@ -17,14 +17,7 @@
 
 #include <Engine/Utils/gltf.h>
 #include <Engine/platform.h>
-
-/// <summary>
-/// 
-/// </summary>
-/// 
-/// 
-
-# include <Engine/Utils/bvh.h>
+#include <Engine/Utils/bvh.h>
 
 constexpr int NUM_CASCADES = 3;
 constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
@@ -1544,7 +1537,7 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 	};
 
 
-	// Pipeline layout is shared across all 
+	// Pipeline layout is shared across all materials for now.
 	// Lets do this hacky thing for now
 	auto han = context->pipelines_.getHandle(0);
 	auto pipe_lyt = context->pipelines_.get(han)->plyt;
@@ -1561,47 +1554,37 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 		dynamicOffsets
 	);
 
-	// This is obviously hacky and wrong.
+	std::vector<int> visible;
 
-	// Proper Material batching requires reordering drawsets or indirect drawing.
-	// We are doing neither.
-	for (auto mat_pipe_entry : context->pipelines_.objects_) {
+	auto view = camera_->getViewMatrix();
+	auto proj = camera_->getProjMatrix();
+	proj[1][1] *= -1;
+
+	auto viewProj = proj * view; // Freeze at first for debug
+
+	frustumCullBVH(
+		tree_,
+		0,
+		viewProj,
+		camera_->getPosition(),
+		visible
+	);
+
+
+	// This is one renderpass per material with all meshes that share pipeline
+	// But all those meshes still are one draw command each
+	// DrawCommand redcution needs of indirect drawing / instancing when suitable
+	// or contiguous index list for static meshes grouped together in one command
+	// (would require materialID as vertex attr. Could be worth it tho)
+
+	// This is so wrong, we are drawing all prims for all pipelines.
+	// this just works because right now we only have 1 pipeline...
+	context->pipelines_.forEach([&](auto& obj_) {
 
 		vkCmdBindPipeline(
 			commandBuffer,
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			mat_pipe_entry.obj_.pipeline
-		);
-
-		std::vector<int> visible;
-		glm::vec4 planes[5];
-		glm::vec4 corners[8];
-
-		auto view = camera_->getViewMatrix();
-		auto proj = camera_->getProjMatrix();
-		proj[1][1] *= -1;
-
-		auto viewProj = proj * view; // Freeze at first for debug
-
-		getFrustumPlanes_ZO_InfiniteFar(
-			viewProj,
-			camera_->getPosition(),
-			planes
-		);
-
-		// I muted corners ftm
-		//getFrustumCorners(
-		//	viewProj,
-		//	corners
-		//);
-
-		frustumCullBVH(
-			tree_,
-			0,
-			planes,
-			5,
-			corners,
-			visible
+			obj_.pipeline
 		);
 
 		for (uint32_t primId : visible) {
@@ -1619,8 +1602,15 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 			auto material_instance_index = scene_.materialForNode[i];
 			pc.material_index = material_instance_index;
 
-			MaterialPushConstants pcm =
-				context->materialInstances_.objects_[material_instance_index].obj_.values;
+			auto matHandle = context->materialInstances_.getHandle(material_instance_index);
+			auto mat = context->materialInstances_.get(matHandle);
+			if (!mat) continue; // skip if invalid
+
+			//// skip primitive if material's pipeline doesn't match current obj_
+			//auto pipelineObj = context->pipelines_.get(mat->pipeline);
+			//if (pipelineObj != obj_) continue;
+
+			MaterialPushConstants pcm = mat->values;
 
 			struct PC_All {
 				MainViewPushConstants pc;               // 144
@@ -1659,9 +1649,9 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 				);
 
 			}
-
 		}
 	}
+	);
 
 
 	ImGui::Render();
@@ -2104,7 +2094,6 @@ drawDataBinding.bindingDesc(),
 	main_view_pipeline_h = context->CreatePipeline(
 		// Raster settings
 		{
-
 			.depthClampEnable = VK_FALSE, // needs to be enabled
 			.rasterizerDiscardEnable = VK_FALSE,
 			.polygonMode = VK_POLYGON_MODE_FILL,
@@ -2114,7 +2103,7 @@ drawDataBinding.bindingDesc(),
 		desc,
 		vert_shader_h,
 		fragHandle,
-		findDepthFormat(physicalDevice), // THIS IS REALLY BAD. I WANT FIXED DEPTH FORMAT OR EARLY OUT ON DEVICE CRTEATION. lifted form vulkan tutorial
+		findDepthFormat(physicalDevice),
 		swapChainImageFormat
 	);
 	auto pipe_obj = context->pipelines_.get(main_view_pipeline_h);

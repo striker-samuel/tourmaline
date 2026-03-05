@@ -89,4 +89,13 @@ public:
     uint32_t numObjects() const {
         return numObjects_;
     }
+
+	template<typename Func>
+	void forEach(Func&& func) {
+		for (auto& entry : objects_) {
+			if (entry.nextFree_ == kListEndSentinel) { // only active
+				func(entry.obj_);
+			}
+		}
+	}
 };
