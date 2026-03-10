@@ -160,6 +160,13 @@ struct BufferDescription {
 
 };
 
+// TODO
+struct PipelineKey {
+	//vert
+	//frag
+	//layout
+};
+
 // 
 struct SamplerKey {
 	// Enough to dedupe VkSampler objects in your cache

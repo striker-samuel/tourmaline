@@ -138,6 +138,7 @@ public:
 
 	//SamplerHandle GetSampler(SamplerKey key);
 	VkQueue GetGraphicsQueue();
+	PipelineHandle GetAppropiatePipeline(PipelineKey key);
 
 	void CleanUp();
 

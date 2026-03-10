@@ -655,7 +655,7 @@ private:
 			writes[1].dstBinding = 3;
 			writes[1].dstArrayElement = 0;
 			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-			writes[1].descriptorCount = samplerInfos.size();   // or 1 if you use a single shared sampler
+			writes[1].descriptorCount = static_cast<uint32_t>(samplerInfos.size());   // or 1 if you use a single shared sampler
 			writes[1].pImageInfo = samplerInfos.data();
 
 			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
@@ -1444,6 +1444,8 @@ void VulkanApp::LoadScene() {
 
 void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
 
+	//
+
 	VkImageMemoryBarrier barrierToColorAttachment{};
 	barrierToColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 	barrierToColorAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // or VK_IMAGE_LAYOUT_PRESENT_SRC_KHR if reusing
@@ -1481,6 +1483,7 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 	colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
 	colorAttachment.imageView = swapChainImageViews[imageIndex];  // actual view
 	colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
 	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
@@ -1493,6 +1496,41 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 	renderingInfo.colorAttachmentCount = 1;
 	renderingInfo.pColorAttachments = &colorAttachment;
 	renderingInfo.pDepthAttachment = &depthAttachment;
+
+	//
+
+	std::vector<int> visible;
+
+	auto view = camera_->getViewMatrix();
+	auto proj = camera_->getProjMatrix();
+	proj[1][1] *= -1;
+
+	auto viewProj = proj * view; // Freeze at first for debug
+
+	frustumCullBVH(
+		tree_,
+		0,
+		viewProj,
+		camera_->getPosition(),
+		visible
+	);
+
+	// VISIBLE PIPELINES
+	std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
+
+	for (uint32_t primId : visible) {
+		uint32_t node = tree_.primToNode[primId];
+
+		auto it = scene_.materialForNode.find(node);
+		if (it == scene_.materialForNode.end()) continue;
+
+		uint32_t materialIndex = it->second;
+		auto matHandle = context->materialInstances_.getHandle(materialIndex);
+		auto mat = context->materialInstances_.get(matHandle);
+
+		pipeline_map[mat->pipeline].push_back(node);
+
+	}
 
 	vkCmdBeginRendering(commandBuffer, &renderingInfo);
 
@@ -1514,16 +1552,14 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 	scissor.extent = swapChainExtent;
 	vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-	// BIND
+	// BIND VETEX
 	BindVertex(commandBuffer);
 
-	MainViewPushConstants pc{};
-	pc.model = glm::mat4(1.0f);
-
-	//
+	// BIND DESCRIPTOR SETS
+	// Layout here must be compatible for all material pipelines.
+	// Else we would need to change layout and then rebind.
 	auto dynamic_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDynamicDescriptorSet);
 	auto update_after_bind_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDescriptorSet);
-
 
 	uint32_t dynamicOffsets[2] = {
 		frameUniformsBinding.dynamicOffsetFrame(currentFrame),
@@ -1535,11 +1571,7 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 		update_after_bind_set->set,
 	};
 
-
-	// Pipeline layout is shared across all materials for now.
-	// Lets do this hacky thing for now
-	auto han = context->pipelines_.getHandle(0);
-	auto pipe_lyt = context->pipelines_.get(han)->plyt;
+	auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->plyt;
 	auto pipeline_layout = context->pipelineLayouts_.get(pipe_lyt);
 
 	vkCmdBindDescriptorSets(
@@ -1553,47 +1585,13 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 		dynamicOffsets
 	);
 
-	std::vector<int> visible;
+	//
 
-	auto view = camera_->getViewMatrix();
-	auto proj = camera_->getProjMatrix();
-	proj[1][1] *= -1;
+	MainViewPushConstants pc{};
+	pc.model = glm::mat4(1.0f);
 
-	auto viewProj = proj * view; // Freeze at first for debug
-
-	frustumCullBVH(
-		tree_,
-		0,
-		viewProj,
-		camera_->getPosition(),
-		visible
-	);
-
-	//std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
-
-	//for (uint32_t primId : visible) {
-	//	uint32_t node = tree_.primToNode[primId];
-
-	//	auto it = scene_.materialForNode.find(node);
-	//	if (it == scene_.materialForNode.end()) continue;
-
-	//	uint32_t materialIndex = it->second;
-	//	auto matHandle = context->materialInstances_.getHandle(materialIndex);
-	//	auto mat = context->materialInstances_.get(matHandle);
-
-	//	pipeline_map[mat->pipeline].push_back(node);
-	//	
-	//}
-
-	// This is one renderpass per material with all meshes that share pipeline
-	// But all those meshes still are one draw command each
-	// DrawCommand redcution needs of indirect drawing / instancing when suitable
-	// or contiguous index list for static meshes grouped together in one command
-	// (would require materialID as vertex attr. Could be worth it tho)
-
-	// This is so wrong, we are drawing all prims for all pipelines.
-	// this just works because right now we only have 1 pipeline...
-	context->pipelines_.forEachHandle([&](PipelineHandle han_) {
+	for (const auto& [han_, visible] : pipeline_map) {
+		//context->pipelines_.forEachHandle([&](PipelineHandle han_) {
 
 		vkCmdBindPipeline(
 			commandBuffer,
@@ -1601,10 +1599,10 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 			context->pipelines_.get(han_)->pipeline
 		);
 
-		for (uint32_t primId : visible) {
-			uint32_t i = tree_.primToNode[primId];
+		for (uint32_t visible_node : visible) {
+			//uint32_t i = tree_.primToNode[primId];
 
-			auto it = scene_.meshForNode.find(i);
+			auto it = scene_.meshForNode.find(visible_node);
 			if (it == scene_.meshForNode.end()) continue;
 
 			uint32_t meshIndex = it->second;
@@ -1613,7 +1611,7 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 				context->meshes_.getHandle(meshIndex)
 			);
 
-			auto material_instance_index = scene_.materialForNode[i];
+			auto material_instance_index = scene_.materialForNode[visible_node];
 			pc.material_index = material_instance_index;
 
 			auto matHandle = context->materialInstances_.getHandle(material_instance_index);
@@ -1644,7 +1642,7 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 
 			for (auto& draw_set : mesh_desc->sets) {
 
-				auto& model_ = scene_.globalTransform[i];
+				auto& model_ = scene_.globalTransform[visible_node];
 				vkCmdPushConstants(
 					commandBuffer,
 					pipeline_layout->layout,
@@ -1665,9 +1663,7 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 
 			}
 		}
-		}
-	);
-
+	}
 
 	ImGui::Render();
 

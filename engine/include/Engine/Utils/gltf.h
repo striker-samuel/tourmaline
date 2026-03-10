@@ -469,7 +469,8 @@ MaterialInstanceHandle CreateMaterial(Context* ctx, const tinygltf::Model& model
 	// free after upload
 	ktxTexture2_Destroy(ktxTex);
 
-	auto material_pipe_0 = ctx->pipelines_.getHandle(0);
+	// TO-DO No key provided.
+	auto material_pipe_0 = ctx->GetAppropiatePipeline({});
 	assert(material_pipe_0.valid());
 
 	auto mat_h = ctx->CreateMaterialInstance(material_pipe_0);

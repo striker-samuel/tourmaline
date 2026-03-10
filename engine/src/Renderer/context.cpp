@@ -2026,6 +2026,12 @@ VkQueue Context::GetGraphicsQueue() {
 	return default_queue;
 }
 
+// TO-DO
+PipelineHandle Context::GetAppropiatePipeline(PipelineKey key)
+{
+	return pipelines_.getHandle(0);
+}
+
 void destroy(Context* ctx, ShaderModuleHandle handle) {
 	assert(handle.valid());
 	auto sm = ctx->shaderModules_.get(handle);
