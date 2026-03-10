@@ -80,7 +80,7 @@ private:
 	float time_since_start_s;
 
 	Camera* camera_ = nullptr;
-	CameraPositioner_FirstPerson cameraPositioner =  CameraPositioner_FirstPerson(
+	CameraPositioner_FirstPerson cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target
 		glm::vec3(0.0f, 1.0f, 0.0f) //up
@@ -319,8 +319,7 @@ private:
 
 	}
 
-	void LateUpdate() {
-	}
+	void LateUpdate() {}
 
 #pragma endregion
 
@@ -690,7 +689,7 @@ private:
 	void RecordCascadesForDirectionalLight(
 		DirectionalLight& light,
 		VkCommandBuffer& commandBuffer,
-		ShadowMap& shadowmap, 
+		ShadowMap& shadowmap,
 		VkPipelineLayout& pipe_lyt
 	);
 
@@ -1570,6 +1569,21 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 		visible
 	);
 
+	//std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
+
+	//for (uint32_t primId : visible) {
+	//	uint32_t node = tree_.primToNode[primId];
+
+	//	auto it = scene_.materialForNode.find(node);
+	//	if (it == scene_.materialForNode.end()) continue;
+
+	//	uint32_t materialIndex = it->second;
+	//	auto matHandle = context->materialInstances_.getHandle(materialIndex);
+	//	auto mat = context->materialInstances_.get(matHandle);
+
+	//	pipeline_map[mat->pipeline].push_back(node);
+	//	
+	//}
 
 	// This is one renderpass per material with all meshes that share pipeline
 	// But all those meshes still are one draw command each
@@ -1579,12 +1593,12 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 
 	// This is so wrong, we are drawing all prims for all pipelines.
 	// this just works because right now we only have 1 pipeline...
-	context->pipelines_.forEach([&](auto& obj_) {
+	context->pipelines_.forEachHandle([&](PipelineHandle han_) {
 
 		vkCmdBindPipeline(
 			commandBuffer,
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			obj_.pipeline
+			context->pipelines_.get(han_)->pipeline
 		);
 
 		for (uint32_t primId : visible) {
@@ -1605,6 +1619,7 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 			auto matHandle = context->materialInstances_.getHandle(material_instance_index);
 			auto mat = context->materialInstances_.get(matHandle);
 			if (!mat) continue; // skip if invalid
+			if (mat->pipeline != han_) continue;
 
 			//// skip primitive if material's pipeline doesn't match current obj_
 			//auto pipelineObj = context->pipelines_.get(mat->pipeline);
@@ -1613,8 +1628,8 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 			MaterialPushConstants pcm = mat->values;
 
 			struct PC_All {
-				MainViewPushConstants pc;               // 144
-				MaterialPushConstants mpc;      // 48
+				MainViewPushConstants pc;
+				MaterialPushConstants mpc;
 			};
 			PC_All all{ pc, pcm };
 
@@ -1650,7 +1665,7 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 
 			}
 		}
-	}
+		}
 	);
 
 
