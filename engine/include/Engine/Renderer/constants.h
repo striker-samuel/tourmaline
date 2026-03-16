@@ -1,11 +1,14 @@
 #pragma once
+#include <cassert>
 
 static constexpr uint32_t WIDTH = 1280;
 static constexpr uint32_t HEIGHT = 720;
 
-// Double buffering :)
-static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
-static constexpr int DESIRED_SWAPCHAING_IMAGE_COUNT = 2;
+
+// Right now the depth render target for the main view is reused every frame
+// Thing is only one frame does render at a time due to single graghics queue with synchronization.
+static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 6;
+static constexpr uint32_t DESIRED_SWAPCHAIN_IMAGE_COUNT = 2;
 
 //static constexpr VkFormat SHADOWMAP_DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 static constexpr VkFormat SHADOWMAP_DEPTH_FORMAT = VK_FORMAT_D16_UNORM;

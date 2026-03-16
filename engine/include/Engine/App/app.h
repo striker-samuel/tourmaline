@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
+
 #include "volk.h"
 #include "vk_mem_alloc.h"
 #include <GLFW/glfw3.h>
@@ -37,6 +39,7 @@ class VulkanApp {
 
 public:
 
+	uint32_t framesInFlight;
 	RingBinding<FrameUniforms, 1> frameUniformsBinding;
 	RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
 	RingBinding<Light, MAX_LIGHTS> frameLigthsBinding;
@@ -139,7 +142,8 @@ private:
 
 #pragma region ===[ Synchronization Primitives ]===
 
-	VkSemaphore * renderFinishedSemaphores; // this is swapchainImageCountSize. that count cant be known without a query thats why here lies a pointer.
+	VkSemaphore* renderFinishedSemaphores;
+	// this is swapchainImageCountSize. that count cant be known without a query thats why here lies a pointer.
 	VkSemaphore imageAvailableSemaphores[MAX_FRAMES_IN_FLIGHT];
 	VkFence inFlightFences[MAX_FRAMES_IN_FLIGHT];
 
@@ -732,17 +736,6 @@ void VulkanApp::InitializeImGui() {
 
 	auto im_dp = context->descriptorSetPools_.get(context->imgui_descriptor_pool);
 
-	SwapChainSupportDetails swapChainSupport =
-		querySwapChainSupport(physicalDevice, surface);
-
-	uint32_t desired = DESIRED_SWAPCHAING_IMAGE_COUNT; // triple buffering target
-	uint32_t minReq = swapChainSupport.capabilities.minImageCount;
-	uint32_t maxReq = swapChainSupport.capabilities.maxImageCount; // 0 means "no maximum"
-
-	swapchainImageCount = std::max(minReq, desired);
-	if (maxReq != 0) swapchainImageCount = std::min(swapchainImageCount, maxReq);
-
-
 	// Provide information for dynamic rendering
 	VkPipelineRenderingCreateInfo pipeline_create{
 		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
@@ -756,6 +749,9 @@ void VulkanApp::InitializeImGui() {
 	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 	ImGui_ImplGlfw_InitForVulkan(window, /*install callbacks*/ false);
 
+	SwapChainSupportDetails swapChainSupport =
+		querySwapChainSupport(physicalDevice, surface);
+
 	ImGui_ImplVulkan_InitInfo info{};
 	info.Instance = instance;
 	info.ApiVersion = VK_API_VERSION_1_3;
@@ -763,7 +759,7 @@ void VulkanApp::InitializeImGui() {
 	info.Device = device;
 	info.Queue = context->default_queue;
 	info.DescriptorPool = *im_dp;
-	info.MinImageCount = minReq;
+	info.MinImageCount = swapChainSupport.capabilities.minImageCount;
 	info.ImageCount = swapchainImageCount;
 	info.UseDynamicRendering = true,
 		info.PipelineRenderingCreateInfo = pipeline_create;
@@ -1011,6 +1007,8 @@ bool VulkanApp::Initialize() {
 	// Pick physical device, create logical device, get queues from physdevice. Create VMA allocator
 	InitVulkanApp();
 
+	//
+
 	SwapChainSupportDetails swapChainSupport =
 		querySwapChainSupport(physicalDevice, surface);
 	VkSurfaceFormatKHR surfaceFormat =
@@ -1018,13 +1016,22 @@ bool VulkanApp::Initialize() {
 
 	swapChainImageFormat = surfaceFormat.format;
 
-	InitializeImGui();
+	uint32_t desired = DESIRED_SWAPCHAIN_IMAGE_COUNT;
+	uint32_t minReq = swapChainSupport.capabilities.minImageCount;
+	uint32_t maxReq = swapChainSupport.capabilities.maxImageCount;
+
+	swapchainImageCount = std::max(minReq, DESIRED_SWAPCHAIN_IMAGE_COUNT);
+	if (maxReq != 0)
+		swapchainImageCount = std::min(swapchainImageCount, maxReq);
+
+	framesInFlight = std::min(MAX_FRAMES_IN_FLIGHT, swapchainImageCount);
 
 	// SwapChain
 	CreateSwapChain();
 	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
 	CreateSwapchainImageViews();
 
+	InitializeImGui();
 	// Queues.
 	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
 
@@ -1293,7 +1300,7 @@ void VulkanApp::DrawFrame() {
 	}
 
 	// Update current frame
-	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+	currentFrame = (currentFrame + 1) % framesInFlight;
 }
 
 // Updates perframe camera view settings. view, proj, invView... etc.
@@ -1717,7 +1724,7 @@ void VulkanApp::CreateRenderSyncObjects() {
 		}
 	}
 
-	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+	for (size_t i = 0; i < framesInFlight; i++) {
 
 		if (
 			vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
