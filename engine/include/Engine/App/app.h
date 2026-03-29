@@ -30,26 +30,19 @@ std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf" // Index 0
 };
 
-struct FrameResources {
-	DescriptorSetHandle frameDescriptorSet;
-	DescriptorSetHandle frameDynamicDescriptorSet;
-};
-
 class VulkanApp {
 
 public:
 
-	uint32_t framesInFlight;
-	RingBinding<FrameUniforms, 1> frameUniformsBinding;
-	RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
-	RingBinding<Light, MAX_LIGHTS> frameLigthsBinding;
+	// This really shouldnt be here. this is scene level
+	BvhTree tree_;
+	VkImage* GetCurrentSwapchainColorImage();
 
 	// These match swapchainImageDimensions.
 	int width_ = WIDTH;
 	int height_ = HEIGHT;
 
 	bool Initialize();
-	bool InitializeAppData();
 	bool Run() {
 
 
@@ -67,27 +60,32 @@ public:
 	void LoadScene();
 
 
+
 private:
 
-	Context* context;
+	Context* context; // VulkanResources Cotnext.
 	ImGuiContext* imgui_ctx;
-	Scene scene_ = {}; // empty scene initialization
-	BvhTree tree_ = {};
 
-	// App still has ownership over the present queue for the current moment.
+	Scene scene_ = {};
+
 	VkQueue presentQueue_;
+	uint32_t framesInFlight;
+
+	//RingBinding<FrameUniforms, 1> frameUniformsBinding;
+	//RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
+	//RingBinding<Light, MAX_LIGHTS> frameLigthsBinding;
 
 #pragma region ===[ App / Core State ]===
 
 	float delta_time_s;
 	float time_since_start_s;
 
-	Camera* camera_ = nullptr;
-	CameraPositioner_FirstPerson cameraPositioner = CameraPositioner_FirstPerson(
-		glm::vec3(0.0f, 1.0f, 0.0f), //pos
-		glm::vec3(0.0f, 1.0f, 1.0f), //target
-		glm::vec3(0.0f, 1.0f, 0.0f) //up
-	);
+	//Camera* camera_ = nullptr;
+	//CameraPositioner_FirstPerson cameraPositioner = CameraPositioner_FirstPerson(
+	//	glm::vec3(0.0f, 1.0f, 0.0f), //pos
+	//	glm::vec3(0.0f, 1.0f, 1.0f), //target
+	//	glm::vec3(0.0f, 1.0f, 0.0f) //up
+	//);
 
 	//  culling debug
 	glm::mat4 frozenMainView = {};
@@ -106,11 +104,9 @@ private:
 
 #pragma endregion
 
-	VkImage main_depthImage;
-	VkImageView main_depthImageView;
-
 	ImageHandle mainViewDepthImage;
 	ImageViewHandle mainViewDepthImageView;
+
 	VmaAllocation main_d_alloc;
 
 #pragma region ===[ GLFW / Window State ]===
@@ -126,15 +122,8 @@ private:
 	VkDevice device = VK_NULL_HANDLE;
 #pragma endregion
 
-#pragma region ===[ Uniforms / Descriptor Sets ]==
-
-	FrameResources perFrameData[MAX_FRAMES_IN_FLIGHT];
-
-#pragma endregion
-
 #pragma region ===[ Pipeline / Render Resources ]===
 
-	PipelineHandle main_view_pipeline_h;
 	VkCommandPool perFrameCommandPools[MAX_FRAMES_IN_FLIGHT];
 	VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
 
@@ -142,12 +131,22 @@ private:
 
 #pragma region ===[ Synchronization Primitives ]===
 
-	VkSemaphore* renderFinishedSemaphores;
-	// this is swapchainImageCountSize. that count cant be known without a query thats why here lies a pointer.
+	// no array since swpachainIamgeCount is not known yet.
+	VkSemaphore * renderFinishedSemaphores;
 	VkSemaphore imageAvailableSemaphores[MAX_FRAMES_IN_FLIGHT];
 	VkFence inFlightFences[MAX_FRAMES_IN_FLIGHT];
 
+
+	uint32_t currentImage = 0;
+	// This is current index to swapchainImage array.
 	uint32_t currentFrame = 0;
+	/* 
+		This is the currentFrame in flight.O..MAX_FRAMES_IN_FLIGHT.
+		This is not the currentSwapchainImageIndex,
+		its just the index for accesing frame in flight resources,
+		like command pools and else.
+	*/
+
 #pragma endregion
 
 #pragma region ===[ Input ]===
@@ -183,9 +182,7 @@ private:
 
 		lastFrameTime = currentTime;
 	}
-	void UpdateFrameUniforms(uint32_t currentImage);
-	void UpdateDrawDataBuffers(uint32_t currentImage);
-	//void UpdateLightsBuffers(uint32_t currentImage);
+
 
 	void UiPass() {
 
@@ -193,7 +190,6 @@ private:
 		ImGui_ImplVulkan_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
-
 
 		// UI Here
 		ImGuiIO& io = ImGui::GetIO();
@@ -273,9 +269,11 @@ private:
 
 			// Event loop
 			CameraUpdate();
+
 			EarlyUpdate();
 			Update(); // Main
 			LateUpdate();
+
 			DrawFrame();
 
 		}
@@ -443,46 +441,52 @@ private:
 	void CreateDepthResources() {
 		VkFormat depthFormat = findDepthFormat(physicalDevice);
 
-		//mainViewDepthImage = context->CreateImage(
-		//	swapChainExtent.width,
-		//	swapChainExtent.height,
-		//	depthFormat,
-		//	VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-		//	0, //levels == mips. mainView depth should be 0 levels. 
-		//	1
-		//); // TILING IS ASSUMED OPTIMAL
-
-		//mainViewDepthImageView = context->CreateImageView(
-		//	mainViewDepthImage,
-		//	VK_IMAGE_ASPECT_DEPTH_BIT,
-		//	0,
-		//	0,
-		//	1, 
-		//	VK_IMAGE_VIEW_TYPE_2D
-		//);
-
-		createImage(
+		mainViewDepthImage = context->CreateImage(
 			swapChainExtent.width,
 			swapChainExtent.height,
 			depthFormat,
-			VK_IMAGE_TILING_OPTIMAL,
 			VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-			main_depthImage
+			0, //levels == mips. mainView depth should be 0 levels. 
+			1
+		); // TILING IS ASSUMED OPTIMAL
+
+		mainViewDepthImageView = context->CreateImageView(
+			mainViewDepthImage,
+			VK_IMAGE_ASPECT_DEPTH_BIT,
+			0,
+			0,
+			1,
+			VK_IMAGE_VIEW_TYPE_2D
 		);
 
-		createImageView(main_depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, main_depthImageView, 1);
+		//createImage(
+		//	swapChainExtent.width,
+		//	swapChainExtent.height,
+		//	depthFormat,
+		//	VK_IMAGE_TILING_OPTIMAL,
+		//	VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+		//	VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		//	main_depthImage
+		//);
 
-		context->TransitionImageLayout(main_depthImage, depthFormat,
-			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+		//createImageView(main_depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, main_depthImageView, 1);
+
+		context->TransitionImageLayout(
+			mainViewDepthImage,
+			VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+		);
 
 	}
 
 	// Cleanup
 	void CleanUpSwapChain() {
 
-		vkDestroyImageView(device, main_depthImageView, nullptr);
-		vmaDestroyImage(*context->allocator_, main_depthImage, main_d_alloc);
+		destroy(context, mainViewDepthImageView);
+		destroy(context, mainViewDepthImage);
+
+		//vkDestroyImageView(device, main_depthImageView, nullptr);
+		//vmaDestroyImage(*context->allocator_, main_depthImage, main_d_alloc);
 
 		for (uint32_t i = 0; i < swapchainImageCount; ++i) {
 			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
@@ -612,32 +616,33 @@ private:
 
 		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstances_.numObjects());
 
-		// --- Build image infos (sampled images) ---
 		std::vector<VkDescriptorImageInfo> imageInfos;
 		std::vector<VkDescriptorImageInfo> samplerInfos;
 
-		int count = (context->textures_.numObjects());
+		int count = (context->images_.numObjects());
 		imageInfos.reserve(count);
 		samplerInfos.reserve(count);
 
-		for (int i = 0; i < count; i++)
-		{
-			auto tex = context->textures_.objects_[i].obj_;
+
+		context->images_.forEach([&](Image obj_) {
 
 			VkDescriptorImageInfo ii{};
 			ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-			ii.imageView = tex.imageView;
+			ii.imageView = obj_.sampleView;
 			ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			imageInfos.push_back(ii);
 
+
+			// Sampler for the bindless texure approach needs refacotr.
+			// Doesnt Really make sense.
 			VkDescriptorImageInfo si{};
-			si.sampler = tex.sampler;
+			si.sampler = obj_.sampler;
 			si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
 			si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
 			samplerInfos.push_back(si);
-		};
 
-
+			}
+		);
 
 		for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; frameIndex++) {
 			//// --- Two writes: images at index 2, samplers at index 3 ---
@@ -685,19 +690,9 @@ private:
 
 #pragma region ===[ CommandRecording ]===
 
+	void Acquire();
+	void Submit();
 	void DrawFrame();
-	void RecordMainViewCommmandsForFrame(
-		VkCommandBuffer commandBuffer,
-		uint32_t imageIndex
-	);
-	void RecordCascadesForDirectionalLight(
-		DirectionalLight& light,
-		VkCommandBuffer& commandBuffer,
-		ShadowMap& shadowmap,
-		VkPipelineLayout& pipe_lyt
-	);
-
-	void RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer);
 
 #pragma endregion
 
@@ -1014,6 +1009,8 @@ bool VulkanApp::Initialize() {
 	VkSurfaceFormatKHR surfaceFormat =
 		chooseSwapSurfaceFormat(swapChainSupport.formats);
 
+	// SWAPCHAIN
+
 	swapChainImageFormat = surfaceFormat.format;
 
 	uint32_t desired = DESIRED_SWAPCHAIN_IMAGE_COUNT;
@@ -1026,10 +1023,11 @@ bool VulkanApp::Initialize() {
 
 	framesInFlight = std::min(MAX_FRAMES_IN_FLIGHT, swapchainImageCount);
 
-	// SwapChain
 	CreateSwapChain();
-	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
 	CreateSwapchainImageViews();
+	renderFinishedSemaphores = new VkSemaphore[swapchainImageCount];
+
+	//
 
 	InitializeImGui();
 	// Queues.
@@ -1063,17 +1061,7 @@ bool VulkanApp::Initialize() {
 	CreateRenderSyncObjects();
 	CreateDepthResources();
 
-	camera_ = new Camera(cameraPositioner);
 
-	//IntializeShadowMaps();
-
-	return true;
-
-}
-
-bool VulkanApp::InitializeAppData() {
-	//WritePak();
-	//RegisterPaks();
 	return true;
 
 }
@@ -1174,16 +1162,25 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 
 #pragma endregion
 
-void VulkanApp::DrawFrame() {
+void VulkanApp::Acquire() {
 
 	vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE,
 		UINT64_MAX);
 
+	//if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+	//	vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+	//}
+	//imagesInFlight[imageIndex] = inFlightFences[currentFrame];
 
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(
-		device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame],
-		VK_NULL_HANDLE, &imageIndex);
+		device,
+		swapChain,
+		UINT64_MAX,
+		imageAvailableSemaphores[currentFrame],
+		VK_NULL_HANDLE,
+		&imageIndex
+	);
 
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -1194,37 +1191,22 @@ void VulkanApp::DrawFrame() {
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
 
-	std::cout << "draw" << std::endl;
-
-	// This is here to be as close as posible.
 	UpdateDeltaTime();
 
-#pragma region GPU_UPDATE
-
-	// this is per frame scene state
-	UpdateFrameUniforms(currentFrame);
-
-	// Not reallly used right now is it
-	//UpdateDrawDataBuffers(currentFrame);
-
-
+	// We reset fence to off
 	vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
+	// We also reset the command list to start recording a new
 	// Resetting entire pool is faster and better. I have split pools per frame so no biggie.
 	//vkResetCommandBuffer(commandBuffers[currentFrame],
 	//	/*VkCommandBufferResetFlagBits*/ 0);
 	vkResetCommandPool(device, perFrameCommandPools[currentFrame], 0);
 
-	// These are bandwitth heavy because im not tracking what needs updating in any way...
-	//UpdateLightsBuffers(currentFrame);
-	//UpdateShadowMapDescriptorSets(currentFrame);
-	//UpdateMainViewFrameData(currentFrame);
-	//UpdateLightDescriptorSets(currentFrame);
-	//UpdateBindlessTextures(currentFrame);
+	//UiPass();
 
-#pragma endregion
-
-	UiPass();
+	// this is per frame scene state
+	// This guarantess completeness and syncronization because its default_queue
+	//UpdateFrameUniforms(currentFrame); 
 
 	VkCommandBufferBeginInfo beginInfo{};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1233,14 +1215,45 @@ void VulkanApp::DrawFrame() {
 		throw std::runtime_error("failed to begin recording command buffer!");
 	}
 
-	//RecordCommandsForFrameShadowMaps(commandBuffers[currentFrame]);
-	RecordMainViewCommmandsForFrame(commandBuffers[currentFrame], imageIndex);
+	VkImageMemoryBarrier barrierToColorAttachment{};
+	barrierToColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrierToColorAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // or VK_IMAGE_LAYOUT_PRESENT_SRC_KHR if reusing
+	barrierToColorAttachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	barrierToColorAttachment.srcAccessMask = 0;  // No access before
+	barrierToColorAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+	barrierToColorAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; // Wew manage just one queue so fuck it
+	barrierToColorAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+
+	barrierToColorAttachment.image = swapChainImages[imageIndex];
+
+	barrierToColorAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrierToColorAttachment.subresourceRange.baseMipLevel = 0;
+	barrierToColorAttachment.subresourceRange.levelCount = 1;
+	barrierToColorAttachment.subresourceRange.baseArrayLayer = 0;
+	barrierToColorAttachment.subresourceRange.layerCount = 1;
+
+	vkCmdPipelineBarrier(
+		commandBuffers[currentFrame],
+		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		0,
+		0, nullptr,
+		0, nullptr,
+		1, &barrierToColorAttachment
+	);
+
+
+	// Command recording starts here
+}
+
+void VulkanApp::Submit() {
+
+	VkResult result;
 
 	if (vkEndCommandBuffer(commandBuffers[currentFrame]) != VK_SUCCESS) {
 		throw std::runtime_error("failed to record command buffer!");
 	}
-
-
 	// Submit Frame 
 	{
 
@@ -1304,7 +1317,7 @@ void VulkanApp::DrawFrame() {
 }
 
 // Updates perframe camera view settings. view, proj, invView... etc.
-void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
+void VulkanApp::UpdateFrameUniforms(uint32_t currentFrame) {
 
 	auto view = camera_->getViewMatrix();
 	auto proj = camera_->getProjMatrix();
@@ -1333,7 +1346,7 @@ void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
 	data.exposure = 0.f;
 
 	VkResult result{};
-	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
+	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentFrame]);
 
 	context->UploadDataToBuffer(
 		frameUniformsBinding.buffer_h,
@@ -1342,92 +1355,13 @@ void VulkanApp::UpdateFrameUniforms(uint32_t currentImage) {
 		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 		VK_ACCESS_SHADER_READ_BIT,
 		0,
-		frameUniformsBinding.dynamicOffsetFrame(currentImage)
+		frameUniformsBinding.dynamicOffsetFrame(currentFrame)
 	);
 
-	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
+	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentFrame]);
 
 
 }
-
-// This is needed for instanced draws.
-void VulkanApp::UpdateDrawDataBuffers(uint32_t currentImage) {
-
-	std::array<DrawSetData, MAX_DRAWS> data;
-	int i = 0;
-
-	const auto& src = scene_.globalTransform;
-	for (size_t i = 0, n = src.size(); i < n; ++i) {
-		std::memcpy(data[i].transform, glm::value_ptr(src[i]), sizeof(float) * 16);
-		data[i].color = {};
-		//data[i].color = { float(i) * 0.20f, 0.3f, -float(i) * 0.7f, 1.0f };
-	}
-
-	drawDataBinding.uploadData(
-		data,
-		currentImage,
-		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-		VK_ACCESS_SHADER_READ_BIT
-	);
-}
-
-//void VulkanApp::UpdateLightsBuffers(uint32_t currentImage) {
-//
-//	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentImage]);
-//
-//	//for (auto spot : spot_lights) {
-//
-//	//	auto proj = GetPerspectiveProjectionForLight(lights[i]);
-//	//	proj[1][1] *= -1;
-//	//	lvp = proj * GetLightView(lights[i]);
-//
-//	//	std::memcpy(
-//	//		lights[i].lightVP,
-//	//		glm::value_ptr(lvp),
-//	//		sizeof(float) * 16);
-//	//}
-//
-//	//for (auto dirl : directional_lights)
-//	//{
-//
-//	//	glm::mat4 lvp;
-//
-//	//	if (lights[i].type == LIGHT_TYPE_SPOT) {
-//	//	}
-//	//	else if (lights[i].type == LIGHT_TYPE_DIRECTIONAL) {
-//	//		glm::mat4 proj, view;
-//
-//	//		auto sm = GetShadowMapFromShadowMapIndex(lights[i].shadow_map_index, currentFrame);
-//	//		auto shadowMapImage = context->images_.get(sm.image);
-//
-//	//		GetDirectionalLightOrthoVP(
-//	//			lights[i],
-//	//			camera_.getViewMatrix(),
-//	//			camera_.getProjMatrix(),
-//	//			0.1f, 20.0f,
-//	//			view, proj,
-//	//			/*zPadding*/ 50.0f,
-//	//			/*snap*/ true,
-//	//			/*res*/ shadowMapImage->width
-//	//		);
-//
-//	//		proj[1][1] *= -1;
-//	//		lvp = proj * view;
-//
-//
-//	//context->UploadDataToBuffer(
-//	//	lightDataUniformBuffers[currentImage],
-//	//	lights.data(),
-//	//	sizeof(Light) * lights.size(),
-//	//	VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-//	//	VK_ACCESS_SHADER_READ_BIT
-//	//	//VK_ACCESS_UNIFORM_READ_BIT 
-//
-//	//);
-//
-//	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentImage]);
-//
-//}
 
 void VulkanApp::CleanUp() {
 
@@ -1437,9 +1371,8 @@ void VulkanApp::CleanUp() {
 
 void VulkanApp::LoadScene() {
 
-	camera_->setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
+	//camera_->setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
 
-	// This will upload 
 	Scene imported_scene;
 	std::filesystem::path p(gltf_meshes_paths[0]);
 	UploadGltfToContext(context, p, imported_scene);
@@ -1449,51 +1382,28 @@ void VulkanApp::LoadScene() {
 
 }
 
-void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+VkImage* VulkanApp::GetCurrentSwapchainColorImage() {
+	return &swapChainImages[currentImage];
+}
 
-	//
 
-	VkImageMemoryBarrier barrierToColorAttachment{};
-	barrierToColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrierToColorAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // or VK_IMAGE_LAYOUT_PRESENT_SRC_KHR if reusing
-	barrierToColorAttachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	barrierToColorAttachment.srcAccessMask = 0;  // No access before
-	barrierToColorAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	barrierToColorAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrierToColorAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrierToColorAttachment.image = swapChainImages[imageIndex];
-	barrierToColorAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	barrierToColorAttachment.subresourceRange.baseMipLevel = 0;
-	barrierToColorAttachment.subresourceRange.levelCount = 1;
-	barrierToColorAttachment.subresourceRange.baseArrayLayer = 0;
-	barrierToColorAttachment.subresourceRange.layerCount = 1;
+struct FrameBuffer {
+	struct Attachment {
+		ImageHandle render;
+		ImageHandle resolve_texture;
+	};
 
-	vkCmdPipelineBarrier(
-		commandBuffer,
-		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		0,
-		0, nullptr,
-		0, nullptr,
-		1, &barrierToColorAttachment
-	);
+	Attachment color;
+	Attachment depth;
 
-	VkRenderingAttachmentInfoKHR depthAttachment{};
-	depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-	depthAttachment.imageView = main_depthImageView;
-	depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-	depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
+};
 
-	VkRenderingAttachmentInfoKHR colorAttachment{};
-	colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-	colorAttachment.imageView = swapChainImageViews[imageIndex];  // actual view
-	colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
+void VulkanApp::BeginRendering(VkCommandBuffer commandBuffer, RenderPass renderpass, FrameBuffer fb) {
+}
+
+void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer) {
+
 
 	VkRenderingInfoKHR renderingInfo{};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
@@ -1501,8 +1411,8 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 	renderingInfo.renderArea.extent = swapChainExtent;
 	renderingInfo.layerCount = 1;
 	renderingInfo.colorAttachmentCount = 1;
-	renderingInfo.pColorAttachments = &colorAttachment;
-	renderingInfo.pDepthAttachment = &depthAttachment;
+	renderingInfo.pColorAttachments = &renderpass.color;
+	renderingInfo.pDepthAttachment = &renderpass.depth;
 
 	//
 
@@ -1563,8 +1473,6 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 	BindVertex(commandBuffer);
 
 	// BIND DESCRIPTOR SETS
-	// Layout here must be compatible for all material pipelines.
-	// Else we would need to change layout and then rebind.
 	auto dynamic_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDynamicDescriptorSet);
 	auto update_after_bind_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDescriptorSet);
 
@@ -1672,11 +1580,11 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 		}
 	}
 
-	ImGui::Render();
+	//ImGui::Render();
 
-	// Record the ImGui draw data into your Vulkan command buffer.
-	// You must already be inside a render pass (or dynamic rendering block)
-	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
+	//// Record the ImGui draw data into your Vulkan command buffer.
+	//// You must already be inside a render pass (or dynamic rendering block)
+	//ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 
 	vkCmdEndRendering(commandBuffer);
 
@@ -1688,7 +1596,7 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer, u
 	barrier.dstAccessMask = 0;  // Nothing needs to read it before present
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = swapChainImages[imageIndex];
+	barrier.image = getCurrentSwapchainColorImage();
 	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	barrier.subresourceRange.baseMipLevel = 0;
 	barrier.subresourceRange.levelCount = 1;
@@ -1848,7 +1756,7 @@ void VulkanApp::RecordCascadesForDirectionalLight(
 	}
 }
 
-void VulkanApp::RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer)
+//void VulkanApp::RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer)
 {
 	//std::vector<SpotLight> spotLights;
 
@@ -2034,21 +1942,31 @@ void VulkanApp::RecordCommandsForFrameShadowMaps(VkCommandBuffer commandBuffer)
 
 
 	//}
-}
+//}
+
+
+//typedef struct VkRenderingAttachmentInfo {
+//    VkStructureType          sType;
+//    const void*              pNext;
+//    VkImageView              imageView;
+//    VkImageLayout            imageLayout;
+//    VkResolveModeFlagBits    resolveMode;
+//    VkImageView              resolveImageView;
+//    VkImageLayout            resolveImageLayout;
+//    VkAttachmentLoadOp       loadOp;
+//    VkAttachmentStoreOp      storeOp;
+//    VkClearValue             clearValue;
+//} VkRenderingAttachmentInfo;
+
+struct RenderPass final {
+	VkRenderingAttachmentInfo color[1] = {};
+	VkRenderingAttachmentInfo depth = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
+	VkRenderingAttachmentInfo stencil = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
+};
+
 
 void VulkanApp::Start() {
-
-
-	auto vertShaderCode = readFile("content/shaders/default.vert.hlsl.spv");
-	auto fragShaderCode = readFile("content/shaders/default.frag.hlsl.spv");
-
-	auto vert_shader_h = context->CreateShaderModule(
-		vertShaderCode
-	);
-	auto fragHandle = context->CreateShaderModule(
-		fragShaderCode
-	);
-
+	// Init
 	frameUniformsBinding.init(
 		context,
 		0, //bindding #
@@ -2065,17 +1983,27 @@ void VulkanApp::Start() {
 		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC //descriptorType
 	);
 
+	auto vertShaderCode = readFile("content/shaders/default.vert.hlsl.spv");
+	auto fragShaderCode = readFile("content/shaders/default.frag.hlsl.spv");
+
+	auto vert_shader_h = context->CreateShaderModule(
+		vertShaderCode
+	);
+	auto fragHandle = context->CreateShaderModule(
+		fragShaderCode
+	);
+
 	PipelineLayoutDesc desc;
 	desc.sets = {
 		DescriptorSetLayoutDesc{
-			0, // set
+			0, // setLayout #
 			VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, // createFlags
 			{
-frameUniformsBinding.bindingDesc(),
-drawDataBinding.bindingDesc(),
-
+				frameUniformsBinding.bindingDesc(), // binding 0,0
+				drawDataBinding.bindingDesc(), //binding 0,1
 			}
 		},
+		// These two need to be separated due to UPDATE_AFTER_BIND and dynamicOffsets incompatibility in same setLayout
 		DescriptorSetLayoutDesc{
 			.set = 1,
 			.createFlags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
@@ -2093,14 +2021,14 @@ drawDataBinding.bindingDesc(),
 		BindingDesc{
 			.binding = 3,
 			.type = VK_DESCRIPTOR_TYPE_SAMPLER,
-			.count = MAX_TEXTURES,
+			.count = MAX_TEXTURES, // We carry 1 to one samplers, this is wasteful but lets do this ftm
 			.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
 			.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
 					  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
 			.immutableSamplers = {}
 		}
-		}
 	}
+}
 	};
 	desc.pushConstants.push_back({
 		.stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2110,7 +2038,6 @@ drawDataBinding.bindingDesc(),
 		});
 
 	main_view_pipeline_h = context->CreatePipeline(
-		// Raster settings
 		{
 			.depthClampEnable = VK_FALSE, // needs to be enabled
 			.rasterizerDiscardEnable = VK_FALSE,
@@ -2124,11 +2051,13 @@ drawDataBinding.bindingDesc(),
 		findDepthFormat(physicalDevice),
 		swapChainImageFormat
 	);
+
+
 	auto pipe_obj = context->pipelines_.get(main_view_pipeline_h);
 	auto aa = context->pipelineLayouts_.get(pipe_obj->plyt);
 	auto bb = aa->setLayouts;
 
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+	for (int i = 0; i < framesInFlight; i++) {
 
 		perFrameData[i].frameDynamicDescriptorSet = context->createDescriptorSet(
 			bb[0]
@@ -2137,11 +2066,8 @@ drawDataBinding.bindingDesc(),
 		perFrameData[i].frameDescriptorSet = context->createDescriptorSet(
 			bb[1]
 		);
-
-		//shadowFrameDescriptorSets[i] = context->createDescriptorSet(
-		//	context->default_shadow_descriptorLayout
-		//);
 	}
+
 
 	SetDescriptorSets();
 
@@ -2150,3 +2076,24 @@ drawDataBinding.bindingDesc(),
 	UpdateBindlessTexturesSets();
 
 }
+
+
+
+
+
+//VkRenderingAttachmentInfoKHR depthAttachment{};
+//depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+//depthAttachment.imageView = main_depthImageView;
+//depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+//depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+//depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+//depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
+
+//VkRenderingAttachmentInfoKHR colorAttachment{};
+//colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+//colorAttachment.imageView = swapChainImageViews[imageIndex];  // actual view
+//colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+//colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+//colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+//colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };

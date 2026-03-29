@@ -114,20 +114,31 @@ private:
     HandleType handle_ = {};
 };
 
-using ShaderModuleHandle = Handle<struct ShaderModule>;
-using TextureHandle = Handle<struct Texture>;
+
+
+// VkObject Handles
 using ImageHandle = Handle<struct Image>;
+
+// This may not be needed too. Image resources can hold their on vkImageViews after all
+// and tradionally you would only need 3 types of view, one for attachment, one for binding
+// an array for imageArrays for those images like CubeMaps
+// Maybe its bettter to specialize those but this code should not make those decissions I think.
 using ImageViewHandle = Handle<struct ImageView>;
-using ShadowMapHandle = Handle<struct ShadowMap>;
 using SamplerHandle = Handle<struct Sampler>;
-using MaterialInstanceHandle = Handle<struct MaterialInstance>;
+using ShaderModuleHandle = Handle<struct ShaderModule>;
+
 using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 using DescriptorSetHandle = Handle<struct DescriptorSet>;
 using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
-using DeviceBufferHandle = Handle<struct BufferDescription>;
+
 using PipelineHandle = Handle<struct Pipeline>;
-using MeshDescHandle = Handle<struct Geometry>;
-using GeometryPageHandle = Handle <struct GeometryPage>;
 using PipelineLayoutHandle = Handle<struct PipelineLayout>;
 
+using DeviceBufferHandle = Handle<struct BufferDescription>;
+
+// Resource Handles. not vulkan native.
+using GeometryHandle = Handle<struct Geometry>;
+using MaterialInstanceHandle = Handle<struct MaterialInstance>;
+// 
+using GeometryPageHandle = Handle <struct GeometryPage>;
 

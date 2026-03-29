@@ -250,7 +250,7 @@ static AlphaMode ParseAlphaMode(const std::string& s) {
 }
 
 
-MeshUploadInput MeshDataFromPrimitive(
+MeshUploadInput SurfaceDataFromGltfPrimitive(
 	const tinygltf::Model& model,
 	const tinygltf::Primitive& primitive
 ) {
@@ -435,17 +435,14 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 		* glm::scale(glm::mat4(1.0f), s);
 }
 
-
-static int UploadPrimitiveAsMesh(
+static int UploadGltfPrimitive(
 	Context* ctx,
 	const tinygltf::Model& model,
 	const tinygltf::Primitive& primitive
 ) {
-	auto mdata = MeshDataFromPrimitive(model, primitive);
+	auto mdata = SurfaceDataFromGltfPrimitive(model, primitive);
 	auto mhandle = ctx->UploadVertexData(mdata);
 	return mhandle.index();
-
-
 }
 
 MaterialInstanceHandle CreateMaterial(Context* ctx, const tinygltf::Model& model, int material, const char* texture_root) {
@@ -567,7 +564,7 @@ struct GltfToSceneImporter {
 				scene.localTransform[primNode] = glm::mat4(1.0f);
 				scene.globalTransform[primNode] = glm::mat4(1.0f);
 
-				scene.meshForNode[primNode] = UploadPrimitiveAsMesh(ctx, model, primitive);
+				scene.meshForNode[primNode] = UploadGltfPrimitive(ctx, model, primitive);
 
 				const uint32_t matIndex = getOrCreateMaterialIndex(primitive.material);
 				scene.materialForNode[primNode] = matIndex;
@@ -589,7 +586,7 @@ void UploadGltfToContext(
 	Scene& result_scene
 ) {
 
-	std::vector<DrawRange> uploaded;
+	std::vector<Surface> uploaded;
 	std::set<uint32_t> already_uploaded;
 
 	tinygltf::Model model;

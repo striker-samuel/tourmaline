@@ -1,5 +1,7 @@
 #include <Engine/Renderer/context.h>
 
+//#include <ktxvulkan.h>
+
 static inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
 
 Context::Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface) {
@@ -20,37 +22,31 @@ Context::Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physi
 	VkResult res = vmaImportVulkanFunctionsFromVolk(&allocatorCreateInfo, &vulkanFunctions);
 	allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
 
-	res = vmaCreateAllocator(&allocatorCreateInfo, &allocator);
+	res = vmaCreateAllocator(&allocatorCreateInfo, &allocator_);
 	assert(res == VK_SUCCESS);
 
-	allocator_ = &allocator;
-	device_ = device;
-	physicalDevice_ = physicalDevice;
-
-	VkSampler default_sampler;
+	// This is ok because VkObjects are just opaque handles for the driver.
+	device_ = *device;
 
 	// from ChatGpt, may not be true: you can set a generic sampler with a big maxLod like 100, and reuse it for all your textures of any mip count.
 	// The driver will clamp dynamically per texture.
 	samplers["default"] = CreateSampler(100);
-
-	// Samplers are driver objs. can be copied like this np.
 	samplers["default_shadow"] = CreateShadowSampler(1);
 
-	// Lets reserve upfront.
-	textures_.objects_.reserve(MAX_TEXTURES);
-
-	//materialPipelinePool_.objects_.reserve(1000);
-	// This is a small reservation. just testing 
-
+	images_.objects_.reserve(MAX_IMAGES);
 	buffers_.objects_.reserve(MAX_BUFFERS);
 
 	InitializeDeviceVmaPools();
+
+
+	// This initialization is not the same as the others...
+	// Also im making the context have ownership of the geometry buffers. may not be the cleanest or better.
+	// Do I want the context to manage memory resources or to provide core app functionality like meshUpload too?
 	InitalizeGeoBuffers();
 
 	// Lets have one dpool
 	default_descriptor_pool = createDescriptorPool();
 	imgui_descriptor_pool = createDescriptorPool();
-
 
 	// These are pipeline specific. 
 	//default_descriptorLayout = createMainViewDescriptorLayout();
@@ -65,22 +61,25 @@ Context::Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physi
 	.queueFamilyIndex = indices.graphicsFamily.value()
 	};
 
-	vkGetDeviceQueue(*device_, indices.graphicsFamily.value(), 0, &default_queue);
+	vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &default_queue);
 
 	// This should pick transfer over graphics
-	vkGetDeviceQueue(*device_, indices.graphicsFamily.value(), 0, &transfer_queue);
+	vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &transfer_queue);
 
 	for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
-		if (vkCreateCommandPool(*device_, &poolInfo, nullptr, &default_command_pool) !=
+		if (vkCreateCommandPool(device_, &poolInfo, nullptr, &default_command_pool) !=
 			VK_SUCCESS) {
 			throw std::runtime_error("failed to create graphics command pool!");
 		}
 	}
 
 	ktx_vdi = ktxVulkanDeviceInfo_Create(
-		*physicalDevice_,
-		*device_,
-		transfer_queue, // this maybe should be transfer queue. we only use ktx to upload tex. no blitting for mipmaps, which are generated offline.
+		physicalDevice_,
+		device_,
+		transfer_queue,
+		// this maybe should be transfer queue. we only use ktx to upload tex.
+		// no blitting for mipmaps, which are generated offline
+		// runtime genreation for mipmaps in ktx seems to be not up to par with SOA
 		default_command_pool,
 		NULL
 	);
@@ -98,7 +97,7 @@ void Context::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize si
 
 void Context::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset) {
 
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands(*device_, default_command_pool);
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(device_, default_command_pool);
 
 	VkBufferCopy copyRegion{};
 	copyRegion.size = size;
@@ -106,7 +105,7 @@ void Context::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize si
 	copyRegion.dstOffset = dstOffset;
 	vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
 
-	endSingleTimeCommands(*device_, commandBuffer, default_queue, default_command_pool);
+	endSingleTimeCommands(device_, commandBuffer, default_queue, default_command_pool);
 }
 
 void Context::InitalizeGeoBuffers() {
@@ -188,12 +187,12 @@ void Context::InitializeDeviceVmaPools() {
 		aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
 		uint32_t typeIndex = UINT32_MAX;
-		VK_CHECK(vmaFindMemoryTypeIndexForImageInfo(*allocator_, &imgCI, &aCI, &typeIndex));
+		VK_CHECK(vmaFindMemoryTypeIndexForImageInfo(allocator_, &imgCI, &aCI, &typeIndex));
 
 		VmaPoolCreateInfo pci{};
 		pci.memoryTypeIndex = typeIndex;
 		pci.blockSize = 64 * 1024 * 1024;
-		VK_CHECK(vmaCreatePool(*allocator_, &pci, &D_2DImagesPool));
+		VK_CHECK(vmaCreatePool(allocator_, &pci, &D_2DImagesPool));
 	}
 
 	//// DEVICE-LOCAL pool for static geometry buffers
@@ -206,12 +205,12 @@ void Context::InitializeDeviceVmaPools() {
 	//	aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
 	//	uint32_t typeIndex = UINT32_MAX;
-	//	VK_CHECK(vmaFindMemoryTypeIndexForBufferInfo(*allocator_, &bufCI, &aCI, &typeIndex));
+	//	VK_CHECK(vmaFindMemoryTypeIndexForBufferInfo(allocator_, &bufCI, &aCI, &typeIndex));
 
 	//	VmaPoolCreateInfo pci{};
 	//	pci.memoryTypeIndex = typeIndex;
 	//	pci.blockSize = 64 * 1024 * 1024;
-	//	VK_CHECK(vmaCreatePool(*allocator_, &pci, &D_geo));
+	//	VK_CHECK(vmaCreatePool(allocator_, &pci, &D_geo));
 	//}
 
 	{
@@ -225,12 +224,12 @@ void Context::InitializeDeviceVmaPools() {
 		aCI.usage = VMA_MEMORY_USAGE_AUTO;
 
 		uint32_t typeIndex = UINT32_MAX;
-		vmaFindMemoryTypeIndexForBufferInfo(*allocator_, &bufCI, &aCI, &typeIndex);
+		vmaFindMemoryTypeIndexForBufferInfo(allocator_, &bufCI, &aCI, &typeIndex);
 
 		VmaPoolCreateInfo pci{};
 		pci.memoryTypeIndex = typeIndex; // host-visible & host-coherent type
 		pci.blockSize = 32 * 1024 * 1024;
-		VK_CHECK(vmaCreatePool(*allocator_, &pci, &D_StagingPool));
+		VK_CHECK(vmaCreatePool(allocator_, &pci, &D_StagingPool));
 	}
 
 
@@ -239,7 +238,7 @@ void Context::InitializeDeviceVmaPools() {
 [[nodiscard]] SamplerHandle Context::CreateSampler(uint32_t levelCount) {
 
 	VkSampler sampler_;
-	createSampler(*physicalDevice_, *device_, sampler_, levelCount, VK_COMPARE_OP_ALWAYS);
+	createSampler(physicalDevice_, device_, sampler_, levelCount, VK_COMPARE_OP_ALWAYS);
 
 	return samplers_.create(std::move(sampler_));
 
@@ -265,44 +264,13 @@ void Context::InitializeDeviceVmaPools() {
 	sci.compareEnable = VK_TRUE;
 	sci.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 
-	VkSampler shadowCmpSampler;
-	VK_CHECK(vkCreateSampler(*device_, &sci, nullptr, &sampler_));
-
+	VK_CHECK(vkCreateSampler(device_, &sci, nullptr, &sampler_));
 	return samplers_.create(std::move(sampler_));
 
 }
 
-[[nodiscard]] ImageViewHandle  Context::CreateImageView(
-	VkImage image,
-	VkFormat format,
-	VkImageAspectFlags aspectFlags,
-	int levelCount
-) {
-
-	return CreateImageView(
-		image,
-		format,
-		aspectFlags,
-		levelCount,
-		0,
-		1,
-		VK_IMAGE_VIEW_TYPE_2D // Lets default to this. im only using 2D arrays for cascades in shadow perFrame for the moment
-	);
-
-}
-
-[[nodiscard]] ImageViewHandle  Context::CreateImageView(
-	VkImage image,
-	VkFormat format,
-	VkImageAspectFlags aspectFlags,
-	int levelCount,
-	int baseArrayLayer,
-	int layerCount,
-	VkImageViewType viewType
-) {
-
-	VkImageView imageView;
-
+void Context::CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view)
+{
 	VkImageViewCreateInfo viewInfo{};
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	viewInfo.image = image;
@@ -323,15 +291,14 @@ void Context::InitializeDeviceVmaPools() {
 	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
 	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
-	VK_CHECK(vkCreateImageView(*device_, &viewInfo, nullptr, &imageView));
-
-	return imageViews_.create(std::move(imageView));
-
-
+	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
 }
 
+
+
 [[nodiscard]] ImageViewHandle  Context::CreateImageView(
-	ImageHandle image,
+	VkImage image,
+	VkFormat format,
 	VkImageAspectFlags aspectFlags,
 	int levelCount,
 	int baseArrayLayer,
@@ -339,20 +306,22 @@ void Context::InitializeDeviceVmaPools() {
 	VkImageViewType viewType
 ) {
 
-	auto img = images_.get(image);
+	VkImageView imageView;
 
-	return CreateImageView(
-		img->image,
-		img->format,
+	CreateImageView(
+		image,
+		format,
 		aspectFlags,
 		levelCount,
 		baseArrayLayer,
 		layerCount,
-		viewType
+		viewType,
+		imageView
 	);
 
-}
+	return imageViews_.create(std::move(imageView));
 
+}
 
 [[nodiscard]] DescriptorSetHandle Context::createDescriptorSet(
 	DescriptorLayoutHandle lyt
@@ -375,7 +344,7 @@ void Context::InitializeDeviceVmaPools() {
 	allocInfo.pSetLayouts = layouts.data();
 
 	DescriptorSet ds;
-	VkResult result = vkAllocateDescriptorSets(*device_, &allocInfo, &ds.set);
+	VkResult result = vkAllocateDescriptorSets(device_, &allocInfo, &ds.set);
 	ds.layout = lyt;
 
 	if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
@@ -410,7 +379,7 @@ void Context::InitializeDeviceVmaPools() {
 	aci.usage = vma_usage;
 	// Optionally choose pools here based on usage_flags/usage
 
-	VK_CHECK(vmaCreateBuffer(*allocator_,
+	VK_CHECK(vmaCreateBuffer(allocator_,
 		&ci,
 		&aci,
 		&desc.buffer,
@@ -420,7 +389,7 @@ void Context::InitializeDeviceVmaPools() {
 
 	// Query memory properties to know if it’s host-visible:
 	VkMemoryPropertyFlags props{};
-	vmaGetAllocationMemoryProperties(*allocator_, desc.alloc, &props);
+	vmaGetAllocationMemoryProperties(allocator_, desc.alloc, &props);
 	desc.memory_flags = props;
 
 	// Lets go plain usageflags here
@@ -464,11 +433,11 @@ void Context::UploadDataToBuffer(
 	//	(bufferDesc->role & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? VK_ACCESS_UNIFORM_READ_BIT
 	//	: VK_ACCESS_SHADER_READ_BIT;
 
-	VkCommandBuffer tmpBuf = beginSingleTimeCommands(*device_, default_command_pool);
+	VkCommandBuffer tmpBuf = beginSingleTimeCommands(device_, default_command_pool);
 
 	if (bufferDesc->is_mapapble()) {
 		// Direct copy into mapped allocation
-		VkResult result = vmaCopyMemoryToAllocation(*allocator_, data, bufferDesc->alloc, 0, dataSize);
+		VkResult result = vmaCopyMemoryToAllocation(allocator_, data, bufferDesc->alloc, 0, dataSize);
 		assert(result == VK_SUCCESS);
 
 		VkBufferMemoryBarrier b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
@@ -489,7 +458,7 @@ void Context::UploadDataToBuffer(
 			1, &b,
 			0, nullptr);
 
-		endSingleTimeCommands(*device_, tmpBuf, default_queue, default_command_pool);
+		endSingleTimeCommands(device_, tmpBuf, default_queue, default_command_pool);
 		return;
 	}
 
@@ -505,10 +474,10 @@ void Context::UploadDataToBuffer(
 	sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 	sAlloc.pool = D_StagingPool;
 
-	vmaCreateBuffer(*allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
+	vmaCreateBuffer(allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr);
 
 	// Fill the staging buffer with the *provided* data
-	VkResult result = vmaCopyMemoryToAllocation(*allocator_, data, stagingAlloc, 0, dataSize);
+	VkResult result = vmaCopyMemoryToAllocation(allocator_, data, stagingAlloc, 0, dataSize);
 	assert(result == VK_SUCCESS);
 
 	// Copy staging -> dst
@@ -540,204 +509,14 @@ void Context::UploadDataToBuffer(
 		0, nullptr);
 
 
-	endSingleTimeCommands(*device_, tmpBuf, default_queue, default_command_pool);
+	endSingleTimeCommands(device_, tmpBuf, default_queue, default_command_pool);
 
 	// we could maybe delay this
-	vmaDestroyBuffer(*allocator_, stagingBuf, stagingAlloc);
+	vmaDestroyBuffer(allocator_, stagingBuf, stagingAlloc);
 }
 
 
-// I shold update this to not be a monolithic block instead resue the mainView framering buffers layout if useful 
-//[[nodiscad]] DescriptorLayoutHandle Context::CreateShadowMapsDescriptorSetLayout() {
-//	// INDEX DATA
-//	VkDescriptorSetLayoutBinding instanceIndexBinding{};
-//	instanceIndexBinding.binding = 0;
-//	instanceIndexBinding.descriptorCount = 1;
-//	instanceIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-//	instanceIndexBinding.pImmutableSamplers = nullptr;
-//	instanceIndexBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-//
-//	VkDescriptorSetLayoutBinding instanceDataBinding{};
-//	instanceDataBinding.binding = 1;
-//	instanceDataBinding.descriptorCount = 1;
-//	instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-//	instanceDataBinding.pImmutableSamplers = nullptr;
-//	instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-//
-//	VkDescriptorSetLayoutBinding lightBinding{};
-//	lightBinding.binding = 2;
-//	lightBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-//	lightBinding.descriptorCount = 1;
-//	lightBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-//
-//	// ShadowMetaUB
-//	VkDescriptorSetLayoutBinding shadowMetaBinding{};
-//	lightBinding.binding = 3;
-//	lightBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-//	lightBinding.descriptorCount = 1;
-//	lightBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-//
-//	std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
-//		instanceIndexBinding,
-//		instanceDataBinding,
-//		lightBinding,
-//		//		shadowMetaBinding
-//	};
-//
-//	// Per-binding flags — same size as bindings[]
-//	//std::array<VkDescriptorBindingFlags, 3> bindingFlags = {
-//	//	0,// instanceUBO
-//	//	0,// instanceSSBO
-//	//	0 // lightData.
-//	//};
-//
-//	//VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
-//	//bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-//	//bindless_flags.pNext = nullptr;
-//	//bindless_flags.bindingCount = static_cast<uint32_t>(bindingFlags.size());
-//	//bindless_flags.pBindingFlags = bindingFlags.data();
-//
-//	VkDescriptorSetLayoutCreateInfo layoutInfo{};
-//	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-//	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-//	layoutInfo.pBindings = bindings.data();
-//	//layoutInfo.pNext = &bindless_flags;
-//	//layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-//
-//	VkDescriptorSetLayout descriptorSetLayout;
-//
-//	if (vkCreateDescriptorSetLayout(*device_, &layoutInfo, nullptr,
-//		&descriptorSetLayout) != VK_SUCCESS) {
-//		throw std::runtime_error("failed to create descriptor set layout!");
-//	}
-//
-//	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
-//}
-
-
-//[[nodiscard]] DescriptorLayoutHandle Context::createDescriptorLayout(PipelineLayoutDescription& pld) {
-//
-//
-//
-//}
-//
-//[[nodiscard]] DescriptorLayoutHandle Context::CreateTextureTableLayout() {
-//
-//
-//
-//	VkDescriptorSetLayoutBinding sampledImageBinding{};
-//	sampledImageBinding.binding = 2;
-//	sampledImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-//	sampledImageBinding.descriptorCount = MAX_TEXTURES;
-//	sampledImageBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-//
-//	VkDescriptorSetLayoutBinding sampBinding{};
-//	sampBinding.binding = 3;
-//	sampBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-//	sampBinding.descriptorCount = MAX_TEXTURES;
-//	sampBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-//
-//
-//	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
-//		sampledImageBinding,
-//		sampBinding,
-//	};
-//
-//	// Per-binding flags — same size as bindings[]
-//	std::array<VkDescriptorBindingFlags, 2> bindingFlags = {
-//		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-//		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
-//		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-//		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
-//	};
-//
-//	VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
-//	bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-//	bindless_flags.pNext = nullptr;
-//	bindless_flags.bindingCount = static_cast<uint32_t>(bindingFlags.size());
-//	bindless_flags.pBindingFlags = bindingFlags.data()rea
-//	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-//
-//	VkDescriptorSetLayout descriptorSetLayout;
-//
-//	if (vkCreateDescriptorSetLayout(*device_, &layoutInfo, nullptr,
-//		&descriptorSetLayout) != VK_SUCCESS) {
-//		throw std::runtime_error("failed to create descriptor set layout!");
-//	}
-//
-//	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
-//
-//
-//}
-
-
-//[[nodiscard]] DescriptorLayoutHandle Context::createMainViewDescriptorLayout() {
-//
-//	VkDescriptorSetLayoutBinding frameUniformsBinding{};
-//	frameUniformsBinding.binding = 0;
-//	frameUniformsBinding.descriptorCount = 1;
-//	frameUniformsBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-//	frameUniformsBinding.pImmutableSamplers = nullptr;
-//	frameUniformsBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-//
-//	VkDescriptorSetLayoutBinding instanceDataBinding{};
-//	instanceDataBinding.binding = 1;
-//	instanceDataBinding.descriptorCount = 1;
-//	instanceDataBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
-//	instanceDataBinding.pImmutableSamplers = nullptr;
-//	instanceDataBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-//
-//	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
-//		frameUniformsBinding,
-//		instanceDataBinding,
-//		//sampledImageBinding,
-//		//sampBinding,
-//		//lightBinding,
-//		//shadowMapBinding,
-//		//shadowSamp
-//	};
-//
-//	// Per-binding flags — same size as bindings[]
-//	std::array<VkDescriptorBindingFlags, 2> bindingFlags = {
-//		0,
-//		0,
-//		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-//		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless textures
-//		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-//		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless samplers
-//		//0, // lightData.
-//		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-//		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless shadowmap_images
-//		//VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-//		//VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, // bindless shadowmap_samplers
-//	};
-//
-//	// Chain flags struct
-//	//VkDescriptorSetLayoutBindingFlagsCreateInfo bindless_flags{};
-//	//bindless_flags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-//	//bindless_flags.pNext = nullptr;
-//	//bindless_flags.bindingCount = static_cast<uint32_t>(bindingFlags.size());
-//	//bindless_flags.pBindingFlags = bindingFlags.data();
-//
-//	VkDescriptorSetLayoutCreateInfo layoutInfo{};
-//	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-//	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-//	layoutInfo.pBindings = bindings.data();
-//	layoutInfo.pNext = VK_NULL_HANDLE;
-//	//layoutInfo.pNext = &bindless_flags;
-//	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-//
-//	VkDescriptorSetLayout descriptorSetLayout;
-//
-//	if (vkCreateDescriptorSetLayout(*device_, &layoutInfo, nullptr,
-//		&descriptorSetLayout) != VK_SUCCESS) {
-//		throw std::runtime_error("failed to create descriptor set layout!");
-//	}
-//
-//	return descriptorSetLayouts_.create(std::move(descriptorSetLayout));
-//
-//}
-
+// I shold update this to not be a monolithic block in
 [[nodiscard]] DescriptorPoolHandle Context::createDescriptorPool() {
 	const uint32_t bindless_sets = MAX_FRAMES_IN_FLIGHT;
 	const uint32_t max_textures = MAX_TEXTURES;
@@ -760,10 +539,9 @@ void Context::UploadDataToBuffer(
 	poolInfo.pPoolSizes = poolSizes.data();
 
 	VkDescriptorPool dpool;
-	VK_CHECK(vkCreateDescriptorPool(*device_, &poolInfo, nullptr, &dpool));
+	VK_CHECK(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &dpool));
 	return descriptorSetPools_.create(std::move(dpool));
 }
-
 //[[nodiscard]] PipelineHandle Context::CreateShadowPipeline(ShaderModuleHandle vert) {
 //
 //	// We ure using native VkPipelineLayout to ease things for now so we dont have to formalize a way to describe that.
@@ -896,7 +674,7 @@ void Context::UploadDataToBuffer(
 //	layoutInfo.pushConstantRangeCount = 1;
 //	layoutInfo.pPushConstantRanges = &range;
 //
-//	if (vkCreatePipelineLayout(*device_, &layoutInfo, nullptr,
+//	if (vkCreatePipelineLayout(device_, &layoutInfo, nullptr,
 //		&pipeline.plyt) != VK_SUCCESS) {
 //		throw std::runtime_error("failed to create pipeline layout!");
 //	}
@@ -926,7 +704,7 @@ void Context::UploadDataToBuffer(
 //	assert(pipeCI.pMultisampleState != nullptr);
 //
 //	std::cout << "creating Shadow Pipeline" << std::endl;
-//	vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipeCI, nullptr, &pipeline.pipeline);
+//	vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeCI, nullptr, &pipeline.pipeline);
 //	std::cout << "end creating shadow pipeline" << std::endl;
 //
 //
@@ -978,7 +756,7 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 	const uint32_t rangeCount = static_cast<uint32_t>(descIn.pushConstants.size());
 
 	VkPhysicalDeviceProperties properties{};
-	vkGetPhysicalDeviceProperties(*physicalDevice_, &properties);
+	vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
 	auto min_align = properties.limits.minUniformBufferOffsetAlignment;
 
 	assert(rangeCount <= 8 && "Max 8 push constant ranges");
@@ -1019,7 +797,7 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 		.pPushConstantRanges = rangeCount ? ranges : nullptr,
 	};
 
-	VK_CHECK(vkCreatePipelineLayout(*device_, &ci, nullptr, &out.layout));
+	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &out.layout));
 
 	return pipelineLayouts_.create(std::move(out));
 }
@@ -1069,9 +847,8 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 	auto bindingDescription = Vertex::getBindingDescription();
 	auto attributeDescriptions = Vertex::getAttributeDescriptions();
 
-	vertexInputInfo.vertexBindingDescriptionCount = bindingDescription.size();
-	vertexInputInfo.vertexAttributeDescriptionCount =
-		static_cast<uint32_t>(attributeDescriptions.size());
+	vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(bindingDescription.size());
+	vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
 	vertexInputInfo.pVertexBindingDescriptions = bindingDescription.data();
 	vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
@@ -1195,7 +972,7 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 	pipelineInfo.layout = plytObj->layout;
 	pipelineInfo.pNext = &dynamic_rendering_pipeline_info;
 
-	if (vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipelineInfo,
+	if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo,
 		nullptr, &pipeline.pipeline) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create graphics pipeline!");
@@ -1359,7 +1136,7 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 	//layoutInfo.pushConstantRangeCount = 1;
 	//layoutInfo.pPushConstantRanges = &range;
 //
-//	if (vkCreatePipelineLayout(*device_, &layoutInfo, nullptr,
+//	if (vkCreatePipelineLayout(device_, &layoutInfo, nullptr,
 //		&pipeline.plyt) != VK_SUCCESS) {
 //		throw std::runtime_error("failed to create pipeline layout!");
 //	}
@@ -1393,7 +1170,7 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 //	pipelineInfo.layout = pipeline.plyt;
 //	pipelineInfo.pNext = &dynamic_rendering_pipeline_info;
 //
-//	if (vkCreateGraphicsPipelines(*device_, VK_NULL_HANDLE, 1, &pipelineInfo,
+//	if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo,
 //		nullptr, &pipeline.pipeline) != VK_SUCCESS)
 //	{
 //		throw std::runtime_error("failed to create graphics pipeline!");
@@ -1452,7 +1229,7 @@ void Context::TransitionImageLayout(
 	VkImageLayout oldLayout,
 	VkImageLayout newLayout
 ) {
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands(*device_, default_command_pool);
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(device_, default_command_pool);
 
 	VkImageMemoryBarrier barrier{};
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1539,7 +1316,7 @@ void Context::TransitionImageLayout(
 		&barrier
 	);
 
-	endSingleTimeCommands(*device_,
+	endSingleTimeCommands(device_,
 		commandBuffer,
 		default_queue,
 		default_command_pool
@@ -1547,117 +1324,347 @@ void Context::TransitionImageLayout(
 }
 
 VkCommandBuffer Context::GetCommandBuffer() {
-	return beginSingleTimeCommands(*device_,
+	return beginSingleTimeCommands(device_,
 		default_command_pool);
 
 }
 
 void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue) {
 	endSingleTimeCommands(
-		*device_,
+		device_,
 		cmdBuf,
 		queue,
 		pool
 	);
 }
 
-//[[nodiscard]] SamplerHandle Context::GetSampler(SamplerKey key) {}
-
-// At this moment the only texture input supported is ktxTextures. This is a big LIMITATION/HOLE
-// 
-// The complete reuqirements specification/nomenclatures are 
-// not yet formalized for this toy renderer. That will need to come later.
-[[nodiscard]] TextureHandle Context::CreateTexture(ktxTexture2& texture) {
-
+ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
-		//auto target = pickTarget(*physicalDevice_);
-
-		// This is hardcoded to BC7. it is not appropiate for other than diffuse.
+		// Hardcoded for now, as in your original code.
 		KTX_error_code tr = ktxTexture2_TranscodeBasis(&texture, KTX_TTF_BC7_RGBA, 0);
-		if (tr != KTX_SUCCESS) throw std::runtime_error(ktxErrorString(tr));
+		if (tr != KTX_SUCCESS) {
+			throw std::runtime_error(ktxErrorString(tr));
+		}
 	}
 
-	// they should be generated with the py script
+	// Force offline mip usage.
 	texture.generateMipmaps = KTX_FALSE;
 
-	const VkImageUsageFlags usage =
-		VK_IMAGE_USAGE_SAMPLED_BIT |           // <-- required for sampling
-		VK_IMAGE_USAGE_TRANSFER_DST_BIT |      // <-- required for the copy
-		(texture.generateMipmaps ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0); // for blit chain. this needs linear format.
-
-	ktxVulkanTexture vk_tex{};
-	KTX_error_code kr = ktxTexture2_VkUploadEx(
-		&texture,
-		ktx_vdi,
-		&vk_tex,
-		VK_IMAGE_TILING_OPTIMAL,
-		usage,
-		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-	);
-	if (kr != KTX_SUCCESS) {
-
-		VkFormat fmt = ktxTexture2_GetVkFormat(&texture);
-		char msg[256];
-		snprintf(msg, sizeof(msg), "ktxTexture2_VkUploadEx failed (%s), VkFormat=%d, %ux%u, levels=%u, layers=%u",
-			ktxErrorString(kr), (int)fmt, texture.baseWidth, texture.baseHeight,
-			texture.numLevels, texture.numLayers);
-		throw std::runtime_error(msg);
+	const VkFormat format = ktxTexture2_GetVkFormat(&texture);
+	if (format == VK_FORMAT_UNDEFINED) {
+		throw std::runtime_error("KTX texture has undefined VkFormat after transcoding.");
 	}
 
-	// 3) Build your view/sampler from the format actually created.
-	Texture ctx_tex{};
-	ctx_tex.image = vk_tex.image;
+	const uint32_t width = texture.baseWidth;
+	const uint32_t height = texture.baseHeight;
+	const uint32_t depth = std::max(1u, texture.baseDepth);
+	const uint32_t mipLevels = texture.numLevels;
+	const uint32_t arrayLayers =
+		std::max(1u, texture.numLayers) * std::max(1u, texture.numFaces);
 
-	auto aspect = (vk_tex.imageFormat == VK_FORMAT_D16_UNORM || vk_tex.imageFormat == VK_FORMAT_D32_SFLOAT ||
-		vk_tex.imageFormat == VK_FORMAT_X8_D24_UNORM_PACK32)
-		? VK_IMAGE_ASPECT_DEPTH_BIT
-		: (vk_tex.imageFormat == VK_FORMAT_S8_UINT)
-		? VK_IMAGE_ASPECT_STENCIL_BIT
-		: (vk_tex.imageFormat == VK_FORMAT_D24_UNORM_S8_UINT || vk_tex.imageFormat == VK_FORMAT_D32_SFLOAT_S8_UINT)
-		? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
-		: VK_IMAGE_ASPECT_COLOR_BIT;
+	const bool isCubemap = texture.isCubemap == KTX_TRUE;
 
-	// Lets do this for the moment. DEPTH is 
-	assert(aspect == VK_IMAGE_ASPECT_COLOR_BIT);
+	const VkImageUsageFlags usage =
+		VK_IMAGE_USAGE_SAMPLED_BIT |
+		VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+		(texture.generateMipmaps ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
 
-	auto view_handle = CreateImageView(ctx_tex.image, vk_tex.imageFormat, aspect, texture.numLevels);
-	ctx_tex.imageView = *imageViews_.get(view_handle);
-	auto sh = samplers["default"];
-	ctx_tex.sampler = *samplers_.get(sh);
 
-	// Later, when destroying:
-	// ktxVulkanTexture_Destruct(&vk_tex, device_, nullptr);
+	// -------------------------------------------------------------------------
+	// Create VkImage with VMA
+	// -------------------------------------------------------------------------
+	VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	imageInfo.flags = isCubemap ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+	imageInfo.imageType = (depth > 1) ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+	imageInfo.format = format;
+	imageInfo.extent = { width, height, depth };
+	imageInfo.mipLevels = mipLevels;
+	imageInfo.arrayLayers = arrayLayers;
+	imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+	imageInfo.usage = usage;
+	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-	return textures_.create(std::move(ctx_tex));
-}
+	VmaAllocationCreateInfo imageAllocInfo{};
+	imageAllocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+	imageAllocInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-[[nodiscard]] ShadowMapHandle Context::CreateShadowMap(int width, int height)
-{
-	auto image = CreateShadowMapImage(width, height);
 
-	auto arrayLayers = 1;
-	VkImageViewType viewType = (arrayLayers > 1) ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+	Image image_obj;
+	VkImage image = VK_NULL_HANDLE;
+	VmaAllocation imageAllocation = VK_NULL_HANDLE;
+	VmaAllocationInfo imageAllocationInfo{};
 
-	auto view = CreateImageView(
-		image,
-		//VK_FORMAT_D32_SFLOAT, // Copied from CreateCascadedShadowMapsDepthImage. Need to checlk froamt availabilty and track it, probably...,
-		VK_IMAGE_ASPECT_DEPTH_BIT,
-		1,
-		0,
-		1,
-		viewType
-
+	VkResult vr = vmaCreateImage(
+		allocator_,
+		&imageInfo,
+		&imageAllocInfo,
+		&image,
+		&imageAllocation,
+		&imageAllocationInfo
 	);
 
-	ShadowMap sm{
-	.image = image,
-	.sampleView = view,
-	.renderView = view,
-	};
+	if (vr != VK_SUCCESS) {
+		throw std::runtime_error("vmaCreateImage failed for KTX texture.");
+	}
 
-	return shadowmaps_.create(std::move(sm));
 
+	// -------------------------------------------------------------------------
+	// Create staging buffer and copy KTX payload into it
+	// -------------------------------------------------------------------------
+	ktx_size_t ktxDataSize = ktxTexture_GetDataSize(*texture);
+	ktx_uint8_t* ktxData = ktxTexture_GetData(*texture);
+
+	if (!ktxData || ktxDataSize == 0) {
+		vmaDestroyImage(allocator_, image, imageAllocation);
+		throw std::runtime_error("KTX texture has no image data.");
+	}
+
+	VkBufferCreateInfo stagingBufferInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	stagingBufferInfo.size = static_cast<VkDeviceSize>(ktxDataSize);
+	stagingBufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+	stagingBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+	VmaAllocationCreateInfo stagingAllocInfo{};
+	stagingAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+	stagingAllocInfo.flags =
+		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+		VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+	VkBuffer stagingBuffer = VK_NULL_HANDLE;
+	VmaAllocation stagingAllocation = VK_NULL_HANDLE;
+	VmaAllocationInfo stagingAllocationInfo{};
+
+	vr = vmaCreateBuffer(
+		allocator_,
+		&stagingBufferInfo,
+		&stagingAllocInfo,
+		&stagingBuffer,
+		&stagingAllocation,
+		&stagingAllocationInfo
+	);
+
+	if (vr != VK_SUCCESS) {
+		vmaDestroyImage(allocator_, image, imageAllocation);
+		throw std::runtime_error("vmaCreateBuffer failed for KTX staging buffer.");
+	}
+
+	std::memcpy(stagingAllocationInfo.pMappedData, ktxData, static_cast<size_t>(ktxDataSize));
+	vmaFlushAllocation(allocator_, stagingAllocation, 0, VK_WHOLE_SIZE);
+
+	// -------------------------------------------------------------------------
+	// Build VkBufferImageCopy regions from KTX offsets
+	// -------------------------------------------------------------------------
+	std::vector<VkBufferImageCopy> regions;
+	regions.reserve(mipLevels * arrayLayers);
+
+	for (uint32_t level = 0; level < mipLevels; ++level) {
+		const uint32_t mipWidth = std::max(1u, width >> level);
+		const uint32_t mipHeight = std::max(1u, height >> level);
+		const uint32_t mipDepth = std::max(1u, depth >> level);
+
+		if (texture.numLayers > 0) {
+			// Array texture / cubemap array / cubemap
+			for (uint32_t layer = 0; layer < std::max(1u, texture.numLayers); ++layer) {
+				const uint32_t faces = std::max(1u, texture.numFaces);
+
+				for (uint32_t face = 0; face < faces; ++face) {
+					ktx_size_t offset = 0;
+					KTX_error_code offRes = ktxTexture_GetImageOffset(
+						ktxTexture(texture),
+						level,
+						layer,
+						face,
+						&offset
+					);
+					if (offRes != KTX_SUCCESS) {
+						vmaDestroyBuffer(allocator_, stagingBuffer, stagingAllocation);
+						vmaDestroyImage(allocator_, image, imageAllocation);
+						throw std::runtime_error("ktxTexture_GetImageOffset failed.");
+					}
+
+					VkBufferImageCopy region{};
+					region.bufferOffset = static_cast<VkDeviceSize>(offset);
+					region.bufferRowLength = 0;   // tightly packed
+					region.bufferImageHeight = 0; // tightly packed
+
+					region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+					region.imageSubresource.mipLevel = level;
+					region.imageSubresource.baseArrayLayer = layer * faces + face;
+					region.imageSubresource.layerCount = 1;
+
+					region.imageOffset = { 0, 0, 0 };
+					region.imageExtent = { mipWidth, mipHeight, mipDepth };
+
+					regions.push_back(region);
+				}
+			}
+		}
+		else {
+			// Non-array texture
+			ktx_size_t offset = 0;
+			KTX_error_code offRes = ktxTexture_GetImageOffset(
+				ktxTexture(texture),
+				level,
+				0,
+				0,
+				&offset
+			);
+			if (offRes != KTX_SUCCESS) {
+				vmaDestroyBuffer(allocator_, stagingBuffer, stagingAllocation);
+				vmaDestroyImage(allocator_, image, imageAllocation);
+				throw std::runtime_error("ktxTexture_GetImageOffset failed.");
+			}
+
+			VkBufferImageCopy region{};
+			region.bufferOffset = static_cast<VkDeviceSize>(offset);
+			region.bufferRowLength = 0;
+			region.bufferImageHeight = 0;
+
+			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			region.imageSubresource.mipLevel = level;
+			region.imageSubresource.baseArrayLayer = 0;
+			region.imageSubresource.layerCount = 1;
+
+			region.imageOffset = { 0, 0, 0 };
+			region.imageExtent = { mipWidth, mipHeight, mipDepth };
+
+			regions.push_back(region);
+		}
+	}
+
+	// -------------------------------------------------------------------------
+	// Record upload
+	// -------------------------------------------------------------------------
+	VkCommandBuffer cmd = beginSingleTimeCommands(device_, default_command_pool); // your helper
+
+	{
+		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		barrier.srcAccessMask = 0;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.baseMipLevel = 0;
+		barrier.subresourceRange.levelCount = mipLevels;
+		barrier.subresourceRange.baseArrayLayer = 0;
+		barrier.subresourceRange.layerCount = arrayLayers;
+
+		vkCmdPipelineBarrier(
+			cmd,
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &barrier
+		);
+	}
+
+	vkCmdCopyBufferToImage(
+		cmd,
+		stagingBuffer,
+		image,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		static_cast<uint32_t>(regions.size()),
+		regions.data()
+	);
+
+	{
+		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.baseMipLevel = 0;
+		barrier.subresourceRange.levelCount = mipLevels;
+		barrier.subresourceRange.baseArrayLayer = 0;
+		barrier.subresourceRange.layerCount = arrayLayers;
+
+		vkCmdPipelineBarrier(
+			cmd,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &barrier
+		);
+	}
+
+	endSingleTimeCommands(device_, cmd, default_queue, default_command_pool); // your helper; submit + wait or submit to upload queue
+
+	vmaDestroyBuffer(allocator_, stagingBuffer, stagingAllocation);
+
+	// -------------------------------------------------------------------------
+	// View
+	// -------------------------------------------------------------------------
+	VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+
+	VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
+	if (isCubemap) {
+		viewType = (arrayLayers > 6) ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : VK_IMAGE_VIEW_TYPE_CUBE;
+	}
+	else if (arrayLayers > 1) {
+		viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+	}
+	else if (depth > 1) {
+		viewType = VK_IMAGE_VIEW_TYPE_3D;
+	}
+
+	CreateImageView(
+		image,
+		format,
+		aspect,
+		mipLevels,
+		viewType,
+		arrayLayers,
+		viewType,
+		image_obj.renderView
+	);
+
+
+
+
+	return images_.create(std::move(image_obj));
 }
+
+
+//[[nodiscard]] ShadowMapHandle Context::CreateShadowMap(int width, int height)
+//{
+//	auto image = CreateShadowMapImage(width, height);
+//
+//	auto arrayLayers = 1;
+//	VkImageViewType viewType = (arrayLayers > 1) ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+//
+//	auto view = CreateImageView(
+//		image,
+//		//VK_FORMAT_D32_SFLOAT, // Copied from CreateCascadedShadowMapsDepthImage. Need to checlk froamt availabilty and track it, probably...,
+//		VK_IMAGE_ASPECT_DEPTH_BIT,
+//		1,
+//		0,
+//		1,
+//		viewType
+//
+//	);
+//
+//	ShadowMap sm{
+//	.image = image,
+//	.sampleView = view,
+//	.renderView = view,
+//	};
+//
+//	return shadowmaps_.create(std::move(sm));
+//
+//}
 
 [[nodiscard]] ImageHandle Context::CreateShadowMapImage(int texWidth, int texHeight /*int cascades*/) {
 
@@ -1683,8 +1690,6 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	return image_handle;
 };
 
-// I don't like texHeight and texWidth with subscript tex. Images can be non textures...
-// Should be cleaned up later.
 [[nodiscard]] ImageHandle Context::CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers) {
 
 	Image image = {};
@@ -1721,11 +1726,10 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	image.usage = usage;
 	image.arrayLayers = arrayLayers;
 
-
 	//VmaAllocation alloc = VK_NULL_HANDLE;
 	VmaAllocationInfo allocInfo{};
 
-	VkResult res = vmaCreateImage(*allocator_, &imgCI, &allocation_create_info, &image.image, &image.alloc, &allocInfo);
+	VkResult res = vmaCreateImage(allocator_, &imgCI, &allocation_create_info, &image.image, &image.alloc, &allocInfo);
 	if (res != VK_SUCCESS) {
 		throw std::runtime_error("vmaCreateImage (in pool) failed");
 	}
@@ -1734,7 +1738,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 
 }
 
-[[nodiscard]] MeshDescHandle Context::UploadVertexData(MeshUploadInput& geometry_data)
+[[nodiscard]] GeometryHandle Context::UploadVertexData(MeshUploadInput& geometry_data)
 {
 	const uint32_t vcount = static_cast<uint32_t>(geometry_data.vertices.size());
 	auto page = geometry_pages.get(current_geometry_page);
@@ -1846,9 +1850,9 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	}
 
 	// ------------------------------------------
-	// 5) Draw range (bind-once style)
+	// 5) Surface (bind-once style)
 	// ------------------------------------------
-	DrawRange ds{};
+	Surface ds{};
 	ds.page = current_geometry_page;
 	ds.index_count = static_cast<uint32_t>(geometry_data.indices.size());
 	ds.first_index = static_cast<uint32_t>(index_offset_bytes / sizeof(IndexT));
@@ -1860,7 +1864,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	Geometry mesh_dec{};
 	mesh_dec.lods = 1;
 	mesh_dec.lod_offsets = { 0 };
-	mesh_dec.sets = { ds };
+	mesh_dec.surfaces = { ds };
 	mesh_dec.aabbMin = geometry_data.aabb_min;
 	mesh_dec.aabbMax = geometry_data.aabb_max;
 
@@ -1887,12 +1891,12 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 		VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
 	// 3) Create buffer + allocation
-	VK_CHECK(vmaCreateBuffer(*allocator_, &ci, &aci,
+	VK_CHECK(vmaCreateBuffer(allocator_, &ci, &aci,
 		&desc.buffer, &desc.alloc, &desc.allocInfo));
 
 	// 4) Cache memory properties for quick checks/debug
 	VkMemoryPropertyFlags props{};
-	vmaGetAllocationMemoryProperties(*allocator_, desc.alloc, &props);
+	vmaGetAllocationMemoryProperties(allocator_, desc.alloc, &props);
 	desc.memory_flags = props;
 	desc.usage = ci.usage;
 
@@ -1914,14 +1918,14 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	auto* buf = buffers_.get(handle);
 
 	void* mapped = nullptr;
-	VK_CHECK(vmaMapMemory(*allocator_, buf->alloc, &mapped));
+	VK_CHECK(vmaMapMemory(allocator_, buf->alloc, &mapped));
 
 	// NOTE: memcpy(dst <- src)
 	std::memcpy(mapped, srcData, static_cast<size_t>(size));
 
 	// HOST_COHERENT means we don't need vmaFlushAllocation.
 	// If you drop HOST_COHERENT in the future, call vmaFlushAllocation here.
-	vmaUnmapMemory(*allocator_, buf->alloc);
+	vmaUnmapMemory(allocator_, buf->alloc);
 
 	return handle;
 }
@@ -1929,7 +1933,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 [[nodiscard]] ShaderModuleHandle Context::CreateShaderModule(std::vector<char> code) {
 
 	auto shader = createDeviceShaderModule(
-		*device_,
+		device_,
 		std::move(code)
 	);
 
@@ -2012,7 +2016,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	ci.pNext = anyFlags ? &flagsCI : nullptr;
 
 	VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-	VK_CHECK(vkCreateDescriptorSetLayout(*device_, &ci, nullptr, &layout));
+	VK_CHECK(vkCreateDescriptorSetLayout(device_, &ci, nullptr, &layout));
 
 	DescriptorLayoutHandle h = descriptorSetLayouts_.create(std::move(layout));
 
@@ -2027,6 +2031,9 @@ VkQueue Context::GetGraphicsQueue() {
 }
 
 // TO-DO
+// Just a placeholder for now to remember pipeline caching scheme needs inplementation
+// Doom 2016 had a redudec number of PSOs in the 400
+// Keeping this here as goal and to have in mind the orders of magintude we are talking about
 PipelineHandle Context::GetAppropiatePipeline(PipelineKey key)
 {
 	return pipelines_.getHandle(0);
@@ -2035,41 +2042,84 @@ PipelineHandle Context::GetAppropiatePipeline(PipelineKey key)
 void destroy(Context* ctx, ShaderModuleHandle handle) {
 	assert(handle.valid());
 	auto sm = ctx->shaderModules_.get(handle);
-	vkDestroyShaderModule(*ctx->device_, *sm, NULL);
+	vkDestroyShaderModule(ctx->device_, *sm, NULL);
 	ctx->shaderModules_.destroy(handle);
-};
-void destroy(Context* ctx, TextureHandle handle) {
-	assert(handle.valid());
-	auto tex = ctx->textures_.get(handle);
+}
+void destroy(Context* ctx, DescriptorPoolHandle handle)
+{}
+void destroy(Context * ctx, DescriptorSetHandle handle)
+{}
+void destroy(Context * ctx, DescriptorLayoutHandle handle)
+{}
+;
 
-	// Lets not manage samplers just this soon. we have a default one with use for every texture rnow anyways.
-	//if (tex->owns_sampler) {
-	//	vkDestroySampler(*ctx->device_, tex->sampler, nullptr);
-	//	// this is not needed its just a pattern for preventing use after free.
-	//	//tex->sampler = VK_NULL_HANDLE;
+void destroy(Context* ctx, ImageViewHandle handle)
+{
+	auto obj_ = ctx->imageViews_.get(handle);
+	vkDestroyImageView(ctx->device_, *obj_, nullptr);
+	ctx->imageViews_.destroy(handle);
+}
+
+void destroy(Context* ctx, SamplerHandle handle)
+{}
+
+void destroy(Context* ctx, ImageHandle handle)
+{
+
+	if (!handle.valid()) return;
+
+	//auto image = ctx->images_.get(handle);
+	Image& image = *ctx->images_.get(handle);
+
+	// Destroy any image views created from this image first.
+	//if (image.view != VK_NULL_HANDLE) {
+	//    vkDestroyImageView(device_, image.view, nullptr);
+	//    image.view = VK_NULL_HANDLE;
 	//}
 
-	// Im pairing imageViews 1 to 1 with iamges. so lets free that
-	vkDestroyImageView(*ctx->device_, tex->imageView, nullptr);
-	vmaDestroyImage(*ctx->allocator_, tex->image, tex->alloc);
+	// If you created other views per mip/layer, destroy those too.
+	// If you created a sampler, destroy that separately:
+	// vkDestroySampler(device_, image.sampler, nullptr);
 
-	ctx->textures_.destroy(handle);
+	if (image.image != VK_NULL_HANDLE) {
+		vmaDestroyImage(ctx->allocator_, image.image, image.alloc);
+		image.image = VK_NULL_HANDLE;
+		image.alloc = nullptr;
+	}
+
+	ctx->images_.destroy(handle);
+
+	//auto obj_ = ctx->images_.get(handle);
+	//vmaDestroyImage(*ctx->allocator_, obj_->image, obj_->alloc);
+	//ctx->images_.destroy(handle);
 }
-void destroy(Context* ctx, ImageHandle handle)
-{}
+
+
 void destroy(Context* ctx, DeviceBufferHandle handle) {
 	assert(handle.valid());
 	auto db = ctx->buffers_.get(handle);
-	vmaDestroyBuffer(*ctx->allocator_, db->buffer, db->alloc);
+	vmaDestroyBuffer(ctx->allocator_, db->buffer, db->alloc);
 	ctx->buffers_.destroy(handle);
-};
+}
+void destroy(Context* ctx, PipelineHandle handle)
+{}
+;
 void destroy(Context* ctx, PipelineLayoutHandle h)
 {
 	assert(h.valid());
 	auto* pl = ctx->pipelineLayouts_.get(h);
-	if (pl->layout) vkDestroyPipelineLayout(*ctx->device_, pl->layout, nullptr);
+	if (pl->layout) vkDestroyPipelineLayout(ctx->device_, pl->layout, nullptr);
 	ctx->pipelineLayouts_.destroy(h);
 }
+
+void destroy(Context* ctx, GeometryHandle handle)
+{}
+
+void destroy(Context * ctx, GeometryPageHandle handle)
+{}
+
+void destroy(Context * ctx, MaterialInstanceHandle handle)
+{}
 
 // END
 
