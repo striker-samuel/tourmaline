@@ -1,7 +1,5 @@
 #include <Engine/Renderer/context.h>
 
-//#include <ktxvulkan.h>
-
 static inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
 
 Context::Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface) {
@@ -293,8 +291,6 @@ void Context::CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags
 
 	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
 }
-
-
 
 [[nodiscard]] ImageViewHandle  Context::CreateImageView(
 	VkImage image,
@@ -938,9 +934,8 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 #pragma region ---[LayoutDescription]---
 
 	PipelineLayoutHandle plytHandle = createPipelineLayout(layoutDesc);
-	pipeline.plyt = plytHandle;
-
 	PipelineLayout* plytObj = pipelineLayouts_.get(plytHandle);
+	//pipeline.plyt = plytHandle;
 
 #pragma endregion
 
@@ -977,6 +972,7 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 	{
 		throw std::runtime_error("failed to create graphics pipeline!");
 	}
+
 
 	return pipelines_.create(std::move(pipeline));
 
@@ -1410,11 +1406,12 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 	}
 
 
-	// -------------------------------------------------------------------------
-	// Create staging buffer and copy KTX payload into it
-	// -------------------------------------------------------------------------
-	ktx_size_t ktxDataSize = ktxTexture_GetDataSize(*texture);
-	ktx_uint8_t* ktxData = ktxTexture_GetData(*texture);
+	// TODO: This is really ugly. Revise 
+	auto* base = reinterpret_cast<ktxTexture*>(&texture);
+
+	// Should this be compressed or uncompressed size?? My guess is uncompressed.
+	ktx_size_t ktxDataSize = ktxTexture_GetDataSizeUncompressed(base);
+	ktx_uint8_t* ktxData = ktxTexture_GetData(base);
 
 	if (!ktxData || ktxDataSize == 0) {
 		vmaDestroyImage(allocator_, image, imageAllocation);
@@ -1471,8 +1468,8 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 
 				for (uint32_t face = 0; face < faces; ++face) {
 					ktx_size_t offset = 0;
-					KTX_error_code offRes = ktxTexture_GetImageOffset(
-						ktxTexture(texture),
+					KTX_error_code offRes = ktxTexture2_GetImageOffset(
+						&texture,
 						level,
 						layer,
 						face,
@@ -1504,8 +1501,12 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 		else {
 			// Non-array texture
 			ktx_size_t offset = 0;
+
+
+
 			KTX_error_code offRes = ktxTexture_GetImageOffset(
-				ktxTexture(texture),
+				base,
+				//ktxTexture(texture),
 				level,
 				0,
 				0,
@@ -1717,12 +1718,14 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 	allocation_create_info.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
 	allocation_create_info.pool = D_2DImagesPool;
 
+	// Laout is transient. and depents on stage. 
 	//	image.layout = VK_IMAGE_LAYOUT_UNDEFINED;
 	image.format = format;
 	image.levels = levels;
-	image.width = texWidth;
-	image.height = texHeight;
-	// Lets store usage. 
+
+	image.extent.width = texWidth;
+	image.extent.height = texHeight;
+
 	image.usage = usage;
 	image.arrayLayers = arrayLayers;
 
@@ -2123,4 +2126,5 @@ void destroy(Context * ctx, MaterialInstanceHandle handle)
 
 // END
 
-void Context::CleanUp() {}
+void Context::CleanUp(
+) {}

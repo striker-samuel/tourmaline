@@ -15,7 +15,6 @@
 #include <ktx.h>
 #include <ktxvulkan.h>
 
-static inline bool is_aligned4(uint32_t v);
 
 
 // This belongs here. 
@@ -80,31 +79,28 @@ public:
 	VkQueue default_queue;
 	VkQueue transfer_queue;
 
+	GeometryPageHandle current_geometry_page;
 	// --------------------------------------
 
 	Pool<BufferDescription, BufferDescription> buffers_;
-
-	// ...
 	Pool<Image, Image> images_;
 	
-	Pool<ImageView, VkImageView> imageViews_;
+	Pool<ImageView, VkImageView> imageViews_; // We may not need this one.
 	Pool<Sampler, VkSampler> samplers_;
-	Pool<PipelineLayout, PipelineLayout> pipelineLayouts_;
 
 	Pool<ShaderModule, VkShaderModule> shaderModules_;
+
 	Pool<DescriptorSet, DescriptorSet> descriptorSets_;
 	Pool<DescriptorLayout, VkDescriptorSetLayout> descriptorSetLayouts_;
 	Pool<DescriptorPool, VkDescriptorPool> descriptorSetPools_;
 
 	Pool<Pipeline, Pipeline> pipelines_;
+	Pool<PipelineLayout, PipelineLayout> pipelineLayouts_;
 
-	//
-	Pool<MaterialInstance, MaterialInstance> materialInstances_;
-	//
-	GeometryPageHandle current_geometry_page;
 	Pool<Geometry, Geometry> meshes_;
 	Pool <GeometryPage, GeometryPage> geometry_pages;
-	// 
+
+	Pool<MaterialInstance, MaterialInstance> materialInstances_;
 
 	Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface);
 	~Context(
@@ -145,7 +141,9 @@ public:
 
 	DescriptorPoolHandle createDescriptorPool();
 
-	void CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view); 
+	ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType);
+	void CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view);
+
 	//ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount);
 	//ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType);
 	//ImageViewHandle CreateImageView(ImageHandle image, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType);

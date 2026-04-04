@@ -7,21 +7,18 @@
 
 #include <ktxvulkan.h>
 
-// This structs should be named less generic, somethign like ToyPipeline could help to notice
-// this are part of my implementation surface and not Vulkans or other. 
+
+//  
 struct Pipeline {
-
-
 	// Only caring for these stages for now.
 	ShaderModuleHandle vert;
 	ShaderModuleHandle frag;
-
-
-	DescriptorSetHandle ds;
-	PipelineLayoutHandle plyt;
-
 	VkPipeline pipeline;
-	//maybe name
+
+	// this can and should be reusable from pipeline to pipeline.
+	// thats the why for handles instead of VkDescriptorSet
+	std::vector<DescriptorSetHandle> sets;
+
 
 };
 
@@ -34,8 +31,8 @@ struct PipelineLayout {
 	VkPipelineLayout layout = VK_NULL_HANDLE;
 	std::vector<DescriptorLayoutHandle> setLayouts; // keep handles for lifetime tracking
 };
-///
-//
+
+// Surface is the 3d primitve and not to be taken as renderSurface.
 struct Surface {
 	GeometryPageHandle page;
 	uint32_t first_index; 
@@ -48,7 +45,8 @@ struct MaterialInstance {
 	MaterialPushConstants values = {};
 };
 
-// This is currently the smallest primitive for geometry data.
+// 
+// 
 struct Geometry {
 
 	glm::vec3 aabbMin;
