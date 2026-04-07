@@ -29,25 +29,22 @@
 // --Defaults--
 constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 
-//
-//typedef struct VkRenderingAttachmentInfo {
-//    VkStructureType          sType;
-//    const void*              pNext;
-//    VkImageView              imageView;
-//    VkImageLayout            imageLayout;
-//    VkResolveModeFlagBits    resolveMode;
-//    VkImageView              resolveImageView;
-//    VkImageLayout            resolveImageLayout;
-//    VkAttachmentLoadOp       loadOp;
-//    VkAttachmentStoreOp      storeOp;
-//    VkClearValue             clearValue;
-//} VkRenderingAttachmentInfo;
 
-struct RenderPass final {
-	VkRenderingAttachmentInfo color[1] = {};
-	VkRenderingAttachmentInfo depth = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
-	VkRenderingAttachmentInfo stencil = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
+// Flow structs.
+// Toypasss
+struct ToyCommandBuffer final {
+	VkCommandBuffer commandBuffer;
+	VkRenderingInfo renderingInfo;
+
 };
+//struct RenderPass final{};
+//struct FrameBuffer final{};
+
+//struct RenderPass final {
+//	VkRenderingAttachmentInfo color[1] = {};
+//	VkRenderingAttachmentInfo depth = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
+//	VkRenderingAttachmentInfo stencil = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
+//};
 
 struct FrameBuffer {
 	struct Attachment {
@@ -60,11 +57,27 @@ struct FrameBuffer {
 
 };
 
+// ----
+
+// Crap will move out from here
+std::vector<std::string> gltf_meshes_paths = {
+	"content/models/Sponza/sponza.gltf" // Index 0
+};
+
+Camera* camera_ = nullptr;
+CameraPositioner_FirstPerson cameraPositioner = CameraPositioner_FirstPerson(
+	glm::vec3(0.0f, 1.0f, 0.0f), //pos
+	glm::vec3(0.0f, 1.0f, 1.0f), //target
+	glm::vec3(0.0f, 1.0f, 0.0f) //up
+);
+
 
 class VulkanApp {
 
 public:
 
+	// Will remove nows
+	void Record();
 	bool Initialize();
 
 	void Start();
@@ -82,7 +95,9 @@ public:
 
 	};
 
-	void BeginRendering(VkCommandBuffer commandBuffer, RenderPass renderpass, FrameBuffer fb);
+	void EndRendering();
+
+
 	//
 	void LoadScene();
 
@@ -92,6 +107,11 @@ private:
 	ImGuiContext* imgui_ctx;
 	VulkanSwapchain& swapchain;
 
+	//
+	VkQueue presentQueue;
+	VkQueue graphicsQueue;
+
+	//
 	Scene& scene_;
 	BvhTree tree_;
 
@@ -100,12 +120,6 @@ private:
 	float delta_time_s;
 	float time_since_start_s;
 
-	//Camera* camera_ = nullptr;
-	CameraPositioner_FirstPerson cameraPositioner = CameraPositioner_FirstPerson(
-		glm::vec3(0.0f, 1.0f, 0.0f), //pos
-		glm::vec3(0.0f, 1.0f, 1.0f), //target
-		glm::vec3(0.0f, 1.0f, 0.0f) //up
-	);
 
 	glm::mat4 frozenMainView = {};
 
@@ -256,7 +270,7 @@ private:
 			Update(); // Main
 			LateUpdate();
 
-			DrawFrame();
+			//DrawFrame();
 
 		}
 
@@ -456,9 +470,15 @@ private:
 
 #pragma region ===[ CommandRecording ]===
 
-	void Acquire();
-	void Submit();
-	void DrawFrame();
+ //This approach is wrong, forces manual discipline, to not interleave acquire and submit of different toyCommandBuffer objs.
+	//Could be better done with the lightweightVk approach
+	ToyCommandBuffer Acquire(
+		//FrameBuffer fb
+	);
+	void Submit(ToyCommandBuffer& cmds);
+
+	// This was the main event entry poitn for frameDraw. No longer done this way
+	//void DrawFrame();
 
 #pragma endregion
 
@@ -501,12 +521,9 @@ void VulkanApp::InitializeImGui() {
 		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
 	pipeline_create.pNext = VK_NULL_HANDLE;
 
-
-
-
 	// We are using the single color buffer out.
 	pipeline_create.colorAttachmentCount = 1;
-	pipeline_create.pColorAttachmentFormats = &swapchain.imageFormat_;
+	pipeline_create.pColorAttachmentFormats = &swapchain.surfaceFormat_;
 
 	pipeline_create.depthAttachmentFormat = findDepthFormat(physicalDevice);
 	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
@@ -717,8 +734,8 @@ void VulkanApp::InitVulkanApp() {
 
 		volkLoadDevice(device);
 
-		//vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue_);
-		vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue_);
+		vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
+		vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
 
 		// Assert for BC7
 		VkFormatProperties p{};
@@ -781,8 +798,18 @@ bool VulkanApp::Initialize() {
 
 	// SWAPCHAIN
 
-	swapchain = new VulkanSwapchain();
+	auto swap = new VulkanSwapchain(
+		context,
+		physicalDevice, // This may be redundant, context already knows of device, and physDevice.
+		device, //
+		surface,
+		presentQueue, // Queue acquisition is currently done on InitVulkanApp()
+		window,
+		MAX_FRAMES_IN_FLIGHT,
+		DESIRED_SWAPCHAIN_IMAGE_COUNT
+	);
 	// 
+
 	InitializeImGui();
 
 
@@ -913,20 +940,19 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 
 #pragma endregion
 
-void VulkanApp::Acquire() {
+
+
+ToyCommandBuffer VulkanApp::Acquire(
+	//FrameBuffer fb // We are just takign swap
+) {
 
 	vkWaitForFences(
 		device,
 		1,
-		swapchain.GetInFlightFence(),
+		&swapchain.GetInFlightFence(),
 		VK_TRUE,
 		UINT64_MAX
 	);
-
-	//if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
-	//	vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
-	//}
-	//imagesInFlight[imageIndex] = inFlightFences[currentFrame];
 
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(
@@ -941,13 +967,24 @@ void VulkanApp::Acquire() {
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
 		swapchain.RecreateSwapChain();
-		return;
+
+		// hmmmm, dont kwnow how i shoild handle this...
+		return; 
 	}
 	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
 
+	//
+	swapchain.SetCurrentImageIndex(imageIndex);
+
+	// This needs to be here for correctness. Acquire image can hold.
 	UpdateDeltaTime();
+
+
+	// Now we reset the command obj we will be recording to.
+	// Resetting pool so its cheaper.
+	// We also reset the flag. Flags are raised and done. reset is manual.
 
 	// We reset fence to off
 	vkResetFences(device, 1, &swapchain.inFlightFences_[swapchain.currentFrame_]);
@@ -958,11 +995,6 @@ void VulkanApp::Acquire() {
 	//	/*VkCommandBufferResetFlagBits*/ 0);
 	vkResetCommandPool(device, perFrameCommandPools[swapchain.currentFrame_], 0);
 
-	//UiPass();
-
-	// this is per frame scene state
-	// This guarantess completeness and syncronization because its default_queue
-	//UpdateFrameUniforms(currentFrame); 
 
 	VkCommandBufferBeginInfo beginInfo{};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -971,6 +1003,7 @@ void VulkanApp::Acquire() {
 		throw std::runtime_error("failed to begin recording command buffer!");
 	}
 
+	// Acquire right now returns a commandBuffer to record to frame correspoding swapchain color Image
 	VkImageMemoryBarrier barrierToColorAttachment{};
 	barrierToColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 	barrierToColorAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // or VK_IMAGE_LAYOUT_PRESENT_SRC_KHR if reusing
@@ -999,11 +1032,50 @@ void VulkanApp::Acquire() {
 		1, &barrierToColorAttachment
 	);
 
+	// ImgGui here adds ui commadns.
+	//UiPass();
+	//UpdateFrameUniforms(currentFrame); 
 
-	// Command recording starts here
+	//auto color = context->images_.get(fb.color.render);
+	//auto depth = context->images_.get(fb.depth.render);
+
+	auto color = swapchain.GetCurrentImageView();
+	auto depth = swapchain.GetDepthImage();
+	auto depthView = context->images_.get(depth)->renderView;
+
+	VkRenderingAttachmentInfo depthAttachment{};
+	depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+	depthAttachment.imageView = depthView;
+	depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+	depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
+
+	VkRenderingAttachmentInfo colorAttachment{};
+	colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+	colorAttachment.imageView = color;
+	colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
+
+VkRenderingInfoKHR renderingInfo;
+	renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
+	renderingInfo.renderArea.offset = { 0, 0 };
+	renderingInfo.renderArea.extent = swapchain.GetExtent();
+	renderingInfo.layerCount = 1;
+	renderingInfo.colorAttachmentCount = 1;
+
+	renderingInfo.pColorAttachments = &colorAttachment;
+	renderingInfo.pDepthAttachment = &depthAttachment;
+
+	return ToyCommandBuffer{
+		.commandBuffer = commandBuffers[swapchain.currentFrame_],
+		.renderingInfo = renderingInfo
+	};
 }
 
-void VulkanApp::Submit() {
+void VulkanApp::Submit(ToyCommandBuffer& cmds) {
 
 	VkResult result;
 
@@ -1055,12 +1127,12 @@ void VulkanApp::Submit() {
 		presentInfo.pSwapchains = swapChains;
 		presentInfo.pImageIndices = &swapchain.currentImageIndex_;
 
-		result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+		result = vkQueuePresentKHR(presentQueue, &presentInfo);
 
 		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
 			framebufferResized) {
 			framebufferResized = false;
-			RecreateSwapChain();
+			swapchain.RecreateSwapChain();
 		}
 		else if (result != VK_SUCCESS) {
 			throw std::runtime_error("failed to present swap chain image!");
@@ -1093,27 +1165,7 @@ void VulkanApp::LoadScene() {
 
 }
 
-void VulkanApp::BeginRendering(VkCommandBuffer commandBuffer, RenderPass renderpass, FrameBuffer fb) {
-
-	VkRenderingInfoKHR renderingInfo{};
-	renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
-	renderingInfo.renderArea.offset = { 0, 0 };
-	renderingInfo.renderArea.extent = swapchain.getExtent();
-	renderingInfo.layerCount = 1;
-	renderingInfo.colorAttachmentCount = 1;
-	renderingInfo.pColorAttachments = &renderpass.color;
-	renderingInfo.pDepthAttachment = &renderpass.depth;
-
-}
-
-
-void VulkanApp::EndRendering() {
-
-}
-
-void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer) {
-
-
+void VulkanApp::Record(){
 
 	//
 
@@ -1150,7 +1202,23 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer) {
 
 	}
 
-	vkCmdBeginRendering(commandBuffer, &renderingInfo);
+	auto cmd = Acquire(
+
+		// Just acquirec spwap current Color, and swap depth
+		//FrameBuffer{
+		//	.color = ,
+		//	.depth = 
+		//}
+		// definition
+	);
+
+	vkCmdBeginRendering(
+		cmd.commandBuffer,
+		&cmd.renderingInfo
+	);
+
+
+	auto swapChainExtent = swapchain.GetExtent();
 
 	// VIEWPORT
 	// Flipped because of this :)
@@ -1162,16 +1230,17 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer) {
 	vp.height = (float)swapChainExtent.height;
 	vp.minDepth = 0.0f;
 	vp.maxDepth = 1.0f;
-	vkCmdSetViewport(commandBuffer, 0, 1, &vp);
+	vkCmdSetViewport(cmd.commandBuffer, 0, 1, &vp);
 
 	// SCISSOR.
 	VkRect2D scissor{};
 	scissor.offset = { 0, 0 };
 	scissor.extent = swapChainExtent;
-	vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+	vkCmdSetScissor(cmd.commandBuffer, 0, 1, &scissor);
 
 	// BIND VETEX
-	BindVertex(commandBuffer);
+	// Dont have 
+	// BindVertex(commandBuffer);
 
 	// BIND DESCRIPTOR SETS
 	auto dynamic_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDynamicDescriptorSet);
@@ -1256,7 +1325,7 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer) {
 				&all
 			);
 
-			for (auto& draw_set : mesh_desc->sets) {
+			for (auto& draw_set : mesh_desc->surfaces) {
 
 				auto& model_ = scene_.globalTransform[visible_node];
 				vkCmdPushConstants(
@@ -1297,7 +1366,7 @@ void VulkanApp::RecordMainViewCommmandsForFrame(VkCommandBuffer commandBuffer) {
 	barrier.dstAccessMask = 0;  // Nothing needs to read it before present
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = getCurrentSwapchainColorImage();
+	barrier.image = swapchain.GetCurrentImage();
 	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	barrier.subresourceRange.baseMipLevel = 0;
 	barrier.subresourceRange.levelCount = 1;
@@ -1361,71 +1430,7 @@ void UpdateFrameUniforms(uint32_t currentFrame) {
 
 	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentFrame]);
 
-
 }
-// Updates perframe camera view settings. view, proj, invView... etc.
-void UpdateFrameUniforms(uint32_t currentFrame) {
-
-	auto view = camera_->getViewMatrix();
-	auto proj = camera_->getProjMatrix();
-	proj[1][1] *= -1;
-
-	auto viewProj = proj * view;
-
-	FrameUniforms data{};
-	data.cameraPos = cameraPositioner.cameraPosition_;
-
-	data.view = view;
-	data.proj = proj;
-	data.viewProj = viewProj;
-
-	data.invView = glm::inverse(view);
-	data.invProj = glm::inverse(proj);
-	data.invViewProj = glm::inverse(viewProj);
-
-	data.time = 0.0f;
-	data.viewportSize = { width_, height_ };
-	data.invViewportSize = { 1.0f / width_, 1.0f / height_ };
-
-	// Not implemented for now
-	data.nearPlane = 0.f;
-	data.farPlane = 0.f;
-	data.exposure = 0.f;
-
-	VkResult result{};
-	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentFrame]);
-
-	context->UploadDataToBuffer(
-		frameUniformsBinding.buffer_h,
-		&data,
-		sizeof(FrameUniforms)/* * 1*/,
-		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-		VK_ACCESS_SHADER_READ_BIT,
-		0,
-		frameUniformsBinding.dynamicOffsetFrame(currentFrame)
-	);
-
-	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentFrame]);
-
-
-}
-
-//VkRenderingAttachmentInfoKHR depthAttachment{};
-//depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-//depthAttachment.imageView = main_depthImageView;
-//depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-//depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-//depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-//depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
-
-//VkRenderingAttachmentInfoKHR colorAttachment{};
-//colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-//colorAttachment.imageView = swapChainImageViews[imageIndex];  // actual view
-//colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-//colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-//colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-//colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
 
 
 PipelineHandle pipe;
@@ -1484,18 +1489,18 @@ void VulkanApp::Start() {
 						  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
 				.immutableSamplers = {}
 			},
-			// Example bindless samplers
-			BindingDesc{
-				.binding = 3,
-				.type = VK_DESCRIPTOR_TYPE_SAMPLER,
-				.count = MAX_TEXTURES, // We carry 1 to one samplers, this is wasteful but lets do this ftm
-				.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
-				.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-						  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-				.immutableSamplers = {}
-			}
+		// Example bindless samplers
+		BindingDesc{
+			.binding = 3,
+			.type = VK_DESCRIPTOR_TYPE_SAMPLER,
+			.count = MAX_TEXTURES, // We carry 1 to one samplers, this is wasteful but lets do this ftm
+			.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
+			.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+					  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+			.immutableSamplers = {}
 		}
 	}
+}
 	};
 	desc.pushConstants.push_back(
 		{
@@ -1522,8 +1527,6 @@ void VulkanApp::Start() {
 	);
 
 
-
-
 	auto pipe_obj = context->pipelines_.get(main_view_pipeline_h);
 	auto aa = context->pipelineLayouts_.get(pipe_obj->plyt);
 	auto bb = aa->setLayouts;
@@ -1546,10 +1549,4 @@ void VulkanApp::Start() {
 	LoadScene();
 	//UpdateBindlessTexturesSets();
 
-}
-
-
-
-void VulkanApp::DrawFrame() {
-
-}
+};

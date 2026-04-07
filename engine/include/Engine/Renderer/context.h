@@ -85,7 +85,7 @@ public:
 	Pool<BufferDescription, BufferDescription> buffers_;
 	Pool<Image, Image> images_;
 	
-	Pool<ImageView, VkImageView> imageViews_; // We may not need this one.
+	//Pool<ImageView, VkImageView> imageViews_; // We may not need this one.
 	Pool<Sampler, VkSampler> samplers_;
 
 	Pool<ShaderModule, VkShaderModule> shaderModules_;
@@ -141,12 +141,7 @@ public:
 
 	DescriptorPoolHandle createDescriptorPool();
 
-	ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType);
 	void CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view);
-
-	//ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount);
-	//ImageViewHandle CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType);
-	//ImageViewHandle CreateImageView(ImageHandle image, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType);
 
 	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
 	DeviceBufferHandle createBuffer(VkDeviceSize size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);

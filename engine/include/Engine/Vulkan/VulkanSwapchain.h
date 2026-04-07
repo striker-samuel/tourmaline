@@ -9,68 +9,7 @@
 
 #include <Engine/Renderer/context.h>
 
-//void createImageView(
-//		VkImage image,
-//		VkFormat format,
-//		VkImageAspectFlags aspectFlags,
-//		VkImageView& imageView,
-//		int levelCount
-//	) {
-//		VkImageViewCreateInfo viewInfo{};
-//		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-//		viewInfo.image = image;
-//		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-//		viewInfo.format = format;
-//		// viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-//		viewInfo.subresourceRange.aspectMask = aspectFlags;
-//		viewInfo.subresourceRange.baseMipLevel = 0;
-//		viewInfo.subresourceRange.levelCount = levelCount;
-//		viewInfo.subresourceRange.baseArrayLayer = 0;
-//		viewInfo.subresourceRange.layerCount = 1;
-//
-//		if (vkCreateImageView(device, &viewInfo, nullptr, &imageView) !=
-//			VK_SUCCESS) {
-//			throw std::runtime_error("failed to create texture image view!");
-//		}
-//
-//	}
-//	// Obly used now for depthImage. Im gonnad need to add supprot for this on context.... for shadowmpas.
-//	void createImage(
-//		uint32_t width,
-//		uint32_t height,
-//		VkFormat format,
-//		VkImageTiling tiling,
-//		VkImageUsageFlags usage,
-//		VkMemoryPropertyFlags properties,
-//		VkImage& image
-//	) {
-//
-//		VkImageCreateInfo imgCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-//		imgCreateInfo.imageType = VK_IMAGE_TYPE_2D;
-//		imgCreateInfo.extent.width = width;
-//		imgCreateInfo.extent.height = height;
-//		imgCreateInfo.extent.depth = 1;
-//		imgCreateInfo.mipLevels = 1;
-//		imgCreateInfo.arrayLayers = 1;
-//		imgCreateInfo.format = format;
-//		imgCreateInfo.tiling = tiling;
-//		imgCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-//		imgCreateInfo.usage = usage;
-//		imgCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-//
-//		VmaAllocationCreateInfo allocCreateInfo = {};
-//		allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-//		allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-//		allocCreateInfo.priority = 1.0f;
-//
-//		VmaAllocation alloc;
-//		vmaCreateImage(*context->allocator_, &imgCreateInfo, &allocCreateInfo, &image, &alloc, nullptr);
-//		//return alloc;
-//	}
-
-
 class VulkanSwapchain {
-
 
 public:
     int current_width, current_height = 0;
@@ -82,8 +21,8 @@ public:
         VkSurfaceKHR surface,
         VkQueue presentQueue,
         GLFWwindow* window,
-        uint32_t framesInFlight,
-        uint32_t desiredImageCount
+        const uint32_t framesInFlight,
+        const uint32_t desiredImageCount
     )
         : ctx_(context),
           physicalDevice_(physicalDevice),
@@ -137,7 +76,7 @@ public:
 
     // Getters so it can be marked as const on callee site?. ..Dont quite like it.
     VkSwapchainKHR GetHandle() const { return swapchain_; }
-    VkFormat GetImageFormat() const { return imageFormat_; }
+    VkFormat GetImageFormat() const { return surfaceFormat_; }
     VkExtent2D GetExtent() const { return extent_; }
 
     uint32_t GetImageCount() const {
@@ -172,7 +111,7 @@ public:
         return imageAvailableSemaphores_.at(currentFrame_);
     }
 
-    VkFence GetInFlightFence() const {
+    VkFence& GetInFlightFence() /*const*/ {
         return inFlightFences_.at(currentFrame_);
     }
 
@@ -182,10 +121,6 @@ public:
 
     ImageHandle GetDepthImage() const {
         return depthImage_;
-    }
-
-    ImageViewHandle GetDepthImageView() const {
-        return depthImageView_;
     }
 
     void AdvanceFrame() {
@@ -208,16 +143,19 @@ public:
 
     std::vector<VkImage> images_;
     std::vector<VkImageView> imageViews_;
-    std::vector<VkSemaphore> renderFinishedSemaphores_;
 
+    // refactor to use this instead.
+    // images already can hold views and samplers too.
+    //std::vector<ImageHandle> images_;
+
+    std::vector<VkSemaphore> renderFinishedSemaphores_;
     std::vector<VkSemaphore> imageAvailableSemaphores_;
     std::vector<VkFence> inFlightFences_;
 
-    VkFormat imageFormat_ = VK_FORMAT_UNDEFINED;
+    VkFormat surfaceFormat_ = VK_FORMAT_UNDEFINED;
     VkExtent2D extent_{};
 
     ImageHandle depthImage_{};
-    ImageViewHandle depthImageView_{};
 
     uint32_t framesInFlight_ = 0;
     uint32_t desiredImageCount_ = 0;
@@ -225,7 +163,6 @@ public:
     uint32_t currentImageIndex_ = 0;
     uint32_t currentFrame_ = 0;
 
-private:
     void CreateSwapchain() {
         SwapChainSupportDetails support =
             querySwapChainSupport(physicalDevice_, surface_);
@@ -292,7 +229,7 @@ private:
         imageViews_.resize(actualImageCount);
         renderFinishedSemaphores_.resize(actualImageCount, VK_NULL_HANDLE);
 
-        imageFormat_ = surfaceFormat.format;
+        surfaceFormat_ = surfaceFormat.format;
         extent_ = swapExtent;
     }
 
@@ -302,10 +239,13 @@ private:
 
             ctx_.CreateImageView(
                 images_[i],
-                imageFormat_,
+                surfaceFormat_,
                 VK_IMAGE_ASPECT_COLOR_BIT,
-                imageView,
-                1
+                0,
+                0,
+                1,
+                VK_IMAGE_VIEW_TYPE_2D,
+                imageView
             );
 
             imageViews_[i] = imageView;
@@ -324,14 +264,18 @@ private:
             1
         );
 
-        depthImageView_ = ctx_.CreateImageView(
-            depthImage_,
+        auto obj_ = ctx_.images_.get(depthImage_);
+        ctx_.CreateImageView(
+            obj_->image,
+            obj_->format,
             VK_IMAGE_ASPECT_DEPTH_BIT,
             0,
             0,
             1,
-            VK_IMAGE_VIEW_TYPE_2D
+            VK_IMAGE_VIEW_TYPE_2D,
+            obj_->renderView
         );
+        obj_->renderView = obj_->sampleView;
 
         ctx_.TransitionImageLayout(
             depthImage_,
@@ -390,13 +334,8 @@ private:
 
     void CleanupSwapchain() {
 
-        if (depthImageView_) {
-            destroy(ctx_, depthImageView_);
-            depthImageView_ = {};
-        }
-
         if (depthImage_) {
-            destroy(ctx_, depthImage_);
+            destroy(&ctx_, depthImage_);
             depthImage_ = {};
         }
 
@@ -414,4 +353,8 @@ private:
             swapchain_ = VK_NULL_HANDLE;
         }
     }
+    void RecreateSwapChain();
 };
+
+
+void VulkanSwapchain::RecreateSwapChain() {};

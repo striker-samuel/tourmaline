@@ -267,7 +267,16 @@ void Context::InitializeDeviceVmaPools() {
 
 }
 
-void Context::CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view)
+void Context::CreateImageView(
+	VkImage image,
+	VkFormat format, 
+	VkImageAspectFlags aspectFlags,
+	int levelCount,
+	int baseArrayLayer,
+	int layerCount, 
+	VkImageViewType viewType,
+	VkImageView& view
+)
 {
 	VkImageViewCreateInfo viewInfo{};
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -290,33 +299,6 @@ void Context::CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags
 	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
 	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
-}
-
-[[nodiscard]] ImageViewHandle  Context::CreateImageView(
-	VkImage image,
-	VkFormat format,
-	VkImageAspectFlags aspectFlags,
-	int levelCount,
-	int baseArrayLayer,
-	int layerCount,
-	VkImageViewType viewType
-) {
-
-	VkImageView imageView;
-
-	CreateImageView(
-		image,
-		format,
-		aspectFlags,
-		levelCount,
-		baseArrayLayer,
-		layerCount,
-		viewType,
-		imageView
-	);
-
-	return imageViews_.create(std::move(imageView));
-
 }
 
 [[nodiscard]] DescriptorSetHandle Context::createDescriptorSet(
@@ -2055,13 +2037,6 @@ void destroy(Context * ctx, DescriptorSetHandle handle)
 void destroy(Context * ctx, DescriptorLayoutHandle handle)
 {}
 ;
-
-void destroy(Context* ctx, ImageViewHandle handle)
-{
-	auto obj_ = ctx->imageViews_.get(handle);
-	vkDestroyImageView(ctx->device_, *obj_, nullptr);
-	ctx->imageViews_.destroy(handle);
-}
 
 void destroy(Context* ctx, SamplerHandle handle)
 {}
