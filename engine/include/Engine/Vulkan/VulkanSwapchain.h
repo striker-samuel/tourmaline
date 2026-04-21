@@ -21,8 +21,8 @@ public:
         VkSurfaceKHR surface,
         VkQueue presentQueue,
         GLFWwindow* window,
-        const uint32_t framesInFlight,
-        const uint32_t desiredImageCount
+        uint32_t framesInFlight,
+        uint32_t desiredImageCount
     )
         : ctx_(context),
           physicalDevice_(physicalDevice),

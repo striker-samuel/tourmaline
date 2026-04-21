@@ -15,7 +15,6 @@
 
 //
 #include <Engine/Renderer/context.h>
-#include <Engine/Renderer/ringBinding.h>
 #include <Engine/Vulkan/VulkanSwapchain.h>
 
 #include <Engine/Camera/camera.h>
@@ -29,65 +28,75 @@
 // --Defaults--
 constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 
+namespace Toy {
 
-// Flow structs.
-// Toypasss
+}
+
+// 
 struct ToyCommandBuffer final {
+	// Maybe this shoudl be wrapped
 	VkCommandBuffer commandBuffer;
+	PipelineHandle pipeline = {};
+
 	VkRenderingInfo renderingInfo;
+	//ToyFrameBuffer fb;
+	//ToyRenderPass rp;
+
+	//VkPipeline lastBoundPipeline_ = VK_NULL_HANDLE;
+	//bool rendering_ = false;
 
 };
-//struct RenderPass final{};
-//struct FrameBuffer final{};
 
-//struct RenderPass final {
-//	VkRenderingAttachmentInfo color[1] = {};
-//	VkRenderingAttachmentInfo depth = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
-//	VkRenderingAttachmentInfo stencil = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
-//};
+struct ToyRenderPass final {
+	// This will be needed later 
+	//struct AttachmentPass {
+	//};
 
-struct FrameBuffer {
+	//AttachmentPass color[1];
+	//AttachmentPass depth;
+	//AttachmentPass stencil;
+
+	VkRenderingAttachmentInfo color[1] = {};
+
+	VkRenderingAttachmentInfo depth = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
+	VkRenderingAttachmentInfo stencil = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
+};
+
+struct ToyFrameBuffer final {
 	struct Attachment {
-		ImageHandle render;
-		ImageHandle resolve_texture;
+		VkImageView render;
+		//ImageHandle render;
+		//ImageHandle resolve_texture;
 	};
-
 	Attachment color;
 	Attachment depth;
-
 };
 
-// ----
 
-// Crap will move out from here
-std::vector<std::string> gltf_meshes_paths = {
-	"content/models/Sponza/sponza.gltf" // Index 0
+
+struct Level {
+	Scene scene = {};
+	BvhTree tree = {};
+	Context* ctx = nullptr;
+	bool tree_done = false;
 };
-
-Camera* camera_ = nullptr;
-CameraPositioner_FirstPerson cameraPositioner = CameraPositioner_FirstPerson(
-	glm::vec3(0.0f, 1.0f, 0.0f), //pos
-	glm::vec3(0.0f, 1.0f, 1.0f), //target
-	glm::vec3(0.0f, 1.0f, 0.0f) //up
-);
 
 
 class VulkanApp {
 
 public:
 
-	// Will remove nows
-	void Record();
+	VulkanApp(){}
+
+	virtual void DrawFrame() = 0;
+
 	bool Initialize();
-
-	void Start();
-
 	bool Run() {
 
 		bool result = Initialize();
 		assert(result && "Failed to initialize");
 
-		Start();
+		//Start();
 		MainLoop();
 		CleanUp();
 
@@ -95,31 +104,21 @@ public:
 
 	};
 
-	void EndRendering();
+protected:
 
+	Context* context = nullptr; //resources
+	ImGuiContext* imgui_ctx = nullptr;
+	VulkanSwapchain* swapchain = nullptr;
 
-	//
-	void LoadScene();
+	VkQueue presentQueue = VK_NULL_HANDLE;
+	VkQueue graphicsQueue = VK_NULL_HANDLE;
 
-private:
-
-	Context* context; // VulkanResources Context.
-	ImGuiContext* imgui_ctx;
-	VulkanSwapchain& swapchain;
-
-	//
-	VkQueue presentQueue;
-	VkQueue graphicsQueue;
-
-	//
-	Scene& scene_;
-	BvhTree tree_;
+	Level level = {};
 
 #pragma region ===[ App / Core State ]===
 
-	float delta_time_s;
-	float time_since_start_s;
-
+	float delta_time_s = .0f;
+	float time_since_start_s = .0f;
 
 	glm::mat4 frozenMainView = {};
 
@@ -270,7 +269,7 @@ private:
 			Update(); // Main
 			LateUpdate();
 
-			//DrawFrame();
+			DrawFrame();
 
 		}
 
@@ -294,7 +293,8 @@ private:
 	}
 
 	void EarlyUpdate() {
-		recalculateGlobalTransforms(scene_);
+		//level.scene ? recalculateGlobalTransforms(level.scene) : void();
+		recalculateGlobalTransforms(level.scene);
 	}
 
 	void Update() {
@@ -452,28 +452,28 @@ private:
 
 	//}
 
-	//void BindVertex(VkCommandBuffer commandBuffer) {
+	void BindVertex(VkCommandBuffer commandBuffer) {
 
-	//	auto page = context->geometry_pages.get(context->current_geometry_page);
+		// Using pages but here we ignore it...
+		auto page = context->geometry_pages.get(context->current_geometry_page);
 
-	//	VkBuffer bufs[] = {
-	//		context->buffers_.get(page->vertexPosBuffer)->buffer,
-	//		context->buffers_.get(page->vertexShadingBuffer)->buffer
-	//	};
-	//	VkDeviceSize offs[] = { 0, 0 };
-	//	vkCmdBindVertexBuffers(commandBuffer, 0, 2, bufs, offs);
+		VkBuffer bufs[] = {
+			context->buffers_.get(page->vertexPosBuffer)->buffer,
+			context->buffers_.get(page->vertexShadingBuffer)->buffer
+		};
+		VkDeviceSize offs[] = { 0, 0 };
+		vkCmdBindVertexBuffers(commandBuffer, 0, 2, bufs, offs);
 
-	//	vkCmdBindIndexBuffer(commandBuffer, context->buffers_.get(page->indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
-	//}
-
-
+		vkCmdBindIndexBuffer(commandBuffer, context->buffers_.get(page->indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
+	}
 
 #pragma region ===[ CommandRecording ]===
 
- //This approach is wrong, forces manual discipline, to not interleave acquire and submit of different toyCommandBuffer objs.
-	//Could be better done with the lightweightVk approach
-	ToyCommandBuffer Acquire(
-		//FrameBuffer fb
+	//This approach is wrong, forces manual discipline, to not interleave acquire and submit of different toyCommandBuffer objs.
+	   //Could be better done with the lightweightVk approach
+	ToyCommandBuffer AcquireMain(
+		//ToyRenderPass rp,
+		//ToyFrameBuffer fb
 	);
 	void Submit(ToyCommandBuffer& cmds);
 
@@ -523,7 +523,7 @@ void VulkanApp::InitializeImGui() {
 
 	// We are using the single color buffer out.
 	pipeline_create.colorAttachmentCount = 1;
-	pipeline_create.pColorAttachmentFormats = &swapchain.surfaceFormat_;
+	pipeline_create.pColorAttachmentFormats = &swapchain->surfaceFormat_;
 
 	pipeline_create.depthAttachmentFormat = findDepthFormat(physicalDevice);
 	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
@@ -540,7 +540,7 @@ void VulkanApp::InitializeImGui() {
 	info.Queue = context->default_queue;
 	info.DescriptorPool = *im_dp;
 	info.MinImageCount = swapChainSupport.capabilities.minImageCount;
-	info.ImageCount = swapchain.GetImageCount();
+	info.ImageCount = swapchain->GetImageCount();
 	info.UseDynamicRendering = true,
 		info.PipelineRenderingCreateInfo = pipeline_create;
 
@@ -799,19 +799,18 @@ bool VulkanApp::Initialize() {
 	// SWAPCHAIN
 
 	auto swap = new VulkanSwapchain(
-		context,
+		*context,
 		physicalDevice, // This may be redundant, context already knows of device, and physDevice.
 		device, //
 		surface,
 		presentQueue, // Queue acquisition is currently done on InitVulkanApp()
 		window,
-		MAX_FRAMES_IN_FLIGHT,
-		DESIRED_SWAPCHAIN_IMAGE_COUNT
+		static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT),
+		static_cast<uint32_t>(DESIRED_SWAPCHAIN_IMAGE_COUNT)
 	);
 	// 
 
 	InitializeImGui();
-
 
 	// FRAME COMMAND 
 	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
@@ -940,16 +939,16 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 
 #pragma endregion
 
-
-
-ToyCommandBuffer VulkanApp::Acquire(
-	//FrameBuffer fb // We are just takign swap
-) {
+ToyCommandBuffer VulkanApp::AcquireMain(
+	//ToyFrameBuffer fb,
+	//ToyRenderPass rp
+)
+{
 
 	vkWaitForFences(
 		device,
 		1,
-		&swapchain.GetInFlightFence(),
+		&swapchain->GetInFlightFence(),
 		VK_TRUE,
 		UINT64_MAX
 	);
@@ -957,26 +956,27 @@ ToyCommandBuffer VulkanApp::Acquire(
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(
 		device,
-		swapchain.swapchain_,
+		swapchain->swapchain_,
 		UINT64_MAX,
-		swapchain.imageAvailableSemaphores_[swapchain.currentFrame_],
+		swapchain->imageAvailableSemaphores_[swapchain->currentFrame_],
 		VK_NULL_HANDLE,
 		&imageIndex
 	);
 
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-		swapchain.RecreateSwapChain();
+		swapchain->RecreateSwapChain();
 
-		// hmmmm, dont kwnow how i shoild handle this...
-		return; 
+		// AcquireMain needs to be reworked so empry return is legal, and tries to acquire again
+		assert(false && "not implemented yet");
+		//return;
 	}
 	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
 
 	//
-	swapchain.SetCurrentImageIndex(imageIndex);
+	swapchain->SetCurrentImageIndex(imageIndex);
 
 	// This needs to be here for correctness. Acquire image can hold.
 	UpdateDeltaTime();
@@ -987,23 +987,23 @@ ToyCommandBuffer VulkanApp::Acquire(
 	// We also reset the flag. Flags are raised and done. reset is manual.
 
 	// We reset fence to off
-	vkResetFences(device, 1, &swapchain.inFlightFences_[swapchain.currentFrame_]);
+	vkResetFences(device, 1, &swapchain->inFlightFences_[swapchain->currentFrame_]);
 
 	// We also reset the command list to start recording a new
 	// Resetting entire pool is faster and better. I have split pools per frame so no biggie.
 	//vkResetCommandBuffer(commandBuffers[currentFrame],
 	//	/*VkCommandBufferResetFlagBits*/ 0);
-	vkResetCommandPool(device, perFrameCommandPools[swapchain.currentFrame_], 0);
+	vkResetCommandPool(device, perFrameCommandPools[swapchain->currentFrame_], 0);
 
 
 	VkCommandBufferBeginInfo beginInfo{};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
-	if (vkBeginCommandBuffer(commandBuffers[swapchain.currentFrame_], &beginInfo) != VK_SUCCESS) {
+	if (vkBeginCommandBuffer(commandBuffers[swapchain->currentFrame_], &beginInfo) != VK_SUCCESS) {
 		throw std::runtime_error("failed to begin recording command buffer!");
 	}
 
-	// Acquire right now returns a commandBuffer to record to frame correspoding swapchain color Image
+	// Acquire right now returns a commandBuffer to record to frame correspoding swapchain->color Image
 	VkImageMemoryBarrier barrierToColorAttachment{};
 	barrierToColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 	barrierToColorAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // or VK_IMAGE_LAYOUT_PRESENT_SRC_KHR if reusing
@@ -1014,7 +1014,7 @@ ToyCommandBuffer VulkanApp::Acquire(
 	barrierToColorAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; // Wew manage just one queue so fuck it
 	barrierToColorAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 
-	barrierToColorAttachment.image = swapchain.images_[imageIndex];
+	barrierToColorAttachment.image = swapchain->images_[imageIndex];
 
 	barrierToColorAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	barrierToColorAttachment.subresourceRange.baseMipLevel = 0;
@@ -1023,7 +1023,7 @@ ToyCommandBuffer VulkanApp::Acquire(
 	barrierToColorAttachment.subresourceRange.layerCount = 1;
 
 	vkCmdPipelineBarrier(
-		commandBuffers[swapchain.currentFrame_],
+		commandBuffers[swapchain->currentFrame_],
 		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 		0,
@@ -1034,13 +1034,10 @@ ToyCommandBuffer VulkanApp::Acquire(
 
 	// ImgGui here adds ui commadns.
 	//UiPass();
-	//UpdateFrameUniforms(currentFrame); 
 
-	//auto color = context->images_.get(fb.color.render);
-	//auto depth = context->images_.get(fb.depth.render);
+	auto color = swapchain->GetCurrentImageView();
+	auto depth = swapchain->GetDepthImage();
 
-	auto color = swapchain.GetCurrentImageView();
-	auto depth = swapchain.GetDepthImage();
 	auto depthView = context->images_.get(depth)->renderView;
 
 	VkRenderingAttachmentInfo depthAttachment{};
@@ -1059,10 +1056,10 @@ ToyCommandBuffer VulkanApp::Acquire(
 	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
 
-VkRenderingInfoKHR renderingInfo;
+	VkRenderingInfoKHR renderingInfo;
 	renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
 	renderingInfo.renderArea.offset = { 0, 0 };
-	renderingInfo.renderArea.extent = swapchain.GetExtent();
+	renderingInfo.renderArea.extent = swapchain->GetExtent();
 	renderingInfo.layerCount = 1;
 	renderingInfo.colorAttachmentCount = 1;
 
@@ -1070,16 +1067,18 @@ VkRenderingInfoKHR renderingInfo;
 	renderingInfo.pDepthAttachment = &depthAttachment;
 
 	return ToyCommandBuffer{
-		.commandBuffer = commandBuffers[swapchain.currentFrame_],
+		.commandBuffer = commandBuffers[swapchain->currentFrame_],
 		.renderingInfo = renderingInfo
 	};
 }
 
 void VulkanApp::Submit(ToyCommandBuffer& cmds) {
 
+	//cmds.rendering_ = true;
+
 	VkResult result;
 
-	if (vkEndCommandBuffer(commandBuffers[swapchain.currentFrame_]) != VK_SUCCESS) {
+	if (vkEndCommandBuffer(commandBuffers[swapchain->currentFrame_]) != VK_SUCCESS) {
 		throw std::runtime_error("failed to record command buffer!");
 	}
 	// Submit Frame 
@@ -1088,7 +1087,7 @@ void VulkanApp::Submit(ToyCommandBuffer& cmds) {
 		VkSubmitInfo submitInfo{};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-		VkSemaphore waitSemaphores[] = { swapchain.imageAvailableSemaphores_[swapchain.currentFrame_] };
+		VkSemaphore waitSemaphores[] = { swapchain->imageAvailableSemaphores_[swapchain->currentFrame_] };
 		VkPipelineStageFlags waitStages[] = {
 			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 		submitInfo.waitSemaphoreCount = 1;
@@ -1096,9 +1095,9 @@ void VulkanApp::Submit(ToyCommandBuffer& cmds) {
 		submitInfo.pWaitDstStageMask = waitStages;
 
 		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers = &commandBuffers[swapchain.currentFrame_];
+		submitInfo.pCommandBuffers = &commandBuffers[swapchain->currentFrame_];
 
-		VkSemaphore signalSemaphores[] = {swapchain.renderFinishedSemaphores_[swapchain.currentFrame_] };
+		VkSemaphore signalSemaphores[] = { swapchain->renderFinishedSemaphores_[swapchain->currentFrame_] };
 		submitInfo.signalSemaphoreCount = 1;
 		submitInfo.pSignalSemaphores = signalSemaphores;
 
@@ -1107,7 +1106,7 @@ void VulkanApp::Submit(ToyCommandBuffer& cmds) {
 				context->default_queue,
 				1,
 				&submitInfo,
-				swapchain.GetInFlightFence()
+				swapchain->GetInFlightFence()
 			) != VK_SUCCESS
 			) {
 
@@ -1122,17 +1121,17 @@ void VulkanApp::Submit(ToyCommandBuffer& cmds) {
 		presentInfo.waitSemaphoreCount = 1;
 		presentInfo.pWaitSemaphores = signalSemaphores;
 
-		VkSwapchainKHR swapChains[] = { swapchain.swapchain_ };
+		VkSwapchainKHR swapChains[] = { swapchain->swapchain_ };
 		presentInfo.swapchainCount = 1;
 		presentInfo.pSwapchains = swapChains;
-		presentInfo.pImageIndices = &swapchain.currentImageIndex_;
+		presentInfo.pImageIndices = &swapchain->currentImageIndex_;
 
 		result = vkQueuePresentKHR(presentQueue, &presentInfo);
 
 		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
 			framebufferResized) {
 			framebufferResized = false;
-			swapchain.RecreateSwapChain();
+			swapchain->RecreateSwapChain();
 		}
 		else if (result != VK_SUCCESS) {
 			throw std::runtime_error("failed to present swap chain image!");
@@ -1141,8 +1140,7 @@ void VulkanApp::Submit(ToyCommandBuffer& cmds) {
 
 	}
 
-	swapchain.AdvanceFrame();
-	// Update current frame
+	swapchain->AdvanceFrame();
 	//currentFrame = (currentFrame + 1) % framesInFlight;
 }
 
@@ -1152,401 +1150,52 @@ void VulkanApp::CleanUp() {
 	context->CleanUp();
 }
 
-void VulkanApp::LoadScene() {
+//
+//// Updates perframe camera view settings. view, proj, invView... etc.
+//void UpdateFrameUniforms(uint32_t currentFrame) {
+//
+//	auto view = camera->getViewMatrix();
+//	auto proj = camera->getProjMatrix();
+//	proj[1][1] *= -1;
+//
+//	auto viewProj = proj * view;
+//
+//	FrameUniforms data{};
+//	data.cameraPos = cameraPositioner.cameraPosition_;
+//
+//	data.view = view;
+//	data.proj = proj;
+//	data.viewProj = viewProj;
+//
+//	data.invView = glm::inverse(view);
+//	data.invProj = glm::inverse(proj);
+//	data.invViewProj = glm::inverse(viewProj);
+//
+//	data.time = 0.0f;
+//	data.viewportSize = { width_, height_ };
+//	data.invViewportSize = { 1.0f / width_, 1.0f / height_ };
+//
+//	// Not implemented for now
+//	data.nearPlane = 0.f;
+//	data.farPlane = 0.f;
+//	data.exposure = 0.f;
+//
+//	VkResult result{};
+//	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentFrame]);
+//
+//	context->UploadDataToBuffer(
+//		frameUniformsBinding.buffer_h,
+//		&data,
+//		sizeof(FrameUniforms)/* * 1*/,
+//		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+//		VK_ACCESS_SHADER_READ_BIT,
+//		0,
+//		frameUniformsBinding.dynamicOffsetFrame(currentFrame)
+//	);
+//
+//	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentFrame]);
+//
+//}
+
+//
 
-	//camera_->setPerspective(45.0f, float(width_) / float(height_), default_near_clip, default_far_clip);
-
-	Scene imported_scene;
-	std::filesystem::path p(gltf_meshes_paths[0]);
-	UploadGltfToContext(context, p, imported_scene);
-
-	scene_ = imported_scene;
-	tree_ = treeFromScene(context, scene_);
-
-}
-
-void VulkanApp::Record(){
-
-	//
-
-	std::vector<int> visible;
-
-	auto view = camera_->getViewMatrix();
-	auto proj = camera_->getProjMatrix();
-	proj[1][1] *= -1;
-
-	auto viewProj = proj * view; // Freeze at first for debug
-
-	frustumCullBVH(
-		tree_,
-		0,
-		viewProj,
-		camera_->getPosition(),
-		visible
-	);
-
-	// VISIBLE PIPELINES
-	std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
-
-	for (uint32_t primId : visible) {
-		uint32_t node = tree_.primToNode[primId];
-
-		auto it = scene_.materialForNode.find(node);
-		if (it == scene_.materialForNode.end()) continue;
-
-		uint32_t materialIndex = it->second;
-		auto matHandle = context->materialInstances_.getHandle(materialIndex);
-		auto mat = context->materialInstances_.get(matHandle);
-
-		pipeline_map[mat->pipeline].push_back(node);
-
-	}
-
-	auto cmd = Acquire(
-
-		// Just acquirec spwap current Color, and swap depth
-		//FrameBuffer{
-		//	.color = ,
-		//	.depth = 
-		//}
-		// definition
-	);
-
-	vkCmdBeginRendering(
-		cmd.commandBuffer,
-		&cmd.renderingInfo
-	);
-
-
-	auto swapChainExtent = swapchain.GetExtent();
-
-	// VIEWPORT
-	// Flipped because of this :)
-	// https://www.saschawillems.de/blog/2019/03/29/flipping-the-vulkan-viewport/
-	VkViewport vp{};
-	vp.x = 0.0f;
-	vp.y = 0.0f;
-	vp.width = (float)swapChainExtent.width;
-	vp.height = (float)swapChainExtent.height;
-	vp.minDepth = 0.0f;
-	vp.maxDepth = 1.0f;
-	vkCmdSetViewport(cmd.commandBuffer, 0, 1, &vp);
-
-	// SCISSOR.
-	VkRect2D scissor{};
-	scissor.offset = { 0, 0 };
-	scissor.extent = swapChainExtent;
-	vkCmdSetScissor(cmd.commandBuffer, 0, 1, &scissor);
-
-	// BIND VETEX
-	// Dont have 
-	// BindVertex(commandBuffer);
-
-	// BIND DESCRIPTOR SETS
-	auto dynamic_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDynamicDescriptorSet);
-	auto update_after_bind_set = context->descriptorSets_.get(perFrameData[currentFrame].frameDescriptorSet);
-
-	uint32_t dynamicOffsets[2] = {
-		frameUniformsBinding.dynamicOffsetFrame(currentFrame),
-		drawDataBinding.dynamicOffsetFrame(currentFrame),
-	};
-
-	VkDescriptorSet sets[2] = {
-		dynamic_set->set,
-		update_after_bind_set->set,
-	};
-
-	auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->plyt;
-	auto pipeline_layout = context->pipelineLayouts_.get(pipe_lyt);
-
-	vkCmdBindDescriptorSets(
-		commandBuffer,
-		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		pipeline_layout->layout,
-		0,
-		2,
-		sets,
-		2,
-		dynamicOffsets
-	);
-
-	//
-
-	MainViewPushConstants pc{};
-	pc.model = glm::mat4(1.0f);
-
-	for (const auto& [han_, visible] : pipeline_map) {
-		//context->pipelines_.forEachHandle([&](PipelineHandle han_) {
-
-		vkCmdBindPipeline(
-			commandBuffer,
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			context->pipelines_.get(han_)->pipeline
-		);
-
-		for (uint32_t visible_node : visible) {
-			//uint32_t i = tree_.primToNode[primId];
-
-			auto it = scene_.meshForNode.find(visible_node);
-			if (it == scene_.meshForNode.end()) continue;
-
-			uint32_t meshIndex = it->second;
-
-			auto mesh_desc = context->meshes_.get(
-				context->meshes_.getHandle(meshIndex)
-			);
-
-			auto material_instance_index = scene_.materialForNode[visible_node];
-			pc.material_index = material_instance_index;
-
-			auto matHandle = context->materialInstances_.getHandle(material_instance_index);
-			auto mat = context->materialInstances_.get(matHandle);
-			if (!mat) continue; // skip if invalid
-			if (mat->pipeline != han_) continue;
-
-			//// skip primitive if material's pipeline doesn't match current obj_
-			//auto pipelineObj = context->pipelines_.get(mat->pipeline);
-			//if (pipelineObj != obj_) continue;
-
-			MaterialPushConstants pcm = mat->values;
-
-			struct PC_All {
-				MainViewPushConstants pc;
-				MaterialPushConstants mpc;
-			};
-			PC_All all{ pc, pcm };
-
-			vkCmdPushConstants(
-				commandBuffer,
-				pipeline_layout->layout,
-				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-				0, //offset to start of the range to push
-				sizeof(PC_All), // size to push
-				&all
-			);
-
-			for (auto& draw_set : mesh_desc->surfaces) {
-
-				auto& model_ = scene_.globalTransform[visible_node];
-				vkCmdPushConstants(
-					commandBuffer,
-					pipeline_layout->layout,
-					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-					offsetof(MainViewPushConstants, model),
-					sizeof(glm::mat4),
-					glm::value_ptr(model_)
-				);
-
-				vkCmdDrawIndexed(
-					commandBuffer,
-					draw_set.index_count,
-					1,
-					draw_set.first_index,
-					draw_set.base_vertex,
-					0
-				);
-
-			}
-		}
-	}
-
-	//ImGui::Render();
-
-	//// Record the ImGui draw data into your Vulkan command buffer.
-	//// You must already be inside a render pass (or dynamic rendering block)
-	//ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
-
-	vkCmdEndRendering(commandBuffer);
-
-	VkImageMemoryBarrier barrier{};
-	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-	barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	barrier.dstAccessMask = 0;  // Nothing needs to read it before present
-	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = swapchain.GetCurrentImage();
-	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	barrier.subresourceRange.baseMipLevel = 0;
-	barrier.subresourceRange.levelCount = 1;
-	barrier.subresourceRange.baseArrayLayer = 0;
-	barrier.subresourceRange.layerCount = 1;
-
-	vkCmdPipelineBarrier(
-		commandBuffer,
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // after rendering finishes
-		VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,          // before presentation
-		0,
-		0, nullptr,
-		0, nullptr,
-		1, &barrier
-	);
-
-}
-
-
-// Updates perframe camera view settings. view, proj, invView... etc.
-void UpdateFrameUniforms(uint32_t currentFrame) {
-
-	auto view = camera_->getViewMatrix();
-	auto proj = camera_->getProjMatrix();
-	proj[1][1] *= -1;
-
-	auto viewProj = proj * view;
-
-	FrameUniforms data{};
-	data.cameraPos = cameraPositioner.cameraPosition_;
-
-	data.view = view;
-	data.proj = proj;
-	data.viewProj = viewProj;
-
-	data.invView = glm::inverse(view);
-	data.invProj = glm::inverse(proj);
-	data.invViewProj = glm::inverse(viewProj);
-
-	data.time = 0.0f;
-	data.viewportSize = { width_, height_ };
-	data.invViewportSize = { 1.0f / width_, 1.0f / height_ };
-
-	// Not implemented for now
-	data.nearPlane = 0.f;
-	data.farPlane = 0.f;
-	data.exposure = 0.f;
-
-	VkResult result{};
-	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentFrame]);
-
-	context->UploadDataToBuffer(
-		frameUniformsBinding.buffer_h,
-		&data,
-		sizeof(FrameUniforms)/* * 1*/,
-		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-		VK_ACCESS_SHADER_READ_BIT,
-		0,
-		frameUniformsBinding.dynamicOffsetFrame(currentFrame)
-	);
-
-	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentFrame]);
-
-}
-
-
-PipelineHandle pipe;
-RingBinding frameUniformsBinding;
-RingBinding drawDataBinding;
-
-void VulkanApp::Start() {
-	// Init
-	frameUniformsBinding.init(
-		context,
-		0, //bindding #
-		MAX_FRAMES_IN_FLIGHT,
-		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
-	);
-
-	drawDataBinding.init(
-		context,
-		1, //bindding #
-		MAX_FRAMES_IN_FLIGHT,
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, //bufferUsageFlags
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC //descriptorType
-	);
-
-	auto vertShaderCode = readFile("content/shaders/default.vert.hlsl.spv");
-	auto fragShaderCode = readFile("content/shaders/default.frag.hlsl.spv");
-
-	auto vert_shader_h = context->CreateShaderModule(
-		vertShaderCode
-	);
-	auto fragHandle = context->CreateShaderModule(
-		fragShaderCode
-	);
-
-	PipelineLayoutDesc desc;
-	desc.sets = {
-		DescriptorSetLayoutDesc{
-			0, // setLayout #
-			VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, // createFlags
-			{
-				frameUniformsBinding.bindingDesc(), // binding 0,0
-				drawDataBinding.bindingDesc(), //binding 0,1
-			}
-		},
-		// These two need to be separated due to UPDATE_AFTER_BIND and dynamicOffsets incompatibility in same setLayout
-		DescriptorSetLayoutDesc{
-			.set = 1,
-			.createFlags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-			.bindings = {
-			BindingDesc{
-				.binding = 2,
-				.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-				.count = MAX_TEXTURES,
-				.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
-				.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-						  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-				.immutableSamplers = {}
-			},
-		// Example bindless samplers
-		BindingDesc{
-			.binding = 3,
-			.type = VK_DESCRIPTOR_TYPE_SAMPLER,
-			.count = MAX_TEXTURES, // We carry 1 to one samplers, this is wasteful but lets do this ftm
-			.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
-			.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-					  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-			.immutableSamplers = {}
-		}
-	}
-}
-	};
-	desc.pushConstants.push_back(
-		{
-		.stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-		.offset = 0,
-		.size = uint32_t(sizeof(MainViewPushConstants) +
-						   sizeof(MaterialPushConstants)),
-		}
-	);
-
-	pipe = context->CreatePipeline(
-		{
-			.depthClampEnable = VK_FALSE, // needs to be enabled
-			.rasterizerDiscardEnable = VK_FALSE,
-			.polygonMode = VK_POLYGON_MODE_FILL,
-			.cullMode = VK_CULL_MODE_BACK_BIT,
-			.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE
-		}, // rasterDesc
-		desc, // layoutDesc
-		vert_shader_h, // vert
-		fragHandle, //frag
-		findDepthFormat(physicalDevice),
-		swapchain.GetImageFormat()
-	);
-
-
-	auto pipe_obj = context->pipelines_.get(main_view_pipeline_h);
-	auto aa = context->pipelineLayouts_.get(pipe_obj->plyt);
-	auto bb = aa->setLayouts;
-
-	for (int i = 0; i < swapchain.framesInFlight_; i++) {
-
-		perFrameData[i].frameDynamicDescriptorSet = context->createDescriptorSet(
-			bb[0]
-		);
-
-		perFrameData[i].frameDescriptorSet = context->createDescriptorSet(
-			bb[1]
-		);
-	}
-
-
-	//SetDescriptorSets();
-
-	// APP
-	LoadScene();
-	//UpdateBindlessTexturesSets();
-
-};

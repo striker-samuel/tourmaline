@@ -16,6 +16,11 @@
 #include <ktxvulkan.h>
 
 
+//struct SubmitHandle {
+//	uint32_t idx_;
+//	uint32_t gen_;
+//};
+
 
 // This belongs here. 
 // As it stands Context is also a geometry data manager.
