@@ -28,16 +28,13 @@
 // --Defaults--
 constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 
-namespace Toy {
-
-}
 
 // 
 struct ToyCommandBuffer final {
 	// Maybe this shoudl be wrapped
 	VkCommandBuffer commandBuffer;
-	PipelineHandle pipeline = {};
 
+	PipelineHandle pipeline = {};
 	VkRenderingInfo renderingInfo;
 	//ToyFrameBuffer fb;
 	//ToyRenderPass rp;
@@ -82,11 +79,13 @@ struct Level {
 };
 
 
+// Should be renamned to somnehting like VulkanAppBase or somethign like that.
 class VulkanApp {
 
 public:
 
-	VulkanApp(){}
+	//VulkanApp(){} // this is just defualt really
+	virtual ~VulkanApp() = default;
 
 	virtual void DrawFrame() = 0;
 
@@ -96,7 +95,6 @@ public:
 		bool result = Initialize();
 		assert(result && "Failed to initialize");
 
-		//Start();
 		MainLoop();
 		CleanUp();
 
@@ -113,7 +111,6 @@ protected:
 	VkQueue presentQueue = VK_NULL_HANDLE;
 	VkQueue graphicsQueue = VK_NULL_HANDLE;
 
-	Level level = {};
 
 #pragma region ===[ App / Core State ]===
 
@@ -262,9 +259,6 @@ protected:
 
 			glfwPollEvents();
 
-			// Event loop
-			CameraUpdate();
-
 			EarlyUpdate();
 			Update(); // Main
 			LateUpdate();
@@ -281,22 +275,12 @@ protected:
 
 #pragma region Events
 
-	void CameraUpdate() {
-		double x, y;
-		glfwGetCursorPos(window, &x, &y);
-
-		// TODO. expose dimensison to app. from framebuffer/swapchain
-		//cameraPositioner.update(delta_time_s,
-		//	glm::vec2(x / width_, y / -height_),
-		//	rightMousePressed);
-
-	}
 
 	void EarlyUpdate() {
 		//level.scene ? recalculateGlobalTransforms(level.scene) : void();
-		recalculateGlobalTransforms(level.scene);
-	}
+		//recalculateGlobalTransforms(level.scene);
 
+	}
 	void Update() {
 		//OPTICK_EVENT();
 		int i = 3;
@@ -866,11 +850,11 @@ void VulkanApp::scrollCallback(GLFWwindow* window, double xOffset, double yOffse
 }
 
 void VulkanApp::handleMouseScroll(double xOffset, double yOffset) {
-	const float scrollSpeed = 1.0f;
-	glm::vec3 forward = cameraPositioner.getForward();
-	cameraPositioner.setPosition(
-		cameraPositioner.getPosition() + static_cast<float>(yOffset) * scrollSpeed * forward
-	);
+	//const float scrollSpeed = 1.0f;
+	//glm::vec3 forward = cameraPositioner.getForward();
+	//cameraPositioner.setPosition(
+	//	cameraPositioner.getPosition() + static_cast<float>(yOffset) * scrollSpeed * forward
+	//);
 }
 
 void VulkanApp::handleMouseMovement(double xpos, double ypos) {
@@ -892,42 +876,42 @@ void VulkanApp::handleMouseButton(int button, int action, int mods) {
 }
 
 void VulkanApp::handleKey(int key, int scancode, int action, int mods) {
-	bool isPressed = action != GLFW_RELEASE;
+	//bool isPressed = action != GLFW_RELEASE;
 
-	switch (key) {
-	case GLFW_KEY_R:
-	case GLFW_KEY_F:
-		cameraPositioner.reset();
-		break;
-	case GLFW_KEY_W:
-	case GLFW_KEY_UP:
-		cameraPositioner.movement_.forward_ = isPressed;
-		break;
-	case GLFW_KEY_S:
-	case GLFW_KEY_DOWN:
-		cameraPositioner.movement_.backward_ = isPressed;
-		break;
-	case GLFW_KEY_A:
-	case GLFW_KEY_LEFT:
-		cameraPositioner.movement_.left_ = isPressed;
-		break;
-	case GLFW_KEY_D:
-	case GLFW_KEY_RIGHT:
-		cameraPositioner.movement_.right_ = isPressed;
-		break;
-	case GLFW_KEY_Q:
-	case GLFW_KEY_SPACE:
-		cameraPositioner.movement_.up_ = isPressed;
-		break;
-	case GLFW_KEY_E:
-		cameraPositioner.movement_.down_ = isPressed;
-		break;
-	case GLFW_KEY_LEFT_SHIFT:
-		cameraPositioner.movement_.fastSpeed_ = isPressed;
-		break;
-	default:
-		break;
-	}
+	//switch (key) {
+	//case GLFW_KEY_R:
+	//case GLFW_KEY_F:
+	//	cameraPositioner.reset();
+	//	break;
+	//case GLFW_KEY_W:
+	//case GLFW_KEY_UP:
+	//	cameraPositioner.movement_.forward_ = isPressed;
+	//	break;
+	//case GLFW_KEY_S:
+	//case GLFW_KEY_DOWN:
+	//	cameraPositioner.movement_.backward_ = isPressed;
+	//	break;
+	//case GLFW_KEY_A:
+	//case GLFW_KEY_LEFT:
+	//	cameraPositioner.movement_.left_ = isPressed;
+	//	break;
+	//case GLFW_KEY_D:
+	//case GLFW_KEY_RIGHT:
+	//	cameraPositioner.movement_.right_ = isPressed;
+	//	break;
+	//case GLFW_KEY_Q:
+	//case GLFW_KEY_SPACE:
+	//	cameraPositioner.movement_.up_ = isPressed;
+	//	break;
+	//case GLFW_KEY_E:
+	//	cameraPositioner.movement_.down_ = isPressed;
+	//	break;
+	//case GLFW_KEY_LEFT_SHIFT:
+	//	cameraPositioner.movement_.fastSpeed_ = isPressed;
+	//	break;
+	//default:
+	//	break;
+	//}
 }
 
 void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
@@ -980,7 +964,6 @@ ToyCommandBuffer VulkanApp::AcquireMain(
 
 	// This needs to be here for correctness. Acquire image can hold.
 	UpdateDeltaTime();
-
 
 	// Now we reset the command obj we will be recording to.
 	// Resetting pool so its cheaper.
@@ -1149,53 +1132,4 @@ void VulkanApp::CleanUp() {
 
 	context->CleanUp();
 }
-
-//
-//// Updates perframe camera view settings. view, proj, invView... etc.
-//void UpdateFrameUniforms(uint32_t currentFrame) {
-//
-//	auto view = camera->getViewMatrix();
-//	auto proj = camera->getProjMatrix();
-//	proj[1][1] *= -1;
-//
-//	auto viewProj = proj * view;
-//
-//	FrameUniforms data{};
-//	data.cameraPos = cameraPositioner.cameraPosition_;
-//
-//	data.view = view;
-//	data.proj = proj;
-//	data.viewProj = viewProj;
-//
-//	data.invView = glm::inverse(view);
-//	data.invProj = glm::inverse(proj);
-//	data.invViewProj = glm::inverse(viewProj);
-//
-//	data.time = 0.0f;
-//	data.viewportSize = { width_, height_ };
-//	data.invViewportSize = { 1.0f / width_, 1.0f / height_ };
-//
-//	// Not implemented for now
-//	data.nearPlane = 0.f;
-//	data.farPlane = 0.f;
-//	data.exposure = 0.f;
-//
-//	VkResult result{};
-//	VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentFrame]);
-//
-//	context->UploadDataToBuffer(
-//		frameUniformsBinding.buffer_h,
-//		&data,
-//		sizeof(FrameUniforms)/* * 1*/,
-//		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-//		VK_ACCESS_SHADER_READ_BIT,
-//		0,
-//		frameUniformsBinding.dynamicOffsetFrame(currentFrame)
-//	);
-//
-//	endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentFrame]);
-//
-//}
-
-//
 

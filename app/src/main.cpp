@@ -1,6 +1,5 @@
 #pragma once
 
-// This si the main cu so we want the implementation in this one but this is ugly as hell?
 #define TINYGLTF_IMPLEMENTATION
 
 
@@ -9,15 +8,142 @@
 //  Not same layer
 #include <Engine/Renderer/ringBinding.h>
 
+
+std::vector<std::string> gltf_meshes_paths = {
+	"content/models/Sponza/sponza.gltf"
+};
+
+
 class TestApp : public VulkanApp {
 	using Super = VulkanApp;
 
+
+
+
+	///
+	struct MainViewPushConstants {
+		glm::mat4 model;
+		int material_index;
+		uint32_t     _pad0[3];
+	};
+
+	struct MaterialPushConstants {
+		// Color *=
+		glm::vec4 ambient = glm::vec4(0.06f);
+		glm::vec4 diffuse = glm::vec4(1.0f);
+		int tex[4] = { -1, -1, -1, -1 }; //diffuse ,ambient, alpha // unused 
+	};
+
+	static_assert(sizeof(MainViewPushConstants) % 16 == 0);
+	static_assert(sizeof(MaterialPushConstants) % 16 == 0);
+
+	/// 
+	PipelineHandle mainPipeline; // app shouldnt not be responsible for this. 
+
+
+	struct FrameResources {
+		DescriptorSetHandle frameDescriptorSet;
+		DescriptorSetHandle frameDynamicDescriptorSet;
+	};
+	FrameResources perFrameData[MAX_FRAMES_IN_FLIGHT];
+
+	//
+	RingBinding<FrameUniforms, 1> frameUniformsBinding;
+	RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
+
+
+	// 
 	CameraPositioner_FirstPerson cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target
 		glm::vec3(0.0f, 1.0f, 0.0f) //up
 	);
-	Camera camera_ = Camera(cameraPositioner);
+	Camera camera = Camera(cameraPositioner);
+
+	Level level = {};
+
+	void EarlyUpdate() {
+		Super::EarlyUpdate();
+
+		double x, y;
+		glfwGetCursorPos(window, &x, &y);
+
+		// TODO. expose dimensison to app. from framebuffer/swapchain
+		//cameraPositioner.update(delta_time_s,
+		//	glm::vec2(x / width_, y / -height_),
+		//	rightMousePressed);
+
+
+	}
+
+	void Update() {
+		Super::Update();
+	}
+
+	void LateUpdate() {
+		Super::LateUpdate();
+	}
+
+
+	// Don't now if the callbacks are set to these. with the inheritance
+	void handleMouseScroll(double xOffset, double yOffset) {
+		const float scrollSpeed = 1.0f;
+		glm::vec3 forward = cameraPositioner.getForward();
+		cameraPositioner.setPosition(
+			cameraPositioner.getPosition() + static_cast<float>(yOffset) * scrollSpeed * forward
+		);
+	}
+
+	void handleMouseMovement(double xpos, double ypos) {
+		//if (!rightMousePressed) return;
+		//glm::vec2 mousePos = glm::vec2(
+		//	static_cast<float>(xpos) / width_,
+		//	static_cast<float>(ypos) / -height_
+		//);
+		//cameraPositioner.update(delta_time_s,
+		//	mousePos,
+		//	true
+		//);
+	}
+
+	void handleKey(int key, int scancode, int action, int mods) {
+		bool isPressed = action != GLFW_RELEASE;
+
+		switch (key) {
+		case GLFW_KEY_R:
+		case GLFW_KEY_F:
+			cameraPositioner.reset();
+			break;
+		case GLFW_KEY_W:
+		case GLFW_KEY_UP:
+			cameraPositioner.movement_.forward_ = isPressed;
+			break;
+		case GLFW_KEY_S:
+		case GLFW_KEY_DOWN:
+			cameraPositioner.movement_.backward_ = isPressed;
+			break;
+		case GLFW_KEY_A:
+		case GLFW_KEY_LEFT:
+			cameraPositioner.movement_.left_ = isPressed;
+			break;
+		case GLFW_KEY_D:
+		case GLFW_KEY_RIGHT:
+			cameraPositioner.movement_.right_ = isPressed;
+			break;
+		case GLFW_KEY_Q:
+		case GLFW_KEY_SPACE:
+			cameraPositioner.movement_.up_ = isPressed;
+			break;
+		case GLFW_KEY_E:
+			cameraPositioner.movement_.down_ = isPressed;
+			break;
+		case GLFW_KEY_LEFT_SHIFT:
+			cameraPositioner.movement_.fastSpeed_ = isPressed;
+			break;
+		default:
+			break;
+		}
+	}
 
 
 	void Initialize() {
@@ -96,6 +222,8 @@ class TestApp : public VulkanApp {
 			}
 		);
 
+		// Just define renderPasses and grah and go.
+		// App shouldnt need to do this really...
 		mainPipeline = context->CreatePipeline(
 			{
 				.depthClampEnable = VK_FALSE, // needs to be enabled
@@ -110,9 +238,7 @@ class TestApp : public VulkanApp {
 			findDepthFormat(physicalDevice),
 			swapchain->GetImageFormat()
 		);
-
-
-		//auto pipe_obj = context->pipelines_.get(mainPipeline);
+		auto pipe_obj = context->pipelines_.get(mainPipeline);
 		//auto aa = context->pipelineLayouts_.get(pipe_obj->plyt);
 		//auto bb = aa->setLayouts;
 
@@ -147,24 +273,71 @@ class TestApp : public VulkanApp {
 	};
 
 
-	void Record(VulkanApp& app) {
+	void UpdateFrameUniforms(uint32_t currentFrame) {
+
+		auto view = camera.getViewMatrix();
+		auto proj = camera.getProjMatrix();
+		proj[1][1] *= -1;
+
+		auto viewProj = proj * view;
+
+		FrameUniforms data{};
+		data.cameraPos = cameraPositioner.cameraPosition_;
+
+		data.view = view;
+		data.proj = proj;
+		data.viewProj = viewProj;
+
+		data.invView = glm::inverse(view);
+		data.invProj = glm::inverse(proj);
+		data.invViewProj = glm::inverse(viewProj);
+
+		data.time = 0.0f;
+		data.viewportSize = { width_, height_ };
+		data.invViewportSize = { 1.0f / width_, 1.0f / height_ };
+
+		// Not implemented for now
+		data.nearPlane = 0.f;
+		data.farPlane = 0.f;
+		data.exposure = 0.f;
+
+		VkResult result{};
+		VkCommandBuffer cmdBuf = beginSingleTimeCommands(device, perFrameCommandPools[currentFrame]);
+
+		context->UploadDataToBuffer(
+			frameUniformsBinding.buffer_h,
+			&data,
+			sizeof(FrameUniforms)/* * 1*/,
+			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			0,
+			frameUniformsBinding.dynamicOffsetFrame(currentFrame)
+		);
+
+		endSingleTimeCommands(device, cmdBuf, context->default_queue, perFrameCommandPools[currentFrame]);
+
+	}
 
 
 
-		/// Culling. Frameuniforms Uplaod ois no t here also depends on camera.
+
+
+
+	void FrustumCull(Level& level) {
+		/// Culling. FrameUniform ViewProj must mach for correctness
 		std::vector<int> visible;
 
-		auto view = camera_->getViewMatrix();
-		auto proj = camera_->getProjMatrix();
+		auto view = camera_.getViewMatrix();
+		auto proj = camera_.getProjMatrix();
 		proj[1][1] *= -1;
 
 		auto viewProj = proj * view; // Freeze at first for debug
 
 		frustumCullBVH(
-			*app->level.tree,
+			level.tree,
 			0,
 			viewProj,
-			camera_->getPosition(),
+			camera_.getPosition(),
 			visible
 		);
 
@@ -172,10 +345,10 @@ class TestApp : public VulkanApp {
 		std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
 
 		for (uint32_t primId : visible) {
-			uint32_t node = tree_.primToNode[primId];
+			uint32_t node = level.tree.primToNode[primId];
 
-			auto it = scene_.materialForNode.find(node);
-			if (it == scene_.materialForNode.end()) continue;
+			auto it = level.scene.materialForNode.find(node);
+			if (it == level.scene.materialForNode.end()) continue;
 
 			uint32_t materialIndex = it->second;
 			auto matHandle = context->materialInstances_.getHandle(materialIndex);
@@ -185,9 +358,13 @@ class TestApp : public VulkanApp {
 
 		}
 
-		auto com = AcquireMain();
-		auto swapChainExtent = app.swapchain->GetExtent();
+	}
 
+	void DrawFrame() {
+		Super::DrawFrame();
+
+		auto cmd = AcquireMain();
+		auto swapChainExtent = swapchain->GetExtent();
 
 		// VIEWPORT
 		// Flipped because of this :)
@@ -208,7 +385,7 @@ class TestApp : public VulkanApp {
 		vkCmdSetScissor(cmd.commandBuffer, 0, 1, &scissor);
 
 		// BIND VETEX
-		app.BindVertex(commandBuffer);
+		BindVertex(cmd.commandBuffer);
 
 		// BIND DESCRIPTOR SETS
 		auto dynamic_set = context->descriptorSets_.get(perFrameData[swapchain.currentFrame_].frameDynamicDescriptorSet);
@@ -224,11 +401,12 @@ class TestApp : public VulkanApp {
 			update_after_bind_set->set,
 		};
 
-		auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->plyt;
+		auto pipe_lyt = context->pipelines_.get(mainPipeline)->plyt;
+		//auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->plyt;
 		auto pipeline_layout = context->pipelineLayouts_.get(pipe_lyt);
 
 		vkCmdBindDescriptorSets(
-			com.commandBuffer,
+			cmd.commandBuffer,
 			//commandBuffers[swapchain.currentFrame_],
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
 			pipeline_layout->layout,
@@ -263,8 +441,8 @@ class TestApp : public VulkanApp {
 			for (uint32_t visible_node : visible) {
 				//uint32_t i = tree_.primToNode[primId];
 
-				auto it = scene_.meshForNode.find(visible_node);
-				if (it == scene_.meshForNode.end()) continue;
+				auto it = level.scene.meshForNode.find(visible_node);
+				if (it == level.scene.meshForNode.end()) continue;
 
 				uint32_t meshIndex = it->second;
 
@@ -272,7 +450,7 @@ class TestApp : public VulkanApp {
 					context->meshes_.getHandle(meshIndex)
 				);
 
-				auto material_instance_index = scene_.materialForNode[visible_node];
+				auto material_instance_index = level.scene.materialForNode[visible_node];
 				pc.material_index = material_instance_index;
 
 				auto matHandle = context->materialInstances_.getHandle(material_instance_index);
@@ -304,7 +482,7 @@ class TestApp : public VulkanApp {
 
 				for (auto& draw_set : mesh_desc->surfaces) {
 
-					auto& model_ = scene_.globalTransform[visible_node];
+					auto& model_ = level.scene.globalTransform[visible_node];
 					vkCmdPushConstants(
 						com.commandBuffer,
 						//commandBuffers[swapchain.currentFrame_],
@@ -336,7 +514,7 @@ class TestApp : public VulkanApp {
 		//ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 
 		vkCmdEndRendering(
-			com.commandBuffer
+			cmd.commandBuffer
 			//commandBuffers[swapchain.currentFrame_]
 		);
 
@@ -351,7 +529,7 @@ class TestApp : public VulkanApp {
 		barrier.dstAccessMask = 0;  // Nothing needs to read it before present
 		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = swapchain.GetCurrentImage();
+		barrier.image = swapchain->GetCurrentImage();
 		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		barrier.subresourceRange.baseMipLevel = 0;
 		barrier.subresourceRange.levelCount = 1;
@@ -359,7 +537,7 @@ class TestApp : public VulkanApp {
 		barrier.subresourceRange.layerCount = 1;
 
 		vkCmdPipelineBarrier(
-			com.commandBuffer,
+			cmd.commandBuffer,
 			//commandBuffers[swapchain.currentFrame_],
 			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // after rendering finishes
 			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,          // before presentation
@@ -393,19 +571,5 @@ int main(int argc, const char* argv[]) {
 }
 
 
-std::vector<std::string> gltf_meshes_paths = {
-	"content/models/Sponza/sponza.gltf" // Index 0
-};
-//
 
-PipelineHandle mainPipeline;
-RingBinding<FrameUniforms, 1> frameUniformsBinding;
-RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
-
-struct FrameResources {
-	DescriptorSetHandle frameDescriptorSet;
-	DescriptorSetHandle frameDynamicDescriptorSet;
-};
-
-FrameResources perFrameData[MAX_FRAMES_IN_FLIGHT];
 

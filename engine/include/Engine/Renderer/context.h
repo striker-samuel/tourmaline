@@ -96,11 +96,11 @@ public:
 	Pool<ShaderModule, VkShaderModule> shaderModules_;
 
 	Pool<DescriptorSet, DescriptorSet> descriptorSets_;
-	Pool<DescriptorLayout, VkDescriptorSetLayout> descriptorSetLayouts_;
+	//Pool<DescriptorLayout, VkDescriptorSetLayout> descriptorSetLayouts_;
 	Pool<DescriptorPool, VkDescriptorPool> descriptorSetPools_;
 
 	Pool<Pipeline, Pipeline> pipelines_;
-	Pool<PipelineLayout, PipelineLayout> pipelineLayouts_;
+	//Pool<PipelineLayout, PipelineLayout> pipelineLayouts_;
 
 	Pool<Geometry, Geometry> meshes_;
 	Pool <GeometryPage, GeometryPage> geometry_pages;
@@ -122,13 +122,13 @@ public:
 	DeviceBufferHandle CreateStagingBuffer(const void* srcData, VkDeviceSize size);
 	ShaderModuleHandle CreateShaderModule(std::vector<char> code);
 
-	PipelineLayoutHandle createPipelineLayout(const PipelineLayoutDesc& descIn);
+
+	void CreateDescriptorLayout(const DescriptorSetLayoutDesc& descIn, VkDescriptorSetLayout& layout);
+	void CreatePipelineLayout(const PipelineLayoutDesc& descIn, VkPipelineLayout& layout);
 	PipelineHandle CreatePipeline(RasterSettings raster_settings, PipelineLayoutDesc layoutDesc, ShaderModuleHandle vert, ShaderModuleHandle frag, VkFormat depth_format, VkFormat swapchainImageFormat);
 
 	ImageHandle CreateShadowMapImage(int texWidth, int texHeight);
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
-
-
 
 	// Instead of specializing with baked in defautls just expose 
 	// sampler creation, maybe bassed on samplerKey

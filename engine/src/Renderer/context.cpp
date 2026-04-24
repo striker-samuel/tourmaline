@@ -301,45 +301,45 @@ void Context::CreateImageView(
 	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
 }
 
-[[nodiscard]] DescriptorSetHandle Context::createDescriptorSet(
-	DescriptorLayoutHandle lyt
-) {
-	// Pools should be rolled over on fail, get new pool. then discard FIFO
-	auto descriptorPool = descriptorSetPools_.get(default_descriptor_pool);
-	auto layout = descriptorSetLayouts_.get(lyt);
-
-	std::array<VkDescriptorSetLayout, 1> layouts = {
-		*layout
-	};
-
-	VkDescriptorSetAllocateInfo allocInfo{};
-	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	// This needs to be implemented using rotating pools.
-	allocInfo.descriptorPool = *descriptorPool;
-	allocInfo.descriptorSetCount = 1;
-	//allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
-
-	allocInfo.pSetLayouts = layouts.data();
-
-	DescriptorSet ds;
-	VkResult result = vkAllocateDescriptorSets(device_, &allocInfo, &ds.set);
-	ds.layout = lyt;
-
-	if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
-
-		assert(false && "oom pool");
-
-		// Rotate the descriptor pool. try again
-		// Manage live dspools. defrag
-	}
-
-	if (result != VK_SUCCESS) {
-		throw std::runtime_error("failed to allocate descriptor sets!");
-	}
-
-	return descriptorSets_.create(std::move(ds));
-
-}
+//[[nodiscard]] DescriptorSetHandle Context::createDescriptorSet(
+//	DescriptorLayoutHandle lyt
+//) {
+//	// Pools should be rolled over on fail, get new pool. then discard FIFO
+//	auto descriptorPool = descriptorSetPools_.get(default_descriptor_pool);
+//	auto layout = descriptorSetLayouts_.get(lyt);
+//
+//	std::array<VkDescriptorSetLayout, 1> layouts = {
+//		*layout
+//	};
+//
+//	VkDescriptorSetAllocateInfo allocInfo{};
+//	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+//	// This needs to be implemented using rotating pools.
+//	allocInfo.descriptorPool = *descriptorPool;
+//	allocInfo.descriptorSetCount = 1;
+//	//allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+//
+//	allocInfo.pSetLayouts = layouts.data();
+//
+//	DescriptorSet ds;
+//	VkResult result = vkAllocateDescriptorSets(device_, &allocInfo, &ds.set);
+//	ds.layout = lyt;
+//
+//	if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
+//
+//		assert(false && "oom pool");
+//
+//		// Rotate the descriptor pool. try again
+//		// Manage live dspools. defrag
+//	}
+//
+//	if (result != VK_SUCCESS) {
+//		throw std::runtime_error("failed to allocate descriptor sets!");
+//	}
+//
+//	return descriptorSets_.create(std::move(ds));
+//
+//}
 
 [[nodiscard]] DeviceBufferHandle Context::createBuffer(
 	VkDeviceSize size,
@@ -520,6 +520,7 @@ void Context::UploadDataToBuffer(
 	VK_CHECK(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &dpool));
 	return descriptorSetPools_.create(std::move(dpool));
 }
+
 //[[nodiscard]] PipelineHandle Context::CreateShadowPipeline(ShaderModuleHandle vert) {
 //
 //	// We ure using native VkPipelineLayout to ease things for now so we dont have to formalize a way to describe that.
@@ -690,10 +691,8 @@ void Context::UploadDataToBuffer(
 //
 //}
 
-PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& descIn)
+void Context::CreatePipelineLayout(const PipelineLayoutDesc& descIn, VkPipelineLayout& layout)
 {
-	PipelineLayout out{};
-	out.layout = VK_NULL_HANDLE;
 
 	// ---- 1) Canonicalize sets (sort by set index)
 	std::vector<DescriptorSetLayoutDesc> sets = descIn.sets;
@@ -713,21 +712,21 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 	std::array<VkDescriptorSetLayout, 8> vkSetLayouts{};
 	vkSetLayouts.fill(VK_NULL_HANDLE);
 
-	out.setLayouts.clear();
-	out.setLayouts.reserve(sets.size());
+	//out.setLayouts.clear();
+	//out.setLayouts.reserve(sets.size());
 
 	for (const auto& s : sets)
 	{
-		DescriptorLayoutHandle lytHandle = createDescriptorLayout(s);
-		out.setLayouts.push_back(lytHandle);
-
-		VkDescriptorSetLayout* vkLyt = descriptorSetLayouts_.get(lytHandle);
-		vkSetLayouts[s.set] = *vkLyt;
+		//DescriptorLayoutHandle lytHandle = createDescriptorLayout(s);
+		//VkDescriptorSetLayout* vkLyt = descriptorSetLayouts_.get(lytHandle);
+		VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+		CreateDescriptorLayout(s, layout);
+		vkSetLayouts[s.set] = layout;
 	}
 
 	// Optional policy: forbid gaps
-	// for (uint32_t i = 0; i < setLayoutCount; ++i)
-	//     assert(vkSetLayouts[i] != VK_NULL_HANDLE && "Descriptor set gap not allowed");
+	 for (uint32_t i = 0; i < setLayoutCount; ++i)
+	     assert(vkSetLayouts[i] != VK_NULL_HANDLE && "Descriptor set gap not allowed");
 
 	// ---- 3) Push constant ranges (max 8)
 	VkPushConstantRange ranges[8]{};
@@ -775,9 +774,9 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 		.pPushConstantRanges = rangeCount ? ranges : nullptr,
 	};
 
-	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &out.layout));
+	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &layout));
 
-	return pipelineLayouts_.create(std::move(out));
+	//return pipelineLayouts_.create(std::move(out));
 }
 
 
@@ -915,9 +914,10 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 
 #pragma region ---[LayoutDescription]---
 
-	PipelineLayoutHandle plytHandle = createPipelineLayout(layoutDesc);
-	PipelineLayout* plytObj = pipelineLayouts_.get(plytHandle);
+	//PipelineLayoutHandle plytHandle = createPipelineLayout(layoutDesc);
+	//PipelineLayout* plytObj = pipelineLayouts_.get(plytHandle);
 	//pipeline.plyt = plytHandle;
+	CreatePipelineLayout(layoutDesc, pipeline.layout);
 
 #pragma endregion
 
@@ -946,7 +946,7 @@ PipelineLayoutHandle Context::createPipelineLayout(const PipelineLayoutDesc& des
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicState;
 	pipelineInfo.pDepthStencilState = &depthStencil;
-	pipelineInfo.layout = plytObj->layout;
+	pipelineInfo.layout = pipeline.layout;
 	pipelineInfo.pNext = &dynamic_rendering_pipeline_info;
 
 	if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo,
@@ -1926,12 +1926,12 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 
 };
 
-[[nodiscard]] DescriptorLayoutHandle Context::createDescriptorLayout(const DescriptorSetLayoutDesc& descIn)
+void Context::CreateDescriptorLayout(const DescriptorSetLayoutDesc& descIn, VkDescriptorSetLayout& layout)
 {
 	// 1) Canonicalize (copy then sort by binding)
 	DescriptorSetLayoutDesc desc = descIn;
-	std::sort(desc.bindings.begin(), desc.bindings.end(),
-		[](auto& a, auto& b) { return a.binding < b.binding; });
+	//std::sort(desc.bindings.begin(), desc.bindings.end(),
+	//	[](auto& a, auto& b) { return a.binding < b.binding; });
 
 	// 2) Compute a cache key (pseudo)
 	// LayoutKey key = Hash(desc);
@@ -2000,15 +2000,14 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 	for (auto f : bindingFlags) if (f != 0) { anyFlags = true; break; }
 	ci.pNext = anyFlags ? &flagsCI : nullptr;
 
-	VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+	//VkDescriptorSetLayout layout = VK_NULL_HANDLE;
 	VK_CHECK(vkCreateDescriptorSetLayout(device_, &ci, nullptr, &layout));
-
-	DescriptorLayoutHandle h = descriptorSetLayouts_.create(std::move(layout));
-
 	// 5) Cache it (pseudo)
 	// layoutCache[key] = h;
 
-	return h;
+	//DescriptorLayoutHandle h = descriptorSetLayouts_.create(std::move(layout));
+	//return h;
+
 }
 
 VkQueue Context::GetGraphicsQueue() {
@@ -2072,23 +2071,26 @@ void destroy(Context* ctx, ImageHandle handle)
 	//ctx->images_.destroy(handle);
 }
 
-
 void destroy(Context* ctx, DeviceBufferHandle handle) {
 	assert(handle.valid());
 	auto db = ctx->buffers_.get(handle);
 	vmaDestroyBuffer(ctx->allocator_, db->buffer, db->alloc);
 	ctx->buffers_.destroy(handle);
 }
+
+
 void destroy(Context* ctx, PipelineHandle handle)
-{}
-;
-void destroy(Context* ctx, PipelineLayoutHandle h)
-{
-	assert(h.valid());
-	auto* pl = ctx->pipelineLayouts_.get(h);
-	if (pl->layout) vkDestroyPipelineLayout(ctx->device_, pl->layout, nullptr);
-	ctx->pipelineLayouts_.destroy(h);
-}
+{};
+
+
+
+//void destroy(Context* ctx, PipelineLayoutHandle h)
+//{
+//	assert(h.valid());
+//	auto* pl = ctx->pipelineLayouts_.get(h);
+//	if (pl->layout) vkDestroyPipelineLayout(ctx->device_, pl->layout, nullptr);
+//	ctx->pipelineLayouts_.destroy(h);
+//}
 
 void destroy(Context* ctx, GeometryHandle handle)
 {}
