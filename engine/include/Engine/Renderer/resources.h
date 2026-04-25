@@ -8,33 +8,26 @@
 #include <ktxvulkan.h>
 
 
+struct PipelineLayout {
+	VkPipelineLayout layout = VK_NULL_HANDLE;
+	std::array<VkDescriptorSetLayout, 8> sets;
+};
+
 //  
 struct Pipeline {
 	// Only caring for these stages for now.
 	ShaderModuleHandle vert;
 	ShaderModuleHandle frag;
 
-	VkPipeline pipeline;
-
-	// Pipelines may share this opaque handle. it could be optimizades with cache or with other setup.
-	VkPipelineLayout layout;
-
-
-	// this can and should be reusable from pipeline to pipeline.
-	// thats the why for handles instead of VkDescriptorSet
-	std::vector<DescriptorSetHandle> sets;
-
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	PipelineLayout layout = {};
 };
 
 struct DescriptorSet {
-	DescriptorLayoutHandle layout;
-	VkDescriptorSet set;
+	//DescriptorLayoutHandle layout = {};
+	VkDescriptorSetLayout layout = {};
+	VkDescriptorSet set = VK_NULL_HANDLE;
 };
-
-//struct PipelineLayout {
-//	VkPipelineLayout layout = VK_NULL_HANDLE;
-//	std::vector<DescriptorLayoutHandle> setLayouts; // keep handles for lifetime tracking
-//};
 
 // Surface is the 3d primitve and not to be taken as renderSurface.
 struct Surface {

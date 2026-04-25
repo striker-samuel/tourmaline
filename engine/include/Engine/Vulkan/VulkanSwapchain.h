@@ -33,6 +33,9 @@ public:
           window_(window),
           framesInFlight_(framesInFlight),
           desiredImageCount_(desiredImageCount) {
+
+        //
+        current_height, current_width = 0;
     }
 
     ~VulkanSwapchain() {

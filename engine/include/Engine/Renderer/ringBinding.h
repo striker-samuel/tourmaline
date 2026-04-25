@@ -42,7 +42,7 @@ struct RingBinding
 		//}
 
 		VkPhysicalDeviceProperties props{};
-		vkGetPhysicalDeviceProperties(*context->physicalDevice_, &props);
+		vkGetPhysicalDeviceProperties(context->physicalDevice_, &props);
 
 		const VkDeviceSize dynAlign =
 			(descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)

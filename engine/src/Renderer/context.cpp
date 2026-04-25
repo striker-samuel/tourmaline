@@ -301,45 +301,46 @@ void Context::CreateImageView(
 	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
 }
 
-//[[nodiscard]] DescriptorSetHandle Context::createDescriptorSet(
-//	DescriptorLayoutHandle lyt
-//) {
-//	// Pools should be rolled over on fail, get new pool. then discard FIFO
-//	auto descriptorPool = descriptorSetPools_.get(default_descriptor_pool);
-//	auto layout = descriptorSetLayouts_.get(lyt);
-//
-//	std::array<VkDescriptorSetLayout, 1> layouts = {
-//		*layout
-//	};
-//
-//	VkDescriptorSetAllocateInfo allocInfo{};
-//	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-//	// This needs to be implemented using rotating pools.
-//	allocInfo.descriptorPool = *descriptorPool;
-//	allocInfo.descriptorSetCount = 1;
-//	//allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
-//
-//	allocInfo.pSetLayouts = layouts.data();
-//
-//	DescriptorSet ds;
-//	VkResult result = vkAllocateDescriptorSets(device_, &allocInfo, &ds.set);
-//	ds.layout = lyt;
-//
-//	if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
-//
-//		assert(false && "oom pool");
-//
-//		// Rotate the descriptor pool. try again
-//		// Manage live dspools. defrag
-//	}
-//
-//	if (result != VK_SUCCESS) {
-//		throw std::runtime_error("failed to allocate descriptor sets!");
-//	}
-//
-//	return descriptorSets_.create(std::move(ds));
-//
-//}
+[[nodiscard]] DescriptorSetHandle Context::CreateDescriptorSet(
+	VkDescriptorSetLayout& layout
+	//VkDescriptorSet& set
+) {
+	// Pools should be rolled over on fail, get new pool. then discard FIFO
+	auto descriptorPool = descriptorSetPools_.get(default_descriptor_pool);
+	//auto layout = descriptorSetLayouts_.get(lyt);
+
+	std::array<VkDescriptorSetLayout, 1> layouts = {
+		layout
+	};
+
+	VkDescriptorSetAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	// This needs to be implemented using rotating pools.
+	allocInfo.descriptorPool = *descriptorPool;
+	allocInfo.descriptorSetCount = 1;
+	//allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+
+	allocInfo.pSetLayouts = layouts.data();
+
+	DescriptorSet ds;
+	VkResult result = vkAllocateDescriptorSets(device_, &allocInfo, &ds.set);
+	ds.layout = layout;
+
+	if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
+
+		assert(false && "oom pool");
+
+		// Rotate the descriptor pool. try again
+		// Manage live dspools. defrag
+	}
+
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("failed to allocate descriptor sets!");
+	}
+
+	return descriptorSets_.create(std::move(ds));
+
+}
 
 [[nodiscard]] DeviceBufferHandle Context::createBuffer(
 	VkDeviceSize size,
@@ -691,7 +692,8 @@ void Context::UploadDataToBuffer(
 //
 //}
 
-void Context::CreatePipelineLayout(const PipelineLayoutDesc& descIn, VkPipelineLayout& layout)
+
+void Context::CreatePipelineLayout(const PipelineLayoutDesc& descIn, PipelineLayout& out)
 {
 
 	// ---- 1) Canonicalize sets (sort by set index)
@@ -774,7 +776,10 @@ void Context::CreatePipelineLayout(const PipelineLayoutDesc& descIn, VkPipelineL
 		.pPushConstantRanges = rangeCount ? ranges : nullptr,
 	};
 
-	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &layout));
+	VK_CHECK(
+		vkCreatePipelineLayout(device_, &ci, nullptr, &out.layout)
+	);
+	out.sets = vkSetLayouts;
 
 	//return pipelineLayouts_.create(std::move(out));
 }
@@ -917,7 +922,9 @@ void Context::CreatePipelineLayout(const PipelineLayoutDesc& descIn, VkPipelineL
 	//PipelineLayoutHandle plytHandle = createPipelineLayout(layoutDesc);
 	//PipelineLayout* plytObj = pipelineLayouts_.get(plytHandle);
 	//pipeline.plyt = plytHandle;
-	CreatePipelineLayout(layoutDesc, pipeline.layout);
+	PipelineLayout lyt;
+	CreatePipelineLayout(layoutDesc, lyt);
+	pipeline.layout = lyt;
 
 #pragma endregion
 
@@ -946,7 +953,7 @@ void Context::CreatePipelineLayout(const PipelineLayoutDesc& descIn, VkPipelineL
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicState;
 	pipelineInfo.pDepthStencilState = &depthStencil;
-	pipelineInfo.layout = pipeline.layout;
+	pipelineInfo.layout = pipeline.layout.layout;
 	pipelineInfo.pNext = &dynamic_rendering_pipeline_info;
 
 	if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo,
@@ -955,9 +962,7 @@ void Context::CreatePipelineLayout(const PipelineLayoutDesc& descIn, VkPipelineL
 		throw std::runtime_error("failed to create graphics pipeline!");
 	}
 
-
 	return pipelines_.create(std::move(pipeline));
-
 
 }
 

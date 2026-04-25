@@ -84,7 +84,6 @@ class VulkanApp {
 
 public:
 
-	//VulkanApp(){} // this is just defualt really
 	virtual ~VulkanApp() = default;
 
 	virtual void DrawFrame() = 0;
@@ -136,8 +135,8 @@ protected:
 
 #pragma region ===[ Frame Commands List ]===
 
-	VkCommandPool perFrameCommandPools[MAX_FRAMES_IN_FLIGHT];
-	VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
+	VkCommandPool perFrameCommandPools[MAX_FRAMES_IN_FLIGHT]{};
+	VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT]{};
 
 #pragma endregion
 

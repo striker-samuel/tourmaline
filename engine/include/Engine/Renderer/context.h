@@ -4,6 +4,7 @@
 #include <array>
 
 #include <Engine/Vulkan/vulkan_helpers.h>
+
 #include <Engine/Renderer/constants.h>
 #include <Engine/Renderer/primitives.h>
 #include <Engine/Renderer/descriptions.h>
@@ -16,11 +17,27 @@
 #include <ktxvulkan.h>
 
 
-//struct SubmitHandle {
-//	uint32_t idx_;
-//	uint32_t gen_;
-//};
 
+struct MainViewPushConstants {
+	glm::mat4 model;
+	int material_index;
+	uint32_t     _pad0[3];
+};
+
+struct MaterialPushConstants {
+	// Color *=
+	glm::vec4 ambient = glm::vec4(0.06f);
+	glm::vec4 diffuse = glm::vec4(1.0f);
+	int tex[4] = { -1, -1, -1, -1 }; //diffuse ,ambient, alpha // unused 
+};
+
+static_assert(sizeof(MainViewPushConstants) % 16 == 0);
+static_assert(sizeof(MaterialPushConstants) % 16 == 0);
+
+struct MaterialInstance {
+	PipelineHandle pipeline;
+	MaterialPushConstants values = {};
+};
 
 // This belongs here. 
 // As it stands Context is also a geometry data manager.
@@ -86,26 +103,24 @@ public:
 
 	GeometryPageHandle current_geometry_page;
 	// --------------------------------------
+	Pool<MaterialInstance, MaterialInstance> materialInstances_;
+	// --------------------------------------
 
-	Pool<BufferDescription, BufferDescription> buffers_;
 	Pool<Image, Image> images_;
-	
-	//Pool<ImageView, VkImageView> imageViews_; // We may not need this one.
+	Pool<BufferDescription, BufferDescription> buffers_;
+
+
 	Pool<Sampler, VkSampler> samplers_;
-
 	Pool<ShaderModule, VkShaderModule> shaderModules_;
-
 	Pool<DescriptorSet, DescriptorSet> descriptorSets_;
-	//Pool<DescriptorLayout, VkDescriptorSetLayout> descriptorSetLayouts_;
 	Pool<DescriptorPool, VkDescriptorPool> descriptorSetPools_;
 
 	Pool<Pipeline, Pipeline> pipelines_;
-	//Pool<PipelineLayout, PipelineLayout> pipelineLayouts_;
 
 	Pool<Geometry, Geometry> meshes_;
-	Pool <GeometryPage, GeometryPage> geometry_pages;
+	Pool<GeometryPage, GeometryPage> geometry_pages;
 
-	Pool<MaterialInstance, MaterialInstance> materialInstances_;
+	//
 
 	Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface);
 	~Context(
@@ -124,7 +139,8 @@ public:
 
 
 	void CreateDescriptorLayout(const DescriptorSetLayoutDesc& descIn, VkDescriptorSetLayout& layout);
-	void CreatePipelineLayout(const PipelineLayoutDesc& descIn, VkPipelineLayout& layout);
+	//void CreatePipelineLayout(const PipelineLayoutDesc& descIn, VkPipelineLayout& layout);
+	void CreatePipelineLayout(const PipelineLayoutDesc& descIn, PipelineLayout& out);
 	PipelineHandle CreatePipeline(RasterSettings raster_settings, PipelineLayoutDesc layoutDesc, ShaderModuleHandle vert, ShaderModuleHandle frag, VkFormat depth_format, VkFormat swapchainImageFormat);
 
 	ImageHandle CreateShadowMapImage(int texWidth, int texHeight);
@@ -148,7 +164,11 @@ public:
 
 	void CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view);
 
-	DescriptorSetHandle createDescriptorSet(DescriptorLayoutHandle lyt);
+
+	DescriptorSetHandle CreateDescriptorSet(VkDescriptorSetLayout& layout);
+	//DescriptorSetHandle CreateDescriptorSet(VkDescriptorSetLayout& lyt, VkDescriptorSet& set);
+	//DescriptorSetHandle CreateDescriptorSet(DescriptorLayoutHandle lyt);
+
 	DeviceBufferHandle createBuffer(VkDeviceSize size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
 	void UploadDataToBuffer(DeviceBufferHandle buffer,const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
