@@ -30,19 +30,6 @@ constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 
 
 // 
-struct ToyCommandBuffer final {
-	// Maybe this shoudl be wrapped
-	VkCommandBuffer commandBuffer;
-
-	PipelineHandle pipeline = {};
-	VkRenderingInfo renderingInfo;
-	//ToyFrameBuffer fb;
-	//ToyRenderPass rp;
-
-	//VkPipeline lastBoundPipeline_ = VK_NULL_HANDLE;
-	//bool rendering_ = false;
-
-};
 
 struct ToyRenderPass final {
 	// This will be needed later 
@@ -54,7 +41,6 @@ struct ToyRenderPass final {
 	//AttachmentPass stencil;
 
 	VkRenderingAttachmentInfo color[1] = {};
-
 	VkRenderingAttachmentInfo depth = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
 	VkRenderingAttachmentInfo stencil = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
 };
@@ -70,11 +56,26 @@ struct ToyFrameBuffer final {
 };
 
 
+struct ToyCommandBuffer final {
+	// Maybe this shoudl be wrapped
+	VkCommandBuffer commandBuffer;
+	ToyRenderPass rp;
+	VkRenderingInfo renderingInfo;
+	//PipelineHandle pipeline = {};
+	//ToyFrameBuffer fb;
+	//VkPipeline lastBoundPipeline_ = VK_NULL_HANDLE;
+	//bool rendering_ = false;
+};
 
 struct Level {
+
+
 	Scene scene = {};
 	BvhTree tree = {};
 	Context* ctx = nullptr;
+
+
+	// is this bool really needed when we can probe BvhTree for tree
 	bool tree_done = false;
 };
 
@@ -84,11 +85,17 @@ class VulkanApp {
 
 public:
 
+	Level level{};
+
 	virtual ~VulkanApp() = default;
 
+	// This is the user entry point for now.
 	virtual void DrawFrame() = 0;
+	virtual void CleanUp();
 
-	bool Initialize();
+	// This cant be pure virtual. App inititalizes vulkan, creates context, imgui and more...
+	virtual bool Initialize();
+
 	bool Run() {
 
 		bool result = Initialize();
@@ -109,7 +116,6 @@ protected:
 
 	VkQueue presentQueue = VK_NULL_HANDLE;
 	VkQueue graphicsQueue = VK_NULL_HANDLE;
-
 
 #pragma region ===[ App / Core State ]===
 
@@ -277,8 +283,7 @@ protected:
 
 	void EarlyUpdate() {
 		//level.scene ? recalculateGlobalTransforms(level.scene) : void();
-		//recalculateGlobalTransforms(level.scene);
-
+		recalculateGlobalTransforms(level.scene);
 	}
 	void Update() {
 		//OPTICK_EVENT();
@@ -316,124 +321,6 @@ protected:
 			throw std::runtime_error("failed to set up debug messenger!");
 		}
 	}
-	void CleanUp();
-
-	//
-	//// --------------------------
-
-
-	// these all should be part of the command list recording cotnext/abstraction
-
-	//// These descriptors sets can be set and done.
-	//// Bindless textures image and samplers set cannot be
-	//void SetDescriptorSets()
-	//{
-	//	// Dynamic
-	//	for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; frameIndex++) {
-
-	//		auto setHandle = perFrameData[frameIndex].frameDynamicDescriptorSet;
-	//		auto setObj = context->descriptorSets_.get(setHandle);
-	//		VkDescriptorSet vkSet = setObj->set;
-
-	//		// FrameUniforms 
-	//		auto frameUniformsBufferHandle = context->buffers_.get(frameUniformsBinding.buffer_h);
-	//		VkDescriptorBufferInfo frameUniformsInfo{
-	//			.buffer = frameUniformsBufferHandle->buffer,
-	//			.offset = 0,
-	//			.range = sizeof(FrameUniforms) // this is the size of the window accesed per bind
-	//		};
-
-	//		// Draw data
-	//		auto drawsDataBufferHandle = context->buffers_.get(drawDataBinding.buffer_h);
-	//		VkDescriptorBufferInfo drawBufferInfo{
-	//			.buffer = drawsDataBufferHandle->buffer,
-	//			.offset = 0,
-	//			.range = sizeof(DrawSetData) * MAX_DRAWS
-	//		};
-	//		VkWriteDescriptorSet writes[2]{};
-
-	//		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	//		writes[0].dstSet = vkSet;
-	//		writes[0].dstBinding = 0; // UBO
-	//		writes[0].dstArrayElement = 0;
-	//		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-	//		writes[0].descriptorCount = 1;
-	//		writes[0].pBufferInfo = &frameUniformsInfo;
-
-	//		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	//		writes[1].dstSet = vkSet;
-	//		writes[1].dstBinding = 1; // SSBO
-	//		writes[1].dstArrayElement = 0;
-	//		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
-	//		writes[1].descriptorCount = 1;
-	//		writes[1].pBufferInfo = &drawBufferInfo;
-
-	//		vkUpdateDescriptorSets(device, 2 /*descriptorWriteCount*/, writes, 0, nullptr);
-
-	//	}
-	//}
-
-	//// This could be done way more clever. Only updating changed textures.
-	//// This may cause problems over the frame boundary if texture list changes...
-	//void UpdateBindlessTexturesSets() {
-
-	//	const uint32_t materialCount = static_cast<uint32_t>(context->materialInstances_.numObjects());
-
-	//	std::vector<VkDescriptorImageInfo> imageInfos;
-	//	std::vector<VkDescriptorImageInfo> samplerInfos;
-
-	//	int count = (context->images_.numObjects());
-	//	imageInfos.reserve(count);
-	//	samplerInfos.reserve(count);
-
-
-	//	context->images_.forEach([&](Image obj_) {
-
-	//		VkDescriptorImageInfo ii{};
-	//		ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-	//		ii.imageView = obj_.sampleView;
-	//		ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	//		imageInfos.push_back(ii);
-
-
-	//		// Sampler for the bindless texure approach needs refacotr.
-	//		// Doesnt Really make sense.
-	//		VkDescriptorImageInfo si{};
-	//		si.sampler = obj_.sampler;
-	//		si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
-	//		si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
-	//		samplerInfos.push_back(si);
-
-	//		}
-	//	);
-
-	//	for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; frameIndex++) {
-	//		//// --- Two writes: images at index 2, samplers at index 3 ---
-	//		VkWriteDescriptorSet writes[2]{};
-
-	//		auto setHandle = perFrameData[frameIndex].frameDescriptorSet;
-	//		auto set = context->descriptorSets_.get(setHandle);
-
-	//		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	//		writes[0].dstSet = set->set;
-	//		writes[0].dstBinding = 2;
-	//		writes[0].dstArrayElement = 0;
-	//		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-	//		writes[0].descriptorCount = imageInfos.size();
-	//		writes[0].pImageInfo = imageInfos.data();
-
-	//		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	//		writes[1].dstSet = set->set;
-	//		writes[1].dstBinding = 3;
-	//		writes[1].dstArrayElement = 0;
-	//		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-	//		writes[1].descriptorCount = static_cast<uint32_t>(samplerInfos.size());   // or 1 if you use a single shared sampler
-	//		writes[1].pImageInfo = samplerInfos.data();
-
-	//		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
-	//	}
-
-	//}
 
 	void BindVertex(VkCommandBuffer commandBuffer) {
 
@@ -781,7 +668,7 @@ bool VulkanApp::Initialize() {
 
 	// SWAPCHAIN
 
-	auto swap = new VulkanSwapchain(
+	swapchain = new VulkanSwapchain(
 		*context,
 		physicalDevice, // This may be redundant, context already knows of device, and physDevice.
 		device, //
@@ -791,8 +678,8 @@ bool VulkanApp::Initialize() {
 		static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT),
 		static_cast<uint32_t>(DESIRED_SWAPCHAIN_IMAGE_COUNT)
 	);
+	swapchain->Create();
 	// 
-
 	InitializeImGui();
 
 	// FRAME COMMAND 
@@ -922,10 +809,7 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 
 #pragma endregion
 
-ToyCommandBuffer VulkanApp::AcquireMain(
-	//ToyFrameBuffer fb,
-	//ToyRenderPass rp
-)
+ToyCommandBuffer VulkanApp::AcquireMain()
 {
 
 	vkWaitForFences(
@@ -1038,95 +922,30 @@ ToyCommandBuffer VulkanApp::AcquireMain(
 	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
 
-	VkRenderingInfoKHR renderingInfo;
+	ToyCommandBuffer cb{
+		.commandBuffer = commandBuffers[swapchain->currentFrame_],
+		.rp = {
+		.color = colorAttachment,
+		.depth = depthAttachment
+		}
+	};
+
+	VkRenderingInfoKHR renderingInfo{};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
 	renderingInfo.renderArea.offset = { 0, 0 };
 	renderingInfo.renderArea.extent = swapchain->GetExtent();
 	renderingInfo.layerCount = 1;
 	renderingInfo.colorAttachmentCount = 1;
 
-	renderingInfo.pColorAttachments = &colorAttachment;
-	renderingInfo.pDepthAttachment = &depthAttachment;
+	renderingInfo.pColorAttachments = cb.rp.color;
+	renderingInfo.pDepthAttachment = &cb.rp.depth;
 
-	return ToyCommandBuffer{
-		.commandBuffer = commandBuffers[swapchain->currentFrame_],
-		.renderingInfo = renderingInfo
-	};
+	cb.renderingInfo = renderingInfo;
+
+	return cb;
 }
 
-void VulkanApp::Submit(ToyCommandBuffer& cmds) {
-
-	//cmds.rendering_ = true;
-
-	VkResult result;
-
-	if (vkEndCommandBuffer(commandBuffers[swapchain->currentFrame_]) != VK_SUCCESS) {
-		throw std::runtime_error("failed to record command buffer!");
-	}
-	// Submit Frame 
-	{
-
-		VkSubmitInfo submitInfo{};
-		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-		VkSemaphore waitSemaphores[] = { swapchain->imageAvailableSemaphores_[swapchain->currentFrame_] };
-		VkPipelineStageFlags waitStages[] = {
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-		submitInfo.waitSemaphoreCount = 1;
-		submitInfo.pWaitSemaphores = waitSemaphores;
-		submitInfo.pWaitDstStageMask = waitStages;
-
-		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers = &commandBuffers[swapchain->currentFrame_];
-
-		VkSemaphore signalSemaphores[] = { swapchain->renderFinishedSemaphores_[swapchain->currentFrame_] };
-		submitInfo.signalSemaphoreCount = 1;
-		submitInfo.pSignalSemaphores = signalSemaphores;
-
-		if (
-			vkQueueSubmit(
-				context->default_queue,
-				1,
-				&submitInfo,
-				swapchain->GetInFlightFence()
-			) != VK_SUCCESS
-			) {
-
-			assert(false && "failed to submit draw");
-			throw std::runtime_error("failed to submit draw command buffer!");
-		}
-
-
-		VkPresentInfoKHR presentInfo{};
-		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
-		presentInfo.waitSemaphoreCount = 1;
-		presentInfo.pWaitSemaphores = signalSemaphores;
-
-		VkSwapchainKHR swapChains[] = { swapchain->swapchain_ };
-		presentInfo.swapchainCount = 1;
-		presentInfo.pSwapchains = swapChains;
-		presentInfo.pImageIndices = &swapchain->currentImageIndex_;
-
-		result = vkQueuePresentKHR(presentQueue, &presentInfo);
-
-		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
-			framebufferResized) {
-			framebufferResized = false;
-			swapchain->RecreateSwapChain();
-		}
-		else if (result != VK_SUCCESS) {
-			throw std::runtime_error("failed to present swap chain image!");
-		}
-
-
-	}
-
-	swapchain->AdvanceFrame();
-	//currentFrame = (currentFrame + 1) % framesInFlight;
-}
-
-
+// TO DOO 
 void VulkanApp::CleanUp() {
 
 	context->CleanUp();

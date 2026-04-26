@@ -2,7 +2,8 @@
 
 static inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
 
-Context::Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface) {
+Context::Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface
+) {
 
 	VmaAllocatorCreateInfo allocatorCreateInfo = {};
 	allocatorCreateInfo.physicalDevice = *physicalDevice;
@@ -25,17 +26,17 @@ Context::Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physi
 
 	// This is ok because VkObjects are just opaque handles for the driver.
 	device_ = *device;
+	physicalDevice_ = *physicalDevice;
 
 	// from ChatGpt, may not be true: you can set a generic sampler with a big maxLod like 100, and reuse it for all your textures of any mip count.
 	// The driver will clamp dynamically per texture.
 	samplers["default"] = CreateSampler(100);
-	samplers["default_shadow"] = CreateShadowSampler(1);
+	//samplers["default_shadow"] = CreateShadowSampler(1);
 
 	images_.objects_.reserve(MAX_IMAGES);
 	buffers_.objects_.reserve(MAX_BUFFERS);
 
 	InitializeDeviceVmaPools();
-
 
 	// This initialization is not the same as the others...
 	// Also im making the context have ownership of the geometry buffers. may not be the cleanest or better.
@@ -242,30 +243,30 @@ void Context::InitializeDeviceVmaPools() {
 
 }
 
-[[nodiscard]] SamplerHandle Context::CreateShadowSampler(uint32_t levelCount) {
-
-	VkSampler sampler_;
-
-	VkSamplerCreateInfo sci{};
-	sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-
-	sci.magFilter = VK_FILTER_LINEAR;
-	sci.minFilter = VK_FILTER_LINEAR;
-	sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-
-	sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-	sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-	sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-
-	sci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-
-	sci.compareEnable = VK_TRUE;
-	sci.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-
-	VK_CHECK(vkCreateSampler(device_, &sci, nullptr, &sampler_));
-	return samplers_.create(std::move(sampler_));
-
-}
+//[[nodiscard]] SamplerHandle Context::CreateShadowSampler(uint32_t levelCount) {
+//
+//	VkSampler sampler_;
+//
+//	VkSamplerCreateInfo sci{};
+//	sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+//
+//	sci.magFilter = VK_FILTER_LINEAR;
+//	sci.minFilter = VK_FILTER_LINEAR;
+//	sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+//
+//	sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+//	sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+//	sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+//
+//	sci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+//
+//	sci.compareEnable = VK_TRUE;
+//	sci.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+//
+//	VK_CHECK(vkCreateSampler(device_, &sci, nullptr, &sampler_));
+//	return samplers_.create(std::move(sampler_));
+//
+//}
 
 void Context::CreateImageView(
 	VkImage image,
@@ -1322,6 +1323,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 }
 
 ImageHandle Context::CreateTexture(ktxTexture2& texture) {
+
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
 		// Hardcoded for now, as in your original code.
 		KTX_error_code tr = ktxTexture2_TranscodeBasis(&texture, KTX_TTF_BC7_RGBA, 0);
@@ -1352,17 +1354,21 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 		VK_IMAGE_USAGE_TRANSFER_DST_BIT |
 		(texture.generateMipmaps ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
 
+	const bool is3D = depth > 1;
 
 	// -------------------------------------------------------------------------
 	// Create VkImage with VMA
 	// -------------------------------------------------------------------------
 	VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	imageInfo.flags = isCubemap ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
-	imageInfo.imageType = (depth > 1) ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+	
+	imageInfo.imageType = is3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+	imageInfo.extent = { width, height, depth };
+	imageInfo.arrayLayers = is3D ? 1 : arrayLayers;
+
 	imageInfo.format = format;
 	imageInfo.extent = { width, height, depth };
 	imageInfo.mipLevels = mipLevels;
-	imageInfo.arrayLayers = arrayLayers;
 	imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 	imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
 	imageInfo.usage = usage;
@@ -1373,8 +1379,6 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 	imageAllocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 	imageAllocInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-
-	Image image_obj;
 	VkImage image = VK_NULL_HANDLE;
 	VmaAllocation imageAllocation = VK_NULL_HANDLE;
 	VmaAllocationInfo imageAllocationInfo{};
@@ -1608,19 +1612,40 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 		viewType = VK_IMAGE_VIEW_TYPE_3D;
 	}
 
+	Image image_obj{};
+	image_obj.image = image;
+	image_obj.is_tex = true;
+	image_obj.alloc = imageAllocation;
+	image_obj.allocInfo = imageAllocationInfo;
+	image_obj.format = format;
+	image_obj.usage = usage;
+	image_obj.extent = { width, height, depth };
+	image_obj.arrayLayers = imageInfo.arrayLayers;
+	image_obj.levels = mipLevels;
+	image_obj.sampleView = VK_NULL_HANDLE;
+	image_obj.renderView = VK_NULL_HANDLE;
+
+
+	// TODO: fix this crap
+	auto smp = samplers_.get(samplers.at("default"));
+	image_obj.sampler = *smp;
+
+	for (auto& v : image_obj.arrayView) {
+		v = VK_NULL_HANDLE;
+	}
+
 	CreateImageView(
 		image,
 		format,
 		aspect,
 		mipLevels,
-		viewType,
+		0,
 		arrayLayers,
 		viewType,
 		image_obj.renderView
 	);
 
-
-
+	image_obj.sampleView = image_obj.renderView;
 
 	return images_.create(std::move(image_obj));
 }
@@ -1654,29 +1679,29 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 //
 //}
 
-[[nodiscard]] ImageHandle Context::CreateShadowMapImage(int texWidth, int texHeight /*int cascades*/) {
-
-	//VkFormat depth_format = VK_FORMAT_D32_SFLOAT; // I dont need stencil, so lets hardcode this for the moment here. /*findDepthFormat(*physicalDevice_);*/
-	VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT // sample as texture
-		| VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-
-	// Levels just 1. No mipmaps for shadow perFrame images. 
-	ImageHandle image_handle = CreateImage(texWidth,
-		texHeight, SHADOWMAP_DEPTH_FORMAT, usage, 1, 1);
-
-	auto image = images_.get(image_handle);
-
-	// I dont really care beucase first op will be loadClear
-	//TransitionImageLayout(
-	//	image_handle,
-	//	VK_IMAGE_LAYOUT_UNDEFINED,
-	//	VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
-	//);
-
-	//image->layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-
-	return image_handle;
-};
+//[[nodiscard]] ImageHandle Context::CreateShadowMapImage(int texWidth, int texHeight /*int cascades*/) {
+//
+//	//VkFormat depth_format = VK_FORMAT_D32_SFLOAT; // I dont need stencil, so lets hardcode this for the moment here. /*findDepthFormat(*physicalDevice_);*/
+//	VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT // sample as texture
+//		| VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+//
+//	// Levels just 1. No mipmaps for shadow perFrame images. 
+//	ImageHandle image_handle = CreateImage(texWidth,
+//		texHeight, SHADOWMAP_DEPTH_FORMAT, usage, 1, 1);
+//
+//	auto image = images_.get(image_handle);
+//
+//	// I dont really care beucase first op will be loadClear
+//	//TransitionImageLayout(
+//	//	image_handle,
+//	//	VK_IMAGE_LAYOUT_UNDEFINED,
+//	//	VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+//	//);
+//
+//	//image->layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+//
+//	return image_handle;
+//};
 
 [[nodiscard]] ImageHandle Context::CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers) {
 

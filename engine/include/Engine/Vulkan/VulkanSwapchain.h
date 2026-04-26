@@ -33,9 +33,6 @@ public:
           window_(window),
           framesInFlight_(framesInFlight),
           desiredImageCount_(desiredImageCount) {
-
-        //
-        current_height, current_width = 0;
     }
 
     ~VulkanSwapchain() {
@@ -63,9 +60,8 @@ public:
             glfwWaitEvents();
         }
 
-        // Crude.
-        current_width = width;
-        current_height = height;
+        extent_.width = width;
+        extent_.height = height;
 
         vkDeviceWaitIdle(device_);
 
@@ -245,7 +241,7 @@ public:
                 images_[i],
                 surfaceFormat_,
                 VK_IMAGE_ASPECT_COLOR_BIT,
-                0,
+                1, // no mips is still 1 levle
                 0,
                 1,
                 VK_IMAGE_VIEW_TYPE_2D,
@@ -264,7 +260,7 @@ public:
             extent_.height,
             depthFormat,
             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-            0,
+            1,
             1
         );
 
@@ -273,13 +269,13 @@ public:
             obj_->image,
             obj_->format,
             VK_IMAGE_ASPECT_DEPTH_BIT,
-            0,
+            1,
             0,
             1,
             VK_IMAGE_VIEW_TYPE_2D,
             obj_->renderView
         );
-        obj_->renderView = obj_->sampleView;
+        obj_->sampleView = obj_->renderView;
 
         ctx_.TransitionImageLayout(
             depthImage_,

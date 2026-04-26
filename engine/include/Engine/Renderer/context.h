@@ -59,6 +59,25 @@ struct GeometryPageRef {
 	uint16_t flags;     // optional (layout, etc.)
 };
 
+
+//struct MeshManager {
+//	Context* context;
+//
+//	MeshManager(Context& context_)
+//		:
+//		context(context_)
+//	{
+//
+//	};
+//
+//	uint32_t vertex_cursor = 0;
+//	Pool<Geometry, Geometry> meshes_;
+//	Pool<GeometryPage, GeometryPage> geometry_pages;
+//
+//	GeometryHandle UploadVertexData(MeshUploadInput& mesh_data) {};
+//
+//};
+
 // This resource management style is lifted from lightweightVk
 class Context {
 
@@ -74,6 +93,8 @@ class Context {
 
 
 public:
+
+	// This should be removed... Maybe...
 	std::unordered_map<std::string, SamplerHandle> samplers;
 
 	VmaAllocator allocator_;
@@ -117,6 +138,8 @@ public:
 
 	Pool<Pipeline, Pipeline> pipelines_;
 
+	// this doesnt belong here
+	// and should be moved to MeshMaanger.
 	Pool<Geometry, Geometry> meshes_;
 	Pool<GeometryPage, GeometryPage> geometry_pages;
 
@@ -137,28 +160,20 @@ public:
 	DeviceBufferHandle CreateStagingBuffer(const void* srcData, VkDeviceSize size);
 	ShaderModuleHandle CreateShaderModule(std::vector<char> code);
 
-
 	void CreateDescriptorLayout(const DescriptorSetLayoutDesc& descIn, VkDescriptorSetLayout& layout);
-	//void CreatePipelineLayout(const PipelineLayoutDesc& descIn, VkPipelineLayout& layout);
+	//DescriptorLayoutHandle createDescriptorLayout(const DescriptorSetLayoutDesc& descIn);
+
+
 	void CreatePipelineLayout(const PipelineLayoutDesc& descIn, PipelineLayout& out);
 	PipelineHandle CreatePipeline(RasterSettings raster_settings, PipelineLayoutDesc layoutDesc, ShaderModuleHandle vert, ShaderModuleHandle frag, VkFormat depth_format, VkFormat swapchainImageFormat);
 
-	ImageHandle CreateShadowMapImage(int texWidth, int texHeight);
+	ImageHandle CreateTexture(ktxTexture2& texture);
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
 
-	// Instead of specializing with baked in defautls just expose 
-	// sampler creation, maybe bassed on samplerKey
 	SamplerHandle GetSampler(SamplerKey samplerKey);
 	SamplerHandle CreateSampler(uint32_t levelCount);
-	SamplerHandle CreateShadowSampler(uint32_t levelCount);
-
-	//ImageHandle CreateTexture(filepath);
-	ImageHandle CreateTexture(ktxTexture2& texture);
-	// Same here, no specialization
-	//ImageHandle CreateShadowMap(int width = 1024, int height = 1024);
 
 	MaterialInstanceHandle CreateMaterialInstance(PipelineHandle mat_pipeline);
-	DescriptorLayoutHandle createDescriptorLayout(const DescriptorSetLayoutDesc& descIn);
 
 	DescriptorPoolHandle createDescriptorPool();
 
@@ -182,7 +197,6 @@ public:
 	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 	void TransitionImageLayout(ImageHandle image_handle, VkImageLayout oldLayout, VkImageLayout newLayout);
 
-	//SamplerHandle GetSampler(SamplerKey key);
 	VkQueue GetGraphicsQueue();
 	PipelineHandle GetAppropiatePipeline(PipelineKey key);
 

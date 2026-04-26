@@ -55,27 +55,27 @@ struct Geometry {
 
 
 struct Image {
+    VkImage image = VK_NULL_HANDLE;
+    VmaAllocation alloc = VK_NULL_HANDLE;
+    VmaAllocationInfo allocInfo{};
 
-	VkImage image;
-	VmaAllocation alloc;
-	VmaAllocationInfo allocInfo; // allocation metadata return.
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkImageUsageFlags usage = 0;
 
-	VkFormat format;
-	VkImageUsageFlags usage;
+    VkExtent3D extent{};
+    uint32_t arrayLayers = 0;
+    uint32_t levels = 0;
 
-	VkExtent3D extent;
-	uint32_t arrayLayers; // DepthImage will have each cascae in diff index.
-	uint32_t levels; // levels is Mips.
+    VkImageView sampleView = VK_NULL_HANDLE;
+    VkImageView renderView = VK_NULL_HANDLE;
+    VkImageView arrayView[6]{
+        VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+        VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
+    };
 
-	VkImageView sampleView;
-	VkImageView renderView;
-	VkImageView arrayView[6];
-
-
-	// This probably will be removed in due time
-	VkSampler sampler;
+    VkSampler sampler = VK_NULL_HANDLE;
+	bool is_tex = false;
 };
-
 // This ideally shouldnt use VkTypes and be the RHI interface.
 // Lets roll with this for now
 struct RasterSettings {
