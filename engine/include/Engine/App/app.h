@@ -832,8 +832,7 @@ ToyCommandBuffer VulkanApp::AcquireMain()
 
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-		swapchain->RecreateSwapChain();
-
+		swapchain->Recreate();
 		// AcquireMain needs to be reworked so empry return is legal, and tries to acquire again
 		assert(false && "not implemented yet");
 		//return;

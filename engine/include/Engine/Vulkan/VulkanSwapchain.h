@@ -125,6 +125,10 @@ public:
 
     void AdvanceFrame() {
         currentFrame_ = (currentFrame_ + 1) % framesInFlight_;
+
+
+        // BAD BAD BAD
+        SetCurrentImageIndex(currentFrame_);
     }
 
     void SetCurrentImageIndex(uint32_t imageIndex) {
@@ -141,12 +145,11 @@ public:
 
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
 
+
+    //VkImage depthImage_;
+    ImageHandle depthImage_{};
     std::vector<VkImage> images_;
     std::vector<VkImageView> imageViews_;
-
-    // refactor to use this instead.
-    // images already can hold views and samplers too.
-    //std::vector<ImageHandle> images_;
 
     std::vector<VkSemaphore> renderFinishedSemaphores_;
     std::vector<VkSemaphore> imageAvailableSemaphores_;
@@ -154,8 +157,6 @@ public:
 
     VkFormat surfaceFormat_ = VK_FORMAT_UNDEFINED;
     VkExtent2D extent_{};
-
-    ImageHandle depthImage_{};
 
     uint32_t framesInFlight_ = 0;
     uint32_t desiredImageCount_ = 0;
@@ -344,8 +345,8 @@ public:
                 vkDestroyImageView(device_, view, nullptr);
             }
         }
-        imageViews_.clear();
 
+        imageViews_.clear();
         images_.clear();
 
         if (swapchain_ != VK_NULL_HANDLE) {
@@ -353,8 +354,4 @@ public:
             swapchain_ = VK_NULL_HANDLE;
         }
     }
-    void RecreateSwapChain();
 };
-
-
-void VulkanSwapchain::RecreateSwapChain() {};

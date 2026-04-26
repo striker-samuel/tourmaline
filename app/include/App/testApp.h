@@ -43,11 +43,9 @@ class TestApp : public VulkanApp {
 		double x, y;
 		glfwGetCursorPos(window, &x, &y);
 
-		// TODO. expose dimensison to app. from framebuffer/swapchain
-		//cameraPositioner.update(delta_time_s,
-		//	glm::vec2(x / width_, y / -height_),
-		//	rightMousePressed);
-
+		cameraPositioner.update(delta_time_s,
+			glm::vec2(x / swapchain->extent_.width, y / -swapchain->extent_.height),
+			rightMousePressed);
 
 	}
 
@@ -306,6 +304,10 @@ class TestApp : public VulkanApp {
 		samplerInfos.reserve(count);
 
 		context->images_.forEach([&](Image obj_) {
+
+			// This is fast and crude fix. 
+			// Swapchain depth image is created on the same pool and other images are too.
+			// swapchaim color images are manages by the VkSwapchain object tho.
 			if (!obj_.is_tex) { return; };
 
 			VkDescriptorImageInfo ii{};
@@ -588,11 +590,10 @@ class TestApp : public VulkanApp {
 
 		//// Record the ImGui draw data into your Vulkan command buffer.
 		//// You must already be inside a render pass (or dynamic rendering block)
-		//ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
+		//ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd.commandBuffer);
 
 		vkCmdEndRendering(
 			cmd.commandBuffer
-			//commandBuffers[swapchain.currentFrame_]
 		);
 
 		// SUBMITs
@@ -677,12 +678,11 @@ class TestApp : public VulkanApp {
 			if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
 				framebufferResized) {
 				framebufferResized = false;
-				swapchain->RecreateSwapChain();
+				swapchain->Recreate();
 			}
 			else if (result != VK_SUCCESS) {
 				throw std::runtime_error("failed to present swap chain image!");
 			}
-
 
 		}
 
