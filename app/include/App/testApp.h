@@ -14,6 +14,9 @@ std::vector<std::string> gltf_meshes_paths = {
 class TestApp : public VulkanApp {
 	using Super = VulkanApp;
 
+	//~TestApp() {
+	//	~Super::();
+	//};
 
 	struct FrameResources {
 		DescriptorSetHandle frameDescriptorSet;
@@ -34,10 +37,10 @@ class TestApp : public VulkanApp {
 	);
 	Camera camera = Camera(cameraPositioner);
 
-	//
-	PipelineHandle mainPipeline; // app shouldnt not be responsible for this. 
+	// this shouldnt be like this
+	PipelineHandle mainPipeline;
 
-	void EarlyUpdate() {
+	void EarlyUpdate() override {
 		Super::EarlyUpdate();
 
 		double x, y;
@@ -57,9 +60,7 @@ class TestApp : public VulkanApp {
 		Super::LateUpdate();
 	}
 
-
-	// Don't now if the callbacks are set to these. with the inheritance
-	void handleMouseScroll(double xOffset, double yOffset) {
+	void handleMouseScroll(double xOffset, double yOffset) override{
 		const float scrollSpeed = 1.0f;
 		glm::vec3 forward = cameraPositioner.getForward();
 		cameraPositioner.setPosition(
@@ -67,19 +68,22 @@ class TestApp : public VulkanApp {
 		);
 	}
 
-	void handleMouseMovement(double xpos, double ypos) {
-		//if (!rightMousePressed) return;
-		//glm::vec2 mousePos = glm::vec2(
-		//	static_cast<float>(xpos) / width_,
-		//	static_cast<float>(ypos) / -height_
-		//);
-		//cameraPositioner.update(delta_time_s,
-		//	mousePos,
-		//	true
-		//);
+	void handleMouseMovement(double xpos, double ypos) override {
+		//Super::handleMouseMovement(xpos, ypos);
+		if (!rightMousePressed) return;
+		glm::vec2 mousePos = glm::vec2(
+			static_cast<float>(xpos) / swapchain->GetExtent().width,
+			static_cast<float>(ypos) / -swapchain->GetExtent().height
+		);
+		cameraPositioner.update(delta_time_s,
+			mousePos,
+			true
+		);
 	}
 
-	void handleKey(int key, int scancode, int action, int mods) {
+	void handleKey(int key, int scancode, int action, int mods) override{
+		//Super::handleKey(key, scancode, action, mods);
+
 		bool isPressed = action != GLFW_RELEASE;
 
 		switch (key) {
@@ -153,7 +157,7 @@ class TestApp : public VulkanApp {
 		desc.sets = {
 			DescriptorSetLayoutDesc{
 				0, // setLayout #
-				VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, // createFlags
+				0, //VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, // createFlags
 				{
 					frameUniformsBinding.bindingDesc(), // binding 0,0
 					drawDataBinding.bindingDesc(), //binding 0,1
@@ -241,7 +245,10 @@ class TestApp : public VulkanApp {
 		level = lvl;
 
 		SetDescriptorSets();
+
+
 		UpdateBindlessTexturesSets();
+
 		return true;
 	};
 
@@ -358,9 +365,8 @@ class TestApp : public VulkanApp {
 
 	void UpdateFrameUniforms(uint32_t currentFrame) {
 
-
-		int width_ = swapchain->current_width;
-		int height_ = swapchain->current_height;
+		int width_ = swapchain->GetExtent().width;
+		int height_ = swapchain->GetExtent().height;
 
 		auto view = camera.getViewMatrix();
 		auto proj = camera.getProjMatrix();
@@ -408,6 +414,8 @@ class TestApp : public VulkanApp {
 		auto cmd = AcquireMain();
 		auto swapChainExtent = swapchain->GetExtent();
 
+		UpdateFrameUniforms(swapchain->GetCurrentFrameIndex());
+
 		// VIEWPORT
 		// Flipped because of this :)
 		// https://www.saschawillems.de/blog/2019/03/29/flipping-the-vulkan-viewport/
@@ -441,7 +449,6 @@ class TestApp : public VulkanApp {
 
 		auto viewProj = proj * view; // Freeze at first for debug
 
-
 		if (level.tree_done) {
 			frustumCullBVH(
 				level.tree,
@@ -452,15 +459,14 @@ class TestApp : public VulkanApp {
 			);
 		}
 		else {
-
 			assert(false && "tree wasnt done");
 		}
 
 		// VISIBLE PIPELINES
 		std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
 
-		for (uint32_t primId : visible) {
-			uint32_t node = level.tree.primToNode[primId];
+		for (uint32_t node : visible) {
+			//uint32_t node = level.tree.primToNode[primId];
 
 			auto it = level.scene.materialForNode.find(node);
 			if (it == level.scene.materialForNode.end()) continue;
@@ -473,6 +479,13 @@ class TestApp : public VulkanApp {
 
 		}
 
+		if (pipeline_map.empty()) {
+			vkCmdBeginRendering(cmd.commandBuffer, &cmd.renderingInfo);
+			vkCmdEndRendering(cmd.commandBuffer);
+			// then transition/present as usual
+			return;
+		}
+		auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->layout;
 
 		uint32_t dynamicOffsets[2] = {
 			frameUniformsBinding.dynamicOffsetFrame(swapchain->currentFrame_),
@@ -484,7 +497,6 @@ class TestApp : public VulkanApp {
 			update_after_bind_set->set,
 		};
 
-		auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->layout;
 
 		vkCmdBindDescriptorSets(
 			cmd.commandBuffer,
@@ -512,7 +524,6 @@ class TestApp : public VulkanApp {
 
 			vkCmdBindPipeline(
 				cmd.commandBuffer,
-				//commandBuffers[swapchain.currentFrame_],
 				VK_PIPELINE_BIND_POINT_GRAPHICS,
 				context->pipelines_.get(han_)->pipeline
 			);
@@ -586,11 +597,13 @@ class TestApp : public VulkanApp {
 			}
 		}
 
-		//ImGui::Render();
+		UiPass();
 
-		//// Record the ImGui draw data into your Vulkan command buffer.
-		//// You must already be inside a render pass (or dynamic rendering block)
-		//ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd.commandBuffer);
+		ImGui::Render();
+
+		// Record the ImGui draw data into your Vulkan command buffer.
+		// You must already be inside a render pass (or dynamic rendering block)
+		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd.commandBuffer);
 
 		vkCmdEndRendering(
 			cmd.commandBuffer
@@ -625,7 +638,7 @@ class TestApp : public VulkanApp {
 
 		VkResult result;
 
-		if (vkEndCommandBuffer(commandBuffers[swapchain->currentFrame_]) != VK_SUCCESS) {
+		if (vkEndCommandBuffer(cmd.commandBuffer) != VK_SUCCESS) {
 			throw std::runtime_error("failed to record command buffer!");
 		}
 		// Submit Frame 
@@ -642,7 +655,8 @@ class TestApp : public VulkanApp {
 			submitInfo.pWaitDstStageMask = waitStages;
 
 			submitInfo.commandBufferCount = 1;
-			submitInfo.pCommandBuffers = &commandBuffers[swapchain->currentFrame_];
+			//submitInfo.pCommandBuffers = &commandBuffers[swapchain->currentFrame_];
+			submitInfo.pCommandBuffers = &cmd.commandBuffer;
 
 			VkSemaphore signalSemaphores[] = { swapchain->renderFinishedSemaphores_[swapchain->currentFrame_] };
 			submitInfo.signalSemaphoreCount = 1;

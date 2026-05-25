@@ -10,7 +10,7 @@
 
 struct PipelineLayout {
 	VkPipelineLayout layout = VK_NULL_HANDLE;
-	std::array<VkDescriptorSetLayout, 8> sets;
+	std::array<VkDescriptorSetLayout, 8> sets{};
 };
 
 //  

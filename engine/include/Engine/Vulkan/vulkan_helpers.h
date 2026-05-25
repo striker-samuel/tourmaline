@@ -17,7 +17,7 @@
 #include <Engine/Shared/common.h>
 #include <Engine/Renderer/primitives.h>
 
-inline const char* vkResultToString(VkResult result);
+/*inline*/ const char* vkResultToString(VkResult result);
 
 #define VK_CHECK(x)                                                     \
     do {                                                                \
@@ -63,17 +63,17 @@ struct QueueFamilyIndices {
 };
 
 struct SwapChainSupportDetails {
-	VkSurfaceCapabilitiesKHR capabilities;
+	VkSurfaceCapabilitiesKHR capabilities{};
 	std::vector<VkSurfaceFormatKHR> formats;
 	std::vector<VkPresentModeKHR> presentModes;
 };
 
-VkResult CreateDebugUtilsMessengerEXT(
-	VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-	const VkAllocationCallbacks* pAllocator,
-	VkDebugUtilsMessengerEXT* pDebugMessenger);
-
-void DestroyDebugUtilsMessengerEXT(VkInstance instance,	VkDebugUtilsMessengerEXT debugMessenger,const VkAllocationCallbacks* pAllocator);
+//VkResult CreateDebugUtilsMessengerEXT(
+//	VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
+//	const VkAllocationCallbacks* pAllocator,
+//	VkDebugUtilsMessengerEXT* pDebugMessenger);
+//
+//void DestroyDebugUtilsMessengerEXT(VkInstance instance,	VkDebugUtilsMessengerEXT debugMessenger,const VkAllocationCallbacks* pAllocator);
 
 bool checkValidationLayerSupport();
 
@@ -114,12 +114,3 @@ std::vector<const char*> getRequiredExtensions();
 void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo);
 VkCommandBuffer beginSingleTimeCommands(VkDevice device, VkCommandPool commandPool);
 void endSingleTimeCommands(VkDevice device, VkCommandBuffer commandBuffer, VkQueue queue, VkCommandPool commandPool);
-
-void createSampler(
-	const VkPhysicalDevice& physicalDevice,
-	const VkDevice& device,
-	VkSampler& sampler,
-	int levelCount,
-	VkCompareOp compareOp
-
-);

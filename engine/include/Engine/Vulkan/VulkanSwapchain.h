@@ -13,7 +13,6 @@
 class VulkanSwapchain {
 
 public:
-    int current_width, current_height = 0;
 
     VulkanSwapchain(
         Context& context,
@@ -51,6 +50,7 @@ public:
     }
 
     void Recreate() {
+        // No new sync objects. Should investigate, can iamge# change? on OOD
         int width = 0;
         int height = 0;
 
@@ -125,10 +125,6 @@ public:
 
     void AdvanceFrame() {
         currentFrame_ = (currentFrame_ + 1) % framesInFlight_;
-
-
-        // BAD BAD BAD
-        SetCurrentImageIndex(currentFrame_);
     }
 
     void SetCurrentImageIndex(uint32_t imageIndex) {

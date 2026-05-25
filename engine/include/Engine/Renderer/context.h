@@ -130,11 +130,11 @@ public:
 	Pool<Image, Image> images_;
 	Pool<BufferDescription, BufferDescription> buffers_;
 
-
 	Pool<Sampler, VkSampler> samplers_;
-	Pool<ShaderModule, VkShaderModule> shaderModules_;
 	Pool<DescriptorSet, DescriptorSet> descriptorSets_;
 	Pool<DescriptorPool, VkDescriptorPool> descriptorSetPools_;
+
+	Pool<ShaderModule, VkShaderModule> shaderModules_;
 
 	Pool<Pipeline, Pipeline> pipelines_;
 

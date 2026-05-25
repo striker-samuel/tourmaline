@@ -2,7 +2,7 @@
 
 #include <Engine/Vulkan/vulkan_helpers.h>
 
-inline const char* vkResultToString(VkResult result) {
+/*inline*/ const char* vkResultToString(VkResult result) {
     switch (result) {
     case VK_SUCCESS: return "VK_SUCCESS";
     case VK_NOT_READY: return "VK_NOT_READY";
@@ -38,29 +38,32 @@ debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 	return VK_FALSE;
 }
 
-VkResult CreateDebugUtilsMessengerEXT(
-	VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-	const VkAllocationCallbacks* pAllocator,
-	VkDebugUtilsMessengerEXT* pDebugMessenger) {
-	auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
-		instance, "vkCreateDebugUtilsMessengerEXT");
-	if (func != nullptr) {
-		return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
-	}
-	else {
-		return VK_ERROR_EXTENSION_NOT_PRESENT;
-	}
-}
 
-void DestroyDebugUtilsMessengerEXT(VkInstance instance,
-	VkDebugUtilsMessengerEXT debugMessenger,
-	const VkAllocationCallbacks* pAllocator) {
-	auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
-		instance, "vkDestroyDebugUtilsMessengerEXT");
-	if (func != nullptr) {
-		func(instance, debugMessenger, pAllocator);
-	}
-}
+
+// Using Volk. May not need this at all
+//VkResult CreateDebugUtilsMessengerEXT(
+//	VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
+//	const VkAllocationCallbacks* pAllocator,
+//	VkDebugUtilsMessengerEXT* pDebugMessenger) {
+//	auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+//		instance, "vkCreateDebugUtilsMessengerEXT");
+//	if (func != nullptr) {
+//		return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
+//	}
+//	else {
+//		return VK_ERROR_EXTENSION_NOT_PRESENT;
+//	}
+//}
+//
+//void DestroyDebugUtilsMessengerEXT(VkInstance instance,
+//	VkDebugUtilsMessengerEXT debugMessenger,
+//	const VkAllocationCallbacks* pAllocator) {
+//	auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+//		instance, "vkDestroyDebugUtilsMessengerEXT");
+//	if (func != nullptr) {
+//		func(instance, debugMessenger, pAllocator);
+//	}
+//}
 
 bool checkValidationLayerSupport() {
 	uint32_t layerCount;
@@ -394,45 +397,3 @@ void endSingleTimeCommands(VkDevice device, VkCommandBuffer commandBuffer, VkQue
 //	return KTX_TTF_RGBA32; // uncompressed fallback (always works)
 //}
 
-void createSampler(
-	const VkPhysicalDevice& physicalDevice,
-	const VkDevice& device,
-	VkSampler& sampler,
-	int levelCount,
-	VkCompareOp compareOp
-
-) {
-	VkSamplerCreateInfo samplerInfo{};
-	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	samplerInfo.magFilter = VK_FILTER_LINEAR;
-	samplerInfo.minFilter = VK_FILTER_LINEAR;
-
-	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-
-	VkPhysicalDeviceProperties properties{};
-	vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-
-	samplerInfo.anisotropyEnable = VK_TRUE;
-	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-
-	// This is a hardware/spec limit. Thats why im asserting here...
-	// Maybe we can query gpu capabilities to give better paths to more powerful devices.
-	assert(properties.limits.maxUniformBufferRange >= 1 << 16);
-
-	samplerInfo.unnormalizedCoordinates = VK_FALSE;
-	samplerInfo.compareEnable = VK_FALSE;
-	//samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-	samplerInfo.compareOp = compareOp;
-
-	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-	samplerInfo.mipLodBias = 0.0f;
-	samplerInfo.minLod = 0.0f;
-	//samplerInfo.maxLod = 0.0f;
-	samplerInfo.maxLod = float(levelCount - 1);
-
-	VK_CHECK(vkCreateSampler(device, &samplerInfo, nullptr, &sampler));
-
-}

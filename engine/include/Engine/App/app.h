@@ -36,10 +36,6 @@ struct ToyRenderPass final {
 	//struct AttachmentPass {
 	//};
 
-	//AttachmentPass color[1];
-	//AttachmentPass depth;
-	//AttachmentPass stencil;
-
 	VkRenderingAttachmentInfo color[1] = {};
 	VkRenderingAttachmentInfo depth = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
 	VkRenderingAttachmentInfo stencil = { .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
@@ -58,9 +54,11 @@ struct ToyFrameBuffer final {
 
 struct ToyCommandBuffer final {
 	// Maybe this shoudl be wrapped
-	VkCommandBuffer commandBuffer;
-	ToyRenderPass rp;
-	VkRenderingInfo renderingInfo;
+	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+	ToyRenderPass rp{};
+
+	VkRenderingInfo renderingInfo{};
+
 	//PipelineHandle pipeline = {};
 	//ToyFrameBuffer fb;
 	//VkPipeline lastBoundPipeline_ = VK_NULL_HANDLE;
@@ -73,7 +71,6 @@ struct Level {
 	Scene scene = {};
 	BvhTree tree = {};
 	Context* ctx = nullptr;
-
 
 	// is this bool really needed when we can probe BvhTree for tree
 	bool tree_done = false;
@@ -114,12 +111,15 @@ protected:
 	ImGuiContext* imgui_ctx = nullptr;
 	VulkanSwapchain* swapchain = nullptr;
 
+	// This maybe should be owned by swpachain.
 	VkQueue presentQueue = VK_NULL_HANDLE;
 	VkQueue graphicsQueue = VK_NULL_HANDLE;
 
 #pragma region ===[ App / Core State ]===
 
 	float delta_time_s = .0f;
+
+	// This needs rework. naive float for elpased time leads to problems in the long run!
 	float time_since_start_s = .0f;
 
 	glm::mat4 frozenMainView = {};
@@ -127,16 +127,19 @@ protected:
 #pragma endregion
 
 #pragma region ===[ GLFW / Window State ]===
-	GLFWwindow * window;
+	GLFWwindow * window = nullptr;
 #pragma endregion
 
+	VkSurfaceKHR surface = VK_NULL_HANDLE; 
+
 #pragma region ===[ Vulkan Instance / Device / Queues ]===
-	VkInstance instance;
-	VkDebugUtilsMessengerEXT debugMessenger;
-	VkSurfaceKHR surface;
+
+	VkInstance instance = VK_NULL_HANDLE; 
+	VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
 
 	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 	VkDevice device = VK_NULL_HANDLE;
+
 #pragma endregion
 
 #pragma region ===[ Frame Commands List ]===
@@ -146,11 +149,13 @@ protected:
 
 #pragma endregion
 
-
 #pragma region ===[ Input ]===
 	bool rightMousePressed = false;
-	bool firstMouse;
-	float lastX, lastY;
+	bool firstMouse = false;
+
+	float lastX = 0.f;
+	float lastY = 0.f;
+
 	int currentKey = -1; // Keeps track of the currently pressed key (W, A, S, D)
 #pragma endregion
 
@@ -281,11 +286,11 @@ protected:
 #pragma region Events
 
 
-	void EarlyUpdate() {
+	virtual void EarlyUpdate() {
 		//level.scene ? recalculateGlobalTransforms(level.scene) : void();
 		recalculateGlobalTransforms(level.scene);
 	}
-	void Update() {
+	virtual void Update() {
 		//OPTICK_EVENT();
 		int i = 3;
 		//float phase = std::sin(i + time_since_start_s * 0.35f);
@@ -306,7 +311,7 @@ protected:
 
 	}
 
-	void LateUpdate() {}
+	virtual void LateUpdate() {}
 
 #pragma endregion
 
@@ -316,7 +321,7 @@ protected:
 		VkDebugUtilsMessengerCreateInfoEXT createInfo;
 		populateDebugMessengerCreateInfo(createInfo);
 
-		if (CreateDebugUtilsMessengerEXT(instance, &createInfo, nullptr,
+		if (vkCreateDebugUtilsMessengerEXT(instance, &createInfo, nullptr,
 			&debugMessenger) != VK_SUCCESS) {
 			throw std::runtime_error("failed to set up debug messenger!");
 		}
@@ -360,10 +365,10 @@ protected:
 	static void mouseCallback(GLFWwindow* window, double xpos, double ypos);
 	static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
 
-	void handleMouseScroll(double xOffset, double yOffset);
-	void handleMouseMovement(double xpos, double ypos);
-	void handleMouseButton(int button, int action, int mods);
-	void handleKey(int key, int scancode, int action, int mods);
+	virtual void handleMouseScroll(double xOffset, double yOffset);
+	virtual void handleMouseMovement(double xpos, double ypos);
+	virtual void handleMouseButton(int button, int action, int mods);
+	virtual void handleKey(int key, int scancode, int action, int mods);
 
 #pragma endregion
 
@@ -477,7 +482,7 @@ void VulkanApp::InitVulkanApp() {
 		VkDebugUtilsMessengerCreateInfoEXT createInfo;
 		populateDebugMessengerCreateInfo(createInfo);
 
-		if (CreateDebugUtilsMessengerEXT(instance, &createInfo, nullptr,
+		if (vkCreateDebugUtilsMessengerEXT(instance, &createInfo, nullptr,
 			&debugMessenger) != VK_SUCCESS) {
 			throw std::runtime_error("failed to set up debug messenger!");
 		}
@@ -697,16 +702,16 @@ bool VulkanApp::Initialize() {
 		}
 	}
 
-	VkCommandBufferAllocateInfo allocInfo{};
-	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	allocInfo.commandPool = perFrameCommandPools[0]; // cant this just be 0 here?
-	//allocInfo.commandPool = perFrameCommandPools[currentFrame];
-	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	allocInfo.commandBufferCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+	// We do pool per frame, because reset pool is faster than reseting indiviual commandBuffers.
+	// Also frame is a good lifetime unit/boundary of course!
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+		VkCommandBufferAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		allocInfo.commandPool = perFrameCommandPools[i];
+		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		allocInfo.commandBufferCount = 1;
 
-	if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers) !=
-		VK_SUCCESS) {
-		throw std::runtime_error("failed to allocate command buffers!");
+		VK_CHECK(vkAllocateCommandBuffers(device, &allocInfo, &commandBuffers[i]));
 	}
 
 	return true;
@@ -735,25 +740,9 @@ void VulkanApp::scrollCallback(GLFWwindow* window, double xOffset, double yOffse
 	if (app) app->handleMouseScroll(xOffset, yOffset);
 }
 
-void VulkanApp::handleMouseScroll(double xOffset, double yOffset) {
-	//const float scrollSpeed = 1.0f;
-	//glm::vec3 forward = cameraPositioner.getForward();
-	//cameraPositioner.setPosition(
-	//	cameraPositioner.getPosition() + static_cast<float>(yOffset) * scrollSpeed * forward
-	//);
-}
+void VulkanApp::handleMouseScroll(double xOffset, double yOffset) {}
 
-void VulkanApp::handleMouseMovement(double xpos, double ypos) {
-	//if (!rightMousePressed) return;
-	//glm::vec2 mousePos = glm::vec2(
-	//	static_cast<float>(xpos) / width_,
-	//	static_cast<float>(ypos) / -height_
-	//);
-	//cameraPositioner.update(delta_time_s,
-	//	mousePos,
-	//	true
-	//);
-}
+void VulkanApp::handleMouseMovement(double xpos, double ypos) {}
 
 void VulkanApp::handleMouseButton(int button, int action, int mods) {
 	if (button == GLFW_MOUSE_BUTTON_RIGHT) {
@@ -761,44 +750,7 @@ void VulkanApp::handleMouseButton(int button, int action, int mods) {
 	}
 }
 
-void VulkanApp::handleKey(int key, int scancode, int action, int mods) {
-	//bool isPressed = action != GLFW_RELEASE;
-
-	//switch (key) {
-	//case GLFW_KEY_R:
-	//case GLFW_KEY_F:
-	//	cameraPositioner.reset();
-	//	break;
-	//case GLFW_KEY_W:
-	//case GLFW_KEY_UP:
-	//	cameraPositioner.movement_.forward_ = isPressed;
-	//	break;
-	//case GLFW_KEY_S:
-	//case GLFW_KEY_DOWN:
-	//	cameraPositioner.movement_.backward_ = isPressed;
-	//	break;
-	//case GLFW_KEY_A:
-	//case GLFW_KEY_LEFT:
-	//	cameraPositioner.movement_.left_ = isPressed;
-	//	break;
-	//case GLFW_KEY_D:
-	//case GLFW_KEY_RIGHT:
-	//	cameraPositioner.movement_.right_ = isPressed;
-	//	break;
-	//case GLFW_KEY_Q:
-	//case GLFW_KEY_SPACE:
-	//	cameraPositioner.movement_.up_ = isPressed;
-	//	break;
-	//case GLFW_KEY_E:
-	//	cameraPositioner.movement_.down_ = isPressed;
-	//	break;
-	//case GLFW_KEY_LEFT_SHIFT:
-	//	cameraPositioner.movement_.fastSpeed_ = isPressed;
-	//	break;
-	//default:
-	//	break;
-	//}
-}
+void VulkanApp::handleKey(int key, int scancode, int action, int mods) {}
 
 void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 	int height) {
@@ -921,13 +873,6 @@ ToyCommandBuffer VulkanApp::AcquireMain()
 	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
 
-	ToyCommandBuffer cb{
-		.commandBuffer = commandBuffers[swapchain->currentFrame_],
-		.rp = {
-		.color = colorAttachment,
-		.depth = depthAttachment
-		}
-	};
 
 	VkRenderingInfoKHR renderingInfo{};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
@@ -936,6 +881,15 @@ ToyCommandBuffer VulkanApp::AcquireMain()
 	renderingInfo.layerCount = 1;
 	renderingInfo.colorAttachmentCount = 1;
 
+
+	// Need to do this to avoid dangling pointers
+	ToyCommandBuffer cb{
+		.commandBuffer = commandBuffers[swapchain->currentFrame_],
+		.rp = {
+		.color = colorAttachment,
+		.depth = depthAttachment
+		}
+	};
 	renderingInfo.pColorAttachments = cb.rp.color;
 	renderingInfo.pDepthAttachment = &cb.rp.depth;
 
@@ -944,9 +898,43 @@ ToyCommandBuffer VulkanApp::AcquireMain()
 	return cb;
 }
 
-// TO DOO 
 void VulkanApp::CleanUp() {
 
+	return;
+
+	vkDeviceWaitIdle(device);
+
+	swapchain->CleanupSwapchain();
+
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		// destroying the pool fress the commandBuffers too
+		vkDestroyCommandPool(device, perFrameCommandPools[i], nullptr);
+	}
 	context->CleanUp();
+
+	vkDestroyDevice(device, nullptr);
+
+	if (surface != VK_NULL_HANDLE)
+	{
+		glfwDestroyWindow(window);
+		vkDestroySurfaceKHR(instance, surface, nullptr);
+		surface = VK_NULL_HANDLE;
+		glfwTerminate;
+		window = nullptr;
+	}
+
+	// 
+	vkDestroyDebugUtilsMessengerEXT(
+		instance,
+		debugMessenger,
+		nullptr
+	);
+	vkDestroyInstance(instance, nullptr);
+
+	// then destroy the device; this releases VkQueue handles too
+	presentQueue = VK_NULL_HANDLE;
+	graphicsQueue = VK_NULL_HANDLE;
+	instance = VK_NULL_HANDLE;
+
 }
 

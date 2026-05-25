@@ -21,7 +21,7 @@ struct Aabb {
 	glm::vec3 mn, mx;
 
 	static Aabb empty() {
-		float inf = std::numeric_limits<float>::infinity();
+		constexpr float inf = std::numeric_limits<float>::infinity();
 		return { { inf, inf, inf }, { -inf, -inf, -inf } };
 	}
 
@@ -50,6 +50,7 @@ struct Aabb {
 struct PrimitiveInfo {
 	Aabb bounds;
 	glm::vec3 centroid;
+	uint32_t node;
 };
 
 struct BvhNode {
@@ -65,6 +66,7 @@ struct BvhNode {
 	bool isLeaf() const { return count > 0; }
 };
 
+// Dont like vector types..
 struct BvhTree {
 	std::vector<BvhNode> nodes;
 	std::vector<uint32_t> primIndices; // permutation of primitives (triangles)
@@ -92,96 +94,96 @@ static Aabb rangeCentroidBounds(const std::vector<PrimitiveInfo>& prims,
 }
 
 static uint32_t buildRecursive(
-    BvhTree& tree,
-    const std::vector<PrimitiveInfo>& prims,
-    uint32_t first,
-    uint32_t count,
-    uint32_t maxLeafSize = 4)
+	BvhTree& tree,
+	const std::vector<PrimitiveInfo>& prims,
+	uint32_t first,
+	uint32_t count,
+	uint32_t maxLeafSize = 4)
 {
-    const uint32_t nodeIdx = (uint32_t)tree.nodes.size();
-    tree.nodes.push_back(BvhNode{});
+	const uint32_t nodeIdx = (uint32_t)tree.nodes.size();
+	tree.nodes.push_back(BvhNode{});
 
-    // Always re-fetch by index (avoid dangling references if vector reallocates)
-    tree.nodes[nodeIdx].bounds = rangeBounds(prims, tree.primIndices, first, count);
+	// Always re-fetch by index (avoid dangling references if vector reallocates)
+	tree.nodes[nodeIdx].bounds = rangeBounds(prims, tree.primIndices, first, count);
 
-    // Leaf condition
-    if (count <= maxLeafSize) {
-        tree.nodes[nodeIdx].leftFirst = first;
-        tree.nodes[nodeIdx].count = count;
-        return nodeIdx;
-    }
+	// Leaf condition
+	if (count <= maxLeafSize) {
+		tree.nodes[nodeIdx].leftFirst = first;
+		tree.nodes[nodeIdx].count = count;
+		return nodeIdx;
+	}
 
-    // Choose split axis by centroid bounds
-    Aabb cb = rangeCentroidBounds(prims, tree.primIndices, first, count);
+	// Choose split axis by centroid bounds
+	Aabb cb = rangeCentroidBounds(prims, tree.primIndices, first, count);
 
-    // Optional sanity: if cb is invalid, make leaf
-    auto finite3 = [](const glm::vec3& v) {
-        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
-    };
-    if (!finite3(cb.mn) || !finite3(cb.mx)) {
-        tree.nodes[nodeIdx].leftFirst = first;
-        tree.nodes[nodeIdx].count = count;
-        return nodeIdx;
-    }
+	// Optional sanity: if cb is invalid, make leaf
+	auto finite3 = [](const glm::vec3& v) {
+		return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+		};
+	if (!finite3(cb.mn) || !finite3(cb.mx)) {
+		tree.nodes[nodeIdx].leftFirst = first;
+		tree.nodes[nodeIdx].count = count;
+		return nodeIdx;
+	}
 
-    int axis = cb.longestAxis();
+	int axis = cb.longestAxis();
 
-    auto axisMin = [&](int ax) { return ax==0 ? cb.mn.x : ax==1 ? cb.mn.y : cb.mn.z; };
-    auto axisMax = [&](int ax) { return ax==0 ? cb.mx.x : ax==1 ? cb.mx.y : cb.mx.z; };
+	auto axisMin = [&](int ax) { return ax == 0 ? cb.mn.x : ax == 1 ? cb.mn.y : cb.mn.z; };
+	auto axisMax = [&](int ax) { return ax == 0 ? cb.mx.x : ax == 1 ? cb.mx.y : cb.mx.z; };
 
-    float cmin = axisMin(axis);
-    float cmax = axisMax(axis);
+	float cmin = axisMin(axis);
+	float cmax = axisMax(axis);
 
-    // Use epsilon, not ==, and try other axes before giving up
-    const float eps = 1e-6f;
-    if (fabsf(cmax - cmin) < eps) {
-        int ax2 = (axis + 1) % 3;
-        int ax3 = (axis + 2) % 3;
+	// Use epsilon, not ==, and try other axes before giving up
+	const float eps = 1e-6f;
+	if (fabsf(cmax - cmin) < eps) {
+		int ax2 = (axis + 1) % 3;
+		int ax3 = (axis + 2) % 3;
 
-        if (fabsf(axisMax(ax2) - axisMin(ax2)) >= eps) axis = ax2;
-        else if (fabsf(axisMax(ax3) - axisMin(ax3)) >= eps) axis = ax3;
-        else {
-            // Completely degenerate centroid bounds: still split by index to avoid 1-node BVH
-            uint32_t mid = first + count / 2;
-            tree.nodes[nodeIdx].count = 0;
+		if (fabsf(axisMax(ax2) - axisMin(ax2)) >= eps) axis = ax2;
+		else if (fabsf(axisMax(ax3) - axisMin(ax3)) >= eps) axis = ax3;
+		else {
+			// Completely degenerate centroid bounds: still split by index to avoid 1-node BVH
+			uint32_t mid = first + count / 2;
+			tree.nodes[nodeIdx].count = 0;
 
-            uint32_t leftChild  = buildRecursive(tree, prims, first, mid - first, maxLeafSize);
-            uint32_t rightChild = buildRecursive(tree, prims, mid, first + count - mid, maxLeafSize);
+			uint32_t leftChild = buildRecursive(tree, prims, first, mid - first, maxLeafSize);
+			uint32_t rightChild = buildRecursive(tree, prims, mid, first + count - mid, maxLeafSize);
 
-            tree.nodes[nodeIdx].leftFirst = leftChild;
-            tree.nodes[nodeIdx].right = rightChild;
-            return nodeIdx;
-        }
+			tree.nodes[nodeIdx].leftFirst = leftChild;
+			tree.nodes[nodeIdx].right = rightChild;
+			return nodeIdx;
+		}
 
-        cmin = axisMin(axis);
-        cmax = axisMax(axis);
-    }
+		cmin = axisMin(axis);
+		cmax = axisMax(axis);
+	}
 
-    // Partition at median by centroid
-    uint32_t mid = first + count / 2;
+	// Partition at median by centroid
+	uint32_t mid = first + count / 2;
 
-    auto centroidAxis = [&](uint32_t primId) -> float {
-        const glm::vec3& c = prims[primId].centroid;
-        return axis == 0 ? c.x : axis == 1 ? c.y : c.z;
-    };
+	auto centroidAxis = [&](uint32_t primId) -> float {
+		const glm::vec3& c = prims[primId].centroid;
+		return axis == 0 ? c.x : axis == 1 ? c.y : c.z;
+		};
 
-    std::nth_element(
-        tree.primIndices.begin() + first,
-        tree.primIndices.begin() + mid,
-        tree.primIndices.begin() + first + count,
-        [&](uint32_t a, uint32_t b) { return centroidAxis(a) < centroidAxis(b); }
-    );
+	std::nth_element(
+		tree.primIndices.begin() + first,
+		tree.primIndices.begin() + mid,
+		tree.primIndices.begin() + first + count,
+		[&](uint32_t a, uint32_t b) { return centroidAxis(a) < centroidAxis(b); }
+	);
 
-    // Create interior node
-    tree.nodes[nodeIdx].count = 0;
+	// Create interior node
+	tree.nodes[nodeIdx].count = 0;
 
-    uint32_t leftChild  = buildRecursive(tree, prims, first, mid - first, maxLeafSize);
-    uint32_t rightChild = buildRecursive(tree, prims, mid, first + count - mid, maxLeafSize);
+	uint32_t leftChild = buildRecursive(tree, prims, first, mid - first, maxLeafSize);
+	uint32_t rightChild = buildRecursive(tree, prims, mid, first + count - mid, maxLeafSize);
 
-    tree.nodes[nodeIdx].leftFirst = leftChild;
-    tree.nodes[nodeIdx].right = rightChild;
+	tree.nodes[nodeIdx].leftFirst = leftChild;
+	tree.nodes[nodeIdx].right = rightChild;
 
-    return nodeIdx;
+	return nodeIdx;
 }
 
 
@@ -240,12 +242,15 @@ BvhTree treeFromScene(const Context* ctx, const Scene& scene) {
 		glm::vec3 wMin(worldMin.x, worldMin.y, worldMin.z);
 		glm::vec3 wMax(worldMax.x, worldMax.y, worldMax.z);
 
-		prims.push_back(PrimitiveInfo{
+		prims.push_back(
+			PrimitiveInfo{
 			{ wMin, wMax },
-			centroid(wMin, wMax)
-			});
+			centroid(wMin, wMax),
+			(uint32_t)i // node
+			}
+		);
 
-		tree.primToNode.push_back((uint32_t)i);
+
 	}
 
 	const uint32_t N = (uint32_t)prims.size();
@@ -255,6 +260,14 @@ BvhTree treeFromScene(const Context* ctx, const Scene& scene) {
 	tree.nodes.reserve(N * 2); // rough
 	if (N > 0) {
 		buildRecursive(tree, prims, 0, N, /*maxLeafSize=*/4);
+	}
+
+	// Rebuild map
+	tree.primToNode.resize(N);
+
+	for (uint32_t slot = 0; slot < N; ++slot) {
+		uint32_t originalPrimId = tree.primIndices[slot];
+		tree.primToNode[slot] = prims[originalPrimId].node;
 	}
 
 	return tree;
@@ -312,41 +325,39 @@ inline bool aabbInFrustum(
 
 void frustumCullBVH(
 	const BvhTree& tree,
-    int rootIndex,
-    const glm::vec4* planes,
+	int rootIndex,
+	const glm::vec4* planes,
 	int planeCount,
-	std::vector<int>& outVisiblePrimIndices
-){
-    outVisiblePrimIndices.clear();
-    if (rootIndex < 0) return;
+	std::vector<int>& outVisiblePrims
+) {
+	outVisiblePrims.clear();
+	if (rootIndex < 0) return;
 
-    std::vector<int> stack;
-    stack.reserve(128);
-    stack.push_back(rootIndex);
+	std::vector<int> stack;
+	stack.reserve(128);
+	stack.push_back(rootIndex);
 
-    while (!stack.empty()) {
-        int ni = stack.back();
-        stack.pop_back();
+	while (!stack.empty()) {
+		int ni = stack.back();
+		stack.pop_back();
 
-        const BvhNode& n = tree.nodes[ni];
-        if (!aabbInFrustum(
-			planes,
-			planeCount,
-			n.bounds)
-			) continue;
+		const BvhNode& n = tree.nodes[ni];
 
-        if (n.isLeaf()) {
+		if (!aabbInFrustum(planes, planeCount, n.bounds))
+			continue;
+
+		if (n.isLeaf()) {
 			for (uint32_t i = 0; i < n.count; ++i) {
-				uint32_t primId = tree.primIndices[n.leftFirst + i];
-				outVisiblePrimIndices.push_back(primId);
-				//uint32_t nodeId = tree.primToNode[primId];
-				//outVisibleNodeIndices.push_back(nodeId);
+				uint32_t slot = n.leftFirst + i;
+				uint32_t node = tree.primToNode[slot];
+				outVisiblePrims.push_back((int)node);
 			}
-        } else {
-            if (n.leftFirst  >= 0) stack.push_back(n.leftFirst);
-            if (n.right >= 0) stack.push_back(n.right);
-        }
-    }
+		}
+		else {
+			stack.push_back((int)n.leftFirst);
+			stack.push_back((int)n.right);
+		}
+	}
 }
 
 void frustumCullBVH(
@@ -354,7 +365,7 @@ void frustumCullBVH(
 	int rootIndex,
 	const glm::mat4& viewProj,
 	const glm::vec3 cameraPos,
-	std::vector<int>& outVisiblePrimIndices
+	std::vector<int>& outVisiblePrims
 ) {
 
 	glm::vec4 planes[5];
@@ -370,7 +381,7 @@ void frustumCullBVH(
 		rootIndex,
 		planes,
 		planeCount,
-		outVisiblePrimIndices
+		outVisiblePrims
 	);
 
 }

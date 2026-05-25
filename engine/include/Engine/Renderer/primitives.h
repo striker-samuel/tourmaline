@@ -7,8 +7,8 @@ struct MeshUploadInput {
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
 
-	glm::vec3 aabb_min;
-	glm::vec3 aabb_max;
+	glm::vec3 aabb_min{};
+	glm::vec3 aabb_max{};
 };
 
 //// DEFAULT GEOS
