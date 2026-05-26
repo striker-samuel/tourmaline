@@ -128,7 +128,7 @@ public:
 	// --------------------------------------
 
 	Pool<Image, Image> images_;
-	Pool<Image, Image> textures_;
+	//Pool<Image, Image> textures_;
 	Pool<BufferDescription, BufferDescription> buffers_;
 
 	Pool<Sampler, VkSampler> samplers_;
@@ -171,7 +171,6 @@ public:
 	ImageHandle CreateTexture(ktxTexture2& texture);
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
 
-	SamplerHandle GetSampler(SamplerKey samplerKey);
 	SamplerHandle CreateSampler(uint32_t levelCount);
 
 	MaterialInstanceHandle CreateMaterialInstance(PipelineHandle mat_pipeline);

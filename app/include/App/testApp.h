@@ -12,11 +12,12 @@ std::vector<std::string> gltf_meshes_paths = {
 
 
 class TestApp : public VulkanApp {
-	using Super = VulkanApp;
 
-	//~TestApp() {
-	//	~Super::();
-	//};
+public:
+	~TestApp() {};
+
+private:
+	using Super = VulkanApp;
 
 	struct FrameResources {
 		DescriptorSetHandle frameDescriptorSet;
@@ -310,27 +311,40 @@ class TestApp : public VulkanApp {
 		imageInfos.reserve(count);
 		samplerInfos.reserve(count);
 
-		context->textures_.forEach([&](Image obj_) {
+		auto smp = context->samplers_.get(context->samplers.at("default"));
+		//image_obj.sampler = *smp;
 
-			// This is fast and crude fix. 
-			// Swapchain depth image is created on the same pool and other images are too.
-			// swapchaim color images are manages by the VkSwapchain object tho.
-			if (!obj_.is_tex) { return; };
+		VkDescriptorImageInfo si{};
+		si.sampler = *smp;
+		si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
+		si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
+		samplerInfos.push_back(si);
 
-			VkDescriptorImageInfo ii{};
-			ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-			ii.imageView = obj_.sampleView;
-			ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			imageInfos.push_back(ii);
 
-			// Sampler for the bindless texure approach needs refacotr.
-			// Doesnt Really make sense.
-			VkDescriptorImageInfo si{};
-			si.sampler = obj_.sampler;
-			si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
-			si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
-			samplerInfos.push_back(si);
 
+		// this has problems.
+		// theres compressiona around index meaning. 
+		// textureIndex/imageIndex
+		context->images_.forEach([&](Image obj_)
+			{
+				// This is fast and crude fix. 
+				// Swapchain depth image is created on the same pool and other images are too.
+				// swapchaim color images are manages by the VkSwapchain object tho.
+				//if (!obj_.is_tex) { return; };
+
+				VkDescriptorImageInfo ii{};
+				ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
+				ii.imageView = obj_.sampleView;
+				ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				imageInfos.push_back(ii);
+
+				//// Sampler for the bindless texure approach needs refacotr.
+				//// Doesnt Really make sense.
+				//VkDescriptorImageInfo si{};
+				//si.sampler = obj_.sampler;
+				//si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
+				//si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
+				//samplerInfos.push_back(si);
 			}
 		);
 

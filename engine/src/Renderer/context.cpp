@@ -1470,6 +1470,7 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 		throw std::runtime_error("vmaCreateBuffer failed for KTX staging buffer.");
 	}
 
+	// Guaranteed mapped. Ignore warning
 	std::memcpy(stagingAllocationInfo.pMappedData, ktxData, static_cast<size_t>(ktxDataSize));
 	vmaFlushAllocation(allocator_, stagingAllocation, 0, VK_WHOLE_SIZE);
 
@@ -1679,7 +1680,7 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 
 	image_obj.sampleView = image_obj.renderView;
 
-	return textures_.create(std::move(image_obj));
+	return images_.create(std::move(image_obj));
 }
 
 

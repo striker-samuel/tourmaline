@@ -148,7 +148,10 @@ PSOut mainPS(PSIn IN)
     float4x4 lightViewProj;
 
     // Diffuse texture lookup
+    // x is diffuse.
     uint texIdx = pc.tex.x; // uniform per draw via push constants
+    
+    // using #0 sampler always hmmmm
     float4 texSample = materialTex[texIdx].Sample(materialSamp[0], IN.uv);
 
     // Base material color (vertex color * material diffuse * texture)
