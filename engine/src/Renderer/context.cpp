@@ -1679,7 +1679,7 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 
 	image_obj.sampleView = image_obj.renderView;
 
-	return images_.create(std::move(image_obj));
+	return textures_.create(std::move(image_obj));
 }
 
 

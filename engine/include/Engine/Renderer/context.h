@@ -128,6 +128,7 @@ public:
 	// --------------------------------------
 
 	Pool<Image, Image> images_;
+	Pool<Image, Image> textures_;
 	Pool<BufferDescription, BufferDescription> buffers_;
 
 	Pool<Sampler, VkSampler> samplers_;

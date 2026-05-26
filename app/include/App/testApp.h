@@ -310,7 +310,7 @@ class TestApp : public VulkanApp {
 		imageInfos.reserve(count);
 		samplerInfos.reserve(count);
 
-		context->images_.forEach([&](Image obj_) {
+		context->textures_.forEach([&](Image obj_) {
 
 			// This is fast and crude fix. 
 			// Swapchain depth image is created on the same pool and other images are too.
