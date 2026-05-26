@@ -60,7 +60,7 @@ class TestApp : public VulkanApp {
 		Super::LateUpdate();
 	}
 
-	void handleMouseScroll(double xOffset, double yOffset) override{
+	void handleMouseScroll(double xOffset, double yOffset) override {
 		const float scrollSpeed = 1.0f;
 		glm::vec3 forward = cameraPositioner.getForward();
 		cameraPositioner.setPosition(
@@ -81,7 +81,7 @@ class TestApp : public VulkanApp {
 		);
 	}
 
-	void handleKey(int key, int scancode, int action, int mods) override{
+	void handleKey(int key, int scancode, int action, int mods) override {
 		//Super::handleKey(key, scancode, action, mods);
 
 		bool isPressed = action != GLFW_RELEASE;
@@ -449,43 +449,48 @@ class TestApp : public VulkanApp {
 
 		auto viewProj = proj * view; // Freeze at first for debug
 
-		if (level.tree_done) {
-			frustumCullBVH(
-				level.tree,
-				0,
-				viewProj,
-				camera.getPosition(),
-				visible
-			);
-		}
-		else {
-			assert(false && "tree wasnt done");
-		}
+		//if (level.tree_done) {
+		//	frustumCullBVH(
+		//		level.tree,
+		//		0,
+		//		viewProj,
+		//		camera.getPosition(),
+		//		visible
+		//	);
+		//}
+		//else {
+		//	assert(false && "tree wasnt done");
+		//}
 
-		// VISIBLE PIPELINES
-		std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
+		//// VISIBLE PIPELINES
+		//std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
 
-		for (uint32_t node : visible) {
-			//uint32_t node = level.tree.primToNode[primId];
+		//for (uint32_t primSlot : visible) {
+		//	if (primSlot >= level.tree.primToNode.size()) continue;
 
-			auto it = level.scene.materialForNode.find(node);
-			if (it == level.scene.materialForNode.end()) continue;
+		//	uint32_t node = level.tree.primToNode[primSlot];
 
-			uint32_t materialIndex = it->second;
-			auto matHandle = context->materialInstances_.getHandle(materialIndex);
-			auto mat = context->materialInstances_.get(matHandle);
+		//	auto it = level.scene.materialForNode.find(node);
+		//	if (it == level.scene.materialForNode.end()) continue;
 
-			pipeline_map[mat->pipeline].push_back(node);
+		//	uint32_t materialIndex = it->second;
+		//	auto matHandle = context->materialInstances_.getHandle(materialIndex);
+		//	auto mat = context->materialInstances_.get(matHandle);
+		//	if (!mat) continue;
 
-		}
+		//	pipeline_map[mat->pipeline].push_back(primSlot); // NOT node
+		//}
 
-		if (pipeline_map.empty()) {
-			vkCmdBeginRendering(cmd.commandBuffer, &cmd.renderingInfo);
-			vkCmdEndRendering(cmd.commandBuffer);
-			// then transition/present as usual
-			return;
-		}
-		auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->layout;
+		//if (pipeline_map.empty()) {
+		//	vkCmdBeginRendering(cmd.commandBuffer, &cmd.renderingInfo);
+		//	vkCmdEndRendering(cmd.commandBuffer);
+		//	// then transition/present as usual
+		//	return;
+		//}
+		//auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->layout;
+
+		auto han_ = context->pipelines_.getHandle(0);
+		auto pipe_lyt = context->pipelines_.objects_[0].obj_.layout;
 
 		uint32_t dynamicOffsets[2] = {
 			frameUniformsBinding.dynamicOffsetFrame(swapchain->currentFrame_),
@@ -519,7 +524,8 @@ class TestApp : public VulkanApp {
 		MainViewPushConstants pc{};
 		pc.model = glm::mat4(1.0f);
 
-		for (const auto& [han_, visible] : pipeline_map) {
+		//for (const auto& [han_, visible] : pipeline_map) {
+		{
 			//context->pipelines_.forEachHandle([&](PipelineHandle han_) {
 
 			vkCmdBindPipeline(
@@ -528,8 +534,12 @@ class TestApp : public VulkanApp {
 				context->pipelines_.get(han_)->pipeline
 			);
 
-			for (uint32_t visible_node : visible) {
-				//uint32_t i = tree_.primToNode[primId];
+
+			for (int visible_node = 0; visible_node < level.scene.hierarchy.size(); visible_node++) {
+				//for (uint32_t visible_prim : visible) {
+				//	uint32_t visible_node = level.tree.primToNode[visible_prim];
+
+					//uint32_t i = tree_.primToNode[primId];
 
 				auto it = level.scene.meshForNode.find(visible_node);
 				if (it == level.scene.meshForNode.end()) continue;
@@ -545,12 +555,10 @@ class TestApp : public VulkanApp {
 
 				auto matHandle = context->materialInstances_.getHandle(material_instance_index);
 				auto mat = context->materialInstances_.get(matHandle);
-				if (!mat) continue; // skip if invalid
-				if (mat->pipeline != han_) continue;
 
-				//// skip primitive if material's pipeline doesn't match current obj_
-				//auto pipelineObj = context->pipelines_.get(mat->pipeline);
-				//if (pipelineObj != obj_) continue;
+				assert(mat);
+				//if (!mat) continue; // skip if invalid
+				//if (mat->pipeline != han_) continue;
 
 				MaterialPushConstants pcm = mat->values;
 
@@ -562,11 +570,10 @@ class TestApp : public VulkanApp {
 
 				vkCmdPushConstants(
 					cmd.commandBuffer,
-					//commandBuffers[swapchain.currentFrame_],
 					pipe_lyt.layout,
 					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 					0, //offset to start of the range to push
-					sizeof(PC_All), // size to push
+					sizeof(PC_All), // SIZE
 					&all
 				);
 

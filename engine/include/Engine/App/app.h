@@ -26,7 +26,7 @@
 //
 
 // --Defaults--
-constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+//constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 
 
 // 
@@ -651,7 +651,7 @@ bool VulkanApp::Initialize() {
 	}
 	glfwMakeContextCurrent(window);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-	glfwSetWindowTitle(window, /*ENGINE_NAME*/ "VulkanBackend");
+	glfwSetWindowTitle(window, /*ENGINE_NAME*/ "samuelmartin.1999@outlok.com");
 	glfwSetKeyCallback(window, VulkanApp::keyCallback);
 	glfwSetCursorPosCallback(window, VulkanApp::mouseCallback);
 	glfwSetMouseButtonCallback(window, VulkanApp::mouseButtonCallback);

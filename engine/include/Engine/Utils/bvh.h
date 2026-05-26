@@ -47,10 +47,9 @@ struct Aabb {
 	}
 };
 
-struct PrimitiveInfo {
+struct Partition {
 	Aabb bounds;
 	glm::vec3 centroid;
-	uint32_t node;
 };
 
 struct BvhNode {
@@ -73,7 +72,7 @@ struct BvhTree {
 	std::vector<uint32_t> primToNode; // mapping to scene hierarchy slot
 };
 
-static Aabb rangeBounds(const std::vector<PrimitiveInfo>& prims,
+static Aabb rangeBounds(const std::vector<Partition>& prims,
 	const std::vector<uint32_t>& primIndices,
 	uint32_t first, uint32_t count)
 {
@@ -83,7 +82,7 @@ static Aabb rangeBounds(const std::vector<PrimitiveInfo>& prims,
 	return b;
 }
 
-static Aabb rangeCentroidBounds(const std::vector<PrimitiveInfo>& prims,
+static Aabb rangeCentroidBounds(const std::vector<Partition>& prims,
 	const std::vector<uint32_t>& primIndices,
 	uint32_t first, uint32_t count)
 {
@@ -95,7 +94,7 @@ static Aabb rangeCentroidBounds(const std::vector<PrimitiveInfo>& prims,
 
 static uint32_t buildRecursive(
 	BvhTree& tree,
-	const std::vector<PrimitiveInfo>& prims,
+	const std::vector<Partition>& prims,
 	uint32_t first,
 	uint32_t count,
 	uint32_t maxLeafSize = 4)
@@ -190,7 +189,7 @@ static uint32_t buildRecursive(
 BvhTree treeFromScene(const Context* ctx, const Scene& scene) {
 	BvhTree tree;
 
-	std::vector<PrimitiveInfo> prims;
+	std::vector<Partition> prims;
 	prims.reserve(scene.hierarchy.size());
 	tree.primToNode.reserve(scene.hierarchy.size());
 
@@ -243,10 +242,9 @@ BvhTree treeFromScene(const Context* ctx, const Scene& scene) {
 		glm::vec3 wMax(worldMax.x, worldMax.y, worldMax.z);
 
 		prims.push_back(
-			PrimitiveInfo{
+			Partition{
 			{ wMin, wMax },
 			centroid(wMin, wMax),
-			(uint32_t)i // node
 			}
 		);
 
@@ -262,13 +260,13 @@ BvhTree treeFromScene(const Context* ctx, const Scene& scene) {
 		buildRecursive(tree, prims, 0, N, /*maxLeafSize=*/4);
 	}
 
-	// Rebuild map
-	tree.primToNode.resize(N);
+	//// Rebuild map
+	//tree.primToNode.resize(N);
 
-	for (uint32_t slot = 0; slot < N; ++slot) {
-		uint32_t originalPrimId = tree.primIndices[slot];
-		tree.primToNode[slot] = prims[originalPrimId].node;
-	}
+	//for (uint32_t slot = 0; slot < N; ++slot) {
+	//	uint32_t originalPrimId = tree.primIndices[slot];
+	//	tree.primToNode[slot] = prims[originalPrimId].node;
+	//}
 
 	return tree;
 }
@@ -349,8 +347,7 @@ void frustumCullBVH(
 		if (n.isLeaf()) {
 			for (uint32_t i = 0; i < n.count; ++i) {
 				uint32_t slot = n.leftFirst + i;
-				uint32_t node = tree.primToNode[slot];
-				outVisiblePrims.push_back((int)node);
+				outVisiblePrims.push_back((int)slot);
 			}
 		}
 		else {

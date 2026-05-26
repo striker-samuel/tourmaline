@@ -167,8 +167,10 @@ public:
         VkSurfaceFormatKHR surfaceFormat =
             chooseSwapSurfaceFormat(support.formats);
 
-        VkPresentModeKHR presentMode =
-            chooseSwapPresentMode(support.presentModes);
+        VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+
+        //VkPresentModeKHR presentMode =
+        //    chooseSwapPresentMode(support.presentModes);
 
         VkExtent2D swapExtent =
             chooseSwapExtent(support.capabilities, window_);
