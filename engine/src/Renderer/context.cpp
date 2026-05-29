@@ -34,6 +34,7 @@ Context::Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physi
 	//samplers["default_shadow"] = CreateShadowSampler(1);
 
 	images_.objects_.reserve(MAX_IMAGES);
+	textures_.objects_.reserve(MAX_TEXTURES);
 	buffers_.objects_.reserve(MAX_BUFFERS);
 
 	InitializeDeviceVmaPools();
@@ -1354,7 +1355,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	);
 }
 
-ImageHandle Context::CreateTexture(ktxTexture2& texture) {
+TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
 		// Hardcoded for now, as in your original code.
@@ -1663,9 +1664,9 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 	auto smp = samplers_.get(samplers.at("default"));
 	image_obj.sampler = *smp;
 
-	for (auto& v : image_obj.arrayView) {
-		v = VK_NULL_HANDLE;
-	}
+	//for (auto& v : image_obj.arrayView) {
+	//	v = VK_NULL_HANDLE;
+	//}
 
 	CreateImageView(
 		image,
@@ -1680,7 +1681,7 @@ ImageHandle Context::CreateTexture(ktxTexture2& texture) {
 
 	image_obj.sampleView = image_obj.renderView;
 
-	return images_.create(std::move(image_obj));
+	return textures_.create(std::move(image_obj));
 }
 
 

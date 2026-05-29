@@ -19,6 +19,7 @@ public:
 private:
 	using Super = VulkanApp;
 
+	// App resources -- This should just be spawned by the RG
 	struct FrameResources {
 		DescriptorSetHandle frameDescriptorSet;
 		DescriptorSetHandle frameDynamicDescriptorSet;
@@ -28,9 +29,9 @@ private:
 	//
 	RingBinding<FrameUniforms, 1> frameUniformsBinding;
 	RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
+	PipelineHandle mainPipeline;
 
-
-	// 
+	// App state
 	CameraPositioner_FirstPerson cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target
@@ -38,18 +39,17 @@ private:
 	);
 	Camera camera = Camera(cameraPositioner);
 
-	// this shouldnt be like this
-	PipelineHandle mainPipeline;
 
+	// Event loop
 	void EarlyUpdate() override {
 		Super::EarlyUpdate();
 
-		double x, y;
-		glfwGetCursorPos(window, &x, &y);
+		//double x, y;
+		//glfwGetCursorPos(window, &x, &y);
 
-		cameraPositioner.update(delta_time_s,
-			glm::vec2(x / swapchain->extent_.width, y / -swapchain->extent_.height),
-			rightMousePressed);
+		//cameraPositioner.update(delta_time_s,
+		//	glm::vec2(x / swapchain->extent_.width, y / -swapchain->extent_.height),
+		//	rightMousePressed);
 
 	}
 
@@ -239,7 +239,7 @@ private:
 
 		Level lvl = {
 			.scene = imported_scene,
-			.tree = treeFromScene(context, imported_scene),
+			.static_tree = treeFromScene(context, imported_scene),
 			.ctx = context,
 			.tree_done = true
 		};
@@ -307,44 +307,37 @@ private:
 		std::vector<VkDescriptorImageInfo> imageInfos;
 		std::vector<VkDescriptorImageInfo> samplerInfos;
 
-		int count = (context->images_.numObjects());
+		int count = (context->textures_.numObjects());
 		imageInfos.reserve(count);
 		samplerInfos.reserve(count);
 
-		auto smp = context->samplers_.get(context->samplers.at("default"));
-		//image_obj.sampler = *smp;
+		//auto smp = context->samplers_.get(context->samplers.at("default"));
+		////image_obj.sampler = *smp;
 
-		VkDescriptorImageInfo si{};
-		si.sampler = *smp;
-		si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
-		si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
-		samplerInfos.push_back(si);
-
-
+		//VkDescriptorImageInfo si{};
+		//si.sampler = *smp;
+		//si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
+		//si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
+		//samplerInfos.push_back(si);
 
 		// this has problems.
 		// theres compressiona around index meaning. 
 		// textureIndex/imageIndex
-		context->images_.forEach([&](Image obj_)
+		context->textures_.forEach([&](Image obj_)
 			{
-				// This is fast and crude fix. 
-				// Swapchain depth image is created on the same pool and other images are too.
-				// swapchaim color images are manages by the VkSwapchain object tho.
-				//if (!obj_.is_tex) { return; };
-
 				VkDescriptorImageInfo ii{};
 				ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
 				ii.imageView = obj_.sampleView;
 				ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				imageInfos.push_back(ii);
 
-				//// Sampler for the bindless texure approach needs refacotr.
-				//// Doesnt Really make sense.
-				//VkDescriptorImageInfo si{};
-				//si.sampler = obj_.sampler;
-				//si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
-				//si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
-				//samplerInfos.push_back(si);
+				// Sampler for the bindless texure approach needs refacotr.
+				// Doesnt Really make sense.
+				VkDescriptorImageInfo si{};
+				si.sampler = obj_.sampler;
+				si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
+				si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
+				samplerInfos.push_back(si);
 			}
 		);
 
@@ -463,48 +456,52 @@ private:
 
 		auto viewProj = proj * view; // Freeze at first for debug
 
-		//if (level.tree_done) {
-		//	frustumCullBVH(
-		//		level.tree,
-		//		0,
-		//		viewProj,
-		//		camera.getPosition(),
-		//		visible
-		//	);
-		//}
-		//else {
-		//	assert(false && "tree wasnt done");
-		//}
+		if (level.tree_done) {
+			frustumCullBVH(
+				level.static_tree,
+				0,
+				viewProj,
+				camera.getPosition(),
+				visible
+			);
+		}
+		else {
+			assert(false && "tree wasnt done");
+		}
 
-		//// VISIBLE PIPELINES
-		//std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
+		// VISIBLE PIPELINES
+		std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
 
-		//for (uint32_t primSlot : visible) {
-		//	if (primSlot >= level.tree.primToNode.size()) continue;
+		for (uint32_t primSlot : visible) {
+			if (primSlot >= level.static_tree.primToNode.size()) continue;
 
-		//	uint32_t node = level.tree.primToNode[primSlot];
+			uint32_t node = level.static_tree.primToNode[primSlot];
 
-		//	auto it = level.scene.materialForNode.find(node);
-		//	if (it == level.scene.materialForNode.end()) continue;
+			auto it = level.scene.materialForNode.find(node);
+			if (it == level.scene.materialForNode.end()) continue;
 
-		//	uint32_t materialIndex = it->second;
-		//	auto matHandle = context->materialInstances_.getHandle(materialIndex);
-		//	auto mat = context->materialInstances_.get(matHandle);
-		//	if (!mat) continue;
+			uint32_t materialIndex = it->second;
+			auto matHandle = context->materialInstances_.getHandle(materialIndex);
+			auto mat = context->materialInstances_.get(matHandle);
+			if (!mat) continue;
 
-		//	pipeline_map[mat->pipeline].push_back(primSlot); // NOT node
-		//}
+			pipeline_map[mat->pipeline].push_back(primSlot); // NOT node
+		}
 
-		//if (pipeline_map.empty()) {
-		//	vkCmdBeginRendering(cmd.commandBuffer, &cmd.renderingInfo);
-		//	vkCmdEndRendering(cmd.commandBuffer);
-		//	// then transition/present as usual
-		//	return;
-		//}
-		//auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->layout;
+		//assert(!pipeline_map.empty() && "map empty");
+		if (pipeline_map.empty()) {
+			vkCmdBeginRendering(cmd.commandBuffer, &cmd.renderingInfo);
+			vkCmdEndRendering(cmd.commandBuffer);
 
-		auto han_ = context->pipelines_.getHandle(0);
-		auto pipe_lyt = context->pipelines_.objects_[0].obj_.layout;
+			swapchain->AdvanceFrame();
+
+
+
+
+			return; // This is illefgal
+		}
+
+		auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->layout;
 
 		uint32_t dynamicOffsets[2] = {
 			frameUniformsBinding.dynamicOffsetFrame(swapchain->currentFrame_),
@@ -538,7 +535,7 @@ private:
 		MainViewPushConstants pc{};
 		pc.model = glm::mat4(1.0f);
 
-		//for (const auto& [han_, visible] : pipeline_map) {
+		for (const auto& [han_, visible] : pipeline_map)
 		{
 			//context->pipelines_.forEachHandle([&](PipelineHandle han_) {
 
@@ -549,11 +546,9 @@ private:
 			);
 
 
-			for (int visible_node = 0; visible_node < level.scene.hierarchy.size(); visible_node++) {
-				//for (uint32_t visible_prim : visible) {
-				//	uint32_t visible_node = level.tree.primToNode[visible_prim];
-
-					//uint32_t i = tree_.primToNode[primId];
+			//for (int visible_node = 0; visible_node < level.scene.hierarchy.size(); visible_node++) {
+			for (uint32_t visible_prim : visible) {
+				uint32_t visible_node = level.static_tree.primToNode[visible_prim];
 
 				auto it = level.scene.meshForNode.find(visible_node);
 				if (it == level.scene.meshForNode.end()) continue;

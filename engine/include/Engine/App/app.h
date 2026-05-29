@@ -52,27 +52,37 @@ struct ToyFrameBuffer final {
 };
 
 
+//struct DeviceWorkerPayload {
+//	VkDevice device;
+//	VkCommandBuffer commandBuffer;
+//	VkQueue queue;
+//	VkCommandPool commandPool;
+//
+//};
+//
+//// maybe bufHandle'
+//struct ScopedCommandBuffer{
+//	//Context* ctx;
+//	VkCommandBuffer buf;
+//	// rendering info
+//};
+//
 struct ToyCommandBuffer final {
-	// Maybe this shoudl be wrapped
 	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 	ToyRenderPass rp{};
-
-	VkRenderingInfo renderingInfo{};
-
-	//PipelineHandle pipeline = {};
-	//ToyFrameBuffer fb;
-	//VkPipeline lastBoundPipeline_ = VK_NULL_HANDLE;
-	//bool rendering_ = false;
+	VkRenderingInfo renderingInfo{}; //ToyFrameBuffer fb;
 };
 
 struct Level {
-
-
 	Scene scene = {};
 	BvhTree tree = {};
+	BvhTree static_tree = {};
 	Context* ctx = nullptr;
 
 	// is this bool really needed when we can probe BvhTree for tree
+	// 
+	// Yes. its cheap and clear if we take care no respect the invariant of tree_done == tree procesed.
+	// Static atm
 	bool tree_done = false;
 };
 
@@ -118,10 +128,10 @@ protected:
 #pragma region ===[ App / Core State ]===
 
 	float delta_time_s = .0f;
-
 	// This needs rework. naive float for elpased time leads to problems in the long run!
 	float time_since_start_s = .0f;
 
+	// the purporse of this is manly culling debug
 	glm::mat4 frozenMainView = {};
 
 #pragma endregion
@@ -761,6 +771,8 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 
 #pragma endregion
 
+
+
 ToyCommandBuffer VulkanApp::AcquireMain()
 {
 
@@ -769,7 +781,7 @@ ToyCommandBuffer VulkanApp::AcquireMain()
 		1,
 		&swapchain->GetInFlightFence(),
 		VK_TRUE,
-		UINT64_MAX
+		UINT64_MAX 
 	);
 
 	uint32_t imageIndex;
@@ -796,9 +808,6 @@ ToyCommandBuffer VulkanApp::AcquireMain()
 	//
 	swapchain->SetCurrentImageIndex(imageIndex);
 
-	// This needs to be here for correctness. Acquire image can hold.
-	UpdateDeltaTime();
-
 	// Now we reset the command obj we will be recording to.
 	// Resetting pool so its cheaper.
 	// We also reset the flag. Flags are raised and done. reset is manual.
@@ -812,6 +821,8 @@ ToyCommandBuffer VulkanApp::AcquireMain()
 	//	/*VkCommandBufferResetFlagBits*/ 0);
 	vkResetCommandPool(device, perFrameCommandPools[swapchain->currentFrame_], 0);
 
+	// This needs to be here for correctness. Acquire image can hold.
+	UpdateDeltaTime();
 
 	VkCommandBufferBeginInfo beginInfo{};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;

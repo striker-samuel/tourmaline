@@ -11,31 +11,17 @@
 #include <glm/glm.hpp>
 #include <glm/ext.hpp>
 
-#include <Engine/Renderer/light.h>
-
 using glm::mat4;
-
-// we do not define std::vector<Node*> Children - this is already present in the aiNode from assimp
 
 constexpr const int MAX_NODE_LEVEL = 16;
 
+enum NodeFlags {
+    STATIC_TRANSFORM = 1u << 1,
+};
 
-//struct SceneLight {
-//
-//	glm::vec4 color = glm::vec4(1.0f);
-//	float position[3] = { 0.0f,0.0f,0.0f };
-//	int32_t flags = 0;
-//	float direction[3] = { 0.0f,0.0f,0.0f };
-//	float intensity = .0f;
-//	int32_t type = LIGHT_TYPE_POINT;
-//
-//	float innerAngle = glm::radians(10.0f);
-//	float outerAngle = glm::radians(20.0f);
-//};
-//
 
 // This was lifted from https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan
-
+// But cahnges has been made trought so its not 1:1 to the original
 struct Hierarchy {
 	// parent for this node (or -1 for root)
 	int parent = -1;
@@ -49,14 +35,14 @@ struct Hierarchy {
 	int level = 0;
 };
 
-/* This scene is converted into a descriptorSet(s) in MultiRenderer class
-   This structure is also used as a storage type in SceneExporter tool
- */
 struct Scene {
+
 	// local transformations for each node and global transforms
 	// + an array of 'dirty/changed' local transforms
 	std::vector<mat4> localTransform;  // indexed by node
 	std::vector<mat4> globalTransform; // indexed by node
+
+	std::vector<uint32_t> flags; // indexed by node
 
 	// list of nodes that need their global transforms recalculated
 	std::vector<int> changedAtThisFrame[MAX_NODE_LEVEL];
@@ -73,10 +59,8 @@ struct Scene {
 	// Node name component: which name is assigned to the node (Node -> Name)
 	std::unordered_map<uint32_t, uint32_t> nameForNode;
 
-	// Lets add light support to the scene def
+	// Lets add light support to the scene def. hieratchy node can be both light and mesh at the same time
 	std::unordered_map<uint32_t, uint32_t> lightForNode;
-
-//	std::vector<struct Light> lights;
 
 	// List of scene node names
 	std::vector<std::string> nodeNames;

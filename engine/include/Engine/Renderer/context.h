@@ -78,6 +78,7 @@ struct GeometryPageRef {
 //
 //};
 
+
 // This resource management style is lifted from lightweightVk
 class Context {
 
@@ -98,6 +99,8 @@ public:
 	std::unordered_map<std::string, SamplerHandle> samplers;
 
 	VmaAllocator allocator_;
+
+	// this specs could be part of a paylaoid struct ktx style 
 	VkDevice device_;
 	VkPhysicalDevice physicalDevice_;
 
@@ -123,12 +126,14 @@ public:
 	VkQueue transfer_queue;
 
 	GeometryPageHandle current_geometry_page;
+
 	// --------------------------------------
 	Pool<MaterialInstance, MaterialInstance> materialInstances_;
 	// --------------------------------------
 
 	Pool<Image, Image> images_;
-	//Pool<Image, Image> textures_;
+	Pool<Texture, Image> textures_;
+
 	Pool<BufferDescription, BufferDescription> buffers_;
 
 	Pool<Sampler, VkSampler> samplers_;
@@ -168,7 +173,7 @@ public:
 	void CreatePipelineLayout(const PipelineLayoutDesc& descIn, PipelineLayout& out);
 	PipelineHandle CreatePipeline(RasterSettings raster_settings, PipelineLayoutDesc layoutDesc, ShaderModuleHandle vert, ShaderModuleHandle frag, VkFormat depth_format, VkFormat swapchainImageFormat);
 
-	ImageHandle CreateTexture(ktxTexture2& texture);
+	TextureHandle CreateTexture(ktxTexture2& texture);
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
 
 	SamplerHandle CreateSampler(uint32_t levelCount);

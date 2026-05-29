@@ -50,6 +50,7 @@ struct Aabb {
 struct Partition {
 	Aabb bounds;
 	glm::vec3 centroid;
+	uint32_t node;
 };
 
 struct BvhNode {
@@ -245,8 +246,9 @@ BvhTree treeFromScene(const Context* ctx, const Scene& scene) {
 			Partition{
 			{ wMin, wMax },
 			centroid(wMin, wMax),
+			(uint32_t)i
 			}
-		);
+			);
 
 
 	}
@@ -260,13 +262,13 @@ BvhTree treeFromScene(const Context* ctx, const Scene& scene) {
 		buildRecursive(tree, prims, 0, N, /*maxLeafSize=*/4);
 	}
 
-	//// Rebuild map
-	//tree.primToNode.resize(N);
+	// Rebuild map
+	tree.primToNode.resize(N);
 
-	//for (uint32_t slot = 0; slot < N; ++slot) {
-	//	uint32_t originalPrimId = tree.primIndices[slot];
-	//	tree.primToNode[slot] = prims[originalPrimId].node;
-	//}
+	for (uint32_t slot = 0; slot < N; ++slot) {
+		uint32_t originalPrimId = tree.primIndices[slot];
+		tree.primToNode[slot] = prims[originalPrimId].node;
+	}
 
 	return tree;
 }
