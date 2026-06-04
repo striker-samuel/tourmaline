@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <vector>
 #include <cassert>
 #include <limits>
@@ -8,6 +9,10 @@
 
 #include <Engine/Renderer/context.h>
 #include <Engine/Scene/scene.h>
+
+// Dont like this. jsut used for bounds.
+// maybe a fucntiopmn arg works better
+#include <Engine/Renderer/meshmanager.h>
 
 
 static inline glm::vec3 minVec(const glm::vec3& a, const glm::vec3& b) {
@@ -186,8 +191,12 @@ static uint32_t buildRecursive(
 	return nodeIdx;
 }
 
+using MeshFromIndexFunc = std::function<Mesh(uint32_t meshIndex)>;
 
-BvhTree treeFromScene(const Context* ctx, const Scene& scene) {
+BvhTree treeFromScene(
+	const Scene& scene,
+	MeshFromIndexFunc meshFromMeshIndex
+) {
 	BvhTree tree;
 
 	std::vector<Partition> prims;
@@ -209,11 +218,10 @@ BvhTree treeFromScene(const Context* ctx, const Scene& scene) {
 			continue;
 
 		uint32_t m = it->second;
-		const auto& mesh = ctx->meshes_.objects_[m];
+		Mesh mesh = meshFromMeshIndex(m);
 		const glm::mat4& glob = scene.globalTransform[i];
-
-		const glm::vec3 localMin = mesh.obj_.aabbMin;
-		const glm::vec3 localMax = mesh.obj_.aabbMax;
+		const glm::vec3 localMin = mesh.aabbMin;
+		const glm::vec3 localMax = mesh.aabbMax;
 
 		// Transform 8 corners to get correct world AABB under rotation/scale
 		glm::vec3 worldMin(+FLT_MAX), worldMax(-FLT_MAX);

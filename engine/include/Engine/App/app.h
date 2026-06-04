@@ -6,7 +6,8 @@
 //
 #include "volk.h"
 #include "vk_mem_alloc.h"
-#include <GLFW/glfw3.h>
+//#include <GLFW/glfw3.h>
+#include "input.h"
 
 // Imgui
 #include "imgui.h"
@@ -23,13 +24,7 @@
 #include <Engine/Utils/gltf.h>
 #include <Engine/platform.h>
 #include <Engine/Utils/bvh.h>
-//
 
-// --Defaults--
-//constexpr VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
-
-
-// 
 
 struct ToyRenderPass final {
 	// This will be needed later 
@@ -73,26 +68,13 @@ struct ToyCommandBuffer final {
 	VkRenderingInfo renderingInfo{}; //ToyFrameBuffer fb;
 };
 
-struct Level {
-	Scene scene = {};
-	BvhTree tree = {};
-	BvhTree static_tree = {};
-	Context* ctx = nullptr;
-
-	// is this bool really needed when we can probe BvhTree for tree
-	// 
-	// Yes. its cheap and clear if we take care no respect the invariant of tree_done == tree procesed.
-	// Static atm
-	bool tree_done = false;
-};
-
 
 // Should be renamned to somnehting like VulkanAppBase or somethign like that.
 class VulkanApp {
 
 public:
 
-	Level level{};
+	Input input;
 
 	virtual ~VulkanApp() = default;
 
@@ -159,16 +141,6 @@ protected:
 
 #pragma endregion
 
-#pragma region ===[ Input ]===
-	bool rightMousePressed = false;
-	bool firstMouse = false;
-
-	float lastX = 0.f;
-	float lastY = 0.f;
-
-	int currentKey = -1; // Keeps track of the currently pressed key (W, A, S, D)
-#pragma endregion
-
 #pragma region ===[ Flags / Events ]===
 	bool framebufferResized = false;
 #pragma endregion
@@ -210,63 +182,6 @@ protected:
 
 		ImDrawList* drawList = ImGui::GetForegroundDrawList();
 
-
-		// DEBUG DRAW POINTS OVER LIGHTS:
-		//glm::mat4 view = camera_.getViewMatrix();
-		//glm::mat4 proj = camera_.getProjMatrix();
-		//proj[1][1] *= -1.0f;  // match your main pass
-
-		//int node = 0;
-		//for (auto light : lights) {
-
-		//	if (light.intensity <= 0.0f)
-		//		continue;
-
-		//	glm::vec3 worldPos(
-		//		light.position[0],
-		//		light.position[1],
-		//		light.position[2]
-		//	);
-
-		//	glm::vec4 clip = proj * view * glm::vec4(worldPos, 1.0f);
-		//	if (clip.w <= 0.0f)
-		//		continue;
-
-		//	glm::vec3 ndc = glm::vec3(clip) / clip.w; // [-1,1]
-
-		//	if (ndc.x < -1.0f || ndc.x > 1.0f ||
-		//		ndc.y < -1.0f || ndc.y > 1.0f ||
-		//		ndc.z < 0.0f || ndc.z > 1.0f)
-		//		continue;
-
-		//	// Map NDC -> ImGui screen space (origin top-left)
-		//	const float sx = (ndc.x * 0.5f + 0.5f) * io.DisplaySize.x;
-		//	const float sy = (ndc.y * 0.5f + 0.5f) * io.DisplaySize.y;  // <- no extra flip
-
-		//	float r = light.color[0];
-		//	float g = light.color[1];
-		//	float b = light.color[2];
-		//	if (r == 0.0f && g == 0.0f && b == 0.0f) {
-		//		r = 1.0f; g = 1.0f; b = 0.0f;
-		//	}
-
-		//	ImU32 col = IM_COL32(
-		//		(int)(glm::clamp(r, 0.0f, 1.0f) * 255.0f),
-		//		(int)(glm::clamp(g, 0.0f, 1.0f) * 255.0f),
-		//		(int)(glm::clamp(b, 0.0f, 1.0f) * 255.0f),
-		//		255
-		//	);
-
-		//	const float radius = 6.0f;
-		//	drawList->AddCircleFilled(ImVec2(sx, sy), radius, col, 12);
-
-		//	// Optional label
-		//	drawList->AddText(ImVec2(sx + radius + 2.0f, sy - radius),
-		//		IM_COL32(255, 255, 255, 255),
-		//		std::to_string(node).c_str());
-		//	node++;
-		//}
-
 	}
 
 #pragma region MainLoop
@@ -278,9 +193,10 @@ protected:
 			//OPTICK_FRAME("MainThread");
 
 			glfwPollEvents();
+			input.beginFrame();
 
 			EarlyUpdate();
-			Update(); // Main
+			Update();
 			LateUpdate();
 
 			DrawFrame();
@@ -295,32 +211,8 @@ protected:
 
 #pragma region Events
 
-
-	virtual void EarlyUpdate() {
-		//level.scene ? recalculateGlobalTransforms(level.scene) : void();
-		recalculateGlobalTransforms(level.scene);
-	}
-	virtual void Update() {
-		//OPTICK_EVENT();
-		int i = 3;
-		//float phase = std::sin(i + time_since_start_s * 0.35f);
-		//scene_.localTransform[1][3][1] = phase *10;
-		//markAsChanged(scene_, 1);
-
-		//// fake animation
-		//int i = 0;
-		//for (auto light : lights) {
-
-		//	if (light.type != LIGHT_TYPE_DIRECTIONAL) {
-		//		float phase = std::sin(i + time_since_start_s * 0.35f);  // staggered phases
-		//		light.position[2] = static_cast<float>(i) * 1 + phase;
-		//		i++;
-		//	}
-
-		//}
-
-	}
-
+	virtual void EarlyUpdate() {};
+	virtual void Update() {}
 	virtual void LateUpdate() {}
 
 #pragma endregion
@@ -337,20 +229,6 @@ protected:
 		}
 	}
 
-	void BindVertex(VkCommandBuffer commandBuffer) {
-
-		// Using pages but here we ignore it...
-		auto page = context->geometry_pages.get(context->current_geometry_page);
-
-		VkBuffer bufs[] = {
-			context->buffers_.get(page->vertexPosBuffer)->buffer,
-			context->buffers_.get(page->vertexShadingBuffer)->buffer
-		};
-		VkDeviceSize offs[] = { 0, 0 };
-		vkCmdBindVertexBuffers(commandBuffer, 0, 2, bufs, offs);
-
-		vkCmdBindIndexBuffer(commandBuffer, context->buffers_.get(page->indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
-	}
 
 #pragma region ===[ CommandRecording ]===
 
@@ -756,7 +634,7 @@ void VulkanApp::handleMouseMovement(double xpos, double ypos) {}
 
 void VulkanApp::handleMouseButton(int button, int action, int mods) {
 	if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-		rightMousePressed = (action == GLFW_PRESS);
+		//rightMousePressed = (action == GLFW_PRESS);
 	}
 }
 
@@ -930,7 +808,7 @@ void VulkanApp::CleanUp() {
 		glfwDestroyWindow(window);
 		vkDestroySurfaceKHR(instance, surface, nullptr);
 		surface = VK_NULL_HANDLE;
-		glfwTerminate;
+		glfwTerminate();
 		window = nullptr;
 	}
 

@@ -1,15 +1,98 @@
 #pragma once
 #include <Engine/App/app.h>
 
-
-//  Not same layer
 #include <Engine/Renderer/ringBinding.h>
-
 
 std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
 };
 
+
+// SETIINGS
+enum CULLING_MODE : uint32_t {
+	NO_CULLING = 0,
+	CPU_CULLING = 1,
+	GPU_CULLING = 1,
+};
+
+// 
+
+struct DrawSetData {
+	float transform[16] = {
+		1.0f, 0.0f, 0.0f, 0.0f,
+		0.0f, 1.0f, 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		0.0f, 0.0f, 0.0f, 1.0f
+	};
+	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
+};
+
+static_assert(sizeof(DrawSetData) % 16 == 0);
+
+struct FrameUniforms
+{
+	glm::mat4 view;
+	glm::mat4 proj;
+	glm::mat4 viewProj;
+
+	glm::mat4 invView;
+	glm::mat4 invProj;
+	glm::mat4 invViewProj;
+
+	glm::vec3 cameraPos;
+	float     time;
+
+	glm::vec2 viewportSize;
+	glm::vec2 invViewportSize;
+
+	float nearPlane;
+	float farPlane;
+	float exposure;
+	float padding; // keep 16-byte alignment
+};
+static_assert(sizeof(FrameUniforms) % 16 == 0);
+
+
+struct MainViewPushConstants {
+	glm::mat4 model;
+	int material_index;
+	uint32_t     _pad0[3];
+};
+static_assert(sizeof(MainViewPushConstants) % 16 == 0);
+
+
+
+struct Level : Scene {
+
+	MeshManager* man = nullptr;
+	BvhTree tree = {};
+	BvhTree static_tree = {};
+
+
+	// This should be peged to recalulateGlobalTransforms and dirty update. 
+	// Crude patch to get it running now. ;)
+	bool tree_done = false;
+
+	~Level() {}
+
+
+	void Upload(
+		std::filesystem::path gltf_model_path
+	) {
+
+		tinygltf::Model model;
+		LoadModelFromAsciiFile(model, gltf_model_path.string().c_str());
+
+		GltfToSceneImporter importer(*man, *this, model, std::move(gltf_model_path));
+		importer.importNodeRecursive(/*rootNodeIdx*/0, /*parentSceneNode=*/-1, /*level=*/0);
+
+		// This is needed or else scene will not carry transforms effectively
+		markAsChanged(*this, 0);
+		recalculateGlobalTransforms(*this);
+
+	}
+
+};
 
 class TestApp : public VulkanApp {
 
@@ -18,6 +101,9 @@ public:
 
 private:
 	using Super = VulkanApp;
+	// this is bad. redesign!
+	MeshManager man = {};
+	Level current_level = {};
 
 	// App resources -- This should just be spawned by the RG
 	struct FrameResources {
@@ -25,8 +111,8 @@ private:
 		DescriptorSetHandle frameDynamicDescriptorSet;
 	};
 	FrameResources perFrameData[MAX_FRAMES_IN_FLIGHT];
+	// 
 
-	//
 	RingBinding<FrameUniforms, 1> frameUniformsBinding;
 	RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
 	PipelineHandle mainPipeline;
@@ -40,17 +126,8 @@ private:
 	Camera camera = Camera(cameraPositioner);
 
 
-	// Event loop
 	void EarlyUpdate() override {
 		Super::EarlyUpdate();
-
-		//double x, y;
-		//glfwGetCursorPos(window, &x, &y);
-
-		//cameraPositioner.update(delta_time_s,
-		//	glm::vec2(x / swapchain->extent_.width, y / -swapchain->extent_.height),
-		//	rightMousePressed);
-
 	}
 
 	void Update() {
@@ -61,71 +138,14 @@ private:
 		Super::LateUpdate();
 	}
 
-	void handleMouseScroll(double xOffset, double yOffset) override {
-		const float scrollSpeed = 1.0f;
-		glm::vec3 forward = cameraPositioner.getForward();
-		cameraPositioner.setPosition(
-			cameraPositioner.getPosition() + static_cast<float>(yOffset) * scrollSpeed * forward
-		);
-	}
-
-	void handleMouseMovement(double xpos, double ypos) override {
-		//Super::handleMouseMovement(xpos, ypos);
-		if (!rightMousePressed) return;
-		glm::vec2 mousePos = glm::vec2(
-			static_cast<float>(xpos) / swapchain->GetExtent().width,
-			static_cast<float>(ypos) / -swapchain->GetExtent().height
-		);
-		cameraPositioner.update(delta_time_s,
-			mousePos,
-			true
-		);
-	}
-
-	void handleKey(int key, int scancode, int action, int mods) override {
-		//Super::handleKey(key, scancode, action, mods);
-
-		bool isPressed = action != GLFW_RELEASE;
-
-		switch (key) {
-		case GLFW_KEY_R:
-		case GLFW_KEY_F:
-			cameraPositioner.reset();
-			break;
-		case GLFW_KEY_W:
-		case GLFW_KEY_UP:
-			cameraPositioner.movement_.forward_ = isPressed;
-			break;
-		case GLFW_KEY_S:
-		case GLFW_KEY_DOWN:
-			cameraPositioner.movement_.backward_ = isPressed;
-			break;
-		case GLFW_KEY_A:
-		case GLFW_KEY_LEFT:
-			cameraPositioner.movement_.left_ = isPressed;
-			break;
-		case GLFW_KEY_D:
-		case GLFW_KEY_RIGHT:
-			cameraPositioner.movement_.right_ = isPressed;
-			break;
-		case GLFW_KEY_Q:
-		case GLFW_KEY_SPACE:
-			cameraPositioner.movement_.up_ = isPressed;
-			break;
-		case GLFW_KEY_E:
-			cameraPositioner.movement_.down_ = isPressed;
-			break;
-		case GLFW_KEY_LEFT_SHIFT:
-			cameraPositioner.movement_.fastSpeed_ = isPressed;
-			break;
-		default:
-			break;
-		}
-	}
-
 	bool Initialize() {
 		if (!Super::Initialize())
 			return false;
+
+		man = MeshManager(
+			context
+		);
+		man.InitalizeGeoBuffers();
 
 		// Init
 		frameUniformsBinding.init(
@@ -196,11 +216,12 @@ private:
 			.stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			.offset = 0,
 			.size = uint32_t(sizeof(MainViewPushConstants) +
-							   sizeof(MaterialPushConstants)),
+							   sizeof(Material::Values)
+			),
 			}
 		);
 
-		// Just define renderPasses and grah and go.
+		// Just define renderPasses and grah and go.s
 		// App shouldnt need to do this really...
 		mainPipeline = context->CreatePipeline(
 			{
@@ -233,21 +254,20 @@ private:
 		// Dedfault camera settings
 		camera.setPerspective(45.0f, float(swapchain->extent_.width) / float(swapchain->extent_.height), default_near_clip, default_far_clip);
 
-		Scene imported_scene;
 		std::filesystem::path p(gltf_meshes_paths[0]);
-		UploadGltfToContext(context, p, imported_scene);
-
-		Level lvl = {
-			.scene = imported_scene,
-			.static_tree = treeFromScene(context, imported_scene),
-			.ctx = context,
-			.tree_done = true
-		};
-		level = lvl;
+		current_level.man = &man;
+		current_level.Upload(
+			p
+		);
+		current_level.static_tree = treeFromScene(current_level,
+			[&](uint32_t index) -> const Mesh& {
+				// Highly illegal. but lets roll with this,
+				return this->man.meshes.objects_[index].obj_;
+			}
+		);
+		current_level.tree_done = true;
 
 		SetDescriptorSets();
-
-
 		UpdateBindlessTexturesSets();
 
 		return true;
@@ -302,7 +322,7 @@ private:
 
 	void UpdateBindlessTexturesSets() {
 
-		const uint32_t materialCount = static_cast<uint32_t>(context->materialInstances_.numObjects());
+		const uint32_t materialCount = static_cast<uint32_t>(man.materials.numObjects());
 
 		std::vector<VkDescriptorImageInfo> imageInfos;
 		std::vector<VkDescriptorImageInfo> samplerInfos;
@@ -442,7 +462,7 @@ private:
 		vkCmdSetScissor(cmd.commandBuffer, 0, 1, &scissor);
 
 		// BIND VETEX
-		BindVertex(cmd.commandBuffer);
+		man.BindVertex(cmd.commandBuffer);
 
 		// BIND DESCRIPTOR SETS
 		auto dynamic_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDynamicDescriptorSet);
@@ -456,9 +476,9 @@ private:
 
 		auto viewProj = proj * view; // Freeze at first for debug
 
-		if (level.tree_done) {
+		if (current_level.tree_done) {
 			frustumCullBVH(
-				level.static_tree,
+				current_level.static_tree,
 				0,
 				viewProj,
 				camera.getPosition(),
@@ -473,17 +493,24 @@ private:
 		std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
 
 		for (uint32_t primSlot : visible) {
-			if (primSlot >= level.static_tree.primToNode.size()) continue;
+			if (primSlot >= current_level.static_tree.primToNode.size()) continue;
 
-			uint32_t node = level.static_tree.primToNode[primSlot];
+			uint32_t node = current_level.static_tree.primToNode[primSlot];
 
-			auto it = level.scene.materialForNode.find(node);
-			if (it == level.scene.materialForNode.end()) continue;
+			auto it = current_level.materialForNode.find(node);
+			if (it == current_level.materialForNode.end()) continue;
 
 			uint32_t materialIndex = it->second;
-			auto matHandle = context->materialInstances_.getHandle(materialIndex);
-			auto mat = context->materialInstances_.get(matHandle);
+			auto matHandle = man.materials.getHandle(materialIndex);
+			auto mat = man.materials.get(matHandle);
 			if (!mat) continue;
+
+			// Lets just hardcode them to mainPipeline.
+			// im doing empyty pipelines right now! be careful
+			//assert(mat->pipeline);
+			if (!mat->pipeline) {
+				mat->pipeline = mainPipeline;
+			}
 
 			pipeline_map[mat->pipeline].push_back(primSlot); // NOT node
 		}
@@ -548,32 +575,32 @@ private:
 
 			//for (int visible_node = 0; visible_node < level.scene.hierarchy.size(); visible_node++) {
 			for (uint32_t visible_prim : visible) {
-				uint32_t visible_node = level.static_tree.primToNode[visible_prim];
+				uint32_t visible_node = current_level.static_tree.primToNode[visible_prim];
 
-				auto it = level.scene.meshForNode.find(visible_node);
-				if (it == level.scene.meshForNode.end()) continue;
+				auto it = current_level.meshForNode.find(visible_node);
+				if (it == current_level.meshForNode.end()) continue;
 
 				uint32_t meshIndex = it->second;
 
-				auto mesh_desc = context->meshes_.get(
-					context->meshes_.getHandle(meshIndex)
+				auto mesh_desc = man.meshes.get(
+					man.meshes.getHandle(meshIndex)
 				);
 
-				auto material_instance_index = level.scene.materialForNode[visible_node];
+				auto material_instance_index = current_level.materialForNode[visible_node];
 				pc.material_index = material_instance_index;
 
-				auto matHandle = context->materialInstances_.getHandle(material_instance_index);
-				auto mat = context->materialInstances_.get(matHandle);
+				auto matHandle = man.materials.getHandle(material_instance_index);
+				auto mat = man.materials.get(matHandle);
 
 				assert(mat);
 				//if (!mat) continue; // skip if invalid
 				//if (mat->pipeline != han_) continue;
 
-				MaterialPushConstants pcm = mat->values;
+				Material::Values pcm = mat->values;
 
 				struct PC_All {
 					MainViewPushConstants pc;
-					MaterialPushConstants mpc;
+					Material::Values mpc;
 				};
 				PC_All all{ pc, pcm };
 
@@ -588,7 +615,7 @@ private:
 
 				for (auto& draw_set : mesh_desc->surfaces) {
 
-					auto& model_ = level.scene.globalTransform[visible_node];
+					auto& model_ = current_level.globalTransform[visible_node];
 					vkCmdPushConstants(
 						cmd.commandBuffer,
 						//commandBuffers[swapchain.currentFrame_],
@@ -722,3 +749,4 @@ private:
 	}
 
 };
+

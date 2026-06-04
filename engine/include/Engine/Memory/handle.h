@@ -115,43 +115,23 @@ private:
 };
 
 
+
+// CONTEXT
 using ImageHandle = Handle<struct Image>;
 using TextureHandle = Handle<struct Texture>;
 
-// This may not be needed too. Image resources can hold their on vkImageViews after all
-// and tradionally you would only need 3 types of view, one for attachment, one for binding
-// an array for imageArrays for those images like CubeMaps
-// Maybe its bettter to specialize those but this code should not make those decissions I think.
-using ImageViewHandle = Handle<struct ImageView>;
-
-
-// This also may be not be propber resource lvl
-using SamplerHandle = Handle<struct Sampler>;
-
-
 using ShaderModuleHandle = Handle<struct ShaderModule>;
-
 using DescriptorPoolHandle = Handle<struct DescriptorPool>;
+
+
+
 using DescriptorSetHandle = Handle<struct DescriptorSet>;
-using DescriptorLayoutHandle = Handle<struct DescriptorLayout>;
 
 using PipelineHandle = Handle<struct Pipeline>;
-using PipelineLayoutHandle = Handle<struct PipelineLayout>;
 
-
-
+//using PipelineLayoutHandle = Handle<struct Pipeline::Layout>;
 using DeviceBufferHandle = Handle<struct BufferDescription>;
 
-
-
-// maybe this should be context level and be app level hmmm.
-using MaterialInstanceHandle = Handle<struct MaterialInstance>;
-
-
-
-using GeometryHandle = Handle<struct Geometry>;
-using GeometryPageHandle = Handle <struct GeometryPage>;
-
-
-
-
+//MESH MANAGER
+using MeshHandle = Handle<struct Mesh>;
+using GeometryPageHandle = Handle<struct GeometryPage>;

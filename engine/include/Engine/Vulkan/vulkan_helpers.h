@@ -15,7 +15,8 @@
 #include <cstring>
 
 #include <Engine/Shared/common.h>
-#include <Engine/Renderer/primitives.h>
+
+#include "volk.h"
 
 /*inline*/ const char* vkResultToString(VkResult result);
 

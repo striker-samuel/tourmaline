@@ -8,49 +8,22 @@
 #include <ktxvulkan.h>
 
 
-struct PipelineLayout {
-	VkPipelineLayout layout = VK_NULL_HANDLE;
-	std::array<VkDescriptorSetLayout, 8> sets{};
-};
-
-//  
 struct Pipeline {
-	// Only caring for these stages for now.
+	struct Layout {
+		VkPipelineLayout layout = VK_NULL_HANDLE;
+		std::array<VkDescriptorSetLayout, 8> sets{};
+	} layout;
+
 	ShaderModuleHandle vert;
 	ShaderModuleHandle frag;
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
-	PipelineLayout layout = {};
 };
 
 struct DescriptorSet {
 	//DescriptorLayoutHandle layout = {};
 	VkDescriptorSetLayout layout = {};
 	VkDescriptorSet set = VK_NULL_HANDLE;
-};
-
-// Surface is the 3d primitve and not to be taken as renderSurface.
-struct Surface {
-	GeometryPageHandle page;
-	uint32_t first_index; 
-	uint32_t index_count;
-	int32_t  base_vertex;   
-};
-
-
-// 
-// 
-struct Geometry {
-
-	glm::vec3 aabbMin;
-	float     sphereRadius;
-	glm::vec3 aabbMax;
-	float     spherePad;
-
-	uint32_t lods = 1;
-	std::vector<uint32_t> lod_offsets;
-	std::vector<Surface> surfaces;
-
 };
 
 
@@ -73,9 +46,16 @@ struct Image {
         VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
     };
 
+
     VkSampler sampler = VK_NULL_HANDLE;
 	bool is_tex = false;
+
+
+	// TODO: remove this hacky way!
+	bool owns_sampler = false;
 };
+
+
 // This ideally shouldnt use VkTypes and be the RHI interface.
 // Lets roll with this for now
 struct RasterSettings {
@@ -110,15 +90,6 @@ struct BufferDescription {
 
 };
 
-
-// 
-struct PipelineKey {
-	//vert
-	//frag
-	//layout
-};
-
-// 
 struct SamplerKey {
 	// Enough to dedupe VkSampler objects in your cache
 	VkFilter mag = VK_FILTER_LINEAR;
@@ -136,8 +107,6 @@ struct SamplerKey {
 	bool operator==(const SamplerKey&) const = default;
 };
 
-// Pipeline blocks.
-
 struct BindingDesc {
 	uint32_t binding = 0;                 // binding number inside the set
 
@@ -147,7 +116,7 @@ struct BindingDesc {
 	VkDescriptorBindingFlags flags = 0;   // PARTIALLY_BOUND, UPDATE_AFTER_BIND, etc.
 
 	//std::vector<SamplerKey> immutableSamplers; // size must be == count if non-empty
-	std::vector<SamplerHandle> immutableSamplers; // size must be == count if non-empty
+	std::vector<VkSampler> immutableSamplers; // size must be == count if non-empty
 };
 
 struct DescriptorSetLayoutDesc {

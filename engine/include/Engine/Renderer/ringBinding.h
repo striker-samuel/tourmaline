@@ -59,25 +59,6 @@ struct RingBinding
 		//mapped = context->getMappedPtr(buffer_h); // if persistently mapped
 	}
 
-	void uploadData(
-		const std::array<T, MaxElems> &elems,
-		uint32_t ringIndex,
-		VkPipelineStageFlags dstStages,
-		VkAccessFlags dstAccess
-	) {
-
-		context->UploadDataToBuffer(
-			buffer_h,
-			elems.data(),
-			sizeof(T) * elems.size(),
-			dstStages,
-			dstAccess,
-			0,
-			dynamicOffsetFrame(ringIndex)
-		);
-
-	}
-
 
 	BindingDesc bindingDesc(
 		//const std::vector<VkSampler>& resolvedImmutableSamplers

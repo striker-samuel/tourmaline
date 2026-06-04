@@ -18,9 +18,9 @@
 #include <tiny_gltf.h>
 
 #include <Engine/Renderer/vertex.h>
-#include <Engine/Renderer/primitives.h>
 #include <Engine/Renderer/context.h>
 
+#include <Engine/Renderer/meshmanager.h>
 
 struct GltfTextureRef {
 	int textureIndex = -1;   // index into model.textures
@@ -435,87 +435,44 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 		* glm::scale(glm::mat4(1.0f), s);
 }
 
-static int UploadGltfPrimitive(
-	Context* ctx,
-	const tinygltf::Model& model,
-	const tinygltf::Primitive& primitive
-) {
-	auto mdata = SurfaceDataFromGltfPrimitive(model, primitive);
-	auto mhandle = ctx->UploadVertexData(mdata);
-	return mhandle.index();
-}
 
-MaterialInstanceHandle CreateMaterial(Context* ctx, const tinygltf::Model& model, int material, const char* texture_root) {
-
-	auto mat = ExtractMaterials(model)[material];
-	auto color_uri = UriFromTexture(model, *mat.baseColorTex);
-
-	ktxTexture2* ktxTex = nullptr;
-	KTX_error_code res = ktxTexture2_CreateFromNamedFile(
-		(texture_root / *color_uri).string().c_str(),
-		KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
-		&ktxTex
-	);
-
-	if (res != KTX_SUCCESS) {
-		throw std::runtime_error("KTX load failed");
-	}
-
-	auto colorTexHandle = ctx->CreateTexture(*ktxTex);
-
-	// free after upload
-	ktxTexture2_Destroy(ktxTex);
-
-	// TO-DO No key provided.
-	auto material_pipe_0 = ctx->GetAppropiatePipeline({});
-	assert(material_pipe_0.valid());
-
-	auto mat_h = ctx->CreateMaterialInstance(material_pipe_0);
-	ctx->materialInstances_.get(mat_h)->values.tex[0] = colorTexHandle.index();
-	return mat_h;
-
-}
-
+// Maybe i shoudl distinguis between NIL and DEFAULT
+// Although makes sense to make nil index 0 and to store there the classic radioactive purple image
 uint32_t GetDefaultMaterialIndex(Context* ctx) {
-	return 0;
+	return DEFAULT_MATERIAL_INDEX;
 }
 
 struct GltfToSceneImporter {
-	Context* ctx = nullptr;
+	MeshManager& man;
 	Scene& scene;
 	const tinygltf::Model& model;
 	std::filesystem::path gltfModelPath; // full path to .gltf/.glb on disk
 
-	// Cache: glTF material index -> your runtime pool index.
-	// Sentinel indicates "not created yet".
 	static constexpr uint32_t kInvalidMat = 0xFFFFFFFFu;
 	std::vector<uint32_t> materialCache;
 
 	GltfToSceneImporter(
-		Context* inCtx,
+		MeshManager& inMan,
 		Scene& inScene,
 		const tinygltf::Model& inModel,
 		std::filesystem::path inGltfModelPath
 	)
-		: ctx(inCtx)
+		: man(inMan)
 		, scene(inScene)
 		, model(inModel)
 		, gltfModelPath(std::move(inGltfModelPath))
 		, materialCache(inModel.materials.size(), kInvalidMat)
-	{
-	}
+	{}
 
-	// Returns your runtime material index (pool index) for a given glTF material index.
-	// Creates once and caches.
-	uint32_t getOrCreateMaterialIndex(int gltfMaterialIndex) {
+	uint32_t getOrCreateMaterial(int gltfMaterialIndex) {
 		if (gltfMaterialIndex < 0) {
-			return GetDefaultMaterialIndex(ctx);
+			return GetDefaultMaterialIndex(man.ctx);
 		}
 
 		// glTF guarantees material indices are within model.materials
 		// (assuming the file is valid). If you want belt-and-suspenders:
 		if ((size_t)gltfMaterialIndex >= materialCache.size()) {
-			return GetDefaultMaterialIndex(ctx);
+			return GetDefaultMaterialIndex(man.ctx);
 		}
 
 		uint32_t& slot = materialCache[(size_t)gltfMaterialIndex];
@@ -526,15 +483,42 @@ struct GltfToSceneImporter {
 		// NOTE: Avoid storing baseDir as a dangling c_str(). Build it here.
 		const std::string baseDir = gltfModelPath.parent_path().string();
 
-		MaterialInstanceHandle h = CreateMaterial(
-			ctx,
-			model,
-			gltfMaterialIndex,
-			baseDir.c_str()
-		);
+		// TODO : This should be done onlt once instead of here!
+		auto mat = ExtractMaterials(model)[gltfMaterialIndex];
 
-		slot = h.index();
-		return slot;
+		TextureHandle colorTexHandle{};
+
+		// TODO : Upload all textures
+		{
+
+			auto color_uri = UriFromTexture(model, *mat.baseColorTex);
+
+			ktxTexture2* ktxTex = nullptr;
+			KTX_error_code res = ktxTexture2_CreateFromNamedFile(
+				(baseDir.c_str() / *color_uri).string().c_str(),
+				KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
+				&ktxTex
+			);
+
+			if (res != KTX_SUCCESS) {
+				throw std::runtime_error("KTX load failed");
+			}
+
+			colorTexHandle = man.ctx->CreateTexture(*ktxTex);
+			ktxTexture2_Destroy(ktxTex);
+		}
+		
+		return man.CreateMaterial(
+			{
+				.diffuse = colorTexHandle
+			}
+		).index();
+
+	}
+
+	uint32_t getOrCreateMesh(tinygltf::Primitive primitive) {
+		auto mdata = SurfaceDataFromGltfPrimitive(model, primitive);
+		return man.UploadVertexData(mdata).index();
 	}
 
 	void importNodeRecursive(int gltfNodeIndex, int parentSceneNode, int level) {
@@ -564,10 +548,8 @@ struct GltfToSceneImporter {
 				scene.localTransform[primNode] = glm::mat4(1.0f);
 				scene.globalTransform[primNode] = glm::mat4(1.0f);
 
-				scene.meshForNode[primNode] = UploadGltfPrimitive(ctx, model, primitive);
-
-				const uint32_t matIndex = getOrCreateMaterialIndex(primitive.material);
-				scene.materialForNode[primNode] = matIndex;
+				scene.meshForNode[primNode] = getOrCreateMesh(primitive);
+				scene.materialForNode[primNode] = getOrCreateMaterial(primitive.material);
 
 				markAsChanged(scene, primNode);
 			}
@@ -578,28 +560,4 @@ struct GltfToSceneImporter {
 			importNodeRecursive(child, groupNode, level + 1);
 		}
 	}
-};
-
-void UploadGltfToContext(
-	Context* ctx,
-	std::filesystem::path gltf_model_path,
-	Scene& result_scene
-) {
-
-	std::vector<Surface> uploaded;
-	std::set<uint32_t> already_uploaded;
-
-	tinygltf::Model model;
-	LoadModelFromAsciiFile(model, gltf_model_path.string().c_str());
-
-	GltfToSceneImporter importer(ctx, result_scene, model, std::move(gltf_model_path));
-	importer.importNodeRecursive(/*rootNodeIdx*/0, /*parentSceneNode=*/-1, /*level=*/0);
-
-	// This is needed or else scene will not carry transforms effectively
-	markAsChanged(result_scene, 0);
-	recalculateGlobalTransforms(result_scene);
-
-	// Import light from gltf missing 
-	// Import cameras from gltg missing too
-
 };

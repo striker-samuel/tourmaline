@@ -2,6 +2,9 @@
 
 #include <vector>
 
+
+
+
 template<typename ObjectType, typename ImplObjectType>
 class Pool {
 	static constexpr uint32_t kListEndSentinel = 0xffffffff;

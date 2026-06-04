@@ -1,4 +1,5 @@
 #include <Engine/Renderer/context.h>
+#include <Engine/Renderer/vertex.h>
 
 static inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
 
@@ -30,19 +31,20 @@ Context::Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physi
 
 	// from ChatGpt, may not be true: you can set a generic sampler with a big maxLod like 100, and reuse it for all your textures of any mip count.
 	// The driver will clamp dynamically per texture.
-	samplers["default"] = CreateSampler(100);
+	//samplers["default"] = CreateSampler(100);
 	//samplers["default_shadow"] = CreateShadowSampler(1);
 
 	images_.objects_.reserve(MAX_IMAGES);
 	textures_.objects_.reserve(MAX_TEXTURES);
 	buffers_.objects_.reserve(MAX_BUFFERS);
+	descriptorSets_.objects_.reserve(MAX_DESCRIPTORS);
 
 	InitializeDeviceVmaPools();
 
 	// This initialization is not the same as the others...
 	// Also im making the context have ownership of the geometry buffers. may not be the cleanest or better.
 	// Do I want the context to manage memory resources or to provide core app functionality like meshUpload too?
-	InitalizeGeoBuffers();
+	//InitalizeGeoBuffers();
 
 	// Lets have one dpool
 	default_descriptor_pool = createDescriptorPool();
@@ -91,81 +93,7 @@ Context::~Context(
 	CleanUp();
 };
 
-void Context::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
-	copyBuffer(srcBuffer, dstBuffer, size, 0, 0);
-}
 
-void Context::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset) {
-
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands(device_, default_command_pool);
-
-	VkBufferCopy copyRegion{};
-	copyRegion.size = size;
-	copyRegion.srcOffset = srcOffset;
-	copyRegion.dstOffset = dstOffset;
-	vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
-
-	endSingleTimeCommands(device_, commandBuffer, default_queue, default_command_pool);
-}
-
-void Context::InitalizeGeoBuffers() {
-
-	{
-
-		uint32_t totalVertexBytes = 512u * 1024u * 1024u;
-		uint32_t totalIndexBytes = 512u * 1024u * 1024u;
-
-		// Create the actual GPU buffers (these are the page's buffers)
-		DeviceBufferHandle vb_pos = createBuffer(
-			totalVertexBytes,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-		);
-
-		DeviceBufferHandle vb_shd = createBuffer(
-			totalVertexBytes,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-		);
-
-		DeviceBufferHandle ib = createBuffer(
-			totalIndexBytes,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-		);
-
-		// Build a page that OWNS allocators for those buffers
-		GeometryPage page{};
-		page.vertexPosBuffer = vb_pos;
-		page.vertexShadingBuffer = vb_shd;
-		page.indexBuffer = ib;
-
-		// Capacity in vertices must satisfy both streams
-		page.max_vertices = std::min(
-			totalVertexBytes / uint32_t(sizeof(VertexPos)),
-			totalVertexBytes / uint32_t(sizeof(VertexShading))
-		);
-
-		// Index allocator (bytes)
-		{
-			VmaVirtualBlockCreateInfo ci{};
-			ci.size = totalIndexBytes;
-			VK_CHECK(vmaCreateVirtualBlock(&ci, &page.index_blk));
-		}
-
-		// Vertex allocator (VERTEX UNITS!)
-		{
-			VmaVirtualBlockCreateInfo vu{};
-			vu.size = page.max_vertices; // vertices, not bytes
-			VK_CHECK(vmaCreateVirtualBlock(&vu, &page.vertex_units_blk));
-		}
-
-
-		current_geometry_page = geometry_pages.create(std::move(page));
-
-	}
-
-}
 
 void Context::InitializeDeviceVmaPools() {
 
@@ -235,9 +163,7 @@ void Context::InitializeDeviceVmaPools() {
 
 }
 
-[[nodiscard]] SamplerHandle Context::CreateSampler(uint32_t levelCount) {
-
-	VkSampler sampler;
+void Context::CreateSampler(uint32_t levelCount, VkSampler& sampler) {
 
 	VkSamplerCreateInfo samplerInfo{};
 	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -272,9 +198,48 @@ void Context::InitializeDeviceVmaPools() {
 
 	VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler));
 
-	return samplers_.create(std::move(sampler));
-
 }
+//
+//[[nodiscard]] SamplerHandle Context::CreateSampler(uint32_t levelCount) {
+//
+//	VkSampler sampler;
+//
+//	VkSamplerCreateInfo samplerInfo{};
+//	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+//	samplerInfo.magFilter = VK_FILTER_LINEAR;
+//	samplerInfo.minFilter = VK_FILTER_LINEAR;
+//
+//	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+//	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+//	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+//
+//	VkPhysicalDeviceProperties properties{};
+//	vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+//
+//	samplerInfo.anisotropyEnable = VK_TRUE;
+//	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+//	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+//
+//	// This is a hardware/spec limit. Thats why im asserting here...
+//	// Maybe we can query gpu capabilities to give better paths to more powerful devices.
+//	assert(properties.limits.maxUniformBufferRange >= 1 << 16);
+//
+//	samplerInfo.unnormalizedCoordinates = VK_FALSE;
+//	samplerInfo.compareEnable = VK_FALSE;
+//	samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+//	//samplerInfo.compareOp = compareOp;
+//
+//	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+//	samplerInfo.mipLodBias = 0.0f;
+//	samplerInfo.minLod = 0.0f;
+//	//samplerInfo.maxLod = 0.0f;
+//	samplerInfo.maxLod = float(levelCount - 1);
+//
+//	VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler));
+//
+//	return samplers_.create(std::move(sampler));
+//
+//}
 
 //[[nodiscard]] SamplerHandle Context::CreateShadowSampler(uint32_t levelCount) {
 //
@@ -337,7 +302,6 @@ void Context::CreateImageView(
 
 [[nodiscard]] DescriptorSetHandle Context::CreateDescriptorSet(
 	VkDescriptorSetLayout& layout
-	//VkDescriptorSet& set
 ) {
 	// Pools should be rolled over on fail, get new pool. then discard FIFO
 	auto descriptorPool = descriptorSetPools_.get(default_descriptor_pool);
@@ -727,7 +691,7 @@ void Context::UploadDataToBuffer(
 //}
 
 
-void Context::CreatePipelineLayout(const PipelineLayoutDesc& descIn, PipelineLayout& out)
+void Context::CreatePipelineLayout(const PipelineLayoutDesc& descIn, Pipeline::Layout& out)
 {
 
 	// ---- 1) Canonicalize sets (sort by set index)
@@ -956,7 +920,7 @@ void Context::CreatePipelineLayout(const PipelineLayoutDesc& descIn, PipelineLay
 	//PipelineLayoutHandle plytHandle = createPipelineLayout(layoutDesc);
 	//PipelineLayout* plytObj = pipelineLayouts_.get(plytHandle);
 	//pipeline.plyt = plytHandle;
-	PipelineLayout lyt;
+	Pipeline::Layout lyt;
 	CreatePipelineLayout(layoutDesc, lyt);
 	pipeline.layout = lyt;
 
@@ -1208,18 +1172,6 @@ void Context::CreatePipelineLayout(const PipelineLayoutDesc& descIn, PipelineLay
 //
 //}
 
-//[[nodiscard]] PipelineHandle Context::GetAppropiatePipeline(/* reqs*/) {
-//	return default_material_pipeline;
-//}
-
-[[nodiscard]] MaterialInstanceHandle Context::CreateMaterialInstance(PipelineHandle mat_pipeline)
-{
-	MaterialInstance mat_instance = {};
-	mat_instance.pipeline = mat_pipeline;
-
-	return materialInstances_.create(std::move(mat_instance));
-}
-
 void Context::TransitionImageLayout(
 	ImageHandle image_handle,
 	//VkFormat format,
@@ -1355,6 +1307,7 @@ void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, Vk
 	);
 }
 
+// This whole resource upload is too primitie and slow 
 TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
@@ -1408,6 +1361,7 @@ TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
+	// Textures go on device local.
 	VmaAllocationCreateInfo imageAllocInfo{};
 	imageAllocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 	imageAllocInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -1429,16 +1383,17 @@ TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 		throw std::runtime_error("vmaCreateImage failed for KTX texture.");
 	}
 
-
-	// TODO: This is really ugly. Revise 
 	auto* base = reinterpret_cast<ktxTexture*>(&texture);
-
-	// Should this be compressed or uncompressed size?? My guess is uncompressed.
 	ktx_size_t ktxDataSize = ktxTexture_GetDataSizeUncompressed(base);
 	ktx_uint8_t* ktxData = ktxTexture_GetData(base);
 
 	if (!ktxData || ktxDataSize == 0) {
+
 		vmaDestroyImage(allocator_, image, imageAllocation);
+
+		// this is illegal and should just assert out really.
+		// even on release build? ftm
+		assert(false && "no image data");
 		throw std::runtime_error("KTX texture has no image data.");
 	}
 
@@ -1471,7 +1426,7 @@ TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 		throw std::runtime_error("vmaCreateBuffer failed for KTX staging buffer.");
 	}
 
-	// Guaranteed mapped. Ignore warning
+	// Guaranteed mapped due to chosen flags. Ignore warning
 	std::memcpy(stagingAllocationInfo.pMappedData, ktxData, static_cast<size_t>(ktxDataSize));
 	vmaFlushAllocation(allocator_, stagingAllocation, 0, VK_WHOLE_SIZE);
 
@@ -1527,8 +1482,6 @@ TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 			// Non-array texture
 			ktx_size_t offset = 0;
 
-
-
 			KTX_error_code offRes = ktxTexture_GetImageOffset(
 				base,
 				//ktxTexture(texture),
@@ -1560,6 +1513,12 @@ TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 		}
 	}
 
+
+
+
+	// texture_copies.push_back()
+
+	// Instead of this upload should be scheduled to do in abtch and recorded to the transferQueue! 
 	// -------------------------------------------------------------------------
 	// Record upload
 	// -------------------------------------------------------------------------
@@ -1659,14 +1618,9 @@ TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 	image_obj.sampleView = VK_NULL_HANDLE;
 	image_obj.renderView = VK_NULL_HANDLE;
 
-
-	// TODO: fix this crap
-	auto smp = samplers_.get(samplers.at("default"));
-	image_obj.sampler = *smp;
-
-	//for (auto& v : image_obj.arrayView) {
-	//	v = VK_NULL_HANDLE;
-	//}
+	// TODO: Rework this.
+	CreateSampler(0, image_obj.sampler);
+	image_obj.owns_sampler = true;
 
 	CreateImageView(
 		image,
@@ -1787,139 +1741,6 @@ TextureHandle Context::CreateTexture(ktxTexture2& texture) {
 
 }
 
-[[nodiscard]] GeometryHandle Context::UploadVertexData(MeshUploadInput& geometry_data)
-{
-	const uint32_t vcount = static_cast<uint32_t>(geometry_data.vertices.size());
-	auto page = geometry_pages.get(current_geometry_page);
-
-	// ------------------------------------------
-	// 0) Allocate vertices from ONE vertex-units block
-	// ------------------------------------------
-	VmaVirtualAllocation vtx_alloc{};
-	VkDeviceSize baseVertex = 0; // <-- returned "offset" in VERTEX UNITS (not bytes)
-
-	{
-		VmaVirtualAllocationCreateInfo aV{};
-		aV.size = vcount;     // vertex units
-		aV.alignment = 1;     // vertex units
-
-		if (vmaVirtualAllocate(page->vertex_units_blk, &aV, &vtx_alloc, &baseVertex) != VK_SUCCESS) {
-			// Not enough contiguous vertex space in this page (or fragmented)
-			return {};
-		}
-	}
-
-	// Derived byte offsets for each stream (for copy destinations)
-	const VkDeviceSize pos_byte_offset = baseVertex * sizeof(VertexPos);
-	const VkDeviceSize shd_byte_offset = baseVertex * sizeof(VertexShading);
-
-	// ------------------------------------------
-	// 1) INDICES (same idea as before)
-	// ------------------------------------------
-	using IndexT = uint32_t;
-	const VkDeviceSize indexBytes =
-		sizeof(IndexT) * static_cast<VkDeviceSize>(geometry_data.indices.size());
-
-	VmaVirtualAllocation index_alloc{};
-	VkDeviceSize index_offset_bytes = 0;
-
-	{
-		VmaVirtualAllocationCreateInfo aIdx{};
-		aIdx.size = indexBytes;
-		aIdx.alignment = sizeof(IndexT);
-
-		if (vmaVirtualAllocate(page->index_blk /*or index_blk*/, &aIdx, &index_alloc, &index_offset_bytes) != VK_SUCCESS) {
-			// Roll back vertex allocation
-			vmaVirtualFree(page->vertex_units_blk, vtx_alloc);
-			return {};
-		}
-
-		auto staging_h = CreateStagingBuffer(geometry_data.indices.data(), indexBytes);
-		auto staging = buffers_.get(staging_h);
-
-		copyBuffer(staging->buffer, buffers_.get(page->indexBuffer)->buffer, indexBytes, 0, index_offset_bytes);
-		destroy(this, staging_h);
-	}
-
-	// ------------------------------------------
-	// 2) Split vertices into two CPU arrays
-	// ------------------------------------------
-	std::vector<VertexPos> pos(vcount);
-	std::vector<VertexShading> shd(vcount);
-
-	for (uint32_t i = 0; i < vcount; ++i) {
-		const Vertex& v = geometry_data.vertices[i];
-
-		pos[i].pos = v.pos;
-
-		shd[i].color = v.color;
-		shd[i].texCoord = v.texCoord;
-		shd[i].normal = v.normal;
-		shd[i].tangent = v.tangent;
-	}
-
-	// ------------------------------------------
-	// 3) Upload positions to binding 0 buffer at derived offset
-	// ------------------------------------------
-	{
-		const VkDeviceSize posBytes = sizeof(VertexPos) * static_cast<VkDeviceSize>(vcount);
-
-		auto staging_h = CreateStagingBuffer(pos.data(), posBytes);
-		auto staging = buffers_.get(staging_h);
-
-		copyBuffer(
-			staging->buffer,
-			buffers_.get(page->vertexPosBuffer /*or vertex_buffer*/)->buffer,
-			posBytes,
-			0,
-			pos_byte_offset
-		);
-
-		destroy(this, staging_h);
-	}
-
-	// ------------------------------------------
-	// 4) Upload shading to binding 1 buffer at derived offset
-	// ------------------------------------------
-	{
-		const VkDeviceSize shdBytes = sizeof(VertexShading) * static_cast<VkDeviceSize>(vcount);
-
-		auto staging_h = CreateStagingBuffer(shd.data(), shdBytes);
-		auto staging = buffers_.get(staging_h);
-
-		copyBuffer(
-			staging->buffer,
-			buffers_.get(page->vertexShadingBuffer /*or vertex_shading_buffer*/)->buffer,
-			shdBytes,
-			0,
-			shd_byte_offset
-		);
-
-		destroy(this, staging_h);
-	}
-
-	// ------------------------------------------
-	// 5) Surface (bind-once style)
-	// ------------------------------------------
-	Surface ds{};
-	ds.page = current_geometry_page;
-	ds.index_count = static_cast<uint32_t>(geometry_data.indices.size());
-	ds.first_index = static_cast<uint32_t>(index_offset_bytes / sizeof(IndexT));
-	ds.base_vertex = static_cast<int32_t>(baseVertex);
-
-	// IMPORTANT: store allocs somewhere if you want to free later.
-	// e.g. ds.vertex_alloc = vtx_alloc; ds.index_alloc = index_alloc; (requires fields)
-
-	Geometry mesh_dec{};
-	mesh_dec.lods = 1;
-	mesh_dec.lod_offsets = { 0 };
-	mesh_dec.surfaces = { ds };
-	mesh_dec.aabbMin = geometry_data.aabb_min;
-	mesh_dec.aabbMax = geometry_data.aabb_max;
-
-	return meshes_.create(std::move(mesh_dec));
-}
-
 [[nodiscard]] DeviceBufferHandle Context::CreateStagingBuffer(VkDeviceSize size)
 {
 	BufferDescription desc{};
@@ -2031,8 +1852,11 @@ void Context::CreateDescriptorLayout(const DescriptorSetLayoutDesc& descIn, VkDe
 			auto& store = immutableSamplersStorage.back();
 			store.reserve(b.immutableSamplers.size());
 
-			for (SamplerHandle sh : b.immutableSamplers)
-				store.push_back(*samplers_.get(sh)); // you store VkSampler in pool
+			//for (SamplerHandle sh : b.immutableSamplers)
+			//	store.push_back(*samplers_.get(sh)); // you store VkSampler in pool
+
+			// TODO : VALIDATE
+			store = b.immutableSamplers;
 
 			vkB.pImmutableSamplers = store.data();
 		}
@@ -2074,18 +1898,9 @@ void Context::CreateDescriptorLayout(const DescriptorSetLayoutDesc& descIn, VkDe
 
 }
 
-VkQueue Context::GetGraphicsQueue() {
-	return default_queue;
-}
+// 
 
-// TO-DO
-// Just a placeholder for now to remember pipeline caching scheme needs inplementation
-// Doom 2016 had a redudec number of PSOs in the 400
-// Keeping this here as goal and to have in mind the orders of magintude we are talking about
-PipelineHandle Context::GetAppropiatePipeline(PipelineKey key)
-{
-	return pipelines_.getHandle(0);
-}
+
 
 void destroy(Context* ctx, ShaderModuleHandle handle) {
 	assert(handle.valid());
@@ -2097,13 +1912,6 @@ void destroy(Context* ctx, DescriptorPoolHandle handle)
 {}
 void destroy(Context * ctx, DescriptorSetHandle handle)
 {}
-void destroy(Context * ctx, DescriptorLayoutHandle handle)
-{}
-;
-
-void destroy(Context* ctx, SamplerHandle handle)
-{}
-
 void destroy(Context* ctx, ImageHandle handle)
 {
 
@@ -2142,30 +1950,26 @@ void destroy(Context* ctx, DeviceBufferHandle handle) {
 	ctx->buffers_.destroy(handle);
 }
 
-
 void destroy(Context* ctx, PipelineHandle handle)
 {};
 
-
-
-//void destroy(Context* ctx, PipelineLayoutHandle h)
-//{
-//	assert(h.valid());
-//	auto* pl = ctx->pipelineLayouts_.get(h);
-//	if (pl->layout) vkDestroyPipelineLayout(ctx->device_, pl->layout, nullptr);
-//	ctx->pipelineLayouts_.destroy(h);
-//}
-
-void destroy(Context* ctx, GeometryHandle handle)
-{}
-
-void destroy(Context * ctx, GeometryPageHandle handle)
-{}
-
-void destroy(Context * ctx, MaterialInstanceHandle handle)
-{}
-
-// END
-
 void Context::CleanUp(
 ) {}
+
+// All these operations on queus should pusehd to a stack of deferred ops and done threaded? 
+void Context::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
+	copyBuffer(srcBuffer, dstBuffer, size, 0, 0);
+}
+
+void Context::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset) {
+
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(device_, default_command_pool);
+
+	VkBufferCopy copyRegion{};
+	copyRegion.size = size;
+	copyRegion.srcOffset = srcOffset;
+	copyRegion.dstOffset = dstOffset;
+	vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+	endSingleTimeCommands(device_, commandBuffer, default_queue, default_command_pool);
+}
