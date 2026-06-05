@@ -94,6 +94,8 @@ struct Level : Scene {
 
 };
 
+
+
 class TestApp : public VulkanApp {
 
 public:
@@ -104,6 +106,9 @@ private:
 	// this is bad. redesign!
 	MeshManager man = {};
 	Level current_level = {};
+	
+	// 
+	void UpdateCamera(float dt);
 
 	// App resources -- This should just be spawned by the RG
 	struct FrameResources {
@@ -125,13 +130,13 @@ private:
 	);
 	Camera camera = Camera(cameraPositioner);
 
-
 	void EarlyUpdate() override {
 		Super::EarlyUpdate();
 	}
 
 	void Update() {
 		Super::Update();
+		UpdateCamera(delta_time_s);
 	}
 
 	void LateUpdate() {
@@ -748,5 +753,51 @@ private:
 
 	}
 
+
 };
 
+void TestApp::UpdateCamera(float dt)
+{
+    auto& movement = cameraPositioner.movement_;
+
+    movement.forward_ = input.isKeyHeld(GLFW_KEY_W);
+    movement.backward_ = input.isKeyHeld(GLFW_KEY_S);
+    movement.left_ = input.isKeyHeld(GLFW_KEY_A);
+    movement.right_ = input.isKeyHeld(GLFW_KEY_D);
+
+	// Check the behacviour of this. 
+	// is up and down in camera orientation, not world space.
+    movement.up_ = input.isKeyHeld(GLFW_KEY_E) || input.isKeyHeld(GLFW_KEY_SPACE);
+    movement.down_ = input.isKeyHeld(GLFW_KEY_Q) || input.isKeyHeld(GLFW_KEY_LEFT_CONTROL);
+
+    movement.fastSpeed_ =
+        input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
+        input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
+
+	// NDC, but to frameBuffer dimensions. 
+	//glm::vec2 mousePos = glm::vec2(
+	//	(static_cast<float>(input.getMouseX()) / static_cast<float>(swapchain->GetExtent().width)) * 2.0f - 1.0f,
+	//	1.0f - (static_cast<float>(input.getMouseY()) / static_cast<float>(swapchain->GetExtent().height)) * 2.0f
+	//);
+	
+	// NDC, to window dimensions. These two may not match, depends on DPI settings. Be careful.
+	// Input should be normalized and not be affected by resolution!
+	glm::vec2 mousePos = glm::vec2(
+		(static_cast<float>(input.getMouseX()) / static_cast<float>(swapchain->windowWidth)) * 2.0f - 1.0f,
+		1.0f - (static_cast<float>(input.getMouseY()) / static_cast<float>(swapchain->windowHeight)) * 2.0f
+	);
+
+    const bool mousePressed =
+        input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT);
+
+    if (input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT))
+    {
+        cameraPositioner.resetMousePosition(mousePos);
+    }
+
+    cameraPositioner.update(
+        static_cast<double>(dt),
+        mousePos,
+        mousePressed
+    );
+}

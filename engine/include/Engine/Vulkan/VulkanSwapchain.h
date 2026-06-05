@@ -60,6 +60,8 @@ public:
             glfwWaitEvents();
         }
 
+		glfwGetWindowSize(window_, &windowWidth, &windowHeight);
+
         extent_.width = width;
         extent_.height = height;
 
@@ -152,7 +154,12 @@ public:
     std::vector<VkFence> inFlightFences_;
 
     VkFormat surfaceFormat_ = VK_FORMAT_UNDEFINED;
+
+    // extent is framebuffer size
     VkExtent2D extent_{};
+    // this is window height. may not match in HIGH DPI enviroments.
+	int windowWidth = 0;
+	int windowHeight = 0;
 
     uint32_t framesInFlight_ = 0;
     uint32_t desiredImageCount_ = 0;
@@ -230,6 +237,7 @@ public:
 
         surfaceFormat_ = surfaceFormat.format;
         extent_ = swapExtent;
+		glfwGetWindowSize(window_, &windowWidth, &windowHeight);
     }
 
     void CreateImageViews() {

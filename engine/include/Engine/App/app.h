@@ -122,11 +122,11 @@ protected:
 	GLFWwindow * window = nullptr;
 #pragma endregion
 
-	VkSurfaceKHR surface = VK_NULL_HANDLE; 
+	VkSurfaceKHR surface = VK_NULL_HANDLE;
 
 #pragma region ===[ Vulkan Instance / Device / Queues ]===
 
-	VkInstance instance = VK_NULL_HANDLE; 
+	VkInstance instance = VK_NULL_HANDLE;
 	VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
 
 	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -184,6 +184,7 @@ protected:
 
 	}
 
+
 #pragma region MainLoop
 
 	void MainLoop() {
@@ -192,8 +193,8 @@ protected:
 
 			//OPTICK_FRAME("MainThread");
 
-			glfwPollEvents();
 			input.beginFrame();
+			glfwPollEvents();
 
 			EarlyUpdate();
 			Update();
@@ -229,6 +230,38 @@ protected:
 		}
 	}
 
+#pragma region ===[ GlfwCallbacks ]===
+
+	static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+
+	static void keyCallback(
+		GLFWwindow* window,
+		int key,
+		int scancode,
+		int action,
+		int mods
+	);
+
+	static void mouseButtonCallback(
+		GLFWwindow* window,
+		int button,
+		int action,
+		int mods
+	);
+
+	static void cursorPositionCallback(
+		GLFWwindow* window,
+		double xpos,
+		double ypos
+	);
+
+	static void scrollCallback(
+		GLFWwindow* window,
+		double xoffset,
+		double yoffset
+	);
+
+#pragma endregion
 
 #pragma region ===[ CommandRecording ]===
 
@@ -242,21 +275,6 @@ protected:
 
 	// This was the main event entry poitn for frameDraw. No longer done this way
 	//void DrawFrame();
-
-#pragma endregion
-
-#pragma region ===[ InputHooks ]===
-
-	static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
-	static void scrollCallback(GLFWwindow* window, double xOffset, double yOffset);
-	static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
-	static void mouseCallback(GLFWwindow* window, double xpos, double ypos);
-	static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
-
-	virtual void handleMouseScroll(double xOffset, double yOffset);
-	virtual void handleMouseMovement(double xpos, double ypos);
-	virtual void handleMouseButton(int button, int action, int mods);
-	virtual void handleKey(int key, int scancode, int action, int mods);
 
 #pragma endregion
 
@@ -540,11 +558,11 @@ bool VulkanApp::Initialize() {
 	glfwMakeContextCurrent(window);
 	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	glfwSetWindowTitle(window, /*ENGINE_NAME*/ "samuelmartin.1999@outlok.com");
-	glfwSetKeyCallback(window, VulkanApp::keyCallback);
-	glfwSetCursorPosCallback(window, VulkanApp::mouseCallback);
-	glfwSetMouseButtonCallback(window, VulkanApp::mouseButtonCallback);
-	glfwSetScrollCallback(
-		window, VulkanApp::scrollCallback);  // Register scroll callback
+
+	glfwSetKeyCallback(window, keyCallback);
+	glfwSetMouseButtonCallback(window, mouseButtonCallback);
+	glfwSetCursorPosCallback(window, cursorPositionCallback);
+	glfwSetScrollCallback(window, scrollCallback);
 
 	glfwSetWindowUserPointer(window, this);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
@@ -608,38 +626,6 @@ bool VulkanApp::Initialize() {
 
 #pragma region ===[ Callbacks ]===
 
-void VulkanApp::mouseCallback(GLFWwindow* window, double xpos, double ypos) {
-	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-	if (app) app->handleMouseMovement(xpos, ypos);
-}
-
-void VulkanApp::keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-	if (app) app->handleKey(key, scancode, action, mods);
-}
-
-void VulkanApp::mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
-	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-	if (app) app->handleMouseButton(button, action, mods);
-}
-
-void VulkanApp::scrollCallback(GLFWwindow* window, double xOffset, double yOffset) {
-	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-	if (app) app->handleMouseScroll(xOffset, yOffset);
-}
-
-void VulkanApp::handleMouseScroll(double xOffset, double yOffset) {}
-
-void VulkanApp::handleMouseMovement(double xpos, double ypos) {}
-
-void VulkanApp::handleMouseButton(int button, int action, int mods) {
-	if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-		//rightMousePressed = (action == GLFW_PRESS);
-	}
-}
-
-void VulkanApp::handleKey(int key, int scancode, int action, int mods) {}
-
 void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 	int height) {
 	auto app =
@@ -649,8 +635,6 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 
 #pragma endregion
 
-
-
 ToyCommandBuffer VulkanApp::AcquireMain()
 {
 
@@ -659,7 +643,7 @@ ToyCommandBuffer VulkanApp::AcquireMain()
 		1,
 		&swapchain->GetInFlightFence(),
 		VK_TRUE,
-		UINT64_MAX 
+		UINT64_MAX
 	);
 
 	uint32_t imageIndex;
@@ -827,3 +811,56 @@ void VulkanApp::CleanUp() {
 
 }
 
+void VulkanApp::keyCallback(
+	GLFWwindow* window,
+	int key,
+	int scancode,
+	int action,
+	int mods
+) {
+	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+
+	if (app) {
+		app->input.onKey(key, scancode, action, mods);
+	}
+}
+
+
+void VulkanApp::mouseButtonCallback(
+	GLFWwindow* window,
+	int button,
+	int action,
+	int mods
+) {
+	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+
+	if (app) {
+		app->input.onMouseButton(button, action, mods);
+	}
+}
+
+
+void VulkanApp::cursorPositionCallback(
+	GLFWwindow* window,
+	double xpos,
+	double ypos
+) {
+	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+
+	if (app) {
+		app->input.onCursorMove(xpos, ypos);
+	}
+}
+
+
+void VulkanApp::scrollCallback(
+	GLFWwindow* window,
+	double xoffset,
+	double yoffset
+) {
+	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+
+	if (app) {
+		app->input.onScroll(xoffset, yoffset);
+	}
+}
