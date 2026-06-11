@@ -12,7 +12,7 @@
 
 // Dont like this. jsut used for bounds.
 // maybe a fucntiopmn arg works better
-#include <Engine/Renderer/meshmanager.h>
+#include <Engine/Renderer/ToyResourceManager.h>
 
 
 static inline glm::vec3 minVec(const glm::vec3& a, const glm::vec3& b) {

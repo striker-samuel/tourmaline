@@ -1,5 +1,8 @@
 #pragma once
 
+
+
+// This is a bad interface to the engine. 
 #define TINYGLTF_IMPLEMENTATION
 #include <App/testApp.h>
 

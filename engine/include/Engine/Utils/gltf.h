@@ -20,7 +20,7 @@
 #include <Engine/Renderer/vertex.h>
 #include <Engine/Renderer/context.h>
 
-#include <Engine/Renderer/meshmanager.h>
+#include <Engine/Renderer/ToyResourceManager.h>
 
 struct GltfTextureRef {
 	int textureIndex = -1;   // index into model.textures
@@ -157,8 +157,7 @@ bool LoadModelFromAsciiFile(tinygltf::Model& model, const char* filename) {
 	return res;
 }
 
-static std::optional<std::filesystem::path> UriFromTexture(
-	//	const std::filesystem::path& gltfPath,
+std::filesystem::path UriFromTexture(
 	const tinygltf::Model& model,
 	GltfTextureRef& texture_ref
 ) {
@@ -166,8 +165,6 @@ static std::optional<std::filesystem::path> UriFromTexture(
 
 	// Case 1: External image via URI
 	if (!img.uri.empty() && !starts_with(img.uri, "data:")) {
-
-
 
 		// this duty falls on the caller as of now .
 		//std::filesystem::path baseDir = gltfPath.parent_path();
@@ -178,11 +175,9 @@ static std::optional<std::filesystem::path> UriFromTexture(
 	}
 	else {
 
-		// Should I abort on internal image??? ....
-
+		// No internal texures!
+		assert(false);
 	}
-
-	return std::nullopt;
 }
 
 static std::optional<GltfTextureRef> GltfResolveTexture(
@@ -436,14 +431,9 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 }
 
 
-// Maybe i shoudl distinguis between NIL and DEFAULT
-// Although makes sense to make nil index 0 and to store there the classic radioactive purple image
-uint32_t GetDefaultMaterialIndex(Context* ctx) {
-	return DEFAULT_MATERIAL_INDEX;
-}
 
 struct GltfToSceneImporter {
-	MeshManager& man;
+	ToyResourceManager& man;
 	Scene& scene;
 	const tinygltf::Model& model;
 	std::filesystem::path gltfModelPath; // full path to .gltf/.glb on disk
@@ -452,7 +442,7 @@ struct GltfToSceneImporter {
 	std::vector<uint32_t> materialCache;
 
 	GltfToSceneImporter(
-		MeshManager& inMan,
+		ToyResourceManager& inMan,
 		Scene& inScene,
 		const tinygltf::Model& inModel,
 		std::filesystem::path inGltfModelPath
@@ -466,13 +456,13 @@ struct GltfToSceneImporter {
 
 	uint32_t getOrCreateMaterial(int gltfMaterialIndex) {
 		if (gltfMaterialIndex < 0) {
-			return GetDefaultMaterialIndex(man.ctx);
+			return DEFAULT_MATERIAL_INDEX;
 		}
 
 		// glTF guarantees material indices are within model.materials
 		// (assuming the file is valid). If you want belt-and-suspenders:
 		if ((size_t)gltfMaterialIndex >= materialCache.size()) {
-			return GetDefaultMaterialIndex(man.ctx);
+			return DEFAULT_MATERIAL_INDEX;
 		}
 
 		uint32_t& slot = materialCache[(size_t)gltfMaterialIndex];
@@ -495,7 +485,7 @@ struct GltfToSceneImporter {
 
 			ktxTexture2* ktxTex = nullptr;
 			KTX_error_code res = ktxTexture2_CreateFromNamedFile(
-				(baseDir.c_str() / *color_uri).string().c_str(),
+				(baseDir.c_str() / color_uri).string().c_str(),
 				KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
 				&ktxTex
 			);
@@ -504,7 +494,8 @@ struct GltfToSceneImporter {
 				throw std::runtime_error("KTX load failed");
 			}
 
-			colorTexHandle = man.ctx->CreateTexture(*ktxTex);
+			// awful
+			colorTexHandle = man.ctx->GetOrCreateTexure(color_uri.string(), *ktxTex);
 			ktxTexture2_Destroy(ktxTex);
 		}
 		

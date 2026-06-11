@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 
+#include <Engine/Vulkan/core.h>
 #include <Engine/Vulkan/vulkan_helpers.h>
 
 #include <Engine/Renderer/constants.h>
@@ -11,79 +12,99 @@
 #include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
 
+
+// textures upload
+#include <map>
+
+// Texture upload 
+// this should be refactore  to something like a GetImageData fucntion arg, maybe...
 #include <ktx.h>
 #include <ktxvulkan.h>
 
 
-#define DEFAULT_MATERIAL_INDEX (0);
+struct PipelineCreateInfo {};
+
+// These may be redundant but im still going with them
+struct SamplerCreateInfo {
+};
+
+// These also may be used for Keys? dont know yet.
+//using SamplerKey = SamplerCreateInfo;
+
+struct ImageCreateInfo {
+	int texWidth;
+	int texHeight;
+	VkFormat format;
+	VkImageUsageFlags usage;
+	uint32_t levels;
+	uint32_t arrayLayers;
+};
+
+struct BufferCreateInfo {
+	VkDeviceSize size;
+	VmaMemoryUsage vma_usage;
+	VkBufferUsageFlags usage_flags;
+};
 
 class Context {
-	// This is a payload defining instance.
-	ktxVulkanDeviceInfo* ktx_vdi = NULL;
+	
+	VulkanCore& core;
+	VmaAllocator allocator_;
 
 	VmaPool D_2DImagesPool;
-	VmaPool D_ShaderPool;
 	VmaPool D_StagingPool;
 
 public:
 
-	VkInstance* instance_;
-	VkDevice device_;
-	VkPhysicalDevice physicalDevice_;
+	int Initialize();
+	Context(VulkanCore _core) : core(_core) { Initialize(); };
+	~Context();
 
-	//std::unordered_map<std::string, SamplerHandle> samplers;
-	VmaAllocator allocator_;
-
-	// --------------------------------------
-
-	DescriptorPoolHandle default_descriptor_pool;
-	DescriptorPoolHandle imgui_descriptor_pool;
-
-	VkCommandPool default_command_pool;
-
-	// --------------------------------------
-
-	VkQueue default_queue;
-	VkQueue transfer_queue;
-
-	// --------------------------------------
-
-	
-	// images here should be for render targets and thinks like that. 
-	// Dont like image name for this. maybea attachment would be better
 	Pool<Image, Image> images_;
-	Pool<Texture, Image> textures_;
-
-	Pool<BufferDescription, BufferDescription> buffers_;
-
-	//Pool<Sampler, VkSampler> samplers_;
-
+	Pool<Texture, Image> textures_; // tdont like this specialization 
+	Pool<DeviceBuffer, DeviceBuffer> buffers_; // neither this monolithic buffer setup.
 	Pool<DescriptorSet, DescriptorSet> descriptorSets_;
-	Pool<DescriptorPool, VkDescriptorPool> descriptorSetPools_;
 	Pool<ShaderModule, VkShaderModule> shaderModules_;
 	Pool<Pipeline, Pipeline> pipelines_;
 
-	Context(VkInstance& instance, VkDevice* device, VkPhysicalDevice* physicalDevice, VkSurfaceKHR surface);
+	Pool<DescriptorPool, VkDescriptorPool> descriptorSetPools_;
+	DescriptorPoolHandle default_descriptor_pool;
+	DescriptorPoolHandle imgui_descriptor_pool;
 
-	~Context(
-	);
+	//Pool<Sampler, VkSampler> samplers_;
+	std::map<std::string, TextureHandle> textures_uploaded;
 
 	void InitializeDeviceVmaPools();
 
+
+	// BUFFERS
 	DeviceBufferHandle CreateStagingBuffer(const void* srcData, VkDeviceSize size);
 	DeviceBufferHandle CreateStagingBuffer(VkDeviceSize size);
-	DeviceBufferHandle createBuffer(VkDeviceSize size, VmaMemoryUsage vma_usage, VkBufferUsageFlags usage_flags);
 
-	TextureHandle CreateTexture(ktxTexture2& texture);
+	DeviceBufferHandle CreateBuffer(BufferCreateInfo _bufferCreateInfo);
+
+	// IMAGES
+	ImageHandle CreateImage(ImageCreateInfo _imageCreateInfo);
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
 
+	// TEXTURES
+	// These need to be heavily reworked
+	TextureHandle GetOrCreateTexure(std::string uri, ktxTexture2& texture);
+	TextureHandle CreateTexture(ktxTexture2& texture);
+
+	// SHADERS
 	ShaderModuleHandle CreateShaderModule(std::vector<char> code);
+
+	// DESCRIPTOR SETS
+	DescriptorSetHandle CreateDescriptorSet(VkDescriptorSetLayout& layout);
+
+	// PIPELINES
+	PipelineHandle CreatePipeline(RasterSettings raster_settings, PipelineLayoutDesc layoutDesc, ShaderModuleHandle vert, ShaderModuleHandle frag, VkFormat depth_format, VkFormat swapchainImageFormat);
+
 
 	void CreatePipelineLayout(const PipelineLayoutDesc& descIn, Pipeline::Layout& out);
 	void CreateDescriptorLayout(const DescriptorSetLayoutDesc& descIn, VkDescriptorSetLayout& layout);
-	DescriptorSetHandle CreateDescriptorSet(VkDescriptorSetLayout& layout);
 
-	PipelineHandle CreatePipeline(RasterSettings raster_settings, PipelineLayoutDesc layoutDesc, ShaderModuleHandle vert, ShaderModuleHandle frag, VkFormat depth_format, VkFormat swapchainImageFormat);
 
 	//SamplerHandle CreateSampler(uint32_t levelCount);
 	void CreateSampler(uint32_t levelCount, VkSampler& sampler);
@@ -101,6 +122,7 @@ public:
 	//
 	VkCommandBuffer GetCommandBuffer();
 	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
+
 
 
 	// 

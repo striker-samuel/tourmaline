@@ -19,6 +19,33 @@
 #include "volk.h"
 
 /*inline*/ const char* vkResultToString(VkResult result);
+//
+//#define VK_ASSERT(func)                                            \
+//  {                                                                \
+//    const VkResult vk_assert_result = func;                        \
+//    if (vk_assert_result != VK_SUCCESS) {                          \
+//      LLOGW("Vulkan API call failed: %s:%i\n  %s\n  %s\n", \
+//                    __FILE__,                                      \
+//                    __LINE__,                                      \
+//                    #func,                                         \
+//                    lvk::getVulkanResultString(vk_assert_result)); \
+//      assert(false);                                               \
+//    }                                                              \
+//  }
+
+#define VK_ASSERT_RETURN(func)                                     \
+  {                                                                \
+    const VkResult vk_assert_result = func;                        \
+    if (vk_assert_result != VK_SUCCESS) {                          \
+      LLOGW("Vulkan API call failed: %s:%i\n  %s\n  %s\n", \
+                    __FILE__,                                      \
+                    __LINE__,                                      \
+                    #func,                                         \
+                    lvk::getVulkanResultString(vk_assert_result)); \
+      assert(false);                                               \
+      return getResultFromVkResult(vk_assert_result);              \
+    }                                                              \
+  }
 
 #define VK_CHECK(x)                                                     \
     do {                                                                \

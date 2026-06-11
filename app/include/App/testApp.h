@@ -1,6 +1,5 @@
 #pragma once
 #include <Engine/App/app.h>
-
 #include <Engine/Renderer/ringBinding.h>
 
 std::vector<std::string> gltf_meshes_paths = {
@@ -64,7 +63,7 @@ static_assert(sizeof(MainViewPushConstants) % 16 == 0);
 
 struct Level : Scene {
 
-	MeshManager* man = nullptr;
+	ToyResourceManager* man = nullptr;
 	BvhTree tree = {};
 	BvhTree static_tree = {};
 
@@ -103,11 +102,13 @@ public:
 
 private:
 	using Super = VulkanApp;
-	// this is bad. redesign!
-	MeshManager man = {};
+
+	// nahhh, dont like this 
+	ToyResourceManager man = {};
+	// -----
+
 	Level current_level = {};
-	
-	// 
+
 	void UpdateCamera(float dt);
 
 	// App resources -- This should just be spawned by the RG
@@ -147,7 +148,7 @@ private:
 		if (!Super::Initialize())
 			return false;
 
-		man = MeshManager(
+		man = ToyResourceManager(
 			context
 		);
 		man.InitalizeGeoBuffers();
@@ -239,7 +240,7 @@ private:
 			desc, // layoutDesc
 			vert_shader_h, // vert
 			fragHandle, //frag
-			findDepthFormat(physicalDevice),
+			findDepthFormat(core.physicalDevice_),
 			swapchain->GetImageFormat()
 		);
 		auto pipe_obj = context->pipelines_.get(mainPipeline);
@@ -272,7 +273,9 @@ private:
 		);
 		current_level.tree_done = true;
 
-		SetDescriptorSets();
+		// This is rendergraph responsability really
+		//SetDescriptorSets();
+
 		UpdateBindlessTexturesSets();
 
 		return true;
@@ -439,18 +442,64 @@ private:
 
 	}
 
-	void DrawFrame() {
-		// Pure virtual
-		//Super::DrawFrame();
-
-		auto cmd = AcquireMain();
+	void RenderFrame() {
+		auto cmd = AcquireFramebuffer();
 		auto swapChainExtent = swapchain->GetExtent();
+		auto colorView = swapchain->GetCurrentImageView();
+		auto depthHandle = swapchain->GetDepthImage();
+		auto depthView = context->images_.get(depthHandle)->renderView;
+	}
+
+	void DrawFrame() {
+		// Setup rendering info for the main pass
+
+		//VkRenderingAttachmentInfo colorAttachment{};
+		//colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+		//colorAttachment.imageView = colorView;
+		//colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		//colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		//colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		//colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
+
+		//VkRenderingAttachmentInfo depthAttachment{};
+		//depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+		//depthAttachment.imageView = depthView;
+		//depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+		//depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		//depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		//depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
+
+		//cmd.renderingInfo = {};
+		//cmd.renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
+		//cmd.renderingInfo.renderArea.offset = { 0, 0 };
+		//cmd.renderingInfo.renderArea.extent = swapChainExtent;
+		//cmd.renderingInfo.layerCount = 1;
+		//cmd.renderingInfo.colorAttachmentCount = 1;
+		//cmd.renderingInfo.pColorAttachments = &colorAttachment;
+		//cmd.renderingInfo.pDepthAttachment = &depthAttachment;
+
+		rendergraph.Clear();
+
+		auto color = rendergraph.GetImage({});
+		auto depth = rendergraph.GetImage({});
+
+		rendergraph.AddPass(
+			{
+				.type = PassType::Rasterize,
+				.colorAttachments_ = {
+			},
+				.depthAttachment_ = {},
+				.stencilAttachment_ = {},
+			}
+			)
+			.setExtent(swapchainExtent)
+			.setColor({color}, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
+			.setDepth(depth, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_DONT_CATE, {.0f, 0})
+			;
 
 		UpdateFrameUniforms(swapchain->GetCurrentFrameIndex());
 
 		// VIEWPORT
-		// Flipped because of this :)
-		// https://www.saschawillems.de/blog/2019/03/29/flipping-the-vulkan-viewport/
 		VkViewport vp{};
 		vp.x = 0.0f;
 		vp.y = 0.0f;
@@ -466,9 +515,6 @@ private:
 		scissor.extent = swapChainExtent;
 		vkCmdSetScissor(cmd.commandBuffer, 0, 1, &scissor);
 
-		// BIND VETEX
-		man.BindVertex(cmd.commandBuffer);
-
 		// BIND DESCRIPTOR SETS
 		auto dynamic_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDynamicDescriptorSet);
 		auto update_after_bind_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDescriptorSet);
@@ -479,7 +525,7 @@ private:
 		auto proj = camera.getProjMatrix();
 		proj[1][1] *= -1;
 
-		auto viewProj = proj * view; // Freeze at first for debug
+		auto viewProj = proj * view;
 
 		if (current_level.tree_done) {
 			frustumCullBVH(
@@ -510,27 +556,21 @@ private:
 			auto mat = man.materials.get(matHandle);
 			if (!mat) continue;
 
-			// Lets just hardcode them to mainPipeline.
-			// im doing empyty pipelines right now! be careful
-			//assert(mat->pipeline);
 			if (!mat->pipeline) {
 				mat->pipeline = mainPipeline;
 			}
 
-			pipeline_map[mat->pipeline].push_back(primSlot); // NOT node
+			pipeline_map[mat->pipeline].push_back(primSlot);
 		}
 
-		//assert(!pipeline_map.empty() && "map empty");
 		if (pipeline_map.empty()) {
+			// This is clearly wrong.
+			// Maybe.
+			// Load op cleas the fb
 			vkCmdBeginRendering(cmd.commandBuffer, &cmd.renderingInfo);
 			vkCmdEndRendering(cmd.commandBuffer);
-
-			swapchain->AdvanceFrame();
-
-
-
-
-			return; // This is illefgal
+			EndAndPresentFramebuffer(cmd);
+			return;
 		}
 
 		auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->layout;
@@ -545,10 +585,8 @@ private:
 			update_after_bind_set->set,
 		};
 
-
 		vkCmdBindDescriptorSets(
 			cmd.commandBuffer,
-			//commandBuffers[swapchain.currentFrame_],
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
 			pipe_lyt.layout,
 			0,
@@ -558,7 +596,6 @@ private:
 			dynamicOffsets
 		);
 
-		// Rendering Info is not set up
 		vkCmdBeginRendering(
 			cmd.commandBuffer,
 			&cmd.renderingInfo
@@ -569,16 +606,12 @@ private:
 
 		for (const auto& [han_, visible] : pipeline_map)
 		{
-			//context->pipelines_.forEachHandle([&](PipelineHandle han_) {
-
 			vkCmdBindPipeline(
 				cmd.commandBuffer,
 				VK_PIPELINE_BIND_POINT_GRAPHICS,
 				context->pipelines_.get(han_)->pipeline
 			);
 
-
-			//for (int visible_node = 0; visible_node < level.scene.hierarchy.size(); visible_node++) {
 			for (uint32_t visible_prim : visible) {
 				uint32_t visible_node = current_level.static_tree.primToNode[visible_prim];
 
@@ -598,8 +631,6 @@ private:
 				auto mat = man.materials.get(matHandle);
 
 				assert(mat);
-				//if (!mat) continue; // skip if invalid
-				//if (mat->pipeline != han_) continue;
 
 				Material::Values pcm = mat->values;
 
@@ -613,8 +644,8 @@ private:
 					cmd.commandBuffer,
 					pipe_lyt.layout,
 					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-					0, //offset to start of the range to push
-					sizeof(PC_All), // SIZE
+					0,
+					sizeof(PC_All),
 					&all
 				);
 
@@ -623,7 +654,6 @@ private:
 					auto& model_ = current_level.globalTransform[visible_node];
 					vkCmdPushConstants(
 						cmd.commandBuffer,
-						//commandBuffers[swapchain.currentFrame_],
 						pipe_lyt.layout,
 						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 						offsetof(MainViewPushConstants, model),
@@ -633,7 +663,6 @@ private:
 
 					vkCmdDrawIndexed(
 						cmd.commandBuffer,
-						//commandBuffers[swapchain.currentFrame_],
 						draw_set.index_count,
 						1,
 						draw_set.first_index,
@@ -649,107 +678,13 @@ private:
 
 		ImGui::Render();
 
-		// Record the ImGui draw data into your Vulkan command buffer.
-		// You must already be inside a render pass (or dynamic rendering block)
 		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd.commandBuffer);
 
 		vkCmdEndRendering(
 			cmd.commandBuffer
 		);
 
-		// SUBMITs
-		VkImageMemoryBarrier barrier{};
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-		barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-		barrier.dstAccessMask = 0;  // Nothing needs to read it before present
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = swapchain->GetCurrentImage();
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.baseMipLevel = 0;
-		barrier.subresourceRange.levelCount = 1;
-		barrier.subresourceRange.baseArrayLayer = 0;
-		barrier.subresourceRange.layerCount = 1;
-
-		vkCmdPipelineBarrier(
-			cmd.commandBuffer,
-			//commandBuffers[swapchain.currentFrame_],
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // after rendering finishes
-			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,          // before presentation
-			0,
-			0, nullptr,
-			0, nullptr,
-			1, &barrier
-		);
-
-		VkResult result;
-
-		if (vkEndCommandBuffer(cmd.commandBuffer) != VK_SUCCESS) {
-			throw std::runtime_error("failed to record command buffer!");
-		}
-		// Submit Frame 
-		{
-
-			VkSubmitInfo submitInfo{};
-			submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-			VkSemaphore waitSemaphores[] = { swapchain->imageAvailableSemaphores_[swapchain->currentFrame_] };
-			VkPipelineStageFlags waitStages[] = {
-				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-			submitInfo.waitSemaphoreCount = 1;
-			submitInfo.pWaitSemaphores = waitSemaphores;
-			submitInfo.pWaitDstStageMask = waitStages;
-
-			submitInfo.commandBufferCount = 1;
-			//submitInfo.pCommandBuffers = &commandBuffers[swapchain->currentFrame_];
-			submitInfo.pCommandBuffers = &cmd.commandBuffer;
-
-			VkSemaphore signalSemaphores[] = { swapchain->renderFinishedSemaphores_[swapchain->currentFrame_] };
-			submitInfo.signalSemaphoreCount = 1;
-			submitInfo.pSignalSemaphores = signalSemaphores;
-
-			if (
-				vkQueueSubmit(
-					context->default_queue,
-					1,
-					&submitInfo,
-					swapchain->GetInFlightFence()
-				) != VK_SUCCESS
-				) {
-
-				assert(false && "failed to submit draw");
-				throw std::runtime_error("failed to submit draw command buffer!");
-			}
-
-
-			VkPresentInfoKHR presentInfo{};
-			presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
-			presentInfo.waitSemaphoreCount = 1;
-			presentInfo.pWaitSemaphores = signalSemaphores;
-
-			VkSwapchainKHR swapChains[] = { swapchain->swapchain_ };
-			presentInfo.swapchainCount = 1;
-			presentInfo.pSwapchains = swapChains;
-			presentInfo.pImageIndices = &swapchain->currentImageIndex_;
-
-			result = vkQueuePresentKHR(presentQueue, &presentInfo);
-
-			if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
-				framebufferResized) {
-				framebufferResized = false;
-				swapchain->Recreate();
-			}
-			else if (result != VK_SUCCESS) {
-				throw std::runtime_error("failed to present swap chain image!");
-			}
-
-		}
-
-		swapchain->AdvanceFrame();
-		//currentFrame = (currentFrame + 1) % framesInFlight;
+		EndAndPresentFramebuffer(cmd);
 
 	}
 
@@ -758,28 +693,28 @@ private:
 
 void TestApp::UpdateCamera(float dt)
 {
-    auto& movement = cameraPositioner.movement_;
+	auto& movement = cameraPositioner.movement_;
 
-    movement.forward_ = input.isKeyHeld(GLFW_KEY_W);
-    movement.backward_ = input.isKeyHeld(GLFW_KEY_S);
-    movement.left_ = input.isKeyHeld(GLFW_KEY_A);
-    movement.right_ = input.isKeyHeld(GLFW_KEY_D);
+	movement.forward_ = input.isKeyHeld(GLFW_KEY_W);
+	movement.backward_ = input.isKeyHeld(GLFW_KEY_S);
+	movement.left_ = input.isKeyHeld(GLFW_KEY_A);
+	movement.right_ = input.isKeyHeld(GLFW_KEY_D);
 
 	// Check the behacviour of this. 
 	// is up and down in camera orientation, not world space.
-    movement.up_ = input.isKeyHeld(GLFW_KEY_E) || input.isKeyHeld(GLFW_KEY_SPACE);
-    movement.down_ = input.isKeyHeld(GLFW_KEY_Q) || input.isKeyHeld(GLFW_KEY_LEFT_CONTROL);
+	movement.up_ = input.isKeyHeld(GLFW_KEY_E) || input.isKeyHeld(GLFW_KEY_SPACE);
+	movement.down_ = input.isKeyHeld(GLFW_KEY_Q) || input.isKeyHeld(GLFW_KEY_LEFT_CONTROL);
 
-    movement.fastSpeed_ =
-        input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
-        input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
+	movement.fastSpeed_ =
+		input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
+		input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
 
 	// NDC, but to frameBuffer dimensions. 
 	//glm::vec2 mousePos = glm::vec2(
 	//	(static_cast<float>(input.getMouseX()) / static_cast<float>(swapchain->GetExtent().width)) * 2.0f - 1.0f,
 	//	1.0f - (static_cast<float>(input.getMouseY()) / static_cast<float>(swapchain->GetExtent().height)) * 2.0f
 	//);
-	
+
 	// NDC, to window dimensions. These two may not match, depends on DPI settings. Be careful.
 	// Input should be normalized and not be affected by resolution!
 	glm::vec2 mousePos = glm::vec2(
@@ -787,17 +722,17 @@ void TestApp::UpdateCamera(float dt)
 		1.0f - (static_cast<float>(input.getMouseY()) / static_cast<float>(swapchain->windowHeight)) * 2.0f
 	);
 
-    const bool mousePressed =
-        input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT);
+	const bool mousePressed =
+		input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT);
 
-    if (input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT))
-    {
-        cameraPositioner.resetMousePosition(mousePos);
-    }
+	if (input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT))
+	{
+		cameraPositioner.resetMousePosition(mousePos);
+	}
 
-    cameraPositioner.update(
-        static_cast<double>(dt),
-        mousePos,
-        mousePressed
-    );
+	cameraPositioner.update(
+		static_cast<double>(dt),
+		mousePos,
+		mousePressed
+	);
 }

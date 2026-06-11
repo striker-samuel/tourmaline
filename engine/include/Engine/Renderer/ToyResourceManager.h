@@ -2,7 +2,6 @@
 
 #include <Engine/Shared/common.h>
 
-
 #include <Engine/Scene/scene.h>
 #include <Engine/Renderer/vertex.h>
 #include <Engine/Renderer/context.h>
@@ -27,7 +26,7 @@ struct MeshUploadInput {
 };
 
 struct Surface {
-	uint32_t first_index; 
+	uint32_t first_index;
 	uint32_t index_count;
 	int32_t  base_vertex;
 };
@@ -37,6 +36,10 @@ struct GeometryPage {
 	DeviceBufferHandle indexBuffer;
 	DeviceBufferHandle vertexPosBuffer;
 	DeviceBufferHandle vertexShadingBuffer;
+
+	//Holder<DeviceBufferHandle> indexBuffer;
+	//Holder<DeviceBufferHandle> vertexPosBuffer;
+	//Holder<DeviceBufferHandle> vertexShadingBuffer;
 
 	//	uint32_t vertex_cursor = 0;   // per page
 	uint32_t max_vertices = 0;    // per page capacity in vertices
@@ -71,16 +74,22 @@ struct Mesh {
 
 using MaterialHandle = Handle<struct Material>;
 
+
 struct Material {
 	// RasterSettings. BRDF and else
 	enum MaterialModel {
 		//RasterSettings raster;
 	};
 
+	// Materials may share referecnes
+	// Maybe we should refcount these
 	struct Textures {
 		TextureHandle diffuse{};
 		TextureHandle specular{};
 		TextureHandle opacity{};
+		// NormalMap could need specialization or just stablish
+		// a good defualt for the whole renderere and just support one type.
+		TextureHandle normal{};
 	} textures;
 
 	// --------------------------------------------
@@ -93,10 +102,11 @@ struct Material {
 		glm::vec4 diffuse = glm::vec4(1.0f);
 
 		// This can easily go outdated form .textures. bad design!!!
-		int tex[4] = { -1, -1, -1, -1 }; //diffuse ,ambient, alpha // unused 
+		int tex[4] = { -1, -1, -1, -1 }; //diffuse ,ambient, alpha, normals
 	} values;
 	static_assert(sizeof(Values) % 16 == 0);
 
+	// 
 	PipelineHandle pipeline{};
 
 	// This could be PipelineKey blob or somehting like that. not the handle to the resource.
@@ -113,23 +123,14 @@ struct Material {
 	return ctx->pipelines_.getHandle(0);
 };
 
-struct MeshManager {
+struct ToyResourceManager {
 	Context* ctx = nullptr;
-
-	//MeshManager(Context* context_)
-	//	:
-	//	ctx(context_)
-	//{
-
-	//};
-
 	uint32_t vertex_cursor = 0;
 
 	Pool<Mesh, Mesh> meshes;
 	Pool<Material, Material> materials;
-
-	Pool<GeometryPage, GeometryPage> geometry_pages;
 	GeometryPageHandle current_geometry_page;
+	Pool<GeometryPage, GeometryPage> geometry_pages;
 
 	MeshHandle UploadVertexData(MeshUploadInput& mesh_data);
 	MaterialHandle CreateMaterial(Material::Textures textures);
@@ -152,13 +153,34 @@ struct MeshManager {
 		vkCmdBindIndexBuffer(commandBuffer, ctx->buffers_.get(page->indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
 	};
 
+	~ToyResourceManager();
+
 };
 
 
 
-[[nodiscard]] MaterialHandle MeshManager::CreateMaterial(Material::Textures textures /*Type/Pipeline type*/) {
+// This breaks Holder since that only taskes Context*
+void destroy(ToyResourceManager* man, GeometryPageHandle handle) {
+	auto page = man->geometry_pages.get(handle);
+	vmaDestroyVirtualBlock(page->index_blk);
+	vmaDestroyVirtualBlock(page->vertex_units_blk);
+	man->geometry_pages.destroy(handle);
+};
+
+// TODO:: this is not done properl
+ToyResourceManager::~ToyResourceManager() {
+	geometry_pages.forEachHandle([&](GeometryPageHandle han_) {
+		destroy(this, han_);
+		}
+	);
+
+}
+
+[[nodiscard]] MaterialHandle ToyResourceManager::CreateMaterial(Material::Textures textures /*Type/Pipeline type*/) {
 	assert(textures.diffuse.valid() && "Invalid handle for diffuse");
 
+
+	// Increase tex rc!
 	Material mat{};
 	mat.textures.diffuse = textures.diffuse;
 	mat.values.tex[0] = textures.diffuse.index();
@@ -172,7 +194,7 @@ struct MeshManager {
 }
 
 
-[[nodiscard]] MeshHandle MeshManager::UploadVertexData(MeshUploadInput& geometry_data)
+[[nodiscard]] MeshHandle ToyResourceManager::UploadVertexData(MeshUploadInput& geometry_data)
 {
 
 	const uint32_t vcount = static_cast<uint32_t>(geometry_data.vertices.size());
@@ -311,7 +333,7 @@ struct MeshManager {
 	return meshes.create(std::move(mesh_desc));
 }
 
-void MeshManager::InitalizeGeoBuffers() {
+void ToyResourceManager::InitalizeGeoBuffers() {
 
 	{
 		uint32_t totalVertexBytes = 512u * 1024u * 1024u;
@@ -362,11 +384,12 @@ void MeshManager::InitalizeGeoBuffers() {
 			VK_CHECK(vmaCreateVirtualBlock(&vu, &page.vertex_units_blk));
 		}
 
+		//current_geometry_page = { this->ctx, geometry_pages.create(std::move(page)) };
 		current_geometry_page = geometry_pages.create(std::move(page));
 
 	}
 
 }
 
-void destroy(MeshManager* ctx, MeshHandle handle);
-void destroy(MeshManager* ctx, GeometryPageHandle handle);
+void destroy(ToyResourceManager* ctx, MeshHandle handle);
+void destroy(ToyResourceManager* ctx, GeometryPageHandle handle);
