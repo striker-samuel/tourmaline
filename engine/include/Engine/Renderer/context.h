@@ -17,20 +17,14 @@
 #include <map>
 
 // Texture upload 
-// this should be refactore  to something like a GetImageData fucntion arg, maybe...
+// this should be refactore  to something like a GetImageData lambda, maybe...
 #include <ktx.h>
 #include <ktxvulkan.h>
 
 
-struct PipelineCreateInfo {};
-
-// These may be redundant but im still going with them
-struct SamplerCreateInfo {
-};
-
-// These also may be used for Keys? dont know yet.
-//using SamplerKey = SamplerCreateInfo;
-
+/// <summary>
+///  One could argue this is just redundant provided that vulkanHpp has this same thing typed out...
+/// </summary>
 struct ImageCreateInfo {
 	int texWidth;
 	int texHeight;
@@ -40,21 +34,97 @@ struct ImageCreateInfo {
 	uint32_t arrayLayers;
 };
 
-struct BufferCreateInfo {
+struct SamplerCreateInfo {
+	VkFilter mag = VK_FILTER_LINEAR;
+	VkFilter min = VK_FILTER_LINEAR;
+	VkSamplerMipmapMode mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	VkSamplerAddressMode u = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	VkSamplerAddressMode v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	VkSamplerAddressMode w = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	float maxLod = 1000.0f;
+	float maxAniso = 1.0f;
+	VkCompareOp compareOp = VK_COMPARE_OP_ALWAYS;
+	bool compareEnable = false;
+};
+
+// TODO :: This neeeds heaby doses of elbow grease really
+struct PipelineCreateInfo{
+	
+	// Raster
+	struct RasterSettings {
+		uint32_t depthClampEnable = VK_FALSE;
+		uint32_t rasterizerDiscardEnable = VK_FALSE;
+		VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
+		float lineWidth = 1.0f;
+		uint32_t cullMode = VK_CULL_MODE_BACK_BIT;
+		VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+		// Depth bias for shadowmaps.
+		uint32_t depthBiasEnable = VK_FALSE;
+		float depthBiasConstant = 0.0f;
+		float depthBiasSlope = 1.0f; // This should be PCF radius https://mynameismjp.wordpress.com/2013/09/10/shadow-maps/
+
+	} rasterSettings;
+
+	// TODO: HEABY WORK HEER
+	// This should be creation/key also. dont quite like the stae of inmutable samplers and binding.
+	struct BindingDesc {
+		uint32_t binding = 0; // state 
+		VkDescriptorType type{};
+		uint32_t count = 1;
+		VkShaderStageFlags stages = 0;
+		VkDescriptorBindingFlags flags = 0;
+		std::vector<VkSampler> immutableSamplers; // state, should be a list of SamplerKey/desc/createInfo really
+	};
+
+	//struct Binding {
+	//	size_t bindPoint = 0;
+	//	std::vector<VkSampler> immutableSamplers;
+	//	BindingDesc desc;
+	//};
+
+	struct DescriptorSetLayoutDesc {
+		uint32_t set = 0;                     // set number in pipeline layout
+		VkDescriptorSetLayoutCreateFlags createFlags = 0; // e.g. UPDATE_AFTER_BIND_POOL_BIT
+		std::vector<BindingDesc> bindings;
+	};
+
+	struct PushConstantDesc {
+		VkShaderStageFlags stages = 0;
+		uint32_t offset = 0;
+		uint32_t size = 0;
+	};
+
+	struct PipelineLayoutDesc {
+		std::vector<DescriptorSetLayoutDesc> sets; // each has set index
+		std::vector<PushConstantDesc> pushConstants;
+	} layoutDesc;
+
+	// I dont like this 
+	ShaderModuleHandle vert;
+	ShaderModuleHandle frag;
+
+	// Swapchain Setup.
+	VkFormat depth_format;
+	VkFormat swapchainImageFormat;
+};
+
+struct DeviceBufferCreateInfo {
 	VkDeviceSize size;
 	VmaMemoryUsage vma_usage;
 	VkBufferUsageFlags usage_flags;
 };
 
+
 class Context {
 	
-	VulkanCore& core;
 	VmaAllocator allocator_;
-
 	VmaPool D_2DImagesPool;
 	VmaPool D_StagingPool;
 
 public:
+
+	VulkanCore& core;
 
 	int Initialize();
 	Context(VulkanCore _core) : core(_core) { Initialize(); };
@@ -66,47 +136,43 @@ public:
 	Pool<DescriptorSet, DescriptorSet> descriptorSets_;
 	Pool<ShaderModule, VkShaderModule> shaderModules_;
 	Pool<Pipeline, Pipeline> pipelines_;
-
 	Pool<DescriptorPool, VkDescriptorPool> descriptorSetPools_;
+	//Pool<Sampler, VkSampler> samplers_;
+
+	std::map<std::string, TextureHandle> textures_uploaded;
+
 	DescriptorPoolHandle default_descriptor_pool;
 	DescriptorPoolHandle imgui_descriptor_pool;
 
-	//Pool<Sampler, VkSampler> samplers_;
-	std::map<std::string, TextureHandle> textures_uploaded;
-
 	void InitializeDeviceVmaPools();
 
+	// Create resources
 
 	// BUFFERS
 	DeviceBufferHandle CreateStagingBuffer(const void* srcData, VkDeviceSize size);
 	DeviceBufferHandle CreateStagingBuffer(VkDeviceSize size);
-
-	DeviceBufferHandle CreateBuffer(BufferCreateInfo _bufferCreateInfo);
-
-	// IMAGES
-	ImageHandle CreateImage(ImageCreateInfo _imageCreateInfo);
+	DeviceBufferHandle CreateBuffer(DeviceBufferCreateInfo bufferCreateInfo);
+	//Images
+	ImageHandle CreateImage(ImageCreateInfo imageCreateInfo);
 	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
+	// PIPELINES
+	PipelineHandle CreatePipeline(PipelineCreateInfo pipelineCreateInfo);
+
+
+	// SHADERS
+	ShaderModuleHandle CreateShaderModule(std::vector<char> code);
+	// DESCRIPTOR SETS
+	DescriptorSetHandle CreateDescriptorSet(VkDescriptorSetLayout& layout);
 
 	// TEXTURES
 	// These need to be heavily reworked
 	TextureHandle GetOrCreateTexure(std::string uri, ktxTexture2& texture);
 	TextureHandle CreateTexture(ktxTexture2& texture);
 
-	// SHADERS
-	ShaderModuleHandle CreateShaderModule(std::vector<char> code);
-
-	// DESCRIPTOR SETS
-	DescriptorSetHandle CreateDescriptorSet(VkDescriptorSetLayout& layout);
-
-	// PIPELINES
-	PipelineHandle CreatePipeline(RasterSettings raster_settings, PipelineLayoutDesc layoutDesc, ShaderModuleHandle vert, ShaderModuleHandle frag, VkFormat depth_format, VkFormat swapchainImageFormat);
 
 
 	void CreatePipelineLayout(const PipelineLayoutDesc& descIn, Pipeline::Layout& out);
 	void CreateDescriptorLayout(const DescriptorSetLayoutDesc& descIn, VkDescriptorSetLayout& layout);
-
-
-	//SamplerHandle CreateSampler(uint32_t levelCount);
 	void CreateSampler(uint32_t levelCount, VkSampler& sampler);
 
 	DescriptorPoolHandle createDescriptorPool();

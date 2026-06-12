@@ -298,17 +298,17 @@ void Context::CreateImageView(
 }
 
 [[nodiscard]] DeviceBufferHandle Context::CreateBuffer(
-	BufferCreateInfo _bufferCreateInfo
+	DeviceBufferCreateInfo bufferCreateInfo
 ) {
 	DeviceBuffer desc{};
 
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	ci.size = _bufferCreateInfo.size;
-	ci.usage = _bufferCreateInfo.usage_flags;
+	ci.size = bufferCreateInfo.size;
+	ci.usage = bufferCreateInfo.usage_flags;
 	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
 	VmaAllocationCreateInfo aci{};
-	aci.usage = _bufferCreateInfo.vma_usage;
+	aci.usage = bufferCreateInfo.vma_usage;
 
 	// Optionally choose pools here based on usage_flags/usage
 	VK_CHECK(vmaCreateBuffer(allocator_,
@@ -320,7 +320,7 @@ void Context::CreateImageView(
 	);
 
 	vmaGetAllocationMemoryProperties(allocator_, desc.alloc, &desc.memory_flags);
-	desc.usage = _bufferCreateInfo.usage_flags;
+	desc.usage = bufferCreateInfo.usage_flags;
 
 	return buffers_.create(std::move(desc));
 }
@@ -685,7 +685,7 @@ void Context::CreatePipelineLayout(
 	const uint32_t rangeCount = static_cast<uint32_t>(descIn.pushConstants.size());
 
 	VkPhysicalDeviceProperties properties{};
-	vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+	vkGetPhysicalDeviceProperties(core.physicalDevice_, &properties);
 	auto min_align = properties.limits.minUniformBufferOffsetAlignment;
 
 	assert(rangeCount <= 8 && "Max 8 push constant ranges");
@@ -726,31 +726,19 @@ void Context::CreatePipelineLayout(
 		.pPushConstantRanges = rangeCount ? ranges : nullptr,
 	};
 
-	VK_CHECK(
-		vkCreatePipelineLayout(device_, &ci, nullptr, &out.layout)
-	);
+	VK_CHECK(vkCreatePipelineLayout(core.device_, &ci, nullptr, &out.layout));
 	out.sets = vkSetLayouts;
-
-	//return pipelineLayouts_.create(std::move(out));
 }
 
 
-//[[nodiscard]] PipelineHandle Context::CreatePipeline(
-//	PipelineDesc/Key key,
-//) {} Same but with key -> pipeline 
 [[nodiscard]] PipelineHandle Context::CreatePipeline(
-	RasterSettings raster_settings,
-	PipelineLayoutDesc layoutDesc,
-	ShaderModuleHandle vert,
-	ShaderModuleHandle frag,
-	VkFormat depth_format,
-	VkFormat swapchainImageFormat
+	PipelineCreateInfo pipelineCreateInfo
 ) {
 
 
 	Pipeline pipeline;
-	auto v = shaderModules_.get(vert);
-	auto f = shaderModules_.get(frag);
+	auto v = shaderModules_.get(pipelineCreateInfo.vert);
+	auto f = shaderModules_.get(pipelineCreateInfo.frag);
 
 	// SHADER
 	VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
@@ -800,33 +788,24 @@ void Context::CreatePipelineLayout(
 	// RASTERIZER
 
 	VkPipelineRasterizationStateCreateInfo rasterizer{};
-
-	rasterizer.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-
-
-	// This may be pretty sytupid, to encode raster_settings in a custom strutct with same members.
-	// May be good later for defining a common interface RHI like if i do a DirectX backend?. Should I keep it?
-	rasterizer.depthClampEnable = raster_settings.depthClampEnable;
-	rasterizer.rasterizerDiscardEnable = raster_settings.rasterizerDiscardEnable;
-	rasterizer.polygonMode = raster_settings.polygonMode;
-	rasterizer.lineWidth = raster_settings.lineWidth;
-	rasterizer.cullMode = raster_settings.cullMode;
-	rasterizer.frontFace = raster_settings.frontFace;
-	rasterizer.depthBiasEnable = raster_settings.depthBiasEnable;
+	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rasterizer.depthClampEnable = pipelineCreateInfo.rasterSettings.depthClampEnable;
+	rasterizer.rasterizerDiscardEnable = pipelineCreateInfo.rasterSettings.rasterizerDiscardEnable;
+	rasterizer.polygonMode = pipelineCreateInfo.rasterSettings.polygonMode;
+	rasterizer.lineWidth = pipelineCreateInfo.rasterSettings.lineWidth;
+	rasterizer.cullMode = pipelineCreateInfo.rasterSettings.cullMode;
+	rasterizer.frontFace = pipelineCreateInfo.rasterSettings.frontFace;
+	rasterizer.depthBiasEnable = pipelineCreateInfo.rasterSettings.depthBiasEnable;
 
 	// MULTISAMPLING
 	VkPipelineMultisampleStateCreateInfo multisampling{};
-	multisampling.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 	multisampling.sampleShadingEnable = VK_FALSE;
 	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
 	// STENCIL
-
 	VkPipelineDepthStencilStateCreateInfo depthStencil{};
-	depthStencil.sType =
-		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 	depthStencil.depthTestEnable = VK_TRUE;
 	depthStencil.depthWriteEnable = VK_TRUE;
 	depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
@@ -834,7 +813,6 @@ void Context::CreatePipelineLayout(
 	depthStencil.stencilTestEnable = VK_FALSE;
 
 	// COLORBLEND
-
 	VkPipelineColorBlendAttachmentState colorBlendAttachment{};
 	colorBlendAttachment.colorWriteMask =
 		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -873,22 +851,21 @@ void Context::CreatePipelineLayout(
 	//PipelineLayout* plytObj = pipelineLayouts_.get(plytHandle);
 	//pipeline.plyt = plytHandle;
 	Pipeline::Layout lyt;
-	CreatePipelineLayout(layoutDesc, lyt);
+	CreatePipelineLayout(pipelineCreateInfo.layoutDesc, lyt);
 	pipeline.layout = lyt;
 
 #pragma endregion
 
-
-	// Provide information for dynamic rendering
 	VkPipelineRenderingCreateInfo dynamic_rendering_pipeline_info{
-		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR
+	};
 	dynamic_rendering_pipeline_info.pNext = VK_NULL_HANDLE;
 
-	// We are using the single color buffer out.
+	// This depends on render setup. should not be encoded in the createInfo.
+	// Maybe even resolved with the current swapchain setup?
 	dynamic_rendering_pipeline_info.colorAttachmentCount = 1;
-	dynamic_rendering_pipeline_info.pColorAttachmentFormats = &swapchainImageFormat;
-
-	dynamic_rendering_pipeline_info.depthAttachmentFormat = depth_format;
+	dynamic_rendering_pipeline_info.pColorAttachmentFormats = &pipelineCreateInfo.swapchainImageFormat;
+	dynamic_rendering_pipeline_info.depthAttachmentFormat = pipelineCreateInfo.depth_format;
 	dynamic_rendering_pipeline_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo{};
@@ -1384,7 +1361,7 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 	}
 
 	// Guaranteed mapped due to chosen flags. Ignore warning
-    #pragma warning(suppress : 6387)
+#pragma warning(suppress : 6387)
 	std::memcpy(stagingAllocationInfo.pMappedData, ktxData, static_cast<size_t>(ktxDataSize));
 	vmaFlushAllocation(allocator_, stagingAllocation, 0, VK_WHOLE_SIZE);
 
@@ -1765,14 +1742,11 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 }
 
 [[nodiscard]] ShaderModuleHandle Context::CreateShaderModule(std::vector<char> code) {
-
 	auto shader = createDeviceShaderModule(
-		device_,
+		core.device_,
 		std::move(code)
 	);
-
 	return shaderModules_.create(std::move(shader));
-
 };
 
 void Context::CreateDescriptorLayout(const DescriptorSetLayoutDesc& descIn, VkDescriptorSetLayout& layout)
@@ -1853,7 +1827,7 @@ void Context::CreateDescriptorLayout(const DescriptorSetLayoutDesc& descIn, VkDe
 	ci.pNext = anyFlags ? &flagsCI : nullptr;
 
 	//VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-	VK_CHECK(vkCreateDescriptorSetLayout(device_, &ci, nullptr, &layout));
+	VK_CHECK(vkCreateDescriptorSetLayout(code.device_, &ci, nullptr, &layout));
 	// 5) Cache it (pseudo)
 	// layoutCache[key] = h;
 

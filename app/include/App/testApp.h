@@ -180,9 +180,9 @@ private:
 			fragShaderCode
 		);
 
-		PipelineLayoutDesc desc;
+		PipelineCreateInfo::PipelineLayoutDesc desc;
 		desc.sets = {
-			DescriptorSetLayoutDesc{
+			PipelineCreateInfo::DescriptorSetLayoutDesc{
 				0, // setLayout #
 				0, //VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, // createFlags
 				{
@@ -191,11 +191,11 @@ private:
 				}
 			},
 			// These two need to be separated due to UPDATE_AFTER_BIND and dynamicOffsets incompatibility in same setLayout
-			DescriptorSetLayoutDesc{
+			PipelineCreateInfo::DescriptorSetLayoutDesc{
 				.set = 1,
 				.createFlags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
 				.bindings = {
-				BindingDesc{
+				PipelineCreateInfo::BindingDesc{
 					.binding = 2,
 					.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
 					.count = MAX_TEXTURES,
@@ -205,7 +205,7 @@ private:
 					.immutableSamplers = {}
 				},
 			// Example bindless samplers
-			BindingDesc{
+			PipelineCreateInfo::BindingDesc{
 				.binding = 3,
 				.type = VK_DESCRIPTOR_TYPE_SAMPLER,
 				.count = MAX_TEXTURES, // We carry 1 to one samplers, this is wasteful but lets do this ftm
@@ -231,17 +231,19 @@ private:
 		// App shouldnt need to do this really...
 		mainPipeline = context->CreatePipeline(
 			{
+			.rasterSettings = {
 				.depthClampEnable = VK_FALSE, // needs to be enabled
 				.rasterizerDiscardEnable = VK_FALSE,
 				.polygonMode = VK_POLYGON_MODE_FILL,
 				.cullMode = VK_CULL_MODE_BACK_BIT,
 				.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE
 			}, // rasterDesc
-			desc, // layoutDesc
-			vert_shader_h, // vert
-			fragHandle, //frag
-			findDepthFormat(core.physicalDevice_),
-			swapchain->GetImageFormat()
+			.layoutDesc = desc, // layoutDesc
+			.vert = vert_shader_h, // vert
+			.frag = fragHandle, //frag
+			.depth_format = findDepthFormat(core.physicalDevice_),
+			.swapchainImageFormat = swapchain->GetImageFormat() 
+			}
 		);
 		auto pipe_obj = context->pipelines_.get(mainPipeline);
 		auto bb = pipe_obj->layout.sets;
@@ -275,7 +277,6 @@ private:
 
 		// This is rendergraph responsability really
 		//SetDescriptorSets();
-
 		UpdateBindlessTexturesSets();
 
 		return true;
@@ -323,7 +324,7 @@ private:
 			writes[1].descriptorCount = 1;
 			writes[1].pBufferInfo = &drawBufferInfo;
 
-			vkUpdateDescriptorSets(device, 2 /*descriptorWriteCount*/, writes, 0, nullptr);
+			vkUpdateDescriptorSets(core.device_, 2 /*descriptorWriteCount*/, writes, 0, nullptr);
 
 		}
 	}
@@ -424,7 +425,7 @@ private:
 		data.viewportSize = { width_, height_ };
 		data.invViewportSize = { 1.0f / width_, 1.0f / height_ };
 
-		// Not implemented for now
+		// Not in use now
 		data.nearPlane = 0.f;
 		data.farPlane = 0.f;
 		data.exposure = 0.f;
@@ -442,15 +443,15 @@ private:
 
 	}
 
-	void RenderFrame() {
-		auto cmd = AcquireFramebuffer();
+	void BeginFrame() {
+		auto fb = AcquireFramebuffer();
 		auto swapChainExtent = swapchain->GetExtent();
 		auto colorView = swapchain->GetCurrentImageView();
 		auto depthHandle = swapchain->GetDepthImage();
 		auto depthView = context->images_.get(depthHandle)->renderView;
 	}
 
-	void DrawFrame() {
+	void RenderFrame() {
 		// Setup rendering info for the main pass
 
 		//VkRenderingAttachmentInfo colorAttachment{};
@@ -479,22 +480,22 @@ private:
 		//cmd.renderingInfo.pDepthAttachment = &depthAttachment;
 
 		rendergraph.Clear();
+		//rendergraph.NewFrame();
 
-		auto color = rendergraph.GetImage({});
-		auto depth = rendergraph.GetImage({});
+		auto color = rendergraph.AddImage({});
+		auto depth = rendergraph.AddImage({});
+
+		auto colorView = rendergraph.AddImageView({});
+		auto depthView = rendergraph.AddImageView({});
 
 		rendergraph.AddPass(
 			{
 				.type = PassType::Rasterize,
-				.colorAttachments_ = {
-			},
-				.depthAttachment_ = {},
-				.stencilAttachment_ = {},
 			}
 			)
 			.setExtent(swapchainExtent)
-			.setColor({color}, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
-			.setDepth(depth, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_DONT_CATE, {.0f, 0})
+			.setColor({ color }, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
+			.setDepth(depth, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
 			;
 
 		UpdateFrameUniforms(swapchain->GetCurrentFrameIndex());

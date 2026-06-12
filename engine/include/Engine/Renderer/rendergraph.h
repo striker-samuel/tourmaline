@@ -4,18 +4,17 @@
 //#include <Engine/Vulkan/core.h>
 #include <Engine/Renderer/context.h>
 
+// Lets just alias creation info to the key
+using ImageKey = ImageCreateInfo;
+using DeviceBufferKey = DeviceBufferCreateInfo;
+
+// forward declarations
 struct RenderGraph{};
+struct ToyRenderPass {};
 
-struct ImageKey {
-	int texWidth;
-	int texHeight;
-	VkFormat format;
-	VkImageUsageFlags usage;
-	uint32_t levels;
-	uint32_t arrayLayers;
-};
-
-struct BufferKey {
+struct ToyRenderPassContext {
+	Context& ctx;
+	ToyRenderPass renderpass;
 };
 
 struct ToyFrameBuffer{
@@ -25,20 +24,18 @@ struct ToyFrameBuffer{
 	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 };
 
-struct ToyRenderPass {};
-struct ToyRenderPassContext {
-	Context& ctx;
-	ToyRenderPass renderpass;
+struct VirtualBufferId
+{
+	size_t id;
+	DeviceBufferKey key;
+	DeviceBufferHandle buffer;
 };
-using RecordingFunction = std::function<void(ToyRenderPassContext)>;
 
-enum PassType {
-	Rasterize,
-	Compute,
-	//TransferPass,
-	//ImagePresent,
-	//FrameSyncBegin,
-	//FrameSyncEnd
+struct VirtualImageViewId
+{
+	size_t id;
+	ImageViewKey key;
+	ImageViewHandle buffer;
 };
 
 struct VirtualImageId {
@@ -48,31 +45,31 @@ struct VirtualImageId {
 	};
 
 	size_t id;
-	ImageTypes imageType;
-	// if external provide handle
-
-	// Remember! Handles are per context
+	ImageTypes imageType; // transient/external
+	ImageKey key;
+	// this may be collapsed into resolvedImage
 	ImageHandle externalImage{};
+	ImageHandle resolvedImage{};
 };
 
+/// <summary>
+/// 
+/// 
+/// </summary>
+using RecordingFunction = std::function<void(ToyRenderPassContext)>;
 struct ToyRenderPass final {
-
 	//RenderGraph& rendergraph;
 
+	enum struct PassType { Rasterize, Compute };
 	PassType type;
+
 	VkExtent2D extent_;
 	VkOffset2D offset_ = { 0,0 };
 
 	RecordingFunction recordingFunction_;
 
-	// Data
-	//std::vector<BufferKey> uniformBuffers_;
-	//std::vector<BufferKey> storageBuffers_;
-	std::vector<BufferKey> vertexBuffers_;
-
-	// Attachments
 	struct Attachment {
-		ImageKey image;
+		VirtualImageId image;
 		VkAttachmentLoadOp loadOp;
 		VkAttachmentStoreOp storeOp;
 		VkClearValue clearValue;
@@ -82,9 +79,12 @@ struct ToyRenderPass final {
 	Attachment depthAttachment_{ .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .clearValue = { 1.0f } /*.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE */ };
 	Attachment stencilAttachment_{ .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .clearValue = {0.0f} /*.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE*/ };
 
-	// Builder
+	std::vector<VirtualBufferId> uniformBuffers_;
+	std::vector<VirtualBufferId> storageBuffers_;
+	std::vector<VirtualBufferId> vertexBuffers_;
+
 	ToyRenderPass& setColor(
-		std::vector<VirtualImageId> images,
+		std::vector<VirtualImageViewId>& images,
 		VkAttachmentLoadOp _loadOp,
 		VkAttachmentStoreOp _storeOp,
 		VkClearValue _clearValue
@@ -99,11 +99,15 @@ struct ToyRenderPass final {
 
 	// stencil is baked into depth! this can cause problems here!
 	// protect agains invariant or make SetStencil only enable
-	ToyRenderPass& setDepth(VirtualImageId _imageId) {};
-	ToyRenderPass& setStencil(VirtualImageId depthAttachent) /*{ this->depthAttachment_ = depthAttachent; return *this; }*/;
+	ToyRenderPass& setDepth(VirtualImageViewId _imageId) {};
+	ToyRenderPass& setStencil(VirtualImageViewId depthAttachent) /*{ this->depthAttachment_ = depthAttachent; return *this; }*/;
 
-	ToyRenderPass& serVertexBuffers(std::vector<BufferKey> vertexBuffers) { this->vertexBuffers_ = vertexBuffers; return *this; }
+	ToyRenderPass& setVertexBuffers(std::vector<VirtualBufferId> vertexBuffers) { this->vertexBuffers_ = vertexBuffers; return *this; }
+	ToyRenderPass& setStorageBuffers(std::vector<VirtualBufferId> storageBuffers) { this->storageBuffers_ = storageBuffers; return *this; }
+	ToyRenderPass& setUniformBuffers(std::vector<VirtualBufferId> uniformBuffers) { this->uniformBuffers_ = uniformBuffers; return *this; }
+
 	ToyRenderPass& setRecordingFunc(RecordingFunction recordingFunction) { this->recordingFunction_ = recordingFunction; return *this; };
+
 	ToyRenderPass& setExtent(VkExtent2D extent) { this->extent_ = extent; return *this; };
 	ToyRenderPass& setOffset(VkOffset2D offset) { this->offset_ = offset; return *this; };
 
@@ -114,29 +118,47 @@ struct RenderGraph {
 	std::vector<ToyRenderPass> passes;
 	void Clear() { passes.clear(); }
 
-	std::vector<ImageKey> images;
+	std::vector<VirtualImageId> images;
+	//std::map<ImageKey, VirtualImageId> images;
+	//std::map<BufferKey, VirtualImageId> buffers;
 
 	ToyRenderPass& AddPass(ToyRenderPass _renderPass) {
 		return passes.emplace_back(_renderPass);
 	}
 
-	VirtualImageId GetImage(ImageKey _imageKey) {
+	VirtualImageId AddImage(ImageHandle _image) {
 		VirtualImageId proxy{
 			.id = images.size()
 		};
-		images.push_back(_imageKey);
-
+		images.push_back(proxy);
+		return proxy;
 	}
+	//VirtualImageId AddImage(ImageHandle _image) {
+	//	VirtualImageId proxy{
+	//		.id = images.size()
+	//	};
+	//	images.push_back(proxy);
+	//	return proxy;
+	//}
 
-	// TODO: Implement ImageKey → ImageHandle resolution
+	// Resolution
 	ImageHandle ResolveImageKey(const ImageKey& key) {
-		(void)key;
 		return {};
 	}
+	DeviceBufferHandle ResolveBufferHandle(const DeviceBufferKey& key) {
+		return{};
+	}
 
-	// Resolves all ImageKeys, then begins/ends dynamic rendering for each pass
-	void Execute(
-	) {
+	void ResolveImages();
+	void ResolveImageViews();
+	void ResolveBuffers();
+
+	void Execute(ToyFrameBuffer& fb) {
+
+	  ResolveImages();
+	  ResolveImageViews();
+	  ResolveBuffers();
+
 		for (auto& pass : passes) {
 			std::vector<VkRenderingAttachmentInfo> colorInfos;
 			colorInfos.reserve(pass.colorAttachments_.size());
@@ -171,7 +193,6 @@ struct RenderGraph {
 
 			VkRenderingInfo renderInfo{};
 			renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
-			//renderInfo.renderArea.offset = { 0, 0 };
 			renderInfo.renderArea.offset = pass.offset_;
 			renderInfo.renderArea.extent = pass.extent_;
 			renderInfo.layerCount = 1;
@@ -179,7 +200,7 @@ struct RenderGraph {
 			renderInfo.pColorAttachments = colorInfos.data();
 			renderInfo.pDepthAttachment = &depthInfo;
 
-			vkCmdBeginRendering(cb.commandBuffer, &renderInfo);
+			vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
 
 			ToyRenderPassContext rpc{
 				.ctx = *ctx,
@@ -190,8 +211,20 @@ struct RenderGraph {
 				rpc
 			);
 
-			vkCmdEndRendering(cb.commandBuffer);
+			vkCmdEndRendering(fb.commandBuffer);
 		}
 	}
 };
 
+
+
+
+class Cache {
+
+	Context& ctx_;
+	Cache(Context& ctx) : ctx_(ctx) {}
+	~Cache() {};
+	std::map<ImageKey, ImageHandle> images;
+	std::map<DeviceBufferKey, DeviceBufferHandle> images;
+	std::map<PipelineKey, PipelineHandle> images;
+}
