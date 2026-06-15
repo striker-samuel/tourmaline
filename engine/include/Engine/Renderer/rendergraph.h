@@ -7,7 +7,7 @@
 // Lets just alias creation info to the key
 using ImageKey = ImageCreateInfo;
 using DeviceBufferKey = DeviceBufferCreateInfo;
-using PipelineKey = DeviceBufferCreateInfo;
+//using PipelineKey = PipelineCreateInfo;
 
 // forward declarations
 struct RenderGraph;
@@ -15,7 +15,7 @@ struct ToyRenderPass;
 
 struct ToyRenderPassContext {
 	Context& ctx;
-	ToyRenderPass renderpass;
+	ToyRenderPass& renderpass;
 };
 
 struct ToyFrameBuffer{
@@ -104,6 +104,7 @@ struct ToyRenderPass final {
 		VkClearValue _clearValue
 	) {
 		this->depthAttachment_ = { viewId, _loadOp, _storeOp, _clearValue };
+		return *this;
 	};
 	ToyRenderPass& setStencil(VirtualImageViewId depthAttachent) /*{ this->depthAttachment_ = depthAttachent; return *this; }*/;
 
@@ -149,9 +150,9 @@ struct RenderGraph {
 		return proxy;
 	}
 
-	void ResolveImages();
-	void ResolveImageViews();
-	void ResolveBuffers();
+	void ResolveImages() {};
+	void ResolveImageViews() {};
+	void ResolveBuffers() {};
 
 	void Execute(ToyFrameBuffer& fb) {
 
@@ -239,7 +240,7 @@ class Cache {
 	Cache(Context& ctx) : ctx_(ctx) {}
 	~Cache() {};
 	std::map<ImageKey, ImageHandle> images;
-	std::map<PipelineKey, PipelineHandle> pipelines;
+	//std::map<PipelineKey, PipelineHandle> pipelines;
 
 	// This should be split into unofmr, storage and else
 	std::map<DeviceBufferKey, DeviceBufferHandle> buffers;

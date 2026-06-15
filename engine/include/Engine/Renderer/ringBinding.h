@@ -42,7 +42,7 @@ struct RingBinding
 		//}
 
 		VkPhysicalDeviceProperties props{};
-		vkGetPhysicalDeviceProperties(context->physicalDevice_, &props);
+		vkGetPhysicalDeviceProperties(context->core.physicalDevice_, &props);
 
 		const VkDeviceSize dynAlign =
 			(descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
@@ -55,7 +55,7 @@ struct RingBinding
 
 		const VkDeviceSize totalSize = frameStride * ringCount;
 
-		buffer_h = context->createBuffer(totalSize, memUsage, usageFlags);
+		buffer_h = context->CreateBuffer({ totalSize, memUsage, usageFlags });
 		//mapped = context->getMappedPtr(buffer_h); // if persistently mapped
 	}
 
@@ -63,7 +63,7 @@ struct RingBinding
 	PipelineCreateInfo::BindingDesc bindingDesc(
 		//const std::vector<VkSampler>& resolvedImmutableSamplers
 	) const{
-		BindingDesc bn{};
+		PipelineCreateInfo::BindingDesc bn{};
 		bn.binding = binding;
 		bn.type = descriptorType;
 		bn.count = 1;

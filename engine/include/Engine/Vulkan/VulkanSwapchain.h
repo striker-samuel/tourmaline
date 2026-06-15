@@ -252,12 +252,24 @@ public:
         //VkFormat depthFormat = findDepthFormat(physicalDevice_);
         VkFormat depthFormat = ctx_.core.viewportDepthFormat;
         depthImage_ = ctx_.CreateImage(
-            extent_.width,
-            extent_.height,
-            depthFormat,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-            1,
-            1
+
+
+            {
+
+                .texWidth = static_cast<int>(extent_.width),
+                .texHeight = static_cast<int>(extent_.height),
+                .format = depthFormat,
+                .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                .levels = 1,
+                .arrayLayers = 1
+            }
+
+            //extent_.width,
+            //extent_.height,
+            //depthFormat,
+            //VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            //1,
+            //1
         );
 
         auto obj_ = ctx_.images_.get(depthImage_);

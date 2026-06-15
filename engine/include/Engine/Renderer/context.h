@@ -13,6 +13,7 @@
 #include <Engine/Memory/pool.h>
 
 
+#include <tuple>
 // textures upload
 #include <map>
 
@@ -32,6 +33,12 @@ struct ImageCreateInfo {
 	VkImageUsageFlags usage;
 	uint32_t levels;
 	uint32_t arrayLayers;
+
+	bool operator<(const ImageCreateInfo& other) const {
+        return std::tie(texWidth, texHeight, format, usage, levels, arrayLayers) <
+               std::tie(other.texWidth, other.texHeight, other.format,
+                        other.usage, other.levels, other.arrayLayers);
+    }
 };
 
 struct SamplerCreateInfo {
@@ -166,7 +173,7 @@ public:
 	DeviceBufferHandle CreateBuffer(DeviceBufferCreateInfo bufferCreateInfo);
 	//Images
 	ImageHandle CreateImage(ImageCreateInfo imageCreateInfo);
-	ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
+	//ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
 	// PIPELINES
 	PipelineHandle CreatePipeline(PipelineCreateInfo pipelineCreateInfo);
 

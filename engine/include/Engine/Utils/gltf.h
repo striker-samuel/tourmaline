@@ -22,7 +22,7 @@
 
 #include <Engine/Renderer/ToyResourceManager.h>
 
-#define DEFAULT_MATERIAL_INDEX = 0;
+#define DEFAULT_MATERIAL_INDEX 0;
 
 struct GltfTextureRef {
 	int textureIndex = -1;   // index into model.textures

@@ -444,13 +444,18 @@ private:
 	}
 
 
-	void BeginFrame() {
+	void DrawFrame() {
 		auto fb = AcquireFramebuffer();
-		//auto swapChainExtent = swapchain->GetExtent();
-		//auto colorView = swapchain->GetCurrentImageView();
-		//auto depthHandle = swapchain->GetDepthImage();
-		//auto depthView = context->images_.get(depthHandle)->renderView;
+		RenderFrame(fb);
+		EndAndPresentFramebuffer(fb);
 	}
+
+	//void BeginFrame() {
+	//	auto swapChainExtent = swapchain->GetExtent();
+	//	auto colorView = swapchain->GetCurrentImageView();
+	//	auto depthHandle = swapchain->GetDepthImage();
+	//	auto depthView = context->images_.get(depthHandle)->renderView;
+	//}
 
 	void RenderFrame(ToyFrameBuffer fb) {
 
@@ -461,6 +466,9 @@ private:
 		auto depthView = context->images_.get(fb.swapchain.depthImage_)->renderView;
 		auto depthViewId = rendergraph.AddImageView(depthView);
 
+		std::vector<VirtualImageViewId> colors;
+		colors.push_back(color);
+
 		auto mainPass = rendergraph.AddPass(
 			{
 				.type = ToyRenderPass::PassType::Rasterize,
@@ -468,7 +476,7 @@ private:
 			)
 			.setOffset({ 0,0 })
 			.setExtent(fb.swapchain.extent_)
-			.setColor({ color }, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
+			.setColor( colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
 			.setDepth(depthViewId, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
 			.setRecordingFunc([this, fb](ToyRenderPassContext renderpassctx) {
 
@@ -638,7 +646,6 @@ private:
 			);
 
 		rendergraph.Execute(fb);
-		EndAndPresentFramebuffer(fb);
 
 	}
 
