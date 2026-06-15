@@ -1,18 +1,17 @@
 #pragma once
 
-#include "volk.h"
-#include <Engine/Vulkan/vulkan_helpers.h>
 
+#include "volk.h"
+#include <Engine/Renderer/constants.h>
+#include <Engine/Vulkan/vulkan_helpers.h>
 
 #define APPLICATION_NAME "Sam2025Vulkan_one_three"
 #define ENGINE_NAME "SamEngine"
 
+#include <ktxvulkan.h>
 
-struct CommandScope {};
-
-struct VulkanCore {
-	ktxVulkanDeviceInfo ktxInfo{};
-
+struct /*class*/ VulkanCore {
+	ktxVulkanDeviceInfo ktxInfo_;
 
 	VkInstance instance_ = VK_NULL_HANDLE;
 	VkDevice device_ = VK_NULL_HANDLE;
@@ -22,23 +21,49 @@ struct VulkanCore {
 	VkQueue presentQueue_ = VK_NULL_HANDLE;
 	VkQueue transferQueue_ = VK_NULL_HANDLE;
 
-	// not sure about this
+	// Dont like surface here 
 	VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 
-	// Dont like having a commandPool default.
-	VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
-	// ----
+	// maybe not cool. Could it make sense to have one more that oen depthFormat for an applciationa?
+	// surfaceDetphFormat 
+	VkFormat viewportDepthFormat;
 
+	// Dont like having a commandPool default.
+	// also dont like the name
+	VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
 	VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
 
-	//
-	VkPhysicalDeviceProperties properties{};
+	VkPhysicalDeviceDriverProperties vkPhysicalDeviceDriverProperties_ = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES, nullptr };
+	VkPhysicalDeviceVulkan13Properties vkPhysicalDeviceVulkan13Properties_ = {
+		 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES,
+		 &vkPhysicalDeviceDriverProperties_,
+	};
+	// provided by Vulkan 1.2
+	VkPhysicalDeviceVulkan12Properties vkPhysicalDeviceVulkan12Properties_ = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
+		&vkPhysicalDeviceVulkan13Properties_,
+	};
+	VkPhysicalDeviceDepthStencilResolveProperties vkPhysicalDeviceDepthStencilResolveProperties_ = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES,
+		&vkPhysicalDeviceVulkan12Properties_,
+	};
+	// provided by Vulkan 1.1
+	VkPhysicalDeviceVulkan11Properties vkPhysicalDeviceVulkan11Properties_ = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES,
+		&vkPhysicalDeviceDepthStencilResolveProperties_,
+	};
+	VkPhysicalDeviceProperties2 vkPhysicalDeviceProperties2_ = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+		&vkPhysicalDeviceVulkan11Properties_,
+		VkPhysicalDeviceProperties{},
+	};
 
-	// TODO
-	//features1
-	//features11
-	//features12
-	//features13
+	// missing 1.4 .. dont care yet
+	VkPhysicalDeviceVulkan13Features vkFeatures13_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+	VkPhysicalDeviceVulkan12Features vkFeatures12_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &vkFeatures13_ };
+	VkPhysicalDeviceVulkan11Features vkFeatures11_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &vkFeatures12_ };
+	VkPhysicalDeviceFeatures2 vkFeatures10_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &vkFeatures11_ };
+	// 
 
 	void GetQueues() {
 
@@ -50,7 +75,6 @@ struct VulkanCore {
 		};
 
 		vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &graphicsQueue_);
-
 		// This should pick transfer over graphics
 		vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &transferQueue_);
 
@@ -62,10 +86,10 @@ struct VulkanCore {
 		}
 
 		// may be wrong . 
-		ktxInfo = *ktxVulkanDeviceInfo_Create(
+		ktxInfo_ = *ktxVulkanDeviceInfo_Create(
 			physicalDevice_,
 			device_,
-			transferQueue_,
+			/*transferQueue_*/ VK_NULL_HANDLE,
 			// this maybe should be transfer queue. we only use ktx to upload tex.
 			// no blitting for mipmaps, which are generated offline
 			// runtime genreation for mipmaps in ktx seems to be not up to par with SOA
@@ -74,8 +98,11 @@ struct VulkanCore {
 		);
 	}
 
-	ktxVulkanDeviceInfo GetKtxPayloadInfo() {
-		return ktxInfo;
+
+public:
+
+	const ktxVulkanDeviceInfo GetKtxPayloadInfo() {
+		return ktxInfo_;
 	}
 
 	VulkanCore() {
@@ -158,7 +185,7 @@ struct VulkanCore {
 			throw std::runtime_error("failed to find a suitable GPU!");
 		}
 
-		vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+		vkGetPhysicalDeviceProperties2(physicalDevice_, &vkPhysicalDeviceProperties2_);
 
 #ifndef DEBUG
 
@@ -253,6 +280,7 @@ struct VulkanCore {
 			vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &graphicsQueue_);
 			vkGetDeviceQueue(device_, indices.presentFamily.value(), 0, &presentQueue_);
 
+			// this is really hacky 
 			// Assert for BC7
 			VkFormatProperties p{};
 			vkGetPhysicalDeviceFormatProperties(physicalDevice_, VK_FORMAT_BC7_SRGB_BLOCK, &p);
@@ -261,9 +289,10 @@ struct VulkanCore {
 
 		}
 
-
 		GetQueues();
+		// 
+		viewportDepthFormat = findDepthFormat(physicalDevice_);
 
-	}
+	};
 
 };

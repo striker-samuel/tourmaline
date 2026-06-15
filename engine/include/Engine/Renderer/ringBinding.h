@@ -60,7 +60,7 @@ struct RingBinding
 	}
 
 
-	BindingDesc bindingDesc(
+	PipelineCreateInfo::BindingDesc bindingDesc(
 		//const std::vector<VkSampler>& resolvedImmutableSamplers
 	) const{
 		BindingDesc bn{};

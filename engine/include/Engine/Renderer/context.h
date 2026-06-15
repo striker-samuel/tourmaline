@@ -46,6 +46,7 @@ struct SamplerCreateInfo {
 	VkCompareOp compareOp = VK_COMPARE_OP_ALWAYS;
 	bool compareEnable = false;
 };
+using SamplerKey = SamplerCreateInfo;
 
 // TODO :: This neeeds heaby doses of elbow grease really
 struct PipelineCreateInfo{
@@ -118,20 +119,31 @@ struct DeviceBufferCreateInfo {
 
 class Context {
 	
-	VmaAllocator allocator_;
 	VmaPool D_2DImagesPool;
 	VmaPool D_StagingPool;
 
 public:
 
+	VmaAllocator allocator_;
 	VulkanCore& core;
+	//VulkanCore& core_;
 
 	int Initialize();
 	Context(VulkanCore _core) : core(_core) { Initialize(); };
+	//Context(VulkanCore core) : core_(core) { Initialize(); };
 	~Context();
 
+	// 
+	struct ToyCommandBuffer {
+		VkCommandBuffer cmdH;
+		size_t index;
+		bool recording;
+	};
+	std::vector<ToyCommandBuffer> commamds;
+	// 
+
 	Pool<Image, Image> images_;
-	Pool<Texture, Image> textures_; // tdont like this specialization 
+	Pool<Texture, Image> textures_; // dont like this specialization 
 	Pool<DeviceBuffer, DeviceBuffer> buffers_; // neither this monolithic buffer setup.
 	Pool<DescriptorSet, DescriptorSet> descriptorSets_;
 	Pool<ShaderModule, VkShaderModule> shaderModules_;
@@ -167,18 +179,19 @@ public:
 	// TEXTURES
 	// These need to be heavily reworked
 	TextureHandle GetOrCreateTexure(std::string uri, ktxTexture2& texture);
-	TextureHandle CreateTexture(ktxTexture2& texture);
+	//TextureHandle CreateTexture(ktxTexture2& texture);
 
+	void CreatePipelineLayout(const PipelineCreateInfo::PipelineLayoutDesc& descIn, Pipeline::Layout& out);
+	void CreateDescriptorLayout(const PipelineCreateInfo::DescriptorSetLayoutDesc& descIn, VkDescriptorSetLayout& layout);
 
-
-	void CreatePipelineLayout(const PipelineLayoutDesc& descIn, Pipeline::Layout& out);
-	void CreateDescriptorLayout(const DescriptorSetLayoutDesc& descIn, VkDescriptorSetLayout& layout);
-	void CreateSampler(uint32_t levelCount, VkSampler& sampler);
+	void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
 
 	DescriptorPoolHandle createDescriptorPool();
 
 	void CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view);
 
+
+	// 
 	void UploadDataToBuffer(DeviceBufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
 	void UploadDataToBuffer(DeviceBufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset, size_t dest_offset);
 
@@ -188,9 +201,6 @@ public:
 	//
 	VkCommandBuffer GetCommandBuffer();
 	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
-
-
-
 	// 
 	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 	void TransitionImageLayout(ImageHandle image_handle, VkImageLayout oldLayout, VkImageLayout newLayout);
@@ -206,4 +216,9 @@ void destroy(Context* ctx, DeviceBufferHandle handle);
 void destroy(Context* ctx, PipelineHandle handle);
 
 
-
+class ResourceMan{
+	ResourceMan(Context& context) : ctx(context){};
+	Context& ctx;
+	Pool<Texture, Image> textures_; // dont like this specialization 
+};
+void destroy(ResourceMan* man, TextureHandle handle);

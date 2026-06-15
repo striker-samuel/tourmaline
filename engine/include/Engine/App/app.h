@@ -112,8 +112,8 @@ protected:
 	}
 
 
+	// Dont like this hre like this
 	void UiPass() {
-
 		// These all 3 are needed for initialization.
 		ImGui_ImplVulkan_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
@@ -125,7 +125,6 @@ protected:
 			1000.0f / io.Framerate, io.Framerate);
 
 		ImDrawList* drawList = ImGui::GetForegroundDrawList();
-
 	}
 
 
@@ -265,7 +264,7 @@ void VulkanApp::InitializeImGui() {
 void VulkanApp::InitVulkanApp() {
 
 	core = VulkanCore();
-	if (glfwCreateWindowSurface(core.instance_, window, nullptr, &core.surface) !=
+	if (glfwCreateWindowSurface(core.instance_, window, nullptr, &core.surface_) !=
 		VK_SUCCESS) {
 		throw std::runtime_error("failed to create window surface!");
 	}
@@ -317,7 +316,7 @@ bool VulkanApp::Initialize() {
 	//
 
 	SwapChainSupportDetails swapChainSupport =
-		querySwapChainSupport(physicalDevice, surface);
+		querySwapChainSupport(core.physicalDevice_, core.surface_);
 	VkSurfaceFormatKHR surfaceFormat =
 		chooseSwapSurfaceFormat(swapChainSupport.formats);
 
@@ -325,10 +324,6 @@ bool VulkanApp::Initialize() {
 
 	swapchain = new VulkanSwapchain(
 		*context,
-		physicalDevice, // This may be redundant, context already knows of device, and physDevice.
-		device, //
-		surface,
-		presentQueue, // Queue acquisition is currently done on InitVulkanApp()
 		window,
 		static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT),
 		static_cast<uint32_t>(DESIRED_SWAPCHAIN_IMAGE_COUNT)
@@ -338,7 +333,7 @@ bool VulkanApp::Initialize() {
 	InitializeImGui();
 
 	// FRAME COMMAND 
-	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, surface);
+	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(core.physicalDevice_, core.surface_);
 	VkCommandPoolCreateInfo poolInfo{
 		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -346,7 +341,7 @@ bool VulkanApp::Initialize() {
 	};
 
 	for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
-		if (vkCreateCommandPool(device, &poolInfo, nullptr, &perFrameCommandPools[fn]) !=
+		if (vkCreateCommandPool(core.device_, &poolInfo, nullptr, &perFrameCommandPools[fn]) !=
 			VK_SUCCESS) {
 			throw std::runtime_error("failed to create graphics command pool!");
 		}
@@ -361,7 +356,7 @@ bool VulkanApp::Initialize() {
 		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 		allocInfo.commandBufferCount = 1;
 
-		VK_CHECK(vkAllocateCommandBuffers(device, &allocInfo, &commandBuffers[i]));
+		VK_CHECK(vkAllocateCommandBuffers(core.device_, &allocInfo, &commandBuffers[i]));
 	}
 
 	return true;
@@ -381,41 +376,40 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 
 void VulkanApp::CleanUp() {
 
-	return;
-
-	vkDeviceWaitIdle(device);
-
+	vkDeviceWaitIdle(core.device_);
 	swapchain->CleanupSwapchain();
 
+
+	// 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		// destroying the pool fress the commandBuffers too
-		vkDestroyCommandPool(device, perFrameCommandPools[i], nullptr);
+		vkDestroyCommandPool(core.device_, perFrameCommandPools[i], nullptr);
 	}
 	context->CleanUp();
 
-	vkDestroyDevice(device, nullptr);
+	vkDestroyDevice(core.device_, nullptr);
 
-	if (surface != VK_NULL_HANDLE)
+	if (core.surface_ != VK_NULL_HANDLE)
 	{
 		glfwDestroyWindow(window);
-		vkDestroySurfaceKHR(instance, surface, nullptr);
-		surface = VK_NULL_HANDLE;
+		vkDestroySurfaceKHR(core.instance_, core.surface_, nullptr);
+		core.surface_ = VK_NULL_HANDLE;
 		glfwTerminate();
 		window = nullptr;
 	}
 
 	// 
 	vkDestroyDebugUtilsMessengerEXT(
-		instance,
-		debugMessenger,
+		core.instance_,
+		core.debugMessenger_,
 		nullptr
 	);
-	vkDestroyInstance(instance, nullptr);
+	vkDestroyInstance(core.instance_, nullptr);
 
 	// then destroy the device; this releases VkQueue handles too
-	presentQueue = VK_NULL_HANDLE;
-	graphicsQueue = VK_NULL_HANDLE;
-	instance = VK_NULL_HANDLE;
+	core.presentQueue_ = VK_NULL_HANDLE;
+	core.graphicsQueue_ = VK_NULL_HANDLE;
+	core.instance_ = VK_NULL_HANDLE;
 
 }
 
@@ -473,10 +467,10 @@ void VulkanApp::scrollCallback(
 	}
 }
 
-ToyFrameBuffer VulkanApp::AcquireFrame()
+ToyFrameBuffer VulkanApp::AcquireFramebuffer()
 {
 	vkWaitForFences(
-		device,
+		core.device_,
 		1,
 		&swapchain->GetInFlightFence(),
 		VK_TRUE,
@@ -485,7 +479,7 @@ ToyFrameBuffer VulkanApp::AcquireFrame()
 
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(
-		device,
+		core.device_,
 		swapchain->swapchain_,
 		UINT64_MAX,
 		swapchain->imageAvailableSemaphores_[swapchain->currentFrame_],
@@ -503,9 +497,8 @@ ToyFrameBuffer VulkanApp::AcquireFrame()
 
 	swapchain->SetCurrentImageIndex(imageIndex);
 
-	vkResetFences(device, 1, &swapchain->inFlightFences_[swapchain->currentFrame_]);
-
-	vkResetCommandPool(device, perFrameCommandPools[swapchain->currentFrame_], 0);
+	vkResetFences(core.device_, 1, &swapchain->inFlightFences_[swapchain->currentFrame_]);
+	vkResetCommandPool(core.device_, perFrameCommandPools[swapchain->currentFrame_], 0);
 
 	UpdateDeltaTime();
 
@@ -541,10 +534,13 @@ ToyFrameBuffer VulkanApp::AcquireFrame()
 		1, &barrierToColorAttachment
 	);
 
-	ToyFrameBuffer cb{};
-	cb.frameIndex = swapchain->currentFrame_;
-	cb.commandBuffer = commandBuffers[swapchain->currentFrame_];
-	return cb;
+	ToyFrameBuffer frameBufferContext_{
+		.frameIndex = swapchain->currentFrame_,
+		.commandBuffer = commandBuffers[swapchain->currentFrame_],
+		.swapchain = *swapchain
+
+	};
+	return frameBufferContext_;
 }
 
 void VulkanApp::EndAndPresentFramebuffer(ToyFrameBuffer& fb)
@@ -597,7 +593,7 @@ void VulkanApp::EndAndPresentFramebuffer(ToyFrameBuffer& fb)
 
 	if (
 		vkQueueSubmit(
-			context->default_queue,
+			core.graphicsQueue_,
 			1,
 			&submitInfo,
 			swapchain->GetInFlightFence()
@@ -618,7 +614,7 @@ void VulkanApp::EndAndPresentFramebuffer(ToyFrameBuffer& fb)
 	presentInfo.pSwapchains = swapChains;
 	presentInfo.pImageIndices = &swapchain->currentImageIndex_;
 
-	VkResult result = vkQueuePresentKHR(presentQueue, &presentInfo);
+	VkResult result = vkQueuePresentKHR(core.presentQueue_, &presentInfo);
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
 		framebufferResized) {

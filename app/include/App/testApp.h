@@ -242,7 +242,7 @@ private:
 			.vert = vert_shader_h, // vert
 			.frag = fragHandle, //frag
 			.depth_format = findDepthFormat(core.physicalDevice_),
-			.swapchainImageFormat = swapchain->GetImageFormat() 
+			.swapchainImageFormat = swapchain->GetImageFormat()
 			}
 		);
 		auto pipe_obj = context->pipelines_.get(mainPipeline);
@@ -393,7 +393,7 @@ private:
 			writes[1].descriptorCount = static_cast<uint32_t>(samplerInfos.size());   // or 1 if you use a single shared sampler
 			writes[1].pImageInfo = samplerInfos.data();
 
-			vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+			vkUpdateDescriptorSets(core.device_, 2, writes, 0, nullptr);
 		}
 
 	}
@@ -443,249 +443,202 @@ private:
 
 	}
 
+
 	void BeginFrame() {
 		auto fb = AcquireFramebuffer();
-		auto swapChainExtent = swapchain->GetExtent();
-		auto colorView = swapchain->GetCurrentImageView();
-		auto depthHandle = swapchain->GetDepthImage();
-		auto depthView = context->images_.get(depthHandle)->renderView;
+		//auto swapChainExtent = swapchain->GetExtent();
+		//auto colorView = swapchain->GetCurrentImageView();
+		//auto depthHandle = swapchain->GetDepthImage();
+		//auto depthView = context->images_.get(depthHandle)->renderView;
 	}
 
-	void RenderFrame() {
-		// Setup rendering info for the main pass
-
-		//VkRenderingAttachmentInfo colorAttachment{};
-		//colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-		//colorAttachment.imageView = colorView;
-		//colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		//colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		//colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-		//colorAttachment.clearValue = { {0.0f, 0.0f, 0.0f, 1.0f} };
-
-		//VkRenderingAttachmentInfo depthAttachment{};
-		//depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-		//depthAttachment.imageView = depthView;
-		//depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-		//depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		//depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		//depthAttachment.clearValue.depthStencil = { 0.0f, 0 };
-
-		//cmd.renderingInfo = {};
-		//cmd.renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
-		//cmd.renderingInfo.renderArea.offset = { 0, 0 };
-		//cmd.renderingInfo.renderArea.extent = swapChainExtent;
-		//cmd.renderingInfo.layerCount = 1;
-		//cmd.renderingInfo.colorAttachmentCount = 1;
-		//cmd.renderingInfo.pColorAttachments = &colorAttachment;
-		//cmd.renderingInfo.pDepthAttachment = &depthAttachment;
+	void RenderFrame(ToyFrameBuffer fb) {
 
 		rendergraph.Clear();
 		//rendergraph.NewFrame();
 
-		auto color = rendergraph.AddImage({});
-		auto depth = rendergraph.AddImage({});
+		auto color = rendergraph.AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
+		auto depthView = context->images_.get(fb.swapchain.depthImage_)->renderView;
+		auto depthViewId = rendergraph.AddImageView(depthView);
 
-		auto colorView = rendergraph.AddImageView({});
-		auto depthView = rendergraph.AddImageView({});
-
-		rendergraph.AddPass(
+		auto mainPass = rendergraph.AddPass(
 			{
-				.type = PassType::Rasterize,
+				.type = ToyRenderPass::PassType::Rasterize,
 			}
 			)
-			.setExtent(swapchainExtent)
+			.setOffset({ 0,0 })
+			.setExtent(fb.swapchain.extent_)
 			.setColor({ color }, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
-			.setDepth(depth, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
-			;
+			.setDepth(depthViewId, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
+			.setRecordingFunc([this, fb](ToyRenderPassContext renderpassctx) {
 
-		UpdateFrameUniforms(swapchain->GetCurrentFrameIndex());
+			UpdateFrameUniforms(swapchain->GetCurrentFrameIndex());
 
-		// VIEWPORT
-		VkViewport vp{};
-		vp.x = 0.0f;
-		vp.y = 0.0f;
-		vp.width = (float)swapChainExtent.width;
-		vp.height = (float)swapChainExtent.height;
-		vp.minDepth = 0.0f;
-		vp.maxDepth = 1.0f;
-		vkCmdSetViewport(cmd.commandBuffer, 0, 1, &vp);
+			// BIND DESCRIPTOR SETS
+			auto dynamic_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDynamicDescriptorSet);
+			auto update_after_bind_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDescriptorSet);
 
-		// SCISSOR.
-		VkRect2D scissor{};
-		scissor.offset = { 0, 0 };
-		scissor.extent = swapChainExtent;
-		vkCmdSetScissor(cmd.commandBuffer, 0, 1, &scissor);
+			std::vector<int> visible;
 
-		// BIND DESCRIPTOR SETS
-		auto dynamic_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDynamicDescriptorSet);
-		auto update_after_bind_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDescriptorSet);
+			auto view = camera.getViewMatrix();
+			auto proj = camera.getProjMatrix();
+			proj[1][1] *= -1;
 
-		std::vector<int> visible;
+			auto viewProj = proj * view;
 
-		auto view = camera.getViewMatrix();
-		auto proj = camera.getProjMatrix();
-		proj[1][1] *= -1;
-
-		auto viewProj = proj * view;
-
-		if (current_level.tree_done) {
-			frustumCullBVH(
-				current_level.static_tree,
-				0,
-				viewProj,
-				camera.getPosition(),
-				visible
-			);
-		}
-		else {
-			assert(false && "tree wasnt done");
-		}
-
-		// VISIBLE PIPELINES
-		std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
-
-		for (uint32_t primSlot : visible) {
-			if (primSlot >= current_level.static_tree.primToNode.size()) continue;
-
-			uint32_t node = current_level.static_tree.primToNode[primSlot];
-
-			auto it = current_level.materialForNode.find(node);
-			if (it == current_level.materialForNode.end()) continue;
-
-			uint32_t materialIndex = it->second;
-			auto matHandle = man.materials.getHandle(materialIndex);
-			auto mat = man.materials.get(matHandle);
-			if (!mat) continue;
-
-			if (!mat->pipeline) {
-				mat->pipeline = mainPipeline;
+			if (current_level.tree_done) {
+				frustumCullBVH(
+					current_level.static_tree,
+					0,
+					viewProj,
+					camera.getPosition(),
+					visible
+				);
+			}
+			else {
+				assert(false && "tree wasnt done");
 			}
 
-			pipeline_map[mat->pipeline].push_back(primSlot);
-		}
+			// VISIBLE PIPELINES
+			std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
 
-		if (pipeline_map.empty()) {
-			// This is clearly wrong.
-			// Maybe.
-			// Load op cleas the fb
-			vkCmdBeginRendering(cmd.commandBuffer, &cmd.renderingInfo);
-			vkCmdEndRendering(cmd.commandBuffer);
-			EndAndPresentFramebuffer(cmd);
-			return;
-		}
+			for (uint32_t primSlot : visible) {
+				if (primSlot >= current_level.static_tree.primToNode.size()) continue;
 
-		auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->layout;
+				uint32_t node = current_level.static_tree.primToNode[primSlot];
 
-		uint32_t dynamicOffsets[2] = {
-			frameUniformsBinding.dynamicOffsetFrame(swapchain->currentFrame_),
-			drawDataBinding.dynamicOffsetFrame(swapchain->currentFrame_),
-		};
+				auto it = current_level.materialForNode.find(node);
+				if (it == current_level.materialForNode.end()) continue;
 
-		VkDescriptorSet sets[2] = {
-			dynamic_set->set,
-			update_after_bind_set->set,
-		};
+				uint32_t materialIndex = it->second;
+				auto matHandle = man.materials.getHandle(materialIndex);
+				auto mat = man.materials.get(matHandle);
+				if (!mat) continue;
 
-		vkCmdBindDescriptorSets(
-			cmd.commandBuffer,
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			pipe_lyt.layout,
-			0,
-			2,
-			sets,
-			2,
-			dynamicOffsets
-		);
+				if (!mat->pipeline) {
+					mat->pipeline = mainPipeline;
+				}
 
-		vkCmdBeginRendering(
-			cmd.commandBuffer,
-			&cmd.renderingInfo
-		);
+				pipeline_map[mat->pipeline].push_back(primSlot);
+			}
 
-		MainViewPushConstants pc{};
-		pc.model = glm::mat4(1.0f);
+			if (pipeline_map.empty()) {
+				// This is clearly wrong.
+				// Maybe.
+				// Load op cleas the fb
+				//vkCmdBeginRendering(fb.commandBuffer, &cmd.renderingInfo);
+				//vkCmdEndRendering(fb.commandBuffer);
+				//ndAndPresentFramebuffer(fb);
+				assert(false);
+			}
 
-		for (const auto& [han_, visible] : pipeline_map)
-		{
-			vkCmdBindPipeline(
-				cmd.commandBuffer,
+			auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->layout;
+
+			uint32_t dynamicOffsets[2] = {
+				frameUniformsBinding.dynamicOffsetFrame(swapchain->currentFrame_),
+				drawDataBinding.dynamicOffsetFrame(swapchain->currentFrame_),
+			};
+
+			VkDescriptorSet sets[2] = {
+				dynamic_set->set,
+				update_after_bind_set->set,
+			};
+
+			vkCmdBindDescriptorSets(
+				fb.commandBuffer,
 				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				context->pipelines_.get(han_)->pipeline
+				pipe_lyt.layout,
+				0,
+				2,
+				sets,
+				2,
+				dynamicOffsets
 			);
 
-			for (uint32_t visible_prim : visible) {
-				uint32_t visible_node = current_level.static_tree.primToNode[visible_prim];
+			MainViewPushConstants pc{};
+			pc.model = glm::mat4(1.0f);
 
-				auto it = current_level.meshForNode.find(visible_node);
-				if (it == current_level.meshForNode.end()) continue;
-
-				uint32_t meshIndex = it->second;
-
-				auto mesh_desc = man.meshes.get(
-					man.meshes.getHandle(meshIndex)
+			for (const auto& [han_, visible] : pipeline_map)
+			{
+				vkCmdBindPipeline(
+					fb.commandBuffer,
+					VK_PIPELINE_BIND_POINT_GRAPHICS,
+					context->pipelines_.get(han_)->pipeline
 				);
 
-				auto material_instance_index = current_level.materialForNode[visible_node];
-				pc.material_index = material_instance_index;
+				for (uint32_t visible_prim : visible) {
+					uint32_t visible_node = current_level.static_tree.primToNode[visible_prim];
 
-				auto matHandle = man.materials.getHandle(material_instance_index);
-				auto mat = man.materials.get(matHandle);
+					auto it = current_level.meshForNode.find(visible_node);
+					if (it == current_level.meshForNode.end()) continue;
 
-				assert(mat);
+					uint32_t meshIndex = it->second;
 
-				Material::Values pcm = mat->values;
+					auto mesh_desc = man.meshes.get(
+						man.meshes.getHandle(meshIndex)
+					);
 
-				struct PC_All {
-					MainViewPushConstants pc;
-					Material::Values mpc;
-				};
-				PC_All all{ pc, pcm };
+					auto material_instance_index = current_level.materialForNode[visible_node];
+					pc.material_index = material_instance_index;
 
-				vkCmdPushConstants(
-					cmd.commandBuffer,
-					pipe_lyt.layout,
-					VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-					0,
-					sizeof(PC_All),
-					&all
-				);
+					auto matHandle = man.materials.getHandle(material_instance_index);
+					auto mat = man.materials.get(matHandle);
 
-				for (auto& draw_set : mesh_desc->surfaces) {
+					assert(mat);
 
-					auto& model_ = current_level.globalTransform[visible_node];
+					Material::Values pcm = mat->values;
+
+					struct PC_All {
+						MainViewPushConstants pc;
+						Material::Values mpc;
+					};
+					PC_All all{ pc, pcm };
+
 					vkCmdPushConstants(
-						cmd.commandBuffer,
+						fb.commandBuffer,
 						pipe_lyt.layout,
 						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-						offsetof(MainViewPushConstants, model),
-						sizeof(glm::mat4),
-						glm::value_ptr(model_)
+						0,
+						sizeof(PC_All),
+						&all
 					);
 
-					vkCmdDrawIndexed(
-						cmd.commandBuffer,
-						draw_set.index_count,
-						1,
-						draw_set.first_index,
-						draw_set.base_vertex,
-						0
-					);
+					for (auto& draw_set : mesh_desc->surfaces) {
 
+						auto& model_ = current_level.globalTransform[visible_node];
+						vkCmdPushConstants(
+							fb.commandBuffer,
+							pipe_lyt.layout,
+							VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+							offsetof(MainViewPushConstants, model),
+							sizeof(glm::mat4),
+							glm::value_ptr(model_)
+						);
+
+						vkCmdDrawIndexed(
+							fb.commandBuffer,
+							draw_set.index_count,
+							1,
+							draw_set.first_index,
+							draw_set.base_vertex,
+							0
+						);
+
+					}
 				}
 			}
-		}
 
-		UiPass();
 
-		ImGui::Render();
+			// This shouldnt be here really
+			UiPass();
+			ImGui::Render();
+			ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), fb.commandBuffer);
+			//
+				}
+			);
 
-		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd.commandBuffer);
-
-		vkCmdEndRendering(
-			cmd.commandBuffer
-		);
-
-		EndAndPresentFramebuffer(cmd);
+		rendergraph.Execute(fb);
+		EndAndPresentFramebuffer(fb);
 
 	}
 
@@ -736,4 +689,5 @@ void TestApp::UpdateCamera(float dt)
 		mousePos,
 		mousePressed
 	);
+
 }

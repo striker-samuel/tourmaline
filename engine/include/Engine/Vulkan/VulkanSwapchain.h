@@ -15,20 +15,13 @@ class VulkanSwapchain {
 public:
 
     VulkanSwapchain(
+        //VulkanCore& core,
         Context& context,
-        VkPhysicalDevice physicalDevice,
-        VkDevice device,
-        VkSurfaceKHR surface,
-        VkQueue presentQueue,
         GLFWwindow* window,
         uint32_t framesInFlight,
         uint32_t desiredImageCount
     )
         : ctx_(context),
-          physicalDevice_(physicalDevice),
-          device_(device),
-          surface_(surface),
-          presentQueue_(presentQueue),
           window_(window),
           framesInFlight_(framesInFlight),
           desiredImageCount_(desiredImageCount) {
@@ -65,7 +58,7 @@ public:
         extent_.width = width;
         extent_.height = height;
 
-        vkDeviceWaitIdle(device_);
+        vkDeviceWaitIdle(ctx_.core.device_);
 
         CleanupSwapchain();
 
@@ -134,18 +127,13 @@ public:
     }
 
     Context& ctx_;
+    //VulkanCore& core_;
 
-    VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
-    VkDevice device_ = VK_NULL_HANDLE;
-    VkSurfaceKHR surface_ = VK_NULL_HANDLE;
-    VkQueue presentQueue_ = VK_NULL_HANDLE;
     GLFWwindow* window_ = nullptr;
-
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
 
-
-    //VkImage depthImage_;
     ImageHandle depthImage_{};
+    //VkImage depthImage_;
     std::vector<VkImage> images_;
     std::vector<VkImageView> imageViews_;
 
@@ -167,9 +155,10 @@ public:
     uint32_t currentImageIndex_ = 0;
     uint32_t currentFrame_ = 0;
 
+
     void CreateSwapchain() {
         SwapChainSupportDetails support =
-            querySwapChainSupport(physicalDevice_, surface_);
+            querySwapChainSupport(ctx_.core.physicalDevice_, ctx_.core.surface_);
 
         VkSurfaceFormatKHR surfaceFormat =
             chooseSwapSurfaceFormat(support.formats);
@@ -192,7 +181,7 @@ public:
             imageCount = support.capabilities.maxImageCount;
         }
 
-        QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
+        QueueFamilyIndices indices = findQueueFamilies(ctx_.core.physicalDevice_, ctx_.core.surface_);
         uint32_t queueFamilyIndices[] = {
             indices.graphicsFamily.value(),
             indices.presentFamily.value()
@@ -200,7 +189,7 @@ public:
 
         VkSwapchainCreateInfoKHR createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-        createInfo.surface = surface_;
+        createInfo.surface = ctx_.core.surface_;
         createInfo.minImageCount = imageCount;
         createInfo.imageFormat = surfaceFormat.format;
         createInfo.imageColorSpace = surfaceFormat.colorSpace;
@@ -221,16 +210,16 @@ public:
             createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
         }
 
-        VkResult result = vkCreateSwapchainKHR(device_, &createInfo, nullptr, &swapchain_);
+        VkResult result = vkCreateSwapchainKHR(ctx_.core.device_, &createInfo, nullptr, &swapchain_);
         if (result != VK_SUCCESS) {
             throw std::runtime_error("Failed to create Vulkan swapchain.");
         }
 
         uint32_t actualImageCount = 0;
-        vkGetSwapchainImagesKHR(device_, swapchain_, &actualImageCount, nullptr);
+        vkGetSwapchainImagesKHR(ctx_.core.device_, swapchain_, &actualImageCount, nullptr);
 
         images_.resize(actualImageCount);
-        vkGetSwapchainImagesKHR(device_, swapchain_, &actualImageCount, images_.data());
+        vkGetSwapchainImagesKHR(ctx_.core.device_, swapchain_, &actualImageCount, images_.data());
 
         imageViews_.resize(actualImageCount);
         renderFinishedSemaphores_.resize(actualImageCount, VK_NULL_HANDLE);
@@ -260,8 +249,8 @@ public:
     }
 
     void CreateDepthResources() {
-        VkFormat depthFormat = findDepthFormat(physicalDevice_);
-
+        //VkFormat depthFormat = findDepthFormat(physicalDevice_);
+        VkFormat depthFormat = ctx_.core.viewportDepthFormat;
         depthImage_ = ctx_.CreateImage(
             extent_.width,
             extent_.height,
@@ -303,14 +292,14 @@ public:
         fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
         for (size_t i = 0; i < renderFinishedSemaphores_.size(); ++i) {
-            if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &renderFinishedSemaphores_[i]) != VK_SUCCESS) {
+            if (vkCreateSemaphore(ctx_.core.device_, &semaphoreInfo, nullptr, &renderFinishedSemaphores_[i]) != VK_SUCCESS) {
                 throw std::runtime_error("Failed to create render-finished semaphore.");
             }
         }
 
         for (size_t i = 0; i < framesInFlight_; ++i) {
-            if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &imageAvailableSemaphores_[i]) != VK_SUCCESS ||
-                vkCreateFence(device_, &fenceInfo, nullptr, &inFlightFences_[i]) != VK_SUCCESS) {
+            if (vkCreateSemaphore(ctx_.core.device_, &semaphoreInfo, nullptr, &imageAvailableSemaphores_[i]) != VK_SUCCESS ||
+                vkCreateFence(ctx_.core.device_, &fenceInfo, nullptr, &inFlightFences_[i]) != VK_SUCCESS) {
                 throw std::runtime_error("Failed to create per-frame sync objects.");
             }
         }
@@ -319,21 +308,21 @@ public:
     void DestroySyncObjects() {
         for (VkSemaphore semaphore : renderFinishedSemaphores_) {
             if (semaphore != VK_NULL_HANDLE) {
-                vkDestroySemaphore(device_, semaphore, nullptr);
+                vkDestroySemaphore(ctx_.core.device_, semaphore, nullptr);
             }
         }
         renderFinishedSemaphores_.clear();
 
         for (VkSemaphore semaphore : imageAvailableSemaphores_) {
             if (semaphore != VK_NULL_HANDLE) {
-                vkDestroySemaphore(device_, semaphore, nullptr);
+                vkDestroySemaphore(ctx_.core.device_, semaphore, nullptr);
             }
         }
         imageAvailableSemaphores_.clear();
 
         for (VkFence fence : inFlightFences_) {
             if (fence != VK_NULL_HANDLE) {
-                vkDestroyFence(device_, fence, nullptr);
+                vkDestroyFence(ctx_.core.device_, fence, nullptr);
             }
         }
         inFlightFences_.clear();
@@ -348,7 +337,7 @@ public:
 
         for (VkImageView view : imageViews_) {
             if (view != VK_NULL_HANDLE) {
-                vkDestroyImageView(device_, view, nullptr);
+                vkDestroyImageView(ctx_.core.device_, view, nullptr);
             }
         }
 
@@ -356,7 +345,7 @@ public:
         images_.clear();
 
         if (swapchain_ != VK_NULL_HANDLE) {
-            vkDestroySwapchainKHR(device_, swapchain_, nullptr);
+            vkDestroySwapchainKHR(ctx_.core.device_, swapchain_, nullptr);
             swapchain_ = VK_NULL_HANDLE;
         }
     }

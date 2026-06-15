@@ -340,22 +340,28 @@ void ToyResourceManager::InitalizeGeoBuffers() {
 		uint32_t totalIndexBytes = 512u * 1024u * 1024u;
 
 		// Create the actual GPU buffers (these are the page's buffers)
-		DeviceBufferHandle vb_pos = ctx->createBuffer(
+		DeviceBufferHandle vb_pos = ctx->CreateBuffer(
+			{
 			totalVertexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			}
 		);
 
-		DeviceBufferHandle vb_shd = ctx->createBuffer(
+		DeviceBufferHandle vb_shd = ctx->CreateBuffer(
+			{
 			totalVertexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			}
 		);
 
-		DeviceBufferHandle ib = ctx->createBuffer(
-			totalIndexBytes,
+		DeviceBufferHandle ib = ctx->CreateBuffer(
+			{
+				totalIndexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			}
 		);
 
 		// Single page.

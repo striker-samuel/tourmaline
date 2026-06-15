@@ -7,10 +7,11 @@
 // Lets just alias creation info to the key
 using ImageKey = ImageCreateInfo;
 using DeviceBufferKey = DeviceBufferCreateInfo;
+using PipelineKey = DeviceBufferCreateInfo;
 
 // forward declarations
-struct RenderGraph{};
-struct ToyRenderPass {};
+struct RenderGraph;
+struct ToyRenderPass;
 
 struct ToyRenderPassContext {
 	Context& ctx;
@@ -18,10 +19,9 @@ struct ToyRenderPassContext {
 };
 
 struct ToyFrameBuffer{
-	//Swapchain& swapchain;
-	// We are going with stupid simple only one swapchain
 	uint32_t frameIndex = 0; // Maybe end os uint32_ to catch for unitialized? this value can only be ip to SWAPCHAIN_IMAGE_COUNT
 	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+	VulkanSwapchain& swapchain;
 };
 
 struct VirtualBufferId
@@ -34,8 +34,7 @@ struct VirtualBufferId
 struct VirtualImageViewId
 {
 	size_t id;
-	ImageViewKey key;
-	ImageViewHandle buffer;
+	VkImageView resolvedImageView = VK_NULL_HANDLE;
 };
 
 struct VirtualImageId {
@@ -69,7 +68,7 @@ struct ToyRenderPass final {
 	RecordingFunction recordingFunction_;
 
 	struct Attachment {
-		VirtualImageId image;
+		VirtualImageViewId view;
 		VkAttachmentLoadOp loadOp;
 		VkAttachmentStoreOp storeOp;
 		VkClearValue clearValue;
@@ -84,22 +83,28 @@ struct ToyRenderPass final {
 	std::vector<VirtualBufferId> vertexBuffers_;
 
 	ToyRenderPass& setColor(
-		std::vector<VirtualImageViewId>& images,
+		std::vector<VirtualImageViewId>& views, // may be better to do views. 
 		VkAttachmentLoadOp _loadOp,
 		VkAttachmentStoreOp _storeOp,
 		VkClearValue _clearValue
 	) {
-		this->colorAttachments_.resize(images.size());
-		for (size_t index = 0; index < images.size(); index++)
+		this->colorAttachments_.resize(views.size());
+		for (size_t index = 0; index < views.size(); index++)
 		{
-			this->colorAttachments_[index] = { images[index], _loadOp, _storeOp, _clearValue };
+			this->colorAttachments_[index] = { views[index], _loadOp, _storeOp, _clearValue };
 		}
 		return *this;
 	}
 
 	// stencil is baked into depth! this can cause problems here!
 	// protect agains invariant or make SetStencil only enable
-	ToyRenderPass& setDepth(VirtualImageViewId _imageId) {};
+	ToyRenderPass& setDepth(VirtualImageViewId viewId,
+		VkAttachmentLoadOp _loadOp,
+		VkAttachmentStoreOp _storeOp,
+		VkClearValue _clearValue
+	) {
+		this->depthAttachment_ = { viewId, _loadOp, _storeOp, _clearValue };
+	};
 	ToyRenderPass& setStencil(VirtualImageViewId depthAttachent) /*{ this->depthAttachment_ = depthAttachent; return *this; }*/;
 
 	ToyRenderPass& setVertexBuffers(std::vector<VirtualBufferId> vertexBuffers) { this->vertexBuffers_ = vertexBuffers; return *this; }
@@ -119,6 +124,7 @@ struct RenderGraph {
 	void Clear() { passes.clear(); }
 
 	std::vector<VirtualImageId> images;
+	std::vector<VirtualImageViewId> views;
 	//std::map<ImageKey, VirtualImageId> images;
 	//std::map<BufferKey, VirtualImageId> buffers;
 
@@ -126,27 +132,21 @@ struct RenderGraph {
 		return passes.emplace_back(_renderPass);
 	}
 
-	VirtualImageId AddImage(ImageHandle _image) {
-		VirtualImageId proxy{
-			.id = images.size()
-		};
-		images.push_back(proxy);
-		return proxy;
-	}
-	//VirtualImageId AddImage(ImageHandle _image) {
+
+	//VirtualImageId AddImage(ImageHandle imageHandle) {
+	//	auto image = ctx->images_.get(imageHandle);
 	//	VirtualImageId proxy{
-	//		.id = images.size()
+	//		.id = images.size(),
 	//	};
 	//	images.push_back(proxy);
 	//	return proxy;
 	//}
-
-	// Resolution
-	ImageHandle ResolveImageKey(const ImageKey& key) {
-		return {};
-	}
-	DeviceBufferHandle ResolveBufferHandle(const DeviceBufferKey& key) {
-		return{};
+	VirtualImageViewId AddImageView(VkImageView view) {
+		VirtualImageViewId proxy{
+			.id = views.size()
+		};
+		views.push_back(proxy);
+		return proxy;
 	}
 
 	void ResolveImages();
@@ -156,21 +156,21 @@ struct RenderGraph {
 	void Execute(ToyFrameBuffer& fb) {
 
 	  ResolveImages();
-	  ResolveImageViews();
+	  //ResolveImageViews();
 	  ResolveBuffers();
 
 		for (auto& pass : passes) {
 			std::vector<VkRenderingAttachmentInfo> colorInfos;
 			colorInfos.reserve(pass.colorAttachments_.size());
 
-
 			for (auto& att : pass.colorAttachments_) {
 				VkRenderingAttachmentInfo info{};
 				info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-				ImageHandle h = ResolveImageKey(att.image);
-				if (h.valid()) {
-					info.imageView = ctx->images_.get(h)->renderView;
-				}
+				//ImageHandle h = att.image.resolvedImage;
+				//if (h.valid()) {
+				//	info.imageView = ctx->images_.get(h)->renderView;
+				//}
+				info.imageView = att.view.resolvedImageView;
 				info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 				info.loadOp = att.loadOp;
 				info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -181,10 +181,11 @@ struct RenderGraph {
 			VkRenderingAttachmentInfo depthInfo{};
 			depthInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
 			{
-				ImageHandle h = ResolveImageKey(pass.depthAttachment_.image);
-				if (h.valid()) {
-					depthInfo.imageView = ctx->images_.get(h)->renderView;
-				}
+				//ImageHandle h = pass.depthAttachment_.image.resolvedImage;
+				//if (h.valid()) {
+				//	depthInfo.imageView = ctx->images_.get(h)->renderView;
+				//}
+				depthInfo.imageView = pass.depthAttachment_.view.resolvedImageView;
 			}
 			depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
 			depthInfo.loadOp = pass.depthAttachment_.loadOp;
@@ -199,6 +200,22 @@ struct RenderGraph {
 			renderInfo.colorAttachmentCount = (uint32_t)colorInfos.size();
 			renderInfo.pColorAttachments = colorInfos.data();
 			renderInfo.pDepthAttachment = &depthInfo;
+
+			//// VIEWPORT
+			VkViewport vp{};
+			vp.x = 0.0f;
+			vp.y = 0.0f;
+			vp.width = (float)pass.extent_.width;
+			vp.height = (float)pass.extent_.height;
+			vp.minDepth = 0.0f;
+			vp.maxDepth = 1.0f;
+			vkCmdSetViewport(fb.commandBuffer, 0, 1, &vp);
+
+			// SCISSOR.
+			VkRect2D scissor{};
+			scissor.offset = { 0, 0 };
+			scissor.extent = pass.extent_;
+			vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
 
 			vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
 
@@ -216,15 +233,21 @@ struct RenderGraph {
 	}
 };
 
-
-
-
 class Cache {
 
 	Context& ctx_;
 	Cache(Context& ctx) : ctx_(ctx) {}
 	~Cache() {};
 	std::map<ImageKey, ImageHandle> images;
-	std::map<DeviceBufferKey, DeviceBufferHandle> images;
-	std::map<PipelineKey, PipelineHandle> images;
-}
+	std::map<PipelineKey, PipelineHandle> pipelines;
+
+	// This should be split into unofmr, storage and else
+	std::map<DeviceBufferKey, DeviceBufferHandle> buffers;
+
+	ImageHandle GetImage(ImageKey key) {
+		// Obviusly not correct
+		auto cacheHit = images[key];
+		return cacheHit;
+	};
+
+};
