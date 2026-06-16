@@ -103,12 +103,6 @@ public:
 private:
 	using Super = VulkanApp;
 
-	// nahhh, dont like this 
-	ToyResourceManager man = {};
-	// -----
-
-	Level current_level = {};
-
 	void UpdateCamera(float dt);
 
 	// App resources -- This should just be spawned by the RG
@@ -118,7 +112,6 @@ private:
 	};
 	FrameResources perFrameData[MAX_FRAMES_IN_FLIGHT];
 	// 
-
 	RingBinding<FrameUniforms, 1> frameUniformsBinding;
 	RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
 	PipelineHandle mainPipeline;
@@ -130,6 +123,9 @@ private:
 		glm::vec3(0.0f, 1.0f, 0.0f) //up
 	);
 	Camera camera = Camera(cameraPositioner);
+	ToyResourceManager man = {};
+	Level current_level = {};
+	//
 
 	void EarlyUpdate() override {
 		Super::EarlyUpdate();
@@ -276,7 +272,8 @@ private:
 		current_level.tree_done = true;
 
 		// This is rendergraph responsability really
-		//SetDescriptorSets();
+		SetDescriptorSets();
+
 		UpdateBindlessTexturesSets();
 
 		return true;
@@ -476,6 +473,7 @@ private:
 			)
 			.setOffset({ 0,0 })
 			.setExtent(fb.swapchain.extent_)
+			//.setVertexBuffers(), 
 			.setColor( colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
 			.setDepth(depthViewId, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
 			.setRecordingFunc([this, fb](ToyRenderPassContext renderpassctx) {

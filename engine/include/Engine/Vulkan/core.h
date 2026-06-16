@@ -11,27 +11,24 @@
 #include <ktxvulkan.h>
 
 struct /*class*/ VulkanCore {
-	ktxVulkanDeviceInfo ktxInfo_;
 
 	VkInstance instance_ = VK_NULL_HANDLE;
 	VkDevice device_ = VK_NULL_HANDLE;
 	VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
-
+	//
 	VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 	VkQueue presentQueue_ = VK_NULL_HANDLE;
 	VkQueue transferQueue_ = VK_NULL_HANDLE;
-
-	// dont like this
+	// 
 	VkSurfaceKHR surface_;
-	// maybe not cool. Could it make sense to have one more that oen depthFormat for an applciationa?
-	// surfaceDetphFormat 
 	VkFormat viewportDepthFormat;
+	ktxVulkanDeviceInfo ktxInfo_;
 
-	// Dont like having a commandPool default.
-	// also dont like the name
+	// Dont like having a commandPool default. // also dont like the name
 	VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
 	VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
 
+	// Enviroment Descriptions
 	VkPhysicalDeviceDriverProperties vkPhysicalDeviceDriverProperties_ = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES, nullptr };
 	VkPhysicalDeviceVulkan13Properties vkPhysicalDeviceVulkan13Properties_ = {
 		 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES,
@@ -56,7 +53,7 @@ struct /*class*/ VulkanCore {
 		&vkPhysicalDeviceVulkan11Properties_,
 		VkPhysicalDeviceProperties{},
 	};
-	VkPhysicalDeviceProperties2& GetPhysicalDeviceProperties() { return this->vkPhysicalDeviceProperties2_;  };
+	VkPhysicalDeviceProperties2& GetPhysicalDeviceProperties() { return this->vkPhysicalDeviceProperties2_; };
 
 	// missing 1.4 .. dont care yet
 	VkPhysicalDeviceVulkan13Features vkFeatures13_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
@@ -65,18 +62,21 @@ struct /*class*/ VulkanCore {
 	VkPhysicalDeviceFeatures2 vkFeatures10_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &vkFeatures11_ };
 	// 
 
-
-
-
 public:
+
+	VulkanCore() {};
+	VulkanCore(const VulkanCore&) = delete;
+	VulkanCore& operator=(const VulkanCore&) = delete;
+
+	VulkanCore(VulkanCore&&) = delete;
+	VulkanCore& operator=(VulkanCore&&) = delete;
 
 	const ktxVulkanDeviceInfo GetKtxPayloadInfo() {
 		return ktxInfo_;
 	}
 
-	VulkanCore() {};
-
 	void Init() {
+
 		if (enableValidationLayers && !checkValidationLayerSupport()) {
 			throw std::runtime_error(
 				"validation layers requested, but not available!");
@@ -131,7 +131,6 @@ public:
 		};
 
 	};
-
 	void Init2() {
 		{
 
