@@ -144,7 +144,8 @@ struct RenderGraph {
 	//}
 	VirtualImageViewId AddImageView(VkImageView view) {
 		VirtualImageViewId proxy{
-			.id = views.size()
+			.id = views.size(),
+			.resolvedImageView = view
 		};
 		views.push_back(proxy);
 		return proxy;
@@ -157,7 +158,7 @@ struct RenderGraph {
 	void Execute(ToyFrameBuffer& fb) {
 
 	  ResolveImages();
-	  //ResolveImageViews();
+	  ResolveImageViews();
 	  ResolveBuffers();
 
 		for (auto& pass : passes) {

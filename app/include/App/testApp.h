@@ -566,6 +566,8 @@ private:
 			MainViewPushConstants pc{};
 			pc.model = glm::mat4(1.0f);
 
+			man.BindVertex(fb.commandBuffer);
+
 			for (const auto& [han_, visible] : pipeline_map)
 			{
 				vkCmdBindPipeline(

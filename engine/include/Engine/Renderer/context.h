@@ -136,8 +136,7 @@ public:
 	//VulkanCore& core_;
 
 	int Initialize();
-	Context(VulkanCore _core) : core(_core) { Initialize(); };
-	//Context(VulkanCore core) : core_(core) { Initialize(); };
+	Context(VulkanCore& _core) : core(_core) {  Initialize(); };
 	~Context();
 
 	// 

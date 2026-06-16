@@ -34,7 +34,6 @@ public:
 	VulkanCore core;
 	Input input;
 
-
 	// TODO : check constructo
 	VulkanApp() {};
 	virtual ~VulkanApp() = default;
@@ -261,16 +260,6 @@ void VulkanApp::InitializeImGui() {
 
 }
 
-void VulkanApp::InitVulkanApp() {
-
-	core = VulkanCore();
-	if (glfwCreateWindowSurface(core.instance_, window, nullptr, &core.surface_) !=
-		VK_SUCCESS) {
-		throw std::runtime_error("failed to create window surface!");
-	}
-
-	context = new Context(core);
-}
 
 bool VulkanApp::Initialize() {
 
@@ -310,18 +299,20 @@ bool VulkanApp::Initialize() {
 	glfwSetWindowUserPointer(window, this);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
-	// Pick physical device, create logical device, get queues from physdevice. Create VMA allocator
-	InitVulkanApp();
-
-	//
+	core.Init();
+	if (glfwCreateWindowSurface(core.instance_, window, nullptr, &core.surface_) !=
+		VK_SUCCESS) {
+		throw std::runtime_error("failed to create window surface!");
+	}
+	core.Init2();
+	context = new Context(core);
 
 	SwapChainSupportDetails swapChainSupport =
-		querySwapChainSupport(core.physicalDevice_, core.surface_);
+		querySwapChainSupport(core.physicalDevice_,core.surface_);
 	VkSurfaceFormatKHR surfaceFormat =
 		chooseSwapSurfaceFormat(swapChainSupport.formats);
 
 	// SWAPCHAIN
-
 	swapchain = new VulkanSwapchain(
 		*context,
 		window,

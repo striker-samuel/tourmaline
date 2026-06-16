@@ -41,9 +41,7 @@ struct RingBinding
 		//	assert(false, "invalid descriptor type for ringBuffer");
 		//}
 
-		VkPhysicalDeviceProperties props{};
-		vkGetPhysicalDeviceProperties(context->core.physicalDevice_, &props);
-
+		auto props = context_->core.GetPhysicalDeviceProperties().properties;
 		const VkDeviceSize dynAlign =
 			(descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
 			? props.limits.minUniformBufferOffsetAlignment
