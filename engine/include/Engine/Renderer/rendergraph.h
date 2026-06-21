@@ -84,6 +84,13 @@ struct ToyRenderPass final {
 	//struct VertexDefiniton {} vertex_def;
 	std::vector<VirtualBufferId> vertexBuffers_;
 
+	struct VirtualDescriptorSet {
+		VkDescriptorSetLayout resolvedLyt = VK_NULL_HANDLE;
+	};
+
+	// instead of using the constant this can be queried trough device capcabilitites
+	VirtualDescriptorSet sets[MAX_DESCRIPTORS];
+
 	ToyRenderPass& setColor(
 		std::vector<VirtualImageViewId>& views, // may be better to do views. 
 		VkAttachmentLoadOp _loadOp,
@@ -110,7 +117,20 @@ struct ToyRenderPass final {
 	};
 	ToyRenderPass& setStencil(VirtualImageViewId depthAttachent) /*{ this->depthAttachment_ = depthAttachent; return *this; }*/;
 
+	//ToyRenderPass& AddBinding(size_t layout, size_t binding) {}
+	ToyRenderPass& AddBinding(size_t set, PipelineCreateInfo::BindingDesc bindingDescription) {
+	
+		// Check flag compa
+	}
+
+	// this needs rework
+	//struct VertexFormatDesc {
+	//	//binding desc!
+	//	} vertexFormat_;
+	//ToyRenderPass& setVertexFormat(VertexFormatDesc vertexFormat) { this->vertexFormat_ = vertexFormat; return *this; }
 	ToyRenderPass& setVertexBuffers(std::vector<VirtualBufferId> vertexBuffers) { this->vertexBuffers_ = vertexBuffers; return *this; }
+
+
 	ToyRenderPass& setStorageBuffers(std::vector<VirtualBufferId> storageBuffers) { this->storageBuffers_ = storageBuffers; return *this; }
 	ToyRenderPass& setUniformBuffers(std::vector<VirtualBufferId> uniformBuffers) { this->uniformBuffers_ = uniformBuffers; return *this; }
 
@@ -128,6 +148,7 @@ struct RenderGraph {
 
 	RenderGraph(Context& ctx) : ctx_(ctx) {};
 	Context& ctx_;
+	//PipelineBuilder pipelineBuilder_;
 
 	std::vector<ToyRenderPass> passes;
 	void Clear() { passes.clear(); }
@@ -135,6 +156,8 @@ struct RenderGraph {
 	std::vector<VirtualImageId> images;
 	std::vector<VirtualImageViewId> views;
 	std::vector<VirtualBufferId> buffers;
+
+
 
 	ToyRenderPass& AddPass(ToyRenderPass _renderPass) {
 		return passes.emplace_back(_renderPass);
@@ -181,7 +204,7 @@ struct RenderGraph {
 	void Resolve() {};
 
 	void Execute(ToyFrameBuffer& fb) {
-
+		// swapchain may be passed to create pipelines with proper format.
 		Resolve();
 
 		for (auto& pass : passes) {
@@ -235,6 +258,8 @@ struct RenderGraph {
 			vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
 
 			// Vertex Bind
+			// this should check for pipeline compat and coherence with having no vertex buffers
+			//if (builder.GetPipepline(pass.pipeline_).vertexFormat) {}
 			if (pass.vertexBuffers_.size() > 0) {
 				auto indexBuffer = ctx_.buffers_.get(pass.vertexBuffers_[0].resolvedBufferHandle);
 				vkCmdBindIndexBuffer(fb.commandBuffer, indexBuffer->buffer, 0, VK_INDEX_TYPE_UINT32);

@@ -112,7 +112,6 @@ protected:
 
 #pragma region Initialization
 
-	void InitVulkanApp();
 	void InitializeImGui();
 
 #pragma endregion
@@ -352,7 +351,7 @@ bool VulkanApp::Initialize() {
 		VK_CHECK(vkAllocateCommandBuffers(core.device_, &allocInfo, &commandBuffers[i]));
 	}
 
-	rendergraph = std::make_unique<RenderGraph>(context);
+	rendergraph = std::make_unique<RenderGraph>(*context);
 	return true;
 
 }

@@ -270,7 +270,7 @@ private:
 
 		// This is rendergraph responsability really
 		SetDescriptorSets();
-		//UpdateBindlessTexturesSets();
+		UpdateBindlessTexturesSets();
 
 		return true;
 	};
@@ -436,29 +436,31 @@ private:
 	void RenderFrame(ToyFrameBuffer fb) {
 
 		//ImGuiScopedFrame uiFrame;
-		rendergraph.Clear();
+		rendergraph->Clear();
 
-		auto color = rendergraph.AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
+		auto color = rendergraph->AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
 		auto depthView = context->images_.get(fb.swapchain.depthImage_)->renderView;
-		auto depthViewId = rendergraph.AddImageView(depthView);
-		auto vertexBuffers = rendergraph.AddBuffers(man.GetVertexBuffers());
+		auto depthViewId = rendergraph->AddImageView(depthView);
+		auto vertexBuffers = rendergraph->AddBuffers(man.GetVertexBuffers());
 
 		std::vector<VirtualImageViewId> colors;
 		colors.push_back(color);
 
-		auto mainPass = rendergraph.AddPass(
+		auto mainPass = rendergraph->AddPass(
 			{
-				.rg_ = rendergraph, // dont like how this is done
+				.rg_ = *rendergraph, // dont like how this is done
 				.type = ToyRenderPass::PassType::Rasterize,
 			}
 			)
 			.setOffset({ 0,0 })
+			//.addBinding()
 			//.setGraphicsPipeline()
 			.setExtent(fb.swapchain.extent_)
 			.setVertexBuffers(vertexBuffers)
 			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
 			.setDepth(depthViewId, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
-			.setRecordingFunc([this, fb](ToyRenderPassContext renderpassctx) {
+			.setRecordingFunc([this, fb](ToyRenderPassContext renderpassctx)
+				{
 
 			// This shoudl be done by the rg
 			auto dynamic_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDynamicDescriptorSet);
@@ -534,8 +536,6 @@ private:
 
 			MainViewPushConstants pc{};
 			pc.model = glm::mat4(1.0f);
-
-			//man.BindVertex(fb.commandBuffer);
 
 			for (const auto& [han_, visible] : pipeline_map)
 			{
@@ -623,7 +623,7 @@ private:
 				}
 			);
 
-		rendergraph.Execute(fb);
+		rendergraph->Execute(fb);
 
 	}
 

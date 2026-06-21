@@ -17,7 +17,7 @@
 #include <map>
 
 // Texture upload 
-// this should be refactore  to something like a GetImageData lambda, maybe...
+// this should be refactored to something like a GetImageData lambda, maybe...
 #include <ktx.h>
 #include <ktxvulkan.h>
 
@@ -88,10 +88,7 @@ struct PipelineCreateInfo{
 		std::vector<VkSampler> immutableSamplers; // state, should be a list of SamplerKey/desc/createInfo really
 	};
 
-	//struct Binding {
-	//	size_t bindPoint = 0;
-	//	std::vector<VkSampler> immutableSamplers;
-	//	BindingDesc desc;
+	//struct VertexFormatDesc {
 	//};
 
 	struct DescriptorSetLayoutDesc {
@@ -118,7 +115,9 @@ struct PipelineCreateInfo{
 	//ShaderModuleHandle task;
 	//ShaderModuleHandle compute;
 
-	// Swapchain Setup.
+
+	// This shouldnt be here 
+	// Pipeline builder should inject this really
 	VkFormat depth_format;
 	VkFormat swapchainImageFormat;
 };
@@ -130,6 +129,17 @@ struct DeviceBufferCreateInfo {
 	VkBufferUsageFlags usage_flags;
 };
 
+
+//struct PipelineBuilder {
+//	PipelineBuilder(Context& ctx) : ctx_(ctx) {};
+//	Context& ctx_;
+//	VkDescriptorSetLayout lastSetLayout_;
+//	std::map<PipelineKey, PipelineHandle> cache_;
+//	PipelineHandle CreateGraphicsPipeline(PipelineCreateInfo pipelineCreateInfo) {};
+//};
+
+// 4.6gb is good amount to reserver for 8gb vram system
+// 2gb for Windows is good practice. And a little headroom for aux apps
 struct Context {
 
 	VulkanCore& core;
@@ -179,6 +189,8 @@ struct Context {
 	//Images
 	ImageHandle CreateImage(ImageCreateInfo imageCreateInfo);
 	//void CreateImage(ImageCreateInfo imageCreateInfo, VkImage& outImage);
+	
+	// This should be moved to a pipelineBuilder, maybe
 	// PIPELINES
 	PipelineHandle CreatePipeline(PipelineCreateInfo pipelineCreateInfo);
 
