@@ -9,6 +9,11 @@
 //#include <GLFW/glfw3.h>
 #include "input.h"
 
+
+// deferred
+#include <future>
+
+
 // Imgui
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -28,9 +33,26 @@
 #include <Engine/Utils/bvh.h>
 
 
+// Lifted from legit engine
+//struct ImGuiScopedFrame
+//{
+//	ImGuiScopedFrame()
+//	{
+//		ImGui::NewFrame();
+//	}
+//	~ImGuiScopedFrame()
+//	{
+//		ImGui::EndFrame();
+//	}
+//};
+
+
 class VulkanApp {
 
 public:
+
+	std::vector<std::packaged_task<void()>> deferredTasks;
+
 	VulkanCore core;
 	Input input;
 
@@ -58,7 +80,7 @@ public:
 protected:
 
 	Context* context = nullptr; //resources
-	RenderGraph rendergraph;
+	std::unique_ptr<RenderGraph> rendergraph;
 	ImGuiContext* imgui_ctx = nullptr;
 	VulkanSwapchain* swapchain = nullptr;
 
@@ -110,23 +132,6 @@ protected:
 		lastFrameTime = currentTime;
 	}
 
-
-	// Dont like this hre like this
-	void UiPass() {
-		// These all 3 are needed for initialization.
-		ImGui_ImplVulkan_NewFrame();
-		ImGui_ImplGlfw_NewFrame();
-		ImGui::NewFrame();
-
-		// UI Here
-		ImGuiIO& io = ImGui::GetIO();
-		ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
-			1000.0f / io.Framerate, io.Framerate);
-
-		ImDrawList* drawList = ImGui::GetForegroundDrawList();
-	}
-
-
 #pragma region MainLoop
 
 	void MainLoop() {
@@ -143,12 +148,9 @@ protected:
 			LateUpdate();
 
 			DrawFrame();
+			// 
 
 		}
-
-		// This holds. cpu. until queue completion. presentations is done by presetnQueue
-		//vkDeviceWaitIdle(core.device_);
-		// cleanup will already hold
 	}
 
 #pragma endregion
@@ -308,7 +310,7 @@ bool VulkanApp::Initialize() {
 	context = new Context(core);
 
 	SwapChainSupportDetails swapChainSupport =
-		querySwapChainSupport(core.physicalDevice_,core.surface_);
+		querySwapChainSupport(core.physicalDevice_, core.surface_);
 	VkSurfaceFormatKHR surfaceFormat =
 		chooseSwapSurfaceFormat(swapChainSupport.formats);
 
@@ -350,6 +352,7 @@ bool VulkanApp::Initialize() {
 		VK_CHECK(vkAllocateCommandBuffers(core.device_, &allocInfo, &commandBuffers[i]));
 	}
 
+	rendergraph = std::make_unique<RenderGraph>(context);
 	return true;
 
 }
@@ -369,8 +372,6 @@ void VulkanApp::CleanUp() {
 
 	vkDeviceWaitIdle(core.device_);
 	swapchain->CleanupSwapchain();
-
-
 	// 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		// destroying the pool fress the commandBuffers too

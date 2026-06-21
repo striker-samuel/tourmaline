@@ -15,7 +15,6 @@ class VulkanSwapchain {
 public:
 
     VulkanSwapchain(
-        //VulkanCore& core,
         Context& context,
         GLFWwindow* window,
         uint32_t framesInFlight,
@@ -26,14 +25,15 @@ public:
           framesInFlight_(framesInFlight),
           desiredImageCount_(desiredImageCount) {
     }
+    VulkanSwapchain(const VulkanSwapchain&) = delete;
+    VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
+    VulkanSwapchain(VulkanSwapchain&&) = delete;
+    VulkanSwapchain& operator=(VulkanSwapchain&&) = delete;
 
     ~VulkanSwapchain() {
         DestroySyncObjects();
         CleanupSwapchain();
     }
-
-    VulkanSwapchain(const VulkanSwapchain&) = delete;
-    VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
 
     void Create() {
         CreateSwapchain();
@@ -132,8 +132,9 @@ public:
     GLFWwindow* window_ = nullptr;
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
 
+    //Holder<ImageHandle> depthImage_{};
     ImageHandle depthImage_{};
-    //VkImage depthImage_;
+    // This cannot be imageHandle because swpachainImages are external.
     std::vector<VkImage> images_;
     std::vector<VkImageView> imageViews_;
 
@@ -252,8 +253,6 @@ public:
         //VkFormat depthFormat = findDepthFormat(physicalDevice_);
         VkFormat depthFormat = ctx_.core.viewportDepthFormat;
         depthImage_ = ctx_.CreateImage(
-
-
             {
 
                 .texWidth = static_cast<int>(extent_.width),

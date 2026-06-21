@@ -119,16 +119,11 @@ private:
 // CONTEXT
 using ImageHandle = Handle<struct Image>;
 using TextureHandle = Handle<struct Texture>;
-
 using ShaderModuleHandle = Handle<struct ShaderModule>;
 using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 using DescriptorSetHandle = Handle<struct DescriptorSet>;
-
 using PipelineHandle = Handle<struct Pipeline>;
-
-//using PipelineLayoutHandle = Handle<struct Pipeline::Layout>;
 using DeviceBufferHandle = Handle<struct DeviceBuffer>;
-
 //MESH MANAGER
 using MeshHandle = Handle<struct Mesh>;
 using GeometryPageHandle = Handle<struct GeometryPage>;

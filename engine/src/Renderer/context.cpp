@@ -41,6 +41,8 @@ int Context::Initialize(
 	default_descriptor_pool = createDescriptorPool();
 	imgui_descriptor_pool = createDescriptorPool();
 
+	//nil_texture = CreateTexture("");
+
 	return 0; // no error
 
 };
@@ -718,7 +720,6 @@ void Context::CreatePipelineLayout(
 
 void Context::TransitionImageLayout(
 	ImageHandle image_handle,
-	//VkFormat format,
 	VkImageLayout oldLayout,
 	VkImageLayout newLayout
 
@@ -737,7 +738,6 @@ void Context::TransitionImageLayout(
 
 void Context::TransitionImageLayout(
 	VkImage image,
-	// Atm format is only being used for stencil comp check. 
 	VkFormat format,
 	VkImageLayout oldLayout,
 	VkImageLayout newLayout
@@ -1197,6 +1197,8 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 
 }
 
+//void Context::CreateImage(ImageCreateInfo _imageCreateInfo,VkImage& out) {}
+
 [[nodiscard]] ImageHandle Context::CreateImage(ImageCreateInfo _imageCreateInfo)
 {
 	Image image = {};
@@ -1459,10 +1461,9 @@ void Context::CleanUp
 () {
 
 	VK_CHECK(vkDeviceWaitIdle(core.device_));
-
 	vmaDestroyPool(allocator_, D_2DImagesPool);
-	//shaderModules_.forEach([](ShaderModule& obj_) {
-	//	});
+
+	shaderModules_.clear();
 	//vmaDestroyPool(allocator_, D_ShaderPool);
 
 	// This is only used to staging buffers and they should be all destroyed on deviceIdle really.

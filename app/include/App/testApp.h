@@ -6,16 +6,6 @@ std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
 };
 
-
-// SETIINGS
-enum CULLING_MODE : uint32_t {
-	NO_CULLING = 0,
-	CPU_CULLING = 1,
-	GPU_CULLING = 1,
-};
-
-// 
-
 struct DrawSetData {
 	float transform[16] = {
 		1.0f, 0.0f, 0.0f, 0.0f,
@@ -95,6 +85,12 @@ struct Level : Scene {
 
 
 
+//struct TextureManager {
+//	Context& ctx_;
+//	TextureManager(Context& ctx) : ctx_(ctx); 
+//};
+
+
 class TestApp : public VulkanApp {
 
 public:
@@ -123,6 +119,7 @@ private:
 		glm::vec3(0.0f, 1.0f, 0.0f) //up
 	);
 	Camera camera = Camera(cameraPositioner);
+
 	ToyResourceManager man = {};
 	Level current_level = {};
 	//
@@ -273,8 +270,7 @@ private:
 
 		// This is rendergraph responsability really
 		SetDescriptorSets();
-
-		UpdateBindlessTexturesSets();
+		//UpdateBindlessTexturesSets();
 
 		return true;
 	};
@@ -337,18 +333,6 @@ private:
 		imageInfos.reserve(count);
 		samplerInfos.reserve(count);
 
-		//auto smp = context->samplers_.get(context->samplers.at("default"));
-		////image_obj.sampler = *smp;
-
-		//VkDescriptorImageInfo si{};
-		//si.sampler = *smp;
-		//si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
-		//si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
-		//samplerInfos.push_back(si);
-
-		// this has problems.
-		// theres compressiona around index meaning. 
-		// textureIndex/imageIndex
 		context->textures_.forEach([&](Image obj_)
 			{
 				VkDescriptorImageInfo ii{};
@@ -396,7 +380,7 @@ private:
 	}
 
 
-	void UpdateFrameUniforms(uint32_t currentFrame) {
+	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame) {
 
 		int width_ = swapchain->GetExtent().width;
 		int height_ = swapchain->GetExtent().height;
@@ -437,66 +421,59 @@ private:
 			0,
 			frameUniformsBinding.dynamicOffsetFrame(currentFrame)
 		);
+		return data;
 
 	}
 
-
 	void DrawFrame() {
+		// This waits on fence to the swapchainIamge 
+		// All control logic around this is in swapchain realyl
 		auto fb = AcquireFramebuffer();
 		RenderFrame(fb);
 		EndAndPresentFramebuffer(fb);
 	}
 
-	//void BeginFrame() {
-	//	auto swapChainExtent = swapchain->GetExtent();
-	//	auto colorView = swapchain->GetCurrentImageView();
-	//	auto depthHandle = swapchain->GetDepthImage();
-	//	auto depthView = context->images_.get(depthHandle)->renderView;
-	//}
-
 	void RenderFrame(ToyFrameBuffer fb) {
 
+		//ImGuiScopedFrame uiFrame;
 		rendergraph.Clear();
-		//rendergraph.NewFrame();
 
 		auto color = rendergraph.AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
 		auto depthView = context->images_.get(fb.swapchain.depthImage_)->renderView;
 		auto depthViewId = rendergraph.AddImageView(depthView);
+		auto vertexBuffers = rendergraph.AddBuffers(man.GetVertexBuffers());
 
 		std::vector<VirtualImageViewId> colors;
 		colors.push_back(color);
 
 		auto mainPass = rendergraph.AddPass(
 			{
+				.rg_ = rendergraph, // dont like how this is done
 				.type = ToyRenderPass::PassType::Rasterize,
 			}
 			)
 			.setOffset({ 0,0 })
+			//.setGraphicsPipeline()
 			.setExtent(fb.swapchain.extent_)
-			//.setVertexBuffers(), 
-			.setColor( colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
+			.setVertexBuffers(vertexBuffers)
+			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
 			.setDepth(depthViewId, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
 			.setRecordingFunc([this, fb](ToyRenderPassContext renderpassctx) {
 
-			UpdateFrameUniforms(swapchain->GetCurrentFrameIndex());
-
-			// BIND DESCRIPTOR SETS
+			// This shoudl be done by the rg
 			auto dynamic_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDynamicDescriptorSet);
 			auto update_after_bind_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDescriptorSet);
 
+			// dont really like this fb passign.
+			auto frameData = UpdateFrameUniforms(fb.swapchain.GetCurrentFrameIndex());
+			// BIND DESCRIPTOR SETS
+
 			std::vector<int> visible;
-
-			auto view = camera.getViewMatrix();
-			auto proj = camera.getProjMatrix();
-			proj[1][1] *= -1;
-
-			auto viewProj = proj * view;
-
 			if (current_level.tree_done) {
 				frustumCullBVH(
 					current_level.static_tree,
 					0,
-					viewProj,
+					frameData.viewProj,
 					camera.getPosition(),
 					visible
 				);
@@ -529,12 +506,6 @@ private:
 			}
 
 			if (pipeline_map.empty()) {
-				// This is clearly wrong.
-				// Maybe.
-				// Load op cleas the fb
-				//vkCmdBeginRendering(fb.commandBuffer, &cmd.renderingInfo);
-				//vkCmdEndRendering(fb.commandBuffer);
-				//ndAndPresentFramebuffer(fb);
 				assert(false);
 			}
 
@@ -564,7 +535,7 @@ private:
 			MainViewPushConstants pc{};
 			pc.model = glm::mat4(1.0f);
 
-			man.BindVertex(fb.commandBuffer);
+			//man.BindVertex(fb.commandBuffer);
 
 			for (const auto& [han_, visible] : pipeline_map)
 			{
@@ -636,9 +607,16 @@ private:
 				}
 			}
 
+			ImGui_ImplVulkan_NewFrame();
+			ImGui_ImplGlfw_NewFrame();
+			ImGui::NewFrame();
 
-			// This shouldnt be here really
-			UiPass();
+			// UI Here
+			ImGuiIO& io = ImGui::GetIO();
+			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
+				1000.0f / io.Framerate, io.Framerate);
+
+			ImDrawList* drawList = ImGui::GetForegroundDrawList();
 			ImGui::Render();
 			ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), fb.commandBuffer);
 			//
@@ -648,7 +626,6 @@ private:
 		rendergraph.Execute(fb);
 
 	}
-
 
 };
 

@@ -18,7 +18,12 @@ struct ToyRenderPassContext {
 	ToyRenderPass& renderpass;
 };
 
-struct ToyFrameBuffer{
+// Could be good to have subresource level access too
+//struct SubResoruceViewKey {
+//	uint32_t mips;
+//};
+
+struct ToyFrameBuffer {
 	uint32_t frameIndex = 0; // Maybe end os uint32_ to catch for unitialized? this value can only be ip to SWAPCHAIN_IMAGE_COUNT
 	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 	VulkanSwapchain& swapchain;
@@ -28,7 +33,8 @@ struct VirtualBufferId
 {
 	size_t id;
 	DeviceBufferKey key;
-	DeviceBufferHandle buffer;
+	DeviceBufferHandle resolvedBufferHandle;
+	VkBuffer GetBuffer() {};
 };
 
 struct VirtualImageViewId
@@ -45,27 +51,21 @@ struct VirtualImageId {
 
 	size_t id;
 	ImageTypes imageType; // transient/external
-	ImageKey key;
+	ImageKey key; // May not be needed really
 	// this may be collapsed into resolvedImage
 	ImageHandle externalImage{};
 	ImageHandle resolvedImage{};
 };
 
-/// <summary>
-/// 
-/// 
-/// </summary>
 using RecordingFunction = std::function<void(ToyRenderPassContext)>;
 struct ToyRenderPass final {
-	//RenderGraph& rendergraph;
-
+	RenderGraph& rg_;
 	enum struct PassType { Rasterize, Compute };
 	PassType type;
-
 	VkExtent2D extent_;
 	VkOffset2D offset_ = { 0,0 };
-
 	RecordingFunction recordingFunction_;
+	PipelineKey pipeline_;
 
 	struct Attachment {
 		VirtualImageViewId view;
@@ -80,6 +80,8 @@ struct ToyRenderPass final {
 
 	std::vector<VirtualBufferId> uniformBuffers_;
 	std::vector<VirtualBufferId> storageBuffers_;
+
+	//struct VertexDefiniton {} vertex_def;
 	std::vector<VirtualBufferId> vertexBuffers_;
 
 	ToyRenderPass& setColor(
@@ -113,35 +115,39 @@ struct ToyRenderPass final {
 	ToyRenderPass& setUniformBuffers(std::vector<VirtualBufferId> uniformBuffers) { this->uniformBuffers_ = uniformBuffers; return *this; }
 
 	ToyRenderPass& setRecordingFunc(RecordingFunction recordingFunction) { this->recordingFunction_ = recordingFunction; return *this; };
+	ToyRenderPass& setGraphicsPipeline(PipelineKey pipeline) { this->pipeline_ = pipeline; return *this; };
+	//ToyRenderPass& setComputePipeline(PipelineKey pipeline) { this->pipeline_ = pipeline; return *this; };
 
 	ToyRenderPass& setExtent(VkExtent2D extent) { this->extent_ = extent; return *this; };
 	ToyRenderPass& setOffset(VkOffset2D offset) { this->offset_ = offset; return *this; };
-
+	RenderGraph& GetRenderGraph() { return this->rg_; };
 };
 
 struct RenderGraph {
-	Context* ctx;
+	// this should be hable to serialize... and deserialize really
+
+	RenderGraph(Context& ctx) : ctx_(ctx) {};
+	Context& ctx_;
+
 	std::vector<ToyRenderPass> passes;
 	void Clear() { passes.clear(); }
 
 	std::vector<VirtualImageId> images;
 	std::vector<VirtualImageViewId> views;
-	//std::map<ImageKey, VirtualImageId> images;
-	//std::map<BufferKey, VirtualImageId> buffers;
+	std::vector<VirtualBufferId> buffers;
 
 	ToyRenderPass& AddPass(ToyRenderPass _renderPass) {
 		return passes.emplace_back(_renderPass);
 	}
-
-
-	//VirtualImageId AddImage(ImageHandle imageHandle) {
-	//	auto image = ctx->images_.get(imageHandle);
-	//	VirtualImageId proxy{
-	//		.id = images.size(),
-	//	};
-	//	images.push_back(proxy);
-	//	return proxy;
-	//}
+	VirtualImageId AddImage(ImageHandle imageHandle) {
+		auto image = ctx_.images_.get(imageHandle);
+		VirtualImageId proxy{
+			.id = images.size(),
+			.resolvedImage = imageHandle
+		};
+		images.push_back(proxy);
+		return proxy;
+	}
 	VirtualImageViewId AddImageView(VkImageView view) {
 		VirtualImageViewId proxy{
 			.id = views.size(),
@@ -150,16 +156,33 @@ struct RenderGraph {
 		views.push_back(proxy);
 		return proxy;
 	}
+	std::vector<VirtualBufferId> AddBuffers(std::vector<DeviceBufferHandle> bufferHandles) {
+		size_t start = buffers.size();
+
+		for (auto b : bufferHandles) {
+			VirtualBufferId proxy{
+				.id = buffers.size(),
+				.resolvedBufferHandle = b
+			};
+			buffers.push_back(proxy);
+		}
+
+		return std::vector<VirtualBufferId>(
+			buffers.begin() + start,
+			buffers.end()
+		);
+	}
 
 	void ResolveImages() {};
 	void ResolveImageViews() {};
 	void ResolveBuffers() {};
 
+	void TopoSort() {};
+	void Resolve() {};
+
 	void Execute(ToyFrameBuffer& fb) {
 
-	  ResolveImages();
-	  ResolveImageViews();
-	  ResolveBuffers();
+		Resolve();
 
 		for (auto& pass : passes) {
 			std::vector<VkRenderingAttachmentInfo> colorInfos;
@@ -168,10 +191,6 @@ struct RenderGraph {
 			for (auto& att : pass.colorAttachments_) {
 				VkRenderingAttachmentInfo info{};
 				info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-				//ImageHandle h = att.image.resolvedImage;
-				//if (h.valid()) {
-				//	info.imageView = ctx->images_.get(h)->renderView;
-				//}
 				info.imageView = att.view.resolvedImageView;
 				info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 				info.loadOp = att.loadOp;
@@ -183,10 +202,6 @@ struct RenderGraph {
 			VkRenderingAttachmentInfo depthInfo{};
 			depthInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
 			{
-				//ImageHandle h = pass.depthAttachment_.image.resolvedImage;
-				//if (h.valid()) {
-				//	depthInfo.imageView = ctx->images_.get(h)->renderView;
-				//}
 				depthInfo.imageView = pass.depthAttachment_.view.resolvedImageView;
 			}
 			depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
@@ -219,10 +234,26 @@ struct RenderGraph {
 			scissor.extent = pass.extent_;
 			vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
 
+			// Vertex Bind
+			if (pass.vertexBuffers_.size() > 0) {
+				auto indexBuffer = ctx_.buffers_.get(pass.vertexBuffers_[0].resolvedBufferHandle);
+				vkCmdBindIndexBuffer(fb.commandBuffer, indexBuffer->buffer, 0, VK_INDEX_TYPE_UINT32);
+
+				size_t v_bufs = pass.vertexBuffers_.size() - 1;
+				std::vector<VkBuffer> bufs;
+				bufs.reserve(2);
+				for (size_t i = 1; i < pass.vertexBuffers_.size(); i++) {
+					bufs.push_back(ctx_.buffers_.get(pass.vertexBuffers_[i].resolvedBufferHandle)->buffer);
+				}
+				VkDeviceSize offs[] = { 0, 0 };
+				vkCmdBindVertexBuffers(fb.commandBuffer, 0, v_bufs, bufs.data(), offs);
+			}
+
+
 			vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
 
 			ToyRenderPassContext rpc{
-				.ctx = *ctx,
+				.ctx = ctx_,
 				.renderpass = pass
 			};
 
@@ -234,22 +265,22 @@ struct RenderGraph {
 		}
 	}
 };
-
-class Cache {
-
-	Context& ctx_;
-	Cache(Context& ctx) : ctx_(ctx) {}
-	~Cache() {};
-	std::map<ImageKey, ImageHandle> images;
-	//std::map<PipelineKey, PipelineHandle> pipelines;
-
-	// This should be split into unofmr, storage and else
-	std::map<DeviceBufferKey, DeviceBufferHandle> buffers;
-
-	ImageHandle GetImage(ImageKey key) {
-		// Obviusly not correct
-		auto cacheHit = images[key];
-		return cacheHit;
-	};
-
-};
+//
+//class Cache {
+//
+//	Context& ctx_;
+//	Cache(Context& ctx) : ctx_(ctx) {}
+//	~Cache() {};
+//	std::map<ImageKey, ImageHandle> images;
+//	//std::map<PipelineKey, PipelineHandle> pipelines;
+//
+//	// This should be split into unofmr, storage and else
+//	std::map<DeviceBufferKey, DeviceBufferHandle> buffers;
+//
+//	ImageHandle GetImage(ImageKey key) {
+//		// Obviusly not correct
+//		auto cacheHit = images[key];
+//		return cacheHit;
+//	};
+//
+//};

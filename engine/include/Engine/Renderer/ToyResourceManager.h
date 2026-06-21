@@ -49,6 +49,8 @@ struct GeometryPage {
 };
 
 struct Mesh {
+	//enum struct VertexType {
+	//Normal, Skinned, whatev};
 
 	struct Alloc {
 		// page could be useful for separating tiles into pages... Lets get rid of them for the moment, or go monopage.
@@ -73,16 +75,9 @@ struct Mesh {
 };
 
 using MaterialHandle = Handle<struct Material>;
-
-
 struct Material {
-	// RasterSettings. BRDF and else
-	enum MaterialModel {
-		//RasterSettings raster;
-	};
-
-	// Materials may share referecnes
-	// Maybe we should refcount these
+	// Materials may share textures
+	// Maybe we should refcount these for clearance
 	struct Textures {
 		TextureHandle diffuse{};
 		TextureHandle specular{};
@@ -106,30 +101,19 @@ struct Material {
 	} values;
 	static_assert(sizeof(Values) % 16 == 0);
 
-	// 
+	// pipeline encodes BRDF and rastersettings really
 	PipelineHandle pipeline{};
-
-	// This could be PipelineKey blob or somehting like that. not the handle to the resource.
-	// Materials dont own the pipeline really
-
-	//Material model maybek key.- This is to translate gltf materials into my own, using codified spec MaterialModel 
-	PipelineHandle GetPipelineFromMaterialModel(Context* ctx, MaterialModel material_model);
-
 };
 
-//TODO
-[[nodiscard]] PipelineHandle GetPipelineFromMaterialModel(Context* ctx, Material::MaterialModel material_model) {
-	// Obviusly incomplete 
-	return ctx->pipelines_.getHandle(0);
-};
 
+// this should just instead be moved to mesh class or maybe even level.
 struct ToyResourceManager {
 	Context* ctx = nullptr;
 	uint32_t vertex_cursor = 0;
 
 	Pool<Mesh, Mesh> meshes;
 	Pool<Material, Material> materials;
-	GeometryPageHandle current_geometry_page;
+	GeometryPageHandle current_geometry_page;	
 	Pool<GeometryPage, GeometryPage> geometry_pages;
 
 	MeshHandle UploadVertexData(MeshUploadInput& mesh_data);
@@ -137,24 +121,16 @@ struct ToyResourceManager {
 
 	void InitalizeGeoBuffers();
 
-	// TODO. customizable vertex formats via spec
-	void BindVertex(VkCommandBuffer commandBuffer) {
-
+	std::vector<DeviceBufferHandle> GetVertexBuffers() {
 		auto page = geometry_pages.get(current_geometry_page);
-
-		VkBuffer bufs[] = {
-			ctx->buffers_.get(page->vertexPosBuffer)->buffer,
-			ctx->buffers_.get(page->vertexShadingBuffer)->buffer
+		return std::vector<DeviceBufferHandle>{
+			page->indexBuffer,
+			page->vertexPosBuffer,
+			page->vertexShadingBuffer,
 		};
-
-		VkDeviceSize offs[] = { 0, 0 };
-
-		vkCmdBindVertexBuffers(commandBuffer, 0, 2, bufs, offs);
-		vkCmdBindIndexBuffer(commandBuffer, ctx->buffers_.get(page->indexBuffer)->buffer, 0, VK_INDEX_TYPE_UINT32);
 	};
 
 	~ToyResourceManager();
-
 };
 
 

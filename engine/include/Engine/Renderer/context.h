@@ -12,7 +12,6 @@
 #include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
 
-
 #include <tuple>
 // textures upload
 #include <map>
@@ -21,7 +20,6 @@
 // this should be refactore  to something like a GetImageData lambda, maybe...
 #include <ktx.h>
 #include <ktxvulkan.h>
-
 
 /// <summary>
 ///  One could argue this is just redundant provided that vulkanHpp has this same thing typed out...
@@ -57,6 +55,11 @@ using SamplerKey = SamplerCreateInfo;
 
 // TODO :: This neeeds heaby doses of elbow grease really
 struct PipelineCreateInfo{
+
+	//enum struct PipelineType  {
+	//	Graphics,
+	//	Compute
+	//} type_;
 	
 	// Raster
 	struct RasterSettings {
@@ -111,11 +114,15 @@ struct PipelineCreateInfo{
 	// I dont like this 
 	ShaderModuleHandle vert;
 	ShaderModuleHandle frag;
+	//ShaderModuleHandle mesh;
+	//ShaderModuleHandle task;
+	//ShaderModuleHandle compute;
 
 	// Swapchain Setup.
 	VkFormat depth_format;
 	VkFormat swapchainImageFormat;
 };
+using PipelineKey = PipelineCreateInfo;
 
 struct DeviceBufferCreateInfo {
 	VkDeviceSize size;
@@ -123,29 +130,27 @@ struct DeviceBufferCreateInfo {
 	VkBufferUsageFlags usage_flags;
 };
 
+struct Context {
 
-class Context {
-	
-	VmaPool D_2DImagesPool;
-	VmaPool D_StagingPool;
-
-public:
-
-	VmaAllocator allocator_;
 	VulkanCore& core;
-	//VulkanCore& core_;
 
 	int Initialize();
 	Context(VulkanCore& _core) : core(_core) {  Initialize(); };
 	~Context();
 
+	Context(const Context&) = delete;
+	Context& operator=(const Context&) = delete;
+	Context(Context&&) = delete;
+	Context& operator=(Context&&) = delete;
+
 	// 
-	struct ToyCommandBuffer {
-		VkCommandBuffer cmdH;
-		size_t index;
-		bool recording;
-	};
-	std::vector<ToyCommandBuffer> commamds;
+	//struct ToyCommandBuffer {
+	//	VkCommandBuffer cmd;
+	//	size_t index;
+	//	bool recording;
+	//};
+	//// This should have pool semantics, really
+	//std::vector<ToyCommandBuffer> commamds;
 	// 
 
 	Pool<Image, Image> images_;
@@ -159,6 +164,7 @@ public:
 
 	std::map<std::string, TextureHandle> textures_uploaded;
 
+	// This needs to be rolling and pooled. struct RollignPool
 	DescriptorPoolHandle default_descriptor_pool;
 	DescriptorPoolHandle imgui_descriptor_pool;
 
@@ -172,20 +178,17 @@ public:
 	DeviceBufferHandle CreateBuffer(DeviceBufferCreateInfo bufferCreateInfo);
 	//Images
 	ImageHandle CreateImage(ImageCreateInfo imageCreateInfo);
-	//ImageHandle CreateImage(int texWidth, int texHeight, VkFormat format, VkImageUsageFlags usage, uint32_t levels, uint32_t arrayLayers);
+	//void CreateImage(ImageCreateInfo imageCreateInfo, VkImage& outImage);
 	// PIPELINES
 	PipelineHandle CreatePipeline(PipelineCreateInfo pipelineCreateInfo);
-
 
 	// SHADERS
 	ShaderModuleHandle CreateShaderModule(std::vector<char> code);
 	// DESCRIPTOR SETS
 	DescriptorSetHandle CreateDescriptorSet(VkDescriptorSetLayout& layout);
 
-	// TEXTURES
-	// These need to be heavily reworked
+	//TextureHandle CreateTexture(std::string uri);
 	TextureHandle GetOrCreateTexure(std::string uri, ktxTexture2& texture);
-	//TextureHandle CreateTexture(ktxTexture2& texture);
 
 	void CreatePipelineLayout(const PipelineCreateInfo::PipelineLayoutDesc& descIn, Pipeline::Layout& out);
 	void CreateDescriptorLayout(const PipelineCreateInfo::DescriptorSetLayoutDesc& descIn, VkDescriptorSetLayout& layout);
@@ -196,7 +199,6 @@ public:
 
 	void CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view);
 
-
 	// 
 	void UploadDataToBuffer(DeviceBufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
 	void UploadDataToBuffer(DeviceBufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset, size_t dest_offset);
@@ -204,7 +206,6 @@ public:
 	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset);
 
-	//
 	VkCommandBuffer GetCommandBuffer();
 	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
 	// 
@@ -213,6 +214,14 @@ public:
 
 	void CleanUp();
 
+
+	VmaAllocator allocator_;
+private:
+	VmaPool D_2DImagesPool;
+	VmaPool D_StagingPool;
+
+	// dont like this!
+	TextureHandle nil_texture{}; // Default texture.
 };
 
 void destroy(Context* ctx, ImageHandle handle);
@@ -220,11 +229,3 @@ void destroy(Context* ctx, ShaderModuleHandle handle);
 void destroy(Context* ctx, DescriptorPoolHandle handle);
 void destroy(Context* ctx, DeviceBufferHandle handle);
 void destroy(Context* ctx, PipelineHandle handle);
-
-
-class ResourceMan{
-	ResourceMan(Context& context) : ctx(context){};
-	Context& ctx;
-	Pool<Texture, Image> textures_; // dont like this specialization 
-};
-void destroy(ResourceMan* man, TextureHandle handle);
