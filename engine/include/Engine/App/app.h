@@ -2,24 +2,20 @@
 
 #include <algorithm>
 #include <cassert>
-
 //
 #include "volk.h"
 #include "vk_mem_alloc.h"
 //#include <GLFW/glfw3.h>
 #include "input.h"
 
-
-// deferred
 #include <future>
-
 
 // Imgui
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
-
 //
+
 #include <Engine/Vulkan/core.h>
 #include <Engine/Renderer/context.h>
 #include <Engine/Vulkan/VulkanSwapchain.h>
@@ -32,27 +28,8 @@
 #include <Engine/platform.h>
 #include <Engine/Utils/bvh.h>
 
-
-// Lifted from legit engine
-//struct ImGuiScopedFrame
-//{
-//	ImGuiScopedFrame()
-//	{
-//		ImGui::NewFrame();
-//	}
-//	~ImGuiScopedFrame()
-//	{
-//		ImGui::EndFrame();
-//	}
-//};
-
-
 class VulkanApp {
-
 public:
-
-	std::vector<std::packaged_task<void()>> deferredTasks;
-
 	VulkanCore core;
 	Input input;
 
@@ -79,7 +56,7 @@ public:
 
 protected:
 
-	Context* context = nullptr; //resources
+	Context* context = nullptr;
 	std::unique_ptr<RenderGraph> rendergraph;
 	ImGuiContext* imgui_ctx = nullptr;
 	VulkanSwapchain* swapchain = nullptr;
@@ -220,7 +197,9 @@ void VulkanApp::InitializeImGui() {
 	io.SetClipboardTextFn = [](void*, const char* text) { glfwSetClipboardString(nullptr, text); };
 	io.GetClipboardTextFn = [](void*) { return glfwGetClipboardString(nullptr); };
 
-	auto im_dp = context->descriptorSetPools_.get(context->imgui_descriptor_pool);
+	//auto im_dp = context->descriptorSetPools_.get(context->imgui_descriptor_pool);
+	auto dp_h = context->createDescriptorPool();
+	//auto imgui_dp = context->de
 
 	// Provide information for dynamic rendering
 	VkPipelineRenderingCreateInfo pipeline_create{
@@ -276,7 +255,6 @@ bool VulkanApp::Initialize() {
 		std::cerr << "Failed to initialize GLFW\n";
 		return false;
 	}
-
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
 	int width_ = DEFAULT_WIDTH;
@@ -320,8 +298,6 @@ bool VulkanApp::Initialize() {
 		static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT),
 		static_cast<uint32_t>(DESIRED_SWAPCHAIN_IMAGE_COUNT)
 	);
-	swapchain->Create();
-	// 
 	InitializeImGui();
 
 	// FRAME COMMAND 
@@ -367,10 +343,13 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 
 #pragma endregion
 
+
+
 void VulkanApp::CleanUp() {
 
 	vkDeviceWaitIdle(core.device_);
 	swapchain->CleanupSwapchain();
+
 	// 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		// destroying the pool fress the commandBuffers too
@@ -388,7 +367,6 @@ void VulkanApp::CleanUp() {
 		glfwTerminate();
 		window = nullptr;
 	}
-
 	// 
 	vkDestroyDebugUtilsMessengerEXT(
 		core.instance_,

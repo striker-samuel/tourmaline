@@ -13,6 +13,7 @@ int Context::Initialize(
 
 	// Hardcodede to 1.3 atm
 	allocatorCreateInfo.vulkanApiVersion = VK_API_VERSION_1_3;
+	//allocatorCreateInfo.vulkanApiVersion = core.API_VERSION;
 
 	allocatorCreateInfo.flags =
 		VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT |
@@ -27,20 +28,17 @@ int Context::Initialize(
 	res = vmaCreateAllocator(&allocatorCreateInfo, &allocator_);
 	assert(res == VK_SUCCESS);
 
+
+	images_.objects_.reserve(MAX_IMAGES);
+	buffers_.objects_.reserve(MAX_BUFFERS);
+	descriptorSets_.objects_.reserve(MAX_DESCRIPTORS);
+
+
+	// default objs
 	// from ChatGpt, may not be true: you can set a generic sampler with a big maxLod like 100, and reuse it for all your textures of any mip count.
 	// The driver will clamp dynamically per texture.
 	//samplers["default"] = CreateSampler(100);
 	//samplers["default_shadow"] = CreateShadowSampler(1);
-
-	images_.objects_.reserve(MAX_IMAGES);
-	textures_.objects_.reserve(MAX_TEXTURES);
-	buffers_.objects_.reserve(MAX_BUFFERS);
-	descriptorSets_.objects_.reserve(MAX_DESCRIPTORS);
-
-	InitializeDeviceVmaPools();
-	default_descriptor_pool = createDescriptorPool();
-	imgui_descriptor_pool = createDescriptorPool();
-
 	//nil_texture = CreateTexture("");
 
 	return 0; // no error
@@ -51,76 +49,6 @@ Context::~Context(
 ) {
 	CleanUp();
 };
-
-
-
-void Context::InitializeDeviceVmaPools() {
-
-	// DEVICE-LOCAL pool for 2D images
-	{
-		VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-		imgCI.imageType = VK_IMAGE_TYPE_2D;
-		imgCI.format = VK_FORMAT_R8G8B8A8_UNORM;
-		imgCI.extent = { 4, 4, 1 };
-		imgCI.mipLevels = 1;
-		imgCI.arrayLayers = 1;
-		imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
-		imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
-		imgCI.usage = VK_IMAGE_USAGE_SAMPLED_BIT
-			| VK_IMAGE_USAGE_TRANSFER_DST_BIT
-			| VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // for vkCmdBlitImage when building mips
-
-		VmaAllocationCreateInfo aCI{};
-		aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-
-		uint32_t typeIndex = UINT32_MAX;
-		VK_CHECK(vmaFindMemoryTypeIndexForImageInfo(allocator_, &imgCI, &aCI, &typeIndex));
-
-		VmaPoolCreateInfo pci{};
-		pci.memoryTypeIndex = typeIndex;
-		pci.blockSize = 64 * 1024 * 1024;
-		VK_CHECK(vmaCreatePool(allocator_, &pci, &D_2DImagesPool));
-	}
-
-	//// DEVICE-LOCAL pool for static geometry buffers
-	//{
-	//	VkBufferCreateInfo bufCI{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	//	bufCI.size = 64 * 1024; // dummy
-	//	bufCI.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
-	//	VmaAllocationCreateInfo aCI{};
-	//	aCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-
-	//	uint32_t typeIndex = UINT32_MAX;
-	//	VK_CHECK(vmaFindMemoryTypeIndexForBufferInfo(allocator_, &bufCI, &aCI, &typeIndex));
-
-	//	VmaPoolCreateInfo pci{};
-	//	pci.memoryTypeIndex = typeIndex;
-	//	pci.blockSize = 64 * 1024 * 1024;
-	//	VK_CHECK(vmaCreatePool(allocator_, &pci, &D_geo));
-	//}
-
-	{
-		VkBufferCreateInfo bufCI{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-		bufCI.size = 64 * 1024;
-		bufCI.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-		VmaAllocationCreateInfo aCI{};
-		aCI.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-			| VMA_ALLOCATION_CREATE_MAPPED_BIT;
-		aCI.usage = VMA_MEMORY_USAGE_AUTO;
-
-		uint32_t typeIndex = UINT32_MAX;
-		vmaFindMemoryTypeIndexForBufferInfo(allocator_, &bufCI, &aCI, &typeIndex);
-
-		VmaPoolCreateInfo pci{};
-		pci.memoryTypeIndex = typeIndex; // host-visible & host-coherent type
-		pci.blockSize = 32 * 1024 * 1024;
-		VK_CHECK(vmaCreatePool(allocator_, &pci, &D_StagingPool));
-	}
-
-
-}
 
 void Context::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
 
@@ -158,72 +86,6 @@ void Context::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSample
 	VK_CHECK(vkCreateSampler(core.device_, &samplerInfo, nullptr, &sampler));
 
 }
-//
-//[[nodiscard]] SamplerHandle Context::CreateSampler(uint32_t levelCount) {
-//
-//	VkSampler sampler;
-//
-//	VkSamplerCreateInfo samplerInfo{};
-//	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-//	samplerInfo.magFilter = VK_FILTER_LINEAR;
-//	samplerInfo.minFilter = VK_FILTER_LINEAR;
-//
-//	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-//	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-//	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-//
-//	VkPhysicalDeviceProperties properties{};
-//	vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-//
-//	samplerInfo.anisotropyEnable = VK_TRUE;
-//	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-//	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-//
-//	// This is a hardware/spec limit. Thats why im asserting here...
-//	// Maybe we can query gpu capabilities to give better paths to more powerful devices.
-//	assert(properties.limits.maxUniformBufferRange >= 1 << 16);
-//
-//	samplerInfo.unnormalizedCoordinates = VK_FALSE;
-//	samplerInfo.compareEnable = VK_FALSE;
-//	samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-//	//samplerInfo.compareOp = compareOp;
-//
-//	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-//	samplerInfo.mipLodBias = 0.0f;
-//	samplerInfo.minLod = 0.0f;
-//	//samplerInfo.maxLod = 0.0f;
-//	samplerInfo.maxLod = float(levelCount - 1);
-//
-//	VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler));
-//
-//	return samplers_.create(std::move(sampler));
-//
-//}
-
-//[[nodiscard]] SamplerHandle Context::CreateShadowSampler(uint32_t levelCount) {
-//
-//	VkSampler sampler_;
-//
-//	VkSamplerCreateInfo sci{};
-//	sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-//
-//	sci.magFilter = VK_FILTER_LINEAR;
-//	sci.minFilter = VK_FILTER_LINEAR;
-//	sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-//
-//	sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-//	sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-//	sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-//
-//	sci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-//
-//	sci.compareEnable = VK_TRUE;
-//	sci.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-//
-//	VK_CHECK(vkCreateSampler(device_, &sci, nullptr, &sampler_));
-//	return samplers_.create(std::move(sampler_));
-//
-//}
 
 void Context::CreateImageView(
 	VkImage image,
@@ -260,11 +122,9 @@ void Context::CreateImageView(
 }
 
 [[nodiscard]] DescriptorSetHandle Context::CreateDescriptorSet(
+	DescriptorPoolHandle pool,
 	VkDescriptorSetLayout& layout
 ) {
-	// Pools should be rolled over on fail, get new pool. then discard FIFO
-	auto descriptorPool = descriptorSetPools_.get(default_descriptor_pool);
-	//auto layout = descriptorSetLayouts_.get(lyt);
 
 	std::array<VkDescriptorSetLayout, 1> layouts = {
 		layout
@@ -300,7 +160,7 @@ void Context::CreateImageView(
 }
 
 [[nodiscard]] DeviceBufferHandle Context::CreateBuffer(
-	DeviceBufferCreateInfo bufferCreateInfo
+	BufferCreateInfo bufferCreateInfo
 ) {
 	DeviceBuffer desc{};
 
@@ -469,45 +329,30 @@ void Context::UploadDataToBuffer(
 
 	VkDescriptorPool dpool;
 	VK_CHECK(vkCreateDescriptorPool(core.device_, &poolInfo, nullptr, &dpool));
-	return descriptorSetPools_.create(std::move(dpool));
+	return descriptorPools_.create(std::move(dpool));
 }
 
 
 // This does not depend on context (jsut the core device payload and should not be part of it really) 
-void Context::CreatePipelineLayout(
+void PipelineBuilder::CreatePipelineLayout(
 	const PipelineCreateInfo::PipelineLayoutDesc& descIn,
 	Pipeline::Layout& out)
 {
 
-	// ---- 1) Canonicalize sets (sort by set index)
-	std::vector<PipelineCreateInfo::DescriptorSetLayoutDesc> sets = descIn.sets;
-	std::sort(sets.begin(), sets.end(),
-		[](const auto& a, const auto& b) { return a.set < b.set; });
-
-	// ---- 2) Determine max set index and build VkDescriptorSetLayout array
-	uint32_t maxSet = 0;
-	for (const auto& s : sets) maxSet = std::max(maxSet, s.set);
-
-	// You can pick your own limit. Vulkan guarantees at least 4, often 8+.
-	// If you want "max 8 sets" like you did for push constants:
-	assert(maxSet < 8 && "Too many descriptor sets (max set index must be < 8)");
-
-	const uint32_t setLayoutCount = (sets.empty()) ? 0u : (maxSet + 1);
-
+	auto sets = descIn.setDescriptions;
+	assert(sets.size() <= 8 && "Too many descriptor sets 8+");
+	const uint32_t setLayoutCount = (sets.empty()) ? 0u : (sets.size());
 	std::array<VkDescriptorSetLayout, 8> vkSetLayouts{};
 	vkSetLayouts.fill(VK_NULL_HANDLE);
 
+	int i = 0;
 	for (const auto& s : sets)
 	{
-		VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-		CreateDescriptorLayout(s, layout);
-
-		vkSetLayouts[s.set] = layout; // ?? wth
+		VkDescriptorSetLayout vk_lyt = VK_NULL_HANDLE;
+		CreateDescriptorSetLayout(s, vk_lyt);
+		vkSetLayouts[i] = vk_lyt;
+		i++;
 	}
-
-	// Optional policy: forbid gaps
-	for (uint32_t i = 0; i < setLayoutCount; ++i)
-		assert(vkSetLayouts[i] != VK_NULL_HANDLE && "Descriptor set gap not allowed");
 
 	// ---- 3) Push constant ranges (max 8)
 	VkPushConstantRange ranges[8]{};
@@ -555,19 +400,17 @@ void Context::CreatePipelineLayout(
 		.pPushConstantRanges = rangeCount ? ranges : nullptr,
 	};
 
-	VK_CHECK(vkCreatePipelineLayout(core.device_, &ci, nullptr, &out.layout));
-	out.sets = vkSetLayouts;
+	VK_CHECK(vkCreatePipelineLayout(core.device_, &ci, nullptr, &out.vk_layout));
+	//out.vk_sets = vkSetLayouts;
 }
 
-
-[[nodiscard]] PipelineHandle Context::CreatePipeline(
+[[nodiscard]] PipelineHandle PipelineBuilder::CreateGraphicsPipeline(
 	PipelineCreateInfo pipelineCreateInfo
 ) {
 
-
 	Pipeline pipeline;
-	auto v = shaderModules_.get(pipelineCreateInfo.vert);
-	auto f = shaderModules_.get(pipelineCreateInfo.frag);
+	auto v = ctx_.shaderModules_.get(pipelineCreateInfo.vert);
+	auto f = ctx_.shaderModules_.get(pipelineCreateInfo.frag);
 
 	// SHADER
 	VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
@@ -587,15 +430,11 @@ void Context::CreatePipelineLayout(
 	VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
 													  fragShaderStageInfo };
 
-	// VERTEX FORMAT. This is fixed and set beforehand
-
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
 	vertexInputInfo.sType =
 		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
 	auto bindingDescription = Vertex::getBindingDescription();
 	auto attributeDescriptions = Vertex::getAttributeDescriptions();
-
 	vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(bindingDescription.size());
 	vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
 	vertexInputInfo.pVertexBindingDescriptions = bindingDescription.data();
@@ -608,14 +447,12 @@ void Context::CreatePipelineLayout(
 	inputAssembly.primitiveRestartEnable = VK_FALSE;
 
 	// VIEWPORT
-
 	VkPipelineViewportStateCreateInfo viewportState{};
 	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 	viewportState.viewportCount = 1;
 	viewportState.scissorCount = 1;
 
 	// RASTERIZER
-
 	VkPipelineRasterizationStateCreateInfo rasterizer{};
 	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 	rasterizer.depthClampEnable = pipelineCreateInfo.rasterSettings.depthClampEnable;
@@ -661,7 +498,6 @@ void Context::CreatePipelineLayout(
 	colorBlending.blendConstants[3] = 0.0f;
 
 	// DYNAMIC STATES
-
 	// These two are elemental. There are extensions for almost anything do. Maybe it is woth to go all in dynamic state.
 	std::vector<VkDynamicState> dynamicStates = {
 		VK_DYNAMIC_STATE_VIEWPORT,
@@ -675,23 +511,25 @@ void Context::CreatePipelineLayout(
 	dynamicState.pDynamicStates = dynamicStates.data();
 
 #pragma region ---[LayoutDescription]---
-	Pipeline::Layout lyt;
-	CreatePipelineLayout(pipelineCreateInfo.layoutDesc, lyt);
-	pipeline.layout = lyt;
+	VkPipelineLayout lyt;
+	CreatePipelineLayout(pipelineCreateInfo.layoutDescription, lyt);
 
 #pragma endregion
 
-	VkPipelineRenderingCreateInfo dynamic_rendering_pipeline_info{
-		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR
-	};
-	dynamic_rendering_pipeline_info.pNext = VK_NULL_HANDLE;
 
-	// This depends on render setup. should not be encoded in the createInfo.
-	// Maybe even resolved with the current swapchain setup?
-	dynamic_rendering_pipeline_info.colorAttachmentCount = 1;
-	dynamic_rendering_pipeline_info.pColorAttachmentFormats = &pipelineCreateInfo.swapchainImageFormat;
-	dynamic_rendering_pipeline_info.depthAttachmentFormat = pipelineCreateInfo.depth_format;
-	dynamic_rendering_pipeline_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+	//// This depends on RenderPass description too...
+	//std::vector<VkFormat> colorAttachmentFormats;
+	//colorAttachmentFormats.push_back(static_cast<VkFormat>(swapchain_->GetImageFormat()));
+	//VkPipelineRenderingCreateInfo dynamic_rendering_pipeline_info{
+	//	VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR
+	//};
+	//dynamic_rendering_pipeline_info.pNext = VK_NULL_HANDLE;
+	//dynamic_rendering_pipeline_info.colorAttachmentCount = 1;
+	//dynamic_rendering_pipeline_info.pColorAttachmentFormats = colorAttachmentFormats.data();
+	//dynamic_rendering_pipeline_info.depthAttachmentFormat = static_cast<VkFormat>(swapchain_->GetDepthImageFormat());
+	////dynamic_rendering_pipeline_info.pColorAttachmentFormats = &pipelineCreateInfo.swapchainImageFormat;
+	////dynamic_rendering_pipeline_info.depthAttachmentFormat = pipelineCreateInfo.depth_format;
+	//dynamic_rendering_pipeline_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo{};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -705,16 +543,16 @@ void Context::CreatePipelineLayout(
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicState;
 	pipelineInfo.pDepthStencilState = &depthStencil;
-	pipelineInfo.layout = pipeline.layout.layout;
-	pipelineInfo.pNext = &dynamic_rendering_pipeline_info;
+	pipelineInfo.layout = pipelineLayput;
+	pipelineInfo.pNext = &dynamicRenderingInfo_;
 
-	if (vkCreateGraphicsPipelines(core.device_, VK_NULL_HANDLE, 1, &pipelineInfo,
+	if (vkCreateGraphicsPipelines(ctx_.core.device_, VK_NULL_HANDLE, 1, &pipelineInfo,
 		nullptr, &pipeline.pipeline) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create graphics pipeline!");
 	}
 
-	return pipelines_.create(std::move(pipeline));
+	return ctx_.graphicPipelines_.create(std::move(pipeline));
 
 }
 
@@ -1293,17 +1131,13 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 {
 	auto handle = CreateStagingBuffer(size);
 	auto* buf = buffers_.get(handle);
-
 	void* mapped = nullptr;
 	VK_CHECK(vmaMapMemory(allocator_, buf->alloc, &mapped));
-
 	// NOTE: memcpy(dst <- src)
 	std::memcpy(mapped, srcData, static_cast<size_t>(size));
-
 	// HOST_COHERENT means we don't need vmaFlushAllocation.
 	// If you drop HOST_COHERENT in the future, call vmaFlushAllocation here.
 	vmaUnmapMemory(allocator_, buf->alloc);
-
 	return handle;
 }
 
@@ -1315,18 +1149,12 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 	return shaderModules_.create(std::move(shader));
 };
 
-void Context::CreateDescriptorLayout(const PipelineCreateInfo::DescriptorSetLayoutDesc& descIn, VkDescriptorSetLayout& layout)
+void PipelineBuilder::CreateDescriptorSetLayout(
+	const PipelineCreateInfo::DescriptorSetDescription& descIn,
+	VkDescriptorSetLayout& layout)
 {
-	// 1) Canonicalize (copy then sort by binding)
-	PipelineCreateInfo::DescriptorSetLayoutDesc desc = descIn;
-	//std::sort(desc.bindings.begin(), desc.bindings.end(),
-	//	[](auto& a, auto& b) { return a.binding < b.binding; });
+	PipelineCreateInfo::DescriptorSetDescription desc = descIn;
 
-	// 2) Compute a cache key (pseudo)
-	// LayoutKey key = Hash(desc);
-	// if (auto it = layoutCache.find(key); it != layoutCache.end()) return it->second;
-
-	// 3) Build VkDescriptorSetLayoutBinding array
 	std::vector<VkDescriptorSetLayoutBinding> vkBindings;
 	vkBindings.reserve(desc.bindings.size());
 
@@ -1338,37 +1166,26 @@ void Context::CreateDescriptorLayout(const PipelineCreateInfo::DescriptorSetLayo
 	std::vector<VkDescriptorBindingFlags> bindingFlags;
 	bindingFlags.reserve(desc.bindings.size());
 
-	for (const PipelineCreateInfo::BindingDesc& b : desc.bindings)
+	for (const PipelineCreateInfo::BindingDescription& b : desc.bindings)
 	{
 		VkDescriptorSetLayoutBinding vkB{};
 		vkB.binding = b.binding;
 		vkB.descriptorType = b.type;
 		vkB.descriptorCount = b.count;
 		vkB.stageFlags = b.stages;
-
-		// Immutable samplers: only valid for SAMPLER / COMBINED_IMAGE_SAMPLER
 		if (!b.immutableSamplers.empty())
 		{
-			// Validate sizes early (debug assert)
 			assert(b.immutableSamplers.size() == b.count);
-
 			immutableSamplersStorage.emplace_back();
 			auto& store = immutableSamplersStorage.back();
 			store.reserve(b.immutableSamplers.size());
-
-			//for (SamplerHandle sh : b.immutableSamplers)
-			//	store.push_back(*samplers_.get(sh)); // you store VkSampler in pool
-
-			// TODO : VALIDATE
 			store = b.immutableSamplers;
-
 			vkB.pImmutableSamplers = store.data();
 		}
 		else
 		{
 			vkB.pImmutableSamplers = nullptr;
 		}
-
 		vkBindings.push_back(vkB);
 		bindingFlags.push_back(b.flags);
 	}
@@ -1392,14 +1209,7 @@ void Context::CreateDescriptorLayout(const PipelineCreateInfo::DescriptorSetLayo
 	for (auto f : bindingFlags) if (f != 0) { anyFlags = true; break; }
 	ci.pNext = anyFlags ? &flagsCI : nullptr;
 
-	//VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-	VK_CHECK(vkCreateDescriptorSetLayout(core.device_, &ci, nullptr, &layout));
-	// 5) Cache it (pseudo)
-	// layoutCache[key] = h;
-
-	//DescriptorLayoutHandle h = descriptorSetLayouts_.create(std::move(layout));
-	//return h;
-
+	VK_CHECK(vkCreateDescriptorSetLayout(ctx_.core.device_, &ci, nullptr, &layout));
 }
 
 // 
@@ -1412,10 +1222,11 @@ void destroy(Context* ctx, ShaderModuleHandle handle) {
 	vkDestroyShaderModule(ctx->core.device_, *sm, NULL);
 	ctx->shaderModules_.destroy(handle);
 }
-void destroy(Context* ctx, DescriptorPoolHandle handle)
-{}
-void destroy(Context* ctx, DescriptorSetHandle handle)
-{}
+void destroy(Context* ctx, DescriptorPoolHandle handle) {
+	//vkDeviceWaitIdle(core_.device_);
+	//vkDestroyDescriptorPool(ha)
+}
+void destroy(Context* ctx, DescriptorSetHandle handle){}
 void destroy(Context* ctx, ImageHandle handle)
 {
 

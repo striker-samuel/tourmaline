@@ -25,7 +25,6 @@ struct RingBinding
 
 	void init(
 		Context* context_,
-		uint32_t binding_, // Manual count for bidning positions
 		uint32_t ringCount_, // should be almost always FRAMES_IN_FLIGHT
 		VkBufferUsageFlags usageFlags,
 		VkDescriptorType descriptorType_,
@@ -33,7 +32,6 @@ struct RingBinding
 	)
 	{
 		context = context_;
-		binding = binding_;
 		ringCount = ringCount_;
 		descriptorType = descriptorType_;
 
@@ -58,11 +56,11 @@ struct RingBinding
 	}
 
 
-	PipelineCreateInfo::BindingDesc bindingDesc(
+	PipelineCreateInfo::BindingDescription bindingDesc(
 		//const std::vector<VkSampler>& resolvedImmutableSamplers
 	) const{
 		PipelineCreateInfo::BindingDesc bn{};
-		bn.binding = binding;
+		//bn.binding = binding;
 		bn.type = descriptorType;
 		bn.count = 1;
 		bn.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT;

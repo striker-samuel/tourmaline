@@ -10,6 +10,7 @@
 
 #include <ktxvulkan.h>
 
+
 struct /*class*/ VulkanCore {
 
 	VkInstance instance_ = VK_NULL_HANDLE;

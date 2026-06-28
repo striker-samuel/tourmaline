@@ -49,17 +49,11 @@ struct MainViewPushConstants {
 };
 static_assert(sizeof(MainViewPushConstants) % 16 == 0);
 
-
-
 struct Level : Scene {
 
 	ToyResourceManager* man = nullptr;
 	BvhTree tree = {};
 	BvhTree static_tree = {};
-
-
-	// This should be peged to recalulateGlobalTransforms and dirty update. 
-	// Crude patch to get it running now. ;)
 	bool tree_done = false;
 
 	~Level() {}
@@ -84,13 +78,6 @@ struct Level : Scene {
 };
 
 
-
-//struct TextureManager {
-//	Context& ctx_;
-//	TextureManager(Context& ctx) : ctx_(ctx); 
-//};
-
-
 class TestApp : public VulkanApp {
 
 public:
@@ -101,16 +88,8 @@ private:
 
 	void UpdateCamera(float dt);
 
-	// App resources -- This should just be spawned by the RG
-	struct FrameResources {
-		DescriptorSetHandle frameDescriptorSet;
-		DescriptorSetHandle frameDynamicDescriptorSet;
-	};
-	FrameResources perFrameData[MAX_FRAMES_IN_FLIGHT];
-	// 
 	RingBinding<FrameUniforms, 1> frameUniformsBinding;
 	RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
-	PipelineHandle mainPipeline;
 
 	// App state
 	CameraPositioner_FirstPerson cameraPositioner = CameraPositioner_FirstPerson(
@@ -137,6 +116,11 @@ private:
 		Super::LateUpdate();
 	}
 
+	ShaderModuleHandle GetShaderModule(std::string uri) {
+		auto code = readFile(uri);
+		return context->CreateShaderModule(code);
+	};
+
 	bool Initialize() {
 		if (!Super::Initialize())
 			return false;
@@ -149,7 +133,6 @@ private:
 		// Init
 		frameUniformsBinding.init(
 			context,
-			0, //bindding #
 			MAX_FRAMES_IN_FLIGHT,
 			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
@@ -157,11 +140,11 @@ private:
 
 		drawDataBinding.init(
 			context,
-			1, //bindding #
 			MAX_FRAMES_IN_FLIGHT,
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, //bufferUsageFlags
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC //descriptorType
 		);
+
 
 		auto vertShaderCode = readFile("content/shaders/default.vert.hlsl.spv");
 		auto fragShaderCode = readFile("content/shaders/default.frag.hlsl.spv");
@@ -173,84 +156,60 @@ private:
 			fragShaderCode
 		);
 
-		PipelineCreateInfo::PipelineLayoutDesc desc;
-		desc.sets = {
-			PipelineCreateInfo::DescriptorSetLayoutDesc{
-				0, // setLayout #
-				0, //VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, // createFlags
-				{
-					frameUniformsBinding.bindingDesc(), // binding 0,0
-					drawDataBinding.bindingDesc(), //binding 0,1
+		PipelineCreateInfo::PipelineLayoutDesc desc{};
+		desc.setDescriptions = {
+			{
+				.createFlags = 0,
+				.bindings = {
+					frameUniformsBinding.bindingDesc(),
+					drawDataBinding.bindingDesc(),
 				}
 			},
-			// These two need to be separated due to UPDATE_AFTER_BIND and dynamicOffsets incompatibility in same setLayout
-			PipelineCreateInfo::DescriptorSetLayoutDesc{
-				.set = 1,
+			{
 				.createFlags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
 				.bindings = {
-				PipelineCreateInfo::BindingDesc{
-					.binding = 2,
-					.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-					.count = MAX_TEXTURES,
-					.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
-					.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-							  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-					.immutableSamplers = {}
-				},
-			// Example bindless samplers
-			PipelineCreateInfo::BindingDesc{
-				.binding = 3,
-				.type = VK_DESCRIPTOR_TYPE_SAMPLER,
-				.count = MAX_TEXTURES, // We carry 1 to one samplers, this is wasteful but lets do this ftm
-				.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
-				.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-						  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-				.immutableSamplers = {}
+					PipelineCreateInfo::BindingDescription
+					{
+						.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+						.count = MAX_TEXTURES,
+						.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
+						.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+								  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+					},
+					PipelineCreateInfo::BindingDescription
+					{
+						.type = VK_DESCRIPTOR_TYPE_SAMPLER,
+						.count = MAX_TEXTURES, // We carry 1 to one samplers, this is wasteful but lets do this ftm
+						.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
+						.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+								  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+					}
+				}
 			}
-		}
-	}
 		};
-		desc.pushConstants.push_back(
-			{
-			.stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			.offset = 0,
-			.size = uint32_t(sizeof(MainViewPushConstants) +
-							   sizeof(Material::Values)
-			),
+		desc.pushConstants = {
+				{
+				.stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				.offset = 0,
+				.size = uint32_t(sizeof(MainViewPushConstants) +
+								   sizeof(Material::Values)
+				),
 			}
-		);
+		};
 
-		// Just define renderPasses and grah and go.s
-		// App shouldnt need to do this really...
-		mainPipeline = context->CreatePipeline(
-			{
+		PipelineCreateInfo pipelineCreateInfo{
 			.rasterSettings = {
 				.depthClampEnable = VK_FALSE, // needs to be enabled
 				.rasterizerDiscardEnable = VK_FALSE,
 				.polygonMode = VK_POLYGON_MODE_FILL,
 				.cullMode = VK_CULL_MODE_BACK_BIT,
 				.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE
+				//.depthBias // this will go with deafutls be careful
 			}, // rasterDesc
 			.layoutDesc = desc, // layoutDesc
 			.vert = vert_shader_h, // vert
 			.frag = fragHandle, //frag
-			.depth_format = findDepthFormat(core.physicalDevice_),
-			.swapchainImageFormat = swapchain->GetImageFormat()
-			}
-		);
-		auto pipe_obj = context->pipelines_.get(mainPipeline);
-		auto bb = pipe_obj->layout.sets;
-
-		for (int i = 0; i < swapchain->framesInFlight_; i++) {
-
-			perFrameData[i].frameDynamicDescriptorSet = context->CreateDescriptorSet(
-				bb[0]
-			);
-
-			perFrameData[i].frameDescriptorSet = context->CreateDescriptorSet(
-				bb[1]
-			);
-		}
+		};
 
 		// Dedfault camera settings
 		camera.setPerspective(45.0f, float(swapchain->extent_.width) / float(swapchain->extent_.height), default_near_clip, default_far_clip);
@@ -262,15 +221,14 @@ private:
 		);
 		current_level.static_tree = treeFromScene(current_level,
 			[&](uint32_t index) -> const Mesh& {
-				// Highly illegal. but lets roll with this,
-				return this->man.meshes.objects_[index].obj_;
-			}
+			// Highly illegal. but lets roll with this,
+			return this->man.meshes.objects_[index].obj_;
+		}
 		);
 		current_level.tree_done = true;
 
 		// This is rendergraph responsability really
-		SetDescriptorSets();
-		UpdateBindlessTexturesSets();
+		//UpdateBindlessTexturesSets();
 
 		return true;
 	};
@@ -329,53 +287,54 @@ private:
 		std::vector<VkDescriptorImageInfo> imageInfos;
 		std::vector<VkDescriptorImageInfo> samplerInfos;
 
-		int count = (context->textures_.numObjects());
+		int count = (textures_.numObjects());
 		imageInfos.reserve(count);
 		samplerInfos.reserve(count);
+		//textures_.forEach([&](Image obj_)
+		for (auto textureHandle : textures_)
+		{
+			auto obj_ = context->images_.get(textureHandle);
+			VkDescriptorImageInfo ii{};
+			ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
+			ii.imageView = obj_->sampleView;
+			ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			imageInfos.push_back(ii);
 
-		context->textures_.forEach([&](Image obj_)
-			{
-				VkDescriptorImageInfo ii{};
-				ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-				ii.imageView = obj_.sampleView;
-				ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				imageInfos.push_back(ii);
-
-				// Sampler for the bindless texure approach needs refacotr.
-				// Doesnt Really make sense.
-				VkDescriptorImageInfo si{};
-				si.sampler = obj_.sampler;
-				si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
-				si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
-				samplerInfos.push_back(si);
-			}
-		);
-
-		for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; frameIndex++) {
-			//// --- Two writes: images at index 2, samplers at index 3 ---
-			VkWriteDescriptorSet writes[2]{};
-
-			auto setHandle = perFrameData[frameIndex].frameDescriptorSet;
-			auto set = context->descriptorSets_.get(setHandle);
-
-			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writes[0].dstSet = set->set;
-			writes[0].dstBinding = 2;
-			writes[0].dstArrayElement = 0;
-			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-			writes[0].descriptorCount = imageInfos.size();
-			writes[0].pImageInfo = imageInfos.data();
-
-			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writes[1].dstSet = set->set;
-			writes[1].dstBinding = 3;
-			writes[1].dstArrayElement = 0;
-			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-			writes[1].descriptorCount = static_cast<uint32_t>(samplerInfos.size());   // or 1 if you use a single shared sampler
-			writes[1].pImageInfo = samplerInfos.data();
-
-			vkUpdateDescriptorSets(core.device_, 2, writes, 0, nullptr);
+			// Sampler for the bindless texure approach needs refacotr.
+			// Doesnt Really make sense.
+			VkDescriptorImageInfo si{};
+			si.sampler = obj_->sampler;
+			si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
+			si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
+			samplerInfos.push_back(si);
 		}
+			);
+
+			for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; frameIndex++) {
+				//// --- Two writes: images at index 2, samplers at index 3 ---
+				VkWriteDescriptorSet writes[2]{};
+
+				auto setHandle = perFrameData[frameIndex].frameDescriptorSet;
+				auto set = context->descriptorSets_.get(setHandle);
+
+				writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				writes[0].dstSet = set->set;
+				writes[0].dstBinding = 2;
+				writes[0].dstArrayElement = 0;
+				writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+				writes[0].descriptorCount = imageInfos.size();
+				writes[0].pImageInfo = imageInfos.data();
+
+				writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				writes[1].dstSet = set->set;
+				writes[1].dstBinding = 3;
+				writes[1].dstArrayElement = 0;
+				writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+				writes[1].descriptorCount = static_cast<uint32_t>(samplerInfos.size());   // or 1 if you use a single shared sampler
+				writes[1].pImageInfo = samplerInfos.data();
+
+				vkUpdateDescriptorSets(core.device_, 2, writes, 0, nullptr);
+			}
 
 	}
 
@@ -433,6 +392,9 @@ private:
 		EndAndPresentFramebuffer(fb);
 	}
 
+
+
+
 	void RenderFrame(ToyFrameBuffer fb) {
 
 		//ImGuiScopedFrame uiFrame;
@@ -453,14 +415,14 @@ private:
 			}
 			)
 			.setOffset({ 0,0 })
-			//.addBinding()
 			//.setGraphicsPipeline()
 			.setExtent(fb.swapchain.extent_)
 			.setVertexBuffers(vertexBuffers)
 			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
 			.setDepth(depthViewId, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
+			.setGraphicsPipeline()
 			.setRecordingFunc([this, fb](ToyRenderPassContext renderpassctx)
-				{
+		{
 
 			// This shoudl be done by the rg
 			auto dynamic_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDynamicDescriptorSet);
@@ -468,7 +430,6 @@ private:
 
 			// dont really like this fb passign.
 			auto frameData = UpdateFrameUniforms(fb.swapchain.GetCurrentFrameIndex());
-			// BIND DESCRIPTOR SETS
 
 			std::vector<int> visible;
 			if (current_level.tree_done) {
@@ -511,8 +472,13 @@ private:
 				assert(false);
 			}
 
+
+			//
+			// this is bad. layouts may be shared between pipelines, its the most common indeed
+			// use maintenance4
 			auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->layout;
 
+			//
 			uint32_t dynamicOffsets[2] = {
 				frameUniformsBinding.dynamicOffsetFrame(swapchain->currentFrame_),
 				drawDataBinding.dynamicOffsetFrame(swapchain->currentFrame_),
@@ -620,7 +586,7 @@ private:
 			ImGui::Render();
 			ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), fb.commandBuffer);
 			//
-				}
+		}
 			);
 
 		rendergraph->Execute(fb);

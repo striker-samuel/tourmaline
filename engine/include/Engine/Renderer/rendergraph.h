@@ -6,22 +6,11 @@
 
 // Lets just alias creation info to the key
 using ImageKey = ImageCreateInfo;
-using DeviceBufferKey = DeviceBufferCreateInfo;
-//using PipelineKey = PipelineCreateInfo;
+using ImageKey = ImageCreateInfo;
+using DeviceBufferKey = BufferCreateInfo;
 
-// forward declarations
 struct RenderGraph;
 struct ToyRenderPass;
-
-struct ToyRenderPassContext {
-	Context& ctx;
-	ToyRenderPass& renderpass;
-};
-
-// Could be good to have subresource level access too
-//struct SubResoruceViewKey {
-//	uint32_t mips;
-//};
 
 struct ToyFrameBuffer {
 	uint32_t frameIndex = 0; // Maybe end os uint32_ to catch for unitialized? this value can only be ip to SWAPCHAIN_IMAGE_COUNT
@@ -29,21 +18,25 @@ struct ToyFrameBuffer {
 	VulkanSwapchain& swapchain;
 };
 
-struct VirtualBufferId
+//right now jsut mapping to single buffer resource, and not being more granular.
+struct LogicalBuffer
 {
 	size_t id;
 	DeviceBufferKey key;
 	DeviceBufferHandle resolvedBufferHandle;
-	VkBuffer GetBuffer() {};
 };
 
-struct VirtualImageViewId
+
+// hmmmm
+struct LogicalImageView
 {
 	size_t id;
+	ImageHandle externalImage{};
 	VkImageView resolvedImageView = VK_NULL_HANDLE;
+	VkFormat resolvedFormat = VK_FORMAT_UNDEFINED;
 };
 
-struct VirtualImageId {
+struct LogicalImage {
 	enum struct ImageTypes {
 		Transient, // Wont outlive the frame
 		External // External like swapIamge for expample
@@ -57,18 +50,29 @@ struct VirtualImageId {
 	ImageHandle resolvedImage{};
 };
 
+struct ToyRenderPassContext {
+	Context& ctx;
+	ToyRenderPass& renderpass;
+};
 using RecordingFunction = std::function<void(ToyRenderPassContext)>;
 struct ToyRenderPass final {
 	RenderGraph& rg_;
+
 	enum struct PassType { Rasterize, Compute };
+
 	PassType type;
 	VkExtent2D extent_;
 	VkOffset2D offset_ = { 0,0 };
 	RecordingFunction recordingFunction_;
-	PipelineKey pipeline_;
+
+
+	// Instrospect form shader or define here
+	//std::vector<LogicalBinding> bindings_;
+	//std::vector<LogicalBinding> bindings_;
+	//std::vector<LogicalBinding> bindings_;
 
 	struct Attachment {
-		VirtualImageViewId view;
+		LogicalImageView view;
 		VkAttachmentLoadOp loadOp;
 		VkAttachmentStoreOp storeOp;
 		VkClearValue clearValue;
@@ -78,21 +82,22 @@ struct ToyRenderPass final {
 	Attachment depthAttachment_{ .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .clearValue = { 1.0f } /*.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE */ };
 	Attachment stencilAttachment_{ .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .clearValue = {0.0f} /*.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE*/ };
 
-	std::vector<VirtualBufferId> uniformBuffers_;
-	std::vector<VirtualBufferId> storageBuffers_;
+	std::vector<LogicalBuffer> uniformBuffers_;
+	std::vector<LogicalBuffer> storageBuffers_;
+	std::vector<LogicalBuffer> vertexBuffers_;
 
-	//struct VertexDefiniton {} vertex_def;
-	std::vector<VirtualBufferId> vertexBuffers_;
-
-	struct VirtualDescriptorSet {
-		VkDescriptorSetLayout resolvedLyt = VK_NULL_HANDLE;
-	};
-
-	// instead of using the constant this can be queried trough device capcabilitites
-	VirtualDescriptorSet sets[MAX_DESCRIPTORS];
+	// Pipeline
+	ShaderModuleHandle vert_;
+	ShaderModuleHandle frag_;
+	ToyRenderPass& setVertShader(ShaderModuleHandle vert) { vert_ = vert; };
+	ToyRenderPass& setFragShader(ShaderModuleHandle frag) { frag_ = frag; };
+	PipelineCreateInfo::RasterSettings rasterSettings_;
+	ToyRenderPass& setRasterSettings(PipelineCreateInfo::RasterSettings rasterSettings) { rasterSettings_ = rasterSettings; };
+	//
+	//ToyRenderPass& setBinding(PipelineCreateInfo::BindingDescription desc) {};
 
 	ToyRenderPass& setColor(
-		std::vector<VirtualImageViewId>& views, // may be better to do views. 
+		std::vector<LogicalImageView>& views, // may be better to do views. 
 		VkAttachmentLoadOp _loadOp,
 		VkAttachmentStoreOp _storeOp,
 		VkClearValue _clearValue
@@ -107,7 +112,7 @@ struct ToyRenderPass final {
 
 	// stencil is baked into depth! this can cause problems here!
 	// protect agains invariant or make SetStencil only enable
-	ToyRenderPass& setDepth(VirtualImageViewId viewId,
+	ToyRenderPass& setDepth(LogicalImageView viewId,
 		VkAttachmentLoadOp _loadOp,
 		VkAttachmentStoreOp _storeOp,
 		VkClearValue _clearValue
@@ -115,86 +120,99 @@ struct ToyRenderPass final {
 		this->depthAttachment_ = { viewId, _loadOp, _storeOp, _clearValue };
 		return *this;
 	};
-	ToyRenderPass& setStencil(VirtualImageViewId depthAttachent) /*{ this->depthAttachment_ = depthAttachent; return *this; }*/;
-
-	//ToyRenderPass& AddBinding(size_t layout, size_t binding) {}
-	ToyRenderPass& AddBinding(size_t set, PipelineCreateInfo::BindingDesc bindingDescription) {
-	
-		// Check flag compa
-	}
+	ToyRenderPass& setStencil(LogicalImageView depthAttachent) /*{ this->depthAttachment_ = depthAttachent; return *this; }*/;
 
 	// this needs rework
 	//struct VertexFormatDesc {
 	//	//binding desc!
 	//	} vertexFormat_;
 	//ToyRenderPass& setVertexFormat(VertexFormatDesc vertexFormat) { this->vertexFormat_ = vertexFormat; return *this; }
-	ToyRenderPass& setVertexBuffers(std::vector<VirtualBufferId> vertexBuffers) { this->vertexBuffers_ = vertexBuffers; return *this; }
+	ToyRenderPass& setVertexBuffers(std::vector<LogicalBuffer> vertexBuffers) { this->vertexBuffers_ = vertexBuffers; return *this; }
 
-
-	ToyRenderPass& setStorageBuffers(std::vector<VirtualBufferId> storageBuffers) { this->storageBuffers_ = storageBuffers; return *this; }
-	ToyRenderPass& setUniformBuffers(std::vector<VirtualBufferId> uniformBuffers) { this->uniformBuffers_ = uniformBuffers; return *this; }
+	//
+	//ToyRenderPass& setStorageBuffers(std::vector<LogicalBuffer> storageBuffers) { this->storageBuffers_ = storageBuffers; return *this; }
+	//ToyRenderPass& setUniformBuffers(std::vector<LogicalBuffer> uniformBuffers) { this->uniformBuffers_ = uniformBuffers; return *this; }
+	//
 
 	ToyRenderPass& setRecordingFunc(RecordingFunction recordingFunction) { this->recordingFunction_ = recordingFunction; return *this; };
-	ToyRenderPass& setGraphicsPipeline(PipelineKey pipeline) { this->pipeline_ = pipeline; return *this; };
-	//ToyRenderPass& setComputePipeline(PipelineKey pipeline) { this->pipeline_ = pipeline; return *this; };
-
 	ToyRenderPass& setExtent(VkExtent2D extent) { this->extent_ = extent; return *this; };
 	ToyRenderPass& setOffset(VkOffset2D offset) { this->offset_ = offset; return *this; };
+
 	RenderGraph& GetRenderGraph() { return this->rg_; };
 };
 
 struct RenderGraph {
-	// this should be hable to serialize... and deserialize really
 
-	RenderGraph(Context& ctx) : ctx_(ctx) {};
+	RenderGraph(Context& ctx) : ctx_(ctx) { pipelineBuilder_ = std::make_unique<PipelineBuilder>(ctx_); };
 	Context& ctx_;
-	//PipelineBuilder pipelineBuilder_;
+	std::unique_ptr<PipelineBuilder> pipelineBuilder_;
 
 	std::vector<ToyRenderPass> passes;
 	void Clear() { passes.clear(); }
 
-	std::vector<VirtualImageId> images;
-	std::vector<VirtualImageViewId> views;
-	std::vector<VirtualBufferId> buffers;
-
-
+	std::vector<LogicalImage> images;
+	std::vector<LogicalImageView> views;
+	std::vector<LogicalBuffer> buffers;
 
 	ToyRenderPass& AddPass(ToyRenderPass _renderPass) {
 		return passes.emplace_back(_renderPass);
 	}
-	VirtualImageId AddImage(ImageHandle imageHandle) {
+
+	//LogicalImage AddImage(VkImageCreateInfo imageDescription) {};
+	LogicalImage AddImage(ImageHandle imageHandle) {
 		auto image = ctx_.images_.get(imageHandle);
-		VirtualImageId proxy{
+		LogicalImage proxy{
 			.id = images.size(),
 			.resolvedImage = imageHandle
 		};
 		images.push_back(proxy);
 		return proxy;
 	}
-	VirtualImageViewId AddImageView(VkImageView view) {
-		VirtualImageViewId proxy{
+	LogicalImageView AddImageView(VkImageView view, VkFormat format) {
+		LogicalImageView proxy{
 			.id = views.size(),
-			.resolvedImageView = view
+			.externalImage = {},
+			.resolvedImageView = view,
+			.resolvedFormat = format
 		};
 		views.push_back(proxy);
 		return proxy;
 	}
-	std::vector<VirtualBufferId> AddBuffers(std::vector<DeviceBufferHandle> bufferHandles) {
+	std::vector<LogicalBuffer> AddBuffers(std::vector<DeviceBufferHandle> bufferHandles) {
 		size_t start = buffers.size();
 
 		for (auto b : bufferHandles) {
-			VirtualBufferId proxy{
+			LogicalBuffer proxy{
 				.id = buffers.size(),
 				.resolvedBufferHandle = b
 			};
 			buffers.push_back(proxy);
 		}
 
-		return std::vector<VirtualBufferId>(
+		return std::vector<LogicalBuffer>(
 			buffers.begin() + start,
 			buffers.end()
 		);
 	}
+
+
+	VkPipelineRenderingCreateInfo GetPipelineRenderingInfo(
+		const ToyRenderPass& pass
+	) {
+		std::vector<VkFormat> colorAttachmentFormats;
+		for (auto cattach : pass.colorAttachments_) {
+			colorAttachmentFormats.push_back(cattach.view.resolvedFormat);
+		}
+
+		return VkPipelineRenderingCreateInfo{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR,
+				.pNext = VK_NULL_HANDLE,
+				.colorAttachmentCount = static_cast<uint32_t>(colorAttachmentFormats.size()),
+				.pColorAttachmentFormats = colorAttachmentFormats.data(),
+				.depthAttachmentFormat = pass.depthAttachment_.view.resolvedImageView ? pass.depthAttachment_.view.resolvedFormat : VK_FORMAT_UNDEFINED,
+				.stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
+		};
+	};
 
 	void ResolveImages() {};
 	void ResolveImageViews() {};
@@ -203,8 +221,21 @@ struct RenderGraph {
 	void TopoSort() {};
 	void Resolve() {};
 
+
+	PipelineBuilder& GetPipelineBuilder() {
+		return	*pipelineBuilder_;
+	};
+	void BindPipeline(const ToyRenderPassContext& rpc) {
+
+		GetPipelineBuilder()
+			.setRasterSettings(rpc.renderpass.rasterSettings_)
+			.setDynamicRenderingInfo(GetPipelineRenderingInfo(rpc.renderpass))
+			.buildPipeline();
+
+	};
+
 	void Execute(ToyFrameBuffer& fb) {
-		// swapchain may be passed to create pipelines with proper format.
+
 		Resolve();
 
 		for (auto& pass : passes) {
@@ -274,13 +305,13 @@ struct RenderGraph {
 				vkCmdBindVertexBuffers(fb.commandBuffer, 0, v_bufs, bufs.data(), offs);
 			}
 
-
 			vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
 
 			ToyRenderPassContext rpc{
 				.ctx = ctx_,
 				.renderpass = pass
 			};
+			BindPipeline(rpc);
 
 			pass.recordingFunction_(
 				rpc
@@ -290,22 +321,3 @@ struct RenderGraph {
 		}
 	}
 };
-//
-//class Cache {
-//
-//	Context& ctx_;
-//	Cache(Context& ctx) : ctx_(ctx) {}
-//	~Cache() {};
-//	std::map<ImageKey, ImageHandle> images;
-//	//std::map<PipelineKey, PipelineHandle> pipelines;
-//
-//	// This should be split into unofmr, storage and else
-//	std::map<DeviceBufferKey, DeviceBufferHandle> buffers;
-//
-//	ImageHandle GetImage(ImageKey key) {
-//		// Obviusly not correct
-//		auto cacheHit = images[key];
-//		return cacheHit;
-//	};
-//
-//};

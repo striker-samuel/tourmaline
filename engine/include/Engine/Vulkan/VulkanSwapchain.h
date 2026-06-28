@@ -24,6 +24,8 @@ public:
           window_(window),
           framesInFlight_(framesInFlight),
           desiredImageCount_(desiredImageCount) {
+
+        Create();
     }
     VulkanSwapchain(const VulkanSwapchain&) = delete;
     VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
@@ -72,6 +74,7 @@ public:
     // Getters so it can be marked as const on callee site?. ..Dont quite like it.
     VkSwapchainKHR GetHandle() const { return swapchain_; }
     VkFormat GetImageFormat() const { return surfaceFormat_; }
+    VkFormat GetDepthImageFormat() const { return depthFormat_; }
     VkExtent2D GetExtent() const { return extent_; }
 
     uint32_t GetImageCount() const {
@@ -143,6 +146,7 @@ public:
     std::vector<VkFence> inFlightFences_;
 
     VkFormat surfaceFormat_ = VK_FORMAT_UNDEFINED;
+    VkFormat depthFormat_ = VK_FORMAT_UNDEFINED;
 
     // extent is framebuffer size
     VkExtent2D extent_{};
@@ -251,13 +255,13 @@ public:
 
     void CreateDepthResources() {
         //VkFormat depthFormat = findDepthFormat(physicalDevice_);
-        VkFormat depthFormat = ctx_.core.viewportDepthFormat;
+        depthFormat_ = ctx_.core.viewportDepthFormat;
         depthImage_ = ctx_.CreateImage(
             {
 
                 .texWidth = static_cast<int>(extent_.width),
                 .texHeight = static_cast<int>(extent_.height),
-                .format = depthFormat,
+                .format = depthFormat_,
                 .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                 .levels = 1,
                 .arrayLayers = 1
