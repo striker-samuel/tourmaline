@@ -2,7 +2,6 @@
 
 #include <Engine/shared/common.h>
 
-
 // ---------- Host Descriptions ------------
 
 struct PointLight {
@@ -33,7 +32,6 @@ struct DirectionalLight {
 	int shadowSlot = -1;
 };
 
-
 //enum LightType : int32_t {
 //	LIGHT_TYPE_POINT = 0,
 //	LIGHT_TYPE_SPOT = 1
@@ -41,21 +39,15 @@ struct DirectionalLight {
 //};
 
 struct alignas(16) Light {
-	glm::vec4 color = glm::vec4(1.0f);       // offset 0,  size 16
-
-	float position[3] = { 0.0f,0.0f,0.0f };     // offset 16, size 12
+	glm::vec4 color = glm::vec4(1.0f);
+	float position[3] = { 0.0f,0.0f,0.0f };
 	int32_t flags = 0;
-	//float _pad0;           // offset 28, size 4  -> total 32
-
-	float direction[3] = { 0.0f,0.0f,0.0f };    // offset 32, size 12
-	float intensity = .0f;       // offset 44, size 4  -> total 48
-
-	//int32_t type = LIGHT_TYPE_POINT;
+	float direction[3] = { 0.0f,0.0f,0.0f };
+	float intensity = .0f;
 	int32_t pad_;
-	// in radians!
 	float innerAngle = glm::radians(10.0f);
 	float outerAngle = glm::radians(20.0f);
-	int shadow_map_index = -1;	 // This is the index to the ShadowMapSlot
+	int shadow_map_index = -1;
 	float lightVP[16] = {};
 };
 
@@ -143,9 +135,4 @@ void GetDirectionalLightOrthoVP(
 
 // This gets you 8 worldSpace positions that are the corners of the boundingBox of the frustrum of camera proj and view used.
 // Uses mainView camera conventions, so reverse-z infinite.
-static std::array<glm::vec3, 8> GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
-	const glm::mat4& proj,
-	const glm::mat4& view,
-	float nearDist,
-	float farDist
-);
+static std::array<glm::vec3, 8> GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(const glm::mat4& proj, const glm::mat4& view, float nearDist, float farDist);

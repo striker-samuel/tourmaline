@@ -1,6 +1,6 @@
 #pragma once
 
-
+#include <cassert>
 #include "volk.h"
 #include <Engine/Renderer/constants.h>
 #include <Engine/Vulkan/vulkan_helpers.h>
@@ -8,8 +8,22 @@
 #define APPLICATION_NAME "Sam2025Vulkan_one_three"
 #define ENGINE_NAME "SamEngine"
 
-#include <ktxvulkan.h>
+// DEFAULT INITIALIZATION
 
+static constexpr uint32_t DEFAULT_WIDTH = 1280;
+static constexpr uint32_t DEFAULT_HEIGHT = 720;
+static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+static constexpr uint32_t DESIRED_SWAPCHAIN_IMAGE_COUNT = 2;
+
+static constexpr uint32_t MAX_BUFFERS = 4096;
+static constexpr uint32_t MAX_DESCRIPTORS = 4096;
+static constexpr uint32_t MAX_DRAWS = 1024;
+static constexpr uint32_t MAX_INSTANCES = 1000;
+static constexpr uint32_t MAX_MESHES = 1000;
+static constexpr uint32_t MAX_LIGHTS = 10;
+static constexpr uint32_t MAX_TEXTURES = 4096;
+static constexpr uint32_t MAX_IMAGES = 4096;
+static constexpr uint32_t MAX_PUSH_CONSTANTS = 8;
 
 struct /*class*/ VulkanCore {
 
@@ -23,7 +37,10 @@ struct /*class*/ VulkanCore {
 	// 
 	VkSurfaceKHR surface_;
 	VkFormat viewportDepthFormat;
-	ktxVulkanDeviceInfo ktxInfo_;
+
+
+	const std::vector<const char*> validationLayers = { "VK_LAYER_KHRONOS_validation", };
+	const std::vector<const char*> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
 	// Dont like having a commandPool default. // also dont like the name
 	VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
@@ -66,15 +83,16 @@ struct /*class*/ VulkanCore {
 public:
 
 	VulkanCore() {};
+	//VulkanCore(GLFWwindow* window) {};
 	VulkanCore(const VulkanCore&) = delete;
 	VulkanCore& operator=(const VulkanCore&) = delete;
 
 	VulkanCore(VulkanCore&&) = delete;
 	VulkanCore& operator=(VulkanCore&&) = delete;
 
-	const ktxVulkanDeviceInfo GetKtxPayloadInfo() {
-		return ktxInfo_;
-	}
+	// hacky way. Dont want to deal with finding and setting up queue. not needed to develop the rest of the API
+	VkQueue GetTransferQueue() { return transferQueue_ != VK_NULL_HANDLE ? transferQueue_ : graphicsQueue_; };
+	//const ktxVulkanDeviceInfo GetKtxPayloadInfo() { return ktxInfo_; };
 
 	void Init() {
 
@@ -280,19 +298,96 @@ public:
 			}
 
 			// may be wrong . 
-			ktxInfo_ = *ktxVulkanDeviceInfo_Create(
-				physicalDevice_,
-				device_,
-				/*transferQueue_*/ VK_NULL_HANDLE,
-				// this maybe should be transfer queue. we only use ktx to upload tex.
-				// no blitting for mipmaps, which are generated offline
-				// runtime genreation for mipmaps in ktx seems to be not up to par with SOA
-				defaultCommandPool_,
-				NULL
-			);
 			viewportDepthFormat = findDepthFormat(physicalDevice_);
 
 		};
 
 	};
+
+	void CreateFence(const VkFenceCreateInfo createInfo, VkFence& out) {
+		VK_CHECK(vkCreateFence(device_, &createInfo, nullptr, &out));
+	};
+	void CreateSemaphore(VkSemaphoreCreateInfo createInfo, VkSemaphore& out) {
+		VK_CHECK(vkCreateSemaphore(device_, &createInfo, nullptr, &out));
+	};
 };
+
+struct CommandSubmitter {
+
+	struct ToyCommandBuffer {
+		VkCommandBuffer cmd = VK_NULL_HANDLE;
+		VkFence fence_ = VK_NULL_HANDLE;
+		VkSemaphore semaphore_ = VK_NULL_HANDLE;
+		bool isEncoding_ = false;
+		//QueuePreference queue_ = QueuePreference::GRAPHICS; // Dont know yet how to properly resolve this. will come with real use
+	};
+
+	struct Slot {
+		ToyCommandBuffer cmd{};
+		uint32_t gen_ = 1;
+	};
+
+	struct CommandSubmitHandle {
+		uint32_t index_ = 0;
+		uint32_t gen_ = 1;
+	};
+	const VkSemaphoreCreateInfo createSemaphoreInfo{
+	  .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+	  .flags = 0,
+	};
+	const VkFenceCreateInfo createFenceInfo = {
+		.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+		.flags = 0,
+	};
+	enum struct QueuePreference {
+		TRANSFER,
+		GRAPHICS
+	};
+	CommandSubmitter(VulkanCore& core) : core_(core) {};
+	~CommandSubmitter() {};
+	bool isReady(CommandSubmitHandle handle) { return true; };
+
+	CommandSubmitHandle acquire() {
+		//auto cmd = beginSingleTimeCommands(core_.device_, core_.defaultCommandPool_);
+		ToyCommandBuffer wrapper = {
+			.cmd = cmd,
+			.fence_ = VK_NULL_HANDLE,
+			.semaphore_ = VK_NULL_HANDLE,
+			.isEncoding_ = true
+		};
+		core_.CreateFence(createFenceInfo, wrapper.fence_);
+		core_.CreateSemaphore(createSemaphoreInfo, wrapper.semaphore_);
+
+		auto gen = commandBuffers_[nextFree].gen_;
+		commandBuffers_[nextFree] = { .cmd = wrapper, .gen_ = gen };
+	};
+
+	void submit(CommandSubmitHandle handle) {
+		auto slot = commandBuffers_[handle.index_];
+
+		//endSingleTimeCommands(
+		//	core_.device_,
+		//	slot.cmd.cmd,
+		//	core_.graphicsQueue_,
+		//	//cmd->queue_ == QueuePreference::GRAPHICS ? core_.graphicsQueue_ : core_.transferQueue_,
+		//	core_.defaultCommandPool_
+		//);
+	}
+
+	CommandSubmitter(VulkanCore& core) : core_(core) {};
+	~CommandSubmitter() {};
+private:
+	static constexpr uint32_t kMax = 64;
+	uint32_t nextFree = kMax;
+	uint32_t commandBuffersAmmount_ = 0;
+	Slot commandBuffers_[kMax];
+	VulkanCore& core_;
+};
+
+struct DeferredCommandBuffer {
+	DeferredCommandBuffer(std::packaged_task<void()>&& task, CommandSubmitter::CommandSubmitHandle handle) : task_(std::move(task)), handle_(handle) {}
+	std::packaged_task<void()> task_;
+	CommandSubmitter::CommandSubmitHandle handle_;
+};
+
+

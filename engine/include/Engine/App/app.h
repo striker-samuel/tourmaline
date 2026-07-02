@@ -2,31 +2,30 @@
 
 #include <algorithm>
 #include <cassert>
+#include <future>
 //
 #include "volk.h"
 #include "vk_mem_alloc.h"
-//#include <GLFW/glfw3.h>
-#include "input.h"
-
-#include <future>
-
-// Imgui
+//
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 //
-
+#include "input.h"
 #include <Engine/Vulkan/core.h>
 #include <Engine/Renderer/context.h>
 #include <Engine/Vulkan/VulkanSwapchain.h>
 #include <Engine/Renderer/rendergraph.h>
-
+//
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
-
-#include <Engine/Utils/gltf.h>
-#include <Engine/platform.h>
+//
+#include <Engine/Utils/gltf.h> 
 #include <Engine/Utils/bvh.h>
+#include <Engine/platform.h>
+
+static constexpr float default_near_clip = 0.01f;
+static constexpr float default_far_clip = 50.0f;
 
 class VulkanApp {
 public:
@@ -197,21 +196,18 @@ void VulkanApp::InitializeImGui() {
 	io.SetClipboardTextFn = [](void*, const char* text) { glfwSetClipboardString(nullptr, text); };
 	io.GetClipboardTextFn = [](void*) { return glfwGetClipboardString(nullptr); };
 
-	//auto im_dp = context->descriptorSetPools_.get(context->imgui_descriptor_pool);
 	auto dp_h = context->createDescriptorPool();
-	//auto imgui_dp = context->de
+	auto im_dp = context->descriptorPools_.get(dp_h);
 
-	// Provide information for dynamic rendering
 	VkPipelineRenderingCreateInfo pipeline_create{
 		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
 	pipeline_create.pNext = VK_NULL_HANDLE;
-
 	// We are using the single color buffer out.
 	pipeline_create.colorAttachmentCount = 1;
 	pipeline_create.pColorAttachmentFormats = &swapchain->surfaceFormat_;
-
 	pipeline_create.depthAttachmentFormat = findDepthFormat(core.physicalDevice_);
 	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
 	ImGui_ImplGlfw_InitForVulkan(window, /*install callbacks*/ false);
 
 	SwapChainSupportDetails swapChainSupport =
@@ -227,11 +223,8 @@ void VulkanApp::InitializeImGui() {
 	info.MinImageCount = swapChainSupport.capabilities.minImageCount;
 	info.ImageCount = swapchain->GetImageCount();
 	info.UseDynamicRendering = true,
-		info.PipelineRenderingCreateInfo = pipeline_create;
-
-	//PipelineInfoMain.PipelineRenderingCreateInfo structure.
+	info.PipelineRenderingCreateInfo = pipeline_create;
 	ImGui_ImplVulkan_Init(&info  /* oUseDynamicRendering=true */);
-
 	//// Upload font texture once
 	//VkCommandBuffer cmd = beginCommands();
 	//ImGui_ImplVulkan_CreateFontsTexture(cmd);
@@ -342,8 +335,6 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 }
 
 #pragma endregion
-
-
 
 void VulkanApp::CleanUp() {
 

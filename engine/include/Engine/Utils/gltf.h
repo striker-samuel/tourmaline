@@ -435,7 +435,7 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 
 
 struct GltfToSceneImporter {
-	ToyResourceManager& man;
+	ToyMeshManager& man;
 	Scene& scene;
 	const tinygltf::Model& model;
 	std::filesystem::path gltfModelPath; // full path to .gltf/.glb on disk
@@ -444,7 +444,7 @@ struct GltfToSceneImporter {
 	std::vector<uint32_t> materialCache;
 
 	GltfToSceneImporter(
-		ToyResourceManager& inMan,
+		ToyMeshManager& inMan,
 		Scene& inScene,
 		const tinygltf::Model& inModel,
 		std::filesystem::path inGltfModelPath

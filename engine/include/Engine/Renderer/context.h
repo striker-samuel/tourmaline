@@ -7,7 +7,6 @@
 #include <Engine/Vulkan/vulkan_helpers.h>
 #include <Engine/Vulkan/VulkanSwapchain.h>
 
-#include <Engine/Renderer/constants.h>
 #include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
 
@@ -16,24 +15,44 @@
 #include <future>
 
 #include "vk_mem_alloc.h"
+
 #include <ktx.h>
 #include <ktxvulkan.h>
 
-namespace SamToy {};
+// 
+using ImageHandle = Handle<struct Image>;
+using PipelineHandle = Handle<struct Pipeline>;
+using ToyBufferHandle = Handle<struct ToyBuffer>;
+using SamplerHandle = Handle<struct Sampler>;
+using ShaderModuleHandle = Handle<struct ShaderModule>;
+using DescriptorPoolHandle = Handle<struct DescriptorPool>;
+using DescriptorSetHandle = Handle<struct DescriptorSet>;
+
+// Dont like this
+using TextureHandle = Handle<struct Image>;
+using MeshHandle = Handle<struct Mesh>;
+
+namespace SamToy {
+// Maybe type result 
+//struct ToyResult {};
+};
+
 struct VulkanSwapchain;
+
+// Maybe bigger ShaderProgram resource is better
+struct Pipeline {
+	VkPipeline pipeline;
+	VkPipelineLayout layout;
+};
 
 struct Image {
 	VkImage image = VK_NULL_HANDLE;
 	VmaAllocation alloc = VK_NULL_HANDLE;
-	VmaAllocationInfo allocInfo{};
-
 	VkFormat format = VK_FORMAT_UNDEFINED;
 	VkImageUsageFlags usage = 0;
-
 	VkExtent3D extent{};
 	uint32_t arrayLayers = 0;
 	uint32_t levels = 0;
-
 	VkImageView sampleView = VK_NULL_HANDLE; // you can sample multiple levels
 	VkImageView renderView = VK_NULL_HANDLE; // but can only render to one. Views are created with this baked in. Thats the why to separate them
 	VkImageView arrayView[6]{
@@ -41,26 +60,24 @@ struct Image {
 		VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
 	};
 	// not owning
-	VkSampler sampler = VK_NULL_HANDLE;
-	//SamplerKey samplerKey{};
+	VkSampler sampler_ = VK_NULL_HANDLE;
+	//Image& setSampler(VkSampler sampler) { this->sampler_ = sampler; return *this; };
 };
 
-struct DeviceBuffer {
-	VkBuffer buffer;
-	VmaAllocation alloc;
-	VmaAllocationInfo allocInfo;
+struct ToyBuffer {
+	VkBuffer buffer = VK_NULL_HANDLE;
+	VmaAllocation alloc{};
+	//VmaAllocationInfo allocInfo{}; // this is just an info return. the info contained maybe altered during refrag so makes no sense storing it
 	VkBufferUsageFlags usage;
 	VkMemoryPropertyFlags memory_flags;
-
 	bool is_mapable() const {
 		return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 	}
-	bool operator()(const DeviceBuffer& a, const DeviceBuffer& b) const {
+	bool operator()(const ToyBuffer& a, const ToyBuffer& b) const {
 		return std::tie(a.buffer, a.alloc, a.usage, a.memory_flags)
 			< std::tie(b.buffer, b.alloc, b.usage, b.memory_flags);
 	}
 };
-
 
 /// <summary>
 ///  One could argue this is just redundant provided that VkImageCreateInfo has this same thing typed out...
@@ -78,6 +95,8 @@ struct ImageCreateInfo {
 				other.usage, other.levels, other.arrayLayers);
 	}
 };
+using ImageViewCreateInfo = VkImageViewCreateInfo; // hacky
+//struct ImageViewCreateInfo {};
 
 struct SamplerCreateInfo {
 	VkFilter mag = VK_FILTER_LINEAR;
@@ -93,8 +112,8 @@ struct SamplerCreateInfo {
 };
 using SamplerKey = SamplerCreateInfo;
 
-// TODO :: This neeeds heaby doses of elbow grease really
 struct PipelineCreateInfo {
+
 	//struct VertexFormatDesc {
 	//};
 	struct RasterSettings {
@@ -143,59 +162,20 @@ struct BufferCreateInfo {
 	VmaMemoryUsage vma_usage;
 	VkBufferUsageFlags usage_flags;
 };
-
-struct PipelineBuilder {
-	PipelineBuilder(Context& ctx) : ctx_(ctx) {
-		dps_.push_back(Holder(&ctx_, ctx_.createDescriptorPool()));
-	};
-	~PipelineBuilder() { dps_.clear(); sets_.clear(); };
+struct TextureCache {
+	TextureCache(Context& ctx) :ctx_(ctx) {};
 	Context& ctx_;
-
-	// 
-	ShaderModuleHandle vert_{};
-	ShaderModuleHandle frag_{};
-	//hmmm
-	std::vector<Holder<DescriptorPoolHandle>> dps_;
-	std::vector<Holder<DescriptorSetHandle>> sets_;
-
-
-	// Pass will give us this
-	PipelineCreateInfo::RasterSettings rasterSettings_;
-	// Graph will give us this
-	VkPipelineRenderingCreateInfo dynamicRenderingInfo_;
-
-	//using PipelineLayoutKey = PipelineCreateInfo::PipelineLayoutDesc;
-	//std::map<PipelineLayoutKey, VkPipelineLayout> pipelineCache_;
-
-public:
-
-	PipelineBuilder& setVert();
-	PipelineBuilder& setFrag();
-	//PipelineBuilder& setVertexFormat();
-
-	PipelineBuilder& setRasterSettings(PipelineCreateInfo::RasterSettings rasterSettings) { this->rasterSettings_ = rasterSettings; };
-	PipelineBuilder& setDynamicRenderingInfo(VkPipelineRenderingCreateInfo dynamicRenderingInfo) { this->dynamicRenderingInfo_ = dynamicRenderingInfo; };
-	//PipelineBuilder& setRasterSettings(PipelineCreateInfo::RasterSettings rasterSettings) { this->rasterSettings_ = rasterSettings; };
-	PipelineHandle CreateGraphicsPipeline(PipelineCreateInfo pipelineCreateInfo) {};
-	VkPipeline Build() {
-
-		rasterSettings_ = {};
-		dynamicRenderingInfo_ = {};
-	};
-
-private:
-	void CreatePipelineLayout(const PipelineCreateInfo::PipelineLayoutDesc& descIn, VkPipelineLayout& out);
-	void CreateDescriptorSetLayout(const PipelineCreateInfo::DescriptorSetDescription& descIn, VkDescriptorSetLayout& layout);
-
+	std::map<std::string, Holder<ImageHandle>> texturesUploaded_;
+	TextureHandle GetOrCreateTexture(std::string uri, ktxTexture2& texture);
 };
-
 
 // 4.6gb is good amount to reserver for 8gb vram system
 // 2gb for Windows is good practice. And a little headroom for aux apps
 struct Context {
-	//std::vector<std::packaged_task<void()>> deferredTasks;
 	VulkanCore& core;
-	//VulkanCore& core_;
+	// 
+	ktxVulkanDeviceInfo ktxInfo_;
+	std::vector<DeferredCommandBuffer> deferredTasks_;
 
 	int Initialize();
 	Context(VulkanCore& _core) : core(_core) { Initialize(); };
@@ -205,50 +185,111 @@ struct Context {
 	Context& operator=(const Context&) = delete;
 	Context(Context&&) = delete;
 	Context& operator=(Context&&) = delete;
-	//
 
-	Pool<Image, Image> images_;
-	Pool<DeviceBuffer, DeviceBuffer> buffers_;
-	Pool<DescriptorSet, VkDescriptorSet> descriptorSets_;
-	Pool<ShaderModule, VkShaderModule> shaderModules_;
-	Pool<DescriptorPool, VkDescriptorPool> descriptorPools_;
-	Pool<Pipeline, Pipeline> graphicPipelines_;
 	//
-	DeviceBufferHandle CreateStagingBuffer(const void* srcData, VkDeviceSize size);
-	DeviceBufferHandle CreateStagingBuffer(VkDeviceSize size);
-	DeviceBufferHandle CreateBuffer(BufferCreateInfo bufferCreateInfo);
-
-	ImageHandle CreateImage(ImageCreateInfo imageCreateInfo);
-	ShaderModuleHandle CreateShaderModule(std::vector<char> code);
-
-	DescriptorPoolHandle createDescriptorPool();
-	void UploadDataToBuffer(DeviceBufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
-	void UploadDataToBuffer(DeviceBufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset, size_t dest_offset);
+	Holder<ToyBufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
+	Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo);
+	Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
+	Holder<DescriptorPoolHandle> CreateDescriptorPool(); // just hardcoded defaults for pool. 
+	Holder<DescriptorSetHandle> CreateDescriptorSet(DescriptorPoolHandle pool, VkDescriptorSetLayout& layout);
 	//
-	void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
-	void CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view);
-	// 
-	VkCommandBuffer GetCommandBuffer();
-	void SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue);
+	void UploadDataToBuffer(ToyBufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
+	void UploadDataToBuffer(ToyBufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset, size_t dest_offset);
 	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 	void TransitionImageLayout(ImageHandle image_handle, VkImageLayout oldLayout, VkImageLayout newLayout);
+
 	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset);
 	//
 	void CleanUp();
 
-	VmaAllocator allocator_;
+	void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle);
+	void ProcessDeferrredTasks(); //void Flush();
+	void GetKtxDeviceInfo() {
+		ktxInfo_ = *ktxVulkanDeviceInfo_Create(
+			core.physicalDevice_,
+			core.device_,
+			/*core.GetTransferQueue()*/ VK_NULL_HANDLE,
+			// this maybe should be transfer queue. we only use ktx to upload tex.
+			// no blitting for mipmaps, which are generated offline
+			// runtime genreation for mipmaps in ktx seems to be not up to par with SOA
+			core.defaultCommandPool_,
+			NULL
+		);
+	}
+
 private:
+	Pool<Image, Image> images_;
+	Pool<ToyBuffer, ToyBuffer> buffers_;
+	Pool<Sampler, VkSampler> samplers_;
+	Pool<DescriptorSet, VkDescriptorSet> descriptorSets_;
+	Pool<ShaderModule, VkShaderModule> shaderModules_;
+	Pool<DescriptorPool, VkDescriptorPool> descriptorPools_;
+	Pool<Pipeline, Pipeline> graphicPipelines_;
+
+	VmaAllocator allocator_;
 	VmaPool D_2DImagesPool;
 	VmaPool D_StagingPool;
 
-	// We need a default texture for the nil slot incase missing textures are used.
-	// The image needs to exist to be in the descriptorSet so it must be a real image
-	TextureHandle nil_texture{}; // Default texture.
+	//TextureHandle nil_texture{}; // Default texture.
 };
 
 void destroy(Context* ctx, ImageHandle handle);
 void destroy(Context* ctx, ShaderModuleHandle handle);
 void destroy(Context* ctx, DescriptorPoolHandle handle);
-void destroy(Context* ctx, DeviceBufferHandle handle);
-void destroy(Context* ctx, PipelineHandle handle);
+void destroy(Context* ctx, ToyBufferHandle handle);
+
+
+struct PipelineCache {
+	std::map<PipelineKey, Holder<PipelineHandle>> pipelines_;
+};
+
+struct ShaderProgram {
+	Context& ctx_;
+	ShaderProgram(Context& ctx) : ctx_(ctx) {
+		dps_.push_back(Holder(&ctx_, ctx_.createDescriptorPool()));
+	};
+	~ShaderProgram() { dps_.clear(); sets_.clear(); };
+	// 
+	Holder<ShaderModuleHandle> vert_{};
+	Holder<ShaderModuleHandle> frag_{};
+
+	std::vector<Holder<DescriptorPoolHandle>> dps_;
+	std::vector<Holder<DescriptorSetHandle>> sets_;
+
+	// Pass will give us this
+	PipelineCreateInfo::RasterSettings rasterSettings_;
+	PipelineCreateInfo::PipelineLayoutDesc pipelineLayoutDescription_;
+	// Graph will give us this
+	VkPipelineRenderingCreateInfo dynamicRenderingInfo_;
+	//std::map<PipelineCreateInfo, Holder<PipelineHandle>> pipelineCache_;
+
+public:
+
+	ShaderProgram& setRasterSettings(PipelineCreateInfo::RasterSettings rasterSettings) { this->rasterSettings_ = rasterSettings; };
+	ShaderProgram& setDynamicRenderingInfo(VkPipelineRenderingCreateInfo dynamicRenderingInfo) { this->dynamicRenderingInfo_ = dynamicRenderingInfo; };
+
+	VkPipeline Build() {
+		PipelineCreateInfo info;
+		info.rasterSettings = rasterSettings_;
+		info.vert = vert_;
+		info.frag = frag_;
+		info.layoutDescription;
+
+		//auto it = pipelineCache_.find(info);
+		//if (it == pipelineCache_.end()) { CreateGraphicsPipeline(info) }
+
+		// plenty stupid to do builder pattern and need to manually restore state...
+		// jsut to keep the cache going about
+		rasterSettings_ = {};
+		dynamicRenderingInfo_ = {};
+		vert_ = {};
+		frag_ = {};
+	};
+
+private:
+	void CreatePipelineLayout(const PipelineCreateInfo::PipelineLayoutDesc& descIn, VkPipelineLayout& out);
+	void CreateDescriptorSetLayout(const PipelineCreateInfo::DescriptorSetDescription& descIn, VkDescriptorSetLayout& layout);
+
+};
+

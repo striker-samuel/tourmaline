@@ -17,7 +17,6 @@ class Pool {
 
 public:
 	std::vector<PoolEntry> objects_;
-
 	Handle<ObjectType> create(ImplObjectType&& obj) {
 		uint32_t idx = 0;
 		if (freeListHead_ != kListEndSentinel) {
@@ -111,11 +110,11 @@ public:
 
 };
 
-namespace std {
-	template <>
-	struct hash<PipelineHandle> {
-		size_t operator()(const PipelineHandle& h) const noexcept {
-			return std::hash<uint32_t>{}(h.index());
-		}
-	};
-}
+//namespace std {
+//	template <>
+//	struct hash<PipelineHandle> {
+//		size_t operator()(const PipelineHandle& h) const noexcept {
+//			return std::hash<uint32_t>{}(h.index());
+//		}
+//	};
+//}

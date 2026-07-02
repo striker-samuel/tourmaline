@@ -78,18 +78,16 @@ struct Level : Scene {
 };
 
 
+
+
 class TestApp : public VulkanApp {
 
 public:
 	~TestApp() {};
-
 private:
 	using Super = VulkanApp;
-
+	std::unique_ptr<ToyMeshManager> man;
 	void UpdateCamera(float dt);
-
-	RingBinding<FrameUniforms, 1> frameUniformsBinding;
-	RingBinding<DrawSetData, MAX_DRAWS> drawDataBinding;
 
 	// App state
 	CameraPositioner_FirstPerson cameraPositioner = CameraPositioner_FirstPerson(
@@ -99,7 +97,6 @@ private:
 	);
 	Camera camera = Camera(cameraPositioner);
 
-	ToyResourceManager man = {};
 	Level current_level = {};
 	//
 
@@ -121,29 +118,33 @@ private:
 		return context->CreateShaderModule(code);
 	};
 
+
 	bool Initialize() {
 		if (!Super::Initialize())
 			return false;
 
-		man = ToyResourceManager(
-			context
-		);
-		man.InitalizeGeoBuffers();
+		man = std::make_unique<ToyMeshManager>(ToyMeshManager(*context));
 
-		// Init
-		frameUniformsBinding.init(
-			context,
-			MAX_FRAMES_IN_FLIGHT,
-			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
-		);
+		auto rg = rendergraph.get();
+		rg->AddBuffer<FrameUniforms>(1); //frames in flight ring access? how to semantically say that
+		rg->AddBuffer<DrawSetData>(MAX_DRAWS);
 
-		drawDataBinding.init(
-			context,
-			MAX_FRAMES_IN_FLIGHT,
-			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, //bufferUsageFlags
-			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC //descriptorType
-		);
+		//// Init
+		//frameUniformsBinding.init(
+		//	context,
+		//	MAX_FRAMES_IN_FLIGHT,
+		//	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		//	VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+		//);
+
+		//drawDataBinding.init(
+		//	context,
+		//	MAX_FRAMES_IN_FLIGHT,
+		//	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, //bufferUsageFlags
+		//	VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC //descriptorType
+		//);
+
+
 
 
 		auto vertShaderCode = readFile("content/shaders/default.vert.hlsl.spv");
@@ -393,8 +394,6 @@ private:
 	}
 
 
-
-
 	void RenderFrame(ToyFrameBuffer fb) {
 
 		//ImGuiScopedFrame uiFrame;
@@ -411,7 +410,7 @@ private:
 		auto mainPass = rendergraph->AddPass(
 			{
 				.rg_ = *rendergraph, // dont like how this is done
-				.type = ToyRenderPass::PassType::Rasterize,
+				//.type = ToyRenderPass::PassType::Rasterize,
 			}
 			)
 			.setOffset({ 0,0 })
@@ -446,7 +445,7 @@ private:
 			}
 
 			// VISIBLE PIPELINES
-			std::unordered_map<PipelineHandle, std::vector<int>> pipeline_map;
+			std::unordered_map<VkPipeline, std::vector<int>> pipeline_map;
 
 			for (uint32_t primSlot : visible) {
 				if (primSlot >= current_level.static_tree.primToNode.size()) continue;
@@ -461,8 +460,9 @@ private:
 				auto mat = man.materials.get(matHandle);
 				if (!mat) continue;
 
+				// crude hack
 				if (!mat->pipeline) {
-					mat->pipeline = mainPipeline;
+					assert(false);
 				}
 
 				pipeline_map[mat->pipeline].push_back(primSlot);
@@ -472,44 +472,36 @@ private:
 				assert(false);
 			}
 
-
-			//
-			// this is bad. layouts may be shared between pipelines, its the most common indeed
-			// use maintenance4
-			auto pipe_lyt = context->pipelines_.get(pipeline_map.begin()->first)->layout;
-
-			//
 			uint32_t dynamicOffsets[2] = {
 				frameUniformsBinding.dynamicOffsetFrame(swapchain->currentFrame_),
 				drawDataBinding.dynamicOffsetFrame(swapchain->currentFrame_),
 			};
 
-			VkDescriptorSet sets[2] = {
-				dynamic_set->set,
-				update_after_bind_set->set,
-			};
-
-			vkCmdBindDescriptorSets(
-				fb.commandBuffer,
-				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				pipe_lyt.layout,
-				0,
-				2,
-				sets,
-				2,
-				dynamicOffsets
-			);
+			//vkCmdBindDescriptorSets(
+			//	fb.commandBuffer,
+			//	VK_PIPELINE_BIND_POINT_GRAPHICS,
+			//	0,
+			//	2,
+			//	sets,
+			//	2,
+			//);
 
 			MainViewPushConstants pc{};
 			pc.model = glm::mat4(1.0f);
 
 			for (const auto& [han_, visible] : pipeline_map)
 			{
-				vkCmdBindPipeline(
+				BindPipeline(
 					fb.commandBuffer,
-					VK_PIPELINE_BIND_POINT_GRAPHICS,
-					context->pipelines_.get(han_)->pipeline
+					{
+
+					},
 				);
+				//vkCmdBindPipeline(
+				//	fb.commandBuffer,
+				//	VK_PIPELINE_BIND_POINT_GRAPHICS,
+				//	context->pipelines_.get(han_)->pipeline
+				//);
 
 				for (uint32_t visible_prim : visible) {
 					uint32_t visible_node = current_level.static_tree.primToNode[visible_prim];

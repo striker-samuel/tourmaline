@@ -6,78 +6,34 @@
 #include <Engine/Renderer/vertex.h>
 #include <Engine/Renderer/context.h>
 
-//struct MeshData {
-//	void* vertices;
-//	void* indices;
-//	size_t verticesSize;
-//	size_t indicesSize;
-//
-//	// 
-//	glm::vec3 aabb_min{};
-//	glm::vec3 aabb_max{};
-//};
-
-struct MeshUploadInput {
-	std::vector<Vertex> vertices;
-	std::vector<uint32_t> indices;
-
-	glm::vec3 aabb_min{};
-	glm::vec3 aabb_max{};
-};
-
-struct Surface {
-	uint32_t first_index;
-	uint32_t index_count;
-	int32_t  base_vertex;
-};
-
-struct GeometryPage {
-
-	DeviceBufferHandle indexBuffer;
-	DeviceBufferHandle vertexPosBuffer;
-	DeviceBufferHandle vertexShadingBuffer;
-
-	//Holder<DeviceBufferHandle> indexBuffer;
-	//Holder<DeviceBufferHandle> vertexPosBuffer;
-	//Holder<DeviceBufferHandle> vertexShadingBuffer;
-
-	//	uint32_t vertex_cursor = 0;   // per page
-	uint32_t max_vertices = 0;    // per page capacity in vertices
-
-	VmaVirtualBlock index_blk;         // bytes (as you already do)
-	VmaVirtualBlock vertex_units_blk;  // vertices (NEW)
-};
-
 struct Mesh {
-	//enum struct VertexType {
-	//Normal, Skinned, whatev};
-
+	struct DataUpload {
+		std::vector<Vertex> vertices;
+		std::vector<uint32_t> indices;
+		glm::vec3 aabb_min{};
+		glm::vec3 aabb_max{};
+	};
+	struct Surface {
+		uint32_t first_index;
+		uint32_t index_count;
+		int32_t  base_vertex;
+	};
+	//VertexDeclaration
 	struct Alloc {
-		// page could be useful for separating tiles into pages... Lets get rid of them for the moment, or go monopage.
-		// they also may make sense for vertex specializaiton.
-		GeometryPageHandle page{};
 		VmaVirtualAllocation index{};
 		VmaVirtualAllocation vertex{};
-
 	} alloc;
-
 	glm::vec3 aabbMin;
 	float     sphereRadius;
 	glm::vec3 aabbMax;
 	float     spherePad;
-
-	// This is not good 
-	uint32_t lods = 1;
-
-	std::vector<uint32_t> lod_offsets;
+	// removed lods for now.
 	std::vector<Surface> surfaces;
-
 };
 
 using MaterialHandle = Handle<struct Material>;
 struct Material {
-	// Materials may share textures
-	// Maybe we should refcount these for clearance
+	// this is bad
 	struct Textures {
 		TextureHandle diffuse{};
 		TextureHandle specular{};
@@ -85,101 +41,67 @@ struct Material {
 		// NormalMap could need specialization or just stablish
 		// a good defualt for the whole renderere and just support one type.
 		TextureHandle normal{};
-	} textures;
-
-	// --------------------------------------------
-
-	//GpuBlob
+	} textures_;
 	struct Values {
 		// Color *=
 		// TODO - to 0.0f
 		glm::vec4 ambient = glm::vec4(0.06f);
 		glm::vec4 diffuse = glm::vec4(1.0f);
-
 		// This can easily go outdated form .textures. bad design!!!
 		int tex[4] = { -1, -1, -1, -1 }; //diffuse ,ambient, alpha, normals
 	} values;
 	static_assert(sizeof(Values) % 16 == 0);
-
-	// pipeline encodes BRDF and rastersettings really
-	PipelineHandle pipeline{};
 };
 
 
 // this should just instead be moved to mesh class or maybe even level.
-struct ToyResourceManager {
-	Context* ctx = nullptr;
+struct ToyMeshManager {
+	Context& ctx_;
+	ToyMeshManager(Context& ctx) :ctx_(ctx) {};
+	~ToyMeshManager() {};
+
 	uint32_t vertex_cursor = 0;
+	//uint32_t max_vertices = 0;
+	VmaVirtualBlock index_blk;
+	VmaVirtualBlock vertex_units_blk; // this is hacked to be 1wide to index into vertexPos and shadingBuffe
 
 	Pool<Mesh, Mesh> meshes;
 	Pool<Material, Material> materials;
-	GeometryPageHandle current_geometry_page;	
-	Pool<GeometryPage, GeometryPage> geometry_pages;
 
-	MeshHandle UploadVertexData(MeshUploadInput& mesh_data);
+	// this is bad because there are more vertex formats that may not be like this
+	Holder<ToyBufferHandle> indexBuffer;
+	Holder<ToyBufferHandle> vertexPosBuffer;
+	Holder<ToyBufferHandle> vertexShadingBuffer;
+
+	MeshHandle UploadVertexData(Mesh::DataUpload& mesh_data);
 	MaterialHandle CreateMaterial(Material::Textures textures);
 
 	void InitalizeGeoBuffers();
 
-	std::vector<DeviceBufferHandle> GetVertexBuffers() {
-		auto page = geometry_pages.get(current_geometry_page);
-		return std::vector<DeviceBufferHandle>{
-			page->indexBuffer,
-			page->vertexPosBuffer,
-			page->vertexShadingBuffer,
+	std::vector<ToyBufferHandle> GetVertexBuffers() {
+		return std::vector<ToyBufferHandle>{
+			indexBuffer,
+				vertexPosBuffer,
+				vertexShadingBuffer,
 		};
 	};
-
-	~ToyResourceManager();
 };
 
 
 
-// This breaks Holder since that only taskes Context*
-void destroy(ToyResourceManager* man, GeometryPageHandle handle) {
-	auto page = man->geometry_pages.get(handle);
-	vmaDestroyVirtualBlock(page->index_blk);
-	vmaDestroyVirtualBlock(page->vertex_units_blk);
-	man->geometry_pages.destroy(handle);
-};
-
-// TODO:: this is not done properl
-ToyResourceManager::~ToyResourceManager() {
-	geometry_pages.forEachHandle([&](GeometryPageHandle han_) {
-		destroy(this, han_);
-		}
-	);
-
-}
-
-[[nodiscard]] MaterialHandle ToyResourceManager::CreateMaterial(Material::Textures textures /*Type/Pipeline type*/) {
+[[nodiscard]] MaterialHandle ToyMeshManager::CreateMaterial(Material::Textures textures) {
 	assert(textures.diffuse.valid() && "Invalid handle for diffuse");
-
-
-	// Increase tex rc!
 	Material mat{};
 	mat.textures.diffuse = textures.diffuse;
 	mat.values.tex[0] = textures.diffuse.index();
-
-	//mat.values.tex[0] = textures.diffuse.index();
-	//mat.values.tex[0] = textures.diffuse.index();
-	//mat.values.tex[0] = textures.diffuse.index();
-
 	return  materials.create(std::move(mat));
-
 }
 
 
-[[nodiscard]] MeshHandle ToyResourceManager::UploadVertexData(MeshUploadInput& geometry_data)
+[[nodiscard]] MeshHandle ToyMeshManager::UploadVertexData(Mesh::DataUpload& geometry_data)
 {
-
 	const uint32_t vcount = static_cast<uint32_t>(geometry_data.vertices.size());
-	auto page = geometry_pages.get(current_geometry_page);
-
 	Mesh mesh_desc{};
-	mesh_desc.alloc.page = current_geometry_page;
-
-
 	// This is a really hacky way to implement separate buffer pos and shading virtual alloc,
 	// we alloc vertex count on a virtual allocator with vertex size and use that as bookkeeping, 
 	// but then we build our offsets into the real buffers. 
@@ -194,7 +116,7 @@ ToyResourceManager::~ToyResourceManager() {
 		aV.size = vcount;     // vertex units
 		aV.alignment = 1;     // vertex units
 
-		if (vmaVirtualAllocate(page->vertex_units_blk, &aV, &mesh_desc.alloc.vertex, &baseVertex) != VK_SUCCESS) {
+		if (vmaVirtualAllocate(vertex_units_blk, &aV, &mesh_desc.alloc.vertex, &baseVertex) != VK_SUCCESS) {
 			// Not enough contiguous vertex space in this page (or fragmented)
 			return {};
 		}
@@ -218,17 +140,16 @@ ToyResourceManager::~ToyResourceManager() {
 		aIdx.size = indexBytes;
 		aIdx.alignment = sizeof(IndexT);
 
-		if (vmaVirtualAllocate(page->index_blk /*or index_blk*/, &aIdx, &mesh_desc.alloc.index, &index_offset_bytes) != VK_SUCCESS) {
+		if (vmaVirtualAllocate(index_blk /*or index_blk*/, &aIdx, &mesh_desc.alloc.index, &index_offset_bytes) != VK_SUCCESS) {
 			// Roll back vertex allocation
-			vmaVirtualFree(page->vertex_units_blk, mesh_desc.alloc.vertex);
+			vmaVirtualFree(vertex_units_blk, mesh_desc.alloc.vertex);
 			return {};
 		}
 
-		auto staging_h = ctx->CreateStagingBuffer(geometry_data.indices.data(), indexBytes);
-		auto staging = ctx->buffers_.get(staging_h);
-
-		ctx->copyBuffer(staging->buffer, ctx->buffers_.get(page->indexBuffer)->buffer, indexBytes, 0, index_offset_bytes);
-		destroy(ctx, staging_h);
+		auto staging_h = ctx_.CreateStagingBuffer(geometry_data.indices.data(), indexBytes);
+		auto staging = ctx_.buffers_.get(staging_h);
+		ctx_.copyBuffer(staging->buffer, ctx_.buffers_.get(indexBuffer)->buffer, indexBytes, 0, index_offset_bytes);
+		destroy(&ctx_, staging_h);
 	}
 
 	// ------------------------------------------
@@ -309,14 +230,14 @@ ToyResourceManager::~ToyResourceManager() {
 	return meshes.create(std::move(mesh_desc));
 }
 
-void ToyResourceManager::InitalizeGeoBuffers() {
+void ToyMeshManager::InitalizeGeoBuffers() {
 
 	{
 		uint32_t totalVertexBytes = 512u * 1024u * 1024u;
 		uint32_t totalIndexBytes = 512u * 1024u * 1024u;
 
 		// Create the actual GPU buffers (these are the page's buffers)
-		DeviceBufferHandle vb_pos = ctx->CreateBuffer(
+		ToyBufferHandle vb_pos = ctx->CreateBuffer(
 			{
 			totalVertexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
@@ -324,7 +245,7 @@ void ToyResourceManager::InitalizeGeoBuffers() {
 			}
 		);
 
-		DeviceBufferHandle vb_shd = ctx->CreateBuffer(
+		ToyBufferHandle vb_shd = ctx->CreateBuffer(
 			{
 			totalVertexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
@@ -332,7 +253,7 @@ void ToyResourceManager::InitalizeGeoBuffers() {
 			}
 		);
 
-		DeviceBufferHandle ib = ctx->CreateBuffer(
+		ToyBufferHandle ib = ctx->CreateBuffer(
 			{
 				totalIndexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
@@ -373,5 +294,4 @@ void ToyResourceManager::InitalizeGeoBuffers() {
 
 }
 
-void destroy(ToyResourceManager* ctx, MeshHandle handle);
-void destroy(ToyResourceManager* ctx, GeometryPageHandle handle);
+void destroy(ToyMeshManager* ctx, MeshHandle handle);

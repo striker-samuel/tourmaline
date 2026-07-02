@@ -18,7 +18,7 @@ struct RingBinding
 	VkDeviceSize elemStride = sizeof(T);
 	VkDeviceSize frameStride = 0;
 	VkDeviceSize range = 0;
-	DeviceBufferHandle buffer_h;
+	ToyBufferHandle buffer_h;
 	void* mapped = nullptr;
 
 	VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;

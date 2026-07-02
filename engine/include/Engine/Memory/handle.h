@@ -5,7 +5,6 @@
 class Context;
 
 // Lifted from LightweightVk.
-
 // Non-ref counted handles; based on:
 // https://enginearchitecture.realtimerendering.com/downloads/reac2023_modern_mobile_rendering_at_hypehype.pdf
 template<typename ObjectType>
@@ -114,16 +113,3 @@ private:
     HandleType handle_ = {};
 };
 
-
-
-// CONTEXT
-using ImageHandle = Handle<struct Image>;
-using TextureHandle = Handle<struct Texture>;
-using ShaderModuleHandle = Handle<struct ShaderModule>;
-using DescriptorPoolHandle = Handle<struct DescriptorPool>;
-using DescriptorSetHandle = Handle<struct DescriptorSet>;
-using PipelineHandle = Handle<struct Pipeline>;
-using DeviceBufferHandle = Handle<struct DeviceBuffer>;
-//MESH MANAGER
-using MeshHandle = Handle<struct Mesh>;
-using GeometryPageHandle = Handle<struct GeometryPage>;

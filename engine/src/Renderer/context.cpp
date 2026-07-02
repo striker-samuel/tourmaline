@@ -50,103 +50,27 @@ Context::~Context(
 	CleanUp();
 };
 
-void Context::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
-
-	VkSamplerCreateInfo samplerInfo{};
-	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	samplerInfo.magFilter = VK_FILTER_LINEAR;
-	samplerInfo.minFilter = VK_FILTER_LINEAR;
-
-	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-
-	VkPhysicalDeviceProperties properties{};
-	vkGetPhysicalDeviceProperties(core.physicalDevice_, &properties);
-
-	samplerInfo.anisotropyEnable = VK_TRUE;
-	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-
-	// This is a hardware/spec limit. Thats why im asserting here...
-	// Maybe we can query gpu capabilities to give better paths to more powerful devices.
-	assert(properties.limits.maxUniformBufferRange >= 1 << 16);
-
-	samplerInfo.unnormalizedCoordinates = VK_FALSE;
-	samplerInfo.compareEnable = VK_FALSE;
-	samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-	//samplerInfo.compareOp = compareOp;
-
-	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-	samplerInfo.mipLodBias = 0.0f;
-	samplerInfo.minLod = 0.0f;
-	samplerInfo.maxLod = samplerCreateInfo.maxLod;
-	//samplerInfo.maxLod = float(samplerCreateInfo.levelCount - 1);
-
-	VK_CHECK(vkCreateSampler(core.device_, &samplerInfo, nullptr, &sampler));
-
-}
-
-void Context::CreateImageView(
-	VkImage image,
-	VkFormat format,
-	VkImageAspectFlags aspectFlags,
-	int levelCount,
-	int baseArrayLayer,
-	int layerCount,
-	VkImageViewType viewType,
-	VkImageView& view
-)
-{
-	VkImageViewCreateInfo viewInfo{};
-	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-	viewInfo.image = image;
-	viewInfo.viewType = viewType;
-	viewInfo.format = format;
-
-	viewInfo.subresourceRange.aspectMask = aspectFlags;
-	viewInfo.subresourceRange.baseMipLevel = 0;
-	//viewInfo.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
-	// VK_REMAINING_MIP_LEVELS is a special constant value used for image views to indicate that all remaining mipmap levels in an image after the base level should be included in the view.
-	viewInfo.subresourceRange.levelCount = levelCount;
-	viewInfo.subresourceRange.baseArrayLayer = baseArrayLayer;
-	viewInfo.subresourceRange.layerCount = layerCount;
-
-	// Lets default this like that ourselves.
-	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-
-	VK_CHECK(vkCreateImageView(core.device_, &viewInfo, nullptr, &view));
-}
 
 [[nodiscard]] DescriptorSetHandle Context::CreateDescriptorSet(
 	DescriptorPoolHandle pool,
 	VkDescriptorSetLayout& layout
 ) {
-
+	auto dpool = descriptorPools_.get(pool);
 	std::array<VkDescriptorSetLayout, 1> layouts = {
 		layout
 	};
 
 	VkDescriptorSetAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	// This needs to be implemented using rotating pools.
-	allocInfo.descriptorPool = *descriptorPool;
+	allocInfo.descriptorPool = *dpool;
 	allocInfo.descriptorSetCount = 1;
-	//allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
-
 	allocInfo.pSetLayouts = layouts.data();
 
-	DescriptorSet ds;
-	VkResult result = vkAllocateDescriptorSets(core.device_, &allocInfo, &ds.set);
-	ds.layout = layout;
+	VkDescriptorSet ds;
+	VkResult result = vkAllocateDescriptorSets(core.device_, &allocInfo, &ds);
 
 	if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
-
 		assert(false && "oom pool");
-
 		// Rotate the descriptor pool. try again
 		// Manage live dspools. defrag
 	}
@@ -156,19 +80,16 @@ void Context::CreateImageView(
 	}
 
 	return descriptorSets_.create(std::move(ds));
-
 }
 
-[[nodiscard]] DeviceBufferHandle Context::CreateBuffer(
+[[nodiscard]] ToyBufferHandle Context::CreateBuffer(
 	BufferCreateInfo bufferCreateInfo
 ) {
-	DeviceBuffer desc{};
-
+	ToyBuffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	ci.size = bufferCreateInfo.size;
 	ci.usage = bufferCreateInfo.usage_flags;
 	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
 	VmaAllocationCreateInfo aci{};
 	aci.usage = bufferCreateInfo.vma_usage;
 
@@ -178,7 +99,9 @@ void Context::CreateImageView(
 		&aci,
 		&desc.buffer,
 		&desc.alloc,
-		&desc.allocInfo)
+		nullptr
+		//&desc.allocInfo
+	)
 	);
 
 	vmaGetAllocationMemoryProperties(allocator_, desc.alloc, &desc.memory_flags);
@@ -188,7 +111,7 @@ void Context::CreateImageView(
 }
 
 void Context::UploadDataToBuffer(
-	DeviceBufferHandle buffer,
+	ToyBufferHandle buffer,
 	const void* data,
 	size_t dataSize,
 	VkPipelineStageFlags dstStages,
@@ -207,7 +130,7 @@ void Context::UploadDataToBuffer(
 }
 
 void Context::UploadDataToBuffer(
-	DeviceBufferHandle buffer,
+	ToyBufferHandle buffer,
 	const void* data,
 	size_t dataSize,
 	VkPipelineStageFlags dstStages,
@@ -215,7 +138,7 @@ void Context::UploadDataToBuffer(
 	size_t src_offset,
 	size_t dest_offset
 ) {
-	DeviceBuffer* bufferDesc = buffers_.get(buffer);
+	ToyBuffer* bufferDesc = buffers_.get(buffer);
 
 	// Since Im not subclassing/specializing buffers I retired this.
 	//const VkAccessFlags dstAccess =
@@ -332,11 +255,10 @@ void Context::UploadDataToBuffer(
 	return descriptorPools_.create(std::move(dpool));
 }
 
-
-// This does not depend on context (jsut the core device payload and should not be part of it really) 
 void PipelineBuilder::CreatePipelineLayout(
 	const PipelineCreateInfo::PipelineLayoutDesc& descIn,
-	Pipeline::Layout& out)
+	VkPipelineLayout& out
+)
 {
 
 	auto sets = descIn.setDescriptions;
@@ -404,7 +326,7 @@ void PipelineBuilder::CreatePipelineLayout(
 	//out.vk_sets = vkSetLayouts;
 }
 
-[[nodiscard]] PipelineHandle PipelineBuilder::CreateGraphicsPipeline(
+[[nodiscard]] Pipeline PipelineBuilder::CreateGraphicsPipeline(
 	PipelineCreateInfo pipelineCreateInfo
 ) {
 
@@ -515,21 +437,6 @@ void PipelineBuilder::CreatePipelineLayout(
 	CreatePipelineLayout(pipelineCreateInfo.layoutDescription, lyt);
 
 #pragma endregion
-
-
-	//// This depends on RenderPass description too...
-	//std::vector<VkFormat> colorAttachmentFormats;
-	//colorAttachmentFormats.push_back(static_cast<VkFormat>(swapchain_->GetImageFormat()));
-	//VkPipelineRenderingCreateInfo dynamic_rendering_pipeline_info{
-	//	VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR
-	//};
-	//dynamic_rendering_pipeline_info.pNext = VK_NULL_HANDLE;
-	//dynamic_rendering_pipeline_info.colorAttachmentCount = 1;
-	//dynamic_rendering_pipeline_info.pColorAttachmentFormats = colorAttachmentFormats.data();
-	//dynamic_rendering_pipeline_info.depthAttachmentFormat = static_cast<VkFormat>(swapchain_->GetDepthImageFormat());
-	////dynamic_rendering_pipeline_info.pColorAttachmentFormats = &pipelineCreateInfo.swapchainImageFormat;
-	////dynamic_rendering_pipeline_info.depthAttachmentFormat = pipelineCreateInfo.depth_format;
-	//dynamic_rendering_pipeline_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo{};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -675,29 +582,9 @@ void Context::TransitionImageLayout(
 	);
 }
 
-VkCommandBuffer Context::GetCommandBuffer() {
-	return beginSingleTimeCommands(
-		core.device_,
-		core.defaultCommandPool_
-	);
-
-}
-
-void Context::SubmitCommandBuffer(VkCommandBuffer cmdBuf, VkCommandPool pool, VkQueue queue) {
-	endSingleTimeCommands(
-		core.device_,
-		cmdBuf,
-		queue,
-		pool
-	);
-}
-
-// This whole resource upload is too primitie and slow 
-TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) {
-
-	// 
-	auto it = textures_uploaded.find(uri);
-	if (it != textures_uploaded.end()) { return it->second; };
+TextureHandle TextureCache::GetOrCreateTexture(std::string uri, ktxTexture2& texture) {
+	auto it = texturesUploaded_.find(uri);
+	if (it != texturesUploaded_.end()) { return it->second; };
 	//
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
@@ -758,15 +645,16 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 
 	VkImage image = VK_NULL_HANDLE;
 	VmaAllocation imageAllocation = VK_NULL_HANDLE;
-	VmaAllocationInfo imageAllocationInfo{};
+	//VmaAllocationInfo imageAllocationInfo{};
 
 	VkResult vr = vmaCreateImage(
-		allocator_,
+		ctx_.allocator_,
 		&imageInfo,
 		&imageAllocInfo,
 		&image,
 		&imageAllocation,
-		&imageAllocationInfo
+		nullptr
+		//&imageAllocationInfo
 	);
 
 	if (vr != VK_SUCCESS) {
@@ -779,7 +667,7 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 
 	if (!ktxData || ktxDataSize == 0) {
 
-		vmaDestroyImage(allocator_, image, imageAllocation);
+		vmaDestroyImage(ctx_.allocator_, image, imageAllocation);
 
 		// this is illegal and should just assert out really.
 		// even on release build? ftm
@@ -803,23 +691,24 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 	VmaAllocationInfo stagingAllocationInfo{};
 
 	vr = vmaCreateBuffer(
-		allocator_,
+		ctx_.allocator_,
 		&stagingBufferInfo,
 		&stagingAllocInfo,
 		&stagingBuffer,
 		&stagingAllocation,
+		//nullptr
 		&stagingAllocationInfo
 	);
 
 	if (vr != VK_SUCCESS) {
-		vmaDestroyImage(allocator_, image, imageAllocation);
+		vmaDestroyImage(ctx_.allocator_, image, imageAllocation);
 		throw std::runtime_error("vmaCreateBuffer failed for KTX staging buffer.");
 	}
 
 	// Guaranteed mapped due to chosen flags. Ignore warning
 #pragma warning(suppress : 6387)
 	std::memcpy(stagingAllocationInfo.pMappedData, ktxData, static_cast<size_t>(ktxDataSize));
-	vmaFlushAllocation(allocator_, stagingAllocation, 0, VK_WHOLE_SIZE);
+	vmaFlushAllocation(ctx_.allocator_, stagingAllocation, 0, VK_WHOLE_SIZE); // commit
 
 	// -------------------------------------------------------------------------
 	// Build VkBufferImageCopy regions from KTX offsets
@@ -882,8 +771,8 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 				&offset
 			);
 			if (offRes != KTX_SUCCESS) {
-				vmaDestroyBuffer(allocator_, stagingBuffer, stagingAllocation);
-				vmaDestroyImage(allocator_, image, imageAllocation);
+				vmaDestroyBuffer(ctx_.allocator_, stagingBuffer, stagingAllocation);
+				vmaDestroyImage(ctx_.allocator_, image, imageAllocation);
 				throw std::runtime_error("ktxTexture_GetImageOffset failed.");
 			}
 
@@ -913,7 +802,7 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 	// -------------------------------------------------------------------------
 	// Record upload
 	// -------------------------------------------------------------------------
-	VkCommandBuffer cmd = beginSingleTimeCommands(core.device_, core.defaultCommandPool_); // your helper
+	VkCommandBuffer cmd = beginSingleTimeCommands(ctx_.core.device_, ctx_.core.defaultCommandPool_); // your helper
 
 	{
 		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
@@ -998,9 +887,7 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 
 	Image image_obj{};
 	image_obj.image = image;
-	//image_obj.is_tex = true;
 	image_obj.alloc = imageAllocation;
-	image_obj.allocInfo = imageAllocationInfo;
 	image_obj.format = format;
 	image_obj.usage = usage;
 	image_obj.extent = { width, height, depth };
@@ -1011,10 +898,9 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 
 	// TODO: Rework this.
 	//CreateSampler(0, image_obj.sampler);
-	CreateSampler(SamplerCreateInfo(), image_obj.sampler);
-	image_obj.owns_sampler = true;
+	ctx_.CreateSampler(SamplerCreateInfo(), image_obj.sampler);
 
-	CreateImageView(
+	ctx_.CreateImageView(
 		image,
 		format,
 		aspect,
@@ -1027,10 +913,8 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 
 	image_obj.sampleView = image_obj.renderView;
 
-	auto res = textures_.create(std::move(image_obj));
-
-	textures_uploaded[uri] = res;
-
+	auto res = ctx_.images_.create(std::move(image_obj));
+	texturesUploaded_[uri] = Holder(&ctx_, res);
 	return res;
 
 }
@@ -1086,28 +970,22 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 
 }
 
-[[nodiscard]] DeviceBufferHandle Context::CreateStagingBuffer(VkDeviceSize size)
+[[nodiscard]] ToyBufferHandle Context::CreateStagingBuffer(VkDeviceSize size)
 {
-	DeviceBuffer desc{};
+	ToyBuffer desc{};
 
-	// 1) Describe the buffer itself
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	ci.size = size;                          // VkDeviceSize
-	ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT; // staging = copy source
+	ci.size = size;
+	ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-	// 2) Describe how we want the allocation
 	VmaAllocationCreateInfo aci{};
 	aci.usage = VMA_MEMORY_USAGE_AUTO; // modern VMA: let it pick a good type
-	// Tell VMA we intend to write from the CPU sequentially
 	aci.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-	// Belt & suspenders: force host-visible + coherent
 	aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
 		VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-	// 3) Create buffer + allocation
-	VK_CHECK(vmaCreateBuffer(allocator_, &ci, &aci,
-		&desc.buffer, &desc.alloc, &desc.allocInfo));
+	VK_CHECK(vmaCreateBuffer(allocator_, &ci, &aci, &desc.buffer, &desc.alloc, nullptr));
 
 	// 4) Cache memory properties for quick checks/debug
 	VkMemoryPropertyFlags props{};
@@ -1115,25 +993,20 @@ TextureHandle Context::GetOrCreateTexure(std::string uri, ktxTexture2& texture) 
 	desc.memory_flags = props;
 	desc.usage = ci.usage;
 
-	// Safety: make sure we got what we asked for
-	// (You can convert to your own assert/log system)
 	if ((props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
-		// This should never happen given requiredFlags, but check anyway.
-		// Handle error as appropriate for your engine:
-		// throw/abort/log + destroy
+		assert(false); // just hard crush for now
 	}
 
 	return buffers_.create(std::move(desc));
 }
 
-[[nodiscard]] DeviceBufferHandle Context::CreateStagingBuffer(const void* srcData,
+[[nodiscard]] ToyBufferHandle Context::CreateStagingBuffer(const void* srcData,
 	VkDeviceSize size)
 {
 	auto handle = CreateStagingBuffer(size);
 	auto* buf = buffers_.get(handle);
 	void* mapped = nullptr;
 	VK_CHECK(vmaMapMemory(allocator_, buf->alloc, &mapped));
-	// NOTE: memcpy(dst <- src)
 	std::memcpy(mapped, srcData, static_cast<size_t>(size));
 	// HOST_COHERENT means we don't need vmaFlushAllocation.
 	// If you drop HOST_COHERENT in the future, call vmaFlushAllocation here.
@@ -1226,25 +1099,31 @@ void destroy(Context* ctx, DescriptorPoolHandle handle) {
 	//vkDeviceWaitIdle(core_.device_);
 	//vkDestroyDescriptorPool(ha)
 }
-void destroy(Context* ctx, DescriptorSetHandle handle){}
+void destroy(Context* ctx, DescriptorSetHandle handle) {}
+
+
 void destroy(Context* ctx, ImageHandle handle)
 {
 
 	if (!handle.valid()) return;
 
-	//auto image = ctx->images_.get(handle);
+	auto device_ = ctx->core.device_;
 	Image& image = *ctx->images_.get(handle);
 
-	// Destroy any image views created from this image first.
-	//if (image.view != VK_NULL_HANDLE) {
-	//    vkDestroyImageView(device_, image.view, nullptr);
-	//    image.view = VK_NULL_HANDLE;
-	//}
+	if (image.renderView != VK_NULL_HANDLE) {
+		vkDestroyImageView(device_, image.renderView, nullptr);
+		image.renderView = VK_NULL_HANDLE;
+	}
 
-	// If you created other views per mip/layer, destroy those too.
-	// If you created a sampler, destroy that separately:
-	// vkDestroySampler(device_, image.sampler, nullptr);
-
+	if (image.sampleView != VK_NULL_HANDLE) {
+		vkDestroyImageView(device_, image.sampleView, nullptr);
+		image.sampleView = VK_NULL_HANDLE;
+	}
+	for (auto& view : image.arrayView) {
+		vkDestroyImageView(device_, image.sampleView, nullptr);
+		view = VK_NULL_HANDLE;
+	}
+	//vkDestroySampler(device_, image.sampler, nullptr); // not owning!
 	if (image.image != VK_NULL_HANDLE) {
 		vmaDestroyImage(ctx->allocator_, image.image, image.alloc);
 		image.image = VK_NULL_HANDLE;
@@ -1252,49 +1131,121 @@ void destroy(Context* ctx, ImageHandle handle)
 	}
 
 	ctx->images_.destroy(handle);
-
-	//auto obj_ = ctx->images_.get(handle);
-	//vmaDestroyImage(*ctx->allocator_, obj_->image, obj_->alloc);
-	//ctx->images_.destroy(handle);
 }
 
-void destroy(Context* ctx, DeviceBufferHandle handle) {
+void destroy(Context* ctx, ToyBufferHandle handle) {
 	assert(handle.valid());
 	auto db = ctx->buffers_.get(handle);
 	vmaDestroyBuffer(ctx->allocator_, db->buffer, db->alloc);
 	ctx->buffers_.destroy(handle);
 }
 
-void destroy(Context* ctx, PipelineHandle handle)
-{};
-
 void Context::CleanUp
 () {
-
 	VK_CHECK(vkDeviceWaitIdle(core.device_));
 	vmaDestroyPool(allocator_, D_2DImagesPool);
-
-	shaderModules_.clear();
-	//vmaDestroyPool(allocator_, D_ShaderPool);
-
-	// This is only used to staging buffers and they should be all destroyed on deviceIdle really.
 	vmaDestroyPool(allocator_, D_StagingPool);
 }
 
-// All these operations on queus should pusehd to a stack of deferred ops and done threaded? 
-void Context::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
-	copyBuffer(srcBuffer, dstBuffer, size, 0, 0);
+void Context::AddDeferredTask(std::packaged_task<void()>&& task, CommandBufferHandle handle)
+{
+	if (!handle.valid()) {
+		handle = submitter_.acquire();
+	}
+	deferredTasks_.emplace_back(std::move(task), handle);
 }
 
-void Context::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset) {
+void Context::ProcessDeferrredTasks()
+{
+	std::vector<DeferredCommandBuffer>::iterator it = deferredTasks_.begin();
+	while (it != deferredTasks_.end() && submitter_.isReady(it->handle_)) {
+	  (it++)->task_();
+	}
+	deferredTasks_.erase(deferredTasks_.begin(), it);
+}
+
+void Context::CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset) {
+
+	//AddDeferredTask()
 
 	VkCommandBuffer commandBuffer = beginSingleTimeCommands(core.device_, core.defaultCommandPool_);
-
 	VkBufferCopy copyRegion{};
 	copyRegion.size = size;
 	copyRegion.srcOffset = srcOffset;
 	copyRegion.dstOffset = dstOffset;
 	vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
-
 	endSingleTimeCommands(core.device_, commandBuffer, core.graphicsQueue_, core.defaultCommandPool_);
+}
+
+
+void Context::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
+
+	VkSamplerCreateInfo samplerInfo{};
+	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	samplerInfo.magFilter = VK_FILTER_LINEAR;
+	samplerInfo.minFilter = VK_FILTER_LINEAR;
+
+	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+
+	VkPhysicalDeviceProperties properties{};
+	vkGetPhysicalDeviceProperties(core.physicalDevice_, &properties);
+
+	samplerInfo.anisotropyEnable = VK_TRUE;
+	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+
+	// This is a hardware/spec limit. Thats why im asserting here...
+	// Maybe we can query gpu capabilities to give better paths to more powerful devices.
+	assert(properties.limits.maxUniformBufferRange >= 1 << 16);
+
+	samplerInfo.unnormalizedCoordinates = VK_FALSE;
+	samplerInfo.compareEnable = VK_FALSE;
+	samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+	//samplerInfo.compareOp = compareOp;
+
+	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	samplerInfo.mipLodBias = 0.0f;
+	samplerInfo.minLod = 0.0f;
+	samplerInfo.maxLod = samplerCreateInfo.maxLod;
+	//samplerInfo.maxLod = float(samplerCreateInfo.levelCount - 1);
+
+	VK_CHECK(vkCreateSampler(core.device_, &samplerInfo, nullptr, &sampler));
+
+}
+
+// This should be moved to core.
+void Context::CreateImageView(
+	VkImage image,
+	VkFormat format,
+	VkImageAspectFlags aspectFlags,
+	int levelCount,
+	int baseArrayLayer,
+	int layerCount,
+	VkImageViewType viewType,
+	VkImageView& view
+)
+{
+	VkImageViewCreateInfo viewInfo{};
+	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	viewInfo.image = image;
+	viewInfo.viewType = viewType;
+	viewInfo.format = format;
+
+	viewInfo.subresourceRange.aspectMask = aspectFlags;
+	viewInfo.subresourceRange.baseMipLevel = 0;
+	//viewInfo.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
+	// VK_REMAINING_MIP_LEVELS is a special constant value used for image views to indicate that all remaining mipmap levels in an image after the base level should be included in the view.
+	viewInfo.subresourceRange.levelCount = levelCount;
+	viewInfo.subresourceRange.baseArrayLayer = baseArrayLayer;
+	viewInfo.subresourceRange.layerCount = layerCount;
+
+	// Lets default this like that ourselves.
+	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+	VK_CHECK(vkCreateImageView(core.device_, &viewInfo, nullptr, &view));
 }

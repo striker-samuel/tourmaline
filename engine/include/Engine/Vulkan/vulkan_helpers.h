@@ -19,19 +19,6 @@
 #include "volk.h"
 
 /*inline*/ const char* vkResultToString(VkResult result);
-//
-//#define VK_ASSERT(func)                                            \
-//  {                                                                \
-//    const VkResult vk_assert_result = func;                        \
-//    if (vk_assert_result != VK_SUCCESS) {                          \
-//      LLOGW("Vulkan API call failed: %s:%i\n  %s\n  %s\n", \
-//                    __FILE__,                                      \
-//                    __LINE__,                                      \
-//                    #func,                                         \
-//                    lvk::getVulkanResultString(vk_assert_result)); \
-//      assert(false);                                               \
-//    }                                                              \
-//  }
 
 #define VK_ASSERT_RETURN(func)                                     \
   {                                                                \
@@ -58,15 +45,6 @@
     } while (0)
 
 
-const std::vector<const char*> validationLayers = {
-	"VK_LAYER_KHRONOS_validation",
-};
-
-const std::vector<const char*> deviceExtensions = {
-	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-	// Not needed -- Vk1.3 promoted baybeeee
-	//VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
-};
 
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL
@@ -96,50 +74,18 @@ struct SwapChainSupportDetails {
 	std::vector<VkPresentModeKHR> presentModes;
 };
 
-//VkResult CreateDebugUtilsMessengerEXT(
-//	VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-//	const VkAllocationCallbacks* pAllocator,
-//	VkDebugUtilsMessengerEXT* pDebugMessenger);
-//
-//void DestroyDebugUtilsMessengerEXT(VkInstance instance,	VkDebugUtilsMessengerEXT debugMessenger,const VkAllocationCallbacks* pAllocator);
-
 bool checkValidationLayerSupport();
-
-VkFormat findSupportedFormat(
-	VkPhysicalDevice physicalDevice,
-	const std::vector<VkFormat>& candidates,
-	VkImageTiling tiling,
-	VkFormatFeatureFlags features
-);
-
 bool hasStencilComponent(VkFormat format);
-
-VkFormat findDepthFormat(
-	VkPhysicalDevice physicalDevice
-);
-uint32_t findMemoryType(
-	VkPhysicalDevice physicalDevice,
-	uint32_t typeFilter,
-	VkMemoryPropertyFlags properties
-);
+VkFormat findSupportedFormat(VkPhysicalDevice physicalDevice, const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features);
+VkFormat findDepthFormat(VkPhysicalDevice physicalDevice);
+uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties);
 VkShaderModule createDeviceShaderModule(VkDevice device, const std::vector<char>& code);
 SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
-QueueFamilyIndices findQueueFamilies(
-	VkPhysicalDevice device,
-	VkSurfaceKHR surface
-);
-
+QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
 bool checkDeviceExtensionSupport(VkPhysicalDevice device);
 bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface);
-VkSurfaceFormatKHR chooseSwapSurfaceFormat(
-	const std::vector<VkSurfaceFormatKHR>& availableFormats);
-
-VkPresentModeKHR chooseSwapPresentMode(
-	const std::vector<VkPresentModeKHR>& availablePresentModes);
-
+VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
+VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
 VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window);
 std::vector<const char*> getRequiredExtensions();
 void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo);
-
-VkCommandBuffer beginSingleTimeCommands(VkDevice device, VkCommandPool commandPool);
-void endSingleTimeCommands(VkDevice device, VkCommandBuffer commandBuffer, VkQueue queue, VkCommandPool commandPool);
