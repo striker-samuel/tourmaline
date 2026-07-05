@@ -80,13 +80,11 @@ struct Level : Scene {
 struct AppResources {
 	LogicalBuffer frameUniformsBuffer{};
 	LogicalBuffer drawDataBuffer{};
-
-	ShaderProgram defaultMainView{};
+	//ShaderProgram defaultMainView{};
 };
 
-
-class TestApp : public VulkanApp {
-	using Super = VulkanApp;
+class TestApp : public SamToy::VulkanApp {
+	using Super = SamToy::VulkanApp;
 public:
 	~TestApp() {};
 private:
@@ -119,93 +117,24 @@ private:
 		if (!Super::Initialize())
 			return false;
 
+		camera.setPerspective(45.0f, float(swapchain->extent_.width) / float(swapchain->extent_.height), default_near_clip, default_far_clip);
+		//
+		std::filesystem::path p(gltf_meshes_paths[0]);
+		//
 		man = std::make_unique<ToyMeshManager>(ToyMeshManager(*context));
-
+		current_level.man = &man;
+		current_level.Upload(p);
+		current_level.static_tree = treeFromScene(current_level,
+			[&](uint32_t index) -> const Mesh& {return this->man.meshes.objects_[index].obj_; }
+		);
+		current_level.tree_done = true;
+		// 
 		auto rg = rendergraph.get();
 		resources_.frameUniformsBuffer = rg->AddBuffer<FrameUniforms>(1); //frames in flight ring access? how to semantically say that this should be inifr
 		resources_.drawDataBuffer = rg->AddBuffer<DrawSetData>(MAX_DRAWS); // this is storage
-
-		//PipelineCreateInfo pipelineCreateInfo{
-		//	.rasterSettings = {
-		//		.depthClampEnable = VK_FALSE, // needs to be enabled
-		//		.rasterizerDiscardEnable = VK_FALSE,
-		//		.polygonMode = VK_POLYGON_MODE_FILL,
-		//		.cullMode = VK_CULL_MODE_BACK_BIT,
-		//		.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE
-		//		//.depthBias // this will go with deafutls be careful
-		//	}, // rasterDesc
-		//	.vert = vert_shader_h, // vert
-		//	.frag = fragHandle, //frag
-		//};
-
-		// Dedfault camera settings
-		camera.setPerspective(45.0f, float(swapchain->extent_.width) / float(swapchain->extent_.height), default_near_clip, default_far_clip);
-
-		std::filesystem::path p(gltf_meshes_paths[0]);
-		current_level.man = &man;
-		current_level.Upload(
-			p
-		);
-		current_level.static_tree = treeFromScene(current_level,
-			[&](uint32_t index) -> const Mesh& {
-			// Highly illegal. but lets roll with this,
-			return this->man.meshes.objects_[index].obj_;
-		}
-		);
-		current_level.tree_done = true;
-
-		// This is rendergraph responsability really
-		//UpdateBindlessTexturesSets();
-
+		//
 		return true;
 	};
-
-	void SetDescriptorSets()
-	{
-		// Dynamic
-		for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; frameIndex++) {
-
-			auto setHandle = perFrameData[frameIndex].frameDynamicDescriptorSet;
-			auto setObj = context->descriptorSets_.get(setHandle);
-			VkDescriptorSet vkSet = setObj->set;
-
-			// FrameUniforms 
-			auto frameUniformsBufferHandle = context->buffers_.get(frameUniformsBinding.buffer_h);
-			VkDescriptorBufferInfo frameUniformsInfo{
-				.buffer = frameUniformsBufferHandle->buffer,
-				.offset = 0,
-				.range = sizeof(FrameUniforms) // this is the size of the window accesed per bind
-			};
-
-			// Draw data
-			auto drawsDataBufferHandle = context->buffers_.get(drawDataBinding.buffer_h);
-			VkDescriptorBufferInfo drawBufferInfo{
-				.buffer = drawsDataBufferHandle->buffer,
-				.offset = 0,
-				.range = sizeof(DrawSetData) * MAX_DRAWS
-			};
-			VkWriteDescriptorSet writes[2]{};
-
-			writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writes[0].dstSet = vkSet;
-			writes[0].dstBinding = 0; // UBO
-			writes[0].dstArrayElement = 0;
-			writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-			writes[0].descriptorCount = 1;
-			writes[0].pBufferInfo = &frameUniformsInfo;
-
-			writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			writes[1].dstSet = vkSet;
-			writes[1].dstBinding = 1; // SSBO
-			writes[1].dstArrayElement = 0;
-			writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
-			writes[1].descriptorCount = 1;
-			writes[1].pBufferInfo = &drawBufferInfo;
-
-			vkUpdateDescriptorSets(core.device_, 2 /*descriptorWriteCount*/, writes, 0, nullptr);
-
-		}
-	}
 
 	void UpdateBindlessTexturesSets() {
 
@@ -297,15 +226,15 @@ private:
 		data.farPlane = 0.f;
 		data.exposure = 0.f;
 
-		// HOST MAP UPLOAD OPTIMIST PATH.
+		// reowrk this
 		context->UploadDataToBuffer(
-			frameUniformsBinding.buffer_h,
+			resources_.frameUniformsBuffer.resolvedBufferHandle,
 			&data,
 			sizeof(FrameUniforms)/* * 1*/,
 			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 			VK_ACCESS_SHADER_READ_BIT,
 			0,
-			frameUniformsBinding.dynamicOffsetFrame(currentFrame)
+			currentFrame * resources_.frameUniformsBuffer.key.elementSize * resources_.frameUniformsBuffer.key.elementCount // dynamicOffsetPerFrame
 		);
 		return data;
 
@@ -422,7 +351,7 @@ private:
 					{
 
 					},
-				);
+					);
 				//vkCmdBindPipeline(
 				//	fb.commandBuffer,
 				//	VK_PIPELINE_BIND_POINT_GRAPHICS,

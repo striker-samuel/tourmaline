@@ -434,25 +434,28 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 
 
 struct GltfToSceneImporter {
-	ToyMeshManager& man;
 	Scene& scene;
 	const tinygltf::Model& model;
 	std::filesystem::path gltfModelPath; // full path to .gltf/.glb on disk
-
 	static constexpr uint32_t kInvalidMat = 0xFFFFFFFFu;
 	std::vector<uint32_t> materialCache;
+	std::function<uint32_t(MeshUploadInput& data)> createMeshCallback_;
+	std::function<uint32_t()> createMaterialCallback_;
 
 	GltfToSceneImporter(
 		ToyMeshManager& inMan,
 		Scene& inScene,
 		const tinygltf::Model& inModel,
-		std::filesystem::path inGltfModelPath
+		std::filesystem::path inGltfModelPath,
+		std::function<uint32_t()> createMeshCallback,
+		std::function<uint32_t()> createMaterialCallback
 	)
-		: man(inMan)
-		, scene(inScene)
+		: scene(inScene)
 		, model(inModel)
 		, gltfModelPath(std::move(inGltfModelPath))
 		, materialCache(inModel.materials.size(), kInvalidMat)
+		, createMeshCallback_(createMeshCallback)
+		, createMaterialCallback_(createMaterialCallback)
 	{}
 
 	uint32_t getOrCreateMaterial(int gltfMaterialIndex) {
@@ -499,7 +502,7 @@ struct GltfToSceneImporter {
 			colorTexHandle = man.ctx->GetOrCreateTexure(color_uri.string(), *ktxTex);
 			ktxTexture2_Destroy(ktxTex);
 		}
-		
+
 		return man.CreateMaterial(
 			{
 				.diffuse = colorTexHandle
@@ -510,7 +513,7 @@ struct GltfToSceneImporter {
 
 	uint32_t getOrCreateMesh(tinygltf::Primitive primitive) {
 		auto mdata = SurfaceDataFromGltfPrimitive(model, primitive);
-		return man.UploadVertexData(mdata).index();
+		return createMeshCallback_(mdata).index();
 	}
 
 	void importNodeRecursive(int gltfNodeIndex, int parentSceneNode, int level) {

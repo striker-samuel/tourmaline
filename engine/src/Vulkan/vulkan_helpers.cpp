@@ -1,8 +1,11 @@
 #pragma once
 
-#include <Engine/Vulkan/vulkan_helpers.h>
+#include <iostream>
+#include <vector>
+#include <algorithm> //for std::clamp
+#include <Engine/Vulkan/core.h>
 
-/*inline*/ const char* vkResultToString(VkResult result) {
+const char* vkResultToString(VkResult result) {
 	switch (result) {
 	case VK_SUCCESS: return "VK_SUCCESS";
 	case VK_NOT_READY: return "VK_NOT_READY";
@@ -38,7 +41,7 @@ debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 	return VK_FALSE;
 }
 
-bool checkValidationLayerSupport() {
+bool checkValidationLayerSupport(const std::vector<const char*> validationLayers) {
 	uint32_t layerCount;
 	vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
 
