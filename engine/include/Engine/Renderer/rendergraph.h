@@ -9,12 +9,13 @@ struct ToyRenderPass;
 
 using ImageKey = ImageCreateInfo;
 using ImageViewKey = ImageViewCreateInfo;
-//using DeviceBufferKey = BufferCreateInfo;
-struct DeviceBufferKey {
+struct BufferKey {
 	size_t elementSize;
 	size_t elementCount;
 };
+//using DeviceBufferKey = BufferCreateInfo;
 
+/// 
 struct ToyFrameBuffer {
 	uint32_t frameIndex = 0; // Maybe end os uint32_ to catch for unitialized? this value can only be ip to SWAPCHAIN_IMAGE_COUNT
 	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
@@ -29,8 +30,8 @@ struct LogicalBuffer
 		Transient
 	} type;
 	size_t id;
-	DeviceBufferKey key;
-	ToyBufferHandle resolvedBufferHandle;
+	BufferKey key;
+	ToyBufferHandle resolvedBufferHandle; // Should be holder?
 };
 
 struct LogicalImageView
@@ -56,10 +57,11 @@ struct LogicalImage {
 };
 
 struct ToyRenderPassContext {
-	Context& ctx;
+	//Context& ctx;// maybe nort needed
 	ToyRenderPass& renderpass;
-	//VkCommandBuffer GetCmd() {return renderpass}
+	VkCommandBuffer cmd;
 };
+
 using RecordingFunction = std::function<void(ToyRenderPassContext)>;
 struct ToyRenderPass final {
 	RenderGraph& rg_;
@@ -128,32 +130,40 @@ private:
 
 };
 struct RenderGraph {
-
-	RenderGraph(Context& ctx) : ctx_(ctx) { pipelineBuilder_ = std::make_unique<PipelineBuilder>(ctx_); };
 	Context& ctx_;
-	std::unique_ptr<PipelineBuilder> pipelineBuilder_;
 
 	std::vector<ToyRenderPass> passes;
-	void Clear() { passes.clear(); }
+	void Clear() { 
+		passes.clear(); 
+	}
 
 	std::vector<LogicalImage> images;
 	std::vector<LogicalImageView> views;
 	std::vector<LogicalBuffer> buffers;
 
+	// Renderpass boundary is now attachament flush
 	ToyRenderPass& AddPass(ToyRenderPass _renderPass) {
 		return passes.emplace_back(_renderPass);
 	}
 
 	LogicalImage AddImage() {};
 	LogicalImageView AddImageView() {};
-	// Can be used for ring too really
+
 	template<typename DataType>
 	LogicalBuffer AddBuffer(uint32_t count) {
-		return {
+
+		BufferKey key = {
+				.elementSize = sizeof(DataType),
+				.elementCount = count
+		};
+
+		return LogicalBuffer{
+			.id = buffers.size(),
 			.type = LogicalBuffer::Type::Transient,
-			//...
+			.key = key,
 		};
 	};
+
 	LogicalImage AddExternalImage(ImageHandle imageHandle) {
 		auto image = ctx_.images_.get(imageHandle);
 		LogicalImage proxy{
@@ -190,14 +200,12 @@ struct RenderGraph {
 		);
 	}
 
-	PipelineBuilder& GetPipelineBuilder() { return	*pipelineBuilder_; };
-
 	VkPipelineRenderingCreateInfo GetPipelineRenderingInfo(
 		const ToyRenderPass& pass
 	) {
 		std::vector<VkFormat> colorAttachmentFormats;
 		for (auto cattach : pass.colorAttachments_) {
-			colorAttachmentFormats.push_back(cattach.view.resolvedFormat);
+			colorAttachmentFormats.push_back(cattach.view.key.format);
 		}
 
 		return VkPipelineRenderingCreateInfo{
@@ -271,7 +279,7 @@ struct RenderGraph {
 			scissor.extent = pass.extent_;
 			vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
 
-			//this does depenmd of pass.vertexDecalration here is just hardcoded really
+			// this should adapt to pass vertex declaration.
 			if (pass.vertexBuffers_.size() > 0) {
 				auto indexBuffer = ctx_.buffers_.get(pass.vertexBuffers_[0].resolvedBufferHandle);
 				vkCmdBindIndexBuffer(fb.commandBuffer, indexBuffer->buffer, 0, VK_INDEX_TYPE_UINT32);
@@ -289,8 +297,9 @@ struct RenderGraph {
 			vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
 
 			ToyRenderPassContext rpc{
-				.ctx = ctx_,
-				.renderpass = pass
+				//.ctx = ctx_,
+				.renderpass = pass,
+				.cmd = fb.commandBuffer
 			};
 
 			pass.recordingFunction_(

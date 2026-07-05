@@ -1,45 +1,31 @@
 #pragma once
 
-#include <algorithm>
 #include <array>
-
-#include <Engine/Vulkan/core.h>
-#include <Engine/Vulkan/vulkan_helpers.h>
-#include <Engine/Vulkan/VulkanSwapchain.h>
-
-#include <Engine/Memory/handle.h>
-#include <Engine/Memory/pool.h>
-
 #include <tuple>
 #include <map>
 #include <future>
-
+#include <algorithm>
+//
+#include <Engine/Vulkan/core.h>
+#include <Engine/Memory/handle.h>
+#include <Engine/Memory/pool.h>
+//
 #include "vk_mem_alloc.h"
-
 #include <ktx.h>
 #include <ktxvulkan.h>
 
 // 
-using ImageHandle = Handle<struct Image>;
+using ImageHandle = Handle<struct Image>; // Attachments
 using PipelineHandle = Handle<struct Pipeline>;
 using ToyBufferHandle = Handle<struct ToyBuffer>;
 using SamplerHandle = Handle<struct Sampler>;
 using ShaderModuleHandle = Handle<struct ShaderModule>;
 using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 using DescriptorSetHandle = Handle<struct DescriptorSet>;
-
-// Dont like this
+//
+// Specialization for textures.
 using TextureHandle = Handle<struct Image>;
-using MeshHandle = Handle<struct Mesh>;
-
-namespace SamToy {
-// Maybe type result 
-//struct ToyResult {};
-};
-
-struct VulkanSwapchain;
-
-// Maybe bigger ShaderProgram resource is better
+//
 struct Pipeline {
 	VkPipeline pipeline;
 	VkPipelineLayout layout;
@@ -147,27 +133,27 @@ struct PipelineCreateInfo {
 		uint32_t size = 0;
 	};
 	struct PipelineLayoutDesc {
+		bool valid = 0;
 		std::vector<DescriptorSetDescription> setDescriptions; // each has set index
 		std::vector<PushConstantDescription> pushConstants;
 	};
 	PipelineLayoutDesc layoutDescription{};
 	RasterSettings rasterSettings{};
-	ShaderModuleHandle vert{};
-	ShaderModuleHandle frag{};
 };
-using PipelineKey = PipelineCreateInfo;
 
+using PipelineKey = PipelineCreateInfo;
 struct BufferCreateInfo {
 	VkDeviceSize size;
 	VmaMemoryUsage vma_usage;
 	VkBufferUsageFlags usage_flags;
 };
-struct TextureCache {
-	TextureCache(Context& ctx) :ctx_(ctx) {};
-	Context& ctx_;
-	std::map<std::string, Holder<ImageHandle>> texturesUploaded_;
-	TextureHandle GetOrCreateTexture(std::string uri, ktxTexture2& texture);
-};
+
+//struct TextureCache {
+//	TextureCache(Context& ctx) :ctx_(ctx) {};
+//	Context& ctx_;
+//	std::map<std::string, Holder<ImageHandle>> texturesUploaded_;
+//	TextureHandle GetOrCreateTexture(std::string uri, ktxTexture2& texture);
+//};
 
 // 4.6gb is good amount to reserver for 8gb vram system
 // 2gb for Windows is good practice. And a little headroom for aux apps
@@ -188,6 +174,8 @@ struct Context {
 
 	//
 	Holder<ToyBufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
+	Holder<ToyBufferHandle> CreateStagingBuffer(VkDeviceSize size);
+	//
 	Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo);
 	Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
 	Holder<DescriptorPoolHandle> CreateDescriptorPool(); // just hardcoded defaults for pool. 
@@ -197,14 +185,14 @@ struct Context {
 	void UploadDataToBuffer(ToyBufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset, size_t dest_offset);
 	void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 	void TransitionImageLayout(ImageHandle image_handle, VkImageLayout oldLayout, VkImageLayout newLayout);
-
-	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
-	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset);
+	//
+	void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset);
 	//
 	void CleanUp();
-
+	//
 	void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle);
 	void ProcessDeferrredTasks(); //void Flush();
+	//
 	void GetKtxDeviceInfo() {
 		ktxInfo_ = *ktxVulkanDeviceInfo_Create(
 			core.physicalDevice_,
@@ -217,27 +205,38 @@ struct Context {
 			NULL
 		);
 	}
+	//SamplerHandle GetSampler(SamplerKey key) {
+	//	auto it = samplerMap_.find(key);
+	//	if (it != samplerMap_.end()) {
+	//		//return it->second().get().handle();
+	//	}
+	//	else {
+	//		auto handle = core.CreateSampler(key);
+	//		samplerMap_[key] = Holder(&this, handle);
+	//		return handle;
 
-private:
+	//	}
+	//};
+
+//private:
 	Pool<Image, Image> images_;
 	Pool<ToyBuffer, ToyBuffer> buffers_;
 	Pool<Sampler, VkSampler> samplers_;
-	Pool<DescriptorSet, VkDescriptorSet> descriptorSets_;
 	Pool<ShaderModule, VkShaderModule> shaderModules_;
 	Pool<DescriptorPool, VkDescriptorPool> descriptorPools_;
-	Pool<Pipeline, Pipeline> graphicPipelines_;
-
+	//
 	VmaAllocator allocator_;
 	VmaPool D_2DImagesPool;
 	VmaPool D_StagingPool;
-
-	//TextureHandle nil_texture{}; // Default texture.
+	//
+	TextureHandle nil_texture{};
+	SamplerHandle default_sampler{};
 };
 
 void destroy(Context* ctx, ImageHandle handle);
+void destroy(Context* ctx, ToyBufferHandle handle);
 void destroy(Context* ctx, ShaderModuleHandle handle);
 void destroy(Context* ctx, DescriptorPoolHandle handle);
-void destroy(Context* ctx, ToyBufferHandle handle);
 
 
 struct PipelineCache {
@@ -247,19 +246,21 @@ struct PipelineCache {
 struct ShaderProgram {
 	Context& ctx_;
 	ShaderProgram(Context& ctx) : ctx_(ctx) {
-		dps_.push_back(Holder(&ctx_, ctx_.createDescriptorPool()));
+		//dps_.push_back(Holder(&ctx_, ctx_.CreateDescriptorPool()));
 	};
 	~ShaderProgram() { dps_.clear(); sets_.clear(); };
 	// 
-	Holder<ShaderModuleHandle> vert_{};
-	Holder<ShaderModuleHandle> frag_{};
+	//Holder<ShaderModuleHandle> vert_{};
+	//Holder<ShaderModuleHandle> frag_{};
+	ShaderModuleHandle vert_{};
+	ShaderModuleHandle frag_{};
 
-	std::vector<Holder<DescriptorPoolHandle>> dps_;
-	std::vector<Holder<DescriptorSetHandle>> sets_;
+	std::vector<DescriptorPoolHandle> dps_;
+	std::vector<DescriptorSetHandle> sets_;
 
 	// Pass will give us this
-	PipelineCreateInfo::RasterSettings rasterSettings_;
-	PipelineCreateInfo::PipelineLayoutDesc pipelineLayoutDescription_;
+	PipelineCreateInfo::RasterSettings rasterSettings_{};
+	PipelineCreateInfo::PipelineLayoutDesc pipelineLayoutDescription_{};
 	// Graph will give us this
 	VkPipelineRenderingCreateInfo dynamicRenderingInfo_;
 	//std::map<PipelineCreateInfo, Holder<PipelineHandle>> pipelineCache_;
@@ -268,6 +269,9 @@ public:
 
 	ShaderProgram& setRasterSettings(PipelineCreateInfo::RasterSettings rasterSettings) { this->rasterSettings_ = rasterSettings; };
 	ShaderProgram& setDynamicRenderingInfo(VkPipelineRenderingCreateInfo dynamicRenderingInfo) { this->dynamicRenderingInfo_ = dynamicRenderingInfo; };
+	ShaderProgram& setLayoutDescription();
+	ShaderProgram& setVert(ShaderModuleHandle vert) { this->vert_ = Holder<ShaderModuleHandle>(&ctx_, vert); return *this; };
+	ShaderProgram& setFrag(ShaderModuleHandle frag) { this->frag_ = Holder<ShaderModuleHandle>(&ctx_, frag); return *this; };
 
 	VkPipeline Build() {
 		PipelineCreateInfo info;
@@ -275,16 +279,6 @@ public:
 		info.vert = vert_;
 		info.frag = frag_;
 		info.layoutDescription;
-
-		//auto it = pipelineCache_.find(info);
-		//if (it == pipelineCache_.end()) { CreateGraphicsPipeline(info) }
-
-		// plenty stupid to do builder pattern and need to manually restore state...
-		// jsut to keep the cache going about
-		rasterSettings_ = {};
-		dynamicRenderingInfo_ = {};
-		vert_ = {};
-		frag_ = {};
 	};
 
 private:

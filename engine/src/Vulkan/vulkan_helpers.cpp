@@ -3,28 +3,28 @@
 #include <Engine/Vulkan/vulkan_helpers.h>
 
 /*inline*/ const char* vkResultToString(VkResult result) {
-    switch (result) {
-    case VK_SUCCESS: return "VK_SUCCESS";
-    case VK_NOT_READY: return "VK_NOT_READY";
-    case VK_TIMEOUT: return "VK_TIMEOUT";
-    case VK_EVENT_SET: return "VK_EVENT_SET";
-    case VK_EVENT_RESET: return "VK_EVENT_RESET";
-    case VK_INCOMPLETE: return "VK_INCOMPLETE";
-    case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
-    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-    case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
-    case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
-    case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
-    case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
-    case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
-    case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
-    case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
-    case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
-    case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
-    case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
-    case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
-    default: return "VK_ERROR_<unrecognized>";
-    }
+	switch (result) {
+	case VK_SUCCESS: return "VK_SUCCESS";
+	case VK_NOT_READY: return "VK_NOT_READY";
+	case VK_TIMEOUT: return "VK_TIMEOUT";
+	case VK_EVENT_SET: return "VK_EVENT_SET";
+	case VK_EVENT_RESET: return "VK_EVENT_RESET";
+	case VK_INCOMPLETE: return "VK_INCOMPLETE";
+	case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+	case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+	case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+	case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+	case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+	case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+	case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+	case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+	case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+	case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+	case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+	case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+	case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
+	default: return "VK_ERROR_<unrecognized>";
+	}
 }
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL
@@ -179,38 +179,88 @@ QueueFamilyIndices findQueueFamilies(
 	QueueFamilyIndices indices;
 
 	uint32_t queueFamilyCount = 0;
-	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount,
-		nullptr);
+	vkGetPhysicalDeviceQueueFamilyProperties(
+		device,
+		&queueFamilyCount,
+		nullptr
+	);
 
 	std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
 	vkGetPhysicalDeviceQueueFamilyProperties(
 		device,
 		&queueFamilyCount,
-		queueFamilies.data());
+		queueFamilies.data()
+	);
 
 	int i = 0;
+
 	for (const auto& queueFamily : queueFamilies) {
 		if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
 			indices.graphicsFamily = i;
 		}
 
 		VkBool32 presentSupport = false;
-		vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+		vkGetPhysicalDeviceSurfaceSupportKHR(
+			device,
+			i,
+			surface,
+			&presentSupport
+		);
 
 		if (presentSupport) {
 			indices.presentFamily = i;
 		}
 
-		if (indices.isComplete()) {
+		i++;
+	}
+
+	// Look for a dedicated transfer queue.
+	i = 0;
+	for (const auto& queueFamily : queueFamilies) {
+		bool supportsTransfer =
+			queueFamily.queueFlags & VK_QUEUE_TRANSFER_BIT;
+
+		bool supportsGraphics =
+			queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT;
+
+		bool supportsCompute =
+			queueFamily.queueFlags & VK_QUEUE_COMPUTE_BIT;
+
+		if (supportsTransfer && !supportsGraphics && !supportsCompute) {
+			indices.transferFamily = i;
 			break;
 		}
 
 		i++;
 	}
 
+	// If no fully dedicated transfer queue exists,
+	// look for one that at least is not a graphics queue.
+	if (!indices.transferFamily.has_value()) {
+		i = 0;
+		for (const auto& queueFamily : queueFamilies) {
+			bool supportsTransfer =
+				queueFamily.queueFlags & VK_QUEUE_TRANSFER_BIT;
+
+			bool supportsGraphics =
+				queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT;
+
+			if (supportsTransfer && !supportsGraphics) {
+				indices.transferFamily = i;
+				break;
+			}
+
+			i++;
+		}
+	}
+
+	// Final fallback: use graphics queue for transfers.
+	if (!indices.transferFamily.has_value()) {
+		indices.transferFamily = indices.graphicsFamily;
+	}
+
 	return indices;
 }
-
 bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
 	uint32_t extensionCount;
 	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
@@ -321,41 +371,41 @@ void populateDebugMessengerCreateInfo(
 		VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
 	createInfo.pfnUserCallback = debugCallback;
 }
-
-VkCommandBuffer beginSingleTimeCommands(
-	VkDevice device,
-	VkCommandPool commandPool) {
-	VkCommandBufferAllocateInfo allocInfo{};
-	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	allocInfo.commandPool = commandPool;
-	allocInfo.commandBufferCount = 1;
-
-	VkCommandBuffer commandBuffer;
-	vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
-
-	VkCommandBufferBeginInfo beginInfo{};
-	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-	vkBeginCommandBuffer(commandBuffer, &beginInfo);
-
-	return commandBuffer;
-}
-
-void endSingleTimeCommands(VkDevice device, VkCommandBuffer commandBuffer, VkQueue queue, VkCommandPool commandPool) {
-	vkEndCommandBuffer(commandBuffer);
-
-	VkSubmitInfo submitInfo{};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &commandBuffer;
-
-	vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
-	vkQueueWaitIdle(queue);
-
-	vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-}
+//
+//VkCommandBuffer beginSingleTimeCommands(
+//	VkDevice device,
+//	VkCommandPool commandPool) {
+//	VkCommandBufferAllocateInfo allocInfo{};
+//	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+//	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+//	allocInfo.commandPool = commandPool;
+//	allocInfo.commandBufferCount = 1;
+//
+//	VkCommandBuffer commandBuffer;
+//	vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+//
+//	VkCommandBufferBeginInfo beginInfo{};
+//	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+//	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+//
+//	vkBeginCommandBuffer(commandBuffer, &beginInfo);
+//
+//	return commandBuffer;
+//}
+//
+//void endSingleTimeCommands(VkDevice device, VkCommandBuffer commandBuffer, VkQueue queue, VkCommandPool commandPool) {
+//	vkEndCommandBuffer(commandBuffer);
+//
+//	VkSubmitInfo submitInfo{};
+//	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+//	submitInfo.commandBufferCount = 1;
+//	submitInfo.pCommandBuffers = &commandBuffer;
+//
+//	vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+//	vkQueueWaitIdle(queue);
+//
+//	vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+//}
 
 //static bool supports(VkPhysicalDevice pd, VkFormat fmt, VkFormatFeatureFlags feats) {
 //	VkFormatProperties p{}; vkGetPhysicalDeviceFormatProperties(pd, fmt, &p);

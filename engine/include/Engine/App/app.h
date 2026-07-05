@@ -29,11 +29,12 @@ static constexpr float default_far_clip = 50.0f;
 
 class VulkanApp {
 public:
-	VulkanCore core;
+	std::unique_ptr<VulkanCore> core;
 	Input input;
 
-	// TODO : check constructo
-	VulkanApp() {};
+	VulkanApp() {
+		core = std::make_unique<VulkanCore>();
+	};
 	virtual ~VulkanApp() = default;
 
 	virtual void DrawFrame() = 0;
@@ -73,6 +74,7 @@ protected:
 
 #pragma region ===[ GLFW / Window State ]===
 	GLFWwindow * window = nullptr;
+	VkSurfaceKHR surface_;
 #pragma endregion
 
 #pragma region ===[ Frame Commands List ]===
@@ -181,8 +183,6 @@ protected:
 
 };
 
-
-// IMP
 void VulkanApp::InitializeImGui() {
 
 	// Setup Dear ImGui context
@@ -196,7 +196,7 @@ void VulkanApp::InitializeImGui() {
 	io.SetClipboardTextFn = [](void*, const char* text) { glfwSetClipboardString(nullptr, text); };
 	io.GetClipboardTextFn = [](void*) { return glfwGetClipboardString(nullptr); };
 
-	auto dp_h = context->createDescriptorPool();
+	auto dp_h = context->CreateDescriptorPool();
 	auto im_dp = context->descriptorPools_.get(dp_h);
 
 	VkPipelineRenderingCreateInfo pipeline_create{
@@ -210,8 +210,7 @@ void VulkanApp::InitializeImGui() {
 
 	ImGui_ImplGlfw_InitForVulkan(window, /*install callbacks*/ false);
 
-	SwapChainSupportDetails swapChainSupport =
-		querySwapChainSupport(core.physicalDevice_, core.surface_);
+	SwapChainSupportDetails swapChainSupport = querySwapChainSupport(core.physicalDevice_, surface_);
 
 	ImGui_ImplVulkan_InitInfo info{};
 	info.Instance = core.instance_;
@@ -223,7 +222,7 @@ void VulkanApp::InitializeImGui() {
 	info.MinImageCount = swapChainSupport.capabilities.minImageCount;
 	info.ImageCount = swapchain->GetImageCount();
 	info.UseDynamicRendering = true,
-	info.PipelineRenderingCreateInfo = pipeline_create;
+		info.PipelineRenderingCreateInfo = pipeline_create;
 	ImGui_ImplVulkan_Init(&info  /* oUseDynamicRendering=true */);
 	//// Upload font texture once
 	//VkCommandBuffer cmd = beginCommands();
@@ -271,12 +270,11 @@ bool VulkanApp::Initialize() {
 	glfwSetWindowUserPointer(window, this);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
-	core.Init();
-	if (glfwCreateWindowSurface(core.instance_, window, nullptr, &core.surface_) !=
+	if (glfwCreateWindowSurface(core.instance_, window, nullptr, surface) !=
 		VK_SUCCESS) {
 		throw std::runtime_error("failed to create window surface!");
 	}
-	core.Init2();
+	core.Init();
 	context = new Context(core);
 
 	SwapChainSupportDetails swapChainSupport =

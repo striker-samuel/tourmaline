@@ -9,7 +9,6 @@
 
 #include <Engine/Renderer/context.h>
 
-
 class VulkanSwapchain {
 
 public:
@@ -135,9 +134,7 @@ public:
     GLFWwindow* window_ = nullptr;
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
 
-    //Holder<ImageHandle> depthImage_{};
-    ImageHandle depthImage_{};
-    // This cannot be imageHandle because swpachainImages are external.
+    Holder<ImageHandle> depthImage_{};
     std::vector<VkImage> images_;
     std::vector<VkImageView> imageViews_;
 

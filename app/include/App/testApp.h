@@ -1,6 +1,5 @@
 #pragma once
 #include <Engine/App/app.h>
-#include <Engine/Renderer/ringBinding.h>
 
 std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
@@ -51,7 +50,6 @@ static_assert(sizeof(MainViewPushConstants) % 16 == 0);
 
 struct Level : Scene {
 
-	ToyResourceManager* man = nullptr;
 	BvhTree tree = {};
 	BvhTree static_tree = {};
 	bool tree_done = false;
@@ -79,25 +77,29 @@ struct Level : Scene {
 
 
 
+struct AppResources {
+	LogicalBuffer frameUniformsBuffer{};
+	LogicalBuffer drawDataBuffer{};
+
+	ShaderProgram defaultMainView{};
+};
+
 
 class TestApp : public VulkanApp {
-
+	using Super = VulkanApp;
 public:
 	~TestApp() {};
 private:
-	using Super = VulkanApp;
+	AppResources resources_;
 	std::unique_ptr<ToyMeshManager> man;
-	void UpdateCamera(float dt);
-
-	// App state
+	Level current_level = {};
 	CameraPositioner_FirstPerson cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target
 		glm::vec3(0.0f, 1.0f, 0.0f) //up
 	);
 	Camera camera = Camera(cameraPositioner);
-
-	Level current_level = {};
+	void UpdateCamera(float dt);
 	//
 
 	void EarlyUpdate() override {
@@ -113,12 +115,6 @@ private:
 		Super::LateUpdate();
 	}
 
-	ShaderModuleHandle GetShaderModule(std::string uri) {
-		auto code = readFile(uri);
-		return context->CreateShaderModule(code);
-	};
-
-
 	bool Initialize() {
 		if (!Super::Initialize())
 			return false;
@@ -126,91 +122,21 @@ private:
 		man = std::make_unique<ToyMeshManager>(ToyMeshManager(*context));
 
 		auto rg = rendergraph.get();
-		rg->AddBuffer<FrameUniforms>(1); //frames in flight ring access? how to semantically say that
-		rg->AddBuffer<DrawSetData>(MAX_DRAWS);
+		resources_.frameUniformsBuffer = rg->AddBuffer<FrameUniforms>(1); //frames in flight ring access? how to semantically say that this should be inifr
+		resources_.drawDataBuffer = rg->AddBuffer<DrawSetData>(MAX_DRAWS); // this is storage
 
-		//// Init
-		//frameUniformsBinding.init(
-		//	context,
-		//	MAX_FRAMES_IN_FLIGHT,
-		//	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		//	VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
-		//);
-
-		//drawDataBinding.init(
-		//	context,
-		//	MAX_FRAMES_IN_FLIGHT,
-		//	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, //bufferUsageFlags
-		//	VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC //descriptorType
-		//);
-
-
-
-
-		auto vertShaderCode = readFile("content/shaders/default.vert.hlsl.spv");
-		auto fragShaderCode = readFile("content/shaders/default.frag.hlsl.spv");
-
-		auto vert_shader_h = context->CreateShaderModule(
-			vertShaderCode
-		);
-		auto fragHandle = context->CreateShaderModule(
-			fragShaderCode
-		);
-
-		PipelineCreateInfo::PipelineLayoutDesc desc{};
-		desc.setDescriptions = {
-			{
-				.createFlags = 0,
-				.bindings = {
-					frameUniformsBinding.bindingDesc(),
-					drawDataBinding.bindingDesc(),
-				}
-			},
-			{
-				.createFlags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-				.bindings = {
-					PipelineCreateInfo::BindingDescription
-					{
-						.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-						.count = MAX_TEXTURES,
-						.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
-						.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-								  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
-					},
-					PipelineCreateInfo::BindingDescription
-					{
-						.type = VK_DESCRIPTOR_TYPE_SAMPLER,
-						.count = MAX_TEXTURES, // We carry 1 to one samplers, this is wasteful but lets do this ftm
-						.stages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT,
-						.flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-								  VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
-					}
-				}
-			}
-		};
-		desc.pushConstants = {
-				{
-				.stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-				.offset = 0,
-				.size = uint32_t(sizeof(MainViewPushConstants) +
-								   sizeof(Material::Values)
-				),
-			}
-		};
-
-		PipelineCreateInfo pipelineCreateInfo{
-			.rasterSettings = {
-				.depthClampEnable = VK_FALSE, // needs to be enabled
-				.rasterizerDiscardEnable = VK_FALSE,
-				.polygonMode = VK_POLYGON_MODE_FILL,
-				.cullMode = VK_CULL_MODE_BACK_BIT,
-				.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE
-				//.depthBias // this will go with deafutls be careful
-			}, // rasterDesc
-			.layoutDesc = desc, // layoutDesc
-			.vert = vert_shader_h, // vert
-			.frag = fragHandle, //frag
-		};
+		//PipelineCreateInfo pipelineCreateInfo{
+		//	.rasterSettings = {
+		//		.depthClampEnable = VK_FALSE, // needs to be enabled
+		//		.rasterizerDiscardEnable = VK_FALSE,
+		//		.polygonMode = VK_POLYGON_MODE_FILL,
+		//		.cullMode = VK_CULL_MODE_BACK_BIT,
+		//		.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE
+		//		//.depthBias // this will go with deafutls be careful
+		//	}, // rasterDesc
+		//	.vert = vert_shader_h, // vert
+		//	.frag = fragHandle, //frag
+		//};
 
 		// Dedfault camera settings
 		camera.setPerspective(45.0f, float(swapchain->extent_.width) / float(swapchain->extent_.height), default_near_clip, default_far_clip);

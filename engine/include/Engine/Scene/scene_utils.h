@@ -15,16 +15,6 @@
 
 #include <glslang/Include/glslang_c_interface.h>
 
-bool endsWith(const char* s, const char* part);
-
-std::string readShaderFile(const char* fileName);
-
-//VkShaderStageFlagBits vkShaderStageFromFileName(const char* fileName);
-//
-//lvk::Holder<lvk::ShaderModuleHandle> loadShaderModule(const std::unique_ptr<lvk::IContext>& ctx, const char* fileName);
-//lvk::Holder<lvk::TextureHandle> loadTexture(
-//    const std::unique_ptr<lvk::IContext>& ctx, const char* fileName, lvk::TextureType textureType = lvk::TextureType_2D, bool sRGB = false);
-
 template <typename T> inline void mergeVectors(std::vector<T>& v1, const std::vector<T>& v2)
 {
     v1.insert(v1.end(), v2.begin(), v2.end());
@@ -53,3 +43,5 @@ void loadStringList(FILE* f, std::vector<std::string>& lines);
 int addUnique(std::vector<std::string>& files, const std::string& file);
 std::string replaceAll(const std::string& str, const std::string& oldSubStr, const std::string& newSubStr);
 std::string lowercaseString(const std::string& s); // convert 8-bit ASCII string to upper case
+bool endsWith(const char* s, const char* part);
+std::string readShaderFile(const char* fileName);

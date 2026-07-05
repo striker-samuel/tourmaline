@@ -31,15 +31,15 @@ int Context::Initialize(
 
 	images_.objects_.reserve(MAX_IMAGES);
 	buffers_.objects_.reserve(MAX_BUFFERS);
-	descriptorSets_.objects_.reserve(MAX_DESCRIPTORS);
-
-
+	//descriptorSets_.objects_.reserve(MAX_DESCRIPTORS);
 	// default objs
 	// from ChatGpt, may not be true: you can set a generic sampler with a big maxLod like 100, and reuse it for all your textures of any mip count.
 	// The driver will clamp dynamically per texture.
 	//samplers["default"] = CreateSampler(100);
 	//samplers["default_shadow"] = CreateShadowSampler(1);
 	//nil_texture = CreateTexture("");
+
+	default_sampler = CreateSampler(SamplerCreateInfo());
 
 	return 0; // no error
 
@@ -51,38 +51,7 @@ Context::~Context(
 };
 
 
-[[nodiscard]] DescriptorSetHandle Context::CreateDescriptorSet(
-	DescriptorPoolHandle pool,
-	VkDescriptorSetLayout& layout
-) {
-	auto dpool = descriptorPools_.get(pool);
-	std::array<VkDescriptorSetLayout, 1> layouts = {
-		layout
-	};
-
-	VkDescriptorSetAllocateInfo allocInfo{};
-	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	allocInfo.descriptorPool = *dpool;
-	allocInfo.descriptorSetCount = 1;
-	allocInfo.pSetLayouts = layouts.data();
-
-	VkDescriptorSet ds;
-	VkResult result = vkAllocateDescriptorSets(core.device_, &allocInfo, &ds);
-
-	if (result == VK_ERROR_OUT_OF_POOL_MEMORY) {
-		assert(false && "oom pool");
-		// Rotate the descriptor pool. try again
-		// Manage live dspools. defrag
-	}
-
-	if (result != VK_SUCCESS) {
-		throw std::runtime_error("failed to allocate descriptor sets!");
-	}
-
-	return descriptorSets_.create(std::move(ds));
-}
-
-[[nodiscard]] ToyBufferHandle Context::CreateBuffer(
+[[nodiscard]] Holder<ToyBufferHandle> Context::CreateBuffer(
 	BufferCreateInfo bufferCreateInfo
 ) {
 	ToyBuffer desc{};
@@ -104,29 +73,10 @@ Context::~Context(
 	)
 	);
 
+	// getDeviceAddress
 	vmaGetAllocationMemoryProperties(allocator_, desc.alloc, &desc.memory_flags);
 	desc.usage = bufferCreateInfo.usage_flags;
-
-	return buffers_.create(std::move(desc));
-}
-
-void Context::UploadDataToBuffer(
-	ToyBufferHandle buffer,
-	const void* data,
-	size_t dataSize,
-	VkPipelineStageFlags dstStages,
-	VkAccessFlags dstAccess
-) {
-
-	return UploadDataToBuffer(
-		buffer,
-		data,
-		dataSize,
-		dstStages,
-		dstAccess,
-		0,
-		0
-	);
+	return Holder(this, buffers_.create(std::move(desc)));
 }
 
 void Context::UploadDataToBuffer(
@@ -218,8 +168,8 @@ void Context::UploadDataToBuffer(
 		0,
 		0, nullptr,
 		1, &b2,
-		0, nullptr);
-
+		0, nullptr)
+		;
 
 	endSingleTimeCommands(core.device_, tmpBuf, core.graphicsQueue_, core.defaultCommandPool_);
 
@@ -227,21 +177,15 @@ void Context::UploadDataToBuffer(
 	vmaDestroyBuffer(allocator_, stagingBuf, stagingAlloc);
 }
 
-// This is functional but really crude, no descriptorPool rotation support, and despite good defualts it ideally should at least take
-// framesInFlight count
-[[nodiscard]] DescriptorPoolHandle Context::createDescriptorPool() {
-	const uint32_t bindless_sets = MAX_FRAMES_IN_FLIGHT;
-	const uint32_t max_textures = MAX_TEXTURES;
-
-	const uint32_t total_sampled_images = bindless_sets * max_textures;
-	const uint32_t total_samplers = bindless_sets * max_textures;
-
+[[nodiscard]] Holder<DescriptorPoolHandle> Context::CreateDescriptorPool() {
+	const uint32_t total_sampled_images = MAX_FRAMES_IN_FLIGHT * MAX_TEXTURES;
+	const uint32_t total_samplers = MAX_FRAMES_IN_FLIGHT * MAX_TEXTURES;
 	std::array<VkDescriptorPoolSize, 4> poolSizes = { {
-	  { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,   2u * MAX_FRAMES_IN_FLIGHT },
-	  { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   2u * MAX_FRAMES_IN_FLIGHT },
-	  { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    total_sampled_images      },
-	  { VK_DESCRIPTOR_TYPE_SAMPLER,          total_samplers            },
-	} };
+			//{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,   0 }, //deviceAddres mapping.
+			//{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   0 },
+			{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    total_sampled_images      },
+			{ VK_DESCRIPTOR_TYPE_SAMPLER,          total_samplers            },
+		  } };
 
 	VkDescriptorPoolCreateInfo poolInfo{ };
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -252,7 +196,7 @@ void Context::UploadDataToBuffer(
 
 	VkDescriptorPool dpool;
 	VK_CHECK(vkCreateDescriptorPool(core.device_, &poolInfo, nullptr, &dpool));
-	return descriptorPools_.create(std::move(dpool));
+	return Holder(this, descriptorPools_.create(std::move(dpool)));
 }
 
 void PipelineBuilder::CreatePipelineLayout(
@@ -460,24 +404,6 @@ void PipelineBuilder::CreatePipelineLayout(
 	}
 
 	return ctx_.graphicPipelines_.create(std::move(pipeline));
-
-}
-
-void Context::TransitionImageLayout(
-	ImageHandle image_handle,
-	VkImageLayout oldLayout,
-	VkImageLayout newLayout
-
-) {
-	assert(image_handle.valid() && "Image handle was not valid");
-	auto image = images_.get(image_handle);
-
-	TransitionImageLayout(
-		image->image,
-		image->format,
-		oldLayout,
-		newLayout
-	);
 
 }
 
@@ -795,15 +721,7 @@ TextureHandle TextureCache::GetOrCreateTexture(std::string uri, ktxTexture2& tex
 
 
 
-
-	// texture_copies.push_back()
-
-	// Instead of this upload should be scheduled to do in abtch and recorded to the transferQueue! 
-	// -------------------------------------------------------------------------
-	// Record upload
-	// -------------------------------------------------------------------------
 	VkCommandBuffer cmd = beginSingleTimeCommands(ctx_.core.device_, ctx_.core.defaultCommandPool_); // your helper
-
 	{
 		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
 		barrier.srcAccessMask = 0;
@@ -970,10 +888,9 @@ TextureHandle TextureCache::GetOrCreateTexture(std::string uri, ktxTexture2& tex
 
 }
 
-[[nodiscard]] ToyBufferHandle Context::CreateStagingBuffer(VkDeviceSize size)
+[[nodiscard]] Holder<ToyBufferHandle> Context::CreateStagingBuffer(VkDeviceSize size)
 {
 	ToyBuffer desc{};
-
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	ci.size = size;
 	ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
@@ -1087,8 +1004,6 @@ void PipelineBuilder::CreateDescriptorSetLayout(
 
 // 
 
-
-
 void destroy(Context* ctx, ShaderModuleHandle handle) {
 	assert(handle.valid());
 	auto sm = ctx->shaderModules_.get(handle);
@@ -1096,10 +1011,23 @@ void destroy(Context* ctx, ShaderModuleHandle handle) {
 	ctx->shaderModules_.destroy(handle);
 }
 void destroy(Context* ctx, DescriptorPoolHandle handle) {
-	//vkDeviceWaitIdle(core_.device_);
-	//vkDestroyDescriptorPool(ha)
+	assert(handle.valid());
+	vkDeviceWaitIdle(ctx->core.device_);
+	auto obj_ = ctx->descriptorPools_.get(handle);
+	vkDestroyDescriptorPool(ctx->core.device_, *obj_, nullptr);
 }
-void destroy(Context* ctx, DescriptorSetHandle handle) {}
+
+// This requires freeing from a pool
+void destroy(Context* ctx, DescriptorSetHandle handle) {
+	auto& core = ctx->core;
+	assert(handle.valid());
+	//vkDeviceWaitIdle(ctx->core.device_);
+	//auto obj_ = ctx->descriptorSets_.get(handle);
+	//vkFreeDescriptorSets(
+	//	core.device_,
+	//)
+	//vkDescrip(ctx->core.device_, *obj_, nullptr);
+}
 
 
 void destroy(Context* ctx, ImageHandle handle)
@@ -1159,7 +1087,7 @@ void Context::ProcessDeferrredTasks()
 {
 	std::vector<DeferredCommandBuffer>::iterator it = deferredTasks_.begin();
 	while (it != deferredTasks_.end() && submitter_.isReady(it->handle_)) {
-	  (it++)->task_();
+		(it++)->task_();
 	}
 	deferredTasks_.erase(deferredTasks_.begin(), it);
 }

@@ -1,9 +1,10 @@
 #pragma once
 
 #include <cassert>
+#include <optional>
+#include <set>
+
 #include "volk.h"
-#include <Engine/Renderer/constants.h>
-#include <Engine/Vulkan/vulkan_helpers.h>
 
 #define APPLICATION_NAME "Sam2025Vulkan_one_three"
 #define ENGINE_NAME "SamEngine"
@@ -25,7 +26,90 @@ static constexpr uint32_t MAX_TEXTURES = 4096;
 static constexpr uint32_t MAX_IMAGES = 4096;
 static constexpr uint32_t MAX_PUSH_CONSTANTS = 8;
 
-struct /*class*/ VulkanCore {
+
+/*inline*/ const char* vkResultToString(VkResult result);
+
+#define VK_ASSERT_RETURN(func)                                     \
+  {                                                                \
+    const VkResult vk_assert_result = func;                        \
+    if (vk_assert_result != VK_SUCCESS) {                          \
+      LLOGW("Vulkan API call failed: %s:%i\n  %s\n  %s\n", \
+                    __FILE__,                                      \
+                    __LINE__,                                      \
+                    #func,                                         \
+                    lvk::getVulkanResultString(vk_assert_result)); \
+      assert(false);                                               \
+      return getResultFromVkResult(vk_assert_result);              \
+    }                                                              \
+  }
+
+#define VK_CHECK(x)                                                     \
+    do {                                                                \
+        VkResult err = (x);                                             \
+        if (err != VK_SUCCESS) {                                        \
+            fprintf(stderr, "[Vulkan Error] %s:%d: %s\n",               \
+                    __FILE__, __LINE__, vkResultToString(err));         \
+            abort();                                                    \
+        }                                                               \
+    } while (0)
+
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL
+debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+	VkDebugUtilsMessageTypeFlagsEXT messageType,
+	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+	void* pUserData);
+
+#ifdef NDEBUG
+const bool enableValidationLayers = false;
+#else
+const bool enableValidationLayers = true;
+#endif
+
+struct QueueFamilyIndices {
+	std::optional<uint32_t> graphicsFamily;
+	std::optional<uint32_t> presentFamily;
+	std::optional<uint32_t> transferFamily;
+
+	bool isComplete() {
+		return graphicsFamily.has_value() && presentFamily.has_value();
+	}
+};
+
+struct SwapChainSupportDetails {
+	VkSurfaceCapabilitiesKHR capabilities{};
+	std::vector<VkSurfaceFormatKHR> formats;
+	std::vector<VkPresentModeKHR> presentModes;
+};
+
+bool checkValidationLayerSupport();
+bool hasStencilComponent(VkFormat format);
+VkFormat findSupportedFormat(VkPhysicalDevice physicalDevice, const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features);
+VkFormat findDepthFormat(VkPhysicalDevice physicalDevice);
+uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties);
+VkShaderModule createDeviceShaderModule(VkDevice device, const std::vector<char>& code);
+SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
+QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
+bool checkDeviceExtensionSupport(VkPhysicalDevice device);
+bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface);
+VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
+VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
+VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window);
+std::vector<const char*> getRequiredExtensions();
+void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo);
+
+enum VulkanVersion {
+	VK_1_3
+};
+
+struct CoreConfiguration {
+	VulkanVersion version_ = VK_1_3;
+	const std::vector<const char*> validationLayers = { "VK_LAYER_KHRONOS_validation", };
+	const std::vector<const char*> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+	const std::vector<const char*> instanceExtensions = {};
+};
+
+struct VulkanCore {
 
 	VkInstance instance_ = VK_NULL_HANDLE;
 	VkDevice device_ = VK_NULL_HANDLE;
@@ -37,17 +121,17 @@ struct /*class*/ VulkanCore {
 	// 
 	VkSurfaceKHR surface_;
 	VkFormat viewportDepthFormat;
-
-
-	const std::vector<const char*> validationLayers = { "VK_LAYER_KHRONOS_validation", };
-	const std::vector<const char*> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
-
-	// Dont like having a commandPool default. // also dont like the name
+	//
 	VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
 	VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
+	//
 
 	// Enviroment Descriptions
 	VkPhysicalDeviceDriverProperties vkPhysicalDeviceDriverProperties_ = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES, nullptr };
+	VkPhysicalDeviceDepthStencilResolveProperties vkPhysicalDeviceDepthStencilResolveProperties_ = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES,
+		&vkPhysicalDeviceVulkan12Properties_,
+	};
 	VkPhysicalDeviceVulkan13Properties vkPhysicalDeviceVulkan13Properties_ = {
 		 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES,
 		 &vkPhysicalDeviceDriverProperties_,
@@ -56,10 +140,6 @@ struct /*class*/ VulkanCore {
 	VkPhysicalDeviceVulkan12Properties vkPhysicalDeviceVulkan12Properties_ = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
 		&vkPhysicalDeviceVulkan13Properties_,
-	};
-	VkPhysicalDeviceDepthStencilResolveProperties vkPhysicalDeviceDepthStencilResolveProperties_ = {
-		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES,
-		&vkPhysicalDeviceVulkan12Properties_,
 	};
 	// provided by Vulkan 1.1
 	VkPhysicalDeviceVulkan11Properties vkPhysicalDeviceVulkan11Properties_ = {
@@ -82,19 +162,19 @@ struct /*class*/ VulkanCore {
 
 public:
 
-	VulkanCore() {};
-	//VulkanCore(GLFWwindow* window) {};
+	VulkanCore(CoreConfiguration config) {};
 	VulkanCore(const VulkanCore&) = delete;
 	VulkanCore& operator=(const VulkanCore&) = delete;
-
 	VulkanCore(VulkanCore&&) = delete;
 	VulkanCore& operator=(VulkanCore&&) = delete;
 
 	// hacky way. Dont want to deal with finding and setting up queue. not needed to develop the rest of the API
 	VkQueue GetTransferQueue() { return transferQueue_ != VK_NULL_HANDLE ? transferQueue_ : graphicsQueue_; };
-	//const ktxVulkanDeviceInfo GetKtxPayloadInfo() { return ktxInfo_; };
 
-	void Init() {
+	void Init(
+		CoreConfiguration config,
+		VkSurfaceKHR* surface = nullptr
+	) {
 
 		if (enableValidationLayers && !checkValidationLayerSupport()) {
 			throw std::runtime_error(
@@ -118,14 +198,11 @@ public:
 		createInfo.ppEnabledExtensionNames = extensions.data();
 
 		if (enableValidationLayers) {
-			createInfo.enabledLayerCount =
-				static_cast<uint32_t>(validationLayers.size());
-			createInfo.ppEnabledLayerNames = validationLayers.data();
-
+			createInfo.enabledLayerCount = static_cast<uint32_t>(config.validationLayers.size());
+			createInfo.ppEnabledLayerNames = config.validationLayers.data();
 			VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo;
 			populateDebugMessengerCreateInfo(debugCreateInfo);
 			createInfo.pNext = (void*)&debugCreateInfo;
-
 		}
 		else {
 			createInfo.enabledLayerCount = 0;
@@ -149,8 +226,6 @@ public:
 			}
 		};
 
-	};
-	void Init2() {
 		{
 
 			// Pick Device
@@ -177,27 +252,15 @@ public:
 
 			vkGetPhysicalDeviceProperties2(physicalDevice_, &vkPhysicalDeviceProperties2_);
 
-#ifndef DEBUG
-
-			std::cout << "----DEVICE INFO-----" << std::endl;
-
-			std::cout << "	maxUniformBufferRange = "
-				<< properties.limits.maxUniformBufferRange << " bytes\n";
-
-			std::cout << "	minUniformBufferOffsetAlignment = "
-				<< properties.limits.minUniformBufferOffsetAlignment << " bytes\n";
-
-			std::cout << "	maxStorageBufferRange = "
-				<< properties.limits.maxStorageBufferRange << " bytes\n\n";
-#endif
-
 			// Create Logical Device
 			{
 				QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
 
 				std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-				std::set<uint32_t> uniqueQueueFamilies = { indices.graphicsFamily.value(),
-														  indices.presentFamily.value() };
+				std::set<uint32_t> uniqueQueueFamilies = {
+					indices.graphicsFamily.value(),
+														  indices.presentFamily.value() 
+				};
 
 				float queuePriority = 1.0f;
 				for (uint32_t queueFamily : uniqueQueueFamilies) {
@@ -209,28 +272,37 @@ public:
 					queueCreateInfos.push_back(queueCreateInfo);
 				}
 
+				VkPhysicalDeviceVulkan11Features deviceFeatures11{
+					.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+					.pNext = nullptr,
+					.storageBuffer16BitAccess = VK_TRUE,
+					.uniformAndStorageBuffer16BitAccess = VK_TRUE,
+					.storagePushConstant16 = VK_TRUE,
+					.storageInputOutput16 = VK_TRUE
+				};
+				VkPhysicalDeviceVulkan12Features deviceFeatures12{
+					.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+					.pNext = &deviceFeatures11,
+					.shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
+					.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE,
+					.descriptorBindingPartiallyBound = VK_TRUE,
+					.descriptorBindingVariableDescriptorCount = VK_TRUE,
+					.runtimeDescriptorArray = VK_TRUE,
+					.bufferDeviceAddress = VK_TRUE
+				};
 
-				// Descriptor indexing (core, not EXT)
-				VkPhysicalDeviceDescriptorIndexingFeatures descIdx{};
-				descIdx.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
-				// Enable what you actually need:
-				descIdx.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-				descIdx.descriptorBindingPartiallyBound = VK_TRUE;
-				descIdx.runtimeDescriptorArray = VK_TRUE;
-				descIdx.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+				VkPhysicalDeviceVulkan13Features deviceFeatures13
+				{
+					.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+					.pNext = &deviceFeatures12,
+					.synchronization2 = VK_TRUE,
+					.dynamicRendering = VK_TRUE,
+					.maintenance4 = VK_TRUE,
+				};
 
-				// Maybe I dont want this one
-				descIdx.descriptorBindingVariableDescriptorCount = VK_TRUE;
-
-				VkPhysicalDeviceVulkan13Features vulkan13Features{};
-				vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-				vulkan13Features.dynamicRendering = VK_TRUE;
-				vulkan13Features.pNext = &descIdx;
-
-				// Core features (BC + anisotropy) go in Features2.features
 				VkPhysicalDeviceFeatures2 feats2{
 					.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-					.pNext = &vulkan13Features,
+					.pNext = &deviceFeatures13,
 					.features = {
 						.samplerAnisotropy = VK_TRUE,
 						.textureCompressionBC = VK_TRUE, // REQUIRED for BC1..BC7
@@ -239,29 +311,22 @@ public:
 
 				VkDeviceCreateInfo createInfo{};
 				createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-				createInfo.queueCreateInfoCount =
-					static_cast<uint32_t>(queueCreateInfos.size());
+				createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
 				createInfo.pQueueCreateInfos = queueCreateInfos.data();
-
-				// Using Features2
 				createInfo.pEnabledFeatures = nullptr;
 				createInfo.pNext = &feats2;
-
-				createInfo.enabledExtensionCount =
-					static_cast<uint32_t>(deviceExtensions.size());
-				createInfo.ppEnabledExtensionNames = deviceExtensions.data();
+				createInfo.enabledExtensionCount = static_cast<uint32_t>(config.deviceExtensions.size());
+				createInfo.ppEnabledExtensionNames = config.deviceExtensions.data();
 
 				if (enableValidationLayers) {
-					createInfo.enabledLayerCount =
-						static_cast<uint32_t>(validationLayers.size());
-					createInfo.ppEnabledLayerNames = validationLayers.data();
+					createInfo.enabledLayerCount = static_cast<uint32_t>(config.validationLayers.size());
+					createInfo.ppEnabledLayerNames = config.validationLayers.data();
 				}
 				else {
 					createInfo.enabledLayerCount = 0;
 				}
 
-				if (vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_) !=
-					VK_SUCCESS) {
+				if (vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_) != VK_SUCCESS) {
 					throw std::runtime_error("failed to create logical device!");
 				}
 
@@ -280,15 +345,15 @@ public:
 			}
 
 			QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
-			VkCommandPoolCreateInfo poolInfo{
-			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-			.queueFamilyIndex = indices.graphicsFamily.value()
+			VkCommandPoolCreateInfo poolInfo
+			{
+				.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+				.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+				.queueFamilyIndex = indices.graphicsFamily.value()
 			};
 
 			vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &graphicsQueue_);
-			// This should pick transfer over graphics
-			vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &transferQueue_);
+			vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &transferQueue_); // This should pick transfer over graphics
 
 			for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
 				if (vkCreateCommandPool(device_, &poolInfo, nullptr, &defaultCommandPool_) !=
@@ -296,10 +361,6 @@ public:
 					throw std::runtime_error("failed to create graphics command pool!");
 				}
 			}
-
-			// may be wrong . 
-			viewportDepthFormat = findDepthFormat(physicalDevice_);
-
 		};
 
 	};
@@ -310,6 +371,7 @@ public:
 	void CreateSemaphore(VkSemaphoreCreateInfo createInfo, VkSemaphore& out) {
 		VK_CHECK(vkCreateSemaphore(device_, &createInfo, nullptr, &out));
 	};
+	VkFormat GetDepthFormat();
 };
 
 struct CommandSubmitter {
@@ -343,7 +405,15 @@ struct CommandSubmitter {
 		TRANSFER,
 		GRAPHICS
 	};
-	CommandSubmitter(VulkanCore& core) : core_(core) {};
+	CommandSubmitter(VulkanCore& core) : core_(core) {
+
+
+
+
+
+
+
+	};
 	~CommandSubmitter() {};
 	bool isReady(CommandSubmitHandle handle) { return true; };
 
@@ -357,7 +427,6 @@ struct CommandSubmitter {
 		};
 		core_.CreateFence(createFenceInfo, wrapper.fence_);
 		core_.CreateSemaphore(createSemaphoreInfo, wrapper.semaphore_);
-
 		auto gen = commandBuffers_[nextFree].gen_;
 		commandBuffers_[nextFree] = { .cmd = wrapper, .gen_ = gen };
 	};

@@ -19,8 +19,7 @@
 
 #include <Engine/Renderer/vertex.h>
 #include <Engine/Renderer/context.h>
-
-#include <Engine/Renderer/ToyResourceManager.h>
+#include <Engine/Renderer/ToyResourceManager.h> // woudl be better to get rid of this
 
 #define DEFAULT_MATERIAL_INDEX 0;
 
