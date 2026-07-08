@@ -1,10 +1,13 @@
 #pragma once
 
 #include <Engine/Shared/common.h>
+#include <Engine/Vulkan/core.h>
 
 #include <Engine/Scene/scene.h>
 #include <Engine/Renderer/vertex.h>
-#include <Engine/Vulkan/core.h>
+
+using MeshHandle = Handle<struct Mesh>;
+using namespace SamToy;
 
 struct Mesh {
 	struct DataUpload {
@@ -32,6 +35,8 @@ struct Mesh {
 };
 
 using MaterialHandle = Handle<struct Material>;
+
+
 struct Material {
 	// this is bad
 	struct Textures {
@@ -55,10 +60,10 @@ struct Material {
 
 
 // this should just instead be moved to mesh class or maybe even level.
-struct ToyMeshManager {
-	Context& ctx_;
-	ToyMeshManager(Context& ctx) :ctx_(ctx) {};
-	~ToyMeshManager() {};
+struct MeshManager {
+	SamToy::Context& ctx_;
+	MeshManager(SamToy::Context& ctx) :ctx_(ctx) {};
+	~MeshManager() {};
 
 	uint32_t vertex_cursor = 0;
 	//uint32_t max_vertices = 0;
@@ -69,17 +74,17 @@ struct ToyMeshManager {
 	Pool<Material, Material> materials;
 
 	// this is bad because there are more vertex formats that may not be like this
-	Holder<ToyBufferHandle> indexBuffer;
-	Holder<ToyBufferHandle> vertexPosBuffer;
-	Holder<ToyBufferHandle> vertexShadingBuffer;
+	Holder<BufferHandle> indexBuffer;
+	Holder<BufferHandle> vertexPosBuffer;
+	Holder<BufferHandle> vertexShadingBuffer;
 
 	MeshHandle UploadVertexData(Mesh::DataUpload& mesh_data);
 	MaterialHandle CreateMaterial(Material::Textures textures);
 
 	void InitalizeGeoBuffers();
 
-	std::vector<ToyBufferHandle> GetVertexBuffers() {
-		return std::vector<ToyBufferHandle>{
+	std::vector<BufferHandle> GetVertexBuffers() {
+		return std::vector<BufferHandle>{
 			indexBuffer,
 				vertexPosBuffer,
 				vertexShadingBuffer,
@@ -89,16 +94,16 @@ struct ToyMeshManager {
 
 
 
-[[nodiscard]] MaterialHandle ToyMeshManager::CreateMaterial(Material::Textures textures) {
+[[nodiscard]] MaterialHandle MeshManager::CreateMaterial(Material::Textures textures) {
 	assert(textures.diffuse.valid() && "Invalid handle for diffuse");
 	Material mat{};
-	mat.textures.diffuse = textures.diffuse;
+	mat.textures_.diffuse = textures.diffuse;
 	mat.values.tex[0] = textures.diffuse.index();
 	return  materials.create(std::move(mat));
 }
 
 
-[[nodiscard]] MeshHandle ToyMeshManager::UploadVertexData(Mesh::DataUpload& geometry_data)
+[[nodiscard]] MeshHandle MeshManager::UploadVertexData(Mesh::DataUpload& geometry_data)
 {
 	const uint32_t vcount = static_cast<uint32_t>(geometry_data.vertices.size());
 	Mesh mesh_desc{};
@@ -180,7 +185,7 @@ struct ToyMeshManager {
 
 		ctx->copyBuffer(
 			staging->buffer,
-			ctx->buffers_.get(page->vertexPosBuffer /*or vertex_buffer*/)->buffer,
+			ctx->buffers_.get(vertexPosBuffer /*or vertex_buffer*/)->buffer,
 			posBytes,
 			0,
 			pos_byte_offset
@@ -212,7 +217,7 @@ struct ToyMeshManager {
 	// ------------------------------------------
 	// 5) Surface (bind-once style)
 	// ------------------------------------------
-	Surface ds{};
+	Mesh::Surface ds{};
 	ds.index_count = static_cast<uint32_t>(geometry_data.indices.size());
 	ds.first_index = static_cast<uint32_t>(index_offset_bytes / sizeof(IndexT));
 	ds.base_vertex = static_cast<int32_t>(baseVertex);
@@ -220,8 +225,8 @@ struct ToyMeshManager {
 	// IMPORTANT: store allocs somewhere if you want to free later.
 	// e.g. ds.vertex_alloc = vtx_alloc; ds.index_alloc = index_alloc; (requires fields)
 
-	mesh_desc.lods = 1;
-	mesh_desc.lod_offsets = { 0 };
+	//mesh_desc.lods = 1;
+	//mesh_desc.lod_offsets = { 0 };
 	mesh_desc.surfaces = { ds };
 	mesh_desc.aabbMin = geometry_data.aabb_min;
 	mesh_desc.aabbMax = geometry_data.aabb_max;
@@ -230,14 +235,14 @@ struct ToyMeshManager {
 	return meshes.create(std::move(mesh_desc));
 }
 
-void ToyMeshManager::InitalizeGeoBuffers() {
+void MeshManager::InitalizeGeoBuffers() {
 
 	{
 		uint32_t totalVertexBytes = 512u * 1024u * 1024u;
 		uint32_t totalIndexBytes = 512u * 1024u * 1024u;
 
 		// Create the actual GPU buffers (these are the page's buffers)
-		ToyBufferHandle vb_pos = ctx->CreateBuffer(
+		BufferHandle vb_pos = ctx_.CreateBuffer(
 			{
 			totalVertexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
@@ -245,7 +250,7 @@ void ToyMeshManager::InitalizeGeoBuffers() {
 			}
 		);
 
-		ToyBufferHandle vb_shd = ctx->CreateBuffer(
+		BufferHandle vb_shd = ctx_.CreateBuffer(
 			{
 			totalVertexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
@@ -253,7 +258,7 @@ void ToyMeshManager::InitalizeGeoBuffers() {
 			}
 		);
 
-		ToyBufferHandle ib = ctx->CreateBuffer(
+		BufferHandle ib = ctx_.CreateBuffer(
 			{
 				totalIndexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
@@ -261,14 +266,14 @@ void ToyMeshManager::InitalizeGeoBuffers() {
 			}
 		);
 
-		// Single page.
-		GeometryPage page{};
-		page.vertexPosBuffer = vb_pos;
-		page.vertexShadingBuffer = vb_shd;
-		page.indexBuffer = ib;
+		//// Single page.
+		//GeometryPage page{};
+		//page.vertexPosBuffer = vb_pos;
+		//page.vertexShadingBuffer = vb_shd;
+		//page.indexBuffer = ib;
 
 		// Capacity in vertices must satisfy both streams
-		page.max_vertices = std::min(
+		auto max_vertices = std::min(
 			totalVertexBytes / uint32_t(sizeof(VertexPos)),
 			totalVertexBytes / uint32_t(sizeof(VertexShading))
 		);
@@ -277,21 +282,23 @@ void ToyMeshManager::InitalizeGeoBuffers() {
 		{
 			VmaVirtualBlockCreateInfo ci{};
 			ci.size = totalIndexBytes;
-			VK_CHECK(vmaCreateVirtualBlock(&ci, &page.index_blk));
+			VK_CHECK(vmaCreateVirtualBlock(&ci, &index_blk));
 		}
 
 		// Vertex allocator (VERTEX UNITS!)
 		{
-			VmaVirtualBlockCreateInfo vu{};
-			vu.size = page.max_vertices; // vertices, not bytes
-			VK_CHECK(vmaCreateVirtualBlock(&vu, &page.vertex_units_blk));
+			VmaVirtualBlockCreateInfo vu{
+				.size = max_vertices,
+				.flags = 0
+			};
+			VK_CHECK(vmaCreateVirtualBlock(&vu, &vertex_units_blk));
 		}
 
 		//current_geometry_page = { this->ctx, geometry_pages.create(std::move(page)) };
-		current_geometry_page = geometry_pages.create(std::move(page));
+		//current_geometry_page = geometry_pages.create(std::move(page));
 
 	}
 
 }
 
-void destroy(ToyMeshManager* ctx, MeshHandle handle);
+void destroy(MeshManager* ctx, MeshHandle handle);

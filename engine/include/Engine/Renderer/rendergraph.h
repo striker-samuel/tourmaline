@@ -4,7 +4,10 @@
 #include <Engine/Vulkan/core.h>
 
 struct RenderGraph;
-struct ToyRenderPass;
+struct RenderPass;
+
+
+using namespace SamToy;
 
 using ImageKey = ImageCreateInfo;
 using ImageViewKey = ImageViewCreateInfo;
@@ -30,7 +33,7 @@ struct LogicalBuffer
 	} type;
 	size_t id;
 	BufferKey key;
-	ToyBufferHandle resolvedBufferHandle; // Should be holder?
+	BufferHandle resolvedBufferHandle; // Should be holder?
 };
 
 struct LogicalImageView
@@ -57,12 +60,12 @@ struct LogicalImage {
 
 struct ToyRenderPassContext {
 	//Context& ctx;// maybe nort needed
-	ToyRenderPass& renderpass;
+	RenderPass& renderpass;
 	VkCommandBuffer cmd;
 };
 
 using RecordingFunction = std::function<void(ToyRenderPassContext)>;
-struct ToyRenderPass final {
+struct RenderPass final {
 	RenderGraph& rg_;
 	enum struct PassType { Rasterize, Compute } type_;
 
@@ -78,21 +81,21 @@ struct ToyRenderPass final {
 	// 0 is index. 1...N are vertex
 	std::vector<LogicalBuffer> vertexBuffers_;
 
-	ToyRenderPass& setColor(
-		std::vector<LogicalImageView>& views, // may be better to do views. 
+	RenderPass& setColor(
+		std::vector<LogicalImageView>& m_views_, // may be better to do views. 
 		VkAttachmentLoadOp _loadOp,
 		VkAttachmentStoreOp _storeOp,
 		VkClearValue _clearValue
 	) {
-		this->colorAttachments_.resize(views.size());
-		for (size_t index = 0; index < views.size(); index++)
+		this->colorAttachments_.resize(m_views_.size());
+		for (size_t index = 0; index < m_views_.size(); index++)
 		{
-			this->colorAttachments_[index] = { views[index], _loadOp, _storeOp, _clearValue };
+			this->colorAttachments_[index] = { m_views_[index], _loadOp, _storeOp, _clearValue };
 		}
 		return *this;
 	}
 
-	ToyRenderPass& setDepth(LogicalImageView viewId,
+	RenderPass& setDepth(LogicalImageView viewId,
 		VkAttachmentLoadOp _loadOp,
 		VkAttachmentStoreOp _storeOp,
 		VkClearValue _clearValue
@@ -106,13 +109,13 @@ struct ToyRenderPass final {
 	struct VertexFormatDesc {
 		VkPipelineVertexInputStateCreateInfo vertexDescription{};
 	} vertexFormat_;
-	ToyRenderPass& setVertexFormat(VertexFormatDesc vertexFormat) { this->vertexFormat_ = vertexFormat; return *this; }
-	ToyRenderPass& setVertexBuffers(std::vector<LogicalBuffer> vertexBuffers) { this->vertexBuffers_ = vertexBuffers; return *this; }
+	RenderPass& setVertexFormat(VertexFormatDesc vertexFormat) { this->vertexFormat_ = vertexFormat; return *this; }
+	RenderPass& setVertexBuffers(std::vector<LogicalBuffer> vertexBuffers) { this->vertexBuffers_ = vertexBuffers; return *this; }
 
 	//
-	ToyRenderPass& setRecordingFunc(RecordingFunction recordingFunction) { this->recordingFunction_ = recordingFunction; return *this; };
-	ToyRenderPass& setExtent(VkExtent2D extent) { this->extent_ = extent; return *this; };
-	ToyRenderPass& setOffset(VkOffset2D offset) { this->offset_ = offset; return *this; };
+	RenderPass& setRecordingFunc(RecordingFunction recordingFunction) { this->recordingFunction_ = recordingFunction; return *this; };
+	RenderPass& setExtent(VkExtent2D extent) { this->extent_ = extent; return *this; };
+	RenderPass& setOffset(VkOffset2D offset) { this->offset_ = offset; return *this; };
 	// 
 	RenderGraph& GetRenderGraph() { return this->rg_; };
 
@@ -129,24 +132,24 @@ private:
 
 };
 struct RenderGraph {
-	Context& ctx_;
+	SamToy::Context& ctx_;
 
-	std::vector<ToyRenderPass> passes;
-	void Clear() { 
-		passes.clear(); 
-	}
+	void Clear() { m_passes_.clear(); }
 
-	std::vector<LogicalImage> images;
-	std::vector<LogicalImageView> views;
-	std::vector<LogicalBuffer> buffers;
 
-	// Renderpass boundary is now attachament flush
-	ToyRenderPass& AddPass(ToyRenderPass _renderPass) {
-		return passes.emplace_back(_renderPass);
-	}
+	// Renderpass boundary is now attachemnt flush
+	RenderPass& AddPass(RenderPass _renderPass) { return m_passes_.emplace_back(_renderPass); }
 
-	LogicalImage AddImage() {};
-	LogicalImageView AddImageView() {};
+	LogicalImage AddImage(ImageCreateInfo description) { assert(false); };
+	LogicalImage AddImage(VkImage image) { assert(false); };
+	LogicalImageView AddImageView(ImageViewCreateInfo description);
+	LogicalImageView AddImageView(VkImageView view) {
+		LogicalImageView proxyView{};
+		proxyView.type = LogicalImageView::Type::External;
+		proxyView.id = m_views_.size();
+		proxyView.resolvedImageView = view;
+		m_views_.push_back(proxyView);
+	};
 
 	template<typename DataType>
 	LogicalBuffer AddBuffer(uint32_t count) {
@@ -157,7 +160,7 @@ struct RenderGraph {
 		};
 
 		return LogicalBuffer{
-			.id = buffers.size(),
+			.id = m_buffers_.size(),
 			.type = LogicalBuffer::Type::Transient,
 			.key = key,
 		};
@@ -166,10 +169,10 @@ struct RenderGraph {
 	LogicalImage AddExternalImage(ImageHandle imageHandle) {
 		auto image = ctx_.images_.get(imageHandle);
 		LogicalImage proxy{
-			.id = images.size(),
+			.id = m_images_.size(),
 			.resolvedImage = imageHandle
 		};
-		images.push_back(proxy);
+		m_images_.push_back(proxy);
 		return proxy;
 	}
 	//LogicalImageView AddExternalImageView(ImageViewHandle handle) {
@@ -182,25 +185,25 @@ struct RenderGraph {
 	//	views.push_back(proxy);
 	//	return proxy;
 	//}
-	std::vector<LogicalBuffer> AddExternalBuffers(std::vector<ToyBufferHandle> bufferHandles) {
-		size_t start = buffers.size();
+	std::vector<LogicalBuffer> AddExternalBuffers(std::vector<BufferHandle> bufferHandles) {
+		size_t start = m_buffers_.size();
 
 		for (auto b : bufferHandles) {
 			LogicalBuffer proxy{
-				.id = buffers.size(),
+				.id = m_buffers_.size(),
 				.resolvedBufferHandle = b
 			};
-			buffers.push_back(proxy);
+			m_buffers_.push_back(proxy);
 		}
 
 		return std::vector<LogicalBuffer>(
-			buffers.begin() + start,
-			buffers.end()
+			m_buffers_.begin() + start,
+			m_buffers_.end()
 		);
 	}
 
 	VkPipelineRenderingCreateInfo GetPipelineRenderingInfo(
-		const ToyRenderPass& pass
+		const RenderPass& pass
 	) {
 		std::vector<VkFormat> colorAttachmentFormats;
 		for (auto cattach : pass.colorAttachments_) {
@@ -212,7 +215,8 @@ struct RenderGraph {
 				.pNext = VK_NULL_HANDLE,
 				.colorAttachmentCount = static_cast<uint32_t>(colorAttachmentFormats.size()),
 				.pColorAttachmentFormats = colorAttachmentFormats.data(),
-				.depthAttachmentFormat = pass.depthAttachment_.view.resolvedImageView ? pass.depthAttachment_.view.resolvedFormat : VK_FORMAT_UNDEFINED,
+				//.depthAttachmentFormat = pass.depthAttachment_.view.resolvedImageView ? pass.depthAttachment_.view.resolvedFormat : VK_FORMAT_UNDEFINED,
+				.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT_S8_UINT, // TODO:: Hardcoded for now
 				.stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
 		};
 	};
@@ -228,7 +232,7 @@ struct RenderGraph {
 
 		Resolve();
 
-		for (auto& pass : passes) {
+		for (auto& pass : m_passes_) {
 
 			std::vector<VkRenderingAttachmentInfo> colorInfos;
 			colorInfos.reserve(pass.colorAttachments_.size());
@@ -308,4 +312,10 @@ struct RenderGraph {
 			vkCmdEndRendering(fb.commandBuffer);
 		}
 	}
+
+private:
+	std::vector<RenderPass> m_passes_;
+	std::vector<LogicalImage> m_images_;
+	std::vector<LogicalImageView> m_views_;
+	std::vector<LogicalBuffer> m_buffers_;
 };

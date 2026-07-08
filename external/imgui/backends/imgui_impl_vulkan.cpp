@@ -111,8 +111,8 @@ struct ImGui_ImplVulkan_FrameRenderBuffers;
 struct ImGui_ImplVulkan_WindowRenderBuffers;
 bool ImGui_ImplVulkan_CreateDeviceObjects();
 void ImGui_ImplVulkan_DestroyDeviceObjects();
-void ImGui_ImplVulkan_DestroyFrameRenderBuffers(VkDevice device, ImGui_ImplVulkan_FrameRenderBuffers* buffers, const VkAllocationCallbacks* allocator);
-void ImGui_ImplVulkan_DestroyWindowRenderBuffers(VkDevice device, ImGui_ImplVulkan_WindowRenderBuffers* buffers, const VkAllocationCallbacks* allocator);
+void ImGui_ImplVulkan_DestroyFrameRenderBuffers(VkDevice device, ImGui_ImplVulkan_FrameRenderBuffers* m_buffers_, const VkAllocationCallbacks* allocator);
+void ImGui_ImplVulkan_DestroyWindowRenderBuffers(VkDevice device, ImGui_ImplVulkan_WindowRenderBuffers* m_buffers_, const VkAllocationCallbacks* allocator);
 void ImGui_ImplVulkanH_DestroyFrame(VkDevice device, ImGui_ImplVulkanH_Frame* fd, const VkAllocationCallbacks* allocator);
 void ImGui_ImplVulkanH_DestroyFrameSemaphores(VkDevice device, ImGui_ImplVulkanH_FrameSemaphores* fsd, const VkAllocationCallbacks* allocator);
 void ImGui_ImplVulkanH_CreateWindowSwapChain(VkPhysicalDevice physical_device, VkDevice device, ImGui_ImplVulkanH_Window* wd, const VkAllocationCallbacks* allocator, int w, int h, uint32_t min_image_count);
@@ -1348,23 +1348,23 @@ void ImGui_ImplVulkan_RemoveTexture(VkDescriptorSet descriptor_set)
     vkFreeDescriptorSets(v->Device, pool, 1, &descriptor_set);
 }
 
-void ImGui_ImplVulkan_DestroyFrameRenderBuffers(VkDevice device, ImGui_ImplVulkan_FrameRenderBuffers* buffers, const VkAllocationCallbacks* allocator)
+void ImGui_ImplVulkan_DestroyFrameRenderBuffers(VkDevice device, ImGui_ImplVulkan_FrameRenderBuffers* m_buffers_, const VkAllocationCallbacks* allocator)
 {
-    if (buffers->VertexBuffer) { vkDestroyBuffer(device, buffers->VertexBuffer, allocator); buffers->VertexBuffer = VK_NULL_HANDLE; }
-    if (buffers->VertexBufferMemory) { vkFreeMemory(device, buffers->VertexBufferMemory, allocator); buffers->VertexBufferMemory = VK_NULL_HANDLE; }
-    if (buffers->IndexBuffer) { vkDestroyBuffer(device, buffers->IndexBuffer, allocator); buffers->IndexBuffer = VK_NULL_HANDLE; }
-    if (buffers->IndexBufferMemory) { vkFreeMemory(device, buffers->IndexBufferMemory, allocator); buffers->IndexBufferMemory = VK_NULL_HANDLE; }
-    buffers->VertexBufferSize = 0;
-    buffers->IndexBufferSize = 0;
+    if (m_buffers_->VertexBuffer) { vkDestroyBuffer(device, m_buffers_->VertexBuffer, allocator); m_buffers_->VertexBuffer = VK_NULL_HANDLE; }
+    if (m_buffers_->VertexBufferMemory) { vkFreeMemory(device, m_buffers_->VertexBufferMemory, allocator); m_buffers_->VertexBufferMemory = VK_NULL_HANDLE; }
+    if (m_buffers_->IndexBuffer) { vkDestroyBuffer(device, m_buffers_->IndexBuffer, allocator); m_buffers_->IndexBuffer = VK_NULL_HANDLE; }
+    if (m_buffers_->IndexBufferMemory) { vkFreeMemory(device, m_buffers_->IndexBufferMemory, allocator); m_buffers_->IndexBufferMemory = VK_NULL_HANDLE; }
+    m_buffers_->VertexBufferSize = 0;
+    m_buffers_->IndexBufferSize = 0;
 }
 
-void ImGui_ImplVulkan_DestroyWindowRenderBuffers(VkDevice device, ImGui_ImplVulkan_WindowRenderBuffers* buffers, const VkAllocationCallbacks* allocator)
+void ImGui_ImplVulkan_DestroyWindowRenderBuffers(VkDevice device, ImGui_ImplVulkan_WindowRenderBuffers* m_buffers_, const VkAllocationCallbacks* allocator)
 {
-    for (uint32_t n = 0; n < buffers->Count; n++)
-        ImGui_ImplVulkan_DestroyFrameRenderBuffers(device, &buffers->FrameRenderBuffers[n], allocator);
-    buffers->FrameRenderBuffers.clear();
-    buffers->Index = 0;
-    buffers->Count = 0;
+    for (uint32_t n = 0; n < m_buffers_->Count; n++)
+        ImGui_ImplVulkan_DestroyFrameRenderBuffers(device, &m_buffers_->FrameRenderBuffers[n], allocator);
+    m_buffers_->FrameRenderBuffers.clear();
+    m_buffers_->Index = 0;
+    m_buffers_->Count = 0;
 }
 
 //-------------------------------------------------------------------------

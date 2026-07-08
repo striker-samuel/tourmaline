@@ -1,5 +1,6 @@
 #pragma once
 #include <Engine/App/app.h>
+#include <Engine/Renderer/resource_manager.h>
 
 std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
@@ -50,27 +51,27 @@ static_assert(sizeof(MainViewPushConstants) % 16 == 0);
 
 struct Level : Scene {
 
+	MeshManager* m_meshManagerPimpl = nullptr;
 	BvhTree tree = {};
 	BvhTree static_tree = {};
 	bool tree_done = false;
+	//std::map<uint32_t, MeshHandle> m_meshForNode;
 
+	Level(MeshManager* meshManager) : m_meshManagerPimpl(meshManager) {};
 	~Level() {}
-
 
 	void Upload(
 		std::filesystem::path gltf_model_path
 	) {
-
 		tinygltf::Model model;
 		LoadModelFromAsciiFile(model, gltf_model_path.string().c_str());
 
-		GltfToSceneImporter importer(*man, *this, model, std::move(gltf_model_path));
+		GltfToSceneImporter importer(*m_meshManagerPimpl, *this, model, std::move(gltf_model_path));
 		importer.importNodeRecursive(/*rootNodeIdx*/0, /*parentSceneNode=*/-1, /*level=*/0);
 
 		// This is needed or else scene will not carry transforms effectively
 		markAsChanged(*this, 0);
 		recalculateGlobalTransforms(*this);
-
 	}
 
 };
@@ -88,15 +89,7 @@ class TestApp : public SamToy::VulkanApp {
 public:
 	~TestApp() {};
 private:
-	AppResources resources_;
-	std::unique_ptr<ToyMeshManager> man;
-	Level current_level = {};
-	CameraPositioner_FirstPerson cameraPositioner = CameraPositioner_FirstPerson(
-		glm::vec3(0.0f, 1.0f, 0.0f), //pos
-		glm::vec3(0.0f, 1.0f, 1.0f), //target
-		glm::vec3(0.0f, 1.0f, 0.0f) //up
-	);
-	Camera camera = Camera(cameraPositioner);
+
 	void UpdateCamera(float dt);
 	//
 
@@ -117,80 +110,80 @@ private:
 		if (!Super::Initialize())
 			return false;
 
-		camera.setPerspective(45.0f, float(swapchain->extent_.width) / float(swapchain->extent_.height), default_near_clip, default_far_clip);
+		m_meshManagerPimpl = std::make_unique<MeshManager>(MeshManager(*context));
+		m_camera.setPerspective(45.0f, float(swapchain->extent_.width) / float(swapchain->extent_.height), default_near_clip, default_far_clip);
 		//
 		std::filesystem::path p(gltf_meshes_paths[0]);
 		//
-		man = std::make_unique<ToyMeshManager>(ToyMeshManager(*context));
-		current_level.man = &man;
-		current_level.Upload(p);
-		current_level.static_tree = treeFromScene(current_level,
-			[&](uint32_t index) -> const Mesh& {return this->man.meshes.objects_[index].obj_; }
+		m_currentLevel.m_meshManagerPimpl = m_meshManagerPimpl.get();
+		m_currentLevel.Upload(p);
+		m_currentLevel.static_tree = treeFromScene(m_currentLevel,
+			[&](uint32_t index) -> const Mesh& {return this->m_meshManagerPimpl->meshes.objects_[index].obj_; }
 		);
-		current_level.tree_done = true;
+		m_currentLevel.tree_done = true;
 		// 
 		auto rg = rendergraph.get();
-		resources_.frameUniformsBuffer = rg->AddBuffer<FrameUniforms>(1); //frames in flight ring access? how to semantically say that this should be inifr
-		resources_.drawDataBuffer = rg->AddBuffer<DrawSetData>(MAX_DRAWS); // this is storage
+		m_resources.frameUniformsBuffer = rg->AddBuffer<FrameUniforms>(1); //frames in flight ring access? how to semantically say that this should be inifr
+		m_resources.drawDataBuffer = rg->AddBuffer<DrawSetData>(MAX_DRAWS); // this is storage
 		//
 		return true;
 	};
 
 	void UpdateBindlessTexturesSets() {
 
-		const uint32_t materialCount = static_cast<uint32_t>(man.materials.numObjects());
+		//const uint32_t materialCount = static_cast<uint32_t>(m_meshManagerPimpl.materials.numObjects());
 
-		std::vector<VkDescriptorImageInfo> imageInfos;
-		std::vector<VkDescriptorImageInfo> samplerInfos;
+		//std::vector<VkDescriptorImageInfo> imageInfos;
+		//std::vector<VkDescriptorImageInfo> samplerInfos;
 
-		int count = (textures_.numObjects());
-		imageInfos.reserve(count);
-		samplerInfos.reserve(count);
-		//textures_.forEach([&](Image obj_)
-		for (auto textureHandle : textures_)
-		{
-			auto obj_ = context->images_.get(textureHandle);
-			VkDescriptorImageInfo ii{};
-			ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-			ii.imageView = obj_->sampleView;
-			ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			imageInfos.push_back(ii);
+		//int count = (textures_.numObjects());
+		//imageInfos.reserve(count);
+		//samplerInfos.reserve(count);
+		////textures_.forEach([&](Image obj_)
+		//for (auto textureHandle : textures_)
+		//{
+		//	auto obj_ = context->images_.get(textureHandle);
+		//	VkDescriptorImageInfo ii{};
+		//	ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
+		//	ii.imageView = obj_->sampleView;
+		//	ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		//	imageInfos.push_back(ii);
 
-			// Sampler for the bindless texure approach needs refacotr.
-			// Doesnt Really make sense.
-			VkDescriptorImageInfo si{};
-			si.sampler = obj_->sampler;
-			si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
-			si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
-			samplerInfos.push_back(si);
-		}
-			);
+		//	// Sampler for the bindless texure approach needs refacotr.
+		//	// Doesnt Really make sense.
+		//	VkDescriptorImageInfo si{};
+		//	si.sampler = obj_->sampler;
+		//	si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
+		//	si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
+		//	samplerInfos.push_back(si);
+		//}
+		//	);
 
-			for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; frameIndex++) {
-				//// --- Two writes: images at index 2, samplers at index 3 ---
-				VkWriteDescriptorSet writes[2]{};
+		//	for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; frameIndex++) {
+		//		//// --- Two writes: images at index 2, samplers at index 3 ---
+		//		VkWriteDescriptorSet writes[2]{};
 
-				auto setHandle = perFrameData[frameIndex].frameDescriptorSet;
-				auto set = context->descriptorSets_.get(setHandle);
+		//		auto setHandle = perFrameData[frameIndex].frameDescriptorSet;
+		//		auto set = context->descriptorSets_.get(setHandle);
 
-				writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-				writes[0].dstSet = set->set;
-				writes[0].dstBinding = 2;
-				writes[0].dstArrayElement = 0;
-				writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-				writes[0].descriptorCount = imageInfos.size();
-				writes[0].pImageInfo = imageInfos.data();
+		//		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		//		writes[0].dstSet = set->set;
+		//		writes[0].dstBinding = 2;
+		//		writes[0].dstArrayElement = 0;
+		//		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		//		writes[0].descriptorCount = imageInfos.size();
+		//		writes[0].pImageInfo = imageInfos.data();
 
-				writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-				writes[1].dstSet = set->set;
-				writes[1].dstBinding = 3;
-				writes[1].dstArrayElement = 0;
-				writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-				writes[1].descriptorCount = static_cast<uint32_t>(samplerInfos.size());   // or 1 if you use a single shared sampler
-				writes[1].pImageInfo = samplerInfos.data();
+		//		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		//		writes[1].dstSet = set->set;
+		//		writes[1].dstBinding = 3;
+		//		writes[1].dstArrayElement = 0;
+		//		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+		//		writes[1].descriptorCount = static_cast<uint32_t>(samplerInfos.size());   // or 1 if you use a single shared sampler
+		//		writes[1].pImageInfo = samplerInfos.data();
 
-				vkUpdateDescriptorSets(core.device_, 2, writes, 0, nullptr);
-			}
+		//		vkUpdateDescriptorSets(core.device_, 2, writes, 0, nullptr);
+		//	}
 
 	}
 
@@ -200,14 +193,14 @@ private:
 		int width_ = swapchain->GetExtent().width;
 		int height_ = swapchain->GetExtent().height;
 
-		auto view = camera.getViewMatrix();
-		auto proj = camera.getProjMatrix();
+		auto view = m_camera.getViewMatrix();
+		auto proj = m_camera.getProjMatrix();
 		proj[1][1] *= -1;
 
 		auto viewProj = proj * view;
 
 		FrameUniforms data{};
-		data.cameraPos = cameraPositioner.cameraPosition_;
+		data.cameraPos = m_cameraPositioner.cameraPosition_;
 
 		data.view = view;
 		data.proj = proj;
@@ -228,13 +221,13 @@ private:
 
 		// reowrk this
 		context->UploadDataToBuffer(
-			resources_.frameUniformsBuffer.resolvedBufferHandle,
+			m_resources.frameUniformsBuffer.resolvedBufferHandle,
 			&data,
 			sizeof(FrameUniforms)/* * 1*/,
 			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 			VK_ACCESS_SHADER_READ_BIT,
 			0,
-			currentFrame * resources_.frameUniformsBuffer.key.elementSize * resources_.frameUniformsBuffer.key.elementCount // dynamicOffsetPerFrame
+			currentFrame * m_resources.frameUniformsBuffer.key.elementSize * m_resources.frameUniformsBuffer.key.elementCount // dynamicOffsetPerFrame
 		);
 		return data;
 
@@ -257,14 +250,15 @@ private:
 		auto color = rendergraph->AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
 		auto depthView = context->images_.get(fb.swapchain.depthImage_)->renderView;
 		auto depthViewId = rendergraph->AddImageView(depthView);
-		auto vertexBuffers = rendergraph->AddBuffers(man.GetVertexBuffers());
 
-		std::vector<VirtualImageViewId> colors;
+		auto vertexBuffers = rendergraph->AddExternalBuffers(m_meshManagerPimpl.GetVertexBuffers());
+
+		std::vector<LogicalImage> colors;
 		colors.push_back(color);
 
 		auto mainPass = rendergraph->AddPass(
 			{
-				.rg_ = *rendergraph, // dont like how this is done
+				//.rg_ = *rendergraph, // dont like how this is done
 				//.type = ToyRenderPass::PassType::Rasterize,
 			}
 			)
@@ -286,12 +280,12 @@ private:
 			auto frameData = UpdateFrameUniforms(fb.swapchain.GetCurrentFrameIndex());
 
 			std::vector<int> visible;
-			if (current_level.tree_done) {
+			if (m_currentLevel.tree_done) {
 				frustumCullBVH(
-					current_level.static_tree,
+					m_currentLevel.static_tree,
 					0,
 					frameData.viewProj,
-					camera.getPosition(),
+					m_camera.getPosition(),
 					visible
 				);
 			}
@@ -303,16 +297,16 @@ private:
 			std::unordered_map<VkPipeline, std::vector<int>> pipeline_map;
 
 			for (uint32_t primSlot : visible) {
-				if (primSlot >= current_level.static_tree.primToNode.size()) continue;
+				if (primSlot >= m_currentLevel.static_tree.primToNode.size()) continue;
 
-				uint32_t node = current_level.static_tree.primToNode[primSlot];
+				uint32_t node = m_currentLevel.static_tree.primToNode[primSlot];
 
-				auto it = current_level.materialForNode.find(node);
-				if (it == current_level.materialForNode.end()) continue;
+				auto it = m_currentLevel.materialForNode.find(node);
+				if (it == m_currentLevel.materialForNode.end()) continue;
 
 				uint32_t materialIndex = it->second;
-				auto matHandle = man.materials.getHandle(materialIndex);
-				auto mat = man.materials.get(matHandle);
+				auto matHandle = m_meshManagerPimpl.materials.getHandle(materialIndex);
+				auto mat = m_meshManagerPimpl.materials.get(matHandle);
 				if (!mat) continue;
 
 				// crude hack
@@ -359,22 +353,22 @@ private:
 				//);
 
 				for (uint32_t visible_prim : visible) {
-					uint32_t visible_node = current_level.static_tree.primToNode[visible_prim];
+					uint32_t visible_node = m_currentLevel.static_tree.primToNode[visible_prim];
 
-					auto it = current_level.meshForNode.find(visible_node);
-					if (it == current_level.meshForNode.end()) continue;
+					auto it = m_currentLevel.meshForNode.find(visible_node);
+					if (it == m_currentLevel.meshForNode.end()) continue;
 
 					uint32_t meshIndex = it->second;
 
-					auto mesh_desc = man.meshes.get(
-						man.meshes.getHandle(meshIndex)
+					auto mesh_desc = m_meshManagerPimpl.meshes.get(
+						m_meshManagerPimpl.meshes.getHandle(meshIndex)
 					);
 
-					auto material_instance_index = current_level.materialForNode[visible_node];
+					auto material_instance_index = m_currentLevel.materialForNode[visible_node];
 					pc.material_index = material_instance_index;
 
-					auto matHandle = man.materials.getHandle(material_instance_index);
-					auto mat = man.materials.get(matHandle);
+					auto matHandle = m_meshManagerPimpl.materials.getHandle(material_instance_index);
+					auto mat = m_meshManagerPimpl.materials.get(matHandle);
 
 					assert(mat);
 
@@ -397,7 +391,7 @@ private:
 
 					for (auto& draw_set : mesh_desc->surfaces) {
 
-						auto& model_ = current_level.globalTransform[visible_node];
+						auto& model_ = m_currentLevel.globalTransform[visible_node];
 						vkCmdPushConstants(
 							fb.commandBuffer,
 							pipe_lyt.layout,
@@ -440,11 +434,24 @@ private:
 
 	}
 
+
+private:
+	AppResources m_resources;
+	Level m_currentLevel;
+	std::unique_ptr<MeshManager> m_meshManagerPimpl;
+	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
+		glm::vec3(0.0f, 1.0f, 0.0f), //pos
+		glm::vec3(0.0f, 1.0f, 1.0f), //target
+		glm::vec3(0.0f, 1.0f, 0.0f) //up
+	);
+	Camera m_camera = Camera(m_cameraPositioner);
+
+
 };
 
 void TestApp::UpdateCamera(float dt)
 {
-	auto& movement = cameraPositioner.movement_;
+	auto& movement = m_cameraPositioner.movement_;
 
 	movement.forward_ = input.isKeyHeld(GLFW_KEY_W);
 	movement.backward_ = input.isKeyHeld(GLFW_KEY_S);
@@ -478,10 +485,10 @@ void TestApp::UpdateCamera(float dt)
 
 	if (input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT))
 	{
-		cameraPositioner.resetMousePosition(mousePos);
+		m_cameraPositioner.resetMousePosition(mousePos);
 	}
 
-	cameraPositioner.update(
+	m_cameraPositioner.update(
 		static_cast<double>(dt),
 		mousePos,
 		mousePressed

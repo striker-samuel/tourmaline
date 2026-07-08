@@ -9,7 +9,6 @@
 #include <optional>
 #include <vector>
 #include <set>
-#include <future>
 //
 #include "vk_mem_alloc.h"
 //
@@ -18,8 +17,8 @@
 #include "Engine/Shared/common.h"
 #include <Engine/Memory/pool.h>
 //
-#include <ktx.h>
-#include <ktxvulkan.h>
+//#include <ktx.h>
+//#include <ktxvulkan.h>
 //
 #define APPLICATION_NAME "Sam2025Vulkan_one_three"
 #define ENGINE_NAME "SamEngine"
@@ -485,8 +484,8 @@ namespace SamToy {
 					.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, //yes, just primary
 					.commandBufferCount = kMax,
 			};
-			VkCommandBuffer buffers[kMax];
-			VK_CHECK(vkAllocateCommandBuffers(core_.device_, &info, buffers));
+			VkCommandBuffer m_buffers_[kMax];
+			VK_CHECK(vkAllocateCommandBuffers(core_.device_, &info, m_buffers_));
 
 			VkSemaphoreTypeCreateInfo semaphoreTypeInfo{};
 			semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
@@ -495,7 +494,7 @@ namespace SamToy {
 			semaphoreTypeInfo.initialValue = 0; // starting counter value
 
 			for (int i = 0; i < kMax; i++) {
-				commandBuffers_[i].allocatedCmd_ = buffers[i];
+				commandBuffers_[i].allocatedCmd_ = m_buffers_[i];
 				commandBuffers_[i].wrapper_.isEncoding_ = false;
 				//core_.CreateFence(VkFenceCreateInfo{ .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = 0 }, commandBuffers_[i].wrapper_.fence_);
 				core_.CreateSemaphore(VkSemaphoreCreateInfo
@@ -516,7 +515,7 @@ namespace SamToy {
 			// Conservative. You can remove this if the owner guarantees GPU work is complete.
 			vkDeviceWaitIdle(core_.device_);
 
-			VkCommandBuffer buffers[kMax]{};
+			VkCommandBuffer m_buffers_[kMax]{};
 
 			for (uint32_t i = 0; i < kMax; ++i) {
 				auto& wrapper = commandBuffers_[i].wrapper_;
@@ -532,14 +531,14 @@ namespace SamToy {
 					wrapper.finishedSignalSemaphore.semaphore_ = VK_NULL_HANDLE;
 				}
 
-				buffers[i] = commandBuffers_[i].allocatedCmd_;
+				m_buffers_[i] = commandBuffers_[i].allocatedCmd_;
 				commandBuffers_[i].allocatedCmd_ = VK_NULL_HANDLE;
 				wrapper.isEncoding_ = false;
 			}
 
 			VkCommandPool pool = core_.GetCommandPool(queue_);
 			if (pool != VK_NULL_HANDLE) {
-				vkFreeCommandBuffers(core_.device_, pool, kMax, buffers);
+				vkFreeCommandBuffers(core_.device_, pool, kMax, m_buffers_);
 			}
 		}
 
@@ -730,7 +729,7 @@ namespace SamToy {
 	// 
 	using ImageHandle = Handle<struct Image>; // Attachments
 	using PipelineHandle = Handle<struct Pipeline>;
-	using ToyBufferHandle = Handle<struct Buffer>;
+	using BufferHandle = Handle<struct Buffer>;
 	using SamplerHandle = Handle<struct Sampler>;
 	using ShaderModuleHandle = Handle<struct ShaderModule>;
 	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
@@ -864,9 +863,7 @@ namespace SamToy {
 	// 4.6gb is good amount to reserver for 8gb vram system
 	// 2gb for Windows is good practice. And a little headroom for aux apps
 	struct Context {
-		VulkanCore& core;
-		// 
-		ktxVulkanDeviceInfo ktxInfo_;
+		//ktxVulkanDeviceInfo ktxInfo_;
 
 		int Initialize();
 		Context(VulkanCore& _core) : core(_core) { Initialize(); };
@@ -877,22 +874,20 @@ namespace SamToy {
 		Context(Context&&) = delete;
 		Context& operator=(Context&&) = delete;
 
-//
-
-		void AddDeferredTask(std::packaged_task<void()>&& task,  CommandSubmitHandle handle = CommandSubmitHandle{});
+		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
 		void ProcessDeferrredTasks(); //void Flush();
 
 		//
-		Holder<ToyBufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
-		Holder<ToyBufferHandle> CreateStagingBuffer(VkDeviceSize size);
+		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
+		Holder<BufferHandle> CreateStagingBuffer(VkDeviceSize size);
 		//
 		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
 		Holder<DescriptorPoolHandle> CreateDescriptorPool(); // just hardcoded defaults for pool. 
 		Holder<DescriptorSetHandle> CreateDescriptorSet(DescriptorPoolHandle pool, VkDescriptorSetLayout& layout);
 		//
-		void UploadDataToBuffer(ToyBufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
-		void UploadDataToBuffer(ToyBufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset, size_t dest_offset);
+		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
+		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset, size_t dest_offset);
 		void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 		void TransitionImageLayout(ImageHandle image_handle, VkImageLayout oldLayout, VkImageLayout newLayout);
 		//
@@ -900,26 +895,28 @@ namespace SamToy {
 		//
 		void CleanUp();
 		//
-		void GetKtxDeviceInfo() {
-			ktxInfo_ = *ktxVulkanDeviceInfo_Create(
-				core.physicalDevice_,
-				core.device_,
-				/*core.GetTransferQueue()*/ VK_NULL_HANDLE,
-				// this maybe should be transfer queue. we only use ktx to upload tex.
-				// no blitting for mipmaps, which are generated offline
-				// runtime genreation for mipmaps in ktx seems to be not up to par with SOA
-				core.defaultCommandPool_,
-				NULL
-			);
-		}
+		//void GetKtxDeviceInfo() {
+		//	ktxInfo_ = *ktxVulkanDeviceInfo_Create(
+		//		core.physicalDevice_,
+		//		core.device_,
+		//		/*core.GetTransferQueue()*/ VK_NULL_HANDLE,
+		//		// this maybe should be transfer queue. we only use ktx to upload tex.
+		//		// no blitting for mipmaps, which are generated offline
+		//		// runtime genreation for mipmaps in ktx seems to be not up to par with SOA
+		//		core.defaultCommandPool_,
+		//		NULL
+		//	);
+		//}
 
-		//private:
+
+	//private:
 		Pool<Image, Image> images_;
 		Pool<Buffer, Buffer> buffers_;
 		Pool<Sampler, VkSampler> samplers_;
 		Pool<ShaderModule, VkShaderModule> shaderModules_;
 		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_;
 		//
+		VulkanCore& core;
 		VmaAllocator m_allocator_;
 		VmaPool m_imagesPool;
 		VmaPool m_stagingPool;
@@ -930,7 +927,7 @@ namespace SamToy {
 	};
 
 	void destroy(Context* ctx, ImageHandle handle);
-	void destroy(Context* ctx, ToyBufferHandle handle);
+	void destroy(Context* ctx, BufferHandle handle);
 	void destroy(Context* ctx, ShaderModuleHandle handle);
 	void destroy(Context* ctx, DescriptorPoolHandle handle);
 

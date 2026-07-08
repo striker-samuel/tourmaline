@@ -19,7 +19,7 @@
 
 #include <Engine/Vulkan/core.h>
 #include <Engine/Renderer/vertex.h>
-#include <Engine/Renderer/ToyResourceManager.h> // woudl be better to get rid of this
+#include <Engine/Renderer/resource_manager.h> // woudl be better to get rid of this
 
 #define DEFAULT_MATERIAL_INDEX 0;
 
@@ -91,7 +91,7 @@ static inline const uint8_t* gltfPtr(const tinygltf::Model& m,
 	size_t index)
 {
 	const auto& bv = m.bufferViews[a.bufferView];
-	const auto& buf = m.buffers[bv.buffer];
+	const auto& buf = m.m_buffers_[bv.buffer];
 	size_t elemSize = gltfElementSize(a);
 	size_t stride = bv.byteStride ? bv.byteStride : elemSize;
 
@@ -162,7 +162,7 @@ std::filesystem::path UriFromTexture(
 	const tinygltf::Model& model,
 	GltfTextureRef& texture_ref
 ) {
-	const tinygltf::Image& img = model.images[texture_ref.imageIndex];
+	const tinygltf::Image& img = model.m_images_[texture_ref.imageIndex];
 
 	// Case 1: External image via URI
 	if (!img.uri.empty() && !starts_with(img.uri, "data:")) {
@@ -191,7 +191,7 @@ static std::optional<GltfTextureRef> GltfResolveTexture(
 	out.textureIndex = texInfo.index;
 	out.texCoord = texInfo.texCoord;
 
-	if (tex.source >= 0 && tex.source < (int)model.images.size())
+	if (tex.source >= 0 && tex.source < (int)model.m_images_.size())
 		out.imageIndex = tex.source;
 	if (tex.sampler >= 0 && tex.sampler < (int)model.samplers.size())
 		out.samplerIndex = tex.sampler;
@@ -211,7 +211,7 @@ static std::optional<GltfTextureRef> GtlfResolveNormalTexture(
 	out.texCoord = nrm.texCoord;
 	out.scaleOrStrength = (float)nrm.scale;
 
-	if (tex.source >= 0 && tex.source < (int)model.images.size())
+	if (tex.source >= 0 && tex.source < (int)model.m_images_.size())
 		out.imageIndex = tex.source;
 	if (tex.sampler >= 0 && tex.sampler < (int)model.samplers.size())
 		out.samplerIndex = tex.sampler;
@@ -230,7 +230,7 @@ static std::optional<GltfTextureRef> GLtfResolveOcclusionTexture(
 	out.texCoord = occ.texCoord;
 	out.scaleOrStrength = (float)occ.strength;
 
-	if (tex.source >= 0 && tex.source < (int)model.images.size())
+	if (tex.source >= 0 && tex.source < (int)model.m_images_.size())
 		out.imageIndex = tex.source;
 	if (tex.sampler >= 0 && tex.sampler < (int)model.samplers.size())
 		out.samplerIndex = tex.sampler;
@@ -246,11 +246,11 @@ static AlphaMode ParseAlphaMode(const std::string& s) {
 }
 
 
-MeshUploadInput SurfaceDataFromGltfPrimitive(
+Mesh::DataUpload SurfaceDataFromGltfPrimitive(
 	const tinygltf::Model& model,
 	const tinygltf::Primitive& primitive
 ) {
-	MeshUploadInput data;
+	Mesh::DataUpload data;
 
 	// AABB. for culling	
 	{
@@ -435,27 +435,30 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 
 struct GltfToSceneImporter {
 	Scene& scene;
+	MeshManager* manager_ = nullptr;
 	const tinygltf::Model& model;
 	std::filesystem::path gltfModelPath; // full path to .gltf/.glb on disk
 	static constexpr uint32_t kInvalidMat = 0xFFFFFFFFu;
 	std::vector<uint32_t> materialCache;
-	std::function<uint32_t(MeshUploadInput& data)> createMeshCallback_;
-	std::function<uint32_t()> createMaterialCallback_;
+	//std::function<uint32_t(MeshUploadInput& data)> createMeshCallback_;
+	//std::function<uint32_t()> createMaterialCallback_;
 
-	GltfToSceneImporter(
-		ToyMeshManager& inMan,
-		Scene& inScene,
-		const tinygltf::Model& inModel,
-		std::filesystem::path inGltfModelPath,
-		std::function<uint32_t()> createMeshCallback,
-		std::function<uint32_t()> createMaterialCallback
+	GltfToSceneImporter
+	(
+		MeshManager& inMan
+		, Scene& inScene
+		, const tinygltf::Model& inModel
+		, std::filesystem::path inGltfModelPath
+		//,std::function<uint32_t()> createMeshCallback
+		//,std::function<uint32_t()> createMaterialCallback
 	)
 		: scene(inScene)
 		, model(inModel)
 		, gltfModelPath(std::move(inGltfModelPath))
 		, materialCache(inModel.materials.size(), kInvalidMat)
-		, createMeshCallback_(createMeshCallback)
-		, createMaterialCallback_(createMaterialCallback)
+		, manager_(&inMan)
+		//, createMeshCallback_(createMeshCallback)
+		//, createMaterialCallback_(createMaterialCallback)
 	{}
 
 	uint32_t getOrCreateMaterial(int gltfMaterialIndex) {
@@ -499,11 +502,11 @@ struct GltfToSceneImporter {
 			}
 
 			// awful
-			colorTexHandle = man.ctx->GetOrCreateTexure(color_uri.string(), *ktxTex);
+			colorTexHandle = m_meshManagerPimpl.ctx->GetOrCreateTexure(color_uri.string(), *ktxTex);
 			ktxTexture2_Destroy(ktxTex);
 		}
 
-		return man.CreateMaterial(
+		return m_meshManagerPimpl.CreateMaterial(
 			{
 				.diffuse = colorTexHandle
 			}

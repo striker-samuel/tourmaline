@@ -50,7 +50,6 @@ public:
 		proj_ = MakeInfReversedZProjRH(fovY, aspect, zNear);
 	}
 
-
 private:
 	const CameraPositionerInterface* positioner_;
 	glm::mat4 proj_;
