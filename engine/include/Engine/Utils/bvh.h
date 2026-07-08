@@ -7,8 +7,8 @@
 #include <algorithm>
 #include <cstdint>
 
-#include <Engine/Renderer/context.h>
 #include <Engine/Scene/scene.h>
+#include <Engine/Vulkan/core.h>
 
 // Dont like this. jsut used for bounds.
 // maybe a fucntiopmn arg works better

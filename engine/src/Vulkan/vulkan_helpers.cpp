@@ -30,8 +30,7 @@ const char* vkResultToString(VkResult result) {
 	}
 }
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL
-debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 	VkDebugUtilsMessageTypeFlagsEXT messageType,
 	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
 	void* pUserData) {
@@ -89,10 +88,6 @@ VkFormat findSupportedFormat(
 	throw std::runtime_error("failed to find supported format!");
 }
 
-bool hasStencilComponent(VkFormat format) {
-	return format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
-		format == VK_FORMAT_D24_UNORM_S8_UINT;
-}
 
 // I should implement promotion other ways. Shadows may run other depthfmt also.
 // Maybe should be const. just checked for availability at device, error out if not found.
@@ -107,42 +102,8 @@ VkFormat findDepthFormat(
 			VK_FORMAT_D24_UNORM_S8_UINT
 		},
 		VK_IMAGE_TILING_OPTIMAL,
-		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-}
-
-uint32_t findMemoryType(
-	VkPhysicalDevice physicalDevice,
-	uint32_t typeFilter,
-	VkMemoryPropertyFlags properties
-) {
-	VkPhysicalDeviceMemoryProperties memProperties;
-	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
-
-	for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-		if ((typeFilter & (1 << i)) &&
-			(memProperties.memoryTypes[i].propertyFlags & properties) ==
-			properties) {
-			return i;
-		}
-	}
-
-	throw std::runtime_error("failed to find suitable memory type!");
-}
-
-VkShaderModule createDeviceShaderModule(VkDevice device, const std::vector<char>& code) {
-	VkShaderModuleCreateInfo createInfo{};
-	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-	createInfo.codeSize = code.size();
-
-	createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
-
-	VkShaderModule shaderModule;
-	if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) !=
-		VK_SUCCESS) {
-		throw std::runtime_error("failed to create shader module!");
-	}
-
-	return shaderModule;
+		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+	);
 }
 
 SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
@@ -264,7 +225,7 @@ QueueFamilyIndices findQueueFamilies(
 
 	return indices;
 }
-bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
+bool checkDeviceExtensionSupport(VkPhysicalDevice device, const std::vector<const char*> deviceExtensions) {
 	uint32_t extensionCount;
 	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
 		nullptr);
@@ -273,9 +234,7 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
 	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
 		availableExtensions.data());
 
-	std::set<std::string> requiredExtensions(deviceExtensions.begin(),
-		deviceExtensions.end());
-
+	std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
 	for (const auto& extension : availableExtensions) {
 		requiredExtensions.erase(extension.extensionName);
 	}
@@ -283,10 +242,10 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
 	return requiredExtensions.empty();
 }
 
-bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface) {
+bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface, const std::vector<const char*> deviceExtensions) {
 	QueueFamilyIndices indices = findQueueFamilies(device, surface);
 
-	bool extensionsSupported = checkDeviceExtensionSupport(device);
+	bool extensionsSupported = checkDeviceExtensionSupport(device, deviceExtensions);
 
 	bool swapChainAdequate = false;
 	if (extensionsSupported) {
@@ -345,7 +304,7 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwi
 	}
 }
 
-std::vector<const char*> getRequiredExtensions() {
+std::vector<const char*> getRequiredExtensionsForGlfw() {
 	uint32_t glfwExtensionCount = 0;
 	const char** glfwExtensions;
 	glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
@@ -359,67 +318,3 @@ std::vector<const char*> getRequiredExtensions() {
 
 	return extensions;
 }
-
-void populateDebugMessengerCreateInfo(
-	VkDebugUtilsMessengerCreateInfoEXT& createInfo
-) {
-	createInfo = {};
-	createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-	createInfo.messageSeverity =
-		//VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-		VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-		VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-	createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-		VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-		VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-	createInfo.pfnUserCallback = debugCallback;
-}
-//
-//VkCommandBuffer beginSingleTimeCommands(
-//	VkDevice device,
-//	VkCommandPool commandPool) {
-//	VkCommandBufferAllocateInfo allocInfo{};
-//	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-//	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-//	allocInfo.commandPool = commandPool;
-//	allocInfo.commandBufferCount = 1;
-//
-//	VkCommandBuffer commandBuffer;
-//	vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
-//
-//	VkCommandBufferBeginInfo beginInfo{};
-//	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-//	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-//
-//	vkBeginCommandBuffer(commandBuffer, &beginInfo);
-//
-//	return commandBuffer;
-//}
-//
-//void endSingleTimeCommands(VkDevice device, VkCommandBuffer commandBuffer, VkQueue queue, VkCommandPool commandPool) {
-//	vkEndCommandBuffer(commandBuffer);
-//
-//	VkSubmitInfo submitInfo{};
-//	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-//	submitInfo.commandBufferCount = 1;
-//	submitInfo.pCommandBuffers = &commandBuffer;
-//
-//	vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
-//	vkQueueWaitIdle(queue);
-//
-//	vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-//}
-
-//static bool supports(VkPhysicalDevice pd, VkFormat fmt, VkFormatFeatureFlags feats) {
-//	VkFormatProperties p{}; vkGetPhysicalDeviceFormatProperties(pd, fmt, &p);
-//	return (p.optimalTilingFeatures & feats) == feats;
-//}
-//
-//static ktx_transcode_fmt_e pickTarget(VkPhysicalDevice pd) {
-//	const auto need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT; // what upload ultimately needs
-//	if (supports(pd, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, need)) return KTX_TTF_ASTC_4x4_RGBA;
-//	if (supports(pd, VK_FORMAT_BC7_UNORM_BLOCK, need)) return KTX_TTF_BC7_RGBA;
-//	if (supports(pd, VK_FORMAT_BC3_UNORM_BLOCK, need)) return KTX_TTF_BC3_RGBA;
-//	return KTX_TTF_RGBA32; // uncompressed fallback (always works)
-//}
-

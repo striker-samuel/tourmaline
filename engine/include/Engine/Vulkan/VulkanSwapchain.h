@@ -7,7 +7,7 @@
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
 
-#include <Engine/Renderer/context.h>
+#include <Engine/Vulkan/core.h>
 
 class VulkanSwapchain {
 
