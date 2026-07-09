@@ -65,18 +65,14 @@ struct Level : Scene {
 	) {
 		tinygltf::Model model;
 		LoadModelFromAsciiFile(model, gltf_model_path.string().c_str());
-
 		GltfToSceneImporter importer(*m_meshManagerPimpl, *this, model, std::move(gltf_model_path));
 		importer.importNodeRecursive(/*rootNodeIdx*/0, /*parentSceneNode=*/-1, /*level=*/0);
-
 		// This is needed or else scene will not carry transforms effectively
 		markAsChanged(*this, 0);
 		recalculateGlobalTransforms(*this);
 	}
 
 };
-
-
 
 struct AppResources {
 	LogicalBuffer frameUniformsBuffer{};
@@ -87,6 +83,7 @@ struct AppResources {
 class TestApp : public SamToy::VulkanApp {
 	using Super = SamToy::VulkanApp;
 public:
+	TestApp() { Initialize(); };
 	~TestApp() {};
 private:
 
@@ -110,8 +107,8 @@ private:
 		if (!Super::Initialize())
 			return false;
 
-		m_meshManagerPimpl = std::make_unique<MeshManager>(MeshManager(*context));
-		m_camera.setPerspective(45.0f, float(swapchain->extent_.width) / float(swapchain->extent_.height), default_near_clip, default_far_clip);
+		m_meshManagerPimpl = std::make_unique<MeshManager>(MeshManager(*m_context));
+		m_camera.setPerspective(45.0f, float(m_swapchain->extent_.width) / float(m_swapchain->extent_.height), default_near_clip, default_far_clip);
 		//
 		std::filesystem::path p(gltf_meshes_paths[0]);
 		//
@@ -122,7 +119,7 @@ private:
 		);
 		m_currentLevel.tree_done = true;
 		// 
-		auto rg = rendergraph.get();
+		auto rg = m_rendergraph.get();
 		m_resources.frameUniformsBuffer = rg->AddBuffer<FrameUniforms>(1); //frames in flight ring access? how to semantically say that this should be inifr
 		m_resources.drawDataBuffer = rg->AddBuffer<DrawSetData>(MAX_DRAWS); // this is storage
 		//
@@ -244,22 +241,21 @@ private:
 
 	void RenderFrame(ToyFrameBuffer fb) {
 
+		auto frameData = UpdateFrameUniforms(fb.swapchain.GetCurrentFrameIndex());
 		//ImGuiScopedFrame uiFrame;
-		rendergraph->Clear();
+		m_rendergraph->Clear();
 
-		auto color = rendergraph->AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
-		auto depthView = context->images_.get(fb.swapchain.depthImage_)->renderView;
-		auto depthViewId = rendergraph->AddImageView(depthView);
+		auto color = m_rendergraph->AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
+		auto depthView = m_context->images_.get(fb.swapchain.depthImage_)->renderView;
+		auto depthViewId = m_rendergraph->AddImageView(depthView);
 
-		auto vertexBuffers = rendergraph->AddExternalBuffers(m_meshManagerPimpl.GetVertexBuffers());
-
-		std::vector<LogicalImage> colors;
+		auto vertexBuffers = m_rendergraph->AddExternalBuffers(m_meshManagerPimpl.GetVertexBuffers());
+		std::vector<LogicalImageView> colors;
 		colors.push_back(color);
 
-		auto mainPass = rendergraph->AddPass(
+		auto mainPass = m_rendergraph->AddPass(
 			{
-				//.rg_ = *rendergraph, // dont like how this is done
-				//.type = ToyRenderPass::PassType::Rasterize,
+				.rg_ = *m_rendergraph, // dont like how this is done
 			}
 			)
 			.setOffset({ 0,0 })
@@ -276,8 +272,6 @@ private:
 			auto dynamic_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDynamicDescriptorSet);
 			auto update_after_bind_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDescriptorSet);
 
-			// dont really like this fb passign.
-			auto frameData = UpdateFrameUniforms(fb.swapchain.GetCurrentFrameIndex());
 
 			std::vector<int> visible;
 			if (m_currentLevel.tree_done) {
@@ -295,7 +289,6 @@ private:
 
 			// VISIBLE PIPELINES
 			std::unordered_map<VkPipeline, std::vector<int>> pipeline_map;
-
 			for (uint32_t primSlot : visible) {
 				if (primSlot >= m_currentLevel.static_tree.primToNode.size()) continue;
 
@@ -305,16 +298,10 @@ private:
 				if (it == m_currentLevel.materialForNode.end()) continue;
 
 				uint32_t materialIndex = it->second;
-				auto matHandle = m_meshManagerPimpl.materials.getHandle(materialIndex);
-				auto mat = m_meshManagerPimpl.materials.get(matHandle);
+				auto matHandle = m_meshManagerPimpl->materials.getHandle(materialIndex);
+				auto mat = m_meshManagerPimpl->materials.get(matHandle);
 				if (!mat) continue;
-
-				// crude hack
-				if (!mat->pipeline) {
-					assert(false);
-				}
-
-				pipeline_map[mat->pipeline].push_back(primSlot);
+				//pipeline_map[mat->pipeline].push_back(primSlot);
 			}
 
 			if (pipeline_map.empty()) {

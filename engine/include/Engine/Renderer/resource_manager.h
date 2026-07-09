@@ -7,7 +7,7 @@
 #include <Engine/Renderer/vertex.h>
 
 using MeshHandle = Handle<struct Mesh>;
-using namespace SamToy;
+using namespace smvk;
 
 struct Mesh {
 	struct DataUpload {
@@ -61,8 +61,8 @@ struct Material {
 
 // this should just instead be moved to mesh class or maybe even level.
 struct MeshManager {
-	SamToy::Context& ctx_;
-	MeshManager(SamToy::Context& ctx) :ctx_(ctx) {};
+	smvk::Context& ctx_;
+	MeshManager(smvk::Context& ctx) :ctx_(ctx) {};
 	~MeshManager() {};
 
 	uint32_t vertex_cursor = 0;

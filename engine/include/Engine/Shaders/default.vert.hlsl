@@ -2,8 +2,7 @@
 #define MAX_INSTANCES 1000
 #endif
 
-#include "common.hlsli"
-
+//#include "common.hlsli"
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<FrameUniforms> frame_res;

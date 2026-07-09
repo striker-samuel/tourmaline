@@ -3,229 +3,231 @@
 #include <stdint.h>
 #include <vector>
 
-class Context;
 
-// Lifted from LightweightVk.
-// Non-ref counted handles; based on:
-// https://enginearchitecture.realtimerendering.com/downloads/reac2023_modern_mobile_rendering_at_hypehype.pdf
-template<typename ObjectType>
-class Handle final {
-public:
-    Handle() = default;
+namespace smvk {
+	class Context;
 
-    bool empty() const {
-        return gen_ == 0;
-    }
-    bool valid() const {
-        return gen_ != 0;
-    }
-    uint32_t index() const {
-        return index_;
-    }
-    uint32_t gen() const {
-        return gen_;
-    }
-    void* indexAsVoid() const {
-        return reinterpret_cast<void*>(static_cast<ptrdiff_t>(index_));
-    }
-    bool operator==(const Handle<ObjectType>& other) const {
-        return index_ == other.index_ && gen_ == other.gen_;
-    }
-    bool operator!=(const Handle<ObjectType>& other) const {
-        return index_ != other.index_ || gen_ != other.gen_;
-    }
-    // allow conditions 'if (handle)'
-    explicit operator bool() const {
-        return gen_ != 0;
-    }
+	// Lifted from LightweightVk.
+	// Non-ref counted handles; based on:
+	// https://enginearchitecture.realtimerendering.com/downloads/reac2023_modern_mobile_rendering_at_hypehype.pdf
+	template<typename ObjectType>
+	class Handle final {
+	public:
+		Handle() = default;
 
-private:
-    Handle(uint32_t index, uint32_t gen) : index_(index), gen_(gen) {};
+		bool empty() const {
+			return gen_ == 0;
+		}
+		bool valid() const {
+			return gen_ != 0;
+		}
+		uint32_t index() const {
+			return index_;
+		}
+		uint32_t gen() const {
+			return gen_;
+		}
+		void* indexAsVoid() const {
+			return reinterpret_cast<void*>(static_cast<ptrdiff_t>(index_));
+		}
+		bool operator==(const Handle<ObjectType>& other) const {
+			return index_ == other.index_ && gen_ == other.gen_;
+		}
+		bool operator!=(const Handle<ObjectType>& other) const {
+			return index_ != other.index_ || gen_ != other.gen_;
+		}
+		// allow conditions 'if (handle)'
+		explicit operator bool() const {
+			return gen_ != 0;
+		}
 
-    template<typename ObjectType_, typename ImplObjectType>
-    friend class Pool;
+	private:
+		Handle(uint32_t index, uint32_t gen) : index_(index), gen_(gen) {};
 
-    uint32_t index_ = 0;
-    uint32_t gen_ = 0;
-};
+		template<typename ObjectType_, typename ImplObjectType>
+		friend class Pool;
 
-static_assert(sizeof(Handle<class Foo>) == sizeof(uint64_t));
-
-
-template<typename HandleType>
-class Holder final {
-public:
-    Holder() = default;
-    Holder(Context* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
-    ~Holder() {
-        destroy(ctx_, handle_);
-    }
-    Holder(const Holder&) = delete;
-    Holder(Holder&& other) : ctx_(other.ctx_), handle_(other.handle_) {
-        other.ctx_ = nullptr;
-        other.handle_ = HandleType{};
-    }
-    Holder& operator=(const Holder&) = delete;
-    Holder& operator=(Holder&& other) {
-        std::swap(ctx_, other.ctx_);
-        std::swap(handle_, other.handle_);
-        return *this;
-    }
-    Holder& operator=(std::nullptr_t) {
-        this->reset();
-        return *this;
-    }
-
-    inline operator HandleType() const {
-        return handle_;
-    }
-
-    bool valid() const {
-        return handle_.valid();
-    }
-
-    bool empty() const {
-        return handle_.empty();
-    }
-
-    void reset() {
-        destroy(ctx_, handle_);
-        ctx_ = nullptr;
-        handle_ = HandleType{};
-    }
-
-    HandleType release() {
-        ctx_ = nullptr;
-        return std::exchange(handle_, HandleType{});
-    }
-
-    uint32_t gen() const {
-        return handle_.gen();
-    }
-    uint32_t index() const {
-        return handle_.index();
-    }
-    void* indexAsVoid() const {
-        return handle_.indexAsVoid();
-    }
-
-private:
-    Context* ctx_ = nullptr;
-    HandleType handle_ = {};
-};
-
-template<typename ObjectType, typename ImplObjectType>
-class Pool {
-	static constexpr uint32_t kListEndSentinel = 0xffffffff;
-	struct PoolEntry {
-		explicit PoolEntry(ImplObjectType& obj) : obj_(std::move(obj)) {}
-		ImplObjectType obj_ = {};
-		uint32_t gen_ = 1;
-		uint32_t nextFree_ = kListEndSentinel;
+		uint32_t index_ = 0;
+		uint32_t gen_ = 0;
 	};
-	uint32_t freeListHead_ = kListEndSentinel;
-	uint32_t numObjects_ = 0;
 
-public:
-	std::vector<PoolEntry> objects_;
-	Handle<ObjectType> create(ImplObjectType&& obj) {
-		uint32_t idx = 0;
-		if (freeListHead_ != kListEndSentinel) {
-			idx = freeListHead_;
-			freeListHead_ = objects_[idx].nextFree_;
-			objects_[idx].obj_ = std::move(obj);
+	static_assert(sizeof(Handle<class Foo>) == sizeof(uint64_t));
+
+
+	template<typename HandleType>
+	class Holder final {
+	public:
+		Holder() = default;
+		Holder(Context* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
+		~Holder() {
+			destroy(ctx_, handle_);
 		}
-		else {
-			idx = (uint32_t)objects_.size();
-			objects_.emplace_back(obj);
+		Holder(const Holder&) = delete;
+		Holder(Holder&& other) : ctx_(other.ctx_), handle_(other.handle_) {
+			other.ctx_ = nullptr;
+			other.handle_ = HandleType{};
 		}
-		numObjects_++;
-		return Handle<ObjectType>(idx, objects_[idx].gen_);
-	}
-	void destroy(Handle<ObjectType> handle) {
-		if (handle.empty())
-			return;
-		assert(numObjects_ > 0); // double deletion
-		const uint32_t index = handle.index();
-		assert(index < objects_.size());
-		assert(handle.gen() == objects_[index].gen_); // double deletion
-		objects_[index].obj_ = ImplObjectType{};
-		objects_[index].gen_++;
-		objects_[index].nextFree_ = freeListHead_;
-		freeListHead_ = index;
-		numObjects_--;
-	}
-	const ImplObjectType* get(Handle<ObjectType> handle) const {
-		if (handle.empty())
-			return nullptr;
+		Holder& operator=(const Holder&) = delete;
+		Holder& operator=(Holder&& other) {
+			std::swap(ctx_, other.ctx_);
+			std::swap(handle_, other.handle_);
+			return *this;
+		}
+		Holder& operator=(std::nullptr_t) {
+			this->reset();
+			return *this;
+		}
 
-		const uint32_t index = handle.index();
-		assert(index < objects_.size());
-		assert(handle.gen() == objects_[index].gen_); // accessing deleted object
-		return &objects_[index].obj_;
-	}
-	ImplObjectType* get(Handle<ObjectType> handle) {
-		if (handle.empty())
-			return nullptr;
+		inline operator HandleType() const {
+			return handle_;
+		}
 
-		const uint32_t index = handle.index();
-		assert(index < objects_.size());
-		assert(handle.gen() == objects_[index].gen_); // accessing deleted object
-		return &objects_[index].obj_;
-	}
-	Handle<ObjectType> getHandle(uint32_t index) const {
-		assert(index < objects_.size());
-		if (index >= objects_.size())
+		bool valid() const {
+			return handle_.valid();
+		}
+
+		bool empty() const {
+			return handle_.empty();
+		}
+
+		void reset() {
+			destroy(ctx_, handle_);
+			ctx_ = nullptr;
+			handle_ = HandleType{};
+		}
+
+		HandleType release() {
+			ctx_ = nullptr;
+			return std::exchange(handle_, HandleType{});
+		}
+
+		uint32_t gen() const {
+			return handle_.gen();
+		}
+		uint32_t index() const {
+			return handle_.index();
+		}
+		void* indexAsVoid() const {
+			return handle_.indexAsVoid();
+		}
+
+	private:
+		Context* ctx_ = nullptr;
+		HandleType handle_ = {};
+	};
+
+	template<typename ObjectType, typename ImplObjectType>
+	class Pool {
+		static constexpr uint32_t kListEndSentinel = 0xffffffff;
+		struct PoolEntry {
+			explicit PoolEntry(ImplObjectType& obj) : obj_(std::move(obj)) {}
+			ImplObjectType obj_ = {};
+			uint32_t gen_ = 1;
+			uint32_t nextFree_ = kListEndSentinel;
+		};
+		uint32_t freeListHead_ = kListEndSentinel;
+		uint32_t numObjects_ = 0;
+
+	public:
+		std::vector<PoolEntry> objects_;
+		Handle<ObjectType> create(ImplObjectType&& obj) {
+			uint32_t idx = 0;
+			if (freeListHead_ != kListEndSentinel) {
+				idx = freeListHead_;
+				freeListHead_ = objects_[idx].nextFree_;
+				objects_[idx].obj_ = std::move(obj);
+			}
+			else {
+				idx = (uint32_t)objects_.size();
+				objects_.emplace_back(obj);
+			}
+			numObjects_++;
+			return Handle<ObjectType>(idx, objects_[idx].gen_);
+		}
+		void destroy(Handle<ObjectType> handle) {
+			if (handle.empty())
+				return;
+			assert(numObjects_ > 0); // double deletion
+			const uint32_t index = handle.index();
+			assert(index < objects_.size());
+			assert(handle.gen() == objects_[index].gen_); // double deletion
+			objects_[index].obj_ = ImplObjectType{};
+			objects_[index].gen_++;
+			objects_[index].nextFree_ = freeListHead_;
+			freeListHead_ = index;
+			numObjects_--;
+		}
+		const ImplObjectType* get(Handle<ObjectType> handle) const {
+			if (handle.empty())
+				return nullptr;
+
+			const uint32_t index = handle.index();
+			assert(index < objects_.size());
+			assert(handle.gen() == objects_[index].gen_); // accessing deleted object
+			return &objects_[index].obj_;
+		}
+		ImplObjectType* get(Handle<ObjectType> handle) {
+			if (handle.empty())
+				return nullptr;
+
+			const uint32_t index = handle.index();
+			assert(index < objects_.size());
+			assert(handle.gen() == objects_[index].gen_); // accessing deleted object
+			return &objects_[index].obj_;
+		}
+		Handle<ObjectType> getHandle(uint32_t index) const {
+			assert(index < objects_.size());
+			if (index >= objects_.size())
+				return {};
+
+			return Handle<ObjectType>(index, objects_[index].gen_);
+		}
+		Handle<ObjectType> findObject(const ImplObjectType* obj) {
+			if (!obj)
+				return {};
+
+			for (size_t idx = 0; idx != objects_.size(); idx++) {
+				if (objects_[idx].obj_ == *obj) {
+					return Handle<ObjectType>((uint32_t)idx, objects_[idx].gen_);
+				}
+			}
+
 			return {};
+		}
+		void clear() {
+			objects_.clear();
+			freeListHead_ = kListEndSentinel;
+			numObjects_ = 0;
+		}
+		uint32_t numObjects() const {
+			return numObjects_;
+		}
 
-		return Handle<ObjectType>(index, objects_[index].gen_);
-	}
-	Handle<ObjectType> findObject(const ImplObjectType* obj) {
-		if (!obj)
-			return {};
-
-		for (size_t idx = 0; idx != objects_.size(); idx++) {
-			if (objects_[idx].obj_ == *obj) {
-				return Handle<ObjectType>((uint32_t)idx, objects_[idx].gen_);
+		template<typename Func>
+		void forEach(Func&& func) {
+			for (auto& entry : objects_) {
+				if (entry.nextFree_ == kListEndSentinel) { // only active
+					func(entry.obj_);
+				}
 			}
 		}
 
-		return {};
-	}
-	void clear() {
-		objects_.clear();
-		freeListHead_ = kListEndSentinel;
-		numObjects_ = 0;
-	}
-	uint32_t numObjects() const {
-		return numObjects_;
-	}
-
-	template<typename Func>
-	void forEach(Func&& func) {
-		for (auto& entry : objects_) {
-			if (entry.nextFree_ == kListEndSentinel) { // only active
-				func(entry.obj_);
+		template<typename Func>
+		void forEachHandle(Func&& func) {
+			for (int i = 0; i < objects_.size(); i++) {
+				if (objects_[i].nextFree_ == kListEndSentinel) { // only active
+					func(getHandle(i));
+				}
 			}
 		}
-	}
 
-	template<typename Func>
-	void forEachHandle(Func&& func) {
-		for (int i = 0; i < objects_.size(); i++) {
-			if (objects_[i].nextFree_ == kListEndSentinel) { // only active
-				func(getHandle(i));
-			}
-		}
-	}
+	};
 
+	//namespace std {
+	//	template <>
+	//	struct hash<PipelineHandle> {
+	//		size_t operator()(const PipelineHandle& h) const noexcept {
+	//			return std::hash<uint32_t>{}(h.index());
+	//		}
+	//	};
 };
-
-//namespace std {
-//	template <>
-//	struct hash<PipelineHandle> {
-//		size_t operator()(const PipelineHandle& h) const noexcept {
-//			return std::hash<uint32_t>{}(h.index());
-//		}
-//	};
-//}
