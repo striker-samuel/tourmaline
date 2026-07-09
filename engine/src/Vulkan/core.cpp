@@ -272,12 +272,9 @@ int smvk::Context::Initialize(
 
 }
 inline smvk::Context::Context(VulkanCore& core) :core_(core), m_submitter(core, QueuePreference::GRAPHICS) { Initialize(); };
-
 smvk::Context::~Context() { CleanUp(); };
 
-[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::Context::CreateBuffer(
-	BufferCreateInfo bufferCreateInfo
-) {
+[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::Context::CreateBuffer(BufferCreateInfo bufferCreateInfo) {
 	Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	ci.size = bufferCreateInfo.size;
@@ -299,6 +296,12 @@ smvk::Context::~Context() { CleanUp(); };
 	);
 
 	// getDeviceAddress
+	const VkBufferDeviceAddressInfo ai = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+		.buffer = desc.buffer
+	};
+	desc.deviceAdress = vkGetBufferDeviceAddress(core_.device_, &ai);
+	//
 	vmaGetAllocationMemoryProperties(m_allocator, desc.alloc, &desc.memory_flags);
 	desc.usage = bufferCreateInfo.usage_flags;
 	return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
@@ -313,44 +316,28 @@ void smvk::Context::UploadDataToBuffer(
 	size_t src_offset,
 	size_t dest_offset
 ) {
-	Buffer* bufferDesc = buffers_.get(buffer);
+	Buffer* buf = buffers_.get(buffer);
+	auto han = m_submitter.acquire();
+	auto cmd = m_submitter.GetCommandBuffer(han).cmd;
 
-	// Since Im not subclassing/specializing buffers I retired this.
-	//const VkAccessFlags dstAccess =
-	//	(bufferDesc->role & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ? VK_ACCESS_UNIFORM_READ_BIT
-	//	: VK_ACCESS_SHADER_READ_BIT;
-
-	//VkCommandBuffer tmpBuf = beginSingleTimeCommands(core.device_, core.defaultCommandPool_);
-
-	if (bufferDesc->is_mapable()) {
-		// Direct copy into mapped allocation
-		VkResult result = vmaCopyMemoryToAllocation(m_allocator_, data, bufferDesc->alloc, 0, dataSize);
-		assert(result == VK_SUCCESS);
-
-		VkBufferMemoryBarrier b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-		b.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-		b.dstAccessMask = dstAccess;
-		b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		b.buffer = bufferDesc->buffer;
-		b.offset = 0;
-		b.size = VK_WHOLE_SIZE;
-
-		vkCmdPipelineBarrier(
-			tmpBuf,
-			VK_PIPELINE_STAGE_HOST_BIT,
+	if (buf->is_mapable()) {
+		VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, buf->alloc, 0, dataSize));
+		BufferBarrier(
+			cmd,
+			buf->buffer,
+			dest_offset,
+			dataSize,
+			VK_PIPELINE_STAGE_2_HOST_BIT,
+			VK_ACCESS_2_HOST_WRITE_BIT,
 			dstStages,
-			0,
-			0, nullptr,
-			1, &b,
-			0, nullptr);
-
-		endSingleTimeCommands(core.device_, tmpBuf, core.graphicsQueue_, core.defaultCommandPool_);
+			dstAccess
+		);
 		return;
 	}
 
-	// Device-local path: stage the caller's data
-	VkBuffer stagingBuf; VmaAllocation stagingAlloc;
+	VkBuffer stagingBuf;
+	VmaAllocation stagingAlloc;
+
 	VkBufferCreateInfo sInfo{
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 		.size = dataSize,
@@ -361,45 +348,33 @@ void smvk::Context::UploadDataToBuffer(
 	sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 	sAlloc.pool = m_stagingPool;
 
-	VK_CHECK(vmaCreateBuffer(m_allocator_, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr));
-
 	// Fill the staging buffer with the *provided* data
-	VkResult result = vmaCopyMemoryToAllocation(m_allocator_, data, stagingAlloc, 0, dataSize);
-	assert(result == VK_SUCCESS);
+	VK_CHECK(vmaCreateBuffer(m_allocator, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr));
+	VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, stagingAlloc, 0, dataSize));
 
 	// Copy staging -> dst
 	VkBufferCopy copyRegion{
-		.srcOffset = src_offset,
+		.srcOffset = 0,	// we have the staging buf created for this so just from 0.
 		.dstOffset = dest_offset,
-		.size = dataSize };
-	vkCmdCopyBuffer(tmpBuf, stagingBuf, bufferDesc->buffer, 1, &copyRegion);
+		.size = dataSize
+	};
+	vkCmdCopyBuffer(cmd, stagingBuf, buf->buffer, 1, &copyRegion);
 
-	// Make the copy visible to shaders
-	VkBufferMemoryBarrier b2{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-	b2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	b2.dstAccessMask = dstAccess;
-	b2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	b2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	b2.buffer = bufferDesc->buffer;
-	//b2.offset = 0;
-	//b2.size = VK_WHOLE_SIZE;
-	b2.offset = dest_offset;
-	b2.size = dataSize;
-
-	vkCmdPipelineBarrier(
-		tmpBuf,
-		VK_PIPELINE_STAGE_TRANSFER_BIT,
+	BufferBarrier(
+		cmd,
+		buf->buffer,
+		dest_offset,
+		dataSize,
+		VK_PIPELINE_STAGE_2_HOST_BIT,
+		VK_ACCESS_2_HOST_WRITE_BIT,
 		dstStages,
-		0,
-		0, nullptr,
-		1, &b2,
-		0, nullptr)
-		;
+		dstAccess
+	);
 
-	endSingleTimeCommands(core.device_, tmpBuf, core.graphicsQueue_, core.defaultCommandPool_);
-
-	// we could maybe delay this
-	vmaDestroyBuffer(m_allocator_, stagingBuf, stagingAlloc);
+	AddDeferredTask(
+		std::packaged_task<void()>([this, stagingBuf, stagingAlloc] {vmaDestroyBuffer(m_allocator, stagingBuf, stagingAlloc); })
+		, han
+	);
 }
 
 [[nodiscard]] smvk::Holder<smvk::DescriptorPoolHandle> smvk::Context::CreateDescriptorPool() {
@@ -622,117 +597,108 @@ void smvk::ShaderProgram::CreatePipelineLayout(const PipelineCreateInfo::Pipelin
 //
 //	}
 
-void smvk::Context::TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout
-) {
-
-	auto cmd = m_submitter.acquire();
-	AddDeferredTask(
-		[]{},
-		handle
-	);
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands(core.device_, core.defaultCommandPool_);
-
-	VkImageMemoryBarrier barrier{};
-	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrier.oldLayout = oldLayout;
-	barrier.newLayout = newLayout;
-	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = image;
-	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	barrier.subresourceRange.baseMipLevel = 0;
-	barrier.subresourceRange.levelCount = 1;
-	barrier.subresourceRange.baseArrayLayer = 0;
-	barrier.subresourceRange.layerCount = 1;
-
-	if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-
-		if (hasStencilComponent(format)) {
-			barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
-		}
-	}
-	else {
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	}
-
-	VkPipelineStageFlags sourceStage;
-	VkPipelineStageFlags destinationStage;
-
-	if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
-		newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-		barrier.srcAccessMask = 0;
-		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-		sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-		destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-	}
-	else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
-		newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-		sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-		destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-	}
-	else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
-		newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-
-		// Swapchain depth
-		barrier.srcAccessMask = 0;
-		barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-		sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-		destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-	}
-	else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
-		newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
-
-		// ShadowMaps
-		barrier.srcAccessMask = 0;
-		barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-		sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-		destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-	}
-
-	else {
-
-		assert(false); // This so i have easy acces to call stack.
-		//throw std::invalid_argument("unsupported layout transition!");
-	}
-
-	vkCmdPipelineBarrier(
-		commandBuffer,
-		sourceStage,
-		destinationStage,
-		0,
-		0,
-		nullptr,
-		0,
-		nullptr,
-		1,
-		&barrier
-	);
-
-	endSingleTimeCommands(
-		core.device_,
-		commandBuffer,
-		core.graphicsQueue_,
-		core.defaultCommandPool_
-	);
-}
+//void smvk::Context::TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout
+//) {
 //
-[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::Context::CreateImage(ImageCreateInfo _imageCreateInfo)
+//	auto cmd = m_submitter.acquire();
+//	VkCommandBuffer commandBuffer = beginSingleTimeCommands(core.device_, core.defaultCommandPool_);
+//
+//	VkImageMemoryBarrier barrier{};
+//	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+//	barrier.oldLayout = oldLayout;
+//	barrier.newLayout = newLayout;
+//	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+//	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+//	barrier.image = image;
+//	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+//	barrier.subresourceRange.baseMipLevel = 0;
+//	barrier.subresourceRange.levelCount = 1;
+//	barrier.subresourceRange.baseArrayLayer = 0;
+//	barrier.subresourceRange.layerCount = 1;
+//
+//	if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL || newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
+//		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+//
+//		if (hasStencilComponent(format)) {
+//			barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+//		}
+//	}
+//	else {
+//		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+//	}
+//
+//	VkPipelineStageFlags sourceStage;
+//	VkPipelineStageFlags destinationStage;
+//
+//	if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+//		newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+//		barrier.srcAccessMask = 0;
+//		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+//
+//		sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+//		destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+//	}
+//	else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
+//		newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+//		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+//		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+//
+//		sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+//		destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+//	}
+//	else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+//		newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+//
+//		// Swapchain depth
+//		barrier.srcAccessMask = 0;
+//		barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+//			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+//
+//		sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+//		destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+//	}
+//	else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+//		newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) {
+//
+//		// ShadowMaps
+//		barrier.srcAccessMask = 0;
+//		barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+//			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+//
+//		sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+//		destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+//	}
+//
+//	else {
+//
+//		assert(false); // This so i have easy acces to call stack.
+//		//throw std::invalid_argument("unsupported layout transition!");
+//	}
+//
+//	vkCmdPipelineBarrier(
+//		commandBuffer,
+//		sourceStage,
+//		destinationStage,
+//		0,
+//		0,
+//		nullptr,
+//		0,
+//		nullptr,
+//		1,
+//		&barrier
+//	);
+//
+//	endSingleTimeCommands(
+//		core.device_,
+//		commandBuffer,
+//		core.graphicsQueue_,
+//		core.defaultCommandPool_
+//	);
+//}
+//
+[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::Context::CreateImage(ImageCreateInfo _imageCreateInfo, void* data, size_t dataSize)
 {
-	Image image = {};
-
-	//VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT // sample as texture
-	//	| VK_IMAGE_USAGE_TRANSFER_DST_BIT; // upload via copy // I dont need this for depth
-	//VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-
+	Image image{};
 	VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	imgCI.imageType = VK_IMAGE_TYPE_2D;
 	imgCI.format = _imageCreateInfo.format;               // pick your format
@@ -740,10 +706,8 @@ void smvk::Context::TransitionImageLayout(VkImage image, VkFormat format, VkImag
 	imgCI.mipLevels = _imageCreateInfo.levels;                                      // >1 if you want mipmaps
 	imgCI.usage = _imageCreateInfo.usage;
 	imgCI.arrayLayers = _imageCreateInfo.arrayLayers;                                      // >1 for arrays/cubemaps
-
 	imgCI.samples = VK_SAMPLE_COUNT_1_BIT;                  // MSAA? set >1
 	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;                // GPU-friendly
-
 	// Queue exclusivity on by default.
 	imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	imgCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;              // we’ll transition later. Well jus use transition General always
@@ -751,24 +715,14 @@ void smvk::Context::TransitionImageLayout(VkImage image, VkFormat format, VkImag
 	VmaAllocationCreateInfo allocation_create_info{};
 	allocation_create_info.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
 	allocation_create_info.pool = m_imagesPool;
-
-	// Laout is transient. and depents on stage. 
-	//	image.layout = VK_IMAGE_LAYOUT_UNDEFINED;
-
 	image.format = _imageCreateInfo.format;
 	image.levels = _imageCreateInfo.levels;
 	image.extent.width = _imageCreateInfo.texWidth;
 	image.extent.height = _imageCreateInfo.texHeight;
 	image.usage = _imageCreateInfo.usage;
 	image.arrayLayers = _imageCreateInfo.arrayLayers;
-
-	//VmaAllocation alloc = VK_NULL_HANDLE;
-	VmaAllocationInfo allocInfo{};
-
-	VkResult res = vmaCreateImage(m_allocator, &imgCI, &allocation_create_info, &image.image, &image.alloc, &allocInfo);
-	if (res != VK_SUCCESS) {
-		throw std::runtime_error("vmaCreateImage (in pool) failed");
-	}
+	image.sampler_ = m_defaultSampler;
+	VK_CHECK(vmaCreateImage(m_allocator, &imgCI, &allocation_create_info, &image.image, &image.alloc, nullptr));
 
 	return smvk::Holder<ImageHandle>(this, images_.create(std::move(image)));
 
@@ -800,21 +754,9 @@ void smvk::Context::TransitionImageLayout(VkImage image, VkFormat format, VkImag
 
 	return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
 }
-[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::Context::CreateStagingBuffer(const void* srcData, VkDeviceSize size)
-{
-	auto handle = CreateStagingBuffer(size);
-	auto* buf = buffers_.get(handle);
-	void* mapped = nullptr;
-	VK_CHECK(vmaMapMemory(m_allocator, buf->alloc, &mapped));
-	std::memcpy(mapped, srcData, static_cast<size_t>(size));
-	// HOST_COHERENT means we don't need vmaFlushAllocation.
-	// If you drop HOST_COHERENT in the future, call vmaFlushAllocation here.
-	vmaUnmapMemory(m_allocator, buf->alloc);
-	return handle;
-}
 [[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::Context::CreateShaderModule(std::vector<char> code) {
 	VkShaderModule shader;
-	core.CreateShaderModule(
+	core_.CreateShaderModule(
 		std::move(code),
 		shader
 	);
@@ -896,9 +838,7 @@ void smvk::Context::ProcessDeferrredTasks()
 	m_deferredTasks.erase(m_deferredTasks.begin(), it);
 }
 void smvk::Context::CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset) {
-
 	//AddDeferredTask()
-
 	VkCommandBuffer commandBuffer = beginSingleTimeCommands(core.device_, core.defaultCommandPool_);
 	VkBufferCopy copyRegion{};
 	copyRegion.size = size;
@@ -1041,5 +981,84 @@ void smvk::ShaderProgram::CreateDescriptorSetLayout(const smvk::PipelineCreateIn
 	for (auto f : bindingFlags) if (f != 0) { anyFlags = true; break; }
 	ci.pNext = anyFlags ? &flagsCI : nullptr;
 
-	VK_CHECK(vkCreateDescriptorSetLayout(ctx_.core.device_, &ci, nullptr, &layout));
+	VK_CHECK(vkCreateDescriptorSetLayout(ctx_.core_.device_, &ci, nullptr, &layout));
 }
+
+inline void BufferBarrier(
+	VkCommandBuffer cmd,
+	VkBuffer buffer,
+	VkDeviceSize offset,
+	VkDeviceSize size,
+	VkPipelineStageFlags2 srcStage,
+	VkAccessFlags2 srcAccess,
+	VkPipelineStageFlags2 dstStage,
+	VkAccessFlags2 dstAccess
+) {
+	VkBufferMemoryBarrier2 barrier{
+		.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+		.pNext = nullptr,
+		.srcStageMask = srcStage,
+		.srcAccessMask = srcAccess,
+		.dstStageMask = dstStage,
+		.dstAccessMask = dstAccess,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.buffer = buffer,
+		.offset = offset,
+		.size = size,
+	};
+	VkDependencyInfo dep{
+		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+		.pNext = nullptr,
+		.dependencyFlags = 0,
+		.memoryBarrierCount = 0,
+		.pMemoryBarriers = nullptr,
+		.bufferMemoryBarrierCount = 1,
+		.pBufferMemoryBarriers = &barrier,
+		.imageMemoryBarrierCount = 0,
+		.pImageMemoryBarriers = nullptr,
+	};
+	vkCmdPipelineBarrier2(cmd, &dep);
+}
+
+inline void TransitionImageLayout(
+    VkCommandBuffer cmd,
+    VkImage image,
+    VkImageLayout oldLayout,
+    VkImageLayout newLayout,
+    VkImageSubresourceRange subresourceRange,
+    VkPipelineStageFlags2 srcStage,
+    VkAccessFlags2 srcAccess,
+    VkPipelineStageFlags2 dstStage,
+    VkAccessFlags2 dstAccess
+) {
+    VkImageMemoryBarrier2 barrier{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .pNext = nullptr,
+        .srcStageMask = srcStage,
+        .srcAccessMask = srcAccess,
+        .dstStageMask = dstStage,
+        .dstAccessMask = dstAccess,
+        .oldLayout = oldLayout,
+        .newLayout = newLayout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresourceRange = subresourceRange,
+    };
+
+    VkDependencyInfo dep{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .pNext = nullptr,
+        .dependencyFlags = 0,
+        .memoryBarrierCount = 0,
+        .pMemoryBarriers = nullptr,
+        .bufferMemoryBarrierCount = 0,
+        .pBufferMemoryBarriers = nullptr,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &barrier,
+    };
+
+    vkCmdPipelineBarrier2(cmd, &dep);
+}
+

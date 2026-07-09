@@ -38,6 +38,7 @@ static constexpr uint32_t MAX_IMAGES = 4096;
 static constexpr uint32_t MAX_PUSH_CONSTANTS = 8;
 //
 
+
 inline const char* vkResultToString(VkResult result);
 
 #define VK_ASSERT_RETURN(func)                                     \
@@ -79,6 +80,7 @@ const bool enableValidationLayers = true;
 
 //private implementation details.
 namespace {
+	using deferred = std::packaged_task<void()>;
 	//
 	struct QueueFamilyIndices {
 		std::optional<uint32_t> graphicsFamily;
@@ -122,6 +124,7 @@ namespace {
 	};
 };
 
+
 namespace smvk {
 
 	struct Pipeline {
@@ -149,9 +152,12 @@ namespace smvk {
 	struct Buffer {
 		VkBuffer buffer = VK_NULL_HANDLE;
 		VmaAllocation alloc{};
-		//VmaAllocationInfo allocInfo{}; // this is just an info return. the info contained maybe altered during refrag so makes no sense storing it
+		// VmaAllocationInfo allocInfo{};
+		// this is just an info return. the info contained maybe altered during refrag so makes no sense storing it
 		VkBufferUsageFlags usage;
 		VkMemoryPropertyFlags memory_flags;
+		VkDeviceAddress deviceAdress = 0;
+		uint64_t deviceAdress;
 		bool is_mapable() const {
 			return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 		}
@@ -182,7 +188,7 @@ namespace smvk {
 	using ImageHandle = Handle<struct Image>; // Attachments
 	using PipelineHandle = Handle<struct Pipeline>;
 	using BufferHandle = Handle<struct Buffer>;
-	using SamplerHandle = Handle<struct Sampler>;
+	//using SamplerHandle = Handle<struct Sampler>;
 	using ShaderModuleHandle = Handle<struct ShaderModule>;
 	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 	using DescriptorSetHandle = Handle<struct DescriptorSet>;
@@ -644,17 +650,13 @@ namespace smvk {
 		//
 		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
 		Holder<BufferHandle> CreateStagingBuffer(VkDeviceSize size);
-		Holder<BufferHandle> CreateStagingBuffer(const void* srcData, VkDeviceSize size); //Creates a staging buffer and copies to it the data
-		//
-		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo);
+		//Holder<BufferHandle> CreateStagingBuffer(const void* srcData, VkDeviceSize size); //Creates a staging buffer and copies to it the data
+		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, void* data = nullptr, size_t dataSize = 0);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
 		Holder<DescriptorPoolHandle> CreateDescriptorPool(); // just hardcoded defaults for pool. 
 		Holder<DescriptorSetHandle> CreateDescriptorSet(DescriptorPoolHandle pool, VkDescriptorSetLayout& layout);
 		//
-		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAcces);
-		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset, size_t dest_offset);
-		void TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
-		void TransitionImageLayout(ImageHandle image_handle, VkImageLayout oldLayout, VkImageLayout newLayout);
+		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		//
 		void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset);
 		void CleanUp();
@@ -675,13 +677,10 @@ namespace smvk {
 	//private:
 		Pool<Image, Image> images_;
 		Pool<Buffer, Buffer> buffers_;
-		Pool<Sampler, VkSampler> samplers_;
 		Pool<ShaderModule, VkShaderModule> shaderModules_;
-		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_;
-
-		Holder<DescriptorPoolHandle> descriptorPool_;
-		Holder<DescriptorSetHandle> descriptorSets_[MAX_FRAMES_IN_FLIGHT];
-
+		//
+		VkDescriptorPool descriptorPool_;
+		VkDescriptorSet descriptorSets_[MAX_FRAMES_IN_FLIGHT];
 		//
 		VulkanCore& core_;
 		CommandBufferManager m_submitter;
@@ -691,7 +690,7 @@ namespace smvk {
 		std::vector<DeferredTask> m_deferredTasks;
 		//
 		TextureHandle m_nilTexture{};
-		SamplerHandle m_defaultSampler{};
+		VkSampler m_defaultSampler{};
 	};
 
 	void destroy(Context* ctx, ImageHandle handle);
@@ -734,3 +733,27 @@ namespace smvk {
 	};
 
 };
+
+inline void BufferBarrier(
+	VkCommandBuffer cmd,
+	VkBuffer buffer,
+	VkDeviceSize offset,
+	VkDeviceSize size,
+	VkPipelineStageFlags2 srcStage,
+	VkAccessFlags2 srcAccess,
+	VkPipelineStageFlags2 dstStage,
+	VkAccessFlags2 dstAccess
+);
+
+inline void TransitionImageLayout(
+	VkCommandBuffer cmd,
+	VkImage image,
+	VkImageLayout oldLayout,
+	VkImageLayout newLayout,
+	VkImageSubresourceRange subresourceRange,
+	VkPipelineStageFlags2 srcStage,
+	VkAccessFlags2 srcAccess,
+	VkPipelineStageFlags2 dstStage,
+	VkAccessFlags2 dstAccess
+);
+
