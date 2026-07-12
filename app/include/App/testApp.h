@@ -1,6 +1,7 @@
 #pragma once
 #include <Engine/App/app.h>
 #include <Engine/Renderer/resource_manager.h>
+#include <Engine/Renderer/rendergraph.h>
 
 std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
@@ -56,8 +57,7 @@ struct Level : Scene {
 	BvhTree static_tree = {};
 	bool tree_done = false;
 	//std::map<uint32_t, MeshHandle> m_meshForNode;
-
-	Level(MeshManager* meshManager) : m_meshManagerPimpl(meshManager) {};
+	//Level(MeshManager* meshManager) : m_meshManagerPimpl(meshManager) {};
 	~Level() {}
 
 	void Upload(
@@ -80,8 +80,8 @@ struct AppResources {
 	//ShaderProgram defaultMainView{};
 };
 
-class TestApp : public SamToy::VulkanApp {
-	using Super = SamToy::VulkanApp;
+class TestApp : public smvk::VulkanApp {
+	using Super = smvk::VulkanApp;
 public:
 	TestApp() { Initialize(); };
 	~TestApp() {};
@@ -108,7 +108,9 @@ private:
 			return false;
 
 		m_meshManagerPimpl = std::make_unique<MeshManager>(MeshManager(*m_context));
-		m_camera.setPerspective(45.0f, float(m_swapchain->extent_.width) / float(m_swapchain->extent_.height), default_near_clip, default_far_clip);
+		m_camera.setPerspective(45.0f, float(m_swapchain->GetExtent().width) / float(m_swapchain->GetExtent().height),
+			default_near_clip, default_far_clip
+		);
 		//
 		std::filesystem::path p(gltf_meshes_paths[0]);
 		//

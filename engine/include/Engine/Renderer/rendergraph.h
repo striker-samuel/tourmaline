@@ -9,12 +9,15 @@ namespace smvk {
 	struct RenderPass;
 
 	using ImageKey = ImageCreateInfo;
+	//using BufferKey = BufferCreateInfo;
 	using ImageViewKey = ImageViewCreateInfo;
+
+	// This could be better yes
+	// no acces qualifiers tho hmmm
 	struct BufferKey {
 		size_t elementSize;
 		size_t elementCount;
 	};
-	//using DeviceBufferKey = BufferCreateInfo;
 
 	struct ToyFrameBuffer {
 		uint32_t frameIndex = 0; // Maybe end os uint32_ to catch for unitialized? this value can only be ip to SWAPCHAIN_IMAGE_COUNT
@@ -128,7 +131,7 @@ namespace smvk {
 		friend RenderGraph;
 
 	};
-	struct RenderGraph {
+	struct RenderGraph final{
 		smvk::Context& ctx_;
 		void Clear() { m_passes_.clear(); }
 

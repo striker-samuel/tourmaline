@@ -1,7 +1,5 @@
 #include <Engine/App/app.h>
 
-static constexpr float default_near_clip = 0.01f;
-static constexpr float default_far_clip = 50.0f;
 
 VulkanCore& VulkanApp::GetCore() { return *core_; }
 const VulkanCore& VulkanApp::GetCore() const { return *core_; }

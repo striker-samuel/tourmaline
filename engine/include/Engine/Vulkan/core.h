@@ -16,27 +16,25 @@
 #include "Engine/Shared/common.h"
 #include <Engine/Memory/pool.h>
 //
+//#define USE_KTX
 #ifdef USE_KTX
 #include <ktx.h>
 #include <ktxvulkan.h>
 #endif
 // 
-//
 #define APPLICATION_NAME "smvk_app"
 #define ENGINE_NAME "smvk"
 //
-static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
-static constexpr uint32_t DESIRED_SWAPCHAIN_IMAGE_COUNT = 2;
+static constexpr float default_near_clip = 0.01f;
+static constexpr float default_far_clip = 50.0f;
 //
 static constexpr uint32_t DEFAULT_WIDTH = 1280;
 static constexpr uint32_t DEFAULT_HEIGHT = 720;
+static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+static constexpr uint32_t DESIRED_SWAPCHAIN_IMAGE_COUNT = 2;
 static constexpr uint32_t MAX_BUFFERS = 1024;
-static constexpr uint32_t MAX_DRAWS = 1024;
 static constexpr uint32_t MAX_LIGHTS = 4096;
 static constexpr uint32_t MAX_TEXTURES = 4096;
-static constexpr uint32_t MAX_IMAGES = 4096;
-static constexpr uint32_t MAX_PUSH_CONSTANTS = 8;
-//
 
 
 inline const char* vkResultToString(VkResult result);
@@ -66,22 +64,7 @@ inline const char* vkResultToString(VkResult result);
     } while (0)
 
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL
-debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-	VkDebugUtilsMessageTypeFlagsEXT messageType,
-	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-	void* pUserData);
-
-#ifdef NDEBUG
-const bool enableValidationLayers = false;
-#else
-const bool enableValidationLayers = true;
-#endif
-
-//private implementation details.
-namespace {
-	using deferred = std::packaged_task<void()>;
-	//
+namespace smvk {
 	struct QueueFamilyIndices {
 		std::optional<uint32_t> graphicsFamily;
 		std::optional<uint32_t> presentFamily;
@@ -97,34 +80,51 @@ namespace {
 		std::vector<VkSurfaceFormatKHR> formats;
 		std::vector<VkPresentModeKHR> presentModes;
 	};
-	// This are mostly lifted from the vulkan tutorial page and really should be refactored into core.
-	std::vector<const char*> getRequiredExtensionsForGlfw();
-	bool checkDeviceExtensionSupport(VkPhysicalDevice device, const std::vector<const char*> deviceExtensions);
-	bool checkValidationLayerSupport(const std::vector<const char*> validationLayers);
-	bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface);
-	//
-	SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
-	QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
-	VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
-	VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
-	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window);
-	VkFormat findSupportedFormat(VkPhysicalDevice physicalDevice, const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features);
-	VkFormat findDepthFormat(VkPhysicalDevice physicalDevice);
-	//
-
-	//Buffers will be pushed in pc block with deviceAddress
-	// This bidnign model is lifted from lightweightVK
-	enum Bindings {
-		kBinding_Textures = 0,
-		kBinding_Samplers = 1,
-		//kBinding_StorageImages = 2,
-		//kBinding_YUVImages = 3,
-		//kBinding_AccelerationStructures = 4,
-		//kBinding_NumBindings = 5,
+};
+// CreatePayloads//Keys for logicalReources
+namespace smvk {
+	struct BufferCreateInfo {
+		VkDeviceSize size;
+		VmaMemoryUsage vma_usage;
+		VkBufferUsageFlags usage_flags;
 	};
+	struct ImageCreateInfo {
+		int texWidth;
+		int texHeight;
+		VkFormat format;
+		VkImageUsageFlags usage;
+		uint32_t levels;
+		uint32_t arrayLayers;
+		bool operator<(const ImageCreateInfo& other) const {
+			return std::tie(texWidth, texHeight, format, usage, levels, arrayLayers) <
+				std::tie(other.texWidth, other.texHeight, other.format,
+					other.usage, other.levels, other.arrayLayers);
+		}
+	};
+	struct ImageViewCreateInfo {
+		VkImageViewCreateFlags     flags{};
+		VkImage                    image{};
+		VkImageViewType            viewType{};
+		VkFormat                   format{};
+		VkImageSubresourceRange    subResourceRange{};
+	};
+	struct SamplerCreateInfo {
+		VkFilter mag = VK_FILTER_LINEAR;
+		VkFilter min = VK_FILTER_LINEAR;
+		VkSamplerMipmapMode mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		VkSamplerAddressMode u = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		VkSamplerAddressMode v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		VkSamplerAddressMode w = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		float maxLod = 1000.0f;
+		float maxAniso = 1.0f;
+		VkCompareOp compareOp = VK_COMPARE_OP_ALWAYS;
+		bool compareEnable = false;
+	};
+	void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
+	void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
 };
 
-
+// maybe this should be impl.cpp exclusive
 namespace smvk {
 
 	struct Pipeline {
@@ -146,9 +146,14 @@ namespace smvk {
 			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
 			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
 		};
-		VkSampler sampler_ = VK_NULL_HANDLE; // not owning
+		// not fully implemented yet.
+		VkSampler sampler_ = VK_NULL_HANDLE;
+		bool owns_sampler = false;
+		bool owns_views = true;
+		bool is_swapchain = false;
 	};
 
+	// Just piggybacking on vma really
 	struct Buffer {
 		VkBuffer buffer = VK_NULL_HANDLE;
 		VmaAllocation alloc{};
@@ -168,8 +173,13 @@ namespace smvk {
 	};
 };
 
+
+
 namespace smvk {
 
+
+	// Just VK_1_3 for the moment, should be more than ok
+	// https://asawicki.info/articles/state_of_gpu_hardware_2025.php 
 	enum VulkanVersion {
 		VK_1_3
 	};
@@ -188,16 +198,10 @@ namespace smvk {
 	using ImageHandle = Handle<struct Image>; // Attachments
 	using PipelineHandle = Handle<struct Pipeline>;
 	using BufferHandle = Handle<struct Buffer>;
-	//using SamplerHandle = Handle<struct Sampler>;
 	using ShaderModuleHandle = Handle<struct ShaderModule>;
 	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 	using DescriptorSetHandle = Handle<struct DescriptorSet>;
-	using TextureHandle = Handle<struct Image>;
-
-	// Just VK_1_3 for the moment
-	// https://asawicki.info/articles/state_of_gpu_hardware_2025.php
-	// Should be more than ok
-	//
+	using TextureHandle = Handle<struct Image>; //
 
 	struct VulkanCore {
 		struct CoreConfiguration {
@@ -206,21 +210,8 @@ namespace smvk {
 			const std::vector<const char*> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 			const std::vector<const char*> instanceExtensions = {};
 		} config_;
-		VkInstance instance_ = VK_NULL_HANDLE;
-		VkDevice device_ = VK_NULL_HANDLE;
-		VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
 		//
-		VkQueue graphicsQueue_ = VK_NULL_HANDLE;
-		VkQueue presentQueue_ = VK_NULL_HANDLE;
-		VkQueue transferQueue_ = VK_NULL_HANDLE;
-		// 
-		VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 		VkFormat m_depthFormat = VK_FORMAT_UNDEFINED; // at least main view format
-		//
-		VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
-		VkCommandPool transferCommandPool_ = VK_NULL_HANDLE;
-		VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
-		//
 
 		// Enviroment Descriptions
 		VkPhysicalDeviceDriverProperties vkPhysicalDeviceDriverProperties_ = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES, nullptr };
@@ -265,271 +256,53 @@ namespace smvk {
 		VulkanCore& operator=(VulkanCore&&) = delete;
 
 		bool Init(VkSurfaceKHR* surface = nullptr);
-		void CreateFence(const VkFenceCreateInfo createInfo, VkFence& out);
-		void CreateSemaphore(VkSemaphoreCreateInfo createInfo, VkSemaphore& out);
-		void CreateShaderModule(const std::vector<char>& code, VkShaderModule& out);
 		VkFormat GetDepthFormat();
 		VkCommandPool GetCommandPool(QueuePreference preferredQueue);
-
+		//
+		void CreateFence(const VkFenceCreateInfo createInfo, VkFence& out);
+		void CreateSemaphore(VkSemaphoreCreateInfo createInfo, VkSemaphore& out);
+		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
+		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
+		void CreateShaderModule(const std::vector<char>& code, VkShaderModule& out);
+		void CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view);
 	};
 
 	struct CommandBufferManager {
-
 		struct TimelineSemaphore {
 			VkSemaphore semaphore_ = VK_NULL_HANDLE;
 			uint64_t initialValue_ = 0;
 			uint64_t goal_ = 1; //defautl to 1
 		};
-
 		//
-		struct ToyCommandBuffer {
+		struct CommandBuffer {
 			VkCommandBuffer cmd = VK_NULL_HANDLE;
 			TimelineSemaphore finishedSignalSemaphore{};
 			bool isEncoding_ = false;
 			QueuePreference queue_ = QueuePreference::GRAPHICS; // Dont know yet how to properly resolve this. will come with real use
 		};
-		//
 		struct WrapperSlot {
-			ToyCommandBuffer wrapper_{};
+			CommandBuffer wrapper_{};
 			VkCommandBuffer allocatedCmd_;
 			uint32_t gen_ = 1;
 		};
 		//
-		CommandBufferManager(VulkanCore& core, QueuePreference queue)
-			:
-			core_(core)
-			, queue_(queue)
-		{
-			VkCommandPool pool = core.GetCommandPool(queue);
-			if (pool == VK_NULL_HANDLE) { assert(false && "no commandPool"); };
-			VkCommandBufferAllocateInfo info{
-				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-					.pNext = nullptr,
-					.commandPool = pool,
-					.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, //yes, just primary
-					.commandBufferCount = kMax,
-			};
-			VkCommandBuffer m_buffers_[kMax];
-			VK_CHECK(vkAllocateCommandBuffers(core_.device_, &info, m_buffers_));
-
-			VkSemaphoreTypeCreateInfo semaphoreTypeInfo{};
-			semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
-			semaphoreTypeInfo.pNext = nullptr;
-			semaphoreTypeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-			semaphoreTypeInfo.initialValue = 0; // starting counter value
-
-			for (int i = 0; i < kMax; i++) {
-				commandBuffers_[i].allocatedCmd_ = m_buffers_[i];
-				commandBuffers_[i].wrapper_.isEncoding_ = false;
-				//core_.CreateFence(VkFenceCreateInfo{ .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = 0 }, commandBuffers_[i].wrapper_.fence_);
-				core_.CreateSemaphore(VkSemaphoreCreateInfo
-					{
-						.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-						.pNext = &semaphoreTypeInfo,
-						.flags = 0,
-					},
-					commandBuffers_[i].wrapper_.finishedSignalSemaphore.semaphore_
-					);
-			}
-		};
-		~CommandBufferManager() {
-			if (core_.device_ == VK_NULL_HANDLE) {
-				return;
-			}
-
-			// Conservative. You can remove this if the owner guarantees GPU work is complete.
-			vkDeviceWaitIdle(core_.device_);
-
-			VkCommandBuffer m_buffers_[kMax]{};
-
-			for (uint32_t i = 0; i < kMax; ++i) {
-				auto& wrapper = commandBuffers_[i].wrapper_;
-				assert(wrapper.isEncoding_ == false && "still encoding");
-
-				//if (wrapper.fence_ != VK_NULL_HANDLE) {
-				//	vkDestroyFence(core_.device_, wrapper.fence_, nullptr);
-				//	wrapper.fence_ = VK_NULL_HANDLE;
-				//}
-
-				if (wrapper.finishedSignalSemaphore.semaphore_ != VK_NULL_HANDLE) {
-					vkDestroySemaphore(core_.device_, wrapper.finishedSignalSemaphore.semaphore_, nullptr);
-					wrapper.finishedSignalSemaphore.semaphore_ = VK_NULL_HANDLE;
-				}
-
-				m_buffers_[i] = commandBuffers_[i].allocatedCmd_;
-				commandBuffers_[i].allocatedCmd_ = VK_NULL_HANDLE;
-				wrapper.isEncoding_ = false;
-			}
-
-			VkCommandPool pool = core_.GetCommandPool(queue_);
-			if (pool != VK_NULL_HANDLE) {
-				vkFreeCommandBuffers(core_.device_, pool, kMax, m_buffers_);
-			}
-		}
-		[[nodiscard]] CommandSubmitHandle acquire(uint32_t goal = 1)
-		{
-			WrapperSlot picked{};
-			uint32_t pickedIndex;
-
-			if (availableSlots == 0) { wait(); };
-			// just iterate to find first free
-			for (auto slot : commandBuffers_) {
-				if (slot.wrapper_.cmd == VK_NULL_HANDLE) {
-					picked = slot;
-				}
-				pickedIndex++;
-			}
-			picked.wrapper_.cmd = picked.allocatedCmd_;
-			picked.wrapper_.finishedSignalSemaphore.goal_ = goal;
-			availableSlots--;
-
-			VkCommandBufferBeginInfo beginInfo{
-				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-				.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
-			};
-
-			vkBeginCommandBuffer(picked.wrapper_.cmd, &beginInfo);
-			return CommandSubmitHandle{ .index_ = pickedIndex , .gen_ = picked.gen_ };
-		};
-		[[nodiscard]] ToyCommandBuffer GetCommandBuffer(CommandSubmitHandle handle) {
-			assert(handle.gen_ == commandBuffers_[handle.index_].gen_);
-			return commandBuffers_[handle.index_].wrapper_;
-		};
-		void reset(CommandSubmitHandle handle) {
-			auto& wrapper = get(handle);
-			wrapper.isEncoding_ = false;
-			//vkResetFences(core_.device_, 1, &wrapper.fence_);
-			vkResetCommandBuffer(wrapper.cmd, VkCommandBufferResetFlags{ 0 });
-			wrapper.cmd = VK_NULL_HANDLE;
-
-			auto& gen = commandBuffers_[handle.index_].gen_;
-			gen++;
-			// if overflowing set to 1. 
-			if (gen == 0) {
-				gen = 1;
-			}
-			availableSlots++;
-		};
-		void submit(CommandSubmitHandle handle) {
-			if (!validHandle(handle)) { assert(false && "invalid handle"); }
-			auto& wrapper_ = commandBuffers_[handle.index_].wrapper_;
-			vkEndCommandBuffer(wrapper_.cmd);
-			//VkQueue queue = wrapper.queue_ == QueuePreference::TRANSFER ? core_.transferQueue_ : core_.graphicsQueue_;
-			VkQueue queue = core_.graphicsQueue_; // defaultComamndPool_ routes to this queue so...
-
-
-			//WAITING ON
-			uint32_t waitSemaphoresCount = 0;
-			VkSemaphoreSubmitInfo waitSemaphores[2];
-			//
-			VkSemaphoreSubmitInfo signalFinishedSemaphoresSubmitInfo{
-				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-				.semaphore = wrapper_.finishedSignalSemaphore.semaphore_,
-				.value = wrapper_.finishedSignalSemaphore.goal_
-			};
-
-			VkCommandBufferSubmitInfo commandsSubmitInfo
-			{
-				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-				.pNext = nullptr,
-				.commandBuffer = wrapper_.cmd,
-				.deviceMask = 0
-			};
-
-			VkSubmitInfo2 submitInfo{
-				.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-				.pNext = nullptr,
-				.waitSemaphoreInfoCount = waitSemaphoresCount,
-				.pWaitSemaphoreInfos = waitSemaphores,
-				.commandBufferInfoCount = 1,
-				.pCommandBufferInfos = &commandsSubmitInfo,
-				.signalSemaphoreInfoCount = 1,
-				.pSignalSemaphoreInfos = &signalFinishedSemaphoresSubmitInfo
-			};
-			vkQueueSubmit2(queue, 1, &submitInfo, VK_NULL_HANDLE);
-			vkQueueWaitIdle(queue);
-
-			wrapper_.isEncoding_ = false;
-			m_lastSubmit = handle;
-		};
-		bool validHandle(CommandSubmitHandle handle) {
-			return handle.gen_ == commandBuffers_[handle.index_].gen_;
-		};
-		void purge() {
-			for (uint32_t i = 0; i << kMax; i++) {
-				auto& wrp = commandBuffers_[i].wrapper_;
-				if (wrp.cmd == VK_NULL_HANDLE || wrp.isEncoding_) { continue; }
-				uint64_t waitValue = wrp.finishedSignalSemaphore.goal_;
-				VkSemaphore semaphore = wrp.finishedSignalSemaphore.semaphore_;
-				VkSemaphoreWaitInfo waitInfo{
-					.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-					.pNext = nullptr,
-					.flags = 0,
-					.semaphoreCount = 1,
-					.pSemaphores = &semaphore,
-					.pValues = &waitValue,
-				};
-
-				vkWaitSemaphores(
-					core_.device_,
-					&waitInfo,
-					UINT64_MAX
-				);
-				reset({ .index_ = i, .gen_ = commandBuffers_[i].gen_ });
-			}
-		}
-		void wait(CommandSubmitHandle handle) {
-			auto wrp = GetCommandBuffer(handle);
-			if (wrp.cmd == VK_NULL_HANDLE || wrp.isEncoding_) { assert(false); }
-			uint64_t waitValue = wrp.finishedSignalSemaphore.goal_;
-			VkSemaphore semaphore = wrp.finishedSignalSemaphore.semaphore_;
-
-			VkSemaphoreWaitInfo waitInfo{
-				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-				.pNext = nullptr,
-				.flags = 0,
-				.semaphoreCount = 1,
-				.pSemaphores = &semaphore,
-				.pValues = &waitValue,
-			};
-			vkWaitSemaphores(core_.device_,
-				&waitInfo,
-				UINT64_MAX
-			);
-		};
-		void waitAll() {
-			VkSemaphore sems[kMax];
-			uint64_t goals[kMax];
-			uint32_t numSems = 0;
-
-			for (uint32_t i = 0; i << kMax; i++) {
-				auto& wrp = commandBuffers_[i].wrapper_;
-				if (wrp.cmd == VK_NULL_HANDLE || wrp.isEncoding_) { continue; }
-				goals[numSems] = wrp.finishedSignalSemaphore.goal_;
-				sems[numSems] = wrp.finishedSignalSemaphore.semaphore_;
-				numSems++;
-			};
-
-			VkSemaphoreWaitInfo waitInfo{
-				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-				.pNext = nullptr,
-				.flags = 0,
-				.semaphoreCount = numSems,
-				.pSemaphores = sems,
-				.pValues = goals,
-			};
-			vkWaitSemaphores(
-				core_.device_,
-				&waitInfo,
-				UINT64_MAX
-			);
-		};
+		CommandBufferManager(QueuePreference queue);;
+		~CommandBufferManager();
+		[[nodiscard]] CommandSubmitHandle acquire(uint32_t goal = 1);;
+		[[nodiscard]] CommandBuffer& GetCommandBuffer(CommandSubmitHandle handle);;
+		void submit(CommandSubmitHandle handle);;
+		bool validHandle(CommandSubmitHandle handle) const;
+		bool isReady(CommandSubmitHandle handle);
+		void wait(CommandSubmitHandle handle, uint64_t timeout = UINT64_MAX);
+		void waitAll();
+		void purge();
 	private:
+		void reset(CommandSubmitHandle handle);;
 		VulkanCore& core_;
 		static const uint32_t kMax = 64;
 		uint32_t availableSlots = kMax;
 		WrapperSlot commandBuffers_[kMax];
-		CommandSubmitHandle m_lastSubmit{};
+		CommandSubmitHandle m_lastSubmit{}; // not in use right now. used for creating linkedList for a faux dependency chain
 		QueuePreference queue_;
 	};
 	struct CommandSubmitHandle {
@@ -539,54 +312,8 @@ namespace smvk {
 	};
 
 
-
-	//
-	struct BufferCreateInfo {
-		VkDeviceSize size;
-		VmaMemoryUsage vma_usage;
-		VkBufferUsageFlags usage_flags;
-	};
-	struct ImageCreateInfo {
-		int texWidth;
-		int texHeight;
-		VkFormat format;
-		VkImageUsageFlags usage;
-		uint32_t levels;
-		uint32_t arrayLayers;
-		bool operator<(const ImageCreateInfo& other) const {
-			return std::tie(texWidth, texHeight, format, usage, levels, arrayLayers) <
-				std::tie(other.texWidth, other.texHeight, other.format,
-					other.usage, other.levels, other.arrayLayers);
-		}
-	};
-	struct IamgeViewCreateInfo {
-		VkImageViewCreateFlags     flags;
-		VkImage                    image;
-		VkImageViewType            viewType;
-		VkFormat                   format;
-		//VkComponentMapping         components;
-		//VkImageSubresourceRange    subresourceRange;
-	};
-	//using ImageViewCreateInfo = VkImageViewCreateInfo; // hacky
-	//struct ImageViewCreateInfo {};
-
-	struct SamplerCreateInfo {
-		VkFilter mag = VK_FILTER_LINEAR;
-		VkFilter min = VK_FILTER_LINEAR;
-		VkSamplerMipmapMode mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-		VkSamplerAddressMode u = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		VkSamplerAddressMode v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		VkSamplerAddressMode w = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		float maxLod = 1000.0f;
-		float maxAniso = 1.0f;
-		VkCompareOp compareOp = VK_COMPARE_OP_ALWAYS;
-		bool compareEnable = false;
-	};
-	using SamplerKey = SamplerCreateInfo;
-
 	struct PipelineCreateInfo {
-		//struct VertexFormatDesc {
-		//};
+
 		struct RasterSettings {
 			uint32_t depthClampEnable = VK_FALSE;
 			uint32_t rasterizerDiscardEnable = VK_FALSE;
@@ -595,7 +322,6 @@ namespace smvk {
 			uint32_t cullMode = VK_CULL_MODE_BACK_BIT;
 			VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 			uint32_t depthBiasEnable = VK_FALSE;
-			// Depth bias for shadowmaps.
 			float depthBiasConstant = 0.0f;
 			float depthBiasSlope = 1.0f; // This should be PCF radius https://mynameismjp.wordpress.com/2013/09/10/shadow-maps/
 
@@ -626,55 +352,36 @@ namespace smvk {
 		RasterSettings rasterSettings{};
 	};
 
-	using PipelineKey = PipelineCreateInfo;
-
-
 	// 4.6gb is good amount to reserver for 8gb vram system
 	// 2gb for Windows is good practice. And a little headroom for aux apps
 	struct Context {
 #ifdef USE_KTX
 		ktxVulkanDeviceInfo ktxInfo_;
-		const KtxVulkanDeviceInfo GetKtxInfo() { return ktxInfo_; };
+		const ktxVulkanDeviceInfo GetKtxInfo() { return ktxInfo_; };
 #endif
 		Context(VulkanCore& core);
-		~Context();
+		~Context();;
 		Context(const Context&) = delete;
 		Context& operator=(const Context&) = delete;
 		Context(Context&&) = delete;
 		Context& operator=(Context&&) = delete;
-		//s
+
 		int Initialize();
-		//
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
 		void ProcessDeferrredTasks(); //void Flush();
 		//
 		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
 		Holder<BufferHandle> CreateStagingBuffer(VkDeviceSize size);
-		//Holder<BufferHandle> CreateStagingBuffer(const void* srcData, VkDeviceSize size); //Creates a staging buffer and copies to it the data
 		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, void* data = nullptr, size_t dataSize = 0);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
-		Holder<DescriptorPoolHandle> CreateDescriptorPool(); // just hardcoded defaults for pool. 
-		Holder<DescriptorSetHandle> CreateDescriptorSet(DescriptorPoolHandle pool, VkDescriptorSetLayout& layout);
+		Holder<TextureHandle> CreateTexture(void* data, size_t dataSize);
 		//
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
-		//
-		void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset);
 		void CleanUp();
-		//
-		//void GetKtxDeviceInfo() {
-		//	ktxInfo_ = *ktxVulkanDeviceInfo_Create(
-		//		core.physicalDevice_,
-		//		core.device_,
-		//		/*core.GetTransferQueue()*/ VK_NULL_HANDLE,
-		//		// this maybe should be transfer queue. we only use ktx to upload tex.
-		//		// no blitting for mipmaps, which are generated offline
-		//		// runtime genreation for mipmaps in ktx seems to be not up to par with SOA
-		//		core.defaultCommandPool_,
-		//		NULL
-		//	);
-		//}
-
-	//private:
+#ifdef USE_KTX
+		void GetKtxDeviceInfo();
+#endif
+		//private:
 		Pool<Image, Image> images_;
 		Pool<Buffer, Buffer> buffers_;
 		Pool<ShaderModule, VkShaderModule> shaderModules_;
@@ -698,10 +405,7 @@ namespace smvk {
 	void destroy(Context* ctx, ShaderModuleHandle handle);
 	void destroy(Context* ctx, DescriptorPoolHandle handle);
 
-	struct PipelineCache {
-		std::map<PipelineKey, Holder<PipelineHandle>> pipelines_;
-	};
-
+	//
 	struct ShaderProgram {
 		Context& ctx_;
 		ShaderProgram(Context& ctx) : ctx_(ctx) {};
@@ -727,13 +431,12 @@ namespace smvk {
 			//info.frag = frag_;
 			info.layoutDescription;
 		};
-	private:
-		void CreatePipelineLayout(const PipelineCreateInfo::PipelineLayoutDesc& descIn, VkPipelineLayout& out);
-		void CreateDescriptorSetLayout(const PipelineCreateInfo::DescriptorSetDescription& descIn, VkDescriptorSetLayout& layout);
 	};
-
+	//VkCommandPool GetCommandPool(QueuePreference preferredQueue);
 };
 
+
+// In reality these should be added automatically by the rg
 inline void BufferBarrier(
 	VkCommandBuffer cmd,
 	VkBuffer buffer,
@@ -745,7 +448,8 @@ inline void BufferBarrier(
 	VkAccessFlags2 dstAccess
 );
 
-inline void TransitionImageLayout(
+
+inline void ImageBarrier(
 	VkCommandBuffer cmd,
 	VkImage image,
 	VkImageLayout oldLayout,
@@ -756,4 +460,98 @@ inline void TransitionImageLayout(
 	VkPipelineStageFlags2 dstStage,
 	VkAccessFlags2 dstAccess
 );
+// Not needed with barriers2
+//inline void TransitionImageLayout(
+//	VkCommandBuffer cmd,
+//	VkImage image,
+//	VkImageLayout oldLayout,
+//	VkImageLayout newLayout,
+//	VkImageSubresourceRange subresourceRange,
+//	VkPipelineStageFlags2 srcStage,
+//	VkAccessFlags2 srcAccess,
+//	VkPipelineStageFlags2 dstStage,
+//	VkAccessFlags2 dstAccess
+//);
+//
 
+
+
+namespace smvk {
+
+	class VulkanSwapchain {
+
+	public:
+
+		VulkanSwapchain(
+			Context& context,
+			GLFWwindow* window,
+			uint32_t framesInFlight,
+			uint32_t desiredImageCount
+		);
+		VulkanSwapchain(const VulkanSwapchain&) = delete;
+		VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
+		VulkanSwapchain(VulkanSwapchain&&) = delete;
+		VulkanSwapchain& operator=(VulkanSwapchain&&) = delete;
+		~VulkanSwapchain();
+
+		void Create() {
+			CreateSwapchain();
+			CreateImageViews();
+			CreateDepthResources();
+			CreateSyncObjects();
+		}
+		void Recreate();
+
+		// 
+		VkFormat GetImageFormat() const { return surfaceFormat_; }
+		VkFormat GetDepthImageFormat() const { return depthFormat_; }
+		VkExtent2D GetExtent() const { return extent_; }
+		uint32_t GetImageCount() const { return static_cast<uint32_t>(images_.size()); }
+		VkImage GetImage(uint32_t index) const { return images_.at(index); }
+		VkImageView GetImageView(uint32_t index) const { return imageViews_.at(index); }
+		VkImage GetCurrentImage() const { return images_.at(currentImageIndex_); }
+		VkImageView GetCurrentImageView() const { return imageViews_.at(currentImageIndex_); }
+		uint32_t GetCurrentImageIndex() const { return currentImageIndex_; }
+		uint32_t GetCurrentFrameIndex() const { return currentFrame_; }
+		VkSemaphore GetImageAvailableSemaphore() const { return imageAvailableSemaphores_.at(currentFrame_); }
+		VkFence GetInFlightFence() const { return inFlightFences_.at(currentFrame_); }
+		VkSemaphore GetRenderFinishedSemaphore(uint32_t imageIndex) const { return renderFinishedSemaphores_.at(imageIndex); }
+		ImageHandle GetDepthImage() const { return depthImage_; }
+		// 
+
+		void AdvanceFrame() { currentFrame_ = (currentFrame_ + 1) % framesInFlight_; }
+		void SetCurrentImageIndex(uint32_t imageIndex) { currentImageIndex_ = imageIndex; }
+
+	private:
+		Context& ctx_;
+		GLFWwindow* window_ = nullptr;
+		VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
+
+		Holder<ImageHandle> depthImage_{};
+		std::vector<VkImage> images_;
+		// these are external images that cannnot be represented by our Image obj
+		std::vector<VkImageView> imageViews_;
+		std::vector<VkSemaphore> renderFinishedSemaphores_;
+		std::vector<VkSemaphore> imageAvailableSemaphores_;
+		std::vector<VkFence> inFlightFences_;
+
+		VkFormat surfaceFormat_ = VK_FORMAT_UNDEFINED;
+		VkFormat depthFormat_ = VK_FORMAT_UNDEFINED;
+
+		VkExtent2D extent_{};
+		int windowWidth = 0;
+		int windowHeight = 0;
+		uint32_t framesInFlight_ = 0;
+		uint32_t desiredImageCount_ = 0;
+		uint32_t currentImageIndex_ = 0;
+		uint32_t currentFrame_ = 0;
+
+		void CreateSwapchain();
+		void CreateImageViews();
+		void CreateDepthResources();
+		void CreateSyncObjects();
+		void DestroySyncObjects();
+		void CleanupSwapchain();
+	};
+
+};

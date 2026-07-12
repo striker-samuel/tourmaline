@@ -6,8 +6,8 @@
 #include <Engine/Scene/scene.h>
 #include <Engine/Renderer/vertex.h>
 
-using MeshHandle = Handle<struct Mesh>;
-using namespace smvk;
+using MeshHandle = smvk::Handle<struct Mesh>;
+using MaterialHandle = smvk::Handle<struct Material>;
 
 struct Mesh {
 	struct DataUpload {
@@ -34,18 +34,14 @@ struct Mesh {
 	std::vector<Surface> surfaces;
 };
 
-using MaterialHandle = Handle<struct Material>;
-
 
 struct Material {
 	// this is bad
 	struct Textures {
-		TextureHandle diffuse{};
-		TextureHandle specular{};
-		TextureHandle opacity{};
-		// NormalMap could need specialization or just stablish
-		// a good defualt for the whole renderere and just support one type.
-		TextureHandle normal{};
+		smvk::TextureHandle diffuse{};
+		smvk::TextureHandle specular{};
+		smvk::TextureHandle opacity{};
+		smvk::TextureHandle normal{};
 	} textures_;
 	struct Values {
 		// Color *=
@@ -70,21 +66,20 @@ struct MeshManager {
 	VmaVirtualBlock index_blk;
 	VmaVirtualBlock vertex_units_blk; // this is hacked to be 1wide to index into vertexPos and shadingBuffe
 
-	Pool<Mesh, Mesh> meshes;
-	Pool<Material, Material> materials;
-
+	smvk::Pool<Mesh, Mesh> meshes;
+	smvk::Pool<Material, Material> materials;
 	// this is bad because there are more vertex formats that may not be like this
-	Holder<BufferHandle> indexBuffer;
-	Holder<BufferHandle> vertexPosBuffer;
-	Holder<BufferHandle> vertexShadingBuffer;
+	smvk::Holder<smvk::BufferHandle> indexBuffer;
+	smvk::Holder<smvk::BufferHandle> vertexPosBuffer;
+	smvk::Holder<smvk::BufferHandle> vertexShadingBuffer;
 
 	MeshHandle UploadVertexData(Mesh::DataUpload& mesh_data);
 	MaterialHandle CreateMaterial(Material::Textures textures);
 
 	void InitalizeGeoBuffers();
 
-	std::vector<BufferHandle> GetVertexBuffers() {
-		return std::vector<BufferHandle>{
+	std::vector<smvk::BufferHandle> GetVertexBuffers() {
+		return std::vector<smvk::BufferHandle>{
 			indexBuffer,
 				vertexPosBuffer,
 				vertexShadingBuffer,
@@ -153,7 +148,7 @@ struct MeshManager {
 
 		auto staging_h = ctx_.CreateStagingBuffer(geometry_data.indices.data(), indexBytes);
 		auto staging = ctx_.buffers_.get(staging_h);
-		ctx_.copyBuffer(staging->buffer, ctx_.buffers_.get(indexBuffer)->buffer, indexBytes, 0, index_offset_bytes);
+		ctx_.Copy(staging->buffer, ctx_.buffers_.get(indexBuffer)->buffer, indexBytes, 0, index_offset_bytes);
 		destroy(&ctx_, staging_h);
 	}
 
