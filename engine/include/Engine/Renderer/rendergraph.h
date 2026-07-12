@@ -10,16 +10,16 @@ namespace smvk {
 
 	using ImageKey = ImageCreateInfo;
 	//using BufferKey = BufferCreateInfo;
-	using ImageViewKey = ImageViewCreateInfo;
-
 	// This could be better yes
 	// no acces qualifiers tho hmmm
 	struct BufferKey {
 		size_t elementSize;
 		size_t elementCount;
 	};
+	using ImageViewKey = ImageViewCreateInfo;
 
-	struct ToyFrameBuffer {
+
+	struct FrameBuffer {
 		uint32_t frameIndex = 0; // Maybe end os uint32_ to catch for unitialized? this value can only be ip to SWAPCHAIN_IMAGE_COUNT
 		VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 		VulkanSwapchain& swapchain;
@@ -225,7 +225,7 @@ namespace smvk {
 		void TopoSort() {};
 		void Resolve() {};
 
-		void Execute(ToyFrameBuffer& fb) {
+		void Execute(FrameBuffer& fb) {
 
 			Resolve();
 

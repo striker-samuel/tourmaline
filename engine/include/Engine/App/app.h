@@ -26,8 +26,7 @@ namespace smvk {
 
 	class VulkanApp {
 	public:
-		std::unique_ptr<VulkanCore> core_;
-		Input input;
+		Input m_input{};
 		VulkanApp();
 		virtual ~VulkanApp();
 		virtual void DrawFrame() = 0;
@@ -40,20 +39,18 @@ namespace smvk {
 		VulkanCore& GetCore();
 		const VulkanCore& GetCore() const;
 	protected:
-		Context* m_context = nullptr;
+		std::unique_ptr<VulkanCore> core_;
+		std::unique_ptr<Context> m_context;
 		std::unique_ptr<RenderGraph> m_rendergraph;
+		std::unique_ptr<VulkanSwapchain> m_swapchain;
+		//std::unique_ptr < ImGuiContext> m_imguiCtx;
 		ImGuiContext* m_imguiCtx = nullptr;
-		VulkanSwapchain* m_swapchain = nullptr;
-		VkSurfaceKHR m_surface;
-
 #pragma region ===[ App / Core State ]===
-
 		// This needs rework. naive float for elpased time leads to problems in the long run!
 		float delta_time_s = .0f;
 		float time_since_start_s = .0f;
 
 		glm::mat4 frozenMainView = {};
-
 #pragma endregion
 
 #pragma region ===[ GLFW / Window State ]===
@@ -111,7 +108,7 @@ namespace smvk {
 		);
 
 #pragma endregion
-		ToyFrameBuffer AcquireFramebuffer();
-		void EndAndPresentFramebuffer(ToyFrameBuffer& cb);
+		FrameBuffer AcquireFramebuffer();
+		void EndAndPresentFramebuffer(FrameBuffer& cb);
 	};
 };

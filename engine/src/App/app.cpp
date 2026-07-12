@@ -1,9 +1,8 @@
 #include <Engine/App/app.h>
 
+using namespace smvk; // cleanup later dont just pump using here
 
-VulkanCore& VulkanApp::GetCore() { return *core_; }
-const VulkanCore& VulkanApp::GetCore() const { return *core_; }
-VulkanApp::VulkanApp() : core_(std::make_unique<VulkanCore>()) {}
+VulkanApp::VulkanApp(){}
 VulkanApp::~VulkanApp() = default;
 
 void VulkanApp::InitializeImGui() {
@@ -14,14 +13,12 @@ void VulkanApp::InitializeImGui() {
 	ImGuiIO& io = ImGui::GetIO(); (void)io;
 	//io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Control	ImGui::SetCurrentContext(imgui_ctx);
-
 	// Clipboard via GLFW (optional but nice)
 	io.SetClipboardTextFn = [](void*, const char* text) { glfwSetClipboardString(nullptr, text); };
 	io.GetClipboardTextFn = [](void*) { return glfwGetClipboardString(nullptr); };
 
-	auto& vk_core = GetCore();
-	auto dp_h = m_context->CreateDescriptorPool();
-	auto im_dp = m_context->descriptorPools_.get(dp_h);
+	//auto dp_h = m_context->CreateDescriptorPool();
+	//auto im_dp = m_context->descriptorPools_.get(dp_h);
 
 	VkPipelineRenderingCreateInfo pipeline_create{
 		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
@@ -93,19 +90,17 @@ bool VulkanApp::Initialize() {
 	glfwSetWindowUserPointer(window, this);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
-
-	auto& vk_core = GetCore();
-	if (glfwCreateWindowSurface(vk_core.instance_, window, nullptr, surface_) !=
+	if (glfwCreateWindowSurface(vk_core.GetInstance(), window, nullptr, m_surface) !=
 		VK_SUCCESS) {
 		throw std::runtime_error("failed to create window surface!");
 	}
-	vk_core.Init();
+	vk_core = std::make_unique<VulkanCore>(&window);
 
-	SwapChainSupportDetails swapChainSupport = querySwapChainSupport(vk_core.physicalDevice_, vk_core.surface_);
-	VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
+	//SwapChainSupportDetails swapChainSupport = querySwapChainSupport(vk_core.physicalDevice_, vk_core.surface_);
+	//VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
 
 	// SWAPCHAIN
-	m_swapchain = new VulkanSwapchain(
+	m_swapchain = std::make_unique<VulkanSwapchain>(
 		*m_context,
 		window,
 		static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT),
@@ -114,31 +109,16 @@ bool VulkanApp::Initialize() {
 	InitializeImGui();
 
 	// FRAME COMMAND 
-	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(vk_core.physicalDevice_, vk_core.surface_);
-	VkCommandPoolCreateInfo poolInfo{
-		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-		.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
-	};
-
-	for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
-		if (vkCreateCommandPool(vk_core.device_, &poolInfo, nullptr, &perFrameCommandPools[fn]) !=
-			VK_SUCCESS) {
-			throw std::runtime_error("failed to create graphics command pool!");
-		}
-	}
-
 	// We do pool per frame, because reset pool is faster than reseting indiviual commandBuffers.
 	// Also frame is a good lifetime unit/boundary of course!
-	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-		VkCommandBufferAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-		allocInfo.commandPool = perFrameCommandPools[i];
-		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		allocInfo.commandBufferCount = 1;
-
-		VK_CHECK(vkAllocateCommandBuffers(vk_core.device_, &allocInfo, &commandBuffers[i]));
-	}
+	//for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+	//	VkCommandBufferAllocateInfo allocInfo{};
+	//	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	//	allocInfo.commandPool = perFrameCommandPools[i];
+	//	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	//	allocInfo.commandBufferCount = 1;
+	//	VK_CHECK(vkAllocateCommandBuffers(vk_core.device_, &allocInfo, &commandBuffers[i]));
+	//}
 
 	m_rendergraph = std::make_unique<RenderGraph>(*m_context);
 	return true;
@@ -161,19 +141,17 @@ bool VulkanApp::Run() {
 
 void VulkanApp::CleanUp() {
 
-	vkDeviceWaitIdle(core.device_);
-	swapchain->CleanupSwapchain();
-
+	vkDeviceWaitIdle(device_);
+	m_swapchain->CleanupSwapchain();
 	// 
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		// destroying the pool fress the commandBuffers too
-		vkDestroyCommandPool(core.device_, perFrameCommandPools[i], nullptr);
+		vkDestroyCommandPool(device_, perFrameCommandPools[i], nullptr);
 	}
-	context->CleanUp();
+	m_context->CleanUp();
 
-	vkDestroyDevice(core.device_, nullptr);
-
-	if (core.surface_ != VK_NULL_HANDLE)
+	vkDestroyDevice(device_, nullptr);
+	if (m_surface_ != VK_NULL_HANDLE)
 	{
 		glfwDestroyWindow(window);
 		vkDestroySurfaceKHR(core.instance_, core.surface_, nullptr);
@@ -213,7 +191,7 @@ inline void VulkanApp::UpdateDeltaTime() {
 
 void VulkanApp::MainLoop() {
 	while (!glfwWindowShouldClose(window)) {
-		input.beginFrame();
+		m_input.beginFrame();
 
 		glfwPollEvents();
 		EarlyUpdate();
@@ -236,7 +214,7 @@ void VulkanApp::keyCallback(
 	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
 
 	if (app) {
-		app->input.onKey(key, scancode, action, mods);
+		app->m_input.onKey(key, scancode, action, mods);
 	}
 }
 
@@ -250,7 +228,7 @@ void VulkanApp::mouseButtonCallback(
 	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
 
 	if (app) {
-		app->input.onMouseButton(button, action, mods);
+		app->m_input.onMouseButton(button, action, mods);
 	}
 }
 
@@ -263,7 +241,7 @@ void VulkanApp::cursorPositionCallback(
 	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
 
 	if (app) {
-		app->input.onCursorMove(xpos, ypos);
+		app->m_input.onCursorMove(xpos, ypos);
 	}
 }
 
@@ -276,7 +254,7 @@ void VulkanApp::scrollCallback(
 	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
 
 	if (app) {
-		app->input.onScroll(xoffset, yoffset);
+		app->m_input.onScroll(xoffset, yoffset);
 	}
 }
 
@@ -289,7 +267,7 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 
 #pragma endregion
 
-ToyFrameBuffer VulkanApp::AcquireFramebuffer()
+smvk::FrameBuffer VulkanApp::AcquireFramebuffer()
 {
 	vkWaitForFences(
 		core.device_,
@@ -365,57 +343,50 @@ ToyFrameBuffer VulkanApp::AcquireFramebuffer()
 	return frameBufferContext_;
 }
 
-void VulkanApp::EndAndPresentFramebuffer(ToyFrameBuffer& fb)
+void VulkanApp::EndAndPresentFramebuffer(FrameBuffer& fb)
 {
-	VkImageMemoryBarrier barrierToPresent{};
-	barrierToPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrierToPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	barrierToPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-	barrierToPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	barrierToPresent.dstAccessMask = 0;
-	barrierToPresent.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrierToPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrierToPresent.image = swapchain->GetCurrentImage();
-	barrierToPresent.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	barrierToPresent.subresourceRange.baseMipLevel = 0;
-	barrierToPresent.subresourceRange.levelCount = 1;
-	barrierToPresent.subresourceRange.baseArrayLayer = 0;
-	barrierToPresent.subresourceRange.layerCount = 1;
 
-	vkCmdPipelineBarrier(
+	ImageBarrier(
 		fb.commandBuffer,
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		0,
-		0, nullptr,
-		0, nullptr,
-		1, &barrierToPresent
-	);
+		m_swapchain->GetCurrentImage(),
+		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		{ // maybe the api surface should specialize subresoruces to avoid having to think about this
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		},
+		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+		VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+		VK_PIPELINE_STAGE_2_NONE,
+		VK_ACCESS_2_NONE
 
+		);
+
+	// 
 	if (vkEndCommandBuffer(fb.commandBuffer) != VK_SUCCESS) {
 		throw std::runtime_error("failed to record command buffer!");
 	}
 
 	VkSubmitInfo submitInfo{};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-	VkSemaphore waitSemaphores[] = { swapchain->imageAvailableSemaphores_[swapchain->currentFrame_] };
+	VkSemaphore waitSemaphores[] = { m_swapchain->imageAvailableSemaphores_[swapchain->currentFrame_] };
 	VkPipelineStageFlags waitStages[] = {
 		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 	submitInfo.waitSemaphoreCount = 1;
 	submitInfo.pWaitSemaphores = waitSemaphores;
 	submitInfo.pWaitDstStageMask = waitStages;
-
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &fb.commandBuffer;
-
 	VkSemaphore signalSemaphores[] = { swapchain->renderFinishedSemaphores_[swapchain->currentFrame_] };
 	submitInfo.signalSemaphoreCount = 1;
 	submitInfo.pSignalSemaphores = signalSemaphores;
 
 	if (
 		vkQueueSubmit(
-			core.graphicsQueue_,
+			GetGraphicsQueue(),
 			1,
 			&submitInfo,
 			swapchain->GetInFlightFence()
@@ -425,18 +396,17 @@ void VulkanApp::EndAndPresentFramebuffer(ToyFrameBuffer& fb)
 		throw std::runtime_error("failed to submit draw command buffer!");
 	}
 
+	//
 	VkPresentInfoKHR presentInfo{};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
 	presentInfo.waitSemaphoreCount = 1;
 	presentInfo.pWaitSemaphores = signalSemaphores;
-
 	VkSwapchainKHR swapChains[] = { swapchain->swapchain_ };
 	presentInfo.swapchainCount = 1;
 	presentInfo.pSwapchains = swapChains;
 	presentInfo.pImageIndices = &swapchain->currentImageIndex_;
 
-	VkResult result = vkQueuePresentKHR(core.presentQueue_, &presentInfo);
+	VkResult result = vkQueuePresentKHR(GetPresentQueue(), &presentInfo);
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
 		framebufferResized) {
@@ -446,6 +416,7 @@ void VulkanApp::EndAndPresentFramebuffer(ToyFrameBuffer& fb)
 	else if (result != VK_SUCCESS) {
 		throw std::runtime_error("failed to present swap chain image!");
 	}
+	//
 
 	swapchain->AdvanceFrame();
 }

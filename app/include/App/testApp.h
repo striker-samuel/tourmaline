@@ -75,8 +75,8 @@ struct Level : Scene {
 };
 
 struct AppResources {
-	LogicalBuffer frameUniformsBuffer{};
-	LogicalBuffer drawDataBuffer{};
+	smvk::LogicalBuffer frameUniformsBuffer{};
+	smvk::LogicalBuffer drawDataBuffer{};
 	//ShaderProgram defaultMainView{};
 };
 
@@ -86,6 +86,7 @@ public:
 	TestApp() { Initialize(); };
 	~TestApp() {};
 private:
+	uint32_t kMaxDraws = 1000;
 
 	void UpdateCamera(float dt);
 	//
@@ -113,84 +114,23 @@ private:
 		);
 		//
 		std::filesystem::path p(gltf_meshes_paths[0]);
-		//
 		m_currentLevel.m_meshManagerPimpl = m_meshManagerPimpl.get();
 		m_currentLevel.Upload(p);
 		m_currentLevel.static_tree = treeFromScene(m_currentLevel,
 			[&](uint32_t index) -> const Mesh& {return this->m_meshManagerPimpl->meshes.objects_[index].obj_; }
 		);
 		m_currentLevel.tree_done = true;
-		// 
+
 		auto rg = m_rendergraph.get();
 		m_resources.frameUniformsBuffer = rg->AddBuffer<FrameUniforms>(1); //frames in flight ring access? how to semantically say that this should be inifr
-		m_resources.drawDataBuffer = rg->AddBuffer<DrawSetData>(MAX_DRAWS); // this is storage
-		//
+		m_resources.drawDataBuffer = rg->AddBuffer<DrawSetData>(kMaxDraws); // this is storage
 		return true;
 	};
 
-	void UpdateBindlessTexturesSets() {
-
-		//const uint32_t materialCount = static_cast<uint32_t>(m_meshManagerPimpl.materials.numObjects());
-
-		//std::vector<VkDescriptorImageInfo> imageInfos;
-		//std::vector<VkDescriptorImageInfo> samplerInfos;
-
-		//int count = (textures_.numObjects());
-		//imageInfos.reserve(count);
-		//samplerInfos.reserve(count);
-		////textures_.forEach([&](Image obj_)
-		//for (auto textureHandle : textures_)
-		//{
-		//	auto obj_ = context->images_.get(textureHandle);
-		//	VkDescriptorImageInfo ii{};
-		//	ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-		//	ii.imageView = obj_->sampleView;
-		//	ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		//	imageInfos.push_back(ii);
-
-		//	// Sampler for the bindless texure approach needs refacotr.
-		//	// Doesnt Really make sense.
-		//	VkDescriptorImageInfo si{};
-		//	si.sampler = obj_->sampler;
-		//	si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
-		//	si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
-		//	samplerInfos.push_back(si);
-		//}
-		//	);
-
-		//	for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; frameIndex++) {
-		//		//// --- Two writes: images at index 2, samplers at index 3 ---
-		//		VkWriteDescriptorSet writes[2]{};
-
-		//		auto setHandle = perFrameData[frameIndex].frameDescriptorSet;
-		//		auto set = context->descriptorSets_.get(setHandle);
-
-		//		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		//		writes[0].dstSet = set->set;
-		//		writes[0].dstBinding = 2;
-		//		writes[0].dstArrayElement = 0;
-		//		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		//		writes[0].descriptorCount = imageInfos.size();
-		//		writes[0].pImageInfo = imageInfos.data();
-
-		//		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		//		writes[1].dstSet = set->set;
-		//		writes[1].dstBinding = 3;
-		//		writes[1].dstArrayElement = 0;
-		//		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-		//		writes[1].descriptorCount = static_cast<uint32_t>(samplerInfos.size());   // or 1 if you use a single shared sampler
-		//		writes[1].pImageInfo = samplerInfos.data();
-
-		//		vkUpdateDescriptorSets(core.device_, 2, writes, 0, nullptr);
-		//	}
-
-	}
-
-
 	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame) {
 
-		int width_ = swapchain->GetExtent().width;
-		int height_ = swapchain->GetExtent().height;
+		int width_ = m_swapchain->GetExtent().width;
+		int height_ = m_swapchain->GetExtent().height;
 
 		auto view = m_camera.getViewMatrix();
 		auto proj = m_camera.getProjMatrix();
@@ -218,8 +158,7 @@ private:
 		data.farPlane = 0.f;
 		data.exposure = 0.f;
 
-		// reowrk this
-		context->UploadDataToBuffer(
+		m_context->UploadDataToBuffer(
 			m_resources.frameUniformsBuffer.resolvedBufferHandle,
 			&data,
 			sizeof(FrameUniforms)/* * 1*/,
@@ -241,7 +180,7 @@ private:
 	}
 
 
-	void RenderFrame(ToyFrameBuffer fb) {
+	void RenderFrame(smvk::ToyFrameBuffer fb) {
 
 		auto frameData = UpdateFrameUniforms(fb.swapchain.GetCurrentFrameIndex());
 		//ImGuiScopedFrame uiFrame;

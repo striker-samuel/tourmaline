@@ -178,6 +178,9 @@ namespace smvk {
 namespace smvk {
 
 
+	VkQueue GetGraphicsQueue(); // really hacky Only needed becuse app.cpp has presetn code and needs it
+	VkQueue GetPresentQueue(); // really hacky Only needed becuse app.cpp has presetn code and needs it
+
 	// Just VK_1_3 for the moment, should be more than ok
 	// https://asawicki.info/articles/state_of_gpu_hardware_2025.php 
 	enum VulkanVersion {
@@ -196,12 +199,12 @@ namespace smvk {
 	};
 	//
 	using ImageHandle = Handle<struct Image>; // Attachments
+	using TextureHandle = Handle<struct Image>; // ...
 	using PipelineHandle = Handle<struct Pipeline>;
 	using BufferHandle = Handle<struct Buffer>;
 	using ShaderModuleHandle = Handle<struct ShaderModule>;
-	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
-	using DescriptorSetHandle = Handle<struct DescriptorSet>;
-	using TextureHandle = Handle<struct Image>; //
+	//using DescriptorPoolHandle = Handle<struct DescriptorPool>;
+	//using DescriptorSetHandle = Handle<struct DescriptorSet>;
 
 	struct VulkanCore {
 		struct CoreConfiguration {
@@ -212,6 +215,7 @@ namespace smvk {
 		} config_;
 		//
 		VkFormat m_depthFormat = VK_FORMAT_UNDEFINED; // at least main view format
+		VkSurfaceKHR m_surface = VK_NULL_HANDLE;
 
 		// Enviroment Descriptions
 		VkPhysicalDeviceDriverProperties vkPhysicalDeviceDriverProperties_ = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES, nullptr };
@@ -249,7 +253,7 @@ namespace smvk {
 
 	public:
 
-		VulkanCore(CoreConfiguration config) :config_(config) {};
+		VulkanCore(CoreConfiguration config = {}, GLFWwindow* window = nullptr) :config_(config) {};
 		VulkanCore(const VulkanCore&) = delete;
 		VulkanCore& operator=(const VulkanCore&) = delete;
 		VulkanCore(VulkanCore&&) = delete;
@@ -265,6 +269,11 @@ namespace smvk {
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
 		void CreateShaderModule(const std::vector<char>& code, VkShaderModule& out);
 		void CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view);
+
+		void CreateCommandPool(QueuePreference queue, VkCommandPoolCreateFlags flags, VkCommandPool& out);
+		// really hacky
+		VkInstance& GetInstance();
+
 	};
 
 	struct CommandBufferManager {
@@ -360,7 +369,7 @@ namespace smvk {
 		const ktxVulkanDeviceInfo GetKtxInfo() { return ktxInfo_; };
 #endif
 		Context(VulkanCore& core);
-		~Context();;
+		~Context();
 		Context(const Context&) = delete;
 		Context& operator=(const Context&) = delete;
 		Context(Context&&) = delete;
@@ -403,7 +412,7 @@ namespace smvk {
 	void destroy(Context* ctx, ImageHandle handle);
 	void destroy(Context* ctx, BufferHandle handle);
 	void destroy(Context* ctx, ShaderModuleHandle handle);
-	void destroy(Context* ctx, DescriptorPoolHandle handle);
+	//void destroy(Context* ctx, DescriptorPolHandle handle);
 
 	//
 	struct ShaderProgram {
@@ -448,7 +457,7 @@ inline void BufferBarrier(
 	VkAccessFlags2 dstAccess
 );
 
-
+// this covers image transitions as well sycn2 mandted.
 inline void ImageBarrier(
 	VkCommandBuffer cmd,
 	VkImage image,
@@ -460,20 +469,6 @@ inline void ImageBarrier(
 	VkPipelineStageFlags2 dstStage,
 	VkAccessFlags2 dstAccess
 );
-// Not needed with barriers2
-//inline void TransitionImageLayout(
-//	VkCommandBuffer cmd,
-//	VkImage image,
-//	VkImageLayout oldLayout,
-//	VkImageLayout newLayout,
-//	VkImageSubresourceRange subresourceRange,
-//	VkPipelineStageFlags2 srcStage,
-//	VkAccessFlags2 srcAccess,
-//	VkPipelineStageFlags2 dstStage,
-//	VkAccessFlags2 dstAccess
-//);
-//
-
 
 
 namespace smvk {

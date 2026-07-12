@@ -8,11 +8,9 @@ const bool enableValidationLayers = true;
 #endif
 //
 
-static inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
+
+// anonymous namepsace is like static but can hold types
 namespace {
-	static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
-
-
 	// Buffers will be pushed in pc block with deviceAddress
 	// The rest will be bindless with fixed bindign#
 	// This bindless model is lifted from lightweightVK aproach
@@ -21,6 +19,10 @@ namespace {
 		kBinding_Samplers = 1,
 	};
 
+};
+
+namespace {
+	static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
 	[[nodiscard]] std::vector<const char*> getRequiredExtensionsForGlfw();
 	[[nodiscard]] smvk::SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
 	[[nodiscard]] smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
@@ -43,8 +45,11 @@ static VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
 static VkQueue transferQueue_ = VK_NULL_HANDLE;
+//
 static VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
 static VkCommandPool transferCommandPool_ = VK_NULL_HANDLE;
+//
+static inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
 //
 VkCommandPool GetCommandPool(smvk::QueuePreference preferredQueue)
 {
@@ -133,7 +138,7 @@ bool smvk::VulkanCore::Init(VkSurfaceKHR* surface) {
 		vkEnumeratePhysicalDevices(instance_, &deviceCount, devices.data());
 
 		for (const auto& device : devices) {
-			if (isDeviceSuitable(device, surface_)) {
+			if (isDeviceSuitable(device, m_surface)) {
 				physicalDevice_ = device;
 				break;
 			}
@@ -147,8 +152,7 @@ bool smvk::VulkanCore::Init(VkSurfaceKHR* surface) {
 
 		// Create Logical Device
 		{
-			QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
-
+			QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, m_surface);
 			std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
 			std::set<uint32_t> uniqueQueueFamilies = {
 				indices.graphicsFamily.value(),
@@ -279,7 +283,23 @@ void smvk::VulkanCore::CreateShaderModule(const std::vector<char>& code, VkShade
 		VK_SUCCESS) {
 		throw std::runtime_error("failed to create shader module!");
 	}
-};
+}
+inline void smvk::VulkanCore::CreateCommandPool(QueuePreference queue, VkCommandPoolCreateFlags flags, VkCommandPool& out) {
+	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice_, surface_);
+	VkCommandPoolCreateInfo poolInfo{
+		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+		.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
+	};
+
+	for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
+		if (vkCreateCommandPool(vk_core.device_, &poolInfo, nullptr, &perFrameCommandPools[fn]) !=
+			VK_SUCCESS) {
+			throw std::runtime_error("failed to create graphics command pool!");
+		}
+	}
+}
+inline VkInstance& smvk::VulkanCore::GetInstance() { return instance_; };
 VkFormat smvk::VulkanCore::GetDepthFormat() { return m_depthFormat; };
 int smvk::Context::Initialize(
 ) {
@@ -1179,8 +1199,8 @@ inline void smvk::VulkanSwapchain::Recreate() {
 	currentImageIndex_ = 0;
 }
 inline void smvk::VulkanSwapchain::CreateSwapchain() {
-	SwapChainSupportDetails support = querySwapChainSupport(physicalDevice_, surface_);
 
+	SwapChainSupportDetails support = querySwapChainSupport(physicalDevice_, surface_);
 	VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(support.formats);
 	VkExtent2D swapExtent = chooseSwapExtent(support.capabilities, window_);
 	VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
@@ -1328,21 +1348,21 @@ inline void smvk::VulkanSwapchain::CreateSyncObjects() {
 inline void smvk::VulkanSwapchain::DestroySyncObjects() {
 	for (VkSemaphore semaphore : renderFinishedSemaphores_) {
 		if (semaphore != VK_NULL_HANDLE) {
-			vkDestroySemaphore(ctx_.core.device_, semaphore, nullptr);
+			vkDestroySemaphore(device_, semaphore, nullptr);
 		}
 	}
 	renderFinishedSemaphores_.clear();
 
 	for (VkSemaphore semaphore : imageAvailableSemaphores_) {
 		if (semaphore != VK_NULL_HANDLE) {
-			vkDestroySemaphore(ctx_.core.device_, semaphore, nullptr);
+			vkDestroySemaphore(device_, semaphore, nullptr);
 		}
 	}
 	imageAvailableSemaphores_.clear();
 
 	for (VkFence fence : inFlightFences_) {
 		if (fence != VK_NULL_HANDLE) {
-			vkDestroyFence(ctx_.core.device_, fence, nullptr);
+			vkDestroyFence(device_, fence, nullptr);
 		}
 	}
 	inFlightFences_.clear();
@@ -1368,3 +1388,6 @@ inline void smvk::VulkanSwapchain::CleanupSwapchain() {
 	}
 }
 //
+// TODO :: Remove this. leaking implementation.
+VkQueue smvk::GetGraphicsQueue() { return graphicsQueue_; };
+VkQueue smvk::GetPresentQueue() { return presentQueue_; };
