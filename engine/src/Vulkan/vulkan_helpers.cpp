@@ -71,17 +71,17 @@ VkFormat findSupportedFormat(
 	VkImageTiling tiling,
 	VkFormatFeatureFlags features
 ) {
-	for (VkFormat format : candidates) {
+	for (VkFormat vk_format : candidates) {
 		VkFormatProperties props;
-		vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &props);
+		vkGetPhysicalDeviceFormatProperties(physicalDevice, vk_format, &props);
 
 		if (tiling == VK_IMAGE_TILING_LINEAR &&
 			(props.linearTilingFeatures & features) == features) {
-			return format;
+			return vk_format;
 		}
 		else if (tiling == VK_IMAGE_TILING_OPTIMAL &&
 			(props.optimalTilingFeatures & features) == features) {
-			return format;
+			return vk_format;
 		}
 	}
 
@@ -260,7 +260,7 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface, const std::
 VkSurfaceFormatKHR chooseSwapSurfaceFormat(
 	const std::vector<VkSurfaceFormatKHR>& availableFormats) {
 	for (const auto& availableFormat : availableFormats) {
-		if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
+		if (availableFormat.vk_format == VK_FORMAT_B8G8R8A8_SRGB &&
 			availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
 			return availableFormat;
 		}

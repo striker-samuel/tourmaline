@@ -138,7 +138,7 @@ namespace smvk {
 		RenderPass& AddPass(RenderPass renderPass) { return m_passes_.emplace_back(renderPass); }
 
 		LogicalImage AddImage(ImageCreateInfo description) { assert(false); };
-		LogicalImage AddImage(VkImage image) { assert(false); };
+		LogicalImage AddImage(VkImage vk_image) { assert(false); };
 		LogicalImageView AddImageView(ImageViewCreateInfo description);
 		LogicalImageView AddImageView(VkImageView view) {
 			LogicalImageView proxyView{};
@@ -164,7 +164,7 @@ namespace smvk {
 		};
 
 		LogicalImage AddExternalImage(ImageHandle imageHandle) {
-			auto image = ctx_.images_.get(imageHandle);
+			auto vk_image = ctx_.images_.get(imageHandle);
 			LogicalImage proxy{
 				.id = m_images_.size(),
 				.resolvedImage = imageHandle
@@ -204,7 +204,7 @@ namespace smvk {
 		) {
 			std::vector<VkFormat> colorAttachmentFormats;
 			for (auto cattach : pass.colorAttachments_) {
-				colorAttachmentFormats.push_back(cattach.view.key.format);
+				colorAttachmentFormats.push_back(cattach.view.key.vk_format);
 			}
 
 			return VkPipelineRenderingCreateInfo{

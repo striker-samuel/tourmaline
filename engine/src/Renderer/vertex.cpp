@@ -24,27 +24,27 @@ std::array<VkVertexInputAttributeDescription, 5> Vertex::getAttributeDescription
 
 	attributeDescriptions[0].binding = 0;
 	attributeDescriptions[0].location = 0;
-	attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+	attributeDescriptions[0].vk_format = VK_FORMAT_R32G32B32_SFLOAT;
 	attributeDescriptions[0].offset = offsetof(VertexPos, pos);
 
 	attributeDescriptions[1].binding = 1;
 	attributeDescriptions[1].location = 1;
-	attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+	attributeDescriptions[1].vk_format = VK_FORMAT_R32G32B32_SFLOAT;
 	attributeDescriptions[1].offset = offsetof(VertexShading, color);
 
 	attributeDescriptions[2].binding = 1;
 	attributeDescriptions[2].location = 2;
-	attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+	attributeDescriptions[2].vk_format = VK_FORMAT_R32G32_SFLOAT;
 	attributeDescriptions[2].offset = offsetof(VertexShading, texCoord);
 
 	attributeDescriptions[3].binding = 1;
 	attributeDescriptions[3].location = 3;
-	attributeDescriptions[3].format = VK_FORMAT_R32G32B32_SFLOAT;
+	attributeDescriptions[3].vk_format = VK_FORMAT_R32G32B32_SFLOAT;
 	attributeDescriptions[3].offset = offsetof(VertexShading, normal);
 
 	attributeDescriptions[4].binding = 1;
 	attributeDescriptions[4].location = 4;
-	attributeDescriptions[4].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+	attributeDescriptions[4].vk_format = VK_FORMAT_R32G32B32A32_SFLOAT;
 	attributeDescriptions[4].offset = offsetof(VertexShading, tangent);
 
 	return attributeDescriptions;

@@ -52,7 +52,6 @@ void VulkanApp::InitializeImGui() {
 
 }
 
-
 bool VulkanApp::Initialize() {
 
 	if (volkInitialize() != VK_SUCCESS) {
@@ -90,23 +89,17 @@ bool VulkanApp::Initialize() {
 	glfwSetWindowUserPointer(window, this);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
-	if (glfwCreateWindowSurface(vk_core.GetInstance(), window, nullptr, m_surface) !=
-		VK_SUCCESS) {
-		throw std::runtime_error("failed to create window surface!");
-	}
-	vk_core = std::make_unique<VulkanCore>(&window);
+	core_ = CreateVulkanCoreWithWindow(VulkanCore::CoreConfiguration{}, window);
 
-	//SwapChainSupportDetails swapChainSupport = querySwapChainSupport(vk_core.physicalDevice_, vk_core.surface_);
-	//VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
-
-	// SWAPCHAIN
 	m_swapchain = std::make_unique<VulkanSwapchain>(
 		*m_context,
 		window,
 		static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT),
 		static_cast<uint32_t>(DESIRED_SWAPCHAIN_IMAGE_COUNT)
 	);
-	InitializeImGui();
+	m_rendergraph = std::make_unique<RenderGraph>(*m_context);
+
+	//InitializeImGui();
 
 	// FRAME COMMAND 
 	// We do pool per frame, because reset pool is faster than reseting indiviual commandBuffers.
@@ -120,7 +113,6 @@ bool VulkanApp::Initialize() {
 	//	VK_CHECK(vkAllocateCommandBuffers(vk_core.device_, &allocInfo, &commandBuffers[i]));
 	//}
 
-	m_rendergraph = std::make_unique<RenderGraph>(*m_context);
 	return true;
 
 }
@@ -140,17 +132,17 @@ bool VulkanApp::Run() {
 };
 
 void VulkanApp::CleanUp() {
-
-	vkDeviceWaitIdle(device_);
-	m_swapchain->CleanupSwapchain();
+	//vkDeviceWaitIdle(device_);
+	delete(&m_swapchain);
+	//m_swapchain->CleanupSwapchain();
 	// 
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		// destroying the pool fress the commandBuffers too
-		vkDestroyCommandPool(device_, perFrameCommandPools[i], nullptr);
-	}
+	//for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+	//	// destroying the pool fress the commandBuffers too
+	//	vkDestroyCommandPool(device_, perFrameCommandPools[i], nullptr);
+	//}
 	m_context->CleanUp();
 
-	vkDestroyDevice(device_, nullptr);
+	glfwDestroyWindow(window);
 	if (m_surface_ != VK_NULL_HANDLE)
 	{
 		glfwDestroyWindow(window);
@@ -159,19 +151,6 @@ void VulkanApp::CleanUp() {
 		glfwTerminate();
 		window = nullptr;
 	}
-	// 
-	vkDestroyDebugUtilsMessengerEXT(
-		core.instance_,
-		core.debugMessenger_,
-		nullptr
-	);
-	vkDestroyInstance(core.instance_, nullptr);
-
-	// then destroy the device; this releases VkQueue handles too
-	core.presentQueue_ = VK_NULL_HANDLE;
-	core.graphicsQueue_ = VK_NULL_HANDLE;
-	core.instance_ = VK_NULL_HANDLE;
-
 }
 
 inline void VulkanApp::UpdateDeltaTime() {
@@ -270,9 +249,9 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 smvk::FrameBuffer VulkanApp::AcquireFramebuffer()
 {
 	vkWaitForFences(
-		core.device_,
+		device_,
 		1,
-		&swapchain->GetInFlightFence(),
+		&m_swapchain->GetInFlightFence(),
 		VK_TRUE,
 		UINT64_MAX
 	);
@@ -280,7 +259,7 @@ smvk::FrameBuffer VulkanApp::AcquireFramebuffer()
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(
 		core.device_,
-		swapchain->swapchain_,
+		m_swapchain->swapchain_,
 		UINT64_MAX,
 		swapchain->imageAvailableSemaphores_[swapchain->currentFrame_],
 		VK_NULL_HANDLE,
@@ -334,7 +313,7 @@ smvk::FrameBuffer VulkanApp::AcquireFramebuffer()
 		1, &barrierToColorAttachment
 	);
 
-	ToyFrameBuffer frameBufferContext_{
+	FrameBuffer frameBufferContext_{
 		.frameIndex = swapchain->currentFrame_,
 		.commandBuffer = commandBuffers[swapchain->currentFrame_],
 		.swapchain = *swapchain
@@ -416,7 +395,9 @@ void VulkanApp::EndAndPresentFramebuffer(FrameBuffer& fb)
 	else if (result != VK_SUCCESS) {
 		throw std::runtime_error("failed to present swap chain image!");
 	}
-	//
 
+	//m_submitter.waitAll(); // maybe ?
+	//deferredTask.doAll()
 	swapchain->AdvanceFrame();
+
 }

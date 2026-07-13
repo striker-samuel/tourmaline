@@ -16,13 +16,12 @@
 #include "Engine/Shared/common.h"
 #include <Engine/Memory/pool.h>
 //
-//#define USE_KTX
+//#define USE_KTX // lets code with this on by default
 #ifdef USE_KTX
 #include <ktx.h>
 #include <ktxvulkan.h>
 #endif
 // 
-#define APPLICATION_NAME "smvk_app"
 #define ENGINE_NAME "smvk"
 //
 static constexpr float default_near_clip = 0.01f;
@@ -91,21 +90,21 @@ namespace smvk {
 	struct ImageCreateInfo {
 		int texWidth;
 		int texHeight;
-		VkFormat format;
+		VkFormat vk_format;
 		VkImageUsageFlags usage;
 		uint32_t levels;
 		uint32_t arrayLayers;
 		bool operator<(const ImageCreateInfo& other) const {
-			return std::tie(texWidth, texHeight, format, usage, levels, arrayLayers) <
-				std::tie(other.texWidth, other.texHeight, other.format,
+			return std::tie(texWidth, texHeight, vk_format, usage, levels, arrayLayers) <
+				std::tie(other.texWidth, other.texHeight, other.vk_format,
 					other.usage, other.levels, other.arrayLayers);
 		}
 	};
 	struct ImageViewCreateInfo {
 		VkImageViewCreateFlags     flags{};
-		VkImage                    image{};
+		VkImage                    vk_image{};
 		VkImageViewType            viewType{};
-		VkFormat                   format{};
+		VkFormat                   vk_format{};
 		VkImageSubresourceRange    subResourceRange{};
 	};
 	struct SamplerCreateInfo {
@@ -133,10 +132,10 @@ namespace smvk {
 	};
 
 	struct Image {
-		VkImage image = VK_NULL_HANDLE;
-		VmaAllocation alloc = VK_NULL_HANDLE;
-		VkFormat format = VK_FORMAT_UNDEFINED;
-		VkImageUsageFlags usage = 0;
+		VkImage vk_image = VK_NULL_HANDLE;
+		VmaAllocation vma_alloc = VK_NULL_HANDLE;
+		VkFormat vk_format = VK_FORMAT_UNDEFINED;
+		VkImageUsageFlags vk_usageFlags = 0;
 		VkExtent3D extent{};
 		uint32_t arrayLayers = 0;
 		uint32_t levels = 0;
@@ -155,8 +154,8 @@ namespace smvk {
 
 	// Just piggybacking on vma really
 	struct Buffer {
-		VkBuffer buffer = VK_NULL_HANDLE;
-		VmaAllocation alloc{};
+		VkBuffer vk_buffer = VK_NULL_HANDLE;
+		VmaAllocation vma_alloc{};
 		// VmaAllocationInfo allocInfo{};
 		// this is just an info return. the info contained maybe altered during refrag so makes no sense storing it
 		VkBufferUsageFlags usage;
@@ -166,10 +165,10 @@ namespace smvk {
 		bool is_mapable() const {
 			return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 		}
-		bool operator()(const Buffer& a, const Buffer& b) const {
-			return std::tie(a.buffer, a.alloc, a.usage, a.memory_flags)
-				< std::tie(b.buffer, b.alloc, b.usage, b.memory_flags);
-		}
+		//bool operator()(const Buffer& a, const Buffer& b) const {
+		//	return std::tie(a.vk_buffer, a.vma_alloc, a.usage, a.memory_flags)
+		//		< std::tie(b.vk_buffer, b.vma_alloc, b.usage, b.memory_flags);
+		//}
 	};
 };
 
@@ -177,9 +176,10 @@ namespace smvk {
 
 namespace smvk {
 
-
+	// TODO:: Rework this
 	VkQueue GetGraphicsQueue(); // really hacky Only needed becuse app.cpp has presetn code and needs it
 	VkQueue GetPresentQueue(); // really hacky Only needed becuse app.cpp has presetn code and needs it
+
 
 	// Just VK_1_3 for the moment, should be more than ok
 	// https://asawicki.info/articles/state_of_gpu_hardware_2025.php 
@@ -199,10 +199,13 @@ namespace smvk {
 	};
 	//
 	using ImageHandle = Handle<struct Image>; // Attachments
-	using TextureHandle = Handle<struct Image>; // ...
-	using PipelineHandle = Handle<struct Pipeline>;
+	using TextureHandle = Handle<struct Image>;
+	using SamplerHanlde = Handle<struct Sampler>;
 	using BufferHandle = Handle<struct Buffer>;
 	using ShaderModuleHandle = Handle<struct ShaderModule>;
+	// Maybe specializing it here its a good idea
+	using GraphicsPipelineHandle = Handle<struct Pipeline>;
+
 	//using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 	//using DescriptorSetHandle = Handle<struct DescriptorSet>;
 
@@ -213,9 +216,8 @@ namespace smvk {
 			const std::vector<const char*> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 			const std::vector<const char*> instanceExtensions = {};
 		} config_;
-		//
-		VkFormat m_depthFormat = VK_FORMAT_UNDEFINED; // at least main view format
-		VkSurfaceKHR m_surface = VK_NULL_HANDLE;
+
+		//VkSurfaceKHR surface_;
 
 		// Enviroment Descriptions
 		VkPhysicalDeviceDriverProperties vkPhysicalDeviceDriverProperties_ = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES, nullptr };
@@ -253,28 +255,30 @@ namespace smvk {
 
 	public:
 
-		VulkanCore(CoreConfiguration config = {}, GLFWwindow* window = nullptr) :config_(config) {};
+		VulkanCore(CoreConfiguration config = {}) :config_(config) {};
 		VulkanCore(const VulkanCore&) = delete;
 		VulkanCore& operator=(const VulkanCore&) = delete;
 		VulkanCore(VulkanCore&&) = delete;
 		VulkanCore& operator=(VulkanCore&&) = delete;
 
-		bool Init(VkSurfaceKHR* surface = nullptr);
-		VkFormat GetDepthFormat();
-		VkCommandPool GetCommandPool(QueuePreference preferredQueue);
+		int CreateInstance();
+		bool Init();
 		//
 		void CreateFence(const VkFenceCreateInfo createInfo, VkFence& out);
 		void CreateSemaphore(VkSemaphoreCreateInfo createInfo, VkSemaphore& out);
 		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
 		void CreateShaderModule(const std::vector<char>& code, VkShaderModule& out);
-		void CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view);
-
+		void CreateImageView(VkImage vk_image, VkFormat vk_format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view);
 		void CreateCommandPool(QueuePreference queue, VkCommandPoolCreateFlags flags, VkCommandPool& out);
-		// really hacky
-		VkInstance& GetInstance();
-
+		//void CreateDescriptorSet();
+		//void CreateDescriptorPool();
+		//
+		//VkInstance& GetInstance();
+		VkCommandPool GetCommandPool(QueuePreference preferredQueue);
 	};
+
+	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window);
 
 	struct CommandBufferManager {
 		struct TimelineSemaphore {
@@ -287,7 +291,7 @@ namespace smvk {
 			VkCommandBuffer cmd = VK_NULL_HANDLE;
 			TimelineSemaphore finishedSignalSemaphore{};
 			bool isEncoding_ = false;
-			QueuePreference queue_ = QueuePreference::GRAPHICS; // Dont know yet how to properly resolve this. will come with real use
+			//QueuePreference queue_ = QueuePreference::GRAPHICS; // Dont know yet how to properly resolve this. will come with real use
 		};
 		struct WrapperSlot {
 			CommandBuffer wrapper_{};
@@ -312,7 +316,7 @@ namespace smvk {
 		uint32_t availableSlots = kMax;
 		WrapperSlot commandBuffers_[kMax];
 		CommandSubmitHandle m_lastSubmit{}; // not in use right now. used for creating linkedList for a faux dependency chain
-		QueuePreference queue_;
+		//QueuePreference queue_;
 	};
 	struct CommandSubmitHandle {
 		uint32_t index_ = 0;
@@ -320,9 +324,7 @@ namespace smvk {
 		bool empty() { return gen_ == 0; };
 	};
 
-
 	struct PipelineCreateInfo {
-
 		struct RasterSettings {
 			uint32_t depthClampEnable = VK_FALSE;
 			uint32_t rasterizerDiscardEnable = VK_FALSE;
@@ -333,31 +335,34 @@ namespace smvk {
 			uint32_t depthBiasEnable = VK_FALSE;
 			float depthBiasConstant = 0.0f;
 			float depthBiasSlope = 1.0f; // This should be PCF radius https://mynameismjp.wordpress.com/2013/09/10/shadow-maps/
+		};
 
-		};
-		struct BindingDescription {
-			uint32_t binding = 0; // If we want sparse bindings we need this
-			VkDescriptorType type{};
-			uint32_t count = 1;
-			VkShaderStageFlags stages = 0;
-			VkDescriptorBindingFlags flags = 0;
-			std::vector<VkSampler> immutableSamplers;
-		};
-		struct DescriptorSetDescription {
-			VkDescriptorSetLayoutCreateFlags createFlags = 0; // e.g. UPDATE_AFTER_BIND_POOL_BIT
-			std::vector<BindingDescription> bindings;
-		};
-		struct PushConstantDescription {
-			VkShaderStageFlags stages = 0;
-			uint32_t offset = 0;
-			uint32_t size = 0;
-		};
-		struct PipelineLayoutDesc {
-			bool valid = 0;
-			std::vector<DescriptorSetDescription> setDescriptions; // each has set index
-			std::vector<PushConstantDescription> pushConstants;
-		};
-		PipelineLayoutDesc layoutDescription{};
+		//Handle vert_;
+		//Handle frag_;
+
+		//struct BindingDescription {
+		//	uint32_t binding = 0; // If we want sparse bindings we need this
+		//	VkDescriptorType type{};
+		//	uint32_t count = 1;
+		//	VkShaderStageFlags stages = 0;
+		//	VkDescriptorBindingFlags flags = 0;
+		//	std::vector<VkSampler> immutableSamplers;
+		//};
+		//struct DescriptorSetDescription {
+		//	VkDescriptorSetLayoutCreateFlags createFlags = 0; // e.g. UPDATE_AFTER_BIND_POOL_BIT
+		//	std::vector<BindingDescription> bindings;
+		//};
+		//struct PushConstantDescription {
+		//	VkShaderStageFlags stages = 0;
+		//	uint32_t offset = 0;
+		//	uint32_t size = 0;
+		//};
+		//struct PipelineLayoutDesc {
+		//	bool valid = 0;
+		//	std::vector<DescriptorSetDescription> setDescriptions; // each has set index
+		//	std::vector<PushConstantDescription> pushConstants;
+		//};
+		//PipelineLayoutDesc layoutDescription{};
 		RasterSettings rasterSettings{};
 	};
 
@@ -367,6 +372,9 @@ namespace smvk {
 #ifdef USE_KTX
 		ktxVulkanDeviceInfo ktxInfo_;
 		const ktxVulkanDeviceInfo GetKtxInfo() { return ktxInfo_; };
+		Holder<TextureHandle> CreateTexture(
+			ktxTexture2& ktxTexture
+		);;
 #endif
 		Context(VulkanCore& core);
 		~Context();
@@ -379,12 +387,17 @@ namespace smvk {
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
 		void ProcessDeferrredTasks(); //void Flush();
 		//
-		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
-		Holder<BufferHandle> CreateStagingBuffer(VkDeviceSize size);
-		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, void* data = nullptr, size_t dataSize = 0);
-		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
-		Holder<TextureHandle> CreateTexture(void* data, size_t dataSize);
+		BufferHandle CreateStagingBuffer(VkDeviceSize size);
 		//
+		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
+		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
+		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
+		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
+		//
+
+		//void UploadDataToImage(ImageHandle image, const void* data) {};
+		void* MapBuffer(smvk::Handle<smvk::Buffer> handle);
+		void UnmapBuffer(smvk::Handle<smvk::Buffer> handle);
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		void CleanUp();
 #ifdef USE_KTX
@@ -406,7 +419,7 @@ namespace smvk {
 		std::vector<DeferredTask> m_deferredTasks;
 		//
 		TextureHandle m_nilTexture{};
-		VkSampler m_defaultSampler{};
+		SamplerHandle m_defaultSampler{}; // maybe shoudl be handle
 	};
 
 	void destroy(Context* ctx, ImageHandle handle);
@@ -424,7 +437,7 @@ namespace smvk {
 		ShaderModuleHandle frag_{};
 		// Pass will give us this
 		PipelineCreateInfo::RasterSettings rasterSettings_{};
-		PipelineCreateInfo::PipelineLayoutDesc pipelineLayoutDescription_{};
+		//PipelineCreateInfo::PipelineLayoutDesc pipelineLayoutDescription_{};
 		// Graph will give us this
 		VkPipelineRenderingCreateInfo dynamicRenderingInfo_;
 		//std::map<PipelineCreateInfo, Holder<PipelineHandle>> pipelineCache_;
@@ -438,7 +451,7 @@ namespace smvk {
 			info.rasterSettings = rasterSettings_;
 			//info.vert = vert_;
 			//info.frag = frag_;
-			info.layoutDescription;
+			//info.layoutDescription;
 		};
 	};
 	//VkCommandPool GetCommandPool(QueuePreference preferredQueue);
@@ -460,7 +473,7 @@ inline void BufferBarrier(
 // this covers image transitions as well sycn2 mandted.
 inline void ImageBarrier(
 	VkCommandBuffer cmd,
-	VkImage image,
+	VkImage vk_image,
 	VkImageLayout oldLayout,
 	VkImageLayout newLayout,
 	VkImageSubresourceRange subresourceRange,

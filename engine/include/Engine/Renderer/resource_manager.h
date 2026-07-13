@@ -25,7 +25,7 @@ struct Mesh {
 	struct Alloc {
 		VmaVirtualAllocation index{};
 		VmaVirtualAllocation vertex{};
-	} alloc;
+	} vma_alloc;
 	glm::vec3 aabbMin;
 	float     sphereRadius;
 	glm::vec3 aabbMax;
@@ -116,7 +116,7 @@ struct MeshManager {
 		aV.size = vcount;     // vertex units
 		aV.alignment = 1;     // vertex units
 
-		if (vmaVirtualAllocate(vertex_units_blk, &aV, &mesh_desc.alloc.vertex, &baseVertex) != VK_SUCCESS) {
+		if (vmaVirtualAllocate(vertex_units_blk, &aV, &mesh_desc.vma_alloc.vertex, &baseVertex) != VK_SUCCESS) {
 			// Not enough contiguous vertex space in this page (or fragmented)
 			return {};
 		}
@@ -140,9 +140,9 @@ struct MeshManager {
 		aIdx.size = indexBytes;
 		aIdx.alignment = sizeof(IndexT);
 
-		if (vmaVirtualAllocate(index_blk /*or index_blk*/, &aIdx, &mesh_desc.alloc.index, &index_offset_bytes) != VK_SUCCESS) {
+		if (vmaVirtualAllocate(index_blk /*or index_blk*/, &aIdx, &mesh_desc.vma_alloc.index, &index_offset_bytes) != VK_SUCCESS) {
 			// Roll back vertex allocation
-			vmaVirtualFree(vertex_units_blk, mesh_desc.alloc.vertex);
+			vmaVirtualFree(vertex_units_blk, mesh_desc.vma_alloc.vertex);
 			return {};
 		}
 

@@ -55,6 +55,7 @@ namespace smvk {
 
 #pragma region ===[ GLFW / Window State ]===
 		GLFWwindow * window = nullptr;
+		//VkSurfaceKHR m_surface = VK_NULL_HANDLE;
 #pragma endregion
 
 #pragma region ===[ Frame Commands List ]===
