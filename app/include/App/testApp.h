@@ -1,5 +1,6 @@
 #pragma once
 #include <Engine/App/app.h>
+#include <Engine/App/level.h>
 #include <Engine/Renderer/resource_manager.h>
 #include <Engine/Renderer/rendergraph.h>
 
@@ -16,7 +17,6 @@ struct DrawSetData {
 	};
 	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
 };
-
 static_assert(sizeof(DrawSetData) % 16 == 0);
 
 struct FrameUniforms
@@ -42,37 +42,7 @@ struct FrameUniforms
 };
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 
-
-struct MainViewPushConstants {
-	glm::mat4 model;
-	int material_index;
-	uint32_t     _pad0[3];
-};
-static_assert(sizeof(MainViewPushConstants) % 16 == 0);
-
-struct Level : Scene {
-
-	MeshManager* m_meshManagerPimpl = nullptr;
-	BvhTree tree = {};
-	BvhTree static_tree = {};
-	bool tree_done = false;
-	//std::map<uint32_t, MeshHandle> m_meshForNode;
-	//Level(MeshManager* meshManager) : m_meshManagerPimpl(meshManager) {};
-	~Level() {}
-
-	void Upload(
-		std::filesystem::path gltf_model_path
-	) {
-		tinygltf::Model model;
-		LoadModelFromAsciiFile(model, gltf_model_path.string().c_str());
-		GltfToSceneImporter importer(*m_meshManagerPimpl, *this, model, std::move(gltf_model_path));
-		importer.importNodeRecursive(/*rootNodeIdx*/0, /*parentSceneNode=*/-1, /*level=*/0);
-		// This is needed or else scene will not carry transforms effectively
-		markAsChanged(*this, 0);
-		recalculateGlobalTransforms(*this);
-	}
-
-};
+struct ViewportResources {};
 
 struct AppResources {
 	smvk::LogicalBuffer frameUniformsBuffer{};
@@ -108,7 +78,7 @@ private:
 		if (!Super::Initialize())
 			return false;
 
-		m_meshManagerPimpl = std::make_unique<MeshManager>(MeshManager(*m_context));
+		m_meshManagerPimpl = std::make_unique<MeshManager>(*m_context);
 		m_camera.setPerspective(45.0f, float(m_swapchain->GetExtent().width) / float(m_swapchain->GetExtent().height),
 			default_near_clip, default_far_clip
 		);
@@ -127,7 +97,7 @@ private:
 		return true;
 	};
 
-	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame) {
+	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame, smvk::BufferHandle handle) {
 
 		int width_ = m_swapchain->GetExtent().width;
 		int height_ = m_swapchain->GetExtent().height;
@@ -159,13 +129,15 @@ private:
 		data.exposure = 0.f;
 
 		m_context->UploadDataToBuffer(
-			m_resources.frameUniformsBuffer.resolvedBufferHandle,
+			//m_resources.frameUniformsBuffer.resolvedBufferHandle,
+			handle,
 			&data,
 			sizeof(FrameUniforms)/* * 1*/,
 			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 			VK_ACCESS_SHADER_READ_BIT,
 			0,
-			currentFrame * m_resources.frameUniformsBuffer.key.elementSize * m_resources.frameUniformsBuffer.key.elementCount // dynamicOffsetPerFrame
+			currentFrame * sizeof(FrameUniforms)
+			//currentFrame * m_resources.frameUniformsBuffer.key.elementSize * m_resources.frameUniformsBuffer.key.elementCount // dynamicOffsetPerFrame
 		);
 		return data;
 
@@ -174,45 +146,41 @@ private:
 	void DrawFrame() {
 		// This waits on fence to the swapchainIamge 
 		// All control logic around this is in swapchain realyl
-		auto fb = AcquireFramebuffer();
+		auto fb = m_swapchain->AcquireFramebuffer();
+		UpdateDeltaTime();
 		RenderFrame(fb);
-		EndAndPresentFramebuffer(fb);
+		m_swapchain->EndAndPresentFramebuffer(fb);
 	}
 
 
-	void RenderFrame(smvk::ToyFrameBuffer fb) {
-
-		auto frameData = UpdateFrameUniforms(fb.swapchain.GetCurrentFrameIndex());
-		//ImGuiScopedFrame uiFrame;
+	void RenderFrame(smvk::FrameBuffer fb) {
 		m_rendergraph->Clear();
 
-		auto color = m_rendergraph->AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
-		auto depthView = m_context->images_.get(fb.swapchain.depthImage_)->renderView;
-		auto depthViewId = m_rendergraph->AddImageView(depthView);
+		// Update Buffer Contents.
+		m_rendergraph->AddRingBuffer<FrameUniforms>(1);
+		m_rendergraph->AddRingBuffer<DrawSetData>(kMaxDraws);
 
-		auto vertexBuffers = m_rendergraph->AddExternalBuffers(m_meshManagerPimpl.GetVertexBuffers());
-		std::vector<LogicalImageView> colors;
-		colors.push_back(color);
+		// ATTACHMENT SETUP
+		auto colorProxy = m_rendergraph->AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
+		auto depthProxy = m_rendergraph->AddImageView(
+			m_context->images_.get(fb.swapchain.depthImage_)->renderView //hacky
+		);
+		std::vector<smvk::LogicalImageView> colors;
+		colors.push_back(colorProxy);
 
-		auto mainPass = m_rendergraph->AddPass(
-			{
-				.rg_ = *m_rendergraph, // dont like how this is done
-			}
-			)
+		// VERTEX SETUP
+		auto vertexBuffers = m_rendergraph->AddExternalBuffers(m_meshManagerPimpl->GetVertexBuffers());
+
+		auto mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
-			//.setGraphicsPipeline()
 			.setExtent(fb.swapchain.extent_)
 			.setVertexBuffers(vertexBuffers)
 			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
-			.setDepth(depthViewId, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
-			.setGraphicsPipeline()
-			.setRecordingFunc([this, fb](ToyRenderPassContext renderpassctx)
+			.setDepth(depthProxy, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
+			.setRecordingFunc([this, fb](smvk::RenderPassContext renderpassctx)
 		{
-
-			// This shoudl be done by the rg
-			auto dynamic_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDynamicDescriptorSet);
-			auto update_after_bind_set = context->descriptorSets_.get(perFrameData[swapchain->currentFrame_].frameDescriptorSet);
-
+			auto frameData = UpdateFrameUniforms(fb.swapchain.GetCurrentFrameIndex(), m_resources.frameUniformsBuffer.resolvedBufferHandle);
+			auto meshMan = m_meshManagerPimpl.get();
 
 			std::vector<int> visible;
 			if (m_currentLevel.tree_done) {
@@ -228,52 +196,8 @@ private:
 				assert(false && "tree wasnt done");
 			}
 
-			// VISIBLE PIPELINES
-			std::unordered_map<VkPipeline, std::vector<int>> pipeline_map;
-			for (uint32_t primSlot : visible) {
-				if (primSlot >= m_currentLevel.static_tree.primToNode.size()) continue;
-
-				uint32_t node = m_currentLevel.static_tree.primToNode[primSlot];
-
-				auto it = m_currentLevel.materialForNode.find(node);
-				if (it == m_currentLevel.materialForNode.end()) continue;
-
-				uint32_t materialIndex = it->second;
-				auto matHandle = m_meshManagerPimpl->materials.getHandle(materialIndex);
-				auto mat = m_meshManagerPimpl->materials.get(matHandle);
-				if (!mat) continue;
-				//pipeline_map[mat->pipeline].push_back(primSlot);
-			}
-
-			if (pipeline_map.empty()) {
-				assert(false);
-			}
-
-			uint32_t dynamicOffsets[2] = {
-				frameUniformsBinding.dynamicOffsetFrame(swapchain->currentFrame_),
-				drawDataBinding.dynamicOffsetFrame(swapchain->currentFrame_),
-			};
-
-			//vkCmdBindDescriptorSets(
-			//	fb.commandBuffer,
-			//	VK_PIPELINE_BIND_POINT_GRAPHICS,
-			//	0,
-			//	2,
-			//	sets,
-			//	2,
-			//);
-
-			MainViewPushConstants pc{};
-			pc.model = glm::mat4(1.0f);
-
-			for (const auto& [han_, visible] : pipeline_map)
+			for (auto node : m_currentLevel.hierarchy)
 			{
-				BindPipeline(
-					fb.commandBuffer,
-					{
-
-					},
-					);
 				//vkCmdBindPipeline(
 				//	fb.commandBuffer,
 				//	VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -288,46 +212,47 @@ private:
 
 					uint32_t meshIndex = it->second;
 
-					auto mesh_desc = m_meshManagerPimpl.meshes.get(
-						m_meshManagerPimpl.meshes.getHandle(meshIndex)
+
+					auto mesh_desc = meshMan->meshes.get(
+						meshMan->meshes.getHandle(meshIndex)
 					);
 
 					auto material_instance_index = m_currentLevel.materialForNode[visible_node];
-					pc.material_index = material_instance_index;
+					//pc.material_index = material_instance_index;
 
-					auto matHandle = m_meshManagerPimpl.materials.getHandle(material_instance_index);
-					auto mat = m_meshManagerPimpl.materials.get(matHandle);
+					auto matHandle = m_meshManagerPimpl->materials.getHandle(material_instance_index);
+					auto mat = m_meshManagerPimpl->materials.get(matHandle);
 
 					assert(mat);
 
-					Material::Values pcm = mat->values;
+					//Material::Values pcm = mat->values;
 
-					struct PC_All {
-						MainViewPushConstants pc;
-						Material::Values mpc;
-					};
-					PC_All all{ pc, pcm };
+					//struct PC_All {
+					//	MainViewPushConstants pc;
+					//	Material::Values mpc;
+					//};
+					//PC_All all{ pc, pcm };
 
-					vkCmdPushConstants(
-						fb.commandBuffer,
-						pipe_lyt.layout,
-						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-						0,
-						sizeof(PC_All),
-						&all
-					);
+					//vkCmdPushConstants(
+					//	fb.commandBuffer,
+					//	pipe_lyt.layout,
+					//	VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+					//	0,
+					//	sizeof(PC_All),
+					//	&all
+					//);
 
 					for (auto& draw_set : mesh_desc->surfaces) {
 
-						auto& model_ = m_currentLevel.globalTransform[visible_node];
-						vkCmdPushConstants(
-							fb.commandBuffer,
-							pipe_lyt.layout,
-							VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-							offsetof(MainViewPushConstants, model),
-							sizeof(glm::mat4),
-							glm::value_ptr(model_)
-						);
+						//auto& model_ = m_currentLevel.globalTransform[visible_node];
+						//vkCmdPushConstants(
+						//	fb.commandBuffer,
+						//	pipe_lyt.layout,
+						//	VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+						//	offsetof(MainViewPushConstants, model),
+						//	sizeof(glm::mat4),
+						//	glm::value_ptr(model_)
+						//);
 
 						vkCmdDrawIndexed(
 							fb.commandBuffer,
@@ -342,23 +267,23 @@ private:
 				}
 			}
 
-			ImGui_ImplVulkan_NewFrame();
-			ImGui_ImplGlfw_NewFrame();
-			ImGui::NewFrame();
+			//ImGui_ImplVulkan_NewFrame();
+			//ImGui_ImplGlfw_NewFrame();
+			//ImGui::NewFrame();
 
-			// UI Here
-			ImGuiIO& io = ImGui::GetIO();
-			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
-				1000.0f / io.Framerate, io.Framerate);
+			//// UI Here
+			//ImGuiIO& io = ImGui::GetIO();
+			//ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
+			//	1000.0f / io.Framerate, io.Framerate);
 
-			ImDrawList* drawList = ImGui::GetForegroundDrawList();
-			ImGui::Render();
-			ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), fb.commandBuffer);
+			//ImDrawList* drawList = ImGui::GetForegroundDrawList();
+			//ImGui::Render();
+			//ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), fb.commandBuffer);
 			//
 		}
 			);
 
-		rendergraph->Execute(fb);
+		m_rendergraph->Execute(fb);
 
 	}
 
@@ -373,45 +298,43 @@ private:
 		glm::vec3(0.0f, 1.0f, 0.0f) //up
 	);
 	Camera m_camera = Camera(m_cameraPositioner);
-
-
 };
 
 void TestApp::UpdateCamera(float dt)
 {
 	auto& movement = m_cameraPositioner.movement_;
 
-	movement.forward_ = input.isKeyHeld(GLFW_KEY_W);
-	movement.backward_ = input.isKeyHeld(GLFW_KEY_S);
-	movement.left_ = input.isKeyHeld(GLFW_KEY_A);
-	movement.right_ = input.isKeyHeld(GLFW_KEY_D);
+	movement.forward_ = m_input.isKeyHeld(GLFW_KEY_W);
+	movement.backward_ = m_input.isKeyHeld(GLFW_KEY_S);
+	movement.left_ = m_input.isKeyHeld(GLFW_KEY_A);
+	movement.right_ = m_input.isKeyHeld(GLFW_KEY_D);
 
 	// Check the behacviour of this. 
 	// is up and down in camera orientation, not world space.
-	movement.up_ = input.isKeyHeld(GLFW_KEY_E) || input.isKeyHeld(GLFW_KEY_SPACE);
-	movement.down_ = input.isKeyHeld(GLFW_KEY_Q) || input.isKeyHeld(GLFW_KEY_LEFT_CONTROL);
+	movement.up_ = m_input.isKeyHeld(GLFW_KEY_E) || m_input.isKeyHeld(GLFW_KEY_SPACE);
+	movement.down_ = m_input.isKeyHeld(GLFW_KEY_Q) || m_input.isKeyHeld(GLFW_KEY_LEFT_CONTROL);
 
 	movement.fastSpeed_ =
-		input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
-		input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
+		m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
+		m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
 
 	// NDC, but to frameBuffer dimensions. 
 	//glm::vec2 mousePos = glm::vec2(
-	//	(static_cast<float>(input.getMouseX()) / static_cast<float>(swapchain->GetExtent().width)) * 2.0f - 1.0f,
-	//	1.0f - (static_cast<float>(input.getMouseY()) / static_cast<float>(swapchain->GetExtent().height)) * 2.0f
+	//	(static_cast<float>(m_input.getMouseX()) / static_cast<float>(swapchain->GetExtent().width)) * 2.0f - 1.0f,
+	//	1.0f - (static_cast<float>(m_input.getMouseY()) / static_cast<float>(swapchain->GetExtent().height)) * 2.0f
 	//);
 
 	// NDC, to window dimensions. These two may not match, depends on DPI settings. Be careful.
-	// Input should be normalized and not be affected by resolution!
+	// m_input should be normalized and not be affected by resolution!
 	glm::vec2 mousePos = glm::vec2(
-		(static_cast<float>(input.getMouseX()) / static_cast<float>(swapchain->windowWidth)) * 2.0f - 1.0f,
-		1.0f - (static_cast<float>(input.getMouseY()) / static_cast<float>(swapchain->windowHeight)) * 2.0f
+		(static_cast<float>(m_input.getMouseX()) / static_cast<float>(m_swapchain->windowWidth)) * 2.0f - 1.0f,
+		1.0f - (static_cast<float>(m_input.getMouseY()) / static_cast<float>(m_swapchain->windowHeight)) * 2.0f
 	);
 
 	const bool mousePressed =
-		input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT);
+		m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT);
 
-	if (input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT))
+	if (m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT))
 	{
 		m_cameraPositioner.resetMousePosition(mousePos);
 	}

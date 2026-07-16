@@ -91,7 +91,7 @@ static inline const uint8_t* gltfPtr(const tinygltf::Model& m,
 	size_t index)
 {
 	const auto& bv = m.bufferViews[a.bufferView];
-	const auto& buf = m.m_buffers_[bv.buffer];
+	const auto& buf = m.buffers[bv.buffer];
 	size_t elemSize = gltfElementSize(a);
 	size_t stride = bv.byteStride ? bv.byteStride : elemSize;
 
@@ -162,7 +162,7 @@ std::filesystem::path UriFromTexture(
 	const tinygltf::Model& model,
 	GltfTextureRef& texture_ref
 ) {
-	const tinygltf::Image& img = model.m_images_[texture_ref.imageIndex];
+	const tinygltf::Image& img = model.images[texture_ref.imageIndex];
 
 	// Case 1: External image via URI
 	if (!img.uri.empty() && !starts_with(img.uri, "data:")) {
@@ -178,6 +178,7 @@ std::filesystem::path UriFromTexture(
 
 		// No internal texures!
 		assert(false);
+		return "";
 	}
 }
 
@@ -191,7 +192,7 @@ static std::optional<GltfTextureRef> GltfResolveTexture(
 	out.textureIndex = texInfo.index;
 	out.texCoord = texInfo.texCoord;
 
-	if (tex.source >= 0 && tex.source < (int)model.m_images_.size())
+	if (tex.source >= 0 && tex.source < (int)model.images.size())
 		out.imageIndex = tex.source;
 	if (tex.sampler >= 0 && tex.sampler < (int)model.samplers.size())
 		out.samplerIndex = tex.sampler;
@@ -211,7 +212,7 @@ static std::optional<GltfTextureRef> GtlfResolveNormalTexture(
 	out.texCoord = nrm.texCoord;
 	out.scaleOrStrength = (float)nrm.scale;
 
-	if (tex.source >= 0 && tex.source < (int)model.m_images_.size())
+	if (tex.source >= 0 && tex.source < (int)model.images.size())
 		out.imageIndex = tex.source;
 	if (tex.sampler >= 0 && tex.sampler < (int)model.samplers.size())
 		out.samplerIndex = tex.sampler;
@@ -230,7 +231,7 @@ static std::optional<GltfTextureRef> GLtfResolveOcclusionTexture(
 	out.texCoord = occ.texCoord;
 	out.scaleOrStrength = (float)occ.strength;
 
-	if (tex.source >= 0 && tex.source < (int)model.m_images_.size())
+	if (tex.source >= 0 && tex.source < (int)model.images.size())
 		out.imageIndex = tex.source;
 	if (tex.sampler >= 0 && tex.sampler < (int)model.samplers.size())
 		out.samplerIndex = tex.sampler;
@@ -483,7 +484,7 @@ struct GltfToSceneImporter {
 		// TODO : This should be done onlt once instead of here!
 		auto mat = ExtractMaterials(model)[gltfMaterialIndex];
 
-		TextureHandle colorTexHandle{};
+		smvk::TextureHandle colorTexHandle{};
 
 		// TODO : Upload all textures
 		{
@@ -502,11 +503,11 @@ struct GltfToSceneImporter {
 			}
 
 			// awful
-			colorTexHandle = m_meshManagerPimpl.ctx->GetOrCreateTexure(color_uri.string(), *ktxTex);
+			colorTexHandle = manager_->GetOrCreateTexture(color_uri.string(), *ktxTex);
 			ktxTexture2_Destroy(ktxTex);
 		}
 
-		return m_meshManagerPimpl.CreateMaterial(
+		return manager_->CreateMaterial(
 			{
 				.diffuse = colorTexHandle
 			}
@@ -516,7 +517,8 @@ struct GltfToSceneImporter {
 
 	uint32_t getOrCreateMesh(tinygltf::Primitive primitive) {
 		auto mdata = SurfaceDataFromGltfPrimitive(model, primitive);
-		return createMeshCallback_(mdata).index();
+		return manager_->UploadVertexData(mdata).index();
+		//return createMeshCallback_(mdata).index();
 	}
 
 	void importNodeRecursive(int gltfNodeIndex, int parentSceneNode, int level) {

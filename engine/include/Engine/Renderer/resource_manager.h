@@ -75,6 +75,9 @@ struct MeshManager {
 
 	MeshHandle UploadVertexData(Mesh::DataUpload& mesh_data);
 	MaterialHandle CreateMaterial(Material::Textures textures);
+	smvk::TextureHandle GetOrCreateTexture(std::string uri, ktxTexture2& tex);
+
+	std::map<std::string, smvk::TextureHandle> textureCache;
 
 	void InitalizeGeoBuffers();
 
@@ -87,14 +90,23 @@ struct MeshManager {
 	};
 };
 
-
-
 [[nodiscard]] MaterialHandle MeshManager::CreateMaterial(Material::Textures textures) {
 	assert(textures.diffuse.valid() && "Invalid handle for diffuse");
 	Material mat{};
 	mat.textures_.diffuse = textures.diffuse;
 	mat.values.tex[0] = textures.diffuse.index();
 	return  materials.create(std::move(mat));
+}
+
+inline smvk::TextureHandle MeshManager::GetOrCreateTexture(std::string uri, ktxTexture2& tex) {
+
+	auto it = textureCache.find(uri);
+	if (it == textureCache.end()) {
+		auto han = ctx_.CreateTexture(tex);
+		textureCache[uri] = han;
+		return han;
+	}
+	return it->second;
 }
 
 
@@ -118,7 +130,7 @@ struct MeshManager {
 
 		if (vmaVirtualAllocate(vertex_units_blk, &aV, &mesh_desc.vma_alloc.vertex, &baseVertex) != VK_SUCCESS) {
 			// Not enough contiguous vertex space in this page (or fragmented)
-			return {};
+			return {}; // TODO :: cath this result!
 		}
 	}
 
@@ -141,15 +153,11 @@ struct MeshManager {
 		aIdx.alignment = sizeof(IndexT);
 
 		if (vmaVirtualAllocate(index_blk /*or index_blk*/, &aIdx, &mesh_desc.vma_alloc.index, &index_offset_bytes) != VK_SUCCESS) {
-			// Roll back vertex allocation
-			vmaVirtualFree(vertex_units_blk, mesh_desc.vma_alloc.vertex);
+			vmaVirtualFree(vertex_units_blk, mesh_desc.vma_alloc.vertex); // Roll back vertex allocation
 			return {};
 		}
 
-		auto staging_h = ctx_.CreateStagingBuffer(geometry_data.indices.data(), indexBytes);
-		auto staging = ctx_.buffers_.get(staging_h);
-		ctx_.Copy(staging->buffer, ctx_.buffers_.get(indexBuffer)->buffer, indexBytes, 0, index_offset_bytes);
-		destroy(&ctx_, staging_h);
+		ctx_.UploadDataToBuffer(indexBuffer, geometry_data.indices.data(), indexBytes, 0, index_offset_bytes);
 	}
 
 	// ------------------------------------------
@@ -174,19 +182,7 @@ struct MeshManager {
 	// ------------------------------------------
 	{
 		const VkDeviceSize posBytes = sizeof(VertexPos) * static_cast<VkDeviceSize>(vcount);
-
-		auto staging_h = ctx->CreateStagingBuffer(pos.data(), posBytes);
-		auto staging = ctx->buffers_.get(staging_h);
-
-		ctx->copyBuffer(
-			staging->buffer,
-			ctx->buffers_.get(vertexPosBuffer /*or vertex_buffer*/)->buffer,
-			posBytes,
-			0,
-			pos_byte_offset
-		);
-
-		destroy(ctx, staging_h);
+		ctx_.UploadDataToBuffer(vertexPosBuffer, pos.data(), posBytes, 0, 0, pos_byte_offset);
 	}
 
 	// ------------------------------------------
@@ -194,19 +190,7 @@ struct MeshManager {
 	// ------------------------------------------
 	{
 		const VkDeviceSize shdBytes = sizeof(VertexShading) * static_cast<VkDeviceSize>(vcount);
-
-		auto staging_h = ctx->CreateStagingBuffer(shd.data(), shdBytes);
-		auto staging = ctx->buffers_.get(staging_h);
-
-		ctx->copyBuffer(
-			staging->buffer,
-			ctx->buffers_.get(page->vertexShadingBuffer /*or vertex_shading_buffer*/)->buffer,
-			shdBytes,
-			0,
-			shd_byte_offset
-		);
-
-		destroy(ctx, staging_h);
+		ctx_.UploadDataToBuffer(vertexShadingBuffer, pos.data(), shdBytes, 0, 0, shd_byte_offset);
 	}
 
 	// ------------------------------------------
@@ -237,7 +221,7 @@ void MeshManager::InitalizeGeoBuffers() {
 		uint32_t totalIndexBytes = 512u * 1024u * 1024u;
 
 		// Create the actual GPU buffers (these are the page's buffers)
-		BufferHandle vb_pos = ctx_.CreateBuffer(
+		smvk::BufferHandle vb_pos = ctx_.CreateBuffer(
 			{
 			totalVertexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
@@ -245,7 +229,7 @@ void MeshManager::InitalizeGeoBuffers() {
 			}
 		);
 
-		BufferHandle vb_shd = ctx_.CreateBuffer(
+		smvk::BufferHandle vb_shd = ctx_.CreateBuffer(
 			{
 			totalVertexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
@@ -253,7 +237,7 @@ void MeshManager::InitalizeGeoBuffers() {
 			}
 		);
 
-		BufferHandle ib = ctx_.CreateBuffer(
+		smvk::BufferHandle ib = ctx_.CreateBuffer(
 			{
 				totalIndexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
@@ -261,13 +245,6 @@ void MeshManager::InitalizeGeoBuffers() {
 			}
 		);
 
-		//// Single page.
-		//GeometryPage page{};
-		//page.vertexPosBuffer = vb_pos;
-		//page.vertexShadingBuffer = vb_shd;
-		//page.indexBuffer = ib;
-
-		// Capacity in vertices must satisfy both streams
 		auto max_vertices = std::min(
 			totalVertexBytes / uint32_t(sizeof(VertexPos)),
 			totalVertexBytes / uint32_t(sizeof(VertexShading))
@@ -288,9 +265,6 @@ void MeshManager::InitalizeGeoBuffers() {
 			};
 			VK_CHECK(vmaCreateVirtualBlock(&vu, &vertex_units_blk));
 		}
-
-		//current_geometry_page = { this->ctx, geometry_pages.create(std::move(page)) };
-		//current_geometry_page = geometry_pages.create(std::move(page));
 
 	}
 

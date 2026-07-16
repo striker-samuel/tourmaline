@@ -260,7 +260,7 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface, const std::
 VkSurfaceFormatKHR chooseSwapSurfaceFormat(
 	const std::vector<VkSurfaceFormatKHR>& availableFormats) {
 	for (const auto& availableFormat : availableFormats) {
-		if (availableFormat.vk_format == VK_FORMAT_B8G8R8A8_SRGB &&
+		if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
 			availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
 			return availableFormat;
 		}
@@ -304,7 +304,7 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwi
 	}
 }
 
-std::vector<const char*> getRequiredExtensionsForGlfw() {
+std::vector<const char*> getRequiredExtensionsForGlfw(bool enableValidationLayers) {
 	uint32_t glfwExtensionCount = 0;
 	const char** glfwExtensions;
 	glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);

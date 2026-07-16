@@ -1,8 +1,7 @@
 #include <algorithm>
 #include <cstdint>
+
 #include <Engine/Vulkan/core.h>
-
-
 
 //
 #ifdef NDEBUG
@@ -11,7 +10,6 @@ const bool enableValidationLayers = false;
 const bool enableValidationLayers = true;
 #endif
 //
-
 
 // anonymous namepsace is like static but can hold types
 namespace {
@@ -88,11 +86,23 @@ namespace {
 
 };
 
+static VkInstance instance_ = VK_NULL_HANDLE;
+static VkDevice device_ = VK_NULL_HANDLE;
+static VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
+static VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
+static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
+static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
+static VkQueue presentQueue_ = VK_NULL_HANDLE;
+static VkQueue transferQueue_ = VK_NULL_HANDLE;
+static VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
+static VkCommandPool transferCommandPool_ = VK_NULL_HANDLE;
+//
+
 namespace {
 	static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
-	[[nodiscard]] std::vector<const char*> getRequiredExtensionsForGlfw();
-	[[nodiscard]] smvk::SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
-	[[nodiscard]] smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
+	[[nodiscard]] std::vector<const char*> getRequiredExtensionsForGlfw(bool enableValidationLayers);
+	[[nodiscard]] SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
+	[[nodiscard]] QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
 	bool checkDeviceExtensionSupport(VkPhysicalDevice device, const std::vector<const char*> deviceExtensions);
 	bool checkValidationLayerSupport(const std::vector<const char*> validationLayers);
 	bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface);
@@ -101,26 +111,22 @@ namespace {
 	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window);
 	VkFormat findSupportedFormat(VkPhysicalDevice physicalDevice, const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features);
 	VkFormat findDepthFormat(VkPhysicalDevice physicalDevice);
+	void DestroyDebugUtilsMessengerEXT(
+		VkInstance instance,
+		VkDebugUtilsMessengerEXT debugMessenger,
+		const VkAllocationCallbacks* pAllocator
+	) {
+		auto func = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+			vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT")
+			);
 
+		if (func != nullptr) {
+			func(instance, debugMessenger, pAllocator);
+		}
+	}
 };
-//
-static VkInstance instance_ = VK_NULL_HANDLE;
-static VkDevice device_ = VK_NULL_HANDLE;
-static VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
-static VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
-static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
-//
-static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
-static VkQueue presentQueue_ = VK_NULL_HANDLE;
-static VkQueue transferQueue_ = VK_NULL_HANDLE;
-//
-static VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
-static VkCommandPool transferCommandPool_ = VK_NULL_HANDLE;
-//
+
 static inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
-//
-
-
 static uint64_t getImageSizeBytes(const smvk::ImageCreateInfo& info) {
 	const FormatInfo fmt = getFormatInfo(info.vk_format);
 
@@ -148,6 +154,7 @@ static uint64_t getImageSizeBytes(const smvk::ImageCreateInfo& info) {
 
 	return totalSize;
 }
+
 VkCommandPool GetCommandPool(smvk::QueuePreference preferredQueue)
 {
 	switch (preferredQueue) {
@@ -165,6 +172,67 @@ VkCommandPool GetCommandPool(smvk::QueuePreference preferredQueue)
 };
 
 
+void CreateDescriptorSetLayout(const smvk::PipelineCreateInfo::DescriptorSetDescription& descIn, VkDescriptorSetLayout& layout)
+{
+	smvk::PipelineCreateInfo::DescriptorSetDescription desc = descIn;
+	std::vector<VkDescriptorSetLayoutBinding> vkBindings;
+	vkBindings.reserve(desc.bindings.size());
+
+	// IMPORTANT: pImmutableSamplers must point to memory that lives until vkCreateDescriptorSetLayout returns.
+	// We can keep a local vector-of-vectors of VkSampler pointers to stable storage.
+	std::vector<std::vector<VkSampler>> immutableSamplersStorage;
+	immutableSamplersStorage.reserve(desc.bindings.size());
+
+	std::vector<VkDescriptorBindingFlags> bindingFlags;
+	bindingFlags.reserve(desc.bindings.size());
+
+	for (const smvk::PipelineCreateInfo::BindingDescription& b : desc.bindings)
+	{
+		VkDescriptorSetLayoutBinding vkB{};
+		vkB.binding = b.binding;
+		vkB.descriptorType = b.type;
+		vkB.descriptorCount = b.count;
+		vkB.stageFlags = b.stages;
+		if (!b.immutableSamplers.empty())
+		{
+			assert(b.immutableSamplers.size() == b.count);
+			immutableSamplersStorage.emplace_back();
+			auto& store = immutableSamplersStorage.back();
+			store.reserve(b.immutableSamplers.size());
+			store = b.immutableSamplers;
+			vkB.pImmutableSamplers = store.data();
+		}
+		else
+		{
+			vkB.pImmutableSamplers = nullptr;
+		}
+		vkBindings.push_back(vkB);
+		bindingFlags.push_back(b.flags);
+	}
+
+	// 4) Optional binding flags chain
+	VkDescriptorSetLayoutBindingFlagsCreateInfo flagsCI{
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO
+	};
+	flagsCI.bindingCount = (uint32_t)bindingFlags.size();
+	flagsCI.pBindingFlags = bindingFlags.data();
+
+	VkDescriptorSetLayoutCreateInfo ci{
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+	};
+	ci.flags = desc.createFlags;
+	ci.bindingCount = (uint32_t)vkBindings.size();
+	ci.pBindings = vkBindings.data();
+
+	// Only chain if you actually have non-zero flags; otherwise keep pNext null
+	bool anyFlags = false;
+	for (auto f : bindingFlags) if (f != 0) { anyFlags = true; break; }
+	ci.pNext = anyFlags ? &flagsCI : nullptr;
+
+	VK_CHECK(vkCreateDescriptorSetLayout(device_, &ci, nullptr, &layout));
+}
+
+//
 int smvk::VulkanCore::CreateInstance() {
 
 	if (enableValidationLayers && !checkValidationLayerSupport(config_.validationLayers)) {
@@ -194,7 +262,7 @@ int smvk::VulkanCore::CreateInstance() {
 	.pfnUserCallback = debugCallback
 	};
 
-	auto extensions = getRequiredExtensionsForGlfw();
+	auto extensions = getRequiredExtensionsForGlfw(enableValidationLayers);
 
 	VkInstanceCreateInfo createInfo{};
 	createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -226,7 +294,6 @@ int smvk::VulkanCore::CreateInstance() {
 
 	return 0;
 };
-
 bool smvk::VulkanCore::Init() {
 
 	{
@@ -255,7 +322,7 @@ bool smvk::VulkanCore::Init() {
 
 		// Create Logical Device
 		{
-			QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, m_surface);
+			QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
 			std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
 			std::set<uint32_t> uniqueQueueFamilies = {
 				indices.graphicsFamily.value(),
@@ -387,25 +454,21 @@ void smvk::VulkanCore::CreateShaderModule(const std::vector<char>& code, VkShade
 		throw std::runtime_error("failed to create shader module!");
 	}
 }
-
-// APP CODE
-//inline void smvk::VulkanCore::CreateCommandPool(QueuePreference queue, VkCommandPoolCreateFlags flags, VkCommandPool& out) {
-//	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice_, surface_);
-//	VkCommandPoolCreateInfo poolInfo{
-//		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-//		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-//		.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
-//	};
+inline smvk::VulkanCore::~VulkanCore() {
+	vkDeviceWaitIdle(device_);
+	vkDestroyCommandPool(device_, defaultCommandPool_, nullptr);
+	vkDestroyCommandPool(device_, transferCommandPool_, nullptr);
+	if (surface_ != VK_NULL_HANDLE) {
+		vkDestroySurfaceKHR(instance_, surface_, nullptr);
+	}
+	DestroyDebugUtilsMessengerEXT(instance_, debugMessenger_, nullptr);
+	vkDestroyInstance(instance_, nullptr);
+}
 //
-//	for (int fn = 0; fn < MAX_FRAMES_IN_FLIGHT; fn++) {
-//		if (vkCreateCommandPool(device_, &poolInfo, nullptr, &perFrameCommandPools[fn]) !=
-//			VK_SUCCESS) {
-//			throw std::runtime_error("failed to create graphics command pool!");
-//		}
-//	}
-//}
-int smvk::Context::Initialize(
-) {
+#ifdef USE_KTX
+inline smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ktxTexture2& ktxTexture) {}
+#endif 
+int smvk::Context::Initialize() {
 	VmaAllocatorCreateInfo allocatorCreateInfo = {};
 	allocatorCreateInfo.physicalDevice = physicalDevice_;
 	allocatorCreateInfo.device = device_;
@@ -431,14 +494,21 @@ int smvk::Context::Initialize(
 		},
 		&pixel
 		);
-	m_defaultSampler = core_.CreateSampler(SamplerCreateInfo());
 
+	m_defaultSampler = CreateSampler(SamplerCreateInfo{});
+
+	// TODO: rework this
+	m_submitter = new CommandBufferManager(core_, QueuePreference::GRAPHICS);
 	return 0; // no error
-
 }
-inline smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ktxTexture2& ktxTexture) {}
-inline smvk::Context::Context(VulkanCore& core) :core_(core), m_submitter(core, QueuePreference::GRAPHICS) { Initialize(); }
-inline smvk::Context::~Context() { CleanUp(); };
+inline smvk::Context::Context(VulkanCore& core) :core_(core) { Initialize(); }
+inline smvk::Context::~Context() {
+	// Crude
+	delete(&m_submitter);
+	m_submitter = nullptr;
+	//
+	CleanUp();
+};
 void smvk::Context::UploadDataToBuffer(
 	BufferHandle buffer,
 	const void* data,
@@ -449,14 +519,14 @@ void smvk::Context::UploadDataToBuffer(
 	size_t dest_offset
 ) {
 	Buffer* buf = buffers_.get(buffer);
-	auto han = m_submitter.acquire();
-	auto cmd = m_submitter.GetCommandBuffer(han).cmd;
+	auto han = m_submitter->acquire();
+	auto cmd = m_submitter->GetCommandBuffer(han).cmd;
 
 	if (buf->is_mapable()) {
 		VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, buf->vma_alloc, 0, dataSize));
 		BufferBarrier(
 			cmd,
-			buf->buffer,
+			buf->vk_buffer,
 			dest_offset,
 			dataSize,
 			VK_PIPELINE_STAGE_2_HOST_BIT,
@@ -709,7 +779,11 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 {
 	Image vk_image{};
 	VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-	imgCI.imageType = VK_IMAGE_TYPE_2D;
+
+
+
+	imgCI.imageType = VK_IMAGE_TYPE_2D; // TODO, hardoded to 2D but could be 3D really
+
 	imgCI.format = _imageCreateInfo.vk_format;               // pick your format
 	imgCI.extent = { static_cast<uint32_t>(_imageCreateInfo.texWidth), static_cast<uint32_t>(_imageCreateInfo.texHeight), 1 }; // width, height, depth
 	imgCI.mipLevels = _imageCreateInfo.levels;                                      // >1 if you want mipmaps
@@ -730,34 +804,18 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 	vk_image.extent.height = _imageCreateInfo.texHeight;
 	vk_image.vk_usageFlags = _imageCreateInfo.usage;
 	vk_image.arrayLayers = _imageCreateInfo.arrayLayers;
-	vk_image.sampler_ = m_defaultSampler;
 	VK_CHECK(vmaCreateImage(m_allocator, &imgCI, &allocation_create_info, &vk_image.vk_image, &vk_image.vma_alloc, nullptr));
 
+	// TODO:: rework this
+	vk_image.vk_sampler = *samplers_.get(m_defaultSampler);
+	vk_image.owns_sampler = false;
 
 	if (data != nullptr) {
 	}
 	return smvk::Holder<ImageHandle>(this, images_.create(std::move(vk_image)));
 
 }
-
-void* smvk::Context::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
-	void* mapped = nullptr;
-	auto buf = this->buffers_.get(handle);
-	VK_CHECK(vmaMapMemory(m_allocator, buf->vma_alloc, &mapped));
-	return mapped;
-}
-void smvk::Context::UnmapBuffer(smvk::Handle<smvk::Buffer> handle) {
-	void* mapped = nullptr;
-	auto buf = this->buffers_.get(handle);
-	// Not required for HOST_COHERENT memory, but harmless if you want to support
-	// non-coherent staging buffers later.
-	// vmaFlushAllocation(m_allocator, staging->vma_alloc, 0, stagingBufferSize);
-	vmaUnmapMemory(m_allocator, buf->vma_alloc);
-}
-
-[[nodiscard]]
-smvk::Holder<smvk::TextureHandle>
-smvk::Context::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data)
+[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data)
 {
 	auto imageHolder = CreateImage(imageCreateInfo);
 	auto textureHandle = imageHolder.operator smvk::TextureHandle();
@@ -774,8 +832,8 @@ smvk::Context::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data)
 	// vmaFlushAllocation(m_allocator, staging->vma_alloc, 0, stagingBufferSize);
 	vmaUnmapMemory(m_allocator, stagingBuf->vma_alloc);
 
-	auto han = m_submitter.acquire();
-	VkCommandBuffer cmd = m_submitter.GetCommandBuffer(han).cmd;
+	auto han = m_submitter->acquire();
+	VkCommandBuffer cmd = m_submitter->GetCommandBuffer(han).cmd;
 	{
 		VkImageSubresourceRange range{};
 		range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -907,14 +965,13 @@ smvk::Context::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data)
 	// Submit command buffer.
 	// Adapt this to your submitter API.
 	// ---------------------------------------------------------------------
-	m_submitter.submit(han); // <-- replace with your actual submit call
+	m_submitter->submit(han); // <-- replace with your actual submit call
 	AddDeferredTask(
 		std::packaged_task<void()>([this, stagingBuf] {delete(stagingBuf); })
 		, han
 	);
 	return imageHolder;
 }
-
 [[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::Context::CreateBuffer(BufferCreateInfo bufferCreateInfo) {
 	Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -945,7 +1002,6 @@ smvk::Context::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data)
 	desc.usage = bufferCreateInfo.usage_flags;
 	return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
 }
-//[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::Context::CreateStagingBuffer(VkDeviceSize size)
 [[nodiscard]] smvk::BufferHandle smvk::Context::CreateStagingBuffer(VkDeviceSize size)
 {
 	Buffer desc{};
@@ -974,6 +1030,11 @@ smvk::Context::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data)
 
 	return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
 }
+[[nodiscard]] smvk::Holder<smvk::SamplerHandle> smvk::Context::CreateSampler(SamplerCreateInfo samplerCreateInfo) {
+	VkSampler sampler;
+	core_.CreateSampler(samplerCreateInfo, sampler);
+	return smvk::Holder<SamplerHandle>(this, samplers_.create(std::move(sampler)));
+}
 [[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::Context::CreateShaderModule(std::vector<char> code) {
 	VkShaderModule shader;
 	core_.CreateShaderModule(
@@ -982,14 +1043,40 @@ smvk::Context::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data)
 	);
 	return smvk::Holder(this, shaderModules_.create(std::move(shader)));
 }
-
-//[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(void* data, size_t dataSize)
-//{
-//	ImageCreateInfo createInfo;
-//	createInfo.format = VK
-//		CreateImage();
-//	return Holder<TextureHandle>(this, images_.create());
-//};
+void* smvk::Context::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
+	void* mapped = nullptr;
+	auto buf = this->buffers_.get(handle);
+	VK_CHECK(vmaMapMemory(m_allocator, buf->vma_alloc, &mapped));
+	return mapped;
+}
+void smvk::Context::UnmapBuffer(smvk::Handle<smvk::Buffer> handle) {
+	void* mapped = nullptr;
+	auto buf = this->buffers_.get(handle);
+	// Not required for HOST_COHERENT memory, but harmless if you want to support
+	// non-coherent staging buffers later.
+	// vmaFlushAllocation(m_allocator, staging->vma_alloc, 0, stagingBufferSize);
+	vmaUnmapMemory(m_allocator, buf->vma_alloc);
+}
+void smvk::Context::AddDeferredTask(std::packaged_task<void()>&& task, smvk::CommandSubmitHandle handle)
+{
+	if (m_submitter->validHandle(handle)) {
+		handle = m_submitter->acquire();
+	}
+	m_deferredTasks.emplace_back(std::move(task), handle);
+}
+void smvk::Context::ProcessDeferrredTasks()
+{
+	std::vector<DeferredTask>::iterator it = m_deferredTasks.begin();
+	while (it != m_deferredTasks.end() && m_submitter->isReady(it->handle_)) {
+		(it++)->task_();
+	}
+	m_deferredTasks.erase(m_deferredTasks.begin(), it);
+}
+void smvk::Context::CleanUp() {
+	VK_CHECK(vkDeviceWaitIdle(device_));
+	vmaDestroyPool(m_allocator, m_imagesPool);
+	vmaDestroyPool(m_allocator, m_stagingPool);
+}
 void destroy(smvk::Context* ctx, smvk::BufferHandle handle) {
 	assert(handle.valid());
 	auto db = ctx->buffers_.get(handle);
@@ -1001,27 +1088,6 @@ void destroy(smvk::Context* ctx, smvk::ShaderModuleHandle handle) {
 	auto sm = ctx->shaderModules_.get(handle);
 	vkDestroyShaderModule(device_, *sm, NULL);
 	ctx->shaderModules_.destroy(handle);
-}
-//
-void smvk::Context::AddDeferredTask(std::packaged_task<void()>&& task, smvk::CommandSubmitHandle handle)
-{
-	if (m_submitter.validHandle(handle)) {
-		handle = m_submitter.acquire();
-	}
-	m_deferredTasks.emplace_back(std::move(task), handle);
-}
-void smvk::Context::ProcessDeferrredTasks()
-{
-	std::vector<DeferredTask>::iterator it = m_deferredTasks.begin();
-	while (it != m_deferredTasks.end() && m_submitter.isReady(it->handle_)) {
-		(it++)->task_();
-	}
-	m_deferredTasks.erase(m_deferredTasks.begin(), it);
-}
-void smvk::Context::CleanUp() {
-	VK_CHECK(vkDeviceWaitIdle(device_));
-	vmaDestroyPool(m_allocator, m_imagesPool);
-	vmaDestroyPool(m_allocator, m_stagingPool);
 }
 #ifdef USE_KTX
 inline void smvk::Context::GetKtxDeviceInfo() {
@@ -1038,65 +1104,6 @@ inline void smvk::Context::GetKtxDeviceInfo() {
 }
 #endif
 //
-void CreateDescriptorSetLayout(const smvk::PipelineCreateInfo::DescriptorSetDescription& descIn, VkDescriptorSetLayout& layout)
-{
-	smvk::PipelineCreateInfo::DescriptorSetDescription desc = descIn;
-	std::vector<VkDescriptorSetLayoutBinding> vkBindings;
-	vkBindings.reserve(desc.bindings.size());
-
-	// IMPORTANT: pImmutableSamplers must point to memory that lives until vkCreateDescriptorSetLayout returns.
-	// We can keep a local vector-of-vectors of VkSampler pointers to stable storage.
-	std::vector<std::vector<VkSampler>> immutableSamplersStorage;
-	immutableSamplersStorage.reserve(desc.bindings.size());
-
-	std::vector<VkDescriptorBindingFlags> bindingFlags;
-	bindingFlags.reserve(desc.bindings.size());
-
-	for (const smvk::PipelineCreateInfo::BindingDescription& b : desc.bindings)
-	{
-		VkDescriptorSetLayoutBinding vkB{};
-		vkB.binding = b.binding;
-		vkB.descriptorType = b.type;
-		vkB.descriptorCount = b.count;
-		vkB.stageFlags = b.stages;
-		if (!b.immutableSamplers.empty())
-		{
-			assert(b.immutableSamplers.size() == b.count);
-			immutableSamplersStorage.emplace_back();
-			auto& store = immutableSamplersStorage.back();
-			store.reserve(b.immutableSamplers.size());
-			store = b.immutableSamplers;
-			vkB.pImmutableSamplers = store.data();
-		}
-		else
-		{
-			vkB.pImmutableSamplers = nullptr;
-		}
-		vkBindings.push_back(vkB);
-		bindingFlags.push_back(b.flags);
-	}
-
-	// 4) Optional binding flags chain
-	VkDescriptorSetLayoutBindingFlagsCreateInfo flagsCI{
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO
-	};
-	flagsCI.bindingCount = (uint32_t)bindingFlags.size();
-	flagsCI.pBindingFlags = bindingFlags.data();
-
-	VkDescriptorSetLayoutCreateInfo ci{
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
-	};
-	ci.flags = desc.createFlags;
-	ci.bindingCount = (uint32_t)vkBindings.size();
-	ci.pBindings = vkBindings.data();
-
-	// Only chain if you actually have non-zero flags; otherwise keep pNext null
-	bool anyFlags = false;
-	for (auto f : bindingFlags) if (f != 0) { anyFlags = true; break; }
-	ci.pNext = anyFlags ? &flagsCI : nullptr;
-
-	VK_CHECK(vkCreateDescriptorSetLayout(device_, &ci, nullptr, &layout));
-}
 
 inline void BufferBarrier(
 	VkCommandBuffer cmd,
@@ -1183,8 +1190,10 @@ inline void ImageBarrier(
 	vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 }
 // 
-inline smvk::CommandBufferManager::CommandBufferManager(QueuePreference queue)
-	:queue_(queue)
+inline smvk::CommandBufferManager::CommandBufferManager(
+	VulkanCore& core,
+	QueuePreference queue)
+	: core_(core), queue_(queue)
 {
 	VkCommandPool pool = GetCommandPool(queue);
 	if (pool == VK_NULL_HANDLE) { assert(false && "no commandPool"); };
@@ -1247,7 +1256,7 @@ inline smvk::CommandBufferManager::~CommandBufferManager() {
 		wrapper.isEncoding_ = false;
 	}
 
-	VkCommandPool pool = core_.GetCommandPool(queue_);
+	VkCommandPool pool = GetCommandPool(queue_);
 	if (pool != VK_NULL_HANDLE) {
 		vkFreeCommandBuffers(device_, pool, kMax, m_buffers_);
 	}
@@ -1257,7 +1266,9 @@ inline smvk::CommandBufferManager::~CommandBufferManager() {
 	WrapperSlot picked{};
 	uint32_t pickedIndex;
 
-	if (availableSlots == 0) { wait(); };
+	if (availableSlots == 0) {
+		waitAll(); //obv not ok ! TODO::
+	};
 	// just iterate to find first free
 	for (auto slot : commandBuffers_) {
 		if (slot.wrapper_.cmd == VK_NULL_HANDLE) {
@@ -1322,9 +1333,12 @@ inline void smvk::CommandBufferManager::submit(CommandSubmitHandle handle) {
 	m_lastSubmit = handle;
 }
 inline bool smvk::CommandBufferManager::validHandle(CommandSubmitHandle handle) const { return handle.gen_ == commandBuffers_[handle.index_].gen_; }
-inline bool smvk::CommandBufferManager::isReady(CommandSubmitHandle handle) { return true; } // TODO:: needs implementation
+inline bool smvk::CommandBufferManager::isReady(CommandSubmitHandle handle) {
+	wait(handle); // crude
+	return true;
+} // TODO:: needs implementation
 inline void smvk::CommandBufferManager::purge() {
-	for (uint32_t i = 0; i << kMax; i++) {
+	for (uint32_t i = 0; i < kMax; i++) {
 		auto& wrp = commandBuffers_[i].wrapper_;
 		if (wrp.cmd == VK_NULL_HANDLE || wrp.isEncoding_) { continue; }
 		uint64_t waitValue = wrp.finishedSignalSemaphore.goal_;
@@ -1370,7 +1384,7 @@ inline void smvk::CommandBufferManager::waitAll() {
 	uint64_t goals[kMax];
 	uint32_t numSems = 0;
 
-	for (uint32_t i = 0; i << kMax; i++) {
+	for (uint32_t i = 0; i < kMax; i++) {
 		auto& wrp = commandBuffers_[i].wrapper_;
 		if (wrp.cmd == VK_NULL_HANDLE || wrp.isEncoding_) { continue; }
 		goals[numSems] = wrp.finishedSignalSemaphore.goal_;
@@ -1444,17 +1458,11 @@ void smvk::CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView&
 {
 	VkImageViewCreateInfo viewInfo{};
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-	viewInfo.vk_image = imageViewCreateInfo.vk_image;
+	viewInfo.image = imageViewCreateInfo.vk_image;
 	viewInfo.viewType = imageViewCreateInfo.viewType;
-	viewInfo.vk_format = imageViewCreateInfo.vk_format;
+	viewInfo.format = imageViewCreateInfo.vk_format;
 	viewInfo.subresourceRange = imageViewCreateInfo.subResourceRange;
-	//.aspectMask = imageViewCreateInfo.aspectFlags,
-	//.baseMipLevel = 0,
-	////.levelCount = VK_REMAINING_MIP_LEVELS,
-	//.levelCount = imageViewCreateInfo.levelCount,
-	//.baseArrayLayer = imageViewCreatInfo.baseArrayLayer,
-	//.layerCount = imageViewCreateInfo.layerCount,
-// Lets default this like that ourselves.
+	// Lets default this like that ourselves.
 	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
 	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
 	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -1470,6 +1478,17 @@ inline smvk::VulkanSwapchain::VulkanSwapchain(Context& context, GLFWwindow* wind
 	desiredImageCount_(desiredImageCount) {
 
 	Create();
+	//FRAME COMMAND 
+	//We do pool per frame, because reset pool is faster than reseting indiviual commandBuffers.
+	//Also frame is a good lifetime unit/boundary of course!
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+		VkCommandBufferAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		allocInfo.commandPool = perFrameCommandPools[i];
+		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		allocInfo.commandBufferCount = 1;
+		VK_CHECK(vkAllocateCommandBuffers(device_, &allocInfo, &commandBuffers[i]));
+	}
 }
 inline smvk::VulkanSwapchain::~VulkanSwapchain() {
 	DestroySyncObjects();
@@ -1503,7 +1522,7 @@ inline void smvk::VulkanSwapchain::Recreate() {
 }
 inline void smvk::VulkanSwapchain::CreateSwapchain() {
 
-	smvk::SwapChainSupportDetails support = querySwapChainSupport(physicalDevice_, surface_);
+	SwapChainSupportDetails support = querySwapChainSupport(physicalDevice_, surface_);
 	VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(support.formats);
 	VkExtent2D swapExtent = chooseSwapExtent(support.capabilities, window_);
 	VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
@@ -1548,17 +1567,17 @@ inline void smvk::VulkanSwapchain::CreateSwapchain() {
 	else {
 		createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	}
-	VkResult result = vkCreateSwapchainKHR(device_, &createInfo, nullptr, &swapchain_);
+	VkResult result = vkCreateSwapchainKHR(device_, &createInfo, nullptr, &vk_swapchain_);
 	if (result != VK_SUCCESS) {
 		throw std::runtime_error("Failed to create Vulkan swapchain.");
 	}
 	uint32_t actualImageCount = 0;
-	vkGetSwapchainImagesKHR(device_, swapchain_, &actualImageCount, nullptr);
+	vkGetSwapchainImagesKHR(device_, vk_swapchain_, &actualImageCount, nullptr);
 	images_.resize(actualImageCount);
-	vkGetSwapchainImagesKHR(device_, swapchain_, &actualImageCount, images_.data());
+	vkGetSwapchainImagesKHR(device_, vk_swapchain_, &actualImageCount, images_.data());
 	imageViews_.resize(actualImageCount);
 	renderFinishedSemaphores_.resize(actualImageCount, VK_NULL_HANDLE);
-	surfaceFormat_ = surfaceFormat.format;
+	vk_surfaceFormat_ = surfaceFormat.format;
 	extent_ = swapExtent;
 	glfwGetWindowSize(window_, &windowWidth, &windowHeight);
 }
@@ -1568,7 +1587,7 @@ inline void smvk::VulkanSwapchain::CreateImageViews() {
 			.flags = VK_IMAGE_ASPECT_COLOR_BIT,
 			.vk_image = images_[i],
 			.viewType = VK_IMAGE_VIEW_TYPE_2D,
-			.vk_format = surfaceFormat_,
+			.vk_format = vk_surfaceFormat_,
 			.subResourceRange =
 			{
 				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1589,7 +1608,7 @@ inline void smvk::VulkanSwapchain::CreateDepthResources() {
 		ImageCreateInfo{
 			.texWidth = static_cast<int>(extent_.width),
 			.texHeight = static_cast<int>(extent_.height),
-			.vk_format = depthFormat_,
+			.vk_format = vk_depthFormat_,
 			.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
 			.levels = 1,
 			.arrayLayers = 0,
@@ -1616,12 +1635,27 @@ inline void smvk::VulkanSwapchain::CreateDepthResources() {
 	);
 	obj_->sampleView = obj_->renderView;
 
-	auto wrapper = ctx_.m_submitter.GetCommandBuffer(ctx_.m_submitter.acquire());
+	auto wrapper = ctx_.m_submitter->GetCommandBuffer(ctx_.m_submitter->acquire());
+
 	ImageBarrier(
 		wrapper.cmd,
 		obj_->vk_image,
 		VK_IMAGE_LAYOUT_UNDEFINED,
-		VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+		VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		{
+			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+			.baseMipLevel = 0,
+			.levelCount = VK_REMAINING_MIP_LEVELS, // there should be only 1 do
+			.baseArrayLayer = 0,
+			.layerCount = VK_REMAINING_ARRAY_LAYERS
+		},
+		VK_PIPELINE_STAGE_2_NONE,
+		VK_ACCESS_2_NONE,
+		VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+		VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+		VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+		VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+
 	);
 }
 inline void smvk::VulkanSwapchain::CreateSyncObjects() {
@@ -1685,28 +1719,183 @@ inline void smvk::VulkanSwapchain::CleanupSwapchain() {
 	imageViews_.clear();
 	images_.clear();
 
-	if (swapchain_ != VK_NULL_HANDLE) {
-		vkDestroySwapchainKHR(device_, swapchain_, nullptr);
-		swapchain_ = VK_NULL_HANDLE;
+	if (vk_swapchain_ != VK_NULL_HANDLE) {
+		vkDestroySwapchainKHR(device_, vk_swapchain_, nullptr);
+		vk_swapchain_ = VK_NULL_HANDLE;
 	}
 }
-//VkQueue smvk::GetGraphicsQueue() { return graphicsQueue_; }
-//VkQueue smvk::GetPresentQueue() { return presentQueue_; }
-//VkQueue smvk::GetInstance() { return instance_ };
-
+//
 std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(
-    smvk::VulkanCore::CoreConfiguration config,
-    GLFWwindow* window
+	smvk::VulkanCore::CoreConfiguration config,
+	GLFWwindow* window
 ) {
-    assert(window != nullptr && "window was nullptr!");
+	assert(window != nullptr && "window was nullptr!");
 
-    auto unique = std::make_unique<VulkanCore>(config);
-    auto core = unique.get();
+	auto unique = std::make_unique<VulkanCore>(config);
+	auto core = unique.get();
 
-    core->CreateInstance();
-    if (glfwCreateWindowSurface(instance_, window, nullptr, &surface_) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create window surface!");
-    }
-    core->Init();
-    return unique;
+	core->CreateInstance();
+	if (glfwCreateWindowSurface(instance_, window, nullptr, &surface_) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create window surface!");
+	}
+	core->Init();
+	return unique;
+}
+
+smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
+{
+
+	auto f = GetInFlightFence();
+	vkWaitForFences(
+		device_,
+		1,
+		&f,
+		VK_TRUE,
+		UINT64_MAX
+	);
+
+	uint32_t imageIndex;
+	VkResult result = vkAcquireNextImageKHR(
+		device_,
+		vk_swapchain_,
+		UINT64_MAX,
+		imageAvailableSemaphores_[currentFrame_],
+		VK_NULL_HANDLE,
+		&imageIndex
+	);
+
+	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+		Recreate();
+		assert(false && "not implemented yet");
+	}
+	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+		throw std::runtime_error("failed to acquire swap chain image!");
+	}
+
+	SetCurrentImageIndex(imageIndex);
+
+	vkResetFences(device_, 1, &inFlightFences_[currentFrame_]);
+	vkResetCommandPool(device_, perFrameCommandPools[currentFrame_], 0);
+
+	//UpdateDeltaTime();
+
+	VkCommandBufferBeginInfo beginInfo{};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+	if (vkBeginCommandBuffer(commandBuffers[currentFrame_], &beginInfo) != VK_SUCCESS) {
+		throw std::runtime_error("failed to begin recording command buffer!");
+	}
+
+	VkImageMemoryBarrier barrierToColorAttachment{};
+	barrierToColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrierToColorAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	barrierToColorAttachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	barrierToColorAttachment.srcAccessMask = 0;
+	barrierToColorAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	barrierToColorAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrierToColorAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrierToColorAttachment.image = images_[imageIndex];
+	barrierToColorAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrierToColorAttachment.subresourceRange.baseMipLevel = 0;
+	barrierToColorAttachment.subresourceRange.levelCount = 1;
+	barrierToColorAttachment.subresourceRange.baseArrayLayer = 0;
+	barrierToColorAttachment.subresourceRange.layerCount = 1;
+
+	vkCmdPipelineBarrier(
+		commandBuffers[currentFrame_],
+		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		0,
+		0, nullptr,
+		0, nullptr,
+		1, &barrierToColorAttachment
+	);
+
+	FrameBuffer frameBufferContext_{
+		.frameIndex = currentFrame_,
+		.commandBuffer = commandBuffers[currentFrame_],
+		.swapchain = *this
+
+	};
+	return frameBufferContext_;
+}
+
+void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
+{
+
+	ImageBarrier(
+		fb.commandBuffer,
+		GetCurrentImage(),
+		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		{ // maybe the api surface should specialize subresoruces to avoid having to think about this
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		},
+		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+		VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+		VK_PIPELINE_STAGE_2_NONE,
+		VK_ACCESS_2_NONE
+		);
+
+	// 
+	if (vkEndCommandBuffer(fb.commandBuffer) != VK_SUCCESS) {
+		throw std::runtime_error("failed to record command buffer!");
+	}
+
+	VkSubmitInfo submitInfo{};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	VkSemaphore waitSemaphores[] = { imageAvailableSemaphores_[currentFrame_] };
+	VkPipelineStageFlags waitStages[] = {
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	submitInfo.waitSemaphoreCount = 1;
+	submitInfo.pWaitSemaphores = waitSemaphores;
+	submitInfo.pWaitDstStageMask = waitStages;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &fb.commandBuffer;
+	VkSemaphore signalSemaphores[] = { renderFinishedSemaphores_[currentFrame_] };
+	submitInfo.signalSemaphoreCount = 1;
+	submitInfo.pSignalSemaphores = signalSemaphores;
+
+
+	if (
+		vkQueueSubmit(
+			graphicsQueue_,
+			1,
+			&submitInfo,
+			GetInFlightFence()
+		) != VK_SUCCESS
+		) {
+		assert(false && "failed to submit draw");
+		throw std::runtime_error("failed to submit draw command buffer!");
+	}
+
+	//
+	VkPresentInfoKHR presentInfo{};
+	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+	presentInfo.waitSemaphoreCount = 1;
+	presentInfo.pWaitSemaphores = signalSemaphores;
+	VkSwapchainKHR swapChains[] = { vk_swapchain_ };
+	presentInfo.swapchainCount = 1;
+	presentInfo.pSwapchains = swapChains;
+	presentInfo.pImageIndices = &currentImageIndex_;
+
+	VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+
+	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
+		framebufferResized) {
+		framebufferResized = false;
+		Recreate();
+	}
+	else if (result != VK_SUCCESS) {
+		throw std::runtime_error("failed to present swap chain image!");
+	}
+
+	//m_submitter.waitAll(); // maybe ?
+	//deferredTask.doAll()
+	AdvanceFrame();
+
 }

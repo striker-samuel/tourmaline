@@ -32,18 +32,15 @@ namespace smvk {
 		virtual void DrawFrame() = 0;
 		virtual void CleanUp();
 		virtual bool Initialize();
-		bool Run() {};
+		bool Run();
 		void MainLoop();
 		void UpdateDeltaTime();
-
-		VulkanCore& GetCore();
-		const VulkanCore& GetCore() const;
 	protected:
 		std::unique_ptr<VulkanCore> core_;
 		std::unique_ptr<Context> m_context;
 		std::unique_ptr<RenderGraph> m_rendergraph;
 		std::unique_ptr<VulkanSwapchain> m_swapchain;
-		//std::unique_ptr < ImGuiContext> m_imguiCtx;
+		//std::unique_ptr <ImGuiContext> m_imguiCtx;
 		ImGuiContext* m_imguiCtx = nullptr;
 #pragma region ===[ App / Core State ]===
 		// This needs rework. naive float for elpased time leads to problems in the long run!
@@ -58,13 +55,8 @@ namespace smvk {
 		//VkSurfaceKHR m_surface = VK_NULL_HANDLE;
 #pragma endregion
 
-#pragma region ===[ Frame Commands List ]===
-		VkCommandPool perFrameCommandPools[MAX_FRAMES_IN_FLIGHT]{};
-		VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT]{};
-#pragma endregion
 
 #pragma region ===[ Flags / Events ]===
-		bool framebufferResized = false;
 #pragma endregion
 
 #pragma region Initialization
@@ -109,7 +101,5 @@ namespace smvk {
 		);
 
 #pragma endregion
-		FrameBuffer AcquireFramebuffer();
-		void EndAndPresentFramebuffer(FrameBuffer& cb);
 	};
 };

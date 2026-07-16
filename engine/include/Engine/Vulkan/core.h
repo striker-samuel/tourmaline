@@ -16,7 +16,7 @@
 #include "Engine/Shared/common.h"
 #include <Engine/Memory/pool.h>
 //
-//#define USE_KTX // lets code with this on by default
+#define USE_KTX // lets code with this on by default
 #ifdef USE_KTX
 #include <ktx.h>
 #include <ktxvulkan.h>
@@ -63,31 +63,33 @@ inline const char* vkResultToString(VkResult result);
     } while (0)
 
 
-namespace smvk {
-	struct QueueFamilyIndices {
-		std::optional<uint32_t> graphicsFamily;
-		std::optional<uint32_t> presentFamily;
-		std::optional<uint32_t> transferFamily;
+struct QueueFamilyIndices {
+	std::optional<uint32_t> graphicsFamily;
+	std::optional<uint32_t> presentFamily;
+	std::optional<uint32_t> transferFamily;
 
-		bool isComplete() {
-			return graphicsFamily.has_value() && presentFamily.has_value();
-		}
-	};
+	bool isComplete() {
+		return graphicsFamily.has_value() && presentFamily.has_value();
+	}
+};
 
-	struct SwapChainSupportDetails {
-		VkSurfaceCapabilitiesKHR capabilities{};
-		std::vector<VkSurfaceFormatKHR> formats;
-		std::vector<VkPresentModeKHR> presentModes;
-	};
+struct SwapChainSupportDetails {
+	VkSurfaceCapabilitiesKHR capabilities{};
+	std::vector<VkSurfaceFormatKHR> formats;
+	std::vector<VkPresentModeKHR> presentModes;
 };
 // CreatePayloads//Keys for logicalReources
 namespace smvk {
+
+
+
 	struct BufferCreateInfo {
 		VkDeviceSize size;
 		VmaMemoryUsage vma_usage;
 		VkBufferUsageFlags usage_flags;
 	};
 	struct ImageCreateInfo {
+		//VkExtent3D vk_extent; // support 3d images
 		int texWidth;
 		int texHeight;
 		VkFormat vk_format;
@@ -146,7 +148,7 @@ namespace smvk {
 			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
 		};
 		// not fully implemented yet.
-		VkSampler sampler_ = VK_NULL_HANDLE;
+		VkSampler vk_sampler = VK_NULL_HANDLE;
 		bool owns_sampler = false;
 		bool owns_views = true;
 		bool is_swapchain = false;
@@ -161,7 +163,6 @@ namespace smvk {
 		VkBufferUsageFlags usage;
 		VkMemoryPropertyFlags memory_flags;
 		VkDeviceAddress deviceAdress = 0;
-		uint64_t deviceAdress;
 		bool is_mapable() const {
 			return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 		}
@@ -176,11 +177,6 @@ namespace smvk {
 
 namespace smvk {
 
-	// TODO:: Rework this
-	VkQueue GetGraphicsQueue(); // really hacky Only needed becuse app.cpp has presetn code and needs it
-	VkQueue GetPresentQueue(); // really hacky Only needed becuse app.cpp has presetn code and needs it
-
-
 	// Just VK_1_3 for the moment, should be more than ok
 	// https://asawicki.info/articles/state_of_gpu_hardware_2025.php 
 	enum VulkanVersion {
@@ -192,22 +188,23 @@ namespace smvk {
 		COMPUTE
 	};
 
-	struct DeferredTask {
-		DeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle) : task_(std::move(task)), handle_(handle) {}
-		std::packaged_task<void()> task_;
-		CommandSubmitHandle handle_;
-	};
+
 	//
 	using ImageHandle = Handle<struct Image>; // Attachments
 	using TextureHandle = Handle<struct Image>;
-	using SamplerHanlde = Handle<struct Sampler>;
+	using SamplerHandle = Handle<struct Sampler>;
 	using BufferHandle = Handle<struct Buffer>;
 	using ShaderModuleHandle = Handle<struct ShaderModule>;
+
+	// 1 pool 1 set per frame in flight just with the bindless setup
+	// 1 pool for imgui too
+	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
+	using DescriptorSetHandle = Handle<struct DescriptorSet>;
 	// Maybe specializing it here its a good idea
 	using GraphicsPipelineHandle = Handle<struct Pipeline>;
+	using ComputePipelineHandle = Handle<struct Pipeline>;
+	//using ComputePipelineHandle = Handle<struct Pipeline>;
 
-	//using DescriptorPoolHandle = Handle<struct DescriptorPool>;
-	//using DescriptorSetHandle = Handle<struct DescriptorSet>;
 
 	struct VulkanCore {
 		struct CoreConfiguration {
@@ -216,9 +213,6 @@ namespace smvk {
 			const std::vector<const char*> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 			const std::vector<const char*> instanceExtensions = {};
 		} config_;
-
-		//VkSurfaceKHR surface_;
-
 		// Enviroment Descriptions
 		VkPhysicalDeviceDriverProperties vkPhysicalDeviceDriverProperties_ = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES, nullptr };
 		VkPhysicalDeviceDepthStencilResolveProperties vkPhysicalDeviceDepthStencilResolveProperties_ = {
@@ -256,6 +250,7 @@ namespace smvk {
 	public:
 
 		VulkanCore(CoreConfiguration config = {}) :config_(config) {};
+		~VulkanCore();
 		VulkanCore(const VulkanCore&) = delete;
 		VulkanCore& operator=(const VulkanCore&) = delete;
 		VulkanCore(VulkanCore&&) = delete;
@@ -273,12 +268,15 @@ namespace smvk {
 		void CreateCommandPool(QueuePreference queue, VkCommandPoolCreateFlags flags, VkCommandPool& out);
 		//void CreateDescriptorSet();
 		//void CreateDescriptorPool();
-		//
-		//VkInstance& GetInstance();
-		VkCommandPool GetCommandPool(QueuePreference preferredQueue);
 	};
 
 	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window);
+
+	struct CommandSubmitHandle {
+		uint32_t index_ = 0;
+		uint32_t gen_ = 0; // gen 0 means no slot. alas empty. 
+		bool empty() { return gen_ == 0; };
+	};
 
 	struct CommandBufferManager {
 		struct TimelineSemaphore {
@@ -299,29 +297,30 @@ namespace smvk {
 			uint32_t gen_ = 1;
 		};
 		//
-		CommandBufferManager(QueuePreference queue);;
+		CommandBufferManager(VulkanCore& core, QueuePreference queue);
 		~CommandBufferManager();
-		[[nodiscard]] CommandSubmitHandle acquire(uint32_t goal = 1);;
-		[[nodiscard]] CommandBuffer& GetCommandBuffer(CommandSubmitHandle handle);;
-		void submit(CommandSubmitHandle handle);;
+		CommandSubmitHandle acquire(uint32_t goal = 1);
+		CommandBuffer& GetCommandBuffer(CommandSubmitHandle handle);
+		void submit(CommandSubmitHandle handle);
 		bool validHandle(CommandSubmitHandle handle) const;
 		bool isReady(CommandSubmitHandle handle);
 		void wait(CommandSubmitHandle handle, uint64_t timeout = UINT64_MAX);
 		void waitAll();
 		void purge();
 	private:
-		void reset(CommandSubmitHandle handle);;
+		void reset(CommandSubmitHandle handle);
 		VulkanCore& core_;
+		QueuePreference queue_ = QueuePreference::GRAPHICS;
 		static const uint32_t kMax = 64;
 		uint32_t availableSlots = kMax;
 		WrapperSlot commandBuffers_[kMax];
 		CommandSubmitHandle m_lastSubmit{}; // not in use right now. used for creating linkedList for a faux dependency chain
 		//QueuePreference queue_;
 	};
-	struct CommandSubmitHandle {
-		uint32_t index_ = 0;
-		uint32_t gen_ = 0; // gen 0 means no slot. alas empty. 
-		bool empty() { return gen_ == 0; };
+	struct DeferredTask {
+		DeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle) : task_(std::move(task)), handle_(handle) {}
+		std::packaged_task<void()> task_;
+		CommandSubmitHandle handle_;
 	};
 
 	struct PipelineCreateInfo {
@@ -337,31 +336,30 @@ namespace smvk {
 			float depthBiasSlope = 1.0f; // This should be PCF radius https://mynameismjp.wordpress.com/2013/09/10/shadow-maps/
 		};
 
-		//Handle vert_;
-		//Handle frag_;
-
-		//struct BindingDescription {
-		//	uint32_t binding = 0; // If we want sparse bindings we need this
-		//	VkDescriptorType type{};
-		//	uint32_t count = 1;
-		//	VkShaderStageFlags stages = 0;
-		//	VkDescriptorBindingFlags flags = 0;
-		//	std::vector<VkSampler> immutableSamplers;
-		//};
-		//struct DescriptorSetDescription {
-		//	VkDescriptorSetLayoutCreateFlags createFlags = 0; // e.g. UPDATE_AFTER_BIND_POOL_BIT
-		//	std::vector<BindingDescription> bindings;
-		//};
-		//struct PushConstantDescription {
-		//	VkShaderStageFlags stages = 0;
-		//	uint32_t offset = 0;
-		//	uint32_t size = 0;
-		//};
-		//struct PipelineLayoutDesc {
-		//	bool valid = 0;
-		//	std::vector<DescriptorSetDescription> setDescriptions; // each has set index
-		//	std::vector<PushConstantDescription> pushConstants;
-		//};
+		//  I will rework all these.
+		struct BindingDescription {
+			uint32_t binding = 0; // If we want sparse bindings we need this
+			VkDescriptorType type{};
+			uint32_t count = 1;
+			VkShaderStageFlags stages = 0;
+			VkDescriptorBindingFlags flags = 0;
+			std::vector<VkSampler> immutableSamplers;
+		};
+		struct DescriptorSetDescription {
+			VkDescriptorSetLayoutCreateFlags createFlags = 0; // e.g. UPDATE_AFTER_BIND_POOL_BIT
+			std::vector<BindingDescription> bindings;
+		};
+		struct PushConstantDescription {
+			VkShaderStageFlags stages = 0;
+			uint32_t offset = 0;
+			uint32_t size = 0;
+		};
+		struct PipelineLayoutDesc {
+			bool valid = 0;
+			std::vector<DescriptorSetDescription> setDescriptions; // each has set index
+			std::vector<PushConstantDescription> pushConstants;
+		};
+		//
 		//PipelineLayoutDesc layoutDescription{};
 		RasterSettings rasterSettings{};
 	};
@@ -393,6 +391,7 @@ namespace smvk {
 		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
 		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
+		Holder<SamplerHandle> CreateSampler(SamplerCreateInfo samplerCreateInfo);
 		//
 
 		//void UploadDataToImage(ImageHandle image, const void* data) {};
@@ -403,20 +402,22 @@ namespace smvk {
 #ifdef USE_KTX
 		void GetKtxDeviceInfo();
 #endif
-		//private:
+		//protected:
+		VulkanCore& core_;
+		CommandBufferManager* m_submitter = nullptr;
+		std::vector<DeferredTask> m_deferredTasks;
+
 		Pool<Image, Image> images_;
 		Pool<Buffer, Buffer> buffers_;
 		Pool<ShaderModule, VkShaderModule> shaderModules_;
+		Pool<Sampler, VkSampler> samplers_;
 		//
-		VkDescriptorPool descriptorPool_;
-		VkDescriptorSet descriptorSets_[MAX_FRAMES_IN_FLIGHT];
 		//
-		VulkanCore& core_;
-		CommandBufferManager m_submitter;
 		VmaAllocator m_allocator;
 		VmaPool m_imagesPool;
 		VmaPool m_stagingPool;
-		std::vector<DeferredTask> m_deferredTasks;
+		VkDescriptorPool descriptorPool_;
+		VkDescriptorSet descriptorSets_[MAX_FRAMES_IN_FLIGHT];
 		//
 		TextureHandle m_nilTexture{};
 		SamplerHandle m_defaultSampler{}; // maybe shoudl be handle
@@ -425,36 +426,23 @@ namespace smvk {
 	void destroy(Context* ctx, ImageHandle handle);
 	void destroy(Context* ctx, BufferHandle handle);
 	void destroy(Context* ctx, ShaderModuleHandle handle);
-	//void destroy(Context* ctx, DescriptorPolHandle handle);
+	void destroy(Context* ctx, SamplerHandle handle);
+	void destroy(Context* ctx, DescriptorPoolHandle handle);
+	void destroy(Context* ctx, DescriptorSetHandle handle);
 
 	//
 	struct ShaderProgram {
-		Context& ctx_;
-		ShaderProgram(Context& ctx) : ctx_(ctx) {};
+		//ShaderProgram(Context& ctx) : ctx_(ctx) {};
+		ShaderProgram() {};
 		~ShaderProgram() {};
-		//
 		ShaderModuleHandle vert_{};
 		ShaderModuleHandle frag_{};
-		// Pass will give us this
 		PipelineCreateInfo::RasterSettings rasterSettings_{};
-		//PipelineCreateInfo::PipelineLayoutDesc pipelineLayoutDescription_{};
-		// Graph will give us this
-		VkPipelineRenderingCreateInfo dynamicRenderingInfo_;
-		//std::map<PipelineCreateInfo, Holder<PipelineHandle>> pipelineCache_;
-	public:
-		ShaderProgram& setDynamicRenderingInfo(VkPipelineRenderingCreateInfo dynamicRenderingInfo) { this->dynamicRenderingInfo_ = dynamicRenderingInfo; };
-		ShaderProgram& setLayoutDescription();
-		ShaderProgram& setVert(ShaderModuleHandle vert) { this->vert_ = Holder<ShaderModuleHandle>(&ctx_, vert); return *this; };
-		ShaderProgram& setFrag(ShaderModuleHandle frag) { this->frag_ = Holder<ShaderModuleHandle>(&ctx_, frag); return *this; };
-		VkPipeline Build() {
-			PipelineCreateInfo info;
-			info.rasterSettings = rasterSettings_;
-			//info.vert = vert_;
-			//info.frag = frag_;
-			//info.layoutDescription;
-		};
+	//public:
+	//	ShaderProgram& setVert(ShaderModuleHandle vert) { this->vert_ = Holder<ShaderModuleHandle>(&ctx_, vert); return *this; };
+	//	ShaderProgram& setFrag(ShaderModuleHandle frag) { this->frag_ = Holder<ShaderModuleHandle>(&ctx_, frag); return *this; };
 	};
-	//VkCommandPool GetCommandPool(QueuePreference preferredQueue);
+
 };
 
 
@@ -486,6 +474,13 @@ inline void ImageBarrier(
 
 namespace smvk {
 
+	class VulkanSwapchain;
+	struct FrameBuffer {
+		uint32_t frameIndex = 0; // Maybe end os uint32_ to catch for unitialized? this value can only be ip to SWAPCHAIN_IMAGE_COUNT
+		VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+		VulkanSwapchain& swapchain;
+	};
+
 	class VulkanSwapchain {
 
 	public:
@@ -511,8 +506,9 @@ namespace smvk {
 		void Recreate();
 
 		// 
-		VkFormat GetImageFormat() const { return surfaceFormat_; }
-		VkFormat GetDepthImageFormat() const { return depthFormat_; }
+		VkFormat GetImageFormat() const { return vk_surfaceFormat_; }
+		VkFormat GetDepthImageFormat() const { return vk_depthFormat_; }
+
 		VkExtent2D GetExtent() const { return extent_; }
 		uint32_t GetImageCount() const { return static_cast<uint32_t>(images_.size()); }
 		VkImage GetImage(uint32_t index) const { return images_.at(index); }
@@ -530,21 +526,27 @@ namespace smvk {
 		void AdvanceFrame() { currentFrame_ = (currentFrame_ + 1) % framesInFlight_; }
 		void SetCurrentImageIndex(uint32_t imageIndex) { currentImageIndex_ = imageIndex; }
 
-	private:
+		//private:
 		Context& ctx_;
 		GLFWwindow* window_ = nullptr;
-		VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
+		VkSwapchainKHR vk_swapchain_ = VK_NULL_HANDLE;
+		VkFormat vk_surfaceFormat_ = VK_FORMAT_UNDEFINED;
+		VkFormat vk_depthFormat_ = VK_FORMAT_UNDEFINED;
+
+#pragma region ===[ Frame Commands List ]===
+		VkCommandPool perFrameCommandPools[MAX_FRAMES_IN_FLIGHT]{};
+		VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT]{};
+#pragma endregion
+
+		bool framebufferResized = false;
 
 		Holder<ImageHandle> depthImage_{};
-		std::vector<VkImage> images_;
 		// these are external images that cannnot be represented by our Image obj
+		std::vector<VkImage> images_;
 		std::vector<VkImageView> imageViews_;
 		std::vector<VkSemaphore> renderFinishedSemaphores_;
 		std::vector<VkSemaphore> imageAvailableSemaphores_;
 		std::vector<VkFence> inFlightFences_;
-
-		VkFormat surfaceFormat_ = VK_FORMAT_UNDEFINED;
-		VkFormat depthFormat_ = VK_FORMAT_UNDEFINED;
 
 		VkExtent2D extent_{};
 		int windowWidth = 0;
@@ -560,6 +562,9 @@ namespace smvk {
 		void CreateSyncObjects();
 		void DestroySyncObjects();
 		void CleanupSwapchain();
+
+		FrameBuffer AcquireFramebuffer();
+		void EndAndPresentFramebuffer(FrameBuffer& cb);
 	};
 
 };
