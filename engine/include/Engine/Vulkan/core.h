@@ -293,7 +293,7 @@ namespace smvk {
 		};
 		struct WrapperSlot {
 			CommandBuffer wrapper_{};
-			VkCommandBuffer allocatedCmd_;
+			VkCommandBuffer allocatedCmd_ = VK_NULL_HANDLE;
 			uint32_t gen_ = 1;
 		};
 		//

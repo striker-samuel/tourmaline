@@ -13,16 +13,10 @@
 //
 #include "input.h"
 #include <Engine/Vulkan/core.h>
-#include <Engine/Renderer/rendergraph.h>
-//
-#include <Engine/Camera/camera.h>
-#include <Engine/Scene/scene.h>
-//
-#include <Engine/Utils/gltf.h> 
-#include <Engine/Utils/bvh.h>
-#include <Engine/platform.h>
 
 namespace smvk {
+
+	struct RenderGraph;
 
 	class VulkanApp {
 	public:

@@ -1,11 +1,18 @@
+#include <iostream>
+#include <chrono>
+
 #include <Engine/App/app.h>
 
-using namespace smvk; // cleanup later dont just pump using here
+#include <Engine/Camera/camera.h>
+#include <Engine/Scene/scene.h>
+#include <Engine/Renderer/rendergraph.h>
+#include <Engine/platform.h>
 
-VulkanApp::VulkanApp() {}
-VulkanApp::~VulkanApp() = default;
 
-void VulkanApp::InitializeImGui() {}
+smvk::VulkanApp::VulkanApp() {}
+smvk::VulkanApp::~VulkanApp() = default;
+
+void smvk::VulkanApp::InitializeImGui() {}
 //
 //void VulkanApp::InitializeImGui() {
 //
@@ -54,7 +61,7 @@ void VulkanApp::InitializeImGui() {}
 //
 //}
 
-bool VulkanApp::Initialize() {
+bool smvk::VulkanApp::Initialize() {
 
 	if (volkInitialize() != VK_SUCCESS) {
 		std::cerr << "Failed to initialize Volk\n";
@@ -108,7 +115,7 @@ bool VulkanApp::Initialize() {
 }
 
 
-bool VulkanApp::Run() {
+bool smvk::VulkanApp::Run() {
 	bool result = Initialize();
 	assert(result && "Failed to initialize");
 	MainLoop();
@@ -117,7 +124,7 @@ bool VulkanApp::Run() {
 
 };
 
-void VulkanApp::CleanUp() {
+void smvk::VulkanApp::CleanUp() {
 	//vkDeviceWaitIdle(device_);
 	//for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 	//	// destroying the pool fress the commandBuffers too
@@ -138,7 +145,8 @@ void VulkanApp::CleanUp() {
 	}
 }
 
-inline void VulkanApp::UpdateDeltaTime() {
+
+void smvk::VulkanApp::UpdateDeltaTime() {
 
 	static auto lastFrameTime = std::chrono::high_resolution_clock::now();
 	static auto startTime = std::chrono::high_resolution_clock::now();
@@ -153,7 +161,7 @@ inline void VulkanApp::UpdateDeltaTime() {
 	lastFrameTime = currentTime;
 }
 
-void VulkanApp::MainLoop() {
+void smvk::VulkanApp::MainLoop() {
 	while (!glfwWindowShouldClose(window)) {
 		m_input.beginFrame();
 
@@ -168,14 +176,14 @@ void VulkanApp::MainLoop() {
 
 #pragma region ===[ Callbacks ]===
 
-void VulkanApp::keyCallback(
+void smvk::VulkanApp::keyCallback(
 	GLFWwindow* window,
 	int key,
 	int scancode,
 	int action,
 	int mods
 ) {
-	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+	auto* app = static_cast<smvk::VulkanApp*>(glfwGetWindowUserPointer(window));
 
 	if (app) {
 		app->m_input.onKey(key, scancode, action, mods);
@@ -183,13 +191,13 @@ void VulkanApp::keyCallback(
 }
 
 
-void VulkanApp::mouseButtonCallback(
+void smvk::VulkanApp::mouseButtonCallback(
 	GLFWwindow* window,
 	int button,
 	int action,
 	int mods
 ) {
-	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+	auto* app = static_cast<smvk::VulkanApp*>(glfwGetWindowUserPointer(window));
 
 	if (app) {
 		app->m_input.onMouseButton(button, action, mods);
@@ -197,12 +205,12 @@ void VulkanApp::mouseButtonCallback(
 }
 
 
-void VulkanApp::cursorPositionCallback(
+void smvk::VulkanApp::cursorPositionCallback(
 	GLFWwindow* window,
 	double xpos,
 	double ypos
 ) {
-	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+	auto* app = static_cast<smvk::VulkanApp*>(glfwGetWindowUserPointer(window));
 
 	if (app) {
 		app->m_input.onCursorMove(xpos, ypos);
@@ -210,22 +218,22 @@ void VulkanApp::cursorPositionCallback(
 }
 
 
-void VulkanApp::scrollCallback(
+void smvk::VulkanApp::scrollCallback(
 	GLFWwindow* window,
 	double xoffset,
 	double yoffset
 ) {
-	auto* app = static_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+	auto* app = static_cast<smvk::VulkanApp*>(glfwGetWindowUserPointer(window));
 
 	if (app) {
 		app->m_input.onScroll(xoffset, yoffset);
 	}
 }
 
-void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
+void smvk::VulkanApp::framebufferResizeCallback(GLFWwindow* window, int width,
 	int height) {
 	auto app =
-		reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
+		reinterpret_cast<smvk::VulkanApp*>(glfwGetWindowUserPointer(window));
 	app->m_swapchain.get()->framebufferResized = true;
 }
 

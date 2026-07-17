@@ -82,8 +82,6 @@ namespace {
 		}
 	}
 
-
-
 };
 
 static VkInstance instance_ = VK_NULL_HANDLE;
@@ -154,7 +152,6 @@ static uint64_t getImageSizeBytes(const smvk::ImageCreateInfo& info) {
 
 	return totalSize;
 }
-
 VkCommandPool GetCommandPool(smvk::QueuePreference preferredQueue)
 {
 	switch (preferredQueue) {
@@ -170,8 +167,6 @@ VkCommandPool GetCommandPool(smvk::QueuePreference preferredQueue)
 
 	return VK_NULL_HANDLE;
 };
-
-
 void CreateDescriptorSetLayout(const smvk::PipelineCreateInfo::DescriptorSetDescription& descIn, VkDescriptorSetLayout& layout)
 {
 	smvk::PipelineCreateInfo::DescriptorSetDescription desc = descIn;
@@ -231,7 +226,6 @@ void CreateDescriptorSetLayout(const smvk::PipelineCreateInfo::DescriptorSetDesc
 
 	VK_CHECK(vkCreateDescriptorSetLayout(device_, &ci, nullptr, &layout));
 }
-
 //
 int smvk::VulkanCore::CreateInstance() {
 
@@ -435,6 +429,8 @@ bool smvk::VulkanCore::Init() {
 		}
 
 	};
+
+	return true;
 
 };
 void smvk::VulkanCore::CreateFence(const VkFenceCreateInfo createInfo, VkFence& out) {
@@ -1077,13 +1073,13 @@ void smvk::Context::CleanUp() {
 	vmaDestroyPool(m_allocator, m_imagesPool);
 	vmaDestroyPool(m_allocator, m_stagingPool);
 }
-void destroy(smvk::Context* ctx, smvk::BufferHandle handle) {
+void smvk::destroy(smvk::Context* ctx, smvk::BufferHandle handle) {
 	assert(handle.valid());
 	auto db = ctx->buffers_.get(handle);
 	vmaDestroyBuffer(ctx->m_allocator, db->vk_buffer, db->vma_alloc);
 	ctx->buffers_.destroy(handle);
 }
-void destroy(smvk::Context* ctx, smvk::ShaderModuleHandle handle) {
+void smvk::destroy(smvk::Context* ctx, smvk::ShaderModuleHandle handle) {
 	assert(handle.valid());
 	auto sm = ctx->shaderModules_.get(handle);
 	vkDestroyShaderModule(device_, *sm, NULL);
@@ -1177,23 +1173,20 @@ inline void ImageBarrier(
 		.pNext = nullptr,
 		.dependencyFlags = 0,
 
-		.memoryBarrierCount = 0,
-		.pMemoryBarriers = nullptr,
+.memoryBarrierCount = 0,
+.pMemoryBarriers = nullptr,
 
-		.bufferMemoryBarrierCount = 0,
-		.pBufferMemoryBarriers = nullptr,
+.bufferMemoryBarrierCount = 0,
+.pBufferMemoryBarriers = nullptr,
 
-		.imageMemoryBarrierCount = 1,
-		.pImageMemoryBarriers = &imageBarrier,
+.imageMemoryBarrierCount = 1,
+.pImageMemoryBarriers = &imageBarrier,
 	};
 
 	vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 }
 // 
-inline smvk::CommandBufferManager::CommandBufferManager(
-	VulkanCore& core,
-	QueuePreference queue)
-	: core_(core), queue_(queue)
+inline smvk::CommandBufferManager::CommandBufferManager(VulkanCore& core, QueuePreference queue) : core_(core), queue_(queue)
 {
 	VkCommandPool pool = GetCommandPool(queue);
 	if (pool == VK_NULL_HANDLE) { assert(false && "no commandPool"); };
@@ -1264,18 +1257,22 @@ inline smvk::CommandBufferManager::~CommandBufferManager() {
 [[nodiscard]] inline smvk::CommandSubmitHandle smvk::CommandBufferManager::acquire(uint32_t goal)
 {
 	WrapperSlot picked{};
-	uint32_t pickedIndex;
+	uint32_t pickedIndex = UINT32_MAX;
 
 	if (availableSlots == 0) {
 		waitAll(); //obv not ok ! TODO::
 	};
 	// just iterate to find first free
-	for (auto slot : commandBuffers_) {
+	for (auto& slot : commandBuffers_) {
 		if (slot.wrapper_.cmd == VK_NULL_HANDLE) {
 			picked = slot;
 		}
 		pickedIndex++;
 	}
+	if (pickedIndex == UINT32_MAX) {
+		assert(false);
+	}
+
 	picked.wrapper_.cmd = picked.allocatedCmd_;
 	picked.wrapper_.finishedSignalSemaphore.goal_ = goal;
 	availableSlots--;
@@ -1725,10 +1722,7 @@ inline void smvk::VulkanSwapchain::CleanupSwapchain() {
 	}
 }
 //
-std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(
-	smvk::VulkanCore::CoreConfiguration config,
-	GLFWwindow* window
-) {
+std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window) {
 	assert(window != nullptr && "window was nullptr!");
 
 	auto unique = std::make_unique<VulkanCore>(config);
@@ -1741,7 +1735,6 @@ std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(
 	core->Init();
 	return unique;
 }
-
 smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 {
 
@@ -1819,7 +1812,6 @@ smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	};
 	return frameBufferContext_;
 }
-
 void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 {
 

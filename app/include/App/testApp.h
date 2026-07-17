@@ -1,7 +1,13 @@
 #pragma once
 #include <Engine/App/app.h>
-#include <Engine/Renderer/resource_manager.h>
+
+//#include <Engine/Renderer/resource_manager.h>
 #include <Engine/Renderer/rendergraph.h>
+
+#include <Engine/Utils/bvh.h>
+#include <Engine/Utils/gltf.h> 
+#include <Engine/Camera/camera.h> 
+
 
 struct Level : Scene {
 	MeshManager* m_meshManagerPimpl = nullptr;

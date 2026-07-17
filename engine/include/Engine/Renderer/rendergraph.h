@@ -23,8 +23,8 @@ namespace smvk {
 			External,
 			Transient
 		} type;
-		size_t id;
-		BufferKey key;
+		size_t id = 0;
+		BufferKey key{};
 		BufferHandle resolvedBufferHandle; // Should be holder?
 	};
 
@@ -34,8 +34,8 @@ namespace smvk {
 			External,
 			Transient
 		} type;
-		size_t id;
-		ImageViewKey key; //VkFormat resolvedFormat = VK_FORMAT_UNDEFINED;
+		size_t id = 0;
+		ImageViewKey key{}; //VkFormat resolvedFormat = VK_FORMAT_UNDEFINED;
 		ImageHandle resolvedImage{};
 		VkImageView resolvedImageView = VK_NULL_HANDLE;
 		// we are not managing subresource here... Should be done for proper aliasing later.
@@ -47,8 +47,8 @@ namespace smvk {
 			Transient,
 			External
 		} type;
-		size_t id;
-		ImageKey key;
+		size_t id = 0;
+		ImageKey key{};
 		ImageHandle resolvedImage{};
 	};
 
