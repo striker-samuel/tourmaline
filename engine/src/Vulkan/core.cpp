@@ -462,7 +462,10 @@ inline smvk::VulkanCore::~VulkanCore() {
 }
 //
 #ifdef USE_KTX
-inline smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ktxTexture2& ktxTexture) {}
+smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ktxTexture2& ktxTexture) {
+	Image img{};
+	return Holder<TextureHandle>(this, static_cast<TextureHandle>(images_.create(std::move(img))));
+}
 #endif 
 int smvk::Context::Initialize() {
 	VmaAllocatorCreateInfo allocatorCreateInfo = {};
@@ -775,9 +778,6 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 {
 	Image vk_image{};
 	VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-
-
-
 	imgCI.imageType = VK_IMAGE_TYPE_2D; // TODO, hardoded to 2D but could be 3D really
 
 	imgCI.format = _imageCreateInfo.vk_format;               // pick your format
@@ -963,10 +963,10 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 	// ---------------------------------------------------------------------
 	m_submitter->submit(han); // <-- replace with your actual submit call
 	AddDeferredTask(
-		std::packaged_task<void()>([this, stagingBuf] {delete(stagingBuf); })
-		, han
+		std::packaged_task<void()>([this, stagingBuf] {delete(stagingBuf); }), han
 	);
-	return imageHolder;
+	Image img{};
+	return Holder<TextureHandle>(this, static_cast<TextureHandle>(images_.create(std::move(img))));
 }
 [[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::Context::CreateBuffer(BufferCreateInfo bufferCreateInfo) {
 	Buffer desc{};
@@ -1073,6 +1073,8 @@ void smvk::Context::CleanUp() {
 	vmaDestroyPool(m_allocator, m_imagesPool);
 	vmaDestroyPool(m_allocator, m_stagingPool);
 }
+
+// 
 void smvk::destroy(smvk::Context* ctx, smvk::BufferHandle handle) {
 	assert(handle.valid());
 	auto db = ctx->buffers_.get(handle);
@@ -1085,6 +1087,12 @@ void smvk::destroy(smvk::Context* ctx, smvk::ShaderModuleHandle handle) {
 	vkDestroyShaderModule(device_, *sm, NULL);
 	ctx->shaderModules_.destroy(handle);
 }
+void smvk::destroy(smvk::Context* ctx, smvk::ImageHandle handle) {}
+void smvk::destroy(smvk::Context* ctx, smvk::SamplerHandle handle) {}
+void smvk::destroy(smvk::Context* ctx, smvk::DescriptorSetHandle handle) {}
+void smvk::destroy(smvk::Context* ctx, smvk::DescriptorPoolHandle handle) {}
+//
+
 #ifdef USE_KTX
 inline void smvk::Context::GetKtxDeviceInfo() {
 	ktxInfo_ = *ktxVulkanDeviceInfo_Create(

@@ -185,3 +185,98 @@ std::vector<smvk::BufferHandle> MeshManager::GetVertexBuffers() {
 }
 void destroy(MeshManager* ctx, MeshHandle handle);
 
+Mesh::DataUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, const tinygltf::Primitive& primitive) {
+	Mesh::DataUpload data;
+
+	// AABB. for culling	
+	{
+		auto it = primitive.attributes.find("POSITION");
+		if (it == primitive.attributes.end())
+			return data;
+
+		int accessorIndex = it->second;
+		const tinygltf::Accessor& accessor = model.accessors[accessorIndex];
+
+		if (accessor.minValues.size() >= 3 && accessor.maxValues.size() >= 3) {
+
+			// glTF stores AABB in the accessor
+			const std::vector<double>& min = accessor.minValues;
+			const std::vector<double>& max = accessor.maxValues;
+
+			glm::vec3 aabbMin(min[0], min[1], min[2]);
+			glm::vec3 aabbMax(max[0], max[1], max[2]);
+
+			// Apply same conversion as positions
+			glm::vec3 c0(-aabbMin.x, aabbMin.y, -aabbMin.z);
+			glm::vec3 c1(-aabbMax.x, aabbMax.y, -aabbMax.z);
+
+			glm::vec3 mn = glm::min(c0, c1);
+			glm::vec3 mx = glm::max(c0, c1);
+
+			data.aabb_min = mn;
+			data.aabb_max = mx;
+
+
+		}
+		else {
+
+			// I wont handle this. just assert and fail. 
+			assert(false && "failed to get bb ");
+
+		}
+
+	}
+
+	// Extract vertices
+	auto& posAcc = model.accessors[primitive.attributes.at("POSITION")];
+	data.vertices.reserve(posAcc.count);
+	for (size_t i = 0; i < posAcc.count; ++i) {
+		Vertex v{};
+		v.pos = readVec3ForientationFix(model, posAcc, i);
+		v.color = { 1.0f, 1.0f, 1.0f };
+		v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
+		v.normal = { 0.0f, 1.0f, 0.0f }; // will replace if normals provided
+		v.tangent = { 1.0f, 0.0f,0.0f, 1.0f }; // zero out tangent by default too ;)
+		data.vertices.push_back(v);
+	}
+
+	if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end()) {
+		auto& uvAcc = model.accessors[it->second];
+		for (size_t i = 0; i < uvAcc.count && i < data.vertices.size(); ++i) {
+			glm::vec2 uv = readVec2F(model, uvAcc, i);
+			data.vertices[i].texCoord = uv; // flip V if your shader expects it: uv.y = 1.0f - uv.y;
+		}
+	}
+
+	if (auto it = primitive.attributes.find("TANGENT"); it != primitive.attributes.end()) {
+		auto& tangentAcc = model.accessors[it->second];
+		for (size_t i = 0; i < tangentAcc.count && i < data.vertices.size(); ++i) {
+			glm::vec4 tangent = readVec4F(model, tangentAcc, i);
+
+			// Space conversion to my engine. Same as pos
+			tangent.x *= -1.0f;
+			tangent.z *= -1.0f;
+
+			data.vertices[i].tangent = tangent;
+		}
+	}
+
+
+	if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end()) {
+		auto& nAcc = model.accessors[it->second];
+		for (size_t i = 0; i < nAcc.count && i < data.vertices.size(); ++i) {
+			glm::vec3 n = readVec3ForientationFix(model, nAcc, i);
+			data.vertices[i].normal = glm::normalize(n);
+		}
+	}
+
+	if (primitive.indices >= 0) {
+		auto& idxAcc = model.accessors[primitive.indices];
+		for (size_t i = 0; i < idxAcc.count; ++i) {
+			data.indices.push_back(readIndex(model, idxAcc, i));
+		}
+	}
+
+	return data;
+
+}

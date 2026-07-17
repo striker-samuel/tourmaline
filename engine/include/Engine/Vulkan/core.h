@@ -372,7 +372,7 @@ namespace smvk {
 		const ktxVulkanDeviceInfo GetKtxInfo() { return ktxInfo_; };
 		Holder<TextureHandle> CreateTexture(
 			ktxTexture2& ktxTexture
-		);;
+		);
 #endif
 		Context(VulkanCore& core);
 		~Context();

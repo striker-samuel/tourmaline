@@ -1,7 +1,7 @@
 #pragma once
 #include <Engine/App/app.h>
 
-//#include <Engine/Renderer/resource_manager.h>
+#include <Engine/Renderer/resource_manager.h>
 #include <Engine/Renderer/rendergraph.h>
 
 #include <Engine/Utils/bvh.h>
@@ -23,19 +23,18 @@ struct Level : Scene {
 	) {
 		tinygltf::Model model;
 		LoadModelFromAsciiFile(model, gltf_model_path.string().c_str());
-		GltfToSceneImporter importer(*m_meshManagerPimpl, *this, model, std::move(gltf_model_path));
+		GltfToSceneImporter importer(
+			*this,
+			*m_meshManagerPimpl,
+			model,
+			std::move(gltf_model_path
+			)
+		);
 		importer.importNodeRecursive(/*rootNodeIdx*/0, /*parentSceneNode=*/-1, /*level=*/0);
 		// This is needed or else scene will not carry transforms effectively
 		markAsChanged(*this, 0);
 		recalculateGlobalTransforms(*this);
 	}
-
-	//template<typename Func>
-	//	void forEachNode(Func&& func) {
-	//		for (int node = 0; hierarchy.size(); node++) {
-	//			func(node);
-	//		}
-	//	}
 };
 std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
