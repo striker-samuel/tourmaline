@@ -16,12 +16,6 @@
 #include "Engine/Shared/common.h"
 #include <Engine/Memory/pool.h>
 //
-#define USE_KTX // lets code with this on by default
-#ifdef USE_KTX
-#include <ktx.h>
-#include <ktxvulkan.h>
-#endif
-// 
 #define ENGINE_NAME "smvk"
 //
 static constexpr float default_near_clip = 0.01f;
@@ -68,7 +62,7 @@ struct QueueFamilyIndices {
 	std::optional<uint32_t> presentFamily;
 	std::optional<uint32_t> transferFamily;
 
-	bool isComplete() {
+	bool isComplete() const {
 		return graphicsFamily.has_value() && presentFamily.has_value();
 	}
 };
@@ -80,9 +74,6 @@ struct SwapChainSupportDetails {
 };
 // CreatePayloads//Keys for logicalReources
 namespace smvk {
-
-
-
 	struct BufferCreateInfo {
 		VkDeviceSize size;
 		VmaMemoryUsage vma_usage;
@@ -121,8 +112,6 @@ namespace smvk {
 		VkCompareOp compareOp = VK_COMPARE_OP_ALWAYS;
 		bool compareEnable = false;
 	};
-	void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
-	void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
 };
 
 // maybe this should be impl.cpp exclusive
@@ -275,7 +264,7 @@ namespace smvk {
 	struct CommandSubmitHandle {
 		uint32_t index_ = 0;
 		uint32_t gen_ = 0; // gen 0 means no slot. alas empty. 
-		bool empty() { return gen_ == 0; };
+		bool empty() const { return gen_ == 0; };
 	};
 
 	struct CommandBufferManager {
@@ -367,13 +356,6 @@ namespace smvk {
 	// 4.6gb is good amount to reserver for 8gb vram system
 	// 2gb for Windows is good practice. And a little headroom for aux apps
 	struct Context {
-#ifdef USE_KTX
-		ktxVulkanDeviceInfo ktxInfo_;
-		const ktxVulkanDeviceInfo GetKtxInfo() { return ktxInfo_; };
-		Holder<TextureHandle> CreateTexture(
-			ktxTexture2& ktxTexture
-		);
-#endif
 		Context(VulkanCore& core);
 		~Context();
 		Context(const Context&) = delete;

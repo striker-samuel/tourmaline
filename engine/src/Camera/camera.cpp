@@ -10,28 +10,13 @@ glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNe
 		0.0f, 0.0f, zNear, 0.0f);
 }
 
-inline Camera::Camera(CameraPositionerInterface& positioner)
-	: positioner_(&positioner)
-{
-	proj_ = glm::mat4(1.0f);
-}
-
-inline glm::mat4 Camera::getViewMatrix() const { return positioner_->getViewMatrix(); }
-
-inline glm::vec3 Camera::getPosition() const { return positioner_->getPosition(); }
-
-inline glm::mat4 Camera::getProjMatrix() const { return proj_; }
-
-inline void Camera::setOrtho2D(float width, float height) {
-	proj_ = glm::ortho(0.0f, width, 0.0f, height, -1.0f, 1.0f);
-}
-
-inline void Camera::setPerspective(float fovY, float aspect, float zNear, float zFar) {
-	//proj_ = glm::perspective(glm::radians(fovY), aspect, zNear, zFar);
-	proj_ = MakeInfReversedZProjRH(fovY, aspect, zNear);
-}
-
-inline CameraPositioner_FirstPerson::CameraPositioner_FirstPerson(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up)
+Camera::Camera(CameraPositionerInterface& positioner) : positioner_(&positioner) { proj_ = glm::mat4(1.0f); }
+glm::mat4 Camera::getViewMatrix() const { return positioner_->getViewMatrix(); }
+glm::vec3 Camera::getPosition() const { return positioner_->getPosition(); }
+glm::mat4 Camera::getProjMatrix() const { return proj_; }
+void Camera::setOrtho2D(float width, float height) { proj_ = glm::ortho(0.0f, width, 0.0f, height, -1.0f, 1.0f); }
+void Camera::setPerspective(float fovY, float aspect, float zNear, float zFar) { proj_ = MakeInfReversedZProjRH(fovY, aspect, zNear); }
+CameraPositioner_FirstPerson::CameraPositioner_FirstPerson(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up)
 	: cameraPosition_(pos)
 	, cameraOrientation_(glm::lookAt(pos, target, up))
 	, up_(up)
@@ -42,7 +27,7 @@ inline CameraPositioner_FirstPerson::CameraPositioner_FirstPerson(const glm::vec
 	starting_up = up_;
 }
 
-inline void CameraPositioner_FirstPerson::update(double deltaSeconds, const glm::vec2& mousePos, bool mousePressed)
+void CameraPositioner_FirstPerson::update(double deltaSeconds, const glm::vec2& mousePos, bool mousePressed)
 {
 	if (mousePressed)
 	{
@@ -94,49 +79,43 @@ inline void CameraPositioner_FirstPerson::update(double deltaSeconds, const glm:
 	cameraPosition_ += moveSpeed_ * static_cast<float>(deltaSeconds);
 }
 
-inline glm::mat4 CameraPositioner_FirstPerson::getViewMatrix() const
+glm::mat4 CameraPositioner_FirstPerson::getViewMatrix() const
 {
 	const glm::mat4 t = glm::translate(glm::mat4(1.0f), -cameraPosition_);
 	const glm::mat4 r = glm::mat4_cast(cameraOrientation_);
 	return r * t;
 }
 
-inline glm::vec3 CameraPositioner_FirstPerson::getPosition() const
+glm::vec3 CameraPositioner_FirstPerson::getPosition() const
 {
 	return cameraPosition_;
 }
 
-inline void CameraPositioner_FirstPerson::setPosition(const glm::vec3& pos)
+void CameraPositioner_FirstPerson::setPosition(const glm::vec3& pos)
 {
 	cameraPosition_ = pos;
 }
-
-inline void CameraPositioner_FirstPerson::setSpeed(const glm::vec3& speed) {
+void CameraPositioner_FirstPerson::setSpeed(const glm::vec3& speed) {
 	moveSpeed_ = speed;
 }
-
-inline void CameraPositioner_FirstPerson::resetMousePosition(const glm::vec2& p) {
+void CameraPositioner_FirstPerson::resetMousePosition(const glm::vec2& p) {
 	mousePos_ = p;
 }
-
-inline void CameraPositioner_FirstPerson::setUpVector(const glm::vec3& up)
+void CameraPositioner_FirstPerson::setUpVector(const glm::vec3& up)
 {
 	const glm::mat4 view = getViewMatrix();
 	const glm::vec3 dir = -glm::vec3(view[0][2], view[1][2], view[2][2]);
 	cameraOrientation_ = glm::lookAt(cameraPosition_, cameraPosition_ + dir, up);
 }
-
-inline void CameraPositioner_FirstPerson::lookAt(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up) {
+void CameraPositioner_FirstPerson::lookAt(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up) {
 	cameraPosition_ = pos;
 	cameraOrientation_ = glm::lookAt(pos, target, up);
 }
-
-inline glm::vec3 CameraPositioner_FirstPerson::getForward() const {
+glm::vec3 CameraPositioner_FirstPerson::getForward() const {
 	const glm::mat4 rot = glm::mat4_cast(cameraOrientation_);
 	return -glm::vec3(rot[0][2], rot[1][2], rot[2][2]);
 }
-
-inline void CameraPositioner_FirstPerson::reset() {
+void CameraPositioner_FirstPerson::reset() {
 	cameraOrientation_ = starting_cameraOrientation;
 	cameraPosition_ = starting_pos;
 	up_ = starting_up;

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstdint>
+#include <iostream>
 
 #include <Engine/Vulkan/core.h>
 
@@ -20,13 +21,11 @@ namespace {
 		kBinding_Textures = 0,
 		kBinding_Samplers = 1,
 	};
-
 	struct FormatInfo {
 		uint32_t blockWidth;
 		uint32_t blockHeight;
 		uint32_t bytesPerBlock;
 	};
-
 	static FormatInfo getFormatInfo(VkFormat format) {
 		switch (format) {
 			// 8-bit per pixel
@@ -78,10 +77,9 @@ namespace {
 			return { 4, 4, 16 };
 
 		default:
-			assert(false && "");
+			assert(false);
 		}
 	}
-
 };
 
 static VkInstance instance_ = VK_NULL_HANDLE;
@@ -96,33 +94,345 @@ static VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
 static VkCommandPool transferCommandPool_ = VK_NULL_HANDLE;
 //
 
-namespace {
-	VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
-	[[nodiscard]] std::vector<const char*> getRequiredExtensionsForGlfw(bool enableValidationLayers);
-	[[nodiscard]] SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
-	[[nodiscard]] QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
-	bool checkDeviceExtensionSupport(VkPhysicalDevice device, const std::vector<const char*> deviceExtensions);
-	bool checkValidationLayerSupport(const std::vector<const char*> validationLayers);
-	bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface);
-	VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
-	VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
-	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window);
-	VkFormat findSupportedFormat(VkPhysicalDevice physicalDevice, const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features);
-	VkFormat findDepthFormat(VkPhysicalDevice physicalDevice);
-	void DestroyDebugUtilsMessengerEXT(
-		VkInstance instance,
-		VkDebugUtilsMessengerEXT debugMessenger,
-		const VkAllocationCallbacks* pAllocator
-	) {
-		auto func = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
-			vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT")
-			);
+//VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
+//[[nodiscard]] std::vector<const char*> getRequiredExtensionsForGlfw(bool enableValidationLayers);
+//[[nodiscard]] SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
+//[[nodiscard]] QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
+//bool checkDeviceExtensionSupport(VkPhysicalDevice device, const std::vector<const char*> deviceExtensions);
+//bool checkValidationLayerSupport(const std::vector<const char*> validationLayers);
+//bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface);
+//VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
+//VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
+//VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window);
+//VkFormat findSupportedFormat(VkPhysicalDevice physicalDevice, const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features);
+//VkFormat findDepthFormat(VkPhysicalDevice physicalDevice);
+void DestroyDebugUtilsMessengerEXT(
+	VkInstance instance,
+	VkDebugUtilsMessengerEXT debugMessenger,
+	const VkAllocationCallbacks* pAllocator
+) {
+	auto func = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+		vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT")
+		);
 
-		if (func != nullptr) {
-			func(instance, debugMessenger, pAllocator);
+	if (func != nullptr) {
+		func(instance, debugMessenger, pAllocator);
+	}
+}
+
+const char* vkResultToString(VkResult result) {
+	switch (result) {
+	case VK_SUCCESS: return "VK_SUCCESS";
+	case VK_NOT_READY: return "VK_NOT_READY";
+	case VK_TIMEOUT: return "VK_TIMEOUT";
+	case VK_EVENT_SET: return "VK_EVENT_SET";
+	case VK_EVENT_RESET: return "VK_EVENT_RESET";
+	case VK_INCOMPLETE: return "VK_INCOMPLETE";
+	case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+	case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+	case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+	case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+	case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+	case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+	case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+	case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+	case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+	case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+	case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+	case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+	case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
+	default: return "VK_ERROR_<unrecognized>";
+	}
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+	VkDebugUtilsMessageTypeFlagsEXT messageType,
+	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+	void* pUserData) {
+	std::cerr << "---------------- Vulkan Validation ----------------\n";
+	std::cerr << "Message: " << pCallbackData->pMessage << "\n";
+	std::cerr << "\n";  // <--- Blank line for separation
+	return VK_FALSE;
+}
+
+bool checkValidationLayerSupport(const std::vector<const char*> validationLayers) {
+	uint32_t layerCount;
+	vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+
+	std::vector<VkLayerProperties> availableLayers(layerCount);
+	vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+
+	for (const char* layerName : validationLayers) {
+		bool layerFound = false;
+
+		for (const auto& layerProperties : availableLayers) {
+			if (strcmp(layerName, layerProperties.layerName) == 0) {
+				layerFound = true;
+				break;
+			}
+		}
+
+		if (!layerFound) {
+			return false;
 		}
 	}
-};
+
+	return true;
+}
+
+VkFormat findSupportedFormat(
+	VkPhysicalDevice physicalDevice,
+	const std::vector<VkFormat>& candidates,
+	VkImageTiling tiling,
+	VkFormatFeatureFlags features
+) {
+	for (VkFormat vk_format : candidates) {
+		VkFormatProperties props;
+		vkGetPhysicalDeviceFormatProperties(physicalDevice, vk_format, &props);
+
+		if (tiling == VK_IMAGE_TILING_LINEAR &&
+			(props.linearTilingFeatures & features) == features) {
+			return vk_format;
+		}
+		else if (tiling == VK_IMAGE_TILING_OPTIMAL &&
+			(props.optimalTilingFeatures & features) == features) {
+			return vk_format;
+		}
+	}
+
+	throw std::runtime_error("failed to find supported format!");
+}
+
+
+// I should implement promotion other ways. Shadows may run other depthfmt also.
+// Maybe should be const. just checked for availability at device, error out if not found.
+VkFormat findDepthFormat(
+	VkPhysicalDevice physicalDevice
+) {
+	return findSupportedFormat(
+		physicalDevice,
+		{
+			//VK_FORMAT_D32_SFLOAT // no stencil. Lets just stick to stencil formats as a minimum
+			VK_FORMAT_D32_SFLOAT_S8_UINT,
+			VK_FORMAT_D24_UNORM_S8_UINT
+		},
+		VK_IMAGE_TILING_OPTIMAL,
+		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+	);
+}
+
+SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
+
+	SwapChainSupportDetails details;
+
+	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface,
+		&details.capabilities);
+
+	uint32_t formatCount;
+	vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount,
+		nullptr);
+
+	if (formatCount != 0) {
+		details.formats.resize(formatCount);
+		vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount,
+			details.formats.data());
+	}
+
+	uint32_t presentModeCount;
+	vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface,
+		&presentModeCount, nullptr);
+
+	if (presentModeCount != 0) {
+		details.presentModes.resize(presentModeCount);
+		vkGetPhysicalDeviceSurfacePresentModesKHR(
+			device, surface, &presentModeCount, details.presentModes.data());
+	}
+
+	return details;
+}
+
+QueueFamilyIndices findQueueFamilies(
+	VkPhysicalDevice device,
+	VkSurfaceKHR surface
+) {
+	QueueFamilyIndices indices;
+
+	uint32_t queueFamilyCount = 0;
+	vkGetPhysicalDeviceQueueFamilyProperties(
+		device,
+		&queueFamilyCount,
+		nullptr
+	);
+
+	std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+	vkGetPhysicalDeviceQueueFamilyProperties(
+		device,
+		&queueFamilyCount,
+		queueFamilies.data()
+	);
+
+	int i = 0;
+
+	for (const auto& queueFamily : queueFamilies) {
+		if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+			indices.graphicsFamily = i;
+		}
+
+		VkBool32 presentSupport = false;
+		vkGetPhysicalDeviceSurfaceSupportKHR(
+			device,
+			i,
+			surface,
+			&presentSupport
+		);
+
+		if (presentSupport) {
+			indices.presentFamily = i;
+		}
+
+		i++;
+	}
+
+	// Look for a dedicated transfer queue.
+	i = 0;
+	for (const auto& queueFamily : queueFamilies) {
+		bool supportsTransfer =
+			queueFamily.queueFlags & VK_QUEUE_TRANSFER_BIT;
+
+		bool supportsGraphics =
+			queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT;
+
+		bool supportsCompute =
+			queueFamily.queueFlags & VK_QUEUE_COMPUTE_BIT;
+
+		if (supportsTransfer && !supportsGraphics && !supportsCompute) {
+			indices.transferFamily = i;
+			break;
+		}
+
+		i++;
+	}
+
+	// If no fully dedicated transfer queue exists,
+	// look for one that at least is not a graphics queue.
+	if (!indices.transferFamily.has_value()) {
+		i = 0;
+		for (const auto& queueFamily : queueFamilies) {
+			bool supportsTransfer =
+				queueFamily.queueFlags & VK_QUEUE_TRANSFER_BIT;
+
+			bool supportsGraphics =
+				queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT;
+
+			if (supportsTransfer && !supportsGraphics) {
+				indices.transferFamily = i;
+				break;
+			}
+
+			i++;
+		}
+	}
+
+	// Final fallback: use graphics queue for transfers.
+	if (!indices.transferFamily.has_value()) {
+		indices.transferFamily = indices.graphicsFamily;
+	}
+
+	return indices;
+}
+bool checkDeviceExtensionSupport(VkPhysicalDevice device, const std::vector<const char*> deviceExtensions) {
+	uint32_t extensionCount;
+	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
+		nullptr);
+
+	std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
+		availableExtensions.data());
+
+	std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
+	for (const auto& extension : availableExtensions) {
+		requiredExtensions.erase(extension.extensionName);
+	}
+
+	return requiredExtensions.empty();
+}
+
+bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface, const std::vector<const char*> deviceExtensions) {
+	QueueFamilyIndices indices = findQueueFamilies(device, surface);
+
+	bool extensionsSupported = checkDeviceExtensionSupport(device, deviceExtensions);
+
+	bool swapChainAdequate = false;
+	if (extensionsSupported) {
+		SwapChainSupportDetails swapChainSupport = querySwapChainSupport(device, surface);
+		swapChainAdequate = !swapChainSupport.formats.empty() &&
+			!swapChainSupport.presentModes.empty();
+	}
+
+	return indices.isComplete() && extensionsSupported && swapChainAdequate;
+}
+
+VkSurfaceFormatKHR chooseSwapSurfaceFormat(
+	const std::vector<VkSurfaceFormatKHR>& availableFormats) {
+	for (const auto& availableFormat : availableFormats) {
+		if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
+			availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+			return availableFormat;
+		}
+	}
+
+	return availableFormats[0];
+}
+
+VkPresentModeKHR chooseSwapPresentMode(
+	const std::vector<VkPresentModeKHR>& availablePresentModes) {
+	for (const auto& availablePresentMode : availablePresentModes) {
+		if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
+			return availablePresentMode;
+		}
+	}
+
+	return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window) {
+
+	if (capabilities.currentExtent.width !=
+		std::numeric_limits<uint32_t>::max()) {
+		return capabilities.currentExtent;
+	}
+	else {
+		int width, height;
+		glfwGetFramebufferSize(window, &width, &height);
+
+		VkExtent2D actualExtent = { static_cast<uint32_t>(width),
+								   static_cast<uint32_t>(height) };
+
+		actualExtent.width =
+			std::clamp(actualExtent.width, capabilities.minImageExtent.width,
+				capabilities.maxImageExtent.width);
+		actualExtent.height =
+			std::clamp(actualExtent.height, capabilities.minImageExtent.height,
+				capabilities.maxImageExtent.height);
+
+		return actualExtent;
+	}
+}
+
+std::vector<const char*> getRequiredExtensionsForGlfw(bool enableValidationLayers) {
+	uint32_t glfwExtensionCount = 0;
+	const char** glfwExtensions;
+	glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+
+	std::vector<const char*> extensions(glfwExtensions,
+		glfwExtensions + glfwExtensionCount);
+
+	if (enableValidationLayers) {
+		extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	}
+
+	return extensions;
+}
 
 static inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
 static uint64_t getImageSizeBytes(const smvk::ImageCreateInfo& info) {
@@ -302,7 +612,7 @@ bool smvk::VulkanCore::Init() {
 		vkEnumeratePhysicalDevices(instance_, &deviceCount, devices.data());
 
 		for (const auto& device : devices) {
-			if (isDeviceSuitable(device, surface_)) {
+			if (isDeviceSuitable(device, surface_, config_.deviceExtensions)) {
 				physicalDevice_ = device;
 				break;
 			}
@@ -460,13 +770,9 @@ inline smvk::VulkanCore::~VulkanCore() {
 	DestroyDebugUtilsMessengerEXT(instance_, debugMessenger_, nullptr);
 	vkDestroyInstance(instance_, nullptr);
 }
-//
-#ifdef USE_KTX
-smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ktxTexture2& ktxTexture) {
-	Image img{};
-	return Holder<TextureHandle>(this, static_cast<TextureHandle>(images_.create(std::move(img))));
-}
-#endif 
+
+
+
 int smvk::Context::Initialize() {
 	VmaAllocatorCreateInfo allocatorCreateInfo = {};
 	allocatorCreateInfo.physicalDevice = physicalDevice_;
@@ -500,12 +806,11 @@ int smvk::Context::Initialize() {
 	m_submitter = new CommandBufferManager(core_, QueuePreference::GRAPHICS);
 	return 0; // no error
 }
-inline smvk::Context::Context(VulkanCore& core) :core_(core) { Initialize(); }
-inline smvk::Context::~Context() {
-	// Crude
+smvk::Context::Context(VulkanCore& core) :core_(core) { Initialize(); }
+smvk::Context::~Context() {
+	// TODO:: implement this propertul
 	delete(&m_submitter);
 	m_submitter = nullptr;
-	//
 	CleanUp();
 };
 void smvk::Context::UploadDataToBuffer(
@@ -637,142 +942,6 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 	};
 	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &out));
 }
-//	[[nodiscard]] Pipeline ShaderProgram::CreateGraphicsPipeline(
-//		PipelineCreateInfo pipelineCreateInfo
-//	) {
-//
-//		Pipeline pipeline;
-//		auto v = ctx_.shaderModules_.get(pipelineCreateInfo.vert);
-//		auto f = ctx_.shaderModules_.get(pipelineCreateInfo.frag);
-//
-//		// SHADER
-//		VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-//		vertShaderStageInfo.sType =
-//			VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-//		vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-//		vertShaderStageInfo.module = *v;
-//		vertShaderStageInfo.pName = "mainVS";
-//
-//		VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
-//		fragShaderStageInfo.sType =
-//			VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-//		fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-//		fragShaderStageInfo.module = *f;
-//		fragShaderStageInfo.pName = "mainPS";
-//
-//		VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,
-//														  fragShaderStageInfo };
-//
-//		VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-//		vertexInputInfo.sType =
-//			VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-//		auto bindingDescription = Vertex::getBindingDescription();
-//		auto attributeDescriptions = Vertex::getAttributeDescriptions();
-//		vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(bindingDescription.size());
-//		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-//		vertexInputInfo.pVertexBindingDescriptions = bindingDescription.data();
-//		vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
-//
-//		VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-//		inputAssembly.sType =
-//			VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-//		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-//		inputAssembly.primitiveRestartEnable = VK_FALSE;
-//
-//		// VIEWPORT
-//		VkPipelineViewportStateCreateInfo viewportState{};
-//		viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-//		viewportState.viewportCount = 1;
-//		viewportState.scissorCount = 1;
-//
-//		// RASTERIZER
-//		VkPipelineRasterizationStateCreateInfo rasterizer{};
-//		rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-//		rasterizer.depthClampEnable = pipelineCreateInfo.rasterSettings.depthClampEnable;
-//		rasterizer.rasterizerDiscardEnable = pipelineCreateInfo.rasterSettings.rasterizerDiscardEnable;
-//		rasterizer.polygonMode = pipelineCreateInfo.rasterSettings.polygonMode;
-//		rasterizer.lineWidth = pipelineCreateInfo.rasterSettings.lineWidth;
-//		rasterizer.cullMode = pipelineCreateInfo.rasterSettings.cullMode;
-//		rasterizer.frontFace = pipelineCreateInfo.rasterSettings.frontFace;
-//		rasterizer.depthBiasEnable = pipelineCreateInfo.rasterSettings.depthBiasEnable;
-//
-//		// MULTISAMPLING
-//		VkPipelineMultisampleStateCreateInfo multisampling{};
-//		multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-//		multisampling.sampleShadingEnable = VK_FALSE;
-//		multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-//
-//		// STENCIL
-//		VkPipelineDepthStencilStateCreateInfo depthStencil{};
-//		depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-//		depthStencil.depthTestEnable = VK_TRUE;
-//		depthStencil.depthWriteEnable = VK_TRUE;
-//		depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
-//		depthStencil.depthBoundsTestEnable = VK_FALSE;
-//		depthStencil.stencilTestEnable = VK_FALSE;
-//
-//		// COLORBLEND
-//		VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-//		colorBlendAttachment.colorWriteMask =
-//			VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-//			VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-//		colorBlendAttachment.blendEnable = VK_FALSE;
-//
-//		VkPipelineColorBlendStateCreateInfo colorBlending{};
-//		colorBlending.sType =
-//			VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-//		colorBlending.logicOpEnable = VK_FALSE;
-//		colorBlending.logicOp = VK_LOGIC_OP_COPY;
-//		colorBlending.attachmentCount = 1;
-//		colorBlending.pAttachments = &colorBlendAttachment;
-//		colorBlending.blendConstants[0] = 0.0f;
-//		colorBlending.blendConstants[1] = 0.0f;
-//		colorBlending.blendConstants[2] = 0.0f;
-//		colorBlending.blendConstants[3] = 0.0f;
-//
-//		// DYNAMIC STATES
-//		// These two are elemental. There are extensions for almost anything do. Maybe it is woth to go all in dynamic state.
-//		std::vector<VkDynamicState> dynamicStates = {
-//			VK_DYNAMIC_STATE_VIEWPORT,
-//			VK_DYNAMIC_STATE_SCISSOR
-//		};
-//
-//		VkPipelineDynamicStateCreateInfo dynamicState{};
-//		dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-//		dynamicState.dynamicStateCount =
-//			static_cast<uint32_t>(dynamicStates.size());
-//		dynamicState.pDynamicStates = dynamicStates.data();
-//
-//#pragma region ---[LayoutDescription]---
-//		VkPipelineLayout lyt;
-//		CreatePipelineLayout(pipelineCreateInfo.layoutDescription, lyt);
-//
-//#pragma endregion
-//
-//		VkGraphicsPipelineCreateInfo pipelineInfo{};
-//		pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-//		pipelineInfo.stageCount = 2;
-//		pipelineInfo.pStages = shaderStages;
-//		pipelineInfo.pVertexInputState = &vertexInputInfo;
-//		pipelineInfo.pInputAssemblyState = &inputAssembly;
-//		pipelineInfo.pViewportState = &viewportState;
-//		pipelineInfo.pRasterizationState = &rasterizer;
-//		pipelineInfo.pMultisampleState = &multisampling;
-//		pipelineInfo.pColorBlendState = &colorBlending;
-//		pipelineInfo.pDynamicState = &dynamicState;
-//		pipelineInfo.pDepthStencilState = &depthStencil;
-//		pipelineInfo.layout = pipelineLayput;
-//		pipelineInfo.pNext = &dynamicRenderingInfo_;
-//
-//		if (vkCreateGraphicsPipelines(ctx_.core.device_, VK_NULL_HANDLE, 1, &pipelineInfo,
-//			nullptr, &pipeline.pipeline) != VK_SUCCESS)
-//		{
-//			throw std::runtime_error("failed to create graphics pipeline!");
-//		}
-//
-//		return ctx_.graphicPipelines_.create(std::move(pipeline));
-//
-//	}
 
 [[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::Context::CreateImage(ImageCreateInfo _imageCreateInfo, const void* data)
 {
@@ -1425,7 +1594,7 @@ inline void smvk::CommandBufferManager::reset(CommandSubmitHandle handle) {
 	availableSlots++;
 }
 //
-void smvk::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
+void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
 
 	VkSamplerCreateInfo samplerInfo{};
 	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -1459,7 +1628,7 @@ void smvk::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& 
 	VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler));
 
 }
-void smvk::CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view)
+void smvk::VulkanCore::CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view)
 {
 	VkImageViewCreateInfo viewInfo{};
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1476,7 +1645,7 @@ void smvk::CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView&
 	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
 }
 // 
-inline smvk::VulkanSwapchain::VulkanSwapchain(Context& context, GLFWwindow* window, uint32_t framesInFlight, uint32_t desiredImageCount)
+smvk::VulkanSwapchain::VulkanSwapchain(Context& context, GLFWwindow* window, uint32_t framesInFlight, uint32_t desiredImageCount)
 	: ctx_(context),
 	window_(window),
 	framesInFlight_(framesInFlight),
@@ -1495,11 +1664,11 @@ inline smvk::VulkanSwapchain::VulkanSwapchain(Context& context, GLFWwindow* wind
 		VK_CHECK(vkAllocateCommandBuffers(device_, &allocInfo, &commandBuffers[i]));
 	}
 }
-inline smvk::VulkanSwapchain::~VulkanSwapchain() {
+smvk::VulkanSwapchain::~VulkanSwapchain() {
 	DestroySyncObjects();
 	CleanupSwapchain();
 }
-inline void smvk::VulkanSwapchain::Recreate() {
+void smvk::VulkanSwapchain::Recreate() {
 	// No new sync objects. Should investigate, can iamge# change? on OOD
 	int width = 0;
 	int height = 0;
@@ -1525,7 +1694,7 @@ inline void smvk::VulkanSwapchain::Recreate() {
 
 	currentImageIndex_ = 0;
 }
-inline void smvk::VulkanSwapchain::CreateSwapchain() {
+void smvk::VulkanSwapchain::CreateSwapchain() {
 
 	SwapChainSupportDetails support = querySwapChainSupport(physicalDevice_, surface_);
 	VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(support.formats);
@@ -1586,7 +1755,7 @@ inline void smvk::VulkanSwapchain::CreateSwapchain() {
 	extent_ = swapExtent;
 	glfwGetWindowSize(window_, &windowWidth, &windowHeight);
 }
-inline void smvk::VulkanSwapchain::CreateImageViews() {
+void smvk::VulkanSwapchain::CreateImageViews() {
 	for (size_t i = 0; i < images_.size(); ++i) {
 		auto viewCreateInfo = ImageViewCreateInfo{
 			.flags = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1602,13 +1771,13 @@ inline void smvk::VulkanSwapchain::CreateImageViews() {
 				.layerCount = 1
 			}
 		};
-		CreateImageView(
+		ctx_.core_.CreateImageView(
 			viewCreateInfo,
 			imageViews_[i]
 		);
 	}
 }
-inline void smvk::VulkanSwapchain::CreateDepthResources() {
+void smvk::VulkanSwapchain::CreateDepthResources() {
 	depthImage_ = ctx_.CreateImage(
 		ImageCreateInfo{
 			.texWidth = static_cast<int>(extent_.width),
@@ -1634,7 +1803,7 @@ inline void smvk::VulkanSwapchain::CreateDepthResources() {
 	},
 	};
 
-	CreateImageView(
+	ctx_.core_.CreateImageView(
 		viewCreateInfo,
 		obj_->renderView
 	);

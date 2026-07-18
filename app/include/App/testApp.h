@@ -8,7 +8,6 @@
 #include <Engine/Utils/gltf.h> 
 #include <Engine/Camera/camera.h> 
 
-
 struct Level : Scene {
 	MeshManager* m_meshManagerPimpl = nullptr;
 	BvhTree tree = {};
@@ -203,7 +202,7 @@ private:
 		// VERTEX SETUP
 		auto vertexBuffers = m_rendergraph->AddExternalBuffers(m_meshManagerPimpl->GetVertexBuffers());
 
-		auto mainPass = m_rendergraph->AddPass()
+		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
 			.setExtent(fb.swapchain.extent_)
 			.setVertexBuffers(vertexBuffers)
@@ -228,7 +227,7 @@ private:
 				assert(false && "tree wasnt done");
 			}
 
-			for (auto node : m_currentLevel.hierarchy)
+			for (Hierarchy node : m_currentLevel.hierarchy)
 			{
 				//vkCmdBindPipeline(
 				//	fb.commandBuffer,

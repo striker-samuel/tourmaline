@@ -137,7 +137,7 @@ namespace smvk {
 
 		LogicalImage AddImage(ImageCreateInfo description) { assert(false); };
 		LogicalImage AddImage(VkImage vk_image) { assert(false); };
-		LogicalImageView AddImageView(ImageViewCreateInfo description);
+		LogicalImageView AddImageView(ImageViewCreateInfo description) { assert(false); };
 		LogicalImageView AddImageView(VkImageView view) {
 			LogicalImageView proxyView{};
 			proxyView.type = LogicalImageView::Type::External;
@@ -219,7 +219,7 @@ namespace smvk {
 			const RenderPass& pass
 		) {
 			std::vector<VkFormat> colorAttachmentFormats;
-			for (auto cattach : pass.colorAttachments_) {
+			for (auto& cattach : pass.colorAttachments_) {
 				colorAttachmentFormats.push_back(cattach.view.key.vk_format);
 			}
 

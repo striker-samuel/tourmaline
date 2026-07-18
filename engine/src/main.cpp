@@ -11,8 +11,12 @@
 
 #define VOLK_IMPLEMENTATION
 
+#include <tiny_gltf.h>
+#include "volk.h"
+#include "vk_mem_alloc.h"
+
 #include <iostream>
-int main() {
-  std::cout << "Engine stub running!" << std::endl;
-  return 0;
-}
+//int main() {
+//  std::cout << "Engine stub running!" << std::endl;
+//  return 0;
+//}
