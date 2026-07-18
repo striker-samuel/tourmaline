@@ -32,8 +32,8 @@ namespace smvk {
 	protected:
 		std::unique_ptr<VulkanCore> core_;
 		std::unique_ptr<Context> m_context;
-		std::unique_ptr<RenderGraph> m_rendergraph;
 		std::unique_ptr<VulkanSwapchain> m_swapchain;
+		std::unique_ptr<RenderGraph> m_rendergraph;
 		//std::unique_ptr <ImGuiContext> m_imguiCtx;
 		ImGuiContext* m_imguiCtx = nullptr;
 #pragma region ===[ App / Core State ]===

@@ -1,35 +1,37 @@
 #include <Engine/Renderer/resource_manager.h>
 
-MeshManager::MeshManager(smvk::Context& ctx) :ctx_(ctx) {}
+MeshManager::MeshManager(smvk::Context& ctx) :ctx_(ctx) {
+	InitalizeGeoBuffers();
+}
 void MeshManager::InitalizeGeoBuffers() {
 	{
 		uint32_t totalVertexBytes = 512u * 1024u * 1024u;
 		uint32_t totalIndexBytes = 512u * 1024u * 1024u;
 
 		// Create the actual GPU buffers (these are the page's buffers)
-		smvk::BufferHandle vb_pos = ctx_.CreateBuffer(
+		vertexPosBuffer = smvk::Holder(ctx_.CreateBuffer(
 			{
 			totalVertexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			}
-		);
+		));
 
-		smvk::BufferHandle vb_shd = ctx_.CreateBuffer(
+		vertexShadingBuffer = smvk::Holder(ctx_.CreateBuffer(
 			{
 			totalVertexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			}
-		);
+		));
 
-		smvk::BufferHandle ib = ctx_.CreateBuffer(
+		indexBuffer = smvk::Holder(ctx_.CreateBuffer(
 			{
 				totalIndexBytes,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			}
-		);
+		));
 
 		auto max_vertices = std::min(
 			totalVertexBytes / uint32_t(sizeof(VertexPos)),

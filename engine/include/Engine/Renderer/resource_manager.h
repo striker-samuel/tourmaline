@@ -70,6 +70,7 @@ struct MeshManager {
 	std::map<std::string, smvk::TextureHandle> textureCache;
 	smvk::Pool<Mesh, Mesh> meshes;
 	smvk::Pool<Material, Material> materials;
+
 	smvk::Holder<smvk::BufferHandle> indexBuffer;
 	smvk::Holder<smvk::BufferHandle> vertexPosBuffer;
 	smvk::Holder<smvk::BufferHandle> vertexShadingBuffer;

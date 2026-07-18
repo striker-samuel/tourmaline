@@ -80,18 +80,17 @@ namespace smvk {
 		VkBufferUsageFlags usage_flags;
 	};
 	struct ImageCreateInfo {
-		//VkExtent3D vk_extent; // support 3d images
-		int texWidth;
-		int texHeight;
-		VkFormat vk_format;
-		VkImageUsageFlags usage;
-		uint32_t levels;
-		uint32_t arrayLayers;
-		bool operator<(const ImageCreateInfo& other) const {
-			return std::tie(texWidth, texHeight, vk_format, usage, levels, arrayLayers) <
-				std::tie(other.texWidth, other.texHeight, other.vk_format,
-					other.usage, other.levels, other.arrayLayers);
-		}
+		VkExtent3D vk_extent; // support 3d images
+		VkFormat vk_format = VK_FORMAT_UNDEFINED;
+		VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+			VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		uint32_t levels = 1;
+		uint32_t arrayLayers = 1;
+		//bool operator<(const ImageCreateInfo& other) const {
+		//	return std::tie(vk_extent, vk_format, usage, levels, arrayLayers) <
+		//		std::tie(other.vk_extent, other.vk_format,
+		//			other.usage, other.levels, other.arrayLayers);
+		//}
 	};
 	struct ImageViewCreateInfo {
 		VkImageViewCreateFlags     flags{};
@@ -125,19 +124,19 @@ namespace smvk {
 	struct Image {
 		VkImage vk_image = VK_NULL_HANDLE;
 		VmaAllocation vma_alloc = VK_NULL_HANDLE;
+		//ImageCreateInfo createInfo;
+		VkExtent3D vk_extent = { 1,1,1 };
 		VkFormat vk_format = VK_FORMAT_UNDEFINED;
-		VkImageUsageFlags vk_usageFlags = 0;
-		VkExtent3D extent{};
-		uint32_t arrayLayers = 0;
-		uint32_t levels = 0;
+		uint32_t levels = 1;
+		uint32_t arrayLayers = 1;
+		// 
 		VkImageView sampleView = VK_NULL_HANDLE; // you can sample multiple levels
 		VkImageView renderView = VK_NULL_HANDLE; // but can only render to one. Views are created with this baked in. Thats the why to separate them
 		VkImageView arrayView[6]{
 			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
 			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
-		};
-		// not fully implemented yet.
-		VkSampler vk_sampler = VK_NULL_HANDLE;
+		}; // for cubemap
+		VkSampler vk_sampler = VK_NULL_HANDLE; // ownership sematincs not fully implemented
 		bool owns_sampler = false;
 		bool owns_views = true;
 		bool is_swapchain = false;
@@ -147,22 +146,17 @@ namespace smvk {
 	struct Buffer {
 		VkBuffer vk_buffer = VK_NULL_HANDLE;
 		VmaAllocation vma_alloc{};
-		// VmaAllocationInfo allocInfo{};
-		// this is just an info return. the info contained maybe altered during refrag so makes no sense storing it
-		VkBufferUsageFlags usage;
-		VkMemoryPropertyFlags memory_flags;
+		VkBufferUsageFlags usage = 0;
+		VkMemoryPropertyFlags memory_flags = 0;
 		VkDeviceAddress deviceAdress = 0;
-		bool is_mapable() const {
-			return this->memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+		[[nodiscard]] bool is_mappable() const noexcept {
+			return (memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
 		}
-		//bool operator()(const Buffer& a, const Buffer& b) const {
-		//	return std::tie(a.vk_buffer, a.vma_alloc, a.usage, a.memory_flags)
-		//		< std::tie(b.vk_buffer, b.vma_alloc, b.usage, b.memory_flags);
+		//[[nodiscard]] bool is_valid() const noexcept {
+		//	return vk_buffer != VK_NULL_HANDLE && vma_alloc != nullptr;
 		//}
 	};
 };
-
-
 
 namespace smvk {
 
@@ -171,13 +165,13 @@ namespace smvk {
 	enum VulkanVersion {
 		VK_1_3
 	};
+
+	// This was badly solved.
 	enum struct QueuePreference {
 		GRAPHICS,
 		TRANSFER,
 		COMPUTE
 	};
-
-
 	//
 	using ImageHandle = Handle<struct Image>; // Attachments
 	using TextureHandle = Handle<struct Image>;
@@ -367,18 +361,16 @@ namespace smvk {
 		void ProcessDeferrredTasks(); //void Flush();
 		//
 		BufferHandle CreateStagingBuffer(VkDeviceSize size);
-		//
 		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
 		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
 		Holder<SamplerHandle> CreateSampler(SamplerCreateInfo samplerCreateInfo);
 		//
-
-		//void UploadDataToImage(ImageHandle image, const void* data) {};
 		void* MapBuffer(smvk::Handle<smvk::Buffer> handle);
 		void UnmapBuffer(smvk::Handle<smvk::Buffer> handle);
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
+		void UploadDataToImage2D(ImageHandle image, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		void CleanUp();
 #ifdef USE_KTX
 		void GetKtxDeviceInfo();
@@ -419,9 +411,9 @@ namespace smvk {
 		ShaderModuleHandle vert_{};
 		ShaderModuleHandle frag_{};
 		PipelineCreateInfo::RasterSettings rasterSettings_{};
-	//public:
-	//	ShaderProgram& setVert(ShaderModuleHandle vert) { this->vert_ = Holder<ShaderModuleHandle>(&ctx_, vert); return *this; };
-	//	ShaderProgram& setFrag(ShaderModuleHandle frag) { this->frag_ = Holder<ShaderModuleHandle>(&ctx_, frag); return *this; };
+		//public:
+		//	ShaderProgram& setVert(ShaderModuleHandle vert) { this->vert_ = Holder<ShaderModuleHandle>(&ctx_, vert); return *this; };
+		//	ShaderProgram& setFrag(ShaderModuleHandle frag) { this->frag_ = Holder<ShaderModuleHandle>(&ctx_, frag); return *this; };
 	};
 
 };
@@ -486,9 +478,8 @@ namespace smvk {
 		}
 		void Recreate();
 
-		// 
-		VkFormat GetImageFormat() const { return vk_surfaceFormat_; }
-		VkFormat GetDepthImageFormat() const { return vk_depthFormat_; }
+		//VkFormat GetImageFormat() const { return vk_surfaceFormat_; }
+		//VkFormat GetDepthImageFormat() const { return vk_depthFormat_; }
 
 		VkExtent2D GetExtent() const { return extent_; }
 		uint32_t GetImageCount() const { return static_cast<uint32_t>(images_.size()); }
