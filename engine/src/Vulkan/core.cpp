@@ -92,20 +92,9 @@ static VkQueue presentQueue_ = VK_NULL_HANDLE;
 static VkQueue transferQueue_ = VK_NULL_HANDLE;
 static VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
 static VkCommandPool transferCommandPool_ = VK_NULL_HANDLE;
-//
 
-//VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData);
-//[[nodiscard]] std::vector<const char*> getRequiredExtensionsForGlfw(bool enableValidationLayers);
-//[[nodiscard]] SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
-//[[nodiscard]] QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
-//bool checkDeviceExtensionSupport(VkPhysicalDevice device, const std::vector<const char*> deviceExtensions);
-//bool checkValidationLayerSupport(const std::vector<const char*> validationLayers);
-//bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface);
-//VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
-//VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
-//VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window);
-//VkFormat findSupportedFormat(VkPhysicalDevice physicalDevice, const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features);
-//VkFormat findDepthFormat(VkPhysicalDevice physicalDevice);
+
+
 void DestroyDebugUtilsMessengerEXT(
 	VkInstance instance,
 	VkDebugUtilsMessengerEXT debugMessenger,
@@ -622,6 +611,7 @@ bool smvk::VulkanCore::Init() {
 			throw std::runtime_error("failed to find a suitable GPU!");
 		}
 
+		vkGetPhysicalDeviceFeatures2(physicalDevice_, &vkFeatures10_);
 		vkGetPhysicalDeviceProperties2(physicalDevice_, &vkPhysicalDeviceProperties2_);
 
 		// Create Logical Device
@@ -644,15 +634,17 @@ bool smvk::VulkanCore::Init() {
 				queueCreateInfos.push_back(queueCreateInfo);
 			}
 
-			VkPhysicalDeviceVulkan11Features deviceFeatures11{
+			VkPhysicalDeviceVulkan11Features deviceFeatures11
+			{
 				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
 				.pNext = nullptr,
 				.storageBuffer16BitAccess = VK_TRUE,
 				.uniformAndStorageBuffer16BitAccess = VK_TRUE,
-				.storagePushConstant16 = VK_TRUE,
-				.storageInputOutput16 = VK_TRUE
+				//.storagePushConstant16 = VK_TRUE,
+				//.storageInputOutput16 = VK_TRUE
 			};
-			VkPhysicalDeviceVulkan12Features deviceFeatures12{
+			VkPhysicalDeviceVulkan12Features deviceFeatures12
+			{
 				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 				.pNext = &deviceFeatures11,
 				.shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
@@ -662,7 +654,6 @@ bool smvk::VulkanCore::Init() {
 				.runtimeDescriptorArray = VK_TRUE,
 				.bufferDeviceAddress = VK_TRUE
 			};
-
 			VkPhysicalDeviceVulkan13Features deviceFeatures13
 			{
 				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -680,6 +671,11 @@ bool smvk::VulkanCore::Init() {
 					.textureCompressionBC = VK_TRUE, // REQUIRED for BC1..BC7
 				},
 			};
+
+			//s
+//#define CHECK_VULKAN_FEATURE(reqFeatures, availFeatures, feature, version)     \
+//  if ((reqFeatures.feature == VK_TRUE) && (availFeatures.feature == VK_FALSE)) \
+//    missingFeatures.append("\n   " version " ." #feature);
 
 			VkDeviceCreateInfo createInfo{};
 			createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -943,17 +939,17 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &out));
 }
 
-[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::Context::CreateImage(ImageCreateInfo _imageCreateInfo, const void* data)
+[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::Context::CreateImage(ImageCreateInfo imageCreateInfo, const void* data)
 {
 	Image vk_image{};
 	VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	imgCI.imageType = VK_IMAGE_TYPE_2D; // TODO, hardoded to 2D but could be 3D really
 
-	imgCI.format = _imageCreateInfo.vk_format;               // pick your format
-	imgCI.extent = { static_cast<uint32_t>(_imageCreateInfo.texWidth), static_cast<uint32_t>(_imageCreateInfo.texHeight), 1 }; // width, height, depth
-	imgCI.mipLevels = _imageCreateInfo.levels;                                      // >1 if you want mipmaps
-	imgCI.usage = _imageCreateInfo.usage;
-	imgCI.arrayLayers = _imageCreateInfo.arrayLayers;                                      // >1 for arrays/cubemaps
+	imgCI.format = imageCreateInfo.vk_format;               // pick your format
+	imgCI.extent = { static_cast<uint32_t>(imageCreateInfo.texWidth), static_cast<uint32_t>(imageCreateInfo.texHeight), 1 }; // width, height, depth
+	imgCI.mipLevels = imageCreateInfo.levels;                                      // >1 if you want mipmaps
+	imgCI.usage = imageCreateInfo.usage;
+	imgCI.arrayLayers = imageCreateInfo.arrayLayers;                                      // >1 for arrays/cubemaps
 	imgCI.samples = VK_SAMPLE_COUNT_1_BIT;                  // MSAA? set >1
 	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;                // GPU-friendly
 	// Queue exclusivity on by default.
@@ -963,12 +959,12 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 	VmaAllocationCreateInfo allocation_create_info{};
 	allocation_create_info.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
 	allocation_create_info.pool = m_imagesPool;
-	vk_image.vk_format = _imageCreateInfo.vk_format;
-	vk_image.levels = _imageCreateInfo.levels;
-	vk_image.extent.width = _imageCreateInfo.texWidth;
-	vk_image.extent.height = _imageCreateInfo.texHeight;
-	vk_image.vk_usageFlags = _imageCreateInfo.usage;
-	vk_image.arrayLayers = _imageCreateInfo.arrayLayers;
+	vk_image.vk_format = imageCreateInfo.vk_format;
+	vk_image.levels = imageCreateInfo.levels;
+	vk_image.extent.width = imageCreateInfo.texWidth;
+	vk_image.extent.height = imageCreateInfo.texHeight;
+	vk_image.vk_usageFlags = imageCreateInfo.usage;
+	vk_image.arrayLayers = imageCreateInfo.arrayLayers;
 	VK_CHECK(vmaCreateImage(m_allocator, &imgCI, &allocation_create_info, &vk_image.vk_image, &vk_image.vma_alloc, nullptr));
 
 	// TODO:: rework this
