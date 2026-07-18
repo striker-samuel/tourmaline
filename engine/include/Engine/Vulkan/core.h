@@ -253,7 +253,6 @@ namespace smvk {
 		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
 		void CreateShaderModule(const std::vector<char>& code, VkShaderModule& out);
-		void CreateImageView(VkImage vk_image, VkFormat vk_format, VkImageAspectFlags aspectFlags, int levelCount, int baseArrayLayer, int layerCount, VkImageViewType viewType, VkImageView& view);
 		void CreateCommandPool(QueuePreference queue, VkCommandPoolCreateFlags flags, VkCommandPool& out);
 		//void CreateDescriptorSet();
 		//void CreateDescriptorPool();

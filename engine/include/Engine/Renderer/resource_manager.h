@@ -2,7 +2,6 @@
 
 #include <Engine/Vulkan/core.h>
 #include <Engine/Shared/common.h>
-#include <Engine/Utils/gltf.h> 
 #include <Engine/Scene/scene.h>
 #include <Engine/Renderer/vertex.h>
 
@@ -65,9 +64,9 @@ struct MeshManager {
 	smvk::TextureHandle GetOrCreateTexture(std::string uri, ktxTexture2& tex);
 	std::vector<smvk::BufferHandle> GetVertexBuffers();
 
-private:
+//private:
 	void InitalizeGeoBuffers();
-private:
+//private:
 	std::map<std::string, smvk::TextureHandle> textureCache;
 	smvk::Pool<Mesh, Mesh> meshes;
 	smvk::Pool<Material, Material> materials;
@@ -81,38 +80,4 @@ private:
 	uint32_t vertex_cursor = 0;
 };
 
-
-
 void destroy(MeshManager* ctx, MeshHandle handle);
-Mesh::DataUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model,const tinygltf::Primitive& primitive);
-
-constexpr uint32_t DEFAULT_MATERIAL_INDEX = 0;
-struct GltfToSceneImporter {
-	Scene& scene;
-	MeshManager& manager_;
-	const tinygltf::Model& model;
-	std::filesystem::path gltfModelPath; // full path to .gltf/.glb on disk
-	static constexpr uint32_t kInvalidMat = 0xFFFFFFFFu;
-	std::vector<uint32_t> materialCache;
-
-	GltfToSceneImporter
-	(
-		Scene& inScene
-		, MeshManager& manager 
-		, const tinygltf::Model& inModel
-		, std::filesystem::path inGltfModelPath
-/*		, std::function<uint32_t(void* data)> createMeshCallback
-		, std::function<uint32_t()> createMaterialCallback*/
-	)
-		: scene(inScene)
-		, manager_(manager)
-		, model(inModel)
-		, gltfModelPath(std::move(inGltfModelPath))
-		, materialCache(inModel.materials.size(), kInvalidMat)
-	{}
-
-	uint32_t getOrCreateMaterial(int gltfMaterialIndex);
-	uint32_t getOrCreateMesh(tinygltf::Primitive primitive);
-	void importNodeRecursive(int gltfNodeIndex, int parentSceneNode, int level);
-};
-
