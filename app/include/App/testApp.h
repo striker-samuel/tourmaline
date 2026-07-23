@@ -86,7 +86,7 @@ struct AppResources {
 class TestApp : public smvk::VulkanApp {
 	using Super = smvk::VulkanApp;
 public:
-	TestApp() { Initialize(); }; 
+	TestApp() {}; 
 	~TestApp() {};
 private:
 	uint32_t kMaxDraws = 1000;
@@ -107,7 +107,7 @@ private:
 		Super::LateUpdate();
 	}
 
-	bool Initialize() {
+	bool Initialize() override {
 		if (!Super::Initialize())
 			return false;
 
