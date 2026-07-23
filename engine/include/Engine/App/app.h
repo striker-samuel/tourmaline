@@ -34,7 +34,7 @@ namespace smvk {
 		std::unique_ptr<Context> m_context;
 		std::unique_ptr<VulkanSwapchain> m_swapchain;
 		std::unique_ptr<RenderGraph> m_rendergraph;
-		//std::unique_ptr <ImGuiContext> m_imguiCtx;
+		//std::unique_ptr <ImGuiContext> m_imguiCtx; // Maybe we should copy nvprocore2 elements idea
 		ImGuiContext* m_imguiCtx = nullptr;
 #pragma region ===[ App / Core State ]===
 		// This needs rework. naive float for elpased time leads to problems in the long run!

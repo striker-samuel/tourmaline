@@ -17,6 +17,9 @@
 #include <Engine/Memory/pool.h>
 //
 #define ENGINE_NAME "smvk"
+
+#include <ktx.h>
+#include <ktxVulkan.h>
 //
 static constexpr float default_near_clip = 0.01f;
 static constexpr float default_far_clip = 50.0f;
@@ -110,6 +113,19 @@ namespace smvk {
 		float maxAniso = 1.0f;
 		VkCompareOp compareOp = VK_COMPARE_OP_ALWAYS;
 		bool compareEnable = false;
+		bool operator<(const SamplerCreateInfo& other) const noexcept {
+			return std::tie(
+				mag, min, mip,
+				u, v, w,
+				maxLod, maxAniso,
+				compareOp, compareEnable
+			) < std::tie(
+				other.mag, other.min, other.mip,
+				other.u, other.v, other.w,
+				other.maxLod, other.maxAniso,
+				other.compareOp, other.compareEnable
+			);
+		}
 	};
 };
 
@@ -137,7 +153,7 @@ namespace smvk {
 			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
 		}; // for cubemap
 		VkSampler vk_sampler = VK_NULL_HANDLE; // ownership sematincs not fully implemented
-		bool owns_sampler = false;
+		//bool owns_sampler = false;
 		bool owns_views = true;
 		bool is_swapchain = false;
 	};
@@ -172,22 +188,22 @@ namespace smvk {
 		TRANSFER,
 		COMPUTE
 	};
-	//
-	using ImageHandle = Handle<struct Image>; // Attachments
-	using TextureHandle = Handle<struct Image>;
+
+	using Texture = Image;
+	using TextureHandle = Handle<Texture>;
+
+	using ImageHandle = Handle<struct Image>;
 	using SamplerHandle = Handle<struct Sampler>;
 	using BufferHandle = Handle<struct Buffer>;
 	using ShaderModuleHandle = Handle<struct ShaderModule>;
-
-	// 1 pool 1 set per frame in flight just with the bindless setup
-	// 1 pool for imgui too
 	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 	using DescriptorSetHandle = Handle<struct DescriptorSet>;
-	// Maybe specializing it here its a good idea
+	// 1 pool 1 set per frame in flight just with the bindless setup
+	// 1 pool for imgui too
+
 	using GraphicsPipelineHandle = Handle<struct Pipeline>;
 	using ComputePipelineHandle = Handle<struct Pipeline>;
 	//using ComputePipelineHandle = Handle<struct Pipeline>;
-
 
 	struct VulkanCore {
 		struct CoreConfiguration {
@@ -224,6 +240,7 @@ namespace smvk {
 		VkPhysicalDeviceProperties2& GetPhysicalDeviceProperties() { return this->vkPhysicalDeviceProperties2_; };
 
 		// missing 1.4 .. dont care yet
+		//VkPhysicalDeviceVulkan14Features vkFeatures14_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES };
 		VkPhysicalDeviceVulkan13Features vkFeatures13_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
 		VkPhysicalDeviceVulkan12Features vkFeatures12_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &vkFeatures13_ };
 		VkPhysicalDeviceVulkan11Features vkFeatures11_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &vkFeatures12_ };
@@ -241,15 +258,13 @@ namespace smvk {
 
 		int CreateInstance();
 		bool Init();
-		//
-		void CreateFence(const VkFenceCreateInfo createInfo, VkFence& out);
-		void CreateSemaphore(VkSemaphoreCreateInfo createInfo, VkSemaphore& out);
+
+		//void CreateFence(const VkFenceCreateInfo createInfo, VkFence& out);
 		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
 		void CreateShaderModule(const std::vector<char>& code, VkShaderModule& out);
-		void CreateCommandPool(QueuePreference queue, VkCommandPoolCreateFlags flags, VkCommandPool& out);
-		//void CreateDescriptorSet();
-		//void CreateDescriptorPool();
+		//void CreateCommandPool(QueuePreference queue, VkCommandPoolCreateFlags flags, VkCommandPool& out);
+		void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out);
 	};
 
 	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window);
@@ -293,7 +308,7 @@ namespace smvk {
 		void reset(CommandSubmitHandle handle);
 		VulkanCore& core_;
 		QueuePreference queue_ = QueuePreference::GRAPHICS;
-		static const uint32_t kMax = 64;
+		static const uint32_t kMax = 1;
 		uint32_t availableSlots = kMax;
 		WrapperSlot commandBuffers_[kMax];
 		CommandSubmitHandle m_lastSubmit{}; // not in use right now. used for creating linkedList for a faux dependency chain
@@ -363,37 +378,42 @@ namespace smvk {
 		BufferHandle CreateStagingBuffer(VkDeviceSize size);
 		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
+		Holder<TextureHandle> CreateTexture(ktxTexture2& texture);
+
+		//Holder<SamplerHandle> CreateSampler(SamplerCreateInfo samplerCreateInfo);
+		// dont like this this 
 		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
-		Holder<SamplerHandle> CreateSampler(SamplerCreateInfo samplerCreateInfo);
 		//
 		void* MapBuffer(smvk::Handle<smvk::Buffer> handle);
 		void UnmapBuffer(smvk::Handle<smvk::Buffer> handle);
-		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
-		void UploadDataToImage2D(ImageHandle image, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
+		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
+		void UploadDataToImage2D(Image img, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		void CleanUp();
-#ifdef USE_KTX
-		void GetKtxDeviceInfo();
-#endif
+
+
+
+		void GetKtxDeviceInfo(); // will be removed
 		//protected:
 		VulkanCore& core_;
 		CommandBufferManager* m_submitter = nullptr;
 		std::vector<DeferredTask> m_deferredTasks;
 
+		Pool<Texture, Texture> textures_;
+
 		Pool<Image, Image> images_;
 		Pool<Buffer, Buffer> buffers_;
 		Pool<ShaderModule, VkShaderModule> shaderModules_;
 		Pool<Sampler, VkSampler> samplers_;
-		//
-		//
+
 		VmaAllocator m_allocator;
 		VmaPool m_imagesPool;
 		VmaPool m_stagingPool;
 		VkDescriptorPool descriptorPool_;
 		VkDescriptorSet descriptorSets_[MAX_FRAMES_IN_FLIGHT];
-		//
+
 		TextureHandle m_nilTexture{};
-		SamplerHandle m_defaultSampler{}; // maybe shoudl be handle
+		VkSampler m_defaultSampler{};
 	};
 
 	void destroy(Context* ctx, ImageHandle handle);
@@ -446,6 +466,18 @@ inline void ImageBarrier(
 
 
 namespace smvk {
+
+	struct SamplerPool {
+		struct SamplerPoolCreateInfo {
+			VkDevice device;
+		};
+		SamplerPool(SamplerPoolCreateInfo createInfo);
+		~SamplerPool();
+		VkDevice device_;
+		using SamplerKey = SamplerCreateInfo;
+		std::map<SamplerKey, VkSampler> m_samplers;
+		VkSampler GetSampler(SamplerKey key);
+	};
 
 	class VulkanSwapchain;
 	struct FrameBuffer {

@@ -221,12 +221,4 @@ namespace smvk {
 		}
 
 	};
-
-	//namespace std {
-	//	template <>
-	//	struct hash<PipelineHandle> {
-	//		size_t operator()(const PipelineHandle& h) const noexcept {
-	//			return std::hash<uint32_t>{}(h.index());
-	//		}
-	//	};
 };

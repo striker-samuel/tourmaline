@@ -8,6 +8,7 @@
 #include <Engine/Utils/gltf.h> 
 #include <Engine/Camera/camera.h> 
 
+struct Texture;
 struct Level : Scene {
 	MeshManager* m_meshManagerPimpl = nullptr;
 	BvhTree tree = {};
@@ -16,6 +17,7 @@ struct Level : Scene {
 	//std::map<uint32_t, MeshHandle> m_meshForNode;
 	//Level(MeshManager* meshManager) : m_meshManagerPimpl(meshManager) {};
 	~Level() {}
+	smvk::Pool<Texture, smvk::Image> textures_;
 
 	void Upload(
 		std::filesystem::path gltf_model_path
@@ -84,7 +86,7 @@ struct AppResources {
 class TestApp : public smvk::VulkanApp {
 	using Super = smvk::VulkanApp;
 public:
-	TestApp() { Initialize(); };
+	TestApp() { Initialize(); }; 
 	~TestApp() {};
 private:
 	uint32_t kMaxDraws = 1000;

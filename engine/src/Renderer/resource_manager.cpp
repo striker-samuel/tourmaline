@@ -100,10 +100,19 @@ MeshHandle MeshManager::UploadVertexData(Mesh::DataUpload& mesh_data)
 
 		if (vmaVirtualAllocate(index_blk /*or index_blk*/, &aIdx, &mesh_desc.vma_alloc.index, &index_offset_bytes) != VK_SUCCESS) {
 			vmaVirtualFree(vertex_units_blk, mesh_desc.vma_alloc.vertex); // Roll back vertex allocation
+			assert(false);
 			return {};
 		}
 
-		ctx_.UploadDataToBuffer(indexBuffer, mesh_data.indices.data(), indexBytes, 0, index_offset_bytes);
+		ctx_.UploadDataToBuffer(
+			indexBuffer,
+			mesh_data.indices.data(),
+			indexBytes,
+			VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
+			VK_ACCESS_2_INDEX_READ_BIT,
+			0,
+			index_offset_bytes
+		);
 	}
 
 	// ------------------------------------------
@@ -128,7 +137,14 @@ MeshHandle MeshManager::UploadVertexData(Mesh::DataUpload& mesh_data)
 	// ------------------------------------------
 	{
 		const VkDeviceSize posBytes = sizeof(VertexPos) * static_cast<VkDeviceSize>(vcount);
-		ctx_.UploadDataToBuffer(vertexPosBuffer, pos.data(), posBytes, 0, 0, pos_byte_offset);
+		ctx_.UploadDataToBuffer(vertexPosBuffer,
+			pos.data(),
+			posBytes,
+			VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
+			VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
+			0,
+			pos_byte_offset
+		);
 	}
 
 	// ------------------------------------------
@@ -136,7 +152,14 @@ MeshHandle MeshManager::UploadVertexData(Mesh::DataUpload& mesh_data)
 	// ------------------------------------------
 	{
 		const VkDeviceSize shdBytes = sizeof(VertexShading) * static_cast<VkDeviceSize>(vcount);
-		ctx_.UploadDataToBuffer(vertexShadingBuffer, pos.data(), shdBytes, 0, 0, shd_byte_offset);
+		ctx_.UploadDataToBuffer(vertexShadingBuffer,
+			shd.data(),
+			shdBytes,
+			VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
+			VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
+			0,
+			shd_byte_offset
+		);
 	}
 
 	// ------------------------------------------
@@ -160,7 +183,7 @@ MeshHandle MeshManager::UploadVertexData(Mesh::DataUpload& mesh_data)
 	return meshes.create(std::move(mesh_desc));
 }
 [[nodiscard]] MaterialHandle MeshManager::CreateMaterial(Material::Textures textures) {
-	assert(textures.diffuse.valid() && "Invalid handle for diffuse");
+	assert(!textures.diffuse.empty() && "Invalid handle for diffuse");
 	Material mat{};
 	mat.textures_.diffuse = textures.diffuse;
 	mat.values.tex[0] = textures.diffuse.index();

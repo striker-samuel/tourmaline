@@ -312,24 +312,20 @@ uint32_t GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
 
 	smvk::TextureHandle colorTexHandle{};
 
-	// TODO : Upload all textures
 	{
-
-		//auto color_uri = UriFromTexture(model, *mat.baseColorTex);
-		//ktxTexture2* ktxTex = nullptr;
-		//KTX_error_code res = ktxTexture2_CreateFromNamedFile(
-		//	(baseDir.c_str() / color_uri).string().c_str(),
-		//	KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
-		//	&ktxTex
-		//);
-
-		//if (res != KTX_SUCCESS) {
-		//	throw std::runtime_error("KTX load failed");
-		//}
-
-		////colorTexHandle = manager_.ctx_.CreateTexture(color_uri.string(), *ktxTex);
-		//colorTexHandle = manager_.ctx_.CreateTexture(*ktxTex);
-		//ktxTexture2_Destroy(ktxTex);
+		auto color_uri = UriFromTexture(model, *mat.baseColorTex);
+		ktxTexture2* ktxTex = nullptr;
+		KTX_error_code res = ktxTexture2_CreateFromNamedFile(
+			(baseDir.c_str() / color_uri).string().c_str(),
+			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
+			&ktxTex
+		);
+		if (res != KTX_SUCCESS) {
+			throw std::runtime_error("KTX load failed");
+		}
+		//colorTexHandle = manager_.ctx_.CreateTexture(color_uri.string(), *ktxTex);
+		colorTexHandle = manager_.ctx_.CreateTexture(*ktxTex);
+		ktxTexture2_Destroy(ktxTex);
 	}
 
 	return manager_.CreateMaterial(
@@ -437,7 +433,7 @@ Mesh::DataUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, cons
 }
 uint32_t GltfToSceneImporter::getOrCreateMesh(tinygltf::Primitive primitive) {
 	auto mdata = SurfaceDataFromGltfPrimitive(model, primitive);
-	//return createMeshCallback_(&mdata).index();
+	std::cout << mdata.vertices.size() << std::endl;
 	return manager_.UploadVertexData(mdata).index();
 }
 void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentSceneNode, int level) {

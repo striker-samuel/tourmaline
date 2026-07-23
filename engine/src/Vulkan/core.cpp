@@ -601,7 +601,6 @@ int smvk::VulkanCore::CreateInstance() {
 	return 0;
 };
 bool smvk::VulkanCore::Init() {
-
 	{
 		uint32_t deviceCount = 0;
 		vkEnumeratePhysicalDevices(instance_, &deviceCount, nullptr);
@@ -753,12 +752,22 @@ bool smvk::VulkanCore::Init() {
 	return true;
 
 };
-void smvk::VulkanCore::CreateFence(const VkFenceCreateInfo createInfo, VkFence& out) {
-	VK_CHECK(vkCreateFence(device_, &createInfo, nullptr, &out));
-};
-void smvk::VulkanCore::CreateSemaphore(VkSemaphoreCreateInfo createInfo, VkSemaphore& out) {
+//void smvk::VulkanCore::CreateFence(const VkFenceCreateInfo createInfo, VkFence& out) {
+//	VK_CHECK(vkCreateFence(device_, &createInfo, nullptr, &out));
+//};
+void smvk::VulkanCore::CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out) {
+	VkSemaphoreTypeCreateInfo semaphoreTypeInfo{};
+	semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+	semaphoreTypeInfo.pNext = nullptr;
+	semaphoreTypeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+	semaphoreTypeInfo.initialValue = initialValue;
+	VkSemaphoreCreateInfo createInfo{
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+		.pNext = &semaphoreTypeInfo,
+		.flags = 0 };
 	VK_CHECK(vkCreateSemaphore(device_, &createInfo, nullptr, &out));
 };
+
 void smvk::VulkanCore::CreateShaderModule(const std::vector<char>& code, VkShaderModule& out) {
 	VkShaderModuleCreateInfo createInfo{};
 	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -932,14 +941,15 @@ int smvk::Context::Initialize() {
 	VK_CHECK(createAttachmentPool(m_allocator, m_imagesPool));
 	VK_CHECK(createStagingPool(m_allocator, m_stagingPool));
 
-	m_defaultSampler = CreateSampler(SamplerCreateInfo{});
+	core_.CreateSampler(SamplerCreateInfo{}, m_defaultSampler);
 	const uint32_t pixel = 0xFF000000;
-	m_nilTexture = CreateTexture(ImageCreateInfo{
-		.vk_extent = {1,1,1},
-		.vk_format = VK_FORMAT_R8G8B8A8_SRGB,
-		},
-		&pixel
-		);
+	//m_nilTexture = CreateTexture(
+	//	ImageCreateInfo{
+	//	.vk_extent = {1,1,1},
+	//	.vk_format = VK_FORMAT_R8G8B8A8_SRGB,
+	//	},
+	//	&pixel
+	//	);
 
 	// TODO: rework this
 	m_submitter = new CommandBufferManager(core_, QueuePreference::GRAPHICS);
@@ -956,18 +966,28 @@ void smvk::Context::UploadDataToBuffer(
 	BufferHandle buffer,
 	const void* data,
 	size_t dataSize,
-	VkPipelineStageFlags dstStages,
-	VkAccessFlags dstAccess,
+	VkPipelineStageFlags2 dstStages,
+	VkAccessFlags2 dstAccess,
 	size_t src_offset,
 	size_t dest_offset
 ) {
+	auto stageHan = CreateStagingBuffer(dataSize);
+
 	auto buf = buffers_.get(buffer);
-	assert(buf != nullptr && "");
+	assert(buffer.valid());
+	assert(buf->vk_buffer != VK_NULL_HANDLE);
+
+	auto stagingBuf = buffers_.get(stageHan);
+	assert(stagingBuf->vk_buffer != VK_NULL_HANDLE);
+	assert(stagingBuf->vk_buffer != VK_NULL_HANDLE);
+
+
+
 	auto han = m_submitter->acquire();
 	auto cmd = m_submitter->GetCommandBuffer(han).cmd;
 
 	if (buf->is_mappable()) {
-		VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, buf->vma_alloc, 0, dataSize));
+		VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, buf->vma_alloc, dest_offset, dataSize));
 		BufferBarrier(
 			cmd,
 			buf->vk_buffer,
@@ -981,22 +1001,12 @@ void smvk::Context::UploadDataToBuffer(
 		return;
 	}
 
-	VkBuffer stagingBuf;
-	VmaAllocation stagingAlloc;
 
-	VkBufferCreateInfo sInfo{
-		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-		.size = dataSize,
-		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-	};
-	VmaAllocationCreateInfo sAlloc{};
-	sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
-	sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-	sAlloc.pool = m_stagingPool;
-
-	// Fill the staging buffer with the *provided* data
-	VK_CHECK(vmaCreateBuffer(m_allocator, &sInfo, &sAlloc, &stagingBuf, &stagingAlloc, nullptr));
-	VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, stagingAlloc, 0, dataSize));
+	//VmaAllocationInfo info{};
+	//vmaGetAllocationInfo(m_allocator, stagingBuf->vma_alloc, &info);
+	//assert(dest_offset <= info.size);
+	//assert(dataSize <= info.size - dest_offset);
+	VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, stagingBuf->vma_alloc, 0, dataSize));
 
 	// Copy staging -> dst
 	VkBufferCopy copyRegion{
@@ -1004,30 +1014,31 @@ void smvk::Context::UploadDataToBuffer(
 		.dstOffset = dest_offset,
 		.size = dataSize
 	};
-	vkCmdCopyBuffer(cmd, stagingBuf, buf->vk_buffer, 1, &copyRegion);
+	vkCmdCopyBuffer(cmd, stagingBuf->vk_buffer, buf->vk_buffer, 1, &copyRegion);
 
 	BufferBarrier(
 		cmd,
 		buf->vk_buffer,
 		dest_offset,
 		dataSize,
-		VK_PIPELINE_STAGE_2_HOST_BIT,
-		VK_ACCESS_2_HOST_WRITE_BIT,
+		VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+		VK_ACCESS_2_TRANSFER_WRITE_BIT,
 		dstStages,
 		dstAccess
 	);
 
+	m_submitter->submit(han);
 	AddDeferredTask(
-		std::packaged_task<void()>([this, stagingBuf, stagingAlloc] {vmaDestroyBuffer(m_allocator, stagingBuf, stagingAlloc); })
+		std::packaged_task<void()>([this, stagingBuf] {vmaDestroyBuffer(m_allocator, stagingBuf->vk_buffer, stagingBuf->vma_alloc); })
 		, han
 	);
 }
-void smvk::Context::UploadDataToImage2D(ImageHandle image, const void* data, size_t dataSize, VkPipelineStageFlags dstStages, VkAccessFlags dstAccess, size_t src_offset, size_t dest_offset)
+
+void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset, size_t dest_offset)
 {
-	auto img = images_.get(image);
 	const VkDeviceSize stagingBufferSize = static_cast<VkDeviceSize>(getImageSizeBytes(
 		{
-			.vk_extent = img->vk_extent
+			.vk_extent = image.vk_extent
 		}
 	));
 	auto stagingBufferHandle = CreateStagingBuffer(stagingBufferSize);
@@ -1047,13 +1058,13 @@ void smvk::Context::UploadDataToImage2D(ImageHandle image, const void* data, siz
 		VkImageSubresourceRange range{};
 		range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		range.baseMipLevel = 0;
-		range.levelCount = img->levels;
+		range.levelCount = image.levels;
 		range.baseArrayLayer = 0;
-		range.layerCount = img->arrayLayers;
+		range.layerCount = image.arrayLayers;
 
 		ImageBarrier(
 			cmd,
-			img->vk_image,
+			image.vk_image,
 			VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			range,
@@ -1076,21 +1087,21 @@ void smvk::Context::UploadDataToImage2D(ImageHandle image, const void* data, siz
 	// ---------------------------------------------------------------------
 	std::vector<VkBufferImageCopy2> regions;
 	regions.reserve(
-		static_cast<size_t>(img->levels) *
-		static_cast<size_t>(img->arrayLayers)
+		static_cast<size_t>(image.levels) *
+		static_cast<size_t>(image.arrayLayers)
 	);
 
 	VkDeviceSize bufferOffset = 0;
 
-	const FormatInfo fmt = getFormatInfo(img->vk_format);
+	const FormatInfo fmt = getFormatInfo(image.vk_format);
 
-	for (uint32_t level = 0; level < img->levels; ++level)
+	for (uint32_t level = 0; level < image.levels; ++level)
 	{
 		const uint32_t mipWidth =
-			std::max(1u, static_cast<uint32_t>(img->vk_extent.width) >> level);
+			std::max(1u, static_cast<uint32_t>(image.vk_extent.width) >> level);
 
 		const uint32_t mipHeight =
-			std::max(1u, static_cast<uint32_t>(img->vk_extent.height) >> level);
+			std::max(1u, static_cast<uint32_t>(image.vk_extent.height) >> level);
 
 		const uint32_t blocksX =
 			(mipWidth + fmt.blockWidth - 1) / fmt.blockWidth;
@@ -1103,7 +1114,7 @@ void smvk::Context::UploadDataToImage2D(ImageHandle image, const void* data, siz
 			static_cast<VkDeviceSize>(blocksY) *
 			static_cast<VkDeviceSize>(fmt.bytesPerBlock);
 
-		for (uint32_t layer = 0; layer < img->arrayLayers; ++layer)
+		for (uint32_t layer = 0; layer < image.arrayLayers; ++layer)
 		{
 			VkBufferImageCopy2 region{};
 			region.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2;
@@ -1135,7 +1146,7 @@ void smvk::Context::UploadDataToImage2D(ImageHandle image, const void* data, siz
 	VkCopyBufferToImageInfo2 copyInfo{};
 	copyInfo.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2;
 	copyInfo.srcBuffer = staginfBuffer->vk_buffer; // <-- replace with your staging buffer member
-	copyInfo.dstImage = img->vk_image;
+	copyInfo.dstImage = image.vk_image;
 	copyInfo.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 	copyInfo.regionCount = static_cast<uint32_t>(regions.size());
 	copyInfo.pRegions = regions.data();
@@ -1149,13 +1160,13 @@ void smvk::Context::UploadDataToImage2D(ImageHandle image, const void* data, siz
 		VkImageSubresourceRange range{};
 		range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		range.baseMipLevel = 0;
-		range.levelCount = img->levels;
+		range.levelCount = image.levels;
 		range.baseArrayLayer = 0;
-		range.layerCount = img->arrayLayers;
+		range.layerCount = image.arrayLayers;
 
 		ImageBarrier(
 			cmd,
-			img->vk_image,
+			image.vk_image,
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			range,
@@ -1264,22 +1275,359 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 	VK_CHECK(vmaCreateImage(m_allocator, &imgCI, &allocation_create_info, &img.vk_image, &img.vma_alloc, nullptr));
 
 	// TODO:: rework this
-	img.vk_sampler = *samplers_.get(m_defaultSampler);
-	img.owns_sampler = false;
+	img.vk_sampler = m_defaultSampler;
+	//img.owns_sampler = false;
 
 	if (data != nullptr) {}
 	return smvk::Holder<ImageHandle>(this, images_.create(std::move(img)));
 
 }
-[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data)
-{
-	auto imageHolder = CreateImage(imageCreateInfo);
-	auto textureHandle = imageHolder.operator smvk::TextureHandle();
-	auto smvk_image = this->images_.get(textureHandle);
 
-	Image img{};
-	return Holder<TextureHandle>(this, static_cast<TextureHandle>(images_.create(std::move(img))));
+//smvk::Holder<smvk::TextureHandle> CreateTexture(smvk::ImageCreateInfo imageCreateInfo, const void* data = nullptr)
+//{
+//	smvk::Texture t;
+//	return { this, textures_.create(std::move(t)) };
+//
+//}
+smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ktxTexture2& texture) {
+
+	if (ktxTexture2_NeedsTranscoding(&texture)) {
+		// Hardcoded for now, as in your original code.
+		KTX_error_code tr = ktxTexture2_TranscodeBasis(&texture, KTX_TTF_BC7_RGBA, 0);
+		if (tr != KTX_SUCCESS) {
+			throw std::runtime_error(ktxErrorString(tr));
+		}
+	}
+
+	// Force offline mip usage.
+	texture.generateMipmaps = KTX_FALSE;
+
+	const VkFormat format = ktxTexture2_GetVkFormat(&texture);
+	if (format == VK_FORMAT_UNDEFINED) {
+		throw std::runtime_error("KTX texture has undefined VkFormat after transcoding.");
+	}
+
+	const uint32_t width = texture.baseWidth;
+	const uint32_t height = texture.baseHeight;
+	const uint32_t depth = std::max(1u, texture.baseDepth);
+	const uint32_t mipLevels = texture.numLevels;
+	const uint32_t arrayLayers =
+		std::max(1u, texture.numLayers) * std::max(1u, texture.numFaces);
+
+	const bool isCubemap = texture.isCubemap == KTX_TRUE;
+
+	const VkImageUsageFlags usage =
+		VK_IMAGE_USAGE_SAMPLED_BIT |
+		VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+		(texture.generateMipmaps ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
+
+	const bool is3D = depth > 1;
+
+	// -------------------------------------------------------------------------
+	// Create VkImage with VMA
+	// -------------------------------------------------------------------------
+	VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	imageInfo.flags = isCubemap ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+
+	imageInfo.imageType = is3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+	imageInfo.extent = { width, height, depth };
+	imageInfo.arrayLayers = is3D ? 1 : arrayLayers;
+
+	imageInfo.format = format;
+	imageInfo.extent = { width, height, depth };
+	imageInfo.mipLevels = mipLevels;
+	imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+	imageInfo.usage = usage;
+	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+	// Textures go on device local.
+	VmaAllocationCreateInfo imageAllocInfo{};
+	imageAllocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+	imageAllocInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+	VkImage image = VK_NULL_HANDLE;
+	VmaAllocation imageAllocation = VK_NULL_HANDLE;
+	VmaAllocationInfo imageAllocationInfo{};
+
+	VkResult vr = vmaCreateImage(
+		m_allocator,
+		&imageInfo,
+		&imageAllocInfo,
+		&image,
+		&imageAllocation,
+		&imageAllocationInfo
+	);
+
+	if (vr != VK_SUCCESS) {
+		throw std::runtime_error("vmaCreateImage failed for KTX texture.");
+	}
+
+	auto* base = reinterpret_cast<ktxTexture*>(&texture);
+	ktx_size_t ktxDataSize = ktxTexture_GetDataSizeUncompressed(base);
+	ktx_uint8_t* ktxData = ktxTexture_GetData(base);
+
+	if (!ktxData || ktxDataSize == 0) {
+		vmaDestroyImage(m_allocator, image, imageAllocation);
+		assert(false && "no image data");
+		throw std::runtime_error("KTX texture has no image data.");
+	}
+
+	VkBufferCreateInfo stagingBufferInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	stagingBufferInfo.size = static_cast<VkDeviceSize>(ktxDataSize);
+	stagingBufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+	stagingBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+	VmaAllocationCreateInfo stagingAllocInfo{};
+	stagingAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+	stagingAllocInfo.flags =
+		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+		VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+	VkBuffer stagingBuffer = VK_NULL_HANDLE;
+	VmaAllocation stagingAllocation = VK_NULL_HANDLE;
+	VmaAllocationInfo stagingAllocationInfo{};
+
+	vr = vmaCreateBuffer(
+		m_allocator,
+		&stagingBufferInfo,
+		&stagingAllocInfo,
+		&stagingBuffer,
+		&stagingAllocation,
+		&stagingAllocationInfo
+	);
+
+	if (vr != VK_SUCCESS) {
+		vmaDestroyImage(m_allocator, image, imageAllocation);
+		throw std::runtime_error("vmaCreateBuffer failed for KTX staging buffer.");
+	}
+
+	// Guaranteed mapped due to chosen flags. Ignore warning
+#pragma warning(suppress : 6387)
+	std::memcpy(stagingAllocationInfo.pMappedData, ktxData, static_cast<size_t>(ktxDataSize));
+	vmaFlushAllocation(m_allocator, stagingAllocation, 0, VK_WHOLE_SIZE);
+
+	// -------------------------------------------------------------------------
+	// Build VkBufferImageCopy regions from KTX offsets
+	// -------------------------------------------------------------------------
+	std::vector<VkBufferImageCopy> regions;
+	regions.reserve(mipLevels * arrayLayers);
+
+	for (uint32_t level = 0; level < mipLevels; ++level) {
+		const uint32_t mipWidth = std::max(1u, width >> level);
+		const uint32_t mipHeight = std::max(1u, height >> level);
+		const uint32_t mipDepth = std::max(1u, depth >> level);
+
+		if (texture.numLayers > 0) {
+			// Array texture / cubemap array / cubemap
+			for (uint32_t layer = 0; layer < std::max(1u, texture.numLayers); ++layer) {
+				const uint32_t faces = std::max(1u, texture.numFaces);
+
+				for (uint32_t face = 0; face < faces; ++face) {
+					ktx_size_t offset = 0;
+					KTX_error_code offRes = ktxTexture2_GetImageOffset(
+						&texture,
+						level,
+						layer,
+						face,
+						&offset
+					);
+					if (offRes != KTX_SUCCESS) {
+						vmaDestroyBuffer(m_allocator, stagingBuffer, stagingAllocation);
+						vmaDestroyImage(m_allocator, image, imageAllocation);
+						throw std::runtime_error("ktxTexture_GetImageOffset failed.");
+					}
+
+					VkBufferImageCopy region{};
+					region.bufferOffset = static_cast<VkDeviceSize>(offset);
+					region.bufferRowLength = 0;   // tightly packed
+					region.bufferImageHeight = 0; // tightly packed
+
+					region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+					region.imageSubresource.mipLevel = level;
+					region.imageSubresource.baseArrayLayer = layer * faces + face;
+					region.imageSubresource.layerCount = 1;
+
+					region.imageOffset = { 0, 0, 0 };
+					region.imageExtent = { mipWidth, mipHeight, mipDepth };
+
+					regions.push_back(region);
+				}
+			}
+		}
+		else {
+			// Non-array texture
+			ktx_size_t offset = 0;
+
+			KTX_error_code offRes = ktxTexture_GetImageOffset(
+				base,
+				//ktxTexture(texture),
+				level,
+				0,
+				0,
+				&offset
+			);
+			if (offRes != KTX_SUCCESS) {
+				vmaDestroyBuffer(m_allocator, stagingBuffer, stagingAllocation);
+				vmaDestroyImage(m_allocator, image, imageAllocation);
+				throw std::runtime_error("ktxTexture_GetImageOffset failed.");
+			}
+
+			VkBufferImageCopy region{};
+			region.bufferOffset = static_cast<VkDeviceSize>(offset);
+			region.bufferRowLength = 0;
+			region.bufferImageHeight = 0;
+
+			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			region.imageSubresource.mipLevel = level;
+			region.imageSubresource.baseArrayLayer = 0;
+			region.imageSubresource.layerCount = 1;
+
+			region.imageOffset = { 0, 0, 0 };
+			region.imageExtent = { mipWidth, mipHeight, mipDepth };
+
+			regions.push_back(region);
+		}
+	}
+
+	// Instead of this upload should be scheduled to do in abtch and recorded to the transferQueue! 
+	// -------------------------------------------------------------------------
+	// Record upload
+	// -------------------------------------------------------------------------
+	//VkCommandBuffer cmd = beginSingleTimeCommands(core.device_, core.defaultCommandPool_); // your helper
+	auto han = m_submitter->acquire();
+	auto cmd = m_submitter->GetCommandBuffer(han).cmd;
+
+
+	//ImageBarrier(
+	//	cmd, 
+	//	
+	//)
+	{
+		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		barrier.srcAccessMask = 0;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.baseMipLevel = 0;
+		barrier.subresourceRange.levelCount = mipLevels;
+		barrier.subresourceRange.baseArrayLayer = 0;
+		barrier.subresourceRange.layerCount = arrayLayers;
+
+		vkCmdPipelineBarrier(
+			cmd,
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &barrier
+		);
+	}
+
+	vkCmdCopyBufferToImage(
+		cmd,
+		stagingBuffer,
+		image,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		static_cast<uint32_t>(regions.size()),
+		regions.data()
+	);
+
+	{
+		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.baseMipLevel = 0;
+		barrier.subresourceRange.levelCount = mipLevels;
+		barrier.subresourceRange.baseArrayLayer = 0;
+		barrier.subresourceRange.layerCount = arrayLayers;
+
+		vkCmdPipelineBarrier(
+			cmd,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &barrier
+		);
+	}
+
+	m_submitter->submit(han);
+	AddDeferredTask(
+		std::packaged_task<void()>([this, buf = stagingBuffer, alloc = stagingAllocation] {vmaDestroyBuffer(this->m_allocator, buf, alloc); }),
+		han
+	);
+
+	// -------------------------------------------------------------------------
+	// View
+	// -------------------------------------------------------------------------
+	VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+
+	VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
+	if (isCubemap) {
+		viewType = (arrayLayers > 6) ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : VK_IMAGE_VIEW_TYPE_CUBE;
+	}
+	else if (arrayLayers > 1) {
+		viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+	}
+	else if (depth > 1) {
+		viewType = VK_IMAGE_VIEW_TYPE_3D;
+	}
+
+	Image image_obj{};
+	image_obj.vk_image = image;
+	image_obj.vma_alloc = imageAllocation;
+	image_obj.vk_format = format;
+	image_obj.vk_extent = { width, height, depth };
+	image_obj.arrayLayers = imageInfo.arrayLayers;
+	image_obj.levels = mipLevels;
+	image_obj.sampleView = VK_NULL_HANDLE;
+	image_obj.renderView = VK_NULL_HANDLE;
+
+	// TODO: Rework this.
+	//CreateSampler(0, image_obj.sampler);
+	//CreateSampler(SamplerCreateInfo(), image_obj.sampler);
+
+	image_obj.vk_sampler = m_defaultSampler;
+	//image_obj.owns_sampler = true;
+
+
+	ImageViewCreateInfo createViewInfo{};
+	createViewInfo.flags = {};
+	createViewInfo.vk_image = image;
+	createViewInfo.vk_format = format;
+	createViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	createViewInfo.subResourceRange = {
+		.aspectMask = aspect,
+		.baseMipLevel = 0,
+		.levelCount = 1,
+		.baseArrayLayer = 0,
+		.layerCount = 1
+	};
+
+	core_.CreateImageView(
+		createViewInfo,
+		image_obj.renderView
+	);
+
+	image_obj.sampleView = image_obj.renderView;
+	return { this, 	textures_.create(std::move(image_obj)) };
+
 }
+
 [[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::Context::CreateBuffer(BufferCreateInfo bufferCreateInfo) {
 	Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -1308,7 +1656,7 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 	desc.deviceAdress = vkGetBufferDeviceAddress(device_, &ai);
 	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &desc.memory_flags);
 	desc.usage = bufferCreateInfo.usage_flags;
-	return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
+	return { this, buffers_.create(std::move(desc)) };
 }
 [[nodiscard]] smvk::BufferHandle smvk::Context::CreateStagingBuffer(VkDeviceSize size)
 {
@@ -1326,9 +1674,10 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 
 	VK_CHECK(vmaCreateBuffer(m_allocator, &ci, &aci, &desc.vk_buffer, &desc.vma_alloc, nullptr));
 
+
 	VkMemoryPropertyFlags props{}; //Cache memory properties for quick checks/debug
 	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &props);
-	desc.memory_flags = props;
+	desc.memory_flags = aci.requiredFlags;
 	desc.usage = ci.usage;
 
 	if ((props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
@@ -1338,11 +1687,11 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 	//return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
 	return buffers_.create(std::move(desc));
 }
-[[nodiscard]] smvk::Holder<smvk::SamplerHandle> smvk::Context::CreateSampler(SamplerCreateInfo samplerCreateInfo) {
-	VkSampler sampler;
-	core_.CreateSampler(samplerCreateInfo, sampler);
-	return smvk::Holder<SamplerHandle>(this, samplers_.create(std::move(sampler)));
-}
+//[[nodiscard]] smvk::Holder<smvk::SamplerHandle> smvk::Context::CreateSampler(SamplerCreateInfo samplerCreateInfo) {
+//	VkSampler sampler;
+//	core_.CreateSampler(samplerCreateInfo, sampler);
+//	return smvk::Holder<SamplerHandle>(this, samplers_.create(std::move(sampler)));
+//}
 [[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::Context::CreateShaderModule(std::vector<char> code) {
 	VkShaderModule shader;
 	core_.CreateShaderModule(
@@ -1367,7 +1716,9 @@ void smvk::Context::UnmapBuffer(smvk::Handle<smvk::Buffer> handle) {
 }
 void smvk::Context::AddDeferredTask(std::packaged_task<void()>&& task, smvk::CommandSubmitHandle handle)
 {
-	if (m_submitter->validHandle(handle)) {
+	//if (!m_submitter->validHandle(handle)) {
+	if (handle.gen_ == 0) //not valid acquire 
+	{ 
 		handle = m_submitter->acquire();
 	}
 	m_deferredTasks.emplace_back(std::move(task), handle);
@@ -1388,13 +1739,13 @@ void smvk::Context::CleanUp() {
 
 // 
 void smvk::destroy(smvk::Context* ctx, smvk::BufferHandle handle) {
-	assert(handle.valid());
-	auto db = ctx->buffers_.get(handle);
-	vmaDestroyBuffer(ctx->m_allocator, db->vk_buffer, db->vma_alloc);
+	if (handle.empty()) { return; };
+	smvk::Buffer db = *ctx->buffers_.get(handle);
+	vmaDestroyBuffer(ctx->m_allocator, db.vk_buffer, db.vma_alloc);
 	ctx->buffers_.destroy(handle);
 }
 void smvk::destroy(smvk::Context* ctx, smvk::ShaderModuleHandle handle) {
-	assert(handle.valid());
+	if (handle.empty()) { return; };
 	auto sm = ctx->shaderModules_.get(handle);
 	vkDestroyShaderModule(device_, *sm, NULL);
 	ctx->shaderModules_.destroy(handle);
@@ -1431,6 +1782,8 @@ inline void BufferBarrier(
 	VkPipelineStageFlags2 dstStage,
 	VkAccessFlags2 dstAccess
 ) {
+
+	assert(dstAccess == 0 || dstStage != 0);
 	VkBufferMemoryBarrier2 barrier{
 		.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
 		.pNext = nullptr,
@@ -1517,24 +1870,12 @@ inline smvk::CommandBufferManager::CommandBufferManager(VulkanCore& core, QueueP
 	VkCommandBuffer m_buffers_[kMax];
 	VK_CHECK(vkAllocateCommandBuffers(device_, &info, m_buffers_));
 
-	VkSemaphoreTypeCreateInfo semaphoreTypeInfo{};
-	semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
-	semaphoreTypeInfo.pNext = nullptr;
-	semaphoreTypeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-	semaphoreTypeInfo.initialValue = 0; // starting counter value
-
 	for (int i = 0; i < kMax; i++) {
 		commandBuffers_[i].allocatedCmd_ = m_buffers_[i];
 		commandBuffers_[i].wrapper_.isEncoding_ = false;
 		//core_.CreateFence(VkFenceCreateInfo{ .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = 0 }, commandBuffers_[i].wrapper_.fence_);
-		core_.CreateSemaphore(VkSemaphoreCreateInfo
-			{
-				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-				.pNext = &semaphoreTypeInfo,
-				.flags = 0,
-			},
-			commandBuffers_[i].wrapper_.finishedSignalSemaphore.semaphore_
-			);
+		core_.CreateTimelineSemaphore(0, commandBuffers_[i].wrapper_.finishedSignalSemaphore.semaphore_
+		);
 	}
 }
 inline smvk::CommandBufferManager::~CommandBufferManager() {
@@ -1587,12 +1928,13 @@ inline smvk::CommandBufferManager::~CommandBufferManager() {
 		}
 		pickedIndex++;
 	}
+	if (picked == nullptr) { assert(false); }
 	if (pickedIndex == kMax) {
 		assert(false && "couldnt pick");
 	}
 
 	picked->wrapper_.cmd = picked->allocatedCmd_;
-	picked->wrapper_.finishedSignalSemaphore.goal_ = goal;
+	picked->wrapper_.finishedSignalSemaphore.goal_ = goal + picked->gen_;
 	availableSlots--;
 
 	VkCommandBufferBeginInfo beginInfo{
@@ -1642,11 +1984,12 @@ inline void smvk::CommandBufferManager::submit(CommandSubmitHandle handle) {
 		.pSignalSemaphoreInfos = &signalFinishedSemaphoresSubmitInfo
 	};
 	vkQueueSubmit2(queue, 1, &submitInfo, VK_NULL_HANDLE);
-	vkQueueWaitIdle(queue);
+	//vkQueueWaitIdle(queue);
 
 	wrapper_.isEncoding_ = false;
 	m_lastSubmit = handle;
 }
+
 inline bool smvk::CommandBufferManager::validHandle(CommandSubmitHandle handle) const { return handle.gen_ == commandBuffers_[handle.index_].gen_; }
 inline bool smvk::CommandBufferManager::isReady(CommandSubmitHandle handle) {
 	wait(handle); // crude
@@ -1667,11 +2010,12 @@ inline void smvk::CommandBufferManager::purge() {
 			.pValues = &waitValue,
 		};
 
-		vkWaitSemaphores(
+		VkResult result = vkWaitSemaphores(
 			device_,
 			&waitInfo,
 			UINT64_MAX
 		);
+		if (result == VK_TIMEOUT) { assert(false); }
 		reset({ .index_ = i, .gen_ = commandBuffers_[i].gen_ });
 	}
 }
@@ -1689,10 +2033,14 @@ inline void smvk::CommandBufferManager::wait(CommandSubmitHandle handle, uint64_
 		.pSemaphores = &semaphore,
 		.pValues = &waitValue,
 	};
-	vkWaitSemaphores(device_,
+	VkResult result = vkWaitSemaphores(device_,
 		&waitInfo,
 		timeout
 	);
+
+	if (result == VK_TIMEOUT) { assert(false && "timeout reached"); }
+	availableSlots++;
+
 }
 inline void smvk::CommandBufferManager::waitAll() {
 	VkSemaphore sems[kMax];
@@ -1715,11 +2063,22 @@ inline void smvk::CommandBufferManager::waitAll() {
 		.pSemaphores = sems,
 		.pValues = goals,
 	};
-	vkWaitSemaphores(
+	VkResult result = vkWaitSemaphores(
 		device_,
 		&waitInfo,
 		UINT64_MAX
 	);
+	if (result == VK_TIMEOUT) { assert(false && "timeout "); }
+	//availableSlots = kMax;
+
+	for (uint32_t i = 0; i < kMax; i++) {
+		auto& wrp = commandBuffers_[i].wrapper_;
+		if (wrp.cmd == VK_NULL_HANDLE || wrp.isEncoding_) { continue; }
+		reset({ i, commandBuffers_[i].gen_ });
+	};
+
+
+
 }
 inline void smvk::CommandBufferManager::reset(CommandSubmitHandle handle) {
 	auto& wrapper = GetCommandBuffer(handle);
@@ -1957,7 +2316,7 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 		.viewType = VK_IMAGE_VIEW_TYPE_2D,
 		.vk_format = obj_->vk_format,
 		.subResourceRange = {
-			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT 
+			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT
 			| VK_IMAGE_ASPECT_STENCIL_BIT,
 			.baseMipLevel = 0,
 			.levelCount = VK_REMAINING_MIP_LEVELS,
@@ -1981,7 +2340,7 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 		VK_IMAGE_LAYOUT_UNDEFINED,
 		VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 		{
-			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT ,
 			.baseMipLevel = 0,
 			.levelCount = VK_REMAINING_MIP_LEVELS, // there should be only 1 do
 			.baseArrayLayer = 0,
@@ -2234,3 +2593,35 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 	AdvanceFrame();
 
 }
+
+//
+smvk::SamplerPool::SamplerPool(SamplerPoolCreateInfo createInfo) : device_(createInfo.device) {
+	VkSampler defaultSampler;
+	vkCreateSampler(device_, {}, nullptr, &defaultSampler);
+	m_samplers[SamplerKey{}] = defaultSampler;
+}
+
+smvk::SamplerPool::~SamplerPool() {
+	for (auto sampler : m_samplers)
+	{
+		vkDestroySampler(device_, sampler.second, nullptr);
+	}
+	m_samplers.clear();
+}
+
+VkSampler smvk::SamplerPool::GetSampler(SamplerKey key) {
+	auto it = m_samplers.find(key);
+	if (it == m_samplers.end()) {
+		VkSampler newSampler;
+		VkSamplerCreateInfo createInfo{};
+		// populate
+		vkCreateSampler(device_, &createInfo, nullptr, &newSampler);
+		m_samplers[key] = newSampler;
+		return newSampler;
+	}
+	else {
+		return it->second;
+	}
+
+}
+
