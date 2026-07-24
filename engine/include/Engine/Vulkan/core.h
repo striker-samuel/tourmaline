@@ -83,6 +83,14 @@ namespace smvk {
 		VkBufferUsageFlags usage_flags;
 	};
 	struct ImageCreateInfo {
+
+		// this is missing support for a lot of VkCreateImageInfo properties
+		// right now we are using a sane default but,,,
+		// also this smvk::rhi layer shouldnt use vkTypes and instead be converted
+		// to vkTypes of vulkan backend implementation land. as a proper RHI.
+		// right now im not focusing on that and I dont want to carry all that boilerplate
+		// to develop the way of doing this of this api. Also, learning project!!! ;)
+
 		VkExtent3D vk_extent; // support 3d images
 		VkFormat vk_format = VK_FORMAT_UNDEFINED;
 		VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -291,7 +299,7 @@ namespace smvk {
 	// QueueTimeline from nvprocore2. It works so its staying for now but this is DUMB!
 	// * The idea was to peg multiple cmd to same timeline semaphore for batched jobs on a single slot.
 	// makes no sense in practice. 
-	struct CommandBufferManager {
+	struct Submitter {
 		struct TimelineSemaphore {
 			VkSemaphore semaphore_ = VK_NULL_HANDLE;
 			uint64_t initialValue_ = 0;
@@ -310,8 +318,8 @@ namespace smvk {
 			uint32_t gen_ = 1;
 		};
 		//
-		CommandBufferManager(VulkanCore& core, QueuePreference queue);
-		~CommandBufferManager();
+		Submitter(VulkanCore& core, QueuePreference queue);
+		~Submitter();
 		CommandSubmitHandle acquire(uint32_t goal = 1);
 		CommandBuffer& GetCommandBuffer(CommandSubmitHandle handle);
 		void submit(CommandSubmitHandle handle);
@@ -319,16 +327,17 @@ namespace smvk {
 		bool isReady(CommandSubmitHandle handle);
 		void wait(CommandSubmitHandle handle, uint64_t timeout = UINT64_MAX);
 		void waitAll();
+		void waitAny();
 		void purge();
 	private:
 		void reset(CommandSubmitHandle handle);
 		VulkanCore& core_;
+		VkQueue m_queue = VK_NULL_HANDLE;
 		QueuePreference queue_ = QueuePreference::GRAPHICS;
-		static const uint32_t kMax = 64;
+		static const uint32_t kMax = 12;
 		uint32_t availableSlots = kMax;
 		WrapperSlot commandBuffers_[kMax];
 		CommandSubmitHandle m_lastSubmit{}; // not in use right now. used for creating linkedList for a faux dependency chain
-		//QueuePreference queue_;
 	};
 	struct DeferredTask {
 		DeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle) : task_(std::move(task)), handle_(handle) {}
@@ -414,7 +423,7 @@ namespace smvk {
 		void GetKtxDeviceInfo(); // will be removed
 		//protected:
 		VulkanCore& core_;
-		CommandBufferManager* m_submitter = nullptr;
+		Submitter* m_submitter = nullptr;
 		std::vector<DeferredTask> m_deferredTasks;
 
 		Pool<Texture, Texture> textures_;

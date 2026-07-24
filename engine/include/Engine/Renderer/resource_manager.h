@@ -59,14 +59,32 @@ struct MeshManager {
 	smvk::Context& ctx_;
 	MeshManager(smvk::Context& ctx);
 	~MeshManager() {};
+
 	MeshHandle UploadVertexData(Mesh::DataUpload& mesh_data);
 	MaterialHandle CreateMaterial(Material::Textures textures);
 	smvk::TextureHandle GetOrCreateTexture(std::string uri, ktxTexture2& tex);
+
+	smvk::BufferHandle GetIndexBuffer();
 	std::vector<smvk::BufferHandle> GetVertexBuffers();
 
-//private:
+	void Bind(VkCommandBuffer commandBuffer) {
+		auto indexBuffer = ctx_.buffers_.get(GetIndexBuffer());
+		auto vertexBuffers = GetVertexBuffers();
+		std::vector<VkBuffer> bufs{};
+		bufs.reserve(2);
+		for (auto han : vertexBuffers) {
+			bufs.push_back(
+				ctx_.buffers_.get(han)->vk_buffer
+			);
+		}
+		VkDeviceSize offs[] = { 0, 0 };
+		vkCmdBindIndexBuffer(commandBuffer, indexBuffer->vk_buffer, 0, VK_INDEX_TYPE_UINT32);
+		vkCmdBindVertexBuffers(commandBuffer, 0, bufs.size(), bufs.data(), offs);
+	};
+
+	//private:
 	void InitalizeGeoBuffers();
-//private:
+	//private:
 	std::map<std::string, smvk::TextureHandle> textureCache;
 	smvk::Pool<Mesh, Mesh> meshes;
 	smvk::Pool<Material, Material> materials;

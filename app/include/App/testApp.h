@@ -123,6 +123,7 @@ private:
 			[&](uint32_t index) -> const Mesh& {return this->m_meshManagerPimpl->meshes.objects_[index].obj_; }
 		);
 		m_currentLevel.tree_done = true;
+		m_context->ProcessDeferrredTasks();
 
 		return true;
 	};
@@ -197,23 +198,14 @@ private:
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(colorProxy);
 
-		// VERTEX SETUP
-		auto vertexBuffers = m_rendergraph->AddExternalBuffers(m_meshManagerPimpl->GetVertexBuffers());
-
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
 			.setExtent(fb.swapchain.extent_)
-			.setVertexBuffers(vertexBuffers)
 			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
 			.setDepth(depthProxy, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
-			.setRecordingFunc([this, fb](smvk::RenderPassContext renderpassctx)
+			.setRecordingFunc([this, fb](smvk::RenderPassContext pass)
 		{
-
-			//auto a = m_resources.frameUniformsBuffer->resolvedBufferHandle;
-
-
-			auto frameUniformsBufferHandle = m_rendergraph->storageBuffers_.get(m_resources.frameUniformsBuffer);
-			auto frameData = UpdateFrameUniforms(fb.swapchain.GetCurrentFrameIndex(), frameUniformsBufferHandle->resolvedBufferHandle);
+			auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
 			auto meshMan = m_meshManagerPimpl.get();
 
 			std::vector<int> visible;
@@ -318,6 +310,7 @@ private:
 			);
 
 		m_rendergraph->Execute(fb);
+		m_context->ProcessDeferrredTasks();
 
 	}
 

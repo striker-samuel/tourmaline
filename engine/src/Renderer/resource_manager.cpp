@@ -199,10 +199,14 @@ smvk::TextureHandle MeshManager::GetOrCreateTexture(std::string uri, ktxTexture2
 	}
 	return it->second;
 }
+
+
+smvk::BufferHandle MeshManager::GetIndexBuffer() {
+	return indexBuffer;
+}
 std::vector<smvk::BufferHandle> MeshManager::GetVertexBuffers() {
 	return std::vector<smvk::BufferHandle>{
-		indexBuffer,
-			vertexPosBuffer,
+		vertexPosBuffer,
 			vertexShadingBuffer,
 	};
 }
