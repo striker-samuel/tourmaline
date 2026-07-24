@@ -85,7 +85,7 @@ namespace smvk {
 	struct ImageCreateInfo {
 		VkExtent3D vk_extent; // support 3d images
 		VkFormat vk_format = VK_FORMAT_UNDEFINED;
-		VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+		VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_SAMPLED_BIT |
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 		uint32_t levels = 1;
 		uint32_t arrayLayers = 1;
@@ -143,6 +143,8 @@ namespace smvk {
 		//ImageCreateInfo createInfo;
 		VkExtent3D vk_extent = { 1,1,1 };
 		VkFormat vk_format = VK_FORMAT_UNDEFINED;
+		VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+			VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 		uint32_t levels = 1;
 		uint32_t arrayLayers = 1;
 		// 
@@ -152,10 +154,19 @@ namespace smvk {
 			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
 			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
 		}; // for cubemap
-		VkSampler vk_sampler = VK_NULL_HANDLE; // ownership sematincs not fully implemented
-		//bool owns_sampler = false;
+		VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
 		bool owns_views = true;
-		bool is_swapchain = false;
+		bool is_swapchain = false; //
+
+		ImageCreateInfo getImageCreateInfo() const {
+			return {
+				.vk_extent = vk_extent,
+				.vk_format = vk_format,
+				.vk_usage = vk_usage,
+				.levels = levels,
+				.arrayLayers = arrayLayers
+			};
+		};
 	};
 
 	// Just piggybacking on vma really
@@ -275,6 +286,11 @@ namespace smvk {
 		bool empty() const { return gen_ == 0; };
 	};
 
+	// This is a copy of the approach of IGL/lightweightVk but I changed fences for timelineSempahores.
+	// This change doenst really make sense. TimelineSemaphore support would be more useful to model something like
+	// QueueTimeline from nvprocore2. It works so its staying for now but this is DUMB!
+	// * The idea was to peg multiple cmd to same timeline semaphore for batched jobs on a single slot.
+	// makes no sense in practice. 
 	struct CommandBufferManager {
 		struct TimelineSemaphore {
 			VkSemaphore semaphore_ = VK_NULL_HANDLE;
@@ -308,7 +324,7 @@ namespace smvk {
 		void reset(CommandSubmitHandle handle);
 		VulkanCore& core_;
 		QueuePreference queue_ = QueuePreference::GRAPHICS;
-		static const uint32_t kMax = 1;
+		static const uint32_t kMax = 64;
 		uint32_t availableSlots = kMax;
 		WrapperSlot commandBuffers_[kMax];
 		CommandSubmitHandle m_lastSubmit{}; // not in use right now. used for creating linkedList for a faux dependency chain
@@ -379,6 +395,8 @@ namespace smvk {
 		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
 		Holder<TextureHandle> CreateTexture(ktxTexture2& texture);
+
+		smvk::BufferHandle CreateBufferNoHolder(BufferCreateInfo bufferCreateInfo);
 
 		//Holder<SamplerHandle> CreateSampler(SamplerCreateInfo samplerCreateInfo);
 		// dont like this this 

@@ -35,6 +35,7 @@ struct Level : Scene {
 		// This is needed or else scene will not carry transforms effectively
 		markAsChanged(*this, 0);
 		recalculateGlobalTransforms(*this);
+		//m_meshManagerPimpl->ctx_.ProcessDeferrredTasks(); //  TODO. fails
 	}
 };
 std::vector<std::string> gltf_meshes_paths = {
@@ -78,15 +79,14 @@ static_assert(sizeof(FrameUniforms) % 16 == 0);
 struct ViewportResources {};
 
 struct AppResources {
-	smvk::LogicalBuffer frameUniformsBuffer{};
-	smvk::LogicalBuffer drawDataBuffer{};
-	//ShaderProgram defaultMainView{};
+	smvk::LogicalBufferHandle frameUniformsBuffer{};
+	smvk::LogicalBufferHandle drawDataBuffer{};
 };
 
 class TestApp : public smvk::VulkanApp {
 	using Super = smvk::VulkanApp;
 public:
-	TestApp() {}; 
+	TestApp() {};
 	~TestApp() {};
 private:
 	uint32_t kMaxDraws = 1000;
@@ -124,9 +124,6 @@ private:
 		);
 		m_currentLevel.tree_done = true;
 
-		auto rg = m_rendergraph.get();
-		m_resources.frameUniformsBuffer = rg->AddBuffer<FrameUniforms>(1); //frames in flight ring access? how to semantically say that this should be inifr
-		m_resources.drawDataBuffer = rg->AddBuffer<DrawSetData>(kMaxDraws); // this is storage
 		return true;
 	};
 
@@ -162,7 +159,6 @@ private:
 		data.exposure = 0.f;
 
 		m_context->UploadDataToBuffer(
-			//m_resources.frameUniformsBuffer.resolvedBufferHandle,
 			handle,
 			&data,
 			sizeof(FrameUniforms)/* * 1*/,
@@ -190,15 +186,15 @@ private:
 		m_rendergraph->Clear();
 
 		// Update Buffer Contents.
-		m_rendergraph->AddRingBuffer<FrameUniforms>(1);
-		m_rendergraph->AddRingBuffer<DrawSetData>(kMaxDraws);
+		m_resources.frameUniformsBuffer = m_rendergraph->AddRingBuffer<FrameUniforms>(1, "frameUniforms");
+		m_resources.drawDataBuffer = m_rendergraph->AddRingBuffer<DrawSetData>(kMaxDraws, "drawData");
 
 		// ATTACHMENT SETUP
 		auto colorProxy = m_rendergraph->AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
 		auto depthProxy = m_rendergraph->AddImageView(
 			m_context->images_.get(fb.swapchain.depthImage_)->renderView //hacky
 		);
-		std::vector<smvk::LogicalImageView> colors;
+		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(colorProxy);
 
 		// VERTEX SETUP
@@ -212,7 +208,12 @@ private:
 			.setDepth(depthProxy, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
 			.setRecordingFunc([this, fb](smvk::RenderPassContext renderpassctx)
 		{
-			auto frameData = UpdateFrameUniforms(fb.swapchain.GetCurrentFrameIndex(), m_resources.frameUniformsBuffer.resolvedBufferHandle);
+
+			//auto a = m_resources.frameUniformsBuffer->resolvedBufferHandle;
+
+
+			auto frameUniformsBufferHandle = m_rendergraph->storageBuffers_.get(m_resources.frameUniformsBuffer);
+			auto frameData = UpdateFrameUniforms(fb.swapchain.GetCurrentFrameIndex(), frameUniformsBufferHandle->resolvedBufferHandle);
 			auto meshMan = m_meshManagerPimpl.get();
 
 			std::vector<int> visible;

@@ -428,12 +428,9 @@ Mesh::DataUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, cons
 
 	return data;
 
-
-
 }
 uint32_t GltfToSceneImporter::getOrCreateMesh(tinygltf::Primitive primitive) {
 	auto mdata = SurfaceDataFromGltfPrimitive(model, primitive);
-	std::cout << mdata.vertices.size() << std::endl;
 	return manager_.UploadVertexData(mdata).index();
 }
 void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentSceneNode, int level) {

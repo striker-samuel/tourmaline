@@ -3,11 +3,16 @@
 #include <vector>
 #include <Engine/Vulkan/core.h>
 
+
 namespace smvk {
-	//
 	struct RenderGraph;
 	struct RenderPass;
-	//
+	using LogicalBufferHandle = Handle<struct LogicalBuffer>;
+	using LogicalImageHandle = Handle<struct LogicalImage>;
+	using LogicalImageViewHandle = Handle<struct LogicalImageView>;
+};
+
+namespace smvk {
 
 	struct BufferKey {
 		size_t elementSize;
@@ -23,9 +28,9 @@ namespace smvk {
 			External,
 			Transient
 		} type;
-		size_t id = 0;
 		BufferKey key{};
-		BufferHandle resolvedBufferHandle; // Should be holder?
+		BufferHandle resolvedBufferHandle;
+		const char* name = "";
 	};
 
 	struct LogicalImageView
@@ -34,7 +39,6 @@ namespace smvk {
 			External,
 			Transient
 		} type;
-		size_t id = 0;
 		ImageViewKey key{}; //VkFormat resolvedFormat = VK_FORMAT_UNDEFINED;
 		ImageHandle resolvedImage{};
 		VkImageView resolvedImageView = VK_NULL_HANDLE;
@@ -43,11 +47,10 @@ namespace smvk {
 	};
 
 	struct LogicalImage {
-		enum struct ImageTypes {
+		enum struct Type {
 			Transient,
 			External
 		} type;
-		size_t id = 0;
 		ImageKey key{};
 		ImageHandle resolvedImage{};
 	};
@@ -64,23 +67,21 @@ namespace smvk {
 		explicit RenderPass(RenderGraph& rg)
 			: rg_(rg) {}
 		RenderGraph& rg_;
-		//enum struct PassType { Rasterize, Compute } type_;
 
 		struct Attachment {
-			LogicalImageView view;
+			LogicalImageViewHandle view;
 			VkAttachmentLoadOp loadOp;
 			VkAttachmentStoreOp storeOp;
 			VkClearValue clearValue;
 		};
 
-		std::vector<LogicalImage> inputImages_;
-		//std::vector<LogicalBuffer> uniformBuffers_; // dont really care about supporten uniform path. just abuse storage.
-		std::vector<LogicalBuffer> storageBuffers_;
-		// 0 is index. 1...N are vertex // this is bad and shoul be reworked to a vertexdecl type or something
-		std::vector<LogicalBuffer> vertexBuffers_;
+		std::vector<LogicalImageViewHandle> views;
+		std::vector<LogicalImageHandle> inputImages_;
+		std::vector<LogicalBufferHandle> storageBuffers_;
+		std::vector<LogicalBufferHandle> vertexBuffers_;
 
 		RenderPass& setColor(
-			std::vector<LogicalImageView>& views,
+			std::vector<LogicalImageViewHandle>& views,
 			VkAttachmentLoadOp loadOp,
 			VkAttachmentStoreOp storeOp,
 			VkClearValue clearValue
@@ -92,8 +93,8 @@ namespace smvk {
 			}
 			return *this;
 		}
-
-		RenderPass& setDepth(LogicalImageView viewId,
+		RenderPass& setDepth(
+			LogicalImageViewHandle viewId,
 			VkAttachmentLoadOp _loadOp,
 			VkAttachmentStoreOp _storeOp,
 			VkClearValue _clearValue
@@ -103,18 +104,19 @@ namespace smvk {
 		};
 		//ToyRenderPass& setStencil(LogicalImageView depthAttachent) /*{ this->depthAttachment_ = depthAttachent; return *this; }*/;
 
-		// Not supported yet
 		struct VertexFormatDesc {
 			VkPipelineVertexInputStateCreateInfo vertexDescription{};
 		} vertexFormat_;
+
+		//
 		RenderPass& setVertexFormat(VertexFormatDesc vertexFormat) { this->vertexFormat_ = vertexFormat; return *this; }
-		//RenderPass& setUniformBuffers(std::vector<LogicalBuffer> uniformBuffers) { this->uniformBuffers_ = uniformBuffers};
-		RenderPass& setInputImages(std::vector<LogicalImage> inputImages) { this->inputImages_ = inputImages; };
-		RenderPass& setStorageBuffers(std::vector<LogicalBuffer> storageBuffers) { this->storageBuffers_ = storageBuffers; };
-		RenderPass& setVertexBuffers(std::vector<LogicalBuffer> vertexBuffers) { this->vertexBuffers_ = vertexBuffers; return *this; }
+		RenderPass& setInputImages(std::vector<LogicalImageHandle> inputImages) { this->inputImages_ = inputImages; };
+		RenderPass& setStorageBuffers(std::vector<LogicalBufferHandle> storageBuffers) { this->storageBuffers_ = storageBuffers; };
+		RenderPass& setVertexBuffers(std::vector<LogicalBufferHandle> vertexBuffers) { this->vertexBuffers_ = vertexBuffers; return *this; }
 		RenderPass& setRecordingFunc(RecordingFunction recordingFunction) { this->recordingFunction_ = recordingFunction; return *this; };
 		RenderPass& setExtent(VkExtent2D extent) { this->extent_ = extent; return *this; };
 		RenderPass& setOffset(VkOffset2D offset) { this->offset_ = offset; return *this; };
+
 		RenderGraph& GetRenderGraph() { return this->rg_; };
 
 	private:
@@ -126,8 +128,10 @@ namespace smvk {
 		//PassType type = PassType::Rasterize;
 		RecordingFunction recordingFunction_{};
 	};
+
+
 	struct RenderGraph final {
-		smvk::Context& ctx_;
+		smvk::Context& ctx_; // maybe a ptr would just be better
 		explicit RenderGraph(Context& ctx) : ctx_(ctx) {};
 		void Clear() { m_passes.clear(); }
 
@@ -135,84 +139,64 @@ namespace smvk {
 			return m_passes.emplace_back(RenderPass(*this));
 		}
 
-		LogicalImage AddImage(ImageCreateInfo description) { assert(false); };
-		LogicalImage AddImage(VkImage vk_image) { assert(false); };
-		LogicalImageView AddImageView(ImageViewCreateInfo description) { assert(false); };
-		LogicalImageView AddImageView(VkImageView view) {
+		[[nodiscard]] LogicalImageHandle AddImage(ImageCreateInfo description) { assert(false); };
+		[[nodiscard]] LogicalImageHandle AddImage(ImageHandle imageHandle) {
+			assert(!imageHandle.empty());
+			auto img = ctx_.images_.get(imageHandle);
+			LogicalImage proxyImage{
+				.type = LogicalImage::Type::External,
+				.key = img->getImageCreateInfo(),
+				.resolvedImage = imageHandle
+			};
+			return images_.create(std::move(proxyImage));
+		};
+		[[nodiscard]] LogicalImageViewHandle AddImageView(ImageViewCreateInfo description) { assert(false); };
+		[[nodisacrd]] LogicalImageHandle AddImage(VkImage vk_image) { assert(false); };
+		[[nodiscard]] LogicalImageViewHandle AddImageView(VkImageView view) {
 			LogicalImageView proxyView{};
 			proxyView.type = LogicalImageView::Type::External;
-			proxyView.id = m_views.size();
 			proxyView.resolvedImageView = view;
-			m_views.push_back(proxyView);
-			return proxyView;
-
+			return imageViews_.create(std::move(proxyView));
 		};
 
 		template<typename DataType>
-		LogicalBuffer AddRingBuffer(uint32_t count) {
+		[[nodicard]] LogicalBufferHandle AddRingBuffer(uint32_t count, const char* name = "") {
 			BufferKey key = {
 					.elementSize = sizeof(DataType),
 					.elementCount = count,
-					.ring = true
+					.ring = true,
 			};
-
-			return LogicalBuffer{
+			auto buf = LogicalBuffer{
 				.type = LogicalBuffer::Type::Transient,
-				.id = m_storageBuffers.size(),
 				.key = key,
+				.name = name
 			};
-
+			return storageBuffers_.create(std::move(buf));
 		}
-
 		template<typename DataType>
-		LogicalBuffer AddBuffer(uint32_t count) {
-
+		[[nodiscard]] LogicalBufferHandle AddBuffer(uint32_t count, const char* name = "") {
 			BufferKey key = {
 					.elementSize = sizeof(DataType),
 					.elementCount = count
 			};
-
-			return LogicalBuffer{
-				.type = LogicalBuffer::Type::Transient,
-				.id = m_storageBuffers.size(),
-				.key = key,
+			LogicalBuffer proxyBuffer = {
+			   .type = LogicalBuffer::Type::Transient,
+			   .key = key,
+			   .name = name
 			};
+			return storageBuffers_.create(std::move(proxyBuffer));
 		};
 
-		LogicalImage AddExternalImage(ImageHandle imageHandle) {
-			auto vk_image = ctx_.images_.get(imageHandle);
-			LogicalImage proxy{
-				.id = m_images.size(),
-				.resolvedImage = imageHandle
-			};
-			m_images.push_back(proxy);
-			return proxy;
-		};
-		//LogicalImageView AddExternalImageView(ImageViewHandle handle) {
-		//	LogicalImageView proxy{
-		//		.id = views.size(),
-		//		.externalImage = {},
-		//		.resolvedImageView = view,
-		//		.resolvedFormat = format
-		//	};
-		//	views.push_back(proxy);
-		//	return proxy;
-		//}
-		std::vector<LogicalBuffer> AddExternalBuffers(std::vector<BufferHandle> bufferHandles) {
-			size_t start = m_storageBuffers.size();
-
+		[[nodiscard]] std::vector<LogicalBufferHandle> AddExternalBuffers(std::vector<BufferHandle> bufferHandles) {
+			std::vector<LogicalBufferHandle> handles;
 			for (auto b : bufferHandles) {
 				LogicalBuffer proxy{
-					.id = m_storageBuffers.size(),
+					.type = LogicalBuffer::Type::External,
 					.resolvedBufferHandle = b
 				};
-				m_storageBuffers.push_back(proxy);
+				handles.push_back(storageBuffers_.create(std::move(proxy)));
 			}
-
-			return std::vector<LogicalBuffer>(
-				m_storageBuffers.begin() + start,
-				m_storageBuffers.end()
-			);
+			return handles;
 		}
 
 		VkPipelineRenderingCreateInfo GetPipelineRenderingInfo(
@@ -220,7 +204,8 @@ namespace smvk {
 		) {
 			std::vector<VkFormat> colorAttachmentFormats;
 			for (auto& cattach : pass.colorAttachments_) {
-				colorAttachmentFormats.push_back(cattach.view.key.vk_format);
+
+				colorAttachmentFormats.push_back(imageViews_.get(cattach.view)->key.vk_format);
 			}
 
 			return VkPipelineRenderingCreateInfo{
@@ -234,11 +219,46 @@ namespace smvk {
 			};
 		};
 
+
 		void ResolveImages() {};
-		void ResolveImageViews() {};
-		void ResolveBuffers() {};
+		void ResolveImageViews() {
+			//imageViews.forEach(
+			//	[this](LogicalBuffer* logicalBuffer) {
+			//	if (logicalBuffer->resolvedBufferHandle.empty()) {
+			//		const auto& key = logicalBuffer->key;
+			//		int ringMultiplier = key.ring ? 4 : 1; //harcoded framesInFlight to 4. this should be swapchain framesInFlight!!
+			//		logicalBuffer->resolvedBufferHandle = ctx_.CreateBufferNoHolder(
+			//			BufferCreateInfo{
+			//				.size = key.elementCount * key.elementSize * ringMultiplier,
+			//				.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+			//				.usage_flags = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+			//			}
+			//		);
+			//	};
+			//}
+			//);
+		};
+
+		void ResolveBuffers() {
+			storageBuffers_.forEach(
+				[this](LogicalBuffer& logicalBuffer) { // Pass by reference, not pointer
+				if (logicalBuffer.resolvedBufferHandle.empty()) {
+					const auto& key = logicalBuffer.key;
+					int ringMultiplier = key.ring ? 4 : 1;
+					logicalBuffer.resolvedBufferHandle = ctx_.CreateBufferNoHolder(
+						BufferCreateInfo{
+							.size = key.elementCount * key.elementSize * ringMultiplier,
+							.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+							.usage_flags =
+							  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+							| VK_BUFFER_USAGE_TRANSFER_DST_BIT
+						}
+					);
+				}
+			}
+			);
+		}
 		void TopoSort() {};
-		void Resolve() {};
 		VkPipelineLayout GetLayout() {
 			return VkPipelineLayout{};
 		};
@@ -259,24 +279,24 @@ namespace smvk {
 
 		void PushDescriptors(
 			VkCommandBuffer cmd
-		) {
-
-
-
-		}
+		) {}
 
 		void Execute(FrameBuffer& fb) {
 
-			Resolve();
+			ResolveBuffers();
+			ResolveImages();
+			ResolveImageViews();
 
 			for (auto& pass : m_passes) {
 
 				std::vector<VkRenderingAttachmentInfo> colorInfos;
 				colorInfos.reserve(pass.colorAttachments_.size());
 				for (auto& att : pass.colorAttachments_) {
+
+					auto view = imageViews_.get(att.view);
 					VkRenderingAttachmentInfo info{};
 					info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-					info.imageView = att.view.resolvedImageView;
+					info.imageView = view->resolvedImageView;
 					info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 					info.loadOp = att.loadOp;
 					info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -284,10 +304,11 @@ namespace smvk {
 					colorInfos.push_back(info);
 				}
 
+				auto depthView = imageViews_.get(pass.depthAttachment_.view);
 				VkRenderingAttachmentInfo depthInfo{};
 				depthInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
 				{
-					depthInfo.imageView = pass.depthAttachment_.view.resolvedImageView;
+					depthInfo.imageView = depthView->resolvedImageView;
 				}
 				depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
 				depthInfo.loadOp = pass.depthAttachment_.loadOp;
@@ -321,14 +342,21 @@ namespace smvk {
 
 				// this should adapt to pass vertex declaration.
 				if (pass.vertexBuffers_.size() > 0) {
-					auto indexBuffer = ctx_.buffers_.get(pass.vertexBuffers_[0].resolvedBufferHandle);
-					vkCmdBindIndexBuffer(fb.commandBuffer, indexBuffer->vk_buffer, 0, VK_INDEX_TYPE_UINT32);
 
+					auto a = storageBuffers_.get(pass.vertexBuffers_[0]);
+					auto indexBuffer = ctx_.buffers_.get(
+						a->resolvedBufferHandle
+					);
+
+					vkCmdBindIndexBuffer(fb.commandBuffer, indexBuffer->vk_buffer, 0, VK_INDEX_TYPE_UINT32);
 					size_t v_bufs = pass.vertexBuffers_.size() - 1;
 					std::vector<VkBuffer> bufs;
 					bufs.reserve(2);
 					for (size_t i = 1; i < pass.vertexBuffers_.size(); i++) {
-						bufs.push_back(ctx_.buffers_.get(pass.vertexBuffers_[i].resolvedBufferHandle)->vk_buffer);
+						bufs.push_back(
+							ctx_.buffers_.get(
+								storageBuffers_.get(pass.vertexBuffers_[i])->resolvedBufferHandle)->vk_buffer
+						);
 					}
 					VkDeviceSize offs[] = { 0, 0 };
 					vkCmdBindVertexBuffers(fb.commandBuffer, 0, v_bufs, bufs.data(), offs);
@@ -353,15 +381,12 @@ namespace smvk {
 			}
 		}
 
-	private:
+		//private:
+		smvk::Pool<LogicalImage, LogicalImage> images_;
+		smvk::Pool<LogicalImageView, LogicalImageView> imageViews_;
+		smvk::Pool<LogicalBuffer, LogicalBuffer> storageBuffers_;
+		//smvk::Pool<LogicalBuffer, LogicalBuffer> vertexBuffers_;
 		std::vector<RenderPass> m_passes;
-
-
-		// reosurces
-		std::vector<LogicalImage> m_images;
-		std::vector<LogicalImageView> m_views;
-		std::vector<LogicalBuffer> m_storageBuffers;
-		//std::vector<LogicalBuffer> m_uniformBuffers; // we dont care for uniform buffers yet. lets bruteforce with storage
 	};
 
 };

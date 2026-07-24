@@ -1257,7 +1257,7 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 	imgCI.format = imageCreateInfo.vk_format;               // pick your format
 	imgCI.extent = imageCreateInfo.vk_extent;// width, height, depth
 	imgCI.mipLevels = imageCreateInfo.levels;                                      // >1 if you want mipmaps
-	imgCI.usage = imageCreateInfo.usage;
+	imgCI.usage = imageCreateInfo.vk_usage;
 	imgCI.arrayLayers = imageCreateInfo.arrayLayers;                                      // >1 for arrays/cubemaps
 	imgCI.samples = VK_SAMPLE_COUNT_1_BIT;                  // MSAA? set >1
 	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;                // GPU-friendly
@@ -1628,6 +1628,36 @@ smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ktxTexture2& text
 
 }
 
+[[nodiscard]] smvk::BufferHandle smvk::Context::CreateBufferNoHolder(BufferCreateInfo bufferCreateInfo) {
+	Buffer desc{};
+	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	ci.size = bufferCreateInfo.size;
+	ci.usage = bufferCreateInfo.usage_flags | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	VmaAllocationCreateInfo aci{};
+	aci.usage = bufferCreateInfo.vma_usage;
+
+	// Optionally choose pools here based on usage_flags/usage
+	VK_CHECK(vmaCreateBuffer(
+		m_allocator,
+		&ci,
+		&aci,
+		&desc.vk_buffer,
+		&desc.vma_alloc,
+		nullptr
+		//&desc.allocInfo
+	)
+	);
+
+	const VkBufferDeviceAddressInfo ai = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+		.buffer = desc.vk_buffer
+	};
+	desc.deviceAdress = vkGetBufferDeviceAddress(device_, &ai);
+	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &desc.memory_flags);
+	desc.usage = bufferCreateInfo.usage_flags;
+	return buffers_.create(std::move(desc));
+}
 [[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::Context::CreateBuffer(BufferCreateInfo bufferCreateInfo) {
 	Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -1718,7 +1748,7 @@ void smvk::Context::AddDeferredTask(std::packaged_task<void()>&& task, smvk::Com
 {
 	//if (!m_submitter->validHandle(handle)) {
 	if (handle.gen_ == 0) //not valid acquire 
-	{ 
+	{
 		handle = m_submitter->acquire();
 	}
 	m_deferredTasks.emplace_back(std::move(task), handle);
@@ -1914,10 +1944,11 @@ inline smvk::CommandBufferManager::~CommandBufferManager() {
 }
 [[nodiscard]] inline smvk::CommandSubmitHandle smvk::CommandBufferManager::acquire(uint32_t goal)
 {
-	WrapperSlot* picked;
+	WrapperSlot* picked = nullptr;
 	uint32_t pickedIndex = 0;
 
 	if (availableSlots == 0) {
+		//waitAny(); // MAybe this is more sensible.
 		waitAll(); //obv not ok ! TODO::
 	};
 	// just iterate to find first free
@@ -2063,21 +2094,14 @@ inline void smvk::CommandBufferManager::waitAll() {
 		.pSemaphores = sems,
 		.pValues = goals,
 	};
-	VkResult result = vkWaitSemaphores(
-		device_,
-		&waitInfo,
-		UINT64_MAX
-	);
-	if (result == VK_TIMEOUT) { assert(false && "timeout "); }
-	//availableSlots = kMax;
+
+	VK_CHECK(vkWaitSemaphores(device_, &waitInfo, UINT64_MAX));
 
 	for (uint32_t i = 0; i < kMax; i++) {
 		auto& wrp = commandBuffers_[i].wrapper_;
 		if (wrp.cmd == VK_NULL_HANDLE || wrp.isEncoding_) { continue; }
 		reset({ i, commandBuffers_[i].gen_ });
 	};
-
-
 
 }
 inline void smvk::CommandBufferManager::reset(CommandSubmitHandle handle) {
@@ -2304,7 +2328,7 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 		ImageCreateInfo{
 			.vk_extent = {extent_.width, extent_.height, 1 },
 			.vk_format = vk_depthFormat_,
-			.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+			.vk_usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
 			.levels = 1,
 			.arrayLayers = 1
 		}
@@ -2440,6 +2464,7 @@ std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanC
 smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 {
 
+	//if framebufferResized ??
 	auto f = GetInFlightFence();
 	vkWaitForFences(
 		device_,
@@ -2516,7 +2541,6 @@ smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 }
 void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 {
-
 	ImageBarrier(
 		fb.commandBuffer,
 		GetCurrentImage(),
@@ -2579,6 +2603,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 
 	VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
 
+	// this is at eof, this should be earlier right? theres the glfw event.
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
 		framebufferResized) {
 		framebufferResized = false;
@@ -2588,8 +2613,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 		throw std::runtime_error("failed to present swap chain image!");
 	}
 
-	//m_submitter.waitAll(); // maybe ?
-	//deferredTask.doAll()
+	//waitAll(); // maybe ?
 	AdvanceFrame();
 
 }
