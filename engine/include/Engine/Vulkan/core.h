@@ -177,9 +177,7 @@ namespace smvk {
 		//}
 	};
 
-	using Texture = Image;
-	using TextureHandle = Handle<Texture>;
-
+	using TextureHandle = Handle<struct Texture>;
 	using ImageHandle = Handle<struct Image>;
 	using SamplerHandle = Handle<struct Sampler>;
 	using BufferHandle = Handle<struct Buffer>;
@@ -460,9 +458,10 @@ namespace smvk {
 
 		int Initialize();
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
-		void ProcessDeferrredTasks(); //void Flush();
+		void ProcessDeferrredTasks();
+		//void Flush();
 		//
-		BufferHandle CreateStagingBuffer(VkDeviceSize size); // needs manual release with destroy
+		BufferHandle CreateStagingBuffer(VkDeviceSize size); 
 		BufferHandle CreateBufferNoHolder(BufferCreateInfo bufferCreateInfo);
 		ImageHandle CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		// 
@@ -481,13 +480,14 @@ namespace smvk {
 		void CleanUp();
 
 		void GetKtxDeviceInfo(); // will be removed
+
+
 		//private:
 		VulkanCore& core_;
 		Submitter* m_submitter = nullptr;
 		std::vector<DeferredTask> m_deferredTasks;
 
 		Pool<Texture, Texture> textures_;
-
 		Pool<Image, Image> images_;
 		Pool<Buffer, Buffer> buffers_;
 		Pool<ShaderModule, VkShaderModule> shaderModules_;
@@ -617,7 +617,7 @@ namespace smvk {
 
 		bool framebufferResized = false;
 
-		Holder<ImageHandle> depthImage_{};
+		Holder<ImageHandle> depthImage_;
 		// these are external images that cannnot be represented by our Image obj
 		std::vector<VkImage> images_;
 		std::vector<VkImageView> imageViews_;

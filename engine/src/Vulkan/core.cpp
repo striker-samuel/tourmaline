@@ -2059,7 +2059,7 @@ inline smvk::Submitter::~Submitter() {
 	return commandBuffers_[handle.index_].wrapper_;
 }
 inline void smvk::Submitter::submit(CommandSubmitHandle handle) {
-	if (handle.empty()) { assert(false && "empty handle"; };
+	if (handle.empty()) { assert(false && "empty handle"); };
 	if (!validHandle(handle)) { assert(false && "invalid handle"); }
 	auto& wrapper_ = commandBuffers_[handle.index_].wrapper_;
 	vkEndCommandBuffer(wrapper_.cmd);
@@ -2354,16 +2354,19 @@ void smvk::VulkanSwapchain::CreateImageViews() {
 }
 void smvk::VulkanSwapchain::CreateDepthResources() {
 	assert(vk_depthFormat_ != VK_FORMAT_UNDEFINED && "core depthFormat not set. failed to create swapchain depth Image");
-	depthImage_ = { ctx_, ctx_.CreateImage(
+
+
+	auto han = ctx_.CreateImage(
 		ImageCreateInfo{
 			.vk_extent = {extent_.width, extent_.height, 1 },
 			.vk_format = vk_depthFormat_,
 			.vk_usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
 			.levels = 1,
 			.arrayLayers = 1
-		}
-	)
-	};
+		},
+		nullptr
+	);
+	depthImage_ = smvk::Holder<smvk::ImageHandle>(&ctx_, han);
 
 	auto obj_ = ctx_.images_.get(depthImage_);
 	auto viewCreateInfo = ImageViewCreateInfo{
