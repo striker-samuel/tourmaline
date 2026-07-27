@@ -329,9 +329,7 @@ uint32_t GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
 	}
 
 	return manager_.CreateMaterial(
-		{
-			.diffuse = colorTexHandle
-		}
+		colorTexHandle
 	).index();
 
 }

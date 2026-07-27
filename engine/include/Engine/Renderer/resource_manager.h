@@ -35,19 +35,11 @@ struct Mesh {
 
 
 struct Material {
-	// this is bad
-	struct Textures {
-		smvk::TextureHandle diffuse{};
-		smvk::TextureHandle specular{};
-		smvk::TextureHandle opacity{};
-		smvk::TextureHandle normal{};
-	} textures_;
 	struct Values {
 		// Color *=
 		// TODO - to 0.0f
 		glm::vec4 ambient = glm::vec4(0.06f);
 		glm::vec4 diffuse = glm::vec4(1.0f);
-		// This can easily go outdated form .textures. bad design!!!
 		int tex[4] = { -1, -1, -1, -1 }; //diffuse ,ambient, alpha, normals
 	} values;
 	static_assert(sizeof(Values) % 16 == 0);
@@ -59,7 +51,7 @@ struct MeshManager {
 	~MeshManager() {};
 
 	MeshHandle UploadVertexData(Mesh::DataUpload& mesh_data);
-	MaterialHandle CreateMaterial(Material::Textures textures);
+	MaterialHandle CreateMaterial(smvk::TextureHandle diffuse);
 	smvk::TextureHandle GetOrCreateTexture(std::string uri, ktxTexture2& tex);
 
 	smvk::BufferHandle GetIndexBuffer();

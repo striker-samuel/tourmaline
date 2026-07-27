@@ -69,14 +69,8 @@ namespace smvk {
 	};
 	struct ImageCreateInfo {
 
-		// this is missing support for a lot of VkCreateImageInfo properties
-		// right now we are using a sane default but,,,
-		// also this smvk::rhi layer shouldnt use vkTypes and instead be converted
-		// to vkTypes of vulkan backend implementation land. as a proper RHI.
-		// right now im not focusing on that and I dont want to carry all that boilerplate
-		// to develop the way of doing this of this api. Also, learning project!!! ;)
-
-		VkExtent3D vk_extent; // support 3d images
+		VkSampleCountFlags vk_samples = VK_SAMPLE_COUNT_1_BIT;
+		VkExtent3D vk_extent;
 		VkFormat vk_format = VK_FORMAT_UNDEFINED;
 		VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_SAMPLED_BIT |
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -140,17 +134,16 @@ namespace smvk {
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 		uint32_t levels = 1;
 		uint32_t arrayLayers = 1;
-		// 
+		VkSampleCountFlags vk_samples = VK_SAMPLE_COUNT_1_BIT;
 		VkImageView sampleView = VK_NULL_HANDLE; // you can sample multiple levels
-		VkImageView renderView = VK_NULL_HANDLE; // but can only render to one. Views are created with this baked in. Thats the why to separate them
+		VkImageView storageView = VK_NULL_HANDLE; // but can only render to one. Views are created with this baked in. Thats the why to separate them
 		VkImageView arrayView[6]{
 			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
 			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
 		}; // for cubemap
 		VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
 		bool owns_views = true;
-		bool is_swapchain = false; //
-
+		bool is_swapchain = false;
 		ImageCreateInfo getImageCreateInfo() const {
 			return {
 				.vk_extent = vk_extent,
@@ -177,15 +170,13 @@ namespace smvk {
 		//}
 	};
 
-	using TextureHandle = Handle<struct Texture>;
 	using ImageHandle = Handle<struct Image>;
+	using TextureHandle = Handle<struct Texture>;
 	using SamplerHandle = Handle<struct Sampler>;
 	using BufferHandle = Handle<struct Buffer>;
 	using ShaderModuleHandle = Handle<struct ShaderModule>;
-
 	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 	using DescriptorSetHandle = Handle<struct DescriptorSet>;
-	//using GraphicsPipelineHandle = Handle<struct RenderPipelineState>;
 
 };
 
@@ -487,7 +478,7 @@ namespace smvk {
 		Submitter* m_submitter = nullptr;
 		std::vector<DeferredTask> m_deferredTasks;
 
-		Pool<Texture, Texture> textures_;
+		Pool<Texture, Image> textures_;
 		Pool<Image, Image> images_;
 		Pool<Buffer, Buffer> buffers_;
 		Pool<ShaderModule, VkShaderModule> shaderModules_;
@@ -504,6 +495,7 @@ namespace smvk {
 	};
 
 	void destroy(Context* ctx, ImageHandle handle);
+	void destroy(Context* ctx, TextureHandle handle);
 	void destroy(Context* ctx, BufferHandle handle);
 	void destroy(Context* ctx, ShaderModuleHandle handle);
 	void destroy(Context* ctx, SamplerHandle handle);
@@ -597,7 +589,6 @@ namespace smvk {
 		VkSemaphore GetImageAvailableSemaphore() const { return imageAvailableSemaphores_.at(currentFrame_); }
 		VkFence GetInFlightFence() const { return inFlightFences_.at(currentFrame_); }
 		VkSemaphore GetRenderFinishedSemaphore(uint32_t imageIndex) const { return renderFinishedSemaphores_.at(imageIndex); }
-		ImageHandle GetDepthImage() const { return depthImage_; }
 		// 
 
 		void AdvanceFrame() { currentFrame_ = (currentFrame_ + 1) % framesInFlight_; }
@@ -618,7 +609,6 @@ namespace smvk {
 		bool framebufferResized = false;
 
 		Holder<ImageHandle> depthImage_;
-		// these are external images that cannnot be represented by our Image obj
 		std::vector<VkImage> images_;
 		std::vector<VkImageView> imageViews_;
 		std::vector<VkSemaphore> renderFinishedSemaphores_;

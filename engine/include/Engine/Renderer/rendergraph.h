@@ -10,6 +10,10 @@ namespace smvk {
 	using LogicalBufferHandle = Handle<struct LogicalBuffer>;
 	using LogicalImageHandle = Handle<struct LogicalImage>;
 	using LogicalImageViewHandle = Handle<struct LogicalImageView>;
+
+
+	// dont quite like thisreally
+	using LogicalStorageImageHandle = Handle<struct LogicalStorageImage>;
 };
 
 namespace smvk {
@@ -84,6 +88,7 @@ namespace smvk {
 		std::vector<LogicalImageViewHandle> views;
 		std::vector<LogicalImageHandle> inputImages_;
 		std::vector<LogicalBufferHandle> storageBuffers_;
+		std::vector<LogicalStorageImageHandle> storageImages_;
 
 		struct AttachmentBlendSetup {
 			VkPipelineColorBlendAttachmentState state;
@@ -103,13 +108,53 @@ namespace smvk {
 			}
 			return *this;
 		}
+
+		// this is so wrong at so many levels.
+		//RenderPass& setDepth(
+		//	LogicalImageHandle depthImage,
+		//	VkAttachmentLoadOp loadOp,
+		//	VkAttachmentStoreOp storeOp,
+		//	VkClearValue clearValue
+		//) {
+
+		//	VkImageSubresourceRange range{};
+		//	range.layerCount = VK_REMAINING_ARRAY_LAYERS;
+		//	range.levelCount = VK_REMAINING_MIP_LEVELS;
+		//	range.baseArrayLayer = 0;
+		//	range.baseMipLevel = 0;
+
+		//	// right now we will harcode depth and stencil byt shoudl be better done this
+		//	range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+
+		//	LogicalImageView proxyView{};
+		//	proxyView.key = {
+		//		.image = depthImage,
+		//		.flags = {},
+		//		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		//		.subResourceRange = range
+		//	};
+		//	VkFormat format = rg_.inputImages_.get(depthImage)->key.vk_format;
+		//	proxyView.resolvedFormat = format;
+		//	proxyView.type = LogicalImageView::Type::Transient;
+		//	auto han = rg_.imageViews_.create(std::move(proxyView));
+
+		//	Attachment depthAttachment{};
+		//	depthAttachment.view = han;
+		//	depthAttachment.loadOp = loadOp;
+		//	depthAttachment.storeOp = storeOp;
+		//	depthAttachment.clearValue = clearValue;
+		//	this->depthAttachment_ = depthAttachment;
+
+		//	return *this;
+		//};
+
 		RenderPass& setDepth(
-			LogicalImageViewHandle viewId,
-			VkAttachmentLoadOp _loadOp,
-			VkAttachmentStoreOp _storeOp,
-			VkClearValue _clearValue
+			LogicalImageViewHandle logicalImageViewHandle,
+			VkAttachmentLoadOp loadOp,
+			VkAttachmentStoreOp storeOp,
+			VkClearValue clearValue
 		) {
-			this->depthAttachment_ = { viewId, _loadOp, _storeOp, _clearValue };
+			this->depthAttachment_ = { logicalImageViewHandle, loadOp, storeOp, clearValue };
 			return *this;
 		};
 		//ToyRenderPass& setStencil(LogicalImageView depthAttachent) /*{ this->depthAttachment_ = depthAttachent; return *this; }*/;
@@ -122,6 +167,7 @@ namespace smvk {
 		RenderPass& setVertexFormat(VertexFormatDesc vertexFormat) { this->vertexFormat_ = vertexFormat; return *this; }
 		RenderPass& setInputImages(std::vector<LogicalImageHandle> inputImages) { this->inputImages_ = inputImages; };
 		RenderPass& setStorageBuffers(std::vector<LogicalBufferHandle> storageBuffers) { this->storageBuffers_ = storageBuffers; };
+		RenderPass& setStorageImages(std::vector<LogicalStorageImageHandle> storageImages) { this->storageImages_ = storageImages; };
 		RenderPass& setRecordingFunc(RecordingFunction recordingFunction) { this->recordingFunction_ = recordingFunction; return *this; };
 		RenderPass& setExtent(VkExtent2D extent) { this->extent_ = extent; return *this; };
 		RenderPass& setOffset(VkOffset2D offset) { this->offset_ = offset; return *this; };
@@ -168,17 +214,15 @@ namespace smvk {
 				.key = img->getImageCreateInfo(),
 				.resolvedImageHandle = imageHandle
 			};
-			return images_.create(std::move(proxyImage));
+			return inputImages_.create(std::move(proxyImage));
 		};
 		[[nodiscard]] LogicalImageViewHandle AddImageView(ImageViewCreateInfo description) { assert(false); };
-		[[nodisacrd]] LogicalImageHandle AddImage(VkImage vk_image) { assert(false); };
 		[[nodiscard]] LogicalImageViewHandle AddImageView(VkImageView view) {
 			LogicalImageView proxyView{};
 			proxyView.type = LogicalImageView::Type::External;
 			proxyView.resolvedImageView = view;
 			return imageViews_.create(std::move(proxyView));
 		};
-
 		template<typename DataType>
 		[[nodicard]] LogicalBufferHandle AddRingBuffer(uint32_t count, const char* name = "") {
 			BufferKey key = {
@@ -207,7 +251,11 @@ namespace smvk {
 			return storageBuffers_.create(std::move(proxyBuffer));
 		};
 
-		[[nodiscard]] std::vector<LogicalBufferHandle> AddExternalBuffers(std::vector<BufferHandle> bufferHandles) {
+		[[nodiscard]] std::vector<LogicalBufferHandle> AddExternalBuffers(
+			std::vector<BufferHandle> bufferHandles
+			//, BufferKey* keys, // could be used to mark them as rings but .... maybe not.
+			//int keyCount
+		) {
 			std::vector<LogicalBufferHandle> handles;
 			for (auto b : bufferHandles) {
 				LogicalBuffer proxy{
@@ -242,13 +290,24 @@ namespace smvk {
 		//void TopoSort() {}; 
 		// so resolved is just creating the resources/getting them from cache.
 		void ResolveImages() {
-			images_.forEach(
+			inputImages_.forEach(
 				[this](LogicalImage& logicalImage) {
 				if (logicalImage.resolvedImageHandle.empty()) {
+					if (logicalImage.type == LogicalImage::Type::External) { assert(false && "external image unresolved. shouldnt be possible"); };
 					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr);
 				};
 			}
 			);
+
+			inputImages_.forEach(
+				[this](LogicalImage& logicalImage) {
+				if (logicalImage.resolvedImageHandle.empty()) {
+					if (logicalImage.type == LogicalImage::Type::External) { assert(false && "external image unresolved. shouldnt be possible"); };
+					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr);
+				};
+			}
+			);
+
 		};
 
 		void ResolveImageViews() {
@@ -256,14 +315,14 @@ namespace smvk {
 			imageViews_.forEach(
 				[this](LogicalImageView& logicalView) {
 				if (logicalView.resolvedImageView == VK_NULL_HANDLE) {
-					auto logicalImage = images_.get(logicalView.key.image);
+					auto logicalImage = inputImages_.get(logicalView.key.image);
 					auto img = ctx_.images_.get(logicalImage->resolvedImageHandle);
 					logicalView.resolvedFormat = img->vk_format;
 					// if outImage"" we need to know if we are renderting to, sampling from or both
 					// didnt distinguish before!. ill just assume render.
 					// also swaphcain image is abstracted from the rendergraph for the moment...
 					// LegitEngine does the present ass a pass. maybe its a good idea.
-					logicalView.resolvedImageView = img->renderView;
+					logicalView.resolvedImageView = img->sampleView;
 
 				};
 			}
@@ -295,7 +354,7 @@ namespace smvk {
 			return storageBuffers_.get(handle)->resolvedBufferHandle;
 		};
 		smvk::ImageHandle GetResolvedImageHandle(LogicalImageHandle handle) const {
-			return images_.get(handle)->resolvedImageHandle;
+			return inputImages_.get(handle)->resolvedImageHandle;
 		};
 
 		void Execute(FrameBuffer& fb) {
@@ -378,9 +437,14 @@ namespace smvk {
 			}
 		}
 
+		// TODO:: pending implementation.
+		VkExtent2D GetMipSize(LogicalImageHandle imageHandle, uint32_t level);
+		VkExtent2D GetMipSize(LogicalImageViewHandle imageViewHandle, uint32_t level);
+
 		//private:
 		smvk::Context& ctx_;
-		smvk::Pool<LogicalImage, LogicalImage> images_;
+		smvk::Pool<LogicalImage, LogicalImage> inputImages_;
+		smvk::Pool<LogicalStorageImage, LogicalImage> storageImages_;
 		smvk::Pool<LogicalImageView, LogicalImageView> imageViews_;
 		smvk::Pool<LogicalBuffer, LogicalBuffer> storageBuffers_;
 		std::vector<RenderPass> m_passes;

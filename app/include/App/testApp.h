@@ -79,8 +79,10 @@ static_assert(sizeof(FrameUniforms) % 16 == 0);
 struct ViewportResources {};
 
 struct AppResources {
-	smvk::LogicalBufferHandle frameUniformsBuffer{};
-	smvk::LogicalBufferHandle drawDataBuffer{};
+	smvk::Holder<smvk::BufferHandle> frameUniforms;
+	//FrameUniforms frameData[MAX_FRAMES_IN_FLIGHT];
+	//smvk::LogicalBufferHandle frameUniformsBuffer{};
+	//smvk::LogicalBufferHandle drawDataBuffer{};
 };
 
 class TestApp : public smvk::VulkanApp {
@@ -128,7 +130,7 @@ private:
 		return true;
 	};
 
-	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame, smvk::BufferHandle handle) {
+	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame) {
 
 		int width_ = m_swapchain->GetExtent().width;
 		int height_ = m_swapchain->GetExtent().height;
@@ -139,38 +141,43 @@ private:
 
 		auto viewProj = proj * view;
 
-		FrameUniforms data{};
-		data.cameraPos = m_cameraPositioner.cameraPosition_;
+		void* mapped = m_context->MapBuffer(m_resources.frameUniforms);
 
-		data.view = view;
-		data.proj = proj;
-		data.viewProj = viewProj;
 
-		data.invView = glm::inverse(view);
-		data.invProj = glm::inverse(proj);
-		data.invViewProj = glm::inverse(viewProj);
+		// this is wrong should check properly
+		//auto limits = core_->GetPhysicalDeviceProperties().properties.limits;
+		//if (!limits.minStorageBufferOffsetAlignment == 16)
+		//{
+		//	assert(false);
+		//
+		//
 
-		data.time = 0.0f;
-		data.viewportSize = { width_, height_ };
-		data.invViewportSize = { 1.0f / width_, 1.0f / height_ };
+		auto* curr = reinterpret_cast<FrameUniforms*>(
+			static_cast<std::byte*>(mapped) +
+			currentFrame * sizeof(FrameUniforms)
+			);
+		curr->cameraPos = m_cameraPositioner.cameraPosition_;
+
+		curr->view = view;
+		curr->proj = proj;
+		curr->viewProj = viewProj;
+
+		curr->invView = glm::inverse(view);
+		curr->invProj = glm::inverse(proj);
+		curr->invViewProj = glm::inverse(viewProj);
+
+		curr->time = 0.0f;
+		curr->viewportSize = { width_, height_ };
+		curr->invViewportSize = { 1.0f / width_, 1.0f / height_ };
 
 		// Not in use now
-		data.nearPlane = 0.f;
-		data.farPlane = 0.f;
-		data.exposure = 0.f;
+		curr->nearPlane = 0.f;
+		curr->farPlane = 0.f;
+		curr->exposure = 0.f;
 
-		m_context->UploadDataToBuffer(
-			handle,
-			&data,
-			sizeof(FrameUniforms)/* * 1*/,
-			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-			VK_ACCESS_SHADER_READ_BIT,
-			0,
-			currentFrame * sizeof(FrameUniforms)
-			//currentFrame * m_resources.frameUniformsBuffer.key.elementSize * m_resources.frameUniformsBuffer.key.elementCount // dynamicOffsetPerFrame
-		);
-		return data;
-
+		FrameUniforms copy = *curr;
+		m_context->UnmapBuffer(m_resources.frameUniforms);
+		return copy;
 	}
 
 	void DrawFrame() {
@@ -184,29 +191,27 @@ private:
 
 
 	void RenderFrame(smvk::FrameBuffer fb) {
+
 		m_rendergraph->Clear();
 
-		// Update Buffer Contents.
-		m_resources.frameUniformsBuffer = m_rendergraph->AddRingBuffer<FrameUniforms>(1, "frameUniforms");
-		m_resources.drawDataBuffer = m_rendergraph->AddRingBuffer<DrawSetData>(kMaxDraws, "drawData");
-
 		// ATTACHMENT SETUP
-		auto colorProxy = m_rendergraph->AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
-		auto depthProxy = m_rendergraph->AddImageView(
-			m_context->images_.get(fb.swapchain.depthImage_)->renderView //hacky
-		);
+		auto logicalSwapchainImage = m_rendergraph->AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
+
+		auto depthImage = m_context->images_.get(fb.swapchain.depthImage_);
+		auto logicalDepthImageView = m_rendergraph->AddImageView(depthImage->sampleView);
+
 		std::vector<smvk::LogicalImageViewHandle> colors;
-		colors.push_back(colorProxy);
+		colors.push_back(logicalSwapchainImage);
 
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
 			.setExtent(fb.swapchain.extent_)
-			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })
-			.setDepth(depthProxy, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
+			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} }) // Rendering directly to swapcahinImage!
+			.setDepth(logicalDepthImageView, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
 			.setRecordingFunc([this, fb](smvk::RenderPassContext pass)
 		{
 			auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
-			auto meshMan = m_meshManagerPimpl.get();
+			auto mesh_manager = m_meshManagerPimpl.get();
 
 			std::vector<int> visible;
 			if (m_currentLevel.tree_done) {
@@ -237,18 +242,13 @@ private:
 					if (it == m_currentLevel.meshForNode.end()) continue;
 
 					uint32_t meshIndex = it->second;
-
-
-					auto mesh_desc = meshMan->meshes.get(
-						meshMan->meshes.getHandle(meshIndex)
+					auto mesh_desc = mesh_manager->meshes.get(
+						mesh_manager->meshes.getHandle(meshIndex)
 					);
 
 					auto material_instance_index = m_currentLevel.materialForNode[visible_node];
-					//pc.material_index = material_instance_index;
-
 					auto matHandle = m_meshManagerPimpl->materials.getHandle(material_instance_index);
 					auto mat = m_meshManagerPimpl->materials.get(matHandle);
-
 					assert(mat);
 
 					//Material::Values pcm = mat->values;
@@ -316,7 +316,7 @@ private:
 
 
 private:
-	AppResources m_resources;
+	AppResources m_resources{};
 	Level m_currentLevel;
 	std::unique_ptr<MeshManager> m_meshManagerPimpl;
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(

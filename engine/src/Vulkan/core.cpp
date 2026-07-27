@@ -1688,7 +1688,7 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 	image_obj.arrayLayers = imageInfo.arrayLayers;
 	image_obj.levels = mipLevels;
 	image_obj.sampleView = VK_NULL_HANDLE;
-	image_obj.renderView = VK_NULL_HANDLE;
+	image_obj.storageView = VK_NULL_HANDLE;
 
 	// TODO: Rework this.
 	//CreateSampler(0, image_obj.sampler);
@@ -1713,10 +1713,12 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 
 	core_.CreateImageView(
 		createViewInfo,
-		image_obj.renderView
+		image_obj.sampleView
 	);
 
-	image_obj.sampleView = image_obj.renderView;
+	// storage view shoyld have swizzle to guarante rgba
+	image_obj.storageView = image_obj.sampleView;
+
 	return { this, 	textures_.create(std::move(image_obj)) };
 
 }
@@ -1824,7 +1826,6 @@ void* smvk::Context::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
 	return mapped;
 }
 void smvk::Context::UnmapBuffer(smvk::Handle<smvk::Buffer> handle) {
-	void* mapped = nullptr;
 	auto buf = this->buffers_.get(handle);
 	// Not required for HOST_COHERENT memory, but harmless if you want to support
 	// non-coherent staging buffers later.
@@ -1874,6 +1875,7 @@ void smvk::destroy(smvk::Context* ctx, smvk::ShaderModuleHandle handle) {
 	ctx->shaderModules_.destroy(handle);
 }
 void smvk::destroy(smvk::Context* ctx, smvk::ImageHandle handle) {}
+void smvk::destroy(smvk::Context* ctx, smvk::TextureHandle handle) {}
 void smvk::destroy(smvk::Context* ctx, smvk::SamplerHandle handle) {}
 void smvk::destroy(smvk::Context* ctx, smvk::DescriptorSetHandle handle) {}
 void smvk::destroy(smvk::Context* ctx, smvk::DescriptorPoolHandle handle) {}
@@ -2265,7 +2267,7 @@ void smvk::VulkanSwapchain::Recreate() {
 
 	CreateSwapchain();
 	CreateImageViews();
-	CreateDepthResources();
+	//CreateDepthResources();
 
 	currentImageIndex_ = 0;
 }
@@ -2354,9 +2356,7 @@ void smvk::VulkanSwapchain::CreateImageViews() {
 }
 void smvk::VulkanSwapchain::CreateDepthResources() {
 	assert(vk_depthFormat_ != VK_FORMAT_UNDEFINED && "core depthFormat not set. failed to create swapchain depth Image");
-
-
-	auto han = ctx_.CreateImage(
+	auto imageHan = ctx_.CreateImage(
 		ImageCreateInfo{
 			.vk_extent = {extent_.width, extent_.height, 1 },
 			.vk_format = vk_depthFormat_,
@@ -2366,7 +2366,7 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 		},
 		nullptr
 	);
-	depthImage_ = smvk::Holder<smvk::ImageHandle>(&ctx_, han);
+	depthImage_ = smvk::Holder<smvk::ImageHandle>(&ctx_, imageHan);
 
 	auto obj_ = ctx_.images_.get(depthImage_);
 	auto viewCreateInfo = ImageViewCreateInfo{
@@ -2384,9 +2384,8 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 
 	ctx_.core_.CreateImageView(
 		viewCreateInfo,
-		obj_->renderView
+		obj_->sampleView
 	);
-	obj_->sampleView = obj_->renderView;
 
 	// acquire and submit to transitiobn image layout. could be more sofisticated really
 	auto han = ctx_.m_submitter->acquire();
@@ -2462,10 +2461,10 @@ inline void smvk::VulkanSwapchain::DestroySyncObjects() {
 	inFlightFences_.clear();
 }
 inline void smvk::VulkanSwapchain::CleanupSwapchain() {
-	if (depthImage_.valid()) {
-		destroy(&ctx_, depthImage_);
-		depthImage_ = {};
-	}
+	//if (depthImage_.valid()) {
+	//	destroy(&ctx_, depthImage_);
+	//	depthImage_ = {};
+	//}
 
 	for (VkImageView view : imageViews_) {
 		if (view != VK_NULL_HANDLE) {

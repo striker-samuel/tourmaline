@@ -182,11 +182,10 @@ MeshHandle MeshManager::UploadVertexData(Mesh::DataUpload& mesh_data)
 
 	return meshes.create(std::move(mesh_desc));
 }
-[[nodiscard]] MaterialHandle MeshManager::CreateMaterial(Material::Textures textures) {
-	assert(!textures.diffuse.empty() && "Invalid handle for diffuse");
+[[nodiscard]] MaterialHandle MeshManager::CreateMaterial(smvk::TextureHandle diffuse) {
+	assert(!diffuse.empty() && "Invalid handle for diffuse");
 	Material mat{};
-	mat.textures_.diffuse = textures.diffuse;
-	mat.values.tex[0] = textures.diffuse.index();
+	mat.values.tex[0] = diffuse.index();
 	return  materials.create(std::move(mat));
 }
 smvk::TextureHandle MeshManager::GetOrCreateTexture(std::string uri, ktxTexture2& tex) {
