@@ -643,4 +643,4 @@ namespace smvk {
 		FrameBuffer AcquireFramebuffer();
 		void EndAndPresentFramebuffer(FrameBuffer& cb);
 	};
-
+};
