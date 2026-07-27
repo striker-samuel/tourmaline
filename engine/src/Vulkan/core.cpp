@@ -12,14 +12,33 @@ const bool enableValidationLayers = true;
 #endif
 //
 
-// anonymous namepsace is like static but can hold types
+struct QueueFamilyIndices {
+	std::optional<uint32_t> graphicsFamily;
+	std::optional<uint32_t> presentFamily;
+	std::optional<uint32_t> transferFamily;
+
+	bool isComplete() const {
+		return graphicsFamily.has_value() && presentFamily.has_value();
+	}
+};
+
+struct SwapChainSupportDetails {
+	VkSurfaceCapabilitiesKHR capabilities{};
+	std::vector<VkSurfaceFormatKHR> formats;
+	std::vector<VkPresentModeKHR> presentModes;
+};
+
+
+static inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
 namespace {
 	// Buffers will be pushed in pc block with deviceAddress
-	// The rest will be bindless with fixed bindign#
+	// The rest will be bindless with fixed binding#
 	// This bindless model is lifted from lightweightVK aproach
 	enum Bindings {
-		kBinding_Textures = 0,
+		kBinding_Textures = 0, // position 0
 		kBinding_Samplers = 1,
+		kBinding_StorageImages = 2,
+		kBinding_NumBindings = 3 // this should be # of all other
 	};
 	struct FormatInfo {
 		uint32_t blockWidth;
@@ -82,24 +101,22 @@ namespace {
 	}
 };
 
+// Vulkan Objects
 static VkInstance instance_ = VK_NULL_HANDLE;
 static VkDevice device_ = VK_NULL_HANDLE;
 static VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
 static VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
 static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
+
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
 static VkQueue transferQueue_ = VK_NULL_HANDLE;
+
 static VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
 static VkCommandPool transferCommandPool_ = VK_NULL_HANDLE;
 
-
-
-void DestroyDebugUtilsMessengerEXT(
-	VkInstance instance,
-	VkDebugUtilsMessengerEXT debugMessenger,
-	const VkAllocationCallbacks* pAllocator
-) {
+// Helpers
+void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator) {
 	auto func = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
 		vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT")
 		);
@@ -108,7 +125,6 @@ void DestroyDebugUtilsMessengerEXT(
 		func(instance, debugMessenger, pAllocator);
 	}
 }
-
 const char* vkResultToString(VkResult result) {
 	switch (result) {
 	case VK_SUCCESS: return "VK_SUCCESS";
@@ -133,17 +149,12 @@ const char* vkResultToString(VkResult result) {
 	default: return "VK_ERROR_<unrecognized>";
 	}
 }
-
-VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-	VkDebugUtilsMessageTypeFlagsEXT messageType,
-	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-	void* pUserData) {
+VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
 	std::cerr << "---------------- Vulkan Validation ----------------\n";
 	std::cerr << "Message: " << pCallbackData->pMessage << "\n";
 	std::cerr << "\n";  // <--- Blank line for separation
 	return VK_FALSE;
 }
-
 bool checkValidationLayerSupport(const std::vector<const char*> validationLayers) {
 	uint32_t layerCount;
 	vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
@@ -168,16 +179,49 @@ bool checkValidationLayerSupport(const std::vector<const char*> validationLayers
 
 	return true;
 }
+bool IsFormatSupported(VkFormat format, VkFormatFeatureFlags requiredFeatures, VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL)
+{
+	VkFormatProperties props{};
+	vkGetPhysicalDeviceFormatProperties(
+		physicalDevice_,
+		format,
+		&props);
 
-VkFormat findSupportedFormat(
-	VkPhysicalDevice physicalDevice,
-	const std::vector<VkFormat>& candidates,
-	VkImageTiling tiling,
-	VkFormatFeatureFlags features
-) {
+	const VkFormatFeatureFlags availableFeatures =
+		tiling == VK_IMAGE_TILING_OPTIMAL
+		? props.optimalTilingFeatures
+		: props.linearTilingFeatures;
+
+	return (availableFeatures & requiredFeatures) == requiredFeatures;
+}
+void CheckTextureFormatSupport()
+{
+	constexpr VkFormatFeatureFlags required =
+		VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+
+	assert(IsFormatSupported(
+		VK_FORMAT_BC1_RGBA_SRGB_BLOCK,
+		required));
+
+	assert(IsFormatSupported(
+		VK_FORMAT_BC5_UNORM_BLOCK,
+		required));
+
+	assert(IsFormatSupported(
+		VK_FORMAT_BC7_SRGB_BLOCK,
+		required));
+}
+VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) {
 	for (VkFormat vk_format : candidates) {
+
+		//bool support = IsFormatSupported(
+		//	physicalDevice_,
+		//	vk_format,
+		//	features
+		//);
+
 		VkFormatProperties props;
-		vkGetPhysicalDeviceFormatProperties(physicalDevice, vk_format, &props);
+		vkGetPhysicalDeviceFormatProperties(physicalDevice_, vk_format, &props);
 
 		if (tiling == VK_IMAGE_TILING_LINEAR &&
 			(props.linearTilingFeatures & features) == features) {
@@ -191,14 +235,8 @@ VkFormat findSupportedFormat(
 
 	throw std::runtime_error("failed to find supported format!");
 }
-
-
-// I should implement promotion other ways. Shadows may run other depthfmt also.
-// Maybe should be const. just checked for availability at device, error out if not found.
-VkFormat findDepthFormat(
-) {
+VkFormat findDepthFormat() {
 	return findSupportedFormat(
-		physicalDevice_,
 		{
 			//VK_FORMAT_D32_SFLOAT // no stencil. Lets just stick to stencil formats as a minimum
 			VK_FORMAT_D32_SFLOAT_S8_UINT,
@@ -208,7 +246,6 @@ VkFormat findDepthFormat(
 		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
 	);
 }
-
 SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
 
 	SwapChainSupportDetails details;
@@ -238,11 +275,7 @@ SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurface
 
 	return details;
 }
-
-QueueFamilyIndices findQueueFamilies(
-	VkPhysicalDevice device,
-	VkSurfaceKHR surface
-) {
+QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface) {
 	QueueFamilyIndices indices;
 
 	uint32_t queueFamilyCount = 0;
@@ -344,7 +377,6 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device, const std::vector<cons
 
 	return requiredExtensions.empty();
 }
-
 bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface, const std::vector<const char*> deviceExtensions) {
 	QueueFamilyIndices indices = findQueueFamilies(device, surface);
 
@@ -359,9 +391,7 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface, const std::
 
 	return indices.isComplete() && extensionsSupported && swapChainAdequate;
 }
-
-VkSurfaceFormatKHR chooseSwapSurfaceFormat(
-	const std::vector<VkSurfaceFormatKHR>& availableFormats) {
+VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) {
 	for (const auto& availableFormat : availableFormats) {
 		if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
 			availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
@@ -371,9 +401,7 @@ VkSurfaceFormatKHR chooseSwapSurfaceFormat(
 
 	return availableFormats[0];
 }
-
-VkPresentModeKHR chooseSwapPresentMode(
-	const std::vector<VkPresentModeKHR>& availablePresentModes) {
+VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
 	for (const auto& availablePresentMode : availablePresentModes) {
 		if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
 			return availablePresentMode;
@@ -382,7 +410,6 @@ VkPresentModeKHR chooseSwapPresentMode(
 
 	return VK_PRESENT_MODE_FIFO_KHR;
 }
-
 VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window) {
 
 	if (capabilities.currentExtent.width !=
@@ -406,7 +433,6 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwi
 		return actualExtent;
 	}
 }
-
 std::vector<const char*> getRequiredExtensionsForGlfw(bool enableValidationLayers) {
 	uint32_t glfwExtensionCount = 0;
 	const char** glfwExtensions;
@@ -421,8 +447,6 @@ std::vector<const char*> getRequiredExtensionsForGlfw(bool enableValidationLayer
 
 	return extensions;
 }
-
-static inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
 static uint64_t getImageSizeBytes(
 	VkFormat vk_format,
 	VkExtent3D vk_extent,
@@ -463,8 +487,6 @@ static uint64_t getImageSizeBytes(const smvk::ImageCreateInfo& info) {
 		info.arrayLayers
 	);
 }
-
-
 VkQueue GetQueue(smvk::QueuePreference preferredQueue) {
 	switch (preferredQueue) {
 	case smvk::QueuePreference::GRAPHICS:
@@ -553,7 +575,68 @@ void CreateDescriptorSetLayout(const smvk::PipelineCreateInfo::DescriptorSetDesc
 
 	VK_CHECK(vkCreateDescriptorSetLayout(device_, &ci, nullptr, &layout));
 }
-//
+void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& descIn, VkPipelineLayout& out)
+{
+	auto sets = descIn.setDescriptions;
+	assert(sets.size() <= 8 && "Too many descriptor sets 8+");
+	const uint32_t setLayoutCount = (sets.empty()) ? 0u : (sets.size());
+	std::array<VkDescriptorSetLayout, 8> vkSetLayouts{};
+	vkSetLayouts.fill(VK_NULL_HANDLE);
+
+	int i = 0;
+	for (const auto& s : sets)
+	{
+		VkDescriptorSetLayout vk_lyt = VK_NULL_HANDLE;
+		CreateDescriptorSetLayout(s, vk_lyt);
+		vkSetLayouts[i] = vk_lyt;
+		i++;
+	}
+
+	VkPushConstantRange ranges[8]{};
+	const uint32_t rangeCount = static_cast<uint32_t>(descIn.pushConstants.size());
+	VkPhysicalDeviceProperties properties{};
+	vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+	auto min_align = properties.limits.minUniformBufferOffsetAlignment;
+
+	assert(rangeCount <= 8 && "Max 8 push constant ranges");
+
+	// Decide explicit offsets vs packed offsets
+	bool anyExplicitOffset = false;
+	for (const auto& pc : descIn.pushConstants)
+		if (pc.offset != 0) { anyExplicitOffset = true; break; }
+
+	uint32_t curr_off = 0;
+
+	for (uint32_t i = 0; i < rangeCount; ++i)
+	{
+		const auto& r = descIn.pushConstants[i];
+
+		const uint32_t off = anyExplicitOffset ? r.offset : curr_off;
+
+		assert(is_aligned4(off));
+		assert(is_aligned4(r.size));
+		assert(r.size > 0);
+
+		ranges[i] = VkPushConstantRange{
+			.stageFlags = r.stages,
+			.offset = off,
+			.size = r.size
+		};
+
+		if (!anyExplicitOffset)
+			curr_off += r.size;
+	}
+	VkPipelineLayoutCreateInfo ci{
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = setLayoutCount,
+		.pSetLayouts = setLayoutCount ? vkSetLayouts.data() : nullptr,
+		.pushConstantRangeCount = rangeCount,
+		.pPushConstantRanges = rangeCount ? ranges : nullptr,
+	};
+	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &out));
+}
+
+// VulkanCore
 int smvk::VulkanCore::CreateInstance() {
 
 	if (enableValidationLayers && !checkValidationLayerSupport(config_.validationLayers)) {
@@ -633,6 +716,8 @@ bool smvk::VulkanCore::Init() {
 				break;
 			}
 		}
+
+		CheckTextureFormatSupport(); // Check block format support
 
 		if (physicalDevice_ == VK_NULL_HANDLE) {
 			throw std::runtime_error("failed to find a suitable GPU!");
@@ -728,12 +813,6 @@ bool smvk::VulkanCore::Init() {
 
 			volkLoadDevice(device_);
 
-			// this is really hacky 
-			// Assert for BC7
-			VkFormatProperties p{};
-			vkGetPhysicalDeviceFormatProperties(physicalDevice_, VK_FORMAT_BC7_SRGB_BLOCK, &p);
-			bool sampleOK = (p.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
-			assert(sampleOK);
 
 		}
 
@@ -758,7 +837,7 @@ bool smvk::VulkanCore::Init() {
 			VK_SUCCESS) {
 			throw std::runtime_error("failed to create graphics command pool!");
 		}
-		if (vkCreateCommandPool(device_, &poolInfo, nullptr, &transferCommandPool_) !=
+		if (vkCreateCommandPool(device_, &transferPoolInfo, nullptr, &transferCommandPool_) !=
 			VK_SUCCESS) {
 			throw std::runtime_error("failed to create transfer command pool!");
 		}
@@ -768,9 +847,6 @@ bool smvk::VulkanCore::Init() {
 	return true;
 
 };
-//void smvk::VulkanCore::CreateFence(const VkFenceCreateInfo createInfo, VkFence& out) {
-//	VK_CHECK(vkCreateFence(device_, &createInfo, nullptr, &out));
-//};
 void smvk::VulkanCore::CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out) {
 	VkSemaphoreTypeCreateInfo semaphoreTypeInfo{};
 	semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
@@ -783,7 +859,6 @@ void smvk::VulkanCore::CreateTimelineSemaphore(uint64_t initialValue, VkSemaphor
 		.flags = 0 };
 	VK_CHECK(vkCreateSemaphore(device_, &createInfo, nullptr, &out));
 };
-
 void smvk::VulkanCore::CreateShaderModule(const std::vector<char>& code, VkShaderModule& out) {
 	VkShaderModuleCreateInfo createInfo{};
 	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -805,10 +880,72 @@ inline smvk::VulkanCore::~VulkanCore() {
 	DestroyDebugUtilsMessengerEXT(instance_, debugMessenger_, nullptr);
 	vkDestroyInstance(instance_, nullptr);
 }
+void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
 
-VkResult createStagingPool(
-	VmaAllocator allocator,
-	VmaPool& attachmentPool)
+	VkSamplerCreateInfo samplerInfo{};
+	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	samplerInfo.magFilter = VK_FILTER_LINEAR;
+	samplerInfo.minFilter = VK_FILTER_LINEAR;
+
+	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+
+	VkPhysicalDeviceProperties properties{};
+	vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+	samplerInfo.anisotropyEnable = VK_TRUE;
+	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+	// This is a hardware/spec limit. Thats why im asserting here...
+	// Maybe we can query gpu capabilities to give better paths to more powerful devices.
+	assert(properties.limits.maxUniformBufferRange >= 1 << 16);
+
+	samplerInfo.unnormalizedCoordinates = VK_FALSE;
+	samplerInfo.compareEnable = VK_FALSE;
+	samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+	//samplerInfo.compareOp = compareOp;
+
+	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	samplerInfo.mipLodBias = 0.0f;
+	samplerInfo.minLod = 0.0f;
+	samplerInfo.maxLod = samplerCreateInfo.maxLod;
+	//samplerInfo.maxLod = float(samplerCreateInfo.levelCount - 1);
+
+	VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler));
+
+}
+void smvk::VulkanCore::CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view)
+{
+	VkImageViewCreateInfo viewInfo{};
+	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	viewInfo.image = imageViewCreateInfo.vk_image;
+	viewInfo.viewType = imageViewCreateInfo.viewType;
+	viewInfo.format = imageViewCreateInfo.vk_format;
+	viewInfo.subresourceRange = imageViewCreateInfo.subResourceRange;
+	// Lets default this like that ourselves.
+	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
+}
+std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window) {
+	assert(window != nullptr && "window was nullptr!");
+
+	auto unique = std::make_unique<VulkanCore>(config);
+	auto core = unique.get();
+
+	core->CreateInstance();
+	if (glfwCreateWindowSurface(instance_, window, nullptr, &surface_) != VK_SUCCESS) {
+		throw std::runtime_error("failed to create window surface!");
+	}
+	core->Init();
+	return unique;
+}
+
+// Context
+VkResult createStagingPool(VmaAllocator allocator, VmaPool& attachmentPool)
 {
 	// Representative attachment image.
 	// Use a format supported by every image intended for this pool.
@@ -871,10 +1008,7 @@ VkResult createStagingPool(
 		&poolInfo,
 		&attachmentPool);
 }
-
-VkResult createAttachmentPool(
-	VmaAllocator allocator,
-	VmaPool& attachmentPool)
+VkResult createAttachmentPool(VmaAllocator allocator, VmaPool& attachmentPool)
 {
 	// Representative attachment image.
 	// Use a format supported by every image intended for this pool.
@@ -1046,7 +1180,6 @@ void smvk::Context::UploadDataToBuffer(
 		, han
 	);
 }
-
 void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset, size_t dest_offset)
 {
 	const VkDeviceSize stagingBufferSize = static_cast<VkDeviceSize>(getImageSizeBytes(
@@ -1205,68 +1338,7 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 	);
 
 }
-void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& descIn, VkPipelineLayout& out)
-{
-	auto sets = descIn.setDescriptions;
-	assert(sets.size() <= 8 && "Too many descriptor sets 8+");
-	const uint32_t setLayoutCount = (sets.empty()) ? 0u : (sets.size());
-	std::array<VkDescriptorSetLayout, 8> vkSetLayouts{};
-	vkSetLayouts.fill(VK_NULL_HANDLE);
-
-	int i = 0;
-	for (const auto& s : sets)
-	{
-		VkDescriptorSetLayout vk_lyt = VK_NULL_HANDLE;
-		CreateDescriptorSetLayout(s, vk_lyt);
-		vkSetLayouts[i] = vk_lyt;
-		i++;
-	}
-
-	VkPushConstantRange ranges[8]{};
-	const uint32_t rangeCount = static_cast<uint32_t>(descIn.pushConstants.size());
-	VkPhysicalDeviceProperties properties{};
-	vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-	auto min_align = properties.limits.minUniformBufferOffsetAlignment;
-
-	assert(rangeCount <= 8 && "Max 8 push constant ranges");
-
-	// Decide explicit offsets vs packed offsets
-	bool anyExplicitOffset = false;
-	for (const auto& pc : descIn.pushConstants)
-		if (pc.offset != 0) { anyExplicitOffset = true; break; }
-
-	uint32_t curr_off = 0;
-
-	for (uint32_t i = 0; i < rangeCount; ++i)
-	{
-		const auto& r = descIn.pushConstants[i];
-
-		const uint32_t off = anyExplicitOffset ? r.offset : curr_off;
-
-		assert(is_aligned4(off));
-		assert(is_aligned4(r.size));
-		assert(r.size > 0);
-
-		ranges[i] = VkPushConstantRange{
-			.stageFlags = r.stages,
-			.offset = off,
-			.size = r.size
-		};
-
-		if (!anyExplicitOffset)
-			curr_off += r.size;
-	}
-	VkPipelineLayoutCreateInfo ci{
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = setLayoutCount,
-		.pSetLayouts = setLayoutCount ? vkSetLayouts.data() : nullptr,
-		.pushConstantRangeCount = rangeCount,
-		.pPushConstantRanges = rangeCount ? ranges : nullptr,
-	};
-	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &out));
-}
-
-[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::Context::CreateImage(ImageCreateInfo imageCreateInfo, const void* data)
+[[nodiscard]] smvk::ImageHandle smvk::Context::CreateImage(ImageCreateInfo imageCreateInfo, const void* data)
 {
 	Image img{};
 
@@ -1310,14 +1382,7 @@ void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& de
 	return smvk::Holder<ImageHandle>(this, images_.create(std::move(img)));
 
 }
-
-//smvk::Holder<smvk::TextureHandle> CreateTexture(smvk::ImageCreateInfo imageCreateInfo, const void* data = nullptr)
-//{
-//	smvk::Texture t;
-//	return { this, textures_.create(std::move(t)) };
-//
-//}
-smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ktxTexture2& texture) {
+[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ktxTexture2& texture) {
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
 		// Hardcoded for now, as in your original code.
@@ -1655,7 +1720,6 @@ smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ktxTexture2& text
 	return { this, 	textures_.create(std::move(image_obj)) };
 
 }
-
 [[nodiscard]] smvk::BufferHandle smvk::Context::CreateBufferNoHolder(BufferCreateInfo bufferCreateInfo) {
 	Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -1745,11 +1809,6 @@ smvk::Holder<smvk::TextureHandle> smvk::Context::CreateTexture(ktxTexture2& text
 	//return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
 	return buffers_.create(std::move(desc));
 }
-//[[nodiscard]] smvk::Holder<smvk::SamplerHandle> smvk::Context::CreateSampler(SamplerCreateInfo samplerCreateInfo) {
-//	VkSampler sampler;
-//	core_.CreateSampler(samplerCreateInfo, sampler);
-//	return smvk::Holder<SamplerHandle>(this, samplers_.create(std::move(sampler)));
-//}
 [[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::Context::CreateShaderModule(std::vector<char> code) {
 	VkShaderModule shader;
 	core_.CreateShaderModule(
@@ -1790,10 +1849,17 @@ void smvk::Context::ProcessDeferrredTasks()
 }
 void smvk::Context::CleanUp() {
 	VK_CHECK(vkDeviceWaitIdle(device_));
+
+	images_.clear();
+	buffers_.clear();
+	shaderModules_.clear();
+	samplers_.clear();
+
 	vmaDestroyPool(m_allocator, m_imagesPool);
 	vmaDestroyPool(m_allocator, m_stagingPool);
+	vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
+	memset(descriptorSets_, 0, sizeof(descriptorSets_));
 }
-
 // 
 void smvk::destroy(smvk::Context* ctx, smvk::BufferHandle handle) {
 	if (handle.empty()) { return; };
@@ -1811,24 +1877,8 @@ void smvk::destroy(smvk::Context* ctx, smvk::ImageHandle handle) {}
 void smvk::destroy(smvk::Context* ctx, smvk::SamplerHandle handle) {}
 void smvk::destroy(smvk::Context* ctx, smvk::DescriptorSetHandle handle) {}
 void smvk::destroy(smvk::Context* ctx, smvk::DescriptorPoolHandle handle) {}
-//
 
-#ifdef USE_KTX
-inline void smvk::Context::GetKtxDeviceInfo() {
-	ktxInfo_ = *ktxVulkanDeviceInfo_Create(
-		physicalDevice_,
-		device_,
-		/*core.GetTransferQueue()*/ graphicsQueue_,
-		// this maybe should be transfer queue. we only use ktx to upload tex.
-		// no blitting for mipmaps, which are generated offline
-		// runtime genreation for mipmaps in ktx seems to be not up to par with SOA
-		defaultCommandPool_,
-		NULL
-	);
-}
-#endif
-//
-
+// Barriers
 inline void BufferBarrier(
 	VkCommandBuffer cmd,
 	VkBuffer buffer,
@@ -1912,12 +1962,13 @@ inline void ImageBarrier(
 
 	vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 }
-// 
+
+// Submitter
 inline smvk::Submitter::Submitter(VulkanCore& core, QueuePreference queue) : core_(core), queue_(queue)
 {
-
 	m_queue = GetQueue(queue);
 	VkCommandPool pool = GetCommandPool(queue);
+
 	if (pool == VK_NULL_HANDLE) { assert(false && "no commandPool"); };
 	VkCommandBufferAllocateInfo info{
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1944,18 +1995,15 @@ inline smvk::Submitter::~Submitter() {
 
 	// Conservative. You can remove this if the owner guarantees GPU work is complete.
 	vkDeviceWaitIdle(device_);
-
 	VkCommandBuffer m_buffers_[kMax]{};
 
 	for (uint32_t i = 0; i < kMax; ++i) {
 		auto& wrapper = commandBuffers_[i].wrapper_;
 		assert(wrapper.isEncoding_ == false && "still encoding");
-
 		//if (wrapper.fence_ != VK_NULL_HANDLE) {
 		//	vkDestroyFence(device_, wrapper.fence_, nullptr);
 		//	wrapper.fence_ = VK_NULL_HANDLE;
 		//}
-
 		if (wrapper.finishedSignalSemaphore.semaphore_ != VK_NULL_HANDLE) {
 			vkDestroySemaphore(device_, wrapper.finishedSignalSemaphore.semaphore_, nullptr);
 			wrapper.finishedSignalSemaphore.semaphore_ = VK_NULL_HANDLE;
@@ -1977,10 +2025,11 @@ inline smvk::Submitter::~Submitter() {
 	uint32_t pickedIndex = 0;
 
 	if (availableSlots == 0) {
-		//waitAny();
-		waitAll(); 
+		waitAll(); // this is naive. works but could be better
 	};
-	// just iterate to find first free
+
+	// just iterate to find first free.  this abuses gens of earlier indexes
+	// Maybe sort on gen an pick earlier
 	for (auto& slot : commandBuffers_) {
 		if (slot.wrapper_.cmd == VK_NULL_HANDLE) {
 			picked = &slot;
@@ -2010,6 +2059,7 @@ inline smvk::Submitter::~Submitter() {
 	return commandBuffers_[handle.index_].wrapper_;
 }
 inline void smvk::Submitter::submit(CommandSubmitHandle handle) {
+	if (handle.empty()) { assert(false && "empty handle"; };
 	if (!validHandle(handle)) { assert(false && "invalid handle"); }
 	auto& wrapper_ = commandBuffers_[handle.index_].wrapper_;
 	vkEndCommandBuffer(wrapper_.cmd);
@@ -2045,7 +2095,6 @@ inline void smvk::Submitter::submit(CommandSubmitHandle handle) {
 	wrapper_.isEncoding_ = false;
 	m_lastSubmit = handle;
 }
-
 inline bool smvk::Submitter::validHandle(CommandSubmitHandle handle) const { return handle.gen_ == commandBuffers_[handle.index_].gen_; }
 inline bool smvk::Submitter::isReady(CommandSubmitHandle handle) {
 	if (handle.gen_ < commandBuffers_[handle.index_].gen_) { return true; }; // already finished
@@ -2100,50 +2149,7 @@ inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout) 
 	availableSlots++;
 
 }
-
-inline void smvk::Submitter::waitAny() {
-    VkSemaphore sems[kMax];
-    uint64_t goals[kMax];
-    uint32_t indices[kMax];
-    uint32_t numSems = 0;
-
-    for (uint32_t i = 0; i < kMax; ++i) {
-        auto& wrp = commandBuffers_[i].wrapper_;
-        if (wrp.cmd == VK_NULL_HANDLE || wrp.isEncoding_) {
-            continue;
-        }
-
-        indices[numSems] = i;
-        goals[numSems] = wrp.finishedSignalSemaphore.goal_;
-        sems[numSems] = wrp.finishedSignalSemaphore.semaphore_;
-        ++numSems;
-    }
-
-    if (numSems == 0)
-        return;
-
-    VkSemaphoreWaitInfo waitInfo{
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-        .pNext = nullptr,
-        .flags = VK_SEMAPHORE_WAIT_ANY_BIT,
-        .semaphoreCount = numSems,
-        .pSemaphores = sems,
-        .pValues = goals,
-    };
-
-    VK_CHECK(vkWaitSemaphores(device_, &waitInfo, UINT64_MAX));
-    for (uint32_t n = 0; n < numSems; ++n) {
-        uint64_t value = 0;
-        VK_CHECK(vkGetSemaphoreCounterValue(device_, sems[n], &value));
-
-        if (value >= goals[n]) {
-            const uint32_t i = indices[n];
-            reset({i, commandBuffers_[i].gen_});
-            return;
-        }
-    }
-
-}inline void smvk::Submitter::waitAll() {
+inline void smvk::Submitter::waitAll() {
 	VkSemaphore sems[kMax];
 	uint64_t goals[kMax];
 	uint32_t numSems = 0;
@@ -2156,8 +2162,8 @@ inline void smvk::Submitter::waitAny() {
 		numSems++;
 	};
 
-    if (numSems == 0)
-        return;
+	if (numSems == 0)
+		return;
 
 	VkSemaphoreWaitInfo waitInfo{
 		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -2190,58 +2196,8 @@ inline void smvk::Submitter::reset(CommandSubmitHandle handle) {
 	}
 	availableSlots++;
 }
-//
-void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
 
-	VkSamplerCreateInfo samplerInfo{};
-	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	samplerInfo.magFilter = VK_FILTER_LINEAR;
-	samplerInfo.minFilter = VK_FILTER_LINEAR;
-
-	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-
-	VkPhysicalDeviceProperties properties{};
-	vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-	samplerInfo.anisotropyEnable = VK_TRUE;
-	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-	// This is a hardware/spec limit. Thats why im asserting here...
-	// Maybe we can query gpu capabilities to give better paths to more powerful devices.
-	assert(properties.limits.maxUniformBufferRange >= 1 << 16);
-
-	samplerInfo.unnormalizedCoordinates = VK_FALSE;
-	samplerInfo.compareEnable = VK_FALSE;
-	samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-	//samplerInfo.compareOp = compareOp;
-
-	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-	samplerInfo.mipLodBias = 0.0f;
-	samplerInfo.minLod = 0.0f;
-	samplerInfo.maxLod = samplerCreateInfo.maxLod;
-	//samplerInfo.maxLod = float(samplerCreateInfo.levelCount - 1);
-
-	VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler));
-
-}
-void smvk::VulkanCore::CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view)
-{
-	VkImageViewCreateInfo viewInfo{};
-	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-	viewInfo.image = imageViewCreateInfo.vk_image;
-	viewInfo.viewType = imageViewCreateInfo.viewType;
-	viewInfo.format = imageViewCreateInfo.vk_format;
-	viewInfo.subresourceRange = imageViewCreateInfo.subResourceRange;
-	// Lets default this like that ourselves.
-	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-
-	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
-}
-// 
+// VulkanSwapchain
 smvk::VulkanSwapchain::VulkanSwapchain(Context& context, GLFWwindow* window, uint32_t framesInFlight, uint32_t desiredImageCount)
 	: ctx_(context),
 	window_(window),
@@ -2281,6 +2237,7 @@ smvk::VulkanSwapchain::~VulkanSwapchain() {
 
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		vkDestroyCommandPool(device_, perFrameCommandPools[i], nullptr);
+		// this freeds all the commands too
 	};
 
 	DestroySyncObjects();
@@ -2397,7 +2354,7 @@ void smvk::VulkanSwapchain::CreateImageViews() {
 }
 void smvk::VulkanSwapchain::CreateDepthResources() {
 	assert(vk_depthFormat_ != VK_FORMAT_UNDEFINED && "core depthFormat not set. failed to create swapchain depth Image");
-	depthImage_ = ctx_.CreateImage(
+	depthImage_ = { ctx_, ctx_.CreateImage(
 		ImageCreateInfo{
 			.vk_extent = {extent_.width, extent_.height, 1 },
 			.vk_format = vk_depthFormat_,
@@ -2405,7 +2362,8 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 			.levels = 1,
 			.arrayLayers = 1
 		}
-	);
+	)
+	};
 
 	auto obj_ = ctx_.images_.get(depthImage_);
 	auto viewCreateInfo = ImageViewCreateInfo{
@@ -2519,20 +2477,6 @@ inline void smvk::VulkanSwapchain::CleanupSwapchain() {
 		vkDestroySwapchainKHR(device_, vk_swapchain_, nullptr);
 		vk_swapchain_ = VK_NULL_HANDLE;
 	}
-}
-//
-std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window) {
-	assert(window != nullptr && "window was nullptr!");
-
-	auto unique = std::make_unique<VulkanCore>(config);
-	auto core = unique.get();
-
-	core->CreateInstance();
-	if (glfwCreateWindowSurface(instance_, window, nullptr, &surface_) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create window surface!");
-	}
-	core->Init();
-	return unique;
 }
 smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 {
@@ -2691,13 +2635,12 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 
 }
 
-//
+//  SamplerPool
 smvk::SamplerPool::SamplerPool(SamplerPoolCreateInfo createInfo) : device_(createInfo.device) {
 	VkSampler defaultSampler;
 	vkCreateSampler(device_, {}, nullptr, &defaultSampler);
 	m_samplers[SamplerKey{}] = defaultSampler;
 }
-
 smvk::SamplerPool::~SamplerPool() {
 	for (auto sampler : m_samplers)
 	{
@@ -2705,7 +2648,6 @@ smvk::SamplerPool::~SamplerPool() {
 	}
 	m_samplers.clear();
 }
-
 VkSampler smvk::SamplerPool::GetSampler(SamplerKey key) {
 	auto it = m_samplers.find(key);
 	if (it == m_samplers.end()) {
@@ -2721,4 +2663,3 @@ VkSampler smvk::SamplerPool::GetSampler(SamplerKey key) {
 	}
 
 }
-

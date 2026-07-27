@@ -65,20 +65,7 @@ namespace smvk {
 		ImageHandle resolvedImageHandle{};
 	};
 
-	struct RenderGraph;
-	struct RenderPassContext {
-		smvk::BufferHandle GetResolvedBuffer(LogicalBufferHandle handle) {
-			return rendergraph.GetResolvedBufferHandle(handle);
-		};
-		smvk::ImageHandle GetResolvedImage(LogicalImageHandle handle) {
-			return rendergraph.GetResolvedImageHandle(handle)
-		};
-		VkCommandBuffer cmd;
-	private:
-		RenderGraph& rendergraph;
-		RenderPass& renderpass;
-		friend RenderGraph;
-	};
+	struct RenderPassContext;
 
 	using RecordingFunction = std::function<void(RenderPassContext)>;
 	struct RenderPass final {
@@ -97,6 +84,11 @@ namespace smvk {
 		std::vector<LogicalImageViewHandle> views;
 		std::vector<LogicalImageHandle> inputImages_;
 		std::vector<LogicalBufferHandle> storageBuffers_;
+
+		struct AttachmentBlendSetup {
+			VkPipelineColorBlendAttachmentState state;
+		};
+		std::vector<AttachmentBlendSetup> colorAttachmentsBlendSetups;  // should either be {} or match colors size.
 
 		RenderPass& setColor(
 			std::vector<LogicalImageViewHandle>& views,
@@ -146,6 +138,18 @@ namespace smvk {
 		RecordingFunction recordingFunction_{};
 	};
 
+
+	struct RenderPassContext {
+		VkCommandBuffer cmd;
+		RenderPass& renderpass;
+		//RenderGraph* rendergraph = nullptr;
+		//smvk::BufferHandle GetResolvedBuffer(LogicalBufferHandle handle) {
+		//	return rendergraph->GetResolvedBufferHandle(handle);
+		//}
+		//smvk::ImageHandle GetResolvedImage(LogicalImageHandle handle) {
+		//	return rendergraph->GetResolvedImageHandle(handle);
+		//}
+	};
 
 	struct RenderGraph final {
 		explicit RenderGraph(Context& ctx) : ctx_(ctx) {};
@@ -239,12 +243,9 @@ namespace smvk {
 		// so resolved is just creating the resources/getting them from cache.
 		void ResolveImages() {
 			images_.forEach(
-				[this](LogicalImage* logicalImage) {
-				if (logicalImage->resolvedImageHandle.empty()) {
-					//auto logicalImage = images_.get(logicalView->key.image);
-					//auto img = ctx_.images_.get(logicalImage->resolvedImageHandle);
-					logicalImage->resolvedImageHandle = ctx_.CreateImage(logicalImage->key, nullptr);
-					// TODO THIS IS A HOLDER. RAII WILL AUTODESTROY IT
+				[this](LogicalImage& logicalImage) {
+				if (logicalImage.resolvedImageHandle.empty()) {
+					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr);
 				};
 			}
 			);
@@ -253,16 +254,16 @@ namespace smvk {
 		void ResolveImageViews() {
 			// needs resolved images first
 			imageViews_.forEach(
-				[this](LogicalImageView* logicalView) {
-				if (logicalView->resolvedImageView == VK_NULL_HANDLE) {
-					auto logicalImage = images_.get(logicalView->key.image);
+				[this](LogicalImageView& logicalView) {
+				if (logicalView.resolvedImageView == VK_NULL_HANDLE) {
+					auto logicalImage = images_.get(logicalView.key.image);
 					auto img = ctx_.images_.get(logicalImage->resolvedImageHandle);
-					logicalView->resolvedFormat = img->vk_format;
+					logicalView.resolvedFormat = img->vk_format;
 					// if outImage"" we need to know if we are renderting to, sampling from or both
 					// didnt distinguish before!. ill just assume render.
 					// also swaphcain image is abstracted from the rendergraph for the moment...
 					// LegitEngine does the present ass a pass. maybe its a good idea.
-					logicalView->resolvedImageView = img->renderView;
+					logicalView.resolvedImageView = img->renderView;
 
 				};
 			}
@@ -364,9 +365,9 @@ namespace smvk {
 				//PushDescriptors(fb.commandBuffer);
 
 				RenderPassContext rpc{
-					.rendergraph = *this,
-					.renderpass = pass,
-					.cmd = fb.commandBuffer
+					.cmd = fb.commandBuffer,
+					.renderpass = pass
+					//.rendergraph =this,
 				};
 
 				pass.recordingFunction_(
@@ -384,5 +385,7 @@ namespace smvk {
 		smvk::Pool<LogicalBuffer, LogicalBuffer> storageBuffers_;
 		std::vector<RenderPass> m_passes;
 	};
+
+
 
 };

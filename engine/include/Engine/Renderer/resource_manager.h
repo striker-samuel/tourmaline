@@ -53,8 +53,6 @@ struct Material {
 	static_assert(sizeof(Values) % 16 == 0);
 };
 
-
-struct ktxTexture2;
 struct MeshManager {
 	smvk::Context& ctx_;
 	MeshManager(smvk::Context& ctx);

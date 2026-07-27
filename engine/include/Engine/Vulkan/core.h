@@ -60,22 +60,7 @@ inline const char* vkResultToString(VkResult result);
     } while (0)
 
 
-struct QueueFamilyIndices {
-	std::optional<uint32_t> graphicsFamily;
-	std::optional<uint32_t> presentFamily;
-	std::optional<uint32_t> transferFamily;
 
-	bool isComplete() const {
-		return graphicsFamily.has_value() && presentFamily.has_value();
-	}
-};
-
-struct SwapChainSupportDetails {
-	VkSurfaceCapabilitiesKHR capabilities{};
-	std::vector<VkSurfaceFormatKHR> formats;
-	std::vector<VkPresentModeKHR> presentModes;
-};
-// CreatePayloads//Keys for logicalReources
 namespace smvk {
 	struct BufferCreateInfo {
 		VkDeviceSize size;
@@ -142,7 +127,7 @@ namespace smvk {
 
 	struct Pipeline {
 		VkPipeline pipeline;
-		VkPipelineLayout layout;
+		//VkPipelineLayout layout;
 	};
 
 	struct Image {
@@ -191,7 +176,98 @@ namespace smvk {
 		//	return vk_buffer != VK_NULL_HANDLE && vma_alloc != nullptr;
 		//}
 	};
+
+	using Texture = Image;
+	using TextureHandle = Handle<Texture>;
+
+	using ImageHandle = Handle<struct Image>;
+	using SamplerHandle = Handle<struct Sampler>;
+	using BufferHandle = Handle<struct Buffer>;
+	using ShaderModuleHandle = Handle<struct ShaderModule>;
+
+	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
+	using DescriptorSetHandle = Handle<struct DescriptorSet>;
+	//using GraphicsPipelineHandle = Handle<struct RenderPipelineState>;
+
 };
+
+
+//namespace smvk {
+//	struct RenderPipelineDesc {
+//
+//		// INPUT ASS
+//		//Topology topology = Topology_Triangle;
+//		//lvk::VertexInput vertexInput;
+//
+//		ShaderModuleHandle smVert;
+//		//ShaderModuleHandle smTesc;
+//		//ShaderModuleHandle smTese;
+//		//ShaderModuleHandle smGeom;
+//		//ShaderModuleHandle smTask;
+//		//ShaderModuleHandle smMesh;
+//		ShaderModuleHandle smFrag;
+//
+//		//SpecializationConstantDesc specInfo = {};
+//
+//		const char* entryPointVert = "main";
+//		const char* entryPointTesc = "main";
+//		const char* entryPointTese = "main";
+//		const char* entryPointGeom = "main";
+//		const char* entryPointTask = "main";
+//		const char* entryPointMesh = "main";
+//		const char* entryPointFrag = "main";
+//
+//
+//
+//		// TARGET
+//		//ColorAttachment color[LVK_MAX_COLOR_ATTACHMENTS] = {};
+//		//Format depthFormat = Format_Invalid;
+//		//Format stencilFormat = Format_Invalid;
+//
+//		// RASTER CONF
+//		//CullMode cullMode = lvk::CullMode_None;
+//		//WindingMode frontFaceWinding = lvk::WindingMode_CCW;
+//		//PolygonMode polygonMode = lvk::PolygonMode_Fill;
+//
+//		//StencilState backFaceStencil = {};
+//		//StencilState frontFaceStencil = {};
+//
+//		// TES
+//		//uint32_t patchControlPoints = 0;
+//		// MSAA
+//		uint32_t samplesCount = 1u;
+//		float minSampleShading = 0.0f;
+//
+//		const char* debugName = "";
+//
+//		//uint32_t getNumColorAttachments() const {
+//		//	uint32_t n = 0;
+//		//	while (n < LVK_MAX_COLOR_ATTACHMENTS && color[n].format != Format_Invalid) {
+//		//		n++;
+//		//	}
+//		//	return n;
+//		//}
+//	};
+//	struct RenderPipelineState final {
+//		RenderPipelineDesc desc_;
+//
+//
+//		//uint32_t numBindings_ = 0;
+//		//uint32_t numAttributes_ = 0;
+//		//VkVertexInputBindingDescription vkBindings_[VertexInput::LVK_VERTEX_BUFFER_MAX] = {};
+//		//VkVertexInputAttributeDescription vkAttributes_[VertexInput::LVK_VERTEX_ATTRIBUTES_MAX] = {};
+//
+//		// non-owning, the last seen VkDescriptorSetLayout from VulkanContext::vkDSL_ (if the context has a new layout, invalidate all VkPipeline
+//		// objects)
+//		VkDescriptorSetLayout lastVkDescriptorSetLayout_ = VK_NULL_HANDLE;
+//
+//		VkShaderStageFlags shaderStageFlags_ = 0;
+//		VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
+//		VkPipeline pipeline_ = VK_NULL_HANDLE;
+//
+//		void* specConstantDataStorage_ = nullptr;
+//	};
+//};
 
 namespace smvk {
 
@@ -208,21 +284,6 @@ namespace smvk {
 		COMPUTE
 	};
 
-	using Texture = Image;
-	using TextureHandle = Handle<Texture>;
-
-	using ImageHandle = Handle<struct Image>;
-	using SamplerHandle = Handle<struct Sampler>;
-	using BufferHandle = Handle<struct Buffer>;
-	using ShaderModuleHandle = Handle<struct ShaderModule>;
-	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
-	using DescriptorSetHandle = Handle<struct DescriptorSet>;
-	// 1 pool 1 set per frame in flight just with the bindless setup
-	// 1 pool for imgui too
-
-	using GraphicsPipelineHandle = Handle<struct Pipeline>;
-	using ComputePipelineHandle = Handle<struct Pipeline>;
-	//using ComputePipelineHandle = Handle<struct Pipeline>;
 
 	struct VulkanCore {
 		struct CoreConfiguration {
@@ -316,6 +377,7 @@ namespace smvk {
 			CommandBuffer wrapper_{};
 			VkCommandBuffer allocatedCmd_ = VK_NULL_HANDLE;
 			uint32_t gen_ = 1;
+			//uint32_t index = UINT32_MAX;  // load balancing gens sorting and using this
 		};
 		//
 		Submitter(VulkanCore& core, QueuePreference queue);
@@ -327,7 +389,6 @@ namespace smvk {
 		bool isReady(CommandSubmitHandle handle);
 		void wait(CommandSubmitHandle handle, uint64_t timeout = UINT64_MAX);
 		void waitAll();
-		void waitAny();
 		void purge();
 	private:
 		void reset(CommandSubmitHandle handle);
@@ -346,6 +407,7 @@ namespace smvk {
 	};
 
 	struct PipelineCreateInfo {
+
 		struct RasterSettings {
 			uint32_t depthClampEnable = VK_FALSE;
 			uint32_t rasterizerDiscardEnable = VK_FALSE;
@@ -358,7 +420,6 @@ namespace smvk {
 			float depthBiasSlope = 1.0f; // This should be PCF radius https://mynameismjp.wordpress.com/2013/09/10/shadow-maps/
 		};
 
-		//  I will rework all these.
 		struct BindingDescription {
 			uint32_t binding = 0; // If we want sparse bindings we need this
 			VkDescriptorType type{};
@@ -376,6 +437,7 @@ namespace smvk {
 			uint32_t offset = 0;
 			uint32_t size = 0;
 		};
+
 		struct PipelineLayoutDesc {
 			bool valid = 0;
 			std::vector<DescriptorSetDescription> setDescriptions; // each has set index
@@ -400,28 +462,26 @@ namespace smvk {
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
 		void ProcessDeferrredTasks(); //void Flush();
 		//
-		BufferHandle CreateStagingBuffer(VkDeviceSize size);
-		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
+		BufferHandle CreateStagingBuffer(VkDeviceSize size); // needs manual release with destroy
+		BufferHandle CreateBufferNoHolder(BufferCreateInfo bufferCreateInfo);
+		ImageHandle CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
+		// 
 		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
 		Holder<TextureHandle> CreateTexture(ktxTexture2& texture);
-
-		smvk::BufferHandle CreateBufferNoHolder(BufferCreateInfo bufferCreateInfo);
-
-		//Holder<SamplerHandle> CreateSampler(SamplerCreateInfo samplerCreateInfo);
-		// dont like this this 
 		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
 		//
+
 		void* MapBuffer(smvk::Handle<smvk::Buffer> handle);
 		void UnmapBuffer(smvk::Handle<smvk::Buffer> handle);
+
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		void UploadDataToImage2D(Image img, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
+
 		void CleanUp();
 
-
-
 		void GetKtxDeviceInfo(); // will be removed
-		//protected:
+		//private:
 		VulkanCore& core_;
 		Submitter* m_submitter = nullptr;
 		std::vector<DeferredTask> m_deferredTasks;
@@ -447,21 +507,10 @@ namespace smvk {
 	void destroy(Context* ctx, BufferHandle handle);
 	void destroy(Context* ctx, ShaderModuleHandle handle);
 	void destroy(Context* ctx, SamplerHandle handle);
+
 	void destroy(Context* ctx, DescriptorPoolHandle handle);
 	void destroy(Context* ctx, DescriptorSetHandle handle);
 
-	//
-	struct ShaderProgram {
-		//ShaderProgram(Context& ctx) : ctx_(ctx) {};
-		ShaderProgram() {};
-		~ShaderProgram() {};
-		ShaderModuleHandle vert_{};
-		ShaderModuleHandle frag_{};
-		PipelineCreateInfo::RasterSettings rasterSettings_{};
-		//public:
-		//	ShaderProgram& setVert(ShaderModuleHandle vert) { this->vert_ = Holder<ShaderModuleHandle>(&ctx_, vert); return *this; };
-		//	ShaderProgram& setFrag(ShaderModuleHandle frag) { this->frag_ = Holder<ShaderModuleHandle>(&ctx_, frag); return *this; };
-	};
 
 };
 
@@ -537,9 +586,6 @@ namespace smvk {
 		}
 		void Recreate();
 
-		//VkFormat GetImageFormat() const { return vk_surfaceFormat_; }
-		//VkFormat GetDepthImageFormat() const { return vk_depthFormat_; }
-
 		VkExtent2D GetExtent() const { return extent_; }
 		uint32_t GetImageCount() const { return static_cast<uint32_t>(images_.size()); }
 		VkImage GetImage(uint32_t index) const { return images_.at(index); }
@@ -598,4 +644,3 @@ namespace smvk {
 		void EndAndPresentFramebuffer(FrameBuffer& cb);
 	};
 
-};
