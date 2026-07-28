@@ -35,7 +35,7 @@ struct Level : Scene {
 		// This is needed or else scene will not carry transforms effectively
 		markAsChanged(*this, 0);
 		recalculateGlobalTransforms(*this);
-		//m_meshManagerPimpl->ctx_.ProcessDeferrredTasks(); //  TODO. fails
+		m_meshManagerPimpl->ctx_.ProcessDeferrredTasks();
 	}
 };
 std::vector<std::string> gltf_meshes_paths = {
