@@ -8,7 +8,14 @@
 #include <Engine/Utils/gltf.h> 
 #include <Engine/Camera/camera.h> 
 
-struct Texture;
+// Constants //
+static constexpr float default_near_clip = 0.01f;
+static constexpr float default_far_clip = 50.0f;
+std::vector<std::string> gltf_meshes_paths = {
+	"content/models/Sponza/sponza.gltf"
+};
+
+//
 struct Level : Scene {
 	MeshManager* m_meshManagerPimpl = nullptr;
 	BvhTree tree = {};
@@ -17,7 +24,7 @@ struct Level : Scene {
 	//std::map<uint32_t, MeshHandle> m_meshForNode;
 	//Level(MeshManager* meshManager) : m_meshManagerPimpl(meshManager) {};
 	~Level() {}
-	smvk::Pool<Texture, smvk::Image> textures_;
+	smvk::Pool<smvk::Texture, smvk::Image> textures_;
 
 	void Upload(
 		std::filesystem::path gltf_model_path
@@ -38,10 +45,9 @@ struct Level : Scene {
 		m_meshManagerPimpl->ctx_.ProcessDeferrredTasks();
 	}
 };
-std::vector<std::string> gltf_meshes_paths = {
-	"content/models/Sponza/sponza.gltf"
-};
 
+
+// Data definitions //
 struct DrawSetData {
 	float transform[16] = {
 		1.0f, 0.0f, 0.0f, 0.0f,
@@ -76,14 +82,15 @@ struct FrameUniforms
 };
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 
-struct ViewportResources {};
 
+// Resources
+struct ViewportResources {};
 struct AppResources {
 	smvk::Holder<smvk::BufferHandle> frameUniforms;
-	//FrameUniforms frameData[MAX_FRAMES_IN_FLIGHT];
-	//smvk::LogicalBufferHandle frameUniformsBuffer{};
-	//smvk::LogicalBufferHandle drawDataBuffer{};
+	//smvk::Holder<smvk::BufferHandle> drawData;
+	smvk::Holder<smvk::RenderPipelineHandle> mainPipeline;
 };
+
 
 class TestApp : public smvk::VulkanApp {
 	using Super = smvk::VulkanApp;
@@ -127,6 +134,14 @@ private:
 		m_currentLevel.tree_done = true;
 		m_context->ProcessDeferrredTasks();
 
+		m_resources.frameUniforms = m_context->CreateBuffer(
+			{
+				.size = sizeof(FrameUniforms) * m_swapchain->framesInFlight_,
+				.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+				.usage_flags = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			}
+		);
+
 		return true;
 	};
 
@@ -141,48 +156,75 @@ private:
 
 		auto viewProj = proj * view;
 
-		void* mapped = m_context->MapBuffer(m_resources.frameUniforms);
+		// Host mapped version. CreateBuffer doesnt support properFlags
+		//void* mapped = m_context->MapBuffer(m_resources.frameUniforms);
+		//////this is wrong should check properly
+		////auto limits = core_->GetPhysicalDeviceProperties().properties.limits;
+		////if (!limits.minStorageBufferOffsetAlignment == 16) {assert(false) ;}
+		////if (!limits.minUniformBufferOffsetAlignment == 16) {assert(false) ;}
+		//auto* curr = reinterpret_cast<FrameUniforms*>(
+		//	static_cast<std::byte*>(mapped) +
+		//	currentFrame * sizeof(FrameUniforms)
+		//	);
+		//curr->cameraPos = m_cameraPositioner.cameraPosition_;
 
+		//curr->view = view;
+		//curr->proj = proj;
+		//curr->viewProj = viewProj;
 
-		// this is wrong should check properly
-		//auto limits = core_->GetPhysicalDeviceProperties().properties.limits;
-		//if (!limits.minStorageBufferOffsetAlignment == 16)
-		//{
-		//	assert(false);
-		//
-		//
+		//curr->invView = glm::inverse(view);
+		//curr->invProj = glm::inverse(proj);
+		//curr->invViewProj = glm::inverse(viewProj);
 
-		auto* curr = reinterpret_cast<FrameUniforms*>(
-			static_cast<std::byte*>(mapped) +
-			currentFrame * sizeof(FrameUniforms)
-			);
-		curr->cameraPos = m_cameraPositioner.cameraPosition_;
+		//curr->time = 0.0f;
+		//curr->viewportSize = { width_, height_ };
+		//curr->invViewportSize = { 1.0f / width_, 1.0f / height_ };
 
-		curr->view = view;
-		curr->proj = proj;
-		curr->viewProj = viewProj;
+		//// Not in use now
+		//curr->nearPlane = 0.f;
+		//curr->farPlane = 0.f;
+		//curr->exposure = 0.f;
 
-		curr->invView = glm::inverse(view);
-		curr->invProj = glm::inverse(proj);
-		curr->invViewProj = glm::inverse(viewProj);
+		//FrameUniforms copy = *curr;
+		//m_context->UnmapBuffer(m_resources.frameUniforms);
+		//return copy;
 
-		curr->time = 0.0f;
-		curr->viewportSize = { width_, height_ };
-		curr->invViewportSize = { 1.0f / width_, 1.0f / height_ };
+		FrameUniforms data;
+		data.cameraPos = m_cameraPositioner.cameraPosition_;
+
+		data.view = view;
+		data.proj = proj;
+		data.viewProj = viewProj;
+
+		data.invView = glm::inverse(view);
+		data.invProj = glm::inverse(proj);
+		data.invViewProj = glm::inverse(viewProj);
+
+		data.time = 0.0f;
+		data.viewportSize = { width_, height_ };
+		data.invViewportSize = { 1.0f / width_, 1.0f / height_ };
 
 		// Not in use now
-		curr->nearPlane = 0.f;
-		curr->farPlane = 0.f;
-		curr->exposure = 0.f;
+		data.nearPlane = 0.f;
+		data.farPlane = 0.f;
+		data.exposure = 0.f;
 
-		FrameUniforms copy = *curr;
-		m_context->UnmapBuffer(m_resources.frameUniforms);
-		return copy;
+
+		m_context->UploadDataToBuffer(
+			m_resources.frameUniforms,
+			&data,
+			sizeof(FrameUniforms)/* * 1*/,
+			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			0,
+			currentFrame * sizeof(FrameUniforms)
+			//currentFrame * m_resources.frameUniformsBuffer.key.elementSize * m_resources.frameUniformsBuffer.key.elementCount // dynamicOffsetPerFrame
+		);
+		return data;
+
 	}
 
 	void DrawFrame() {
-		// This waits on fence to the swapchainIamge 
-		// All control logic around this is in swapchain realyl
 		auto fb = m_swapchain->AcquireFramebuffer();
 		UpdateDeltaTime();
 		RenderFrame(fb);
@@ -196,22 +238,24 @@ private:
 
 		// ATTACHMENT SETUP
 		auto logicalSwapchainImage = m_rendergraph->AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
-
 		auto depthImage = m_context->images_.get(fb.swapchain.depthImage_);
 		auto logicalDepthImageView = m_rendergraph->AddImageView(depthImage->sampleView);
-
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(logicalSwapchainImage);
+		//
 
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
 			.setExtent(fb.swapchain.extent_)
-			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} }) // Rendering directly to swapcahinImage!
+			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} }) 
+			// Rendering directly to swapchainImage!
 			.setDepth(logicalDepthImageView, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
 			.setRecordingFunc([this, fb](smvk::RenderPassContext pass)
 		{
 			auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
 			auto mesh_manager = m_meshManagerPimpl.get();
+
+			m_rendergraph->BindPipeline();
 
 			std::vector<int> visible;
 			if (m_currentLevel.tree_done) {

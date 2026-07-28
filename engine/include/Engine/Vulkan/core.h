@@ -21,8 +21,6 @@
 #include <ktx.h>
 #include <ktxVulkan.h>
 //
-static constexpr float default_near_clip = 0.01f;
-static constexpr float default_far_clip = 50.0f;
 //
 static constexpr uint32_t DEFAULT_WIDTH = 1280;
 static constexpr uint32_t DEFAULT_HEIGHT = 720;
@@ -31,6 +29,7 @@ static constexpr uint32_t DESIRED_SWAPCHAIN_IMAGE_COUNT = 2;
 static constexpr uint32_t MAX_BUFFERS = 1024;
 static constexpr uint32_t MAX_LIGHTS = 4096;
 static constexpr uint32_t MAX_TEXTURES = 4096;
+static constexpr uint32_t MAX_COLOR_ATTACHEMNTS = 4096;
 
 
 inline const char* vkResultToString(VkResult result);
@@ -61,11 +60,31 @@ inline const char* vkResultToString(VkResult result);
 
 
 
+
+
 namespace smvk {
+
+	// Predegined buffer usages so we have flags preset.
+	// Theres no need for infinite granularity so clearly this will be the best approach when ready
+	//enum BufferTypeBits : uint8_t {
+	//  BufferUsageBits_Index = 1 << 0,
+	//  BufferUsageBits_Vertex = 1 << 1,
+	//  BufferUsageBits_Uniform = 1 << 2,
+	//  BufferUsageBits_Storage = 1 << 3,
+	//  BufferUsageBits_Indirect = 1 << 4,
+	//  // ray tracing
+	//  BufferUsageBits_ShaderBindingTable = 1 << 5,
+	//  BufferUsageBits_AccelStructBuildInputReadOnly = 1 << 6,
+	//  BufferUsageBits_AccelStructStorage = 1 << 7
+	//};
+
 	struct BufferCreateInfo {
 		VkDeviceSize size;
 		VmaMemoryUsage vma_usage;
 		VkBufferUsageFlags usage_flags;
+		const char* name;
+		//void* data;
+		//uint8_t usage = 0;
 	};
 	struct ImageCreateInfo {
 
@@ -76,11 +95,6 @@ namespace smvk {
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 		uint32_t levels = 1;
 		uint32_t arrayLayers = 1;
-		//bool operator<(const ImageCreateInfo& other) const {
-		//	return std::tie(vk_extent, vk_format, usage, levels, arrayLayers) <
-		//		std::tie(other.vk_extent, other.vk_format,
-		//			other.usage, other.levels, other.arrayLayers);
-		//}
 	};
 	struct ImageViewCreateInfo {
 		VkImageViewCreateFlags     flags{};
@@ -116,14 +130,7 @@ namespace smvk {
 	};
 };
 
-// maybe this should be impl.cpp exclusive
 namespace smvk {
-
-	struct Pipeline {
-		VkPipeline pipeline;
-		//VkPipelineLayout layout;
-	};
-
 	struct Image {
 		VkImage vk_image = VK_NULL_HANDLE;
 		VmaAllocation vma_alloc = VK_NULL_HANDLE;
@@ -170,6 +177,8 @@ namespace smvk {
 		//}
 	};
 
+
+
 	using ImageHandle = Handle<struct Image>;
 	using TextureHandle = Handle<struct Texture>;
 	using SamplerHandle = Handle<struct Sampler>;
@@ -178,85 +187,70 @@ namespace smvk {
 	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 	using DescriptorSetHandle = Handle<struct DescriptorSet>;
 
+	using RenderPipelineHandle = Handle<struct RenderPipelineState>;
+};
+
+namespace smvk {
+
+	struct RenderPipelineDesc {
+
+		// This will be hardcoded in build for now.
+		// INPUT ASS
+		//Topology topology = Topology_Triangle;
+		//lvk::VertexInput vertexInput;
+
+		ShaderModuleHandle smVert;
+		ShaderModuleHandle smFrag;
+
+		// lifted from lvk but not implemented yey
+		//ShaderModuleHandle smTesc;
+		//ShaderModuleHandle smTese;
+		//ShaderModuleHandle smGeom;
+		//ShaderModuleHandle smTask;
+		//ShaderModuleHandle smMesh;
+
+		// Same, not supported yet
+		//SpecializationConstantDesc specInfo = {};
+
+		const char* entryPointVert = "main";
+		const char* entryPointFrag = "main";
+
+		struct ColorAttachemnt {
+			VkFormat vkColorFormat = VK_FORMAT_UNDEFINED;
+			bool blend = false;
+			//BlendState blendState;
+		} color[6]; // hardcoded for max # of color attachments. 6 for cubemap
+
+		// TARGET
+		//ColorAttachment color[LVK_MAX_COLOR_ATTACHMENTS] = {};
+		VkFormat vkDepthFormat = VK_FORMAT_UNDEFINED; // maybe max enum for default better?
+		VkFormat vkStencilFormat = VK_FORMAT_UNDEFINED; // maybe max enum for default better?
+		//Format depthFormat = Format_Invalid;
+		//Format stencilFormat = Format_Invalid;
+		VkCullModeFlags vkCullMode = VK_CULL_MODE_BACK_BIT;
+		VkFrontFace vkFrontFace = VK_FRONT_FACE_CLOCKWISE;
+		VkPolygonMode vkPolygonMode = VK_POLYGON_MODE_FILL;
+		// Stencil not yet implemented.
+		//StencilState backFaceStencil = {};
+		//StencilState frontFaceStencil = {};
+		// TES
+		//uint32_t patchControlPoints = 0;
+		// MSAA
+		uint32_t samplesCount = 1u;
+		float minSampleShading = 0.0f;
+		const char* debugName = "";
+	};
+
+	struct RenderPipelineState {
+		RenderPipelineDesc description; //key?
+		VkDescriptorSetLayout vkDsLayoutUsed;
+		VkPipeline vkPipeline;
+		VkPipelineLayout vkLayout;
+	};
+
 };
 
 
-//namespace smvk {
-//	struct RenderPipelineDesc {
-//
-//		// INPUT ASS
-//		//Topology topology = Topology_Triangle;
-//		//lvk::VertexInput vertexInput;
-//
-//		ShaderModuleHandle smVert;
-//		//ShaderModuleHandle smTesc;
-//		//ShaderModuleHandle smTese;
-//		//ShaderModuleHandle smGeom;
-//		//ShaderModuleHandle smTask;
-//		//ShaderModuleHandle smMesh;
-//		ShaderModuleHandle smFrag;
-//
-//		//SpecializationConstantDesc specInfo = {};
-//
-//		const char* entryPointVert = "main";
-//		const char* entryPointTesc = "main";
-//		const char* entryPointTese = "main";
-//		const char* entryPointGeom = "main";
-//		const char* entryPointTask = "main";
-//		const char* entryPointMesh = "main";
-//		const char* entryPointFrag = "main";
-//
-//
-//
-//		// TARGET
-//		//ColorAttachment color[LVK_MAX_COLOR_ATTACHMENTS] = {};
-//		//Format depthFormat = Format_Invalid;
-//		//Format stencilFormat = Format_Invalid;
-//
-//		// RASTER CONF
-//		//CullMode cullMode = lvk::CullMode_None;
-//		//WindingMode frontFaceWinding = lvk::WindingMode_CCW;
-//		//PolygonMode polygonMode = lvk::PolygonMode_Fill;
-//
-//		//StencilState backFaceStencil = {};
-//		//StencilState frontFaceStencil = {};
-//
-//		// TES
-//		//uint32_t patchControlPoints = 0;
-//		// MSAA
-//		uint32_t samplesCount = 1u;
-//		float minSampleShading = 0.0f;
-//
-//		const char* debugName = "";
-//
-//		//uint32_t getNumColorAttachments() const {
-//		//	uint32_t n = 0;
-//		//	while (n < LVK_MAX_COLOR_ATTACHMENTS && color[n].format != Format_Invalid) {
-//		//		n++;
-//		//	}
-//		//	return n;
-//		//}
-//	};
-//	struct RenderPipelineState final {
-//		RenderPipelineDesc desc_;
-//
-//
-//		//uint32_t numBindings_ = 0;
-//		//uint32_t numAttributes_ = 0;
-//		//VkVertexInputBindingDescription vkBindings_[VertexInput::LVK_VERTEX_BUFFER_MAX] = {};
-//		//VkVertexInputAttributeDescription vkAttributes_[VertexInput::LVK_VERTEX_ATTRIBUTES_MAX] = {};
-//
-//		// non-owning, the last seen VkDescriptorSetLayout from VulkanContext::vkDSL_ (if the context has a new layout, invalidate all VkPipeline
-//		// objects)
-//		VkDescriptorSetLayout lastVkDescriptorSetLayout_ = VK_NULL_HANDLE;
-//
-//		VkShaderStageFlags shaderStageFlags_ = 0;
-//		VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
-//		VkPipeline pipeline_ = VK_NULL_HANDLE;
-//
-//		void* specConstantDataStorage_ = nullptr;
-//	};
-//};
 
 namespace smvk {
 

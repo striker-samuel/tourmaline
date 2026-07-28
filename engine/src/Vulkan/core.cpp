@@ -1798,7 +1798,6 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 
 	VK_CHECK(vmaCreateBuffer(m_allocator, &ci, &aci, &desc.vk_buffer, &desc.vma_alloc, nullptr));
 
-
 	VkMemoryPropertyFlags props{}; //Cache memory properties for quick checks/debug
 	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &props);
 	desc.memory_flags = aci.requiredFlags;
