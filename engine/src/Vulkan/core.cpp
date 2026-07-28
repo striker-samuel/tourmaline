@@ -1821,12 +1821,16 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 }
 void* smvk::Context::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
 	void* mapped = nullptr;
+	assert(!handle.empty());
 	auto buf = this->buffers_.get(handle);
+	assert(buf != nullptr);
 	VK_CHECK(vmaMapMemory(m_allocator, buf->vma_alloc, &mapped));
 	return mapped;
 }
 void smvk::Context::UnmapBuffer(smvk::Handle<smvk::Buffer> handle) {
+	assert(!handle.empty());
 	auto buf = this->buffers_.get(handle);
+	assert(buf != nullptr);
 	// Not required for HOST_COHERENT memory, but harmless if you want to support
 	// non-coherent staging buffers later.
 	// vmaFlushAllocation(m_allocator, staging->vma_alloc, 0, stagingBufferSize);
