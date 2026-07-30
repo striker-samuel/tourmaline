@@ -21,18 +21,34 @@ namespace smvk {
 		VkPipeline pipeline = VK_NULL_HANDLE;
 		VkPipelineLayout layout = VK_NULL_HANDLE;
 	};
+
+	// this is so badly executed its painful to look at
 	struct PipelineCache {
 		PipelineCache(Context* ctx) : ctx_(ctx) {};
 		std::map<RenderPipelineState, PipelineBundle> cache_;
 		PipelineBundle GetPipeline(RenderPipelineHandle handle) {
 			auto renderState = ctx_->graphicPipelines_.get(handle);
-			auto it = cache_.find(*renderState);
-			if (it == cache_.end()) {
+			assert(renderState != nullptr);
+			if (renderState->vkPipeline != VK_NULL_HANDLE && renderState->vkLayout != VK_NULL_HANDLE) {
+				return {
+					renderState->vkPipeline,
+					renderState->vkLayout
+				};
+			}
+			else {
 				auto newPipe = BuildGraphicsPipeline(ctx_, *renderState);
-				cache_[*renderState] = newPipe;
+				renderState->vkPipeline = newPipe.pipeline;
+				renderState->vkLayout = newPipe.layout;
 				return newPipe;
 			}
-			return it->second;
+
+			//auto it = cache_.find(*renderState);
+			//if (it == cache_.end()) {
+			//	auto newPipe = BuildGraphicsPipeline(ctx_, *renderState);
+			//	cache_[*renderState] = newPipe;
+			//	return newPipe;
+			//}
+			//return it->second;
 		};
 		PipelineBundle BuildGraphicsPipeline(Context* ctx, RenderPipelineState rps)
 		{
@@ -144,11 +160,11 @@ namespace smvk {
 			std::vector<VkDynamicState> dynamicStates = {
 				VK_DYNAMIC_STATE_VIEWPORT, // critical
 				VK_DYNAMIC_STATE_SCISSOR, // critical
-				VK_DYNAMIC_STATE_BLEND_CONSTANTS,
-				VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
-				VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
-				VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
-				VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE
+				//VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+				//VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+				//VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+				//VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+				//VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE
 			};
 
 			VkPipelineDynamicStateCreateInfo dynamicState{};
@@ -574,6 +590,7 @@ namespace smvk {
 			}
 			if (bundle.pipeline != vkCurrentPipeline_) {
 				vkCurrentPipeline_ = bundle.pipeline;
+				vkCurrentPipelineLayout_ = bundle.layout;
 			}
 			else {
 				return;
@@ -582,6 +599,18 @@ namespace smvk {
 				cmd,
 				VK_PIPELINE_BIND_POINT_GRAPHICS,
 				vkCurrentPipeline_
+			);
+
+			vkCmdBindDescriptorSets(
+				cmd,
+				VK_PIPELINE_BIND_POINT_GRAPHICS,
+				//vkCurrentPipelineLayout_,
+				ctx_.defaultPipeLyt,
+				0,
+				1,
+				ctx_.defaultDescriptorSets_,
+				0,
+				0
 			);
 		}
 
@@ -681,6 +710,11 @@ namespace smvk {
 
 		std::unique_ptr<PipelineCache> pipelineCachePimpl;
 		smvk::Context& ctx_;
+
+
+		//VkPipelineLayout vkDefaultSetLaput_;
+		smvk::Holder<DescriptorSetHandle> defaultSet;
+
 	};
 
 

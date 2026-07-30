@@ -610,7 +610,7 @@ void smvk::CreateDefaultDescriptorSetLayout(VkDescriptorSetLayout& dsl) {
 
 	const uint32_t flags =
 		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
-		| VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT
+		//| VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT
 		| VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 
 	VkDescriptorBindingFlags bindingFlags[kBinding_NumBindings];
@@ -785,6 +785,7 @@ bool smvk::VulkanCore::Init() {
 				.pNext = &deviceFeatures11,
 				.shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
 				.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE,
+				.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE,
 				.descriptorBindingPartiallyBound = VK_TRUE,
 				.descriptorBindingVariableDescriptorCount = VK_TRUE,
 				.runtimeDescriptorArray = VK_TRUE,
@@ -894,7 +895,7 @@ void smvk::VulkanCore::CreateShaderModule(const std::vector<char>& code, VkShade
 		throw std::runtime_error("failed to create shader module!");
 	}
 }
-void smvk::VulkanCore::CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline pipeline) {
+void smvk::VulkanCore::CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline) {
 
 	if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &createInfo,
 		nullptr, &pipeline) != VK_SUCCESS)
@@ -902,16 +903,6 @@ void smvk::VulkanCore::CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo creat
 		throw std::runtime_error("failed to create graphics pipeline!");
 	}
 
-}
-inline smvk::VulkanCore::~VulkanCore() {
-	vkDeviceWaitIdle(device_);
-	vkDestroyCommandPool(device_, defaultCommandPool_, nullptr);
-	vkDestroyCommandPool(device_, transferCommandPool_, nullptr);
-	if (surface_ != VK_NULL_HANDLE) {
-		vkDestroySurfaceKHR(instance_, surface_, nullptr);
-	}
-	DestroyDebugUtilsMessengerEXT(instance_, debugMessenger_, nullptr);
-	vkDestroyInstance(instance_, nullptr);
 }
 void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
 
@@ -962,6 +953,16 @@ void smvk::VulkanCore::CreateImageView(ImageViewCreateInfo imageViewCreateInfo, 
 	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
 	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
+}
+inline smvk::VulkanCore::~VulkanCore() {
+	vkDeviceWaitIdle(device_);
+	vkDestroyCommandPool(device_, defaultCommandPool_, nullptr);
+	vkDestroyCommandPool(device_, transferCommandPool_, nullptr);
+	if (surface_ != VK_NULL_HANDLE) {
+		vkDestroySurfaceKHR(instance_, surface_, nullptr);
+	}
+	DestroyDebugUtilsMessengerEXT(instance_, debugMessenger_, nullptr);
+	vkDestroyInstance(instance_, nullptr);
 }
 std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window) {
 	assert(window != nullptr && "window was nullptr!");
@@ -1134,14 +1135,33 @@ int smvk::Context::Initialize() {
 	//	&pixel
 	//	);
 
-	// TODO: rework this
+	// TODO: rework this queuePrefernece thing
 	m_submitter = new Submitter(core_, QueuePreference::GRAPHICS);
+
+	CreateDefaultDescriptorSetLayout(defaultSetLayout);
+	defaultDescriptorPool = CreateDescriptorPool();
+	VkDescriptorPool pool = *descriptorPools_.get(defaultDescriptorPool);
+	VkDescriptorSetLayout layouts[4] = { defaultSetLayout, defaultSetLayout, defaultSetLayout, defaultSetLayout };
+
+	VkDescriptorSetAllocateInfo info
+	{
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.pNext = nullptr,
+		.descriptorPool = pool,
+		.descriptorSetCount = 4,
+		.pSetLayouts = layouts
+	};
+
+	vkAllocateDescriptorSets(
+		device_,
+		&info,
+		defaultDescriptorSets_
+	);
 	return 0; // no error
 }
 smvk::Context::Context(VulkanCore& core) :core_(core) { Initialize(); }
 smvk::Context::~Context() {
-	// TODO:: implement this propertul
-	delete(&m_submitter);
+	if (m_submitter != nullptr) { delete(&m_submitter); }
 	m_submitter = nullptr;
 	CleanUp();
 };
@@ -1841,6 +1861,31 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 	VK_CHECK(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &dpool));
 	return { this, descriptorPools_.create(std::move(dpool)) };
 }
+//[[nodiscard]] smvk::Holder<smvk::DescriptorSetHandle> smvk::Context::CreateDescriptorSet(VkDescriptorSetLayout setLayout)
+//{
+//
+//
+//	VkDescriptorSet set;
+//	vkAllocateDescriptorSets(
+//		device_,
+//		info,
+//		&set
+//	);
+//
+//	return { this, descriptorSets_.create(std::move(set)); }
+//}
+[[nodiscard]] smvk::Holder<smvk::RenderPipelineHandle> smvk::Context::CreateRenderPipeline(
+	smvk::ShaderModuleHandle vert,
+	smvk::ShaderModuleHandle frag
+) {
+	RenderPipelineState rps{};
+	rps.description.smVert = vert;
+	rps.description.smFrag = frag;
+	//rps.vkPipeline = VK_NULL_HANDLE;
+	//rps.vkLayout = VK_NULL_HANDLE;
+	return { this, this->graphicPipelines_.create(std::move(rps)) };
+}
+
 void* smvk::Context::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
 	void* mapped = nullptr;
 	assert(!handle.empty());
@@ -1884,7 +1929,7 @@ void smvk::Context::CleanUp() {
 
 	vmaDestroyPool(m_allocator, m_imagesPool);
 	vmaDestroyPool(m_allocator, m_stagingPool);
-	memset(descriptorSets_, 0, sizeof(descriptorSets_));
+	//memset(descriptorSets_, 0, sizeof(descriptorSets_));
 }
 // 
 void smvk::destroy(smvk::Context* ctx, smvk::BufferHandle handle) {
@@ -1904,7 +1949,6 @@ void smvk::destroy(smvk::Context* ctx, smvk::TextureHandle handle) {}
 void smvk::destroy(smvk::Context* ctx, smvk::SamplerHandle handle) {}
 void smvk::destroy(smvk::Context* ctx, smvk::DescriptorSetHandle handle) {}
 void smvk::destroy(smvk::Context* ctx, smvk::DescriptorPoolHandle handle) {}
-
 void smvk::destroy(smvk::Context* ctx, smvk::RenderPipelineHandle handle) {}
 
 // Barriers
@@ -2022,17 +2066,12 @@ inline smvk::Submitter::~Submitter() {
 		return;
 	}
 
-	// Conservative. You can remove this if the owner guarantees GPU work is complete.
 	vkDeviceWaitIdle(device_);
 	VkCommandBuffer m_buffers_[kMax]{};
 
 	for (uint32_t i = 0; i < kMax; ++i) {
 		auto& wrapper = commandBuffers_[i].wrapper_;
 		assert(wrapper.isEncoding_ == false && "still encoding");
-		//if (wrapper.fence_ != VK_NULL_HANDLE) {
-		//	vkDestroyFence(device_, wrapper.fence_, nullptr);
-		//	wrapper.fence_ = VK_NULL_HANDLE;
-		//}
 		if (wrapper.finishedSignalSemaphore.semaphore_ != VK_NULL_HANDLE) {
 			vkDestroySemaphore(device_, wrapper.finishedSignalSemaphore.semaphore_, nullptr);
 			wrapper.finishedSignalSemaphore.semaphore_ = VK_NULL_HANDLE;

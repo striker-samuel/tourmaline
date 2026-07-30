@@ -188,7 +188,7 @@ namespace smvk {
 	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 	using DescriptorSetHandle = Handle<struct DescriptorSet>;
 
-	using RenderPipelineHandle = Handle<struct RenderPipelineState>;
+	using RenderPipelineHandle = Handle<struct RenderPipeline>;
 };
 
 namespace smvk {
@@ -242,15 +242,13 @@ namespace smvk {
 		const char* debugName = "";
 
 		bool operator<(const RenderPipelineDesc& other) const noexcept {
-
 		}
 	};
 
 	struct RenderPipelineState {
-		RenderPipelineDesc description;
-		//VkDescriptorSetLayout vkDsLayoutUsed;
-		VkPipeline vkPipeline;
-		VkPipelineLayout vkLayout;
+		RenderPipelineDesc description{};
+		VkPipeline vkPipeline = VK_NULL_HANDLE;
+		VkPipelineLayout vkLayout = VK_NULL_HANDLE;
 		bool operator<(const RenderPipelineState& other) const noexcept {
 		    return description < other.description;
 		}
@@ -345,7 +343,7 @@ namespace smvk {
 		bool Init();
 
 
-		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline pipeline);
+		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline);
 		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
 		void CreateShaderModule(const std::vector<char>& code, VkShaderModule& out);
@@ -429,18 +427,20 @@ namespace smvk {
 		Context& operator=(Context&&) = delete;
 
 		int Initialize();
+		//
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
 		void ProcessDeferrredTasks();
-		//void Flush();
 		//
 		BufferHandle CreateStagingBuffer(VkDeviceSize size);
 		ImageHandle CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
+		Holder<RenderPipelineHandle> CreateRenderPipeline(smvk::ShaderModuleHandle vert, smvk::ShaderModuleHandle frag);
 		// 
 		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
 		Holder<TextureHandle> CreateTexture(ktxTexture2& texture);
 		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
 		Holder<DescriptorPoolHandle> CreateDescriptorPool();
+		//Holder<DescriptorSetHandle> CreateDescriptorSet(VkDescriptorSetLayout setLayout);
 		//
 
 		void* MapBuffer(smvk::Handle<smvk::Buffer> handle);
@@ -463,7 +463,7 @@ namespace smvk {
 		Pool<Sampler, VkSampler> samplers_;
 		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_;
 
-		Pool<RenderPipelineState, RenderPipelineState> graphicPipelines_;
+		Pool<RenderPipeline, RenderPipelineState> graphicPipelines_;
 
 		VmaAllocator m_allocator;
 		VmaPool m_imagesPool;
@@ -477,8 +477,8 @@ namespace smvk {
 		void CreateDefaultLayoutAndSets();
 		VkDescriptorSetLayout defaultSetLayout;
 		VkPipelineLayout defaultPipeLyt;
-		//VkDescriptorPool descriptorPool_;
-		VkDescriptorSet descriptorSets_[MAX_FRAMES_IN_FLIGHT];
+		Holder<DescriptorPoolHandle> defaultDescriptorPool;
+		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT];
 	};
 
 	void destroy(Context* ctx, ImageHandle handle);

@@ -8,6 +8,8 @@
 #include <Engine/Utils/gltf.h> 
 #include <Engine/Camera/camera.h> 
 
+#include <Engine/platform.h>
+
 // Constants //
 static constexpr float default_near_clip = 0.01f;
 static constexpr float default_far_clip = 50.0f;
@@ -142,6 +144,11 @@ private:
 			}
 		);
 
+		auto vertCode = readFile("content/shaders/default.vert.hlsl.spv");
+		auto fragCode = readFile("content/shaders/default.frag.hlsl.spv");
+		auto vert = m_context->CreateShaderModule(vertCode).release();
+		auto frag = m_context->CreateShaderModule(fragCode).release();
+		m_resources.mainPipeline = m_context->CreateRenderPipeline(vert, frag);
 		return true;
 	};
 
