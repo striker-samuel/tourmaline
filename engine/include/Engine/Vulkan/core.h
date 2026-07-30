@@ -432,7 +432,7 @@ namespace smvk {
 		void ProcessDeferrredTasks();
 		//
 		BufferHandle CreateStagingBuffer(VkDeviceSize size);
-		ImageHandle CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
+		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<RenderPipelineHandle> CreateRenderPipeline(smvk::ShaderModuleHandle vert, smvk::ShaderModuleHandle frag);
 		// 
 		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
@@ -456,8 +456,8 @@ namespace smvk {
 		Submitter* m_submitter = nullptr;
 		std::vector<DeferredTask> m_deferredTasks;
 
-		Pool<Texture, Image> textures_;
-		Pool<Image, Image> images_;
+		Pool<Image, Image> images_; // VkSwapchainImages are not represented with Image type and just owned by the swapchain
+		Pool<Texture, Image> textures_; // specializaed textures away from images
 		Pool<Buffer, Buffer> buffers_;
 		Pool<ShaderModule, VkShaderModule> shaderModules_;
 		Pool<Sampler, VkSampler> samplers_;
@@ -466,15 +466,17 @@ namespace smvk {
 		Pool<RenderPipeline, RenderPipelineState> graphicPipelines_;
 
 		VmaAllocator m_allocator;
+		// no pool in vmaCreateallocation goes to a default pool provided a vma for the memory type used
+		// more granularity could provide useful
 		VmaPool m_imagesPool;
 		VmaPool m_stagingPool;
 
-		TextureHandle m_nilTexture{};
-		VkSampler m_defaultSampler{};
+		TextureHandle m_nilTexture{}; // needed to avoid sparse list in bindless
+		VkSampler m_defaultSampler{}; // This really should be a SamplersPool implementation the same way nprocore2 handles this
 
 
-		// Hardcoded pipeline layout
-		void CreateDefaultLayoutAndSets();
+		void UpdateBindings();
+		// Binding model is just hardcoded.
 		VkDescriptorSetLayout defaultSetLayout;
 		VkPipelineLayout defaultPipeLyt;
 		Holder<DescriptorPoolHandle> defaultDescriptorPool;

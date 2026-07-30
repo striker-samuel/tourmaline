@@ -595,12 +595,11 @@ static VkDescriptorSetLayoutBinding getDSLBinding(uint32_t binding,
 
 void smvk::CreateDefaultDescriptorSetLayout(VkDescriptorSetLayout& dsl) {
 
+	// This is bad!
 	VkShaderStageFlags stageFlags =
 		VK_SHADER_STAGE_VERTEX_BIT
-		| VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
-		| VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
 		| VK_SHADER_STAGE_FRAGMENT_BIT
-		| VK_SHADER_STAGE_COMPUTE_BIT;
+		| VK_SHADER_STAGE_COMPUTE_BIT; 
 
 	const VkDescriptorSetLayoutBinding bindings[kBinding_NumBindings] = {
 		getDSLBinding(kBinding_Textures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
@@ -810,7 +809,7 @@ bool smvk::VulkanCore::Init() {
 				},
 			};
 
-			//s
+// Missing features macro, right now I dont want that much portability nor correctness do rawdogging extensions!
 //#define CHECK_VULKAN_FEATURE(reqFeatures, availFeatures, feature, version)     \
 //  if ((reqFeatures.feature == VK_TRUE) && (availFeatures.feature == VK_FALSE)) \
 //    missingFeatures.append("\n   " version " ." #feature);
@@ -979,28 +978,23 @@ std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanC
 }
 
 // Context
-VkResult createStagingPool(VmaAllocator allocator, VmaPool& attachmentPool)
+VkResult CreateStagingPool(VmaAllocator allocator, VmaPool& attachmentPool)
 {
-	// Representative attachment image.
-	// Use a format supported by every image intended for this pool.
+	// Example texture.
 	VkImageCreateInfo imageInfo{
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.imageType = VK_IMAGE_TYPE_2D,
 		.format = VK_FORMAT_R8G8B8A8_UNORM,
 		.extent = {
-			.width = 1920,
-			.height = 1080,
+			.width = 2160, //2k textures
+			.height = 2160,
 			.depth = 1,
 		},
 		.mipLevels = 1,
 		.arrayLayers = 1,
 		.samples = VK_SAMPLE_COUNT_1_BIT,
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
-		.usage =
-			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-			VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-			VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
-			VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+		.usage = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
 		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 	};
@@ -1042,7 +1036,7 @@ VkResult createStagingPool(VmaAllocator allocator, VmaPool& attachmentPool)
 		&poolInfo,
 		&attachmentPool);
 }
-VkResult createAttachmentPool(VmaAllocator allocator, VmaPool& attachmentPool)
+VkResult CreateAttachmentPool(VmaAllocator allocator, VmaPool& attachmentPool)
 {
 	// Representative attachment image.
 	// Use a format supported by every image intended for this pool.
@@ -1122,8 +1116,8 @@ int smvk::Context::Initialize() {
 	VK_CHECK(vmaImportVulkanFunctionsFromVolk(&allocatorCreateInfo, &vulkanFunctions));
 	allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
 	VK_CHECK(vmaCreateAllocator(&allocatorCreateInfo, &m_allocator));
-	VK_CHECK(createAttachmentPool(m_allocator, m_imagesPool));
-	VK_CHECK(createStagingPool(m_allocator, m_stagingPool));
+	VK_CHECK(CreateAttachmentPool(m_allocator, m_imagesPool));
+	VK_CHECK(CreateStagingPool(m_allocator, m_stagingPool));
 
 	core_.CreateSampler(SamplerCreateInfo{}, m_defaultSampler);
 	const uint32_t pixel = 0xFF000000;
@@ -1138,7 +1132,9 @@ int smvk::Context::Initialize() {
 	// TODO: rework this queuePrefernece thing
 	m_submitter = new Submitter(core_, QueuePreference::GRAPHICS);
 
+	// Hardcoded binding setup.
 	CreateDefaultDescriptorSetLayout(defaultSetLayout);
+	CreateDefaultPipelineLayout(defaultPipeLyt);
 	defaultDescriptorPool = CreateDescriptorPool();
 	VkDescriptorPool pool = *descriptorPools_.get(defaultDescriptorPool);
 	VkDescriptorSetLayout layouts[4] = { defaultSetLayout, defaultSetLayout, defaultSetLayout, defaultSetLayout };
@@ -1157,6 +1153,8 @@ int smvk::Context::Initialize() {
 		&info,
 		defaultDescriptorSets_
 	);
+	//
+	
 	return 0; // no error
 }
 smvk::Context::Context(VulkanCore& core) :core_(core) { Initialize(); }
@@ -1391,7 +1389,35 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 	);
 
 }
-[[nodiscard]] smvk::ImageHandle smvk::Context::CreateImage(ImageCreateInfo imageCreateInfo, const void* data)
+[[nodiscard]] smvk::BufferHandle smvk::Context::CreateStagingBuffer(VkDeviceSize size)
+{
+	smvk::Buffer desc{};
+	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	ci.size = size;
+	ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+	VmaAllocationCreateInfo aci{};
+	aci.usage = VMA_MEMORY_USAGE_AUTO; // modern VMA: let it pick a good type
+	aci.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+	aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+		VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+	VK_CHECK(vmaCreateBuffer(m_allocator, &ci, &aci, &desc.vk_buffer, &desc.vma_alloc, nullptr));
+
+	VkMemoryPropertyFlags props{}; //Cache memory properties for quick checks/debug
+	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &props);
+	desc.memory_flags = aci.requiredFlags;
+	desc.usage = ci.usage;
+
+	if ((props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
+		assert(false); // just hard crush for now
+	}
+
+	//return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
+	return buffers_.create(std::move(desc));
+}
+[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::Context::CreateImage(ImageCreateInfo imageCreateInfo, const void* data)
 {
 	Image img{};
 
@@ -1805,34 +1831,6 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 	desc.usage = bufferCreateInfo.usage_flags;
 	return { this, buffers_.create(std::move(desc)) };
 }
-[[nodiscard]] smvk::BufferHandle smvk::Context::CreateStagingBuffer(VkDeviceSize size)
-{
-	smvk::Buffer desc{};
-	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	ci.size = size;
-	ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-	VmaAllocationCreateInfo aci{};
-	aci.usage = VMA_MEMORY_USAGE_AUTO; // modern VMA: let it pick a good type
-	aci.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-	aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-		VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-	VK_CHECK(vmaCreateBuffer(m_allocator, &ci, &aci, &desc.vk_buffer, &desc.vma_alloc, nullptr));
-
-	VkMemoryPropertyFlags props{}; //Cache memory properties for quick checks/debug
-	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &props);
-	desc.memory_flags = aci.requiredFlags;
-	desc.usage = ci.usage;
-
-	if ((props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
-		assert(false); // just hard crush for now
-	}
-
-	//return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
-	return buffers_.create(std::move(desc));
-}
 [[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::Context::CreateShaderModule(std::vector<char> code) {
 	VkShaderModule shader;
 	core_.CreateShaderModule(
@@ -1861,19 +1859,8 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 	VK_CHECK(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &dpool));
 	return { this, descriptorPools_.create(std::move(dpool)) };
 }
-//[[nodiscard]] smvk::Holder<smvk::DescriptorSetHandle> smvk::Context::CreateDescriptorSet(VkDescriptorSetLayout setLayout)
-//{
-//
-//
-//	VkDescriptorSet set;
-//	vkAllocateDescriptorSets(
-//		device_,
-//		info,
-//		&set
-//	);
-//
-//	return { this, descriptorSets_.create(std::move(set)); }
-//}
+
+// This is awfully incomplete
 [[nodiscard]] smvk::Holder<smvk::RenderPipelineHandle> smvk::Context::CreateRenderPipeline(
 	smvk::ShaderModuleHandle vert,
 	smvk::ShaderModuleHandle frag
@@ -1881,6 +1868,7 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 	RenderPipelineState rps{};
 	rps.description.smVert = vert;
 	rps.description.smFrag = frag;
+	rps.description.vkDepthFormat = findDepthFormat(); //crude
 	//rps.vkPipeline = VK_NULL_HANDLE;
 	//rps.vkLayout = VK_NULL_HANDLE;
 	return { this, this->graphicPipelines_.create(std::move(rps)) };

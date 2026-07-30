@@ -175,8 +175,7 @@ namespace smvk {
 
 #pragma region ---[LayoutDescription]---
 
-			VkPipelineLayout lyt;
-			CreateDefaultPipelineLayout(lyt);
+			CreateDefaultPipelineLayout(rps.vkLayout);
 
 #pragma endregion
 
@@ -200,7 +199,6 @@ namespace smvk {
 			dynamic_rendering_pipeline_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
 
-			CreateDefaultPipelineLayout(rps.vkLayout);
 			VkGraphicsPipelineCreateInfo pipelineInfo{};
 			pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 			pipelineInfo.stageCount = 2;
@@ -410,8 +408,6 @@ namespace smvk {
 		explicit RenderGraph(Context& ctx) : ctx_(ctx) {
 			pipelineCachePimpl = std::make_unique<PipelineCache>(&ctx_);
 		};
-
-
 		void Clear() { m_passes.clear(); }
 
 		RenderPass& AddPass() {
@@ -463,7 +459,6 @@ namespace smvk {
 			};
 			return storageBuffers_.create(std::move(proxyBuffer));
 		};
-
 		[[nodiscard]] std::vector<LogicalBufferHandle> AddExternalBuffers(
 			std::vector<BufferHandle> bufferHandles
 			//, BufferKey* keys, // could be used to mark them as rings but .... maybe not.
@@ -507,7 +502,7 @@ namespace smvk {
 				[this](LogicalImage& logicalImage) {
 				if (logicalImage.resolvedImageHandle.empty()) {
 					if (logicalImage.type == LogicalImage::Type::External) { assert(false && "external image unresolved. shouldnt be possible"); };
-					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr);
+					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
 				};
 			}
 			);
@@ -516,7 +511,7 @@ namespace smvk {
 				[this](LogicalImage& logicalImage) {
 				if (logicalImage.resolvedImageHandle.empty()) {
 					if (logicalImage.type == LogicalImage::Type::External) { assert(false && "external image unresolved. shouldnt be possible"); };
-					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr);
+					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
 				};
 			}
 			);
@@ -694,12 +689,13 @@ namespace smvk {
 			}
 		}
 
-		// TODO:: pending implementation.
 		//VkExtent2D GetMipSize(LogicalImageHandle imageHandle, uint32_t level);
 		//VkExtent2D GetMipSize(LogicalImageViewHandle imageViewHandle, uint32_t level);
 
+		// Currently bound
 		VkPipeline vkCurrentPipeline_;
 		VkPipelineLayout vkCurrentPipelineLayout_;
+		// maybe set?
 
 		smvk::Pool<LogicalImage, LogicalImage> inputImages_;
 		smvk::Pool<LogicalStorageImage, LogicalImage> storageImages_;
@@ -710,10 +706,6 @@ namespace smvk {
 
 		std::unique_ptr<PipelineCache> pipelineCachePimpl;
 		smvk::Context& ctx_;
-
-
-		//VkPipelineLayout vkDefaultSetLaput_;
-		smvk::Holder<DescriptorSetHandle> defaultSet;
 
 	};
 
