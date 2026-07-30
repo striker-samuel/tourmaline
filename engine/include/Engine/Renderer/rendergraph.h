@@ -2,18 +2,214 @@
 
 #include <vector>
 #include <Engine/Vulkan/core.h>
+#include <Engine/Renderer/vertex.h> // TODO:: Refactor this out!
 
 
 namespace smvk {
+
 	struct RenderGraph;
-	struct RenderPass;
+
 	using LogicalBufferHandle = Handle<struct LogicalBuffer>;
 	using LogicalImageHandle = Handle<struct LogicalImage>;
 	using LogicalImageViewHandle = Handle<struct LogicalImageView>;
-
-
-	// dont quite like thisreally
 	using LogicalStorageImageHandle = Handle<struct LogicalStorageImage>;
+};
+
+namespace smvk {
+
+	struct PipelineBundle {
+		VkPipeline pipeline = VK_NULL_HANDLE;
+		VkPipelineLayout layout = VK_NULL_HANDLE;
+	};
+	struct PipelineCache {
+		PipelineCache(Context* ctx) : ctx_(ctx) {};
+		std::map<RenderPipelineState, PipelineBundle> cache_;
+		PipelineBundle GetPipeline(RenderPipelineHandle handle) {
+			auto renderState = ctx_->graphicPipelines_.get(handle);
+			auto it = cache_.find(*renderState);
+			if (it == cache_.end()) {
+				auto newPipe = BuildGraphicsPipeline(ctx_, *renderState);
+				cache_[*renderState] = newPipe;
+				return newPipe;
+			}
+			return it->second;
+		};
+		PipelineBundle BuildGraphicsPipeline(Context* ctx, RenderPipelineState rps)
+		{
+
+			auto pipeDescription = rps.description;
+			auto v = ctx->shaderModules_.get(pipeDescription.smVert);
+			auto f = ctx->shaderModules_.get(pipeDescription.smFrag);
+
+			// SHADER
+			VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+			vertShaderStageInfo.sType =
+				VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+			vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+			vertShaderStageInfo.module = *v;
+			vertShaderStageInfo.pName = "mainVS";
+
+			VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+			fragShaderStageInfo.sType =
+				VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+			fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+			fragShaderStageInfo.module = *f;
+			fragShaderStageInfo.pName = "mainPS";
+
+			VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,fragShaderStageInfo };
+
+			// VERTEX FORMAT. This is fixed and set beforehand
+			// this should be obatined from description
+			auto bindingDescription = Vertex::getBindingDescription();
+			auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+			VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+			vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+			vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(bindingDescription.size());
+			vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+			vertexInputInfo.pVertexBindingDescriptions = bindingDescription.data();
+			vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+			VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+			inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+			inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+			inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+			// VIEWPORT
+
+			VkPipelineViewportStateCreateInfo viewportState{};
+			viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+			viewportState.viewportCount = 1;
+			viewportState.scissorCount = 1;
+
+			// RASTERIZER
+			// Hardcoded fornow
+			VkPipelineRasterizationStateCreateInfo rasterizationState_{
+				  .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+				  .flags = 0,
+				  .depthClampEnable = VK_FALSE,
+				  .rasterizerDiscardEnable = VK_FALSE,
+				  .polygonMode = VK_POLYGON_MODE_FILL,
+				  .cullMode = VK_CULL_MODE_NONE,
+				  .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+				  .depthBiasEnable = VK_FALSE,
+				  .depthBiasConstantFactor = 0.0f,
+				  .depthBiasClamp = 0.0f,
+				  .depthBiasSlopeFactor = 0.0f,
+				  .lineWidth = 1.0f,
+			};
+			//rasterizer.depthClampEnable = pipelineCreateInfo.rasterSettings.depthClampEnable;
+			//rasterizer.rasterizerDiscardEnable = pipelineCreateInfo.rasterSettings.rasterizerDiscardEnable;
+			//rasterizer.polygonMode = pipelineCreateInfo.rasterSettings.polygonMode;
+			//rasterizer.lineWidth = pipelineCreateInfo.rasterSettings.lineWidth;
+			//rasterizer.cullMode = pipelineCreateInfo.rasterSettings.cullMode;
+			//rasterizer.frontFace = pipelineCreateInfo.rasterSettings.frontFace;
+			//rasterizer.depthBiasEnable = pipelineCreateInfo.rasterSettings.depthBiasEnable;
+
+			// MULTISAMPLING
+			VkPipelineMultisampleStateCreateInfo multisampling{};
+			multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+			multisampling.sampleShadingEnable = VK_FALSE;
+			multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+			// STENCIL
+			VkPipelineDepthStencilStateCreateInfo depthStencil{};
+			depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+			depthStencil.depthTestEnable = VK_TRUE;
+			depthStencil.depthWriteEnable = VK_TRUE;
+			depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
+			depthStencil.depthBoundsTestEnable = VK_FALSE;
+			depthStencil.stencilTestEnable = VK_FALSE;
+
+			// COLORBLEND
+			VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+			colorBlendAttachment.colorWriteMask =
+				VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+				VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+			colorBlendAttachment.blendEnable = VK_FALSE;
+
+			VkPipelineColorBlendStateCreateInfo colorBlending{};
+			colorBlending.sType =
+				VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+			colorBlending.logicOpEnable = VK_FALSE;
+			colorBlending.logicOp = VK_LOGIC_OP_COPY;
+			colorBlending.attachmentCount = 1;
+			colorBlending.pAttachments = &colorBlendAttachment;
+			colorBlending.blendConstants[0] = 0.0f;
+			colorBlending.blendConstants[1] = 0.0f;
+			colorBlending.blendConstants[2] = 0.0f;
+			colorBlending.blendConstants[3] = 0.0f;
+
+			// DYNAMIC STATES
+			std::vector<VkDynamicState> dynamicStates = {
+				VK_DYNAMIC_STATE_VIEWPORT, // critical
+				VK_DYNAMIC_STATE_SCISSOR, // critical
+				VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+				VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+				VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+				VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+				VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE
+			};
+
+			VkPipelineDynamicStateCreateInfo dynamicState{};
+			dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+			dynamicState.dynamicStateCount =
+				static_cast<uint32_t>(dynamicStates.size());
+			dynamicState.pDynamicStates = dynamicStates.data();
+
+#pragma region ---[LayoutDescription]---
+
+			VkPipelineLayout lyt;
+			CreateDefaultPipelineLayout(lyt);
+
+#pragma endregion
+
+
+			VkFormat colorFormats[6];
+			int colorFormatCount = 0;
+			for (int i = 0; i < 6; i++) {
+				if (pipeDescription.color[i].vkColorFormat != VK_FORMAT_UNDEFINED) {
+					colorFormats[i] = pipeDescription.color[i].vkColorFormat;
+					colorFormatCount++;
+				}
+			}
+
+			VkPipelineRenderingCreateInfo dynamic_rendering_pipeline_info{
+				VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR
+			};
+			dynamic_rendering_pipeline_info.pNext = VK_NULL_HANDLE;
+			dynamic_rendering_pipeline_info.colorAttachmentCount = colorFormatCount;
+			dynamic_rendering_pipeline_info.pColorAttachmentFormats = colorFormats;
+			dynamic_rendering_pipeline_info.depthAttachmentFormat = pipeDescription.vkDepthFormat;
+			dynamic_rendering_pipeline_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
+
+			CreateDefaultPipelineLayout(rps.vkLayout);
+			VkGraphicsPipelineCreateInfo pipelineInfo{};
+			pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+			pipelineInfo.stageCount = 2;
+			pipelineInfo.pStages = shaderStages;
+			pipelineInfo.pVertexInputState = &vertexInputInfo;
+			pipelineInfo.pInputAssemblyState = &inputAssembly;
+			pipelineInfo.pViewportState = &viewportState;
+			pipelineInfo.pRasterizationState = &rasterizationState_;
+			pipelineInfo.pMultisampleState = &multisampling;
+			pipelineInfo.pColorBlendState = &colorBlending;
+			pipelineInfo.pDynamicState = &dynamicState;
+			pipelineInfo.pDepthStencilState = &depthStencil;
+			pipelineInfo.layout = rps.vkLayout;
+			pipelineInfo.pNext = &dynamic_rendering_pipeline_info;
+
+			ctx->core_.CreateGraphicsPipeline(pipelineInfo, rps.vkPipeline);
+			return {
+				rps.vkPipeline,
+				rps.vkLayout
+			};
+		}
+		smvk::Context* ctx_;
+	};
+
+
 };
 
 namespace smvk {
@@ -73,10 +269,7 @@ namespace smvk {
 
 	using RecordingFunction = std::function<void(RenderPassContext)>;
 	struct RenderPass final {
-
-		explicit RenderPass(RenderGraph& rg)
-			: rg_(rg) {}
-		RenderGraph& rg_;
+		explicit RenderPass(RenderGraph& rg) : rg_(rg) {}
 
 		struct Attachment {
 			LogicalImageViewHandle view;
@@ -176,11 +369,11 @@ namespace smvk {
 
 	private:
 		friend RenderGraph;
+		RenderGraph& rg_;
 		VkExtent2D extent_ = { 0,0 };
 		VkOffset2D offset_ = { 0,0 };
 		std::vector<Attachment> colorAttachments_{};
 		Attachment depthAttachment_{ .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .clearValue = { 1.0f } /*.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE */ };
-		//PassType type = PassType::Rasterize;
 		RecordingFunction recordingFunction_{};
 	};
 
@@ -198,7 +391,11 @@ namespace smvk {
 	};
 
 	struct RenderGraph final {
-		explicit RenderGraph(Context& ctx) : ctx_(ctx) {};
+		explicit RenderGraph(Context& ctx) : ctx_(ctx) {
+			pipelineCachePimpl = std::make_unique<PipelineCache>(&ctx_);
+		};
+
+
 		void Clear() { m_passes.clear(); }
 
 		RenderPass& AddPass() {
@@ -335,7 +532,7 @@ namespace smvk {
 				if (logicalBuffer.resolvedBufferHandle.empty()) {
 					const auto& key = logicalBuffer.key;
 					int ringMultiplier = key.ring ? 4 : 1;
-					logicalBuffer.resolvedBufferHandle = ctx_.CreateBufferNoHolder(
+					logicalBuffer.resolvedBufferHandle = ctx_.CreateBuffer(
 						BufferCreateInfo{
 							.size = key.elementCount * key.elementSize * ringMultiplier,
 							.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
@@ -343,7 +540,7 @@ namespace smvk {
 							  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
 							| VK_BUFFER_USAGE_TRANSFER_DST_BIT
 						}
-					);
+					).release();
 				}
 			}
 			);
@@ -356,6 +553,37 @@ namespace smvk {
 		smvk::ImageHandle GetResolvedImageHandle(LogicalImageHandle handle) const {
 			return inputImages_.get(handle)->resolvedImageHandle;
 		};
+
+		void PushConstants(VkCommandBuffer cmd, uint32_t offset, uint32_t size, void* data) {
+			assert(vkCurrentPipelineLayout_ != VK_NULL_HANDLE);
+			vkCmdPushConstants(
+				cmd,
+				vkCurrentPipelineLayout_,
+				VK_SHADER_STAGE_ALL, // crude
+				//VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, /// This should depend on type of pipeline bound!
+				offset,
+				size,
+				data
+			);
+
+		}
+		void BindPipeline(VkCommandBuffer cmd, RenderPipelineHandle handle) {
+			auto bundle = pipelineCachePimpl->GetPipeline(handle);
+			if (bundle.pipeline == VK_NULL_HANDLE) {
+				assert(false && "Invalid pipeline handle");
+			}
+			if (bundle.pipeline != vkCurrentPipeline_) {
+				vkCurrentPipeline_ = bundle.pipeline;
+			}
+			else {
+				return;
+			}
+			vkCmdBindPipeline(
+				cmd,
+				VK_PIPELINE_BIND_POINT_GRAPHICS,
+				vkCurrentPipeline_
+			);
+		}
 
 		void Execute(FrameBuffer& fb) {
 
@@ -438,18 +666,22 @@ namespace smvk {
 		}
 
 		// TODO:: pending implementation.
-		VkExtent2D GetMipSize(LogicalImageHandle imageHandle, uint32_t level);
-		VkExtent2D GetMipSize(LogicalImageViewHandle imageViewHandle, uint32_t level);
+		//VkExtent2D GetMipSize(LogicalImageHandle imageHandle, uint32_t level);
+		//VkExtent2D GetMipSize(LogicalImageViewHandle imageViewHandle, uint32_t level);
 
-		//private:
-		smvk::Context& ctx_;
+		VkPipeline vkCurrentPipeline_;
+		VkPipelineLayout vkCurrentPipelineLayout_;
+
 		smvk::Pool<LogicalImage, LogicalImage> inputImages_;
 		smvk::Pool<LogicalStorageImage, LogicalImage> storageImages_;
 		smvk::Pool<LogicalImageView, LogicalImageView> imageViews_;
 		smvk::Pool<LogicalBuffer, LogicalBuffer> storageBuffers_;
-		std::vector<RenderPass> m_passes;
-	};
 
+		std::vector<RenderPass> m_passes;
+
+		std::unique_ptr<PipelineCache> pipelineCachePimpl;
+		smvk::Context& ctx_;
+	};
 
 
 };

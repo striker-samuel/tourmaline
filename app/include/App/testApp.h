@@ -247,15 +247,13 @@ private:
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
 			.setExtent(fb.swapchain.extent_)
-			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} }) 
-			// Rendering directly to swapchainImage!
+			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })  // Rendering directly to swapchainImage!
 			.setDepth(logicalDepthImageView, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
 			.setRecordingFunc([this, fb](smvk::RenderPassContext pass)
 		{
 			auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
 			auto mesh_manager = m_meshManagerPimpl.get();
 
-			m_rendergraph->BindPipeline();
 
 			std::vector<int> visible;
 			if (m_currentLevel.tree_done) {
@@ -273,12 +271,7 @@ private:
 
 			for (Hierarchy node : m_currentLevel.hierarchy)
 			{
-				//vkCmdBindPipeline(
-				//	fb.commandBuffer,
-				//	VK_PIPELINE_BIND_POINT_GRAPHICS,
-				//	context->pipelines_.get(han_)->pipeline
-				//);
-
+				m_rendergraph->BindPipeline(fb.commandBuffer, m_resources.mainPipeline);
 				for (uint32_t visible_prim : visible) {
 					uint32_t visible_node = m_currentLevel.static_tree.primToNode[visible_prim];
 
@@ -295,35 +288,28 @@ private:
 					auto mat = m_meshManagerPimpl->materials.get(matHandle);
 					assert(mat);
 
-					//Material::Values pcm = mat->values;
+					auto& model_ = m_currentLevel.globalTransform[visible_node];
+					struct {
+						uint64_t frameUniforms;
+						//uint64_t drawData;
+						//uint32_t node; -> Get model from this if scene hioerarchy has gpuSide
+						float model[16];
+						Material::Values mpc;
+					} pc = {
+						.frameUniforms = m_context->buffers_.get(m_resources.frameUniforms)->deviceAddress,
+						.mpc = mat->values
+					};
+					const float* modelData = glm::value_ptr(model_);
+					std::copy_n(modelData, 16, pc.model);
 
-					//struct PC_All {
-					//	MainViewPushConstants pc;
-					//	Material::Values mpc;
-					//};
-					//PC_All all{ pc, pcm };
-
-					//vkCmdPushConstants(
-					//	fb.commandBuffer,
-					//	pipe_lyt.layout,
-					//	VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-					//	0,
-					//	sizeof(PC_All),
-					//	&all
-					//);
+					m_rendergraph->PushConstants(
+						fb.commandBuffer,
+						0,
+						sizeof(pc),
+						&pc
+					);
 
 					for (auto& draw_set : mesh_desc->surfaces) {
-
-						//auto& model_ = m_currentLevel.globalTransform[visible_node];
-						//vkCmdPushConstants(
-						//	fb.commandBuffer,
-						//	pipe_lyt.layout,
-						//	VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-						//	offsetof(MainViewPushConstants, model),
-						//	sizeof(glm::mat4),
-						//	glm::value_ptr(model_)
-						//);
-
 						vkCmdDrawIndexed(
 							fb.commandBuffer,
 							draw_set.index_count,

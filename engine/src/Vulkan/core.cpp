@@ -516,122 +516,146 @@ VkCommandPool GetCommandPool(smvk::QueuePreference preferredQueue)
 
 	return VK_NULL_HANDLE;
 };
-void CreateDescriptorSetLayout(const smvk::PipelineCreateInfo::DescriptorSetDescription& descIn, VkDescriptorSetLayout& layout)
-{
-	smvk::PipelineCreateInfo::DescriptorSetDescription desc = descIn;
-	std::vector<VkDescriptorSetLayoutBinding> vkBindings;
-	vkBindings.reserve(desc.bindings.size());
+//void CreateDescriptorSetLayout(const smvk::PipelineCreateInfo::DescriptorSetDescription& descIn, VkDescriptorSetLayout& layout)
+//{
+//	smvk::PipelineCreateInfo::DescriptorSetDescription desc = descIn;
+//	std::vector<VkDescriptorSetLayoutBinding> vkBindings;
+//	vkBindings.reserve(desc.bindings.size());
+//
+//	// IMPORTANT: pImmutableSamplers must point to memory that lives until vkCreateDescriptorSetLayout returns.
+//	// We can keep a local vector-of-vectors of VkSampler pointers to stable storage.
+//	std::vector<std::vector<VkSampler>> immutableSamplersStorage;
+//	immutableSamplersStorage.reserve(desc.bindings.size());
+//
+//	std::vector<VkDescriptorBindingFlags> bindingFlags;
+//	bindingFlags.reserve(desc.bindings.size());
+//
+//	for (const smvk::PipelineCreateInfo::BindingDescription& b : desc.bindings)
+//	{
+//		VkDescriptorSetLayoutBinding vkB{};
+//		vkB.binding = b.binding;
+//		vkB.descriptorType = b.type;
+//		vkB.descriptorCount = b.count;
+//		vkB.stageFlags = b.stages;
+//		if (!b.immutableSamplers.empty())
+//		{
+//			assert(b.immutableSamplers.size() == b.count);
+//			immutableSamplersStorage.emplace_back();
+//			auto& store = immutableSamplersStorage.back();
+//			store.reserve(b.immutableSamplers.size());
+//			store = b.immutableSamplers;
+//			vkB.pImmutableSamplers = store.data();
+//		}
+//		else
+//		{
+//			vkB.pImmutableSamplers = nullptr;
+//		}
+//		vkBindings.push_back(vkB);
+//		bindingFlags.push_back(b.flags);
+//	}
+//
+//	// 4) Optional binding flags chain
+//	VkDescriptorSetLayoutBindingFlagsCreateInfo flagsCI{
+//		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO
+//	};
+//	flagsCI.bindingCount = (uint32_t)bindingFlags.size();
+//	flagsCI.pBindingFlags = bindingFlags.data();
+//
+//	VkDescriptorSetLayoutCreateInfo ci{
+//		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+//	};
+//	ci.flags = desc.createFlags;
+//	ci.bindingCount = (uint32_t)vkBindings.size();
+//	ci.pBindings = vkBindings.data();
+//
+//	// Only chain if you actually have non-zero flags; otherwise keep pNext null
+//	bool anyFlags = false;
+//	for (auto f : bindingFlags) if (f != 0) { anyFlags = true; break; }
+//	ci.pNext = anyFlags ? &flagsCI : nullptr;
+//
+//	VK_CHECK(vkCreateDescriptorSetLayout(device_, &ci, nullptr, &layout));
+//}
 
-	// IMPORTANT: pImmutableSamplers must point to memory that lives until vkCreateDescriptorSetLayout returns.
-	// We can keep a local vector-of-vectors of VkSampler pointers to stable storage.
-	std::vector<std::vector<VkSampler>> immutableSamplersStorage;
-	immutableSamplersStorage.reserve(desc.bindings.size());
 
-	std::vector<VkDescriptorBindingFlags> bindingFlags;
-	bindingFlags.reserve(desc.bindings.size());
-
-	for (const smvk::PipelineCreateInfo::BindingDescription& b : desc.bindings)
-	{
-		VkDescriptorSetLayoutBinding vkB{};
-		vkB.binding = b.binding;
-		vkB.descriptorType = b.type;
-		vkB.descriptorCount = b.count;
-		vkB.stageFlags = b.stages;
-		if (!b.immutableSamplers.empty())
-		{
-			assert(b.immutableSamplers.size() == b.count);
-			immutableSamplersStorage.emplace_back();
-			auto& store = immutableSamplersStorage.back();
-			store.reserve(b.immutableSamplers.size());
-			store = b.immutableSamplers;
-			vkB.pImmutableSamplers = store.data();
-		}
-		else
-		{
-			vkB.pImmutableSamplers = nullptr;
-		}
-		vkBindings.push_back(vkB);
-		bindingFlags.push_back(b.flags);
-	}
-
-	// 4) Optional binding flags chain
-	VkDescriptorSetLayoutBindingFlagsCreateInfo flagsCI{
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO
+static VkDescriptorSetLayoutBinding getDSLBinding(uint32_t binding,
+	VkDescriptorType descriptorType,
+	uint32_t descriptorCount,
+	VkShaderStageFlags stageFlags,
+	const VkSampler* immutableSamplers = nullptr
+) {
+	return VkDescriptorSetLayoutBinding{
+		.binding = binding,
+		.descriptorType = descriptorType,
+		.descriptorCount = descriptorCount,
+		.stageFlags = stageFlags,
+		.pImmutableSamplers = immutableSamplers,
 	};
-	flagsCI.bindingCount = (uint32_t)bindingFlags.size();
-	flagsCI.pBindingFlags = bindingFlags.data();
-
-	VkDescriptorSetLayoutCreateInfo ci{
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
-	};
-	ci.flags = desc.createFlags;
-	ci.bindingCount = (uint32_t)vkBindings.size();
-	ci.pBindings = vkBindings.data();
-
-	// Only chain if you actually have non-zero flags; otherwise keep pNext null
-	bool anyFlags = false;
-	for (auto f : bindingFlags) if (f != 0) { anyFlags = true; break; }
-	ci.pNext = anyFlags ? &flagsCI : nullptr;
-
-	VK_CHECK(vkCreateDescriptorSetLayout(device_, &ci, nullptr, &layout));
 }
-void CreatePipelineLayout(const smvk::PipelineCreateInfo::PipelineLayoutDesc& descIn, VkPipelineLayout& out)
+
+
+void smvk::CreateDefaultDescriptorSetLayout(VkDescriptorSetLayout& dsl) {
+
+	VkShaderStageFlags stageFlags =
+		VK_SHADER_STAGE_VERTEX_BIT
+		| VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
+		| VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
+		| VK_SHADER_STAGE_FRAGMENT_BIT
+		| VK_SHADER_STAGE_COMPUTE_BIT;
+
+	const VkDescriptorSetLayoutBinding bindings[kBinding_NumBindings] = {
+		getDSLBinding(kBinding_Textures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
+		getDSLBinding(kBinding_Samplers, VK_DESCRIPTOR_TYPE_SAMPLER, MAX_SAMPLERS, stageFlags),
+		getDSLBinding(kBinding_StorageImages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_TEXTURES, stageFlags),
+	};
+
+	const uint32_t flags =
+		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+		| VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT
+		| VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+
+	VkDescriptorBindingFlags bindingFlags[kBinding_NumBindings];
+	for (int i = 0; i < kBinding_NumBindings; ++i) {
+		bindingFlags[i] = flags;
+	}
+	const VkDescriptorSetLayoutBindingFlagsCreateInfo setLayoutBindingFlagsCI = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT,
+		//.bindingCount = uint32_t(hasAccelerationStructure_ ? kBinding_NumBindings : kBinding_NumBindings - 1),
+		.bindingCount = kBinding_NumBindings,
+		.pBindingFlags = bindingFlags,
+	};
+	const VkDescriptorSetLayoutCreateInfo dslci = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.pNext = &setLayoutBindingFlagsCI,
+		.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT_EXT,
+		//.bindingCount = uint32_t(hasAccelerationStructure_ ? kBinding_NumBindings : kBinding_NumBindings - 1),
+		.bindingCount = kBinding_NumBindings,
+		.pBindings = bindings,
+	};
+
+	VK_CHECK(vkCreateDescriptorSetLayout(device_, &dslci, nullptr, &dsl));
+
+}
+void smvk::CreateDefaultPipelineLayout(VkPipelineLayout& out)
 {
-	auto sets = descIn.setDescriptions;
-	assert(sets.size() <= 8 && "Too many descriptor sets 8+");
-	const uint32_t setLayoutCount = (sets.empty()) ? 0u : (sets.size());
-	std::array<VkDescriptorSetLayout, 8> vkSetLayouts{};
-	vkSetLayouts.fill(VK_NULL_HANDLE);
+	VkDescriptorSetLayout setLayout;
+	CreateDefaultDescriptorSetLayout(setLayout);
+	VkDescriptorSetLayout setLayouts[1] = { setLayout };
+	//VkDescriptorSetLayout setLayouts[4] = { setLayout, setLayout, setLayout };
 
-	int i = 0;
-	for (const auto& s : sets)
-	{
-		VkDescriptorSetLayout vk_lyt = VK_NULL_HANDLE;
-		CreateDescriptorSetLayout(s, vk_lyt);
-		vkSetLayouts[i] = vk_lyt;
-		i++;
-	}
+	// Just hardcode this as a monolitic block for now.
+	static constexpr uint32_t EnginePushConstantSize = 128; // Or 256 if Vulkan 1.4 is your minimum target.
+	VkPushConstantRange range{
+		.stageFlags = VK_SHADER_STAGE_ALL,
+		.offset = 0,
+		.size = EnginePushConstantSize,
+	};
 
-	VkPushConstantRange ranges[8]{};
-	const uint32_t rangeCount = static_cast<uint32_t>(descIn.pushConstants.size());
-	VkPhysicalDeviceProperties properties{};
-	vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-	auto min_align = properties.limits.minUniformBufferOffsetAlignment;
-
-	assert(rangeCount <= 8 && "Max 8 push constant ranges");
-
-	// Decide explicit offsets vs packed offsets
-	bool anyExplicitOffset = false;
-	for (const auto& pc : descIn.pushConstants)
-		if (pc.offset != 0) { anyExplicitOffset = true; break; }
-
-	uint32_t curr_off = 0;
-
-	for (uint32_t i = 0; i < rangeCount; ++i)
-	{
-		const auto& r = descIn.pushConstants[i];
-
-		const uint32_t off = anyExplicitOffset ? r.offset : curr_off;
-
-		assert(is_aligned4(off));
-		assert(is_aligned4(r.size));
-		assert(r.size > 0);
-
-		ranges[i] = VkPushConstantRange{
-			.stageFlags = r.stages,
-			.offset = off,
-			.size = r.size
-		};
-
-		if (!anyExplicitOffset)
-			curr_off += r.size;
-	}
 	VkPipelineLayoutCreateInfo ci{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = setLayoutCount,
-		.pSetLayouts = setLayoutCount ? vkSetLayouts.data() : nullptr,
-		.pushConstantRangeCount = rangeCount,
-		.pPushConstantRanges = rangeCount ? ranges : nullptr,
+		.setLayoutCount = 1,
+		.pSetLayouts = setLayouts,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges = &range
 	};
 	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &out));
 }
@@ -869,6 +893,15 @@ void smvk::VulkanCore::CreateShaderModule(const std::vector<char>& code, VkShade
 		VK_SUCCESS) {
 		throw std::runtime_error("failed to create shader module!");
 	}
+}
+void smvk::VulkanCore::CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline pipeline) {
+
+	if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &createInfo,
+		nullptr, &pipeline) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create graphics pipeline!");
+	}
+
 }
 inline smvk::VulkanCore::~VulkanCore() {
 	vkDeviceWaitIdle(device_);
@@ -1722,36 +1755,6 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 	return { this, 	textures_.create(std::move(image_obj)) };
 
 }
-[[nodiscard]] smvk::BufferHandle smvk::Context::CreateBufferNoHolder(BufferCreateInfo bufferCreateInfo) {
-	Buffer desc{};
-	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	ci.size = bufferCreateInfo.size;
-	ci.usage = bufferCreateInfo.usage_flags | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	VmaAllocationCreateInfo aci{};
-	aci.usage = bufferCreateInfo.vma_usage;
-
-	// Optionally choose pools here based on usage_flags/usage
-	VK_CHECK(vmaCreateBuffer(
-		m_allocator,
-		&ci,
-		&aci,
-		&desc.vk_buffer,
-		&desc.vma_alloc,
-		nullptr
-		//&desc.allocInfo
-	)
-	);
-
-	const VkBufferDeviceAddressInfo ai = {
-		.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-		.buffer = desc.vk_buffer
-	};
-	desc.deviceAdress = vkGetBufferDeviceAddress(device_, &ai);
-	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &desc.memory_flags);
-	desc.usage = bufferCreateInfo.usage_flags;
-	return buffers_.create(std::move(desc));
-}
 [[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::Context::CreateBuffer(BufferCreateInfo bufferCreateInfo) {
 	Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -1777,7 +1780,7 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 		.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
 		.buffer = desc.vk_buffer
 	};
-	desc.deviceAdress = vkGetBufferDeviceAddress(device_, &ai);
+	desc.deviceAddress = vkGetBufferDeviceAddress(device_, &ai);
 	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &desc.memory_flags);
 	desc.usage = bufferCreateInfo.usage_flags;
 	return { this, buffers_.create(std::move(desc)) };
@@ -1817,6 +1820,26 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, size_t da
 		shader
 	);
 	return smvk::Holder(this, shaderModules_.create(std::move(shader)));
+}
+[[nodiscard]] smvk::Holder<smvk::DescriptorPoolHandle> smvk::Context::CreateDescriptorPool() {
+	std::array<VkDescriptorPoolSize, 3> poolSizes = {
+	  {
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    MAX_TEXTURES },
+		{ VK_DESCRIPTOR_TYPE_SAMPLER,          MAX_SAMPLERS },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    MAX_TEXTURES },
+	  }
+	};
+
+	VkDescriptorPoolCreateInfo poolInfo{ };
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.maxSets = 1000;
+	poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT; // required
+	poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+	poolInfo.pPoolSizes = poolSizes.data();
+
+	VkDescriptorPool dpool;
+	VK_CHECK(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &dpool));
+	return { this, descriptorPools_.create(std::move(dpool)) };
 }
 void* smvk::Context::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
 	void* mapped = nullptr;
@@ -1861,7 +1884,6 @@ void smvk::Context::CleanUp() {
 
 	vmaDestroyPool(m_allocator, m_imagesPool);
 	vmaDestroyPool(m_allocator, m_stagingPool);
-	vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
 	memset(descriptorSets_, 0, sizeof(descriptorSets_));
 }
 // 
@@ -1882,6 +1904,8 @@ void smvk::destroy(smvk::Context* ctx, smvk::TextureHandle handle) {}
 void smvk::destroy(smvk::Context* ctx, smvk::SamplerHandle handle) {}
 void smvk::destroy(smvk::Context* ctx, smvk::DescriptorSetHandle handle) {}
 void smvk::destroy(smvk::Context* ctx, smvk::DescriptorPoolHandle handle) {}
+
+void smvk::destroy(smvk::Context* ctx, smvk::RenderPipelineHandle handle) {}
 
 // Barriers
 inline void BufferBarrier(
@@ -2203,11 +2227,12 @@ inline void smvk::Submitter::reset(CommandSubmitHandle handle) {
 }
 
 // VulkanSwapchain
-smvk::VulkanSwapchain::VulkanSwapchain(Context& context, GLFWwindow* window, uint32_t framesInFlight, uint32_t desiredImageCount)
-	: ctx_(context),
-	window_(window),
-	framesInFlight_(framesInFlight),
-	desiredImageCount_(desiredImageCount) {
+smvk::VulkanSwapchain::VulkanSwapchain(Context& context, GLFWwindow* window/*, uint32_t framesInFlight, uint32_t desiredImageCount*/)
+	: ctx_(context)
+	, window_(window)
+	//, framesInFlight_(framesInFlight),
+	//, desiredImageCount_(desiredImageCount)
+{
 
 	vk_depthFormat_ = findDepthFormat();
 	Create();
@@ -2282,7 +2307,8 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 	VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 	//VkPresentModeKHR presentMode = chooseSwapPresentMode(support.presentModes);
 
-	uint32_t imageCount = desiredImageCount_;
+	//uint32_t imageCount = desiredImageCount_;
+	uint32_t imageCount = DESIRED_SWAPCHAIN_IMAGE_COUNT;
 	if (imageCount < support.capabilities.minImageCount) {
 		imageCount = support.capabilities.minImageCount;
 	}
@@ -2291,6 +2317,7 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 		imageCount > support.capabilities.maxImageCount) {
 		imageCount = support.capabilities.maxImageCount;
 	}
+	framesInFlight_ = imageCount + 2u;
 
 	QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
 	uint32_t queueFamilyIndices[] = {
@@ -2568,7 +2595,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 		GetCurrentImage(),
 		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-		{ // maybe the api surface should specialize subresoruces to avoid having to think about this
+		{
 			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 			.baseMipLevel = 0,
 			.levelCount = 1,

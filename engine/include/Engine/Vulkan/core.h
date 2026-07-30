@@ -29,6 +29,7 @@ static constexpr uint32_t DESIRED_SWAPCHAIN_IMAGE_COUNT = 2;
 static constexpr uint32_t MAX_BUFFERS = 1024;
 static constexpr uint32_t MAX_LIGHTS = 4096;
 static constexpr uint32_t MAX_TEXTURES = 4096;
+static constexpr uint32_t MAX_SAMPLERS = 8;
 static constexpr uint32_t MAX_COLOR_ATTACHEMNTS = 4096;
 
 
@@ -168,7 +169,7 @@ namespace smvk {
 		VmaAllocation vma_alloc{};
 		VkBufferUsageFlags usage = 0;
 		VkMemoryPropertyFlags memory_flags = 0;
-		VkDeviceAddress deviceAdress = 0;
+		VkDeviceAddress deviceAddress = 0;
 		[[nodiscard]] bool is_mappable() const noexcept {
 			return (memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
 		}
@@ -239,15 +240,36 @@ namespace smvk {
 		uint32_t samplesCount = 1u;
 		float minSampleShading = 0.0f;
 		const char* debugName = "";
+
+		bool operator<(const RenderPipelineDesc& other) const noexcept {
+
+		}
 	};
 
 	struct RenderPipelineState {
-		RenderPipelineDesc description; //key?
-		VkDescriptorSetLayout vkDsLayoutUsed;
+		RenderPipelineDesc description;
+		//VkDescriptorSetLayout vkDsLayoutUsed;
 		VkPipeline vkPipeline;
 		VkPipelineLayout vkLayout;
+		bool operator<(const RenderPipelineState& other) const noexcept {
+		    return description < other.description;
+		}
 	};
 
+	//struct PipelineCreateInfo {
+	//	struct BindingDescription {
+	//		uint32_t binding = 0; // If we want sparse bindings we need this
+	//		VkDescriptorType type{};
+	//		uint32_t count = 1;
+	//		VkShaderStageFlags stages = 0;
+	//		VkDescriptorBindingFlags flags = 0;
+	//		std::vector<VkSampler> immutableSamplers;
+	//	};
+	//	struct DescriptorSetDescription {
+	//		VkDescriptorSetLayoutCreateFlags createFlags = 0; // e.g. UPDATE_AFTER_BIND_POOL_BIT
+	//		std::vector<BindingDescription> bindings;
+	//	};
+	//};
 };
 
 
@@ -322,14 +344,19 @@ namespace smvk {
 		int CreateInstance();
 		bool Init();
 
-		//void CreateFence(const VkFenceCreateInfo createInfo, VkFence& out);
+
+		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline pipeline);
 		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
 		void CreateShaderModule(const std::vector<char>& code, VkShaderModule& out);
-		//void CreateCommandPool(QueuePreference queue, VkCommandPoolCreateFlags flags, VkCommandPool& out);
 		void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out);
+		//void CreateFence(const VkFenceCreateInfo createInfo, VkFence& out);
+		//void CreateCommandPool(QueuePreference queue, VkCommandPoolCreateFlags flags, VkCommandPool& out);
 	};
 
+
+	void CreateDefaultDescriptorSetLayout(VkDescriptorSetLayout& dsl);
+	void CreateDefaultPipelineLayout(VkPipelineLayout& out);
 	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window);
 
 	struct CommandSubmitHandle {
@@ -389,47 +416,7 @@ namespace smvk {
 		CommandSubmitHandle handle_;
 	};
 
-	struct PipelineCreateInfo {
 
-		struct RasterSettings {
-			uint32_t depthClampEnable = VK_FALSE;
-			uint32_t rasterizerDiscardEnable = VK_FALSE;
-			VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
-			float lineWidth = 1.0f;
-			uint32_t cullMode = VK_CULL_MODE_BACK_BIT;
-			VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-			uint32_t depthBiasEnable = VK_FALSE;
-			float depthBiasConstant = 0.0f;
-			float depthBiasSlope = 1.0f; // This should be PCF radius https://mynameismjp.wordpress.com/2013/09/10/shadow-maps/
-		};
-
-		struct BindingDescription {
-			uint32_t binding = 0; // If we want sparse bindings we need this
-			VkDescriptorType type{};
-			uint32_t count = 1;
-			VkShaderStageFlags stages = 0;
-			VkDescriptorBindingFlags flags = 0;
-			std::vector<VkSampler> immutableSamplers;
-		};
-		struct DescriptorSetDescription {
-			VkDescriptorSetLayoutCreateFlags createFlags = 0; // e.g. UPDATE_AFTER_BIND_POOL_BIT
-			std::vector<BindingDescription> bindings;
-		};
-		struct PushConstantDescription {
-			VkShaderStageFlags stages = 0;
-			uint32_t offset = 0;
-			uint32_t size = 0;
-		};
-
-		struct PipelineLayoutDesc {
-			bool valid = 0;
-			std::vector<DescriptorSetDescription> setDescriptions; // each has set index
-			std::vector<PushConstantDescription> pushConstants;
-		};
-		//
-		//PipelineLayoutDesc layoutDescription{};
-		RasterSettings rasterSettings{};
-	};
 
 	// 4.6gb is good amount to reserver for 8gb vram system
 	// 2gb for Windows is good practice. And a little headroom for aux apps
@@ -446,14 +433,14 @@ namespace smvk {
 		void ProcessDeferrredTasks();
 		//void Flush();
 		//
-		BufferHandle CreateStagingBuffer(VkDeviceSize size); 
-		BufferHandle CreateBufferNoHolder(BufferCreateInfo bufferCreateInfo);
+		BufferHandle CreateStagingBuffer(VkDeviceSize size);
 		ImageHandle CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		// 
 		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
 		Holder<TextureHandle> CreateTexture(ktxTexture2& texture);
 		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
+		Holder<DescriptorPoolHandle> CreateDescriptorPool();
 		//
 
 		void* MapBuffer(smvk::Handle<smvk::Buffer> handle);
@@ -463,9 +450,6 @@ namespace smvk {
 		void UploadDataToImage2D(Image img, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 
 		void CleanUp();
-
-		void GetKtxDeviceInfo(); // will be removed
-
 
 		//private:
 		VulkanCore& core_;
@@ -477,15 +461,24 @@ namespace smvk {
 		Pool<Buffer, Buffer> buffers_;
 		Pool<ShaderModule, VkShaderModule> shaderModules_;
 		Pool<Sampler, VkSampler> samplers_;
+		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_;
+
+		Pool<RenderPipelineState, RenderPipelineState> graphicPipelines_;
 
 		VmaAllocator m_allocator;
 		VmaPool m_imagesPool;
 		VmaPool m_stagingPool;
-		VkDescriptorPool descriptorPool_;
-		VkDescriptorSet descriptorSets_[MAX_FRAMES_IN_FLIGHT];
 
 		TextureHandle m_nilTexture{};
 		VkSampler m_defaultSampler{};
+
+
+		// Hardcoded pipeline layout
+		void CreateDefaultLayoutAndSets();
+		VkDescriptorSetLayout defaultSetLayout;
+		VkPipelineLayout defaultPipeLyt;
+		//VkDescriptorPool descriptorPool_;
+		VkDescriptorSet descriptorSets_[MAX_FRAMES_IN_FLIGHT];
 	};
 
 	void destroy(Context* ctx, ImageHandle handle);
@@ -496,6 +489,7 @@ namespace smvk {
 
 	void destroy(Context* ctx, DescriptorPoolHandle handle);
 	void destroy(Context* ctx, DescriptorSetHandle handle);
+	void destroy(Context* ctx, RenderPipelineHandle handle);
 
 
 };
@@ -553,10 +547,10 @@ namespace smvk {
 	public:
 
 		VulkanSwapchain(
-			Context& context,
-			GLFWwindow* window,
-			uint32_t framesInFlight,
-			uint32_t desiredImageCount
+			Context& context
+			, GLFWwindow* window
+			//, uint32_t framesInFlight,
+			//, uint32_t desiredImageCount
 		);
 		VulkanSwapchain(const VulkanSwapchain&) = delete;
 		VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
@@ -613,7 +607,7 @@ namespace smvk {
 		int windowWidth = 0;
 		int windowHeight = 0;
 		uint32_t framesInFlight_ = 0;
-		uint32_t desiredImageCount_ = 0;
+		uint32_t desiredImageCount_ = DESIRED_SWAPCHAIN_IMAGE_COUNT;
 		uint32_t currentImageIndex_ = 0;
 		uint32_t currentFrame_ = 0;
 
