@@ -250,6 +250,7 @@ private:
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(logicalSwapchainImage);
 		//
+		m_meshManagerPimpl->BindIndexVertexBuffers(fb.commandBuffer);
 
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
@@ -260,7 +261,6 @@ private:
 		{
 			auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
 			auto mesh_manager = m_meshManagerPimpl.get();
-
 
 			std::vector<int> visible;
 			if (m_currentLevel.tree_done) {
@@ -276,9 +276,10 @@ private:
 				assert(false && "tree wasnt done");
 			}
 
+			m_rendergraph->BindPipeline(fb.commandBuffer, m_resources.mainPipeline);
 			for (Hierarchy node : m_currentLevel.hierarchy)
 			{
-				m_rendergraph->BindPipeline(fb.commandBuffer, m_resources.mainPipeline);
+
 				for (uint32_t visible_prim : visible) {
 					uint32_t visible_node = m_currentLevel.static_tree.primToNode[visible_prim];
 

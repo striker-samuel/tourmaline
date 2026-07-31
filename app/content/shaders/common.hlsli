@@ -1,22 +1,7 @@
-#ifndef MAX_LIGHTS
-#define MAX_LIGHTS 10
-#endif
 
-
-[[vk::push_constant]]
-struct PC_Draw
-{
-    float4x4 model;
-    uint materialIndex;
-    float _pad[3];
-
-    //Material
-    float4 ambient;
-    float4 diffuse;
-    uint4 tex; //diffuse, ambient, spec
-    //float4 _pad;
-} pc;
-
+// Default bindings
+[[vk::binding(0,0)]] Texture2D materialTex[]; // sampled images
+[[vk::binding(1,0)]] SamplerState materialSamp[]; // samplers
 
 struct FrameUniforms
 {
@@ -37,6 +22,16 @@ struct FrameUniforms
     float nearPlane;
     float farPlane;
     float exposure;
-    float padding; // keep 16-byte alignment
+    float padding;
 };
 
+struct PC_Draw
+{
+    vk::BufferPointer<FrameUniforms> frameUniforms;
+    float4 ambient;
+    float4 diffuse;
+    uint4 tex;
+};
+
+[[vk::push_constant]]
+ConstantBuffer<PC_Draw> pc;

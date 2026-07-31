@@ -1,8 +1,8 @@
 #include "light.hlsli"
 #include "common.hlsli"
 
-[[vk::binding(2,1)]] Texture2D materialTex[]; // sampled images
-[[vk::binding(3,1)]] SamplerState materialSamp[]; // samplers
+[[vk::binding(0,0)]] Texture2D materialTex[]; // sampled images
+[[vk::binding(0,1)]] SamplerState materialSamp[]; // samplers
 
 //[[vk::binding(4, 0)]]
 //cbuffer Lights

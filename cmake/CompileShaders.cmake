@@ -1,6 +1,5 @@
-﻿# Update these to your Vulkan 1.4 SDK paths
-set(GLSLC "C:/VulkanSDK/1.3.283.0/Bin/glslc.exe")   # <- update path
-set(DXC   "C:/VulkanSDK/1.3.283.0/Bin/dxc.exe")     # <- update path
+﻿set(GLSLC "%VULKAN_SDK%/Bin/glslc.exe")
+set(DXC   "%VULKAN_SDK%/Bin/dxc.exe")
 
 # Helper: map filename to stage + entry for HLSL
 function(_detect_hlsl_stage_and_entry SHADER OUT_STAGE OUT_ENTRY OUT_PROFILE)

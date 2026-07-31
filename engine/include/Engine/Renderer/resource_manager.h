@@ -57,7 +57,7 @@ struct MeshManager {
 	smvk::BufferHandle GetIndexBuffer();
 	std::vector<smvk::BufferHandle> GetVertexBuffers();
 
-	void Bind(VkCommandBuffer commandBuffer) {
+	void BindIndexVertexBuffers(VkCommandBuffer commandBuffer) {
 		auto indexBuffer = ctx_.buffers_.get(GetIndexBuffer());
 		auto vertexBuffers = GetVertexBuffers();
 		std::vector<VkBuffer> bufs{};

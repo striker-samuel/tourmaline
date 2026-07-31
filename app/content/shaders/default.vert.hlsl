@@ -1,22 +1,4 @@
-#ifndef MAX_INSTANCES
-#define MAX_INSTANCES 1000
-#endif
-
 #include "common.hlsli"
-
-
-[[vk::binding(0, 0)]]
-ConstantBuffer<FrameUniforms> frame_res;
-
-struct DrawSetData
-{
-    float4x4 transform;
-    float4 color;
-};
-
-//Unused right now
-[[vk::binding(1, 0)]]
-StructuredBuffer<DrawSetData> drawData;
 
 struct VSIn
 {
