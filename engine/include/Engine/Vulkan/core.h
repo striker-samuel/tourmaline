@@ -65,6 +65,17 @@ inline const char* vkResultToString(VkResult result);
 
 namespace smvk {
 
+	struct QueueFamilyIndices {
+		std::optional<uint32_t> graphicsFamily;
+		std::optional<uint32_t> presentFamily;
+		std::optional<uint32_t> transferFamily;
+
+		bool isComplete() const {
+			return graphicsFamily.has_value() && presentFamily.has_value();
+		}
+	};
+
+
 	// Predegined buffer usages so we have flags preset.
 	// Theres no need for infinite granularity so clearly this will be the best approach when ready
 	//enum BufferTypeBits : uint8_t {
@@ -79,16 +90,19 @@ namespace smvk {
 	//  BufferUsageBits_AccelStructStorage = 1 << 7
 	//};
 
+	//struct BufferCreateInfo {
+	//	size_t size;
+	//	uint8_t bufferUsageType = 0;
+	//	const char* name;
+	//};
+
 	struct BufferCreateInfo {
 		VkDeviceSize size;
-		VmaMemoryUsage vma_usage;
+		VmaMemoryUsage vma_usage; // this is derived from buffer/type or use.
 		VkBufferUsageFlags usage_flags;
 		const char* name;
-		//void* data;
-		//uint8_t usage = 0;
 	};
 	struct ImageCreateInfo {
-
 		VkSampleCountFlags vk_samples = VK_SAMPLE_COUNT_1_BIT;
 		VkExtent3D vk_extent;
 		VkFormat vk_format = VK_FORMAT_UNDEFINED;
@@ -132,10 +146,14 @@ namespace smvk {
 };
 
 namespace smvk {
+
+
 	struct Image {
+
+		// shoudl i just sstore vkIamgeCreateinfo??
+
 		VkImage vk_image = VK_NULL_HANDLE;
 		VmaAllocation vma_alloc = VK_NULL_HANDLE;
-		//ImageCreateInfo createInfo;
 		VkExtent3D vk_extent = { 1,1,1 };
 		VkFormat vk_format = VK_FORMAT_UNDEFINED;
 		VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -152,6 +170,8 @@ namespace smvk {
 		VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
 		bool owns_views = true;
 		bool is_swapchain = false;
+
+
 		ImageCreateInfo getImageCreateInfo() const {
 			return {
 				.vk_extent = vk_extent,
@@ -170,21 +190,19 @@ namespace smvk {
 		VkBufferUsageFlags usage = 0;
 		VkMemoryPropertyFlags memory_flags = 0;
 		VkDeviceAddress deviceAddress = 0;
+		//uint64_t mapped = 0; // permanent mapping may be good
 		[[nodiscard]] bool is_mappable() const noexcept {
 			return (memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
 		}
-		//[[nodiscard]] bool is_valid() const noexcept {
-		//	return vk_buffer != VK_NULL_HANDLE && vma_alloc != nullptr;
-		//}
 	};
 
-
+	// will be removed when updating to vk 1.4
+	using ShaderModuleHandle = Handle<struct ShaderModule>;
 
 	using ImageHandle = Handle<struct Image>;
 	using TextureHandle = Handle<struct Texture>;
 	using SamplerHandle = Handle<struct Sampler>;
 	using BufferHandle = Handle<struct Buffer>;
-	using ShaderModuleHandle = Handle<struct ShaderModule>;
 	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 	using DescriptorSetHandle = Handle<struct DescriptorSet>;
 
@@ -193,100 +211,12 @@ namespace smvk {
 
 namespace smvk {
 
-	struct RenderPipelineDesc {
-
-		// This will be hardcoded in build for now.
-		// INPUT ASS
-		//Topology topology = Topology_Triangle;
-		//lvk::VertexInput vertexInput;
-
-		ShaderModuleHandle smVert;
-		ShaderModuleHandle smFrag;
-
-		// lifted from lvk but not implemented yey
-		//ShaderModuleHandle smTesc;
-		//ShaderModuleHandle smTese;
-		//ShaderModuleHandle smGeom;
-		//ShaderModuleHandle smTask;
-		//ShaderModuleHandle smMesh;
-
-		// Same, not supported yet
-		//SpecializationConstantDesc specInfo = {};
-
-		const char* entryPointVert = "main";
-		const char* entryPointFrag = "main";
-
-		struct ColorAttachemnt {
-			VkFormat vkColorFormat = VK_FORMAT_UNDEFINED;
-			bool blend = false;
-			//BlendState blendState;
-		} color[6]; // hardcoded for max # of color attachments. 6 for cubemap
-
-		// TARGET
-		//ColorAttachment color[LVK_MAX_COLOR_ATTACHMENTS] = {};
-		VkFormat vkDepthFormat = VK_FORMAT_UNDEFINED; // maybe max enum for default better?
-		VkFormat vkStencilFormat = VK_FORMAT_UNDEFINED; // maybe max enum for default better?
-		//Format depthFormat = Format_Invalid;
-		//Format stencilFormat = Format_Invalid;
-		VkCullModeFlags vkCullMode = VK_CULL_MODE_BACK_BIT;
-		VkFrontFace vkFrontFace = VK_FRONT_FACE_CLOCKWISE;
-		VkPolygonMode vkPolygonMode = VK_POLYGON_MODE_FILL;
-		// Stencil not yet implemented.
-		//StencilState backFaceStencil = {};
-		//StencilState frontFaceStencil = {};
-		// TES
-		//uint32_t patchControlPoints = 0;
-		// MSAA
-		uint32_t samplesCount = 1u;
-		float minSampleShading = 0.0f;
-		const char* debugName = "";
-
-		bool operator<(const RenderPipelineDesc& other) const noexcept {
-		}
-	};
-
-	struct RenderPipelineState {
-		RenderPipelineDesc description{};
-		VkPipeline vkPipeline = VK_NULL_HANDLE;
-		VkPipelineLayout vkLayout = VK_NULL_HANDLE;
-		bool operator<(const RenderPipelineState& other) const noexcept {
-		    return description < other.description;
-		}
-	};
-
-	//struct PipelineCreateInfo {
-	//	struct BindingDescription {
-	//		uint32_t binding = 0; // If we want sparse bindings we need this
-	//		VkDescriptorType type{};
-	//		uint32_t count = 1;
-	//		VkShaderStageFlags stages = 0;
-	//		VkDescriptorBindingFlags flags = 0;
-	//		std::vector<VkSampler> immutableSamplers;
-	//	};
-	//	struct DescriptorSetDescription {
-	//		VkDescriptorSetLayoutCreateFlags createFlags = 0; // e.g. UPDATE_AFTER_BIND_POOL_BIT
-	//		std::vector<BindingDescription> bindings;
-	//	};
-	//};
-};
-
-
-
-namespace smvk {
-
 	// Just VK_1_3 for the moment, should be more than ok
 	// https://asawicki.info/articles/state_of_gpu_hardware_2025.php 
 	enum VulkanVersion {
 		VK_1_3
+		//, VK_1_4
 	};
-
-	// This was badly solved.
-	enum struct QueuePreference {
-		GRAPHICS,
-		TRANSFER,
-		COMPUTE
-	};
-
 
 	struct VulkanCore {
 		struct CoreConfiguration {
@@ -329,6 +259,7 @@ namespace smvk {
 		VkPhysicalDeviceVulkan11Features vkFeatures11_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &vkFeatures12_ };
 		VkPhysicalDeviceFeatures2 vkFeatures10_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &vkFeatures11_ };
 		// 
+		QueueFamilyIndices indices;
 
 	public:
 
@@ -343,20 +274,22 @@ namespace smvk {
 		bool Init();
 
 
-		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline);
 		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
 		void CreateShaderModule(const std::vector<char>& code, VkShaderModule& out);
 		void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out);
-		//void CreateFence(const VkFenceCreateInfo createInfo, VkFence& out);
 		//void CreateCommandPool(QueuePreference queue, VkCommandPoolCreateFlags flags, VkCommandPool& out);
-	};
 
+		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline);
+		//void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline);
+	};
 
 	void CreateDefaultDescriptorSetLayout(VkDescriptorSetLayout& dsl);
 	void CreateDefaultPipelineLayout(VkPipelineLayout& out);
 	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window);
 
+
+	//
 	struct CommandSubmitHandle {
 		uint32_t index_ = 0;
 		uint32_t gen_ = 0; // gen 0 means no slot. alas empty. 
@@ -364,12 +297,12 @@ namespace smvk {
 	};
 
 	// This is a copy of the approach of IGL/lightweightVk but I changed fences for timelineSempahores.
-	// This change doenst really make sense. TimelineSemaphore support would be more useful to model something like
+	// This change doenst really make sense. SemaphoreState support would be more useful to model something like
 	// QueueTimeline from nvprocore2. It works so its staying for now but this is DUMB!
 	// * The idea was to peg multiple cmd to same timeline semaphore for batched jobs on a single slot.
 	// makes no sense in practice. 
 	struct Submitter {
-		struct TimelineSemaphore {
+		struct SemaphoreState {
 			VkSemaphore semaphore_ = VK_NULL_HANDLE;
 			uint64_t initialValue_ = 0;
 			uint64_t goal_ = 1; //defautl to 1
@@ -377,9 +310,8 @@ namespace smvk {
 		//
 		struct CommandBuffer {
 			VkCommandBuffer cmd = VK_NULL_HANDLE;
-			TimelineSemaphore finishedSignalSemaphore{};
+			SemaphoreState finishedSignalSemaphore{};
 			bool isEncoding_ = false;
-			//QueuePreference queue_ = QueuePreference::GRAPHICS; // Dont know yet how to properly resolve this. will come with real use
 		};
 		struct WrapperSlot {
 			CommandBuffer wrapper_{};
@@ -388,7 +320,8 @@ namespace smvk {
 			//uint32_t index = UINT32_MAX;  // load balancing gens sorting and using this
 		};
 		//
-		Submitter(VulkanCore& core, QueuePreference queue);
+		// this is wrong, should take queue index.
+		Submitter(VulkanCore& core, uint32_t queueIndex);
 		~Submitter();
 		CommandSubmitHandle acquire(uint32_t goal = 1);
 		CommandBuffer& GetCommandBuffer(CommandSubmitHandle handle);
@@ -401,8 +334,8 @@ namespace smvk {
 	private:
 		void reset(CommandSubmitHandle handle);
 		VulkanCore& core_;
+		VkCommandPool pool_;
 		VkQueue m_queue = VK_NULL_HANDLE;
-		QueuePreference queue_ = QueuePreference::GRAPHICS;
 		static const uint32_t kMax = 12;
 		uint32_t availableSlots = kMax;
 		WrapperSlot commandBuffers_[kMax];
@@ -415,9 +348,6 @@ namespace smvk {
 	};
 
 
-
-	// 4.6gb is good amount to reserver for 8gb vram system
-	// 2gb for Windows is good practice. And a little headroom for aux apps
 	struct Context {
 		Context(VulkanCore& core);
 		~Context();
@@ -427,11 +357,12 @@ namespace smvk {
 		Context& operator=(Context&&) = delete;
 
 		int Initialize();
-		//
+		// 	
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
 		void ProcessDeferrredTasks();
 		//
-		BufferHandle CreateStagingBuffer(VkDeviceSize size);
+
+		BufferHandle CreateStagingBuffer(VkDeviceSize size); // Right now only used for image upload, every other data upload is done by mapping
 		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<RenderPipelineHandle> CreateRenderPipeline(smvk::ShaderModuleHandle vert, smvk::ShaderModuleHandle frag);
 		// 
@@ -440,14 +371,14 @@ namespace smvk {
 		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
 		Holder<DescriptorPoolHandle> CreateDescriptorPool();
-		//Holder<DescriptorSetHandle> CreateDescriptorSet(VkDescriptorSetLayout setLayout);
 		//
+		//Holder<RenderPipelineHandle> CreateRenderPipeline(RenderPipelineDescription rps);
 
 		void* MapBuffer(smvk::Handle<smvk::Buffer> handle);
 		void UnmapBuffer(smvk::Handle<smvk::Buffer> handle);
 
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
-		void UploadDataToImage2D(Image img, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
+		void UploadDataToImage2D(Image img, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 
 		void CleanUp();
 
@@ -463,7 +394,7 @@ namespace smvk {
 		Pool<Sampler, VkSampler> samplers_;
 		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_;
 
-		Pool<RenderPipeline, RenderPipelineState> graphicPipelines_;
+		//Pool<RenderPipeline, RenderPipelineState> graphicPipelines_;
 
 		VmaAllocator m_allocator;
 		// no pool in vmaCreateallocation goes to a default pool provided a vma for the memory type used
@@ -476,9 +407,10 @@ namespace smvk {
 
 
 		void UpdateBindings();
+
 		// Binding model is just hardcoded.
 		VkDescriptorSetLayout defaultSetLayout;
-		VkPipelineLayout defaultPipeLyt;
+		VkPipelineLayout defaultPipeLayout;
 		Holder<DescriptorPoolHandle> defaultDescriptorPool;
 		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT];
 	};
@@ -551,8 +483,6 @@ namespace smvk {
 		VulkanSwapchain(
 			Context& context
 			, GLFWwindow* window
-			//, uint32_t framesInFlight,
-			//, uint32_t desiredImageCount
 		);
 		VulkanSwapchain(const VulkanSwapchain&) = delete;
 		VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;

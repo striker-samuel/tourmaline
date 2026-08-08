@@ -89,8 +89,7 @@ static_assert(sizeof(FrameUniforms) % 16 == 0);
 struct ViewportResources {};
 struct AppResources {
 	smvk::Holder<smvk::BufferHandle> frameUniforms;
-	//smvk::Holder<smvk::BufferHandle> drawData;
-	smvk::Holder<smvk::RenderPipelineHandle> mainPipeline;
+	smvk::ShaderProgram mainProgram;
 };
 
 
@@ -144,11 +143,16 @@ private:
 			}
 		);
 
+		// Main ShaderProgram
 		auto vertCode = readFile("content/shaders/default.vert.hlsl.spv");
 		auto fragCode = readFile("content/shaders/default.frag.hlsl.spv");
-		auto vert = m_context->CreateShaderModule(vertCode).release();
-		auto frag = m_context->CreateShaderModule(fragCode).release();
-		m_resources.mainPipeline = m_context->CreateRenderPipeline(vert, frag);
+		auto vert = m_context->CreateShaderModule(vertCode);
+		auto frag = m_context->CreateShaderModule(fragCode);
+		m_resources.mainProgram = {
+			.vert = std::move(vert),
+			.frag = std::move(frag)
+		};
+
 		return true;
 	};
 
@@ -244,9 +248,15 @@ private:
 		m_rendergraph->Clear();
 
 		// ATTACHMENT SETUP
-		auto logicalSwapchainImage = m_rendergraph->AddImageView(fb.swapchain.imageViews_[fb.frameIndex]);
+		auto logicalSwapchainImage = m_rendergraph->AddImageView(
+			fb.swapchain.imageViews_[fb.frameIndex], // This is wrong. should be frameIndex converted to imageIndex
+			fb.swapchain.vk_surfaceFormat_
+		);
 		auto depthImage = m_context->images_.get(fb.swapchain.depthImage_);
-		auto logicalDepthImageView = m_rendergraph->AddImageView(depthImage->sampleView);
+		auto logicalDepthImageView = m_rendergraph->AddImageView(
+			depthImage->sampleView,
+			fb.swapchain.vk_depthFormat_
+		);
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(logicalSwapchainImage);
 		//
@@ -276,7 +286,7 @@ private:
 				assert(false && "tree wasnt done");
 			}
 
-			m_rendergraph->BindPipeline(fb.commandBuffer, m_resources.mainPipeline);
+			m_rendergraph->BindRenderPipeline(fb.commandBuffer, m_resources.mainProgram);
 			for (Hierarchy node : m_currentLevel.hierarchy)
 			{
 
@@ -297,15 +307,14 @@ private:
 					assert(mat);
 
 					auto& model_ = m_currentLevel.globalTransform[visible_node];
-					struct {
-						uint64_t frameUniforms;
-						//uint64_t drawData;
-						//uint32_t node; -> Get model from this if scene hioerarchy has gpuSide
+					struct alignas(16) {
 						float model[16];
 						Material::Values mpc;
+						uint64_t frameUniforms;
 					} pc = {
+						.model = {},
+						.mpc = mat->values,
 						.frameUniforms = m_context->buffers_.get(m_resources.frameUniforms)->deviceAddress,
-						.mpc = mat->values
 					};
 					const float* modelData = glm::value_ptr(model_);
 					std::copy_n(modelData, 16, pc.model);

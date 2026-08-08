@@ -99,23 +99,13 @@ bool smvk::VulkanApp::Initialize() {
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
 	core_ = CreateVulkanCoreWithWindow(VulkanCore::CoreConfiguration{}, window);
-	m_context = std::make_unique<Context>(*core_.get());
 
+	m_context = std::make_unique<Context>(*core_.get());
 	m_swapchain = std::make_unique<VulkanSwapchain>(
 		*m_context,
 		window
-		//,
-		//static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT),
-		//static_cast<uint32_t>(DESIRED_SWAPCHAIN_IMAGE_COUNT)
 	);
 
-	// Maybe not ok to do this here.
-	//for (int i = 0; i < m_swapchain->framesInFlight_; i++)
-	//{
-	//	if (m_dpools[i].empty()) {
-	//		m_dpools[i] = m_context->CreateDescriptorPool();
-	//	}
-	//}
 	m_rendergraph = std::make_unique<RenderGraph>(*m_context);
 	//InitializeImGui();
 

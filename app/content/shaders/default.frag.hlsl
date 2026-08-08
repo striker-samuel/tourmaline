@@ -1,20 +1,6 @@
 #include "light.hlsli"
 #include "common.hlsli"
 
-[[vk::binding(0,0)]] Texture2D materialTex[]; // sampled images
-[[vk::binding(0,1)]] SamplerState materialSamp[]; // samplers
-
-//[[vk::binding(4, 0)]]
-//cbuffer Lights
-//{
-//    Light g_Lights[10]; // or a struct containing them
-//};
-
-//[[vk::binding(5, 0)]]
-//Texture2D gShadowMaps[];
-
-//[[vk::binding(6, 0)]]
-//SamplerComparisonState gShadowSamplers[];
 
 struct PSIn
 {
@@ -28,9 +14,8 @@ struct PSOut
     float4 outColor : SV_Target;
 };
 
-
 // Here because symbols need to be defined before literal copy paste of include!
-#include "shadows.hlsli"
+//#include "shadows.hlsli"
 
 //float3 EvaluateSpotLight(
 //    Light light,

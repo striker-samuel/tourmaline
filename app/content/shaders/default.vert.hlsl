@@ -23,6 +23,7 @@ struct VSOut
 VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
+    FrameUniforms frame = pc.frameUniforms.Get();
 
     // World position
     float4 world = mul(pc.model, float4(IN.position, 1.0));
@@ -30,7 +31,7 @@ VSOut mainVS(VSIn IN)
 
     // View / projection
     //float4 viewPos = mul(frame_res.view, world);
-    float4 clip = mul(frame_res.viewProj, world);
+    float4 clip = mul(frame.viewProj, world);
     OUT.pos = clip;
 
     OUT.color = float3(1.0f, 1.0f, 1.0f);

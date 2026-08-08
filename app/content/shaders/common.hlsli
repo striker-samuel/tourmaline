@@ -27,10 +27,11 @@ struct FrameUniforms
 
 struct PC_Draw
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    float4x4 model;
     float4 ambient;
     float4 diffuse;
     uint4 tex;
+    vk::BufferPointer<FrameUniforms>frameUniforms;
 };
 
 [[vk::push_constant]]
