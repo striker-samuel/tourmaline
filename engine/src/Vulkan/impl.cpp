@@ -101,9 +101,6 @@ static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
 static VkQueue transferQueue_ = VK_NULL_HANDLE;
 
-static VkCommandPool defaultCommandPool_ = VK_NULL_HANDLE;
-static VkCommandPool transferCommandPool_ = VK_NULL_HANDLE;
-
 // Helpers
 VkMemoryRequirements2 getDeviceImageMemoryRequirements(
 	VkDevice device,
@@ -714,26 +711,26 @@ bool smvk::VulkanCore::Init() {
 		vkGetDeviceQueue(device_, indices.presentFamily.value(), 0, &presentQueue_);
 		vkGetDeviceQueue(device_, indices.transferFamily.value(), 0, &transferQueue_);
 
-		VkCommandPoolCreateInfo poolInfo
-		{
-			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, // this is needed to reset individual cmdbuf in the pool
-			.queueFamilyIndex = indices.graphicsFamily.value()
-		};
-		VkCommandPoolCreateInfo transferPoolInfo
-		{
-			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, // this is needed to reset individual cmdbuf in the pool
-			.queueFamilyIndex = indices.transferFamily.value()
-		};
-		if (vkCreateCommandPool(device_, &poolInfo, nullptr, &defaultCommandPool_) !=
-			VK_SUCCESS) {
-			throw std::runtime_error("failed to create graphics command pool!");
-		}
-		if (vkCreateCommandPool(device_, &transferPoolInfo, nullptr, &transferCommandPool_) !=
-			VK_SUCCESS) {
-			throw std::runtime_error("failed to create transfer command pool!");
-		}
+		//VkCommandPoolCreateInfo poolInfo
+		//{
+		//	.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+		//	.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, // this is needed to reset individual cmdbuf in the pool
+		//	.queueFamilyIndex = indices.graphicsFamily.value()
+		//};
+		//VkCommandPoolCreateInfo transferPoolInfo
+		//{
+		//	.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+		//	.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, // this is needed to reset individual cmdbuf in the pool
+		//	.queueFamilyIndex = indices.transferFamily.value()
+		//};
+		//if (vkCreateCommandPool(device_, &poolInfo, nullptr, &defaultCommandPool_) !=
+		//	VK_SUCCESS) {
+		//	throw std::runtime_error("failed to create graphics command pool!");
+		//}
+		//if (vkCreateCommandPool(device_, &transferPoolInfo, nullptr, &transferCommandPool_) !=
+		//	VK_SUCCESS) {
+		//	throw std::runtime_error("failed to create transfer command pool!");
+		//}
 
 	};
 
@@ -824,8 +821,8 @@ void smvk::VulkanCore::CreateImageView(ImageViewCreateInfo imageViewCreateInfo, 
 }
 inline smvk::VulkanCore::~VulkanCore() {
 	vkDeviceWaitIdle(device_);
-	vkDestroyCommandPool(device_, defaultCommandPool_, nullptr);
-	vkDestroyCommandPool(device_, transferCommandPool_, nullptr);
+	//vkDestroyCommandPool(device_, defaultCommandPool_, nullptr);
+	//vkDestroyCommandPool(device_, transferCommandPool_, nullptr);
 	if (surface_ != VK_NULL_HANDLE) {
 		vkDestroySurfaceKHR(instance_, surface_, nullptr);
 	}
@@ -847,127 +844,6 @@ std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanC
 }
 
 // Context
-VkResult CreateStagingPool(VmaAllocator allocator, VmaPool& attachmentPool)
-{
-	// Example texture.
-	VkImageCreateInfo imageInfo{
-		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-		.imageType = VK_IMAGE_TYPE_2D,
-		.format = VK_FORMAT_R8G8B8A8_UNORM,
-		.extent = {
-			.width = 2160, //2k textures
-			.height = 2160,
-			.depth = 1,
-		},
-		.mipLevels = 1,
-		.arrayLayers = 1,
-		.samples = VK_SAMPLE_COUNT_1_BIT,
-		.tiling = VK_IMAGE_TILING_OPTIMAL,
-		.usage = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-	};
-
-	VmaAllocationCreateInfo allocationInfo{
-		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-		.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-	};
-
-	uint32_t memoryTypeIndex = 0;
-
-	VkResult result = vmaFindMemoryTypeIndexForImageInfo(
-		allocator,
-		&imageInfo,
-		&allocationInfo,
-		&memoryTypeIndex);
-
-	if (result != VK_SUCCESS)
-		return result;
-
-	VmaPoolCreateInfo poolInfo{
-		.memoryTypeIndex = memoryTypeIndex,
-
-		// Safe because this pool contains only optimal-tiled images.
-		.flags = VMA_POOL_CREATE_IGNORE_BUFFER_IMAGE_GRANULARITY_BIT,
-
-		// Tune these values based on attachment sizes and frames in flight.
-		.blockSize = 128ull * 1024ull * 1024ull,
-		.minBlockCount = 1,
-		.maxBlockCount = 8,
-
-		.priority = 1.0f,
-		.minAllocationAlignment = 0,
-		.pMemoryAllocateNext = nullptr,
-	};
-
-	return vmaCreatePool(
-		allocator,
-		&poolInfo,
-		&attachmentPool);
-}
-VkResult CreateAttachmentPool(VmaAllocator allocator, VmaPool& attachmentPool)
-{
-	// Representative attachment image.
-	// Use a format supported by every image intended for this pool.
-	VkImageCreateInfo imageInfo{
-		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-		.imageType = VK_IMAGE_TYPE_2D,
-		.format = VK_FORMAT_R8G8B8A8_UNORM,
-		.extent = {
-			.width = 1920,
-			.height = 1080,
-			.depth = 1,
-		},
-		.mipLevels = 1,
-		.arrayLayers = 1,
-		.samples = VK_SAMPLE_COUNT_1_BIT,
-		.tiling = VK_IMAGE_TILING_OPTIMAL,
-		.usage =
-			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-			VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-			VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
-			VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
-		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-	};
-
-	VmaAllocationCreateInfo allocationInfo{
-		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-		.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-	};
-
-	uint32_t memoryTypeIndex = 0;
-
-	VkResult result = vmaFindMemoryTypeIndexForImageInfo(
-		allocator,
-		&imageInfo,
-		&allocationInfo,
-		&memoryTypeIndex);
-
-	if (result != VK_SUCCESS)
-		return result;
-
-	VmaPoolCreateInfo poolInfo{
-		.memoryTypeIndex = memoryTypeIndex,
-
-		// Safe because this pool contains only optimal-tiled images.
-		.flags = VMA_POOL_CREATE_IGNORE_BUFFER_IMAGE_GRANULARITY_BIT,
-
-		// Tune these values based on attachment sizes and frames in flight.
-		.blockSize = 128ull * 1024ull * 1024ull,
-		.minBlockCount = 1,
-		.maxBlockCount = 8,
-
-		.priority = 1.0f,
-		.minAllocationAlignment = 0,
-		.pMemoryAllocateNext = nullptr,
-	};
-
-	return vmaCreatePool(
-		allocator,
-		&poolInfo,
-		&attachmentPool);
-}
 int smvk::Context::Initialize() {
 	VmaAllocatorCreateInfo allocatorCreateInfo = {};
 	allocatorCreateInfo.physicalDevice = physicalDevice_;
@@ -985,11 +861,12 @@ int smvk::Context::Initialize() {
 	VK_CHECK(vmaImportVulkanFunctionsFromVolk(&allocatorCreateInfo, &vulkanFunctions));
 	allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
 	VK_CHECK(vmaCreateAllocator(&allocatorCreateInfo, &m_allocator));
-	VK_CHECK(CreateAttachmentPool(m_allocator, m_imagesPool));
-	VK_CHECK(CreateStagingPool(m_allocator, m_stagingPool));
+	//VK_CHECK(CreateAttachmentPool(m_allocator, m_imagesPool));
+	//VK_CHECK(CreateStagingPool(m_allocator, m_stagingPool));
 
+	m_submitter = new Submitter(core_, core_.indices.graphicsFamily.value());
 	core_.CreateSampler(SamplerCreateInfo{}, m_defaultSampler);
-	const uint32_t pixel = 0xFF000000;
+	//const uint32_t pixel = 0xFF000000;
 	//m_nilTexture = CreateTexture(
 	//	ImageCreateInfo{
 	//	.vk_extent = {1,1,1},
@@ -998,21 +875,26 @@ int smvk::Context::Initialize() {
 	//	&pixel
 	//	);
 
-	// needs rework
-	m_submitter = new Submitter(core_, core_.indices.graphicsFamily.value());
 
 	// Hardcoded binding setup {
 	CreateDefaultDescriptorSetLayout(defaultSetLayout);
 	CreateDefaultPipelineLayout(defaultPipeLayout);
+
+	// this pool only holds MAX_K, not MAX_K * framesInFlight or MAX_FRAMES_IN_FLIGHT
 	defaultDescriptorPool = CreateDescriptorPool();
 	VkDescriptorPool pool = *descriptorPools_.get(defaultDescriptorPool);
-	VkDescriptorSetLayout layouts[4] = { defaultSetLayout, defaultSetLayout, defaultSetLayout, defaultSetLayout };
+
+	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT]{};
+	for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
+		layouts[frame] = defaultSetLayout;
+	}
+
 	VkDescriptorSetAllocateInfo info
 	{
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 		.pNext = nullptr,
 		.descriptorPool = pool,
-		.descriptorSetCount = 1,
+		.descriptorSetCount = 1, // We are just allocating the first layout namespace
 		.pSetLayouts = layouts
 	};
 	vkAllocateDescriptorSets(
@@ -1020,7 +902,7 @@ int smvk::Context::Initialize() {
 		&info,
 		defaultDescriptorSets_
 	);
-	// -- HardcodedBindidngSetup }
+	// -- HardcodedBindlessSetup }
 
 	return 0; // no error
 }
@@ -1709,9 +1591,10 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, VkPipelin
 	return { this, shaderModules_.create(std::move(shader)) };
 }
 [[nodiscard]] smvk::Holder<smvk::DescriptorPoolHandle> smvk::Context::CreateDescriptorPool() {
-	std::array<VkDescriptorPoolSize, 3 /*framesInFlight?*/> poolSizes = {
+
+	std::array<VkDescriptorPoolSize, 3> poolSizes = {
 	  {
-		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    MAX_TEXTURES },
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    MAX_TEXTURES }, // times framesInFlight?
 		{ VK_DESCRIPTOR_TYPE_SAMPLER,          MAX_SAMPLERS },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    MAX_TEXTURES },
 	  }
@@ -1770,8 +1653,8 @@ void smvk::Context::CleanUp() {
 	shaderModules_.clear();
 	samplers_.clear();
 
-	vmaDestroyPool(m_allocator, m_imagesPool);
-	vmaDestroyPool(m_allocator, m_stagingPool);
+	//vmaDestroyPool(m_allocator, m_imagesPool);
+	//vmaDestroyPool(m_allocator, m_stagingPool);
 	//memset(descriptorSets_, 0, sizeof(descriptorSets_));
 }
 // 
@@ -2153,6 +2036,7 @@ smvk::VulkanSwapchain::VulkanSwapchain(Context& context, GLFWwindow* window/*, u
 }
 smvk::VulkanSwapchain::~VulkanSwapchain() {
 
+	vkDeviceWaitIdle(device_);
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		vkDestroyCommandPool(device_, perFrameCommandPools[i], nullptr);
 		// this freeds all the commands too
@@ -2356,6 +2240,7 @@ inline void smvk::VulkanSwapchain::CreateSyncObjects() {
 	}
 }
 inline void smvk::VulkanSwapchain::DestroySyncObjects() {
+
 	for (VkSemaphore semaphore : renderFinishedSemaphores_) {
 		if (semaphore != VK_NULL_HANDLE) {
 			vkDestroySemaphore(device_, semaphore, nullptr);

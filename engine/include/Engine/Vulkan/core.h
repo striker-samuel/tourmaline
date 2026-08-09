@@ -295,13 +295,10 @@ namespace smvk {
 		uint32_t gen_ = 0; // gen 0 means no slot. alas empty. 
 		bool empty() const { return gen_ == 0; };
 	};
-
-	// This is a copy of the approach of IGL/lightweightVk but I changed fences for timelineSempahores.
-	// This change doenst really make sense. SemaphoreState support would be more useful to model something like
-	// QueueTimeline from nvprocore2. It works so its staying for now but this is DUMB!
-	// * The idea was to peg multiple cmd to same timeline semaphore for batched jobs on a single slot.
-	// makes no sense in practice. 
+	// Bring nvprocore 2 queue timeleine setup here.
 	struct Submitter {
+
+		// this should be changed
 		struct SemaphoreState {
 			VkSemaphore semaphore_ = VK_NULL_HANDLE;
 			uint64_t initialValue_ = 0;
@@ -319,8 +316,6 @@ namespace smvk {
 			uint32_t gen_ = 1;
 			//uint32_t index = UINT32_MAX;  // load balancing gens sorting and using this
 		};
-		//
-		// this is wrong, should take queue index.
 		Submitter(VulkanCore& core, uint32_t queueIndex);
 		~Submitter();
 		CommandSubmitHandle acquire(uint32_t goal = 1);
@@ -340,6 +335,8 @@ namespace smvk {
 		uint32_t availableSlots = kMax;
 		WrapperSlot commandBuffers_[kMax];
 		CommandSubmitHandle m_lastSubmit{}; // not in use right now. used for creating linkedList for a faux dependency chain
+		VkSemaphore m_timelineSemaphore = VK_NULL_HANDLE;
+		uint64_t m_timelineValue = 1;
 	};
 	struct DeferredTask {
 		DeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle) : task_(std::move(task)), handle_(handle) {}
@@ -371,8 +368,6 @@ namespace smvk {
 		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
 		Holder<DescriptorPoolHandle> CreateDescriptorPool();
-		//
-		//Holder<RenderPipelineHandle> CreateRenderPipeline(RenderPipelineDescription rps);
 
 		void* MapBuffer(smvk::Handle<smvk::Buffer> handle);
 		void UnmapBuffer(smvk::Handle<smvk::Buffer> handle);
@@ -390,21 +385,14 @@ namespace smvk {
 		Pool<Image, Image> images_; // VkSwapchainImages are not represented with Image type and just owned by the swapchain
 		Pool<Texture, Image> textures_; // specializaed textures away from images
 		Pool<Buffer, Buffer> buffers_;
-		Pool<ShaderModule, VkShaderModule> shaderModules_;
 		Pool<Sampler, VkSampler> samplers_;
-		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_;
 
-		//Pool<RenderPipeline, RenderPipelineState> graphicPipelines_;
+		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_; // Maybe we should do away with this as we only manage one pool, and one for Imgui
+		Pool<ShaderModule, VkShaderModule> shaderModules_; // this should be removed when moving to vk1.4
 
 		VmaAllocator m_allocator;
-		// no pool in vmaCreateallocation goes to a default pool provided a vma for the memory type used
-		// more granularity could provide useful
-		VmaPool m_imagesPool;
-		VmaPool m_stagingPool;
-
 		TextureHandle m_nilTexture{}; // needed to avoid sparse list in bindless
 		VkSampler m_defaultSampler{}; // This really should be a SamplersPool implementation the same way nprocore2 handles this
-
 
 		void UpdateBindings();
 

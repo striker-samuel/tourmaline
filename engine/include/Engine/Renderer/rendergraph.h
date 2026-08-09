@@ -599,11 +599,11 @@ namespace smvk {
 				VK_PIPELINE_BIND_POINT_GRAPHICS,
 				//vkCurrentPipelineLayout_,
 				ctx_.defaultPipeLayout,
-				0,
-				1,
+				0, //first
+				1, //count
 				ctx_.defaultDescriptorSets_,
-				0,
-				0
+				0, //dynoffsetCount
+				nullptr //dynOffset
 			);
 		}
 

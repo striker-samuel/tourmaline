@@ -17,11 +17,17 @@ std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
 };
 
+// Bring Phyre asset to runtime scene mapping-
+//struct AssetReference{};
+//struct Cluster{};
+
 //
 struct Level : Scene {
 	MeshManager* m_meshManagerPimpl = nullptr;
 	BvhTree tree = {};
+	// 
 	BvhTree static_tree = {};
+	// We should split static scene objects to another tree, or maybe flag nodes an static and skip bhv reconstruction each frame for them
 	bool tree_done = false;
 	//std::map<uint32_t, MeshHandle> m_meshForNode;
 	//Level(MeshManager* meshManager) : m_meshManagerPimpl(meshManager) {};
@@ -156,6 +162,55 @@ private:
 		return true;
 	};
 
+	//void UpdateBindlessTexturesSets() {
+
+	//	std::vector<VkDescriptorImageInfo> imageInfos;
+	//	std::vector<VkDescriptorImageInfo> samplerInfos;
+	//	auto smp = m_context->m_defaultSampler;
+	//	VkDescriptorImageInfo si{};
+	//	si.sampler = smp;
+	//	si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
+	//	si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
+	//	samplerInfos.push_back(si);
+
+	//	m_context->images_.forEach([&](smvk::Image obj_)
+	//	{
+	//		VkDescriptorImageInfo ii{};
+	//		ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
+	//		ii.imageView = obj_.sampleView;
+	//		ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	//		imageInfos.push_back(ii);
+	//	}
+	//	);
+
+	//	{
+
+	//	//for (size_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; frameIndex++) {
+	//		//// --- Two writes: images at index 2, samplers at index 3 ---
+	//		//auto setHandle = perFrameData[frameIndex].frameDescriptorSet;
+	//		//auto set = context->descriptorSets_.get(setHandle);
+
+	//		VkWriteDescriptorSet writes[2]{};
+	//		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	//		writes[0].dstSet = m_context->defaultDescriptorSets_[];
+	//		writes[0].dstBinding = 2;
+	//		writes[0].dstArrayElement = 0;
+	//		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	//		writes[0].descriptorCount = imageInfos.size();
+	//		writes[0].pImageInfo = imageInfos.data();
+
+	//		writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	//		writes[1].dstSet = set->set;
+	//		writes[1].dstBinding = 3;
+	//		writes[1].dstArrayElement = 0;
+	//		writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+	//		writes[1].descriptorCount = static_cast<uint32_t>(samplerInfos.size());   // or 1 if you use a single shared sampler
+	//		writes[1].pImageInfo = samplerInfos.data();
+
+	//		vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+	//	}
+
+	//}
 	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame) {
 
 		int width_ = m_swapchain->GetExtent().width;

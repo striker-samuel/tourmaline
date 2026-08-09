@@ -12,9 +12,9 @@
 smvk::VulkanApp::VulkanApp() {}
 smvk::VulkanApp::~VulkanApp() = default;
 
-void smvk::VulkanApp::InitializeImGui() {}
-//
-//void VulkanApp::InitializeImGui() {
+//void smvk::VulkanApp::InitializeImGui() {}
+
+//void smvk::VulkanApp::InitializeImGui() {
 //
 //	// Setup Dear ImGui context
 //	IMGUI_CHECKVERSION();
@@ -34,25 +34,27 @@ void smvk::VulkanApp::InitializeImGui() {}
 //	pipeline_create.pNext = VK_NULL_HANDLE;
 //	// We are using the single color buffer out.
 //	pipeline_create.colorAttachmentCount = 1;
-//	pipeline_create.pColorAttachmentFormats = &swapchain->vk_surfaceFormat;
-//	pipeline_create.depthAttachmentFormat = findDepthFormat(vk_core.physicalDevice_);
+//	pipeline_create.pColorAttachmentFormats = &m_swapchain->vk_surfaceFormat_;
+//	pipeline_create.depthAttachmentFormat = m_swapchain->vk_depthFormat_;
+//	//pipeline_create.stencilAttachmentFormat = m_swapchain->vk_depthFormat_; // if depthFormat is stencil
 //	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 //
 //	ImGui_ImplGlfw_InitForVulkan(window, /*install callbacks*/ false);
-//	SwapChainSupportDetails swapChainSupport = querySwapChainSupport(vk_core.physicalDevice_, surface_);
 //
 //	ImGui_ImplVulkan_InitInfo info{};
-//	info.Instance = vk_core.instance_;
-//	info.ApiVersion = VK_API_VERSION_1_3;
-//	info.PhysicalDevice = vk_core.physicalDevice_;
-//	info.Device = vk_core.device_;
-//	info.Queue = vk_core.graphicsQueue_;
+//	info.Instance = instance_;
+//	//info.ApiVersion = core
+//	info.ApiVersion = VK_API_VERSION_1_3; //
+//	info.PhysicalDevice = physicalDevice_;
+//	info.Device = device_;
+//	info.Queue = graphicsQueue_;
 //	info.DescriptorPool = *im_dp;
 //	info.MinImageCount = swapChainSupport.capabilities.minImageCount;
 //	info.ImageCount = swapchain->GetImageCount();
 //	info.UseDynamicRendering = true,
 //		info.PipelineRenderingCreateInfo = pipeline_create;
 //	ImGui_ImplVulkan_Init(&info  /* oUseDynamicRendering=true */);
+//
 //	//// Upload font texture once
 //	//VkCommandBuffer cmd = beginCommands();
 //	//ImGui_ImplVulkan_CreateFontsTexture(cmd);
@@ -108,8 +110,6 @@ bool smvk::VulkanApp::Initialize() {
 
 	m_rendergraph = std::make_unique<RenderGraph>(*m_context);
 	//InitializeImGui();
-
-
 	return true;
 
 }
@@ -125,13 +125,8 @@ bool smvk::VulkanApp::Run() {
 };
 
 void smvk::VulkanApp::CleanUp() {
-	//vkDeviceWaitIdle(device_);
-	//for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-	//	// destroying the pool fress the commandBuffers too
-	//	vkDestroyCommandPool(device_, perFrameCommandPools[i], nullptr);
-	//}
-	m_context.release(); // destroy resources and free them
-	if (m_swapchain) // if swap
+	m_context.release();	
+	if (m_swapchain)
 	{
 		m_swapchain.reset();
 		core_.reset();
@@ -141,6 +136,7 @@ void smvk::VulkanApp::CleanUp() {
 	}
 	else
 	{
+		assert(window == nullptr);
 		core_.reset();
 	}
 }
