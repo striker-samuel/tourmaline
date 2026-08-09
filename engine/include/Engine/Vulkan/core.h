@@ -65,6 +65,14 @@ inline const char* vkResultToString(VkResult result);
 
 namespace smvk {
 
+	enum Bindings {
+		kBinding_Textures = 0, // position 0
+		kBinding_Samplers = 1,
+		kBinding_StorageImages = 2,
+		kBinding_NumBindings = 3 // this should be # of all other
+	};
+
+
 	struct QueueFamilyIndices {
 		std::optional<uint32_t> graphicsFamily;
 		std::optional<uint32_t> presentFamily;
@@ -273,13 +281,8 @@ namespace smvk {
 		int CreateInstance();
 		bool Init();
 
-
 		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
-		void CreateShaderModule(const std::vector<char>& code, VkShaderModule& out);
-		void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out);
-		//void CreateCommandPool(QueuePreference queue, VkCommandPoolCreateFlags flags, VkCommandPool& out);
-
 		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline);
 		//void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline);
 	};
@@ -375,7 +378,7 @@ namespace smvk {
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		void UploadDataToImage2D(Image img, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 
-		void CleanUp();
+		void UpdateBindings(uint32_t frameIndex = 0);
 
 		//private:
 		VulkanCore& core_;
@@ -394,7 +397,6 @@ namespace smvk {
 		TextureHandle m_nilTexture{}; // needed to avoid sparse list in bindless
 		VkSampler m_defaultSampler{}; // This really should be a SamplersPool implementation the same way nprocore2 handles this
 
-		void UpdateBindings();
 
 		// Binding model is just hardcoded.
 		VkDescriptorSetLayout defaultSetLayout;

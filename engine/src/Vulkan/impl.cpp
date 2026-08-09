@@ -23,12 +23,6 @@ namespace {
 	// Buffers will be pushed in pc block with deviceAddress
 	// The rest will be bindless with fixed binding#
 	// This bindless model is lifted from lightweightVK aproach
-	enum Bindings {
-		kBinding_Textures = 0, // position 0
-		kBinding_Samplers = 1,
-		kBinding_StorageImages = 2,
-		kBinding_NumBindings = 3 // this should be # of all other
-	};
 	struct FormatInfo {
 		uint32_t blockWidth;
 		uint32_t blockHeight;
@@ -737,7 +731,7 @@ bool smvk::VulkanCore::Init() {
 	return true;
 
 };
-void smvk::VulkanCore::CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out) {
+void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out) {
 	VkSemaphoreTypeCreateInfo semaphoreTypeInfo{};
 	semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
 	semaphoreTypeInfo.pNext = nullptr;
@@ -749,7 +743,7 @@ void smvk::VulkanCore::CreateTimelineSemaphore(uint64_t initialValue, VkSemaphor
 		.flags = 0 };
 	VK_CHECK(vkCreateSemaphore(device_, &createInfo, nullptr, &out));
 };
-void smvk::VulkanCore::CreateShaderModule(const std::vector<char>& code, VkShaderModule& out) {
+void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& out) {
 	VkShaderModuleCreateInfo createInfo{};
 	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
 	createInfo.codeSize = code.size();
@@ -908,9 +902,14 @@ int smvk::Context::Initialize() {
 }
 smvk::Context::Context(VulkanCore& core) :core_(core) { Initialize(); }
 smvk::Context::~Context() {
+	VK_CHECK(vkDeviceWaitIdle(device_));
 	if (m_submitter != nullptr) { delete(&m_submitter); }
 	m_submitter = nullptr;
-	CleanUp();
+	images_.clear();
+	buffers_.clear();
+	shaderModules_.clear();
+	samplers_.clear();
+	memset(defaultDescriptorSets_, 0, sizeof(defaultDescriptorSets_));
 };
 void smvk::Context::UploadDataToBuffer(
 	BufferHandle buffer,
@@ -1584,7 +1583,7 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, VkPipelin
 }
 [[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::Context::CreateShaderModule(std::vector<char> code) {
 	VkShaderModule shader;
-	core_.CreateShaderModule(
+	CreateShaderModuleIn(
 		std::move(code),
 		shader
 	);
@@ -1645,17 +1644,45 @@ void smvk::Context::ProcessDeferrredTasks()
 	}
 	m_deferredTasks.erase(m_deferredTasks.begin(), it);
 }
-void smvk::Context::CleanUp() {
-	VK_CHECK(vkDeviceWaitIdle(device_));
+void smvk::Context::UpdateBindings(uint32_t frameIndex) {
 
-	images_.clear();
-	buffers_.clear();
-	shaderModules_.clear();
-	samplers_.clear();
+	// this is clearly incomplete.
 
-	//vmaDestroyPool(m_allocator, m_imagesPool);
-	//vmaDestroyPool(m_allocator, m_stagingPool);
-	//memset(descriptorSets_, 0, sizeof(descriptorSets_));
+	std::vector<VkDescriptorImageInfo> imageInfos;
+	std::vector<VkDescriptorImageInfo> samplerInfos;
+	VkDescriptorImageInfo si{};
+	si.sampler = m_defaultSampler;
+	si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
+	si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
+	samplerInfos.push_back(si);
+
+	textures_.forEach([&](smvk::Image obj_)
+	{
+		VkDescriptorImageInfo ii{};
+		ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
+		ii.imageView = obj_.sampleView;
+		ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		imageInfos.push_back(ii);
+	}
+	);
+
+	VkWriteDescriptorSet writes[2]{};
+	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[0].dstSet = defaultDescriptorSets_[frameIndex];
+	writes[0].dstBinding = smvk::Bindings::kBinding_Textures;
+	writes[0].dstArrayElement = 0;
+	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	writes[0].descriptorCount = imageInfos.size();
+	writes[0].pImageInfo = imageInfos.data();
+
+	writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[1].dstSet = defaultDescriptorSets_[frameIndex];
+	writes[1].dstBinding = smvk::kBinding_Samplers;
+	writes[1].dstArrayElement = 0;
+	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+	writes[1].descriptorCount = static_cast<uint32_t>(samplerInfos.size());   // or 1 if you use a single shared sampler
+	writes[1].pImageInfo = samplerInfos.data();
+	vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
 }
 // 
 void smvk::destroy(smvk::Context* ctx, smvk::BufferHandle handle) {
@@ -1794,8 +1821,7 @@ inline smvk::Submitter::Submitter(VulkanCore& core, uint32_t queueIndex) : core_
 		commandBuffers_[i].allocatedCmd_ = m_buffers_[i];
 		commandBuffers_[i].wrapper_.isEncoding_ = false;
 		//core_.CreateFence(VkFenceCreateInfo{ .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = 0 }, commandBuffers_[i].wrapper_.fence_);
-		core_.CreateTimelineSemaphore(0, commandBuffers_[i].wrapper_.finishedSignalSemaphore.semaphore_
-		);
+		CreateTimelineSemaphore(0, commandBuffers_[i].wrapper_.finishedSignalSemaphore.semaphore_);
 	}
 }
 inline smvk::Submitter::~Submitter() {
