@@ -93,7 +93,6 @@ static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
-static VkQueue transferQueue_ = VK_NULL_HANDLE;
 
 // Helpers
 VkMemoryRequirements2 getDeviceImageMemoryRequirements(
@@ -549,7 +548,7 @@ int smvk::VulkanCore::CreateInstance() {
 	{
 		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
 		.messageSeverity =
-		VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+		//VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
 		VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
 		VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
 	.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
@@ -644,8 +643,6 @@ bool smvk::VulkanCore::Init() {
 				.pNext = nullptr,
 				.storageBuffer16BitAccess = VK_TRUE,
 				.uniformAndStorageBuffer16BitAccess = VK_TRUE,
-				//.storagePushConstant16 = VK_TRUE,
-				//.storageInputOutput16 = VK_TRUE
 			};
 			VkPhysicalDeviceVulkan12Features deviceFeatures12
 			{
@@ -668,6 +665,13 @@ bool smvk::VulkanCore::Init() {
 				.dynamicRendering = VK_TRUE,
 				.maintenance4 = VK_TRUE,
 			};
+
+			// if version == 1.4
+			//VkPhysicalDeviceVulkan14Features deviceFeatures14
+			//{
+			//	.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
+			//	.pNext = &deviceFeatures13,
+			//};
 
 			VkPhysicalDeviceFeatures2 feats2{
 				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
@@ -701,31 +705,8 @@ bool smvk::VulkanCore::Init() {
 		}
 
 		QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
-		vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &graphicsQueue_);
-		vkGetDeviceQueue(device_, indices.presentFamily.value(), 0, &presentQueue_);
-		vkGetDeviceQueue(device_, indices.transferFamily.value(), 0, &transferQueue_);
-
-		//VkCommandPoolCreateInfo poolInfo
-		//{
-		//	.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-		//	.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, // this is needed to reset individual cmdbuf in the pool
-		//	.queueFamilyIndex = indices.graphicsFamily.value()
-		//};
-		//VkCommandPoolCreateInfo transferPoolInfo
-		//{
-		//	.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-		//	.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, // this is needed to reset individual cmdbuf in the pool
-		//	.queueFamilyIndex = indices.transferFamily.value()
-		//};
-		//if (vkCreateCommandPool(device_, &poolInfo, nullptr, &defaultCommandPool_) !=
-		//	VK_SUCCESS) {
-		//	throw std::runtime_error("failed to create graphics command pool!");
-		//}
-		//if (vkCreateCommandPool(device_, &transferPoolInfo, nullptr, &transferCommandPool_) !=
-		//	VK_SUCCESS) {
-		//	throw std::runtime_error("failed to create transfer command pool!");
-		//}
-
+		vkGetDeviceQueue(device_, indices.presentFamily.value(), 0, &presentQueue_); // this is fine like this
+		vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &graphicsQueue_); // this maybe not 
 	};
 
 	return true;
@@ -763,6 +744,9 @@ void smvk::VulkanCore::CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo creat
 	}
 
 }
+void smvk::VulkanCore::DestroyPipeline(VkPipeline pipeline) {
+	vkDestroyPipeline(device_, pipeline, nullptr);
+}
 void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
 
 	VkSamplerCreateInfo samplerInfo{};
@@ -779,14 +763,9 @@ void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo,
 	samplerInfo.anisotropyEnable = VK_TRUE;
 	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
 	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-	// This is a hardware/spec limit. Thats why im asserting here...
-	// Maybe we can query gpu capabilities to give better paths to more powerful devices.
-	assert(properties.limits.maxUniformBufferRange >= 1 << 16);
-
 	samplerInfo.unnormalizedCoordinates = VK_FALSE;
 	samplerInfo.compareEnable = VK_FALSE;
-	samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-	//samplerInfo.compareOp = compareOp;
+	samplerInfo.compareOp = samplerCreateInfo.compareOp;
 
 	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 	samplerInfo.mipLodBias = 0.0f;
@@ -1093,7 +1072,7 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, VkPipelin
 	copyInfo.srcBuffer = staginfBuffer->vk_buffer; // <-- replace with your staging buffer member
 	copyInfo.dstImage = image.vk_image;
 	copyInfo.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	copyInfo.regionCount = static_cast<uint32_t>(regions.size());
+	copyInfo.regionCount = regions.size();
 	copyInfo.pRegions = regions.data();
 	vkCmdCopyBufferToImage2(cmd, &copyInfo);
 
@@ -1647,7 +1626,6 @@ void smvk::Context::ProcessDeferrredTasks()
 void smvk::Context::UpdateBindings(uint32_t frameIndex) {
 
 	// this is clearly incomplete.
-
 	std::vector<VkDescriptorImageInfo> imageInfos;
 	std::vector<VkDescriptorImageInfo> samplerInfos;
 	VkDescriptorImageInfo si{};

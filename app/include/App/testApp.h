@@ -293,9 +293,27 @@ private:
 			else {
 				assert(false && "tree wasnt done");
 			}
-
 			m_rendergraph->BindRenderPipeline(fb.commandBuffer, m_resources.mainProgram);
-			for (Hierarchy node : m_currentLevel.hierarchy)
+
+			//Push frame
+			struct alignas(16) PushConstants {
+				float model[16];
+				Material::Values mpc{};
+				uint64_t frameUniforms;
+			};
+			uint64_t frameUniforms =
+				m_context->buffers_
+				.get(m_resources.frameUniforms)
+				->deviceAddress;
+
+			m_rendergraph->PushConstants(
+				fb.commandBuffer,
+				offsetof(PushConstants, frameUniforms),
+				sizeof(frameUniforms),
+				&frameUniforms
+			);
+			//
+			for (const Hierarchy& node : m_currentLevel.hierarchy)
 			{
 
 				for (uint32_t visible_prim : visible) {
@@ -314,23 +332,16 @@ private:
 					auto mat = m_meshManagerPimpl->materials.get(matHandle);
 					assert(mat);
 
-					auto& model_ = m_currentLevel.globalTransform[visible_node];
-					struct alignas(16) {
-						float model[16];
-						Material::Values mpc;
-						uint64_t frameUniforms;
-					} pc = {
-						.model = {},
-						.mpc = mat->values,
-						.frameUniforms = m_context->buffers_.get(m_resources.frameUniforms)->deviceAddress,
-					};
-					const float* modelData = glm::value_ptr(model_);
+					auto& model = m_currentLevel.globalTransform[visible_node];
+					PushConstants pc{};
+					pc.mpc = mat->values;
+					const float* modelData = glm::value_ptr(model);
 					std::copy_n(modelData, 16, pc.model);
 
 					m_rendergraph->PushConstants(
 						fb.commandBuffer,
 						0,
-						sizeof(pc),
+						offsetof(PushConstants, frameUniforms),
 						&pc
 					);
 

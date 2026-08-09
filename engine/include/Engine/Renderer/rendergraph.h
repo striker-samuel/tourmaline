@@ -3,8 +3,6 @@
 #include <vector>
 #include <Engine/Vulkan/core.h>
 
-
-
 #include <Engine/Renderer/vertex.h> // TODO:: Refactor this out!
 
 
@@ -12,6 +10,11 @@ namespace smvk {
 	struct ShaderProgram {
 		Holder<ShaderModuleHandle> vert{};
 		Holder<ShaderModuleHandle> frag{};
+		bool operator==(const ShaderProgram& other) const noexcept
+		{
+			return vert.index() == other.vert.index() &&
+				frag.index() == other.frag.index();
+		}
 	};
 	struct RenderGraph;
 
@@ -22,69 +25,143 @@ namespace smvk {
 };
 
 namespace smvk {
-	// This is not needed. We are handling a global default
+
 	struct PipelineBundle {
 		VkPipeline pipeline = VK_NULL_HANDLE;
 		VkPipelineLayout layout = VK_NULL_HANDLE;
 	};
 
-	struct PipelineCache {
-		PipelineCache(Context* ctx) : ctx_(ctx) {};
+	struct PipelineKey {
+		ShaderProgram& program;
+		std::vector<VkFormat> colorFormats;
+		VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+		VkFormat stencilFormat = VK_FORMAT_UNDEFINED;
+
+		VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
+		VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
+		VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+		bool operator==(const PipelineKey& other) const noexcept
+		{
+			return program == other.program &&
+				colorFormats == other.colorFormats &&
+				depthFormat == other.depthFormat &&
+				stencilFormat == other.stencilFormat &&
+				polygonMode == other.polygonMode &&
+				cullMode == other.cullMode &&
+				frontFace == other.frontFace;
+		}
+	};
+
+	struct PipelineKeyHash {
+		static void HashCombine(std::size_t& seed, std::size_t value) noexcept
+		{
+			// Standard-ish hash combine.
+			seed ^= value + 0x9e3779b97f4a7c15ull +
+				(seed << 6) + (seed >> 2);
+		}
+
+		template<typename T>
+		static void HashValue(std::size_t& seed, const T& value) noexcept
+		{
+			HashCombine(seed, std::hash<T>{}(value));
+		}
+
+		std::size_t operator()(const PipelineKey& key) const noexcept
+		{
+			std::size_t seed = 0;
+
+			HashValue(seed, key.program.vert.index());
+			HashValue(seed, key.program.frag.index());
+			HashValue(seed, key.colorFormats.size());
+			for (VkFormat format : key.colorFormats) {
+				HashValue(seed, static_cast<uint32_t>(format));
+			}
+
+			HashValue(seed, static_cast<uint32_t>(key.depthFormat));
+			HashValue(seed, static_cast<uint32_t>(key.stencilFormat));
+			HashValue(seed, static_cast<uint32_t>(key.polygonMode));
+			HashValue(seed, static_cast<uint32_t>(key.cullMode));
+			HashValue(seed, static_cast<uint32_t>(key.frontFace));
+
+			return seed;
+		}
+	};
+
+	class PipelineCache {
+	public:
+		explicit PipelineCache(Context* ctx)
+			: ctx_(ctx)
+		{}
+
+		~PipelineCache()
+		{
+			Clear();
+		}
+
 		PipelineBundle GetRenderPipeline(
 			ShaderProgram& program,
-			// pass
 			const VkFormat* colorFormats,
 			uint32_t nColorAttachments,
 			VkFormat depthFormat,
-			VkFormat stencilFormat, //this right now shoyld match depthFormat since is same image.
-			//rasterizerState
+			VkFormat stencilFormat,
 			VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL,
 			VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT,
-			VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE
-		) {
-
-			// TODO:: check for matching pipeline before building new one
-
-			auto newPipe = BuildGraphicsPipeline(
-				ctx_,
-				program,
-				colorFormats,
-				nColorAttachments,
-				depthFormat,
-				stencilFormat,
-				polygonMode,
-				cullMode,
-				frontFace
-			);
-			return newPipe;
-		};
-		PipelineBundle BuildGraphicsPipeline(
-			Context* ctx,
-			// shaders
-			ShaderProgram& program,
-			// pass
-			const VkFormat* colorFormats,
-			uint32_t nColorAttachments,
-			VkFormat depthFormat,
-			VkFormat stencilFormat, //this right now shoyld match depthFormat since is same image.
-			//rasterizerState
-			VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL,
-			VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT,
-			VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE
-		)
+			VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE)
 		{
-			auto v = ctx->shaderModules_.get(program.vert);
-			auto f = ctx->shaderModules_.get(program.frag);
+			PipelineKey key{
+				.program = program,
+				.colorFormats = std::vector<VkFormat>(
+					colorFormats,
+					colorFormats + nColorAttachments),
+				.depthFormat = depthFormat,
+				.stencilFormat = stencilFormat,
+				.polygonMode = polygonMode,
+				.cullMode = cullMode,
+				.frontFace = frontFace,
+			};
 
-			// SHADER
+			if (auto it = pipelines_.find(key); it != pipelines_.end()) {
+				return it->second;
+			}
+
+			PipelineBundle bundle = BuildGraphicsPipeline(key);
+
+			auto [it, inserted] =
+				pipelines_.emplace(std::move(key), bundle);
+
+			return it->second;
+		}
+
+		void Clear()
+		{
+			for (auto& [key, bundle] : pipelines_) {
+				if (bundle.pipeline != VK_NULL_HANDLE) {
+					ctx_->core_.DestroyPipeline(bundle.pipeline);
+				}
+				// Do not destroy bundle.layout here because it is the
+				// global/default pipeline layout owned by Context.
+			}
+
+			pipelines_.clear();
+		}
+
+	private:
+		PipelineBundle BuildGraphicsPipeline(const PipelineKey& key)
+		{
+			auto v = ctx_->shaderModules_.get(key.program.vert);
+			auto f = ctx_->shaderModules_.get(key.program.frag);
+
+			// ---------------------------------------------------------
+			// SHADERS
+			// ---------------------------------------------------------
+
 			VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
 			vertShaderStageInfo.sType =
 				VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 			vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
 			vertShaderStageInfo.module = *v;
 			vertShaderStageInfo.pName = "mainVS";
-			//vertShaderStageInfo.pSpecializationInfo = getSpecInfo()
-
 
 			VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
 			fragShaderStageInfo.sType =
@@ -93,141 +170,263 @@ namespace smvk {
 			fragShaderStageInfo.module = *f;
 			fragShaderStageInfo.pName = "mainPS";
 
-			VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,fragShaderStageInfo };
+			VkPipelineShaderStageCreateInfo shaderStages[] = {
+				vertShaderStageInfo,
+				fragShaderStageInfo
+			};
 
-			// VERTEX FORMAT. This is fixed and set beforehand
-			// this should be obatined from description
-			auto bindingDescription = Vertex::getBindingDescription();
+			// ---------------------------------------------------------
+			// VERTEX INPUT
+			// ---------------------------------------------------------
+
+			auto bindingDescriptions = Vertex::getBindingDescription();
 			auto attributeDescriptions = Vertex::getAttributeDescriptions();
 
 			VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-			vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-			vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(bindingDescription.size());
-			vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-			vertexInputInfo.pVertexBindingDescriptions = bindingDescription.data();
-			vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+			vertexInputInfo.sType =
+				VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+			vertexInputInfo.vertexBindingDescriptionCount =
+				static_cast<uint32_t>(bindingDescriptions.size());
+
+			vertexInputInfo.pVertexBindingDescriptions =
+				bindingDescriptions.data();
+
+			vertexInputInfo.vertexAttributeDescriptionCount =
+				static_cast<uint32_t>(attributeDescriptions.size());
+
+			vertexInputInfo.pVertexAttributeDescriptions =
+				attributeDescriptions.data();
+
+			// ---------------------------------------------------------
+			// INPUT ASSEMBLY
+			// ---------------------------------------------------------
 
 			VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-			inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-			inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-			inputAssembly.primitiveRestartEnable = VK_FALSE;
+			inputAssembly.sType =
+				VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+			inputAssembly.topology =
+				VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+			inputAssembly.primitiveRestartEnable =
+				VK_FALSE;
 
+			// ---------------------------------------------------------
 			// VIEWPORT
+			// ---------------------------------------------------------
 
 			VkPipelineViewportStateCreateInfo viewportState{};
-			viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+			viewportState.sType =
+				VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 			viewportState.viewportCount = 1;
 			viewportState.scissorCount = 1;
 
-			// RASTERIZER
-			// Hardcoded fornow
-			VkPipelineRasterizationStateCreateInfo rasterizationState_{
-				  .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-				  .flags = 0,
-				  .depthClampEnable = VK_FALSE, //
-				  .rasterizerDiscardEnable = VK_FALSE,
-				  .polygonMode = polygonMode,
-				  .cullMode = cullMode,
-				  .frontFace = frontFace,
+			// ---------------------------------------------------------
+			// RASTERIZATION
+			// ---------------------------------------------------------
 
-				  .depthBiasEnable = VK_FALSE,
-				  .depthBiasConstantFactor = 0.0f,
-				  .depthBiasClamp = 0.0f,
-				  .depthBiasSlopeFactor = 0.0f,
+			VkPipelineRasterizationStateCreateInfo rasterizationState{
+				.sType =
+					VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 
-				  .lineWidth = 1.0f,
+				.pNext = nullptr,
+				.flags = 0,
+
+				.depthClampEnable = VK_FALSE,
+				.rasterizerDiscardEnable = VK_FALSE,
+
+				.polygonMode = key.polygonMode,
+				.cullMode = key.cullMode,
+				.frontFace = key.frontFace,
+
+				.depthBiasEnable = VK_FALSE,
+				.depthBiasConstantFactor = 0.0f,
+				.depthBiasClamp = 0.0f,
+				.depthBiasSlopeFactor = 0.0f,
+
+				.lineWidth = 1.0f,
 			};
 
+			// ---------------------------------------------------------
 			// MULTISAMPLING
+			// ---------------------------------------------------------
+
 			VkPipelineMultisampleStateCreateInfo multisampling{};
-			multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+			multisampling.sType =
+				VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 			multisampling.sampleShadingEnable = VK_FALSE;
-			multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+			multisampling.rasterizationSamples =
+				VK_SAMPLE_COUNT_1_BIT;
 
-			// STENCIL
+			// ---------------------------------------------------------
+			// DEPTH / STENCIL
+			// ---------------------------------------------------------
+
 			VkPipelineDepthStencilStateCreateInfo depthStencil{};
-			depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-			depthStencil.depthTestEnable = VK_TRUE;
-			depthStencil.depthWriteEnable = VK_TRUE;
-			depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
-			depthStencil.depthBoundsTestEnable = VK_FALSE;
-			depthStencil.stencilTestEnable = VK_FALSE;
+			depthStencil.sType =
+				VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 
-			// Blending should be configurable too!
-			// COLORBLEND
+			depthStencil.depthTestEnable =
+				key.depthFormat != VK_FORMAT_UNDEFINED;
+
+			depthStencil.depthWriteEnable =
+				key.depthFormat != VK_FORMAT_UNDEFINED;
+
+			depthStencil.depthCompareOp =
+				VK_COMPARE_OP_GREATER;
+
+			depthStencil.depthBoundsTestEnable =
+				VK_FALSE;
+
+			depthStencil.stencilTestEnable =
+				VK_FALSE;
+
+			// ---------------------------------------------------------
+			// COLOR BLENDING
+			// ---------------------------------------------------------
+
 			VkPipelineColorBlendAttachmentState colorBlendAttachment{};
 			colorBlendAttachment.colorWriteMask =
-				VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-				VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-			colorBlendAttachment.blendEnable = VK_FALSE;
+				VK_COLOR_COMPONENT_R_BIT |
+				VK_COLOR_COMPONENT_G_BIT |
+				VK_COLOR_COMPONENT_B_BIT |
+				VK_COLOR_COMPONENT_A_BIT;
+
+			colorBlendAttachment.blendEnable =
+				VK_FALSE;
+
+			// One attachment state per color target.
+			std::vector<VkPipelineColorBlendAttachmentState>
+				colorBlendAttachments(
+					key.colorFormats.size(),
+					colorBlendAttachment);
 
 			VkPipelineColorBlendStateCreateInfo colorBlending{};
 			colorBlending.sType =
 				VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+
 			colorBlending.logicOpEnable = VK_FALSE;
 			colorBlending.logicOp = VK_LOGIC_OP_COPY;
-			colorBlending.attachmentCount = 1;
-			colorBlending.pAttachments = &colorBlendAttachment;
-			colorBlending.blendConstants[0] = 0.0f;
-			colorBlending.blendConstants[1] = 0.0f;
-			colorBlending.blendConstants[2] = 0.0f;
-			colorBlending.blendConstants[3] = 0.0f;
 
-			// DYNAMIC STATES
-			std::vector<VkDynamicState> dynamicStates = {
-				VK_DYNAMIC_STATE_VIEWPORT, // critical
-				VK_DYNAMIC_STATE_SCISSOR, // critical
-				//VK_DYNAMIC_STATE_BLEND_CONSTANTS,
-				//VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
-				//VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
-				//VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
-				//VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE
+			colorBlending.attachmentCount =
+				static_cast<uint32_t>(colorBlendAttachments.size());
+
+			colorBlending.pAttachments =
+				colorBlendAttachments.data();
+
+			// ---------------------------------------------------------
+			// DYNAMIC STATE
+			// ---------------------------------------------------------
+
+			constexpr VkDynamicState dynamicStates[] = {
+				VK_DYNAMIC_STATE_VIEWPORT,
+				VK_DYNAMIC_STATE_SCISSOR,
 			};
 
 			VkPipelineDynamicStateCreateInfo dynamicState{};
-			dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-			dynamicState.dynamicStateCount =
-				static_cast<uint32_t>(dynamicStates.size());
-			dynamicState.pDynamicStates = dynamicStates.data();
+			dynamicState.sType =
+				VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
 
-			VkPipelineLayout lyt = ctx_->defaultPipeLayout;
-			VkPipelineRenderingCreateInfo dynamic_rendering_pipeline_info{
-				VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR
-			};
-			dynamic_rendering_pipeline_info.pNext = VK_NULL_HANDLE;
-			dynamic_rendering_pipeline_info.colorAttachmentCount = nColorAttachments;
-			dynamic_rendering_pipeline_info.pColorAttachmentFormats = colorFormats;
-			dynamic_rendering_pipeline_info.depthAttachmentFormat = depthFormat;
-			dynamic_rendering_pipeline_info.stencilAttachmentFormat = stencilFormat;
+			dynamicState.dynamicStateCount =
+				static_cast<uint32_t>(std::size(dynamicStates));
+
+			dynamicState.pDynamicStates =
+				dynamicStates;
+
+			// ---------------------------------------------------------
+			// PIPELINE LAYOUT
+			// ---------------------------------------------------------
+
+			VkPipelineLayout layout =
+				ctx_->defaultPipeLayout;
+
+			// ---------------------------------------------------------
+			// DYNAMIC RENDERING
+			// ---------------------------------------------------------
+
+			VkPipelineRenderingCreateInfo renderingInfo{};
+			renderingInfo.sType =
+				VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+
+			renderingInfo.colorAttachmentCount =
+				static_cast<uint32_t>(key.colorFormats.size());
+
+			renderingInfo.pColorAttachmentFormats =
+				key.colorFormats.data();
+
+			renderingInfo.depthAttachmentFormat =
+				key.depthFormat;
+
+			renderingInfo.stencilAttachmentFormat =
+				key.stencilFormat;
+
+			// ---------------------------------------------------------
+			// GRAPHICS PIPELINE
+			// ---------------------------------------------------------
 
 			VkGraphicsPipelineCreateInfo pipelineInfo{};
-			pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-			pipelineInfo.stageCount = 2;
-			pipelineInfo.pStages = shaderStages;
-			pipelineInfo.pVertexInputState = &vertexInputInfo;
-			pipelineInfo.pInputAssemblyState = &inputAssembly;
-			pipelineInfo.pViewportState = &viewportState;
-			pipelineInfo.pRasterizationState = &rasterizationState_;
-			pipelineInfo.pMultisampleState = &multisampling;
-			pipelineInfo.pColorBlendState = &colorBlending;
-			pipelineInfo.pDynamicState = &dynamicState;
-			pipelineInfo.pDepthStencilState = &depthStencil;
-			pipelineInfo.layout = lyt;
-			pipelineInfo.pNext = &dynamic_rendering_pipeline_info;
+			pipelineInfo.sType =
+				VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+
+			pipelineInfo.pNext =
+				&renderingInfo;
+
+			pipelineInfo.stageCount =
+				static_cast<uint32_t>(std::size(shaderStages));
+
+			pipelineInfo.pStages =
+				shaderStages;
+
+			pipelineInfo.pVertexInputState =
+				&vertexInputInfo;
+
+			pipelineInfo.pInputAssemblyState =
+				&inputAssembly;
+
+			pipelineInfo.pViewportState =
+				&viewportState;
+
+			pipelineInfo.pRasterizationState =
+				&rasterizationState;
+
+			pipelineInfo.pMultisampleState =
+				&multisampling;
+
+			pipelineInfo.pDepthStencilState =
+				&depthStencil;
+
+			pipelineInfo.pColorBlendState =
+				&colorBlending;
+
+			pipelineInfo.pDynamicState =
+				&dynamicState;
+
+			pipelineInfo.layout =
+				layout;
 
 			PipelineBundle bundle{};
-			ctx->core_.CreateGraphicsPipeline(pipelineInfo, bundle.pipeline);
-			bundle.layout = lyt;
+
+			ctx_->core_.CreateGraphicsPipeline(
+				pipelineInfo,
+				bundle.pipeline);
+
+			bundle.layout =
+				layout;
+
 			return bundle;
 		}
-		//
 
 	private:
-		smvk::Context* ctx_;
+		Context* ctx_ = nullptr;
+
+		std::unordered_map<
+			PipelineKey,
+			PipelineBundle,
+			PipelineKeyHash
+		> pipelines_;
 	};
 
+} // namespace smvk
 
-};
 
 namespace smvk {
 	struct BufferKey {
@@ -335,10 +534,6 @@ namespace smvk {
 			return *this;
 		};
 
-		//struct VertexFormatDesc {
-		//	VkPipelineVertexInputStateCreateInfo vertexDescription{};
-		//} vertexFormat_;
-
 		// Resources
 		RenderPass& setInputImages(std::vector<LogicalImageHandle> inputImages) { this->inputImages_ = inputImages; };
 		RenderPass& setStorageBuffers(std::vector<LogicalBufferHandle> storageBuffers) { this->storageBuffers_ = storageBuffers; };
@@ -354,20 +549,22 @@ namespace smvk {
 
 	private:
 		friend RenderGraph;
-
+		//
 		std::vector<LogicalImageHandle> inputImages_;
 		std::vector<LogicalBufferHandle> storageBuffers_;
 		std::vector<LogicalStorageImageHandle> storageImages_;
-
-
+		// Description
+		// topology.
+		// setncil
+		// msaa
 		VkExtent2D extent_ = { 0,0 };
 		VkOffset2D offset_ = { 0,0 };
 		std::vector<Attachment> colorAttachments_{};
 		std::vector<AttachmentBlendSetup> colorAttachmentsBlendSetups;  // should either be {} or match colors size.
 		Attachment depthAttachment_{ .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .clearValue = { 1.0f } /*.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE */ };
+		//
 		RecordingFunction recordingFunction_{};
 	};
-
 
 	struct RenderPassContext {
 		VkCommandBuffer cmd;
@@ -386,31 +583,9 @@ namespace smvk {
 			pipelineCachePimpl = std::make_unique<PipelineCache>(&ctx_);
 		};
 		void Clear() { m_passes.clear(); }
-
-
-
-		// Rendergraph must resolve resouerces before this gettin called
-		RenderPassDescription GetPassDescription(RenderPass& pass) {
-			RenderPassDescription desc{};
-			int i = 0;
-			for (auto c : pass.colorAttachments_) {
-				auto view = imageViews_.get(c.view);
-				assert(view->resolvedFormat != VK_FORMAT_UNDEFINED);
-				desc.color[i].vkColorFormat = view->resolvedFormat;
-				desc.color[i].blend = false; // Pending blendsate implementation
-			}
-			auto depth = imageViews_.get(pass.depthAttachment_.view);
-			assert(depth->resolvedFormat != VK_FORMAT_UNDEFINED);
-			desc.vkDepthFormat = depth->resolvedFormat;
-			//pending vertex assembly
-			//pendibg blend
-			//pending stencil
-			return desc;
-		};
 		RenderPass& AddPass() {
 			return m_passes.emplace_back(RenderPass());
 		}
-
 		[[nodiscard]] LogicalImageHandle AddImage(ImageCreateInfo description) { assert(false); };
 		[[nodiscard]] LogicalImageHandle AddImage(ImageHandle imageHandle) {
 			assert(!imageHandle.empty());
@@ -473,66 +648,6 @@ namespace smvk {
 			return handles;
 		}
 
-		void ResolveImages() {
-			inputImages_.forEach(
-				[this](LogicalImage& logicalImage) {
-				if (logicalImage.resolvedImageHandle.empty()) {
-					if (logicalImage.type == LogicalImage::Type::External) { assert(false && "external image unresolved. shouldnt be possible"); };
-					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
-				};
-			}
-			);
-
-			inputImages_.forEach(
-				[this](LogicalImage& logicalImage) {
-				if (logicalImage.resolvedImageHandle.empty()) {
-					if (logicalImage.type == LogicalImage::Type::External) { assert(false && "external image unresolved. shouldnt be possible"); };
-					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
-				};
-			}
-			);
-
-		};
-
-		void ResolveImageViews() {
-			// needs resolved images first
-			imageViews_.forEach(
-				[this](LogicalImageView& logicalView) {
-				if (logicalView.resolvedImageView == VK_NULL_HANDLE) {
-					auto logicalImage = inputImages_.get(logicalView.key.image);
-					auto img = ctx_.images_.get(logicalImage->resolvedImageHandle);
-					logicalView.resolvedFormat = img->vk_format;
-					// if outImage"" we need to know if we are renderting to, sampling from or both
-					// didnt distinguish before!. ill just assume render.
-					// also swaphcain image is abstracted from the rendergraph for the moment...
-					// LegitEngine does the present ass a pass. maybe its a good idea.
-					logicalView.resolvedImageView = img->sampleView;
-
-				};
-			}
-			);
-		};
-
-		void ResolveBuffers() {
-			storageBuffers_.forEach(
-				[this](LogicalBuffer& logicalBuffer) { // Pass by reference, not pointer
-				if (logicalBuffer.resolvedBufferHandle.empty()) {
-					const auto& key = logicalBuffer.key;
-					int ringMultiplier = key.ring ? 4 : 1;
-					logicalBuffer.resolvedBufferHandle = ctx_.CreateBuffer(
-						BufferCreateInfo{
-							.size = key.elementCount * key.elementSize * ringMultiplier,
-							.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-							.usage_flags =
-							  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-							| VK_BUFFER_USAGE_TRANSFER_DST_BIT
-						}
-					).release();
-				}
-			}
-			);
-		}
-
 		smvk::BufferHandle GetResolvedBufferHandle(LogicalBufferHandle handle) const {
 			return storageBuffers_.get(handle)->resolvedBufferHandle;
 		};
@@ -553,7 +668,6 @@ namespace smvk {
 			);
 
 		}
-
 		void BindRenderPipeline(VkCommandBuffer cmd, ShaderProgram& shaderProgram) {
 			std::vector<VkFormat> colorAttachmentFormats;
 			for (auto& cattach : currentPass_->colorAttachments_) {
@@ -606,7 +720,6 @@ namespace smvk {
 				nullptr //dynOffset
 			);
 		}
-
 		void Execute(FrameBuffer& fb) {
 
 			ResolveImages();
@@ -684,6 +797,65 @@ namespace smvk {
 			}
 		}
 
+	private:
+		void ResolveImages() {
+			inputImages_.forEach(
+				[this](LogicalImage& logicalImage) {
+				if (logicalImage.resolvedImageHandle.empty()) {
+					if (logicalImage.type == LogicalImage::Type::External) { assert(false && "external image unresolved. shouldnt be possible"); };
+					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
+				};
+			}
+			);
+
+			inputImages_.forEach(
+				[this](LogicalImage& logicalImage) {
+				if (logicalImage.resolvedImageHandle.empty()) {
+					if (logicalImage.type == LogicalImage::Type::External) { assert(false && "external image unresolved. shouldnt be possible"); };
+					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
+				};
+			}
+			);
+
+		};
+		void ResolveImageViews() {
+			// needs resolved images first
+			imageViews_.forEach(
+				[this](LogicalImageView& logicalView) {
+				if (logicalView.resolvedImageView == VK_NULL_HANDLE) {
+					auto logicalImage = inputImages_.get(logicalView.key.image);
+					auto img = ctx_.images_.get(logicalImage->resolvedImageHandle);
+					logicalView.resolvedFormat = img->vk_format;
+					// if outImage"" we need to know if we are renderting to, sampling from or both
+					// didnt distinguish before!. ill just assume render.
+					// also swaphcain image is abstracted from the rendergraph for the moment...
+					// LegitEngine does the present ass a pass. maybe its a good idea.
+					logicalView.resolvedImageView = img->sampleView;
+
+				};
+			}
+			);
+		};
+		void ResolveBuffers() {
+			storageBuffers_.forEach(
+				[this](LogicalBuffer& logicalBuffer) { // Pass by reference, not pointer
+				if (logicalBuffer.resolvedBufferHandle.empty()) {
+					const auto& key = logicalBuffer.key;
+					int ringMultiplier = key.ring ? 4 : 1;
+					logicalBuffer.resolvedBufferHandle = ctx_.CreateBuffer(
+						BufferCreateInfo{
+							.size = key.elementCount * key.elementSize * ringMultiplier,
+							.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+							.usage_flags =
+							  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+							| VK_BUFFER_USAGE_TRANSFER_DST_BIT
+						}
+					).release();
+				}
+			}
+			);
+		}
+
 		RenderPass* currentPass_;
 		VkPipeline vkCurrentPipeline_;
 		VkPipelineLayout vkCurrentPipelineLayout_;
@@ -694,7 +866,6 @@ namespace smvk {
 		smvk::Pool<LogicalBuffer, LogicalBuffer> storageBuffers_;
 		//
 		std::vector<RenderPass> m_passes;
-		//
 		std::unique_ptr<PipelineCache> pipelineCachePimpl;
 		smvk::Context& ctx_;
 

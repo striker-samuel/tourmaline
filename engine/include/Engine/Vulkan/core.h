@@ -72,7 +72,6 @@ namespace smvk {
 		kBinding_NumBindings = 3 // this should be # of all other
 	};
 
-
 	struct QueueFamilyIndices {
 		std::optional<uint32_t> graphicsFamily;
 		std::optional<uint32_t> presentFamily;
@@ -82,7 +81,6 @@ namespace smvk {
 			return graphicsFamily.has_value() && presentFamily.has_value();
 		}
 	};
-
 
 	// Predegined buffer usages so we have flags preset.
 	// Theres no need for infinite granularity so clearly this will be the best approach when ready
@@ -158,8 +156,6 @@ namespace smvk {
 
 	struct Image {
 
-		// shoudl i just sstore vkIamgeCreateinfo??
-
 		VkImage vk_image = VK_NULL_HANDLE;
 		VmaAllocation vma_alloc = VK_NULL_HANDLE;
 		VkExtent3D vk_extent = { 1,1,1 };
@@ -179,7 +175,7 @@ namespace smvk {
 		bool owns_views = true;
 		bool is_swapchain = false;
 
-
+		// This should be reworked out really
 		ImageCreateInfo getImageCreateInfo() const {
 			return {
 				.vk_extent = vk_extent,
@@ -227,47 +223,58 @@ namespace smvk {
 	};
 
 	struct VulkanCore {
+
 		struct CoreConfiguration {
 			VulkanVersion version_ = VK_1_3;
 			const std::vector<const char*> validationLayers = { "VK_LAYER_KHRONOS_validation", };
 			const std::vector<const char*> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 			const std::vector<const char*> instanceExtensions = {};
 		} config_;
-		// Enviroment Descriptions
-		VkPhysicalDeviceDriverProperties vkPhysicalDeviceDriverProperties_ = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES, nullptr };
+
+		VkPhysicalDeviceDriverProperties vkPhysicalDeviceDriverProperties_ = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+		nullptr
+		};
+
 		VkPhysicalDeviceDepthStencilResolveProperties vkPhysicalDeviceDepthStencilResolveProperties_ = {
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES,
-			&vkPhysicalDeviceVulkan12Properties_,
+			&vkPhysicalDeviceDriverProperties_
 		};
+
+		//VkPhysicalDeviceVulkan14Properties vkPhysicalDeviceVulkan14Properties_ = {
+		//VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_PROPERTIES,
+		//&vkPhysicalDeviceDepthStencilResolveProperties_
+		//};
+
 		VkPhysicalDeviceVulkan13Properties vkPhysicalDeviceVulkan13Properties_ = {
-			 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES,
-			 &vkPhysicalDeviceDriverProperties_,
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES,
+			&vkPhysicalDeviceDepthStencilResolveProperties_
 		};
-		// provided by Vulkan 1.2
+
 		VkPhysicalDeviceVulkan12Properties vkPhysicalDeviceVulkan12Properties_ = {
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
-			&vkPhysicalDeviceVulkan13Properties_,
+			&vkPhysicalDeviceVulkan13Properties_
 		};
-		// provided by Vulkan 1.1
+
 		VkPhysicalDeviceVulkan11Properties vkPhysicalDeviceVulkan11Properties_ = {
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES,
-			&vkPhysicalDeviceDepthStencilResolveProperties_,
+			&vkPhysicalDeviceVulkan12Properties_
 		};
+
 		VkPhysicalDeviceProperties2 vkPhysicalDeviceProperties2_ = {
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
 			&vkPhysicalDeviceVulkan11Properties_,
-			VkPhysicalDeviceProperties{},
+			{}
 		};
 		VkPhysicalDeviceProperties2& GetPhysicalDeviceProperties() { return this->vkPhysicalDeviceProperties2_; };
 
-		// missing 1.4 .. dont care yet
 		//VkPhysicalDeviceVulkan14Features vkFeatures14_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES };
 		VkPhysicalDeviceVulkan13Features vkFeatures13_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
 		VkPhysicalDeviceVulkan12Features vkFeatures12_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &vkFeatures13_ };
 		VkPhysicalDeviceVulkan11Features vkFeatures11_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &vkFeatures12_ };
 		VkPhysicalDeviceFeatures2 vkFeatures10_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &vkFeatures11_ };
-		// 
-		QueueFamilyIndices indices;
+
+		QueueFamilyIndices indices; // this will be filled in device initialization. exposed queues
 
 	public:
 
@@ -285,6 +292,7 @@ namespace smvk {
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
 		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline);
 		//void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline);
+		void DestroyPipeline(VkPipeline pipeline);;
 	};
 
 	void CreateDefaultDescriptorSetLayout(VkDescriptorSetLayout& dsl);
