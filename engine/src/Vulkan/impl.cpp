@@ -2067,7 +2067,7 @@ inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout) 
 	);
 
 	if (result == VK_TIMEOUT) { assert(false && "timeout reached"); }
-	availableSlots++;
+	reset(handle);
 
 }
 inline void smvk::Submitter::waitAll() {
