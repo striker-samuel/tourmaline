@@ -2271,6 +2271,7 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 
 }
 inline void smvk::VulkanSwapchain::CreateSyncObjects() {
+	renderFinishedSemaphores_.resize(framesInFlight_, VK_NULL_HANDLE);
 	imageAvailableSemaphores_.resize(framesInFlight_, VK_NULL_HANDLE);
 	inFlightFences_.resize(framesInFlight_, VK_NULL_HANDLE);
 
@@ -2281,7 +2282,7 @@ inline void smvk::VulkanSwapchain::CreateSyncObjects() {
 	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 	fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-	for (size_t i = 0; i < renderFinishedSemaphores_.size(); ++i) {
+	for (size_t i = 0; i < imageViews_.size(); ++i) {
 		if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &renderFinishedSemaphores_[i]) != VK_SUCCESS) {
 			throw std::runtime_error("Failed to create render-finished semaphore.");
 		}
@@ -2339,16 +2340,17 @@ inline void smvk::VulkanSwapchain::CleanupSwapchain() {
 }
 smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 {
-
-	//if framebufferResized ??
 	auto f = GetInFlightFence();
-	vkWaitForFences(
+	VkResult waitResult = vkWaitForFences(
 		device_,
 		1,
 		&f,
 		VK_TRUE,
 		UINT64_MAX
 	);
+	if (waitResult != VK_SUCCESS && waitResult != VK_TIMEOUT) {
+		throw std::runtime_error("Failed to wait for fence.");
+	}
 
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(
@@ -2413,6 +2415,7 @@ smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 
 	FrameBuffer frameBufferContext_{
 		.frameIndex = currentFrame_,
+		.imageIndex = currentImageIndex_,
 		.commandBuffer = commandBuffers[currentFrame_],
 		.swapchain = *this
 

@@ -257,7 +257,7 @@ private:
 
 		// ATTACHMENT SETUP
 		auto logicalSwapchainImage = m_rendergraph->AddImageView(
-			fb.swapchain.imageViews_[fb.frameIndex], // This is wrong. should be frameIndex converted to imageIndex
+			fb.swapchain.imageViews_[fb.imageIndex],
 			fb.swapchain.vk_surfaceFormat_
 		);
 		auto depthImage = m_context->images_.get(fb.swapchain.depthImage_);

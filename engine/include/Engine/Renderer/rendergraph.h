@@ -726,7 +726,9 @@ namespace smvk {
 			ResolveImageViews();
 			ResolveBuffers();
 
+
 			for (auto& pass : m_passes) {
+				// update bindigns for storageImages and else associated to this pass
 
 				// Reset current pipeline bound
 				vkCurrentPipelineLayout_ = VK_NULL_HANDLE;
@@ -803,6 +805,7 @@ namespace smvk {
 				[this](LogicalImage& logicalImage) {
 				if (logicalImage.resolvedImageHandle.empty()) {
 					if (logicalImage.type == LogicalImage::Type::External) { assert(false && "external image unresolved. shouldnt be possible"); };
+					//CreateTransientImaeg(key, sync_req);
 					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
 				};
 			}
@@ -812,6 +815,7 @@ namespace smvk {
 				[this](LogicalImage& logicalImage) {
 				if (logicalImage.resolvedImageHandle.empty()) {
 					if (logicalImage.type == LogicalImage::Type::External) { assert(false && "external image unresolved. shouldnt be possible"); };
+					//CreateTransientImaeg(key, sync_req);
 					logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
 				};
 			}

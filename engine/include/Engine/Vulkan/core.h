@@ -292,7 +292,7 @@ namespace smvk {
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
 		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline);
 		//void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline);
-		void DestroyPipeline(VkPipeline pipeline);;
+		void DestroyPipeline(VkPipeline pipeline);
 	};
 
 	void CreateDefaultDescriptorSetLayout(VkDescriptorSetLayout& dsl);
@@ -372,7 +372,6 @@ namespace smvk {
 
 		BufferHandle CreateStagingBuffer(VkDeviceSize size); // Right now only used for image upload, every other data upload is done by mapping
 		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
-		Holder<RenderPipelineHandle> CreateRenderPipeline(smvk::ShaderModuleHandle vert, smvk::ShaderModuleHandle frag);
 		// 
 		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
 		Holder<TextureHandle> CreateTexture(ktxTexture2& texture);
@@ -402,9 +401,8 @@ namespace smvk {
 		Pool<ShaderModule, VkShaderModule> shaderModules_; // this should be removed when moving to vk1.4
 
 		VmaAllocator m_allocator;
-		TextureHandle m_nilTexture{}; // needed to avoid sparse list in bindless
+		//TextureHandle m_nilTexture{}; // needed to avoid sparse list in bindless
 		VkSampler m_defaultSampler{}; // This really should be a SamplersPool implementation the same way nprocore2 handles this
-
 
 		// Binding model is just hardcoded.
 		VkDescriptorSetLayout defaultSetLayout;
@@ -449,7 +447,9 @@ inline void ImageBarrier(
 	VkPipelineStageFlags2 srcStage,
 	VkAccessFlags2 srcAccess,
 	VkPipelineStageFlags2 dstStage,
-	VkAccessFlags2 dstAccess
+	VkAccessFlags2 dstAccess,
+	uint32_t srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+	uint32_t dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED
 );
 
 
@@ -469,7 +469,8 @@ namespace smvk {
 
 	class VulkanSwapchain;
 	struct FrameBuffer {
-		uint32_t frameIndex = 0; // Maybe end os uint32_ to catch for unitialized? this value can only be ip to SWAPCHAIN_IMAGE_COUNT
+		uint32_t frameIndex = 0;
+		uint32_t imageIndex = 0;
 		VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 		VulkanSwapchain& swapchain;
 	};
@@ -532,6 +533,7 @@ namespace smvk {
 		std::vector<VkSemaphore> renderFinishedSemaphores_;
 		std::vector<VkSemaphore> imageAvailableSemaphores_;
 		std::vector<VkFence> inFlightFences_;
+		std::vector<VkFence> imagesInFlight_;
 
 		VkExtent2D extent_{};
 		int windowWidth = 0;
