@@ -156,6 +156,12 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBits
 	std::cerr << "---------------- Vulkan Validation ----------------\n";
 	std::cerr << "Message: " << pCallbackData->pMessage << "\n";
 	std::cerr << "\n";  // <--- Blank line for separation
+
+	if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+	{
+		//__debugbreak();
+	}
+
 	return VK_FALSE;
 }
 bool checkValidationLayerSupport(const std::vector<const char*> validationLayers) {
@@ -278,87 +284,131 @@ SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurface
 
 	return details;
 }
-smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface) {
+smvk::QueueFamilyIndices findQueueFamilies(
+	VkPhysicalDevice device,
+	VkSurfaceKHR surface)
+{
 	smvk::QueueFamilyIndices indices;
 
 	uint32_t queueFamilyCount = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties(
 		device,
 		&queueFamilyCount,
-		nullptr
-	);
+		nullptr);
 
 	std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+
 	vkGetPhysicalDeviceQueueFamilyProperties(
 		device,
 		&queueFamilyCount,
-		queueFamilies.data()
-	);
+		queueFamilies.data());
 
-	int i = 0;
 
-	for (const auto& queueFamily : queueFamilies) {
-		if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-			indices.graphicsFamily = i;
-		}
+	for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+		VkBool32 present = VK_FALSE;
+		vkGetPhysicalDeviceSurfaceSupportKHR(
+			device, i, surface, &present);
 
-		VkBool32 presentSupport = false;
+		const auto flags = queueFamilies[i].queueFlags;
+
+		printf(
+			"Queue family %u: "
+			"count=%u G=%d C=%d T=%d S=%d P=%d\n",
+			i,
+			queueFamilies[i].queueCount,
+			!!(flags & VK_QUEUE_GRAPHICS_BIT),
+			!!(flags & VK_QUEUE_COMPUTE_BIT),
+			!!(flags & VK_QUEUE_TRANSFER_BIT),
+			!!(flags & VK_QUEUE_SPARSE_BINDING_BIT),
+			!!present);
+	}
+
+	// First pass: prefer one family that supports BOTH graphics + present.
+	for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+		const auto& q = queueFamilies[i];
+
+		VkBool32 presentSupport = VK_FALSE;
 		vkGetPhysicalDeviceSurfaceSupportKHR(
 			device,
 			i,
 			surface,
-			&presentSupport
-		);
+			&presentSupport);
 
-		if (presentSupport) {
+		const bool graphics =
+			(q.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
+
+		if (graphics && presentSupport) {
+			indices.graphicsFamily = i;
 			indices.presentFamily = i;
+			break;
 		}
-
-		i++;
 	}
 
-	// Look for a dedicated transfer queue.
-	i = 0;
-	for (const auto& queueFamily : queueFamilies) {
-		bool supportsTransfer =
-			queueFamily.queueFlags & VK_QUEUE_TRANSFER_BIT;
+	// If no combined family exists, find them separately.
+	if (!indices.graphicsFamily || !indices.presentFamily) {
+		for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+			const auto& q = queueFamilies[i];
 
-		bool supportsGraphics =
-			queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT;
+			if (!indices.graphicsFamily &&
+				(q.queueFlags & VK_QUEUE_GRAPHICS_BIT))
+			{
+				indices.graphicsFamily = i;
+			}
 
-		bool supportsCompute =
-			queueFamily.queueFlags & VK_QUEUE_COMPUTE_BIT;
+			VkBool32 presentSupport = VK_FALSE;
+			vkGetPhysicalDeviceSurfaceSupportKHR(
+				device,
+				i,
+				surface,
+				&presentSupport);
 
-		if (supportsTransfer && !supportsGraphics && !supportsCompute) {
+			if (!indices.presentFamily && presentSupport) {
+				indices.presentFamily = i;
+			}
+
+			if (indices.graphicsFamily &&
+				indices.presentFamily)
+			{
+				break;
+			}
+		}
+	}
+
+	// Prefer a truly dedicated transfer queue.
+	for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+		const auto flags = queueFamilies[i].queueFlags;
+
+		const bool transfer =
+			(flags & VK_QUEUE_TRANSFER_BIT) != 0;
+		const bool graphics =
+			(flags & VK_QUEUE_GRAPHICS_BIT) != 0;
+		const bool compute =
+			(flags & VK_QUEUE_COMPUTE_BIT) != 0;
+
+		if (transfer && !graphics && !compute) {
 			indices.transferFamily = i;
 			break;
 		}
-
-		i++;
 	}
 
-	// If no fully dedicated transfer queue exists,
-	// look for one that at least is not a graphics queue.
-	if (!indices.transferFamily.has_value()) {
-		i = 0;
-		for (const auto& queueFamily : queueFamilies) {
-			bool supportsTransfer =
-				queueFamily.queueFlags & VK_QUEUE_TRANSFER_BIT;
+	// Otherwise prefer non-graphics.
+	if (!indices.transferFamily) {
+		for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+			const auto flags = queueFamilies[i].queueFlags;
 
-			bool supportsGraphics =
-				queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT;
+			const bool transfer =
+				(flags & VK_QUEUE_TRANSFER_BIT) != 0;
+			const bool graphics =
+				(flags & VK_QUEUE_GRAPHICS_BIT) != 0;
 
-			if (supportsTransfer && !supportsGraphics) {
+			if (transfer && !graphics) {
 				indices.transferFamily = i;
 				break;
 			}
-
-			i++;
 		}
 	}
 
-	// Final fallback: use graphics queue for transfers.
-	if (!indices.transferFamily.has_value()) {
+	if (!indices.transferFamily) {
 		indices.transferFamily = indices.graphicsFamily;
 	}
 
@@ -1625,8 +1675,7 @@ void smvk::Context::ProcessDeferrredTasks()
 }
 void smvk::Context::UpdateBindings(uint32_t frameIndex) {
 
-	// this is clearly incomplete.
-	std::vector<VkDescriptorImageInfo> imageInfos;
+ 	std::vector<VkDescriptorImageInfo> imageInfos;
 	std::vector<VkDescriptorImageInfo> samplerInfos;
 	VkDescriptorImageInfo si{};
 	si.sampler = m_defaultSampler;
@@ -1735,7 +1784,9 @@ inline void ImageBarrier(
 	VkPipelineStageFlags2 srcStage,
 	VkAccessFlags2 srcAccess,
 	VkPipelineStageFlags2 dstStage,
-	VkAccessFlags2 dstAccess
+	VkAccessFlags2 dstAccess,
+	uint32_t srcQueueFamilyIndex,
+	uint32_t dstQueueFamilyIndex
 )
 {
 	VkImageMemoryBarrier2 imageBarrier{
@@ -1750,8 +1801,8 @@ inline void ImageBarrier(
 		.oldLayout = oldLayout,
 		.newLayout = newLayout,
 
-		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.srcQueueFamilyIndex = srcQueueFamilyIndex,
+		.dstQueueFamilyIndex = dstQueueFamilyIndex,
 
 		.image = vk_image,
 		.subresourceRange = subresourceRange,
@@ -2322,8 +2373,6 @@ smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	vkResetFences(device_, 1, &inFlightFences_[currentFrame_]);
 	vkResetCommandPool(device_, perFrameCommandPools[currentFrame_], 0);
 
-	//UpdateDeltaTime();
-
 	VkCommandBufferBeginInfo beginInfo{};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
@@ -2337,8 +2386,14 @@ smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	barrierToColorAttachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	barrierToColorAttachment.srcAccessMask = 0;
 	barrierToColorAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+	//barrierToColorAttachment.srcQueueFamilyIndex =
+	//	ctx_.core_.indices.presentFamily.value();
+	//barrierToColorAttachment.dstQueueFamilyIndex =
+	//	ctx_.core_.indices.graphicsFamily.value();
 	barrierToColorAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrierToColorAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	
 	barrierToColorAttachment.image = images_[imageIndex];
 	barrierToColorAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	barrierToColorAttachment.subresourceRange.baseMipLevel = 0;
@@ -2382,6 +2437,8 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 		VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
 		VK_PIPELINE_STAGE_2_NONE,
 		VK_ACCESS_2_NONE
+		//ctx_.core_.indices.graphicsFamily.value(), //nasty
+		//ctx_.core_.indices.presentFamily.value()
 		);
 
 	// 
@@ -2399,7 +2456,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 	submitInfo.pWaitDstStageMask = waitStages;
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &fb.commandBuffer;
-	VkSemaphore signalSemaphores[] = { renderFinishedSemaphores_[currentFrame_] };
+	VkSemaphore signalSemaphores[] = { renderFinishedSemaphores_[currentImageIndex_] };
 	submitInfo.signalSemaphoreCount = 1;
 	submitInfo.pSignalSemaphores = signalSemaphores;
 
