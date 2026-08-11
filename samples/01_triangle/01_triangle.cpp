@@ -1,5 +1,7 @@
 #pragma once
 
+#include <iostream>
+
 #include <Engine/App/app.h>
 #include <Engine/Renderer/rendergraph.h>
 #include <Engine/Renderer/dxc_integration.h>
@@ -141,5 +143,23 @@ private:
     }
 
 private:
-    ShaderProgram m_program{};
+    smvk::ShaderProgram m_program{};
 };
+
+
+int main(int argc, const char* argv[]) {
+    if (argc > 1) {
+        std::cout << argv[0];
+    }
+
+    TriangleApp app = TriangleApp();
+    try {
+        app.Run();
+    }
+    catch (const std::exception& e) {
+        std::cerr << e.what() << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
+}

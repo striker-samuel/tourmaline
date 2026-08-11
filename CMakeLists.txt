@@ -80,5 +80,6 @@ endif()
 add_subdirectory(external/imgui)
 add_subdirectory(engine)
 add_subdirectory(app)
+add_subdirectory(samples/01_triangle)
 
 
