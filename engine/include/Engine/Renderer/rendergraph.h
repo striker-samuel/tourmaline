@@ -135,6 +135,7 @@ namespace smvk {
 
 		void Clear()
 		{
+			//vkDeviceWaitIdle(device_);
 			for (auto& [key, bundle] : pipelines_) {
 				if (bundle.pipeline != VK_NULL_HANDLE) {
 					ctx_->core_.DestroyPipeline(bundle.pipeline);
@@ -582,7 +583,8 @@ namespace smvk {
 		explicit RenderGraph(Context& ctx) : ctx_(ctx) {
 			pipelineCachePimpl = std::make_unique<PipelineCache>(&ctx_);
 		};
-		void Clear() { m_passes.clear(); }
+		// could be called NewFrame really
+		void NewFrame() { m_passes.clear(); }
 		RenderPass& AddPass() {
 			return m_passes.emplace_back(RenderPass());
 		}

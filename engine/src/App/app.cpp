@@ -161,7 +161,9 @@ void smvk::VulkanApp::UpdateDeltaTime() {
 void smvk::VulkanApp::MainLoop() {
 	while (!glfwWindowShouldClose(window)) {
 		m_input.beginFrame();
-
+		if (m_input.isKeyHeld(GLFW_KEY_ESCAPE)) {
+			glfwSetWindowShouldClose(window, GLFW_TRUE);
+		}
 		glfwPollEvents();
 		EarlyUpdate();
 		Update();

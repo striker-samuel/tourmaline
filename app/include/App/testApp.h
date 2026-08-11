@@ -257,7 +257,7 @@ private:
 
 	void RenderFrame(smvk::FrameBuffer fb) {
 
-		m_rendergraph->Clear();
+		m_rendergraph->NewFrame();
 		m_context->UpdateBindings();
 
 		// ATTACHMENT SETUP
