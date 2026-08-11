@@ -35,6 +35,7 @@ namespace smvk {
 		std::unique_ptr<VulkanSwapchain> m_swapchain;
 		std::unique_ptr<RenderGraph> m_rendergraph;
 		ImGuiContext* m_imguiCtx = nullptr;
+		Holder<DescriptorPoolHandle> imgui_descriptorPool;
 #pragma region ===[ App / Core State ]===
 		float delta_time_s = .0f;
 		float time_since_start_s = .0f;

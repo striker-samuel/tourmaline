@@ -21,6 +21,7 @@
 #include <ktx.h>
 #include <ktxVulkan.h>
 //
+
 //
 static constexpr uint32_t DEFAULT_WIDTH = 1280;
 static constexpr uint32_t DEFAULT_HEIGHT = 720;
@@ -200,9 +201,7 @@ namespace smvk {
 		}
 	};
 
-	// will be removed when updating to vk 1.4
-	using ShaderModuleHandle = Handle<struct ShaderModule>;
-
+	using ShaderModuleHandle = Handle<struct ShaderModule>; // will be removed when updating to vk 1.4
 	using ImageHandle = Handle<struct Image>;
 	using TextureHandle = Handle<struct Texture>;
 	using SamplerHandle = Handle<struct Sampler>;
@@ -210,7 +209,6 @@ namespace smvk {
 	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 	using DescriptorSetHandle = Handle<struct DescriptorSet>;
 
-	using RenderPipelineHandle = Handle<struct RenderPipeline>;
 };
 
 namespace smvk {
@@ -287,6 +285,11 @@ namespace smvk {
 
 		int CreateInstance();
 		bool Init();
+
+		VkInstance GetInstance();
+		VkDevice GetDevice();
+		VkPhysicalDevice GetPhysicalDevice();
+		VkQueue GetGraphicsQueue();
 
 		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
@@ -419,7 +422,6 @@ namespace smvk {
 
 	void destroy(ResourceContext* ctx, DescriptorPoolHandle handle);
 	void destroy(ResourceContext* ctx, DescriptorSetHandle handle);
-	void destroy(ResourceContext* ctx, RenderPipelineHandle handle);
 
 
 };
@@ -499,6 +501,7 @@ namespace smvk {
 
 		VkExtent2D GetExtent() const { return extent_; }
 		uint32_t GetImageCount() const { return static_cast<uint32_t>(images_.size()); }
+		uint32_t GetMinImageCount() const { return minImageCount_; };
 		VkImage GetImage(uint32_t index) const { return images_.at(index); }
 		VkImageView GetImageView(uint32_t index) const { return imageViews_.at(index); }
 		VkImage GetCurrentImage() const { return images_.at(currentImageIndex_); }
@@ -526,6 +529,7 @@ namespace smvk {
 #pragma endregion
 
 		bool framebufferResized = false;
+		uint32_t minImageCount_;
 
 		Holder<ImageHandle> depthImage_;
 		std::vector<VkImage> images_;

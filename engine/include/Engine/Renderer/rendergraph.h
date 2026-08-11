@@ -135,16 +135,13 @@ namespace smvk {
 
 		void Clear()
 		{
-			//vkDeviceWaitIdle(device_);
+			vkDeviceWaitIdle(ctx_->core_.GetDevice());
 			for (auto& [key, bundle] : pipelines_) {
 				if (bundle.pipeline != VK_NULL_HANDLE) {
 					ctx_->core_.DestroyPipeline(bundle.pipeline);
 				}
-				// Do not destroy bundle.layout here because it is the
-				// global/default pipeline layout owned by ResourceContext.
 			}
-
-			pipelines_.clear();
+			//pipelines_.clear();
 		}
 
 	private:

@@ -18,6 +18,7 @@ add_subdirectory(external/glfw)
 # GLM (header-only)
 add_subdirectory(external/glm)
 
+
 # --- KTX hinting --------------------------------------------------------------
 # Users can point CMake at KTX in several ways:
 #  1) -Dktx_DIR=/path/to/lib/cmake/ktx

@@ -48,7 +48,24 @@ target_link_libraries(engine
         #OptickCore
 )
 
+# DXC -- shader compiling HLSL->SPIRV
+set(DXC_DIR "${CMAKE_SOURCE_DIR}/external/dxc")
+
+target_include_directories(engine PRIVATE
+    "${DXC_DIR}/include"
+)
+
+target_link_libraries(engine PRIVATE
+    "${DXC_DIR}/lib/x64/dxcompiler.lib"
+)
 
 
+add_custom_command(TARGET engine POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${DXC_DIR}/bin/x64/dxcompiler.dll"
+        "$<TARGET_FILE_DIR:engine>"
 
-
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${DXC_DIR}/bin/x64/dxil.dll"
+        "$<TARGET_FILE_DIR:engine>"
+)

@@ -761,7 +761,24 @@ bool smvk::VulkanCore::Init() {
 
 	return true;
 
-};
+}
+VkInstance smvk::VulkanCore::GetInstance()
+{
+	return instance_;
+}
+VkDevice smvk::VulkanCore::GetDevice()
+{
+	return device_;
+}
+VkPhysicalDevice smvk::VulkanCore::GetPhysicalDevice()
+{
+	return physicalDevice_;
+}
+VkQueue smvk::VulkanCore::GetGraphicsQueue()
+{
+	return graphicsQueue_;
+}
+;
 void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out) {
 	VkSemaphoreTypeCreateInfo semaphoreTypeInfo{};
 	semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
@@ -1735,7 +1752,6 @@ void smvk::destroy(smvk::ResourceContext* ctx, smvk::TextureHandle handle) {}
 void smvk::destroy(smvk::ResourceContext* ctx, smvk::SamplerHandle handle) {}
 void smvk::destroy(smvk::ResourceContext* ctx, smvk::DescriptorSetHandle handle) {}
 void smvk::destroy(smvk::ResourceContext* ctx, smvk::DescriptorPoolHandle handle) {}
-void smvk::destroy(smvk::ResourceContext* ctx, smvk::RenderPipelineHandle handle) {}
 
 // Barriers
 inline void BufferBarrier(
@@ -2135,6 +2151,7 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 	VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 
 	uint32_t imageCount = DESIRED_SWAPCHAIN_IMAGE_COUNT;
+	minImageCount_ = support.capabilities.minImageCount;
 	if (imageCount < support.capabilities.minImageCount) {
 		imageCount = support.capabilities.minImageCount;
 	}
@@ -2390,10 +2407,7 @@ smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	barrierToColorAttachment.srcAccessMask = 0;
 	barrierToColorAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
-	//barrierToColorAttachment.srcQueueFamilyIndex =
-	//	ctx_.core_.indices.presentFamily.value();
-	//barrierToColorAttachment.dstQueueFamilyIndex =
-	//	ctx_.core_.indices.graphicsFamily.value();
+	// We are suing grapgics and present capable queue. No need to transfer
 	barrierToColorAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrierToColorAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	
