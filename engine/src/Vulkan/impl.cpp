@@ -932,8 +932,8 @@ int smvk::Context::Initialize() {
 smvk::Context::Context(VulkanCore& core) :core_(core) { Initialize(); }
 smvk::Context::~Context() {
 	VK_CHECK(vkDeviceWaitIdle(device_));
-	if (m_submitter != nullptr) { delete(&m_submitter); }
-	m_submitter = nullptr;
+	delete m_submitter;
+	m_submitter = nullptr;	
 	images_.clear();
 	buffers_.clear();
 	shaderModules_.clear();
@@ -973,6 +973,7 @@ void smvk::Context::UploadDataToBuffer(
 			dstStages,
 			dstAccess
 		);
+		m_submitter->submit(han);
 		return;
 	}
 
@@ -1127,9 +1128,9 @@ void smvk::Context::UploadDataToImage2D(Image image, const void* data, VkPipelin
 	vkCmdCopyBufferToImage2(cmd, &copyInfo);
 
 
-	if (dstAccess == VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess == VK_ACCESS_2_TRANSFER_WRITE_BIT)
-	{
-		// omit
+	if (dstStages == VK_PIPELINE_STAGE_2_TRANSFER_BIT &&
+		dstAccess == VK_ACCESS_2_TRANSFER_WRITE_BIT) {
+		// no-op
 	}
 	else {
 		// ---------------------------------------------------------------------

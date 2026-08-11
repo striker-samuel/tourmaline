@@ -124,21 +124,22 @@ bool smvk::VulkanApp::Run() {
 
 };
 
-void smvk::VulkanApp::CleanUp() {
-	m_context.release();	
-	if (m_swapchain)
-	{
-		m_swapchain.reset();
-		core_.reset();
+void smvk::VulkanApp::CleanUp()
+{
+	m_rendergraph.reset();
+
+	m_swapchain.reset();
+
+	m_context.reset();
+
+	core_.reset();
+
+	if (window != nullptr) {
 		glfwDestroyWindow(window);
-		glfwTerminate();
 		window = nullptr;
 	}
-	else
-	{
-		assert(window == nullptr);
-		core_.reset();
-	}
+
+	glfwTerminate();
 }
 
 

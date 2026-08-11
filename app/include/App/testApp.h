@@ -159,10 +159,15 @@ private:
 			.frag = std::move(frag)
 		};
 
+
+		// dirty textures right now only happen here so this would be more efficient like this...
+		// but lets not optimize this now. for proper optimization we need proper app scene load/unload semantics, we actually dont have now
+		//m_context->UpdateBindings();
+
 		return true;
 	};
 
-	
+
 	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame) {
 
 		int width_ = m_swapchain->GetExtent().width;
