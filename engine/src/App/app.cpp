@@ -102,7 +102,7 @@ bool smvk::VulkanApp::Initialize() {
 
 	core_ = CreateVulkanCoreWithWindow(VulkanCore::CoreConfiguration{}, window);
 
-	m_context = std::make_unique<Context>(*core_.get());
+	m_context = std::make_unique<ResourceContext>(*core_.get());
 	m_swapchain = std::make_unique<VulkanSwapchain>(
 		*m_context,
 		window

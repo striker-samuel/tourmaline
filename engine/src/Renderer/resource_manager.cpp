@@ -1,6 +1,6 @@
 #include <Engine/Renderer/resource_manager.h>
 
-MeshManager::MeshManager(smvk::Context& ctx) :ctx_(ctx) {
+MeshManager::MeshManager(smvk::ResourceContext& ctx) :ctx_(ctx) {
 	InitalizeGeoBuffers();
 }
 void MeshManager::InitalizeGeoBuffers() {

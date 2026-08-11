@@ -90,7 +90,7 @@ namespace smvk {
 
 	class PipelineCache {
 	public:
-		explicit PipelineCache(Context* ctx)
+		explicit PipelineCache(ResourceContext* ctx)
 			: ctx_(ctx)
 		{}
 
@@ -141,7 +141,7 @@ namespace smvk {
 					ctx_->core_.DestroyPipeline(bundle.pipeline);
 				}
 				// Do not destroy bundle.layout here because it is the
-				// global/default pipeline layout owned by Context.
+				// global/default pipeline layout owned by ResourceContext.
 			}
 
 			pipelines_.clear();
@@ -417,7 +417,7 @@ namespace smvk {
 		}
 
 	private:
-		Context* ctx_ = nullptr;
+		ResourceContext* ctx_ = nullptr;
 
 		std::unordered_map<
 			PipelineKey,
@@ -580,7 +580,7 @@ namespace smvk {
 	};
 
 	struct RenderGraph final {
-		explicit RenderGraph(Context& ctx) : ctx_(ctx) {
+		explicit RenderGraph(ResourceContext& ctx) : ctx_(ctx) {
 			pipelineCachePimpl = std::make_unique<PipelineCache>(&ctx_);
 		};
 		// could be called NewFrame really
@@ -873,7 +873,7 @@ namespace smvk {
 		//
 		std::vector<RenderPass> m_passes;
 		std::unique_ptr<PipelineCache> pipelineCachePimpl;
-		smvk::Context& ctx_;
+		smvk::ResourceContext& ctx_;
 
 	};
 

@@ -4,7 +4,7 @@
 #include <vector>
 
 namespace smvk {
-	class Context;
+	class ResourceContext;
 
 	// Lifted from LightweightVk.
 	// Non-ref counted handles; based on:
@@ -57,7 +57,7 @@ namespace smvk {
 	class Holder final {
 	public:
 		Holder() = default;
-		Holder(Context* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
+		Holder(ResourceContext* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
 		~Holder() {
 			destroy(ctx_, handle_);
 		}
@@ -111,7 +111,7 @@ namespace smvk {
 		}
 
 	private:
-		Context* ctx_ = nullptr;
+		ResourceContext* ctx_ = nullptr;
 		HandleType handle_ = {};
 	};
 

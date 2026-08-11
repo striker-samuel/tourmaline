@@ -356,13 +356,13 @@ namespace smvk {
 	};
 
 
-	struct Context {
-		Context(VulkanCore& core);
-		~Context();
-		Context(const Context&) = delete;
-		Context& operator=(const Context&) = delete;
-		Context(Context&&) = delete;
-		Context& operator=(Context&&) = delete;
+	struct ResourceContext {
+		ResourceContext(VulkanCore& core);
+		~ResourceContext();
+		ResourceContext(const ResourceContext&) = delete;
+		ResourceContext& operator=(const ResourceContext&) = delete;
+		ResourceContext(ResourceContext&&) = delete;
+		ResourceContext& operator=(ResourceContext&&) = delete;
 
 		int Initialize();
 		// 	
@@ -411,15 +411,15 @@ namespace smvk {
 		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT];
 	};
 
-	void destroy(Context* ctx, ImageHandle handle);
-	void destroy(Context* ctx, TextureHandle handle);
-	void destroy(Context* ctx, BufferHandle handle);
-	void destroy(Context* ctx, ShaderModuleHandle handle);
-	void destroy(Context* ctx, SamplerHandle handle);
+	void destroy(ResourceContext* ctx, ImageHandle handle);
+	void destroy(ResourceContext* ctx, TextureHandle handle);
+	void destroy(ResourceContext* ctx, BufferHandle handle);
+	void destroy(ResourceContext* ctx, ShaderModuleHandle handle);
+	void destroy(ResourceContext* ctx, SamplerHandle handle);
 
-	void destroy(Context* ctx, DescriptorPoolHandle handle);
-	void destroy(Context* ctx, DescriptorSetHandle handle);
-	void destroy(Context* ctx, RenderPipelineHandle handle);
+	void destroy(ResourceContext* ctx, DescriptorPoolHandle handle);
+	void destroy(ResourceContext* ctx, DescriptorSetHandle handle);
+	void destroy(ResourceContext* ctx, RenderPipelineHandle handle);
 
 
 };
@@ -480,7 +480,7 @@ namespace smvk {
 	public:
 
 		VulkanSwapchain(
-			Context& context
+			ResourceContext& context
 			, GLFWwindow* window
 		);
 		VulkanSwapchain(const VulkanSwapchain&) = delete;
@@ -514,7 +514,7 @@ namespace smvk {
 		void SetCurrentImageIndex(uint32_t imageIndex) { currentImageIndex_ = imageIndex; }
 
 		//private:
-		Context& ctx_;
+		ResourceContext& ctx_;
 		GLFWwindow* window_ = nullptr;
 		VkSwapchainKHR vk_swapchain_ = VK_NULL_HANDLE;
 		VkFormat vk_surfaceFormat_ = VK_FORMAT_UNDEFINED;

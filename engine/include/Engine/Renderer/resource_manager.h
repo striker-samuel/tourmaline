@@ -46,8 +46,8 @@ struct Material {
 };
 
 struct MeshManager {
-	smvk::Context& ctx_;
-	MeshManager(smvk::Context& ctx);
+	smvk::ResourceContext& ctx_;
+	MeshManager(smvk::ResourceContext& ctx);
 	~MeshManager() {};
 
 	MeshHandle UploadVertexData(Mesh::DataUpload& mesh_data);
