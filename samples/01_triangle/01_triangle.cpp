@@ -14,7 +14,7 @@ struct VSOutput
     float3 color    : COLOR0;
 };
 
-VSOutput main(uint vertexID : SV_VertexID)
+VSOutput mainVS(uint vertexID : SV_VertexID)
 {
     static const float2 positions[3] =
     {
@@ -30,8 +30,20 @@ VSOutput main(uint vertexID : SV_VertexID)
         float3(0.0, 0.0, 1.0)
     };
 
+    static const float4x4 projection =
+    {
+        1.0,  0.0, 0.0, 0.0,
+        0.0, -1.0, 0.0, 0.0,
+        0.0,  0.0, 1.0, 0.0,
+        0.0,  0.0, 0.0, 1.0
+    };
+
     VSOutput output;
-    output.position = float4(positions[vertexID], 0.0, 1.0);
+
+    float4 position = float4(positions[vertexID], 0.0, 1.0);
+
+    output.position = mul(projection, position);
+//projection is needed beacuse of vulkan defaults viewport behaviour
     output.color = colors[vertexID];
 
     return output;
@@ -41,7 +53,7 @@ VSOutput main(uint vertexID : SV_VertexID)
 
 static constexpr const char* kTriangleFragShader = R"(
 
-float4 main(
+float4 mainPS(
     float4 position : SV_Position,
     float3 color    : COLOR0
 ) : SV_Target
@@ -64,12 +76,14 @@ private:
 
         auto vertCode = CompileHLSLToSPIRV(
             kTriangleVertShader,
-            ShaderStage::Vertex
+            ShaderStage::Vertex,
+            L"mainVS"
         );
 
         auto fragCode = CompileHLSLToSPIRV(
             kTriangleFragShader,
-            ShaderStage::Fragment
+            ShaderStage::Fragment,
+            L"mainPS"
         );
 
         m_program = {
@@ -157,7 +171,11 @@ int main(int argc, const char* argv[]) {
         app.Run();
     }
     catch (const std::exception& e) {
-        std::cerr << e.what() << std::endl;
+        std::cerr << "\nERROR: " << e.what() << std::endl;
+
+        std::cerr << "\nPress Enter to exit...";
+        std::cin.get();
+
         return EXIT_FAILURE;
     }
 

@@ -175,7 +175,7 @@ private:
 
 		auto view = m_camera.getViewMatrix();
 		auto proj = m_camera.getProjMatrix();
-		proj[1][1] *= -1;
+		proj[1][1] *= -1; // viewport fix ditecrly in proj
 
 		auto viewProj = proj * view;
 

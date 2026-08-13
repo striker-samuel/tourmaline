@@ -12,7 +12,11 @@ int main(int argc, const char* argv[]) {
 		app.Run();
 	}
 	catch (const std::exception& e) {
-		std::cerr << e.what() << std::endl;
+		std::cerr << "\nERROR: " << e.what() << std::endl;
+
+		std::cerr << "\nPress Enter to exit...";
+		std::cin.get();
+
 		return EXIT_FAILURE;
 	}
 

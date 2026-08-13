@@ -3,11 +3,22 @@
 #include <vector>
 #include <Engine/Vulkan/core.h>
 
-#include <Engine/Renderer/vertex.h> // TODO:: Refactor this out!
-
 
 namespace smvk {
+
+	//struct Shader {
+	//	const char* entryPoint = "main";
+	//	VkShaderStageFlagBits stage;
+	//	//bool usePushConstants;
+
+	//};
+
 	struct ShaderProgram {
+		//const Shader shaders[8];
+		//size_t shaderCount = 0;
+
+		const char* vertEntry = "mainVS";
+		const char* fragEntry = "mainPS";
 		Holder<ShaderModuleHandle> vert{};
 		Holder<ShaderModuleHandle> frag{};
 		bool operator==(const ShaderProgram& other) const noexcept
@@ -33,13 +44,18 @@ namespace smvk {
 
 	struct PipelineKey {
 		ShaderProgram& program;
+		//
+		std::vector<VkVertexInputBindingDescription> bindingDescriptions{};
+		std::vector<VkVertexInputAttributeDescription> attributeDescriptions{};
+		//
 		std::vector<VkFormat> colorFormats;
 		VkFormat depthFormat = VK_FORMAT_UNDEFINED;
 		VkFormat stencilFormat = VK_FORMAT_UNDEFINED;
-
 		VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
 		VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
 		VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+		//VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE;
+
 
 		bool operator==(const PipelineKey& other) const noexcept
 		{
@@ -141,7 +157,7 @@ namespace smvk {
 					ctx_->core_.DestroyPipeline(bundle.pipeline);
 				}
 			}
-			//pipelines_.clear();
+			pipelines_.clear();
 		}
 
 	private:
@@ -159,14 +175,14 @@ namespace smvk {
 				VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 			vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
 			vertShaderStageInfo.module = *v;
-			vertShaderStageInfo.pName = "mainVS";
+			vertShaderStageInfo.pName = key.program.vertEntry;
 
 			VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
 			fragShaderStageInfo.sType =
 				VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 			fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
 			fragShaderStageInfo.module = *f;
-			fragShaderStageInfo.pName = "mainPS";
+			fragShaderStageInfo.pName = key.program.fragEntry;
 
 			VkPipelineShaderStageCreateInfo shaderStages[] = {
 				vertShaderStageInfo,
@@ -177,24 +193,14 @@ namespace smvk {
 			// VERTEX INPUT
 			// ---------------------------------------------------------
 
-			auto bindingDescriptions = Vertex::getBindingDescription();
-			auto attributeDescriptions = Vertex::getAttributeDescriptions();
-
+			auto bindingDescriptions = key.bindingDescriptions;
+			auto attributeDescriptions = key.attributeDescriptions;
 			VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-			vertexInputInfo.sType =
-				VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-			vertexInputInfo.vertexBindingDescriptionCount =
-				static_cast<uint32_t>(bindingDescriptions.size());
-
-			vertexInputInfo.pVertexBindingDescriptions =
-				bindingDescriptions.data();
-
-			vertexInputInfo.vertexAttributeDescriptionCount =
-				static_cast<uint32_t>(attributeDescriptions.size());
-
-			vertexInputInfo.pVertexAttributeDescriptions =
-				attributeDescriptions.data();
+			vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+			vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(bindingDescriptions.size());
+			vertexInputInfo.pVertexBindingDescriptions = bindingDescriptions.data();
+			vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+			vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
 			// ---------------------------------------------------------
 			// INPUT ASSEMBLY
@@ -262,19 +268,14 @@ namespace smvk {
 			VkPipelineDepthStencilStateCreateInfo depthStencil{};
 			depthStencil.sType =
 				VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-
 			depthStencil.depthTestEnable =
 				key.depthFormat != VK_FORMAT_UNDEFINED;
-
 			depthStencil.depthWriteEnable =
 				key.depthFormat != VK_FORMAT_UNDEFINED;
-
 			depthStencil.depthCompareOp =
 				VK_COMPARE_OP_GREATER;
-
 			depthStencil.depthBoundsTestEnable =
 				VK_FALSE;
-
 			depthStencil.stencilTestEnable =
 				VK_FALSE;
 
@@ -318,6 +319,8 @@ namespace smvk {
 			constexpr VkDynamicState dynamicStates[] = {
 				VK_DYNAMIC_STATE_VIEWPORT,
 				VK_DYNAMIC_STATE_SCISSOR,
+				//VK_DYNAMIC_STATE_DEPTH_BOUNDS,
+				//VK_DYNAMIC_STATE_DEPTH_BIAS
 			};
 
 			VkPipelineDynamicStateCreateInfo dynamicState{};
@@ -480,14 +483,18 @@ namespace smvk {
 
 	struct RenderPassContext; // Refactor this struct to oblvion
 
+	//struct AttachmentBlendSetup {};
+	using AttachmentColorBlendSetup = VkPipelineColorBlendAttachmentState;
+	//using AttachmentDepthBlendSetup = VkPipelineColorBlendAttachmentState;
+
 	struct RenderPassDescription {
+
 		struct ColorAttachment {
 			VkFormat vkColorFormat = VK_FORMAT_UNDEFINED;
-			bool blend = false;
-			//BlendState blendState;
+			AttachmentColorBlendSetup blend;
 		} color[6]{};
 		VkFormat vkDepthFormat = VK_FORMAT_UNDEFINED;
-		//Topology topology = Topology_Triangle;
+		VkPrimitiveTopology vkTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 		//lvk::VertexInput vertexInput;
 		//StencilState backFaceStencil = {};
 		//StencilState frontFaceStencil = {};
@@ -504,9 +511,9 @@ namespace smvk {
 			VkAttachmentStoreOp storeOp;
 			VkClearValue clearValue;
 		};
-		struct AttachmentBlendSetup {
-			VkPipelineColorBlendAttachmentState state;
-		};
+		//struct AttachmentBlendSetup {
+		//	VkPipelineColorBlendAttachmentState state;
+		//};
 
 		RenderPass& setColor(
 			std::vector<LogicalImageViewHandle>& views,
@@ -553,12 +560,12 @@ namespace smvk {
 		std::vector<LogicalStorageImageHandle> storageImages_;
 		// Description
 		// topology.
-		// setncil
+		// stencil
 		// msaa
 		VkExtent2D extent_ = { 0,0 };
 		VkOffset2D offset_ = { 0,0 };
 		std::vector<Attachment> colorAttachments_{};
-		std::vector<AttachmentBlendSetup> colorAttachmentsBlendSetups;  // should either be {} or match colors size.
+		std::vector<AttachmentColorBlendSetup> colorAttachmentsBlendSetups;  // should either be {} or match colors size.
 		Attachment depthAttachment_{ .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .clearValue = { 1.0f } /*.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE */ };
 		//
 		RecordingFunction recordingFunction_{};
@@ -567,13 +574,6 @@ namespace smvk {
 	struct RenderPassContext {
 		VkCommandBuffer cmd;
 		RenderPass& renderpass;
-		//RenderGraph* rendergraph = nullptr;
-		//smvk::BufferHandle GetResolvedBuffer(LogicalBufferHandle handle) {
-		//	return rendergraph->GetResolvedBufferHandle(handle);
-		//}
-		//smvk::ImageHandle GetResolvedImage(LogicalImageHandle handle) {
-		//	return rendergraph->GetResolvedImageHandle(handle);
-		//}
 	};
 
 	struct RenderGraph final {
@@ -672,7 +672,12 @@ namespace smvk {
 			for (auto& cattach : currentPass_->colorAttachments_) {
 				colorAttachmentFormats.push_back(imageViews_.get(cattach.view)->resolvedFormat);
 			}
-			auto depthFormat = imageViews_.get(currentPass_->depthAttachment_.view)->resolvedFormat;
+
+			VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+			const bool hasDepth = !currentPass_->depthAttachment_.view.empty();
+			if (hasDepth) {
+				depthFormat = imageViews_.get(currentPass_->depthAttachment_.view)->resolvedFormat;
+			}
 			VkPipelineRenderingCreateInfo info{
 					.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR,
 					.pNext = VK_NULL_HANDLE,
@@ -749,27 +754,36 @@ namespace smvk {
 					colorInfos.push_back(info);
 				}
 
-				auto depthView = imageViews_.get(pass.depthAttachment_.view);
-				VkRenderingAttachmentInfo depthInfo{};
-				depthInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+				VkRenderingAttachmentInfo depthInfo{
+				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+				};
+
+				const bool hasDepth = !pass.depthAttachment_.view.empty();
+
+				if (hasDepth)
 				{
+					auto depthView = imageViews_.get(pass.depthAttachment_.view);
+
 					depthInfo.imageView = depthView->resolvedImageView;
+					depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+					depthInfo.loadOp = pass.depthAttachment_.loadOp;
+					depthInfo.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+					depthInfo.clearValue = pass.depthAttachment_.clearValue;
 				}
-				depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-				depthInfo.loadOp = pass.depthAttachment_.loadOp;
-				depthInfo.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-				depthInfo.clearValue = pass.depthAttachment_.clearValue;
 
-				VkRenderingInfo renderInfo{};
-				renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
-				renderInfo.renderArea.offset = pass.offset_;
-				renderInfo.renderArea.extent = pass.extent_;
-				renderInfo.layerCount = 1;
-				renderInfo.colorAttachmentCount = (uint32_t)colorInfos.size();
-				renderInfo.pColorAttachments = colorInfos.data();
-				renderInfo.pDepthAttachment = &depthInfo;
+				VkRenderingInfo renderInfo{
+					.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
+					.renderArea = {
+						.offset = pass.offset_,
+						.extent = pass.extent_,
+					},
+					.layerCount = 1,
+					.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
+					.pColorAttachments = colorInfos.data(),
+					.pDepthAttachment = hasDepth ? &depthInfo : nullptr,
+				};
 
-				//// VIEWPORT
+				// VIEWPORT
 				VkViewport vp{};
 				vp.x = 0.0f;
 				vp.y = 0.0f;

@@ -11,6 +11,13 @@ const bool enableValidationLayers = false;
 const bool enableValidationLayers = true;
 #endif
 //
+static VkInstance instance_ = VK_NULL_HANDLE;
+static VkDevice device_ = VK_NULL_HANDLE;
+static VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
+static VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
+static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
+static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
+static VkQueue presentQueue_ = VK_NULL_HANDLE;
 
 struct SwapChainSupportDetails {
 	VkSurfaceCapabilitiesKHR capabilities{};
@@ -84,17 +91,7 @@ namespace {
 	}
 };
 
-// Vulkan Objects
-static VkInstance instance_ = VK_NULL_HANDLE;
-static VkDevice device_ = VK_NULL_HANDLE;
-static VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
-static VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
-static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 
-static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
-static VkQueue presentQueue_ = VK_NULL_HANDLE;
-
-// Helpers
 VkMemoryRequirements2 getDeviceImageMemoryRequirements(
 	VkDevice device,
 	const VkImageCreateInfo& imageCreateInfo
@@ -222,16 +219,8 @@ void CheckTextureFormatSupport()
 }
 VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) {
 	for (VkFormat vk_format : candidates) {
-
-		//bool support = IsFormatSupported(
-		//	physicalDevice_,
-		//	vk_format,
-		//	features
-		//);
-
 		VkFormatProperties props;
 		vkGetPhysicalDeviceFormatProperties(physicalDevice_, vk_format, &props);
-
 		if (tiling == VK_IMAGE_TILING_LINEAR &&
 			(props.linearTilingFeatures & features) == features) {
 			return vk_format;
@@ -241,7 +230,6 @@ VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTil
 			return vk_format;
 		}
 	}
-
 	throw std::runtime_error("failed to find supported format!");
 }
 VkFormat findDepthFormat() {
