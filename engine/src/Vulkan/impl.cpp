@@ -2506,10 +2506,6 @@ inline void smvk::VulkanSwapchain::DestroySyncObjects() {
 	inFlightFences_.clear();
 }
 inline void smvk::VulkanSwapchain::CleanupSwapchain() {
-	if (depthImage_.valid()) {
-		destroy(&ctx_, depthImage_);
-		depthImage_ = {};
-	}
 
 	for (VkImageView view : imageViews_) {
 		if (view != VK_NULL_HANDLE) {
