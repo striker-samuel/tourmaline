@@ -939,11 +939,51 @@ smvk::ResourceContext::ResourceContext(VulkanCore& core) :core_(core) { Initiali
 smvk::ResourceContext::~ResourceContext() {
 	VK_CHECK(vkDeviceWaitIdle(device_));
 	delete m_submitter;
-	m_submitter = nullptr;	
+	m_submitter = nullptr;
+
+	std::cout << "[ResourceContext::~ResourceContext] Leaking objects:\n";
+
+	shaderModules_.forEachHandle([this](ShaderModuleHandle handle) {
+		auto sm = shaderModules_.get(handle);
+		std::cout << "  [LEAK] ShaderModule: handle index=" << handle.index()
+			<< ", gen=" << handle.gen() << ", module=" << *sm << "\n";
+	});
+	buffers_.forEachHandle([this](BufferHandle handle) {
+		auto buf = buffers_.get(handle);
+		std::cout << "  [LEAK] Buffer: handle index=" << handle.index()
+			<< ", gen=" << handle.gen() << ", buffer=" << buf->vk_buffer
+			<< ", allocation=" << buf->vma_alloc << "\n";
+	});
+	samplers_.forEachHandle([this](SamplerHandle handle) {
+		auto s = samplers_.get(handle);
+		std::cout << "  [LEAK] Sampler: handle index=" << handle.index()
+			<< ", gen=" << handle.gen() << ", sampler=" << *s << "\n";
+	});
+	descriptorPools_.forEachHandle([this](DescriptorPoolHandle handle) {
+		auto dp = descriptorPools_.get(handle);
+		std::cout << "  [LEAK] DescriptorPool: handle index=" << handle.index()
+			<< ", gen=" << handle.gen() << ", pool=" << *dp << "\n";
+	});
+	images_.forEachHandle([this](ImageHandle handle) {
+		auto img = images_.get(handle);
+		std::cout << "  [LEAK] Image: handle index=" << handle.index()
+			<< ", gen=" << handle.gen() << ", image=" << img->vk_image
+			<< ", allocation=" << img->vma_alloc << ", views="
+			<< img->sampleView << "/" << img->storageView << "\n";
+	});
+	textures_.forEachHandle([this](TextureHandle handle) {
+		auto tex = textures_.get(handle);
+		std::cout << "  [LEAK] Texture: handle index=" << handle.index()
+			<< ", gen=" << handle.gen() << ", image=" << tex->vk_image
+			<< ", allocation=" << tex->vma_alloc << "\n";
+	});
+
 	images_.clear();
+	textures_.clear();
 	buffers_.clear();
 	shaderModules_.clear();
 	samplers_.clear();
+	descriptorPools_.clear();
 	memset(defaultDescriptorSets_, 0, sizeof(defaultDescriptorSets_));
 };
 void smvk::ResourceContext::UploadDataToBuffer(
@@ -1220,7 +1260,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	//return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
 	return buffers_.create(std::move(desc));
 }
-[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::ResourceContext::CreateImage(ImageCreateInfo imageCreateInfo, const void* data)
+ [[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::ResourceContext::CreateImage(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
 {
 	Image img{};
 
@@ -1246,6 +1286,20 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	img.arrayLayers = imageCreateInfo.arrayLayers;
 	VK_CHECK(vmaCreateImage(m_allocator, &imgCI, &allocation_create_info, &img.vk_image, &img.vma_alloc, nullptr));
 
+#if defined(_DEBUG)
+	if (debugName) {
+		VkDebugUtilsObjectNameInfoEXT nameInfo{
+			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
+		};
+		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+		nameInfo.objectHandle = reinterpret_cast<uint64_t>(img.vk_image);
+		nameInfo.pObjectName = debugName;
+		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+	}
+#else
+	(void)debugName;
+#endif
+
 	// TODO:: rework this
 	img.vk_sampler = m_defaultSampler;
 	//img.owns_sampler = false;
@@ -1266,7 +1320,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	return smvk::Holder<ImageHandle>(this, images_.create(std::move(img)));
 
 }
-[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::ResourceContext::CreateTexture(ktxTexture2& texture) {
+[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::ResourceContext::CreateTexture(ktxTexture2& texture, const char* debugName) {
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
 		// Hardcoded for now, as in your original code.
@@ -1340,6 +1394,20 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	if (vr != VK_SUCCESS) {
 		throw std::runtime_error("vmaCreateImage failed for KTX texture.");
 	}
+
+#if defined(_DEBUG)
+	if (debugName) {
+		VkDebugUtilsObjectNameInfoEXT nameInfo{
+			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
+		};
+		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+		nameInfo.objectHandle = reinterpret_cast<uint64_t>(image);
+		nameInfo.pObjectName = debugName;
+		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+	}
+#else
+	(void)debugName;
+#endif
 
 	auto* base = reinterpret_cast<ktxTexture*>(&texture);
 	ktx_size_t ktxDataSize = ktxTexture_GetDataSizeUncompressed(base);
@@ -1629,17 +1697,43 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	desc.deviceAddress = vkGetBufferDeviceAddress(device_, &ai);
 	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &desc.memory_flags);
 	desc.usage = bufferCreateInfo.usage_flags;
+#if defined(_DEBUG)
+	if (debugName) {
+		VkDebugUtilsObjectNameInfoEXT nameInfo{
+			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
+		};
+		nameInfo.objectType = VK_OBJECT_TYPE_BUFFER;
+		nameInfo.objectHandle = reinterpret_cast<uint64_t>(desc.vk_buffer);
+		nameInfo.pObjectName = debugName;
+		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+	}
+#else
+	(void)debugName;
+#endif
 	return { this, buffers_.create(std::move(desc)) };
 }
-[[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::ResourceContext::CreateShaderModule(std::vector<char> code) {
+[[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::ResourceContext::CreateShaderModule(std::vector<char> code, const char* debugName) {
 	VkShaderModule shader;
 	CreateShaderModuleIn(
 		std::move(code),
 		shader
 	);
+#if defined(_DEBUG)
+	if (debugName) {
+		VkDebugUtilsObjectNameInfoEXT nameInfo{
+			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
+		};
+		nameInfo.objectType = VK_OBJECT_TYPE_SHADER_MODULE;
+		nameInfo.objectHandle = reinterpret_cast<uint64_t>(shader);
+		nameInfo.pObjectName = debugName;
+		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+	}
+#else
+	(void)debugName;
+#endif
 	return { this, shaderModules_.create(std::move(shader)) };
 }
-[[nodiscard]] smvk::Holder<smvk::DescriptorPoolHandle> smvk::ResourceContext::CreateDescriptorPool() {
+[[nodiscard]] smvk::Holder<smvk::DescriptorPoolHandle> smvk::ResourceContext::CreateDescriptorPool(const char* debugName) {
 
 	std::array<VkDescriptorPoolSize, 3> poolSizes = {
 	  {
@@ -1658,6 +1752,19 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 
 	VkDescriptorPool dpool;
 	VK_CHECK(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &dpool));
+#if defined(_DEBUG)
+	if (debugName) {
+		VkDebugUtilsObjectNameInfoEXT nameInfo{
+			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
+		};
+		nameInfo.objectType = VK_OBJECT_TYPE_DESCRIPTOR_POOL;
+		nameInfo.objectHandle = reinterpret_cast<uint64_t>(dpool);
+		nameInfo.pObjectName = debugName;
+		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+	}
+#else
+	(void)debugName;
+#endif
 	return { this, descriptorPools_.create(std::move(dpool)) };
 }
 
@@ -1749,11 +1856,71 @@ void smvk::destroy(smvk::ResourceContext* ctx, smvk::ShaderModuleHandle handle) 
 	vkDestroyShaderModule(device_, *sm, NULL);
 	ctx->shaderModules_.destroy(handle);
 }
-void smvk::destroy(smvk::ResourceContext* ctx, smvk::ImageHandle handle) {}
-void smvk::destroy(smvk::ResourceContext* ctx, smvk::TextureHandle handle) {}
-void smvk::destroy(smvk::ResourceContext* ctx, smvk::SamplerHandle handle) {}
+void smvk::destroy(smvk::ResourceContext* ctx, smvk::ImageHandle handle) {
+	if (handle.empty()) { return; };
+	auto img = ctx->images_.get(handle);
+	if (img->owns_views) {
+		for (int i = 0; i < 6; ++i) {
+			if (img->arrayView[i] != VK_NULL_HANDLE) {
+				vkDestroyImageView(device_, img->arrayView[i], nullptr);
+			}
+		}
+		if (img->sampleView != VK_NULL_HANDLE && img->sampleView != img->storageView) {
+			vkDestroyImageView(device_, img->sampleView, nullptr);
+		}
+		if (img->storageView != VK_NULL_HANDLE && img->storageView != img->sampleView) {
+			vkDestroyImageView(device_, img->storageView, nullptr);
+		}
+	}
+	if (!img->is_swapchain && img->vk_image != VK_NULL_HANDLE) {
+		vmaDestroyImage(ctx->m_allocator, img->vk_image, img->vma_alloc);
+	}
+	ctx->images_.destroy(handle);
+}
+
+void smvk::destroy(smvk::ResourceContext* ctx, smvk::TextureHandle handle) {
+	if (handle.empty()) { return; };
+	auto tex = ctx->textures_.get(handle);
+	if (tex->owns_views) {
+		for (int i = 0; i < 6; ++i) {
+			if (tex->arrayView[i] != VK_NULL_HANDLE) {
+				vkDestroyImageView(device_, tex->arrayView[i], nullptr);
+			}
+		}
+		if (tex->sampleView != VK_NULL_HANDLE && tex->sampleView != tex->storageView) {
+			vkDestroyImageView(device_, tex->sampleView, nullptr);
+		}
+		if (tex->storageView != VK_NULL_HANDLE && tex->storageView != tex->sampleView) {
+			vkDestroyImageView(device_, tex->storageView, nullptr);
+		}
+	}
+	if (!tex->is_swapchain && tex->vk_image != VK_NULL_HANDLE) {
+		vmaDestroyImage(ctx->m_allocator, tex->vk_image, tex->vma_alloc);
+	}
+	ctx->textures_.destroy(handle);
+}
+
+void smvk::destroy(smvk::ResourceContext* ctx, smvk::SamplerHandle handle) {
+	if (handle.empty()) { return; };
+	auto s = ctx->samplers_.get(handle);
+	if (*s != VK_NULL_HANDLE) {
+		vkDestroySampler(device_, *s, nullptr);
+	}
+	ctx->samplers_.destroy(handle);
+}
+
+// Descriptor sets are implicitly freed when their pool is destroyed;
+// there is no individual VkDescriptorSet destruction call.
 void smvk::destroy(smvk::ResourceContext* ctx, smvk::DescriptorSetHandle handle) {}
-void smvk::destroy(smvk::ResourceContext* ctx, smvk::DescriptorPoolHandle handle) {}
+
+void smvk::destroy(smvk::ResourceContext* ctx, smvk::DescriptorPoolHandle handle) {
+	if (handle.empty()) { return; };
+	auto dp = ctx->descriptorPools_.get(handle);
+	if (*dp != VK_NULL_HANDLE) {
+		vkDestroyDescriptorPool(device_, *dp, nullptr);
+	}
+	ctx->descriptorPools_.destroy(handle);
+}
 
 // Barriers
 inline void BufferBarrier(
