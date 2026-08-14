@@ -152,13 +152,20 @@ private:
 		// Main ShaderProgram
 		auto vertCode = readFile("content/shaders/default.vert.hlsl.spv");
 		auto fragCode = readFile("content/shaders/default.frag.hlsl.spv");
-		auto vert = m_context->CreateShaderModule(vertCode);
-		auto frag = m_context->CreateShaderModule(fragCode);
-		m_resources.mainProgram = {
-			.vert = std::move(vert),
-			.frag = std::move(frag)
+		auto vert = smvk::Shader{
+			.vkShaderModule = m_context->CreateShaderModule(vertCode).release(),
+			.entryPoint = "mainVS",
+			.stage = VK_SHADER_STAGE_VERTEX_BIT
 		};
-
+		auto frag = smvk::Shader{
+			.vkShaderModule = m_context->CreateShaderModule(fragCode).release(),
+			.entryPoint = "mainPS",
+			.stage = VK_SHADER_STAGE_FRAGMENT_BIT
+		};
+		m_resources.mainProgram = {
+			.shaders = {vert, frag},
+			.shaderCount = 2
+		};
 
 		// dirty textures right now only happen here so this would be more efficient like this...
 		// but lets not optimize this now. for proper optimization we need proper app scene load/unload semantics, we actually dont have now

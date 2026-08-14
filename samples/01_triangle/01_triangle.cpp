@@ -86,9 +86,20 @@ private:
             L"mainPS"
         );
 
+        smvk::Shader vert = {
+            .vkShaderModule = m_context->CreateShaderModule(vertCode).release(),
+            .entryPoint = "mainVS",
+            .stage = VK_SHADER_STAGE_VERTEX_BIT
+        };
+        smvk::Shader frag = {
+            .vkShaderModule = m_context->CreateShaderModule(fragCode).release(),
+            .entryPoint = "mainPS",
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT
+        };
+
         m_program = {
-            .vert = m_context->CreateShaderModule(vertCode),
-            .frag = m_context->CreateShaderModule(fragCode),
+            .shaders = {vert, frag},
+            .shaderCount = 2
         };
 
         return true;

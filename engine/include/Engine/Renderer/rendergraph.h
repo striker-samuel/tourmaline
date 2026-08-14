@@ -1,33 +1,13 @@
 #pragma once
 
 #include <vector>
+#include <string_view> // Entry point 
+#include <cstring>     // compare and hash
+
 #include <Engine/Vulkan/core.h>
 
-
 namespace smvk {
-
-	//struct Shader {
-	//	const char* entryPoint = "main";
-	//	VkShaderStageFlagBits stage;
-	//	//bool usePushConstants;
-	//};
-
-	struct ShaderProgram {
-		//const Shader shaders[8];
-		//size_t shaderCount = 0;
-
-		const char* vertEntry = "mainVS";
-		const char* fragEntry = "mainPS";
-		Holder<ShaderModuleHandle> vert{};
-		Holder<ShaderModuleHandle> frag{};
-		bool operator==(const ShaderProgram& other) const noexcept
-		{
-			return vert.index() == other.vert.index() &&
-				frag.index() == other.frag.index();
-		}
-	};
 	struct RenderGraph;
-
 	using LogicalBufferHandle = Handle<struct LogicalBuffer>;
 	using LogicalImageHandle = Handle<struct LogicalImage>;
 	using LogicalImageViewHandle = Handle<struct LogicalImageView>;
@@ -42,11 +22,10 @@ namespace smvk {
 	};
 
 	struct PipelineKey {
+
 		ShaderProgram& program;
-		//
 		std::vector<VkVertexInputBindingDescription> bindingDescriptions{};
 		std::vector<VkVertexInputAttributeDescription> attributeDescriptions{};
-		//
 		std::vector<VkFormat> colorFormats;
 		VkFormat depthFormat = VK_FORMAT_UNDEFINED;
 		VkFormat stencilFormat = VK_FORMAT_UNDEFINED;
@@ -83,8 +62,16 @@ namespace smvk {
 		{
 			std::size_t seed = 0;
 
-			HashValue(seed, key.program.vert.index());
-			HashValue(seed, key.program.frag.index());
+			HashValue(seed, key.program.shaderCount);
+
+			for (size_t i = 0; i < key.program.shaderCount; ++i)
+			{
+				const Shader& shader = key.program.shaders[i];
+
+				HashValue(seed, shader.vkShaderModule.index());
+				HashValue(seed, static_cast<uint32_t>(shader.stage));
+				HashValue(seed, std::string_view(shader.entryPoint));
+			}
 			HashValue(seed, key.colorFormats.size());
 			for (VkFormat format : key.colorFormats) {
 				HashValue(seed, static_cast<uint32_t>(format));
@@ -159,31 +146,25 @@ namespace smvk {
 	private:
 		PipelineBundle BuildGraphicsPipeline(const PipelineKey& key)
 		{
-			auto v = ctx_->shaderModules_.get(key.program.vert);
-			auto f = ctx_->shaderModules_.get(key.program.frag);
+			std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
+			shaderStages.reserve(key.program.shaderCount);
 
-			// ---------------------------------------------------------
-			// SHADERS
-			// ---------------------------------------------------------
+			for (size_t i = 0; i < key.program.shaderCount; ++i)
+			{
+				const Shader& shader = key.program.shaders[i];
 
-			VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-			vertShaderStageInfo.sType =
-				VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-			vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-			vertShaderStageInfo.module = *v;
-			vertShaderStageInfo.pName = key.program.vertEntry;
+				auto shaderModule = ctx_->shaderModules_.get(shader.vkShaderModule);
 
-			VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
-			fragShaderStageInfo.sType =
-				VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-			fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-			fragShaderStageInfo.module = *f;
-			fragShaderStageInfo.pName = key.program.fragEntry;
+				VkPipelineShaderStageCreateInfo stageInfo{};
+				stageInfo.sType =
+					VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 
-			VkPipelineShaderStageCreateInfo shaderStages[] = {
-				vertShaderStageInfo,
-				fragShaderStageInfo
-			};
+				stageInfo.stage = shader.stage;
+				stageInfo.module = *shaderModule;
+				stageInfo.pName = shader.entryPoint;
+
+				shaderStages.push_back(stageInfo);
+			}
 
 			// ---------------------------------------------------------
 			// VERTEX INPUT
@@ -371,7 +352,7 @@ namespace smvk {
 				static_cast<uint32_t>(std::size(shaderStages));
 
 			pipelineInfo.pStages =
-				shaderStages;
+				shaderStages.data();
 
 			pipelineInfo.pVertexInputState =
 				&vertexInputInfo;

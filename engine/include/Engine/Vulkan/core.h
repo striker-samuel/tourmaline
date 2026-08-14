@@ -201,6 +201,7 @@ namespace smvk {
 		}
 	};
 
+
 	using ShaderModuleHandle = Handle<struct ShaderModule>; // will be removed when updating to vk 1.4
 	using ImageHandle = Handle<struct Image>;
 	using TextureHandle = Handle<struct Texture>;
@@ -208,6 +209,40 @@ namespace smvk {
 	using BufferHandle = Handle<struct Buffer>;
 	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
 	using DescriptorSetHandle = Handle<struct DescriptorSet>;
+
+	struct Shader {
+		ShaderModuleHandle vkShaderModule; // to be refactored out when moving to 1.4
+		const char* entryPoint = "main";
+		VkShaderStageFlagBits stage;
+		//bool usePushConstants;
+		//size_t pushConstantsSize // this should be gotten with reflection
+
+		bool operator==(const Shader& other) const noexcept {
+			return std::strcmp(entryPoint, other.entryPoint) == 0 &&
+				stage == other.stage &&
+				vkShaderModule == other.vkShaderModule;
+		}
+	};
+
+	struct ShaderProgram {
+		Shader shaders[8];
+		size_t shaderCount = 0;
+		bool operator==(const ShaderProgram& other) const noexcept
+		{
+			if (shaderCount != other.shaderCount)
+			{
+				return false;
+			}
+
+			for (size_t i = 0; i < shaderCount; ++i)
+			{
+				if (!(shaders[i] == other.shaders[i]))
+					return false;
+			}
+
+			return true;
+		}
+	};
 
 };
 
@@ -373,8 +408,7 @@ namespace smvk {
 
 		BufferHandle CreateStagingBuffer(VkDeviceSize size, const char* debugName = "staging"); // Right now only used for image upload, every other data upload is done by mapping
 		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr);
-		// 
-		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr); // specialization for textures instead of .isTexture property
+		//Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr); // specialization for textures instead of .isTexture property
 		Holder<TextureHandle> CreateTexture(ktxTexture2& texture, const char* debugName = nullptr);
 		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo, const char* debugName = nullptr);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = nullptr);

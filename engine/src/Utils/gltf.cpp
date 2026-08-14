@@ -324,7 +324,7 @@ uint32_t GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
 			throw std::runtime_error("KTX load failed");
 		}
 		//colorTexHandle = manager_.ctx_.CreateTexture(color_uri.string(), *ktxTex);
-		colorTexHandle = manager_.ctx_.CreateTexture(*ktxTex);
+		colorTexHandle = manager_.ctx_.CreateTexture(*ktxTex).release();
 		ktxTexture2_Destroy(ktxTex);
 	}
 
