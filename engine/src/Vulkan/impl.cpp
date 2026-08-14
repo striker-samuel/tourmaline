@@ -2309,7 +2309,7 @@ void smvk::VulkanSwapchain::Recreate() {
 
 	CreateSwapchain();
 	CreateImageViews();
-	//CreateDepthResources();
+	CreateDepthResources();
 
 	currentImageIndex_ = 0;
 }
@@ -2507,10 +2507,10 @@ inline void smvk::VulkanSwapchain::DestroySyncObjects() {
 	inFlightFences_.clear();
 }
 inline void smvk::VulkanSwapchain::CleanupSwapchain() {
-	//if (depthImage_.valid()) {
-	//	destroy(&ctx_, depthImage_);
-	//	depthImage_ = {};
-	//}
+	if (depthImage_.valid()) {
+		destroy(&ctx_, depthImage_);
+		depthImage_ = {};
+	}
 
 	for (VkImageView view : imageViews_) {
 		if (view != VK_NULL_HANDLE) {
@@ -2552,7 +2552,6 @@ smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
 		Recreate();
-		assert(false && "not implemented yet");
 	}
 	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
 		throw std::runtime_error("failed to acquire swap chain image!");
@@ -2680,8 +2679,6 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 	else if (result != VK_SUCCESS) {
 		throw std::runtime_error("failed to present swap chain image!");
 	}
-
-	//waitAll(); // maybe ?
 	AdvanceFrame();
 
 }
