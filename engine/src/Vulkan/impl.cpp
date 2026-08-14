@@ -156,7 +156,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBits
 
 	if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
 	{
-		//__debugbreak();
+		__debugbreak();
 	}
 
 	return VK_FALSE;
@@ -2400,7 +2400,8 @@ void smvk::VulkanSwapchain::CreateImageViews() {
 }
 void smvk::VulkanSwapchain::CreateDepthResources() {
 	assert(vk_depthFormat_ != VK_FORMAT_UNDEFINED && "core depthFormat not set. failed to create swapchain depth Image");
-	auto imageHan = ctx_.CreateImage(
+	depthImage_.release(); // this triggers in time destruction, maybe adding it to deferred deletion its better?
+	depthImage_= ctx_.CreateImage(
 		ImageCreateInfo{
 			.vk_extent = {extent_.width, extent_.height, 1 },
 			.vk_format = vk_depthFormat_,
@@ -2410,8 +2411,6 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 		},
 		nullptr
 	);
-	depthImage_ = smvk::Holder<smvk::ImageHandle>(&ctx_, imageHan);
-
 	auto obj_ = ctx_.images_.get(depthImage_);
 	auto viewCreateInfo = ImageViewCreateInfo{
 		.vk_image = obj_->vk_image,
