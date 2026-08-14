@@ -8,6 +8,7 @@
 
 namespace smvk {
 	struct RenderGraph;
+	struct CommandBuffer;
 	using LogicalBufferHandle = Handle<struct LogicalBuffer>;
 	using LogicalImageHandle = Handle<struct LogicalImage>;
 	using LogicalImageViewHandle = Handle<struct LogicalImageView>;
@@ -458,8 +459,6 @@ namespace smvk {
 		ImageHandle resolvedImageHandle{};
 	};
 
-	struct RenderPassContext; // Refactor this struct to oblvion
-
 	//struct AttachmentBlendSetup {};
 	using AttachmentColorBlendSetup = VkPipelineColorBlendAttachmentState;
 	//using AttachmentDepthBlendSetup = VkPipelineColorBlendAttachmentState;
@@ -480,7 +479,7 @@ namespace smvk {
 		//float minSampleShading = 0.0f;
 	};
 
-	using RecordingFunction = std::function<void(RenderPassContext)>;
+	using RecordingFunction = std::function<void(CommandBuffer&)>;
 	struct RenderPass final {
 		struct Attachment {
 			LogicalImageViewHandle view;
@@ -517,9 +516,9 @@ namespace smvk {
 		};
 
 		// Resources
-		RenderPass& setInputImages(std::vector<LogicalImageHandle> inputImages) { this->inputImages_ = inputImages; };
-		RenderPass& setStorageBuffers(std::vector<LogicalBufferHandle> storageBuffers) { this->storageBuffers_ = storageBuffers; };
-		RenderPass& setStorageImages(std::vector<LogicalStorageImageHandle> storageImages) { this->storageImages_ = storageImages; };
+		RenderPass& setInputImages(std::vector<LogicalImageHandle> inputImages) { this->inputImages_ = std::move(inputImages); return *this; };
+		RenderPass& setStorageBuffers(std::vector<LogicalBufferHandle> storageBuffers) { this->storageBuffers_ = std::move(storageBuffers); return *this; };
+		RenderPass& setStorageImages(std::vector<LogicalStorageImageHandle> storageImages) { this->storageImages_ = std::move(storageImages); return *this; };
 
 		// Settings
 		RenderPass& setExtent(VkExtent2D extent) { this->extent_ = extent; return *this; };
@@ -531,6 +530,7 @@ namespace smvk {
 
 	private:
 		friend RenderGraph;
+		friend struct CommandBuffer;
 		//
 		std::vector<LogicalImageHandle> inputImages_;
 		std::vector<LogicalBufferHandle> storageBuffers_;
@@ -548,9 +548,38 @@ namespace smvk {
 		RecordingFunction recordingFunction_{};
 	};
 
-	struct RenderPassContext {
-		VkCommandBuffer cmd;
-		RenderPass& renderpass;
+	struct CommandBuffer final {
+	public:
+		CommandBuffer() = delete;
+
+		void BindPipeline(ShaderProgram& shaderProgram);
+		void PushConstants(uint32_t offset, uint32_t size, const void* data);
+
+		void SetViewport(const VkViewport& viewport);
+		void SetScissor(const VkRect2D& scissor);
+
+		void Draw(
+			uint32_t vertexCount,
+			uint32_t instanceCount = 1,
+			uint32_t firstVertex = 0,
+			uint32_t firstInstance = 0);
+
+		VkCommandBuffer GetVkCommandBuffer() const { return cmd_; }
+
+	private:
+		friend struct RenderGraph;
+
+		CommandBuffer(
+			VkCommandBuffer cmd,
+			RenderGraph& graph,
+			RenderPass& renderPass);
+
+		VkCommandBuffer cmd_ = VK_NULL_HANDLE;
+		RenderGraph* graph_ = nullptr;
+		RenderPass* renderPass_ = nullptr;
+
+		VkPipeline currentPipeline_ = VK_NULL_HANDLE;
+		VkPipelineLayout currentPipelineLayout_ = VK_NULL_HANDLE;
 	};
 
 	struct RenderGraph final {
@@ -582,7 +611,7 @@ namespace smvk {
 			return imageViews_.create(std::move(proxyView));
 		};
 		template<typename DataType>
-		[[nodicard]] LogicalBufferHandle AddRingBuffer(uint32_t count, const char* name = "") {
+		[[nodiscard]] LogicalBufferHandle AddRingBuffer(uint32_t count, const char* name = "") {
 			BufferKey key = {
 					.elementSize = sizeof(DataType),
 					.elementCount = count,
@@ -631,165 +660,11 @@ namespace smvk {
 			return inputImages_.get(handle)->resolvedImageHandle;
 		};
 
-		void PushConstants(VkCommandBuffer cmd, uint32_t offset, uint32_t size, void* data) {
-			assert(vkCurrentPipelineLayout_ != VK_NULL_HANDLE);
-			vkCmdPushConstants(
-				cmd,
-				vkCurrentPipelineLayout_,
-				VK_SHADER_STAGE_ALL, // crude
-				//VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, /// This should depend on type of pipeline bound!
-				offset,
-				size,
-				data
-			);
-
-		}
-		void BindRenderPipeline(VkCommandBuffer cmd, ShaderProgram& shaderProgram) {
-			std::vector<VkFormat> colorAttachmentFormats;
-			for (auto& cattach : currentPass_->colorAttachments_) {
-				colorAttachmentFormats.push_back(imageViews_.get(cattach.view)->resolvedFormat);
-			}
-
-			VkFormat depthFormat = VK_FORMAT_UNDEFINED;
-			const bool hasDepth = !currentPass_->depthAttachment_.view.empty();
-			if (hasDepth) {
-				depthFormat = imageViews_.get(currentPass_->depthAttachment_.view)->resolvedFormat;
-			}
-			VkPipelineRenderingCreateInfo info{
-					.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR,
-					.pNext = VK_NULL_HANDLE,
-					.colorAttachmentCount = static_cast<uint32_t>(colorAttachmentFormats.size()),
-					.pColorAttachmentFormats = colorAttachmentFormats.data(),
-					.depthAttachmentFormat = depthFormat,
-					.stencilAttachmentFormat = depthFormat /*if depthFormat has stencil dadda*/,
-			};
-
-			auto bundle = pipelineCachePimpl->GetRenderPipeline(shaderProgram,
-				info.pColorAttachmentFormats,
-				info.colorAttachmentCount,
-				info.depthAttachmentFormat,
-				info.stencilAttachmentFormat
-				//polygonmode =pass.polygonMode.
-				//blend = pass.blend
-			);
-
-			if (bundle.pipeline == VK_NULL_HANDLE) {
-				assert(false && "Invalid pipeline handle");
-			}
-			if (bundle.pipeline != vkCurrentPipeline_) {
-				vkCurrentPipeline_ = bundle.pipeline;
-				vkCurrentPipelineLayout_ = bundle.layout;
-			}
-			else {
-				return;
-			}
-			vkCmdBindPipeline(
-				cmd,
-				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				vkCurrentPipeline_
-			);
-
-			vkCmdBindDescriptorSets(
-				cmd,
-				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				//vkCurrentPipelineLayout_,
-				ctx_.defaultPipeLayout,
-				0, //first
-				1, //count
-				ctx_.defaultDescriptorSets_,
-				0, //dynoffsetCount
-				nullptr //dynOffset
-			);
-		}
-		void Execute(FrameBuffer& fb) {
-
-			ResolveImages();
-			ResolveImageViews();
-			ResolveBuffers();
-
-
-			for (auto& pass : m_passes) {
-				// update bindigns for storageImages and else associated to this pass
-
-				// Reset current pipeline bound
-				vkCurrentPipelineLayout_ = VK_NULL_HANDLE;
-				vkCurrentPipeline_ = VK_NULL_HANDLE;
-				currentPass_ = &pass;
-
-				std::vector<VkRenderingAttachmentInfo> colorInfos;
-				colorInfos.reserve(pass.colorAttachments_.size());
-				for (auto& att : pass.colorAttachments_) {
-
-					auto view = imageViews_.get(att.view);
-					VkRenderingAttachmentInfo info{};
-					info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-					info.imageView = view->resolvedImageView;
-					info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-					info.loadOp = att.loadOp;
-					info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-					info.clearValue = att.clearValue;
-					colorInfos.push_back(info);
-				}
-
-				VkRenderingAttachmentInfo depthInfo{
-				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-				};
-
-				const bool hasDepth = !pass.depthAttachment_.view.empty();
-
-				if (hasDepth)
-				{
-					auto depthView = imageViews_.get(pass.depthAttachment_.view);
-
-					depthInfo.imageView = depthView->resolvedImageView;
-					depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
-					depthInfo.loadOp = pass.depthAttachment_.loadOp;
-					depthInfo.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-					depthInfo.clearValue = pass.depthAttachment_.clearValue;
-				}
-
-				VkRenderingInfo renderInfo{
-					.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
-					.renderArea = {
-						.offset = pass.offset_,
-						.extent = pass.extent_,
-					},
-					.layerCount = 1,
-					.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
-					.pColorAttachments = colorInfos.data(),
-					.pDepthAttachment = hasDepth ? &depthInfo : nullptr,
-				};
-
-				// VIEWPORT
-				VkViewport vp{};
-				vp.x = 0.0f;
-				vp.y = 0.0f;
-				vp.width = (float)pass.extent_.width;
-				vp.height = (float)pass.extent_.height;
-				vp.minDepth = 0.0f;
-				vp.maxDepth = 1.0f;
-				vkCmdSetViewport(fb.commandBuffer, 0, 1, &vp);
-
-				// SCISSOR.
-				VkRect2D scissor{};
-				scissor.offset = { 0, 0 };
-				scissor.extent = pass.extent_;
-				vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
-
-				vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
-				RenderPassContext rpc{
-					.cmd = fb.commandBuffer,
-					.renderpass = pass
-				};
-				pass.recordingFunction_(rpc);
-
-				assert(vkCurrentPipeline_ != VK_NULL_HANDLE && "no current pipeline");
-
-				vkCmdEndRendering(fb.commandBuffer);
-			}
-		}
+		void Execute(FrameBuffer& fb);
 
 	private:
+		friend struct CommandBuffer;
+
 		void ResolveImages() {
 			inputImages_.forEach(
 				[this](LogicalImage& logicalImage) {
@@ -850,9 +725,6 @@ namespace smvk {
 			);
 		}
 
-		RenderPass* currentPass_;
-		VkPipeline vkCurrentPipeline_;
-		VkPipelineLayout vkCurrentPipelineLayout_;
 		// 
 		smvk::Pool<LogicalImage, LogicalImage> inputImages_;
 		smvk::Pool<LogicalStorageImage, LogicalImage> storageImages_;
@@ -865,5 +737,195 @@ namespace smvk {
 
 	};
 
+	inline CommandBuffer::CommandBuffer(
+		VkCommandBuffer cmd,
+		RenderGraph& graph,
+		RenderPass& renderPass)
+		: cmd_(cmd)
+		, graph_(&graph)
+		, renderPass_(&renderPass)
+	{}
+
+	inline void CommandBuffer::BindPipeline(ShaderProgram& shaderProgram)
+	{
+		assert(graph_ != nullptr);
+		assert(renderPass_ != nullptr);
+
+		std::vector<VkFormat> colorAttachmentFormats;
+		colorAttachmentFormats.reserve(renderPass_->colorAttachments_.size());
+
+		for (auto& attachment : renderPass_->colorAttachments_) {
+			colorAttachmentFormats.push_back(
+				graph_->imageViews_.get(attachment.view)->resolvedFormat);
+		}
+
+		VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+		const bool hasDepth = !renderPass_->depthAttachment_.view.empty();
+
+		if (hasDepth) {
+			depthFormat = graph_->imageViews_
+				.get(renderPass_->depthAttachment_.view)
+				->resolvedFormat;
+		}
+
+		auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
+			shaderProgram,
+			colorAttachmentFormats.data(),
+			static_cast<uint32_t>(colorAttachmentFormats.size()),
+			depthFormat,
+			depthFormat
+			// polygonmode = pass.polygonMode.
+			// blend = pass.blend
+		);
+
+		assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");
+
+		if (bundle.pipeline == currentPipeline_) {
+			return;
+		}
+
+		currentPipeline_ = bundle.pipeline;
+		currentPipelineLayout_ = bundle.layout;
+
+		vkCmdBindPipeline(
+			cmd_,
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			currentPipeline_);
+
+		vkCmdBindDescriptorSets(
+			cmd_,
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			graph_->ctx_.defaultPipeLayout,
+			0,
+			1,
+			graph_->ctx_.defaultDescriptorSets_,
+			0,
+			nullptr);
+	}
+
+	inline void CommandBuffer::PushConstants(
+		uint32_t offset,
+		uint32_t size,
+		const void* data)
+	{
+		assert(currentPipelineLayout_ != VK_NULL_HANDLE);
+
+		vkCmdPushConstants(
+			cmd_,
+			currentPipelineLayout_,
+			VK_SHADER_STAGE_ALL,
+			offset,
+			size,
+			data);
+	}
+
+	inline void CommandBuffer::SetViewport(const VkViewport& viewport)
+	{
+		vkCmdSetViewport(cmd_, 0, 1, &viewport);
+	}
+
+	inline void CommandBuffer::SetScissor(const VkRect2D& scissor)
+	{
+		vkCmdSetScissor(cmd_, 0, 1, &scissor);
+	}
+
+	inline void CommandBuffer::Draw(
+		uint32_t vertexCount,
+		uint32_t instanceCount,
+		uint32_t firstVertex,
+		uint32_t firstInstance)
+	{
+		vkCmdDraw(
+			cmd_,
+			vertexCount,
+			instanceCount,
+			firstVertex,
+			firstInstance);
+	}
+
+	inline void RenderGraph::Execute(FrameBuffer& fb)
+	{
+		ResolveImages();
+		ResolveImageViews();
+		ResolveBuffers();
+
+		for (auto& pass : m_passes) {
+			// update bindings for storageImages and else associated to this pass
+
+			std::vector<VkRenderingAttachmentInfo> colorInfos;
+			colorInfos.reserve(pass.colorAttachments_.size());
+
+			for (auto& att : pass.colorAttachments_) {
+				auto view = imageViews_.get(att.view);
+
+				VkRenderingAttachmentInfo info{};
+				info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+				info.imageView = view->resolvedImageView;
+				info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+				info.loadOp = att.loadOp;
+				info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+				info.clearValue = att.clearValue;
+
+				colorInfos.push_back(info);
+			}
+
+			VkRenderingAttachmentInfo depthInfo{
+				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+			};
+
+			const bool hasDepth = !pass.depthAttachment_.view.empty();
+
+			if (hasDepth) {
+				auto depthView = imageViews_.get(pass.depthAttachment_.view);
+
+				depthInfo.imageView = depthView->resolvedImageView;
+				depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+				depthInfo.loadOp = pass.depthAttachment_.loadOp;
+				depthInfo.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+				depthInfo.clearValue = pass.depthAttachment_.clearValue;
+			}
+
+			VkRenderingInfo renderInfo{
+				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
+				.renderArea = {
+					.offset = pass.offset_,
+					.extent = pass.extent_,
+				},
+				.layerCount = 1,
+				.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
+				.pColorAttachments = colorInfos.data(),
+				.pDepthAttachment = hasDepth ? &depthInfo : nullptr,
+			};
+
+			VkViewport vp{};
+			vp.x = 0.0f;
+			vp.y = 0.0f;
+			vp.width = static_cast<float>(pass.extent_.width);
+			vp.height = static_cast<float>(pass.extent_.height);
+			vp.minDepth = 0.0f;
+			vp.maxDepth = 1.0f;
+
+			VkRect2D scissor{};
+			scissor.offset = { 0, 0 };
+			scissor.extent = pass.extent_;
+
+			vkCmdSetViewport(fb.commandBuffer, 0, 1, &vp);
+			vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
+
+			vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
+
+			CommandBuffer cmd{
+				fb.commandBuffer,
+				*this,
+				pass
+			};
+
+			if (pass.recordingFunction_) {
+				pass.recordingFunction_(cmd);
+			}
+
+			vkCmdEndRendering(fb.commandBuffer);
+		}
+	};
 
 };

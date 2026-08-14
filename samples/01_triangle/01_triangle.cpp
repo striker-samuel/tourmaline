@@ -135,14 +135,11 @@ private:
                 { { 0.0f, 0.0f, 0.0f, 1.0f } }
             )
             .setRecordingFunc(
-                [this, fb](smvk::RenderPassContext pass) {
-            m_rendergraph->BindRenderPipeline(
-                fb.commandBuffer,
-                m_program
-            );
+                [this](smvk::CommandBuffer& cmd) {
 
+            cmd.BindPipeline(m_program);
             vkCmdDraw(
-                fb.commandBuffer,
+                cmd.GetVkCommandBuffer(),
                 3,  // vertex count
                 1,  // instance count
                 0,  // first vertex
