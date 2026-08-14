@@ -309,10 +309,7 @@ namespace smvk {
 		uint32_t gen_ = 0; // gen 0 means no slot. alas empty. 
 		bool empty() const { return gen_ == 0; };
 	};
-	// Bring nvprocore 2 queue timeleine setup here.
 	struct Submitter {
-
-		// this should be changed
 		struct SemaphoreState {
 			VkSemaphore semaphore_ = VK_NULL_HANDLE;
 			uint64_t initialValue_ = 0;
@@ -349,6 +346,7 @@ namespace smvk {
 		uint32_t availableSlots = kMax;
 		WrapperSlot commandBuffers_[kMax];
 		CommandSubmitHandle m_lastSubmit{}; // not in use right now. used for creating linkedList for a faux dependency chain
+
 		VkSemaphore m_timelineSemaphore = VK_NULL_HANDLE;
 		uint64_t m_timelineValue = 1;
 	};
@@ -373,14 +371,14 @@ namespace smvk {
 		void ProcessDeferrredTasks();
 		//
 
-		BufferHandle CreateStagingBuffer(VkDeviceSize size); // Right now only used for image upload, every other data upload is done by mapping
-		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
+		BufferHandle CreateStagingBuffer(VkDeviceSize size, const char* debugName = "staging"); // Right now only used for image upload, every other data upload is done by mapping
+		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr);
 		// 
-		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
-		Holder<TextureHandle> CreateTexture(ktxTexture2& texture);
-		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo);
-		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code);
-		Holder<DescriptorPoolHandle> CreateDescriptorPool();
+		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr); // specialization for textures instead of .isTexture property
+		Holder<TextureHandle> CreateTexture(ktxTexture2& texture, const char* debugName = nullptr);
+		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo, const char* debugName = nullptr);
+		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = nullptr);
+		Holder<DescriptorPoolHandle> CreateDescriptorPool(const char* debugName = nullptr);
 
 		void* MapBuffer(smvk::Handle<smvk::Buffer> handle);
 		void UnmapBuffer(smvk::Handle<smvk::Buffer> handle);

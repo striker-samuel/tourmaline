@@ -10,7 +10,6 @@ namespace smvk {
 	//	const char* entryPoint = "main";
 	//	VkShaderStageFlagBits stage;
 	//	//bool usePushConstants;
-
 	//};
 
 	struct ShaderProgram {
@@ -54,9 +53,6 @@ namespace smvk {
 		VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
 		VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
 		VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-		//VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE;
-
-
 		bool operator==(const PipelineKey& other) const noexcept
 		{
 			return program == other.program &&

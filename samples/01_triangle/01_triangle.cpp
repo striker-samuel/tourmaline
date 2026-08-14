@@ -94,18 +94,6 @@ private:
         return true;
     }
 
-    void EarlyUpdate() override {
-        Super::EarlyUpdate();
-    }
-
-    void Update() override {
-        Super::Update();
-    }
-
-    void LateUpdate() override {
-        Super::LateUpdate();
-    }
-
     void DrawFrame() override {
         auto fb = m_swapchain->AcquireFramebuffer();
 

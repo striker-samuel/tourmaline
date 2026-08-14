@@ -292,24 +292,24 @@ smvk::QueueFamilyIndices findQueueFamilies(
 		queueFamilies.data());
 
 
-	for (uint32_t i = 0; i < queueFamilyCount; ++i) {
-		VkBool32 present = VK_FALSE;
-		vkGetPhysicalDeviceSurfaceSupportKHR(
-			device, i, surface, &present);
+	//for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+	//	VkBool32 present = VK_FALSE;
+	//	vkGetPhysicalDeviceSurfaceSupportKHR(
+	//		device, i, surface, &present);
 
-		const auto flags = queueFamilies[i].queueFlags;
+	//	const auto flags = queueFamilies[i].queueFlags;
 
-		printf(
-			"Queue family %u: "
-			"count=%u G=%d C=%d T=%d S=%d P=%d\n",
-			i,
-			queueFamilies[i].queueCount,
-			!!(flags & VK_QUEUE_GRAPHICS_BIT),
-			!!(flags & VK_QUEUE_COMPUTE_BIT),
-			!!(flags & VK_QUEUE_TRANSFER_BIT),
-			!!(flags & VK_QUEUE_SPARSE_BINDING_BIT),
-			!!present);
-	}
+	//	printf(
+	//		"Queue family %u: "
+	//		"count=%u G=%d C=%d T=%d S=%d P=%d\n",
+	//		i,
+	//		queueFamilies[i].queueCount,
+	//		!!(flags & VK_QUEUE_GRAPHICS_BIT),
+	//		!!(flags & VK_QUEUE_COMPUTE_BIT),
+	//		!!(flags & VK_QUEUE_TRANSFER_BIT),
+	//		!!(flags & VK_QUEUE_SPARSE_BINDING_BIT),
+	//		!!present);
+	//}
 
 	// First pass: prefer one family that supports BOTH graphics + present.
 	for (uint32_t i = 0; i < queueFamilyCount; ++i) {
@@ -855,6 +855,7 @@ inline smvk::VulkanCore::~VulkanCore() {
 		vkDestroySurfaceKHR(instance_, surface_, nullptr);
 	}
 	DestroyDebugUtilsMessengerEXT(instance_, debugMessenger_, nullptr);
+	vkDestroyDevice(device_, nullptr);
 	vkDestroyInstance(instance_, nullptr);
 }
 std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window) {
@@ -1172,7 +1173,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	);
 
 }
-[[nodiscard]] smvk::BufferHandle smvk::ResourceContext::CreateStagingBuffer(VkDeviceSize size)
+[[nodiscard]] smvk::BufferHandle smvk::ResourceContext::CreateStagingBuffer(VkDeviceSize size, const char* debugName)
 {
 	smvk::Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -1187,6 +1188,25 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 		VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
 	VK_CHECK(vmaCreateBuffer(m_allocator, &ci, &aci, &desc.vk_buffer, &desc.vma_alloc, nullptr));
+
+#ifndef NDEBUG
+	if (debugName)
+	{
+		VkDebugUtilsObjectNameInfoEXT nameInfo{
+			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
+		};
+
+		nameInfo.objectType = VK_OBJECT_TYPE_BUFFER;
+		nameInfo.objectHandle =
+			reinterpret_cast<uint64_t>(desc.vk_buffer);
+		nameInfo.pObjectName = debugName;
+
+		vkSetDebugUtilsObjectNameEXT(
+			device_,
+			&nameInfo);
+	}
+#endif
+
 
 	VkMemoryPropertyFlags props{}; //Cache memory properties for quick checks/debug
 	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &props);
@@ -1554,13 +1574,8 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	image_obj.sampleView = VK_NULL_HANDLE;
 	image_obj.storageView = VK_NULL_HANDLE;
 
-	// TODO: Rework this.
-	//CreateSampler(0, image_obj.sampler);
-	//CreateSampler(SamplerCreateInfo(), image_obj.sampler);
-
+	// TODO: Rework this- Get sampler by spec from the pool
 	image_obj.vk_sampler = m_defaultSampler;
-	//image_obj.owns_sampler = true;
-
 
 	ImageViewCreateInfo createViewInfo{};
 	createViewInfo.flags = {};
@@ -1586,7 +1601,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	return { this, 	textures_.create(std::move(image_obj)) };
 
 }
-[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::ResourceContext::CreateBuffer(BufferCreateInfo bufferCreateInfo) {
+[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::ResourceContext::CreateBuffer(BufferCreateInfo bufferCreateInfo,const char* debugName) {
 	Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	ci.size = bufferCreateInfo.size;
@@ -1726,7 +1741,6 @@ void smvk::destroy(smvk::ResourceContext* ctx, smvk::BufferHandle handle) {
 	vmaDestroyBuffer(ctx->m_allocator, db.vk_buffer, db.vma_alloc);
 	ctx->buffers_.destroy(handle);
 }
-
 
 // remove when updating to 1.4
 void smvk::destroy(smvk::ResourceContext* ctx, smvk::ShaderModuleHandle handle) {
@@ -1933,7 +1947,8 @@ inline void smvk::Submitter::submit(CommandSubmitHandle handle) {
 	VkSemaphoreSubmitInfo signalFinishedSemaphoresSubmitInfo{
 		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
 		.semaphore = wrapper_.finishedSignalSemaphore.semaphore_,
-		.value = wrapper_.finishedSignalSemaphore.goal_
+		.value = wrapper_.finishedSignalSemaphore.goal_,
+		.stageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT
 	};
 
 	VkCommandBufferSubmitInfo commandsSubmitInfo
