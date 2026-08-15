@@ -5,6 +5,7 @@
 #include <cstring>     // compare and hash
 
 #include <Engine/Vulkan/core.h>
+#include <Engine/Renderer/mesh.h>
 
 namespace smvk {
 	struct RenderGraph;
@@ -17,12 +18,6 @@ namespace smvk {
 
 
 namespace smvk {
-
-	struct VertexFormat
-	{
-		std::vector<VkVertexInputBindingDescription> bindingDescriptions{};
-		std::vector<VkVertexInputAttributeDescription> attributeDescriptions{};
-	};
 
 	struct PipelineBundle {
 		VkPipeline pipeline = VK_NULL_HANDLE;

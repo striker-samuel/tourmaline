@@ -122,7 +122,7 @@ MeshHandle MeshManager::UploadVertexData(Mesh::DataUpload& mesh_data)
 	std::vector<VertexShading> shd(vcount);
 
 	for (uint32_t i = 0; i < vcount; ++i) {
-		const Vertex& v = mesh_data.vertices[i];
+		const StaticVertex& v = mesh_data.vertices[i];
 
 		pos[i].pos = v.pos;
 

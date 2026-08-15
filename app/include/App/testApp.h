@@ -282,15 +282,14 @@ private:
 		//
 		m_meshManagerPimpl->BindIndexVertexBuffers(fb.commandBuffer);
 
-
 		// really bad
-		auto vertexFmt = smvk::VertexFormat{};
-		for (auto a : Vertex::getAttributeDescriptions()) {
-			vertexFmt.attributeDescriptions.push_back(a);
-		}
-		for (auto b : Vertex::getBindingDescription()) {
-			vertexFmt.bindingDescriptions.push_back(b);
-		}
+		//auto vertexFmt = smvk::VertexFormat{};
+		//for (auto a : Vertex::getAttributeDescriptions()) {
+		//	vertexFmt.attributeDescriptions.push_back(a);
+		//}
+		//for (auto b : Vertex::getBindingDescription()) {
+		//	vertexFmt.bindingDescriptions.push_back(b);
+		//}
 		// rework this
 
 		auto& mainPass = m_rendergraph->AddPass()
@@ -298,7 +297,7 @@ private:
 			.setExtent(fb.swapchain.extent_)
 			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })  // Rendering directly to swapchainImage!
 			.setDepth(logicalDepthImageView, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
-			.setRecordingFunc([this, fb, vertexFmt](smvk::CommandBuffer& cmd)
+			.setRecordingFunc([this, fb](smvk::CommandBuffer& cmd)
 		{
 			auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
 			auto mesh_manager = m_meshManagerPimpl.get();
@@ -319,7 +318,6 @@ private:
 
 			cmd.BindRenderPipeline(
 				m_resources.mainProgram,
-				vertexFmt
 				);
 
 			//Push frame

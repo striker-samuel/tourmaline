@@ -378,7 +378,7 @@ Mesh::DataUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, cons
 	auto& posAcc = model.accessors[primitive.attributes.at("POSITION")];
 	data.vertices.reserve(posAcc.count);
 	for (size_t i = 0; i < posAcc.count; ++i) {
-		Vertex v{};
+		StaticVertex v{};
 		v.pos = readVec3ForientationFix(model, posAcc, i);
 		v.color = { 1.0f, 1.0f, 1.0f };
 		v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist

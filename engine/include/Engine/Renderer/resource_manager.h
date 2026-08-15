@@ -3,35 +3,11 @@
 #include <Engine/Vulkan/core.h>
 #include <Engine/Shared/common.h>
 #include <Engine/Scene/scene.h>
-#include <Engine/Renderer/vertex.h>
+#include <Engine/Renderer/mesh.h>
 
 using MeshHandle = smvk::Handle<struct Mesh>;
 using MaterialHandle = smvk::Handle<struct Material>;
 
-struct Mesh {
-	struct DataUpload {
-		std::vector<Vertex> vertices;
-		std::vector<uint32_t> indices;
-		glm::vec3 aabb_min{};
-		glm::vec3 aabb_max{};
-	};
-	struct Surface {
-		uint32_t first_index;
-		uint32_t index_count;
-		int32_t  base_vertex;
-	};
-	//VertexDeclaration
-	struct Alloc {
-		VmaVirtualAllocation index{};
-		VmaVirtualAllocation vertex{};
-	} vma_alloc;
-	glm::vec3 aabbMin;
-	float     sphereRadius;
-	glm::vec3 aabbMax;
-	float     spherePad;
-	// removed lods for now.
-	std::vector<Surface> surfaces;
-};
 
 
 struct Material {
@@ -57,20 +33,54 @@ struct MeshManager {
 	smvk::BufferHandle GetIndexBuffer();
 	std::vector<smvk::BufferHandle> GetVertexBuffers();
 
-	void BindIndexVertexBuffers(VkCommandBuffer commandBuffer) {
-		auto indexBuffer = ctx_.buffers_.get(GetIndexBuffer());
-		auto vertexBuffers = GetVertexBuffers();
-		std::vector<VkBuffer> bufs{};
-		bufs.reserve(2);
-		for (auto han : vertexBuffers) {
-			bufs.push_back(
-				ctx_.buffers_.get(han)->vk_buffer
+	void BindMesh(
+		VkCommandBuffer commandBuffer,
+		const Mesh& mesh
+	) {
+		auto vertexBuffers = mesh.vertexBuffers();
+
+		std::vector<VkBuffer> buffers;
+		std::vector<VkDeviceSize> offsets;
+
+		buffers.reserve(vertexBuffers.size());
+		offsets.reserve(vertexBuffers.size());
+
+		for (const auto& vertexBuffer : vertexBuffers) {
+			buffers.push_back(vertexBuffer.buffer.vk_buffer);
+			offsets.push_back(vertexBuffer.offset);
+		}
+
+		vkCmdBindVertexBuffers(
+			commandBuffer,
+			0,
+			static_cast<uint32_t>(buffers.size()),
+			buffers.data(),
+			offsets.data()
+		);
+
+		if (auto* index = mesh.indexBuffer()) {
+			vkCmdBindIndexBuffer(
+				commandBuffer,
+				index->buffer.vk_buffer,
+				index->offset,
+				index->indexType
 			);
 		}
-		VkDeviceSize offs[] = { 0, 0 };
-		vkCmdBindIndexBuffer(commandBuffer, indexBuffer->vk_buffer, 0, VK_INDEX_TYPE_UINT32);
-		vkCmdBindVertexBuffers(commandBuffer, 0, bufs.size(), bufs.data(), offs);
-	};
+	}
+	//void BindIndexVertexBuffers(VkCommandBuffer commandBuffer) {
+	//	auto indexBuffer = ctx_.buffers_.get(GetIndexBuffer());
+	//	auto vertexBuffers = GetVertexBuffers();
+	//	std::vector<VkBuffer> bufs{};
+	//	bufs.reserve(2);
+	//	for (auto han : vertexBuffers) {
+	//		bufs.push_back(
+	//			ctx_.buffers_.get(han)->vk_buffer
+	//		);
+	//	}
+	//	VkDeviceSize offs[] = { 0, 0 };
+	//	vkCmdBindIndexBuffer(commandBuffer, indexBuffer->vk_buffer, 0, VK_INDEX_TYPE_UINT32);
+	//	vkCmdBindVertexBuffers(commandBuffer, 0, bufs.size(), bufs.data(), offs);
+	//};
 
 	//private:
 	void InitalizeGeoBuffers();
