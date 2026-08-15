@@ -282,12 +282,23 @@ private:
 		//
 		m_meshManagerPimpl->BindIndexVertexBuffers(fb.commandBuffer);
 
+
+		// really bad
+		auto vertexFmt = smvk::VertexFormat{};
+		for (auto a : Vertex::getAttributeDescriptions()) {
+			vertexFmt.attributeDescriptions.push_back(a);
+		}
+		for (auto b : Vertex::getBindingDescription()) {
+			vertexFmt.bindingDescriptions.push_back(b);
+		}
+		// rework this
+
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
 			.setExtent(fb.swapchain.extent_)
 			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })  // Rendering directly to swapchainImage!
 			.setDepth(logicalDepthImageView, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
-			.setRecordingFunc([this, fb](smvk::RenderPassContext pass)
+			.setRecordingFunc([this, fb, vertexFmt](smvk::CommandBuffer& cmd)
 		{
 			auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
 			auto mesh_manager = m_meshManagerPimpl.get();
@@ -305,7 +316,11 @@ private:
 			else {
 				assert(false && "tree wasnt done");
 			}
-			m_rendergraph->BindRenderPipeline(fb.commandBuffer, m_resources.mainProgram);
+
+			cmd.BindRenderPipeline(
+				m_resources.mainProgram,
+				vertexFmt
+				);
 
 			//Push frame
 			struct alignas(16) PushConstants {
@@ -318,8 +333,7 @@ private:
 				.get(m_resources.frameUniforms)
 				->deviceAddress;
 
-			m_rendergraph->PushConstants(
-				fb.commandBuffer,
+			cmd.PushConstants(
 				offsetof(PushConstants, frameUniforms),
 				sizeof(frameUniforms),
 				&frameUniforms
@@ -350,8 +364,7 @@ private:
 					const float* modelData = glm::value_ptr(model);
 					std::copy_n(modelData, 16, pc.model);
 
-					m_rendergraph->PushConstants(
-						fb.commandBuffer,
+					cmd.PushConstants(
 						0,
 						offsetof(PushConstants, frameUniforms),
 						&pc

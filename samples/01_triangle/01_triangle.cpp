@@ -135,21 +135,20 @@ private:
                 { { 0.0f, 0.0f, 0.0f, 1.0f } }
             )
             .setRecordingFunc(
-                [this](smvk::CommandBuffer& cmd) {
-
-            cmd.BindPipeline(m_program);
-            vkCmdDraw(
-                cmd.GetVkCommandBuffer(),
+                [this](smvk::CommandBuffer& cmd) 
+        { //recording
+            cmd.BindRenderPipeline(m_program);
+            cmd.Draw(
                 3,  // vertex count
                 1,  // instance count
                 0,  // first vertex
                 0   // first instance
             );
-        }
+        } //end recording
             );
 
         m_rendergraph->Execute(fb);
-        m_context->ProcessDeferrredTasks();
+        m_context->ProcessDeferrredTasks(); // Not needed here
     }
 
 private:

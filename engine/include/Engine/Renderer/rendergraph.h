@@ -15,7 +15,14 @@ namespace smvk {
 	using LogicalStorageImageHandle = Handle<struct LogicalStorageImage>;
 };
 
+
 namespace smvk {
+
+	struct VertexFormat
+	{
+		std::vector<VkVertexInputBindingDescription> bindingDescriptions{};
+		std::vector<VkVertexInputAttributeDescription> attributeDescriptions{};
+	};
 
 	struct PipelineBundle {
 		VkPipeline pipeline = VK_NULL_HANDLE;
@@ -101,6 +108,7 @@ namespace smvk {
 
 		PipelineBundle GetRenderPipeline(
 			ShaderProgram& program,
+			VertexFormat vertexFormat,
 			const VkFormat* colorFormats,
 			uint32_t nColorAttachments,
 			VkFormat depthFormat,
@@ -111,6 +119,8 @@ namespace smvk {
 		{
 			PipelineKey key{
 				.program = program,
+				.bindingDescriptions = vertexFormat.bindingDescriptions,
+				.attributeDescriptions = vertexFormat.attributeDescriptions,
 				.colorFormats = std::vector<VkFormat>(
 					colorFormats,
 					colorFormats + nColorAttachments),
@@ -552,7 +562,7 @@ namespace smvk {
 	public:
 		CommandBuffer() = delete;
 
-		void BindPipeline(ShaderProgram& shaderProgram);
+		void BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormat vertexFormat);
 		void PushConstants(uint32_t offset, uint32_t size, const void* data);
 
 		void SetViewport(const VkViewport& viewport);
@@ -746,7 +756,7 @@ namespace smvk {
 		, renderPass_(&renderPass)
 	{}
 
-	inline void CommandBuffer::BindPipeline(ShaderProgram& shaderProgram)
+	inline void CommandBuffer::BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormat vertexFormat = VertexFormat())
 	{
 		assert(graph_ != nullptr);
 		assert(renderPass_ != nullptr);
@@ -770,6 +780,7 @@ namespace smvk {
 
 		auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
 			shaderProgram,
+			vertexFormat,
 			colorAttachmentFormats.data(),
 			static_cast<uint32_t>(colorAttachmentFormats.size()),
 			depthFormat,
@@ -806,14 +817,16 @@ namespace smvk {
 	inline void CommandBuffer::PushConstants(
 		uint32_t offset,
 		uint32_t size,
-		const void* data)
+		const void* data
+		//stageMask stageMask
+	)
 	{
 		assert(currentPipelineLayout_ != VK_NULL_HANDLE);
 
 		vkCmdPushConstants(
 			cmd_,
 			currentPipelineLayout_,
-			VK_SHADER_STAGE_ALL,
+			VK_SHADER_STAGE_ALL, //may be really bad
 			offset,
 			size,
 			data);

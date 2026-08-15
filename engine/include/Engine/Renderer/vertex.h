@@ -3,9 +3,7 @@
 #include <Engine/Shared/common.h>
 #include "volk.h"
 
-
 // Fixed vertex format. This is no good. vertex format specializations is needed in a renderer!
-
 struct VertexPos {
 	glm::vec3 pos;
 };
