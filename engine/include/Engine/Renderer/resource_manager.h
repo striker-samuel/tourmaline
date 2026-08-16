@@ -43,22 +43,6 @@ namespace smvk {
         [[nodiscard]]
         ClusterMaterialHandle CreateMaterial(TextureHandle diffuse);
 
-
-        // -------------------------------------------------------------------------
-        // Buffers used by renderer
-        // -------------------------------------------------------------------------
-
-        BufferHandle GetPositionBuffer() const {
-            return vertexPosBuffer_;
-        }
-
-        BufferHandle GetShadingBuffer() const {
-            return vertexShadingBuffer_;
-        }
-
-        BufferHandle GetIndexBuffer() const {
-            return indexBuffer_;
-        }
         void BindStaticMeshBuffers(VkCommandBuffer cmd) const;
 
   
@@ -70,9 +54,9 @@ namespace smvk {
         // -------------------------------------------------------------------------
         // Physical GPU buffers
         // -------------------------------------------------------------------------
-        BufferHandle vertexPosBuffer_{};
-        BufferHandle vertexShadingBuffer_{};
-        BufferHandle indexBuffer_{};
+        Holder<BufferHandle> vertexPosBuffer_{};
+        Holder<BufferHandle> vertexShadingBuffer_{};
+        Holder<BufferHandle> indexBuffer_{};
 
         // -------------------------------------------------------------------------
         // Virtual allocations

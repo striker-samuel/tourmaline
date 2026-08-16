@@ -18,7 +18,33 @@ namespace smvk {
 		DestroyGeometryBuffers();
 	}
 
+	void Cluster::BindStaticMeshBuffers(VkCommandBuffer cmd) const
+	{
+		VkBuffer vertexBuffers[] = {
+			ctx_.buffers_.get(vertexPosBuffer_)->vk_buffer,
+			ctx_.buffers_.get(vertexShadingBuffer_)->vk_buffer
+		};
 
+		VkDeviceSize offsets[] = {
+			0,
+			0
+		};
+
+		vkCmdBindVertexBuffers(
+			cmd,
+			0,
+			2,
+			vertexBuffers,
+			offsets
+		);
+
+		vkCmdBindIndexBuffer(
+			cmd,
+			ctx_.buffers_.get(indexBuffer_)->vk_buffer,
+			0,
+			VK_INDEX_TYPE_UINT32
+		);
+	}
 	// -----------------------------------------------------------------------------
 	// Buffer initialization
 	// -----------------------------------------------------------------------------
