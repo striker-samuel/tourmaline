@@ -1,62 +1,71 @@
 #include <Engine/Renderer/resource_manager.h>
 
-MeshManager::MeshManager(smvk::ResourceContext& ctx) :ctx_(ctx) {
-	InitalizeGeoBuffers();
-}
-void MeshManager::InitalizeGeoBuffers() {
-	{
-		uint32_t totalVertexBytes = 512u * 1024u * 1024u;
-		uint32_t totalIndexBytes = 512u * 1024u * 1024u;
 
-		// Create the actual GPU buffers (these are the page's buffers)
-		vertexPosBuffer = smvk::Holder(ctx_.CreateBuffer(
-			{
-			totalVertexBytes,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			}
-		));
+smvk::Cluster::Cluster(smvk::ResourceContext& ctx) :ctx_(ctx) {}
 
-		vertexShadingBuffer = smvk::Holder(ctx_.CreateBuffer(
-			{
-			totalVertexBytes,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			}
-		));
+static constexpr size_t blockSize =  512u * 1024u * 1024u; 
+static smvk::BufferHandle buffers[10];
+static size_t bufferCount;
 
-		indexBuffer = smvk::Holder(ctx_.CreateBuffer(
-			{
-				totalIndexBytes,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			}
-		));
+// linear allocator setup for vertex
+VmaVirtualBlock index_blk{};
+VmaVirtualBlock vertex_units_blk{};
+uint32_t vertex_cursor = 0;
 
-		auto max_vertices = std::min(
-			totalVertexBytes / uint32_t(sizeof(VertexPos)),
-			totalVertexBytes / uint32_t(sizeof(VertexShading))
-		);
+//void Cluster::InitializeVertexBuffers() {
+//	{
+//		// Create the actual GPU buffers (these are the page's buffers)
+//		vertexPosBuffer = smvk::Holder(ctx_.CreateBuffer(
+//			{
+//			totalVertexBytes,
+//			VMA_MEMORY_USAGE_GPU_ONLY,
+//			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+//			}
+//		));
+//
+//		vertexShadingBuffer = smvk::Holder(ctx_.CreateBuffer(
+//			{
+//			totalVertexBytes,
+//			VMA_MEMORY_USAGE_GPU_ONLY,
+//			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+//			}
+//		));
+//
+//		indexBuffer = smvk::Holder(ctx_.CreateBuffer(
+//			{
+//				totalIndexBytes,
+//			VMA_MEMORY_USAGE_GPU_ONLY,
+//			VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+//			}
+//		));
+//
+//		auto max_vertices = std::min(
+//			totalVertexBytes / uint32_t(sizeof(VertexPos)),
+//			totalVertexBytes / uint32_t(sizeof(VertexShading))
+//		);
+//
+//		// Index allocator (bytes)
+//		{
+//			VmaVirtualBlockCreateInfo ci{};
+//			ci.size = totalIndexBytes;
+//			VK_CHECK(vmaCreateVirtualBlock(&ci, &index_blk));
+//		}
+//
+//		// Vertex allocator (VERTEX UNITS!)
+//		{
+//			VmaVirtualBlockCreateInfo vu{
+//				.size = max_vertices,
+//				.flags = 0
+//			};
+//			VK_CHECK(vmaCreateVirtualBlock(&vu, &vertex_units_blk));
+//		}
+//
+//	}
+//}
 
-		// Index allocator (bytes)
-		{
-			VmaVirtualBlockCreateInfo ci{};
-			ci.size = totalIndexBytes;
-			VK_CHECK(vmaCreateVirtualBlock(&ci, &index_blk));
-		}
 
-		// Vertex allocator (VERTEX UNITS!)
-		{
-			VmaVirtualBlockCreateInfo vu{
-				.size = max_vertices,
-				.flags = 0
-			};
-			VK_CHECK(vmaCreateVirtualBlock(&vu, &vertex_units_blk));
-		}
 
-	}
-}
-MeshHandle MeshManager::UploadVertexData(Mesh::DataUpload& mesh_data)
+MeshHandle Cluster::UploadVertexData(Mesh::DataUpload& mesh_data)
 {
 	const uint32_t vcount = static_cast<uint32_t>(mesh_data.vertices.size());
 	Mesh mesh_desc{};

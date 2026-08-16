@@ -21,7 +21,7 @@ namespace smvk {
 	class VulkanApp {
 	public:
 		Input m_input{};
-		VulkanApp();
+		VulkanApp(ResourceContext* ctx) : m_context(ctx) {};
 		virtual ~VulkanApp();
 		virtual void DrawFrame() = 0;
 		virtual void CleanUp();
@@ -30,8 +30,7 @@ namespace smvk {
 		void MainLoop();
 		void UpdateDeltaTime();
 	protected:
-		std::unique_ptr<VulkanCore> core_;
-		std::unique_ptr<ResourceContext> m_context;
+		ResourceContext* m_context;
 		std::unique_ptr<VulkanSwapchain> m_swapchain;
 		std::unique_ptr<RenderGraph> m_rendergraph;
 		ImGuiContext* m_imguiCtx = nullptr;

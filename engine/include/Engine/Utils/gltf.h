@@ -5,7 +5,7 @@
 
 struct GltfToSceneImporter {
 	Scene& scene;
-	MeshManager& manager_;
+	Cluster& manager_;
 	const tinygltf::Model& model;
 	std::filesystem::path gltfModelPath; // full path to .gltf/.glb on disk
 	static constexpr uint32_t kInvalidMat = 0xFFFFFFFFu;
@@ -14,7 +14,7 @@ struct GltfToSceneImporter {
 	GltfToSceneImporter
 	(
 		Scene& inScene
-		, MeshManager& manager 
+		, Cluster& manager 
 		, const tinygltf::Model& inModel
 		, std::filesystem::path inGltfModelPath
 	)

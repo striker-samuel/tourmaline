@@ -17,13 +17,9 @@ std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
 };
 
-// Bring Phyre asset to runtime scene mapping-
-//struct AssetReference{};
-//struct Cluster{};
-
+//static PCluster;
 //
 struct Level : Scene {
-	MeshManager* m_meshManagerPimpl = nullptr;
 	BvhTree tree = {};
 	// 
 	BvhTree static_tree = {};
@@ -90,20 +86,17 @@ struct FrameUniforms
 };
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 
-
 // Resources
-struct ViewportResources {};
 struct AppResources {
 	smvk::Holder<smvk::BufferHandle> frameUniforms;
 	smvk::ShaderProgram mainProgram;
 };
 
-
 class TestApp : public smvk::VulkanApp {
 	using Super = smvk::VulkanApp;
 public:
-	TestApp() {};
-	~TestApp() {};
+	//TestApp() {};
+	//~TestApp() {};
 private:
 	uint32_t kMaxDraws = 1000;
 
@@ -318,6 +311,7 @@ private:
 
 			cmd.BindRenderPipeline(
 				m_resources.mainProgram,
+				smvk::StaticVertexFormat
 				);
 
 			//Push frame
@@ -407,7 +401,7 @@ private:
 private:
 	AppResources m_resources{};
 	Level m_currentLevel;
-	std::unique_ptr<MeshManager> m_meshManagerPimpl;
+	std::unique_ptr<Cluster> m_meshManagerPimpl;
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target

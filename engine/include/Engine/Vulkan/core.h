@@ -449,12 +449,12 @@ namespace smvk {
 	void destroy(ResourceContext* ctx, ImageHandle handle);
 	void destroy(ResourceContext* ctx, TextureHandle handle);
 	void destroy(ResourceContext* ctx, BufferHandle handle);
-	void destroy(ResourceContext* ctx, ShaderModuleHandle handle);
 	void destroy(ResourceContext* ctx, SamplerHandle handle);
 
 	void destroy(ResourceContext* ctx, DescriptorPoolHandle handle);
 	void destroy(ResourceContext* ctx, DescriptorSetHandle handle);
 
+	void destroy(ResourceContext* ctx, ShaderModuleHandle handle); // will be removed in 1.4
 
 };
 
