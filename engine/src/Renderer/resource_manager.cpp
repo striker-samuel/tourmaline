@@ -1,222 +1,383 @@
 #include <Engine/Renderer/resource_manager.h>
 
+// vkDeviceSz
+static constexpr size_t VertexBufferSize = 512ull * 1024ull * 1024ull;
+static constexpr size_t IndexBufferSize = 512ull * 1024ull * 1024ull;
 
-smvk::Cluster::Cluster(smvk::ResourceContext& ctx) :ctx_(ctx) {}
+namespace smvk {
 
-static constexpr size_t blockSize =  512u * 1024u * 1024u; 
-static smvk::BufferHandle buffers[10];
-static size_t bufferCount;
-
-// linear allocator setup for vertex
-VmaVirtualBlock index_blk{};
-VmaVirtualBlock vertex_units_blk{};
-uint32_t vertex_cursor = 0;
-
-//void Cluster::InitializeVertexBuffers() {
-//	{
-//		// Create the actual GPU buffers (these are the page's buffers)
-//		vertexPosBuffer = smvk::Holder(ctx_.CreateBuffer(
-//			{
-//			totalVertexBytes,
-//			VMA_MEMORY_USAGE_GPU_ONLY,
-//			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-//			}
-//		));
-//
-//		vertexShadingBuffer = smvk::Holder(ctx_.CreateBuffer(
-//			{
-//			totalVertexBytes,
-//			VMA_MEMORY_USAGE_GPU_ONLY,
-//			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-//			}
-//		));
-//
-//		indexBuffer = smvk::Holder(ctx_.CreateBuffer(
-//			{
-//				totalIndexBytes,
-//			VMA_MEMORY_USAGE_GPU_ONLY,
-//			VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-//			}
-//		));
-//
-//		auto max_vertices = std::min(
-//			totalVertexBytes / uint32_t(sizeof(VertexPos)),
-//			totalVertexBytes / uint32_t(sizeof(VertexShading))
-//		);
-//
-//		// Index allocator (bytes)
-//		{
-//			VmaVirtualBlockCreateInfo ci{};
-//			ci.size = totalIndexBytes;
-//			VK_CHECK(vmaCreateVirtualBlock(&ci, &index_blk));
-//		}
-//
-//		// Vertex allocator (VERTEX UNITS!)
-//		{
-//			VmaVirtualBlockCreateInfo vu{
-//				.size = max_vertices,
-//				.flags = 0
-//			};
-//			VK_CHECK(vmaCreateVirtualBlock(&vu, &vertex_units_blk));
-//		}
-//
-//	}
-//}
-
-
-
-MeshHandle Cluster::UploadVertexData(Mesh::DataUpload& mesh_data)
-{
-	const uint32_t vcount = static_cast<uint32_t>(mesh_data.vertices.size());
-	Mesh mesh_desc{};
-	// This is a really hacky way to implement separate buffer pos and shading virtual alloc,
-	// we alloc vertex count on a virtual allocator with vertex size and use that as bookkeeping, 
-	// but then we build our offsets into the real buffers. 
-
-	// ------------------------------------------
-	// 0) Allocate vertices from ONE vertex-units block
-	// ------------------------------------------
-	VkDeviceSize baseVertex = 0; // <-- returned "offset" in VERTEX UNITS (not bytes)
-
+	Cluster::Cluster(ResourceContext& ctx)
+		: ctx_(ctx)
 	{
-		VmaVirtualAllocationCreateInfo aV{};
-		aV.size = vcount;     // vertex units
-		aV.alignment = 1;     // vertex units
+		CreateGeometryBuffers();
+	}
 
-		if (vmaVirtualAllocate(vertex_units_blk, &aV, &mesh_desc.vma_alloc.vertex, &baseVertex) != VK_SUCCESS) {
-			// Not enough contiguous vertex space in this page (or fragmented)
-			return {}; // TODO :: cath this result!
+
+	Cluster::~Cluster()
+	{
+		DestroyGeometryBuffers();
+	}
+
+
+	// -----------------------------------------------------------------------------
+	// Buffer initialization
+	// -----------------------------------------------------------------------------
+
+	void Cluster::CreateGeometryBuffers()
+	{
+		vertexPosBuffer_ = ctx_.CreateBuffer({
+			VertexBufferSize,
+			VMA_MEMORY_USAGE_GPU_ONLY,
+			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			});
+
+		vertexShadingBuffer_ = ctx_.CreateBuffer({
+			VertexBufferSize,
+			VMA_MEMORY_USAGE_GPU_ONLY,
+			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			});
+
+		indexBuffer_ = ctx_.CreateBuffer({
+			IndexBufferSize,
+			VMA_MEMORY_USAGE_GPU_ONLY,
+			VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			});
+
+
+		// -------------------------------------------------------------------------
+		// Vertex virtual allocator
+		//
+		// IMPORTANT:
+		// This allocator is measured in VERTICES, not bytes.
+		//
+		// Both physical vertex streams use this same allocation.
+		// -------------------------------------------------------------------------
+
+		const VkDeviceSize maxVertices = std::min(
+			VertexBufferSize / sizeof(VertexPos),
+			VertexBufferSize / sizeof(VertexShading)
+		);
+
+		{
+			VmaVirtualBlockCreateInfo info{};
+			info.size = maxVertices;
+
+			VK_CHECK(
+				vmaCreateVirtualBlock(
+					&info,
+					&vertexBlock_
+				)
+			);
+		}
+
+
+		// -------------------------------------------------------------------------
+		// Index virtual allocator
+		//
+		// This one IS measured in bytes.
+		// -------------------------------------------------------------------------
+
+		{
+			VmaVirtualBlockCreateInfo info{};
+			info.size = IndexBufferSize;
+
+			VK_CHECK(
+				vmaCreateVirtualBlock(
+					&info,
+					&indexBlock_
+				)
+			);
 		}
 	}
 
-	// Derived byte offsets for each stream (for copy destinations)
-	const VkDeviceSize pos_byte_offset = baseVertex * sizeof(VertexPos);
-	const VkDeviceSize shd_byte_offset = baseVertex * sizeof(VertexShading);
 
-	// ------------------------------------------
-	// 1) INDICES
-	// ------------------------------------------
-	using IndexT = uint32_t;
-	const VkDeviceSize indexBytes =
-		sizeof(IndexT) * static_cast<VkDeviceSize>(mesh_data.indices.size());
-
-	VkDeviceSize index_offset_bytes = 0;
-
+	void Cluster::DestroyGeometryBuffers()
 	{
-		VmaVirtualAllocationCreateInfo aIdx{};
-		aIdx.size = indexBytes;
-		aIdx.alignment = sizeof(IndexT);
-
-		if (vmaVirtualAllocate(index_blk /*or index_blk*/, &aIdx, &mesh_desc.vma_alloc.index, &index_offset_bytes) != VK_SUCCESS) {
-			vmaVirtualFree(vertex_units_blk, mesh_desc.vma_alloc.vertex); // Roll back vertex allocation
-			assert(false);
-			return {};
+		if (vertexBlock_) {
+			vmaClearVirtualBlock(vertexBlock_);
+			vmaDestroyVirtualBlock(vertexBlock_);
+			vertexBlock_ = VK_NULL_HANDLE;
 		}
+
+		if (indexBlock_) {
+			vmaClearVirtualBlock(indexBlock_);
+			vmaDestroyVirtualBlock(indexBlock_);
+			indexBlock_ = VK_NULL_HANDLE;
+		}
+
+		// Whatever destruction API your ResourceContext uses:
+		//
+		// ctx_.DestroyBuffer(vertexPosBuffer_);
+		// ctx_.DestroyBuffer(vertexShadingBuffer_);
+		// ctx_.DestroyBuffer(indexBuffer_);
+	}
+
+
+	// -----------------------------------------------------------------------------
+	// Mesh upload
+	// -----------------------------------------------------------------------------
+
+	ClusterStaticMeshHandle Cluster::UploadStaticMesh(
+		const StaticMeshUpload& data)
+	{
+		const uint32_t vertexCount =
+			static_cast<uint32_t>(data.vertices.size());
+
+		const uint32_t indexCount =
+			static_cast<uint32_t>(data.indices.size());
+
+
+		if (vertexCount == 0)
+			return {};
+
+
+		StaticMesh result{};
+
+
+		// =========================================================================
+		// 1. Allocate vertex range
+		//
+		// vertexBase is in VERTEX UNITS, not bytes.
+		// =========================================================================
+
+		VkDeviceSize vertexBase = 0;
+
+		{
+			VmaVirtualAllocationCreateInfo allocInfo{};
+			allocInfo.size = vertexCount;
+			allocInfo.alignment = 1;
+
+			const VkResult res = vmaVirtualAllocate(
+				vertexBlock_,
+				&allocInfo,
+				&result.allocation.vertex,
+				&vertexBase
+			);
+
+			if (res != VK_SUCCESS) {
+				return {};
+			}
+		}
+
+
+		// =========================================================================
+		// 2. Allocate index range
+		// =========================================================================
+
+		const VkDeviceSize indexBytes =
+			sizeof(uint32_t) *
+			static_cast<VkDeviceSize>(indexCount);
+
+		VkDeviceSize indexByteOffset = 0;
+
+		if (indexCount > 0) {
+
+			VmaVirtualAllocationCreateInfo allocInfo{};
+			allocInfo.size = indexBytes;
+			allocInfo.alignment = alignof(uint32_t);
+
+			const VkResult res = vmaVirtualAllocate(
+				indexBlock_,
+				&allocInfo,
+				&result.allocation.index,
+				&indexByteOffset
+			);
+
+			if (res != VK_SUCCESS) {
+
+				vmaVirtualFree(
+					vertexBlock_,
+					result.allocation.vertex
+				);
+
+				return {};
+			}
+		}
+
+
+		// =========================================================================
+		// 3. Convert AoS -> SoA-ish GPU streams
+		// =========================================================================
+
+		std::vector<VertexPos> positions(vertexCount);
+		std::vector<VertexShading> shading(vertexCount);
+
+		for (uint32_t i = 0; i < vertexCount; ++i) {
+
+			const StaticVertex& src = data.vertices[i];
+
+			positions[i].pos = src.pos;
+
+			shading[i].color = src.color;
+			shading[i].texCoord = src.texCoord;
+			shading[i].normal = src.normal;
+			shading[i].tangent = src.tangent;
+		}
+
+
+		// =========================================================================
+		// 4. Upload position stream
+		// =========================================================================
+
+		const VkDeviceSize positionOffset =
+			vertexBase * sizeof(VertexPos);
+
+		const VkDeviceSize positionBytes =
+			vertexCount * sizeof(VertexPos);
 
 		ctx_.UploadDataToBuffer(
-			indexBuffer,
-			mesh_data.indices.data(),
-			indexBytes,
-			VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
-			VK_ACCESS_2_INDEX_READ_BIT,
-			0,
-			index_offset_bytes
-		);
-	}
+			vertexPosBuffer_,
+			positions.data(),
+			positionBytes,
 
-	// ------------------------------------------
-	// 2) Split vertices into two CPU arrays
-	// ------------------------------------------
-	std::vector<VertexPos> pos(vcount);
-	std::vector<VertexShading> shd(vcount);
-
-	for (uint32_t i = 0; i < vcount; ++i) {
-		const StaticVertex& v = mesh_data.vertices[i];
-
-		pos[i].pos = v.pos;
-
-		shd[i].color = v.color;
-		shd[i].texCoord = v.texCoord;
-		shd[i].normal = v.normal;
-		shd[i].tangent = v.tangent;
-	}
-
-	// ------------------------------------------
-	// 3) Upload positions to binding 0 buffer at derived offset
-	// ------------------------------------------
-	{
-		const VkDeviceSize posBytes = sizeof(VertexPos) * static_cast<VkDeviceSize>(vcount);
-		ctx_.UploadDataToBuffer(vertexPosBuffer,
-			pos.data(),
-			posBytes,
 			VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
 			VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
-			0,
-			pos_byte_offset
-		);
-	}
 
-	// ------------------------------------------
-	// 4) Upload shading to binding 1 buffer at derived offset
-	// ------------------------------------------
-	{
-		const VkDeviceSize shdBytes = sizeof(VertexShading) * static_cast<VkDeviceSize>(vcount);
-		ctx_.UploadDataToBuffer(vertexShadingBuffer,
-			shd.data(),
-			shdBytes,
+			0,
+			positionOffset
+		);
+
+
+		// =========================================================================
+		// 5. Upload shading stream
+		// =========================================================================
+
+		const VkDeviceSize shadingOffset =
+			vertexBase * sizeof(VertexShading);
+
+		const VkDeviceSize shadingBytes =
+			vertexCount * sizeof(VertexShading);
+
+		ctx_.UploadDataToBuffer(
+			vertexShadingBuffer_,
+			shading.data(),
+			shadingBytes,
+
 			VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
 			VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
+
 			0,
-			shd_byte_offset
+			shadingOffset
+		);
+
+
+		// =========================================================================
+		// 6. Upload indices
+		// =========================================================================
+
+		if (indexCount > 0) {
+
+			ctx_.UploadDataToBuffer(
+				indexBuffer_,
+				data.indices.data(),
+				indexBytes,
+
+				VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
+				VK_ACCESS_2_INDEX_READ_BIT,
+
+				0,
+				indexByteOffset
+			);
+		}
+
+
+		// =========================================================================
+		// 7. Construct mesh
+		// =========================================================================
+
+		StaticMesh& mesh = result;
+
+		mesh.geometry.topology =
+			PrimitiveTopology::TriangleList;
+
+		mesh.geometry.vertexCount = vertexCount;
+		mesh.geometry.indexCount = indexCount;
+
+		mesh.geometry.aabbMin = data.aabbMin;
+		mesh.geometry.aabbMax = data.aabbMax;
+
+
+		Surface surface{};
+
+		surface.firstIndex =
+			static_cast<uint32_t>(
+				indexByteOffset / sizeof(uint32_t)
+				);
+
+		surface.indexCount = indexCount;
+
+		surface.baseVertex =
+			static_cast<int32_t>(vertexBase);
+
+		mesh.geometry.surfaces.push_back(surface);
+
+
+		return staticMeshes.create(
+			std::move(result)
 		);
 	}
 
-	// ------------------------------------------
-	// 5) Surface (bind-once style)
-	// ------------------------------------------
-	Mesh::Surface ds{};
-	ds.index_count = static_cast<uint32_t>(mesh_data.indices.size());
-	ds.first_index = static_cast<uint32_t>(index_offset_bytes / sizeof(IndexT));
-	ds.base_vertex = static_cast<int32_t>(baseVertex);
 
-	// IMPORTANT: store allocs somewhere if you want to free later.
-	// e.g. ds.vertex_alloc = vtx_alloc; ds.index_alloc = index_alloc; (requires fields)
+	// -----------------------------------------------------------------------------
+	// Mesh destruction
+	// -----------------------------------------------------------------------------
 
-	//mesh_desc.lods = 1;
-	//mesh_desc.lod_offsets = { 0 };
-	mesh_desc.surfaces = { ds };
-	mesh_desc.aabbMin = mesh_data.aabb_min;
-	mesh_desc.aabbMax = mesh_data.aabb_max;
-	//mesh_desc.alloc.page = current_geometry_page;
+	void Cluster::DestroyMesh(
+		ClusterStaticMeshHandle handle)
+	{
+		if (handle.empty())
+			return;
 
-	return meshes.create(std::move(mesh_desc));
-}
-[[nodiscard]] MaterialHandle MeshManager::CreateMaterial(smvk::TextureHandle diffuse) {
-	assert(!diffuse.empty() && "Invalid handle for diffuse");
-	Material mat{};
-	mat.values.tex[0] = diffuse.index();
-	return  materials.create(std::move(mat));
-}
-smvk::TextureHandle MeshManager::GetOrCreateTexture(std::string uri, ktxTexture2& tex) {
+		StaticMesh* mesh =
+			staticMeshes.get(handle);
 
-	auto it = textureCache.find(uri);
-	if (it == textureCache.end()) {
-		//auto han = ctx_.CreateTexture(tex);
-		//textureCache[uri] = han;
-		//return han;
+		if (mesh->allocation.vertex) {
+
+			vmaVirtualFree(
+				vertexBlock_,
+				mesh->allocation.vertex
+			);
+
+			mesh->allocation.vertex = VK_NULL_HANDLE;
+		}
+
+		if (mesh->allocation.index) {
+
+			vmaVirtualFree(
+				indexBlock_,
+				mesh->allocation.index
+			);
+
+			mesh->allocation.index = VK_NULL_HANDLE;
+		}
+
+		staticMeshes.destroy(handle);
 	}
-	return it->second;
-}
 
 
-smvk::BufferHandle MeshManager::GetIndexBuffer() {
-	return indexBuffer;
-}
-std::vector<smvk::BufferHandle> MeshManager::GetVertexBuffers() {
-	return std::vector<smvk::BufferHandle>{
-		vertexPosBuffer,
-			vertexShadingBuffer,
-	};
-}
-void destroy(MeshManager* ctx, MeshHandle handle) {};
+	// -----------------------------------------------------------------------------
+	// Material
+	// -----------------------------------------------------------------------------
 
+	ClusterMaterialHandle Cluster::CreateMaterial(
+		TextureHandle diffuse)
+	{
+		assert(
+			!diffuse.empty() &&
+			"Invalid diffuse texture handle"
+		);
+
+		Material material{};
+
+		material.values.tex[0] =
+			static_cast<int>(diffuse.index());
+
+		return materials.create(
+			std::move(material)
+		);
+	}
+
+} // namespace smvk

@@ -191,7 +191,7 @@ static uint32_t buildRecursive(
 	return nodeIdx;
 }
 
-using MeshFromIndexFunc = std::function<Mesh(uint32_t meshIndex)>;
+using MeshFromIndexFunc = std::function<smvk::StaticMesh(uint32_t meshIndex)>;
 
 BvhTree treeFromScene(
 	const Scene& scene,
@@ -218,10 +218,10 @@ BvhTree treeFromScene(
 			continue;
 
 		uint32_t m = it->second;
-		Mesh mesh = meshFromMeshIndex(m);
+		smvk::StaticMesh mesh = meshFromMeshIndex(m);
 		const glm::mat4& glob = scene.globalTransform[i];
-		const glm::vec3 localMin = mesh.aabbMin;
-		const glm::vec3 localMax = mesh.aabbMax;
+		const glm::vec3 localMin = mesh.geometry.aabbMin;
+		const glm::vec3 localMax = mesh.geometry.aabbMax;
 
 		// Transform 8 corners to get correct world AABB under rotation/scale
 		glm::vec3 worldMin(+FLT_MAX), worldMax(-FLT_MAX);

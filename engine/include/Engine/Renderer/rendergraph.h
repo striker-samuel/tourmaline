@@ -114,8 +114,8 @@ namespace smvk {
 		{
 			PipelineKey key{
 				.program = program,
-				.bindingDescriptions = vertexFormat.bindingDescriptions,
-				.attributeDescriptions = vertexFormat.attributeDescriptions,
+				.bindingDescriptions = getVkVertexInputBindingDescriptions(vertexFormat),
+				.attributeDescriptions = getVkVertexAttributeDescriptions(vertexFormat),
 				.colorFormats = std::vector<VkFormat>(
 					colorFormats,
 					colorFormats + nColorAttachments),

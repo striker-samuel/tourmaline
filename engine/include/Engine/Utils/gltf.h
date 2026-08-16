@@ -1,11 +1,14 @@
 #pragma once
-#include <tiny_gltf.h>
+
 #include <filesystem>
+#include <tiny_gltf.h>
+
+#include <Engine/Scene/Scene.h>
 #include <Engine/Renderer/resource_manager.h>
 
 struct GltfToSceneImporter {
 	Scene& scene;
-	Cluster& manager_;
+	smvk::Cluster& manager_;
 	const tinygltf::Model& model;
 	std::filesystem::path gltfModelPath; // full path to .gltf/.glb on disk
 	static constexpr uint32_t kInvalidMat = 0xFFFFFFFFu;
@@ -14,7 +17,7 @@ struct GltfToSceneImporter {
 	GltfToSceneImporter
 	(
 		Scene& inScene
-		, Cluster& manager 
+		, smvk::Cluster& manager 
 		, const tinygltf::Model& inModel
 		, std::filesystem::path inGltfModelPath
 	)

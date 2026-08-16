@@ -21,7 +21,7 @@ namespace smvk {
 	class VulkanApp {
 	public:
 		Input m_input{};
-		VulkanApp(ResourceContext* ctx) : m_context(ctx) {};
+		VulkanApp();
 		virtual ~VulkanApp();
 		virtual void DrawFrame() = 0;
 		virtual void CleanUp();
@@ -34,7 +34,7 @@ namespace smvk {
 		std::unique_ptr<VulkanSwapchain> m_swapchain;
 		std::unique_ptr<RenderGraph> m_rendergraph;
 		ImGuiContext* m_imguiCtx = nullptr;
-		Holder<DescriptorPoolHandle> imgui_descriptorPool;
+		//Holder<DescriptorPoolHandle> imgui_descriptorPool;
 #pragma region ===[ App / Core State ]===
 		float delta_time_s = .0f;
 		float time_since_start_s = .0f;

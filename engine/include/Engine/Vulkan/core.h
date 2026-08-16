@@ -321,6 +321,8 @@ namespace smvk {
 		int CreateInstance();
 		bool Init();
 
+
+		// this should be gone!
 		VkInstance GetInstance();
 		VkDevice GetDevice();
 		VkPhysicalDevice GetPhysicalDevice();
@@ -328,8 +330,10 @@ namespace smvk {
 
 		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
+
 		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline);
 		//void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline);
+
 		void DestroyPipeline(VkPipeline pipeline);
 	};
 

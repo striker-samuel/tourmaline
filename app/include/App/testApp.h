@@ -17,18 +17,12 @@ std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
 };
 
-//static PCluster;
-//
 struct Level : Scene {
-	BvhTree tree = {};
-	// 
-	BvhTree static_tree = {};
-	// We should split static scene objects to another tree, or maybe flag nodes an static and skip bhv reconstruction each frame for them
-	bool tree_done = false;
-	//std::map<uint32_t, MeshHandle> m_meshForNode;
-	//Level(MeshManager* meshManager) : m_meshManagerPimpl(meshManager) {};
 	~Level() {}
-	smvk::Pool<smvk::Texture, smvk::Image> textures_;
+	smvk::Cluster* cluster;
+	BvhTree tree = {};
+	BvhTree static_tree = {};
+	bool tree_done = false;
 
 	void Upload(
 		std::filesystem::path gltf_model_path
@@ -37,16 +31,19 @@ struct Level : Scene {
 		LoadModelFromAsciiFile(model, gltf_model_path.string().c_str());
 		GltfToSceneImporter importer(
 			*this,
-			*m_meshManagerPimpl,
+			*cluster,
 			model,
 			std::move(gltf_model_path
 			)
 		);
 		importer.importNodeRecursive(/*rootNodeIdx*/0, /*parentSceneNode=*/-1, /*level=*/0);
+
+
 		// This is needed or else scene will not carry transforms effectively
 		markAsChanged(*this, 0);
 		recalculateGlobalTransforms(*this);
-		m_meshManagerPimpl->ctx_.ProcessDeferrredTasks();
+
+		cluster->ctx_.ProcessDeferrredTasks();
 	}
 };
 
@@ -120,16 +117,16 @@ private:
 		if (!Super::Initialize())
 			return false;
 
-		m_meshManagerPimpl = std::make_unique<MeshManager>(*m_context);
+		m_cluster = std::make_unique<smvk::Cluster>(*m_context);
 		m_camera.setPerspective(45.0f, float(m_swapchain->GetExtent().width) / float(m_swapchain->GetExtent().height),
 			default_near_clip, default_far_clip
 		);
 		//
 		std::filesystem::path p(gltf_meshes_paths[0]);
-		m_currentLevel.m_meshManagerPimpl = m_meshManagerPimpl.get();
+		m_currentLevel.cluster = m_cluster.get(); 
 		m_currentLevel.Upload(p);
 		m_currentLevel.static_tree = treeFromScene(m_currentLevel,
-			[&](uint32_t index) -> const Mesh& {return this->m_meshManagerPimpl->meshes.objects_[index].obj_; }
+			[&](uint32_t index) -> const smvk::StaticMesh& {return this->m_cluster->staticMeshes.objects_[index].obj_; }
 		);
 		m_currentLevel.tree_done = true;
 		m_context->ProcessDeferrredTasks();
@@ -273,17 +270,7 @@ private:
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(logicalSwapchainImage);
 		//
-		m_meshManagerPimpl->BindIndexVertexBuffers(fb.commandBuffer);
-
-		// really bad
-		//auto vertexFmt = smvk::VertexFormat{};
-		//for (auto a : Vertex::getAttributeDescriptions()) {
-		//	vertexFmt.attributeDescriptions.push_back(a);
-		//}
-		//for (auto b : Vertex::getBindingDescription()) {
-		//	vertexFmt.bindingDescriptions.push_back(b);
-		//}
-		// rework this
+		m_cluster->BindStaticMeshBuffers(fb.commandBuffer);
 
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
@@ -293,7 +280,7 @@ private:
 			.setRecordingFunc([this, fb](smvk::CommandBuffer& cmd)
 		{
 			auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
-			auto mesh_manager = m_meshManagerPimpl.get();
+			auto mesh_manager = m_cluster.get();
 
 			std::vector<int> visible;
 			if (m_currentLevel.tree_done) {
@@ -317,7 +304,7 @@ private:
 			//Push frame
 			struct alignas(16) PushConstants {
 				float model[16];
-				Material::Values mpc{};
+				smvk::Material::Values mpc{};
 				uint64_t frameUniforms;
 			};
 			uint64_t frameUniforms =
@@ -341,13 +328,13 @@ private:
 					if (it == m_currentLevel.meshForNode.end()) continue;
 
 					uint32_t meshIndex = it->second;
-					auto mesh_desc = mesh_manager->meshes.get(
-						mesh_manager->meshes.getHandle(meshIndex)
+					auto mesh_desc = mesh_manager->staticMeshes.get(
+						mesh_manager->staticMeshes.getHandle(meshIndex)
 					);
 
 					auto material_instance_index = m_currentLevel.materialForNode[visible_node];
-					auto matHandle = m_meshManagerPimpl->materials.getHandle(material_instance_index);
-					auto mat = m_meshManagerPimpl->materials.get(matHandle);
+					auto matHandle = m_cluster->materials.getHandle(material_instance_index);
+					auto mat = m_cluster->materials.get(matHandle);
 					assert(mat);
 
 					auto& model = m_currentLevel.globalTransform[visible_node];
@@ -362,13 +349,13 @@ private:
 						&pc
 					);
 
-					for (auto& draw_set : mesh_desc->surfaces) {
+					for (auto& draw_set : mesh_desc->geometry.surfaces) {
 						vkCmdDrawIndexed(
 							fb.commandBuffer,
-							draw_set.index_count,
+							draw_set.indexCount,
 							1,
-							draw_set.first_index,
-							draw_set.base_vertex,
+							draw_set.firstIndex,
+							draw_set.baseVertex,
 							0
 						);
 
@@ -401,7 +388,7 @@ private:
 private:
 	AppResources m_resources{};
 	Level m_currentLevel;
-	std::unique_ptr<Cluster> m_meshManagerPimpl;
+	std::unique_ptr<smvk::Cluster> m_cluster;
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target
