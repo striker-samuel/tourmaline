@@ -333,8 +333,8 @@ uint32_t GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
 	).index();
 
 }
-Mesh::DataUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, const tinygltf::Primitive& primitive) {
-	Mesh::DataUpload data;
+smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, const tinygltf::Primitive& primitive) {
+	smvk::StaticMeshUpload data;
 	// AABB. for culling	
 	{
 		auto it = primitive.attributes.find("POSITION");
@@ -360,8 +360,8 @@ Mesh::DataUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, cons
 			glm::vec3 mn = glm::min(c0, c1);
 			glm::vec3 mx = glm::max(c0, c1);
 
-			data.aabb_min = mn;
-			data.aabb_max = mx;
+			data.aabbMin = mn;
+			data.aabbMax = mx;
 
 
 		}
@@ -374,11 +374,12 @@ Mesh::DataUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, cons
 
 	}
 
+
 	// Extract vertices
 	auto& posAcc = model.accessors[primitive.attributes.at("POSITION")];
 	data.vertices.reserve(posAcc.count);
 	for (size_t i = 0; i < posAcc.count; ++i) {
-		StaticVertex v{};
+		smvk::StaticVertex v{};
 		v.pos = readVec3ForientationFix(model, posAcc, i);
 		v.color = { 1.0f, 1.0f, 1.0f };
 		v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
@@ -387,6 +388,7 @@ Mesh::DataUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, cons
 		data.vertices.push_back(v);
 	}
 
+
 	if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end()) {
 		auto& uvAcc = model.accessors[it->second];
 		for (size_t i = 0; i < uvAcc.count && i < data.vertices.size(); ++i) {
@@ -394,6 +396,7 @@ Mesh::DataUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, cons
 			data.vertices[i].texCoord = uv; // flip V if your shader expects it: uv.y = 1.0f - uv.y;
 		}
 	}
+
 
 	if (auto it = primitive.attributes.find("TANGENT"); it != primitive.attributes.end()) {
 		auto& tangentAcc = model.accessors[it->second];
@@ -417,6 +420,7 @@ Mesh::DataUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, cons
 		}
 	}
 
+
 	if (primitive.indices >= 0) {
 		auto& idxAcc = model.accessors[primitive.indices];
 		for (size_t i = 0; i < idxAcc.count; ++i) {
@@ -424,12 +428,14 @@ Mesh::DataUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, cons
 		}
 	}
 
+
 	return data;
 
 }
+
 uint32_t GltfToSceneImporter::getOrCreateMesh(tinygltf::Primitive primitive) {
 	auto mdata = SurfaceDataFromGltfPrimitive(model, primitive);
-	return manager_.UploadVertexData(mdata).index();
+	return manager_.UploadStaticMesh(mdata).index();
 }
 void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentSceneNode, int level) {
 	const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];
