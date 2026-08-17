@@ -123,6 +123,7 @@ namespace smvk {
 			ImplObjectType obj_ = {};
 			uint32_t gen_ = 1;
 			uint32_t nextFree_ = kListEndSentinel;
+			bool occupied_ = false;
 		};
 		uint32_t freeListHead_ = kListEndSentinel;
 		uint32_t numObjects_ = 0;
@@ -140,6 +141,7 @@ namespace smvk {
 				idx = (uint32_t)objects_.size();
 				objects_.emplace_back(obj);
 			}
+			objects_[idx].occupied_ = true;
 			numObjects_++;
 			return Handle<ObjectType>(idx, objects_[idx].gen_);
 		}
@@ -153,6 +155,7 @@ namespace smvk {
 			objects_[index].obj_ = ImplObjectType{};
 			objects_[index].gen_++;
 			objects_[index].nextFree_ = freeListHead_;
+			objects_[index].occupied_ = false;
 			freeListHead_ = index;
 			numObjects_--;
 		}
@@ -203,19 +206,24 @@ namespace smvk {
 		}
 
 		template<typename Func>
-		void forEach(Func&& func) {
+		void forEach(Func&& func)
+		{
 			for (auto& entry : objects_) {
-				if (entry.nextFree_ == kListEndSentinel) { // only active
+				if (entry.occupied_) {
 					func(entry.obj_);
 				}
 			}
 		}
 
 		template<typename Func>
-		void forEachHandle(Func&& func) {
-			for (int i = 0; i < objects_.size(); i++) {
-				if (objects_[i].nextFree_ == kListEndSentinel) { // only active
-					func(getHandle(i));
+		void forEachHandle(Func&& func)
+		{
+			for (uint32_t i = 0; i < objects_.size(); ++i) {
+				if (objects_[i].occupied_) {
+					func(Handle<ObjectType>(
+						i,
+						objects_[i].gen_
+					));
 				}
 			}
 		}
