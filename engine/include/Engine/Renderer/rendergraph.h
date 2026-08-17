@@ -92,7 +92,7 @@ namespace smvk {
 
 	class PipelineCache {
 	public:
-		explicit PipelineCache(ResourceContext* ctx)
+		explicit PipelineCache(VulkanResourceManager* ctx)
 			: ctx_(ctx)
 		{}
 
@@ -400,7 +400,7 @@ namespace smvk {
 		}
 
 	private:
-		ResourceContext* ctx_ = nullptr;
+		VulkanResourceManager* ctx_ = nullptr;
 
 		std::unordered_map<
 			PipelineKey,
@@ -588,7 +588,7 @@ namespace smvk {
 	};
 
 	struct RenderGraph final {
-		explicit RenderGraph(ResourceContext& ctx) : ctx_(ctx) {
+		explicit RenderGraph(VulkanResourceManager& ctx) : ctx_(ctx) {
 			pipelineCachePimpl = std::make_unique<PipelineCache>(&ctx_);
 		};
 		// could be called NewFrame really
@@ -738,7 +738,7 @@ namespace smvk {
 		//
 		std::vector<RenderPass> m_passes;
 		std::unique_ptr<PipelineCache> pipelineCachePimpl;
-		smvk::ResourceContext& ctx_;
+		smvk::VulkanResourceManager& ctx_;
 
 	};
 

@@ -861,7 +861,7 @@ std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanC
 }
 
 // ResourceContext
-int smvk::ResourceContext::Initialize() {
+int smvk::VulkanResourceManager::Initialize() {
 	VmaAllocatorCreateInfo allocatorCreateInfo = {};
 	allocatorCreateInfo.physicalDevice = physicalDevice_;
 	allocatorCreateInfo.device = device_;
@@ -923,8 +923,8 @@ int smvk::ResourceContext::Initialize() {
 
 	return 0; // no error
 }
-smvk::ResourceContext::ResourceContext(VulkanCore& core) :core_(core) { Initialize(); }
-smvk::ResourceContext::~ResourceContext() {
+smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore& core) :core_(core) { Initialize(); }
+smvk::VulkanResourceManager::~VulkanResourceManager() {
 	VK_CHECK(vkDeviceWaitIdle(device_));
 	delete m_submitter;
 	m_submitter = nullptr;
@@ -979,7 +979,7 @@ smvk::ResourceContext::~ResourceContext() {
 	//descriptorPools_.clear();
 	memset(defaultDescriptorSets_, 0, sizeof(defaultDescriptorSets_));
 };
-void smvk::ResourceContext::UploadDataToBuffer(
+void smvk::VulkanResourceManager::UploadDataToBuffer(
 	BufferHandle buffer,
 	const void* data,
 	size_t dataSize,
@@ -1048,7 +1048,7 @@ void smvk::ResourceContext::UploadDataToBuffer(
 		, han
 	);
 }
-void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset, size_t dest_offset)
+void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset, size_t dest_offset)
 {
 
 	VkImageCreateInfo vkImageCreateInfo{};
@@ -1206,7 +1206,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	);
 
 }
-[[nodiscard]] smvk::BufferHandle smvk::ResourceContext::CreateStagingBuffer(VkDeviceSize size, const char* debugName)
+[[nodiscard]] smvk::BufferHandle smvk::VulkanResourceManager::CreateStagingBuffer(VkDeviceSize size, const char* debugName)
 {
 	smvk::Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -1253,7 +1253,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	//return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
 	return buffers_.create(std::move(desc));
 }
-[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::ResourceContext::CreateImage(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
+[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::VulkanResourceManager::CreateImage(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
 {
 	Image img{};
 
@@ -1313,7 +1313,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	return smvk::Holder<ImageHandle>(this, images_.create(std::move(img)));
 
 }
-[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::ResourceContext::CreateTexture(ktxTexture2& texture, const char* debugName) {
+[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ktxTexture2& texture, const char* debugName) {
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
 		// Hardcoded for now, as in your original code.
@@ -1662,7 +1662,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	return { this, 	textures_.create(std::move(image_obj)) };
 
 }
-[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::ResourceContext::CreateBuffer(BufferCreateInfo bufferCreateInfo, const char* debugName) {
+[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::VulkanResourceManager::CreateBuffer(BufferCreateInfo bufferCreateInfo, const char* debugName) {
 	Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	ci.size = bufferCreateInfo.size;
@@ -1705,7 +1705,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 #endif
 	return { this, buffers_.create(std::move(desc)) };
 }
-[[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::ResourceContext::CreateShaderModule(std::vector<char> code, const char* debugName) {
+[[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::VulkanResourceManager::CreateShaderModule(std::vector<char> code, const char* debugName) {
 	VkShaderModule shader;
 	CreateShaderModuleIn(
 		std::move(code),
@@ -1726,7 +1726,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 #endif
 	return { this, shaderModules_.create(std::move(shader)) };
 }
-[[nodiscard]] smvk::Holder<smvk::DescriptorPoolHandle> smvk::ResourceContext::CreateDescriptorPool(const char* debugName) {
+[[nodiscard]] smvk::Holder<smvk::DescriptorPoolHandle> smvk::VulkanResourceManager::CreateDescriptorPool(const char* debugName) {
 
 	std::array<VkDescriptorPoolSize, 3> poolSizes = {
 	  {
@@ -1761,7 +1761,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	return { this, descriptorPools_.create(std::move(dpool)) };
 }
 
-void* smvk::ResourceContext::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
+void* smvk::VulkanResourceManager::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
 	void* mapped = nullptr;
 	assert(!handle.empty());
 	auto buf = this->buffers_.get(handle);
@@ -1769,7 +1769,7 @@ void* smvk::ResourceContext::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
 	VK_CHECK(vmaMapMemory(m_allocator, buf->vma_alloc, &mapped));
 	return mapped;
 }
-void smvk::ResourceContext::UnmapBuffer(smvk::Handle<smvk::Buffer> handle) {
+void smvk::VulkanResourceManager::UnmapBuffer(smvk::Handle<smvk::Buffer> handle) {
 	assert(!handle.empty());
 	auto buf = this->buffers_.get(handle);
 	assert(buf != nullptr);
@@ -1778,7 +1778,7 @@ void smvk::ResourceContext::UnmapBuffer(smvk::Handle<smvk::Buffer> handle) {
 	// vmaFlushAllocation(m_allocator, staging->vma_alloc, 0, stagingBufferSize);
 	vmaUnmapMemory(m_allocator, buf->vma_alloc);
 }
-void smvk::ResourceContext::AddDeferredTask(std::packaged_task<void()>&& task, smvk::CommandSubmitHandle handle)
+void smvk::VulkanResourceManager::AddDeferredTask(std::packaged_task<void()>&& task, smvk::CommandSubmitHandle handle)
 {
 	if (handle.gen_ == 0) //not valid acquire 
 	{
@@ -1786,7 +1786,7 @@ void smvk::ResourceContext::AddDeferredTask(std::packaged_task<void()>&& task, s
 	}
 	m_deferredTasks.emplace_back(std::move(task), handle);
 }
-void smvk::ResourceContext::ProcessDeferrredTasks()
+void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 {
 	std::vector<DeferredTask>::iterator it = m_deferredTasks.begin();
 	while (it != m_deferredTasks.end() && m_submitter->isReady(it->handle_)) {
@@ -1794,7 +1794,7 @@ void smvk::ResourceContext::ProcessDeferrredTasks()
 	}
 	m_deferredTasks.erase(m_deferredTasks.begin(), it);
 }
-void smvk::ResourceContext::UpdateBindings(uint32_t frameIndex) {
+void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex) {
 
 	std::vector<VkDescriptorImageInfo> imageInfos;
 	std::vector<VkDescriptorImageInfo> samplerInfos;
@@ -1833,7 +1833,7 @@ void smvk::ResourceContext::UpdateBindings(uint32_t frameIndex) {
 	vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
 }
 // 
-void smvk::destroy(smvk::ResourceContext* ctx, smvk::BufferHandle handle) {
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BufferHandle handle) {
 	if (handle.empty()) { return; };
 	smvk::Buffer db = *ctx->buffers_.get(handle);
 	//if mapped, unmap first as vma requires.
@@ -1843,13 +1843,13 @@ void smvk::destroy(smvk::ResourceContext* ctx, smvk::BufferHandle handle) {
 }
 
 // remove when updating to 1.4
-void smvk::destroy(smvk::ResourceContext* ctx, smvk::ShaderModuleHandle handle) {
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ShaderModuleHandle handle) {
 	if (handle.empty()) { return; };
 	auto sm = ctx->shaderModules_.get(handle);
 	vkDestroyShaderModule(device_, *sm, NULL);
 	ctx->shaderModules_.destroy(handle);
 }
-void smvk::destroy(smvk::ResourceContext* ctx, smvk::ImageHandle handle) {
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageHandle handle) {
 	if (handle.empty()) { return; };
 	auto img = ctx->images_.get(handle);
 	if (img->owns_views) {
@@ -1871,7 +1871,7 @@ void smvk::destroy(smvk::ResourceContext* ctx, smvk::ImageHandle handle) {
 	ctx->images_.destroy(handle);
 }
 
-void smvk::destroy(smvk::ResourceContext* ctx, smvk::TextureHandle handle) {
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::TextureHandle handle) {
 	if (handle.empty()) { return; };
 	auto tex = ctx->textures_.get(handle);
 	if (tex->owns_views) {
@@ -1893,7 +1893,7 @@ void smvk::destroy(smvk::ResourceContext* ctx, smvk::TextureHandle handle) {
 	ctx->textures_.destroy(handle);
 }
 
-void smvk::destroy(smvk::ResourceContext* ctx, smvk::SamplerHandle handle) {
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::SamplerHandle handle) {
 	if (handle.empty()) { return; };
 	auto s = ctx->samplers_.get(handle);
 	if (*s != VK_NULL_HANDLE) {
@@ -1902,7 +1902,7 @@ void smvk::destroy(smvk::ResourceContext* ctx, smvk::SamplerHandle handle) {
 	ctx->samplers_.destroy(handle);
 }
 
-void smvk::destroy(smvk::ResourceContext* ctx, smvk::DescriptorPoolHandle handle) {
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::DescriptorPoolHandle handle) {
 	if (handle.empty()) { return; };
 	auto dp = ctx->descriptorPools_.get(handle);
 	if (*dp != VK_NULL_HANDLE) {
@@ -2233,7 +2233,7 @@ inline void smvk::Submitter::reset(CommandSubmitHandle handle) {
 }
 
 // VulkanSwapchain
-smvk::VulkanSwapchain::VulkanSwapchain(ResourceContext& context, GLFWwindow* window/*, uint32_t framesInFlight, uint32_t desiredImageCount*/)
+smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context, GLFWwindow* window/*, uint32_t framesInFlight, uint32_t desiredImageCount*/)
 	: ctx_(context)
 	, window_(window)
 {

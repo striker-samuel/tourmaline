@@ -6,14 +6,8 @@ static constexpr size_t IndexBufferSize = 512ull * 1024ull * 1024ull;
 
 namespace smvk {
 
-	Cluster::Cluster(ResourceContext& ctx)
-		: ctx_(ctx) {
-		CreateGeometryBuffers();
-	}
-	Cluster::~Cluster()
-	{
-		DestroyGeometryBuffers();
-	}
+	Cluster::Cluster(VulkanResourceManager& ctx) : ctx_(ctx) { AllocateGeometryBuffers(); }
+	Cluster::~Cluster() { DestroyGeometryBuffers(); }
 
 	void Cluster::BindStaticMeshBuffers(VkCommandBuffer cmd) const
 	{
@@ -46,7 +40,7 @@ namespace smvk {
 	// Buffer initialization
 	// -----------------------------------------------------------------------------
 
-	void Cluster::CreateGeometryBuffers()
+	void Cluster::AllocateGeometryBuffers()
 	{
 		vertexPosBuffer_ = ctx_.CreateBuffer({
 			VertexBufferSize,

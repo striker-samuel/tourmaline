@@ -31,7 +31,7 @@ namespace smvk {
 		void UpdateDeltaTime();
 	protected:
 		std::unique_ptr<VulkanCore> core_;
-		std::unique_ptr<ResourceContext> m_context;
+		std::unique_ptr<VulkanResourceManager> m_context;
 		std::unique_ptr<VulkanSwapchain> m_swapchain;
 		std::unique_ptr<RenderGraph> m_rendergraph;
 		ImGuiContext* m_imguiCtx = nullptr;

@@ -9,76 +9,60 @@
 
 namespace smvk {
 
-    using ClusterStaticMeshHandle = smvk::Handle<StaticMesh>;
-    using ClusterMaterialHandle = smvk::Handle<struct Material>;
+	//struct Cluster;
+	//template<typename HandleType>
+	//struct AssetRef {
+	//	std::string uri;
+	//	HandleType handle{};
+	//	Cluster* cluster = nullptr;
+	//};
+
+	using ClusterStaticMeshHandle = smvk::Handle<StaticMesh>;
+	using ClusterMaterialHandle = smvk::Handle<struct Material>;
+
+	struct Cluster {
+
+		explicit Cluster(VulkanResourceManager& ctx);
+		~Cluster();
+		Cluster(const Cluster&) = delete;
+		Cluster& operator=(const Cluster&) = delete;
+
+		VulkanResourceManager& ctx_;
+
+		[[nodiscard]] ClusterStaticMeshHandle UploadStaticMesh(const StaticMeshUpload& data);
+		[[nodiscard]] ClusterMaterialHandle CreateMaterial(TextureHandle diffuse);
+		void BindStaticMeshBuffers(VkCommandBuffer cmd) const;
+
+		void AllocateGeometryBuffers();
+		void DestroyGeometryBuffers();
 
 
-    class Cluster {
-    public:
+		void DestroyMesh(ClusterStaticMeshHandle handle);
+		void DestroyMaterial(ClusterStaticMeshHandle handle);
 
-        ResourceContext& ctx_;
-        explicit Cluster(ResourceContext& ctx);
-        ~Cluster();
+		//private:
+			// -------------------------------------------------------------------------
+			// Physical GPU buffers
+			// -------------------------------------------------------------------------
+		Holder<BufferHandle> vertexPosBuffer_{};
+		Holder<BufferHandle> vertexShadingBuffer_{};
+		Holder<BufferHandle> indexBuffer_{};
 
-        Cluster(const Cluster&) = delete;
-        Cluster& operator=(const Cluster&) = delete;
+		// -------------------------------------------------------------------------
+		// Virtual allocations
+		// -------------------------------------------------------------------------
+		VmaVirtualBlock vertexBlock_ = VK_NULL_HANDLE;
+		VmaVirtualBlock indexBlock_ = VK_NULL_HANDLE;
+		// -------------------------------------------------------------------------
+		// Resources
+		// -------------------------------------------------------------------------
 
+		Pool<StaticMesh, StaticMesh> staticMeshes;
+		Pool<Material, Material> materials;
 
-        // -------------------------------------------------------------------------
-        // Meshes
-        // -------------------------------------------------------------------------
+		//std::vector<Holder<TextureHandle>> textures;
 
-        [[nodiscard]]
-        ClusterStaticMeshHandle UploadStaticMesh(
-            const StaticMeshUpload& data
-        );
+	};
 
-        void DestroyMesh(ClusterStaticMeshHandle handle);
-
-
-        // -------------------------------------------------------------------------
-        // Materials
-        // -------------------------------------------------------------------------
-
-        [[nodiscard]]
-        ClusterMaterialHandle CreateMaterial(TextureHandle diffuse);
-
-        void BindStaticMeshBuffers(VkCommandBuffer cmd) const;
-
-  
-    //private:
-        void CreateGeometryBuffers();
-        void DestroyGeometryBuffers();
- 
-    //private:
-        // -------------------------------------------------------------------------
-        // Physical GPU buffers
-        // -------------------------------------------------------------------------
-        Holder<BufferHandle> vertexPosBuffer_{};
-        Holder<BufferHandle> vertexShadingBuffer_{};
-        Holder<BufferHandle> indexBuffer_{};
-
-        // -------------------------------------------------------------------------
-        // Virtual allocations
-        // -------------------------------------------------------------------------
-        VmaVirtualBlock vertexBlock_ = VK_NULL_HANDLE;
-        VmaVirtualBlock indexBlock_ = VK_NULL_HANDLE;
-        // -------------------------------------------------------------------------
-        // Resources
-        // -------------------------------------------------------------------------
-
-        Pool<StaticMesh, StaticMesh> staticMeshes;
-        Pool<Material, Material> materials;
-
-        //std::vector<Holder<TextureHandle>> textures;
-
-    };
-
-    //template<typename HandleType>
-    //struct AssetRef {
-    //    std::string uri;
-    //    HandleType handle{};
-    //    Cluster* cluster = nullptr;
-    //};
 
 } // namespace smvk
