@@ -61,9 +61,6 @@ inline const char* vkResultToString(VkResult result);
     } while (0)
 
 
-
-
-
 namespace smvk {
 
 	enum Bindings {
@@ -175,6 +172,7 @@ namespace smvk {
 		VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
 		bool owns_views = true;
 		bool is_swapchain = false;
+		//const char* debugName = nullptr;
 
 		// This should be reworked out really
 		ImageCreateInfo getImageCreateInfo() const {
@@ -201,14 +199,14 @@ namespace smvk {
 		}
 	};
 
+	// will be removed when updating to vk 1.4
+	using ShaderModuleHandle = Handle<struct ShaderModule>;
 
-	using ShaderModuleHandle = Handle<struct ShaderModule>; // will be removed when updating to vk 1.4
 	using ImageHandle = Handle<struct Image>;
 	using TextureHandle = Handle<struct Texture>;
 	using SamplerHandle = Handle<struct Sampler>;
 	using BufferHandle = Handle<struct Buffer>;
 	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
-	using DescriptorSetHandle = Handle<struct DescriptorSet>;
 
 	struct Shader {
 		ShaderModuleHandle vkShaderModule; // to be refactored out when moving to 1.4
@@ -409,7 +407,6 @@ namespace smvk {
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
 		void ProcessDeferrredTasks();
 		//
-
 		BufferHandle CreateStagingBuffer(VkDeviceSize size, const char* debugName = "staging"); // Right now only used for image upload, every other data upload is done by mapping
 		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr);
 		//Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr); // specialization for textures instead of .isTexture property
@@ -424,13 +421,21 @@ namespace smvk {
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		void UploadDataToImage2D(Image img, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 
+		// This needs a profound rework
 		void UpdateBindings(uint32_t frameIndex = 0);
 
-		//private:
+		// VulkanImpl
 		VulkanCore& core_;
+		VmaAllocator m_allocator;
 		Submitter* m_submitter = nullptr;
 		std::vector<DeferredTask> m_deferredTasks;
 
+		//  Binding Model
+		VkDescriptorSetLayout defaultSetLayout;
+		VkPipelineLayout defaultPipeLayout;
+		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT];
+
+		// Resources
 		Pool<Image, Image> images_; // VkSwapchainImages are not represented with Image type and just owned by the swapchain
 		Pool<Texture, Image> textures_; // specializaed textures away from images
 		Pool<Buffer, Buffer> buffers_;
@@ -439,15 +444,11 @@ namespace smvk {
 		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_; // Maybe we should do away with this as we only manage one pool, and one for Imgui
 		Pool<ShaderModule, VkShaderModule> shaderModules_; // this should be removed when moving to vk1.4
 
-		VmaAllocator m_allocator;
-		//TextureHandle m_nilTexture{}; // needed to avoid sparse list in bindless
-		VkSampler m_defaultSampler{}; // This really should be a SamplersPool implementation the same way nprocore2 handles this
-
-		// Binding model is just hardcoded.
-		VkDescriptorSetLayout defaultSetLayout;
-		VkPipelineLayout defaultPipeLayout;
+		// DEFAULTS
+		//TextureHandle m_nilTexture{};
+		VkSampler m_defaultSampler{};
 		Holder<DescriptorPoolHandle> defaultDescriptorPool;
-		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT];
+
 	};
 
 	void destroy(ResourceContext* ctx, ImageHandle handle);
@@ -456,8 +457,6 @@ namespace smvk {
 	void destroy(ResourceContext* ctx, SamplerHandle handle);
 
 	void destroy(ResourceContext* ctx, DescriptorPoolHandle handle);
-	void destroy(ResourceContext* ctx, DescriptorSetHandle handle);
-
 	void destroy(ResourceContext* ctx, ShaderModuleHandle handle); // will be removed in 1.4
 
 };

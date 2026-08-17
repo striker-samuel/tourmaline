@@ -19,6 +19,11 @@ static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
 
+VkInstance smvk::VulkanCore::GetInstance() { return instance_; }
+VkDevice smvk::VulkanCore::GetDevice() { return device_; }
+VkPhysicalDevice smvk::VulkanCore::GetPhysicalDevice() { return physicalDevice_; }
+VkQueue smvk::VulkanCore::GetGraphicsQueue() { return graphicsQueue_; }
+
 struct SwapChainSupportDetails {
 	VkSurfaceCapabilitiesKHR capabilities{};
 	std::vector<VkSurfaceFormatKHR> formats;
@@ -750,23 +755,6 @@ bool smvk::VulkanCore::Init() {
 	return true;
 
 }
-VkInstance smvk::VulkanCore::GetInstance()
-{
-	return instance_;
-}
-VkDevice smvk::VulkanCore::GetDevice()
-{
-	return device_;
-}
-VkPhysicalDevice smvk::VulkanCore::GetPhysicalDevice()
-{
-	return physicalDevice_;
-}
-VkQueue smvk::VulkanCore::GetGraphicsQueue()
-{
-	return graphicsQueue_;
-}
-;
 void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out) {
 	VkSemaphoreTypeCreateInfo semaphoreTypeInfo{};
 	semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
@@ -943,6 +931,7 @@ smvk::ResourceContext::~ResourceContext() {
 
 	std::cout << "[ResourceContext::~ResourceContext] Leaking objects:\n";
 
+#ifndef N_DEBUG
 	shaderModules_.forEachHandle([this](ShaderModuleHandle handle) {
 		auto sm = shaderModules_.get(handle);
 		std::cout << "  [LEAK] ShaderModule: handle index=" << handle.index()
@@ -960,9 +949,12 @@ smvk::ResourceContext::~ResourceContext() {
 			<< ", gen=" << handle.gen() << ", sampler=" << *s << "\n";
 	});
 	descriptorPools_.forEachHandle([this](DescriptorPoolHandle handle) {
-		auto dp = descriptorPools_.get(handle);
-		std::cout << "  [LEAK] DescriptorPool: handle index=" << handle.index()
-			<< ", gen=" << handle.gen() << ", pool=" << *dp << "\n";
+		if (handle != defaultDescriptorPool)
+		{
+			auto dp = descriptorPools_.get(handle);
+			std::cout << "  [LEAK] DescriptorPool: handle index=" << handle.index()
+				<< ", gen=" << handle.gen() << ", pool=" << *dp << "\n";
+		}
 	});
 	images_.forEachHandle([this](ImageHandle handle) {
 		auto img = images_.get(handle);
@@ -977,13 +969,14 @@ smvk::ResourceContext::~ResourceContext() {
 			<< ", gen=" << handle.gen() << ", image=" << tex->vk_image
 			<< ", allocation=" << tex->vma_alloc << "\n";
 	});
+#endif
 
-	images_.clear();
-	textures_.clear();
-	buffers_.clear();
-	shaderModules_.clear();
-	samplers_.clear();
-	descriptorPools_.clear();
+	//images_.clear();
+	//textures_.clear();
+	//buffers_.clear();
+	//shaderModules_.clear();
+	//samplers_.clear();
+	//descriptorPools_.clear();
 	memset(defaultDescriptorSets_, 0, sizeof(defaultDescriptorSets_));
 };
 void smvk::ResourceContext::UploadDataToBuffer(
@@ -1260,7 +1253,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	//return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
 	return buffers_.create(std::move(desc));
 }
- [[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::ResourceContext::CreateImage(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
+[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::ResourceContext::CreateImage(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
 {
 	Image img{};
 
@@ -1669,7 +1662,7 @@ void smvk::ResourceContext::UploadDataToImage2D(Image image, const void* data, V
 	return { this, 	textures_.create(std::move(image_obj)) };
 
 }
-[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::ResourceContext::CreateBuffer(BufferCreateInfo bufferCreateInfo,const char* debugName) {
+[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::ResourceContext::CreateBuffer(BufferCreateInfo bufferCreateInfo, const char* debugName) {
 	Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	ci.size = bufferCreateInfo.size;
@@ -1803,7 +1796,7 @@ void smvk::ResourceContext::ProcessDeferrredTasks()
 }
 void smvk::ResourceContext::UpdateBindings(uint32_t frameIndex) {
 
- 	std::vector<VkDescriptorImageInfo> imageInfos;
+	std::vector<VkDescriptorImageInfo> imageInfos;
 	std::vector<VkDescriptorImageInfo> samplerInfos;
 	VkDescriptorImageInfo si{};
 	si.sampler = m_defaultSampler;
@@ -1908,10 +1901,6 @@ void smvk::destroy(smvk::ResourceContext* ctx, smvk::SamplerHandle handle) {
 	}
 	ctx->samplers_.destroy(handle);
 }
-
-// Descriptor sets are implicitly freed when their pool is destroyed;
-// there is no individual VkDescriptorSet destruction call.
-void smvk::destroy(smvk::ResourceContext* ctx, smvk::DescriptorSetHandle handle) {}
 
 void smvk::destroy(smvk::ResourceContext* ctx, smvk::DescriptorPoolHandle handle) {
 	if (handle.empty()) { return; };
@@ -2401,7 +2390,7 @@ void smvk::VulkanSwapchain::CreateImageViews() {
 void smvk::VulkanSwapchain::CreateDepthResources() {
 	assert(vk_depthFormat_ != VK_FORMAT_UNDEFINED && "core depthFormat not set. failed to create swapchain depth Image");
 	depthImage_.release(); // this triggers in time destruction, maybe adding it to deferred deletion its better?
-	depthImage_= ctx_.CreateImage(
+	depthImage_ = ctx_.CreateImage(
 		ImageCreateInfo{
 			.vk_extent = {extent_.width, extent_.height, 1 },
 			.vk_format = vk_depthFormat_,
@@ -2574,7 +2563,7 @@ smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	// We are suing grapgics and present capable queue. No need to transfer
 	barrierToColorAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrierToColorAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	
+
 	barrierToColorAttachment.image = images_[imageIndex];
 	barrierToColorAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	barrierToColorAttachment.subresourceRange.baseMipLevel = 0;
@@ -2621,7 +2610,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 		VK_ACCESS_2_NONE
 		//ctx_.core_.indices.graphicsFamily.value(), //nasty
 		//ctx_.core_.indices.presentFamily.value()
-		);
+	);
 
 	// 
 	if (vkEndCommandBuffer(fb.commandBuffer) != VK_SUCCESS) {

@@ -1,18 +1,15 @@
-#include <Engine/Renderer/resource_manager.h>
+#include <Engine/Renderer/cluster.h>
 
-// vkDeviceSz
+// VkDeviceSize hould be equivalent
 static constexpr size_t VertexBufferSize = 512ull * 1024ull * 1024ull;
 static constexpr size_t IndexBufferSize = 512ull * 1024ull * 1024ull;
 
 namespace smvk {
 
 	Cluster::Cluster(ResourceContext& ctx)
-		: ctx_(ctx)
-	{
+		: ctx_(ctx) {
 		CreateGeometryBuffers();
 	}
-
-
 	Cluster::~Cluster()
 	{
 		DestroyGeometryBuffers();

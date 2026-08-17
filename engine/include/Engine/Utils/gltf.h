@@ -4,12 +4,13 @@
 #include <tiny_gltf.h>
 
 #include <Engine/Scene/Scene.h>
-#include <Engine/Renderer/resource_manager.h>
+#include <Engine/Renderer/cluster.h>
 
 struct GltfToSceneImporter {
 	Scene& scene;
 	smvk::Cluster& manager_;
-	const tinygltf::Model& model;
+
+	const tinygltf::Model& model; 
 	std::filesystem::path gltfModelPath; // full path to .gltf/.glb on disk
 	static constexpr uint32_t kInvalidMat = 0xFFFFFFFFu;
 	std::vector<uint32_t> materialCache;

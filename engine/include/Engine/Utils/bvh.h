@@ -10,9 +10,7 @@
 #include <Engine/Scene/scene.h>
 #include <Engine/Vulkan/core.h>
 
-// Dont like this. jsut used for bounds.
-// maybe a fucntiopmn arg works better
-#include <Engine/Renderer/resource_manager.h>
+#include <Engine/Renderer/cluster.h>
 
 
 static inline glm::vec3 minVec(const glm::vec3& a, const glm::vec3& b) {

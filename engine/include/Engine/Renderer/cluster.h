@@ -70,6 +70,8 @@ namespace smvk {
         Pool<StaticMesh, StaticMesh> staticMeshes;
         Pool<Material, Material> materials;
 
+        //std::vector<Holder<TextureHandle>> textures;
+
     };
 
     //template<typename HandleType>

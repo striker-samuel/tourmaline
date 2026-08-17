@@ -120,10 +120,7 @@ bool smvk::VulkanApp::Run() {
 
 void smvk::VulkanApp::CleanUp()
 {
-	m_rendergraph.reset();
-	m_swapchain.reset();
-	m_context.reset();
-	core_.reset();
+	vkDeviceWaitIdle(core_->GetDevice());
 	if (window != nullptr) {
 		glfwDestroyWindow(window);
 		window = nullptr;

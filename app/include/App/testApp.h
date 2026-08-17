@@ -1,13 +1,12 @@
 #pragma once
 #include <Engine/App/app.h>
 
-#include <Engine/Renderer/resource_manager.h>
 #include <Engine/Renderer/rendergraph.h>
 
 #include <Engine/Utils/bvh.h>
-#include <Engine/Utils/gltf.h> 
 #include <Engine/Camera/camera.h> 
 
+#include <Engine/App/level.h>
 #include <Engine/platform.h>
 
 // Constants //
@@ -15,36 +14,6 @@ static constexpr float default_near_clip = 0.01f;
 static constexpr float default_far_clip = 50.0f;
 std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
-};
-
-struct Level : Scene {
-	~Level() {}
-	smvk::Cluster* cluster;
-	BvhTree tree = {};
-	BvhTree static_tree = {};
-	bool tree_done = false;
-
-	void Upload(
-		std::filesystem::path gltf_model_path
-	) {
-		tinygltf::Model model;
-		LoadModelFromAsciiFile(model, gltf_model_path.string().c_str());
-		GltfToSceneImporter importer(
-			*this,
-			*cluster,
-			model,
-			std::move(gltf_model_path
-			)
-		);
-		importer.importNodeRecursive(/*rootNodeIdx*/0, /*parentSceneNode=*/-1, /*level=*/0);
-
-
-		// This is needed or else scene will not carry transforms effectively
-		markAsChanged(*this, 0);
-		recalculateGlobalTransforms(*this);
-
-		cluster->ctx_.ProcessDeferrredTasks();
-	}
 };
 
 
@@ -86,6 +55,8 @@ static_assert(sizeof(FrameUniforms) % 16 == 0);
 // Resources
 struct AppResources {
 	smvk::Holder<smvk::BufferHandle> frameUniforms;
+	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
+	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
 	smvk::ShaderProgram mainProgram;
 };
 
@@ -142,13 +113,16 @@ private:
 		// Main ShaderProgram
 		auto vertCode = readFile("content/shaders/default.vert.hlsl.spv");
 		auto fragCode = readFile("content/shaders/default.frag.hlsl.spv");
+		m_resources.vertShader = m_context->CreateShaderModule(vertCode, "vert");
+		m_resources.fragShader = m_context->CreateShaderModule(fragCode, "frag");
+
 		auto vert = smvk::Shader{
-			.vkShaderModule = m_context->CreateShaderModule(vertCode).release(),
+			.vkShaderModule = m_resources.vertShader,
 			.entryPoint = "mainVS",
 			.stage = VK_SHADER_STAGE_VERTEX_BIT
 		};
 		auto frag = smvk::Shader{
-			.vkShaderModule = m_context->CreateShaderModule(fragCode).release(),
+			.vkShaderModule = m_resources.fragShader,
 			.entryPoint = "mainPS",
 			.stage = VK_SHADER_STAGE_FRAGMENT_BIT
 		};
@@ -387,8 +361,8 @@ private:
 
 private:
 	AppResources m_resources{};
-	Level m_currentLevel;
 	std::unique_ptr<smvk::Cluster> m_cluster;
+	Level m_currentLevel;
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target
