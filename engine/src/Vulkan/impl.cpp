@@ -507,65 +507,6 @@ static VkDescriptorSetLayoutBinding getDSLBinding(uint32_t binding,
 	};
 }
 
-void smvk::CreateDefaultDescriptorSetLayout(VkDescriptorSetLayout& dsl) {
-
-	VkShaderStageFlags stageFlags =
-		VK_SHADER_STAGE_VERTEX_BIT
-		| VK_SHADER_STAGE_FRAGMENT_BIT
-		| VK_SHADER_STAGE_COMPUTE_BIT;
-
-	const VkDescriptorSetLayoutBinding bindings[kBinding_NumBindings] = {
-		getDSLBinding(kBinding_Textures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
-		getDSLBinding(kBinding_Samplers, VK_DESCRIPTOR_TYPE_SAMPLER, MAX_SAMPLERS, stageFlags),
-		getDSLBinding(kBinding_StorageImages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_TEXTURES, stageFlags),
-	};
-
-	const uint32_t flags =
-		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
-		//| VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT
-		| VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-
-	VkDescriptorBindingFlags bindingFlags[kBinding_NumBindings];
-	for (int i = 0; i < kBinding_NumBindings; ++i) {
-		bindingFlags[i] = flags;
-	}
-	const VkDescriptorSetLayoutBindingFlagsCreateInfo setLayoutBindingFlagsCI = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT,
-		.bindingCount = kBinding_NumBindings,
-		.pBindingFlags = bindingFlags,
-	};
-	const VkDescriptorSetLayoutCreateInfo dslci = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		.pNext = &setLayoutBindingFlagsCI,
-		.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT_EXT,
-		.bindingCount = kBinding_NumBindings,
-		.pBindings = bindings,
-	};
-
-	VK_CHECK(vkCreateDescriptorSetLayout(device_, &dslci, nullptr, &dsl));
-
-}
-void smvk::CreateDefaultPipelineLayout(VkDescriptorSetLayout* layouts, uint32_t layoutCount,VkPipelineLayout& out)
-{
-	// Engine Wide PC block
-	static constexpr uint32_t EnginePushConstantSize = 128;
-	// Or 256 if Vulkan 1.4 is your minimum target.
-	VkPushConstantRange range{
-		.stageFlags = VK_SHADER_STAGE_ALL,
-		.offset = 0,
-		.size = EnginePushConstantSize,
-	};
-
-	VkPipelineLayoutCreateInfo ci{
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = layoutCount,
-		.pSetLayouts = layouts,
-		.pushConstantRangeCount = 1,
-		.pPushConstantRanges = &range
-	};
-	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &out));
-}
-
 // VulkanCore
 int smvk::VulkanCore::CreateInstance() {
 
@@ -792,7 +733,7 @@ void smvk::VulkanCore::CreateComputePipeline(VkComputePipelineCreateInfo createI
 	}
 }
 void smvk::VulkanCore::DestroyPipeline(VkPipeline pipeline) {
-	vkDestroyPipeline(device_, pipeline, nullptr);
+vkDestroyPipeline(device_, pipeline, nullptr);
 }
 void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
 
@@ -898,8 +839,58 @@ int smvk::VulkanResourceManager::Initialize() {
 
 
 	// Hardcoded binding setup {
-	CreateDefaultDescriptorSetLayout(defaultSetLayout);
-	CreateDefaultPipelineLayout(&defaultSetLayout, 1, defaultPipeLayout);
+
+	VkShaderStageFlags stageFlags =
+		VK_SHADER_STAGE_VERTEX_BIT
+		| VK_SHADER_STAGE_FRAGMENT_BIT
+		| VK_SHADER_STAGE_COMPUTE_BIT;
+
+	const VkDescriptorSetLayoutBinding bindings[kBinding_NumBindings] = {
+		getDSLBinding(kBinding_Textures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
+		getDSLBinding(kBinding_Samplers, VK_DESCRIPTOR_TYPE_SAMPLER, MAX_SAMPLERS, stageFlags),
+		getDSLBinding(kBinding_StorageImages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_TEXTURES, stageFlags),
+	};
+
+	const uint32_t flags =
+		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+		//| VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT
+		| VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+
+	VkDescriptorBindingFlags bindingFlags[kBinding_NumBindings];
+	for (int i = 0; i < kBinding_NumBindings; ++i) {
+		bindingFlags[i] = flags;
+	}
+	const VkDescriptorSetLayoutBindingFlagsCreateInfo setLayoutBindingFlagsCI = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT,
+		.bindingCount = kBinding_NumBindings,
+		.pBindingFlags = bindingFlags,
+	};
+	const VkDescriptorSetLayoutCreateInfo dslci = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.pNext = &setLayoutBindingFlagsCI,
+		.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT_EXT,
+		.bindingCount = kBinding_NumBindings,
+		.pBindings = bindings,
+	};
+
+	VK_CHECK(vkCreateDescriptorSetLayout(device_, &dslci, nullptr, &defaultSetLayout));
+
+	// Engine Wide PC block
+	static constexpr uint32_t EnginePushConstantSize = 128;
+	VkPushConstantRange range{
+		.stageFlags = VK_SHADER_STAGE_ALL,
+		.offset = 0,
+		.size = EnginePushConstantSize,
+	};
+
+	VkPipelineLayoutCreateInfo ci{
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = 1,
+		.pSetLayouts = &defaultSetLayout,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges = &range
+	};
+	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &defaultPipeLayout));
 
 	// this pool only holds MAX_K, not MAX_K * framesInFlight or MAX_FRAMES_IN_FLIGHT
 	defaultDescriptorPool = CreateDescriptorPool();

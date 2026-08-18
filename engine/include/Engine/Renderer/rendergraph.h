@@ -140,7 +140,9 @@ namespace smvk {
 
 		void Clear()
 		{
-			vkDeviceWaitIdle(ctx_->core_.GetDevice());
+
+			//Dont like this
+			//vkDeviceWaitIdle(ctx_->core_.GetDevice());
 			for (auto& [key, bundle] : pipelines_) {
 				if (bundle.pipeline != VK_NULL_HANDLE) {
 					ctx_->core_.DestroyPipeline(bundle.pipeline);

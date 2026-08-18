@@ -334,8 +334,6 @@ namespace smvk {
 		void DestroyPipeline(VkPipeline pipeline);
 	};
 
-	void CreateDefaultDescriptorSetLayout(VkDescriptorSetLayout& dsl);
-	void CreateDefaultPipelineLayout(VkDescriptorSetLayout* layouts, uint32_t layoutCount, VkPipelineLayout& out);
 	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window);
 	//std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreHeadless(smvk::VulkanCore::CoreConfiguration config);
 
