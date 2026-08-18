@@ -111,22 +111,23 @@ namespace {
 		default: throw std::runtime_error("Unsupported index componentType");
 		}
 	}
-	std::filesystem::path UriFromTexture(const tinygltf::Model& model, GltfTextureRef& texture_ref) {
+	std::filesystem::path UriFromTexture(
+		const tinygltf::Model& model,
+		const GltfTextureRef& texture_ref)
+	{
 		const tinygltf::Image& img = model.images[texture_ref.imageIndex];
 
 		// Case 1: External image via URI
 		if (!img.uri.empty() && !starts_with(img.uri, "data:")) {
-
 			// this duty falls on the caller as of now .
 			//std::filesystem::path baseDir = gltfPath.parent_path();
 			//std::filesystem::path imagePath = baseDir / img.uri;
 			std::filesystem::path imagePath = img.uri;
-
 			return imagePath.lexically_normal();
 		}
 		else {
 			// No internal texures!
-			assert(false && "Internal textures not supported for gld loading.");
+			assert(false && "Internal textures not supported for gltf loading.");
 			return "";
 		}
 	}
@@ -204,59 +205,100 @@ std::optional<GltfTextureRef> GLtfResolveOcclusionTexture(const tinygltf::Model&
 	if (out.imageIndex < 0) return std::nullopt;
 	return out;
 }
-std::vector<GltfMaterial> ExtractMaterials(const tinygltf::Model& model)
+static GltfMaterial ExtractMaterial(
+	const tinygltf::Model& model,
+	int materialIndex)
 {
-	std::vector<GltfMaterial> out;
-	out.reserve(model.materials.size());
+	assert(materialIndex >= 0);
+	assert(
+		static_cast<size_t>(materialIndex) <
+		model.materials.size()
+	);
 
-	for (int i = 0; i < (int)model.materials.size(); ++i) {
-		const tinygltf::Material& m = model.materials[i];
-		GltfMaterial mat{};
-		mat.name = m.name;
+	const tinygltf::Material& m =
+		model.materials[materialIndex];
 
-		// Core PBR factors
-		if (m.pbrMetallicRoughness.baseColorFactor.size() == 4) {
-			for (int k = 0; k < 4; ++k) mat.baseColorFactor[k] = m.pbrMetallicRoughness.baseColorFactor[k];
+	GltfMaterial mat{};
+
+	mat.name = m.name;
+
+	// -------------------------------------------------------------------------
+	// PBR Metallic-Roughness
+	// -------------------------------------------------------------------------
+
+	if (m.pbrMetallicRoughness.baseColorFactor.size() == 4) {
+		for (int k = 0; k < 4; ++k) {
+			mat.baseColorFactor[k] =
+				m.pbrMetallicRoughness.baseColorFactor[k];
 		}
-		mat.metallicFactor = m.pbrMetallicRoughness.metallicFactor;
-		mat.roughnessFactor = m.pbrMetallicRoughness.roughnessFactor;
-
-		// Textures
-		if (auto t = GltfResolveTexture(model, m.pbrMetallicRoughness.baseColorTexture))
-			mat.baseColorTex = *t;
-
-		if (auto t = GltfResolveTexture(model, m.pbrMetallicRoughness.metallicRoughnessTexture))
-			mat.metallicRoughnessTex = *t;
-
-		if (auto t = GtlfResolveNormalTexture(model, m.normalTexture))
-			mat.normalTex = *t;
-
-		if (auto t = GLtfResolveOcclusionTexture(model, m.occlusionTexture))
-			mat.occlusionTex = *t;
-
-		if (auto t = GltfResolveTexture(model, m.emissiveTexture))
-			mat.emissiveTex = *t;
-
-		if (m.emissiveFactor.size() == 3) {
-			for (int k = 0; k < 3; ++k) mat.emissiveFactor[k] = m.emissiveFactor[k];
-		}
-
-		// Alpha + sidedness
-		mat.alphaMode = ParseAlphaMode(m.alphaMode);
-		mat.alphaCutoff = m.alphaCutoff;     // only meaningful for MASK
-		mat.doubleSided = m.doubleSided;
-
-		// (Optional) Example: read KHR_materials_unlit flag
-		// if (m.additionalValues.count("unlit")) { ... } // or check m.extensions
-
-		// (Optional) Example: KHR_texture_transform on baseColorTexture
-		// auto it = m.extensions.find("KHR_texture_transform");
-		// If present, read offset/scale/rotation and apply in your UV pipeline.
-
-		out.emplace_back(std::move(mat));
 	}
 
-	return out;
+	mat.metallicFactor =
+		m.pbrMetallicRoughness.metallicFactor;
+
+	mat.roughnessFactor =
+		m.pbrMetallicRoughness.roughnessFactor;
+
+	// -------------------------------------------------------------------------
+	// Textures
+	// -------------------------------------------------------------------------
+
+	if (auto t = GltfResolveTexture(
+		model,
+		m.pbrMetallicRoughness.baseColorTexture))
+	{
+		mat.baseColorTex = *t;
+	}
+
+	if (auto t = GltfResolveTexture(
+		model,
+		m.pbrMetallicRoughness.metallicRoughnessTexture))
+	{
+		mat.metallicRoughnessTex = *t;
+	}
+
+	if (auto t = GtlfResolveNormalTexture(
+		model,
+		m.normalTexture))
+	{
+		mat.normalTex = *t;
+	}
+
+	if (auto t = GLtfResolveOcclusionTexture(
+		model,
+		m.occlusionTexture))
+	{
+		mat.occlusionTex = *t;
+	}
+
+	if (auto t = GltfResolveTexture(
+		model,
+		m.emissiveTexture))
+	{
+		mat.emissiveTex = *t;
+	}
+
+	if (m.emissiveFactor.size() == 3) {
+		for (int k = 0; k < 3; ++k) {
+			mat.emissiveFactor[k] =
+				m.emissiveFactor[k];
+		}
+	}
+
+	// -------------------------------------------------------------------------
+	// Rasterization
+	// -------------------------------------------------------------------------
+
+	mat.alphaMode =
+		ParseAlphaMode(m.alphaMode);
+
+	mat.alphaCutoff =
+		m.alphaCutoff;
+
+	mat.doubleSided =
+		m.doubleSided;
+
+	return mat;
 }
 glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 {
@@ -288,53 +330,99 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 		* glm::mat4_cast(r)
 		* glm::scale(glm::mat4(1.0f), s);
 }
-uint32_t GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
+
+smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex)
+{
 	if (gltfMaterialIndex < 0) {
-		return DEFAULT_MATERIAL_INDEX;
+		// TODO: default material
+		return {};
 	}
 
-	// glTF guarantees material indices are within model.materials
-	// (assuming the file is valid). If you want belt-and-suspenders:
-	if ((size_t)gltfMaterialIndex >= materialCache.size()) {
-		return DEFAULT_MATERIAL_INDEX;
-	}
+	assert(
+		static_cast<size_t>(gltfMaterialIndex) <
+		materialCache.size()
+	);
 
-	uint32_t& slot = materialCache[(size_t)gltfMaterialIndex];
-	if (slot != kInvalidMat) {
+	auto& slot =
+		materialCache[gltfMaterialIndex];
+
+	if (!slot.empty()) {
 		return slot;
 	}
 
-	// NOTE: Avoid storing baseDir as a dangling c_str(). Build it here.
-	const std::string baseDir = gltfModelPath.parent_path().string();
+	// This material has never been imported before.
+	// Parse only THIS glTF material.
+	const GltfMaterial mat =
+		ExtractMaterial(
+			model,
+			gltfMaterialIndex
+		);
 
-	// TODO : This should be done onlt once instead of here!
-	auto mat = ExtractMaterials(model)[gltfMaterialIndex];
+	const std::filesystem::path baseDir =
+		gltfModelPath.parent_path();
 
 	smvk::TextureHandle colorTexHandle{};
 
-	{
-		auto color_uri = UriFromTexture(model, *mat.baseColorTex);
+	if (mat.baseColorTex) {
+
+		auto textureRef =
+			*mat.baseColorTex;
+
+		const std::filesystem::path textureUri =
+			UriFromTexture(
+				model,
+				textureRef
+			);
+
+		const std::filesystem::path fullTexturePath =
+			(baseDir / textureUri)
+			.lexically_normal();
+
 		ktxTexture2* ktxTex = nullptr;
-		KTX_error_code res = ktxTexture2_CreateFromNamedFile(
-			(baseDir.c_str() / color_uri).string().c_str(),
-			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, // <<–– correct flags
-			&ktxTex
-		);
-		if (res != KTX_SUCCESS) {
-			throw std::runtime_error("KTX load failed");
+
+		const KTX_error_code result =
+			ktxTexture2_CreateFromNamedFile(
+				fullTexturePath.string().c_str(),
+				KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+				&ktxTex
+			);
+
+		if (result != KTX_SUCCESS) {
+			throw std::runtime_error(
+				"Failed to load KTX texture: " +
+				fullTexturePath.string()
+			);
 		}
 
-		auto color = m_cluster.ctx_.CreateTexture(*ktxTex);
-		colorTexHandle = color;
-		m_cluster.textures.push_back(std::move(color));
-		ktxTexture2_Destroy(ktxTex);
+		auto texture =
+			cluster.ctx_.CreateTexture(
+				*ktxTex
+			);
+
+		ktxTexture2_Destroy(
+			ktxTex
+		);
+
+		colorTexHandle =
+			texture;
+
+		cluster.textures.create(
+			std::move(texture)
+		);
+	}
+	else {
+		// TODO: cluster/default white texture
+		return {};
 	}
 
-	return m_cluster.CreateMaterial(
-		colorTexHandle
-	).index();
+	slot =
+		cluster.CreateMaterial(
+			colorTexHandle
+		);
 
+	return slot;
 }
+
 smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, const tinygltf::Primitive& primitive) {
 	smvk::StaticMeshUpload data;
 	// AABB. for culling	
@@ -435,24 +523,61 @@ smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model
 
 }
 
-uint32_t GltfToSceneImporter::getOrCreateMesh(tinygltf::Primitive primitive) {
-	auto mdata = SurfaceDataFromGltfPrimitive(model, primitive);
-	return m_cluster.UploadStaticMesh(mdata).index();
+smvk::ClusterStaticMeshHandle
+GltfToSceneImporter::getOrCreateMesh(
+	int gltfMeshIndex,
+	int primitiveIndex)
+{
+	assert(gltfMeshIndex >= 0);
+	assert(
+		static_cast<size_t>(gltfMeshIndex) <
+		model.meshes.size()
+	);
+
+	const tinygltf::Mesh& gltfMesh =
+		model.meshes[gltfMeshIndex];
+
+	assert(primitiveIndex >= 0);
+	assert(
+		static_cast<size_t>(primitiveIndex) <
+		gltfMesh.primitives.size()
+	);
+
+	auto& slot =
+		meshCache[gltfMeshIndex][primitiveIndex];
+
+	if (!slot.empty()) {
+		return slot;
+	}
+
+	const tinygltf::Primitive& primitive =
+		gltfMesh.primitives[primitiveIndex];
+
+	auto data =
+		SurfaceDataFromGltfPrimitive(
+			model,
+			primitive
+		);
+
+	slot =
+		cluster.UploadStaticMesh(data);
+
+	return slot;
 }
 void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentSceneNode, int level) {
 	const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];
 
 	// Always create a "group" node that owns name + transform and preserves hierarchy.
-	const int groupNode = addNode(scene, parentSceneNode, level);
+	const int groupNode = addNode(cluster.scene, parentSceneNode, level);
 
 	{
-		const int nameIndex = (int)scene.nodeNames.size();
-		scene.nodeNames.push_back(gltfNode.name.empty() ? "Node" : gltfNode.name);
-		scene.nameForNode[groupNode] = nameIndex;
+		const int nameIndex = (int)cluster.scene.nodeNames.size();
+		cluster.scene.nodeNames.push_back(gltfNode.name.empty() ? "Node" : gltfNode.name);
+		cluster.scene.nameForNode[groupNode] = nameIndex;
 	}
 
-	scene.localTransform[groupNode] = GetNodeLocalTransform(gltfNode);
-	scene.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
+	cluster.scene.localTransform[groupNode] = GetNodeLocalTransform(gltfNode);
+	cluster.scene.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
 
 	// Unroll primitives into separate meshes (your current approach).
 	if (gltfNode.mesh >= 0) {
@@ -461,15 +586,19 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentScene
 		for (int primIndex = 0; primIndex < (int)gltfMesh.primitives.size(); ++primIndex) {
 			const tinygltf::Primitive& primitive = gltfMesh.primitives[primIndex];
 
-			const int primNode = addNode(scene, groupNode, level + 1);
-
-			scene.localTransform[primNode] = glm::mat4(1.0f);
-			scene.globalTransform[primNode] = glm::mat4(1.0f);
-
-			scene.meshForNode[primNode] = getOrCreateMesh(primitive);
-			scene.materialForNode[primNode] = getOrCreateMaterial(primitive.material);
-
-			markAsChanged(scene, primNode);
+			const int primNode = addNode(cluster.scene, groupNode, level + 1);
+			cluster.scene.localTransform[primNode] = glm::mat4(1.0f);
+			cluster.scene.globalTransform[primNode] = glm::mat4(1.0f);
+			cluster.scene.meshForNode[primNode] =
+				getOrCreateMesh(
+					gltfNode.mesh,
+					primIndex
+				).index();
+			cluster.scene.materialForNode[primNode] =
+				getOrCreateMaterial(
+					primitive.material
+				).index();
+			markAsChanged(cluster.scene, primNode);
 		}
 	}
 

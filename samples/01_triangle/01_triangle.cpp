@@ -150,6 +150,14 @@ private:
         m_rendergraph->Execute(fb);
         m_context->ProcessDeferrredTasks(); // Not needed here
     }
+    void CleanUp() {
+        Super::CleanUp();
+
+        for (int i = 0; i < m_program.shaderCount; i++) {
+            smvk::destroy(m_context.get(), m_program.shaders[i].vkShaderModule);
+        }
+
+    }
 
 private:
     smvk::ShaderProgram m_program{};

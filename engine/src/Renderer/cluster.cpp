@@ -1,62 +1,41 @@
 #include <Engine/Renderer/cluster.h>
 
-// VkDeviceSize hould be equivalent
-static constexpr size_t VertexBufferSize = 512ull * 1024ull * 1024ull;
-static constexpr size_t IndexBufferSize = 512ull * 1024ull * 1024ull;
+namespace {
+	constexpr size_t VertexBufferSize = 512ull * 1024ull * 1024ull;
+	constexpr size_t IndexBufferSize = 512ull * 1024ull * 1024ull;
+
+	smvk::BufferHandle staticVertexPosBuffer{};
+	smvk::BufferHandle staticVertexShadingBuffer{};
+	smvk::BufferHandle staticIndexBuffer{};
+	VmaVirtualBlock vertexBlock_ = VK_NULL_HANDLE;
+	VmaVirtualBlock indexBlock_ = VK_NULL_HANDLE;
+	uint32_t clusterRefCount_ = 0;
+
+} // anonymous namespace
 
 namespace smvk {
 
-	Cluster::Cluster(VulkanResourceManager& ctx) : ctx_(ctx) { AllocateGeometryBuffers(); }
-	Cluster::~Cluster() { DestroyGeometryBuffers(); }
-
-	void Cluster::BindStaticMeshBuffers(VkCommandBuffer cmd) const
-	{
-		VkBuffer vertexBuffers[] = {
-			ctx_.buffers_.get(vertexPosBuffer_)->vk_buffer,
-			ctx_.buffers_.get(vertexShadingBuffer_)->vk_buffer
-		};
-
-		VkDeviceSize offsets[] = {
-			0,
-			0
-		};
-
-		vkCmdBindVertexBuffers(
-			cmd,
-			0,
-			2,
-			vertexBuffers,
-			offsets
-		);
-
-		vkCmdBindIndexBuffer(
-			cmd,
-			ctx_.buffers_.get(indexBuffer_)->vk_buffer,
-			0,
-			VK_INDEX_TYPE_UINT32
-		);
-	}
 	// -----------------------------------------------------------------------------
 	// Buffer initialization
 	// -----------------------------------------------------------------------------
 
 	void Cluster::AllocateGeometryBuffers()
 	{
-		vertexPosBuffer_ = ctx_.CreateBuffer({
+		staticVertexPosBuffer = ctx_.CreateBuffer({
 			VertexBufferSize,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			});
 
-		vertexShadingBuffer_ = ctx_.CreateBuffer({
+		staticVertexShadingBuffer = ctx_.CreateBuffer({
 			VertexBufferSize,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			});
 
-		indexBuffer_ = ctx_.CreateBuffer({
+		staticIndexBuffer = ctx_.CreateBuffer({
 			IndexBufferSize,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
@@ -111,28 +90,69 @@ namespace smvk {
 	}
 
 
-	void Cluster::DestroyGeometryBuffers()
+
+	Cluster::Cluster(VulkanResourceManager& ctx)
+		: ctx_(ctx)
 	{
-		if (vertexBlock_) {
-			vmaClearVirtualBlock(vertexBlock_);
-			vmaDestroyVirtualBlock(vertexBlock_);
-			vertexBlock_ = VK_NULL_HANDLE;
+		if (clusterRefCount_++ == 0) {
+			AllocateGeometryBuffers();
 		}
-
-		if (indexBlock_) {
-			vmaClearVirtualBlock(indexBlock_);
-			vmaDestroyVirtualBlock(indexBlock_);
-			indexBlock_ = VK_NULL_HANDLE;
-		}
-
-		// Whatever destruction API your ResourceContext uses:
-		//
-		// ctx_.DestroyBuffer(vertexPosBuffer_);
-		// ctx_.DestroyBuffer(vertexShadingBuffer_);
-		// ctx_.DestroyBuffer(indexBuffer_);
 	}
 
+	Cluster::~Cluster()
+	{
+		assert(clusterRefCount_ > 0);
 
+		// mt problems probably
+		if (--clusterRefCount_ == 0) {
+
+			if (vertexBlock_) {
+				vmaClearVirtualBlock(vertexBlock_);
+				vmaDestroyVirtualBlock(vertexBlock_);
+				vertexBlock_ = VK_NULL_HANDLE;
+			}
+
+			if (indexBlock_) {
+				vmaClearVirtualBlock(indexBlock_);
+				vmaDestroyVirtualBlock(indexBlock_);
+				indexBlock_ = VK_NULL_HANDLE;
+			}
+
+			// Skinned mesh geometry heap free
+			destroy(&ctx_, staticVertexPosBuffer);
+			destroy(&ctx_, staticVertexShadingBuffer);
+			destroy(&ctx_, staticIndexBuffer);
+
+		}
+	}
+	void Cluster::BindStaticMeshBuffers(VkCommandBuffer cmd) const
+	{
+		VkBuffer vertexBuffers[] = {
+			ctx_.buffers_.get(staticVertexPosBuffer)->vk_buffer,
+			ctx_.buffers_.get(staticVertexShadingBuffer)->vk_buffer
+		};
+
+		VkDeviceSize offsets[] = {
+			0,
+			0
+		};
+
+		vkCmdBindVertexBuffers(
+			cmd,
+			0,
+			2,
+			vertexBuffers,
+			offsets
+		);
+
+		vkCmdBindIndexBuffer(
+			cmd,
+			ctx_.buffers_.get(staticIndexBuffer)->vk_buffer,
+			0,
+			VK_INDEX_TYPE_UINT32
+		);
+	}
+	
 	// -----------------------------------------------------------------------------
 	// Mesh upload
 	// -----------------------------------------------------------------------------
@@ -246,7 +266,7 @@ namespace smvk {
 			vertexCount * sizeof(VertexPos);
 
 		ctx_.UploadDataToBuffer(
-			vertexPosBuffer_,
+			staticVertexPosBuffer,
 			positions.data(),
 			positionBytes,
 
@@ -269,7 +289,7 @@ namespace smvk {
 			vertexCount * sizeof(VertexShading);
 
 		ctx_.UploadDataToBuffer(
-			vertexShadingBuffer_,
+			staticVertexShadingBuffer,
 			shading.data(),
 			shadingBytes,
 
@@ -288,7 +308,7 @@ namespace smvk {
 		if (indexCount > 0) {
 
 			ctx_.UploadDataToBuffer(
-				indexBuffer_,
+				staticIndexBuffer,
 				data.indices.data(),
 				indexBytes,
 
@@ -396,5 +416,73 @@ namespace smvk {
 			std::move(material)
 		);
 	}
+	void Cluster::DestroyMaterial(ClusterMaterialHandle handle)
+	{
+		materials.destroy(handle);
+	}
+
+	//ClusterTextureHandle Cluster::GetOrLoadTexture(
+	//	const std::filesystem::path& uri)
+	//{
+	//	const std::string key = NormalizeAssetUri(uri);
+
+	//	if (auto it = textureByUri.find(key); it != textureByUri.end())
+	//		return it->second;
+
+	//	ktxTexture2* ktx = nullptr;
+
+	//	if (ktxTexture2_CreateFromNamedFile(
+	//		key.c_str(),
+	//		KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+	//		&ktx) != KTX_SUCCESS)
+	//	{
+	//		throw std::runtime_error("Failed to load texture: " + key);
+	//	}
+
+	//	auto handle = UploadTexture(*ktx);
+
+	//	ktxTexture2_Destroy(ktx);
+
+	//	textureByUri.emplace(key, handle);
+	//	return handle;
+	//}
+	//ClusterMaterialHandle
+	//	GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex)
+	//{
+	//	if (gltfMaterialIndex < 0)
+	//		return m_cluster.defaultMaterial();
+
+	//	if (materialCache[gltfMaterialIndex].valid())
+	//		return materialCache[gltfMaterialIndex];
+
+	//	const auto uri =
+	//		MakeGltfMaterialUri(gltfModelPath, gltfMaterialIndex);
+
+	//	if (auto existing = m_cluster.FindMaterial(uri)) {
+	//		materialCache[gltfMaterialIndex] = existing;
+	//		return existing;
+	//	}
+
+	//	const auto& src = extractedMaterials[gltfMaterialIndex];
+
+	//	Material dst{};
+
+	//	if (src.baseColorTex) {
+	//		auto textureUri =
+	//			ResolveTextureUri(model, *src.baseColorTex, gltfModelPath);
+
+	//		dst.baseColorTexture =
+	//			m_cluster.GetOrLoadTexture(textureUri);
+	//	}
+
+	//	auto handle = m_cluster.CreateMaterial(dst);
+
+	//	m_cluster.RegisterMaterial(uri, handle);
+
+	//	materialCache[gltfMaterialIndex] = handle;
+	//	return handle;
+	//}
 
 } // namespace smvk
+
+

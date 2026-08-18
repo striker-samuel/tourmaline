@@ -367,6 +367,7 @@ namespace smvk {
 
 		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
+
 		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline);
 		void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline);
 
@@ -752,9 +753,7 @@ namespace smvk {
 
 		void Clear()
 		{
-
-			//Dont like this
-			//vkDeviceWaitIdle(ctx_->core_.GetDevice());
+			//vkDeviceWaitIdle(ctx_->core_.GetDevice()); //Dont like this
 			for (auto& [key, bundle] : pipelines_) {
 				if (bundle.pipeline != VK_NULL_HANDLE) {
 					ctx_->core_.DestroyPipeline(bundle.pipeline);

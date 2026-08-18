@@ -716,7 +716,7 @@ void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& out) {
 	}
 }
 void smvk::VulkanCore::CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline) {
-
+	assert(!pipeline);
 	if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &createInfo,
 		nullptr, &pipeline) != VK_SUCCESS)
 	{
@@ -726,6 +726,7 @@ void smvk::VulkanCore::CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo creat
 }
 void smvk::VulkanCore::CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline)
 {
+	assert(!pipeline);
 	if (vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &createInfo,
 		nullptr, &pipeline) != VK_SUCCESS)
 	{
