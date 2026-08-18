@@ -36,7 +36,6 @@ namespace smvk {
 		void AllocateGeometryBuffers();
 		void DestroyGeometryBuffers();
 
-
 		void DestroyMesh(ClusterStaticMeshHandle handle);
 		void DestroyMaterial(ClusterStaticMeshHandle handle);
 
@@ -60,7 +59,7 @@ namespace smvk {
 		Pool<StaticMesh, StaticMesh> staticMeshes;
 		Pool<Material, Material> materials;
 
-		//std::vector<Holder<TextureHandle>> textures;
+		std::vector<Holder<TextureHandle>> textures;
 
 	};
 

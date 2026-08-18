@@ -25,7 +25,7 @@
 //
 static constexpr uint32_t DEFAULT_WIDTH = 1280;
 static constexpr uint32_t DEFAULT_HEIGHT = 720;
-static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 6;
 static constexpr uint32_t DESIRED_SWAPCHAIN_IMAGE_COUNT = 2;
 static constexpr uint32_t MAX_BUFFERS = 1024;
 static constexpr uint32_t MAX_LIGHTS = 4096;
@@ -115,6 +115,7 @@ namespace smvk {
 		uint32_t levels = 1;
 		uint32_t arrayLayers = 1;
 	};
+	using TextureCreateInfo = ImageCreateInfo;
 	struct ImageViewCreateInfo {
 		VkImageViewCreateFlags     flags{};
 		VkImage                    vk_image{};
@@ -305,7 +306,8 @@ namespace smvk {
 		VkPhysicalDeviceVulkan11Features vkFeatures11_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &vkFeatures12_ };
 		VkPhysicalDeviceFeatures2 vkFeatures10_ = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &vkFeatures11_ };
 
-		QueueFamilyIndices indices; // this will be filled in device initialization. exposed queues
+		// dont like this data definition for queue exposure.
+		QueueFamilyIndices indices; 
 
 	public:
 
@@ -319,18 +321,15 @@ namespace smvk {
 		int CreateInstance();
 		bool Init();
 
-
-		// this should be gone!
-		VkInstance GetInstance();
+		//VkInstance GetInstance();
 		VkDevice GetDevice();
-		VkPhysicalDevice GetPhysicalDevice();
-		VkQueue GetGraphicsQueue();
+		//VkPhysicalDevice GetPhysicalDevice();
+		//VkQueue GetGraphicsQueue();
 
 		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
 		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
-
 		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline);
-		//void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline);
+		void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline);
 
 		void DestroyPipeline(VkPipeline pipeline);
 	};
@@ -338,6 +337,7 @@ namespace smvk {
 	void CreateDefaultDescriptorSetLayout(VkDescriptorSetLayout& dsl);
 	void CreateDefaultPipelineLayout(VkPipelineLayout& out);
 	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window);
+	//std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreHeadless(smvk::VulkanCore::CoreConfiguration config);
 
 
 	//
@@ -462,7 +462,6 @@ namespace smvk {
 };
 
 
-// In reality these should be added automatically by the rg
 inline void BufferBarrier(
 	VkCommandBuffer cmd,
 	VkBuffer buffer,
@@ -474,7 +473,6 @@ inline void BufferBarrier(
 	VkAccessFlags2 dstAccess
 );
 
-// this covers image transitions as well sycn2 mandted.
 inline void ImageBarrier(
 	VkCommandBuffer cmd,
 	VkImage vk_image,
@@ -492,17 +490,17 @@ inline void ImageBarrier(
 
 namespace smvk {
 
-	struct SamplerPool {
-		struct SamplerPoolCreateInfo {
-			VkDevice device;
-		};
-		SamplerPool(SamplerPoolCreateInfo createInfo);
-		~SamplerPool();
-		VkDevice device_;
-		using SamplerKey = SamplerCreateInfo;
-		std::map<SamplerKey, VkSampler> m_samplers;
-		VkSampler GetSampler(SamplerKey key);
-	};
+	//struct SamplerPool {
+	//	struct SamplerPoolCreateInfo {
+	//		VkDevice device;
+	//	};
+	//	SamplerPool(SamplerPoolCreateInfo createInfo);
+	//	~SamplerPool();
+	//	VkDevice device_;
+	//	using SamplerKey = SamplerCreateInfo;
+	//	std::map<SamplerKey, VkSampler> m_samplers;
+	//	VkSampler GetSampler(SamplerKey key);
+	//};
 
 	class VulkanSwapchain;
 	struct FrameBuffer {

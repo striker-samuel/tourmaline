@@ -8,7 +8,7 @@
 
 struct GltfToSceneImporter {
 	Scene& scene;
-	smvk::Cluster& manager_;
+	smvk::Cluster& m_cluster;
 
 	const tinygltf::Model& model; 
 	std::filesystem::path gltfModelPath; // full path to .gltf/.glb on disk
@@ -23,7 +23,7 @@ struct GltfToSceneImporter {
 		, std::filesystem::path inGltfModelPath
 	)
 		: scene(inScene)
-		, manager_(manager)
+		, m_cluster(manager)
 		, model(inModel)
 		, gltfModelPath(std::move(inGltfModelPath))
 		, materialCache(inModel.materials.size(), kInvalidMat)

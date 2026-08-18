@@ -323,12 +323,14 @@ uint32_t GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
 		if (res != KTX_SUCCESS) {
 			throw std::runtime_error("KTX load failed");
 		}
-		//colorTexHandle = manager_.ctx_.CreateTexture(color_uri.string(), *ktxTex);
-		colorTexHandle = manager_.ctx_.CreateTexture(*ktxTex).release();
+
+		auto color = m_cluster.ctx_.CreateTexture(*ktxTex);
+		colorTexHandle = color;
+		m_cluster.textures.push_back(std::move(color));
 		ktxTexture2_Destroy(ktxTex);
 	}
 
-	return manager_.CreateMaterial(
+	return m_cluster.CreateMaterial(
 		colorTexHandle
 	).index();
 
@@ -435,7 +437,7 @@ smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model
 
 uint32_t GltfToSceneImporter::getOrCreateMesh(tinygltf::Primitive primitive) {
 	auto mdata = SurfaceDataFromGltfPrimitive(model, primitive);
-	return manager_.UploadStaticMesh(mdata).index();
+	return m_cluster.UploadStaticMesh(mdata).index();
 }
 void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentSceneNode, int level) {
 	const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];

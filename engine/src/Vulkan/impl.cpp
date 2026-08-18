@@ -19,10 +19,10 @@ static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
 
-VkInstance smvk::VulkanCore::GetInstance() { return instance_; }
+//VkInstance smvk::VulkanCore::GetInstance() { return instance_; }
 VkDevice smvk::VulkanCore::GetDevice() { return device_; }
-VkPhysicalDevice smvk::VulkanCore::GetPhysicalDevice() { return physicalDevice_; }
-VkQueue smvk::VulkanCore::GetGraphicsQueue() { return graphicsQueue_; }
+//VkPhysicalDevice smvk::VulkanCore::GetPhysicalDevice() { return physicalDevice_; }
+//VkQueue smvk::VulkanCore::GetGraphicsQueue() { return graphicsQueue_; }
 
 struct SwapChainSupportDetails {
 	VkSurfaceCapabilitiesKHR capabilities{};
@@ -787,6 +787,14 @@ void smvk::VulkanCore::CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo creat
 	}
 
 }
+void smvk::VulkanCore::CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline)
+{
+	if (vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &createInfo,
+		nullptr, &pipeline) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create graphics pipeline!");
+	}
+}
 void smvk::VulkanCore::DestroyPipeline(VkPipeline pipeline) {
 	vkDestroyPipeline(device_, pipeline, nullptr);
 }
@@ -929,41 +937,67 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	delete m_submitter;
 	m_submitter = nullptr;
 
-	std::cout << "[ResourceContext::~ResourceContext] Leaking objects:\n";
 
 #ifndef N_DEBUG
-	shaderModules_.forEachHandle([this](ShaderModuleHandle handle) {
+	bool leakHeaderPrinted = false;
+
+	auto printLeakHeader = [&]() {
+		if (!leakHeaderPrinted)
+		{
+			std::cout << "[ResourceContext::~ResourceContext] Leaking objects:\n";
+			leakHeaderPrinted = true;
+		}
+	};
+
+	shaderModules_.forEachHandle([&](ShaderModuleHandle handle) {
+		printLeakHeader();
+
 		auto sm = shaderModules_.get(handle);
 		std::cout << "  [LEAK] ShaderModule: handle index=" << handle.index()
 			<< ", gen=" << handle.gen() << ", module=" << *sm << "\n";
 	});
-	buffers_.forEachHandle([this](BufferHandle handle) {
+
+	buffers_.forEachHandle([&](BufferHandle handle) {
+		printLeakHeader();
+
 		auto buf = buffers_.get(handle);
 		std::cout << "  [LEAK] Buffer: handle index=" << handle.index()
 			<< ", gen=" << handle.gen() << ", buffer=" << buf->vk_buffer
 			<< ", allocation=" << buf->vma_alloc << "\n";
 	});
-	samplers_.forEachHandle([this](SamplerHandle handle) {
+
+	samplers_.forEachHandle([&](SamplerHandle handle) {
+		printLeakHeader();
+
 		auto s = samplers_.get(handle);
 		std::cout << "  [LEAK] Sampler: handle index=" << handle.index()
 			<< ", gen=" << handle.gen() << ", sampler=" << *s << "\n";
 	});
-	descriptorPools_.forEachHandle([this](DescriptorPoolHandle handle) {
+
+	descriptorPools_.forEachHandle([&](DescriptorPoolHandle handle) {
 		if (handle != defaultDescriptorPool)
 		{
+			printLeakHeader();
+
 			auto dp = descriptorPools_.get(handle);
 			std::cout << "  [LEAK] DescriptorPool: handle index=" << handle.index()
 				<< ", gen=" << handle.gen() << ", pool=" << *dp << "\n";
 		}
 	});
-	images_.forEachHandle([this](ImageHandle handle) {
+
+	images_.forEachHandle([&](ImageHandle handle) {
+		printLeakHeader();
+
 		auto img = images_.get(handle);
 		std::cout << "  [LEAK] Image: handle index=" << handle.index()
 			<< ", gen=" << handle.gen() << ", image=" << img->vk_image
 			<< ", allocation=" << img->vma_alloc << ", views="
 			<< img->sampleView << "/" << img->storageView << "\n";
 	});
-	textures_.forEachHandle([this](TextureHandle handle) {
+
+	textures_.forEachHandle([&](TextureHandle handle) {
+		printLeakHeader();
+
 		auto tex = textures_.get(handle);
 		std::cout << "  [LEAK] Texture: handle index=" << handle.index()
 			<< ", gen=" << handle.gen() << ", image=" << tex->vk_image
@@ -971,12 +1005,11 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	});
 #endif
 
-	//images_.clear();
-	//textures_.clear();
-	//buffers_.clear();
-	//shaderModules_.clear();
-	//samplers_.clear();
-	//descriptorPools_.clear();
+	// Destroy unmanaged handles not in pools:
+	vkDestroyPipelineLayout(device_, defaultPipeLayout, nullptr);
+	vkDestroyDescriptorSetLayout(device_, defaultSetLayout, nullptr);
+	vkDestroySampler(device_, m_defaultSampler, nullptr);
+
 	memset(defaultDescriptorSets_, 0, sizeof(defaultDescriptorSets_));
 };
 void smvk::VulkanResourceManager::UploadDataToBuffer(
@@ -985,21 +1018,16 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 	size_t dataSize,
 	VkPipelineStageFlags2 dstStages,
 	VkAccessFlags2 dstAccess,
-	size_t src_offset,
+	size_t src_offset, // unused
 	size_t dest_offset
 ) {
-	auto stageHan = CreateStagingBuffer(dataSize);
 
 	auto buf = buffers_.get(buffer);
 	assert(buffer.valid());
 	assert(buf->vk_buffer != VK_NULL_HANDLE);
 
-	auto stagingBuf = buffers_.get(stageHan);
-	assert(stagingBuf->vk_buffer != VK_NULL_HANDLE);
-
 	auto han = m_submitter->acquire();
 	auto cmd = m_submitter->GetCommandBuffer(han).cmd;
-
 	if (buf->is_mappable()) {
 		VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, buf->vma_alloc, dest_offset, dataSize));
 		BufferBarrier(
@@ -1016,11 +1044,12 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 		return;
 	}
 
+	auto stageHan = CreateStagingBuffer(dataSize);
+	// this invalidates buf*, so lets get it again.
+	buf = buffers_.get(buffer);
+	auto stagingBuf = buffers_.get(stageHan);
+	assert(stagingBuf->vk_buffer != VK_NULL_HANDLE);
 
-	//VmaAllocationInfo info{};
-	//vmaGetAllocationInfo(m_allocator, stagingBuf->vma_alloc, &info);
-	//assert(dest_offset <= info.size);
-	//assert(dataSize <= info.size - dest_offset);
 	VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, stagingBuf->vma_alloc, 0, dataSize));
 
 	// Copy staging -> dst
@@ -1044,7 +1073,7 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 
 	m_submitter->submit(han);
 	AddDeferredTask(
-		std::packaged_task<void()>([this, han = stageHan] {	destroy(this, han); })
+		std::packaged_task<void()>([this, staging = stageHan] { destroy(this, staging); })
 		, han
 	);
 }
@@ -2051,6 +2080,7 @@ inline smvk::Submitter::~Submitter() {
 
 	if (pool_ != VK_NULL_HANDLE) {
 		vkFreeCommandBuffers(device_, pool_, kMax, m_buffers_);
+		vkDestroyCommandPool(device_, pool_, nullptr);
 	}
 }
 [[nodiscard]] inline smvk::CommandSubmitHandle smvk::Submitter::acquire(uint32_t goal)
@@ -2668,30 +2698,30 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 }
 
 //  SamplerPool
-smvk::SamplerPool::SamplerPool(SamplerPoolCreateInfo createInfo) : device_(createInfo.device) {
-	VkSampler defaultSampler;
-	vkCreateSampler(device_, {}, nullptr, &defaultSampler);
-	m_samplers[SamplerKey{}] = defaultSampler;
-}
-smvk::SamplerPool::~SamplerPool() {
-	for (auto sampler : m_samplers)
-	{
-		vkDestroySampler(device_, sampler.second, nullptr);
-	}
-	m_samplers.clear();
-}
-VkSampler smvk::SamplerPool::GetSampler(SamplerKey key) {
-	auto it = m_samplers.find(key);
-	if (it == m_samplers.end()) {
-		VkSampler newSampler;
-		VkSamplerCreateInfo createInfo{};
-		// populate
-		vkCreateSampler(device_, &createInfo, nullptr, &newSampler);
-		m_samplers[key] = newSampler;
-		return newSampler;
-	}
-	else {
-		return it->second;
-	}
-
-}
+//smvk::SamplerPool::SamplerPool(SamplerPoolCreateInfo createInfo) : device_(createInfo.device) {
+//	VkSampler defaultSampler;
+//	vkCreateSampler(device_, {}, nullptr, &defaultSampler);
+//	m_samplers[SamplerKey{}] = defaultSampler;
+//}
+//smvk::SamplerPool::~SamplerPool() {
+//	for (auto sampler : m_samplers)
+//	{
+//		vkDestroySampler(device_, sampler.second, nullptr);
+//	}
+//	m_samplers.clear();
+//}
+//VkSampler smvk::SamplerPool::GetSampler(SamplerKey key) {
+//	auto it = m_samplers.find(key);
+//	if (it == m_samplers.end()) {
+//		VkSampler newSampler;
+//		VkSamplerCreateInfo createInfo{};
+//		// populate
+//		vkCreateSampler(device_, &createInfo, nullptr, &newSampler);
+//		m_samplers[key] = newSampler;
+//		return newSampler;
+//	}
+//	else {
+//		return it->second;
+//	}
+//
+//}
