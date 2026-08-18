@@ -13,12 +13,11 @@ int main(int argc, const char* argv[]) {
 	}
 	catch (const std::exception& e) {
 		std::cerr << "\nERROR: " << e.what() << std::endl;
-
 		std::cerr << "\nPress Enter to exit...";
 		std::cin.get();
-
 		return EXIT_FAILURE;
 	}
-
+	std::cerr << "\nPress Enter to exit...";
+	std::cin.get();
 	return EXIT_SUCCESS;
 }

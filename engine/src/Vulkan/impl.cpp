@@ -545,12 +545,8 @@ void smvk::CreateDefaultDescriptorSetLayout(VkDescriptorSetLayout& dsl) {
 	VK_CHECK(vkCreateDescriptorSetLayout(device_, &dslci, nullptr, &dsl));
 
 }
-void smvk::CreateDefaultPipelineLayout(VkPipelineLayout& out)
+void smvk::CreateDefaultPipelineLayout(VkDescriptorSetLayout* layouts, uint32_t layoutCount,VkPipelineLayout& out)
 {
-	VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
-	CreateDefaultDescriptorSetLayout(setLayout);
-	VkDescriptorSetLayout setLayouts[1] = { setLayout };
-
 	// Engine Wide PC block
 	static constexpr uint32_t EnginePushConstantSize = 128;
 	// Or 256 if Vulkan 1.4 is your minimum target.
@@ -562,8 +558,8 @@ void smvk::CreateDefaultPipelineLayout(VkPipelineLayout& out)
 
 	VkPipelineLayoutCreateInfo ci{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = 1,
-		.pSetLayouts = setLayouts,
+		.setLayoutCount = layoutCount,
+		.pSetLayouts = layouts,
 		.pushConstantRangeCount = 1,
 		.pPushConstantRanges = &range
 	};
@@ -903,7 +899,7 @@ int smvk::VulkanResourceManager::Initialize() {
 
 	// Hardcoded binding setup {
 	CreateDefaultDescriptorSetLayout(defaultSetLayout);
-	CreateDefaultPipelineLayout(defaultPipeLayout);
+	CreateDefaultPipelineLayout(&defaultSetLayout, 1, defaultPipeLayout);
 
 	// this pool only holds MAX_K, not MAX_K * framesInFlight or MAX_FRAMES_IN_FLIGHT
 	defaultDescriptorPool = CreateDescriptorPool();
@@ -1009,8 +1005,9 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	vkDestroyPipelineLayout(device_, defaultPipeLayout, nullptr);
 	vkDestroyDescriptorSetLayout(device_, defaultSetLayout, nullptr);
 	vkDestroySampler(device_, m_defaultSampler, nullptr);
-
 	memset(defaultDescriptorSets_, 0, sizeof(defaultDescriptorSets_));
+
+	vmaDestroyAllocator(m_allocator);
 };
 void smvk::VulkanResourceManager::UploadDataToBuffer(
 	BufferHandle buffer,
@@ -1887,11 +1884,11 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageHandle handle) {
 				vkDestroyImageView(device_, img->arrayView[i], nullptr);
 			}
 		}
-		if (img->sampleView != VK_NULL_HANDLE && img->sampleView != img->storageView) {
-			vkDestroyImageView(device_, img->sampleView, nullptr);
-		}
 		if (img->storageView != VK_NULL_HANDLE && img->storageView != img->sampleView) {
 			vkDestroyImageView(device_, img->storageView, nullptr);
+		}
+		if (img->sampleView != VK_NULL_HANDLE) {
+			vkDestroyImageView(device_, img->sampleView, nullptr);
 		}
 	}
 	if (!img->is_swapchain && img->vk_image != VK_NULL_HANDLE) {
@@ -1909,11 +1906,11 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::TextureHandle handle)
 				vkDestroyImageView(device_, tex->arrayView[i], nullptr);
 			}
 		}
-		if (tex->sampleView != VK_NULL_HANDLE && tex->sampleView != tex->storageView) {
-			vkDestroyImageView(device_, tex->sampleView, nullptr);
-		}
 		if (tex->storageView != VK_NULL_HANDLE && tex->storageView != tex->sampleView) {
 			vkDestroyImageView(device_, tex->storageView, nullptr);
+		}
+		if (tex->sampleView != VK_NULL_HANDLE) {
+			vkDestroyImageView(device_, tex->sampleView, nullptr);
 		}
 	}
 	if (!tex->is_swapchain && tex->vk_image != VK_NULL_HANDLE) {
