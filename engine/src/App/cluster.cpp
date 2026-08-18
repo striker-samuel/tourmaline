@@ -1,4 +1,4 @@
-#include <Engine/Renderer/cluster.h>
+#include <Engine/App/cluster.h>
 
 namespace {
 	constexpr size_t VertexBufferSize = 512ull * 1024ull * 1024ull;
@@ -26,21 +26,21 @@ namespace smvk {
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			});
+			}).release();
 
 		staticVertexShadingBuffer = ctx_.CreateBuffer({
 			VertexBufferSize,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			});
+			}).release();
 
 		staticIndexBuffer = ctx_.CreateBuffer({
 			IndexBufferSize,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			});
+			}).release();
 
 
 		// -------------------------------------------------------------------------
@@ -125,34 +125,7 @@ namespace smvk {
 
 		}
 	}
-	void Cluster::BindStaticMeshBuffers(VkCommandBuffer cmd) const
-	{
-		VkBuffer vertexBuffers[] = {
-			ctx_.buffers_.get(staticVertexPosBuffer)->vk_buffer,
-			ctx_.buffers_.get(staticVertexShadingBuffer)->vk_buffer
-		};
 
-		VkDeviceSize offsets[] = {
-			0,
-			0
-		};
-
-		vkCmdBindVertexBuffers(
-			cmd,
-			0,
-			2,
-			vertexBuffers,
-			offsets
-		);
-
-		vkCmdBindIndexBuffer(
-			cmd,
-			ctx_.buffers_.get(staticIndexBuffer)->vk_buffer,
-			0,
-			VK_INDEX_TYPE_UINT32
-		);
-	}
-	
 	// -----------------------------------------------------------------------------
 	// Mesh upload
 	// -----------------------------------------------------------------------------
@@ -482,6 +455,35 @@ namespace smvk {
 	//	materialCache[gltfMaterialIndex] = handle;
 	//	return handle;
 	//}
+
+	void BindStaticMeshBuffers(VkCommandBuffer cmd)
+	{
+		VkBuffer vertexBuffers[] = {
+			ctx_.buffers_.get(staticVertexPosBuffer)->vk_buffer,
+			ctx_.buffers_.get(staticVertexShadingBuffer)->vk_buffer
+		};
+
+		VkDeviceSize offsets[] = {
+			0,
+			0
+		};
+
+		vkCmdBindVertexBuffers(
+			cmd,
+			0,
+			2,
+			vertexBuffers,
+			offsets
+		);
+
+		vkCmdBindIndexBuffer(
+			cmd,
+			ctx_.buffers_.get(staticIndexBuffer)->vk_buffer,
+			0,
+			VK_INDEX_TYPE_UINT32
+		);
+	}
+
 
 } // namespace smvk
 

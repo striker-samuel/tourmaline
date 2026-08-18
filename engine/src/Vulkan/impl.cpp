@@ -1814,6 +1814,10 @@ void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 }
 void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex) {
 
+	if (!needToUpdateDescriptors) {
+		return;
+	}
+
 	std::vector<VkDescriptorImageInfo> imageInfos;
 	std::vector<VkDescriptorImageInfo> samplerInfos;
 	VkDescriptorImageInfo si{};
@@ -1832,7 +1836,8 @@ void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex) {
 	}
 	);
 
-	VkWriteDescriptorSet writes[2]{};
+	VkWriteDescriptorSet writes[2] = {};
+	//VkWriteDescriptorSet writes[kBinding_NumBindings] = {};
 	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[0].dstSet = defaultDescriptorSets_[frameIndex];
 	writes[0].dstBinding = smvk::Bindings::kBinding_Textures;
@@ -1849,6 +1854,8 @@ void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex) {
 	writes[1].descriptorCount = static_cast<uint32_t>(samplerInfos.size());   // or 1 if you use a single shared sampler
 	writes[1].pImageInfo = samplerInfos.data();
 	vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
+
+	needToUpdateDescriptors = false;
 }
 // 
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BufferHandle handle) {

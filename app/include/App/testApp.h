@@ -6,7 +6,7 @@
 #include <Engine/Utils/bvh.h>
 #include <Engine/Camera/camera.h> 
 
-#include <Engine/App/level.h>
+#include <Engine/App/world.h>
 #include <Engine/platform.h>
 
 // Constants //
@@ -54,6 +54,7 @@ static_assert(sizeof(FrameUniforms) % 16 == 0);
 
 // Resources
 struct AppResources {
+
 	smvk::Holder<smvk::BufferHandle> frameUniforms;
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
@@ -88,20 +89,13 @@ private:
 		if (!Super::Initialize())
 			return false;
 
-		m_cluster = std::make_unique<smvk::Cluster>(*m_context);
-		m_camera.setPerspective(45.0f, float(m_swapchain->GetExtent().width) / float(m_swapchain->GetExtent().height),
+		m_camera.setPerspective(
+			45.0f,
+			float(m_swapchain->GetExtent().width) / float(m_swapchain->GetExtent().height),
 			default_near_clip, default_far_clip
 		);
-		//
 		std::filesystem::path p(gltf_meshes_paths[0]);
-		m_currentLevel.cluster = m_cluster.get(); 
-		m_currentLevel.Upload(p);
-		m_currentLevel.static_tree = treeFromScene(m_currentLevel,
-			[&](uint32_t index) -> const smvk::StaticMesh& {return this->m_cluster->staticMeshes.objects_[index].obj_; }
-		);
-		m_currentLevel.tree_done = true;
-		m_context->ProcessDeferrredTasks();
-
+		//m_context->ProcessDeferrredTasks();
 		m_resources.frameUniforms = m_context->CreateBuffer(
 			{
 				.size = sizeof(FrameUniforms) * m_swapchain->framesInFlight_,
@@ -130,10 +124,6 @@ private:
 			.shaders = {vert, frag},
 			.shaderCount = 2
 		};
-
-		// dirty textures right now only happen here so this would be more efficient like this...
-		// but lets not optimize this now. for proper optimization we need proper app scene load/unload semantics, we actually dont have now
-		//m_context->UpdateBindings();
 
 		return true;
 	};
@@ -244,7 +234,9 @@ private:
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(logicalSwapchainImage);
 		//
-		m_cluster->BindStaticMeshBuffers(fb.commandBuffer);
+
+		// this clusters[0] is really hacky
+		smvk::BindStaticMeshBuffers(fb.commandBuffer);
 
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
@@ -254,21 +246,20 @@ private:
 			.setRecordingFunc([this, fb](smvk::CommandBuffer& cmd)
 		{
 			auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
-			auto mesh_manager = m_cluster.get();
 
-			std::vector<int> visible;
-			if (m_currentLevel.tree_done) {
-				frustumCullBVH(
-					m_currentLevel.static_tree,
-					0,
-					frameData.viewProj,
-					m_camera.getPosition(),
-					visible
-				);
-			}
-			else {
-				assert(false && "tree wasnt done");
-			}
+			//std::vector<int> visible;
+			//if (m_currentLevel.tree_done) {
+			//	frustumCullBVH(
+			//		m_currentLevel.static_tree,
+			//		0,
+			//		frameData.viewProj,
+			//		m_camera.getPosition(),
+			//		visible
+			//	);
+			//}
+			//else {
+			//	assert(false && "tree wasnt done");
+			//}
 
 			cmd.BindRenderPipeline(
 				m_resources.mainProgram,
@@ -292,26 +283,28 @@ private:
 				&frameUniforms
 			);
 			//
-			for (const Hierarchy& node : m_currentLevel.hierarchy)
+
+			auto& scene = m_currentLevel.cluster->scene;
+			for (const Hierarchy& node : scene.hierarchy)
 			{
 
 				for (uint32_t visible_prim : visible) {
 					uint32_t visible_node = m_currentLevel.static_tree.primToNode[visible_prim];
 
-					auto it = m_currentLevel.meshForNode.find(visible_node);
-					if (it == m_currentLevel.meshForNode.end()) continue;
+					auto it = scene.meshForNode.find(visible_node);
+					if (it == scene.meshForNode.end()) continue;
 
 					uint32_t meshIndex = it->second;
 					auto mesh_desc = mesh_manager->staticMeshes.get(
 						mesh_manager->staticMeshes.getHandle(meshIndex)
 					);
 
-					auto material_instance_index = m_currentLevel.materialForNode[visible_node];
+					auto material_instance_index = scene.materialForNode[visible_node];
 					auto matHandle = m_cluster->materials.getHandle(material_instance_index);
 					auto mat = m_cluster->materials.get(matHandle);
 					assert(mat);
 
-					auto& model = m_currentLevel.globalTransform[visible_node];
+					auto& model = scene.globalTransform[visible_node];
 					PushConstants pc{};
 					pc.mpc = mat->values;
 					const float* modelData = glm::value_ptr(model);
@@ -361,8 +354,6 @@ private:
 
 private:
 	AppResources m_resources{};
-	std::unique_ptr<smvk::Cluster> m_cluster;
-	Level m_currentLevel;
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target

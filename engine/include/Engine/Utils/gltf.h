@@ -5,7 +5,8 @@
 
 #include <tiny_gltf.h>
 
-#include <Engine/Renderer/cluster.h>
+#include <Engine/App/cluster.h>
+
 
 struct GltfToSceneImporter
 {
@@ -55,7 +56,26 @@ struct GltfToSceneImporter
 	);
 };
 
+
 bool LoadModelFromAsciiFile(
 	tinygltf::Model& model,
 	const char* filename
 );
+
+smvk::Cluster GltfToCluster(
+	smvk::VulkanResourceManager& context,
+	const tinygltf::Model& inModel,
+	std::filesystem::path inGltfModelPath
+) {
+	smvk::Cluster out{ context };
+	GltfToSceneImporter importer{
+		out,
+		inModel,
+		inGltfModelPath
+	};
+	importer.importNodeRecursive(0, 1, 0);
+	markAsChanged(out.scene, 0);
+	recalculateGlobalTransforms(out.scene);
+	return out;
+}
+

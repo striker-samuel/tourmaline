@@ -10,7 +10,7 @@
 #include <Engine/Scene/scene.h>
 #include <Engine/Vulkan/core.h>
 
-#include <Engine/Renderer/cluster.h>
+#include <Engine/App/cluster.h>
 
 
 static inline glm::vec3 minVec(const glm::vec3& a, const glm::vec3& b) {

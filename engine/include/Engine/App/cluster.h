@@ -33,7 +33,6 @@ namespace smvk {
 
 	private:
 		void AllocateGeometryBuffers();
-		void BindStaticMeshBuffers(VkCommandBuffer cmd) const;
 		//
 		std::unordered_map<std::string, ClusterStaticMeshHandle> meshByUri;
 		std::unordered_map<std::string, ClusterMaterialHandle> materialByUri;
@@ -57,6 +56,11 @@ namespace smvk {
 		}
 	};
 
+
+	//void BindFormat(VertexFormat fmt);
+	// static heaps, this could be done quite easily
+	void BindStaticMeshBuffers(VkCommandBuffer cmd);
 }
+
 
 

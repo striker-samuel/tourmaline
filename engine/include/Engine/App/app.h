@@ -14,6 +14,8 @@
 #include "input.h"
 #include <Engine/Vulkan/core.h>
 
+#include <Engine/App/world.h>
+
 namespace smvk {
 
 	struct RenderGraph;
@@ -34,6 +36,7 @@ namespace smvk {
 		std::unique_ptr<VulkanResourceManager> m_context;
 		std::unique_ptr<VulkanSwapchain> m_swapchain;
 		std::unique_ptr<RenderGraph> m_rendergraph;
+		std::unique_ptr<World> m_world;
 		ImGuiContext* m_imguiCtx = nullptr;
 		//Holder<DescriptorPoolHandle> imgui_descriptorPool;
 #pragma region ===[ App / Core State ]===
