@@ -4,9 +4,8 @@
 #include <vector>
 #include <optional>
 
-#include <Engine/Shared/common.h>
-#include "volk.h"
-#include "vk_mem_alloc.h"
+#include <Engine/Shared/common.h> //glm
+#include <Engine/Vulkan/core.h>
 
 namespace smvk {
 
@@ -20,45 +19,6 @@ namespace smvk {
         } values;
 
         static_assert(sizeof(Values) % 16 == 0);
-    };
-
-
-    enum class PrimitiveTopology {
-        PointList,
-        LineList,
-        LineStrip,
-        TriangleList,
-        TriangleStrip,
-        TriangleFan,
-    };
-
-    enum class VertexSemantic {
-        Position,
-        Normal,
-        Tangent,
-        Color,
-        TexCoord0,
-        TexCoord1,
-        JointIndices,
-        JointWeights,
-    };
-
-    struct VertexAttribute {
-        VertexSemantic semantic;
-        VkFormat format;
-        uint32_t offset;
-    };
-
-    struct VertexBinding {
-        uint32_t binding;
-        uint32_t stride;
-        VkVertexInputRate inputRate;
-
-        std::vector<VertexAttribute> attributes;
-    };
-
-    struct VertexFormat {
-        std::vector<VertexBinding> bindings;
     };
 
 
@@ -190,7 +150,5 @@ namespace smvk {
         glm::vec3 aabbMax{};
     };
 
-    std::vector<VkVertexInputBindingDescription> getVkVertexInputBindingDescriptions(const VertexFormat& format);
-    std::vector<VkVertexInputAttributeDescription> getVkVertexAttributeDescriptions(const VertexFormat& format);
 
 } // namespace smvk

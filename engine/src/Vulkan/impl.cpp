@@ -733,7 +733,7 @@ void smvk::VulkanCore::CreateComputePipeline(VkComputePipelineCreateInfo createI
 	}
 }
 void smvk::VulkanCore::DestroyPipeline(VkPipeline pipeline) {
-vkDestroyPipeline(device_, pipeline, nullptr);
+	vkDestroyPipeline(device_, pipeline, nullptr);
 }
 void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
 
@@ -2684,6 +2684,55 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 	AdvanceFrame();
 
 }
+
+std::vector<VkVertexInputBindingDescription>
+smvk::getVkVertexInputBindingDescriptions(const smvk::VertexFormat& format)
+{
+	std::vector<VkVertexInputBindingDescription> descriptions;
+	descriptions.reserve(format.bindings.size());
+
+	for (const VertexBinding& binding : format.bindings) {
+		descriptions.push_back({
+			.binding = binding.binding,
+			.stride = binding.stride,
+			.inputRate = binding.inputRate,
+			});
+	}
+
+	return descriptions;
+}
+
+std::vector<VkVertexInputAttributeDescription>
+smvk::getVkVertexAttributeDescriptions(const smvk::VertexFormat& format)
+{
+	std::vector<VkVertexInputAttributeDescription> descriptions;
+
+	size_t attributeCount = 0;
+
+	for (const VertexBinding& binding : format.bindings) {
+		attributeCount += binding.attributes.size();
+	}
+
+	descriptions.reserve(attributeCount);
+
+	uint32_t location = 0;
+
+	for (const VertexBinding& binding : format.bindings) {
+		for (const VertexAttribute& attribute : binding.attributes) {
+			descriptions.push_back({
+				.location = location++,
+				.binding = binding.binding,
+				.format = attribute.format,
+				.offset = attribute.offset,
+				});
+		}
+	}
+
+	return descriptions;
+}
+
+
+
 
 //  SamplerPool
 //smvk::SamplerPool::SamplerPool(SamplerPoolCreateInfo createInfo) : device_(createInfo.device) {
