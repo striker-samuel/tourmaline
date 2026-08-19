@@ -62,7 +62,7 @@ bool LoadModelFromAsciiFile(
 );
 
 inline void GltfToCluster(
-	smvk::VulkanResourceManager& context,
+	smvk::VulkanResourceManager& /*context*/,
 	const tinygltf::Model& inModel,
 	std::filesystem::path inGltfModelPath,
 	smvk::Cluster& out
@@ -72,8 +72,34 @@ inline void GltfToCluster(
 		inModel,
 		inGltfModelPath
 	};
-	importer.importNodeRecursive(0, 1, 0);
-	markAsChanged(out.scene, 0);
+
+	// Cluster-scene root (index 0, parent = -1). Imported glTF scene roots
+	// attach underneath it so addNode() always sees a valid parent index.
+	const int root = addNode(out.scene, -1, 0);
+	out.scene.localTransform[root] = glm::mat4(1.0f);
+	out.scene.globalTransform[root] = glm::mat4(1.0f);
+
+	// Collect the glTF top-level node indices.
+	std::vector<int> gltfRoots;
+	if (inModel.defaultScene >= 0 && inModel.defaultScene < (int)inModel.scenes.size()) {
+		gltfRoots = inModel.scenes[inModel.defaultScene].nodes;
+	} else if (!inModel.scenes.empty()) {
+		gltfRoots = inModel.scenes.front().nodes;
+	} else {
+		// Fallback: a node is a root if it isn't referenced as anyone's child.
+		std::vector<bool> referenced(inModel.nodes.size());
+		for (const auto& n : inModel.nodes)
+			for (int c : n.children)
+				if (c >= 0 && c < (int)inModel.nodes.size())
+					referenced[c] = true;
+		for (int i = 0; i < (int)inModel.nodes.size(); ++i)
+			if (!referenced[i]) gltfRoots.push_back(i);
+	}
+
+	for (int gltfNode : gltfRoots)
+		importer.importNodeRecursive(gltfNode, root, 1);
+
+	markAsChanged(out.scene, root);
 	recalculateGlobalTransforms(out.scene);
 }
 

@@ -5,6 +5,7 @@
 #include "Engine/Scene/scene.h"
 #include "Engine/Scene/scene_utils.h"
 
+#include <cassert>
 #include <algorithm>
 #include <numeric>
 
@@ -12,6 +13,8 @@
 
 int addNode(Scene& scene, int parent, int level)
 {
+  const int nodeCount = (int)scene.hierarchy.size();
+  assert(parent == -1 || (parent >= 0 && parent < nodeCount));
   const int node = (int)scene.hierarchy.size();
   {
     // TODO: resize aux arrays (local/global etc.)
