@@ -1,6 +1,5 @@
 #pragma once
 
-
 #include <filesystem>
 
 #include <Engine/App/app.h>
@@ -16,7 +15,6 @@ static constexpr float default_far_clip = 50.0f;
 std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
 };
-
 
 // Data definitions //
 struct DrawSetData {
@@ -126,14 +124,18 @@ private:
 			.shaderCount = 2
 		};
 
-
 		// dont like this!!
+		// maybe something like register on use
+		// would be better
+		// or configurable build flags
+		// DISABLE_STATIC_VERTEX_HEAPS
+		// DISABLE_SKINNED_VERTEX_HEAPS
+		// to expose the option but kiss
 		smvk::AllocateStaticVertexFmt(*m_context);
 		return true;
 	};
 
 	void CleanUp() {
-
 		// really bad
 		vkDeviceWaitIdle(core_->GetDevice());
 		smvk::DeallocateStaticVertexFmt(*m_context);
@@ -271,27 +273,31 @@ private:
 				&frameUniforms
 			);
 
-
-			m_world->forEach(
-				[&]() 
-				{
-				},
-				smvk::IteratorFlag::NONE
-			);
-			//for (const Hierarchy& node : m_world->hierarchy)
-			/*for (NodeId node = 0; node < m_world->hierarchy.size(); node++)
+			m_world->forEachNode(
+				smvk::IteratorFlagBit_Renderable
+				| smvk::IteratorFlagBit_Opaque
+				| smvk::IteratorFlagBit_PassedCullTest
+				| smvk::IteratorFlagBit_StaticVertexFmt
+				,
+				[&](NodeId node)
 			{
-				auto it = m_world->meshForNode.find(node);
-				if (it == m_world->meshForNode.end()) continue;
-				uint32_t meshIndex = it->second;
+				auto meshForNode = m_world->meshForNode.find(node);
+				if (meshForNode == m_world->meshForNode.end()) {
+					return;
+				}
 
-				auto meshDesc = m_world->meshes->clusters[0].
-				auto material_instance_index = scene.materialForNode[visible_node];
-				auto matHandle = m_cluster->materials.getHandle(material_instance_index);
-				auto mat = m_cluster->materials.get(matHandle);
-				assert(mat);
+				auto materialForNode = m_world->materialForNode.find(node);
+				if (materialForNode == m_world->materialForNode.end()) {
+					return;
+				}
 
-				auto& model = scene.globalTransform[visible_node];
+				auto& model = m_world->globalTransform[node];
+
+				uint32_t meshId = meshForNode->second;
+				uint32_t materialId = materialForNode->second;
+				smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
+				auto mat = m_world->GetMaterial(materialId);
+
 				PushConstants pc{};
 				pc.mpc = mat->values;
 				const float* modelData = glm::value_ptr(model);
@@ -303,7 +309,7 @@ private:
 					&pc
 				);
 
-				for (auto& draw_set : mesh_desc->geometry.surfaces) {
+				for (auto& draw_set : meshDesc->geometry.surfaces) {
 					vkCmdDrawIndexed(
 						fb.commandBuffer,
 						draw_set.indexCount,
@@ -312,25 +318,36 @@ private:
 						draw_set.baseVertex,
 						0
 					);
-
-				}
-			}*/
-
-			//ImGui_ImplVulkan_NewFrame();
-			//ImGui_ImplGlfw_NewFrame();
-			//ImGui::NewFrame();
-
-			//// UI Here
-			//ImGuiIO& io = ImGui::GetIO();
-			//ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
-			//	1000.0f / io.Framerate, io.Framerate);
-
-			//ImDrawList* drawList = ImGui::GetForegroundDrawList();
-			//ImGui::Render();
-			//ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), fb.commandBuffer);
-			//
+				};
+			}
+			);
+		
 		}
 			);
+
+
+		//// UI PASS
+		//m_rendergraph->AddPass()
+		//	.setOffset({ 0,0 })
+		//	.setExtent(fb.swapchain.extent_)
+		//	.setColor(colors, VK_ATTACHMENT_LOAD_OP_NONE, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })  // Rendering directly to swapchainImage!
+		//	//.setDepth(logicalDepthImageView, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
+		//	.setRecordingFunc([this, fb](smvk::CommandBuffer& cmd) {
+
+		//	//ImGui_ImplVulkan_NewFrame();
+		//	//ImGui_ImplGlfw_NewFrame();
+		//	//ImGui::NewFrame();
+
+		//	//// UI Here
+		//	//ImGuiIO& io = ImGui::GetIO();
+		//	//ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
+		//	//	1000.0f / io.Framerate, io.Framerate);
+
+		//	//ImDrawList* drawList = ImGui::GetForegroundDrawList();
+		//	//ImGui::Render();
+		//	//ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+		//	//
+		//});
 
 		m_rendergraph->Execute(fb);
 		m_context->ProcessDeferrredTasks();

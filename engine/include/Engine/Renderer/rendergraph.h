@@ -4,13 +4,14 @@
 #include <string_view> // Entry point 
 #include <cstring>     // compare and hash
 
-#include <Engine/Vulkan/impl.h>
-//#include <Engine/smvk.h>
+#include <Engine/Vulkan/impl.h> //
+//#include <Engine/smvk.h> // -> this should be enough
 #include <Engine/Renderer/mesh.h>
 
 namespace smvk {
 	struct RenderGraph;
 	struct CommandBuffer;
+	//
 	using LogicalBufferHandle = Handle<struct LogicalBuffer>;
 	using LogicalImageHandle = Handle<struct LogicalImage>;
 	using LogicalImageViewHandle = Handle<struct LogicalImageView>;
@@ -18,8 +19,6 @@ namespace smvk {
 };
 
 namespace smvk {
-
-
 
 	struct BufferKey {
 		size_t elementSize;
@@ -31,6 +30,7 @@ namespace smvk {
 		// perf gains from mangling all that could be negligible on modern hw.
 		bool ring; // each frame has its own size*count
 	};
+
 	using ImageKey = ImageCreateInfo;
 	struct ImageViewKey {
 		LogicalImageHandle image;
@@ -161,7 +161,7 @@ namespace smvk {
 		RecordingFunction recordingFunction_{};
 	};
 
-	struct CommandBuffer final {
+	struct CommandBuffer /*: ICommandBuffer*/ final {
 	public:
 		CommandBuffer() = delete;
 
@@ -365,19 +365,14 @@ namespace smvk {
 		assert(renderPass_ != nullptr);
 
 		VertexFormatDescription formatDescription{};
-
 		switch (vertexFormat)
 		{
 		case VertexFormat::StaticVertexFormat:
 			smvk::BindStaticVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
 			formatDescription = StaticVertexFormat;
 			break;
-
-			// Add other vertex formats here.
-			// case smvk::DynamicVertexFormat:
-			//     smvk::BindDynamicVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
-			//     break;
-
+		//case VertexFormat::Empty:
+		//	break;
 		default:
 			break;
 		}

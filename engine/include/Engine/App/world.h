@@ -9,45 +9,25 @@ namespace smvk // this builds on top of the rhi so maybe smvk is not proper-
 		CPU
 		//, GPU
 	};
-	//maybe specialize in MeshIteratorFLag, MaterialIteratorFLag... else?
-	// ScriptIteratorFlag
-	enum class IteratorFlag : uint32_t {
-		// Renderable
-		// Opaque
-		// Transparent
-		NONE = 0,
-		MESH = 1u << 0,
-		MATERIAL = 1u << 1,
-		TEXTURE = 1u << 2,
 
-		ALL = MESH | MATERIAL | TEXTURE
-	};
+	typedef enum IteratorFlagBits {
+		IteratorFlagBit_None = 0,
+		IteratorFlagBit_Renderable = 1u << 0,
+		IteratorFlagBit_Opaque = 1u << 1,
+		IteratorFlagBit_Transparent = 1u << 2,
+		IteratorFlagBit_PassedCullTest = 1u << 3,
+		IteratorFlagBit_StaticVertexFmt = 1u << 4,
+		//IteratorFlagBit_SkinnedVertexFmt = 1u << 5,
+		//IteratorFlagBit_Dag = 1u << 4, ?? Maybe
+	} IteratorFlagBits;
+	typedef uint32_t IteratorFlags;
 
-	constexpr IteratorFlag operator|(IteratorFlag a, IteratorFlag b)
-	{
-		return static_cast<IteratorFlag>(
-			static_cast<uint32_t>(a) |
-			static_cast<uint32_t>(b)
-			);
-	}
-
-	constexpr IteratorFlag operator&(IteratorFlag a, IteratorFlag b)
-	{
-		return static_cast<IteratorFlag>(
-			static_cast<uint32_t>(a) &
-			static_cast<uint32_t>(b)
-			);
-	}
-
-	constexpr bool HasFlag(IteratorFlag flags, IteratorFlag flag)
-	{
-		return (static_cast<uint32_t>(flags) &
-			static_cast<uint32_t>(flag)) != 0;
-	}
 	struct World : Scene // dont quite like this
 	{
 		explicit World() {};
-		//Scene scene;
+
+		mutable bool dirtyCull = true;
+		std::vector<IteratorFlagBits> flags; // indexed by node
 
 		std::vector<std::unique_ptr<smvk::Cluster>> clusters;
 
@@ -55,12 +35,10 @@ namespace smvk // this builds on top of the rhi so maybe smvk is not proper-
 			smvk::Cluster* cluster;
 			smvk::ClusterStaticMeshHandle handle;
 		};
-
 		struct MaterialLocation {
 			smvk::Cluster* cluster;
 			smvk::ClusterMaterialHandle handle;
 		};
-
 		struct TextureLocation {
 			smvk::Cluster* cluster;
 			smvk::ClusterTextureHandle handle;
@@ -78,7 +56,7 @@ namespace smvk // this builds on top of the rhi so maybe smvk is not proper-
 		void ResolveAndFixupClusters();
 
 		template<typename Func>
-		void forEach(Func&& func, IteratorFlag flags)
+		void forEachNode(IteratorFlags flags, Func&& func)
 		{
 			func();
 			//for (uint32_t i = 0; i < objects_.size(); ++i) {
@@ -112,7 +90,9 @@ namespace smvk // this builds on top of the rhi so maybe smvk is not proper-
 
 
 	private:
-		void Cull(CullType cullType, glm::mat4 viewProj);
+		void Cull(CullType cullType, glm::mat4 viewProj) {
+			dirtyCull = false;
+		};
 	};
 
 

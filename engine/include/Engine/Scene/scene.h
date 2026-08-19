@@ -41,7 +41,6 @@ struct Scene {
 	std::vector<mat4> localTransform;  // indexed by node
 	std::vector<mat4> globalTransform; // indexed by node
 
-	std::vector<NodeId> flags; // indexed by node
 	std::vector<NodeId> changedAtThisFrame[MAX_NODE_LEVEL];
 
 	std::vector<Hierarchy> hierarchy;

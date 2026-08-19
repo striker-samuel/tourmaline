@@ -9,7 +9,6 @@
 
 namespace smvk {
 
-
 	struct alignas(16) MaterialValues {
 		glm::vec4 ambient{ 0.06f };
 		glm::vec4 diffuse{ 1.0f };

@@ -732,25 +732,21 @@ namespace smvk {
 		}
 	};
 
-	// Predegined buffer usages so we have flags preset.
-	// Theres no need for infinite granularity so clearly this will be the best approach when ready
-	//enum BufferTypeBits : uint8_t {
-	//  BufferUsageBits_Index = 1 << 0,
-	//  BufferUsageBits_Vertex = 1 << 1,
-	//  BufferUsageBits_Uniform = 1 << 2,
-	//  BufferUsageBits_Storage = 1 << 3,
-	//  BufferUsageBits_Indirect = 1 << 4,
-	//  // ray tracing
-	//  BufferUsageBits_ShaderBindingTable = 1 << 5,
-	//  BufferUsageBits_AccelStructBuildInputReadOnly = 1 << 6,
-	//  BufferUsageBits_AccelStructStorage = 1 << 7
-	//};
+	//typedef enum BufferUsageFlagBits {
+	//	BufferUsageFlagBits_Index = 1 << 0,
+	//	BufferUsageFlagBits_Vertex = 1 << 1,
+	//	BufferUsageFlagBits_Uniform = 1 << 2,
+	//	BufferUsageFlagBits_Storage = 1 << 3,
+	//	BufferUsageFlagBits_Indirect = 1 << 4,
+	//} BufferUsageFlagBits;
 
-	//struct BufferCreateInfo {
+	//typedef uint8_t BufferUsageFlags;
+
+	//typedef struct BufferCreateInfo {
 	//	size_t size;
-	//	uint8_t bufferUsageType = 0;
+	//	BufferUsageFlags usage;
 	//	const char* name;
-	//};
+	//} BufferCreateInfo;
 
 	struct BufferCreateInfo {
 		VkDeviceSize size;
@@ -758,6 +754,7 @@ namespace smvk {
 		VkBufferUsageFlags usage_flags;
 		const char* name;
 	};
+
 	struct ImageCreateInfo {
 		VkSampleCountFlags vk_samples = VK_SAMPLE_COUNT_1_BIT;
 		VkExtent3D vk_extent;
