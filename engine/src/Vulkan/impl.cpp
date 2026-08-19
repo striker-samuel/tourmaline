@@ -922,6 +922,22 @@ int smvk::VulkanResourceManager::Initialize() {
 smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore& core) :core_(core) { Initialize(); }
 smvk::VulkanResourceManager::~VulkanResourceManager() {
 	VK_CHECK(vkDeviceWaitIdle(device_));
+
+	// Tear down the permanent static-vertex geometry heaps here (buffers +
+	// VMA virtual blocks) so they are freed with the allocator/pools still
+	// alive and never reported as leaks. No-op when never allocated.
+	destroy(this, m_staticVertexPosBuffer);
+	destroy(this, m_staticVertexShadingBuffer);
+	destroy(this, m_staticIndexBuffer);
+	if (m_staticVertexBlock) {
+		vmaDestroyVirtualBlock(m_staticVertexBlock);
+		m_staticVertexBlock = VK_NULL_HANDLE;
+	}
+	if (m_staticIndexBlock) {
+		vmaDestroyVirtualBlock(m_staticIndexBlock);
+		m_staticIndexBlock = VK_NULL_HANDLE;
+	}
+
 	delete m_submitter;
 	m_submitter = nullptr;
 

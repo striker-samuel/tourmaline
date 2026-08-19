@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Engine/Config/config.h>
 #include <Engine/smvk.h>
 
 namespace smvk {
@@ -211,6 +212,18 @@ namespace smvk {
 
 		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_; // Maybe we should do away with this as we only manage one pool, and one for Imgui
 		Pool<ShaderModule, VkShaderModule> shaderModules_; // this should be removed when moving to vk1.4
+
+		// Static vertex geometry heaps. These are permanent-lifetime
+		// resources owned by this manager and torn down in
+		// ~VulkanResourceManager (freeing the buffers + VMA virtual blocks
+		// before the allocator/pools are destroyed). Population is gated by
+		// SMVK_STATIC_VERTEX_HEAPS at the allocate call site; when disabled
+		// the handles stay empty and teardown is a no-op.
+		BufferHandle m_staticVertexPosBuffer{};
+		BufferHandle m_staticVertexShadingBuffer{};
+		BufferHandle m_staticIndexBuffer{};
+		VmaVirtualBlock m_staticVertexBlock = VK_NULL_HANDLE;
+		VmaVirtualBlock m_staticIndexBlock = VK_NULL_HANDLE;
 
 		// DEFAULTS
 		//TextureHandle m_nilTexture{};

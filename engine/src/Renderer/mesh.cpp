@@ -7,15 +7,6 @@
 namespace {
 	constexpr size_t VertexBufferSize = 512ull * 1024ull * 1024ull;
 	constexpr size_t IndexBufferSize = 512ull * 1024ull * 1024ull;
-
-	// StaticVertex Format Geometry Heaps
-	bool allocatedStaticVertexFmt = false;
-	smvk::BufferHandle staticVertexPosBuffer{};
-	smvk::BufferHandle staticVertexShadingBuffer{};
-	smvk::BufferHandle staticIndexBuffer{};
-
-	VmaVirtualBlock vertexBlock_ = VK_NULL_HANDLE;
-	VmaVirtualBlock indexBlock_ = VK_NULL_HANDLE;
 } // anonymous namespace
 
 namespace smvk {
@@ -59,7 +50,7 @@ namespace smvk {
 			allocInfo.alignment = 1;
 
 			const VkResult res = vmaVirtualAllocate(
-				vertexBlock_,
+				ctx_.m_staticVertexBlock,
 				&allocInfo,
 				&result.allocation.vertexAllocation,
 				&vertexBase
@@ -88,7 +79,7 @@ namespace smvk {
 			allocInfo.alignment = alignof(uint32_t);
 
 			const VkResult res = vmaVirtualAllocate(
-				indexBlock_,
+				ctx_.m_staticIndexBlock,
 				&allocInfo,
 				&result.allocation.indexAllocation,
 				&indexByteOffset
@@ -96,10 +87,10 @@ namespace smvk {
 
 			if (res != VK_SUCCESS) {
 
-				vmaVirtualFree(
-					vertexBlock_,
-					result.allocation.vertexAllocation
-				);
+			vmaVirtualFree(
+				ctx_.m_staticVertexBlock,
+				result.allocation.vertexAllocation
+			);
 
 				return {};
 			}
@@ -137,7 +128,7 @@ namespace smvk {
 			vertexCount * sizeof(VertexPos);
 
 		ctx_.UploadDataToBuffer(
-			staticVertexPosBuffer,
+			ctx_.m_staticVertexPosBuffer,
 			positions.data(),
 			positionBytes,
 
@@ -160,7 +151,7 @@ namespace smvk {
 			vertexCount * sizeof(VertexShading);
 
 		ctx_.UploadDataToBuffer(
-			staticVertexShadingBuffer,
+			ctx_.m_staticVertexShadingBuffer,
 			shading.data(),
 			shadingBytes,
 
@@ -179,7 +170,7 @@ namespace smvk {
 		if (indexCount > 0) {
 
 			ctx_.UploadDataToBuffer(
-				staticIndexBuffer,
+				ctx_.m_staticIndexBuffer,
 				data.indices.data(),
 				indexBytes,
 
@@ -245,7 +236,7 @@ namespace smvk {
 		if (mesh->allocation.vertexAllocation) {
 
 			vmaVirtualFree(
-				vertexBlock_,
+				ctx_.m_staticVertexBlock,
 				mesh->allocation.vertexAllocation
 			);
 
@@ -255,7 +246,7 @@ namespace smvk {
 		if (mesh->allocation.indexAllocation) {
 
 			vmaVirtualFree(
-				indexBlock_,
+				ctx_.m_staticIndexBlock,
 				mesh->allocation.indexAllocation
 			);
 
@@ -291,13 +282,13 @@ namespace smvk {
 	{
 
 #ifndef N_DEBUG
-		assert(staticIndexBuffer.valid());
-		assert(staticVertexPosBuffer.valid());
-		assert(staticVertexShadingBuffer.valid());
+		assert(ctx.m_staticVertexPosBuffer.valid());
+		assert(ctx.m_staticVertexShadingBuffer.valid());
+		assert(ctx.m_staticIndexBuffer.valid());
 #endif
 		VkBuffer vertexBuffers[] = {
-			ctx.buffers_.get(staticVertexPosBuffer)->vk_buffer,
-			ctx.buffers_.get(staticVertexShadingBuffer)->vk_buffer
+			ctx.buffers_.get(ctx.m_staticVertexPosBuffer)->vk_buffer,
+			ctx.buffers_.get(ctx.m_staticVertexShadingBuffer)->vk_buffer
 		};
 
 		VkDeviceSize offsets[] = {
@@ -315,7 +306,7 @@ namespace smvk {
 
 		vkCmdBindIndexBuffer(
 			cmd,
-			ctx.buffers_.get(staticIndexBuffer)->vk_buffer,
+			ctx.buffers_.get(ctx.m_staticIndexBuffer)->vk_buffer,
 			0,
 			VK_INDEX_TYPE_UINT32
 		);
@@ -323,20 +314,20 @@ namespace smvk {
 
 	void AllocateStaticVertexFmt(smvk::VulkanResourceManager& ctx)
 	{
-		assert(!allocatedStaticVertexFmt);
-		staticVertexPosBuffer = ctx.CreateBuffer({
+		assert(!ctx.m_staticVertexPosBuffer.valid());
+		ctx.m_staticVertexPosBuffer = ctx.CreateBuffer({
 				VertexBufferSize,
 				VMA_MEMORY_USAGE_GPU_ONLY,
 				VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
 				VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			}).release();
-		staticVertexShadingBuffer = ctx.CreateBuffer({
+		ctx.m_staticVertexShadingBuffer = ctx.CreateBuffer({
 			VertexBufferSize,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			}).release();
-		staticIndexBuffer = ctx.CreateBuffer({
+		ctx.m_staticIndexBuffer = ctx.CreateBuffer({
 			IndexBufferSize,
 			VMA_MEMORY_USAGE_GPU_ONLY,
 			VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
@@ -355,7 +346,7 @@ namespace smvk {
 			VK_CHECK(
 				vmaCreateVirtualBlock(
 					&info,
-					&vertexBlock_
+					&ctx.m_staticVertexBlock
 				)
 			);
 		}
@@ -374,37 +365,12 @@ namespace smvk {
 			VK_CHECK(
 				vmaCreateVirtualBlock(
 					&info,
-					&indexBlock_
+					&ctx.m_staticIndexBlock
 				)
 			);
 		}
-
-		allocatedStaticVertexFmt = true;
 	}
 
-
-	// this has the problem of needing ctx to be the same
-	// we are using single Vulkan Resource Manager for now
-	void DeallocateStaticVertexFmt(smvk::VulkanResourceManager& ctx)
-	{
-		if (vertexBlock_) {
-			vmaClearVirtualBlock(vertexBlock_);
-			vmaDestroyVirtualBlock(vertexBlock_);
-			vertexBlock_ = VK_NULL_HANDLE;
-		}
-
-		if (indexBlock_) {
-			vmaClearVirtualBlock(indexBlock_);
-			vmaDestroyVirtualBlock(indexBlock_);
-			indexBlock_ = VK_NULL_HANDLE;
-		}
-
-		// Skinned mesh geometry heap free
-		destroy(&ctx, staticVertexPosBuffer);
-		destroy(&ctx, staticVertexShadingBuffer);
-		destroy(&ctx, staticIndexBuffer);
-
-	}
 
 
 };

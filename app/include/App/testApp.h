@@ -125,14 +125,12 @@ private:
 			.shaderCount = 2
 		};
 
-		// dont like this!!
-		// maybe something like register on use
-		// would be better
-		// or configurable build flags
-		// DISABLE_STATIC_VERTEX_HEAPS
-		// DISABLE_SKINNED_VERTEX_HEAPS
-		// to expose the option but kiss
+		// Static vertex/index geometry heaps. Gated by SMVK_STATIC_VERTEX_HEAPS
+		// (see Engine/Config/config.h) so apps that do not use the static
+		// vertex format path can opt out of the large heaps.
+#if SMVK_STATIC_VERTEX_HEAPS
 		smvk::AllocateStaticVertexFmt(*m_context);
+#endif
 
 		// Import the glTF scene into a Cluster (owned by the cluster's resource
 		// pools), register it with the World, and resolve all imported scenes
@@ -149,10 +147,8 @@ private:
 		return true;
 	};
 
-	void CleanUp() {
-		// really bad
-		vkDeviceWaitIdle(core_->GetDevice());
-		smvk::DeallocateStaticVertexFmt(*m_context);
+	void CleanUp() override {
+		Super::CleanUp();
 	}
 
 	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame) {

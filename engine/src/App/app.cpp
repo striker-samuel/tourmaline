@@ -123,10 +123,7 @@ bool smvk::VulkanApp::Run() {
 
 void smvk::VulkanApp::CleanUp()
 {
-	vkDeviceWaitIdle(core_->GetDevice());
-
-	//
-	//smvk::DeallocateStaticVertexFmt(*m_context.get());
+		vkDeviceWaitIdle(core_->GetDevice());
 
 	if (window != nullptr) {
 		glfwDestroyWindow(window);

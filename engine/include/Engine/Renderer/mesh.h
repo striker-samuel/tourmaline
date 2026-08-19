@@ -153,7 +153,6 @@ namespace smvk {
 	};
 
 	void AllocateStaticVertexFmt(smvk::VulkanResourceManager& ctx);
-	void DeallocateStaticVertexFmt(smvk::VulkanResourceManager& ctx);
 	void BindStaticVertexFmtBuffers(VulkanResourceManager& ctx, VkCommandBuffer cmd);
 
 } // namespace smvk
