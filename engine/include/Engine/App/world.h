@@ -1,9 +1,14 @@
 #pragma once
+#include <memory>
+#include <unordered_map>
+#include <vector>
+
+#include <glm/glm.hpp>
+
 #include <Engine/App/cluster.h>
 #include <Engine/Scene/scene.h>
 
-namespace smvk // this builds on top of the rhi so maybe smvk is not proper-
-{
+namespace smvk {
 	// Only supported mode now
 	enum struct CullType {
 		CPU
@@ -22,12 +27,19 @@ namespace smvk // this builds on top of the rhi so maybe smvk is not proper-
 	} IteratorFlagBits;
 	typedef uint32_t IteratorFlags;
 
-	struct World : Scene // dont quite like this
-	{
+	// World is the single runtime scene graph. It is *not* an imported scene.
+	// It owns (has-a) the merged Scene hierarchy, owns the Clusters that hold
+	// the actual mesh/material/texture resources, and resolves per-node mesh/
+	// material indices stored in the Scene to the owning Cluster + handle.
+	struct World {
 		explicit World() {};
 
+		// Merged runtime scene graph. Imported Cluster scenes are folded into
+		// this via ResolveAndFixup_clusters().
+		Scene scene;
+
 		mutable bool dirtyCull = true;
-		std::vector<IteratorFlagBits> flags; // indexed by node
+		std::vector<IteratorFlags> flags; // indexed by node
 
 		std::vector<std::unique_ptr<smvk::Cluster>> clusters;
 
@@ -44,56 +56,43 @@ namespace smvk // this builds on top of the rhi so maybe smvk is not proper-
 			smvk::ClusterTextureHandle handle;
 		};
 
-		std::unordered_map<std::string, MeshLocation> meshes;
-		std::unordered_map<std::string, MaterialLocation> materials;
-		std::unordered_map<std::string, TextureLocation> textures;
+		// Indexed by the mesh/material index stored in scene.meshForNode /
+		// scene.materialForNode. Each entry points back to the owning
+		// Cluster so resources stay owned by clusters.
+		std::vector<MeshLocation> meshLocations;
+		std::vector<MaterialLocation> materialLocations;
+		std::vector<TextureLocation> textureLocations;
 
-		smvk::Cluster& LoadCluster(...);
+		smvk::Cluster& LoadCluster(VulkanResourceManager& ctx);
 		void UnloadCluster(smvk::Cluster&);
 
-		void RegisterCluster(smvk::Cluster&);
-		void UnregisterCluster(smvk::Cluster&);
-		void ResolveAndFixupClusters();
+		void RegisterCluster(std::unique_ptr<smvk::Cluster> cluster);
+		std::unique_ptr<smvk::Cluster> UnregisterCluster(smvk::Cluster&);
+		void ResolveAndFixup_clusters();
+
+		smvk::StaticMesh* GetMesh(uint32_t meshIndex);
+		smvk::Material* GetMaterial(uint32_t materialIndex);
 
 		template<typename Func>
-		void forEachNode(IteratorFlags flags, Func&& func)
+		void forEachNode(IteratorFlags requiredFlags, Func&& func)
 		{
-			func();
-			//for (uint32_t i = 0; i < objects_.size(); ++i) {
-			//	auto& object = objects_[i];
+			if (dirtyCull && flags.size() == scene.hierarchy.size())
+				Cull(CullType::CPU, {});
 
-			//	if (!object.occupied_)
-			//		continue;
+			for (uint32_t i = 0; i < scene.hierarchy.size(); ++i) {
+			const IteratorFlags nf =
+				(i < flags.size()) ? flags[i]
+				                   : static_cast<IteratorFlags>(IteratorFlagBit_None);
 
-			//	if (HasFlag(flags, IteratorFlag::MESH)) {
-			//		// check whether this object is a mesh
-			//	}
+				if ((nf & requiredFlags) != requiredFlags)
+					continue;
 
-			//	if (HasFlag(flags, IteratorFlag::MATERIAL)) {
-			//		// check whether this object is a material
-			//	}
-
-			//	func(Handle<ObjectType>(
-			//		i,
-			//		object.gen_
-			//	));
-			//}
-		}		//
-		//BvhTree staticNodesTree{};
-		//mutable bool staticBvhDone = true;
-		//void BuildBvh() {
-		//	treeFromScene(
-		//		scene,
-		//		[&](uint32_t index) -> const smvk::StaticMesh& {return this->meshes[index].obj_; }
-		//	);
-		//}
-
+				func(static_cast<NodeId>(i));
+			}
+		}
 
 	private:
-		void Cull(CullType cullType, glm::mat4 viewProj) {
-			dirtyCull = false;
-		};
+		void Cull(CullType cullType, glm::mat4 viewProj);
 	};
-
 
 };

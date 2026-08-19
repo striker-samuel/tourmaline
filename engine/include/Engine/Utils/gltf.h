@@ -61,11 +61,11 @@ bool LoadModelFromAsciiFile(
 	const char* filename
 );
 
-void GltfToCluster(
+inline void GltfToCluster(
 	smvk::VulkanResourceManager& context,
 	const tinygltf::Model& inModel,
 	std::filesystem::path inGltfModelPath,
-	smvk::Cluster out
+	smvk::Cluster& out
 ) {
 	GltfToSceneImporter importer{
 		out,

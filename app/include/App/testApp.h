@@ -6,6 +6,7 @@
 #include <Engine/App/world.h>
 
 #include <Engine/Camera/camera.h> 
+#include <Engine/Utils/gltf.h>
 #include <Engine/Renderer/rendergraph.h>
 #include <Engine/platform.h>
 
@@ -132,6 +133,19 @@ private:
 		// DISABLE_SKINNED_VERTEX_HEAPS
 		// to expose the option but kiss
 		smvk::AllocateStaticVertexFmt(*m_context);
+
+		// Import the glTF scene into a Cluster (owned by the cluster's resource
+		// pools), register it with the World, and resolve all imported scenes
+		// into the single runtime scene graph.
+		tinygltf::Model model;
+		if (!LoadModelFromAsciiFile(model, gltf_meshes_paths[0].c_str())) {
+			return false;
+		}
+
+		auto& cluster = m_world->LoadCluster(*m_context);
+		GltfToCluster(*m_context, model, gltf_meshes_paths[0], cluster);
+		m_world->ResolveAndFixup_clusters();
+
 		return true;
 	};
 
@@ -281,17 +295,17 @@ private:
 				,
 				[&](NodeId node)
 			{
-				auto meshForNode = m_world->meshForNode.find(node);
-				if (meshForNode == m_world->meshForNode.end()) {
+				auto meshForNode = m_world->scene.meshForNode.find(node);
+				if (meshForNode == m_world->scene.meshForNode.end()) {
 					return;
 				}
 
-				auto materialForNode = m_world->materialForNode.find(node);
-				if (materialForNode == m_world->materialForNode.end()) {
+				auto materialForNode = m_world->scene.materialForNode.find(node);
+				if (materialForNode == m_world->scene.materialForNode.end()) {
 					return;
 				}
 
-				auto& model = m_world->globalTransform[node];
+				auto& model = m_world->scene.globalTransform[node];
 
 				uint32_t meshId = meshForNode->second;
 				uint32_t materialId = materialForNode->second;

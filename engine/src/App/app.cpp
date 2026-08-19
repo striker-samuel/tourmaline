@@ -105,6 +105,7 @@ bool smvk::VulkanApp::Initialize() {
 	m_rendergraph = std::make_unique<RenderGraph>(*m_context);
 	//InitializeImGui();
 
+	m_world = std::make_unique<World>();
 
 	return true;
 

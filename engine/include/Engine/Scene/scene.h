@@ -12,13 +12,7 @@
 #include <glm/ext.hpp>
 
 using glm::mat4;
-
 constexpr const int MAX_NODE_LEVEL = 16;
-
-enum NodeFlags {
-    STATIC_TRANSFORM = 1u << 1,
-};
-
 
 // This was lifted from https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan
 // But cahnges has been made trought so its not 1:1 to the original
