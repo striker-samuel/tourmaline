@@ -1,12 +1,13 @@
 #pragma once
+
+
+#include <filesystem>
+
 #include <Engine/App/app.h>
-
-#include <Engine/Renderer/rendergraph.h>
-
-#include <Engine/Utils/bvh.h>
-#include <Engine/Camera/camera.h> 
-
 #include <Engine/App/world.h>
+
+#include <Engine/Camera/camera.h> 
+#include <Engine/Renderer/rendergraph.h>
 #include <Engine/platform.h>
 
 // Constants //
@@ -125,9 +126,18 @@ private:
 			.shaderCount = 2
 		};
 
+
+		// dont like this!!
+		smvk::AllocateStaticVertexFmt(*m_context);
 		return true;
 	};
 
+	void CleanUp() {
+
+		// really bad
+		vkDeviceWaitIdle(core_->GetDevice());
+		smvk::DeallocateStaticVertexFmt(*m_context);
+	}
 
 	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame) {
 
@@ -193,7 +203,6 @@ private:
 		data.farPlane = 0.f;
 		data.exposure = 0.f;
 
-
 		m_context->UploadDataToBuffer(
 			m_resources.frameUniforms,
 			&data,
@@ -215,7 +224,6 @@ private:
 		m_swapchain->EndAndPresentFramebuffer(fb);
 	}
 
-
 	void RenderFrame(smvk::FrameBuffer fb) {
 
 		m_rendergraph->NewFrame();
@@ -233,10 +241,6 @@ private:
 		);
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(logicalSwapchainImage);
-		//
-
-		// this clusters[0] is really hacky
-		smvk::BindStaticMeshBuffers(fb.commandBuffer);
 
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
@@ -246,89 +250,71 @@ private:
 			.setRecordingFunc([this, fb](smvk::CommandBuffer& cmd)
 		{
 			auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
-
-			//std::vector<int> visible;
-			//if (m_currentLevel.tree_done) {
-			//	frustumCullBVH(
-			//		m_currentLevel.static_tree,
-			//		0,
-			//		frameData.viewProj,
-			//		m_camera.getPosition(),
-			//		visible
-			//	);
-			//}
-			//else {
-			//	assert(false && "tree wasnt done");
-			//}
-
 			cmd.BindRenderPipeline(
 				m_resources.mainProgram,
-				smvk::StaticVertexFormat
-				);
+				smvk::VertexFormat::StaticVertexFormat
+			);
 
 			//Push frame
 			struct alignas(16) PushConstants {
 				float model[16];
-				smvk::Material::Values mpc{};
+				smvk::MaterialValues mpc{};
 				uint64_t frameUniforms;
 			};
 			uint64_t frameUniforms =
 				m_context->buffers_
 				.get(m_resources.frameUniforms)
 				->deviceAddress;
-
 			cmd.PushConstants(
 				offsetof(PushConstants, frameUniforms),
 				sizeof(frameUniforms),
 				&frameUniforms
 			);
-			//
 
-			auto& scene = m_currentLevel.cluster->scene;
-			for (const Hierarchy& node : scene.hierarchy)
+
+			m_world->forEach(
+				[&]() 
+				{
+				},
+				smvk::IteratorFlag::NONE
+			);
+			//for (const Hierarchy& node : m_world->hierarchy)
+			/*for (NodeId node = 0; node < m_world->hierarchy.size(); node++)
 			{
+				auto it = m_world->meshForNode.find(node);
+				if (it == m_world->meshForNode.end()) continue;
+				uint32_t meshIndex = it->second;
 
-				for (uint32_t visible_prim : visible) {
-					uint32_t visible_node = m_currentLevel.static_tree.primToNode[visible_prim];
+				auto meshDesc = m_world->meshes->clusters[0].
+				auto material_instance_index = scene.materialForNode[visible_node];
+				auto matHandle = m_cluster->materials.getHandle(material_instance_index);
+				auto mat = m_cluster->materials.get(matHandle);
+				assert(mat);
 
-					auto it = scene.meshForNode.find(visible_node);
-					if (it == scene.meshForNode.end()) continue;
+				auto& model = scene.globalTransform[visible_node];
+				PushConstants pc{};
+				pc.mpc = mat->values;
+				const float* modelData = glm::value_ptr(model);
+				std::copy_n(modelData, 16, pc.model);
 
-					uint32_t meshIndex = it->second;
-					auto mesh_desc = mesh_manager->staticMeshes.get(
-						mesh_manager->staticMeshes.getHandle(meshIndex)
+				cmd.PushConstants(
+					0,
+					offsetof(PushConstants, frameUniforms),
+					&pc
+				);
+
+				for (auto& draw_set : mesh_desc->geometry.surfaces) {
+					vkCmdDrawIndexed(
+						fb.commandBuffer,
+						draw_set.indexCount,
+						1,
+						draw_set.firstIndex,
+						draw_set.baseVertex,
+						0
 					);
 
-					auto material_instance_index = scene.materialForNode[visible_node];
-					auto matHandle = m_cluster->materials.getHandle(material_instance_index);
-					auto mat = m_cluster->materials.get(matHandle);
-					assert(mat);
-
-					auto& model = scene.globalTransform[visible_node];
-					PushConstants pc{};
-					pc.mpc = mat->values;
-					const float* modelData = glm::value_ptr(model);
-					std::copy_n(modelData, 16, pc.model);
-
-					cmd.PushConstants(
-						0,
-						offsetof(PushConstants, frameUniforms),
-						&pc
-					);
-
-					for (auto& draw_set : mesh_desc->geometry.surfaces) {
-						vkCmdDrawIndexed(
-							fb.commandBuffer,
-							draw_set.indexCount,
-							1,
-							draw_set.firstIndex,
-							draw_set.baseVertex,
-							0
-						);
-
-					}
 				}
-			}
+			}*/
 
 			//ImGui_ImplVulkan_NewFrame();
 			//ImGui_ImplGlfw_NewFrame();

@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <iostream>
 
-#include <Engine/Vulkan/core.h>
+#include <Engine/Vulkan/impl.h>
 
 //
 #ifdef NDEBUG
@@ -1812,48 +1812,78 @@ void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 	}
 	m_deferredTasks.erase(m_deferredTasks.begin(), it);
 }
-void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex) {
-
+void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex)
+{
 	if (!needToUpdateDescriptors) {
 		return;
 	}
 
 	std::vector<VkDescriptorImageInfo> imageInfos;
 	std::vector<VkDescriptorImageInfo> samplerInfos;
-	VkDescriptorImageInfo si{};
-	si.sampler = m_defaultSampler;
-	si.imageView = VK_NULL_HANDLE;            // not used for SAMPLER
-	si.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for SAMPLER
-	samplerInfos.push_back(si);
 
+	// Shared/default sampler.
+	{
+		VkDescriptorImageInfo samplerInfo{};
+		samplerInfo.sampler = m_defaultSampler;
+		samplerInfo.imageView = VK_NULL_HANDLE;
+		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		samplerInfos.push_back(samplerInfo);
+	}
+
+	// Sampled images.
 	textures_.forEach([&](smvk::Image obj_)
 	{
-		VkDescriptorImageInfo ii{};
-		ii.sampler = VK_NULL_HANDLE; // separate samplers -> leave null
-		ii.imageView = obj_.sampleView;
-		ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		imageInfos.push_back(ii);
+		VkDescriptorImageInfo imageInfo{};
+		imageInfo.sampler = VK_NULL_HANDLE;
+		imageInfo.imageView = obj_.sampleView;
+		imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		imageInfos.push_back(imageInfo);
+	});
+
+	VkWriteDescriptorSet writes[2]{};
+	uint32_t numWrites = 0;
+
+	// Textures.
+	if (!imageInfos.empty())
+	{
+		VkWriteDescriptorSet& write = writes[numWrites++];
+
+		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		write.dstSet = defaultDescriptorSets_[frameIndex];
+		write.dstBinding = smvk::Bindings::kBinding_Textures;
+		write.dstArrayElement = 0;
+		write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		write.descriptorCount = static_cast<uint32_t>(imageInfos.size());
+		write.pImageInfo = imageInfos.data();
 	}
-	);
 
-	VkWriteDescriptorSet writes[2] = {};
-	//VkWriteDescriptorSet writes[kBinding_NumBindings] = {};
-	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[0].dstSet = defaultDescriptorSets_[frameIndex];
-	writes[0].dstBinding = smvk::Bindings::kBinding_Textures;
-	writes[0].dstArrayElement = 0;
-	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-	writes[0].descriptorCount = imageInfos.size();
-	writes[0].pImageInfo = imageInfos.data();
+	// Samplers.
+	if (!samplerInfos.empty())
+	{
+		VkWriteDescriptorSet& write = writes[numWrites++];
 
-	writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[1].dstSet = defaultDescriptorSets_[frameIndex];
-	writes[1].dstBinding = smvk::kBinding_Samplers;
-	writes[1].dstArrayElement = 0;
-	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-	writes[1].descriptorCount = static_cast<uint32_t>(samplerInfos.size());   // or 1 if you use a single shared sampler
-	writes[1].pImageInfo = samplerInfos.data();
-	vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
+		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		write.dstSet = defaultDescriptorSets_[frameIndex];
+		write.dstBinding = smvk::kBinding_Samplers;
+		write.dstArrayElement = 0;
+		write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+		write.descriptorCount = static_cast<uint32_t>(samplerInfos.size());
+		write.pImageInfo = samplerInfos.data();
+	}
+
+	// Don't call vkUpdateDescriptorSets with zero writes.
+	if (numWrites > 0)
+	{
+		vkUpdateDescriptorSets(
+			device_,
+			numWrites,
+			writes,
+			0,
+			nullptr
+		);
+	}
 
 	needToUpdateDescriptors = false;
 }
@@ -2694,7 +2724,7 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 }
 
 std::vector<VkVertexInputBindingDescription>
-smvk::getVkVertexInputBindingDescriptions(const smvk::VertexFormat& format)
+smvk::getVkVertexInputBindingDescriptions(const smvk::VertexFormatDescription& format)
 {
 	std::vector<VkVertexInputBindingDescription> descriptions;
 	descriptions.reserve(format.bindings.size());
@@ -2711,7 +2741,7 @@ smvk::getVkVertexInputBindingDescriptions(const smvk::VertexFormat& format)
 }
 
 std::vector<VkVertexInputAttributeDescription>
-smvk::getVkVertexAttributeDescriptions(const smvk::VertexFormat& format)
+smvk::getVkVertexAttributeDescriptions(const smvk::VertexFormatDescription& format)
 {
 	std::vector<VkVertexInputAttributeDescription> descriptions;
 

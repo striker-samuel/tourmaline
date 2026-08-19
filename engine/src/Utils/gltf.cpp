@@ -8,7 +8,6 @@
 #include <Engine/Utils/gltf.h>
 #include <Engine/Shared/common.h>
 
-
 namespace {
 	constexpr uint32_t DEFAULT_MATERIAL_INDEX = 0;
 	enum class AlphaMode { Opaque, Mask, Blend };
@@ -154,7 +153,6 @@ bool LoadModelFromAsciiFile(tinygltf::Model& model, const char* filename) {
 
 	return res;
 }
-
 std::optional<GltfTextureRef> GltfResolveTexture(const tinygltf::Model& model, const tinygltf::TextureInfo& texInfo)
 {
 	if (texInfo.index < 0 || texInfo.index >= (int)model.textures.size()) return std::nullopt;
@@ -205,9 +203,7 @@ std::optional<GltfTextureRef> GLtfResolveOcclusionTexture(const tinygltf::Model&
 	if (out.imageIndex < 0) return std::nullopt;
 	return out;
 }
-static GltfMaterial ExtractMaterial(
-	const tinygltf::Model& model,
-	int materialIndex)
+static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIndex)
 {
 	assert(materialIndex >= 0);
 	assert(
@@ -422,7 +418,6 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 
 	return slot;
 }
-
 smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, const tinygltf::Primitive& primitive) {
 	smvk::StaticMeshUpload data;
 	// AABB. for culling	
@@ -522,11 +517,7 @@ smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model
 	return data;
 
 }
-
-smvk::ClusterStaticMeshHandle
-GltfToSceneImporter::getOrCreateMesh(
-	int gltfMeshIndex,
-	int primitiveIndex)
+smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshIndex, int primitiveIndex)
 {
 	assert(gltfMeshIndex >= 0);
 	assert(

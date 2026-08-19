@@ -35,37 +35,22 @@ struct Hierarchy {
 	int level = 0;
 };
 
+using NodeId = uint32_t;
 struct Scene {
 
-	// local transformations for each node and global transforms
-	// + an array of 'dirty/changed' local transforms
 	std::vector<mat4> localTransform;  // indexed by node
 	std::vector<mat4> globalTransform; // indexed by node
 
-	std::vector<uint32_t> flags; // indexed by node
+	std::vector<NodeId> flags; // indexed by node
+	std::vector<NodeId> changedAtThisFrame[MAX_NODE_LEVEL];
 
-	// list of nodes that need their global transforms recalculated
-	std::vector<int> changedAtThisFrame[MAX_NODE_LEVEL];
-
-	// Hierarchy component
 	std::vector<Hierarchy> hierarchy;
+	std::unordered_map<NodeId, uint32_t> meshForNode;
+	std::unordered_map<NodeId, uint32_t> materialForNode;
+	std::unordered_map<NodeId, uint32_t> nameForNode;
+	std::unordered_map<NodeId, uint32_t> lightForNode;
 
-	// MeshData component: which MeshData belongs to which node (Node -> MeshData)
-	std::unordered_map<uint32_t, uint32_t> meshForNode;
-
-	// Material component: which material belongs to which node (Node -> Material)
-	std::unordered_map<uint32_t, uint32_t> materialForNode;
-
-	// Node name component: which name is assigned to the node (Node -> Name)
-	std::unordered_map<uint32_t, uint32_t> nameForNode;
-
-	// Lets add light support to the scene def. hieratchy node can be both light and mesh at the same time
-	std::unordered_map<uint32_t, uint32_t> lightForNode;
-
-	// List of scene node names
 	std::vector<std::string> nodeNames;
-
-	// Debug list of material names
 	std::vector<std::string> materialNames;
 };
 

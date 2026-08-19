@@ -8,10 +8,7 @@
 #include <cstdint>
 
 #include <Engine/Scene/scene.h>
-#include <Engine/Vulkan/core.h>
-
-#include <Engine/App/cluster.h>
-
+//#include <Engine/App/cluster.h>
 
 static inline glm::vec3 minVec(const glm::vec3& a, const glm::vec3& b) {
 	return { std::min(a.x,b.x), std::min(a.y,b.y), std::min(a.z,b.z) };

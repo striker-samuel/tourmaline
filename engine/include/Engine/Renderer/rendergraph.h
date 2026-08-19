@@ -4,7 +4,8 @@
 #include <string_view> // Entry point 
 #include <cstring>     // compare and hash
 
-#include <Engine/Vulkan/core.h>
+#include <Engine/Vulkan/impl.h>
+//#include <Engine/smvk.h>
 #include <Engine/Renderer/mesh.h>
 
 namespace smvk {
@@ -358,10 +359,28 @@ namespace smvk {
 		, renderPass_(&renderPass)
 	{}
 
-	inline void CommandBuffer::BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormat vertexFormat = VertexFormat())
+	inline void CommandBuffer::BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormat vertexFormat = VertexFormat::Empty)
 	{
 		assert(graph_ != nullptr);
 		assert(renderPass_ != nullptr);
+
+		VertexFormatDescription formatDescription{};
+
+		switch (vertexFormat)
+		{
+		case VertexFormat::StaticVertexFormat:
+			smvk::BindStaticVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
+			formatDescription = StaticVertexFormat;
+			break;
+
+			// Add other vertex formats here.
+			// case smvk::DynamicVertexFormat:
+			//     smvk::BindDynamicVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
+			//     break;
+
+		default:
+			break;
+		}
 
 		std::vector<VkFormat> colorAttachmentFormats;
 		colorAttachmentFormats.reserve(renderPass_->colorAttachments_.size());
@@ -382,7 +401,7 @@ namespace smvk {
 
 		auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
 			shaderProgram,
-			vertexFormat,
+			formatDescription,
 			colorAttachmentFormats.data(),
 			static_cast<uint32_t>(colorAttachmentFormats.size()),
 			depthFormat,

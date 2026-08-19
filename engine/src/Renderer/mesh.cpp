@@ -1,135 +1,33 @@
+#include <Engine/Renderer/mesh.h>
 #include <Engine/App/cluster.h>
+
+#include <Engine/Vulkan/impl.h>
+#include <Engine/smvk.h>
 
 namespace {
 	constexpr size_t VertexBufferSize = 512ull * 1024ull * 1024ull;
 	constexpr size_t IndexBufferSize = 512ull * 1024ull * 1024ull;
 
+	// StaticVertex Format Geometry Heaps
+	bool allocatedStaticVertexFmt = false;
 	smvk::BufferHandle staticVertexPosBuffer{};
 	smvk::BufferHandle staticVertexShadingBuffer{};
 	smvk::BufferHandle staticIndexBuffer{};
+
 	VmaVirtualBlock vertexBlock_ = VK_NULL_HANDLE;
 	VmaVirtualBlock indexBlock_ = VK_NULL_HANDLE;
-	uint32_t clusterRefCount_ = 0;
-
 } // anonymous namespace
 
 namespace smvk {
-
-	// -----------------------------------------------------------------------------
-	// Buffer initialization
-	// -----------------------------------------------------------------------------
-
-	void Cluster::AllocateGeometryBuffers()
-	{
-		staticVertexPosBuffer = ctx_.CreateBuffer({
-			VertexBufferSize,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			}).release();
-
-		staticVertexShadingBuffer = ctx_.CreateBuffer({
-			VertexBufferSize,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			}).release();
-
-		staticIndexBuffer = ctx_.CreateBuffer({
-			IndexBufferSize,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			}).release();
-
-
-		// -------------------------------------------------------------------------
-		// Vertex virtual allocator
-		//
-		// IMPORTANT:
-		// This allocator is measured in VERTICES, not bytes.
-		//
-		// Both physical vertex streams use this same allocation.
-		// -------------------------------------------------------------------------
-
-		const VkDeviceSize maxVertices = std::min(
-			VertexBufferSize / sizeof(VertexPos),
-			VertexBufferSize / sizeof(VertexShading)
-		);
-
-		{
-			VmaVirtualBlockCreateInfo info{};
-			info.size = maxVertices;
-
-			VK_CHECK(
-				vmaCreateVirtualBlock(
-					&info,
-					&vertexBlock_
-				)
-			);
-		}
-
-
-		// -------------------------------------------------------------------------
-		// Index virtual allocator
-		//
-		// This one IS measured in bytes.
-		// -------------------------------------------------------------------------
-
-		{
-			VmaVirtualBlockCreateInfo info{};
-			info.size = IndexBufferSize;
-
-			VK_CHECK(
-				vmaCreateVirtualBlock(
-					&info,
-					&indexBlock_
-				)
-			);
-		}
+	Cluster::~Cluster() {
+		// staticMeshes have vmaAllocations that need to be destroyed properly
+		staticMeshes.forEachHandle([&](ClusterStaticMeshHandle han) {
+			DestroyMesh(han);
+		});
+		//these can just go atm
+		materials.clear();
+		textures.clear();
 	}
-
-
-
-	Cluster::Cluster(VulkanResourceManager& ctx)
-		: ctx_(ctx)
-	{
-		if (clusterRefCount_++ == 0) {
-			AllocateGeometryBuffers();
-		}
-	}
-
-	Cluster::~Cluster()
-	{
-		assert(clusterRefCount_ > 0);
-
-		// mt problems probably
-		if (--clusterRefCount_ == 0) {
-
-			if (vertexBlock_) {
-				vmaClearVirtualBlock(vertexBlock_);
-				vmaDestroyVirtualBlock(vertexBlock_);
-				vertexBlock_ = VK_NULL_HANDLE;
-			}
-
-			if (indexBlock_) {
-				vmaClearVirtualBlock(indexBlock_);
-				vmaDestroyVirtualBlock(indexBlock_);
-				indexBlock_ = VK_NULL_HANDLE;
-			}
-
-			// Skinned mesh geometry heap free
-			destroy(&ctx_, staticVertexPosBuffer);
-			destroy(&ctx_, staticVertexShadingBuffer);
-			destroy(&ctx_, staticIndexBuffer);
-
-		}
-	}
-
-	// -----------------------------------------------------------------------------
-	// Mesh upload
-	// -----------------------------------------------------------------------------
-
 	ClusterStaticMeshHandle Cluster::UploadStaticMesh(
 		const StaticMeshUpload& data)
 	{
@@ -163,7 +61,7 @@ namespace smvk {
 			const VkResult res = vmaVirtualAllocate(
 				vertexBlock_,
 				&allocInfo,
-				&result.allocation.vertex,
+				&result.allocation.vertexAllocation,
 				&vertexBase
 			);
 
@@ -192,7 +90,7 @@ namespace smvk {
 			const VkResult res = vmaVirtualAllocate(
 				indexBlock_,
 				&allocInfo,
-				&result.allocation.index,
+				&result.allocation.indexAllocation,
 				&indexByteOffset
 			);
 
@@ -200,7 +98,7 @@ namespace smvk {
 
 				vmaVirtualFree(
 					vertexBlock_,
-					result.allocation.vertex
+					result.allocation.vertexAllocation
 				);
 
 				return {};
@@ -344,24 +242,24 @@ namespace smvk {
 		StaticMesh* mesh =
 			staticMeshes.get(handle);
 
-		if (mesh->allocation.vertex) {
+		if (mesh->allocation.vertexAllocation) {
 
 			vmaVirtualFree(
 				vertexBlock_,
-				mesh->allocation.vertex
+				mesh->allocation.vertexAllocation
 			);
 
-			mesh->allocation.vertex = VK_NULL_HANDLE;
+			mesh->allocation.vertexAllocation = VK_NULL_HANDLE;
 		}
 
-		if (mesh->allocation.index) {
+		if (mesh->allocation.indexAllocation) {
 
 			vmaVirtualFree(
 				indexBlock_,
-				mesh->allocation.index
+				mesh->allocation.indexAllocation
 			);
 
-			mesh->allocation.index = VK_NULL_HANDLE;
+			mesh->allocation.indexAllocation = VK_NULL_HANDLE;
 		}
 
 		staticMeshes.destroy(handle);
@@ -381,86 +279,25 @@ namespace smvk {
 		);
 
 		Material material{};
-
-		material.values.tex[0] =
-			static_cast<int>(diffuse.index());
-
-		return materials.create(
-			std::move(material)
-		);
+		material.values.textures[0] = static_cast<int>(diffuse.index());
+		return materials.create(std::move(material));
 	}
 	void Cluster::DestroyMaterial(ClusterMaterialHandle handle)
 	{
 		materials.destroy(handle);
 	}
 
-	//ClusterTextureHandle Cluster::GetOrLoadTexture(
-	//	const std::filesystem::path& uri)
-	//{
-	//	const std::string key = NormalizeAssetUri(uri);
-
-	//	if (auto it = textureByUri.find(key); it != textureByUri.end())
-	//		return it->second;
-
-	//	ktxTexture2* ktx = nullptr;
-
-	//	if (ktxTexture2_CreateFromNamedFile(
-	//		key.c_str(),
-	//		KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
-	//		&ktx) != KTX_SUCCESS)
-	//	{
-	//		throw std::runtime_error("Failed to load texture: " + key);
-	//	}
-
-	//	auto handle = UploadTexture(*ktx);
-
-	//	ktxTexture2_Destroy(ktx);
-
-	//	textureByUri.emplace(key, handle);
-	//	return handle;
-	//}
-	//ClusterMaterialHandle
-	//	GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex)
-	//{
-	//	if (gltfMaterialIndex < 0)
-	//		return m_cluster.defaultMaterial();
-
-	//	if (materialCache[gltfMaterialIndex].valid())
-	//		return materialCache[gltfMaterialIndex];
-
-	//	const auto uri =
-	//		MakeGltfMaterialUri(gltfModelPath, gltfMaterialIndex);
-
-	//	if (auto existing = m_cluster.FindMaterial(uri)) {
-	//		materialCache[gltfMaterialIndex] = existing;
-	//		return existing;
-	//	}
-
-	//	const auto& src = extractedMaterials[gltfMaterialIndex];
-
-	//	Material dst{};
-
-	//	if (src.baseColorTex) {
-	//		auto textureUri =
-	//			ResolveTextureUri(model, *src.baseColorTex, gltfModelPath);
-
-	//		dst.baseColorTexture =
-	//			m_cluster.GetOrLoadTexture(textureUri);
-	//	}
-
-	//	auto handle = m_cluster.CreateMaterial(dst);
-
-	//	m_cluster.RegisterMaterial(uri, handle);
-
-	//	materialCache[gltfMaterialIndex] = handle;
-	//	return handle;
-	//}
-
-	void BindStaticMeshBuffers(VkCommandBuffer cmd)
+	void BindStaticVertexFmtBuffers(VulkanResourceManager& ctx, VkCommandBuffer cmd)
 	{
+
+#ifndef N_DEBUG
+		assert(staticIndexBuffer.valid());
+		assert(staticVertexPosBuffer.valid());
+		assert(staticVertexShadingBuffer.valid());
+#endif
 		VkBuffer vertexBuffers[] = {
-			ctx_.buffers_.get(staticVertexPosBuffer)->vk_buffer,
-			ctx_.buffers_.get(staticVertexShadingBuffer)->vk_buffer
+			ctx.buffers_.get(staticVertexPosBuffer)->vk_buffer,
+			ctx.buffers_.get(staticVertexShadingBuffer)->vk_buffer
 		};
 
 		VkDeviceSize offsets[] = {
@@ -478,13 +315,96 @@ namespace smvk {
 
 		vkCmdBindIndexBuffer(
 			cmd,
-			ctx_.buffers_.get(staticIndexBuffer)->vk_buffer,
+			ctx.buffers_.get(staticIndexBuffer)->vk_buffer,
 			0,
 			VK_INDEX_TYPE_UINT32
 		);
 	}
 
+	void AllocateStaticVertexFmt(smvk::VulkanResourceManager& ctx)
+	{
+		assert(!allocatedStaticVertexFmt);
+		staticVertexPosBuffer = ctx.CreateBuffer({
+				VertexBufferSize,
+				VMA_MEMORY_USAGE_GPU_ONLY,
+				VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			}).release();
+		staticVertexShadingBuffer = ctx.CreateBuffer({
+			VertexBufferSize,
+			VMA_MEMORY_USAGE_GPU_ONLY,
+			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			}).release();
+		staticIndexBuffer = ctx.CreateBuffer({
+			IndexBufferSize,
+			VMA_MEMORY_USAGE_GPU_ONLY,
+			VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			}).release();
 
-} // namespace smvk
+		const VkDeviceSize maxVertices = std::min(
+			VertexBufferSize / sizeof(smvk::VertexPos),
+			VertexBufferSize / sizeof(smvk::VertexShading)
+		);
+
+		{
+			VmaVirtualBlockCreateInfo info{};
+			info.size = maxVertices;
+
+			VK_CHECK(
+				vmaCreateVirtualBlock(
+					&info,
+					&vertexBlock_
+				)
+			);
+		}
 
 
+		// -------------------------------------------------------------------------
+		// Index virtual allocator
+		//
+		// This one IS measured in bytes.
+		// -------------------------------------------------------------------------
+
+		{
+			VmaVirtualBlockCreateInfo info{};
+			info.size = IndexBufferSize;
+
+			VK_CHECK(
+				vmaCreateVirtualBlock(
+					&info,
+					&indexBlock_
+				)
+			);
+		}
+
+		allocatedStaticVertexFmt = true;
+	}
+
+
+	// this has the problem of needing ctx to be the same
+	// we are using single Vulkan Resource Manager for now
+	void DeallocateStaticVertexFmt(smvk::VulkanResourceManager& ctx)
+	{
+		if (vertexBlock_) {
+			vmaClearVirtualBlock(vertexBlock_);
+			vmaDestroyVirtualBlock(vertexBlock_);
+			vertexBlock_ = VK_NULL_HANDLE;
+		}
+
+		if (indexBlock_) {
+			vmaClearVirtualBlock(indexBlock_);
+			vmaDestroyVirtualBlock(indexBlock_);
+			indexBlock_ = VK_NULL_HANDLE;
+		}
+
+		// Skinned mesh geometry heap free
+		destroy(&ctx, staticVertexPosBuffer);
+		destroy(&ctx, staticVertexShadingBuffer);
+		destroy(&ctx, staticIndexBuffer);
+
+	}
+
+
+};

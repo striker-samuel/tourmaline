@@ -137,7 +137,7 @@ private:
             .setRecordingFunc(
                 [this](smvk::CommandBuffer& cmd) 
         { //recording
-            cmd.BindRenderPipeline(m_program);
+            cmd.BindRenderPipeline(m_program, smvk::VertexFormat::Empty);
             cmd.Draw(
                 3,  // vertex count
                 1,  // instance count

@@ -12,8 +12,10 @@
 #include "imgui_impl_vulkan.h"
 //
 #include "input.h"
-#include <Engine/Vulkan/core.h>
 
+//#include <Engine/smvk.h> // impl.h should be done away and port the public interface to smvk.h
+//smvk.h is a abad name beacuse smvk means samuel martin vulkan!
+#include <Engine/Vulkan/impl.h>
 #include <Engine/App/world.h>
 
 namespace smvk {

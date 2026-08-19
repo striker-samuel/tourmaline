@@ -7,7 +7,6 @@
 
 #include <Engine/App/cluster.h>
 
-
 struct GltfToSceneImporter
 {
 	smvk::Cluster& cluster;
@@ -62,12 +61,12 @@ bool LoadModelFromAsciiFile(
 	const char* filename
 );
 
-smvk::Cluster GltfToCluster(
+void GltfToCluster(
 	smvk::VulkanResourceManager& context,
 	const tinygltf::Model& inModel,
-	std::filesystem::path inGltfModelPath
+	std::filesystem::path inGltfModelPath,
+	smvk::Cluster out
 ) {
-	smvk::Cluster out{ context };
 	GltfToSceneImporter importer{
 		out,
 		inModel,
@@ -76,6 +75,5 @@ smvk::Cluster GltfToCluster(
 	importer.importNodeRecursive(0, 1, 0);
 	markAsChanged(out.scene, 0);
 	recalculateGlobalTransforms(out.scene);
-	return out;
 }
 

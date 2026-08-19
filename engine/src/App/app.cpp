@@ -104,6 +104,8 @@ bool smvk::VulkanApp::Initialize() {
 
 	m_rendergraph = std::make_unique<RenderGraph>(*m_context);
 	//InitializeImGui();
+
+
 	return true;
 
 }
@@ -121,6 +123,10 @@ bool smvk::VulkanApp::Run() {
 void smvk::VulkanApp::CleanUp()
 {
 	vkDeviceWaitIdle(core_->GetDevice());
+
+	//
+	//smvk::DeallocateStaticVertexFmt(*m_context.get());
+
 	if (window != nullptr) {
 		glfwDestroyWindow(window);
 		window = nullptr;

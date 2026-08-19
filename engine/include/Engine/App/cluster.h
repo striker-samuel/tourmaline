@@ -1,11 +1,14 @@
 
 #pragma once
+#include <Engine/smvk.h>
+#include <Engine/Vulkan/impl.h>
 
-#include <Engine/Vulkan/core.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
 
 namespace smvk {
+
+	struct World;
 
 	using ClusterStaticMeshHandle = Handle<StaticMesh>;
 	using ClusterMaterialHandle = Handle<Material>;
@@ -14,14 +17,15 @@ namespace smvk {
 	struct Cluster {
 		explicit Cluster(VulkanResourceManager& ctx);
 		~Cluster();
-
 		Cluster(const Cluster&) = delete;
 		Cluster& operator=(const Cluster&) = delete;
 
 		VulkanResourceManager& ctx_;
-
 		Scene scene;
-		//
+		World* world = nullptr;
+		//Cluster* sibling = nullptr;
+		// linked list for import chain if multiple clusters belong to one input file.
+
 		Pool<StaticMesh, StaticMesh> staticMeshes;
 		Pool<Material, Material> materials;
 		Pool<Texture, Holder<TextureHandle>> textures;
@@ -32,11 +36,9 @@ namespace smvk {
 		void DestroyMaterial(ClusterMaterialHandle handle);
 
 	private:
-		void AllocateGeometryBuffers();
-		//
-		std::unordered_map<std::string, ClusterStaticMeshHandle> meshByUri;
-		std::unordered_map<std::string, ClusterMaterialHandle> materialByUri;
-		std::unordered_map<std::string, TextureHandle> textureByUri;
+		//std::unordered_map<std::string, ClusterStaticMeshHandle> meshByUri;
+		//std::unordered_map<std::string, ClusterMaterialHandle> materialByUri;
+		//std::unordered_map<std::string, TextureHandle> textureByUri;
 	};
 
 	template<typename HandleT>
@@ -55,11 +57,6 @@ namespace smvk {
 			handle = {};
 		}
 	};
-
-
-	//void BindFormat(VertexFormat fmt);
-	// static heaps, this could be done quite easily
-	void BindStaticMeshBuffers(VkCommandBuffer cmd);
 }
 
 

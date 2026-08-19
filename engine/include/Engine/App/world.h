@@ -1,10 +1,20 @@
 #pragma once
 #include <Engine/App/cluster.h>
-#include <Engine/Utils/bvh.h>
+#include <Engine/Scene/scene.h>
 
-namespace smvk {
-
+namespace smvk // this builds on top of the rhi so maybe smvk is not proper-
+{
+	// Only supported mode now
+	enum struct CullType {
+		CPU
+		//, GPU
+	};
+	//maybe specialize in MeshIteratorFLag, MaterialIteratorFLag... else?
+	// ScriptIteratorFlag
 	enum class IteratorFlag : uint32_t {
+		// Renderable
+		// Opaque
+		// Transparent
 		NONE = 0,
 		MESH = 1u << 0,
 		MATERIAL = 1u << 1,
@@ -13,8 +23,31 @@ namespace smvk {
 		ALL = MESH | MATERIAL | TEXTURE
 	};
 
-	struct World {
+	constexpr IteratorFlag operator|(IteratorFlag a, IteratorFlag b)
+	{
+		return static_cast<IteratorFlag>(
+			static_cast<uint32_t>(a) |
+			static_cast<uint32_t>(b)
+			);
+	}
+
+	constexpr IteratorFlag operator&(IteratorFlag a, IteratorFlag b)
+	{
+		return static_cast<IteratorFlag>(
+			static_cast<uint32_t>(a) &
+			static_cast<uint32_t>(b)
+			);
+	}
+
+	constexpr bool HasFlag(IteratorFlag flags, IteratorFlag flag)
+	{
+		return (static_cast<uint32_t>(flags) &
+			static_cast<uint32_t>(flag)) != 0;
+	}
+	struct World : Scene // dont quite like this
+	{
 		explicit World() {};
+		//Scene scene;
 
 		std::vector<std::unique_ptr<smvk::Cluster>> clusters;
 
@@ -42,32 +75,31 @@ namespace smvk {
 
 		void RegisterCluster(smvk::Cluster&);
 		void UnregisterCluster(smvk::Cluster&);
-
 		void ResolveAndFixupClusters();
-
 
 		template<typename Func>
 		void forEach(Func&& func, IteratorFlag flags)
 		{
-			for (uint32_t i = 0; i < objects_.size(); ++i) {
-				auto& object = objects_[i];
+			func();
+			//for (uint32_t i = 0; i < objects_.size(); ++i) {
+			//	auto& object = objects_[i];
 
-				if (!object.occupied_)
-					continue;
+			//	if (!object.occupied_)
+			//		continue;
 
-				if (HasFlag(flags, IteratorFlag::MESH)) {
-					// check whether this object is a mesh
-				}
+			//	if (HasFlag(flags, IteratorFlag::MESH)) {
+			//		// check whether this object is a mesh
+			//	}
 
-				if (HasFlag(flags, IteratorFlag::MATERIAL)) {
-					// check whether this object is a material
-				}
+			//	if (HasFlag(flags, IteratorFlag::MATERIAL)) {
+			//		// check whether this object is a material
+			//	}
 
-				func(Handle<ObjectType>(
-					i,
-					object.gen_
-				));
-			}
+			//	func(Handle<ObjectType>(
+			//		i,
+			//		object.gen_
+			//	));
+			//}
 		}		//
 		//BvhTree staticNodesTree{};
 		//mutable bool staticBvhDone = true;
@@ -77,6 +109,10 @@ namespace smvk {
 		//		[&](uint32_t index) -> const smvk::StaticMesh& {return this->meshes[index].obj_; }
 		//	);
 		//}
+
+
+	private:
+		void Cull(CullType cullType, glm::mat4 viewProj);
 	};
 
 
