@@ -637,11 +637,11 @@ static constexpr uint32_t DEFAULT_HEIGHT = 720;
 static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 6;
 static constexpr uint32_t DESIRED_SWAPCHAIN_IMAGE_COUNT = 2;
 static constexpr uint32_t MAX_BUFFERS = 1024;
-static constexpr uint32_t MAX_LIGHTS = 4096;
+static constexpr uint32_t MAX_LIGHTS = 64;
 static constexpr uint32_t MAX_TEXTURES = 4096;
 static constexpr uint32_t MAX_SAMPLERS = 8;
+static constexpr uint32_t MAX_SHADOW_SAMPLERS = 8;
 static constexpr uint32_t MAX_COLOR_ATTACHEMNTS = 4096;
-
 
 inline const char* vkResultToString(VkResult result);
 
@@ -762,8 +762,9 @@ namespace smvk {
 
 	enum Bindings {
 		kBinding_Textures = 0, // position 0
-		kBinding_Samplers = 1,
-		kBinding_StorageImages = 2,
+		kBinding_Samplers = 1, // kBinding_ComparisonSamplers = 2,
+		// I thought better to alias samplers with comparisonSamplers HLSLside.
+		kBinding_StorageImages = 3,
 		kBinding_NumBindings = 3 // this should be # of all other
 	};
 

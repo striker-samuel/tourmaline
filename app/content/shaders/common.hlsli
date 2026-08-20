@@ -1,10 +1,15 @@
+#include "light.hlsli"
 
-// Default bindings
-[[vk::binding(0,0)]] Texture2D materialTex[]; // sampled images
-[[vk::binding(1,0)]] SamplerState materialSamp[]; // samplers
+#define MAX_LIGHTS 64
 
-[[vk::binding(2,0)]] Texture2D shadowMaps[];
-[[vk::binding(3,0)]] SamplerState shadowSamplers[];
+[[vk::binding(0, 0)]]
+//[[vk::binding(kBinding_Textures, 0)]]
+Texture2D textures[];
+[[vk::binding(1, 0)]]
+//[[vk::binding(kBinding_Samplers, 0)]]
+SamplerState samplers[];
+[[vk::binding(1, 0)]] // aliases to samplers! CAREFUL
+SamplerComparisonState comparisonSamplers[];
 
 struct FrameUniforms
 {
@@ -28,13 +33,26 @@ struct FrameUniforms
     float padding;
 };
 
+
+struct LightBuffer
+{
+    Light lights[MAX_LIGHTS];
+};
+
+//struct MaterialValues{};
+
 struct PC_Draw
 {
     float4x4 model;
     float4 ambient;
     float4 diffuse;
-    uint4 tex;
-    vk::BufferPointer<FrameUniforms>frameUniforms;
+    uint4 tex; // type it properly. maybe
+    vk::BufferPointer<FrameUniforms>
+    frameUniforms;
+    vk::BufferPointer<LightBuffer>
+    bLights;
+    int comparisonSamplerId;
+   
 };
 
 [[vk::push_constant]]

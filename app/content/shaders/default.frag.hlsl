@@ -1,7 +1,6 @@
 #include "light.hlsli"
 #include "common.hlsli"
 
-
 struct PSIn
 {
     float3 color : COLOR0;
@@ -128,16 +127,14 @@ struct PSOut
 
 PSOut mainPS(PSIn IN)
 {
+    
     PSOut OUT;
     float4x4 lightView;
     float4x4 lightViewProj;
 
-    // Diffuse texture lookup
-    // x is diffuse.
     uint texIdx = pc.tex.x; // uniform per draw via push constants
-    
-    // using #0 sampler always hmmmm
-    float4 texSample = materialTex[texIdx].Sample(materialSamp[0], IN.uv);
+    float4 texSample = textures[texIdx].Sample(materialSamp[0], IN.uv); 
+    // using #0 sampler always hmmmm fix this!
 
     // Base material color (vertex color * material diffuse * texture)
     float3 baseColor = IN.color * pc.diffuse.rgb * texSample.rgb;
@@ -177,9 +174,14 @@ PSOut mainPS(PSIn IN)
     //}
 
     float shadow = 1.0f;
-    if (g_Lights[0].shadow_map_index >= 0)
+    Light light = pc.bLights.Get().lights[0];
+    if (light.shadow_map_index >= 0)
     {
-        shadow = GetShadowFactor(gShadowMaps, gShadowSamplers, IN.worldPos, g_Lights[0]);
+        shadow = GetShadowFactor(
+        shadowSamplers,
+        IN.worldPos,
+        light
+    );
     }
     //depth = (1 - depth) * 20;
     

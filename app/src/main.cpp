@@ -4,11 +4,13 @@
 
 #include <Engine/App/app.h>
 #include <Engine/App/world.h>
+#include <Engine/Renderer/rendergraph.h>
+
+#include <Engine/Utils/gltf.h> // for gltf read into smvk::Cluster
+#include <Engine/platform.h> // for readFile
 
 #include <Engine/Camera/camera.h> 
-#include <Engine/Utils/gltf.h>
-#include <Engine/Renderer/rendergraph.h>
-#include <Engine/platform.h>
+#include <Engine/Renderer/light.h>
 
 // Constants //
 static constexpr float default_near_clip = 0.01f;
@@ -55,6 +57,7 @@ static_assert(sizeof(FrameUniforms) % 16 == 0);
 // Resources
 struct AppResources {
 	smvk::Holder<smvk::BufferHandle> frameUniforms;
+	smvk::Holder<smvk::BufferHandle> lightsBuffer;
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
 	smvk::ShaderProgram mainProgram;
@@ -102,6 +105,13 @@ private:
 		m_resources.frameUniforms = m_context->CreateBuffer(
 			{
 				.size = sizeof(FrameUniforms) * m_swapchain->framesInFlight_,
+				.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+				.usage_flags = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			}
+		);
+		m_resources.frameUniforms = m_context->CreateBuffer(
+			{
+				.size = sizeof(Light) * MAX_LIGHTS * m_swapchain->framesInFlight_,
 				.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
 				.usage_flags = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			}
@@ -159,7 +169,7 @@ private:
 		shadowMapCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 		shadowMapCI.imageType = VK_IMAGE_TYPE_2D;
 		shadowMapCI.format = VK_FORMAT_D32_SFLOAT;
-		shadowMapCI.extent = {2048u, 2048u, 1u};
+		shadowMapCI.extent = { 2048u, 2048u, 1u };
 		shadowMapCI.mipLevels = 1u;
 		shadowMapCI.arrayLayers = 1u;
 		shadowMapCI.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -259,6 +269,39 @@ private:
 
 	}
 
+	void UpdateLights(uint32_t currentFrame) {
+
+		// GatherLights
+		m_world->forEachNode(
+			smvk::IteratorFlagBit_LightPoint,
+			[&](NodeId node) {
+		}
+		);
+
+		Light lights[MAX_LIGHTS]{};
+		lights[0] = Light{
+			.color = {1, .8, .8, 1}
+		};
+		glm::vec3 lightDir(0.5f, -1.0f, 0.5f);
+		lightDir = glm::normalize(lightDir);
+		glm::vec3 lightPos = glm::vec3(0.0f) + glm::vec3(1) * 0.5f + lightDir * 15.0f;
+		glm::vec3 sceneCenter(0.0f);
+		glm::vec3 lightUp(0.0f, 1.0f, 0.0f);
+		//glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, lightUp);
+		//glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, lightNear, lightFar);
+		//glm::mat4 lightVP = lightProj * lightView;
+		m_context->UploadDataToBuffer(
+			m_resources.frameUniforms,
+			&lights,
+			sizeof(lights)/* * 1*/,
+			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			0,
+			currentFrame * sizeof(FrameUniforms)
+			//currentFrame * m_resources.frameUniformsBuffer.key.elementSize * m_resources.frameUniformsBuffer.key.elementCount // dynamicOffsetPerFrame
+		);
+	}
+
 	void DrawFrame() {
 		auto fb = m_swapchain->AcquireFramebuffer();
 		UpdateDeltaTime();
@@ -270,41 +313,29 @@ private:
 
 		m_rendergraph->NewFrame();
 		m_context->UpdateBindings();
-		auto frameData = UpdateFrameUniforms(fb.imageIndex);
+		auto frameData = UpdateFrameUniforms(fb.frameIndex);
+		UpdateLights(fb.frameIndex);
 
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
 
-		// PASSSES
+		struct alignas(16) PushConstants {
+			float model[16];
+			smvk::MaterialValues mpc{};
+			uint64_t frameUniforms;
+		};
 
-		// Light direction positioned relative to camera
-		glm::vec3 lightDir(0.5f, -1.0f, 0.5f);
-		lightDir = glm::normalize(lightDir);
-
-		glm::vec3 lightPos = glm::vec3(0.0f) + glm::vec3(1) * 0.5f + lightDir * 15.0f;
-		glm::vec3 sceneCenter(0.0f);
-		glm::vec3 lightUp(0.0f, 1.0f, 0.0f);
-		glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, lightUp);
-
-		float lightFar = 50.0f;
-		float lightNear = 0.1f;
-		float radius = 10.0f;
-		glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, lightNear, lightFar);
-		glm::mat4 lightVP = lightProj * lightView;
+		// FRAME
 
 		auto& shadowPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
 			.setExtent({ 2048, 2048 })
-			.setDepth(m_viewportResources.shadowmaps[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, {1.0f})
-			.setRecordingFunc([this, lightVP](smvk::CommandBuffer& cmd)
+			.setDepth(m_viewportResources.shadowmaps[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { 1.0f })
+			.setRecordingFunc([this](smvk::CommandBuffer& cmd)
 		{
-			// Bind pipeline with cull mode BACK and depth bias for shadow mapping
-			// Set push constant with light VP matrix
-			struct alignas(16) ShadowPushConstants {
-				glm::mat4 lightVP;
-			};
-			ShadowPushConstants pushConstants{};
-			memcpy(&pushConstants.lightVP, &lightVP, 64);
+
+
+
 			cmd.PushConstants(
 				0,
 				sizeof(pushConstants),
@@ -317,7 +348,7 @@ private:
 			m_world->forEachNode(
 				smvk::IteratorFlagBit_PassedCullTest
 				| smvk::IteratorFlagBit_StaticVertexFmt
-				,[&](NodeId node)
+				, [&](NodeId node)
 			{
 				auto meshForNode = m_world->scene.meshForNode.find(node);
 				if (meshForNode == m_world->scene.meshForNode.end()) {
@@ -360,12 +391,7 @@ private:
 				smvk::VertexFormat::StaticVertexFormat
 			);
 
-			//Push frame
-			struct alignas(16) PushConstants {
-				float model[16];
-				smvk::MaterialValues mpc{};
-				uint64_t frameUniforms;
-			};
+
 			uint64_t frameUniforms =
 				m_context->buffers_
 				.get(m_resources.frameUniforms)
@@ -428,7 +454,7 @@ private:
 			);
 
 
-		
+
 		// UI PASS
 		//m_rendergraph->AddPass()
 		//	.setOffset({ 0,0 })

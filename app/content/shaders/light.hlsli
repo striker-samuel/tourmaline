@@ -1,7 +1,4 @@
 #pragma once
-/// <summary>
-///  Shader side descriptions.
-/// </summary>
 
 struct Light
 {

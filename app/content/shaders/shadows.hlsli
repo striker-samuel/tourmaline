@@ -6,7 +6,7 @@
 #endif
 
 #define Epsilon 1
-
+#include "light.hlsli"
 
 struct CascadeMeta
 {
@@ -96,17 +96,16 @@ float GetOrientedBias(float3 faceNormal,
 
 
 float GetShadowFactor(
-	Texture2D shadowMaps[],
-	SamplerComparisonState shadowSamplers[],
 	float3 worldPos,
 	Light light
 )
 {
 	if (light.shadow_map_index < 0)
 		return 1.0f;
-
+	
+	
 	uint idx = NonUniformResourceIndex((uint)light.shadow_map_index);
-
+	
 	float4 clip = mul(light.lightVP, float4(worldPos, 1.0));
 	float3 ndc = clip.xyz / clip.w;
 
@@ -122,8 +121,8 @@ float GetShadowFactor(
 
 	float receiverDepth = ndc.z;
 
-	float shadow = shadowMaps[idx].SampleCmpLevelZero(
-		shadowSamplers[idx],
+	float shadow = textures[idx].SampleCmpLevelZero(
+		comparisonSamplers[comparisonSamplerId],
 		uv,
 		receiverDepth
 	);

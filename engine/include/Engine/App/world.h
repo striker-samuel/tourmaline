@@ -29,7 +29,10 @@ namespace smvk {
 		IteratorFlagBit_Transparent = 1u << 2,
 		IteratorFlagBit_PassedCullTest = 1u << 3,
 		IteratorFlagBit_StaticVertexFmt = 1u << 4,
-		IteratorFlagBit_CastShadow= 1u << 5,
+		IteratorFlagBit_CastShadow = 1u << 5,
+		IteratorFlagBit_LightDirectional = 1u << 6,
+		IteratorFlagBit_LightSpot = 1u << 7,
+		IteratorFlagBit_LightPoint = 1u << 8,
 		//IteratorFlagBit_SkinnedVertexFmt = 1u << 5,
 		//IteratorFlagBit_Dag = 1u << 4, ?? Maybe
 	} IteratorFlagBits;
@@ -90,9 +93,9 @@ namespace smvk {
 		void forEachNode(IteratorFlags requiredFlags, Func&& func)
 		{
 			for (uint32_t i = 0; i < scene.hierarchy.size(); ++i) {
-			const IteratorFlags nf =
-				(i < flags.size()) ? flags[i]
-				                   : static_cast<IteratorFlags>(IteratorFlagBit_None);
+				const IteratorFlags nf =
+					(i < flags.size()) ? flags[i]
+					: static_cast<IteratorFlags>(IteratorFlagBit_None);
 
 				if ((nf & requiredFlags) != requiredFlags)
 					continue;

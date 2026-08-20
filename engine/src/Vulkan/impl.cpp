@@ -844,6 +844,7 @@ int smvk::VulkanResourceManager::Initialize() {
 	const VkDescriptorSetLayoutBinding bindings[kBinding_NumBindings] = {
 		getDSLBinding(kBinding_Textures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
 		getDSLBinding(kBinding_Samplers, VK_DESCRIPTOR_TYPE_SAMPLER, MAX_SAMPLERS, stageFlags),
+		//getDSLBinding(kBinding_ComparisonSamplers, VK_DESCRIPTOR_TYPE_SAMPLER, MAX_SHADOW_SAMPLERS, stageFlags),
 		getDSLBinding(kBinding_StorageImages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_TEXTURES, stageFlags),
 	};
 
