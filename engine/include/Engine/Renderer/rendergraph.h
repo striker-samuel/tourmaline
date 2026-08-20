@@ -206,7 +206,6 @@ namespace smvk {
 		explicit RenderGraph(VulkanResourceManager& ctx) : ctx_(ctx) {
 			pipelineCachePimpl = std::make_unique<PipelineCache>(&ctx_);
 		};
-		// could be called NewFrame really
 		void NewFrame() { m_passes.clear(); }
 		RenderPass& AddPass() {
 			return m_passes.emplace_back(RenderPass());

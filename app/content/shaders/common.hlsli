@@ -3,6 +3,9 @@
 [[vk::binding(0,0)]] Texture2D materialTex[]; // sampled images
 [[vk::binding(1,0)]] SamplerState materialSamp[]; // samplers
 
+[[vk::binding(2,0)]] Texture2D shadowMaps[];
+[[vk::binding(3,0)]] SamplerState shadowSamplers[];
+
 struct FrameUniforms
 {
     float4x4 view;

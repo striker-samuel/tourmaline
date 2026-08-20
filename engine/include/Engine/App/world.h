@@ -29,6 +29,7 @@ namespace smvk {
 		IteratorFlagBit_Transparent = 1u << 2,
 		IteratorFlagBit_PassedCullTest = 1u << 3,
 		IteratorFlagBit_StaticVertexFmt = 1u << 4,
+		IteratorFlagBit_CastShadow= 1u << 5,
 		//IteratorFlagBit_SkinnedVertexFmt = 1u << 5,
 		//IteratorFlagBit_Dag = 1u << 4, ?? Maybe
 	} IteratorFlagBits;

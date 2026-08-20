@@ -54,11 +54,16 @@ static_assert(sizeof(FrameUniforms) % 16 == 0);
 
 // Resources
 struct AppResources {
-
 	smvk::Holder<smvk::BufferHandle> frameUniforms;
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
 	smvk::ShaderProgram mainProgram;
+};
+
+struct ViewportResources {
+	smvk::LogicalImageViewHandle depthView;
+	std::vector<smvk::LogicalImageViewHandle> swapImages;
+	smvk::LogicalImageViewHandle shadowmaps[8];
 };
 
 class TestApp : public smvk::VulkanApp {
@@ -67,8 +72,6 @@ public:
 	//TestApp() {};
 	//~TestApp() {};
 private:
-	uint32_t kMaxDraws = 1000;
-
 	void UpdateCamera(float dt);
 	//
 
@@ -137,6 +140,39 @@ private:
 		auto& cluster = m_world->LoadCluster(*m_context);
 		GltfToCluster(*m_context, model, gltf_meshes_paths[0], cluster);
 		m_world->ResolveAndFixup_clusters();
+
+		// Frame Resource
+
+		for (int i = 0; i < m_swapchain->GetImageCount(); i++) {
+			auto logicalSwapchainImage = m_rendergraph->AddImageView(
+				m_swapchain->imageViews_[i],
+				m_swapchain->vk_surfaceFormat_
+			);
+		}
+		auto depthImage = m_context->images_.get(m_swapchain->depthImage_);
+		auto logicalDepthImageView = m_rendergraph->AddImageView(
+			depthImage->sampleView,
+			m_swapchain->vk_depthFormat_
+		);
+
+		VkImageCreateInfo shadowMapCI{};
+		shadowMapCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		shadowMapCI.imageType = VK_IMAGE_TYPE_2D;
+		shadowMapCI.format = VK_FORMAT_D32_SFLOAT;
+		shadowMapCI.extent = {2048u, 2048u, 1u};
+		shadowMapCI.mipLevels = 1u;
+		shadowMapCI.arrayLayers = 1u;
+		shadowMapCI.samples = VK_SAMPLE_COUNT_1_BIT;
+		shadowMapCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+		shadowMapCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		shadowMapCI.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		shadowMapCI.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+		auto shadowMapHandle = m_context->CreateImage(shadowMapCI, nullptr, "shadowMap");
+		auto shadowImg = m_context->images_.get(shadowMapHandle);
+		m_viewportResources.shadowmaps[0] = m_rendergraph->AddImageView(shadowImg->sampleView, VK_FORMAT_D32_SFLOAT);
+		//auto smimage = m_rendergraph->AddImage(shadowMapCI);
+		//m_viewportResources.shadowmaps[0] = m_rendergraph->AddImageView(smimage);
 
 		return true;
 	};
@@ -234,28 +270,88 @@ private:
 
 		m_rendergraph->NewFrame();
 		m_context->UpdateBindings();
-		auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
+		auto frameData = UpdateFrameUniforms(fb.imageIndex);
 
-		// ATTACHMENT SETUP
-		auto logicalSwapchainImage = m_rendergraph->AddImageView(
-			fb.swapchain.imageViews_[fb.imageIndex],
-			fb.swapchain.vk_surfaceFormat_
-		);
-		auto depthImage = m_context->images_.get(fb.swapchain.depthImage_);
-		auto logicalDepthImageView = m_rendergraph->AddImageView(
-			depthImage->sampleView,
-			fb.swapchain.vk_depthFormat_
-		);
 		std::vector<smvk::LogicalImageViewHandle> colors;
-		colors.push_back(logicalSwapchainImage);
+		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
 
 		// PASSSES
+
+		// Light direction positioned relative to camera
+		glm::vec3 lightDir(0.5f, -1.0f, 0.5f);
+		lightDir = glm::normalize(lightDir);
+
+		glm::vec3 lightPos = glm::vec3(0.0f) + glm::vec3(1) * 0.5f + lightDir * 15.0f;
+		glm::vec3 sceneCenter(0.0f);
+		glm::vec3 lightUp(0.0f, 1.0f, 0.0f);
+		glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, lightUp);
+
+		float lightFar = 50.0f;
+		float lightNear = 0.1f;
+		float radius = 10.0f;
+		glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, lightNear, lightFar);
+		glm::mat4 lightVP = lightProj * lightView;
+
+		auto& shadowPass = m_rendergraph->AddPass()
+			.setOffset({ 0,0 })
+			.setExtent({ 2048, 2048 })
+			.setDepth(m_viewportResources.shadowmaps[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, {1.0f})
+			.setRecordingFunc([this, lightVP](smvk::CommandBuffer& cmd)
+		{
+			// Bind pipeline with cull mode BACK and depth bias for shadow mapping
+			// Set push constant with light VP matrix
+			struct alignas(16) ShadowPushConstants {
+				glm::mat4 lightVP;
+			};
+			ShadowPushConstants pushConstants{};
+			memcpy(&pushConstants.lightVP, &lightVP, 64);
+			cmd.PushConstants(
+				0,
+				sizeof(pushConstants),
+				&pushConstants,
+				smvk::PipelineStageBit_AllGraphics
+			);
+
+			// Render meshes with cull mode BACK (render front faces from light's perspective)
+			// and depth bias to reduce shadow acne
+			m_world->forEachNode(
+				smvk::IteratorFlagBit_PassedCullTest
+				| smvk::IteratorFlagBit_StaticVertexFmt
+				,[&](NodeId node)
+			{
+				auto meshForNode = m_world->scene.meshForNode.find(node);
+				if (meshForNode == m_world->scene.meshForNode.end()) {
+					return;
+				}
+
+				auto materialForNode = m_world->scene.materialForNode.find(node);
+				if (materialForNode == m_world->scene.materialForNode.end()) {
+					return;
+				}
+
+				auto& model = m_world->scene.globalTransform[node];
+				uint32_t meshId = meshForNode->second;
+				smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
+
+				// Draw the mesh - the vertex shader will transform positions by lightVP
+				// (light VP is passed via push constants)
+				for (auto& draw_set : meshDesc->geometry.surfaces) {
+					cmd.DrawIndexed(
+						draw_set.indexCount,
+						1,
+						draw_set.firstIndex,
+						draw_set.baseVertex
+					);
+				};
+			}
+			);
+		});
 
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
 			.setExtent(fb.swapchain.extent_)
 			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })  // Rendering directly to swapchainImage!
-			.setDepth(logicalDepthImageView, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
+			.setDepth(m_viewportResources.depthView, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
 			.setRecordingFunc([this](smvk::CommandBuffer& cmd)
 		{
 
@@ -332,7 +428,8 @@ private:
 			);
 
 
-		//// UI PASS
+		
+		// UI PASS
 		//m_rendergraph->AddPass()
 		//	.setOffset({ 0,0 })
 		//	.setExtent(fb.swapchain.extent_)
@@ -363,6 +460,7 @@ private:
 
 private:
 	AppResources m_resources{};
+	ViewportResources m_viewportResources{};
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target

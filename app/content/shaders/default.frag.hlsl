@@ -15,7 +15,7 @@ struct PSOut
 };
 
 // Here because symbols need to be defined before literal copy paste of include!
-//#include "shadows.hlsli"
+#include "shadows.hlsli"
 
 //float3 EvaluateSpotLight(
 //    Light light,
@@ -148,7 +148,7 @@ PSOut mainPS(PSIn IN)
     // Normalized normal
     float3 N = normalize(IN.normal);
 
-    //float shadow = ShadowFactor(IN.worldPos);
+//float shadow = ShadowFactor(IN.worldPos);
     // Accumulate lighting
     float3 litColor = ambient;
 
@@ -175,12 +175,16 @@ PSOut mainPS(PSIn IN)
     //        continue;
     //    }
     //}
-    
-    //float depth = gShadowMaps.Sample(gShadowSampler, float3(IN.uv, g_Lights[0].shadow_map_index)).r;
+
+    float shadow = 1.0f;
+    if (g_Lights[0].shadow_map_index >= 0)
+    {
+        shadow = GetShadowFactor(gShadowMaps, gShadowSamplers, IN.worldPos, g_Lights[0]);
+    }
     //depth = (1 - depth) * 20;
     
     OUT.
-        outColor = float4(litColor.rgb, texSample.a);
+        outColor = float4(litColor.rgb * shadow, texSample.a);
 
     
     //float3 N = normalize(IN.normal);
