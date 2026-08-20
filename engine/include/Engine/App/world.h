@@ -6,13 +6,20 @@
 #include <glm/glm.hpp>
 
 #include <Engine/App/cluster.h>
+//#include <Engine/Utils/Bvh.h>
 #include <Engine/Scene/scene.h>
 
 namespace smvk {
+
 	// Only supported mode now
 	enum struct CullType {
 		CPU
 		//, GPU
+	};
+
+	struct CullConfiguration {
+		CullType cullType = CullType::CPU;
+		glm::mat4 viewProj{};
 	};
 
 	typedef enum IteratorFlagBits {
@@ -73,12 +80,14 @@ namespace smvk {
 		smvk::StaticMesh* GetMesh(uint32_t meshIndex);
 		smvk::Material* GetMaterial(uint32_t materialIndex);
 
+		//void NewFrame();
+			//if (dirtyCull && flags.size() == scene.hierarchy.size())
+			//	Cull(CullConfiguration{});
+		//void EndFrame();
+
 		template<typename Func>
 		void forEachNode(IteratorFlags requiredFlags, Func&& func)
 		{
-			if (dirtyCull && flags.size() == scene.hierarchy.size())
-				Cull(CullType::CPU, {});
-
 			for (uint32_t i = 0; i < scene.hierarchy.size(); ++i) {
 			const IteratorFlags nf =
 				(i < flags.size()) ? flags[i]
@@ -92,7 +101,7 @@ namespace smvk {
 		}
 
 	private:
-		void Cull(CullType cullType, glm::mat4 viewProj);
+		void Cull(CullConfiguration config);
 	};
 
 };

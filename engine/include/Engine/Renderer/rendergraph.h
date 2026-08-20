@@ -166,7 +166,7 @@ namespace smvk {
 		CommandBuffer() = delete;
 
 		void BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormat vertexFormat);
-		void PushConstants(uint32_t offset, uint32_t size, const void* data);
+		void PushConstants(uint32_t offset, uint32_t size, const void* data, PipelineStage stageMask = PipelineStageBit_AllGraphics);
 
 		void SetViewport(const VkViewport& viewport);
 		void SetScissor(const VkRect2D& scissor);
@@ -176,6 +176,13 @@ namespace smvk {
 			uint32_t instanceCount = 1,
 			uint32_t firstVertex = 0,
 			uint32_t firstInstance = 0);
+		void DrawIndexed(
+			uint32_t indexCount,
+			uint32_t instanceCount = 1,
+			uint32_t firstIndex = 0,
+			uint32_t baseVertex = 0,
+			uint32_t firstInstance = 0
+		);
 
 		VkCommandBuffer GetVkCommandBuffer() const { return cmd_; }
 
@@ -371,8 +378,8 @@ namespace smvk {
 			smvk::BindStaticVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
 			formatDescription = StaticVertexFormat;
 			break;
-		//case VertexFormat::Empty:
-		//	break;
+			//case VertexFormat::Empty:
+			//	break;
 		default:
 			break;
 		}
@@ -433,8 +440,8 @@ namespace smvk {
 	inline void CommandBuffer::PushConstants(
 		uint32_t offset,
 		uint32_t size,
-		const void* data
-		//stageMask stageMask
+		const void* data,
+		PipelineStage stageMask
 	)
 	{
 		assert(currentPipelineLayout_ != VK_NULL_HANDLE);
@@ -470,6 +477,23 @@ namespace smvk {
 			instanceCount,
 			firstVertex,
 			firstInstance);
+	}
+	inline void CommandBuffer::DrawIndexed(
+		uint32_t indexCount,
+		uint32_t instanceCount,
+		uint32_t firstIndex,
+		uint32_t baseVertex,
+		uint32_t firstInstance
+	)
+	{
+		vkCmdDrawIndexed(
+			cmd_,
+			indexCount,
+			instanceCount,
+			firstIndex,
+			baseVertex,
+			firstInstance
+		);
 	}
 
 	inline void RenderGraph::Execute(FrameBuffer& fb)

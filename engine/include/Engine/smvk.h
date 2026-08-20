@@ -671,6 +671,51 @@ inline const char* vkResultToString(VkResult result);
 
 
 namespace smvk {
+	typedef enum PipelineStageBits {
+		PipelineStageBit_None = 0,
+
+		PipelineStageBit_Vertex = 1u << 0,
+		PipelineStageBit_Fragment = 1u << 1,
+		PipelineStageBit_Compute = 1u << 2,
+		PipelineStageBit_Geometry = 1u << 3,
+		PipelineStageBit_TessellationControl = 1u << 4,
+		PipelineStageBit_TessellationEvaluation = 1u << 5,
+		PipelineStageBit_Task = 1u << 6,
+		PipelineStageBit_Mesh = 1u << 7,
+
+		// Ray tracing stages
+		PipelineStageBit_RayGeneration = 1u << 8,
+		PipelineStageBit_AnyHit = 1u << 9,
+		PipelineStageBit_ClosestHit = 1u << 10,
+		PipelineStageBit_Miss = 1u << 11,
+		PipelineStageBit_Intersection = 1u << 12,
+		PipelineStageBit_Callable = 1u << 13,
+
+		// Convenience masks
+		PipelineStageBit_AllGraphics =
+		PipelineStageBit_Vertex |
+		PipelineStageBit_Fragment |
+		PipelineStageBit_Geometry |
+		PipelineStageBit_TessellationControl |
+		PipelineStageBit_TessellationEvaluation |
+		PipelineStageBit_Task |
+		PipelineStageBit_Mesh,
+
+		PipelineStageBit_AllRayTracing =
+		PipelineStageBit_RayGeneration |
+		PipelineStageBit_AnyHit |
+		PipelineStageBit_ClosestHit |
+		PipelineStageBit_Miss |
+		PipelineStageBit_Intersection |
+		PipelineStageBit_Callable,
+
+		PipelineStageBit_All =
+		PipelineStageBit_AllGraphics |
+		PipelineStageBit_Compute |
+		PipelineStageBit_AllRayTracing,
+
+	} PipelineStageBits;
+	typedef uint32_t PipelineStage;
 
 	enum class PrimitiveTopology {
 		PointList,

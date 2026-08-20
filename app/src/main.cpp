@@ -234,6 +234,7 @@ private:
 
 		m_rendergraph->NewFrame();
 		m_context->UpdateBindings();
+		auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
 
 		// ATTACHMENT SETUP
 		auto logicalSwapchainImage = m_rendergraph->AddImageView(
@@ -248,14 +249,16 @@ private:
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(logicalSwapchainImage);
 
+		// PASSSES
+
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
 			.setExtent(fb.swapchain.extent_)
 			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })  // Rendering directly to swapchainImage!
 			.setDepth(logicalDepthImageView, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
-			.setRecordingFunc([this, fb](smvk::CommandBuffer& cmd)
+			.setRecordingFunc([this](smvk::CommandBuffer& cmd)
 		{
-			auto frameData = UpdateFrameUniforms(fb.swapchain.currentImageIndex_);
+
 			cmd.BindRenderPipeline(
 				m_resources.mainProgram,
 				smvk::VertexFormat::StaticVertexFormat
@@ -280,7 +283,7 @@ private:
 			m_world->forEachNode(
 				smvk::IteratorFlagBit_Renderable
 				| smvk::IteratorFlagBit_Opaque
-				| smvk::IteratorFlagBit_PassedCullTest
+				//| smvk::IteratorFlagBit_PassedCullTest
 				| smvk::IteratorFlagBit_StaticVertexFmt
 				,
 				[&](NodeId node)
@@ -310,17 +313,16 @@ private:
 				cmd.PushConstants(
 					0,
 					offsetof(PushConstants, frameUniforms),
-					&pc
+					&pc,
+					smvk::PipelineStageBit_AllGraphics
 				);
 
 				for (auto& draw_set : meshDesc->geometry.surfaces) {
-					vkCmdDrawIndexed(
-						fb.commandBuffer,
+					cmd.DrawIndexed(
 						draw_set.indexCount,
 						1,
 						draw_set.firstIndex,
-						draw_set.baseVertex,
-						0
+						draw_set.baseVertex
 					);
 				};
 			}

@@ -926,6 +926,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore& core) :core_(core
 smvk::VulkanResourceManager::~VulkanResourceManager() {
 	VK_CHECK(vkDeviceWaitIdle(device_));
 
+	// dont like this approach
 	destroy(this, m_staticVertexPosBuffer);
 	destroy(this, m_staticVertexShadingBuffer);
 	destroy(this, m_staticIndexBuffer);
@@ -937,6 +938,7 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 		vmaDestroyVirtualBlock(m_staticIndexBlock);
 		m_staticIndexBlock = VK_NULL_HANDLE;
 	}
+	//
 
 	delete m_submitter;
 	m_submitter = nullptr;

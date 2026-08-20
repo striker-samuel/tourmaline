@@ -217,7 +217,7 @@ namespace smvk {
 	}
 
 	// Stub culling: everything is considered visible until a real culler exists.
-	void World::Cull(CullType, glm::mat4)
+	void World::Cull(CullConfiguration config)
 	{
 		for (uint32_t i = 0; i < flags.size(); ++i) {
 			flags[i] |= static_cast<IteratorFlags>(IteratorFlagBit_PassedCullTest);
