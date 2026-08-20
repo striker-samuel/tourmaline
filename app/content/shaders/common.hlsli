@@ -1,3 +1,4 @@
+#pragma once
 #include "light.hlsli"
 
 #define MAX_LIGHTS 64
@@ -51,8 +52,7 @@ struct PC_Draw
     frameUniforms;
     vk::BufferPointer<LightBuffer>
     bLights;
-    int comparisonSamplerId;
-   
+    uint comparisonSamplerId;
 };
 
 [[vk::push_constant]]

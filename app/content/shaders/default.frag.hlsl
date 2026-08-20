@@ -133,7 +133,7 @@ PSOut mainPS(PSIn IN)
     float4x4 lightViewProj;
 
     uint texIdx = pc.tex.x; // uniform per draw via push constants
-    float4 texSample = textures[texIdx].Sample(materialSamp[0], IN.uv); 
+    float4 texSample = textures[texIdx].Sample(samplers[0], IN.uv); 
     // using #0 sampler always hmmmm fix this!
 
     // Base material color (vertex color * material diffuse * texture)
@@ -178,7 +178,7 @@ PSOut mainPS(PSIn IN)
     if (light.shadow_map_index >= 0)
     {
         shadow = GetShadowFactor(
-        shadowSamplers,
+        pc.comparisonSamplerId,
         IN.worldPos,
         light
     );

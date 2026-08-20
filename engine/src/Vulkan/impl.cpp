@@ -826,7 +826,15 @@ int smvk::VulkanResourceManager::Initialize() {
 	VK_CHECK(vmaCreateAllocator(&allocatorCreateInfo, &m_allocator));
 
 	m_submitter = new Submitter(core_, core_.indices.graphicsFamily.value());
+
+	// Urges creating the SamplerPool -> key mapping to samplers!
 	core_.CreateSampler(SamplerCreateInfo{}, m_defaultSampler);
+	core_.CreateSampler(SamplerCreateInfo{
+		.compareOp = VK_COMPARE_OP_GREATER_OR_EQUAL,
+		.compareEnable = true
+		},
+		m_defaultShadowSampler
+	);
 	//const uint32_t pixel = 0xFF000000;
 	//m_nilTexture = CreateTexture(
 	//	ImageCreateInfo{
@@ -1012,11 +1020,17 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	});
 #endif
 
-	// Destroy unmanaged handles not in pools:
+	// Destroy unmanaged handles not in RAII pools
 	vkDestroyPipelineLayout(device_, defaultPipeLayout, nullptr);
 	vkDestroyDescriptorSetLayout(device_, defaultSetLayout, nullptr);
-	vkDestroySampler(device_, m_defaultSampler, nullptr);
+	if (m_defaultSampler != VK_NULL_HANDLE) {
+		vkDestroySampler(device_, m_defaultSampler, nullptr);
+	}
+	if (m_defaultShadowSampler != VK_NULL_HANDLE) {
+		vkDestroySampler(device_, m_defaultShadowSampler, nullptr);
+	}
 	memset(defaultDescriptorSets_, 0, sizeof(defaultDescriptorSets_));
+	//
 
 	vmaDestroyAllocator(m_allocator);
 };
@@ -1843,7 +1857,14 @@ void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex)
 		samplerInfo.sampler = m_defaultSampler;
 		samplerInfo.imageView = VK_NULL_HANDLE;
 		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		samplerInfos.push_back(samplerInfo);
+	}
 
+	{
+		VkDescriptorImageInfo samplerInfo{};
+		samplerInfo.sampler = m_defaultShadowSampler;
+		samplerInfo.imageView = VK_NULL_HANDLE;
+		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		samplerInfos.push_back(samplerInfo);
 	}
 

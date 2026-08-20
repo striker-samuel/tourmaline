@@ -6,31 +6,31 @@
 #endif
 
 #define Epsilon 1
-#include "light.hlsli"
+#include "common.hlsli"
 
 struct CascadeMeta
 {
-	float4x4 lightVP;
-	float splitEnd;        // view-space depth end for this cascade
-	float bias;
-	float normalBias;
+    float4x4 lightVP;
+    float splitEnd; // view-space depth end for this cascade
+    float bias;
+    float normalBias;
 
-	float2 invShadowSize;  // 1/(atlasWidth, atlasHeight) OR 1/(tileWidth,tileHeight) depending how you do PCF
-	float2 uvScale;        // tile scale in atlas UV
-	float2 uvBias;         // tile offset in atlas UV
-	float2 uvClampMin;     // clamp inside tile (avoid bleeding)
-	float2 uvClampMax;
+    float2 invShadowSize; // 1/(atlasWidth, atlasHeight) OR 1/(tileWidth,tileHeight) depending how you do PCF
+    float2 uvScale; // tile scale in atlas UV
+    float2 uvBias; // tile offset in atlas UV
+    float2 uvClampMin; // clamp inside tile (avoid bleeding)
+    float2 uvClampMax;
 };
 
 int SelectCascade(float viewDepth, CascadeMeta cascades[NUM_CASCADES])
 {
 	[unroll]
-	for (int i = 0; i < NUM_CASCADES; ++i)
-	{
-		if (viewDepth < cascades[i].splitEnd)
-			return i;
-	}
-	return NUM_CASCADES - 1;
+    for (int i = 0; i < NUM_CASCADES; ++i)
+    {
+        if (viewDepth < cascades[i].splitEnd)
+            return i;
+    }
+    return NUM_CASCADES - 1;
 }
 
 //float PCFShadow(
@@ -80,10 +80,10 @@ float GetOrientedBias(float3 faceNormal,
 	bool isSSS
 )
 {
-	static float kOrientedBias = 0.00002f; 
-	float isFacingLight = dot(faceNormal, lightDirection) < 0;
-	bool moveTowardLight = isSSS || isFacingLight;
-	return moveTowardLight ? -kOrientedBias : kOrientedBias;
+    static float kOrientedBias = 0.00002f;
+    float isFacingLight = dot(faceNormal, lightDirection) < 0;
+    bool moveTowardLight = isSSS || isFacingLight;
+    return moveTowardLight ? -kOrientedBias : kOrientedBias;
 }
 
 
@@ -96,38 +96,39 @@ float GetOrientedBias(float3 faceNormal,
 
 
 float GetShadowFactor(
+    uint comparisonSamplerId,
 	float3 worldPos,
 	Light light
 )
 {
-	if (light.shadow_map_index < 0)
-		return 1.0f;
+    if (light.shadow_map_index < 0)
+        return 1.0f;
 	
 	
-	uint idx = NonUniformResourceIndex((uint)light.shadow_map_index);
+    uint idx = NonUniformResourceIndex((uint) light.shadow_map_index);
 	
-	float4 clip = mul(light.lightVP, float4(worldPos, 1.0));
-	float3 ndc = clip.xyz / clip.w;
+    float4 clip = mul(light.lightVP, float4(worldPos, 1.0));
+    float3 ndc = clip.xyz / clip.w;
 
 	// outside light frustum => lit
-	if (ndc.z <= 0.0f || ndc.z >= 1.0f)
-		return 1.0f;
+    if (ndc.z <= 0.0f || ndc.z >= 1.0f)
+        return 1.0f;
 
-	float2 uv = ndc.xy * 0.5f + 0.5f;
+    float2 uv = ndc.xy * 0.5f + 0.5f;
 
-	if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
+    if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
 		// light on uv outside shadomap
-		return 1.0f;
+        return 1.0f;
 
-	float receiverDepth = ndc.z;
+    float receiverDepth = ndc.z;
 
-	float shadow = textures[idx].SampleCmpLevelZero(
+    float shadow = textures[idx].SampleCmpLevelZero(
 		comparisonSamplers[comparisonSamplerId],
 		uv,
 		receiverDepth
 	);
 
-	return shadow;
+    return shadow;
 }
 
 float GetShadowFactorODB(
@@ -138,37 +139,37 @@ float GetShadowFactorODB(
 	float3 normal
 )
 {
-	if (light.shadow_map_index < 0)
-		return 1.0f;
+    if (light.shadow_map_index < 0)
+        return 1.0f;
 
-	uint idx = NonUniformResourceIndex((uint)light.shadow_map_index);
+    uint idx = NonUniformResourceIndex((uint) light.shadow_map_index);
 
-	float4 clip = mul(light.lightVP, float4(worldPos, 1.0));
-	float3 ndc = clip.xyz / clip.w;
+    float4 clip = mul(light.lightVP, float4(worldPos, 1.0));
+    float3 ndc = clip.xyz / clip.w;
 
 	// outside light frustum => lit
-	if (ndc.z <= 0.0f || ndc.z >= 1.0f)
-		return 1.0f;
+    if (ndc.z <= 0.0f || ndc.z >= 1.0f)
+        return 1.0f;
 
-	float2 uv = ndc.xy * 0.5f + 0.5f;
+    float2 uv = ndc.xy * 0.5f + 0.5f;
 
-	if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
+    if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
 		// light on uv outside shadomap
-		return 1.0f;
+        return 1.0f;
 
-	float receiverDepth = ndc.z;
+    float receiverDepth = ndc.z;
 	
-	receiverDepth += GetOrientedBias(
+    receiverDepth += GetOrientedBias(
 		normal,
 		light.direction,
 		false
 	);
 
-	float shadow = shadowMaps[idx].SampleCmpLevelZero(
+    float shadow = shadowMaps[idx].SampleCmpLevelZero(
 		shadowSamplers[idx],
 		uv,
 		receiverDepth
 	);
 
-	return shadow;
+    return shadow;
 }

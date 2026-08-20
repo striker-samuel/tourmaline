@@ -323,7 +323,9 @@ private:
 			float model[16];
 			smvk::MaterialValues mpc{};
 			uint64_t frameUniforms;
-		};
+			uint64_t lightsBuffer;
+			uint32_t comparisonSamplerId;
+		} pc;
 
 		// FRAME
 
@@ -334,12 +336,25 @@ private:
 			.setRecordingFunc([this](smvk::CommandBuffer& cmd)
 		{
 
+			uint64_t frameUniforms =
+				m_context->buffers_
+				.get(m_resources.frameUniforms)
+				->deviceAddress;
+			uint64_t lightsBuffer =
+				m_context->buffers_
+				.get(m_resources.lightsBuffer)
+				->deviceAddress;
 
+			PushConstants pc;
+			pc.frameUniforms = frameUniforms;
+			pc.lightsBuffer = lightsBuffer;
+			pc.comparisonSamplerId = 1;  // hardcoded to 1
+			// ideally should be gotteng from samplerPool/samplerMap->GetSamplerId(key)
 
 			cmd.PushConstants(
 				0,
-				sizeof(pushConstants),
-				&pushConstants,
+				sizeof(PushConstants),
+				&pc,
 				smvk::PipelineStageBit_AllGraphics
 			);
 

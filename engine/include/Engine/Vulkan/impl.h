@@ -214,7 +214,10 @@ namespace smvk {
 
 		// DEFAULTS
 		//TextureHandle m_nilTexture{};
+
 		VkSampler m_defaultSampler{};
+		VkSampler m_defaultShadowSampler{};
+
 		Holder<DescriptorPoolHandle> defaultDescriptorPool;
 		//Holder<DescriptorPoolHandle> imguiDescriptorPool;
 
