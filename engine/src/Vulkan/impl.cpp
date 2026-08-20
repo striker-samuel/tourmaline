@@ -808,6 +808,7 @@ std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanC
 
 // ResourceContext
 int smvk::VulkanResourceManager::Initialize() {
+
 	VmaAllocatorCreateInfo allocatorCreateInfo = {};
 	allocatorCreateInfo.physicalDevice = physicalDevice_;
 	allocatorCreateInfo.device = device_;
@@ -817,15 +818,12 @@ int smvk::VulkanResourceManager::Initialize() {
 		VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT |
 		VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT |
 		VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
-	// VMA_ALLOCATOR_CREATE_KHR_EXTERNAL_MEMORY_WIN32_BIT // We wont use this. Just keeeping this here to remember it exists.
 	if (allocatorCreateInfo.vulkanApiVersion == UINT32_MAX) { assert(false); };
 
 	VmaVulkanFunctions vulkanFunctions;
 	VK_CHECK(vmaImportVulkanFunctionsFromVolk(&allocatorCreateInfo, &vulkanFunctions));
 	allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
 	VK_CHECK(vmaCreateAllocator(&allocatorCreateInfo, &m_allocator));
-	//VK_CHECK(CreateAttachmentPool(m_allocator, m_imagesPool));
-	//VK_CHECK(CreateStagingPool(m_allocator, m_stagingPool));
 
 	m_submitter = new Submitter(core_, core_.indices.graphicsFamily.value());
 	core_.CreateSampler(SamplerCreateInfo{}, m_defaultSampler);
@@ -837,9 +835,6 @@ int smvk::VulkanResourceManager::Initialize() {
 	//	},
 	//	&pixel
 	//	);
-
-
-	// Hardcoded binding setup {
 
 	VkShaderStageFlags stageFlags =
 		VK_SHADER_STAGE_VERTEX_BIT
@@ -894,7 +889,15 @@ int smvk::VulkanResourceManager::Initialize() {
 	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &defaultPipeLayout));
 
 	// this pool only holds MAX_K, not MAX_K * framesInFlight or MAX_FRAMES_IN_FLIGHT
-	defaultDescriptorPool = CreateDescriptorPool();
+
+	std::vector<VkDescriptorPoolSize> poolSizes = {
+	  {
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    MAX_TEXTURES }, // times framesInFlight?
+		{ VK_DESCRIPTOR_TYPE_SAMPLER,          MAX_SAMPLERS },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    MAX_TEXTURES },
+	  }
+	};
+	defaultDescriptorPool = CreateDescriptorPool(poolSizes);
 	VkDescriptorPool pool = *descriptorPools_.get(defaultDescriptorPool);
 
 	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT]{};
@@ -923,9 +926,6 @@ smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore& core) :core_(core
 smvk::VulkanResourceManager::~VulkanResourceManager() {
 	VK_CHECK(vkDeviceWaitIdle(device_));
 
-	// Tear down the permanent static-vertex geometry heaps here (buffers +
-	// VMA virtual blocks) so they are freed with the allocator/pools still
-	// alive and never reported as leaks. No-op when never allocated.
 	destroy(this, m_staticVertexPosBuffer);
 	destroy(this, m_staticVertexShadingBuffer);
 	destroy(this, m_staticIndexBuffer);
@@ -1347,6 +1347,11 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 	return smvk::Holder<ImageHandle>(this, images_.create(std::move(img)));
 
 }
+smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
+{
+	assert(false); // to be implemented
+	return Holder<TextureHandle>();
+}
 [[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ktxTexture2& texture, const char* debugName) {
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
@@ -1760,16 +1765,8 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 #endif
 	return { this, shaderModules_.create(std::move(shader)) };
 }
-[[nodiscard]] smvk::Holder<smvk::DescriptorPoolHandle> smvk::VulkanResourceManager::CreateDescriptorPool(const char* debugName) {
-
-	std::array<VkDescriptorPoolSize, 3> poolSizes = {
-	  {
-		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    MAX_TEXTURES }, // times framesInFlight?
-		{ VK_DESCRIPTOR_TYPE_SAMPLER,          MAX_SAMPLERS },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    MAX_TEXTURES },
-	  }
-	};
-
+[[nodiscard]] smvk::Holder<smvk::DescriptorPoolHandle> smvk::VulkanResourceManager::CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName)
+{
 	VkDescriptorPoolCreateInfo poolInfo{ };
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.maxSets = 1000;

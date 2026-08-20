@@ -1,6 +1,5 @@
 #pragma once
 
-#include <Engine/Config/config.h>
 #include <Engine/smvk.h>
 
 namespace smvk {
@@ -13,11 +12,11 @@ namespace smvk {
 	};
 
 	struct VulkanCore {
-		static VulkanCore& Get()
-		{
-			static VulkanCore instance;
-			return instance;
-		}
+		//static VulkanCore& Get()
+		//{
+		//	static VulkanCore instance;
+		//	return instance;
+		//}
 
 		struct CoreConfiguration {
 			VulkanVersion version_ = VK_1_3;
@@ -157,14 +156,6 @@ namespace smvk {
 
 
 	struct VulkanResourceManager {
-
-		//static VulkanResourceManager& Get()
-		//{
-		//	static VulkanResourceManager instance{ VulkanCore::Get() };
-		//	// doesnt call initialize, maybe dangerous.
-		//	return instance;
-		//}
-
 		VulkanResourceManager(VulkanCore& core);
 		~VulkanResourceManager();
 		VulkanResourceManager(const VulkanResourceManager&) = delete;
@@ -179,11 +170,12 @@ namespace smvk {
 		//
 		BufferHandle CreateStagingBuffer(VkDeviceSize size, const char* debugName = "staging"); // Right now only used for image upload, every other data upload is done by mapping
 		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr);
-		//Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr); // specialization for textures instead of .isTexture property
+		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr); // specialization for textures instead of .isTexture property
+		// dont like ther hardcode dep to ktx2
 		Holder<TextureHandle> CreateTexture(ktxTexture2& texture, const char* debugName = nullptr);
 		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo, const char* debugName = nullptr);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = nullptr);
-		Holder<DescriptorPoolHandle> CreateDescriptorPool(const char* debugName = nullptr);
+		Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = nullptr);
 
 		void* MapBuffer(smvk::Handle<smvk::Buffer> handle);
 		void UnmapBuffer(smvk::Handle<smvk::Buffer> handle);
@@ -213,12 +205,7 @@ namespace smvk {
 		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_; // Maybe we should do away with this as we only manage one pool, and one for Imgui
 		Pool<ShaderModule, VkShaderModule> shaderModules_; // this should be removed when moving to vk1.4
 
-		// Static vertex geometry heaps. These are permanent-lifetime
-		// resources owned by this manager and torn down in
-		// ~VulkanResourceManager (freeing the buffers + VMA virtual blocks
-		// before the allocator/pools are destroyed). Population is gated by
-		// SMVK_STATIC_VERTEX_HEAPS at the allocate call site; when disabled
-		// the handles stay empty and teardown is a no-op.
+		//StaticVertexFmt
 		BufferHandle m_staticVertexPosBuffer{};
 		BufferHandle m_staticVertexShadingBuffer{};
 		BufferHandle m_staticIndexBuffer{};

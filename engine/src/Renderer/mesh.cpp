@@ -314,7 +314,6 @@ namespace smvk {
 
 	void AllocateStaticVertexFmt(smvk::VulkanResourceManager& ctx)
 	{
-		assert(!ctx.m_staticVertexPosBuffer.valid());
 		ctx.m_staticVertexPosBuffer = ctx.CreateBuffer({
 				VertexBufferSize,
 				VMA_MEMORY_USAGE_GPU_ONLY,

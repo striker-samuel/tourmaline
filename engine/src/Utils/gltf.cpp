@@ -132,6 +132,19 @@ namespace {
 	}
 };
 
+GltfToSceneImporter::GltfToSceneImporter(smvk::Cluster& inCluster, const tinygltf::Model& inModel, std::filesystem::path inGltfModelPath)
+	: cluster(inCluster)
+	, model(inModel)
+	, gltfModelPath(std::move(inGltfModelPath))
+	, materialCache(inModel.materials.size())
+{
+	meshCache.resize(inModel.meshes.size());
+	for (size_t i = 0; i < inModel.meshes.size(); ++i) {
+		meshCache[i].resize(
+			inModel.meshes[i].primitives.size()
+		);
+	}
+}
 bool LoadModelFromAsciiFile(tinygltf::Model& model, const char* filename) {
 	tinygltf::TinyGLTF loader;
 	std::string err;
@@ -331,6 +344,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 {
 	if (gltfMaterialIndex < 0) {
 		// TODO: default material
+
 		return {};
 	}
 
