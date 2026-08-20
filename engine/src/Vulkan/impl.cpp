@@ -1326,7 +1326,6 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 	img.vk_format = imageCreateInfo.vk_format;
 	img.levels = imageCreateInfo.levels;
 	img.vk_extent = imageCreateInfo.vk_extent;
-	//img.vk_usageFlags = imageCreateInfo.usage;
 	img.arrayLayers = imageCreateInfo.arrayLayers;
 	VK_CHECK(vmaCreateImage(m_allocator, &imgCI, &allocation_create_info, &img.vk_image, &img.vma_alloc, nullptr));
 
@@ -1348,7 +1347,28 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 	img.vk_sampler = m_defaultSampler;
 	//img.owns_sampler = false;
 
-	//auto reqs = getDeviceImageMemoryRequirements(device_, imgCI);
+	//VkImageAspectFlags from usage
+
+	ImageViewCreateInfo createViewInfo{};
+	createViewInfo.flags = {};
+	createViewInfo.vk_image = img.vk_image;
+	createViewInfo.vk_format = img.vk_format;
+	createViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	createViewInfo.subResourceRange = {
+		.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, // HARDCODED AND BAD
+		.baseMipLevel = 0,
+		.levelCount = 1,
+		.baseArrayLayer = 0,
+		.layerCount = 1
+	};
+
+	core_.CreateImageView(
+		createViewInfo,
+		img.sampleView
+	);
+
+	// storage view shoyld have swizzle to guarante rgba
+	img.storageView = img.sampleView;
 
 	if (data != nullptr) {
 		UploadDataToImage2D(

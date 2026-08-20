@@ -61,6 +61,7 @@ namespace smvk {
 		// owns the views directly. so no ImageViewHandle really.
 		VkImageView resolvedImageView = VK_NULL_HANDLE;
 		VkFormat resolvedFormat = VK_FORMAT_UNDEFINED;
+		const char* name = "";
 	};
 
 	struct LogicalImage {
@@ -222,11 +223,25 @@ namespace smvk {
 			return inputImages_.create(std::move(proxyImage));
 		};
 		[[nodiscard]] LogicalImageViewHandle AddImageView(ImageViewCreateInfo description) { assert(false); };
-		[[nodiscard]] LogicalImageViewHandle AddImageView(VkImageView view, VkFormat format) {
+		[[nodiscard]] LogicalImageViewHandle AddImageView(VkImageView imageView, VkFormat vkFormat, const char* debugName = nullptr) {
 			LogicalImageView proxyView{};
 			proxyView.type = LogicalImageView::Type::External;
-			proxyView.resolvedImageView = view;
-			proxyView.resolvedFormat = format;
+			proxyView.resolvedImageView = imageView;
+			proxyView.resolvedFormat = vkFormat;
+			proxyView.name = debugName;
+			return imageViews_.create(std::move(proxyView));
+		};
+		[[nodiscard]] LogicalImageViewHandle AddImageView(ImageHandle imageHandle, const char* debugName = nullptr) {
+			auto img = ctx_.images_.get(imageHandle);
+			assert(img != nullptr);
+			LogicalImageView proxyView{};
+			proxyView.type = LogicalImageView::Type::External;
+			proxyView.key.image = AddImage(imageHandle);
+			//proxyView.key.viewType; 
+			//proxyView.key.subResourceRange;
+			proxyView.resolvedImageView = img->sampleView;
+			proxyView.resolvedFormat = img->vk_format;
+			proxyView.name = debugName;
 			return imageViews_.create(std::move(proxyView));
 		};
 		template<typename DataType>
@@ -314,10 +329,6 @@ namespace smvk {
 					auto logicalImage = inputImages_.get(logicalView.key.image);
 					auto img = ctx_.images_.get(logicalImage->resolvedImageHandle);
 					logicalView.resolvedFormat = img->vk_format;
-					// if outImage"" we need to know if we are renderting to, sampling from or both
-					// didnt distinguish before!. ill just assume render.
-					// also swaphcain image is abstracted from the rendergraph for the moment...
-					// LegitEngine does the present ass a pass. maybe its a good idea.
 					logicalView.resolvedImageView = img->sampleView;
 
 				};
@@ -392,13 +403,21 @@ namespace smvk {
 		}
 
 		VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+		VkFormat stencilFormat = VK_FORMAT_UNDEFINED;
 		const bool hasDepth = !renderPass_->depthAttachment_.view.empty();
 
 		if (hasDepth) {
-			depthFormat = graph_->imageViews_
+			VkFormat format = graph_->imageViews_
 				.get(renderPass_->depthAttachment_.view)
 				->resolvedFormat;
+
+			if (FormatHasDepth(format))
+				depthFormat = format;
+
+			if (FormatHasStencil(format))
+				stencilFormat = format;
 		}
+
 
 		auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
 			shaderProgram,
@@ -406,9 +425,7 @@ namespace smvk {
 			colorAttachmentFormats.data(),
 			static_cast<uint32_t>(colorAttachmentFormats.size()),
 			depthFormat,
-			depthFormat
-			// polygonmode = pass.polygonMode.
-			// blend = pass.blend
+			stencilFormat
 		);
 
 		assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");
@@ -527,15 +544,21 @@ namespace smvk {
 
 			const bool hasDepth = !pass.depthAttachment_.view.empty();
 
-			if (hasDepth) {
-				auto depthView = imageViews_.get(pass.depthAttachment_.view);
+			auto depthView = hasDepth
+				? imageViews_.get(pass.depthAttachment_.view)
+				: nullptr;
 
+			if (hasDepth) {
 				depthInfo.imageView = depthView->resolvedImageView;
 				depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
 				depthInfo.loadOp = pass.depthAttachment_.loadOp;
-				depthInfo.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+				depthInfo.storeOp = pass.depthAttachment_.storeOp;
 				depthInfo.clearValue = pass.depthAttachment_.clearValue;
 			}
+
+			const bool hasStencil =
+				hasDepth &&
+				FormatHasStencil(depthView->resolvedFormat);
 
 			VkRenderingInfo renderInfo{
 				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
@@ -546,8 +569,11 @@ namespace smvk {
 				.layerCount = 1,
 				.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
 				.pColorAttachments = colorInfos.data(),
-				.pDepthAttachment = hasDepth ? &depthInfo : nullptr,
 			};
+			renderInfo.pDepthAttachment =
+				hasDepth ? &depthInfo : nullptr;
+			renderInfo.pStencilAttachment =
+				hasStencil ? &depthInfo : nullptr;
 
 			VkViewport vp{};
 			vp.x = 0.0f;

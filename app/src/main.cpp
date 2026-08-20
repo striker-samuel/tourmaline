@@ -58,15 +58,19 @@ static_assert(sizeof(FrameUniforms) % 16 == 0);
 struct AppResources {
 	smvk::Holder<smvk::BufferHandle> frameUniforms;
 	smvk::Holder<smvk::BufferHandle> lightsBuffer;
+	smvk::Holder<smvk::BufferHandle> materialsBuffer;
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
 	smvk::ShaderProgram mainProgram;
+	smvk::ShaderProgram shadowProgram;
 };
 
 struct ViewportResources {
 	smvk::LogicalImageViewHandle depthView;
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
-	smvk::LogicalImageViewHandle shadowmaps[8];
+	smvk::Holder<smvk::ImageHandle> shadowmaps[8];
+	//smvk::LogicalImageHandle shadowmaps[8];
+	smvk::LogicalImageViewHandle shadowmapViews[8];
 };
 
 class TestApp : public smvk::VulkanApp {
@@ -109,9 +113,16 @@ private:
 				.usage_flags = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			}
 		);
-		m_resources.frameUniforms = m_context->CreateBuffer(
+		m_resources.lightsBuffer = m_context->CreateBuffer(
 			{
 				.size = sizeof(Light) * MAX_LIGHTS * m_swapchain->framesInFlight_,
+				.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+				.usage_flags = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+			}
+		);
+		m_resources.materialsBuffer = m_context->CreateBuffer(
+			{
+				.size = sizeof(smvk::MaterialValues) * m_swapchain->framesInFlight_,
 				.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
 				.usage_flags = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
 			}
@@ -122,6 +133,7 @@ private:
 		auto fragCode = readFile("content/shaders/default.frag.hlsl.spv");
 		m_resources.vertShader = m_context->CreateShaderModule(vertCode, "vert");
 		m_resources.fragShader = m_context->CreateShaderModule(fragCode, "frag");
+		//m_resources.vertShaderShadowMap = m_context->CreateShaderModule(fragCode, "frag");
 
 		auto vert = smvk::Shader{
 			.vkShaderModule = m_resources.vertShader,
@@ -136,6 +148,10 @@ private:
 		m_resources.mainProgram = {
 			.shaders = {vert, frag},
 			.shaderCount = 2
+		};
+		m_resources.shadowProgram = {
+			.shaders = {vert},
+			.shaderCount = 1
 		};
 
 		smvk::AllocateStaticVertexFmt(*m_context);
@@ -156,40 +172,36 @@ private:
 		for (int i = 0; i < m_swapchain->GetImageCount(); i++) {
 			auto logicalSwapchainImage = m_rendergraph->AddImageView(
 				m_swapchain->imageViews_[i],
-				m_swapchain->vk_surfaceFormat_
+				m_swapchain->vk_surfaceFormat_,
+				"swap"
 			);
+			m_viewportResources.swapImages.push_back(logicalSwapchainImage);
 		}
 		auto depthImage = m_context->images_.get(m_swapchain->depthImage_);
 		auto logicalDepthImageView = m_rendergraph->AddImageView(
 			depthImage->sampleView,
-			m_swapchain->vk_depthFormat_
+			m_swapchain->vk_depthFormat_,
+			"depth"
 		);
 
-		VkImageCreateInfo shadowMapCI{};
-		shadowMapCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-		shadowMapCI.imageType = VK_IMAGE_TYPE_2D;
-		shadowMapCI.format = VK_FORMAT_D32_SFLOAT;
-		shadowMapCI.extent = { 2048u, 2048u, 1u };
-		shadowMapCI.mipLevels = 1u;
+		smvk::ImageCreateInfo shadowMapCI{};
+		shadowMapCI.vk_format = VK_FORMAT_D32_SFLOAT;
+		shadowMapCI.vk_extent = { 2048u, 2048u, 1u };
+		shadowMapCI.levels = 1u;
 		shadowMapCI.arrayLayers = 1u;
-		shadowMapCI.samples = VK_SAMPLE_COUNT_1_BIT;
-		shadowMapCI.tiling = VK_IMAGE_TILING_OPTIMAL;
-		shadowMapCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		shadowMapCI.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-		shadowMapCI.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		shadowMapCI.vk_usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
-		auto shadowMapHandle = m_context->CreateImage(shadowMapCI, nullptr, "shadowMap");
-		auto shadowImg = m_context->images_.get(shadowMapHandle);
-		m_viewportResources.shadowmaps[0] = m_rendergraph->AddImageView(shadowImg->sampleView, VK_FORMAT_D32_SFLOAT);
-		//auto smimage = m_rendergraph->AddImage(shadowMapCI);
-		//m_viewportResources.shadowmaps[0] = m_rendergraph->AddImageView(smimage);
+		m_viewportResources.shadowmaps[0] = m_context->CreateImage(shadowMapCI, nullptr, "shadowMap");
+		auto smimage = m_context->images_.get(m_viewportResources.shadowmaps[0]);
+		assert(smimage != nullptr);
+		m_viewportResources.shadowmapViews[0] = m_rendergraph->AddImageView(
+			smimage->sampleView,
+			smimage->vk_format,
+			"shadow"
+		);
 
 		return true;
 	};
-
-	void CleanUp() override {
-		Super::CleanUp();
-	}
 
 	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame) {
 
@@ -291,16 +303,28 @@ private:
 		//glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, lightNear, lightFar);
 		//glm::mat4 lightVP = lightProj * lightView;
 		m_context->UploadDataToBuffer(
-			m_resources.frameUniforms,
+			m_resources.lightsBuffer,
 			&lights,
-			sizeof(lights)/* * 1*/,
+			sizeof(lights),
 			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 			VK_ACCESS_SHADER_READ_BIT,
 			0,
-			currentFrame * sizeof(FrameUniforms)
-			//currentFrame * m_resources.frameUniformsBuffer.key.elementSize * m_resources.frameUniformsBuffer.key.elementCount // dynamicOffsetPerFrame
+			currentFrame * sizeof(lights)
 		);
 	}
+	//void UpdateMaterials(uint32_t currentFrame){
+	//	std::vector<smvk::MaterialValues> mats;
+	//	m_world->materialLocations
+	//	m_context->UploadDataToBuffer(
+	//		m_resources.lightsBuffer,
+	//		&lights,
+	//		sizeof(MaterialValues),
+	//		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+	//		VK_ACCESS_SHADER_READ_BIT,
+	//		0,
+	//		currentFrame * sizeof(lights)
+	//	);
+	//}
 
 	void DrawFrame() {
 		auto fb = m_swapchain->AcquireFramebuffer();
@@ -321,18 +345,18 @@ private:
 
 		struct alignas(16) PushConstants {
 			float model[16];
-			smvk::MaterialValues mpc{};
 			uint64_t frameUniforms;
 			uint64_t lightsBuffer;
+			uint64_t materialsBuffer;
+			uint32_t materialId;
 			uint32_t comparisonSamplerId;
 		} pc;
 
 		// FRAME
-
 		auto& shadowPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })
 			.setExtent({ 2048, 2048 })
-			.setDepth(m_viewportResources.shadowmaps[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { 1.0f })
+			.setDepth(m_viewportResources.shadowmapViews[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { 1.0f })
 			.setRecordingFunc([this](smvk::CommandBuffer& cmd)
 		{
 
@@ -351,6 +375,10 @@ private:
 			pc.comparisonSamplerId = 1;  // hardcoded to 1
 			// ideally should be gotteng from samplerPool/samplerMap->GetSamplerId(key)
 
+			cmd.BindRenderPipeline(
+				m_resources.shadowProgram,
+				smvk::VertexFormat::StaticVertexFormat
+			);
 			cmd.PushConstants(
 				0,
 				sizeof(PushConstants),
@@ -405,7 +433,6 @@ private:
 				m_resources.mainProgram,
 				smvk::VertexFormat::StaticVertexFormat
 			);
-
 
 			uint64_t frameUniforms =
 				m_context->buffers_
