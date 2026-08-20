@@ -144,7 +144,7 @@ namespace smvk {
 			uint64_t goal_ = 1; //defautl to 1
 		};
 		//
-		struct CommandBuffer {
+		struct CommandBuffer { // duplicated from rendergraph. commandBuffer
 			VkCommandBuffer cmd = VK_NULL_HANDLE;
 			SemaphoreState finishedSignalSemaphore{};
 			bool isEncoding_ = false;

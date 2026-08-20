@@ -178,19 +178,19 @@ private:
 			m_viewportResources.swapImages.push_back(logicalSwapchainImage);
 		}
 		auto depthImage = m_context->images_.get(m_swapchain->depthImage_);
-		auto logicalDepthImageView = m_rendergraph->AddImageView(
+		m_viewportResources.depthView = m_rendergraph->AddImageView(
 			depthImage->sampleView,
 			m_swapchain->vk_depthFormat_,
 			"depth"
 		);
 
+		// shadowmap
 		smvk::ImageCreateInfo shadowMapCI{};
 		shadowMapCI.vk_format = VK_FORMAT_D32_SFLOAT;
 		shadowMapCI.vk_extent = { 2048u, 2048u, 1u };
 		shadowMapCI.levels = 1u;
 		shadowMapCI.arrayLayers = 1u;
 		shadowMapCI.vk_usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-
 		m_viewportResources.shadowmaps[0] = m_context->CreateImage(shadowMapCI, nullptr, "shadowMap");
 		auto smimage = m_context->images_.get(m_viewportResources.shadowmaps[0]);
 		assert(smimage != nullptr);
@@ -199,6 +199,33 @@ private:
 			smimage->vk_format,
 			"shadow"
 		);
+
+		// Manuel Barrier transition
+		// this whole shadowmap thing is so badly done, api surface NEEDS more polish
+		auto han = m_context->m_submitter->acquire();
+		auto cmd = m_context->m_submitter->GetCommandBuffer(han);
+		ImageBarrier(
+			cmd.cmd,
+			smimage->vk_image,
+			VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+			{
+				.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+				.baseMipLevel = 0,
+				.levelCount = VK_REMAINING_MIP_LEVELS,
+				.baseArrayLayer = 0,
+				.layerCount = VK_REMAINING_ARRAY_LAYERS
+			},
+			VK_PIPELINE_STAGE_2_NONE,
+			VK_ACCESS_2_NONE,
+			VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+			VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+		);
+		m_context->m_submitter->submit(han);
+		m_context->m_submitter->wait(han);
+		//
 
 		return true;
 	};
@@ -345,10 +372,11 @@ private:
 
 		struct alignas(16) PushConstants {
 			float model[16];
+			smvk::MaterialValues material;
 			uint64_t frameUniforms;
 			uint64_t lightsBuffer;
-			uint64_t materialsBuffer;
-			uint32_t materialId;
+			//uint64_t materialsBuffer;
+			//uint32_t materialId;
 			uint32_t comparisonSamplerId;
 		} pc;
 
@@ -470,7 +498,7 @@ private:
 				auto mat = m_world->GetMaterial(materialId);
 
 				PushConstants pc{};
-				pc.mpc = mat->values;
+				pc.material = mat->values;
 				const float* modelData = glm::value_ptr(model);
 				std::copy_n(modelData, 16, pc.model);
 

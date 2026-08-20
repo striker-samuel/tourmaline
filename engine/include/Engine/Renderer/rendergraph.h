@@ -114,6 +114,7 @@ namespace smvk {
 			this->colorAttachments_.resize(views.size());
 			for (size_t index = 0; index < views.size(); index++)
 			{
+			assert(!views[index].empty() && "setColor() called with empty image view");
 				this->colorAttachments_[index] = { views[index], loadOp, storeOp, clearValue };
 			}
 			return *this;
@@ -125,6 +126,7 @@ namespace smvk {
 			VkAttachmentStoreOp storeOp,
 			VkClearValue clearValue
 		) {
+			assert(!logicalImageViewHandle.empty() && "setDepth() called with empty image view");
 			this->depthAttachment_ = { logicalImageViewHandle, loadOp, storeOp, clearValue };
 			return *this;
 		};
@@ -543,22 +545,23 @@ namespace smvk {
 			};
 
 			const bool hasDepth = !pass.depthAttachment_.view.empty();
-
 			auto depthView = hasDepth
 				? imageViews_.get(pass.depthAttachment_.view)
 				: nullptr;
+			const bool hasStencil =
+				hasDepth &&
+				FormatHasStencil(depthView->resolvedFormat);
 
 			if (hasDepth) {
 				depthInfo.imageView = depthView->resolvedImageView;
-				depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
+				depthInfo.imageLayout =
+					hasStencil
+					? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+					: VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
 				depthInfo.loadOp = pass.depthAttachment_.loadOp;
 				depthInfo.storeOp = pass.depthAttachment_.storeOp;
 				depthInfo.clearValue = pass.depthAttachment_.clearValue;
 			}
-
-			const bool hasStencil =
-				hasDepth &&
-				FormatHasStencil(depthView->resolvedFormat);
 
 			VkRenderingInfo renderInfo{
 				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
