@@ -374,80 +374,80 @@ private:
 			float model[16];
 			smvk::MaterialValues material;
 			uint64_t frameUniforms;
-			uint64_t lightsBuffer;
+			//uint64_t lightsBuffer;
 			//uint64_t materialsBuffer;
 			//uint32_t materialId;
-			uint32_t comparisonSamplerId;
+			//uint32_t comparisonSamplerId;
 		} pc;
 
 		// FRAME
-		auto& shadowPass = m_rendergraph->AddPass()
-			.setOffset({ 0,0 })
-			.setExtent({ 2048, 2048 })
-			.setDepth(m_viewportResources.shadowmapViews[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { 1.0f })
-			.setRecordingFunc([this](smvk::CommandBuffer& cmd)
-		{
+		//auto& shadowPass = m_rendergraph->AddPass()
+		//	.setOffset({ 0,0 })
+		//	.setExtent({ 2048, 2048 })
+		//	.setDepth(m_viewportResources.shadowmapViews[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { 1.0f })
+		//	.setRecordingFunc([this](smvk::CommandBuffer& cmd)
+		//{
 
-			uint64_t frameUniforms =
-				m_context->buffers_
-				.get(m_resources.frameUniforms)
-				->deviceAddress;
-			uint64_t lightsBuffer =
-				m_context->buffers_
-				.get(m_resources.lightsBuffer)
-				->deviceAddress;
+		//	uint64_t frameUniforms =
+		//		m_context->buffers_
+		//		.get(m_resources.frameUniforms)
+		//		->deviceAddress;
+		//	uint64_t lightsBuffer =
+		//		m_context->buffers_
+		//		.get(m_resources.lightsBuffer)
+		//		->deviceAddress;
 
-			PushConstants pc;
-			pc.frameUniforms = frameUniforms;
-			pc.lightsBuffer = lightsBuffer;
-			pc.comparisonSamplerId = 1;  // hardcoded to 1
-			// ideally should be gotteng from samplerPool/samplerMap->GetSamplerId(key)
+		//	PushConstants pc;
+		//	pc.frameUniforms = frameUniforms;
+		//	//pc.lightsBuffer = lightsBuffer;
+		//	//pc.comparisonSamplerId = 1;  // hardcoded to 1
+		//	// ideally should be gotteng from samplerPool/samplerMap->GetSamplerId(key)
 
-			cmd.BindRenderPipeline(
-				m_resources.shadowProgram,
-				smvk::VertexFormat::StaticVertexFormat
-			);
-			cmd.PushConstants(
-				0,
-				sizeof(PushConstants),
-				&pc,
-				smvk::PipelineStageBit_AllGraphics
-			);
+		//	cmd.BindRenderPipeline(
+		//		m_resources.shadowProgram,
+		//		smvk::VertexFormat::StaticVertexFormat
+		//	);
+		//	cmd.PushConstants(
+		//		0,
+		//		sizeof(PushConstants),
+		//		&pc,
+		//		smvk::PipelineStageBit_AllGraphics
+		//	);
 
-			// Render meshes with cull mode BACK (render front faces from light's perspective)
-			// and depth bias to reduce shadow acne
-			m_world->forEachNode(
-				smvk::IteratorFlagBit_PassedCullTest
-				| smvk::IteratorFlagBit_StaticVertexFmt
-				, [&](NodeId node)
-			{
-				auto meshForNode = m_world->scene.meshForNode.find(node);
-				if (meshForNode == m_world->scene.meshForNode.end()) {
-					return;
-				}
+		//	// Render meshes with cull mode BACK (render front faces from light's perspective)
+		//	// and depth bias to reduce shadow acne
+		//	m_world->forEachNode(
+		//		smvk::IteratorFlagBit_PassedCullTest
+		//		| smvk::IteratorFlagBit_StaticVertexFmt
+		//		, [&](NodeId node)
+		//	{
+		//		auto meshForNode = m_world->scene.meshForNode.find(node);
+		//		if (meshForNode == m_world->scene.meshForNode.end()) {
+		//			return;
+		//		}
 
-				auto materialForNode = m_world->scene.materialForNode.find(node);
-				if (materialForNode == m_world->scene.materialForNode.end()) {
-					return;
-				}
+		//		auto materialForNode = m_world->scene.materialForNode.find(node);
+		//		if (materialForNode == m_world->scene.materialForNode.end()) {
+		//			return;
+		//		}
 
-				auto& model = m_world->scene.globalTransform[node];
-				uint32_t meshId = meshForNode->second;
-				smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
+		//		auto& model = m_world->scene.globalTransform[node];
+		//		uint32_t meshId = meshForNode->second;
+		//		smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
 
-				// Draw the mesh - the vertex shader will transform positions by lightVP
-				// (light VP is passed via push constants)
-				for (auto& draw_set : meshDesc->geometry.surfaces) {
-					cmd.DrawIndexed(
-						draw_set.indexCount,
-						1,
-						draw_set.firstIndex,
-						draw_set.baseVertex
-					);
-				};
-			}
-			);
-		});
+		//		// Draw the mesh - the vertex shader will transform positions by lightVP
+		//		// (light VP is passed via push constants)
+		//		for (auto& draw_set : meshDesc->geometry.surfaces) {
+		//			cmd.DrawIndexed(
+		//				draw_set.indexCount,
+		//				1,
+		//				draw_set.firstIndex,
+		//				draw_set.baseVertex
+		//			);
+		//		};
+		//	}
+		//	);
+		//});
 
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })

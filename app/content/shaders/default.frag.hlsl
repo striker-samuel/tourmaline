@@ -173,20 +173,20 @@ PSOut mainPS(PSIn IN)
     //    }
     //}
 
-    float shadow = 1.0f;
-    Light light = pc.bLights.Get().lights[0];
-    if (light.shadow_map_index >= 0)
-    {
-        shadow = GetShadowFactor(
-        pc.comparisonSamplerId,
-        IN.worldPos,
-        light
-    );
-    }
+    float shadowFactor = 1.0f;
+    //Light light = pc.bLights.Get().lights[0];
+    //if (light.shadow_map_index >= 0)
+    //{
+    //    shadow = GetShadowFactor(
+    //    pc.comparisonSamplerId,
+    //    IN.worldPos,
+    //    light
+    //);
+    //}
     //depth = (1 - depth) * 20;
     
     OUT.
-        outColor = float4(litColor.rgb * shadow, texSample.a);
+        outColor = float4(litColor.rgb * shadowFactor, texSample.a);
 
     
     //float3 N = normalize(IN.normal);

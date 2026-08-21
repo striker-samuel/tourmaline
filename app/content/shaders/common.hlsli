@@ -50,9 +50,9 @@ struct PC_Draw
     uint4 tex; // type it properly. maybe
     vk::BufferPointer<FrameUniforms>
     frameUniforms;
-    vk::BufferPointer<LightBuffer>
-    bLights;
-    uint comparisonSamplerId;
+    //vk::BufferPointer<LightBuffer>
+    //bLights;
+    //uint comparisonSamplerId;
 };
 
 [[vk::push_constant]]
