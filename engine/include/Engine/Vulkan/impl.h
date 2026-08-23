@@ -3,15 +3,15 @@
 #include <Engine/smvk.h>
 
 constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
-	VK_BUFFER_USAGE_INDEX_BUFFER_BIT |VK_BUFFER_USAGE_TRANSFER_DST_BIT,               // BufferType_Index
-	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |VK_BUFFER_USAGE_TRANSFER_DST_BIT,             // BufferType_Vertex
-	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
-	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Storage
+	VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_Index
+	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,             // BufferType_Vertex
+	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
+	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Storage
 	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,           // BufferType_Indirect
 	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_TransferSrc
 	VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_TransferDst
 	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_Staging: transfer with host visibility
-	0,                                               // BufferType_Count sentinel
+	0,                                             // BufferType_Count sentinel
 };
 
 constexpr VmaMemoryUsage bufferTypeToVmaUsage[9] = {

@@ -66,10 +66,11 @@ struct AppResources {
 };
 
 struct ViewportResources {
+	//
+	smvk::Holder<smvk::ImageHandle> shadowmaps[8];
+	//
 	smvk::LogicalImageViewHandle depthView;
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
-	smvk::Holder<smvk::ImageHandle> shadowmaps[8];
-	//smvk::LogicalImageHandle shadowmaps[8];
 	smvk::LogicalImageViewHandle shadowmapViews[8];
 };
 
@@ -112,12 +113,12 @@ private:
 			"frame uniforms"
 		);
 		m_resources.lightsBuffer = m_context->CreateBuffer(
-			sizeof(Light) * MAX_LIGHTS * m_swapchain->framesInFlight_,
+			sizeof(smvk::Light) * MAX_LIGHTS * m_swapchain->framesInFlight_,
 			smvk::BufferType_Storage,
 			"lights buffer"
 		);
 		m_resources.materialsBuffer = m_context->CreateBuffer(
-			sizeof(smvk::MaterialValues) * m_swapchain->framesInFlight_,
+			sizeof(smvk::MaterialValues)* MAX_MATERIALS * m_swapchain->framesInFlight_,
 			smvk::BufferType_Storage,
 			"materials buffer"
 		);
@@ -314,8 +315,8 @@ private:
 		}
 		);
 
-		Light lights[MAX_LIGHTS]{};
-		lights[0] = Light{
+		smvk::Light lights[MAX_LIGHTS]{};
+		lights[0] = smvk::Light{
 			.color = {1, .8, .8, 1}
 		};
 		glm::vec3 lightDir(0.5f, -1.0f, 0.5f);
@@ -336,19 +337,35 @@ private:
 			currentFrame * sizeof(lights)
 		);
 	}
-	//void UpdateMaterials(uint32_t currentFrame){
-	//	std::vector<smvk::MaterialValues> mats;
-	//	m_world->materialLocations
-	//	m_context->UploadDataToBuffer(
-	//		m_resources.lightsBuffer,
-	//		&lights,
-	//		sizeof(MaterialValues),
-	//		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-	//		VK_ACCESS_SHADER_READ_BIT,
-	//		0,
-	//		currentFrame * sizeof(lights)
-	//	);
-	//}
+
+	void UpdateMaterials(uint32_t currentFrame) {
+		std::vector<smvk::MaterialValues> mats;
+		mats.reserve(m_world->materialLocations.size());
+
+		for (uint32_t i = 0; i < m_world->materialLocations.size(); i++) {
+			auto* mat = m_world->GetMaterial(i);
+			if (mat) {
+				mats.push_back(mat->values);
+			}
+		}
+
+		//constexpr size_t MAX_MATERIALS = 1024;
+		constexpr size_t MATERIAL_FRAME_STRIDE =
+			sizeof(smvk::MaterialValues) * MAX_MATERIALS;
+
+		size_t frameOffset =
+			currentFrame * MATERIAL_FRAME_STRIDE;
+
+		m_context->UploadDataToBuffer(
+			m_resources.materialsBuffer,
+			mats.data(),
+			sizeof(smvk::MaterialValues) * mats.size(),
+			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			0,
+			frameOffset
+		);
+	}
 
 	void DrawFrame() {
 		auto fb = m_swapchain->AcquireFramebuffer();
@@ -362,6 +379,8 @@ private:
 		m_rendergraph->NewFrame();
 		m_context->UpdateBindings();
 		auto frameData = UpdateFrameUniforms(fb.frameIndex);
+		UpdateMaterials(fb.frameIndex);
+		//auto frameData = UpdateFrameUniforms(fb.frameIndex);
 		//UpdateLights(fb.frameIndex);
 
 		std::vector<smvk::LogicalImageViewHandle> colors;
@@ -369,17 +388,17 @@ private:
 
 		struct alignas(16) PushConstants {
 			float model[16];
-			smvk::MaterialValues material;
 			uint64_t frameUniforms;
-			//uint64_t lightsBuffer;
-			//uint64_t materialsBuffer;
-			//uint32_t materialId;
-			//uint32_t comparisonSamplerId;
+			uint64_t lightsBuffer;
+			uint64_t materialsBuffer;
+			uint32_t materialId;
+			uint32_t comparisonSamplerId;
 		} pc;
 
-		auto& shadowPass = m_rendergraph->AddPass()
+		auto& shadowPass = m_rendergraph->AddPass("Shadow")
 			.setOffset({ 0,0 })
 			.setExtent({ 2048, 2048 })
+			//.setCullMode()
 			.setDepth(m_viewportResources.shadowmapViews[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { 1.0f })
 			.setRecordingFunc([this](smvk::CommandBuffer& cmd)
 		{
@@ -413,8 +432,8 @@ private:
 			// Render meshes with cull mode BACK (render front faces from light's perspective)
 			// and depth bias to reduce shadow acne
 			m_world->forEachNode(
-				smvk::IteratorFlagBit_PassedCullTest
-				| smvk::IteratorFlagBit_StaticVertexFmt
+				smvk::IteratorFlagBit_StaticVertexFmt
+				//| smvk::IteratorFlagBit_CastShadow
 				, [&](NodeId node)
 			{
 				auto meshForNode = m_world->scene.meshForNode.find(node);
@@ -467,6 +486,15 @@ private:
 				sizeof(frameUniforms),
 				&frameUniforms
 			);
+			uint64_t materialsAddress =
+				m_context->buffers_
+				.get(m_resources.materialsBuffer)
+				->deviceAddress;
+			cmd.PushConstants(
+				offsetof(PushConstants, materialsBuffer),
+				sizeof(uint64_t),
+				&materialsAddress
+			);
 
 			m_world->forEachNode(
 				smvk::IteratorFlagBit_Renderable
@@ -491,15 +519,20 @@ private:
 				uint32_t meshId = meshForNode->second;
 				uint32_t materialId = materialForNode->second;
 				smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
-				auto mat = m_world->GetMaterial(materialId);
 
 				PushConstants pc{};
-				pc.material = mat->values;
+				pc.materialId = materialId;
 				const float* modelData = glm::value_ptr(model);
 				std::copy_n(modelData, 16, pc.model);
 
 				cmd.PushConstants(
-					0,
+					offsetof(PushConstants, materialId),
+					sizeof(pc.materialId),
+					&pc.materialId,
+					smvk::PipelineStageBit_AllGraphics
+				);
+				cmd.PushConstants(
+					0, 
 					offsetof(PushConstants, frameUniforms),
 					&pc,
 					smvk::PipelineStageBit_AllGraphics

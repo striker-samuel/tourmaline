@@ -132,16 +132,15 @@ PSOut mainPS(PSIn IN)
     float4x4 lightView;
     float4x4 lightViewProj;
 
-    uint texIdx = pc.tex.x; // uniform per draw via push constants
-    float4 texSample = textures[texIdx].Sample(samplers[0], IN.uv); 
+    MaterialValues values = pc.bMats.Get().mats[pc.materialId];
+    uint texIdx = values.tex.x;
+    float4 texSample = textures[texIdx].Sample(samplers[0], IN.uv);
     // using #0 sampler always hmmmm fix this!
-
     // Base material color (vertex color * material diffuse * texture)
-    float3 baseColor = IN.color * pc.diffuse.rgb * texSample.rgb;
+    float3 baseColor = IN.color * values.diffuse.rgb * texSample.rgb;
     
     // Ambient term
-    float3 ambient = pc.ambient.rgb * texSample.rgb;
-
+    float3 ambient = values.ambient.rgb * texSample.rgb;
     // Normalized normal
     float3 N = normalize(IN.normal);
 

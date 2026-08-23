@@ -44,7 +44,7 @@ glm::mat4 MakeOrthoRH_ZO(
 }
 
 
-glm::mat4 GetSpotLightView(const SpotLight& l)
+glm::mat4 GetSpotLightView(const smvk::SpotLight& l)
 {
 	glm::vec3 pos(l.position[0], l.position[1], l.position[2]);
 	glm::vec3 dir(l.direction[0], l.direction[1], l.direction[2]);
@@ -121,7 +121,7 @@ static glm::vec3 ChooseSafeUpForLookAt(const glm::vec3& forward /*normalized*/)
 }
 
 void GetDirectionalLightOrthoVP(
-	const DirectionalLight& l,
+	const smvk::DirectionalLight& l,
 	const glm::mat4& cameraView,
 	const glm::mat4& cameraProj,
 	float shadowNear,
@@ -209,7 +209,7 @@ void GetDirectionalLightOrthoVP(
 }
 
 glm::mat4 GetPerspectiveProjectionForLight(
-	const SpotLight& l,
+	const smvk::SpotLight& l,
 	float aspect,
 	float nearPlane,
 	float farPlane

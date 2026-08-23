@@ -901,8 +901,8 @@ int smvk::VulkanResourceManager::Initialize() {
 	VK_CHECK(vkCreateDescriptorSetLayout(device_, &dslci, nullptr, &defaultSetLayout));
 
 	// Engine Wide PC block
-	static constexpr uint32_t EnginePushConstantSize = 128;
-	//static constexpr uint32_t EnginePushConstantSize = 256;
+	//static constexpr uint32_t EnginePushConstantSize = 128;
+	static constexpr uint32_t EnginePushConstantSize = 256;
 	VkPushConstantRange range{
 		.stageFlags = VK_SHADER_STAGE_ALL,
 		.offset = 0,

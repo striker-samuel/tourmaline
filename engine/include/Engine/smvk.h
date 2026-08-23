@@ -634,12 +634,13 @@
 //
 static constexpr uint32_t DEFAULT_WIDTH = 1280;
 static constexpr uint32_t DEFAULT_HEIGHT = 720;
-static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 6;
+static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 static constexpr uint32_t DESIRED_SWAPCHAIN_IMAGE_COUNT = 2;
 static constexpr uint32_t MAX_BUFFERS = 1024;
 static constexpr uint32_t MAX_LIGHTS = 64;
 static constexpr uint32_t MAX_TEXTURES = 4096;
 static constexpr uint32_t MAX_SAMPLERS = 8;
+static constexpr uint32_t MAX_MATERIALS = 1024;
 static constexpr uint32_t MAX_SHADOW_SAMPLERS = 8;
 static constexpr uint32_t MAX_COLOR_ATTACHEMNTS = 4096;
 
@@ -778,28 +779,17 @@ namespace smvk {
 		}
 	};
 
-	typedef enum BufferUsageFlagBits {
-		BufferUsageFlagBits_Index = 1 << 0,
-		BufferUsageFlagBits_Vertex = 1 << 1,
-		BufferUsageFlagBits_Uniform = 1 << 2,
-		BufferUsageFlagBits_Storage = 1 << 3,
-		BufferUsageFlagBits_Indirect = 1 << 4,
-	} BufferUsageFlagBits;
-
-	typedef uint8_t BufferUsageFlags;
-
-typedef enum BufferType {
-	BufferType_Index = 0,
-	BufferType_Vertex,
-	BufferType_Uniform,
-	BufferType_Storage,
-	BufferType_Indirect,
-	BufferType_TransferSrc,
-	BufferType_TransferDst,
-	BufferType_Staging,
-	BufferType_Count,
-} BufferType;
-
+	typedef enum BufferType {
+		BufferType_Index = 0,
+		BufferType_Vertex,
+		BufferType_Uniform,
+		BufferType_Storage,
+		BufferType_Indirect,
+		BufferType_TransferSrc,
+		BufferType_TransferDst,
+		BufferType_Staging,
+		BufferType_Count,
+	} BufferType;
 	struct BufferCreateInfo {
 		VkDeviceSize size;
 		BufferType bufferType;

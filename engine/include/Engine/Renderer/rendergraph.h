@@ -95,6 +95,7 @@ namespace smvk {
 
 	using RecordingFunction = std::function<void(CommandBuffer&)>;
 	struct RenderPass final {
+		explicit RenderPass(const char* name = nullptr) { name_ = name; }
 		struct Attachment {
 			LogicalImageViewHandle view;
 			VkAttachmentLoadOp loadOp;
@@ -114,7 +115,7 @@ namespace smvk {
 			this->colorAttachments_.resize(views.size());
 			for (size_t index = 0; index < views.size(); index++)
 			{
-			assert(!views[index].empty() && "setColor() called with empty image view");
+				assert(!views[index].empty() && "setColor() called with empty image view");
 				this->colorAttachments_[index] = { views[index], loadOp, storeOp, clearValue };
 			}
 			return *this;
@@ -162,6 +163,7 @@ namespace smvk {
 		Attachment depthAttachment_{ .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .clearValue = { 1.0f } /*.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE */ };
 		//
 		RecordingFunction recordingFunction_{};
+		const char* name_;
 	};
 
 	struct CommandBuffer /*: ICommandBuffer*/ final {
@@ -210,8 +212,8 @@ namespace smvk {
 			pipelineCachePimpl = std::make_unique<PipelineCache>(&ctx_);
 		};
 		void NewFrame() { m_passes.clear(); }
-		RenderPass& AddPass() {
-			return m_passes.emplace_back(RenderPass());
+		RenderPass& AddPass(const char* name = nullptr) {
+			return m_passes.emplace_back(RenderPass(name));
 		}
 		[[nodiscard]] LogicalImageHandle AddImage(ImageCreateInfo description) { assert(false); };
 		[[nodiscard]] LogicalImageHandle AddImage(ImageHandle imageHandle) {
@@ -337,7 +339,7 @@ namespace smvk {
 			}
 			);
 		};
-void ResolveBuffers() {
+		void ResolveBuffers() {
 			storageBuffers_.forEach(
 				[this](LogicalBuffer& logicalBuffer) {
 				if (logicalBuffer.resolvedBufferHandle.empty()) {
@@ -350,8 +352,8 @@ void ResolveBuffers() {
 					).release();
 				}
 			}
-		);
-	}
+			);
+		}
 
 		//
 		smvk::Pool<LogicalImage, LogicalImage> inputImages_;
