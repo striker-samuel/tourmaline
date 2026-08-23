@@ -124,14 +124,12 @@ private:
 			"materials buffer"
 		);
 
-		//auto test = m_context->buffers_.get(m_resources.frameUniforms);
-		//assert(test->is_mappable());
-
 		// Main ShaderProgram
 		auto vertCode = readFile("content/shaders/default.vert.hlsl.spv");
 		auto fragCode = readFile("content/shaders/default.frag.hlsl.spv");
 		m_resources.vertShader = m_context->CreateShaderModule(vertCode, "vert");
 		m_resources.fragShader = m_context->CreateShaderModule(fragCode, "frag");
+
 		auto shadowVertCode = readFile("content/shaders/shadow.vert.hlsl.spv");
 		m_resources.shadowVert = m_context->CreateShaderModule(shadowVertCode, "shadowVert");
 
@@ -149,8 +147,15 @@ private:
 			.shaders = {vert, frag},
 			.shaderCount = 2
 		};
+
+		//
+		auto shadowVert = smvk::Shader{
+			.vkShaderModule = m_resources.shadowVert,
+			.entryPoint = "mainVS",
+			.stage = VK_SHADER_STAGE_VERTEX_BIT
+		};
 		m_resources.shadowProgram = {
-			.shaders = {vert},
+			.shaders = {shadowVert},
 			.shaderCount = 1
 		};
 
@@ -308,34 +313,85 @@ private:
 
 	}
 
-	void UpdateLights(uint32_t currentFrame) {
-
-		// GatherLights
+	void UpdateLights(uint32_t currentFrame)
+	{
 		smvk::Light lights[MAX_LIGHTS]{};
-		m_world->forEachNode(
-			smvk::IteratorFlagBit_LightPoint,
-			[&](NodeId node) {
-		}
-		);
 
-		lights[0] = smvk::Light{
-			.color = {1, .8, .8, 1}
-		};
-		glm::vec3 lightDir(0.5f, -1.0f, 0.5f);
-		lightDir = glm::normalize(lightDir);
-		float radius = 40.f;
-		float lightNear = 0.01f;
-		float lightFar = 100000.f;
-		glm::vec3 lightPos = glm::vec3(0.0f) + glm::vec3(1) * 0.5f + lightDir * 15.0f;
-		glm::vec3 sceneCenter(0.0f);
+		glm::vec3 lightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.5f));
+
+		const glm::vec3 sceneCenter(0.0f);
+
+		constexpr float shadowRadius = 40.0f;
+		constexpr float lightDistance = 100.0f;
+		constexpr float lightNear = 0.1f;
+		constexpr float lightFar = 200.0f;
+
+		// lightDir = direction the light travels.
+		const glm::vec3 lightPos =
+			sceneCenter - lightDir * lightDistance;
+
 		glm::vec3 lightUp(0.0f, 1.0f, 0.0f);
-		glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, lightUp);
-		glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, lightNear, lightFar);
-		glm::mat4 lightVP = lightProj * lightView;
+
+		// Avoid lookAt degenerating if direction is nearly parallel to up.
+		if (std::abs(glm::dot(lightDir, lightUp)) > 0.99f)
+			lightUp = glm::vec3(0.0f, 0.0f, 1.0f);
+
+		const glm::mat4 lightView =
+			glm::lookAt(lightPos, sceneCenter, lightUp);
+
+		glm::mat4 lightProj =
+			glm::ortho(
+				-shadowRadius,
+				shadowRadius,
+				-shadowRadius,
+				shadowRadius,
+				lightNear,
+				lightFar
+			);
+
+		// Only if you're not already flipping Vulkan Y elsewhere.
+		lightProj[1][1] *= -1.0f;
+
+		const glm::mat4 lightVP = lightProj * lightView;
+
+		// ---------------------------------------------------------
+		// Directional light
+		// ---------------------------------------------------------
+
+		smvk::Light& light = lights[0];
+
+		light.color = glm::vec4(1.0f, 0.8f, 0.8f, 1.0f);
+
+		light.position[0] = lightPos.x;
+		light.position[1] = lightPos.y;
+		light.position[2] = lightPos.z;
+
+		light.direction[0] = lightDir.x;
+		light.direction[1] = lightDir.y;
+		light.direction[2] = lightDir.z;
+
+		light.intensity = 1.0f;
+
+		// Replace with your actual flag enum.
+		//light.flags = smvk::LightFlagBit_Directional;
+
+		// Assuming this light uses shadow-map slot 0.
+		light.shadow_map_index = 0;
+
+		// These don't matter for a directional light, but keeping
+		// sensible defaults is fine.
+		light.innerAngle = 0.0f;
+		light.outerAngle = 0.0f;
+
+		std::memcpy(
+			light.lightVP,
+			glm::value_ptr(lightVP),
+			sizeof(light.lightVP)
+		);
 
 		m_context->UploadDataToBuffer(
 			m_resources.lightsBuffer,
-			&lights,
+			lights,
 			sizeof(lights),
 			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 			VK_ACCESS_SHADER_READ_BIT,
@@ -426,7 +482,9 @@ private:
 		auto& shadowPass = m_rendergraph->AddPass("Shadow")
 			.setOffset({ 0,0 })
 			.setExtent({ 2048, 2048 })
-			//.setCullMode()
+			.setDepthTestEnable(true)
+			.setDepthWriteEnable(true)
+			.setDepthCompareOp(VK_COMPARE_OP_LESS_OR_EQUAL)
 			.setDepth(m_viewportResources.shadowmapViews[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { 1.0f })
 			.setRecordingFunc([this, pc](smvk::CommandBuffer& cmd)
 		{
@@ -462,6 +520,18 @@ private:
 				auto& model = m_world->scene.globalTransform[node];
 				uint32_t meshId = meshForNode->second;
 				smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
+
+				PushConstants pc{};
+				const float* modelData = glm::value_ptr(model);
+				std::copy_n(modelData, 16, pc.model);
+
+				cmd.PushConstants(
+					0,
+					offsetof(PushConstants, frameUniforms),
+					&pc,
+					smvk::PipelineStageBit_AllGraphics
+				);
+
 				for (auto& draw_set : meshDesc->geometry.surfaces) {
 					cmd.DrawIndexed(
 						draw_set.indexCount,
