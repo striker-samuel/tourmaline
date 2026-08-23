@@ -12,7 +12,6 @@ inline float length2(const T& v) {
 }
 
 
-
 // This should not be used. MainView will be perspective ftm.
 // Cascades or shadowmaps should neber
 glm::mat4 MakeOrthoRH_ZO(
@@ -44,7 +43,7 @@ glm::mat4 MakeOrthoRH_ZO(
 }
 
 
-glm::mat4 GetSpotLightView(const smvk::SpotLight& l)
+glm::mat4 smvk::GetSpotLightView(const smvk::SpotLight& l)
 {
 	glm::vec3 pos(l.position[0], l.position[1], l.position[2]);
 	glm::vec3 dir(l.direction[0], l.direction[1], l.direction[2]);
@@ -63,7 +62,7 @@ glm::mat4 GetSpotLightView(const smvk::SpotLight& l)
 	return glm::lookAt(pos, pos + dir, up);
 }
 
-static std::array<glm::vec3, 8> GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
+static std::array<glm::vec3, 8> smvk::GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
 	const glm::mat4& invProj,
 	const glm::mat4& invView,
 	float nearDist,
@@ -120,7 +119,7 @@ static glm::vec3 ChooseSafeUpForLookAt(const glm::vec3& forward /*normalized*/)
 	return up;
 }
 
-void GetDirectionalLightOrthoVP(
+void smvk::GetDirectionalLightOrthoVP(
 	const smvk::DirectionalLight& l,
 	const glm::mat4& cameraView,
 	const glm::mat4& cameraProj,
@@ -141,9 +140,8 @@ void GetDirectionalLightOrthoVP(
 		assert(false && "shadowFar was less than shadowNear");
 	//		return;
 
-		// Normalize light direction
+	// Normalize light direction
 	glm::vec3 lightDir = glm::normalize(glm::vec3(l.direction[0], l.direction[1], l.direction[2]));
-
 
 	static auto prj = cameraProj;
 	static auto viw = cameraView;
@@ -206,9 +204,18 @@ void GetDirectionalLightOrthoVP(
 
 	outProj = glm::orthoRH_ZO(minX, maxX, minY, maxY, zNear, zFar);
 
+	// Compute cascade split end (view-space depth)
+	// For cascades: splitEnd is the view-space depth where this cascade ends
+	// Positive view-space depth means looking along -Z from camera
+	// We need to transform shadowFar into view space to get splitEnd
+	float cascadeSplitEnd = shadowFar; // default: single cascade covers full range
+
+	// outView and outProj are now set up. The light VP will be outProj * outView.
+	// For cascade splitting, we'd need to adjust the projection based on splitEnd.
+	// For 1 cascade, the full lightVP is used directly.
 }
 
-glm::mat4 GetPerspectiveProjectionForLight(
+glm::mat4 smvk::GetPerspectiveProjectionForLight(
 	const smvk::SpotLight& l,
 	float aspect,
 	float nearPlane,
@@ -226,6 +233,6 @@ glm::mat4 GetPerspectiveProjectionForLight(
 //	float farPlane
 //)
 //{
-//	float fovRadians = glm::radians(90.0f); // 90° for each cube face, if you go that route
+//	float fovRadians = glm::radians(90.0f); // 90ï¿½ for each cube face, if you go that route
 //	return glm::perspective(fovRadians, 1.0f, nearPlane, farPlane);
 //}

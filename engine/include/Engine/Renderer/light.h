@@ -32,7 +32,7 @@ namespace smvk {
 		int shadowSlot = -1;
 	};
 
-	struct alignas(16) Light {
+struct alignas(16) Light {
 		glm::vec4 color = glm::vec4(1.0f);
 		float position[3] = { 0.0f,0.0f,0.0f };
 		int32_t flags = 0;
@@ -49,20 +49,6 @@ namespace smvk {
 
 	// -------------- GPU descriptions ---------------
 
-	// Lets just hardcode the different types of lights. 
-	// they do need different data and are implemented quiter differently. Data is king, so from now on they are separated. 
-	struct alignas(16) GpuDirectionalLightDescription
-	{
-		glm::vec4 color = glm::vec4(1.0f);
-		float direction[3] = { 0.0f,0.0f,0.0f };
-		int32_t flags = 0;
-		float intensity = .0f;
-		int shadow_map_index = -1; // This may change for cascade reasons. dont know yet.
-		float pad_;
-		float lightVP[16] = {};
-	};
-	static_assert(sizeof(GpuDirectionalLightDescription) % 16 == 0);
-
 	struct GpuCascadeDescription
 	{
 		float lightVP[16];
@@ -78,6 +64,23 @@ namespace smvk {
 		float pad2_[2];
 	};
 	static_assert(sizeof(GpuCascadeDescription) % 16 == 0);
+
+	// Lets just hardcode the different types of lights. 
+	// they do need different data and are implemented quiter differently. Data is king, so from now on they are separated. 
+	struct alignas(16) GpuDirectionalLightDescription
+	{
+		glm::vec4 color = glm::vec4(1.0f);
+		float direction[3] = { 0.0f,0.0f,0.0f };
+		int32_t flags = 0;
+		float intensity = .0f;
+		int shadow_map_index = -1;
+		int numCascades = 1;
+		float pad_[3];
+		float lightVP[16] = {};
+		GpuCascadeDescription cascades[4];
+	};
+	static_assert(sizeof(GpuDirectionalLightDescription) % 16 == 0);
+
 
 	struct alignas(16) GpuSpotLightDescription {
 		glm::vec4 color = glm::vec4(1.0f);

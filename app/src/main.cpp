@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <iostream>
 #include <filesystem>
 
@@ -339,20 +339,25 @@ private:
 		const glm::mat4 lightView =
 			glm::lookAt(lightPos, sceneCenter, lightUp);
 
-		glm::mat4 lightProj =
-			glm::ortho(
-				-shadowRadius,
-				shadowRadius,
-				-shadowRadius,
-				shadowRadius,
-				lightNear,
-				lightFar
-			);
+		glm::mat4 lightProj;
+		glm::mat4 lightViewOut;
 
-		// Only if you're not already flipping Vulkan Y elsewhere.
-		lightProj[1][1] *= -1.0f;
+		// Use engine's cascade-aware ortho VP with texel snap
+		GetDirectionalLightOrthoVP(
+			smvk::DirectionalLight{},
+			lightView,
+			glm::mat4(1.0f),
+			lightNear,
+			lightFar,
+			lightViewOut,
+			lightProj,
+			0.0f,                       // zPadding
+			true,                       // enableTexelSnap
+			2048                        // shadowMapRes
+		);
 
-		const glm::mat4 lightVP = lightProj * lightView;
+		// lightVP = lightProj * lightViewOut (full cascade 0 covers full range)
+		const glm::mat4 lightVP = lightProj * lightViewOut;
 
 		// ---------------------------------------------------------
 		// Directional light
@@ -731,3 +736,5 @@ int main(int argc, const char* argv[]) {
 	std::cin.get();
 	return EXIT_SUCCESS;
 }
+
+
