@@ -61,6 +61,7 @@ struct AppResources {
 	smvk::Holder<smvk::BufferHandle> materialsBuffer;
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
+	smvk::Holder<smvk::ShaderModuleHandle> shadowVert;
 	smvk::ShaderProgram mainProgram;
 	smvk::ShaderProgram shadowProgram;
 };
@@ -131,7 +132,8 @@ private:
 		auto fragCode = readFile("content/shaders/default.frag.hlsl.spv");
 		m_resources.vertShader = m_context->CreateShaderModule(vertCode, "vert");
 		m_resources.fragShader = m_context->CreateShaderModule(fragCode, "frag");
-		//m_resources.vertShaderShadowMap = m_context->CreateShaderModule(fragCode, "frag");
+		auto shadowVertCode = readFile("content/shaders/shadow.vert.hlsl.spv");
+		m_resources.shadowVert = m_context->CreateShaderModule(shadowVertCode, "shadowVert");
 
 		auto vert = smvk::Shader{
 			.vkShaderModule = m_resources.vertShader,
@@ -309,24 +311,28 @@ private:
 	void UpdateLights(uint32_t currentFrame) {
 
 		// GatherLights
+		smvk::Light lights[MAX_LIGHTS]{};
 		m_world->forEachNode(
 			smvk::IteratorFlagBit_LightPoint,
 			[&](NodeId node) {
 		}
 		);
 
-		smvk::Light lights[MAX_LIGHTS]{};
 		lights[0] = smvk::Light{
 			.color = {1, .8, .8, 1}
 		};
 		glm::vec3 lightDir(0.5f, -1.0f, 0.5f);
 		lightDir = glm::normalize(lightDir);
+		float radius = 40.f;
+		float lightNear = 0.01f;
+		float lightFar = 100000.f;
 		glm::vec3 lightPos = glm::vec3(0.0f) + glm::vec3(1) * 0.5f + lightDir * 15.0f;
 		glm::vec3 sceneCenter(0.0f);
 		glm::vec3 lightUp(0.0f, 1.0f, 0.0f);
-		//glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, lightUp);
-		//glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, lightNear, lightFar);
-		//glm::mat4 lightVP = lightProj * lightView;
+		glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, lightUp);
+		glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, lightNear, lightFar);
+		glm::mat4 lightVP = lightProj * lightView;
+
 		m_context->UploadDataToBuffer(
 			m_resources.lightsBuffer,
 			&lights,
@@ -377,11 +383,14 @@ private:
 	void RenderFrame(smvk::FrameBuffer fb) {
 
 		m_rendergraph->NewFrame();
+
+		//
 		m_context->UpdateBindings();
-		auto frameData = UpdateFrameUniforms(fb.frameIndex);
+		auto frameData =
+			UpdateFrameUniforms(fb.frameIndex);
+		UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
-		//auto frameData = UpdateFrameUniforms(fb.frameIndex);
-		//UpdateLights(fb.frameIndex);
+		//
 
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
@@ -398,6 +407,7 @@ private:
 			m_context->buffers_
 			.get(m_resources.materialsBuffer)
 			->deviceAddress;
+
 		struct alignas(16) PushConstants {
 			float model[16];
 			uint64_t frameUniforms;
@@ -452,9 +462,6 @@ private:
 				auto& model = m_world->scene.globalTransform[node];
 				uint32_t meshId = meshForNode->second;
 				smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
-
-				// Draw the mesh - the vertex shader will transform positions by lightVP
-				// (light VP is passed via push constants)
 				for (auto& draw_set : meshDesc->geometry.surfaces) {
 					cmd.DrawIndexed(
 						draw_set.indexCount,

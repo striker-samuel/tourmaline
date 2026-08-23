@@ -672,6 +672,9 @@ inline const char* vkResultToString(VkResult result);
 
 
 namespace smvk {
+
+	typedef uint64_t BufferDeviceAddress;
+
 	typedef enum PipelineStageBits {
 		PipelineStageBit_None = 0,
 
@@ -821,7 +824,7 @@ namespace smvk {
 		VkSamplerAddressMode u = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 		VkSamplerAddressMode v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 		VkSamplerAddressMode w = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		float maxLod = 1000.0f;
+		float maxLod = VK_LOD_CLAMP_NONE;
 		float maxAniso = 1.0f;
 		VkCompareOp compareOp = VK_COMPARE_OP_ALWAYS;
 		bool compareEnable = false;
