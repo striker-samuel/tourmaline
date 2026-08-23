@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Solution>
+	<Configurations>
+		<BuildType Name="Debug"/>
+		<BuildType Name="Release"/>
+		<BuildType Name="MinSizeRel"/>
+		<BuildType Name="RelWithDebInfo"/>
+		<Platform Name="x64"/>
+	</Configurations>
+	<Project Path="engine.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="5268177d-25b5-3bae-bc44-c280b64993ad">
+		<BuildDependency Project="../ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="../external/glfw/src/glfw.vcxproj"/>
+		<BuildDependency Project="../external/glm/glm/glm.vcxproj"/>
+		<BuildDependency Project="../external/imgui/imgui_core.vcxproj"/>
+		<BuildDependency Project="../external/meshoptimizer/meshoptimizer.vcxproj"/>
+		<BuildDependency Project="../external/volk/volk.vcxproj"/>
+	</Project>
+	<Project Path="../external/glm/glm/glm.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="b85b15d7-c571-3671-b6c2-3cf4a1a35bfc">
+		<BuildDependency Project="../ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="../external/imgui/imgui_core.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="e8fbd4a2-39e7-3d9e-9e8b-cc0531ca7655">
+		<BuildDependency Project="../ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="../external/meshoptimizer/meshoptimizer.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="268a1c27-ebf7-3fbf-b2e3-fde2512bacee">
+		<BuildDependency Project="../ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="../external/volk/volk.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="e2278b39-2062-3f59-a9a9-ca111e194fbd">
+		<BuildDependency Project="../ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Folder Name="/CMakePredefinedTargets/">
+		<Project Path="ALL_BUILD.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="dd7f9a51-cbe5-379f-ac7c-cde4d5918d4b" DefaultStartup="true">
+			<BuildDependency Project="../ZERO_CHECK.vcxproj"/>
+			<BuildDependency Project="engine.vcxproj"/>
+		</Project>
+		<Project Path="INSTALL.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="c3fa6074-bc62-3336-b8f0-7c8c8fc7a716">
+			<BuildDependency Project="ALL_BUILD.vcxproj"/>
+			<BuildDependency Project="../ZERO_CHECK.vcxproj"/>
+			<Build Solution="Debug|*" Project="false"/>
+			<Build Solution="Release|*" Project="false"/>
+			<Build Solution="MinSizeRel|*" Project="false"/>
+			<Build Solution="RelWithDebInfo|*" Project="false"/>
+		</Project>
+		<Project Path="../ZERO_CHECK.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="1a90ddfb-02bf-3907-be33-238503071dac"/>
+	</Folder>
+	<Folder Name="/GLFW3/">
+		<Project Path="../external/glfw/src/glfw.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="1bb8d44c-65bf-3e79-903f-240c802be930">
+			<BuildDependency Project="../ZERO_CHECK.vcxproj"/>
+		</Project>
+	</Folder>
+</Solution>

@@ -122,8 +122,8 @@ private:
 			"materials buffer"
 		);
 
-		auto aaa = m_context->buffers_.get(m_resources.frameUniforms);
-		//assert(aaa->is_mappable());
+		//auto test = m_context->buffers_.get(m_resources.frameUniforms);
+		//assert(test->is_mappable());
 
 		// Main ShaderProgram
 		auto vertCode = readFile("content/shaders/default.vert.hlsl.spv");

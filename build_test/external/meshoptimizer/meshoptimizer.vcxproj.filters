@@ -1,0 +1,69 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\allocator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\clusterizer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\indexanalyzer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\indexcodec.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\indexgenerator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\overdrawoptimizer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\partition.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\quantization.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\rasterizer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\simplifier.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\spatialorder.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\stripifier.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\vcacheoptimizer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\vertexcodec.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\vertexfilter.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\vfetchoptimizer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="F:\REPOS\vulkantoy\external\meshoptimizer\src\meshoptimizer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="F:\REPOS\vulkantoy\external\meshoptimizer\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{68A16105-8462-39D7-ADAF-3D9628EA4AB2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{F0819190-BD00-3DA5-9FEF-468D5D061B48}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="F:\REPOS\vulkantoy\build_test\CMakeFiles\1cc27ccd959ad8f3686203ce359c24bb\default.frag.hlsl.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\REPOS\vulkantoy\build_test\CMakeFiles\1cc27ccd959ad8f3686203ce359c24bb\default.vert.hlsl.spv.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\REPOS\vulkantoy\build_test\CMakeFiles\e69be411758f2ac605c55d5fee27d4fb\App_shaders.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\REPOS\vulkantoy\app\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="F:\REPOS\vulkantoy\build_test\app\CMakeFiles\App_shaders" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{A7A90C98-693B-3CA8-8BF2-29C47785085D}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

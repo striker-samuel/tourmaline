@@ -788,16 +788,17 @@ namespace smvk {
 
 	typedef uint8_t BufferUsageFlags;
 
-	typedef enum BufferType {
-		BufferType_Index = 0,
-		BufferType_Vertex,
-		BufferType_Uniform,
-		BufferType_Storage,
-		BufferType_Indirect,
-		BufferType_TransferSrc,
-		BufferType_TransferDst,
-		BufferType_Count,
-	} BufferType;
+typedef enum BufferType {
+	BufferType_Index = 0,
+	BufferType_Vertex,
+	BufferType_Uniform,
+	BufferType_Storage,
+	BufferType_Indirect,
+	BufferType_TransferSrc,
+	BufferType_TransferDst,
+	BufferType_Staging,
+	BufferType_Count,
+} BufferType;
 
 	struct BufferCreateInfo {
 		VkDeviceSize size;

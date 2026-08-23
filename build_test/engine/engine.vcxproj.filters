@@ -1,0 +1,117 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="F:\REPOS\vulkantoy\engine\src\App\app.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\engine\src\App\world.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\engine\src\Camera\camera.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\engine\src\Renderer\dxc_integration.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\engine\src\Renderer\light.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\engine\src\Renderer\mesh.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\engine\src\Renderer\rendergraph.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\engine\src\Scene\Scene.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\engine\src\Scene\scene_utils.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\engine\src\Utils\gltf.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\engine\src\Vulkan\impl.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\engine\src\main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\imgui\backends\imgui_impl_glfw.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="F:\REPOS\vulkantoy\external\imgui\backends\imgui_impl_vulkan.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\App\app.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\App\cluster.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\App\input.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\App\world.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Camera\camera.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Memory\pool.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Renderer\dxc_integration.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Renderer\light.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Renderer\mesh.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Renderer\rendergraph.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Scene\scene.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Scene\scene_utils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Shaders\shaderio.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Shared\common.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Utils\bvh.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Utils\gltf.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\Vulkan\impl.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\platform.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="F:\REPOS\vulkantoy\engine\include\Engine\smvk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="F:\REPOS\vulkantoy\engine\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{68A16105-8462-39D7-ADAF-3D9628EA4AB2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{F0819190-BD00-3DA5-9FEF-468D5D061B48}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

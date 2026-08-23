@@ -1,0 +1,533 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{8F28E962-4E80-356F-BC02-045B7BE4329F}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>App</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">F:\REPOS\vulkantoy\build_test\Debug\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">App.dir\Debug\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">App</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">F:\REPOS\vulkantoy\build_test\Release\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">App.dir\Release\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">App</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">F:\REPOS\vulkantoy\build_test\MinSizeRel\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">App.dir\MinSizeRel\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">App</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">F:\REPOS\vulkantoy\build_test\RelWithDebInfo\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">App.dir\RelWithDebInfo\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">App</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</GenerateManifest>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>F:\REPOS\vulkantoy\app\include;F:\REPOS\vulkantoy\engine\include;F:\REPOS\vulkantoy\external\tiny_obj_loader;F:\REPOS\vulkantoy\external\tinygltf;F:\REPOS\vulkantoy\external\json\single_include\nlohmann;F:\REPOS\vulkantoy\external\VulkanMemoryAllocator;F:\REPOS\vulkantoy\external\glfw\include;F:\REPOS\vulkantoy\external\glm;F:\REPOS\vulkantoy\external\volk;C:\VulkanSDK\1.4.357.0\include;F:\REPOS\vulkantoy\external\imgui;F:\REPOS\vulkantoy\external\imgui\backends;F:\REPOS\vulkantoy\external\meshoptimizer\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/ktx/include"</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>Disabled</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;GLM_ENABLE_EXPERIMENTAL;TINYGLTF_NO_STB_IMAGE;TINYGLTF_NO_STB_IMAGE_WRITE;TINYGLTF_NO_EXTERNAL_IMAGE;GLFW_INCLUDE_NONE;_DEBUG;DEBUG;BASISU_NO_ITERATOR_DEBUG_LEVEL;KTX_FEATURE_KTX1;KTX_FEATURE_KTX2;KTX_FEATURE_WRITE;IMGUI_IMPL_VULKAN_NO_PROTOTYPES;IMGUI_IMPL_VULKAN_USE_VOLK;CMAKE_INTDIR="Debug"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;GLM_ENABLE_EXPERIMENTAL;TINYGLTF_NO_STB_IMAGE;TINYGLTF_NO_STB_IMAGE_WRITE;TINYGLTF_NO_EXTERNAL_IMAGE;GLFW_INCLUDE_NONE;DEBUG;BASISU_NO_ITERATOR_DEBUG_LEVEL;KTX_FEATURE_KTX1;KTX_FEATURE_KTX2;KTX_FEATURE_WRITE;IMGUI_IMPL_VULKAN_NO_PROTOTYPES;IMGUI_IMPL_VULKAN_USE_VOLK;CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>F:\REPOS\vulkantoy\app\include;F:\REPOS\vulkantoy\engine\include;F:\REPOS\vulkantoy\external\tiny_obj_loader;F:\REPOS\vulkantoy\external\tinygltf;F:\REPOS\vulkantoy\external\json\single_include\nlohmann;F:\REPOS\vulkantoy\external\VulkanMemoryAllocator;F:\REPOS\vulkantoy\external\glfw\include;F:\REPOS\vulkantoy\external\glm;F:\REPOS\vulkantoy\external\volk;C:\VulkanSDK\1.4.357.0\include;F:\REPOS\vulkantoy\external\imgui;F:\REPOS\vulkantoy\external\imgui\backends;F:\REPOS\vulkantoy\external\meshoptimizer\src;C:\ktx\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>F:\REPOS\vulkantoy\app\include;F:\REPOS\vulkantoy\engine\include;F:\REPOS\vulkantoy\external\tiny_obj_loader;F:\REPOS\vulkantoy\external\tinygltf;F:\REPOS\vulkantoy\external\json\single_include\nlohmann;F:\REPOS\vulkantoy\external\VulkanMemoryAllocator;F:\REPOS\vulkantoy\external\glfw\include;F:\REPOS\vulkantoy\external\glm;F:\REPOS\vulkantoy\external\volk;C:\VulkanSDK\1.4.357.0\include;F:\REPOS\vulkantoy\external\imgui;F:\REPOS\vulkantoy\external\imgui\backends;F:\REPOS\vulkantoy\external\meshoptimizer\src;C:\ktx\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message>	📦 Copying resource folders (shaders, textures, models) to App runtime directory</Message>
+      <Command>setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different C:/ktx/bin/ktx.dll F:/REPOS/vulkantoy/build_test/Debug
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory F:/REPOS/vulkantoy/build_test/Debug/content/textures
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory F:/REPOS/vulkantoy/build_test/Debug/content/models
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_directory F:/REPOS/vulkantoy/App/content/textures F:/REPOS/vulkantoy/build_test/Debug/content/textures
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_directory F:/REPOS/vulkantoy/App/content/models F:/REPOS/vulkantoy/build_test/Debug/content/models
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>..\engine\Debug\engine.lib;C:\ktx\lib\ktx.lib;..\external\glfw\src\Debug\glfw3.lib;..\external\glm\glm\Debug\glm.lib;..\external\volk\Debug\volk.lib;..\external\imgui\Debug\imgui_core.lib;..\external\meshoptimizer\Debug\meshoptimizer.lib;F:\REPOS\vulkantoy\external\dxc\lib\x64\dxcompiler.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>F:/REPOS/vulkantoy/build_test/app/Debug/App.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>F:/REPOS/vulkantoy/build_test/Debug/App.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>F:\REPOS\vulkantoy\app\include;F:\REPOS\vulkantoy\engine\include;F:\REPOS\vulkantoy\external\tiny_obj_loader;F:\REPOS\vulkantoy\external\tinygltf;F:\REPOS\vulkantoy\external\json\single_include\nlohmann;F:\REPOS\vulkantoy\external\VulkanMemoryAllocator;F:\REPOS\vulkantoy\external\glfw\include;F:\REPOS\vulkantoy\external\glm;F:\REPOS\vulkantoy\external\volk;C:\VulkanSDK\1.4.357.0\include;F:\REPOS\vulkantoy\external\imgui;F:\REPOS\vulkantoy\external\imgui\backends;F:\REPOS\vulkantoy\external\meshoptimizer\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/ktx/include"</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;GLM_ENABLE_EXPERIMENTAL;TINYGLTF_NO_STB_IMAGE;TINYGLTF_NO_STB_IMAGE_WRITE;TINYGLTF_NO_EXTERNAL_IMAGE;GLFW_INCLUDE_NONE;BASISU_NO_ITERATOR_DEBUG_LEVEL;KTX_FEATURE_KTX1;KTX_FEATURE_KTX2;KTX_FEATURE_WRITE;IMGUI_IMPL_VULKAN_NO_PROTOTYPES;IMGUI_IMPL_VULKAN_USE_VOLK;CMAKE_INTDIR="Release"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;GLM_ENABLE_EXPERIMENTAL;TINYGLTF_NO_STB_IMAGE;TINYGLTF_NO_STB_IMAGE_WRITE;TINYGLTF_NO_EXTERNAL_IMAGE;GLFW_INCLUDE_NONE;BASISU_NO_ITERATOR_DEBUG_LEVEL;KTX_FEATURE_KTX1;KTX_FEATURE_KTX2;KTX_FEATURE_WRITE;IMGUI_IMPL_VULKAN_NO_PROTOTYPES;IMGUI_IMPL_VULKAN_USE_VOLK;CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>F:\REPOS\vulkantoy\app\include;F:\REPOS\vulkantoy\engine\include;F:\REPOS\vulkantoy\external\tiny_obj_loader;F:\REPOS\vulkantoy\external\tinygltf;F:\REPOS\vulkantoy\external\json\single_include\nlohmann;F:\REPOS\vulkantoy\external\VulkanMemoryAllocator;F:\REPOS\vulkantoy\external\glfw\include;F:\REPOS\vulkantoy\external\glm;F:\REPOS\vulkantoy\external\volk;C:\VulkanSDK\1.4.357.0\include;F:\REPOS\vulkantoy\external\imgui;F:\REPOS\vulkantoy\external\imgui\backends;F:\REPOS\vulkantoy\external\meshoptimizer\src;C:\ktx\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>F:\REPOS\vulkantoy\app\include;F:\REPOS\vulkantoy\engine\include;F:\REPOS\vulkantoy\external\tiny_obj_loader;F:\REPOS\vulkantoy\external\tinygltf;F:\REPOS\vulkantoy\external\json\single_include\nlohmann;F:\REPOS\vulkantoy\external\VulkanMemoryAllocator;F:\REPOS\vulkantoy\external\glfw\include;F:\REPOS\vulkantoy\external\glm;F:\REPOS\vulkantoy\external\volk;C:\VulkanSDK\1.4.357.0\include;F:\REPOS\vulkantoy\external\imgui;F:\REPOS\vulkantoy\external\imgui\backends;F:\REPOS\vulkantoy\external\meshoptimizer\src;C:\ktx\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message>	📦 Copying resource folders (shaders, textures, models) to App runtime directory</Message>
+      <Command>setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different C:/ktx/bin/ktx.dll F:/REPOS/vulkantoy/build_test/Release
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory F:/REPOS/vulkantoy/build_test/Release/content/textures
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory F:/REPOS/vulkantoy/build_test/Release/content/models
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_directory F:/REPOS/vulkantoy/App/content/textures F:/REPOS/vulkantoy/build_test/Release/content/textures
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_directory F:/REPOS/vulkantoy/App/content/models F:/REPOS/vulkantoy/build_test/Release/content/models
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>..\engine\Release\engine.lib;C:\ktx\lib\ktx.lib;..\external\glfw\src\Release\glfw3.lib;..\external\glm\glm\Release\glm.lib;..\external\volk\Release\volk.lib;..\external\imgui\Release\imgui_core.lib;..\external\meshoptimizer\Release\meshoptimizer.lib;F:\REPOS\vulkantoy\external\dxc\lib\x64\dxcompiler.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>F:/REPOS/vulkantoy/build_test/app/Release/App.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>F:/REPOS/vulkantoy/build_test/Release/App.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>F:\REPOS\vulkantoy\app\include;F:\REPOS\vulkantoy\engine\include;F:\REPOS\vulkantoy\external\tiny_obj_loader;F:\REPOS\vulkantoy\external\tinygltf;F:\REPOS\vulkantoy\external\json\single_include\nlohmann;F:\REPOS\vulkantoy\external\VulkanMemoryAllocator;F:\REPOS\vulkantoy\external\glfw\include;F:\REPOS\vulkantoy\external\glm;F:\REPOS\vulkantoy\external\volk;C:\VulkanSDK\1.4.357.0\include;F:\REPOS\vulkantoy\external\imgui;F:\REPOS\vulkantoy\external\imgui\backends;F:\REPOS\vulkantoy\external\meshoptimizer\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/ktx/include"</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MinSpace</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;GLM_ENABLE_EXPERIMENTAL;TINYGLTF_NO_STB_IMAGE;TINYGLTF_NO_STB_IMAGE_WRITE;TINYGLTF_NO_EXTERNAL_IMAGE;GLFW_INCLUDE_NONE;BASISU_NO_ITERATOR_DEBUG_LEVEL;KTX_FEATURE_KTX1;KTX_FEATURE_KTX2;KTX_FEATURE_WRITE;IMGUI_IMPL_VULKAN_NO_PROTOTYPES;IMGUI_IMPL_VULKAN_USE_VOLK;CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;GLM_ENABLE_EXPERIMENTAL;TINYGLTF_NO_STB_IMAGE;TINYGLTF_NO_STB_IMAGE_WRITE;TINYGLTF_NO_EXTERNAL_IMAGE;GLFW_INCLUDE_NONE;BASISU_NO_ITERATOR_DEBUG_LEVEL;KTX_FEATURE_KTX1;KTX_FEATURE_KTX2;KTX_FEATURE_WRITE;IMGUI_IMPL_VULKAN_NO_PROTOTYPES;IMGUI_IMPL_VULKAN_USE_VOLK;CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>F:\REPOS\vulkantoy\app\include;F:\REPOS\vulkantoy\engine\include;F:\REPOS\vulkantoy\external\tiny_obj_loader;F:\REPOS\vulkantoy\external\tinygltf;F:\REPOS\vulkantoy\external\json\single_include\nlohmann;F:\REPOS\vulkantoy\external\VulkanMemoryAllocator;F:\REPOS\vulkantoy\external\glfw\include;F:\REPOS\vulkantoy\external\glm;F:\REPOS\vulkantoy\external\volk;C:\VulkanSDK\1.4.357.0\include;F:\REPOS\vulkantoy\external\imgui;F:\REPOS\vulkantoy\external\imgui\backends;F:\REPOS\vulkantoy\external\meshoptimizer\src;C:\ktx\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>F:\REPOS\vulkantoy\app\include;F:\REPOS\vulkantoy\engine\include;F:\REPOS\vulkantoy\external\tiny_obj_loader;F:\REPOS\vulkantoy\external\tinygltf;F:\REPOS\vulkantoy\external\json\single_include\nlohmann;F:\REPOS\vulkantoy\external\VulkanMemoryAllocator;F:\REPOS\vulkantoy\external\glfw\include;F:\REPOS\vulkantoy\external\glm;F:\REPOS\vulkantoy\external\volk;C:\VulkanSDK\1.4.357.0\include;F:\REPOS\vulkantoy\external\imgui;F:\REPOS\vulkantoy\external\imgui\backends;F:\REPOS\vulkantoy\external\meshoptimizer\src;C:\ktx\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message>	📦 Copying resource folders (shaders, textures, models) to App runtime directory</Message>
+      <Command>setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different C:/ktx/bin/ktx.dll F:/REPOS/vulkantoy/build_test/MinSizeRel
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory F:/REPOS/vulkantoy/build_test/MinSizeRel/content/textures
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory F:/REPOS/vulkantoy/build_test/MinSizeRel/content/models
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_directory F:/REPOS/vulkantoy/App/content/textures F:/REPOS/vulkantoy/build_test/MinSizeRel/content/textures
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_directory F:/REPOS/vulkantoy/App/content/models F:/REPOS/vulkantoy/build_test/MinSizeRel/content/models
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>..\engine\MinSizeRel\engine.lib;C:\ktx\lib\ktx.lib;..\external\glfw\src\MinSizeRel\glfw3.lib;..\external\glm\glm\MinSizeRel\glm.lib;..\external\volk\MinSizeRel\volk.lib;..\external\imgui\MinSizeRel\imgui_core.lib;..\external\meshoptimizer\MinSizeRel\meshoptimizer.lib;F:\REPOS\vulkantoy\external\dxc\lib\x64\dxcompiler.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>F:/REPOS/vulkantoy/build_test/app/MinSizeRel/App.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>F:/REPOS/vulkantoy/build_test/MinSizeRel/App.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>F:\REPOS\vulkantoy\app\include;F:\REPOS\vulkantoy\engine\include;F:\REPOS\vulkantoy\external\tiny_obj_loader;F:\REPOS\vulkantoy\external\tinygltf;F:\REPOS\vulkantoy\external\json\single_include\nlohmann;F:\REPOS\vulkantoy\external\VulkanMemoryAllocator;F:\REPOS\vulkantoy\external\glfw\include;F:\REPOS\vulkantoy\external\glm;F:\REPOS\vulkantoy\external\volk;C:\VulkanSDK\1.4.357.0\include;F:\REPOS\vulkantoy\external\imgui;F:\REPOS\vulkantoy\external\imgui\backends;F:\REPOS\vulkantoy\external\meshoptimizer\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/ktx/include"</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;GLM_ENABLE_EXPERIMENTAL;TINYGLTF_NO_STB_IMAGE;TINYGLTF_NO_STB_IMAGE_WRITE;TINYGLTF_NO_EXTERNAL_IMAGE;GLFW_INCLUDE_NONE;BASISU_NO_ITERATOR_DEBUG_LEVEL;KTX_FEATURE_KTX1;KTX_FEATURE_KTX2;KTX_FEATURE_WRITE;IMGUI_IMPL_VULKAN_NO_PROTOTYPES;IMGUI_IMPL_VULKAN_USE_VOLK;CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GLM_FORCE_RADIANS;GLM_FORCE_DEPTH_ZERO_TO_ONE;GLM_ENABLE_EXPERIMENTAL;TINYGLTF_NO_STB_IMAGE;TINYGLTF_NO_STB_IMAGE_WRITE;TINYGLTF_NO_EXTERNAL_IMAGE;GLFW_INCLUDE_NONE;BASISU_NO_ITERATOR_DEBUG_LEVEL;KTX_FEATURE_KTX1;KTX_FEATURE_KTX2;KTX_FEATURE_WRITE;IMGUI_IMPL_VULKAN_NO_PROTOTYPES;IMGUI_IMPL_VULKAN_USE_VOLK;CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>F:\REPOS\vulkantoy\app\include;F:\REPOS\vulkantoy\engine\include;F:\REPOS\vulkantoy\external\tiny_obj_loader;F:\REPOS\vulkantoy\external\tinygltf;F:\REPOS\vulkantoy\external\json\single_include\nlohmann;F:\REPOS\vulkantoy\external\VulkanMemoryAllocator;F:\REPOS\vulkantoy\external\glfw\include;F:\REPOS\vulkantoy\external\glm;F:\REPOS\vulkantoy\external\volk;C:\VulkanSDK\1.4.357.0\include;F:\REPOS\vulkantoy\external\imgui;F:\REPOS\vulkantoy\external\imgui\backends;F:\REPOS\vulkantoy\external\meshoptimizer\src;C:\ktx\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>F:\REPOS\vulkantoy\app\include;F:\REPOS\vulkantoy\engine\include;F:\REPOS\vulkantoy\external\tiny_obj_loader;F:\REPOS\vulkantoy\external\tinygltf;F:\REPOS\vulkantoy\external\json\single_include\nlohmann;F:\REPOS\vulkantoy\external\VulkanMemoryAllocator;F:\REPOS\vulkantoy\external\glfw\include;F:\REPOS\vulkantoy\external\glm;F:\REPOS\vulkantoy\external\volk;C:\VulkanSDK\1.4.357.0\include;F:\REPOS\vulkantoy\external\imgui;F:\REPOS\vulkantoy\external\imgui\backends;F:\REPOS\vulkantoy\external\meshoptimizer\src;C:\ktx\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message>	📦 Copying resource folders (shaders, textures, models) to App runtime directory</Message>
+      <Command>setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different C:/ktx/bin/ktx.dll F:/REPOS/vulkantoy/build_test/RelWithDebInfo
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory F:/REPOS/vulkantoy/build_test/RelWithDebInfo/content/textures
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory F:/REPOS/vulkantoy/build_test/RelWithDebInfo/content/models
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_directory F:/REPOS/vulkantoy/App/content/textures F:/REPOS/vulkantoy/build_test/RelWithDebInfo/content/textures
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_directory F:/REPOS/vulkantoy/App/content/models F:/REPOS/vulkantoy/build_test/RelWithDebInfo/content/models
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>..\engine\RelWithDebInfo\engine.lib;C:\ktx\lib\ktx.lib;..\external\glfw\src\RelWithDebInfo\glfw3.lib;..\external\glm\glm\RelWithDebInfo\glm.lib;..\external\volk\RelWithDebInfo\volk.lib;..\external\imgui\RelWithDebInfo\imgui_core.lib;..\external\meshoptimizer\RelWithDebInfo\meshoptimizer.lib;F:\REPOS\vulkantoy\external\dxc\lib\x64\dxcompiler.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>F:/REPOS/vulkantoy/build_test/app/RelWithDebInfo/App.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>F:/REPOS/vulkantoy/build_test/RelWithDebInfo/App.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="F:\REPOS\vulkantoy\app\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule F:/REPOS/vulkantoy/app/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SF:/REPOS/vulkantoy -BF:/REPOS/vulkantoy/build_test --check-stamp-file F:/REPOS/vulkantoy/build_test/app/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Program Files\CMake\share\cmake-4.4\Modules\CMakeCInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Compiler\MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\FindVulkan.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Internal\CMakeCLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Linker\MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Linker\Windows-MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Windows-MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Windows-MSVC.cmake;F:\REPOS\vulkantoy\build_test\CMakeFiles\4.4.2\CMakeCCompiler.cmake;F:\REPOS\vulkantoy\build_test\CMakeFiles\cmake.verify_globs;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">F:\REPOS\vulkantoy\build_test\app\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule F:/REPOS/vulkantoy/app/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SF:/REPOS/vulkantoy -BF:/REPOS/vulkantoy/build_test --check-stamp-file F:/REPOS/vulkantoy/build_test/app/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Program Files\CMake\share\cmake-4.4\Modules\CMakeCInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Compiler\MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\FindVulkan.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Internal\CMakeCLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Linker\MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Linker\Windows-MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Windows-MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Windows-MSVC.cmake;F:\REPOS\vulkantoy\build_test\CMakeFiles\4.4.2\CMakeCCompiler.cmake;F:\REPOS\vulkantoy\build_test\CMakeFiles\cmake.verify_globs;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">F:\REPOS\vulkantoy\build_test\app\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule F:/REPOS/vulkantoy/app/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SF:/REPOS/vulkantoy -BF:/REPOS/vulkantoy/build_test --check-stamp-file F:/REPOS/vulkantoy/build_test/app/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Program Files\CMake\share\cmake-4.4\Modules\CMakeCInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Compiler\MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\FindVulkan.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Internal\CMakeCLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Linker\MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Linker\Windows-MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Windows-MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Windows-MSVC.cmake;F:\REPOS\vulkantoy\build_test\CMakeFiles\4.4.2\CMakeCCompiler.cmake;F:\REPOS\vulkantoy\build_test\CMakeFiles\cmake.verify_globs;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">F:\REPOS\vulkantoy\build_test\app\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule F:/REPOS/vulkantoy/app/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SF:/REPOS/vulkantoy -BF:/REPOS/vulkantoy/build_test --check-stamp-file F:/REPOS/vulkantoy/build_test/app/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Program Files\CMake\share\cmake-4.4\Modules\CMakeCInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Compiler\MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\FindVulkan.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Internal\CMakeCLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Linker\MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Linker\Windows-MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Windows-MSVC-C.cmake;C:\Program Files\CMake\share\cmake-4.4\Modules\Platform\Windows-MSVC.cmake;F:\REPOS\vulkantoy\build_test\CMakeFiles\4.4.2\CMakeCCompiler.cmake;F:\REPOS\vulkantoy\build_test\CMakeFiles\cmake.verify_globs;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">F:\REPOS\vulkantoy\build_test\app\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="F:\REPOS\vulkantoy\app\src\main.cpp" />
+    <ClCompile Include="F:\REPOS\vulkantoy\external\imgui\backends\imgui_impl_glfw.cpp" />
+    <ClCompile Include="F:\REPOS\vulkantoy\external\imgui\backends\imgui_impl_vulkan.cpp" />
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="F:\REPOS\vulkantoy\build_test\ZERO_CHECK.vcxproj">
+      <Project>{1A90DDFB-02BF-3907-BE33-238503071DAC}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="F:\REPOS\vulkantoy\build_test\app\compile_shaders_target.vcxproj">
+      <Project>{35126360-5452-39DD-8EAD-89EB59157CC0}</Project>
+      <Name>compile_shaders_target</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="F:\REPOS\vulkantoy\build_test\engine\engine.vcxproj">
+      <Project>{5268177D-25B5-3BAE-BC44-C280B64993AD}</Project>
+      <Name>engine</Name>
+    </ProjectReference>
+    <ProjectReference Include="F:\REPOS\vulkantoy\build_test\external\glfw\src\glfw.vcxproj">
+      <Project>{1BB8D44C-65BF-3E79-903F-240C802BE930}</Project>
+      <Name>glfw</Name>
+    </ProjectReference>
+    <ProjectReference Include="F:\REPOS\vulkantoy\build_test\external\glm\glm\glm.vcxproj">
+      <Project>{B85B15D7-C571-3671-B6C2-3CF4A1A35BFC}</Project>
+      <Name>glm</Name>
+    </ProjectReference>
+    <ProjectReference Include="F:\REPOS\vulkantoy\build_test\external\imgui\imgui_core.vcxproj">
+      <Project>{E8FBD4A2-39E7-3D9E-9E8B-CC0531CA7655}</Project>
+      <Name>imgui_core</Name>
+    </ProjectReference>
+    <ProjectReference Include="F:\REPOS\vulkantoy\build_test\external\meshoptimizer\meshoptimizer.vcxproj">
+      <Project>{268A1C27-EBF7-3FBF-B2E3-FDE2512BACEE}</Project>
+      <Name>meshoptimizer</Name>
+    </ProjectReference>
+    <ProjectReference Include="F:\REPOS\vulkantoy\build_test\external\volk\volk.vcxproj">
+      <Project>{E2278B39-2062-3F59-A9A9-CA111E194FBD}</Project>
+      <Name>volk</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

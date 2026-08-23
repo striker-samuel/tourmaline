@@ -1088,7 +1088,7 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 		return;
 	}
 
-	auto stageHan = CreateBuffer(dataSize, smvk::BufferType_TransferSrc, "staging buffer");
+	auto stageHan = CreateBuffer(dataSize, smvk::BufferType_Staging, "staging buffer").release();
 	// this invalidates buf*, so lets get it again.
 	buf = buffers_.get(buffer);
 	auto stagingBuf = buffers_.get(stageHan);
@@ -1719,10 +1719,16 @@ smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(Ima
 	ci.size = size;
 	ci.usage = bufferTypeToUsageFlags[static_cast<size_t>(bufferType)];
 	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
 	VmaAllocationCreateInfo aci{};
 	aci.usage = bufferTypeToVmaUsage[static_cast<size_t>(bufferType)];
-	// Add host-visible requirement for uniform buffers (frame data updated on CPU)
+	if (bufferType == BufferType_Staging) {
+		aci.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+		// Optional/redundant if you want to strictly require it.
+		aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+	}
 	if (bufferType == BufferType_Uniform) {
+		aci.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 		aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 	}
 

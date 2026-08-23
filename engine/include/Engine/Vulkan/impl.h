@@ -2,26 +2,28 @@
 
 #include <Engine/smvk.h>
 
-constexpr VkBufferUsageFlags bufferTypeToUsageFlags[8] = {
-	VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
-	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
-	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-	VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-	0,
+constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
+	VK_BUFFER_USAGE_INDEX_BUFFER_BIT |VK_BUFFER_USAGE_TRANSFER_DST_BIT,               // BufferType_Index
+	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |VK_BUFFER_USAGE_TRANSFER_DST_BIT,             // BufferType_Vertex
+	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
+	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Storage
+	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,           // BufferType_Indirect
+	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_TransferSrc
+	VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_TransferDst
+	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_Staging: transfer with host visibility
+	0,                                               // BufferType_Count sentinel
 };
 
-constexpr VmaMemoryUsage bufferTypeToVmaUsage[8] = {
-	VMA_MEMORY_USAGE_GPU_ONLY,
-	VMA_MEMORY_USAGE_GPU_ONLY,
-	VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-	VMA_MEMORY_USAGE_GPU_ONLY,
-	VMA_MEMORY_USAGE_GPU_ONLY,
-	VMA_MEMORY_USAGE_AUTO,
-	VMA_MEMORY_USAGE_AUTO,
-	VMA_MEMORY_USAGE_AUTO,
+constexpr VmaMemoryUsage bufferTypeToVmaUsage[9] = {
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Index: device-local only
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Vertex: device-local only
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Uniform: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Storage: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Indirect: device-local only
+	VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferSrc: auto-detect memory properties
+	VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferDst: auto-detect memory properties
+	VMA_MEMORY_USAGE_AUTO_PREFER_HOST, // BufferType_Staging: auto-prefer host for CPU mapping
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Count sentinel
 };
 
 

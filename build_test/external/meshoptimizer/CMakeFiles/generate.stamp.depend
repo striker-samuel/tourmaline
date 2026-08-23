@@ -1,0 +1,8 @@
+# CMake generation dependency list for this directory.
+C:/Program Files/CMake/share/cmake-4.4/Modules/BasicConfigVersion-SamePatchVersion.cmake.in
+C:/Program Files/CMake/share/cmake-4.4/Modules/CMakePackageConfigHelpers.cmake
+C:/Program Files/CMake/share/cmake-4.4/Modules/GNUInstallDirs.cmake
+C:/Program Files/CMake/share/cmake-4.4/Modules/WriteBasicConfigVersionFile.cmake
+F:/REPOS/vulkantoy/build_test/CMakeFiles/cmake.verify_globs
+F:/REPOS/vulkantoy/external/meshoptimizer/CMakeLists.txt
+F:/REPOS/vulkantoy/external/meshoptimizer/config.cmake.in

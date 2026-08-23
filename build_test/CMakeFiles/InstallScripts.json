@@ -1,0 +1,19 @@
+{
+	"InstallScripts" : 
+	[
+		"F:/REPOS/vulkantoy/build_test/cmake_install.cmake",
+		"F:/REPOS/vulkantoy/build_test/external/meshoptimizer/cmake_install.cmake",
+		"F:/REPOS/vulkantoy/build_test/external/glfw/cmake_install.cmake",
+		"F:/REPOS/vulkantoy/build_test/external/glfw/src/cmake_install.cmake",
+		"F:/REPOS/vulkantoy/build_test/external/glfw/docs/cmake_install.cmake",
+		"F:/REPOS/vulkantoy/build_test/external/glm/cmake_install.cmake",
+		"F:/REPOS/vulkantoy/build_test/external/glm/glm/cmake_install.cmake",
+		"F:/REPOS/vulkantoy/build_test/external/json/cmake_install.cmake",
+		"F:/REPOS/vulkantoy/build_test/external/volk/cmake_install.cmake",
+		"F:/REPOS/vulkantoy/build_test/external/imgui/cmake_install.cmake",
+		"F:/REPOS/vulkantoy/build_test/engine/cmake_install.cmake",
+		"F:/REPOS/vulkantoy/build_test/app/cmake_install.cmake",
+		"F:/REPOS/vulkantoy/build_test/samples/01_triangle/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

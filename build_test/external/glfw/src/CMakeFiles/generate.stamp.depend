@@ -1,0 +1,4 @@
+# CMake generation dependency list for this directory.
+F:/REPOS/vulkantoy/build_test/CMakeFiles/cmake.verify_globs
+F:/REPOS/vulkantoy/external/glfw/CMake/glfw3.pc.in
+F:/REPOS/vulkantoy/external/glfw/src/CMakeLists.txt
