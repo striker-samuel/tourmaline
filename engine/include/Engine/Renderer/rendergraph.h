@@ -337,27 +337,23 @@ namespace smvk {
 			}
 			);
 		};
-		void ResolveBuffers() {
+void ResolveBuffers() {
 			storageBuffers_.forEach(
-				[this](LogicalBuffer& logicalBuffer) { // Pass by reference, not pointer
+				[this](LogicalBuffer& logicalBuffer) {
 				if (logicalBuffer.resolvedBufferHandle.empty()) {
 					const auto& key = logicalBuffer.key;
 					int ringMultiplier = key.ring ? 4 : 1;
 					logicalBuffer.resolvedBufferHandle = ctx_.CreateBuffer(
-						BufferCreateInfo{
-							.size = key.elementCount * key.elementSize * ringMultiplier,
-							.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-							.usage_flags =
-							  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-							| VK_BUFFER_USAGE_TRANSFER_DST_BIT
-						}
+						key.elementCount * key.elementSize * ringMultiplier,
+						smvk::BufferType_Storage,
+						"resolved buffer"
 					).release();
 				}
 			}
-			);
-		}
+		);
+	}
 
-		// 
+		//
 		smvk::Pool<LogicalImage, LogicalImage> inputImages_;
 		smvk::Pool<LogicalStorageImage, LogicalImage> storageImages_;
 		smvk::Pool<LogicalImageView, LogicalImageView> imageViews_;

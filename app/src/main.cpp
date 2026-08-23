@@ -107,26 +107,23 @@ private:
 		std::filesystem::path p(gltf_meshes_paths[0]);
 		//m_context->ProcessDeferrredTasks();
 		m_resources.frameUniforms = m_context->CreateBuffer(
-			{
-				.size = sizeof(FrameUniforms) * m_swapchain->framesInFlight_,
-				.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-				.usage_flags = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			}
+			sizeof(FrameUniforms) * m_swapchain->framesInFlight_,
+			smvk::BufferType_Uniform,
+			"frame uniforms"
 		);
 		m_resources.lightsBuffer = m_context->CreateBuffer(
-			{
-				.size = sizeof(Light) * MAX_LIGHTS * m_swapchain->framesInFlight_,
-				.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-				.usage_flags = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			}
+			sizeof(Light) * MAX_LIGHTS * m_swapchain->framesInFlight_,
+			smvk::BufferType_Storage,
+			"lights buffer"
 		);
 		m_resources.materialsBuffer = m_context->CreateBuffer(
-			{
-				.size = sizeof(smvk::MaterialValues) * m_swapchain->framesInFlight_,
-				.vma_usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-				.usage_flags = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			}
+			sizeof(smvk::MaterialValues) * m_swapchain->framesInFlight_,
+			smvk::BufferType_Storage,
+			"materials buffer"
 		);
+
+		auto aaa = m_context->buffers_.get(m_resources.frameUniforms);
+		//assert(aaa->is_mappable());
 
 		// Main ShaderProgram
 		auto vertCode = readFile("content/shaders/default.vert.hlsl.spv");
@@ -365,7 +362,7 @@ private:
 		m_rendergraph->NewFrame();
 		m_context->UpdateBindings();
 		auto frameData = UpdateFrameUniforms(fb.frameIndex);
-		UpdateLights(fb.frameIndex);
+		//UpdateLights(fb.frameIndex);
 
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
@@ -380,74 +377,73 @@ private:
 			//uint32_t comparisonSamplerId;
 		} pc;
 
-		// FRAME
-		//auto& shadowPass = m_rendergraph->AddPass()
-		//	.setOffset({ 0,0 })
-		//	.setExtent({ 2048, 2048 })
-		//	.setDepth(m_viewportResources.shadowmapViews[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { 1.0f })
-		//	.setRecordingFunc([this](smvk::CommandBuffer& cmd)
-		//{
+		auto& shadowPass = m_rendergraph->AddPass()
+			.setOffset({ 0,0 })
+			.setExtent({ 2048, 2048 })
+			.setDepth(m_viewportResources.shadowmapViews[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { 1.0f })
+			.setRecordingFunc([this](smvk::CommandBuffer& cmd)
+		{
 
-		//	uint64_t frameUniforms =
-		//		m_context->buffers_
-		//		.get(m_resources.frameUniforms)
-		//		->deviceAddress;
-		//	uint64_t lightsBuffer =
-		//		m_context->buffers_
-		//		.get(m_resources.lightsBuffer)
-		//		->deviceAddress;
+			uint64_t frameUniforms =
+				m_context->buffers_
+				.get(m_resources.frameUniforms)
+				->deviceAddress;
+			uint64_t lightsBuffer =
+				m_context->buffers_
+				.get(m_resources.lightsBuffer)
+				->deviceAddress;
 
-		//	PushConstants pc;
-		//	pc.frameUniforms = frameUniforms;
-		//	//pc.lightsBuffer = lightsBuffer;
-		//	//pc.comparisonSamplerId = 1;  // hardcoded to 1
-		//	// ideally should be gotteng from samplerPool/samplerMap->GetSamplerId(key)
+			PushConstants pc;
+			pc.frameUniforms = frameUniforms;
+			//pc.lightsBuffer = lightsBuffer;
+			//pc.comparisonSamplerId = 1;  // hardcoded to 1
+			// ideally should be gotteng from samplerPool/samplerMap->GetSamplerId(key)
 
-		//	cmd.BindRenderPipeline(
-		//		m_resources.shadowProgram,
-		//		smvk::VertexFormat::StaticVertexFormat
-		//	);
-		//	cmd.PushConstants(
-		//		0,
-		//		sizeof(PushConstants),
-		//		&pc,
-		//		smvk::PipelineStageBit_AllGraphics
-		//	);
+			cmd.BindRenderPipeline(
+				m_resources.shadowProgram,
+				smvk::VertexFormat::StaticVertexFormat
+			);
+			cmd.PushConstants(
+				0,
+				sizeof(PushConstants),
+				&pc,
+				smvk::PipelineStageBit_AllGraphics
+			);
 
-		//	// Render meshes with cull mode BACK (render front faces from light's perspective)
-		//	// and depth bias to reduce shadow acne
-		//	m_world->forEachNode(
-		//		smvk::IteratorFlagBit_PassedCullTest
-		//		| smvk::IteratorFlagBit_StaticVertexFmt
-		//		, [&](NodeId node)
-		//	{
-		//		auto meshForNode = m_world->scene.meshForNode.find(node);
-		//		if (meshForNode == m_world->scene.meshForNode.end()) {
-		//			return;
-		//		}
+			// Render meshes with cull mode BACK (render front faces from light's perspective)
+			// and depth bias to reduce shadow acne
+			m_world->forEachNode(
+				smvk::IteratorFlagBit_PassedCullTest
+				| smvk::IteratorFlagBit_StaticVertexFmt
+				, [&](NodeId node)
+			{
+				auto meshForNode = m_world->scene.meshForNode.find(node);
+				if (meshForNode == m_world->scene.meshForNode.end()) {
+					return;
+				}
 
-		//		auto materialForNode = m_world->scene.materialForNode.find(node);
-		//		if (materialForNode == m_world->scene.materialForNode.end()) {
-		//			return;
-		//		}
+				auto materialForNode = m_world->scene.materialForNode.find(node);
+				if (materialForNode == m_world->scene.materialForNode.end()) {
+					return;
+				}
 
-		//		auto& model = m_world->scene.globalTransform[node];
-		//		uint32_t meshId = meshForNode->second;
-		//		smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
+				auto& model = m_world->scene.globalTransform[node];
+				uint32_t meshId = meshForNode->second;
+				smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
 
-		//		// Draw the mesh - the vertex shader will transform positions by lightVP
-		//		// (light VP is passed via push constants)
-		//		for (auto& draw_set : meshDesc->geometry.surfaces) {
-		//			cmd.DrawIndexed(
-		//				draw_set.indexCount,
-		//				1,
-		//				draw_set.firstIndex,
-		//				draw_set.baseVertex
-		//			);
-		//		};
-		//	}
-		//	);
-		//});
+				// Draw the mesh - the vertex shader will transform positions by lightVP
+				// (light VP is passed via push constants)
+				for (auto& draw_set : meshDesc->geometry.surfaces) {
+					cmd.DrawIndexed(
+						draw_set.indexCount,
+						1,
+						draw_set.firstIndex,
+						draw_set.baseVertex
+					);
+				};
+			}
+			);
+		});
 
 		auto& mainPass = m_rendergraph->AddPass()
 			.setOffset({ 0,0 })

@@ -314,24 +314,9 @@ namespace smvk {
 
 	void AllocateStaticVertexFmt(smvk::VulkanResourceManager& ctx)
 	{
-		ctx.m_staticVertexPosBuffer = ctx.CreateBuffer({
-				VertexBufferSize,
-				VMA_MEMORY_USAGE_GPU_ONLY,
-				VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-				VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			}).release();
-		ctx.m_staticVertexShadingBuffer = ctx.CreateBuffer({
-			VertexBufferSize,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			}).release();
-		ctx.m_staticIndexBuffer = ctx.CreateBuffer({
-			IndexBufferSize,
-			VMA_MEMORY_USAGE_GPU_ONLY,
-			VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT
-			}).release();
+		ctx.m_staticVertexPosBuffer = ctx.CreateBuffer(VertexBufferSize, smvk::BufferType_Vertex, "static vertex pos").release();
+		ctx.m_staticVertexShadingBuffer = ctx.CreateBuffer(VertexBufferSize, smvk::BufferType_Vertex, "static vertex shading").release();
+		ctx.m_staticIndexBuffer = ctx.CreateBuffer(IndexBufferSize, smvk::BufferType_Index, "static index").release();
 
 		const VkDeviceSize maxVertices = std::min(
 			VertexBufferSize / sizeof(smvk::VertexPos),

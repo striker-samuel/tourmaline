@@ -2,6 +2,29 @@
 
 #include <Engine/smvk.h>
 
+constexpr VkBufferUsageFlags bufferTypeToUsageFlags[8] = {
+	VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
+	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
+	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+	VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	0,
+};
+
+constexpr VmaMemoryUsage bufferTypeToVmaUsage[8] = {
+	VMA_MEMORY_USAGE_GPU_ONLY,
+	VMA_MEMORY_USAGE_GPU_ONLY,
+	VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+	VMA_MEMORY_USAGE_GPU_ONLY,
+	VMA_MEMORY_USAGE_GPU_ONLY,
+	VMA_MEMORY_USAGE_AUTO,
+	VMA_MEMORY_USAGE_AUTO,
+	VMA_MEMORY_USAGE_AUTO,
+};
+
+
 inline bool FormatHasStencil(VkFormat format)
 {
 	switch (format)
@@ -198,12 +221,11 @@ namespace smvk {
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
 		void ProcessDeferrredTasks();
 		//
-		BufferHandle CreateStagingBuffer(VkDeviceSize size, const char* debugName = "staging"); // Right now only used for image upload, every other data upload is done by mapping
 		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr);
 		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr); // specialization for textures instead of .isTexture property
 		// dont like ther hardcode dep to ktx2
 		Holder<TextureHandle> CreateTexture(ktxTexture2& texture, const char* debugName = nullptr);
-		Holder<BufferHandle> CreateBuffer(BufferCreateInfo bufferCreateInfo, const char* debugName = nullptr);
+		Holder<BufferHandle> CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = nullptr);
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = nullptr);
 		Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = nullptr);
 

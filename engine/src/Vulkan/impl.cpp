@@ -161,7 +161,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBits
 
 	if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
 	{
-		__debugbreak();
+		//__debugbreak();
 	}
 
 	return VK_FALSE;
@@ -445,15 +445,15 @@ VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>
 
 	return availableFormats[0];
 }
-VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
-	for (const auto& availablePresentMode : availablePresentModes) {
-		if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
-			return availablePresentMode;
-		}
-	}
-
-	return VK_PRESENT_MODE_FIFO_KHR;
-}
+//VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
+//	for (const auto& availablePresentMode : availablePresentModes) {
+//		if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
+//			return availablePresentMode;
+//		}
+//	}
+//
+//	return VK_PRESENT_MODE_FIFO_KHR;
+//}
 VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window) {
 
 	if (capabilities.currentExtent.width !=
@@ -545,10 +545,25 @@ int smvk::VulkanCore::CreateInstance() {
 	createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
 	createInfo.ppEnabledExtensionNames = extensions.data();
 
+	VkValidationFeatureDisableEXT disabledValidationFeatures[] = {
+		VK_VALIDATION_FEATURE_DISABLE_UNIQUE_HANDLES_EXT
+	};
+
+	VkValidationFeaturesEXT validationFeatures{};
+	validationFeatures.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
+	validationFeatures.pNext = &debugCreateInfo;
+	validationFeatures.disabledValidationFeatureCount = 1;
+	validationFeatures.pDisabledValidationFeatures = disabledValidationFeatures;
+
 	if (enableValidationLayers) {
-		createInfo.enabledLayerCount = static_cast<uint32_t>(config_.validationLayers.size());
-		createInfo.ppEnabledLayerNames = config_.validationLayers.data();
-		createInfo.pNext = (void*)&debugCreateInfo;
+		createInfo.enabledLayerCount =
+			static_cast<uint32_t>(config_.validationLayers.size());
+
+		createInfo.ppEnabledLayerNames =
+			config_.validationLayers.data();
+
+		// validationFeatures -> debugCreateInfo
+		createInfo.pNext = &validationFeatures;
 	}
 	else {
 		createInfo.enabledLayerCount = 0;
@@ -560,12 +575,17 @@ int smvk::VulkanCore::CreateInstance() {
 	}
 
 	volkLoadInstance(instance_);
+
 	if (enableValidationLayers) {
-		if (vkCreateDebugUtilsMessengerEXT(instance_, &debugCreateInfo, nullptr,
-			&debugMessenger_) != VK_SUCCESS) {
+		if (vkCreateDebugUtilsMessengerEXT(
+			instance_,
+			&debugCreateInfo,
+			nullptr,
+			&debugMessenger_) != VK_SUCCESS)
+		{
 			throw std::runtime_error("failed to set up debug messenger!");
 		}
-	};
+	}
 
 	return 0;
 };
@@ -1053,6 +1073,7 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 	auto cmd = m_submitter->GetCommandBuffer(han).cmd;
 	if (buf->is_mappable()) {
 		VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, buf->vma_alloc, dest_offset, dataSize));
+		// this would be better served with a sync request pushed to a list.
 		BufferBarrier(
 			cmd,
 			buf->vk_buffer,
@@ -1067,7 +1088,7 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 		return;
 	}
 
-	auto stageHan = CreateStagingBuffer(dataSize);
+	auto stageHan = CreateBuffer(dataSize, smvk::BufferType_TransferSrc, "staging buffer");
 	// this invalidates buf*, so lets get it again.
 	buf = buffers_.get(buffer);
 	auto stagingBuf = buffers_.get(stageHan);
@@ -1095,8 +1116,8 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 	);
 
 	m_submitter->submit(han);
-	AddDeferredTask(
-		std::packaged_task<void()>([this, staging = stageHan] { destroy(this, staging); })
+AddDeferredTask(
+		std::packaged_task<void()>([this, staging = std::move(stageHan)] {destroy(this, staging); })
 		, han
 	);
 }
@@ -1107,7 +1128,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 	auto memReqs = getDeviceImageMemoryRequirements(device_, vkImageCreateInfo);
 	VkDeviceSize stagingBufferSize = memReqs.memoryRequirements.size;
 
-	auto stagingBufferHandle = CreateStagingBuffer(stagingBufferSize);
+	auto stagingBufferHandle = CreateBuffer(stagingBufferSize, smvk::BufferType_TransferSrc, "staging buffer");
 	auto staginfBuffer = buffers_.get(stagingBufferHandle);
 
 	void* mapped = MapBuffer(stagingBufferHandle);
@@ -1253,57 +1274,10 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 
 	m_submitter->submit(han);
 	AddDeferredTask(
-		std::packaged_task<void()>([this, staging = stagingBufferHandle] {destroy(this, staging); }),
-		han // Delete stagingBuffer when copy ends.
+		std::packaged_task<void()>([this, staging = std::move(stagingBufferHandle)] {destroy(this, staging); })
+		, han
 	);
 
-}
-[[nodiscard]] smvk::BufferHandle smvk::VulkanResourceManager::CreateStagingBuffer(VkDeviceSize size, const char* debugName)
-{
-	smvk::Buffer desc{};
-	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	ci.size = size;
-	ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-	VmaAllocationCreateInfo aci{};
-	aci.usage = VMA_MEMORY_USAGE_AUTO; // modern VMA: let it pick a good type
-	aci.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-	aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-		VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-	VK_CHECK(vmaCreateBuffer(m_allocator, &ci, &aci, &desc.vk_buffer, &desc.vma_alloc, nullptr));
-
-#ifndef NDEBUG
-	if (debugName)
-	{
-		VkDebugUtilsObjectNameInfoEXT nameInfo{
-			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
-		};
-
-		nameInfo.objectType = VK_OBJECT_TYPE_BUFFER;
-		nameInfo.objectHandle =
-			reinterpret_cast<uint64_t>(desc.vk_buffer);
-		nameInfo.pObjectName = debugName;
-
-		vkSetDebugUtilsObjectNameEXT(
-			device_,
-			&nameInfo);
-	}
-#endif
-
-
-	VkMemoryPropertyFlags props{}; //Cache memory properties for quick checks/debug
-	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &props);
-	desc.memory_flags = aci.requiredFlags;
-	desc.usage = ci.usage;
-
-	if ((props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
-		assert(false); // just hard crush for now
-	}
-
-	//return smvk::Holder<smvk::BufferHandle>(this, buffers_.create(std::move(desc)));
-	return buffers_.create(std::move(desc));
 }
 [[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::VulkanResourceManager::CreateImage(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
 {
@@ -1739,14 +1713,18 @@ smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(Ima
 	return { this, 	textures_.create(std::move(image_obj)) };
 
 }
-[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::VulkanResourceManager::CreateBuffer(BufferCreateInfo bufferCreateInfo, const char* debugName) {
+[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::VulkanResourceManager::CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName) {
 	Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	ci.size = bufferCreateInfo.size;
-	ci.usage = bufferCreateInfo.usage_flags | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+	ci.size = size;
+	ci.usage = bufferTypeToUsageFlags[static_cast<size_t>(bufferType)];
 	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	VmaAllocationCreateInfo aci{};
-	aci.usage = bufferCreateInfo.vma_usage;
+	aci.usage = bufferTypeToVmaUsage[static_cast<size_t>(bufferType)];
+	// Add host-visible requirement for uniform buffers (frame data updated on CPU)
+	if (bufferType == BufferType_Uniform) {
+		aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+	}
 
 	// Optionally choose pools here based on usage_flags/usage
 	VK_CHECK(vmaCreateBuffer(
@@ -1764,9 +1742,11 @@ smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(Ima
 		.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
 		.buffer = desc.vk_buffer
 	};
-	desc.deviceAddress = vkGetBufferDeviceAddress(device_, &ai);
+	desc.deviceAddress = (bufferType == BufferType_Uniform || bufferType == BufferType_Storage ||
+						  bufferType == BufferType_Indirect) 
+						? vkGetBufferDeviceAddress(device_, &ai) : 0;
 	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &desc.memory_flags);
-	desc.usage = bufferCreateInfo.usage_flags;
+	desc.usage = bufferTypeToUsageFlags[static_cast<size_t>(bufferType)];
 #if defined(_DEBUG)
 	if (debugName) {
 		VkDebugUtilsObjectNameInfoEXT nameInfo{

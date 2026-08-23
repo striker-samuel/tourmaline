@@ -778,28 +778,33 @@ namespace smvk {
 		}
 	};
 
-	//typedef enum BufferUsageFlagBits {
-	//	BufferUsageFlagBits_Index = 1 << 0,
-	//	BufferUsageFlagBits_Vertex = 1 << 1,
-	//	BufferUsageFlagBits_Uniform = 1 << 2,
-	//	BufferUsageFlagBits_Storage = 1 << 3,
-	//	BufferUsageFlagBits_Indirect = 1 << 4,
-	//} BufferUsageFlagBits;
+	typedef enum BufferUsageFlagBits {
+		BufferUsageFlagBits_Index = 1 << 0,
+		BufferUsageFlagBits_Vertex = 1 << 1,
+		BufferUsageFlagBits_Uniform = 1 << 2,
+		BufferUsageFlagBits_Storage = 1 << 3,
+		BufferUsageFlagBits_Indirect = 1 << 4,
+	} BufferUsageFlagBits;
 
-	//typedef uint8_t BufferUsageFlags;
+	typedef uint8_t BufferUsageFlags;
 
-	//typedef struct BufferCreateInfo {
-	//	size_t size;
-	//	BufferUsageFlags usage;
-	//	const char* name;
-	//} BufferCreateInfo;
+	typedef enum BufferType {
+		BufferType_Index = 0,
+		BufferType_Vertex,
+		BufferType_Uniform,
+		BufferType_Storage,
+		BufferType_Indirect,
+		BufferType_TransferSrc,
+		BufferType_TransferDst,
+		BufferType_Count,
+	} BufferType;
 
 	struct BufferCreateInfo {
 		VkDeviceSize size;
-		VmaMemoryUsage vma_usage; // this is derived from buffer/type or use.
-		VkBufferUsageFlags usage_flags;
+		BufferType bufferType;
 		const char* name;
 	};
+
 
 	struct ImageCreateInfo {
 		VkSampleCountFlags vk_samples = VK_SAMPLE_COUNT_1_BIT;
