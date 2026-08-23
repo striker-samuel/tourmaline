@@ -339,37 +339,35 @@ private:
 		const glm::mat4 lightView =
 			glm::lookAt(lightPos, sceneCenter, lightUp);
 
-		glm::mat4 lightProj;
-		glm::mat4 lightViewOut;
+		// Compute ortho projection same as original code
+		glm::mat4 lightProj =
+			glm::ortho(
+				-shadowRadius,
+				shadowRadius,
+				-shadowRadius,
+				shadowRadius,
+				lightNear,
+				lightFar
+			);
+
+		// Only if you're not already flipping Vulkan Y elsewhere.
+		//lightProj[1][1] *= -1.0f;
+
+		auto cameraView = m_camera.getViewMatrix();
+		auto cameraProj = m_camera.getProjMatrix();
+		cameraProj[1][1] *= -1; // viewport fix ditecrly in proj
 
 		// Use engine's cascade-aware ortho VP with texel snap
-		GetDirectionalLightOrthoVP(
-			smvk::DirectionalLight{},
-			lightView,
-			glm::mat4(1.0f),
-			lightNear,
-			lightFar,
-			lightViewOut,
-			lightProj,
-			0.0f,                       // zPadding
-			true,                       // enableTexelSnap
-			2048                        // shadowMapRes
-		);
-
-		// lightVP = lightProj * lightViewOut (full cascade 0 covers full range)
-		const glm::mat4 lightVP = lightProj * lightViewOut;
+		// Pass lightProj as cameraProj so the function can compute proper frustum corners
+		glm::mat4 lightViewOut;
 
 		// ---------------------------------------------------------
 		// Directional light
 		// ---------------------------------------------------------
 
-		smvk::Light& light = lights[0];
+		smvk::DirectionalLight& light = lights[0];
 
 		light.color = glm::vec4(1.0f, 0.8f, 0.8f, 1.0f);
-
-		light.position[0] = lightPos.x;
-		light.position[1] = lightPos.y;
-		light.position[2] = lightPos.z;
 
 		light.direction[0] = lightDir.x;
 		light.direction[1] = lightDir.y;
@@ -380,19 +378,36 @@ private:
 		// Replace with your actual flag enum.
 		//light.flags = smvk::LightFlagBit_Directional;
 
-		// Assuming this light uses shadow-map slot 0.
-		light.shadow_map_index = 0;
+		//// Assuming this light uses shadow-map slot 0.
+		//light.shadow_map_index = 0;
 
-		// These don't matter for a directional light, but keeping
-		// sensible defaults is fine.
-		light.innerAngle = 0.0f;
-		light.outerAngle = 0.0f;
+		//// These don't matter for a directional light, but keeping
+		//// sensible defaults is fine.
+		//light.innerAngle = 0.0f;
+		//light.outerAngle = 0.0f;
 
-		std::memcpy(
-			light.lightVP,
-			glm::value_ptr(lightVP),
-			sizeof(light.lightVP)
+		GetDirectionalLightOrthoVP(
+			light,
+			cameraView,
+			cameraProj,  // Use ortho proj for frustum corner extraction
+			lightNear,
+			lightFar,
+			lightViewOut,
+			lightProj,  // outProj (function will overwrite, but we recompute below)
+			0.0f,       // zPadding
+			true,       // enableTexelSnap
+			2048        // shadowMapRes
 		);
+
+		// Rebuild lightVP using the texel-snapped view and our original ortho proj
+		// The function modifies lightViewOut with texel snap delta baked in,
+		// so we just multiply our original proj by the snapped view
+		//const glm::mat4 lightVP = lightProj * lightViewOut;
+		//std::memcpy(
+		//	lightVP,
+		//	glm::value_ptr(lightVP),
+		//	sizeof(light.lightVP)
+		//);
 
 		m_context->UploadDataToBuffer(
 			m_resources.lightsBuffer,
