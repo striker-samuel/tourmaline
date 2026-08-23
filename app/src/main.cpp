@@ -118,7 +118,7 @@ private:
 			"lights buffer"
 		);
 		m_resources.materialsBuffer = m_context->CreateBuffer(
-			sizeof(smvk::MaterialValues)* MAX_MATERIALS * m_swapchain->framesInFlight_,
+			sizeof(smvk::MaterialValues) * MAX_MATERIALS * m_swapchain->framesInFlight_,
 			smvk::BufferType_Storage,
 			"materials buffer"
 		);
@@ -386,6 +386,18 @@ private:
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
 
+		uint64_t frameUniformsAddress =
+			m_context->buffers_
+			.get(m_resources.frameUniforms)
+			->deviceAddress;
+		uint64_t lightsBufferAddress =
+			m_context->buffers_
+			.get(m_resources.lightsBuffer)
+			->deviceAddress;
+		uint64_t materialsAddress =
+			m_context->buffers_
+			.get(m_resources.materialsBuffer)
+			->deviceAddress;
 		struct alignas(16) PushConstants {
 			float model[16];
 			uint64_t frameUniforms;
@@ -393,30 +405,21 @@ private:
 			uint64_t materialsBuffer;
 			uint32_t materialId;
 			uint32_t comparisonSamplerId;
-		} pc;
+		} pc{
+			.frameUniforms = frameUniformsAddress,
+			.lightsBuffer = lightsBufferAddress,
+			.materialsBuffer = materialsAddress,
+			.materialId = 0, // defaultMaterial
+			.comparisonSamplerId = 1
+		};
 
 		auto& shadowPass = m_rendergraph->AddPass("Shadow")
 			.setOffset({ 0,0 })
 			.setExtent({ 2048, 2048 })
 			//.setCullMode()
 			.setDepth(m_viewportResources.shadowmapViews[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { 1.0f })
-			.setRecordingFunc([this](smvk::CommandBuffer& cmd)
+			.setRecordingFunc([this, pc](smvk::CommandBuffer& cmd)
 		{
-
-			uint64_t frameUniforms =
-				m_context->buffers_
-				.get(m_resources.frameUniforms)
-				->deviceAddress;
-			uint64_t lightsBuffer =
-				m_context->buffers_
-				.get(m_resources.lightsBuffer)
-				->deviceAddress;
-
-			PushConstants pc;
-			pc.frameUniforms = frameUniforms;
-			//pc.lightsBuffer = lightsBuffer;
-			//pc.comparisonSamplerId = 1;  // hardcoded to 1
-			// ideally should be gotteng from samplerPool/samplerMap->GetSamplerId(key)
 
 			cmd.BindRenderPipeline(
 				m_resources.shadowProgram,
@@ -469,7 +472,7 @@ private:
 			.setExtent(fb.swapchain.extent_)
 			.setColor(colors, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })  // Rendering directly to swapchainImage!
 			.setDepth(m_viewportResources.depthView, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
-			.setRecordingFunc([this](smvk::CommandBuffer& cmd)
+			.setRecordingFunc([this, pc](smvk::CommandBuffer& cmd)
 		{
 
 			cmd.BindRenderPipeline(
@@ -477,23 +480,15 @@ private:
 				smvk::VertexFormat::StaticVertexFormat
 			);
 
-			uint64_t frameUniforms =
-				m_context->buffers_
-				.get(m_resources.frameUniforms)
-				->deviceAddress;
 			cmd.PushConstants(
 				offsetof(PushConstants, frameUniforms),
-				sizeof(frameUniforms),
-				&frameUniforms
+				sizeof(uint64_t),
+				&pc.frameUniforms
 			);
-			uint64_t materialsAddress =
-				m_context->buffers_
-				.get(m_resources.materialsBuffer)
-				->deviceAddress;
 			cmd.PushConstants(
 				offsetof(PushConstants, materialsBuffer),
 				sizeof(uint64_t),
-				&materialsAddress
+				&pc.materialsBuffer
 			);
 
 			m_world->forEachNode(
@@ -532,7 +527,7 @@ private:
 					smvk::PipelineStageBit_AllGraphics
 				);
 				cmd.PushConstants(
-					0, 
+					0,
 					offsetof(PushConstants, frameUniforms),
 					&pc,
 					smvk::PipelineStageBit_AllGraphics
@@ -551,8 +546,6 @@ private:
 
 		}
 			);
-
-
 
 		// UI PASS
 		//m_rendergraph->AddPass()
