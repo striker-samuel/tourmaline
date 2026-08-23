@@ -85,9 +85,19 @@ namespace smvk {
 		} color[6]{};
 		VkFormat vkDepthFormat = VK_FORMAT_UNDEFINED;
 		VkPrimitiveTopology vkTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-		//lvk::VertexInput vertexInput;
-		//StencilState backFaceStencil = {};
-		//StencilState frontFaceStencil = {};
+		bool depthTestEnable = VK_TRUE;
+		bool depthWriteEnable = VK_TRUE;
+		VkCompareOp depthCompareOp = VK_COMPARE_OP_GREATER;
+		bool stencilTestEnable = VK_FALSE;
+		bool stencilWriteEnable = VK_FALSE;
+		uint32_t frontStencilCompareOp = VK_COMPARE_OP_ALWAYS;
+		uint32_t backStencilCompareOp = VK_COMPARE_OP_ALWAYS;
+		uint32_t frontStencilFailOp = VK_STENCIL_OP_KEEP;
+		uint32_t backStencilFailOp = VK_STENCIL_OP_KEEP;
+		uint32_t frontStencilPassOp = VK_STENCIL_OP_KEEP;
+		uint32_t backStencilPassOp = VK_STENCIL_OP_KEEP;
+		VkStencilFaceFlags frontStencilFace = VK_STENCIL_FACE_FRONT_BIT;
+		VkStencilFaceFlags backStencilFace = VK_STENCIL_FACE_BACK_BIT;
 		//uint32_t patchControlPoints = 0;
 		//uint32_t samplesCount = 1u;
 		//float minSampleShading = 0.0f;
@@ -131,6 +141,19 @@ namespace smvk {
 			this->depthAttachment_ = { logicalImageViewHandle, loadOp, storeOp, clearValue };
 			return *this;
 		};
+		RenderPass& setDepthTestEnable(bool enable) { this->depthTestEnable_ = enable; return *this; };
+		RenderPass& setDepthWriteEnable(bool enable) { this->depthWriteEnable_ = enable; return *this; };
+		RenderPass& setDepthCompareOp(VkCompareOp op) { this->depthCompareOp_ = op; return *this; };
+		RenderPass& setStencilTestEnable(bool enable) { this->stencilTestEnable_ = enable; return *this; };
+		RenderPass& setStencilWriteEnable(bool enable) { this->stencilWriteEnable_ = enable; return *this; };
+		RenderPass& setFrontStencilCompareOp(VkCompareOp op) { this->frontStencilCompareOp_ = op; return *this; };
+		RenderPass& setBackStencilCompareOp(VkCompareOp op) { this->backStencilCompareOp_ = op; return *this; };
+		RenderPass& setFrontStencilFailOp(uint32_t op) { this->frontStencilFailOp_ = op; return *this; };
+		RenderPass& setBackStencilFailOp(uint32_t op) { this->backStencilFailOp_ = op; return *this; };
+		RenderPass& setFrontStencilPassOp(uint32_t op) { this->frontStencilPassOp_ = op; return *this; };
+		RenderPass& setBackStencilPassOp(uint32_t op) { this->backStencilPassOp_ = op; return *this; };
+		RenderPass& setStencilFace(VkStencilFaceFlags face) { this->stencilFace_ = face; return *this; };
+
 
 		// Resources
 		RenderPass& setInputImages(std::vector<LogicalImageHandle> inputImages) { this->inputImages_ = std::move(inputImages); return *this; };
@@ -162,6 +185,18 @@ namespace smvk {
 		std::vector<AttachmentColorBlendSetup> colorAttachmentsBlendSetups;  // should either be {} or match colors size.
 		Attachment depthAttachment_{ .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .clearValue = { 1.0f } /*.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE */ };
 		//
+		bool depthTestEnable_ = VK_TRUE;
+		bool depthWriteEnable_ = VK_TRUE;
+		VkCompareOp depthCompareOp_ = VK_COMPARE_OP_GREATER;
+		bool stencilTestEnable_ = VK_FALSE;
+		bool stencilWriteEnable_ = VK_FALSE;
+		VkCompareOp frontStencilCompareOp_ = VK_COMPARE_OP_ALWAYS;
+		VkCompareOp backStencilCompareOp_ = VK_COMPARE_OP_ALWAYS;
+		uint32_t frontStencilFailOp_ = VK_STENCIL_OP_KEEP;
+		uint32_t backStencilFailOp_ = VK_STENCIL_OP_KEEP;
+		uint32_t frontStencilPassOp_ = VK_STENCIL_OP_KEEP;
+		uint32_t backStencilPassOp_ = VK_STENCIL_OP_KEEP;
+		VkStencilFaceFlags stencilFace_ = VK_STENCIL_FACE_FRONT_BIT;
 		RecordingFunction recordingFunction_{};
 		const char* name_;
 	};
@@ -425,7 +460,22 @@ namespace smvk {
 			colorAttachmentFormats.data(),
 			static_cast<uint32_t>(colorAttachmentFormats.size()),
 			depthFormat,
-			stencilFormat
+			stencilFormat,
+			VK_POLYGON_MODE_FILL,
+			VK_CULL_MODE_BACK_BIT,
+			VK_FRONT_FACE_COUNTER_CLOCKWISE,
+			renderPass_->depthTestEnable_,
+			renderPass_->depthWriteEnable_,
+			renderPass_->depthCompareOp_,
+			renderPass_->stencilTestEnable_,
+			renderPass_->stencilWriteEnable_,
+			renderPass_->frontStencilCompareOp_,
+			renderPass_->backStencilCompareOp_,
+			renderPass_->frontStencilFailOp_,
+			renderPass_->backStencilFailOp_,
+			renderPass_->frontStencilPassOp_,
+			renderPass_->backStencilPassOp_,
+			renderPass_->stencilFace_
 		);
 
 		assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");

@@ -436,6 +436,19 @@ namespace smvk {
 		VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
 		VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
 		VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+		bool depthTestEnable = VK_TRUE;
+		bool depthWriteEnable = VK_TRUE;
+		VkCompareOp depthCompareOp = VK_COMPARE_OP_GREATER;
+		bool stencilTestEnable = VK_FALSE;
+		bool stencilWriteEnable = VK_FALSE;
+		VkCompareOp frontStencilCompareOp = VK_COMPARE_OP_ALWAYS;
+		VkCompareOp backStencilCompareOp = VK_COMPARE_OP_ALWAYS;
+		uint32_t frontStencilFailOp = VK_STENCIL_OP_KEEP;
+		uint32_t backStencilFailOp = VK_STENCIL_OP_KEEP;
+		uint32_t frontStencilPassOp = VK_STENCIL_OP_KEEP;
+		uint32_t backStencilPassOp = VK_STENCIL_OP_KEEP;
+		VkStencilFaceFlags frontStencilFace = VK_STENCIL_FACE_FRONT_BIT;
+		VkStencilFaceFlags backStencilFace = VK_STENCIL_FACE_BACK_BIT;
 		bool operator==(const PipelineKey& other) const noexcept
 		{
 			return program == other.program &&
@@ -444,7 +457,20 @@ namespace smvk {
 				stencilFormat == other.stencilFormat &&
 				polygonMode == other.polygonMode &&
 				cullMode == other.cullMode &&
-				frontFace == other.frontFace;
+				frontFace == other.frontFace &&
+				depthTestEnable == other.depthTestEnable &&
+				depthWriteEnable == other.depthWriteEnable &&
+				depthCompareOp == other.depthCompareOp &&
+				stencilTestEnable == other.stencilTestEnable &&
+				stencilWriteEnable == other.stencilWriteEnable &&
+				frontStencilCompareOp == other.frontStencilCompareOp &&
+				backStencilCompareOp == other.backStencilCompareOp &&
+				frontStencilFailOp == other.frontStencilFailOp &&
+				backStencilFailOp == other.backStencilFailOp &&
+				frontStencilPassOp == other.frontStencilPassOp &&
+				backStencilPassOp == other.backStencilPassOp &&
+				frontStencilFace == other.frontStencilFace &&
+				backStencilFace == other.backStencilFace;
 		}
 	};
 
@@ -486,6 +512,19 @@ namespace smvk {
 			HashValue(seed, static_cast<uint32_t>(key.polygonMode));
 			HashValue(seed, static_cast<uint32_t>(key.cullMode));
 			HashValue(seed, static_cast<uint32_t>(key.frontFace));
+			HashValue(seed, static_cast<uint32_t>(key.depthTestEnable));
+			HashValue(seed, static_cast<uint32_t>(key.depthWriteEnable));
+			HashValue(seed, static_cast<uint32_t>(key.depthCompareOp));
+			HashValue(seed, static_cast<uint32_t>(key.stencilTestEnable));
+			HashValue(seed, static_cast<uint32_t>(key.stencilWriteEnable));
+			HashValue(seed, static_cast<uint32_t>(key.frontStencilCompareOp));
+			HashValue(seed, static_cast<uint32_t>(key.backStencilCompareOp));
+			HashValue(seed, static_cast<uint32_t>(key.frontStencilFailOp));
+			HashValue(seed, static_cast<uint32_t>(key.backStencilFailOp));
+			HashValue(seed, static_cast<uint32_t>(key.frontStencilPassOp));
+			HashValue(seed, static_cast<uint32_t>(key.backStencilPassOp));
+			HashValue(seed, static_cast<uint32_t>(key.frontStencilFace));
+			HashValue(seed, static_cast<uint32_t>(key.backStencilFace));
 
 			return seed;
 		}
@@ -514,7 +553,20 @@ namespace smvk {
 			VkFormat stencilFormat,
 			VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL,
 			VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT,
-			VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE)
+			VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+			bool depthTestEnable = VK_TRUE,
+			bool depthWriteEnable = VK_TRUE,
+			VkCompareOp depthCompareOp = VK_COMPARE_OP_GREATER,
+			bool stencilTestEnable = VK_FALSE,
+			bool stencilWriteEnable = VK_FALSE,
+			VkCompareOp frontStencilCompareOp = VK_COMPARE_OP_ALWAYS,
+			VkCompareOp backStencilCompareOp = VK_COMPARE_OP_ALWAYS,
+			uint32_t frontStencilFailOp = VK_STENCIL_OP_KEEP,
+			uint32_t backStencilFailOp = VK_STENCIL_OP_KEEP,
+			uint32_t frontStencilPassOp = VK_STENCIL_OP_KEEP,
+			uint32_t backStencilPassOp = VK_STENCIL_OP_KEEP,
+			VkStencilFaceFlags frontStencilFace = VK_STENCIL_FACE_FRONT_BIT,
+			VkStencilFaceFlags backStencilFace = VK_STENCIL_FACE_BACK_BIT)
 		{
 			PipelineKey key{
 				.program = program,
@@ -528,6 +580,19 @@ namespace smvk {
 				.polygonMode = polygonMode,
 				.cullMode = cullMode,
 				.frontFace = frontFace,
+				.depthTestEnable = depthTestEnable,
+				.depthWriteEnable = depthWriteEnable,
+				.depthCompareOp = depthCompareOp,
+				.stencilTestEnable = stencilTestEnable,
+				.stencilWriteEnable = stencilWriteEnable,
+				.frontStencilCompareOp = frontStencilCompareOp,
+				.backStencilCompareOp = backStencilCompareOp,
+				.frontStencilFailOp = frontStencilFailOp,
+				.backStencilFailOp = backStencilFailOp,
+				.frontStencilPassOp = frontStencilPassOp,
+				.backStencilPassOp = backStencilPassOp,
+				.frontStencilFace = frontStencilFace,
+				.backStencilFace = backStencilFace,
 			};
 
 			if (auto it = pipelines_.find(key); it != pipelines_.end()) {
@@ -655,16 +720,28 @@ namespace smvk {
 			VkPipelineDepthStencilStateCreateInfo depthStencil{};
 			depthStencil.sType =
 				VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-			depthStencil.depthTestEnable =
-				key.depthFormat != VK_FORMAT_UNDEFINED;
-			depthStencil.depthWriteEnable =
-				key.depthFormat != VK_FORMAT_UNDEFINED;
-			depthStencil.depthCompareOp =
-				VK_COMPARE_OP_GREATER;
-			depthStencil.depthBoundsTestEnable =
-				VK_FALSE;
-			depthStencil.stencilTestEnable =
-				VK_FALSE;
+			depthStencil.depthTestEnable = key.depthTestEnable;
+			depthStencil.depthWriteEnable = key.depthWriteEnable;
+			depthStencil.depthCompareOp = key.depthCompareOp;
+			depthStencil.depthBoundsTestEnable = VK_FALSE;
+			depthStencil.stencilTestEnable = key.stencilTestEnable;
+
+			VkStencilOpState frontStencil{};
+			frontStencil.compareOp = key.frontStencilCompareOp;
+			frontStencil.failOp = static_cast<VkStencilOp>(key.frontStencilFailOp);
+			frontStencil.passOp = static_cast<VkStencilOp>(key.frontStencilPassOp);
+			frontStencil.depthFailOp = VK_STENCIL_OP_KEEP;
+			frontStencil.writeMask = 0xFF;
+
+			VkStencilOpState backStencil{};
+			backStencil.compareOp = key.backStencilCompareOp;
+			backStencil.failOp = static_cast<VkStencilOp>(key.backStencilFailOp);
+			backStencil.passOp = static_cast<VkStencilOp>(key.backStencilPassOp);
+			backStencil.depthFailOp = VK_STENCIL_OP_KEEP;
+			backStencil.writeMask = 0xFF;
+
+			depthStencil.front = frontStencil;
+			depthStencil.back = backStencil;
 
 			// ---------------------------------------------------------
 			// COLOR BLENDING
