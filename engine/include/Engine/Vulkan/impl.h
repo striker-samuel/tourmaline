@@ -27,37 +27,150 @@ constexpr VmaMemoryUsage bufferTypeToVmaUsage[9] = {
 };
 
 
-inline bool FormatHasStencil(VkFormat format)
-{
-	switch (format)
-	{
-	case VK_FORMAT_S8_UINT:
-	case VK_FORMAT_D16_UNORM_S8_UINT:
-	case VK_FORMAT_D24_UNORM_S8_UINT:
-	case VK_FORMAT_D32_SFLOAT_S8_UINT:
-		return true;
 
-	default:
-		return false;
-	}
-}
-inline bool FormatHasDepth(VkFormat format)
-{
-	switch (format)
-	{
-	case VK_FORMAT_D16_UNORM:
-	case VK_FORMAT_X8_D24_UNORM_PACK32:
-	case VK_FORMAT_D32_SFLOAT:
-	case VK_FORMAT_D16_UNORM_S8_UINT:
-	case VK_FORMAT_D24_UNORM_S8_UINT:
-	case VK_FORMAT_D32_SFLOAT_S8_UINT:
-		return true;
+// ============================================================================
+// DepthSettings and BlendSettings are RHI-defined types in smvk.h.
+// Translators convert them to Vk types for pipeline cache usage.
+// ============================================================================
 
-	default:
-		return false;
-	}
-}
 namespace smvk {
+
+	inline bool FormatHasStencil(VkFormat format)
+	{
+		switch (format)
+		{
+		case VK_FORMAT_S8_UINT:
+		case VK_FORMAT_D16_UNORM_S8_UINT:
+		case VK_FORMAT_D24_UNORM_S8_UINT:
+		case VK_FORMAT_D32_SFLOAT_S8_UINT:
+			return true;
+
+		default:
+			return false;
+		}
+	}
+	inline bool FormatHasDepth(VkFormat format)
+	{
+		switch (format)
+		{
+		case VK_FORMAT_D16_UNORM:
+		case VK_FORMAT_X8_D24_UNORM_PACK32:
+		case VK_FORMAT_D32_SFLOAT:
+		case VK_FORMAT_D16_UNORM_S8_UINT:
+		case VK_FORMAT_D24_UNORM_S8_UINT:
+		case VK_FORMAT_D32_SFLOAT_S8_UINT:
+			return true;
+
+		default:
+			return false;
+		}
+	}
+
+	// ============================================================================
+	// Type translators: convert RHI types from smvk.h to Vk types for pipeline state
+	// ============================================================================
+
+	// CompareOp (RHI enum) -> VkCompareOp
+	inline VkCompareOp toVkCompareOp(smvk::CompareOp op)
+	{
+		switch (op)
+		{
+		case smvk::CompareOp::Never:        return VK_COMPARE_OP_NEVER;
+		case smvk::CompareOp::Less:         return VK_COMPARE_OP_LESS;
+		case smvk::CompareOp::Equal:        return VK_COMPARE_OP_EQUAL;
+		case smvk::CompareOp::LessEqual:    return VK_COMPARE_OP_LESS_OR_EQUAL;
+		case smvk::CompareOp::Greater:      return VK_COMPARE_OP_GREATER;
+		case smvk::CompareOp::NotEqual:     return VK_COMPARE_OP_NOT_EQUAL;
+		case smvk::CompareOp::GreaterEqual: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+		case smvk::CompareOp::Always:       return VK_COMPARE_OP_ALWAYS;
+		default:                            return VK_COMPARE_OP_ALWAYS;
+		}
+	}
+
+	// BlendAttachmentState factors/ops -> Vk blend factors/ops
+	inline VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor)
+	{
+		switch (factor)
+		{
+		case smvk::BlendAttachmentState::SrcColorBlendFactor::Zero:       return VK_BLEND_FACTOR_ZERO;
+		case smvk::BlendAttachmentState::SrcColorBlendFactor::One:        return VK_BLEND_FACTOR_ONE;
+		case smvk::BlendAttachmentState::SrcColorBlendFactor::SrcAlpha:   return VK_BLEND_FACTOR_SRC_ALPHA;
+		case smvk::BlendAttachmentState::SrcColorBlendFactor::OneMinusSrcAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+		default: return VK_BLEND_FACTOR_ONE;
+		}
+	}
+
+	inline VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor)
+	{
+		switch (factor)
+		{
+		case smvk::BlendAttachmentState::DstColorBlendFactor::Zero:       return VK_BLEND_FACTOR_ZERO;
+		case smvk::BlendAttachmentState::DstColorBlendFactor::One:        return VK_BLEND_FACTOR_ONE;
+		case smvk::BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+		default: return VK_BLEND_FACTOR_ONE;
+		}
+	}
+
+	inline VkBlendOp toVkBlendOp(smvk::BlendAttachmentState::ColorBlendOp op)
+	{
+		switch (op)
+		{
+		case smvk::BlendAttachmentState::ColorBlendOp::Add:             return VK_BLEND_OP_ADD;
+		case smvk::BlendAttachmentState::ColorBlendOp::Subtract:        return VK_BLEND_OP_SUBTRACT;
+		case smvk::BlendAttachmentState::ColorBlendOp::ReverseSubtract:  return VK_BLEND_OP_REVERSE_SUBTRACT;
+		case smvk::BlendAttachmentState::ColorBlendOp::Min:             return VK_BLEND_OP_MIN;
+		case smvk::BlendAttachmentState::ColorBlendOp::Max:             return VK_BLEND_OP_MAX;
+		default: return VK_BLEND_OP_ADD;
+		}
+	}
+
+	inline VkBlendOp toVkBlendOp(smvk::BlendAttachmentState::AlphaBlendOp op)
+	{
+		switch (op)
+		{
+		case smvk::BlendAttachmentState::AlphaBlendOp::Add:             return VK_BLEND_OP_ADD;
+		case smvk::BlendAttachmentState::AlphaBlendOp::Subtract:        return VK_BLEND_OP_SUBTRACT;
+		case smvk::BlendAttachmentState::AlphaBlendOp::ReverseSubtract:  return VK_BLEND_OP_REVERSE_SUBTRACT;
+		case smvk::BlendAttachmentState::AlphaBlendOp::Min:             return VK_BLEND_OP_MIN;
+		case smvk::BlendAttachmentState::AlphaBlendOp::Max:             return VK_BLEND_OP_MAX;
+		default: return VK_BLEND_OP_ADD;
+		}
+	}
+
+	// VkColorComponentFlags -> BlendAttachmentState color write mask bits
+	inline uint8_t toRhiColorWriteMask(VkColorComponentFlags flags)
+	{
+		uint8_t mask = 0;
+		if (flags & VK_COLOR_COMPONENT_R_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::R);
+		if (flags & VK_COLOR_COMPONENT_G_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::G);
+		if (flags & VK_COLOR_COMPONENT_B_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::B);
+		if (flags & VK_COLOR_COMPONENT_A_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::A);
+		return mask;
+	}
+
+	// VkBlendFactor/Op/ColorComponentFlags -> BlendAttachmentState
+	inline smvk::BlendAttachmentState::SrcColorBlendFactor toRhiSrcColorBlendFactor(VkBlendFactor factor)
+	{
+		switch (factor)
+		{
+		case VK_BLEND_FACTOR_ZERO:          return smvk::BlendAttachmentState::SrcColorBlendFactor::Zero;
+		case VK_BLEND_FACTOR_ONE:         return smvk::BlendAttachmentState::SrcColorBlendFactor::One;
+		case VK_BLEND_FACTOR_SRC_ALPHA:   return smvk::BlendAttachmentState::SrcColorBlendFactor::SrcAlpha;
+		case VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: return smvk::BlendAttachmentState::SrcColorBlendFactor::OneMinusSrcAlpha;
+		default: return smvk::BlendAttachmentState::SrcColorBlendFactor::One;
+		}
+	}
+
+	inline smvk::BlendAttachmentState::DstColorBlendFactor toRhiDstColorBlendFactor(VkBlendFactor factor)
+	{
+		switch (factor)
+		{
+		case VK_BLEND_FACTOR_ZERO:          return smvk::BlendAttachmentState::DstColorBlendFactor::Zero;
+		case VK_BLEND_FACTOR_ONE:         return smvk::BlendAttachmentState::DstColorBlendFactor::One;
+		case VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: return smvk::BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha;
+		default: return smvk::BlendAttachmentState::DstColorBlendFactor::One;
+		}
+	}
 
 	// Just VK_1_3 for the moment, should be more than ok
 	// https://asawicki.info/articles/state_of_gpu_hardware_2025.php 

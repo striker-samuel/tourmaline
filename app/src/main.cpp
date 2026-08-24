@@ -458,10 +458,6 @@ private:
 		auto& shadowPass = m_rendergraph->AddPass("Shadow")
 			.setOffset({ 0,0 })
 			.setExtent({ 2048, 2048 })
-			.setDepthTestEnable(true)
-			.setDepthWriteEnable(true)
-			//.setDepthBiasSlopeFactor() // PCF radiues
-			.setDepthCompareOp(VK_COMPARE_OP_LESS_OR_EQUAL)
 			.setDepth(m_viewportResources.shadowmapViews[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { 1.0f })
 			.setRecordingFunc([this, pc](smvk::CommandBuffer& cmd)
 		{

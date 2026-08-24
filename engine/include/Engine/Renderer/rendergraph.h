@@ -141,19 +141,6 @@ namespace smvk {
 			this->depthAttachment_ = { logicalImageViewHandle, loadOp, storeOp, clearValue };
 			return *this;
 		};
-		RenderPass& setDepthTestEnable(bool enable) { this->depthTestEnable_ = enable; return *this; };
-		RenderPass& setDepthWriteEnable(bool enable) { this->depthWriteEnable_ = enable; return *this; };
-		RenderPass& setDepthCompareOp(VkCompareOp op) { this->depthCompareOp_ = op; return *this; };
-		RenderPass& setStencilTestEnable(bool enable) { this->stencilTestEnable_ = enable; return *this; };
-		RenderPass& setStencilWriteEnable(bool enable) { this->stencilWriteEnable_ = enable; return *this; };
-		RenderPass& setFrontStencilCompareOp(VkCompareOp op) { this->frontStencilCompareOp_ = op; return *this; };
-		RenderPass& setBackStencilCompareOp(VkCompareOp op) { this->backStencilCompareOp_ = op; return *this; };
-		RenderPass& setFrontStencilFailOp(uint32_t op) { this->frontStencilFailOp_ = op; return *this; };
-		RenderPass& setBackStencilFailOp(uint32_t op) { this->backStencilFailOp_ = op; return *this; };
-		RenderPass& setFrontStencilPassOp(uint32_t op) { this->frontStencilPassOp_ = op; return *this; };
-		RenderPass& setBackStencilPassOp(uint32_t op) { this->backStencilPassOp_ = op; return *this; };
-		RenderPass& setStencilFace(VkStencilFaceFlags face) { this->stencilFace_ = face; return *this; };
-
 
 		// Resources
 		RenderPass& setInputImages(std::vector<LogicalImageHandle> inputImages) { this->inputImages_ = std::move(inputImages); return *this; };
@@ -175,28 +162,12 @@ namespace smvk {
 		std::vector<LogicalImageHandle> inputImages_;
 		std::vector<LogicalBufferHandle> storageBuffers_;
 		std::vector<LogicalStorageImageHandle> storageImages_;
-		// Description
-		// topology.
-		// stencil
-		// msaa
 		VkExtent2D extent_ = { 0,0 };
 		VkOffset2D offset_ = { 0,0 };
 		std::vector<Attachment> colorAttachments_{};
 		std::vector<AttachmentColorBlendSetup> colorAttachmentsBlendSetups;  // should either be {} or match colors size.
 		Attachment depthAttachment_{ .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .clearValue = { 1.0f } /*.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE */ };
 		//
-		bool depthTestEnable_ = VK_TRUE;
-		bool depthWriteEnable_ = VK_TRUE;
-		VkCompareOp depthCompareOp_ = VK_COMPARE_OP_GREATER;
-		bool stencilTestEnable_ = VK_FALSE;
-		bool stencilWriteEnable_ = VK_FALSE;
-		VkCompareOp frontStencilCompareOp_ = VK_COMPARE_OP_ALWAYS;
-		VkCompareOp backStencilCompareOp_ = VK_COMPARE_OP_ALWAYS;
-		uint32_t frontStencilFailOp_ = VK_STENCIL_OP_KEEP;
-		uint32_t backStencilFailOp_ = VK_STENCIL_OP_KEEP;
-		uint32_t frontStencilPassOp_ = VK_STENCIL_OP_KEEP;
-		uint32_t backStencilPassOp_ = VK_STENCIL_OP_KEEP;
-		VkStencilFaceFlags stencilFace_ = VK_STENCIL_FACE_FRONT_BIT;
 		RecordingFunction recordingFunction_{};
 		const char* name_;
 	};
@@ -205,7 +176,10 @@ namespace smvk {
 	public:
 		CommandBuffer() = delete;
 
-		void BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormat vertexFormat);
+
+		// stencil
+		// msaa
+		void BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormat vertexFormat, const smvk::DepthSettings& depthSettings, const smvk::BlendSettings& blendSettings);
 		void PushConstants(uint32_t offset, uint32_t size, const void* data, PipelineStage stageMask = PipelineStageBit_AllGraphics);
 
 		void SetViewport(const VkViewport& viewport);
@@ -233,6 +207,7 @@ namespace smvk {
 			VkCommandBuffer cmd,
 			RenderGraph& graph,
 			RenderPass& renderPass);
+
 
 		VkCommandBuffer cmd_ = VK_NULL_HANDLE;
 		RenderGraph* graph_ = nullptr;
@@ -411,7 +386,9 @@ namespace smvk {
 		, renderPass_(&renderPass)
 	{}
 
-	inline void CommandBuffer::BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormat vertexFormat = VertexFormat::Empty)
+	inline void CommandBuffer::BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormat vertexFormat = VertexFormat::Empty,
+	                                              const smvk::DepthSettings& depthSettings = DepthSettings::DepthTest(),
+	                                              const smvk::BlendSettings& blendSettings = BlendSettings::Opaque())
 	{
 		assert(graph_ != nullptr);
 		assert(renderPass_ != nullptr);
@@ -453,7 +430,23 @@ namespace smvk {
 				stencilFormat = format;
 		}
 
+		// Map DepthSettings to pipeline state fields
+		bool depthTestEnable = depthSettings.depthTestEnable;
+		bool depthWriteEnable = depthSettings.writeEnable ? VK_TRUE : VK_FALSE;
+		VkCompareOp depthCompareOp = smvk::toVkCompareOp(depthSettings.depthFunc);
 
+		// Stencil settings use default values since RenderPass no longer stores
+		// pipeline state (depth/stencil compare ops, test/write enables are now
+		// managed via DepthSettings/BlendSettings passed to bindRenderPipeline).
+		bool stencilTestEnable = false;
+		bool stencilWriteEnable = false;
+		VkCompareOp frontStencilCompareOp = VK_COMPARE_OP_ALWAYS;
+		VkCompareOp backStencilCompareOp = VK_COMPARE_OP_ALWAYS;
+		uint32_t frontStencilFailOp = VK_STENCIL_OP_KEEP;
+		uint32_t backStencilFailOp = VK_STENCIL_OP_KEEP;
+		uint32_t frontStencilPassOp = VK_STENCIL_OP_KEEP;
+		uint32_t backStencilPassOp = VK_STENCIL_OP_KEEP;
+		VkStencilFaceFlags stencilFace = VK_STENCIL_FACE_FRONT_BIT;
 		auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
 			shaderProgram,
 			formatDescription,
@@ -464,20 +457,19 @@ namespace smvk {
 			VK_POLYGON_MODE_FILL,
 			VK_CULL_MODE_BACK_BIT,
 			VK_FRONT_FACE_COUNTER_CLOCKWISE,
-			renderPass_->depthTestEnable_,
-			renderPass_->depthWriteEnable_,
-			renderPass_->depthCompareOp_,
-			renderPass_->stencilTestEnable_,
-			renderPass_->stencilWriteEnable_,
-			renderPass_->frontStencilCompareOp_,
-			renderPass_->backStencilCompareOp_,
-			renderPass_->frontStencilFailOp_,
-			renderPass_->backStencilFailOp_,
-			renderPass_->frontStencilPassOp_,
-			renderPass_->backStencilPassOp_,
-			renderPass_->stencilFace_
+			depthTestEnable,
+			depthWriteEnable,
+			depthCompareOp,
+			stencilTestEnable,
+			stencilWriteEnable,
+			frontStencilCompareOp,
+			backStencilCompareOp,
+			frontStencilFailOp,
+			backStencilFailOp,
+			frontStencilPassOp,
+			backStencilPassOp,
+			stencilFace
 		);
-
 		assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");
 
 		if (bundle.pipeline == currentPipeline_) {

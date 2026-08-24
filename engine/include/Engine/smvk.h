@@ -408,13 +408,9 @@
 //		Repeat,
 //		MirroredRepeat,
 //		ClampToEdge,
-//		ClampToBorder,
-//		MirrorClampToEdge,
-//	};
-//
 //	enum class CompareOp : uint8_t
 //	{
-//		Never,
+///		Never,
 //		Less,
 //		Equal,
 //		LessEqual,
@@ -672,6 +668,238 @@ inline const char* vkResultToString(VkResult result);
 
 
 namespace smvk {
+
+	// ============================================================================
+	// Compare operation for depth/stencil testing
+	// ============================================================================
+
+	enum class CompareOp : uint8_t {
+		Never,
+		Less,
+		Equal,
+		LessEqual,
+		Greater,
+		NotEqual,
+		GreaterEqual,
+		Always
+	};
+
+	// ============================================================================
+	// Depth settings for pipeline state
+	// ============================================================================
+
+	struct DepthSettings {
+		CompareOp depthFunc = CompareOp::Less;
+		bool writeEnable = true;
+		bool depthTestEnable = true;
+		bool depthBiasEnable = false;
+		float depthBiasConstantFactor = 0.0f;
+		float depthBiasClamp = 0.0f;
+		float depthBiasSlopeFactor = 0.0f;
+
+		static DepthSettings DepthTest()
+		{
+			DepthSettings s;
+			s.depthFunc = CompareOp::Less;
+			s.writeEnable = true;
+			s.depthTestEnable = true;
+			s.depthBiasEnable = false;
+			return s;
+		}
+
+		static DepthSettings Disabled()
+		{
+			DepthSettings s;
+			s.depthFunc = CompareOp::Always;
+			s.writeEnable = false;
+			s.depthTestEnable = true;
+			s.depthBiasEnable = false;
+			return s;
+		}
+
+		static DepthSettings Always()
+		{
+			DepthSettings s;
+			s.depthFunc = CompareOp::Always;
+			s.writeEnable = true;
+			s.depthTestEnable = true;
+			s.depthBiasEnable = false;
+			return s;
+		}
+
+		static DepthSettings WithSlopeBias(
+			CompareOp depthFunc,
+			bool writeEnable,
+			bool depthTestEnable = true,
+			float slopeFactor = 1.0f,
+			float constantFactor = 0.0f,
+			float clamp = 0.0f
+		)
+		{
+			DepthSettings s;
+			s.depthFunc = depthFunc;
+			s.writeEnable = writeEnable;
+			s.depthTestEnable = depthTestEnable;
+			s.depthBiasEnable = true;
+			s.depthBiasSlopeFactor = slopeFactor;
+			s.depthBiasConstantFactor = constantFactor;
+			s.depthBiasClamp = clamp;
+			return s;
+		}
+
+		bool operator<(const DepthSettings& other) const noexcept
+		{
+			return std::tie(depthFunc, writeEnable, depthTestEnable,
+				depthBiasEnable, depthBiasConstantFactor, depthBiasClamp, depthBiasSlopeFactor) <
+				std::tie(other.depthFunc, other.writeEnable, other.depthTestEnable,
+					other.depthBiasEnable, other.depthBiasConstantFactor, other.depthBiasClamp, other.depthBiasSlopeFactor);
+		}
+	};
+
+	// ============================================================================
+	// Blend settings for pipeline state
+	// ============================================================================
+
+	// Abstract blend state description - defined in RHI layer, translated to Vk types
+	// in impl.h when creating pipelines.
+	struct BlendAttachmentState {
+		bool blendEnable = false;
+		// Color blend factors
+		enum class SrcColorBlendFactor : uint8_t {
+			Zero = 0,
+			One = 1,
+			SrcAlpha = 2,
+			OneMinusSrcAlpha = 3,
+			// ... other factors as needed
+		};
+		enum class DstColorBlendFactor : uint8_t {
+			Zero = 0,
+			One = 1,
+			OneMinusSrcAlpha = 2,
+			// ... other factors as needed
+		};
+		// Color blend operation
+		enum class ColorBlendOp : uint8_t {
+			Add = 0,
+			Subtract = 1,
+			ReverseSubtract = 2,
+			Min = 3,
+			Max = 4,
+		};
+		// Alpha blend operation
+		enum class AlphaBlendOp : uint8_t {
+			Add = 0,
+			Subtract = 1,
+			ReverseSubtract = 2,
+			Min = 3,
+			Max = 4,
+		};
+		// Color write mask bits
+		enum class ColorComponentFlag : uint8_t {
+			R = 1u << 0,
+			G = 1u << 1,
+			B = 1u << 2,
+			A = 1u << 3,
+		};
+
+		SrcColorBlendFactor srcColorBlendFactor = SrcColorBlendFactor::One;
+		DstColorBlendFactor dstColorBlendFactor = DstColorBlendFactor::One;
+		ColorBlendOp colorBlendOp = ColorBlendOp::Add;
+		AlphaBlendOp alphaBlendOp = AlphaBlendOp::Add;
+		uint8_t colorWriteMask =
+			static_cast<uint8_t>(ColorComponentFlag::R) |
+			static_cast<uint8_t>(ColorComponentFlag::G) |
+			static_cast<uint8_t>(ColorComponentFlag::B) |
+			static_cast<uint8_t>(ColorComponentFlag::A);
+	};
+
+	// Holds blend state for multiple color attachments
+	struct BlendState {
+		bool blendEnable = false;
+		BlendAttachmentState attachment[4]{}; // max 4 color attachments
+	};
+
+	struct BlendSettings {
+		BlendState blendState{};
+
+		static BlendSettings Opaque()
+		{
+			BlendSettings s;
+			s.blendState.blendEnable = false;
+			s.blendState.attachment[0].srcColorBlendFactor = BlendAttachmentState::SrcColorBlendFactor::One;
+			s.blendState.attachment[0].dstColorBlendFactor = BlendAttachmentState::DstColorBlendFactor::One;
+			s.blendState.attachment[0].colorBlendOp = BlendAttachmentState::ColorBlendOp::Add;
+			s.blendState.attachment[0].alphaBlendOp = BlendAttachmentState::AlphaBlendOp::Add;
+			s.blendState.attachment[0].colorWriteMask =
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::R) |
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::G) |
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::B) |
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::A);
+			return s;
+		}
+
+		static BlendSettings Add()
+		{
+			BlendSettings s;
+			s.blendState.blendEnable = true;
+			s.blendState.attachment[0].srcColorBlendFactor = BlendAttachmentState::SrcColorBlendFactor::One;
+			s.blendState.attachment[0].dstColorBlendFactor = BlendAttachmentState::DstColorBlendFactor::One;
+			s.blendState.attachment[0].colorBlendOp = BlendAttachmentState::ColorBlendOp::Add;
+			s.blendState.attachment[0].alphaBlendOp = BlendAttachmentState::AlphaBlendOp::Add;
+			s.blendState.attachment[0].colorWriteMask =
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::R) |
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::G) |
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::B) |
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::A);
+			return s;
+		}
+
+		static BlendSettings Mixed()
+		{
+			BlendSettings s;
+			s.blendState.blendEnable = true;
+			s.blendState.attachment[0].srcColorBlendFactor = BlendAttachmentState::SrcColorBlendFactor::One;
+			s.blendState.attachment[0].dstColorBlendFactor = BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha;
+			s.blendState.attachment[0].colorBlendOp = BlendAttachmentState::ColorBlendOp::Add;
+			s.blendState.attachment[0].alphaBlendOp = BlendAttachmentState::AlphaBlendOp::Add;
+			s.blendState.attachment[0].colorWriteMask =
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::R) |
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::G) |
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::B) |
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::A);
+			return s;
+		}
+
+		static BlendSettings AlphaBlend()
+		{
+			BlendSettings s;
+			s.blendState.blendEnable = true;
+			s.blendState.attachment[0].srcColorBlendFactor = BlendAttachmentState::SrcColorBlendFactor::SrcAlpha;
+			s.blendState.attachment[0].dstColorBlendFactor = BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha;
+			s.blendState.attachment[0].colorBlendOp = BlendAttachmentState::ColorBlendOp::Add;
+			s.blendState.attachment[0].alphaBlendOp = BlendAttachmentState::AlphaBlendOp::Add;
+			s.blendState.attachment[0].colorWriteMask =
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::R) |
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::G) |
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::B) |
+				static_cast<uint8_t>(BlendAttachmentState::ColorComponentFlag::A);
+			return s;
+		}
+
+		bool operator<(const BlendSettings& other) const noexcept
+		{
+			return std::tie(blendState.blendEnable,
+				blendState.attachment[0].alphaBlendOp,
+				blendState.attachment[0].colorBlendOp,
+				blendState.attachment[0].srcColorBlendFactor,
+				blendState.attachment[0].dstColorBlendFactor) <
+				std::tie(other.blendState.blendEnable,
+					other.blendState.attachment[0].alphaBlendOp,
+					other.blendState.attachment[0].colorBlendOp,
+					other.blendState.attachment[0].srcColorBlendFactor,
+					other.blendState.attachment[0].dstColorBlendFactor);
+		}
+	};
 
 	typedef uint64_t BufferDeviceAddress;
 
