@@ -4,6 +4,9 @@
 #define MAX_LIGHTS 64
 #define MAX_MATERIALS 1024
 
+//#define kBinding_Textures 0
+//#define kBinding_Samplers 1
+
 [[vk::binding(0, 0)]]
 //[[vk::binding(kBinding_Textures, 0)]]
 Texture2D textures[];
@@ -39,6 +42,7 @@ struct FrameUniforms
 struct LightBuffer
 {
     Light lights[MAX_LIGHTS];
+    //uint lightCount;
 };
 
 struct MaterialValues
@@ -53,7 +57,7 @@ struct MaterialsBuffer
     MaterialValues mats[MAX_MATERIALS];
 };
 
-struct PC_Draw
+struct PushConstants
 {
     float4x4 model;
     vk::BufferPointer<FrameUniforms>
@@ -67,4 +71,4 @@ struct PC_Draw
 };
 
 [[vk::push_constant]]
-ConstantBuffer<PC_Draw> pc;
+ConstantBuffer<PushConstants> pc;

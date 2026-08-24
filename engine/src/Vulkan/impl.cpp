@@ -1279,58 +1279,77 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 	);
 
 }
-[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::VulkanResourceManager::CreateImage(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
+
+[[nodiscard]] smvk::Image smvk::VulkanResourceManager::CreateImageImpl(
+	const smvk::ImageCreateInfo& imageCreateInfo,
+	const void* data,
+	const char* debugName)
 {
 	Image img{};
 
-	VkImageCreateInfo imgCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-	imgCI.imageType = VK_IMAGE_TYPE_2D; // TODO, hardoded to 2D but could be 3D really
-	imgCI.format = imageCreateInfo.vk_format;               // pick your format
-	imgCI.extent = imageCreateInfo.vk_extent;// width, height, depth
-	imgCI.mipLevels = imageCreateInfo.levels;                                      // >1 if you want mipmaps
-	imgCI.usage = imageCreateInfo.vk_usage;
-	imgCI.arrayLayers = imageCreateInfo.arrayLayers;                                      // >1 for arrays/cubemaps
-	imgCI.samples = VK_SAMPLE_COUNT_1_BIT;                  // MSAA? set >1
-	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;                // GPU-friendly
-	imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // Queue exclusivity on by default.
-	imgCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;              // we’ll transition later. Well jus use transition General always
+	VkImageCreateInfo imgCI{
+		VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
+	};
 
-	VmaAllocationCreateInfo allocation_create_info{};
-	allocation_create_info.usage = VMA_MEMORY_USAGE_GPU_ONLY; // should be compatible with the pool’s memoryType
-	allocation_create_info.pool = VK_NULL_HANDLE; // Null handle draws from VmaDefaultPool based on usage
+	imgCI.imageType = VK_IMAGE_TYPE_2D;
+	imgCI.format = imageCreateInfo.vk_format;
+	imgCI.extent = imageCreateInfo.vk_extent;
+	imgCI.mipLevels = imageCreateInfo.levels;
+	imgCI.arrayLayers = imageCreateInfo.arrayLayers;
+	imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
+	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+	imgCI.usage = imageCreateInfo.vk_usage;
+	imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	imgCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+	VmaAllocationCreateInfo allocationCreateInfo{};
+	allocationCreateInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	allocationCreateInfo.pool = VK_NULL_HANDLE;
+
 	img.vk_format = imageCreateInfo.vk_format;
 	img.levels = imageCreateInfo.levels;
 	img.vk_extent = imageCreateInfo.vk_extent;
 	img.arrayLayers = imageCreateInfo.arrayLayers;
-	VK_CHECK(vmaCreateImage(m_allocator, &imgCI, &allocation_create_info, &img.vk_image, &img.vma_alloc, nullptr));
+
+	VK_CHECK(vmaCreateImage(
+		m_allocator,
+		&imgCI,
+		&allocationCreateInfo,
+		&img.vk_image,
+		&img.vma_alloc,
+		nullptr
+	));
 
 #if defined(_DEBUG)
-	if (debugName) {
+	if (debugName)
+	{
 		VkDebugUtilsObjectNameInfoEXT nameInfo{
 			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
 		};
+
 		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
 		nameInfo.objectHandle = reinterpret_cast<uint64_t>(img.vk_image);
 		nameInfo.pObjectName = debugName;
-		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+
+		vkSetDebugUtilsObjectNameEXT(
+			device_,
+			&nameInfo
+		);
 	}
 #else
 	(void)debugName;
 #endif
 
-	// TODO:: rework this
 	img.vk_sampler = m_defaultSampler;
-	//img.owns_sampler = false;
-
-	//VkImageAspectFlags from usage
 
 	ImageViewCreateInfo createViewInfo{};
 	createViewInfo.flags = {};
 	createViewInfo.vk_image = img.vk_image;
 	createViewInfo.vk_format = img.vk_format;
 	createViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+
 	createViewInfo.subResourceRange = {
-		.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, // HARDCODED AND BAD
+		.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, // TODO: derive from format/usage
 		.baseMipLevel = 0,
 		.levelCount = 1,
 		.baseArrayLayer = 0,
@@ -1342,28 +1361,61 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 		img.sampleView
 	);
 
-	// storage view shoyld have swizzle to guarante rgba
 	img.storageView = img.sampleView;
 
-	if (data != nullptr) {
+	if (data)
+	{
 		UploadDataToImage2D(
 			img,
 			data,
-			//reqs.memoryRequirements.size,
 			VK_PIPELINE_STAGE_2_TRANSFER_BIT,
 			VK_ACCESS_2_TRANSFER_WRITE_BIT,
 			0,
 			0
 		);
 	}
-	return smvk::Holder<ImageHandle>(this, images_.create(std::move(img)));
 
+	return img;
 }
-smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
+[[nodiscard]]
+smvk::Holder<smvk::ImageHandle>
+smvk::VulkanResourceManager::CreateImage(
+	ImageCreateInfo imageCreateInfo,
+	const void* data,
+	const char* debugName)
 {
-	assert(false); // to be implemented
-	return Holder<TextureHandle>();
+	Image img = CreateImageImpl(
+		imageCreateInfo,
+		data,
+		debugName
+	);
+
+	return smvk::Holder<ImageHandle>(
+		this,
+		images_.create(std::move(img))
+	);
 }
+
+[[nodiscard]]
+smvk::Holder<smvk::TextureHandle>
+smvk::VulkanResourceManager::CreateTexture(
+	ImageCreateInfo imageCreateInfo,
+	const void* data,
+	const char* debugName)
+{
+	Image img = CreateImageImpl(
+		imageCreateInfo,
+		data,
+		debugName
+	);
+
+	needToUpdateDescriptors = true;
+	return smvk::Holder<TextureHandle>(
+		this,
+		textures_.create(std::move(img))
+	);
+}
+
 [[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ktxTexture2& texture, const char* debugName) {
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {

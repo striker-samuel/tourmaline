@@ -98,31 +98,32 @@ struct PSOut
 //}
 
 
-//float3 EvaluateDirectLight(
-//    Light light,
-//    float3 worldPos,
-//    float3 N,
-//    float3 baseColor
-//)
-//{
-//    // Direction *from the point toward the light*
-//    // If light.direction points "forward" from the light, use -direction.
-//    float3 L = normalize(-light.direction);
+float3 EvaluateDirectLight(
+    Light light,
+    float3 worldPos,
+    float3 N,
+    float3 baseColor
+)
+{
+    // Direction *from the point toward the light*
+    // If light.direction points "forward" from the light, use -direction.
+    float3 L = normalize(-light.direction);
 
-//    float NdotL = saturate(dot(N, L));
-//    if (NdotL <= 0.0f)
-//        return 0.0.xxx;
+    float NdotL = saturate(dot(N, L));
+    if (NdotL <= 0.0f)
+        return 0.0.xxx;
 
-//    float3 lightColor = light.color.rgb * light.intensity;
+    float3 lightColor = light.color.rgb * light.intensity;
 
-//    float shadow = 1.0f;
-//    if (light.shadow_map_index >= 0)
-//    {
-//        shadow = GetShadowFactorODB(gShadowMaps, gShadowSamplers, worldPos, light, N);
-//    }
+    float shadow = 1.0f;
+    if (light.shadow_map_index >= 0)
+    {
+        //shadow = GetShadowFactorODB(gShadowMaps, gShadowSamplers, worldPos, light, N);
+        shadow = GetShadowFactor(1, worldPos, light);
+    }
 
-//    return baseColor * lightColor * NdotL * shadow;
-//}
+    return baseColor * lightColor * NdotL * shadow;
+}
 
 
 PSOut mainPS(PSIn IN)
@@ -133,9 +134,11 @@ PSOut mainPS(PSIn IN)
     float4x4 lightViewProj;
 
     MaterialValues values = pc.bMats.Get().mats[pc.materialId];
+    //Light lights[] = pc.bLights.Get().lights;
     uint texIdx = values.tex.x;
+    
+    // using #0 sampler always hmmmm fix this! 
     float4 texSample = textures[texIdx].Sample(samplers[0], IN.uv);
-    // using #0 sampler always hmmmm fix this!
     // Base material color (vertex color * material diffuse * texture)
     float3 baseColor = IN.color * values.diffuse.rgb * texSample.rgb;
     
@@ -144,12 +147,15 @@ PSOut mainPS(PSIn IN)
     // Normalized normal
     float3 N = normalize(IN.normal);
 
-//float shadow = ShadowFactor(IN.worldPos);
-    // Accumulate lighting
-    float3 litColor = ambient;
+    //float shadowFactor = GetShadowFactor(1, IN.worldPos, pc.bLights.Get().lights[0]);
+    float3 litColor = EvaluateDirectLight(pc.bLights.Get().lights[0],
+    IN.worldPos,
+    N,
+    ambient);
 
     //[loop]
-    //for (uint i = 0; i < MAX_LIGHTS; ++i)
+    ////for (uint i = 0; i < MAX_LIGHTS; ++i)
+    //for (uint i = 0; i < 1; ++i)
     //{
     //    Light light = g_Lights[i];
 
@@ -172,7 +178,7 @@ PSOut mainPS(PSIn IN)
     //    }
     //}
 
-    float shadowFactor = 1.0f;
+    //float shadowFactor = 1.0f;
     //Light light = pc.bLights.Get().lights[0];
     //if (light.shadow_map_index >= 0)
     //{
@@ -184,10 +190,8 @@ PSOut mainPS(PSIn IN)
     //}
     //depth = (1 - depth) * 20;
     
-    OUT.
-        outColor = float4(litColor.rgb * shadowFactor, texSample.a);
+    OUT.outColor = float4(litColor.rgb, texSample.a);
 
-    
     //float3 N = normalize(IN.normal);
     //float3 L = normalize(-g_Lights[0].direction);
     //float ndl = dot(N, L); // NOTE: not saturate yet

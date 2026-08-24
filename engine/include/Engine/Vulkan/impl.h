@@ -237,6 +237,7 @@ namespace smvk {
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		void UploadDataToImage2D(Image img, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 
+
 		void UpdateBindings(uint32_t frameIndex = 0);
 
 		// VulkanImpl
@@ -277,6 +278,10 @@ namespace smvk {
 
 		mutable bool needToUpdateDescriptors = true;
 		//mutable bool needToUpdateTextures = true; //maybe disambiguation is better here?
+
+
+	private:
+		Image CreateImageImpl(const smvk::ImageCreateInfo& imageCreateInfo, const void* data, const char* debugName);
 
 	};
 

@@ -19,6 +19,8 @@ std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
 };
 
+//struct ShadowmapCascadeAtlas {};
+
 // Data definitions //
 struct DrawSetData {
 	float transform[16] = {
@@ -68,7 +70,7 @@ struct AppResources {
 
 struct ViewportResources {
 	//
-	smvk::Holder<smvk::ImageHandle> shadowmaps[8];
+	smvk::Holder<smvk::TextureHandle> shadowmaps[8];
 	//
 	smvk::LogicalImageViewHandle depthView;
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
@@ -196,8 +198,8 @@ private:
 		shadowMapCI.levels = 1u;
 		shadowMapCI.arrayLayers = 1u;
 		shadowMapCI.vk_usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-		m_viewportResources.shadowmaps[0] = m_context->CreateImage(shadowMapCI, nullptr, "shadowMap");
-		auto smimage = m_context->images_.get(m_viewportResources.shadowmaps[0]);
+		m_viewportResources.shadowmaps[0] = m_context->CreateTexture(shadowMapCI, nullptr, "shadowMap");
+		auto smimage = m_context->textures_.get(m_viewportResources.shadowmaps[0]);
 		assert(smimage != nullptr);
 		m_viewportResources.shadowmapViews[0] = m_rendergraph->AddImageView(
 			smimage->sampleView,
@@ -319,7 +321,7 @@ private:
 		glm::vec3 lightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.5f));
 		auto cameraView = m_camera.getViewMatrix();
 		auto cameraProj = m_camera.getProjMatrix();
-		cameraProj[1][1] *= -1; // viewport fix ditecrly in proj
+		//cameraProj[1][1] *= -1; // viewport fix ditecrly in proj
 
 		// Use engine's cascade-aware ortho VP with texel snap
 		// Pass lightProj as cameraProj so the function can compute proper frustum corners
@@ -335,10 +337,9 @@ private:
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
 		light.intensity = 1.0f;
+		light.shadow_map_index = m_viewportResources.shadowmaps[0].index();
 		// Replace with your actual flag enum.
 		//light.flags = smvk::LightFlagBit_Directional;
-		//// Assuming this light uses shadow-map slot 0.
-		//light.shadow_map_index = 0;
 
 		smvk::GetDirectionalLightOrthoVP(
 			lightDir,
@@ -353,7 +354,7 @@ private:
 			2048        // shadowMapRes
 		);
 
-		//lightProjOut[1][1] *= -1;
+		lightProjOut[1][1] *= -1;
 		auto lightViewProj = lightProjOut * lightViewOut;
 		std::memcpy(
 			light.lightVP,
