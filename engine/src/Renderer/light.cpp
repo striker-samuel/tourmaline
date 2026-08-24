@@ -120,7 +120,7 @@ static glm::vec3 ChooseSafeUpForLookAt(const glm::vec3& forward /*normalized*/)
 }
 
 void smvk::GetDirectionalLightOrthoVP(
-	const smvk::DirectionalLight& l,
+	const glm::vec3 lightDir,
 	const glm::mat4& cameraView,
 	const glm::mat4& cameraProj,
 	float shadowNear,
@@ -141,7 +141,7 @@ void smvk::GetDirectionalLightOrthoVP(
 	//		return;
 
 	// Normalize light direction
-	glm::vec3 lightDir = glm::normalize(glm::vec3(l.direction[0], l.direction[1], l.direction[2]));
+	//glm::vec3 lightDir = glm::normalize(glm::vec3(l.direction[0], l.direction[1], l.direction[2]));
 
 	static auto prj = cameraProj;
 	static auto viw = cameraView;
