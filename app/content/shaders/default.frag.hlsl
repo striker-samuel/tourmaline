@@ -119,7 +119,7 @@ float3 EvaluateDirectLight(
     if (light.shadow_map_index >= 0)
     {
         //shadow = GetShadowFactorODB(gShadowMaps, gShadowSamplers, worldPos, light, N);
-        shadow = GetShadowFactor(1, worldPos, light);
+        shadow = GetShadowFactorODB(1, worldPos, light, N);
     }
 
     return baseColor * lightColor * NdotL * shadow;
@@ -134,24 +134,14 @@ PSOut mainPS(PSIn IN)
     float4x4 lightViewProj;
 
     MaterialValues values = pc.bMats.Get().mats[pc.materialId];
-    //Light lights[] = pc.bLights.Get().lights;
-    uint texIdx = values.tex.x;
-    
-    // using #0 sampler always hmmmm fix this! 
-    float4 texSample = textures[texIdx].Sample(samplers[0], IN.uv);
-    // Base material color (vertex color * material diffuse * texture)
+    uint diffuseTexIdx = values.tex.x;
+    float4 texSample = textures[diffuseTexIdx].Sample(samplers[0], IN.uv); // using #0 sampler always hmmmm fix this! 
     float3 baseColor = IN.color * values.diffuse.rgb * texSample.rgb;
-    
-    // Ambient term
     float3 ambient = values.ambient.rgb * texSample.rgb;
-    // Normalized normal
     float3 N = normalize(IN.normal);
 
     //float shadowFactor = GetShadowFactor(1, IN.worldPos, pc.bLights.Get().lights[0]);
-    float3 litColor = EvaluateDirectLight(pc.bLights.Get().lights[0],
-    IN.worldPos,
-    N,
-    ambient);
+    float3 litColor = EvaluateDirectLight(pc.bLights.Get().lights[0], IN.worldPos, N, ambient);
 
     //[loop]
     ////for (uint i = 0; i < MAX_LIGHTS; ++i)
@@ -177,27 +167,6 @@ PSOut mainPS(PSIn IN)
     //        continue;
     //    }
     //}
-
-    //float shadowFactor = 1.0f;
-    //Light light = pc.bLights.Get().lights[0];
-    //if (light.shadow_map_index >= 0)
-    //{
-    //    shadow = GetShadowFactor(
-    //    pc.comparisonSamplerId,
-    //    IN.worldPos,
-    //    light
-    //);
-    //}
-    //depth = (1 - depth) * 20;
-    
     OUT.outColor = float4(litColor.rgb, texSample.a);
-
-    //float3 N = normalize(IN.normal);
-    //float3 L = normalize(-g_Lights[0].direction);
-    //float ndl = dot(N, L); // NOTE: not saturate yet
-    //OUT.outColor = float4(ndl.xxx * 0.5f + 0.5f, 1);
-    //return OUT;
-
-    
     return OUT;
 }

@@ -132,8 +132,7 @@ float GetShadowFactor(
 }
 
 float GetShadowFactorODB(
-	Texture2D shadowMaps[],
-	SamplerComparisonState shadowSamplers[],
+    uint comparisonSamplerId,
 	float3 worldPos,
 	Light light,
 	float3 normal
@@ -164,9 +163,8 @@ float GetShadowFactorODB(
 		light.direction,
 		false
 	);
-
-    float shadow = shadowMaps[idx].SampleCmpLevelZero(
-		shadowSamplers[idx],
+    float shadow = textures[idx].SampleCmpLevelZero(
+		comparisonSamplers[comparisonSamplerId],
 		uv,
 		receiverDepth
 	);

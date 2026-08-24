@@ -321,10 +321,8 @@ private:
 		glm::vec3 lightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.5f));
 		auto cameraView = m_camera.getViewMatrix();
 		auto cameraProj = m_camera.getProjMatrix();
-		//cameraProj[1][1] *= -1; // viewport fix ditecrly in proj
+		//cameraProj[1][1] *= -1;
 
-		// Use engine's cascade-aware ortho VP with texel snap
-		// Pass lightProj as cameraProj so the function can compute proper frustum corners
 		glm::mat4 lightViewOut;
 		glm::mat4 lightProjOut;
 		constexpr float lightNear = 0.1f;
@@ -336,7 +334,7 @@ private:
 		light.direction[0] = lightDir.x;
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
-		light.intensity = 1.0f;
+		light.intensity = 10.0f;
 		light.shadow_map_index = m_viewportResources.shadowmaps[0].index();
 		// Replace with your actual flag enum.
 		//light.flags = smvk::LightFlagBit_Directional;
