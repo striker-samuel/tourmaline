@@ -321,12 +321,11 @@ private:
 		glm::vec3 lightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.5f));
 		auto cameraView = m_camera.getViewMatrix();
 		auto cameraProj = m_camera.getProjMatrix();
-		//cameraProj[1][1] *= -1;
 
 		glm::mat4 lightViewOut;
 		glm::mat4 lightProjOut;
 		constexpr float lightNear = 0.1f;
-		constexpr float lightFar = 200.0f;
+		constexpr float lightFar = 100.0f;
 
 		smvk::Light lights[MAX_LIGHTS]{};
 		smvk::Light& light = lights[0];
@@ -334,7 +333,7 @@ private:
 		light.direction[0] = lightDir.x;
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
-		light.intensity = 10.0f;
+		light.intensity = 1.0f;
 		light.shadow_map_index = m_viewportResources.shadowmaps[0].index();
 		// Replace with your actual flag enum.
 		//light.flags = smvk::LightFlagBit_Directional;
@@ -342,12 +341,14 @@ private:
 		smvk::GetDirectionalLightOrthoVP(
 			lightDir,
 			cameraView,
-			cameraProj,  // Use ortho proj for frustum corner extraction
+			cameraProj,
+			//glm::inverse(cameraView),
+			//glm::inverse(cameraProj),
 			lightNear,
 			lightFar,
 			lightViewOut,
 			lightProjOut,  // outProj (function will overwrite, but we recompute below)
-			0.0f,       // zPadding
+			60.f,//10000.0f,       // zPadding
 			true,       // enableTexelSnap
 			2048        // shadowMapRes
 		);
@@ -360,6 +361,9 @@ private:
 			sizeof(light.lightVP)
 		);
 
+		constexpr size_t LIGHT_FRAME_STRIDE = sizeof(smvk::Light) * MAX_LIGHTS;
+		size_t frameOffset = currentFrame * LIGHT_FRAME_STRIDE;
+
 		m_context->UploadDataToBuffer(
 			m_resources.lightsBuffer,
 			lights,
@@ -367,7 +371,8 @@ private:
 			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 			VK_ACCESS_SHADER_READ_BIT,
 			0,
-			currentFrame * sizeof(lights)
+			//currentFrame * sizeof(lights)
+			frameOffset
 		);
 	}
 
@@ -455,6 +460,7 @@ private:
 			.setExtent({ 2048, 2048 })
 			.setDepthTestEnable(true)
 			.setDepthWriteEnable(true)
+			//.setDepthBiasSlopeFactor() // PCF radiues
 			.setDepthCompareOp(VK_COMPARE_OP_LESS_OR_EQUAL)
 			.setDepth(m_viewportResources.shadowmapViews[0], VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, { 1.0f })
 			.setRecordingFunc([this, pc](smvk::CommandBuffer& cmd)

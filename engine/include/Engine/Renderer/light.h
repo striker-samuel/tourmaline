@@ -96,25 +96,32 @@ namespace smvk {
 	};
 	static_assert(sizeof(GpuSpotLightDescription) % 16 == 0);
 
-	glm::mat4 GetSpotLightView(const SpotLight& l);
-	void GetDirectionalLightOrthoVP(const glm::vec3 lightDir, const glm::mat4& cameraView, const glm::mat4& cameraProj, float shadowNear, float shadowFar, glm::mat4& outView, glm::mat4& outProj, float zPadding, bool enableTexelSnap, int shadowMapRes);
-	glm::mat4 GetPerspectiveProjectionForLight(const SpotLight& l, float aspect = 1.0f, float nearPlane = 0.1f, float farPlane = 100.0f);
-	//void GetDirectionalLightOrthoVP(
-	//	const DirectionalLight& l,
-	//	const glm::mat4& cameraView,
-	//	const glm::mat4& cameraProj,
-	//	float shadowNear,
-	//	float shadowFar,
-	//	glm::mat4& outView,
-	//	glm::mat4& outProj,
-	//	// Optional quality/stability knobs:
-	//	float zPadding,  // world units padding along light Z (prevents clipping)
-	//	//	float xyPadding,   // world units padding in light X/Y (edge safety)
-	//	bool  enableTexelSnap,   // reduce shimmering
-	//	int   shadowMapRes    // used for snapping; set to your shadow map size
-	//);
-	// This gets you 8 worldSpace positions that are the corners of the boundingBox of the frustrum of camera proj and view used.
-	// Uses mainView camera conventions, so reverse-z infinite.
-	static std::array<glm::vec3, 8> GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(const glm::mat4& proj, const glm::mat4& view, float nearDist, float farDist);
+	glm::mat4 GetSpotLightView(
+		const SpotLight& l
+	);
+	void GetDirectionalLightOrthoVP(
+		const glm::vec3 lightDir,
+		const glm::mat4& invCameraView,
+		const glm::mat4& invCameraProj,
+		float shadowNear,
+		float shadowFar,
+		glm::mat4& outView,
+		glm::mat4& outProj,
+		float zPadding,
+		bool enableTexelSnap,
+		int shadowMapRes
+	);
+	glm::mat4 GetPerspectiveProjectionForLight(
+		const SpotLight& l,
+		float aspect = 1.0f,
+		float nearPlane = 0.1f,
+		float farPlane = 100.0f
+	);
+	static std::array<glm::vec3, 8> GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
+		const glm::mat4& proj,
+		const glm::mat4& view,
+		float nearDist,
+		float farDist
+	);
 
 };

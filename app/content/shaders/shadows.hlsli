@@ -33,47 +33,46 @@ int SelectCascade(float viewDepth, CascadeMeta cascades[NUM_CASCADES])
     return NUM_CASCADES - 1;
 }
 
-//float PCFShadow(
-//	Texture2D shadowMaps[],
-//	SamplerComparisonState  shadowSamplers[],
-//	float2 uv,
-//	float currentDepth,   // receiver depth in shadow map depth space (0..1)
-//	uint shadowIdx
-//)
-//{
-//	uint w, h;
-//	shadowMaps[shadowIdx].GetDimensions(w, h);
-//	float2 texelSize = 1.0f / float2(w, h);
-//
-//	// Kernel radius in texels:
-//	// 0 => 1x1
-//	// 1 => 3x3
-//	// 2 => 5x5
-//	// 3 => 7x7
-//	const int radius = 1; // <-- set what you actually want
-//
-//	float sum = 0.0f;
-//	int samples = 0;
-//
-//	[unroll]
-//		for (int y = -radius; y <= radius; ++y)
-//		{
-//			[unroll]
-//			for (int x = -radius; x <= radius; ++x)
-//			{
-//				float2 offset = float2(x, y) * texelSize;
-//
-//				float d = shadowMaps[shadowIdx]
-//					.Sample(shadowSamplers[shadowIdx], uv + offset)
-//					.r;
-//
-//				sum += (currentDepth <= d) ? 1.0f : 0.0f;
-//				samples++;
-//			}
-//		}
-//
-//	return sum / samples;
-//}
+float PCFShadow(
+    uint samplerId,
+	float2 uv,
+	float currentDepth, // receiver depth in shadow map depth space (0..1)
+	uint shadowIdx
+)
+{
+    uint w, h;
+    textures[shadowIdx].GetDimensions(w, h);
+    float2 texelSize = 1.0f / float2(w, h);
+
+	// Kernel radius in texels:
+	// 0 => 1x1
+	// 1 => 3x3
+	// 2 => 5x5
+	// 3 => 7x7
+    const int radius = 1; // <-- set what you actually want
+
+    float sum = 0.0f;
+    int samples = 0;
+
+	[unroll]
+    for (int y = -radius; y <= radius; ++y)
+    {
+			[unroll]
+        for (int x = -radius; x <= radius; ++x)
+        {
+            float2 offset = float2(x, y) * texelSize;
+
+            float d = textures[shadowIdx]
+					.Sample(samplers[samplerId], uv + offset)
+					.r;
+
+            sum += (currentDepth <= d) ? 1.0f : 0.0f;
+            samples++;
+        }
+    }
+
+    return sum / samples;
+}
 
 float GetOrientedBias(float3 faceNormal,
 	float3 lightDirection,
@@ -85,14 +84,6 @@ float GetOrientedBias(float3 faceNormal,
     bool moveTowardLight = isSSS || isFacingLight;
     return moveTowardLight ? -kOrientedBias : kOrientedBias;
 }
-
-
-//11 float3 GetLightDirection(in LightInfo lightInfo,
-//    12 in float3 worldPos)
-//    13 {
-//    14 return lightInfo.IsDirectional() ? lightInfo.LightDirection
-//        15 : worldPos - lightInfo.WorldPos;
-//    16 }
 
 
 float GetShadowFactor(
@@ -121,14 +112,17 @@ float GetShadowFactor(
         return 1.0f;
 
     float receiverDepth = ndc.z;
+    
+    
+    return PCFShadow(1, uv, ndc.z, idx);
 
-    float shadow = textures[idx].SampleCmpLevelZero(
-		comparisonSamplers[comparisonSamplerId],
-		uv,
-		receiverDepth
-	);
+ //   float shadow = textures[idx].SampleCmpLevelZero(
+	//	comparisonSamplers[comparisonSamplerId],
+	//	uv,
+	//	receiverDepth
+	//);
 
-    return shadow;
+ //   return shadow;
 }
 
 float GetShadowFactorODB(

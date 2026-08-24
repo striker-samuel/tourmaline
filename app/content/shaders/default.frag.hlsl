@@ -119,7 +119,7 @@ float3 EvaluateDirectLight(
     if (light.shadow_map_index >= 0)
     {
         //shadow = GetShadowFactorODB(gShadowMaps, gShadowSamplers, worldPos, light, N);
-        shadow = GetShadowFactorODB(1, worldPos, light, N);
+        shadow = GetShadowFactor(1, worldPos, light);
     }
 
     return baseColor * lightColor * NdotL * shadow;
@@ -137,11 +137,11 @@ PSOut mainPS(PSIn IN)
     uint diffuseTexIdx = values.tex.x;
     float4 texSample = textures[diffuseTexIdx].Sample(samplers[0], IN.uv); // using #0 sampler always hmmmm fix this! 
     float3 baseColor = IN.color * values.diffuse.rgb * texSample.rgb;
-    float3 ambient = values.ambient.rgb * texSample.rgb;
     float3 N = normalize(IN.normal);
 
-    //float shadowFactor = GetShadowFactor(1, IN.worldPos, pc.bLights.Get().lights[0]);
-    float3 litColor = EvaluateDirectLight(pc.bLights.Get().lights[0], IN.worldPos, N, ambient);
+    float3 ambient = values.ambient.rgb * texSample.rgb;
+    float3 litColor = ambient;
+    litColor += EvaluateDirectLight(pc.bLights.Get().lights[0], IN.worldPos, N, baseColor);
 
     //[loop]
     ////for (uint i = 0; i < MAX_LIGHTS; ++i)
