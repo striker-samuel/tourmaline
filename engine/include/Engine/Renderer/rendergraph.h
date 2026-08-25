@@ -3,7 +3,6 @@
 #include <functional>
 #include <vector>
 
-#include <Engine/RHI/types.h>
 #include <Engine/Vulkan/impl.h> // backend only; ideally move Execute() to .cpp
 #include <Engine/Renderer/mesh.h>
 
@@ -370,17 +369,14 @@ struct RenderGraph final
 
         LogicalImage logical{
             .type = LogicalResourceType::External,
-
             // Convert physical/backend description -> RHI description.
             .key = GetRHIImageCreateInfo(*image),
-
             .resolvedImageHandle = imageHandle,
             .name = name,
         };
 
         return images_.create(std::move(logical));
     }
-
 
     // --------------------------------------------------------
     // Image views

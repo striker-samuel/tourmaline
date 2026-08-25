@@ -721,7 +721,7 @@ bool smvk::VulkanCore::Init() {
 	return true;
 
 }
-void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out) {
+inline void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out) {
 	VkSemaphoreTypeCreateInfo semaphoreTypeInfo{};
 	semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
 	semaphoreTypeInfo.pNext = nullptr;
@@ -733,7 +733,7 @@ void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out) {
 		.flags = 0 };
 	VK_CHECK(vkCreateSemaphore(device_, &createInfo, nullptr, &out));
 };
-void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& out) {
+inline void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& out) {
 	VkShaderModuleCreateInfo createInfo{};
 	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
 	createInfo.codeSize = code.size();

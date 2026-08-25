@@ -498,19 +498,6 @@ namespace smvk {
 		}
 	}
 
-	inline VkBlendOp toVkBlendOp(smvk::BlendAttachmentState::ColorBlendOp op)
-	{
-		switch (op)
-		{
-		case smvk::BlendAttachmentState::ColorBlendOp::Add:             return VK_BLEND_OP_ADD;
-		case smvk::BlendAttachmentState::ColorBlendOp::Subtract:        return VK_BLEND_OP_SUBTRACT;
-		case smvk::BlendAttachmentState::ColorBlendOp::ReverseSubtract:  return VK_BLEND_OP_REVERSE_SUBTRACT;
-		case smvk::BlendAttachmentState::ColorBlendOp::Min:             return VK_BLEND_OP_MIN;
-		case smvk::BlendAttachmentState::ColorBlendOp::Max:             return VK_BLEND_OP_MAX;
-		default: return VK_BLEND_OP_ADD;
-		}
-	}
-
 	inline VkBlendOp toVkBlendOp(smvk::BlendAttachmentState::AlphaBlendOp op)
 	{
 		switch (op)
@@ -891,113 +878,120 @@ namespace smvk {
 		VkPipelineLayout layout = VK_NULL_HANDLE;
 	};
 
-	struct PipelineKey {
 
-		ShaderProgram& program;
-		std::vector<VkVertexInputBindingDescription> bindingDescriptions{};
-		std::vector<VkVertexInputAttributeDescription> attributeDescriptions{};
-		std::vector<VkFormat> colorFormats;
-		VkFormat depthFormat = VK_FORMAT_UNDEFINED;
-		VkFormat stencilFormat = VK_FORMAT_UNDEFINED;
-		VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
-		VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
-		VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-		bool depthTestEnable = VK_TRUE;
-		bool depthWriteEnable = VK_TRUE;
-		VkCompareOp depthCompareOp = VK_COMPARE_OP_GREATER;
-		bool stencilTestEnable = VK_FALSE;
-		bool stencilWriteEnable = VK_FALSE;
-		VkCompareOp frontStencilCompareOp = VK_COMPARE_OP_ALWAYS;
-		VkCompareOp backStencilCompareOp = VK_COMPARE_OP_ALWAYS;
-		uint32_t frontStencilFailOp = VK_STENCIL_OP_KEEP;
-		uint32_t backStencilFailOp = VK_STENCIL_OP_KEEP;
-		uint32_t frontStencilPassOp = VK_STENCIL_OP_KEEP;
-		uint32_t backStencilPassOp = VK_STENCIL_OP_KEEP;
-		VkStencilFaceFlags frontStencilFace = VK_STENCIL_FACE_FRONT_BIT;
-		VkStencilFaceFlags backStencilFace = VK_STENCIL_FACE_BACK_BIT;
-		bool operator==(const PipelineKey& other) const noexcept
+	struct PipelineKeyHash
+	{
+		size_t operator()(const PipelineKey& key) const noexcept
 		{
-			return program == other.program &&
-				colorFormats == other.colorFormats &&
-				depthFormat == other.depthFormat &&
-				stencilFormat == other.stencilFormat &&
-				polygonMode == other.polygonMode &&
-				cullMode == other.cullMode &&
-				frontFace == other.frontFace &&
-				depthTestEnable == other.depthTestEnable &&
-				depthWriteEnable == other.depthWriteEnable &&
-				depthCompareOp == other.depthCompareOp &&
-				stencilTestEnable == other.stencilTestEnable &&
-				stencilWriteEnable == other.stencilWriteEnable &&
-				frontStencilCompareOp == other.frontStencilCompareOp &&
-				backStencilCompareOp == other.backStencilCompareOp &&
-				frontStencilFailOp == other.frontStencilFailOp &&
-				backStencilFailOp == other.backStencilFailOp &&
-				frontStencilPassOp == other.frontStencilPassOp &&
-				backStencilPassOp == other.backStencilPassOp &&
-				frontStencilFace == other.frontStencilFace &&
-				backStencilFace == other.backStencilFace;
-		}
-	};
+			size_t seed = 0;
 
-	struct PipelineKeyHash {
-		static void HashCombine(std::size_t& seed, std::size_t value) noexcept
-		{
-			// Standard-ish hash combine.
-			seed ^= value + 0x9e3779b97f4a7c15ull +
-				(seed << 6) + (seed >> 2);
-		}
+			auto hashCombine = [&seed](auto&& value)
+			{
+				using T = std::decay_t<decltype(value)>;
 
-		template<typename T>
-		static void HashValue(std::size_t& seed, const T& value) noexcept
-		{
-			HashCombine(seed, std::hash<T>{}(value));
-		}
+				seed ^= std::hash<T>{}(value)
+					+0x9e3779b97f4a7c15ull
+					+ (seed << 6)
+					+ (seed >> 2);
+			};
 
-		std::size_t operator()(const PipelineKey& key) const noexcept
-		{
-			std::size_t seed = 0;
-
-			HashValue(seed, key.program.shaderCount);
+			// Shader program
+			hashCombine(key.program.shaderCount);
 
 			for (size_t i = 0; i < key.program.shaderCount; ++i)
 			{
 				const Shader& shader = key.program.shaders[i];
 
-				HashValue(seed, shader.vkShaderModule.index());
-				HashValue(seed, static_cast<uint32_t>(shader.stage));
-				HashValue(seed, std::string_view(shader.entryPoint));
-			}
-			HashValue(seed, key.colorFormats.size());
-			for (VkFormat format : key.colorFormats) {
-				HashValue(seed, static_cast<uint32_t>(format));
+				// Prefer hashing your stable ShaderModuleHandle,
+				// not VkShaderModule itself.
+				hashCombine(shader.vkShaderModule);
+				hashCombine(shader.stage);
+
+				if (shader.entryPoint)
+					hashCombine(std::string_view(shader.entryPoint));
 			}
 
-			HashValue(seed, static_cast<uint32_t>(key.depthFormat));
-			HashValue(seed, static_cast<uint32_t>(key.stencilFormat));
-			HashValue(seed, static_cast<uint32_t>(key.polygonMode));
-			HashValue(seed, static_cast<uint32_t>(key.cullMode));
-			HashValue(seed, static_cast<uint32_t>(key.frontFace));
-			HashValue(seed, static_cast<uint32_t>(key.depthTestEnable));
-			HashValue(seed, static_cast<uint32_t>(key.depthWriteEnable));
-			HashValue(seed, static_cast<uint32_t>(key.depthCompareOp));
-			HashValue(seed, static_cast<uint32_t>(key.stencilTestEnable));
-			HashValue(seed, static_cast<uint32_t>(key.stencilWriteEnable));
-			HashValue(seed, static_cast<uint32_t>(key.frontStencilCompareOp));
-			HashValue(seed, static_cast<uint32_t>(key.backStencilCompareOp));
-			HashValue(seed, static_cast<uint32_t>(key.frontStencilFailOp));
-			HashValue(seed, static_cast<uint32_t>(key.backStencilFailOp));
-			HashValue(seed, static_cast<uint32_t>(key.frontStencilPassOp));
-			HashValue(seed, static_cast<uint32_t>(key.backStencilPassOp));
-			HashValue(seed, static_cast<uint32_t>(key.frontStencilFace));
-			HashValue(seed, static_cast<uint32_t>(key.backStencilFace));
+			// Vertex format
+			for (const auto& binding : key.vertexFormat.bindings)
+			{
+				hashCombine(binding.binding);
+				hashCombine(binding.stride);
+				hashCombine(binding.inputRate);
+
+				for (const auto& attribute : binding.attributes)
+				{
+					hashCombine(attribute.semantic);
+					hashCombine(attribute.format);
+					hashCombine(attribute.offset);
+				}
+			}
+
+			// Attachment formats
+			hashCombine(key.colorFormats.size());
+
+			for (Format format : key.colorFormats)
+				hashCombine(format);
+
+			hashCombine(key.depthFormat);
+			hashCombine(key.stencilFormat);
+
+			// Input assembly
+			hashCombine(key.topology);
+
+			// Raster
+			hashCombine(key.raster.polygonMode);
+			hashCombine(key.raster.cullMode);
+			hashCombine(key.raster.frontFace);
+			hashCombine(key.raster.depthClampEnable);
+			hashCombine(key.raster.rasterizerDiscardEnable);
+			hashCombine(key.raster.lineWidth);
+
+			// Depth
+			hashCombine(key.depth.depthFunc);
+			hashCombine(key.depth.writeEnable);
+			hashCombine(key.depth.depthTestEnable);
+			hashCombine(key.depth.depthBiasEnable);
+			hashCombine(key.depth.depthBiasConstantFactor);
+			hashCombine(key.depth.depthBiasClamp);
+			hashCombine(key.depth.depthBiasSlopeFactor);
+
+			// Stencil
+			hashCombine(key.stencil.frontCompareOp);
+			hashCombine(key.stencil.backCompareOp);
+
+			hashCombine(key.stencil.frontFailOp);
+			hashCombine(key.stencil.backFailOp);
+
+			hashCombine(key.stencil.frontPassOp);
+			hashCombine(key.stencil.backPassOp);
+
+			hashCombine(key.stencil.frontTestEnable);
+			hashCombine(key.stencil.backTestEnable);
+
+			hashCombine(key.stencil.frontWriteEnable);
+			hashCombine(key.stencil.backWriteEnable);
+
+			// Blend
+			hashCombine(key.blend.blendState.blendEnable);
+
+			for (const auto& attachment :
+				key.blend.blendState.attachment)
+			{
+				hashCombine(attachment.blendEnable);
+				hashCombine(attachment.srcColorBlendFactor);
+				hashCombine(attachment.dstColorBlendFactor);
+				hashCombine(attachment.colorBlendOp);
+				hashCombine(attachment.alphaBlendOp);
+				hashCombine(attachment.colorWriteMask);
+			}
+
+			// MSAA
+			hashCombine(key.msaa.samples);
 
 			return seed;
 		}
 	};
 
-	//std::vector<VkVertexInputBindingDescription> getVkVertexInputBindingDescriptions(const VertexFormatDescription& format);
-	//std::vector<VkVertexInputAttributeDescription> getVkVertexAttributeDescriptions(const VertexFormatDescription& format);
 	class PipelineCache
 	{
 	public:
