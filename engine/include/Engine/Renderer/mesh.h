@@ -61,11 +61,11 @@ namespace smvk {
 			{
 				.binding = 0,
 				.stride = sizeof(VertexPos),
-				.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+				.inputRate = VertexInputRate::Vertex,
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Position,
-						.format = VK_FORMAT_R32G32B32_SFLOAT,
+						.format = Format::RGB32_Float,
 						.offset = offsetof(VertexPos, pos)
 					}
 				}
@@ -73,26 +73,26 @@ namespace smvk {
 			{
 				.binding = 1,
 				.stride = sizeof(VertexShading),
-				.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+				.inputRate = VertexInputRate::Vertex,
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Color,
-						.format = VK_FORMAT_R32G32B32_SFLOAT,
+						.format = Format::RG32_Float,
 						.offset = offsetof(VertexShading, color)
 					},
 					{
 						.semantic = VertexSemantic::TexCoord0,
-						.format = VK_FORMAT_R32G32_SFLOAT,
+						.format = Format::RG32_Float,
 						.offset = offsetof(VertexShading, texCoord)
 					},
 					{
 						.semantic = VertexSemantic::Normal,
-						.format = VK_FORMAT_R32G32B32_SFLOAT,
+						.format = Format::RGB32_Float,
 						.offset = offsetof(VertexShading, normal)
 					},
 					{
 						.semantic = VertexSemantic::Tangent,
-						.format = VK_FORMAT_R32G32B32A32_SFLOAT,
+						.format = Format::RGBA32_Float,
 						.offset = offsetof(VertexShading, tangent)
 					}
 				}

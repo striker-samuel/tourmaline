@@ -176,10 +176,14 @@ namespace smvk {
 	public:
 		CommandBuffer() = delete;
 
-
-		// stencil
-		// msaa
-		void BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormat vertexFormat, const smvk::DepthSettings& depthSettings, const smvk::BlendSettings& blendSettings);
+		void BindRenderPipeline(
+			ShaderProgram& shaderProgram, 
+			VertexFormat vertexFormat,
+			const smvk::DepthSettings& depthSettings,
+			const smvk::StencilSettings& stencilSettings,
+			const smvk::BlendSettings& blendSettings,
+			const smvk::MSAASettings& msaaSettings
+		);
 		void PushConstants(uint32_t offset, uint32_t size, const void* data, PipelineStage stageMask = PipelineStageBit_AllGraphics);
 
 		void SetViewport(const VkViewport& viewport);
@@ -207,6 +211,7 @@ namespace smvk {
 			VkCommandBuffer cmd,
 			RenderGraph& graph,
 			RenderPass& renderPass);
+
 
 
 		VkCommandBuffer cmd_ = VK_NULL_HANDLE;
@@ -377,7 +382,7 @@ namespace smvk {
 
 	};
 
-	inline CommandBuffer::CommandBuffer(
+	CommandBuffer::CommandBuffer(
 		VkCommandBuffer cmd,
 		RenderGraph& graph,
 		RenderPass& renderPass)
@@ -386,9 +391,14 @@ namespace smvk {
 		, renderPass_(&renderPass)
 	{}
 
-	inline void CommandBuffer::BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormat vertexFormat = VertexFormat::Empty,
-	                                              const smvk::DepthSettings& depthSettings = DepthSettings::DepthTest(),
-	                                              const smvk::BlendSettings& blendSettings = BlendSettings::Opaque())
+	void CommandBuffer::BindRenderPipeline(
+		ShaderProgram& shaderProgram,
+		VertexFormat vertexFormat = VertexFormat::Empty,
+		const smvk::DepthSettings& depthSettings = DepthSettings::DepthTest(),
+		const smvk::StencilSettings& stencilSettings = StencilSettings::DefaultDisabled(),
+		const smvk::BlendSettings& blendSettings = BlendSettings::Opaque(),
+		const smvk::MSAASettings& msaaSettings = MSAASettings::Count1()
+	)
 	{
 		assert(graph_ != nullptr);
 		assert(renderPass_ != nullptr);
@@ -414,12 +424,12 @@ namespace smvk {
 				graph_->imageViews_.get(attachment.view)->resolvedFormat);
 		}
 
-		VkFormat depthFormat = VK_FORMAT_UNDEFINED;
-		VkFormat stencilFormat = VK_FORMAT_UNDEFINED;
+		smvk::Format depthFormat = smvk::Format::Undefined;
+		smvk::Format stencilFormat = smvk::Format::Undefined;
 		const bool hasDepth = !renderPass_->depthAttachment_.view.empty();
 
 		if (hasDepth) {
-			VkFormat format = graph_->imageViews_
+			smvk::Format format = graph_->imageViews_
 				.get(renderPass_->depthAttachment_.view)
 				->resolvedFormat;
 
@@ -434,41 +444,30 @@ namespace smvk {
 		bool depthTestEnable = depthSettings.depthTestEnable;
 		bool depthWriteEnable = depthSettings.writeEnable ? VK_TRUE : VK_FALSE;
 		VkCompareOp depthCompareOp = smvk::toVkCompareOp(depthSettings.depthFunc);
-
-		// Stencil settings use default values since RenderPass no longer stores
-		// pipeline state (depth/stencil compare ops, test/write enables are now
-		// managed via DepthSettings/BlendSettings passed to bindRenderPipeline).
-		bool stencilTestEnable = false;
-		bool stencilWriteEnable = false;
-		VkCompareOp frontStencilCompareOp = VK_COMPARE_OP_ALWAYS;
-		VkCompareOp backStencilCompareOp = VK_COMPARE_OP_ALWAYS;
-		uint32_t frontStencilFailOp = VK_STENCIL_OP_KEEP;
-		uint32_t backStencilFailOp = VK_STENCIL_OP_KEEP;
-		uint32_t frontStencilPassOp = VK_STENCIL_OP_KEEP;
-		uint32_t backStencilPassOp = VK_STENCIL_OP_KEEP;
-		VkStencilFaceFlags stencilFace = VK_STENCIL_FACE_FRONT_BIT;
+		bool stencilTestEnable = stencilSettings.frontTestEnable || stencilSettings.backTestEnable;
+		bool stencilWriteEnable = stencilSettings.frontWriteEnable || stencilSettings.backWriteEnable;
+		VkCompareOp frontStencilCompareOp = smvk::toVkCompareOp(stencilSettings.frontCompareOp);
+		VkCompareOp backStencilCompareOp = smvk::toVkCompareOp(stencilSettings.backCompareOp);
+		uint32_t frontStencilFailOp = stencilSettings.frontFailOp;
+		uint32_t backStencilFailOp = stencilSettings.backFailOp;
+		uint32_t frontStencilPassOp = stencilSettings.frontPassOp;
+		uint32_t backStencilPassOp = stencilSettings.backPassOp;
+		VkStencilFaceFlags stencilFace = stencilSettings.frontFace;
 		auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
 			shaderProgram,
 			formatDescription,
 			colorAttachmentFormats.data(),
 			static_cast<uint32_t>(colorAttachmentFormats.size()),
-			depthFormat,
-			stencilFormat,
+			smvk::toVkFormat(depthFormat),
+			smvk::toVkFormat(stencilFormat),
 			VK_POLYGON_MODE_FILL,
 			VK_CULL_MODE_BACK_BIT,
 			VK_FRONT_FACE_COUNTER_CLOCKWISE,
 			depthTestEnable,
 			depthWriteEnable,
-			depthCompareOp,
-			stencilTestEnable,
-			stencilWriteEnable,
-			frontStencilCompareOp,
-			backStencilCompareOp,
-			frontStencilFailOp,
-			backStencilFailOp,
-			frontStencilPassOp,
-			backStencilPassOp,
-			stencilFace
+			smvk::toVkCompareOp(depthCompareOp),
+			stencilSettings,
+			msaaSettings
 		);
 		assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");
 

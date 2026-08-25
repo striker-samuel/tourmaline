@@ -1,609 +1,4 @@
 #pragma once
-//
-//#include <cstdint>
-//#include <cstddef>
-//#include <vector>
-//#include <optional>
-//#include <tuple>
-//#include <cstring>
-//#include <type_traits>
-//
-//#include "Engine/Shared/common.h"
-//#include <Engine/Memory/pool.h>
-//
-//#define ENGINE_NAME "smvk"
-//
-//namespace smvk {
-//
-//	// ============================================================================
-//	// Common helpers
-//	// ============================================================================
-//
-//	template<typename Enum>
-//	constexpr auto to_underlying(Enum value) noexcept
-//	{
-//		return static_cast<std::underlying_type_t<Enum>>(value);
-//	}
-//
-//	template<typename Enum>
-//	constexpr Enum operator|(Enum lhs, Enum rhs) noexcept
-//		requires std::is_enum_v<Enum>
-//	{
-//		return static_cast<Enum>(
-//			to_underlying(lhs) | to_underlying(rhs)
-//			);
-//	}
-//
-//	template<typename Enum>
-//	constexpr Enum operator&(Enum lhs, Enum rhs) noexcept
-//		requires std::is_enum_v<Enum>
-//	{
-//		return static_cast<Enum>(
-//			to_underlying(lhs) & to_underlying(rhs)
-//			);
-//	}
-//
-//	template<typename Enum>
-//	constexpr Enum& operator|=(Enum& lhs, Enum rhs) noexcept
-//		requires std::is_enum_v<Enum>
-//	{
-//		lhs = lhs | rhs;
-//		return lhs;
-//	}
-//
-//	template<typename Enum>
-//	constexpr bool has_flag(Enum value, Enum flag) noexcept
-//	{
-//		return (to_underlying(value) & to_underlying(flag)) != 0;
-//	}
-//
-//
-//	// ============================================================================
-//	// Basic geometry / resource dimensions
-//	// ============================================================================
-//
-//	struct Extent2D
-//	{
-//		uint32_t width = 1;
-//		uint32_t height = 1;
-//	};
-//
-//	struct Extent3D
-//	{
-//		uint32_t width = 1;
-//		uint32_t height = 1;
-//		uint32_t depth = 1;
-//	};
-//
-//	struct Offset3D
-//	{
-//		int32_t x = 0;
-//		int32_t y = 0;
-//		int32_t z = 0;
-//	};
-//
-//
-//	// ============================================================================
-//	// Formats
-//	// ============================================================================
-//
-//	enum class Format : uint16_t
-//	{
-//		Undefined,
-//
-//		// 8-bit
-//		R8_UNorm,
-//		R8_SNorm,
-//		R8_UInt,
-//		R8_SInt,
-//
-//		RG8_UNorm,
-//		RG8_SNorm,
-//		RG8_UInt,
-//		RG8_SInt,
-//
-//		RGBA8_UNorm,
-//		RGBA8_SNorm,
-//		RGBA8_UInt,
-//		RGBA8_SInt,
-//		RGBA8_SRGB,
-//
-//		BGRA8_UNorm,
-//		BGRA8_SRGB,
-//
-//		// 16-bit
-//		R16_UNorm,
-//		R16_SNorm,
-//		R16_UInt,
-//		R16_SInt,
-//		R16_Float,
-//
-//		RG16_UNorm,
-//		RG16_SNorm,
-//		RG16_UInt,
-//		RG16_SInt,
-//		RG16_Float,
-//
-//		RGBA16_UNorm,
-//		RGBA16_SNorm,
-//		RGBA16_UInt,
-//		RGBA16_SInt,
-//		RGBA16_Float,
-//
-//		// 32-bit
-//		R32_UInt,
-//		R32_SInt,
-//		R32_Float,
-//
-//		RG32_UInt,
-//		RG32_SInt,
-//		RG32_Float,
-//
-//		RGB32_UInt,
-//		RGB32_SInt,
-//		RGB32_Float,
-//
-//		RGBA32_UInt,
-//		RGBA32_SInt,
-//		RGBA32_Float,
-//
-//		// packed
-//		RGB10A2_UNorm,
-//		RGB10A2_UInt,
-//
-//		R11G11B10_Float,
-//
-//		// depth / stencil
-//		D16_UNorm,
-//		D24_UNorm_S8_UInt,
-//		D32_Float,
-//		D32_Float_S8_UInt,
-//
-//		// compressed
-//		BC1_RGBA_UNorm,
-//		BC1_RGBA_SRGB,
-//		BC2_UNorm,
-//		BC2_SRGB,
-//		BC3_UNorm,
-//		BC3_SRGB,
-//		BC4_UNorm,
-//		BC4_SNorm,
-//		BC5_UNorm,
-//		BC5_SNorm,
-//		BC6H_UFloat,
-//		BC6H_SFloat,
-//		BC7_UNorm,
-//		BC7_SRGB,
-//	};
-//
-//
-//	// ============================================================================
-//	// Primitive / vertex input
-//	// ============================================================================
-//
-//	enum class PrimitiveTopology : uint8_t
-//	{
-//		PointList,
-//
-//		LineList,
-//		LineStrip,
-//
-//		TriangleList,
-//		TriangleStrip,
-//		TriangleFan,
-//	};
-//
-//	enum class VertexInputRate : uint8_t
-//	{
-//		Vertex,
-//		Instance,
-//	};
-//
-//	enum class VertexSemantic : uint8_t
-//	{
-//		Position,
-//		Normal,
-//		Tangent,
-//		Color,
-//
-//		TexCoord0,
-//		TexCoord1,
-//
-//		JointIndices,
-//		JointWeights,
-//	};
-//
-//	struct VertexAttribute
-//	{
-//		VertexSemantic semantic = VertexSemantic::Position;
-//		Format format = Format::Undefined;
-//		uint32_t offset = 0;
-//	};
-//
-//	struct VertexBinding
-//	{
-//		uint32_t binding = 0;
-//		uint32_t stride = 0;
-//
-//		VertexInputRate inputRate = VertexInputRate::Vertex;
-//
-//		std::vector<VertexAttribute> attributes;
-//	};
-//
-//	struct VertexFormatDescription
-//	{
-//		std::vector<VertexBinding> bindings;
-//	};
-//
-//
-//	// ============================================================================
-//	// Sample counts
-//	// ============================================================================
-//
-//	enum class SampleCount : uint8_t
-//	{
-//		Count1 = 1,
-//		Count2 = 2,
-//		Count4 = 4,
-//		Count8 = 8,
-//		Count16 = 16,
-//		Count32 = 32,
-//		Count64 = 64,
-//	};
-//
-//
-//	// ============================================================================
-//	// Buffer
-//	// ============================================================================
-//
-//	enum class BufferUsage : uint32_t
-//	{
-//		None = 0,
-//
-//		TransferSrc = 1u << 0,
-//		TransferDst = 1u << 1,
-//
-//		Index = 1u << 2,
-//		Vertex = 1u << 3,
-//		Uniform = 1u << 4,
-//		Storage = 1u << 5,
-//		Indirect = 1u << 6,
-//
-//		// Keep room here for future RT support:
-//		// ShaderBindingTable
-//		// AccelerationStructureInput
-//		// AccelerationStructureStorage
-//	};
-//
-//	enum class MemoryUsage : uint8_t
-//	{
-//		Auto,
-//
-//		DeviceLocal,
-//		Upload,
-//		Readback,
-//	};
-//
-//	struct BufferCreateInfo
-//	{
-//		size_t size = 0;
-//
-//		BufferUsage usage = BufferUsage::None;
-//		MemoryUsage memoryUsage = MemoryUsage::Auto;
-//
-//		const char* name = nullptr;
-//	};
-//
-//
-//	// ============================================================================
-//	// Image
-//	// ============================================================================
-//
-//	enum class ImageType : uint8_t
-//	{
-//		Image1D,
-//		Image2D,
-//		Image3D,
-//	};
-//
-//	enum class ImageUsage : uint32_t
-//	{
-//		None = 0,
-//
-//		TransferSrc = 1u << 0,
-//		TransferDst = 1u << 1,
-//
-//		Sampled = 1u << 2,
-//		Storage = 1u << 3,
-//
-//		ColorAttachment = 1u << 4,
-//		DepthStencilAttachment = 1u << 5,
-//
-//		InputAttachment = 1u << 6,
-//	};
-//
-//	enum class ImageViewType : uint8_t
-//	{
-//		View1D,
-//		View2D,
-//		View3D,
-//
-//		ViewCube,
-//
-//		View1DArray,
-//		View2DArray,
-//		ViewCubeArray,
-//	};
-//
-//	enum class ImageAspect : uint8_t
-//	{
-//		None = 0,
-//		Color = 1u << 0,
-//		Depth = 1u << 1,
-//		Stencil = 1u << 2,
-//	};
-//
-//	struct ImageSubresourceRange
-//	{
-//		ImageAspect aspect = ImageAspect::Color;
-//
-//		uint32_t baseMipLevel = 0;
-//		uint32_t mipLevelCount = 1;
-//
-//		uint32_t baseArrayLayer = 0;
-//		uint32_t arrayLayerCount = 1;
-//	};
-//
-//	struct ImageCreateInfo
-//	{
-//		ImageType type = ImageType::Image2D;
-//
-//		Extent3D extent{};
-//
-//		Format format = Format::Undefined;
-//
-//		ImageUsage usage =
-//			ImageUsage::Sampled |
-//			ImageUsage::TransferDst;
-//
-//		SampleCount samples = SampleCount::Count1;
-//
-//		uint32_t mipLevels = 1;
-//		uint32_t arrayLayers = 1;
-//
-//		const char* name = nullptr;
-//	};
-//
-//	using TextureCreateInfo = ImageCreateInfo;
-//
-//	struct ImageViewCreateInfo
-//	{
-//		ImageViewType viewType = ImageViewType::View2D;
-//
-//		// Undefined = inherit underlying image format.
-//		Format format = Format::Undefined;
-//
-//		ImageSubresourceRange subresourceRange{};
-//	};
-//
-//
-//	// ============================================================================
-//	// Samplers
-//	// ============================================================================
-//
-//	enum class Filter : uint8_t
-//	{
-//		Nearest,
-//		Linear,
-//	};
-//
-//	enum class MipmapMode : uint8_t
-//	{
-//		Nearest,
-//		Linear,
-//	};
-//
-//	enum class AddressMode : uint8_t
-//	{
-//		Repeat,
-//		MirroredRepeat,
-//		ClampToEdge,
-//	enum class CompareOp : uint8_t
-//	{
-///		Never,
-//		Less,
-//		Equal,
-//		LessEqual,
-//		Greater,
-//		NotEqual,
-//		GreaterEqual,
-//		Always,
-//	};
-//
-//	struct SamplerCreateInfo
-//	{
-//		Filter magFilter = Filter::Linear;
-//		Filter minFilter = Filter::Linear;
-//
-//		MipmapMode mipmapMode = MipmapMode::Linear;
-//
-//		AddressMode addressU = AddressMode::Repeat;
-//		AddressMode addressV = AddressMode::Repeat;
-//		AddressMode addressW = AddressMode::Repeat;
-//
-//		float mipLodBias = 0.0f;
-//
-//		float minLod = 0.0f;
-//		float maxLod = 1000.0f;
-//
-//		float maxAnisotropy = 1.0f;
-//
-//		CompareOp compareOp = CompareOp::Always;
-//		bool compareEnable = false;
-//
-//		bool operator<(const SamplerCreateInfo& other) const noexcept
-//		{
-//			return std::tie(
-//				magFilter,
-//				minFilter,
-//				mipmapMode,
-//
-//				addressU,
-//				addressV,
-//				addressW,
-//
-//				mipLodBias,
-//				minLod,
-//				maxLod,
-//				maxAnisotropy,
-//
-//				compareOp,
-//				compareEnable
-//			) <
-//				std::tie(
-//					other.magFilter,
-//					other.minFilter,
-//					other.mipmapMode,
-//
-//					other.addressU,
-//					other.addressV,
-//					other.addressW,
-//
-//					other.mipLodBias,
-//					other.minLod,
-//					other.maxLod,
-//					other.maxAnisotropy,
-//
-//					other.compareOp,
-//					other.compareEnable
-//				);
-//		}
-//	};
-//
-//
-//	// ============================================================================
-//	// Shader
-//	// ============================================================================
-//
-//	enum class ShaderStage : uint32_t
-//	{
-//		None = 0,
-//
-//		Vertex = 1u << 0,
-//		TessControl = 1u << 1,
-//		TessEvaluation = 1u << 2,
-//		Geometry = 1u << 3,
-//		Fragment = 1u << 4,
-//		Compute = 1u << 5,
-//
-//		// Future:
-//		// Task
-//		// Mesh
-//		// RayGen
-//		// AnyHit
-//		// ClosestHit
-//		// Miss
-//		// Intersection
-//		// Callable
-//	};
-//
-//	using ShaderStageFlags = ShaderStage;
-//
-//
-//	// ============================================================================
-//	// Resource handles
-//	// ============================================================================
-//
-//	template<typename T>
-//	struct Handle;
-//
-//	using ImageHandle = Handle<struct Image>;
-//	using TextureHandle = Handle<struct Texture>;
-//	using SamplerHandle = Handle<struct Sampler>;
-//	using BufferHandle = Handle<struct Buffer>;
-//	using ShaderModuleHandle = Handle<struct ShaderModule>;
-//	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
-//
-//
-//	// ============================================================================
-//	// Shader program
-//	// ============================================================================
-//
-//	struct Shader
-//	{
-//		ShaderModuleHandle module;
-//
-//		const char* entryPoint = "main";
-//		ShaderStage stage = ShaderStage::None;
-//
-//		bool operator==(const Shader& other) const noexcept
-//		{
-//			return std::strcmp(entryPoint, other.entryPoint) == 0 &&
-//				stage == other.stage &&
-//				module == other.module;
-//		}
-//	};
-//
-//	struct ShaderProgram
-//	{
-//		Shader shaders[8]{};
-//		size_t shaderCount = 0;
-//
-//		bool operator==(const ShaderProgram& other) const noexcept
-//		{
-//			if (shaderCount != other.shaderCount)
-//				return false;
-//
-//			for (size_t i = 0; i < shaderCount; ++i)
-//			{
-//				if (!(shaders[i] == other.shaders[i]))
-//					return false;
-//			}
-//
-//			return true;
-//		}
-//	};
-//
-//
-//	// ============================================================================
-//	// Descriptor/bindless slots
-//	// ============================================================================
-//
-//	enum class BindingType : uint8_t
-//	{
-//		Textures,
-//		Samplers,
-//		StorageImages,
-//
-//		Count
-//	};
-//
-//
-//	// ============================================================================
-//	// Queue information
-//	//
-//	// I'd keep this generic rather than calling them "Vk queue families".
-//	// ============================================================================
-//
-//	struct QueueFamilyIndices
-//	{
-//		std::optional<uint32_t> graphics;
-//		std::optional<uint32_t> present;
-//		std::optional<uint32_t> transfer;
-//		std::optional<uint32_t> compute;
-//
-//		[[nodiscard]]
-//		bool isComplete() const noexcept
-//		{
-//			return graphics.has_value() &&
-//				present.has_value();
-//		}
-//	};
-//
-//} // namespace rhi
-
-
-#pragma once
 
 #include <cassert>
 #include <array>
@@ -620,13 +15,11 @@
 //
 #include "Engine/Shared/common.h"
 #include <Engine/Memory/pool.h>
-//
+
 #define ENGINE_NAME "smvk"
 
 #include <ktx.h>
 #include <ktxVulkan.h>
-//
-
 //
 static constexpr uint32_t DEFAULT_WIDTH = 1280;
 static constexpr uint32_t DEFAULT_HEIGHT = 720;
@@ -666,14 +59,402 @@ inline const char* vkResultToString(VkResult result);
         }                                                               \
     } while (0)
 
-
 namespace smvk {
 
+	/*template<typename Enum>
+	constexpr auto to_underlying(Enum value) noexcept
+	{
+		return static_cast<std::underlying_type_t<Enum>>(value);
+	}
+
+	template<typename Enum>
+	constexpr Enum operator|(Enum lhs, Enum rhs) noexcept
+		requires std::is_enum_v<Enum>
+	{
+		return static_cast<Enum>(
+			to_underlying(lhs) | to_underlying(rhs)
+			);
+	}
+
+	template<typename Enum>
+	constexpr Enum operator&(Enum lhs, Enum rhs) noexcept
+		requires std::is_enum_v<Enum>
+	{
+		return static_cast<Enum>(
+			to_underlying(lhs) & to_underlying(rhs)
+			);
+	}
+
+	template<typename Enum>
+	constexpr Enum& operator|=(Enum& lhs, Enum rhs) noexcept
+		requires std::is_enum_v<Enum>
+	{
+		lhs = lhs | rhs;
+		return lhs;
+	}
+
+	template<typename Enum>
+	constexpr bool has_flag(Enum value, Enum flag) noexcept
+	{
+		return (to_underlying(value) & to_underlying(flag)) != 0;
+	}*/
+
 	// ============================================================================
-	// Compare operation for depth/stencil testing
+	// Basic geometry / resource dimensions
 	// ============================================================================
 
-	enum class CompareOp : uint8_t {
+	struct Extent2D
+	{
+		uint32_t width = 1;
+		uint32_t height = 1;
+	};
+
+	struct Extent3D
+	{
+		uint32_t width = 1;
+		uint32_t height = 1;
+		uint32_t depth = 1;
+	};
+
+	struct Offset3D
+	{
+		int32_t x = 0;
+		int32_t y = 0;
+		int32_t z = 0;
+	};
+
+	// ============================================================================
+	// Formats
+	// ============================================================================
+
+	enum class Format : uint16_t
+	{
+		Undefined,
+
+		// 8-bit
+		R8_UNorm,
+		R8_SNorm,
+		R8_UInt,
+		R8_SInt,
+
+		RG8_UNorm,
+		RG8_SNorm,
+		RG8_UInt,
+		RG8_SInt,
+
+		RGBA8_UNorm,
+		RGBA8_SNorm,
+		RGBA8_UInt,
+		RGBA8_SInt,
+		RGBA8_SRGB,
+
+		BGRA8_UNorm,
+		BGRA8_SRGB,
+
+		// 16-bit
+		R16_UNorm,
+		R16_SNorm,
+		R16_UInt,
+		R16_SInt,
+		R16_Float,
+
+		RG16_UNorm,
+		RG16_SNorm,
+		RG16_UInt,
+		RG16_SInt,
+		RG16_Float,
+
+		RGBA16_UNorm,
+		RGBA16_SNorm,
+		RGBA16_UInt,
+		RGBA16_SInt,
+		RGBA16_Float,
+
+		// 32-bit
+		R32_UInt,
+		R32_SInt,
+		R32_Float,
+
+		RG32_UInt,
+		RG32_SInt,
+		RG32_Float,
+
+		RGB32_UInt,
+		RGB32_SInt,
+		RGB32_Float,
+
+		RGBA32_UInt,
+		RGBA32_SInt,
+		RGBA32_Float,
+
+		// packed
+		RGB10A2_UNorm,
+		RGB10A2_UInt,
+
+		R11G11B10_Float,
+
+		// depth / stencil
+		D16_UNorm,
+		D24_UNorm_S8_UInt,
+		D32_Float,
+		D32_Float_S8_UInt,
+
+		// compressed
+		BC1_RGBA_UNorm,
+		BC1_RGBA_SRGB,
+		BC2_UNorm,
+		BC2_SRGB,
+		BC3_UNorm,
+		BC3_SRGB,
+		BC4_UNorm,
+		BC4_SNorm,
+		BC5_UNorm,
+		BC5_SNorm,
+		BC6H_UFloat,
+		BC6H_SFloat,
+		BC7_UNorm,
+		BC7_SRGB,
+	};
+
+	// ============================================================================
+	// Primitive / vertex input
+	// ============================================================================
+
+	enum class PrimitiveTopology : uint8_t
+	{
+		PointList,
+
+		LineList,
+		LineStrip,
+
+		TriangleList,
+		TriangleStrip,
+		TriangleFan,
+	};
+
+	enum class VertexInputRate : uint8_t
+	{
+		Vertex,
+		Instance,
+	};
+
+	enum class VertexSemantic : uint8_t
+	{
+		Position,
+		Normal,
+		Tangent,
+		Color,
+
+		TexCoord0,
+		TexCoord1,
+
+		JointIndices,
+		JointWeights,
+	};
+
+	struct VertexAttribute
+	{
+		VertexSemantic semantic = VertexSemantic::Position;
+		Format format = Format::Undefined;
+		uint32_t offset = 0;
+	};
+
+	struct VertexBinding
+	{
+		uint32_t binding = 0;
+		uint32_t stride = 0;
+
+		VertexInputRate inputRate = VertexInputRate::Vertex;
+
+		std::vector<VertexAttribute> attributes;
+	};
+
+	struct VertexFormatDescription
+	{
+		std::vector<VertexBinding> bindings;
+	};
+
+	// ============================================================================
+	// Sample counts
+	// ============================================================================
+
+	enum class SampleCount : uint8_t
+	{
+		Count1 = 1,
+		Count2 = 2,
+		Count4 = 4,
+		Count8 = 8,
+		Count16 = 16,
+		Count32 = 32,
+		Count64 = 64,
+	};
+
+	struct MSAASettings {
+		SampleCount samples = SampleCount::Count1;
+
+		static MSAASettings Count1() { return { SampleCount::Count1 }; }
+		static MSAASettings Count2() { return { SampleCount::Count2 }; }
+		static MSAASettings Count4() { return { SampleCount::Count4 }; }
+		static MSAASettings Count8() { return { SampleCount::Count8 }; }
+		static MSAASettings Count16() { return { SampleCount::Count16 }; }
+		static MSAASettings Count32() { return { SampleCount::Count32 }; }
+		static MSAASettings Count64() { return { SampleCount::Count64 }; }
+	};
+
+	// ============================================================================
+	// Buffer
+	// ============================================================================
+
+	enum class BufferUsage : uint32_t
+	{
+		None = 0,
+
+		TransferSrc = 1u << 0,
+		TransferDst = 1u << 1,
+
+		Index = 1u << 2,
+		Vertex = 1u << 3,
+		Uniform = 1u << 4,
+		Storage = 1u << 5,
+		Indirect = 1u << 6,
+
+		// Keep room here for future RT support:
+		// ShaderBindingTable
+		// AccelerationStructureInput
+		// AccelerationStructureStorage
+	};
+
+	enum class MemoryUsage : uint8_t
+	{
+		Auto,
+
+		DeviceLocal,
+		Upload,
+		Readback,
+	};
+
+	//struct BufferCreateInfo
+	//{
+	//	size_t size = 0;
+	//	BufferUsage usage = BufferUsage::None;
+	//	MemoryUsage memoryUsage = MemoryUsage::Auto;
+	//	const char* name = nullptr;
+	//};
+
+	// ============================================================================
+	// Image
+	// ============================================================================
+
+	enum class ImageType : uint8_t
+	{
+		Image1D,
+		Image2D,
+		Image3D,
+	};
+
+	enum class ImageUsage : uint32_t
+	{
+		None = 0,
+
+		TransferSrc = 1u << 0,
+		TransferDst = 1u << 1,
+
+		Sampled = 1u << 2,
+		Storage = 1u << 3,
+
+		ColorAttachment = 1u << 4,
+		DepthStencilAttachment = 1u << 5,
+
+		InputAttachment = 1u << 6,
+	};
+
+	enum class ImageViewType : uint8_t
+	{
+		View1D,
+		View2D,
+		View3D,
+
+		ViewCube,
+
+		View1DArray,
+		View2DArray,
+		ViewCubeArray,
+	};
+
+	enum class ImageAspect : uint8_t
+	{
+		None = 0,
+		Color = 1u << 0,
+		Depth = 1u << 1,
+		Stencil = 1u << 2,
+	};
+
+	struct ImageSubresourceRange
+	{
+		ImageAspect aspect = ImageAspect::Color;
+
+		uint32_t baseMipLevel = 0;
+		uint32_t mipLevelCount = 1;
+
+		uint32_t baseArrayLayer = 0;
+		uint32_t arrayLayerCount = 1;
+	};
+
+	//	struct ImageCreateInfo
+	//	{
+	//		ImageType type = ImageType::Image2D;
+	//
+	//		Extent3D extent{};
+	//
+	//		Format format = Format::Undefined;
+	//
+	//		ImageUsage usage =
+	//			ImageUsage::Sampled |
+	//			ImageUsage::TransferDst;
+	//
+	//		SampleCount samples = SampleCount::Count1;
+	//
+	//		uint32_t mipLevels = 1;
+	//		uint32_t arrayLayers = 1;
+	//
+	//		const char* name = nullptr;
+	//	};
+	//
+	//	using TextureCreateInfo = ImageCreateInfo;
+	//
+	//	struct ImageViewCreateInfo
+	//	{
+	//		ImageViewType viewType = ImageViewType::View2D;
+	//
+	//		// Undefined = inherit underlying image format.
+	//		Format format = Format::Undefined;
+	//
+	//		ImageSubresourceRange subresourceRange{};
+	//	};
+	//
+	//
+	enum class Filter : uint8_t
+	{
+		Nearest,
+		Linear,
+	};
+
+	enum class MipmapMode : uint8_t
+	{
+		Nearest,
+		Linear,
+	};
+
+	enum class AddressMode : uint8_t
+	{
+		Repeat,
+		MirroredRepeat,
+		ClampToEdge
+
+	};
+
+	enum class CompareOp : uint8_t
+	{
 		Never,
 		Less,
 		Equal,
@@ -681,8 +462,176 @@ namespace smvk {
 		Greater,
 		NotEqual,
 		GreaterEqual,
-		Always
+		Always,
 	};
+
+	/*	struct SamplerCreateInfo
+		{
+			Filter magFilter = Filter::Linear;
+			Filter minFilter = Filter::Linear;
+
+			MipmapMode mipmapMode = MipmapMode::Linear;
+
+			AddressMode addressU = AddressMode::Repeat;
+			AddressMode addressV = AddressMode::Repeat;
+			AddressMode addressW = AddressMode::Repeat;
+
+			float mipLodBias = 0.0f;
+
+			float minLod = 0.0f;
+			float maxLod = 1000.0f;
+
+			float maxAnisotropy = 1.0f;
+
+			CompareOp compareOp = CompareOp::Always;
+			bool compareEnable = false;
+
+			bool operator<(const SamplerCreateInfo& other) const noexcept
+			{
+				return std::tie(
+					magFilter,
+					minFilter,
+					mipmapMode,
+
+					addressU,
+					addressV,
+					addressW,
+
+					mipLodBias,
+					minLod,
+					maxLod,
+					maxAnisotropy,
+
+					compareOp,
+					compareEnable
+				) <
+					std::tie(
+						other.magFilter,
+						other.minFilter,
+						other.mipmapMode,
+
+						other.addressU,
+						other.addressV,
+						other.addressW,
+
+						other.mipLodBias,
+						other.minLod,
+						other.maxLod,
+						other.maxAnisotropy,
+
+						other.compareOp,
+						other.compareEnable
+					);
+			}
+		};*/
+
+		//	// ============================================================================
+		//	// Shader
+		//	// ============================================================================
+		//
+		//	enum class ShaderStage : uint32_t
+		//	{
+		//		None = 0,
+		//
+		//		Vertex = 1u << 0,
+		//		TessControl = 1u << 1,
+		//		TessEvaluation = 1u << 2,
+		//		Geometry = 1u << 3,
+		//		Fragment = 1u << 4,
+		//		Compute = 1u << 5,
+		//
+		//		// Future:
+		//		// Task
+		//		// Mesh
+		//		// RayGen
+		//		// AnyHit
+		//		// ClosestHit
+		//		// Miss
+		//		// Intersection
+		//		// Callable
+		//	};
+		//
+		//	using ShaderStageFlags = ShaderStage;
+		//
+		//	// ============================================================================
+		//	// Shader program
+		//	// ============================================================================
+		//
+		//	struct Shader
+		//	{
+		//		ShaderModuleHandle module;
+		//
+		//		const char* entryPoint = "main";
+		//		ShaderStage stage = ShaderStage::None;
+		//
+		//		bool operator==(const Shader& other) const noexcept
+		//		{
+		//			return std::strcmp(entryPoint, other.entryPoint) == 0 &&
+		//				stage == other.stage &&
+		//				module == other.module;
+		//		}
+		//	};
+		//
+		//	struct ShaderProgram
+		//	{
+		//		Shader shaders[8]{};
+		//		size_t shaderCount = 0;
+		//
+		//		bool operator==(const ShaderProgram& other) const noexcept
+		//		{
+		//			if (shaderCount != other.shaderCount)
+		//				return false;
+		//
+		//			for (size_t i = 0; i < shaderCount; ++i)
+		//			{
+		//				if (!(shaders[i] == other.shaders[i]))
+		//					return false;
+		//			}
+		//
+		//			return true;
+		//		}
+		//	};
+
+
+	// ============================================================================
+	// Stencil
+	// ============================================================================
+
+	enum StencilOp : uint8_t
+	{
+		STENCIL_OP_KEEP = 0,
+		STENCIL_OP_ZERO,
+		STENCIL_OP_REPLACE,
+		STENCIL_OP_INCREMENT_AND_CLAMP,
+		STENCIL_OP_DECREMENT_AND_CLAMP,
+		STENCIL_OP_INVERT,
+		STENCIL_OP_INCREMENT_AND_WRAP,
+		STENCIL_OP_DECREMENT_AND_WRAP,
+	};
+
+	struct StencilSettings {
+		CompareOp frontCompareOp = CompareOp::Always;
+		CompareOp backCompareOp = CompareOp::Always;
+		uint8_t frontFailOp = STENCIL_OP_KEEP;
+		uint8_t backFailOp = STENCIL_OP_KEEP;
+		uint8_t frontPassOp = STENCIL_OP_KEEP;
+		uint8_t backPassOp = STENCIL_OP_KEEP;
+		VkStencilFaceFlags frontFace = VK_STENCIL_FACE_FRONT_BIT;
+		VkStencilFaceFlags backFace = VK_STENCIL_FACE_BACK_BIT;
+		bool frontTestEnable = VK_FALSE;
+		bool backTestEnable = VK_FALSE;
+		bool frontWriteEnable = VK_FALSE;
+		bool backWriteEnable = VK_FALSE;
+
+		// Static helpers
+		static StencilSettings DefaultDisabled();
+		static StencilSettings DefaultEnabled();
+		static StencilSettings TwoSided(CompareOp frontCompareOp, CompareOp backCompareOp, ...);
+
+		// Comparison operators for caching
+		bool operator<(const StencilSettings& other) const noexcept;
+	};
+
 
 	// ============================================================================
 	// Depth settings for pipeline state
@@ -813,7 +762,6 @@ namespace smvk {
 			static_cast<uint8_t>(ColorComponentFlag::A);
 	};
 
-	// Holds blend state for multiple color attachments
 	struct BlendState {
 		bool blendEnable = false;
 		BlendAttachmentState attachment[4]{}; // max 4 color attachments
@@ -949,49 +897,6 @@ namespace smvk {
 	} PipelineStageBits;
 	typedef uint32_t PipelineStage;
 
-	enum class PrimitiveTopology {
-		PointList,
-		LineList,
-		LineStrip,
-		TriangleList,
-		TriangleStrip,
-		TriangleFan,
-	};
-
-	enum class VertexSemantic {
-		Position,
-		Normal,
-		Tangent,
-		Color,
-		TexCoord0,
-		TexCoord1,
-		JointIndices,
-		JointWeights,
-	};
-
-	struct VertexAttribute {
-		VertexSemantic semantic;
-		VkFormat format;
-		uint32_t offset;
-		bool operator==(const VertexAttribute&) const = default;
-	};
-
-	struct VertexBinding {
-		uint32_t binding;
-		uint32_t stride;
-		VkVertexInputRate inputRate;
-
-		std::vector<VertexAttribute> attributes;
-		bool operator==(const VertexBinding&) const = default;
-
-	};
-
-	struct VertexFormatDescription {
-		std::vector<VertexBinding> bindings;
-		bool operator==(const VertexFormatDescription&) const = default;
-	};
-
-
 	enum Bindings {
 		kBinding_Textures = 0, // position 0
 		kBinding_Samplers = 1, // kBinding_ComparisonSamplers = 2,
@@ -1021,12 +926,12 @@ namespace smvk {
 		BufferType_Staging,
 		BufferType_Count,
 	} BufferType;
+
 	struct BufferCreateInfo {
 		VkDeviceSize size;
 		BufferType bufferType;
 		const char* name;
 	};
-
 
 	struct ImageCreateInfo {
 		VkSampleCountFlags vk_samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1070,11 +975,6 @@ namespace smvk {
 			);
 		}
 	};
-};
-
-namespace smvk {
-
-
 	struct Image {
 
 		VkImage vk_image = VK_NULL_HANDLE;
@@ -1095,9 +995,6 @@ namespace smvk {
 		VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
 		bool owns_views = true;
 		bool is_swapchain = false;
-		//const char* debugName = nullptr;
-
-		// This should be reworked out really
 		ImageCreateInfo getImageCreateInfo() const {
 			return {
 				.vk_extent = vk_extent,
@@ -1122,9 +1019,7 @@ namespace smvk {
 		}
 	};
 
-	// will be removed when updating to vk 1.4
-	using ShaderModuleHandle = Handle<struct ShaderModule>;
-
+	using ShaderModuleHandle = Handle<struct ShaderModule>; // will be removed when updating to vk 1.4
 	using ImageHandle = Handle<struct Image>;
 	using TextureHandle = Handle<struct Texture>;
 	using SamplerHandle = Handle<struct Sampler>;
@@ -1165,10 +1060,10 @@ namespace smvk {
 		}
 	};
 
-	//struct ICore {};
-	//struct ISwapchain {};
-	//struct IResourceManager {};
-	//struct ICommandList {};
-	//struct IFrameBuffer {};
-
 };
+//Interfaces to implement
+//struct ICore {};
+//struct ISwapchain {};
+//struct IResourceManager {};
+//struct ICommandList {};
+//struct IFrameBuffer {};
