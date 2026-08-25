@@ -61,44 +61,6 @@ inline const char* vkResultToString(VkResult result);
 
 namespace smvk {
 
-	/*template<typename Enum>
-	constexpr auto to_underlying(Enum value) noexcept
-	{
-		return static_cast<std::underlying_type_t<Enum>>(value);
-	}
-
-	template<typename Enum>
-	constexpr Enum operator|(Enum lhs, Enum rhs) noexcept
-		requires std::is_enum_v<Enum>
-	{
-		return static_cast<Enum>(
-			to_underlying(lhs) | to_underlying(rhs)
-			);
-	}
-
-	template<typename Enum>
-	constexpr Enum operator&(Enum lhs, Enum rhs) noexcept
-		requires std::is_enum_v<Enum>
-	{
-		return static_cast<Enum>(
-			to_underlying(lhs) & to_underlying(rhs)
-			);
-	}
-
-	template<typename Enum>
-	constexpr Enum& operator|=(Enum& lhs, Enum rhs) noexcept
-		requires std::is_enum_v<Enum>
-	{
-		lhs = lhs | rhs;
-		return lhs;
-	}
-
-	template<typename Enum>
-	constexpr bool has_flag(Enum value, Enum flag) noexcept
-	{
-		return (to_underlying(value) & to_underlying(flag)) != 0;
-	}*/
-
 	// ============================================================================
 	// Basic geometry / resource dimensions
 	// ============================================================================
@@ -529,73 +491,73 @@ namespace smvk {
 		//	// Shader
 		//	// ============================================================================
 		//
-		//	enum class ShaderStage : uint32_t
-		//	{
-		//		None = 0,
-		//
-		//		Vertex = 1u << 0,
-		//		TessControl = 1u << 1,
-		//		TessEvaluation = 1u << 2,
-		//		Geometry = 1u << 3,
-		//		Fragment = 1u << 4,
-		//		Compute = 1u << 5,
-		//
-		//		// Future:
-		//		// Task
-		//		// Mesh
-		//		// RayGen
-		//		// AnyHit
-		//		// ClosestHit
-		//		// Miss
-		//		// Intersection
-		//		// Callable
-		//	};
-		//
-		//	using ShaderStageFlags = ShaderStage;
-		//
-		//	// ============================================================================
-		//	// Shader program
-		//	// ============================================================================
-		//
-		//	struct Shader
-		//	{
-		//		ShaderModuleHandle module;
-		//
-		//		const char* entryPoint = "main";
-		//		ShaderStage stage = ShaderStage::None;
-		//
-		//		bool operator==(const Shader& other) const noexcept
-		//		{
-		//			return std::strcmp(entryPoint, other.entryPoint) == 0 &&
-		//				stage == other.stage &&
-		//				module == other.module;
-		//		}
-		//	};
-		//
-		//	struct ShaderProgram
-		//	{
-		//		Shader shaders[8]{};
-		//		size_t shaderCount = 0;
-		//
-		//		bool operator==(const ShaderProgram& other) const noexcept
-		//		{
-		//			if (shaderCount != other.shaderCount)
-		//				return false;
-		//
-		//			for (size_t i = 0; i < shaderCount; ++i)
-		//			{
-		//				if (!(shaders[i] == other.shaders[i]))
-		//					return false;
-		//			}
-		//
-		//			return true;
-		//		}
-		//	};
+	enum class ShaderStage : uint32_t
+	{
+		None = 0,
+
+		Vertex = 1u << 0,
+		TessControl = 1u << 1,
+		TessEvaluation = 1u << 2,
+		Geometry = 1u << 3,
+		Fragment = 1u << 4,
+		Compute = 1u << 5,
+
+		// Future:
+		// Task
+		// Mesh
+		// RayGen
+		// AnyHit
+		// ClosestHit
+		// Miss
+		// Intersection
+		// Callable
+	};
+
+	using ShaderStageFlags = ShaderStage;
+	//
+	//	// ============================================================================
+	//	// Shader program
+	//	// ============================================================================
+	//
+	//	struct Shader
+	//	{
+	//		ShaderModuleHandle module;
+	//
+	//		const char* entryPoint = "main";
+	//		ShaderStage stage = ShaderStage::None;
+	//
+	//		bool operator==(const Shader& other) const noexcept
+	//		{
+	//			return std::strcmp(entryPoint, other.entryPoint) == 0 &&
+	//				stage == other.stage &&
+	//				module == other.module;
+	//		}
+	//	};
+	//
+	//	struct ShaderProgram
+	//	{
+	//		Shader shaders[8]{};
+	//		size_t shaderCount = 0;
+	//
+	//		bool operator==(const ShaderProgram& other) const noexcept
+	//		{
+	//			if (shaderCount != other.shaderCount)
+	//				return false;
+	//
+	//			for (size_t i = 0; i < shaderCount; ++i)
+	//			{
+	//				if (!(shaders[i] == other.shaders[i]))
+	//					return false;
+	//			}
+	//
+	//			return true;
+	//		}
+	//	};
 
 
-	// ============================================================================
-	// Stencil
-	// ============================================================================
+// ============================================================================
+// Stencil
+// ============================================================================
 
 	enum StencilOp : uint8_t
 	{
@@ -1057,6 +1019,111 @@ namespace smvk {
 			}
 
 			return true;
+		}
+	};
+
+
+	enum class PolygonMode : uint8_t
+	{
+		Fill,
+		Line,
+		Point,
+	};
+
+	enum class CullMode : uint8_t
+	{
+		None,
+		Front,
+		Back,
+		FrontAndBack,
+	};
+
+	enum class FrontFace : uint8_t
+	{
+		CounterClockwise,
+		Clockwise,
+	};
+
+	struct RasterSettings
+	{
+		PolygonMode polygonMode = PolygonMode::Fill;
+		CullMode cullMode = CullMode::Back;
+		FrontFace frontFace = FrontFace::CounterClockwise;
+
+		bool depthClampEnable = false;
+		bool rasterizerDiscardEnable = false;
+
+		float lineWidth = 1.0f;
+
+		bool operator<(const RasterSettings& rhs) const noexcept
+		{
+			return std::tie(
+				polygonMode,
+				cullMode,
+				frontFace,
+				depthClampEnable,
+				rasterizerDiscardEnable,
+				lineWidth
+			) <
+				std::tie(
+					rhs.polygonMode,
+					rhs.cullMode,
+					rhs.frontFace,
+					rhs.depthClampEnable,
+					rhs.rasterizerDiscardEnable,
+					rhs.lineWidth
+				);
+		}
+	};
+
+};
+
+namespace smvk {
+
+	struct PipelineKey
+	{
+		ShaderProgram program{};
+
+		VertexFormatDescription vertexFormat{};
+
+		std::vector<Format> colorFormats;
+
+		Format depthFormat = Format::Undefined;
+		Format stencilFormat = Format::Undefined;
+
+		PrimitiveTopology topology =
+			PrimitiveTopology::TriangleList;
+
+		RasterSettings raster{};
+
+		DepthSettings depth{};
+		StencilSettings stencil{};
+		BlendSettings blend{};
+		MSAASettings msaa{};
+
+		bool operator==(const PipelineKey& rhs) const noexcept
+		{
+			return
+				program == rhs.program &&
+				vertexFormat == rhs.vertexFormat &&
+				colorFormats == rhs.colorFormats &&
+				depthFormat == rhs.depthFormat &&
+				stencilFormat == rhs.stencilFormat &&
+				topology == rhs.topology &&
+
+				!(raster < rhs.raster) &&
+				!(rhs.raster < raster) &&
+
+				!(depth < rhs.depth) &&
+				!(rhs.depth < depth) &&
+
+				!(stencil < rhs.stencil) &&
+				!(rhs.stencil < stencil) &&
+
+				!(blend < rhs.blend) &&
+				!(rhs.blend < blend) &&
+
+				msaa.samples == rhs.msaa.samples;
 		}
 	};
 

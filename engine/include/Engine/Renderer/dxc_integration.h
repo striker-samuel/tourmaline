@@ -2,11 +2,10 @@
 #include <cstring>
 #include <vector>
 
-enum class ShaderStage
+enum class DxcShaderStage
 {
 	Vertex,
 	Fragment,
 	Compute
 };
-
-std::vector<char> CompileHLSLToSPIRV(std::string_view source, ShaderStage stage, const wchar_t* entryPoint = L"main");
+std::vector<char> CompileHLSLToSPIRV(std::string_view source, DxcShaderStage stage, const wchar_t* entryPoint = L"main");

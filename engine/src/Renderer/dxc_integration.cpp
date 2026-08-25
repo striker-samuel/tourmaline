@@ -11,13 +11,14 @@
 #include <cstring>
 
 #include <Engine/Renderer/dxc_integration.h>
-static const wchar_t* GetShaderProfile(ShaderStage stage)
+
+static const wchar_t* GetShaderProfile(DxcShaderStage stage)
 {
     switch (stage)
     {
-    case ShaderStage::Vertex:   return L"vs_6_6";
-    case ShaderStage::Fragment: return L"ps_6_6";
-    case ShaderStage::Compute:  return L"cs_6_6";
+    case DxcShaderStage::Vertex:   return L"vs_6_6";
+    case DxcShaderStage::Fragment: return L"ps_6_6";
+    case DxcShaderStage::Compute:  return L"cs_6_6";
     }
 
     return nullptr;
@@ -25,7 +26,7 @@ static const wchar_t* GetShaderProfile(ShaderStage stage)
 
 std::vector<char> CompileHLSLToSPIRV(
     std::string_view source,
-    ShaderStage stage,
+    DxcShaderStage stage,
     const wchar_t* entryPoint
 )
 {
