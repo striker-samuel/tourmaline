@@ -24,6 +24,30 @@ VkDevice smvk::VulkanCore::GetDevice() { return device_; }
 //VkPhysicalDevice smvk::VulkanCore::GetPhysicalDevice() { return physicalDevice_; }
 //VkQueue smvk::VulkanCore::GetGraphicsQueue() { return graphicsQueue_; }
 
+const char* vkResultToString(VkResult result) {
+	switch (result) {
+	case VK_SUCCESS: return "VK_SUCCESS";
+	case VK_NOT_READY: return "VK_NOT_READY";
+	case VK_TIMEOUT: return "VK_TIMEOUT";
+	case VK_EVENT_SET: return "VK_EVENT_SET";
+	case VK_EVENT_RESET: return "VK_EVENT_RESET";
+	case VK_INCOMPLETE: return "VK_INCOMPLETE";
+	case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+	case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+	case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+	case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+	case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+	case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+	case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+	case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+	case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+	case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+	case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+	case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+	case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
+	default: return "VK_ERROR_<unrecognized>";
+	}
+}
 namespace {
 
 	inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
@@ -95,6 +119,136 @@ namespace {
 		std::vector<VkPresentModeKHR> presentModes;
 	};
 
+
+	smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface)
+	{
+		smvk::QueueFamilyIndices indices;
+
+		uint32_t queueFamilyCount = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(
+			device,
+			&queueFamilyCount,
+			nullptr);
+
+		std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+
+		vkGetPhysicalDeviceQueueFamilyProperties(
+			device,
+			&queueFamilyCount,
+			queueFamilies.data());
+
+
+		//for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+		//	VkBool32 present = VK_FALSE;
+		//	vkGetPhysicalDeviceSurfaceSupportKHR(
+		//		device, i, surface, &present);
+
+		//	const auto flags = queueFamilies[i].queueFlags;
+
+		//	printf(
+		//		"Queue family %u: "
+		//		"count=%u G=%d C=%d T=%d S=%d P=%d\n",
+		//		i,
+		//		queueFamilies[i].queueCount,
+		//		!!(flags & VK_QUEUE_GRAPHICS_BIT),
+		//		!!(flags & VK_QUEUE_COMPUTE_BIT),
+		//		!!(flags & VK_QUEUE_TRANSFER_BIT),
+		//		!!(flags & VK_QUEUE_SPARSE_BINDING_BIT),
+		//		!!present);
+		//}
+
+		// First pass: prefer one family that supports BOTH graphics + present.
+		for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+			const auto& q = queueFamilies[i];
+
+			VkBool32 presentSupport = VK_FALSE;
+			vkGetPhysicalDeviceSurfaceSupportKHR(
+				device,
+				i,
+				surface,
+				&presentSupport);
+
+			const bool graphics =
+				(q.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
+
+			if (graphics && presentSupport) {
+				indices.graphicsFamily = i;
+				indices.presentFamily = i;
+				break;
+			}
+		}
+
+		// If no combined family exists, find them separately.
+		if (!indices.graphicsFamily || !indices.presentFamily) {
+			for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+				const auto& q = queueFamilies[i];
+
+				if (!indices.graphicsFamily &&
+					(q.queueFlags & VK_QUEUE_GRAPHICS_BIT))
+				{
+					indices.graphicsFamily = i;
+				}
+
+				VkBool32 presentSupport = VK_FALSE;
+				vkGetPhysicalDeviceSurfaceSupportKHR(
+					device,
+					i,
+					surface,
+					&presentSupport);
+
+				if (!indices.presentFamily && presentSupport) {
+					indices.presentFamily = i;
+				}
+
+				if (indices.graphicsFamily &&
+					indices.presentFamily)
+				{
+					break;
+				}
+			}
+		}
+
+		// Prefer a truly dedicated transfer queue.
+		for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+			const auto flags = queueFamilies[i].queueFlags;
+
+			const bool transfer =
+				(flags & VK_QUEUE_TRANSFER_BIT) != 0;
+			const bool graphics =
+				(flags & VK_QUEUE_GRAPHICS_BIT) != 0;
+			const bool compute =
+				(flags & VK_QUEUE_COMPUTE_BIT) != 0;
+
+			if (transfer && !graphics && !compute) {
+				indices.transferFamily = i;
+				break;
+			}
+		}
+
+		// Otherwise prefer non-graphics.
+		if (!indices.transferFamily) {
+			for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+				const auto flags = queueFamilies[i].queueFlags;
+
+				const bool transfer =
+					(flags & VK_QUEUE_TRANSFER_BIT) != 0;
+				const bool graphics =
+					(flags & VK_QUEUE_GRAPHICS_BIT) != 0;
+
+				if (transfer && !graphics) {
+					indices.transferFamily = i;
+					break;
+				}
+			}
+		}
+
+		if (!indices.transferFamily) {
+			indices.transferFamily = indices.graphicsFamily;
+		}
+
+		return indices;
+	}
+
 	VkMemoryRequirements2 getDeviceImageMemoryRequirements(VkDevice device, const VkImageCreateInfo& imageCreateInfo) {
 		VkDeviceImageMemoryRequirements queryInfo{
 			.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
@@ -123,30 +277,6 @@ namespace {
 
 		if (func != nullptr) {
 			func(instance, debugMessenger, pAllocator);
-		}
-	}
-	const char* vkResultToString(VkResult result) {
-		switch (result) {
-		case VK_SUCCESS: return "VK_SUCCESS";
-		case VK_NOT_READY: return "VK_NOT_READY";
-		case VK_TIMEOUT: return "VK_TIMEOUT";
-		case VK_EVENT_SET: return "VK_EVENT_SET";
-		case VK_EVENT_RESET: return "VK_EVENT_RESET";
-		case VK_INCOMPLETE: return "VK_INCOMPLETE";
-		case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
-		case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-		case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
-		case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
-		case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
-		case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
-		case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
-		case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
-		case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
-		case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
-		case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
-		case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
-		case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
-		default: return "VK_ERROR_<unrecognized>";
 		}
 	}
 	VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
@@ -372,137 +502,95 @@ namespace {
 		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Count sentinel
 	};
 
-	smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface)
-	{
-		smvk::QueueFamilyIndices indices;
-
-		uint32_t queueFamilyCount = 0;
-		vkGetPhysicalDeviceQueueFamilyProperties(
-			device,
-			&queueFamilyCount,
-			nullptr);
-
-		std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-
-		vkGetPhysicalDeviceQueueFamilyProperties(
-			device,
-			&queueFamilyCount,
-			queueFamilies.data());
-
-
-		//for (uint32_t i = 0; i < queueFamilyCount; ++i) {
-		//	VkBool32 present = VK_FALSE;
-		//	vkGetPhysicalDeviceSurfaceSupportKHR(
-		//		device, i, surface, &present);
-
-		//	const auto flags = queueFamilies[i].queueFlags;
-
-		//	printf(
-		//		"Queue family %u: "
-		//		"count=%u G=%d C=%d T=%d S=%d P=%d\n",
-		//		i,
-		//		queueFamilies[i].queueCount,
-		//		!!(flags & VK_QUEUE_GRAPHICS_BIT),
-		//		!!(flags & VK_QUEUE_COMPUTE_BIT),
-		//		!!(flags & VK_QUEUE_TRANSFER_BIT),
-		//		!!(flags & VK_QUEUE_SPARSE_BINDING_BIT),
-		//		!!present);
-		//}
-
-		// First pass: prefer one family that supports BOTH graphics + present.
-		for (uint32_t i = 0; i < queueFamilyCount; ++i) {
-			const auto& q = queueFamilies[i];
-
-			VkBool32 presentSupport = VK_FALSE;
-			vkGetPhysicalDeviceSurfaceSupportKHR(
-				device,
-				i,
-				surface,
-				&presentSupport);
-
-			const bool graphics =
-				(q.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
-
-			if (graphics && presentSupport) {
-				indices.graphicsFamily = i;
-				indices.presentFamily = i;
-				break;
-			}
-		}
-
-		// If no combined family exists, find them separately.
-		if (!indices.graphicsFamily || !indices.presentFamily) {
-			for (uint32_t i = 0; i < queueFamilyCount; ++i) {
-				const auto& q = queueFamilies[i];
-
-				if (!indices.graphicsFamily &&
-					(q.queueFlags & VK_QUEUE_GRAPHICS_BIT))
-				{
-					indices.graphicsFamily = i;
-				}
-
-				VkBool32 presentSupport = VK_FALSE;
-				vkGetPhysicalDeviceSurfaceSupportKHR(
-					device,
-					i,
-					surface,
-					&presentSupport);
-
-				if (!indices.presentFamily && presentSupport) {
-					indices.presentFamily = i;
-				}
-
-				if (indices.graphicsFamily &&
-					indices.presentFamily)
-				{
-					break;
-				}
-			}
-		}
-
-		// Prefer a truly dedicated transfer queue.
-		for (uint32_t i = 0; i < queueFamilyCount; ++i) {
-			const auto flags = queueFamilies[i].queueFlags;
-
-			const bool transfer =
-				(flags & VK_QUEUE_TRANSFER_BIT) != 0;
-			const bool graphics =
-				(flags & VK_QUEUE_GRAPHICS_BIT) != 0;
-			const bool compute =
-				(flags & VK_QUEUE_COMPUTE_BIT) != 0;
-
-			if (transfer && !graphics && !compute) {
-				indices.transferFamily = i;
-				break;
-			}
-		}
-
-		// Otherwise prefer non-graphics.
-		if (!indices.transferFamily) {
-			for (uint32_t i = 0; i < queueFamilyCount; ++i) {
-				const auto flags = queueFamilies[i].queueFlags;
-
-				const bool transfer =
-					(flags & VK_QUEUE_TRANSFER_BIT) != 0;
-				const bool graphics =
-					(flags & VK_QUEUE_GRAPHICS_BIT) != 0;
-
-				if (transfer && !graphics) {
-					indices.transferFamily = i;
-					break;
-				}
-			}
-		}
-
-		if (!indices.transferFamily) {
-			indices.transferFamily = indices.graphicsFamily;
-		}
-
-		return indices;
-	}
 } // static ns
 
+
+struct Image {
+	VkImage vk_image = VK_NULL_HANDLE;
+	VmaAllocation vma_alloc = VK_NULL_HANDLE;
+	VkExtent3D vk_extent = { 1,1,1 };
+	VkFormat vk_format = VK_FORMAT_UNDEFINED;
+	VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+		VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	uint32_t levels = 1;
+	uint32_t arrayLayers = 1;
+	VkSampleCountFlags vk_samples = VK_SAMPLE_COUNT_1_BIT;
+	VkImageView sampleView = VK_NULL_HANDLE; // you can sample multiple levels
+	VkImageView storageView = VK_NULL_HANDLE; // but can only render to one. Views are created with this baked in. Thats the why to separate them
+	VkImageView arrayView[6]{
+		VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+		VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
+	}; // for cubemap
+	VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
+	bool owns_views = true;
+	bool is_swapchain = false;
+};
+
+struct Buffer {
+	VkBuffer vk_buffer = VK_NULL_HANDLE;
+	VmaAllocation vma_alloc{};
+	VkBufferUsageFlags usage = 0;
+	VkMemoryPropertyFlags memory_flags = 0;
+	VkDeviceAddress deviceAddress = 0;
+	//uint64_t mapped = 0; // permanent mapping may be good
+	[[nodiscard]] bool is_mappable() const noexcept {
+		return (memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+	}
+};
+
+
+
+
 // RHI to vulkan
+VkClearValue          smvk::toVkClearValue(ClearColor color)
+{
+	VkClearValue result{};
+	result.color.float32[0] = color.r;
+	result.color.float32[1] = color.g;
+	result.color.float32[2] = color.b;
+	result.color.float32[3] = color.a;
+	return result;
+}
+VkClearValue smvk::toVkClearValue(ClearDepthStencil clearDepth)
+{
+	VkClearValue result{};
+	result.depthStencil = {
+		clearDepth.depth,
+		clearDepth.stencil
+	};
+	return result;
+}
+VkAttachmentLoadOp    smvk::toVkAttachmentLoadOp(AttachmentLoadOp op)
+{
+	switch (op)
+	{
+	case AttachmentLoadOp::Load:
+		return VK_ATTACHMENT_LOAD_OP_LOAD;
+
+	case AttachmentLoadOp::Clear:
+		return VK_ATTACHMENT_LOAD_OP_CLEAR;
+
+	case AttachmentLoadOp::DontCare:
+		return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	}
+
+	assert(false && "Unsupported AttachmentLoadOp");
+	return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+}
+VkAttachmentStoreOp   smvk::toVkAttachmentStoreOp(AttachmentStoreOp op)
+{
+	switch (op)
+	{
+	case AttachmentStoreOp::Store:
+		return VK_ATTACHMENT_STORE_OP_STORE;
+
+	case AttachmentStoreOp::DontCare:
+		return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	}
+
+	assert(false && "Unsupported AttachmentStoreOp");
+	return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+}
 VkStencilOp           smvk::toVkStencilOp(uint8_t op)
 {
 	switch (op) {
@@ -981,21 +1069,7 @@ bool smvk::FormatHasDepth(VkFormat format)
 	}
 }
 
-static VkDescriptorSetLayoutBinding getDSLBinding(uint32_t binding,
-	VkDescriptorType descriptorType,
-	uint32_t descriptorCount,
-	VkShaderStageFlags stageFlags,
-	const VkSampler* immutableSamplers = nullptr
-) {
-	return VkDescriptorSetLayoutBinding{
-		.binding = binding,
-		.descriptorType = descriptorType,
-		.descriptorCount = descriptorCount,
-		.stageFlags = stageFlags,
-		.pImmutableSamplers = immutableSamplers,
-	};
-}
-
+//
 inline void BufferBarrier(
 	VkCommandBuffer cmd,
 	VkBuffer buffer,
@@ -1032,10 +1106,9 @@ int smvk::VulkanCore::CreateInstance() {
 
 	VkApplicationInfo appInfo{};
 	appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-	//appInfo.pApplicationName = APPLICATION_NAME;
 	appInfo.pApplicationName = "default_smvk_name1";
 	//appInfo.applicationVersion = VK_MAKE_API_VERSION(1, 0, 0);
-	appInfo.pEngineName = ENGINE_NAME;
+	appInfo.pEngineName = "SamEngine";
 	appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
 	appInfo.apiVersion = VK_API_VERSION_1_3;
 
@@ -1341,6 +1414,22 @@ std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanC
 	return unique;
 }
 
+
+static inline VkDescriptorSetLayoutBinding getDSLBinding(uint32_t binding,
+	VkDescriptorType descriptorType,
+	uint32_t descriptorCount,
+	VkShaderStageFlags stageFlags,
+	const VkSampler* immutableSamplers = nullptr
+) {
+	return VkDescriptorSetLayoutBinding{
+		.binding = binding,
+		.descriptorType = descriptorType,
+		.descriptorCount = descriptorCount,
+		.stageFlags = stageFlags,
+		.pImmutableSamplers = immutableSamplers,
+	};
+}
+
 // ResourceContext
 int smvk::VulkanResourceManager::Initialize() {
 
@@ -1383,6 +1472,7 @@ int smvk::VulkanResourceManager::Initialize() {
 		VK_SHADER_STAGE_VERTEX_BIT
 		| VK_SHADER_STAGE_FRAGMENT_BIT
 		| VK_SHADER_STAGE_COMPUTE_BIT;
+
 
 	const VkDescriptorSetLayoutBinding bindings[kBinding_NumBindings] = {
 		getDSLBinding(kBinding_Textures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),

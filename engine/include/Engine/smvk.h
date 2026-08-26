@@ -16,8 +16,6 @@
 #include "Engine/Shared/common.h"
 #include <Engine/Memory/pool.h>
 
-#define ENGINE_NAME "smvk"
-
 //
 static constexpr uint32_t DEFAULT_WIDTH = 1280;
 static constexpr uint32_t DEFAULT_HEIGHT = 720;
@@ -30,6 +28,8 @@ static constexpr uint32_t MAX_SAMPLERS = 8;
 static constexpr uint32_t MAX_MATERIALS = 1024;
 static constexpr uint32_t MAX_SHADOW_SAMPLERS = 8;
 static constexpr uint32_t MAX_COLOR_ATTACHEMNTS = 4096;
+
+inline const char* vkResultToString(VkResult result);
 
 namespace smvk {
 
@@ -245,33 +245,53 @@ namespace smvk {
 	// Buffer
 	// ============================================================================
 
-	enum class BufferUsage : uint32_t
-	{
-		None = 0,
+	//enum class MemoryUsage : uint8_t
+	//{
+	//	Auto,
 
-		TransferSrc = 1u << 0,
-		TransferDst = 1u << 1,
+	//	DeviceLocal,
+	//	Upload,
+	//	Readback,
+	//};
 
-		Index = 1u << 2,
-		Vertex = 1u << 3,
-		Uniform = 1u << 4,
-		Storage = 1u << 5,
-		Indirect = 1u << 6,
+	typedef enum BufferType {
+		BufferType_Index = 0,
+		BufferType_Vertex,
+		BufferType_Uniform,
+		BufferType_Storage,
+		BufferType_Indirect,
+		BufferType_TransferSrc,
+		BufferType_TransferDst,
+		BufferType_Staging,
+		BufferType_Count,
+	} BufferType;
 
-		// Keep room here for future RT support:
-		// ShaderBindingTable
-		// AccelerationStructureInput
-		// AccelerationStructureStorage
+	//enum class BufferUsage : uint32_t
+	//{
+	//	None = 0,
+
+	//	TransferSrc = 1u << 0,
+	//	TransferDst = 1u << 1,
+
+	//	Index = 1u << 2,
+	//	Vertex = 1u << 3,
+	//	Uniform = 1u << 4,
+	//	Storage = 1u << 5,
+	//	Indirect = 1u << 6,
+
+	//	// Keep room here for future RT support:
+	//	// ShaderBindingTable
+	//	// AccelerationStructureInput
+	//	// AccelerationStructureStorage
+	//};
+
+	struct BufferCreateInfo {
+		size_t size = 0;
+		BufferType bufferType;
+		//	MemoryUsage memoryUsage = MemoryUsage::Auto;
+		const char* name = nullptr;
 	};
 
-	enum class MemoryUsage : uint8_t
-	{
-		Auto,
-
-		DeviceLocal,
-		Upload,
-		Readback,
-	};
 
 	//struct BufferCreateInfo
 	//{
@@ -307,6 +327,13 @@ namespace smvk {
 
 		InputAttachment = 1u << 6,
 	};
+	constexpr ImageUsage operator|(ImageUsage a, ImageUsage b)
+	{
+		return static_cast<ImageUsage>(
+			static_cast<uint32_t>(a) |
+			static_cast<uint32_t>(b)
+			);
+	}
 
 	enum class ImageViewType : uint8_t
 	{
@@ -340,39 +367,57 @@ namespace smvk {
 		uint32_t arrayLayerCount = 1;
 	};
 
-	//	struct ImageCreateInfo
-	//	{
-	//		ImageType type = ImageType::Image2D;
+	struct ClearColor
+	{
+		float r = 0.0f;
+		float g = 0.0f;
+		float b = 0.0f;
+		float a = 0.0f;
+	};
+
+	struct ClearDepthStencil
+	{
+		float depth = 1.0f;
+		uint32_t stencil = 0;
+	};
+
+	enum class AttachmentLoadOp : uint8_t
+	{
+		Load,
+		Clear,
+		DontCare
+	};
+
+	enum class AttachmentStoreOp : uint8_t
+	{
+		Store,
+		DontCare
+	};
+
+	struct ImageCreateInfo
+	{
+		ImageType type = ImageType::Image2D;
+		Extent3D extent{};
+		Format format = Format::Undefined;
+		ImageUsage usage =
+			ImageUsage::Sampled |
+			ImageUsage::TransferDst;
+		SampleCount samples = SampleCount::Count1;
+		uint32_t mipLevels = 1;
+		uint32_t arrayLayers = 1;
+		const char* name = nullptr;
+	};
+	using TextureCreateInfo = ImageCreateInfo;
+	struct ImageViewCreateInfo
+	{
+		ImageViewType viewType = ImageViewType::View2D;
+		// Undefined = inherit underlying image format.
+		Format format = Format::Undefined;
+		ImageSubresourceRange subresourceRange{};
+	};
+
 	//
-	//		Extent3D extent{};
-	//
-	//		Format format = Format::Undefined;
-	//
-	//		ImageUsage usage =
-	//			ImageUsage::Sampled |
-	//			ImageUsage::TransferDst;
-	//
-	//		SampleCount samples = SampleCount::Count1;
-	//
-	//		uint32_t mipLevels = 1;
-	//		uint32_t arrayLayers = 1;
-	//
-	//		const char* name = nullptr;
-	//	};
-	//
-	//	using TextureCreateInfo = ImageCreateInfo;
-	//
-	//	struct ImageViewCreateInfo
-	//	{
-	//		ImageViewType viewType = ImageViewType::View2D;
-	//
-	//		// Undefined = inherit underlying image format.
-	//		Format format = Format::Undefined;
-	//
-	//		ImageSubresourceRange subresourceRange{};
-	//	};
-	//
-	//
+
 	enum class Filter : uint8_t
 	{
 		Nearest,
@@ -405,70 +450,69 @@ namespace smvk {
 		Always,
 	};
 
-	/*	struct SamplerCreateInfo
+	struct SamplerCreateInfo
+	{
+		Filter magFilter = Filter::Linear;
+		Filter minFilter = Filter::Linear;
+		MipmapMode mipmapMode = MipmapMode::Linear;
+
+		AddressMode addressU = AddressMode::Repeat;
+		AddressMode addressV = AddressMode::Repeat;
+		AddressMode addressW = AddressMode::Repeat;
+
+		float mipLodBias = 0.0f;
+
+		float minLod = 0.0f;
+		float maxLod = 1000.0f;
+
+		float maxAnisotropy = 1.0f;
+
+		CompareOp compareOp = CompareOp::Always;
+		bool compareEnable = false;
+
+		bool operator<(const SamplerCreateInfo& other) const noexcept
 		{
-			Filter magFilter = Filter::Linear;
-			Filter minFilter = Filter::Linear;
+			return std::tie(
+				magFilter,
+				minFilter,
+				mipmapMode,
 
-			MipmapMode mipmapMode = MipmapMode::Linear;
+				addressU,
+				addressV,
+				addressW,
 
-			AddressMode addressU = AddressMode::Repeat;
-			AddressMode addressV = AddressMode::Repeat;
-			AddressMode addressW = AddressMode::Repeat;
+				mipLodBias,
+				minLod,
+				maxLod,
+				maxAnisotropy,
 
-			float mipLodBias = 0.0f;
+				compareOp,
+				compareEnable
+			) <
+				std::tie(
+					other.magFilter,
+					other.minFilter,
+					other.mipmapMode,
 
-			float minLod = 0.0f;
-			float maxLod = 1000.0f;
+					other.addressU,
+					other.addressV,
+					other.addressW,
 
-			float maxAnisotropy = 1.0f;
+					other.mipLodBias,
+					other.minLod,
+					other.maxLod,
+					other.maxAnisotropy,
 
-			CompareOp compareOp = CompareOp::Always;
-			bool compareEnable = false;
+					other.compareOp,
+					other.compareEnable
+				);
+		}
+	};
 
-			bool operator<(const SamplerCreateInfo& other) const noexcept
-			{
-				return std::tie(
-					magFilter,
-					minFilter,
-					mipmapMode,
+	// ============================================================================
+	// Shader
+	// ============================================================================
 
-					addressU,
-					addressV,
-					addressW,
-
-					mipLodBias,
-					minLod,
-					maxLod,
-					maxAnisotropy,
-
-					compareOp,
-					compareEnable
-				) <
-					std::tie(
-						other.magFilter,
-						other.minFilter,
-						other.mipmapMode,
-
-						other.addressU,
-						other.addressV,
-						other.addressW,
-
-						other.mipLodBias,
-						other.minLod,
-						other.maxLod,
-						other.maxAnisotropy,
-
-						other.compareOp,
-						other.compareEnable
-					);
-			}
-		};*/
-
-		//	// ============================================================================
-		//	// Shader
-		//	// ============================================================================
-		//
 	enum class ShaderStage : uint32_t
 	{
 		None = 0,
@@ -497,40 +541,40 @@ namespace smvk {
 	// Shader program
 	// ============================================================================
 
-	//struct Shader
-	//{
-	//	ShaderModuleHandle module;
+	struct Shader
+	{
+		ShaderModuleHandle module;
 
-	//	const char* entryPoint = "main";
-	//	ShaderStage stage = ShaderStage::None;
+		const char* entryPoint = "main";
+		ShaderStage stage = ShaderStage::None;
 
-	//	bool operator==(const Shader& other) const noexcept
-	//	{
-	//		return std::strcmp(entryPoint, other.entryPoint) == 0 &&
-	//			stage == other.stage &&
-	//			module == other.module;
-	//	}
-	//};
+		bool operator==(const Shader& other) const noexcept
+		{
+			return std::strcmp(entryPoint, other.entryPoint) == 0 &&
+				stage == other.stage &&
+				module == other.module;
+		}
+	};
 
-	//struct ShaderProgram
-	//{
-	//	Shader shaders[8]{};
-	//	size_t shaderCount = 0;
+	struct ShaderProgram
+	{
+		Shader shaders[8]{};
+		size_t shaderCount = 0;
 
-	//	bool operator==(const ShaderProgram& other) const noexcept
-	//	{
-	//		if (shaderCount != other.shaderCount)
-	//			return false;
+		bool operator==(const ShaderProgram& other) const noexcept
+		{
+			if (shaderCount != other.shaderCount)
+				return false;
 
-	//		for (size_t i = 0; i < shaderCount; ++i)
-	//		{
-	//			if (!(shaders[i] == other.shaders[i]))
-	//				return false;
-	//		}
+			for (size_t i = 0; i < shaderCount; ++i)
+			{
+				if (!(shaders[i] == other.shaders[i]))
+					return false;
+			}
 
-	//		return true;
-	//	}
-	//};
+			return true;
+		}
+	};
 
 	// ============================================================================
 	// Stencil
@@ -852,144 +896,12 @@ namespace smvk {
 		}
 	};
 
-	typedef enum BufferType {
-		BufferType_Index = 0,
-		BufferType_Vertex,
-		BufferType_Uniform,
-		BufferType_Storage,
-		BufferType_Indirect,
-		BufferType_TransferSrc,
-		BufferType_TransferDst,
-		BufferType_Staging,
-		BufferType_Count,
-	} BufferType;
-
-	struct BufferCreateInfo {
-		VkDeviceSize size;
-		BufferType bufferType;
-		const char* name;
-	};
-
-	struct ImageCreateInfo {
-		VkSampleCountFlags vk_samples = VK_SAMPLE_COUNT_1_BIT;
-		VkExtent3D vk_extent;
-		VkFormat vk_format = VK_FORMAT_UNDEFINED;
-		VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_SAMPLED_BIT |
-			VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-		uint32_t levels = 1;
-		uint32_t arrayLayers = 1;
-	};
-	using TextureCreateInfo = ImageCreateInfo;
-
-	struct ImageViewCreateInfo {
-		VkImageViewCreateFlags     flags{};
-		VkImage                    vk_image{};
-		VkImageViewType            viewType{};
-		VkFormat                   vk_format{};
-		VkImageSubresourceRange    subResourceRange{};
-	};
-
-	struct SamplerCreateInfo {
-		VkFilter mag = VK_FILTER_LINEAR;
-		VkFilter min = VK_FILTER_LINEAR;
-		VkSamplerMipmapMode mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-		VkSamplerAddressMode u = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		VkSamplerAddressMode v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		VkSamplerAddressMode w = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		float maxLod = VK_LOD_CLAMP_NONE;
-		float maxAniso = 1.0f;
-		VkCompareOp compareOp = VK_COMPARE_OP_ALWAYS;
-		bool compareEnable = false;
-		bool operator<(const SamplerCreateInfo& other) const noexcept {
-			return std::tie(
-				mag, min, mip,
-				u, v, w,
-				maxLod, maxAniso,
-				compareOp, compareEnable
-			) < std::tie(
-				other.mag, other.min, other.mip,
-				other.u, other.v, other.w,
-				other.maxLod, other.maxAniso,
-				other.compareOp, other.compareEnable
-			);
-		}
-	};
-
-	struct Image {
-		VkImage vk_image = VK_NULL_HANDLE;
-		VmaAllocation vma_alloc = VK_NULL_HANDLE;
-		VkExtent3D vk_extent = { 1,1,1 };
-		VkFormat vk_format = VK_FORMAT_UNDEFINED;
-		VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_SAMPLED_BIT |
-			VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-		uint32_t levels = 1;
-		uint32_t arrayLayers = 1;
-		VkSampleCountFlags vk_samples = VK_SAMPLE_COUNT_1_BIT;
-		VkImageView sampleView = VK_NULL_HANDLE; // you can sample multiple levels
-		VkImageView storageView = VK_NULL_HANDLE; // but can only render to one. Views are created with this baked in. Thats the why to separate them
-		VkImageView arrayView[6]{
-			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
-			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
-		}; // for cubemap
-		VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
-		bool owns_views = true;
-		bool is_swapchain = false;
-	};
-
-	// Just piggybacking on vma really
-	struct Buffer {
-		VkBuffer vk_buffer = VK_NULL_HANDLE;
-		VmaAllocation vma_alloc{};
-		VkBufferUsageFlags usage = 0;
-		VkMemoryPropertyFlags memory_flags = 0;
-		VkDeviceAddress deviceAddress = 0;
-		//uint64_t mapped = 0; // permanent mapping may be good
-		[[nodiscard]] bool is_mappable() const noexcept {
-			return (memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
-		}
-	};
-
 	using ShaderModuleHandle = Handle<struct ShaderModule>; // will be removed when updating to vk 1.4
 	using ImageHandle = Handle<struct Image>;
 	using TextureHandle = Handle<struct Texture>;
 	using SamplerHandle = Handle<struct Sampler>;
 	using BufferHandle = Handle<struct Buffer>;
 	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
-
-	struct Shader {
-		ShaderModuleHandle vkShaderModule; // to be refactored out when moving to 1.4
-		const char* entryPoint = "main";
-		VkShaderStageFlagBits stage;
-		//bool usePushConstants;
-		//size_t pushConstantsSize // this should be gotten with reflection
-
-		bool operator==(const Shader& other) const noexcept {
-			return std::strcmp(entryPoint, other.entryPoint) == 0 &&
-				stage == other.stage &&
-				vkShaderModule == other.vkShaderModule;
-		}
-	};
-
-	struct ShaderProgram {
-		Shader shaders[8];
-		size_t shaderCount = 0;
-		bool operator==(const ShaderProgram& other) const noexcept
-		{
-			if (shaderCount != other.shaderCount)
-			{
-				return false;
-			}
-
-			for (size_t i = 0; i < shaderCount; ++i)
-			{
-				if (!(shaders[i] == other.shaders[i]))
-					return false;
-			}
-
-			return true;
-		}
-	};
-
 
 	enum class PolygonMode : uint8_t
 	{
@@ -1051,19 +963,12 @@ namespace smvk {
 	struct PipelineKey
 	{
 		ShaderProgram program{};
-
 		VertexFormatDescription vertexFormat{};
-
 		std::vector<Format> colorFormats;
-
 		Format depthFormat = Format::Undefined;
 		Format stencilFormat = Format::Undefined;
-
-		PrimitiveTopology topology =
-			PrimitiveTopology::TriangleList;
-
+		PrimitiveTopology topology =PrimitiveTopology::TriangleList;
 		RasterSettings raster{};
-
 		DepthSettings depth{};
 		StencilSettings stencil{};
 		BlendSettings blend{};
@@ -1095,79 +1000,80 @@ namespace smvk {
 		}
 	};
 
-};
-// ============================================================================
-// RHI Interfaces
-// ============================================================================
 
-// Core interface - essential RHI operations
-struct ICore {
-	virtual ~ICore() = default;
-	virtual int CreateInstance() = 0;
-	virtual bool Init() = 0;
-	virtual VkDevice GetDevice() = 0;
-	// virtual VkPhysicalDevice GetPhysicalDevice() = 0;
-	// virtual VkQueue GetGraphicsQueue() = 0;
-	virtual void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) = 0;
-	virtual void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view) = 0;
-	virtual void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline) = 0;
-	virtual void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline) = 0;
-	virtual void DestroyPipeline(VkPipeline pipeline) = 0;
-};
+	//// ============================================================================
+	//// RHI Interfaces
+	//// ============================================================================
 
-// Swapchain interface
-struct ISwapchain {
-	virtual ~ISwapchain() = default;
-	virtual VkExtent2D GetExtent() const = 0;
-	virtual uint32_t GetImageCount() const = 0;
-	virtual VkImage GetImage(uint32_t index) const = 0;
-	virtual VkImageView GetImageView(uint32_t index) const = 0;
-	virtual VkImage GetCurrentImage() const = 0;
-	virtual VkImageView GetCurrentImageView() const = 0;
-	virtual uint32_t GetCurrentImageIndex() const = 0;
-	virtual uint32_t GetCurrentFrameIndex() const = 0;
-	virtual VkSemaphore GetImageAvailableSemaphore() const = 0;
-	virtual VkFence GetInFlightFence() const = 0;
-	virtual VkSemaphore GetRenderFinishedSemaphore(uint32_t imageIndex) const = 0;
-	virtual void AdvanceFrame() = 0;
-	virtual void SetCurrentImageIndex(uint32_t imageIndex) = 0;
-	virtual void Recreate() = 0;
-	virtual void EndAndPresentFramebuffer(FrameBuffer& fb) = 0;
-};
+	//// Core interface - essential RHI operations
+	//struct ICore {
+	//	virtual ~ICore() = default;
+	//	virtual int CreateInstance() = 0;
+	//	virtual bool Init() = 0;
+	//	//virtual VkDevice GetDevice() = 0;
+	//	// virtual VkPhysicalDevice GetPhysicalDevice() = 0;
+	//	// virtual VkQueue GetGraphicsQueue() = 0;
+	//	virtual void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) = 0;
+	//	virtual void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view) = 0;
+	//	virtual void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline) = 0;
+	//	virtual void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline) = 0;
+	//	virtual void DestroyPipeline(VkPipeline pipeline) = 0;
+	//};
 
-// Resource manager interface
-struct IResourceManager {
-	virtual ~IResourceManager() = default;
-	virtual Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr) = 0;
-	virtual Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr) = 0;
-	virtual Holder<BufferHandle> CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = nullptr) = 0;
-	virtual Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = nullptr) = 0;
-	virtual Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = nullptr) = 0;
-	virtual void* MapBuffer(Handle<Buffer> handle) = 0;
-	virtual void UnmapBuffer(Handle<Buffer> handle) = 0;
-	virtual void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0) = 0;
-	virtual void UploadDataToImage2D(Image img, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0) = 0;
-	virtual void UpdateBindings(uint32_t frameIndex = 0) = 0;
-};
+	//// Swapchain interface
+	//struct ISwapchain {
+	//	virtual ~ISwapchain() = default;
+	//	virtual VkExtent2D GetExtent() const = 0;
+	//	virtual uint32_t GetImageCount() const = 0;
+	//	virtual VkImage GetImage(uint32_t index) const = 0;
+	//	virtual VkImageView GetImageView(uint32_t index) const = 0;
+	//	virtual VkImage GetCurrentImage() const = 0;
+	//	virtual VkImageView GetCurrentImageView() const = 0;
+	//	virtual uint32_t GetCurrentImageIndex() const = 0;
+	//	virtual uint32_t GetCurrentFrameIndex() const = 0;
+	//	virtual VkSemaphore GetImageAvailableSemaphore() const = 0;
+	//	virtual VkFence GetInFlightFence() const = 0;
+	//	virtual VkSemaphore GetRenderFinishedSemaphore(uint32_t imageIndex) const = 0;
+	//	virtual void AdvanceFrame() = 0;
+	//	virtual void SetCurrentImageIndex(uint32_t imageIndex) = 0;
+	//	virtual void Recreate() = 0;
+	//	virtual void EndAndPresentFramebuffer(FrameBuffer& fb) = 0;
+	//};
 
-// Command list interface
-struct ICommandList {
-	virtual ~ICommandList() = default;
-	virtual void Begin() = 0;
-	virtual void End() = 0;
-	virtual void Submit() = 0;
-	virtual void PushConstants(uint32_t offset, uint32_t size, const void* data, PipelineStage stageMask = PipelineStageBit_AllGraphics) = 0;
-	virtual void BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormatDescription vertexFormatDescription = VertexFormatDescription(), const DepthSettings& depthSettings = DepthSettings::DepthTest(), const StencilSettings& stencilSettings = StencilSettings::DefaultDisabled(), const BlendSettings& blendSettings = BlendSettings::Opaque(), const MSAASettings& msaaSettings = MSAASettings::Count1()) = 0;
-	virtual void Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) = 0;
-	virtual void DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0, uint32_t baseVertex = 0, uint32_t firstInstance = 0) = 0;
-};
+	//// Resource manager interface
+	//struct IResourceManager {
+	//	virtual ~IResourceManager() = default;
+	//	virtual Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr) = 0;
+	//	virtual Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr) = 0;
+	//	virtual Holder<BufferHandle> CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = nullptr) = 0;
+	//	virtual Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = nullptr) = 0;
+	//	virtual Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = nullptr) = 0;
+	//	virtual void* MapBuffer(Handle<Buffer> handle) = 0;
+	//	virtual void UnmapBuffer(Handle<Buffer> handle) = 0;
+	//	virtual void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0) = 0;
+	//	virtual void UploadDataToImage2D(Image img, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0) = 0;
+	//	virtual void UpdateBindings(uint32_t frameIndex = 0) = 0;
+	//};
 
-// Framebuffer interface
-struct IFrameBuffer {
-	virtual ~IFrameBuffer() = default;
-	virtual VkRenderPass GetRenderPass() const = 0;
-	virtual VkFramebuffer GetVkFramebuffer() const = 0;
-	virtual uint32_t GetWidth() const = 0;
-	virtual uint32_t GetHeight() const = 0;
-	virtual uint32_t GetImageIndex() const = 0;
+	//// Command list interface
+	//struct ICommandList {
+	//	virtual ~ICommandList() = default;
+	//	virtual void Begin() = 0;
+	//	virtual void End() = 0;
+	//	virtual void Submit() = 0;
+	//	virtual void PushConstants(uint32_t offset, uint32_t size, const void* data, PipelineStage stageMask = PipelineStageBit_AllGraphics) = 0;
+	//	virtual void BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormatDescription vertexFormatDescription = VertexFormatDescription(), const DepthSettings& depthSettings = DepthSettings::DepthTest(), const StencilSettings& stencilSettings = StencilSettings::DefaultDisabled(), const BlendSettings& blendSettings = BlendSettings::Opaque(), const MSAASettings& msaaSettings = MSAASettings::Count1()) = 0;
+	//	virtual void Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) = 0;
+	//	virtual void DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0, uint32_t baseVertex = 0, uint32_t firstInstance = 0) = 0;
+	//};
+
+	//// Framebuffer interface
+	//struct IFrameBuffer {
+	//	virtual ~IFrameBuffer() = default;
+	//	virtual VkRenderPass GetRenderPass() const = 0;
+	//	virtual VkFramebuffer GetVkFramebuffer() const = 0;
+	//	virtual uint32_t GetWidth() const = 0;
+	//	virtual uint32_t GetHeight() const = 0;
+	//	virtual uint32_t GetImageIndex() const = 0;
+	//};
 };

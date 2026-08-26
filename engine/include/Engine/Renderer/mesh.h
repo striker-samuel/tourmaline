@@ -100,10 +100,7 @@ namespace smvk {
 		}
 	};
 
-	enum struct VertexFormat {
-		Empty
-		, StaticVertexFormat
-	};
+
 	// -----------------------------------------------------------------------------
 	// Draw information
 	// -----------------------------------------------------------------------------
@@ -154,5 +151,14 @@ namespace smvk {
 
 	void AllocateStaticVertexFmt(smvk::VulkanResourceManager& ctx);
 	void BindStaticVertexFmtBuffers(VulkanResourceManager& ctx, VkCommandBuffer cmd);
+
+	enum struct VertexFormat {
+		Empty
+		, StaticVertexFormat
+	};
+
+	VertexFormatDescription GetVertexFormatDescription(VertexFormat format);
+
+
 
 } // namespace smvk

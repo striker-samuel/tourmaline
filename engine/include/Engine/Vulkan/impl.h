@@ -12,9 +12,6 @@
 #include <unordered_map>
 
 
-// these should be moved from here
-inline const char* vkResultToString(VkResult result);
-
 #define VK_ASSERT_RETURN(func)                                     \
   {                                                                \
     const VkResult vk_assert_result = func;                        \
@@ -51,6 +48,10 @@ namespace smvk {
 	// Type translators: convert RHI types from smvk.h to Vk types for pipeline state
 	// ============================================================================
 
+	inline VkClearValue toVkClearValue(ClearColor color);
+	inline VkClearValue toVkClearValue(ClearDepthStencil clearDepth);
+	inline VkAttachmentLoadOp  toVkAttachmentLoadOp(AttachmentLoadOp op);
+	inline VkAttachmentStoreOp toVkAttachmentStoreOp(AttachmentStoreOp op);
 	inline VkStencilOp toVkStencilOp(uint8_t op);
 	inline VkShaderStageFlagBits toVkShaderStage(ShaderStage stage);
 	inline VkBlendFactor toVkSrcBlendFactor(BlendAttachmentState::SrcColorBlendFactor factor);
@@ -68,8 +69,8 @@ namespace smvk {
 	inline VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor);
 	inline VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor);
 	inline uint8_t toRhiColorWriteMask(VkColorComponentFlags flags);
-	inline smvk::BlendAttachmentState::SrcColorBlendFactor toRhiSrcColorBlendFactor(VkBlendFactor factor);
-	inline smvk::BlendAttachmentState::DstColorBlendFactor toRhiDstColorBlendFactor(VkBlendFactor factor);
+	//inline smvk::BlendAttachmentState::SrcColorBlendFactor toRhiSrcColorBlendFactor(VkBlendFactor factor);
+	//inline smvk::BlendAttachmentState::DstColorBlendFactor toRhiDstColorBlendFactor(VkBlendFactor factor);
 
 	// ============================================================================
 	// 	Core

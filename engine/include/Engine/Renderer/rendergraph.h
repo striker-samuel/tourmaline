@@ -12,40 +12,21 @@ namespace smvk {
 	struct RenderGraph;
 	struct CommandBuffer;
 
-	using LogicalBufferHandle =
-		Handle<struct LogicalBuffer>;
-
-	using LogicalImageHandle =
-		Handle<struct LogicalImage>;
-
-	using LogicalImageViewHandle =
-		Handle<struct LogicalImageView>;
-
+	using LogicalBufferHandle = Handle<struct LogicalBuffer>;
+	using LogicalImageHandle = Handle<struct LogicalImage>;
+	using LogicalImageViewHandle = Handle<struct LogicalImageView>;
 
 	// ============================================================
-	// RHI resource descriptions
+	// Logical Resoruce Keys
 	// ============================================================
 
-	struct BufferKey
-	{
-		size_t elementSize = 0;
-		size_t elementCount = 0;
-
-		BufferUsage usage = BufferUsage::Storage;
-		MemoryUsage memoryUsage = MemoryUsage::Auto;
-
-		bool ring = false;
-	};
-
+	using BufferKey = BufferCreateInfo;
 	using ImageKey = ImageCreateInfo;
-
-	struct ImageViewKey
+	struct ImageViewKey // this neesds rework
 	{
 		LogicalImageHandle image;
-
 		ImageViewType viewType = ImageViewType::View2D;
 		Format format = Format::Undefined;
-
 		ImageSubresourceRange subresourceRange{};
 	};
 
@@ -54,7 +35,7 @@ namespace smvk {
 	// Logical resources
 	// ============================================================
 
-	enum class LogicalResourceType : uint8_t
+	enum class Type : uint8_t
 	{
 		Transient,
 		External
@@ -62,19 +43,15 @@ namespace smvk {
 
 	struct LogicalBuffer
 	{
-		LogicalResourceType type = LogicalResourceType::Transient;
-
+		Type type = Type::Transient;
 		BufferKey key{};
-
-		// Backend-resolved resource.
 		BufferHandle resolvedBufferHandle{};
-
 		const char* name = "";
 	};
 
 	struct LogicalImage
 	{
-		LogicalResourceType type = LogicalResourceType::Transient;
+		Type type = Type::Transient;
 		ImageKey key{};
 		ImageHandle resolvedImageHandle{};
 		const char* name = "";
@@ -82,51 +59,16 @@ namespace smvk {
 
 	struct LogicalImageView
 	{
-		LogicalResourceType type = LogicalResourceType::Transient;
-
+		Type type = Type::Transient;
 		ImageViewKey key{};
-
-		// Backend-resolved state.
-		VkImageView resolvedImageView = VK_NULL_HANDLE;
-
-		// Keep the logical/RHI format here.
+		VkImageView resolvedImageView = VK_NULL_HANDLE; // this is bad
 		Format resolvedFormat = Format::Undefined;
-
 		const char* name = "";
 	};
-
 
 	// ============================================================
 	// Render attachments
 	// ============================================================
-
-	// These should also live in RHI if they don't already.
-	enum class AttachmentLoadOp : uint8_t
-	{
-		Load,
-		Clear,
-		DontCare
-	};
-
-	enum class AttachmentStoreOp : uint8_t
-	{
-		Store,
-		DontCare
-	};
-
-	struct ClearColor
-	{
-		float r = 0.0f;
-		float g = 0.0f;
-		float b = 0.0f;
-		float a = 0.0f;
-	};
-
-	struct ClearDepthStencil
-	{
-		float depth = 1.0f;
-		uint32_t stencil = 0;
-	};
 
 	struct RenderAttachment
 	{
@@ -291,7 +233,7 @@ namespace smvk {
 			const char* name = "")
 		{
 			LogicalImage image{
-				.type = LogicalResourceType::Transient,
+				.type = Type::Transient,
 				.key = description,
 				.name = name,
 			};
@@ -317,7 +259,7 @@ namespace smvk {
 			assert(!image.empty());
 
 			LogicalImageView view{
-				.type = LogicalResourceType::Transient,
+				.type = Type::Transient,
 				.key = {
 					.image = image,
 					.viewType = type,
@@ -337,7 +279,7 @@ namespace smvk {
 			const char* name = "")
 		{
 			LogicalImageView view{
-				.type = LogicalResourceType::External,
+				.type = Type::External,
 				.resolvedImageView = imageView,
 				.resolvedFormat = format,
 				.name = name,
@@ -355,43 +297,19 @@ namespace smvk {
 		[[nodiscard]]
 		LogicalBufferHandle AddBuffer(
 			uint32_t count,
-			BufferUsage usage = BufferUsage::Storage,
+			BufferType usage = BufferType::Storage,
 			const char* name = "")
 		{
 			LogicalBuffer buffer{
-				.type = LogicalResourceType::Transient,
+				.type = Type::Transient,
 				.key = {
 					.elementSize = sizeof(T),
 					.elementCount = count,
 					.usage = usage,
 					.ring = false,
 				},
-				.name = name,
-			};
-
-			return buffers_.create(std::move(buffer));
+				.name = name,			};
 		}
-
-		/*	template<typename T>
-			[[nodiscard]]
-			LogicalBufferHandle AddRingBuffer(
-				uint32_t count,
-				BufferUsage usage = BufferUsage::Storage,
-				const char* name = "")
-			{
-				LogicalBuffer buffer{
-					.type = LogicalResourceType::Transient,
-					.key = {
-						.elementSize = sizeof(T),
-						.elementCount = count,
-						.usage = usage,
-						.ring = true,
-					},
-					.name = name,
-				};
-
-				return buffers_.create(std::move(buffer));
-			}*/
 
 		[[nodiscard]]
 		BufferHandle GetResolvedBufferHandle(
@@ -417,9 +335,9 @@ namespace smvk {
 		void ResolveBuffers();
 
 		Pool<LogicalImage, LogicalImage> images_;
+		//Pool<LogicalImage, LogicalImage> storageImages_;
 		Pool<LogicalImageView, LogicalImageView> imageViews_;
 		Pool<LogicalBuffer, LogicalBuffer> buffers_;
-
 		std::vector<RenderPass> passes_;
 
 		VulkanResourceManager& ctx_;
@@ -438,7 +356,7 @@ namespace smvk {
 
 		void BindRenderPipeline(
 			ShaderProgram& shaderProgram,
-			VertexFormatDescription vertexFormatDescription = VertexFormatDescription(),
+			VertexFormat vertexFormat = VertexFormat::Empty,
 			const DepthSettings& depthSettings = DepthSettings::DepthTest(),
 			const StencilSettings& stencilSettings = StencilSettings::DefaultDisabled(),
 			const BlendSettings& blendSettings = BlendSettings::Opaque(),
@@ -455,7 +373,15 @@ namespace smvk {
 			uint32_t vertexCount,
 			uint32_t instanceCount = 1,
 			uint32_t firstVertex = 0,
-			uint32_t firstInstance = 0);
+			uint32_t firstInstance = 0)
+		{
+			vkCmdDraw(
+				cmd_,
+				vertexCount,
+				instanceCount,
+				firstVertex,
+				firstInstance);
+		};
 
 		void DrawIndexed(
 			uint32_t indexCount,
@@ -463,7 +389,16 @@ namespace smvk {
 			uint32_t firstIndex = 0,
 			uint32_t baseVertex = 0,
 			uint32_t firstInstance = 0
-		);
+		)
+		{
+			vkCmdDrawIndexed(
+				cmd_,
+				indexCount,
+				instanceCount,
+				firstIndex,
+				static_cast<int32_t>(baseVertex),
+				firstInstance);
+		};
 
 	private:
 		friend RenderGraph;

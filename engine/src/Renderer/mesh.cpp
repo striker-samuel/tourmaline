@@ -312,6 +312,16 @@ namespace smvk {
 		);
 	}
 
+	VertexFormatDescription GetVertexFormatDescription(VertexFormat format) {
+		switch (format)
+		{
+		case VertexFormat::Empty:
+			return {};
+		case VertexFormat::StaticVertexFormat:
+			return StaticVertexFormat;
+		}
+	}
+
 	void AllocateStaticVertexFmt(smvk::VulkanResourceManager& ctx)
 	{
 		ctx.m_staticVertexPosBuffer = ctx.CreateBuffer(VertexBufferSize, smvk::BufferType_Vertex, "static vertex pos").release();

@@ -23,7 +23,7 @@ smvk::LogicalImageHandle smvk::RenderGraph::AddImage(smvk::ImageHandle imageHand
 	assert(image);
 
 	LogicalImage logical{
-		.type = LogicalResourceType::External,
+		.type = Type::External,
 		.key = GetImageCreateInfoFromImage(image),
 		.resolvedImageHandle = imageHandle,
 		.name = name,
@@ -35,31 +35,28 @@ smvk::LogicalImageHandle smvk::RenderGraph::AddImage(smvk::ImageHandle imageHand
 
 void smvk::CommandBuffer::BindRenderPipeline(
 	ShaderProgram& shaderProgram,
-	VertexFormatDescription vertexFormatDescription,
-	const DepthSettings& depthSettings ,
+	VertexFormat vertexFormat,
+	const DepthSettings& depthSettings,
 	const StencilSettings& stencilSettings,
 	const BlendSettings& blendSettings,
-	const MSAASettings& msaaSettings 
+	const MSAASettings& msaaSettings
 )
 {
 	assert(graph_ != nullptr);
 	assert(renderPass_ != nullptr);
 
-	// Fix this!
-	//smvk::BindStaticVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
-	// 
-	//VertexFormatDescription formatDescription{};
-	//switch (vertexFormat)
-	//{
-	//case VertexFormat::StaticVertexFormat:
-	//	smvk::BindStaticVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
-	//	formatDescription = StaticVertexFormat;
-	//	break;
-	//	//case VertexFormat::Empty:
-	//	//	break;
-	//default:
-	//	break;
-	//}
+	switch (vertexFormat)
+	{
+	case VertexFormat::StaticVertexFormat:
+		smvk::BindStaticVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
+		break;
+	case VertexFormat::Empty:
+		break;
+	default:
+		break;
+	}
+	VertexFormatDescription formatDescription{};
+	formatDescription = GetVertexFormatDescription(vertexFormat);
 
 	std::vector<smvk::Format> colorAttachmentFormats;
 	colorAttachmentFormats.reserve(renderPass_->colorAttachments_.size());
@@ -85,7 +82,7 @@ void smvk::CommandBuffer::BindRenderPipeline(
 
 	auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
 		shaderProgram,
-		vertexFormatDescription,
+		formatDescription,
 		colorAttachmentFormats.data(),
 		static_cast<uint32_t>(colorAttachmentFormats.size()),
 		depthFormat,
@@ -121,4 +118,144 @@ void smvk::CommandBuffer::BindRenderPipeline(
 		graph_->ctx_.defaultDescriptorSets_,
 		0,
 		nullptr);
+}
+
+void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
+{
+	ResolveImages();
+	ResolveImageViews();
+	ResolveBuffers();
+
+	for (auto& pass : passes_) {
+		// update bindings for storageImages and else associated to this pass
+
+		std::vector<VkRenderingAttachmentInfo> colorInfos;
+		colorInfos.reserve(pass.colorAttachments_.size());
+
+		for (auto& att : pass.colorAttachments_) {
+			auto view = imageViews_.get(att.view);
+
+			VkRenderingAttachmentInfo info{};
+			info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+			info.imageView = view->resolvedImageView;
+			info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			info.loadOp = VkAttachmentLoadOp(att.loadOp);
+			info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+			info.clearValue = toVkClearValue(att.clearColor);
+
+			colorInfos.push_back(info);
+		}
+
+		VkRenderingAttachmentInfo depthInfo{
+			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+		};
+
+		const bool hasDepth = !pass.depthAttachment_.view.empty();
+		auto depthView = hasDepth
+			? imageViews_.get(pass.depthAttachment_.view)
+			: nullptr;
+		const bool hasStencil =
+			hasDepth &&
+			FormatHasStencil(
+				toVkFormat(
+					depthView->resolvedFormat
+				));
+
+		if (hasDepth) {
+			depthInfo.imageView = depthView->resolvedImageView;
+			depthInfo.imageLayout =
+				hasStencil
+				? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+				: VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+			depthInfo.loadOp = toVkAttachmentLoadOp(pass.depthAttachment_.loadOp);
+			depthInfo.storeOp = toVkAttachmentStoreOp(pass.depthAttachment_.storeOp);
+			depthInfo.clearValue = toVkClearValue(pass.depthAttachment_.clear);
+
+			VkRenderingInfo renderInfo{
+				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
+				.renderArea = {
+					.offset = {pass.offsetX_, pass.offsetY_},
+					.extent = {pass.extent_.width, pass.extent_.height},
+				},
+				.layerCount = 1,
+				.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
+				.pColorAttachments = colorInfos.data(),
+			};
+			renderInfo.pDepthAttachment =
+				hasDepth ? &depthInfo : nullptr;
+			renderInfo.pStencilAttachment =
+				hasStencil ? &depthInfo : nullptr;
+
+			VkViewport vp{};
+			vp.x = 0.0f;
+			vp.y = 0.0f;
+			vp.width = static_cast<float>(pass.extent_.width);
+			vp.height = static_cast<float>(pass.extent_.height);
+			vp.minDepth = 0.0f;
+			vp.maxDepth = 1.0f;
+
+			VkRect2D scissor{};
+			scissor.offset = { 0, 0 };
+			scissor.extent = { pass.extent_.width, pass.extent_.height };
+
+			vkCmdSetViewport(fb.commandBuffer, 0, 1, &vp);
+			vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
+
+			vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
+
+			CommandBuffer cmd{
+				fb.commandBuffer,
+				*this,
+				pass
+			};
+
+			if (pass.recordingFunction_) {
+				pass.recordingFunction_(cmd);
+			}
+
+			vkCmdEndRendering(fb.commandBuffer);
+		}
+	};
+}
+
+void smvk::RenderGraph::ResolveImages() {
+	images_.forEach(
+		[this](smvk::LogicalImage& logicalImage) {
+		if (logicalImage.resolvedImageHandle.empty()) {
+			if (logicalImage.type == smvk::LogicalImage::Type::External) { assert(false && "external image unresolved. shouldnt be possible"); };
+			//CreateTransientImaeg(key, sync_req);
+			logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
+		};
+	}
+	);
+};
+void smvk::RenderGraph::ResolveImageViews() {
+	// needs resolved images first
+	imageViews_.forEach(
+		[this](LogicalImageView& logicalView) {
+		if (logicalView.resolvedImageView == VK_NULL_HANDLE) {
+			auto logicalImage = images_.get(logicalView.key.image);
+			auto img = ctx_.images_.get(logicalImage->resolvedImageHandle);
+			logicalView.resolvedFormat = img->vk_format;
+			logicalView.resolvedImageView = img->sampleView;
+
+		};
+	}
+	);
+};
+void smvk::RenderGraph::ResolveBuffers()
+{
+	//	buffers.forEach(
+	//		[this](LogicalBuffer& logicalBuffer) {
+	//		if (logicalBuffer.resolvedBufferHandle.empty()) {
+	//			const auto& key = logicalBuffer.key;
+	//			int ringMultiplier = key.ring ? 4 : 1;
+	//			logicalBuffer.resolvedBufferHandle = ctx_.CreateBuffer(
+	//				key.elementCount * key.elementSize * ringMultiplier,
+	//				smvk::BufferType_Storage,
+	//				"resolved buffer"
+	//			).release();
+	//		}
+	//	}
+	//	);
 }
