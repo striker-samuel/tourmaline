@@ -35,7 +35,7 @@ namespace smvk {
 	// Logical resources
 	// ============================================================
 
-	enum class Type : uint8_t
+	enum class ResourceType : uint8_t
 	{
 		Transient,
 		External
@@ -43,7 +43,7 @@ namespace smvk {
 
 	struct LogicalBuffer
 	{
-		Type type = Type::Transient;
+		ResourceType type = ResourceType::Transient;
 		BufferKey key{};
 		BufferHandle resolvedBufferHandle{};
 		const char* name = "";
@@ -51,7 +51,7 @@ namespace smvk {
 
 	struct LogicalImage
 	{
-		Type type = Type::Transient;
+		ResourceType type = ResourceType::Transient;
 		ImageKey key{};
 		ImageHandle resolvedImageHandle{};
 		const char* name = "";
@@ -59,7 +59,7 @@ namespace smvk {
 
 	struct LogicalImageView
 	{
-		Type type = Type::Transient;
+		ResourceType type = ResourceType::Transient;
 		ImageViewKey key{};
 		VkImageView resolvedImageView = VK_NULL_HANDLE; // this is bad
 		Format resolvedFormat = Format::Undefined;
@@ -73,20 +73,16 @@ namespace smvk {
 	struct RenderAttachment
 	{
 		LogicalImageViewHandle view;
-
 		AttachmentLoadOp loadOp = AttachmentLoadOp::DontCare;
 		AttachmentStoreOp storeOp = AttachmentStoreOp::Store;
-
 		ClearColor clearColor{};
 	};
 
 	struct DepthAttachment
 	{
 		LogicalImageViewHandle view;
-
 		AttachmentLoadOp loadOp = AttachmentLoadOp::DontCare;
 		AttachmentStoreOp storeOp = AttachmentStoreOp::Store;
-
 		ClearDepthStencil clear{};
 	};
 
@@ -182,19 +178,14 @@ namespace smvk {
 	private:
 		friend RenderGraph;
 		friend CommandBuffer;
-
 		std::vector<LogicalImageHandle> inputImages_;
 		std::vector<LogicalBufferHandle> storageBuffers_;
-
 		std::vector<RenderAttachment> colorAttachments_;
 		DepthAttachment depthAttachment_{};
-
 		Extent2D extent_{};
 		int32_t offsetX_ = 0;
 		int32_t offsetY_ = 0;
-
 		RecordingFunction recordingFunction_{};
-
 		const char* name_ = nullptr;
 	};
 
@@ -233,7 +224,7 @@ namespace smvk {
 			const char* name = "")
 		{
 			LogicalImage image{
-				.type = Type::Transient,
+				.type = ResourceType::Transient,
 				.key = description,
 				.name = name,
 			};
@@ -259,7 +250,7 @@ namespace smvk {
 			assert(!image.empty());
 
 			LogicalImageView view{
-				.type = Type::Transient,
+				.type = ResourceType::Transient,
 				.key = {
 					.image = image,
 					.viewType = type,
@@ -279,7 +270,7 @@ namespace smvk {
 			const char* name = "")
 		{
 			LogicalImageView view{
-				.type = Type::External,
+				.type = ResourceType::External,
 				.resolvedImageView = imageView,
 				.resolvedFormat = format,
 				.name = name,
@@ -301,7 +292,7 @@ namespace smvk {
 			const char* name = "")
 		{
 			LogicalBuffer buffer{
-				.type = Type::Transient,
+				.type = ResourceType::Transient,
 				.key = {
 					.elementSize = sizeof(T),
 					.elementCount = count,

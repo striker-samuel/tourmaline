@@ -87,10 +87,10 @@ namespace smvk {
 
 			if (res != VK_SUCCESS) {
 
-			vmaVirtualFree(
-				ctx_.m_staticVertexBlock,
-				result.allocation.vertexAllocation
-			);
+				vmaVirtualFree(
+					ctx_.m_staticVertexBlock,
+					result.allocation.vertexAllocation
+				);
 
 				return {};
 			}
@@ -264,18 +264,20 @@ namespace smvk {
 	ClusterMaterialHandle Cluster::CreateMaterial(
 		TextureHandle diffuse)
 	{
-		assert(
-			!diffuse.empty() &&
-			"Invalid diffuse texture handle"
-		);
+		return {};
+		//	assert(
+		//		!diffuse.empty() &&
+		//		"Invalid diffuse texture handle"
+		//	);
 
-		Material material{};
-		material.values.textures[0] = static_cast<int>(diffuse.index());
-		return materials.create(std::move(material));
-	}
-	void Cluster::DestroyMaterial(ClusterMaterialHandle handle)
-	{
-		materials.destroy(handle);
+		//	Material material{};
+		//	material.values.textures[0] = static_cast<int>(diffuse.index());
+		//	return materials.create(std::move(material));
+		//}
+		//void Cluster::DestroyMaterial(ClusterMaterialHandle handle)
+		//{
+		//	materials.destroy(handle);
+		//}
 	}
 
 	void BindStaticVertexFmtBuffers(VulkanResourceManager& ctx, VkCommandBuffer cmd)

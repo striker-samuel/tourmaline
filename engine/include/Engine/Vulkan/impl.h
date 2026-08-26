@@ -40,37 +40,36 @@
 namespace smvk {
 
 
-	// dont like these
-	inline bool FormatHasStencil(VkFormat format);
-	inline bool FormatHasDepth(VkFormat format);
+	/*constexpr*/ bool FormatHasStencil(VkFormat format);
+	/*constexpr*/ bool FormatHasDepth(VkFormat format);
 
 	// ============================================================================
 	// Type translators: convert RHI types from smvk.h to Vk types for pipeline state
 	// ============================================================================
 
-	inline VkClearValue toVkClearValue(ClearColor color);
-	inline VkClearValue toVkClearValue(ClearDepthStencil clearDepth);
-	inline VkAttachmentLoadOp  toVkAttachmentLoadOp(AttachmentLoadOp op);
-	inline VkAttachmentStoreOp toVkAttachmentStoreOp(AttachmentStoreOp op);
-	inline VkStencilOp toVkStencilOp(uint8_t op);
-	inline VkShaderStageFlagBits toVkShaderStage(ShaderStage stage);
-	inline VkBlendFactor toVkSrcBlendFactor(BlendAttachmentState::SrcColorBlendFactor factor);
-	inline VkBlendFactor toVkDstBlendFactor(BlendAttachmentState::DstColorBlendFactor factor);
-	inline VkBlendOp toVkBlendOp(BlendAttachmentState::ColorBlendOp op);
-	inline VkBlendOp toVkBlendOp(BlendAttachmentState::AlphaBlendOp op);
-	inline VkColorComponentFlags toVkColorWriteMask(uint8_t mask);
-	inline VkPrimitiveTopology toVkPrimitiveTopology(PrimitiveTopology topology);
-	inline VkPolygonMode toVkPolygonMode(PolygonMode mode);
-	inline VkCullModeFlags toVkCullMode(CullMode mode);
-	inline VkFrontFace toVkFrontFace(FrontFace face);
-	inline VkSampleCountFlagBits toVkSampleCount(SampleCount samples);
-	inline VkCompareOp toVkCompareOp(smvk::CompareOp op);
-	inline VkFormat toVkFormat(smvk::Format format);
-	inline VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor);
-	inline VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor);
-	inline uint8_t toRhiColorWriteMask(VkColorComponentFlags flags);
-	//inline smvk::BlendAttachmentState::SrcColorBlendFactor toRhiSrcColorBlendFactor(VkBlendFactor factor);
-	//inline smvk::BlendAttachmentState::DstColorBlendFactor toRhiDstColorBlendFactor(VkBlendFactor factor);
+	constexpr VkImageUsageFlags toVkImageUsageFlags(ImageUsage usage);
+	constexpr VkImageType toVkImageType(ImageType type);
+	constexpr VkClearValue toVkClearValue(ClearColor color);
+	constexpr VkClearValue toVkClearValue(ClearDepthStencil clearDepth);
+	constexpr VkAttachmentLoadOp  toVkAttachmentLoadOp(AttachmentLoadOp op);
+	constexpr VkAttachmentStoreOp toVkAttachmentStoreOp(AttachmentStoreOp op);
+	constexpr VkStencilOp toVkStencilOp(uint8_t op);
+	constexpr VkShaderStageFlagBits toVkShaderStage(ShaderStage stage);
+	constexpr VkBlendFactor toVkSrcBlendFactor(BlendAttachmentState::SrcColorBlendFactor factor);
+	constexpr VkBlendFactor toVkDstBlendFactor(BlendAttachmentState::DstColorBlendFactor factor);
+	constexpr VkBlendOp toVkBlendOp(BlendAttachmentState::ColorBlendOp op);
+	constexpr VkBlendOp toVkBlendOp(BlendAttachmentState::AlphaBlendOp op);
+	constexpr VkColorComponentFlags toVkColorWriteMask(uint8_t mask);
+	constexpr VkPrimitiveTopology toVkPrimitiveTopology(PrimitiveTopology topology);
+	constexpr VkPolygonMode toVkPolygonMode(PolygonMode mode);
+	constexpr VkCullModeFlags toVkCullMode(CullMode mode);
+	constexpr VkFrontFace toVkFrontFace(FrontFace face);
+	constexpr VkSampleCountFlagBits toVkSampleCount(SampleCount samples);
+	constexpr VkCompareOp toVkCompareOp(smvk::CompareOp op);
+	constexpr VkFormat toVkFormat(smvk::Format format);
+	constexpr VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor);
+	constexpr VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor);
+	constexpr uint8_t toRhiColorWriteMask(VkColorComponentFlags flags);
 
 	// ============================================================================
 	// 	Core
@@ -433,7 +432,7 @@ namespace smvk {
 			HashValue(seed, key.program.shaderCount);
 			for (size_t i = 0; i < key.program.shaderCount; ++i) {
 				const Shader& shader = key.program.shaders[i];
-				HashValue(seed, shader.vkShaderModule.index());
+				HashValue(seed, shader.module.index());
 				HashValue(seed, static_cast<uint32_t>(shader.stage));
 				HashValue(seed, std::string_view(shader.entryPoint));
 			}

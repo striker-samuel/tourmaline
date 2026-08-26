@@ -87,14 +87,14 @@ private:
         );
 
         smvk::Shader vert = {
-            .vkShaderModule = m_context->CreateShaderModule(vertCode).release(),
+            .module = m_context->CreateShaderModule(vertCode).release(),
             .entryPoint = "mainVS",
-            .stage = VK_SHADER_STAGE_VERTEX_BIT
+            .stage = smvk::ShaderStage::Vertex
         };
         smvk::Shader frag = {
-            .vkShaderModule = m_context->CreateShaderModule(fragCode).release(),
+            .module = m_context->CreateShaderModule(fragCode).release(),
             .entryPoint = "mainPS",
-            .stage = VK_SHADER_STAGE_FRAGMENT_BIT
+            .stage = smvk::ShaderStage::Fragment
         };
 
         m_program = {
@@ -146,7 +146,9 @@ private:
         { //recording
             cmd.BindRenderPipeline(
                 m_program,
-                smvk::GetVertexFormatDescription(smvk::VertexFormat::Empty));
+                smvk::VertexFormat::Empty
+            )
+                ;
             cmd.Draw(
                 3,  // vertex count
                 1,  // instance count
@@ -163,7 +165,7 @@ private:
         Super::CleanUp();
 
         for (int i = 0; i < m_program.shaderCount; i++) {
-            smvk::destroy(m_context.get(), m_program.shaders[i].vkShaderModule);
+            smvk::destroy(m_context.get(), m_program.shaders[i].module);
         }
 
     }

@@ -505,44 +505,48 @@ namespace {
 } // static ns
 
 
-struct Image {
-	VkImage vk_image = VK_NULL_HANDLE;
-	VmaAllocation vma_alloc = VK_NULL_HANDLE;
-	VkExtent3D vk_extent = { 1,1,1 };
-	VkFormat vk_format = VK_FORMAT_UNDEFINED;
-	VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_SAMPLED_BIT |
-		VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	uint32_t levels = 1;
-	uint32_t arrayLayers = 1;
-	VkSampleCountFlags vk_samples = VK_SAMPLE_COUNT_1_BIT;
-	VkImageView sampleView = VK_NULL_HANDLE; // you can sample multiple levels
-	VkImageView storageView = VK_NULL_HANDLE; // but can only render to one. Views are created with this baked in. Thats the why to separate them
-	VkImageView arrayView[6]{
-		VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
-		VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
-	}; // for cubemap
-	VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
-	bool owns_views = true;
-	bool is_swapchain = false;
-};
-
-struct Buffer {
-	VkBuffer vk_buffer = VK_NULL_HANDLE;
-	VmaAllocation vma_alloc{};
-	VkBufferUsageFlags usage = 0;
-	VkMemoryPropertyFlags memory_flags = 0;
-	VkDeviceAddress deviceAddress = 0;
-	//uint64_t mapped = 0; // permanent mapping may be good
-	[[nodiscard]] bool is_mappable() const noexcept {
-		return (memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
-	}
-};
-
-
-
-
 // RHI to vulkan
-VkClearValue          smvk::toVkClearValue(ClearColor color)
+constexpr VkImageUsageFlags     smvk::toVkImageUsageFlags(ImageUsage usage)
+{
+	VkImageUsageFlags flags = 0;
+
+	const auto value = static_cast<uint32_t>(usage);
+
+	if (value & static_cast<uint32_t>(ImageUsage::TransferSrc))
+		flags |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+
+	if (value & static_cast<uint32_t>(ImageUsage::TransferDst))
+		flags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+	if (value & static_cast<uint32_t>(ImageUsage::Sampled))
+		flags |= VK_IMAGE_USAGE_SAMPLED_BIT;
+
+	if (value & static_cast<uint32_t>(ImageUsage::Storage))
+		flags |= VK_IMAGE_USAGE_STORAGE_BIT;
+
+	if (value & static_cast<uint32_t>(ImageUsage::ColorAttachment))
+		flags |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+	if (value & static_cast<uint32_t>(ImageUsage::DepthStencilAttachment))
+		flags |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+	if (value & static_cast<uint32_t>(ImageUsage::InputAttachment))
+		flags |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+
+	return flags;
+}
+constexpr VkImageType           smvk::toVkImageType(ImageType type)
+{
+	switch (type)
+	{
+	case ImageType::Image1D: return VK_IMAGE_TYPE_1D;
+	case ImageType::Image2D: return VK_IMAGE_TYPE_2D;
+	case ImageType::Image3D: return VK_IMAGE_TYPE_3D;
+	}
+
+	return VK_IMAGE_TYPE_2D; // unreachable for valid ImageType values
+}
+constexpr VkClearValue          smvk::toVkClearValue(ClearColor color)
 {
 	VkClearValue result{};
 	result.color.float32[0] = color.r;
@@ -551,7 +555,7 @@ VkClearValue          smvk::toVkClearValue(ClearColor color)
 	result.color.float32[3] = color.a;
 	return result;
 }
-VkClearValue smvk::toVkClearValue(ClearDepthStencil clearDepth)
+constexpr VkClearValue          smvk::toVkClearValue(ClearDepthStencil clearDepth)
 {
 	VkClearValue result{};
 	result.depthStencil = {
@@ -560,7 +564,7 @@ VkClearValue smvk::toVkClearValue(ClearDepthStencil clearDepth)
 	};
 	return result;
 }
-VkAttachmentLoadOp    smvk::toVkAttachmentLoadOp(AttachmentLoadOp op)
+constexpr VkAttachmentLoadOp    smvk::toVkAttachmentLoadOp(AttachmentLoadOp op)
 {
 	switch (op)
 	{
@@ -577,7 +581,7 @@ VkAttachmentLoadOp    smvk::toVkAttachmentLoadOp(AttachmentLoadOp op)
 	assert(false && "Unsupported AttachmentLoadOp");
 	return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 }
-VkAttachmentStoreOp   smvk::toVkAttachmentStoreOp(AttachmentStoreOp op)
+constexpr VkAttachmentStoreOp   smvk::toVkAttachmentStoreOp(AttachmentStoreOp op)
 {
 	switch (op)
 	{
@@ -591,7 +595,7 @@ VkAttachmentStoreOp   smvk::toVkAttachmentStoreOp(AttachmentStoreOp op)
 	assert(false && "Unsupported AttachmentStoreOp");
 	return VK_ATTACHMENT_STORE_OP_DONT_CARE;
 }
-VkStencilOp           smvk::toVkStencilOp(uint8_t op)
+constexpr VkStencilOp           smvk::toVkStencilOp(uint8_t op)
 {
 	switch (op) {
 	case STENCIL_OP_KEEP:                return VK_STENCIL_OP_KEEP;
@@ -607,7 +611,7 @@ VkStencilOp           smvk::toVkStencilOp(uint8_t op)
 		return VK_STENCIL_OP_KEEP;
 	}
 }
-VkShaderStageFlagBits smvk::toVkShaderStage(ShaderStage stage)
+constexpr VkShaderStageFlagBits smvk::toVkShaderStage(ShaderStage stage)
 {
 	switch (stage)
 	{
@@ -658,7 +662,7 @@ VkShaderStageFlagBits smvk::toVkShaderStage(ShaderStage stage)
 		return VK_SHADER_STAGE_VERTEX_BIT;
 	}
 }
-VkBlendFactor         smvk::toVkSrcBlendFactor(BlendAttachmentState::SrcColorBlendFactor factor)
+constexpr VkBlendFactor         smvk::toVkSrcBlendFactor(BlendAttachmentState::SrcColorBlendFactor factor)
 {
 	using Factor =
 		BlendAttachmentState::SrcColorBlendFactor;
@@ -681,7 +685,7 @@ VkBlendFactor         smvk::toVkSrcBlendFactor(BlendAttachmentState::SrcColorBle
 	assert(false);
 	return VK_BLEND_FACTOR_ONE;
 }
-VkBlendFactor         smvk::toVkDstBlendFactor(BlendAttachmentState::DstColorBlendFactor factor)
+constexpr VkBlendFactor         smvk::toVkDstBlendFactor(BlendAttachmentState::DstColorBlendFactor factor)
 {
 	using Factor =
 		BlendAttachmentState::DstColorBlendFactor;
@@ -701,7 +705,7 @@ VkBlendFactor         smvk::toVkDstBlendFactor(BlendAttachmentState::DstColorBle
 	assert(false);
 	return VK_BLEND_FACTOR_ONE;
 }
-VkBlendOp             smvk::toVkBlendOp(BlendAttachmentState::ColorBlendOp op)
+constexpr VkBlendOp             smvk::toVkBlendOp(BlendAttachmentState::ColorBlendOp op)
 {
 	using Op =
 		BlendAttachmentState::ColorBlendOp;
@@ -727,7 +731,7 @@ VkBlendOp             smvk::toVkBlendOp(BlendAttachmentState::ColorBlendOp op)
 	assert(false);
 	return VK_BLEND_OP_ADD;
 }
-VkBlendOp             smvk::toVkBlendOp(BlendAttachmentState::AlphaBlendOp op)
+constexpr VkBlendOp             smvk::toVkBlendOp(BlendAttachmentState::AlphaBlendOp op)
 {
 	using Op =
 		BlendAttachmentState::AlphaBlendOp;
@@ -753,7 +757,7 @@ VkBlendOp             smvk::toVkBlendOp(BlendAttachmentState::AlphaBlendOp op)
 	assert(false);
 	return VK_BLEND_OP_ADD;
 }
-VkColorComponentFlags smvk::toVkColorWriteMask(uint8_t mask)
+constexpr VkColorComponentFlags smvk::toVkColorWriteMask(uint8_t mask)
 {
 	using Flag =
 		BlendAttachmentState::ColorComponentFlag;
@@ -774,7 +778,7 @@ VkColorComponentFlags smvk::toVkColorWriteMask(uint8_t mask)
 
 	return result;
 }
-VkPrimitiveTopology   smvk::toVkPrimitiveTopology(PrimitiveTopology topology)
+constexpr VkPrimitiveTopology   smvk::toVkPrimitiveTopology(PrimitiveTopology topology)
 {
 	switch (topology)
 	{
@@ -800,7 +804,7 @@ VkPrimitiveTopology   smvk::toVkPrimitiveTopology(PrimitiveTopology topology)
 	assert(false);
 	return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
-VkPolygonMode         smvk::toVkPolygonMode(PolygonMode mode)
+constexpr VkPolygonMode         smvk::toVkPolygonMode(PolygonMode mode)
 {
 	switch (mode)
 	{
@@ -817,7 +821,7 @@ VkPolygonMode         smvk::toVkPolygonMode(PolygonMode mode)
 	assert(false);
 	return VK_POLYGON_MODE_FILL;
 }
-VkCullModeFlags       smvk::toVkCullMode(CullMode mode)
+constexpr VkCullModeFlags       smvk::toVkCullMode(CullMode mode)
 {
 	switch (mode)
 	{
@@ -837,7 +841,7 @@ VkCullModeFlags       smvk::toVkCullMode(CullMode mode)
 	assert(false);
 	return VK_CULL_MODE_NONE;
 }
-VkFrontFace           smvk::toVkFrontFace(FrontFace face)
+constexpr VkFrontFace           smvk::toVkFrontFace(FrontFace face)
 {
 	switch (face)
 	{
@@ -851,7 +855,7 @@ VkFrontFace           smvk::toVkFrontFace(FrontFace face)
 	assert(false);
 	return VK_FRONT_FACE_COUNTER_CLOCKWISE;
 }
-VkSampleCountFlagBits smvk::toVkSampleCount(SampleCount samples)
+constexpr VkSampleCountFlagBits smvk::toVkSampleCount(SampleCount samples)
 {
 	switch (samples)
 	{
@@ -880,7 +884,7 @@ VkSampleCountFlagBits smvk::toVkSampleCount(SampleCount samples)
 	assert(false);
 	return VK_SAMPLE_COUNT_1_BIT;
 }
-VkCompareOp           smvk::toVkCompareOp(smvk::CompareOp op)
+constexpr VkCompareOp           smvk::toVkCompareOp(smvk::CompareOp op)
 {
 	switch (op)
 	{
@@ -895,7 +899,7 @@ VkCompareOp           smvk::toVkCompareOp(smvk::CompareOp op)
 	default:                            return VK_COMPARE_OP_ALWAYS;
 	}
 }
-VkFormat              smvk::toVkFormat(smvk::Format format)
+constexpr VkFormat              smvk::toVkFormat(smvk::Format format)
 {
 	switch (format)
 	{
@@ -987,7 +991,7 @@ VkFormat              smvk::toVkFormat(smvk::Format format)
 
 	return VK_FORMAT_UNDEFINED;
 }
-VkBlendFactor         smvk::toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor)
+constexpr VkBlendFactor         smvk::toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor)
 {
 	switch (factor)
 	{
@@ -998,7 +1002,7 @@ VkBlendFactor         smvk::toVkBlendFactor(smvk::BlendAttachmentState::SrcColor
 	default: return VK_BLEND_FACTOR_ONE;
 	}
 }
-VkBlendFactor         smvk::toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor)
+constexpr VkBlendFactor         smvk::toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor)
 {
 	switch (factor)
 	{
@@ -1008,7 +1012,7 @@ VkBlendFactor         smvk::toVkBlendFactor(smvk::BlendAttachmentState::DstColor
 	default: return VK_BLEND_FACTOR_ONE;
 	}
 }
-uint8_t               smvk::toRhiColorWriteMask(VkColorComponentFlags flags)
+constexpr uint8_t               smvk::toRhiColorWriteMask(VkColorComponentFlags flags)
 {
 	uint8_t mask = 0;
 	if (flags & VK_COLOR_COMPONENT_R_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::R);
@@ -1017,28 +1021,9 @@ uint8_t               smvk::toRhiColorWriteMask(VkColorComponentFlags flags)
 	if (flags & VK_COLOR_COMPONENT_A_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::A);
 	return mask;
 }
-smvk::BlendAttachmentState::SrcColorBlendFactor smvk::toRhiSrcColorBlendFactor(VkBlendFactor factor)
-{
-	switch (factor)
-	{
-	case VK_BLEND_FACTOR_ZERO:          return smvk::BlendAttachmentState::SrcColorBlendFactor::Zero;
-	case VK_BLEND_FACTOR_ONE:         return smvk::BlendAttachmentState::SrcColorBlendFactor::One;
-	case VK_BLEND_FACTOR_SRC_ALPHA:   return smvk::BlendAttachmentState::SrcColorBlendFactor::SrcAlpha;
-	case VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: return smvk::BlendAttachmentState::SrcColorBlendFactor::OneMinusSrcAlpha;
-	default: return smvk::BlendAttachmentState::SrcColorBlendFactor::One;
-	}
-}
-smvk::BlendAttachmentState::DstColorBlendFactor smvk::toRhiDstColorBlendFactor(VkBlendFactor factor)
-{
-	switch (factor)
-	{
-	case VK_BLEND_FACTOR_ZERO:          return smvk::BlendAttachmentState::DstColorBlendFactor::Zero;
-	case VK_BLEND_FACTOR_ONE:         return smvk::BlendAttachmentState::DstColorBlendFactor::One;
-	case VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: return smvk::BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha;
-	default: return smvk::BlendAttachmentState::DstColorBlendFactor::One;
-	}
-}
-bool smvk::FormatHasStencil(VkFormat format)
+
+//
+/*constexpr*/ bool                  smvk::FormatHasStencil(VkFormat format)
 {
 	switch (format)
 	{
@@ -1052,7 +1037,7 @@ bool smvk::FormatHasStencil(VkFormat format)
 		return false;
 	}
 }
-bool smvk::FormatHasDepth(VkFormat format)
+/*constexpr*/ bool                  smvk::FormatHasDepth(VkFormat format)
 {
 	switch (format)
 	{
@@ -1068,7 +1053,27 @@ bool smvk::FormatHasDepth(VkFormat format)
 		return false;
 	}
 }
+static constexpr VkImageAspectFlags VkAspectMaskFromFormat(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_D16_UNORM:
+	case VK_FORMAT_X8_D24_UNORM_PACK32:
+	case VK_FORMAT_D32_SFLOAT:
+		return VK_IMAGE_ASPECT_DEPTH_BIT;
 
+	case VK_FORMAT_S8_UINT:
+		return VK_IMAGE_ASPECT_STENCIL_BIT;
+
+	case VK_FORMAT_D16_UNORM_S8_UINT:
+	case VK_FORMAT_D24_UNORM_S8_UINT:
+	case VK_FORMAT_D32_SFLOAT_S8_UINT:
+		return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+
+	default:
+		return VK_IMAGE_ASPECT_COLOR_BIT;
+	}
+}
 //
 inline void BufferBarrier(
 	VkCommandBuffer cmd,
@@ -1362,7 +1367,7 @@ void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo,
 	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
 	samplerInfo.unnormalizedCoordinates = VK_FALSE;
 	samplerInfo.compareEnable = VK_FALSE;
-	samplerInfo.compareOp = samplerCreateInfo.compareOp;
+	samplerInfo.compareOp = toVkCompareOp(samplerCreateInfo.compareOp);
 
 	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 	samplerInfo.mipLodBias = 0.0f;
@@ -1373,22 +1378,22 @@ void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo,
 	VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler));
 
 }
-void smvk::VulkanCore::CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view)
-{
-	VkImageViewCreateInfo viewInfo{};
-	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-	viewInfo.image = imageViewCreateInfo.vk_image;
-	viewInfo.viewType = imageViewCreateInfo.viewType;
-	viewInfo.format = imageViewCreateInfo.vk_format;
-	viewInfo.subresourceRange = imageViewCreateInfo.subResourceRange;
-	// Lets default this like that ourselves.
-	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-
-	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
-}
+//void smvk::VulkanCore::CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view)
+//{
+//	VkImageViewCreateInfo viewInfo{};
+//	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+//	viewInfo.image = imageViewCreateInfo.vk_image;
+//	viewInfo.viewType = imageViewCreateInfo.viewType;
+//	viewInfo.format = imageViewCreateInfo.vk_format;
+//	viewInfo.subresourceRange = imageViewCreateInfo.subResourceRange;
+//	// Lets default this like that ourselves.
+//	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+//	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+//	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+//	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+//
+//	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
+//}
 inline smvk::VulkanCore::~VulkanCore() {
 	vkDeviceWaitIdle(device_);
 	//vkDestroyCommandPool(device_, defaultCommandPool_, nullptr);
@@ -1453,8 +1458,9 @@ int smvk::VulkanResourceManager::Initialize() {
 
 	// Urges creating the SamplerPool -> key mapping to samplers!
 	core_.CreateSampler(SamplerCreateInfo{}, m_defaultSampler);
-	core_.CreateSampler(SamplerCreateInfo{
-		.compareOp = VK_COMPARE_OP_GREATER_OR_EQUAL,
+	core_.CreateSampler(
+		SamplerCreateInfo{
+		.compareOp = smvk::CompareOp::LessEqual,
 		.compareEnable = true
 		},
 		m_defaultShadowSampler
@@ -1468,11 +1474,15 @@ int smvk::VulkanResourceManager::Initialize() {
 	//	&pixel
 	//	);
 
+
+	// ============================================================================
+	// Hardcoded Bindless Setup
+	// ============================================================================
+
 	VkShaderStageFlags stageFlags =
 		VK_SHADER_STAGE_VERTEX_BIT
 		| VK_SHADER_STAGE_FRAGMENT_BIT
 		| VK_SHADER_STAGE_COMPUTE_BIT;
-
 
 	const VkDescriptorSetLayoutBinding bindings[kBinding_NumBindings] = {
 		getDSLBinding(kBinding_Textures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
@@ -1522,18 +1532,16 @@ int smvk::VulkanResourceManager::Initialize() {
 	};
 	VK_CHECK(vkCreatePipelineLayout(device_, &ci, nullptr, &defaultPipeLayout));
 
-	// this pool only holds MAX_K, not MAX_K * framesInFlight or MAX_FRAMES_IN_FLIGHT
-
 	std::vector<VkDescriptorPoolSize> poolSizes = {
 	  {
-		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    MAX_TEXTURES }, // times framesInFlight?
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    MAX_TEXTURES },
 		{ VK_DESCRIPTOR_TYPE_SAMPLER,          MAX_SAMPLERS },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    MAX_TEXTURES },
 	  }
 	};
 	defaultDescriptorPool = CreateDescriptorPool(poolSizes);
-	VkDescriptorPool pool = *descriptorPools_.get(defaultDescriptorPool);
 
+	VkDescriptorPool pool = *descriptorPools_.get(defaultDescriptorPool);
 	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT]{};
 	for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
 		layouts[frame] = defaultSetLayout;
@@ -1552,7 +1560,8 @@ int smvk::VulkanResourceManager::Initialize() {
 		&info,
 		defaultDescriptorSets_
 	);
-	// -- HardcodedBindlessSetup }
+
+	// ============================================================================
 
 	return 0; // no error
 }
@@ -1887,30 +1896,28 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 [[nodiscard]] smvk::Image smvk::VulkanResourceManager::CreateImageImpl(const smvk::ImageCreateInfo& imageCreateInfo, const void* data, const char* debugName)
 {
 	Image img{};
-
+	img.vk_format = toVkFormat(imageCreateInfo.format);
+	img.levels = imageCreateInfo.mipLevels;
+	img.vk_extent = { imageCreateInfo.extent.width, imageCreateInfo.extent.height };
+	img.arrayLayers = imageCreateInfo.arrayLayers;
+	img.info_ = imageCreateInfo; //BAD BAD BAD
 	VkImageCreateInfo imgCI{
 		VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
 	};
-
-	imgCI.imageType = VK_IMAGE_TYPE_2D;
-	imgCI.format = imageCreateInfo.vk_format;
-	imgCI.extent = imageCreateInfo.vk_extent;
-	imgCI.mipLevels = imageCreateInfo.levels;
+	imgCI.imageType = toVkImageType(imageCreateInfo.type);
+	imgCI.format = toVkFormat(imageCreateInfo.format);
+	imgCI.extent = { imageCreateInfo.extent.width, imageCreateInfo.extent.height };
+	imgCI.mipLevels = imageCreateInfo.mipLevels;
 	imgCI.arrayLayers = imageCreateInfo.arrayLayers;
-	imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
-	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
-	imgCI.usage = imageCreateInfo.vk_usage;
+	imgCI.samples = toVkSampleCount(imageCreateInfo.samples);
+	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL; // not exposing this for now
+	imgCI.usage = toVkImageUsageFlags(imageCreateInfo.usage);
 	imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	imgCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 	VmaAllocationCreateInfo allocationCreateInfo{};
 	allocationCreateInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 	allocationCreateInfo.pool = VK_NULL_HANDLE;
-
-	img.vk_format = imageCreateInfo.vk_format;
-	img.levels = imageCreateInfo.levels;
-	img.vk_extent = imageCreateInfo.vk_extent;
-	img.arrayLayers = imageCreateInfo.arrayLayers;
 
 	VK_CHECK(vmaCreateImage(
 		m_allocator,
@@ -1941,28 +1948,27 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 	(void)debugName;
 #endif
 
-	img.vk_sampler = m_defaultSampler;
 
-	ImageViewCreateInfo createViewInfo{};
-	createViewInfo.flags = {};
-	createViewInfo.vk_image = img.vk_image;
-	createViewInfo.vk_format = img.vk_format;
-	createViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-
-	createViewInfo.subResourceRange = {
-		.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, // TODO: derive from format/usage
+	VkImageViewCreateInfo viewInfo{};
+	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	viewInfo.image = img.vk_image;
+	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	viewInfo.format = img.vk_format;
+	viewInfo.subresourceRange = {
+		.aspectMask = VkAspectMaskFromFormat(img.vk_format),
 		.baseMipLevel = 0,
 		.levelCount = 1,
 		.baseArrayLayer = 0,
 		.layerCount = 1
-	};
+	};;
+	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
-	core_.CreateImageView(
-		createViewInfo,
-		img.sampleView
-	);
-
+	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &img.sampleView));
 	img.storageView = img.sampleView;
+	img.vk_sampler = m_defaultSampler;
 
 	if (data)
 	{
@@ -2304,7 +2310,6 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 	// -------------------------------------------------------------------------
 	// View
 	// -------------------------------------------------------------------------
-	VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
 
 	VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
 	if (isCubemap) {
@@ -2327,28 +2332,25 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 	image_obj.sampleView = VK_NULL_HANDLE;
 	image_obj.storageView = VK_NULL_HANDLE;
 
-	// TODO: Rework this- Get sampler by spec from the pool
-	image_obj.vk_sampler = m_defaultSampler;
-
-	ImageViewCreateInfo createViewInfo{};
-	createViewInfo.flags = {};
-	createViewInfo.vk_image = image;
-	createViewInfo.vk_format = format;
-	createViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	createViewInfo.subResourceRange = {
-		.aspectMask = aspect,
+	VkImageViewCreateInfo viewInfo{};
+	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	viewInfo.image = image_obj.vk_image;
+	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	viewInfo.format = image_obj.vk_format;
+	viewInfo.subresourceRange = {
+		.aspectMask = VkAspectMaskFromFormat(image_obj.vk_format),
 		.baseMipLevel = 0,
-		.levelCount = 1,
+		.levelCount = VK_REMAINING_MIP_LEVELS,
 		.baseArrayLayer = 0,
-		.layerCount = 1
-	};
+		.layerCount = VK_REMAINING_ARRAY_LAYERS
+	};;
+	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
-	core_.CreateImageView(
-		createViewInfo,
-		image_obj.sampleView
-	);
-
-	// storage view shoyld have swizzle to guarante rgba
+	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &image_obj.sampleView));
+	image_obj.vk_sampler = m_defaultSampler; // TODO: Rework this- Get sampler by spec from the pool
 	image_obj.storageView = image_obj.sampleView;
 
 	return { this, 	textures_.create(std::move(image_obj)) };
@@ -3103,84 +3105,75 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 }
 void smvk::VulkanSwapchain::CreateImageViews() {
 	for (size_t i = 0; i < images_.size(); ++i) {
-		auto viewCreateInfo = ImageViewCreateInfo{
-			.flags = VK_IMAGE_ASPECT_COLOR_BIT,
-			.vk_image = images_[i],
-			.viewType = VK_IMAGE_VIEW_TYPE_2D,
-			.vk_format = vk_surfaceFormat_,
-			.subResourceRange =
-			{
-				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.baseMipLevel = 0,
-				.levelCount = 1,
-				.baseArrayLayer = 0,
-				.layerCount = 1
-			}
+		VkImageViewCreateInfo viewInfo{};
+		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		viewInfo.image = images_[i];
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format = vk_surfaceFormat_;
+		viewInfo.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1
 		};
-		ctx_.core_.CreateImageView(
-			viewCreateInfo,
-			imageViews_[i]
-		);
+		VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &imageViews_[i]));
 	}
 }
 void smvk::VulkanSwapchain::CreateDepthResources() {
 	assert(vk_depthFormat_ != VK_FORMAT_UNDEFINED && "core depthFormat not set. failed to create swapchain depth Image");
-	depthImage_.release(); // this triggers in time destruction, maybe adding it to deferred deletion its better?
+
+	depthImage_.release();
+
+	const Format depthFormat =
+		vk_depthFormat_ == VK_FORMAT_D32_SFLOAT_S8_UINT
+		? Format::D32_Float_S8_UInt
+		: Format::D24_UNorm_S8_UInt;
+
+	ImageCreateInfo depthImageCreateInfo{};
+	depthImageCreateInfo.extent = { extent_.width, extent_.height };
+	depthImageCreateInfo.format = depthFormat;
+	depthImageCreateInfo.usage = ImageUsage::DepthStencilAttachment;
+	depthImageCreateInfo.mipLevels = 1;
+	depthImageCreateInfo.arrayLayers = 1;
+
 	depthImage_ = ctx_.CreateImage(
-		ImageCreateInfo{
-			.vk_extent = {extent_.width, extent_.height, 1 },
-			.vk_format = vk_depthFormat_,
-			.vk_usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-			.levels = 1,
-			.arrayLayers = 1
-		},
-		nullptr
+		depthImageCreateInfo,
+		nullptr,
+		"swapchain depth image"
 	);
-	auto obj_ = ctx_.images_.get(depthImage_);
-	auto viewCreateInfo = ImageViewCreateInfo{
-		.vk_image = obj_->vk_image,
-		.viewType = VK_IMAGE_VIEW_TYPE_2D,
-		.vk_format = obj_->vk_format,
-		.subResourceRange = {
-			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT
-			| VK_IMAGE_ASPECT_STENCIL_BIT,
-			.baseMipLevel = 0,
-			.levelCount = VK_REMAINING_MIP_LEVELS,
-			.baseArrayLayer = 0,
-			.layerCount = VK_REMAINING_ARRAY_LAYERS	},
+
+	auto* depthImage = ctx_.images_.get(depthImage_);
+	assert(depthImage != nullptr);
+
+	const VkImageSubresourceRange depthRange{
+		.aspectMask = VkAspectMaskFromFormat(depthImage->vk_format),
+		.baseMipLevel = 0,
+		.levelCount = 1,
+		.baseArrayLayer = 0,
+		.layerCount = 1
 	};
 
-	ctx_.core_.CreateImageView(
-		viewCreateInfo,
-		obj_->sampleView
-	);
+	// CreateImageImpl already creates sampleView using the format's correct aspect mask.
+	// Only transition the image into the layout expected by depth attachment rendering.
+	auto handle = ctx_.m_submitter->acquire();
+	auto wrapper = ctx_.m_submitter->GetCommandBuffer(handle);
 
-	// acquire and submit to transitiobn image layout. could be more sofisticated really
-	auto han = ctx_.m_submitter->acquire();
-	auto wrapper = ctx_.m_submitter->GetCommandBuffer(han);
-	//VkCommandBuffer cmd = commandBuffers[currentFrame_];
 	ImageBarrier(
 		wrapper.cmd,
-		obj_->vk_image,
+		depthImage->vk_image,
 		VK_IMAGE_LAYOUT_UNDEFINED,
 		VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-		{
-			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT ,
-			.baseMipLevel = 0,
-			.levelCount = VK_REMAINING_MIP_LEVELS, // there should be only 1 do
-			.baseArrayLayer = 0,
-			.layerCount = VK_REMAINING_ARRAY_LAYERS
-		},
+		depthRange,
 		VK_PIPELINE_STAGE_2_NONE,
 		VK_ACCESS_2_NONE,
 		VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
 		VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
 		VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
 		VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
-
 	);
-	ctx_.m_submitter->submit(han);
 
+	ctx_.m_submitter->submit(handle);
 }
 inline void smvk::VulkanSwapchain::CreateSyncObjects() {
 	renderFinishedSemaphores_.resize(imageViews_.size(), VK_NULL_HANDLE);
@@ -3490,11 +3483,8 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 	// SHADERS
 	// ========================================================
 
-	std::vector<VkPipelineShaderStageCreateInfo>
-		shaderStages;
-
-	shaderStages.reserve(
-		key.program.shaderCount);
+	std::vector<VkPipelineShaderStageCreateInfo>shaderStages;
+	shaderStages.reserve(key.program.shaderCount);
 
 	for (size_t i = 0;
 		i < key.program.shaderCount;
@@ -3505,23 +3495,15 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 
 		auto shaderModule =
 			ctx_->shaderModules_.get(
-				shader.vkShaderModule);
+				shader.module);
 
 		VkPipelineShaderStageCreateInfo stageInfo{
 			.sType =
 				VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-
-			// Ideally shader.stage is RHI too:
-			.stage =
-				shader.stage,
-
-			.module =
-				*shaderModule,
-
-			.pName =
-				shader.entryPoint,
+			.stage = toVkShaderStage(shader.stage),
+			.module = *shaderModule,
+			.pName = shader.entryPoint,
 		};
-
 		shaderStages.push_back(stageInfo);
 	}
 
@@ -3880,53 +3862,38 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 	// PIPELINE
 	// ========================================================
 
-	const VkPipelineLayout layout =
-		ctx_->defaultPipeLayout;
-
+	const VkPipelineLayout layout = ctx_->defaultPipeLayout;
 	VkGraphicsPipelineCreateInfo pipelineInfo{
 		.sType =
 			VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-
 		.pNext =
 			&renderingInfo,
-
 		.stageCount =
 			static_cast<uint32_t>(
 				shaderStages.size()),
-
 		.pStages =
 			shaderStages.data(),
-
 		.pVertexInputState =
 			&vertexInputInfo,
-
 		.pInputAssemblyState =
 			&inputAssembly,
-
 		.pViewportState =
 			&viewportState,
-
 		.pRasterizationState =
 			&rasterization,
-
 		.pMultisampleState =
 			&multisampling,
-
 		.pDepthStencilState =
 			&depthStencil,
-
 		.pColorBlendState =
 			&colorBlending,
-
 		.pDynamicState =
 			&dynamicState,
-
 		.layout =
 			layout,
 	};
 
 	PipelineBundle bundle{};
-
 	ctx_->core_.CreateGraphicsPipeline(
 		pipelineInfo,
 		bundle.pipeline);
@@ -3940,3 +3907,251 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 
 
 
+#include <Engine/Renderer/rendergraph.h>
+
+[[nodiscard]]
+smvk::LogicalImageHandle smvk::RenderGraph::AddImage(smvk::ImageHandle imageHandle, const char* name
+)
+{
+	assert(!imageHandle.empty());
+
+	auto* image = ctx_.images_.get(imageHandle);
+	assert(image);
+
+	LogicalImage logical{
+		.type = ResourceType::External,
+		.key = image->info_,
+		.resolvedImageHandle = imageHandle,
+		.name = name,
+	};
+
+	return images_.create(std::move(logical));
+}
+
+
+void smvk::CommandBuffer::BindRenderPipeline(
+	ShaderProgram& shaderProgram,
+	VertexFormat vertexFormat,
+	const DepthSettings& depthSettings,
+	const StencilSettings& stencilSettings,
+	const BlendSettings& blendSettings,
+	const MSAASettings& msaaSettings
+)
+{
+	assert(graph_ != nullptr);
+	assert(renderPass_ != nullptr);
+
+	switch (vertexFormat)
+	{
+	case VertexFormat::StaticVertexFormat:
+		smvk::BindStaticVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
+		break;
+	case VertexFormat::Empty:
+		break;
+	default:
+		break;
+	}
+	VertexFormatDescription formatDescription{};
+	formatDescription = GetVertexFormatDescription(vertexFormat);
+
+	std::vector<smvk::Format> colorAttachmentFormats;
+	colorAttachmentFormats.reserve(renderPass_->colorAttachments_.size());
+	for (auto& attachment : renderPass_->colorAttachments_) {
+		colorAttachmentFormats.push_back(
+			graph_->imageViews_.get(attachment.view)->resolvedFormat);
+	}
+	smvk::Format depthFormat = smvk::Format::Undefined;
+	smvk::Format stencilFormat = smvk::Format::Undefined;
+
+	const bool hasDepth = !renderPass_->depthAttachment_.view.empty();
+
+	if (hasDepth) {
+		smvk::Format format = graph_->imageViews_
+			.get(renderPass_->depthAttachment_.view)
+			->resolvedFormat;
+		// I dont like this.
+		if (FormatHasDepth(toVkFormat(format)))
+			depthFormat = format;
+		if (FormatHasStencil(toVkFormat(format)))
+			stencilFormat = format;
+	}
+
+	auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
+		shaderProgram,
+		formatDescription,
+		colorAttachmentFormats.data(),
+		static_cast<uint32_t>(colorAttachmentFormats.size()),
+		depthFormat,
+		stencilFormat,
+		PrimitiveTopology::TriangleList,
+		smvk::RasterSettings{},
+		depthSettings,
+		stencilSettings,
+		blendSettings,
+		msaaSettings
+	);
+
+	assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");
+
+	if (bundle.pipeline == currentPipeline_) {
+		return;
+	}
+
+	currentPipeline_ = bundle.pipeline;
+	currentPipelineLayout_ = bundle.layout;
+
+	vkCmdBindPipeline(
+		cmd_,
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		currentPipeline_);
+
+	vkCmdBindDescriptorSets(
+		cmd_,
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		graph_->ctx_.defaultPipeLayout,
+		0,
+		1,
+		graph_->ctx_.defaultDescriptorSets_,
+		0,
+		nullptr);
+}
+
+void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
+{
+	ResolveImages();
+	ResolveImageViews();
+	ResolveBuffers();
+
+	for (auto& pass : passes_) {
+		// update bindings for storageImages and else associated to this pass
+
+		std::vector<VkRenderingAttachmentInfo> colorInfos;
+		colorInfos.reserve(pass.colorAttachments_.size());
+
+		for (auto& att : pass.colorAttachments_) {
+			auto view = imageViews_.get(att.view);
+
+			VkRenderingAttachmentInfo info{};
+			info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+			info.imageView = view->resolvedImageView;
+			info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			info.loadOp = VkAttachmentLoadOp(att.loadOp);
+			info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+			info.clearValue = toVkClearValue(att.clearColor);
+
+			colorInfos.push_back(info);
+		}
+
+		VkRenderingAttachmentInfo depthInfo{
+			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+		};
+
+		const bool hasDepth = !pass.depthAttachment_.view.empty();
+		auto depthView = hasDepth
+			? imageViews_.get(pass.depthAttachment_.view)
+			: nullptr;
+		const bool hasStencil =
+			hasDepth &&
+			FormatHasStencil(
+				toVkFormat(
+					depthView->resolvedFormat
+				));
+
+		if (hasDepth) {
+			depthInfo.imageView = depthView->resolvedImageView;
+			depthInfo.imageLayout =
+				hasStencil
+				? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+				: VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+			depthInfo.loadOp = toVkAttachmentLoadOp(pass.depthAttachment_.loadOp);
+			depthInfo.storeOp = toVkAttachmentStoreOp(pass.depthAttachment_.storeOp);
+			depthInfo.clearValue = toVkClearValue(pass.depthAttachment_.clear);
+
+			VkRenderingInfo renderInfo{
+				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
+				.renderArea = {
+					.offset = {pass.offsetX_, pass.offsetY_},
+					.extent = {pass.extent_.width, pass.extent_.height},
+				},
+				.layerCount = 1,
+				.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
+				.pColorAttachments = colorInfos.data(),
+			};
+			renderInfo.pDepthAttachment =
+				hasDepth ? &depthInfo : nullptr;
+			renderInfo.pStencilAttachment =
+				hasStencil ? &depthInfo : nullptr;
+
+			VkViewport vp{};
+			vp.x = 0.0f;
+			vp.y = 0.0f;
+			vp.width = static_cast<float>(pass.extent_.width);
+			vp.height = static_cast<float>(pass.extent_.height);
+			vp.minDepth = 0.0f;
+			vp.maxDepth = 1.0f;
+
+			VkRect2D scissor{};
+			scissor.offset = { 0, 0 };
+			scissor.extent = { pass.extent_.width, pass.extent_.height };
+
+			vkCmdSetViewport(fb.commandBuffer, 0, 1, &vp);
+			vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
+
+			vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
+
+			CommandBuffer cmd{
+				fb.commandBuffer,
+				*this,
+				pass
+			};
+
+			if (pass.recordingFunction_) {
+				pass.recordingFunction_(cmd);
+			}
+
+			vkCmdEndRendering(fb.commandBuffer);
+		}
+	};
+}
+
+void smvk::RenderGraph::ResolveImages() {
+	images_.forEach(
+		[this](smvk::LogicalImage& logicalImage) {
+		if (logicalImage.resolvedImageHandle.empty()) {
+			if (logicalImage.type == smvk::ResourceType::External) { assert(false && "external image unresolved. shouldnt be possible"); };
+			//CreateTransientImaeg(key, sync_req);
+			logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
+		};
+	}
+	);
+};
+void smvk::RenderGraph::ResolveImageViews() {
+	// needs resolved images first
+	imageViews_.forEach(
+		[this](LogicalImageView& logicalView) {
+		if (logicalView.resolvedImageView == VK_NULL_HANDLE) {
+			auto logicalImage = images_.get(logicalView.key.image);
+			auto img = ctx_.images_.get(logicalImage->resolvedImageHandle);
+			logicalView.resolvedFormat = img->info_.format;
+			logicalView.resolvedImageView = img->sampleView;
+
+		};
+	}
+	);
+};
+void smvk::RenderGraph::ResolveBuffers()
+{
+	//	buffers.forEach(
+	//		[this](LogicalBuffer& logicalBuffer) {
+	//		if (logicalBuffer.resolvedBufferHandle.empty()) {
+	//			const auto& key = logicalBuffer.key;
+	//			int ringMultiplier = key.ring ? 4 : 1;
+	//			logicalBuffer.resolvedBufferHandle = ctx_.CreateBuffer(
+	//				key.elementCount * key.elementSize * ringMultiplier,
+	//				smvk::BufferType_Storage,
+	//				"resolved buffer"
+	//			).release();
+	//		}
+	//	}
+	//	);
+}

@@ -33,6 +33,8 @@ inline const char* vkResultToString(VkResult result);
 
 namespace smvk {
 
+	struct Image;
+
 	// ============================================================================
 	// Basic geometry / resource dimensions
 	// ============================================================================
@@ -394,27 +396,6 @@ namespace smvk {
 		DontCare
 	};
 
-	struct ImageCreateInfo
-	{
-		ImageType type = ImageType::Image2D;
-		Extent3D extent{};
-		Format format = Format::Undefined;
-		ImageUsage usage =
-			ImageUsage::Sampled |
-			ImageUsage::TransferDst;
-		SampleCount samples = SampleCount::Count1;
-		uint32_t mipLevels = 1;
-		uint32_t arrayLayers = 1;
-		const char* name = nullptr;
-	};
-	using TextureCreateInfo = ImageCreateInfo;
-	struct ImageViewCreateInfo
-	{
-		ImageViewType viewType = ImageViewType::View2D;
-		// Undefined = inherit underlying image format.
-		Format format = Format::Undefined;
-		ImageSubresourceRange subresourceRange{};
-	};
 
 	//
 
@@ -541,13 +522,12 @@ namespace smvk {
 	// Shader program
 	// ============================================================================
 
+	using ShaderModuleHandle = Handle<struct ShaderModule>; // will be removed when updating to vk 1.4
 	struct Shader
 	{
 		ShaderModuleHandle module;
-
 		const char* entryPoint = "main";
 		ShaderStage stage = ShaderStage::None;
-
 		bool operator==(const Shader& other) const noexcept
 		{
 			return std::strcmp(entryPoint, other.entryPoint) == 0 &&
@@ -896,13 +876,6 @@ namespace smvk {
 		}
 	};
 
-	using ShaderModuleHandle = Handle<struct ShaderModule>; // will be removed when updating to vk 1.4
-	using ImageHandle = Handle<struct Image>;
-	using TextureHandle = Handle<struct Texture>;
-	using SamplerHandle = Handle<struct Sampler>;
-	using BufferHandle = Handle<struct Buffer>;
-	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
-
 	enum class PolygonMode : uint8_t
 	{
 		Fill,
@@ -956,9 +929,7 @@ namespace smvk {
 		}
 	};
 
-};
 
-namespace smvk {
 
 	struct PipelineKey
 	{
@@ -967,7 +938,7 @@ namespace smvk {
 		std::vector<Format> colorFormats;
 		Format depthFormat = Format::Undefined;
 		Format stencilFormat = Format::Undefined;
-		PrimitiveTopology topology =PrimitiveTopology::TriangleList;
+		PrimitiveTopology topology = PrimitiveTopology::TriangleList;
 		RasterSettings raster{};
 		DepthSettings depth{};
 		StencilSettings stencil{};
@@ -1001,7 +972,75 @@ namespace smvk {
 	};
 
 
-	//// ============================================================================
+	struct ImageCreateInfo
+	{
+		ImageType type = ImageType::Image2D;
+		Extent3D extent{};
+		Format format = Format::Undefined;
+		ImageUsage usage =
+			ImageUsage::Sampled |
+			ImageUsage::TransferDst;
+		SampleCount samples = SampleCount::Count1;
+		uint32_t mipLevels = 1;
+		uint32_t arrayLayers = 1;
+		const char* name = nullptr;
+	};
+	using TextureCreateInfo = ImageCreateInfo;
+
+	struct Image {
+		VkImage vk_image = VK_NULL_HANDLE;
+		VmaAllocation vma_alloc = VK_NULL_HANDLE;
+		VkExtent3D vk_extent = { 1,1,1 };
+		VkFormat vk_format = VK_FORMAT_UNDEFINED;
+		VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+			VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		uint32_t levels = 1;
+		uint32_t arrayLayers = 1;
+		VkSampleCountFlags vk_samples = VK_SAMPLE_COUNT_1_BIT;
+		VkImageView sampleView = VK_NULL_HANDLE; // you can sample multiple levels
+		VkImageView storageView = VK_NULL_HANDLE; // but can only render to one. Views are created with this baked in. Thats the why to separate them
+		VkImageView arrayView[6]{
+			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
+			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
+		}; // for cubemap
+		VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
+		bool owns_views = true;
+		bool is_swapchain = false;
+
+
+		// crude
+		ImageCreateInfo info_;
+	};
+
+	struct Buffer {
+		VkBuffer vk_buffer = VK_NULL_HANDLE;
+		VmaAllocation vma_alloc{};
+		VkBufferUsageFlags usage = 0;
+		VkMemoryPropertyFlags memory_flags = 0;
+		VkDeviceAddress deviceAddress = 0;
+		//uint64_t mapped = 0; // permanent mapping may be good
+		[[nodiscard]] bool is_mappable() const noexcept {
+			return (memory_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+		}
+	};
+
+	using ImageHandle = Handle<struct Image>;
+	using TextureHandle = Handle<struct Texture>;
+	using SamplerHandle = Handle<struct Sampler>;
+	using BufferHandle = Handle<struct Buffer>;
+	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
+
+	struct ImageViewCreateInfo
+	{
+		ImageHandle image; // DONT LIKE THIS AT ALL
+		ImageViewType viewType = ImageViewType::View2D;
+		Format format = Format::Undefined; // Undefined = inherit underlying image format.
+		ImageSubresourceRange subresourceRange{};
+	};
+
+} // namespace smvk
+
+//// ============================================================================
 	//// RHI Interfaces
 	//// ============================================================================
 
@@ -1076,4 +1115,3 @@ namespace smvk {
 	//	virtual uint32_t GetHeight() const = 0;
 	//	virtual uint32_t GetImageIndex() const = 0;
 	//};
-};
