@@ -1906,7 +1906,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 	};
 	imgCI.imageType = toVkImageType(imageCreateInfo.type);
 	imgCI.format = toVkFormat(imageCreateInfo.format);
-	imgCI.extent = { imageCreateInfo.extent.width, imageCreateInfo.extent.height };
+	imgCI.extent = { imageCreateInfo.extent.width, imageCreateInfo.extent.height, imageCreateInfo.extent.depth };
 	imgCI.mipLevels = imageCreateInfo.mipLevels;
 	imgCI.arrayLayers = imageCreateInfo.arrayLayers;
 	imgCI.samples = toVkSampleCount(imageCreateInfo.samples);
@@ -4023,7 +4023,6 @@ void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 	ResolveBuffers();
 
 	for (auto& pass : passes_) {
-		// update bindings for storageImages and else associated to this pass
 
 		std::vector<VkRenderingAttachmentInfo> colorInfos;
 		colorInfos.reserve(pass.colorAttachments_.size());
@@ -4066,53 +4065,53 @@ void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 			depthInfo.loadOp = toVkAttachmentLoadOp(pass.depthAttachment_.loadOp);
 			depthInfo.storeOp = toVkAttachmentStoreOp(pass.depthAttachment_.storeOp);
 			depthInfo.clearValue = toVkClearValue(pass.depthAttachment_.clear);
-
-			VkRenderingInfo renderInfo{
-				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
-				.renderArea = {
-					.offset = {pass.offsetX_, pass.offsetY_},
-					.extent = {pass.extent_.width, pass.extent_.height},
-				},
-				.layerCount = 1,
-				.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
-				.pColorAttachments = colorInfos.data(),
-			};
-			renderInfo.pDepthAttachment =
-				hasDepth ? &depthInfo : nullptr;
-			renderInfo.pStencilAttachment =
-				hasStencil ? &depthInfo : nullptr;
-
-			VkViewport vp{};
-			vp.x = 0.0f;
-			vp.y = 0.0f;
-			vp.width = static_cast<float>(pass.extent_.width);
-			vp.height = static_cast<float>(pass.extent_.height);
-			vp.minDepth = 0.0f;
-			vp.maxDepth = 1.0f;
-
-			VkRect2D scissor{};
-			scissor.offset = { 0, 0 };
-			scissor.extent = { pass.extent_.width, pass.extent_.height };
-
-			vkCmdSetViewport(fb.commandBuffer, 0, 1, &vp);
-			vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
-
-			vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
-
-			CommandBuffer cmd{
-				fb.commandBuffer,
-				*this,
-				pass
-			};
-
-			if (pass.recordingFunction_) {
-				pass.recordingFunction_(cmd);
-			}
-
-			vkCmdEndRendering(fb.commandBuffer);
 		}
-	};
-}
+
+		VkRenderingInfo renderInfo{
+			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
+			.renderArea = {
+				.offset = {pass.offsetX_, pass.offsetY_},
+				.extent = {pass.extent_.width, pass.extent_.height},
+			},
+			.layerCount = 1,
+			.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
+			.pColorAttachments = colorInfos.data(),
+		};
+		renderInfo.pDepthAttachment =
+			hasDepth ? &depthInfo : nullptr;
+		renderInfo.pStencilAttachment =
+			hasStencil ? &depthInfo : nullptr;
+
+		VkViewport vp{};
+		vp.x = 0.0f;
+		vp.y = 0.0f;
+		vp.width = static_cast<float>(pass.extent_.width);
+		vp.height = static_cast<float>(pass.extent_.height);
+		vp.minDepth = 0.0f;
+		vp.maxDepth = 1.0f;
+
+		VkRect2D scissor{};
+		scissor.offset = { 0, 0 };
+		scissor.extent = { pass.extent_.width, pass.extent_.height };
+
+		vkCmdSetViewport(fb.commandBuffer, 0, 1, &vp);
+		vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
+
+		vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
+
+		CommandBuffer cmd{
+			fb.commandBuffer,
+			*this,
+			pass
+		};
+
+		if (pass.recordingFunction_) {
+			pass.recordingFunction_(cmd);
+		}
+
+		vkCmdEndRendering(fb.commandBuffer);
+	}
+};
 
 void smvk::RenderGraph::ResolveImages() {
 	images_.forEach(

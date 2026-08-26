@@ -269,6 +269,7 @@ namespace smvk {
 			Format format,
 			const char* name = "")
 		{
+			assert(imageView != VK_NULL_HANDLE);
 			LogicalImageView view{
 				.type = ResourceType::External,
 				.resolvedImageView = imageView,

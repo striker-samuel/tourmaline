@@ -63,135 +63,139 @@ float4 mainPS(
 
 )";
 class TriangleApp : public smvk::VulkanApp {
-    using Super = smvk::VulkanApp;
+	using Super = smvk::VulkanApp;
 
 public:
-    TriangleApp() = default;
-    ~TriangleApp() = default;
+	TriangleApp() = default;
+	~TriangleApp() = default;
 
 private:
-    bool Initialize() override {
-        if (!Super::Initialize())
-            return false;
+	bool Initialize() override {
+		if (!Super::Initialize())
+			return false;
 
-        auto vertCode = CompileHLSLToSPIRV(
-            kTriangleVertShader,
-            DxcShaderStage::Vertex,
-            L"mainVS"
-        );
+		//void CreateResources();
+		auto vertCode = CompileHLSLToSPIRV(
+			kTriangleVertShader,
+			DxcShaderStage::Vertex,
+			L"mainVS"
+		);
 
-        auto fragCode = CompileHLSLToSPIRV(
-            kTriangleFragShader,
-            DxcShaderStage::Fragment,
-            L"mainPS"
-        );
+		auto fragCode = CompileHLSLToSPIRV(
+			kTriangleFragShader,
+			DxcShaderStage::Fragment,
+			L"mainPS"
+		);
 
-        smvk::Shader vert = {
-            .module = m_context->CreateShaderModule(vertCode).release(),
-            .entryPoint = "mainVS",
-            .stage = smvk::ShaderStage::Vertex
-        };
-        smvk::Shader frag = {
-            .module = m_context->CreateShaderModule(fragCode).release(),
-            .entryPoint = "mainPS",
-            .stage = smvk::ShaderStage::Fragment
-        };
+		smvk::Shader vert = {
+			.module = m_context->CreateShaderModule(vertCode).release(),
+			.entryPoint = "mainVS",
+			.stage = smvk::ShaderStage::Vertex
+		};
+		smvk::Shader frag = {
+			.module = m_context->CreateShaderModule(fragCode).release(),
+			.entryPoint = "mainPS",
+			.stage = smvk::ShaderStage::Fragment
+		};
 
-        m_program = {
-            .shaders = {vert, frag},
-            .shaderCount = 2
-        };
+		m_program = {
+			.shaders = {vert, frag},
+			.shaderCount = 2
+		};
 
-        return true;
-    }
 
-    void DrawFrame() override {
-        auto fb = m_swapchain->AcquireFramebuffer();
+		swapViews.clear();
+		for (int i = 0; i < m_swapchain->GetImageCount(); i++) {
+			swapViews.push_back(
+				m_rendergraph->AddExternalImageView(
+					m_swapchain->GetImageView(i),
+					smvk::Format::BGRA8_SRGB
+					//m_swapchain->GetFormat()
+				)
+			);
+		}
+		return true;
+	}
 
-        RenderFrame(fb);
+	void DrawFrame() override {
+		auto fb = m_swapchain->AcquireFramebuffer();
+		RenderFrame(fb);
+		m_swapchain->EndAndPresentFramebuffer(fb);
+	}
 
-        m_swapchain->EndAndPresentFramebuffer(fb);
-    }
+	void RenderFrame(smvk::FrameBuffer fb) {
+		m_rendergraph->NewFrame();
+		std::vector<smvk::LogicalImageViewHandle> colors{
+			swapViews[fb.imageIndex]
+		};
 
-    void RenderFrame(smvk::FrameBuffer fb) {
-        m_rendergraph->NewFrame();
-
-        auto swapchainImage = m_rendergraph->AddExternalImageView(
-            fb.swapchain.imageViews_[fb.imageIndex],
-            smvk::Format::RGBA16_Float
-            //fb.swapchain.vk_surfaceFormat_
-        );
-
-        std::vector<smvk::LogicalImageViewHandle> colors{
-            swapchainImage
-        };
-
-        m_rendergraph->AddPass()
-            .SetOffset( 0, 0 )
-            .SetExtent(
-                {
+		m_rendergraph->AddPass()
+			.SetOffset(0, 0)
+			.SetExtent(
+				{
 					fb.swapchain.extent_.width,
 					fb.swapchain.extent_.height
-                }
-                //fb.swapchain.extent_
-            )
-            .SetColor(
-                colors,
-                smvk::AttachmentLoadOp::Clear,
-                smvk::AttachmentStoreOp::Store,
-                smvk::ClearColor(0,0,0,1)
-            )
-            .SetRecordingFunc(
-                [this](smvk::CommandBuffer& cmd) 
-        { //recording
-            cmd.BindRenderPipeline(
-                m_program,
-                smvk::VertexFormat::Empty
-            )
-                ;
-            cmd.Draw(
-                3,  // vertex count
-                1,  // instance count
-                0,  // first vertex
-                0   // first instance
-            );
-        } //end recording
-            );
+				}
+				//fb.swapchain.extent_
+			)
+			.SetColor(
+				colors,
+				smvk::AttachmentLoadOp::Clear,
+				smvk::AttachmentStoreOp::Store,
+				smvk::ClearColor(0, 0, 0, 1)
+			)
+			.SetRecordingFunc(
+				[this](smvk::CommandBuffer& cmd)
+		{ //recording
+			cmd.BindRenderPipeline(
+				m_program,
+				smvk::VertexFormat::Empty
+			)
+				;
+			cmd.Draw(
+				3,  // vertex count
+				1,  // instance count
+				0,  // first vertex
+				0   // first instance
+			);
+		} //end recording
+			);
 
-        m_rendergraph->Execute(fb);
-        m_context->ProcessDeferrredTasks(); // Not needed here
-    }
-    void CleanUp() {
-        Super::CleanUp();
+		m_rendergraph->Execute(fb);
+		m_context->ProcessDeferrredTasks(); // Not needed here
+	}
+	void CleanUp() {
+		Super::CleanUp();
 
-        for (int i = 0; i < m_program.shaderCount; i++) {
-            smvk::destroy(m_context.get(), m_program.shaders[i].module);
-        }
+		for (int i = 0; i < m_program.shaderCount; i++) {
+			smvk::destroy(m_context.get(), m_program.shaders[i].module);
+		}
 
-    }
+	}
 
 private:
-    smvk::ShaderProgram m_program{};
+	std::vector<smvk::LogicalImageViewHandle> swapViews;
+	smvk::ShaderProgram m_program{};
 };
 
 
 int main(int argc, const char* argv[]) {
-    if (argc > 1) {
-        std::cout << argv[0];
-    }
+	if (argc > 1) {
+		std::cout << argv[0];
+	}
 
-    TriangleApp app = TriangleApp();
-    try {
-        app.Run();
-    }
-    catch (const std::exception& e) {
-        std::cerr << "\nERROR: " << e.what() << std::endl;
+	TriangleApp app = TriangleApp();
+	try {
+		app.Run();
+	}
+	catch (const std::exception& e) {
+		std::cerr << "\nERROR: " << e.what() << std::endl;
 
-        std::cerr << "\nPress Enter to exit...";
-        std::cin.get();
+		std::cerr << "\nPress Enter to exit...";
+		std::cin.get();
 
-        return EXIT_FAILURE;
-    }
+		return EXIT_FAILURE;
+	}
 
-    return EXIT_SUCCESS;
+	return EXIT_SUCCESS;
 }
