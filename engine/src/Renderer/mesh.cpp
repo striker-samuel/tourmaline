@@ -264,20 +264,19 @@ namespace smvk {
 	ClusterMaterialHandle Cluster::CreateMaterial(
 		TextureHandle diffuse)
 	{
-		return {};
-		//	assert(
-		//		!diffuse.empty() &&
-		//		"Invalid diffuse texture handle"
-		//	);
+		assert(
+			!diffuse.empty() &&
+			"Invalid diffuse texture handle"
+		);
 
-		//	Material material{};
-		//	material.values.textures[0] = static_cast<int>(diffuse.index());
-		//	return materials.create(std::move(material));
-		//}
-		//void Cluster::DestroyMaterial(ClusterMaterialHandle handle)
-		//{
-		//	materials.destroy(handle);
-		//}
+		Material material{};
+		material.values.textures[0] = static_cast<int>(diffuse.index());
+		return materials.create(std::move(material));
+	}
+
+	void Cluster::DestroyMaterial(ClusterMaterialHandle handle)
+	{
+		materials.destroy(handle);
 	}
 
 	void BindStaticVertexFmtBuffers(VulkanResourceManager& ctx, VkCommandBuffer cmd)

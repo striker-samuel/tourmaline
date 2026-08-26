@@ -70,7 +70,7 @@ namespace smvk {
 	constexpr VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor);
 	constexpr VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor);
 	constexpr uint8_t toRhiColorWriteMask(VkColorComponentFlags flags);
-
+	constexpr VkColorSpaceKHR ToVkColorSpace(smvk::ColorSpace colorSpace);
 	// ============================================================================
 	// 	Core
 	// ============================================================================
@@ -364,8 +364,9 @@ namespace smvk {
 		VulkanResourceManager& ctx_;
 		GLFWwindow* window_ = nullptr;
 		VkSwapchainKHR vk_swapchain_ = VK_NULL_HANDLE;
-		VkFormat vk_surfaceFormat_ = VK_FORMAT_UNDEFINED;
-		VkFormat vk_depthFormat_ = VK_FORMAT_UNDEFINED;
+
+		Format surfaceFormat{};
+		Format depthFormat{};
 
 #pragma region ===[ Frame Commands List ]===
 		VkCommandPool perFrameCommandPools[MAX_FRAMES_IN_FLIGHT]{};

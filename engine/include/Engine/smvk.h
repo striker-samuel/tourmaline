@@ -151,6 +151,35 @@ namespace smvk {
 		BC7_UNorm,
 		BC7_SRGB,
 	};
+	enum class ColorSpace : uint8_t
+	{
+		Undefined,
+
+		SRGB_Nonlinear,
+
+		DisplayP3_Nonlinear,
+		DisplayP3_Linear,
+
+		ExtendedSRGB_Linear,
+		ExtendedSRGB_Nonlinear,
+
+		DCI_P3_Nonlinear,
+
+		BT709_Linear,
+		BT709_Nonlinear,
+
+		BT2020_Linear,
+
+		HDR10_ST2084,
+		HDR10_HLG,
+
+		DolbyVision,
+
+		AdobeRGB_Linear,
+		AdobeRGB_Nonlinear,
+
+		PassThrough,
+	};
 
 	// ============================================================================
 	// Primitive / vertex input
@@ -505,6 +534,8 @@ namespace smvk {
 		Fragment = 1u << 4,
 		Compute = 1u << 5,
 
+		AllGraphics = (1u << 5) - 1
+
 		// Future:
 		// Task
 		// Mesh
@@ -517,6 +548,34 @@ namespace smvk {
 	};
 
 	using ShaderStageFlags = ShaderStage;
+
+	constexpr ShaderStage operator|(ShaderStage lhs, ShaderStage rhs)
+	{
+		return static_cast<ShaderStage>(
+			static_cast<uint32_t>(lhs) |
+			static_cast<uint32_t>(rhs)
+			);
+	}
+
+	constexpr ShaderStage operator&(ShaderStage lhs, ShaderStage rhs)
+	{
+		return static_cast<ShaderStage>(
+			static_cast<uint32_t>(lhs) &
+			static_cast<uint32_t>(rhs)
+			);
+	}
+
+	constexpr ShaderStage& operator|=(ShaderStage& lhs, ShaderStage rhs)
+	{
+		lhs = lhs | rhs;
+		return lhs;
+	}
+
+	constexpr ShaderStage& operator&=(ShaderStage& lhs, ShaderStage rhs)
+	{
+		lhs = lhs & rhs;
+		return lhs;
+	}
 
 	// ============================================================================
 	// Shader program

@@ -300,7 +300,8 @@ namespace smvk {
 					.usage = usage,
 					.ring = false,
 				},
-				.name = name,			};
+				.name = name,
+			};
 		}
 
 		[[nodiscard]]
@@ -359,7 +360,20 @@ namespace smvk {
 			uint32_t offset,
 			uint32_t size,
 			const void* data,
-			PipelineStage stageMask = PipelineStageBit_AllGraphics);
+			ShaderStage stageMask = ShaderStage::Vertex | ShaderStage::Fragment
+		)
+		{
+			assert(currentPipelineLayout_ != VK_NULL_HANDLE);
+			vkCmdPushConstants(
+				cmd_,
+				currentPipelineLayout_,
+				VK_SHADER_STAGE_ALL_GRAPHICS,
+				//toVkShaderStage(stageMask), //may be really bad
+				offset,
+				size,
+				data
+			);
+		};
 
 		void Draw(
 			uint32_t vertexCount,

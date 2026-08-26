@@ -504,6 +504,16 @@ namespace {
 
 } // static ns
 
+//smvk::Format ChooseSwapSurfaceFormat(const std::vector<smvk::Format>& availableFormats) {
+//	for (const auto& availableFormat : availableFormats) {
+//		if (availableFormat.format == smvk::Format::BGRA8_SRGB &&
+//			availableFormat.colorSpace == smvk::ColorSpace::SRGB_Nonlinear)
+//		{
+//			return availableFormat;
+//		}
+//	}
+//	return availableFormats[0];
+//}
 
 // RHI to vulkan
 constexpr VkImageUsageFlags     smvk::toVkImageUsageFlags(ImageUsage usage)
@@ -1021,7 +1031,144 @@ constexpr uint8_t               smvk::toRhiColorWriteMask(VkColorComponentFlags 
 	if (flags & VK_COLOR_COMPONENT_A_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::A);
 	return mask;
 }
+constexpr VkColorSpaceKHR       smvk::ToVkColorSpace(ColorSpace colorSpace)
+{
+	switch (colorSpace)
+	{
+	case smvk::ColorSpace::SRGB_Nonlinear:
+		return VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 
+	case smvk::ColorSpace::DisplayP3_Nonlinear:
+		return VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT;
+
+	case smvk::ColorSpace::DisplayP3_Linear:
+		return VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT;
+
+	case smvk::ColorSpace::ExtendedSRGB_Linear:
+		return VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+
+	case smvk::ColorSpace::ExtendedSRGB_Nonlinear:
+		return VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT;
+
+	case smvk::ColorSpace::DCI_P3_Nonlinear:
+		return VK_COLOR_SPACE_DCI_P3_NONLINEAR_EXT;
+
+	case smvk::ColorSpace::BT709_Linear:
+		return VK_COLOR_SPACE_BT709_LINEAR_EXT;
+
+	case smvk::ColorSpace::BT709_Nonlinear:
+		return VK_COLOR_SPACE_BT709_NONLINEAR_EXT;
+
+	case smvk::ColorSpace::BT2020_Linear:
+		return VK_COLOR_SPACE_BT2020_LINEAR_EXT;
+
+	case smvk::ColorSpace::HDR10_ST2084:
+		return VK_COLOR_SPACE_HDR10_ST2084_EXT;
+
+	case smvk::ColorSpace::HDR10_HLG:
+		return VK_COLOR_SPACE_HDR10_HLG_EXT;
+
+	case smvk::ColorSpace::DolbyVision:
+		return VK_COLOR_SPACE_DOLBYVISION_EXT;
+
+	case smvk::ColorSpace::AdobeRGB_Linear:
+		return VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT;
+
+	case smvk::ColorSpace::AdobeRGB_Nonlinear:
+		return VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT;
+
+	case smvk::ColorSpace::PassThrough:
+		return VK_COLOR_SPACE_PASS_THROUGH_EXT;
+
+	default:
+		return VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+	}
+}
+static constexpr smvk::Format fromVkFormat(VkFormat format) // dont like to have this reverse mapping too. choose swapsurface and depthFormat needs refacotring
+{
+	switch (format)
+	{
+	case VK_FORMAT_R8_UNORM:                 return smvk::Format::R8_UNorm;
+	case VK_FORMAT_R8_SNORM:                 return smvk::Format::R8_SNorm;
+	case VK_FORMAT_R8_UINT:                  return smvk::Format::R8_UInt;
+	case VK_FORMAT_R8_SINT:                  return smvk::Format::R8_SInt;
+
+	case VK_FORMAT_R8G8_UNORM:               return smvk::Format::RG8_UNorm;
+	case VK_FORMAT_R8G8_SNORM:               return smvk::Format::RG8_SNorm;
+	case VK_FORMAT_R8G8_UINT:                return smvk::Format::RG8_UInt;
+	case VK_FORMAT_R8G8_SINT:                return smvk::Format::RG8_SInt;
+
+	case VK_FORMAT_R8G8B8A8_UNORM:           return smvk::Format::RGBA8_UNorm;
+	case VK_FORMAT_R8G8B8A8_SNORM:           return smvk::Format::RGBA8_SNorm;
+	case VK_FORMAT_R8G8B8A8_UINT:            return smvk::Format::RGBA8_UInt;
+	case VK_FORMAT_R8G8B8A8_SINT:            return smvk::Format::RGBA8_SInt;
+	case VK_FORMAT_R8G8B8A8_SRGB:            return smvk::Format::RGBA8_SRGB;
+
+	case VK_FORMAT_B8G8R8A8_UNORM:           return smvk::Format::BGRA8_UNorm;
+	case VK_FORMAT_B8G8R8A8_SRGB:            return smvk::Format::BGRA8_SRGB;
+
+	case VK_FORMAT_R16_UNORM:                return smvk::Format::R16_UNorm;
+	case VK_FORMAT_R16_SNORM:                return smvk::Format::R16_SNorm;
+	case VK_FORMAT_R16_UINT:                 return smvk::Format::R16_UInt;
+	case VK_FORMAT_R16_SINT:                 return smvk::Format::R16_SInt;
+	case VK_FORMAT_R16_SFLOAT:               return smvk::Format::R16_Float;
+
+	case VK_FORMAT_R16G16_UNORM:             return smvk::Format::RG16_UNorm;
+	case VK_FORMAT_R16G16_SNORM:             return smvk::Format::RG16_SNorm;
+	case VK_FORMAT_R16G16_UINT:              return smvk::Format::RG16_UInt;
+	case VK_FORMAT_R16G16_SINT:              return smvk::Format::RG16_SInt;
+	case VK_FORMAT_R16G16_SFLOAT:            return smvk::Format::RG16_Float;
+
+	case VK_FORMAT_R16G16B16A16_UNORM:       return smvk::Format::RGBA16_UNorm;
+	case VK_FORMAT_R16G16B16A16_SNORM:       return smvk::Format::RGBA16_SNorm;
+	case VK_FORMAT_R16G16B16A16_UINT:        return smvk::Format::RGBA16_UInt;
+	case VK_FORMAT_R16G16B16A16_SINT:        return smvk::Format::RGBA16_SInt;
+	case VK_FORMAT_R16G16B16A16_SFLOAT:      return smvk::Format::RGBA16_Float;
+
+	case VK_FORMAT_R32_UINT:                 return smvk::Format::R32_UInt;
+	case VK_FORMAT_R32_SINT:                 return smvk::Format::R32_SInt;
+	case VK_FORMAT_R32_SFLOAT:               return smvk::Format::R32_Float;
+
+	case VK_FORMAT_R32G32_UINT:              return smvk::Format::RG32_UInt;
+	case VK_FORMAT_R32G32_SINT:              return smvk::Format::RG32_SInt;
+	case VK_FORMAT_R32G32_SFLOAT:            return smvk::Format::RG32_Float;
+
+	case VK_FORMAT_R32G32B32_UINT:           return smvk::Format::RGB32_UInt;
+	case VK_FORMAT_R32G32B32_SINT:           return smvk::Format::RGB32_SInt;
+	case VK_FORMAT_R32G32B32_SFLOAT:         return smvk::Format::RGB32_Float;
+
+	case VK_FORMAT_R32G32B32A32_UINT:        return smvk::Format::RGBA32_UInt;
+	case VK_FORMAT_R32G32B32A32_SINT:        return smvk::Format::RGBA32_SInt;
+	case VK_FORMAT_R32G32B32A32_SFLOAT:      return smvk::Format::RGBA32_Float;
+
+	case VK_FORMAT_A2R10G10B10_UNORM_PACK32: return smvk::Format::RGB10A2_UNorm;
+	case VK_FORMAT_A2R10G10B10_UINT_PACK32:  return smvk::Format::RGB10A2_UInt;
+
+	case VK_FORMAT_B10G11R11_UFLOAT_PACK32:  return smvk::Format::R11G11B10_Float;
+
+	case VK_FORMAT_D16_UNORM:                return smvk::Format::D16_UNorm;
+	case VK_FORMAT_D24_UNORM_S8_UINT:        return smvk::Format::D24_UNorm_S8_UInt;
+	case VK_FORMAT_D32_SFLOAT:               return smvk::Format::D32_Float;
+	case VK_FORMAT_D32_SFLOAT_S8_UINT:       return smvk::Format::D32_Float_S8_UInt;
+
+	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:      return smvk::Format::BC1_RGBA_UNorm;
+	case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:       return smvk::Format::BC1_RGBA_SRGB;
+	case VK_FORMAT_BC2_UNORM_BLOCK:          return smvk::Format::BC2_UNorm;
+	case VK_FORMAT_BC2_SRGB_BLOCK:           return smvk::Format::BC2_SRGB;
+	case VK_FORMAT_BC3_UNORM_BLOCK:          return smvk::Format::BC3_UNorm;
+	case VK_FORMAT_BC3_SRGB_BLOCK:           return smvk::Format::BC3_SRGB;
+	case VK_FORMAT_BC4_UNORM_BLOCK:          return smvk::Format::BC4_UNorm;
+	case VK_FORMAT_BC4_SNORM_BLOCK:          return smvk::Format::BC4_SNorm;
+	case VK_FORMAT_BC5_UNORM_BLOCK:          return smvk::Format::BC5_UNorm;
+	case VK_FORMAT_BC5_SNORM_BLOCK:          return smvk::Format::BC5_SNorm;
+	case VK_FORMAT_BC6H_UFLOAT_BLOCK:        return smvk::Format::BC6H_UFloat;
+	case VK_FORMAT_BC6H_SFLOAT_BLOCK:        return smvk::Format::BC6H_SFloat;
+	case VK_FORMAT_BC7_UNORM_BLOCK:          return smvk::Format::BC7_UNorm;
+	case VK_FORMAT_BC7_SRGB_BLOCK:           return smvk::Format::BC7_SRGB;
+
+	default:                                  return smvk::Format::Undefined;
+	}
+}
 //
 /*constexpr*/ bool                  smvk::FormatHasStencil(VkFormat format)
 {
@@ -2976,7 +3123,9 @@ smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context, GLFWwindo
 	, window_(window)
 {
 
-	vk_depthFormat_ = findDepthFormat();
+	depthFormat = fromVkFormat(
+		findDepthFormat()
+	);
 	Create();
 
 	//FRAME COMMAND 
@@ -3093,14 +3242,20 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 	if (result != VK_SUCCESS) {
 		throw std::runtime_error("Failed to create Vulkan swapchain.");
 	}
+
 	uint32_t actualImageCount = 0;
+
+
 	vkGetSwapchainImagesKHR(device_, vk_swapchain_, &actualImageCount, nullptr);
 	images_.resize(actualImageCount);
-	vkGetSwapchainImagesKHR(device_, vk_swapchain_, &actualImageCount, images_.data());
 	imageViews_.resize(actualImageCount);
 	renderFinishedSemaphores_.resize(actualImageCount, VK_NULL_HANDLE);
-	vk_surfaceFormat_ = surfaceFormat.format;
-	extent_ = swapExtent;
+	vkGetSwapchainImagesKHR(device_, vk_swapchain_, &actualImageCount, images_.data());
+
+
+	this->surfaceFormat = fromVkFormat(surfaceFormat.format);
+	this->extent_ = swapExtent;
+
 	glfwGetWindowSize(window_, &windowWidth, &windowHeight);
 }
 void smvk::VulkanSwapchain::CreateImageViews() {
@@ -3109,7 +3264,7 @@ void smvk::VulkanSwapchain::CreateImageViews() {
 		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 		viewInfo.image = images_[i];
 		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		viewInfo.format = vk_surfaceFormat_;
+		viewInfo.format = toVkFormat(depthFormat);
 		viewInfo.subresourceRange = {
 			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 			.baseMipLevel = 0,
@@ -3121,14 +3276,8 @@ void smvk::VulkanSwapchain::CreateImageViews() {
 	}
 }
 void smvk::VulkanSwapchain::CreateDepthResources() {
-	assert(vk_depthFormat_ != VK_FORMAT_UNDEFINED && "core depthFormat not set. failed to create swapchain depth Image");
-
+	assert(depthFormat != smvk::Format::Undefined && "core depthFormat not set. failed to create swapchain depth Image");
 	depthImage_.release();
-
-	const Format depthFormat =
-		vk_depthFormat_ == VK_FORMAT_D32_SFLOAT_S8_UINT
-		? Format::D32_Float_S8_UInt
-		: Format::D24_UNorm_S8_UInt;
 
 	ImageCreateInfo depthImageCreateInfo{};
 	depthImageCreateInfo.extent = { extent_.width, extent_.height };
@@ -3903,8 +4052,6 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 
 	return bundle;
 }
-
-
 
 
 #include <Engine/Renderer/rendergraph.h>
