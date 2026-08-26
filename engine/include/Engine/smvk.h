@@ -1096,9 +1096,78 @@ namespace smvk {
 	};
 
 };
-//Interfaces to implement
-//struct ICore {};
-//struct ISwapchain {};
-//struct IResourceManager {};
-//struct ICommandList {};
-//struct IFrameBuffer {};
+// ============================================================================
+// RHI Interfaces
+// ============================================================================
+
+// Core interface - essential RHI operations
+struct ICore {
+	virtual ~ICore() = default;
+	virtual int CreateInstance() = 0;
+	virtual bool Init() = 0;
+	virtual VkDevice GetDevice() = 0;
+	// virtual VkPhysicalDevice GetPhysicalDevice() = 0;
+	// virtual VkQueue GetGraphicsQueue() = 0;
+	virtual void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) = 0;
+	virtual void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view) = 0;
+	virtual void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline) = 0;
+	virtual void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline) = 0;
+	virtual void DestroyPipeline(VkPipeline pipeline) = 0;
+};
+
+// Swapchain interface
+struct ISwapchain {
+	virtual ~ISwapchain() = default;
+	virtual VkExtent2D GetExtent() const = 0;
+	virtual uint32_t GetImageCount() const = 0;
+	virtual VkImage GetImage(uint32_t index) const = 0;
+	virtual VkImageView GetImageView(uint32_t index) const = 0;
+	virtual VkImage GetCurrentImage() const = 0;
+	virtual VkImageView GetCurrentImageView() const = 0;
+	virtual uint32_t GetCurrentImageIndex() const = 0;
+	virtual uint32_t GetCurrentFrameIndex() const = 0;
+	virtual VkSemaphore GetImageAvailableSemaphore() const = 0;
+	virtual VkFence GetInFlightFence() const = 0;
+	virtual VkSemaphore GetRenderFinishedSemaphore(uint32_t imageIndex) const = 0;
+	virtual void AdvanceFrame() = 0;
+	virtual void SetCurrentImageIndex(uint32_t imageIndex) = 0;
+	virtual void Recreate() = 0;
+	virtual void EndAndPresentFramebuffer(FrameBuffer& fb) = 0;
+};
+
+// Resource manager interface
+struct IResourceManager {
+	virtual ~IResourceManager() = default;
+	virtual Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr) = 0;
+	virtual Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr) = 0;
+	virtual Holder<BufferHandle> CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = nullptr) = 0;
+	virtual Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = nullptr) = 0;
+	virtual Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = nullptr) = 0;
+	virtual void* MapBuffer(Handle<Buffer> handle) = 0;
+	virtual void UnmapBuffer(Handle<Buffer> handle) = 0;
+	virtual void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0) = 0;
+	virtual void UploadDataToImage2D(Image img, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0) = 0;
+	virtual void UpdateBindings(uint32_t frameIndex = 0) = 0;
+};
+
+// Command list interface
+struct ICommandList {
+	virtual ~ICommandList() = default;
+	virtual void Begin() = 0;
+	virtual void End() = 0;
+	virtual void Submit() = 0;
+	virtual void PushConstants(uint32_t offset, uint32_t size, const void* data, PipelineStage stageMask = PipelineStageBit_AllGraphics) = 0;
+	virtual void BindRenderPipeline(ShaderProgram& shaderProgram, VertexFormatDescription vertexFormatDescription = VertexFormatDescription(), const DepthSettings& depthSettings = DepthSettings::DepthTest(), const StencilSettings& stencilSettings = StencilSettings::DefaultDisabled(), const BlendSettings& blendSettings = BlendSettings::Opaque(), const MSAASettings& msaaSettings = MSAASettings::Count1()) = 0;
+	virtual void Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) = 0;
+	virtual void DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0, uint32_t baseVertex = 0, uint32_t firstInstance = 0) = 0;
+};
+
+// Framebuffer interface
+struct IFrameBuffer {
+	virtual ~IFrameBuffer() = default;
+	virtual VkRenderPass GetRenderPass() const = 0;
+	virtual VkFramebuffer GetVkFramebuffer() const = 0;
+	virtual uint32_t GetWidth() const = 0;
+	virtual uint32_t GetHeight() const = 0;
+	virtual uint32_t GetImageIndex() const = 0;
+};

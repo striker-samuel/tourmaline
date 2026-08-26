@@ -12,6 +12,34 @@
 #include <unordered_map>
 
 
+// these should be moved from here
+inline const char* vkResultToString(VkResult result);
+
+#define VK_ASSERT_RETURN(func)                                     \
+  {                                                                \
+    const VkResult vk_assert_result = func;                        \
+    if (vk_assert_result != VK_SUCCESS) {                          \
+      LLOGW("Vulkan API call failed: %s:%i\n  %s\n  %s\n", \
+                    __FILE__,                                      \
+                    __LINE__,                                      \
+                    #func,                                         \
+                    lvk::getVulkanResultString(vk_assert_result)); \
+      assert(false);                                               \
+      return getResultFromVkResult(vk_assert_result);              \
+    }                                                              \
+  }
+
+#define VK_CHECK(x)                                                     \
+    do {                                                                \
+        VkResult err = (x);                                             \
+        if (err != VK_SUCCESS) {                                        \
+            fprintf(stderr, "[Vulkan Error] %s:%d: %s\n",               \
+                    __FILE__, __LINE__, vkResultToString(err));         \
+            abort();                                                    \
+        }                                                               \
+    } while (0)
+
+
 namespace smvk {
 
 

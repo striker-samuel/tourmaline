@@ -15,86 +15,25 @@ static VkDevice device_ = VK_NULL_HANDLE;
 static VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
 static VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
 static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
+
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
-
-constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
-	VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_Index
-	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,             // BufferType_Vertex
-	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
-	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Storage
-	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,           // BufferType_Indirect
-	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_TransferSrc
-	VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_TransferDst
-	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_Staging: transfer with host visibility
-	0,                                             // BufferType_Count sentinel
-};
-
-constexpr VmaMemoryUsage bufferTypeToVmaUsage[9] = {
-	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Index: device-local only
-	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Vertex: device-local only
-	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Uniform: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
-	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Storage: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
-	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Indirect: device-local only
-	VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferSrc: auto-detect memory properties
-	VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferDst: auto-detect memory properties
-	VMA_MEMORY_USAGE_AUTO_PREFER_HOST, // BufferType_Staging: auto-prefer host for CPU mapping
-	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Count sentinel
-};
-
-
-
-inline const char* vkResultToString(VkResult result);
-
-#define VK_ASSERT_RETURN(func)                                     \
-  {                                                                \
-    const VkResult vk_assert_result = func;                        \
-    if (vk_assert_result != VK_SUCCESS) {                          \
-      LLOGW("Vulkan API call failed: %s:%i\n  %s\n  %s\n", \
-                    __FILE__,                                      \
-                    __LINE__,                                      \
-                    #func,                                         \
-                    lvk::getVulkanResultString(vk_assert_result)); \
-      assert(false);                                               \
-      return getResultFromVkResult(vk_assert_result);              \
-    }                                                              \
-  }
-
-#define VK_CHECK(x)                                                     \
-    do {                                                                \
-        VkResult err = (x);                                             \
-        if (err != VK_SUCCESS) {                                        \
-            fprintf(stderr, "[Vulkan Error] %s:%d: %s\n",               \
-                    __FILE__, __LINE__, vkResultToString(err));         \
-            abort();                                                    \
-        }                                                               \
-    } while (0)
-
 
 //VkInstance smvk::VulkanCore::GetInstance() { return instance_; }
 VkDevice smvk::VulkanCore::GetDevice() { return device_; }
 //VkPhysicalDevice smvk::VulkanCore::GetPhysicalDevice() { return physicalDevice_; }
 //VkQueue smvk::VulkanCore::GetGraphicsQueue() { return graphicsQueue_; }
-//
-struct SwapChainSupportDetails {
-	VkSurfaceCapabilitiesKHR capabilities{};
-	std::vector<VkSurfaceFormatKHR> formats;
-	std::vector<VkPresentModeKHR> presentModes;
-};
 
-// Used by device-suitability checks before its definition below.
-smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
 namespace {
+
 	inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
-	// Buffers will be pushed in pc block with deviceAddress
-	// The rest will be bindless with fixed binding#
-	// This bindless model is lifted from lightweightVK aproach
+
 	struct FormatInfo {
 		uint32_t blockWidth;
 		uint32_t blockHeight;
 		uint32_t bytesPerBlock;
 	};
-	static FormatInfo getFormatInfo(VkFormat format) {
+	FormatInfo getFormatInfo(VkFormat format) {
 		switch (format) {
 			// 8-bit per pixel
 		case VK_FORMAT_R8_UNORM:
@@ -149,327 +88,330 @@ namespace {
 			return { 1, 1, 0 };
 		}
 	}
-};
-VkMemoryRequirements2 getDeviceImageMemoryRequirements(VkDevice device, const VkImageCreateInfo& imageCreateInfo) {
-	VkDeviceImageMemoryRequirements queryInfo{
-		.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
-		.pNext = nullptr,
-		.pCreateInfo = &imageCreateInfo,
-		.planeAspect = VK_IMAGE_ASPECT_NONE,
+
+	struct SwapChainSupportDetails {
+		VkSurfaceCapabilitiesKHR capabilities{};
+		std::vector<VkSurfaceFormatKHR> formats;
+		std::vector<VkPresentModeKHR> presentModes;
 	};
 
-	VkMemoryRequirements2 requirements{
-		.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
-		.pNext = nullptr,
-	};
+	VkMemoryRequirements2 getDeviceImageMemoryRequirements(VkDevice device, const VkImageCreateInfo& imageCreateInfo) {
+		VkDeviceImageMemoryRequirements queryInfo{
+			.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
+			.pNext = nullptr,
+			.pCreateInfo = &imageCreateInfo,
+			.planeAspect = VK_IMAGE_ASPECT_NONE,
+		};
 
-	vkGetDeviceImageMemoryRequirements(
-		device,
-		&queryInfo,
-		&requirements
-	);
+		VkMemoryRequirements2 requirements{
+			.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+			.pNext = nullptr,
+		};
 
-	return requirements;
-}
-void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator) {
-	auto func = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
-		vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT")
+		vkGetDeviceImageMemoryRequirements(
+			device,
+			&queryInfo,
+			&requirements
 		);
 
-	if (func != nullptr) {
-		func(instance, debugMessenger, pAllocator);
+		return requirements;
 	}
-}
-const char* vkResultToString(VkResult result) {
-	switch (result) {
-	case VK_SUCCESS: return "VK_SUCCESS";
-	case VK_NOT_READY: return "VK_NOT_READY";
-	case VK_TIMEOUT: return "VK_TIMEOUT";
-	case VK_EVENT_SET: return "VK_EVENT_SET";
-	case VK_EVENT_RESET: return "VK_EVENT_RESET";
-	case VK_INCOMPLETE: return "VK_INCOMPLETE";
-	case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
-	case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-	case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
-	case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
-	case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
-	case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
-	case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
-	case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
-	case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
-	case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
-	case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
-	case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
-	case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
-	default: return "VK_ERROR_<unrecognized>";
+	void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator) {
+		auto func = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+			vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT")
+			);
+
+		if (func != nullptr) {
+			func(instance, debugMessenger, pAllocator);
+		}
 	}
-}
-VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
-	std::cerr << "---------------- Vulkan Validation ----------------\n";
-	std::cerr << "Message: " << pCallbackData->pMessage << "\n";
-	std::cerr << "\n";  // <--- Blank line for separation
-
-	if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
-	{
-		//__debugbreak();
+	const char* vkResultToString(VkResult result) {
+		switch (result) {
+		case VK_SUCCESS: return "VK_SUCCESS";
+		case VK_NOT_READY: return "VK_NOT_READY";
+		case VK_TIMEOUT: return "VK_TIMEOUT";
+		case VK_EVENT_SET: return "VK_EVENT_SET";
+		case VK_EVENT_RESET: return "VK_EVENT_RESET";
+		case VK_INCOMPLETE: return "VK_INCOMPLETE";
+		case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+		case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+		case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+		case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+		case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+		case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+		case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+		case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+		case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+		case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+		case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+		case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+		case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
+		default: return "VK_ERROR_<unrecognized>";
+		}
 	}
+	VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
+		std::cerr << "---------------- Vulkan Validation ----------------\n";
+		std::cerr << "Message: " << pCallbackData->pMessage << "\n";
+		std::cerr << "\n";  // <--- Blank line for separation
 
-	return VK_FALSE;
-}
-bool checkValidationLayerSupport(const std::vector<const char*> validationLayers) {
-	uint32_t layerCount;
-	vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+		if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+		{
+			//__debugbreak();
+		}
 
-	std::vector<VkLayerProperties> availableLayers(layerCount);
-	vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+		return VK_FALSE;
+	}
+	bool checkValidationLayerSupport(const std::vector<const char*> validationLayers) {
+		uint32_t layerCount;
+		vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
 
-	for (const char* layerName : validationLayers) {
-		bool layerFound = false;
+		std::vector<VkLayerProperties> availableLayers(layerCount);
+		vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
 
-		for (const auto& layerProperties : availableLayers) {
-			if (strcmp(layerName, layerProperties.layerName) == 0) {
-				layerFound = true;
-				break;
+		for (const char* layerName : validationLayers) {
+			bool layerFound = false;
+
+			for (const auto& layerProperties : availableLayers) {
+				if (strcmp(layerName, layerProperties.layerName) == 0) {
+					layerFound = true;
+					break;
+				}
+			}
+
+			if (!layerFound) {
+				return false;
 			}
 		}
 
-		if (!layerFound) {
-			return false;
-		}
+		return true;
 	}
+	bool IsFormatSupported(VkFormat format, VkFormatFeatureFlags requiredFeatures, VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL)
+	{
+		VkFormatProperties props{};
+		vkGetPhysicalDeviceFormatProperties(
+			physicalDevice_,
+			format,
+			&props);
 
-	return true;
-}
-bool IsFormatSupported(VkFormat format, VkFormatFeatureFlags requiredFeatures, VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL)
-{
-	VkFormatProperties props{};
-	vkGetPhysicalDeviceFormatProperties(
-		physicalDevice_,
-		format,
-		&props);
+		const VkFormatFeatureFlags availableFeatures =
+			tiling == VK_IMAGE_TILING_OPTIMAL
+			? props.optimalTilingFeatures
+			: props.linearTilingFeatures;
 
-	const VkFormatFeatureFlags availableFeatures =
-		tiling == VK_IMAGE_TILING_OPTIMAL
-		? props.optimalTilingFeatures
-		: props.linearTilingFeatures;
-
-	return (availableFeatures & requiredFeatures) == requiredFeatures;
-}
-void CheckTextureFormatSupport()
-{
-	constexpr VkFormatFeatureFlags required =
-		VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
-
-	assert(IsFormatSupported(
-		VK_FORMAT_BC1_RGBA_SRGB_BLOCK,
-		required));
-
-	assert(IsFormatSupported(
-		VK_FORMAT_BC5_UNORM_BLOCK,
-		required));
-
-	assert(IsFormatSupported(
-		VK_FORMAT_BC7_SRGB_BLOCK,
-		required));
-}
-VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) {
-	for (VkFormat vk_format : candidates) {
-		VkFormatProperties props;
-		vkGetPhysicalDeviceFormatProperties(physicalDevice_, vk_format, &props);
-		if (tiling == VK_IMAGE_TILING_LINEAR &&
-			(props.linearTilingFeatures & features) == features) {
-			return vk_format;
-		}
-		else if (tiling == VK_IMAGE_TILING_OPTIMAL &&
-			(props.optimalTilingFeatures & features) == features) {
-			return vk_format;
-		}
+		return (availableFeatures & requiredFeatures) == requiredFeatures;
 	}
-	throw std::runtime_error("failed to find supported format!");
-}
-VkFormat findDepthFormat() {
-	return findSupportedFormat(
-		{
-			//VK_FORMAT_D32_SFLOAT // no stencil. Lets just stick to stencil formats as a minimum
-			VK_FORMAT_D32_SFLOAT_S8_UINT,
-			VK_FORMAT_D24_UNORM_S8_UINT
-		},
-		VK_IMAGE_TILING_OPTIMAL,
-		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
-	);
-}
-SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
+	void CheckTextureFormatSupport()
+	{
+		constexpr VkFormatFeatureFlags required =
+			VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
 
-	SwapChainSupportDetails details;
+		assert(IsFormatSupported(
+			VK_FORMAT_BC1_RGBA_SRGB_BLOCK,
+			required));
 
-	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface,
-		&details.capabilities);
+		assert(IsFormatSupported(
+			VK_FORMAT_BC5_UNORM_BLOCK,
+			required));
 
-	uint32_t formatCount;
-	vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount,
-		nullptr);
+		assert(IsFormatSupported(
+			VK_FORMAT_BC7_SRGB_BLOCK,
+			required));
+	}
+	VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) {
+		for (VkFormat vk_format : candidates) {
+			VkFormatProperties props;
+			vkGetPhysicalDeviceFormatProperties(physicalDevice_, vk_format, &props);
+			if (tiling == VK_IMAGE_TILING_LINEAR &&
+				(props.linearTilingFeatures & features) == features) {
+				return vk_format;
+			}
+			else if (tiling == VK_IMAGE_TILING_OPTIMAL &&
+				(props.optimalTilingFeatures & features) == features) {
+				return vk_format;
+			}
+		}
+		throw std::runtime_error("failed to find supported format!");
+	}
+	VkFormat findDepthFormat() {
+		return findSupportedFormat(
+			{
+				//VK_FORMAT_D32_SFLOAT // no stencil. Lets just stick to stencil formats as a minimum
+				VK_FORMAT_D32_SFLOAT_S8_UINT,
+				VK_FORMAT_D24_UNORM_S8_UINT
+			},
+			VK_IMAGE_TILING_OPTIMAL,
+			VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+		);
+	}
+	SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
 
-	if (formatCount != 0) {
-		details.formats.resize(formatCount);
+		SwapChainSupportDetails details;
+
+		vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface,
+			&details.capabilities);
+
+		uint32_t formatCount;
 		vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount,
-			details.formats.data());
+			nullptr);
+
+		if (formatCount != 0) {
+			details.formats.resize(formatCount);
+			vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount,
+				details.formats.data());
+		}
+
+		uint32_t presentModeCount;
+		vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface,
+			&presentModeCount, nullptr);
+
+		if (presentModeCount != 0) {
+			details.presentModes.resize(presentModeCount);
+			vkGetPhysicalDeviceSurfacePresentModesKHR(
+				device, surface, &presentModeCount, details.presentModes.data());
+		}
+
+		return details;
 	}
+	bool checkDeviceExtensionSupport(VkPhysicalDevice device, const std::vector<const char*> deviceExtensions) {
+		uint32_t extensionCount;
+		vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
+			nullptr);
 
-	uint32_t presentModeCount;
-	vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface,
-		&presentModeCount, nullptr);
+		std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+		vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
+			availableExtensions.data());
 
-	if (presentModeCount != 0) {
-		details.presentModes.resize(presentModeCount);
-		vkGetPhysicalDeviceSurfacePresentModesKHR(
-			device, surface, &presentModeCount, details.presentModes.data());
+		std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
+		for (const auto& extension : availableExtensions) {
+			requiredExtensions.erase(extension.extensionName);
+		}
+
+		return requiredExtensions.empty();
 	}
+	bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface, const std::vector<const char*> deviceExtensions) {
+		smvk::QueueFamilyIndices indices = findQueueFamilies(device, surface);
+		bool extensionsSupported = checkDeviceExtensionSupport(device, deviceExtensions);
 
-	return details;
-}
-bool checkDeviceExtensionSupport(VkPhysicalDevice device, const std::vector<const char*> deviceExtensions) {
-	uint32_t extensionCount;
-	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
-		nullptr);
-
-	std::vector<VkExtensionProperties> availableExtensions(extensionCount);
-	vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
-		availableExtensions.data());
-
-	std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
-	for (const auto& extension : availableExtensions) {
-		requiredExtensions.erase(extension.extensionName);
+		bool swapChainAdequate = false;
+		if (extensionsSupported) {
+			SwapChainSupportDetails swapChainSupport = querySwapChainSupport(device, surface);
+			swapChainAdequate = !swapChainSupport.formats.empty() &&
+				!swapChainSupport.presentModes.empty();
+		}
+		return indices.isComplete() && extensionsSupported && swapChainAdequate;
 	}
+	VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) {
+		for (const auto& availableFormat : availableFormats) {
+			if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
+				availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+				return availableFormat;
+			}
+		}
 
-	return requiredExtensions.empty();
-}
-bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface, const std::vector<const char*> deviceExtensions) {
-	smvk::QueueFamilyIndices indices = findQueueFamilies(device, surface);
-	bool extensionsSupported = checkDeviceExtensionSupport(device, deviceExtensions);
-
-	bool swapChainAdequate = false;
-	if (extensionsSupported) {
-		SwapChainSupportDetails swapChainSupport = querySwapChainSupport(device, surface);
-		swapChainAdequate = !swapChainSupport.formats.empty() &&
-			!swapChainSupport.presentModes.empty();
+		return availableFormats[0];
 	}
-	return indices.isComplete() && extensionsSupported && swapChainAdequate;
-}
-VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) {
-	for (const auto& availableFormat : availableFormats) {
-		if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
-			availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-			return availableFormat;
+	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window) {
+
+		if (capabilities.currentExtent.width !=
+			std::numeric_limits<uint32_t>::max()) {
+			return capabilities.currentExtent;
+		}
+		else {
+			int width, height;
+			glfwGetFramebufferSize(window, &width, &height);
+
+			VkExtent2D actualExtent = { static_cast<uint32_t>(width),
+									   static_cast<uint32_t>(height) };
+
+			actualExtent.width =
+				std::clamp(actualExtent.width, capabilities.minImageExtent.width,
+					capabilities.maxImageExtent.width);
+			actualExtent.height =
+				std::clamp(actualExtent.height, capabilities.minImageExtent.height,
+					capabilities.maxImageExtent.height);
+
+			return actualExtent;
 		}
 	}
+	std::vector<const char*> getRequiredExtensionsForGlfw(bool enableValidationLayers) {
+		uint32_t glfwExtensionCount = 0;
+		const char** glfwExtensions;
+		glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
 
-	return availableFormats[0];
-}
-VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window) {
+		std::vector<const char*> extensions(glfwExtensions,
+			glfwExtensions + glfwExtensionCount);
 
-	if (capabilities.currentExtent.width !=
-		std::numeric_limits<uint32_t>::max()) {
-		return capabilities.currentExtent;
-	}
-	else {
-		int width, height;
-		glfwGetFramebufferSize(window, &width, &height);
+		if (enableValidationLayers) {
+			extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+		}
 
-		VkExtent2D actualExtent = { static_cast<uint32_t>(width),
-								   static_cast<uint32_t>(height) };
-
-		actualExtent.width =
-			std::clamp(actualExtent.width, capabilities.minImageExtent.width,
-				capabilities.maxImageExtent.width);
-		actualExtent.height =
-			std::clamp(actualExtent.height, capabilities.minImageExtent.height,
-				capabilities.maxImageExtent.height);
-
-		return actualExtent;
-	}
-}
-std::vector<const char*> getRequiredExtensionsForGlfw(bool enableValidationLayers) {
-	uint32_t glfwExtensionCount = 0;
-	const char** glfwExtensions;
-	glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-
-	std::vector<const char*> extensions(glfwExtensions,
-		glfwExtensions + glfwExtensionCount);
-
-	if (enableValidationLayers) {
-		extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+		return extensions;
 	}
 
-	return extensions;
-}
-smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface)
-{
-	smvk::QueueFamilyIndices indices;
+	constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
+		VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_Index
+		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,             // BufferType_Vertex
+		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Storage
+		VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,           // BufferType_Indirect
+		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_TransferSrc
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_TransferDst
+		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_Staging: transfer with host visibility
+		0,                                             // BufferType_Count sentinel
+	};
 
-	uint32_t queueFamilyCount = 0;
-	vkGetPhysicalDeviceQueueFamilyProperties(
-		device,
-		&queueFamilyCount,
-		nullptr);
+	constexpr VmaMemoryUsage bufferTypeToVmaUsage[9] = {
+		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Index: device-local only
+		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Vertex: device-local only
+		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Uniform: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
+		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Storage: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
+		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Indirect: device-local only
+		VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferSrc: auto-detect memory properties
+		VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferDst: auto-detect memory properties
+		VMA_MEMORY_USAGE_AUTO_PREFER_HOST, // BufferType_Staging: auto-prefer host for CPU mapping
+		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Count sentinel
+	};
 
-	std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+	smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface)
+	{
+		smvk::QueueFamilyIndices indices;
 
-	vkGetPhysicalDeviceQueueFamilyProperties(
-		device,
-		&queueFamilyCount,
-		queueFamilies.data());
-
-
-	//for (uint32_t i = 0; i < queueFamilyCount; ++i) {
-	//	VkBool32 present = VK_FALSE;
-	//	vkGetPhysicalDeviceSurfaceSupportKHR(
-	//		device, i, surface, &present);
-
-	//	const auto flags = queueFamilies[i].queueFlags;
-
-	//	printf(
-	//		"Queue family %u: "
-	//		"count=%u G=%d C=%d T=%d S=%d P=%d\n",
-	//		i,
-	//		queueFamilies[i].queueCount,
-	//		!!(flags & VK_QUEUE_GRAPHICS_BIT),
-	//		!!(flags & VK_QUEUE_COMPUTE_BIT),
-	//		!!(flags & VK_QUEUE_TRANSFER_BIT),
-	//		!!(flags & VK_QUEUE_SPARSE_BINDING_BIT),
-	//		!!present);
-	//}
-
-	// First pass: prefer one family that supports BOTH graphics + present.
-	for (uint32_t i = 0; i < queueFamilyCount; ++i) {
-		const auto& q = queueFamilies[i];
-
-		VkBool32 presentSupport = VK_FALSE;
-		vkGetPhysicalDeviceSurfaceSupportKHR(
+		uint32_t queueFamilyCount = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(
 			device,
-			i,
-			surface,
-			&presentSupport);
+			&queueFamilyCount,
+			nullptr);
 
-		const bool graphics =
-			(q.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
+		std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
 
-		if (graphics && presentSupport) {
-			indices.graphicsFamily = i;
-			indices.presentFamily = i;
-			break;
-		}
-	}
+		vkGetPhysicalDeviceQueueFamilyProperties(
+			device,
+			&queueFamilyCount,
+			queueFamilies.data());
 
-	// If no combined family exists, find them separately.
-	if (!indices.graphicsFamily || !indices.presentFamily) {
+
+		//for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+		//	VkBool32 present = VK_FALSE;
+		//	vkGetPhysicalDeviceSurfaceSupportKHR(
+		//		device, i, surface, &present);
+
+		//	const auto flags = queueFamilies[i].queueFlags;
+
+		//	printf(
+		//		"Queue family %u: "
+		//		"count=%u G=%d C=%d T=%d S=%d P=%d\n",
+		//		i,
+		//		queueFamilies[i].queueCount,
+		//		!!(flags & VK_QUEUE_GRAPHICS_BIT),
+		//		!!(flags & VK_QUEUE_COMPUTE_BIT),
+		//		!!(flags & VK_QUEUE_TRANSFER_BIT),
+		//		!!(flags & VK_QUEUE_SPARSE_BINDING_BIT),
+		//		!!present);
+		//}
+
+		// First pass: prefer one family that supports BOTH graphics + present.
 		for (uint32_t i = 0; i < queueFamilyCount; ++i) {
 			const auto& q = queueFamilies[i];
-
-			if (!indices.graphicsFamily &&
-				(q.queueFlags & VK_QUEUE_GRAPHICS_BIT))
-			{
-				indices.graphicsFamily = i;
-			}
 
 			VkBool32 presentSupport = VK_FALSE;
 			vkGetPhysicalDeviceSurfaceSupportKHR(
@@ -478,37 +420,47 @@ smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR
 				surface,
 				&presentSupport);
 
-			if (!indices.presentFamily && presentSupport) {
-				indices.presentFamily = i;
-			}
+			const bool graphics =
+				(q.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
 
-			if (indices.graphicsFamily &&
-				indices.presentFamily)
-			{
+			if (graphics && presentSupport) {
+				indices.graphicsFamily = i;
+				indices.presentFamily = i;
 				break;
 			}
 		}
-	}
 
-	// Prefer a truly dedicated transfer queue.
-	for (uint32_t i = 0; i < queueFamilyCount; ++i) {
-		const auto flags = queueFamilies[i].queueFlags;
+		// If no combined family exists, find them separately.
+		if (!indices.graphicsFamily || !indices.presentFamily) {
+			for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+				const auto& q = queueFamilies[i];
 
-		const bool transfer =
-			(flags & VK_QUEUE_TRANSFER_BIT) != 0;
-		const bool graphics =
-			(flags & VK_QUEUE_GRAPHICS_BIT) != 0;
-		const bool compute =
-			(flags & VK_QUEUE_COMPUTE_BIT) != 0;
+				if (!indices.graphicsFamily &&
+					(q.queueFlags & VK_QUEUE_GRAPHICS_BIT))
+				{
+					indices.graphicsFamily = i;
+				}
 
-		if (transfer && !graphics && !compute) {
-			indices.transferFamily = i;
-			break;
+				VkBool32 presentSupport = VK_FALSE;
+				vkGetPhysicalDeviceSurfaceSupportKHR(
+					device,
+					i,
+					surface,
+					&presentSupport);
+
+				if (!indices.presentFamily && presentSupport) {
+					indices.presentFamily = i;
+				}
+
+				if (indices.graphicsFamily &&
+					indices.presentFamily)
+				{
+					break;
+				}
+			}
 		}
-	}
 
-	// Otherwise prefer non-graphics.
-	if (!indices.transferFamily) {
+		// Prefer a truly dedicated transfer queue.
 		for (uint32_t i = 0; i < queueFamilyCount; ++i) {
 			const auto flags = queueFamilies[i].queueFlags;
 
@@ -516,54 +468,42 @@ smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR
 				(flags & VK_QUEUE_TRANSFER_BIT) != 0;
 			const bool graphics =
 				(flags & VK_QUEUE_GRAPHICS_BIT) != 0;
+			const bool compute =
+				(flags & VK_QUEUE_COMPUTE_BIT) != 0;
 
-			if (transfer && !graphics) {
+			if (transfer && !graphics && !compute) {
 				indices.transferFamily = i;
 				break;
 			}
 		}
+
+		// Otherwise prefer non-graphics.
+		if (!indices.transferFamily) {
+			for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+				const auto flags = queueFamilies[i].queueFlags;
+
+				const bool transfer =
+					(flags & VK_QUEUE_TRANSFER_BIT) != 0;
+				const bool graphics =
+					(flags & VK_QUEUE_GRAPHICS_BIT) != 0;
+
+				if (transfer && !graphics) {
+					indices.transferFamily = i;
+					break;
+				}
+			}
+		}
+
+		if (!indices.transferFamily) {
+			indices.transferFamily = indices.graphicsFamily;
+		}
+
+		return indices;
 	}
+} // static ns
 
-	if (!indices.transferFamily) {
-		indices.transferFamily = indices.graphicsFamily;
-	}
-
-	return indices;
-}
-
-bool smvk::FormatHasStencil(VkFormat format)
-{
-	switch (format)
-	{
-	case VK_FORMAT_S8_UINT:
-	case VK_FORMAT_D16_UNORM_S8_UINT:
-	case VK_FORMAT_D24_UNORM_S8_UINT:
-	case VK_FORMAT_D32_SFLOAT_S8_UINT:
-		return true;
-
-	default:
-		return false;
-	}
-}
-
-bool smvk::FormatHasDepth(VkFormat format)
-{
-	switch (format)
-	{
-	case VK_FORMAT_D16_UNORM:
-	case VK_FORMAT_X8_D24_UNORM_PACK32:
-	case VK_FORMAT_D32_SFLOAT:
-	case VK_FORMAT_D16_UNORM_S8_UINT:
-	case VK_FORMAT_D24_UNORM_S8_UINT:
-	case VK_FORMAT_D32_SFLOAT_S8_UINT:
-		return true;
-
-	default:
-		return false;
-	}
-}
-
-VkStencilOp smvk::toVkStencilOp(uint8_t op)
+// RHI to vulkan
+VkStencilOp           smvk::toVkStencilOp(uint8_t op)
 {
 	switch (op) {
 	case STENCIL_OP_KEEP:                return VK_STENCIL_OP_KEEP;
@@ -579,7 +519,6 @@ VkStencilOp smvk::toVkStencilOp(uint8_t op)
 		return VK_STENCIL_OP_KEEP;
 	}
 }
-
 VkShaderStageFlagBits smvk::toVkShaderStage(ShaderStage stage)
 {
 	switch (stage)
@@ -631,8 +570,7 @@ VkShaderStageFlagBits smvk::toVkShaderStage(ShaderStage stage)
 		return VK_SHADER_STAGE_VERTEX_BIT;
 	}
 }
-
-VkBlendFactor smvk::toVkSrcBlendFactor(BlendAttachmentState::SrcColorBlendFactor factor)
+VkBlendFactor         smvk::toVkSrcBlendFactor(BlendAttachmentState::SrcColorBlendFactor factor)
 {
 	using Factor =
 		BlendAttachmentState::SrcColorBlendFactor;
@@ -655,8 +593,7 @@ VkBlendFactor smvk::toVkSrcBlendFactor(BlendAttachmentState::SrcColorBlendFactor
 	assert(false);
 	return VK_BLEND_FACTOR_ONE;
 }
-
-VkBlendFactor smvk::toVkDstBlendFactor(BlendAttachmentState::DstColorBlendFactor factor)
+VkBlendFactor         smvk::toVkDstBlendFactor(BlendAttachmentState::DstColorBlendFactor factor)
 {
 	using Factor =
 		BlendAttachmentState::DstColorBlendFactor;
@@ -676,8 +613,7 @@ VkBlendFactor smvk::toVkDstBlendFactor(BlendAttachmentState::DstColorBlendFactor
 	assert(false);
 	return VK_BLEND_FACTOR_ONE;
 }
-
-VkBlendOp smvk::toVkBlendOp(BlendAttachmentState::ColorBlendOp op)
+VkBlendOp             smvk::toVkBlendOp(BlendAttachmentState::ColorBlendOp op)
 {
 	using Op =
 		BlendAttachmentState::ColorBlendOp;
@@ -703,8 +639,7 @@ VkBlendOp smvk::toVkBlendOp(BlendAttachmentState::ColorBlendOp op)
 	assert(false);
 	return VK_BLEND_OP_ADD;
 }
-
-VkBlendOp smvk::toVkBlendOp(BlendAttachmentState::AlphaBlendOp op)
+VkBlendOp             smvk::toVkBlendOp(BlendAttachmentState::AlphaBlendOp op)
 {
 	using Op =
 		BlendAttachmentState::AlphaBlendOp;
@@ -730,7 +665,6 @@ VkBlendOp smvk::toVkBlendOp(BlendAttachmentState::AlphaBlendOp op)
 	assert(false);
 	return VK_BLEND_OP_ADD;
 }
-
 VkColorComponentFlags smvk::toVkColorWriteMask(uint8_t mask)
 {
 	using Flag =
@@ -752,8 +686,7 @@ VkColorComponentFlags smvk::toVkColorWriteMask(uint8_t mask)
 
 	return result;
 }
-
-VkPrimitiveTopology smvk::toVkPrimitiveTopology(PrimitiveTopology topology)
+VkPrimitiveTopology   smvk::toVkPrimitiveTopology(PrimitiveTopology topology)
 {
 	switch (topology)
 	{
@@ -779,8 +712,7 @@ VkPrimitiveTopology smvk::toVkPrimitiveTopology(PrimitiveTopology topology)
 	assert(false);
 	return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
-
-VkPolygonMode smvk::toVkPolygonMode(PolygonMode mode)
+VkPolygonMode         smvk::toVkPolygonMode(PolygonMode mode)
 {
 	switch (mode)
 	{
@@ -797,8 +729,7 @@ VkPolygonMode smvk::toVkPolygonMode(PolygonMode mode)
 	assert(false);
 	return VK_POLYGON_MODE_FILL;
 }
-
-VkCullModeFlags smvk::toVkCullMode(CullMode mode)
+VkCullModeFlags       smvk::toVkCullMode(CullMode mode)
 {
 	switch (mode)
 	{
@@ -818,8 +749,7 @@ VkCullModeFlags smvk::toVkCullMode(CullMode mode)
 	assert(false);
 	return VK_CULL_MODE_NONE;
 }
-
-VkFrontFace smvk::toVkFrontFace(FrontFace face)
+VkFrontFace           smvk::toVkFrontFace(FrontFace face)
 {
 	switch (face)
 	{
@@ -833,7 +763,6 @@ VkFrontFace smvk::toVkFrontFace(FrontFace face)
 	assert(false);
 	return VK_FRONT_FACE_COUNTER_CLOCKWISE;
 }
-
 VkSampleCountFlagBits smvk::toVkSampleCount(SampleCount samples)
 {
 	switch (samples)
@@ -863,8 +792,7 @@ VkSampleCountFlagBits smvk::toVkSampleCount(SampleCount samples)
 	assert(false);
 	return VK_SAMPLE_COUNT_1_BIT;
 }
-
-VkCompareOp smvk::toVkCompareOp(smvk::CompareOp op)
+VkCompareOp           smvk::toVkCompareOp(smvk::CompareOp op)
 {
 	switch (op)
 	{
@@ -879,8 +807,7 @@ VkCompareOp smvk::toVkCompareOp(smvk::CompareOp op)
 	default:                            return VK_COMPARE_OP_ALWAYS;
 	}
 }
-
-VkFormat smvk::toVkFormat(smvk::Format format)
+VkFormat              smvk::toVkFormat(smvk::Format format)
 {
 	switch (format)
 	{
@@ -972,8 +899,7 @@ VkFormat smvk::toVkFormat(smvk::Format format)
 
 	return VK_FORMAT_UNDEFINED;
 }
-
-VkBlendFactor smvk::toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor)
+VkBlendFactor         smvk::toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor)
 {
 	switch (factor)
 	{
@@ -984,8 +910,7 @@ VkBlendFactor smvk::toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFac
 	default: return VK_BLEND_FACTOR_ONE;
 	}
 }
-
-VkBlendFactor smvk::toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor)
+VkBlendFactor         smvk::toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor)
 {
 	switch (factor)
 	{
@@ -995,8 +920,7 @@ VkBlendFactor smvk::toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFac
 	default: return VK_BLEND_FACTOR_ONE;
 	}
 }
-
-uint8_t smvk::toRhiColorWriteMask(VkColorComponentFlags flags)
+uint8_t               smvk::toRhiColorWriteMask(VkColorComponentFlags flags)
 {
 	uint8_t mask = 0;
 	if (flags & VK_COLOR_COMPONENT_R_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::R);
@@ -1005,7 +929,6 @@ uint8_t smvk::toRhiColorWriteMask(VkColorComponentFlags flags)
 	if (flags & VK_COLOR_COMPONENT_A_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::A);
 	return mask;
 }
-
 smvk::BlendAttachmentState::SrcColorBlendFactor smvk::toRhiSrcColorBlendFactor(VkBlendFactor factor)
 {
 	switch (factor)
@@ -1017,7 +940,6 @@ smvk::BlendAttachmentState::SrcColorBlendFactor smvk::toRhiSrcColorBlendFactor(V
 	default: return smvk::BlendAttachmentState::SrcColorBlendFactor::One;
 	}
 }
-
 smvk::BlendAttachmentState::DstColorBlendFactor smvk::toRhiDstColorBlendFactor(VkBlendFactor factor)
 {
 	switch (factor)
@@ -1026,6 +948,36 @@ smvk::BlendAttachmentState::DstColorBlendFactor smvk::toRhiDstColorBlendFactor(V
 	case VK_BLEND_FACTOR_ONE:         return smvk::BlendAttachmentState::DstColorBlendFactor::One;
 	case VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: return smvk::BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha;
 	default: return smvk::BlendAttachmentState::DstColorBlendFactor::One;
+	}
+}
+bool smvk::FormatHasStencil(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_S8_UINT:
+	case VK_FORMAT_D16_UNORM_S8_UINT:
+	case VK_FORMAT_D24_UNORM_S8_UINT:
+	case VK_FORMAT_D32_SFLOAT_S8_UINT:
+		return true;
+
+	default:
+		return false;
+	}
+}
+bool smvk::FormatHasDepth(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_D16_UNORM:
+	case VK_FORMAT_X8_D24_UNORM_PACK32:
+	case VK_FORMAT_D32_SFLOAT:
+	case VK_FORMAT_D16_UNORM_S8_UINT:
+	case VK_FORMAT_D24_UNORM_S8_UINT:
+	case VK_FORMAT_D32_SFLOAT_S8_UINT:
+		return true;
+
+	default:
+		return false;
 	}
 }
 
@@ -1043,7 +995,6 @@ static VkDescriptorSetLayoutBinding getDSLBinding(uint32_t binding,
 		.pImmutableSamplers = immutableSamplers,
 	};
 }
-
 
 inline void BufferBarrier(
 	VkCommandBuffer cmd,
@@ -1436,7 +1387,6 @@ int smvk::VulkanResourceManager::Initialize() {
 	const VkDescriptorSetLayoutBinding bindings[kBinding_NumBindings] = {
 		getDSLBinding(kBinding_Textures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
 		getDSLBinding(kBinding_Samplers, VK_DESCRIPTOR_TYPE_SAMPLER, MAX_SAMPLERS, stageFlags),
-		//getDSLBinding(kBinding_ComparisonSamplers, VK_DESCRIPTOR_TYPE_SAMPLER, MAX_SHADOW_SAMPLERS, stageFlags),
 		getDSLBinding(kBinding_StorageImages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_TEXTURES, stageFlags),
 	};
 
@@ -1843,11 +1793,8 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 	);
 
 }
-
-[[nodiscard]] smvk::Image smvk::VulkanResourceManager::CreateImageImpl(
-	const smvk::ImageCreateInfo& imageCreateInfo,
-	const void* data,
-	const char* debugName)
+//
+[[nodiscard]] smvk::Image smvk::VulkanResourceManager::CreateImageImpl(const smvk::ImageCreateInfo& imageCreateInfo, const void* data, const char* debugName)
 {
 	Image img{};
 
@@ -1941,12 +1888,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 
 	return img;
 }
-[[nodiscard]]
-smvk::Holder<smvk::ImageHandle>
-smvk::VulkanResourceManager::CreateImage(
-	ImageCreateInfo imageCreateInfo,
-	const void* data,
-	const char* debugName)
+[[nodiscard]] smvk::Holder<smvk::ImageHandle>smvk::VulkanResourceManager::CreateImage(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
 {
 	Image img = CreateImageImpl(
 		imageCreateInfo,
@@ -1959,13 +1901,7 @@ smvk::VulkanResourceManager::CreateImage(
 		images_.create(std::move(img))
 	);
 }
-
-[[nodiscard]]
-smvk::Holder<smvk::TextureHandle>
-smvk::VulkanResourceManager::CreateTexture(
-	ImageCreateInfo imageCreateInfo,
-	const void* data,
-	const char* debugName)
+[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
 {
 	Image img = CreateImageImpl(
 		imageCreateInfo,
@@ -1979,7 +1915,6 @@ smvk::VulkanResourceManager::CreateTexture(
 		textures_.create(std::move(img))
 	);
 }
-
 [[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ktxTexture2& texture, const char* debugName) {
 
 	if (ktxTexture2_NeedsTranscoding(&texture)) {
@@ -2431,8 +2366,8 @@ smvk::VulkanResourceManager::CreateTexture(
 #endif
 	return { this, descriptorPools_.create(std::move(dpool)) };
 }
-
-void* smvk::VulkanResourceManager::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
+//
+[[nodiscard]] void* smvk::VulkanResourceManager::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
 	void* mapped = nullptr;
 	assert(!handle.empty());
 	auto buf = this->buffers_.get(handle);

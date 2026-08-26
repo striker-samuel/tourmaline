@@ -76,13 +76,13 @@ private:
 
         auto vertCode = CompileHLSLToSPIRV(
             kTriangleVertShader,
-            ShaderStage::Vertex,
+            DxcShaderStage::Vertex,
             L"mainVS"
         );
 
         auto fragCode = CompileHLSLToSPIRV(
             kTriangleFragShader,
-            ShaderStage::Fragment,
+            DxcShaderStage::Fragment,
             L"mainPS"
         );
 
@@ -116,9 +116,10 @@ private:
     void RenderFrame(smvk::FrameBuffer fb) {
         m_rendergraph->NewFrame();
 
-        auto swapchainImage = m_rendergraph->AddImageView(
+        auto swapchainImage = m_rendergraph->AddExternalImageView(
             fb.swapchain.imageViews_[fb.imageIndex],
-            fb.swapchain.vk_surfaceFormat_
+            smvk::Format::RGBA16_Float
+            //fb.swapchain.vk_surfaceFormat_
         );
 
         std::vector<smvk::LogicalImageViewHandle> colors{
@@ -126,15 +127,21 @@ private:
         };
 
         m_rendergraph->AddPass()
-            .setOffset({ 0, 0 })
-            .setExtent(fb.swapchain.extent_)
-            .setColor(
-                colors,
-                VK_ATTACHMENT_LOAD_OP_CLEAR,
-                VK_ATTACHMENT_STORE_OP_STORE,
-                { { 0.0f, 0.0f, 0.0f, 1.0f } }
+            .SetOffset( 0, 0 )
+            .SetExtent(
+                {
+					fb.swapchain.extent_.width,
+					fb.swapchain.extent_.height
+                }
+                //fb.swapchain.extent_
             )
-            .setRecordingFunc(
+            .SetColor(
+                colors,
+                smvk::AttachmentLoadOp::Clear,
+                smvk::AttachmentStoreOp::Store,
+                smvk::ClearColor(0,0,0,1)
+            )
+            .SetRecordingFunc(
                 [this](smvk::CommandBuffer& cmd) 
         { //recording
             cmd.BindRenderPipeline(m_program, smvk::VertexFormat::Empty);
