@@ -18,8 +18,6 @@
 
 #define ENGINE_NAME "smvk"
 
-#include <ktx.h>
-#include <ktxVulkan.h>
 //
 static constexpr uint32_t DEFAULT_WIDTH = 1280;
 static constexpr uint32_t DEFAULT_HEIGHT = 720;
@@ -32,32 +30,6 @@ static constexpr uint32_t MAX_SAMPLERS = 8;
 static constexpr uint32_t MAX_MATERIALS = 1024;
 static constexpr uint32_t MAX_SHADOW_SAMPLERS = 8;
 static constexpr uint32_t MAX_COLOR_ATTACHEMNTS = 4096;
-
-inline const char* vkResultToString(VkResult result);
-
-#define VK_ASSERT_RETURN(func)                                     \
-  {                                                                \
-    const VkResult vk_assert_result = func;                        \
-    if (vk_assert_result != VK_SUCCESS) {                          \
-      LLOGW("Vulkan API call failed: %s:%i\n  %s\n  %s\n", \
-                    __FILE__,                                      \
-                    __LINE__,                                      \
-                    #func,                                         \
-                    lvk::getVulkanResultString(vk_assert_result)); \
-      assert(false);                                               \
-      return getResultFromVkResult(vk_assert_result);              \
-    }                                                              \
-  }
-
-#define VK_CHECK(x)                                                     \
-    do {                                                                \
-        VkResult err = (x);                                             \
-        if (err != VK_SUCCESS) {                                        \
-            fprintf(stderr, "[Vulkan Error] %s:%d: %s\n",               \
-                    __FILE__, __LINE__, vkResultToString(err));         \
-            abort();                                                    \
-        }                                                               \
-    } while (0)
 
 namespace smvk {
 
@@ -219,6 +191,8 @@ namespace smvk {
 		VertexSemantic semantic = VertexSemantic::Position;
 		Format format = Format::Undefined;
 		uint32_t offset = 0;
+
+		bool operator==(const VertexAttribute&) const = default;
 	};
 
 	struct VertexBinding
@@ -229,11 +203,15 @@ namespace smvk {
 		VertexInputRate inputRate = VertexInputRate::Vertex;
 
 		std::vector<VertexAttribute> attributes;
+
+		bool operator==(const VertexBinding&) const = default;
 	};
 
 	struct VertexFormatDescription
 	{
 		std::vector<VertexBinding> bindings;
+
+		bool operator==(const VertexFormatDescription&) const = default;
 	};
 
 	// ============================================================================
@@ -514,50 +492,49 @@ namespace smvk {
 	};
 
 	using ShaderStageFlags = ShaderStage;
-	//
-	//	// ============================================================================
-	//	// Shader program
-	//	// ============================================================================
-	//
-	//	struct Shader
+
+	// ============================================================================
+	// Shader program
+	// ============================================================================
+
+	//struct Shader
+	//{
+	//	ShaderModuleHandle module;
+
+	//	const char* entryPoint = "main";
+	//	ShaderStage stage = ShaderStage::None;
+
+	//	bool operator==(const Shader& other) const noexcept
 	//	{
-	//		ShaderModuleHandle module;
-	//
-	//		const char* entryPoint = "main";
-	//		ShaderStage stage = ShaderStage::None;
-	//
-	//		bool operator==(const Shader& other) const noexcept
-	//		{
-	//			return std::strcmp(entryPoint, other.entryPoint) == 0 &&
-	//				stage == other.stage &&
-	//				module == other.module;
-	//		}
-	//	};
-	//
-	//	struct ShaderProgram
+	//		return std::strcmp(entryPoint, other.entryPoint) == 0 &&
+	//			stage == other.stage &&
+	//			module == other.module;
+	//	}
+	//};
+
+	//struct ShaderProgram
+	//{
+	//	Shader shaders[8]{};
+	//	size_t shaderCount = 0;
+
+	//	bool operator==(const ShaderProgram& other) const noexcept
 	//	{
-	//		Shader shaders[8]{};
-	//		size_t shaderCount = 0;
-	//
-	//		bool operator==(const ShaderProgram& other) const noexcept
+	//		if (shaderCount != other.shaderCount)
+	//			return false;
+
+	//		for (size_t i = 0; i < shaderCount; ++i)
 	//		{
-	//			if (shaderCount != other.shaderCount)
+	//			if (!(shaders[i] == other.shaders[i]))
 	//				return false;
-	//
-	//			for (size_t i = 0; i < shaderCount; ++i)
-	//			{
-	//				if (!(shaders[i] == other.shaders[i]))
-	//					return false;
-	//			}
-	//
-	//			return true;
 	//		}
-	//	};
 
+	//		return true;
+	//	}
+	//};
 
-// ============================================================================
-// Stencil
-// ============================================================================
+	// ============================================================================
+	// Stencil
+	// ============================================================================
 
 	enum StencilOp : uint8_t
 	{
@@ -671,8 +648,6 @@ namespace smvk {
 	// Blend settings for pipeline state
 	// ============================================================================
 
-	// Abstract blend state description - defined in RHI layer, translated to Vk types
-	// in impl.h when creating pipelines.
 	struct BlendAttachmentState {
 		bool blendEnable = false;
 		// Color blend factors
@@ -905,6 +880,7 @@ namespace smvk {
 		uint32_t arrayLayers = 1;
 	};
 	using TextureCreateInfo = ImageCreateInfo;
+
 	struct ImageViewCreateInfo {
 		VkImageViewCreateFlags     flags{};
 		VkImage                    vk_image{};
@@ -912,6 +888,7 @@ namespace smvk {
 		VkFormat                   vk_format{};
 		VkImageSubresourceRange    subResourceRange{};
 	};
+
 	struct SamplerCreateInfo {
 		VkFilter mag = VK_FILTER_LINEAR;
 		VkFilter min = VK_FILTER_LINEAR;
@@ -937,8 +914,8 @@ namespace smvk {
 			);
 		}
 	};
-	struct Image {
 
+	struct Image {
 		VkImage vk_image = VK_NULL_HANDLE;
 		VmaAllocation vma_alloc = VK_NULL_HANDLE;
 		VkExtent3D vk_extent = { 1,1,1 };
@@ -957,15 +934,6 @@ namespace smvk {
 		VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
 		bool owns_views = true;
 		bool is_swapchain = false;
-		ImageCreateInfo getImageCreateInfo() const {
-			return {
-				.vk_extent = vk_extent,
-				.vk_format = vk_format,
-				.vk_usage = vk_usage,
-				.levels = levels,
-				.arrayLayers = arrayLayers
-			};
-		};
 	};
 
 	// Just piggybacking on vma really

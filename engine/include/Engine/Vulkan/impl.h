@@ -2,549 +2,50 @@
 
 #include <Engine/smvk.h>
 
-constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
-	VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_Index
-	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,             // BufferType_Vertex
-	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
-	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Storage
-	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,           // BufferType_Indirect
-	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_TransferSrc
-	VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_TransferDst
-	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_Staging: transfer with host visibility
-	0,                                             // BufferType_Count sentinel
-};
+#include "volk.h"
+#include "vk_mem_alloc.h"
 
-constexpr VmaMemoryUsage bufferTypeToVmaUsage[9] = {
-	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Index: device-local only
-	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Vertex: device-local only
-	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Uniform: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
-	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Storage: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
-	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Indirect: device-local only
-	VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferSrc: auto-detect memory properties
-	VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferDst: auto-detect memory properties
-	VMA_MEMORY_USAGE_AUTO_PREFER_HOST, // BufferType_Staging: auto-prefer host for CPU mapping
-	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Count sentinel
-};
+#include <ktx.h>
+#include <ktxVulkan.h>
 
+#include <string_view>
+#include <unordered_map>
 
-
-// ============================================================================
-// DepthSettings and BlendSettings are RHI-defined types in smvk.h.
-// Translators convert them to Vk types for pipeline cache usage.
-// ============================================================================
 
 namespace smvk {
 
-	inline bool FormatHasStencil(VkFormat format)
-	{
-		switch (format)
-		{
-		case VK_FORMAT_S8_UINT:
-		case VK_FORMAT_D16_UNORM_S8_UINT:
-		case VK_FORMAT_D24_UNORM_S8_UINT:
-		case VK_FORMAT_D32_SFLOAT_S8_UINT:
-			return true;
 
-		default:
-			return false;
-		}
-	}
-	inline bool FormatHasDepth(VkFormat format)
-	{
-		switch (format)
-		{
-		case VK_FORMAT_D16_UNORM:
-		case VK_FORMAT_X8_D24_UNORM_PACK32:
-		case VK_FORMAT_D32_SFLOAT:
-		case VK_FORMAT_D16_UNORM_S8_UINT:
-		case VK_FORMAT_D24_UNORM_S8_UINT:
-		case VK_FORMAT_D32_SFLOAT_S8_UINT:
-			return true;
-
-		default:
-			return false;
-		}
-	}
+	// dont like these
+	inline bool FormatHasStencil(VkFormat format);
+	inline bool FormatHasDepth(VkFormat format);
 
 	// ============================================================================
 	// Type translators: convert RHI types from smvk.h to Vk types for pipeline state
 	// ============================================================================
 
-
-	inline VkShaderStageFlagBits toVkShaderStage(ShaderStage stage)
-	{
-		switch (stage)
-		{
-		case ShaderStage::Vertex:
-			return VK_SHADER_STAGE_VERTEX_BIT;
-
-		case ShaderStage::Fragment:
-			return VK_SHADER_STAGE_FRAGMENT_BIT;
-
-		case ShaderStage::Compute:
-			return VK_SHADER_STAGE_COMPUTE_BIT;
-
-		case ShaderStage::Geometry:
-			return VK_SHADER_STAGE_GEOMETRY_BIT;
-
-		case ShaderStage::TessControl:
-			return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-
-		case ShaderStage::TessEvaluation:
-			return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-
-		//case ShaderStage::Task:
-		//	return VK_SHADER_STAGE_TASK_BIT_EXT;
-
-		//case ShaderStage::Mesh:
-		//	return VK_SHADER_STAGE_MESH_BIT_EXT;
-
-		//case ShaderStage::RayGen:
-		//	return VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-
-		//case ShaderStage::AnyHit:
-		//	return VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
-
-		//case ShaderStage::ClosestHit:
-		//	return VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-
-		//case ShaderStage::Miss:
-		//	return VK_SHADER_STAGE_MISS_BIT_KHR;
-
-		//case ShaderStage::Intersection:
-		//	return VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
-
-		//case ShaderStage::Callable:
-		//	return VK_SHADER_STAGE_CALLABLE_BIT_KHR;
-
-		default:
-			assert(false && "Unsupported ShaderStage");
-			return VK_SHADER_STAGE_VERTEX_BIT;
-		}
-	}
-
-	inline VkBlendFactor toVkSrcBlendFactor(
-		BlendAttachmentState::SrcColorBlendFactor factor)
-	{
-		using Factor =
-			BlendAttachmentState::SrcColorBlendFactor;
-
-		switch (factor)
-		{
-		case Factor::Zero:
-			return VK_BLEND_FACTOR_ZERO;
-
-		case Factor::One:
-			return VK_BLEND_FACTOR_ONE;
-
-		case Factor::SrcAlpha:
-			return VK_BLEND_FACTOR_SRC_ALPHA;
-
-		case Factor::OneMinusSrcAlpha:
-			return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-		}
-
-		assert(false);
-		return VK_BLEND_FACTOR_ONE;
-	}
-
-	inline VkBlendFactor toVkDstBlendFactor(
-		BlendAttachmentState::DstColorBlendFactor factor)
-	{
-		using Factor =
-			BlendAttachmentState::DstColorBlendFactor;
-
-		switch (factor)
-		{
-		case Factor::Zero:
-			return VK_BLEND_FACTOR_ZERO;
-
-		case Factor::One:
-			return VK_BLEND_FACTOR_ONE;
-
-		case Factor::OneMinusSrcAlpha:
-			return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-		}
-
-		assert(false);
-		return VK_BLEND_FACTOR_ONE;
-	}
-
-	inline VkBlendOp toVkBlendOp(
-		BlendAttachmentState::ColorBlendOp op)
-	{
-		using Op =
-			BlendAttachmentState::ColorBlendOp;
-
-		switch (op)
-		{
-		case Op::Add:
-			return VK_BLEND_OP_ADD;
-
-		case Op::Subtract:
-			return VK_BLEND_OP_SUBTRACT;
-
-		case Op::ReverseSubtract:
-			return VK_BLEND_OP_REVERSE_SUBTRACT;
-
-		case Op::Min:
-			return VK_BLEND_OP_MIN;
-
-		case Op::Max:
-			return VK_BLEND_OP_MAX;
-		}
-
-		assert(false);
-		return VK_BLEND_OP_ADD;
-	}
-
-	inline VkBlendOp toVkBlendOp(
-		BlendAttachmentState::AlphaBlendOp op)
-	{
-		using Op =
-			BlendAttachmentState::AlphaBlendOp;
-
-		switch (op)
-		{
-		case Op::Add:
-			return VK_BLEND_OP_ADD;
-
-		case Op::Subtract:
-			return VK_BLEND_OP_SUBTRACT;
-
-		case Op::ReverseSubtract:
-			return VK_BLEND_OP_REVERSE_SUBTRACT;
-
-		case Op::Min:
-			return VK_BLEND_OP_MIN;
-
-		case Op::Max:
-			return VK_BLEND_OP_MAX;
-		}
-
-		assert(false);
-		return VK_BLEND_OP_ADD;
-	}
-
-	inline VkColorComponentFlags toVkColorWriteMask(
-		uint8_t mask)
-	{
-		using Flag =
-			BlendAttachmentState::ColorComponentFlag;
-
-		VkColorComponentFlags result = 0;
-
-		if (mask & static_cast<uint8_t>(Flag::R))
-			result |= VK_COLOR_COMPONENT_R_BIT;
-
-		if (mask & static_cast<uint8_t>(Flag::G))
-			result |= VK_COLOR_COMPONENT_G_BIT;
-
-		if (mask & static_cast<uint8_t>(Flag::B))
-			result |= VK_COLOR_COMPONENT_B_BIT;
-
-		if (mask & static_cast<uint8_t>(Flag::A))
-			result |= VK_COLOR_COMPONENT_A_BIT;
-
-		return result;
-	}
-
-	inline VkPrimitiveTopology toVkPrimitiveTopology(
-		PrimitiveTopology topology)
-	{
-		switch (topology)
-		{
-		case PrimitiveTopology::PointList:
-			return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
-
-		case PrimitiveTopology::LineList:
-			return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-
-		case PrimitiveTopology::LineStrip:
-			return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
-
-		case PrimitiveTopology::TriangleList:
-			return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-		case PrimitiveTopology::TriangleStrip:
-			return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-
-		case PrimitiveTopology::TriangleFan:
-			return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
-		}
-
-		assert(false);
-		return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-	}
-
-	inline VkPolygonMode toVkPolygonMode(
-		PolygonMode mode)
-	{
-		switch (mode)
-		{
-		case PolygonMode::Fill:
-			return VK_POLYGON_MODE_FILL;
-
-		case PolygonMode::Line:
-			return VK_POLYGON_MODE_LINE;
-
-		case PolygonMode::Point:
-			return VK_POLYGON_MODE_POINT;
-		}
-
-		assert(false);
-		return VK_POLYGON_MODE_FILL;
-	}
-
-	inline VkCullModeFlags toVkCullMode(
-		CullMode mode)
-	{
-		switch (mode)
-		{
-		case CullMode::None:
-			return VK_CULL_MODE_NONE;
-
-		case CullMode::Front:
-			return VK_CULL_MODE_FRONT_BIT;
-
-		case CullMode::Back:
-			return VK_CULL_MODE_BACK_BIT;
-
-		case CullMode::FrontAndBack:
-			return VK_CULL_MODE_FRONT_AND_BACK;
-		}
-
-		assert(false);
-		return VK_CULL_MODE_NONE;
-	}
-
-	inline VkFrontFace toVkFrontFace(
-		FrontFace face)
-	{
-		switch (face)
-		{
-		case FrontFace::CounterClockwise:
-			return VK_FRONT_FACE_COUNTER_CLOCKWISE;
-
-		case FrontFace::Clockwise:
-			return VK_FRONT_FACE_CLOCKWISE;
-		}
-
-		assert(false);
-		return VK_FRONT_FACE_COUNTER_CLOCKWISE;
-	}
-
-	inline VkSampleCountFlagBits toVkSampleCount(
-		SampleCount samples)
-	{
-		switch (samples)
-		{
-		case SampleCount::Count1:
-			return VK_SAMPLE_COUNT_1_BIT;
-
-		case SampleCount::Count2:
-			return VK_SAMPLE_COUNT_2_BIT;
-
-		case SampleCount::Count4:
-			return VK_SAMPLE_COUNT_4_BIT;
-
-		case SampleCount::Count8:
-			return VK_SAMPLE_COUNT_8_BIT;
-
-		case SampleCount::Count16:
-			return VK_SAMPLE_COUNT_16_BIT;
-
-		case SampleCount::Count32:
-			return VK_SAMPLE_COUNT_32_BIT;
-
-		case SampleCount::Count64:
-			return VK_SAMPLE_COUNT_64_BIT;
-		}
-
-		assert(false);
-		return VK_SAMPLE_COUNT_1_BIT;
-	}
-
-	// CompareOp (RHI enum) -> VkCompareOp
-	inline VkCompareOp toVkCompareOp(smvk::CompareOp op)
-	{
-		switch (op)
-		{
-		case smvk::CompareOp::Never:        return VK_COMPARE_OP_NEVER;
-		case smvk::CompareOp::Less:         return VK_COMPARE_OP_LESS;
-		case smvk::CompareOp::Equal:        return VK_COMPARE_OP_EQUAL;
-		case smvk::CompareOp::LessEqual:    return VK_COMPARE_OP_LESS_OR_EQUAL;
-		case smvk::CompareOp::Greater:      return VK_COMPARE_OP_GREATER;
-		case smvk::CompareOp::NotEqual:     return VK_COMPARE_OP_NOT_EQUAL;
-		case smvk::CompareOp::GreaterEqual: return VK_COMPARE_OP_GREATER_OR_EQUAL;
-		case smvk::CompareOp::Always:       return VK_COMPARE_OP_ALWAYS;
-		default:                            return VK_COMPARE_OP_ALWAYS;
-		}
-	}
-	inline VkFormat toVkFormat(smvk::Format format)
-	{
-		switch (format)
-		{
-		case smvk::Format::Undefined:           return VK_FORMAT_UNDEFINED;
-
-			// 8-bit
-		case smvk::Format::R8_UNorm:            return VK_FORMAT_R8_UNORM;
-		case smvk::Format::R8_SNorm:            return VK_FORMAT_R8_SNORM;
-		case smvk::Format::R8_UInt:             return VK_FORMAT_R8_UINT;
-		case smvk::Format::R8_SInt:             return VK_FORMAT_R8_SINT;
-
-		case smvk::Format::RG8_UNorm:           return VK_FORMAT_R8G8_UNORM;
-		case smvk::Format::RG8_SNorm:           return VK_FORMAT_R8G8_SNORM;
-		case smvk::Format::RG8_UInt:            return VK_FORMAT_R8G8_UINT;
-		case smvk::Format::RG8_SInt:            return VK_FORMAT_R8G8_SINT;
-
-		case smvk::Format::RGBA8_UNorm:         return VK_FORMAT_R8G8B8A8_UNORM;
-		case smvk::Format::RGBA8_SNorm:         return VK_FORMAT_R8G8B8A8_SNORM;
-		case smvk::Format::RGBA8_UInt:          return VK_FORMAT_R8G8B8A8_UINT;
-		case smvk::Format::RGBA8_SInt:          return VK_FORMAT_R8G8B8A8_SINT;
-		case smvk::Format::RGBA8_SRGB:          return VK_FORMAT_R8G8B8A8_SRGB;
-
-		case smvk::Format::BGRA8_UNorm:         return VK_FORMAT_B8G8R8A8_UNORM;
-		case smvk::Format::BGRA8_SRGB:          return VK_FORMAT_B8G8R8A8_SRGB;
-
-			// 16-bit
-		case smvk::Format::R16_UNorm:           return VK_FORMAT_R16_UNORM;
-		case smvk::Format::R16_SNorm:           return VK_FORMAT_R16_SNORM;
-		case smvk::Format::R16_UInt:            return VK_FORMAT_R16_UINT;
-		case smvk::Format::R16_SInt:            return VK_FORMAT_R16_SINT;
-		case smvk::Format::R16_Float:           return VK_FORMAT_R16_SFLOAT;
-
-		case smvk::Format::RG16_UNorm:          return VK_FORMAT_R16G16_UNORM;
-		case smvk::Format::RG16_SNorm:          return VK_FORMAT_R16G16_SNORM;
-		case smvk::Format::RG16_UInt:           return VK_FORMAT_R16G16_UINT;
-		case smvk::Format::RG16_SInt:           return VK_FORMAT_R16G16_SINT;
-		case smvk::Format::RG16_Float:          return VK_FORMAT_R16G16_SFLOAT;
-
-		case smvk::Format::RGBA16_UNorm:        return VK_FORMAT_R16G16B16A16_UNORM;
-		case smvk::Format::RGBA16_SNorm:        return VK_FORMAT_R16G16B16A16_SNORM;
-		case smvk::Format::RGBA16_UInt:         return VK_FORMAT_R16G16B16A16_UINT;
-		case smvk::Format::RGBA16_SInt:         return VK_FORMAT_R16G16B16A16_SINT;
-		case smvk::Format::RGBA16_Float:        return VK_FORMAT_R16G16B16A16_SFLOAT;
-
-			// 32-bit
-		case smvk::Format::R32_UInt:            return VK_FORMAT_R32_UINT;
-		case smvk::Format::R32_SInt:            return VK_FORMAT_R32_SINT;
-		case smvk::Format::R32_Float:           return VK_FORMAT_R32_SFLOAT;
-
-		case smvk::Format::RG32_UInt:           return VK_FORMAT_R32G32_UINT;
-		case smvk::Format::RG32_SInt:           return VK_FORMAT_R32G32_SINT;
-		case smvk::Format::RG32_Float:          return VK_FORMAT_R32G32_SFLOAT;
-
-		case smvk::Format::RGB32_UInt:          return VK_FORMAT_R32G32B32_UINT;
-		case smvk::Format::RGB32_SInt:          return VK_FORMAT_R32G32B32_SINT;
-		case smvk::Format::RGB32_Float:         return VK_FORMAT_R32G32B32_SFLOAT;
-
-		case smvk::Format::RGBA32_UInt:         return VK_FORMAT_R32G32B32A32_UINT;
-		case smvk::Format::RGBA32_SInt:         return VK_FORMAT_R32G32B32A32_SINT;
-		case smvk::Format::RGBA32_Float:        return VK_FORMAT_R32G32B32A32_SFLOAT;
-
-			// packed
-		case smvk::Format::RGB10A2_UNorm:       return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
-		case smvk::Format::RGB10A2_UInt:        return VK_FORMAT_A2B10G10R10_UINT_PACK32;
-		case smvk::Format::R11G11B10_Float:     return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
-
-			// depth / stencil
-		case smvk::Format::D16_UNorm:           return VK_FORMAT_D16_UNORM;
-		case smvk::Format::D24_UNorm_S8_UInt:   return VK_FORMAT_D24_UNORM_S8_UINT;
-		case smvk::Format::D32_Float:           return VK_FORMAT_D32_SFLOAT;
-		case smvk::Format::D32_Float_S8_UInt:   return VK_FORMAT_D32_SFLOAT_S8_UINT;
-
-			// compressed
-		case smvk::Format::BC1_RGBA_UNorm:      return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
-		case smvk::Format::BC1_RGBA_SRGB:       return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
-		case smvk::Format::BC2_UNorm:           return VK_FORMAT_BC2_UNORM_BLOCK;
-		case smvk::Format::BC2_SRGB:            return VK_FORMAT_BC2_SRGB_BLOCK;
-		case smvk::Format::BC3_UNorm:           return VK_FORMAT_BC3_UNORM_BLOCK;
-		case smvk::Format::BC3_SRGB:            return VK_FORMAT_BC3_SRGB_BLOCK;
-		case smvk::Format::BC4_UNorm:           return VK_FORMAT_BC4_UNORM_BLOCK;
-		case smvk::Format::BC4_SNorm:           return VK_FORMAT_BC4_SNORM_BLOCK;
-		case smvk::Format::BC5_UNorm:           return VK_FORMAT_BC5_UNORM_BLOCK;
-		case smvk::Format::BC5_SNorm:           return VK_FORMAT_BC5_SNORM_BLOCK;
-		case smvk::Format::BC6H_UFloat:         return VK_FORMAT_BC6H_UFLOAT_BLOCK;
-		case smvk::Format::BC6H_SFloat:         return VK_FORMAT_BC6H_SFLOAT_BLOCK;
-		case smvk::Format::BC7_UNorm:           return VK_FORMAT_BC7_UNORM_BLOCK;
-		case smvk::Format::BC7_SRGB:            return VK_FORMAT_BC7_SRGB_BLOCK;
-		}
-
-		return VK_FORMAT_UNDEFINED;
-	}
-
-	// BlendAttachmentState factors/ops -> Vk blend factors/ops
-	inline VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor)
-	{
-		switch (factor)
-		{
-		case smvk::BlendAttachmentState::SrcColorBlendFactor::Zero:       return VK_BLEND_FACTOR_ZERO;
-		case smvk::BlendAttachmentState::SrcColorBlendFactor::One:        return VK_BLEND_FACTOR_ONE;
-		case smvk::BlendAttachmentState::SrcColorBlendFactor::SrcAlpha:   return VK_BLEND_FACTOR_SRC_ALPHA;
-		case smvk::BlendAttachmentState::SrcColorBlendFactor::OneMinusSrcAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-		default: return VK_BLEND_FACTOR_ONE;
-		}
-	}
-
-	inline VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor)
-	{
-		switch (factor)
-		{
-		case smvk::BlendAttachmentState::DstColorBlendFactor::Zero:       return VK_BLEND_FACTOR_ZERO;
-		case smvk::BlendAttachmentState::DstColorBlendFactor::One:        return VK_BLEND_FACTOR_ONE;
-		case smvk::BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-		default: return VK_BLEND_FACTOR_ONE;
-		}
-	}
-
-	inline VkBlendOp toVkBlendOp(smvk::BlendAttachmentState::AlphaBlendOp op)
-	{
-		switch (op)
-		{
-		case smvk::BlendAttachmentState::AlphaBlendOp::Add:             return VK_BLEND_OP_ADD;
-		case smvk::BlendAttachmentState::AlphaBlendOp::Subtract:        return VK_BLEND_OP_SUBTRACT;
-		case smvk::BlendAttachmentState::AlphaBlendOp::ReverseSubtract:  return VK_BLEND_OP_REVERSE_SUBTRACT;
-		case smvk::BlendAttachmentState::AlphaBlendOp::Min:             return VK_BLEND_OP_MIN;
-		case smvk::BlendAttachmentState::AlphaBlendOp::Max:             return VK_BLEND_OP_MAX;
-		default: return VK_BLEND_OP_ADD;
-		}
-	}
-
-	// VkColorComponentFlags -> BlendAttachmentState color write mask bits
-	inline uint8_t toRhiColorWriteMask(VkColorComponentFlags flags)
-	{
-		uint8_t mask = 0;
-		if (flags & VK_COLOR_COMPONENT_R_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::R);
-		if (flags & VK_COLOR_COMPONENT_G_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::G);
-		if (flags & VK_COLOR_COMPONENT_B_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::B);
-		if (flags & VK_COLOR_COMPONENT_A_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::A);
-		return mask;
-	}
-
-	// VkBlendFactor/Op/ColorComponentFlags -> BlendAttachmentState
-	inline smvk::BlendAttachmentState::SrcColorBlendFactor toRhiSrcColorBlendFactor(VkBlendFactor factor)
-	{
-		switch (factor)
-		{
-		case VK_BLEND_FACTOR_ZERO:          return smvk::BlendAttachmentState::SrcColorBlendFactor::Zero;
-		case VK_BLEND_FACTOR_ONE:         return smvk::BlendAttachmentState::SrcColorBlendFactor::One;
-		case VK_BLEND_FACTOR_SRC_ALPHA:   return smvk::BlendAttachmentState::SrcColorBlendFactor::SrcAlpha;
-		case VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: return smvk::BlendAttachmentState::SrcColorBlendFactor::OneMinusSrcAlpha;
-		default: return smvk::BlendAttachmentState::SrcColorBlendFactor::One;
-		}
-	}
-
-	inline smvk::BlendAttachmentState::DstColorBlendFactor toRhiDstColorBlendFactor(VkBlendFactor factor)
-	{
-		switch (factor)
-		{
-		case VK_BLEND_FACTOR_ZERO:          return smvk::BlendAttachmentState::DstColorBlendFactor::Zero;
-		case VK_BLEND_FACTOR_ONE:         return smvk::BlendAttachmentState::DstColorBlendFactor::One;
-		case VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: return smvk::BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha;
-		default: return smvk::BlendAttachmentState::DstColorBlendFactor::One;
-		}
-	}
+	inline VkStencilOp toVkStencilOp(uint8_t op);
+	inline VkShaderStageFlagBits toVkShaderStage(ShaderStage stage);
+	inline VkBlendFactor toVkSrcBlendFactor(BlendAttachmentState::SrcColorBlendFactor factor);
+	inline VkBlendFactor toVkDstBlendFactor(BlendAttachmentState::DstColorBlendFactor factor);
+	inline VkBlendOp toVkBlendOp(BlendAttachmentState::ColorBlendOp op);
+	inline VkBlendOp toVkBlendOp(BlendAttachmentState::AlphaBlendOp op);
+	inline VkColorComponentFlags toVkColorWriteMask(uint8_t mask);
+	inline VkPrimitiveTopology toVkPrimitiveTopology(PrimitiveTopology topology);
+	inline VkPolygonMode toVkPolygonMode(PolygonMode mode);
+	inline VkCullModeFlags toVkCullMode(CullMode mode);
+	inline VkFrontFace toVkFrontFace(FrontFace face);
+	inline VkSampleCountFlagBits toVkSampleCount(SampleCount samples);
+	inline VkCompareOp toVkCompareOp(smvk::CompareOp op);
+	inline VkFormat toVkFormat(smvk::Format format);
+	inline VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor);
+	inline VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor);
+	inline uint8_t toRhiColorWriteMask(VkColorComponentFlags flags);
+	inline smvk::BlendAttachmentState::SrcColorBlendFactor toRhiSrcColorBlendFactor(VkBlendFactor factor);
+	inline smvk::BlendAttachmentState::DstColorBlendFactor toRhiDstColorBlendFactor(VkBlendFactor factor);
+
+	// ============================================================================
+	// 	Core
+	// ============================================================================
 
 	// Just VK_1_3 for the moment, should be more than ok
 	// https://asawicki.info/articles/state_of_gpu_hardware_2025.php 
@@ -878,116 +379,93 @@ namespace smvk {
 		VkPipelineLayout layout = VK_NULL_HANDLE;
 	};
 
-
-	struct PipelineKeyHash
-	{
-		size_t operator()(const PipelineKey& key) const noexcept
+	struct PipelineKeyHash {
+		static void HashCombine(std::size_t& seed, std::size_t value) noexcept
 		{
-			size_t seed = 0;
+			seed ^= value + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
+		}
 
-			auto hashCombine = [&seed](auto&& value)
-			{
-				using T = std::decay_t<decltype(value)>;
+		template<typename T>
+		static void HashValue(std::size_t& seed, const T& value) noexcept
+		{
+			HashCombine(seed, std::hash<T>{}(value));
+		}
 
-				seed ^= std::hash<T>{}(value)
-					+0x9e3779b97f4a7c15ull
-					+ (seed << 6)
-					+ (seed >> 2);
-			};
+		template<typename E>
+		static void HashEnum(std::size_t& seed, E value) noexcept
+		{
+			HashValue(seed, static_cast<std::underlying_type_t<E>>(value));
+		}
 
-			// Shader program
-			hashCombine(key.program.shaderCount);
+		std::size_t operator()(const PipelineKey& key) const noexcept
+		{
+			std::size_t seed = 0;
 
-			for (size_t i = 0; i < key.program.shaderCount; ++i)
-			{
+			HashValue(seed, key.program.shaderCount);
+			for (size_t i = 0; i < key.program.shaderCount; ++i) {
 				const Shader& shader = key.program.shaders[i];
-
-				// Prefer hashing your stable ShaderModuleHandle,
-				// not VkShaderModule itself.
-				hashCombine(shader.vkShaderModule);
-				hashCombine(shader.stage);
-
-				if (shader.entryPoint)
-					hashCombine(std::string_view(shader.entryPoint));
+				HashValue(seed, shader.vkShaderModule.index());
+				HashValue(seed, static_cast<uint32_t>(shader.stage));
+				HashValue(seed, std::string_view(shader.entryPoint));
 			}
 
-			// Vertex format
-			for (const auto& binding : key.vertexFormat.bindings)
-			{
-				hashCombine(binding.binding);
-				hashCombine(binding.stride);
-				hashCombine(binding.inputRate);
-
-				for (const auto& attribute : binding.attributes)
-				{
-					hashCombine(attribute.semantic);
-					hashCombine(attribute.format);
-					hashCombine(attribute.offset);
+			HashValue(seed, key.vertexFormat.bindings.size());
+			for (const VertexBinding& binding : key.vertexFormat.bindings) {
+				HashValue(seed, binding.binding);
+				HashValue(seed, binding.stride);
+				HashEnum(seed, binding.inputRate);
+				HashValue(seed, binding.attributes.size());
+				for (const VertexAttribute& attribute : binding.attributes) {
+					HashEnum(seed, attribute.semantic);
+					HashEnum(seed, attribute.format);
+					HashValue(seed, attribute.offset);
 				}
 			}
 
-			// Attachment formats
-			hashCombine(key.colorFormats.size());
+			HashValue(seed, key.colorFormats.size());
+			for (Format format : key.colorFormats) HashEnum(seed, format);
+			HashEnum(seed, key.depthFormat);
+			HashEnum(seed, key.stencilFormat);
+			HashEnum(seed, key.topology);
 
-			for (Format format : key.colorFormats)
-				hashCombine(format);
+			HashEnum(seed, key.raster.polygonMode);
+			HashEnum(seed, key.raster.cullMode);
+			HashEnum(seed, key.raster.frontFace);
+			HashValue(seed, key.raster.depthClampEnable);
+			HashValue(seed, key.raster.rasterizerDiscardEnable);
+			HashValue(seed, key.raster.lineWidth);
 
-			hashCombine(key.depthFormat);
-			hashCombine(key.stencilFormat);
+			HashEnum(seed, key.depth.depthFunc);
+			HashValue(seed, key.depth.writeEnable);
+			HashValue(seed, key.depth.depthTestEnable);
+			HashValue(seed, key.depth.depthBiasEnable);
+			HashValue(seed, key.depth.depthBiasConstantFactor);
+			HashValue(seed, key.depth.depthBiasClamp);
+			HashValue(seed, key.depth.depthBiasSlopeFactor);
 
-			// Input assembly
-			hashCombine(key.topology);
+			HashEnum(seed, key.stencil.frontCompareOp);
+			HashEnum(seed, key.stencil.backCompareOp);
+			HashValue(seed, key.stencil.frontFailOp);
+			HashValue(seed, key.stencil.backFailOp);
+			HashValue(seed, key.stencil.frontPassOp);
+			HashValue(seed, key.stencil.backPassOp);
+			HashValue(seed, key.stencil.frontFace);
+			HashValue(seed, key.stencil.backFace);
+			HashValue(seed, key.stencil.frontTestEnable);
+			HashValue(seed, key.stencil.backTestEnable);
+			HashValue(seed, key.stencil.frontWriteEnable);
+			HashValue(seed, key.stencil.backWriteEnable);
 
-			// Raster
-			hashCombine(key.raster.polygonMode);
-			hashCombine(key.raster.cullMode);
-			hashCombine(key.raster.frontFace);
-			hashCombine(key.raster.depthClampEnable);
-			hashCombine(key.raster.rasterizerDiscardEnable);
-			hashCombine(key.raster.lineWidth);
-
-			// Depth
-			hashCombine(key.depth.depthFunc);
-			hashCombine(key.depth.writeEnable);
-			hashCombine(key.depth.depthTestEnable);
-			hashCombine(key.depth.depthBiasEnable);
-			hashCombine(key.depth.depthBiasConstantFactor);
-			hashCombine(key.depth.depthBiasClamp);
-			hashCombine(key.depth.depthBiasSlopeFactor);
-
-			// Stencil
-			hashCombine(key.stencil.frontCompareOp);
-			hashCombine(key.stencil.backCompareOp);
-
-			hashCombine(key.stencil.frontFailOp);
-			hashCombine(key.stencil.backFailOp);
-
-			hashCombine(key.stencil.frontPassOp);
-			hashCombine(key.stencil.backPassOp);
-
-			hashCombine(key.stencil.frontTestEnable);
-			hashCombine(key.stencil.backTestEnable);
-
-			hashCombine(key.stencil.frontWriteEnable);
-			hashCombine(key.stencil.backWriteEnable);
-
-			// Blend
-			hashCombine(key.blend.blendState.blendEnable);
-
-			for (const auto& attachment :
-				key.blend.blendState.attachment)
-			{
-				hashCombine(attachment.blendEnable);
-				hashCombine(attachment.srcColorBlendFactor);
-				hashCombine(attachment.dstColorBlendFactor);
-				hashCombine(attachment.colorBlendOp);
-				hashCombine(attachment.alphaBlendOp);
-				hashCombine(attachment.colorWriteMask);
+			HashValue(seed, key.blend.blendState.blendEnable);
+			for (const BlendAttachmentState& a : key.blend.blendState.attachment) {
+				HashEnum(seed, a.srcColorBlendFactor);
+				HashEnum(seed, a.dstColorBlendFactor);
+				HashEnum(seed, a.colorBlendOp);
+				HashEnum(seed, a.alphaBlendOp);
+				HashValue(seed, a.colorWriteMask);
 			}
 
-			// MSAA
-			hashCombine(key.msaa.samples);
-
+			HashEnum(seed, key.msaa.samples);
 			return seed;
 		}
 	};
@@ -1078,6 +556,12 @@ namespace smvk {
 			PipelineKeyHash
 		> pipelines_;
 	};
+
+
+	std::vector<VkVertexInputBindingDescription> getVkVertexInputBindingDescriptions(const VertexFormatDescription& format);
+	std::vector<VkVertexInputAttributeDescription> getVkVertexAttributeDescriptions(const VertexFormatDescription& format);
+
+
 
 } // namespace smvk
 

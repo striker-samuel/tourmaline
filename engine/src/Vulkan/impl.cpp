@@ -17,7 +17,60 @@ static VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
 static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
-//
+
+constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
+	VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_Index
+	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,             // BufferType_Vertex
+	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
+	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Storage
+	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,           // BufferType_Indirect
+	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_TransferSrc
+	VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_TransferDst
+	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_Staging: transfer with host visibility
+	0,                                             // BufferType_Count sentinel
+};
+
+constexpr VmaMemoryUsage bufferTypeToVmaUsage[9] = {
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Index: device-local only
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Vertex: device-local only
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Uniform: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Storage: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Indirect: device-local only
+	VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferSrc: auto-detect memory properties
+	VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferDst: auto-detect memory properties
+	VMA_MEMORY_USAGE_AUTO_PREFER_HOST, // BufferType_Staging: auto-prefer host for CPU mapping
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Count sentinel
+};
+
+
+
+inline const char* vkResultToString(VkResult result);
+
+#define VK_ASSERT_RETURN(func)                                     \
+  {                                                                \
+    const VkResult vk_assert_result = func;                        \
+    if (vk_assert_result != VK_SUCCESS) {                          \
+      LLOGW("Vulkan API call failed: %s:%i\n  %s\n  %s\n", \
+                    __FILE__,                                      \
+                    __LINE__,                                      \
+                    #func,                                         \
+                    lvk::getVulkanResultString(vk_assert_result)); \
+      assert(false);                                               \
+      return getResultFromVkResult(vk_assert_result);              \
+    }                                                              \
+  }
+
+#define VK_CHECK(x)                                                     \
+    do {                                                                \
+        VkResult err = (x);                                             \
+        if (err != VK_SUCCESS) {                                        \
+            fprintf(stderr, "[Vulkan Error] %s:%d: %s\n",               \
+                    __FILE__, __LINE__, vkResultToString(err));         \
+            abort();                                                    \
+        }                                                               \
+    } while (0)
+
+
 //VkInstance smvk::VulkanCore::GetInstance() { return instance_; }
 VkDevice smvk::VulkanCore::GetDevice() { return device_; }
 //VkPhysicalDevice smvk::VulkanCore::GetPhysicalDevice() { return physicalDevice_; }
@@ -28,6 +81,9 @@ struct SwapChainSupportDetails {
 	std::vector<VkSurfaceFormatKHR> formats;
 	std::vector<VkPresentModeKHR> presentModes;
 };
+
+// Used by device-suitability checks before its definition below.
+smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
 namespace {
 	inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
 	// Buffers will be pushed in pc block with deviceAddress
@@ -89,7 +145,8 @@ namespace {
 			return { 4, 4, 16 };
 
 		default:
-			assert(false);
+			assert(false && "Unsupported VkFormat");
+			return { 1, 1, 0 };
 		}
 	}
 };
@@ -474,6 +531,504 @@ smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR
 	return indices;
 }
 
+bool smvk::FormatHasStencil(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_S8_UINT:
+	case VK_FORMAT_D16_UNORM_S8_UINT:
+	case VK_FORMAT_D24_UNORM_S8_UINT:
+	case VK_FORMAT_D32_SFLOAT_S8_UINT:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+bool smvk::FormatHasDepth(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_D16_UNORM:
+	case VK_FORMAT_X8_D24_UNORM_PACK32:
+	case VK_FORMAT_D32_SFLOAT:
+	case VK_FORMAT_D16_UNORM_S8_UINT:
+	case VK_FORMAT_D24_UNORM_S8_UINT:
+	case VK_FORMAT_D32_SFLOAT_S8_UINT:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+VkStencilOp smvk::toVkStencilOp(uint8_t op)
+{
+	switch (op) {
+	case STENCIL_OP_KEEP:                return VK_STENCIL_OP_KEEP;
+	case STENCIL_OP_ZERO:                return VK_STENCIL_OP_ZERO;
+	case STENCIL_OP_REPLACE:             return VK_STENCIL_OP_REPLACE;
+	case STENCIL_OP_INCREMENT_AND_CLAMP: return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+	case STENCIL_OP_DECREMENT_AND_CLAMP: return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+	case STENCIL_OP_INVERT:              return VK_STENCIL_OP_INVERT;
+	case STENCIL_OP_INCREMENT_AND_WRAP:  return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+	case STENCIL_OP_DECREMENT_AND_WRAP:  return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+	default:
+		assert(false && "Unsupported StencilOp");
+		return VK_STENCIL_OP_KEEP;
+	}
+}
+
+VkShaderStageFlagBits smvk::toVkShaderStage(ShaderStage stage)
+{
+	switch (stage)
+	{
+	case ShaderStage::Vertex:
+		return VK_SHADER_STAGE_VERTEX_BIT;
+
+	case ShaderStage::Fragment:
+		return VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	case ShaderStage::Compute:
+		return VK_SHADER_STAGE_COMPUTE_BIT;
+
+	case ShaderStage::Geometry:
+		return VK_SHADER_STAGE_GEOMETRY_BIT;
+
+	case ShaderStage::TessControl:
+		return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+
+	case ShaderStage::TessEvaluation:
+		return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+
+		//case ShaderStage::Task:
+		//	return VK_SHADER_STAGE_TASK_BIT_EXT;
+
+		//case ShaderStage::Mesh:
+		//	return VK_SHADER_STAGE_MESH_BIT_EXT;
+
+		//case ShaderStage::RayGen:
+		//	return VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+
+		//case ShaderStage::AnyHit:
+		//	return VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+
+		//case ShaderStage::ClosestHit:
+		//	return VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+
+		//case ShaderStage::Miss:
+		//	return VK_SHADER_STAGE_MISS_BIT_KHR;
+
+		//case ShaderStage::Intersection:
+		//	return VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
+
+		//case ShaderStage::Callable:
+		//	return VK_SHADER_STAGE_CALLABLE_BIT_KHR;
+
+	default:
+		assert(false && "Unsupported ShaderStage");
+		return VK_SHADER_STAGE_VERTEX_BIT;
+	}
+}
+
+VkBlendFactor smvk::toVkSrcBlendFactor(BlendAttachmentState::SrcColorBlendFactor factor)
+{
+	using Factor =
+		BlendAttachmentState::SrcColorBlendFactor;
+
+	switch (factor)
+	{
+	case Factor::Zero:
+		return VK_BLEND_FACTOR_ZERO;
+
+	case Factor::One:
+		return VK_BLEND_FACTOR_ONE;
+
+	case Factor::SrcAlpha:
+		return VK_BLEND_FACTOR_SRC_ALPHA;
+
+	case Factor::OneMinusSrcAlpha:
+		return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	}
+
+	assert(false);
+	return VK_BLEND_FACTOR_ONE;
+}
+
+VkBlendFactor smvk::toVkDstBlendFactor(BlendAttachmentState::DstColorBlendFactor factor)
+{
+	using Factor =
+		BlendAttachmentState::DstColorBlendFactor;
+
+	switch (factor)
+	{
+	case Factor::Zero:
+		return VK_BLEND_FACTOR_ZERO;
+
+	case Factor::One:
+		return VK_BLEND_FACTOR_ONE;
+
+	case Factor::OneMinusSrcAlpha:
+		return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	}
+
+	assert(false);
+	return VK_BLEND_FACTOR_ONE;
+}
+
+VkBlendOp smvk::toVkBlendOp(BlendAttachmentState::ColorBlendOp op)
+{
+	using Op =
+		BlendAttachmentState::ColorBlendOp;
+
+	switch (op)
+	{
+	case Op::Add:
+		return VK_BLEND_OP_ADD;
+
+	case Op::Subtract:
+		return VK_BLEND_OP_SUBTRACT;
+
+	case Op::ReverseSubtract:
+		return VK_BLEND_OP_REVERSE_SUBTRACT;
+
+	case Op::Min:
+		return VK_BLEND_OP_MIN;
+
+	case Op::Max:
+		return VK_BLEND_OP_MAX;
+	}
+
+	assert(false);
+	return VK_BLEND_OP_ADD;
+}
+
+VkBlendOp smvk::toVkBlendOp(BlendAttachmentState::AlphaBlendOp op)
+{
+	using Op =
+		BlendAttachmentState::AlphaBlendOp;
+
+	switch (op)
+	{
+	case Op::Add:
+		return VK_BLEND_OP_ADD;
+
+	case Op::Subtract:
+		return VK_BLEND_OP_SUBTRACT;
+
+	case Op::ReverseSubtract:
+		return VK_BLEND_OP_REVERSE_SUBTRACT;
+
+	case Op::Min:
+		return VK_BLEND_OP_MIN;
+
+	case Op::Max:
+		return VK_BLEND_OP_MAX;
+	}
+
+	assert(false);
+	return VK_BLEND_OP_ADD;
+}
+
+VkColorComponentFlags smvk::toVkColorWriteMask(uint8_t mask)
+{
+	using Flag =
+		BlendAttachmentState::ColorComponentFlag;
+
+	VkColorComponentFlags result = 0;
+
+	if (mask & static_cast<uint8_t>(Flag::R))
+		result |= VK_COLOR_COMPONENT_R_BIT;
+
+	if (mask & static_cast<uint8_t>(Flag::G))
+		result |= VK_COLOR_COMPONENT_G_BIT;
+
+	if (mask & static_cast<uint8_t>(Flag::B))
+		result |= VK_COLOR_COMPONENT_B_BIT;
+
+	if (mask & static_cast<uint8_t>(Flag::A))
+		result |= VK_COLOR_COMPONENT_A_BIT;
+
+	return result;
+}
+
+VkPrimitiveTopology smvk::toVkPrimitiveTopology(PrimitiveTopology topology)
+{
+	switch (topology)
+	{
+	case PrimitiveTopology::PointList:
+		return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+
+	case PrimitiveTopology::LineList:
+		return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+
+	case PrimitiveTopology::LineStrip:
+		return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+
+	case PrimitiveTopology::TriangleList:
+		return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+	case PrimitiveTopology::TriangleStrip:
+		return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+
+	case PrimitiveTopology::TriangleFan:
+		return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+	}
+
+	assert(false);
+	return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+}
+
+VkPolygonMode smvk::toVkPolygonMode(PolygonMode mode)
+{
+	switch (mode)
+	{
+	case PolygonMode::Fill:
+		return VK_POLYGON_MODE_FILL;
+
+	case PolygonMode::Line:
+		return VK_POLYGON_MODE_LINE;
+
+	case PolygonMode::Point:
+		return VK_POLYGON_MODE_POINT;
+	}
+
+	assert(false);
+	return VK_POLYGON_MODE_FILL;
+}
+
+VkCullModeFlags smvk::toVkCullMode(CullMode mode)
+{
+	switch (mode)
+	{
+	case CullMode::None:
+		return VK_CULL_MODE_NONE;
+
+	case CullMode::Front:
+		return VK_CULL_MODE_FRONT_BIT;
+
+	case CullMode::Back:
+		return VK_CULL_MODE_BACK_BIT;
+
+	case CullMode::FrontAndBack:
+		return VK_CULL_MODE_FRONT_AND_BACK;
+	}
+
+	assert(false);
+	return VK_CULL_MODE_NONE;
+}
+
+VkFrontFace smvk::toVkFrontFace(FrontFace face)
+{
+	switch (face)
+	{
+	case FrontFace::CounterClockwise:
+		return VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+	case FrontFace::Clockwise:
+		return VK_FRONT_FACE_CLOCKWISE;
+	}
+
+	assert(false);
+	return VK_FRONT_FACE_COUNTER_CLOCKWISE;
+}
+
+VkSampleCountFlagBits smvk::toVkSampleCount(SampleCount samples)
+{
+	switch (samples)
+	{
+	case SampleCount::Count1:
+		return VK_SAMPLE_COUNT_1_BIT;
+
+	case SampleCount::Count2:
+		return VK_SAMPLE_COUNT_2_BIT;
+
+	case SampleCount::Count4:
+		return VK_SAMPLE_COUNT_4_BIT;
+
+	case SampleCount::Count8:
+		return VK_SAMPLE_COUNT_8_BIT;
+
+	case SampleCount::Count16:
+		return VK_SAMPLE_COUNT_16_BIT;
+
+	case SampleCount::Count32:
+		return VK_SAMPLE_COUNT_32_BIT;
+
+	case SampleCount::Count64:
+		return VK_SAMPLE_COUNT_64_BIT;
+	}
+
+	assert(false);
+	return VK_SAMPLE_COUNT_1_BIT;
+}
+
+VkCompareOp smvk::toVkCompareOp(smvk::CompareOp op)
+{
+	switch (op)
+	{
+	case smvk::CompareOp::Never:        return VK_COMPARE_OP_NEVER;
+	case smvk::CompareOp::Less:         return VK_COMPARE_OP_LESS;
+	case smvk::CompareOp::Equal:        return VK_COMPARE_OP_EQUAL;
+	case smvk::CompareOp::LessEqual:    return VK_COMPARE_OP_LESS_OR_EQUAL;
+	case smvk::CompareOp::Greater:      return VK_COMPARE_OP_GREATER;
+	case smvk::CompareOp::NotEqual:     return VK_COMPARE_OP_NOT_EQUAL;
+	case smvk::CompareOp::GreaterEqual: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+	case smvk::CompareOp::Always:       return VK_COMPARE_OP_ALWAYS;
+	default:                            return VK_COMPARE_OP_ALWAYS;
+	}
+}
+
+VkFormat smvk::toVkFormat(smvk::Format format)
+{
+	switch (format)
+	{
+	case smvk::Format::Undefined:           return VK_FORMAT_UNDEFINED;
+
+		// 8-bit
+	case smvk::Format::R8_UNorm:            return VK_FORMAT_R8_UNORM;
+	case smvk::Format::R8_SNorm:            return VK_FORMAT_R8_SNORM;
+	case smvk::Format::R8_UInt:             return VK_FORMAT_R8_UINT;
+	case smvk::Format::R8_SInt:             return VK_FORMAT_R8_SINT;
+
+	case smvk::Format::RG8_UNorm:           return VK_FORMAT_R8G8_UNORM;
+	case smvk::Format::RG8_SNorm:           return VK_FORMAT_R8G8_SNORM;
+	case smvk::Format::RG8_UInt:            return VK_FORMAT_R8G8_UINT;
+	case smvk::Format::RG8_SInt:            return VK_FORMAT_R8G8_SINT;
+
+	case smvk::Format::RGBA8_UNorm:         return VK_FORMAT_R8G8B8A8_UNORM;
+	case smvk::Format::RGBA8_SNorm:         return VK_FORMAT_R8G8B8A8_SNORM;
+	case smvk::Format::RGBA8_UInt:          return VK_FORMAT_R8G8B8A8_UINT;
+	case smvk::Format::RGBA8_SInt:          return VK_FORMAT_R8G8B8A8_SINT;
+	case smvk::Format::RGBA8_SRGB:          return VK_FORMAT_R8G8B8A8_SRGB;
+
+	case smvk::Format::BGRA8_UNorm:         return VK_FORMAT_B8G8R8A8_UNORM;
+	case smvk::Format::BGRA8_SRGB:          return VK_FORMAT_B8G8R8A8_SRGB;
+
+		// 16-bit
+	case smvk::Format::R16_UNorm:           return VK_FORMAT_R16_UNORM;
+	case smvk::Format::R16_SNorm:           return VK_FORMAT_R16_SNORM;
+	case smvk::Format::R16_UInt:            return VK_FORMAT_R16_UINT;
+	case smvk::Format::R16_SInt:            return VK_FORMAT_R16_SINT;
+	case smvk::Format::R16_Float:           return VK_FORMAT_R16_SFLOAT;
+
+	case smvk::Format::RG16_UNorm:          return VK_FORMAT_R16G16_UNORM;
+	case smvk::Format::RG16_SNorm:          return VK_FORMAT_R16G16_SNORM;
+	case smvk::Format::RG16_UInt:           return VK_FORMAT_R16G16_UINT;
+	case smvk::Format::RG16_SInt:           return VK_FORMAT_R16G16_SINT;
+	case smvk::Format::RG16_Float:          return VK_FORMAT_R16G16_SFLOAT;
+
+	case smvk::Format::RGBA16_UNorm:        return VK_FORMAT_R16G16B16A16_UNORM;
+	case smvk::Format::RGBA16_SNorm:        return VK_FORMAT_R16G16B16A16_SNORM;
+	case smvk::Format::RGBA16_UInt:         return VK_FORMAT_R16G16B16A16_UINT;
+	case smvk::Format::RGBA16_SInt:         return VK_FORMAT_R16G16B16A16_SINT;
+	case smvk::Format::RGBA16_Float:        return VK_FORMAT_R16G16B16A16_SFLOAT;
+
+		// 32-bit
+	case smvk::Format::R32_UInt:            return VK_FORMAT_R32_UINT;
+	case smvk::Format::R32_SInt:            return VK_FORMAT_R32_SINT;
+	case smvk::Format::R32_Float:           return VK_FORMAT_R32_SFLOAT;
+
+	case smvk::Format::RG32_UInt:           return VK_FORMAT_R32G32_UINT;
+	case smvk::Format::RG32_SInt:           return VK_FORMAT_R32G32_SINT;
+	case smvk::Format::RG32_Float:          return VK_FORMAT_R32G32_SFLOAT;
+
+	case smvk::Format::RGB32_UInt:          return VK_FORMAT_R32G32B32_UINT;
+	case smvk::Format::RGB32_SInt:          return VK_FORMAT_R32G32B32_SINT;
+	case smvk::Format::RGB32_Float:         return VK_FORMAT_R32G32B32_SFLOAT;
+
+	case smvk::Format::RGBA32_UInt:         return VK_FORMAT_R32G32B32A32_UINT;
+	case smvk::Format::RGBA32_SInt:         return VK_FORMAT_R32G32B32A32_SINT;
+	case smvk::Format::RGBA32_Float:        return VK_FORMAT_R32G32B32A32_SFLOAT;
+
+		// packed
+	case smvk::Format::RGB10A2_UNorm:       return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+	case smvk::Format::RGB10A2_UInt:        return VK_FORMAT_A2B10G10R10_UINT_PACK32;
+	case smvk::Format::R11G11B10_Float:     return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+
+		// depth / stencil
+	case smvk::Format::D16_UNorm:           return VK_FORMAT_D16_UNORM;
+	case smvk::Format::D24_UNorm_S8_UInt:   return VK_FORMAT_D24_UNORM_S8_UINT;
+	case smvk::Format::D32_Float:           return VK_FORMAT_D32_SFLOAT;
+	case smvk::Format::D32_Float_S8_UInt:   return VK_FORMAT_D32_SFLOAT_S8_UINT;
+
+		// compressed
+	case smvk::Format::BC1_RGBA_UNorm:      return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+	case smvk::Format::BC1_RGBA_SRGB:       return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+	case smvk::Format::BC2_UNorm:           return VK_FORMAT_BC2_UNORM_BLOCK;
+	case smvk::Format::BC2_SRGB:            return VK_FORMAT_BC2_SRGB_BLOCK;
+	case smvk::Format::BC3_UNorm:           return VK_FORMAT_BC3_UNORM_BLOCK;
+	case smvk::Format::BC3_SRGB:            return VK_FORMAT_BC3_SRGB_BLOCK;
+	case smvk::Format::BC4_UNorm:           return VK_FORMAT_BC4_UNORM_BLOCK;
+	case smvk::Format::BC4_SNorm:           return VK_FORMAT_BC4_SNORM_BLOCK;
+	case smvk::Format::BC5_UNorm:           return VK_FORMAT_BC5_UNORM_BLOCK;
+	case smvk::Format::BC5_SNorm:           return VK_FORMAT_BC5_SNORM_BLOCK;
+	case smvk::Format::BC6H_UFloat:         return VK_FORMAT_BC6H_UFLOAT_BLOCK;
+	case smvk::Format::BC6H_SFloat:         return VK_FORMAT_BC6H_SFLOAT_BLOCK;
+	case smvk::Format::BC7_UNorm:           return VK_FORMAT_BC7_UNORM_BLOCK;
+	case smvk::Format::BC7_SRGB:            return VK_FORMAT_BC7_SRGB_BLOCK;
+	}
+
+	return VK_FORMAT_UNDEFINED;
+}
+
+VkBlendFactor smvk::toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor)
+{
+	switch (factor)
+	{
+	case smvk::BlendAttachmentState::SrcColorBlendFactor::Zero:       return VK_BLEND_FACTOR_ZERO;
+	case smvk::BlendAttachmentState::SrcColorBlendFactor::One:        return VK_BLEND_FACTOR_ONE;
+	case smvk::BlendAttachmentState::SrcColorBlendFactor::SrcAlpha:   return VK_BLEND_FACTOR_SRC_ALPHA;
+	case smvk::BlendAttachmentState::SrcColorBlendFactor::OneMinusSrcAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	default: return VK_BLEND_FACTOR_ONE;
+	}
+}
+
+VkBlendFactor smvk::toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor)
+{
+	switch (factor)
+	{
+	case smvk::BlendAttachmentState::DstColorBlendFactor::Zero:       return VK_BLEND_FACTOR_ZERO;
+	case smvk::BlendAttachmentState::DstColorBlendFactor::One:        return VK_BLEND_FACTOR_ONE;
+	case smvk::BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	default: return VK_BLEND_FACTOR_ONE;
+	}
+}
+
+uint8_t smvk::toRhiColorWriteMask(VkColorComponentFlags flags)
+{
+	uint8_t mask = 0;
+	if (flags & VK_COLOR_COMPONENT_R_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::R);
+	if (flags & VK_COLOR_COMPONENT_G_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::G);
+	if (flags & VK_COLOR_COMPONENT_B_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::B);
+	if (flags & VK_COLOR_COMPONENT_A_BIT) mask |= static_cast<uint8_t>(smvk::BlendAttachmentState::ColorComponentFlag::A);
+	return mask;
+}
+
+smvk::BlendAttachmentState::SrcColorBlendFactor smvk::toRhiSrcColorBlendFactor(VkBlendFactor factor)
+{
+	switch (factor)
+	{
+	case VK_BLEND_FACTOR_ZERO:          return smvk::BlendAttachmentState::SrcColorBlendFactor::Zero;
+	case VK_BLEND_FACTOR_ONE:         return smvk::BlendAttachmentState::SrcColorBlendFactor::One;
+	case VK_BLEND_FACTOR_SRC_ALPHA:   return smvk::BlendAttachmentState::SrcColorBlendFactor::SrcAlpha;
+	case VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: return smvk::BlendAttachmentState::SrcColorBlendFactor::OneMinusSrcAlpha;
+	default: return smvk::BlendAttachmentState::SrcColorBlendFactor::One;
+	}
+}
+
+smvk::BlendAttachmentState::DstColorBlendFactor smvk::toRhiDstColorBlendFactor(VkBlendFactor factor)
+{
+	switch (factor)
+	{
+	case VK_BLEND_FACTOR_ZERO:          return smvk::BlendAttachmentState::DstColorBlendFactor::Zero;
+	case VK_BLEND_FACTOR_ONE:         return smvk::BlendAttachmentState::DstColorBlendFactor::One;
+	case VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: return smvk::BlendAttachmentState::DstColorBlendFactor::OneMinusSrcAlpha;
+	default: return smvk::BlendAttachmentState::DstColorBlendFactor::One;
+	}
+}
+
 static VkDescriptorSetLayoutBinding getDSLBinding(uint32_t binding,
 	VkDescriptorType descriptorType,
 	uint32_t descriptorCount,
@@ -617,11 +1172,11 @@ bool smvk::VulkanCore::Init() {
 			}
 		}
 
-		CheckTextureFormatSupport(); // Check block format support
-
 		if (physicalDevice_ == VK_NULL_HANDLE) {
 			throw std::runtime_error("failed to find a suitable GPU!");
 		}
+
+		CheckTextureFormatSupport(); // Check block format support
 
 		vkGetPhysicalDeviceFeatures2(physicalDevice_, &vkFeatures10_);
 		vkGetPhysicalDeviceProperties2(physicalDevice_, &vkPhysicalDeviceProperties2_);
@@ -2603,7 +3158,7 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 
 }
 inline void smvk::VulkanSwapchain::CreateSyncObjects() {
-	renderFinishedSemaphores_.resize(framesInFlight_, VK_NULL_HANDLE);
+	renderFinishedSemaphores_.resize(imageViews_.size(), VK_NULL_HANDLE);
 	imageAvailableSemaphores_.resize(framesInFlight_, VK_NULL_HANDLE);
 	inFlightFences_.resize(framesInFlight_, VK_NULL_HANDLE);
 
@@ -2692,6 +3247,7 @@ smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
 		Recreate();
+		return AcquireFramebuffer();
 	}
 	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
 		throw std::runtime_error("failed to acquire swap chain image!");
@@ -2822,7 +3378,41 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 	AdvanceFrame();
 
 }
-
+smvk::StencilSettings smvk::StencilSettings::DefaultDisabled()
+{
+	StencilSettings s{};
+	s.frontTestEnable = false;
+	s.backTestEnable = false;
+	s.frontWriteEnable = false;
+	s.backWriteEnable = false;
+	return s;
+}
+smvk::StencilSettings smvk::StencilSettings::DefaultEnabled()
+{
+	StencilSettings s{};
+	s.frontTestEnable = true;
+	s.backTestEnable = true;
+	s.frontWriteEnable = true;
+	s.backWriteEnable = true;
+	return s;
+}
+bool smvk::StencilSettings::operator<(const StencilSettings& other) const noexcept
+{
+	return std::tie(
+		frontCompareOp, backCompareOp,
+		frontFailOp, backFailOp,
+		frontPassOp, backPassOp,
+		frontFace, backFace,
+		frontTestEnable, backTestEnable,
+		frontWriteEnable, backWriteEnable) <
+		std::tie(
+			other.frontCompareOp, other.backCompareOp,
+			other.frontFailOp, other.backFailOp,
+			other.frontPassOp, other.backPassOp,
+			other.frontFace, other.backFace,
+			other.frontTestEnable, other.backTestEnable,
+			other.frontWriteEnable, other.backWriteEnable);
+}
 std::vector<VkVertexInputBindingDescription>
 smvk::getVkVertexInputBindingDescriptions(const smvk::VertexFormatDescription& format)
 {
@@ -2833,7 +3423,9 @@ smvk::getVkVertexInputBindingDescriptions(const smvk::VertexFormatDescription& f
 		descriptions.push_back({
 			.binding = binding.binding,
 			.stride = binding.stride,
-			.inputRate = binding.inputRate,
+			.inputRate = binding.inputRate == VertexInputRate::Instance
+				? VK_VERTEX_INPUT_RATE_INSTANCE
+				: VK_VERTEX_INPUT_RATE_VERTEX,
 			});
 	}
 
@@ -2859,7 +3451,7 @@ smvk::getVkVertexAttributeDescriptions(const smvk::VertexFormatDescription& form
 			descriptions.push_back({
 				.location = location++,
 				.binding = binding.binding,
-				.format = attribute.format,
+				.format = toVkFormat(attribute.format),
 				.offset = attribute.offset,
 				});
 		}
@@ -2867,8 +3459,7 @@ smvk::getVkVertexAttributeDescriptions(const smvk::VertexFormatDescription& form
 
 	return descriptions;
 }
-smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(
-	const smvk::PipelineKey& key)
+smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::PipelineKey& key)
 {
 	// ========================================================
 	// SHADERS
@@ -2897,7 +3488,7 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(
 
 			// Ideally shader.stage is RHI too:
 			.stage =
-				toVkShaderStage(shader.stage),
+				shader.stage,
 
 			.module =
 				*shaderModule,
@@ -3147,8 +3738,7 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(
 			colorBlendAttachments[i];
 
 		dst.blendEnable =
-			key.blend.blendState.blendEnable &&
-			src.blendEnable;
+			key.blend.blendState.blendEnable;
 
 		dst.srcColorBlendFactor =
 			toVkSrcBlendFactor(
@@ -3321,31 +3911,7 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(
 
 	return bundle;
 }
-//  SamplerPool
-//smvk::SamplerPool::SamplerPool(SamplerPoolCreateInfo createInfo) : device_(createInfo.device) {
-//	VkSampler defaultSampler;
-//	vkCreateSampler(device_, {}, nullptr, &defaultSampler);
-//	m_samplers[SamplerKey{}] = defaultSampler;
-//}
-//smvk::SamplerPool::~SamplerPool() {
-//	for (auto sampler : m_samplers)
-//	{
-//		vkDestroySampler(device_, sampler.second, nullptr);
-//	}
-//	m_samplers.clear();
-//}
-//VkSampler smvk::SamplerPool::GetSampler(SamplerKey key) {
-//	auto it = m_samplers.find(key);
-//	if (it == m_samplers.end()) {
-//		VkSampler newSampler;
-//		VkSamplerCreateInfo createInfo{};
-//		// populate
-//		vkCreateSampler(device_, &createInfo, nullptr, &newSampler);
-//		m_samplers[key] = newSampler;
-//		return newSampler;
-//	}
-//	else {
-//		return it->second;
-//	}
-//
-//}
+
+
+
+
