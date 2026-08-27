@@ -21,6 +21,14 @@ std::vector<std::string> gltf_meshes_paths = {
 
 //struct ShadowmapCascadeAtlas {};
 
+struct ShadowMap
+{
+	smvk::Holder<smvk::ImageHandle> image;
+	smvk::Holder<smvk::ImageViewHandle> depthAttachmentView;
+	smvk::Holder<smvk::ImageViewHandle> sampledDepthView;
+	smvk::BindlessImageHandle sampled;
+};
+
 // Data definitions //
 struct DrawSetData {
 	float transform[16] = {
@@ -184,11 +192,13 @@ private:
 			m_viewportResources.swapImages.push_back(logicalSwapchainImage);
 		}
 		auto depthImage = m_context->images_.get(m_swapchain->depthImage_);
+		auto depthImageView = m_context->imageViews_.get(m_swapchain->depthImageView_);
 		m_viewportResources.depthView = m_rendergraph->AddExternalImageView(
-			depthImage->attachmentView,
+			depthImageView->vkView, // vk leaking here
 			m_swapchain->depthFormat,
 			"depth"
 		);
+
 		// if mipped maybe a helper like LegitEngine does is a good idea
 
 		// shadowmap
@@ -199,8 +209,9 @@ private:
 		shadowMapCI.mipLevels = 1u;
 		shadowMapCI.arrayLayers = 1u;
 		shadowMapCI.usage = smvk::ImageUsage::DepthStencilAttachment | smvk::ImageUsage::Sampled;
+		shadowMapCI.name = "shadowMap";
 
-		m_viewportResources.shadowmaps[0] = m_context->CreateTexture(shadowMapCI, nullptr, "shadowMap");
+		m_viewportResources.shadowmaps[0] = m_context->CreateImage(shadowMapCI, nullptr);
 		auto shadowImage =
 			m_rendergraph->AddExternalImage(
 				m_viewportResources.shadowmaps[0],
@@ -222,31 +233,32 @@ private:
 				"shadow depth"
 				);
 
+		// singla sync req would be better
 		// Manual Barrier transition
 		// this whole shadowmap thing is so badly done, api surface NEEDS more polish
-		auto han = m_context->m_submitter->acquire();
-		auto cmd = m_context->m_submitter->GetCommandBuffer(han);
-		ImageBarrier(
-			cmd.cmd,
-			smimage->vk_image,
-			VK_IMAGE_LAYOUT_UNDEFINED,
-			VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-			{
-				.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-				.baseMipLevel = 0,
-				.levelCount = VK_REMAINING_MIP_LEVELS,
-				.baseArrayLayer = 0,
-				.layerCount = VK_REMAINING_ARRAY_LAYERS
-			},
-			VK_PIPELINE_STAGE_2_NONE,
-			VK_ACCESS_2_NONE,
-			VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-			VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
-		);
-		m_context->m_submitter->submit(han);
-		m_context->m_submitter->wait(han);
+		//auto han = m_context->m_submitter->acquire();
+		//auto cmd = m_context->m_submitter->GetCommandBuffer(han);
+		//ImageBarrier(
+		//	cmd.cmd,
+		//	smimage->vk_image,
+		//	VK_IMAGE_LAYOUT_UNDEFINED,
+		//	VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+		//	{
+		//		.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+		//		.baseMipLevel = 0,
+		//		.levelCount = VK_REMAINING_MIP_LEVELS,
+		//		.baseArrayLayer = 0,
+		//		.layerCount = VK_REMAINING_ARRAY_LAYERS
+		//	},
+		//	VK_PIPELINE_STAGE_2_NONE,
+		//	VK_ACCESS_2_NONE,
+		//	VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+		//	VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+		//	VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+		//	VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+		//);
+		//m_context->m_submitter->submit(han);
+		//m_context->m_submitter->wait(han);
 		//
 
 		return true;
@@ -507,7 +519,7 @@ private:
 			// and depth bias to reduce shadow acne
 			m_world->forEachNode(
 				smvk::IteratorFlagBit_StaticVertexFmt
-				//| smvk::IteratorFlagBit_CastShadow
+				| smvk::IteratorFlagBit_CastShadow
 				, [&](NodeId node)
 			{
 				auto meshForNode = m_world->scene.meshForNode.find(node);
@@ -549,12 +561,13 @@ private:
 
 		auto& mainPass = m_rendergraph->AddPass()
 			.SetOffset(0, 0)
-			// this is accessed in textures[0] bindless array so... It still may be good to declare the dep here
-			//.SetInputImages(
-			//	{
-			//		m_viewportResources.shadowmapViews[0]
-			//	}
-			//)
+			.SetInputImages(
+				{
+					m_viewportResources.shadowmapViews[0]
+					// we sample trough the bidnless list but we decalre intention here for sync.
+					// may be bad
+				}
+			)
 			.SetExtent(
 				{
 					fb.swapchain.extent_.width,

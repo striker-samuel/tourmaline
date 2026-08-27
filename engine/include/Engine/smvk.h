@@ -365,6 +365,25 @@ namespace smvk {
 			static_cast<uint32_t>(b)
 			);
 	}
+	constexpr ImageUsage& operator|=(ImageUsage& a, ImageUsage b)
+	{
+		a = a | b;
+		return a;
+	}
+
+	constexpr ImageUsage operator&(ImageUsage a, ImageUsage b)
+	{
+		return static_cast<ImageUsage>(
+			static_cast<uint32_t>(a) &
+			static_cast<uint32_t>(b)
+			);
+	}
+
+	constexpr ImageUsage& operator&=(ImageUsage& a, ImageUsage b)
+	{
+		a = a & b;
+		return a;
+	}
 
 	enum class ImageViewType : uint8_t
 	{
@@ -387,15 +406,28 @@ namespace smvk {
 		Stencil = 1u << 2,
 	};
 
+	constexpr ImageAspect operator&(
+		ImageAspect a,
+		ImageAspect b)
+	{
+		return static_cast<ImageAspect>(
+			static_cast<uint32_t>(a) &
+			static_cast<uint32_t>(b)
+			);
+	}
+
+	static constexpr uint32_t RemainingSubresources =
+		UINT32_MAX;
+
 	struct ImageSubresourceRange
 	{
 		ImageAspect aspect = ImageAspect::Color;
 
 		uint32_t baseMipLevel = 0;
-		uint32_t mipLevelCount = 1;
+		uint32_t mipLevelCount = RemainingSubresources;
 
 		uint32_t baseArrayLayer = 0;
-		uint32_t arrayLayerCount = 1;
+		uint32_t arrayLayerCount = RemainingSubresources;
 	};
 
 	struct ClearColor
@@ -1030,45 +1062,84 @@ namespace smvk {
 		}
 	};
 
+	using ImageHandle = Handle<struct Image>;
+	using TextureHandle = Handle<struct Texture>;
+	using SamplerHandle = Handle<struct Sampler>;
+	using BufferHandle = Handle<struct Buffer>;
+	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
+	using ImageViewHandle = Handle<struct ImageView>;
+	using BindlessImageHandle = Handle<struct BindlessImage>;
 
 	struct ImageCreateInfo
 	{
 		ImageType type = ImageType::Image2D;
 		Extent3D extent{};
+
 		Format format = Format::Undefined;
+
 		ImageUsage usage =
 			ImageUsage::Sampled |
 			ImageUsage::TransferDst;
+
 		SampleCount samples = SampleCount::Count1;
+
 		uint32_t mipLevels = 1;
 		uint32_t arrayLayers = 1;
+
+		// Add this if you want cubemaps cleanly.
+		//ImageCreateFlags flags = ImageCreateFlags::None;
+
 		const char* name = nullptr;
 	};
-	using TextureCreateInfo = ImageCreateInfo;
 
-	struct Image {
-		VkImage vk_image = VK_NULL_HANDLE;
-		VmaAllocation vma_alloc = VK_NULL_HANDLE;
-		VkExtent3D vk_extent = { 1,1,1 };
-		VkFormat vk_format = VK_FORMAT_UNDEFINED;
-		VkImageUsageFlags vk_usage = VK_IMAGE_USAGE_SAMPLED_BIT |
-			VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-		uint32_t levels = 1;
-		uint32_t arrayLayers = 1;
-		VkSampleCountFlagBits  vk_samples = VK_SAMPLE_COUNT_1_BIT;
-		VkImageView sampleView = VK_NULL_HANDLE;
-		VkImageView attachmentView = VK_NULL_HANDLE;
-		VkImageView storageView = VK_NULL_HANDLE;
-		VkImageView arrayView[6]{
-			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
-			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
-		}; // for cubemap
-
-		//VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
-		bool owns_views = true;
-		bool is_swapchain = false;
-		ImageCreateInfo info_;
+	struct Texture
+	{
+		ImageHandle image{};
+		ImageViewHandle view{};
+		BindlessImageHandle bindless{};
 	};
+	struct ImageView
+	{
+		VkImageView vkView = VK_NULL_HANDLE;
+		// Non-owning reference to the image this view was created from.
+		ImageHandle image{};
+		// Resolved metadata.
+		ImageViewType viewType = ImageViewType::View2D;
+		Format format = Format::Undefined;
+		ImageSubresourceRange subresourceRange{};
+	};
+
+
+	enum class ResourceOwnership : uint8_t
+	{
+		Owned,
+		External
+	};
+	struct Image
+	{
+		VkImage vkImage = VK_NULL_HANDLE;
+		VmaAllocation allocation = VK_NULL_HANDLE;
+
+		// Immutable metadata describing the VkImage.
+		ImageType type = ImageType::Image2D;
+		Extent3D extent{};
+
+		Format format = Format::Undefined;
+		ImageUsage usage = ImageUsage::None;
+		SampleCount samples = SampleCount::Count1;
+
+		uint32_t mipLevels = 1;
+		uint32_t arrayLayers = 1;
+
+		//ImageCreateFlags flags = ImageCreateFlags::None;
+
+		// Useful for asserting that an Image isn't destroyed while
+		// ImageViews still reference it.
+		uint32_t liveViewCount = 0;
+		ResourceOwnership ownership =
+			ResourceOwnership::Owned;
+	};
+
 
 	struct Buffer {
 		VkBuffer vk_buffer = VK_NULL_HANDLE;
@@ -1082,19 +1153,25 @@ namespace smvk {
 		}
 	};
 
-	using ImageHandle = Handle<struct Image>;
-	using TextureHandle = Handle<struct Texture>;
-	using SamplerHandle = Handle<struct Sampler>;
-	using BufferHandle = Handle<struct Buffer>;
-	using DescriptorPoolHandle = Handle<struct DescriptorPool>;
+
+	struct BindlessImage
+	{
+		ImageViewHandle view{};
+		// Physical descriptor-array position.
+		uint32_t descriptorIndex = UINT32_MAX;
+		// Layout expected whenever this descriptor is actually sampled.
+		VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	};
 
 	struct ImageViewCreateInfo
 	{
-		ImageHandle image; // DONT LIKE THIS AT ALL
 		ImageViewType viewType = ImageViewType::View2D;
-		Format format = Format::Undefined; // Undefined = inherit underlying image format.
+		// Undefined = inherit from underlying Image.
+		Format format = Format::Undefined;
 		ImageSubresourceRange subresourceRange{};
+		const char* name = nullptr;
 	};
+
 
 } // namespace smvk
 

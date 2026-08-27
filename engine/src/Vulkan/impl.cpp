@@ -447,38 +447,6 @@ namespace {
 		return extensions;
 	}
 
-	constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
-		VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_Index
-		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,             // BufferType_Vertex
-		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Storage
-		VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,           // BufferType_Indirect
-		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_TransferSrc
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_TransferDst
-		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_Staging: transfer with host visibility
-		0,                                             // BufferType_Count sentinel
-	};
-
-	constexpr VmaMemoryUsage bufferTypeToVmaUsage[9] = {
-		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Index: device-local only
-		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Vertex: device-local only
-		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Uniform: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
-		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Storage: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
-		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Indirect: device-local only
-		VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferSrc: auto-detect memory properties
-		VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferDst: auto-detect memory properties
-		VMA_MEMORY_USAGE_AUTO_PREFER_HOST, // BufferType_Staging: auto-prefer host for CPU mapping
-		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Count sentinel
-	};
-
-	constexpr bool HasAnyFlag(
-		smvk::ImageUsage value,
-		smvk::ImageUsage flags)
-	{
-		return
-			(static_cast<uint32_t>(value) &
-				static_cast<uint32_t>(flags)) != 0;
-	}
 
 } // static ns
 
@@ -486,7 +454,6 @@ namespace {
 VkDevice smvk::VulkanCore::GetDevice() { return device_; }
 //VkPhysicalDevice smvk::VulkanCore::GetPhysicalDevice() { return physicalDevice_; }
 //VkQueue smvk::VulkanCore::GetGraphicsQueue() { return graphicsQueue_; }
-
 const char* vkResultToString(VkResult result) {
 	switch (result) {
 	case VK_SUCCESS: return "VK_SUCCESS";
@@ -524,6 +491,38 @@ const char* vkResultToString(VkResult result) {
 //}
 
 // RHI to vulkan
+constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
+	VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_Index
+	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,             // BufferType_Vertex
+	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
+	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Storage
+	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,           // BufferType_Indirect
+	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_TransferSrc
+	VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_TransferDst
+	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_Staging: transfer with host visibility
+	0,                                             // BufferType_Count sentinel
+};
+
+constexpr VmaMemoryUsage bufferTypeToVmaUsage[9] = {
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Index: device-local only
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Vertex: device-local only
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Uniform: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Storage: device-local only (with SHADER_DEVICE_ADDRESS_BIT)
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Indirect: device-local only
+	VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferSrc: auto-detect memory properties
+	VMA_MEMORY_USAGE_AUTO,               // BufferType_TransferDst: auto-detect memory properties
+	VMA_MEMORY_USAGE_AUTO_PREFER_HOST, // BufferType_Staging: auto-prefer host for CPU mapping
+	VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Count sentinel
+};
+
+//constexpr bool HasAnyFlag(
+//	smvk::ImageUsage value,
+//	smvk::ImageUsage flags)
+//{
+//	return
+//		(static_cast<uint32_t>(value) &
+//			static_cast<uint32_t>(flags)) != 0;
+//}
 constexpr VkImageUsageFlags     smvk::toVkImageUsageFlags(ImageUsage usage)
 {
 	VkImageUsageFlags flags = 0;
@@ -1082,7 +1081,21 @@ constexpr VkColorSpaceKHR       smvk::ToVkColorSpace(ColorSpace colorSpace)
 		return VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 	}
 }
+constexpr VkImageAspectFlags    smvk::toVkImageAspectFlags(ImageAspect aspect)
+{
+	VkImageAspectFlags flags = 0;
 
+	if ((aspect & ImageAspect::Color) != ImageAspect::None)
+		flags |= VK_IMAGE_ASPECT_COLOR_BIT;
+
+	if ((aspect & ImageAspect::Depth) != ImageAspect::None)
+		flags |= VK_IMAGE_ASPECT_DEPTH_BIT;
+
+	if ((aspect & ImageAspect::Stencil) != ImageAspect::None)
+		flags |= VK_IMAGE_ASPECT_STENCIL_BIT;
+
+	return flags;
+}
 static constexpr                smvk::Format fromVkFormat(VkFormat format) // dont like to have this reverse mapping too. choose swapsurface and depthFormat needs refacotring
 {
 	switch (format)
@@ -1199,8 +1212,6 @@ static constexpr                smvk::Format fromVkFormat(VkFormat format) // do
 		return false;
 	}
 }
-
-// hmmm 
 static constexpr VkImageAspectFlags VkAspectMaskFromFormat(VkFormat format)
 {
 	switch (format)
@@ -1221,6 +1232,17 @@ static constexpr VkImageAspectFlags VkAspectMaskFromFormat(VkFormat format)
 	default:
 		return VK_IMAGE_ASPECT_COLOR_BIT;
 	}
+}
+[[nodiscard]] inline smvk::ImageAspect DefaultSampleAspect(smvk::Format format)
+{
+	const VkImageAspectFlags aspects =
+		VkAspectMaskFromFormat(toVkFormat(format));
+	// For depth/stencil images, sampled views should normally expose depth only.
+	if (aspects & VK_IMAGE_ASPECT_DEPTH_BIT)
+	{
+		return smvk::ImageAspect::Depth;
+	}
+	return smvk::ImageAspect::Color;
 }
 
 inline void BufferBarrier(
@@ -1250,6 +1272,7 @@ inline void ImageBarrier(
 
 
 // VulkanCore
+
 int smvk::VulkanCore::CreateInstance() {
 
 	if (enableValidationLayers && !checkValidationLayerSupport(config_.validationLayers)) {
@@ -1526,22 +1549,6 @@ void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo,
 	VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler));
 
 }
-//void smvk::VulkanCore::CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view)
-//{
-//	VkImageViewCreateInfo viewInfo{};
-//	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-//	viewInfo.image = imageViewCreateInfo.vk_image;
-//	viewInfo.viewType = imageViewCreateInfo.viewType;
-//	viewInfo.format = imageViewCreateInfo.vk_format;
-//	viewInfo.subresourceRange = imageViewCreateInfo.subResourceRange;
-//	// Lets default this like that ourselves.
-//	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-//	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-//	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-//	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-//
-//	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &view));
-//}
 inline smvk::VulkanCore::~VulkanCore() {
 	vkDeviceWaitIdle(device_);
 	//vkDestroyCommandPool(device_, defaultCommandPool_, nullptr);
@@ -1568,6 +1575,7 @@ std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanC
 }
 
 
+// ResourceContext
 static inline VkDescriptorSetLayoutBinding getDSLBinding(uint32_t binding,
 	VkDescriptorType descriptorType,
 	uint32_t descriptorCount,
@@ -1583,7 +1591,6 @@ static inline VkDescriptorSetLayoutBinding getDSLBinding(uint32_t binding,
 	};
 }
 
-// ResourceContext
 int smvk::VulkanResourceManager::Initialize() {
 
 	VmaAllocatorCreateInfo allocatorCreateInfo = {};
@@ -1621,8 +1628,7 @@ int smvk::VulkanResourceManager::Initialize() {
 			.format = smvk::Format::RGBA8_SRGB,
 			.name = "nilTexture"
 		},
-		&pixel,
-		"nilTexture"
+		&pixel
 	);
 
 	// ============================================================================
@@ -1736,75 +1742,75 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	delete m_submitter;
 	m_submitter = nullptr;
 
+	//
+	//#ifndef N_DEBUG
+	//	bool leakHeaderPrinted = false;
+	//
+	//	auto printLeakHeader = [&]() {
+	//		if (!leakHeaderPrinted)
+	//		{
+	//			std::cout << "[ResourceContext::~ResourceContext] Leaking objects:\n";
+	//			leakHeaderPrinted = true;
+	//		}
+	//	};
+	//
+	//	shaderModules_.forEachHandle([&](ShaderModuleHandle handle) {
+	//		printLeakHeader();
+	//
+	//		auto sm = shaderModules_.get(handle);
+	//		std::cout << "  [LEAK] ShaderModule: handle index=" << handle.index()
+	//			<< ", gen=" << handle.gen() << ", module=" << *sm << "\n";
+	//	});
+	//
+	//	buffers_.forEachHandle([&](BufferHandle handle) {
+	//		printLeakHeader();
+	//
+	//		auto buf = buffers_.get(handle);
+	//		std::cout << "  [LEAK] Buffer: handle index=" << handle.index()
+	//			<< ", gen=" << handle.gen() << ", buffer=" << buf->vk_buffer
+	//			<< ", allocation=" << buf->vma_alloc << "\n";
+	//	});
+	//
+	//	samplers_.forEachHandle([&](SamplerHandle handle) {
+	//		printLeakHeader();
+	//
+	//		auto s = samplers_.get(handle);
+	//		std::cout << "  [LEAK] Sampler: handle index=" << handle.index()
+	//			<< ", gen=" << handle.gen() << ", sampler=" << *s << "\n";
+	//	});
+	//
+	//	descriptorPools_.forEachHandle([&](DescriptorPoolHandle handle) {
+	//		if (handle != defaultDescriptorPool)
+	//		{
+	//			printLeakHeader();
+	//
+	//			auto dp = descriptorPools_.get(handle);
+	//			std::cout << "  [LEAK] DescriptorPool: handle index=" << handle.index()
+	//				<< ", gen=" << handle.gen() << ", pool=" << *dp << "\n";
+	//		}
+	//	});
+	//
+	//	images_.forEachHandle([&](ImageHandle handle) {
+	//		printLeakHeader();
+	//
+	//		auto img = images_.get(handle);
+	//		std::cout << "  [LEAK] Image: handle index=" << handle.index()
+	//			<< ", gen=" << handle.gen() << ", image=" << img->vk_image
+	//			<< ", allocation=" << img->vma_alloc << ", views="
+	//			<< img->sampleView << "/" << img->storageView << "\n";
+	//	});
+	//
+	//	textures_.forEachHandle([&](TextureHandle handle) {
+	//		printLeakHeader();
+	//
+	//		auto tex = textures_.get(handle);
+	//		std::cout << "  [LEAK] Texture: handle index=" << handle.index()
+	//			<< ", gen=" << handle.gen() << ", image=" << tex->vk_image
+	//			<< ", allocation=" << tex->vma_alloc << "\n";
+	//	});
+	//#endif
 
-#ifndef N_DEBUG
-	bool leakHeaderPrinted = false;
-
-	auto printLeakHeader = [&]() {
-		if (!leakHeaderPrinted)
-		{
-			std::cout << "[ResourceContext::~ResourceContext] Leaking objects:\n";
-			leakHeaderPrinted = true;
-		}
-	};
-
-	shaderModules_.forEachHandle([&](ShaderModuleHandle handle) {
-		printLeakHeader();
-
-		auto sm = shaderModules_.get(handle);
-		std::cout << "  [LEAK] ShaderModule: handle index=" << handle.index()
-			<< ", gen=" << handle.gen() << ", module=" << *sm << "\n";
-	});
-
-	buffers_.forEachHandle([&](BufferHandle handle) {
-		printLeakHeader();
-
-		auto buf = buffers_.get(handle);
-		std::cout << "  [LEAK] Buffer: handle index=" << handle.index()
-			<< ", gen=" << handle.gen() << ", buffer=" << buf->vk_buffer
-			<< ", allocation=" << buf->vma_alloc << "\n";
-	});
-
-	samplers_.forEachHandle([&](SamplerHandle handle) {
-		printLeakHeader();
-
-		auto s = samplers_.get(handle);
-		std::cout << "  [LEAK] Sampler: handle index=" << handle.index()
-			<< ", gen=" << handle.gen() << ", sampler=" << *s << "\n";
-	});
-
-	descriptorPools_.forEachHandle([&](DescriptorPoolHandle handle) {
-		if (handle != defaultDescriptorPool)
-		{
-			printLeakHeader();
-
-			auto dp = descriptorPools_.get(handle);
-			std::cout << "  [LEAK] DescriptorPool: handle index=" << handle.index()
-				<< ", gen=" << handle.gen() << ", pool=" << *dp << "\n";
-		}
-	});
-
-	images_.forEachHandle([&](ImageHandle handle) {
-		printLeakHeader();
-
-		auto img = images_.get(handle);
-		std::cout << "  [LEAK] Image: handle index=" << handle.index()
-			<< ", gen=" << handle.gen() << ", image=" << img->vk_image
-			<< ", allocation=" << img->vma_alloc << ", views="
-			<< img->sampleView << "/" << img->storageView << "\n";
-	});
-
-	textures_.forEachHandle([&](TextureHandle handle) {
-		printLeakHeader();
-
-		auto tex = textures_.get(handle);
-		std::cout << "  [LEAK] Texture: handle index=" << handle.index()
-			<< ", gen=" << handle.gen() << ", image=" << tex->vk_image
-			<< ", allocation=" << tex->vma_alloc << "\n";
-	});
-#endif
-
-	// Destroy unmanaged handles not in RAII pools
+		// Destroy unmanaged handles not in RAII pools
 	vkDestroyPipelineLayout(device_, defaultPipeLayout, nullptr);
 	vkDestroyDescriptorSetLayout(device_, defaultSetLayout, nullptr);
 	if (m_defaultSampler != VK_NULL_HANDLE) {
@@ -1885,125 +1891,201 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 	);
 }
 void smvk::VulkanResourceManager::UploadDataToImage2D(
-	Image image,
+	const Image& image,
 	const void* data,
 	VkPipelineStageFlags2 dstStages,
 	VkAccessFlags2 dstAccess,
-	size_t src_offset)
+	size_t srcOffset
+)
 {
-	const FormatInfo fmt = getFormatInfo(image.vk_format);
+
+	// TODO :: doesn't actually provide enough information to determine the final layout. Right now we're effectively saying:
+
+	assert(data != nullptr);
+	assert(image.vkImage != VK_NULL_HANDLE);
+	assert(image.type == ImageType::Image2D);
+	assert((image.usage & ImageUsage::TransferDst) != ImageUsage::None);
+
+	const VkFormat vkFormat = toVkFormat(image.format);
+	const FormatInfo fmt = getFormatInfo(vkFormat);
+
+	const uint32_t mipLevels = image.mipLevels;
+	const uint32_t arrayLayers = image.arrayLayers;
+
+	// -------------------------------------------------------------------------
+	// Calculate upload size
+	// -------------------------------------------------------------------------
 
 	VkDeviceSize stagingBufferSize = 0;
 
-	for (uint32_t level = 0; level < image.levels; ++level)
+	for (uint32_t mip = 0; mip < mipLevels; ++mip)
 	{
 		const uint32_t mipWidth =
-			std::max(1u, image.vk_extent.width >> level);
+			std::max(1u, image.extent.width >> mip);
 
 		const uint32_t mipHeight =
-			std::max(1u, image.vk_extent.height >> level);
+			std::max(1u, image.extent.height >> mip);
 
 		const uint32_t blocksX =
-			(mipWidth + fmt.blockWidth - 1) / fmt.blockWidth;
+			(mipWidth + fmt.blockWidth - 1) /
+			fmt.blockWidth;
 
 		const uint32_t blocksY =
-			(mipHeight + fmt.blockHeight - 1) / fmt.blockHeight;
+			(mipHeight + fmt.blockHeight - 1) /
+			fmt.blockHeight;
 
-		const VkDeviceSize singleLayerMipSize =
+		const VkDeviceSize layerSize =
 			static_cast<VkDeviceSize>(blocksX) *
 			static_cast<VkDeviceSize>(blocksY) *
 			static_cast<VkDeviceSize>(fmt.bytesPerBlock);
 
 		stagingBufferSize +=
-			singleLayerMipSize *
-			static_cast<VkDeviceSize>(image.arrayLayers);
+			layerSize *
+			static_cast<VkDeviceSize>(arrayLayers);
 	}
 
-	auto stagingBufferHandle = CreateBuffer(
-		stagingBufferSize,
-		smvk::BufferType_Staging,
-		"staging buffer"
-	).release();
+	assert(stagingBufferSize > 0);
 
-	void* mapped = MapBuffer(stagingBufferHandle);
+
+	// -------------------------------------------------------------------------
+	// Staging buffer
+	// -------------------------------------------------------------------------
+
+	auto stagingBufferHandle =
+		CreateBuffer(
+			stagingBufferSize,
+			smvk::BufferType_Staging,
+			"image upload staging buffer"
+		).release();
+
+	void* mapped =
+		MapBuffer(stagingBufferHandle);
+
+	assert(mapped != nullptr);
 
 	std::memcpy(
 		mapped,
-		static_cast<const std::byte*>(data) + src_offset,
+		static_cast<const std::byte*>(data) + srcOffset,
 		static_cast<size_t>(stagingBufferSize)
 	);
 
 	UnmapBuffer(stagingBufferHandle);
 
-	auto han = m_submitter->acquire();
-	VkCommandBuffer cmd = m_submitter->GetCommandBuffer(han).cmd;
 
-	// Initial transition.
-	{
-		VkImageSubresourceRange range{
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.baseMipLevel = 0,
-			.levelCount = image.levels,
-			.baseArrayLayer = 0,
-			.layerCount = image.arrayLayers
-		};
+	// -------------------------------------------------------------------------
+	// Command buffer
+	// -------------------------------------------------------------------------
 
-		ImageBarrier(
-			cmd,
-			image.vk_image,
-			VK_IMAGE_LAYOUT_UNDEFINED,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			range,
-			VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-			VK_ACCESS_2_NONE,
-			VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-			VK_ACCESS_2_TRANSFER_WRITE_BIT
-		);
-	}
+	auto submitHandle =
+		m_submitter->acquire();
+
+	VkCommandBuffer cmd =
+		m_submitter
+		->GetCommandBuffer(submitHandle)
+		.cmd;
+
+
+	// -------------------------------------------------------------------------
+	// UNDEFINED -> TRANSFER_DST
+	// -------------------------------------------------------------------------
+
+	const VkImageSubresourceRange fullRange{
+		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel = 0,
+		.levelCount = mipLevels,
+		.baseArrayLayer = 0,
+		.layerCount = arrayLayers
+	};
+
+	ImageBarrier(
+		cmd,
+		image.vkImage,
+		VK_IMAGE_LAYOUT_UNDEFINED,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		fullRange,
+
+		VK_PIPELINE_STAGE_2_NONE,
+		VK_ACCESS_2_NONE,
+
+		VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+		VK_ACCESS_2_TRANSFER_WRITE_BIT
+	);
+
+
+	// -------------------------------------------------------------------------
+	// Copy regions
+	// -------------------------------------------------------------------------
 
 	std::vector<VkBufferImageCopy2> regions;
+
 	regions.reserve(
-		static_cast<size_t>(image.levels) *
-		static_cast<size_t>(image.arrayLayers)
+		static_cast<size_t>(mipLevels) *
+		static_cast<size_t>(arrayLayers)
 	);
 
 	VkDeviceSize bufferOffset = 0;
 
-	for (uint32_t level = 0; level < image.levels; ++level)
+	for (uint32_t mip = 0; mip < mipLevels; ++mip)
 	{
 		const uint32_t mipWidth =
-			std::max(1u, image.vk_extent.width >> level);
+			std::max(1u, image.extent.width >> mip);
 
 		const uint32_t mipHeight =
-			std::max(1u, image.vk_extent.height >> level);
+			std::max(1u, image.extent.height >> mip);
 
 		const uint32_t blocksX =
-			(mipWidth + fmt.blockWidth - 1) / fmt.blockWidth;
+			(mipWidth + fmt.blockWidth - 1) /
+			fmt.blockWidth;
 
 		const uint32_t blocksY =
-			(mipHeight + fmt.blockHeight - 1) / fmt.blockHeight;
+			(mipHeight + fmt.blockHeight - 1) /
+			fmt.blockHeight;
 
-		const VkDeviceSize singleLayerMipSize =
+		const VkDeviceSize layerSize =
 			static_cast<VkDeviceSize>(blocksX) *
 			static_cast<VkDeviceSize>(blocksY) *
 			static_cast<VkDeviceSize>(fmt.bytesPerBlock);
 
-		for (uint32_t layer = 0; layer < image.arrayLayers; ++layer)
+		for (uint32_t layer = 0;
+			layer < arrayLayers;
+			++layer)
 		{
 			VkBufferImageCopy2 region{
-				.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-				.bufferOffset = bufferOffset,
-				.bufferRowLength = 0,
-				.bufferImageHeight = 0,
+				.sType =
+					VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+
+				.pNext =
+					nullptr,
+
+				.bufferOffset =
+					bufferOffset,
+
+				.bufferRowLength =
+					0,
+
+				.bufferImageHeight =
+					0,
 
 				.imageSubresource = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.mipLevel = level,
-					.baseArrayLayer = layer,
-					.layerCount = 1
+					.aspectMask =
+						VK_IMAGE_ASPECT_COLOR_BIT,
+
+					.mipLevel =
+						mip,
+
+					.baseArrayLayer =
+						layer,
+
+					.layerCount =
+						1
 				},
 
-				.imageOffset = { 0, 0, 0 },
+				.imageOffset = {
+					0,
+					0,
+					0
+				},
+
 				.imageExtent = {
 					mipWidth,
 					mipHeight,
@@ -2012,133 +2094,169 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 			};
 
 			regions.push_back(region);
-			bufferOffset += singleLayerMipSize;
+
+			bufferOffset +=
+				layerSize;
 		}
 	}
 
 	assert(bufferOffset == stagingBufferSize);
 
-	smvk::Buffer* stagingBuffer =
+
+	// -------------------------------------------------------------------------
+	// Copy staging -> image
+	// -------------------------------------------------------------------------
+
+	Buffer* stagingBuffer =
 		buffers_.get(stagingBufferHandle);
 
+	assert(stagingBuffer != nullptr);
+
 	VkCopyBufferToImageInfo2 copyInfo{
-		.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
-		.srcBuffer = stagingBuffer->vk_buffer,
-		.dstImage = image.vk_image,
-		.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		.regionCount = static_cast<uint32_t>(regions.size()),
-		.pRegions = regions.data()
+		.sType =
+			VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+
+		.pNext =
+			nullptr,
+
+		.srcBuffer =
+			stagingBuffer->vk_buffer,
+
+		.dstImage =
+			image.vkImage,
+
+		.dstImageLayout =
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+
+		.regionCount =
+			static_cast<uint32_t>(regions.size()),
+
+		.pRegions =
+			regions.data()
 	};
 
-	vkCmdCopyBufferToImage2(cmd, &copyInfo);
+	vkCmdCopyBufferToImage2(
+		cmd,
+		&copyInfo
+	);
 
-	if (!(dstStages == VK_PIPELINE_STAGE_2_TRANSFER_BIT &&
-		dstAccess == VK_ACCESS_2_TRANSFER_WRITE_BIT))
+
+	// -------------------------------------------------------------------------
+	// TRANSFER_DST -> final usage
+	//
+	// If the caller wants to keep using it as a transfer destination,
+	// leave the image in TRANSFER_DST_OPTIMAL.
+	// -------------------------------------------------------------------------
+
+	const bool remainTransferDst =
+		dstStages == VK_PIPELINE_STAGE_2_TRANSFER_BIT &&
+		dstAccess == VK_ACCESS_2_TRANSFER_WRITE_BIT;
+
+	if (!remainTransferDst)
 	{
-		VkImageSubresourceRange range{
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.baseMipLevel = 0,
-			.levelCount = image.levels,
-			.baseArrayLayer = 0,
-			.layerCount = image.arrayLayers
-		};
-
 		ImageBarrier(
 			cmd,
-			image.vk_image,
+			image.vkImage,
+
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			range,
+
+			fullRange,
+
 			VK_PIPELINE_STAGE_2_TRANSFER_BIT,
 			VK_ACCESS_2_TRANSFER_WRITE_BIT,
+
 			dstStages,
 			dstAccess
 		);
 	}
 
-	m_submitter->submit(han);
 
+	// -------------------------------------------------------------------------
+	// Submit
+	// -------------------------------------------------------------------------
+
+	m_submitter->submit(
+		submitHandle
+	);
+
+
+	// Staging buffer must remain alive until this submission finishes.
 	AddDeferredTask(
 		std::packaged_task<void()>(
-			[this, staging = std::move(stagingBufferHandle)] {
-		destroy(this, staging);
-	}),
-		han
+			[
+				this,
+				staging = stagingBufferHandle
+			]
+	{
+		destroy(
+			this,
+			staging
+		);
+	}
+		),
+		submitHandle
 	);
 }
-//
-[[nodiscard]] smvk::Image smvk::VulkanResourceManager::CreateImageImpl(
-	const smvk::ImageCreateInfo& imageCreateInfo,
-	const void* data,
-	const char* debugName)
+[[nodiscard]] smvk::Image smvk::VulkanResourceManager::CreateImageImpl(const ImageCreateInfo& ci)
 {
-	Image img{};
+	assert(ci.format != Format::Undefined);
+	assert(ci.extent.width > 0);
+	assert(ci.extent.height > 0);
+	assert(ci.extent.depth > 0);
+	assert(ci.mipLevels > 0);
+	assert(ci.arrayLayers > 0);
 
-	// Resolve API-facing values once.
-	img.vk_format = toVkFormat(imageCreateInfo.format);
-	img.vk_extent = {
-		imageCreateInfo.extent.width,
-		imageCreateInfo.extent.height,
-		imageCreateInfo.extent.depth
-	};
-	img.levels = imageCreateInfo.mipLevels;
-	img.arrayLayers = imageCreateInfo.arrayLayers;
-	img.vk_samples = toVkSampleCount(imageCreateInfo.samples);
-	img.vk_usage = toVkImageUsageFlags(imageCreateInfo.usage);
+	Image image{};
 
-	// Temporary until Image no longer stores ImageCreateInfo.
-	img.info_ = imageCreateInfo; // Still potentially problematic if info_ contains non-owning pointers.
+	image.type = ci.type;
+	image.extent = ci.extent;
+	image.format = ci.format;
+	image.usage = ci.usage;
+	image.samples = ci.samples;
+	image.mipLevels = ci.mipLevels;
+	image.arrayLayers = ci.arrayLayers;
+	//image.flags = ci.flags;
+	image.ownership = ResourceOwnership::Owned;
 
-	const VkImageAspectFlags formatAspects =
-		VkAspectMaskFromFormat(img.vk_format);
-
-	const bool hasDepth =
-		(formatAspects & VK_IMAGE_ASPECT_DEPTH_BIT) != 0;
-
-	const bool hasStencil =
-		(formatAspects & VK_IMAGE_ASPECT_STENCIL_BIT) != 0;
-
-	const bool isDepthStencil =
-		hasDepth && hasStencil;
-
-	// -------------------------------------------------------------------------
-	// Image
-	// -------------------------------------------------------------------------
-
-	VkImageCreateInfo imgCI{
+	VkImageCreateInfo vkCI{
 		VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
 	};
 
-	imgCI.imageType = toVkImageType(imageCreateInfo.type);
-	imgCI.format = img.vk_format;
-	imgCI.extent = img.vk_extent;
-	imgCI.mipLevels = img.levels;
-	imgCI.arrayLayers = img.arrayLayers;
-	imgCI.samples = img.vk_samples;
-	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
-	imgCI.usage = img.vk_usage;
-	imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	imgCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	//vkCI.flags = toVkImageCreateFlags(ci.flags);
+	vkCI.imageType = toVkImageType(ci.type);
 
-	VmaAllocationCreateInfo allocationCreateInfo{};
-	allocationCreateInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-	allocationCreateInfo.pool = VK_NULL_HANDLE;
+	vkCI.extent = {
+		ci.extent.width,
+		ci.extent.height,
+		ci.extent.depth
+	};
+
+	vkCI.format = toVkFormat(ci.format);
+	vkCI.mipLevels = ci.mipLevels;
+	vkCI.arrayLayers = ci.arrayLayers;
+	vkCI.samples = toVkSampleCount(ci.samples);
+
+	vkCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+	vkCI.usage = toVkImageUsageFlags(ci.usage);
+	vkCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	vkCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+	VmaAllocationCreateInfo allocCI{};
+	allocCI.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+	allocCI.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
 	VK_CHECK(vmaCreateImage(
 		m_allocator,
-		&imgCI,
-		&allocationCreateInfo,
-		&img.vk_image,
-		&img.vma_alloc,
+		&vkCI,
+		&allocCI,
+		&image.vkImage,
+		&image.allocation,
 		nullptr
 	));
 
-	// -------------------------------------------------------------------------
-	// Debug name
-	// -------------------------------------------------------------------------
-
 #if defined(_DEBUG)
-	if (debugName)
+	if (ci.name)
 	{
 		VkDebugUtilsObjectNameInfoEXT nameInfo{
 			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
@@ -2146,129 +2264,36 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
 		nameInfo.objectHandle =
-			reinterpret_cast<uint64_t>(img.vk_image);
-		nameInfo.pObjectName = debugName;
+			reinterpret_cast<uint64_t>(image.vkImage);
+		nameInfo.pObjectName = ci.name;
 
 		vkSetDebugUtilsObjectNameEXT(
 			device_,
 			&nameInfo
 		);
 	}
-#else
-	(void)debugName;
 #endif
 
-	// -------------------------------------------------------------------------
-	// Common view creation helper
-	// -------------------------------------------------------------------------
+	return image;
+}
+[[nodiscard]] smvk::Holder<smvk::ImageHandle> smvk::VulkanResourceManager::CreateImage(ImageCreateInfo ci, const void* data)
+{
+	Image image = CreateImageImpl(ci);
 
-	auto createView =
-		[&](
-			VkImageAspectFlags aspectMask,
-			uint32_t baseMipLevel,
-			uint32_t levelCount,
-			uint32_t baseArrayLayer,
-			uint32_t layerCount) -> VkImageView
-	{
-		VkImageViewCreateInfo viewInfo{
-			VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
-		};
-
-		viewInfo.image = img.vk_image;
-		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		viewInfo.format = img.vk_format;
-
-		viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-		viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-		viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-		viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-
-		viewInfo.subresourceRange = {
-			.aspectMask = aspectMask,
-			.baseMipLevel = baseMipLevel,
-			.levelCount = levelCount,
-			.baseArrayLayer = baseArrayLayer,
-			.layerCount = layerCount
-		};
-
-		VkImageView view = VK_NULL_HANDLE;
-
-		VK_CHECK(vkCreateImageView(
-			device_,
-			&viewInfo,
-			nullptr,
-			&view
-		));
-
-		return view;
-	};
-
-	// -------------------------------------------------------------------------
-	// Sample view
-	//
-	// A sampled depth/stencil VkImageView cannot expose both DEPTH and STENCIL.
-	// Depth is the sensible default for shadow maps / sampled depth buffers.
-	// -------------------------------------------------------------------------
-
-	if (HasAnyFlag(imageCreateInfo.usage, ImageUsage::Sampled))
-	{
-		VkImageAspectFlags sampleAspect = formatAspects;
-
-		if (isDepthStencil)
-		{
-			sampleAspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-		}
-
-		img.sampleView = createView(
-			sampleAspect,
-			0,
-			img.levels,
-			0,
-			img.arrayLayers
-		);
-	}
-
-	if (
-		HasAnyFlag(imageCreateInfo.usage, ImageUsage::ColorAttachment) ||
-		HasAnyFlag(imageCreateInfo.usage, ImageUsage::DepthStencilAttachment))
-	{
-		img.attachmentView = createView(
-			formatAspects,
-			0,
-			1,
-			0,
-			img.arrayLayers
-		);
-	}
-
-	if (HasAnyFlag(imageCreateInfo.usage, ImageUsage::Storage))
-	{
-		// Depth/stencil storage images generally aren't something we should
-		// silently support through this generic path.
-		assert(!hasDepth && !hasStencil);
-
-		img.storageView = createView(
-			formatAspects,
-			0,
-			1,
-			0,
-			img.arrayLayers
-		);
-	}
-
-	// -------------------------------------------------------------------------
-	// Initial upload
-	// -------------------------------------------------------------------------
+	ImageHandle handle =
+		images_.create(std::move(image));
 
 	if (data)
 	{
+		Image* imagePtr = images_.get(handle);
+
 		assert(
-			(img.vk_usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0 &&
-			"Image initialized with data must have TransferDst usage"
+			((imagePtr->usage & ImageUsage::TransferDst) != ImageUsage::None) &&
+			"Initial image data requires TransferDst"
 		);
 
 		UploadDataToImage2D(
-			img,
+			*imagePtr,
 			data,
 			VK_PIPELINE_STAGE_2_TRANSFER_BIT,
 			VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -2276,278 +2301,714 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		);
 	}
 
-	return img;
+	return Holder<ImageHandle>{
+		this,
+			handle
+	};
 }
-[[nodiscard]] smvk::Holder<smvk::ImageHandle>smvk::VulkanResourceManager::CreateImage(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
+[[nodiscard]] smvk::ImageSubresourceRange smvk::VulkanResourceManager::ResolveImageSubresourceRange(const Image& image, ImageSubresourceRange range) const
 {
-	Image img = CreateImageImpl(
-		imageCreateInfo,
-		data,
-		debugName
+	if (range.mipLevelCount == RemainingSubresources)
+	{
+		range.mipLevelCount =
+			image.mipLevels - range.baseMipLevel;
+	}
+
+	if (range.arrayLayerCount == RemainingSubresources)
+	{
+		range.arrayLayerCount =
+			image.arrayLayers - range.baseArrayLayer;
+	}
+
+	assert(
+		range.baseMipLevel + range.mipLevelCount <=
+		image.mipLevels
 	);
 
-	return smvk::Holder<ImageHandle>(
-		this,
-		images_.create(std::move(img))
+	assert(
+		range.baseArrayLayer + range.arrayLayerCount <=
+		image.arrayLayers
 	);
+
+	return range;
 }
-[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data, const char* debugName)
+[[nodiscard]] smvk::Holder<smvk::BindlessImageHandle> smvk::VulkanResourceManager::CreateBindlessImage(ImageViewHandle viewHandle, VkImageLayout readLayout)
 {
-	Image img = CreateImageImpl(
-		imageCreateInfo,
-		data,
-		debugName
-	);
+	ImageView* view = imageViews_.get(viewHandle);
+	assert(view);
+
+	BindlessImage bindless{};
+	bindless.view = viewHandle;
+	bindless.imageLayout = readLayout;
+
+	BindlessImageHandle handle =
+		bindlessImages_.create(std::move(bindless));
+
+	BindlessImage* resource =
+		bindlessImages_.get(handle);
+
+	// The bindless pool is intentionally also our descriptor-slot allocator.
+	resource->descriptorIndex = handle.index();
 
 	needToUpdateDescriptors = true;
-	return smvk::Holder<TextureHandle>(
-		this,
-		textures_.create(std::move(img))
-	);
-}
-[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ktxTexture2& texture, const char* debugName) {
 
-	if (ktxTexture2_NeedsTranscoding(&texture)) {
-		// Hardcoded for now, as in your original code.
-		KTX_error_code tr = ktxTexture2_TranscodeBasis(&texture, KTX_TTF_BC7_RGBA, 0);
-		if (tr != KTX_SUCCESS) {
-			throw std::runtime_error(ktxErrorString(tr));
+	return Holder<BindlessImageHandle>{
+		this,
+			handle
+	};
+}
+[[nodiscard]] smvk::Holder<smvk::TextureHandle>smvk::VulkanResourceManager::CreateTexture(ImageCreateInfo imageCreateInfo, const void* data)
+{
+	assert(
+		((imageCreateInfo.usage & ImageUsage::Sampled) != ImageUsage::None) &&
+		"CreateTexture requires ImageUsage::Sampled"
+	);
+
+	// ---------------------------------------------------------------------
+	// Image
+	// ---------------------------------------------------------------------
+
+	auto image = CreateImage(
+		imageCreateInfo,
+		data
+	);
+
+	const Image* imageResource =
+		images_.get(image);
+
+	assert(imageResource);
+
+
+	// ---------------------------------------------------------------------
+	// Default sampled view
+	// ---------------------------------------------------------------------
+
+	ImageViewCreateInfo viewCI{};
+
+	if (imageResource->type == ImageType::Image3D)
+	{
+		viewCI.viewType = ImageViewType::View3D;
+	}
+	else if (imageResource->arrayLayers > 1)
+	{
+		viewCI.viewType = ImageViewType::View2DArray;
+	}
+	else
+	{
+		viewCI.viewType = ImageViewType::View2D;
+	}
+
+	// Inherit underlying image format.
+	viewCI.format = Format::Undefined;
+
+	viewCI.subresourceRange = {
+		.aspect = DefaultSampleAspect(imageResource->format),
+
+		.baseMipLevel = 0,
+		.mipLevelCount = imageResource->mipLevels,
+
+		.baseArrayLayer = 0,
+		.arrayLayerCount = imageResource->arrayLayers
+	};
+
+	viewCI.name = imageCreateInfo.name;
+
+	auto view = CreateImageView(
+		image,
+		viewCI
+	);
+
+	const ImageViewHandle viewHandle = view;
+
+	// ---------------------------------------------------------------------
+	// Bindless descriptor
+	// ---------------------------------------------------------------------
+
+	auto bindless =
+		CreateBindlessImage(viewHandle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+	// ---------------------------------------------------------------------
+	// Texture owns all three resources.
+	// ---------------------------------------------------------------------
+
+	Texture texture{
+		.image = image.release(),
+		.view = view.release(),
+		.bindless = bindless.release()
+	};
+
+	return Holder<TextureHandle>{
+		this,
+			textures_.create(std::move(texture))
+	};
+}
+[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ktxTexture2& texture, const char* debugName)
+{
+	// -------------------------------------------------------------------------
+	// Transcode
+	// -------------------------------------------------------------------------
+
+	if (ktxTexture2_NeedsTranscoding(&texture))
+	{
+		KTX_error_code result =
+			ktxTexture2_TranscodeBasis(
+				&texture,
+				KTX_TTF_BC7_RGBA,
+				0
+			);
+
+		if (result != KTX_SUCCESS)
+		{
+			throw std::runtime_error(
+				ktxErrorString(result)
+			);
 		}
 	}
 
-	// Force offline mip usage.
+	// We currently expect pre-generated mipmaps.
 	texture.generateMipmaps = KTX_FALSE;
 
-	const VkFormat format = ktxTexture2_GetVkFormat(&texture);
-	if (format == VK_FORMAT_UNDEFINED) {
-		throw std::runtime_error("KTX texture has undefined VkFormat after transcoding.");
+	const VkFormat vkFormat =
+		ktxTexture2_GetVkFormat(&texture);
+
+	if (vkFormat == VK_FORMAT_UNDEFINED)
+	{
+		throw std::runtime_error(
+			"KTX texture has undefined VkFormat after transcoding."
+		);
 	}
 
-	const uint32_t width = texture.baseWidth;
-	const uint32_t height = texture.baseHeight;
-	const uint32_t depth = std::max(1u, texture.baseDepth);
-	const uint32_t mipLevels = texture.numLevels;
+	const Format format =
+		fromVkFormat(vkFormat);
+
+	if (format == Format::Undefined)
+	{
+		throw std::runtime_error(
+			"KTX texture uses a format unsupported by smvk::Format."
+		);
+	}
+
+
+	// -------------------------------------------------------------------------
+	// Description
+	// -------------------------------------------------------------------------
+
+	const uint32_t width =
+		texture.baseWidth;
+
+	const uint32_t height =
+		texture.baseHeight;
+
+	const uint32_t depth =
+		std::max(1u, texture.baseDepth);
+
+	const uint32_t mipLevels =
+		std::max(1u, texture.numLevels);
+
+	const uint32_t ktxLayers =
+		std::max(1u, texture.numLayers);
+
+	const uint32_t faces =
+		std::max(1u, texture.numFaces);
+
 	const uint32_t arrayLayers =
-		std::max(1u, texture.numLayers) * std::max(1u, texture.numFaces);
+		ktxLayers * faces;
 
-	const bool isCubemap = texture.isCubemap == KTX_TRUE;
+	const bool isCubemap =
+		texture.isCubemap == KTX_TRUE;
 
-	const VkImageUsageFlags usage =
-		VK_IMAGE_USAGE_SAMPLED_BIT |
-		VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-		(texture.generateMipmaps ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
+	const bool is3D =
+		depth > 1;
 
-	const bool is3D = depth > 1;
+	assert(!(isCubemap && is3D));
 
-	// -------------------------------------------------------------------------
-	// Create VkImage with VMA
-	// -------------------------------------------------------------------------
-	VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-	imageInfo.flags = isCubemap ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+	ImageUsage usage =
+		ImageUsage::Sampled |
+		ImageUsage::TransferDst;
 
-	imageInfo.imageType = is3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
-	imageInfo.extent = { width, height, depth };
-	imageInfo.arrayLayers = is3D ? 1 : arrayLayers;
-
-	imageInfo.format = format;
-	imageInfo.extent = { width, height, depth };
-	imageInfo.mipLevels = mipLevels;
-	imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-	imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-	imageInfo.usage = usage;
-	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-	// Textures go on device local.
-	VmaAllocationCreateInfo imageAllocInfo{};
-	imageAllocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-	imageAllocInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-
-	VkImage image = VK_NULL_HANDLE;
-	VmaAllocation imageAllocation = VK_NULL_HANDLE;
-	VmaAllocationInfo imageAllocationInfo{};
-
-	VkResult vr = vmaCreateImage(
-		m_allocator,
-		&imageInfo,
-		&imageAllocInfo,
-		&image,
-		&imageAllocation,
-		&imageAllocationInfo
-	);
-
-	if (vr != VK_SUCCESS) {
-		throw std::runtime_error("vmaCreateImage failed for KTX texture.");
+	if (texture.generateMipmaps)
+	{
+		usage |= ImageUsage::TransferSrc;
 	}
 
-#if defined(_DEBUG)
-	if (debugName) {
-		VkDebugUtilsObjectNameInfoEXT nameInfo{
-			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
-		};
-		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
-		nameInfo.objectHandle = reinterpret_cast<uint64_t>(image);
-		nameInfo.pObjectName = debugName;
-		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
-	}
-#else
-	(void)debugName;
-#endif
-
-	auto* base = reinterpret_cast<ktxTexture*>(&texture);
-	ktx_size_t ktxDataSize = ktxTexture_GetDataSizeUncompressed(base);
-	ktx_uint8_t* ktxData = ktxTexture_GetData(base);
-
-	if (!ktxData || ktxDataSize == 0) {
-		vmaDestroyImage(m_allocator, image, imageAllocation);
-		assert(false && "no image data");
-		throw std::runtime_error("KTX texture has no image data.");
-	}
-
-	VkBufferCreateInfo stagingBufferInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	stagingBufferInfo.size = static_cast<VkDeviceSize>(ktxDataSize);
-	stagingBufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-	stagingBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-	VmaAllocationCreateInfo stagingAllocInfo{};
-	stagingAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-	stagingAllocInfo.flags =
-		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-		VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-	VkBuffer stagingBuffer = VK_NULL_HANDLE;
-	VmaAllocation stagingAllocation = VK_NULL_HANDLE;
-	VmaAllocationInfo stagingAllocationInfo{};
-
-	vr = vmaCreateBuffer(
-		m_allocator,
-		&stagingBufferInfo,
-		&stagingAllocInfo,
-		&stagingBuffer,
-		&stagingAllocation,
-		&stagingAllocationInfo
-	);
-
-	if (vr != VK_SUCCESS) {
-		vmaDestroyImage(m_allocator, image, imageAllocation);
-		throw std::runtime_error("vmaCreateBuffer failed for KTX staging buffer.");
-	}
-
-	// Guaranteed mapped due to chosen flags. Ignore warning
-#pragma warning(suppress : 6387)
-	std::memcpy(stagingAllocationInfo.pMappedData, ktxData, static_cast<size_t>(ktxDataSize));
-	vmaFlushAllocation(m_allocator, stagingAllocation, 0, VK_WHOLE_SIZE);
 
 	// -------------------------------------------------------------------------
-	// Build VkBufferImageCopy regions from KTX offsets
+	// Build copy regions FIRST
+	//
+	// This requires no Vulkan resource, so failures here don't require
+	// cleanup of a partially-created Image.
 	// -------------------------------------------------------------------------
+
+	auto* base =
+		reinterpret_cast<ktxTexture*>(&texture);
+
+	const ktx_size_t ktxDataSize =
+		ktxTexture_GetDataSizeUncompressed(base);
+
+	ktx_uint8_t* ktxData =
+		ktxTexture_GetData(base);
+
+	if (!ktxData || ktxDataSize == 0)
+	{
+		throw std::runtime_error(
+			"KTX texture contains no image data."
+		);
+	}
+
 	std::vector<VkBufferImageCopy> regions;
-	regions.reserve(mipLevels * arrayLayers);
 
-	for (uint32_t level = 0; level < mipLevels; ++level) {
-		const uint32_t mipWidth = std::max(1u, width >> level);
-		const uint32_t mipHeight = std::max(1u, height >> level);
-		const uint32_t mipDepth = std::max(1u, depth >> level);
+	regions.reserve(
+		mipLevels * ktxLayers * faces
+	);
 
-		if (texture.numLayers > 0) {
-			// Array texture / cubemap array / cubemap
-			for (uint32_t layer = 0; layer < std::max(1u, texture.numLayers); ++layer) {
-				const uint32_t faces = std::max(1u, texture.numFaces);
+	for (uint32_t mip = 0;
+		mip < mipLevels;
+		++mip)
+	{
+		const uint32_t mipWidth =
+			std::max(1u, width >> mip);
 
-				for (uint32_t face = 0; face < faces; ++face) {
-					ktx_size_t offset = 0;
-					KTX_error_code offRes = ktxTexture2_GetImageOffset(
+		const uint32_t mipHeight =
+			std::max(1u, height >> mip);
+
+		const uint32_t mipDepth =
+			std::max(1u, depth >> mip);
+
+		for (uint32_t layer = 0;
+			layer < ktxLayers;
+			++layer)
+		{
+			for (uint32_t face = 0;
+				face < faces;
+				++face)
+			{
+				ktx_size_t offset = 0;
+
+				KTX_error_code result =
+					ktxTexture2_GetImageOffset(
 						&texture,
-						level,
+						mip,
 						layer,
 						face,
 						&offset
 					);
-					if (offRes != KTX_SUCCESS) {
-						vmaDestroyBuffer(m_allocator, stagingBuffer, stagingAllocation);
-						vmaDestroyImage(m_allocator, image, imageAllocation);
-						throw std::runtime_error("ktxTexture_GetImageOffset failed.");
-					}
 
-					VkBufferImageCopy region{};
-					region.bufferOffset = static_cast<VkDeviceSize>(offset);
-					region.bufferRowLength = 0;   // tightly packed
-					region.bufferImageHeight = 0; // tightly packed
-
-					region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-					region.imageSubresource.mipLevel = level;
-					region.imageSubresource.baseArrayLayer = layer * faces + face;
-					region.imageSubresource.layerCount = 1;
-
-					region.imageOffset = { 0, 0, 0 };
-					region.imageExtent = { mipWidth, mipHeight, mipDepth };
-
-					regions.push_back(region);
+				if (result != KTX_SUCCESS)
+				{
+					throw std::runtime_error(
+						"ktxTexture2_GetImageOffset failed."
+					);
 				}
+
+				VkBufferImageCopy region{};
+
+				region.bufferOffset =
+					static_cast<VkDeviceSize>(offset);
+
+				region.bufferRowLength = 0;
+				region.bufferImageHeight = 0;
+
+				region.imageSubresource.aspectMask =
+					VK_IMAGE_ASPECT_COLOR_BIT;
+
+				region.imageSubresource.mipLevel =
+					mip;
+
+				region.imageSubresource.baseArrayLayer =
+					is3D
+					? 0
+					: layer * faces + face;
+
+				region.imageSubresource.layerCount = 1;
+
+				region.imageOffset = {
+					0,
+					0,
+					0
+				};
+
+				region.imageExtent = {
+					mipWidth,
+					mipHeight,
+					mipDepth
+				};
+
+				regions.push_back(region);
 			}
-		}
-		else {
-			// Non-array texture
-			ktx_size_t offset = 0;
-
-			KTX_error_code offRes = ktxTexture_GetImageOffset(
-				base,
-				//ktxTexture(texture),
-				level,
-				0,
-				0,
-				&offset
-			);
-			if (offRes != KTX_SUCCESS) {
-				vmaDestroyBuffer(m_allocator, stagingBuffer, stagingAllocation);
-				vmaDestroyImage(m_allocator, image, imageAllocation);
-				throw std::runtime_error("ktxTexture_GetImageOffset failed.");
-			}
-
-			VkBufferImageCopy region{};
-			region.bufferOffset = static_cast<VkDeviceSize>(offset);
-			region.bufferRowLength = 0;
-			region.bufferImageHeight = 0;
-
-			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			region.imageSubresource.mipLevel = level;
-			region.imageSubresource.baseArrayLayer = 0;
-			region.imageSubresource.layerCount = 1;
-
-			region.imageOffset = { 0, 0, 0 };
-			region.imageExtent = { mipWidth, mipHeight, mipDepth };
-
-			regions.push_back(region);
 		}
 	}
 
-	// Instead of this upload should be scheduled to do in abtch and recorded to the transferQueue! 
+
+	// -------------------------------------------------------------------------
+	// VkImage
+	// -------------------------------------------------------------------------
+
+	VkImageCreateInfo imageCI{
+		VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
+	};
+
+	imageCI.flags =
+		isCubemap
+		? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT
+		: 0;
+
+	imageCI.imageType =
+		is3D
+		? VK_IMAGE_TYPE_3D
+		: VK_IMAGE_TYPE_2D;
+
+	imageCI.format =
+		vkFormat;
+
+	imageCI.extent = {
+		width,
+		height,
+		depth
+	};
+
+	imageCI.mipLevels =
+		mipLevels;
+
+	imageCI.arrayLayers =
+		is3D
+		? 1u
+		: arrayLayers;
+
+	imageCI.samples =
+		VK_SAMPLE_COUNT_1_BIT;
+
+	imageCI.tiling =
+		VK_IMAGE_TILING_OPTIMAL;
+
+	imageCI.usage =
+		toVkImageUsageFlags(usage);
+
+	imageCI.sharingMode =
+		VK_SHARING_MODE_EXCLUSIVE;
+
+	imageCI.initialLayout =
+		VK_IMAGE_LAYOUT_UNDEFINED;
+
+
+	VmaAllocationCreateInfo allocCI{};
+
+	allocCI.usage =
+		VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+	allocCI.requiredFlags =
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+
+	VkImage vkImage =
+		VK_NULL_HANDLE;
+
+	VmaAllocation allocation =
+		VK_NULL_HANDLE;
+
+	VK_CHECK(
+		vmaCreateImage(
+			m_allocator,
+			&imageCI,
+			&allocCI,
+			&vkImage,
+			&allocation,
+			nullptr
+		)
+	);
+
+
+	// -------------------------------------------------------------------------
+	// Image resource
+	// -------------------------------------------------------------------------
+
+	Image image{};
+
+	image.vkImage =
+		vkImage;
+
+	image.allocation =
+		allocation;
+
+	image.type =
+		is3D
+		? ImageType::Image3D
+		: ImageType::Image2D;
+
+	image.extent = {
+		width,
+		height,
+		depth
+	};
+
+	image.format =
+		format;
+
+	image.usage =
+		usage;
+
+	image.samples =
+		SampleCount::Count1;
+
+	image.mipLevels =
+		mipLevels;
+
+	image.arrayLayers =
+		imageCI.arrayLayers;
+
+	image.liveViewCount = 0;
+
+	image.ownership =
+		ResourceOwnership::Owned;
+
+
+	const ImageHandle imageHandle =
+		images_.create(
+			std::move(image)
+		);
+
+	Holder<ImageHandle> imageHolder{
+		this,
+		imageHandle
+	};
+
+
+	// -------------------------------------------------------------------------
+	// Debug name
+	// -------------------------------------------------------------------------
+
+#if defined(_DEBUG)
+
+	if (debugName)
+	{
+		VkDebugUtilsObjectNameInfoEXT nameInfo{
+			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
+		};
+
+		nameInfo.objectType =
+			VK_OBJECT_TYPE_IMAGE;
+
+		nameInfo.objectHandle =
+			reinterpret_cast<uint64_t>(vkImage);
+
+		nameInfo.pObjectName =
+			debugName;
+
+		vkSetDebugUtilsObjectNameEXT(
+			device_,
+			&nameInfo
+		);
+	}
+
+#else
+
+	(void)debugName;
+
+#endif
+
+
+	// -------------------------------------------------------------------------
+	// Default sampled ImageView
+	// -------------------------------------------------------------------------
+
+	ImageViewCreateInfo viewCI{};
+
+	if (isCubemap)
+	{
+		viewCI.viewType =
+			arrayLayers > 6
+			? ImageViewType::ViewCubeArray
+			: ImageViewType::ViewCube;
+	}
+	else if (is3D)
+	{
+		viewCI.viewType =
+			ImageViewType::View3D;
+	}
+	else if (arrayLayers > 1)
+	{
+		viewCI.viewType =
+			ImageViewType::View2DArray;
+	}
+	else
+	{
+		viewCI.viewType =
+			ImageViewType::View2D;
+	}
+
+	// Inherit Image::format.
+	viewCI.format =
+		Format::Undefined;
+
+	viewCI.subresourceRange = {
+		.aspect =
+			ImageAspect::Color,
+
+		.baseMipLevel =
+			0,
+
+		.mipLevelCount =
+			mipLevels,
+
+		.baseArrayLayer =
+			0,
+
+		.arrayLayerCount =
+			imageCI.arrayLayers
+	};
+
+	viewCI.name =
+		debugName;
+
+	auto viewHolder =
+		CreateImageView(
+			imageHandle,
+			viewCI
+		);
+
+
+	// -------------------------------------------------------------------------
+	// Bindless sampled image
+	// -------------------------------------------------------------------------
+
+	auto bindlessHolder =
+		CreateBindlessImage(
+			viewHolder,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		);
+
+
+	// -------------------------------------------------------------------------
+	// Staging buffer
+	// -------------------------------------------------------------------------
+
+	VkBufferCreateInfo stagingCI{
+		VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
+	};
+
+	stagingCI.size =
+		static_cast<VkDeviceSize>(ktxDataSize);
+
+	stagingCI.usage =
+		VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+	stagingCI.sharingMode =
+		VK_SHARING_MODE_EXCLUSIVE;
+
+
+	VmaAllocationCreateInfo stagingAllocCI{};
+
+	stagingAllocCI.usage =
+		VMA_MEMORY_USAGE_AUTO;
+
+	stagingAllocCI.flags =
+		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+		VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+
+	VkBuffer stagingBuffer =
+		VK_NULL_HANDLE;
+
+	VmaAllocation stagingAllocation =
+		VK_NULL_HANDLE;
+
+	VmaAllocationInfo stagingAllocationInfo{};
+
+
+	VkResult result =
+		vmaCreateBuffer(
+			m_allocator,
+			&stagingCI,
+			&stagingAllocCI,
+			&stagingBuffer,
+			&stagingAllocation,
+			&stagingAllocationInfo
+		);
+
+	if (result != VK_SUCCESS)
+	{
+		// Image/View/Bindless are automatically cleaned up by Holders.
+		throw std::runtime_error(
+			"vmaCreateBuffer failed for KTX staging buffer."
+		);
+	}
+
+
+	// -------------------------------------------------------------------------
+	// Upload CPU -> staging
+	// -------------------------------------------------------------------------
+
+	assert(stagingAllocationInfo.pMappedData);
+
+	std::memcpy(
+		stagingAllocationInfo.pMappedData,
+		ktxData,
+		static_cast<size_t>(ktxDataSize)
+	);
+
+	vmaFlushAllocation(
+		m_allocator,
+		stagingAllocation,
+		0,
+		VK_WHOLE_SIZE
+	);
+
+
 	// -------------------------------------------------------------------------
 	// Record upload
 	// -------------------------------------------------------------------------
-	//VkCommandBuffer cmd = beginSingleTimeCommands(core.device_, core.defaultCommandPool_); // your helper
-	auto han = m_submitter->acquire();
-	auto cmd = m_submitter->GetCommandBuffer(han).cmd;
+
+	auto submitHandle =
+		m_submitter->acquire();
+
+	auto cmd =
+		m_submitter
+		->GetCommandBuffer(submitHandle)
+		.cmd;
 
 
-	//ImageBarrier(
-	//	cmd, 
-	//	
-	//)
+	// UNDEFINED -> TRANSFER_DST
 	{
-		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-		barrier.srcAccessMask = 0;
-		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = image;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.baseMipLevel = 0;
-		barrier.subresourceRange.levelCount = mipLevels;
-		barrier.subresourceRange.baseArrayLayer = 0;
-		barrier.subresourceRange.layerCount = arrayLayers;
+		VkImageMemoryBarrier barrier{
+			VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
+		};
+
+		barrier.srcAccessMask =
+			0;
+
+		barrier.dstAccessMask =
+			VK_ACCESS_TRANSFER_WRITE_BIT;
+
+		barrier.oldLayout =
+			VK_IMAGE_LAYOUT_UNDEFINED;
+
+		barrier.newLayout =
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+		barrier.srcQueueFamilyIndex =
+			VK_QUEUE_FAMILY_IGNORED;
+
+		barrier.dstQueueFamilyIndex =
+			VK_QUEUE_FAMILY_IGNORED;
+
+		barrier.image =
+			vkImage;
+
+		barrier.subresourceRange = {
+			.aspectMask =
+				VK_IMAGE_ASPECT_COLOR_BIT,
+
+			.baseMipLevel =
+				0,
+
+			.levelCount =
+				mipLevels,
+
+			.baseArrayLayer =
+				0,
+
+			.layerCount =
+				imageCI.arrayLayers
+		};
 
 		vkCmdPipelineBarrier(
 			cmd,
@@ -2560,29 +3021,61 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		);
 	}
 
+
+	// Copy
 	vkCmdCopyBufferToImage(
 		cmd,
 		stagingBuffer,
-		image,
+		vkImage,
 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 		static_cast<uint32_t>(regions.size()),
 		regions.data()
 	);
 
+
+	// TRANSFER_DST -> SHADER_READ_ONLY
 	{
-		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = image;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.baseMipLevel = 0;
-		barrier.subresourceRange.levelCount = mipLevels;
-		barrier.subresourceRange.baseArrayLayer = 0;
-		barrier.subresourceRange.layerCount = arrayLayers;
+		VkImageMemoryBarrier barrier{
+			VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
+		};
+
+		barrier.srcAccessMask =
+			VK_ACCESS_TRANSFER_WRITE_BIT;
+
+		barrier.dstAccessMask =
+			VK_ACCESS_SHADER_READ_BIT;
+
+		barrier.oldLayout =
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+		barrier.newLayout =
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		barrier.srcQueueFamilyIndex =
+			VK_QUEUE_FAMILY_IGNORED;
+
+		barrier.dstQueueFamilyIndex =
+			VK_QUEUE_FAMILY_IGNORED;
+
+		barrier.image =
+			vkImage;
+
+		barrier.subresourceRange = {
+			.aspectMask =
+				VK_IMAGE_ASPECT_COLOR_BIT,
+
+			.baseMipLevel =
+				0,
+
+			.levelCount =
+				mipLevels,
+
+			.baseArrayLayer =
+				0,
+
+			.layerCount =
+				imageCI.arrayLayers
+		};
 
 		vkCmdPipelineBarrier(
 			cmd,
@@ -2595,60 +3088,144 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		);
 	}
 
-	m_submitter->submit(han);
-	AddDeferredTask(
-		std::packaged_task<void()>([this, buf = stagingBuffer, alloc = stagingAllocation] {vmaDestroyBuffer(this->m_allocator, buf, alloc); }),
-		han
+
+	m_submitter->submit(
+		submitHandle
 	);
 
+
+	// Staging memory must live until the transfer completes.
+	AddDeferredTask(
+		std::packaged_task<void()>(
+			[
+				this,
+				buffer = stagingBuffer,
+				allocation = stagingAllocation
+			]
+	{
+		vmaDestroyBuffer(
+			m_allocator,
+			buffer,
+			allocation
+		);
+	}
+		),
+		submitHandle
+	);
+
+
 	// -------------------------------------------------------------------------
-	// View
+	// Texture
+	//
+	// Transfer ownership from the temporary Holders to Texture.
 	// -------------------------------------------------------------------------
 
-	VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
-	if (isCubemap) {
-		viewType = (arrayLayers > 6) ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : VK_IMAGE_VIEW_TYPE_CUBE;
+	Texture textureResource{
+		.image =
+			imageHolder.release(),
+
+		.view =
+			viewHolder.release(),
+
+		.bindless =
+			bindlessHolder.release()
+	};
+
+
+	return Holder<TextureHandle>{
+		this,
+			textures_.create(
+				std::move(textureResource)
+			)
+	};
+}
+[[nodiscard]] smvk::Holder<smvk::ImageViewHandle> smvk::VulkanResourceManager::CreateImageView(ImageHandle imageHandle, const ImageViewCreateInfo& ci)
+{
+	Image* image = images_.get(imageHandle);
+	assert(image);
+
+	const Format resolvedFormat =
+		ci.format == Format::Undefined
+		? image->format
+		: ci.format;
+
+	const ImageSubresourceRange resolvedRange =
+		ResolveImageSubresourceRange(
+			*image,
+			ci.subresourceRange
+		);
+
+	VkImageViewCreateInfo vkCI{
+		VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
+	};
+
+	vkCI.image = image->vkImage;
+	vkCI.viewType = toVkImageViewType(ci.viewType);
+	vkCI.format = toVkFormat(resolvedFormat);
+
+	vkCI.components = {
+		VK_COMPONENT_SWIZZLE_IDENTITY,
+		VK_COMPONENT_SWIZZLE_IDENTITY,
+		VK_COMPONENT_SWIZZLE_IDENTITY,
+		VK_COMPONENT_SWIZZLE_IDENTITY
+	};
+
+	vkCI.subresourceRange = {
+		.aspectMask =
+			toVkImageAspectFlags(resolvedRange.aspect),
+
+		.baseMipLevel =
+			resolvedRange.baseMipLevel,
+
+		.levelCount =
+			resolvedRange.mipLevelCount,
+
+		.baseArrayLayer =
+			resolvedRange.baseArrayLayer,
+
+		.layerCount =
+			resolvedRange.arrayLayerCount
+	};
+
+	ImageView view{};
+
+	VK_CHECK(vkCreateImageView(
+		device_,
+		&vkCI,
+		nullptr,
+		&view.vkView
+	));
+
+	view.image = imageHandle;
+	view.viewType = ci.viewType;
+	view.format = resolvedFormat;
+	view.subresourceRange = resolvedRange;
+
+#if defined(_DEBUG)
+	if (ci.name)
+	{
+		VkDebugUtilsObjectNameInfoEXT nameInfo{
+			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
+		};
+
+		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE_VIEW;
+		nameInfo.objectHandle =
+			reinterpret_cast<uint64_t>(view.vkView);
+		nameInfo.pObjectName = ci.name;
+
+		vkSetDebugUtilsObjectNameEXT(
+			device_,
+			&nameInfo
+		);
 	}
-	else if (arrayLayers > 1) {
-		viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-	}
-	else if (depth > 1) {
-		viewType = VK_IMAGE_VIEW_TYPE_3D;
-	}
+#endif
 
-	Image image_obj{};
-	image_obj.vk_image = image;
-	image_obj.vma_alloc = imageAllocation;
-	image_obj.vk_format = format;
-	image_obj.vk_extent = { width, height, depth };
-	image_obj.arrayLayers = imageInfo.arrayLayers;
-	image_obj.levels = mipLevels;
-	image_obj.sampleView = VK_NULL_HANDLE;
-	image_obj.storageView = VK_NULL_HANDLE;
+	++image->liveViewCount;
 
-	VkImageViewCreateInfo viewInfo{};
-	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-	viewInfo.image = image_obj.vk_image;
-	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	viewInfo.format = image_obj.vk_format;
-	viewInfo.subresourceRange = {
-		.aspectMask = VkAspectMaskFromFormat(image_obj.vk_format),
-		.baseMipLevel = 0,
-		.levelCount = VK_REMAINING_MIP_LEVELS,
-		.baseArrayLayer = 0,
-		.layerCount = VK_REMAINING_ARRAY_LAYERS
-	};;
-	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-
-	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &image_obj.sampleView));
-	//image_obj.vk_sampler = m_defaultSampler; // TODO: Rework this- Get sampler by spec from the pool
-	image_obj.storageView = image_obj.sampleView;
-
-	return { this, 	textures_.create(std::move(image_obj)) };
-
+	return Holder<ImageViewHandle>{
+		this,
+			imageViews_.create(std::move(view))
+	};
 }
 [[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::VulkanResourceManager::CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName) {
 	Buffer desc{};
@@ -2752,7 +3329,6 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 #endif
 	return { this, descriptorPools_.create(std::move(dpool)) };
 }
-//
 [[nodiscard]] void* smvk::VulkanResourceManager::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
 	void* mapped = nullptr;
 	assert(!handle.empty());
@@ -2788,87 +3364,137 @@ void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 }
 void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex)
 {
-	if (!needToUpdateDescriptors) {
+	if (!needToUpdateDescriptors)
 		return;
+
+	struct PendingImageWrite
+	{
+		uint32_t slot;
+		VkDescriptorImageInfo info;
+	};
+
+	std::vector<PendingImageWrite> imageWrites;
+
+	bindlessImages_.forEach(
+		[&](BindlessImage bindless)
+	{
+		ImageView* view =
+			imageViews_.get(bindless.view);
+
+		assert(view);
+
+		PendingImageWrite pending{};
+
+		pending.slot =
+			bindless.descriptorIndex;
+
+		pending.info.sampler =
+			VK_NULL_HANDLE;
+
+		pending.info.imageView =
+			view->vkView;
+
+		pending.info.imageLayout =
+			bindless.imageLayout;
+
+		imageWrites.push_back(pending);
 	}
+	);
 
-	std::vector<VkDescriptorImageInfo> imageInfos;
-	std::vector<VkDescriptorImageInfo> samplerInfos;
-
-	// Shared/default sampler.
+	//
+	// Update EVERY descriptor set which contains the global bindless table.
+	//
+	//for (uint32_t frame = 0;
+	//	frame < defaultDescriptorSets_.size();
+	//	++frame)
+	int frame = 0;
 	{
-		VkDescriptorImageInfo samplerInfo{};
-		samplerInfo.sampler = m_defaultSampler;
-		samplerInfo.imageView = VK_NULL_HANDLE;
-		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		samplerInfos.push_back(samplerInfo);
-	}
+		std::vector<VkWriteDescriptorSet> writes;
+		writes.reserve(imageWrites.size());
 
-	{
-		VkDescriptorImageInfo samplerInfo{};
-		samplerInfo.sampler = m_defaultShadowSampler;
-		samplerInfo.imageView = VK_NULL_HANDLE;
-		samplerInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		samplerInfos.push_back(samplerInfo);
-	}
+		for (const auto& pending : imageWrites)
+		{
+			VkWriteDescriptorSet write{
+				VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET
+			};
 
-	// Sampled images.
-	textures_.forEach([&](smvk::Image obj_)
-	{
-		VkDescriptorImageInfo imageInfo{};
-		imageInfo.sampler = VK_NULL_HANDLE;
-		imageInfo.imageView = obj_.sampleView;
-		imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			write.dstSet =
+				defaultDescriptorSets_[frame];
 
-		imageInfos.push_back(imageInfo);
-	});
+			write.dstBinding =
+				smvk::Bindings::kBinding_Textures;
 
-	VkWriteDescriptorSet writes[2]{};
-	uint32_t numWrites = 0;
+			write.dstArrayElement =
+				pending.slot;
 
-	// Textures.
-	if (!imageInfos.empty())
-	{
-		VkWriteDescriptorSet& write = writes[numWrites++];
+			write.descriptorType =
+				VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 
-		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		write.dstSet = defaultDescriptorSets_[frameIndex];
-		write.dstBinding = smvk::Bindings::kBinding_Textures;
-		write.dstArrayElement = 0;
-		write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		write.descriptorCount = static_cast<uint32_t>(imageInfos.size());
-		write.pImageInfo = imageInfos.data();
-	}
+			write.descriptorCount = 1;
 
-	// Samplers.
-	if (!samplerInfos.empty())
-	{
-		VkWriteDescriptorSet& write = writes[numWrites++];
+			write.pImageInfo =
+				&pending.info;
 
-		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		write.dstSet = defaultDescriptorSets_[frameIndex];
-		write.dstBinding = smvk::kBinding_Samplers;
-		write.dstArrayElement = 0;
-		write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-		write.descriptorCount = static_cast<uint32_t>(samplerInfos.size());
-		write.pImageInfo = samplerInfos.data();
-	}
+			writes.push_back(write);
+		}
 
-	// Don't call vkUpdateDescriptorSets with zero writes.
-	if (numWrites > 0)
-	{
-		vkUpdateDescriptorSets(
-			device_,
-			numWrites,
-			writes,
-			0,
-			nullptr
-		);
+		if (!writes.empty())
+		{
+			vkUpdateDescriptorSets(
+				device_,
+				static_cast<uint32_t>(writes.size()),
+				writes.data(),
+				0,
+				nullptr
+			);
+		}
 	}
 
 	needToUpdateDescriptors = false;
 }
 // 
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BindlessImageHandle handle)
+{
+	if (handle.empty())
+		return;
+
+	auto* bindless =
+		ctx->bindlessImages_.get(handle);
+
+	assert(bindless);
+
+	const uint32_t slot =
+		bindless->descriptorIndex;
+
+	// Ideally overwrite this descriptor with your null/default image.
+	//ctx->ClearBindlessImageSlot(slot);
+
+	ctx->bindlessImages_.destroy(handle);
+
+	// If descriptors are replicated per-frame.
+	ctx->needToUpdateDescriptors = true;
+}
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::TextureHandle handle)
+{
+	if (handle.empty())
+		return;
+
+	auto* texture =
+		ctx->textures_.get(handle);
+
+	assert(texture);
+
+	// Descriptor references view.
+	destroy(ctx, texture->bindless);
+
+	// View references image.
+	destroy(ctx, texture->view);
+
+	// Image is now independent.
+	destroy(ctx, texture->image);
+
+	ctx->textures_.destroy(handle);
+}
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BufferHandle handle) {
 	if (handle.empty()) { return; };
 	smvk::Buffer db = *ctx->buffers_.get(handle);
@@ -2883,47 +3509,62 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ShaderModuleHandle ha
 	vkDestroyShaderModule(device_, *sm, NULL);
 	ctx->shaderModules_.destroy(handle);
 }
-void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageHandle handle) {
-	if (handle.empty()) { return; };
-	auto img = ctx->images_.get(handle);
-	if (img->owns_views) {
-		for (int i = 0; i < 6; ++i) {
-			if (img->arrayView[i] != VK_NULL_HANDLE) {
-				vkDestroyImageView(device_, img->arrayView[i], nullptr);
-			}
-		}
-		if (img->storageView != VK_NULL_HANDLE && img->storageView != img->sampleView) {
-			vkDestroyImageView(device_, img->storageView, nullptr);
-		}
-		if (img->sampleView != VK_NULL_HANDLE) {
-			vkDestroyImageView(device_, img->sampleView, nullptr);
-		}
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageHandle handle)
+{
+	if (handle.empty())
+		return;
+
+	auto* image = ctx->images_.get(handle);
+	assert(image);
+
+	// ImageViews must be destroyed first.
+	assert(
+		image->liveViewCount == 0 &&
+		"Destroying Image while ImageViews still reference it"
+	);
+
+	if (image->ownership == ResourceOwnership::Owned &&
+		image->vkImage != VK_NULL_HANDLE)
+	{
+		vmaDestroyImage(
+			ctx->m_allocator,
+			image->vkImage,
+			image->allocation
+		);
 	}
-	if (!img->is_swapchain && img->vk_image != VK_NULL_HANDLE) {
-		vmaDestroyImage(ctx->m_allocator, img->vk_image, img->vma_alloc);
-	}
+
 	ctx->images_.destroy(handle);
 }
-void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::TextureHandle handle) {
-	if (handle.empty()) { return; };
-	auto tex = ctx->textures_.get(handle);
-	if (tex->owns_views) {
-		for (int i = 0; i < 6; ++i) {
-			if (tex->arrayView[i] != VK_NULL_HANDLE) {
-				vkDestroyImageView(device_, tex->arrayView[i], nullptr);
-			}
-		}
-		if (tex->storageView != VK_NULL_HANDLE && tex->storageView != tex->sampleView) {
-			vkDestroyImageView(device_, tex->storageView, nullptr);
-		}
-		if (tex->sampleView != VK_NULL_HANDLE) {
-			vkDestroyImageView(device_, tex->sampleView, nullptr);
-		}
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageViewHandle handle)
+{
+	if (handle.empty())
+		return;
+
+	auto* view = ctx->imageViews_.get(handle);
+	assert(view);
+
+	if (view->vkView != VK_NULL_HANDLE)
+	{
+		vkDestroyImageView(
+			device_,
+			view->vkView,
+			nullptr
+		);
 	}
-	if (!tex->is_swapchain && tex->vk_image != VK_NULL_HANDLE) {
-		vmaDestroyImage(ctx->m_allocator, tex->vk_image, tex->vma_alloc);
+
+	// Maintain parent dependency count.
+	if (!view->image.empty())
+	{
+		auto* image =
+			ctx->images_.get(view->image);
+
+		assert(image);
+		assert(image->liveViewCount > 0);
+
+		--image->liveViewCount;
 	}
-	ctx->textures_.destroy(handle);
+
+	ctx->imageViews_.destroy(handle);
 }
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::SamplerHandle handle) {
 	if (handle.empty()) { return; };
@@ -2981,6 +3622,8 @@ inline void BufferBarrier(
 	};
 	vkCmdPipelineBarrier2(cmd, &dep);
 }
+
+
 inline void ImageBarrier(
 	VkCommandBuffer cmd,
 	VkImage vk_image,
@@ -3423,8 +4066,10 @@ void smvk::VulkanSwapchain::CreateImageViews() {
 	}
 }
 void smvk::VulkanSwapchain::CreateDepthResources() {
+
 	assert(depthFormat != smvk::Format::Undefined && "core depthFormat not set. failed to create swapchain depth Image");
 	depthImage_.release();
+	depthImageView_.release();
 
 	ImageCreateInfo depthImageCreateInfo{};
 	depthImageCreateInfo.extent = { extent_.width, extent_.height };
@@ -3432,32 +4077,47 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 	depthImageCreateInfo.usage = ImageUsage::DepthStencilAttachment;
 	depthImageCreateInfo.mipLevels = 1;
 	depthImageCreateInfo.arrayLayers = 1;
+	depthImageCreateInfo.name = "swapchain depth image";
 
 	depthImage_ = ctx_.CreateImage(
 		depthImageCreateInfo,
-		nullptr,
-		"swapchain depth image"
+		nullptr
 	);
 
 	auto* depthImage = ctx_.images_.get(depthImage_);
 	assert(depthImage != nullptr);
 
+	depthImageView_ = ctx_.CreateImageView(
+		depthImage_,
+		{
+		.viewType = ImageViewType::View2D,
+		.format = depthFormat,
+		.subresourceRange = {
+			.aspect = ImageAspect::Depth,
+			.baseMipLevel = 0,
+			.mipLevelCount = 1,
+			.baseArrayLayer = 0,
+			.arrayLayerCount = 1
+		}
+		}
+	);
+
+	// maybe toVkImageSubresourceRange
 	const VkImageSubresourceRange depthRange{
-		.aspectMask = VkAspectMaskFromFormat(depthImage->vk_format),
+		.aspectMask = VkAspectMaskFromFormat(toVkFormat(depthImage->format)),
 		.baseMipLevel = 0,
 		.levelCount = 1,
 		.baseArrayLayer = 0,
 		.layerCount = 1
 	};
 
-	// CreateImageImpl already creates sampleView using the format's correct aspect mask.
-	// Only transition the image into the layout expected by depth attachment rendering.
+	// Transition the image into the layout expected by depth attachment rendering.
 	auto handle = ctx_.m_submitter->acquire();
 	auto wrapper = ctx_.m_submitter->GetCommandBuffer(handle);
 
 	ImageBarrier(
 		wrapper.cmd,
-		depthImage->vk_image,
+		depthImage->vkImage,
 		VK_IMAGE_LAYOUT_UNDEFINED,
 		VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 		depthRange,
@@ -4201,10 +4861,10 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 }
 
 
+// RENDERGRAPH
 #include <Engine/Renderer/rendergraph.h>
 
-VkImageView smvk::RenderGraph::GetResolvedImageView(
-	LogicalImageViewHandle handle)
+VkImageView smvk::RenderGraph::GetResolvedImageView(LogicalImageViewHandle handle)
 {
 	auto* view = imageViews_.get(handle);
 	assert(view);
@@ -4221,98 +4881,212 @@ VkImageView smvk::RenderGraph::GetResolvedImageView(
 	assert(false);
 	return VK_NULL_HANDLE;
 }
-
-void smvk::CommandBuffer::BindRenderPipeline(
-	ShaderProgram& shaderProgram,
-	VertexFormat vertexFormat,
-	const DepthSettings& depthSettings,
-	const StencilSettings& stencilSettings,
-	const BlendSettings& blendSettings,
-	const MSAASettings& msaaSettings
-)
+VkImageView smvk::RenderGraph::ResolveImageView(const ImageViewKey& key)
 {
-	assert(graph_ != nullptr);
-	assert(renderPass_ != nullptr);
+	assert(!key.image.empty());
 
-	switch (vertexFormat)
+	// ------------------------------------------------------------
+	// Resolve logical image -> physical ImageHandle
+	// ------------------------------------------------------------
+
+	auto* logicalImage = images_.get(key.image);
+	assert(logicalImage != nullptr);
+
+	const ImageHandle imageHandle =
+		logicalImage->resolvedImageHandle;
+
+	assert(!imageHandle.empty());
+
+	auto* image = ctx_.images_.get(imageHandle);
+	assert(image != nullptr);
+	assert(image->vkImage != VK_NULL_HANDLE);
+
+
+	// ------------------------------------------------------------
+	// Resolve format
+	// ------------------------------------------------------------
+
+	const Format resolvedFormat =
+		(key.format != Format::Undefined)
+		? key.format
+		: logicalImage->key.format;
+
+	assert(resolvedFormat != Format::Undefined);
+
+	const VkFormat vkFormat =
+		toVkFormat(resolvedFormat);
+
+	assert(vkFormat != VK_FORMAT_UNDEFINED);
+
+
+	// ------------------------------------------------------------
+	// Resolve aspect
+	// ------------------------------------------------------------
+
+	VkImageAspectFlags aspectMask = 0;
+
+	switch (key.subresourceRange.aspect)
 	{
-	case VertexFormat::StaticVertexFormat:
-		smvk::BindStaticVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
+	case ImageAspect::Color:
+		aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		break;
-	case VertexFormat::Empty:
+
+	case ImageAspect::Depth:
+		aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 		break;
+
+	case ImageAspect::Stencil:
+		aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+		break;
+
+	case ImageAspect::None:
+		//
+		// Treat None as "infer from format".
+		//
+		assert(false && "not implemented");
+		//aspectMask = VkAspectMaskFromFormat(vkFormat);
+		break;
+
 	default:
+		assert(false && "Unsupported ImageAspect");
 		break;
 	}
-	VertexFormatDescription formatDescription{};
-	formatDescription = GetVertexFormatDescription(vertexFormat);
 
-	std::vector<smvk::Format> colorAttachmentFormats;
-	colorAttachmentFormats.reserve(renderPass_->colorAttachments_.size());
-	for (auto& attachment : renderPass_->colorAttachments_)
-	{
-		colorAttachmentFormats.push_back(
-			graph_->GetResolvedImageViewFormat(
-				attachment.view)
-		);
-	}
-	smvk::Format depthFormat =
-		smvk::Format::Undefined;
+	assert(aspectMask != 0);
 
-	smvk::Format stencilFormat =
-		smvk::Format::Undefined;
 
-	if (renderPass_->hasDepthAttachment_)
-	{
-		const auto format =
-			graph_->GetResolvedImageViewFormat(
-				renderPass_->depthAttachment_.view);
+	// ------------------------------------------------------------
+	// Validate range
+	// ------------------------------------------------------------
 
-		if (FormatHasDepth(toVkFormat(format)))
-			depthFormat = format;
+	const auto& range =
+		key.subresourceRange;
 
-		if (FormatHasStencil(toVkFormat(format)))
-			stencilFormat = format;
-	}
+	assert(range.baseMipLevel < image->mipLevels);
+	assert(range.baseArrayLayer < image->arrayLayers);
 
-	auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
-		shaderProgram,
-		formatDescription,
-		colorAttachmentFormats.data(),
-		static_cast<uint32_t>(colorAttachmentFormats.size()),
-		depthFormat,
-		stencilFormat,
-		PrimitiveTopology::TriangleList,
-		smvk::RasterSettings{},
-		depthSettings,
-		stencilSettings,
-		blendSettings,
-		msaaSettings
+	assert(range.mipLevelCount > 0);
+	assert(range.arrayLayerCount > 0);
+
+	assert(
+		range.baseMipLevel + range.mipLevelCount <=
+		image->mipLevels
 	);
 
-	assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");
+	assert(
+		range.baseArrayLayer + range.arrayLayerCount <=
+		image->arrayLayers
+	);
 
-	if (bundle.pipeline == currentPipeline_) {
-		return;
+
+	// ------------------------------------------------------------
+	// Resolve view type
+	// ------------------------------------------------------------
+
+	VkImageViewType vkViewType = toVkImageViewType(key.viewType);
+
+	// ------------------------------------------------------------
+	// Extra validation for cube views
+	// ------------------------------------------------------------
+
+	if (vkViewType == VK_IMAGE_VIEW_TYPE_CUBE)
+	{
+		assert(range.arrayLayerCount == 6);
 	}
 
-	currentPipeline_ = bundle.pipeline;
-	currentPipelineLayout_ = bundle.layout;
+	if (vkViewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
+	{
+		assert(
+			range.arrayLayerCount >= 6 &&
+			(range.arrayLayerCount % 6) == 0
+		);
+	}
 
-	vkCmdBindPipeline(
-		cmd_,
-		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		currentPipeline_);
 
-	vkCmdBindDescriptorSets(
-		cmd_,
-		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		graph_->ctx_.defaultPipeLayout,
-		0,
-		1,
-		graph_->ctx_.defaultDescriptorSets_,
-		0,
-		nullptr);
+	// ------------------------------------------------------------
+	// Create VkImageView
+	// ------------------------------------------------------------
+
+	VkImageViewCreateInfo viewCI{
+		VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
+	};
+
+	viewCI.image =
+		image->vkImage;
+
+	viewCI.viewType =
+		vkViewType;
+
+	viewCI.format =
+		vkFormat;
+
+	viewCI.components = {
+		VK_COMPONENT_SWIZZLE_IDENTITY,
+		VK_COMPONENT_SWIZZLE_IDENTITY,
+		VK_COMPONENT_SWIZZLE_IDENTITY,
+		VK_COMPONENT_SWIZZLE_IDENTITY
+	};
+
+	viewCI.subresourceRange = {
+		.aspectMask =
+			aspectMask,
+
+		.baseMipLevel =
+			range.baseMipLevel,
+
+		.levelCount =
+			range.mipLevelCount,
+
+		.baseArrayLayer =
+			range.baseArrayLayer,
+
+		.layerCount =
+			range.arrayLayerCount,
+	};
+
+
+	VkImageView result =
+		VK_NULL_HANDLE;
+
+	VK_CHECK(
+		vkCreateImageView(
+			ctx_.core_.GetDevice(),
+			&viewCI,
+			nullptr,
+			&result
+		)
+	);
+
+	assert(result != VK_NULL_HANDLE);
+
+	return result;
+}
+void smvk::RenderGraph::ResolveImages() {
+	images_.forEach(
+		[this](smvk::LogicalImage& logicalImage) {
+		if (logicalImage.resolvedImageHandle.empty()) {
+			if (logicalImage.type == smvk::ResourceType::External) { assert(false && "external image unresolved. shouldnt be possible"); };
+			//CreateTransientImaeg(key, sync_req);
+			logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
+		};
+	}
+	);
+};
+void smvk::RenderGraph::ResolveBuffers()
+{
+	//	buffers.forEach(
+	//		[this](LogicalBuffer& logicalBuffer) {
+	//		if (logicalBuffer.resolvedBufferHandle.empty()) {
+	//			const auto& key = logicalBuffer.key;
+	//			int ringMultiplier = key.ring ? 4 : 1;
+	//			logicalBuffer.resolvedBufferHandle = ctx_.CreateBuffer(
+	//				key.elementCount * key.elementSize * ringMultiplier,
+	//				smvk::BufferType_Storage,
+	//				"resolved buffer"
+	//			).release();
+	//		}
+	//	}
+	//	);
 }
 void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 {
@@ -4423,214 +5197,99 @@ void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 		vkCmdEndRendering(fb.commandBuffer);
 	}
 };
-void smvk::RenderGraph::ResolveImages() {
-	images_.forEach(
-		[this](smvk::LogicalImage& logicalImage) {
-		if (logicalImage.resolvedImageHandle.empty()) {
-			if (logicalImage.type == smvk::ResourceType::External) { assert(false && "external image unresolved. shouldnt be possible"); };
-			//CreateTransientImaeg(key, sync_req);
-			logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
-		};
-	}
-	);
-};
-void smvk::RenderGraph::ResolveBuffers()
+//
+void smvk::CommandBuffer::BindRenderPipeline(
+	ShaderProgram& shaderProgram,
+	VertexFormat vertexFormat,
+	const DepthSettings& depthSettings,
+	const StencilSettings& stencilSettings,
+	const BlendSettings& blendSettings,
+	const MSAASettings& msaaSettings
+)
 {
-	//	buffers.forEach(
-	//		[this](LogicalBuffer& logicalBuffer) {
-	//		if (logicalBuffer.resolvedBufferHandle.empty()) {
-	//			const auto& key = logicalBuffer.key;
-	//			int ringMultiplier = key.ring ? 4 : 1;
-	//			logicalBuffer.resolvedBufferHandle = ctx_.CreateBuffer(
-	//				key.elementCount * key.elementSize * ringMultiplier,
-	//				smvk::BufferType_Storage,
-	//				"resolved buffer"
-	//			).release();
-	//		}
-	//	}
-	//	);
-}
-VkImageView smvk::RenderGraph::ResolveImageView(const ImageViewKey& key)
-{
-	assert(!key.image.empty());
+	assert(graph_ != nullptr);
+	assert(renderPass_ != nullptr);
 
-	// ------------------------------------------------------------
-	// Resolve logical image -> physical ImageHandle
-	// ------------------------------------------------------------
-
-	auto* logicalImage = images_.get(key.image);
-	assert(logicalImage != nullptr);
-
-	const ImageHandle imageHandle =
-		logicalImage->resolvedImageHandle;
-
-	assert(!imageHandle.empty());
-
-	auto* image = ctx_.images_.get(imageHandle);
-	assert(image != nullptr);
-	assert(image->vk_image != VK_NULL_HANDLE);
-
-
-	// ------------------------------------------------------------
-	// Resolve format
-	// ------------------------------------------------------------
-
-	const Format resolvedFormat =
-		(key.format != Format::Undefined)
-		? key.format
-		: logicalImage->key.format;
-
-	assert(resolvedFormat != Format::Undefined);
-
-	const VkFormat vkFormat =
-		toVkFormat(resolvedFormat);
-
-	assert(vkFormat != VK_FORMAT_UNDEFINED);
-
-
-	// ------------------------------------------------------------
-	// Resolve aspect
-	// ------------------------------------------------------------
-
-	VkImageAspectFlags aspectMask = 0;
-
-	switch (key.subresourceRange.aspect)
+	switch (vertexFormat)
 	{
-	case ImageAspect::Color:
-		aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	case VertexFormat::StaticVertexFormat:
+		smvk::BindStaticVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
 		break;
-
-	case ImageAspect::Depth:
-		aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+	case VertexFormat::Empty:
 		break;
-
-	case ImageAspect::Stencil:
-		aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-		break;
-
-	case ImageAspect::None:
-		//
-		// Treat None as "infer from format".
-		//
-		assert(false && "not implemented");
-		//aspectMask = VkAspectMaskFromFormat(vkFormat);
-		break;
-
 	default:
-		assert(false && "Unsupported ImageAspect");
 		break;
 	}
+	VertexFormatDescription formatDescription{};
+	formatDescription = GetVertexFormatDescription(vertexFormat);
 
-	assert(aspectMask != 0);
-
-
-	// ------------------------------------------------------------
-	// Validate range
-	// ------------------------------------------------------------
-
-	const auto& range =
-		key.subresourceRange;
-
-	assert(range.baseMipLevel < image->levels);
-	assert(range.baseArrayLayer < image->arrayLayers);
-
-	assert(range.mipLevelCount > 0);
-	assert(range.arrayLayerCount > 0);
-
-	assert(
-		range.baseMipLevel + range.mipLevelCount <=
-		image->levels
-	);
-
-	assert(
-		range.baseArrayLayer + range.arrayLayerCount <=
-		image->arrayLayers
-	);
-
-
-	// ------------------------------------------------------------
-	// Resolve view type
-	// ------------------------------------------------------------
-
-	VkImageViewType vkViewType = toVkImageViewType(key.viewType);
-
-	// ------------------------------------------------------------
-	// Extra validation for cube views
-	// ------------------------------------------------------------
-
-	if (vkViewType == VK_IMAGE_VIEW_TYPE_CUBE)
+	std::vector<smvk::Format> colorAttachmentFormats;
+	colorAttachmentFormats.reserve(renderPass_->colorAttachments_.size());
+	for (auto& attachment : renderPass_->colorAttachments_)
 	{
-		assert(range.arrayLayerCount == 6);
-	}
-
-	if (vkViewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
-	{
-		assert(
-			range.arrayLayerCount >= 6 &&
-			(range.arrayLayerCount % 6) == 0
+		colorAttachmentFormats.push_back(
+			graph_->GetResolvedImageViewFormat(
+				attachment.view)
 		);
 	}
+	smvk::Format depthFormat =
+		smvk::Format::Undefined;
 
+	smvk::Format stencilFormat =
+		smvk::Format::Undefined;
 
-	// ------------------------------------------------------------
-	// Create VkImageView
-	// ------------------------------------------------------------
+	if (renderPass_->hasDepthAttachment_)
+	{
+		const auto format =
+			graph_->GetResolvedImageViewFormat(
+				renderPass_->depthAttachment_.view);
 
-	VkImageViewCreateInfo viewCI{
-		VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
-	};
+		if (FormatHasDepth(toVkFormat(format)))
+			depthFormat = format;
 
-	viewCI.image =
-		image->vk_image;
+		if (FormatHasStencil(toVkFormat(format)))
+			stencilFormat = format;
+	}
 
-	viewCI.viewType =
-		vkViewType;
-
-	viewCI.format =
-		vkFormat;
-
-	viewCI.components = {
-		VK_COMPONENT_SWIZZLE_IDENTITY,
-		VK_COMPONENT_SWIZZLE_IDENTITY,
-		VK_COMPONENT_SWIZZLE_IDENTITY,
-		VK_COMPONENT_SWIZZLE_IDENTITY
-	};
-
-	viewCI.subresourceRange = {
-		.aspectMask =
-			aspectMask,
-
-		.baseMipLevel =
-			range.baseMipLevel,
-
-		.levelCount =
-			range.mipLevelCount,
-
-		.baseArrayLayer =
-			range.baseArrayLayer,
-
-		.layerCount =
-			range.arrayLayerCount,
-	};
-
-
-	VkImageView result =
-		VK_NULL_HANDLE;
-
-	VK_CHECK(
-		vkCreateImageView(
-			ctx_.core_.GetDevice(),
-			&viewCI,
-			nullptr,
-			&result
-		)
+	auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
+		shaderProgram,
+		formatDescription,
+		colorAttachmentFormats.data(),
+		static_cast<uint32_t>(colorAttachmentFormats.size()),
+		depthFormat,
+		stencilFormat,
+		PrimitiveTopology::TriangleList,
+		smvk::RasterSettings{},
+		depthSettings,
+		stencilSettings,
+		blendSettings,
+		msaaSettings
 	);
 
-	assert(result != VK_NULL_HANDLE);
+	assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");
 
-	return result;
+	if (bundle.pipeline == currentPipeline_) {
+		return;
+	}
+
+	currentPipeline_ = bundle.pipeline;
+	currentPipelineLayout_ = bundle.layout;
+
+	vkCmdBindPipeline(
+		cmd_,
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		currentPipeline_);
+
+	vkCmdBindDescriptorSets(
+		cmd_,
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		graph_->ctx_.defaultPipeLayout,
+		0,
+		1,
+		graph_->ctx_.defaultDescriptorSets_,
+		0,
+		nullptr);
 }
-
 void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const void* data, ShaderStage stageMask)
 {
 	assert(currentPipelineLayout_ != VK_NULL_HANDLE);

@@ -11,6 +11,10 @@
 
 namespace smvk
 {
+	// Need to add these for convenience
+	//struct Mipped{};
+	//struct UnMipped{};
+
 	struct RenderGraph;
 	struct CommandBuffer;
 
@@ -421,47 +425,27 @@ namespace smvk
 			assert(image != nullptr);
 
 			LogicalImage logicalImage{
-				.type =
-					ResourceType::External,
+				.type = ResourceType::External,
 
 				.key = {
-					.type =
-						image->info_.type,
-
-					.extent = {
-						image->vk_extent.width,
-						image->vk_extent.height,
-						image->vk_extent.depth
-					},
-
-					.format =
-						image->info_.format,
-
-					.usage =
-						image->info_.usage,
-
-					.samples =
-						image->info_.samples,
-
-					.mipLevels =
-						image->levels,
-
-					.arrayLayers =
-						image->arrayLayers,
-
-					.name =
-						name,
+					.type = image->type,
+					.extent = image->extent,
+					.format = image->format,
+					.usage = image->usage,
+					.samples = image->samples,
+					.mipLevels = image->mipLevels,
+					.arrayLayers = image->arrayLayers,
+					.name = name,
 				},
 
-				.resolvedImageHandle =
-					imageHandle,
+				.resolvedImageHandle = imageHandle,
 
-				.name =
-					name,
+				.name = name,
 			};
 
 			return images_.create(
-				std::move(logicalImage));
+				std::move(logicalImage)
+			);
 		}
 
 

@@ -23,15 +23,17 @@ namespace smvk {
 		VulkanResourceManager& ctx_;
 		Scene scene;
 		World* world = nullptr;
-		//Cluster* sibling = nullptr;
+		Cluster* sibling = nullptr;
 		// linked list for import chain if multiple clusters belong to one input file.
 
+		// this is mesh each resource has a different lifetime semantic! 
 		Pool<StaticMesh, StaticMesh> staticMeshes;
 		Pool<Material, Material> materials;
 		Pool<Texture, Holder<TextureHandle>> textures;
 
 		ClusterStaticMeshHandle UploadStaticMesh(const StaticMeshUpload& data);
 		ClusterMaterialHandle CreateMaterial(TextureHandle diffuse);
+
 		void DestroyMesh(ClusterStaticMeshHandle handle);
 		void DestroyMaterial(ClusterMaterialHandle handle);
 

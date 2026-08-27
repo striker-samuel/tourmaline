@@ -185,6 +185,7 @@ namespace smvk {
 				flags[node] =
 					static_cast<IteratorFlags>(IteratorFlagBit_Renderable)
 					| static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
+					| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow)
 					| static_cast<IteratorFlags>(IteratorFlagBit_StaticVertexFmt);
 			}
 		}

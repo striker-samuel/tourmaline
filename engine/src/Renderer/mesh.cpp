@@ -1,8 +1,8 @@
 #include <Engine/Renderer/mesh.h>
 #include <Engine/App/cluster.h>
 
-#include <Engine/Vulkan/impl.h>
 #include <Engine/smvk.h>
+#include <Engine/Vulkan/impl.h> // This goes straight to VulkanImpl...
 
 namespace {
 	constexpr size_t VertexBufferSize = 512ull * 1024ull * 1024ull;
@@ -11,12 +11,15 @@ namespace {
 
 namespace smvk {
 	Cluster::~Cluster() {
-		// staticMeshes have vmaAllocations that need to be destroyed properly
+
 		staticMeshes.forEachHandle([&](ClusterStaticMeshHandle han) {
 			DestroyMesh(han);
 		});
-		//these can just go atm
+
+		// Materials are just pods
 		materials.clear();
+
+		// textures own holders, when cleared holders go.
 		textures.clear();
 	}
 	ClusterStaticMeshHandle Cluster::UploadStaticMesh(

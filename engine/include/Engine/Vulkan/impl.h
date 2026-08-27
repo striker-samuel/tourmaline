@@ -66,12 +66,13 @@ namespace smvk {
 	constexpr VkCullModeFlags toVkCullMode(CullMode mode);
 	constexpr VkFrontFace toVkFrontFace(FrontFace face);
 	constexpr VkSampleCountFlagBits toVkSampleCount(SampleCount samples);
-	constexpr VkCompareOp toVkCompareOp(smvk::CompareOp op);
-	constexpr VkFormat toVkFormat(smvk::Format format);
-	constexpr VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::SrcColorBlendFactor factor);
-	constexpr VkBlendFactor toVkBlendFactor(smvk::BlendAttachmentState::DstColorBlendFactor factor);
+	constexpr VkCompareOp toVkCompareOp(CompareOp op);
+	constexpr VkFormat toVkFormat(Format format);
+	constexpr VkBlendFactor toVkBlendFactor(BlendAttachmentState::SrcColorBlendFactor factor);
+	constexpr VkBlendFactor toVkBlendFactor(BlendAttachmentState::DstColorBlendFactor factor);
 	constexpr uint8_t toRhiColorWriteMask(VkColorComponentFlags flags);
-	constexpr VkColorSpaceKHR ToVkColorSpace(smvk::ColorSpace colorSpace);
+	constexpr VkColorSpaceKHR ToVkColorSpace(ColorSpace colorSpace);
+	constexpr VkImageAspectFlags toVkImageAspectFlags(ImageAspect aspect);
 	// ============================================================================
 	// 	Core
 	// ============================================================================
@@ -219,8 +220,8 @@ namespace smvk {
 		CommandSubmitHandle handle_;
 	};
 
-
 	struct VulkanResourceManager {
+
 		VulkanResourceManager(VulkanCore& core);
 		~VulkanResourceManager();
 		VulkanResourceManager(const VulkanResourceManager&) = delete;
@@ -233,19 +234,21 @@ namespace smvk {
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
 		void ProcessDeferrredTasks();
 		//
-		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr);
-		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr, const char* debugName = nullptr); // specialization for textures instead of .isTexture property
-		// dont like ther hardcode dep to ktx2
+		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
+		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
 		Holder<TextureHandle> CreateTexture(ktxTexture2& texture, const char* debugName = nullptr);
+		Holder<BindlessImageHandle> CreateBindlessImage(ImageViewHandle viewHandle, VkImageLayout readLayout);
+		Holder<ImageViewHandle> CreateImageView(ImageHandle image, const ImageViewCreateInfo& createInfo);
 		Holder<BufferHandle> CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = nullptr);
-		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = nullptr);
 		Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = nullptr);
+
+		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = nullptr);
 
 		void* MapBuffer(smvk::Handle<smvk::Buffer> handle);
 		void UnmapBuffer(smvk::Handle<smvk::Buffer> handle);
 
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
-		void UploadDataToImage2D(Image image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset);
+		void UploadDataToImage2D(const Image& image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset);
 		//void UploadDataToImage2D(Image img, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 
 
@@ -263,12 +266,15 @@ namespace smvk {
 		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT];
 
 		// Resources
-		Pool<Image, Image> images_; // VkSwapchainImages are not represented with Image type and just owned by the swapchain
-		Pool<Texture, Image> textures_; // specializaed textures away from images
+		Pool<Image, Image> images_;
+		Pool<Texture, Texture> textures_;
 		Pool<Buffer, Buffer> buffers_;
-		Pool<Sampler, VkSampler> samplers_;
+		Pool<ImageView, ImageView> imageViews_;
 
-		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_; // Maybe we should do away with this as we only manage one pool, and one for Imgui
+		// Descriptors
+		Pool<Sampler, VkSampler> samplers_;
+		Pool<BindlessImage, BindlessImage> bindlessImages_;
+		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_;
 		Pool<ShaderModule, VkShaderModule> shaderModules_; // this should be removed when moving to vk1.4
 
 		//StaticVertexFmt
@@ -291,17 +297,19 @@ namespace smvk {
 
 
 	private:
-		Image CreateImageImpl(const smvk::ImageCreateInfo& imageCreateInfo, const void* data, const char* debugName);
-
+		ImageSubresourceRange ResolveImageSubresourceRange(const Image& image, ImageSubresourceRange range) const;
+		Image CreateImageImpl(const ImageCreateInfo& ci);
 	};
 
 	void destroy(VulkanResourceManager* ctx, ImageHandle handle);
 	void destroy(VulkanResourceManager* ctx, TextureHandle handle);
 	void destroy(VulkanResourceManager* ctx, BufferHandle handle);
 	void destroy(VulkanResourceManager* ctx, SamplerHandle handle);
-
+	void destroy(VulkanResourceManager* ctx, BindlessImageHandle handle);
+	void destroy(VulkanResourceManager* ctx, ImageViewHandle handle);
 	void destroy(VulkanResourceManager* ctx, DescriptorPoolHandle handle);
-	void destroy(VulkanResourceManager* ctx, ShaderModuleHandle handle); // will be removed in 1.4
+
+	void destroy(VulkanResourceManager* ctx, ShaderModuleHandle handle); // will be removed in 1.4. transition
 
 };
 
@@ -371,6 +379,7 @@ namespace smvk {
 		uint32_t minImageCount_;
 
 		Holder<ImageHandle> depthImage_;
+		Holder<ImageViewHandle> depthImageView_;
 		std::vector<VkImage> images_;
 		std::vector<VkImageView> imageViews_;
 		std::vector<VkSemaphore> renderFinishedSemaphores_;

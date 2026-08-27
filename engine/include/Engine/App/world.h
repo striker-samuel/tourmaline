@@ -11,7 +11,6 @@
 
 namespace smvk {
 
-	// Only supported mode now
 	enum struct CullType {
 		CPU
 		//, GPU
@@ -33,8 +32,8 @@ namespace smvk {
 		IteratorFlagBit_LightDirectional = 1u << 6,
 		IteratorFlagBit_LightSpot = 1u << 7,
 		IteratorFlagBit_LightPoint = 1u << 8,
-		//IteratorFlagBit_SkinnedVertexFmt = 1u << 5,
-		//IteratorFlagBit_Dag = 1u << 4, ?? Maybe
+		//IteratorFlagBit_Skinned,
+		//IteratorFlagBit_Static
 	} IteratorFlagBits;
 	typedef uint32_t IteratorFlags;
 
@@ -45,6 +44,9 @@ namespace smvk {
 	struct World {
 		explicit World() {};
 
+
+		//AssetRef // Uri mapped assetref to avoid copy of same assets. this needs cooking
+
 		// Merged runtime scene graph. Imported Cluster scenes are folded into
 		// this via ResolveAndFixup_clusters().
 		Scene scene;
@@ -54,6 +56,7 @@ namespace smvk {
 
 		std::vector<std::unique_ptr<smvk::Cluster>> clusters;
 
+		// Resource lookup into clusters
 		struct MeshLocation {
 			smvk::Cluster* cluster;
 			smvk::ClusterStaticMeshHandle handle;
@@ -66,7 +69,6 @@ namespace smvk {
 			smvk::Cluster* cluster;
 			smvk::ClusterTextureHandle handle;
 		};
-
 		// Indexed by the mesh/material index stored in scene.meshForNode /
 		// scene.materialForNode. Each entry points back to the owning
 		// Cluster so resources stay owned by clusters.
