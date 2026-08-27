@@ -175,7 +175,6 @@ private:
 
 
 		// FRAME RESOURCES
-
 		for (int i = 0; i < m_swapchain->GetImageCount(); i++) {
 			auto logicalSwapchainImage = m_rendergraph->AddExternalImageView(
 				m_swapchain->imageViews_[i],
@@ -190,7 +189,6 @@ private:
 			m_swapchain->depthFormat,
 			"depth"
 		);
-
 		// if mipped maybe a helper like LegitEngine does is a good idea
 
 		 // shadowmap
@@ -203,13 +201,26 @@ private:
 		shadowMapCI.usage = smvk::ImageUsage::DepthStencilAttachment | smvk::ImageUsage::Sampled;
 
 		m_viewportResources.shadowmaps[0] = m_context->CreateTexture(shadowMapCI, nullptr, "shadowMap");
-		auto smimage = m_context->textures_.get(m_viewportResources.shadowmaps[0]);
-		assert(smimage != nullptr);
-		m_viewportResources.shadowmapViews[0] = m_rendergraph->AddExternalImageView(
-			smimage->sampleView,
-			shadowMapFormat,
-			"shadow"
-		);
+		auto shadowImage =
+			m_rendergraph->AddExternalImage(
+				m_viewportResources.shadowmaps[0],
+				"shadow image"
+			);
+
+		auto shadowView =
+			m_rendergraph->AddImageView(
+				shadowImage,
+				smvk::ImageViewType::View2D,
+				smvk::Format::Undefined,
+				{
+					.aspect = smvk::ImageAspect::Depth,
+					.baseMipLevel = 0,
+					.mipLevelCount = 1,
+					.baseArrayLayer = 0,
+					.arrayLayerCount = 1,
+				},
+				"shadow depth"
+				);
 
 		//// Manual Barrier transition
 		//// this whole shadowmap thing is so badly done, api surface NEEDS more polish
@@ -478,8 +489,8 @@ private:
 					.depthFunc = smvk::CompareOp::LessEqual,
 					.writeEnable = true,
 					.depthTestEnable = true,
-					.depthBiasEnable =true,
-					.depthBiasConstantFactor = 1.f, 
+					.depthBiasEnable = true,
+					.depthBiasConstantFactor = 1.f,
 					.depthBiasClamp = 0.0f,
 					.depthBiasSlopeFactor = 1.f
 				}
@@ -538,6 +549,12 @@ private:
 
 		auto& mainPass = m_rendergraph->AddPass()
 			.SetOffset(0, 0)
+			// this is accessed in textures[0] bindless array so... It still may be good to declare the dep here
+			//.SetInputImages(
+			//	{
+			//		m_viewportResources.shadowmapViews[0]
+			//	}
+			//)
 			.SetExtent(
 				{
 					fb.swapchain.extent_.width,
@@ -720,9 +737,6 @@ void TestApp::UpdateCamera(float dt)
 	);
 
 }
-
-
-
 
 int main(int argc, const char* argv[]) {
 	if (argc > 1) {
