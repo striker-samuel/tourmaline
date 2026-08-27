@@ -39,7 +39,6 @@
 
 namespace smvk {
 
-
 	/*constexpr*/ bool FormatHasStencil(VkFormat format);
 	/*constexpr*/ bool FormatHasDepth(VkFormat format);
 
@@ -160,12 +159,10 @@ namespace smvk {
 		//VkQueue GetGraphicsQueue();
 
 		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
-		void CreateImageView(ImageViewCreateInfo imageViewCreateInfo, VkImageView& view);
-
 		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline);
 		void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline);
 
-		void DestroyPipeline(VkPipeline pipeline);
+		void DestroyGraphicsPipeline(VkPipeline pipeline);
 	};
 
 	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window);
@@ -251,7 +248,8 @@ namespace smvk {
 		void UnmapBuffer(smvk::Handle<smvk::Buffer> handle);
 
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
-		void UploadDataToImage2D(Image img, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
+		void UploadDataToImage2D(Image image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset);
+		//void UploadDataToImage2D(Image img, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 
 
 		void UpdateBindings(uint32_t frameIndex = 0);
@@ -284,12 +282,11 @@ namespace smvk {
 		VmaVirtualBlock m_staticIndexBlock = VK_NULL_HANDLE;
 
 		// DEFAULTS
-		//TextureHandle m_nilTexture{};
-
 		VkSampler m_defaultSampler{};
 		VkSampler m_defaultShadowSampler{};
 
-		Holder<DescriptorPoolHandle> defaultDescriptorPool;
+		Holder<DescriptorPoolHandle> defaultDescriptorPool{};
+		Holder<TextureHandle> m_nilTexture{};
 		//Holder<DescriptorPoolHandle> imguiDescriptorPool;
 
 		mutable bool needToUpdateDescriptors = true;
@@ -564,7 +561,7 @@ namespace smvk {
 			{
 				if (bundle.pipeline != VK_NULL_HANDLE)
 				{
-					ctx_->core_.DestroyPipeline(
+					ctx_->core_.DestroyGraphicsPipeline(
 						bundle.pipeline);
 				}
 			}

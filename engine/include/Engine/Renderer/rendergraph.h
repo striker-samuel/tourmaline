@@ -367,7 +367,8 @@ namespace smvk {
 			vkCmdPushConstants(
 				cmd_,
 				currentPipelineLayout_,
-				VK_SHADER_STAGE_ALL_GRAPHICS,
+				//VK_SHADER_STAGE_ALL_GRAPHICS,
+				VK_SHADER_STAGE_ALL,
 				//toVkShaderStage(stageMask), //may be really bad
 				offset,
 				size,

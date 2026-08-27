@@ -1055,19 +1055,18 @@ namespace smvk {
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 		uint32_t levels = 1;
 		uint32_t arrayLayers = 1;
-		VkSampleCountFlags vk_samples = VK_SAMPLE_COUNT_1_BIT;
-		VkImageView sampleView = VK_NULL_HANDLE; // you can sample multiple levels
-		VkImageView storageView = VK_NULL_HANDLE; // but can only render to one. Views are created with this baked in. Thats the why to separate them
+		VkSampleCountFlagBits  vk_samples = VK_SAMPLE_COUNT_1_BIT;
+		VkImageView sampleView = VK_NULL_HANDLE;
+		VkImageView attachmentView = VK_NULL_HANDLE;
+		VkImageView storageView = VK_NULL_HANDLE;
 		VkImageView arrayView[6]{
 			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
 			VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE
 		}; // for cubemap
-		VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
+
+		//VkSampler vk_sampler = VK_NULL_HANDLE; // Not owning
 		bool owns_views = true;
 		bool is_swapchain = false;
-
-
-		// crude
 		ImageCreateInfo info_;
 	};
 

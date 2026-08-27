@@ -186,16 +186,14 @@ private:
 		}
 		auto depthImage = m_context->images_.get(m_swapchain->depthImage_);
 		m_viewportResources.depthView = m_rendergraph->AddExternalImageView(
-			depthImage->sampleView,
+			depthImage->attachmentView,
 			m_swapchain->depthFormat,
 			"depth"
 		);
 
 		// if mipped maybe a helper like LegitEngine does is a good idea
 
-
-		// shadowmap
-
+		 // shadowmap
 		smvk::Format shadowMapFormat = smvk::Format::D32_Float_S8_UInt;
 		smvk::ImageCreateInfo shadowMapCI{};
 		shadowMapCI.format = shadowMapFormat;
@@ -207,17 +205,16 @@ private:
 		m_viewportResources.shadowmaps[0] = m_context->CreateTexture(shadowMapCI, nullptr, "shadowMap");
 		auto smimage = m_context->textures_.get(m_viewportResources.shadowmaps[0]);
 		assert(smimage != nullptr);
-
 		m_viewportResources.shadowmapViews[0] = m_rendergraph->AddExternalImageView(
 			smimage->sampleView,
 			shadowMapFormat,
 			"shadow"
 		);
 
-		// Manuel Barrier transition
-		// this whole shadowmap thing is so badly done, api surface NEEDS more polish
-		auto han = m_context->m_submitter->acquire();
-		auto cmd = m_context->m_submitter->GetCommandBuffer(han);
+		//// Manual Barrier transition
+		//// this whole shadowmap thing is so badly done, api surface NEEDS more polish
+		//auto han = m_context->m_submitter->acquire();
+		//auto cmd = m_context->m_submitter->GetCommandBuffer(han);
 		//ImageBarrier(
 		//	cmd.cmd,
 		//	smimage->vk_image,
@@ -237,9 +234,9 @@ private:
 		//	VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
 		//	VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
 		//);
-		m_context->m_submitter->submit(han);
-		m_context->m_submitter->wait(han);
-		//
+		//m_context->m_submitter->submit(han);
+		//m_context->m_submitter->wait(han);
+		////
 
 		return true;
 	};
@@ -355,7 +352,7 @@ private:
 			lightFar,
 			lightViewOut,
 			lightProjOut,  // outProj (function will overwrite, but we recompute below)
-			60.f,//10000.0f,       // zPadding
+			10.f,//10000.0f,       // zPadding
 			true,       // enableTexelSnap
 			2048        // shadowMapRes
 		);
@@ -476,7 +473,17 @@ private:
 
 			cmd.BindRenderPipeline(
 				m_resources.shadowProgram,
-				smvk::VertexFormat::StaticVertexFormat
+				smvk::VertexFormat::StaticVertexFormat,
+				smvk::DepthSettings{
+					.depthFunc = smvk::CompareOp::LessEqual,
+					.writeEnable = true,
+					.depthTestEnable = true,
+					.depthBiasEnable =true,
+					.depthBiasConstantFactor = 1.f, 
+					.depthBiasClamp = 0.0f,
+					.depthBiasSlopeFactor = 1.f
+				}
+
 			);
 			cmd.PushConstants(
 				0,
@@ -553,7 +560,11 @@ private:
 
 			cmd.BindRenderPipeline(
 				m_resources.mainProgram,
-				smvk::VertexFormat::StaticVertexFormat
+				smvk::VertexFormat::StaticVertexFormat,
+				smvk::DepthSettings
+				{
+					.depthFunc = smvk::CompareOp::GreaterEqual
+				}
 			);
 
 			cmd.PushConstants(
@@ -709,7 +720,6 @@ void TestApp::UpdateCamera(float dt)
 	);
 
 }
-
 
 
 

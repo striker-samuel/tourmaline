@@ -109,8 +109,7 @@ private:
 			swapViews.push_back(
 				m_rendergraph->AddExternalImageView(
 					m_swapchain->GetImageView(i),
-					smvk::Format::BGRA8_SRGB
-					//m_swapchain->GetFormat()
+					m_swapchain->surfaceFormat
 				)
 			);
 		}

@@ -119,7 +119,6 @@ namespace {
 		std::vector<VkPresentModeKHR> presentModes;
 	};
 
-
 	smvk::QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface)
 	{
 		smvk::QueueFamilyIndices indices;
@@ -248,7 +247,6 @@ namespace {
 
 		return indices;
 	}
-
 	VkMemoryRequirements2 getDeviceImageMemoryRequirements(VkDevice device, const VkImageCreateInfo& imageCreateInfo) {
 		VkDeviceImageMemoryRequirements queryInfo{
 			.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
@@ -284,10 +282,10 @@ namespace {
 		std::cerr << "Message: " << pCallbackData->pMessage << "\n";
 		std::cerr << "\n";  // <--- Blank line for separation
 
-		if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
-		{
-			//__debugbreak();
-		}
+		//if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+		//{
+		//	__debugbreak();
+		//}
 
 		return VK_FALSE;
 	}
@@ -501,6 +499,15 @@ namespace {
 		VMA_MEMORY_USAGE_AUTO_PREFER_HOST, // BufferType_Staging: auto-prefer host for CPU mapping
 		VMA_MEMORY_USAGE_GPU_ONLY,           // BufferType_Count sentinel
 	};
+
+	constexpr bool HasAnyFlag(
+		smvk::ImageUsage value,
+		smvk::ImageUsage flags)
+	{
+		return
+			(static_cast<uint32_t>(value) &
+				static_cast<uint32_t>(flags)) != 0;
+	}
 
 } // static ns
 
@@ -1493,7 +1500,7 @@ void smvk::VulkanCore::CreateComputePipeline(VkComputePipelineCreateInfo createI
 		throw std::runtime_error("failed to create graphics pipeline!");
 	}
 }
-void smvk::VulkanCore::DestroyPipeline(VkPipeline pipeline) {
+void smvk::VulkanCore::DestroyGraphicsPipeline(VkPipeline pipeline) {
 	vkDestroyPipeline(device_, pipeline, nullptr);
 }
 void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
@@ -1612,15 +1619,17 @@ int smvk::VulkanResourceManager::Initialize() {
 		},
 		m_defaultShadowSampler
 	);
-	//const uint32_t pixel = 0xFF000000;
-	//m_nilTexture = CreateTexture(
-	//	ImageCreateInfo{
-	//	.vk_extent = {1,1,1},
-	//	.vk_format = VK_FORMAT_R8G8B8A8_SRGB,
-	//	},
-	//	&pixel
-	//	);
-
+	const uint32_t pixel = 0xFF000000;
+	m_nilTexture = CreateTexture(
+		ImageCreateInfo
+		{
+			.extent = {1,1,1},
+			.format = smvk::Format::RGBA8_SRGB,
+			.name = "nilTexture"
+		},
+		&pixel,
+		"nilTexture"
+	);
 
 	// ============================================================================
 	// Hardcoded Bindless Setup
@@ -1881,33 +1890,69 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 		, han
 	);
 }
-void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset, size_t dest_offset)
+void smvk::VulkanResourceManager::UploadDataToImage2D(
+	Image image,
+	const void* data,
+	VkPipelineStageFlags2 dstStages,
+	VkAccessFlags2 dstAccess,
+	size_t src_offset)
 {
+	const FormatInfo fmt = getFormatInfo(image.vk_format);
 
-	VkImageCreateInfo vkImageCreateInfo{};
-	auto memReqs = getDeviceImageMemoryRequirements(device_, vkImageCreateInfo);
-	VkDeviceSize stagingBufferSize = memReqs.memoryRequirements.size;
+	VkDeviceSize stagingBufferSize = 0;
 
-	auto stagingBufferHandle = CreateBuffer(stagingBufferSize, smvk::BufferType_TransferSrc, "staging buffer");
-	auto staginfBuffer = buffers_.get(stagingBufferHandle);
+	for (uint32_t level = 0; level < image.levels; ++level)
+	{
+		const uint32_t mipWidth =
+			std::max(1u, image.vk_extent.width >> level);
+
+		const uint32_t mipHeight =
+			std::max(1u, image.vk_extent.height >> level);
+
+		const uint32_t blocksX =
+			(mipWidth + fmt.blockWidth - 1) / fmt.blockWidth;
+
+		const uint32_t blocksY =
+			(mipHeight + fmt.blockHeight - 1) / fmt.blockHeight;
+
+		const VkDeviceSize singleLayerMipSize =
+			static_cast<VkDeviceSize>(blocksX) *
+			static_cast<VkDeviceSize>(blocksY) *
+			static_cast<VkDeviceSize>(fmt.bytesPerBlock);
+
+		stagingBufferSize +=
+			singleLayerMipSize *
+			static_cast<VkDeviceSize>(image.arrayLayers);
+	}
+
+	auto stagingBufferHandle = CreateBuffer(
+		stagingBufferSize,
+		smvk::BufferType_Staging,
+		"staging buffer"
+	).release();
 
 	void* mapped = MapBuffer(stagingBufferHandle);
-	std::memcpy(mapped, data, static_cast<size_t>(stagingBufferSize));
-	// Right now CreateStagingBuffer is HOST COHERENT so no flush is needed
-	// Not required for HOST_COHERENT memory, but harmless if you want to support
-	// non-coherent staging buffers later.
-	// vmaFlushAllocation(m_allocator, staging->vma_alloc, 0, stagingBufferSize);
+
+	std::memcpy(
+		mapped,
+		static_cast<const std::byte*>(data) + src_offset,
+		static_cast<size_t>(stagingBufferSize)
+	);
+
 	UnmapBuffer(stagingBufferHandle);
 
 	auto han = m_submitter->acquire();
 	VkCommandBuffer cmd = m_submitter->GetCommandBuffer(han).cmd;
+
+	// Initial transition.
 	{
-		VkImageSubresourceRange range{};
-		range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		range.baseMipLevel = 0;
-		range.levelCount = image.levels;
-		range.baseArrayLayer = 0;
-		range.layerCount = image.arrayLayers;
+		VkImageSubresourceRange range{
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = image.levels,
+			.baseArrayLayer = 0,
+			.layerCount = image.arrayLayers
+		};
 
 		ImageBarrier(
 			cmd,
@@ -1922,16 +1967,6 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 		);
 	}
 
-	// ---------------------------------------------------------------------
-	// Copy staging buffer into image
-	// Assumes `data` is packed as:
-	// mip 0 layer 0
-	// mip 0 layer 1
-	// ...
-	// mip 1 layer 0
-	// mip 1 layer 1
-	// ...
-	// ---------------------------------------------------------------------
 	std::vector<VkBufferImageCopy2> regions;
 	regions.reserve(
 		static_cast<size_t>(image.levels) *
@@ -1940,15 +1975,13 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 
 	VkDeviceSize bufferOffset = 0;
 
-	const FormatInfo fmt = getFormatInfo(image.vk_format);
-
 	for (uint32_t level = 0; level < image.levels; ++level)
 	{
 		const uint32_t mipWidth =
-			std::max(1u, static_cast<uint32_t>(image.vk_extent.width) >> level);
+			std::max(1u, image.vk_extent.width >> level);
 
 		const uint32_t mipHeight =
-			std::max(1u, static_cast<uint32_t>(image.vk_extent.height) >> level);
+			std::max(1u, image.vk_extent.height >> level);
 
 		const uint32_t blocksX =
 			(mipWidth + fmt.blockWidth - 1) / fmt.blockWidth;
@@ -1963,102 +1996,133 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 
 		for (uint32_t layer = 0; layer < image.arrayLayers; ++layer)
 		{
-			VkBufferImageCopy2 region{};
-			region.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2;
+			VkBufferImageCopy2 region{
+				.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+				.bufferOffset = bufferOffset,
+				.bufferRowLength = 0,
+				.bufferImageHeight = 0,
 
-			region.bufferOffset = bufferOffset;
+				.imageSubresource = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.mipLevel = level,
+					.baseArrayLayer = layer,
+					.layerCount = 1
+				},
 
-			// 0 means tightly packed.
-			region.bufferRowLength = 0;
-			region.bufferImageHeight = 0;
-
-			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			region.imageSubresource.mipLevel = level;
-			region.imageSubresource.baseArrayLayer = layer;
-			region.imageSubresource.layerCount = 1;
-
-			region.imageOffset = { 0, 0, 0 };
-			region.imageExtent = {
-				mipWidth,
-				mipHeight,
-				1
+				.imageOffset = { 0, 0, 0 },
+				.imageExtent = {
+					mipWidth,
+					mipHeight,
+					1
+				}
 			};
 
 			regions.push_back(region);
-
 			bufferOffset += singleLayerMipSize;
 		}
 	}
 
-	VkCopyBufferToImageInfo2 copyInfo{};
-	copyInfo.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2;
-	copyInfo.srcBuffer = staginfBuffer->vk_buffer; // <-- replace with your staging buffer member
-	copyInfo.dstImage = image.vk_image;
-	copyInfo.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	copyInfo.regionCount = regions.size();
-	copyInfo.pRegions = regions.data();
+	assert(bufferOffset == stagingBufferSize);
+
+	smvk::Buffer* stagingBuffer =
+		buffers_.get(stagingBufferHandle);
+
+	VkCopyBufferToImageInfo2 copyInfo{
+		.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+		.srcBuffer = stagingBuffer->vk_buffer,
+		.dstImage = image.vk_image,
+		.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		.regionCount = static_cast<uint32_t>(regions.size()),
+		.pRegions = regions.data()
+	};
+
 	vkCmdCopyBufferToImage2(cmd, &copyInfo);
 
+	if (!(dstStages == VK_PIPELINE_STAGE_2_TRANSFER_BIT &&
+		dstAccess == VK_ACCESS_2_TRANSFER_WRITE_BIT))
+	{
+		VkImageSubresourceRange range{
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = image.levels,
+			.baseArrayLayer = 0,
+			.layerCount = image.arrayLayers
+		};
 
-	if (dstStages == VK_PIPELINE_STAGE_2_TRANSFER_BIT &&
-		dstAccess == VK_ACCESS_2_TRANSFER_WRITE_BIT) {
-		// no-op
+		ImageBarrier(
+			cmd,
+			image.vk_image,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			range,
+			VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+			VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			dstStages,
+			dstAccess
+		);
 	}
-	else {
-		// ---------------------------------------------------------------------
-		// Transition whole image:
-		// TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
-		// ---------------------------------------------------------------------
-		{
-			VkImageSubresourceRange range{};
-			range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			range.baseMipLevel = 0;
-			range.levelCount = image.levels;
-			range.baseArrayLayer = 0;
-			range.layerCount = image.arrayLayers;
-
-			ImageBarrier(
-				cmd,
-				image.vk_image,
-				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-				range,
-				VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-				VK_ACCESS_2_TRANSFER_WRITE_BIT,
-				dstStages,
-				dstAccess
-			);
-		}
-	}
-
 
 	m_submitter->submit(han);
-	AddDeferredTask(
-		std::packaged_task<void()>([this, staging = std::move(stagingBufferHandle)] {destroy(this, staging); })
-		, han
-	);
 
+	AddDeferredTask(
+		std::packaged_task<void()>(
+			[this, staging = std::move(stagingBufferHandle)] {
+		destroy(this, staging);
+	}),
+		han
+	);
 }
 //
-[[nodiscard]] smvk::Image smvk::VulkanResourceManager::CreateImageImpl(const smvk::ImageCreateInfo& imageCreateInfo, const void* data, const char* debugName)
+[[nodiscard]] smvk::Image smvk::VulkanResourceManager::CreateImageImpl(
+	const smvk::ImageCreateInfo& imageCreateInfo,
+	const void* data,
+	const char* debugName)
 {
 	Image img{};
+
+	// Resolve API-facing values once.
 	img.vk_format = toVkFormat(imageCreateInfo.format);
+	img.vk_extent = {
+		imageCreateInfo.extent.width,
+		imageCreateInfo.extent.height,
+		imageCreateInfo.extent.depth
+	};
 	img.levels = imageCreateInfo.mipLevels;
-	img.vk_extent = { imageCreateInfo.extent.width, imageCreateInfo.extent.height };
 	img.arrayLayers = imageCreateInfo.arrayLayers;
-	img.info_ = imageCreateInfo; //BAD BAD BAD
+	img.vk_samples = toVkSampleCount(imageCreateInfo.samples);
+	img.vk_usage = toVkImageUsageFlags(imageCreateInfo.usage);
+
+	// Temporary until Image no longer stores ImageCreateInfo.
+	img.info_ = imageCreateInfo; // Still potentially problematic if info_ contains non-owning pointers.
+
+	const VkImageAspectFlags formatAspects =
+		VkAspectMaskFromFormat(img.vk_format);
+
+	const bool hasDepth =
+		(formatAspects & VK_IMAGE_ASPECT_DEPTH_BIT) != 0;
+
+	const bool hasStencil =
+		(formatAspects & VK_IMAGE_ASPECT_STENCIL_BIT) != 0;
+
+	const bool isDepthStencil =
+		hasDepth && hasStencil;
+
+	// -------------------------------------------------------------------------
+	// Image
+	// -------------------------------------------------------------------------
+
 	VkImageCreateInfo imgCI{
 		VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
 	};
+
 	imgCI.imageType = toVkImageType(imageCreateInfo.type);
-	imgCI.format = toVkFormat(imageCreateInfo.format);
-	imgCI.extent = { imageCreateInfo.extent.width, imageCreateInfo.extent.height, imageCreateInfo.extent.depth };
-	imgCI.mipLevels = imageCreateInfo.mipLevels;
-	imgCI.arrayLayers = imageCreateInfo.arrayLayers;
-	imgCI.samples = toVkSampleCount(imageCreateInfo.samples);
-	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL; // not exposing this for now
-	imgCI.usage = toVkImageUsageFlags(imageCreateInfo.usage);
+	imgCI.format = img.vk_format;
+	imgCI.extent = img.vk_extent;
+	imgCI.mipLevels = img.levels;
+	imgCI.arrayLayers = img.arrayLayers;
+	imgCI.samples = img.vk_samples;
+	imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+	imgCI.usage = img.vk_usage;
 	imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	imgCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -2075,6 +2139,10 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 		nullptr
 	));
 
+	// -------------------------------------------------------------------------
+	// Debug name
+	// -------------------------------------------------------------------------
+
 #if defined(_DEBUG)
 	if (debugName)
 	{
@@ -2083,7 +2151,8 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 		};
 
 		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
-		nameInfo.objectHandle = reinterpret_cast<uint64_t>(img.vk_image);
+		nameInfo.objectHandle =
+			reinterpret_cast<uint64_t>(img.vk_image);
 		nameInfo.pObjectName = debugName;
 
 		vkSetDebugUtilsObjectNameEXT(
@@ -2095,36 +2164,120 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 	(void)debugName;
 #endif
 
+	// -------------------------------------------------------------------------
+	// Common view creation helper
+	// -------------------------------------------------------------------------
 
-	VkImageViewCreateInfo viewInfo{};
-	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-	viewInfo.image = img.vk_image;
-	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	viewInfo.format = img.vk_format;
-	viewInfo.subresourceRange = {
-		.aspectMask = VkAspectMaskFromFormat(img.vk_format),
-		.baseMipLevel = 0,
-		.levelCount = 1,
-		.baseArrayLayer = 0,
-		.layerCount = 1
-	};;
-	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+	auto createView =
+		[&](
+			VkImageAspectFlags aspectMask,
+			uint32_t baseMipLevel,
+			uint32_t levelCount,
+			uint32_t baseArrayLayer,
+			uint32_t layerCount) -> VkImageView
+	{
+		VkImageViewCreateInfo viewInfo{
+			VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
+		};
 
-	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &img.sampleView));
-	img.storageView = img.sampleView;
-	img.vk_sampler = m_defaultSampler;
+		viewInfo.image = img.vk_image;
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format = img.vk_format;
+
+		viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+		viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+		viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+		viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+		viewInfo.subresourceRange = {
+			.aspectMask = aspectMask,
+			.baseMipLevel = baseMipLevel,
+			.levelCount = levelCount,
+			.baseArrayLayer = baseArrayLayer,
+			.layerCount = layerCount
+		};
+
+		VkImageView view = VK_NULL_HANDLE;
+
+		VK_CHECK(vkCreateImageView(
+			device_,
+			&viewInfo,
+			nullptr,
+			&view
+		));
+
+		return view;
+	};
+
+	// -------------------------------------------------------------------------
+	// Sample view
+	//
+	// A sampled depth/stencil VkImageView cannot expose both DEPTH and STENCIL.
+	// Depth is the sensible default for shadow maps / sampled depth buffers.
+	// -------------------------------------------------------------------------
+
+	if (HasAnyFlag(imageCreateInfo.usage, ImageUsage::Sampled))
+	{
+		VkImageAspectFlags sampleAspect = formatAspects;
+
+		if (isDepthStencil)
+		{
+			sampleAspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+		}
+
+		img.sampleView = createView(
+			sampleAspect,
+			0,
+			img.levels,
+			0,
+			img.arrayLayers
+		);
+	}
+
+	if (
+		HasAnyFlag(imageCreateInfo.usage, ImageUsage::ColorAttachment) ||
+		HasAnyFlag(imageCreateInfo.usage, ImageUsage::DepthStencilAttachment))
+	{
+		img.attachmentView = createView(
+			formatAspects,
+			0,
+			1,
+			0,
+			img.arrayLayers
+		);
+	}
+
+	if (HasAnyFlag(imageCreateInfo.usage, ImageUsage::Storage))
+	{
+		// Depth/stencil storage images generally aren't something we should
+		// silently support through this generic path.
+		assert(!hasDepth && !hasStencil);
+
+		img.storageView = createView(
+			formatAspects,
+			0,
+			1,
+			0,
+			img.arrayLayers
+		);
+	}
+
+	// -------------------------------------------------------------------------
+	// Initial upload
+	// -------------------------------------------------------------------------
 
 	if (data)
 	{
+		assert(
+			(img.vk_usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0 &&
+			"Image initialized with data must have TransferDst usage"
+		);
+
 		UploadDataToImage2D(
 			img,
 			data,
 			VK_PIPELINE_STAGE_2_TRANSFER_BIT,
 			VK_ACCESS_2_TRANSFER_WRITE_BIT,
-			0,
 			0
 		);
 	}
@@ -2497,7 +2650,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(Image image, const void* d
 	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
 	VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &image_obj.sampleView));
-	image_obj.vk_sampler = m_defaultSampler; // TODO: Rework this- Get sampler by spec from the pool
+	//image_obj.vk_sampler = m_defaultSampler; // TODO: Rework this- Get sampler by spec from the pool
 	image_obj.storageView = image_obj.sampleView;
 
 	return { this, 	textures_.create(std::move(image_obj)) };
@@ -3264,7 +3417,7 @@ void smvk::VulkanSwapchain::CreateImageViews() {
 		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 		viewInfo.image = images_[i];
 		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		viewInfo.format = toVkFormat(depthFormat);
+		viewInfo.format = toVkFormat(surfaceFormat);
 		viewInfo.subresourceRange = {
 			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 			.baseMipLevel = 0,
@@ -4057,8 +4210,7 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 #include <Engine/Renderer/rendergraph.h>
 
 [[nodiscard]]
-smvk::LogicalImageHandle smvk::RenderGraph::AddImage(smvk::ImageHandle imageHandle, const char* name
-)
+smvk::LogicalImageHandle smvk::RenderGraph::AddImage(smvk::ImageHandle imageHandle, const char* name)
 {
 	assert(!imageHandle.empty());
 
@@ -4074,8 +4226,6 @@ smvk::LogicalImageHandle smvk::RenderGraph::AddImage(smvk::ImageHandle imageHand
 
 	return images_.create(std::move(logical));
 }
-
-
 void smvk::CommandBuffer::BindRenderPipeline(
 	ShaderProgram& shaderProgram,
 	VertexFormat vertexFormat,
@@ -4162,7 +4312,6 @@ void smvk::CommandBuffer::BindRenderPipeline(
 		0,
 		nullptr);
 }
-
 void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 {
 	ResolveImages();
@@ -4259,7 +4408,6 @@ void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 		vkCmdEndRendering(fb.commandBuffer);
 	}
 };
-
 void smvk::RenderGraph::ResolveImages() {
 	images_.forEach(
 		[this](smvk::LogicalImage& logicalImage) {
