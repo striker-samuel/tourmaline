@@ -191,7 +191,7 @@ private:
 		);
 		// if mipped maybe a helper like LegitEngine does is a good idea
 
-		 // shadowmap
+		// shadowmap
 		smvk::Format shadowMapFormat = smvk::Format::D32_Float_S8_UInt;
 		smvk::ImageCreateInfo shadowMapCI{};
 		shadowMapCI.format = shadowMapFormat;
@@ -222,32 +222,32 @@ private:
 				"shadow depth"
 				);
 
-		//// Manual Barrier transition
-		//// this whole shadowmap thing is so badly done, api surface NEEDS more polish
-		//auto han = m_context->m_submitter->acquire();
-		//auto cmd = m_context->m_submitter->GetCommandBuffer(han);
-		//ImageBarrier(
-		//	cmd.cmd,
-		//	smimage->vk_image,
-		//	VK_IMAGE_LAYOUT_UNDEFINED,
-		//	VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-		//	{
-		//		.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-		//		.baseMipLevel = 0,
-		//		.levelCount = VK_REMAINING_MIP_LEVELS,
-		//		.baseArrayLayer = 0,
-		//		.layerCount = VK_REMAINING_ARRAY_LAYERS
-		//	},
-		//	VK_PIPELINE_STAGE_2_NONE,
-		//	VK_ACCESS_2_NONE,
-		//	VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-		//	VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-		//	VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-		//	VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
-		//);
-		//m_context->m_submitter->submit(han);
-		//m_context->m_submitter->wait(han);
-		////
+		// Manual Barrier transition
+		// this whole shadowmap thing is so badly done, api surface NEEDS more polish
+		auto han = m_context->m_submitter->acquire();
+		auto cmd = m_context->m_submitter->GetCommandBuffer(han);
+		ImageBarrier(
+			cmd.cmd,
+			smimage->vk_image,
+			VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+			{
+				.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+				.baseMipLevel = 0,
+				.levelCount = VK_REMAINING_MIP_LEVELS,
+				.baseArrayLayer = 0,
+				.layerCount = VK_REMAINING_ARRAY_LAYERS
+			},
+			VK_PIPELINE_STAGE_2_NONE,
+			VK_ACCESS_2_NONE,
+			VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+			VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+		);
+		m_context->m_submitter->submit(han);
+		m_context->m_submitter->wait(han);
+		//
 
 		return true;
 	};

@@ -527,15 +527,15 @@ namespace smvk {
 	{
 		None = 0,
 
-		Vertex = 1u << 0,
-		TessControl = 1u << 1,
-		TessEvaluation = 1u << 2,
-		Geometry = 1u << 3,
-		Fragment = 1u << 4,
-		Compute = 1u << 5,
+		Vertex = 1u << 0, // 0x01
+		TessControl = 1u << 1, // 0x02
+		TessEvaluation = 1u << 2, // 0x04
+		Geometry = 1u << 3, // 0x08
+		Fragment = 1u << 4, // 0x10
+		Compute = 1u << 5, // 0x20
 
-		AllGraphics = (1u << 5) - 1
-
+		AllGraphics = (1u << 5) - 1u, // 0x1F
+		All = 0x7FFFFFFF,
 		// Future:
 		// Task
 		// Mesh

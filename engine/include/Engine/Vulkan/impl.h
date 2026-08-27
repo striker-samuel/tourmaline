@@ -48,12 +48,14 @@ namespace smvk {
 
 	constexpr VkImageUsageFlags toVkImageUsageFlags(ImageUsage usage);
 	constexpr VkImageType toVkImageType(ImageType type);
+	constexpr VkImageViewType toVkImageViewType(ImageViewType viewType);
 	constexpr VkClearValue toVkClearValue(ClearColor color);
 	constexpr VkClearValue toVkClearValue(ClearDepthStencil clearDepth);
 	constexpr VkAttachmentLoadOp  toVkAttachmentLoadOp(AttachmentLoadOp op);
 	constexpr VkAttachmentStoreOp toVkAttachmentStoreOp(AttachmentStoreOp op);
 	constexpr VkStencilOp toVkStencilOp(uint8_t op);
-	constexpr VkShaderStageFlagBits toVkShaderStage(ShaderStage stage);
+	constexpr VkShaderStageFlagBits toVkShaderStageBit(ShaderStage stage);
+	constexpr VkShaderStageFlags toVkShaderStageFlags(ShaderStage stages);
 	constexpr VkBlendFactor toVkSrcBlendFactor(BlendAttachmentState::SrcColorBlendFactor factor);
 	constexpr VkBlendFactor toVkDstBlendFactor(BlendAttachmentState::DstColorBlendFactor factor);
 	constexpr VkBlendOp toVkBlendOp(BlendAttachmentState::ColorBlendOp op);
@@ -82,11 +84,6 @@ namespace smvk {
 	};
 
 	struct VulkanCore {
-		//static VulkanCore& Get()
-		//{
-		//	static VulkanCore instance;
-		//	return instance;
-		//}
 
 		struct CoreConfiguration {
 			VulkanVersion version_ = VK_1_3;

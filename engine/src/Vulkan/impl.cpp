@@ -19,35 +19,6 @@ static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
 
-//VkInstance smvk::VulkanCore::GetInstance() { return instance_; }
-VkDevice smvk::VulkanCore::GetDevice() { return device_; }
-//VkPhysicalDevice smvk::VulkanCore::GetPhysicalDevice() { return physicalDevice_; }
-//VkQueue smvk::VulkanCore::GetGraphicsQueue() { return graphicsQueue_; }
-
-const char* vkResultToString(VkResult result) {
-	switch (result) {
-	case VK_SUCCESS: return "VK_SUCCESS";
-	case VK_NOT_READY: return "VK_NOT_READY";
-	case VK_TIMEOUT: return "VK_TIMEOUT";
-	case VK_EVENT_SET: return "VK_EVENT_SET";
-	case VK_EVENT_RESET: return "VK_EVENT_RESET";
-	case VK_INCOMPLETE: return "VK_INCOMPLETE";
-	case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
-	case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-	case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
-	case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
-	case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
-	case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
-	case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
-	case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
-	case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
-	case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
-	case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
-	case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
-	case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
-	default: return "VK_ERROR_<unrecognized>";
-	}
-}
 namespace {
 
 	inline bool is_aligned4(uint32_t v) { return (v & 3u) == 0u; }
@@ -511,6 +482,36 @@ namespace {
 
 } // static ns
 
+//VkInstance smvk::VulkanCore::GetInstance() { return instance_; }
+VkDevice smvk::VulkanCore::GetDevice() { return device_; }
+//VkPhysicalDevice smvk::VulkanCore::GetPhysicalDevice() { return physicalDevice_; }
+//VkQueue smvk::VulkanCore::GetGraphicsQueue() { return graphicsQueue_; }
+
+const char* vkResultToString(VkResult result) {
+	switch (result) {
+	case VK_SUCCESS: return "VK_SUCCESS";
+	case VK_NOT_READY: return "VK_NOT_READY";
+	case VK_TIMEOUT: return "VK_TIMEOUT";
+	case VK_EVENT_SET: return "VK_EVENT_SET";
+	case VK_EVENT_RESET: return "VK_EVENT_RESET";
+	case VK_INCOMPLETE: return "VK_INCOMPLETE";
+	case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+	case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+	case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+	case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+	case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+	case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+	case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+	case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+	case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+	case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+	case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+	case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+	case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
+	default: return "VK_ERROR_<unrecognized>";
+	}
+}
+
 //smvk::Format ChooseSwapSurfaceFormat(const std::vector<smvk::Format>& availableFormats) {
 //	for (const auto& availableFormat : availableFormats) {
 //		if (availableFormat.format == smvk::Format::BGRA8_SRGB &&
@@ -562,6 +563,29 @@ constexpr VkImageType           smvk::toVkImageType(ImageType type)
 	}
 
 	return VK_IMAGE_TYPE_2D; // unreachable for valid ImageType values
+}
+constexpr VkImageViewType       smvk::toVkImageViewType(ImageViewType viewType)
+{
+	switch (viewType)
+	{
+	case ImageViewType::View1D:
+		return VK_IMAGE_VIEW_TYPE_1D;
+	case ImageViewType::View2D:
+		return VK_IMAGE_VIEW_TYPE_2D;
+	case ImageViewType::View3D:
+		return VK_IMAGE_VIEW_TYPE_3D;
+	case ImageViewType::ViewCube:
+		return VK_IMAGE_VIEW_TYPE_CUBE;
+	case ImageViewType::View1DArray:
+		return VK_IMAGE_VIEW_TYPE_1D_ARRAY;
+	case ImageViewType::View2DArray:
+		return VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+	case ImageViewType::ViewCubeArray:
+		return VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+	default:
+		assert(false && "Unsupported ImageViewType");
+		return VK_IMAGE_VIEW_TYPE_2D;
+	}
 }
 constexpr VkClearValue          smvk::toVkClearValue(ClearColor color)
 {
@@ -628,56 +652,23 @@ constexpr VkStencilOp           smvk::toVkStencilOp(uint8_t op)
 		return VK_STENCIL_OP_KEEP;
 	}
 }
-constexpr VkShaderStageFlagBits smvk::toVkShaderStage(ShaderStage stage)
+constexpr VkShaderStageFlagBits smvk::toVkShaderStageBit(ShaderStage stage)
 {
-	switch (stage)
-	{
-	case ShaderStage::Vertex:
-		return VK_SHADER_STAGE_VERTEX_BIT;
+	assert(
+		stage != ShaderStage::None &&
+		stage != ShaderStage::AllGraphics &&
+		stage != ShaderStage::All
+	);
 
-	case ShaderStage::Fragment:
-		return VK_SHADER_STAGE_FRAGMENT_BIT;
-
-	case ShaderStage::Compute:
-		return VK_SHADER_STAGE_COMPUTE_BIT;
-
-	case ShaderStage::Geometry:
-		return VK_SHADER_STAGE_GEOMETRY_BIT;
-
-	case ShaderStage::TessControl:
-		return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-
-	case ShaderStage::TessEvaluation:
-		return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-
-		//case ShaderStage::Task:
-		//	return VK_SHADER_STAGE_TASK_BIT_EXT;
-
-		//case ShaderStage::Mesh:
-		//	return VK_SHADER_STAGE_MESH_BIT_EXT;
-
-		//case ShaderStage::RayGen:
-		//	return VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-
-		//case ShaderStage::AnyHit:
-		//	return VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
-
-		//case ShaderStage::ClosestHit:
-		//	return VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-
-		//case ShaderStage::Miss:
-		//	return VK_SHADER_STAGE_MISS_BIT_KHR;
-
-		//case ShaderStage::Intersection:
-		//	return VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
-
-		//case ShaderStage::Callable:
-		//	return VK_SHADER_STAGE_CALLABLE_BIT_KHR;
-
-	default:
-		assert(false && "Unsupported ShaderStage");
-		return VK_SHADER_STAGE_VERTEX_BIT;
-	}
+	return static_cast<VkShaderStageFlagBits>(
+		static_cast<uint32_t>(stage)
+		);
+}
+constexpr VkShaderStageFlags    smvk::toVkShaderStageFlags(ShaderStage stages)
+{
+	return static_cast<VkShaderStageFlags>(
+		static_cast<uint32_t>(stages)
+		);
 }
 constexpr VkBlendFactor         smvk::toVkSrcBlendFactor(BlendAttachmentState::SrcColorBlendFactor factor)
 {
@@ -1091,7 +1082,8 @@ constexpr VkColorSpaceKHR       smvk::ToVkColorSpace(ColorSpace colorSpace)
 		return VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 	}
 }
-static constexpr smvk::Format fromVkFormat(VkFormat format) // dont like to have this reverse mapping too. choose swapsurface and depthFormat needs refacotring
+
+static constexpr                smvk::Format fromVkFormat(VkFormat format) // dont like to have this reverse mapping too. choose swapsurface and depthFormat needs refacotring
 {
 	switch (format)
 	{
@@ -1176,8 +1168,8 @@ static constexpr smvk::Format fromVkFormat(VkFormat format) // dont like to have
 	default:                                  return smvk::Format::Undefined;
 	}
 }
-//
-/*constexpr*/ bool                  smvk::FormatHasStencil(VkFormat format)
+
+/*constexpr*/ bool              smvk::FormatHasStencil(VkFormat format)
 {
 	switch (format)
 	{
@@ -1191,7 +1183,7 @@ static constexpr smvk::Format fromVkFormat(VkFormat format) // dont like to have
 		return false;
 	}
 }
-/*constexpr*/ bool                  smvk::FormatHasDepth(VkFormat format)
+/*constexpr*/ bool              smvk::FormatHasDepth(VkFormat format)
 {
 	switch (format)
 	{
@@ -1207,6 +1199,8 @@ static constexpr smvk::Format fromVkFormat(VkFormat format) // dont like to have
 		return false;
 	}
 }
+
+// hmmm 
 static constexpr VkImageAspectFlags VkAspectMaskFromFormat(VkFormat format)
 {
 	switch (format)
@@ -1228,7 +1222,7 @@ static constexpr VkImageAspectFlags VkAspectMaskFromFormat(VkFormat format)
 		return VK_IMAGE_ASPECT_COLOR_BIT;
 	}
 }
-//
+
 inline void BufferBarrier(
 	VkCommandBuffer cmd,
 	VkBuffer buffer,
@@ -3802,7 +3796,7 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 		VkPipelineShaderStageCreateInfo stageInfo{
 			.sType =
 				VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-			.stage = toVkShaderStage(shader.stage),
+			.stage = toVkShaderStageBit(shader.stage),
 			.module = *shaderModule,
 			.pName = shader.entryPoint,
 		};
@@ -4204,4 +4198,454 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 		layout;
 
 	return bundle;
+}
+
+
+#include <Engine/Renderer/rendergraph.h>
+
+VkImageView smvk::RenderGraph::GetResolvedImageView(
+	LogicalImageViewHandle handle)
+{
+	auto* view = imageViews_.get(handle);
+	assert(view);
+
+	switch (view->type)
+	{
+	case LogicalImageView::Type::ExternalPhysical:
+		return view->externalView;
+
+	case LogicalImageView::Type::Logical:
+		return ResolveImageView(view->key);
+	}
+
+	assert(false);
+	return VK_NULL_HANDLE;
+}
+
+void smvk::CommandBuffer::BindRenderPipeline(
+	ShaderProgram& shaderProgram,
+	VertexFormat vertexFormat,
+	const DepthSettings& depthSettings,
+	const StencilSettings& stencilSettings,
+	const BlendSettings& blendSettings,
+	const MSAASettings& msaaSettings
+)
+{
+	assert(graph_ != nullptr);
+	assert(renderPass_ != nullptr);
+
+	switch (vertexFormat)
+	{
+	case VertexFormat::StaticVertexFormat:
+		smvk::BindStaticVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
+		break;
+	case VertexFormat::Empty:
+		break;
+	default:
+		break;
+	}
+	VertexFormatDescription formatDescription{};
+	formatDescription = GetVertexFormatDescription(vertexFormat);
+
+	std::vector<smvk::Format> colorAttachmentFormats;
+	colorAttachmentFormats.reserve(renderPass_->colorAttachments_.size());
+	for (auto& attachment : renderPass_->colorAttachments_)
+	{
+		colorAttachmentFormats.push_back(
+			graph_->GetResolvedImageViewFormat(
+				attachment.view)
+		);
+	}
+	smvk::Format depthFormat =
+		smvk::Format::Undefined;
+
+	smvk::Format stencilFormat =
+		smvk::Format::Undefined;
+
+	if (renderPass_->hasDepthAttachment_)
+	{
+		const auto format =
+			graph_->GetResolvedImageViewFormat(
+				renderPass_->depthAttachment_.view);
+
+		if (FormatHasDepth(toVkFormat(format)))
+			depthFormat = format;
+
+		if (FormatHasStencil(toVkFormat(format)))
+			stencilFormat = format;
+	}
+
+	auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
+		shaderProgram,
+		formatDescription,
+		colorAttachmentFormats.data(),
+		static_cast<uint32_t>(colorAttachmentFormats.size()),
+		depthFormat,
+		stencilFormat,
+		PrimitiveTopology::TriangleList,
+		smvk::RasterSettings{},
+		depthSettings,
+		stencilSettings,
+		blendSettings,
+		msaaSettings
+	);
+
+	assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");
+
+	if (bundle.pipeline == currentPipeline_) {
+		return;
+	}
+
+	currentPipeline_ = bundle.pipeline;
+	currentPipelineLayout_ = bundle.layout;
+
+	vkCmdBindPipeline(
+		cmd_,
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		currentPipeline_);
+
+	vkCmdBindDescriptorSets(
+		cmd_,
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		graph_->ctx_.defaultPipeLayout,
+		0,
+		1,
+		graph_->ctx_.defaultDescriptorSets_,
+		0,
+		nullptr);
+}
+void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
+{
+	ResolveImages();
+	ResolveBuffers();
+
+	for (auto& pass : passes_) {
+
+		std::vector<VkRenderingAttachmentInfo> colorInfos;
+		colorInfos.reserve(pass.colorAttachments_.size());
+
+		for (auto& att : pass.colorAttachments_)
+		{
+			VkRenderingAttachmentInfo info{
+				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+			};
+
+			info.imageView =
+				GetResolvedImageView(att.view);
+			info.imageLayout =
+				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			info.loadOp =
+				toVkAttachmentLoadOp(att.loadOp);
+			info.storeOp =
+				toVkAttachmentStoreOp(att.storeOp);
+			info.clearValue =
+				toVkClearValue(att.clearColor);
+			colorInfos.push_back(info);
+		}
+
+		VkRenderingAttachmentInfo depthInfo{
+		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+		};
+
+		const bool hasDepth =
+			pass.hasDepthAttachment_;
+
+		bool hasStencil = false;
+
+		if (hasDepth)
+		{
+			const auto depthFormat =
+				GetResolvedImageViewFormat(
+					pass.depthAttachment_.view);
+			hasStencil =
+				FormatHasStencil(
+					toVkFormat(depthFormat));
+			depthInfo.imageView =
+				GetResolvedImageView(
+					pass.depthAttachment_.view);
+			depthInfo.imageLayout =
+				hasStencil
+				? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+				: VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+			depthInfo.loadOp =
+				toVkAttachmentLoadOp(
+					pass.depthAttachment_.loadOp);
+			depthInfo.storeOp =
+				toVkAttachmentStoreOp(
+					pass.depthAttachment_.storeOp);
+			depthInfo.clearValue =
+				toVkClearValue(
+					pass.depthAttachment_.clear);
+		}
+
+		VkRenderingInfo renderInfo{
+			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
+			.renderArea = {
+				.offset = {pass.offsetX_, pass.offsetY_},
+				.extent = {pass.extent_.width, pass.extent_.height},
+			},
+			.layerCount = 1,
+			.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
+			.pColorAttachments = colorInfos.data(),
+		};
+		renderInfo.pDepthAttachment =
+			hasDepth ? &depthInfo : nullptr;
+		renderInfo.pStencilAttachment =
+			hasStencil ? &depthInfo : nullptr;
+
+		VkViewport vp{};
+		vp.x = 0.0f;
+		vp.y = 0.0f;
+		vp.width = static_cast<float>(pass.extent_.width);
+		vp.height = static_cast<float>(pass.extent_.height);
+		vp.minDepth = 0.0f;
+		vp.maxDepth = 1.0f;
+
+		VkRect2D scissor{};
+		scissor.offset = { 0, 0 };
+		scissor.extent = { pass.extent_.width, pass.extent_.height };
+
+		vkCmdSetViewport(fb.commandBuffer, 0, 1, &vp);
+		vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
+
+		vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
+
+		CommandBuffer cmd{
+			fb.commandBuffer,
+			*this,
+			pass
+		};
+
+		if (pass.recordingFunction_) {
+			pass.recordingFunction_(cmd);
+		}
+
+		vkCmdEndRendering(fb.commandBuffer);
+	}
+};
+void smvk::RenderGraph::ResolveImages() {
+	images_.forEach(
+		[this](smvk::LogicalImage& logicalImage) {
+		if (logicalImage.resolvedImageHandle.empty()) {
+			if (logicalImage.type == smvk::ResourceType::External) { assert(false && "external image unresolved. shouldnt be possible"); };
+			//CreateTransientImaeg(key, sync_req);
+			logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
+		};
+	}
+	);
+};
+void smvk::RenderGraph::ResolveBuffers()
+{
+	//	buffers.forEach(
+	//		[this](LogicalBuffer& logicalBuffer) {
+	//		if (logicalBuffer.resolvedBufferHandle.empty()) {
+	//			const auto& key = logicalBuffer.key;
+	//			int ringMultiplier = key.ring ? 4 : 1;
+	//			logicalBuffer.resolvedBufferHandle = ctx_.CreateBuffer(
+	//				key.elementCount * key.elementSize * ringMultiplier,
+	//				smvk::BufferType_Storage,
+	//				"resolved buffer"
+	//			).release();
+	//		}
+	//	}
+	//	);
+}
+VkImageView smvk::RenderGraph::ResolveImageView(const ImageViewKey& key)
+{
+	assert(!key.image.empty());
+
+	// ------------------------------------------------------------
+	// Resolve logical image -> physical ImageHandle
+	// ------------------------------------------------------------
+
+	auto* logicalImage = images_.get(key.image);
+	assert(logicalImage != nullptr);
+
+	const ImageHandle imageHandle =
+		logicalImage->resolvedImageHandle;
+
+	assert(!imageHandle.empty());
+
+	auto* image = ctx_.images_.get(imageHandle);
+	assert(image != nullptr);
+	assert(image->vk_image != VK_NULL_HANDLE);
+
+
+	// ------------------------------------------------------------
+	// Resolve format
+	// ------------------------------------------------------------
+
+	const Format resolvedFormat =
+		(key.format != Format::Undefined)
+		? key.format
+		: logicalImage->key.format;
+
+	assert(resolvedFormat != Format::Undefined);
+
+	const VkFormat vkFormat =
+		toVkFormat(resolvedFormat);
+
+	assert(vkFormat != VK_FORMAT_UNDEFINED);
+
+
+	// ------------------------------------------------------------
+	// Resolve aspect
+	// ------------------------------------------------------------
+
+	VkImageAspectFlags aspectMask = 0;
+
+	switch (key.subresourceRange.aspect)
+	{
+	case ImageAspect::Color:
+		aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		break;
+
+	case ImageAspect::Depth:
+		aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		break;
+
+	case ImageAspect::Stencil:
+		aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+		break;
+
+	case ImageAspect::None:
+		//
+		// Treat None as "infer from format".
+		//
+		assert(false && "not implemented");
+		//aspectMask = VkAspectMaskFromFormat(vkFormat);
+		break;
+
+	default:
+		assert(false && "Unsupported ImageAspect");
+		break;
+	}
+
+	assert(aspectMask != 0);
+
+
+	// ------------------------------------------------------------
+	// Validate range
+	// ------------------------------------------------------------
+
+	const auto& range =
+		key.subresourceRange;
+
+	assert(range.baseMipLevel < image->levels);
+	assert(range.baseArrayLayer < image->arrayLayers);
+
+	assert(range.mipLevelCount > 0);
+	assert(range.arrayLayerCount > 0);
+
+	assert(
+		range.baseMipLevel + range.mipLevelCount <=
+		image->levels
+	);
+
+	assert(
+		range.baseArrayLayer + range.arrayLayerCount <=
+		image->arrayLayers
+	);
+
+
+	// ------------------------------------------------------------
+	// Resolve view type
+	// ------------------------------------------------------------
+
+	VkImageViewType vkViewType = toVkImageViewType(key.viewType);
+
+	// ------------------------------------------------------------
+	// Extra validation for cube views
+	// ------------------------------------------------------------
+
+	if (vkViewType == VK_IMAGE_VIEW_TYPE_CUBE)
+	{
+		assert(range.arrayLayerCount == 6);
+	}
+
+	if (vkViewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
+	{
+		assert(
+			range.arrayLayerCount >= 6 &&
+			(range.arrayLayerCount % 6) == 0
+		);
+	}
+
+
+	// ------------------------------------------------------------
+	// Create VkImageView
+	// ------------------------------------------------------------
+
+	VkImageViewCreateInfo viewCI{
+		VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
+	};
+
+	viewCI.image =
+		image->vk_image;
+
+	viewCI.viewType =
+		vkViewType;
+
+	viewCI.format =
+		vkFormat;
+
+	viewCI.components = {
+		VK_COMPONENT_SWIZZLE_IDENTITY,
+		VK_COMPONENT_SWIZZLE_IDENTITY,
+		VK_COMPONENT_SWIZZLE_IDENTITY,
+		VK_COMPONENT_SWIZZLE_IDENTITY
+	};
+
+	viewCI.subresourceRange = {
+		.aspectMask =
+			aspectMask,
+
+		.baseMipLevel =
+			range.baseMipLevel,
+
+		.levelCount =
+			range.mipLevelCount,
+
+		.baseArrayLayer =
+			range.baseArrayLayer,
+
+		.layerCount =
+			range.arrayLayerCount,
+	};
+
+
+	VkImageView result =
+		VK_NULL_HANDLE;
+
+	VK_CHECK(
+		vkCreateImageView(
+			ctx_.core_.GetDevice(),
+			&viewCI,
+			nullptr,
+			&result
+		)
+	);
+
+	assert(result != VK_NULL_HANDLE);
+
+	return result;
+}
+
+void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const void* data, ShaderStage stageMask)
+{
+	assert(currentPipelineLayout_ != VK_NULL_HANDLE);
+
+	const VkShaderStageFlags vkStages =
+		toVkShaderStageFlags(stageMask);
+
+	assert(vkStages != 0);
+
+	vkCmdPushConstants(
+		cmd_,
+		currentPipelineLayout_,
+		vkStages,
+		offset,
+		size,
+		data
+	);
 }

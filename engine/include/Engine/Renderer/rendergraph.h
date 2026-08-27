@@ -329,7 +329,6 @@ namespace smvk
 		bool hasDepthAttachment_ =
 			false;
 
-
 		Extent2D extent_{};
 
 		int32_t offsetX_ = 0;
@@ -661,13 +660,16 @@ namespace smvk
 		{
 			assert(!handle.empty());
 
-			const auto* view =
-				imageViews_.get(handle);
-
+			const auto* view = imageViews_.get(handle);
 			assert(view != nullptr);
 
-			if (view->key.format !=
-				Format::Undefined)
+			if (view->type == LogicalImageView::Type::ExternalPhysical)
+			{
+				assert(view->externalFormat != Format::Undefined);
+				return view->externalFormat;
+			}
+
+			if (view->key.format != Format::Undefined)
 			{
 				return view->key.format;
 			}
@@ -676,6 +678,7 @@ namespace smvk
 				images_.get(view->key.image);
 
 			assert(image != nullptr);
+			assert(image->key.format != Format::Undefined);
 
 			return image->key.format;
 		}
@@ -748,7 +751,6 @@ namespace smvk
 	{
 		CommandBuffer() = delete;
 
-
 		void BindRenderPipeline(
 			ShaderProgram& shaderProgram,
 			VertexFormat vertexFormat =
@@ -763,30 +765,16 @@ namespace smvk
 				MSAASettings::Count1()
 		);
 
-
 		void PushConstants(
 			uint32_t offset,
 			uint32_t size,
 			const void* data,
 			ShaderStage stageMask =
-				ShaderStage::Vertex |
-				ShaderStage::Fragment)
-		{
-			assert(
-				currentPipelineLayout_ !=
-				VK_NULL_HANDLE);
-
-			vkCmdPushConstants(
-				cmd_,
-				currentPipelineLayout_,
-				toVkShaderStage(stageMask),
-				offset,
-				size,
-				data
-			);
-		}
-
-
+			ShaderStage::AllGraphics
+			//ShaderStage::Vertex |
+			//ShaderStage::Fragment
+		);
+	
 		void Draw(
 			uint32_t vertexCount,
 			uint32_t instanceCount = 1,
@@ -800,7 +788,6 @@ namespace smvk
 				firstVertex,
 				firstInstance);
 		}
-
 
 		void DrawIndexed(
 			uint32_t indexCount,
@@ -852,252 +839,3 @@ namespace smvk
 	};
 
 }
-
-VkImageView smvk::RenderGraph::GetResolvedImageView(
-	LogicalImageViewHandle handle)
-{
-	auto* view = imageViews_.get(handle);
-	assert(view);
-
-	switch (view->type)
-	{
-	case LogicalImageView::Type::ExternalPhysical:
-		return view->externalView;
-
-	case LogicalImageView::Type::Logical:
-		return ResolveImageView(view->key);
-	}
-
-	assert(false);
-	return VK_NULL_HANDLE;
-}
-
-void smvk::CommandBuffer::BindRenderPipeline(
-	ShaderProgram& shaderProgram,
-	VertexFormat vertexFormat,
-	const DepthSettings& depthSettings,
-	const StencilSettings& stencilSettings,
-	const BlendSettings& blendSettings,
-	const MSAASettings& msaaSettings
-)
-{
-	assert(graph_ != nullptr);
-	assert(renderPass_ != nullptr);
-
-	switch (vertexFormat)
-	{
-	case VertexFormat::StaticVertexFormat:
-		smvk::BindStaticVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
-		break;
-	case VertexFormat::Empty:
-		break;
-	default:
-		break;
-	}
-	VertexFormatDescription formatDescription{};
-	formatDescription = GetVertexFormatDescription(vertexFormat);
-
-	std::vector<smvk::Format> colorAttachmentFormats;
-	colorAttachmentFormats.reserve(renderPass_->colorAttachments_.size());
-	for (auto& attachment : renderPass_->colorAttachments_)
-	{
-		colorAttachmentFormats.push_back(
-			graph_->GetResolvedImageViewFormat(
-				attachment.view)
-		);
-	}
-	smvk::Format depthFormat =
-		smvk::Format::Undefined;
-
-	smvk::Format stencilFormat =
-		smvk::Format::Undefined;
-
-	if (renderPass_->hasDepthAttachment_)
-	{
-		const auto format =
-			graph_->GetResolvedImageViewFormat(
-				renderPass_->depthAttachment_.view);
-
-		if (FormatHasDepth(toVkFormat(format)))
-			depthFormat = format;
-
-		if (FormatHasStencil(toVkFormat(format)))
-			stencilFormat = format;
-	}
-
-	auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
-		shaderProgram,
-		formatDescription,
-		colorAttachmentFormats.data(),
-		static_cast<uint32_t>(colorAttachmentFormats.size()),
-		depthFormat,
-		stencilFormat,
-		PrimitiveTopology::TriangleList,
-		smvk::RasterSettings{},
-		depthSettings,
-		stencilSettings,
-		blendSettings,
-		msaaSettings
-	);
-
-	assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");
-
-	if (bundle.pipeline == currentPipeline_) {
-		return;
-	}
-
-	currentPipeline_ = bundle.pipeline;
-	currentPipelineLayout_ = bundle.layout;
-
-	vkCmdBindPipeline(
-		cmd_,
-		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		currentPipeline_);
-
-	vkCmdBindDescriptorSets(
-		cmd_,
-		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		graph_->ctx_.defaultPipeLayout,
-		0,
-		1,
-		graph_->ctx_.defaultDescriptorSets_,
-		0,
-		nullptr);
-}
-void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
-{
-	ResolveImages();
-	ResolveBuffers();
-
-	for (auto& pass : passes_) {
-
-		std::vector<VkRenderingAttachmentInfo> colorInfos;
-		colorInfos.reserve(pass.colorAttachments_.size());
-
-		for (auto& att : pass.colorAttachments_)
-		{
-			VkRenderingAttachmentInfo info{
-				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-			};
-
-			info.imageView =
-				GetResolvedImageView(att.view);
-			info.imageLayout =
-				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-			info.loadOp =
-				toVkAttachmentLoadOp(att.loadOp);
-			info.storeOp =
-				toVkAttachmentStoreOp(att.storeOp);
-			info.clearValue =
-				toVkClearValue(att.clearColor);
-			colorInfos.push_back(info);
-		}
-
-		VkRenderingAttachmentInfo depthInfo{
-		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-		};
-
-		const bool hasDepth =
-			pass.hasDepthAttachment_;
-
-		bool hasStencil = false;
-
-		if (hasDepth)
-		{
-			const auto depthFormat =
-				GetResolvedImageViewFormat(
-					pass.depthAttachment_.view);
-			hasStencil =
-				FormatHasStencil(
-					toVkFormat(depthFormat));
-			depthInfo.imageView =
-				GetResolvedImageView(
-					pass.depthAttachment_.view);
-			depthInfo.imageLayout =
-				hasStencil
-				? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-				: VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-			depthInfo.loadOp =
-				toVkAttachmentLoadOp(
-					pass.depthAttachment_.loadOp);
-			depthInfo.storeOp =
-				toVkAttachmentStoreOp(
-					pass.depthAttachment_.storeOp);
-			depthInfo.clearValue =
-				toVkClearValue(
-					pass.depthAttachment_.clear);
-		}
-
-		VkRenderingInfo renderInfo{
-			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
-			.renderArea = {
-				.offset = {pass.offsetX_, pass.offsetY_},
-				.extent = {pass.extent_.width, pass.extent_.height},
-			},
-			.layerCount = 1,
-			.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
-			.pColorAttachments = colorInfos.data(),
-		};
-		renderInfo.pDepthAttachment =
-			hasDepth ? &depthInfo : nullptr;
-		renderInfo.pStencilAttachment =
-			hasStencil ? &depthInfo : nullptr;
-
-		VkViewport vp{};
-		vp.x = 0.0f;
-		vp.y = 0.0f;
-		vp.width = static_cast<float>(pass.extent_.width);
-		vp.height = static_cast<float>(pass.extent_.height);
-		vp.minDepth = 0.0f;
-		vp.maxDepth = 1.0f;
-
-		VkRect2D scissor{};
-		scissor.offset = { 0, 0 };
-		scissor.extent = { pass.extent_.width, pass.extent_.height };
-
-		vkCmdSetViewport(fb.commandBuffer, 0, 1, &vp);
-		vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
-
-		vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
-
-		CommandBuffer cmd{
-			fb.commandBuffer,
-			*this,
-			pass
-		};
-
-		if (pass.recordingFunction_) {
-			pass.recordingFunction_(cmd);
-		}
-
-		vkCmdEndRendering(fb.commandBuffer);
-	}
-};
-void smvk::RenderGraph::ResolveImages() {
-	images_.forEach(
-		[this](smvk::LogicalImage& logicalImage) {
-		if (logicalImage.resolvedImageHandle.empty()) {
-			if (logicalImage.type == smvk::ResourceType::External) { assert(false && "external image unresolved. shouldnt be possible"); };
-			//CreateTransientImaeg(key, sync_req);
-			logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
-		};
-	}
-	);
-};
-void smvk::RenderGraph::ResolveBuffers()
-{
-	//	buffers.forEach(
-	//		[this](LogicalBuffer& logicalBuffer) {
-	//		if (logicalBuffer.resolvedBufferHandle.empty()) {
-	//			const auto& key = logicalBuffer.key;
-	//			int ringMultiplier = key.ring ? 4 : 1;
-	//			logicalBuffer.resolvedBufferHandle = ctx_.CreateBuffer(
-	//				key.elementCount * key.elementSize * ringMultiplier,
-	//				smvk::BufferType_Storage,
-	//				"resolved buffer"
-	//			).release();
-	//		}
-	//	}
-	//	);
-}
-
