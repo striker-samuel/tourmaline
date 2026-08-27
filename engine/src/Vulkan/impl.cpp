@@ -3452,6 +3452,16 @@ void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex)
 
 	needToUpdateDescriptors = false;
 }
+[[nodiscard]] uint32_t smvk::VulkanResourceManager::GetBindlessIndex(BindlessImageHandle handle) const
+{
+	assert(!handle.empty());
+	return handle.index();
+	//const BindlessImage* bindless =
+	//	bindlessImages_.get(handle);
+	//assert(bindless != nullptr);
+	//assert(bindless->descriptorIndex != UINT32_MAX);
+	//return bindless->descriptorIndex;
+}
 // 
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BindlessImageHandle handle)
 {

@@ -253,6 +253,7 @@ namespace smvk {
 
 
 		void UpdateBindings(uint32_t frameIndex = 0);
+		uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
 
 		// VulkanImpl
 		VulkanCore& core_;

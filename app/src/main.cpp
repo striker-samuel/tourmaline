@@ -20,13 +20,12 @@ std::vector<std::string> gltf_meshes_paths = {
 };
 
 //struct ShadowmapCascadeAtlas {};
-
 struct ShadowMap
 {
 	smvk::Holder<smvk::ImageHandle> image;
-	smvk::Holder<smvk::ImageViewHandle> depthAttachmentView;
-	smvk::Holder<smvk::ImageViewHandle> sampledDepthView;
-	smvk::BindlessImageHandle sampled;
+	smvk::Holder<smvk::ImageViewHandle> attachmentView;
+	smvk::Holder<smvk::ImageViewHandle> sampledView;
+	smvk::Holder<smvk::BindlessImageHandle> bindless;
 };
 
 // Data definitions //
@@ -77,10 +76,11 @@ struct AppResources {
 };
 
 struct ViewportResources {
-	smvk::Holder<smvk::TextureHandle> shadowmaps[8];
-	smvk::LogicalImageViewHandle depthView;
+	ShadowMap shadowmaps[8];
+
+	smvk::LogicalImageViewHandle shadowmapLogicalViews[8];
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
-	smvk::LogicalImageViewHandle shadowmapViews[8];
+	smvk::LogicalImageViewHandle depthView;
 };
 
 class TestApp : public smvk::VulkanApp {
@@ -202,6 +202,8 @@ private:
 		// if mipped maybe a helper like LegitEngine does is a good idea
 
 		// shadowmap
+		auto& shadow = m_viewportResources.shadowmaps[0];
+
 		smvk::Format shadowMapFormat = smvk::Format::D32_Float_S8_UInt;
 		smvk::ImageCreateInfo shadowMapCI{};
 		shadowMapCI.format = shadowMapFormat;
@@ -211,14 +213,108 @@ private:
 		shadowMapCI.usage = smvk::ImageUsage::DepthStencilAttachment | smvk::ImageUsage::Sampled;
 		shadowMapCI.name = "shadowMap";
 
-		m_viewportResources.shadowmaps[0] = m_context->CreateImage(shadowMapCI, nullptr);
-		auto shadowImage =
-			m_rendergraph->AddExternalImage(
-				m_viewportResources.shadowmaps[0],
-				"shadow image"
+		// -------------------------------------------------------------------------
+		// Image
+		// -------------------------------------------------------------------------
+
+		shadow.image =
+			m_context->CreateImage(
+				shadowMapCI,
+				nullptr
 			);
 
-		auto shadowView =
+
+		// -------------------------------------------------------------------------
+		// Depth attachment view
+		// -------------------------------------------------------------------------
+
+		smvk::ImageViewCreateInfo attachmentViewCI{};
+
+		attachmentViewCI.viewType =
+			smvk::ImageViewType::View2D;
+
+		attachmentViewCI.format =
+			smvk::Format::Undefined;
+
+		attachmentViewCI.subresourceRange = {
+			.aspect =
+				smvk::ImageAspect::Depth |
+				smvk::ImageAspect::Stencil,
+
+			.baseMipLevel = 0,
+			.mipLevelCount = 1,
+
+			.baseArrayLayer = 0,
+			.arrayLayerCount = 1
+		};
+
+		attachmentViewCI.name =
+			"shadow attachment";
+
+		shadow.attachmentView =
+			m_context->CreateImageView(
+				shadow.image,
+				attachmentViewCI
+			);
+
+
+		// -------------------------------------------------------------------------
+		// Sampled view
+		//
+		// Important: depth-only, even though the actual format is D32_S8.
+		// -------------------------------------------------------------------------
+
+		smvk::ImageViewCreateInfo sampledViewCI{};
+
+		sampledViewCI.viewType =
+			smvk::ImageViewType::View2D;
+
+		sampledViewCI.format =
+			smvk::Format::Undefined;
+
+		sampledViewCI.subresourceRange = {
+			.aspect =
+				smvk::ImageAspect::Depth,
+
+			.baseMipLevel = 0,
+			.mipLevelCount = 1,
+
+			.baseArrayLayer = 0,
+			.arrayLayerCount = 1
+		};
+
+		sampledViewCI.name =
+			"shadow sampled";
+
+		shadow.sampledView =
+			m_context->CreateImageView(
+				shadow.image,
+				sampledViewCI
+			);
+
+
+		// -------------------------------------------------------------------------
+		// Bindless
+		// -------------------------------------------------------------------------
+
+		shadow.bindless =
+			m_context->CreateBindlessImage(
+				shadow.sampledView,
+				VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL
+			);
+
+
+		// -------------------------------------------------------------------------
+		// Render graph
+		// -------------------------------------------------------------------------
+
+		auto shadowImage =
+			m_rendergraph->AddExternalImage(
+				shadow.image,
+				"shadow image"
+			);;
+
+		m_viewportResources.shadowmapLogicalViews[0] =
 			m_rendergraph->AddImageView(
 				shadowImage,
 				smvk::ImageViewType::View2D,
@@ -361,7 +457,10 @@ private:
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
 		light.intensity = 1.0f;
-		light.shadow_map_index = m_viewportResources.shadowmaps[0].index();
+		light.shadow_map_index =
+			m_context->GetBindlessIndex(
+				m_viewportResources.shadowmaps[0].bindless
+			);
 		// Replace with your actual flag enum.
 		//light.flags = smvk::LightFlagBit_Directional;
 
@@ -486,7 +585,7 @@ private:
 			.SetOffset(0, 0)
 			.SetExtent({ 2048, 2048 })
 			.SetDepth(
-				m_viewportResources.shadowmapViews[0],
+				m_viewportResources.shadowmapLogicalViews[0],
 				smvk::AttachmentLoadOp::Clear,
 				smvk::AttachmentStoreOp::Store,
 				smvk::ClearDepthStencil(1.0f, 0)
@@ -563,7 +662,7 @@ private:
 			.SetOffset(0, 0)
 			.SetInputImages(
 				{
-					m_viewportResources.shadowmapViews[0]
+					m_viewportResources.shadowmapLogicalViews[0]
 					// we sample trough the bidnless list but we decalre intention here for sync.
 					// may be bad
 				}

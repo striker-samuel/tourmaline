@@ -416,6 +416,16 @@ namespace smvk {
 			);
 	}
 
+	constexpr ImageAspect operator|(
+		ImageAspect a,
+		ImageAspect b)
+	{
+		return static_cast<ImageAspect>(
+			static_cast<uint32_t>(a) |
+			static_cast<uint32_t>(b)
+			);
+	}
+
 	static constexpr uint32_t RemainingSubresources =
 		UINT32_MAX;
 
