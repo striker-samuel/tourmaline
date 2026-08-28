@@ -11,6 +11,8 @@
 #include <string_view>
 #include <unordered_map>
 
+inline const char* vkResultToString(VkResult result);
+
 
 #define VK_ASSERT_RETURN(func)                                     \
   {                                                                \
@@ -37,10 +39,69 @@
     } while (0)
 
 
+//namespace vk {
 namespace smvk {
+	//using namespace smvk;
 
-	/*constexpr*/ bool FormatHasStencil(VkFormat format);
-	/*constexpr*/ bool FormatHasDepth(VkFormat format);
+	struct Image
+	{
+		VkImage vkImage = VK_NULL_HANDLE;
+		VmaAllocation allocation = VK_NULL_HANDLE;
+
+		ImageType type = ImageType::Image2D;
+		Extent3D extent{};
+		Format format = Format::Undefined;
+		ImageUsage usage = ImageUsage::None;
+		SampleCount samples = SampleCount::Count1;
+		uint32_t mipLevels = 1;
+		uint32_t arrayLayers = 1;
+		uint32_t liveViewCount = 0;
+		ResourceOwnership ownership = ResourceOwnership::Owned;
+	};
+
+	struct ImageView
+	{
+		VkImageView vkView = VK_NULL_HANDLE;
+
+		ImageHandle image{};
+		ImageViewType viewType = ImageViewType::View2D;
+		Format format = Format::Undefined;
+		ImageSubresourceRange subresourceRange{};
+	};
+
+	struct Buffer
+	{
+		VkBuffer vkBuffer = VK_NULL_HANDLE;
+		VmaAllocation vma_alloc = VK_NULL_HANDLE;
+		VkBufferUsageFlags usage = 0;
+		VkMemoryPropertyFlags memoryFlags = 0;
+		VkDeviceAddress deviceAddress = 0;
+
+		bool isMappable() const noexcept
+		{
+			return
+				(memoryFlags &
+					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+		}
+	};
+
+	struct Texture
+	{
+		ImageHandle image{};
+		ImageViewHandle view{};
+		BindlessImageHandle bindless{};
+	};
+
+	struct BindlessImage
+	{
+		ImageViewHandle view{};
+		uint32_t descriptorIndex = UINT32_MAX;
+		VkImageLayout imageLayout =
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	};
+
+	///*constexpr*/ bool FormatHasStencil(VkFormat format);
+	///*constexpr*/ bool FormatHasDepth(VkFormat format);
 
 	// ============================================================================
 	// Type translators: convert RHI types from smvk.h to Vk types for pipeline state
@@ -220,7 +281,7 @@ namespace smvk {
 		CommandSubmitHandle handle_;
 	};
 
-	struct VulkanResourceManager {
+	struct VulkanResourceManager final {
 
 		VulkanResourceManager(VulkanCore& core);
 		~VulkanResourceManager();
@@ -267,16 +328,16 @@ namespace smvk {
 		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT];
 
 		// Resources
-		Pool<Image, Image> images_;
-		Pool<Texture, Texture> textures_;
-		Pool<Buffer, Buffer> buffers_;
-		Pool<ImageView, ImageView> imageViews_;
 
-		// Descriptors
-		Pool<Sampler, VkSampler> samplers_;
-		Pool<BindlessImage, BindlessImage> bindlessImages_;
-		Pool<DescriptorPool, VkDescriptorPool> descriptorPools_;
-		Pool<ShaderModule, VkShaderModule> shaderModules_; // this should be removed when moving to vk1.4
+		Pool<ImageTag, Image> images_;
+		Pool<TextureTag, Texture> textures_;
+		Pool<BufferTag, Buffer> buffers_;
+		Pool<ImageViewTag, ImageView> imageViews_;
+
+		Pool<SamplerTag, VkSampler> samplers_;
+		Pool<BindlessImageTag, BindlessImage> bindlessImages_;
+		Pool<DescriptorPoolTag, VkDescriptorPool> descriptorPools_;
+		Pool<ShaderModuleTag, VkShaderModule> shaderModules_; // will be removed in 1.4
 
 		//StaticVertexFmt
 		BufferHandle m_staticVertexPosBuffer{};

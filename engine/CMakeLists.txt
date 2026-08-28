@@ -1,5 +1,11 @@
 project(Engine)
 
+# --- Rendering backend ------------------------------------------------------
+# Currently only the Vulkan backend is implemented. Add future backends here
+# (e.g. D3D12, Metal) and switch the compile definition / sources accordingly.
+set(ENGINE_BACKEND "Vulkan" CACHE STRING "Rendering backend: Vulkan")
+set_property(CACHE ENGINE_BACKEND PROPERTY STRINGS "Vulkan")
+
 file(GLOB_RECURSE ENGINE_SRC CONFIGURE_DEPENDS
     src/*.cpp
     include/Engine/*.h
@@ -34,6 +40,10 @@ target_compile_definitions(engine
         TINYGLTF_NO_EXTERNAL_IMAGE
         GLFW_INCLUDE_NONE
 )
+
+if(ENGINE_BACKEND STREQUAL "Vulkan")
+    target_compile_definitions(engine PUBLIC ENGINE_BACKEND_VULKAN)
+endif()
 
 target_link_libraries(engine
     PUBLIC

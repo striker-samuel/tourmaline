@@ -311,7 +311,7 @@ private:
 		auto shadowImage =
 			m_rendergraph->AddExternalImage(
 				shadow.image,
-				"shadow image"
+				"shadowMap1"
 			);;
 
 		m_viewportResources.shadowmapLogicalViews[0] =
@@ -326,35 +326,35 @@ private:
 					.baseArrayLayer = 0,
 					.arrayLayerCount = 1,
 				},
-				"shadow depth"
+				"shadowMapView1"
 				);
 
 		// singla sync req would be better
 		// Manual Barrier transition
 		// this whole shadowmap thing is so badly done, api surface NEEDS more polish
-		//auto han = m_context->m_submitter->acquire();
-		//auto cmd = m_context->m_submitter->GetCommandBuffer(han);
-		//ImageBarrier(
-		//	cmd.cmd,
-		//	smimage->vk_image,
-		//	VK_IMAGE_LAYOUT_UNDEFINED,
-		//	VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-		//	{
-		//		.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-		//		.baseMipLevel = 0,
-		//		.levelCount = VK_REMAINING_MIP_LEVELS,
-		//		.baseArrayLayer = 0,
-		//		.layerCount = VK_REMAINING_ARRAY_LAYERS
-		//	},
-		//	VK_PIPELINE_STAGE_2_NONE,
-		//	VK_ACCESS_2_NONE,
-		//	VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-		//	VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-		//	VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-		//	VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
-		//);
-		//m_context->m_submitter->submit(han);
-		//m_context->m_submitter->wait(han);
+		auto han = m_context->m_submitter->acquire();
+		auto cmd = m_context->m_submitter->GetCommandBuffer(han);
+	/*	ImageBarrier(
+			cmd.cmd,
+			smimage->vk_image,
+			VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+			{
+				.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+				.baseMipLevel = 0,
+				.levelCount = VK_REMAINING_MIP_LEVELS,
+				.baseArrayLayer = 0,
+				.layerCount = VK_REMAINING_ARRAY_LAYERS
+			},
+			VK_PIPELINE_STAGE_2_NONE,
+			VK_ACCESS_2_NONE,
+			VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+			VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+		);*/
+		m_context->m_submitter->submit(han);
+		m_context->m_submitter->wait(han);
 		//
 
 		return true;

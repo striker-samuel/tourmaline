@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <iostream>
 
+#include <GLFW/glfw3.h>
 #include <Engine/Vulkan/impl.h>
 
 #ifdef NDEBUG
@@ -1182,7 +1183,7 @@ static constexpr                smvk::Format fromVkFormat(VkFormat format) // do
 	}
 }
 
-/*constexpr*/ bool              smvk::FormatHasStencil(VkFormat format)
+/*constexpr*/ bool              /*smvk::*/FormatHasStencil(VkFormat format)
 {
 	switch (format)
 	{
@@ -1196,7 +1197,7 @@ static constexpr                smvk::Format fromVkFormat(VkFormat format) // do
 		return false;
 	}
 }
-/*constexpr*/ bool              smvk::FormatHasDepth(VkFormat format)
+/*constexpr*/ bool              /*smvk::*/FormatHasDepth(VkFormat format)
 {
 	switch (format)
 	{
@@ -1836,16 +1837,16 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 
 	auto buf = buffers_.get(buffer);
 	assert(buffer.valid());
-	assert(buf->vk_buffer != VK_NULL_HANDLE);
+	assert(buf->vkBuffer != VK_NULL_HANDLE);
 
 	auto han = m_submitter->acquire();
 	auto cmd = m_submitter->GetCommandBuffer(han).cmd;
-	if (buf->is_mappable()) {
+	if (buf->isMappable()) {
 		VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, buf->vma_alloc, dest_offset, dataSize));
 		// this would be better served with a sync request pushed to a list.
 		BufferBarrier(
 			cmd,
-			buf->vk_buffer,
+			buf->vkBuffer,
 			dest_offset,
 			dataSize,
 			VK_PIPELINE_STAGE_2_HOST_BIT,
@@ -1861,7 +1862,7 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 	// this invalidates buf*, so lets get it again.
 	buf = buffers_.get(buffer);
 	auto stagingBuf = buffers_.get(stageHan);
-	assert(stagingBuf->vk_buffer != VK_NULL_HANDLE);
+	assert(stagingBuf->vkBuffer != VK_NULL_HANDLE);
 
 	VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, stagingBuf->vma_alloc, 0, dataSize));
 
@@ -1871,11 +1872,11 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 		.dstOffset = dest_offset,
 		.size = dataSize
 	};
-	vkCmdCopyBuffer(cmd, stagingBuf->vk_buffer, buf->vk_buffer, 1, &copyRegion);
+	vkCmdCopyBuffer(cmd, stagingBuf->vkBuffer, buf->vkBuffer, 1, &copyRegion);
 
 	BufferBarrier(
 		cmd,
-		buf->vk_buffer,
+		buf->vkBuffer,
 		dest_offset,
 		dataSize,
 		VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -2120,7 +2121,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 			nullptr,
 
 		.srcBuffer =
-			stagingBuffer->vk_buffer,
+			stagingBuffer->vkBuffer,
 
 		.dstImage =
 			image.vkImage,
@@ -3251,7 +3252,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		m_allocator,
 		&ci,
 		&aci,
-		&desc.vk_buffer,
+		&desc.vkBuffer,
 		&desc.vma_alloc,
 		nullptr
 		//&desc.allocInfo
@@ -3260,12 +3261,12 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	const VkBufferDeviceAddressInfo ai = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-		.buffer = desc.vk_buffer
+		.buffer = desc.vkBuffer
 	};
 	desc.deviceAddress = (bufferType == BufferType_Uniform || bufferType == BufferType_Storage ||
 		bufferType == BufferType_Indirect)
 		? vkGetBufferDeviceAddress(device_, &ai) : 0;
-	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &desc.memory_flags);
+	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &desc.memoryFlags);
 	desc.usage = bufferTypeToUsageFlags[static_cast<size_t>(bufferType)];
 #if defined(_DEBUG)
 	if (debugName) {
@@ -3273,7 +3274,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
 		};
 		nameInfo.objectType = VK_OBJECT_TYPE_BUFFER;
-		nameInfo.objectHandle = reinterpret_cast<uint64_t>(desc.vk_buffer);
+		nameInfo.objectHandle = reinterpret_cast<uint64_t>(desc.vkBuffer);
 		nameInfo.pObjectName = debugName;
 		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
 	}
@@ -3510,7 +3511,7 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BufferHandle handle) 
 	smvk::Buffer db = *ctx->buffers_.get(handle);
 	//if mapped, unmap first as vma requires.
 	//if (db.mapped != nullptr) { ctx->UnmapBuffer(handle); }
-	vmaDestroyBuffer(ctx->m_allocator, db.vk_buffer, db.vma_alloc);
+	vmaDestroyBuffer(ctx->m_allocator, db.vkBuffer, db.vma_alloc);
 	ctx->buffers_.destroy(handle);
 }
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ShaderModuleHandle handle) {

@@ -4,7 +4,6 @@
 #include <vector>
 
 namespace smvk {
-	class VulkanResourceManager;
 
 	// Lifted from LightweightVk.
 	// Non-ref counted handles; based on:
@@ -57,7 +56,8 @@ namespace smvk {
 	class Holder final {
 	public:
 		Holder() = default;
-		Holder(VulkanResourceManager* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
+		template<typename ResourceManager>
+		Holder(ResourceManager* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
 		~Holder() {
 			destroy(ctx_, handle_);
 		}
@@ -111,7 +111,7 @@ namespace smvk {
 		}
 
 	private:
-		VulkanResourceManager* ctx_ = nullptr;
+		ResourceManager* ctx_ = nullptr;
 		HandleType handle_ = {};
 	};
 

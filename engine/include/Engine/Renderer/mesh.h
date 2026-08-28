@@ -5,7 +5,8 @@
 #include <optional>
 
 #include <Engine/Shared/common.h> //glm
-#include <Engine/smvk.h>
+//#include <Engine/smvk.h>
+#include <Engine/Vulkan/impl.h> // this should not be here
 
 namespace smvk {
 
