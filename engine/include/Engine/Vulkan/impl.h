@@ -281,7 +281,7 @@ namespace smvk {
 		CommandSubmitHandle handle_;
 	};
 
-	struct VulkanResourceManager final {
+	struct VulkanResourceManager{
 
 		VulkanResourceManager(VulkanCore& core);
 		~VulkanResourceManager();
@@ -305,8 +305,8 @@ namespace smvk {
 
 		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = nullptr);
 
-		void* MapBuffer(smvk::Handle<smvk::Buffer> handle);
-		void UnmapBuffer(smvk::Handle<smvk::Buffer> handle);
+		void* MapBuffer(BufferHandle handle);
+		void UnmapBuffer(BufferHandle handle);
 
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		void UploadDataToImage2D(const Image& image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset);
@@ -654,8 +654,6 @@ namespace smvk {
 
 	std::vector<VkVertexInputBindingDescription> getVkVertexInputBindingDescriptions(const VertexFormatDescription& format);
 	std::vector<VkVertexInputAttributeDescription> getVkVertexAttributeDescriptions(const VertexFormatDescription& format);
-
-
 
 } // namespace smvk
 

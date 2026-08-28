@@ -1,10 +1,19 @@
 project(Engine)
 
 # --- Rendering backend ------------------------------------------------------
-# Currently only the Vulkan backend is implemented. Add future backends here
-# (e.g. D3D12, Metal) and switch the compile definition / sources accordingly.
-set(ENGINE_BACKEND "Vulkan" CACHE STRING "Rendering backend: Vulkan")
-set_property(CACHE ENGINE_BACKEND PROPERTY STRINGS "Vulkan")
+
+set(ENGINE_BACKEND "Vulkan" CACHE STRING "Rendering backend")
+set_property(CACHE ENGINE_BACKEND PROPERTY STRINGS
+    "Vulkan"
+)
+
+if(ENGINE_BACKEND STREQUAL "Vulkan")
+    target_compile_definitions(engine PUBLIC
+        SMVK_BACKEND_VULKAN=1
+    )
+else()
+    message(FATAL_ERROR "Unsupported rendering backend: ${ENGINE_BACKEND}")
+endif()
 
 file(GLOB_RECURSE ENGINE_SRC CONFIGURE_DEPENDS
     src/*.cpp

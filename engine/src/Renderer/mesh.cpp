@@ -291,8 +291,8 @@ namespace smvk {
 		assert(ctx.m_staticIndexBuffer.valid());
 #endif
 		VkBuffer vertexBuffers[] = {
-			ctx.buffers_.get(ctx.m_staticVertexPosBuffer)->vk_buffer,
-			ctx.buffers_.get(ctx.m_staticVertexShadingBuffer)->vk_buffer
+			ctx.buffers_.get(ctx.m_staticVertexPosBuffer)->vkBuffer,
+			ctx.buffers_.get(ctx.m_staticVertexShadingBuffer)->vkBuffer
 		};
 
 		VkDeviceSize offsets[] = {
@@ -310,7 +310,7 @@ namespace smvk {
 
 		vkCmdBindIndexBuffer(
 			cmd,
-			ctx.buffers_.get(ctx.m_staticIndexBuffer)->vk_buffer,
+			ctx.buffers_.get(ctx.m_staticIndexBuffer)->vkBuffer,
 			0,
 			VK_INDEX_TYPE_UINT32
 		);

@@ -3,7 +3,17 @@
 #include <stdint.h>
 #include <vector>
 
+#define SMVK_BACKEND_VULKAN
+
 namespace smvk {
+
+#if defined(SMVK_BACKEND_VULKAN)
+	struct VulkanResourceManager;
+	using IResourceManager = VulkanResourceManager;
+#else
+#error "No rendering backend selected"
+#endif
+
 
 	// Lifted from LightweightVk.
 	// Non-ref counted handles; based on:
@@ -56,8 +66,7 @@ namespace smvk {
 	class Holder final {
 	public:
 		Holder() = default;
-		template<typename ResourceManager>
-		Holder(ResourceManager* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
+		Holder(IResourceManager* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
 		~Holder() {
 			destroy(ctx_, handle_);
 		}
@@ -111,7 +120,7 @@ namespace smvk {
 		}
 
 	private:
-		ResourceManager* ctx_ = nullptr;
+		IResourceManager* ctx_ = nullptr;
 		HandleType handle_ = {};
 	};
 

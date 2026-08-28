@@ -583,7 +583,8 @@ namespace smvk {
 	// Shader program
 	// ============================================================================
 
-	using ShaderModuleHandle = Handle<struct ShaderModule>; // will be removed when updating to vk 1.4
+	struct ShaderModuleTag;
+	using ShaderModuleHandle = Handle<ShaderModuleTag>;
 	struct Shader
 	{
 		ShaderModuleHandle module;
@@ -1074,7 +1075,6 @@ namespace smvk {
 	struct SamplerTag;
 	struct BindlessImageTag;
 	struct DescriptorPoolTag;
-	struct ShaderModuleTag;
 
 	using ImageHandle = Handle<ImageTag>;
 	using ImageViewHandle = Handle<ImageViewTag>;
@@ -1083,6 +1083,5 @@ namespace smvk {
 	using SamplerHandle = Handle<SamplerTag>;
 	using BindlessImageHandle = Handle<BindlessImageTag>;
 	using DescriptorPoolHandle = Handle<DescriptorPoolTag>;
-	using ShaderModuleHandle = Handle<ShaderModuleTag>;
 
 } // namespace smvk

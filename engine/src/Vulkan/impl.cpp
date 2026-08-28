@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <iostream>
 
+#include "volk.h"
 #include <GLFW/glfw3.h>
 #include <Engine/Vulkan/impl.h>
 
@@ -3330,7 +3331,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 #endif
 	return { this, descriptorPools_.create(std::move(dpool)) };
 }
-[[nodiscard]] void* smvk::VulkanResourceManager::MapBuffer(smvk::Handle<smvk::Buffer> handle) {
+[[nodiscard]] void* smvk::VulkanResourceManager::MapBuffer(BufferHandle  handle) {
 	void* mapped = nullptr;
 	assert(!handle.empty());
 	auto buf = this->buffers_.get(handle);
@@ -3338,7 +3339,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	VK_CHECK(vmaMapMemory(m_allocator, buf->vma_alloc, &mapped));
 	return mapped;
 }
-void smvk::VulkanResourceManager::UnmapBuffer(smvk::Handle<smvk::Buffer> handle) {
+void smvk::VulkanResourceManager::UnmapBuffer(BufferHandle handle) {
 	assert(!handle.empty());
 	auto buf = this->buffers_.get(handle);
 	assert(buf != nullptr);
