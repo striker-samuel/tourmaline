@@ -445,6 +445,7 @@ private:
 		glm::vec3 lightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.5f));
 		auto cameraView = m_camera.getViewMatrix();
 		auto cameraProj = m_camera.getProjMatrix();
+		cameraProj[1][1] *= -1;
 
 		glm::mat4 lightViewOut;
 		glm::mat4 lightProjOut;
@@ -475,7 +476,7 @@ private:
 			lightFar,
 			lightViewOut,
 			lightProjOut,  // outProj (function will overwrite, but we recompute below)
-			1.f,       // zPadding
+			10.f,       // zPadding
 			true,       // enableTexelSnap
 			2048        // shadowMapRes
 		);
