@@ -4,7 +4,10 @@ project(VulkanToy LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Vulkan
+# Vulkan#
+#--- Rendering backend ------------------------------------------------------
+
+set(ENGINE_BACKEND "Vulkan" CACHE STRING "Rendering backend")
 find_package(Vulkan REQUIRED)
 
 include(FetchContent)
@@ -82,4 +85,15 @@ add_subdirectory(engine)
 add_subdirectory(app)
 add_subdirectory(samples/01_triangle)
 
+set_property(CACHE ENGINE_BACKEND PROPERTY STRINGS
+    "Vulkan"
+)
+
+if(ENGINE_BACKEND STREQUAL "Vulkan")
+    target_compile_definitions(engine PUBLIC
+        SMVK_BACKEND_VULKAN=1
+    )
+else()
+    message(FATAL_ERROR "Unsupported rendering backend: ${ENGINE_BACKEND}")
+endif()
 
