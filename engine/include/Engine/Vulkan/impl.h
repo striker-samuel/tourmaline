@@ -43,6 +43,20 @@ inline const char* vkResultToString(VkResult result);
 namespace smvk {
 	//using namespace smvk;
 
+	struct StaticMeshAllocation {
+		VmaVirtualAllocation vertexAllocation = VK_NULL_HANDLE;
+		VmaVirtualAllocation indexAllocation = VK_NULL_HANDLE;
+	};
+
+	inline struct StaticVertexFmtHeap {
+		BufferHandle m_staticVertexPosBuffer{};
+		BufferHandle m_staticVertexShadingBuffer{};
+		BufferHandle m_staticIndexBuffer{};
+		VmaVirtualBlock m_staticVertexBlock = VK_NULL_HANDLE;
+		VmaVirtualBlock m_staticIndexBlock = VK_NULL_HANDLE;
+		std::unordered_map<uint32_t, StaticMeshAllocation> m_allocations{};
+	} staticVertexFmtHeap;
+
 	struct Image
 	{
 		VkImage vkImage = VK_NULL_HANDLE;
@@ -234,6 +248,33 @@ namespace smvk {
 		uint32_t gen_ = 0; // gen 0 means no slot. alas empty. 
 		bool empty() const { return gen_ == 0; };
 	};
+	struct ImageSyncRequest {
+		VkImage image = VK_NULL_HANDLE;
+		VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkImageLayout newLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkImageSubresourceRange subresourceRange{
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = VK_REMAINING_MIP_LEVELS,
+			.baseArrayLayer = 0,
+			.layerCount = VK_REMAINING_ARRAY_LAYERS,
+		};
+		VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
+		VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
+		VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+		VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
+		uint32_t srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		uint32_t dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	};
+	struct BufferSyncRequest {
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceSize offset = 0;
+		VkDeviceSize size = VK_WHOLE_SIZE;
+		VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
+		VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
+		VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+		VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
+	};
 	struct Submitter {
 		struct SemaphoreState {
 			VkSemaphore semaphore_ = VK_NULL_HANDLE;
@@ -339,12 +380,6 @@ namespace smvk {
 		Pool<DescriptorPoolTag, VkDescriptorPool> descriptorPools_;
 		Pool<ShaderModuleTag, VkShaderModule> shaderModules_; // will be removed in 1.4
 
-		//StaticVertexFmt
-		BufferHandle m_staticVertexPosBuffer{};
-		BufferHandle m_staticVertexShadingBuffer{};
-		BufferHandle m_staticIndexBuffer{};
-		VmaVirtualBlock m_staticVertexBlock = VK_NULL_HANDLE;
-		VmaVirtualBlock m_staticIndexBlock = VK_NULL_HANDLE;
 
 		// DEFAULTS
 		VkSampler m_defaultSampler{};

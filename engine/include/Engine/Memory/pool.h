@@ -3,8 +3,6 @@
 #include <stdint.h>
 #include <vector>
 
-#define SMVK_BACKEND_VULKAN
-
 namespace smvk {
 
 #if defined(SMVK_BACKEND_VULKAN)

@@ -332,6 +332,9 @@ private:
 		// singla sync req would be better
 		// Manual Barrier transition
 		// this whole shadowmap thing is so badly done, api surface NEEDS more polish
+
+
+
 		auto han = m_context->m_submitter->acquire();
 		auto cmd = m_context->m_submitter->GetCommandBuffer(han);
 	/*	ImageBarrier(

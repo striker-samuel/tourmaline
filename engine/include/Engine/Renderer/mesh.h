@@ -5,8 +5,7 @@
 #include <optional>
 
 #include <Engine/Shared/common.h> //glm
-//#include <Engine/smvk.h>
-#include <Engine/Vulkan/impl.h> // this should not be here
+#include <Engine/smvk.h>
 
 namespace smvk {
 
@@ -132,10 +131,6 @@ namespace smvk {
 
 	struct StaticMesh {
 		Geometry geometry;
-		struct Allocation {
-			VmaVirtualAllocation vertexAllocation = VK_NULL_HANDLE;
-			VmaVirtualAllocation indexAllocation = VK_NULL_HANDLE;
-		} allocation;
 	};
 
 	// -----------------------------------------------------------------------------
@@ -151,7 +146,6 @@ namespace smvk {
 	};
 
 	void AllocateStaticVertexFmt(smvk::VulkanResourceManager& ctx);
-	void BindStaticVertexFmtBuffers(VulkanResourceManager& ctx, VkCommandBuffer cmd);
 
 	enum struct VertexFormat {
 		Empty

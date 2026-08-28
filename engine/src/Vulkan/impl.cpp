@@ -1727,17 +1727,17 @@ smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore& core) :core_(core
 smvk::VulkanResourceManager::~VulkanResourceManager() {
 	VK_CHECK(vkDeviceWaitIdle(device_));
 
-	// dont like this approach
-	destroy(this, m_staticVertexPosBuffer);
-	destroy(this, m_staticVertexShadingBuffer);
-	destroy(this, m_staticIndexBuffer);
-	if (m_staticVertexBlock) {
-		vmaDestroyVirtualBlock(m_staticVertexBlock);
-		m_staticVertexBlock = VK_NULL_HANDLE;
+	// StaticVertexFmt
+	destroy(this, staticVertexFmtHeap.m_staticVertexPosBuffer);
+	destroy(this, staticVertexFmtHeap.m_staticVertexShadingBuffer);
+	destroy(this, staticVertexFmtHeap.m_staticIndexBuffer);
+	if (staticVertexFmtHeap.m_staticVertexBlock) {
+		vmaDestroyVirtualBlock(staticVertexFmtHeap.m_staticVertexBlock);
+		staticVertexFmtHeap.m_staticVertexBlock = VK_NULL_HANDLE;
 	}
-	if (m_staticIndexBlock) {
-		vmaDestroyVirtualBlock(m_staticIndexBlock);
-		m_staticIndexBlock = VK_NULL_HANDLE;
+	if (staticVertexFmtHeap.m_staticIndexBlock) {
+		vmaDestroyVirtualBlock(staticVertexFmtHeap.m_staticIndexBlock);
+		staticVertexFmtHeap.m_staticIndexBlock = VK_NULL_HANDLE;
 	}
 	//
 
@@ -5225,7 +5225,7 @@ void smvk::CommandBuffer::BindRenderPipeline(
 	switch (vertexFormat)
 	{
 	case VertexFormat::StaticVertexFormat:
-		smvk::BindStaticVertexFmtBuffers(this->graph_->ctx_, this->cmd_);
+		BindStaticVertexFmt();
 		break;
 	case VertexFormat::Empty:
 		break;
@@ -5302,6 +5302,40 @@ void smvk::CommandBuffer::BindRenderPipeline(
 		0,
 		nullptr);
 }
+
+void smvk::CommandBuffer::BindStaticVertexFmt()
+{
+#ifndef N_DEBUG
+	assert(staticVertexFmtHeap.m_staticVertexPosBuffer.valid());
+	assert(staticVertexFmtHeap.m_staticVertexShadingBuffer.valid());
+	assert(staticVertexFmtHeap.m_staticIndexBuffer.valid());
+#endif
+	VkBuffer vertexBuffers[] = {
+		graph_->ctx_.buffers_.get(staticVertexFmtHeap.m_staticVertexPosBuffer)->vkBuffer,
+		graph_->ctx_.buffers_.get(staticVertexFmtHeap.m_staticVertexShadingBuffer)->vkBuffer
+	};
+
+	VkDeviceSize offsets[] = {
+		0,
+		0
+	};
+
+	vkCmdBindVertexBuffers(
+		cmd_,
+		0,
+		2,
+		vertexBuffers,
+		offsets
+	);
+
+	vkCmdBindIndexBuffer(
+		cmd_,
+		graph_->ctx_.buffers_.get(staticVertexFmtHeap.m_staticIndexBuffer)->vkBuffer,
+		0,
+		VK_INDEX_TYPE_UINT32
+	);
+}
+
 void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const void* data, ShaderStage stageMask)
 {
 	assert(currentPipelineLayout_ != VK_NULL_HANDLE);

@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include <Engine/Vulkan/impl.h>
+#include <Engine/smvk.h>
 #include <Engine/Renderer/mesh.h>
 
 namespace smvk
@@ -14,6 +14,7 @@ namespace smvk
 	// Need to add these for convenience
 	//struct Mipped{};
 	//struct UnMipped{};
+	//struct SyncRequest;
 
 	struct RenderGraph;
 	struct CommandBuffer;
@@ -708,16 +709,12 @@ namespace smvk
 
 		Pool<LogicalImage, LogicalImage>
 			images_;
-
 		Pool<LogicalImageView, LogicalImageView>
 			imageViews_;
-
 		Pool<LogicalBuffer, LogicalBuffer>
 			buffers_;
-
 		std::vector<RenderPass>
 			passes_;
-
 
 		VulkanResourceManager& ctx_;
 
@@ -820,6 +817,8 @@ namespace smvk
 
 		VkPipelineLayout currentPipelineLayout_ =
 			VK_NULL_HANDLE;
+
+		void BindStaticVertexFmt();
 	};
 
 }

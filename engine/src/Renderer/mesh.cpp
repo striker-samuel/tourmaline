@@ -22,6 +22,7 @@ namespace smvk {
 		// textures own holders, when cleared holders go.
 		textures.clear();
 	}
+
 	ClusterStaticMeshHandle Cluster::UploadStaticMesh(
 		const StaticMeshUpload& data)
 	{
@@ -37,6 +38,7 @@ namespace smvk {
 
 
 		StaticMesh result{};
+		StaticMeshAllocation alloc{};
 
 
 		// =========================================================================
@@ -53,9 +55,9 @@ namespace smvk {
 			allocInfo.alignment = 1;
 
 			const VkResult res = vmaVirtualAllocate(
-				ctx_.m_staticVertexBlock,
+				staticVertexFmtHeap.m_staticVertexBlock,
 				&allocInfo,
-				&result.allocation.vertexAllocation,
+				&alloc.vertexAllocation,
 				&vertexBase
 			);
 
@@ -82,17 +84,17 @@ namespace smvk {
 			allocInfo.alignment = alignof(uint32_t);
 
 			const VkResult res = vmaVirtualAllocate(
-				ctx_.m_staticIndexBlock,
+				staticVertexFmtHeap.m_staticIndexBlock,
 				&allocInfo,
-				&result.allocation.indexAllocation,
+				&alloc.indexAllocation,
 				&indexByteOffset
 			);
 
 			if (res != VK_SUCCESS) {
 
 				vmaVirtualFree(
-					ctx_.m_staticVertexBlock,
-					result.allocation.vertexAllocation
+					staticVertexFmtHeap.m_staticVertexBlock,
+					alloc.vertexAllocation
 				);
 
 				return {};
@@ -131,7 +133,7 @@ namespace smvk {
 			vertexCount * sizeof(VertexPos);
 
 		ctx_.UploadDataToBuffer(
-			ctx_.m_staticVertexPosBuffer,
+			staticVertexFmtHeap.m_staticVertexPosBuffer,
 			positions.data(),
 			positionBytes,
 
@@ -154,7 +156,7 @@ namespace smvk {
 			vertexCount * sizeof(VertexShading);
 
 		ctx_.UploadDataToBuffer(
-			ctx_.m_staticVertexShadingBuffer,
+			staticVertexFmtHeap.m_staticVertexShadingBuffer,
 			shading.data(),
 			shadingBytes,
 
@@ -173,7 +175,7 @@ namespace smvk {
 		if (indexCount > 0) {
 
 			ctx_.UploadDataToBuffer(
-				ctx_.m_staticIndexBuffer,
+				staticVertexFmtHeap.m_staticIndexBuffer,
 				data.indices.data(),
 				indexBytes,
 
@@ -217,9 +219,14 @@ namespace smvk {
 		mesh.geometry.surfaces.push_back(surface);
 
 
-		return staticMeshes.create(
-			std::move(result)
-		);
+		const ClusterStaticMeshHandle handle =
+			staticMeshes.create(std::move(result));
+
+		staticVertexFmtHeap.m_allocations.emplace(
+			handle.index(),
+			std::move(alloc));
+
+		return handle;
 	}
 
 
@@ -233,27 +240,30 @@ namespace smvk {
 		if (handle.empty())
 			return;
 
-		StaticMesh* mesh =
-			staticMeshes.get(handle);
+		auto it =
+			staticVertexFmtHeap.m_allocations.find(handle.index());
 
-		if (mesh->allocation.vertexAllocation) {
+		if (it != staticVertexFmtHeap.m_allocations.end()) {
 
-			vmaVirtualFree(
-				ctx_.m_staticVertexBlock,
-				mesh->allocation.vertexAllocation
-			);
+			StaticMeshAllocation& allocation = it->second;
 
-			mesh->allocation.vertexAllocation = VK_NULL_HANDLE;
-		}
+			if (allocation.vertexAllocation) {
 
-		if (mesh->allocation.indexAllocation) {
+				vmaVirtualFree(
+					staticVertexFmtHeap.m_staticVertexBlock,
+					allocation.vertexAllocation
+				);
+			}
 
-			vmaVirtualFree(
-				ctx_.m_staticIndexBlock,
-				mesh->allocation.indexAllocation
-			);
+			if (allocation.indexAllocation) {
 
-			mesh->allocation.indexAllocation = VK_NULL_HANDLE;
+				vmaVirtualFree(
+					staticVertexFmtHeap.m_staticIndexBlock,
+					allocation.indexAllocation
+				);
+			}
+
+			staticVertexFmtHeap.m_allocations.erase(it);
 		}
 
 		staticMeshes.destroy(handle);
@@ -282,40 +292,6 @@ namespace smvk {
 		materials.destroy(handle);
 	}
 
-	void BindStaticVertexFmtBuffers(VulkanResourceManager& ctx, VkCommandBuffer cmd)
-	{
-
-#ifndef N_DEBUG
-		assert(ctx.m_staticVertexPosBuffer.valid());
-		assert(ctx.m_staticVertexShadingBuffer.valid());
-		assert(ctx.m_staticIndexBuffer.valid());
-#endif
-		VkBuffer vertexBuffers[] = {
-			ctx.buffers_.get(ctx.m_staticVertexPosBuffer)->vkBuffer,
-			ctx.buffers_.get(ctx.m_staticVertexShadingBuffer)->vkBuffer
-		};
-
-		VkDeviceSize offsets[] = {
-			0,
-			0
-		};
-
-		vkCmdBindVertexBuffers(
-			cmd,
-			0,
-			2,
-			vertexBuffers,
-			offsets
-		);
-
-		vkCmdBindIndexBuffer(
-			cmd,
-			ctx.buffers_.get(ctx.m_staticIndexBuffer)->vkBuffer,
-			0,
-			VK_INDEX_TYPE_UINT32
-		);
-	}
-
 	VertexFormatDescription GetVertexFormatDescription(VertexFormat format) {
 		switch (format)
 		{
@@ -328,9 +304,9 @@ namespace smvk {
 
 	void AllocateStaticVertexFmt(smvk::VulkanResourceManager& ctx)
 	{
-		ctx.m_staticVertexPosBuffer = ctx.CreateBuffer(VertexBufferSize, smvk::BufferType_Vertex, "static vertex pos").release();
-		ctx.m_staticVertexShadingBuffer = ctx.CreateBuffer(VertexBufferSize, smvk::BufferType_Vertex, "static vertex shading").release();
-		ctx.m_staticIndexBuffer = ctx.CreateBuffer(IndexBufferSize, smvk::BufferType_Index, "static index").release();
+		staticVertexFmtHeap.m_staticVertexPosBuffer = ctx.CreateBuffer(VertexBufferSize, smvk::BufferType_Vertex, "static vertex pos").release();
+		staticVertexFmtHeap.m_staticVertexShadingBuffer = ctx.CreateBuffer(VertexBufferSize, smvk::BufferType_Vertex, "static vertex shading").release();
+		staticVertexFmtHeap.m_staticIndexBuffer = ctx.CreateBuffer(IndexBufferSize, smvk::BufferType_Index, "static index").release();
 
 		const VkDeviceSize maxVertices = std::min(
 			VertexBufferSize / sizeof(smvk::VertexPos),
@@ -344,7 +320,7 @@ namespace smvk {
 			VK_CHECK(
 				vmaCreateVirtualBlock(
 					&info,
-					&ctx.m_staticVertexBlock
+					&staticVertexFmtHeap.m_staticVertexBlock
 				)
 			);
 		}
@@ -363,7 +339,7 @@ namespace smvk {
 			VK_CHECK(
 				vmaCreateVirtualBlock(
 					&info,
-					&ctx.m_staticIndexBlock
+					&staticVertexFmtHeap.m_staticIndexBlock
 				)
 			);
 		}

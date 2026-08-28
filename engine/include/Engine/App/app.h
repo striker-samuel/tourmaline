@@ -13,8 +13,7 @@
 //
 #include "input.h"
 
-//#include <Engine/smvk.h> // impl.h should be done away and port the public interface to smvk.h
-//smvk.h is a abad name beacuse smvk means samuel martin vulkan!
+//#include <Engine/smvk.h>
 #include <Engine/Vulkan/impl.h>
 #include <Engine/App/world.h>
 
