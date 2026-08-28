@@ -39,9 +39,8 @@ inline const char* vkResultToString(VkResult result);
     } while (0)
 
 
-//namespace vk {
 namespace smvk {
-	//using namespace smvk;
+
 
 	struct StaticMeshAllocation {
 		VmaVirtualAllocation vertexAllocation = VK_NULL_HANDLE;
@@ -380,17 +379,14 @@ namespace smvk {
 		Pool<DescriptorPoolTag, VkDescriptorPool> descriptorPools_;
 		Pool<ShaderModuleTag, VkShaderModule> shaderModules_; // will be removed in 1.4
 
-
 		// DEFAULTS
 		VkSampler m_defaultSampler{};
 		VkSampler m_defaultShadowSampler{};
 
-		Holder<DescriptorPoolHandle> defaultDescriptorPool{};
-		Holder<TextureHandle> m_nilTexture{};
-		//Holder<DescriptorPoolHandle> imguiDescriptorPool;
-
 		mutable bool needToUpdateDescriptors = true;
-		//mutable bool needToUpdateTextures = true; //maybe disambiguation is better here?
+
+		Holder<DescriptorPoolHandle> defaultDescriptorPool{};
+		TextureHandle m_nilTexture{};
 
 
 	private:

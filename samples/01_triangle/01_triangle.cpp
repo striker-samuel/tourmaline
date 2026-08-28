@@ -103,7 +103,6 @@ private:
 			.shaderCount = 2
 		};
 
-
 		swapViews.clear();
 		for (int i = 0; i < m_swapchain->GetImageCount(); i++) {
 			swapViews.push_back(

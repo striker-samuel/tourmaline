@@ -28,6 +28,7 @@ namespace smvk {
 
 		// this is mesh each resource has a different lifetime semantic! 
 		Pool<StaticMesh, StaticMesh> staticMeshes;
+		//Pool<SkinnedMesh, SkinnedMesh> skinnedMesh;
 		Pool<Material, Material> materials;
 		Pool<Texture, Holder<TextureHandle>> textures;
 

@@ -1631,7 +1631,7 @@ int smvk::VulkanResourceManager::Initialize() {
 			.name = "nilTexture"
 		},
 		&pixel
-	);
+	).release();
 
 	// ============================================================================
 	// Hardcoded Bindless Setup
@@ -1727,6 +1727,8 @@ smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore& core) :core_(core
 smvk::VulkanResourceManager::~VulkanResourceManager() {
 	VK_CHECK(vkDeviceWaitIdle(device_));
 
+	destroy(this, m_nilTexture);
+
 	// StaticVertexFmt
 	destroy(this, staticVertexFmtHeap.m_staticVertexPosBuffer);
 	destroy(this, staticVertexFmtHeap.m_staticVertexShadingBuffer);
@@ -1744,75 +1746,73 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	delete m_submitter;
 	m_submitter = nullptr;
 
-	//
-	//#ifndef N_DEBUG
-	//	bool leakHeaderPrinted = false;
-	//
-	//	auto printLeakHeader = [&]() {
-	//		if (!leakHeaderPrinted)
-	//		{
-	//			std::cout << "[ResourceContext::~ResourceContext] Leaking objects:\n";
-	//			leakHeaderPrinted = true;
-	//		}
-	//	};
-	//
-	//	shaderModules_.forEachHandle([&](ShaderModuleHandle handle) {
-	//		printLeakHeader();
-	//
-	//		auto sm = shaderModules_.get(handle);
-	//		std::cout << "  [LEAK] ShaderModule: handle index=" << handle.index()
-	//			<< ", gen=" << handle.gen() << ", module=" << *sm << "\n";
-	//	});
-	//
-	//	buffers_.forEachHandle([&](BufferHandle handle) {
-	//		printLeakHeader();
-	//
-	//		auto buf = buffers_.get(handle);
-	//		std::cout << "  [LEAK] Buffer: handle index=" << handle.index()
-	//			<< ", gen=" << handle.gen() << ", buffer=" << buf->vk_buffer
-	//			<< ", allocation=" << buf->vma_alloc << "\n";
-	//	});
-	//
-	//	samplers_.forEachHandle([&](SamplerHandle handle) {
-	//		printLeakHeader();
-	//
-	//		auto s = samplers_.get(handle);
-	//		std::cout << "  [LEAK] Sampler: handle index=" << handle.index()
-	//			<< ", gen=" << handle.gen() << ", sampler=" << *s << "\n";
-	//	});
-	//
-	//	descriptorPools_.forEachHandle([&](DescriptorPoolHandle handle) {
-	//		if (handle != defaultDescriptorPool)
-	//		{
-	//			printLeakHeader();
-	//
-	//			auto dp = descriptorPools_.get(handle);
-	//			std::cout << "  [LEAK] DescriptorPool: handle index=" << handle.index()
-	//				<< ", gen=" << handle.gen() << ", pool=" << *dp << "\n";
-	//		}
-	//	});
-	//
-	//	images_.forEachHandle([&](ImageHandle handle) {
-	//		printLeakHeader();
-	//
-	//		auto img = images_.get(handle);
-	//		std::cout << "  [LEAK] Image: handle index=" << handle.index()
-	//			<< ", gen=" << handle.gen() << ", image=" << img->vk_image
-	//			<< ", allocation=" << img->vma_alloc << ", views="
-	//			<< img->sampleView << "/" << img->storageView << "\n";
-	//	});
-	//
-	//	textures_.forEachHandle([&](TextureHandle handle) {
-	//		printLeakHeader();
-	//
-	//		auto tex = textures_.get(handle);
-	//		std::cout << "  [LEAK] Texture: handle index=" << handle.index()
-	//			<< ", gen=" << handle.gen() << ", image=" << tex->vk_image
-	//			<< ", allocation=" << tex->vma_alloc << "\n";
-	//	});
-	//#endif
+	#ifndef N_DEBUG
+		bool leakHeaderPrinted = false;
+	
+		auto printLeakHeader = [&]() {
+			if (!leakHeaderPrinted)
+			{
+				std::cout << "[ResourceContext::~ResourceContext] Leaking objects:\n";
+				leakHeaderPrinted = true;
+			}
+		};
+	
+		shaderModules_.forEachHandle([&](ShaderModuleHandle handle) {
+			printLeakHeader();
+	
+			auto sm = shaderModules_.get(handle);
+			std::cout << "  [LEAK] ShaderModule: handle index=" << handle.index()
+				<< ", gen=" << handle.gen() << ", module=" << *sm << "\n";
+		});
+	
+		buffers_.forEachHandle([&](BufferHandle handle) {
+			printLeakHeader();
+	
+			auto buf = buffers_.get(handle);
+			std::cout << "  [LEAK] Buffer: handle index=" << handle.index()
+				<< ", gen=" << handle.gen() << ", buffer=" << buf->vkBuffer
+				<< ", allocation=" << buf->vma_alloc << "\n";
+		});
+	
+		samplers_.forEachHandle([&](SamplerHandle handle) {
+			printLeakHeader();
+	
+			auto s = samplers_.get(handle);
+			std::cout << "  [LEAK] Sampler: handle index=" << handle.index()
+				<< ", gen=" << handle.gen() << ", sampler=" << *s << "\n";
+		});
+	
+		descriptorPools_.forEachHandle([&](DescriptorPoolHandle handle) {
+			if (handle != defaultDescriptorPool)
+			{
+				printLeakHeader();
+	
+				auto dp = descriptorPools_.get(handle);
+				std::cout << "  [LEAK] DescriptorPool: handle index=" << handle.index()
+					<< ", gen=" << handle.gen() << ", pool=" << *dp << "\n";
+			}
+		});
+	
+		images_.forEachHandle([&](ImageHandle handle) {
+			printLeakHeader();
+	
+			auto img = images_.get(handle);
+			std::cout << "  [LEAK] Image: handle index=" << handle.index()
+				<< ", gen=" << handle.gen() << ", image=" << img->vkImage
+				<< ", allocation=" << img->allocation << ", views="
+				<< img->liveViewCount << "\n";
+		});
+	
+		textures_.forEachHandle([&](TextureHandle handle) {
+			printLeakHeader();
+	
+			auto tex = textures_.get(handle);
+			std::cout << "  [LEAK] Texture: handle index=" << handle.index()
+				<< ", gen=" << handle.gen() << ", image=" << tex->image.empty()
+				<< "\n";
+		});
+	#endif
 
-		// Destroy unmanaged handles not in RAII pools
 	vkDestroyPipelineLayout(device_, defaultPipeLayout, nullptr);
 	vkDestroyDescriptorSetLayout(device_, defaultSetLayout, nullptr);
 	if (m_defaultSampler != VK_NULL_HANDLE) {
@@ -1823,7 +1823,6 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	}
 	memset(defaultDescriptorSets_, 0, sizeof(defaultDescriptorSets_));
 	//
-
 	vmaDestroyAllocator(m_allocator);
 };
 void smvk::VulkanResourceManager::UploadDataToBuffer(

@@ -333,10 +333,8 @@ private:
 		// Manual Barrier transition
 		// this whole shadowmap thing is so badly done, api surface NEEDS more polish
 
-
-
-		auto han = m_context->m_submitter->acquire();
-		auto cmd = m_context->m_submitter->GetCommandBuffer(han);
+		//auto han = m_context->m_submitter->acquire();
+		//auto cmd = m_context->m_submitter->GetCommandBuffer(han);
 	/*	ImageBarrier(
 			cmd.cmd,
 			smimage->vk_image,
@@ -356,8 +354,8 @@ private:
 			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
 			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
 		);*/
-		m_context->m_submitter->submit(han);
-		m_context->m_submitter->wait(han);
+		//m_context->m_submitter->submit(han);
+		//m_context->m_submitter->wait(han);
 		//
 
 		return true;
@@ -451,7 +449,7 @@ private:
 		glm::mat4 lightViewOut;
 		glm::mat4 lightProjOut;
 		constexpr float lightNear = 0.1f;
-		constexpr float lightFar = 100.0f;
+		constexpr float lightFar = 10.0f;
 
 		smvk::Light lights[MAX_LIGHTS]{};
 		smvk::Light& light = lights[0];
@@ -477,7 +475,7 @@ private:
 			lightFar,
 			lightViewOut,
 			lightProjOut,  // outProj (function will overwrite, but we recompute below)
-			10.f,//10000.0f,       // zPadding
+			1.f,       // zPadding
 			true,       // enableTexelSnap
 			2048        // shadowMapRes
 		);
