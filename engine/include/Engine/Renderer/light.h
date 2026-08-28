@@ -117,11 +117,5 @@ namespace smvk {
 		float nearPlane = 0.1f,
 		float farPlane = 100.0f
 	);
-	static std::array<glm::vec3, 8> GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
-		const glm::mat4& proj,
-		const glm::mat4& view,
-		float nearDist,
-		float farDist
-	);
 
 };

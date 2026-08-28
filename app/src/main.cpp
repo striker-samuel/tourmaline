@@ -19,7 +19,55 @@ std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
 };
 
-//struct ShadowmapCascadeAtlas {};
+//struct ShadowmapCascadeAtlas {
+//
+//	// ---- cascade split settings ----
+//	const float cameraNear = 0.1f;   // ideally: camera_.nearPlane()
+//	const float shadowFarMax = 20.0f;  // your old single-cascade far (tune this)
+//	const float lambda = 0.5f;   // 0=linear, 1=log (0.5 common)
+//
+//	// ---- atlas tiling (2x2 for 4, 2x2 for <=4, 4x4 for 16, etc.) ----
+//	const int gridDim = (int)std::ceil(std::sqrt((float)NUM_CASCADES));
+//	const uint32_t tileW = image->width / gridDim;
+//	const uint32_t tileH = image->height / gridDim;
+//
+//	// Precompute split ends in view-space depth
+//	float splitEnds[NUM_CASCADES]{};
+//	for (int c = 0; c < NUM_CASCADES; ++c) {
+//		const float p = float(c + 1) / float(NUM_CASCADES);
+//
+//		const float logSplit = cameraNear * std::pow(shadowFarMax / cameraNear, p);
+//		const float linSplit = cameraNear + (shadowFarMax - cameraNear) * p;
+//
+//		splitEnds[c] = linSplit + lambda * (logSplit - linSplit);
+//	}
+//
+//	// Render each cascade
+//	float prevSplit = cameraNear;
+//	for (int c = 0; c < NUM_CASCADES; ++c) {
+//
+//		const float cascadeNear = prevSplit;
+//		const float cascadeFar = splitEnds[c];
+//		prevSplit = cascadeFar;
+//
+//		// --- atlas tile placement ---
+//		const int tx = c % gridDim;
+//		const int ty = c / gridDim;
+//
+//		VkViewport cvp{};
+//		cvp.x = float(tx * tileW);
+//		cvp.y = float(ty * tileH);
+//		cvp.width = float(tileW);
+//		cvp.height = float(tileH);
+//		cvp.minDepth = 0.0f;
+//		cvp.maxDepth = 1.0f;
+//		//vkCmdSetViewport(commandBuffer, 0, 1, &cvp);
+//		VkRect2D cscissor{};
+//		cscissor.offset = { int32_t(tx * tileW), int32_t(ty * tileH) };
+//		cscissor.extent = { tileW, tileH };
+//		//vkCmdSetScissor(commandBuffer, 0, 1, &cscissor);
+//};
+
 struct ShadowMap
 {
 	smvk::Holder<smvk::ImageHandle> image;
@@ -308,11 +356,16 @@ private:
 		// Render graph
 		// -------------------------------------------------------------------------
 
+		//auto shadowImage =
+		//	m_rendergraph->AddImage(
+		//		shadowMapCI,
+		//		"shadowMap1"
+		//	);
 		auto shadowImage =
 			m_rendergraph->AddExternalImage(
 				shadow.image,
 				"shadowMap1"
-			);;
+			);
 
 		m_viewportResources.shadowmapLogicalViews[0] =
 			m_rendergraph->AddImageView(
@@ -445,12 +498,12 @@ private:
 		glm::vec3 lightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.5f));
 		auto cameraView = m_camera.getViewMatrix();
 		auto cameraProj = m_camera.getProjMatrix();
-		cameraProj[1][1] *= -1;
+		//cameraProj[1][1] *= -1;
 
 		glm::mat4 lightViewOut;
 		glm::mat4 lightProjOut;
-		constexpr float lightNear = 0.1f;
-		constexpr float lightFar = 10.0f;
+		constexpr float cameraNear = 0.001f;
+		constexpr float cameraFar = 50.0f;
 
 		smvk::Light lights[MAX_LIGHTS]{};
 		smvk::Light& light = lights[0];
@@ -463,20 +516,18 @@ private:
 			m_context->GetBindlessIndex(
 				m_viewportResources.shadowmaps[0].bindless
 			);
-		// Replace with your actual flag enum.
-		//light.flags = smvk::LightFlagBit_Directional;
 
 		smvk::GetDirectionalLightOrthoVP(
 			lightDir,
-			cameraView,
-			cameraProj,
-			//glm::inverse(cameraView),
-			//glm::inverse(cameraProj),
-			lightNear,
-			lightFar,
+			//cameraView,
+			//cameraProj,
+			glm::inverse(cameraView),
+			glm::inverse(cameraProj),
+			cameraNear,
+			cameraFar,
 			lightViewOut,
 			lightProjOut,  // outProj (function will overwrite, but we recompute below)
-			10.f,       // zPadding
+			1.f,       // zPadding
 			true,       // enableTexelSnap
 			2048        // shadowMapRes
 		);
@@ -558,15 +609,26 @@ private:
 		uint64_t frameUniformsAddress =
 			m_context->buffers_
 			.get(m_resources.frameUniforms)
-			->deviceAddress;
+			->deviceAddress
+			+ fb.frameIndex * sizeof(FrameUniforms);
+
+		constexpr size_t LIGHT_FRAME_STRIDE =
+			sizeof(smvk::Light) * MAX_LIGHTS;
+
 		uint64_t lightsBufferAddress =
 			m_context->buffers_
 			.get(m_resources.lightsBuffer)
-			->deviceAddress;
+			->deviceAddress
+			+ fb.frameIndex * LIGHT_FRAME_STRIDE;
+
+		constexpr size_t MATERIAL_FRAME_STRIDE =
+			sizeof(smvk::MaterialValues) * MAX_MATERIALS;
+
 		uint64_t materialsAddress =
 			m_context->buffers_
 			.get(m_resources.materialsBuffer)
-			->deviceAddress;
+			->deviceAddress
+			+ fb.frameIndex * MATERIAL_FRAME_STRIDE;
 
 		struct alignas(16) PushConstants {
 			float model[16];
@@ -599,13 +661,13 @@ private:
 				m_resources.shadowProgram,
 				smvk::VertexFormat::StaticVertexFormat,
 				smvk::DepthSettings{
-					.depthFunc = smvk::CompareOp::LessEqual,
+					.depthFunc = smvk::CompareOp::Less,
 					.writeEnable = true,
 					.depthTestEnable = true,
 					.depthBiasEnable = true,
-					.depthBiasConstantFactor = 1.f,
+					.depthBiasConstantFactor = 0.f,
 					.depthBiasClamp = 0.0f,
-					.depthBiasSlopeFactor = 1.f
+					.depthBiasSlopeFactor = 3.f
 				}
 
 			);
@@ -637,15 +699,14 @@ private:
 				uint32_t meshId = meshForNode->second;
 				smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
 
-				PushConstants pc{};
-				const float* modelData = glm::value_ptr(model);
-				std::copy_n(modelData, 16, pc.model);
+				PushConstants objectPC{};
+				std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 
 				cmd.PushConstants(
-					0,
-					offsetof(PushConstants, frameUniforms),
-					&pc,
-					smvk::ShaderStage::AllGraphics
+					offsetof(PushConstants, model),
+					sizeof(objectPC.model),
+					objectPC.model,
+					smvk::ShaderStage::Vertex
 				);
 
 				for (auto& draw_set : meshDesc->geometry.surfaces) {
@@ -699,14 +760,10 @@ private:
 			);
 
 			cmd.PushConstants(
-				offsetof(PushConstants, frameUniforms),
-				sizeof(uint64_t),
-				&pc.frameUniforms
-			);
-			cmd.PushConstants(
-				offsetof(PushConstants, materialsBuffer),
-				sizeof(uint64_t),
-				&pc.materialsBuffer
+				0,
+				sizeof(PushConstants),
+				&pc,
+				smvk::ShaderStage::AllGraphics
 			);
 
 			m_world->forEachNode(

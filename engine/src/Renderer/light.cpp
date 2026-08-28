@@ -58,18 +58,16 @@ glm::mat4 smvk::GetSpotLightView(const smvk::SpotLight& l)
 
 	return glm::lookAt(pos, pos + dir, up);
 }
-
-static std::array<glm::vec3, 8> smvk::GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
+static std::array<glm::vec3, 8>
+GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
 	const glm::mat4& invProj,
 	const glm::mat4& invView,
 	float nearDist,
 	float farDist
 )
 {
-	const glm::vec3 camPos = glm::vec3(invView[3]); // translation column in GLM
-
-	// NDC XY corners
-	const glm::vec2 ndcXY[4] = {
+	const glm::vec2 ndcXY[4] =
+	{
 		{-1.0f, -1.0f},
 		{ 1.0f, -1.0f},
 		{ 1.0f,  1.0f},
@@ -80,24 +78,40 @@ static std::array<glm::vec3, 8> smvk::GetFrustumCornersWorldSpace_Rays_ReverseZI
 
 	for (int i = 0; i < 4; ++i)
 	{
-		// IMPORTANT:
-		// - w MUST be 1 (a point), not 0 (a direction).
-		// - For reverse-Z camera projections, the near plane maps to NDC.z = 1.
-		//   (Your MakeInfReversedZProjRH uses reverse-Z.)
-		const glm::vec4 clip(ndcXY[i].x, ndcXY[i].y, 1.0f, 1.0f);
+		// Reverse-Z near plane = NDC z 1.
+		glm::vec4 clip(
+			ndcXY[i].x,
+			ndcXY[i].y,
+			1.0f,
+			1.0f
+		);
+
 		glm::vec4 viewPt = invProj * clip;
 		viewPt /= viewPt.w;
-		glm::vec3 dirView = glm::vec3(viewPt);
-		dirView = glm::normalize(dirView);
-		// Transform direction to world (ignore translation)
-		glm::vec3 dirWorld = glm::normalize(glm::mat3(invView) * dirView);
 
-		corners[i + 0] = camPos + dirWorld * nearDist;
-		corners[i + 4] = camPos + dirWorld * farDist;
+		glm::vec3 rayView = glm::vec3(viewPt);
+
+		// RH camera looks down -Z.
+		// Scale the ray so that its Z depth is exactly nearDist/farDist.
+		const float invForwardDepth =
+			1.0f / (-rayView.z);
+
+		glm::vec3 nearView =
+			rayView * (nearDist * invForwardDepth);
+
+		glm::vec3 farView =
+			rayView * (farDist * invForwardDepth);
+
+		corners[i + 0] =
+			glm::vec3(invView * glm::vec4(nearView, 1.0f));
+
+		corners[i + 4] =
+			glm::vec3(invView * glm::vec4(farView, 1.0f));
 	}
 
 	return corners;
 }
+
 
 static glm::vec3 ChooseSafeUpForLookAt(const glm::vec3& forward /*normalized*/)
 {
@@ -157,24 +171,26 @@ void smvk::GetDirectionalLightOrthoVP(
 
 	// Construct light orientation.
 	const glm::vec3 up = ChooseSafeUpForLookAt(lightDir);
+	float minAlongLight = FLT_MAX;
 
-	//
-	// The exact distance of the light camera does not affect an orthographic
-	// projection's X/Y coverage.
-	//
-	// We only need it far enough back that the entire relevant volume lies
-	// in front of the light camera.
-	//
-	const float lightBackoff =
-		(shadowFar - shadowNear) + zPadding;
+	for (const glm::vec3& corner : corners)
+	{
+		minAlongLight = std::min(
+			minAlongLight,
+			glm::dot(corner - center, lightDir)
+		);
+	}
 
-	const glm::vec3 lightPosition =
+	float lightBackoff =
+		-minAlongLight + zPadding;
+
+	glm::vec3 lightPosition =
 		center - lightDir * lightBackoff;
 
 	outView = glm::lookAt(
 		lightPosition,
 		center,
-		up
+		ChooseSafeUpForLookAt(lightDir)
 	);
 
 	// Transform the actual frustum slice into light space and find its bounds.
@@ -285,103 +301,27 @@ void smvk::GetDirectionalLightOrthoVP(
 		zNear,
 		zFar
 	);
-}
 
-//void smvk::GetDirectionalLightOrthoVP(
-//	const glm::vec3 lightDir,
-//	const glm::mat4& invCameraView,
-//	const glm::mat4& invCameraProj,
-//	float shadowNear,
-//	float shadowFar,
-//	glm::mat4& outView,
-//	glm::mat4& outProj,
-//	// Optional quality/stability knobs:
-//	float zPadding,  // world units padding along light Z (prevents clipping)
-//	//	float xyPadding,   // world units padding in light X/Y (edge safety)
-//	bool  enableTexelSnap,   // reduce shimmering
-//	int   shadowMapRes    // used for snapping; set to your shadow map size
-//)
-//{
-//	float xyPadding = 0.1;
-//
-//	if (!(shadowFar > shadowNear))
-//		assert(false && "shadowFar was less than shadowNear");
-//	//		return;
-//
-//	// Normalize light direction
-//	//glm::vec3 lightDir = glm::normalize(glm::vec3(l.direction[0], l.direction[1], l.direction[2]));
-//
-//	// 8 corners of the camera frustum slice (works for reverse-Z + infinite far)
-//	const auto corners = GetFrustumCornersWorldSpace_Rays_ReverseZInfFarFriendly(
-//		invCameraProj,
-//		invCameraView,
-//		shadowNear,
-//		shadowFar
-//	);
-//
-//	// Compute slice center
-//	glm::vec3 center(0.0f);
-//	for (const auto& c : corners) center += c;
-//	center /= static_cast<float>(corners.size());
-//
-//	float radius = 100.0f;          // <-- hardcoded shadow coverage radius in WORLD units
-//	float zExtent = 100.0f;        // <-- depth coverage along light direction (world units)
-//	float lightBackoff = zExtent * 0.5f; // just needs to be enough to see the box
-//	glm::vec3 up = ChooseSafeUpForLookAt(lightDir);
-//
-//	outView = glm::lookAt(center - lightDir * lightBackoff, center, up);
-//	// Build a fixed-size box in LIGHT SPACE around the transformed center
-//	glm::vec3 centerLS = glm::vec3(outView * glm::vec4(center, 1.0f));
-//
-//	float width = 2.0f * radius;
-//	float height = 2.0f * radius;
-//
-//	if (enableTexelSnap && shadowMapRes > 0)
-//	{
-//		const float unitsPerTexelX = width / float(shadowMapRes);
-//		const float unitsPerTexelY = height / float(shadowMapRes);
-//
-//		// Snap the LIGHT-SPACE center to the texel grid
-//		glm::vec2 snappedCenter;
-//		snappedCenter.x = std::floor(centerLS.x / unitsPerTexelX) * unitsPerTexelX;
-//		snappedCenter.y = std::floor(centerLS.y / unitsPerTexelY) * unitsPerTexelY;
-//
-//		glm::vec2 delta = snappedCenter - glm::vec2(centerLS.x, centerLS.y);
-//
-//		// IMPORTANT: bake that delta into the VIEW matrix (light-space translation)
-//		outView = glm::translate(glm::mat4(1.0f), glm::vec3(delta.x, delta.y, 0.0f)) * outView;
-//
-//		// Update centerLS to the snapped one (optional clarity)
-//		centerLS.x = snappedCenter.x;
-//		centerLS.y = snappedCenter.y;
-//	}
-//
-//	// Now build min/max from (snapped) centerLS and FIXED extents
-//	float minX = centerLS.x - radius;
-//	float maxX = centerLS.x + radius;
-//	float minY = centerLS.y - radius;
-//	float maxY = centerLS.y + radius;
-//
-//	// Z: cover +/- zExtent/2 around centerLS.z
-//	float minZ = centerLS.z - (zExtent * 0.5f);
-//	float maxZ = centerLS.z + (zExtent * 0.5f);
-//
-//	// Convert view-space Z (negative in front) to positive distances for orthoRH_ZO
-//	float zNear = std::max(0.001f, -maxZ);
-//	float zFar = std::max(zNear + 0.001f, -minZ);
-//
-//	outProj = glm::orthoRH_ZO(minX, maxX, minY, maxY, zNear, zFar);
-//
-//	// Compute cascade split end (view-space depth)
-//	// For cascades: splitEnd is the view-space depth where this cascade ends
-//	// Positive view-space depth means looking along -Z from camera
-//	// We need to transform shadowFar into view space to get splitEnd
-//	float cascadeSplitEnd = shadowFar; // default: single cascade covers full range
-//
-//	// outView and outProj are now set up. The light VP will be outProj * outView.
-//	// For cascade splitting, we'd need to adjust the projection based on splitEnd.
-//	// For 1 cascade, the full lightVP is used directly.
-//}
+	// Debufging fit
+	//glm::mat4 lightVP =
+	//	outProj * outView;
+
+	//for (const glm::vec3& corner : corners)
+	//{
+	//	glm::vec4 clip =
+	//		lightVP * glm::vec4(corner, 1.0f);
+
+	//	glm::vec3 ndc =
+	//		glm::vec3(clip) / clip.w;
+
+	//	printf(
+	//		"NDC: %f %f %f\n",
+	//		ndc.x,
+	//		ndc.y,
+	//		ndc.z
+	//	);
+	//}
+}
 
 glm::mat4 smvk::GetPerspectiveProjectionForLight(
 	const smvk::SpotLight& l,
@@ -393,14 +333,3 @@ glm::mat4 smvk::GetPerspectiveProjectionForLight(
 	float fovRadians = l.outerAngle * 2.0f;
 	return glm::perspective(fovRadians, aspect, nearPlane, farPlane);
 }
-
-//std::array<glm::mat4,6 > GetProjectionsForSpotLight(
-//	const PointLight& l,
-//	float aspect,
-//	float nearPlane,
-//	float farPlane
-//)
-//{
-//	float fovRadians = glm::radians(90.0f); // 90� for each cube face, if you go that route
-//	return glm::perspective(fovRadians, 1.0f, nearPlane, farPlane);
-//}
