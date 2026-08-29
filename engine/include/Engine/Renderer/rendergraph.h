@@ -133,6 +133,7 @@ namespace smvk
 
 		ImageViewKey key{};
 
+		ImageViewHandle resolvedViewHandle{};
 		VkImageView externalView = VK_NULL_HANDLE;
 		Format externalFormat = Format::Undefined;
 
@@ -359,6 +360,44 @@ namespace smvk
 			, pipelineCachePimpl(
 				std::make_unique<PipelineCache>(&ctx_))
 		{
+		}
+
+		~RenderGraph()
+		{
+			// Tear down resolved views first so each parent image's
+			// liveViewCount drops to zero before the image itself is
+			// released. External resources are owned by the caller and
+			// must not be destroyed here.
+			imageViews_.forEach(
+				[this](LogicalImageView& view)
+			{
+				if (view.type ==
+					LogicalImageView::Type::ExternalPhysical)
+				{
+					return;
+				}
+
+				if (!view.resolvedViewHandle.empty())
+				{
+					destroy(&ctx_, view.resolvedViewHandle);
+				}
+			}
+			);
+
+			images_.forEach(
+				[this](LogicalImage& image)
+			{
+				if (image.type == ResourceType::External)
+				{
+					return;
+				}
+
+				if (!image.resolvedImageHandle.empty())
+				{
+					destroy(&ctx_, image.resolvedImageHandle);
+				}
+			}
+			);
 		}
 
 
@@ -628,17 +667,6 @@ namespace smvk
 			return image->resolvedImageHandle;
 		}
 
-
-		//
-		// THIS is where VkImageView belongs.
-		//
-		// LogicalImageView does not permanently own one.
-		//
-		[[nodiscard]]
-		VkImageView GetResolvedImageView(
-			LogicalImageViewHandle handle);
-
-
 		[[nodiscard]]
 		Format GetResolvedImageViewFormat(
 			LogicalImageViewHandle handle) const
@@ -676,9 +704,8 @@ namespace smvk
 		void Execute(FrameBuffer& fb);
 
 
-	private:
-		friend CommandBuffer;
-
+	//private:
+	//	friend CommandBuffer;
 
 		// --------------------------------------------------------
 		// Resource resolution
@@ -686,22 +713,7 @@ namespace smvk
 
 		void ResolveImages();
 		void ResolveBuffers();
-
-
-		//
-		// Resolve/create a physical VkImageView from:
-		//
-		//     ImageHandle
-		//     ImageViewType
-		//     Format
-		//     ImageSubresourceRange
-		//
-		// This should eventually be backed by an image-view cache.
-		//
-		[[nodiscard]]
-		VkImageView ResolveImageView(
-			const ImageViewKey& key);
-
+		void ResolveImageViews();
 
 		// --------------------------------------------------------
 		// Graph storage
@@ -717,7 +729,6 @@ namespace smvk
 			passes_;
 
 		VulkanResourceManager& ctx_;
-
 		std::unique_ptr<PipelineCache>
 			pipelineCachePimpl;
 	};

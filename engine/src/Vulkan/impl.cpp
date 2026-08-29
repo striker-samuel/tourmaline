@@ -1312,8 +1312,8 @@ int smvk::VulkanCore::CreateInstance() {
 	createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
 	createInfo.ppEnabledExtensionNames = extensions.data();
 
-	VkValidationFeatureDisableEXT disabledValidationFeatures[] = {
-		VK_VALIDATION_FEATURE_DISABLE_UNIQUE_HANDLES_EXT
+	VkValidationFeatureDisableEXT disabledValidationFeatures[1] = {
+		/*VK_VALIDATION_FEATURE_DISABLE_UNIQUE_HANDLES_EXT*/ // with this on debugNames break
 	};
 
 	VkValidationFeaturesEXT validationFeatures{};
@@ -1595,7 +1595,7 @@ static inline VkDescriptorSetLayoutBinding getDSLBinding(uint32_t binding,
 }
 
 smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore& core) :core_(core)
-{ 
+{
 	VmaAllocatorCreateInfo allocatorCreateInfo = {};
 	allocatorCreateInfo.physicalDevice = physicalDevice_;
 	allocatorCreateInfo.device = device_;
@@ -1728,6 +1728,7 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 
 	destroy(this, m_nilTexture);
 
+	ProcessDeferrredTasks();
 	// StaticVertexFmt
 	destroy(this, staticVertexFmtHeap.m_staticVertexPosBuffer);
 	destroy(this, staticVertexFmtHeap.m_staticVertexShadingBuffer);
@@ -1800,6 +1801,20 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 			<< ", gen=" << handle.gen() << ", image=" << img->vkImage
 			<< ", allocation=" << img->allocation << ", views="
 			<< img->liveViewCount << "\n";
+	});
+
+	imageViews_.forEachHandle([&](ImageViewHandle handle)
+	{
+		printLeakHeader();
+
+		auto* view = imageViews_.get(handle);
+
+		std::cout
+			<< "  [LEAK] ImageView: index="
+			<< handle.index()
+			<< ", gen=" << handle.gen()
+			<< ", VkImageView=" << view->vkView
+			<< "\n";
 	});
 
 	textures_.forEachHandle([&](TextureHandle handle) {
@@ -1898,9 +1913,6 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	size_t srcOffset
 )
 {
-
-	// TODO :: doesn't actually provide enough information to determine the final layout. Right now we're effectively saying:
-
 	assert(data != nullptr);
 	assert(image.vkImage != VK_NULL_HANDLE);
 	assert(image.type == ImageType::Image2D);
@@ -4383,37 +4395,37 @@ smvk::Submitter::validHandle(
 		commandBuffers_[handle.index_].gen_;
 }
 bool smvk::Submitter::isReady(
-    CommandSubmitHandle handle)
+	CommandSubmitHandle handle)
 {
-    if(handle.index_ >= kMax)
-        return false;
+	if (handle.index_ >= kMax)
+		return false;
 
-    WrapperSlot& slot =
-        commandBuffers_[handle.index_];
+	WrapperSlot& slot =
+		commandBuffers_[handle.index_];
 
-    // Old generation already recycled.
-    if(handle.gen_ < slot.gen_)
-        return true;
+	// Old generation already recycled.
+	if (handle.gen_ < slot.gen_)
+		return true;
 
-    if(handle.gen_ != slot.gen_)
-        return false;
+	if (handle.gen_ != slot.gen_)
+		return false;
 
-    if(slot.state_ == CommandState::Recording)
-        return false;
+	if (slot.state_ == CommandState::Recording)
+		return false;
 
-    if(slot.state_ == CommandState::Free)
-        return true;
+	if (slot.state_ == CommandState::Free)
+		return true;
 
-    uint64_t completed = 0;
+	uint64_t completed = 0;
 
-    VK_CHECK(vkGetSemaphoreCounterValue(
-        device_,
-        m_timelineSemaphore,
-        &completed));
+	VK_CHECK(vkGetSemaphoreCounterValue(
+		device_,
+		m_timelineSemaphore,
+		&completed));
 
-    return
-        completed >=
-        slot.retireValue_;
+	return
+		completed >=
+		slot.retireValue_;
 }
 void smvk::Submitter::purge()
 {
@@ -5478,202 +5490,64 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 
 // RENDERGRAPH
 #include <Engine/Renderer/rendergraph.h>
-VkImageView smvk::RenderGraph::GetResolvedImageView(LogicalImageViewHandle handle)
-{
-	auto* view = imageViews_.get(handle);
-	assert(view);
 
-	switch (view->type)
+VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle logicalView) {
+	assert(!logicalView.empty());
+	auto view = rg->imageViews_.get(logicalView);
+	assert(view != nullptr);
+
+	if (view->type == smvk::LogicalImageView::Type::ExternalPhysical)
 	{
-	case LogicalImageView::Type::ExternalPhysical:
+		assert(view->externalView != VK_NULL_HANDLE);
 		return view->externalView;
-
-	case LogicalImageView::Type::Logical:
-		return ResolveImageView(view->key);
 	}
 
-	assert(false);
-	return VK_NULL_HANDLE;
+	assert(!view->resolvedViewHandle.empty());
+	return rg->ctx_.imageViews_.get(view->resolvedViewHandle)->vkView;
 }
-VkImageView smvk::RenderGraph::ResolveImageView(const ImageViewKey& key)
+void smvk::RenderGraph::ResolveImageViews()
 {
-	assert(!key.image.empty());
-
-	// ------------------------------------------------------------
-	// Resolve logical image -> physical ImageHandle
-	// ------------------------------------------------------------
-
-	auto* logicalImage = images_.get(key.image);
-	assert(logicalImage != nullptr);
-
-	const ImageHandle imageHandle =
-		logicalImage->resolvedImageHandle;
-
-	assert(!imageHandle.empty());
-
-	auto* image = ctx_.images_.get(imageHandle);
-	assert(image != nullptr);
-	assert(image->vkImage != VK_NULL_HANDLE);
-
-
-	// ------------------------------------------------------------
-	// Resolve format
-	// ------------------------------------------------------------
-
-	const Format resolvedFormat =
-		(key.format != Format::Undefined)
-		? key.format
-		: logicalImage->key.format;
-
-	assert(resolvedFormat != Format::Undefined);
-
-	const VkFormat vkFormat =
-		toVkFormat(resolvedFormat);
-
-	assert(vkFormat != VK_FORMAT_UNDEFINED);
-
-
-	// ------------------------------------------------------------
-	// Resolve aspect
-	// ------------------------------------------------------------
-
-	VkImageAspectFlags aspectMask = 0;
-
-	switch (key.subresourceRange.aspect)
+	imageViews_.forEach(
+		[this](LogicalImageView& logicalView)
 	{
-	case ImageAspect::Color:
-		aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		break;
+		if (logicalView.type ==
+			LogicalImageView::Type::ExternalPhysical)
+		{
+			return;
+		}
 
-	case ImageAspect::Depth:
-		aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-		break;
+		if (!logicalView.resolvedViewHandle.empty())
+		{
+			return;
+		}
 
-	case ImageAspect::Stencil:
-		aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-		break;
+		auto* logicalImage =
+			images_.get(logicalView.key.image);
 
-	case ImageAspect::None:
-		//
-		// Treat None as "infer from format".
-		//
-		assert(false && "not implemented");
-		//aspectMask = VkAspectMaskFromFormat(vkFormat);
-		break;
+		assert(logicalImage);
+		assert(!logicalImage->resolvedImageHandle.empty());
 
-	default:
-		assert(false && "Unsupported ImageAspect");
-		break;
+		ImageViewCreateInfo ci{};
+
+		ci.viewType =
+			logicalView.key.viewType;
+
+		ci.format =
+			logicalView.key.format;
+
+		ci.subresourceRange =
+			logicalView.key.subresourceRange;
+
+		ci.name =
+			logicalView.name;
+
+		logicalView.resolvedViewHandle =
+			ctx_.CreateImageView(
+				logicalImage->resolvedImageHandle,
+				ci
+			).release();
 	}
-
-	assert(aspectMask != 0);
-
-
-	// ------------------------------------------------------------
-	// Validate range
-	// ------------------------------------------------------------
-
-	const auto& range =
-		key.subresourceRange;
-
-	assert(range.baseMipLevel < image->mipLevels);
-	assert(range.baseArrayLayer < image->arrayLayers);
-
-	assert(range.mipLevelCount > 0);
-	assert(range.arrayLayerCount > 0);
-
-	assert(
-		range.baseMipLevel + range.mipLevelCount <=
-		image->mipLevels
 	);
-
-	assert(
-		range.baseArrayLayer + range.arrayLayerCount <=
-		image->arrayLayers
-	);
-
-
-	// ------------------------------------------------------------
-	// Resolve view type
-	// ------------------------------------------------------------
-
-	VkImageViewType vkViewType = toVkImageViewType(key.viewType);
-
-	// ------------------------------------------------------------
-	// Extra validation for cube views
-	// ------------------------------------------------------------
-
-	if (vkViewType == VK_IMAGE_VIEW_TYPE_CUBE)
-	{
-		assert(range.arrayLayerCount == 6);
-	}
-
-	if (vkViewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
-	{
-		assert(
-			range.arrayLayerCount >= 6 &&
-			(range.arrayLayerCount % 6) == 0
-		);
-	}
-
-
-	// ------------------------------------------------------------
-	// Create VkImageView
-	// ------------------------------------------------------------
-
-	VkImageViewCreateInfo viewCI{
-		VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
-	};
-
-	viewCI.image =
-		image->vkImage;
-
-	viewCI.viewType =
-		vkViewType;
-
-	viewCI.format =
-		vkFormat;
-
-	viewCI.components = {
-		VK_COMPONENT_SWIZZLE_IDENTITY,
-		VK_COMPONENT_SWIZZLE_IDENTITY,
-		VK_COMPONENT_SWIZZLE_IDENTITY,
-		VK_COMPONENT_SWIZZLE_IDENTITY
-	};
-
-	viewCI.subresourceRange = {
-		.aspectMask =
-			aspectMask,
-
-		.baseMipLevel =
-			range.baseMipLevel,
-
-		.levelCount =
-			range.mipLevelCount,
-
-		.baseArrayLayer =
-			range.baseArrayLayer,
-
-		.layerCount =
-			range.arrayLayerCount,
-	};
-
-
-	VkImageView result =
-		VK_NULL_HANDLE;
-
-	VK_CHECK(
-		vkCreateImageView(
-			ctx_.core_.GetDevice(),
-			&viewCI,
-			nullptr,
-			&result
-		)
-	);
-
-	assert(result != VK_NULL_HANDLE);
-
-	return result;
 }
 void smvk::RenderGraph::ResolveImages() {
 	images_.forEach(
@@ -5705,6 +5579,7 @@ void smvk::RenderGraph::ResolveBuffers()
 void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 {
 	ResolveImages();
+	ResolveImageViews();
 	ResolveBuffers();
 
 	for (auto& pass : passes_) {
@@ -5718,9 +5593,8 @@ void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
 			};
 
-			info.imageView =
-				GetResolvedImageView(att.view);
-			info.imageLayout =
+			info.imageView = GetImageView(this, att.view);
+				info.imageLayout =
 				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 			info.loadOp =
 				toVkAttachmentLoadOp(att.loadOp);
@@ -5749,7 +5623,7 @@ void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 				FormatHasStencil(
 					toVkFormat(depthFormat));
 			depthInfo.imageView =
-				GetResolvedImageView(
+				GetImageView(this,
 					pass.depthAttachment_.view);
 			depthInfo.imageLayout =
 				hasStencil

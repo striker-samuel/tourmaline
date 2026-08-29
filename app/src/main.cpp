@@ -356,31 +356,12 @@ private:
 		// Render graph
 		// -------------------------------------------------------------------------
 
-		//auto shadowImage =
-		//	m_rendergraph->AddImage(
-		//		shadowMapCI,
-		//		"shadowMap1"
-		//	);
-		auto shadowImage =
-			m_rendergraph->AddExternalImage(
-				shadow.image,
-				"shadowMap1"
-			);
-
 		m_viewportResources.shadowmapLogicalViews[0] =
-			m_rendergraph->AddImageView(
-				shadowImage,
-				smvk::ImageViewType::View2D,
-				smvk::Format::Undefined,
-				{
-					.aspect = smvk::ImageAspect::Depth,
-					.baseMipLevel = 0,
-					.mipLevelCount = 1,
-					.baseArrayLayer = 0,
-					.arrayLayerCount = 1,
-				},
+			m_rendergraph->AddExternalImageView(
+				m_context->imageViews_.get(shadow.sampledView)->vkView,
+				shadowMapFormat,
 				"shadowMapView1"
-				);
+			);
 
 		// singla sync req would be better
 		// Manual Barrier transition

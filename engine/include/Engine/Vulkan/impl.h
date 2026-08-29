@@ -375,13 +375,13 @@ namespace smvk {
 		//
 		Holder<ImageHandle>          CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<TextureHandle>        CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
-		Holder<TextureHandle>        CreateTexture(ktxTexture2& texture, const char* debugName = nullptr);
+		Holder<TextureHandle>        CreateTexture(ktxTexture2& texture, const char* debugName = "Texture");
 		Holder<BindlessImageHandle>  CreateBindlessImage(ImageViewHandle viewHandle, VkImageLayout readLayout);
 		Holder<ImageViewHandle>      CreateImageView(ImageHandle image, const ImageViewCreateInfo& createInfo);
-		Holder<BufferHandle>         CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = nullptr);
-		Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = nullptr);
+		Holder<BufferHandle>         CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = "Buffer");
+		Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = "DescriptorPool");
 
-		Holder<ShaderModuleHandle>   CreateShaderModule(std::vector<char> code, const char* debugName = nullptr);
+		Holder<ShaderModuleHandle>   CreateShaderModule(std::vector<char> code, const char* debugName = "ShaderModule");
 
 		void* MapBuffer(BufferHandle handle);
 		void UnmapBuffer(BufferHandle handle);
