@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
+#include <span>
 
 #include "volk.h"
 #include <GLFW/glfw3.h>
@@ -1593,8 +1594,8 @@ static inline VkDescriptorSetLayoutBinding getDSLBinding(uint32_t binding,
 	};
 }
 
-int smvk::VulkanResourceManager::Initialize() {
-
+smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore& core) :core_(core)
+{ 
 	VmaAllocatorCreateInfo allocatorCreateInfo = {};
 	allocatorCreateInfo.physicalDevice = physicalDevice_;
 	allocatorCreateInfo.device = device_;
@@ -1721,9 +1722,7 @@ int smvk::VulkanResourceManager::Initialize() {
 
 	// ============================================================================
 
-	return 0; // no error
 }
-smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore& core) :core_(core) { Initialize(); }
 smvk::VulkanResourceManager::~VulkanResourceManager() {
 	VK_CHECK(vkDeviceWaitIdle(device_));
 
@@ -1840,7 +1839,7 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 	assert(buf->vkBuffer != VK_NULL_HANDLE);
 
 	auto han = m_submitter->acquire();
-	auto cmd = m_submitter->GetCommandBuffer(han).cmd;
+	auto cmd = m_submitter->GetCommandBuffer(han);
 	if (buf->isMappable()) {
 		VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, buf->vma_alloc, dest_offset, dataSize));
 		// this would be better served with a sync request pushed to a list.
@@ -1982,8 +1981,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	VkCommandBuffer cmd =
 		m_submitter
-		->GetCommandBuffer(submitHandle)
-		.cmd;
+		->GetCommandBuffer(submitHandle);
 
 
 	// -------------------------------------------------------------------------
@@ -2284,9 +2282,9 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	ImageHandle handle =
 		images_.create(std::move(image));
 
+	Image* imagePtr = images_.get(handle);
 	if (data)
 	{
-		Image* imagePtr = images_.get(handle);
 
 		assert(
 			((imagePtr->usage & ImageUsage::TransferDst) != ImageUsage::None) &&
@@ -2300,6 +2298,42 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 			VK_ACCESS_2_TRANSFER_WRITE_BIT,
 			0
 		);
+	}
+	else {
+
+
+		// this is only a good solution if we go full GENERAL layout.
+		// havent decided yet
+
+		//VkImageSubresourceRange fullRange{
+		//	.aspectMask = VkAspectMaskFromFormat(toVkFormat(imagePtr->format)),
+		//	.baseMipLevel = 0,
+		//	.levelCount = VK_REMAINING_MIP_LEVELS,
+		//	.baseArrayLayer = 0,
+		//	.layerCount = VK_REMAINING_ARRAY_LAYERS
+		//};
+
+		//auto han = m_submitter->acquire();
+		//auto cmd = m_submitter->GetCommandBuffer(han);
+		//// This should be added to a current command, instead of just spawning one submit!.
+		//ImageBarrier(
+		//	cmd.cmd,
+		//	imagePtr->vkImage,
+
+		//	VK_IMAGE_LAYOUT_UNDEFINED,
+		//	VK_IMAGE_LAYOUT_GENERAL,
+		//	fullRange,
+		//	VK_PIPELINE_STAGE_2_NONE,
+		//	0,
+
+		//	VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+		//	VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+		//	VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+		//	VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+		//	VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+		//);
+		//m_submitter->submit(han);
+		//m_submitter->wait(han);
 	}
 
 	return Holder<ImageHandle>{
@@ -2506,7 +2540,7 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		transferFunction == KHR_DF_TRANSFER_SRGB;
 
 	const bool useSRGB =
-	/*	srgb || */ktxIsSRGB;
+		/*	srgb || */ktxIsSRGB;
 
 
 	// -------------------------------------------------------------------------
@@ -3206,8 +3240,7 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		m_submitter
 		->GetCommandBuffer(
 			submitHandle
-		)
-		.cmd;
+		);
 
 
 	// -------------------------------------------------------------------------
@@ -3482,6 +3515,7 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 
 	++image->liveViewCount;
 
+
 	return Holder<ImageViewHandle>{
 		this,
 			imageViews_.create(std::move(view))
@@ -3627,6 +3661,9 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 	if (!(m_needToUpdateTextures || m_needToUpdateSamplers))
 		return;
 
+	// check for these missing.
+	//maxDescriptorSetUpdateAfterBindSampledImages
+	//maxDescriptorSetUpdateAfterBindSamplers
 	struct PendingImageWrite
 	{
 		uint32_t slot;
@@ -3992,238 +4029,497 @@ inline void ImageBarrier(
 }
 
 // Submitter
-inline smvk::Submitter::Submitter(VulkanCore& core, uint32_t queueIndex) : core_(core)
+
+inline smvk::Submitter::Submitter(
+	VulkanCore& core,
+	uint32_t queueIndex)
+	: core_(core)
 {
-	m_queue = graphicsQueue_; // this should pick with queueIndex
-	VkCommandPoolCreateInfo poolInfo
-	{
+	// Fix this according to however VulkanCore stores queues.
+	m_queue = graphicsQueue_;
+
+	VkCommandPoolCreateInfo poolInfo{
 		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, // this is needed to reset individual cmdbuf in the pool
+		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
 		.queueFamilyIndex = core.indices.graphicsFamily.value()
 	};
-	vkCreateCommandPool(device_, &poolInfo, nullptr, &pool_);
 
-	if (pool_ == VK_NULL_HANDLE) { assert(false && "no commandPool"); };
+	VK_CHECK(vkCreateCommandPool(
+		device_,
+		&poolInfo,
+		nullptr,
+		&pool_));
+
+	assert(pool_ != VK_NULL_HANDLE);
+
 	VkCommandBufferAllocateInfo info{
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-		.pNext = nullptr,
 		.commandPool = pool_,
-		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, //yes, just primary
-		.commandBufferCount = kMax,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+		.commandBufferCount = kMax
 	};
-	VkCommandBuffer m_buffers_[kMax];
-	VK_CHECK(vkAllocateCommandBuffers(device_, &info, m_buffers_));
 
-	for (int i = 0; i < kMax; i++) {
-		commandBuffers_[i].allocatedCmd_ = m_buffers_[i];
-		commandBuffers_[i].wrapper_.isEncoding_ = false;
-		//core_.CreateFence(VkFenceCreateInfo{ .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = 0 }, commandBuffers_[i].wrapper_.fence_);
-		CreateTimelineSemaphore(0, commandBuffers_[i].wrapper_.finishedSignalSemaphore.semaphore_);
+	VkCommandBuffer buffers[kMax]{};
+
+	VK_CHECK(vkAllocateCommandBuffers(
+		device_,
+		&info,
+		buffers));
+
+	for (uint32_t i = 0; i < kMax; ++i)
+	{
+		WrapperSlot& slot = commandBuffers_[i];
+
+		slot.allocatedCmd_ = buffers[i];
+		slot.cmd_ = VK_NULL_HANDLE;
+		slot.state_ = CommandState::Free;
+		slot.retireValue_ = 0;
+		slot.gen_ = 1;
+	}
+
+	CreateTimelineSemaphore(
+		0,
+		m_timelineSemaphore);
+
+	assert(m_timelineSemaphore != VK_NULL_HANDLE);
+
+	m_timelineValue = 1;
+	m_lastTimelineValue = 0;
+}
+inline smvk::Submitter::~Submitter()
+{
+	if (device_ == VK_NULL_HANDLE)
+		return;
+
+	waitAll();
+
+#ifndef NDEBUG
+	for (uint32_t i = 0; i < kMax; ++i)
+	{
+		assert(
+			commandBuffers_[i].state_ != CommandState::Recording &&
+			"Submitter destroyed while command buffer is recording");
+	}
+#endif
+
+	if (m_timelineSemaphore != VK_NULL_HANDLE)
+	{
+		vkDestroySemaphore(
+			device_,
+			m_timelineSemaphore,
+			nullptr);
+
+		m_timelineSemaphore = VK_NULL_HANDLE;
+	}
+
+	if (pool_ != VK_NULL_HANDLE)
+	{
+		vkDestroyCommandPool(
+			device_,
+			pool_,
+			nullptr);
+
+		pool_ = VK_NULL_HANDLE;
 	}
 }
-inline smvk::Submitter::~Submitter() {
-	if (device_ == VK_NULL_HANDLE) {
-		return;
-	}
+smvk::TimelinePoint smvk::Submitter::nextSignalPoint() const
+{
+	return TimelinePoint{
+		.semaphore = m_timelineSemaphore,
+		.value = m_timelineValue
+	};
+}
+VkResult smvk::Submitter::waitTimeline(
+	uint64_t value,
+	uint64_t timeout) const
+{
+	assert(value != 0);
+	assert(m_timelineSemaphore != VK_NULL_HANDLE);
 
-	vkDeviceWaitIdle(device_);
-	VkCommandBuffer m_buffers_[kMax]{};
+	VkSemaphore semaphore =
+		m_timelineSemaphore;
 
-	for (uint32_t i = 0; i < kMax; ++i) {
-		auto& wrapper = commandBuffers_[i].wrapper_;
-		assert(wrapper.isEncoding_ == false && "still encoding");
-		if (wrapper.finishedSignalSemaphore.semaphore_ != VK_NULL_HANDLE) {
-			vkDestroySemaphore(device_, wrapper.finishedSignalSemaphore.semaphore_, nullptr);
-			wrapper.finishedSignalSemaphore.semaphore_ = VK_NULL_HANDLE;
+	VkSemaphoreWaitInfo waitInfo{
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+		.semaphoreCount = 1,
+		.pSemaphores = &semaphore,
+		.pValues = &value
+	};
+
+	return vkWaitSemaphores(
+		device_,
+		&waitInfo,
+		timeout);
+}
+
+[[nodiscard]]
+inline smvk::CommandSubmitHandle
+smvk::Submitter::acquire()
+{
+	purge();
+
+	if (availableSlots == 0)
+	{
+		uint64_t oldest = UINT64_MAX;
+
+		for (const WrapperSlot& slot : commandBuffers_)
+		{
+			if (slot.state_ == CommandState::Submitted)
+			{
+				oldest = std::min(
+					oldest,
+					slot.retireValue_);
+			}
 		}
 
-		m_buffers_[i] = commandBuffers_[i].allocatedCmd_;
-		commandBuffers_[i].allocatedCmd_ = VK_NULL_HANDLE;
-		wrapper.isEncoding_ = false;
+		if (oldest != UINT64_MAX)
+		{
+			VK_CHECK(waitTimeline(
+				oldest,
+				UINT64_MAX));
+
+			purge();
+		}
+		else
+		{
+			assert(
+				false &&
+				"All command buffers are currently recording");
+
+			return {};
+		}
 	}
 
-	if (pool_ != VK_NULL_HANDLE) {
-		vkFreeCommandBuffers(device_, pool_, kMax, m_buffers_);
-		vkDestroyCommandPool(device_, pool_, nullptr);
-	}
-}
-[[nodiscard]] inline smvk::CommandSubmitHandle smvk::Submitter::acquire(uint32_t goal)
-{
-	WrapperSlot* picked = nullptr;
-	uint32_t pickedIndex = 0;
+	uint32_t pickedIndex =
+		UINT32_MAX;
 
-	if (availableSlots == 0) {
-		waitAll(); // this is naive. works but could be better
-	};
-
-	// just iterate to find first free.  this abuses gens of earlier indexes
-	// Maybe sort on gen an pick earlier
-	for (auto& slot : commandBuffers_) {
-		if (slot.wrapper_.cmd == VK_NULL_HANDLE) {
-			picked = &slot;
+	for (uint32_t i = 0; i < kMax; ++i)
+	{
+		if (commandBuffers_[i].state_ == CommandState::Free)
+		{
+			pickedIndex = i;
 			break;
 		}
-		pickedIndex++;
-	}
-	if (picked == nullptr) { assert(false); }
-	if (pickedIndex == kMax) {
-		assert(false && "couldnt pick");
 	}
 
-	picked->wrapper_.cmd = picked->allocatedCmd_;
-	picked->wrapper_.finishedSignalSemaphore.goal_ = goal + picked->gen_;
-	availableSlots--;
+	assert(pickedIndex != UINT32_MAX);
+
+	WrapperSlot& slot =
+		commandBuffers_[pickedIndex];
+
+	slot.cmd_ =
+		slot.allocatedCmd_;
+
+	slot.state_ =
+		CommandState::Recording;
+
+	slot.retireValue_ =
+		0;
 
 	VkCommandBufferBeginInfo beginInfo{
-		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+		.sType =
+			VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+
+		.flags =
+			VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
 	};
 
-	vkBeginCommandBuffer(picked->wrapper_.cmd, &beginInfo);
-	return CommandSubmitHandle{ .index_ = pickedIndex , .gen_ = picked->gen_ };
+	VK_CHECK(vkBeginCommandBuffer(
+		slot.cmd_,
+		&beginInfo));
+
+	--availableSlots;
+
+	return CommandSubmitHandle{
+		.index_ = pickedIndex,
+		.gen_ = slot.gen_
+	};
 }
-[[nodiscard]] smvk::Submitter::CommandBuffer& smvk::Submitter::GetCommandBuffer(CommandSubmitHandle handle) {
+[[nodiscard]]
+VkCommandBuffer
+smvk::Submitter::GetCommandBuffer(
+	CommandSubmitHandle handle)
+{
 	assert(validHandle(handle));
-	return commandBuffers_[handle.index_].wrapper_;
+
+	WrapperSlot& slot =
+		commandBuffers_[handle.index_];
+
+	assert(
+		slot.state_ == CommandState::Recording);
+
+	return slot.cmd_;
 }
-inline void smvk::Submitter::submit(CommandSubmitHandle handle) {
-	if (handle.empty()) { assert(false && "empty handle"); };
-	if (!validHandle(handle)) { assert(false && "invalid handle"); }
-	auto& wrapper_ = commandBuffers_[handle.index_].wrapper_;
-	vkEndCommandBuffer(wrapper_.cmd);
-	uint32_t waitSemaphoresCount = 0;
-	VkSemaphoreSubmitInfo waitSemaphores[2];
-	//
-	VkSemaphoreSubmitInfo signalFinishedSemaphoresSubmitInfo{
-		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-		.semaphore = wrapper_.finishedSignalSemaphore.semaphore_,
-		.value = wrapper_.finishedSignalSemaphore.goal_,
-		.stageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT
+smvk::TimelinePoint
+smvk::Submitter::submit(
+	CommandSubmitHandle handle,
+	std::span<const TimelineWait> waits)
+{
+	assert(validHandle(handle));
+
+	WrapperSlot& slot =
+		commandBuffers_[handle.index_];
+
+	assert(
+		slot.state_ == CommandState::Recording);
+
+	assert(
+		slot.cmd_ != VK_NULL_HANDLE);
+
+	VK_CHECK(vkEndCommandBuffer(
+		slot.cmd_));
+
+	std::vector<VkSemaphoreSubmitInfo> waitInfos;
+	waitInfos.reserve(waits.size());
+
+	for (const TimelineWait& wait : waits)
+	{
+		assert(wait.point.valid());
+
+		waitInfos.push_back(
+			VkSemaphoreSubmitInfo{
+				.sType =
+					VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+
+				.semaphore =
+					wait.point.semaphore,
+
+				.value =
+					wait.point.value,
+
+				.stageMask =
+					wait.stageMask,
+
+				.deviceIndex = 0
+			});
+	}
+
+	const uint64_t signalValue =
+		m_timelineValue++;
+
+	assert(signalValue != 0);
+
+	VkSemaphoreSubmitInfo signalInfo{
+		.sType =
+			VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+
+		.semaphore =
+			m_timelineSemaphore,
+
+		.value =
+			signalValue,
+
+		.stageMask =
+			VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+
+		.deviceIndex = 0
 	};
 
-	VkCommandBufferSubmitInfo commandsSubmitInfo
-	{
-		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-		.pNext = nullptr,
-		.commandBuffer = wrapper_.cmd,
+	VkCommandBufferSubmitInfo cmdInfo{
+		.sType =
+			VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+
+		.commandBuffer =
+			slot.cmd_,
+
 		.deviceMask = 0
 	};
 
 	VkSubmitInfo2 submitInfo{
-		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-		.pNext = nullptr,
-		.waitSemaphoreInfoCount = waitSemaphoresCount,
-		.pWaitSemaphoreInfos = waitSemaphores,
+		.sType =
+			VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+
+		.waitSemaphoreInfoCount =
+			static_cast<uint32_t>(waitInfos.size()),
+
+		.pWaitSemaphoreInfos =
+			waitInfos.empty()
+				? nullptr
+				: waitInfos.data(),
+
 		.commandBufferInfoCount = 1,
-		.pCommandBufferInfos = &commandsSubmitInfo,
+		.pCommandBufferInfos = &cmdInfo,
+
 		.signalSemaphoreInfoCount = 1,
-		.pSignalSemaphoreInfos = &signalFinishedSemaphoresSubmitInfo
+		.pSignalSemaphoreInfos = &signalInfo
 	};
-	vkQueueSubmit2(m_queue, 1, &submitInfo, VK_NULL_HANDLE);
 
-	wrapper_.isEncoding_ = false;
-	m_lastSubmit = handle;
+	VK_CHECK(vkQueueSubmit2(
+		m_queue,
+		1,
+		&submitInfo,
+		VK_NULL_HANDLE));
+
+	slot.state_ =
+		CommandState::Submitted;
+
+	slot.retireValue_ =
+		signalValue;
+
+	m_lastTimelineValue =
+		signalValue;
+
+	m_lastSubmit =
+		handle;
+
+	return TimelinePoint{
+		.semaphore =
+			m_timelineSemaphore,
+
+		.value =
+			signalValue
+	};
 }
-inline bool smvk::Submitter::validHandle(CommandSubmitHandle handle) const { return handle.gen_ == commandBuffers_[handle.index_].gen_; }
-inline bool smvk::Submitter::isReady(CommandSubmitHandle handle) {
-	if (handle.gen_ < commandBuffers_[handle.index_].gen_) { return true; }; // already finished
-	// if too old this can lead to problems but uint32t_MAX OLD???
-	wait(handle); // crude
-	return true;
-} // TODO:: needs implementation
-inline void smvk::Submitter::purge() {
-	for (uint32_t i = 0; i < kMax; i++) {
-		auto& wrp = commandBuffers_[i].wrapper_;
-		if (wrp.cmd == VK_NULL_HANDLE || wrp.isEncoding_) { continue; }
-		uint64_t waitValue = wrp.finishedSignalSemaphore.goal_;
-		VkSemaphore semaphore = wrp.finishedSignalSemaphore.semaphore_;
-		VkSemaphoreWaitInfo waitInfo{
-			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-			.pNext = nullptr,
-			.flags = 0,
-			.semaphoreCount = 1,
-			.pSemaphores = &semaphore,
-			.pValues = &waitValue,
-		};
+inline bool
+smvk::Submitter::validHandle(
+	CommandSubmitHandle handle) const
+{
+	if (handle.index_ >= kMax)
+		return false;
+	if (handle.gen_ == 0)
+		return false;
+	return
+		handle.gen_ ==
+		commandBuffers_[handle.index_].gen_;
+}
+bool smvk::Submitter::isReady(
+    CommandSubmitHandle handle)
+{
+    if(handle.index_ >= kMax)
+        return false;
 
-		VkResult result = vkWaitSemaphores(
-			device_,
-			&waitInfo,
-			UINT64_MAX
-		);
-		if (result == VK_TIMEOUT) { assert(false); }
-		reset({ .index_ = i, .gen_ = commandBuffers_[i].gen_ });
+    WrapperSlot& slot =
+        commandBuffers_[handle.index_];
+
+    // Old generation already recycled.
+    if(handle.gen_ < slot.gen_)
+        return true;
+
+    if(handle.gen_ != slot.gen_)
+        return false;
+
+    if(slot.state_ == CommandState::Recording)
+        return false;
+
+    if(slot.state_ == CommandState::Free)
+        return true;
+
+    uint64_t completed = 0;
+
+    VK_CHECK(vkGetSemaphoreCounterValue(
+        device_,
+        m_timelineSemaphore,
+        &completed));
+
+    return
+        completed >=
+        slot.retireValue_;
+}
+void smvk::Submitter::purge()
+{
+	uint64_t completedValue = 0;
+
+	VK_CHECK(vkGetSemaphoreCounterValue(
+		device_,
+		m_timelineSemaphore,
+		&completedValue));
+
+	for (uint32_t i = 0; i < kMax; ++i)
+	{
+		WrapperSlot& slot = commandBuffers_[i];
+
+		if (slot.state_ != CommandState::Submitted)
+			continue;
+
+		if (slot.retireValue_ <= completedValue)
+		{
+			recycleSlot(i);
+		}
 	}
 }
-inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout) {
-	auto wrp = GetCommandBuffer(handle);
-	if (wrp.cmd == VK_NULL_HANDLE || wrp.isEncoding_) { assert(false); }
-	uint64_t waitValue = wrp.finishedSignalSemaphore.goal_;
-	VkSemaphore semaphore = wrp.finishedSignalSemaphore.semaphore_;
+inline void smvk::Submitter::wait(
+	CommandSubmitHandle handle,
+	uint64_t timeout)
+{
+	if (handle.index_ >= kMax)
+	{
+		assert(false && "invalid handle");
+		return;
+	}
 
-	VkSemaphoreWaitInfo waitInfo{
-		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.semaphoreCount = 1,
-		.pSemaphores = &semaphore,
-		.pValues = &waitValue,
-	};
-	VkResult result = vkWaitSemaphores(device_,
-		&waitInfo,
-		timeout
-	);
+	WrapperSlot& slot =
+		commandBuffers_[handle.index_];
 
-	if (result == VK_TIMEOUT) { assert(false && "timeout reached"); }
-	reset(handle);
-
-}
-inline void smvk::Submitter::waitAll() {
-	VkSemaphore sems[kMax];
-	uint64_t goals[kMax];
-	uint32_t numSems = 0;
-
-	for (uint32_t i = 0; i < kMax; i++) {
-		auto& wrp = commandBuffers_[i].wrapper_;
-		if (wrp.cmd == VK_NULL_HANDLE || wrp.isEncoding_) { continue; }
-		goals[numSems] = wrp.finishedSignalSemaphore.goal_;
-		sems[numSems] = wrp.finishedSignalSemaphore.semaphore_;
-		numSems++;
-	};
-
-	if (numSems == 0)
+	// Already recycled.
+	if (handle.gen_ < slot.gen_)
 		return;
 
-	VkSemaphoreWaitInfo waitInfo{
-		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.semaphoreCount = numSems,
-		.pSemaphores = sems,
-		.pValues = goals,
-	};
+	assert(validHandle(handle));
 
-	VK_CHECK(vkWaitSemaphores(device_, &waitInfo, UINT64_MAX));
+	assert(
+		slot.state_ == CommandState::Submitted &&
+		"Cannot wait on command buffer before submit");
 
-	for (uint32_t i = 0; i < kMax; i++) {
-		auto& wrp = commandBuffers_[i].wrapper_;
-		if (wrp.cmd == VK_NULL_HANDLE || wrp.isEncoding_) { continue; }
-		reset({ i, commandBuffers_[i].gen_ });
-	};
+	VkResult result =
+		waitTimeline(
+			slot.retireValue_,
+			timeout);
 
-}
-inline void smvk::Submitter::reset(CommandSubmitHandle handle) {
-	auto& wrapper = GetCommandBuffer(handle);
-	wrapper.isEncoding_ = false;
-	vkResetCommandBuffer(wrapper.cmd, VkCommandBufferResetFlags{ 0 });
-	wrapper.cmd = VK_NULL_HANDLE;
-	auto& gen = commandBuffers_[handle.index_].gen_;
-	gen++;
-	// if overflowing set to 1. 
-	if (gen == 0) {
-		gen = 1;
+	if (result == VK_TIMEOUT)
+	{
+		assert(false && "timeout reached");
+		return;
 	}
-	availableSlots++;
+
+	VK_CHECK(result);
+
+	recycleSlot(
+		handle.index_);
+}
+void smvk::Submitter::waitAll()
+{
+	if (m_lastTimelineValue == 0)
+		return;
+
+	VK_CHECK(waitTimeline(
+		m_lastTimelineValue,
+		UINT64_MAX));
+
+	purge();
+}
+void smvk::Submitter::recycleSlot(
+	uint32_t index)
+{
+	assert(index < kMax);
+
+	WrapperSlot& slot =
+		commandBuffers_[index];
+
+	assert(
+		slot.state_ == CommandState::Submitted);
+
+	assert(
+		slot.cmd_ != VK_NULL_HANDLE);
+
+	VK_CHECK(vkResetCommandBuffer(
+		slot.cmd_,
+		0));
+
+	slot.cmd_ =
+		VK_NULL_HANDLE;
+
+	slot.state_ =
+		CommandState::Free;
+
+	slot.retireValue_ =
+		0;
+
+	++slot.gen_;
+
+	if (slot.gen_ == 0)
+		slot.gen_ = 1;
+
+	++availableSlots;
 }
 
 // VulkanSwapchain
@@ -4432,10 +4728,10 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 
 	// Transition the image into the layout expected by depth attachment rendering.
 	auto handle = ctx_.m_submitter->acquire();
-	auto wrapper = ctx_.m_submitter->GetCommandBuffer(handle);
+	auto cmd = ctx_.m_submitter->GetCommandBuffer(handle);
 
 	ImageBarrier(
-		wrapper.cmd,
+		cmd,
 		depthImage->vkImage,
 		VK_IMAGE_LAYOUT_UNDEFINED,
 		VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,

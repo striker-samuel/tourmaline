@@ -424,40 +424,6 @@ private:
 		proj[1][1] *= -1; // viewport fix ditecrly in proj
 
 		auto viewProj = proj * view;
-
-		// Host mapped version. CreateBuffer doesnt support properFlags
-		//void* mapped = m_context->MapBuffer(m_resources.frameUniforms);
-		//////this is wrong should check properly
-		////auto limits = core_->GetPhysicalDeviceProperties().properties.limits;
-		////if (!limits.minStorageBufferOffsetAlignment == 16) {assert(false) ;}
-		////if (!limits.minUniformBufferOffsetAlignment == 16) {assert(false) ;}
-		//auto* curr = reinterpret_cast<FrameUniforms*>(
-		//	static_cast<std::byte*>(mapped) +
-		//	currentFrame * sizeof(FrameUniforms)
-		//	);
-		//curr->cameraPos = m_cameraPositioner.cameraPosition_;
-
-		//curr->view = view;
-		//curr->proj = proj;
-		//curr->viewProj = viewProj;
-
-		//curr->invView = glm::inverse(view);
-		//curr->invProj = glm::inverse(proj);
-		//curr->invViewProj = glm::inverse(viewProj);
-
-		//curr->time = 0.0f;
-		//curr->viewportSize = { width_, height_ };
-		//curr->invViewportSize = { 1.0f / width_, 1.0f / height_ };
-
-		//// Not in use now
-		//curr->nearPlane = 0.f;
-		//curr->farPlane = 0.f;
-		//curr->exposure = 0.f;
-
-		//FrameUniforms copy = *curr;
-		//m_context->UnmapBuffer(m_resources.frameUniforms);
-		//return copy;
-
 		FrameUniforms data;
 		data.cameraPos = m_cameraPositioner.cameraPosition_;
 
@@ -671,11 +637,13 @@ private:
 				}
 
 			);
+
+			// PC were hardcoded in pipelineCreation to ALL 128 wide
 			cmd.PushConstants(
 				0,
 				sizeof(PushConstants),
 				&pc,
-				smvk::ShaderStage::AllGraphics
+				smvk::ShaderStage::All 
 			);
 
 			// Render meshes with cull mode BACK (render front faces from light's perspective)
@@ -706,7 +674,8 @@ private:
 					offsetof(PushConstants, model),
 					sizeof(objectPC.model),
 					objectPC.model,
-					smvk::ShaderStage::Vertex
+					//smvk::ShaderStage::Vertex
+					smvk::ShaderStage::All
 				);
 
 				for (auto& draw_set : meshDesc->geometry.surfaces) {
@@ -763,7 +732,7 @@ private:
 				0,
 				sizeof(PushConstants),
 				&pc,
-				smvk::ShaderStage::AllGraphics
+				smvk::ShaderStage::All
 			);
 
 			m_world->forEachNode(
@@ -799,13 +768,13 @@ private:
 					offsetof(PushConstants, materialId),
 					sizeof(pc.materialId),
 					&pc.materialId,
-					smvk::ShaderStage::AllGraphics
+					smvk::ShaderStage::All
 				);
 				cmd.PushConstants(
 					0,
 					offsetof(PushConstants, frameUniforms),
 					&pc,
-					smvk::ShaderStage::AllGraphics
+					smvk::ShaderStage::All
 				);
 
 				for (auto& draw_set : meshDesc->geometry.surfaces) {

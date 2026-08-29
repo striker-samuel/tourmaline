@@ -8,6 +8,7 @@
 #include <ktx.h>
 #include <ktxVulkan.h>
 
+#include <span>
 #include <string_view>
 #include <unordered_map>
 
@@ -240,6 +241,33 @@ namespace smvk {
 	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window);
 	//std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreHeadless(smvk::VulkanCore::CoreConfiguration config);
 
+	//struct ImageSyncRequest {
+	//	VkImage image = VK_NULL_HANDLE;
+	//	VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	//	VkImageLayout newLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	//	VkImageSubresourceRange subresourceRange{
+	//		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+	//		.baseMipLevel = 0,
+	//		.levelCount = VK_REMAINING_MIP_LEVELS,
+	//		.baseArrayLayer = 0,
+	//		.layerCount = VK_REMAINING_ARRAY_LAYERS,
+	//	};
+	//	VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
+	//	VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
+	//	VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	//	VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
+	//	uint32_t srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	//	uint32_t dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	//};
+	//struct BufferSyncRequest {
+	//	VkBuffer buffer = VK_NULL_HANDLE;
+	//	VkDeviceSize offset = 0;
+	//	VkDeviceSize size = VK_WHOLE_SIZE;
+	//	VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
+	//	VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
+	//	VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	//	VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
+	//};
 
 	//
 	struct CommandSubmitHandle {
@@ -247,81 +275,92 @@ namespace smvk {
 		uint32_t gen_ = 0; // gen 0 means no slot. alas empty. 
 		bool empty() const { return gen_ == 0; };
 	};
-	struct ImageSyncRequest {
-		VkImage image = VK_NULL_HANDLE;
-		VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		VkImageLayout newLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		VkImageSubresourceRange subresourceRange{
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.baseMipLevel = 0,
-			.levelCount = VK_REMAINING_MIP_LEVELS,
-			.baseArrayLayer = 0,
-			.layerCount = VK_REMAINING_ARRAY_LAYERS,
-		};
-		VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
-		VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
-		VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-		VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
-		uint32_t srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		uint32_t dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+
+	struct TimelinePoint
+	{
+		VkSemaphore semaphore = VK_NULL_HANDLE;
+		uint64_t value = 0;
+
+		explicit operator bool() const
+		{
+			return semaphore != VK_NULL_HANDLE && value != 0;
+		}
+
+		[[nodiscard]]
+		bool valid() const noexcept
+		{
+			return semaphore != VK_NULL_HANDLE && value != 0;
+		}
 	};
-	struct BufferSyncRequest {
-		VkBuffer buffer = VK_NULL_HANDLE;
-		VkDeviceSize offset = 0;
-		VkDeviceSize size = VK_WHOLE_SIZE;
-		VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
-		VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
-		VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-		VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
+
+	struct TimelineWait
+	{
+		TimelinePoint point{};
+		VkPipelineStageFlags2 stageMask =
+			VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
 	};
-	struct Submitter {
-		struct SemaphoreState {
-			VkSemaphore semaphore_ = VK_NULL_HANDLE;
-			uint64_t initialValue_ = 0;
-			uint64_t goal_ = 1; //defautl to 1
+
+	struct Submitter
+	{
+		enum class CommandState : uint8_t
+		{
+			Free,
+			Recording,
+			Submitted
 		};
-		//
-		struct CommandBuffer { // duplicated from rendergraph. commandBuffer
-			VkCommandBuffer cmd = VK_NULL_HANDLE;
-			SemaphoreState finishedSignalSemaphore{};
-			bool isEncoding_ = false;
-		};
-		struct WrapperSlot {
-			CommandBuffer wrapper_{};
+
+		struct WrapperSlot
+		{
+			VkCommandBuffer cmd_ = VK_NULL_HANDLE;
 			VkCommandBuffer allocatedCmd_ = VK_NULL_HANDLE;
 			uint32_t gen_ = 1;
-			//uint32_t index = UINT32_MAX;  // load balancing gens sorting and using this
+			CommandState state_ = CommandState::Free;
+			uint64_t retireValue_ = 0;
 		};
+
 		Submitter(VulkanCore& core, uint32_t queueIndex);
 		~Submitter();
-		CommandSubmitHandle acquire(uint32_t goal = 1);
-		CommandBuffer& GetCommandBuffer(CommandSubmitHandle handle);
-		void submit(CommandSubmitHandle handle);
+
+		CommandSubmitHandle acquire();
+		VkCommandBuffer GetCommandBuffer(CommandSubmitHandle handle);
+		TimelinePoint submit(CommandSubmitHandle handle, std::span<const TimelineWait> waits = {});
 		bool validHandle(CommandSubmitHandle handle) const;
 		bool isReady(CommandSubmitHandle handle);
 		void wait(CommandSubmitHandle handle, uint64_t timeout = UINT64_MAX);
 		void waitAll();
 		void purge();
-	private:
-		void reset(CommandSubmitHandle handle);
-		VulkanCore& core_;
-		VkCommandPool pool_;
-		VkQueue m_queue = VK_NULL_HANDLE;
-		static const uint32_t kMax = 12;
-		uint32_t availableSlots = kMax;
-		WrapperSlot commandBuffers_[kMax];
-		CommandSubmitHandle m_lastSubmit{}; // not in use right now. used for creating linkedList for a faux dependency chain
+		TimelinePoint nextSignalPoint() const;
 
+	private:
+		void recycleSlot(uint32_t index);
+		VkResult waitTimeline(
+			uint64_t value,
+			uint64_t timeout = UINT64_MAX) const;
+
+	private:
+		VulkanCore& core_;
+
+		VkQueue m_queue = VK_NULL_HANDLE;
+		CommandSubmitHandle m_lastSubmit{};
 		VkSemaphore m_timelineSemaphore = VK_NULL_HANDLE;
 		uint64_t m_timelineValue = 1;
+		uint64_t m_lastTimelineValue = 0;
+
+		// CommandPool
+		VkCommandPool pool_ = VK_NULL_HANDLE;
+		static constexpr uint32_t kMax = 12;
+		uint32_t availableSlots = kMax;
+		WrapperSlot commandBuffers_[kMax];
 	};
+
 	struct DeferredTask {
 		DeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle) : task_(std::move(task)), handle_(handle) {}
 		std::packaged_task<void()> task_;
 		CommandSubmitHandle handle_;
 	};
 
-	struct VulkanResourceManager{
+	struct VulkanResourceManager {
 
 		VulkanResourceManager(VulkanCore& core);
 		~VulkanResourceManager();
@@ -330,8 +369,7 @@ namespace smvk {
 		VulkanResourceManager(VulkanResourceManager&&) = delete;
 		VulkanResourceManager& operator=(VulkanResourceManager&&) = delete;
 
-		int Initialize();
-		// 	
+		//
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
 		void ProcessDeferrredTasks();
 		//
@@ -350,24 +388,20 @@ namespace smvk {
 
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		void UploadDataToImage2D(const Image& image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset);
-		//void UploadDataToImage2D(Image img, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
-
 
 		void UpdateDescriptors(uint32_t frameIndex = 0);
 		uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
 
-		// VulkanImpl
 		VulkanCore& core_;
 		VmaAllocator m_allocator;
 		Submitter* m_submitter = nullptr;
 		std::vector<DeferredTask> m_deferredTasks;
 
-		//  Binding Model
 		VkDescriptorSetLayout defaultSetLayout{};
 		VkPipelineLayout defaultPipeLayout{};
 		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT]{};
-		// Resources
 
+		// Resources
 		Pool<ImageTag, Image> images_;
 		Pool<TextureTag, Texture> textures_;
 		Pool<BufferTag, Buffer> buffers_;
