@@ -125,24 +125,41 @@ float3 EvaluateDirectLight(
     return baseColor * lightColor * NdotL * shadow;
 }
 
-
 PSOut mainPS(PSIn IN)
 {
-    
     PSOut OUT;
-    float4x4 lightView;
-    float4x4 lightViewProj;
 
     MaterialValues values = pc.bMats.Get().mats[pc.materialId];
+
     uint diffuseTexIdx = values.tex.x;
-    float4 texSample = textures[diffuseTexIdx].Sample(samplers[0], IN.uv); // using #0 sampler always hmmmm fix this! 
-    float3 baseColor = IN.color * values.diffuse.rgb * texSample.rgb;
+
+    float4 texSample =
+        textures[diffuseTexIdx].Sample(samplers[0], IN.uv);
+
+    float3 baseColor =
+        IN.color *
+        values.diffuse.rgb *
+        texSample.rgb;
+
     float3 N = normalize(IN.normal);
 
-    float3 ambient = values.ambient.rgb * texSample.rgb;
-    float3 litColor = ambient;
-    litColor += EvaluateDirectLight(pc.bLights.Get().lights[0], IN.worldPos, N, baseColor);
+    float3 litColor = 0.0.xxx;
 
+    litColor += EvaluateDirectLight(
+        pc.bLights.Get().lights[0],
+        IN.worldPos,
+        N,
+        baseColor
+    );
+
+    // Ambient is the minimum/floor color.
+    float3 ambientFloor = baseColor * values.ambient;
+    litColor = max(litColor, ambientFloor);
+    OUT.outColor = float4(litColor, texSample.a);
+    return OUT;
+}
+    //OUT.outColor = float4(litColor, texSample.a);
+    //litColor += EvaluateDirectLight(pc.bLights.Get().lights[0], IN.worldPos, N, baseColor);
     //[loop]
     ////for (uint i = 0; i < MAX_LIGHTS; ++i)
     //for (uint i = 0; i < 1; ++i)
@@ -167,6 +184,3 @@ PSOut mainPS(PSIn IN)
     //        continue;
     //    }
     //}
-    OUT.outColor = float4(litColor.rgb, texSample.a);
-    return OUT;
-}

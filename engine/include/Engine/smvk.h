@@ -929,8 +929,7 @@ namespace smvk {
 
 	enum Bindings {
 		kBinding_Textures = 0, // position 0
-		kBinding_Samplers = 1, // kBinding_ComparisonSamplers = 2,
-		// I thought better to alias samplers with comparisonSamplers HLSLside.
+		kBinding_Samplers = 1, // I thought better to alias samplers with comparisonSamplers HLSLside.
 		kBinding_StorageImages = 2,
 		kBinding_NumBindings = 3 // this should be # of all other
 	};

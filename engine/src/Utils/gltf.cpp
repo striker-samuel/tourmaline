@@ -406,7 +406,8 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 
 		auto texture =
 			cluster.ctx_.CreateTexture(
-				*ktxTex
+				*ktxTex,
+				fullTexturePath.string().c_str()
 			);
 
 		ktxTexture2_Destroy(

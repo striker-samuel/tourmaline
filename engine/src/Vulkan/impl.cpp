@@ -1746,72 +1746,72 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	delete m_submitter;
 	m_submitter = nullptr;
 
-	#ifndef N_DEBUG
-		bool leakHeaderPrinted = false;
-	
-		auto printLeakHeader = [&]() {
-			if (!leakHeaderPrinted)
-			{
-				std::cout << "[ResourceContext::~ResourceContext] Leaking objects:\n";
-				leakHeaderPrinted = true;
-			}
-		};
-	
-		shaderModules_.forEachHandle([&](ShaderModuleHandle handle) {
+#ifndef N_DEBUG
+	bool leakHeaderPrinted = false;
+
+	auto printLeakHeader = [&]() {
+		if (!leakHeaderPrinted)
+		{
+			std::cout << "[ResourceContext::~ResourceContext] Leaking objects:\n";
+			leakHeaderPrinted = true;
+		}
+	};
+
+	shaderModules_.forEachHandle([&](ShaderModuleHandle handle) {
+		printLeakHeader();
+
+		auto sm = shaderModules_.get(handle);
+		std::cout << "  [LEAK] ShaderModule: handle index=" << handle.index()
+			<< ", gen=" << handle.gen() << ", module=" << *sm << "\n";
+	});
+
+	buffers_.forEachHandle([&](BufferHandle handle) {
+		printLeakHeader();
+
+		auto buf = buffers_.get(handle);
+		std::cout << "  [LEAK] Buffer: handle index=" << handle.index()
+			<< ", gen=" << handle.gen() << ", buffer=" << buf->vkBuffer
+			<< ", allocation=" << buf->vma_alloc << "\n";
+	});
+
+	samplers_.forEachHandle([&](SamplerHandle handle) {
+		printLeakHeader();
+
+		auto s = samplers_.get(handle);
+		std::cout << "  [LEAK] Sampler: handle index=" << handle.index()
+			<< ", gen=" << handle.gen() << ", sampler=" << *s << "\n";
+	});
+
+	descriptorPools_.forEachHandle([&](DescriptorPoolHandle handle) {
+		if (handle != defaultDescriptorPool)
+		{
 			printLeakHeader();
-	
-			auto sm = shaderModules_.get(handle);
-			std::cout << "  [LEAK] ShaderModule: handle index=" << handle.index()
-				<< ", gen=" << handle.gen() << ", module=" << *sm << "\n";
-		});
-	
-		buffers_.forEachHandle([&](BufferHandle handle) {
-			printLeakHeader();
-	
-			auto buf = buffers_.get(handle);
-			std::cout << "  [LEAK] Buffer: handle index=" << handle.index()
-				<< ", gen=" << handle.gen() << ", buffer=" << buf->vkBuffer
-				<< ", allocation=" << buf->vma_alloc << "\n";
-		});
-	
-		samplers_.forEachHandle([&](SamplerHandle handle) {
-			printLeakHeader();
-	
-			auto s = samplers_.get(handle);
-			std::cout << "  [LEAK] Sampler: handle index=" << handle.index()
-				<< ", gen=" << handle.gen() << ", sampler=" << *s << "\n";
-		});
-	
-		descriptorPools_.forEachHandle([&](DescriptorPoolHandle handle) {
-			if (handle != defaultDescriptorPool)
-			{
-				printLeakHeader();
-	
-				auto dp = descriptorPools_.get(handle);
-				std::cout << "  [LEAK] DescriptorPool: handle index=" << handle.index()
-					<< ", gen=" << handle.gen() << ", pool=" << *dp << "\n";
-			}
-		});
-	
-		images_.forEachHandle([&](ImageHandle handle) {
-			printLeakHeader();
-	
-			auto img = images_.get(handle);
-			std::cout << "  [LEAK] Image: handle index=" << handle.index()
-				<< ", gen=" << handle.gen() << ", image=" << img->vkImage
-				<< ", allocation=" << img->allocation << ", views="
-				<< img->liveViewCount << "\n";
-		});
-	
-		textures_.forEachHandle([&](TextureHandle handle) {
-			printLeakHeader();
-	
-			auto tex = textures_.get(handle);
-			std::cout << "  [LEAK] Texture: handle index=" << handle.index()
-				<< ", gen=" << handle.gen() << ", image=" << tex->image.empty()
-				<< "\n";
-		});
-	#endif
+
+			auto dp = descriptorPools_.get(handle);
+			std::cout << "  [LEAK] DescriptorPool: handle index=" << handle.index()
+				<< ", gen=" << handle.gen() << ", pool=" << *dp << "\n";
+		}
+	});
+
+	images_.forEachHandle([&](ImageHandle handle) {
+		printLeakHeader();
+
+		auto img = images_.get(handle);
+		std::cout << "  [LEAK] Image: handle index=" << handle.index()
+			<< ", gen=" << handle.gen() << ", image=" << img->vkImage
+			<< ", allocation=" << img->allocation << ", views="
+			<< img->liveViewCount << "\n";
+	});
+
+	textures_.forEachHandle([&](TextureHandle handle) {
+		printLeakHeader();
+
+		auto tex = textures_.get(handle);
+		std::cout << "  [LEAK] Texture: handle index=" << handle.index()
+			<< ", gen=" << handle.gen() << ", image=" << tex->image.empty()
+			<< "\n";
+	});
+#endif
 
 	vkDestroyPipelineLayout(device_, defaultPipeLayout, nullptr);
 	vkDestroyDescriptorSetLayout(device_, defaultSetLayout, nullptr);
@@ -2413,6 +2413,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	};
 
 	viewCI.name = imageCreateInfo.name;
+	// maybe append "view"
 
 	auto view = CreateImageView(
 		image,
@@ -2443,15 +2444,110 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 			textures_.create(std::move(texture))
 	};
 }
+static VkFormat toSRGBVkFormat(VkFormat format)
+{
+	// Returns the sRGB variant of a UNORM color format (so sampling auto-linearizes),
+	// or the same format if it has no sRGB counterpart / is already sRGB.
+	// Returns the sRGB Vulkan variant of a UNORM color format.
+	// Returns VK_FORMAT_UNDEFINED if there is no supported sRGB counterpart.
+	switch (format)
+	{
+	case VK_FORMAT_R8G8B8A8_UNORM:
+		return VK_FORMAT_R8G8B8A8_SRGB;
+
+	case VK_FORMAT_B8G8R8A8_UNORM:
+		return VK_FORMAT_B8G8R8A8_SRGB;
+
+	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+		return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+
+	case VK_FORMAT_BC2_UNORM_BLOCK:
+		return VK_FORMAT_BC2_SRGB_BLOCK;
+
+	case VK_FORMAT_BC3_UNORM_BLOCK:
+		return VK_FORMAT_BC3_SRGB_BLOCK;
+
+	case VK_FORMAT_BC7_UNORM_BLOCK:
+		return VK_FORMAT_BC7_SRGB_BLOCK;
+
+
+		// Already sRGB.
+	case VK_FORMAT_R8G8B8A8_SRGB:
+	case VK_FORMAT_B8G8R8A8_SRGB:
+	case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+	case VK_FORMAT_BC2_SRGB_BLOCK:
+	case VK_FORMAT_BC3_SRGB_BLOCK:
+	case VK_FORMAT_BC7_SRGB_BLOCK:
+		return format;
+
+	default:
+		return VK_FORMAT_UNDEFINED;
+	}
+}
 [[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ktxTexture2& texture, const char* debugName)
 {
+	// -------------------------------------------------------------------------
+	// KTX metadata
+	//
+	// `srgb` is an override:
+	//
+	//   true  -> force sRGB
+	//   false -> use KTX transfer-function metadata
+	//
+	// Read this before transcoding so the decision reflects the source asset.
+	// -------------------------------------------------------------------------
+
+	const khr_df_transfer_e transferFunction =
+		ktxTexture2_GetTransferFunction_e(
+			&texture
+		);
+
+	const bool ktxIsSRGB =
+		transferFunction == KHR_DF_TRANSFER_SRGB;
+
+	const bool useSRGB =
+	/*	srgb || */ktxIsSRGB;
+
+
+	// -------------------------------------------------------------------------
+	// Validate dimensions
+	// -------------------------------------------------------------------------
+
+	if (texture.numDimensions < 1 ||
+		texture.numDimensions > 3)
+	{
+		throw std::runtime_error(
+			"KTX texture has invalid dimensionality."
+		);
+	}
+
+	const bool is1D =
+		texture.numDimensions == 1;
+
+	const bool is2D =
+		texture.numDimensions == 2;
+
+	const bool is3D =
+		texture.numDimensions == 3;
+
+	const bool isCubemap =
+		texture.isCubemap == KTX_TRUE;
+
+	if (isCubemap && !is2D)
+	{
+		throw std::runtime_error(
+			"KTX cubemap must be a 2D texture."
+		);
+	}
+
+
 	// -------------------------------------------------------------------------
 	// Transcode
 	// -------------------------------------------------------------------------
 
 	if (ktxTexture2_NeedsTranscoding(&texture))
 	{
-		KTX_error_code result =
+		const KTX_error_code result =
 			ktxTexture2_TranscodeBasis(
 				&texture,
 				KTX_TTF_BC7_RGBA,
@@ -2466,21 +2562,53 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		}
 	}
 
+
 	// We currently expect pre-generated mipmaps.
-	texture.generateMipmaps = KTX_FALSE;
+	texture.generateMipmaps =
+		KTX_FALSE;
 
-	const VkFormat vkFormat =
-		ktxTexture2_GetVkFormat(&texture);
 
-	if (vkFormat == VK_FORMAT_UNDEFINED)
+	// -------------------------------------------------------------------------
+	// Format
+	// -------------------------------------------------------------------------
+
+	const VkFormat sourceVkFormat =
+		ktxTexture2_GetVkFormat(
+			&texture
+		);
+
+	if (sourceVkFormat == VK_FORMAT_UNDEFINED)
 	{
 		throw std::runtime_error(
 			"KTX texture has undefined VkFormat after transcoding."
 		);
 	}
 
+
+	VkFormat imageVkFormat =
+		sourceVkFormat;
+
+	if (useSRGB)
+	{
+		imageVkFormat =
+			toSRGBVkFormat(
+				sourceVkFormat
+			);
+
+		if (imageVkFormat == VK_FORMAT_UNDEFINED)
+		{
+			throw std::runtime_error(
+				"KTX texture requires sRGB sampling, "
+				"but its Vulkan format has no supported sRGB variant."
+			);
+		}
+	}
+
+
 	const Format format =
-		fromVkFormat(vkFormat);
+		fromVkFormat(
+			imageVkFormat
+		);
 
 	if (format == Format::Undefined)
 	{
@@ -2492,36 +2620,58 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	// -------------------------------------------------------------------------
 	// Description
+	//
+	// Vulkan requires unused dimensions to be exactly 1:
+	//
+	// 1D -> width x 1 x 1
+	// 2D -> width x height x 1
+	// 3D -> width x height x depth
 	// -------------------------------------------------------------------------
 
 	const uint32_t width =
-		texture.baseWidth;
+		std::max(
+			1u,
+			texture.baseWidth
+		);
 
 	const uint32_t height =
-		texture.baseHeight;
+		is1D
+		? 1u
+		: std::max(
+			1u,
+			texture.baseHeight
+		);
 
 	const uint32_t depth =
-		std::max(1u, texture.baseDepth);
+		is3D
+		? std::max(
+			1u,
+			texture.baseDepth
+		)
+		: 1u;
+
 
 	const uint32_t mipLevels =
-		std::max(1u, texture.numLevels);
+		std::max(
+			1u,
+			texture.numLevels
+		);
 
 	const uint32_t ktxLayers =
-		std::max(1u, texture.numLayers);
+		std::max(
+			1u,
+			texture.numLayers
+		);
 
 	const uint32_t faces =
-		std::max(1u, texture.numFaces);
+		std::max(
+			1u,
+			texture.numFaces
+		);
 
 	const uint32_t arrayLayers =
 		ktxLayers * faces;
 
-	const bool isCubemap =
-		texture.isCubemap == KTX_TRUE;
-
-	const bool is3D =
-		depth > 1;
-
-	assert(!(isCubemap && is3D));
 
 	ImageUsage usage =
 		ImageUsage::Sampled |
@@ -2529,51 +2679,74 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	if (texture.generateMipmaps)
 	{
-		usage |= ImageUsage::TransferSrc;
+		usage |=
+			ImageUsage::TransferSrc;
 	}
 
 
 	// -------------------------------------------------------------------------
 	// Build copy regions FIRST
-	//
-	// This requires no Vulkan resource, so failures here don't require
-	// cleanup of a partially-created Image.
 	// -------------------------------------------------------------------------
 
 	auto* base =
-		reinterpret_cast<ktxTexture*>(&texture);
+		reinterpret_cast<ktxTexture*>(
+			&texture
+			);
 
 	const ktx_size_t ktxDataSize =
-		ktxTexture_GetDataSizeUncompressed(base);
+		ktxTexture_GetDataSizeUncompressed(
+			base
+		);
 
 	ktx_uint8_t* ktxData =
-		ktxTexture_GetData(base);
+		ktxTexture_GetData(
+			base
+		);
 
-	if (!ktxData || ktxDataSize == 0)
+	if (!ktxData ||
+		ktxDataSize == 0)
 	{
 		throw std::runtime_error(
 			"KTX texture contains no image data."
 		);
 	}
 
+
 	std::vector<VkBufferImageCopy> regions;
 
 	regions.reserve(
-		mipLevels * ktxLayers * faces
+		mipLevels *
+		ktxLayers *
+		faces
 	);
+
 
 	for (uint32_t mip = 0;
 		mip < mipLevels;
 		++mip)
 	{
 		const uint32_t mipWidth =
-			std::max(1u, width >> mip);
+			std::max(
+				1u,
+				width >> mip
+			);
 
 		const uint32_t mipHeight =
-			std::max(1u, height >> mip);
+			is1D
+			? 1u
+			: std::max(
+				1u,
+				height >> mip
+			);
 
 		const uint32_t mipDepth =
-			std::max(1u, depth >> mip);
+			is3D
+			? std::max(
+				1u,
+				depth >> mip
+			)
+			: 1u;
+
 
 		for (uint32_t layer = 0;
 			layer < ktxLayers;
@@ -2583,9 +2756,10 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 				face < faces;
 				++face)
 			{
-				ktx_size_t offset = 0;
+				ktx_size_t offset =
+					0;
 
-				KTX_error_code result =
+				const KTX_error_code result =
 					ktxTexture2_GetImageOffset(
 						&texture,
 						mip,
@@ -2601,13 +2775,20 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 					);
 				}
 
+
 				VkBufferImageCopy region{};
 
 				region.bufferOffset =
-					static_cast<VkDeviceSize>(offset);
+					static_cast<VkDeviceSize>(
+						offset
+						);
 
-				region.bufferRowLength = 0;
-				region.bufferImageHeight = 0;
+				region.bufferRowLength =
+					0;
+
+				region.bufferImageHeight =
+					0;
+
 
 				region.imageSubresource.aspectMask =
 					VK_IMAGE_ASPECT_COLOR_BIT;
@@ -2620,7 +2801,9 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 					? 0
 					: layer * faces + face;
 
-				region.imageSubresource.layerCount = 1;
+				region.imageSubresource.layerCount =
+					1;
+
 
 				region.imageOffset = {
 					0,
@@ -2634,7 +2817,10 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 					mipDepth
 				};
 
-				regions.push_back(region);
+
+				regions.push_back(
+					region
+				);
 			}
 		}
 	}
@@ -2653,13 +2839,27 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT
 		: 0;
 
-	imageCI.imageType =
-		is3D
-		? VK_IMAGE_TYPE_3D
-		: VK_IMAGE_TYPE_2D;
 
+	if (is1D)
+	{
+		imageCI.imageType =
+			VK_IMAGE_TYPE_1D;
+	}
+	else if (is2D)
+	{
+		imageCI.imageType =
+			VK_IMAGE_TYPE_2D;
+	}
+	else
+	{
+		imageCI.imageType =
+			VK_IMAGE_TYPE_3D;
+	}
+
+
+	// Create the image in its actual sampled color space.
 	imageCI.format =
-		vkFormat;
+		imageVkFormat;
 
 	imageCI.extent = {
 		width,
@@ -2682,7 +2882,9 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		VK_IMAGE_TILING_OPTIMAL;
 
 	imageCI.usage =
-		toVkImageUsageFlags(usage);
+		toVkImageUsageFlags(
+			usage
+		);
 
 	imageCI.sharingMode =
 		VK_SHARING_MODE_EXCLUSIVE;
@@ -2690,6 +2892,10 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	imageCI.initialLayout =
 		VK_IMAGE_LAYOUT_UNDEFINED;
 
+
+	// -------------------------------------------------------------------------
+	// Allocation
+	// -------------------------------------------------------------------------
 
 	VmaAllocationCreateInfo allocCI{};
 
@@ -2705,6 +2911,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	VmaAllocation allocation =
 		VK_NULL_HANDLE;
+
 
 	VK_CHECK(
 		vmaCreateImage(
@@ -2730,10 +2937,23 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	image.allocation =
 		allocation;
 
-	image.type =
-		is3D
-		? ImageType::Image3D
-		: ImageType::Image2D;
+
+	if (is1D)
+	{
+		image.type =
+			ImageType::Image1D;
+	}
+	else if (is2D)
+	{
+		image.type =
+			ImageType::Image2D;
+	}
+	else
+	{
+		image.type =
+			ImageType::Image3D;
+	}
+
 
 	image.extent = {
 		width,
@@ -2756,7 +2976,8 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	image.arrayLayers =
 		imageCI.arrayLayers;
 
-	image.liveViewCount = 0;
+	image.liveViewCount =
+		0;
 
 	image.ownership =
 		ResourceOwnership::Owned;
@@ -2764,7 +2985,9 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	const ImageHandle imageHandle =
 		images_.create(
-			std::move(image)
+			std::move(
+				image
+			)
 		);
 
 	Holder<ImageHandle> imageHolder{
@@ -2789,7 +3012,9 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 			VK_OBJECT_TYPE_IMAGE;
 
 		nameInfo.objectHandle =
-			reinterpret_cast<uint64_t>(vkImage);
+			reinterpret_cast<uint64_t>(
+				vkImage
+				);
 
 		nameInfo.pObjectName =
 			debugName;
@@ -2813,19 +3038,27 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	ImageViewCreateInfo viewCI{};
 
+
 	if (isCubemap)
 	{
 		viewCI.viewType =
-			arrayLayers > 6
+			ktxLayers > 1
 			? ImageViewType::ViewCubeArray
 			: ImageViewType::ViewCube;
+	}
+	else if (is1D)
+	{
+		viewCI.viewType =
+			ktxLayers > 1
+			? ImageViewType::View1DArray
+			: ImageViewType::View1D;
 	}
 	else if (is3D)
 	{
 		viewCI.viewType =
 			ImageViewType::View3D;
 	}
-	else if (arrayLayers > 1)
+	else if (ktxLayers > 1)
 	{
 		viewCI.viewType =
 			ImageViewType::View2DArray;
@@ -2836,7 +3069,8 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 			ImageViewType::View2D;
 	}
 
-	// Inherit Image::format.
+
+	// VkImage already has the final UNORM/sRGB format.
 	viewCI.format =
 		Format::Undefined;
 
@@ -2859,6 +3093,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	viewCI.name =
 		debugName;
+
 
 	auto viewHolder =
 		CreateImageView(
@@ -2887,7 +3122,9 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	};
 
 	stagingCI.size =
-		static_cast<VkDeviceSize>(ktxDataSize);
+		static_cast<VkDeviceSize>(
+			ktxDataSize
+			);
 
 	stagingCI.usage =
 		VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
@@ -2915,7 +3152,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	VmaAllocationInfo stagingAllocationInfo{};
 
 
-	VkResult result =
+	const VkResult stagingResult =
 		vmaCreateBuffer(
 			m_allocator,
 			&stagingCI,
@@ -2925,7 +3162,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 			&stagingAllocationInfo
 		);
 
-	if (result != VK_SUCCESS)
+	if (stagingResult != VK_SUCCESS)
 	{
 		// Image/View/Bindless are automatically cleaned up by Holders.
 		throw std::runtime_error(
@@ -2938,12 +3175,16 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	// Upload CPU -> staging
 	// -------------------------------------------------------------------------
 
-	assert(stagingAllocationInfo.pMappedData);
+	assert(
+		stagingAllocationInfo.pMappedData
+	);
 
 	std::memcpy(
 		stagingAllocationInfo.pMappedData,
 		ktxData,
-		static_cast<size_t>(ktxDataSize)
+		static_cast<size_t>(
+			ktxDataSize
+			)
 	);
 
 	vmaFlushAllocation(
@@ -2963,11 +3204,16 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	auto cmd =
 		m_submitter
-		->GetCommandBuffer(submitHandle)
+		->GetCommandBuffer(
+			submitHandle
+		)
 		.cmd;
 
 
+	// -------------------------------------------------------------------------
 	// UNDEFINED -> TRANSFER_DST
+	// -------------------------------------------------------------------------
+
 	{
 		VkImageMemoryBarrier barrier{
 			VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
@@ -3023,18 +3269,28 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	}
 
 
+	// -------------------------------------------------------------------------
 	// Copy
+	// -------------------------------------------------------------------------
+
 	vkCmdCopyBufferToImage(
 		cmd,
 		stagingBuffer,
 		vkImage,
 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		static_cast<uint32_t>(regions.size()),
+		static_cast<uint32_t>(
+			regions.size()
+			),
 		regions.data()
 	);
 
 
+	// -------------------------------------------------------------------------
 	// TRANSFER_DST -> SHADER_READ_ONLY
+	//
+	// Intentionally fragment-only until the general transition API exists.
+	// -------------------------------------------------------------------------
+
 	{
 		VkImageMemoryBarrier barrier{
 			VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
@@ -3095,7 +3351,10 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	);
 
 
-	// Staging memory must live until the transfer completes.
+	// -------------------------------------------------------------------------
+	// Deferred staging cleanup
+	// -------------------------------------------------------------------------
+
 	AddDeferredTask(
 		std::packaged_task<void()>(
 			[
@@ -3117,8 +3376,6 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	// -------------------------------------------------------------------------
 	// Texture
-	//
-	// Transfer ownership from the temporary Holders to Texture.
 	// -------------------------------------------------------------------------
 
 	Texture textureResource{
@@ -3136,7 +3393,9 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	return Holder<TextureHandle>{
 		this,
 			textures_.create(
-				std::move(textureResource)
+				std::move(
+					textureResource
+				)
 			)
 	};
 }
@@ -3363,7 +3622,7 @@ void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 	}
 	m_deferredTasks.erase(m_deferredTasks.begin(), it);
 }
-void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex)
+void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 {
 	if (!needToUpdateDescriptors)
 		return;
@@ -3375,7 +3634,6 @@ void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex)
 	};
 
 	std::vector<PendingImageWrite> imageWrites;
-
 	bindlessImages_.forEach(
 		[&](BindlessImage bindless)
 	{
@@ -3403,16 +3661,40 @@ void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex)
 	);
 
 	//
-	// Update EVERY descriptor set which contains the global bindless table.
-	//
-	//for (uint32_t frame = 0;
-	//	frame < defaultDescriptorSets_.size();
-	//	++frame)
-	int frame = 0;
-	{
-		std::vector<VkWriteDescriptorSet> writes;
-		writes.reserve(imageWrites.size());
+		// Sampler descriptor array:
+		//
+		//   samplers[0] = default sampler
+		//   samplers[1] = default shadow/comparison sampler
+		//
+	VkDescriptorImageInfo samplerInfos[2]{};
 
+	samplerInfos[0].sampler =
+		m_defaultSampler;
+
+	samplerInfos[1].sampler =
+		m_defaultShadowSampler;
+
+	//
+	// Update every descriptor set that contains the global bindless table.
+	//
+	for (uint32_t frame = 0;
+		frame < MAX_FRAMES_IN_FLIGHT /*static_cast<uint32_t>(defaultDescriptorSets_.size())*/;
+		++frame)
+	{
+
+		if (defaultDescriptorSets_[frame] == VK_NULL_HANDLE) {
+			continue;
+		}
+
+		std::vector<VkWriteDescriptorSet> writes;
+
+		writes.reserve(
+			imageWrites.size() + 1
+		);
+
+		//
+		// Bindless sampled images.
+		//
 		for (const auto& pending : imageWrites)
 		{
 			VkWriteDescriptorSet write{
@@ -3431,13 +3713,41 @@ void smvk::VulkanResourceManager::UpdateBindings(uint32_t frameIndex)
 			write.descriptorType =
 				VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 
-			write.descriptorCount = 1;
+			write.descriptorCount =
+				1;
 
 			write.pImageInfo =
 				&pending.info;
 
 			writes.push_back(write);
 		}
+
+		//
+		// Global samplers.
+		//
+		VkWriteDescriptorSet samplerWrite{
+			VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET
+		};
+
+		samplerWrite.dstSet =
+			defaultDescriptorSets_[frame];
+
+		samplerWrite.dstBinding =
+			smvk::Bindings::kBinding_Samplers;
+
+		samplerWrite.dstArrayElement =
+			0;
+
+		samplerWrite.descriptorType =
+			VK_DESCRIPTOR_TYPE_SAMPLER;
+
+		samplerWrite.descriptorCount =
+			2;
+
+		samplerWrite.pImageInfo =
+			samplerInfos;
+
+		writes.push_back(samplerWrite);
 
 		if (!writes.empty())
 		{
@@ -4874,7 +5184,6 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 
 // RENDERGRAPH
 #include <Engine/Renderer/rendergraph.h>
-
 VkImageView smvk::RenderGraph::GetResolvedImageView(LogicalImageViewHandle handle)
 {
 	auto* view = imageViews_.get(handle);
@@ -5208,7 +5517,6 @@ void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 		vkCmdEndRendering(fb.commandBuffer);
 	}
 };
-//
 void smvk::CommandBuffer::BindRenderPipeline(
 	ShaderProgram& shaderProgram,
 	VertexFormat vertexFormat,
@@ -5301,7 +5609,6 @@ void smvk::CommandBuffer::BindRenderPipeline(
 		0,
 		nullptr);
 }
-
 void smvk::CommandBuffer::BindStaticVertexFmt()
 {
 #ifndef N_DEBUG
@@ -5334,7 +5641,6 @@ void smvk::CommandBuffer::BindStaticVertexFmt()
 		VK_INDEX_TYPE_UINT32
 	);
 }
-
 void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const void* data, ShaderStage stageMask)
 {
 	assert(currentPipelineLayout_ != VK_NULL_HANDLE);

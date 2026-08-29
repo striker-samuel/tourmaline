@@ -507,7 +507,7 @@ private:
 
 		smvk::Light lights[MAX_LIGHTS]{};
 		smvk::Light& light = lights[0];
-		light.color = glm::vec4(1.0f, 0.8f, 0.8f, 1.0f);
+		light.color = glm::vec4(1.0f, 1.f, 1.0f, 1.0f);
 		light.direction[0] = lightDir.x;
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
@@ -596,7 +596,7 @@ private:
 		m_rendergraph->NewFrame();
 
 		//
-		m_context->UpdateBindings();
+		m_context->UpdateDescriptors();
 		auto frameData =
 			UpdateFrameUniforms(fb.frameIndex);
 		UpdateLights(fb.frameIndex);

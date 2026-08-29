@@ -335,15 +335,15 @@ namespace smvk {
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
 		void ProcessDeferrredTasks();
 		//
-		Holder<ImageHandle> CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
-		Holder<TextureHandle> CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr); // specialization for textures instead of .isTexture property
-		Holder<TextureHandle> CreateTexture(ktxTexture2& texture, const char* debugName = nullptr);
-		Holder<BindlessImageHandle> CreateBindlessImage(ImageViewHandle viewHandle, VkImageLayout readLayout);
-		Holder<ImageViewHandle> CreateImageView(ImageHandle image, const ImageViewCreateInfo& createInfo);
-		Holder<BufferHandle> CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = nullptr);
+		Holder<ImageHandle>          CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
+		Holder<TextureHandle>        CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
+		Holder<TextureHandle>        CreateTexture(ktxTexture2& texture, const char* debugName = nullptr);
+		Holder<BindlessImageHandle>  CreateBindlessImage(ImageViewHandle viewHandle, VkImageLayout readLayout);
+		Holder<ImageViewHandle>      CreateImageView(ImageHandle image, const ImageViewCreateInfo& createInfo);
+		Holder<BufferHandle>         CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = nullptr);
 		Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = nullptr);
 
-		Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = nullptr);
+		Holder<ShaderModuleHandle>   CreateShaderModule(std::vector<char> code, const char* debugName = nullptr);
 
 		void* MapBuffer(BufferHandle handle);
 		void UnmapBuffer(BufferHandle handle);
@@ -353,7 +353,7 @@ namespace smvk {
 		//void UploadDataToImage2D(Image img, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 
 
-		void UpdateBindings(uint32_t frameIndex = 0);
+		void UpdateDescriptors(uint32_t frameIndex = 0);
 		uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
 
 		// VulkanImpl
@@ -365,8 +365,7 @@ namespace smvk {
 		//  Binding Model
 		VkDescriptorSetLayout defaultSetLayout{};
 		VkPipelineLayout defaultPipeLayout{};
-		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT];
-
+		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT]{};
 		// Resources
 
 		Pool<ImageTag, Image> images_;
