@@ -382,7 +382,8 @@ namespace smvk {
 		VkSampler m_defaultSampler{};
 		VkSampler m_defaultShadowSampler{};
 
-		mutable bool needToUpdateDescriptors = true;
+		mutable bool m_needToUpdateTextures = true;
+		mutable bool m_needToUpdateSamplers = true;
 
 		Holder<DescriptorPoolHandle> defaultDescriptorPool{};
 		TextureHandle m_nilTexture{};

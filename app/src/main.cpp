@@ -495,7 +495,8 @@ private:
 	void UpdateLights(uint32_t currentFrame)
 	{
 
-		glm::vec3 lightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.5f));
+		glm::vec3 lightDir = glm::normalize(glm::vec3(0.2f, -1.0f, 0.5f));
+		lightDir.b *= sin(time_since_start_s) * 0.4;
 		auto cameraView = m_camera.getViewMatrix();
 		auto cameraProj = m_camera.getProjMatrix();
 		//cameraProj[1][1] *= -1;
@@ -597,8 +598,7 @@ private:
 
 		//
 		m_context->UpdateDescriptors();
-		auto frameData =
-			UpdateFrameUniforms(fb.frameIndex);
+		UpdateFrameUniforms(fb.frameIndex);
 		UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
 		//

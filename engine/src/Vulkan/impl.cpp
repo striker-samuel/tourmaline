@@ -2351,7 +2351,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	// The bindless pool is intentionally also our descriptor-slot allocator.
 	resource->descriptorIndex = handle.index();
 
-	needToUpdateDescriptors = true;
+	m_needToUpdateTextures = true;
 
 	return Holder<BindlessImageHandle>{
 		this,
@@ -3624,7 +3624,7 @@ void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 }
 void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 {
-	if (!needToUpdateDescriptors)
+	if (!(m_needToUpdateTextures || m_needToUpdateSamplers))
 		return;
 
 	struct PendingImageWrite
@@ -3667,10 +3667,8 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 		//   samplers[1] = default shadow/comparison sampler
 		//
 	VkDescriptorImageInfo samplerInfos[2]{};
-
 	samplerInfos[0].sampler =
 		m_defaultSampler;
-
 	samplerInfos[1].sampler =
 		m_defaultShadowSampler;
 
@@ -3761,7 +3759,8 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 		}
 	}
 
-	needToUpdateDescriptors = false;
+	m_needToUpdateTextures = false;
+	m_needToUpdateSamplers = false;
 }
 [[nodiscard]] uint32_t smvk::VulkanResourceManager::GetBindlessIndex(BindlessImageHandle handle) const
 {
@@ -3791,9 +3790,8 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BindlessImageHandle h
 	//ctx->ClearBindlessImageSlot(slot);
 
 	ctx->bindlessImages_.destroy(handle);
-
 	// If descriptors are replicated per-frame.
-	ctx->needToUpdateDescriptors = true;
+	ctx->m_needToUpdateTextures = true;
 }
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::TextureHandle handle)
 {
