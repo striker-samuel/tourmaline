@@ -107,7 +107,7 @@ private:
 		for (int i = 0; i < m_swapchain->GetImageCount(); i++) {
 			swapViews.push_back(
 				m_rendergraph->AddExternalImageView(
-					m_swapchain->GetImageView(i),
+					m_swapchain->GetImageViewHandle(i),
 					m_swapchain->surfaceFormat
 				)
 			);

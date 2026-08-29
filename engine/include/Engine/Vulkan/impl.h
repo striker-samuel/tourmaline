@@ -71,17 +71,20 @@ namespace smvk {
 		uint32_t arrayLayers = 1;
 		uint32_t liveViewCount = 0;
 		ResourceOwnership ownership = ResourceOwnership::Owned;
+		const char* name;
 	};
 
-	struct ImageView
-	{
-		VkImageView vkView = VK_NULL_HANDLE;
+ 	struct ImageView
+ 	{
+ 		VkImageView vkView = VK_NULL_HANDLE;
 
-		ImageHandle image{};
-		ImageViewType viewType = ImageViewType::View2D;
-		Format format = Format::Undefined;
-		ImageSubresourceRange subresourceRange{};
-	};
+ 		ImageHandle image{};
+ 		ImageViewType viewType = ImageViewType::View2D;
+ 		Format format = Format::Undefined;
+ 		ImageSubresourceRange subresourceRange{};
+
+ 		ResourceOwnership ownership = ResourceOwnership::Owned;
+ 	};
 
 	struct Buffer
 	{
@@ -377,7 +380,15 @@ namespace smvk {
 		Holder<TextureHandle>        CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<TextureHandle>        CreateTexture(ktxTexture2& texture, const char* debugName = "Texture");
 		Holder<BindlessImageHandle>  CreateBindlessImage(ImageViewHandle viewHandle, VkImageLayout readLayout);
-		Holder<ImageViewHandle>      CreateImageView(ImageHandle image, const ImageViewCreateInfo& createInfo);
+ 		Holder<ImageViewHandle>      CreateImageView(ImageHandle image, const ImageViewCreateInfo& createInfo);
+ 		ImageViewHandle               RegisterImageView(VkImageView vkView, Format format, const char* name = nullptr);
+
+ 		// In-place recreation: keeps the same handle alive while swapping the
+ 		// underlying Vulkan object. Used so external owners (e.g. the swapchain)
+ 		// survive Recreate() without invalidating handles held by the rendergraph.
+ 		void                          SetImageViewVkView(ImageViewHandle handle, VkImageView vkView);
+ 		ImageViewHandle               RecreateImageView(ImageViewHandle handle, ImageHandle image, const ImageViewCreateInfo& createInfo);
+ 		ImageHandle                   RecreateImage(ImageHandle handle, const ImageCreateInfo& createInfo, const void* data = nullptr);
 		Holder<BufferHandle>         CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = "Buffer");
 		Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = "DescriptorPool");
 
@@ -477,8 +488,12 @@ namespace smvk {
 		uint32_t GetMinImageCount() const { return minImageCount_; };
 		VkImage GetImage(uint32_t index) const { return images_.at(index); }
 		VkImageView GetImageView(uint32_t index) const { return imageViews_.at(index); }
+		ImageViewHandle GetImageViewHandle(uint32_t index) const { return imageViewHandles_.at(index); }
 		VkImage GetCurrentImage() const { return images_.at(currentImageIndex_); }
 		VkImageView GetCurrentImageView() const { return imageViews_.at(currentImageIndex_); }
+
+		bool FramebufferResized() const { return framebufferResized; }
+		void ClearFramebufferResized() { framebufferResized = false; }
 		uint32_t GetCurrentImageIndex() const { return currentImageIndex_; }
 		uint32_t GetCurrentFrameIndex() const { return currentFrame_; }
 		VkSemaphore GetImageAvailableSemaphore() const { return imageAvailableSemaphores_.at(currentFrame_); }
@@ -505,10 +520,11 @@ namespace smvk {
 		bool framebufferResized = false;
 		uint32_t minImageCount_;
 
-		Holder<ImageHandle> depthImage_;
-		Holder<ImageViewHandle> depthImageView_;
-		std::vector<VkImage> images_;
-		std::vector<VkImageView> imageViews_;
+ 		Holder<ImageHandle> depthImage_;
+ 		Holder<ImageViewHandle> depthImageView_;
+ 		std::vector<VkImage> images_;
+ 		std::vector<VkImageView> imageViews_;
+ 		std::vector<ImageViewHandle> imageViewHandles_;
 		std::vector<VkSemaphore> renderFinishedSemaphores_;
 		std::vector<VkSemaphore> imageAvailableSemaphores_;
 		std::vector<VkFence> inFlightFences_;
@@ -527,7 +543,7 @@ namespace smvk {
 		void CreateDepthResources();
 		void CreateSyncObjects();
 		void DestroySyncObjects();
-		void CleanupSwapchain();
+		void CleanupSwapchain(bool fullDestroy = false);
 
 		FrameBuffer AcquireFramebuffer();
 		void EndAndPresentFramebuffer(FrameBuffer& cb);

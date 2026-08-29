@@ -3533,6 +3533,142 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 			imageViews_.create(std::move(view))
 	};
 }
+[[nodiscard]] smvk::ImageViewHandle smvk::VulkanResourceManager::RegisterImageView(
+	VkImageView vkView,
+	Format format,
+	const char* name)
+{
+	assert(vkView != VK_NULL_HANDLE);
+
+	ImageView view{};
+	view.vkView = vkView;
+	view.format = format;
+	view.ownership = ResourceOwnership::External;
+
+	return imageViews_.create(std::move(view));
+}
+
+void smvk::VulkanResourceManager::SetImageViewVkView(
+	ImageViewHandle handle,
+	VkImageView vkView)
+{
+	auto* view = imageViews_.get(handle);
+	assert(view != nullptr);
+	view->vkView = vkView;
+}
+
+smvk::ImageViewHandle smvk::VulkanResourceManager::RecreateImageView(
+	ImageViewHandle handle,
+	ImageHandle imageHandle,
+	const ImageViewCreateInfo& ci)
+{
+	ImageView* view = imageViews_.get(handle);
+	assert(view != nullptr);
+
+	const Format resolvedFormat =
+		ci.format == Format::Undefined
+		? images_.get(imageHandle)->format
+		: ci.format;
+
+	const ImageSubresourceRange resolvedRange =
+		ResolveImageSubresourceRange(
+			*images_.get(imageHandle),
+			ci.subresourceRange
+		);
+
+	// Release the previous view and its parent reference.
+	if (view->image.valid())
+	{
+		auto* oldImage = images_.get(view->image);
+		assert(oldImage != nullptr);
+		assert(oldImage->liveViewCount > 0);
+		--oldImage->liveViewCount;
+	}
+
+	if (view->vkView != VK_NULL_HANDLE)
+	{
+		vkDestroyImageView(device_, view->vkView, nullptr);
+		view->vkView = VK_NULL_HANDLE;
+	}
+
+	VkImageViewCreateInfo vkCI{
+		VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
+	};
+
+	vkCI.image = images_.get(imageHandle)->vkImage;
+	vkCI.viewType = toVkImageViewType(ci.viewType);
+	vkCI.format = toVkFormat(resolvedFormat);
+
+	vkCI.components = {
+		VK_COMPONENT_SWIZZLE_IDENTITY,
+		VK_COMPONENT_SWIZZLE_IDENTITY,
+		VK_COMPONENT_SWIZZLE_IDENTITY,
+		VK_COMPONENT_SWIZZLE_IDENTITY
+	};
+
+	vkCI.subresourceRange = {
+		.aspectMask = toVkImageAspectFlags(resolvedRange.aspect),
+		.baseMipLevel = resolvedRange.baseMipLevel,
+		.levelCount = resolvedRange.mipLevelCount,
+		.baseArrayLayer = resolvedRange.baseArrayLayer,
+		.layerCount = resolvedRange.arrayLayerCount
+	};
+
+	VK_CHECK(vkCreateImageView(
+		device_,
+		&vkCI,
+		nullptr,
+		&view->vkView
+	));
+
+	view->image = imageHandle;
+	view->viewType = ci.viewType;
+	view->format = resolvedFormat;
+	view->subresourceRange = resolvedRange;
+
+	++images_.get(imageHandle)->liveViewCount;
+
+	return handle;
+}
+
+smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(
+	ImageHandle handle,
+	const ImageCreateInfo& ci,
+	const void* data)
+{
+	Image* image = images_.get(handle);
+	assert(image != nullptr);
+
+	if (image->ownership == ResourceOwnership::Owned &&
+		image->vkImage != VK_NULL_HANDLE)
+	{
+		vmaDestroyImage(
+			m_allocator,
+			image->vkImage,
+			image->allocation
+		);
+		image->vkImage = VK_NULL_HANDLE;
+		image->allocation = VK_NULL_HANDLE;
+	}
+
+	// Build a fresh image but preserve scalar state (liveViewCount, ownership,
+	// type) so views referencing this handle keep their accounting intact.
+	Image fresh = CreateImageImpl(ci);
+
+	image->vkImage = fresh.vkImage;
+	image->allocation = fresh.allocation;
+	image->type = fresh.type;
+	image->extent = fresh.extent;
+	image->format = fresh.format;
+	image->usage = fresh.usage;
+	image->samples = fresh.samples;
+	image->mipLevels = fresh.mipLevels;
+	image->arrayLayers = fresh.arrayLayers;
+	image->name = fresh.name;
+
+	return handle;
+}
+
 [[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::VulkanResourceManager::CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName) {
 	Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -3911,7 +4047,8 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageViewHandle handl
 	auto* view = ctx->imageViews_.get(handle);
 	assert(view);
 
-	if (view->vkView != VK_NULL_HANDLE)
+	if (view->vkView != VK_NULL_HANDLE &&
+		view->ownership != ResourceOwnership::External)
 	{
 		vkDestroyImageView(
 			device_,
@@ -4578,7 +4715,7 @@ smvk::VulkanSwapchain::~VulkanSwapchain() {
 	};
 
 	DestroySyncObjects();
-	CleanupSwapchain();
+	CleanupSwapchain(true);
 }
 void smvk::VulkanSwapchain::Recreate() {
 	// No new sync objects. Should investigate, can iamge# change? on OOD
@@ -4598,7 +4735,7 @@ void smvk::VulkanSwapchain::Recreate() {
 
 	vkDeviceWaitIdle(device_);
 
-	CleanupSwapchain();
+	CleanupSwapchain(false);
 
 	CreateSwapchain();
 	CreateImageViews();
@@ -4676,7 +4813,21 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 	glfwGetWindowSize(window_, &windowWidth, &windowHeight);
 }
 void smvk::VulkanSwapchain::CreateImageViews() {
-	for (size_t i = 0; i < images_.size(); ++i) {
+	const uint32_t count = static_cast<uint32_t>(images_.size());
+
+	// Keep ImageViewHandles stable across recreation so external owners (the
+	// rendergraph) never see a stale handle. Trim handles beyond the new
+	// image count; the underlying VkImageView is swapped in place otherwise.
+	if (imageViewHandles_.size() > count) {
+		for (uint32_t i = count; i < imageViewHandles_.size(); ++i) {
+			if (!imageViewHandles_[i].empty())
+				destroy(&ctx_, imageViewHandles_[i]);
+		}
+		imageViewHandles_.resize(count);
+		imageViews_.resize(count);
+	}
+
+	for (uint32_t i = 0; i < count; ++i) {
 		VkImageViewCreateInfo viewInfo{};
 		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 		viewInfo.image = images_[i];
@@ -4689,14 +4840,31 @@ void smvk::VulkanSwapchain::CreateImageViews() {
 			.baseArrayLayer = 0,
 			.layerCount = 1
 		};
-		VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &imageViews_[i]));
+
+		VkImageView newView = VK_NULL_HANDLE;
+		VK_CHECK(vkCreateImageView(device_, &viewInfo, nullptr, &newView));
+
+		if (i < imageViewHandles_.size() && !imageViewHandles_[i].empty()) {
+			// Previous raw view already destroyed in CleanupSwapchain; just
+			// point the stable handle at the new VkImageView.
+			imageViews_[i] = newView;
+			ctx_.SetImageViewVkView(imageViewHandles_[i], newView);
+		}
+		else {
+			imageViews_[i] = newView;
+			imageViewHandles_.push_back(
+				ctx_.RegisterImageView(
+					newView,
+					surfaceFormat,
+					"swapchain view"
+				)
+			);
+		}
 	}
 }
 void smvk::VulkanSwapchain::CreateDepthResources() {
 
 	assert(depthFormat != smvk::Format::Undefined && "core depthFormat not set. failed to create swapchain depth Image");
-	depthImage_.release();
-	depthImageView_.release();
 
 	ImageCreateInfo depthImageCreateInfo{};
 	depthImageCreateInfo.extent = { extent_.width, extent_.height };
@@ -4706,17 +4874,22 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 	depthImageCreateInfo.arrayLayers = 1;
 	depthImageCreateInfo.name = "swapchain depth image";
 
-	depthImage_ = ctx_.CreateImage(
-		depthImageCreateInfo,
-		nullptr
-	);
+	// Recreate in place so the ImageViewHandle stays stable across resize and
+	// any rendergraph views referencing it remain valid.
+	if (depthImage_.empty()) {
+		depthImage_ = ctx_.CreateImage(
+			depthImageCreateInfo,
+			nullptr
+		);
+	}
+	else {
+		ctx_.RecreateImage(depthImage_, depthImageCreateInfo, nullptr);
+	}
 
 	auto* depthImage = ctx_.images_.get(depthImage_);
 	assert(depthImage != nullptr);
 
-	depthImageView_ = ctx_.CreateImageView(
-		depthImage_,
-		{
+	const ImageViewCreateInfo depthViewCI{
 		.viewType = ImageViewType::View2D,
 		.format = depthFormat,
 		.subresourceRange = {
@@ -4726,8 +4899,14 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 			.baseArrayLayer = 0,
 			.arrayLayerCount = 1
 		}
-		}
-	);
+	};
+
+	if (depthImageView_.empty()) {
+		depthImageView_ = ctx_.CreateImageView(depthImage_, depthViewCI);
+	}
+	else {
+		ctx_.RecreateImageView(depthImageView_, depthImage_, depthViewCI);
+	}
 
 	// maybe toVkImageSubresourceRange
 	const VkImageSubresourceRange depthRange{
@@ -4806,12 +4985,20 @@ inline void smvk::VulkanSwapchain::DestroySyncObjects() {
 	}
 	inFlightFences_.clear();
 }
-inline void smvk::VulkanSwapchain::CleanupSwapchain() {
+inline void smvk::VulkanSwapchain::CleanupSwapchain(bool fullDestroy) {
 
 	for (VkImageView view : imageViews_) {
 		if (view != VK_NULL_HANDLE) {
 			vkDestroyImageView(device_, view, nullptr);
 		}
+	}
+
+	if (fullDestroy) {
+		for (ImageViewHandle handle : imageViewHandles_) {
+			if (!handle.empty())
+				destroy(&ctx_, handle);
+		}
+		imageViewHandles_.clear();
 	}
 
 	imageViews_.clear();
@@ -5496,11 +5683,11 @@ VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle log
 	auto view = rg->imageViews_.get(logicalView);
 	assert(view != nullptr);
 
-	if (view->type == smvk::LogicalImageView::Type::ExternalPhysical)
-	{
-		assert(view->externalView != VK_NULL_HANDLE);
-		return view->externalView;
-	}
+		if (view->type == smvk::LogicalImageView::Type::ExternalPhysical)
+		{
+			assert(!view->externalViewHandle.empty());
+			return rg->ctx_.imageViews_.get(view->externalViewHandle)->vkView;
+		}
 
 	assert(!view->resolvedViewHandle.empty());
 	return rg->ctx_.imageViews_.get(view->resolvedViewHandle)->vkView;

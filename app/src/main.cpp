@@ -233,16 +233,14 @@ private:
 		// FRAME RESOURCES
 		for (int i = 0; i < m_swapchain->GetImageCount(); i++) {
 			auto logicalSwapchainImage = m_rendergraph->AddExternalImageView(
-				m_swapchain->imageViews_[i],
+				m_swapchain->GetImageViewHandle(i),
 				m_swapchain->surfaceFormat,
 				"swap"
 			);
 			m_viewportResources.swapImages.push_back(logicalSwapchainImage);
 		}
-		auto depthImage = m_context->images_.get(m_swapchain->depthImage_);
-		auto depthImageView = m_context->imageViews_.get(m_swapchain->depthImageView_);
 		m_viewportResources.depthView = m_rendergraph->AddExternalImageView(
-			depthImageView->vkView, // vk leaking here
+			m_swapchain->depthImageView_,
 			m_swapchain->depthFormat,
 			"depth"
 		);
@@ -358,7 +356,7 @@ private:
 
 		m_viewportResources.shadowmapLogicalViews[0] =
 			m_rendergraph->AddExternalImageView(
-				m_context->imageViews_.get(shadow.sampledView)->vkView,
+				shadow.sampledView,
 				shadowMapFormat,
 				"shadowMapView1"
 			);
@@ -532,7 +530,32 @@ private:
 		);
 	}
 
+	void RebuildSwapViews() {
+		for (auto h : m_viewportResources.swapImages) {
+			m_rendergraph->FreeImageView(h);
+		}
+		m_viewportResources.swapImages.clear();
+
+		const uint32_t count = m_swapchain->GetImageCount();
+		m_viewportResources.swapImages.reserve(count);
+		for (uint32_t i = 0; i < count; ++i) {
+			m_viewportResources.swapImages.push_back(
+				m_rendergraph->AddExternalImageView(
+					m_swapchain->GetImageViewHandle(i),
+					m_swapchain->surfaceFormat,
+					"swap"
+				)
+			);
+		}
+	}
+
 	void DrawFrame() {
+		if (m_swapchain->FramebufferResized()) {
+			m_swapchain->Recreate();
+			RebuildSwapViews();
+			m_swapchain->ClearFramebufferResized();
+		}
+
 		auto fb = m_swapchain->AcquireFramebuffer();
 		UpdateDeltaTime();
 		RenderFrame(fb);

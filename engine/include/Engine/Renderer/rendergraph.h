@@ -134,7 +134,7 @@ namespace smvk
 		ImageViewKey key{};
 
 		ImageViewHandle resolvedViewHandle{};
-		VkImageView externalView = VK_NULL_HANDLE;
+		ImageViewHandle externalViewHandle{};
 		Format externalFormat = Format::Undefined;
 
 		const char* name = "";
@@ -364,10 +364,58 @@ namespace smvk
 
 		~RenderGraph()
 		{
-			// Tear down resolved views first so each parent image's
-			// liveViewCount drops to zero before the image itself is
-			// released. External resources are owned by the caller and
-			// must not be destroyed here.
+			ReleaseResolvedResources();
+		}
+
+		//
+		// Targeted teardown of a single external view/image. Used to refresh
+		// swapchain color views on Recreate() without clearing every external
+		// resource the graph holds (e.g. shadow maps stay intact).
+		//
+		void FreeImageView(
+			LogicalImageViewHandle handle)
+		{
+			if (handle.empty())
+				return;
+
+			auto* view = imageViews_.get(handle);
+			assert(view != nullptr);
+
+			if (view->type !=
+				LogicalImageView::Type::ExternalPhysical &&
+				!view->resolvedViewHandle.empty())
+			{
+				destroy(&ctx_, view->resolvedViewHandle);
+			}
+
+			imageViews_.destroy(handle);
+		}
+
+		void FreeImage(
+			LogicalImageHandle handle)
+		{
+			if (handle.empty())
+				return;
+
+			auto* image = images_.get(handle);
+			assert(image != nullptr);
+
+			if (image->type != ResourceType::External &&
+				!image->resolvedImageHandle.empty())
+			{
+				destroy(&ctx_, image->resolvedImageHandle);
+			}
+
+			images_.destroy(handle);
+		}
+
+		//
+		// Destroys resolved views then transient images so each parent image's
+		// liveViewCount reaches zero before the image is released. External
+		// resources are owned by the caller and are left untouched.
+		//
+		void ReleaseResolvedResources()
+		{
 			imageViews_.forEach(
 				[this](LogicalImageView& view)
 			{
@@ -387,16 +435,16 @@ namespace smvk
 			images_.forEach(
 				[this](LogicalImage& image)
 			{
-				if (image.type == ResourceType::External)
-				{
-					return;
-				}
+					if (image.type == ResourceType::External)
+					{
+						return;
+					}
 
-				if (!image.resolvedImageHandle.empty())
-				{
-					destroy(&ctx_, image.resolvedImageHandle);
+					if (!image.resolvedImageHandle.empty())
+					{
+						destroy(&ctx_, image.resolvedImageHandle);
+					}
 				}
-			}
 			);
 		}
 
@@ -529,15 +577,15 @@ namespace smvk
 		}
 
 		LogicalImageViewHandle AddExternalImageView(
-			VkImageView imageView,
+			ImageViewHandle imageView,
 			Format format,
 			const char* name = "")
 		{
-			assert(imageView != VK_NULL_HANDLE);
+			assert(!imageView.empty());
 
 			LogicalImageView view{
 				.type = LogicalImageView::Type::ExternalPhysical,
-				.externalView = imageView,
+				.externalViewHandle = imageView,
 				.externalFormat = format,
 				.name = name,
 			};
