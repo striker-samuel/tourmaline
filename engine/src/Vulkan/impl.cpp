@@ -1185,7 +1185,7 @@ static constexpr                smvk::Format fromVkFormat(VkFormat format) // do
 	}
 }
 
-/*constexpr*/ bool              /*smvk::*/FormatHasStencil(VkFormat format)
+static constexpr bool                     FormatHasStencil(VkFormat format)
 {
 	switch (format)
 	{
@@ -1199,7 +1199,7 @@ static constexpr                smvk::Format fromVkFormat(VkFormat format) // do
 		return false;
 	}
 }
-/*constexpr*/ bool              /*smvk::*/FormatHasDepth(VkFormat format)
+static constexpr bool                     FormatHasDepth(VkFormat format)
 {
 	switch (format)
 	{

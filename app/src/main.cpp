@@ -700,7 +700,7 @@ private:
 			.SetInputImages(
 				{
 					m_viewportResources.shadowmapLogicalViews[0]
-					// we sample trough the bidnless list but we decalre intention here for sync.
+					// we sample trough the bidnless list but we declare intention here for sync.
 					// may be bad
 				}
 			)
