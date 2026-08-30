@@ -11,11 +11,6 @@
 
 namespace smvk
 {
-	// Need to add these for convenience
-	//struct Mipped{};
-	//struct UnMipped{};
-	//struct SyncRequest;
-
 	struct RenderGraph;
 	struct CommandBuffer;
 
@@ -35,37 +30,15 @@ namespace smvk
 
 	using BufferKey = BufferCreateInfo;
 	using ImageKey = ImageCreateInfo;
-
-	//
-	// IMPORTANT:
-	//
-	// This describes a logical view into an image.
-	//
-	// It is NOT a VkImageView.
-	//
-	// A physical VkImageView is resolved/cached later from:
-	//
-	//     resolved image
-	//     + this key
-	//
-	// This means transient and external images follow exactly the
-	// same path once the underlying ImageHandle has been resolved.
-	//
 	struct ImageViewKey
 	{
+		// cant reuse ImageCreateInfo beacuse it lacks handle property. Otherwise should be the same as this
 		LogicalImageHandle image{};
-
 		ImageViewType viewType =
 			ImageViewType::View2D;
-
-		//
-		// Undefined = inherit the underlying image format.
-		//
 		Format format =
 			Format::Undefined;
-
 		ImageSubresourceRange subresourceRange{};
-
 		bool operator==(const ImageViewKey&) const = default;
 	};
 
@@ -85,18 +58,8 @@ namespace smvk
 	{
 		ResourceType type =
 			ResourceType::Transient;
-
 		BufferKey key{};
-
-		//
-		// External:
-		//     supplied by AddExternalBuffer().
-		//
-		// Transient:
-		//     filled during ResolveBuffers().
-		//
 		BufferHandle resolvedBufferHandle{};
-
 		const char* name = "";
 	};
 
@@ -105,18 +68,8 @@ namespace smvk
 	{
 		ResourceType type =
 			ResourceType::Transient;
-
 		ImageKey key{};
-
-		//
-		// External:
-		//     supplied by AddExternalImage().
-		//
-		// Transient:
-		//     filled during ResolveImages().
-		//
 		ImageHandle resolvedImageHandle{};
-
 		const char* name = "";
 	};
 
@@ -128,15 +81,11 @@ namespace smvk
 			Logical,
 			ExternalPhysical
 		};
-
 		Type type = Type::Logical;
-
 		ImageViewKey key{};
-
 		ImageViewHandle resolvedViewHandle{};
 		ImageViewHandle externalViewHandle{};
 		Format externalFormat = Format::Undefined;
-
 		const char* name = "";
 	};
 
@@ -148,13 +97,10 @@ namespace smvk
 	struct RenderAttachment
 	{
 		LogicalImageViewHandle view{};
-
 		AttachmentLoadOp loadOp =
 			AttachmentLoadOp::DontCare;
-
 		AttachmentStoreOp storeOp =
 			AttachmentStoreOp::Store;
-
 		ClearColor clearColor{};
 	};
 
@@ -162,13 +108,10 @@ namespace smvk
 	struct DepthAttachment
 	{
 		LogicalImageViewHandle view{};
-
 		AttachmentLoadOp loadOp =
 			AttachmentLoadOp::DontCare;
-
 		AttachmentStoreOp storeOp =
 			AttachmentStoreOp::Store;
-
 		ClearDepthStencil clear{};
 	};
 
@@ -180,15 +123,12 @@ namespace smvk
 	using RecordingFunction =
 		std::function<void(CommandBuffer&)>;
 
-
 	struct RenderPass final
 	{
 		explicit RenderPass(
 			const char* name = nullptr)
 			: name_(name)
-		{
-		}
-
+		{}
 
 		// --------------------------------------------------------
 		// Attachments
@@ -197,9 +137,9 @@ namespace smvk
 		RenderPass& SetColor(
 			const std::vector<LogicalImageViewHandle>& views,
 			AttachmentLoadOp loadOp =
-				AttachmentLoadOp::Load,
+			AttachmentLoadOp::Load,
 			AttachmentStoreOp storeOp =
-				AttachmentStoreOp::Store,
+			AttachmentStoreOp::Store,
 			ClearColor clearValue = {})
 		{
 			colorAttachments_.resize(views.size());
@@ -223,9 +163,9 @@ namespace smvk
 		RenderPass& SetDepth(
 			LogicalImageViewHandle view,
 			AttachmentLoadOp loadOp =
-				AttachmentLoadOp::Load,
+			AttachmentLoadOp::Load,
 			AttachmentStoreOp storeOp =
-				AttachmentStoreOp::Store,
+			AttachmentStoreOp::Store,
 			ClearDepthStencil clearValue = {})
 		{
 			assert(!view.empty());
@@ -307,25 +247,18 @@ namespace smvk
 		friend RenderGraph;
 		friend CommandBuffer;
 
-		//
 		// Shader-readable resources.
-		//
 		std::vector<LogicalImageViewHandle>
 			inputImages_;
 
-		//
 		// Read/write shader resources.
-		//
 		std::vector<LogicalImageViewHandle>
 			storageImages_;
 
 		std::vector<LogicalBufferHandle>
 			storageBuffers_;
 
-
-		//
 		// Render targets.
-		//
 		std::vector<RenderAttachment>
 			colorAttachments_;
 
@@ -359,19 +292,16 @@ namespace smvk
 			: ctx_(ctx)
 			, pipelineCachePimpl(
 				std::make_unique<PipelineCache>(&ctx_))
-		{
-		}
+		{}
 
 		~RenderGraph()
 		{
 			ReleaseResolvedResources();
 		}
 
-		//
 		// Targeted teardown of a single external view/image. Used to refresh
 		// swapchain color views on Recreate() without clearing every external
-		// resource the graph holds (e.g. shadow maps stay intact).
-		//
+		// resource the graph holds.
 		void FreeImageView(
 			LogicalImageViewHandle handle)
 		{
@@ -409,11 +339,9 @@ namespace smvk
 			images_.destroy(handle);
 		}
 
-		//
 		// Destroys resolved views then transient images so each parent image's
 		// liveViewCount reaches zero before the image is released. External
 		// resources are owned by the caller and are left untouched.
-		//
 		void ReleaseResolvedResources()
 		{
 			imageViews_.forEach(
@@ -435,16 +363,16 @@ namespace smvk
 			images_.forEach(
 				[this](LogicalImage& image)
 			{
-					if (image.type == ResourceType::External)
-					{
-						return;
-					}
-
-					if (!image.resolvedImageHandle.empty())
-					{
-						destroy(&ctx_, image.resolvedImageHandle);
-					}
+				if (image.type == ResourceType::External)
+				{
+					return;
 				}
+
+				if (!image.resolvedImageHandle.empty())
+				{
+					destroy(&ctx_, image.resolvedImageHandle);
+				}
+			}
 			);
 		}
 
@@ -460,6 +388,12 @@ namespace smvk
 
 
 		RenderPass& AddPass(
+			const char* name = nullptr)
+		{
+			return passes_.emplace_back(name);
+		}
+
+		RenderPass& AddComputePass(
 			const char* name = nullptr)
 		{
 			return passes_.emplace_back(name);
@@ -493,13 +427,9 @@ namespace smvk
 		}
 
 
-		//
-		// Import an already-existing physical image.
-		//
+		// Import an already-existing physical image. Needed for swapchain
 		// This is the important external-resource API.
-		//
 		// External images are imported as IMAGES, not VkImageViews.
-		//
 		[[nodiscard]]
 		LogicalImageHandle AddExternalImage(
 			ImageHandle imageHandle,
@@ -545,9 +475,9 @@ namespace smvk
 		LogicalImageViewHandle AddImageView(
 			LogicalImageHandle image,
 			ImageViewType type =
-				ImageViewType::View2D,
+			ImageViewType::View2D,
 			Format format =
-				Format::Undefined,
+			Format::Undefined,
 			ImageSubresourceRange range = {},
 			const char* name = "")
 		{
@@ -592,18 +522,14 @@ namespace smvk
 
 			return imageViews_.create(std::move(view));
 		}
-		//
-		// Convenience function:
-		//
-		// import physical image, then create logical view.
-		//
+
 		[[nodiscard]]
 		LogicalImageViewHandle AddExternalImageView(
 			ImageHandle image,
 			ImageViewType type =
-				ImageViewType::View2D,
+			ImageViewType::View2D,
 			Format format =
-				Format::Undefined,
+			Format::Undefined,
 			ImageSubresourceRange range = {},
 			const char* name = "")
 		{
@@ -630,7 +556,7 @@ namespace smvk
 		LogicalBufferHandle AddBuffer(
 			uint32_t count,
 			BufferType usage =
-				BufferType_Storage,
+			BufferType_Storage,
 			const char* name = "")
 		{
 			LogicalBuffer buffer{
@@ -751,9 +677,8 @@ namespace smvk
 
 		void Execute(FrameBuffer& fb);
 
-
-	//private:
-	//	friend CommandBuffer;
+		//private:
+		//	friend CommandBuffer;
 
 		// --------------------------------------------------------
 		// Resource resolution
@@ -782,102 +707,4 @@ namespace smvk
 	};
 
 
-
-	// ============================================================
-	// Command buffer
-	// ============================================================
-
-	struct CommandBuffer final
-	{
-		CommandBuffer() = delete;
-
-		void BindRenderPipeline(
-			ShaderProgram& shaderProgram,
-			VertexFormat vertexFormat =
-				VertexFormat::Empty,
-			const DepthSettings& depthSettings =
-				DepthSettings::DepthTest(),
-			const StencilSettings& stencilSettings =
-				StencilSettings::DefaultDisabled(),
-			const BlendSettings& blendSettings =
-				BlendSettings::Opaque(),
-			const MSAASettings& msaaSettings =
-				MSAASettings::Count1()
-		);
-
-		void PushConstants(
-			uint32_t offset,
-			uint32_t size,
-			const void* data,
-			ShaderStage stageMask =
-			ShaderStage::AllGraphics
-			//ShaderStage::Vertex |
-			//ShaderStage::Fragment
-		);
-	
-		void Draw(
-			uint32_t vertexCount,
-			uint32_t instanceCount = 1,
-			uint32_t firstVertex = 0,
-			uint32_t firstInstance = 0)
-		{
-			vkCmdDraw(
-				cmd_,
-				vertexCount,
-				instanceCount,
-				firstVertex,
-				firstInstance);
-		}
-
-		void DrawIndexed(
-			uint32_t indexCount,
-			uint32_t instanceCount = 1,
-			uint32_t firstIndex = 0,
-			uint32_t baseVertex = 0,
-			uint32_t firstInstance = 0)
-		{
-			vkCmdDrawIndexed(
-				cmd_,
-				indexCount,
-				instanceCount,
-				firstIndex,
-				static_cast<int32_t>(
-					baseVertex),
-				firstInstance);
-		}
-
-
-	private:
-		friend RenderGraph;
-
-
-		CommandBuffer(
-			VkCommandBuffer cmd,
-			RenderGraph& graph,
-			RenderPass& pass)
-			: cmd_(cmd)
-			, graph_(&graph)
-			, renderPass_(&pass)
-		{
-		}
-
-
-		VkCommandBuffer cmd_ =
-			VK_NULL_HANDLE;
-
-		RenderGraph* graph_ =
-			nullptr;
-
-		RenderPass* renderPass_ =
-			nullptr;
-
-		VkPipeline currentPipeline_ =
-			VK_NULL_HANDLE;
-
-		VkPipelineLayout currentPipelineLayout_ =
-			VK_NULL_HANDLE;
-
-		void BindStaticVertexFmt();
-	};
-
-}
+} // namespace smvk

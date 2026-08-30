@@ -4,7 +4,8 @@
 
 #include <Engine/App/app.h>
 #include <Engine/App/world.h>
-#include <Engine/Renderer/rendergraph.h>
+#include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/commandbuffer.h>
 
 #include <Engine/Utils/gltf.h> // for gltf read into smvk::Cluster
 #include <Engine/platform.h> // for readFile

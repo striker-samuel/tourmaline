@@ -1048,7 +1048,6 @@ namespace smvk {
 		SampleCount samples = SampleCount::Count1;
 		uint32_t mipLevels = 1;
 		uint32_t arrayLayers = 1;
-		// Add this if you want cubemaps cleanly.
 		//ImageCreateFlags flags = ImageCreateFlags::None;
 		const char* name = nullptr;
 	};
@@ -1082,5 +1081,28 @@ namespace smvk {
 	using SamplerHandle = Handle<SamplerTag>;
 	using BindlessImageHandle = Handle<BindlessImageTag>;
 	using DescriptorPoolHandle = Handle<DescriptorPoolTag>;
+
+
+	[[nodiscard]] constexpr ImageAspect DefaultViewAspect(Format format)
+	{
+		switch (format)
+		{
+		case Format::D16_UNorm:
+		case Format::D32_Float:
+			return ImageAspect::Depth;
+
+		case Format::D24_UNorm_S8_UInt:
+		case Format::D32_Float_S8_UInt:
+			// Policy decision: default DS views to depth.
+			return ImageAspect::Depth;
+
+		case Format::Undefined:
+			return ImageAspect::None;
+
+		default:
+			return ImageAspect::Color;
+		}
+	}
+
 
 } // namespace smvk

@@ -1236,7 +1236,7 @@ static constexpr VkImageAspectFlags VkAspectMaskFromFormat(VkFormat format)
 		return VK_IMAGE_ASPECT_COLOR_BIT;
 	}
 }
-[[nodiscard]] inline smvk::ImageAspect DefaultSampleAspect(smvk::Format format)
+[[nodiscard]] smvk::ImageAspect DefaultSampleAspect(smvk::Format format)
 {
 	const VkImageAspectFlags aspects =
 		VkAspectMaskFromFormat(toVkFormat(format));
@@ -5676,7 +5676,8 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 
 
 // RENDERGRAPH
-#include <Engine/Renderer/rendergraph.h>
+#include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/commandbuffer.h>
 
 VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle logicalView) {
 	assert(!logicalView.empty());
@@ -5872,6 +5873,8 @@ void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 		vkCmdEndRendering(fb.commandBuffer);
 	}
 };
+
+
 void smvk::CommandBuffer::BindRenderPipeline(
 	ShaderProgram& shaderProgram,
 	VertexFormat vertexFormat,

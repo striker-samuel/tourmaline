@@ -5,7 +5,9 @@
 
 #include <Engine/Camera/camera.h>
 #include <Engine/Scene/scene.h>
-#include <Engine/Renderer/rendergraph.h>
+#include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/commandbuffer.h>
+
 #include <Engine/platform.h>
 
 
