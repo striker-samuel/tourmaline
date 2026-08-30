@@ -5,7 +5,7 @@
 
 namespace smvk {
 
-#if defined(SMVK_BACKEND_VULKAN)
+#if defined(ENGINE_VULKAN)
 	struct VulkanResourceManager;
 	using IResourceManager = VulkanResourceManager;
 #else

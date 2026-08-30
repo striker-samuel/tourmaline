@@ -2,6 +2,9 @@
 #include <iostream>
 #include <filesystem>
 
+
+#include <Engine/engine.h>
+
 #include <Engine/App/app.h>
 #include <Engine/App/world.h>
 #include <Engine/Rendergraph/rendergraph.h>
@@ -19,55 +22,6 @@ static constexpr float default_far_clip = 50.0f;
 std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
 };
-
-//struct ShadowmapCascadeAtlas {
-//
-//	// ---- cascade split settings ----
-//	const float cameraNear = 0.1f;   // ideally: camera_.nearPlane()
-//	const float shadowFarMax = 20.0f;  // your old single-cascade far (tune this)
-//	const float lambda = 0.5f;   // 0=linear, 1=log (0.5 common)
-//
-//	// ---- atlas tiling (2x2 for 4, 2x2 for <=4, 4x4 for 16, etc.) ----
-//	const int gridDim = (int)std::ceil(std::sqrt((float)NUM_CASCADES));
-//	const uint32_t tileW = image->width / gridDim;
-//	const uint32_t tileH = image->height / gridDim;
-//
-//	// Precompute split ends in view-space depth
-//	float splitEnds[NUM_CASCADES]{};
-//	for (int c = 0; c < NUM_CASCADES; ++c) {
-//		const float p = float(c + 1) / float(NUM_CASCADES);
-//
-//		const float logSplit = cameraNear * std::pow(shadowFarMax / cameraNear, p);
-//		const float linSplit = cameraNear + (shadowFarMax - cameraNear) * p;
-//
-//		splitEnds[c] = linSplit + lambda * (logSplit - linSplit);
-//	}
-//
-//	// Render each cascade
-//	float prevSplit = cameraNear;
-//	for (int c = 0; c < NUM_CASCADES; ++c) {
-//
-//		const float cascadeNear = prevSplit;
-//		const float cascadeFar = splitEnds[c];
-//		prevSplit = cascadeFar;
-//
-//		// --- atlas tile placement ---
-//		const int tx = c % gridDim;
-//		const int ty = c / gridDim;
-//
-//		VkViewport cvp{};
-//		cvp.x = float(tx * tileW);
-//		cvp.y = float(ty * tileH);
-//		cvp.width = float(tileW);
-//		cvp.height = float(tileH);
-//		cvp.minDepth = 0.0f;
-//		cvp.maxDepth = 1.0f;
-//		//vkCmdSetViewport(commandBuffer, 0, 1, &cvp);
-//		VkRect2D cscissor{};
-//		cscissor.offset = { int32_t(tx * tileW), int32_t(ty * tileH) };
-//		cscissor.extent = { tileW, tileH };
-//		//vkCmdSetScissor(commandBuffer, 0, 1, &cscissor);
-//};
 
 struct ShadowMap
 {

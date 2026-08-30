@@ -1,12 +1,13 @@
+#define TINYGLTF_IMPLEMENTATION
+#include <Engine/Utils/gltf.h>
+#include <Engine/Shared/common.h>
+
 #include <array>
 #include <unordered_map>
 #include <vector>
 #include <string>
 #include <iostream>
 #include <filesystem>
-
-#include <Engine/Utils/gltf.h>
-#include <Engine/Shared/common.h>
 
 namespace {
 	constexpr uint32_t DEFAULT_MATERIAL_INDEX = 0;

@@ -91,7 +91,7 @@ set_property(CACHE ENGINE_BACKEND PROPERTY STRINGS
 
 if(ENGINE_BACKEND STREQUAL "Vulkan")
     target_compile_definitions(engine PUBLIC
-        SMVK_BACKEND_VULKAN=1
+        ENGINE_VULKAN=1
     )
 else()
     message(FATAL_ERROR "Unsupported rendering backend: ${ENGINE_BACKEND}")

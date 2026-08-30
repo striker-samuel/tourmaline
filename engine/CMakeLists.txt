@@ -33,7 +33,7 @@ target_compile_definitions(engine
 )
 
 if(ENGINE_BACKEND STREQUAL "Vulkan")
-    target_compile_definitions(engine PUBLIC ENGINE_BACKEND_VULKAN)
+    target_compile_definitions(engine PUBLIC ENGINE_VULKAN)
 endif()
 
 target_link_libraries(engine
