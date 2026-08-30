@@ -1215,7 +1215,7 @@ static constexpr                smvk::Format fromVkFormat(VkFormat format) // do
 		return false;
 	}
 }
-static constexpr VkImageAspectFlags VkAspectMaskFromFormat(VkFormat format)
+static constexpr VkImageAspectFlags       VkAspectMaskFromFormat(VkFormat format)
 {
 	switch (format)
 	{
@@ -1236,7 +1236,7 @@ static constexpr VkImageAspectFlags VkAspectMaskFromFormat(VkFormat format)
 		return VK_IMAGE_ASPECT_COLOR_BIT;
 	}
 }
-[[nodiscard]] smvk::ImageAspect DefaultSampleAspect(smvk::Format format)
+[[nodiscard]] smvk::ImageAspect           DefaultSampleAspect(smvk::Format format)
 {
 	const VkImageAspectFlags aspects =
 		VkAspectMaskFromFormat(toVkFormat(format));
@@ -4178,10 +4178,7 @@ inline void ImageBarrier(
 }
 
 // Submitter
-
-inline smvk::Submitter::Submitter(
-	VulkanCore& core,
-	uint32_t queueIndex)
+inline smvk::Submitter::Submitter(VulkanCore& core, uint32_t queueIndex)
 	: core_(core)
 {
 	// Fix this according to however VulkanCore stores queues.
@@ -4278,9 +4275,7 @@ smvk::TimelinePoint smvk::Submitter::nextSignalPoint() const
 		.value = m_timelineValue
 	};
 }
-VkResult smvk::Submitter::waitTimeline(
-	uint64_t value,
-	uint64_t timeout) const
+VkResult smvk::Submitter::waitTimeline(uint64_t value, uint64_t timeout) const
 {
 	assert(value != 0);
 	assert(m_timelineSemaphore != VK_NULL_HANDLE);
@@ -4300,10 +4295,7 @@ VkResult smvk::Submitter::waitTimeline(
 		&waitInfo,
 		timeout);
 }
-
-[[nodiscard]]
-inline smvk::CommandSubmitHandle
-smvk::Submitter::acquire()
+[[nodiscard]] inline smvk::CommandSubmitHandle smvk::Submitter::acquire()
 {
 	purge();
 
@@ -4384,10 +4376,7 @@ smvk::Submitter::acquire()
 		.gen_ = slot.gen_
 	};
 }
-[[nodiscard]]
-VkCommandBuffer
-smvk::Submitter::GetCommandBuffer(
-	CommandSubmitHandle handle)
+[[nodiscard]] VkCommandBuffer smvk::Submitter::GetCommandBuffer(CommandSubmitHandle handle)
 {
 	assert(validHandle(handle));
 
@@ -4399,10 +4388,7 @@ smvk::Submitter::GetCommandBuffer(
 
 	return slot.cmd_;
 }
-smvk::TimelinePoint
-smvk::Submitter::submit(
-	CommandSubmitHandle handle,
-	std::span<const TimelineWait> waits)
+smvk::TimelinePoint smvk::Submitter::submit(CommandSubmitHandle handle, std::span<const TimelineWait> waits)
 {
 	assert(validHandle(handle));
 
@@ -4519,9 +4505,7 @@ smvk::Submitter::submit(
 			signalValue
 	};
 }
-inline bool
-smvk::Submitter::validHandle(
-	CommandSubmitHandle handle) const
+inline bool smvk::Submitter::validHandle(CommandSubmitHandle handle) const
 {
 	if (handle.index_ >= kMax)
 		return false;
@@ -4531,8 +4515,7 @@ smvk::Submitter::validHandle(
 		handle.gen_ ==
 		commandBuffers_[handle.index_].gen_;
 }
-bool smvk::Submitter::isReady(
-	CommandSubmitHandle handle)
+bool smvk::Submitter::isReady(CommandSubmitHandle handle)
 {
 	if (handle.index_ >= kMax)
 		return false;
@@ -4586,9 +4569,7 @@ void smvk::Submitter::purge()
 		}
 	}
 }
-inline void smvk::Submitter::wait(
-	CommandSubmitHandle handle,
-	uint64_t timeout)
+inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout)
 {
 	if (handle.index_ >= kMax)
 	{
@@ -4636,8 +4617,7 @@ void smvk::Submitter::waitAll()
 
 	purge();
 }
-void smvk::Submitter::recycleSlot(
-	uint32_t index)
+void smvk::Submitter::recycleSlot(uint32_t index)
 {
 	assert(index < kMax);
 
@@ -5678,17 +5658,16 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 // RENDERGRAPH
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Rendergraph/commandbuffer.h>
-
 VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle logicalView) {
 	assert(!logicalView.empty());
 	auto view = rg->imageViews_.get(logicalView);
 	assert(view != nullptr);
 
-		if (view->type == smvk::LogicalImageView::Type::ExternalPhysical)
-		{
-			assert(!view->externalViewHandle.empty());
-			return rg->ctx_.imageViews_.get(view->externalViewHandle)->vkView;
-		}
+	if (view->type == smvk::LogicalImageView::Type::ExternalPhysical)
+	{
+		assert(!view->externalViewHandle.empty());
+		return rg->ctx_.imageViews_.get(view->externalViewHandle)->vkView;
+	}
 
 	assert(!view->resolvedViewHandle.empty());
 	return rg->ctx_.imageViews_.get(view->resolvedViewHandle)->vkView;
@@ -5782,7 +5761,7 @@ void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 			};
 
 			info.imageView = GetImageView(this, att.view);
-				info.imageLayout =
+			info.imageLayout =
 				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 			info.loadOp =
 				toVkAttachmentLoadOp(att.loadOp);
@@ -5873,8 +5852,11 @@ void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 		vkCmdEndRendering(fb.commandBuffer);
 	}
 };
-
-
+smvk::CommandBuffer::CommandBuffer(CommandBufferImpl cmd, smvk::RenderGraph& graph, smvk::RenderPass& pass)
+	: cmd_(cmd)
+	, graph_(&graph)
+	, renderPass_(&pass)
+{}
 void smvk::CommandBuffer::BindRenderPipeline(
 	ShaderProgram& shaderProgram,
 	VertexFormat vertexFormat,
@@ -5945,17 +5927,18 @@ void smvk::CommandBuffer::BindRenderPipeline(
 
 	assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");
 
-	if (bundle.pipeline == currentPipeline_) {
+	if (bundle.pipeline == currentPipeline_.pipeline) {
 		return;
 	}
 
-	currentPipeline_ = bundle.pipeline;
-	currentPipelineLayout_ = bundle.layout;
+	currentPipeline_.pipeline = bundle.pipeline;
+	currentPipeline_.layout = bundle.layout;
 
 	vkCmdBindPipeline(
 		cmd_,
 		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		currentPipeline_);
+		currentPipeline_.pipeline
+	);
 
 	vkCmdBindDescriptorSets(
 		cmd_,
@@ -5999,9 +5982,29 @@ void smvk::CommandBuffer::BindStaticVertexFmt()
 		VK_INDEX_TYPE_UINT32
 	);
 }
+void smvk::CommandBuffer::Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance) {
+	vkCmdDraw(
+		cmd_,
+		vertexCount,
+		instanceCount,
+		firstVertex,
+		firstInstance
+	);
+};
+void smvk::CommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
+{
+	vkCmdDrawIndexed(
+		cmd_,
+		indexCount,
+		instanceCount,
+		firstIndex,
+		vertexOffset,
+		firstInstance
+	);
+}
 void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const void* data, ShaderStage stageMask)
 {
-	assert(currentPipelineLayout_ != VK_NULL_HANDLE);
+	assert(currentPipeline_.layout != VK_NULL_HANDLE);
 
 	const VkShaderStageFlags vkStages =
 		toVkShaderStageFlags(stageMask);
@@ -6010,10 +6013,11 @@ void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const vo
 
 	vkCmdPushConstants(
 		cmd_,
-		currentPipelineLayout_,
+		currentPipeline_.layout,
 		vkStages,
 		offset,
 		size,
 		data
 	);
 }
+

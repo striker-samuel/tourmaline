@@ -1,13 +1,14 @@
 #pragma once
 
+#include "commandbuffer.h"
+#include <Engine/smvk.h>
+#include <Engine/Renderer/mesh.h>
+
 #include <cassert>
 #include <functional>
 #include <memory>
 #include <utility>
 #include <vector>
-
-#include <Engine/smvk.h>
-#include <Engine/Renderer/mesh.h>
 
 namespace smvk
 {
@@ -22,7 +23,6 @@ namespace smvk
 
 	using LogicalImageViewHandle =
 		Handle<struct LogicalImageView>;
-
 
 	// ============================================================
 	// Logical resource descriptions

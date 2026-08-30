@@ -3,7 +3,7 @@
 #include <iostream>
 
 #include <Engine/App/app.h>
-#include <Engine/Renderer/rendergraph.h>
+#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Renderer/dxc_integration.h>
 
 static constexpr const char* kTriangleVertShader = R"(

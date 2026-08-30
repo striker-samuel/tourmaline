@@ -736,5 +736,12 @@ namespace smvk {
 	std::vector<VkVertexInputBindingDescription> getVkVertexInputBindingDescriptions(const VertexFormatDescription& format);
 	std::vector<VkVertexInputAttributeDescription> getVkVertexAttributeDescriptions(const VertexFormatDescription& format);
 
+	struct BoundPipeline {
+		VkPipeline pipeline{};
+		VkPipelineLayout layout{};
+	};
+	using CommandBufferImpl = VkCommandBuffer;
+	using PipelineImpl = BoundPipeline;
+
 } // namespace smvk
 
