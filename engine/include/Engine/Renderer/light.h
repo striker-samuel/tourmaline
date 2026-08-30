@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Engine/shared/common.h>
+#include <glm/glm.hpp>
 
 namespace smvk {
 

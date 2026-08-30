@@ -1,6 +1,5 @@
 #define TINYGLTF_IMPLEMENTATION
 #include <Engine/Utils/gltf.h>
-#include <Engine/Shared/common.h>
 
 #include <array>
 #include <unordered_map>

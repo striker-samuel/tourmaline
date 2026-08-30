@@ -4,6 +4,7 @@
 #include <vector>
 #include <optional>
 
+#include <glm/glm.hpp>
 #include <Engine/smvk.h>
 
 namespace smvk {

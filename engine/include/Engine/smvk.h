@@ -10,9 +10,7 @@
 #include <vector>
 #include <set>
 //
-#include "Engine/Shared/common.h"
 #include <Engine/Memory/pool.h>
-
 //
 static constexpr uint32_t DEFAULT_WIDTH = 1280;
 static constexpr uint32_t DEFAULT_HEIGHT = 720;
