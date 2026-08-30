@@ -1185,6 +1185,8 @@ static constexpr                smvk::Format fromVkFormat(VkFormat format) // do
 	}
 }
 
+
+// Helpers
 static constexpr bool                     FormatHasStencil(VkFormat format)
 {
 	switch (format)
@@ -1236,6 +1238,20 @@ static constexpr VkImageAspectFlags       VkAspectMaskFromFormat(VkFormat format
 		return VK_IMAGE_ASPECT_COLOR_BIT;
 	}
 }
+static constexpr VkDescriptorSetLayoutBinding       getDSLBinding(uint32_t binding,
+	VkDescriptorType descriptorType,
+	uint32_t descriptorCount,
+	VkShaderStageFlags stageFlags,
+	const VkSampler* immutableSamplers = nullptr
+) {
+	return VkDescriptorSetLayoutBinding{
+		.binding = binding,
+		.descriptorType = descriptorType,
+		.descriptorCount = descriptorCount,
+		.stageFlags = stageFlags,
+		.pImmutableSamplers = immutableSamplers,
+	};
+}
 [[nodiscard]] smvk::ImageAspect           DefaultSampleAspect(smvk::Format format)
 {
 	const VkImageAspectFlags aspects =
@@ -1247,7 +1263,10 @@ static constexpr VkImageAspectFlags       VkAspectMaskFromFormat(VkFormat format
 	}
 	return smvk::ImageAspect::Color;
 }
+//
 
+
+// Synchronization
 inline void BufferBarrier(
 	VkCommandBuffer cmd,
 	VkBuffer buffer,
@@ -1579,21 +1598,6 @@ std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanC
 
 
 // ResourceContext
-static inline VkDescriptorSetLayoutBinding getDSLBinding(uint32_t binding,
-	VkDescriptorType descriptorType,
-	uint32_t descriptorCount,
-	VkShaderStageFlags stageFlags,
-	const VkSampler* immutableSamplers = nullptr
-) {
-	return VkDescriptorSetLayoutBinding{
-		.binding = binding,
-		.descriptorType = descriptorType,
-		.descriptorCount = descriptorCount,
-		.stageFlags = stageFlags,
-		.pImmutableSamplers = immutableSamplers,
-	};
-}
-
 smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore& core) :core_(core)
 {
 	VmaAllocatorCreateInfo allocatorCreateInfo = {};
@@ -3533,10 +3537,7 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 			imageViews_.create(std::move(view))
 	};
 }
-[[nodiscard]] smvk::ImageViewHandle smvk::VulkanResourceManager::RegisterImageView(
-	VkImageView vkView,
-	Format format,
-	const char* name)
+[[nodiscard]] smvk::ImageViewHandle smvk::VulkanResourceManager::RegisterImageView(VkImageView vkView, Format format, const char* name)
 {
 	assert(vkView != VK_NULL_HANDLE);
 
@@ -3547,20 +3548,13 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 
 	return imageViews_.create(std::move(view));
 }
-
-void smvk::VulkanResourceManager::SetImageViewVkView(
-	ImageViewHandle handle,
-	VkImageView vkView)
+void smvk::VulkanResourceManager::SetImageViewVkView(ImageViewHandle handle, VkImageView vkView)
 {
 	auto* view = imageViews_.get(handle);
 	assert(view != nullptr);
 	view->vkView = vkView;
 }
-
-smvk::ImageViewHandle smvk::VulkanResourceManager::RecreateImageView(
-	ImageViewHandle handle,
-	ImageHandle imageHandle,
-	const ImageViewCreateInfo& ci)
+smvk::ImageViewHandle smvk::VulkanResourceManager::RecreateImageView(ImageViewHandle handle, ImageHandle imageHandle, const ImageViewCreateInfo& ci)
 {
 	ImageView* view = imageViews_.get(handle);
 	assert(view != nullptr);
@@ -3630,11 +3624,7 @@ smvk::ImageViewHandle smvk::VulkanResourceManager::RecreateImageView(
 
 	return handle;
 }
-
-smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(
-	ImageHandle handle,
-	const ImageCreateInfo& ci,
-	const void* data)
+smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle, const ImageCreateInfo& ci, const void* data)
 {
 	Image* image = images_.get(handle);
 	assert(image != nullptr);
@@ -5654,8 +5644,7 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 	return bundle;
 }
 
-
-// RENDERGRAPH
+// Rendergraph
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Rendergraph/commandbuffer.h>
 VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle logicalView) {
@@ -5852,6 +5841,7 @@ void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
 		vkCmdEndRendering(fb.commandBuffer);
 	}
 };
+// CommandBuffer
 smvk::CommandBuffer::CommandBuffer(CommandBufferImpl cmd, smvk::RenderGraph& graph, smvk::RenderPass& pass)
 	: cmd_(cmd)
 	, graph_(&graph)
