@@ -85,11 +85,10 @@ struct ViewportResources {
 	smvk::LogicalImageViewHandle depthView;
 };
 
-class TestApp : public smvk::VulkanApp {
-	using Super = smvk::VulkanApp;
-public:
-	//TestApp() {};
-	//~TestApp() {};
+
+#include <Engine/Vulkan/vulkanApp.h>
+class TestApp : public smvk::AppImpl {
+	using Super = smvk::AppImpl;
 private:
 	void UpdateCamera(float dt);
 	//

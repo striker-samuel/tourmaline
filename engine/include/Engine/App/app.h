@@ -1,45 +1,33 @@
 #pragma once
-
+//
+#include <Engine/smvk.h>
+#include <Engine/App/world.h>
+#include <GLFW/glfw3.h>
+#include "input.h"
 #include <algorithm>
 #include <cassert>
 #include <future>
-//
-#include "volk.h"
-#include "vk_mem_alloc.h"
-//
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_vulkan.h"
-//
-#include "input.h"
-
-//#include <Engine/smvk.h>
-#include <Engine/Vulkan/impl.h>
-#include <Engine/App/world.h>
 
 namespace smvk {
 
 	struct RenderGraph;
-
-	class VulkanApp {
+	class IApp {
 	public:
 		Input m_input{};
-		VulkanApp();
-		virtual ~VulkanApp();
+		IApp() = default;
+		virtual ~IApp() = default;
+		virtual bool Initialize() = 0;
 		virtual void DrawFrame() = 0;
-		virtual void CleanUp();
-		virtual bool Initialize();
+		//virtual ResourceManagerImpl* GetContext();
+		//virtual SwapchainImpl* GetSwawphain();
 		bool Run();
 		void MainLoop();
 		void UpdateDeltaTime();
 	protected:
-		std::unique_ptr<VulkanCore> core_;
-		std::unique_ptr<VulkanResourceManager> m_context;
-		std::unique_ptr<VulkanSwapchain> m_swapchain;
+		std::unique_ptr<ResourceManagerImpl> m_context; // two should be reduced to one really
+		std::unique_ptr<SwapchainImpl> m_swapchain;
 		std::unique_ptr<RenderGraph> m_rendergraph;
 		std::unique_ptr<World> m_world;
-		ImGuiContext* m_imguiCtx = nullptr;
-		//Holder<DescriptorPoolHandle> imgui_descriptorPool;
 #pragma region ===[ App / Core State ]===
 		float delta_time_s = .0f;
 		float time_since_start_s = .0f;
@@ -47,10 +35,6 @@ namespace smvk {
 
 #pragma region ===[ GLFW / Window State ]===
 		GLFWwindow * window = nullptr;
-#pragma endregion
-
-#pragma region Initialization
-		void InitializeImGui(); // This will be removed and made not app core
 #pragma endregion
 
 #pragma region Events

@@ -465,9 +465,10 @@ namespace {
 } // static ns
 
 //VkInstance smvk::VulkanCore::GetInstance() { return instance_; }
-VkDevice smvk::VulkanCore::GetDevice() { return device_; }
+//VkDevice smvk::VulkanCore::GetDevice() { return device_; }
 //VkPhysicalDevice smvk::VulkanCore::GetPhysicalDevice() { return physicalDevice_; }
 //VkQueue smvk::VulkanCore::GetGraphicsQueue() { return graphicsQueue_; }
+
 const char* vkResultToString(VkResult result) {
 	switch (result) {
 	case VK_SUCCESS: return "VK_SUCCESS";
@@ -1305,6 +1306,79 @@ inline void ImageBarrier(
 
 
 // VulkanCore
+inline void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out) {
+	VkSemaphoreTypeCreateInfo semaphoreTypeInfo{};
+	semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+	semaphoreTypeInfo.pNext = nullptr;
+	semaphoreTypeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+	semaphoreTypeInfo.initialValue = initialValue;
+	VkSemaphoreCreateInfo createInfo{
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+		.pNext = &semaphoreTypeInfo,
+		.flags = 0 };
+	VK_CHECK(vkCreateSemaphore(device_, &createInfo, nullptr, &out));
+};
+inline void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& out) {
+	VkShaderModuleCreateInfo createInfo{};
+	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	createInfo.codeSize = code.size();
+	createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+	if (vkCreateShaderModule(device_, &createInfo, nullptr, &out) !=
+		VK_SUCCESS) {
+		throw std::runtime_error("failed to create shader module!");
+	}
+}
+void static CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline) {
+	assert(!pipeline);
+	if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &createInfo,
+		nullptr, &pipeline) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create graphics pipeline!");
+	}
+
+}
+void static CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline)
+{
+	assert(!pipeline);
+	if (vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &createInfo,
+		nullptr, &pipeline) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create graphics pipeline!");
+	}
+}
+void static DestroyGraphicsPipeline(VkPipeline pipeline) {
+	vkDestroyPipeline(device_, pipeline, nullptr);
+}
+void static CreateSampler(const smvk::SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
+
+	VkSamplerCreateInfo samplerInfo{};
+	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	samplerInfo.magFilter = VK_FILTER_LINEAR;
+	samplerInfo.minFilter = VK_FILTER_LINEAR;
+
+	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+
+	VkPhysicalDeviceProperties properties{};
+	vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+	samplerInfo.anisotropyEnable = VK_TRUE;
+	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+	samplerInfo.unnormalizedCoordinates = VK_FALSE;
+	samplerInfo.compareEnable = VK_FALSE;
+	samplerInfo.compareOp = toVkCompareOp(samplerCreateInfo.compareOp);
+
+	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	samplerInfo.mipLodBias = 0.0f;
+	samplerInfo.minLod = 0.0f;
+	samplerInfo.maxLod = samplerCreateInfo.maxLod;
+	//samplerInfo.maxLod = float(samplerCreateInfo.levelCount - 1);
+
+	VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler));
+
+}
 
 int smvk::VulkanCore::CreateInstance() {
 
@@ -1509,79 +1583,6 @@ bool smvk::VulkanCore::Init() {
 	return true;
 
 }
-inline void CreateTimelineSemaphore(uint64_t initialValue, VkSemaphore& out) {
-	VkSemaphoreTypeCreateInfo semaphoreTypeInfo{};
-	semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
-	semaphoreTypeInfo.pNext = nullptr;
-	semaphoreTypeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-	semaphoreTypeInfo.initialValue = initialValue;
-	VkSemaphoreCreateInfo createInfo{
-		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-		.pNext = &semaphoreTypeInfo,
-		.flags = 0 };
-	VK_CHECK(vkCreateSemaphore(device_, &createInfo, nullptr, &out));
-};
-inline void CreateShaderModuleIn(const std::vector<char>& code, VkShaderModule& out) {
-	VkShaderModuleCreateInfo createInfo{};
-	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-	createInfo.codeSize = code.size();
-	createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
-
-	if (vkCreateShaderModule(device_, &createInfo, nullptr, &out) !=
-		VK_SUCCESS) {
-		throw std::runtime_error("failed to create shader module!");
-	}
-}
-void smvk::VulkanCore::CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline) {
-	assert(!pipeline);
-	if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &createInfo,
-		nullptr, &pipeline) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create graphics pipeline!");
-	}
-
-}
-void smvk::VulkanCore::CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline)
-{
-	assert(!pipeline);
-	if (vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &createInfo,
-		nullptr, &pipeline) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create graphics pipeline!");
-	}
-}
-void smvk::VulkanCore::DestroyGraphicsPipeline(VkPipeline pipeline) {
-	vkDestroyPipeline(device_, pipeline, nullptr);
-}
-void smvk::VulkanCore::CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
-
-	VkSamplerCreateInfo samplerInfo{};
-	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	samplerInfo.magFilter = VK_FILTER_LINEAR;
-	samplerInfo.minFilter = VK_FILTER_LINEAR;
-
-	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-
-	VkPhysicalDeviceProperties properties{};
-	vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-	samplerInfo.anisotropyEnable = VK_TRUE;
-	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-	samplerInfo.unnormalizedCoordinates = VK_FALSE;
-	samplerInfo.compareEnable = VK_FALSE;
-	samplerInfo.compareOp = toVkCompareOp(samplerCreateInfo.compareOp);
-
-	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-	samplerInfo.mipLodBias = 0.0f;
-	samplerInfo.minLod = 0.0f;
-	samplerInfo.maxLod = samplerCreateInfo.maxLod;
-	//samplerInfo.maxLod = float(samplerCreateInfo.levelCount - 1);
-
-	VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler));
-
-}
 inline smvk::VulkanCore::~VulkanCore() {
 	vkDeviceWaitIdle(device_);
 	//vkDestroyCommandPool(device_, defaultCommandPool_, nullptr);
@@ -1609,13 +1610,17 @@ std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanC
 
 
 // ResourceContext
-smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore& core) :core_(core)
+smvk::VulkanResourceManager::VulkanResourceManager(
+	VulkanCore::CoreConfiguration configuration,
+	GLFWwindow* window)
+	: core_(CreateVulkanCoreWithWindow(configuration, window))
 {
+	//assert(window != nullptr && "headless not implemented yet");
 	VmaAllocatorCreateInfo allocatorCreateInfo = {};
 	allocatorCreateInfo.physicalDevice = physicalDevice_;
 	allocatorCreateInfo.device = device_;
 	allocatorCreateInfo.instance = instance_;
-	allocatorCreateInfo.vulkanApiVersion = core_.config_.version_ == VK_1_3 ? VK_API_VERSION_1_3 : UINT32_MAX;
+	allocatorCreateInfo.vulkanApiVersion = core_->config_.version_ == VK_1_3 ? VK_API_VERSION_1_3 : UINT32_MAX;
 	allocatorCreateInfo.flags =
 		VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT |
 		VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT |
@@ -1627,11 +1632,11 @@ smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore& core) :core_(core
 	allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
 	VK_CHECK(vmaCreateAllocator(&allocatorCreateInfo, &m_allocator));
 
-	m_submitter = new Submitter(core_, core_.indices.graphicsFamily.value());
+	m_submitter = new Submitter(*core_, core_->indices.graphicsFamily.value());
 
 	// Urges creating the SamplerPool -> key mapping to samplers!
-	core_.CreateSampler(SamplerCreateInfo{}, m_defaultSampler);
-	core_.CreateSampler(
+	CreateSampler(SamplerCreateInfo{}, m_defaultSampler);
+	CreateSampler(
 		SamplerCreateInfo{
 		.compareOp = smvk::CompareOp::LessEqual,
 		.compareEnable = true
@@ -5645,7 +5650,7 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 	};
 
 	PipelineBundle bundle{};
-	ctx_->core_.CreateGraphicsPipeline(
+	CreateGraphicsPipeline(
 		pipelineInfo,
 		bundle.pipeline);
 
@@ -5653,6 +5658,65 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 		layout;
 
 	return bundle;
+}
+
+smvk::PipelineBundle smvk::PipelineCache::GetRenderPipeline(
+	ShaderProgram& program,
+	const VertexFormatDescription& vertexFormat,
+	const Format* colorFormats,
+	uint32_t colorAttachmentCount,
+	Format depthFormat,
+	Format stencilFormat,
+	PrimitiveTopology topology,
+	const RasterSettings& raster,
+	const DepthSettings& depth,
+	const StencilSettings& stencil,
+	const BlendSettings& blend,
+	const MSAASettings& msaa
+)
+{
+	PipelineKey key{
+		.program = program,
+		.vertexFormat = vertexFormat,
+		.colorFormats = std::vector<Format>(
+			colorFormats,
+			colorFormats + colorAttachmentCount),
+		.depthFormat = depthFormat,
+		.stencilFormat = stencilFormat,
+		.topology = topology,
+		.raster = raster,
+		.depth = depth,
+		.stencil = stencil,
+		.blend = blend,
+		.msaa = msaa,
+	};
+
+	if (auto it = pipelines_.find(key);
+		it != pipelines_.end())
+	{
+		return it->second;
+	}
+
+	PipelineBundle bundle =
+		BuildGraphicsPipeline(key);
+
+	auto [it, inserted] =
+		pipelines_.emplace(
+			std::move(key),
+			bundle);
+
+	return it->second;
+}
+void smvk::PipelineCache::Clear() {
+	for (auto& [key, bundle] : pipelines_)
+	{
+		if (bundle.pipeline != VK_NULL_HANDLE)
+		{
+			DestroyGraphicsPipeline(
+				bundle.pipeline);
+		}
+	}
+	pipelines_.clear();
 }
 
 // Rendergraph
@@ -6021,4 +6085,117 @@ void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const vo
 		data
 	);
 }
+
+#include <Engine/Vulkan/VulkanApp.h>
+//void smvk::VulkanApp::InitializeImGui() {
+//
+//	// Setup Dear ImGui context
+//	IMGUI_CHECKVERSION();
+//	ImGui::CreateContext();
+//	ImGuiIO& io = ImGui::GetIO(); (void)io;
+//	//io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+//	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Control	ImGui::SetCurrentContext(imgui_ctx);
+//	//io.SetClipboardTextFn = [](void*, const char* text) { glfwSetClipboardString(nullptr, text); };
+//	//io.GetClipboardTextFn = [](void*) { return glfwGetClipboardString(nullptr); };
+//
+//	VkPipelineRenderingCreateInfo pipeline_create{
+//		VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+//	pipeline_create.pNext = VK_NULL_HANDLE;
+//	// We are using the single color buffer out.
+//	pipeline_create.colorAttachmentCount = 1;
+//	pipeline_create.pColorAttachmentFormats = &m_swapchain->vk_surfaceFormat_;
+//	pipeline_create.depthAttachmentFormat = m_swapchain->vk_depthFormat_;
+//	pipeline_create.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+//
+//	ImGui_ImplGlfw_InitForVulkan(window, /*install callbacks*/ false);
+//
+//	imgui_descriptorPool = m_context->CreateDescriptorPool();
+//	auto dp = m_context->descriptorPools_.get(imgui_descriptorPool);
+//
+//	ImGui_ImplVulkan_InitInfo info{};
+//	info.Instance = core_->GetInstance();
+//	info.ApiVersion = m_context->core_.config_.version_;
+//	info.PhysicalDevice = core_->GetPhysicalDevice();
+//	info.Device = core_->GetDevice();
+//	info.Queue = core_->GetGraphicsQueue();
+//	info.DescriptorPool = *dp;
+//	info.MinImageCount = m_swapchain->GetMinImageCount();
+//	info.ImageCount = m_swapchain->GetImageCount();
+//	info.UseDynamicRendering = true,
+//	info.PipelineRenderingCreateInfo = pipeline_create;
+//	ImGui_ImplVulkan_Init(&info  /* oUseDynamicRendering=true */);
+//
+//	// I think this is no longer needed
+//	//auto han = m_context->m_submitter->acquire();
+//	//auto cmd = m_context->m_submitter->GetCommandBuffer(han);
+//	//ImGui_ImplVulkan_CreateFontsTexture(cmd.cmd);
+//	//ImGui_ImplVulkan_DestroyFontUploadObjects(cmd.cmd);
+//	//m_context->m_submitter->submit(han);
+//
+//}
+
+bool smvk::VulkanApp::Initialize() {
+
+	if (volkInitialize() != VK_SUCCESS) {
+		std::cerr << "Failed to initialize Volk\n";
+		glfwTerminate();
+		return false;
+	};
+
+	// GLFW;
+
+	if (!glfwInit()) {
+		std::cerr << "Failed to initialize GLFW\n";
+		return false;
+	}
+	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+	int width_ = DEFAULT_WIDTH;
+	int height_ = DEFAULT_HEIGHT;
+	window = glfwCreateWindow(width_, height_, "Vulkan", nullptr, nullptr);
+
+	if (!window) {
+		std::cerr << "Failed to create GLFW window\n";
+		glfwTerminate();
+		return false;
+	}
+	glfwMakeContextCurrent(window);
+	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	glfwSetWindowTitle(window, /*ENGINE_NAME*/ "samuelmartin.1999@outlok.com");
+
+	glfwSetKeyCallback(window, keyCallback);
+	glfwSetMouseButtonCallback(window, mouseButtonCallback);
+	glfwSetCursorPosCallback(window, cursorPositionCallback);
+	glfwSetScrollCallback(window, scrollCallback);
+
+	glfwSetWindowUserPointer(window, this);
+	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+
+	//core_ = CreateVulkanCoreWithWindow(VulkanCore::CoreConfiguration{}, window);
+	m_context = std::make_unique<VulkanResourceManager>(VulkanCore::CoreConfiguration{}, window);
+	m_swapchain = std::make_unique<VulkanSwapchain>(
+		*m_context,
+		window
+	);
+
+	m_rendergraph = std::make_unique<RenderGraph>(*m_context);
+	m_world = std::make_unique<World>();
+
+	// Init imgui?s
+	return true;
+
+}
+smvk::VulkanApp::~VulkanApp()
+{
+	vkDeviceWaitIdle(device_);
+
+	if (window != nullptr) {
+		glfwDestroyWindow(window);
+		window = nullptr;
+	}
+	glfwTerminate();
+}
+
+
+
 

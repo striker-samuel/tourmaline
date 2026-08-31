@@ -15,7 +15,6 @@
 
 inline const char* vkResultToString(VkResult result);
 
-
 #define VK_ASSERT_RETURN(func)                                     \
   {                                                                \
     const VkResult vk_assert_result = func;                        \
@@ -42,8 +41,6 @@ inline const char* vkResultToString(VkResult result);
 
 
 namespace smvk {
-
-
 	struct StaticMeshAllocation {
 		VmaVirtualAllocation vertexAllocation = VK_NULL_HANDLE;
 		VmaVirtualAllocation indexAllocation = VK_NULL_HANDLE;
@@ -75,17 +72,17 @@ namespace smvk {
 		const char* name;
 	};
 
- 	struct ImageView
- 	{
- 		VkImageView vkView = VK_NULL_HANDLE;
+	struct ImageView
+	{
+		VkImageView vkView = VK_NULL_HANDLE;
 
- 		ImageHandle image{};
- 		ImageViewType viewType = ImageViewType::View2D;
- 		Format format = Format::Undefined;
- 		ImageSubresourceRange subresourceRange{};
+		ImageHandle image{};
+		ImageViewType viewType = ImageViewType::View2D;
+		Format format = Format::Undefined;
+		ImageSubresourceRange subresourceRange{};
 
- 		ResourceOwnership ownership = ResourceOwnership::Owned;
- 	};
+		ResourceOwnership ownership = ResourceOwnership::Owned;
+	};
 
 	struct Buffer
 	{
@@ -229,17 +226,6 @@ namespace smvk {
 
 		int CreateInstance();
 		bool Init();
-
-		//VkInstance GetInstance();
-		VkDevice GetDevice();
-		//VkPhysicalDevice GetPhysicalDevice();
-		//VkQueue GetGraphicsQueue();
-
-		void CreateSampler(const SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler);
-		void CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline);
-		void CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline);
-
-		void DestroyGraphicsPipeline(VkPipeline pipeline);
 	};
 
 	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window);
@@ -364,9 +350,10 @@ namespace smvk {
 		CommandSubmitHandle handle_;
 	};
 
-	struct VulkanResourceManager {
+	//struct IResourceManager {};
+	struct VulkanResourceManager final /*: public IResourceManager*/ {
 
-		VulkanResourceManager(VulkanCore& core);
+		VulkanResourceManager(VulkanCore::CoreConfiguration configuration = VulkanCore::CoreConfiguration(), GLFWwindow* window=nullptr);
 		~VulkanResourceManager();
 		VulkanResourceManager(const VulkanResourceManager&) = delete;
 		VulkanResourceManager& operator=(const VulkanResourceManager&) = delete;
@@ -381,15 +368,15 @@ namespace smvk {
 		Holder<TextureHandle>        CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<TextureHandle>        CreateTexture(ktxTexture2& texture, const char* debugName = "Texture");
 		Holder<BindlessImageHandle>  CreateBindlessImage(ImageViewHandle viewHandle, VkImageLayout readLayout);
- 		Holder<ImageViewHandle>      CreateImageView(ImageHandle image, const ImageViewCreateInfo& createInfo);
- 		ImageViewHandle               RegisterImageView(VkImageView vkView, Format format, const char* name = nullptr);
+		Holder<ImageViewHandle>      CreateImageView(ImageHandle image, const ImageViewCreateInfo& createInfo);
+		ImageViewHandle               RegisterImageView(VkImageView vkView, Format format, const char* name = nullptr);
 
- 		// In-place recreation: keeps the same handle alive while swapping the
- 		// underlying Vulkan object. Used so external owners (e.g. the swapchain)
- 		// survive Recreate() without invalidating handles held by the rendergraph.
- 		void                          SetImageViewVkView(ImageViewHandle handle, VkImageView vkView);
- 		ImageViewHandle               RecreateImageView(ImageViewHandle handle, ImageHandle image, const ImageViewCreateInfo& createInfo);
- 		ImageHandle                   RecreateImage(ImageHandle handle, const ImageCreateInfo& createInfo, const void* data = nullptr);
+		// In-place recreation: keeps the same handle alive while swapping the
+		// underlying Vulkan object. Used so external owners (e.g. the swapchain)
+		// survive Recreate() without invalidating handles held by the rendergraph.
+		void                          SetImageViewVkView(ImageViewHandle handle, VkImageView vkView);
+		ImageViewHandle               RecreateImageView(ImageViewHandle handle, ImageHandle image, const ImageViewCreateInfo& createInfo);
+		ImageHandle                   RecreateImage(ImageHandle handle, const ImageCreateInfo& createInfo, const void* data = nullptr);
 		Holder<BufferHandle>         CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = "Buffer");
 		Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = "DescriptorPool");
 
@@ -404,7 +391,7 @@ namespace smvk {
 		void UpdateDescriptors(uint32_t frameIndex = 0);
 		uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
 
-		VulkanCore& core_;
+		std::unique_ptr<VulkanCore> core_;
 		VmaAllocator m_allocator;
 		Submitter* m_submitter = nullptr;
 		std::vector<DeferredTask> m_deferredTasks;
@@ -462,7 +449,7 @@ namespace smvk {
 		VulkanSwapchain& swapchain;
 	};
 
-	class VulkanSwapchain {
+	class VulkanSwapchain final /*: public ISwapchain*/ {
 
 	public:
 
@@ -521,11 +508,11 @@ namespace smvk {
 		bool framebufferResized = false;
 		uint32_t minImageCount_;
 
- 		Holder<ImageHandle> depthImage_;
- 		Holder<ImageViewHandle> depthImageView_;
- 		std::vector<VkImage> images_;
- 		std::vector<VkImageView> imageViews_;
- 		std::vector<ImageViewHandle> imageViewHandles_;
+		Holder<ImageHandle> depthImage_;
+		Holder<ImageViewHandle> depthImageView_;
+		std::vector<VkImage> images_;
+		std::vector<VkImageView> imageViews_;
+		std::vector<ImageViewHandle> imageViewHandles_;
 		std::vector<VkSemaphore> renderFinishedSemaphores_;
 		std::vector<VkSemaphore> imageAvailableSemaphores_;
 		std::vector<VkFence> inFlightFences_;
@@ -670,54 +657,9 @@ namespace smvk {
 			const DepthSettings& depth = DepthSettings::DepthTest(),
 			const StencilSettings& stencil = StencilSettings::DefaultDisabled(),
 			const BlendSettings& blend = BlendSettings::Opaque(),
-			const MSAASettings& msaa = MSAASettings::Count1())
-		{
-			PipelineKey key{
-				.program = program,
-				.vertexFormat = vertexFormat,
-				.colorFormats = std::vector<Format>(
-					colorFormats,
-					colorFormats + colorAttachmentCount),
-				.depthFormat = depthFormat,
-				.stencilFormat = stencilFormat,
-				.topology = topology,
-				.raster = raster,
-				.depth = depth,
-				.stencil = stencil,
-				.blend = blend,
-				.msaa = msaa,
-			};
+			const MSAASettings& msaa = MSAASettings::Count1());
+		void Clear();
 
-			if (auto it = pipelines_.find(key);
-				it != pipelines_.end())
-			{
-				return it->second;
-			}
-
-			PipelineBundle bundle =
-				BuildGraphicsPipeline(key);
-
-			auto [it, inserted] =
-				pipelines_.emplace(
-					std::move(key),
-					bundle);
-
-			return it->second;
-		}
-
-		void Clear()
-		{
-			for (auto& [key, bundle] : pipelines_)
-			{
-				if (bundle.pipeline != VK_NULL_HANDLE)
-				{
-					ctx_->core_.DestroyGraphicsPipeline(
-						bundle.pipeline);
-				}
-			}
-
-			pipelines_.clear();
-		}
 
 	private:
 		PipelineBundle BuildGraphicsPipeline(
@@ -733,16 +675,21 @@ namespace smvk {
 		> pipelines_;
 	};
 
-
 	std::vector<VkVertexInputBindingDescription> getVkVertexInputBindingDescriptions(const VertexFormatDescription& format);
 	std::vector<VkVertexInputAttributeDescription> getVkVertexAttributeDescriptions(const VertexFormatDescription& format);
+
 
 	struct BoundPipeline {
 		VkPipeline pipeline{};
 		VkPipelineLayout layout{};
 	};
+
+	class VulkanApp;
+
 	using CommandBufferImpl = VkCommandBuffer;
 	using PipelineImpl = BoundPipeline;
+	using SwapchainImpl = VulkanSwapchain;
+	using AppImpl = VulkanApp;
 
-} // namespace smvk
+}; // namespace smvk
 

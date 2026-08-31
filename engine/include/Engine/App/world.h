@@ -53,21 +53,20 @@ namespace smvk {
 
 		mutable bool dirtyCull = true;
 		std::vector<IteratorFlags> flags; // indexed by node
-
-		std::vector<std::unique_ptr<smvk::Cluster>> clusters;
+		std::vector<std::unique_ptr<Cluster>> clusters;
 
 		// Resource lookup into clusters
 		struct MeshLocation {
-			smvk::Cluster* cluster;
-			smvk::ClusterStaticMeshHandle handle;
+			Cluster* cluster;
+			ClusterStaticMeshHandle handle;
 		};
 		struct MaterialLocation {
-			smvk::Cluster* cluster;
-			smvk::ClusterMaterialHandle handle;
+			Cluster* cluster;
+			ClusterMaterialHandle handle;
 		};
 		struct TextureLocation {
-			smvk::Cluster* cluster;
-			smvk::ClusterTextureHandle handle;
+			Cluster* cluster;
+			ClusterTextureHandle handle;
 		};
 		// Indexed by the mesh/material index stored in scene.meshForNode /
 		// scene.materialForNode. Each entry points back to the owning
@@ -76,11 +75,11 @@ namespace smvk {
 		std::vector<MaterialLocation> materialLocations;
 		std::vector<TextureLocation> textureLocations;
 
-		smvk::Cluster& LoadCluster(VulkanResourceManager& ctx);
+		Cluster& LoadCluster(VulkanResourceManager& ctx);
 		void UnloadCluster(smvk::Cluster&);
 
-		void RegisterCluster(std::unique_ptr<smvk::Cluster> cluster);
-		std::unique_ptr<smvk::Cluster> UnregisterCluster(smvk::Cluster&);
+		void RegisterCluster(std::unique_ptr<Cluster> cluster);
+		std::unique_ptr<Cluster> UnregisterCluster(Cluster&);
 		void ResolveAndFixup_clusters();
 
 		smvk::StaticMesh* GetMesh(uint32_t meshIndex);

@@ -56,6 +56,8 @@ target_include_directories(App
 
 )
 
+target_compile_definitions(App PRIVATE ENGINE_VULKAN)
+
 target_link_libraries(App
     PRIVATE
         engine

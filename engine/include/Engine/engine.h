@@ -21,3 +21,7 @@
 #include "platform.h"
 #include "smvk.h"
 
+
+#ifdef ENGINE_VULKAN
+#include <Engine/Vulkan/impl.h>
+#endif

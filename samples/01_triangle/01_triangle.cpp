@@ -2,7 +2,8 @@
 
 #include <iostream>
 
-#include <Engine/App/app.h>
+
+#include <Engine/engine.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Renderer/dxc_integration.h>
 
@@ -62,13 +63,18 @@ float4 mainPS(
 }
 
 )";
-class TriangleApp : public smvk::VulkanApp {
-	using Super = smvk::VulkanApp;
+
+#include <Engine/Vulkan/vulkanApp.h>
+class TriangleApp : public smvk::AppImpl {
+	using Super = smvk::AppImpl;
 
 public:
 	TriangleApp() = default;
-	~TriangleApp() = default;
-
+	~TriangleApp() {
+		for (int i = 0; i < m_program.shaderCount; i++) {
+			smvk::destroy(m_context.get(), m_program.shaders[i].module);
+		}
+	}
 private:
 	bool Initialize() override {
 		if (!Super::Initialize())
@@ -115,7 +121,7 @@ private:
 		return true;
 	}
 
-	void DrawFrame() override {
+	void DrawFrame() {
 		auto fb = m_swapchain->AcquireFramebuffer();
 		RenderFrame(fb);
 		m_swapchain->EndAndPresentFramebuffer(fb);
@@ -161,14 +167,6 @@ private:
 
 		m_rendergraph->Execute(fb);
 		m_context->ProcessDeferrredTasks(); // Not needed here
-	}
-	void CleanUp() {
-		Super::CleanUp();
-
-		for (int i = 0; i < m_program.shaderCount; i++) {
-			smvk::destroy(m_context.get(), m_program.shaders[i].module);
-		}
-
 	}
 
 private:

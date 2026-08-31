@@ -1,5 +1,7 @@
 project(Engine)
 
+set(ENGINE_BACKEND "Vulkan")
+
 
 
 file(GLOB_RECURSE ENGINE_SRC CONFIGURE_DEPENDS

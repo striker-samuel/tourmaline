@@ -10,6 +10,7 @@
 #include <vector>
 #include <set>
 //
+#include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
 //
 static constexpr uint32_t DEFAULT_WIDTH = 1280;
@@ -173,6 +174,70 @@ namespace smvk {
 
 		PassThrough,
 	};
+
+	// ============================================================================
+	// Resource access
+	// ============================================================================
+
+	enum class AccessFlags : uint32_t
+	{
+		None = 0,
+
+		IndirectCommandRead = 1u << 0,
+		IndexRead = 1u << 1,
+		VertexAttributeRead = 1u << 2,
+		UniformRead = 1u << 3,
+		InputAttachmentRead = 1u << 4,
+		ShaderRead = 1u << 5,
+		ShaderWrite = 1u << 6,
+		ColorAttachmentRead = 1u << 7,
+		ColorAttachmentWrite = 1u << 8,
+		DepthStencilAttachmentRead = 1u << 9,
+		DepthStencilAttachmentWrite = 1u << 10,
+		TransferRead = 1u << 11,
+		TransferWrite = 1u << 12,
+		HostRead = 1u << 13,
+		HostWrite = 1u << 14,
+		MemoryRead = 1u << 15,
+		MemoryWrite = 1u << 16,
+
+		CommandPreprocessRead = 1u << 17,
+		CommandPreprocessWrite = 1u << 18,
+		ColorAttachmentReadNoncoherent = 1u << 19,
+		ConditionalRenderingRead = 1u << 20,
+		AccelerationStructureRead = 1u << 21,
+		AccelerationStructureWrite = 1u << 22,
+		FragmentShadingRateAttachmentRead = 1u << 23,
+		FragmentDensityMapRead = 1u << 24,
+		TransformFeedbackWrite = 1u << 25,
+		TransformFeedbackCounterRead = 1u << 26,
+		TransformFeedbackCounterWrite = 1u << 27,
+	};
+
+	constexpr AccessFlags operator|(AccessFlags a, AccessFlags b)
+	{
+		return static_cast<AccessFlags>(
+			static_cast<uint32_t>(a) |
+			static_cast<uint32_t>(b));
+	}
+
+	constexpr AccessFlags operator&(AccessFlags a, AccessFlags b)
+	{
+		return static_cast<AccessFlags>(
+			static_cast<uint32_t>(a) &
+			static_cast<uint32_t>(b));
+	}
+
+	constexpr AccessFlags& operator|=(AccessFlags& a, AccessFlags b)
+	{
+		a = a | b;
+		return a;
+	}
+
+	constexpr bool HasAnyFlag(AccessFlags value, AccessFlags flags)
+	{
+		return (value & flags) != AccessFlags::None;
+	}
 
 	// ============================================================================
 	// Primitive / vertex input
@@ -995,6 +1060,8 @@ namespace smvk {
 		}
 	};
 
+
+
 	struct PipelineKey
 	{
 		ShaderProgram program{};
@@ -1034,6 +1101,18 @@ namespace smvk {
 				msaa.samples == rhs.msaa.samples;
 		}
 	};
+
+	// Sync types translated from nicegraf
+	//  Maybe these should be impl. private
+	//struct SyncBarrierMasks
+	//{
+	//	AccessFlags accessMask = AccessFlags::None;
+	//	PipelineStage stageMask = PipelineStageBit_None;
+	//};
+	//struct SyncRequest {
+	//	SyncBarrierMasks barrier_masks;
+	//	Layout            layout;        
+	//};
 
 	struct ImageCreateInfo
 	{
@@ -1101,6 +1180,5 @@ namespace smvk {
 			return ImageAspect::Color;
 		}
 	}
-
 
 } // namespace smvk
