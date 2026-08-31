@@ -5152,24 +5152,6 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
 	AdvanceFrame();
 
 }
-smvk::StencilSettings smvk::StencilSettings::DefaultDisabled()
-{
-	StencilSettings s{};
-	s.frontTestEnable = false;
-	s.backTestEnable = false;
-	s.frontWriteEnable = false;
-	s.backWriteEnable = false;
-	return s;
-}
-smvk::StencilSettings smvk::StencilSettings::DefaultEnabled()
-{
-	StencilSettings s{};
-	s.frontTestEnable = true;
-	s.backTestEnable = true;
-	s.frontWriteEnable = true;
-	s.backWriteEnable = true;
-	return s;
-}
 bool smvk::StencilSettings::operator<(const StencilSettings& other) const noexcept
 {
 	return std::tie(
@@ -5187,6 +5169,7 @@ bool smvk::StencilSettings::operator<(const StencilSettings& other) const noexce
 			other.frontTestEnable, other.backTestEnable,
 			other.frontWriteEnable, other.backWriteEnable);
 }
+//
 std::vector<VkVertexInputBindingDescription>
 smvk::getVkVertexInputBindingDescriptions(const smvk::VertexFormatDescription& format)
 {
@@ -5233,6 +5216,7 @@ smvk::getVkVertexAttributeDescriptions(const smvk::VertexFormatDescription& form
 
 	return descriptions;
 }
+//
 smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::PipelineKey& key)
 {
 	// ========================================================
@@ -5659,7 +5643,6 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 
 	return bundle;
 }
-
 smvk::PipelineBundle smvk::PipelineCache::GetRenderPipeline(
 	ShaderProgram& program,
 	const VertexFormatDescription& vertexFormat,
@@ -6133,7 +6116,6 @@ void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const vo
 //	//m_context->m_submitter->submit(han);
 //
 //}
-
 bool smvk::VulkanApp::Initialize() {
 
 	if (volkInitialize() != VK_SUCCESS) {

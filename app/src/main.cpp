@@ -86,7 +86,6 @@ struct ViewportResources {
 };
 
 
-#include <Engine/Vulkan/vulkanApp.h>
 class TestApp : public smvk::AppImpl {
 	using Super = smvk::AppImpl;
 private:

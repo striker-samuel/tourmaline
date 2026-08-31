@@ -24,4 +24,5 @@
 
 #ifdef ENGINE_VULKAN
 #include <Engine/Vulkan/impl.h>
+#include <Engine/Vulkan/vulkanApp.h>
 #endif

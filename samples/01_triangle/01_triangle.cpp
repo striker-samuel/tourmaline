@@ -64,7 +64,6 @@ float4 mainPS(
 
 )";
 
-#include <Engine/Vulkan/vulkanApp.h>
 class TriangleApp : public smvk::AppImpl {
 	using Super = smvk::AppImpl;
 

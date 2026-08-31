@@ -1180,5 +1180,24 @@ namespace smvk {
 			return ImageAspect::Color;
 		}
 	}
+	inline  StencilSettings StencilSettings::DefaultDisabled()
+	{
+		StencilSettings s{};
+		s.frontTestEnable = false;
+		s.backTestEnable = false;
+		s.frontWriteEnable = false;
+		s.backWriteEnable = false;
+		return s;
+	}
+	inline  StencilSettings StencilSettings::DefaultEnabled()
+	{
+		StencilSettings s{};
+		s.frontTestEnable = true;
+		s.backTestEnable = true;
+		s.frontWriteEnable = true;
+		s.backWriteEnable = true;
+		return s;
+	}
+
 
 } // namespace smvk
