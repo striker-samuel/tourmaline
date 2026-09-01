@@ -4,10 +4,51 @@
 
 namespace smvk {
 
+	// ──────────────────────────────────────────────────────────────────────────
+	// Light intensity – units & photometric interpretation
+	// ──────────────────────────────────────────────────────────────────────────
+	// All lights store `color` (linear RGB, not sRGB) and `intensity` (scalar
+	// multiplier). The product `color.rgb * intensity` is the emitted radiance
+	// / irradiance used in the shader. The *units* depend on light type:
+	//
+	//  • DirectionalLight (sun / moon):
+	//      intensity = illuminance in **lux** (lumens / m²) incident on a
+	//      surface with N·L = 1. Shader computes `N·L * color * intensity`
+	//      without distance falloff. Physically, midday sun ≈ 100 000 lux,
+	//      overcast ≈ 10 000 lux, indoor ≈ 200–800 lux. For an LDR swapchain
+	//      without tonemapping 1.0 ≈ 1 lux looks "unit" bright; after the
+	//      HDR + ACES tonemapper you can use physical values and control
+	//      overall brightness via FrameUniforms.exposure (EV). Current demo
+	//      uses intensity = 10 for a low-dynamic-range look; raise to
+	//      5000–10000 when tonemapper + exposure = 1 is enabled.
+	//
+	//  • PointLight:
+	//      intensity = luminous intensity in **candela** (lumens / steradian).
+	//      Shader should apply inverse-square attenuation
+	//      `atten = intensity / (4π·r²)` (or `1/r²` simplified) so that
+	//      `radiance = color * atten`. A 60 W bulb ≈ 800 lm ≈ 64 cd
+	//      isotropic. Range is encoded in attenuation; no explicit radius –
+	//      shader clamps at `r² = max(r², 0.01)`.
+	//
+	//  • SpotLight:
+	//      intensity = same candela as PointLight, multiplied by a cone
+	//      falloff `smoothstep(outerAngle, innerAngle, spotCos)`. innerAngle
+	//      = fully lit cone, outerAngle = falloff edge (radians). Both
+	//      measured from the spot axis (`-direction`).
+	//
+	//  • General:
+	//      color is typically warm/cool white (e.g. 6500 K ≈ (1.0, 0.95, 0.92)).
+	//      Keep color * intensity in linear space; the final tonemap pass
+	//      (ACES / Reinhard) + gamma converts HDR linear → LDR sRGB. If you
+	//      bypass tonemapping, treat intensity as an LDR “brightness” knob
+	//      (0…10) rather than physical lux/cd.
+	// ──────────────────────────────────────────────────────────────────────────
+
 	struct PointLight {
 		glm::vec4 color = glm::vec4(1.0f);
 		glm::vec3 position = { 0.0f, 0.0f, 0.0f };
 		int32_t flags = 0;
+		// candela (lm/sr); see header doc. Typical  10–500 for indoor, 800 for bulb
 		float intensity = .0f;
 		int shadowSlot = -1;
 	};
@@ -17,6 +58,7 @@ namespace smvk {
 		glm::vec3 position = { 0.0f, 0.0f, 0.0f };
 		glm::vec3 direction = { 0.0f,0.0f,0.0f };
 		int32_t flags = 0;
+		// candela; angular falloff between innerAngle/outerAngle (radians)
 		float intensity = .0f;
 		float innerAngle = glm::radians(10.0f);
 		float outerAngle = glm::radians(20.0f);
@@ -28,6 +70,7 @@ namespace smvk {
 		// No use now but maybe used for masks 
 		int32_t flags = 0;
 		float direction[3] = { 0.0f,0.0f,0.0f };
+		// lux (lm/m²) for N·L=1; see header doc. Sun ≈ 50k–100k with tonemapper
 		float intensity = .0f;
 		int shadowSlot = -1;
 	};
@@ -37,6 +80,9 @@ namespace smvk {
 		float position[3] = { 0.0f,0.0f,0.0f };
 		int32_t flags = 0;
 		float direction[3] = { 0.0f,0.0f,0.0f };
+		// Unified field – units depend on Light.type / shader path:
+		//  Directional → lux, Point/Spot → candela; see top-of-file doc.
+		//  Shader multiplies color.rgb * intensity before tonemap.
 		float intensity = .0f;
 		int32_t pad_;
 		float innerAngle = glm::radians(10.0f);

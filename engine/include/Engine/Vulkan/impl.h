@@ -13,6 +13,7 @@
 #include <span>
 #include <string_view>
 #include <unordered_map>
+#include <memory>
 
 inline const char* vkResultToString(VkResult result);
 
@@ -43,6 +44,7 @@ inline const char* vkResultToString(VkResult result);
 
 namespace smvk {
 
+	class VulkanSamplerCache;
 	class VulkanApp;
 	class VulkanSwapchain;
 
@@ -434,12 +436,16 @@ namespace smvk {
 		Pool<DescriptorPoolTag, VkDescriptorPool> descriptorPools_;
 		Pool<ShaderModuleTag, VkShaderModule> shaderModules_; // will be removed in 1.4
 
-		// DEFAULTS
+		// DEFAULTS (legacy handles – kept for ABI; new code should use samplerCache)
 		VkSampler m_defaultSampler{};
 		VkSampler m_defaultShadowSampler{};
+		std::unique_ptr<VulkanSamplerCache> samplerCache_;
 
 		mutable bool m_needToUpdateTextures = true;
 		mutable bool m_needToUpdateSamplers = true;
+		uint32_t GetOrCreateSampler(const SamplerCreateInfo& ci);
+		VkSampler GetVkSampler(uint32_t index) const;
+		uint32_t GetSamplerCount() const;
 
 		Holder<DescriptorPoolHandle> defaultDescriptorPool{};
 		TextureHandle m_nilTexture{};
@@ -629,6 +635,30 @@ namespace smvk {
 			HashEnum(seed, key.msaa.samples);
 			return seed;
 		}
+	};
+
+	// ------------------------------------------------------------------
+	// VulkanSamplerCache – deduplicates VkSampler objects.
+	// Like VulkanPipelineCache, a description key (SamplerCreateInfo) maps
+	// to a stable descriptor-array index (0 .. MAX_SAMPLERS-1). The cache
+	// owns the VkSampler handles and drives descriptor updates.
+	// ------------------------------------------------------------------
+	class VulkanSamplerCache
+	{
+	public:
+		explicit VulkanSamplerCache(VulkanResourceManager* rm);
+		~VulkanSamplerCache();
+		VulkanSamplerCache(const VulkanSamplerCache&) = delete;
+		VulkanSamplerCache& operator=(const VulkanSamplerCache&) = delete;
+		uint32_t GetOrCreate(const SamplerCreateInfo& ci);
+		uint32_t size() const noexcept { return static_cast<uint32_t>(samplers_.size()); }
+		VkSampler at(uint32_t index) const;
+		void Clear();
+	private:
+		VulkanResourceManager* rm_ = nullptr;
+		std::vector<VkSampler> samplers_;
+		std::vector<SamplerCreateInfo> infos_;
+		std::unordered_map<SamplerCreateInfo, uint32_t, SamplerCreateInfoHash> map_;
 	};
 
 	class VulkanPipelineCache

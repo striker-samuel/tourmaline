@@ -581,6 +581,32 @@ namespace smvk {
 					other.compareEnable
 				);
 		}
+		bool operator==(const SamplerCreateInfo& other) const noexcept
+		{
+			return !(*this < other) && !(other < *this);
+		}
+	};
+
+	struct SamplerCreateInfoHash {
+		static void hashCombine(size_t& seed, size_t v) noexcept {
+			seed ^= v + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+		}
+		size_t operator()(SamplerCreateInfo const& k) const noexcept {
+			size_t h = 0;
+			hashCombine(h, std::hash<int>{}(static_cast<int>(k.magFilter)));
+			hashCombine(h, std::hash<int>{}(static_cast<int>(k.minFilter)));
+			hashCombine(h, std::hash<int>{}(static_cast<int>(k.mipmapMode)));
+			hashCombine(h, std::hash<int>{}(static_cast<int>(k.addressU)));
+			hashCombine(h, std::hash<int>{}(static_cast<int>(k.addressV)));
+			hashCombine(h, std::hash<int>{}(static_cast<int>(k.addressW)));
+			hashCombine(h, std::hash<float>{}(k.mipLodBias));
+			hashCombine(h, std::hash<float>{}(k.minLod));
+			hashCombine(h, std::hash<float>{}(k.maxLod));
+			hashCombine(h, std::hash<float>{}(k.maxAnisotropy));
+			hashCombine(h, std::hash<int>{}(static_cast<int>(k.compareOp)));
+			hashCombine(h, std::hash<bool>{}(k.compareEnable));
+			return h;
+		}
 	};
 
 	// ============================================================================

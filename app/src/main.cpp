@@ -64,8 +64,20 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
 	smvk::Holder<smvk::ShaderModuleHandle> shadowVert;
+	smvk::Holder<smvk::ShaderModuleHandle> tonemapVert;
+	smvk::Holder<smvk::ShaderModuleHandle> tonemapFrag;
 	smvk::ShaderProgram mainProgram;
 	smvk::ShaderProgram shadowProgram;
+	smvk::ShaderProgram tonemapProgram;
+};
+
+struct HdrResources {
+	smvk::Holder<smvk::ImageHandle> image;
+	smvk::Holder<smvk::ImageViewHandle> view;
+	smvk::Holder<smvk::BindlessImageHandle> bindless;
+	uint32_t bindlessIndex = UINT32_MAX;
+	smvk::LogicalImageViewHandle logicalView;
+	smvk::Extent2D extent{0,0};
 };
 
 struct ViewportResources {
@@ -74,6 +86,7 @@ struct ViewportResources {
 	smvk::LogicalImageViewHandle shadowmapLogicalViews[8];
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
 	smvk::LogicalImageViewHandle depthView;
+	HdrResources hdr;
 };
 
 
@@ -82,6 +95,7 @@ class TestApp : public smvk::AppImpl {
 private:
 	void UpdateCamera(float dt);
 	void SetUIMode(bool ui);
+	void EnsureHdrResources();
 	bool m_uiMode = false;
 	//
 
@@ -164,6 +178,15 @@ private:
 			.shaders = {shadowVert},
 			.shaderCount = 1
 		};
+
+		// Tonemapper (fullscreen triangle HDR -> LDR)
+		auto tonemapVertCode = readFile("content/shaders/tonemap.vert.hlsl.spv");
+		auto tonemapFragCode = readFile("content/shaders/tonemap.frag.hlsl.spv");
+		m_resources.tonemapVert = m_context->CreateShaderModule(tonemapVertCode, "tonemapVert");
+		m_resources.tonemapFrag = m_context->CreateShaderModule(tonemapFragCode, "tonemapFrag");
+		auto tonemapVS = smvk::Shader{ .module = m_resources.tonemapVert, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+		auto tonemapPS = smvk::Shader{ .module = m_resources.tonemapFrag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+		m_resources.tonemapProgram = { .shaders = { tonemapVS, tonemapPS }, .shaderCount = 2 };
 
 		smvk::AllocateStaticVertexFmt(*m_context); // dont like this
 
@@ -311,6 +334,8 @@ private:
 				"shadowMapView1"
 			);
 
+		EnsureHdrResources();
+
 		// singla sync req would be better
 		// Manual Barrier transition
 		// this whole shadowmap thing is so badly done, api surface NEEDS more polish
@@ -384,14 +409,16 @@ private:
 		data.invProj = glm::inverse(proj);
 		data.invViewProj = glm::inverse(viewProj);
 
-		data.time = 0.0f;
+		data.time = time_since_start_s;
 		data.viewportSize = { width_, height_ };
 		data.invViewportSize = { 1.0f / width_, 1.0f / height_ };
 
-		// Not in use now
-		data.nearPlane = 0.f;
-		data.farPlane = 0.f;
-		data.exposure = 0.f;
+		data.nearPlane = default_near_clip;
+		data.farPlane = default_far_clip;
+		// Linear exposure multiplier for tonemapper (ACES). 1.0 = no extra exposure;
+		// raise for brighter HDR (e.g. sun 50k lux → exposure 0.02 to fit LDR).
+		// Kept at 1.0 for now – tonemap exposure push is used instead.
+		data.exposure = 1.0f;
 
 		m_context->UploadDataToBuffer(
 			m_resources.frameUniforms,
@@ -427,7 +454,7 @@ private:
 		light.direction[0] = lightDir.x;
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
-		light.intensity = 10.0f;
+		light.intensity = 1.0f;
 		light.shadow_map_index =
 			m_context->GetBindlessIndex(
 				m_viewportResources.shadowmaps[0].bindless
@@ -517,6 +544,7 @@ private:
 				)
 			);
 		}
+		EnsureHdrResources();
 	}
 
 	void DrawFrame() {
@@ -535,16 +563,17 @@ private:
 	void RenderFrame(smvk::Framebuffer fb) {
 
 		m_rendergraph->NewFrame();
-
-		//
+		EnsureHdrResources();
 		m_context->UpdateDescriptors();
 		UpdateFrameUniforms(fb.frameIndex);
 		UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
 		//
-
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
+		// HDR target for scene – intermediate before tonemap
+		std::vector<smvk::LogicalImageViewHandle> hdrColors;
+		hdrColors.push_back(m_viewportResources.hdr.logicalView);
 
 		uint64_t frameUniformsAddress =
 			m_context->GetBufferDeviceAddress(m_resources.frameUniforms)
@@ -658,13 +687,11 @@ private:
 			);
 		});
 
-		auto& mainPass = m_rendergraph->AddPass()
+		auto& mainPass = m_rendergraph->AddPass("Main")
 			.SetOffset(0, 0)
 			.SetInputImages(
 				{
 					m_viewportResources.shadowmapLogicalViews[0]
-					// we sample trough the bidnless list but we declare intention here for sync.
-					// may be bad
 				}
 			)
 			.SetExtent(
@@ -674,7 +701,7 @@ private:
 				}
 			)
 			.SetColor(
-				colors, // this is swapImage directly!
+				hdrColors, // HDR intermediate – tonemapper will resolve to swap
 				smvk::AttachmentLoadOp::Clear,
 				smvk::AttachmentStoreOp::Store,
 				smvk::ClearColor(0, 0, 0, 1)
@@ -760,6 +787,46 @@ private:
 			);
 
 		// ---------------------------------------------------------------------
+		// Tonemapper – HDR (RGBA16F) → LDR swapchain (ACES / Reinhard)
+		// ---------------------------------------------------------------------
+		{
+			// Sampler cache: linear clamp for fullscreen blit, shadow sampler is at 1
+			uint32_t linearSampler = m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
+				.magFilter = smvk::Filter::Linear,
+				.minFilter = smvk::Filter::Linear,
+				.mipmapMode = smvk::MipmapMode::Linear,
+				.addressU = smvk::AddressMode::ClampToEdge,
+				.addressV = smvk::AddressMode::ClampToEdge,
+				.addressW = smvk::AddressMode::ClampToEdge,
+				.maxAnisotropy = 1.0f
+			});
+			struct TonemapPush { uint32_t hdrTextureIndex; uint32_t samplerIndex; float exposure; uint32_t tonemapMode; };
+			TonemapPush tp{
+				.hdrTextureIndex = m_viewportResources.hdr.bindlessIndex,
+				.samplerIndex = linearSampler,
+				.exposure = 1.0f, // FrameUniforms.exposure could be used (pow2)
+				.tonemapMode = 1  // 0=Reinhard, 1=ACES, 2=Uncharted2
+			};
+			auto& tonemapPass = m_rendergraph->AddPass("Tonemap")
+				.SetOffset(0, 0)
+				.SetExtent({ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height })
+				.SetInputImages({ m_viewportResources.hdr.logicalView })
+				.SetColor(colors, smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store, smvk::ClearColor(0,0,0,1))
+				.SetRecordingFunc([this, tp](smvk::CommandBuffer& cmd){
+					cmd.BindRenderPipeline(
+						m_resources.tonemapProgram,
+						smvk::VertexFormat::Empty,
+						smvk::DepthSettings::Disabled(),
+						smvk::StencilSettings::DefaultDisabled(),
+						smvk::BlendSettings::Opaque()
+					);
+					cmd.PushConstants(0, sizeof(TonemapPush), &tp, smvk::ShaderStage::All);
+					cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+				});
+			(void)tonemapPass;
+		}
+
+		// ---------------------------------------------------------------------
 		// ImGui – build UI (before adding the rendergraph pass)
 		// ---------------------------------------------------------------------
 		if (m_imgui && m_imgui->IsInitialized()) {
@@ -811,6 +878,42 @@ private:
 	);
 	Camera m_camera = Camera(m_cameraPositioner);
 };
+
+void TestApp::EnsureHdrResources() {
+	auto vkExt = m_swapchain->GetExtent();
+	smvk::Extent2D extent{ vkExt.width, vkExt.height };
+	auto& hdr = m_viewportResources.hdr;
+	if (!hdr.image.empty() && hdr.extent.width == extent.width && hdr.extent.height == extent.height)
+		return;
+	if (!hdr.logicalView.empty()) {
+		m_rendergraph->FreeImageView(hdr.logicalView);
+		hdr.logicalView = {};
+	}
+	hdr.bindless = {};
+	hdr.view = {};
+	hdr.image = {};
+
+	smvk::ImageCreateInfo ci{};
+	ci.extent = { extent.width, extent.height, 1 };
+	ci.format = smvk::Format::RGBA16_Float;
+	ci.usage = smvk::ImageUsage::ColorAttachment | smvk::ImageUsage::Sampled;
+	ci.mipLevels = 1;
+	ci.arrayLayers = 1;
+	ci.name = "hdr";
+
+	hdr.image = m_context->CreateImage(ci, nullptr);
+	smvk::ImageViewCreateInfo vci{};
+	vci.viewType = smvk::ImageViewType::View2D;
+	vci.format = smvk::Format::Undefined;
+	vci.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 };
+	vci.name = "hdrView";
+	hdr.view = m_context->CreateImageView(hdr.image, vci);
+	hdr.bindless = m_context->CreateBindlessImage(hdr.view, smvk::ImageLayout::ShaderReadOnlyOptimal);
+	hdr.bindlessIndex = m_context->GetBindlessIndex(hdr.bindless);
+	hdr.extent = extent;
+	hdr.logicalView = m_rendergraph->AddExternalImageView(hdr.view, smvk::Format::RGBA16_Float, "hdrLogical");
+	m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{});
+}
 
 void TestApp::UpdateCamera(float dt)
 {

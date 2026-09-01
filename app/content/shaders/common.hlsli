@@ -74,5 +74,7 @@ struct PushConstants
     uint comparisonSamplerId;
 };
 
+#ifndef TONEMAP_PASS
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
+#endif

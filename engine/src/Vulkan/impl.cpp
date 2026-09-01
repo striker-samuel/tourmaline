@@ -1358,34 +1358,47 @@ void static CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipe
 void static DestroyGraphicsPipeline(VkPipeline pipeline) {
 	vkDestroyPipeline(device_, pipeline, nullptr);
 }
+constexpr VkFilter toVkFilter(smvk::Filter f) {
+	return f == smvk::Filter::Nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+}
+constexpr VkSamplerMipmapMode toVkSamplerMipmapMode(smvk::MipmapMode m) {
+	return m == smvk::MipmapMode::Nearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+}
+constexpr VkSamplerAddressMode toVkSamplerAddressMode(smvk::AddressMode a) {
+	switch (a) {
+	case smvk::AddressMode::Repeat: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	case smvk::AddressMode::MirroredRepeat: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+	case smvk::AddressMode::ClampToEdge: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	default: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	}
+}
 void static CreateSampler(const smvk::SamplerCreateInfo& samplerCreateInfo, VkSampler& sampler) {
 
 	VkSamplerCreateInfo samplerInfo{};
 	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	samplerInfo.magFilter = VK_FILTER_LINEAR;
-	samplerInfo.minFilter = VK_FILTER_LINEAR;
-
-	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.magFilter = toVkFilter(samplerCreateInfo.magFilter);
+	samplerInfo.minFilter = toVkFilter(samplerCreateInfo.minFilter);
+	samplerInfo.mipmapMode = toVkSamplerMipmapMode(samplerCreateInfo.mipmapMode);
+	samplerInfo.addressModeU = toVkSamplerAddressMode(samplerCreateInfo.addressU);
+	samplerInfo.addressModeV = toVkSamplerAddressMode(samplerCreateInfo.addressV);
+	samplerInfo.addressModeW = toVkSamplerAddressMode(samplerCreateInfo.addressW);
+	samplerInfo.mipLodBias = samplerCreateInfo.mipLodBias;
+	samplerInfo.minLod = samplerCreateInfo.minLod;
+	samplerInfo.maxLod = samplerCreateInfo.maxLod;
+	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+	samplerInfo.unnormalizedCoordinates = VK_FALSE;
+	samplerInfo.compareEnable = samplerCreateInfo.compareEnable ? VK_TRUE : VK_FALSE;
+	samplerInfo.compareOp = toVkCompareOp(samplerCreateInfo.compareOp);
 
 	VkPhysicalDeviceProperties properties{};
 	vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-	samplerInfo.anisotropyEnable = VK_TRUE;
-	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-	samplerInfo.unnormalizedCoordinates = VK_FALSE;
-	samplerInfo.compareEnable = VK_FALSE;
-	samplerInfo.compareOp = toVkCompareOp(samplerCreateInfo.compareOp);
-
-	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-	samplerInfo.mipLodBias = 0.0f;
-	samplerInfo.minLod = 0.0f;
-	samplerInfo.maxLod = samplerCreateInfo.maxLod;
-	//samplerInfo.maxLod = float(samplerCreateInfo.levelCount - 1);
+	const bool wantAniso = samplerCreateInfo.maxAnisotropy > 1.0f;
+	samplerInfo.anisotropyEnable = wantAniso ? VK_TRUE : VK_FALSE;
+	samplerInfo.maxAnisotropy = wantAniso
+		? std::min(samplerCreateInfo.maxAnisotropy, properties.limits.maxSamplerAnisotropy)
+		: 1.0f;
 
 	VK_CHECK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler));
-
 }
 
 int smvk::VulkanCore::CreateInstance() {
@@ -1658,15 +1671,21 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 
 	m_submitter = new Submitter(*core_, core_->indices.graphicsFamily.value());
 
-	// Urges creating the SamplerPool -> key mapping to samplers!
-	CreateSampler(SamplerCreateInfo{}, m_defaultSampler);
-	CreateSampler(
-		SamplerCreateInfo{
-		.compareOp = smvk::CompareOp::LessEqual,
-		.compareEnable = true
-		},
-		m_defaultShadowSampler
-	);
+	// SamplerCache – owns up to MAX_SAMPLERS deduplicated VkSamplers.
+	// Like VulkanPipelineCache, key (SamplerCreateInfo) → stable index.
+	samplerCache_ = std::make_unique<VulkanSamplerCache>(this);
+	// Populate default slots: 0 = regular, 1 = shadow comparison
+	// Keep legacy handles in sync for existing code paths.
+	{
+		uint32_t idx0 = samplerCache_->GetOrCreate(SamplerCreateInfo{});
+		m_defaultSampler = samplerCache_->at(idx0);
+		uint32_t idx1 = samplerCache_->GetOrCreate(SamplerCreateInfo{
+			.compareOp = smvk::CompareOp::LessEqual,
+			.compareEnable = true
+		});
+		m_defaultShadowSampler = samplerCache_->at(idx1);
+		assert(idx0 == 0 && idx1 == 1 && "sampler cache must allocate defaults at 0,1");
+	}
 	const uint32_t pixel = 0xFF000000;
 	m_nilTexture = CreateTexture(
 		ImageCreateInfo
@@ -1883,6 +1902,13 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 
 	vkDestroyPipelineLayout(device_, defaultPipeLayout, nullptr);
 	vkDestroyDescriptorSetLayout(device_, defaultSetLayout, nullptr);
+	// Samplers are owned by samplerCache – clear it and avoid double-free
+	if (samplerCache_) {
+		samplerCache_->Clear();
+		samplerCache_.reset();
+		m_defaultSampler = VK_NULL_HANDLE;
+		m_defaultShadowSampler = VK_NULL_HANDLE;
+	}
 	if (m_defaultSampler != VK_NULL_HANDLE) {
 		vkDestroySampler(device_, m_defaultSampler, nullptr);
 	}
@@ -3885,17 +3911,24 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 	}
 	);
 
-	//
-		// Sampler descriptor array:
-		//
-		//   samplers[0] = default sampler
-		//   samplers[1] = default shadow/comparison sampler
-		//
-	VkDescriptorImageInfo samplerInfos[2]{};
-	samplerInfos[0].sampler =
-		m_defaultSampler;
-	samplerInfos[1].sampler =
-		m_defaultShadowSampler;
+	// Sampler descriptor array – driven by VulkanSamplerCache.
+	// Index 0 = default (Linear Repeat), 1 = shadow comparison, etc.
+	// Cache guarantees stable indices; like PipelineCache, same
+	// SamplerCreateInfo → same descriptor slot.
+	std::vector<VkDescriptorImageInfo> samplerInfos;
+	if (samplerCache_) {
+		samplerInfos.reserve(samplerCache_->size());
+		for (uint32_t i = 0; i < samplerCache_->size(); ++i) {
+			VkDescriptorImageInfo info{};
+			info.sampler = samplerCache_->at(i);
+			samplerInfos.push_back(info);
+		}
+	} else {
+		// Fallback for early init / headless without cache
+		samplerInfos.resize(2);
+		samplerInfos[0].sampler = m_defaultSampler;
+		samplerInfos[1].sampler = m_defaultShadowSampler;
+	}
 
 	//
 	// Update every descriptor set that contains the global bindless table.
@@ -3965,12 +3998,13 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 			VK_DESCRIPTOR_TYPE_SAMPLER;
 
 		samplerWrite.descriptorCount =
-			2;
+			static_cast<uint32_t>(samplerInfos.size());
 
 		samplerWrite.pImageInfo =
-			samplerInfos;
+			samplerInfos.data();
 
-		writes.push_back(samplerWrite);
+		if (!samplerInfos.empty())
+			writes.push_back(samplerWrite);
 
 		if (!writes.empty())
 		{
@@ -3991,11 +4025,17 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 {
 	assert(!handle.empty());
 	return handle.index();
-	//const BindlessImage* bindless =
-	//	bindlessImages_.get(handle);
-	//assert(bindless != nullptr);
-	//assert(bindless->descriptorIndex != UINT32_MAX);
-	//return bindless->descriptorIndex;
+}
+uint32_t smvk::VulkanResourceManager::GetOrCreateSampler(const SamplerCreateInfo& ci) {
+	assert(samplerCache_ && "samplerCache not initialized");
+	return samplerCache_->GetOrCreate(ci);
+}
+VkSampler smvk::VulkanResourceManager::GetVkSampler(uint32_t index) const {
+	assert(samplerCache_ && "samplerCache not initialized");
+	return samplerCache_->at(index);
+}
+uint32_t smvk::VulkanResourceManager::GetSamplerCount() const {
+	return samplerCache_ ? samplerCache_->size() : 0;
 }
 // 
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BindlessImageHandle handle)
@@ -5785,6 +5825,39 @@ void smvk::VulkanPipelineCache::Clear() {
 		}
 	}
 	pipelines_.clear();
+}
+
+// ------------------------------------------------------------------
+// VulkanSamplerCache
+// ------------------------------------------------------------------
+smvk::VulkanSamplerCache::VulkanSamplerCache(VulkanResourceManager* rm) : rm_(rm) {}
+smvk::VulkanSamplerCache::~VulkanSamplerCache() { Clear(); }
+uint32_t smvk::VulkanSamplerCache::GetOrCreate(const SamplerCreateInfo& ci) {
+	auto it = map_.find(ci);
+	if (it != map_.end()) return it->second;
+	if (samplers_.size() >= MAX_SAMPLERS) {
+		fprintf(stderr, "[VulkanSamplerCache] MAX_SAMPLERS (%u) exceeded – cannot create new sampler\n", (unsigned)MAX_SAMPLERS);
+		assert(false && "MAX_SAMPLERS exceeded");
+		return 0;
+	}
+	VkSampler sampler = VK_NULL_HANDLE;
+	CreateSampler(ci, sampler);
+	uint32_t index = static_cast<uint32_t>(samplers_.size());
+	samplers_.push_back(sampler);
+	infos_.push_back(ci);
+	map_.emplace(ci, index);
+	if (rm_) rm_->m_needToUpdateSamplers = true;
+	return index;
+}
+VkSampler smvk::VulkanSamplerCache::at(uint32_t index) const {
+	assert(index < samplers_.size());
+	return samplers_[index];
+}
+void smvk::VulkanSamplerCache::Clear() {
+	for (VkSampler s : samplers_) if (s != VK_NULL_HANDLE) vkDestroySampler(device_, s, nullptr);
+	samplers_.clear();
+	infos_.clear();
+	map_.clear();
 }
 //void smvk::App::InitializeImGui() {
 //
