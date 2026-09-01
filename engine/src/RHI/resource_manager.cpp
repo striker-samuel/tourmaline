@@ -34,9 +34,21 @@ static VkImageLayout toVkImageLayout(ImageLayout layout) {
     }
 }
 static VkPipelineStageFlags2 toVkPipelineStage(PipelineStage stage) {
-    // PipelineStage is uint32_t bitmask (PipelineStageBits). For firewall we just cast;
-    // callers may pass VK_ values disguised as PipelineStage via static_cast, so preserve bits.
-    return static_cast<VkPipelineStageFlags2>(static_cast<uint32_t>(stage));
+    if (stage == PipelineStageBit_None) return VK_PIPELINE_STAGE_2_NONE;
+    VkPipelineStageFlags2 out = 0;
+    if (stage & PipelineStageBit_Vertex) out |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+    if (stage & PipelineStageBit_Fragment) out |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    if (stage & PipelineStageBit_Compute) out |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    if (stage & PipelineStageBit_Geometry) out |= VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT;
+    if (stage & PipelineStageBit_TessellationControl) out |= VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT;
+    if (stage & PipelineStageBit_TessellationEvaluation) out |= VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT;
+    if (stage & PipelineStageBit_Task) out |= VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT;
+    if (stage & PipelineStageBit_Mesh) out |= VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
+    if (stage & PipelineStageBit_RayGeneration) out |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    // AnyHit etc map to same ray tracing bit for simplicity
+    if (stage & (PipelineStageBit_AnyHit | PipelineStageBit_ClosestHit | PipelineStageBit_Miss | PipelineStageBit_Intersection | PipelineStageBit_Callable))
+        out |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    return out ? out : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 }
 static VkAccessFlags2 toVkAccess(AccessFlags access) {
     return static_cast<VkAccessFlags2>(static_cast<uint32_t>(access));

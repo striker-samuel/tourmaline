@@ -369,8 +369,8 @@ private:
 			m_resources.frameUniforms,
 			&data,
 			sizeof(FrameUniforms)/* * 1*/,
-			static_cast<smvk::PipelineStage>(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT),
-			static_cast<smvk::AccessFlags>(VK_ACCESS_SHADER_READ_BIT),
+			smvk::PipelineStageBit_Vertex,
+			smvk::AccessFlags::ShaderRead,
 			0,
 			currentFrame * sizeof(FrameUniforms)
 			//currentFrame * m_resources.frameUniformsBuffer.key.elementSize * m_resources.frameUniformsBuffer.key.elementCount // dynamicOffsetPerFrame
@@ -435,8 +435,8 @@ private:
 			m_resources.lightsBuffer,
 			lights,
 			sizeof(lights),
-			static_cast<smvk::PipelineStage>(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT),
-			static_cast<smvk::AccessFlags>(VK_ACCESS_SHADER_READ_BIT),
+			smvk::PipelineStageBit_Vertex,
+			smvk::AccessFlags::ShaderRead,
 			0,
 			//currentFrame * sizeof(lights)
 			frameOffset
@@ -465,8 +465,8 @@ private:
 			m_resources.materialsBuffer,
 			mats.data(),
 			sizeof(smvk::MaterialValues) * mats.size(),
-			static_cast<smvk::PipelineStage>(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT),
-			static_cast<smvk::AccessFlags>(VK_ACCESS_SHADER_READ_BIT),
+			smvk::PipelineStageBit_Vertex,
+			smvk::AccessFlags::ShaderRead,
 			0,
 			frameOffset
 		);
