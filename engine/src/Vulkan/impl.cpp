@@ -1286,6 +1286,79 @@ static constexpr VkDescriptorSetLayoutBinding       getDSLBinding(uint32_t bindi
 //
 
 
+// ---------------------------------------------------------------------------
+// Sync helpers – Vk <-> RHI conversions (kept internal for threading safety)
+// ---------------------------------------------------------------------------
+static smvk::ImageLayout FromVkImageLayout(VkImageLayout l) {
+	switch (l) {
+	case VK_IMAGE_LAYOUT_UNDEFINED: return smvk::ImageLayout::Undefined;
+	case VK_IMAGE_LAYOUT_GENERAL: return smvk::ImageLayout::General;
+	case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: return smvk::ImageLayout::ColorAttachmentOptimal;
+	case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL: return smvk::ImageLayout::DepthStencilAttachmentOptimal;
+	case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL: return smvk::ImageLayout::DepthStencilReadOnlyOptimal;
+	case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL: return smvk::ImageLayout::DepthReadOnlyOptimal;
+	case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: return smvk::ImageLayout::ShaderReadOnlyOptimal;
+	case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: return smvk::ImageLayout::TransferSrcOptimal;
+	case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: return smvk::ImageLayout::TransferDstOptimal;
+	case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: return smvk::ImageLayout::PresentSrc;
+	default: return smvk::ImageLayout::Undefined;
+	}
+}
+static smvk::PipelineStage FromVkPipelineStage(VkPipelineStageFlags2 flags) {
+	if (flags == VK_PIPELINE_STAGE_2_NONE) return smvk::PipelineStageBit_None;
+	smvk::PipelineStage out = smvk::PipelineStageBit_None;
+	if (flags & VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Vertex);
+	if (flags & VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Fragment);
+	if (flags & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Compute);
+	if (flags & VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Geometry);
+	if (flags & VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_TessellationControl);
+	if (flags & VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_TessellationEvaluation);
+	if (flags & VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Task);
+	if (flags & VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Mesh);
+	if (flags & VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR)
+		out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_RayGeneration | smvk::PipelineStageBit_AnyHit | smvk::PipelineStageBit_ClosestHit | smvk::PipelineStageBit_Miss | smvk::PipelineStageBit_Intersection | smvk::PipelineStageBit_Callable);
+	if (flags & VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Fragment);
+	if (flags & (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT)) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Fragment);
+	if (flags & VK_PIPELINE_STAGE_2_TRANSFER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_None); // transfer has no RHI bit; keep None to represent transfer
+	return out;
+}
+static smvk::AccessFlags FromVkAccess(VkAccessFlags2 flags) {
+	return static_cast<smvk::AccessFlags>(static_cast<uint32_t>(flags));
+}
+static VkImageLayout ToVkImageLayout(smvk::ImageLayout layout) {
+	switch (layout) {
+	case smvk::ImageLayout::Undefined: return VK_IMAGE_LAYOUT_UNDEFINED;
+	case smvk::ImageLayout::General: return VK_IMAGE_LAYOUT_GENERAL;
+	case smvk::ImageLayout::ColorAttachmentOptimal: return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	case smvk::ImageLayout::DepthStencilAttachmentOptimal: return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	case smvk::ImageLayout::DepthStencilReadOnlyOptimal: return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+	case smvk::ImageLayout::DepthReadOnlyOptimal: return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+	case smvk::ImageLayout::ShaderReadOnlyOptimal: return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	case smvk::ImageLayout::TransferSrcOptimal: return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	case smvk::ImageLayout::TransferDstOptimal: return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	case smvk::ImageLayout::PresentSrc: return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	default: return VK_IMAGE_LAYOUT_UNDEFINED;
+	}
+}
+static VkPipelineStageFlags2 ToVkStage(smvk::PipelineStage stage) {
+	if (stage == smvk::PipelineStageBit_None) return VK_PIPELINE_STAGE_2_NONE;
+	VkPipelineStageFlags2 out = 0;
+	if (stage & smvk::PipelineStageBit_Vertex) out |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+	if (stage & smvk::PipelineStageBit_Fragment) out |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+	if (stage & smvk::PipelineStageBit_Compute) out |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+	if (stage & smvk::PipelineStageBit_Geometry) out |= VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT;
+	if (stage & smvk::PipelineStageBit_TessellationControl) out |= VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT;
+	if (stage & smvk::PipelineStageBit_TessellationEvaluation) out |= VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT;
+	if (stage & smvk::PipelineStageBit_Task) out |= VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT;
+	if (stage & smvk::PipelineStageBit_Mesh) out |= VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
+	if (stage & (smvk::PipelineStageBit_RayGeneration | smvk::PipelineStageBit_AnyHit | smvk::PipelineStageBit_ClosestHit | smvk::PipelineStageBit_Miss | smvk::PipelineStageBit_Intersection | smvk::PipelineStageBit_Callable))
+		out |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+	// RHI Fragment maps to color attachment + depth test in Vk; expand for safety
+	if (stage & smvk::PipelineStageBit_Fragment) out |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+	return out ? out : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+}
+static VkAccessFlags2 ToVkAccessLocal(smvk::AccessFlags access) { return static_cast<VkAccessFlags2>(static_cast<uint32_t>(access)); }
+
 // Synchronization
 inline void BufferBarrier(
 	VkCommandBuffer cmd,
@@ -1937,7 +2010,6 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 	auto cmd = m_submitter->GetCommandBuffer(han);
 	if (buf->isMappable()) {
 		VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, buf->vma_alloc, dest_offset, dataSize));
-		// this would be better served with a sync request pushed to a list.
 		BufferBarrier(
 			cmd,
 			buf->vkBuffer,
@@ -1949,6 +2021,16 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 			dstAccess
 		);
 		m_submitter->submit(han);
+		// Update global sync table for future RenderGraph barriers.
+		{
+			BufferGlobalSyncState st{};
+			st.masks.stageMask = FromVkPipelineStage(dstStages);
+			// If dstStages was NONE (transfer), derive from access
+			if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE)
+				st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
+			st.masks.accessMask = FromVkAccess(dstAccess);
+			SetBufferSyncState(buffer, st);
+		}
 		return;
 	}
 
@@ -1980,6 +2062,14 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 	);
 
 	m_submitter->submit(han);
+	{
+		BufferGlobalSyncState st{};
+		st.masks.stageMask = FromVkPipelineStage(dstStages);
+		if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE)
+			st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
+		st.masks.accessMask = FromVkAccess(dstAccess);
+		SetBufferSyncState(buffer, st);
+	}
 	AddDeferredTask(
 		std::packaged_task<void()>([this, staging = std::move(stageHan)] {destroy(this, staging); })
 		, han
@@ -2272,6 +2362,25 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	);
 
 
+	// Update global sync table for image
+	{
+		ImageHandle found{};
+		images_.forEachHandle([&](ImageHandle h){
+			auto* img = images_.get(h);
+			if (img && img->vkImage == image.vkImage) found = h;
+		});
+		if (!found.empty()) {
+			ImageGlobalSyncState st{};
+			st.masks.stageMask = FromVkPipelineStage(dstStages);
+			if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE)
+				st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
+			st.masks.accessMask = FromVkAccess(dstAccess);
+			st.layout = remainTransferDst ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal;
+			// For image uploads that stay in TransferDst, stage is TRANSFER
+			if (remainTransferDst) st.masks.stageMask = PipelineStageBit_None; // transfer stage
+			SetImageSyncState(found, st);
+		}
+	}
 	// Staging buffer must remain alive until this submission finishes.
 	AddDeferredTask(
 		std::packaged_task<void()>(
@@ -2373,6 +2482,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	ImageHandle handle =
 		images_.create(std::move(image));
+	SetImageSyncState(handle, ImageGlobalSyncState{});
 
 	Image* imagePtr = images_.get(handle);
 	if (data)
@@ -3731,6 +3841,7 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 	image->mipLevels = fresh.mipLevels;
 	image->arrayLayers = fresh.arrayLayers;
 	image->name = fresh.name;
+	SetImageSyncState(handle, ImageGlobalSyncState{});
 
 	return handle;
 }
@@ -3788,7 +3899,10 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 #else
 	(void)debugName;
 #endif
-	return { this, buffers_.create(std::move(desc)) };
+	auto handle = buffers_.create(std::move(desc));
+	// Init global sync state: Undefined / None until first use.
+	SetBufferSyncState(handle, BufferGlobalSyncState{});
+	return { this, handle };
 }
 [[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::VulkanResourceManager::CreateShaderModule(std::vector<char> code, const char* debugName) {
 	VkShaderModule shader;
@@ -4037,6 +4151,59 @@ VkSampler smvk::VulkanResourceManager::GetVkSampler(uint32_t index) const {
 uint32_t smvk::VulkanResourceManager::GetSamplerCount() const {
 	return samplerCache_ ? samplerCache_->size() : 0;
 }
+// ============================================================================
+// Global sync bookkeeping (table handle->state, future multithreading ready)
+// ============================================================================
+smvk::VulkanResourceManager::ImageGlobalSyncState smvk::VulkanResourceManager::GetImageSyncState(ImageHandle h) const {
+	if (h.empty()) return {};
+	std::shared_lock lock(syncMutex_);
+	auto it = imageSyncStates_.find(SyncKey(h));
+	if (it != imageSyncStates_.end()) return it->second;
+	return {};
+}
+smvk::VulkanResourceManager::BufferGlobalSyncState smvk::VulkanResourceManager::GetBufferSyncState(BufferHandle h) const {
+	if (h.empty()) return {};
+	std::shared_lock lock(syncMutex_);
+	auto it = bufferSyncStates_.find(SyncKey(h));
+	if (it != bufferSyncStates_.end()) return it->second;
+	return {};
+}
+void smvk::VulkanResourceManager::SetImageSyncState(ImageHandle h, ImageGlobalSyncState state) {
+	if (h.empty()) return;
+	std::unique_lock lock(syncMutex_);
+	imageSyncStates_[SyncKey(h)] = state;
+}
+void smvk::VulkanResourceManager::SetBufferSyncState(BufferHandle h, BufferGlobalSyncState state) {
+	if (h.empty()) return;
+	std::unique_lock lock(syncMutex_);
+	bufferSyncStates_[SyncKey(h)] = state;
+}
+void smvk::VulkanResourceManager::RemoveImageSyncState(ImageHandle h) {
+	if (h.empty()) return;
+	std::unique_lock lock(syncMutex_);
+	imageSyncStates_.erase(SyncKey(h));
+}
+void smvk::VulkanResourceManager::RemoveBufferSyncState(BufferHandle h) {
+	if (h.empty()) return;
+	std::unique_lock lock(syncMutex_);
+	bufferSyncStates_.erase(SyncKey(h));
+}
+std::unordered_map<uint64_t, smvk::VulkanResourceManager::ImageGlobalSyncState> smvk::VulkanResourceManager::SnapshotImageSyncStates() const {
+	std::shared_lock lock(syncMutex_);
+	return imageSyncStates_;
+}
+std::unordered_map<uint64_t, smvk::VulkanResourceManager::BufferGlobalSyncState> smvk::VulkanResourceManager::SnapshotBufferSyncStates() const {
+	std::shared_lock lock(syncMutex_);
+	return bufferSyncStates_;
+}
+void smvk::VulkanResourceManager::CommitImageSyncStates(const std::unordered_map<uint64_t, ImageGlobalSyncState>& states) {
+	std::unique_lock lock(syncMutex_);
+	for (auto &kv : states) imageSyncStates_[kv.first] = kv.second;
+}
+void smvk::VulkanResourceManager::CommitBufferSyncStates(const std::unordered_map<uint64_t, BufferGlobalSyncState>& states) {
+	std::unique_lock lock(syncMutex_);
+	for (auto &kv : states) bufferSyncStates_[kv.first] = kv.second;
+}
 // 
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BindlessImageHandle handle)
 {
@@ -4082,8 +4249,7 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::TextureHandle handle)
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BufferHandle handle) {
 	if (handle.empty()) { return; };
 	smvk::Buffer db = *ctx->buffers_.get(handle);
-	//if mapped, unmap first as vma requires.
-	//if (db.mapped != nullptr) { ctx->UnmapBuffer(handle); }
+	ctx->RemoveBufferSyncState(handle);
 	vmaDestroyBuffer(ctx->m_allocator, db.vkBuffer, db.vma_alloc);
 	ctx->buffers_.destroy(handle);
 }
@@ -4098,6 +4264,7 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageHandle handle)
 	if (handle.empty())
 		return;
 
+	ctx->RemoveImageSyncState(handle);
 	auto* image = ctx->images_.get(handle);
 	assert(image);
 
@@ -6215,14 +6382,353 @@ void smvk::RenderGraph::ResolveBuffers()
 	//	}
 	//	);
 }
+// ============================================================================
+// Sync helpers – collect usages, topological sort, barrier emission
+// ============================================================================
+std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages() const
+{
+	VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
+	std::vector<PassUsage> out;
+	out.reserve(passes_.size());
+	for (const auto& pass : passes_) {
+		PassUsage pu;
+		// Color attachments – writes
+		for (auto &att : pass.colorAttachments_) {
+			if (att.view.empty()) continue;
+			auto* v = imageViews_.get(att.view);
+			if (!v) continue;
+			ImageHandle phys{};
+			if (v->type == LogicalImageView::Type::ExternalPhysical) {
+				// Resolve external view to physical image; if no backing image (swapchain) skip – swapchain sync stays in Acquire/Present
+				auto* ext = vctx.imageViews_.get(v->externalViewHandle);
+				if (!ext) continue;
+				phys = ext->image;
+				if (phys.empty()) continue; // swapchain – external sync
+			} else {
+				auto* li = images_.get(v->key.image);
+				if (!li) continue;
+				phys = li->resolvedImageHandle;
+			}
+			if (phys.empty()) continue;
+			ImageSyncRequest req{};
+			req.barrierMasks.accessMask = AccessFlags::ColorAttachmentWrite;
+			// Preserve read if Load
+			if (att.loadOp == AttachmentLoadOp::Load) req.barrierMasks.accessMask = req.barrierMasks.accessMask | AccessFlags::ColorAttachmentRead;
+			req.barrierMasks.stageMask = PipelineStageBit_Fragment; // mapped to COLOR_ATTACHMENT_OUTPUT
+			req.layout = ImageLayout::ColorAttachmentOptimal;
+			pu.images.emplace_back(phys, req);
+		}
+		// Depth attachment
+		if (pass.hasDepthAttachment_) {
+			auto &att = pass.depthAttachment_;
+			if (!att.view.empty()) {
+				auto* v = imageViews_.get(att.view);
+				if (!v) continue;
+				ImageHandle phys{};
+				if (v->type == LogicalImageView::Type::ExternalPhysical) {
+					auto* ext = vctx.imageViews_.get(v->externalViewHandle);
+					if (!ext) continue;
+					phys = ext->image;
+					if (phys.empty()) continue;
+				} else {
+					auto* li = images_.get(v->key.image);
+					if (!li) continue;
+					phys = li->resolvedImageHandle;
+				}
+				if (phys.empty()) continue;
+				ImageSyncRequest req{};
+				req.barrierMasks.accessMask = AccessFlags::DepthStencilAttachmentWrite | AccessFlags::DepthStencilAttachmentRead;
+				req.barrierMasks.stageMask = PipelineStageBit_Fragment;
+				req.layout = ImageLayout::DepthStencilAttachmentOptimal;
+				pu.images.emplace_back(phys, req);
+			}
+		}
+		// Explicit image hints (includes SetInput/Storage derived)
+		for (auto &h : pass.imageHints_) {
+			if (h.view.empty()) continue;
+			auto* v = imageViews_.get(h.view);
+			if (!v) continue;
+			ImageHandle phys{};
+			if (v->type == LogicalImageView::Type::ExternalPhysical) {
+				auto* ext = vctx.imageViews_.get(v->externalViewHandle);
+				if (!ext) continue;
+				phys = ext->image;
+				if (phys.empty()) continue; // swapchain – skip
+			} else {
+				auto* li = images_.get(v->key.image);
+				if (!li) continue;
+				phys = li->resolvedImageHandle;
+			}
+			if (phys.empty()) continue;
+			// deduplicate if already covered by attachment (attachment takes precedence)
+			bool dup = false;
+			for (auto &e : pu.images) if (e.first == phys) { dup = true; break; }
+			if (dup) continue;
+			ImageSyncRequest req = h.request;
+			if (req.barrierMasks.stageMask == PipelineStageBit_None)
+				req.barrierMasks.stageMask = DerivePipelineStage(req.barrierMasks.accessMask);
+			// Depth sampled fixup: if image is depth format and hint requests ShaderReadOnly, promote to DepthReadOnly for correctness
+			{
+				auto* img = vctx.images_.get(phys);
+				if (img) {
+					VkFormat fmt = toVkFormat(img->format);
+					bool isDepth = (fmt==VK_FORMAT_D16_UNORM || fmt==VK_FORMAT_D32_SFLOAT || fmt==VK_FORMAT_D24_UNORM_S8_UINT || fmt==VK_FORMAT_D32_SFLOAT_S8_UINT);
+					if (isDepth && req.layout == ImageLayout::ShaderReadOnlyOptimal)
+						req.layout = ImageLayout::DepthStencilReadOnlyOptimal;
+				}
+			}
+			pu.images.emplace_back(phys, req);
+		}
+		// Buffer hints
+		for (auto &h : pass.bufferHints_) {
+			if (h.buffer.empty()) continue;
+			auto* lb = buffers_.get(h.buffer);
+			if (!lb) continue;
+			BufferHandle phys = lb->resolvedBufferHandle;
+			if (phys.empty()) {
+				// External buffer – use resolved directly
+				phys = lb->resolvedBufferHandle;
+				// If external and empty, skip (not resolved)
+				if (phys.empty()) continue;
+			}
+			// For transient buffers not yet created, skip barrier (no physical)
+			if (phys.empty()) continue;
+			BufferSyncRequest req = h.request;
+			if (req.barrierMasks.stageMask == PipelineStageBit_None)
+				req.barrierMasks.stageMask = DerivePipelineStage(req.barrierMasks.accessMask);
+			pu.buffers.emplace_back(phys, req);
+		}
+		out.push_back(std::move(pu));
+	}
+	return out;
+}
+
+std::vector<size_t> smvk::RenderGraph::TopologicalSort(const std::vector<PassUsage>& usages) const
+{
+	size_t n = usages.size();
+	if (n <= 1) {
+		std::vector<size_t> r(n);
+		for (size_t i=0;i<n;++i) r[i]=i;
+		return r;
+	}
+	std::vector<std::vector<size_t>> adj(n);
+	std::vector<int> indeg(n, 0);
+	// Map resource -> last writer / readers tracking for edge generation
+	// We preserve insertion order hazard: iterate passes in order, for each resource add edge from previous access that hazards
+	std::unordered_map<uint64_t, size_t> lastWriterImage; // phys key -> pass idx
+	std::unordered_map<uint64_t, std::vector<size_t>> lastReadersImage;
+	std::unordered_map<uint64_t, size_t> lastWriterBuffer;
+	std::unordered_map<uint64_t, std::vector<size_t>> lastReadersBuffer;
+	auto keyFor = [](auto h){ return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen())<<32)); };
+	for (size_t i=0;i<n;++i){
+		const auto& pu = usages[i];
+		for (auto &p : pu.images){
+			uint64_t k = keyFor(p.first);
+			bool isWrite = IsWriteAccess(p.second.barrierMasks.accessMask);
+			if (isWrite){
+				// WAW: last writer -> this
+				auto itW = lastWriterImage.find(k);
+				if (itW != lastWriterImage.end()){
+					size_t src = itW->second;
+					if (src != i) { adj[src].push_back(i); indeg[i]++; }
+				}
+				// WAR: last readers -> this
+				auto itR = lastReadersImage.find(k);
+				if (itR != lastReadersImage.end()){
+					for (size_t r : itR->second){ adj[r].push_back(i); indeg[i]++; }
+					itR->second.clear();
+				}
+				lastWriterImage[k]=i;
+			} else {
+				// RAW: last writer -> this
+				auto itW = lastWriterImage.find(k);
+				if (itW != lastWriterImage.end()){
+					size_t src = itW->second;
+					adj[src].push_back(i); indeg[i]++;
+				}
+				lastReadersImage[k].push_back(i);
+			}
+		}
+		for (auto &p : pu.buffers){
+			uint64_t k = keyFor(p.first);
+			bool isWrite = IsWriteAccess(p.second.barrierMasks.accessMask);
+			if (isWrite){
+				auto itW = lastWriterBuffer.find(k);
+				if (itW != lastWriterBuffer.end()){ adj[itW->second].push_back(i); indeg[i]++; }
+				auto itR = lastReadersBuffer.find(k);
+				if (itR != lastReadersBuffer.end()){
+					for (size_t r: itR->second){ adj[r].push_back(i); indeg[i]++; }
+					itR->second.clear();
+				}
+				lastWriterBuffer[k]=i;
+			} else {
+				auto itW = lastWriterBuffer.find(k);
+				if (itW != lastWriterBuffer.end()){ adj[itW->second].push_back(i); indeg[i]++; }
+				lastReadersBuffer[k].push_back(i);
+			}
+		}
+	}
+	// Kahn – stable (prefer lower original index)
+	std::vector<size_t> sorted;
+	sorted.reserve(n);
+	// Use ordered set via vector + sort
+	std::vector<size_t> zero;
+	for (size_t i=0;i<n;++i) if (indeg[i]==0) zero.push_back(i);
+	std::sort(zero.begin(), zero.end());
+	while (!zero.empty()){
+		size_t u = zero.front(); zero.erase(zero.begin());
+		sorted.push_back(u);
+		for (size_t v: adj[u]){
+			if (--indeg[v]==0){
+				zero.push_back(v);
+				std::sort(zero.begin(), zero.end());
+			}
+		}
+	}
+	if (sorted.size()!=n){
+		// Cycle – fall back to insertion order and assert
+		assert(false && "RenderGraph cycle detected in pass dependencies");
+		sorted.clear();
+		for (size_t i=0;i<n;++i) sorted.push_back(i);
+	}
+	return sorted;
+}
+
+void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>& sortedOrder, const std::vector<PassUsage>& usages)
+{
+	if (sortedOrder.empty() || usages.empty()) return;
+	VkCommandBuffer vkCmd = reinterpret_cast<VkCommandBuffer>(cmdOpaque);
+	VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
+	// Snapshot global states under shared lock – local bookkeeping starts from these
+	auto globalImageStates = vctx.SnapshotImageSyncStates();
+	auto globalBufferStates = vctx.SnapshotBufferSyncStates();
+	// Local states – seeded from global, with transient default Undefined/None if missing
+	std::unordered_map<uint64_t, VulkanResourceManager::ImageGlobalSyncState> localImage = globalImageStates;
+	std::unordered_map<uint64_t, VulkanResourceManager::BufferGlobalSyncState> localBuffer = globalBufferStates;
+
+	std::vector<VkImageMemoryBarrier2> imgBarriers;
+	std::vector<VkBufferMemoryBarrier2> bufBarriers;
+	imgBarriers.reserve(32);
+	bufBarriers.reserve(16);
+	auto keyFor = [](auto h){ return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen())<<32)); };
+
+	for (size_t idx : sortedOrder){
+		const auto& pu = usages[idx];
+		for (auto &pr : pu.images){
+			ImageHandle h = pr.first;
+			ImageSyncRequest req = pr.second;
+			uint64_t k = keyFor(h);
+			auto it = localImage.find(k);
+			VulkanResourceManager::ImageGlobalSyncState src{};
+			if (it != localImage.end()) src = it->second;
+			else { src.masks = {AccessFlags::None, PipelineStageBit_None}; src.layout = ImageLayout::Undefined; }
+
+			bool srcIsWrite = IsWriteAccess(src.masks.accessMask);
+			bool dstIsWrite = IsWriteAccess(req.barrierMasks.accessMask);
+			bool needBarrier = false;
+			if (src.layout != req.layout) needBarrier = true;
+			else if (src.masks.accessMask != req.barrierMasks.accessMask || src.masks.stageMask != req.barrierMasks.stageMask) {
+				// Read->Read with same layout needs no barrier
+				if (!( !srcIsWrite && !dstIsWrite )) needBarrier = true;
+			}
+			// Also if src is Undefined, we need barrier for layout transition
+			if (src.layout == ImageLayout::Undefined && req.layout != ImageLayout::Undefined) needBarrier = true;
+
+			if (needBarrier){
+				auto* img = vctx.images_.get(h);
+				if (!img || img->vkImage==VK_NULL_HANDLE) continue;
+				VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+				b.srcStageMask = ToVkStage(src.masks.stageMask);
+				// For first transition from Undefined, src stage is NONE
+				if (src.layout == ImageLayout::Undefined) b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+				b.srcAccessMask = ToVkAccessLocal(src.masks.accessMask);
+				if (src.layout == ImageLayout::Undefined) b.srcAccessMask = VK_ACCESS_2_NONE;
+				b.dstStageMask = ToVkStage(req.barrierMasks.stageMask);
+				// Map RHI fragment to proper Vk stage for attachments
+				if (req.layout == ImageLayout::ColorAttachmentOptimal) b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+				else if (req.layout == ImageLayout::DepthStencilAttachmentOptimal) b.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+				b.dstAccessMask = ToVkAccessLocal(req.barrierMasks.accessMask);
+				b.oldLayout = ToVkImageLayout(src.layout);
+				b.newLayout = ToVkImageLayout(req.layout);
+				b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				b.image = img->vkImage;
+				// Use full subresource range – derive aspect from format
+				VkFormat fmt = toVkFormat(img->format);
+				VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+				// For depth formats, choose depth (and stencil if needed)
+				if (fmt == VK_FORMAT_D16_UNORM || fmt==VK_FORMAT_D32_SFLOAT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+				else if (fmt==VK_FORMAT_D24_UNORM_S8_UINT || fmt==VK_FORMAT_D32_SFLOAT_S8_UINT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+				else if (fmt==VK_FORMAT_S8_UINT) aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
+				b.subresourceRange = { aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
+				imgBarriers.push_back(b);
+			}
+			// Update local state to dst
+			VulkanResourceManager::ImageGlobalSyncState dstState{};
+			dstState.masks = req.barrierMasks;
+			dstState.layout = req.layout;
+			localImage[k]=dstState;
+		}
+		for (auto &pr : pu.buffers){
+			BufferHandle h = pr.first;
+			BufferSyncRequest req = pr.second;
+			uint64_t k = keyFor(h);
+			auto it = localBuffer.find(k);
+			VulkanResourceManager::BufferGlobalSyncState src{};
+			if (it != localBuffer.end()) src = it->second;
+			bool srcIsWrite = IsWriteAccess(src.masks.accessMask);
+			bool dstIsWrite = IsWriteAccess(req.barrierMasks.accessMask);
+			bool needBarrier = false;
+			if (src.masks.accessMask != req.barrierMasks.accessMask || src.masks.stageMask != req.barrierMasks.stageMask){
+				if (!( !srcIsWrite && !dstIsWrite )) needBarrier = true;
+			}
+			// First use from None with no access – still may need barrier if dst is read after write globally, but local None -> need barrier if dst is read? For buffer from Undefined, we still need barrier if dst access != None
+			if (src.masks.accessMask==AccessFlags::None && req.barrierMasks.accessMask!=AccessFlags::None) needBarrier = true;
+
+			if (needBarrier){
+				auto* buf = vctx.buffers_.get(h);
+				if (!buf || buf->vkBuffer==VK_NULL_HANDLE) continue;
+				VkBufferMemoryBarrier2 b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+				b.srcStageMask = ToVkStage(src.masks.stageMask);
+				b.srcAccessMask = ToVkAccessLocal(src.masks.accessMask);
+				b.dstStageMask = ToVkStage(req.barrierMasks.stageMask);
+				b.dstAccessMask = ToVkAccessLocal(req.barrierMasks.accessMask);
+				b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				b.buffer = buf->vkBuffer;
+				b.offset = 0;
+				b.size = VK_WHOLE_SIZE;
+				bufBarriers.push_back(b);
+			}
+			VulkanResourceManager::BufferGlobalSyncState dstState{};
+			dstState.masks = req.barrierMasks;
+			localBuffer[k]=dstState;
+		}
+	}
+	if (!imgBarriers.empty() || !bufBarriers.empty()){
+		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+		dep.imageMemoryBarrierCount = static_cast<uint32_t>(imgBarriers.size());
+		dep.pImageMemoryBarriers = imgBarriers.empty()? nullptr : imgBarriers.data();
+		dep.bufferMemoryBarrierCount = static_cast<uint32_t>(bufBarriers.size());
+		dep.pBufferMemoryBarriers = bufBarriers.empty()? nullptr : bufBarriers.data();
+		vkCmdPipelineBarrier2(vkCmd, &dep);
+	}
+	// Commit local states back to global tables (under unique lock)
+	vctx.CommitImageSyncStates(localImage);
+	vctx.CommitBufferSyncStates(localBuffer);
+}
 void smvk::RenderGraph::Execute(smvk::Framebuffer& fb)
 {
 	ResolveImages();
 	ResolveImageViews();
 	ResolveBuffers();
+	auto usages = CollectPassUsages();
+	auto sorted = TopologicalSort(usages);
 	VkCommandBuffer vkCmd = reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque);
+	EmitBarriers(fb.commandBufferOpaque, sorted, usages);
 
-	for (auto& pass : passes_) {
+	for (size_t sIdx : sorted) {
+		auto& pass = passes_[sIdx];
 
 		std::vector<VkRenderingAttachmentInfo> colorInfos;
 		colorInfos.reserve(pass.colorAttachments_.size());

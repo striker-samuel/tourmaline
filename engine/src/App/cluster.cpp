@@ -306,7 +306,8 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 
 	material.values.emissiveFactor = glm::vec4(info.emissiveFactor, 0.0f);
 	// keep ambient as small floor; could be driven by IBL later
-	material.values.ambient = glm::vec4(0.03f, 0.03f, 0.03f, 1.0f);
+	material.values.ambient = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+	//material.values.ambient = glm::vec4(0.03f, 0.03f, 0.03f, 1.0f);
 
 	material.shadingModel = info.shadingModel;
 	material.alphaMode = info.alphaMode;

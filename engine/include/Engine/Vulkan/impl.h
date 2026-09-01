@@ -14,6 +14,8 @@
 #include <string_view>
 #include <unordered_map>
 #include <memory>
+#include <mutex>
+#include <shared_mutex>
 
 inline const char* vkResultToString(VkResult result);
 
@@ -449,6 +451,41 @@ namespace smvk {
 
 		Holder<DescriptorPoolHandle> defaultDescriptorPool{};
 		TextureHandle m_nilTexture{};
+
+		// =================================================================
+		// Global sync bookkeeping – handle -> last barrier state.
+		// Table-based (not intrusive) to keep Image/Buffer POD. Protected
+		// for future multithreading; Execute snapshots under shared lock
+		// and commits under unique lock.
+		// =================================================================
+		struct ImageGlobalSyncState {
+			SyncBarrierMasks masks{ AccessFlags::None, PipelineStageBit_None };
+			ImageLayout layout = ImageLayout::Undefined;
+		};
+		struct BufferGlobalSyncState {
+			SyncBarrierMasks masks{ AccessFlags::None, PipelineStageBit_None };
+		};
+		static uint64_t SyncKey(uint32_t idx, uint32_t gen) noexcept {
+			return (static_cast<uint64_t>(gen) << 32) | idx;
+		}
+		template<typename H> static uint64_t SyncKey(H h) noexcept { return SyncKey(h.index(), h.gen()); }
+
+		mutable std::shared_mutex syncMutex_;
+		std::unordered_map<uint64_t, ImageGlobalSyncState> imageSyncStates_;
+		std::unordered_map<uint64_t, BufferGlobalSyncState> bufferSyncStates_;
+
+		// Global sync accessors – thread-safe.
+		ImageGlobalSyncState GetImageSyncState(ImageHandle h) const;
+		BufferGlobalSyncState GetBufferSyncState(BufferHandle h) const;
+		void SetImageSyncState(ImageHandle h, ImageGlobalSyncState state);
+		void SetBufferSyncState(BufferHandle h, BufferGlobalSyncState state);
+		void RemoveImageSyncState(ImageHandle h);
+		void RemoveBufferSyncState(BufferHandle h);
+		// Snapshot helper for RenderGraph – copies tables under shared lock.
+		std::unordered_map<uint64_t, ImageGlobalSyncState> SnapshotImageSyncStates() const;
+		std::unordered_map<uint64_t, BufferGlobalSyncState> SnapshotBufferSyncStates() const;
+		void CommitImageSyncStates(const std::unordered_map<uint64_t, ImageGlobalSyncState>& states);
+		void CommitBufferSyncStates(const std::unordered_map<uint64_t, BufferGlobalSyncState>& states);
 
 
 	private:

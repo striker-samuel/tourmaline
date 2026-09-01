@@ -237,6 +237,14 @@ namespace smvk {
 	{
 		return (value & flags) != AccessFlags::None;
 	}
+	constexpr AccessFlags operator~(AccessFlags a) {
+		return static_cast<AccessFlags>(~static_cast<uint32_t>(a));
+	}
+	constexpr AccessFlags operator^(AccessFlags a, AccessFlags b) {
+		return static_cast<AccessFlags>(static_cast<uint32_t>(a) ^ static_cast<uint32_t>(b));
+	}
+	constexpr AccessFlags& operator^=(AccessFlags& a, AccessFlags b) { a = a ^ b; return a; }
+	constexpr AccessFlags& operator&=(AccessFlags& a, AccessFlags b) { a = a & b; return a; }
 
 	// ============================================================================
 	// Primitive / vertex input
@@ -1127,18 +1135,6 @@ namespace smvk {
 		}
 	};
 
-	// Sync types translated from nicegraf
-	//  Maybe these should be impl. private
-	//struct SyncBarrierMasks
-	//{
-	//	AccessFlags accessMask = AccessFlags::None;
-	//	PipelineStage stageMask = PipelineStageBit_None;
-	//};
-	//struct SyncRequest {
-	//	SyncBarrierMasks barrier_masks;
-	//	Layout            layout;        
-	//};
-
 	struct ImageCreateInfo
 	{
 		ImageType type = ImageType::Image2D;
@@ -1209,6 +1205,57 @@ namespace smvk {
 	void destroy(ResourceManager* ctx, ImageViewHandle handle);
 	void destroy(ResourceManager* ctx, DescriptorPoolHandle handle);
 	void destroy(ResourceManager* ctx, ShaderModuleHandle handle); // will be removed in 1.4. transition
+
+	 // Sync types translated from nicegraf. RHI-opaque, no Vk leakage.
+	struct SyncBarrierMasks
+	{
+		AccessFlags accessMask = AccessFlags::None;
+		PipelineStage stageMask = PipelineStageBit_None;
+		bool operator==(const SyncBarrierMasks&) const = default;
+	};
+	struct ImageSyncRequest {
+		SyncBarrierMasks barrierMasks{};
+		ImageLayout layout = ImageLayout::Undefined;
+		bool operator==(const ImageSyncRequest&) const = default;
+	};
+	struct BufferSyncRequest {
+		SyncBarrierMasks barrierMasks{};
+		bool operator==(const BufferSyncRequest&) const = default;
+	};
+	using SyncRequest = ImageSyncRequest;
+
+	constexpr bool IsWriteAccess(AccessFlags a) {
+		constexpr AccessFlags writeMask =
+			AccessFlags::ShaderWrite |
+			AccessFlags::ColorAttachmentWrite |
+			AccessFlags::DepthStencilAttachmentWrite |
+			AccessFlags::TransferWrite |
+			AccessFlags::HostWrite |
+			AccessFlags::MemoryWrite |
+			AccessFlags::AccelerationStructureWrite;
+		return (a & writeMask) != AccessFlags::None;
+	}
+	constexpr bool IsReadAccess(AccessFlags a) {
+		return a != AccessFlags::None && !IsWriteAccess(a);
+	}
+
+	inline PipelineStage DerivePipelineStage(AccessFlags access, PipelineStage hint = PipelineStageBit_None) {
+		if (hint != PipelineStageBit_None) return hint;
+		if ((access & AccessFlags::ColorAttachmentWrite) != AccessFlags::None ||
+			(access & AccessFlags::ColorAttachmentRead) != AccessFlags::None)
+			return PipelineStageBit_Fragment;
+		if ((access & AccessFlags::DepthStencilAttachmentWrite) != AccessFlags::None ||
+			(access & AccessFlags::DepthStencilAttachmentRead) != AccessFlags::None)
+			return PipelineStageBit_Fragment;
+		if ((access & AccessFlags::ShaderRead) != AccessFlags::None ||
+			(access & AccessFlags::ShaderWrite) != AccessFlags::None ||
+			(access & AccessFlags::UniformRead) != AccessFlags::None)
+			return PipelineStageBit_Fragment | PipelineStageBit_Vertex | PipelineStageBit_Compute;
+		if ((access & AccessFlags::TransferRead) != AccessFlags::None ||
+			(access & AccessFlags::TransferWrite) != AccessFlags::None)
+			return PipelineStageBit_None;
+		return PipelineStageBit_Fragment;
+	}
 
 
 	[[nodiscard]] constexpr ImageAspect DefaultViewAspect(Format format)

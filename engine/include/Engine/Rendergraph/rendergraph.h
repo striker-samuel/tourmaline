@@ -167,6 +167,18 @@ namespace smvk
 
 
 	// ============================================================
+	// Sync hints for bindless / explicit resources
+	// ============================================================
+	struct ImageHint {
+		LogicalImageViewHandle view{};
+		ImageSyncRequest request{};
+	};
+	struct BufferHint {
+		LogicalBufferHandle buffer{};
+		BufferSyncRequest request{};
+	};
+
+	// ============================================================
 	// Render pass
 	// ============================================================
 
@@ -234,13 +246,25 @@ namespace smvk
 
 
 		// --------------------------------------------------------
-		// Shader resources
+		// Shader resources (legacy sugar – derives sync hints)
 		// --------------------------------------------------------
 
 		RenderPass& SetInputImages(
 			std::vector<LogicalImageViewHandle> images)
 		{
 			inputImages_ = std::move(images);
+			// Also populate sync hints with derived stage/layout if not already hinted.
+			for (auto v : inputImages_) {
+				bool exists = false;
+				for (auto &h : imageHints_) if (h.view == v) { exists = true; break; }
+				if (!exists) {
+					ImageSyncRequest req{};
+					req.barrierMasks.accessMask = AccessFlags::ShaderRead;
+					req.barrierMasks.stageMask = DerivePipelineStage(req.barrierMasks.accessMask);
+					req.layout = ImageLayout::ShaderReadOnlyOptimal;
+					imageHints_.push_back({ v, req });
+				}
+			}
 			return *this;
 		}
 
@@ -249,6 +273,17 @@ namespace smvk
 			std::vector<LogicalImageViewHandle> images)
 		{
 			storageImages_ = std::move(images);
+			for (auto v : storageImages_) {
+				bool exists = false;
+				for (auto &h : imageHints_) if (h.view == v) { exists = true; break; }
+				if (!exists) {
+					ImageSyncRequest req{};
+					req.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+					req.barrierMasks.stageMask = DerivePipelineStage(req.barrierMasks.accessMask);
+					req.layout = ImageLayout::General;
+					imageHints_.push_back({ v, req });
+				}
+			}
 			return *this;
 		}
 
@@ -257,6 +292,50 @@ namespace smvk
 			std::vector<LogicalBufferHandle> buffers)
 		{
 			storageBuffers_ = std::move(buffers);
+			for (auto b : storageBuffers_) {
+				bool exists = false;
+				for (auto &h : bufferHints_) if (h.buffer == b) { exists = true; break; }
+				if (!exists) {
+					BufferSyncRequest req{};
+					req.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+					req.barrierMasks.stageMask = DerivePipelineStage(req.barrierMasks.accessMask);
+					bufferHints_.push_back({ b, req });
+				}
+			}
+			return *this;
+		}
+
+		// --------------------------------------------------------
+		// Explicit sync hints (bindless model)
+		// --------------------------------------------------------
+		RenderPass& AddImageHint(LogicalImageViewHandle view, ImageSyncRequest request)
+		{
+			assert(!view.empty());
+			if (request.barrierMasks.stageMask == PipelineStageBit_None)
+				request.barrierMasks.stageMask = DerivePipelineStage(request.barrierMasks.accessMask);
+			// deduplicate – replace if exists
+			for (auto &h : imageHints_) if (h.view == view) { h.request = request; return *this; }
+			imageHints_.push_back({ view, request });
+			return *this;
+		}
+		RenderPass& AddBufferHint(LogicalBufferHandle buffer, BufferSyncRequest request)
+		{
+			assert(!buffer.empty());
+			if (request.barrierMasks.stageMask == PipelineStageBit_None)
+				request.barrierMasks.stageMask = DerivePipelineStage(request.barrierMasks.accessMask);
+			for (auto &h : bufferHints_) if (h.buffer == buffer) { h.request = request; return *this; }
+			bufferHints_.push_back({ buffer, request });
+			return *this;
+		}
+		// Batch variants
+		RenderPass& AddImageHints(const std::vector<std::pair<LogicalImageViewHandle, ImageSyncRequest>>& hints)
+		{
+			for (auto &p : hints) AddImageHint(p.first, p.second);
+			return *this;
+		}
+		RenderPass& AddBufferHints(const std::vector<std::pair<LogicalBufferHandle, BufferSyncRequest>>& hints)
+		{
+			for (auto &p : hints) AddBufferHint(p.first, p.second);
 			return *this;
 		}
 
@@ -297,7 +376,7 @@ namespace smvk
 		friend RenderGraph;
 		friend CommandBuffer;
 
-		// Shader-readable resources.
+		// Shader-readable resources (legacy, also drives imageHints_ defaults).
 		std::vector<LogicalImageViewHandle>
 			inputImages_;
 
@@ -307,6 +386,12 @@ namespace smvk
 
 		std::vector<LogicalBufferHandle>
 			storageBuffers_;
+
+		// Explicit sync hints – primary source for barrier generation.
+		std::vector<ImageHint>
+			imageHints_;
+		std::vector<BufferHint>
+			bufferHints_;
 
 		// Render targets.
 		std::vector<RenderAttachment>
@@ -613,6 +698,23 @@ namespace smvk
 		void ResolveImages();
 		void ResolveBuffers();
 		void ResolveImageViews();
+
+		// --------------------------------------------------------
+		// Sync – sorting & barrier generation (local bookkeeping)
+		// --------------------------------------------------------
+	private:
+		// Collect per-pass physical image/buffer usage with derived layout/access.
+		struct PassUsage {
+			std::vector<std::pair<ImageHandle, ImageSyncRequest>> images; // resolved physical
+			std::vector<std::pair<BufferHandle, BufferSyncRequest>> buffers;
+		};
+		std::vector<PassUsage> CollectPassUsages() const;
+		static bool IsWriteImage(const ImageSyncRequest& r) { return IsWriteAccess(r.barrierMasks.accessMask); }
+		static bool IsWriteBuffer(const BufferSyncRequest& r) { return IsWriteAccess(r.barrierMasks.accessMask); }
+		std::vector<size_t> TopologicalSort(const std::vector<PassUsage>& usages) const;
+		void EmitBarriers(void* cmdOpaque, const std::vector<size_t>& sortedOrder, const std::vector<PassUsage>& usages);
+
+	public:
 
 		// --------------------------------------------------------
 		// Graph storage
