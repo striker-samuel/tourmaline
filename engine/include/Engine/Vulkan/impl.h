@@ -42,6 +42,33 @@ inline const char* vkResultToString(VkResult result);
 
 
 namespace smvk {
+
+	class VulkanApp;
+	class VulkanSwapchain;
+
+	struct VulkanFrameBuffer {
+		uint32_t frameIndex = 0;
+		uint32_t imageIndex = 0;
+		VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+		VulkanSwapchain& swapchain;
+	};
+
+	struct VulkanPipeline {
+		VkPipeline pipeline{};
+		VkPipelineLayout layout{};
+	};
+
+	struct PipelineBundle {
+		VkPipeline pipeline = VK_NULL_HANDLE;
+		VkPipelineLayout layout = VK_NULL_HANDLE;
+	};
+
+	//struct Allocation{
+	//	std::vector<VmaVirtualAllocation> allocs;
+	//};
+
+	//
+
 	struct StaticMeshAllocation {
 		VmaVirtualAllocation vertexAllocation = VK_NULL_HANDLE;
 		VmaVirtualAllocation indexAllocation = VK_NULL_HANDLE;
@@ -55,6 +82,8 @@ namespace smvk {
 		VmaVirtualBlock m_staticIndexBlock = VK_NULL_HANDLE;
 		std::unordered_map<uint32_t, StaticMeshAllocation> m_allocations{};
 	} staticVertexFmtHeap;
+
+	// s
 
 	struct Image
 	{
@@ -428,18 +457,6 @@ namespace smvk {
 		Image CreateImageImpl(const ImageCreateInfo& ci);
 	};
 
-};
-
-
-namespace smvk {
-	class VulkanSwapchain;
-	struct FrameBuffer {
-		uint32_t frameIndex = 0;
-		uint32_t imageIndex = 0;
-		VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-		VulkanSwapchain& swapchain;
-	};
-
 	class VulkanSwapchain final /*: public ISwapchain*/ {
 
 	public:
@@ -524,14 +541,11 @@ namespace smvk {
 		void DestroySyncObjects();
 		void CleanupSwapchain(bool fullDestroy = false);
 
-		FrameBuffer AcquireFramebuffer();
-		void EndAndPresentFramebuffer(FrameBuffer& cb);
+		VulkanFrameBuffer AcquireFramebuffer();
+		void EndAndPresentFramebuffer(VulkanFrameBuffer& cb);
 	};
 
-	struct PipelineBundle {
-		VkPipeline pipeline = VK_NULL_HANDLE;
-		VkPipelineLayout layout = VK_NULL_HANDLE;
-	};
+
 
 	struct PipelineKeyHash {
 		static void HashCombine(std::size_t& seed, std::size_t value) noexcept
@@ -624,14 +638,14 @@ namespace smvk {
 		}
 	};
 
-	class PipelineCache
+	class VulkanPipelineCache
 	{
 	public:
-		explicit PipelineCache(VulkanResourceManager* ctx)
+		explicit VulkanPipelineCache(VulkanResourceManager* ctx)
 			: ctx_(ctx)
 		{}
 
-		~PipelineCache()
+		~VulkanPipelineCache()
 		{
 			Clear();
 		}
@@ -668,16 +682,6 @@ namespace smvk {
 
 	std::vector<VkVertexInputBindingDescription> getVkVertexInputBindingDescriptions(const VertexFormatDescription& format);
 	std::vector<VkVertexInputAttributeDescription> getVkVertexAttributeDescriptions(const VertexFormatDescription& format);
-
-
-	struct BoundPipeline {
-		VkPipeline pipeline{};
-		VkPipelineLayout layout{};
-	};
-	class VulkanApp;
-
-	using CommandBufferImpl = VkCommandBuffer;
-	using PipelineImpl = BoundPipeline;
 
 }; // namespace smvk
 

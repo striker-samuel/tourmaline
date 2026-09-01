@@ -19,7 +19,9 @@
 
 #include <Engine/Vulkan/impl.h>
 #include <Engine/Vulkan/VulkanApp.h>
+
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/commandbuffer.h>
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -4998,7 +5000,7 @@ inline void smvk::VulkanSwapchain::CleanupSwapchain(bool fullDestroy) {
 		vk_swapchain_ = VK_NULL_HANDLE;
 	}
 }
-smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
+smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 {
 	auto f = GetInFlightFence();
 	VkResult waitResult = vkWaitForFences(
@@ -5070,7 +5072,7 @@ smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 		1, &barrierToColorAttachment
 	);
 
-	FrameBuffer frameBufferContext_{
+	VulkanFrameBuffer frameBufferContext_{
 		.frameIndex = currentFrame_,
 		.imageIndex = currentImageIndex_,
 		.commandBuffer = commandBuffers[currentFrame_],
@@ -5079,7 +5081,7 @@ smvk::FrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	};
 	return frameBufferContext_;
 }
-void smvk::VulkanSwapchain::EndAndPresentFramebuffer(FrameBuffer& fb)
+void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 {
 	ImageBarrier(
 		fb.commandBuffer,
@@ -5220,7 +5222,7 @@ smvk::getVkVertexAttributeDescriptions(const smvk::VertexFormatDescription& form
 	return descriptions;
 }
 //
-smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::PipelineKey& key)
+smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk::PipelineKey& key)
 {
 	// ========================================================
 	// SHADERS
@@ -5646,7 +5648,7 @@ smvk::PipelineBundle smvk::PipelineCache::BuildGraphicsPipeline(const smvk::Pipe
 
 	return bundle;
 }
-smvk::PipelineBundle smvk::PipelineCache::GetRenderPipeline(
+smvk::PipelineBundle smvk::VulkanPipelineCache::GetRenderPipeline(
 	ShaderProgram& program,
 	const VertexFormatDescription& vertexFormat,
 	const Format* colorFormats,
@@ -5693,7 +5695,7 @@ smvk::PipelineBundle smvk::PipelineCache::GetRenderPipeline(
 
 	return it->second;
 }
-void smvk::PipelineCache::Clear() {
+void smvk::VulkanPipelineCache::Clear() {
 	for (auto& [key, bundle] : pipelines_)
 	{
 		if (bundle.pipeline != VK_NULL_HANDLE)
@@ -5828,8 +5830,6 @@ smvk::VulkanApp::~VulkanApp()
 }
 
 
-#include <Engine/Rendergraph/rendergraph.h>
-#include <Engine/Rendergraph/commandbuffer.h>
 void smvk::RenderGraph::ResolveImageViews()
 {
 	imageViews_.forEach(
@@ -6013,7 +6013,7 @@ void smvk::RenderGraph::ResolveBuffers()
 	//	}
 	//	);
 }
-void smvk::RenderGraph::Execute(smvk::FrameBuffer& fb)
+void smvk::RenderGraph::Execute(smvk::VulkanFrameBuffer& fb)
 {
 	ResolveImages();
 	ResolveImageViews();

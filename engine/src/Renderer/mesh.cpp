@@ -18,6 +18,7 @@ namespace smvk {
 		case VertexFormat::StaticVertexFormat:
 			return StaticVertexFormat;
 		}
+		return{};
 	}
 	void AllocateStaticVertexFmt(smvk::VulkanResourceManager& ctx)
 	{

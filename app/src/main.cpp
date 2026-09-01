@@ -511,7 +511,7 @@ private:
 		m_swapchain->EndAndPresentFramebuffer(fb);
 	}
 
-	void RenderFrame(smvk::FrameBuffer fb) {
+	void RenderFrame(smvk::FrameBufferImpl fb) {
 
 		m_rendergraph->NewFrame();
 

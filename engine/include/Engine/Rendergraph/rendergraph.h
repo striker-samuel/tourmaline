@@ -288,10 +288,10 @@ namespace smvk
 	struct RenderGraph final
 	{
 		explicit RenderGraph(
-			VulkanResourceManager& ctx)
+			ResourceManagerImpl& ctx)
 			: ctx_(ctx)
 			, pipelineCachePimpl(
-				std::make_unique<PipelineCache>(&ctx_))
+				std::make_unique<PipelineCacheImpl>(&ctx_))
 		{}
 
 		~RenderGraph()
@@ -559,7 +559,7 @@ namespace smvk
 		// Execution
 		// ========================================================
 
-		void Execute(FrameBuffer& fb);
+		void Execute(VulkanFrameBuffer& fb);
 
 		//private:
 		//	friend CommandBuffer;
@@ -585,8 +585,8 @@ namespace smvk
 		std::vector<RenderPass>
 			passes_;
 
-		VulkanResourceManager& ctx_;
-		std::unique_ptr<PipelineCache>
+		ResourceManagerImpl& ctx_;
+		std::unique_ptr<PipelineCacheImpl>
 			pipelineCachePimpl;
 	};
 
