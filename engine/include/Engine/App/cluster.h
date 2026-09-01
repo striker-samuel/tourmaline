@@ -1,8 +1,9 @@
 
 #pragma once
-#include <Engine/smvk.h>
-#include <Engine/Vulkan/impl.h>
 
+
+#include <Engine/smvk.h>
+#include <Engine/Memory/pool.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
 
@@ -12,7 +13,7 @@ namespace smvk {
 
 	using ClusterStaticMeshHandle = Handle<StaticMesh>;
 	using ClusterMaterialHandle = Handle<Material>;
-	using ClusterTextureHandle = Handle<Texture>;
+	using ClusterTextureHandle = Handle<struct Texture>;
 
 	struct Cluster {
 		explicit Cluster(VulkanResourceManager& ctx);
@@ -20,13 +21,12 @@ namespace smvk {
 		Cluster(const Cluster&) = delete;
 		Cluster& operator=(const Cluster&) = delete;
 
-		VulkanResourceManager& ctx_;
+		ResourceManagerImpl& ctx_;
 		Scene scene;
 		World* world = nullptr;
 		Cluster* sibling = nullptr;
 		// linked list for import chain if multiple clusters belong to one input file.
 
-		// this is mesh each resource has a different lifetime semantic! 
 		Pool<StaticMesh, StaticMesh> staticMeshes;
 		//Pool<SkinnedMesh, SkinnedMesh> skinnedMesh;
 		Pool<Material, Material> materials;

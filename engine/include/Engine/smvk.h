@@ -1,5 +1,8 @@
 #pragma once
 
+#include "backend.h"
+#include <Engine/Memory/handle.h>
+
 #include <cassert>
 #include <array>
 #include <tuple>
@@ -9,10 +12,7 @@
 #include <optional>
 #include <vector>
 #include <set>
-//
-#include <Engine/Memory/handle.h>
-#include <Engine/Memory/pool.h>
-//
+
 static constexpr uint32_t DEFAULT_WIDTH = 1280;
 static constexpr uint32_t DEFAULT_HEIGHT = 720;
 static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
@@ -1158,6 +1158,17 @@ namespace smvk {
 	using SamplerHandle = Handle<SamplerTag>;
 	using BindlessImageHandle = Handle<BindlessImageTag>;
 	using DescriptorPoolHandle = Handle<DescriptorPoolTag>;
+
+	void destroy(ResourceManagerImpl* ctx, ImageHandle handle);
+	void destroy(ResourceManagerImpl* ctx, TextureHandle handle);
+	void destroy(ResourceManagerImpl* ctx, BufferHandle handle);
+	void destroy(ResourceManagerImpl* ctx, SamplerHandle handle);
+	void destroy(ResourceManagerImpl* ctx, BindlessImageHandle handle);
+	void destroy(ResourceManagerImpl* ctx, ImageViewHandle handle);
+	void destroy(ResourceManagerImpl* ctx, DescriptorPoolHandle handle);
+	void destroy(ResourceManagerImpl* ctx, ShaderModuleHandle handle); // will be removed in 1.4. transition
+
+
 
 
 	[[nodiscard]] constexpr ImageAspect DefaultViewAspect(Format format)

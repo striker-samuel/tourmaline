@@ -303,79 +303,15 @@ namespace smvk
 		// swapchain color views on Recreate() without clearing every external
 		// resource the graph holds.
 		void FreeImageView(
-			LogicalImageViewHandle handle)
-		{
-			if (handle.empty())
-				return;
-
-			auto* view = imageViews_.get(handle);
-			assert(view != nullptr);
-
-			if (view->type !=
-				LogicalImageView::Type::ExternalPhysical &&
-				!view->resolvedViewHandle.empty())
-			{
-				destroy(&ctx_, view->resolvedViewHandle);
-			}
-
-			imageViews_.destroy(handle);
-		}
-
+			LogicalImageViewHandle handle);
+	
 		void FreeImage(
-			LogicalImageHandle handle)
-		{
-			if (handle.empty())
-				return;
-
-			auto* image = images_.get(handle);
-			assert(image != nullptr);
-
-			if (image->type != ResourceType::External &&
-				!image->resolvedImageHandle.empty())
-			{
-				destroy(&ctx_, image->resolvedImageHandle);
-			}
-
-			images_.destroy(handle);
-		}
+			LogicalImageHandle handle);
 
 		// Destroys resolved views then transient images so each parent image's
 		// liveViewCount reaches zero before the image is released. External
 		// resources are owned by the caller and are left untouched.
-		void ReleaseResolvedResources()
-		{
-			imageViews_.forEach(
-				[this](LogicalImageView& view)
-			{
-				if (view.type ==
-					LogicalImageView::Type::ExternalPhysical)
-				{
-					return;
-				}
-
-				if (!view.resolvedViewHandle.empty())
-				{
-					destroy(&ctx_, view.resolvedViewHandle);
-				}
-			}
-			);
-
-			images_.forEach(
-				[this](LogicalImage& image)
-			{
-				if (image.type == ResourceType::External)
-				{
-					return;
-				}
-
-				if (!image.resolvedImageHandle.empty())
-				{
-					destroy(&ctx_, image.resolvedImageHandle);
-				}
-			}
-			);
-		}
-
+		void ReleaseResolvedResources();
 
 		// --------------------------------------------------------
 		// Frame
@@ -407,65 +343,13 @@ namespace smvk
 		[[nodiscard]]
 		LogicalImageHandle AddImage(
 			const ImageCreateInfo& description,
-			const char* name = "")
-		{
-			LogicalImage image{
-				.type =
-					ResourceType::Transient,
-
-				.key =
-					description,
-
-				.resolvedImageHandle = {},
-
-				.name =
-					name,
-			};
-
-			return images_.create(
-				std::move(image));
-		}
-
-
-		// Import an already-existing physical image. Needed for swapchain
-		// This is the important external-resource API.
-		// External images are imported as IMAGES, not VkImageViews.
+			const char* name = "");
+	
 		[[nodiscard]]
 		LogicalImageHandle AddExternalImage(
 			ImageHandle imageHandle,
-			const char* name = "")
-		{
-			assert(!imageHandle.empty());
-
-			const Image* image =
-				ctx_.images_.get(imageHandle);
-
-			assert(image != nullptr);
-
-			LogicalImage logicalImage{
-				.type = ResourceType::External,
-
-				.key = {
-					.type = image->type,
-					.extent = image->extent,
-					.format = image->format,
-					.usage = image->usage,
-					.samples = image->samples,
-					.mipLevels = image->mipLevels,
-					.arrayLayers = image->arrayLayers,
-					.name = name,
-				},
-
-				.resolvedImageHandle = imageHandle,
-
-				.name = name,
-			};
-
-			return images_.create(
-				std::move(logicalImage)
-			);
-		}
-
+			const char* name = "");
+	
 
 		// ========================================================
 		// Image views

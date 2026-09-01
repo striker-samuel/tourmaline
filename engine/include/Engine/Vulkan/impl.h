@@ -2,6 +2,7 @@
 
 #include <GLFW/glfw3.h>
 #include <Engine/smvk.h>
+#include <Engine/Memory/pool.h>
 
 #include "volk.h"
 #include "vk_mem_alloc.h"
@@ -427,16 +428,6 @@ namespace smvk {
 		Image CreateImageImpl(const ImageCreateInfo& ci);
 	};
 
-	void destroy(VulkanResourceManager* ctx, ImageHandle handle);
-	void destroy(VulkanResourceManager* ctx, TextureHandle handle);
-	void destroy(VulkanResourceManager* ctx, BufferHandle handle);
-	void destroy(VulkanResourceManager* ctx, SamplerHandle handle);
-	void destroy(VulkanResourceManager* ctx, BindlessImageHandle handle);
-	void destroy(VulkanResourceManager* ctx, ImageViewHandle handle);
-	void destroy(VulkanResourceManager* ctx, DescriptorPoolHandle handle);
-
-	void destroy(VulkanResourceManager* ctx, ShaderModuleHandle handle); // will be removed in 1.4. transition
-
 };
 
 
@@ -683,13 +674,10 @@ namespace smvk {
 		VkPipeline pipeline{};
 		VkPipelineLayout layout{};
 	};
-
 	class VulkanApp;
 
 	using CommandBufferImpl = VkCommandBuffer;
 	using PipelineImpl = BoundPipeline;
-	using SwapchainImpl = VulkanSwapchain;
-	using AppImpl = VulkanApp;
 
 }; // namespace smvk
 

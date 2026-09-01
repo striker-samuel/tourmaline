@@ -44,9 +44,6 @@ namespace smvk {
 	struct World {
 		explicit World() {};
 
-
-		//AssetRef // Uri mapped assetref to avoid copy of same assets. this needs cooking
-
 		// Merged runtime scene graph. Imported Cluster scenes are folded into
 		// this via ResolveAndFixup_clusters().
 		Scene scene;

@@ -1,17 +1,13 @@
 #pragma once
 
-#include <stdint.h>
+#include <Engine/backend.h>
+
+#include <cassert>
+#include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace smvk {
-
-#if defined(ENGINE_VULKAN)
-	struct VulkanResourceManager;
-	using ResourceManagerImpl = VulkanResourceManager;
-#else
-#error "No rendering backend selected"
-#endif
-
 
 	template<typename HandleType>
 	class Holder final {

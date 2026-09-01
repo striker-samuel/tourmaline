@@ -16,7 +16,9 @@
 
 #include "volk.h"
 #include <GLFW/glfw3.h>
+
 #include <Engine/Vulkan/impl.h>
+#include <Engine/Vulkan/VulkanApp.h>
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -5763,6 +5765,118 @@ void smvk::RenderGraph::ResolveImageViews()
 	}
 	);
 }
+[[nodiscard]] smvk::LogicalImageHandle smvk::RenderGraph::AddImage(const ImageCreateInfo& description, const char* name)
+{
+	LogicalImage image{
+		.type =
+			ResourceType::Transient,
+
+		.key =
+			description,
+
+		.resolvedImageHandle = {},
+
+		.name =
+			name,
+	};
+
+	return images_.create(
+		std::move(image));
+}
+[[nodiscard]] smvk::LogicalImageHandle smvk::RenderGraph::AddExternalImage(smvk::ImageHandle imageHandle, const char* name)
+{
+	assert(!imageHandle.empty());
+	const Image* image = ctx_.images_.get(imageHandle);
+	assert(image != nullptr);
+	LogicalImage logicalImage{
+		.type = ResourceType::External,
+
+		.key = {
+			.type = image->type,
+			.extent = image->extent,
+			.format = image->format,
+			.usage = image->usage,
+			.samples = image->samples,
+			.mipLevels = image->mipLevels,
+			.arrayLayers = image->arrayLayers,
+			.name = name,
+		},
+		.resolvedImageHandle = imageHandle,
+		.name = name,
+	};
+	return images_.create(
+		std::move(logicalImage)
+	);
+}
+void smvk::RenderGraph::ReleaseResolvedResources()
+{
+	imageViews_.forEach(
+		[this](LogicalImageView& view)
+	{
+		if (view.type ==
+			LogicalImageView::Type::ExternalPhysical)
+		{
+			return;
+		}
+
+		if (!view.resolvedViewHandle.empty())
+		{
+			destroy(&ctx_, view.resolvedViewHandle);
+		}
+	}
+	);
+
+	images_.forEach(
+		[this](LogicalImage& image)
+	{
+		if (image.type == ResourceType::External)
+		{
+			return;
+		}
+
+		if (!image.resolvedImageHandle.empty())
+		{
+			destroy(&ctx_, image.resolvedImageHandle);
+		}
+	}
+	);
+}
+void smvk::RenderGraph::FreeImageView(
+	LogicalImageViewHandle handle)
+{
+	if (handle.empty())
+		return;
+
+	auto* view = imageViews_.get(handle);
+	assert(view != nullptr);
+
+	if (view->type !=
+		LogicalImageView::Type::ExternalPhysical &&
+		!view->resolvedViewHandle.empty())
+	{
+		destroy(&ctx_, view->resolvedViewHandle);
+	}
+
+	imageViews_.destroy(handle);
+}
+
+void smvk::RenderGraph::FreeImage(
+	LogicalImageHandle handle)
+{
+	if (handle.empty())
+		return;
+
+	auto* image = images_.get(handle);
+	assert(image != nullptr);
+
+	if (image->type != ResourceType::External &&
+		!image->resolvedImageHandle.empty())
+	{
+		destroy(&ctx_, image->resolvedImageHandle);
+	}
+
+	images_.destroy(handle);
+}
 void smvk::RenderGraph::ResolveImages() {
 	images_.forEach(
 		[this](smvk::LogicalImage& logicalImage) {
@@ -6069,7 +6183,6 @@ void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const vo
 	);
 }
 
-#include <Engine/Vulkan/VulkanApp.h>
 //void smvk::VulkanApp::InitializeImGui() {
 //
 //	// Setup Dear ImGui context
@@ -6161,7 +6274,7 @@ bool smvk::VulkanApp::Initialize() {
 	);
 
 	m_rendergraph = std::make_unique<RenderGraph>(*m_context);
-	m_world = std::make_unique<World>();
+	//m_world = std::make_unique<World>();
 
 	// Init imgui?s
 	return true;

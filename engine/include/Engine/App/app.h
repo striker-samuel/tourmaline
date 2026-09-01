@@ -1,14 +1,16 @@
 #pragma once
 //
-#include <Engine/smvk.h>
 #include <Engine/App/world.h>
+#include <Engine/smvk.h>
 #include <GLFW/glfw3.h>
+
 #include "input.h"
 #include <algorithm>
 #include <cassert>
 #include <future>
 
-namespace smvk {
+namespace smvk
+{
 
 	struct RenderGraph;
 	class IApp {

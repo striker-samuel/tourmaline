@@ -1,8 +1,8 @@
+#include <Engine/smvk.h>
+#include <Engine/Vulkan/impl.h> 
+
 #include <Engine/Renderer/mesh.h>
 #include <Engine/App/cluster.h>
-#include <Engine/smvk.h>
-// this is hardcoded to the vulkan impl
-#include <Engine/Vulkan/impl.h> 
 
 namespace {
 	constexpr size_t defaultStaticVertexHeapSize = 512ull * 1024ull * 1024ull;
