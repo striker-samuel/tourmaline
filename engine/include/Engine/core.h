@@ -18,9 +18,15 @@
 #include <glm/gtx/hash.hpp>
 #include <GLFW/glfw3.h>
 
-//#include "platform.h"
 #include "smvk.h"
+
 #ifdef ENGINE_VULKAN
 #include <Engine/Vulkan/impl.h>
 #include <Engine/Vulkan/vulkanApp.h>
 #endif
+#include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Utils/gltf.h> 
+#include <Engine/platform.h>
+#include <Engine/Camera/camera.h> 
+#include <Engine/Renderer/light.h>
+

@@ -19,9 +19,7 @@
 
 #include <Engine/Vulkan/impl.h>
 #include <Engine/Vulkan/VulkanApp.h>
-
 #include <Engine/Rendergraph/rendergraph.h>
-#include <Engine/Rendergraph/commandbuffer.h>
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;

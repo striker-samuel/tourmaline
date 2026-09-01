@@ -3,7 +3,7 @@
 #include "ktx.h"
 
 #include <Engine/Utils/gltf.h>
-#include <Engine/engine.h>
+#include <Engine/core.h>
 
 
 #include <array>

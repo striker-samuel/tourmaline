@@ -3,11 +3,10 @@
 #include <assert.h>
 #include <algorithm>
 
-#include "Engine/engine.h"
+#include "Engine/core.h"
 
 // InfiniteReversedZ projection. For better precission up close and no cutoff
 glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear);
-
 
 class CameraPositionerInterface
 {

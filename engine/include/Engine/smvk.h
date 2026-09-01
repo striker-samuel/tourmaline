@@ -1210,5 +1210,11 @@ namespace smvk {
 		return s;
 	}
 
+	//struct FrameBufferImpl {
+	//	uint32_t frameIndex = 0;
+	//	uint32_t imageIndex = 0;
+	//	CommandBufferImpl commandBuffer{};
+	//	SwapchainImpl& swapchain;
+	//};
 
 } // namespace smvk

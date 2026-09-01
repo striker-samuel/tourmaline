@@ -2,15 +2,8 @@
 #include <iostream>
 #include <filesystem>
 
-#include <Engine/engine.h>
+#include <Engine/core.h>
 
-#include <Engine/Rendergraph/rendergraph.h>
-
-#include <Engine/Utils/gltf.h> // for gltf read into smvk::Cluster
-#include <Engine/platform.h> // for readFile
-
-#include <Engine/Camera/camera.h> 
-#include <Engine/Renderer/light.h>
 
 // Constants //
 static constexpr float default_near_clip = 0.01f;
@@ -846,7 +839,7 @@ int main(int argc, const char* argv[]) {
 		std::cin.get();
 		return EXIT_FAILURE;
 	}
-	std::cerr << "\nPress Enter to exit...";
-	std::cin.get();
+	//std::cerr << "\nPress Enter to exit...";
+	//std::cin.get();
 	return EXIT_SUCCESS;
 }

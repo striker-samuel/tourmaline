@@ -21,7 +21,4 @@ namespace smvk {
 	using CommandBufferImpl = VkCommandBuffer;
 
 };
-//#include <volk.h>
-//#include <Engine/Vulkan/impl.h>
-//#include <Engine/Vulkan/vulkanApp.h>
 #endif

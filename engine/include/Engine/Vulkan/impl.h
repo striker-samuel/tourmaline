@@ -63,13 +63,8 @@ namespace smvk {
 		VkPipelineLayout layout = VK_NULL_HANDLE;
 	};
 
-	//struct Allocation{
-	//	std::vector<VmaVirtualAllocation> allocs;
-	//};
-
-	//
-
 	struct StaticMeshAllocation {
+	//	std::vector<VmaVirtualAllocation> allocs;
 		VmaVirtualAllocation vertexAllocation = VK_NULL_HANDLE;
 		VmaVirtualAllocation indexAllocation = VK_NULL_HANDLE;
 	};
@@ -82,8 +77,6 @@ namespace smvk {
 		VmaVirtualBlock m_staticIndexBlock = VK_NULL_HANDLE;
 		std::unordered_map<uint32_t, StaticMeshAllocation> m_allocations{};
 	} staticVertexFmtHeap;
-
-	// s
 
 	struct Image
 	{
