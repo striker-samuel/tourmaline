@@ -178,16 +178,53 @@ namespace smvk {
 		recalculateGlobalTransforms(scene);
 
 		// Build the per-node iterator flags from the resolved scene: renderable
-		// nodes are those carrying a mesh; everything else is bare.
+		// nodes are those carrying a mesh; material drives Opaque vs Transparent.
 		flags.assign(scene.hierarchy.size(), IteratorFlagBit_None);
 		for (auto& [node, meshIdx] : scene.meshForNode) {
-			if (node < flags.size()) {
-				flags[node] =
-					static_cast<IteratorFlags>(IteratorFlagBit_Renderable)
-					| static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
-					| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow)
-					| static_cast<IteratorFlags>(IteratorFlagBit_StaticVertexFmt);
+			if (node >= flags.size())
+				continue;
+
+			IteratorFlags f = static_cast<IteratorFlags>(IteratorFlagBit_Renderable)
+				| static_cast<IteratorFlags>(IteratorFlagBit_StaticVertexFmt);
+
+			// Material-driven classification. Falls back to Opaque if node has
+			// no material (e.g. default).
+			auto matIt = scene.materialForNode.find(node);
+			if (matIt != scene.materialForNode.end()) {
+				uint32_t matIdx = matIt->second;
+				if (matIdx < materialLocations.size()) {
+					const MaterialLocation& loc = materialLocations[matIdx];
+					if (loc.cluster && loc.handle.valid()) {
+						if (auto* mat = loc.cluster->materials.get(loc.handle)) {
+							if (mat->isTransparent())
+								f |= static_cast<IteratorFlags>(IteratorFlagBit_Transparent);
+							else
+								f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque);
+
+							// Masked (cutout) still casts shadow but via alpha-tested path.
+							// Transparent typically does not cast shadow in this engine.
+							if (!mat->isTransparent())
+								f |= static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
+							else
+								f |= static_cast<IteratorFlags>(IteratorFlagBit_CastShadow); // keep for now; caller may filter Transparent
+						} else {
+							f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
+								| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
+						}
+					} else {
+						f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
+							| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
+					}
+				} else {
+					f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
+						| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
+				}
+			} else {
+				f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
+					| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
 			}
+
+			flags[node] = f;
 		}
 
 		dirtyCull = true;

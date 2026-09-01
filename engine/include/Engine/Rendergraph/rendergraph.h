@@ -53,6 +53,9 @@ namespace smvk
 
 		void BindStaticVertexFmt();
 
+		// Access native VkCommandBuffer for integrations like ImGui.
+		void* GetNativeHandle() const { return cmdOpaque_; }
+
 	private:
 		void* cmdOpaque_ = nullptr;
 		void* currentPipeline_ = nullptr;

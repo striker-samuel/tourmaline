@@ -270,13 +270,28 @@ void smvk::Cluster::DestroyMesh(
 smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 	smvk::TextureHandle diffuse)
 {
-	assert(
-		!diffuse.empty() &&
-		"Invalid diffuse texture handle"
-	);
+	MaterialCreateInfo ci{};
+	ci.diffuse = diffuse;
+	return CreateMaterial(ci);
+}
 
+smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
+	const MaterialCreateInfo& info)
+{
+	// diffuse may be empty for procedural / fallback materials; use -1 sentinel
 	smvk::Material material{};
-	material.values.textures[0] = static_cast<int>(diffuse.index());
+	material.values.diffuse = info.baseColorFactor;
+	material.values.textures[0] =
+		info.diffuse.empty() ? -1 : static_cast<int>(info.diffuse.index());
+	material.values.params.x = info.alphaCutoff;
+	material.values.params.y = info.metallicFactor;
+	material.values.params.z = info.roughnessFactor;
+	material.values.params.w = static_cast<float>(static_cast<uint32_t>(info.shadingModel));
+	material.shadingModel = info.shadingModel;
+	material.alphaMode = info.alphaMode;
+	material.alphaCutoff = info.alphaCutoff;
+	material.doubleSided = info.doubleSided;
+	material.pipeline = MakePipelineStateForMaterial(info.alphaMode, info.doubleSided, info.shadingModel);
 	return materials.create(std::move(material));
 }
 

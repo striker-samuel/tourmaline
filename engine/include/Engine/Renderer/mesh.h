@@ -13,12 +13,66 @@ namespace smvk {
 		glm::vec4 ambient{ 0.06f };
 		glm::vec4 diffuse{ 1.0f };
 		glm::ivec4 textures{ -1 };
+		// x = alphaCutoff, y = metallicFactor, z = roughnessFactor, w = shadingModel (uint bits)
+		glm::vec4 params{ 0.5f, 1.0f, 1.0f, 0.0f };
 	};
 	static_assert(sizeof(MaterialValues) % 16 == 0);
 
+	// -------------------------------------------------------------------------
+	// Shading / raster abstraction
+	// -------------------------------------------------------------------------
+
+	enum class ShadingModel : uint8_t {
+		DefaultLit = 0, // PBR metallic-roughness, single forward pass
+		Unlit,          // baseColor only, no lighting
+		Masked,         // alpha-tested (cutout), uses alphaCutoff
+	};
+
+	enum class AlphaMode : uint8_t {
+		Opaque = 0,
+		Mask,
+		Blend,
+	};
+
+	struct MaterialPipelineState {
+		RasterSettings raster{};
+		DepthSettings depth{};
+		BlendSettings blend{};
+	};
+
+	struct MaterialCreateInfo {
+		TextureHandle diffuse{};
+		glm::vec4 baseColorFactor{ 1.0f };
+		float metallicFactor = 1.0f;
+		float roughnessFactor = 1.0f;
+		ShadingModel shadingModel = ShadingModel::DefaultLit;
+		AlphaMode alphaMode = AlphaMode::Opaque;
+		float alphaCutoff = 0.5f;
+		bool doubleSided = false;
+	};
+
+	MaterialPipelineState MakePipelineStateForMaterial(
+		AlphaMode alphaMode,
+		bool doubleSided,
+		ShadingModel shadingModel = ShadingModel::DefaultLit);
+
 	struct Material {
-		MaterialValues values;
-		//ShaderProgram // RasterState
+		MaterialValues values{};
+		ShadingModel shadingModel = ShadingModel::DefaultLit;
+		AlphaMode alphaMode = AlphaMode::Opaque;
+		float alphaCutoff = 0.5f;
+		bool doubleSided = false;
+
+		// Derived / cached pipeline state. Authoritative for PSO selection
+		// and for World iterator flags. Mutated only via helpers so values
+		// and pipeline stay coherent.
+		MaterialPipelineState pipeline{};
+
+		bool isTransparent() const noexcept { return alphaMode == AlphaMode::Blend; }
+		bool isCutout() const noexcept { return alphaMode == AlphaMode::Mask; }
+		bool isDoubleSided() const noexcept { return doubleSided; }
+
+		void rebuildPipeline() { pipeline = MakePipelineStateForMaterial(alphaMode, doubleSided, shadingModel); }
 	};
 
 

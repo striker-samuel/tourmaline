@@ -50,6 +50,7 @@ struct MaterialValues
     float4 ambient;
     float4 diffuse;
     uint4 tex;
+    float4 params; // x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
 };
 
 struct MaterialsBuffer

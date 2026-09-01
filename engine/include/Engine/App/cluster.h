@@ -34,6 +34,7 @@ namespace smvk {
 
 		ClusterStaticMeshHandle UploadStaticMesh(const StaticMeshUpload& data);
 		ClusterMaterialHandle CreateMaterial(TextureHandle diffuse);
+		ClusterMaterialHandle CreateMaterial(const MaterialCreateInfo& info);
 
 		void DestroyMesh(ClusterStaticMeshHandle handle);
 		void DestroyMaterial(ClusterMaterialHandle handle);

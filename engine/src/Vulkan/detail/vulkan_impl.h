@@ -687,5 +687,14 @@ namespace smvk {
 	void destroy(VulkanResourceManager* ctx, DescriptorPoolHandle handle);
 	void destroy(VulkanResourceManager* ctx, ShaderModuleHandle handle);
 
+	// Vulkan globals accessors for ImGui / external integrations (implemented in impl.cpp).
+	VkInstance       GetVkInstance();
+	VkDevice         GetVkDevice();
+	VkPhysicalDevice GetVkPhysicalDevice();
+	VkQueue          GetVkGraphicsQueue();
+	VkQueue          GetVkPresentQueue();
+	VkSurfaceKHR     GetVkSurface();
+	uint32_t         GetVkGraphicsQueueFamily();
+
 }; // namespace smvk
 

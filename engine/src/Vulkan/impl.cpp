@@ -6425,3 +6425,17 @@ void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const vo
 	);
 }
 
+VkInstance smvk::GetVkInstance() { return instance_; }
+VkDevice smvk::GetVkDevice() { return device_; }
+VkPhysicalDevice smvk::GetVkPhysicalDevice() { return physicalDevice_; }
+VkQueue smvk::GetVkGraphicsQueue() { return graphicsQueue_; }
+VkQueue smvk::GetVkPresentQueue() { return presentQueue_; }
+VkSurfaceKHR smvk::GetVkSurface() { return surface_; }
+uint32_t smvk::GetVkGraphicsQueueFamily() {
+    if (physicalDevice_ != VK_NULL_HANDLE && surface_ != VK_NULL_HANDLE) {
+        auto indices = findQueueFamilies(physicalDevice_, surface_);
+        if (indices.graphicsFamily) return *indices.graphicsFamily;
+    }
+    return 0;
+}
+

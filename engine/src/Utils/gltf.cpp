@@ -15,7 +15,8 @@
 
 namespace {
 	constexpr uint32_t DEFAULT_MATERIAL_INDEX = 0;
-	enum class AlphaMode { Opaque, Mask, Blend };
+	// Local glTF parse enum; maps to smvk::AlphaMode on material creation.
+	enum class GltfAlphaMode { Opaque, Mask, Blend };
 	struct GltfTextureRef {
 		int textureIndex = -1;   // index into model.textures
 		int imageIndex = -1;   // index into model.images  (model.textures[textureIndex].source)
@@ -42,7 +43,7 @@ namespace {
 		std::array<double, 3> emissiveFactor{ 0.0,0.0,0.0 };
 
 		// Rasterization rules
-		AlphaMode alphaMode = AlphaMode::Opaque;
+		GltfAlphaMode alphaMode = GltfAlphaMode::Opaque;
 		double alphaCutoff = 0.5;
 		bool doubleSided = false;
 
@@ -80,10 +81,10 @@ namespace {
 			(a.byteOffset ? a.byteOffset : 0);
 		return buf.data.data() + base + index * stride;
 	}
-	AlphaMode ParseAlphaMode(const std::string& s) {
-		if (s == "MASK")  return AlphaMode::Mask;
-		if (s == "BLEND") return AlphaMode::Blend;
-		return AlphaMode::Opaque; // default or "OPAQUE"
+	GltfAlphaMode ParseAlphaMode(const std::string& s) {
+		if (s == "MASK")  return GltfAlphaMode::Mask;
+		if (s == "BLEND") return GltfAlphaMode::Blend;
+		return GltfAlphaMode::Opaque; // default or "OPAQUE"
 	}
 	glm::vec3 readVec3ForientationFix(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
 		// Expect FLOAT VEC3
@@ -427,14 +428,31 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 		);
 	}
 	else {
-		// TODO: cluster/default white texture
-		return {};
+		// No baseColor texture: create material with fallback (untextured).
+		// Keep colorTexHandle empty -> Material will encode textures[0] = -1
+		// and shader should sample fallback.
 	}
 
-	slot =
-		cluster.CreateMaterial(
-			colorTexHandle
-		);
+	smvk::MaterialCreateInfo ci{};
+	ci.diffuse = colorTexHandle;
+	ci.baseColorFactor = glm::vec4(
+		static_cast<float>(mat.baseColorFactor[0]),
+		static_cast<float>(mat.baseColorFactor[1]),
+		static_cast<float>(mat.baseColorFactor[2]),
+		static_cast<float>(mat.baseColorFactor[3])
+	);
+	ci.metallicFactor = static_cast<float>(mat.metallicFactor);
+	ci.roughnessFactor = static_cast<float>(mat.roughnessFactor);
+	// Map GltfAlphaMode -> smvk::AlphaMode + ShadingModel
+	switch (mat.alphaMode) {
+		case GltfAlphaMode::Opaque: ci.alphaMode = smvk::AlphaMode::Opaque; ci.shadingModel = smvk::ShadingModel::DefaultLit; break;
+		case GltfAlphaMode::Mask:   ci.alphaMode = smvk::AlphaMode::Mask;   ci.shadingModel = smvk::ShadingModel::Masked;   break;
+		case GltfAlphaMode::Blend:  ci.alphaMode = smvk::AlphaMode::Blend;  ci.shadingModel = smvk::ShadingModel::DefaultLit; break;
+	}
+	ci.alphaCutoff = static_cast<float>(mat.alphaCutoff);
+	ci.doubleSided = mat.doubleSided;
+
+	slot = cluster.CreateMaterial(ci);
 
 	return slot;
 }

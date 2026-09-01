@@ -1185,8 +1185,6 @@ namespace smvk {
 	void destroy(ResourceManager* ctx, ShaderModuleHandle handle); // will be removed in 1.4. transition
 
 
-
-
 	[[nodiscard]] constexpr ImageAspect DefaultViewAspect(Format format)
 	{
 		switch (format)
@@ -1225,12 +1223,5 @@ namespace smvk {
 		s.backWriteEnable = true;
 		return s;
 	}
-
-	//struct FrameBufferImpl {
-	//	uint32_t frameIndex = 0;
-	//	uint32_t imageIndex = 0;
-	//	CommandBufferImpl commandBuffer{};
-	//	SwapchainImpl& swapchain;
-	//};
 
 } // namespace smvk

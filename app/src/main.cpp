@@ -3,6 +3,7 @@
 #include <filesystem>
 
 #include <Engine/core.h>
+#include <imgui.h>
 
 
 // Constants //
@@ -332,8 +333,30 @@ private:
 		//m_context->m_submitter->wait(han);
 		//
 
+		// ImGui overlay – init after swapchain/rendergraph are ready.
+		// Uses dynamic rendering; no external RenderPass needed.
+		m_imgui = std::make_unique<smvk::ImGuiOverlay>();
+		if (!m_imgui->Init(*m_context, *m_swapchain, window)) {
+			std::cerr << "[TestApp] Failed to init ImGuiOverlay – continuing without UI\n";
+			m_imgui.reset();
+		} else {
+			// Optional: switch cursor to normal so ImGui is usable.
+			// App sets GLFW_CURSOR_DISABLED by default for FPS camera.
+			// Keep disabled – we'll toggle based on WantCapture in UpdateCamera.
+		}
+
 		return true;
 	};
+
+	void Shutdown() override {
+		// Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
+		WaitForDeviceIdle();
+		if (m_imgui) {
+			m_imgui->Shutdown();
+			m_imgui.reset();
+		}
+		Super::Shutdown();
+	}
 
 	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame) {
 
@@ -731,28 +754,50 @@ private:
 		}
 			);
 
-		// UI PASS
-		//m_rendergraph->AddPass()
-		//	.setOffset({ 0,0 })
-		//	.setExtent(fb.swapchain.extent_)
-		//	.setColor(colors, VK_ATTACHMENT_LOAD_OP_NONE, VK_ATTACHMENT_STORE_OP_STORE, { {0.0f, 0.0f, 0.0f, 1.0f} })  // Rendering directly to swapchainImage!
-		//	//.setDepth(logicalDepthImageView, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, { .0f, 0 })
-		//	.setRecordingFunc([this, fb](smvk::CommandBuffer& cmd) {
+		// ---------------------------------------------------------------------
+		// ImGui – build UI (before adding the rendergraph pass)
+		// ---------------------------------------------------------------------
+		if (m_imgui && m_imgui->IsInitialized()) {
+			m_imgui->NewFrame();
 
-		//	//ImGui_ImplVulkan_NewFrame();
-		//	//ImGui_ImplGlfw_NewFrame();
-		//	//ImGui::NewFrame();
+			// Example UI – replace / extend with app-specific controls.
+			ImGui::Begin("VulkanToy — Debug");
+			ImGui::Text("Frame %.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
+			ImGui::Text("Camera pos: %.2f %.2f %.2f", m_cameraPositioner.cameraPosition_.x, m_cameraPositioner.cameraPosition_.y, m_cameraPositioner.cameraPosition_.z);
+			ImGui::Text("Swapchain %ux%u  framesInFlight=%u",
+				fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height, fb.swapchain->framesInFlight());
+			ImGui::Separator();
+			static bool showDemo = false;
+			ImGui::Checkbox("Show ImGui Demo", &showDemo);
+			ImGui::End();
+#ifdef IMGUI_HAS_DEMO
+			if (showDemo) ImGui::ShowDemoWindow(&showDemo);
+#else
+			if (showDemo) {
+				ImGui::Begin("Demo unavailable");
+				ImGui::Text("Rebuild with -DIMGUI_ENABLE_DEMO=ON to enable demo window.");
+				ImGui::End();
+			}
+#endif
 
-		//	//// UI Here
-		//	//ImGuiIO& io = ImGui::GetIO();
-		//	//ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
-		//	//	1000.0f / io.Framerate, io.Framerate);
+			// Alternative: draw directly with custom draw lists etc.
+			// ImGui::GetForegroundDrawList()->AddCircle(...);
 
-		//	//ImDrawList* drawList = ImGui::GetForegroundDrawList();
-		//	//ImGui::Render();
-		//	//ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
-		//	//
-		//});
+			// Register a rendergraph pass that composites ImGui over the swapchain.
+			// It uses LoadOp::Load so the scene color is preserved, and is
+			// recorded as the *last* pass so UI is on top.
+			// Internally this calls ImGui::Render() + ImGui_ImplVulkan_RenderDrawData.
+			m_imgui->AddPass(*m_rendergraph, colors[0],
+				{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height });
+
+			// Manual alternative (equivalent, more explicit):
+			// ImGui::Render();
+			// m_rendergraph->AddPass("ImGuiManual")
+			//     .SetOffset(0,0)
+			//     .SetExtent({fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height})
+			//     .SetColor(colors, smvk::AttachmentLoadOp::Load, smvk::AttachmentStoreOp::Store)
+			//     .SetRecordingFunc([this](smvk::CommandBuffer& cmd){ m_imgui->Render(cmd); });
+		}
 
 		m_rendergraph->Execute(fb);
 		m_context->ProcessDeferrredTasks();
@@ -761,6 +806,7 @@ private:
 
 
 private:
+	std::unique_ptr<smvk::ImGuiOverlay> m_imgui{};
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
@@ -773,12 +819,18 @@ private:
 
 void TestApp::UpdateCamera(float dt)
 {
-	auto& movement = m_cameraPositioner.movement_;
+	// If ImGui captures input, skip FPS camera movement (prevents fighting).
+	if (m_imgui && m_imgui->IsInitialized() && m_imgui->WantsCaptureKeyboard()) {
+		// Still allow Esc to close (handled in App::MainLoop) – just zero movement.
+		auto& mv = m_cameraPositioner.movement_;
+		mv.forward_ = mv.backward_ = mv.left_ = mv.right_ = mv.up_ = mv.down_ = mv.fastSpeed_ = false;
+	} else {
+		auto& movement = m_cameraPositioner.movement_;
 
-	movement.forward_ = m_input.isKeyHeld(GLFW_KEY_W);
-	movement.backward_ = m_input.isKeyHeld(GLFW_KEY_S);
-	movement.left_ = m_input.isKeyHeld(GLFW_KEY_A);
-	movement.right_ = m_input.isKeyHeld(GLFW_KEY_D);
+		movement.forward_ = m_input.isKeyHeld(GLFW_KEY_W);
+		movement.backward_ = m_input.isKeyHeld(GLFW_KEY_S);
+		movement.left_ = m_input.isKeyHeld(GLFW_KEY_A);
+		movement.right_ = m_input.isKeyHeld(GLFW_KEY_D);
 
 	// Check the behacviour of this. 
 	// is up and down in camera orientation, not world space.
@@ -788,6 +840,11 @@ void TestApp::UpdateCamera(float dt)
 	movement.fastSpeed_ =
 		m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
 		m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
+	}
+
+	// If ImGui wants mouse, don't apply FPS mouselook unless right-button held?
+	// We keep mouse handling outside the keyboard capture branch so cursor
+	// reset still works; the positioner internally ignores updates when not pressed.
 
 	// NDC, but to frameBuffer dimensions. 
 	//glm::vec2 mousePos = glm::vec2(
@@ -802,8 +859,9 @@ void TestApp::UpdateCamera(float dt)
 		1.0f - (static_cast<float>(m_input.getMouseY()) / static_cast<float>(m_swapchain->GetWindowHeight())) * 2.0f
 	);
 
+	bool wantsMouse = m_imgui && m_imgui->IsInitialized() && m_imgui->WantsCaptureMouse();
 	const bool mousePressed =
-		m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT);
+		m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT) && !wantsMouse;
 
 	if (m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT))
 	{

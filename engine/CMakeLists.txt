@@ -7,8 +7,6 @@ set(ENGINE_BACKEND "Vulkan")
 file(GLOB_RECURSE ENGINE_SRC CONFIGURE_DEPENDS
     src/*.cpp
     include/Engine/*.h
-    ${CMAKE_SOURCE_DIR}/external/imgui/backends/imgui_impl_glfw.cpp
-    ${CMAKE_SOURCE_DIR}/external/imgui/backends/imgui_impl_vulkan.cpp
 )
 
 add_library(engine STATIC ${ENGINE_SRC})
@@ -47,11 +45,11 @@ target_link_libraries(engine
         glfw
         glm
         imgui_core
-        imgui_backend_glfw
         meshoptimizer
     PRIVATE
         volk
         KTX::ktx
+        imgui_backend_glfw
         imgui_backend_vulkan
         #OptickCore
 )

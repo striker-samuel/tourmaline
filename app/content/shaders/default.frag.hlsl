@@ -132,9 +132,16 @@ PSOut mainPS(PSIn IN)
     MaterialValues values = pc.bMats.Get().mats[pc.materialId];
 
     uint diffuseTexIdx = values.tex.x;
+    float alphaCutoff = values.params.x;
+    // values.params.w encodes ShadingModel; masked path does alpha test
 
     float4 texSample =
         textures[diffuseTexIdx].Sample(samplers[0], IN.uv);
+
+    // Alpha-tested (Masked) cutout: discard below cutoff. Opaque/Blend skip.
+    // ShadingModel::Masked == 2
+    if (values.params.w == 2.0f && texSample.a < alphaCutoff)
+        discard;
 
     float3 baseColor =
         IN.color *

@@ -39,22 +39,22 @@ endif()
 
 # Vulkan backend contributes sources/includes; you link volk or Vulkan::Vulkan in your app/engine.
 if(IMGUI_BACKEND_VULKAN)
-    add_library(imgui_backend_vulkan INTERFACE)
-    target_sources(imgui_backend_vulkan INTERFACE
-        ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
-    )
-    target_include_directories(imgui_backend_vulkan INTERFACE
-        ${IMGUI_DIR} ${IMGUI_DIR}/backends
-    )
-    if(IMGUI_USE_VOLK)
-        # If you use volk, ImGui's Vulkan backend must not include prototypes
-        target_compile_definitions(imgui_backend_vulkan INTERFACE IMGUI_IMPL_VULKAN_NO_PROTOTYPES)
-        target_compile_definitions(imgui_backend_vulkan INTERFACE IMGUI_IMPL_VULKAN_USE_VOLK)
-    endif()
+     add_library(imgui_backend_vulkan INTERFACE)
+     target_sources(imgui_backend_vulkan INTERFACE
+         ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+     )
+     target_include_directories(imgui_backend_vulkan INTERFACE
+         ${IMGUI_DIR} ${IMGUI_DIR}/backends
+     )
+     if(IMGUI_USE_VOLK)
+         # If you use volk, ImGui's Vulkan backend must not include prototypes
+         target_compile_definitions(imgui_backend_vulkan INTERFACE IMGUI_IMPL_VULKAN_NO_PROTOTYPES)
+         target_compile_definitions(imgui_backend_vulkan INTERFACE IMGUI_IMPL_VULKAN_USE_VOLK)
+     endif()
 
-    #target_compile_definitions(imgui_backend_vulkan INTERFACE IMGUI_IMPL_VULKAN_HAS_DYNAMIC_RENDERING)
+     target_compile_definitions(imgui_backend_vulkan INTERFACE IMGUI_IMPL_VULKAN_HAS_DYNAMIC_RENDERING)
 
-endif()
+ endif()
 
 # Nice-to-have: hide these from install/export unless you want them
 set_target_properties(imgui_core PROPERTIES EXPORT_NAME imgui_core)
