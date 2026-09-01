@@ -12,7 +12,7 @@ namespace smvk {
 	// GPU material buffer layout – must match HLSL common.hlsli::MaterialValues.
 	// Keep 16-byte alignment for StructuredBuffer / buffer_device_address.
 	struct alignas(16) MaterialValues {
-		glm::vec4 ambient{ 0.06f };                       // 0  – legacy ambient floor (kept for compat)
+		glm::vec4 ambient{ 0.0f };                       // 0  – legacy ambient floor (kept for compat)
 		glm::vec4 diffuse{ 1.0f };                       // 16 – baseColorFactor (alias: diffuse)
 		glm::ivec4 textures{ -1 };                       // 32 – x=baseColor, y=metallicRoughness, z=normal, w=occlusion
 		glm::ivec4 textures2{ -1 };                      // 48 – x=emissive, yzw unused (-1)

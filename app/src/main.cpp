@@ -818,7 +818,9 @@ private:
 						smvk::VertexFormat::Empty,
 						smvk::DepthSettings::Disabled(),
 						smvk::StencilSettings::DefaultDisabled(),
-						smvk::BlendSettings::Opaque()
+						smvk::BlendSettings::Opaque(),
+						smvk::MSAASettings::Count1(),
+						smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
 					);
 					cmd.PushConstants(0, sizeof(TonemapPush), &tp, smvk::ShaderStage::All);
 					cmd.Draw(3, 1, 0, 0); // fullscreen triangle

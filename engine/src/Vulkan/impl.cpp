@@ -6337,7 +6337,8 @@ void smvk::CommandBuffer::BindRenderPipeline(
 	const DepthSettings& depthSettings,
 	const StencilSettings& stencilSettings,
 	const BlendSettings& blendSettings,
-	const MSAASettings& msaaSettings
+	const MSAASettings& msaaSettings,
+	const RasterSettings& rasterSettings
 )
 {
 	assert(graph_ != nullptr);
@@ -6394,7 +6395,7 @@ void smvk::CommandBuffer::BindRenderPipeline(
 		depthFormat,
 		stencilFormat,
 		PrimitiveTopology::TriangleList,
-		smvk::RasterSettings{},
+		rasterSettings,
 		depthSettings,
 		stencilSettings,
 		blendSettings,

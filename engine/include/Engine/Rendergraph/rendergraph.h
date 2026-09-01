@@ -28,7 +28,8 @@ namespace smvk
 			const BlendSettings& blendSettings =
 			BlendSettings::Opaque(),
 			const MSAASettings& msaaSettings =
-			MSAASettings::Count1());
+			MSAASettings::Count1(),
+			const RasterSettings& rasterSettings = {});
 
 		void PushConstants(
 			uint32_t offset,
