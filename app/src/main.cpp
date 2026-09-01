@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <iostream>
 #include <filesystem>
 
@@ -107,17 +107,17 @@ private:
 		std::filesystem::path p(gltf_meshes_paths[0]);
 		//m_context->ProcessDeferrredTasks();
 		m_resources.frameUniforms = m_context->CreateBuffer(
-			sizeof(FrameUniforms) * m_swapchain->framesInFlight_,
+			sizeof(FrameUniforms) * m_swapchain->framesInFlight(),
 			smvk::BufferType_Uniform,
 			"frame uniforms"
 		);
 		m_resources.lightsBuffer = m_context->CreateBuffer(
-			sizeof(smvk::Light) * MAX_LIGHTS * m_swapchain->framesInFlight_,
+			sizeof(smvk::Light) * MAX_LIGHTS * m_swapchain->framesInFlight(),
 			smvk::BufferType_Storage,
 			"lights buffer"
 		);
 		m_resources.materialsBuffer = m_context->CreateBuffer(
-			sizeof(smvk::MaterialValues) * MAX_MATERIALS * m_swapchain->framesInFlight_,
+			sizeof(smvk::MaterialValues) * MAX_MATERIALS * m_swapchain->framesInFlight(),
 			smvk::BufferType_Storage,
 			"materials buffer"
 		);
@@ -176,14 +176,14 @@ private:
 		for (int i = 0; i < m_swapchain->GetImageCount(); i++) {
 			auto logicalSwapchainImage = m_rendergraph->AddExternalImageView(
 				m_swapchain->GetImageViewHandle(i),
-				m_swapchain->surfaceFormat,
+				m_swapchain->GetSurfaceFormat(),
 				"swap"
 			);
 			m_viewportResources.swapImages.push_back(logicalSwapchainImage);
 		}
 		m_viewportResources.depthView = m_rendergraph->AddExternalImageView(
-			m_swapchain->depthImageView_,
-			m_swapchain->depthFormat,
+			m_swapchain->GetDepthImageViewHandle(),
+			m_swapchain->GetDepthFormat(),
 			"depth"
 		);
 
@@ -288,7 +288,7 @@ private:
 		shadow.bindless =
 			m_context->CreateBindlessImage(
 				shadow.sampledView,
-				VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL
+				smvk::ImageLayout::DepthReadOnlyOptimal
 			);
 
 
@@ -369,8 +369,8 @@ private:
 			m_resources.frameUniforms,
 			&data,
 			sizeof(FrameUniforms)/* * 1*/,
-			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-			VK_ACCESS_SHADER_READ_BIT,
+			static_cast<smvk::PipelineStage>(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT),
+			static_cast<smvk::AccessFlags>(VK_ACCESS_SHADER_READ_BIT),
 			0,
 			currentFrame * sizeof(FrameUniforms)
 			//currentFrame * m_resources.frameUniformsBuffer.key.elementSize * m_resources.frameUniformsBuffer.key.elementCount // dynamicOffsetPerFrame
@@ -435,8 +435,8 @@ private:
 			m_resources.lightsBuffer,
 			lights,
 			sizeof(lights),
-			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-			VK_ACCESS_SHADER_READ_BIT,
+			static_cast<smvk::PipelineStage>(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT),
+			static_cast<smvk::AccessFlags>(VK_ACCESS_SHADER_READ_BIT),
 			0,
 			//currentFrame * sizeof(lights)
 			frameOffset
@@ -465,8 +465,8 @@ private:
 			m_resources.materialsBuffer,
 			mats.data(),
 			sizeof(smvk::MaterialValues) * mats.size(),
-			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-			VK_ACCESS_SHADER_READ_BIT,
+			static_cast<smvk::PipelineStage>(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT),
+			static_cast<smvk::AccessFlags>(VK_ACCESS_SHADER_READ_BIT),
 			0,
 			frameOffset
 		);
@@ -484,7 +484,7 @@ private:
 			m_viewportResources.swapImages.push_back(
 				m_rendergraph->AddExternalImageView(
 					m_swapchain->GetImageViewHandle(i),
-					m_swapchain->surfaceFormat,
+					m_swapchain->GetSurfaceFormat(),
 					"swap"
 				)
 			);
@@ -504,7 +504,7 @@ private:
 		m_swapchain->EndAndPresentFramebuffer(fb);
 	}
 
-	void RenderFrame(smvk::FrameBufferImpl fb) {
+	void RenderFrame(smvk::Framebuffer fb) {
 
 		m_rendergraph->NewFrame();
 
@@ -519,27 +519,21 @@ private:
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
 
 		uint64_t frameUniformsAddress =
-			m_context->buffers_
-			.get(m_resources.frameUniforms)
-			->deviceAddress
+			m_context->GetBufferDeviceAddress(m_resources.frameUniforms)
 			+ fb.frameIndex * sizeof(FrameUniforms);
 
 		constexpr size_t LIGHT_FRAME_STRIDE =
 			sizeof(smvk::Light) * MAX_LIGHTS;
 
 		uint64_t lightsBufferAddress =
-			m_context->buffers_
-			.get(m_resources.lightsBuffer)
-			->deviceAddress
+			m_context->GetBufferDeviceAddress(m_resources.lightsBuffer)
 			+ fb.frameIndex * LIGHT_FRAME_STRIDE;
 
 		constexpr size_t MATERIAL_FRAME_STRIDE =
 			sizeof(smvk::MaterialValues) * MAX_MATERIALS;
 
 		uint64_t materialsAddress =
-			m_context->buffers_
-			.get(m_resources.materialsBuffer)
-			->deviceAddress
+			m_context->GetBufferDeviceAddress(m_resources.materialsBuffer)
 			+ fb.frameIndex * MATERIAL_FRAME_STRIDE;
 
 		struct alignas(16) PushConstants {
@@ -647,8 +641,8 @@ private:
 			)
 			.SetExtent(
 				{
-					fb.swapchain.extent_.width,
-					fb.swapchain.extent_.height
+					fb.swapchain->GetExtent().width,
+					fb.swapchain->GetExtent().height
 				}
 			)
 			.SetColor(
@@ -804,8 +798,8 @@ void TestApp::UpdateCamera(float dt)
 	// NDC, to window dimensions. These two may not match, depends on DPI settings. Be careful.
 	// m_input should be normalized and not be affected by resolution!
 	glm::vec2 mousePos = glm::vec2(
-		(static_cast<float>(m_input.getMouseX()) / static_cast<float>(m_swapchain->windowWidth)) * 2.0f - 1.0f,
-		1.0f - (static_cast<float>(m_input.getMouseY()) / static_cast<float>(m_swapchain->windowHeight)) * 2.0f
+		(static_cast<float>(m_input.getMouseX()) / static_cast<float>(m_swapchain->GetWindowWidth())) * 2.0f - 1.0f,
+		1.0f - (static_cast<float>(m_input.getMouseY()) / static_cast<float>(m_swapchain->GetWindowHeight())) * 2.0f
 	);
 
 	const bool mousePressed =

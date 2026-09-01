@@ -1,7 +1,6 @@
-#pragma once
-
 #include <Engine/core.h>
 #include <Engine/App/cluster.h>
+#include "../Vulkan/detail/vulkan_impl.h"
 
 
 smvk::Cluster::~Cluster() {
@@ -126,7 +125,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	const VkDeviceSize positionBytes =
 		vertexCount * sizeof(VertexPos);
 
-	ctx_.UploadDataToBuffer(
+	static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque())->UploadDataToBuffer(
 		staticVertexFmtHeap.m_staticVertexPosBuffer,
 		positions.data(),
 		positionBytes,
@@ -149,7 +148,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	const VkDeviceSize shadingBytes =
 		vertexCount * sizeof(VertexShading);
 
-	ctx_.UploadDataToBuffer(
+	static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque())->UploadDataToBuffer(
 		staticVertexFmtHeap.m_staticVertexShadingBuffer,
 		shading.data(),
 		shadingBytes,
@@ -168,7 +167,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 
 	if (indexCount > 0) {
 
-		ctx_.UploadDataToBuffer(
+		static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque())->UploadDataToBuffer(
 			staticVertexFmtHeap.m_staticIndexBuffer,
 			data.indices.data(),
 			indexBytes,

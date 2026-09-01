@@ -19,6 +19,10 @@ target_include_directories(engine
         ${CMAKE_SOURCE_DIR}/external/tiny_obj_loader
         ${CMAKE_SOURCE_DIR}/external/tinygltf
         ${nlohmann_json_SOURCE_DIR}/single_include/nlohmann
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Vulkan/detail
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/RHI/detail
         ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator
 )
 
@@ -35,19 +39,20 @@ target_compile_definitions(engine
 )
 
 if(ENGINE_BACKEND STREQUAL "Vulkan")
-    target_compile_definitions(engine PUBLIC ENGINE_VULKAN)
+    target_compile_definitions(engine PRIVATE ENGINE_VULKAN)
 endif()
 
 target_link_libraries(engine
     PUBLIC
         glfw
         glm
-        volk
-        KTX::ktx
         imgui_core
         imgui_backend_glfw
-        imgui_backend_vulkan
         meshoptimizer
+    PRIVATE
+        volk
+        KTX::ktx
+        imgui_backend_vulkan
         #OptickCore
 )
 

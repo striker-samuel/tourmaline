@@ -12,7 +12,7 @@ namespace smvk {
 	// (its Scene + resource pools). The mesh upload/destroy methods and the
 	// destructor stay in mesh.cpp; this constructor just wires the resource
 	// context and the back-pointer to the owning World.
-	Cluster::Cluster(VulkanResourceManager& ctx)
+	Cluster::Cluster(ResourceManager& ctx)
 		: ctx_(ctx)
 	{
 	}
@@ -21,7 +21,7 @@ namespace smvk {
 	// World
 	// ---------------------------------------------------------------------------
 
-	Cluster& World::LoadCluster(VulkanResourceManager& ctx)
+	Cluster& World::LoadCluster(ResourceManager& ctx)
 	{
 		auto cluster = std::make_unique<Cluster>(ctx);
 		Cluster& ref = *cluster;

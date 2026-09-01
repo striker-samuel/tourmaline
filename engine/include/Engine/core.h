@@ -19,12 +19,11 @@
 #include <GLFW/glfw3.h>
 
 #include "smvk.h"
-
-#ifdef ENGINE_VULKAN
-#include <Engine/Vulkan/impl.h>
-#include <Engine/Vulkan/vulkanApp.h>
-#endif
+#include <Engine/RHI/resource_manager.h>
+#include <Engine/RHI/swapchain.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/App/app.h>
+#include <Engine/App/world.h>
 #include <Engine/Utils/gltf.h> 
 #include <Engine/platform.h>
 #include <Engine/Camera/camera.h> 

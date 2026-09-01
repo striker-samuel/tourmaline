@@ -72,7 +72,7 @@ namespace smvk {
 		std::vector<MaterialLocation> materialLocations;
 		std::vector<TextureLocation> textureLocations;
 
-		Cluster& LoadCluster(VulkanResourceManager& ctx);
+		Cluster& LoadCluster(ResourceManager& ctx);
 		void UnloadCluster(smvk::Cluster&);
 
 		void RegisterCluster(std::unique_ptr<Cluster> cluster);

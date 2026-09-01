@@ -39,5 +39,6 @@ target_include_directories(01_triangle
 target_link_libraries(01_triangle
     PRIVATE
         engine
+        engine
         KTX::ktx
 )

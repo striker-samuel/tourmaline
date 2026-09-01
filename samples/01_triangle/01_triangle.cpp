@@ -112,7 +112,7 @@ private:
 			swapViews.push_back(
 				m_rendergraph->AddExternalImageView(
 					m_swapchain->GetImageViewHandle(i),
-					m_swapchain->surfaceFormat
+					m_swapchain->GetSurfaceFormat()
 				)
 			);
 		}
@@ -125,7 +125,7 @@ private:
 		m_swapchain->EndAndPresentFramebuffer(fb);
 	}
 
-	void RenderFrame(smvk::FrameBufferImpl fb) {
+	void RenderFrame(smvk::Framebuffer fb) {
 		m_rendergraph->NewFrame();
 		std::vector<smvk::LogicalImageViewHandle> colors{
 			swapViews[fb.imageIndex]
@@ -135,8 +135,8 @@ private:
 			.SetOffset(0, 0)
 			.SetExtent(
 				{
-					fb.swapchain.extent_.width,
-					fb.swapchain.extent_.height
+					fb.swapchain->GetExtent().width,
+					fb.swapchain->GetExtent().height
 				}
 				//fb.swapchain.extent_
 			)

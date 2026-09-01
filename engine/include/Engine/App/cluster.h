@@ -16,12 +16,12 @@ namespace smvk {
 	using ClusterTextureHandle = Handle<struct Texture>;
 
 	struct Cluster {
-		explicit Cluster(VulkanResourceManager& ctx);
+		explicit Cluster(ResourceManager& ctx);
 		~Cluster();
 		Cluster(const Cluster&) = delete;
 		Cluster& operator=(const Cluster&) = delete;
 
-		ResourceManagerImpl& ctx_;
+		ResourceManager& ctx_;
 		Scene scene;
 		World* world = nullptr;
 		Cluster* sibling = nullptr;

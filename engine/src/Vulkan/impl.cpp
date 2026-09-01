@@ -17,9 +17,14 @@
 #include "volk.h"
 #include <GLFW/glfw3.h>
 
-#include <Engine/Vulkan/impl.h>
-#include <Engine/Vulkan/VulkanApp.h>
+#include "../Vulkan/detail/vulkan_impl.h"
+#include <Engine/Vulkan/vulkanApp.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/RHI/swapchain.h>
+#include <Engine/App/world.h>
+using smvk::VulkanResourceManager;
+using smvk::VulkanSwapchain;
+using smvk::VulkanFrameBuffer;
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -5781,7 +5786,7 @@ void smvk::VulkanPipelineCache::Clear() {
 	}
 	pipelines_.clear();
 }
-//void smvk::VulkanApp::InitializeImGui() {
+//void smvk::App::InitializeImGui() {
 //
 //	// Setup Dear ImGui context
 //	IMGUI_CHECKVERSION();
@@ -5831,18 +5836,19 @@ VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle log
 	assert(!logicalView.empty());
 	auto view = rg->imageViews_.get(logicalView);
 	assert(view != nullptr);
+	smvk::VulkanResourceManager& vctx = *static_cast<smvk::VulkanResourceManager*>(rg->ctx_.GetVulkanOpaque());
 
 	if (view->type == smvk::LogicalImageView::Type::ExternalPhysical)
 	{
 		assert(!view->externalViewHandle.empty());
-		return rg->ctx_.imageViews_.get(view->externalViewHandle)->vkView;
+		return vctx.imageViews_.get(view->externalViewHandle)->vkView;
 	}
 
 	assert(!view->resolvedViewHandle.empty());
-	return rg->ctx_.imageViews_.get(view->resolvedViewHandle)->vkView;
+	return vctx.imageViews_.get(view->resolvedViewHandle)->vkView;
 }
 
-bool smvk::VulkanApp::Initialize() {
+bool smvk::App::Initialize() {
 
 	if (volkInitialize() != VK_SUCCESS) {
 		std::cerr << "Failed to initialize Volk\n";
@@ -5879,9 +5885,8 @@ bool smvk::VulkanApp::Initialize() {
 	glfwSetWindowUserPointer(window, this);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
-	//core_ = CreateVulkanCoreWithWindow(VulkanCore::CoreConfiguration{}, window);
-	m_context = std::make_unique<VulkanResourceManager>(VulkanCore::CoreConfiguration{}, window);
-	m_swapchain = std::make_unique<VulkanSwapchain>(
+	m_context = std::make_unique<ResourceManager>(window);
+	m_swapchain = std::make_unique<Swapchain>(
 		*m_context,
 		window
 	);
@@ -5893,7 +5898,7 @@ bool smvk::VulkanApp::Initialize() {
 	return true;
 
 }
-void smvk::VulkanApp::WaitForDeviceIdle() {
+void smvk::App::WaitForDeviceIdle() {
 	if (device_ == VK_NULL_HANDLE) return;
 	VkResult r = vkDeviceWaitIdle(device_);
 	if (r != VK_SUCCESS && r != VK_ERROR_DEVICE_LOST) {
@@ -5906,13 +5911,13 @@ void smvk::VulkanApp::WaitForDeviceIdle() {
 	}
 }
 
-void smvk::VulkanApp::OnFramebufferResized(int width, int height) {
+void smvk::App::OnFramebufferResized(int width, int height) {
 	if (m_swapchain) {
-		m_swapchain->framebufferResized = true;
+		m_swapchain->SetFramebufferResized(true);
 	}
 }
 
-void smvk::VulkanApp::Shutdown() {
+void smvk::App::Shutdown() {
 	// Called from IApp::Run while object is still fully constructed.
 	// This ensures derived TestApp Holders (e.g. ShadowMap, Buffers) are
 	// still alive and can be destroyed *after* the wait, before the
@@ -5928,22 +5933,25 @@ void smvk::VulkanApp::Shutdown() {
 	// member order (TestApp members -> VulkanApp members -> IApp window).
 }
 
-smvk::VulkanApp::~VulkanApp()
+smvk::App::~App()
 {
-	// Window is owned by base IApp and destroyed there *after* Vulkan
-	// members (m_context/m_swapchain/m_rendergraph/m_world) due to
-	// member order: derived members destroyed before base members.
-	// Ensure idle before member destruction if Shutdown wasn't called
-	// (e.g. exception path).
 	WaitForDeviceIdle();
-	// Members m_rendergraph/m_world/m_swapchain/m_context are
-	// destroyed automatically in reverse declaration order:
-	// m_world -> m_rendergraph -> m_swapchain -> m_context
-	// This is correct: World textures depend on context, rendergraph
-	// pipelines depend on swapchain command pools, etc.
-	// No explicit reset or window handling here.
+	// Members m_world/m_rendergraph/m_swapchain/m_context destroyed automatically
+	// (App holds them directly; window is last member so destroyed after Vulkan).
+	if (window) {
+		glfwDestroyWindow(window);
+		window = nullptr;
+	}
+	glfwTerminate();
 }
 
+
+struct smvk::RenderGraph::PipelineCacheOpaque {
+	VulkanPipelineCache cache;
+	explicit PipelineCacheOpaque(VulkanResourceManager* rm) : cache(rm) {}
+};
+smvk::RenderGraph::RenderGraph(ResourceManager& ctx) : ctx_(ctx), pipelineCacheOpaque_(std::make_unique<PipelineCacheOpaque>(static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque()))) {}
+smvk::RenderGraph::~RenderGraph() { ReleaseResolvedResources(); }
 
 void smvk::RenderGraph::ResolveImageViews()
 {
@@ -5981,8 +5989,9 @@ void smvk::RenderGraph::ResolveImageViews()
 		ci.name =
 			logicalView.name;
 
+		VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
 		logicalView.resolvedViewHandle =
-			ctx_.CreateImageView(
+			vctx.CreateImageView(
 				logicalImage->resolvedImageHandle,
 				ci
 			).release();
@@ -6010,7 +6019,8 @@ void smvk::RenderGraph::ResolveImageViews()
 [[nodiscard]] smvk::LogicalImageHandle smvk::RenderGraph::AddExternalImage(smvk::ImageHandle imageHandle, const char* name)
 {
 	assert(!imageHandle.empty());
-	const Image* image = ctx_.images_.get(imageHandle);
+	VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
+	const Image* image = vctx.images_.get(imageHandle);
 	assert(image != nullptr);
 	LogicalImage logicalImage{
 		.type = ResourceType::External,
@@ -6034,8 +6044,9 @@ void smvk::RenderGraph::ResolveImageViews()
 }
 void smvk::RenderGraph::ReleaseResolvedResources()
 {
+	VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
 	imageViews_.forEach(
-		[this](LogicalImageView& view)
+		[this, &vctx](LogicalImageView& view)
 	{
 		if (view.type ==
 			LogicalImageView::Type::ExternalPhysical)
@@ -6045,13 +6056,13 @@ void smvk::RenderGraph::ReleaseResolvedResources()
 
 		if (!view.resolvedViewHandle.empty())
 		{
-			destroy(&ctx_, view.resolvedViewHandle);
+			destroy(&vctx, view.resolvedViewHandle);
 		}
 	}
 	);
 
 	images_.forEach(
-		[this](LogicalImage& image)
+		[this, &vctx](LogicalImage& image)
 	{
 		if (image.type == ResourceType::External)
 		{
@@ -6060,7 +6071,7 @@ void smvk::RenderGraph::ReleaseResolvedResources()
 
 		if (!image.resolvedImageHandle.empty())
 		{
-			destroy(&ctx_, image.resolvedImageHandle);
+			destroy(&vctx, image.resolvedImageHandle);
 		}
 	}
 	);
@@ -6078,7 +6089,8 @@ void smvk::RenderGraph::FreeImageView(
 		LogicalImageView::Type::ExternalPhysical &&
 		!view->resolvedViewHandle.empty())
 	{
-		destroy(&ctx_, view->resolvedViewHandle);
+		VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
+		destroy(&vctx, view->resolvedViewHandle);
 	}
 
 	imageViews_.destroy(handle);
@@ -6096,18 +6108,20 @@ void smvk::RenderGraph::FreeImage(
 	if (image->type != ResourceType::External &&
 		!image->resolvedImageHandle.empty())
 	{
-		destroy(&ctx_, image->resolvedImageHandle);
+		VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
+		destroy(&vctx, image->resolvedImageHandle);
 	}
 
 	images_.destroy(handle);
 }
 void smvk::RenderGraph::ResolveImages() {
+	VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
 	images_.forEach(
-		[this](smvk::LogicalImage& logicalImage) {
+		[this, &vctx](smvk::LogicalImage& logicalImage) {
 		if (logicalImage.resolvedImageHandle.empty()) {
 			if (logicalImage.type == smvk::ResourceType::External) { assert(false && "external image unresolved. shouldnt be possible"); };
 			//CreateTransientImaeg(key, sync_req);
-			logicalImage.resolvedImageHandle = ctx_.CreateImage(logicalImage.key, nullptr).release();
+			logicalImage.resolvedImageHandle = vctx.CreateImage(logicalImage.key, nullptr).release();
 		};
 	}
 	);
@@ -6128,11 +6142,12 @@ void smvk::RenderGraph::ResolveBuffers()
 	//	}
 	//	);
 }
-void smvk::RenderGraph::Execute(smvk::VulkanFrameBuffer& fb)
+void smvk::RenderGraph::Execute(smvk::Framebuffer& fb)
 {
 	ResolveImages();
 	ResolveImageViews();
 	ResolveBuffers();
+	VkCommandBuffer vkCmd = reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque);
 
 	for (auto& pass : passes_) {
 
@@ -6219,13 +6234,13 @@ void smvk::RenderGraph::Execute(smvk::VulkanFrameBuffer& fb)
 		scissor.offset = { 0, 0 };
 		scissor.extent = { pass.extent_.width, pass.extent_.height };
 
-		vkCmdSetViewport(fb.commandBuffer, 0, 1, &vp);
-		vkCmdSetScissor(fb.commandBuffer, 0, 1, &scissor);
+		vkCmdSetViewport(vkCmd, 0, 1, &vp);
+		vkCmdSetScissor(vkCmd, 0, 1, &scissor);
 
-		vkCmdBeginRendering(fb.commandBuffer, &renderInfo);
+		vkCmdBeginRendering(vkCmd, &renderInfo);
 
 		CommandBuffer cmd{
-			fb.commandBuffer,
+			reinterpret_cast<void*>(vkCmd),
 			*this,
 			pass
 		};
@@ -6234,12 +6249,12 @@ void smvk::RenderGraph::Execute(smvk::VulkanFrameBuffer& fb)
 			pass.recordingFunction_(cmd);
 		}
 
-		vkCmdEndRendering(fb.commandBuffer);
+		vkCmdEndRendering(vkCmd);
 	}
 };
-// CommandBuffer
-smvk::CommandBuffer::CommandBuffer(CommandBufferImpl cmd, smvk::RenderGraph& graph, smvk::RenderPass& pass)
-	: cmd_(cmd)
+// CommandBuffer – opaque handle firewall: public header stores void* but impl casts to VkCommandBuffer
+smvk::CommandBuffer::CommandBuffer(void* cmdOpaque, smvk::RenderGraph& graph, smvk::RenderPass& pass)
+	: cmdOpaque_(cmdOpaque)
 	, graph_(&graph)
 	, renderPass_(&pass)
 {}
@@ -6296,7 +6311,9 @@ void smvk::CommandBuffer::BindRenderPipeline(
 			stencilFormat = format;
 	}
 
-	auto bundle = graph_->pipelineCachePimpl->GetRenderPipeline(
+	VulkanResourceManager& vulkanCtx = *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
+	auto* cacheOpaque = static_cast<RenderGraph::PipelineCacheOpaque*>(graph_->pipelineCacheOpaque_.get());
+	auto bundle = cacheOpaque->cache.GetRenderPipeline(
 		shaderProgram,
 		formatDescription,
 		colorAttachmentFormats.data(),
@@ -6313,26 +6330,26 @@ void smvk::CommandBuffer::BindRenderPipeline(
 
 	assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");
 
-	if (bundle.pipeline == currentPipeline_.pipeline) {
+	if (bundle.pipeline == reinterpret_cast<VkPipeline>(currentPipeline_)) {
 		return;
 	}
 
-	currentPipeline_.pipeline = bundle.pipeline;
-	currentPipeline_.layout = bundle.layout;
+	currentPipeline_ = reinterpret_cast<void*>(bundle.pipeline);
+	currentLayout_ = reinterpret_cast<void*>(bundle.layout);
 
 	vkCmdBindPipeline(
-		cmd_,
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
 		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		currentPipeline_.pipeline
+		bundle.pipeline
 	);
 
 	vkCmdBindDescriptorSets(
-		cmd_,
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
 		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		graph_->ctx_.defaultPipeLayout,
+		vulkanCtx.defaultPipeLayout,
 		0,
 		1,
-		graph_->ctx_.defaultDescriptorSets_,
+		vulkanCtx.defaultDescriptorSets_,
 		0,
 		nullptr);
 }
@@ -6343,9 +6360,10 @@ void smvk::CommandBuffer::BindStaticVertexFmt()
 	assert(staticVertexFmtHeap.m_staticVertexShadingBuffer.valid());
 	assert(staticVertexFmtHeap.m_staticIndexBuffer.valid());
 #endif
+	VulkanResourceManager& vulkanCtx = *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
 	VkBuffer vertexBuffers[] = {
-		graph_->ctx_.buffers_.get(staticVertexFmtHeap.m_staticVertexPosBuffer)->vkBuffer,
-		graph_->ctx_.buffers_.get(staticVertexFmtHeap.m_staticVertexShadingBuffer)->vkBuffer
+		vulkanCtx.buffers_.get(staticVertexFmtHeap.m_staticVertexPosBuffer)->vkBuffer,
+		vulkanCtx.buffers_.get(staticVertexFmtHeap.m_staticVertexShadingBuffer)->vkBuffer
 	};
 
 	VkDeviceSize offsets[] = {
@@ -6354,7 +6372,7 @@ void smvk::CommandBuffer::BindStaticVertexFmt()
 	};
 
 	vkCmdBindVertexBuffers(
-		cmd_,
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
 		0,
 		2,
 		vertexBuffers,
@@ -6362,15 +6380,15 @@ void smvk::CommandBuffer::BindStaticVertexFmt()
 	);
 
 	vkCmdBindIndexBuffer(
-		cmd_,
-		graph_->ctx_.buffers_.get(staticVertexFmtHeap.m_staticIndexBuffer)->vkBuffer,
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
+		vulkanCtx.buffers_.get(staticVertexFmtHeap.m_staticIndexBuffer)->vkBuffer,
 		0,
 		VK_INDEX_TYPE_UINT32
 	);
 }
 void smvk::CommandBuffer::Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance) {
 	vkCmdDraw(
-		cmd_,
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
 		vertexCount,
 		instanceCount,
 		firstVertex,
@@ -6380,7 +6398,7 @@ void smvk::CommandBuffer::Draw(uint32_t vertexCount, uint32_t instanceCount, uin
 void smvk::CommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
 {
 	vkCmdDrawIndexed(
-		cmd_,
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
 		indexCount,
 		instanceCount,
 		firstIndex,
@@ -6390,7 +6408,7 @@ void smvk::CommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCoun
 }
 void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const void* data, ShaderStage stageMask)
 {
-	assert(currentPipeline_.layout != VK_NULL_HANDLE);
+	assert(currentLayout_ != nullptr);
 
 	const VkShaderStageFlags vkStages =
 		toVkShaderStageFlags(stageMask);
@@ -6398,8 +6416,8 @@ void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const vo
 	assert(vkStages != 0);
 
 	vkCmdPushConstants(
-		cmd_,
-		currentPipeline_.layout,
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
+		reinterpret_cast<VkPipelineLayout>(currentLayout_),
 		vkStages,
 		offset,
 		size,

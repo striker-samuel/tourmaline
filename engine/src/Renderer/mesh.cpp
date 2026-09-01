@@ -1,5 +1,6 @@
 #include <Engine/smvk.h>
-#include <Engine/Vulkan/impl.h> 
+#include <Engine/RHI/resource_manager.h>
+#include "../Vulkan/detail/vulkan_impl.h"
 
 #include <Engine/Renderer/mesh.h>
 #include <Engine/App/cluster.h>
@@ -20,11 +21,12 @@ namespace smvk {
 		}
 		return{};
 	}
-	void AllocateStaticVertexFmt(smvk::VulkanResourceManager& ctx)
+	void AllocateStaticVertexFmt(smvk::ResourceManager& ctx)
 	{
-		staticVertexFmtHeap.m_staticVertexPosBuffer = ctx.CreateBuffer(defaultStaticVertexHeapSize, smvk::BufferType_Vertex, "static vertex pos").release();
-		staticVertexFmtHeap.m_staticVertexShadingBuffer = ctx.CreateBuffer(defaultStaticVertexHeapSize, smvk::BufferType_Vertex, "static vertex shading").release();
-		staticVertexFmtHeap.m_staticIndexBuffer = ctx.CreateBuffer(defaultStaticIndexHeapSize, smvk::BufferType_Index, "static index").release();
+		auto* vctx = static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque());
+		staticVertexFmtHeap.m_staticVertexPosBuffer = vctx->CreateBuffer(defaultStaticVertexHeapSize, smvk::BufferType_Vertex, "static vertex pos").release();
+		staticVertexFmtHeap.m_staticVertexShadingBuffer = vctx->CreateBuffer(defaultStaticVertexHeapSize, smvk::BufferType_Vertex, "static vertex shading").release();
+		staticVertexFmtHeap.m_staticIndexBuffer = vctx->CreateBuffer(defaultStaticIndexHeapSize, smvk::BufferType_Index, "static index").release();
 		const VkDeviceSize maxVertices = std::min(
 			defaultStaticVertexHeapSize / sizeof(smvk::VertexPos),
 			defaultStaticVertexHeapSize / sizeof(smvk::VertexShading)

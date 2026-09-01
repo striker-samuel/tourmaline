@@ -1,24 +1,13 @@
 #pragma once
-
-
-#if defined(ENGINE_VULKAN)
-#include <volk.h>
+// Deprecated shim – backend selection is compile-time single Vulkan build.
+// Do NOT include volk.h here. Public code must include <Engine/RHI/resource_manager.h>
+// and <Engine/RHI/swapchain.h> and use opaque types.
+#include <Engine/RHI/resource_manager.h>
+#include <Engine/RHI/swapchain.h>
 namespace smvk {
-
-	class VulkanApp;
-	struct VulkanSwapchain;
-	struct VulkanResourceManager;
-	struct VulkanPipelineCache;
-	struct VulkanFrameBuffer;
-	struct VulkanPipeline;
-
-	using ResourceManagerImpl = VulkanResourceManager;
-	using SwapchainImpl = VulkanSwapchain;
-	using AppImpl = VulkanApp;
-	using FrameBufferImpl = VulkanFrameBuffer;
-	using PipelineCacheImpl = VulkanPipelineCache;
-	using PipelineImpl = VulkanPipeline;
-	using CommandBufferImpl = VkCommandBuffer;
-
-};
-#endif
+	using ResourceManagerImpl = ResourceManager;
+	using SwapchainImpl = Swapchain;
+	using FrameBufferImpl = Framebuffer;
+	using AppImpl = App;
+	// Pipeline/CommandBuffer are opaque in RenderGraph
+}

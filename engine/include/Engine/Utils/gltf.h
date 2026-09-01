@@ -45,7 +45,7 @@ bool LoadModelFromAsciiFile(
 );
 
 inline void GltfToCluster(
-	smvk::VulkanResourceManager&,
+	smvk::ResourceManager&,
 	const tinygltf::Model& inModel,
 	std::filesystem::path inGltfModelPath,
 	smvk::Cluster& out

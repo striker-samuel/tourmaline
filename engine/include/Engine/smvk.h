@@ -1,6 +1,5 @@
 #pragma once
 
-#include "backend.h"
 #include <Engine/Memory/handle.h>
 
 #include <cassert>
@@ -1159,14 +1158,31 @@ namespace smvk {
 	using BindlessImageHandle = Handle<BindlessImageTag>;
 	using DescriptorPoolHandle = Handle<DescriptorPoolTag>;
 
-	void destroy(ResourceManagerImpl* ctx, ImageHandle handle);
-	void destroy(ResourceManagerImpl* ctx, TextureHandle handle);
-	void destroy(ResourceManagerImpl* ctx, BufferHandle handle);
-	void destroy(ResourceManagerImpl* ctx, SamplerHandle handle);
-	void destroy(ResourceManagerImpl* ctx, BindlessImageHandle handle);
-	void destroy(ResourceManagerImpl* ctx, ImageViewHandle handle);
-	void destroy(ResourceManagerImpl* ctx, DescriptorPoolHandle handle);
-	void destroy(ResourceManagerImpl* ctx, ShaderModuleHandle handle); // will be removed in 1.4. transition
+	// Forward declaration for PIMPL firewall – concrete type lives in RHI/resource_manager.h
+	class ResourceManager;
+
+	// RHI barrier / layout enums (opaque, no Vk leakage)
+	enum class ImageLayout : uint8_t {
+		Undefined = 0,
+		General,
+		ColorAttachmentOptimal,
+		DepthStencilAttachmentOptimal,
+		DepthStencilReadOnlyOptimal,
+		DepthReadOnlyOptimal,
+		ShaderReadOnlyOptimal,
+		TransferSrcOptimal,
+		TransferDstOptimal,
+		PresentSrc
+	};
+
+	void destroy(ResourceManager* ctx, ImageHandle handle);
+	void destroy(ResourceManager* ctx, TextureHandle handle);
+	void destroy(ResourceManager* ctx, BufferHandle handle);
+	void destroy(ResourceManager* ctx, SamplerHandle handle);
+	void destroy(ResourceManager* ctx, BindlessImageHandle handle);
+	void destroy(ResourceManager* ctx, ImageViewHandle handle);
+	void destroy(ResourceManager* ctx, DescriptorPoolHandle handle);
+	void destroy(ResourceManager* ctx, ShaderModuleHandle handle); // will be removed in 1.4. transition
 
 
 

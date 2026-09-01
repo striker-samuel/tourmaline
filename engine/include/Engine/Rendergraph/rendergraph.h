@@ -17,7 +17,7 @@ namespace smvk
 
 	struct CommandBuffer final
 	{
-		CommandBuffer(CommandBufferImpl cmd, RenderGraph& graph, RenderPass& pass);
+		CommandBuffer(void* cmdOpaque, RenderGraph& graph, RenderPass& pass);
 		void BindRenderPipeline(
 			ShaderProgram& shaderProgram,
 			VertexFormat vertexFormat = VertexFormat::Empty,
@@ -54,8 +54,9 @@ namespace smvk
 		void BindStaticVertexFmt();
 
 	private:
-		CommandBufferImpl cmd_{};
-		PipelineImpl currentPipeline_{};
+		void* cmdOpaque_ = nullptr;
+		void* currentPipeline_ = nullptr;
+		void* currentLayout_ = nullptr;
 		RenderGraph* graph_ = nullptr;
 		RenderPass* renderPass_ = nullptr;
 	};
@@ -330,19 +331,14 @@ namespace smvk
 	// Render graph
 	// ============================================================
 
+	class ResourceManager;
+	struct Framebuffer;
 	struct RenderGraph final
 	{
 		explicit RenderGraph(
-			ResourceManagerImpl& ctx)
-			: ctx_(ctx)
-			, pipelineCachePimpl(
-				std::make_unique<PipelineCacheImpl>(&ctx_))
-		{}
+			ResourceManager& ctx);
 
-		~RenderGraph()
-		{
-			ReleaseResolvedResources();
-		}
+		~RenderGraph();
 
 		// Targeted teardown of a single external view/image. Used to refresh
 		// swapchain color views on Recreate() without clearing every external
@@ -604,10 +600,7 @@ namespace smvk
 		// Execution
 		// ========================================================
 
-		void Execute(VulkanFrameBuffer& fb);
-
-		//private:
-		//	friend CommandBuffer;
+		void Execute(Framebuffer& fb);
 
 		// --------------------------------------------------------
 		// Resource resolution
@@ -630,9 +623,9 @@ namespace smvk
 		std::vector<RenderPass>
 			passes_;
 
-		ResourceManagerImpl& ctx_;
-		std::unique_ptr<PipelineCacheImpl>
-			pipelineCachePimpl;
+		ResourceManager& ctx_;
+		struct PipelineCacheOpaque;
+		std::unique_ptr<PipelineCacheOpaque> pipelineCacheOpaque_;
 	};
 
 

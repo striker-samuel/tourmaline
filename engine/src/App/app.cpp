@@ -7,15 +7,7 @@
 #include <Engine/platform.h>
 
 
-smvk::IApp::~IApp() {
-	if (window != nullptr) {
-		glfwDestroyWindow(window);
-		window = nullptr;
-	}
-	glfwTerminate();
-}
-
-bool smvk::IApp::Run() {
+bool smvk::App::Run() {
 	bool result = Initialize();
 	assert(result && "Failed to initialize");
 	MainLoop();
@@ -26,7 +18,7 @@ bool smvk::IApp::Run() {
 	return true;
 };
 
-void smvk::IApp::UpdateDeltaTime() {
+void smvk::App::UpdateDeltaTime() {
 
 	static auto lastFrameTime = std::chrono::high_resolution_clock::now();
 	static auto startTime = std::chrono::high_resolution_clock::now();
@@ -41,7 +33,7 @@ void smvk::IApp::UpdateDeltaTime() {
 	lastFrameTime = currentTime;
 }
 
-void smvk::IApp::MainLoop() {
+void smvk::App::MainLoop() {
 	while (!glfwWindowShouldClose(window)) {
 		m_input.beginFrame();
 		if (m_input.isKeyHeld(GLFW_KEY_ESCAPE)) {
@@ -58,14 +50,14 @@ void smvk::IApp::MainLoop() {
 
 #pragma region ===[ Callbacks ]===
 
-void smvk::IApp::keyCallback(
+void smvk::App::keyCallback(
 	GLFWwindow* window,
 	int key,
 	int scancode,
 	int action,
 	int mods
 ) {
-	auto* app = static_cast<smvk::IApp*>(glfwGetWindowUserPointer(window));
+	auto* app = static_cast<smvk::App*>(glfwGetWindowUserPointer(window));
 
 	if (app) {
 		app->m_input.onKey(key, scancode, action, mods);
@@ -73,13 +65,13 @@ void smvk::IApp::keyCallback(
 }
 
 
-void smvk::IApp::mouseButtonCallback(
+void smvk::App::mouseButtonCallback(
 	GLFWwindow* window,
 	int button,
 	int action,
 	int mods
 ) {
-	auto* app = static_cast<smvk::IApp*>(glfwGetWindowUserPointer(window));
+	auto* app = static_cast<smvk::App*>(glfwGetWindowUserPointer(window));
 
 	if (app) {
 		app->m_input.onMouseButton(button, action, mods);
@@ -87,12 +79,12 @@ void smvk::IApp::mouseButtonCallback(
 }
 
 
-void smvk::IApp::cursorPositionCallback(
+void smvk::App::cursorPositionCallback(
 	GLFWwindow* window,
 	double xpos,
 	double ypos
 ) {
-	auto* app = static_cast<smvk::IApp*>(glfwGetWindowUserPointer(window));
+	auto* app = static_cast<smvk::App*>(glfwGetWindowUserPointer(window));
 
 	if (app) {
 		app->m_input.onCursorMove(xpos, ypos);
@@ -100,22 +92,22 @@ void smvk::IApp::cursorPositionCallback(
 }
 
 
-void smvk::IApp::scrollCallback(
+void smvk::App::scrollCallback(
 	GLFWwindow* window,
 	double xoffset,
 	double yoffset
 ) {
-	auto* app = static_cast<smvk::IApp*>(glfwGetWindowUserPointer(window));
+	auto* app = static_cast<smvk::App*>(glfwGetWindowUserPointer(window));
 
 	if (app) {
 		app->m_input.onScroll(xoffset, yoffset);
 	}
 }
 
-void smvk::IApp::framebufferResizeCallback(GLFWwindow* window, int width,
+void smvk::App::framebufferResizeCallback(GLFWwindow* window, int width,
 	int height) {
 	auto app =
-		reinterpret_cast<smvk::IApp*>(glfwGetWindowUserPointer(window));
+		reinterpret_cast<smvk::App*>(glfwGetWindowUserPointer(window));
 	if (app) {
 		app->OnFramebufferResized(width, height);
 	}

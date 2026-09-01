@@ -1,30 +1,45 @@
 #pragma once
 
-#include <Engine/backend.h>
-
 #include <cassert>
 #include <cstdint>
 #include <utility>
 #include <vector>
 
+#include <Engine/smvk.h>
+
 namespace smvk {
+
+	// Forward declare destroy overloads (defined in RHI/resource_manager.cpp private TU)
+	void destroy(ResourceManager* ctx, ImageHandle handle);
+	void destroy(ResourceManager* ctx, TextureHandle handle);
+	void destroy(ResourceManager* ctx, BufferHandle handle);
+	void destroy(ResourceManager* ctx, SamplerHandle handle);
+	void destroy(ResourceManager* ctx, BindlessImageHandle handle);
+	void destroy(ResourceManager* ctx, ImageViewHandle handle);
+	void destroy(ResourceManager* ctx, DescriptorPoolHandle handle);
+	void destroy(ResourceManager* ctx, ShaderModuleHandle handle);
 
 	template<typename HandleType>
 	class Holder final {
 	public:
 		Holder() = default;
-		Holder(ResourceManagerImpl* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {}
+		template<typename Ctx>
+		Holder(Ctx* ctx, HandleType handle) : ctx_(ctx), handle_(handle) {
+			deleter_ = [](void* c, HandleType h){ destroy(static_cast<Ctx*>(c), h); };
+		}
 		~Holder() {
-			destroy(ctx_, handle_);
+			if (ctx_ && deleter_ && !handle_.empty()) deleter_(ctx_, handle_);
 		}
 		Holder(const Holder&) = delete;
-		Holder(Holder&& other) : ctx_(other.ctx_), handle_(other.handle_) {
+		Holder(Holder&& other) : ctx_(other.ctx_), deleter_(other.deleter_), handle_(other.handle_) {
 			other.ctx_ = nullptr;
+			other.deleter_ = nullptr;
 			other.handle_ = HandleType{};
 		}
 		Holder& operator=(const Holder&) = delete;
 		Holder& operator=(Holder&& other) {
 			std::swap(ctx_, other.ctx_);
+			std::swap(deleter_, other.deleter_);
 			std::swap(handle_, other.handle_);
 			return *this;
 		}
@@ -46,13 +61,15 @@ namespace smvk {
 		}
 
 		void reset() {
-			destroy(ctx_, handle_);
+			if (ctx_ && deleter_ && !handle_.empty()) deleter_(ctx_, handle_);
 			ctx_ = nullptr;
+			deleter_ = nullptr;
 			handle_ = HandleType{};
 		}
 
 		HandleType release() {
 			ctx_ = nullptr;
+			deleter_ = nullptr;
 			return std::exchange(handle_, HandleType{});
 		}
 
@@ -67,7 +84,8 @@ namespace smvk {
 		}
 
 	private:
-		ResourceManagerImpl* ctx_ = nullptr;
+		void* ctx_ = nullptr;
+		void(*deleter_)(void*, HandleType) = nullptr;
 		HandleType handle_ = {};
 	};
 

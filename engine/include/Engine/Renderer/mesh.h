@@ -145,7 +145,7 @@ namespace smvk {
 		glm::vec3 aabbMax{};
 	};
 
-	void AllocateStaticVertexFmt(smvk::ResourceManagerImpl& ctx);
+	void AllocateStaticVertexFmt(smvk::ResourceManager& ctx);
 
 	enum struct VertexFormat {
 		Empty
