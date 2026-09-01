@@ -81,6 +81,8 @@ class TestApp : public smvk::AppImpl {
 	using Super = smvk::AppImpl;
 private:
 	void UpdateCamera(float dt);
+	void SetUIMode(bool ui);
+	bool m_uiMode = false;
 	//
 
 	void EarlyUpdate() override {
@@ -89,7 +91,12 @@ private:
 
 	void Update() {
 		Super::Update();
-		UpdateCamera(delta_time_s);
+		if (m_input.isKeyPressed(GLFW_KEY_I)) {
+			SetUIMode(!m_uiMode);
+		}
+		if (!m_uiMode) {
+			UpdateCamera(delta_time_s);
+		}
 	}
 
 	void LateUpdate() {
@@ -340,9 +347,7 @@ private:
 			std::cerr << "[TestApp] Failed to init ImGuiOverlay – continuing without UI\n";
 			m_imgui.reset();
 		} else {
-			// Optional: switch cursor to normal so ImGui is usable.
-			// App sets GLFW_CURSOR_DISABLED by default for FPS camera.
-			// Keep disabled – we'll toggle based on WantCapture in UpdateCamera.
+			SetUIMode(false); // start in FPS (DISABLED), I toggles to UI (NORMAL)
 		}
 
 		return true;
@@ -760,25 +765,15 @@ private:
 		if (m_imgui && m_imgui->IsInitialized()) {
 			m_imgui->NewFrame();
 
-			// Example UI – replace / extend with app-specific controls.
+			// Minimal UI – name + camera pos (as requested)
 			ImGui::Begin("VulkanToy — Debug");
 			ImGui::Text("Frame %.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
 			ImGui::Text("Camera pos: %.2f %.2f %.2f", m_cameraPositioner.cameraPosition_.x, m_cameraPositioner.cameraPosition_.y, m_cameraPositioner.cameraPosition_.z);
 			ImGui::Text("Swapchain %ux%u  framesInFlight=%u",
 				fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height, fb.swapchain->framesInFlight());
 			ImGui::Separator();
-			static bool showDemo = false;
-			ImGui::Checkbox("Show ImGui Demo", &showDemo);
+			ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
 			ImGui::End();
-#ifdef IMGUI_HAS_DEMO
-			if (showDemo) ImGui::ShowDemoWindow(&showDemo);
-#else
-			if (showDemo) {
-				ImGui::Begin("Demo unavailable");
-				ImGui::Text("Rebuild with -DIMGUI_ENABLE_DEMO=ON to enable demo window.");
-				ImGui::End();
-			}
-#endif
 
 			// Alternative: draw directly with custom draw lists etc.
 			// ImGui::GetForegroundDrawList()->AddCircle(...);
@@ -819,18 +814,12 @@ private:
 
 void TestApp::UpdateCamera(float dt)
 {
-	// If ImGui captures input, skip FPS camera movement (prevents fighting).
-	if (m_imgui && m_imgui->IsInitialized() && m_imgui->WantsCaptureKeyboard()) {
-		// Still allow Esc to close (handled in App::MainLoop) – just zero movement.
-		auto& mv = m_cameraPositioner.movement_;
-		mv.forward_ = mv.backward_ = mv.left_ = mv.right_ = mv.up_ = mv.down_ = mv.fastSpeed_ = false;
-	} else {
-		auto& movement = m_cameraPositioner.movement_;
+	auto& movement = m_cameraPositioner.movement_;
 
-		movement.forward_ = m_input.isKeyHeld(GLFW_KEY_W);
-		movement.backward_ = m_input.isKeyHeld(GLFW_KEY_S);
-		movement.left_ = m_input.isKeyHeld(GLFW_KEY_A);
-		movement.right_ = m_input.isKeyHeld(GLFW_KEY_D);
+	movement.forward_ = m_input.isKeyHeld(GLFW_KEY_W);
+	movement.backward_ = m_input.isKeyHeld(GLFW_KEY_S);
+	movement.left_ = m_input.isKeyHeld(GLFW_KEY_A);
+	movement.right_ = m_input.isKeyHeld(GLFW_KEY_D);
 
 	// Check the behacviour of this. 
 	// is up and down in camera orientation, not world space.
@@ -840,7 +829,6 @@ void TestApp::UpdateCamera(float dt)
 	movement.fastSpeed_ =
 		m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
 		m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
-	}
 
 	// If ImGui wants mouse, don't apply FPS mouselook unless right-button held?
 	// We keep mouse handling outside the keyboard capture branch so cursor
@@ -859,9 +847,8 @@ void TestApp::UpdateCamera(float dt)
 		1.0f - (static_cast<float>(m_input.getMouseY()) / static_cast<float>(m_swapchain->GetWindowHeight())) * 2.0f
 	);
 
-	bool wantsMouse = m_imgui && m_imgui->IsInitialized() && m_imgui->WantsCaptureMouse();
 	const bool mousePressed =
-		m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT) && !wantsMouse;
+		m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT);
 
 	if (m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT))
 	{
@@ -873,7 +860,23 @@ void TestApp::UpdateCamera(float dt)
 		mousePos,
 		mousePressed
 	);
+}
 
+void TestApp::SetUIMode(bool ui)
+{
+	m_uiMode = ui;
+	glfwSetInputMode(window, GLFW_CURSOR, ui ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+	if (ui) {
+		// Center cursor for UI interaction; let ImGui take over.
+		// Don't reset camera mouse pos on mode switch to avoid jump when returning to FPS.
+	} else {
+		// When returning to FPS, sync positioner to current mouse to avoid jump.
+		glm::vec2 mousePos = glm::vec2(
+			(static_cast<float>(m_input.getMouseX()) / static_cast<float>(m_swapchain->GetWindowWidth())) * 2.0f - 1.0f,
+			1.0f - (static_cast<float>(m_input.getMouseY()) / static_cast<float>(m_swapchain->GetWindowHeight())) * 2.0f
+		);
+		m_cameraPositioner.resetMousePosition(mousePos);
+	}
 }
 
 int main(int argc, const char* argv[]) {
