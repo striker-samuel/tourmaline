@@ -1,11 +1,8 @@
 #pragma once
 
+#include <Engine/engine.h>
 #include <Engine/App/cluster.h>
 
-#ifdef ENGINE_VULKAN
-#include <Engine/Vulkan/impl.h>
-#include <Engine/Vulkan/vulkanApp.h>
-#endif
 
 smvk::Cluster::~Cluster() {
 
