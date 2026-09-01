@@ -1587,15 +1587,31 @@ bool smvk::VulkanCore::Init() {
 
 }
 inline smvk::VulkanCore::~VulkanCore() {
-	vkDeviceWaitIdle(device_);
-	//vkDestroyCommandPool(device_, defaultCommandPool_, nullptr);
-	//vkDestroyCommandPool(device_, transferCommandPool_, nullptr);
-	if (surface_ != VK_NULL_HANDLE) {
-		vkDestroySurfaceKHR(instance_, surface_, nullptr);
+	if (device_ != VK_NULL_HANDLE) {
+		VkResult r = vkDeviceWaitIdle(device_);
+		if (r == VK_ERROR_DEVICE_LOST) {
+			fprintf(stderr, "[Vulkan Warning] vkDeviceWaitIdle returned VK_ERROR_DEVICE_LOST during ~VulkanCore, proceeding with teardown\n");
+		}
 	}
-	DestroyDebugUtilsMessengerEXT(instance_, debugMessenger_, nullptr);
-	vkDestroyDevice(device_, nullptr);
-	vkDestroyInstance(instance_, nullptr);
+	if (surface_ != VK_NULL_HANDLE && instance_ != VK_NULL_HANDLE) {
+		vkDestroySurfaceKHR(instance_, surface_, nullptr);
+		surface_ = VK_NULL_HANDLE;
+	}
+	if (instance_ != VK_NULL_HANDLE && debugMessenger_ != VK_NULL_HANDLE) {
+		DestroyDebugUtilsMessengerEXT(instance_, debugMessenger_, nullptr);
+		debugMessenger_ = VK_NULL_HANDLE;
+	}
+	if (device_ != VK_NULL_HANDLE) {
+		vkDestroyDevice(device_, nullptr);
+		device_ = VK_NULL_HANDLE;
+	}
+	if (instance_ != VK_NULL_HANDLE) {
+		vkDestroyInstance(instance_, nullptr);
+		instance_ = VK_NULL_HANDLE;
+	}
+	physicalDevice_ = VK_NULL_HANDLE;
+	graphicsQueue_ = VK_NULL_HANDLE;
+	presentQueue_ = VK_NULL_HANDLE;
 }
 std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window) {
 	assert(window != nullptr && "window was nullptr!");
@@ -1747,7 +1763,17 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 
 }
 smvk::VulkanResourceManager::~VulkanResourceManager() {
-	VK_CHECK(vkDeviceWaitIdle(device_));
+	if (device_ != VK_NULL_HANDLE) {
+		VkResult waitResult = vkDeviceWaitIdle(device_);
+		if (waitResult != VK_SUCCESS && waitResult != VK_ERROR_DEVICE_LOST) {
+			fprintf(stderr, "[Vulkan Error] %s:%d: %s\n",
+				__FILE__, __LINE__, vkResultToString(waitResult));
+			abort();
+		}
+		if (waitResult == VK_ERROR_DEVICE_LOST) {
+			fprintf(stderr, "[Vulkan Warning] vkDeviceWaitIdle returned VK_ERROR_DEVICE_LOST during ~VulkanResourceManager, proceeding with teardown\n");
+		}
+	}
 
 	destroy(this, m_nilTexture);
 
@@ -4547,10 +4573,15 @@ bool smvk::Submitter::isReady(CommandSubmitHandle handle)
 
 	uint64_t completed = 0;
 
-	VK_CHECK(vkGetSemaphoreCounterValue(
+	VkResult r = vkGetSemaphoreCounterValue(
 		device_,
 		m_timelineSemaphore,
-		&completed));
+		&completed);
+	if (r == VK_ERROR_DEVICE_LOST) {
+		// Device lost during shutdown - treat as ready to allow teardown
+		return true;
+	}
+	VK_CHECK(r);
 
 	return
 		completed >=
@@ -4560,10 +4591,27 @@ void smvk::Submitter::purge()
 {
 	uint64_t completedValue = 0;
 
-	VK_CHECK(vkGetSemaphoreCounterValue(
+	VkResult r = vkGetSemaphoreCounterValue(
 		device_,
 		m_timelineSemaphore,
-		&completedValue));
+		&completedValue);
+	if (r == VK_ERROR_DEVICE_LOST) {
+		// On device lost, recycle all submitted slots to unblock shutdown
+		for (uint32_t i = 0; i < kMax; ++i) {
+			WrapperSlot& slot = commandBuffers_[i];
+			if (slot.state_ == CommandState::Submitted) {
+				// Avoid vkResetCommandBuffer on lost device - just mark free
+				slot.cmd_ = VK_NULL_HANDLE;
+				slot.state_ = CommandState::Free;
+				slot.retireValue_ = 0;
+				++slot.gen_;
+				if (slot.gen_ == 0) slot.gen_ = 1;
+				++availableSlots;
+			}
+		}
+		return;
+	}
+	VK_CHECK(r);
 
 	for (uint32_t i = 0; i < kMax; ++i)
 	{
@@ -4610,6 +4658,18 @@ inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout)
 		return;
 	}
 
+	if (result == VK_ERROR_DEVICE_LOST) {
+		fprintf(stderr, "[Vulkan Warning] waitTimeline returned DEVICE_LOST in Submitter::wait, treating as complete\n");
+		// Mark slot as free without vkResetCommandBuffer which would fail on lost device
+		slot.cmd_ = VK_NULL_HANDLE;
+		slot.state_ = CommandState::Free;
+		slot.retireValue_ = 0;
+		++slot.gen_;
+		if (slot.gen_ == 0) slot.gen_ = 1;
+		++availableSlots;
+		return;
+	}
+
 	VK_CHECK(result);
 
 	recycleSlot(
@@ -4620,9 +4680,26 @@ void smvk::Submitter::waitAll()
 	if (m_lastTimelineValue == 0)
 		return;
 
-	VK_CHECK(waitTimeline(
+	VkResult r = waitTimeline(
 		m_lastTimelineValue,
-		UINT64_MAX));
+		UINT64_MAX);
+	if (r == VK_ERROR_DEVICE_LOST) {
+		fprintf(stderr, "[Vulkan Warning] waitTimeline returned DEVICE_LOST in Submitter::waitAll, proceeding with teardown\n");
+		// Recycle all slots without calling Vulkan on lost device
+		for (uint32_t i = 0; i < kMax; ++i) {
+			WrapperSlot& slot = commandBuffers_[i];
+			if (slot.state_ == CommandState::Submitted) {
+				slot.cmd_ = VK_NULL_HANDLE;
+				slot.state_ = CommandState::Free;
+				slot.retireValue_ = 0;
+				++slot.gen_;
+				if (slot.gen_ == 0) slot.gen_ = 1;
+				++availableSlots;
+			}
+		}
+		return;
+	}
+	VK_CHECK(r);
 
 	purge();
 }
@@ -5816,15 +5893,55 @@ bool smvk::VulkanApp::Initialize() {
 	return true;
 
 }
+void smvk::VulkanApp::WaitForDeviceIdle() {
+	if (device_ == VK_NULL_HANDLE) return;
+	VkResult r = vkDeviceWaitIdle(device_);
+	if (r != VK_SUCCESS && r != VK_ERROR_DEVICE_LOST) {
+		fprintf(stderr, "[Vulkan Error] %s:%d: %s\n",
+			__FILE__, __LINE__, vkResultToString(r));
+		abort();
+	}
+	if (r == VK_ERROR_DEVICE_LOST) {
+		fprintf(stderr, "[Vulkan Warning] vkDeviceWaitIdle returned VK_ERROR_DEVICE_LOST, proceeding with teardown\n");
+	}
+}
+
+void smvk::VulkanApp::OnFramebufferResized(int width, int height) {
+	if (m_swapchain) {
+		m_swapchain->framebufferResized = true;
+	}
+}
+
+void smvk::VulkanApp::Shutdown() {
+	// Called from IApp::Run while object is still fully constructed.
+	// This ensures derived TestApp Holders (e.g. ShadowMap, Buffers) are
+	// still alive and can be destroyed *after* the wait, before the
+	// Vulkan context is torn down. Without this, Holders in TestApp would
+	// be destroyed after the Vulkan context (after Run returns, during
+	// destructor unwinding), which is safe only if we waited here first.
+	WaitForDeviceIdle();
+	// Derived Shutdown (TestApp::Shutdown) will run first via virtual
+	// dispatch then this base Shutdown. TestApp should release its Holders
+	// that reference m_context before we reset the context below.
+	// We do not reset m_* here to allow TestApp::Shutdown to still use
+	// m_context if needed; actual destruction happens in ~VulkanApp via
+	// member order (TestApp members -> VulkanApp members -> IApp window).
+}
+
 smvk::VulkanApp::~VulkanApp()
 {
-	vkDeviceWaitIdle(device_);
-
-	if (window != nullptr) {
-		glfwDestroyWindow(window);
-		window = nullptr;
-	}
-	glfwTerminate();
+	// Window is owned by base IApp and destroyed there *after* Vulkan
+	// members (m_context/m_swapchain/m_rendergraph/m_world) due to
+	// member order: derived members destroyed before base members.
+	// Ensure idle before member destruction if Shutdown wasn't called
+	// (e.g. exception path).
+	WaitForDeviceIdle();
+	// Members m_rendergraph/m_world/m_swapchain/m_context are
+	// destroyed automatically in reverse declaration order:
+	// m_world -> m_rendergraph -> m_swapchain -> m_context
+	// This is correct: World textures depend on context, rendergraph
+	// pipelines depend on swapchain command pools, etc.
+	// No explicit reset or window handling here.
 }
 
 

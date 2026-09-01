@@ -1,7 +1,5 @@
 #pragma once
 //
-#include <Engine/App/world.h>
-#include <Engine/smvk.h>
 #include <GLFW/glfw3.h>
 
 #include "input.h"
@@ -12,30 +10,29 @@
 namespace smvk
 {
 
-	struct RenderGraph;
 	class IApp {
 	public:
 		Input m_input{};
 		IApp() = default;
-		virtual ~IApp() = default;
+		virtual ~IApp();
 		virtual bool Initialize() = 0;
 		virtual void DrawFrame() = 0;
-		//virtual ResourceManagerImpl* GetContext();
-		//virtual SwapchainImpl* GetSwawphain();
+		// Called while object is still fully constructed, after MainLoop exits
+		// and before any members are destroyed. Override to release Holders
+		// that depend on the graphics context while GPU is still valid.
+		virtual void Shutdown() {}
 		bool Run();
 		void MainLoop();
 		void UpdateDeltaTime();
 	protected:
-		std::unique_ptr<ResourceManagerImpl> m_context; // two should be reduced to one really
-		std::unique_ptr<SwapchainImpl> m_swapchain;
-		std::unique_ptr<RenderGraph> m_rendergraph;
-		std::unique_ptr<World> m_world;
 #pragma region ===[ App / Core State ]===
 		float delta_time_s = .0f;
 		float time_since_start_s = .0f;
 #pragma endregion
 
 #pragma region ===[ GLFW / Window State ]===
+		// Window is first member so derived graphics members (in VulkanApp)
+		// are destroyed *before* the window (base members destroyed last).
 		GLFWwindow * window = nullptr;
 #pragma endregion
 
@@ -43,6 +40,7 @@ namespace smvk
 		virtual void EarlyUpdate() {};
 		virtual void Update() {}
 		virtual void LateUpdate() {}
+		virtual void OnFramebufferResized(int width, int height) {}
 #pragma endregion
 
 #pragma region ===[ GlfwCallbacks ]===

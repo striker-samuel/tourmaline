@@ -7,10 +7,22 @@
 #include <Engine/platform.h>
 
 
+smvk::IApp::~IApp() {
+	if (window != nullptr) {
+		glfwDestroyWindow(window);
+		window = nullptr;
+	}
+	glfwTerminate();
+}
+
 bool smvk::IApp::Run() {
 	bool result = Initialize();
 	assert(result && "Failed to initialize");
 	MainLoop();
+	// Ensure GPU idle and derived Holders are released while object is
+	// still fully constructed (all members alive). This avoids destroying
+	// VkImage/Buffer-backed Holders after the device/allocator is gone.
+	Shutdown();
 	return true;
 };
 
@@ -104,9 +116,9 @@ void smvk::IApp::framebufferResizeCallback(GLFWwindow* window, int width,
 	int height) {
 	auto app =
 		reinterpret_cast<smvk::IApp*>(glfwGetWindowUserPointer(window));
-	app->m_swapchain.get()->framebufferResized = true;
+	if (app) {
+		app->OnFramebufferResized(width, height);
+	}
 }
 
 #pragma endregion
-
-
