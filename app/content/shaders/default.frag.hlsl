@@ -5,189 +5,250 @@ struct PSIn
 {
     float3 color : COLOR0;
     float2 uv : TEXCOORD0;
-    float3 worldPos : TEXCOORD1; // from VS
-    float3 normal : TEXCOORD2; // from VS, in world space
+    float3 worldPos : TEXCOORD1;
+    float3 normal : TEXCOORD2;
+    float4 tangent : TANGENT;
+    bool isFrontFace : SV_IsFrontFace;
 };
 struct PSOut
 {
     float4 outColor : SV_Target;
 };
 
-// Here because symbols need to be defined before literal copy paste of include!
+// Must be defined after common.hlsli symbols
 #include "shadows.hlsli"
 
-//float3 EvaluateSpotLight(
-//    Light light,
-//    float3 worldPos,
-//    float3 N,
-//    float3 baseColor
-//    )
-//{
-//    // Vector from point to light
-//    float3 toLight = light.position - worldPos;
-//    float distSq = max(dot(toLight, toLight), 1e-4f);
-//    float3 L = toLight * rsqrt(distSq); // normalize
+static const float PI = 3.14159265359f;
 
-//    // Lambert term
-//    float NdotL = saturate(dot(N, L));
-//    if (NdotL <= 0.0f)
-//        return 0.0.xxx;
+// -------------------------------------------------------------------------
+// PBR helpers – Cook-Torrance microfacet
+// -------------------------------------------------------------------------
 
-//    // Inverse square attenuation
-//    float attenuation = 1.0f / distSq;
-
-//    // Make sure light.direction is treated as normalized
-//    float3 lightDir = normalize(light.direction);
-
-//    // Cosine of angle between cone axis and point
-//    // (cone axis points *out* of the light, so use -lightDir)
-//    float spotCos = dot(L, -lightDir);
-
-//    // Assume innerAngle / outerAngle are in radians. They indeed are.
-//    float innerCos = cos(light.innerAngle);
-//    float outerCos = cos(light.outerAngle);
-
-//    // Avoid divide-by-zero if inner == outer
-//    float denom = max(innerCos - outerCos, 1e-4f);
-//    float spotFactor = saturate((spotCos - outerCos) / denom);
-//    // If you want softer edge:
-//    // float spotFactor = saturate(smoothstep(outerCos, innerCos, spotCos));
-
-//    // Shadow factor (1 = lit, 0 = fully shadowed)
-//    float shadow = 1.0;
-//    if (light.shadow_map_index >= 0)
-//    {
-//        shadow = GetShadowFactor(gShadowMaps, gShadowSamplers, worldPos, light);
-//    }
-
-//    float3 lightColor = light.color.rgb * light.intensity;
-    
-//    return baseColor * lightColor * NdotL * attenuation * spotFactor * shadow;
-    
-//}
-
-//// Pure lambertian
-//float3 EvaluatePointLight(Light light, float3 worldPos, float3 N, float3 baseColor)
-//{
-//    // Use explicit position stored in the struct
-//    float3 lightPos = light.position;
-
-//    // Vector to light
-//    float3 toLight = lightPos - worldPos;
-//    float distSq = max(dot(toLight, toLight), 1e-4f);
-
-//    // Direction to light
-//    float3 L = toLight * rsqrt(distSq);
-
-//    // Lambert term
-//    float NdotL = saturate(dot(N, L));
-
-//    // Inverse-square attenuation
-//    float attenuation = 1.0f / distSq;
-
-//    // Light parameters
-//    float3 lightColor = light.color.rgb;
-//    float intensity = light.intensity;
-
-//    // Final contribution
-//    return baseColor * lightColor * intensity * NdotL * attenuation;
-    
-//    // NormalsDebug
-//    //return (dot(N, L) > 0) ? float3(1, 0, 0) : float3(0, 0, 1);
-
-//}
-
-
-float3 EvaluateDirectLight(
-    Light light,
-    float3 worldPos,
-    float3 N,
-    float3 baseColor
-)
+float DistributionGGX(float3 N, float3 H, float roughness)
 {
-    // Direction *from the point toward the light*
-    // If light.direction points "forward" from the light, use -direction.
-    float3 L = normalize(-light.direction);
-
-    float NdotL = saturate(dot(N, L));
-    if (NdotL <= 0.0f)
-        return 0.0.xxx;
-
-    float3 lightColor = light.color.rgb * light.intensity;
-
-    float shadow = 1.0f;
-    if (light.shadow_map_index >= 0)
-    {
-        //shadow = GetShadowFactorODB(gShadowMaps, gShadowSamplers, worldPos, light, N);
-        shadow = GetShadowFactor(1, worldPos, light);
-    }
-
-    return baseColor * lightColor * NdotL * shadow;
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0f);
+    float NdotH2 = NdotH * NdotH;
+    float denom = (NdotH2 * (a2 - 1.0f) + 1.0f);
+    denom = PI * denom * denom;
+    return a2 / max(denom, 1e-7f);
 }
+
+float GeometrySchlickGGX(float NdotV, float roughness)
+{
+    float r = roughness + 1.0f;
+    float k = (r * r) / 8.0f;
+    float denom = NdotV * (1.0f - k) + k;
+    return NdotV / max(denom, 1e-7f);
+}
+
+float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0f);
+    float NdotL = max(dot(N, L), 0.0f);
+    float ggx1 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx2 = GeometrySchlickGGX(NdotL, roughness);
+    return ggx1 * ggx2;
+}
+
+float3 FresnelSchlick(float cosTheta, float3 F0)
+{
+    return F0 + (1.0f - F0) * pow(max(1.0f - cosTheta, 0.0f), 5.0f);
+}
+
+// Optional: with roughness adjustment for smoother Fresnel at grazing
+float3 FresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
+{
+    return F0 + (max(float3(1.0f - roughness, 1.0f - roughness, 1.0f - roughness), F0) - F0) * pow(max(1.0f - cosTheta, 0.0f), 5.0f);
+}
+
+// -------------------------------------------------------------------------
+// Unlit / helpers
+// -------------------------------------------------------------------------
+
+float3 LinearToSRGB(float3 c)
+{
+    // approximate, not used for output if swapchain is sRGB
+    return c;
+}
+
+// -------------------------------------------------------------------------
 
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
 
-    MaterialValues values = pc.bMats.Get().mats[pc.materialId];
+    MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
 
-    uint diffuseTexIdx = values.tex.x;
-    float alphaCutoff = values.params.x;
-    // values.params.w encodes ShadingModel; masked path does alpha test
+    // ---------------------------------------------------------------
+    // Decode material indices and factors
+    // tex: x=baseColor, y=metallicRoughness, z=normal, w=occlusion
+    // tex2: x=emissive
+    // params: x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
+    // params2: x=occlusionStrength, y=normalScale, z=emissiveStrength
+    // ---------------------------------------------------------------
+    int baseColorIdx = mat.tex.x;
+    int mrIdx        = mat.tex.y;
+    int normalIdx    = mat.tex.z;
+    int occIdx       = mat.tex.w;
+    int emissiveIdx  = mat.tex2.x;
 
-    float4 texSample =
-        textures[diffuseTexIdx].Sample(samplers[0], IN.uv);
+    float alphaCutoff      = mat.params.x;
+    float metallicFactor   = mat.params.y;
+    float roughnessFactor  = mat.params.z;
+    float shadingModelF    = mat.params.w;
+    float occlusionStrength= mat.params2.x;
+    float normalScale      = mat.params2.y;
+    float emissiveStrength = mat.params2.z;
 
-    // Alpha-tested (Masked) cutout: discard below cutoff. Opaque/Blend skip.
-    // ShadingModel::Masked == 2
-    if (values.params.w == 2.0f && texSample.a < alphaCutoff)
+    float3 baseColorFactor = mat.diffuse.rgb;
+    float  baseAlphaFactor = mat.diffuse.a;
+    float3 emissiveFactor  = mat.emissiveFactor.rgb;
+
+    // ---------------------------------------------------------------
+    // Sample baseColor / alpha
+    // ---------------------------------------------------------------
+    float4 baseSample = float4(1,1,1,1);
+    if (baseColorIdx >= 0)
+        baseSample = textures[NonUniformResourceIndex((uint)baseColorIdx)].Sample(samplers[0], IN.uv);
+    // glTF: baseColor = baseColorFactor * vertexColor * texture
+    float3 baseColor = baseColorFactor * IN.color * baseSample.rgb;
+    float  baseAlpha = baseAlphaFactor * baseSample.a;
+
+    // Alpha test for Masked (ShadingModel::Masked == 2)
+    // Also respect alphaMode Mask – both encode to 2 historically.
+    if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
         discard;
 
-    float3 baseColor =
-        IN.color *
-        values.diffuse.rgb *
-        texSample.rgb;
+    // ---------------------------------------------------------------
+    // Metallic-roughness
+    // glTF metallicRoughnessTexture: G=roughness, B=metallic
+    // ---------------------------------------------------------------
+    float metallic = metallicFactor;
+    float roughness = roughnessFactor;
+    if (mrIdx >= 0)
+    {
+        float4 mrSample = textures[NonUniformResourceIndex((uint)mrIdx)].Sample(samplers[0], IN.uv);
+        // Spec says: roughness = G * factor, metallic = B * factor
+        roughness *= mrSample.g;
+        metallic  *= mrSample.b;
+    }
+    metallic = saturate(metallic);
+    roughness = clamp(roughness, 0.04f, 1.0f); // avoid 0 roughness singularities
 
+    // ---------------------------------------------------------------
+    // Normal mapping
+    // ---------------------------------------------------------------
     float3 N = normalize(IN.normal);
+    // Double-sided handling: flip if backface when no culling
+    if (!IN.isFrontFace)
+        N = -N;
 
-    float3 litColor = 0.0.xxx;
+    if (normalIdx >= 0)
+    {
+        float3 tangent = normalize(IN.tangent.xyz);
+        float3 bitangent = normalize(cross(N, tangent) * IN.tangent.w);
+        float3x3 TBN = float3x3(tangent, bitangent, N);
 
-    litColor += EvaluateDirectLight(
-        pc.bLights.Get().lights[0],
-        IN.worldPos,
-        N,
-        baseColor
-    );
+        float3 mapN = textures[NonUniformResourceIndex((uint)normalIdx)].Sample(samplers[0], IN.uv).xyz * 2.0f - 1.0f;
+        // Apply normalScale to XY per spec
+        mapN.xy *= normalScale;
+        // Renormalize after scale
+        mapN = normalize(mapN);
+        N = normalize(mul(mapN, TBN));
+    }
 
-    // Ambient is the minimum/floor color.
-    float3 ambientFloor = baseColor * values.ambient;
-    litColor = max(litColor, ambientFloor);
-    OUT.outColor = float4(litColor, texSample.a);
+    // ---------------------------------------------------------------
+    // Occlusion
+    // ---------------------------------------------------------------
+    float occlusion = 1.0f;
+    if (occIdx >= 0)
+    {
+        float occSample = textures[NonUniformResourceIndex((uint)occIdx)].Sample(samplers[0], IN.uv).r;
+        occlusion = lerp(1.0f, occSample, occlusionStrength);
+    }
+
+    // ---------------------------------------------------------------
+    // Emissive
+    // ---------------------------------------------------------------
+    float3 emissive = emissiveFactor * emissiveStrength;
+    if (emissiveIdx >= 0)
+    {
+        float3 eSample = textures[NonUniformResourceIndex((uint)emissiveIdx)].Sample(samplers[0], IN.uv).rgb;
+        emissive *= eSample;
+    }
+
+    // ---------------------------------------------------------------
+    // Unlit path – early out (KHR_materials_unlit)
+    // ---------------------------------------------------------------
+    // ShadingModel::Unlit == 1
+    if (shadingModelF == 1.0f)
+    {
+        float3 color = baseColor + emissive;
+        // Still apply occlusion? Spec says occlusion not for unlit, but we keep none.
+        OUT.outColor = float4(color, baseAlpha);
+        return OUT;
+    }
+
+    // ---------------------------------------------------------------
+    // PBR lighting – directional light + ambient
+    // ---------------------------------------------------------------
+    FrameUniforms frame = pc.frameUniforms.Get();
+    float3 V = normalize(frame.cameraPos - IN.worldPos);
+    float NdotV = max(dot(N, V), 0.0f);
+
+    // F0 for dielectrics 0.04, lerped to baseColor for metals
+    float3 F0 = float3(0.04f, 0.04f, 0.04f);
+    F0 = lerp(F0, baseColor, metallic);
+
+    Light light = pc.bLights.Get().lights[0];
+    float3 L = normalize(-light.direction);
+    float3 H = normalize(V + L);
+    float NdotL = max(dot(N, L), 0.0f);
+    float NdotH = max(dot(N, H), 0.0f);
+    float HdotV = max(dot(H, V), 0.0f);
+
+    float3 lightColor = light.color.rgb * light.intensity;
+
+    float shadow = 1.0f;
+    if (light.shadow_map_index >= 0)
+        shadow = GetShadowFactor(1, IN.worldPos, light);
+
+    // Cook-Torrance BRDF
+    float D = DistributionGGX(N, H, roughness);
+    float G = GeometrySmith(N, V, L, roughness);
+    float3 F = FresnelSchlick(HdotV, F0);
+
+    float3 kS = F;
+    float3 kD = float3(1.0f, 1.0f, 1.0f) - kS;
+    kD *= 1.0f - metallic;
+
+    float3 numerator = D * G * F;
+    float denominator = max(4.0f * NdotV * NdotL, 1e-7f);
+    float3 specular = numerator / denominator;
+
+    // Diffuse is Lambert * (1/PI) folded into kD
+    float3 diffuse = kD * baseColor / PI;
+
+    float3 direct = (diffuse + specular) * lightColor * NdotL * shadow;
+
+    // Ambient / IBL approximation: baseColor * ambient factor * occlusion
+    // Legacy ambient floor kept for look; scaled by occlusion.
+    float3 ambient = baseColor * mat.ambient.rgb * occlusion;
+    // Add a subtle fake skylight based on N.y
+    float hemis = 0.5f + 0.5f * N.y;
+    ambient += baseColor * hemis * 0.02f * occlusion; // very low fill
+
+    float3 color = direct + ambient;
+    color = color * occlusion; // re-apply for direct as well per spec (optional)
+    // Actually spec: occludedColor = lerp(color, color * occTex, strength) applied to final? We split above.
+
+    // Emissive additive
+    color += emissive;
+
+    // Handle alpha blending output
+    // For Opaque/Masked we output baseAlpha, for Blend pipeline handles blending
+    OUT.outColor = float4(color, baseAlpha);
     return OUT;
 }
-    //OUT.outColor = float4(litColor, texSample.a);
-    //litColor += EvaluateDirectLight(pc.bLights.Get().lights[0], IN.worldPos, N, baseColor);
-    //[loop]
-    ////for (uint i = 0; i < MAX_LIGHTS; ++i)
-    //for (uint i = 0; i < 1; ++i)
-    //{
-    //    Light light = g_Lights[i];
-
-    //    if (light.type == 0)
-    //    {
-    //        litColor += EvaluatePointLight(light, IN.worldPos, N, baseColor);
-    //    }
-    //    else if (light.type == 1)
-    //    {
-    //        litColor += EvaluateSpotLight(light, IN.worldPos, N, baseColor);
-
-    //    }
-    //    else if (light.type == 2)
-    //    {
-    //        litColor += EvaluateDirectLight(light, IN.worldPos, N, baseColor);
-    //    }
-    //    else
-    //    {
-    //        continue;
-    //    }
-    //}

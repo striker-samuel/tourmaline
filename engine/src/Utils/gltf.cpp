@@ -41,6 +41,10 @@ namespace {
 		std::optional<GltfTextureRef> occlusionTex;  // strength in scaleOrStrength
 		std::optional<GltfTextureRef> emissiveTex;
 		std::array<double, 3> emissiveFactor{ 0.0,0.0,0.0 };
+		double emissiveStrength = 1.0;
+
+		// Extensions
+		bool unlit = false;
 
 		// Rasterization rules
 		GltfAlphaMode alphaMode = GltfAlphaMode::Opaque;
@@ -124,17 +128,42 @@ namespace {
 
 		// Case 1: External image via URI
 		if (!img.uri.empty() && !starts_with(img.uri, "data:")) {
-			// this duty falls on the caller as of now .
-			//std::filesystem::path baseDir = gltfPath.parent_path();
-			//std::filesystem::path imagePath = baseDir / img.uri;
 			std::filesystem::path imagePath = img.uri;
 			return imagePath.lexically_normal();
 		}
 		else {
-			// No internal texures!
 			assert(false && "Internal textures not supported for gltf loading.");
 			return "";
 		}
+	}
+
+	inline smvk::TextureHandle LoadKtxTextureCached(
+		smvk::Cluster& cluster,
+		const std::filesystem::path& baseDir,
+		const tinygltf::Model& model,
+		const GltfTextureRef& ref,
+		std::unordered_map<int, smvk::TextureHandle>& cache)
+	{
+		auto it = cache.find(ref.imageIndex);
+		if (it != cache.end()) return it->second;
+		std::filesystem::path uri = UriFromTexture(model, ref);
+		if (uri.empty()) return {};
+		std::filesystem::path fullPath = (baseDir / uri).lexically_normal();
+		ktxTexture2* ktxTex = nullptr;
+		KTX_error_code result = ktxTexture2_CreateFromNamedFile(
+			fullPath.string().c_str(),
+			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+			&ktxTex);
+		if (result != KTX_SUCCESS) {
+			std::cerr << "Failed to load KTX texture: " << fullPath << " code " << result << std::endl;
+			return {};
+		}
+		auto holder = cluster.ctx_.CreateTexture(*ktxTex, fullPath.string().c_str());
+		ktxTexture2_Destroy(ktxTex);
+		smvk::TextureHandle h = holder;
+		cluster.textures.create(std::move(holder));
+		cache[ref.imageIndex] = h;
+		return h;
 	}
 };
 
@@ -300,6 +329,22 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
 		}
 	}
 
+	// Extensions: KHR_materials_unlit, KHR_materials_emissive_strength
+	{
+		auto it = m.extensions.find("KHR_materials_unlit");
+		if (it != m.extensions.end()) {
+			mat.unlit = true;
+		}
+		auto it2 = m.extensions.find("KHR_materials_emissive_strength");
+		if (it2 != m.extensions.end() && it2->second.IsObject()) {
+			const auto& obj = it2->second.Get<tinygltf::Value::Object>();
+			auto f = obj.find("emissiveStrength");
+			if (f != obj.end() && f->second.IsNumber()) {
+				mat.emissiveStrength = f->second.GetNumberAsDouble();
+			}
+		}
+	}
+
 	// -------------------------------------------------------------------------
 	// Rasterization
 	// -------------------------------------------------------------------------
@@ -349,9 +394,21 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex)
 {
 	if (gltfMaterialIndex < 0) {
-		// TODO: default material
-
-		return {};
+		if (!defaultMaterialHandle.empty()) return defaultMaterialHandle;
+		smvk::MaterialCreateInfo def{};
+		def.baseColorFactor = glm::vec4(1.0f);
+		def.metallicFactor = 0.0f;
+		def.roughnessFactor = 0.9f;
+		def.emissiveFactor = glm::vec3(0.0f);
+		def.emissiveStrength = 1.0f;
+		def.occlusionStrength = 1.0f;
+		def.normalScale = 1.0f;
+		def.alphaMode = smvk::AlphaMode::Opaque;
+		def.shadingModel = smvk::ShadingModel::DefaultLit;
+		def.alphaCutoff = 0.5f;
+		def.doubleSided = false;
+		defaultMaterialHandle = cluster.CreateMaterial(def);
+		return defaultMaterialHandle;
 	}
 
 	assert(
@@ -366,8 +423,6 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 		return slot;
 	}
 
-	// This material has never been imported before.
-	// Parse only THIS glTF material.
 	const GltfMaterial mat =
 		ExtractMaterial(
 			model,
@@ -377,64 +432,25 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 	const std::filesystem::path baseDir =
 		gltfModelPath.parent_path();
 
-	smvk::TextureHandle colorTexHandle{};
+	auto load = [&](const std::optional<GltfTextureRef>& ref) -> smvk::TextureHandle {
+		if (!ref) return {};
+		return LoadKtxTextureCached(cluster, baseDir, model, *ref, textureCache);
+	};
 
-	if (mat.baseColorTex) {
-
-		auto textureRef =
-			*mat.baseColorTex;
-
-		const std::filesystem::path textureUri =
-			UriFromTexture(
-				model,
-				textureRef
-			);
-
-		const std::filesystem::path fullTexturePath =
-			(baseDir / textureUri)
-			.lexically_normal();
-
-		ktxTexture2* ktxTex = nullptr;
-
-		const KTX_error_code result =
-			ktxTexture2_CreateFromNamedFile(
-				fullTexturePath.string().c_str(),
-				KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
-				&ktxTex
-			);
-
-		if (result != KTX_SUCCESS) {
-			throw std::runtime_error(
-				"Failed to load KTX texture: " +
-				fullTexturePath.string()
-			);
-		}
-
-		auto texture =
-			cluster.ctx_.CreateTexture(
-				*ktxTex,
-				fullTexturePath.string().c_str()
-			);
-
-		ktxTexture2_Destroy(
-			ktxTex
-		);
-
-		colorTexHandle =
-			texture;
-
-		cluster.textures.create(
-			std::move(texture)
-		);
-	}
-	else {
-		// No baseColor texture: create material with fallback (untextured).
-		// Keep colorTexHandle empty -> Material will encode textures[0] = -1
-		// and shader should sample fallback.
-	}
+	smvk::TextureHandle baseColorHandle = load(mat.baseColorTex);
+	smvk::TextureHandle metallicRoughHandle = load(mat.metallicRoughnessTex);
+	smvk::TextureHandle normalHandle = load(mat.normalTex);
+	smvk::TextureHandle occlusionHandle = load(mat.occlusionTex);
+	smvk::TextureHandle emissiveHandle = load(mat.emissiveTex);
 
 	smvk::MaterialCreateInfo ci{};
-	ci.diffuse = colorTexHandle;
+	ci.baseColorTexture = baseColorHandle;
+	ci.metallicRoughnessTexture = metallicRoughHandle;
+	ci.normalTexture = normalHandle;
+	ci.occlusionTexture = occlusionHandle;
+	ci.emissiveTexture = emissiveHandle;
+	// legacy alias
+	ci.diffuse = baseColorHandle;
 	ci.baseColorFactor = glm::vec4(
 		static_cast<float>(mat.baseColorFactor[0]),
 		static_cast<float>(mat.baseColorFactor[1]),
@@ -443,11 +459,29 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 	);
 	ci.metallicFactor = static_cast<float>(mat.metallicFactor);
 	ci.roughnessFactor = static_cast<float>(mat.roughnessFactor);
-	// Map GltfAlphaMode -> smvk::AlphaMode + ShadingModel
-	switch (mat.alphaMode) {
-		case GltfAlphaMode::Opaque: ci.alphaMode = smvk::AlphaMode::Opaque; ci.shadingModel = smvk::ShadingModel::DefaultLit; break;
-		case GltfAlphaMode::Mask:   ci.alphaMode = smvk::AlphaMode::Mask;   ci.shadingModel = smvk::ShadingModel::Masked;   break;
-		case GltfAlphaMode::Blend:  ci.alphaMode = smvk::AlphaMode::Blend;  ci.shadingModel = smvk::ShadingModel::DefaultLit; break;
+	ci.emissiveFactor = glm::vec3(
+		static_cast<float>(mat.emissiveFactor[0]),
+		static_cast<float>(mat.emissiveFactor[1]),
+		static_cast<float>(mat.emissiveFactor[2])
+	);
+	ci.emissiveStrength = static_cast<float>(mat.emissiveStrength);
+	ci.occlusionStrength = mat.occlusionTex ? mat.occlusionTex->scaleOrStrength : 1.0f;
+	ci.normalScale = mat.normalTex ? mat.normalTex->scaleOrStrength : 1.0f;
+	// KHR_materials_unlit overrides shading model
+	if (mat.unlit) {
+		ci.shadingModel = smvk::ShadingModel::Unlit;
+		// Alpha still handled via alphaMode
+		switch (mat.alphaMode) {
+			case GltfAlphaMode::Opaque: ci.alphaMode = smvk::AlphaMode::Opaque; break;
+			case GltfAlphaMode::Mask:   ci.alphaMode = smvk::AlphaMode::Mask; break;
+			case GltfAlphaMode::Blend:  ci.alphaMode = smvk::AlphaMode::Blend; break;
+		}
+	} else {
+		switch (mat.alphaMode) {
+			case GltfAlphaMode::Opaque: ci.alphaMode = smvk::AlphaMode::Opaque; ci.shadingModel = smvk::ShadingModel::DefaultLit; break;
+			case GltfAlphaMode::Mask:   ci.alphaMode = smvk::AlphaMode::Mask;   ci.shadingModel = smvk::ShadingModel::Masked;   break;
+			case GltfAlphaMode::Blend:  ci.alphaMode = smvk::AlphaMode::Blend;  ci.shadingModel = smvk::ShadingModel::DefaultLit; break;
+		}
 	}
 	ci.alphaCutoff = static_cast<float>(mat.alphaCutoff);
 	ci.doubleSided = mat.doubleSided;

@@ -9,14 +9,19 @@
 
 namespace smvk {
 
+	// GPU material buffer layout – must match HLSL common.hlsli::MaterialValues.
+	// Keep 16-byte alignment for StructuredBuffer / buffer_device_address.
 	struct alignas(16) MaterialValues {
-		glm::vec4 ambient{ 0.06f };
-		glm::vec4 diffuse{ 1.0f };
-		glm::ivec4 textures{ -1 };
-		// x = alphaCutoff, y = metallicFactor, z = roughnessFactor, w = shadingModel (uint bits)
-		glm::vec4 params{ 0.5f, 1.0f, 1.0f, 0.0f };
+		glm::vec4 ambient{ 0.06f };                       // 0  – legacy ambient floor (kept for compat)
+		glm::vec4 diffuse{ 1.0f };                       // 16 – baseColorFactor (alias: diffuse)
+		glm::ivec4 textures{ -1 };                       // 32 – x=baseColor, y=metallicRoughness, z=normal, w=occlusion
+		glm::ivec4 textures2{ -1 };                      // 48 – x=emissive, yzw unused (-1)
+		glm::vec4 params{ 0.5f, 1.0f, 1.0f, 0.0f };       // 64 – x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
+		glm::vec4 params2{ 1.0f, 1.0f, 1.0f, 0.0f };      // 80 – x=occlusionStrength, y=normalScale, z=emissiveStrength, w=unused
+		glm::vec4 emissiveFactor{ 0.0f, 0.0f, 0.0f, 0.0f }; // 96 – xyz=emissiveFactor, w=pad
 	};
 	static_assert(sizeof(MaterialValues) % 16 == 0);
+	static_assert(sizeof(MaterialValues) == 112);
 
 	// -------------------------------------------------------------------------
 	// Shading / raster abstraction
@@ -41,10 +46,24 @@ namespace smvk {
 	};
 
 	struct MaterialCreateInfo {
+		// Primary PBR textures – baseColorTexture == diffuse for backward compat.
+		TextureHandle baseColorTexture{};
+		TextureHandle metallicRoughnessTexture{};
+		TextureHandle normalTexture{};
+		TextureHandle occlusionTexture{};
+		TextureHandle emissiveTexture{};
+		// Legacy alias: alias for baseColorTexture
 		TextureHandle diffuse{};
+
 		glm::vec4 baseColorFactor{ 1.0f };
+		glm::vec3 emissiveFactor{ 0.0f };
+		float emissiveStrength = 1.0f;
+
 		float metallicFactor = 1.0f;
 		float roughnessFactor = 1.0f;
+		float normalScale = 1.0f;
+		float occlusionStrength = 1.0f;
+
 		ShadingModel shadingModel = ShadingModel::DefaultLit;
 		AlphaMode alphaMode = AlphaMode::Opaque;
 		float alphaCutoff = 0.5f;

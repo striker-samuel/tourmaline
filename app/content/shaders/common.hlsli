@@ -47,10 +47,13 @@ struct LightBuffer
 
 struct MaterialValues
 {
-    float4 ambient;
-    float4 diffuse;
-    uint4 tex;
-    float4 params; // x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
+    float4 ambient;          // 0  legacy ambient
+    float4 diffuse;          // 16 baseColorFactor
+    int4 tex;                // 32 x=baseColor, y=metallicRoughness, z=normal, w=occlusion
+    int4 tex2;               // 48 x=emissive, yzw unused (-1)
+    float4 params;           // 64 x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
+    float4 params2;          // 80 x=occlusionStrength, y=normalScale, z=emissiveStrength, w=unused
+    float4 emissiveFactor;   // 96 xyz=emissiveFactor, w=pad
 };
 
 struct MaterialsBuffer

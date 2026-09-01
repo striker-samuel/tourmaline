@@ -1,5 +1,10 @@
-﻿set(GLSLC "%VULKAN_SDK%/Bin/glslc.exe")
-set(DXC   "%VULKAN_SDK%/Bin/dxc.exe")
+﻿if(DEFINED ENV{VULKAN_SDK})
+  set(GLSLC "$ENV{VULKAN_SDK}/Bin/glslc.exe")
+  set(DXC   "$ENV{VULKAN_SDK}/Bin/dxc.exe")
+else()
+  set(GLSLC "%VULKAN_SDK%/Bin/glslc.exe")
+  set(DXC   "%VULKAN_SDK%/Bin/dxc.exe")
+endif()
 
 # Helper: map filename to stage + entry for HLSL
 function(_detect_hlsl_stage_and_entry SHADER OUT_STAGE OUT_ENTRY OUT_PROFILE)

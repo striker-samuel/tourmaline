@@ -272,21 +272,42 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 {
 	MaterialCreateInfo ci{};
 	ci.diffuse = diffuse;
+	ci.baseColorTexture = diffuse;
 	return CreateMaterial(ci);
 }
 
 smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 	const MaterialCreateInfo& info)
 {
-	// diffuse may be empty for procedural / fallback materials; use -1 sentinel
 	smvk::Material material{};
+
+	// Resolve baseColor texture – prefer baseColorTexture, fall back to legacy diffuse
+	TextureHandle baseTex = !info.baseColorTexture.empty() ? info.baseColorTexture : info.diffuse;
+
 	material.values.diffuse = info.baseColorFactor;
-	material.values.textures[0] =
-		info.diffuse.empty() ? -1 : static_cast<int>(info.diffuse.index());
+	material.values.textures[0] = baseTex.empty() ? -1 : static_cast<int>(baseTex.index());
+	material.values.textures[1] = info.metallicRoughnessTexture.empty() ? -1 : static_cast<int>(info.metallicRoughnessTexture.index());
+	material.values.textures[2] = info.normalTexture.empty() ? -1 : static_cast<int>(info.normalTexture.index());
+	material.values.textures[3] = info.occlusionTexture.empty() ? -1 : static_cast<int>(info.occlusionTexture.index());
+	material.values.textures2[0] = info.emissiveTexture.empty() ? -1 : static_cast<int>(info.emissiveTexture.index());
+	material.values.textures2[1] = -1;
+	material.values.textures2[2] = -1;
+	material.values.textures2[3] = -1;
+
 	material.values.params.x = info.alphaCutoff;
 	material.values.params.y = info.metallicFactor;
 	material.values.params.z = info.roughnessFactor;
 	material.values.params.w = static_cast<float>(static_cast<uint32_t>(info.shadingModel));
+
+	material.values.params2.x = info.occlusionStrength;
+	material.values.params2.y = info.normalScale;
+	material.values.params2.z = info.emissiveStrength;
+	material.values.params2.w = 0.0f;
+
+	material.values.emissiveFactor = glm::vec4(info.emissiveFactor, 0.0f);
+	// keep ambient as small floor; could be driven by IBL later
+	material.values.ambient = glm::vec4(0.03f, 0.03f, 0.03f, 1.0f);
+
 	material.shadingModel = info.shadingModel;
 	material.alphaMode = info.alphaMode;
 	material.alphaCutoff = info.alphaCutoff;

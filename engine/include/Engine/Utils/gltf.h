@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <vector>
+#include <unordered_map>
 
 #include <tiny_gltf.h>
 
@@ -36,6 +37,8 @@ private:
 	std::filesystem::path gltfModelPath;
 	std::vector<smvk::ClusterMaterialHandle> materialCache;
 	std::vector<std::vector<smvk::ClusterStaticMeshHandle>> meshCache;
+	std::unordered_map<int, smvk::TextureHandle> textureCache; // imageIndex -> handle
+	smvk::ClusterMaterialHandle defaultMaterialHandle{};
 };
 
 

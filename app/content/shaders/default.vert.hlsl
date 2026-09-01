@@ -37,9 +37,12 @@ VSOut mainVS(VSIn IN)
     OUT.color = float3(1.0f, 1.0f, 1.0f);
     OUT.uv = IN.uv;
 
-    // Properly transform normal to world space
+    // Properly transform normal and tangent to world space
     float3 worldNormal = mul((float3x3) pc.model, IN.normal);
     OUT.normal = normalize(worldNormal);
+
+    float3 worldTangent = mul((float3x3) pc.model, IN.tangent.xyz);
+    OUT.tangent = float4(normalize(worldTangent), IN.tangent.w);
 
     return OUT;
 }
