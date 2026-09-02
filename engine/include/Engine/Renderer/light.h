@@ -121,11 +121,11 @@ namespace smvk {
 		float intensity = .0f;
 		int shadow_map_index = -1;
 		int numCascades = 1;
-		float pad_[3];
+		float pad_ = 0.0f; // scalar pad: keeps lightVP 16-byte aligned (no straddling vec3)
 		float lightVP[16] = {};
 		GpuCascadeDescription cascades[4];
 	};
-	static_assert(sizeof(GpuDirectionalLightDescription) % 16 == 0);
+	static_assert(sizeof(GpuDirectionalLightDescription) == 624);
 
 
 	struct alignas(16) GpuSpotLightDescription {

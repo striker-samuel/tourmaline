@@ -3,6 +3,8 @@
 #include <iostream>
 #include <span>
 
+//#define DEBUG_COMMAND_SUBMISSION
+
 #define VMA_IMPLEMENTATION
 #define VMA_VULKAN_VERSION 1003800
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
@@ -52,43 +54,43 @@ static std::mutex& GetQueueMutex(VkQueue q) {
 	static std::mutex fallback; return fallback;
 }
 namespace smvk {
-thread_local std::unordered_map<PoolKey, CommandBufferPool*, PoolKeyHash> t_commandPools;
-std::mutex g_allPoolsMutex;
-std::unordered_map<PoolKey, std::vector<CommandBufferPool*>, PoolKeyHash> g_allPools;
-thread_local int t_threadIdLocal = 0;
+	thread_local std::unordered_map<PoolKey, CommandBufferPool*, PoolKeyHash> t_commandPools;
+	std::mutex g_allPoolsMutex;
+	std::unordered_map<PoolKey, std::vector<CommandBufferPool*>, PoolKeyHash> g_allPools;
+	thread_local int t_threadIdLocal = 0;
 #ifdef __GNUC__
-__thread int t_threadIdGcc = 0;
+	__thread int t_threadIdGcc = 0;
 #endif
 
-void CommandBufferPool::init(VkDevice dev, uint32_t qfi) {
-	device = dev;
-	queueFamilyIndex = qfi;
-	VkCommandPoolCreateInfo ci{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-	ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-	ci.queueFamilyIndex = qfi;
-	VK_CHECK(vkCreateCommandPool(dev, &ci, nullptr, &pool));
-	VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, kMax };
-	VkCommandBuffer bufs[kMax];
-	VK_CHECK(vkAllocateCommandBuffers(dev, &ai, bufs));
-	for (uint32_t i=0;i<kMax;++i){ slots[i].allocatedCmd_ = bufs[i]; slots[i].cmd_ = VK_NULL_HANDLE; slots[i].state_ = WrapperSlot::CommandState::Free; slots[i].gen_=1; slots[i].retireValue_=0; }
-	availableSlots = kMax;
-}
-void CommandBufferPool::destroy() {
-	if (pool != VK_NULL_HANDLE) { vkDestroyCommandPool(device, pool, nullptr); pool = VK_NULL_HANDLE; }
-}
-CommandBufferPool* GetThreadLocalPool(uint32_t qfi, VkDevice dev, const Submitter* owner) {
-	PoolKey key{dev, qfi, owner};
-	auto it = t_commandPools.find(key);
-	if (it != t_commandPools.end()) return it->second;
-	auto* p = new CommandBufferPool();
-	p->init(dev, qfi);
-	t_commandPools[key] = p;
-	{
-		std::lock_guard<std::mutex> lock(g_allPoolsMutex);
-		g_allPools[key].push_back(p);
+	void CommandBufferPool::init(VkDevice dev, uint32_t qfi) {
+		device = dev;
+		queueFamilyIndex = qfi;
+		VkCommandPoolCreateInfo ci{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+		ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+		ci.queueFamilyIndex = qfi;
+		VK_CHECK(vkCreateCommandPool(dev, &ci, nullptr, &pool));
+		VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, kMax };
+		VkCommandBuffer bufs[kMax];
+		VK_CHECK(vkAllocateCommandBuffers(dev, &ai, bufs));
+		for (uint32_t i = 0; i < kMax; ++i) { slots[i].allocatedCmd_ = bufs[i]; slots[i].cmd_ = VK_NULL_HANDLE; slots[i].state_ = WrapperSlot::CommandState::Free; slots[i].gen_ = 1; slots[i].retireValue_ = 0; }
+		availableSlots = kMax;
 	}
-	return p;
-}
+	void CommandBufferPool::destroy() {
+		if (pool != VK_NULL_HANDLE) { vkDestroyCommandPool(device, pool, nullptr); pool = VK_NULL_HANDLE; }
+	}
+	CommandBufferPool* GetThreadLocalPool(uint32_t qfi, VkDevice dev, const Submitter* owner) {
+		PoolKey key{ dev, qfi, owner };
+		auto it = t_commandPools.find(key);
+		if (it != t_commandPools.end()) return it->second;
+		auto* p = new CommandBufferPool();
+		p->init(dev, qfi);
+		t_commandPools[key] = p;
+		{
+			std::lock_guard<std::mutex> lock(g_allPoolsMutex);
+			g_allPools[key].push_back(p);
+		}
+		return p;
+	}
 }
 
 namespace {
@@ -1677,7 +1679,7 @@ bool smvk::VulkanCore::Init() {
 				vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr);
 				std::vector<VkExtensionProperties> exts(extCount);
 				vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data());
-				for (auto &e : exts) if (strcmp(e.extensionName, VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME) == 0) { hostImageCopyAvailable = true; break; }
+				for (auto& e : exts) if (strcmp(e.extensionName, VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME) == 0) { hostImageCopyAvailable = true; break; }
 			}
 			bool enableHostCopy = false;
 			if (hostImageCopyAvailable) {
@@ -1771,6 +1773,19 @@ inline smvk::VulkanCore::~VulkanCore() {
 			fprintf(stderr, "[Vulkan Warning] vkDeviceWaitIdle returned VK_ERROR_DEVICE_LOST during ~VulkanCore, proceeding with teardown\n");
 		}
 	}
+	if (device_ != VK_NULL_HANDLE) {
+		std::lock_guard<std::mutex> lock(g_allPoolsMutex);
+		for (auto& [key, pools] : g_allPools) {
+			for (auto* pool : pools) {
+				if (pool) {
+					pool->destroy();
+					delete pool;
+				}
+			}
+		}
+		g_allPools.clear();
+		t_commandPools.clear();
+	}
 	if (surface_ != VK_NULL_HANDLE && instance_ != VK_NULL_HANDLE) {
 		vkDestroySurfaceKHR(instance_, surface_, nullptr);
 		surface_ = VK_NULL_HANDLE;
@@ -1834,7 +1849,8 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 #if 0
 	if (core_->indices.transferFamily && core_->indices.transferFamily.value() != core_->indices.graphicsFamily.value()) {
 		m_transferSubmitter = new Submitter(*core_, core_->indices.transferFamily.value());
-	} else
+	}
+	else
 #endif
 	{
 		m_transferSubmitter = m_submitter;
@@ -1863,7 +1879,8 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		}
 		if (m_hostImageCopySupported) {
 			printf("[UploadStreamer] VK_EXT_host_image_copy enabled (optimalTilingLayoutUUID supported)\n");
-		} else {
+		}
+		else {
 			printf("[UploadStreamer] VK_EXT_host_image_copy not available, using transfer queue\n");
 		}
 	}
@@ -1886,7 +1903,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		uint32_t idx1 = samplerCache_->GetOrCreate(SamplerCreateInfo{
 			.compareOp = smvk::CompareOp::LessEqual,
 			.compareEnable = true
-		});
+			});
 		m_defaultShadowSampler = samplerCache_->at(idx1);
 		assert(idx0 == 0 && idx1 == 1 && "sampler cache must allocate defaults at 0,1");
 	}
@@ -2213,7 +2230,7 @@ void smvk::UploadStreamer::submitLocked(bool waitOldestIfFull) {
 	if (!m_hasPending || m_curCmd == VK_NULL_HANDLE) {
 		if (m_curCmd != VK_NULL_HANDLE) {
 			auto tp = m_transfer->submit(m_curHandle);
-			for (auto &task : m_pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
+			for (auto& task : m_pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
 			m_pendingCleanups.clear();
 		}
 		m_curCmd = VK_NULL_HANDLE;
@@ -2225,16 +2242,16 @@ void smvk::UploadStreamer::submitLocked(bool waitOldestIfFull) {
 		return;
 	}
 	auto tp = m_transfer->submit(m_curHandle);
-	for (auto &task : m_pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
+	for (auto& task : m_pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
 	m_pendingCleanups.clear();
 	// EXCLUSIVE ownership: submit acquire barriers on graphics queue waiting on transfer timeline
 	if (m_transfer != m_graphics && (!m_pendingBufferAcquires.empty() || !m_pendingImageAcquires.empty())) {
 		auto gHan = m_graphics->acquire();
 		auto gCmd = m_graphics->GetCommandBuffer(gHan);
-		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, (uint32_t)m_pendingBufferAcquires.size(), m_pendingBufferAcquires.empty()?nullptr:m_pendingBufferAcquires.data(), (uint32_t)m_pendingImageAcquires.size(), m_pendingImageAcquires.empty()?nullptr:m_pendingImageAcquires.data() };
+		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, (uint32_t)m_pendingBufferAcquires.size(), m_pendingBufferAcquires.empty() ? nullptr : m_pendingBufferAcquires.data(), (uint32_t)m_pendingImageAcquires.size(), m_pendingImageAcquires.empty() ? nullptr : m_pendingImageAcquires.data() };
 		vkCmdPipelineBarrier2(gCmd, &dep);
 		TimelineWait wait{ tp, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT };
-		m_graphics->submit(gHan, std::span<const TimelineWait>(&wait,1));
+		m_graphics->submit(gHan, std::span<const TimelineWait>(&wait, 1));
 	}
 	m_pendingBufferAcquires.clear();
 	m_pendingImageAcquires.clear();
@@ -2296,13 +2313,14 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 			vkCmdPipelineBarrier2(m_curCmd, &dep);
 			VkBufferMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
 			m_pendingBufferAcquires.push_back(acq);
-		} else {
+		}
+		else {
 			BufferBarrier(m_curCmd, dstBuf->vkBuffer, dstOffset, size, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
 		}
 		m_hasPending = true;
 		// defer staging destruction until transfer batch is submitted (use TimelinePoint)
-		m_pendingCleanups.push_back(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
-		VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
+		m_pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
+		VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
 		m_stagedBytesSinceFlush += size;
 		if (m_stagedBytesSinceFlush >= kFlushThreshold) {
 			submitLocked(false);
@@ -2325,11 +2343,12 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 		vkCmdPipelineBarrier2(m_curCmd, &dep);
 		VkBufferMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
 		m_pendingBufferAcquires.push_back(acq);
-	} else {
+	}
+	else {
 		BufferBarrier(m_curCmd, dstBuf->vkBuffer, dstOffset, size, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
 	}
 	m_hasPending = true;
-	VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
+	VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
 	m_stagedBytesSinceFlush += size;
 	if (m_stagedBytesSinceFlush >= kFlushThreshold) {
 		submitLocked(false);
@@ -2374,8 +2393,8 @@ bool smvk::UploadStreamer::tryHostImageCopy(VkImage image, VkFormat format, VkEx
 			cpy.memoryRowLength = 0;
 			cpy.memoryImageHeight = 0;
 			cpy.imageSubresource = VkImageSubresourceLayers{ VK_IMAGE_ASPECT_COLOR_BIT, mip, layer, 1 };
-			cpy.imageOffset = VkOffset3D{0,0,0};
-			cpy.imageExtent = VkExtent3D{w,h,1};
+			cpy.imageOffset = VkOffset3D{ 0,0,0 };
+			cpy.imageExtent = VkExtent3D{ w,h,1 };
 			copies.push_back(cpy);
 			offset += layerSize;
 		}
@@ -2413,26 +2432,26 @@ bool smvk::UploadStreamer::tryHostImageCopy(VkImage image, VkFormat format, VkEx
 void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
 	if (!data || imageHandle.empty()) return;
 	Image* img = m_rm->images_.get(imageHandle);
-	if (!img || img->vkImage==VK_NULL_HANDLE) return;
+	if (!img || img->vkImage == VK_NULL_HANDLE) return;
 	// try host copy if supported and image has HOST_TRANSFER usage
 	if (
-		false 
+		false
 		&&
 		m_hostCopySupported && (img->usage & ImageUsage::TransferDst) != ImageUsage::None) {
 		VkFormat vkFmtTry = toVkFormat(img->format);
 		if (IsHostTransferSupported(vkFmtTry)) {
 			VkExtent3D ext{ img->extent.width, img->extent.height, img->extent.depth };
 			std::vector<VkBufferImageCopy> dummy;
-			bool remainTransferTry = (dstStages==VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess==VK_ACCESS_2_TRANSFER_WRITE_BIT);
+			bool remainTransferTry = (dstStages == VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess == VK_ACCESS_2_TRANSFER_WRITE_BIT);
 			VkImageLayout finalLayoutTry = remainTransferTry ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			if (tryHostImageCopy(img->vkImage, vkFmtTry, ext, img->mipLevels, img->arrayLayers, data, dataSize, dummy, finalLayoutTry)) {
 				bool remainTransfer = remainTransferTry;
 				VulkanResourceManager::ImageGlobalSyncState st{};
 				st.masks.stageMask = FromVkPipelineStage(dstStages);
-				if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess));
-				st.masks.accessMask=FromVkAccess(dstAccess);
-				st.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal;
-				if (remainTransfer) st.masks.stageMask=PipelineStageBit_Transfer;
+				if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
+				st.masks.accessMask = FromVkAccess(dstAccess);
+				st.layout = remainTransfer ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal;
+				if (remainTransfer) st.masks.stageMask = PipelineStageBit_Transfer;
 				m_rm->SetImageSyncState(imageHandle, st);
 				return;
 			}
@@ -2452,17 +2471,18 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 		ci.size = dataSize;
 		ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 		ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		VmaAllocationCreateInfo aci{}; aci.usage=VMA_MEMORY_USAGE_AUTO; aci.flags=VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT|VMA_ALLOCATION_CREATE_MAPPED_BIT; aci.requiredFlags=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-		VmaAllocationInfo info{}; VK_CHECK(vmaCreateBuffer(m_rm->m_allocator,&ci,&aci,&tmpBuf,&tmpAlloc,&info));
+		VmaAllocationCreateInfo aci{}; aci.usage = VMA_MEMORY_USAGE_AUTO; aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT; aci.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+		VmaAllocationInfo info{}; VK_CHECK(vmaCreateBuffer(m_rm->m_allocator, &ci, &aci, &tmpBuf, &tmpAlloc, &info));
 		dstPtr = info.pMappedData;
 		srcBuf = tmpBuf;
 		srcOff = 0;
 		useTmp = true;
-	} else {
+	}
+	else {
 		dstPtr = static_cast<char*>(m_ring.mapped) + ringOff;
 	}
 	memcpy(dstPtr, data, dataSize);
-	vmaFlushAllocation(m_rm->m_allocator, useTmp?tmpAlloc:m_ring.allocation, srcOff, dataSize);
+	vmaFlushAllocation(m_rm->m_allocator, useTmp ? tmpAlloc : m_ring.allocation, srcOff, dataSize);
 	ensureCmd();
 	// barriers and copy – we need to handle full mip chain; caller provided dataSize covering all mips, but we need regions
 	// Recompute regions similarly to UploadDataToImage2D
@@ -2489,21 +2509,22 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 	// UNDEFINED -> TRANSFER_DST
 	ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
 	// copy
-	if (img->mipLevels==1 && img->arrayLayers==1) {
+	if (img->mipLevels == 1 && img->arrayLayers == 1) {
 		VkBufferImageCopy2 r{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, srcOff, 0,0, {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, {0,0,0}, {img->extent.width, img->extent.height, 1} };
 		VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr, srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r };
 		vkCmdCopyBufferToImage2(m_curCmd, &copyInfo);
-	} else {
+	}
+	else {
 		const FormatInfo fmt = getFormatInfo(vkFmt);
 		std::vector<VkBufferImageCopy2> regs;
 		VkDeviceSize off = srcOff;
-		for(uint32_t mip=0;mip<img->mipLevels;++mip){
+		for (uint32_t mip = 0; mip < img->mipLevels; ++mip) {
 			uint32_t w = std::max(1u, img->extent.width >> mip);
 			uint32_t h = std::max(1u, img->extent.height >> mip);
 			uint32_t blocksX = (w + fmt.blockWidth - 1) / fmt.blockWidth;
 			uint32_t blocksY = (h + fmt.blockHeight - 1) / fmt.blockHeight;
 			VkDeviceSize layerSize = (VkDeviceSize)blocksX * blocksY * fmt.bytesPerBlock;
-			for(uint32_t layer=0; layer<img->arrayLayers; ++layer){
+			for (uint32_t layer = 0; layer < img->arrayLayers; ++layer) {
 				VkBufferImageCopy2 r{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, off, 0,0, {VK_IMAGE_ASPECT_COLOR_BIT, mip, layer, 1}, {0,0,0}, {w,h,1} };
 				regs.push_back(r);
 				off += layerSize;
@@ -2512,7 +2533,7 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 		VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr, srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)regs.size(), regs.data() };
 		vkCmdCopyBufferToImage2(m_curCmd, &copyInfo);
 	}
-	bool remainTransfer = (dstStages==VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess==VK_ACCESS_2_TRANSFER_WRITE_BIT);
+	bool remainTransfer = (dstStages == VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess == VK_ACCESS_2_TRANSFER_WRITE_BIT);
 	if (!remainTransfer) {
 		if (needOwnership) {
 			VkImageMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
@@ -2520,13 +2541,15 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 			vkCmdPipelineBarrier2(m_curCmd, &dep);
 			VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
 			m_pendingImageAcquires.push_back(acq);
-		} else {
+		}
+		else {
 			ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
 		}
-	} else {
+	}
+	else {
 		if (needOwnership) {
 			VkImageMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
-			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel }; vkCmdPipelineBarrier2(m_curCmd,&dep);
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel }; vkCmdPipelineBarrier2(m_curCmd, &dep);
 			VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, 0, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
 			m_pendingImageAcquires.push_back(acq);
 		}
@@ -2538,17 +2561,17 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 	}
 	// defer staging destruction until transfer batch is submitted (TimelinePoint)
 	if (useTmp) {
-		m_pendingCleanups.push_back(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
+		m_pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 	}
 	// update global sync
-	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); st.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask=PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
+	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); st.layout = remainTransfer ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask = PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
 }
 void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* data, size_t dataSize, const std::vector<VkBufferImageCopy>& regions,
 	VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
 	if (!data || imageHandle.empty() || regions.empty()) return;
 	Image* img = m_rm->images_.get(imageHandle);
-	if (!img || img->vkImage==VK_NULL_HANDLE) return;
-	bool remainTransfer = (dstStages==VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess==VK_ACCESS_2_TRANSFER_WRITE_BIT);
+	if (!img || img->vkImage == VK_NULL_HANDLE) return;
+	bool remainTransfer = (dstStages == VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess == VK_ACCESS_2_TRANSFER_WRITE_BIT);
 	VkImageLayout finalLayout = remainTransfer ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	// Try host copy first for KTX (upload once, long-lived)
 	// Spec: finalLayout must be in pCopyDstLayouts; only GENERAL is guaranteed.
@@ -2560,7 +2583,7 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 			if (vkTransitionImageLayoutEXT(device_, 1, &trans1) == VK_SUCCESS) {
 				std::vector<VkMemoryToImageCopyEXT> hostCopies;
 				hostCopies.reserve(regions.size());
-				for (auto &r : regions) {
+				for (auto& r : regions) {
 					VkMemoryToImageCopyEXT hc{};
 					hc.sType = VK_STRUCTURE_TYPE_MEMORY_TO_IMAGE_COPY_EXT;
 					hc.pHostPointer = static_cast<const char*>(data) + r.bufferOffset;
@@ -2582,10 +2605,10 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 					if (vkTransitionImageLayoutEXT(device_, 1, &trans2) == VK_SUCCESS) {
 						VulkanResourceManager::ImageGlobalSyncState st2{};
 						st2.masks.stageMask = FromVkPipelineStage(dstStages);
-						if (st2.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st2.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess));
-						st2.masks.accessMask=FromVkAccess(dstAccess);
-						st2.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal;
-						if (remainTransfer) st2.masks.stageMask=PipelineStageBit_Transfer;
+						if (st2.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st2.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
+						st2.masks.accessMask = FromVkAccess(dstAccess);
+						st2.layout = remainTransfer ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal;
+						if (remainTransfer) st2.masks.stageMask = PipelineStageBit_Transfer;
 						m_rm->SetImageSyncState(imageHandle, st2);
 						return;
 					}
@@ -2611,17 +2634,18 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 		ci.size = dataSize;
 		ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 		ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		VmaAllocationCreateInfo aci{}; aci.usage=VMA_MEMORY_USAGE_AUTO; aci.flags=VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT|VMA_ALLOCATION_CREATE_MAPPED_BIT; aci.requiredFlags=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-		VmaAllocationInfo info{}; VK_CHECK(vmaCreateBuffer(m_rm->m_allocator,&ci,&aci,&tmpBuf,&tmpAlloc,&info));
+		VmaAllocationCreateInfo aci{}; aci.usage = VMA_MEMORY_USAGE_AUTO; aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT; aci.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+		VmaAllocationInfo info{}; VK_CHECK(vmaCreateBuffer(m_rm->m_allocator, &ci, &aci, &tmpBuf, &tmpAlloc, &info));
 		dstPtr = info.pMappedData;
 		srcBuf = tmpBuf;
 		srcOff = 0;
 		useTmp = true;
-	} else {
+	}
+	else {
 		dstPtr = static_cast<char*>(m_ring.mapped) + ringOff;
 	}
 	memcpy(dstPtr, data, dataSize);
-	vmaFlushAllocation(m_rm->m_allocator, useTmp?tmpAlloc:m_ring.allocation, srcOff, dataSize);
+	vmaFlushAllocation(m_rm->m_allocator, useTmp ? tmpAlloc : m_ring.allocation, srcOff, dataSize);
 	ensureCmd();
 	VkImageSubresourceRange fullRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers };
 	uint32_t srcF = m_transfer->queueFamilyIndex();
@@ -2632,7 +2656,7 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 	ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
 	std::vector<VkBufferImageCopy2> regs2;
 	regs2.reserve(regions.size());
-	for (auto &r : regions) {
+	for (auto& r : regions) {
 		VkBufferImageCopy2 r2{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, srcOff + r.bufferOffset, 0,0, {r.imageSubresource.aspectMask, r.imageSubresource.mipLevel, r.imageSubresource.baseArrayLayer, r.imageSubresource.layerCount}, r.imageOffset, r.imageExtent };
 		regs2.push_back(r2);
 	}
@@ -2645,13 +2669,15 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 			vkCmdPipelineBarrier2(m_curCmd, &dep);
 			VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
 			m_pendingImageAcquires.push_back(acq);
-		} else {
+		}
+		else {
 			ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
 		}
-	} else {
+	}
+	else {
 		if (needOwnership) {
 			VkImageMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
-			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel }; vkCmdPipelineBarrier2(m_curCmd,&dep);
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel }; vkCmdPipelineBarrier2(m_curCmd, &dep);
 			VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, 0, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
 			m_pendingImageAcquires.push_back(acq);
 		}
@@ -2662,25 +2688,25 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 		submitLocked(false);
 	}
 	if (useTmp) {
-		m_pendingCleanups.push_back(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
+		m_pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 	}
-	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); st.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask=PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
+	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); st.layout = remainTransfer ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask = PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
 }
-void smvk::UploadStreamer::flush() { std::lock_guard<std::mutex> lock(m_mutex); if(m_hasPending) submitLocked(true); if(m_transfer) m_transfer->purge(); }
+void smvk::UploadStreamer::flush() { std::lock_guard<std::mutex> lock(m_mutex); if (m_hasPending) submitLocked(true); if (m_transfer) m_transfer->purge(); }
 smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	if (!m_hasPending || m_curCmd == VK_NULL_HANDLE) return TimelinePoint{};
 	// Use same path as submitLocked to ensure pending acquires and cleanups are handled
 	auto tp = m_transfer->submit(m_curHandle);
-	for (auto &task : m_pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
+	for (auto& task : m_pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
 	m_pendingCleanups.clear();
 	if (m_transfer != m_graphics && (!m_pendingBufferAcquires.empty() || !m_pendingImageAcquires.empty())) {
 		auto gHan = m_graphics->acquire();
 		auto gCmd = m_graphics->GetCommandBuffer(gHan);
-		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, (uint32_t)m_pendingBufferAcquires.size(), m_pendingBufferAcquires.empty()?nullptr:m_pendingBufferAcquires.data(), (uint32_t)m_pendingImageAcquires.size(), m_pendingImageAcquires.empty()?nullptr:m_pendingImageAcquires.data() };
+		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, (uint32_t)m_pendingBufferAcquires.size(), m_pendingBufferAcquires.empty() ? nullptr : m_pendingBufferAcquires.data(), (uint32_t)m_pendingImageAcquires.size(), m_pendingImageAcquires.empty() ? nullptr : m_pendingImageAcquires.data() };
 		vkCmdPipelineBarrier2(gCmd, &dep);
 		TimelineWait wait{ tp, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT };
-		m_graphics->submit(gHan, std::span<const TimelineWait>(&wait,1));
+		m_graphics->submit(gHan, std::span<const TimelineWait>(&wait, 1));
 	}
 	m_pendingBufferAcquires.clear();
 	m_pendingImageAcquires.clear();
@@ -2690,10 +2716,10 @@ smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
 	m_stagedBytesSinceFlush = 0;
 	return tp;
 }
-void smvk::UploadStreamer::waitAll() { flush(); if(m_transfer) m_transfer->waitAll(); if(m_graphics && m_graphics!=m_transfer) m_graphics->waitAll(); }
+void smvk::UploadStreamer::waitAll() { flush(); if (m_transfer) m_transfer->waitAll(); if (m_graphics && m_graphics != m_transfer) m_graphics->waitAll(); }
 
-void smvk::VulkanResourceManager::FlushUploads() { if(m_streamer) m_streamer->flush(); }
-void smvk::VulkanResourceManager::WaitForUploads() { if(m_streamer) m_streamer->waitAll(); }
+void smvk::VulkanResourceManager::FlushUploads() { if (m_streamer) m_streamer->flush(); }
+void smvk::VulkanResourceManager::WaitForUploads() { if (m_streamer) m_streamer->waitAll(); }
 void smvk::VulkanResourceManager::UploadDataToBuffer(
 	BufferHandle buffer,
 	const void* data,
@@ -2712,8 +2738,8 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 		// Detect batch: if caller is Cluster (we can check if dest is static vertex heap) defer flush.
 		// Simple: flush if the buffer is NOT the static heap buffers
 		if (buffer != staticVertexFmtHeap.m_staticVertexPosBuffer &&
-		    buffer != staticVertexFmtHeap.m_staticVertexShadingBuffer &&
-		    buffer != staticVertexFmtHeap.m_staticIndexBuffer) {
+			buffer != staticVertexFmtHeap.m_staticVertexShadingBuffer &&
+			buffer != staticVertexFmtHeap.m_staticIndexBuffer) {
 			m_streamer->flush();
 		}
 		return;
@@ -2784,7 +2810,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	if (m_streamer) {
 		// Use streamer hot-path (transfer queue + ring) if available
 		ImageHandle found{};
-		images_.forEachHandle([&](ImageHandle h){ auto* im = images_.get(h); if (im && im->vkImage == image.vkImage) found = h; });
+		images_.forEachHandle([&](ImageHandle h) { auto* im = images_.get(h); if (im && im->vkImage == image.vkImage) found = h; });
 		if (!found.empty()) {
 			// compute upload size
 			const VkFormat vkFmt2 = toVkFormat(image.format);
@@ -3080,7 +3106,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	// Update global sync table for image
 	{
 		ImageHandle found{};
-		images_.forEachHandle([&](ImageHandle h){
+		images_.forEachHandle([&](ImageHandle h) {
 			auto* img = images_.get(h);
 			if (img && img->vkImage == image.vkImage) found = h;
 		});
@@ -4351,14 +4377,15 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 	ci.usage = bufferTypeToUsageFlags[static_cast<size_t>(bufferType)];
 	// For frequently updated resources (vertex/index) use CONCURRENT when dedicated transfer exists to avoid ownership ping-pong
 	if (m_transferSubmitter && m_transferSubmitter != m_submitter &&
-	    (bufferType == BufferType_Vertex || bufferType == BufferType_Index || bufferType == BufferType_Storage)) {
+		(bufferType == BufferType_Vertex || bufferType == BufferType_Index || bufferType == BufferType_Storage)) {
 		ci.sharingMode = VK_SHARING_MODE_CONCURRENT;
 		static uint32_t families[2];
 		families[0] = m_submitter->queueFamilyIndex();
 		families[1] = m_transferSubmitter->queueFamilyIndex();
 		ci.queueFamilyIndexCount = 2;
 		ci.pQueueFamilyIndices = families;
-	} else {
+	}
+	else {
 		ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	}
 
@@ -4577,7 +4604,8 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 			info.sampler = samplerCache_->at(i);
 			samplerInfos.push_back(info);
 		}
-	} else {
+	}
+	else {
 		// Fallback for early init / headless without cache
 		samplerInfos.resize(2);
 		samplerInfos[0].sampler = m_defaultSampler;
@@ -4738,11 +4766,11 @@ std::unordered_map<uint64_t, smvk::VulkanResourceManager::BufferGlobalSyncState>
 }
 void smvk::VulkanResourceManager::CommitImageSyncStates(const std::unordered_map<uint64_t, ImageGlobalSyncState>& states) {
 	std::unique_lock lock(syncMutex_);
-	for (auto &kv : states) imageSyncStates_[kv.first] = kv.second;
+	for (auto& kv : states) imageSyncStates_[kv.first] = kv.second;
 }
 void smvk::VulkanResourceManager::CommitBufferSyncStates(const std::unordered_map<uint64_t, BufferGlobalSyncState>& states) {
 	std::unique_lock lock(syncMutex_);
-	for (auto &kv : states) bufferSyncStates_[kv.first] = kv.second;
+	for (auto& kv : states) bufferSyncStates_[kv.first] = kv.second;
 }
 // 
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BindlessImageHandle handle)
@@ -4975,7 +5003,8 @@ inline smvk::Submitter::Submitter(VulkanCore& core, uint32_t queueFamilyIndex)
 		if (q.transferFamily && *q.transferFamily == queueFamilyIndex) m_queue = transferQueue_;
 		else if (q.graphicsFamily && *q.graphicsFamily == queueFamilyIndex) m_queue = graphicsQueue_;
 		else if (q.presentFamily && *q.presentFamily == queueFamilyIndex) m_queue = presentQueue_;
-	} else {
+	}
+	else {
 		m_queue = graphicsQueue_;
 	}
 	if (m_queue == VK_NULL_HANDLE) m_queue = graphicsQueue_;
@@ -5036,7 +5065,7 @@ VkResult smvk::Submitter::waitTimeline(uint64_t value, uint64_t timeout) const
 	if (pool->availableSlots == 0)
 	{
 		uint64_t oldest = UINT64_MAX;
-		for (uint32_t i=0;i<CommandBufferPool::kMax;++i){
+		for (uint32_t i = 0; i < CommandBufferPool::kMax; ++i) {
 			const auto& slot = pool->slots[i];
 			if (slot.state_ == WrapperSlot::CommandState::Submitted) oldest = std::min(oldest, slot.retireValue_);
 		}
@@ -5287,6 +5316,8 @@ void smvk::Submitter::purge()
 	}
 	VK_CHECK(r);
 
+
+#ifdef DEBUG_COMMAND_SUBMISSION
 	fprintf(stderr,
 		"[PURGE] this=%p qfi=%u semaphore=%p "
 		"completed=%llu next=%llu last=%llu\n",
@@ -5296,19 +5327,28 @@ void smvk::Submitter::purge()
 		(unsigned long long)completedValue,
 		(unsigned long long)m_timelineValue,
 		(unsigned long long)m_lastTimelineValue);
+#endif
 
 	if (completedValue == UINT64_MAX) {
+
+#ifdef DEBUG_COMMAND_SUBMISSION
 		fprintf(stderr,
 			"FATAL: timeline semaphore became UINT64_MAX\n");
+#endif
 		abort();
 	}
 
 	if (completedValue >= m_timelineValue) {
+
+#ifdef DEBUG_COMMAND_SUBMISSION
+
 		fprintf(stderr,
 			"FATAL: timeline ahead of Submitter: "
 			"completed=%llu next=%llu\n",
 			(unsigned long long)completedValue,
 			(unsigned long long)m_timelineValue);
+#endif
+
 		abort();
 	}
 
@@ -5346,7 +5386,7 @@ inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout)
 	//	return;
 
 	//assert(validHandle(handle));
-	
+
 	CommandBufferPool* pool = handle.pool;
 	WrapperSlot& slot = pool->slots[handle.index_];
 	assert(slot.state_ == WrapperSlot::CommandState::Submitted && "Cannot wait on command buffer before submit");
@@ -5512,7 +5552,7 @@ void smvk::VulkanSwapchain::Recreate() {
 		imageTimelineValues_.assign(images_.size(), 0);
 		VkSemaphoreCreateInfo info{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
 		renderFinishedSemaphores_.resize(images_.size(), VK_NULL_HANDLE);
-		for (size_t i=0;i<images_.size();++i) vkCreateSemaphore(device_, &info, nullptr, &renderFinishedSemaphores_[i]);
+		for (size_t i = 0; i < images_.size(); ++i) vkCreateSemaphore(device_, &info, nullptr, &renderFinishedSemaphores_[i]);
 	}
 	if (frameTimelineValues_.size() != framesInFlight_) {
 		frameTimelineValues_.assign(framesInFlight_, 0);
@@ -5523,7 +5563,7 @@ void smvk::VulkanSwapchain::Recreate() {
 		VkFenceCreateInfo finfo{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT };
 		imageAvailableSemaphores_.resize(framesInFlight_, VK_NULL_HANDLE);
 		inFlightFences_.resize(framesInFlight_, VK_NULL_HANDLE);
-		for (size_t i=0;i<framesInFlight_;++i){
+		for (size_t i = 0; i < framesInFlight_; ++i) {
 			vkCreateSemaphore(device_, &sinfo, nullptr, &imageAvailableSemaphores_[i]);
 			vkCreateFence(device_, &finfo, nullptr, &inFlightFences_[i]);
 		}
@@ -5924,8 +5964,8 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	imageTimelineValues_[currentImageIndex_] = timelineValue_;
 	{
 		// Single-threaded: all queue ops on render thread, but use per-queue mutex for correctness when transferQueue is distinct
-		std::mutex &mg = GetQueueMutex(graphicsQueue_);
-		std::mutex &mp = GetQueueMutex(presentQueue_);
+		std::mutex& mg = GetQueueMutex(graphicsQueue_);
+		std::mutex& mp = GetQueueMutex(presentQueue_);
 		std::unique_lock<std::mutex> lockG(mg, std::defer_lock);
 		std::unique_lock<std::mutex> lockP(mp, std::defer_lock);
 		if (&mg == &mp) {
@@ -5950,7 +5990,8 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			}
 			AdvanceFrame();
 			return;
-		} else {
+		}
+		else {
 			{
 				std::lock_guard<std::mutex> lock(mg);
 				VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
@@ -6931,7 +6972,7 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 	for (const auto& pass : passes_) {
 		PassUsage pu;
 		// Color attachments – writes
-		for (auto &att : pass.colorAttachments_) {
+		for (auto& att : pass.colorAttachments_) {
 			if (att.view.empty()) continue;
 			auto* v = imageViews_.get(att.view);
 			if (!v) continue;
@@ -6942,7 +6983,8 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 				if (!ext) continue;
 				phys = ext->image;
 				if (phys.empty()) continue; // swapchain – external sync
-			} else {
+			}
+			else {
 				auto* li = images_.get(v->key.image);
 				if (!li) continue;
 				phys = li->resolvedImageHandle;
@@ -6958,7 +7000,7 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 		}
 		// Depth attachment
 		if (pass.hasDepthAttachment_) {
-			auto &att = pass.depthAttachment_;
+			auto& att = pass.depthAttachment_;
 			if (!att.view.empty()) {
 				auto* v = imageViews_.get(att.view);
 				if (!v) continue;
@@ -6968,7 +7010,8 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 					if (!ext) continue;
 					phys = ext->image;
 					if (phys.empty()) continue;
-				} else {
+				}
+				else {
 					auto* li = images_.get(v->key.image);
 					if (!li) continue;
 					phys = li->resolvedImageHandle;
@@ -6982,7 +7025,7 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 			}
 		}
 		// Explicit image hints (includes SetInput/Storage derived)
-		for (auto &h : pass.imageHints_) {
+		for (auto& h : pass.imageHints_) {
 			if (h.view.empty()) continue;
 			auto* v = imageViews_.get(h.view);
 			if (!v) continue;
@@ -6992,7 +7035,8 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 				if (!ext) continue;
 				phys = ext->image;
 				if (phys.empty()) continue; // swapchain – skip
-			} else {
+			}
+			else {
 				auto* li = images_.get(v->key.image);
 				if (!li) continue;
 				phys = li->resolvedImageHandle;
@@ -7000,7 +7044,7 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 			if (phys.empty()) continue;
 			// deduplicate if already covered by attachment (attachment takes precedence)
 			bool dup = false;
-			for (auto &e : pu.images) if (e.first == phys) { dup = true; break; }
+			for (auto& e : pu.images) if (e.first == phys) { dup = true; break; }
 			if (dup) continue;
 			ImageSyncRequest req = h.request;
 			if (req.barrierMasks.stageMask == PipelineStageBit_None)
@@ -7010,7 +7054,7 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 				auto* img = vctx.images_.get(phys);
 				if (img) {
 					VkFormat fmt = toVkFormat(img->format);
-					bool isDepth = (fmt==VK_FORMAT_D16_UNORM || fmt==VK_FORMAT_D32_SFLOAT || fmt==VK_FORMAT_D24_UNORM_S8_UINT || fmt==VK_FORMAT_D32_SFLOAT_S8_UINT);
+					bool isDepth = (fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D32_SFLOAT || fmt == VK_FORMAT_D24_UNORM_S8_UINT || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT);
 					if (isDepth && req.layout == ImageLayout::ShaderReadOnlyOptimal)
 						req.layout = ImageLayout::DepthStencilReadOnlyOptimal;
 				}
@@ -7018,7 +7062,7 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 			pu.images.emplace_back(phys, req);
 		}
 		// Buffer hints
-		for (auto &h : pass.bufferHints_) {
+		for (auto& h : pass.bufferHints_) {
 			if (h.buffer.empty()) continue;
 			auto* lb = buffers_.get(h.buffer);
 			if (!lb) continue;
@@ -7046,7 +7090,7 @@ std::vector<size_t> smvk::RenderGraph::TopologicalSort(const std::vector<PassUsa
 	size_t n = usages.size();
 	if (n <= 1) {
 		std::vector<size_t> r(n);
-		for (size_t i=0;i<n;++i) r[i]=i;
+		for (size_t i = 0; i < n; ++i) r[i] = i;
 		return r;
 	}
 	std::vector<std::vector<size_t>> adj(n);
@@ -7057,51 +7101,53 @@ std::vector<size_t> smvk::RenderGraph::TopologicalSort(const std::vector<PassUsa
 	std::unordered_map<uint64_t, std::vector<size_t>> lastReadersImage;
 	std::unordered_map<uint64_t, size_t> lastWriterBuffer;
 	std::unordered_map<uint64_t, std::vector<size_t>> lastReadersBuffer;
-	auto keyFor = [](auto h){ return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen())<<32)); };
-	for (size_t i=0;i<n;++i){
+	auto keyFor = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
+	for (size_t i = 0; i < n; ++i) {
 		const auto& pu = usages[i];
-		for (auto &p : pu.images){
+		for (auto& p : pu.images) {
 			uint64_t k = keyFor(p.first);
 			bool isWrite = IsWriteAccess(p.second.barrierMasks.accessMask);
-			if (isWrite){
+			if (isWrite) {
 				// WAW: last writer -> this
 				auto itW = lastWriterImage.find(k);
-				if (itW != lastWriterImage.end()){
+				if (itW != lastWriterImage.end()) {
 					size_t src = itW->second;
 					if (src != i) { adj[src].push_back(i); indeg[i]++; }
 				}
 				// WAR: last readers -> this
 				auto itR = lastReadersImage.find(k);
-				if (itR != lastReadersImage.end()){
-					for (size_t r : itR->second){ adj[r].push_back(i); indeg[i]++; }
+				if (itR != lastReadersImage.end()) {
+					for (size_t r : itR->second) { adj[r].push_back(i); indeg[i]++; }
 					itR->second.clear();
 				}
-				lastWriterImage[k]=i;
-			} else {
+				lastWriterImage[k] = i;
+			}
+			else {
 				// RAW: last writer -> this
 				auto itW = lastWriterImage.find(k);
-				if (itW != lastWriterImage.end()){
+				if (itW != lastWriterImage.end()) {
 					size_t src = itW->second;
 					adj[src].push_back(i); indeg[i]++;
 				}
 				lastReadersImage[k].push_back(i);
 			}
 		}
-		for (auto &p : pu.buffers){
+		for (auto& p : pu.buffers) {
 			uint64_t k = keyFor(p.first);
 			bool isWrite = IsWriteAccess(p.second.barrierMasks.accessMask);
-			if (isWrite){
+			if (isWrite) {
 				auto itW = lastWriterBuffer.find(k);
-				if (itW != lastWriterBuffer.end()){ adj[itW->second].push_back(i); indeg[i]++; }
+				if (itW != lastWriterBuffer.end()) { adj[itW->second].push_back(i); indeg[i]++; }
 				auto itR = lastReadersBuffer.find(k);
-				if (itR != lastReadersBuffer.end()){
-					for (size_t r: itR->second){ adj[r].push_back(i); indeg[i]++; }
+				if (itR != lastReadersBuffer.end()) {
+					for (size_t r : itR->second) { adj[r].push_back(i); indeg[i]++; }
 					itR->second.clear();
 				}
-				lastWriterBuffer[k]=i;
-			} else {
+				lastWriterBuffer[k] = i;
+			}
+			else {
 				auto itW = lastWriterBuffer.find(k);
-				if (itW != lastWriterBuffer.end()){ adj[itW->second].push_back(i); indeg[i]++; }
+				if (itW != lastWriterBuffer.end()) { adj[itW->second].push_back(i); indeg[i]++; }
 				lastReadersBuffer[k].push_back(i);
 			}
 		}
@@ -7111,23 +7157,23 @@ std::vector<size_t> smvk::RenderGraph::TopologicalSort(const std::vector<PassUsa
 	sorted.reserve(n);
 	// Use ordered set via vector + sort
 	std::vector<size_t> zero;
-	for (size_t i=0;i<n;++i) if (indeg[i]==0) zero.push_back(i);
+	for (size_t i = 0; i < n; ++i) if (indeg[i] == 0) zero.push_back(i);
 	std::sort(zero.begin(), zero.end());
-	while (!zero.empty()){
+	while (!zero.empty()) {
 		size_t u = zero.front(); zero.erase(zero.begin());
 		sorted.push_back(u);
-		for (size_t v: adj[u]){
-			if (--indeg[v]==0){
+		for (size_t v : adj[u]) {
+			if (--indeg[v] == 0) {
 				zero.push_back(v);
 				std::sort(zero.begin(), zero.end());
 			}
 		}
 	}
-	if (sorted.size()!=n){
+	if (sorted.size() != n) {
 		// Cycle – fall back to insertion order and assert
 		assert(false && "RenderGraph cycle detected in pass dependencies");
 		sorted.clear();
-		for (size_t i=0;i<n;++i) sorted.push_back(i);
+		for (size_t i = 0; i < n; ++i) sorted.push_back(i);
 	}
 	return sorted;
 }
@@ -7148,18 +7194,18 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 	std::vector<VkBufferMemoryBarrier2> bufBarriers;
 	imgBarriers.reserve(32);
 	bufBarriers.reserve(16);
-	auto keyFor = [](auto h){ return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen())<<32)); };
+	auto keyFor = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
 
-	for (size_t idx : sortedOrder){
+	for (size_t idx : sortedOrder) {
 		const auto& pu = usages[idx];
-		for (auto &pr : pu.images){
+		for (auto& pr : pu.images) {
 			ImageHandle h = pr.first;
 			ImageSyncRequest req = pr.second;
 			uint64_t k = keyFor(h);
 			auto it = localImage.find(k);
 			VulkanResourceManager::ImageGlobalSyncState src{};
 			if (it != localImage.end()) src = it->second;
-			else { src.masks = {AccessFlags::None, PipelineStageBit_None}; src.layout = ImageLayout::Undefined; }
+			else { src.masks = { AccessFlags::None, PipelineStageBit_None }; src.layout = ImageLayout::Undefined; }
 
 			bool srcIsWrite = IsWriteAccess(src.masks.accessMask);
 			bool dstIsWrite = IsWriteAccess(req.barrierMasks.accessMask);
@@ -7167,7 +7213,7 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 			if (src.layout != req.layout) needBarrier = true;
 			else if (src.masks.accessMask != req.barrierMasks.accessMask || src.masks.stageMask != req.barrierMasks.stageMask) {
 				// Read->Read with same layout needs no barrier
-				if (!( !srcIsWrite && !dstIsWrite )) needBarrier = true;
+				if (!(!srcIsWrite && !dstIsWrite)) needBarrier = true;
 			}
 			// WAW with same layout/access still needs barrier for ordering/visibility (depth atlas tiles)
 			else if (srcIsWrite && dstIsWrite) {
@@ -7176,9 +7222,9 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 			// Also if src is Undefined, we need barrier for layout transition
 			if (src.layout == ImageLayout::Undefined && req.layout != ImageLayout::Undefined) needBarrier = true;
 
-			if (needBarrier){
+			if (needBarrier) {
 				auto* img = vctx.images_.get(h);
-				if (!img || img->vkImage==VK_NULL_HANDLE) continue;
+				if (!img || img->vkImage == VK_NULL_HANDLE) continue;
 				VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
 				b.srcStageMask = ToVkStage(src.masks.stageMask);
 				// For first transition from Undefined, src stage is NONE
@@ -7199,9 +7245,9 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 				VkFormat fmt = toVkFormat(img->format);
 				VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
 				// For depth formats, choose depth (and stencil if needed)
-				if (fmt == VK_FORMAT_D16_UNORM || fmt==VK_FORMAT_D32_SFLOAT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-				else if (fmt==VK_FORMAT_D24_UNORM_S8_UINT || fmt==VK_FORMAT_D32_SFLOAT_S8_UINT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-				else if (fmt==VK_FORMAT_S8_UINT) aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
+				if (fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D32_SFLOAT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+				else if (fmt == VK_FORMAT_D24_UNORM_S8_UINT || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+				else if (fmt == VK_FORMAT_S8_UINT) aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
 				b.subresourceRange = { aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
 				imgBarriers.push_back(b);
 			}
@@ -7209,9 +7255,9 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 			VulkanResourceManager::ImageGlobalSyncState dstState{};
 			dstState.masks = req.barrierMasks;
 			dstState.layout = req.layout;
-			localImage[k]=dstState;
+			localImage[k] = dstState;
 		}
-		for (auto &pr : pu.buffers){
+		for (auto& pr : pu.buffers) {
 			BufferHandle h = pr.first;
 			BufferSyncRequest req = pr.second;
 			uint64_t k = keyFor(h);
@@ -7221,15 +7267,15 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 			bool srcIsWrite = IsWriteAccess(src.masks.accessMask);
 			bool dstIsWrite = IsWriteAccess(req.barrierMasks.accessMask);
 			bool needBarrier = false;
-			if (src.masks.accessMask != req.barrierMasks.accessMask || src.masks.stageMask != req.barrierMasks.stageMask){
-				if (!( !srcIsWrite && !dstIsWrite )) needBarrier = true;
+			if (src.masks.accessMask != req.barrierMasks.accessMask || src.masks.stageMask != req.barrierMasks.stageMask) {
+				if (!(!srcIsWrite && !dstIsWrite)) needBarrier = true;
 			}
 			// First use from None with no access – still may need barrier if dst is read after write globally, but local None -> need barrier if dst is read? For buffer from Undefined, we still need barrier if dst access != None
-			if (src.masks.accessMask==AccessFlags::None && req.barrierMasks.accessMask!=AccessFlags::None) needBarrier = true;
+			if (src.masks.accessMask == AccessFlags::None && req.barrierMasks.accessMask != AccessFlags::None) needBarrier = true;
 
-			if (needBarrier){
+			if (needBarrier) {
 				auto* buf = vctx.buffers_.get(h);
-				if (!buf || buf->vkBuffer==VK_NULL_HANDLE) continue;
+				if (!buf || buf->vkBuffer == VK_NULL_HANDLE) continue;
 				VkBufferMemoryBarrier2 b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
 				b.srcStageMask = ToVkStage(src.masks.stageMask);
 				b.srcAccessMask = ToVkAccessLocal(src.masks.accessMask);
@@ -7244,15 +7290,15 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 			}
 			VulkanResourceManager::BufferGlobalSyncState dstState{};
 			dstState.masks = req.barrierMasks;
-			localBuffer[k]=dstState;
+			localBuffer[k] = dstState;
 		}
 	}
-	if (!imgBarriers.empty() || !bufBarriers.empty()){
+	if (!imgBarriers.empty() || !bufBarriers.empty()) {
 		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
 		dep.imageMemoryBarrierCount = static_cast<uint32_t>(imgBarriers.size());
-		dep.pImageMemoryBarriers = imgBarriers.empty()? nullptr : imgBarriers.data();
+		dep.pImageMemoryBarriers = imgBarriers.empty() ? nullptr : imgBarriers.data();
 		dep.bufferMemoryBarrierCount = static_cast<uint32_t>(bufBarriers.size());
-		dep.pBufferMemoryBarriers = bufBarriers.empty()? nullptr : bufBarriers.data();
+		dep.pBufferMemoryBarriers = bufBarriers.empty() ? nullptr : bufBarriers.data();
 		vkCmdPipelineBarrier2(vkCmd, &dep);
 	}
 	// Commit local states back to global tables (under unique lock)
@@ -7282,26 +7328,27 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			std::vector<VkBufferMemoryBarrier2> bufBarriers;
 			imgBarriers.reserve(4);
 			bufBarriers.reserve(4);
-			auto keyFor = [](auto h){ return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen())<<32)); };
-			for (auto &pr : pu.images){
+			auto keyFor = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
+			for (auto& pr : pu.images) {
 				ImageHandle h = pr.first;
 				ImageSyncRequest req = pr.second;
 				uint64_t k = keyFor(h);
 				auto it = imageStates.find(k);
 				VulkanResourceManager::ImageGlobalSyncState src{};
 				if (it != imageStates.end()) src = it->second;
-				else { src.masks = {AccessFlags::None, PipelineStageBit_None}; src.layout = ImageLayout::Undefined; }
+				else { src.masks = { AccessFlags::None, PipelineStageBit_None }; src.layout = ImageLayout::Undefined; }
 				bool srcIsWrite = IsWriteAccess(src.masks.accessMask);
 				bool dstIsWrite = IsWriteAccess(req.barrierMasks.accessMask);
 				bool needBarrier = false;
 				if (src.layout != req.layout) needBarrier = true;
 				else if (src.masks.accessMask != req.barrierMasks.accessMask || src.masks.stageMask != req.barrierMasks.stageMask) {
-					if (!( !srcIsWrite && !dstIsWrite )) needBarrier = true;
-				} else if (srcIsWrite && dstIsWrite) needBarrier = true;
+					if (!(!srcIsWrite && !dstIsWrite)) needBarrier = true;
+				}
+				else if (srcIsWrite && dstIsWrite) needBarrier = true;
 				if (src.layout == ImageLayout::Undefined && req.layout != ImageLayout::Undefined) needBarrier = true;
-				if (needBarrier){
+				if (needBarrier) {
 					auto* img = vctx.images_.get(h);
-					if (!img || img->vkImage==VK_NULL_HANDLE) continue;
+					if (!img || img->vkImage == VK_NULL_HANDLE) continue;
 					VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
 					b.srcStageMask = ToVkStage(src.masks.stageMask);
 					if (src.layout == ImageLayout::Undefined) b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
@@ -7318,18 +7365,18 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					b.image = img->vkImage;
 					VkFormat fmt = toVkFormat(img->format);
 					VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-					if (fmt == VK_FORMAT_D16_UNORM || fmt==VK_FORMAT_D32_SFLOAT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-					else if (fmt==VK_FORMAT_D24_UNORM_S8_UINT || fmt==VK_FORMAT_D32_SFLOAT_S8_UINT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-					else if (fmt==VK_FORMAT_S8_UINT) aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
+					if (fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D32_SFLOAT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+					else if (fmt == VK_FORMAT_D24_UNORM_S8_UINT || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+					else if (fmt == VK_FORMAT_S8_UINT) aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
 					b.subresourceRange = { aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
 					imgBarriers.push_back(b);
 				}
 				VulkanResourceManager::ImageGlobalSyncState dstState{};
 				dstState.masks = req.barrierMasks;
 				dstState.layout = req.layout;
-				imageStates[k]=dstState;
+				imageStates[k] = dstState;
 			}
-			for (auto &pr : pu.buffers){
+			for (auto& pr : pu.buffers) {
 				BufferHandle h = pr.first;
 				BufferSyncRequest req = pr.second;
 				uint64_t k = keyFor(h);
@@ -7339,13 +7386,13 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				bool srcIsWrite = IsWriteAccess(src.masks.accessMask);
 				bool dstIsWrite = IsWriteAccess(req.barrierMasks.accessMask);
 				bool needBarrier = false;
-				if (src.masks.accessMask != req.barrierMasks.accessMask || src.masks.stageMask != req.barrierMasks.stageMask){
-					if (!( !srcIsWrite && !dstIsWrite )) needBarrier = true;
+				if (src.masks.accessMask != req.barrierMasks.accessMask || src.masks.stageMask != req.barrierMasks.stageMask) {
+					if (!(!srcIsWrite && !dstIsWrite)) needBarrier = true;
 				}
-				if (src.masks.accessMask==AccessFlags::None && req.barrierMasks.accessMask!=AccessFlags::None) needBarrier = true;
-				if (needBarrier){
+				if (src.masks.accessMask == AccessFlags::None && req.barrierMasks.accessMask != AccessFlags::None) needBarrier = true;
+				if (needBarrier) {
 					auto* buf = vctx.buffers_.get(h);
-					if (!buf || buf->vkBuffer==VK_NULL_HANDLE) continue;
+					if (!buf || buf->vkBuffer == VK_NULL_HANDLE) continue;
 					VkBufferMemoryBarrier2 b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
 					b.srcStageMask = ToVkStage(src.masks.stageMask);
 					b.srcAccessMask = ToVkAccessLocal(src.masks.accessMask);
@@ -7360,14 +7407,14 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				}
 				VulkanResourceManager::BufferGlobalSyncState dstState{};
 				dstState.masks = req.barrierMasks;
-				bufferStates[k]=dstState;
+				bufferStates[k] = dstState;
 			}
-			if (!imgBarriers.empty() || !bufBarriers.empty()){
+			if (!imgBarriers.empty() || !bufBarriers.empty()) {
 				VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
 				dep.imageMemoryBarrierCount = static_cast<uint32_t>(imgBarriers.size());
-				dep.pImageMemoryBarriers = imgBarriers.empty()? nullptr : imgBarriers.data();
+				dep.pImageMemoryBarriers = imgBarriers.empty() ? nullptr : imgBarriers.data();
 				dep.bufferMemoryBarrierCount = static_cast<uint32_t>(bufBarriers.size());
-				dep.pBufferMemoryBarriers = bufBarriers.empty()? nullptr : bufBarriers.data();
+				dep.pBufferMemoryBarriers = bufBarriers.empty() ? nullptr : bufBarriers.data();
 				vkCmdPipelineBarrier2(cmd, &dep);
 			}
 		}
@@ -7397,8 +7444,8 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			depthInfo.storeOp = toVkAttachmentStoreOp(pass.depthAttachment_.storeOp);
 			depthInfo.clearValue = toVkClearValue(pass.depthAttachment_.clear);
 		}
-		VkOffset2D renderOffset{pass.offsetX_, pass.offsetY_};
-		VkExtent2D renderExtent{pass.extent_.width, pass.extent_.height};
+		VkOffset2D renderOffset{ pass.offsetX_, pass.offsetY_ };
+		VkExtent2D renderExtent{ pass.extent_.width, pass.extent_.height };
 		if (hasDepth && colorInfos.empty()) {
 			VulkanResourceManager& vctxLocal = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
 			auto* view = imageViews_.get(pass.depthAttachment_.view);
@@ -7407,7 +7454,8 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				if (view->type == LogicalImageView::Type::ExternalPhysical) {
 					auto* ext = vctxLocal.imageViews_.get(view->externalViewHandle);
 					if (ext) phys = ext->image;
-				} else {
+				}
+				else {
 					auto* li = images_.get(view->key.image);
 					if (li) phys = li->resolvedImageHandle;
 				}
@@ -7416,13 +7464,13 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				auto* img = vctxLocal.images_.get(phys);
 				if (img && img->extent.width != 0 && img->extent.height != 0) {
 					if (img->extent.width != pass.extent_.width || img->extent.height != pass.extent_.height) {
-						renderOffset = {0, 0};
-						renderExtent = {img->extent.width, img->extent.height};
+						renderOffset = { 0, 0 };
+						renderExtent = { img->extent.width, img->extent.height };
 					}
 				}
 			}
 		}
-		VkRenderingInfo renderInfo{ .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR, .renderArea = { .offset = renderOffset, .extent = renderExtent, }, .layerCount = 1, .colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()), .pColorAttachments = colorInfos.data(), };
+		VkRenderingInfo renderInfo{ .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR, .renderArea = {.offset = renderOffset, .extent = renderExtent, }, .layerCount = 1, .colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()), .pColorAttachments = colorInfos.data(), };
 		renderInfo.pDepthAttachment = hasDepth ? &depthInfo : nullptr;
 		renderInfo.pStencilAttachment = hasStencil ? &depthInfo : nullptr;
 		VkViewport vp{}; vp.x = static_cast<float>(pass.offsetX_); vp.y = static_cast<float>(pass.offsetY_); vp.width = static_cast<float>(pass.extent_.width); vp.height = static_cast<float>(pass.extent_.height); vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
@@ -7620,17 +7668,17 @@ VkQueue smvk::GetVkPresentQueue() { return presentQueue_; }
 VkQueue smvk::GetVkTransferQueue() { return transferQueue_; }
 VkSurfaceKHR smvk::GetVkSurface() { return surface_; }
 uint32_t smvk::GetVkGraphicsQueueFamily() {
-    if (physicalDevice_ != VK_NULL_HANDLE && surface_ != VK_NULL_HANDLE) {
-        auto indices = findQueueFamilies(physicalDevice_, surface_);
-        if (indices.graphicsFamily) return *indices.graphicsFamily;
-    }
-    return 0;
+	if (physicalDevice_ != VK_NULL_HANDLE && surface_ != VK_NULL_HANDLE) {
+		auto indices = findQueueFamilies(physicalDevice_, surface_);
+		if (indices.graphicsFamily) return *indices.graphicsFamily;
+	}
+	return 0;
 }
 uint32_t smvk::GetVkTransferQueueFamily() {
-    if (physicalDevice_ != VK_NULL_HANDLE && surface_ != VK_NULL_HANDLE) {
-        auto indices = findQueueFamilies(physicalDevice_, surface_);
-        if (indices.transferFamily) return *indices.transferFamily;
-    }
-    return GetVkGraphicsQueueFamily();
+	if (physicalDevice_ != VK_NULL_HANDLE && surface_ != VK_NULL_HANDLE) {
+		auto indices = findQueueFamilies(physicalDevice_, surface_);
+		if (indices.transferFamily) return *indices.transferFamily;
+	}
+	return GetVkGraphicsQueueFamily();
 }
 

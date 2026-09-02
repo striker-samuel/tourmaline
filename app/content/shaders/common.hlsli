@@ -85,10 +85,10 @@ struct GpuDirectionalLightDescription
     float intensity;
     int shadow_map_index;
     int numCascades;
-    float3 pad_;
+    float pad_; // scalar pad: keeps lightVP 16-byte aligned (no straddling vec3)
     float4x4 lightVP; // fallback / cascade 0
     GpuCascadeDescription cascades[4];
-    float2 _padTail; // pad to 640 bytes to match C++ (632 -> 640)
+    // total 624 bytes – matches C++ GpuDirectionalLightDescription exactly
 };
 
 struct DirectionalCascadeBuffer
