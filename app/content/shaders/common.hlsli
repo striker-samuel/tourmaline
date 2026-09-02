@@ -61,6 +61,41 @@ struct MaterialsBuffer
     MaterialValues mats[MAX_MATERIALS];
 };
 
+// ---- Cascaded shadow map structures (mirrors Engine/Renderer/light.h) ----
+struct GpuCascadeDescription
+{
+    float4x4 lightVP;
+    float splitEnd;
+    float bias;
+    float normalBias;
+    float pad_;
+    float2 invShadowSize;
+    float2 uvScale;
+    float2 uvBias;
+    float2 uvClampMin;
+    float2 uvClampMax;
+    float2 pad2;
+};
+
+struct GpuDirectionalLightDescription
+{
+    float4 color;
+    float3 direction;
+    int flags;
+    float intensity;
+    int shadow_map_index;
+    int numCascades;
+    float3 pad_;
+    float4x4 lightVP; // fallback / cascade 0
+    GpuCascadeDescription cascades[4];
+    float2 _padTail; // pad to 640 bytes to match C++ (632 -> 640)
+};
+
+struct DirectionalCascadeBuffer
+{
+    GpuDirectionalLightDescription dir;
+};
+
 struct PushConstants
 {
     float4x4 model;
@@ -70,8 +105,12 @@ struct PushConstants
     bLights;
     vk::BufferPointer<MaterialsBuffer>
     bMats;
+    vk::BufferPointer<DirectionalCascadeBuffer>
+    cascadeBuffer;
     uint materialId;
     uint comparisonSamplerId;
+    uint numCascades;
+    uint cascadeIndex;
 };
 
 #ifndef TONEMAP_PASS

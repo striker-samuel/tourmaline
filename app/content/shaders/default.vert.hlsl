@@ -37,12 +37,51 @@ VSOut mainVS(VSIn IN)
     OUT.color = float3(1.0f, 1.0f, 1.0f);
     OUT.uv = IN.uv;
 
-    // Properly transform normal and tangent to world space
-    float3 worldNormal = mul((float3x3) pc.model, IN.normal);
+    // Properly transform normal/tangent to world space.
+    // - Normal uses inverse-transpose of upper 3x3 to survive non-uniform scale.
+    // - Tangent xyz uses (float3x3)model, handedness w is flipped if model determinant <0 (mirrored).
+    // - Keeps proj Y-flip (proj[1][1]*=-1) – winding fixed via FrontFace::Clockwise.
+    float3x3 M3 = (float3x3) pc.model;
+
+    // determinant of M3
+    float det = M3[0][0] * (M3[1][1] * M3[2][2] - M3[1][2] * M3[2][1])
+              - M3[0][1] * (M3[1][0] * M3[2][2] - M3[1][2] * M3[2][0])
+              + M3[0][2] * (M3[1][0] * M3[2][1] - M3[1][1] * M3[2][0]);
+
+    // inverse-transpose for normal
+    float3 worldNormal;
+    if (abs(det) > 1e-12f)
+    {
+        // cofactor matrix, transposed = adjugate
+        float3x3 adj;
+        adj[0][0] =  (M3[1][1] * M3[2][2] - M3[1][2] * M3[2][1]);
+        adj[0][1] = -(M3[1][0] * M3[2][2] - M3[1][2] * M3[2][0]);
+        adj[0][2] =  (M3[1][0] * M3[2][1] - M3[1][1] * M3[2][0]);
+
+        adj[1][0] = -(M3[0][1] * M3[2][2] - M3[0][2] * M3[2][1]);
+        adj[1][1] =  (M3[0][0] * M3[2][2] - M3[0][2] * M3[2][0]);
+        adj[1][2] = -(M3[0][0] * M3[2][1] - M3[0][1] * M3[2][0]);
+
+        adj[2][0] =  (M3[0][1] * M3[1][2] - M3[0][2] * M3[1][1]);
+        adj[2][1] = -(M3[0][0] * M3[1][2] - M3[0][2] * M3[1][0]);
+        adj[2][2] =  (M3[0][0] * M3[1][1] - M3[0][1] * M3[1][0]);
+
+        // adj = cofactor matrix C (C[i][j]=(-1)^{i+j} minor).
+        // inverse = C^T / det, inverse-transpose = C / det.
+        // So for normal transform we need C / det (not transpose).
+        float3x3 invTrans = adj / det;
+        // Equivalent to transpose(inverse(M3)). Use mul(invTrans, normal) for column vector.
+        worldNormal = mul(invTrans, IN.normal);
+    }
+    else
+    {
+        worldNormal = mul(M3, IN.normal);
+    }
     OUT.normal = normalize(worldNormal);
 
-    float3 worldTangent = mul((float3x3) pc.model, IN.tangent.xyz);
-    OUT.tangent = float4(normalize(worldTangent), IN.tangent.w);
+    float3 worldTangent = mul(M3, IN.tangent.xyz);
+    float handedness = IN.tangent.w * (det < 0.0f ? -1.0f : 1.0f);
+    OUT.tangent = float4(normalize(worldTangent), handedness);
 
     return OUT;
 }

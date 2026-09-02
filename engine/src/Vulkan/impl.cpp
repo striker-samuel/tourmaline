@@ -1764,10 +1764,12 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	VK_CHECK(vmaCreateAllocator(&allocatorCreateInfo, &m_allocator));
 
 	m_submitter = new Submitter(*core_, core_->indices.graphicsFamily.value());
-	// Use graphics queue for uploads for now to avoid ownership transfer issues.
-	// Dedicated transfer queue is disabled until proper release/acquire with semaphores is implemented.
-	m_transferSubmitter = m_submitter;
-	// Host image copy is disabled for now (causes device lost on some drivers when usage flag is added unconditionally)
+	if (core_->indices.transferFamily && core_->indices.transferFamily.value() != core_->indices.graphicsFamily.value()) {
+		m_transferSubmitter = new Submitter(*core_, core_->indices.transferFamily.value());
+	} else {
+		m_transferSubmitter = m_submitter;
+	}
+	// Host image copy disabled for now – wait for transfer stable
 	m_hostImageCopySupported = false;
 	m_streamer = std::make_unique<UploadStreamer>(this, m_transferSubmitter, m_submitter);
 	m_streamer->init(64ull * 1024 * 1024);
@@ -2111,24 +2113,29 @@ void smvk::UploadStreamer::ensureCmd() {
 void smvk::UploadStreamer::submitLocked(bool waitOldestIfFull) {
 	// caller holds m_mutex
 	if (!m_hasPending || m_curCmd == VK_NULL_HANDLE) {
-		// nothing to submit, but still need to recycle handle if we acquired but did nothing
 		if (m_curCmd != VK_NULL_HANDLE) {
-			// need to end and submit empty? just reset - better to end and submit empty barrier? Instead recycle via submit empty cmd
-			// submit empty command buffer to keep slot lifecycle correct
 			auto tp = m_transfer->submit(m_curHandle);
 			(void)tp;
 		}
 		m_curCmd = VK_NULL_HANDLE;
 		m_curHandle = {};
 		m_hasPending = false;
+		m_pendingBufferAcquires.clear();
+		m_pendingImageAcquires.clear();
 		return;
 	}
 	auto tp = m_transfer->submit(m_curHandle);
-	(void)tp;
-	// If dedicated transfer queue differs from graphics, we need to make graphics visible.
-	// For now we keep a timeline wait insertion point: graphics queue can wait via FlushUploads.
-	// To ensure correctness for immediate use, we do NOT wait here unless caller asks.
-	// The memory barrier was already recorded on transfer queue (TRANSFER->dstStages) – semaphore ensures ordering when graphics later waits.
+	// EXCLUSIVE ownership: submit acquire barriers on graphics queue waiting on transfer timeline
+	if (m_transfer != m_graphics && (!m_pendingBufferAcquires.empty() || !m_pendingImageAcquires.empty())) {
+		auto gHan = m_graphics->acquire();
+		auto gCmd = m_graphics->GetCommandBuffer(gHan);
+		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, (uint32_t)m_pendingBufferAcquires.size(), m_pendingBufferAcquires.empty()?nullptr:m_pendingBufferAcquires.data(), (uint32_t)m_pendingImageAcquires.size(), m_pendingImageAcquires.empty()?nullptr:m_pendingImageAcquires.data() };
+		vkCmdPipelineBarrier2(gCmd, &dep);
+		TimelineWait wait{ tp, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT };
+		m_graphics->submit(gHan, std::span<const TimelineWait>(&wait,1));
+	}
+	m_pendingBufferAcquires.clear();
+	m_pendingImageAcquires.clear();
 	m_curCmd = VK_NULL_HANDLE;
 	m_curHandle = {};
 	m_hasPending = false;
@@ -2180,11 +2187,12 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 		// BufferBarrier forward
 		uint32_t srcFamily = m_transfer->queueFamilyIndex();
 		uint32_t dstFamily = m_graphics->queueFamilyIndex();
-		// barrier with queue family transfer if needed
 		if (srcFamily != dstFamily) {
-			VkBufferMemoryBarrier2 b2{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
-			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0,0,nullptr,1,&b2,0,nullptr };
+			VkBufferMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0,0,nullptr,1,&rel,0,nullptr };
 			vkCmdPipelineBarrier2(m_curCmd, &dep);
+			VkBufferMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
+			m_pendingBufferAcquires.push_back(acq);
 		} else {
 			BufferBarrier(m_curCmd, dstBuf->vkBuffer, dstOffset, size, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
 		}
@@ -2208,9 +2216,11 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 	uint32_t srcFamily = m_transfer->queueFamilyIndex();
 	uint32_t dstFamily = m_graphics->queueFamilyIndex();
 	if (srcFamily != dstFamily) {
-		VkBufferMemoryBarrier2 b2{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
-		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0,0,nullptr,1,&b2,0,nullptr };
+		VkBufferMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
+		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0,0,nullptr,1,&rel,0,nullptr };
 		vkCmdPipelineBarrier2(m_curCmd, &dep);
+		VkBufferMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
+		m_pendingBufferAcquires.push_back(acq);
 	} else {
 		BufferBarrier(m_curCmd, dstBuf->vkBuffer, dstOffset, size, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
 	}
@@ -2310,17 +2320,23 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 		VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr, srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)regs.size(), regs.data() };
 		vkCmdCopyBufferToImage2(m_curCmd, &copyInfo);
 	}
-	// TRANSFER_DST -> SHADER_READ_ONLY (or remain TRANSFER if requested)
 	bool remainTransfer = (dstStages==VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess==VK_ACCESS_2_TRANSFER_WRITE_BIT);
 	if (!remainTransfer) {
-		VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT; VkAccessFlags2 srcAcc = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-		uint32_t sF = VK_QUEUE_FAMILY_IGNORED, dF = VK_QUEUE_FAMILY_IGNORED;
-		if (needOwnership) { sF = srcF; dF = dstF; }
-		ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, fullRange, srcStage, srcAcc, dstStages, dstAccess, sF, dF);
+		if (needOwnership) {
+			VkImageMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel };
+			vkCmdPipelineBarrier2(m_curCmd, &dep);
+			VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
+			m_pendingImageAcquires.push_back(acq);
+		} else {
+			ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+		}
 	} else {
 		if (needOwnership) {
-			VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
-			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &b }; vkCmdPipelineBarrier2(m_curCmd,&dep);
+			VkImageMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel }; vkCmdPipelineBarrier2(m_curCmd,&dep);
+			VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, 0, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
+			m_pendingImageAcquires.push_back(acq);
 		}
 	}
 	m_hasPending = true;

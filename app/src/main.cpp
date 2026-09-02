@@ -1,6 +1,8 @@
 #pragma once
 #include <iostream>
 #include <filesystem>
+#include <array>
+#include <cmath>
 
 #include <Engine/core.h>
 #include <imgui.h>
@@ -12,6 +14,41 @@ static constexpr float default_far_clip = 50.0f;
 std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
 };
+
+// -----------------------------------------------------------------------------
+// Cascade Shadow Map builder – upgraded
+// -----------------------------------------------------------------------------
+static constexpr uint32_t NUM_CASCADES = 4;
+static constexpr uint32_t CASCADE_RES = 2048; // per cascade tile (2048 -> 4096 atlas for 4 cascades, Option B)
+static constexpr float CASCADE_LAMBDA = 0.92f; // 0 = linear, 1 = logarithmic
+static constexpr float CASCADE_Z_PADDING = 1.0f;
+static constexpr smvk::Format SHADOW_FORMAT = smvk::Format::D32_Float; // stencil dropped for directional atlas (Option B)
+
+inline uint32_t CascadeColumns(uint32_t count) {
+	return static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<float>(count))));
+}
+inline uint32_t CascadeRows(uint32_t count) {
+	uint32_t cols = CascadeColumns(count);
+	return (count + cols - 1) / cols;
+}
+inline smvk::Extent2D CascadeAtlasExtent(uint32_t cascadeRes, uint32_t count) {
+	uint32_t cols = CascadeColumns(count);
+	uint32_t rows = CascadeRows(count);
+	return { cascadeRes * cols, cascadeRes * rows };
+}
+// Computes split distances using practical split scheme (lambda blend of log & linear)
+inline std::array<float, NUM_CASCADES + 1> ComputeCascadeSplits(float nearClip, float farClip, float lambda = CASCADE_LAMBDA) {
+	std::array<float, NUM_CASCADES + 1> splits{};
+	splits[0] = nearClip;
+	splits[NUM_CASCADES] = farClip;
+	for (uint32_t i = 1; i < NUM_CASCADES; ++i) {
+		float p = static_cast<float>(i) / static_cast<float>(NUM_CASCADES);
+		float logSplit = nearClip * std::pow(farClip / nearClip, p);
+		float linSplit = nearClip + (farClip - nearClip) * p;
+		splits[i] = lambda * logSplit + (1.0f - lambda) * linSplit;
+	}
+	return splits;
+}
 
 struct ShadowMap
 {
@@ -61,6 +98,7 @@ struct AppResources {
 	smvk::Holder<smvk::BufferHandle> frameUniforms;
 	smvk::Holder<smvk::BufferHandle> lightsBuffer;
 	smvk::Holder<smvk::BufferHandle> materialsBuffer;
+	smvk::Holder<smvk::BufferHandle> directionalCascadeBuffer; // GpuDirectionalLightDescription per frame
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
 	smvk::Holder<smvk::ShaderModuleHandle> shadowVert;
@@ -81,12 +119,15 @@ struct HdrResources {
 };
 
 struct ViewportResources {
-	ShadowMap shadowmaps[8];
+	ShadowMap shadowmaps[8]; // shadowmaps[0] = directional cascade atlas
 
 	smvk::LogicalImageViewHandle shadowmapLogicalViews[8];
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
 	smvk::LogicalImageViewHandle depthView;
 	HdrResources hdr;
+	// cached atlas info for ImGui/debug
+	smvk::Extent2D shadowAtlasExtent{0,0};
+	smvk::Extent2D shadowTileExtent{ CASCADE_RES, CASCADE_RES };
 };
 
 
@@ -142,6 +183,11 @@ private:
 			sizeof(smvk::MaterialValues) * MAX_MATERIALS * m_swapchain->framesInFlight(),
 			smvk::BufferType_Storage,
 			"materials buffer"
+		);
+		m_resources.directionalCascadeBuffer = m_context->CreateBuffer(
+			sizeof(smvk::GpuDirectionalLightDescription) * m_swapchain->framesInFlight(),
+			smvk::BufferType_Storage,
+			"directional cascade buffer"
 		);
 
 		// Main ShaderProgram
@@ -218,19 +264,19 @@ private:
 			"depth"
 		);
 
-		// if mipped maybe a helper like LegitEngine does is a good idea
-
-		// shadowmap
+		// shadowmap – cascaded atlas (upgraded builder)
 		auto& shadow = m_viewportResources.shadowmaps[0];
 
-		smvk::Format shadowMapFormat = smvk::Format::D32_Float_S8_UInt;
+		smvk::Format shadowMapFormat = SHADOW_FORMAT;
+		smvk::Extent2D atlasExtent = CascadeAtlasExtent(CASCADE_RES, NUM_CASCADES);
+		m_viewportResources.shadowAtlasExtent = atlasExtent;
 		smvk::ImageCreateInfo shadowMapCI{};
 		shadowMapCI.format = shadowMapFormat;
-		shadowMapCI.extent = { 2048u, 2048u, 1u };
+		shadowMapCI.extent = { atlasExtent.width, atlasExtent.height, 1u };
 		shadowMapCI.mipLevels = 1u;
 		shadowMapCI.arrayLayers = 1u;
 		shadowMapCI.usage = smvk::ImageUsage::DepthStencilAttachment | smvk::ImageUsage::Sampled;
-		shadowMapCI.name = "shadowMap";
+		shadowMapCI.name = "shadowMapAtlas";
 
 		// -------------------------------------------------------------------------
 		// Image
@@ -257,8 +303,7 @@ private:
 
 		attachmentViewCI.subresourceRange = {
 			.aspect =
-				smvk::ImageAspect::Depth |
-				smvk::ImageAspect::Stencil,
+				smvk::ImageAspect::Depth,
 
 			.baseMipLevel = 0,
 			.mipLevelCount = 1,
@@ -268,7 +313,7 @@ private:
 		};
 
 		attachmentViewCI.name =
-			"shadow attachment";
+			"shadow attachment (depth only, stencil dropped)";
 
 		shadow.attachmentView =
 			m_context->CreateImageView(
@@ -278,9 +323,7 @@ private:
 
 
 		// -------------------------------------------------------------------------
-		// Sampled view
-		//
-		// Important: depth-only, even though the actual format is D32_S8.
+		// Sampled view – depth only (D32, stencil dropped)
 		// -------------------------------------------------------------------------
 
 		smvk::ImageViewCreateInfo sampledViewCI{};
@@ -335,35 +378,6 @@ private:
 			);
 
 		EnsureHdrResources();
-
-		// singla sync req would be better
-		// Manual Barrier transition
-		// this whole shadowmap thing is so badly done, api surface NEEDS more polish
-
-		//auto han = m_context->m_submitter->acquire();
-		//auto cmd = m_context->m_submitter->GetCommandBuffer(han);
-	/*	ImageBarrier(
-			cmd.cmd,
-			smimage->vk_image,
-			VK_IMAGE_LAYOUT_UNDEFINED,
-			VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-			{
-				.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-				.baseMipLevel = 0,
-				.levelCount = VK_REMAINING_MIP_LEVELS,
-				.baseArrayLayer = 0,
-				.layerCount = VK_REMAINING_ARRAY_LAYERS
-			},
-			VK_PIPELINE_STAGE_2_NONE,
-			VK_ACCESS_2_NONE,
-			VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-			VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
-		);*/
-		//m_context->m_submitter->submit(han);
-		//m_context->m_submitter->wait(han);
-		//
 
 		// ImGui overlay – init after swapchain/rendergraph are ready.
 		// Uses dynamic rendering; no external RenderPass needed.
@@ -436,17 +450,14 @@ private:
 
 	void UpdateLights(uint32_t currentFrame)
 	{
-
-		glm::vec3 lightDir = glm::normalize(glm::vec3(0.2f, -1.0f, 0.5f));
-		lightDir.b *= sin(time_since_start_s) * 0.4;
+		// Keep lights[0] hardcoded directional – upgraded to cascades
+		glm::vec3 lightDir = glm::normalize(glm::vec3(4.2f, -1.0f, 0.5f));
+		//lightDir.b *= sin(time_since_start_s) * 0.4;
 		auto cameraView = m_camera.getViewMatrix();
 		auto cameraProj = m_camera.getProjMatrix();
-		//cameraProj[1][1] *= -1;
-
-		glm::mat4 lightViewOut;
-		glm::mat4 lightProjOut;
-		constexpr float cameraNear = 0.001f;
-		constexpr float cameraFar = 50.0f;
+		// Keep Y-flip consistent with main view (UpdateFrameUniforms does proj[1][1] *= -1 for Vulkan).
+		// Cascade frustum extraction must use the same Y-flipped proj, otherwise shadow tiles are Y-mirrored.
+		cameraProj[1][1] *= -1.0f;
 
 		smvk::Light lights[MAX_LIGHTS]{};
 		smvk::Light& light = lights[0];
@@ -460,32 +471,69 @@ private:
 				m_viewportResources.shadowmaps[0].bindless
 			);
 
-		smvk::GetDirectionalLightOrthoVP(
-			lightDir,
-			//cameraView,
-			//cameraProj,
-			glm::inverse(cameraView),
-			glm::inverse(cameraProj),
-			cameraNear,
-			cameraFar,
-			lightViewOut,
-			lightProjOut,  // outProj (function will overwrite, but we recompute below)
-			1.f,       // zPadding
-			true,       // enableTexelSnap
-			2048        // shadowMapRes
-		);
+		// ---- Cascade builder (upgraded) ----
+		auto invView = glm::inverse(cameraView);
+		auto invProj = glm::inverse(cameraProj);
+		auto splits = ComputeCascadeSplits(default_near_clip, default_far_clip, CASCADE_LAMBDA);
 
-		lightProjOut[1][1] *= -1;
-		auto lightViewProj = lightProjOut * lightViewOut;
-		std::memcpy(
-			light.lightVP,
-			glm::value_ptr(lightViewProj),
-			sizeof(light.lightVP)
-		);
+		smvk::GpuDirectionalLightDescription dir{};
+		dir.color = light.color;
+		dir.direction[0] = lightDir.x;
+		dir.direction[1] = lightDir.y;
+		dir.direction[2] = lightDir.z;
+		dir.flags = 0;
+		dir.intensity = light.intensity;
+		dir.shadow_map_index = light.shadow_map_index;
+		dir.numCascades = NUM_CASCADES;
+
+		uint32_t cols = CascadeColumns(NUM_CASCADES);
+		smvk::Extent2D atlasExtent = CascadeAtlasExtent(CASCADE_RES, NUM_CASCADES);
+		float invAtlasW = 1.0f / float(atlasExtent.width);
+		float invAtlasH = 1.0f / float(atlasExtent.height);
+
+		for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
+			float splitNear = splits[i];
+			float splitFar = splits[i + 1];
+			glm::mat4 lv, lp;
+			smvk::GetDirectionalLightOrthoVP(
+				lightDir,
+				invView,
+				invProj,
+				splitNear,
+				splitFar,
+				lv,
+				lp,
+				CASCADE_Z_PADDING,
+				true,
+				(int)CASCADE_RES
+			);
+			lp[1][1] *= -1;
+			glm::mat4 lvp = lp * lv;
+			std::memcpy(dir.cascades[i].lightVP, glm::value_ptr(lvp), sizeof(dir.cascades[i].lightVP));
+			dir.cascades[i].splitEnd = splitFar;
+			// small depth bias per cascade – grows slightly for far cascades
+			dir.cascades[i].bias = 0.0005f * (1.0f + float(i) * 0.5f);
+			dir.cascades[i].normalBias = 0.0f;
+			dir.cascades[i].pad_ = 0.0f;
+			dir.cascades[i].invShadowSize = glm::vec2(1.0f / float(CASCADE_RES), 1.0f / float(CASCADE_RES));
+			uint32_t x = i % cols;
+			uint32_t y = i / cols;
+			float offX = float(x * CASCADE_RES);
+			float offY = float(y * CASCADE_RES);
+			dir.cascades[i].uvScale = glm::vec2(float(CASCADE_RES) * invAtlasW, float(CASCADE_RES) * invAtlasH);
+			dir.cascades[i].uvBias = glm::vec2(offX * invAtlasW, offY * invAtlasH);
+			float texelU = 0.5f * invAtlasW;
+			float texelV = 0.5f * invAtlasH;
+			dir.cascades[i].uvClampMin = dir.cascades[i].uvBias + glm::vec2(texelU, texelV);
+			dir.cascades[i].uvClampMax = dir.cascades[i].uvBias + dir.cascades[i].uvScale - glm::vec2(texelU, texelV);
+			dir.cascades[i].pad2_[0] = 0; dir.cascades[i].pad2_[1] = 0;
+		}
+		std::memcpy(dir.lightVP, dir.cascades[0].lightVP, sizeof(dir.lightVP));
+		// Keep lights[0].lightVP in sync for legacy single-cascade path / debug
+		std::memcpy(light.lightVP, dir.cascades[0].lightVP, sizeof(light.lightVP));
 
 		constexpr size_t LIGHT_FRAME_STRIDE = sizeof(smvk::Light) * MAX_LIGHTS;
 		size_t frameOffset = currentFrame * LIGHT_FRAME_STRIDE;
-
 		m_context->UploadDataToBuffer(
 			m_resources.lightsBuffer,
 			lights,
@@ -493,8 +541,18 @@ private:
 			smvk::PipelineStageBit_Vertex,
 			smvk::AccessFlags::ShaderRead,
 			0,
-			//currentFrame * sizeof(lights)
 			frameOffset
+		);
+		constexpr size_t DIR_STRIDE = sizeof(smvk::GpuDirectionalLightDescription);
+		size_t dirOffset = currentFrame * DIR_STRIDE;
+		m_context->UploadDataToBuffer(
+			m_resources.directionalCascadeBuffer,
+			&dir,
+			sizeof(dir),
+			smvk::PipelineStageBit_Vertex,
+			smvk::AccessFlags::ShaderRead,
+			0,
+			dirOffset
 		);
 	}
 
@@ -593,99 +651,98 @@ private:
 			m_context->GetBufferDeviceAddress(m_resources.materialsBuffer)
 			+ fb.frameIndex * MATERIAL_FRAME_STRIDE;
 
+		constexpr size_t DIR_FRAME_STRIDE =
+			sizeof(smvk::GpuDirectionalLightDescription);
+		uint64_t cascadeBufferAddress =
+			m_context->GetBufferDeviceAddress(m_resources.directionalCascadeBuffer)
+			+ fb.frameIndex * DIR_FRAME_STRIDE;
+
 		struct alignas(16) PushConstants {
 			float model[16];
 			uint64_t frameUniforms;
 			uint64_t lightsBuffer;
 			uint64_t materialsBuffer;
+			uint64_t cascadeBuffer;
 			uint32_t materialId;
 			uint32_t comparisonSamplerId;
+			uint32_t numCascades;
+			uint32_t cascadeIndex;
 		} pc{
 			.frameUniforms = frameUniformsAddress,
 			.lightsBuffer = lightsBufferAddress,
 			.materialsBuffer = materialsAddress,
+			.cascadeBuffer = cascadeBufferAddress,
 			.materialId = 0, // defaultMaterial
-			.comparisonSamplerId = 1
+			.comparisonSamplerId = 1,
+			.numCascades = NUM_CASCADES,
+			.cascadeIndex = 0
 		};
+		static_assert(sizeof(PushConstants) <= 128, "PushConstants must fit in 128 bytes");
 
-		auto& shadowPass = m_rendergraph->AddPass("Shadow")
-			.SetOffset(0, 0)
-			.SetExtent({ 2048, 2048 })
-			.SetDepth(
-				m_viewportResources.shadowmapLogicalViews[0],
-				smvk::AttachmentLoadOp::Clear,
-				smvk::AttachmentStoreOp::Store,
-				smvk::ClearDepthStencil(1.0f, 0)
-			)
-			.SetRecordingFunc([this, pc](smvk::CommandBuffer& cmd)
+		// ---- Cascaded shadow map passes – one per cascade tile in atlas (Option B: full-atlas renderArea, tiled viewport via engine) ----
 		{
-
-			cmd.BindRenderPipeline(
-				m_resources.shadowProgram,
-				smvk::VertexFormat::StaticVertexFormat,
-				smvk::DepthSettings{
-					.depthFunc = smvk::CompareOp::Less,
-					.writeEnable = true,
-					.depthTestEnable = true,
-					.depthBiasEnable = true,
-					.depthBiasConstantFactor = 0.f,
-					.depthBiasClamp = 0.0f,
-					.depthBiasSlopeFactor = 3.f
-				}
-
-			);
-
-			// PC were hardcoded in pipelineCreation to ALL 128 wide
-			cmd.PushConstants(
-				0,
-				sizeof(PushConstants),
-				&pc,
-				smvk::ShaderStage::All 
-			);
-
-			// Render meshes with cull mode BACK (render front faces from light's perspective)
-			// and depth bias to reduce shadow acne
-			m_world->forEachNode(
-				smvk::IteratorFlagBit_StaticVertexFmt
-				| smvk::IteratorFlagBit_CastShadow
-				, [&](NodeId node)
-			{
-				auto meshForNode = m_world->scene.meshForNode.find(node);
-				if (meshForNode == m_world->scene.meshForNode.end()) {
-					return;
-				}
-
-				auto materialForNode = m_world->scene.materialForNode.find(node);
-				if (materialForNode == m_world->scene.materialForNode.end()) {
-					return;
-				}
-
-				auto& model = m_world->scene.globalTransform[node];
-				uint32_t meshId = meshForNode->second;
-				smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
-
-				PushConstants objectPC{};
-				std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-
-				cmd.PushConstants(
-					offsetof(PushConstants, model),
-					sizeof(objectPC.model),
-					objectPC.model,
-					//smvk::ShaderStage::Vertex
-					smvk::ShaderStage::All
-				);
-
-				for (auto& draw_set : meshDesc->geometry.surfaces) {
-					cmd.DrawIndexed(
-						draw_set.indexCount,
-						1,
-						draw_set.firstIndex,
-						draw_set.baseVertex
+			uint32_t cols = CascadeColumns(NUM_CASCADES);
+			const char* cascadeNames[4] = { "ShadowCascade0", "ShadowCascade1", "ShadowCascade2", "ShadowCascade3" };
+			for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci) {
+				uint32_t x = ci % cols;
+				uint32_t y = ci / cols;
+				int32_t offX = int32_t(x * CASCADE_RES);
+				int32_t offY = int32_t(y * CASCADE_RES);
+				PushConstants cascadePC = pc;
+				cascadePC.cascadeIndex = ci;
+				auto& shadowPass = m_rendergraph->AddPass(cascadeNames[ci])
+					.SetOffset(offX, offY)
+					.SetExtent({ CASCADE_RES, CASCADE_RES })
+					.SetDepth(
+						m_viewportResources.shadowmapLogicalViews[0],
+						ci == 0 ? smvk::AttachmentLoadOp::Clear : smvk::AttachmentLoadOp::Load,
+						smvk::AttachmentStoreOp::Store,
+						smvk::ClearDepthStencil(1.0f, 0)
+					)
+					.SetRecordingFunc([this, cascadePC](smvk::CommandBuffer& cmd)
+				{
+					cmd.BindRenderPipeline(
+						m_resources.shadowProgram,
+						smvk::VertexFormat::StaticVertexFormat,
+						smvk::DepthSettings{
+							.depthFunc = smvk::CompareOp::LessEqual,
+							.writeEnable = true,
+							.depthTestEnable = true,
+							.depthBiasEnable = true,
+							.depthBiasConstantFactor = 0.1f,
+							.depthBiasClamp = 0.0f,
+							.depthBiasSlopeFactor = 1.f
+						},
+						smvk::StencilSettings{},
+						smvk::BlendSettings{},
+						smvk::MSAASettings{},
+						smvk::RasterSettings{
+							.cullMode = smvk::CullMode::Back
+						}
 					);
-				};
+					cmd.PushConstants(0, sizeof(PushConstants), &cascadePC, smvk::ShaderStage::All);
+					m_world->forEachNode(
+						smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
+						, [&](NodeId node)
+					{
+						auto meshForNode = m_world->scene.meshForNode.find(node);
+						if (meshForNode == m_world->scene.meshForNode.end()) return;
+						auto materialForNode = m_world->scene.materialForNode.find(node);
+						if (materialForNode == m_world->scene.materialForNode.end()) return;
+						auto& model = m_world->scene.globalTransform[node];
+						uint32_t meshId = meshForNode->second;
+						smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
+						PushConstants objectPC{};
+						std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+						cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+						for (auto& draw_set : meshDesc->geometry.surfaces) {
+							cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+						};
+					});
+				});
+				(void)shadowPass;
 			}
-			);
-		});
+		}
 
 		auto& mainPass = m_rendergraph->AddPass("Main")
 			.SetOffset(0, 0)
@@ -840,6 +897,20 @@ private:
 			ImGui::Text("Camera pos: %.2f %.2f %.2f", m_cameraPositioner.cameraPosition_.x, m_cameraPositioner.cameraPosition_.y, m_cameraPositioner.cameraPosition_.z);
 			ImGui::Text("Swapchain %ux%u  framesInFlight=%u",
 				fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height, fb.swapchain->framesInFlight());
+			ImGui::Separator();
+			{
+				auto splits = ComputeCascadeSplits(default_near_clip, default_far_clip);
+				ImGui::Text("CSM: %u cascades  tile %ux%u  atlas %ux%u",
+					NUM_CASCADES, CASCADE_RES, CASCADE_RES,
+					m_viewportResources.shadowAtlasExtent.width, m_viewportResources.shadowAtlasExtent.height);
+				for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
+					ImGui::Text(" cascade %u: [%.2f .. %.2f] splitEnd %.2f", i, splits[i], splits[i+1], splits[i+1]);
+				}
+				ImGui::Text(" lightDir: %.2f %.2f %.2f", 
+					glm::normalize(glm::vec3(0.2f, -1.0f, 0.5f)).x,
+					glm::normalize(glm::vec3(0.2f, -1.0f, 0.5f)).y,
+					glm::normalize(glm::vec3(0.2f, -1.0f, 0.5f)).z);
+			}
 			ImGui::Separator();
 			ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
 			ImGui::End();

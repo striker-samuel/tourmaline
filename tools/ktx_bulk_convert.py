@@ -34,6 +34,61 @@ LINEAR_HINTS = re.compile(r"(rough|metal|ao|height|mask|spec|gloss|rma|orm|opaci
 NORMAL_HINTS = re.compile(r"(normal|norm|_n\b|_n\.)", re.I)
 
 DEFAULT_PATTERNS = ".png;.jpg;.jpeg;.tga;.bmp;.tif;.tiff;.hdr;.exr"
+import json
+
+
+def build_texture_classification(gltf_path: Path):
+    with open(gltf_path, "r", encoding="utf-8") as f:
+        gltf = json.load(f)
+
+    textures = gltf.get("textures", [])
+    images = gltf.get("images", [])
+
+    classification = {}
+
+    def mark(texture_index, kind):
+        if texture_index is None:
+            return
+        if texture_index < 0 or texture_index >= len(textures):
+            return
+
+        source = textures[texture_index].get("source")
+        if source is None or source < 0 or source >= len(images):
+            return
+
+        uri = images[source].get("uri")
+        if not uri or uri.startswith("data:"):
+            return
+
+        classification[Path(uri).as_posix()] = kind
+
+    for mat in gltf.get("materials", []):
+        pbr = mat.get("pbrMetallicRoughness", {})
+
+        tex = pbr.get("baseColorTexture")
+        if tex:
+            mark(tex.get("index"), "srgb")
+
+        tex = pbr.get("metallicRoughnessTexture")
+        if tex:
+            mark(tex.get("index"), "linear")
+
+        tex = mat.get("normalTexture")
+        if tex:
+            mark(tex.get("index"), "normal")
+
+        tex = mat.get("occlusionTexture")
+        if tex:
+            mark(tex.get("index"), "linear")
+
+        tex = mat.get("emissiveTexture")
+        if tex:
+            mark(tex.get("index"), "srgb")
+
+    return classification
+
+classification =build_texture_classification(r"F:\REPOS\vulkantoy\app\content\models\sponza\sponza.gltf")
+
 
 def find_toktx(tools_dir: Path) -> Path:
     exe = "toktx.exe" if os.name == "nt" else "toktx"
@@ -145,7 +200,16 @@ def main():
         dst = (out_root / rel).with_suffix(".ktx2")
         dst.parent.mkdir(parents=True, exist_ok=True)
 
-        kind = classify_texture(src.name)
+        kind = classification.get(rel)
+        if kind == "normal":
+            cmd += [
+                "--assign_oetf", "linear",
+                "--assign_primaries", "none",
+            ]
+        if kind is None:
+            print(f"[ktx] WARNING: Texture not referenced by glTF: {rel}")
+            kind = "srgb"
+
         cmd = build_cmd(
             toktx=toktx,
             mode=args.mode,

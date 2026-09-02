@@ -13,6 +13,7 @@
 #include <span>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -442,6 +443,10 @@ namespace smvk {
 
 		// host-image-copy support
 		bool m_hostCopySupported = false;
+
+		// pending acquires for EXCLUSIVE ownership transfer
+		std::vector<VkBufferMemoryBarrier2> m_pendingBufferAcquires;
+		std::vector<VkImageMemoryBarrier2> m_pendingImageAcquires;
 	};
 
 	struct DeferredTask {

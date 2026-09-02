@@ -145,20 +145,54 @@ PSOut mainPS(PSIn IN)
     if (!IN.isFrontFace)
         N = -N;
 
+    //if (normalIdx >= 0)
+    //{
+    //    float3 tangent = normalize(IN.tangent.xyz);
+    //    float3 bitangent = normalize(cross(N, tangent) * IN.tangent.w);
+    //    float3x3 TBN = float3x3(tangent, bitangent, N);
+
+    //    float3 mapN = textures[NonUniformResourceIndex((uint)normalIdx)].Sample(samplers[0], IN.uv).xyz * 2.0f - 1.0f;
+    //    // Apply normalScale to XY per spec
+    //    mapN.xy *= normalScale;
+    //    // Renormalize after scale
+    //    mapN = normalize(mapN);
+    //    N = normalize(mul(mapN, TBN));
+    //}
+    
     if (normalIdx >= 0)
     {
-        float3 tangent = normalize(IN.tangent.xyz);
-        float3 bitangent = normalize(cross(N, tangent) * IN.tangent.w);
-        float3x3 TBN = float3x3(tangent, bitangent, N);
+        float3 T = IN.tangent.xyz;
 
-        float3 mapN = textures[NonUniformResourceIndex((uint)normalIdx)].Sample(samplers[0], IN.uv).xyz * 2.0f - 1.0f;
-        // Apply normalScale to XY per spec
+    // T and N are interpolated, so make them perpendicular again.
+        T = normalize(T - N * dot(N, T));
+
+    // tangent.w is the tangent-space handedness.
+    // IMPORTANT:
+    // If the mesh/model transform is mirrored, this should already
+    // include the model determinant sign:
+    //
+    //     tangent.w = gltfTangent.w * mirrorSign;
+    //
+        float handedness = IN.tangent.w;
+
+        float3 B = normalize(cross(N, T)) * handedness;
+
+        float3 mapN =
+        textures[NonUniformResourceIndex((uint) normalIdx)]
+        .Sample(samplers[0], IN.uv)
+        .xyz * 2.0f - 1.0f;
+
+    // glTF normalTexture.scale applies to XY.
         mapN.xy *= normalScale;
-        // Renormalize after scale
         mapN = normalize(mapN);
-        N = normalize(mul(mapN, TBN));
-    }
 
+    // Tangent-space -> world-space.
+        N = normalize(
+        T * mapN.x +
+        B * mapN.y +
+        N * mapN.z
+    );
+    }
     // ---------------------------------------------------------------
     // Occlusion
     // ---------------------------------------------------------------
@@ -213,7 +247,12 @@ PSOut mainPS(PSIn IN)
 
     float shadow = 1.0f;
     if (light.shadow_map_index >= 0)
-        shadow = GetShadowFactor(1, IN.worldPos, light);
+    {
+        if (pc.numCascades > 0)
+            shadow = GetShadowFactorCascadedFromPC(1, IN.worldPos, light);
+        else
+            shadow = GetShadowFactor(1, IN.worldPos, light);
+    }
 
     // Cook-Torrance BRDF
     float D = DistributionGGX(N, H, roughness);
@@ -250,5 +289,12 @@ PSOut mainPS(PSIn IN)
     // Handle alpha blending output
     // For Opaque/Masked we output baseAlpha, for Blend pipeline handles blending
     OUT.outColor = float4(color, baseAlpha);
+    
+//    float3 T = normalize(IN.tangent.xyz);
+//    OUT.outColor = float4(
+//    T * 0.5f + 0.5f,
+//    1.0f
+//);
     return OUT;
+    
 }
