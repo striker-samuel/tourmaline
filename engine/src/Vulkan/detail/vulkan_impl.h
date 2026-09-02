@@ -319,6 +319,7 @@ namespace smvk {
 
 	};
 
+	struct VulkanResourceManager;
 	struct Submitter
 	{
 		enum class CommandState : uint8_t
@@ -337,7 +338,7 @@ namespace smvk {
 			uint64_t retireValue_ = 0;
 		};
 
-		Submitter(VulkanCore& core, uint32_t queueIndex);
+		Submitter(VulkanCore& core, uint32_t queueFamilyIndex);
 		~Submitter();
 
 		CommandSubmitHandle acquire();
@@ -349,6 +350,8 @@ namespace smvk {
 		void waitAll();
 		void purge();
 		TimelinePoint nextSignalPoint() const;
+		uint32_t queueFamilyIndex() const noexcept { return m_queueFamilyIndex; }
+		VkQueue queue() const noexcept { return m_queue; }
 
 	private:
 		void recycleSlot(uint32_t index);
@@ -358,7 +361,9 @@ namespace smvk {
 
 	private:
 		VulkanCore& core_;
+		uint32_t m_queueFamilyIndex = 0;
 
+		mutable std::recursive_mutex m_mutex;
 		VkQueue m_queue = VK_NULL_HANDLE;
 		CommandSubmitHandle m_lastSubmit{};
 		VkSemaphore m_timelineSemaphore = VK_NULL_HANDLE;
@@ -367,12 +372,71 @@ namespace smvk {
 
 		// CommandPool
 		VkCommandPool pool_ = VK_NULL_HANDLE;
-		static constexpr uint32_t kMax = 12;
+		static constexpr uint32_t kMax = 16;
 		uint32_t availableSlots = kMax;
 		WrapperSlot commandBuffers_[kMax];
 	};
 
-	struct DeferredTask {
+	// ---------------------------------------------------------------------
+	// StagingRing – persistent host-visible buffer for batched uploads
+	// ---------------------------------------------------------------------
+	
+	
+	struct VulkanResourceManager;
+	// ---------------------------------------------------------------------
+	// StagingRing – persistent host-visible buffer for batched uploads
+	// ---------------------------------------------------------------------
+	struct StagingRing {
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VmaAllocation allocation = VK_NULL_HANDLE;
+		void* mapped = nullptr;
+		VkDeviceSize capacity = 0;
+		VkDeviceSize offset = 0;
+		VkDeviceSize alignedOffset(VkDeviceSize alignment) const noexcept {
+			return (offset + alignment - 1) & ~(alignment - 1);
+		}
+	};
+
+	// ---------------------------------------------------------------------
+	// UploadStreamer – batched transfer hot-path
+	// ---------------------------------------------------------------------
+	struct UploadStreamer {
+		UploadStreamer() = default;
+		UploadStreamer(VulkanResourceManager* rm, Submitter* transfer, Submitter* graphics);
+		~UploadStreamer();
+
+		UploadStreamer(const UploadStreamer&) = delete;
+		UploadStreamer& operator=(const UploadStreamer&) = delete;
+
+		bool init(VkDeviceSize ringCapacity = 64ull * 1024 * 1024);
+		void destroy();
+		void uploadBuffer(BufferHandle dst, const void* data, size_t size, size_t dstOffset,
+			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
+		void uploadImage(ImageHandle imageHandle, const void* data, size_t dataSize,
+			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
+		bool tryHostImageCopy(VkImage image, VkFormat format, VkExtent3D extent, uint32_t mipLevels,
+			uint32_t arrayLayers, const void* data, size_t dataSize,
+			const std::vector<VkBufferImageCopy>& regions);
+		void flush();
+		TimelinePoint flushAndGetTimeline();
+		void waitAll();
+		bool hasPending() const noexcept { return m_hasPending; }
+	private:
+		VkDeviceSize allocFromRing(VkDeviceSize size, VkDeviceSize alignment);
+		void ensureCmd();
+		void submitLocked(bool waitOldestIfFull = true);
+		VulkanResourceManager* m_rm = nullptr;
+		Submitter* m_transfer = nullptr;
+		Submitter* m_graphics = nullptr;
+		StagingRing m_ring{};
+		CommandSubmitHandle m_curHandle{};
+		VkCommandBuffer m_curCmd = VK_NULL_HANDLE;
+		bool m_hasPending = false;
+		std::mutex m_mutex;
+		bool m_hostCopySupported = false;
+	};
+
+struct DeferredTask {
 		DeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle) : task_(std::move(task)), handle_(handle) {}
 		std::packaged_task<void()> task_;
 		CommandSubmitHandle handle_;
@@ -422,6 +486,10 @@ namespace smvk {
 		std::unique_ptr<VulkanCore> core_;
 		VmaAllocator m_allocator;
 		Submitter* m_submitter = nullptr;
+		Submitter* m_transferSubmitter = nullptr;
+		std::unique_ptr<UploadStreamer> m_streamer;
+		bool m_hostImageCopySupported = false;
+		VkPhysicalDeviceHostImageCopyPropertiesEXT m_hostCopyProps{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_PROPERTIES_EXT };
 		std::vector<DeferredTask> m_deferredTasks;
 
 		VkDescriptorSetLayout defaultSetLayout{};
@@ -451,6 +519,12 @@ namespace smvk {
 		uint32_t GetOrCreateSampler(const SamplerCreateInfo& ci);
 		VkSampler GetVkSampler(uint32_t index) const;
 		uint32_t GetSamplerCount() const;
+		Submitter* GetTransferSubmitter() const noexcept { return m_transferSubmitter; }
+		Submitter* GetGraphicsSubmitter() const noexcept { return m_submitter; }
+		UploadStreamer* GetStreamer() const noexcept { return m_streamer.get(); }
+		bool IsHostImageCopySupported() const noexcept { return m_hostImageCopySupported; }
+		void FlushUploads();
+		void WaitForUploads();
 
 		Holder<DescriptorPoolHandle> defaultDescriptorPool{};
 		TextureHandle m_nilTexture{};
@@ -490,6 +564,7 @@ namespace smvk {
 		void CommitBufferSyncStates(const std::unordered_map<uint64_t, BufferGlobalSyncState>& states);
 
 
+		friend struct UploadStreamer;
 	private:
 		ImageSubresourceRange ResolveImageSubresourceRange(const Image& image, ImageSubresourceRange range) const;
 		Image CreateImageImpl(const ImageCreateInfo& ci);
@@ -771,8 +846,10 @@ namespace smvk {
 	VkPhysicalDevice GetVkPhysicalDevice();
 	VkQueue          GetVkGraphicsQueue();
 	VkQueue          GetVkPresentQueue();
+	VkQueue          GetVkTransferQueue();
 	VkSurfaceKHR     GetVkSurface();
 	uint32_t         GetVkGraphicsQueueFamily();
+	uint32_t         GetVkTransferQueueFamily();
 
 }; // namespace smvk
 

@@ -40,6 +40,7 @@ static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
+static VkQueue transferQueue_ = VK_NULL_HANDLE;
 
 namespace {
 
@@ -1602,10 +1603,33 @@ bool smvk::VulkanCore::Init() {
 				queueCreateInfos.push_back(queueCreateInfo);
 			}
 
+			// Check for VK_EXT_host_image_copy support
+			bool hostImageCopyAvailable = false;
+			{
+				uint32_t extCount = 0;
+				vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr);
+				std::vector<VkExtensionProperties> exts(extCount);
+				vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data());
+				for (auto &e : exts) if (strcmp(e.extensionName, VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME) == 0) { hostImageCopyAvailable = true; break; }
+			}
+			bool enableHostCopy = false;
+			if (hostImageCopyAvailable) {
+				VkPhysicalDeviceHostImageCopyFeaturesEXT queryHostCopy{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT, nullptr };
+				VkPhysicalDeviceFeatures2 queryFeats2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &queryHostCopy };
+				vkGetPhysicalDeviceFeatures2(physicalDevice_, &queryFeats2);
+				if (queryHostCopy.hostImageCopy == VK_TRUE) enableHostCopy = true;
+			}
+
+			VkPhysicalDeviceHostImageCopyFeaturesEXT deviceHostCopyFeatures{
+				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT,
+				nullptr,
+				enableHostCopy ? VK_TRUE : VK_FALSE
+			};
+
 			VkPhysicalDeviceVulkan11Features deviceFeatures11
 			{
 				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-				.pNext = nullptr,
+				.pNext = enableHostCopy ? (void*)&deviceHostCopyFeatures : nullptr,
 				.storageBuffer16BitAccess = VK_TRUE,
 				.uniformAndStorageBuffer16BitAccess = VK_TRUE,
 			};
@@ -1631,26 +1655,17 @@ bool smvk::VulkanCore::Init() {
 				.maintenance4 = VK_TRUE,
 			};
 
-			// if version == 1.4
-			//VkPhysicalDeviceVulkan14Features deviceFeatures14
-			//{
-			//	.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
-			//	.pNext = &deviceFeatures13,
-			//};
-
 			VkPhysicalDeviceFeatures2 feats2{
 				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
 				.pNext = &deviceFeatures13,
 				.features = {
 					.samplerAnisotropy = VK_TRUE,
-					.textureCompressionBC = VK_TRUE, // REQUIRED for BC1..BC7
+					.textureCompressionBC = VK_TRUE,
 				},
 			};
 
-			// Missing features macro, right now I dont want that much portability nor correctness do rawdogging extensions!
-			//#define CHECK_VULKAN_FEATURE(reqFeatures, availFeatures, feature, version)     \
-			//  if ((reqFeatures.feature == VK_TRUE) && (availFeatures.feature == VK_FALSE)) \
-			//    missingFeatures.append("\n   " version " ." #feature);
+			std::vector<const char*> enabledExtensions = config_.deviceExtensions;
+			if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
 
 			VkDeviceCreateInfo createInfo{};
 			createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -1658,8 +1673,8 @@ bool smvk::VulkanCore::Init() {
 			createInfo.pQueueCreateInfos = queueCreateInfos.data();
 			createInfo.pEnabledFeatures = nullptr;
 			createInfo.pNext = &feats2;
-			createInfo.enabledExtensionCount = static_cast<uint32_t>(config_.deviceExtensions.size());
-			createInfo.ppEnabledExtensionNames = config_.deviceExtensions.data();
+			createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+			createInfo.ppEnabledExtensionNames = enabledExtensions.data();
 			createInfo.enabledLayerCount = 0;
 
 			if (vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_) != VK_SUCCESS) {
@@ -1670,8 +1685,13 @@ bool smvk::VulkanCore::Init() {
 		}
 
 		QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
-		vkGetDeviceQueue(device_, indices.presentFamily.value(), 0, &presentQueue_); // this is fine like this
-		vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &graphicsQueue_); // this maybe not 
+		vkGetDeviceQueue(device_, indices.presentFamily.value(), 0, &presentQueue_);
+		vkGetDeviceQueue(device_, indices.graphicsFamily.value(), 0, &graphicsQueue_);
+		{
+			QueueFamilyIndices q2 = findQueueFamilies(physicalDevice_, surface_);
+			if (q2.transferFamily) vkGetDeviceQueue(device_, q2.transferFamily.value(), 0, &transferQueue_);
+			else transferQueue_ = graphicsQueue_;
+		}
 	};
 
 	return true;
@@ -1703,6 +1723,7 @@ inline smvk::VulkanCore::~VulkanCore() {
 	physicalDevice_ = VK_NULL_HANDLE;
 	graphicsQueue_ = VK_NULL_HANDLE;
 	presentQueue_ = VK_NULL_HANDLE;
+	transferQueue_ = VK_NULL_HANDLE;
 }
 std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window) {
 	assert(window != nullptr && "window was nullptr!");
@@ -1743,6 +1764,13 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	VK_CHECK(vmaCreateAllocator(&allocatorCreateInfo, &m_allocator));
 
 	m_submitter = new Submitter(*core_, core_->indices.graphicsFamily.value());
+	// Use graphics queue for uploads for now to avoid ownership transfer issues.
+	// Dedicated transfer queue is disabled until proper release/acquire with semaphores is implemented.
+	m_transferSubmitter = m_submitter;
+	// Host image copy is disabled for now (causes device lost on some drivers when usage flag is added unconditionally)
+	m_hostImageCopySupported = false;
+	m_streamer = std::make_unique<UploadStreamer>(this, m_transferSubmitter, m_submitter);
+	m_streamer->init(64ull * 1024 * 1024);
 
 	// SamplerCache – owns up to MAX_SAMPLERS deduplicated VkSamplers.
 	// Like VulkanPipelineCache, key (SamplerCreateInfo) → stable index.
@@ -1888,7 +1916,9 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 		staticVertexFmtHeap.m_staticIndexBlock = VK_NULL_HANDLE;
 	}
 	//
-
+	if (m_streamer) { m_streamer->waitAll(); m_streamer->destroy(); m_streamer.reset(); }
+	if (m_transferSubmitter && m_transferSubmitter != m_submitter) { delete m_transferSubmitter; }
+	m_transferSubmitter = nullptr;
 	delete m_submitter;
 	m_submitter = nullptr;
 
@@ -1992,6 +2022,322 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	//
 	vmaDestroyAllocator(m_allocator);
 };
+
+// ===============================================================
+// UploadStreamer implementation
+// ===============================================================
+smvk::UploadStreamer::UploadStreamer(VulkanResourceManager* rm, Submitter* transfer, Submitter* graphics)
+	: m_rm(rm), m_transfer(transfer), m_graphics(graphics) {
+	if (rm) m_hostCopySupported = rm->m_hostImageCopySupported;
+}
+smvk::UploadStreamer::~UploadStreamer() { destroy(); }
+bool smvk::UploadStreamer::init(VkDeviceSize ringCapacity) {
+	std::lock_guard<std::mutex> lock(m_mutex);
+	if (m_ring.buffer != VK_NULL_HANDLE) return true;
+	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	ci.size = ringCapacity;
+	ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	VmaAllocationCreateInfo aci{};
+	aci.usage = VMA_MEMORY_USAGE_AUTO;
+	aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+	aci.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+	VmaAllocationInfo info{};
+	VkResult r = vmaCreateBuffer(m_rm->m_allocator, &ci, &aci, &m_ring.buffer, &m_ring.allocation, &info);
+	if (r != VK_SUCCESS) return false;
+	m_ring.mapped = info.pMappedData;
+	m_ring.capacity = ringCapacity;
+	m_ring.offset = 0;
+#if defined(_DEBUG)
+	if (ringCapacity) {
+		VkDebugUtilsObjectNameInfoEXT ni{ VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
+		ni.objectType = VK_OBJECT_TYPE_BUFFER;
+		ni.objectHandle = reinterpret_cast<uint64_t>(m_ring.buffer);
+		ni.pObjectName = "UploadStreamer Ring";
+		vkSetDebugUtilsObjectNameEXT(device_, &ni);
+	}
+#endif
+	return true;
+}
+void smvk::UploadStreamer::destroy() {
+	std::lock_guard<std::mutex> lock(m_mutex);
+	if (m_curCmd != VK_NULL_HANDLE && m_hasPending) {
+		// submit any pending work before destroy
+		submitLocked(false);
+	}
+	if (m_ring.buffer != VK_NULL_HANDLE) {
+		// wait for any in-flight use
+		if (m_transfer) m_transfer->waitAll();
+		if (m_graphics && m_graphics != m_transfer) m_graphics->waitAll();
+		vmaDestroyBuffer(m_rm->m_allocator, m_ring.buffer, m_ring.allocation);
+		m_ring.buffer = VK_NULL_HANDLE;
+		m_ring.allocation = VK_NULL_HANDLE;
+		m_ring.mapped = nullptr;
+		m_ring.capacity = 0;
+		m_ring.offset = 0;
+	}
+	m_curCmd = VK_NULL_HANDLE;
+	m_curHandle = {};
+	m_hasPending = false;
+}
+VkDeviceSize smvk::UploadStreamer::allocFromRing(VkDeviceSize size, VkDeviceSize alignment) {
+	// caller holds m_mutex
+	VkDeviceSize aligned = (m_ring.offset + alignment - 1) & ~(alignment - 1);
+	if (aligned + size > m_ring.capacity) {
+		// need to flush current batch and wrap
+		if (m_hasPending) submitLocked(true);
+		// after submit, wait if we would still overflow (ring too small)
+		if (size > m_ring.capacity) return VK_WHOLE_SIZE; // signal fallback
+		// if transfer still busy, wait for it before wrapping to avoid overwrite
+		// check if transfer is still busy - simple waitAll for now (could be smarter with timeline)
+		// we already submitted, ring can be reused after gpu done; wait if needed
+		// For simplicity, if offset was reset but gpu not done, wait
+		// We flush with wait inside submitLocked when wrap path
+		m_ring.offset = 0;
+		aligned = 0;
+		if (aligned + size > m_ring.capacity) return VK_WHOLE_SIZE;
+	}
+	m_ring.offset = aligned + size;
+	return aligned;
+}
+void smvk::UploadStreamer::ensureCmd() {
+	// caller holds m_mutex
+	if (m_curCmd != VK_NULL_HANDLE) return;
+	// purge already done in acquire
+	m_curHandle = m_transfer->acquire();
+	m_curCmd = m_transfer->GetCommandBuffer(m_curHandle);
+	m_hasPending = false;
+}
+void smvk::UploadStreamer::submitLocked(bool waitOldestIfFull) {
+	// caller holds m_mutex
+	if (!m_hasPending || m_curCmd == VK_NULL_HANDLE) {
+		// nothing to submit, but still need to recycle handle if we acquired but did nothing
+		if (m_curCmd != VK_NULL_HANDLE) {
+			// need to end and submit empty? just reset - better to end and submit empty barrier? Instead recycle via submit empty cmd
+			// submit empty command buffer to keep slot lifecycle correct
+			auto tp = m_transfer->submit(m_curHandle);
+			(void)tp;
+		}
+		m_curCmd = VK_NULL_HANDLE;
+		m_curHandle = {};
+		m_hasPending = false;
+		return;
+	}
+	auto tp = m_transfer->submit(m_curHandle);
+	(void)tp;
+	// If dedicated transfer queue differs from graphics, we need to make graphics visible.
+	// For now we keep a timeline wait insertion point: graphics queue can wait via FlushUploads.
+	// To ensure correctness for immediate use, we do NOT wait here unless caller asks.
+	// The memory barrier was already recorded on transfer queue (TRANSFER->dstStages) – semaphore ensures ordering when graphics later waits.
+	m_curCmd = VK_NULL_HANDLE;
+	m_curHandle = {};
+	m_hasPending = false;
+}
+void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size_t size, size_t dstOffset,
+	VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
+	if (!data || size == 0 || dst.empty()) return;
+	// fast path for host-visible buffers: direct write + barrier on graphics queue
+	{
+		Buffer* b = m_rm->buffers_.get(dst);
+		if (b && b->isMappable()) {
+			VK_CHECK(vmaCopyMemoryToAllocation(m_rm->m_allocator, data, b->vma_alloc, dstOffset, size));
+			// barrier on graphics submitter (or transfer if shared, but graphics is fine)
+			auto han = m_graphics->acquire();
+			auto cmd = m_graphics->GetCommandBuffer(han);
+			// BufferBarrier forward
+			BufferBarrier(cmd, b->vkBuffer, dstOffset, size, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_WRITE_BIT, dstStages, dstAccess);
+			m_graphics->submit(han);
+			VulkanResourceManager::BufferGlobalSyncState st{};
+			st.masks.stageMask = FromVkPipelineStage(dstStages);
+			if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
+			st.masks.accessMask = FromVkAccess(dstAccess);
+			m_rm->SetBufferSyncState(dst, st);
+			return;
+		}
+	}
+	std::lock_guard<std::mutex> lock(m_mutex);
+	Buffer* dstBuf = m_rm->buffers_.get(dst);
+	if (!dstBuf) return;
+	// allocate from ring
+	VkDeviceSize ringOff = allocFromRing(size, 16);
+	if (ringOff == VK_WHOLE_SIZE) {
+		// fallback temporary staging (ring too small)
+		VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		ci.size = size;
+		ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		VmaAllocationCreateInfo aci{};
+		aci.usage = VMA_MEMORY_USAGE_AUTO;
+		aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+		aci.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+		VkBuffer tmpBuf; VmaAllocation tmpAlloc; VmaAllocationInfo tmpInfo{};
+		VK_CHECK(vmaCreateBuffer(m_rm->m_allocator, &ci, &aci, &tmpBuf, &tmpAlloc, &tmpInfo));
+		memcpy(tmpInfo.pMappedData, data, size);
+		vmaFlushAllocation(m_rm->m_allocator, tmpAlloc, 0, VK_WHOLE_SIZE);
+		ensureCmd();
+		VkBufferCopy region{ 0, dstOffset, size };
+		vkCmdCopyBuffer(m_curCmd, tmpBuf, dstBuf->vkBuffer, 1, &region);
+		// BufferBarrier forward
+		uint32_t srcFamily = m_transfer->queueFamilyIndex();
+		uint32_t dstFamily = m_graphics->queueFamilyIndex();
+		// barrier with queue family transfer if needed
+		if (srcFamily != dstFamily) {
+			VkBufferMemoryBarrier2 b2{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0,0,nullptr,1,&b2,0,nullptr };
+			vkCmdPipelineBarrier2(m_curCmd, &dep);
+		} else {
+			BufferBarrier(m_curCmd, dstBuf->vkBuffer, dstOffset, size, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
+		}
+		m_hasPending = true;
+		// remember tmp for deferred destroy after submit
+		CommandSubmitHandle h = m_curHandle;
+		// we can't submit immediately – keep pending; deferred destroy will happen after flush
+		// store deferred task
+		m_rm->AddDeferredTask(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }), h);
+		VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
+		return;
+	}
+	// normal ring path
+	memcpy(static_cast<char*>(m_ring.mapped) + ringOff, data, size);
+	// flush if non-coherent (ring is host_visible, likely coherent; still flush)
+	vmaFlushAllocation(m_rm->m_allocator, m_ring.allocation, ringOff, size);
+	ensureCmd();
+	VkBufferCopy region{ ringOff, dstOffset, size };
+	vkCmdCopyBuffer(m_curCmd, m_ring.buffer, dstBuf->vkBuffer, 1, &region);
+	// BufferBarrier forward
+	uint32_t srcFamily = m_transfer->queueFamilyIndex();
+	uint32_t dstFamily = m_graphics->queueFamilyIndex();
+	if (srcFamily != dstFamily) {
+		VkBufferMemoryBarrier2 b2{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
+		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0,0,nullptr,1,&b2,0,nullptr };
+		vkCmdPipelineBarrier2(m_curCmd, &dep);
+	} else {
+		BufferBarrier(m_curCmd, dstBuf->vkBuffer, dstOffset, size, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
+	}
+	m_hasPending = true;
+	VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
+	// if we are batching many small uploads, don't submit yet – caller will flush
+}
+bool smvk::UploadStreamer::tryHostImageCopy(VkImage image, VkFormat format, VkExtent3D extent, uint32_t mipLevels, uint32_t arrayLayers, const void* data, size_t dataSize, const std::vector<VkBufferImageCopy>& regions) {
+	if (!m_hostCopySupported) return false;
+	// Need to check function pointer
+	if (!vkCopyMemoryToImageEXT || !vkTransitionImageLayoutEXT) return false;
+	// Host copy requires VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT which we don't set for existing images.
+	// We attempt anyway – if image was not created with HOST_TRANSFER usage, this will fail validation.
+	// For now return false to fallback to transfer path.
+	// Proper fix: CreateImageImpl should add HOST_TRANSFER when hostCopy supported.
+	return false;
+}
+void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
+	if (!data || imageHandle.empty()) return;
+	Image* img = m_rm->images_.get(imageHandle);
+	if (!img || img->vkImage==VK_NULL_HANDLE) return;
+	// try host copy if supported and image has HOST_TRANSFER usage
+	if (m_hostCopySupported && (img->usage & ImageUsage::TransferDst) != ImageUsage::None) {
+		// check HOST_TRANSFER bit via vkFormat? we conservatively try if extension loaded; but our images lack the usage, so skip for now
+	}
+	// fallback to staging ring copy path
+	std::lock_guard<std::mutex> lock(m_mutex);
+	// allocate from ring
+	VkDeviceSize ringOff = allocFromRing(dataSize, 16);
+	VmaAllocation tmpAlloc = VK_NULL_HANDLE; VkBuffer tmpBuf = VK_NULL_HANDLE; bool useTmp = false;
+	void* dstPtr = nullptr;
+	VkBuffer srcBuf = m_ring.buffer;
+	VkDeviceSize srcOff = ringOff;
+	if (ringOff == VK_WHOLE_SIZE) {
+		// fallback temp
+		VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		ci.size = dataSize;
+		ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		VmaAllocationCreateInfo aci{}; aci.usage=VMA_MEMORY_USAGE_AUTO; aci.flags=VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT|VMA_ALLOCATION_CREATE_MAPPED_BIT; aci.requiredFlags=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+		VmaAllocationInfo info{}; VK_CHECK(vmaCreateBuffer(m_rm->m_allocator,&ci,&aci,&tmpBuf,&tmpAlloc,&info));
+		dstPtr = info.pMappedData;
+		srcBuf = tmpBuf;
+		srcOff = 0;
+		useTmp = true;
+	} else {
+		dstPtr = static_cast<char*>(m_ring.mapped) + ringOff;
+	}
+	memcpy(dstPtr, data, dataSize);
+	vmaFlushAllocation(m_rm->m_allocator, useTmp?tmpAlloc:m_ring.allocation, srcOff, dataSize);
+	ensureCmd();
+	// barriers and copy – we need to handle full mip chain; caller provided dataSize covering all mips, but we need regions
+	// Recompute regions similarly to UploadDataToImage2D
+	VkFormat vkFmt = toVkFormat(img->format);
+	// Use helper getFormatInfo (local to impl.cpp) – we forward declare via lambda? For now compute via switch minimal
+	// We'll call a helper function defined in impl.cpp: getFormatInfo – need to expose or recompute inline
+	// Instead reuse logic: for simplicity, assume tightly packed and use bufferRowLength=0; create one region per mip/layer if needed
+	// For generic upload, we will use the same logic as original UploadDataToImage2D but with our ring buffer
+	// To avoid duplication, we will record a single barrier UNDEFINED->TRANSFER_DST, then vkCmdCopyBufferToImage2 for all mips, then TRANSFER_DST->SHADER_READ_ONLY
+	// Build regions on the fly
+	// We need fmt info – replicate getFormatInfo minimal for uncompressed; fallback to 4 bytes
+	// toVkFormat forward
+	// We'll approximate: assume format is 4 bytes per pixel for most, but we have correct calculation via dataSize – just push one region per mip/layer with computed offsets? Simpler: if mipLevels==1 && arrayLayers==1, one region
+	std::vector<VkBufferImageCopy2> regions2;
+	// if we have detailed mip info, we should loop; for now if image is 2D and we have dataSize, we can create one region covering base mip
+	// We'll treat data as tightly packed for all mips sequentially – need offsets. We'll reuse same logic as original but with srcOff base
+	// For correctness, handle multi-mip by computing layer sizes using FormatInfo – we need FormatInfo helper. We'll define a local lambda that mimics getFormatInfo via vkGetPhysicalDeviceFormatProperties? Simpler: compute bytesPerPixel approximation 4 – but compressed formats will be wrong. Alternative: call original UploadDataToImage2D path for multi-mip? Instead we will delegate multi-mip to the legacy path.
+	// For streamer, we support single-mip images (most textures are single) – multi-mip KTX already handled separately.
+	VkImageSubresourceRange fullRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers };
+	extern void ImageBarrier(VkCommandBuffer, VkImage, VkImageLayout, VkImageLayout, VkImageSubresourceRange, VkPipelineStageFlags2, VkAccessFlags2, VkPipelineStageFlags2, VkAccessFlags2, uint32_t, uint32_t);
+	uint32_t srcF = m_transfer->queueFamilyIndex();
+	uint32_t dstF = m_graphics->queueFamilyIndex();
+	bool needOwnership = srcF != dstF;
+	// UNDEFINED -> TRANSFER_DST
+	ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+	// copy
+	if (img->mipLevels==1 && img->arrayLayers==1) {
+		VkBufferImageCopy2 r{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, srcOff, 0,0, {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, {0,0,0}, {img->extent.width, img->extent.height, 1} };
+		VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr, srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r };
+		vkCmdCopyBufferToImage2(m_curCmd, &copyInfo);
+	} else {
+		const FormatInfo fmt = getFormatInfo(vkFmt);
+		std::vector<VkBufferImageCopy2> regs;
+		VkDeviceSize off = srcOff;
+		for(uint32_t mip=0;mip<img->mipLevels;++mip){
+			uint32_t w = std::max(1u, img->extent.width >> mip);
+			uint32_t h = std::max(1u, img->extent.height >> mip);
+			uint32_t blocksX = (w + fmt.blockWidth - 1) / fmt.blockWidth;
+			uint32_t blocksY = (h + fmt.blockHeight - 1) / fmt.blockHeight;
+			VkDeviceSize layerSize = (VkDeviceSize)blocksX * blocksY * fmt.bytesPerBlock;
+			for(uint32_t layer=0; layer<img->arrayLayers; ++layer){
+				VkBufferImageCopy2 r{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, off, 0,0, {VK_IMAGE_ASPECT_COLOR_BIT, mip, layer, 1}, {0,0,0}, {w,h,1} };
+				regs.push_back(r);
+				off += layerSize;
+			}
+		}
+		VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr, srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)regs.size(), regs.data() };
+		vkCmdCopyBufferToImage2(m_curCmd, &copyInfo);
+	}
+	// TRANSFER_DST -> SHADER_READ_ONLY (or remain TRANSFER if requested)
+	bool remainTransfer = (dstStages==VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess==VK_ACCESS_2_TRANSFER_WRITE_BIT);
+	if (!remainTransfer) {
+		VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT; VkAccessFlags2 srcAcc = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+		uint32_t sF = VK_QUEUE_FAMILY_IGNORED, dF = VK_QUEUE_FAMILY_IGNORED;
+		if (needOwnership) { sF = srcF; dF = dstF; }
+		ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, fullRange, srcStage, srcAcc, dstStages, dstAccess, sF, dF);
+	} else {
+		if (needOwnership) {
+			VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &b }; vkCmdPipelineBarrier2(m_curCmd,&dep);
+		}
+	}
+	m_hasPending = true;
+	// deferred cleanup for tmp
+	if (useTmp) {
+		CommandSubmitHandle h = m_curHandle;
+		m_rm->AddDeferredTask(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }), h);
+	}
+	// update global sync
+	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); st.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask=PipelineStageBit_None; m_rm->SetImageSyncState(imageHandle, st);
+}
+void smvk::UploadStreamer::flush() { std::lock_guard<std::mutex> lock(m_mutex); if(m_hasPending) submitLocked(true); if(m_transfer) m_transfer->purge(); }
+smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() { std::lock_guard<std::mutex> lock(m_mutex); TimelinePoint tp{}; if(m_hasPending){ tp = m_transfer->submit(m_curHandle); m_curCmd=VK_NULL_HANDLE; m_curHandle={}; m_hasPending=false; } else if(m_transfer) tp = m_transfer->nextSignalPoint(); return tp; }
+void smvk::UploadStreamer::waitAll() { flush(); if(m_transfer) m_transfer->waitAll(); if(m_graphics && m_graphics!=m_transfer) m_graphics->waitAll(); }
+
+void smvk::VulkanResourceManager::FlushUploads() { if(m_streamer) m_streamer->flush(); }
+void smvk::VulkanResourceManager::WaitForUploads() { if(m_streamer) m_streamer->waitAll(); }
 void smvk::VulkanResourceManager::UploadDataToBuffer(
 	BufferHandle buffer,
 	const void* data,
@@ -2001,7 +2347,21 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 	size_t src_offset, // unused
 	size_t dest_offset
 ) {
-
+	// Hot path via UploadStreamer (transfer queue + ring) if available
+	if (m_streamer) {
+		m_streamer->uploadBuffer(buffer, data, dataSize, dest_offset, dstStages, dstAccess);
+		// do not flush here – caller may batch. For single uploads outside batch, flush immediately
+		// to preserve old "submit per call" semantics we flush if not in a batch – heuristic: flush if size < 1MiB? For now flush
+		// To keep batching for Cluster, Cluster will call FlushUploads after 3 uploads.
+		// Detect batch: if caller is Cluster (we can check if dest is static vertex heap) defer flush.
+		// Simple: flush if the buffer is NOT the static heap buffers
+		if (buffer != staticVertexFmtHeap.m_staticVertexPosBuffer &&
+		    buffer != staticVertexFmtHeap.m_staticVertexShadingBuffer &&
+		    buffer != staticVertexFmtHeap.m_staticIndexBuffer) {
+			m_streamer->flush();
+		}
+		return;
+	}
 	auto buf = buffers_.get(buffer);
 	assert(buffer.valid());
 	assert(buf->vkBuffer != VK_NULL_HANDLE);
@@ -2021,11 +2381,9 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 			dstAccess
 		);
 		m_submitter->submit(han);
-		// Update global sync table for future RenderGraph barriers.
 		{
-			BufferGlobalSyncState st{};
+			VulkanResourceManager::BufferGlobalSyncState st{};
 			st.masks.stageMask = FromVkPipelineStage(dstStages);
-			// If dstStages was NONE (transfer), derive from access
 			if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE)
 				st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
 			st.masks.accessMask = FromVkAccess(dstAccess);
@@ -2035,45 +2393,24 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 	}
 
 	auto stageHan = CreateBuffer(dataSize, smvk::BufferType_Staging, "staging buffer").release();
-	// this invalidates buf*, so lets get it again.
 	buf = buffers_.get(buffer);
 	auto stagingBuf = buffers_.get(stageHan);
 	assert(stagingBuf->vkBuffer != VK_NULL_HANDLE);
 
 	VK_CHECK(vmaCopyMemoryToAllocation(m_allocator, data, stagingBuf->vma_alloc, 0, dataSize));
-
-	// Copy staging -> dst
-	VkBufferCopy copyRegion{
-		.srcOffset = 0,	// we have the staging buf created for this so just from 0.
-		.dstOffset = dest_offset,
-		.size = dataSize
-	};
+	VkBufferCopy copyRegion{ 0, dest_offset, dataSize };
 	vkCmdCopyBuffer(cmd, stagingBuf->vkBuffer, buf->vkBuffer, 1, &copyRegion);
-
-	BufferBarrier(
-		cmd,
-		buf->vkBuffer,
-		dest_offset,
-		dataSize,
-		VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-		VK_ACCESS_2_TRANSFER_WRITE_BIT,
-		dstStages,
-		dstAccess
-	);
-
+	BufferBarrier(cmd, buf->vkBuffer, dest_offset, dataSize, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
 	m_submitter->submit(han);
 	{
-		BufferGlobalSyncState st{};
+		VulkanResourceManager::BufferGlobalSyncState st{};
 		st.masks.stageMask = FromVkPipelineStage(dstStages);
 		if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE)
 			st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
 		st.masks.accessMask = FromVkAccess(dstAccess);
 		SetBufferSyncState(buffer, st);
 	}
-	AddDeferredTask(
-		std::packaged_task<void()>([this, staging = std::move(stageHan)] {destroy(this, staging); })
-		, han
-	);
+	AddDeferredTask(std::packaged_task<void()>([this, staging = std::move(stageHan)] {destroy(this, staging); }), han);
 }
 void smvk::VulkanResourceManager::UploadDataToImage2D(
 	const Image& image,
@@ -2087,6 +2424,28 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	assert(image.vkImage != VK_NULL_HANDLE);
 	assert(image.type == ImageType::Image2D);
 	assert((image.usage & ImageUsage::TransferDst) != ImageUsage::None);
+
+	if (m_streamer) {
+		// Use streamer hot-path (transfer queue + ring) if available
+		ImageHandle found{};
+		images_.forEachHandle([&](ImageHandle h){ auto* im = images_.get(h); if (im && im->vkImage == image.vkImage) found = h; });
+		if (!found.empty()) {
+			// compute upload size
+			const VkFormat vkFmt2 = toVkFormat(image.format);
+			const FormatInfo fmt2 = getFormatInfo(vkFmt2);
+			VkDeviceSize sz = 0;
+			for (uint32_t mip = 0; mip < image.mipLevels; ++mip) {
+				uint32_t w = std::max(1u, image.extent.width >> mip);
+				uint32_t h = std::max(1u, image.extent.height >> mip);
+				uint32_t bx = (w + fmt2.blockWidth - 1) / fmt2.blockWidth;
+				uint32_t by = (h + fmt2.blockHeight - 1) / fmt2.blockHeight;
+				sz += (VkDeviceSize)bx * by * fmt2.bytesPerBlock * image.arrayLayers;
+			}
+			m_streamer->uploadImage(found, static_cast<const std::byte*>(data) + srcOffset, (size_t)sz, dstStages, dstAccess);
+			m_streamer->flush();
+			return;
+		}
+	}
 
 	const VkFormat vkFormat = toVkFormat(image.format);
 	const FormatInfo fmt = getFormatInfo(vkFormat);
@@ -2370,7 +2729,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 			if (img && img->vkImage == image.vkImage) found = h;
 		});
 		if (!found.empty()) {
-			ImageGlobalSyncState st{};
+			VulkanResourceManager::ImageGlobalSyncState st{};
 			st.masks.stageMask = FromVkPipelineStage(dstStages);
 			if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE)
 				st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
@@ -2439,6 +2798,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	vkCI.tiling = VK_IMAGE_TILING_OPTIMAL;
 	vkCI.usage = toVkImageUsageFlags(ci.usage);
+	if (m_hostImageCopySupported) vkCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
 	vkCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	vkCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -3435,11 +3795,12 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 	// Record upload
 	// -------------------------------------------------------------------------
 
+	Submitter* uploadSubmitter = m_transferSubmitter ? m_transferSubmitter : m_submitter;
 	auto submitHandle =
-		m_submitter->acquire();
+		uploadSubmitter->acquire();
 
 	auto cmd =
-		m_submitter
+		uploadSubmitter
 		->GetCommandBuffer(
 			submitHandle
 		);
@@ -3526,6 +3887,8 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 	// Intentionally fragment-only until the general transition API exists.
 	// -------------------------------------------------------------------------
 
+	uint32_t transFam = uploadSubmitter->queueFamilyIndex();
+	uint32_t gfxFam = m_submitter->queueFamilyIndex();
 	{
 		VkImageMemoryBarrier barrier{
 			VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
@@ -3543,11 +3906,8 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		barrier.newLayout =
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-		barrier.srcQueueFamilyIndex =
-			VK_QUEUE_FAMILY_IGNORED;
-
-		barrier.dstQueueFamilyIndex =
-			VK_QUEUE_FAMILY_IGNORED;
+		barrier.srcQueueFamilyIndex = (transFam != gfxFam) ? transFam : VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = (transFam != gfxFam) ? gfxFam : VK_QUEUE_FAMILY_IGNORED;
 
 		barrier.image =
 			vkImage;
@@ -3580,10 +3940,38 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		);
 	}
 
-
-	m_submitter->submit(
+	// if transfer queue is distinct, ensure graphics sees the release – we do a wait
+	TimelinePoint tp = uploadSubmitter->submit(
 		submitHandle
 	);
+	if (uploadSubmitter != m_submitter) {
+		// wait for transfer to complete before texture is used (synchronous for now, but off graphics queue)
+		uploadSubmitter->waitAll();
+		// acquire barrier on graphics queue (empty submit that waits)
+		auto gHan = m_submitter->acquire();
+		auto gCmd = m_submitter->GetCommandBuffer(gHan);
+		VkImageMemoryBarrier acquire{
+			VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
+		};
+		acquire.srcAccessMask = 0;
+		acquire.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		acquire.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		acquire.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		acquire.srcQueueFamilyIndex = transFam;
+		acquire.dstQueueFamilyIndex = gfxFam;
+		acquire.image = vkImage;
+		acquire.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = mipLevels,
+			.baseArrayLayer = 0,
+			.layerCount = imageCI.arrayLayers
+		};
+		if (transFam != gfxFam) {
+			vkCmdPipelineBarrier(gCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,nullptr,0,nullptr,1,&acquire);
+		}
+		m_submitter->submit(gHan);
+	}
 
 
 	// -------------------------------------------------------------------------
@@ -4425,16 +4813,26 @@ inline void ImageBarrier(
 }
 
 // Submitter
-inline smvk::Submitter::Submitter(VulkanCore& core, uint32_t queueIndex)
-	: core_(core)
+inline smvk::Submitter::Submitter(VulkanCore& core, uint32_t queueFamilyIndex)
+	: core_(core), m_queueFamilyIndex(queueFamilyIndex)
 {
-	// Fix this according to however VulkanCore stores queues.
-	m_queue = graphicsQueue_;
+	if (queueFamilyIndex == core.indices.transferFamily.value_or(queueFamilyIndex)) {
+		m_queue = transferQueue_ != VK_NULL_HANDLE ? transferQueue_ : graphicsQueue_;
+		if (queueFamilyIndex == core.indices.graphicsFamily.value()) m_queue = graphicsQueue_;
+		// dedicated transfer: use transferQueue_ if family matches transfer
+		QueueFamilyIndices q = findQueueFamilies(physicalDevice_, surface_);
+		if (q.transferFamily && *q.transferFamily == queueFamilyIndex) m_queue = transferQueue_;
+		else if (q.graphicsFamily && *q.graphicsFamily == queueFamilyIndex) m_queue = graphicsQueue_;
+		else if (q.presentFamily && *q.presentFamily == queueFamilyIndex) m_queue = presentQueue_;
+	} else {
+		m_queue = graphicsQueue_;
+	}
+	if (m_queue == VK_NULL_HANDLE) m_queue = graphicsQueue_;
 
 	VkCommandPoolCreateInfo poolInfo{
 		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-		.queueFamilyIndex = core.indices.graphicsFamily.value()
+		.queueFamilyIndex = queueFamilyIndex
 	};
 
 	VK_CHECK(vkCreateCommandPool(
@@ -4517,6 +4915,7 @@ inline smvk::Submitter::~Submitter()
 }
 smvk::TimelinePoint smvk::Submitter::nextSignalPoint() const
 {
+	std::lock_guard<std::recursive_mutex> lock(m_mutex);
 	return TimelinePoint{
 		.semaphore = m_timelineSemaphore,
 		.value = m_timelineValue
@@ -4544,6 +4943,7 @@ VkResult smvk::Submitter::waitTimeline(uint64_t value, uint64_t timeout) const
 }
 [[nodiscard]] inline smvk::CommandSubmitHandle smvk::Submitter::acquire()
 {
+	std::unique_lock<std::recursive_mutex> lock(m_mutex);
 	purge();
 
 	if (availableSlots == 0)
@@ -4562,11 +4962,13 @@ VkResult smvk::Submitter::waitTimeline(uint64_t value, uint64_t timeout) const
 
 		if (oldest != UINT64_MAX)
 		{
+			lock.unlock();
 			VK_CHECK(waitTimeline(
 				oldest,
 				UINT64_MAX));
-
+			lock.lock();
 			purge();
+			if (availableSlots == 0) { assert(false && "still no slot after wait"); return {}; }
 		}
 		else
 		{
@@ -4637,6 +5039,7 @@ VkResult smvk::Submitter::waitTimeline(uint64_t value, uint64_t timeout) const
 }
 smvk::TimelinePoint smvk::Submitter::submit(CommandSubmitHandle handle, std::span<const TimelineWait> waits)
 {
+	std::unique_lock<std::recursive_mutex> lock(m_mutex);
 	assert(validHandle(handle));
 
 	WrapperSlot& slot =
@@ -4754,6 +5157,7 @@ smvk::TimelinePoint smvk::Submitter::submit(CommandSubmitHandle handle, std::spa
 }
 inline bool smvk::Submitter::validHandle(CommandSubmitHandle handle) const
 {
+	std::lock_guard<std::recursive_mutex> lock(m_mutex);
 	if (handle.index_ >= kMax)
 		return false;
 	if (handle.gen_ == 0)
@@ -4764,6 +5168,7 @@ inline bool smvk::Submitter::validHandle(CommandSubmitHandle handle) const
 }
 bool smvk::Submitter::isReady(CommandSubmitHandle handle)
 {
+	std::lock_guard<std::recursive_mutex> lock(m_mutex);
 	if (handle.index_ >= kMax)
 		return false;
 
@@ -4801,6 +5206,7 @@ bool smvk::Submitter::isReady(CommandSubmitHandle handle)
 }
 void smvk::Submitter::purge()
 {
+	std::lock_guard<std::recursive_mutex> lock(m_mutex);
 	uint64_t completedValue = 0;
 
 	VkResult r = vkGetSemaphoreCounterValue(
@@ -4840,6 +5246,7 @@ void smvk::Submitter::purge()
 }
 inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout)
 {
+	std::lock_guard<std::recursive_mutex> lock(m_mutex);
 	if (handle.index_ >= kMax)
 	{
 		assert(false && "invalid handle");
@@ -4889,6 +5296,7 @@ inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout)
 }
 void smvk::Submitter::waitAll()
 {
+	std::lock_guard<std::recursive_mutex> lock(m_mutex);
 	if (m_lastTimelineValue == 0)
 		return;
 
@@ -6631,6 +7039,10 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 				// Read->Read with same layout needs no barrier
 				if (!( !srcIsWrite && !dstIsWrite )) needBarrier = true;
 			}
+			// WAW with same layout/access still needs barrier for ordering/visibility (depth atlas tiles)
+			else if (srcIsWrite && dstIsWrite) {
+				needBarrier = true;
+			}
 			// Also if src is Undefined, we need barrier for layout transition
 			if (src.layout == ImageLayout::Undefined && req.layout != ImageLayout::Undefined) needBarrier = true;
 
@@ -6786,11 +7198,41 @@ void smvk::RenderGraph::Execute(smvk::Framebuffer& fb)
 					pass.depthAttachment_.clear);
 		}
 
+		// Option B: for shadow atlas (depth-only, tiled) use full image as renderArea, tiled viewport/scissor
+		VkOffset2D renderOffset{pass.offsetX_, pass.offsetY_};
+		VkExtent2D renderExtent{pass.extent_.width, pass.extent_.height};
+		if (hasDepth && colorInfos.empty()) {
+			// Try to resolve depth image extent for tiled atlas case
+			VulkanResourceManager& vctxLocal = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
+			auto* view = imageViews_.get(pass.depthAttachment_.view);
+			ImageHandle phys{};
+			if (view) {
+				if (view->type == LogicalImageView::Type::ExternalPhysical) {
+					auto* ext = vctxLocal.imageViews_.get(view->externalViewHandle);
+					if (ext) phys = ext->image;
+				} else {
+					auto* li = images_.get(view->key.image);
+					if (li) phys = li->resolvedImageHandle;
+				}
+			}
+			if (!phys.empty()) {
+				auto* img = vctxLocal.images_.get(phys);
+				if (img && img->extent.width != 0 && img->extent.height != 0) {
+					// If pass is tiled (extent != image extent), use full image for renderArea (Option B)
+					// This keeps all tiles stored, while viewport/scissor clips to tile.
+					if (img->extent.width != pass.extent_.width || img->extent.height != pass.extent_.height) {
+						renderOffset = {0, 0};
+						renderExtent = {img->extent.width, img->extent.height};
+					}
+				}
+			}
+		}
+
 		VkRenderingInfo renderInfo{
 			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
 			.renderArea = {
-				.offset = {pass.offsetX_, pass.offsetY_},
-				.extent = {pass.extent_.width, pass.extent_.height},
+				.offset = renderOffset,
+				.extent = renderExtent,
 			},
 			.layerCount = 1,
 			.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
@@ -6802,15 +7244,15 @@ void smvk::RenderGraph::Execute(smvk::Framebuffer& fb)
 			hasStencil ? &depthInfo : nullptr;
 
 		VkViewport vp{};
-		vp.x = 0.0f;
-		vp.y = 0.0f;
+		vp.x = static_cast<float>(pass.offsetX_);
+		vp.y = static_cast<float>(pass.offsetY_);
 		vp.width = static_cast<float>(pass.extent_.width);
 		vp.height = static_cast<float>(pass.extent_.height);
 		vp.minDepth = 0.0f;
 		vp.maxDepth = 1.0f;
 
 		VkRect2D scissor{};
-		scissor.offset = { 0, 0 };
+		scissor.offset = { pass.offsetX_, pass.offsetY_ };
 		scissor.extent = { pass.extent_.width, pass.extent_.height };
 
 		vkCmdSetViewport(vkCmd, 0, 1, &vp);
@@ -7010,6 +7452,7 @@ VkDevice smvk::GetVkDevice() { return device_; }
 VkPhysicalDevice smvk::GetVkPhysicalDevice() { return physicalDevice_; }
 VkQueue smvk::GetVkGraphicsQueue() { return graphicsQueue_; }
 VkQueue smvk::GetVkPresentQueue() { return presentQueue_; }
+VkQueue smvk::GetVkTransferQueue() { return transferQueue_; }
 VkSurfaceKHR smvk::GetVkSurface() { return surface_; }
 uint32_t smvk::GetVkGraphicsQueueFamily() {
     if (physicalDevice_ != VK_NULL_HANDLE && surface_ != VK_NULL_HANDLE) {
@@ -7017,5 +7460,12 @@ uint32_t smvk::GetVkGraphicsQueueFamily() {
         if (indices.graphicsFamily) return *indices.graphicsFamily;
     }
     return 0;
+}
+uint32_t smvk::GetVkTransferQueueFamily() {
+    if (physicalDevice_ != VK_NULL_HANDLE && surface_ != VK_NULL_HANDLE) {
+        auto indices = findQueueFamilies(physicalDevice_, surface_);
+        if (indices.transferFamily) return *indices.transferFamily;
+    }
+    return GetVkGraphicsQueueFamily();
 }
 

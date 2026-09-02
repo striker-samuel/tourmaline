@@ -20,20 +20,29 @@ namespace smvk {
 		MaterialPipelineState out{};
 
 		// Raster: double-sided disables culling; otherwise back-face cull.
+		// NOTE: main view uses reversed infinite-Z with Y-flipped proj (proj[1][1] *= -1).
+		// Position conversion (-x,-z) preserves winding (+1), Y-flip inverts it (-1).
+		// Net winding inversion would suggest Clockwise, but glTF import + Vulkan viewport
+		// handling keeps NDC winding as CounterClockwise for front faces in this engine
+		// (verified: Clockwise caused global N inversion). Keep CounterClockwise per user report.
 		out.raster.cullMode = doubleSided ? CullMode::None : CullMode::Back;
 		out.raster.polygonMode = PolygonMode::Fill;
 		out.raster.frontFace = FrontFace::CounterClockwise;
 
 		// Depth: opaque/masked write depth; blend does not write depth
 		// (prevents transparent sorting artefacts, caller may override).
+		// Main view uses reversed infinite-Z (GreaterEqual, clear 0) – see main.cpp.
 		if (alphaMode == AlphaMode::Blend) {
 			out.depth = DepthSettings::Disabled();
 			// Keep depth test but no write for typical transparent.
 			out.depth.depthTestEnable = true;
-			out.depth.depthFunc = CompareOp::Less;
+			out.depth.depthFunc = CompareOp::GreaterEqual;
 			out.depth.writeEnable = false;
 		} else {
 			out.depth = DepthSettings::DepthTest();
+			out.depth.depthFunc = CompareOp::GreaterEqual;
+			out.depth.writeEnable = true;
+			out.depth.depthTestEnable = true;
 		}
 
 		// Blend: opaque/masked = no blend; Blend = alpha blend.

@@ -148,9 +148,9 @@ namespace smvk {
 				.stride = sizeof(VertexShading),
 				.inputRate = VertexInputRate::Vertex,
 				.attributes = {
-					{
-						.semantic = VertexSemantic::Color,
-						.format = Format::RG32_Float,
+			{
+				.semantic = VertexSemantic::Color,
+						.format = Format::RGB32_Float,
 						.offset = offsetof(VertexShading, color)
 					},
 					{
