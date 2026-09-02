@@ -508,8 +508,14 @@ private:
 				true,
 				(int)CASCADE_RES
 			);
-			lp[1][1] *= -1;
-			glm::mat4 lvp = lp * lv;
+		// NOTE: do NOT Y-flip the light ortho here. Flipping only lp[1][1] (scale)
+		// without the offset term lp[3][1] breaks the NDC mapping whenever the
+		// light-space Y bounds are asymmetric -> receivers near the slice edge
+		// land outside [0,1] UV and the shader's bounds check returns "lit"
+		// (shadowed objects flicker lit as the camera moves). The flip is also
+		// unnecessary: the shadow pass and the sampling share the same lightVP,
+		// so the NDC->UV convention cancels out.
+		glm::mat4 lvp = lp * lv;
 			std::memcpy(dir.cascades[i].lightVP, glm::value_ptr(lvp), sizeof(dir.cascades[i].lightVP));
 			dir.cascades[i].splitEnd = splitFar;
 			// small depth bias per cascade – grows slightly for far cascades
