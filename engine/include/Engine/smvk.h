@@ -1137,8 +1137,8 @@ namespace smvk {
 		}
 	};
 
-	struct ImageCreateInfo
-	{
+struct ImageCreateInfo
+{
 		ImageType type = ImageType::Image2D;
 		Extent3D extent{};
 		Format format = Format::Undefined;
@@ -1150,6 +1150,7 @@ namespace smvk {
 		uint32_t arrayLayers = 1;
 		//ImageCreateFlags flags = ImageCreateFlags::None;
 		const char* name = nullptr;
+		bool hostTransfer = false;
 	};
 
 	enum class ResourceOwnership : uint8_t

@@ -6,7 +6,7 @@
 
 #include "volk.h"
 #include "vk_mem_alloc.h"
-
+#include <source_location>
 #include <ktx.h>
 #include <ktxVulkan.h>
 
@@ -340,6 +340,7 @@ namespace smvk {
 	extern std::unordered_map<PoolKey, std::vector<CommandBufferPool*>, PoolKeyHash> g_allPools;
 	CommandBufferPool* GetThreadLocalPool(uint32_t queueFamilyIndex, VkDevice device, const Submitter* owner = nullptr);
 
+
 	struct VulkanResourceManager;
 	struct Submitter
 	{
@@ -350,7 +351,11 @@ namespace smvk {
 
 		CommandSubmitHandle acquire();
 		VkCommandBuffer GetCommandBuffer(CommandSubmitHandle handle);
-		TimelinePoint submit(CommandSubmitHandle handle, std::span<const TimelineWait> waits = {});
+		TimelinePoint submit(
+			CommandSubmitHandle handle,
+			std::span<const TimelineWait> waits = {},
+			std::source_location loc =
+			std::source_location::current());
 		bool validHandle(CommandSubmitHandle handle) const;
 		bool isReady(CommandSubmitHandle handle);
 		void wait(CommandSubmitHandle handle, uint64_t timeout = UINT64_MAX);
@@ -522,6 +527,8 @@ namespace smvk {
 		std::unique_ptr<UploadStreamer> m_streamer;
 		bool m_hostImageCopySupported = false;
 		VkPhysicalDeviceHostImageCopyPropertiesEXT m_hostCopyProps{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_PROPERTIES_EXT };
+		std::vector<VkImageLayout> m_hostCopySrcLayouts;
+		std::vector<VkImageLayout> m_hostCopyDstLayouts;
 		std::vector<DeferredTask> m_deferredTasks;
 
 		VkDescriptorSetLayout defaultSetLayout{};
@@ -555,6 +562,17 @@ namespace smvk {
 		Submitter* GetGraphicsSubmitter() const noexcept { return m_submitter; }
 		UploadStreamer* GetStreamer() const noexcept { return m_streamer.get(); }
 		bool IsHostImageCopySupported() const noexcept { return m_hostImageCopySupported; }
+		bool IsHostCopySrcLayoutSupported(VkImageLayout layout) const noexcept {
+			for (auto l : m_hostCopySrcLayouts) if (l == layout) return true;
+			return false;
+		}
+		bool IsHostCopyDstLayoutSupported(VkImageLayout layout) const noexcept {
+			for (auto l : m_hostCopyDstLayouts) if (l == layout) return true;
+			return false;
+		}
+		const std::vector<VkImageLayout>& GetHostCopySrcLayouts() const noexcept { return m_hostCopySrcLayouts; }
+		const std::vector<VkImageLayout>& GetHostCopyDstLayouts() const noexcept { return m_hostCopyDstLayouts; }
+		const VkPhysicalDeviceHostImageCopyPropertiesEXT& GetHostCopyProps() const noexcept { return m_hostCopyProps; }
 		void FlushUploads();
 		void WaitForUploads();
 

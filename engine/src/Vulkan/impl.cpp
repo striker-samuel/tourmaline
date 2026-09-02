@@ -1831,9 +1831,12 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	VK_CHECK(vmaCreateAllocator(&allocatorCreateInfo, &m_allocator));
 
 	m_submitter = new Submitter(*core_, core_->indices.graphicsFamily.value());
+#if 0
 	if (core_->indices.transferFamily && core_->indices.transferFamily.value() != core_->indices.graphicsFamily.value()) {
 		m_transferSubmitter = new Submitter(*core_, core_->indices.transferFamily.value());
-	} else {
+	} else
+#endif
+	{
 		m_transferSubmitter = m_submitter;
 	}
 	{
@@ -1842,10 +1845,21 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		vkGetPhysicalDeviceFeatures2(physicalDevice_, &feats2);
 		m_hostImageCopySupported = hostFeat.hostImageCopy == VK_TRUE;
 		if (m_hostImageCopySupported) {
+			// Two-stage query: first obtain counts, then allocate and retrieve layouts.
+			// pCopySrcLayouts / pCopyDstLayouts are not universally containing
+			// SHADER_READ_ONLY_OPTIMAL – only GENERAL is guaranteed.
 			VkPhysicalDeviceHostImageCopyPropertiesEXT props{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_PROPERTIES_EXT, nullptr };
 			VkPhysicalDeviceProperties2 props2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &props };
 			vkGetPhysicalDeviceProperties2(physicalDevice_, &props2);
+			m_hostCopySrcLayouts.resize(props.copySrcLayoutCount);
+			m_hostCopyDstLayouts.resize(props.copyDstLayoutCount);
+			props.pCopySrcLayouts = m_hostCopySrcLayouts.empty() ? nullptr : m_hostCopySrcLayouts.data();
+			props.pCopyDstLayouts = m_hostCopyDstLayouts.empty() ? nullptr : m_hostCopyDstLayouts.data();
+			vkGetPhysicalDeviceProperties2(physicalDevice_, &props2);
 			m_hostCopyProps = props;
+			// m_hostCopyProps was shallow-copied; restore pointers to persistent storage
+			m_hostCopyProps.pCopySrcLayouts = m_hostCopySrcLayouts.empty() ? nullptr : m_hostCopySrcLayouts.data();
+			m_hostCopyProps.pCopyDstLayouts = m_hostCopyDstLayouts.empty() ? nullptr : m_hostCopyDstLayouts.data();
 		}
 		if (m_hostImageCopySupported) {
 			printf("[UploadStreamer] VK_EXT_host_image_copy enabled (optimalTilingLayoutUUID supported)\n");
@@ -1853,8 +1867,13 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 			printf("[UploadStreamer] VK_EXT_host_image_copy not available, using transfer queue\n");
 		}
 	}
+#if true
+	//m_hostImageCopySupported = false;
+#endif
 	m_streamer = std::make_unique<UploadStreamer>(this, m_transferSubmitter, m_submitter);
 	m_streamer->init(256ull * 1024 * 1024);
+
+	//this->m_hostImageCopySupported = false;
 
 	// SamplerCache – owns up to MAX_SAMPLERS deduplicated VkSamplers.
 	// Like VulkanPipelineCache, key (SamplerCreateInfo) → stable index.
@@ -1969,6 +1988,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	);
 
 	// ============================================================================
+
 
 }
 smvk::VulkanResourceManager::~VulkanResourceManager() {
@@ -2321,6 +2341,9 @@ bool smvk::UploadStreamer::tryHostImageCopy(VkImage image, VkFormat format, VkEx
 	if (!vkCopyMemoryToImageEXT || !vkTransitionImageLayoutEXT) return false;
 	if (!IsHostTransferSupported(format)) return false;
 	if (extent.depth != 1) return false; // fallback for 3D for now
+	// Spec: newLayout must be in VkPhysicalDeviceHostImageCopyPropertiesEXT::pCopyDstLayouts.
+	// Only GENERAL is guaranteed; e.g. SHADER_READ_ONLY_OPTIMAL must be checked.
+	if (m_rm && !m_rm->IsHostCopyDstLayoutSupported(finalLayout)) return false;
 	// Transition UNDEFINED -> GENERAL
 	VkHostImageLayoutTransitionInfoEXT trans1{
 		VK_STRUCTURE_TYPE_HOST_IMAGE_LAYOUT_TRANSITION_INFO_EXT,
@@ -2361,7 +2384,8 @@ bool smvk::UploadStreamer::tryHostImageCopy(VkImage image, VkFormat format, VkEx
 	VkCopyMemoryToImageInfoEXT copyInfo{
 		VK_STRUCTURE_TYPE_COPY_MEMORY_TO_IMAGE_INFO_EXT,
 		nullptr,
-		VK_HOST_IMAGE_COPY_MEMCPY_BIT_EXT,
+		//VK_HOST_IMAGE_COPY_MEMCPY_BIT_EXT,
+		0,
 		image,
 		VK_IMAGE_LAYOUT_GENERAL,
 		(uint32_t)copies.size(),
@@ -2391,7 +2415,10 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 	Image* img = m_rm->images_.get(imageHandle);
 	if (!img || img->vkImage==VK_NULL_HANDLE) return;
 	// try host copy if supported and image has HOST_TRANSFER usage
-	if (m_hostCopySupported && (img->usage & ImageUsage::TransferDst) != ImageUsage::None) {
+	if (
+		false 
+		&&
+		m_hostCopySupported && (img->usage & ImageUsage::TransferDst) != ImageUsage::None) {
 		VkFormat vkFmtTry = toVkFormat(img->format);
 		if (IsHostTransferSupported(vkFmtTry)) {
 			VkExtent3D ext{ img->extent.width, img->extent.height, img->extent.depth };
@@ -2524,7 +2551,9 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 	bool remainTransfer = (dstStages==VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess==VK_ACCESS_2_TRANSFER_WRITE_BIT);
 	VkImageLayout finalLayout = remainTransfer ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	// Try host copy first for KTX (upload once, long-lived)
-	if (m_hostCopySupported && (img->usage & ImageUsage::TransferDst) != ImageUsage::None) {
+	// Spec: finalLayout must be in pCopyDstLayouts; only GENERAL is guaranteed.
+	if (false && m_hostCopySupported && (img->usage & ImageUsage::TransferDst) != ImageUsage::None
+		&& m_rm->IsHostCopyDstLayoutSupported(finalLayout)) {
 		VkFormat vkFmtTry = toVkFormat(img->format);
 		if (IsHostTransferSupported(vkFmtTry) && vkCopyMemoryToImageEXT && vkTransitionImageLayoutEXT && img->extent.depth == 1) {
 			VkHostImageLayoutTransitionInfoEXT trans1{ VK_STRUCTURE_TYPE_HOST_IMAGE_LAYOUT_TRANSITION_INFO_EXT, nullptr, img->vkImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers } };
@@ -2542,7 +2571,7 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 					hc.imageExtent = r.imageExtent;
 					hostCopies.push_back(hc);
 				}
-				VkCopyMemoryToImageInfoEXT copyInfo{ VK_STRUCTURE_TYPE_COPY_MEMORY_TO_IMAGE_INFO_EXT, nullptr, VK_HOST_IMAGE_COPY_MEMCPY_BIT_EXT, img->vkImage, VK_IMAGE_LAYOUT_GENERAL, (uint32_t)hostCopies.size(), hostCopies.data() };
+				VkCopyMemoryToImageInfoEXT copyInfo{ VK_STRUCTURE_TYPE_COPY_MEMORY_TO_IMAGE_INFO_EXT, nullptr, /*VK_HOST_IMAGE_COPY_MEMCPY_BIT_EXT*/0, img->vkImage, VK_IMAGE_LAYOUT_GENERAL, (uint32_t)hostCopies.size(), hostCopies.data() };
 				VkResult cr = vkCopyMemoryToImageEXT(device_, &copyInfo);
 				if (cr != VK_SUCCESS) {
 					copyInfo.flags = 0;
@@ -2562,8 +2591,11 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 					}
 				}
 				// fallback: transition GENERAL -> TRANSFER_DST for staging path
-				VkHostImageLayoutTransitionInfoEXT transFallback{ VK_STRUCTURE_TYPE_HOST_IMAGE_LAYOUT_TRANSITION_INFO_EXT, nullptr, img->vkImage, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers } };
-				vkTransitionImageLayoutEXT(device_, 1, &transFallback);
+				// Only if that target is also a supported host dst layout (GENERAL->TRANSFER_DST is also host-controlled).
+				if (m_rm->IsHostCopyDstLayoutSupported(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)) {
+					VkHostImageLayoutTransitionInfoEXT transFallback{ VK_STRUCTURE_TYPE_HOST_IMAGE_LAYOUT_TRANSITION_INFO_EXT, nullptr, img->vkImage, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers } };
+					vkTransitionImageLayoutEXT(device_, 1, &transFallback);
+				}
 			}
 		}
 	}
@@ -3122,11 +3154,12 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	vkCI.tiling = VK_IMAGE_TILING_OPTIMAL;
 	vkCI.usage = toVkImageUsageFlags(ci.usage);
-	if (m_hostImageCopySupported) {
-		VkFormat vkFmtTmp = toVkFormat(ci.format);
-		if (IsHostTransferSupported(vkFmtTmp)) {
-			vkCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
-		}
+	if (ci.hostTransfer)
+	{
+		assert(m_hostImageCopySupported);
+		const VkFormat format = toVkFormat(ci.format);
+		assert(IsHostTransferSupported(format));
+		vkCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
 	}
 	vkCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	vkCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -3296,13 +3329,25 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	auto image = CreateImage(
 		imageCreateInfo,
-		data
+		nullptr
 	);
 
 	const Image* imageResource =
 		images_.get(image);
 
 	assert(imageResource);
+	if (data)
+	{
+		UploadDataToImage2D(
+			*imageResource,
+			data,
+
+			VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+			VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+
+			0
+		);
+	}
 
 
 	// ---------------------------------------------------------------------
@@ -3810,7 +3855,13 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		toVkImageUsageFlags(
 			usage
 		);
-	if (m_hostImageCopySupported && IsHostTransferSupported(imageCI.format)) {
+	// Explicit per-image opt-in for host transfer (KTX). Keep disabled
+	// initially; set to true for exactly one test texture when re-enabling.
+	const bool useHostCopyForThisTexture = false;
+	if (useHostCopyForThisTexture)
+	{
+		assert(m_hostImageCopySupported);
+		assert(IsHostTransferSupported(imageCI.format));
 		imageCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
 	}
 
@@ -5014,17 +5065,25 @@ VkResult smvk::Submitter::waitTimeline(uint64_t value, uint64_t timeout) const
 	assert(slot.state_ == WrapperSlot::CommandState::Recording);
 	return slot.cmd_;
 }
-smvk::TimelinePoint smvk::Submitter::submit(CommandSubmitHandle handle, std::span<const TimelineWait> waits)
+
+smvk::TimelinePoint smvk::Submitter::submit(
+	CommandSubmitHandle handle,
+	std::span<const TimelineWait> waits,
+	std::source_location loc)
 {
 	std::unique_lock<std::recursive_mutex> lock(m_mutex);
+
 	assert(validHandle(handle));
-	auto* pool = getPool();
+
+	CommandBufferPool* pool = handle.pool;   // <-- important
+	assert(pool);
+
 	WrapperSlot& slot = pool->slots[handle.index_];
+
 	assert(slot.state_ == WrapperSlot::CommandState::Recording);
 	assert(slot.cmd_ != VK_NULL_HANDLE);
 
-	VK_CHECK(vkEndCommandBuffer(
-		slot.cmd_));
+	VK_CHECK(vkEndCommandBuffer(slot.cmd_));
 
 	std::vector<VkSemaphoreSubmitInfo> waitInfos;
 	waitInfos.reserve(waits.size());
@@ -5055,6 +5114,12 @@ smvk::TimelinePoint smvk::Submitter::submit(CommandSubmitHandle handle, std::spa
 		m_timelineValue++;
 
 	assert(signalValue != 0);
+
+	// source_location patch: log caller for debugging timeline/queue issues
+	fprintf(stderr, "[Submit] qfi=%u signal=%llu from %s:%u %s\n",
+		m_queueFamilyIndex,
+		(unsigned long long)signalValue,
+		loc.file_name(), (unsigned)loc.line(), loc.function_name());
 
 	VkSemaphoreSubmitInfo signalInfo{
 		.sType =
@@ -5110,39 +5175,44 @@ smvk::TimelinePoint smvk::Submitter::submit(CommandSubmitHandle handle, std::spa
 			VK_NULL_HANDLE));
 	}
 
-	slot.state_ =
-		CommandState::Submitted;
+	slot.state_ = CommandState::Submitted;
+	slot.retireValue_ = signalValue;
 
-	slot.retireValue_ =
-		signalValue;
+	m_lastTimelineValue = signalValue;
+	m_lastSubmit = handle;
 
-	m_lastTimelineValue =
-		signalValue;
-
-	m_lastSubmit =
-		handle;
-
-	return TimelinePoint{
-		.semaphore =
-			m_timelineSemaphore,
-
-		.value =
-			signalValue
+	return {
+		.semaphore = m_timelineSemaphore,
+		.value = signalValue
 	};
 }
 inline bool smvk::Submitter::validHandle(CommandSubmitHandle handle) const
 {
 	std::lock_guard<std::recursive_mutex> lock(m_mutex);
-	if (handle.index_ >= CommandBufferPool::kMax) return false;
-	if (handle.gen_ == 0) return false;
-	auto* pool = getPool();
-	return handle.gen_ == pool->slots[handle.index_].gen_;
+	if (!handle.pool)
+		return false;
+	if (handle.index_ >= CommandBufferPool::kMax)
+		return false;
+	if (handle.gen_ == 0)
+		return false;
+	const WrapperSlot& slot =
+		handle.pool->slots[handle.index_];
+	return handle.gen_ == slot.gen_;
 }
+//inline bool smvk::Submitter::validHandle(CommandSubmitHandle handle) const
+//{
+//	std::lock_guard<std::recursive_mutex> lock(m_mutex);
+//	if (handle.index_ >= CommandBufferPool::kMax) return false;
+//	if (handle.gen_ == 0) return false;
+//	if (handle.pool == nullptr) return false;
+//	return handle.gen_ == handle.pool->slots[handle.index_].gen_;
+//}
 bool smvk::Submitter::isReady(CommandSubmitHandle handle)
 {
 	std::lock_guard<std::recursive_mutex> lock(m_mutex);
 	if (handle.index_ >= CommandBufferPool::kMax) return false;
-	auto* pool = getPool();
+	if (handle.pool == nullptr) return false;
+	auto* pool = handle.pool;
 	WrapperSlot& slot = pool->slots[handle.index_];
 
 	// Old generation already recycled.
@@ -5173,48 +5243,106 @@ bool smvk::Submitter::isReady(CommandSubmitHandle handle)
 void smvk::Submitter::purge()
 {
 	std::lock_guard<std::recursive_mutex> lock(m_mutex);
-	auto* pool = getPool();
+
 	uint64_t completedValue = 0;
-	VkResult r = vkGetSemaphoreCounterValue(device_, m_timelineSemaphore, &completedValue);
+
+	VkResult r = vkGetSemaphoreCounterValue(
+		device_,
+		m_timelineSemaphore,
+		&completedValue);
+
 	if (r == VK_ERROR_DEVICE_LOST) {
-		for (uint32_t i = 0; i < CommandBufferPool::kMax; ++i) {
-			WrapperSlot& slot = pool->slots[i];
-			if (slot.state_ == WrapperSlot::CommandState::Submitted) {
-				slot.cmd_ = VK_NULL_HANDLE;
-				slot.state_ = WrapperSlot::CommandState::Free;
-				slot.retireValue_ = 0;
-				++slot.gen_; if (slot.gen_ == 0) slot.gen_ = 1;
-				++pool->availableSlots;
+		PoolKey key{ device_, m_queueFamilyIndex, this };
+		std::vector<CommandBufferPool*> pools;
+		{
+			std::lock_guard<std::mutex> g(g_allPoolsMutex);
+			auto it = g_allPools.find(key);
+			if (it != g_allPools.end()) pools = it->second;
+		}
+		if (pools.empty()) {
+			auto* single = getPool();
+			if (single) pools.push_back(single);
+		}
+		for (auto* pool : pools) {
+			for (uint32_t i = 0; i < CommandBufferPool::kMax; ++i) {
+				WrapperSlot& slot = pool->slots[i];
+				if (slot.state_ == WrapperSlot::CommandState::Submitted) {
+					slot.cmd_ = VK_NULL_HANDLE;
+					slot.state_ = WrapperSlot::CommandState::Free;
+					slot.retireValue_ = 0;
+					++slot.gen_; if (slot.gen_ == 0) slot.gen_ = 1;
+					++pool->availableSlots;
+				}
 			}
 		}
 		return;
 	}
 	VK_CHECK(r);
-	for (uint32_t i = 0; i < CommandBufferPool::kMax; ++i)
-	{
-		WrapperSlot& slot = pool->slots[i];
-		if (slot.state_ != WrapperSlot::CommandState::Submitted) continue;
 
-		if (slot.retireValue_ <= completedValue)
-		{
-			recycleSlot(i);
+	fprintf(stderr,
+		"[PURGE] this=%p qfi=%u semaphore=%p "
+		"completed=%llu next=%llu last=%llu\n",
+		this,
+		m_queueFamilyIndex,
+		(void*)m_timelineSemaphore,
+		(unsigned long long)completedValue,
+		(unsigned long long)m_timelineValue,
+		(unsigned long long)m_lastTimelineValue);
+
+	if (completedValue == UINT64_MAX) {
+		fprintf(stderr,
+			"FATAL: timeline semaphore became UINT64_MAX\n");
+		abort();
+	}
+
+	if (completedValue >= m_timelineValue) {
+		fprintf(stderr,
+			"FATAL: timeline ahead of Submitter: "
+			"completed=%llu next=%llu\n",
+			(unsigned long long)completedValue,
+			(unsigned long long)m_timelineValue);
+		abort();
+	}
+
+	PoolKey key{ device_, m_queueFamilyIndex, this };
+	std::vector<CommandBufferPool*> pools;
+	{
+		std::lock_guard<std::mutex> g(g_allPoolsMutex);
+		auto it = g_allPools.find(key);
+		if (it != g_allPools.end()) pools = it->second;
+	}
+	if (pools.empty()) {
+		auto* single = getPool();
+		if (single) pools.push_back(single);
+	}
+	for (auto* pool : pools) {
+		for (uint32_t i = 0; i < CommandBufferPool::kMax; ++i) {
+			WrapperSlot& slot = pool->slots[i];
+			if (slot.state_ != WrapperSlot::CommandState::Submitted) continue;
+			if (slot.retireValue_ <= completedValue) {
+				recycleSlot(pool, i);
+			}
 		}
 	}
 }
 inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout)
 {
 	std::lock_guard<std::recursive_mutex> lock(m_mutex);
-	if (handle.index_ >= CommandBufferPool::kMax) { assert(false && "invalid handle"); return; }
-	auto* pool = getPool();
+	//if (handle.index_ >= CommandBufferPool::kMax) { assert(false && "invalid handle"); return; }
+	//if (handle.pool == nullptr) { assert(false && "wait: null handle.pool"); return; }
+	//auto* pool = handle.pool;
+	//WrapperSlot& slot = pool->slots[handle.index_];
+
+	//// Already recycled.
+	//if (handle.gen_ < slot.gen_)
+	//	return;
+
+	//assert(validHandle(handle));
+	
+	CommandBufferPool* pool = handle.pool;
 	WrapperSlot& slot = pool->slots[handle.index_];
-
-	// Already recycled.
-	if (handle.gen_ < slot.gen_)
-		return;
-
-	assert(validHandle(handle));
-
 	assert(slot.state_ == WrapperSlot::CommandState::Submitted && "Cannot wait on command buffer before submit");
+
 	VkResult result = waitTimeline(slot.retireValue_, timeout);
 	if (result == VK_TIMEOUT) { assert(false && "timeout reached"); return; }
 	if (result == VK_ERROR_DEVICE_LOST) {
@@ -5223,13 +5351,13 @@ inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout)
 		slot.state_ = WrapperSlot::CommandState::Free;
 		slot.retireValue_ = 0;
 		++slot.gen_; if (slot.gen_ == 0) slot.gen_ = 1;
-		++getPool()->availableSlots;
+		++pool->availableSlots;
 		return;
 	}
 
 	VK_CHECK(result);
 
-	recycleSlot(
+	recycleSlot(pool,
 		handle.index_);
 }
 void smvk::Submitter::waitAll()
@@ -5241,15 +5369,27 @@ void smvk::Submitter::waitAll()
 	VkResult r = waitTimeline(m_lastTimelineValue, UINT64_MAX);
 	if (r == VK_ERROR_DEVICE_LOST) {
 		fprintf(stderr, "[Vulkan Warning] waitTimeline returned DEVICE_LOST in Submitter::waitAll, proceeding with teardown\n");
-		auto* pool2 = getPool();
-		for (uint32_t i = 0; i < CommandBufferPool::kMax; ++i) {
-			WrapperSlot& slot = pool2->slots[i];
-			if (slot.state_ == WrapperSlot::CommandState::Submitted) {
-				slot.cmd_ = VK_NULL_HANDLE;
-				slot.state_ = WrapperSlot::CommandState::Free;
-				slot.retireValue_ = 0;
-				++slot.gen_; if (slot.gen_ == 0) slot.gen_ = 1;
-				++pool2->availableSlots;
+		PoolKey key{ device_, m_queueFamilyIndex, this };
+		std::vector<CommandBufferPool*> pools;
+		{
+			std::lock_guard<std::mutex> g(g_allPoolsMutex);
+			auto it = g_allPools.find(key);
+			if (it != g_allPools.end()) pools = it->second;
+		}
+		if (pools.empty()) {
+			auto* single = getPool();
+			if (single) pools.push_back(single);
+		}
+		for (auto* pool2 : pools) {
+			for (uint32_t i = 0; i < CommandBufferPool::kMax; ++i) {
+				WrapperSlot& slot = pool2->slots[i];
+				if (slot.state_ == WrapperSlot::CommandState::Submitted) {
+					slot.cmd_ = VK_NULL_HANDLE;
+					slot.state_ = WrapperSlot::CommandState::Free;
+					slot.retireValue_ = 0;
+					++slot.gen_; if (slot.gen_ == 0) slot.gen_ = 1;
+					++pool2->availableSlots;
+				}
 			}
 		}
 		return;
@@ -5262,14 +5402,30 @@ void smvk::Submitter::recycleSlot(uint32_t index)
 {
 	assert(index < CommandBufferPool::kMax);
 	auto* pool = getPool();
+	recycleSlot(pool, index);
+}
+void smvk::Submitter::recycleSlot(
+	CommandBufferPool* pool,
+	uint32_t index)
+{
+	assert(pool);
+	assert(index < CommandBufferPool::kMax);
+
 	WrapperSlot& slot = pool->slots[index];
+
 	assert(slot.state_ == WrapperSlot::CommandState::Submitted);
 	assert(slot.cmd_ != VK_NULL_HANDLE);
+
 	VK_CHECK(vkResetCommandBuffer(slot.cmd_, 0));
+
 	slot.cmd_ = VK_NULL_HANDLE;
 	slot.state_ = WrapperSlot::CommandState::Free;
 	slot.retireValue_ = 0;
-	++slot.gen_; if (slot.gen_ == 0) slot.gen_ = 1;
+
+	++slot.gen_;
+	if (slot.gen_ == 0)
+		slot.gen_ = 1;
+
 	++pool->availableSlots;
 }
 
