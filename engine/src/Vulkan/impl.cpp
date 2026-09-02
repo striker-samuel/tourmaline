@@ -3454,7 +3454,7 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		return VK_FORMAT_UNDEFINED;
 	}
 }
-[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ktxTexture2& texture, const char* debugName)
+[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateTexture(ktxTexture2& texture, const char* debugName, ImageCreateInfo imageCreateInfo)
 {
 	// -------------------------------------------------------------------------
 	// KTX metadata
@@ -3855,6 +3855,12 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		toVkImageUsageFlags(
 			usage
 		);
+	if (imageCreateInfo.hostTransfer)
+	{
+		assert(m_hostImageCopySupported);
+		assert(IsHostTransferSupported(imageCI.format));
+		imageCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
+	}
 	// Explicit per-image opt-in for host transfer (KTX). Keep disabled
 	// initially; set to true for exactly one test texture when re-enabling.
 	const bool useHostCopyForThisTexture = false;
@@ -5116,10 +5122,12 @@ smvk::TimelinePoint smvk::Submitter::submit(
 	assert(signalValue != 0);
 
 	// source_location patch: log caller for debugging timeline/queue issues
+#ifdef DEBUG_COMMAND_SUBMISSION
 	fprintf(stderr, "[Submit] qfi=%u signal=%llu from %s:%u %s\n",
 		m_queueFamilyIndex,
 		(unsigned long long)signalValue,
 		loc.file_name(), (unsigned)loc.line(), loc.function_name());
+#endif
 
 	VkSemaphoreSubmitInfo signalInfo{
 		.sType =

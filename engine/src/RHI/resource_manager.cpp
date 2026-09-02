@@ -69,8 +69,8 @@ Holder<TextureHandle> ResourceManager::CreateTexture(const ImageCreateInfo& ci, 
     TextureHandle raw = h.release();
     return Holder<TextureHandle>{this, raw};
 }
-Holder<TextureHandle> ResourceManager::CreateTexture(ktxTexture2& texture, const char* debugName) {
-    auto h = impl_->vulkan.CreateTexture(texture, debugName);
+Holder<TextureHandle> ResourceManager::CreateTexture(ktxTexture2& texture, const char* debugName, ImageCreateInfo imageCreateInfo) {
+    auto h = impl_->vulkan.CreateTexture(texture, debugName, imageCreateInfo);
     TextureHandle raw = h.release();
     return Holder<TextureHandle>{this, raw};
 }

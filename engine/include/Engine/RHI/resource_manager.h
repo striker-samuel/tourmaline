@@ -25,7 +25,7 @@ public:
     // Resource creation (RHI-only types, no Vk)
     Holder<ImageHandle> CreateImage(const ImageCreateInfo& ci, const void* data = nullptr);
     Holder<TextureHandle> CreateTexture(const ImageCreateInfo& ci, const void* data = nullptr);
-    Holder<TextureHandle> CreateTexture(ktxTexture2& texture, const char* debugName = "Texture");
+     Holder<TextureHandle> CreateTexture(ktxTexture2& texture, const char* debugName = "Texture", ImageCreateInfo imageCreateInfo = {});
     Holder<BindlessImageHandle> CreateBindlessImage(ImageViewHandle viewHandle, ImageLayout readLayout);
     Holder<ImageViewHandle> CreateImageView(ImageHandle image, const ImageViewCreateInfo& ci);
     // Recreate helpers (kept for swapchain)

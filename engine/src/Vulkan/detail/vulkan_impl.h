@@ -495,7 +495,7 @@ namespace smvk {
 		//
 		Holder<ImageHandle>          CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<TextureHandle>        CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
-		Holder<TextureHandle>        CreateTexture(ktxTexture2& texture, const char* debugName = "Texture");
+		Holder<TextureHandle>        CreateTexture(ktxTexture2& texture, const char* debugName = "Texture", ImageCreateInfo imageCreateInfo = {});
 		Holder<BindlessImageHandle>  CreateBindlessImage(ImageViewHandle viewHandle, VkImageLayout readLayout);
 		Holder<ImageViewHandle>      CreateImageView(ImageHandle image, const ImageViewCreateInfo& createInfo);
 		ImageViewHandle               RegisterImageView(VkImageView vkView, Format format, const char* name = nullptr);

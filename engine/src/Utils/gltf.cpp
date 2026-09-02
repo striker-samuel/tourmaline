@@ -158,7 +158,9 @@ namespace {
 			std::cerr << "Failed to load KTX texture: " << fullPath << " code " << result << std::endl;
 			return {};
 		}
-		auto holder = cluster.ctx_.CreateTexture(*ktxTex, fullPath.string().c_str());
+		smvk::ImageCreateInfo ktxCI{};
+		ktxCI.hostTransfer = true;
+		auto holder = cluster.ctx_.CreateTexture(*ktxTex, fullPath.string().c_str(), ktxCI);
 		ktxTexture2_Destroy(ktxTex);
 		smvk::TextureHandle h = holder;
 		cluster.textures.create(std::move(holder));
