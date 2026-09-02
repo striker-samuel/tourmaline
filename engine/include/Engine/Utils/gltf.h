@@ -7,6 +7,7 @@
 #include <tiny_gltf.h>
 
 #include <Engine/App/cluster.h>
+#include <Engine/RHI/resource_manager.h>
 
 struct GltfToSceneImporter
 {
@@ -93,5 +94,7 @@ inline void GltfToCluster(
 
 	markAsChanged(out.scene, root);
 	recalculateGlobalTransforms(out.scene);
+	// Flush batched uploads (256MB threshold, or manual at end of whole scene)
+	out.ctx_.FlushUploads();
 }
 

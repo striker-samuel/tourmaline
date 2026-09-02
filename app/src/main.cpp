@@ -247,6 +247,7 @@ private:
 		auto& cluster = m_world->LoadCluster(*m_context);
 		GltfToCluster(*m_context, model, gltf_meshes_paths[0], cluster);
 		m_world->ResolveAndFixup_clusters();
+		m_context->FlushUploads();
 
 
 		// FRAME RESOURCES

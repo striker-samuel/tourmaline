@@ -106,6 +106,17 @@ namespace {
 			return { 1, 1, 0 };
 		}
 	}
+	bool IsHostTransferSupported(VkFormat format) {
+		if (physicalDevice_ == VK_NULL_HANDLE) return false;
+		VkFormatProperties3 props3{ VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3, nullptr };
+		VkFormatProperties2 props2{ VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, &props3 };
+		vkGetPhysicalDeviceFormatProperties2(physicalDevice_, format, &props2);
+#ifdef VK_FORMAT_FEATURE_2_HOST_IMAGE_TRANSFER_BIT_EXT
+		return (props3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_HOST_IMAGE_TRANSFER_BIT_EXT) != 0;
+#else
+		return (props3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_HOST_IMAGE_TRANSFER_BIT) != 0;
+#endif
+	}
 
 	struct SwapChainSupportDetails {
 		VkSurfaceCapabilitiesKHR capabilities{};
@@ -1515,9 +1526,15 @@ int smvk::VulkanCore::CreateInstance() {
 		/*VK_VALIDATION_FEATURE_DISABLE_UNIQUE_HANDLES_EXT*/ // with this on debugNames break
 	};
 
+	VkValidationFeatureEnableEXT enabledValidationFeatures[1] = {
+		VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
+	};
+
 	VkValidationFeaturesEXT validationFeatures{};
 	validationFeatures.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
 	validationFeatures.pNext = &debugCreateInfo;
+	validationFeatures.enabledValidationFeatureCount = 1;
+	validationFeatures.pEnabledValidationFeatures = enabledValidationFeatures;
 	validationFeatures.disabledValidationFeatureCount = 1;
 	validationFeatures.pDisabledValidationFeatures = disabledValidationFeatures;
 
@@ -1769,10 +1786,27 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	} else {
 		m_transferSubmitter = m_submitter;
 	}
-	// Host image copy disabled for now – wait for transfer stable
-	m_hostImageCopySupported = false;
+	{
+		VkPhysicalDeviceHostImageCopyFeaturesEXT hostFeat{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT, nullptr };
+		VkPhysicalDeviceFeatures2 feats2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &hostFeat };
+		vkGetPhysicalDeviceFeatures2(physicalDevice_, &feats2);
+		m_hostImageCopySupported = hostFeat.hostImageCopy == VK_TRUE;
+		if (m_hostImageCopySupported) {
+			VkPhysicalDeviceHostImageCopyPropertiesEXT props{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_PROPERTIES_EXT, nullptr };
+			VkPhysicalDeviceProperties2 props2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &props };
+			vkGetPhysicalDeviceProperties2(physicalDevice_, &props2);
+			m_hostCopyProps = props;
+		} else {
+			m_hostImageCopySupported = false;
+		}
+		if (m_hostImageCopySupported) {
+			printf("[UploadStreamer] VK_EXT_host_image_copy enabled (optimalTilingLayoutUUID supported)\n");
+		} else {
+			printf("[UploadStreamer] VK_EXT_host_image_copy not available, using transfer queue\n");
+		}
+	}
 	m_streamer = std::make_unique<UploadStreamer>(this, m_transferSubmitter, m_submitter);
-	m_streamer->init(64ull * 1024 * 1024);
+	m_streamer->init(256ull * 1024 * 1024);
 
 	// SamplerCache – owns up to MAX_SAMPLERS deduplicated VkSamplers.
 	// Like VulkanPipelineCache, key (SamplerCreateInfo) → stable index.
@@ -2122,6 +2156,7 @@ void smvk::UploadStreamer::submitLocked(bool waitOldestIfFull) {
 		m_hasPending = false;
 		m_pendingBufferAcquires.clear();
 		m_pendingImageAcquires.clear();
+		m_stagedBytesSinceFlush = 0;
 		return;
 	}
 	auto tp = m_transfer->submit(m_curHandle);
@@ -2139,6 +2174,7 @@ void smvk::UploadStreamer::submitLocked(bool waitOldestIfFull) {
 	m_curCmd = VK_NULL_HANDLE;
 	m_curHandle = {};
 	m_hasPending = false;
+	m_stagedBytesSinceFlush = 0;
 }
 void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size_t size, size_t dstOffset,
 	VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
@@ -2203,6 +2239,10 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 		// store deferred task
 		m_rm->AddDeferredTask(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }), h);
 		VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
+		m_stagedBytesSinceFlush += size;
+		if (m_stagedBytesSinceFlush >= kFlushThreshold) {
+			submitLocked(false);
+		}
 		return;
 	}
 	// normal ring path
@@ -2226,17 +2266,81 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 	}
 	m_hasPending = true;
 	VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
+	m_stagedBytesSinceFlush += size;
+	if (m_stagedBytesSinceFlush >= kFlushThreshold) {
+		submitLocked(false);
+	}
 	// if we are batching many small uploads, don't submit yet – caller will flush
 }
-bool smvk::UploadStreamer::tryHostImageCopy(VkImage image, VkFormat format, VkExtent3D extent, uint32_t mipLevels, uint32_t arrayLayers, const void* data, size_t dataSize, const std::vector<VkBufferImageCopy>& regions) {
+bool smvk::UploadStreamer::tryHostImageCopy(VkImage image, VkFormat format, VkExtent3D extent, uint32_t mipLevels, uint32_t arrayLayers, const void* data, size_t dataSize, const std::vector<VkBufferImageCopy>& regions, VkImageLayout finalLayout) {
 	if (!m_hostCopySupported) return false;
-	// Need to check function pointer
 	if (!vkCopyMemoryToImageEXT || !vkTransitionImageLayoutEXT) return false;
-	// Host copy requires VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT which we don't set for existing images.
-	// We attempt anyway – if image was not created with HOST_TRANSFER usage, this will fail validation.
-	// For now return false to fallback to transfer path.
-	// Proper fix: CreateImageImpl should add HOST_TRANSFER when hostCopy supported.
-	return false;
+	if (!IsHostTransferSupported(format)) return false;
+	if (extent.depth != 1) return false; // fallback for 3D for now
+	// Transition UNDEFINED -> GENERAL
+	VkHostImageLayoutTransitionInfoEXT trans1{
+		VK_STRUCTURE_TYPE_HOST_IMAGE_LAYOUT_TRANSITION_INFO_EXT,
+		nullptr,
+		image,
+		VK_IMAGE_LAYOUT_UNDEFINED,
+		VK_IMAGE_LAYOUT_GENERAL,
+		VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, arrayLayers }
+	};
+	VkResult r = vkTransitionImageLayoutEXT(device_, 1, &trans1);
+	if (r != VK_SUCCESS) return false;
+
+	const FormatInfo fmt = getFormatInfo(format);
+	std::vector<VkMemoryToImageCopyEXT> copies;
+	copies.reserve((size_t)mipLevels * arrayLayers);
+	VkDeviceSize offset = 0;
+	for (uint32_t mip = 0; mip < mipLevels; ++mip) {
+		uint32_t w = std::max(1u, extent.width >> mip);
+		uint32_t h = std::max(1u, extent.height >> mip);
+		uint32_t blocksX = (w + fmt.blockWidth - 1) / fmt.blockWidth;
+		uint32_t blocksY = (h + fmt.blockHeight - 1) / fmt.blockHeight;
+		VkDeviceSize layerSize = (VkDeviceSize)blocksX * blocksY * fmt.bytesPerBlock;
+		for (uint32_t layer = 0; layer < arrayLayers; ++layer) {
+			if (offset + layerSize > dataSize) return false; // bounds check
+			VkMemoryToImageCopyEXT cpy{};
+			cpy.sType = VK_STRUCTURE_TYPE_MEMORY_TO_IMAGE_COPY_EXT;
+			cpy.pHostPointer = static_cast<const char*>(data) + offset;
+			cpy.memoryRowLength = 0;
+			cpy.memoryImageHeight = 0;
+			cpy.imageSubresource = VkImageSubresourceLayers{ VK_IMAGE_ASPECT_COLOR_BIT, mip, layer, 1 };
+			cpy.imageOffset = VkOffset3D{0,0,0};
+			cpy.imageExtent = VkExtent3D{w,h,1};
+			copies.push_back(cpy);
+			offset += layerSize;
+		}
+	}
+	if (copies.empty()) return false;
+	VkCopyMemoryToImageInfoEXT copyInfo{
+		VK_STRUCTURE_TYPE_COPY_MEMORY_TO_IMAGE_INFO_EXT,
+		nullptr,
+		VK_HOST_IMAGE_COPY_MEMCPY_BIT_EXT,
+		image,
+		VK_IMAGE_LAYOUT_GENERAL,
+		(uint32_t)copies.size(),
+		copies.data()
+	};
+	r = vkCopyMemoryToImageEXT(device_, &copyInfo);
+	if (r != VK_SUCCESS) {
+		// try without MEMCPY flag
+		copyInfo.flags = 0;
+		r = vkCopyMemoryToImageEXT(device_, &copyInfo);
+		if (r != VK_SUCCESS) return false;
+	}
+	// Transition GENERAL -> finalLayout
+	VkHostImageLayoutTransitionInfoEXT trans2{
+		VK_STRUCTURE_TYPE_HOST_IMAGE_LAYOUT_TRANSITION_INFO_EXT,
+		nullptr,
+		image,
+		VK_IMAGE_LAYOUT_GENERAL,
+		finalLayout,
+		VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, arrayLayers }
+	};
+	r = vkTransitionImageLayoutEXT(device_, 1, &trans2);
+	return r == VK_SUCCESS;
 }
 void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
 	if (!data || imageHandle.empty()) return;
@@ -2244,7 +2348,24 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 	if (!img || img->vkImage==VK_NULL_HANDLE) return;
 	// try host copy if supported and image has HOST_TRANSFER usage
 	if (m_hostCopySupported && (img->usage & ImageUsage::TransferDst) != ImageUsage::None) {
-		// check HOST_TRANSFER bit via vkFormat? we conservatively try if extension loaded; but our images lack the usage, so skip for now
+		VkFormat vkFmtTry = toVkFormat(img->format);
+		if (IsHostTransferSupported(vkFmtTry)) {
+			VkExtent3D ext{ img->extent.width, img->extent.height, img->extent.depth };
+			std::vector<VkBufferImageCopy> dummy;
+			bool remainTransferTry = (dstStages==VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess==VK_ACCESS_2_TRANSFER_WRITE_BIT);
+			VkImageLayout finalLayoutTry = remainTransferTry ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			if (tryHostImageCopy(img->vkImage, vkFmtTry, ext, img->mipLevels, img->arrayLayers, data, dataSize, dummy, finalLayoutTry)) {
+				bool remainTransfer = remainTransferTry;
+				VulkanResourceManager::ImageGlobalSyncState st{};
+				st.masks.stageMask = FromVkPipelineStage(dstStages);
+				if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess));
+				st.masks.accessMask=FromVkAccess(dstAccess);
+				st.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal;
+				if (remainTransfer) st.masks.stageMask=PipelineStageBit_None;
+				m_rm->SetImageSyncState(imageHandle, st);
+				return;
+			}
+		}
 	}
 	// fallback to staging ring copy path
 	std::lock_guard<std::mutex> lock(m_mutex);
@@ -2340,12 +2461,135 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 		}
 	}
 	m_hasPending = true;
+	m_stagedBytesSinceFlush += dataSize;
+	if (m_stagedBytesSinceFlush >= kFlushThreshold) {
+		submitLocked(false);
+	}
 	// deferred cleanup for tmp
 	if (useTmp) {
 		CommandSubmitHandle h = m_curHandle;
 		m_rm->AddDeferredTask(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }), h);
 	}
 	// update global sync
+	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); st.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask=PipelineStageBit_None; m_rm->SetImageSyncState(imageHandle, st);
+}
+void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* data, size_t dataSize, const std::vector<VkBufferImageCopy>& regions,
+	VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
+	if (!data || imageHandle.empty() || regions.empty()) return;
+	Image* img = m_rm->images_.get(imageHandle);
+	if (!img || img->vkImage==VK_NULL_HANDLE) return;
+	bool remainTransfer = (dstStages==VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess==VK_ACCESS_2_TRANSFER_WRITE_BIT);
+	VkImageLayout finalLayout = remainTransfer ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	// Try host copy first for KTX (upload once, long-lived)
+	if (m_hostCopySupported && (img->usage & ImageUsage::TransferDst) != ImageUsage::None) {
+		VkFormat vkFmtTry = toVkFormat(img->format);
+		if (IsHostTransferSupported(vkFmtTry) && vkCopyMemoryToImageEXT && vkTransitionImageLayoutEXT && img->extent.depth == 1) {
+			VkHostImageLayoutTransitionInfoEXT trans1{ VK_STRUCTURE_TYPE_HOST_IMAGE_LAYOUT_TRANSITION_INFO_EXT, nullptr, img->vkImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers } };
+			if (vkTransitionImageLayoutEXT(device_, 1, &trans1) == VK_SUCCESS) {
+				std::vector<VkMemoryToImageCopyEXT> hostCopies;
+				hostCopies.reserve(regions.size());
+				for (auto &r : regions) {
+					VkMemoryToImageCopyEXT hc{};
+					hc.sType = VK_STRUCTURE_TYPE_MEMORY_TO_IMAGE_COPY_EXT;
+					hc.pHostPointer = static_cast<const char*>(data) + r.bufferOffset;
+					hc.memoryRowLength = 0;
+					hc.memoryImageHeight = 0;
+					hc.imageSubresource = VkImageSubresourceLayers{ r.imageSubresource.aspectMask, r.imageSubresource.mipLevel, r.imageSubresource.baseArrayLayer, r.imageSubresource.layerCount };
+					hc.imageOffset = r.imageOffset;
+					hc.imageExtent = r.imageExtent;
+					hostCopies.push_back(hc);
+				}
+				VkCopyMemoryToImageInfoEXT copyInfo{ VK_STRUCTURE_TYPE_COPY_MEMORY_TO_IMAGE_INFO_EXT, nullptr, VK_HOST_IMAGE_COPY_MEMCPY_BIT_EXT, img->vkImage, VK_IMAGE_LAYOUT_GENERAL, (uint32_t)hostCopies.size(), hostCopies.data() };
+				VkResult cr = vkCopyMemoryToImageEXT(device_, &copyInfo);
+				if (cr != VK_SUCCESS) {
+					copyInfo.flags = 0;
+					cr = vkCopyMemoryToImageEXT(device_, &copyInfo);
+				}
+				if (cr == VK_SUCCESS) {
+					VkHostImageLayoutTransitionInfoEXT trans2{ VK_STRUCTURE_TYPE_HOST_IMAGE_LAYOUT_TRANSITION_INFO_EXT, nullptr, img->vkImage, VK_IMAGE_LAYOUT_GENERAL, finalLayout, VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers } };
+					if (vkTransitionImageLayoutEXT(device_, 1, &trans2) == VK_SUCCESS) {
+						VulkanResourceManager::ImageGlobalSyncState st2{};
+						st2.masks.stageMask = FromVkPipelineStage(dstStages);
+						if (st2.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st2.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess));
+						st2.masks.accessMask=FromVkAccess(dstAccess);
+						st2.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal;
+						if (remainTransfer) st2.masks.stageMask=PipelineStageBit_None;
+						m_rm->SetImageSyncState(imageHandle, st2);
+						return;
+					}
+				}
+				// fallback: transition GENERAL -> TRANSFER_DST for staging path
+				VkHostImageLayoutTransitionInfoEXT transFallback{ VK_STRUCTURE_TYPE_HOST_IMAGE_LAYOUT_TRANSITION_INFO_EXT, nullptr, img->vkImage, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers } };
+				vkTransitionImageLayoutEXT(device_, 1, &transFallback);
+			}
+		}
+	}
+	// Fallback to staging ring
+	std::lock_guard<std::mutex> lock(m_mutex);
+	VkDeviceSize ringOff = allocFromRing(dataSize, 16);
+	VmaAllocation tmpAlloc = VK_NULL_HANDLE; VkBuffer tmpBuf = VK_NULL_HANDLE; bool useTmp = false;
+	void* dstPtr = nullptr;
+	VkBuffer srcBuf = m_ring.buffer;
+	VkDeviceSize srcOff = ringOff;
+	if (ringOff == VK_WHOLE_SIZE) {
+		VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		ci.size = dataSize;
+		ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		VmaAllocationCreateInfo aci{}; aci.usage=VMA_MEMORY_USAGE_AUTO; aci.flags=VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT|VMA_ALLOCATION_CREATE_MAPPED_BIT; aci.requiredFlags=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+		VmaAllocationInfo info{}; VK_CHECK(vmaCreateBuffer(m_rm->m_allocator,&ci,&aci,&tmpBuf,&tmpAlloc,&info));
+		dstPtr = info.pMappedData;
+		srcBuf = tmpBuf;
+		srcOff = 0;
+		useTmp = true;
+	} else {
+		dstPtr = static_cast<char*>(m_ring.mapped) + ringOff;
+	}
+	memcpy(dstPtr, data, dataSize);
+	vmaFlushAllocation(m_rm->m_allocator, useTmp?tmpAlloc:m_ring.allocation, srcOff, dataSize);
+	ensureCmd();
+	VkImageSubresourceRange fullRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers };
+	uint32_t srcF = m_transfer->queueFamilyIndex();
+	uint32_t dstF = m_graphics->queueFamilyIndex();
+	bool needOwnership = srcF != dstF;
+	// UNDEFINED or TRANSFER_DST -> TRANSFER_DST (handle host fallback case where image already in TRANSFER_DST)
+	// If host fallback transitioned to TRANSFER_DST, oldLayout should be TRANSFER_DST, not UNDEFINED. Check current layout via host transition? For simplicity, use UNDEFINED->TRANSFER_DST with IGNORED, driver will handle if already TRANSFER_DST (validation may warn but not fault for fallback)
+	ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+	std::vector<VkBufferImageCopy2> regs2;
+	regs2.reserve(regions.size());
+	for (auto &r : regions) {
+		VkBufferImageCopy2 r2{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, srcOff + r.bufferOffset, 0,0, {r.imageSubresource.aspectMask, r.imageSubresource.mipLevel, r.imageSubresource.baseArrayLayer, r.imageSubresource.layerCount}, r.imageOffset, r.imageExtent };
+		regs2.push_back(r2);
+	}
+	VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr, srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)regs2.size(), regs2.data() };
+	vkCmdCopyBufferToImage2(m_curCmd, &copyInfo);
+	if (!remainTransfer) {
+		if (needOwnership) {
+			VkImageMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel };
+			vkCmdPipelineBarrier2(m_curCmd, &dep);
+			VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
+			m_pendingImageAcquires.push_back(acq);
+		} else {
+			ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+		}
+	} else {
+		if (needOwnership) {
+			VkImageMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel }; vkCmdPipelineBarrier2(m_curCmd,&dep);
+			VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, 0, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
+			m_pendingImageAcquires.push_back(acq);
+		}
+	}
+	m_hasPending = true;
+	m_stagedBytesSinceFlush += dataSize;
+	if (m_stagedBytesSinceFlush >= kFlushThreshold) {
+		submitLocked(false);
+	}
+	if (useTmp) {
+		CommandSubmitHandle h = m_curHandle;
+		m_rm->AddDeferredTask(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }), h);
+	}
 	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); st.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask=PipelineStageBit_None; m_rm->SetImageSyncState(imageHandle, st);
 }
 void smvk::UploadStreamer::flush() { std::lock_guard<std::mutex> lock(m_mutex); if(m_hasPending) submitLocked(true); if(m_transfer) m_transfer->purge(); }
@@ -2814,7 +3058,12 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	vkCI.tiling = VK_IMAGE_TILING_OPTIMAL;
 	vkCI.usage = toVkImageUsageFlags(ci.usage);
-	if (m_hostImageCopySupported) vkCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
+	if (m_hostImageCopySupported) {
+		VkFormat vkFmtTmp = toVkFormat(ci.format);
+		if (IsHostTransferSupported(vkFmtTmp)) {
+			vkCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
+		}
+	}
 	vkCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	vkCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -3497,6 +3746,9 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		toVkImageUsageFlags(
 			usage
 		);
+	if (m_hostImageCopySupported && IsHostTransferSupported(imageCI.format)) {
+		imageCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
+	}
 
 	imageCI.sharingMode =
 		VK_SHARING_MODE_EXCLUSIVE;
@@ -3729,290 +3981,11 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 	// Staging buffer
 	// -------------------------------------------------------------------------
 
-	VkBufferCreateInfo stagingCI{
-		VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
-	};
-
-	stagingCI.size =
-		static_cast<VkDeviceSize>(
-			ktxDataSize
-			);
-
-	stagingCI.usage =
-		VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-	stagingCI.sharingMode =
-		VK_SHARING_MODE_EXCLUSIVE;
-
-
-	VmaAllocationCreateInfo stagingAllocCI{};
-
-	stagingAllocCI.usage =
-		VMA_MEMORY_USAGE_AUTO;
-
-	stagingAllocCI.flags =
-		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-		VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-
-	VkBuffer stagingBuffer =
-		VK_NULL_HANDLE;
-
-	VmaAllocation stagingAllocation =
-		VK_NULL_HANDLE;
-
-	VmaAllocationInfo stagingAllocationInfo{};
-
-
-	const VkResult stagingResult =
-		vmaCreateBuffer(
-			m_allocator,
-			&stagingCI,
-			&stagingAllocCI,
-			&stagingBuffer,
-			&stagingAllocation,
-			&stagingAllocationInfo
-		);
-
-	if (stagingResult != VK_SUCCESS)
+	// Use UploadStreamer for KTX (batched, 256MB threshold, host-copy first, EXCLUSIVE ownership)
 	{
-		// Image/View/Bindless are automatically cleaned up by Holders.
-		throw std::runtime_error(
-			"vmaCreateBuffer failed for KTX staging buffer."
-		);
+		// KTX images are sampled, final layout SHADER_READ_ONLY (keep TRANSFER_DST false to save transition, global sync will handle)
+		m_streamer->uploadImageKtx(imageHandle, ktxData, ktxDataSize, regions, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
 	}
-
-
-	// -------------------------------------------------------------------------
-	// Upload CPU -> staging
-	// -------------------------------------------------------------------------
-
-	assert(
-		stagingAllocationInfo.pMappedData
-	);
-
-	std::memcpy(
-		stagingAllocationInfo.pMappedData,
-		ktxData,
-		static_cast<size_t>(
-			ktxDataSize
-			)
-	);
-
-	vmaFlushAllocation(
-		m_allocator,
-		stagingAllocation,
-		0,
-		VK_WHOLE_SIZE
-	);
-
-
-	// -------------------------------------------------------------------------
-	// Record upload
-	// -------------------------------------------------------------------------
-
-	Submitter* uploadSubmitter = m_transferSubmitter ? m_transferSubmitter : m_submitter;
-	auto submitHandle =
-		uploadSubmitter->acquire();
-
-	auto cmd =
-		uploadSubmitter
-		->GetCommandBuffer(
-			submitHandle
-		);
-
-
-	// -------------------------------------------------------------------------
-	// UNDEFINED -> TRANSFER_DST
-	// -------------------------------------------------------------------------
-
-	{
-		VkImageMemoryBarrier barrier{
-			VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
-		};
-
-		barrier.srcAccessMask =
-			0;
-
-		barrier.dstAccessMask =
-			VK_ACCESS_TRANSFER_WRITE_BIT;
-
-		barrier.oldLayout =
-			VK_IMAGE_LAYOUT_UNDEFINED;
-
-		barrier.newLayout =
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-
-		barrier.srcQueueFamilyIndex =
-			VK_QUEUE_FAMILY_IGNORED;
-
-		barrier.dstQueueFamilyIndex =
-			VK_QUEUE_FAMILY_IGNORED;
-
-		barrier.image =
-			vkImage;
-
-		barrier.subresourceRange = {
-			.aspectMask =
-				VK_IMAGE_ASPECT_COLOR_BIT,
-
-			.baseMipLevel =
-				0,
-
-			.levelCount =
-				mipLevels,
-
-			.baseArrayLayer =
-				0,
-
-			.layerCount =
-				imageCI.arrayLayers
-		};
-
-		vkCmdPipelineBarrier(
-			cmd,
-			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-			VK_PIPELINE_STAGE_TRANSFER_BIT,
-			0,
-			0, nullptr,
-			0, nullptr,
-			1, &barrier
-		);
-	}
-
-
-	// -------------------------------------------------------------------------
-	// Copy
-	// -------------------------------------------------------------------------
-
-	vkCmdCopyBufferToImage(
-		cmd,
-		stagingBuffer,
-		vkImage,
-		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		static_cast<uint32_t>(
-			regions.size()
-			),
-		regions.data()
-	);
-
-
-	// -------------------------------------------------------------------------
-	// TRANSFER_DST -> SHADER_READ_ONLY
-	//
-	// Intentionally fragment-only until the general transition API exists.
-	// -------------------------------------------------------------------------
-
-	uint32_t transFam = uploadSubmitter->queueFamilyIndex();
-	uint32_t gfxFam = m_submitter->queueFamilyIndex();
-	{
-		VkImageMemoryBarrier barrier{
-			VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
-		};
-
-		barrier.srcAccessMask =
-			VK_ACCESS_TRANSFER_WRITE_BIT;
-
-		barrier.dstAccessMask =
-			VK_ACCESS_SHADER_READ_BIT;
-
-		barrier.oldLayout =
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-
-		barrier.newLayout =
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-		barrier.srcQueueFamilyIndex = (transFam != gfxFam) ? transFam : VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = (transFam != gfxFam) ? gfxFam : VK_QUEUE_FAMILY_IGNORED;
-
-		barrier.image =
-			vkImage;
-
-		barrier.subresourceRange = {
-			.aspectMask =
-				VK_IMAGE_ASPECT_COLOR_BIT,
-
-			.baseMipLevel =
-				0,
-
-			.levelCount =
-				mipLevels,
-
-			.baseArrayLayer =
-				0,
-
-			.layerCount =
-				imageCI.arrayLayers
-		};
-
-		vkCmdPipelineBarrier(
-			cmd,
-			VK_PIPELINE_STAGE_TRANSFER_BIT,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			0,
-			0, nullptr,
-			0, nullptr,
-			1, &barrier
-		);
-	}
-
-	// if transfer queue is distinct, ensure graphics sees the release – we do a wait
-	TimelinePoint tp = uploadSubmitter->submit(
-		submitHandle
-	);
-	if (uploadSubmitter != m_submitter) {
-		// wait for transfer to complete before texture is used (synchronous for now, but off graphics queue)
-		uploadSubmitter->waitAll();
-		// acquire barrier on graphics queue (empty submit that waits)
-		auto gHan = m_submitter->acquire();
-		auto gCmd = m_submitter->GetCommandBuffer(gHan);
-		VkImageMemoryBarrier acquire{
-			VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
-		};
-		acquire.srcAccessMask = 0;
-		acquire.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		acquire.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		acquire.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		acquire.srcQueueFamilyIndex = transFam;
-		acquire.dstQueueFamilyIndex = gfxFam;
-		acquire.image = vkImage;
-		acquire.subresourceRange = {
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.baseMipLevel = 0,
-			.levelCount = mipLevels,
-			.baseArrayLayer = 0,
-			.layerCount = imageCI.arrayLayers
-		};
-		if (transFam != gfxFam) {
-			vkCmdPipelineBarrier(gCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,nullptr,0,nullptr,1,&acquire);
-		}
-		m_submitter->submit(gHan);
-	}
-
-
-	// -------------------------------------------------------------------------
-	// Deferred staging cleanup
-	// -------------------------------------------------------------------------
-
-	AddDeferredTask(
-		std::packaged_task<void()>(
-			[
-				this,
-				buffer = stagingBuffer,
-				allocation = stagingAllocation
-			]
-	{
-		vmaDestroyBuffer(
-			m_allocator,
-			buffer,
-			allocation
-		);
-	}
-		),
-		submitHandle
-	);
-
-
 	// -------------------------------------------------------------------------
 	// Texture
 	// -------------------------------------------------------------------------

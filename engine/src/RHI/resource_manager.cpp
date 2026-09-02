@@ -132,6 +132,7 @@ void ResourceManager::UpdateDescriptors(uint32_t frameIndex) { impl_->vulkan.Upd
 uint32_t ResourceManager::GetBindlessIndex(BindlessImageHandle handle) const { return impl_->vulkan.GetBindlessIndex(handle); }
 uint32_t ResourceManager::GetOrCreateSampler(const SamplerCreateInfo& ci) { return impl_->vulkan.GetOrCreateSampler(ci); }
 uint32_t ResourceManager::GetSamplerCount() const { return impl_->vulkan.GetSamplerCount(); }
+void ResourceManager::FlushUploads() { impl_->vulkan.FlushUploads(); }
 uint64_t ResourceManager::GetBufferDeviceAddress(BufferHandle handle) const {
     auto* buf = impl_->vulkan.buffers_.get(handle);
     if (!buf) return 0;

@@ -50,6 +50,8 @@ public:
     void UpdateDescriptors(uint32_t frameIndex = 0);
     uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
     uint64_t GetBufferDeviceAddress(BufferHandle handle) const;
+    // Flush batched uploads (256MB threshold, or manual at end of scene)
+    void FlushUploads();
     // Sampler cache – deduplicates by description, returns stable
     // index into the global sampler descriptor array (0 .. MAX_SAMPLERS-1).
     // Mirrors VulkanPipelineCache: same SamplerCreateInfo → same index.

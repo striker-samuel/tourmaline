@@ -179,10 +179,6 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 			indexByteOffset
 		);
 	}
-	// Flush the batched streamer (coalesces 3 uploads into one transfer submit)
-	if (auto* rm = static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque())) {
-		if (auto* s = rm->GetStreamer()) s->flush();
-	}
 
 
 	// =========================================================================

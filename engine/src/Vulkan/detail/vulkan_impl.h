@@ -409,15 +409,17 @@ namespace smvk {
 		UploadStreamer(const UploadStreamer&) = delete;
 		UploadStreamer& operator=(const UploadStreamer&) = delete;
 
-		bool init(VkDeviceSize ringCapacity = 64ull * 1024 * 1024);
+		bool init(VkDeviceSize ringCapacity = 256ull * 1024 * 1024);
 		void destroy();
 		void uploadBuffer(BufferHandle dst, const void* data, size_t size, size_t dstOffset,
 			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
 		void uploadImage(ImageHandle imageHandle, const void* data, size_t dataSize,
 			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
+		void uploadImageKtx(ImageHandle imageHandle, const void* data, size_t dataSize, const std::vector<VkBufferImageCopy>& regions,
+			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
 		bool tryHostImageCopy(VkImage image, VkFormat format, VkExtent3D extent, uint32_t mipLevels,
 			uint32_t arrayLayers, const void* data, size_t dataSize,
-			const std::vector<VkBufferImageCopy>& regions);
+			const std::vector<VkBufferImageCopy>& regions, VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		void flush();
 		TimelinePoint flushAndGetTimeline();
 		void waitAll();
@@ -439,6 +441,9 @@ namespace smvk {
 		// pending acquires for EXCLUSIVE ownership transfer
 		std::vector<VkBufferMemoryBarrier2> m_pendingBufferAcquires;
 		std::vector<VkImageMemoryBarrier2> m_pendingImageAcquires;
+
+		VkDeviceSize m_stagedBytesSinceFlush = 0;
+		static constexpr VkDeviceSize kFlushThreshold = 256ull * 1024 * 1024;
 	};
 
 struct DeferredTask {
