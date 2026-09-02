@@ -139,7 +139,7 @@ uint64_t ResourceManager::GetBufferDeviceAddress(BufferHandle handle) const {
     return buf->deviceAddress;
 }
 void ResourceManager::AddDeferredTask(std::packaged_task<void()>&& task, uint32_t handleIndex, uint32_t handleGen) {
-    CommandSubmitHandle h{handleIndex, handleGen};
+    CommandSubmitHandle h{nullptr, handleIndex, handleGen};
     impl_->vulkan.AddDeferredTask(std::move(task), h);
 }
 void ResourceManager::ProcessDeferredTasks() { impl_->vulkan.ProcessDeferrredTasks(); }

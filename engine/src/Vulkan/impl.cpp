@@ -52,8 +52,9 @@ static std::mutex& GetQueueMutex(VkQueue q) {
 	static std::mutex fallback; return fallback;
 }
 namespace smvk {
-thread_local std::unordered_map<uint32_t, CommandBufferPool*> t_commandPools;
-// __thread value as requested (also thread_local above for C++11)
+thread_local std::unordered_map<PoolKey, CommandBufferPool*, PoolKeyHash> t_commandPools;
+std::mutex g_allPoolsMutex;
+std::unordered_map<PoolKey, std::vector<CommandBufferPool*>, PoolKeyHash> g_allPools;
 thread_local int t_threadIdLocal = 0;
 #ifdef __GNUC__
 __thread int t_threadIdGcc = 0;
@@ -75,12 +76,17 @@ void CommandBufferPool::init(VkDevice dev, uint32_t qfi) {
 void CommandBufferPool::destroy() {
 	if (pool != VK_NULL_HANDLE) { vkDestroyCommandPool(device, pool, nullptr); pool = VK_NULL_HANDLE; }
 }
-CommandBufferPool* GetThreadLocalPool(uint32_t qfi, VkDevice dev) {
-	auto it = t_commandPools.find(qfi);
+CommandBufferPool* GetThreadLocalPool(uint32_t qfi, VkDevice dev, const Submitter* owner) {
+	PoolKey key{dev, qfi, owner};
+	auto it = t_commandPools.find(key);
 	if (it != t_commandPools.end()) return it->second;
 	auto* p = new CommandBufferPool();
 	p->init(dev, qfi);
-	t_commandPools[qfi] = p;
+	t_commandPools[key] = p;
+	{
+		std::lock_guard<std::mutex> lock(g_allPoolsMutex);
+		g_allPools[key].push_back(p);
+	}
 	return p;
 }
 }
@@ -1579,8 +1585,8 @@ int smvk::VulkanCore::CreateInstance() {
 	validationFeatures.pNext = &debugCreateInfo;
 	validationFeatures.enabledValidationFeatureCount = 1;
 	validationFeatures.pEnabledValidationFeatures = enabledValidationFeatures;
-	validationFeatures.disabledValidationFeatureCount = 1;
-	validationFeatures.pDisabledValidationFeatures = disabledValidationFeatures;
+	validationFeatures.disabledValidationFeatureCount = 0;
+	validationFeatures.pDisabledValidationFeatures = nullptr;
 
 	if (enableValidationLayers) {
 		createInfo.enabledLayerCount =
@@ -4935,7 +4941,7 @@ inline smvk::Submitter::~Submitter()
 	// Thread-local pools are destroyed per-thread on exit, not here
 }
 inline smvk::CommandBufferPool* smvk::Submitter::getPool() const {
-	return GetThreadLocalPool(m_queueFamilyIndex, device_);
+	return GetThreadLocalPool(m_queueFamilyIndex, device_, this);
 }
 smvk::TimelinePoint smvk::Submitter::nextSignalPoint() const
 {
@@ -4998,12 +5004,12 @@ VkResult smvk::Submitter::waitTimeline(uint64_t value, uint64_t timeout) const
 	VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
 	VK_CHECK(vkBeginCommandBuffer(slot.cmd_, &beginInfo));
 	--pool->availableSlots;
-	return CommandSubmitHandle{ pickedIndex, slot.gen_ };
+	return CommandSubmitHandle{ pool, pickedIndex, slot.gen_ };
 }
 [[nodiscard]] VkCommandBuffer smvk::Submitter::GetCommandBuffer(CommandSubmitHandle handle)
 {
 	assert(validHandle(handle));
-	auto* pool = getPool();
+	auto* pool = handle.pool; assert(pool);
 	WrapperSlot& slot = pool->slots[handle.index_];
 	assert(slot.state_ == WrapperSlot::CommandState::Recording);
 	return slot.cmd_;
@@ -7268,150 +7274,6 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	vctx.CommitImageSyncStates(imageStates);
 	vctx.CommitBufferSyncStates(bufferStates);
 }
-//void smvk::RenderGraph::Execute(smvk::Framebuffer& fb)
-//{
-//	ResolveImages();
-//	ResolveImageViews();
-//	ResolveBuffers();
-//	auto usages = CollectPassUsages();
-//	auto sorted = TopologicalSort(usages);
-//	VkCommandBuffer vkCmd = reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque);
-//	EmitBarriers(fb.commandBufferOpaque, sorted, usages);
-//
-//	for (size_t sIdx : sorted) {
-//		auto& pass = passes_[sIdx];
-//
-//		std::vector<VkRenderingAttachmentInfo> colorInfos;
-//		colorInfos.reserve(pass.colorAttachments_.size());
-//
-//		for (auto& att : pass.colorAttachments_)
-//		{
-//			VkRenderingAttachmentInfo info{
-//				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-//			};
-//
-//			info.imageView = GetImageView(this, att.view);
-//			info.imageLayout =
-//				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-//			info.loadOp =
-//				toVkAttachmentLoadOp(att.loadOp);
-//			info.storeOp =
-//				toVkAttachmentStoreOp(att.storeOp);
-//			info.clearValue =
-//				toVkClearValue(att.clearColor);
-//			colorInfos.push_back(info);
-//		}
-//
-//		VkRenderingAttachmentInfo depthInfo{
-//		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-//		};
-//
-//		const bool hasDepth =
-//			pass.hasDepthAttachment_;
-//
-//		bool hasStencil = false;
-//
-//		if (hasDepth)
-//		{
-//			const auto depthFormat =
-//				GetResolvedImageViewFormat(
-//					pass.depthAttachment_.view);
-//			hasStencil =
-//				FormatHasStencil(
-//					toVkFormat(depthFormat));
-//			depthInfo.imageView =
-//				GetImageView(this,
-//					pass.depthAttachment_.view);
-//			depthInfo.imageLayout =
-//				hasStencil
-//				? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-//				: VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-//			depthInfo.loadOp =
-//				toVkAttachmentLoadOp(
-//					pass.depthAttachment_.loadOp);
-//			depthInfo.storeOp =
-//				toVkAttachmentStoreOp(
-//					pass.depthAttachment_.storeOp);
-//			depthInfo.clearValue =
-//				toVkClearValue(
-//					pass.depthAttachment_.clear);
-//		}
-//
-//		// Option B: for shadow atlas (depth-only, tiled) use full image as renderArea, tiled viewport/scissor
-//		VkOffset2D renderOffset{pass.offsetX_, pass.offsetY_};
-//		VkExtent2D renderExtent{pass.extent_.width, pass.extent_.height};
-//		if (hasDepth && colorInfos.empty()) {
-//			// Try to resolve depth image extent for tiled atlas case
-//			VulkanResourceManager& vctxLocal = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
-//			auto* view = imageViews_.get(pass.depthAttachment_.view);
-//			ImageHandle phys{};
-//			if (view) {
-//				if (view->type == LogicalImageView::Type::ExternalPhysical) {
-//					auto* ext = vctxLocal.imageViews_.get(view->externalViewHandle);
-//					if (ext) phys = ext->image;
-//				} else {
-//					auto* li = images_.get(view->key.image);
-//					if (li) phys = li->resolvedImageHandle;
-//				}
-//			}
-//			if (!phys.empty()) {
-//				auto* img = vctxLocal.images_.get(phys);
-//				if (img && img->extent.width != 0 && img->extent.height != 0) {
-//					// If pass is tiled (extent != image extent), use full image for renderArea (Option B)
-//					// This keeps all tiles stored, while viewport/scissor clips to tile.
-//					if (img->extent.width != pass.extent_.width || img->extent.height != pass.extent_.height) {
-//						renderOffset = {0, 0};
-//						renderExtent = {img->extent.width, img->extent.height};
-//					}
-//				}
-//			}
-//		}
-//
-//		VkRenderingInfo renderInfo{
-//			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
-//			.renderArea = {
-//				.offset = renderOffset,
-//				.extent = renderExtent,
-//			},
-//			.layerCount = 1,
-//			.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
-//			.pColorAttachments = colorInfos.data(),
-//		};
-//		renderInfo.pDepthAttachment =
-//			hasDepth ? &depthInfo : nullptr;
-//		renderInfo.pStencilAttachment =
-//			hasStencil ? &depthInfo : nullptr;
-//
-//		VkViewport vp{};
-//		vp.x = static_cast<float>(pass.offsetX_);
-//		vp.y = static_cast<float>(pass.offsetY_);
-//		vp.width = static_cast<float>(pass.extent_.width);
-//		vp.height = static_cast<float>(pass.extent_.height);
-//		vp.minDepth = 0.0f;
-//		vp.maxDepth = 1.0f;
-//
-//		VkRect2D scissor{};
-//		scissor.offset = { pass.offsetX_, pass.offsetY_ };
-//		scissor.extent = { pass.extent_.width, pass.extent_.height };
-//
-//		vkCmdSetViewport(vkCmd, 0, 1, &vp);
-//		vkCmdSetScissor(vkCmd, 0, 1, &scissor);
-//
-//		vkCmdBeginRendering(vkCmd, &renderInfo);
-//
-//		CommandBuffer cmd{
-//			reinterpret_cast<void*>(vkCmd),
-//			*this,
-//			pass
-//		};
-//
-//		if (pass.recordingFunction_) {
-//			pass.recordingFunction_(cmd);
-//		}
-//
-//		vkCmdEndRendering(vkCmd);
-//	}
-//};
 // CommandBuffer – opaque handle firewall: public header stores void* but impl casts to VkCommandBuffer
 smvk::CommandBuffer::CommandBuffer(void* cmdOpaque, smvk::RenderGraph& graph, smvk::RenderPass& pass)
 	: cmdOpaque_(cmdOpaque)

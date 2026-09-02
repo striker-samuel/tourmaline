@@ -98,6 +98,7 @@ namespace smvk {
 		uint32_t arrayLayers = 1;
 		uint32_t liveViewCount = 0;
 		ResourceOwnership ownership = ResourceOwnership::Owned;
+		bool isConcurrent = false;
 		const char* name;
 	};
 
@@ -120,6 +121,7 @@ namespace smvk {
 		VkBufferUsageFlags usage = 0;
 		VkMemoryPropertyFlags memoryFlags = 0;
 		VkDeviceAddress deviceAddress = 0;
+		bool isConcurrent = false;
 
 		bool isMappable() const noexcept
 		{
@@ -260,39 +262,13 @@ namespace smvk {
 	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, ::GLFWwindow* window);
 	//std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreHeadless(smvk::VulkanCore::CoreConfiguration config);
 
-	//struct ImageSyncRequest {
-	//	VkImage image = VK_NULL_HANDLE;
-	//	VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	//	VkImageLayout newLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	//	VkImageSubresourceRange subresourceRange{
-	//		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-	//		.baseMipLevel = 0,
-	//		.levelCount = VK_REMAINING_MIP_LEVELS,
-	//		.baseArrayLayer = 0,
-	//		.layerCount = VK_REMAINING_ARRAY_LAYERS,
-	//	};
-	//	VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
-	//	VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
-	//	VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-	//	VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
-	//	uint32_t srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	//	uint32_t dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	//};
-	//struct BufferSyncRequest {
-	//	VkBuffer buffer = VK_NULL_HANDLE;
-	//	VkDeviceSize offset = 0;
-	//	VkDeviceSize size = VK_WHOLE_SIZE;
-	//	VkPipelineStageFlags2 srcStage = VK_PIPELINE_STAGE_2_NONE;
-	//	VkAccessFlags2 srcAccess = VK_ACCESS_2_NONE;
-	//	VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-	//	VkAccessFlags2 dstAccess = VK_ACCESS_2_NONE;
-	//};
-
+	struct CommandBufferPool;
 	//
 	struct CommandSubmitHandle {
-		uint32_t index_ = 0;
+		CommandBufferPool* pool = nullptr;
+		uint32_t index_ = UINT32_MAX;
 		uint32_t gen_ = 0; // gen 0 means no slot. alas empty. 
-		bool empty() const { return gen_ == 0; };
+		bool empty() const { return gen_ == 0 || pool == nullptr; };
 	};
 
 	struct TimelinePoint
@@ -320,11 +296,13 @@ namespace smvk {
 
 	};
 
+	struct Submitter;
 	struct WrapperSlot {
 		VkCommandBuffer cmd_ = VK_NULL_HANDLE;
 		VkCommandBuffer allocatedCmd_ = VK_NULL_HANDLE;
 		uint32_t gen_ = 1;
 		enum class CommandState : uint8_t { Free, Recording, Submitted } state_ = CommandState::Free;
+		VkSemaphore retireSemaphore_ = VK_NULL_HANDLE;
 		uint64_t retireValue_ = 0;
 	};
 	struct CommandBufferPool {
@@ -341,8 +319,26 @@ namespace smvk {
 		void recycleSlot(uint32_t idx);
 		bool isReady(CommandSubmitHandle h, VkSemaphore timeline, uint64_t& completed) const;
 	};
-	extern thread_local std::unordered_map<uint32_t, CommandBufferPool*> t_commandPools;
-	CommandBufferPool* GetThreadLocalPool(uint32_t queueFamilyIndex, VkDevice device);
+	struct PoolKey {
+		VkDevice device = VK_NULL_HANDLE;
+		uint32_t qfi = 0;
+		const Submitter* owner = nullptr;
+		bool operator==(const PoolKey& o) const noexcept { return device==o.device && qfi==o.qfi && owner==o.owner; }
+	};
+	struct PoolKeyHash {
+		size_t operator()(const PoolKey& k) const noexcept {
+			size_t a = std::hash<void*>{}(reinterpret_cast<void*>(k.device));
+			size_t b = std::hash<uint32_t>{}(k.qfi);
+			size_t c = std::hash<const void*>{}(k.owner);
+			size_t h = a ^ (b + 0x9e3779b9 + (a<<6) + (a>>2));
+			h ^= c + 0x9e3779b9 + (h<<6) + (h>>2);
+			return h;
+		}
+	};
+	extern thread_local std::unordered_map<PoolKey, CommandBufferPool*, PoolKeyHash> t_commandPools;
+	extern std::mutex g_allPoolsMutex;
+	extern std::unordered_map<PoolKey, std::vector<CommandBufferPool*>, PoolKeyHash> g_allPools;
+	CommandBufferPool* GetThreadLocalPool(uint32_t queueFamilyIndex, VkDevice device, const Submitter* owner = nullptr);
 
 	struct VulkanResourceManager;
 	struct Submitter
@@ -366,6 +362,7 @@ namespace smvk {
 
 	private:
 		void recycleSlot(uint32_t index);
+		void recycleSlot(CommandBufferPool* pool, uint32_t index);
 		VkResult waitTimeline(
 			uint64_t value,
 			uint64_t timeout = UINT64_MAX) const;
@@ -390,6 +387,15 @@ namespace smvk {
 	
 	
 	struct VulkanResourceManager;
+	// Global sync states – for UploadStreamer visibility
+	struct ImageGlobalSyncState {
+		SyncBarrierMasks masks{ AccessFlags::None, PipelineStageBit_None };
+		ImageLayout layout = ImageLayout::Undefined;
+	};
+	struct BufferGlobalSyncState {
+		SyncBarrierMasks masks{ AccessFlags::None, PipelineStageBit_None };
+	};
+
 	// ---------------------------------------------------------------------
 	// StagingRing – persistent host-visible buffer for batched uploads
 	// ---------------------------------------------------------------------
@@ -447,6 +453,8 @@ namespace smvk {
 		// pending acquires for EXCLUSIVE ownership transfer
 		std::vector<VkBufferMemoryBarrier2> m_pendingBufferAcquires;
 		std::vector<VkImageMemoryBarrier2> m_pendingImageAcquires;
+		std::vector<std::pair<BufferHandle, BufferGlobalSyncState>> m_pendingBufferStates;
+		std::vector<std::pair<ImageHandle, ImageGlobalSyncState>> m_pendingImageStates;
 
 		VkDeviceSize m_stagedBytesSinceFlush = 0;
 		static constexpr VkDeviceSize kFlushThreshold = 256ull * 1024 * 1024;
@@ -553,19 +561,9 @@ namespace smvk {
 		Holder<DescriptorPoolHandle> defaultDescriptorPool{};
 		TextureHandle m_nilTexture{};
 
-		// =================================================================
-		// Global sync bookkeeping – handle -> last barrier state.
-		// Table-based (not intrusive) to keep Image/Buffer POD. Protected
-		// for future multithreading; Execute snapshots under shared lock
-		// and commits under unique lock.
-		// =================================================================
-		struct ImageGlobalSyncState {
-			SyncBarrierMasks masks{ AccessFlags::None, PipelineStageBit_None };
-			ImageLayout layout = ImageLayout::Undefined;
-		};
-		struct BufferGlobalSyncState {
-			SyncBarrierMasks masks{ AccessFlags::None, PipelineStageBit_None };
-		};
+		// Global sync bookkeeping – use global types for UploadStreamer visibility
+		using ImageGlobalSyncState = ::smvk::ImageGlobalSyncState;
+		using BufferGlobalSyncState = ::smvk::BufferGlobalSyncState;
 		static uint64_t SyncKey(uint32_t idx, uint32_t gen) noexcept {
 			return (static_cast<uint64_t>(gen) << 32) | idx;
 		}
