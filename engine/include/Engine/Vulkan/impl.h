@@ -452,12 +452,18 @@ namespace smvk {
 
 		VkDeviceSize m_stagedBytesSinceFlush = 0;
 		static constexpr VkDeviceSize kFlushThreshold = 256ull * 1024 * 1024;
+		std::vector<std::packaged_task<void()>> m_pendingCleanups;
 	};
 
 	struct DeferredTask {
-		DeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle) : task_(std::move(task)), handle_(handle) {}
+		DeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle) : task_(std::move(task)), handle_(handle), retirePoint_{}, submitter_(nullptr) {}
+		DeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle, Submitter* submitter) : task_(std::move(task)), handle_(handle), retirePoint_{}, submitter_(submitter) {}
+		DeferredTask(std::packaged_task<void()>&& task, TimelinePoint point) : task_(std::move(task)), handle_{}, retirePoint_(point), submitter_(nullptr) {}
 		std::packaged_task<void()> task_;
 		CommandSubmitHandle handle_;
+		TimelinePoint retirePoint_;
+		Submitter* submitter_ = nullptr;
+		bool isReady() const;
 	};
 
 	//struct IResourceManager {};
@@ -472,6 +478,8 @@ namespace smvk {
 
 		//
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle = CommandSubmitHandle{});
+		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle, Submitter* submitter);
+		void AddDeferredTask(std::packaged_task<void()>&& task, TimelinePoint point);
 		void ProcessDeferrredTasks();
 		//
 		Holder<ImageHandle>          CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);

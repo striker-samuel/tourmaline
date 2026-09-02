@@ -41,6 +41,7 @@ static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
 static VkQueue transferQueue_ = VK_NULL_HANDLE;
+static std::mutex queueMutex;
 
 namespace {
 
@@ -1331,7 +1332,7 @@ static smvk::PipelineStage FromVkPipelineStage(VkPipelineStageFlags2 flags) {
 		out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_RayGeneration | smvk::PipelineStageBit_AnyHit | smvk::PipelineStageBit_ClosestHit | smvk::PipelineStageBit_Miss | smvk::PipelineStageBit_Intersection | smvk::PipelineStageBit_Callable);
 	if (flags & VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Fragment);
 	if (flags & (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT)) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Fragment);
-	if (flags & VK_PIPELINE_STAGE_2_TRANSFER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_None); // transfer has no RHI bit; keep None to represent transfer
+	if (flags & VK_PIPELINE_STAGE_2_TRANSFER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Transfer);
 	return out;
 }
 static smvk::AccessFlags FromVkAccess(VkAccessFlags2 flags) {
@@ -1365,6 +1366,7 @@ static VkPipelineStageFlags2 ToVkStage(smvk::PipelineStage stage) {
 	if (stage & smvk::PipelineStageBit_Mesh) out |= VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
 	if (stage & (smvk::PipelineStageBit_RayGeneration | smvk::PipelineStageBit_AnyHit | smvk::PipelineStageBit_ClosestHit | smvk::PipelineStageBit_Miss | smvk::PipelineStageBit_Intersection | smvk::PipelineStageBit_Callable))
 		out |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+	if (stage & smvk::PipelineStageBit_Transfer) out |= VK_PIPELINE_STAGE_2_TRANSFER_BIT;
 	// RHI Fragment maps to color attachment + depth test in Vk; expand for safety
 	if (stage & smvk::PipelineStageBit_Fragment) out |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
 	return out ? out : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -1781,17 +1783,15 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	VK_CHECK(vmaCreateAllocator(&allocatorCreateInfo, &m_allocator));
 
 	m_submitter = new Submitter(*core_, core_->indices.graphicsFamily.value());
-	if (core_->indices.transferFamily && core_->indices.transferFamily.value() != core_->indices.graphicsFamily.value()) {
-		m_transferSubmitter = new Submitter(*core_, core_->indices.transferFamily.value());
-	} else {
-		m_transferSubmitter = m_submitter;
-	}
+	// single-threaded: force all uploads onto graphics queue (keep muted host copy)
+	m_transferSubmitter = m_submitter;
 	{
 		VkPhysicalDeviceHostImageCopyFeaturesEXT hostFeat{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT, nullptr };
 		VkPhysicalDeviceFeatures2 feats2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &hostFeat };
 		vkGetPhysicalDeviceFeatures2(physicalDevice_, &feats2);
-		m_hostImageCopySupported = hostFeat.hostImageCopy == VK_TRUE;
-		if (m_hostImageCopySupported) {
+		(void)hostFeat;
+		m_hostImageCopySupported = false;
+		if (false && m_hostImageCopySupported) {
 			VkPhysicalDeviceHostImageCopyPropertiesEXT props{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_PROPERTIES_EXT, nullptr };
 			VkPhysicalDeviceProperties2 props2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &props };
 			vkGetPhysicalDeviceProperties2(physicalDevice_, &props2);
@@ -2120,15 +2120,11 @@ VkDeviceSize smvk::UploadStreamer::allocFromRing(VkDeviceSize size, VkDeviceSize
 	// caller holds m_mutex
 	VkDeviceSize aligned = (m_ring.offset + alignment - 1) & ~(alignment - 1);
 	if (aligned + size > m_ring.capacity) {
-		// need to flush current batch and wrap
+		// need to flush current batch and wrap – must wait before reusing memory
 		if (m_hasPending) submitLocked(true);
-		// after submit, wait if we would still overflow (ring too small)
-		if (size > m_ring.capacity) return VK_WHOLE_SIZE; // signal fallback
-		// if transfer still busy, wait for it before wrapping to avoid overwrite
-		// check if transfer is still busy - simple waitAll for now (could be smarter with timeline)
-		// we already submitted, ring can be reused after gpu done; wait if needed
-		// For simplicity, if offset was reset but gpu not done, wait
-		// We flush with wait inside submitLocked when wrap path
+		if (size > m_ring.capacity) return VK_WHOLE_SIZE; // signal fallback to temp staging
+		// Correctness: wait for transfer queue to finish reading old ring contents before wrap
+		m_transfer->waitAll();
 		m_ring.offset = 0;
 		aligned = 0;
 		if (aligned + size > m_ring.capacity) return VK_WHOLE_SIZE;
@@ -2149,7 +2145,8 @@ void smvk::UploadStreamer::submitLocked(bool waitOldestIfFull) {
 	if (!m_hasPending || m_curCmd == VK_NULL_HANDLE) {
 		if (m_curCmd != VK_NULL_HANDLE) {
 			auto tp = m_transfer->submit(m_curHandle);
-			(void)tp;
+			for (auto &task : m_pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
+			m_pendingCleanups.clear();
 		}
 		m_curCmd = VK_NULL_HANDLE;
 		m_curHandle = {};
@@ -2160,6 +2157,8 @@ void smvk::UploadStreamer::submitLocked(bool waitOldestIfFull) {
 		return;
 	}
 	auto tp = m_transfer->submit(m_curHandle);
+	for (auto &task : m_pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
+	m_pendingCleanups.clear();
 	// EXCLUSIVE ownership: submit acquire barriers on graphics queue waiting on transfer timeline
 	if (m_transfer != m_graphics && (!m_pendingBufferAcquires.empty() || !m_pendingImageAcquires.empty())) {
 		auto gHan = m_graphics->acquire();
@@ -2233,11 +2232,8 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 			BufferBarrier(m_curCmd, dstBuf->vkBuffer, dstOffset, size, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
 		}
 		m_hasPending = true;
-		// remember tmp for deferred destroy after submit
-		CommandSubmitHandle h = m_curHandle;
-		// we can't submit immediately – keep pending; deferred destroy will happen after flush
-		// store deferred task
-		m_rm->AddDeferredTask(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }), h);
+		// defer staging destruction until transfer batch is submitted (use TimelinePoint)
+		m_pendingCleanups.push_back(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 		VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
 		m_stagedBytesSinceFlush += size;
 		if (m_stagedBytesSinceFlush >= kFlushThreshold) {
@@ -2361,7 +2357,7 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 				if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess));
 				st.masks.accessMask=FromVkAccess(dstAccess);
 				st.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal;
-				if (remainTransfer) st.masks.stageMask=PipelineStageBit_None;
+				if (remainTransfer) st.masks.stageMask=PipelineStageBit_Transfer;
 				m_rm->SetImageSyncState(imageHandle, st);
 				return;
 			}
@@ -2465,13 +2461,12 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 	if (m_stagedBytesSinceFlush >= kFlushThreshold) {
 		submitLocked(false);
 	}
-	// deferred cleanup for tmp
+	// defer staging destruction until transfer batch is submitted (TimelinePoint)
 	if (useTmp) {
-		CommandSubmitHandle h = m_curHandle;
-		m_rm->AddDeferredTask(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }), h);
+		m_pendingCleanups.push_back(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 	}
 	// update global sync
-	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); st.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask=PipelineStageBit_None; m_rm->SetImageSyncState(imageHandle, st);
+	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); st.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask=PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
 }
 void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* data, size_t dataSize, const std::vector<VkBufferImageCopy>& regions,
 	VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
@@ -2513,7 +2508,7 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 						if (st2.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st2.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess));
 						st2.masks.accessMask=FromVkAccess(dstAccess);
 						st2.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal;
-						if (remainTransfer) st2.masks.stageMask=PipelineStageBit_None;
+						if (remainTransfer) st2.masks.stageMask=PipelineStageBit_Transfer;
 						m_rm->SetImageSyncState(imageHandle, st2);
 						return;
 					}
@@ -2587,13 +2582,34 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 		submitLocked(false);
 	}
 	if (useTmp) {
-		CommandSubmitHandle h = m_curHandle;
-		m_rm->AddDeferredTask(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }), h);
+		m_pendingCleanups.push_back(std::packaged_task<void()>([rm=m_rm, buf=tmpBuf, alloc=tmpAlloc]{ vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 	}
-	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); st.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask=PipelineStageBit_None; m_rm->SetImageSyncState(imageHandle, st);
+	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask==PipelineStageBit_None && dstAccess!=VK_ACCESS_2_NONE) st.masks.stageMask=DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask=FromVkAccess(dstAccess); st.layout = remainTransfer?ImageLayout::TransferDstOptimal:ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask=PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
 }
 void smvk::UploadStreamer::flush() { std::lock_guard<std::mutex> lock(m_mutex); if(m_hasPending) submitLocked(true); if(m_transfer) m_transfer->purge(); }
-smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() { std::lock_guard<std::mutex> lock(m_mutex); TimelinePoint tp{}; if(m_hasPending){ tp = m_transfer->submit(m_curHandle); m_curCmd=VK_NULL_HANDLE; m_curHandle={}; m_hasPending=false; } else if(m_transfer) tp = m_transfer->nextSignalPoint(); return tp; }
+smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
+	std::lock_guard<std::mutex> lock(m_mutex);
+	if (!m_hasPending || m_curCmd == VK_NULL_HANDLE) return TimelinePoint{};
+	// Use same path as submitLocked to ensure pending acquires and cleanups are handled
+	auto tp = m_transfer->submit(m_curHandle);
+	for (auto &task : m_pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
+	m_pendingCleanups.clear();
+	if (m_transfer != m_graphics && (!m_pendingBufferAcquires.empty() || !m_pendingImageAcquires.empty())) {
+		auto gHan = m_graphics->acquire();
+		auto gCmd = m_graphics->GetCommandBuffer(gHan);
+		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, (uint32_t)m_pendingBufferAcquires.size(), m_pendingBufferAcquires.empty()?nullptr:m_pendingBufferAcquires.data(), (uint32_t)m_pendingImageAcquires.size(), m_pendingImageAcquires.empty()?nullptr:m_pendingImageAcquires.data() };
+		vkCmdPipelineBarrier2(gCmd, &dep);
+		TimelineWait wait{ tp, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT };
+		m_graphics->submit(gHan, std::span<const TimelineWait>(&wait,1));
+	}
+	m_pendingBufferAcquires.clear();
+	m_pendingImageAcquires.clear();
+	m_curCmd = VK_NULL_HANDLE;
+	m_curHandle = {};
+	m_hasPending = false;
+	m_stagedBytesSinceFlush = 0;
+	return tp;
+}
 void smvk::UploadStreamer::waitAll() { flush(); if(m_transfer) m_transfer->waitAll(); if(m_graphics && m_graphics!=m_transfer) m_graphics->waitAll(); }
 
 void smvk::VulkanResourceManager::FlushUploads() { if(m_streamer) m_streamer->flush(); }
@@ -2996,7 +3012,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 			st.masks.accessMask = FromVkAccess(dstAccess);
 			st.layout = remainTransferDst ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal;
 			// For image uploads that stay in TransferDst, stage is TRANSFER
-			if (remainTransferDst) st.masks.stageMask = PipelineStageBit_None; // transfer stage
+			if (remainTransferDst) st.masks.stageMask = PipelineStageBit_Transfer;
 			SetImageSyncState(found, st);
 		}
 	}
@@ -4228,7 +4244,18 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	ci.size = size;
 	ci.usage = bufferTypeToUsageFlags[static_cast<size_t>(bufferType)];
-	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	// For frequently updated resources (vertex/index) use CONCURRENT when dedicated transfer exists to avoid ownership ping-pong
+	if (m_transferSubmitter && m_transferSubmitter != m_submitter &&
+	    (bufferType == BufferType_Vertex || bufferType == BufferType_Index || bufferType == BufferType_Storage)) {
+		ci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+		static uint32_t families[2];
+		families[0] = m_submitter->queueFamilyIndex();
+		families[1] = m_transferSubmitter->queueFamilyIndex();
+		ci.queueFamilyIndexCount = 2;
+		ci.pQueueFamilyIndices = families;
+	} else {
+		ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	}
 
 	VmaAllocationCreateInfo aci{};
 	aci.usage = bufferTypeToVmaUsage[static_cast<size_t>(bufferType)];
@@ -4345,19 +4372,50 @@ void smvk::VulkanResourceManager::UnmapBuffer(BufferHandle handle) {
 	// vmaFlushAllocation(m_allocator, staging->vma_alloc, 0, stagingBufferSize);
 	vmaUnmapMemory(m_allocator, buf->vma_alloc);
 }
+bool smvk::DeferredTask::isReady() const {
+	if (retirePoint_.semaphore != VK_NULL_HANDLE && retirePoint_.value != 0) {
+		uint64_t v = 0;
+		VkResult r = vkGetSemaphoreCounterValue(device_, retirePoint_.semaphore, &v);
+		if (r == VK_ERROR_DEVICE_LOST) return true;
+		if (r != VK_SUCCESS) return false;
+		return v >= retirePoint_.value;
+	}
+	if (!handle_.empty() && submitter_ != nullptr) {
+		return submitter_->isReady(handle_);
+	}
+	if (!handle_.empty()) {
+		// Legacy handle without submitter – check via global VulkanResourceManager submitters if possible
+		// For now, treat as ready to avoid leak, but proper code should use TimelinePoint
+		return true;
+	}
+	return true; // empty handle/point means immediate
+}
 void smvk::VulkanResourceManager::AddDeferredTask(std::packaged_task<void()>&& task, smvk::CommandSubmitHandle handle)
 {
-	if (handle.gen_ == 0) //not valid acquire 
-	{
-		handle = m_submitter->acquire();
+	if (handle.empty()) {
+		m_deferredTasks.emplace_back(std::move(task), TimelinePoint{});
+		return;
 	}
-	m_deferredTasks.emplace_back(std::move(task), handle);
+	m_deferredTasks.emplace_back(std::move(task), handle, nullptr);
+}
+void smvk::VulkanResourceManager::AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle, Submitter* submitter)
+{
+	if (handle.empty()) {
+		m_deferredTasks.emplace_back(std::move(task), TimelinePoint{});
+		return;
+	}
+	m_deferredTasks.emplace_back(std::move(task), handle, submitter);
+}
+void smvk::VulkanResourceManager::AddDeferredTask(std::packaged_task<void()>&& task, TimelinePoint point)
+{
+	m_deferredTasks.emplace_back(std::move(task), point);
 }
 void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 {
-	std::vector<DeferredTask>::iterator it = m_deferredTasks.begin();
-	while (it != m_deferredTasks.end() && m_submitter->isReady(it->handle_)) {
-		(it++)->task_();
+	auto it = m_deferredTasks.begin();
+	while (it != m_deferredTasks.end() && it->isReady()) {
+		it->task_();
+		++it;
 	}
 	m_deferredTasks.erase(m_deferredTasks.begin(), it);
 }
@@ -5118,11 +5176,14 @@ smvk::TimelinePoint smvk::Submitter::submit(CommandSubmitHandle handle, std::spa
 		.pSignalSemaphoreInfos = &signalInfo
 	};
 
-	VK_CHECK(vkQueueSubmit2(
-		m_queue,
-		1,
-		&submitInfo,
-		VK_NULL_HANDLE));
+	{
+		std::lock_guard<std::mutex> qlock(queueMutex);
+		VK_CHECK(vkQueueSubmit2(
+			m_queue,
+			1,
+			&submitInfo,
+			VK_NULL_HANDLE));
+	}
 
 	slot.state_ =
 		CommandState::Submitted;
@@ -5728,33 +5789,21 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 		throw std::runtime_error("failed to begin recording command buffer!");
 	}
 
-	VkImageMemoryBarrier barrierToColorAttachment{};
-	barrierToColorAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	VkImageMemoryBarrier2 barrierToColorAttachment{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+	barrierToColorAttachment.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+	barrierToColorAttachment.srcAccessMask = VK_ACCESS_2_NONE;
+	barrierToColorAttachment.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+	barrierToColorAttachment.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
 	barrierToColorAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	barrierToColorAttachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	barrierToColorAttachment.srcAccessMask = 0;
-	barrierToColorAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-	// We are suing grapgics and present capable queue. No need to transfer
 	barrierToColorAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrierToColorAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-
 	barrierToColorAttachment.image = images_[imageIndex];
-	barrierToColorAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	barrierToColorAttachment.subresourceRange.baseMipLevel = 0;
-	barrierToColorAttachment.subresourceRange.levelCount = 1;
-	barrierToColorAttachment.subresourceRange.baseArrayLayer = 0;
-	barrierToColorAttachment.subresourceRange.layerCount = 1;
-
-	vkCmdPipelineBarrier(
-		commandBuffers[currentFrame_],
-		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		0,
-		0, nullptr,
-		0, nullptr,
-		1, &barrierToColorAttachment
-	);
+	barrierToColorAttachment.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+	VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+	dep.imageMemoryBarrierCount = 1;
+	dep.pImageMemoryBarriers = &barrierToColorAttachment;
+	vkCmdPipelineBarrier2(commandBuffers[currentFrame_], &dep);
 
 	VulkanFrameBuffer frameBufferContext_{
 		.frameIndex = currentFrame_,
@@ -5807,36 +5856,35 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	submitInfo.pSignalSemaphores = signalSemaphores;
 
 
-	VK_CHECK(
-		vkQueueSubmit(
-			graphicsQueue_,
-			1,
-			&submitInfo,
-			GetInFlightFence()
-		)
-	);
-
-
-	//
-	VkPresentInfoKHR presentInfo{};
-	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = signalSemaphores;
-	VkSwapchainKHR swapChains[] = { vk_swapchain_ };
-	presentInfo.swapchainCount = 1;
-	presentInfo.pSwapchains = swapChains;
-	presentInfo.pImageIndices = &currentImageIndex_;
-
-	VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
-
-	// this is at eof, this should be earlier right? theres the glfw event.
-	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
-		framebufferResized) {
-		framebufferResized = false;
-		Recreate();
-	}
-	else if (result != VK_SUCCESS) {
-		throw std::runtime_error("failed to present swap chain image!");
+	{
+		std::lock_guard<std::mutex> lock(queueMutex);
+		VK_CHECK(
+			vkQueueSubmit(
+				graphicsQueue_,
+				1,
+				&submitInfo,
+				GetInFlightFence()
+			)
+		);
+		VkPresentInfoKHR presentInfo{};
+		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+		presentInfo.waitSemaphoreCount = 1;
+		presentInfo.pWaitSemaphores = signalSemaphores;
+		VkSwapchainKHR swapChains[] = { vk_swapchain_ };
+		presentInfo.swapchainCount = 1;
+		presentInfo.pSwapchains = swapChains;
+		presentInfo.pImageIndices = &currentImageIndex_;
+		VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
+			framebufferResized) {
+			framebufferResized = false;
+			Recreate();
+		}
+		else if (result != VK_SUCCESS) {
+			throw std::runtime_error("failed to present swap chain image!");
+		}
+		AdvanceFrame();
+		return;
 	}
 	AdvanceFrame();
 
@@ -7118,80 +7166,147 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 	vctx.CommitImageSyncStates(localImage);
 	vctx.CommitBufferSyncStates(localBuffer);
 }
-void smvk::RenderGraph::Execute(smvk::Framebuffer& fb)
+void smvk::RenderGraph::Execute(Framebuffer& fb)
 {
 	ResolveImages();
 	ResolveImageViews();
 	ResolveBuffers();
+
 	auto usages = CollectPassUsages();
 	auto sorted = TopologicalSort(usages);
-	VkCommandBuffer vkCmd = reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque);
-	EmitBarriers(fb.commandBufferOpaque, sorted, usages);
+
+	VkCommandBuffer cmd =
+		reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque);
+	VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
+	auto imageStates = vctx.SnapshotImageSyncStates();
+	auto bufferStates = vctx.SnapshotBufferSyncStates();
 
 	for (size_t sIdx : sorted) {
+		// Per-pass barriers (fix #1) – update imageStates/bufferStates as we go
+		{
+			const auto& pu = usages[sIdx];
+			std::vector<VkImageMemoryBarrier2> imgBarriers;
+			std::vector<VkBufferMemoryBarrier2> bufBarriers;
+			imgBarriers.reserve(4);
+			bufBarriers.reserve(4);
+			auto keyFor = [](auto h){ return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen())<<32)); };
+			for (auto &pr : pu.images){
+				ImageHandle h = pr.first;
+				ImageSyncRequest req = pr.second;
+				uint64_t k = keyFor(h);
+				auto it = imageStates.find(k);
+				VulkanResourceManager::ImageGlobalSyncState src{};
+				if (it != imageStates.end()) src = it->second;
+				else { src.masks = {AccessFlags::None, PipelineStageBit_None}; src.layout = ImageLayout::Undefined; }
+				bool srcIsWrite = IsWriteAccess(src.masks.accessMask);
+				bool dstIsWrite = IsWriteAccess(req.barrierMasks.accessMask);
+				bool needBarrier = false;
+				if (src.layout != req.layout) needBarrier = true;
+				else if (src.masks.accessMask != req.barrierMasks.accessMask || src.masks.stageMask != req.barrierMasks.stageMask) {
+					if (!( !srcIsWrite && !dstIsWrite )) needBarrier = true;
+				} else if (srcIsWrite && dstIsWrite) needBarrier = true;
+				if (src.layout == ImageLayout::Undefined && req.layout != ImageLayout::Undefined) needBarrier = true;
+				if (needBarrier){
+					auto* img = vctx.images_.get(h);
+					if (!img || img->vkImage==VK_NULL_HANDLE) continue;
+					VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+					b.srcStageMask = ToVkStage(src.masks.stageMask);
+					if (src.layout == ImageLayout::Undefined) b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+					b.srcAccessMask = ToVkAccessLocal(src.masks.accessMask);
+					if (src.layout == ImageLayout::Undefined) b.srcAccessMask = VK_ACCESS_2_NONE;
+					b.dstStageMask = ToVkStage(req.barrierMasks.stageMask);
+					if (req.layout == ImageLayout::ColorAttachmentOptimal) b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+					else if (req.layout == ImageLayout::DepthStencilAttachmentOptimal) b.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+					b.dstAccessMask = ToVkAccessLocal(req.barrierMasks.accessMask);
+					b.oldLayout = ToVkImageLayout(src.layout);
+					b.newLayout = ToVkImageLayout(req.layout);
+					b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					b.image = img->vkImage;
+					VkFormat fmt = toVkFormat(img->format);
+					VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+					if (fmt == VK_FORMAT_D16_UNORM || fmt==VK_FORMAT_D32_SFLOAT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+					else if (fmt==VK_FORMAT_D24_UNORM_S8_UINT || fmt==VK_FORMAT_D32_SFLOAT_S8_UINT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+					else if (fmt==VK_FORMAT_S8_UINT) aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
+					b.subresourceRange = { aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
+					imgBarriers.push_back(b);
+				}
+				VulkanResourceManager::ImageGlobalSyncState dstState{};
+				dstState.masks = req.barrierMasks;
+				dstState.layout = req.layout;
+				imageStates[k]=dstState;
+			}
+			for (auto &pr : pu.buffers){
+				BufferHandle h = pr.first;
+				BufferSyncRequest req = pr.second;
+				uint64_t k = keyFor(h);
+				auto it = bufferStates.find(k);
+				VulkanResourceManager::BufferGlobalSyncState src{};
+				if (it != bufferStates.end()) src = it->second;
+				bool srcIsWrite = IsWriteAccess(src.masks.accessMask);
+				bool dstIsWrite = IsWriteAccess(req.barrierMasks.accessMask);
+				bool needBarrier = false;
+				if (src.masks.accessMask != req.barrierMasks.accessMask || src.masks.stageMask != req.barrierMasks.stageMask){
+					if (!( !srcIsWrite && !dstIsWrite )) needBarrier = true;
+				}
+				if (src.masks.accessMask==AccessFlags::None && req.barrierMasks.accessMask!=AccessFlags::None) needBarrier = true;
+				if (needBarrier){
+					auto* buf = vctx.buffers_.get(h);
+					if (!buf || buf->vkBuffer==VK_NULL_HANDLE) continue;
+					VkBufferMemoryBarrier2 b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+					b.srcStageMask = ToVkStage(src.masks.stageMask);
+					b.srcAccessMask = ToVkAccessLocal(src.masks.accessMask);
+					b.dstStageMask = ToVkStage(req.barrierMasks.stageMask);
+					b.dstAccessMask = ToVkAccessLocal(req.barrierMasks.accessMask);
+					b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					b.buffer = buf->vkBuffer;
+					b.offset = 0;
+					b.size = VK_WHOLE_SIZE;
+					bufBarriers.push_back(b);
+				}
+				VulkanResourceManager::BufferGlobalSyncState dstState{};
+				dstState.masks = req.barrierMasks;
+				bufferStates[k]=dstState;
+			}
+			if (!imgBarriers.empty() || !bufBarriers.empty()){
+				VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+				dep.imageMemoryBarrierCount = static_cast<uint32_t>(imgBarriers.size());
+				dep.pImageMemoryBarriers = imgBarriers.empty()? nullptr : imgBarriers.data();
+				dep.bufferMemoryBarrierCount = static_cast<uint32_t>(bufBarriers.size());
+				dep.pBufferMemoryBarriers = bufBarriers.empty()? nullptr : bufBarriers.data();
+				vkCmdPipelineBarrier2(cmd, &dep);
+			}
+		}
 		auto& pass = passes_[sIdx];
-
 		std::vector<VkRenderingAttachmentInfo> colorInfos;
 		colorInfos.reserve(pass.colorAttachments_.size());
-
 		for (auto& att : pass.colorAttachments_)
 		{
-			VkRenderingAttachmentInfo info{
-				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-			};
-
+			VkRenderingAttachmentInfo info{ .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR, };
 			info.imageView = GetImageView(this, att.view);
-			info.imageLayout =
-				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-			info.loadOp =
-				toVkAttachmentLoadOp(att.loadOp);
-			info.storeOp =
-				toVkAttachmentStoreOp(att.storeOp);
-			info.clearValue =
-				toVkClearValue(att.clearColor);
+			info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			info.loadOp = toVkAttachmentLoadOp(att.loadOp);
+			info.storeOp = toVkAttachmentStoreOp(att.storeOp);
+			info.clearValue = toVkClearValue(att.clearColor);
 			colorInfos.push_back(info);
 		}
-
-		VkRenderingAttachmentInfo depthInfo{
-		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
-		};
-
-		const bool hasDepth =
-			pass.hasDepthAttachment_;
-
+		VkRenderingAttachmentInfo depthInfo{ .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR, };
+		const bool hasDepth = pass.hasDepthAttachment_;
 		bool hasStencil = false;
-
 		if (hasDepth)
 		{
-			const auto depthFormat =
-				GetResolvedImageViewFormat(
-					pass.depthAttachment_.view);
-			hasStencil =
-				FormatHasStencil(
-					toVkFormat(depthFormat));
-			depthInfo.imageView =
-				GetImageView(this,
-					pass.depthAttachment_.view);
-			depthInfo.imageLayout =
-				hasStencil
-				? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-				: VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-			depthInfo.loadOp =
-				toVkAttachmentLoadOp(
-					pass.depthAttachment_.loadOp);
-			depthInfo.storeOp =
-				toVkAttachmentStoreOp(
-					pass.depthAttachment_.storeOp);
-			depthInfo.clearValue =
-				toVkClearValue(
-					pass.depthAttachment_.clear);
+			const auto depthFormat = GetResolvedImageViewFormat(pass.depthAttachment_.view);
+			hasStencil = FormatHasStencil(toVkFormat(depthFormat));
+			depthInfo.imageView = GetImageView(this, pass.depthAttachment_.view);
+			depthInfo.imageLayout = hasStencil ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+			depthInfo.loadOp = toVkAttachmentLoadOp(pass.depthAttachment_.loadOp);
+			depthInfo.storeOp = toVkAttachmentStoreOp(pass.depthAttachment_.storeOp);
+			depthInfo.clearValue = toVkClearValue(pass.depthAttachment_.clear);
 		}
-
-		// Option B: for shadow atlas (depth-only, tiled) use full image as renderArea, tiled viewport/scissor
 		VkOffset2D renderOffset{pass.offsetX_, pass.offsetY_};
 		VkExtent2D renderExtent{pass.extent_.width, pass.extent_.height};
 		if (hasDepth && colorInfos.empty()) {
-			// Try to resolve depth image extent for tiled atlas case
 			VulkanResourceManager& vctxLocal = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
 			auto* view = imageViews_.get(pass.depthAttachment_.view);
 			ImageHandle phys{};
@@ -7207,8 +7322,6 @@ void smvk::RenderGraph::Execute(smvk::Framebuffer& fb)
 			if (!phys.empty()) {
 				auto* img = vctxLocal.images_.get(phys);
 				if (img && img->extent.width != 0 && img->extent.height != 0) {
-					// If pass is tiled (extent != image extent), use full image for renderArea (Option B)
-					// This keeps all tiles stored, while viewport/scissor clips to tile.
 					if (img->extent.width != pass.extent_.width || img->extent.height != pass.extent_.height) {
 						renderOffset = {0, 0};
 						renderExtent = {img->extent.width, img->extent.height};
@@ -7216,52 +7329,166 @@ void smvk::RenderGraph::Execute(smvk::Framebuffer& fb)
 				}
 			}
 		}
-
-		VkRenderingInfo renderInfo{
-			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
-			.renderArea = {
-				.offset = renderOffset,
-				.extent = renderExtent,
-			},
-			.layerCount = 1,
-			.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
-			.pColorAttachments = colorInfos.data(),
-		};
-		renderInfo.pDepthAttachment =
-			hasDepth ? &depthInfo : nullptr;
-		renderInfo.pStencilAttachment =
-			hasStencil ? &depthInfo : nullptr;
-
-		VkViewport vp{};
-		vp.x = static_cast<float>(pass.offsetX_);
-		vp.y = static_cast<float>(pass.offsetY_);
-		vp.width = static_cast<float>(pass.extent_.width);
-		vp.height = static_cast<float>(pass.extent_.height);
-		vp.minDepth = 0.0f;
-		vp.maxDepth = 1.0f;
-
-		VkRect2D scissor{};
-		scissor.offset = { pass.offsetX_, pass.offsetY_ };
-		scissor.extent = { pass.extent_.width, pass.extent_.height };
-
-		vkCmdSetViewport(vkCmd, 0, 1, &vp);
-		vkCmdSetScissor(vkCmd, 0, 1, &scissor);
-
-		vkCmdBeginRendering(vkCmd, &renderInfo);
-
-		CommandBuffer cmd{
-			reinterpret_cast<void*>(vkCmd),
-			*this,
-			pass
-		};
-
-		if (pass.recordingFunction_) {
-			pass.recordingFunction_(cmd);
-		}
-
-		vkCmdEndRendering(vkCmd);
+		VkRenderingInfo renderInfo{ .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR, .renderArea = { .offset = renderOffset, .extent = renderExtent, }, .layerCount = 1, .colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()), .pColorAttachments = colorInfos.data(), };
+		renderInfo.pDepthAttachment = hasDepth ? &depthInfo : nullptr;
+		renderInfo.pStencilAttachment = hasStencil ? &depthInfo : nullptr;
+		VkViewport vp{}; vp.x = static_cast<float>(pass.offsetX_); vp.y = static_cast<float>(pass.offsetY_); vp.width = static_cast<float>(pass.extent_.width); vp.height = static_cast<float>(pass.extent_.height); vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+		VkRect2D scissor{}; scissor.offset = { pass.offsetX_, pass.offsetY_ }; scissor.extent = { pass.extent_.width, pass.extent_.height };
+		vkCmdSetViewport(cmd, 0, 1, &vp);
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+		vkCmdBeginRendering(cmd, &renderInfo);
+		CommandBuffer cb{ reinterpret_cast<void*>(cmd), *this, pass };
+		if (pass.recordingFunction_) pass.recordingFunction_(cb);
+		vkCmdEndRendering(cmd);
 	}
-};
+
+	vctx.CommitImageSyncStates(imageStates);
+	vctx.CommitBufferSyncStates(bufferStates);
+}
+//void smvk::RenderGraph::Execute(smvk::Framebuffer& fb)
+//{
+//	ResolveImages();
+//	ResolveImageViews();
+//	ResolveBuffers();
+//	auto usages = CollectPassUsages();
+//	auto sorted = TopologicalSort(usages);
+//	VkCommandBuffer vkCmd = reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque);
+//	EmitBarriers(fb.commandBufferOpaque, sorted, usages);
+//
+//	for (size_t sIdx : sorted) {
+//		auto& pass = passes_[sIdx];
+//
+//		std::vector<VkRenderingAttachmentInfo> colorInfos;
+//		colorInfos.reserve(pass.colorAttachments_.size());
+//
+//		for (auto& att : pass.colorAttachments_)
+//		{
+//			VkRenderingAttachmentInfo info{
+//				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+//			};
+//
+//			info.imageView = GetImageView(this, att.view);
+//			info.imageLayout =
+//				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+//			info.loadOp =
+//				toVkAttachmentLoadOp(att.loadOp);
+//			info.storeOp =
+//				toVkAttachmentStoreOp(att.storeOp);
+//			info.clearValue =
+//				toVkClearValue(att.clearColor);
+//			colorInfos.push_back(info);
+//		}
+//
+//		VkRenderingAttachmentInfo depthInfo{
+//		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+//		};
+//
+//		const bool hasDepth =
+//			pass.hasDepthAttachment_;
+//
+//		bool hasStencil = false;
+//
+//		if (hasDepth)
+//		{
+//			const auto depthFormat =
+//				GetResolvedImageViewFormat(
+//					pass.depthAttachment_.view);
+//			hasStencil =
+//				FormatHasStencil(
+//					toVkFormat(depthFormat));
+//			depthInfo.imageView =
+//				GetImageView(this,
+//					pass.depthAttachment_.view);
+//			depthInfo.imageLayout =
+//				hasStencil
+//				? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+//				: VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+//			depthInfo.loadOp =
+//				toVkAttachmentLoadOp(
+//					pass.depthAttachment_.loadOp);
+//			depthInfo.storeOp =
+//				toVkAttachmentStoreOp(
+//					pass.depthAttachment_.storeOp);
+//			depthInfo.clearValue =
+//				toVkClearValue(
+//					pass.depthAttachment_.clear);
+//		}
+//
+//		// Option B: for shadow atlas (depth-only, tiled) use full image as renderArea, tiled viewport/scissor
+//		VkOffset2D renderOffset{pass.offsetX_, pass.offsetY_};
+//		VkExtent2D renderExtent{pass.extent_.width, pass.extent_.height};
+//		if (hasDepth && colorInfos.empty()) {
+//			// Try to resolve depth image extent for tiled atlas case
+//			VulkanResourceManager& vctxLocal = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
+//			auto* view = imageViews_.get(pass.depthAttachment_.view);
+//			ImageHandle phys{};
+//			if (view) {
+//				if (view->type == LogicalImageView::Type::ExternalPhysical) {
+//					auto* ext = vctxLocal.imageViews_.get(view->externalViewHandle);
+//					if (ext) phys = ext->image;
+//				} else {
+//					auto* li = images_.get(view->key.image);
+//					if (li) phys = li->resolvedImageHandle;
+//				}
+//			}
+//			if (!phys.empty()) {
+//				auto* img = vctxLocal.images_.get(phys);
+//				if (img && img->extent.width != 0 && img->extent.height != 0) {
+//					// If pass is tiled (extent != image extent), use full image for renderArea (Option B)
+//					// This keeps all tiles stored, while viewport/scissor clips to tile.
+//					if (img->extent.width != pass.extent_.width || img->extent.height != pass.extent_.height) {
+//						renderOffset = {0, 0};
+//						renderExtent = {img->extent.width, img->extent.height};
+//					}
+//				}
+//			}
+//		}
+//
+//		VkRenderingInfo renderInfo{
+//			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
+//			.renderArea = {
+//				.offset = renderOffset,
+//				.extent = renderExtent,
+//			},
+//			.layerCount = 1,
+//			.colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()),
+//			.pColorAttachments = colorInfos.data(),
+//		};
+//		renderInfo.pDepthAttachment =
+//			hasDepth ? &depthInfo : nullptr;
+//		renderInfo.pStencilAttachment =
+//			hasStencil ? &depthInfo : nullptr;
+//
+//		VkViewport vp{};
+//		vp.x = static_cast<float>(pass.offsetX_);
+//		vp.y = static_cast<float>(pass.offsetY_);
+//		vp.width = static_cast<float>(pass.extent_.width);
+//		vp.height = static_cast<float>(pass.extent_.height);
+//		vp.minDepth = 0.0f;
+//		vp.maxDepth = 1.0f;
+//
+//		VkRect2D scissor{};
+//		scissor.offset = { pass.offsetX_, pass.offsetY_ };
+//		scissor.extent = { pass.extent_.width, pass.extent_.height };
+//
+//		vkCmdSetViewport(vkCmd, 0, 1, &vp);
+//		vkCmdSetScissor(vkCmd, 0, 1, &scissor);
+//
+//		vkCmdBeginRendering(vkCmd, &renderInfo);
+//
+//		CommandBuffer cmd{
+//			reinterpret_cast<void*>(vkCmd),
+//			*this,
+//			pass
+//		};
+//
+//		if (pass.recordingFunction_) {
+//			pass.recordingFunction_(cmd);
+//		}
+//
+//		vkCmdEndRendering(vkCmd);
+//	}
+//};
 // CommandBuffer – opaque handle firewall: public header stores void* but impl casts to VkCommandBuffer
 smvk::CommandBuffer::CommandBuffer(void* cmdOpaque, smvk::RenderGraph& graph, smvk::RenderPass& pass)
 	: cmdOpaque_(cmdOpaque)

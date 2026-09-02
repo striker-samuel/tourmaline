@@ -997,6 +997,8 @@ namespace smvk {
 		PipelineStageBit_Intersection = 1u << 12,
 		PipelineStageBit_Callable = 1u << 13,
 
+		PipelineStageBit_Transfer = 1u << 14,
+
 		// Convenience masks
 		PipelineStageBit_AllGraphics =
 		PipelineStageBit_Vertex |
@@ -1253,7 +1255,7 @@ namespace smvk {
 			return PipelineStageBit_Fragment | PipelineStageBit_Vertex | PipelineStageBit_Compute;
 		if ((access & AccessFlags::TransferRead) != AccessFlags::None ||
 			(access & AccessFlags::TransferWrite) != AccessFlags::None)
-			return PipelineStageBit_None;
+			return PipelineStageBit_Transfer;
 		return PipelineStageBit_Fragment;
 	}
 
