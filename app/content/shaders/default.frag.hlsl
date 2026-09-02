@@ -159,40 +159,40 @@ PSOut mainPS(PSIn IN)
     //    N = normalize(mul(mapN, TBN));
     //}
     
-    if (normalIdx >= 0)
-    {
-        float3 T = IN.tangent.xyz;
+    //if (normalIdx >= 0)
+    //{
+    //    float3 T = IN.tangent.xyz;
 
-    // T and N are interpolated, so make them perpendicular again.
-        T = normalize(T - N * dot(N, T));
+    //// T and N are interpolated, so make them perpendicular again.
+    //    T = normalize(T - N * dot(N, T));
 
-    // tangent.w is the tangent-space handedness.
-    // IMPORTANT:
-    // If the mesh/model transform is mirrored, this should already
-    // include the model determinant sign:
-    //
-    //     tangent.w = gltfTangent.w * mirrorSign;
-    //
-        float handedness = IN.tangent.w;
+    //// tangent.w is the tangent-space handedness.
+    //// IMPORTANT:
+    //// If the mesh/model transform is mirrored, this should already
+    //// include the model determinant sign:
+    ////
+    ////     tangent.w = gltfTangent.w * mirrorSign;
+    ////
+    //    float handedness = IN.tangent.w;
 
-        float3 B = normalize(cross(N, T)) * handedness;
+    //    float3 B = normalize(cross(N, T)) * handedness;
 
-        float3 mapN =
-        textures[NonUniformResourceIndex((uint) normalIdx)]
-        .Sample(samplers[0], IN.uv)
-        .xyz * 2.0f - 1.0f;
+    //    float3 mapN =
+    //    textures[NonUniformResourceIndex((uint) normalIdx)]
+    //    .Sample(samplers[0], IN.uv)
+    //    .xyz * 2.0f - 1.0f;
 
-    // glTF normalTexture.scale applies to XY.
-        mapN.xy *= normalScale;
-        mapN = normalize(mapN);
+    //// glTF normalTexture.scale applies to XY.
+    //    mapN.xy *= normalScale;
+    //    mapN = normalize(mapN);
 
-    // Tangent-space -> world-space.
-        N = normalize(
-        T * mapN.x +
-        B * mapN.y +
-        N * mapN.z
-    );
-    }
+    //// Tangent-space -> world-space.
+    //    N = normalize(
+    //    T * mapN.x +
+    //    B * mapN.y +
+    //    N * mapN.z
+    //);
+    //}
     // ---------------------------------------------------------------
     // Occlusion
     // ---------------------------------------------------------------

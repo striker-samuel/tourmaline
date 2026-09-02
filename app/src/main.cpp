@@ -452,7 +452,7 @@ private:
 	void UpdateLights(uint32_t currentFrame)
 	{
 		// Keep lights[0] hardcoded directional – upgraded to cascades
-		glm::vec3 lightDir = glm::normalize(glm::vec3(4.2f, -1.0f, 0.5f));
+		glm::vec3 lightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.5f));
 		//lightDir.b *= sin(time_since_start_s) * 0.4;
 		auto cameraView = m_camera.getViewMatrix();
 		auto cameraProj = m_camera.getProjMatrix();
