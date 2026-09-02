@@ -656,6 +656,10 @@ namespace smvk {
 		std::vector<VkSemaphore> imageAvailableSemaphores_;
 		std::vector<VkFence> inFlightFences_;
 		std::vector<VkFence> imagesInFlight_;
+		VkSemaphore timelineSemaphore_ = VK_NULL_HANDLE;
+		uint64_t timelineValue_ = 0;
+		std::vector<uint64_t> frameTimelineValues_;
+		std::vector<uint64_t> imageTimelineValues_;
 
 		VkExtent2D extent_{};
 		int windowWidth = 0;

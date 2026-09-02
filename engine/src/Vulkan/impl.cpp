@@ -5475,6 +5475,29 @@ void smvk::VulkanSwapchain::Recreate() {
 
 	CreateSwapchain();
 	CreateImageViews();
+	// Handle sync objects resize if imageCount or framesInFlight changed (hybrid timeline)
+	if (renderFinishedSemaphores_.size() != images_.size() || imageTimelineValues_.size() != images_.size()) {
+		for (auto s : renderFinishedSemaphores_) if (s) vkDestroySemaphore(device_, s, nullptr);
+		renderFinishedSemaphores_.clear();
+		imageTimelineValues_.assign(images_.size(), 0);
+		VkSemaphoreCreateInfo info{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+		renderFinishedSemaphores_.resize(images_.size(), VK_NULL_HANDLE);
+		for (size_t i=0;i<images_.size();++i) vkCreateSemaphore(device_, &info, nullptr, &renderFinishedSemaphores_[i]);
+	}
+	if (frameTimelineValues_.size() != framesInFlight_) {
+		frameTimelineValues_.assign(framesInFlight_, 0);
+		for (auto s : imageAvailableSemaphores_) if (s) vkDestroySemaphore(device_, s, nullptr);
+		imageAvailableSemaphores_.clear();
+		inFlightFences_.clear();
+		VkSemaphoreCreateInfo sinfo{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+		VkFenceCreateInfo finfo{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT };
+		imageAvailableSemaphores_.resize(framesInFlight_, VK_NULL_HANDLE);
+		inFlightFences_.resize(framesInFlight_, VK_NULL_HANDLE);
+		for (size_t i=0;i<framesInFlight_;++i){
+			vkCreateSemaphore(device_, &sinfo, nullptr, &imageAvailableSemaphores_[i]);
+			vkCreateFence(device_, &finfo, nullptr, &inFlightFences_[i]);
+		}
+	}
 	CreateDepthResources();
 
 	currentImageIndex_ = 0;
@@ -5674,9 +5697,11 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 	ctx_.m_submitter->submit(handle);
 }
 inline void smvk::VulkanSwapchain::CreateSyncObjects() {
-	renderFinishedSemaphores_.resize(imageViews_.size(), VK_NULL_HANDLE);
+	renderFinishedSemaphores_.resize(images_.size(), VK_NULL_HANDLE);
 	imageAvailableSemaphores_.resize(framesInFlight_, VK_NULL_HANDLE);
 	inFlightFences_.resize(framesInFlight_, VK_NULL_HANDLE);
+	frameTimelineValues_.assign(framesInFlight_, 0);
+	imageTimelineValues_.assign(images_.size(), 0);
 
 	VkSemaphoreCreateInfo semaphoreInfo{};
 	semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -5685,7 +5710,7 @@ inline void smvk::VulkanSwapchain::CreateSyncObjects() {
 	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 	fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-	for (size_t i = 0; i < imageViews_.size(); ++i) {
+	for (size_t i = 0; i < images_.size(); ++i) {
 		if (vkCreateSemaphore(device_, &semaphoreInfo, nullptr, &renderFinishedSemaphores_[i]) != VK_SUCCESS) {
 			throw std::runtime_error("Failed to create render-finished semaphore.");
 		}
@@ -5696,6 +5721,13 @@ inline void smvk::VulkanSwapchain::CreateSyncObjects() {
 			vkCreateFence(device_, &fenceInfo, nullptr, &inFlightFences_[i]) != VK_SUCCESS) {
 			throw std::runtime_error("Failed to create per-frame sync objects.");
 		}
+	}
+	// Timeline for in-flight frames (hybrid: 1 binary for acquire + timeline for inFlight)
+	if (timelineSemaphore_ == VK_NULL_HANDLE) {
+		VkSemaphoreTypeCreateInfo typeInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, nullptr, VK_SEMAPHORE_TYPE_TIMELINE, 0 };
+		VkSemaphoreCreateInfo info{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &typeInfo, 0 };
+		VK_CHECK(vkCreateSemaphore(device_, &info, nullptr, &timelineSemaphore_));
+		timelineValue_ = 0;
 	}
 }
 inline void smvk::VulkanSwapchain::DestroySyncObjects() {
@@ -5720,6 +5752,13 @@ inline void smvk::VulkanSwapchain::DestroySyncObjects() {
 		}
 	}
 	inFlightFences_.clear();
+	frameTimelineValues_.clear();
+	imageTimelineValues_.clear();
+	if (timelineSemaphore_ != VK_NULL_HANDLE) {
+		vkDestroySemaphore(device_, timelineSemaphore_, nullptr);
+		timelineSemaphore_ = VK_NULL_HANDLE;
+		timelineValue_ = 0;
+	}
 }
 inline void smvk::VulkanSwapchain::CleanupSwapchain(bool fullDestroy) {
 
@@ -5747,16 +5786,13 @@ inline void smvk::VulkanSwapchain::CleanupSwapchain(bool fullDestroy) {
 }
 smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 {
-	auto f = GetInFlightFence();
-	VkResult waitResult = vkWaitForFences(
-		device_,
-		1,
-		&f,
-		VK_TRUE,
-		UINT64_MAX
-	);
-	if (waitResult != VK_SUCCESS && waitResult != VK_TIMEOUT) {
-		throw std::runtime_error("Failed to wait for fence.");
+	uint64_t waitVal = frameTimelineValues_[currentFrame_];
+	if (waitVal != 0) {
+		VkSemaphoreWaitInfo waitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, nullptr, 0, 1, &timelineSemaphore_, &waitVal };
+		VkResult waitResult = vkWaitSemaphores(device_, &waitInfo, UINT64_MAX);
+		if (waitResult != VK_SUCCESS) {
+			throw std::runtime_error("Failed to wait for timeline semaphore.");
+		}
 	}
 
 	uint32_t imageIndex;
@@ -5779,7 +5815,6 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 
 	SetCurrentImageIndex(imageIndex);
 
-	vkResetFences(device_, 1, &inFlightFences_[currentFrame_]);
 	vkResetCommandPool(device_, perFrameCommandPools[currentFrame_], 0);
 
 	VkCommandBufferBeginInfo beginInfo{};
@@ -5841,35 +5876,29 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 		throw std::runtime_error("failed to record command buffer!");
 	}
 
-	VkSubmitInfo submitInfo{};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	VkSemaphore waitSemaphores[] = { imageAvailableSemaphores_[currentFrame_] };
-	VkPipelineStageFlags waitStages[] = {
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	submitInfo.waitSemaphoreCount = 1;
-	submitInfo.pWaitSemaphores = waitSemaphores;
-	submitInfo.pWaitDstStageMask = waitStages;
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &fb.commandBuffer;
-	VkSemaphore signalSemaphores[] = { renderFinishedSemaphores_[currentImageIndex_] };
-	submitInfo.signalSemaphoreCount = 1;
-	submitInfo.pSignalSemaphores = signalSemaphores;
-
-
+	VkSemaphoreSubmitInfo waitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, imageAvailableSemaphores_[currentFrame_], 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0 };
+	VkSemaphoreSubmitInfo signalInfos[2]{};
+	signalInfos[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+	signalInfos[0].semaphore = renderFinishedSemaphores_[currentImageIndex_];
+	signalInfos[0].value = 0;
+	signalInfos[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	signalInfos[0].deviceIndex = 0;
+	signalInfos[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+	signalInfos[1].semaphore = timelineSemaphore_;
+	signalInfos[1].value = ++timelineValue_;
+	signalInfos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	signalInfos[1].deviceIndex = 0;
+	VkCommandBufferSubmitInfo cmdInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, fb.commandBuffer, 0 };
+	VkSubmitInfo2 submitInfo2{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2, nullptr, 0, 1, &waitInfo, 1, &cmdInfo, 2, signalInfos };
+	frameTimelineValues_[currentFrame_] = timelineValue_;
+	imageTimelineValues_[currentImageIndex_] = timelineValue_;
 	{
 		std::lock_guard<std::mutex> lock(queueMutex);
-		VK_CHECK(
-			vkQueueSubmit(
-				graphicsQueue_,
-				1,
-				&submitInfo,
-				GetInFlightFence()
-			)
-		);
+		VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
 		VkPresentInfoKHR presentInfo{};
 		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 		presentInfo.waitSemaphoreCount = 1;
-		presentInfo.pWaitSemaphores = signalSemaphores;
+		presentInfo.pWaitSemaphores = &renderFinishedSemaphores_[currentImageIndex_];
 		VkSwapchainKHR swapChains[] = { vk_swapchain_ };
 		presentInfo.swapchainCount = 1;
 		presentInfo.pSwapchains = swapChains;
