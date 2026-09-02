@@ -319,23 +319,35 @@ namespace smvk {
 
 	};
 
+	struct WrapperSlot {
+		VkCommandBuffer cmd_ = VK_NULL_HANDLE;
+		VkCommandBuffer allocatedCmd_ = VK_NULL_HANDLE;
+		uint32_t gen_ = 1;
+		enum class CommandState : uint8_t { Free, Recording, Submitted } state_ = CommandState::Free;
+		uint64_t retireValue_ = 0;
+	};
+	struct CommandBufferPool {
+		VkCommandPool pool = VK_NULL_HANDLE;
+		static constexpr uint32_t kMax = 16;
+		WrapperSlot slots[kMax];
+		uint32_t availableSlots = kMax;
+		uint32_t queueFamilyIndex = UINT32_MAX;
+		VkDevice device = VK_NULL_HANDLE;
+		void init(VkDevice dev, uint32_t qfi);
+		void destroy();
+		CommandSubmitHandle acquire(VkDevice dev, uint32_t qfi);
+		VkCommandBuffer getCommandBuffer(CommandSubmitHandle h);
+		void recycleSlot(uint32_t idx);
+		bool isReady(CommandSubmitHandle h, VkSemaphore timeline, uint64_t& completed) const;
+	};
+	// Thread-local command pools per queue family – __thread / thread_local
+	extern thread_local std::unordered_map<uint32_t, CommandBufferPool*> t_commandPools;
+	CommandBufferPool* GetThreadLocalPool(uint32_t queueFamilyIndex, VkDevice device);
+
 	struct Submitter
 	{
-		enum class CommandState : uint8_t
-		{
-			Free,
-			Recording,
-			Submitted
-		};
-
-		struct WrapperSlot
-		{
-			VkCommandBuffer cmd_ = VK_NULL_HANDLE;
-			VkCommandBuffer allocatedCmd_ = VK_NULL_HANDLE;
-			uint32_t gen_ = 1;
-			CommandState state_ = CommandState::Free;
-			uint64_t retireValue_ = 0;
-		};
+		using CommandState = WrapperSlot::CommandState;
+		using WrapperSlot = WrapperSlot;
 
 		Submitter(VulkanCore& core, uint32_t queueFamilyIndex);
 		~Submitter();
@@ -369,11 +381,8 @@ namespace smvk {
 		uint64_t m_timelineValue = 1;
 		uint64_t m_lastTimelineValue = 0;
 
-		// CommandPool
-		VkCommandPool pool_ = VK_NULL_HANDLE;
-		static constexpr uint32_t kMax = 16;
-		uint32_t availableSlots = kMax;
-		WrapperSlot commandBuffers_[kMax];
+		// CommandPool is now thread-local – accessed via GetThreadLocalPool()
+		CommandBufferPool* getPool() const;
 	};
 
 	// ---------------------------------------------------------------------

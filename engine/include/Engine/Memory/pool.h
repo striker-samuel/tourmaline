@@ -92,7 +92,9 @@ namespace smvk {
 	template<typename ObjectType, typename ImplObjectType>
 	class Pool {
 		static constexpr uint32_t kListEndSentinel = 0xffffffff;
+		static constexpr uint32_t kMaxSize = 8192;
 		struct PoolEntry {
+			PoolEntry() = default;
 			explicit PoolEntry(ImplObjectType& obj) : obj_(std::move(obj)) {}
 			ImplObjectType obj_ = {};
 			uint32_t gen_ = 1;
@@ -101,9 +103,11 @@ namespace smvk {
 		};
 		uint32_t freeListHead_ = kListEndSentinel;
 		uint32_t numObjects_ = 0;
+		uint32_t nextIndex_ = 0;
+		uint32_t capacity_ = kMaxSize;
 
 	public:
-		std::vector<PoolEntry> objects_;
+		PoolEntry objects_[kMaxSize] = {};
 		Handle<ObjectType> create(ImplObjectType&& obj) {
 			uint32_t idx = 0;
 			if (freeListHead_ != kListEndSentinel) {
@@ -112,8 +116,11 @@ namespace smvk {
 				objects_[idx].obj_ = std::move(obj);
 			}
 			else {
-				idx = (uint32_t)objects_.size();
-				objects_.emplace_back(obj);
+				assert(nextIndex_ < kMaxSize && "Pool overflow – increase MAX_SIZE");
+				idx = nextIndex_++;
+				objects_[idx].obj_ = std::move(obj);
+				objects_[idx].gen_ = 1;
+				objects_[idx].nextFree_ = kListEndSentinel;
 			}
 			objects_[idx].occupied_ = true;
 			numObjects_++;
@@ -122,58 +129,62 @@ namespace smvk {
 		void destroy(Handle<ObjectType> handle) {
 			if (handle.empty())
 				return;
-			assert(numObjects_ > 0); // double deletion
+			assert(numObjects_ > 0);
 			const uint32_t index = handle.index();
-			assert(index < objects_.size());
-			assert(handle.gen() == objects_[index].gen_); // double deletion
+			assert(index < kMaxSize);
+			assert(index < nextIndex_ || freeListHead_ != kListEndSentinel);
+			assert(handle.gen() == objects_[index].gen_);
 			objects_[index].obj_ = ImplObjectType{};
 			objects_[index].gen_++;
+			if (objects_[index].gen_ == 0) objects_[index].gen_ = 1;
 			objects_[index].nextFree_ = freeListHead_;
 			objects_[index].occupied_ = false;
 			freeListHead_ = index;
 			numObjects_--;
 		}
 		const ImplObjectType* get(Handle<ObjectType> handle) const {
-			if (handle.empty())
-				return nullptr;
-
+			if (handle.empty()) return nullptr;
 			const uint32_t index = handle.index();
-			assert(index < objects_.size());
-			assert(handle.gen() == objects_[index].gen_); // accessing deleted object
+			assert(index < kMaxSize);
+			assert(handle.gen() == objects_[index].gen_);
 			return &objects_[index].obj_;
 		}
 		ImplObjectType* get(Handle<ObjectType> handle) {
-			if (handle.empty())
-				return nullptr;
-
+			if (handle.empty()) return nullptr;
 			const uint32_t index = handle.index();
-			assert(index < objects_.size());
-			assert(handle.gen() == objects_[index].gen_); // accessing deleted object
+			assert(index < kMaxSize);
+			assert(handle.gen() == objects_[index].gen_);
 			return &objects_[index].obj_;
 		}
 		Handle<ObjectType> getHandle(uint32_t index) const {
-			assert(index < objects_.size());
-			if (index >= objects_.size())
-				return {};
-
+			assert(index < kMaxSize);
+			if (index >= kMaxSize) return {};
 			return Handle<ObjectType>(index, objects_[index].gen_);
 		}
 		Handle<ObjectType> findObject(const ImplObjectType* obj) {
-			if (!obj)
-				return {};
-
-			for (size_t idx = 0; idx != objects_.size(); idx++) {
-				if (objects_[idx].obj_ == *obj) {
-					return Handle<ObjectType>((uint32_t)idx, objects_[idx].gen_);
+			if (!obj) return {};
+			for (uint32_t idx = 0; idx < nextIndex_; ++idx) {
+				if (objects_[idx].occupied_ && objects_[idx].obj_ == *obj) {
+					return Handle<ObjectType>(idx, objects_[idx].gen_);
 				}
 			}
-
+			for (uint32_t idx = nextIndex_; idx < kMaxSize; ++idx) {
+				if (objects_[idx].occupied_ && objects_[idx].obj_ == *obj) {
+					return Handle<ObjectType>(idx, objects_[idx].gen_);
+				}
+			}
 			return {};
 		}
 		void clear() {
-			objects_.clear();
+			for (uint32_t i = 0; i < nextIndex_; ++i) {
+				objects_[i] = PoolEntry{};
+				objects_[i].gen_ = 1;
+				objects_[i].nextFree_ = kListEndSentinel;
+				objects_[i].occupied_ = false;
+			}
 			freeListHead_ = kListEndSentinel;
 			numObjects_ = 0;
+			nextIndex_ = 0;
 		}
 		uint32_t numObjects() const {
 			return numObjects_;
@@ -182,22 +193,17 @@ namespace smvk {
 		template<typename Func>
 		void forEach(Func&& func)
 		{
-			for (auto& entry : objects_) {
-				if (entry.occupied_) {
-					func(entry.obj_);
-				}
+			for (uint32_t i = 0; i < kMaxSize; ++i) {
+				if (objects_[i].occupied_) func(objects_[i].obj_);
 			}
 		}
 
 		template<typename Func>
 		void forEachHandle(Func&& func)
 		{
-			for (uint32_t i = 0; i < objects_.size(); ++i) {
+			for (uint32_t i = 0; i < kMaxSize; ++i) {
 				if (objects_[i].occupied_) {
-					func(Handle<ObjectType>(
-						i,
-						objects_[i].gen_
-					));
+					func(Handle<ObjectType>(i, objects_[i].gen_));
 				}
 			}
 		}

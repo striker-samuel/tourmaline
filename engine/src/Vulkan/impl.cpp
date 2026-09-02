@@ -41,7 +41,49 @@ static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
 static VkQueue transferQueue_ = VK_NULL_HANDLE;
-static std::mutex queueMutex;
+struct QueueMutex { VkQueue queue = VK_NULL_HANDLE; std::mutex mutex; };
+static QueueMutex graphicsQueueMutex;
+static QueueMutex presentQueueMutex;
+static QueueMutex transferQueueMutex;
+static std::mutex& GetQueueMutex(VkQueue q) {
+	if (q == graphicsQueue_) return graphicsQueueMutex.mutex;
+	if (q == presentQueue_) return presentQueueMutex.mutex;
+	if (q == transferQueue_) return transferQueueMutex.mutex;
+	static std::mutex fallback; return fallback;
+}
+namespace smvk {
+thread_local std::unordered_map<uint32_t, CommandBufferPool*> t_commandPools;
+// __thread value as requested (also thread_local above for C++11)
+thread_local int t_threadIdLocal = 0;
+#ifdef __GNUC__
+__thread int t_threadIdGcc = 0;
+#endif
+
+void CommandBufferPool::init(VkDevice dev, uint32_t qfi) {
+	device = dev;
+	queueFamilyIndex = qfi;
+	VkCommandPoolCreateInfo ci{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+	ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+	ci.queueFamilyIndex = qfi;
+	VK_CHECK(vkCreateCommandPool(dev, &ci, nullptr, &pool));
+	VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, kMax };
+	VkCommandBuffer bufs[kMax];
+	VK_CHECK(vkAllocateCommandBuffers(dev, &ai, bufs));
+	for (uint32_t i=0;i<kMax;++i){ slots[i].allocatedCmd_ = bufs[i]; slots[i].cmd_ = VK_NULL_HANDLE; slots[i].state_ = WrapperSlot::CommandState::Free; slots[i].gen_=1; slots[i].retireValue_=0; }
+	availableSlots = kMax;
+}
+void CommandBufferPool::destroy() {
+	if (pool != VK_NULL_HANDLE) { vkDestroyCommandPool(device, pool, nullptr); pool = VK_NULL_HANDLE; }
+}
+CommandBufferPool* GetThreadLocalPool(uint32_t qfi, VkDevice dev) {
+	auto it = t_commandPools.find(qfi);
+	if (it != t_commandPools.end()) return it->second;
+	auto* p = new CommandBufferPool();
+	p->init(dev, qfi);
+	t_commandPools[qfi] = p;
+	return p;
+}
+}
 
 namespace {
 
@@ -1783,21 +1825,21 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	VK_CHECK(vmaCreateAllocator(&allocatorCreateInfo, &m_allocator));
 
 	m_submitter = new Submitter(*core_, core_->indices.graphicsFamily.value());
-	// single-threaded: force all uploads onto graphics queue (keep muted host copy)
-	m_transferSubmitter = m_submitter;
+	if (core_->indices.transferFamily && core_->indices.transferFamily.value() != core_->indices.graphicsFamily.value()) {
+		m_transferSubmitter = new Submitter(*core_, core_->indices.transferFamily.value());
+	} else {
+		m_transferSubmitter = m_submitter;
+	}
 	{
 		VkPhysicalDeviceHostImageCopyFeaturesEXT hostFeat{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT, nullptr };
 		VkPhysicalDeviceFeatures2 feats2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &hostFeat };
 		vkGetPhysicalDeviceFeatures2(physicalDevice_, &feats2);
-		(void)hostFeat;
-		m_hostImageCopySupported = false;
-		if (false && m_hostImageCopySupported) {
+		m_hostImageCopySupported = hostFeat.hostImageCopy == VK_TRUE;
+		if (m_hostImageCopySupported) {
 			VkPhysicalDeviceHostImageCopyPropertiesEXT props{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_PROPERTIES_EXT, nullptr };
 			VkPhysicalDeviceProperties2 props2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &props };
 			vkGetPhysicalDeviceProperties2(physicalDevice_, &props2);
 			m_hostCopyProps = props;
-		} else {
-			m_hostImageCopySupported = false;
 		}
 		if (m_hostImageCopySupported) {
 			printf("[UploadStreamer] VK_EXT_host_image_copy enabled (optimalTilingLayoutUUID supported)\n");
@@ -4859,14 +4901,13 @@ inline void ImageBarrier(
 	vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 }
 
-// Submitter
+// Submitter – now uses thread-local CommandBufferPool
 inline smvk::Submitter::Submitter(VulkanCore& core, uint32_t queueFamilyIndex)
 	: core_(core), m_queueFamilyIndex(queueFamilyIndex)
 {
 	if (queueFamilyIndex == core.indices.transferFamily.value_or(queueFamilyIndex)) {
 		m_queue = transferQueue_ != VK_NULL_HANDLE ? transferQueue_ : graphicsQueue_;
 		if (queueFamilyIndex == core.indices.graphicsFamily.value()) m_queue = graphicsQueue_;
-		// dedicated transfer: use transferQueue_ if family matches transfer
 		QueueFamilyIndices q = findQueueFamilies(physicalDevice_, surface_);
 		if (q.transferFamily && *q.transferFamily == queueFamilyIndex) m_queue = transferQueue_;
 		else if (q.graphicsFamily && *q.graphicsFamily == queueFamilyIndex) m_queue = graphicsQueue_;
@@ -4875,52 +4916,9 @@ inline smvk::Submitter::Submitter(VulkanCore& core, uint32_t queueFamilyIndex)
 		m_queue = graphicsQueue_;
 	}
 	if (m_queue == VK_NULL_HANDLE) m_queue = graphicsQueue_;
-
-	VkCommandPoolCreateInfo poolInfo{
-		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-		.queueFamilyIndex = queueFamilyIndex
-	};
-
-	VK_CHECK(vkCreateCommandPool(
-		device_,
-		&poolInfo,
-		nullptr,
-		&pool_));
-
-	assert(pool_ != VK_NULL_HANDLE);
-
-	VkCommandBufferAllocateInfo info{
-		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-		.commandPool = pool_,
-		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-		.commandBufferCount = kMax
-	};
-
-	VkCommandBuffer buffers[kMax]{};
-
-	VK_CHECK(vkAllocateCommandBuffers(
-		device_,
-		&info,
-		buffers));
-
-	for (uint32_t i = 0; i < kMax; ++i)
-	{
-		WrapperSlot& slot = commandBuffers_[i];
-
-		slot.allocatedCmd_ = buffers[i];
-		slot.cmd_ = VK_NULL_HANDLE;
-		slot.state_ = CommandState::Free;
-		slot.retireValue_ = 0;
-		slot.gen_ = 1;
-	}
-
-	CreateTimelineSemaphore(
-		0,
-		m_timelineSemaphore);
-
+	// Command pool is now thread-local – no pool creation here
+	CreateTimelineSemaphore(0, m_timelineSemaphore);
 	assert(m_timelineSemaphore != VK_NULL_HANDLE);
-
 	m_timelineValue = 1;
 	m_lastTimelineValue = 0;
 }
@@ -4928,37 +4926,16 @@ inline smvk::Submitter::~Submitter()
 {
 	if (device_ == VK_NULL_HANDLE)
 		return;
-
 	waitAll();
-
-#ifndef NDEBUG
-	for (uint32_t i = 0; i < kMax; ++i)
-	{
-		assert(
-			commandBuffers_[i].state_ != CommandState::Recording &&
-			"Submitter destroyed while command buffer is recording");
-	}
-#endif
-
 	if (m_timelineSemaphore != VK_NULL_HANDLE)
 	{
-		vkDestroySemaphore(
-			device_,
-			m_timelineSemaphore,
-			nullptr);
-
+		vkDestroySemaphore(device_, m_timelineSemaphore, nullptr);
 		m_timelineSemaphore = VK_NULL_HANDLE;
 	}
-
-	if (pool_ != VK_NULL_HANDLE)
-	{
-		vkDestroyCommandPool(
-			device_,
-			pool_,
-			nullptr);
-
-		pool_ = VK_NULL_HANDLE;
-	}
+	// Thread-local pools are destroyed per-thread on exit, not here
+}
+inline smvk::CommandBufferPool* smvk::Submitter::getPool() const {
+	return GetThreadLocalPool(m_queueFamilyIndex, device_);
 }
 smvk::TimelinePoint smvk::Submitter::nextSignalPoint() const
 {
@@ -4992,111 +4969,53 @@ VkResult smvk::Submitter::waitTimeline(uint64_t value, uint64_t timeout) const
 {
 	std::unique_lock<std::recursive_mutex> lock(m_mutex);
 	purge();
-
-	if (availableSlots == 0)
+	auto* pool = getPool();
+	if (pool->availableSlots == 0)
 	{
 		uint64_t oldest = UINT64_MAX;
-
-		for (const WrapperSlot& slot : commandBuffers_)
-		{
-			if (slot.state_ == CommandState::Submitted)
-			{
-				oldest = std::min(
-					oldest,
-					slot.retireValue_);
-			}
+		for (uint32_t i=0;i<CommandBufferPool::kMax;++i){
+			const auto& slot = pool->slots[i];
+			if (slot.state_ == WrapperSlot::CommandState::Submitted) oldest = std::min(oldest, slot.retireValue_);
 		}
-
 		if (oldest != UINT64_MAX)
 		{
 			lock.unlock();
-			VK_CHECK(waitTimeline(
-				oldest,
-				UINT64_MAX));
+			VK_CHECK(waitTimeline(oldest, UINT64_MAX));
 			lock.lock();
 			purge();
-			if (availableSlots == 0) { assert(false && "still no slot after wait"); return {}; }
+			pool = getPool();
+			if (pool->availableSlots == 0) { assert(false && "still no slot after wait"); return {}; }
 		}
-		else
-		{
-			assert(
-				false &&
-				"All command buffers are currently recording");
-
-			return {};
-		}
+		else { assert(false && "All command buffers are currently recording"); return {}; }
 	}
-
-	uint32_t pickedIndex =
-		UINT32_MAX;
-
-	for (uint32_t i = 0; i < kMax; ++i)
-	{
-		if (commandBuffers_[i].state_ == CommandState::Free)
-		{
-			pickedIndex = i;
-			break;
-		}
-	}
-
+	uint32_t pickedIndex = UINT32_MAX;
+	for (uint32_t i = 0; i < CommandBufferPool::kMax; ++i) if (pool->slots[i].state_ == WrapperSlot::CommandState::Free) { pickedIndex = i; break; }
 	assert(pickedIndex != UINT32_MAX);
-
-	WrapperSlot& slot =
-		commandBuffers_[pickedIndex];
-
-	slot.cmd_ =
-		slot.allocatedCmd_;
-
-	slot.state_ =
-		CommandState::Recording;
-
-	slot.retireValue_ =
-		0;
-
-	VkCommandBufferBeginInfo beginInfo{
-		.sType =
-			VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-
-		.flags =
-			VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
-	};
-
-	VK_CHECK(vkBeginCommandBuffer(
-		slot.cmd_,
-		&beginInfo));
-
-	--availableSlots;
-
-	return CommandSubmitHandle{
-		.index_ = pickedIndex,
-		.gen_ = slot.gen_
-	};
+	WrapperSlot& slot = pool->slots[pickedIndex];
+	slot.cmd_ = slot.allocatedCmd_;
+	slot.state_ = WrapperSlot::CommandState::Recording;
+	slot.retireValue_ = 0;
+	VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+	VK_CHECK(vkBeginCommandBuffer(slot.cmd_, &beginInfo));
+	--pool->availableSlots;
+	return CommandSubmitHandle{ pickedIndex, slot.gen_ };
 }
 [[nodiscard]] VkCommandBuffer smvk::Submitter::GetCommandBuffer(CommandSubmitHandle handle)
 {
 	assert(validHandle(handle));
-
-	WrapperSlot& slot =
-		commandBuffers_[handle.index_];
-
-	assert(
-		slot.state_ == CommandState::Recording);
-
+	auto* pool = getPool();
+	WrapperSlot& slot = pool->slots[handle.index_];
+	assert(slot.state_ == WrapperSlot::CommandState::Recording);
 	return slot.cmd_;
 }
 smvk::TimelinePoint smvk::Submitter::submit(CommandSubmitHandle handle, std::span<const TimelineWait> waits)
 {
 	std::unique_lock<std::recursive_mutex> lock(m_mutex);
 	assert(validHandle(handle));
-
-	WrapperSlot& slot =
-		commandBuffers_[handle.index_];
-
-	assert(
-		slot.state_ == CommandState::Recording);
-
-	assert(
-		slot.cmd_ != VK_NULL_HANDLE);
+	auto* pool = getPool();
+	WrapperSlot& slot = pool->slots[handle.index_];
+	assert(slot.state_ == WrapperSlot::CommandState::Recording);
+	assert(slot.cmd_ != VK_NULL_HANDLE);
 
 	VK_CHECK(vkEndCommandBuffer(
 		slot.cmd_));
@@ -5177,7 +5096,7 @@ smvk::TimelinePoint smvk::Submitter::submit(CommandSubmitHandle handle, std::spa
 	};
 
 	{
-		std::lock_guard<std::mutex> qlock(queueMutex);
+		std::lock_guard<std::mutex> qlock(GetQueueMutex(m_queue));
 		VK_CHECK(vkQueueSubmit2(
 			m_queue,
 			1,
@@ -5208,22 +5127,17 @@ smvk::TimelinePoint smvk::Submitter::submit(CommandSubmitHandle handle, std::spa
 inline bool smvk::Submitter::validHandle(CommandSubmitHandle handle) const
 {
 	std::lock_guard<std::recursive_mutex> lock(m_mutex);
-	if (handle.index_ >= kMax)
-		return false;
-	if (handle.gen_ == 0)
-		return false;
-	return
-		handle.gen_ ==
-		commandBuffers_[handle.index_].gen_;
+	if (handle.index_ >= CommandBufferPool::kMax) return false;
+	if (handle.gen_ == 0) return false;
+	auto* pool = getPool();
+	return handle.gen_ == pool->slots[handle.index_].gen_;
 }
 bool smvk::Submitter::isReady(CommandSubmitHandle handle)
 {
 	std::lock_guard<std::recursive_mutex> lock(m_mutex);
-	if (handle.index_ >= kMax)
-		return false;
-
-	WrapperSlot& slot =
-		commandBuffers_[handle.index_];
+	if (handle.index_ >= CommandBufferPool::kMax) return false;
+	auto* pool = getPool();
+	WrapperSlot& slot = pool->slots[handle.index_];
 
 	// Old generation already recycled.
 	if (handle.gen_ < slot.gen_)
@@ -5232,12 +5146,8 @@ bool smvk::Submitter::isReady(CommandSubmitHandle handle)
 	if (handle.gen_ != slot.gen_)
 		return false;
 
-	if (slot.state_ == CommandState::Recording)
-		return false;
-
-	if (slot.state_ == CommandState::Free)
-		return true;
-
+	if (slot.state_ == WrapperSlot::CommandState::Recording) return false;
+	if (slot.state_ == WrapperSlot::CommandState::Free) return true;
 	uint64_t completed = 0;
 
 	VkResult r = vkGetSemaphoreCounterValue(
@@ -5257,36 +5167,27 @@ bool smvk::Submitter::isReady(CommandSubmitHandle handle)
 void smvk::Submitter::purge()
 {
 	std::lock_guard<std::recursive_mutex> lock(m_mutex);
+	auto* pool = getPool();
 	uint64_t completedValue = 0;
-
-	VkResult r = vkGetSemaphoreCounterValue(
-		device_,
-		m_timelineSemaphore,
-		&completedValue);
+	VkResult r = vkGetSemaphoreCounterValue(device_, m_timelineSemaphore, &completedValue);
 	if (r == VK_ERROR_DEVICE_LOST) {
-		// On device lost, recycle all submitted slots to unblock shutdown
-		for (uint32_t i = 0; i < kMax; ++i) {
-			WrapperSlot& slot = commandBuffers_[i];
-			if (slot.state_ == CommandState::Submitted) {
-				// Avoid vkResetCommandBuffer on lost device - just mark free
+		for (uint32_t i = 0; i < CommandBufferPool::kMax; ++i) {
+			WrapperSlot& slot = pool->slots[i];
+			if (slot.state_ == WrapperSlot::CommandState::Submitted) {
 				slot.cmd_ = VK_NULL_HANDLE;
-				slot.state_ = CommandState::Free;
+				slot.state_ = WrapperSlot::CommandState::Free;
 				slot.retireValue_ = 0;
-				++slot.gen_;
-				if (slot.gen_ == 0) slot.gen_ = 1;
-				++availableSlots;
+				++slot.gen_; if (slot.gen_ == 0) slot.gen_ = 1;
+				++pool->availableSlots;
 			}
 		}
 		return;
 	}
 	VK_CHECK(r);
-
-	for (uint32_t i = 0; i < kMax; ++i)
+	for (uint32_t i = 0; i < CommandBufferPool::kMax; ++i)
 	{
-		WrapperSlot& slot = commandBuffers_[i];
-
-		if (slot.state_ != CommandState::Submitted)
-			continue;
+		WrapperSlot& slot = pool->slots[i];
+		if (slot.state_ != WrapperSlot::CommandState::Submitted) continue;
 
 		if (slot.retireValue_ <= completedValue)
 		{
@@ -5297,14 +5198,9 @@ void smvk::Submitter::purge()
 inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout)
 {
 	std::lock_guard<std::recursive_mutex> lock(m_mutex);
-	if (handle.index_ >= kMax)
-	{
-		assert(false && "invalid handle");
-		return;
-	}
-
-	WrapperSlot& slot =
-		commandBuffers_[handle.index_];
+	if (handle.index_ >= CommandBufferPool::kMax) { assert(false && "invalid handle"); return; }
+	auto* pool = getPool();
+	WrapperSlot& slot = pool->slots[handle.index_];
 
 	// Already recycled.
 	if (handle.gen_ < slot.gen_)
@@ -5312,30 +5208,16 @@ inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout)
 
 	assert(validHandle(handle));
 
-	assert(
-		slot.state_ == CommandState::Submitted &&
-		"Cannot wait on command buffer before submit");
-
-	VkResult result =
-		waitTimeline(
-			slot.retireValue_,
-			timeout);
-
-	if (result == VK_TIMEOUT)
-	{
-		assert(false && "timeout reached");
-		return;
-	}
-
+	assert(slot.state_ == WrapperSlot::CommandState::Submitted && "Cannot wait on command buffer before submit");
+	VkResult result = waitTimeline(slot.retireValue_, timeout);
+	if (result == VK_TIMEOUT) { assert(false && "timeout reached"); return; }
 	if (result == VK_ERROR_DEVICE_LOST) {
 		fprintf(stderr, "[Vulkan Warning] waitTimeline returned DEVICE_LOST in Submitter::wait, treating as complete\n");
-		// Mark slot as free without vkResetCommandBuffer which would fail on lost device
 		slot.cmd_ = VK_NULL_HANDLE;
-		slot.state_ = CommandState::Free;
+		slot.state_ = WrapperSlot::CommandState::Free;
 		slot.retireValue_ = 0;
-		++slot.gen_;
-		if (slot.gen_ == 0) slot.gen_ = 1;
-		++availableSlots;
+		++slot.gen_; if (slot.gen_ == 0) slot.gen_ = 1;
+		++getPool()->availableSlots;
 		return;
 	}
 
@@ -5350,21 +5232,18 @@ void smvk::Submitter::waitAll()
 	if (m_lastTimelineValue == 0)
 		return;
 
-	VkResult r = waitTimeline(
-		m_lastTimelineValue,
-		UINT64_MAX);
+	VkResult r = waitTimeline(m_lastTimelineValue, UINT64_MAX);
 	if (r == VK_ERROR_DEVICE_LOST) {
 		fprintf(stderr, "[Vulkan Warning] waitTimeline returned DEVICE_LOST in Submitter::waitAll, proceeding with teardown\n");
-		// Recycle all slots without calling Vulkan on lost device
-		for (uint32_t i = 0; i < kMax; ++i) {
-			WrapperSlot& slot = commandBuffers_[i];
-			if (slot.state_ == CommandState::Submitted) {
+		auto* pool2 = getPool();
+		for (uint32_t i = 0; i < CommandBufferPool::kMax; ++i) {
+			WrapperSlot& slot = pool2->slots[i];
+			if (slot.state_ == WrapperSlot::CommandState::Submitted) {
 				slot.cmd_ = VK_NULL_HANDLE;
-				slot.state_ = CommandState::Free;
+				slot.state_ = WrapperSlot::CommandState::Free;
 				slot.retireValue_ = 0;
-				++slot.gen_;
-				if (slot.gen_ == 0) slot.gen_ = 1;
-				++availableSlots;
+				++slot.gen_; if (slot.gen_ == 0) slot.gen_ = 1;
+				++pool2->availableSlots;
 			}
 		}
 		return;
@@ -5375,36 +5254,17 @@ void smvk::Submitter::waitAll()
 }
 void smvk::Submitter::recycleSlot(uint32_t index)
 {
-	assert(index < kMax);
-
-	WrapperSlot& slot =
-		commandBuffers_[index];
-
-	assert(
-		slot.state_ == CommandState::Submitted);
-
-	assert(
-		slot.cmd_ != VK_NULL_HANDLE);
-
-	VK_CHECK(vkResetCommandBuffer(
-		slot.cmd_,
-		0));
-
-	slot.cmd_ =
-		VK_NULL_HANDLE;
-
-	slot.state_ =
-		CommandState::Free;
-
-	slot.retireValue_ =
-		0;
-
-	++slot.gen_;
-
-	if (slot.gen_ == 0)
-		slot.gen_ = 1;
-
-	++availableSlots;
+	assert(index < CommandBufferPool::kMax);
+	auto* pool = getPool();
+	WrapperSlot& slot = pool->slots[index];
+	assert(slot.state_ == WrapperSlot::CommandState::Submitted);
+	assert(slot.cmd_ != VK_NULL_HANDLE);
+	VK_CHECK(vkResetCommandBuffer(slot.cmd_, 0));
+	slot.cmd_ = VK_NULL_HANDLE;
+	slot.state_ = WrapperSlot::CommandState::Free;
+	slot.retireValue_ = 0;
+	++slot.gen_; if (slot.gen_ == 0) slot.gen_ = 1;
+	++pool->availableSlots;
 }
 
 // VulkanSwapchain
@@ -5893,27 +5753,61 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	frameTimelineValues_[currentFrame_] = timelineValue_;
 	imageTimelineValues_[currentImageIndex_] = timelineValue_;
 	{
-		std::lock_guard<std::mutex> lock(queueMutex);
-		VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
-		VkPresentInfoKHR presentInfo{};
-		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-		presentInfo.waitSemaphoreCount = 1;
-		presentInfo.pWaitSemaphores = &renderFinishedSemaphores_[currentImageIndex_];
-		VkSwapchainKHR swapChains[] = { vk_swapchain_ };
-		presentInfo.swapchainCount = 1;
-		presentInfo.pSwapchains = swapChains;
-		presentInfo.pImageIndices = &currentImageIndex_;
-		VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
-		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
-			framebufferResized) {
-			framebufferResized = false;
-			Recreate();
+		// Single-threaded: all queue ops on render thread, but use per-queue mutex for correctness when transferQueue is distinct
+		std::mutex &mg = GetQueueMutex(graphicsQueue_);
+		std::mutex &mp = GetQueueMutex(presentQueue_);
+		std::unique_lock<std::mutex> lockG(mg, std::defer_lock);
+		std::unique_lock<std::mutex> lockP(mp, std::defer_lock);
+		if (&mg == &mp) {
+			lockG.lock();
+			VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
+			VkPresentInfoKHR presentInfo{};
+			presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+			presentInfo.waitSemaphoreCount = 1;
+			presentInfo.pWaitSemaphores = &renderFinishedSemaphores_[currentImageIndex_];
+			VkSwapchainKHR swapChains[] = { vk_swapchain_ };
+			presentInfo.swapchainCount = 1;
+			presentInfo.pSwapchains = swapChains;
+			presentInfo.pImageIndices = &currentImageIndex_;
+			VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+			if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
+				framebufferResized) {
+				framebufferResized = false;
+				Recreate();
+			}
+			else if (result != VK_SUCCESS) {
+				throw std::runtime_error("failed to present swap chain image!");
+			}
+			AdvanceFrame();
+			return;
+		} else {
+			{
+				std::lock_guard<std::mutex> lock(mg);
+				VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
+			}
+			{
+				std::lock_guard<std::mutex> lock(mp);
+				VkPresentInfoKHR presentInfo{};
+				presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+				presentInfo.waitSemaphoreCount = 1;
+				presentInfo.pWaitSemaphores = &renderFinishedSemaphores_[currentImageIndex_];
+				VkSwapchainKHR swapChains[] = { vk_swapchain_ };
+				presentInfo.swapchainCount = 1;
+				presentInfo.pSwapchains = swapChains;
+				presentInfo.pImageIndices = &currentImageIndex_;
+				VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+				if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
+					framebufferResized) {
+					framebufferResized = false;
+					Recreate();
+				}
+				else if (result != VK_SUCCESS) {
+					throw std::runtime_error("failed to present swap chain image!");
+				}
+			}
+			AdvanceFrame();
+			return;
 		}
-		else if (result != VK_SUCCESS) {
-			throw std::runtime_error("failed to present swap chain image!");
-		}
-		AdvanceFrame();
-		return;
 	}
 	AdvanceFrame();
 
