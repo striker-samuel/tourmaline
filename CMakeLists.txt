@@ -84,6 +84,7 @@ add_subdirectory(external/imgui)
 add_subdirectory(engine)
 add_subdirectory(app)
 add_subdirectory(samples/01_triangle)
+add_subdirectory(samples/02_blur)
 
 set_property(CACHE ENGINE_BACKEND PROPERTY STRINGS
     "Vulkan"
