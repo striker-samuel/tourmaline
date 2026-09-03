@@ -372,7 +372,7 @@ private:
 		light.direction[0] = lightDir.x;
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
-		light.intensity = 10.0f;
+		light.intensity = 1.0f;
 		light.shadow_map_index =
 			m_context->GetBindlessIndex(
 				m_viewportResources.directionalShadows.bindless

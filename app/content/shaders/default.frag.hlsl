@@ -149,11 +149,26 @@ PSOut mainPS(PSIn IN)
     {
         // Build TBN from interpolated vertex data. Gram-Schmidt re-orthogonalize
         // the tangent against the normal so interpolation doesn't skew the frame.
+        // Guard the degenerate case (T near-parallel to N, e.g. mirrored UV
+        // seams interpolating through zero): normalize(~0) is NaN/INF and would
+        // poison B, then N, then the whole pixel down to HDR.
         float3 T = IN.tangent.xyz;
-        T = normalize(T - N * dot(N, T));
+        float3 Tg = T - N * dot(N, T);
+        float tgLen = length(Tg);
+        if (tgLen > 1e-6f) { T = Tg / tgLen; }
+        else {
+            // Fallback: any axis non-parallel to N gives a valid frame.
+            // N is unit here, so cross() is safely non-zero.
+            float3 axis = abs(N.y) < 0.99f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+            T = normalize(cross(axis, N));
+        }
 
         // tangent.w carries the tangent-space handedness (bitangent sign).
-        float3 B = cross(N, T) * IN.tangent.w;
+        // Sanitize it: 0 (placeholder) or NaN (corrupt data) would zero/poison
+        // B below. Default +1 matches the importer's Lengyel convention.
+        float tw = IN.tangent.w;
+        tw = (tw == 0.0f || isnan(tw)) ? 1.0f : sign(tw);
+        float3 B = cross(N, T) * tw;
 
         float3 mapN = textures[NonUniformResourceIndex((uint)normalIdx)]
             .Sample(samplers[0], IN.uv).xyz * 2.0f - 1.0f;
@@ -162,8 +177,11 @@ PSOut mainPS(PSIn IN)
         mapN.xy *= normalScale;
         mapN = normalize(mapN);
 
-        // Tangent-space -> world-space.
-        N = normalize(T * mapN.x + B * mapN.y + N * mapN.z);
+        // Tangent-space -> world-space. Final length check: with T,B unit and
+        // orthogonal this is near-unit already, but never normalize blind.
+        float3 Nc = T * mapN.x + B * mapN.y + N * mapN.z;
+        float ncLen = length(Nc);
+        N = ncLen > 1e-12f ? Nc / ncLen : N;
     }
     // ---------------------------------------------------------------
     // Occlusion
