@@ -3,20 +3,24 @@
 //
 //   PakCooker --content-dir content --in-vfs models/Sponza/sponza.gltf
 //             --out-pak content/paks/sponza.pak [--meshopt on|off]
-//             [--overdraw 1.05] [--manifest on|off]
+//             [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]
 //
 // Reads the model JSON, .bin buffers and all .ktx2 textures through an
 // OverlayVfs with a LooseBackend over --content-dir (the same lookup rules
 // as the runtime), runs the meshopt cook pass, and writes a self-contained
-// pak with embedded textures plus a .pak.json manifest sidecar.
+// pak with embedded textures. Everything about the pak is already inside
+// the pak — there is intentionally no sidecar manifest. --dump-manifest
+// prints the same data to stdout, read back from the pak via PakReader so
+// it cannot drift from the written bytes.
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
-#include <sstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -35,7 +39,7 @@ struct Args {
 	std::string outPak;
 	bool meshopt = true;
 	float overdraw = 1.05f;
-	bool manifest = true;
+	bool dumpManifest = false; // print pak contents to stdout (pak-sourced)
 	bool verify = true; // re-open the written pak with PakReader (self-check)
 };
 
@@ -69,10 +73,10 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.overdraw = std::stof(v);
 		}
-		else if (a == "--manifest") {
+		else if (a == "--dump-manifest") {
 			std::string v;
 			if (!need(v)) return false;
-			out.manifest = (v == "on" || v == "1" || v == "true");
+			out.dumpManifest = (v == "on" || v == "1" || v == "true");
 		}
 		else if (a == "--verify") {
 			std::string v;
@@ -97,20 +101,89 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 void Usage() {
 	std::cout << "PakCooker --content-dir content --in-vfs models/Sponza/sponza.gltf\n"
 		<< "          --out-pak content/paks/sponza.pak [--meshopt on|off]\n"
-		<< "          [--overdraw 1.05] [--manifest on|off]\n";
+		<< "          [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]\n";
 }
 
-std::string JsonEscape(const std::string& s) {
-	std::string o;
-	for (char c : s) {
-		switch (c) {
-		case '"': o += "\\\""; break;
-		case '\\': o += "\\\\"; break;
-		case '\n': o += "\\n"; break;
-		default: o.push_back(c); break;
+// Little-endian cursor over a MeshBlob payload for manifest printing. Mesh
+// blob layout is defined by cluster_serializer.cpp (see the MeshBlob block):
+//   str uri | u32 vertCount | u32 indexCount | u32 surfCount | surfaces |
+//   vec3 aabbMin | vec3 aabbMax | f32 sphere | u32 topology |
+//   LodInfo{groupId,lodIndex,candidateCount,f32 simplifyError,
+//           f32 screenThreshold,triCount,f32 acmr} | vertex/index payloads
+struct DumpCursor {
+	std::span<const uint8_t> img;
+	size_t off = 0;
+	bool ok = true;
+	uint32_t u32() {
+		uint32_t v = 0;
+		if (off + 4 > img.size()) ok = false; else { memcpy(&v, img.data() + off, 4); off += 4; }
+		return v;
+	}
+	int32_t i32() { return static_cast<int32_t>(u32()); }
+	float f32() {
+		float v = 0.0f;
+		if (off + 4 > img.size()) ok = false; else { memcpy(&v, img.data() + off, 4); off += 4; }
+		return v;
+	}
+	std::string str() {
+		const uint32_t n = u32();
+		if (!ok || off + n > img.size()) { ok = false; return {}; }
+		std::string s(reinterpret_cast<const char*>(img.data() + off), n);
+		off += n;
+		return s;
+	}
+};
+
+// Prints meshes/materials/textures read back from the written pak (never
+// from the in-memory Cluster, so the dump reflects the actual bytes).
+void DumpManifestFromPak(const smvk::PakReader& reader) {
+	std::cout << "  manifest (pak-sourced):\n";
+
+	// Meshes.
+	for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Mesh)) {
+		DumpCursor c{ reader.Payload(*e), 0 };
+		const std::string uri = c.str();
+		const uint32_t vc = c.u32();
+		const uint32_t ic = c.u32();
+		const uint32_t sc = c.u32();
+		for (uint32_t s = 0; s < sc; ++s) { (void)c.u32(); (void)c.u32(); (void)c.i32(); }
+		for (int k = 0; k < 6; ++k) (void)c.f32(); // aabb min/max
+		(void)c.f32(); // sphere
+		(void)c.u32(); // topology
+		const uint32_t groupId = c.u32();
+		const uint32_t lodIndex = c.u32();
+		(void)c.u32(); // candidateCount
+		(void)c.f32(); // simplifyError
+		(void)c.f32(); // screenThreshold
+		const uint32_t tris = c.u32();
+		const float acmr = c.f32();
+		if (!c.ok) {
+			std::cout << "    [truncated mesh blob: " << e->path << "]\n";
+			continue;
+		}
+		std::cout << "    mesh " << uri
+			<< " verts=" << vc << " idx=" << ic
+			<< " lod{g=" << groupId << " i=" << lodIndex << " tris=" << tris
+			<< " acmr=" << acmr << "}\n";
+	}
+
+	// Materials.
+	for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Material)) {
+		DumpCursor c{ reader.Payload(*e), 0 };
+		const std::string uri = c.str();
+		std::cout << "    mat  " << uri << "\n";
+	}
+
+	// Textures (embedded .ktx2 byte size).
+	for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Texture)) {
+		smvk::PakTexturePayload p;
+		if (smvk::ParseTexturePayload(reader.Payload(*e), p)) {
+			std::cout << "    tex  " << p.uri << " (" << p.ktxBytes.size() << " B)\n";
+		}
+		else {
+			std::cout << "    [malformed texture blob: " << e->path << "]\n";
 		}
 	}
-	return o;
 }
 
 } // namespace
@@ -180,7 +253,8 @@ int main(int argc, char** argv) {
 
 	// Self-check: re-open the written file through the production reader
 	// (header/footer/CRC/TOC validation + payload spot-checks).
-	if (args.verify) {
+	std::optional<smvk::PakReader> verifyReader;
+	if (args.verify || args.dumpManifest) {
 		std::ifstream rf(args.outPak, std::ios::binary | std::ios::ate);
 		if (!rf) {
 			std::cerr << "Verify: cannot re-open " << args.outPak << std::endl;
@@ -194,22 +268,29 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 		std::string verr;
-		auto reader = smvk::PakReader::Open(std::span<const uint8_t>(image), verr);
+		// The image must outlive the reader borrow; keep it static duration.
+		static std::vector<uint8_t> keepAlive = std::move(image);
+		auto reader = smvk::PakReader::Open(
+			std::span<const uint8_t>(keepAlive), verr);
 		if (!reader) {
 			std::cerr << "Verify: PakReader rejected: " << verr << std::endl;
 			return 1;
 		}
+		verifyReader = std::move(reader);
+	}
+	if (args.verify && verifyReader) {
+		const auto& reader = *verifyReader;
 		size_t badPayloads = 0;
-		for (const smvk::PakTocEntry* e : reader->BlobsOfKind(smvk::PakAssetKind::Texture)) {
+		for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Texture)) {
 			smvk::PakTexturePayload p;
-			if (!smvk::ParseTexturePayload(reader->Payload(*e), p))
+			if (!smvk::ParseTexturePayload(reader.Payload(*e), p))
 				++badPayloads;
 		}
-		std::cout << "  verify: entries=" << reader->EntryCount()
-			<< " meshes=" << reader->BlobsOfKind(smvk::PakAssetKind::Mesh).size()
-			<< " materials=" << reader->BlobsOfKind(smvk::PakAssetKind::Material).size()
-			<< " textures=" << reader->BlobsOfKind(smvk::PakAssetKind::Texture).size()
-			<< " scene=" << reader->BlobsOfKind(smvk::PakAssetKind::Scene).size()
+		std::cout << "  verify: entries=" << reader.EntryCount()
+			<< " meshes=" << reader.BlobsOfKind(smvk::PakAssetKind::Mesh).size()
+			<< " materials=" << reader.BlobsOfKind(smvk::PakAssetKind::Material).size()
+			<< " textures=" << reader.BlobsOfKind(smvk::PakAssetKind::Texture).size()
+			<< " scene=" << reader.BlobsOfKind(smvk::PakAssetKind::Scene).size()
 			<< (badPayloads ? " BAD PAYLOADS!" : " OK") << "\n";
 		if (badPayloads) {
 			std::cerr << "Verify: " << badPayloads << " malformed texture payload(s)\n";
@@ -217,55 +298,9 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	if (args.manifest) {
-		std::ostringstream m;
-		m << "{\n  \"source\": \"" << JsonEscape(args.inVfs) << "\",\n";
-		m << "  \"pakBytes\": " << pak.size() << ",\n";
-		m << "  \"meshes\": [\n";
-		bool first = true;
-		cluster->staticMeshes.forEachHandle([&](smvk::ClusterStaticMeshHandle h) {
-			const std::string uri = cluster->GetMeshUri(h);
-			auto lod = cluster->GetMeshLod(uri.empty() ? "" : uri);
-			if (!first) m << ",\n";
-			first = false;
-			m << "    {\"uri\": \"" << JsonEscape(uri) << "\"";
-			if (lod) {
-				m << ", \"lodGroup\": " << lod->groupId
-					<< ", \"lodIndex\": " << lod->lodIndex
-					<< ", \"tris\": " << lod->triCount
-					<< ", \"acmr\": " << lod->acmr;
-			}
-			m << "}";
-			});
-		m << "\n  ],\n  \"materials\": [";
-		first = true;
-		cluster->materials.forEachHandle([&](smvk::ClusterMaterialHandle h) {
-			if (!first) m << ", ";
-			first = false;
-			m << "\"" << JsonEscape(cluster->GetMaterialUri(h)) << "\"";
-			});
-		m << "],\n  \"textures\": [";
-		first = true;
-		for (const auto& [uri, rhi] : cluster->ListTextureUris()) {
-			(void)rhi;
-			const auto* src = cluster->GetTextureSource(uri);
-			if (!first) m << ", ";
-			first = false;
-			m << "{\"uri\": \"" << JsonEscape(uri) << "\", \"bytes\": "
-				<< (src ? src->size() : 0) << "}";
-		}
-		m << "]\n}\n";
-		const std::string mpath = args.outPak + ".json";
-		FILE* f = std::fopen(mpath.c_str(), "wb");
-		if (f) {
-			const std::string s = m.str();
-			fwrite(s.data(), 1, s.size(), f);
-			fclose(f);
-			std::cout << "  manifest: " << mpath << "\n";
-		}
-		else {
-			std::cerr << "Cannot write manifest: " << mpath << std::endl;
-		}
+	// No sidecar: the dump is printed straight from the pak TOC/blobs.
+	if (args.dumpManifest && verifyReader) {
+		DumpManifestFromPak(*verifyReader);
 	}
 
 	return 0;
