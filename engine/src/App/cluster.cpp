@@ -305,9 +305,12 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 	material.values.params2.w = 0.0f;
 
 	material.values.emissiveFactor = glm::vec4(info.emissiveFactor, 0.0f);
-	// keep ambient as small floor; could be driven by IBL later
-	material.values.ambient = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-	//material.values.ambient = glm::vec4(0.03f, 0.03f, 0.03f, 1.0f);
+	// Sky-ambient floor (pseudo-IBL). Same irradiance convention as the
+	// directional sun (lux, see Engine/Renderer/light.h): the shader computes
+	// baseColor * ambient.rgb, so ambient.rgb = skyColor * skyLux / PI.
+	// Default: 500 lux clear sky (~10% of the 5000 lux sun), blue-tinted zenith:
+	// (0.45, 0.65, 1.0) * (500 / PI). Overridable per material later.
+	//material.values.ambient = glm::vec4(71.62f, 103.45f, 159.15f, 1.0f);
 
 	material.shadingModel = info.shadingModel;
 	material.alphaMode = info.alphaMode;

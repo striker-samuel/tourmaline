@@ -47,7 +47,7 @@ struct LightBuffer
 
 struct MaterialValues
 {
-    float4 ambient;          // 0  legacy ambient
+    float4 ambient;          // 0  sky-ambient factor: skyColor * skyLux/PI (albedo multiplier, lux convention)
     float4 diffuse;          // 16 baseColorFactor
     int4 tex;                // 32 x=baseColor, y=metallicRoughness, z=normal, w=occlusion
     int4 tex2;               // 48 x=emissive, yzw unused (-1)

@@ -262,13 +262,17 @@ PSOut mainPS(PSIn IN)
 
     float3 direct = (diffuse + specular) * lightColor * NdotL * shadow;
 
-    // Ambient / IBL approximation: baseColor * ambient factor * occlusion
-    // Legacy ambient floor kept for look; scaled by occlusion.
-    float3 ambient = baseColor * mat.ambient.rgb * occlusion;
-    // Add a subtle fake skylight based on N.y
-    float hemis = 0.5f + 0.5f * N.y;
-    ambient += baseColor * hemis * 0.02f * occlusion; // very low fill
+    // Ambient / sky-IBL floor (hemispherical sky).
+    // mat.ambient.rgb is the zenith sky radiance factor as an albedo
+    // multiplier = skyColor * skyLux / PI (same lux convention as the sun;
+    // default set in cluster.cpp: 500 lux ≈ 10% of the 5000 lux sun).
+    // hemi fades it out toward down-facing normals; kD keeps metals dark
+    // in shade (no specular env map yet).
+    //float hemi = 0.5f + 0.5f * N.y;
+    //float3 ambient = kD * baseColor * mat.ambient.rgb * hemi * occlusion;
 
+    
+    float3 ambient = baseColor * mat.ambient.rgb * occlusion;
     float3 color = direct + ambient;
     color = color * occlusion; // re-apply for direct as well per spec (optional)
     // Actually spec: occludedColor = lerp(color, color * occTex, strength) applied to final? We split above.

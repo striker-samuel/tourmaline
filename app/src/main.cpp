@@ -35,8 +35,8 @@ static constexpr smvk::Format SHADOW_FORMAT = smvk::Format::D32_Float; // stenci
 // -----------------------------------------------------------------------------
 static constexpr uint32_t BLOOM_MIP_COUNT = 5;
 static constexpr uint32_t BLOOM_BASE_DIVISOR = 2; // base = hdr / 2 (half-res)
-static constexpr float BLOOM_THRESHOLD = 2.0f;
-static constexpr float BLOOM_KNEE = 0.5f;
+static constexpr float BLOOM_THRESHOLD = 1000.0f; // pre-exposure HDR; sun-lit diffuse spans ~0-1600
+static constexpr float BLOOM_KNEE = 250.0f;       // keeps soft ratio knee/threshold = 0.25
 static constexpr float BLOOM_INTENSITY = 0.6f;
 static constexpr float BLOOM_UPSAMPLE_RADIUS = 1.0f;
 
@@ -56,7 +56,7 @@ static smvk::BloomDesc MakeBloomDesc() {
 // -----------------------------------------------------------------------------
 // Tonemap config (program + pass live in Engine/Rendergraph/tonemap.h)
 // -----------------------------------------------------------------------------
-static constexpr float TONEMAP_EXPOSURE = 0.02f;
+static constexpr float TONEMAP_EXPOSURE = 0.001f; // sun 5000 lux * 0.001 ≈ HDR 5 pre-ACES
 static constexpr uint32_t TONEMAP_MODE = 1; // 0=Reinhard, 1=ACES, 2=Uncharted2
 
 static smvk::TonemapDesc MakeTonemapDesc() {
@@ -323,10 +323,12 @@ private:
 
 		data.nearPlane = default_near_clip;
 		data.farPlane = default_far_clip;
-		// Linear exposure multiplier for tonemapper (ACES). 1.0 = no extra exposure;
-		// raise for brighter HDR (e.g. sun 50k lux → exposure 0.02 to fit LDR).
-		// Kept at 1.0 for now – tonemap exposure push is used instead.
-		data.exposure = 0.02f;
+		// Linear exposure multiplier for the tonemapper (ACES).
+		// Sun is 5000 lux (see UpdateLights); 0.001 puts a sun-facing
+		// mid-gray (albedo 0.18, N·L=1) at HDR ≈ 0.29 pre-ACES → no clipping.
+		// NOTE: FrameUniforms.exposure is currently unread by shaders; the
+		// tonemap push constant (TONEMAP_EXPOSURE) is the live knob. Keep in sync.
+		data.exposure = 0.001f;
 
 		m_context->UploadDataToBuffer(
 			m_resources.frameUniforms,
