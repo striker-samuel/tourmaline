@@ -15,12 +15,14 @@
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/light.h>
+#include <Engine/platform.h>
 
 #include <glm/gtc/type_ptr.hpp>
 
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -75,12 +77,20 @@ inline std::vector<float> ComputeCascadeSplits(
 	return splits;
 }
 
+// Default SPV for the depth-only cascade pass (single VS, no FS).
+inline constexpr const char* kCascadedShadowVsPath = "content/shaders/shadow.vert.hlsl.spv";
+
 struct CascadedShadowAtlas {
 	Holder<ImageHandle> image;
 	Holder<ImageViewHandle> attachmentView; // depth attachment (depth aspect)
 	Holder<ImageViewHandle> sampledView;    // sampled depth view
 	Holder<BindlessImageHandle> bindless;
 	LogicalImageViewHandle logicalView; // rendergraph alias of sampledView
+
+	// Default depth-only program (shadow.vert, mainVS). Created by
+	// EnsureShaders/Create/Ensure so apps don't own shadow modules.
+	Holder<ShaderModuleHandle> vsModule;
+	ShaderProgram program{};
 
 	Extent2D atlasExtent{ 0, 0 };
 	Extent2D tileExtent{ 0, 0 };
@@ -89,6 +99,10 @@ struct CascadedShadowAtlas {
 
 	[[nodiscard]] bool Valid() const {
 		return !image.empty() && cascadeCount != 0;
+	}
+
+	[[nodiscard]] bool ShadersValid() const {
+		return program.shaderCount != 0 && !vsModule.empty();
 	}
 
 	[[nodiscard]] uint32_t Columns() const {
@@ -103,10 +117,49 @@ struct CascadedShadowAtlas {
 		outY = static_cast<int32_t>((index / cols) * tileExtent.height);
 	}
 
+	// Idempotent default program creation (shadow.vert, mainVS).
+	// Returns true when program is ready afterwards.
+	bool EnsureShaders(ResourceManager& ctx, const char* vsPath = kCascadedShadowVsPath) {
+		if (ShadersValid())
+			return true;
+		try {
+			const std::string path = vsPath ? vsPath : kCascadedShadowVsPath;
+			vsModule = ctx.CreateShaderModule(readFile(path), "shadowVert");
+		} catch (...) {
+			return false;
+		}
+		if (vsModule.empty())
+			return false;
+		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
+		program = { .shaders = { vs }, .shaderCount = 1 };
+		return true;
+	}
+
+	void DestroyShaders() {
+		program = ShaderProgram{};
+		vsModule = {};
+	}
+
+	// Frees the atlas images/views (shaders survive – they are size-independent).
+	void Destroy(RenderGraph& rg) {
+		if (!logicalView.empty())
+			rg.FreeImageView(logicalView);
+		logicalView = {};
+		bindless = {};
+		sampledView = {};
+		attachmentView = {};
+		image = {};
+		atlasExtent = { 0, 0 };
+		tileExtent = { 0, 0 };
+		cascadeCount = 0;
+	}
+
 	// Creates the physical atlas (image + depth/sampled views + bindless)
 	// and registers the sampled view with the rendergraph.
-	// Returns false when the descriptor is invalid.
-	bool Create(ResourceManager& ctx, RenderGraph& rg, const CascadedShadowMapDesc& desc) {
+	// Also ensures the default shader program. Returns false when the
+	// descriptor is invalid or shaders fail to load.
+	bool Create(ResourceManager& ctx, RenderGraph& rg, const CascadedShadowMapDesc& desc,
+		const char* vsPath = kCascadedShadowVsPath) {
 		if (desc.cascadeCount == 0 || desc.cascadeCount > kMaxCascades)
 			return false;
 		if (desc.cascadeResolution == 0)
@@ -177,7 +230,22 @@ struct CascadedShadowAtlas {
 		tileExtent = { desc.cascadeResolution, desc.cascadeResolution };
 		format = desc.format;
 		cascadeCount = desc.cascadeCount;
-		return true;
+		return EnsureShaders(ctx, vsPath);
+	}
+
+	// Recreate only when cascadeCount / resolution / format drift.
+	// Also internalizes EnsureShaders – one call keeps resources + program valid.
+	bool Ensure(ResourceManager& ctx, RenderGraph& rg, const CascadedShadowMapDesc& desc,
+		const char* vsPath = kCascadedShadowVsPath) {
+		if (Valid() &&
+			cascadeCount == desc.cascadeCount &&
+			tileExtent.width == desc.cascadeResolution &&
+			tileExtent.height == desc.cascadeResolution &&
+			format == desc.format) {
+			return EnsureShaders(ctx, vsPath);
+		}
+		Destroy(rg);
+		return Create(ctx, rg, desc, vsPath);
 	}
 
 	// Builds the GPU directional description for the current atlas layout.

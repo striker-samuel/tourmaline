@@ -7,6 +7,8 @@
 #include <Engine/core.h>
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
+#include <Engine/Rendergraph/hdr.h>
+#include <Engine/Rendergraph/tonemap.h>
 #include <imgui.h>
 
 
@@ -33,9 +35,9 @@ static constexpr smvk::Format SHADOW_FORMAT = smvk::Format::D32_Float; // stenci
 // -----------------------------------------------------------------------------
 static constexpr uint32_t BLOOM_MIP_COUNT = 5;
 static constexpr uint32_t BLOOM_BASE_DIVISOR = 2; // base = hdr / 2 (half-res)
-static constexpr float BLOOM_THRESHOLD = 1.0f;   // HDR prefilter knee
-static constexpr float BLOOM_KNEE = 0.25f;
-static constexpr float BLOOM_INTENSITY = 0.6f;   // tonemap composite strength
+static constexpr float BLOOM_THRESHOLD = 2.0f;
+static constexpr float BLOOM_KNEE = 0.5f;
+static constexpr float BLOOM_INTENSITY = 0.6f;
 static constexpr float BLOOM_UPSAMPLE_RADIUS = 1.0f;
 
 static smvk::BloomDesc MakeBloomDesc() {
@@ -48,6 +50,31 @@ static smvk::BloomDesc MakeBloomDesc() {
 	d.intensity = BLOOM_INTENSITY;
 	d.upsampleRadius = BLOOM_UPSAMPLE_RADIUS;
 	d.name = "bloom";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
+// Tonemap config (program + pass live in Engine/Rendergraph/tonemap.h)
+// -----------------------------------------------------------------------------
+static constexpr float TONEMAP_EXPOSURE = 0.02f;
+static constexpr uint32_t TONEMAP_MODE = 1; // 0=Reinhard, 1=ACES, 2=Uncharted2
+
+static smvk::TonemapDesc MakeTonemapDesc() {
+	smvk::TonemapDesc d{};
+	d.exposure = TONEMAP_EXPOSURE;
+	d.tonemapMode = TONEMAP_MODE;
+	d.name = "Tonemap";
+	return d;
+}
+
+static smvk::CascadedShadowMapDesc MakeShadowDesc() {
+	smvk::CascadedShadowMapDesc d{};
+	d.cascadeCount = NUM_CASCADES;
+	d.cascadeResolution = CASCADE_RES;
+	d.format = SHADOW_FORMAT;
+	d.lambda = CASCADE_LAMBDA;
+	d.zPadding = CASCADE_Z_PADDING;
+	d.name = "shadowMapAtlas";
 	return d;
 }
 
@@ -94,33 +121,18 @@ struct AppResources {
 	smvk::Holder<smvk::BufferHandle> directionalCascadeBuffer; // GpuDirectionalLightDescription per frame
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
-	smvk::Holder<smvk::ShaderModuleHandle> shadowVert;
-	smvk::Holder<smvk::ShaderModuleHandle> tonemapVert;
-	smvk::Holder<smvk::ShaderModuleHandle> tonemapFrag;
-	smvk::Holder<smvk::ShaderModuleHandle> bloomDownFrag;
-	smvk::Holder<smvk::ShaderModuleHandle> bloomUpFrag;
 	smvk::ShaderProgram mainProgram;
-	smvk::ShaderProgram shadowProgram;
-	smvk::ShaderProgram tonemapProgram;
-	smvk::ShaderProgram bloomDownProgram;
-	smvk::ShaderProgram bloomUpProgram;
-};
-
-struct HdrResources {
-	smvk::Holder<smvk::ImageHandle> image;
-	smvk::Holder<smvk::ImageViewHandle> view;
-	smvk::Holder<smvk::BindlessImageHandle> bindless;
-	uint32_t bindlessIndex = UINT32_MAX;
-	smvk::LogicalImageViewHandle logicalView;
-	smvk::Extent2D extent{0,0};
+	// NOTE: shadow/bloom/tonemap programs + modules are owned by their
+	// engine builders (CascadedShadowAtlas / BloomChain / Tonemapper).
 };
 
 struct ViewportResources {
-	smvk::CascadedShadowAtlas directionalShadows; // cascade atlas builder (image + views + bindless + logical)
-	smvk::BloomChain bloom; // separated per-mip HDR chain (MipBuilder) + down/up passes
+	smvk::CascadedShadowAtlas directionalShadows; // atlas + default shadow program + Ensure
+	smvk::BloomChain bloom; // separated per-mip HDR chain + default down/up programs + Ensure
+	smvk::Tonemapper tonemap; // default tonemap program + pass helper
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
 	smvk::LogicalImageViewHandle depthView;
-	HdrResources hdr;
+	smvk::HdrTarget hdr; // HDR intermediate (image + view + bindless + logical) + Ensure
 };
 
 
@@ -129,8 +141,6 @@ class TestApp : public smvk::AppImpl {
 private:
 	void UpdateCamera(float dt);
 	void SetUIMode(bool ui);
-	void EnsureHdrResources();
-	void EnsureBloomResources();
 	bool m_uiMode = false;
 	//
 
@@ -184,14 +194,12 @@ private:
 			"directional cascade buffer"
 		);
 
-		// Main ShaderProgram
+		// Main ShaderProgram (scene-owned; shadow/bloom/tonemap programs live
+		// in their engine builders with defaults + Ensure).
 		auto vertCode = readFile("content/shaders/default.vert.hlsl.spv");
 		auto fragCode = readFile("content/shaders/default.frag.hlsl.spv");
 		m_resources.vertShader = m_context->CreateShaderModule(vertCode, "vert");
 		m_resources.fragShader = m_context->CreateShaderModule(fragCode, "frag");
-
-		auto shadowVertCode = readFile("content/shaders/shadow.vert.hlsl.spv");
-		m_resources.shadowVert = m_context->CreateShaderModule(shadowVertCode, "shadowVert");
 
 		auto vert = smvk::Shader{
 			.module = m_resources.vertShader,
@@ -207,36 +215,6 @@ private:
 			.shaders = {vert, frag},
 			.shaderCount = 2
 		};
-
-		//
-		auto shadowVert = smvk::Shader{
-			.module = m_resources.shadowVert,
-			.entryPoint = "mainVS",
-			.stage = smvk::ShaderStage::Vertex
-		};
-		m_resources.shadowProgram = {
-			.shaders = {shadowVert},
-			.shaderCount = 1
-		};
-
-		// Tonemapper (fullscreen triangle HDR -> LDR)
-		auto tonemapVertCode = readFile("content/shaders/tonemap.vert.hlsl.spv");
-		auto tonemapFragCode = readFile("content/shaders/tonemap.frag.hlsl.spv");
-		m_resources.tonemapVert = m_context->CreateShaderModule(tonemapVertCode, "tonemapVert");
-		m_resources.tonemapFrag = m_context->CreateShaderModule(tonemapFragCode, "tonemapFrag");
-		auto tonemapVS = smvk::Shader{ .module = m_resources.tonemapVert, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-		auto tonemapPS = smvk::Shader{ .module = m_resources.tonemapFrag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-		m_resources.tonemapProgram = { .shaders = { tonemapVS, tonemapPS }, .shaderCount = 2 };
-
-		// Bloom (fullscreen triangle VS reused from tonemap + down/up PS).
-		auto bloomDownCode = readFile("content/shaders/bloom_down.frag.hlsl.spv");
-		auto bloomUpCode = readFile("content/shaders/bloom_up.frag.hlsl.spv");
-		m_resources.bloomDownFrag = m_context->CreateShaderModule(bloomDownCode, "bloomDownFrag");
-		m_resources.bloomUpFrag = m_context->CreateShaderModule(bloomUpCode, "bloomUpFrag");
-		auto bloomDownPS = smvk::Shader{ .module = m_resources.bloomDownFrag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-		auto bloomUpPS = smvk::Shader{ .module = m_resources.bloomUpFrag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
-		m_resources.bloomDownProgram = { .shaders = { tonemapVS, bloomDownPS }, .shaderCount = 2 };
-		m_resources.bloomUpProgram = { .shaders = { tonemapVS, bloomUpPS }, .shaderCount = 2 };
 
 		smvk::AllocateStaticVertexFmt(*m_context); // dont like this
 
@@ -269,21 +247,28 @@ private:
 			"depth"
 		);
 
-		// Directional cascade atlas via engine builder (ports previous inline code).
-		smvk::CascadedShadowMapDesc shadowDesc{};
-		shadowDesc.cascadeCount = NUM_CASCADES;
-		shadowDesc.cascadeResolution = CASCADE_RES;
-		shadowDesc.format = SHADOW_FORMAT;
-		shadowDesc.lambda = CASCADE_LAMBDA;
-		shadowDesc.zPadding = CASCADE_Z_PADDING;
-		shadowDesc.name = "shadowMapAtlas";
-		if (!m_viewportResources.directionalShadows.Create(*m_context, *m_rendergraph, shadowDesc)) {
+		// Directional cascade atlas + default shadow program (builder owns Ensure).
+		if (!m_viewportResources.directionalShadows.Ensure(*m_context, *m_rendergraph, MakeShadowDesc())) {
 			std::cerr << "[TestApp] Failed to create cascaded shadow atlas\n";
 			return false;
 		}
+		if (!m_viewportResources.tonemap.Ensure(*m_context, MakeTonemapDesc())) {
+			std::cerr << "[TestApp] Failed to create tonemap program\n";
+			return false;
+		}
 
-		EnsureHdrResources();
-		EnsureBloomResources();
+		{
+			auto vkExt = m_swapchain->GetExtent();
+			const smvk::Extent2D extent{ vkExt.width, vkExt.height };
+			if (!m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, extent)) {
+				std::cerr << "[TestApp] Failed to create HDR target\n";
+				return false;
+			}
+			if (!m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, extent, MakeBloomDesc())) {
+				std::cerr << "[TestApp] Bloom chain unavailable (HDR "
+					<< extent.width << "x" << extent.height << ")\n";
+			}
+		}
 
 		// ImGui overlay – init after swapchain/rendergraph are ready.
 		// Uses dynamic rendering; no external RenderPass needed.
@@ -302,6 +287,8 @@ private:
 		// Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
 		WaitForDeviceIdle();
 		m_viewportResources.bloom.Destroy(*m_rendergraph);
+		m_viewportResources.directionalShadows.Destroy(*m_rendergraph);
+		m_viewportResources.hdr.Destroy(*m_rendergraph);
 		if (m_imgui) {
 			m_imgui->Shutdown();
 			m_imgui.reset();
@@ -339,7 +326,7 @@ private:
 		// Linear exposure multiplier for tonemapper (ACES). 1.0 = no extra exposure;
 		// raise for brighter HDR (e.g. sun 50k lux → exposure 0.02 to fit LDR).
 		// Kept at 1.0 for now – tonemap exposure push is used instead.
-		data.exposure = 1.0f;
+		data.exposure = 0.02f;
 
 		m_context->UploadDataToBuffer(
 			m_resources.frameUniforms,
@@ -372,7 +359,7 @@ private:
 		light.direction[0] = lightDir.x;
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
-		light.intensity = 1.0f;
+		light.intensity = 5000.0f;
 		light.shadow_map_index =
 			m_context->GetBindlessIndex(
 				m_viewportResources.directionalShadows.bindless
@@ -466,8 +453,10 @@ private:
 				)
 			);
 		}
-		EnsureHdrResources();
-		EnsureBloomResources();
+		auto vkExt = m_swapchain->GetExtent();
+		const smvk::Extent2D extent{ vkExt.width, vkExt.height };
+		m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, extent);
+		m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, extent, MakeBloomDesc());
 	}
 
 	void DrawFrame() {
@@ -486,8 +475,12 @@ private:
 	void RenderFrame(smvk::Framebuffer fb) {
 
 		m_rendergraph->NewFrame();
-		EnsureHdrResources();
-		EnsureBloomResources();
+		{
+			auto vkExt = m_swapchain->GetExtent();
+			const smvk::Extent2D extent{ vkExt.width, vkExt.height };
+			m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, extent);
+			m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, extent, MakeBloomDesc());
+		}
 		m_context->UpdateDescriptors();
 		UpdateFrameUniforms(fb.frameIndex);
 		UpdateLights(fb.frameIndex);
@@ -555,7 +548,7 @@ private:
 					.SetRecordingFunc([this, cascadePC](smvk::CommandBuffer& cmd)
 				{
 					cmd.BindRenderPipeline(
-						m_resources.shadowProgram,
+						m_viewportResources.directionalShadows.program,
 						smvk::VertexFormat::StaticVertexFormat,
 						smvk::DepthSettings{
 							.depthFunc = smvk::CompareOp::LessEqual,
@@ -710,59 +703,38 @@ private:
 			.maxAnisotropy = 1.0f
 		});
 		if (m_viewportResources.bloom.Valid()) {
+			// Default down/up programs owned by BloomChain (Ensure internalized).
 			m_viewportResources.bloom.AddBloomPasses(
 				*m_rendergraph,
-				m_resources.bloomDownProgram,
-				m_resources.bloomUpProgram,
 				m_viewportResources.hdr.logicalView,
 				m_viewportResources.hdr.bindlessIndex,
 				linearSampler);
 		}
 
 		// ---------------------------------------------------------------------
-		// Tonemapper – HDR (RGBA16F) → LDR swapchain (ACES / Reinhard)
+		// Tonemapper – HDR (RGBA16F) → LDR swapchain (see tonemap.h)
 		// ---------------------------------------------------------------------
 		{
-			// Must match tonemap.frag.hlsl TonemapPush (32 bytes).
-			struct TonemapPush {
-				uint32_t hdrTextureIndex; uint32_t samplerIndex;
-				float exposure; uint32_t tonemapMode;
-				uint32_t bloomTextureIndex; float bloomIntensity;
-				uint32_t pad0; uint32_t pad1;
-			};
-			static_assert(sizeof(TonemapPush) == 32);
 			const bool bloomOn = m_viewportResources.bloom.Valid();
-			TonemapPush tp{
-				.hdrTextureIndex = m_viewportResources.hdr.bindlessIndex,
-				.samplerIndex = linearSampler,
-				.exposure = 1.0f, // FrameUniforms.exposure could be used (pow2)
-				.tonemapMode = 1,  // 0=Reinhard, 1=ACES, 2=Uncharted2
-				.bloomTextureIndex = bloomOn ? m_viewportResources.bloom.MipBindless(0) : UINT32_MAX,
-				.bloomIntensity = bloomOn ? m_viewportResources.bloom.desc.intensity : 0.0f,
-				.pad0 = 0, .pad1 = 0
-			};
-			std::vector<smvk::LogicalImageViewHandle> tonemapInputs;
-			tonemapInputs.push_back(m_viewportResources.hdr.logicalView);
-			if (bloomOn)
-				tonemapInputs.push_back(m_viewportResources.bloom.MipView(0));
-			auto& tonemapPass = m_rendergraph->AddPass("Tonemap")
-				.SetOffset(0, 0)
-				.SetExtent({ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height })
-				.SetInputImages(tonemapInputs)
-				.SetColor(colors, smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store, smvk::ClearColor(0,0,0,1))
-				.SetRecordingFunc([this, tp](smvk::CommandBuffer& cmd){
-					cmd.BindRenderPipeline(
-						m_resources.tonemapProgram,
-						smvk::VertexFormat::Empty,
-						smvk::DepthSettings::Disabled(),
-						smvk::StencilSettings::DefaultDisabled(),
-						smvk::BlendSettings::Opaque(),
-						smvk::MSAASettings::Count1(),
-						smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
-					);
-					cmd.PushConstants(0, sizeof(TonemapPush), &tp, smvk::ShaderStage::All);
-					cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-				});
+			smvk::LogicalImageViewHandle bloomView{};
+			uint32_t bloomBindless = UINT32_MAX;
+			float bloomIntensity = 0.0f;
+			if (bloomOn) {
+				bloomView = m_viewportResources.bloom.MipView(0);
+				bloomBindless = m_viewportResources.bloom.MipBindless(0);
+				bloomIntensity = m_viewportResources.bloom.desc.intensity;
+			}
+			auto& tonemapPass = m_viewportResources.tonemap.AddTonemapPass(
+				*m_rendergraph,
+				m_viewportResources.hdr.logicalView,
+				m_viewportResources.hdr.bindlessIndex,
+				bloomView,
+				bloomBindless,
+				bloomIntensity,
+				linearSampler,
+				colors,
+				{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height },
+				"Tonemap");
 			(void)tonemapPass;
 		}
 
@@ -846,52 +818,6 @@ private:
 	);
 	Camera m_camera = Camera(m_cameraPositioner);
 };
-
-void TestApp::EnsureHdrResources() {
-	auto vkExt = m_swapchain->GetExtent();
-	smvk::Extent2D extent{ vkExt.width, vkExt.height };
-	auto& hdr = m_viewportResources.hdr;
-	if (!hdr.image.empty() && hdr.extent.width == extent.width && hdr.extent.height == extent.height)
-		return;
-	if (!hdr.logicalView.empty()) {
-		m_rendergraph->FreeImageView(hdr.logicalView);
-		hdr.logicalView = {};
-	}
-	hdr.bindless = {};
-	hdr.view = {};
-	hdr.image = {};
-
-	smvk::ImageCreateInfo ci{};
-	ci.extent = { extent.width, extent.height, 1 };
-	ci.format = smvk::Format::RGBA16_Float;
-	ci.usage = smvk::ImageUsage::ColorAttachment | smvk::ImageUsage::Sampled;
-	ci.mipLevels = 1;
-	ci.arrayLayers = 1;
-	ci.name = "hdr";
-
-	hdr.image = m_context->CreateImage(ci, nullptr);
-	smvk::ImageViewCreateInfo vci{};
-	vci.viewType = smvk::ImageViewType::View2D;
-	vci.format = smvk::Format::Undefined;
-	vci.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 };
-	vci.name = "hdrView";
-	hdr.view = m_context->CreateImageView(hdr.image, vci);
-	hdr.bindless = m_context->CreateBindlessImage(hdr.view, smvk::ImageLayout::ShaderReadOnlyOptimal);
-	hdr.bindlessIndex = m_context->GetBindlessIndex(hdr.bindless);
-	hdr.extent = extent;
-	hdr.logicalView = m_rendergraph->AddExternalImageView(hdr.view, smvk::Format::RGBA16_Float, "hdrLogical");
-	m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{});
-}
-
-void TestApp::EnsureBloomResources() {
-	auto vkExt = m_swapchain->GetExtent();
-	smvk::Extent2D hdrExtent{ vkExt.width, vkExt.height };
-	// Bloom tracks the HDR target; Ensure() recreates only on size/desc drift.
-	if (!m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, hdrExtent, MakeBloomDesc())) {
-		std::cerr << "[TestApp] Bloom chain unavailable (HDR "
-			<< hdrExtent.width << "x" << hdrExtent.height << ")\n";
-	}
-}
 
 void TestApp::UpdateCamera(float dt)
 {

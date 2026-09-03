@@ -22,15 +22,16 @@
 //
 // Usage (app/src/main.cpp):
 //   smvk::BloomChain bloom;
-//   bloom.Ensure(ctx, rg, hdrExtent, desc);          // create / resize
-//   bloom.AddBloomPasses(rg, downProg, upProg,       // down + up passes
-//                        hdrLogical, hdrBindless, linearSampler);
+//   bloom.Ensure(ctx, rg, hdrExtent, desc);   // resources + default programs
+//   bloom.AddBloomPasses(rg, hdrLogical, hdrBindless, linearSampler);
 //   tonemap samples bloom.MipBindless(0) as bloomTexture.
 
 #include <Engine/Rendergraph/mipchain.h>
+#include <Engine/platform.h>
 
 #include <cassert>
 #include <cstdint>
+#include <string>
 
 namespace smvk {
 
@@ -71,12 +72,29 @@ struct BloomUpPush {
 };
 static_assert(sizeof(BloomUpPush) == 32);
 
+// Default SPVs (fullscreen-triangle VS shared with tonemap + down/up PS).
+inline constexpr const char* kBloomFullscreenVsPath = "content/shaders/tonemap.vert.hlsl.spv";
+inline constexpr const char* kBloomDownPsPath = "content/shaders/bloom_down.frag.hlsl.spv";
+inline constexpr const char* kBloomUpPsPath = "content/shaders/bloom_up.frag.hlsl.spv";
+
 struct BloomChain {
 	MipBuilder::BuiltChain chain{};
 	BloomDesc desc{};
 	Extent2D hdrExtent{ 0, 0 };
 
+	// Default programs (fullscreen VS + down/up PS). Created by
+	// EnsureShaders/Create/Ensure so apps don't own bloom modules.
+	Holder<ShaderModuleHandle> vsModule;
+	Holder<ShaderModuleHandle> downFragModule;
+	Holder<ShaderModuleHandle> upFragModule;
+	ShaderProgram downProgram{};
+	ShaderProgram upProgram{};
+
 	[[nodiscard]] bool Valid() const { return chain.Valid(); }
+	[[nodiscard]] bool ShadersValid() const {
+		return downProgram.shaderCount != 0 && upProgram.shaderCount != 0 &&
+			!vsModule.empty() && !downFragModule.empty() && !upFragModule.empty();
+	}
 	[[nodiscard]] uint32_t MipCount() const { return chain.MipCount(); }
 
 	[[nodiscard]] Extent2D MipExtent(uint32_t i) const {
@@ -100,7 +118,49 @@ struct BloomChain {
 		};
 	}
 
-	bool Create(ResourceManager& ctx, RenderGraph& rg, Extent2D hdr, const BloomDesc& d) {
+	// Idempotent default program creation (fullscreen VS + down/up PS).
+	// Returns true when both programs are ready afterwards.
+	bool EnsureShaders(ResourceManager& ctx,
+		const char* vsPath = kBloomFullscreenVsPath,
+		const char* downPath = kBloomDownPsPath,
+		const char* upPath = kBloomUpPsPath) {
+		if (ShadersValid())
+			return true;
+		try {
+			const std::string vs = vsPath ? vsPath : kBloomFullscreenVsPath;
+			const std::string down = downPath ? downPath : kBloomDownPsPath;
+			const std::string up = upPath ? upPath : kBloomUpPsPath;
+			if (vsModule.empty())
+				vsModule = ctx.CreateShaderModule(readFile(vs), "bloomFullscreenVS");
+			if (downFragModule.empty())
+				downFragModule = ctx.CreateShaderModule(readFile(down), "bloomDownFrag");
+			if (upFragModule.empty())
+				upFragModule = ctx.CreateShaderModule(readFile(up), "bloomUpFrag");
+		} catch (...) {
+			return false;
+		}
+		if (vsModule.empty() || downFragModule.empty() || upFragModule.empty())
+			return false;
+		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
+		Shader downPS{ .module = downFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+		Shader upPS{ .module = upFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+		downProgram = { .shaders = { vs, downPS }, .shaderCount = 2 };
+		upProgram = { .shaders = { vs, upPS }, .shaderCount = 2 };
+		return true;
+	}
+
+	void DestroyShaders() {
+		downProgram = ShaderProgram{};
+		upProgram = ShaderProgram{};
+		vsModule = {};
+		downFragModule = {};
+		upFragModule = {};
+	}
+
+	bool Create(ResourceManager& ctx, RenderGraph& rg, Extent2D hdr, const BloomDesc& d,
+		const char* vsPath = kBloomFullscreenVsPath,
+		const char* downPath = kBloomDownPsPath,
+		const char* upPath = kBloomUpPsPath) {
 		if (hdr.width == 0 || hdr.height == 0 || d.mipCount == 0)
 			return false;
 		Destroy(rg);
@@ -114,7 +174,7 @@ struct BloomChain {
 		chain = std::move(built);
 		desc = d;
 		hdrExtent = hdr;
-		return true;
+		return EnsureShaders(ctx, vsPath, downPath, upPath);
 	}
 
 	void Destroy(RenderGraph& rg) {
@@ -123,8 +183,11 @@ struct BloomChain {
 	}
 
 	// Recreate only when hdr extent / mipCount / format / divisor drift.
-	// Returns true when the chain is valid afterwards.
-	bool Ensure(ResourceManager& ctx, RenderGraph& rg, Extent2D hdr, const BloomDesc& d) {
+	// Also internalizes EnsureShaders – one call keeps resources + programs valid.
+	bool Ensure(ResourceManager& ctx, RenderGraph& rg, Extent2D hdr, const BloomDesc& d,
+		const char* vsPath = kBloomFullscreenVsPath,
+		const char* downPath = kBloomDownPsPath,
+		const char* upPath = kBloomUpPsPath) {
 		const Extent2D wantBase = BaseExtentFor(hdr, d.baseDivisor);
 		if (Valid() &&
 			hdrExtent.width == hdr.width && hdrExtent.height == hdr.height &&
@@ -132,9 +195,9 @@ struct BloomChain {
 			chain.baseExtent.width == wantBase.width &&
 			chain.baseExtent.height == wantBase.height) {
 			desc = d; // live-update threshold/intensity without realloc
-			return true;
+			return EnsureShaders(ctx, vsPath, downPath, upPath);
 		}
-		return Create(ctx, rg, hdr, d);
+		return Create(ctx, rg, hdr, d, vsPath, downPath, upPath);
 	}
 
 	// ---- Low-level pass shells (caller sets the recording func) ----
@@ -170,9 +233,8 @@ struct BloomChain {
 	}
 
 	// ---- One-call helper: emits down chain + up chain with recordings ----
-	// downProg/upProg must use fullscreen-triangle VS (e.g. tonemap.vert)
-	// + bloom_down / bloom_up PS. Captures only copyable handles/indices,
-	// so the returned passes are safe once this call returns.
+	// Explicit-program overload (custom VS/PS). Captures only copyable
+	// handles/indices, so the returned passes are safe once this returns.
 	void AddBloomPasses(RenderGraph& rg,
 		ShaderProgram& downProg,
 		ShaderProgram& upProg,
@@ -247,6 +309,20 @@ struct BloomChain {
 				cmd.Draw(3, 1, 0, 0);
 			});
 		}
+	}
+
+	// Default overload: uses the internal downProgram/upProgram created by
+	// EnsureShaders/Create/Ensure. Asserts when shaders aren't ready.
+	void AddBloomPasses(RenderGraph& rg,
+		LogicalImageViewHandle hdrView,
+		uint32_t hdrBindlessIndex,
+		uint32_t linearSamplerIndex) const {
+		assert(ShadersValid());
+		// const_cast is safe: explicit overload only copies the programs.
+		AddBloomPasses(rg,
+			const_cast<ShaderProgram&>(downProgram),
+			const_cast<ShaderProgram&>(upProgram),
+			hdrView, hdrBindlessIndex, linearSamplerIndex);
 	}
 };
 
