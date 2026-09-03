@@ -24,6 +24,7 @@
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/swapchain.h>
 #include <Engine/App/world.h>
+#include <Engine/Profile/profile.h>
 using smvk::VulkanResourceManager;
 using smvk::VulkanSwapchain;
 using smvk::VulkanFrameBuffer;
@@ -1761,6 +1762,9 @@ bool smvk::VulkanCore::Init() {
 			if (q2.transferFamily) vkGetDeviceQueue(device_, q2.transferFamily.value(), 0, &transferQueue_);
 			else transferQueue_ = graphicsQueue_;
 		}
+
+		// Optick GPU timelines need the device + graphics queue + volk dispatch.
+		smvk::profiler::InitVulkanGPU();
 	};
 
 	return true;
@@ -1773,6 +1777,7 @@ inline smvk::VulkanCore::~VulkanCore() {
 			fprintf(stderr, "[Vulkan Warning] vkDeviceWaitIdle returned VK_ERROR_DEVICE_LOST during ~VulkanCore, proceeding with teardown\n");
 		}
 	}
+	smvk::profiler::Shutdown();
 	if (device_ != VK_NULL_HANDLE) {
 		std::lock_guard<std::mutex> lock(g_allPoolsMutex);
 		for (auto& [key, pools] : g_allPools) {
@@ -2023,7 +2028,11 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 
 	destroy(this, m_nilTexture);
 
-	ProcessDeferrredTasks();
+	// Flush, not Process: queued tasks may reference the swapchain timeline
+	// semaphore, which ~VulkanSwapchain already destroyed (member order).
+	// The device is idle, so every retire point is trivially satisfied and no
+	// readiness query (which would touch the dead semaphore) may run.
+	FlushDeferredTasks();
 	// StaticVertexFmt
 	destroy(this, staticVertexFmtHeap.m_staticVertexPosBuffer);
 	destroy(this, staticVertexFmtHeap.m_staticVertexShadingBuffer);
@@ -2038,6 +2047,11 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	}
 	//
 	if (m_streamer) { m_streamer->waitAll(); m_streamer->destroy(); m_streamer.reset(); }
+	// Unconditional drain: resources freed during Shutdown (after the last
+	// ProcessDeferrredTasks) plus the static buffers below must still be
+	// released. Device is idle, and Flush never queries semaphores, so this is
+	// safe even though the swapchain timeline is already gone (member order).
+	FlushDeferredTasks();
 	if (m_transferSubmitter && m_transferSubmitter != m_submitter) { delete m_transferSubmitter; }
 	m_transferSubmitter = nullptr;
 	delete m_submitter;
@@ -4551,6 +4565,31 @@ void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 	}
 	m_deferredTasks.erase(m_deferredTasks.begin(), it);
 }
+void smvk::VulkanResourceManager::FlushDeferredTasks()
+{
+	// Unconditional: caller guarantees the device is idle (or lost/teardown),
+	// so every retire point is trivially satisfied. Never queries semaphores,
+	// which matters because the timeline semaphore may already be destroyed
+	// (member teardown order: swapchain before context).
+	for (auto& t : m_deferredTasks) t.task_();
+	m_deferredTasks.clear();
+}
+void smvk::VulkanResourceManager::NotifyGraphicsSubmit(VkSemaphore semaphore, uint64_t value)
+{
+	m_lastGraphicsSemaphore = semaphore;
+	m_lastGraphicsValue = value;
+}
+void smvk::VulkanResourceManager::DeferDestroy(std::packaged_task<void()>&& task)
+{
+	// No graphics submit ever recorded -> nothing can be in flight.
+	if (m_lastGraphicsSemaphore == VK_NULL_HANDLE || m_lastGraphicsValue == 0) {
+		task();
+		return;
+	}
+	// Retire values are monotonic, so FIFO prefix-drain in
+	// ProcessDeferrredTasks stays correct.
+	AddDeferredTask(std::move(task), TimelinePoint{ m_lastGraphicsSemaphore, m_lastGraphicsValue });
+}
 void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 {
 	if (!(m_needToUpdateTextures || m_needToUpdateSamplers))
@@ -4814,12 +4853,20 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::TextureHandle handle)
 
 	ctx->textures_.destroy(handle);
 }
-void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BufferHandle handle) {
-	if (handle.empty()) { return; };
-	smvk::Buffer db = *ctx->buffers_.get(handle);
+namespace smvk { namespace {
+void DestroyBufferNow(VulkanResourceManager* ctx, BufferHandle handle) {
+	Buffer db = *ctx->buffers_.get(handle);
 	ctx->RemoveBufferSyncState(handle);
 	vmaDestroyBuffer(ctx->m_allocator, db.vkBuffer, db.vma_alloc);
 	ctx->buffers_.destroy(handle);
+}
+} } // namespace smvk::<anonymous>
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BufferHandle handle) {
+	if (handle.empty()) { return; };
+	// Buffers are referenced by in-flight draws/indirect args; retire on the
+	// graphics timeline instead of destroying under the GPU.
+	std::packaged_task<void()> task([ctx, handle] { DestroyBufferNow(ctx, handle); });
+	ctx->DeferDestroy(std::move(task));
 }
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ShaderModuleHandle handle) {
 	if (handle.empty()) { return; };
@@ -4827,16 +4874,16 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ShaderModuleHandle ha
 	vkDestroyShaderModule(device_, *sm, NULL);
 	ctx->shaderModules_.destroy(handle);
 }
-void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageHandle handle)
+namespace smvk { namespace {
+void DestroyImageNow(VulkanResourceManager* ctx, ImageHandle handle)
 {
-	if (handle.empty())
-		return;
-
 	ctx->RemoveImageSyncState(handle);
 	auto* image = ctx->images_.get(handle);
 	assert(image);
 
-	// ImageViews must be destroyed first.
+	// ImageViews must be destroyed first. Holds because view teardown is
+	// always queued before image teardown with the same retire point and the
+	// queue drains FIFO (see destroy(TextureHandle), FreeBlurTarget, etc.).
 	assert(
 		image->liveViewCount == 0 &&
 		"Destroying Image while ImageViews still reference it"
@@ -4854,11 +4901,8 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageHandle handle)
 
 	ctx->images_.destroy(handle);
 }
-void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageViewHandle handle)
+void DestroyImageViewNow(smvk::VulkanResourceManager* ctx, smvk::ImageViewHandle handle)
 {
-	if (handle.empty())
-		return;
-
 	auto* view = ctx->imageViews_.get(handle);
 	assert(view);
 
@@ -4885,6 +4929,26 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageViewHandle handl
 	}
 
 	ctx->imageViews_.destroy(handle);
+}
+} } // namespace smvk::<anonymous>
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageHandle handle)
+{
+	if (handle.empty())
+		return;
+	// Images are referenced by in-flight command buffers (attachments and
+	// descriptors). vkDestroyImage while in use is VUID-vkDestroyImage-01000
+	// and ends in DEVICE_LOST; retire on the graphics timeline instead.
+	// Pool slot stays occupied until retirement, so no aliasing in between.
+	std::packaged_task<void()> task([ctx, handle] { DestroyImageNow(ctx, handle); });
+	ctx->DeferDestroy(std::move(task));
+}
+void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ImageViewHandle handle)
+{
+	if (handle.empty())
+		return;
+	// Same use-after-free class as images (descriptors reference the view).
+	std::packaged_task<void()> task([ctx, handle] { DestroyImageViewNow(ctx, handle); });
+	ctx->DeferDestroy(std::move(task));
 }
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::SamplerHandle handle) {
 	if (handle.empty()) { return; };
@@ -5540,6 +5604,11 @@ void smvk::VulkanSwapchain::Recreate() {
 	extent_.height = height;
 
 	vkDeviceWaitIdle(device_);
+	// Idle => every retire point is satisfied; run queued destroys now so no
+	// task can outlive objects Recreate is about to touch. (The graphics
+	// timeline semaphore itself survives Recreate, but flushing here keeps the
+	// invariant "no pending retire across Recreate" regardless.)
+	ctx_.FlushDeferredTasks();
 
 	CleanupSwapchain(false);
 
@@ -5828,6 +5897,10 @@ inline void smvk::VulkanSwapchain::DestroySyncObjects() {
 		vkDestroySemaphore(device_, timelineSemaphore_, nullptr);
 		timelineSemaphore_ = VK_NULL_HANDLE;
 		timelineValue_ = 0;
+		// The stored retirement point dies with the semaphore. Null it so
+		// later destroys run immediately instead of keying tasks on a dead
+		// semaphore (only called from ~VulkanSwapchain, which waited idle).
+		ctx_.NotifyGraphicsSubmit(VK_NULL_HANDLE, 0);
 	}
 }
 inline void smvk::VulkanSwapchain::CleanupSwapchain(bool fullDestroy) {
@@ -5856,6 +5929,7 @@ inline void smvk::VulkanSwapchain::CleanupSwapchain(bool fullDestroy) {
 }
 smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 {
+	SMVK_PROFILE_SCOPE_COLOR("AcquireFramebuffer", Optick::Color::SteelBlue);
 	uint64_t waitVal = frameTimelineValues_[currentFrame_];
 	if (waitVal != 0) {
 		VkSemaphoreWaitInfo waitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, nullptr, 0, 1, &timelineSemaphore_, &waitVal };
@@ -5921,6 +5995,7 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 }
 void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 {
+	SMVK_PROFILE_SCOPE_COLOR("Present", Optick::Color::SteelBlue);
 	ImageBarrier(
 		fb.commandBuffer,
 		GetCurrentImage(),
@@ -5971,6 +6046,10 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 		if (&mg == &mp) {
 			lockG.lock();
 			VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
+			// Publish the retirement point for deferred destroys: any resource
+			// freed from here on retires once this submit (and all before it)
+			// has completed.
+			ctx_.NotifyGraphicsSubmit(timelineSemaphore_, timelineValue_);
 			VkPresentInfoKHR presentInfo{};
 			presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 			presentInfo.waitSemaphoreCount = 1;
@@ -5995,6 +6074,8 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			{
 				std::lock_guard<std::mutex> lock(mg);
 				VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
+				// Same retirement publish as the single-mutex path above.
+				ctx_.NotifyGraphicsSubmit(timelineSemaphore_, timelineValue_);
 			}
 			{
 				std::lock_guard<std::mutex> lock(mp);

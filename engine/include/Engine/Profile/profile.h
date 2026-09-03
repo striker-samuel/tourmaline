@@ -1,0 +1,111 @@
+#pragma once
+// Central Optick integration for VulkanToy.
+//
+// Usage (CPU):
+//   void Foo() { SMVK_PROFILE_FUNCTION(); ... }                       // auto name, default color
+//   { SMVK_PROFILE_SCOPE_COLOR("ShadowPass", Optick::Color::Orange); } // custom color
+//   { SMVK_PROFILE_CATEGORY("UpdateCamera", Optick::Category::GameLogic); }
+//
+// Usage (frame):
+//   while (...) { SMVK_PROFILE_FRAME("MainThread"); ... }
+//
+// Usage (GPU, inside RenderGraph::Execute where a VkCommandBuffer is live):
+//   SMVK_PROFILE_GPU_CONTEXT(cmd);
+//   { SMVK_PROFILE_GPU_EVENT("Main"); ... }
+//
+// When Optick is disabled (ENABLE_OPTICK=OFF -> USE_OPTICK=0) every OPTICK_*
+// macro below compiles to a no-op, so these wrappers stay zero-cost.
+#include <optick.h>
+
+// ---------------------------------------------------------------------------
+// CPU
+// ---------------------------------------------------------------------------
+// Per-frame marker. Call once at the top of the main loop.
+#define SMVK_PROFILE_FRAME(NAME) OPTICK_FRAME(NAME)
+
+// Function scope with automatic (__FUNCSIG__/__PRETTY_FUNCTION__) name.
+#define SMVK_PROFILE_FUNCTION() OPTICK_EVENT()
+
+// Named CPU scope, default color.
+#define SMVK_PROFILE_SCOPE(NAME) OPTICK_EVENT(NAME)
+
+// Named CPU scope with explicit Optick::Color (e.g. Optick::Color::OrangeRed).
+// Encodes the color through a Rendering-filter category so the timeline shows it.
+#if USE_OPTICK
+#define SMVK_PROFILE_SCOPE_COLOR(NAME, COLOR) \
+    OPTICK_EVENT(NAME, OPTICK_MAKE_CATEGORY(Optick::Filter::Rendering, COLOR))
+#else
+#define SMVK_PROFILE_SCOPE_COLOR(NAME, COLOR) OPTICK_EVENT(NAME)
+#endif
+
+// Named scope with a predefined Optick::Category (carries its own color).
+// e.g. Optick::Category::Rendering / GameLogic / IO / Streaming / UI / ...
+#if USE_OPTICK
+#define SMVK_PROFILE_CATEGORY(NAME, CATEGORY) OPTICK_CATEGORY(NAME, CATEGORY)
+#else
+#define SMVK_PROFILE_CATEGORY(NAME, CATEGORY) OPTICK_EVENT(NAME)
+#endif
+
+// Dynamic (run-time string) scope, for quick prototyping.
+#define SMVK_PROFILE_SCOPE_DYNAMIC(NAME) OPTICK_EVENT_DYNAMIC(NAME)
+
+// Attach a tag (int/float/string/...) to the current scope.
+#define SMVK_PROFILE_TAG(NAME, ...) OPTICK_TAG(NAME, __VA_ARGS__)
+
+// Name the current thread in the profiler timeline.
+#define SMVK_PROFILE_THREAD(NAME) OPTICK_THREAD(NAME)
+
+// ---------------------------------------------------------------------------
+// GPU (Vulkan)
+// ---------------------------------------------------------------------------
+#define SMVK_PROFILE_GPU_CONTEXT(CMD_BUFFER) OPTICK_GPU_CONTEXT(CMD_BUFFER)
+#define SMVK_PROFILE_GPU_EVENT(NAME) OPTICK_GPU_EVENT(NAME)
+#define SMVK_PROFILE_GPU_FLIP(SWAPCHAIN) OPTICK_GPU_FLIP(SWAPCHAIN)
+
+// ---------------------------------------------------------------------------
+// Color-coded shortcuts for hot engine systems
+// ---------------------------------------------------------------------------
+#define SMVK_PROFILE_RENDER(NAME)  SMVK_PROFILE_CATEGORY(NAME, Optick::Category::Rendering)
+#define SMVK_PROFILE_SCENE(NAME)   SMVK_PROFILE_CATEGORY(NAME, Optick::Category::Scene)
+#define SMVK_PROFILE_IO(NAME)      SMVK_PROFILE_CATEGORY(NAME, Optick::Category::IO)
+#define SMVK_PROFILE_STREAM(NAME)  SMVK_PROFILE_CATEGORY(NAME, Optick::Category::Streaming)
+#define SMVK_PROFILE_GAMELOGIC(NAME) SMVK_PROFILE_CATEGORY(NAME, Optick::Category::GameLogic)
+#define SMVK_PROFILE_UI(NAME)      SMVK_PROFILE_CATEGORY(NAME, Optick::Category::UI)
+#define SMVK_PROFILE_GPU_SCENE(NAME)   OPTICK_GPU_EVENT(NAME)
+#define SMVK_PROFILE_GPU_SHADOW(NAME)  OPTICK_GPU_EVENT(NAME)
+#define SMVK_PROFILE_GPU_POSTFX(NAME)  OPTICK_GPU_EVENT(NAME)
+
+namespace smvk::profiler {
+
+// One-shot GPU init after VkDevice + queues exist (volk must be loaded).
+// Safe to call once; subsequent calls are ignored. No-op when USE_OPTICK==0.
+void InitVulkanGPU();
+
+// Tear down Optick state (call after vkDeviceWaitIdle, before vkDestroyDevice).
+void Shutdown();
+
+#if USE_OPTICK
+// RAII CPU+GPU scope for run-time pass names (e.g. rendergraph passes).
+// Static OPTICK_GPU_EVENT can't be used in a loop (description is cached per
+// __LINE__), so this resolves a shared description per name instead.
+struct GpuPassScope {
+    ::Optick::Event cpuEvent;
+    ::Optick::GPUEvent gpuEvent;
+    GpuPassScope(const char* name, const char* file, int line)
+        : cpuEvent(*::Optick::EventDescription::CreateShared(name, file, line))
+        , gpuEvent(*::Optick::EventDescription::CreateShared(name, file, line)) {}
+};
+#else
+struct GpuPassScope {
+    GpuPassScope(const char*, const char*, int) {}
+};
+#endif
+
+} // namespace smvk::profiler
+
+// Dynamic CPU+GPU scope for run-time strings (rendergraph pass names, ...).
+// Safe when Optick is disabled (expands to a no-op scope object).
+#define SMVK_CONCAT_IMPL(x, y) x##y
+#define SMVK_CONCAT(x, y) SMVK_CONCAT_IMPL(x, y)
+#define SMVK_PROFILE_GPU_PASS(NAME) \
+    ::smvk::profiler::GpuPassScope SMVK_CONCAT(_smvk_gpu_pass_, __LINE__)(NAME, __FILE__, __LINE__)

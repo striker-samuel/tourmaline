@@ -63,13 +63,20 @@ target_link_libraries(App
         engine
         engine
         KTX::ktx
-        #OptickCore
+        OptickCore
         #meshoptimizer
         #imgui_core
         #imgui_backend_glfw
         #imgui_backend_vulkan
         #Vulkan::Vulkan
         #nlohmann_json
+)
+
+# OptickCore is SHARED: stage its DLL next to App.exe
+add_custom_command(TARGET App POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:OptickCore>"
+        "$<TARGET_FILE_DIR:App>"
 )
 
 

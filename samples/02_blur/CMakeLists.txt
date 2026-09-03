@@ -37,3 +37,9 @@ target_link_libraries(02_blur
         engine
         KTX::ktx
 )
+
+add_custom_command(TARGET 02_blur POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:OptickCore>"
+        "$<TARGET_FILE_DIR:02_blur>"
+)

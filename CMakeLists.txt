@@ -60,6 +60,22 @@ endif()
 add_subdirectory(external/json)
 add_subdirectory(external/volk)
 
+# --- Optick profiler ----------------------------------------------------------
+option(ENABLE_OPTICK "Enable Optick CPU/GPU profiling" ON)
+if(ENABLE_OPTICK)
+  set(OPTICK_USE_VULKAN ON CACHE BOOL "" FORCE)
+else()
+  set(OPTICK_USE_VULKAN OFF CACHE BOOL "" FORCE)
+endif()
+set(OPTICK_USE_D3D12 OFF CACHE BOOL "" FORCE)
+set(OPTICK_BUILD_GUI_APP OFF CACHE BOOL "" FORCE)
+set(OPTICK_BUILD_CONSOLE_SAMPLE OFF CACHE BOOL "" FORCE)
+set(OPTICK_INSTALL_TARGETS OFF CACHE BOOL "" FORCE)
+if(NOT ENABLE_OPTICK)
+  set(OPTICK_ENABLED OFF CACHE BOOL "" FORCE)
+endif()
+add_subdirectory(external/optick)
+
 # Shader compile support
 set(SHADER_SOURCE_DIR ${CMAKE_SOURCE_DIR}/shaders)
 set(SHADER_BINARY_DIR ${CMAKE_BINARY_DIR}/shaders)

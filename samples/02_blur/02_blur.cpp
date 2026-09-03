@@ -390,12 +390,11 @@ private:
 		if (m_blurA.valid && m_blurB.valid &&
 			m_blurA.extent.width == want.width && m_blurA.extent.height == want.height)
 			return;
-		// Holder destroy is an immediate vkDestroyImage, but with frames in
-		// flight the GPU may still be reading the old targets (e.g. the
-		// Downsample slider changes size mid-run). Idle the device before
-		// tearing them down. Recreate paths already idled, so this is a
-		// no-op there and only costs a hitch on real size changes.
-		WaitForDeviceIdle();
+		// Safe without idling: Holder destroy retires the old VkImage/
+		// VkImageView on the graphics timeline (engine DeferDestroy), so the
+		// GPU can still be reading them. Retirement drains in
+		// ProcessDeferrredTasks each frame; pool slots stay reserved until
+		// then, so there is no aliasing either.
 		if (!CreateBlurTarget(m_blurA, want, "blurA") || !CreateBlurTarget(m_blurB, want, "blurB"))
 			std::cerr << "[02_blur] Failed to create blur targets\n";
 	}

@@ -46,12 +46,12 @@ target_link_libraries(engine
         glm
         imgui_core
         meshoptimizer
+        OptickCore
     PRIVATE
         volk
         KTX::ktx
         imgui_backend_glfw
         imgui_backend_vulkan
-        #OptickCore
 )
 
 # DXC -- shader compiling HLSL->SPIRV
@@ -73,5 +73,13 @@ add_custom_command(TARGET engine POST_BUILD
 
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${DXC_DIR}/bin/x64/dxil.dll"
+        "$<TARGET_FILE_DIR:engine>"
+)
+
+# OptickCore builds SHARED upstream -> its DLL must sit next to the exe.
+# $TARGET_FILE:OptickCore resolves to the DLL on Windows.
+add_custom_command(TARGET engine POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:OptickCore>"
         "$<TARGET_FILE_DIR:engine>"
 )

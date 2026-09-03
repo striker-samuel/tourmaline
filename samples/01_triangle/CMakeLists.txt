@@ -42,3 +42,9 @@ target_link_libraries(01_triangle
         engine
         KTX::ktx
 )
+
+add_custom_command(TARGET 01_triangle POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:OptickCore>"
+        "$<TARGET_FILE_DIR:01_triangle>"
+)

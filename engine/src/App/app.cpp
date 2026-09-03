@@ -5,6 +5,7 @@
 #include <Engine/App/app.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
+#include <Engine/Profile/profile.h>
 
 
 bool smvk::App::Run() {
@@ -34,17 +35,33 @@ void smvk::App::UpdateDeltaTime() {
 }
 
 void smvk::App::MainLoop() {
+	SMVK_PROFILE_THREAD("MainThread");
 	while (!glfwWindowShouldClose(window)) {
-		m_input.beginFrame();
-		if (m_input.isKeyHeld(GLFW_KEY_ESCAPE)) {
-			glfwSetWindowShouldClose(window, GLFW_TRUE);
+		SMVK_PROFILE_FRAME("MainThread");
+		{
+			SMVK_PROFILE_SCOPE_COLOR("PollEvents", Optick::Color::Ivory);
+			m_input.beginFrame();
+			if (m_input.isKeyHeld(GLFW_KEY_ESCAPE)) {
+				glfwSetWindowShouldClose(window, GLFW_TRUE);
+			}
+			glfwPollEvents();
 		}
-		glfwPollEvents();
-		EarlyUpdate();
-		Update();
-		LateUpdate();
-
-		DrawFrame();
+		{
+			SMVK_PROFILE_CATEGORY("EarlyUpdate", Optick::Category::GameLogic);
+			EarlyUpdate();
+		}
+		{
+			SMVK_PROFILE_CATEGORY("Update", Optick::Category::GameLogic);
+			Update();
+		}
+		{
+			SMVK_PROFILE_CATEGORY("LateUpdate", Optick::Category::GameLogic);
+			LateUpdate();
+		}
+		{
+			SMVK_PROFILE_CATEGORY("DrawFrame", Optick::Category::Rendering);
+			DrawFrame();
+		}
 	}
 }
 

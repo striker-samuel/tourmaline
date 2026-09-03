@@ -492,6 +492,19 @@ namespace smvk {
 		void AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle, Submitter* submitter);
 		void AddDeferredTask(std::packaged_task<void()>&& task, TimelinePoint point);
 		void ProcessDeferrredTasks();
+		// Runs every queued deferred task unconditionally (no readiness check).
+		// Only safe when the device is idle (or tearing down); used so teardown
+		// can never leak resources whose retire point would never be reached.
+		void FlushDeferredTasks();
+		// Records the latest graphics-queue (swapchain) submit. destroy() keys
+		// resource retirement on this point so vkDestroy* never runs while an
+		// in-flight command buffer still references the object. Must be called
+		// after every successful graphics submit (see EndAndPresentFramebuffer).
+		void NotifyGraphicsSubmit(VkSemaphore timelineSemaphore, uint64_t timelineValue);
+		// Queues task until all graphics work submitted so far has retired.
+		// Runs it immediately if no graphics submit has ever been recorded
+		// (GPU is idle by definition). Render thread only, like AddDeferredTask.
+		void DeferDestroy(std::packaged_task<void()>&& task);
 		//
 		Holder<ImageHandle>          CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<TextureHandle>        CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
@@ -530,6 +543,10 @@ namespace smvk {
 		std::vector<VkImageLayout> m_hostCopySrcLayouts;
 		std::vector<VkImageLayout> m_hostCopyDstLayouts;
 		std::vector<DeferredTask> m_deferredTasks;
+		// Latest graphics submit retirement point (swapchain timeline).
+		// Monotonic while the swapchain lives; reset only with the semaphore.
+		VkSemaphore m_lastGraphicsSemaphore = VK_NULL_HANDLE;
+		uint64_t m_lastGraphicsValue = 0;
 
 		VkDescriptorSetLayout defaultSetLayout{};
 		VkPipelineLayout defaultPipeLayout{};
