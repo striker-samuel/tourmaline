@@ -38,17 +38,27 @@ add_custom_command(TARGET App POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:App>/content/textures
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:App>/content/models
 
-
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_SOURCE_DIR}/App/content/textures
-            $<TARGET_FILE_DIR:App>/content/textures
-
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_SOURCE_DIR}/App/content/models
-            $<TARGET_FILE_DIR:App>/content/models
-
     COMMENT "📦 Copying resource folders (shaders, textures, models) to App runtime directory"
 )
+
+# Copy resource dirs only if they exist in the source tree.
+# (cmake -E copy_directory errors out when the source dir is missing,
+# which would fail the whole POST_BUILD step.)
+if(EXISTS "${APP_DIR}/content/textures")
+    add_custom_command(TARGET App POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${APP_DIR}/content/textures"
+                "$<TARGET_FILE_DIR:App>/content/textures"
+    )
+endif()
+
+if(EXISTS "${APP_DIR}/content/models")
+    add_custom_command(TARGET App POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${APP_DIR}/content/models"
+                "$<TARGET_FILE_DIR:App>/content/models"
+    )
+endif()
 
 target_include_directories(App
     PRIVATE
