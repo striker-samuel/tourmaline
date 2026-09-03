@@ -38,8 +38,19 @@ import json
 
 
 def build_texture_classification(gltf_path: Path):
-    with open(gltf_path, "r", encoding="utf-8") as f:
-        gltf = json.load(f)
+    """Map image references in a glTF file to their encoding kind.
+
+    Returns a dict keyed several ways (full uri, basename, stem) so callers
+    can look up either the converted (.ktx2) name or the original source
+    image (.jpg/.png/...) that shares the same stem.
+    Kinds: 'srgb' (color/emissive), 'linear' (metal/rough/occlusion), 'normal'.
+    """
+    try:
+        with open(gltf_path, "r", encoding="utf-8") as f:
+            gltf = json.load(f)
+    except (OSError, ValueError) as e:
+        sys.stderr.write(f"[ktx] WARNING: Could not parse glTF '{gltf_path}': {e}\n")
+        return {}
 
     textures = gltf.get("textures", [])
     images = gltf.get("images", [])
@@ -60,7 +71,11 @@ def build_texture_classification(gltf_path: Path):
         if not uri or uri.startswith("data:"):
             return
 
-        classification[Path(uri).as_posix()] = kind
+        uri_posix = Path(uri).as_posix()
+        classification[uri_posix] = kind
+        classification[Path(uri_posix).name] = kind
+        # Stem key lets source images (foo.jpg) match converted refs (foo.ktx2).
+        classification[Path(uri_posix).stem] = kind
 
     for mat in gltf.get("materials", []):
         pbr = mat.get("pbrMetallicRoughness", {})
@@ -87,7 +102,36 @@ def build_texture_classification(gltf_path: Path):
 
     return classification
 
-classification =build_texture_classification(r"F:\REPOS\vulkantoy\app\content\models\sponza\sponza.gltf")
+
+def build_classification_for_inputs(in_root: Path, extra_gltfs):
+    """Merge classifications from glTF files found under in_root + extras."""
+    merged = {}
+    gltf_files = sorted(in_root.rglob("*.gltf"))[:50]
+    for extra in (extra_gltfs or []):
+        p = Path(extra)
+        if p.is_file() and p not in gltf_files:
+            gltf_files.append(p)
+    for gltf_path in gltf_files:
+        for key, kind in build_texture_classification(gltf_path).items():
+            merged.setdefault(key, kind)
+    return merged
+
+
+def lookup_kind(classification, in_root: Path, src: Path):
+    """Find the encoding kind for a source image, or None if unreferenced."""
+    try:
+        rel_posix = src.relative_to(in_root).as_posix()
+    except ValueError:
+        rel_posix = None
+    candidates = [
+        rel_posix,
+        src.name,
+        src.stem,
+    ]
+    for key in candidates:
+        if key is not None and key in classification:
+            return classification[key]
+    return None
 
 
 def find_toktx(tools_dir: Path) -> Path:
@@ -168,6 +212,7 @@ def main():
     parser.add_argument("--no-mips", action="store_true", help="Disable mipmap generation.")
     parser.add_argument("--lower-left", action="store_true", help="Map lower-left to (s=0,t=0) for GL-style origin.")
     parser.add_argument("--patterns", default=DEFAULT_PATTERNS, help=f"Semicolon-separated extensions to include. Default: {DEFAULT_PATTERNS}")
+    parser.add_argument("--gltf", action="append", default=[], help="Extra glTF file to use for texture classification (repeatable). By default, *.gltf under the input dir are used.")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing.")
     args = parser.parse_args()
 
@@ -182,6 +227,15 @@ def main():
         sys.exit(2)
 
     out_root.mkdir(parents=True, exist_ok=True)
+
+    classification = build_classification_for_inputs(in_root, args.gltf)
+    if classification:
+        kinds = {}
+        for kind in classification.values():
+            kinds[kind] = kinds.get(kind, 0) + 1
+        print(f"[ktx] Classification from glTF: {kinds}")
+    else:
+        print("[ktx] WARNING: No glTF classification found; using filename heuristics only.")
 
     total = 0
     converted = 0
@@ -200,15 +254,10 @@ def main():
         dst = (out_root / rel).with_suffix(".ktx2")
         dst.parent.mkdir(parents=True, exist_ok=True)
 
-        kind = classification.get(rel)
-        if kind == "normal":
-            cmd += [
-                "--assign_oetf", "linear",
-                "--assign_primaries", "none",
-            ]
+        kind = lookup_kind(classification, in_root, src)
         if kind is None:
-            print(f"[ktx] WARNING: Texture not referenced by glTF: {rel}")
-            kind = "srgb"
+            print(f"[ktx] WARNING: Texture not referenced by glTF, falling back to filename heuristics: {rel}")
+            kind = classify_texture(src.name)
 
         cmd = build_cmd(
             toktx=toktx,

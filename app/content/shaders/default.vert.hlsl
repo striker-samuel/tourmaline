@@ -40,7 +40,8 @@ VSOut mainVS(VSIn IN)
     // Properly transform normal/tangent to world space.
     // - Normal uses inverse-transpose of upper 3x3 to survive non-uniform scale.
     // - Tangent xyz uses (float3x3)model, handedness w is flipped if model determinant <0 (mirrored).
-    // - Keeps proj Y-flip (proj[1][1]*=-1) – winding fixed via FrontFace::Clockwise.
+    // - Main view uses a Y-flipped proj (proj[1][1]*=-1); front-face winding is
+    //   defined by the pipeline RasterSettings (FrontFace::CounterClockwise).
     float3x3 M3 = (float3x3) pc.model;
 
     // determinant of M3

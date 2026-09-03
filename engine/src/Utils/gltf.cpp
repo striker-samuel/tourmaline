@@ -12,6 +12,7 @@
 #include <string>
 #include <iostream>
 #include <filesystem>
+#include <cmath>
 
 namespace {
 	constexpr uint32_t DEFAULT_MATERIAL_INDEX = 0;
@@ -109,6 +110,96 @@ namespace {
 		// Expect FLOAT VEC2
 		const float* p = reinterpret_cast<const float*>(gltfPtr(m, a, i));
 		return glm::vec2(p[0], p[1]);
+	}
+	// -------------------------------------------------------------------------
+	// Tangent-frame synthesis for primitives that lack authoring data.
+	//
+	// Normal maps need a per-vertex tangent frame (N, T, w). Many glTF assets
+	// omit TANGENT (and some omit NORMAL); leaving the loader default of
+	// T=(1,0,0,1) in place produces visibly broken normal-mapped lighting.
+	// These helpers derive smooth normals (area-weighted) and tangents
+	// (UV-gradient accumulation a la Lengyel, Gram-Schmidt orthogonalized
+	// against N with a handedness sign) in the already-converted engine
+	// space, so the result matches the shader's TBN construction.
+	// -------------------------------------------------------------------------
+	void computeSmoothNormals(smvk::StaticMeshUpload& data) {
+		const size_t vcount = data.vertices.size();
+		if (vcount == 0) return;
+		for (auto& v : data.vertices) v.normal = glm::vec3(0.0f);
+		auto accumTri = [&](uint32_t i0, uint32_t i1, uint32_t i2) {
+			if (i0 >= vcount || i1 >= vcount || i2 >= vcount) return;
+			const glm::vec3& p0 = data.vertices[i0].pos;
+			const glm::vec3& p1 = data.vertices[i1].pos;
+			const glm::vec3& p2 = data.vertices[i2].pos;
+			const glm::vec3 fn = glm::cross(p1 - p0, p2 - p0);
+			if (glm::dot(fn, fn) <= 1e-24f) return; // degenerate
+			data.vertices[i0].normal += fn;
+			data.vertices[i1].normal += fn;
+			data.vertices[i2].normal += fn;
+		};
+		if (!data.indices.empty()) {
+			for (size_t t = 0; t + 2 < data.indices.size() + 1; t += 3)
+				accumTri(data.indices[t], data.indices[t + 1], data.indices[t + 2]);
+		}
+		else {
+			for (uint32_t t = 0; t + 2 < vcount + 1; t += 3)
+				accumTri(t, t + 1, t + 2);
+		}
+		for (auto& v : data.vertices) {
+			const float l2 = glm::dot(v.normal, v.normal);
+			v.normal = (l2 > 1e-24f) ? glm::normalize(v.normal) : glm::vec3(0.0f, 1.0f, 0.0f);
+		}
+	}
+	void generateTangents(smvk::StaticMeshUpload& data) {
+		const size_t vcount = data.vertices.size();
+		if (vcount == 0) return;
+		std::vector<glm::vec3> tan1(vcount, glm::vec3(0.0f));
+		std::vector<glm::vec3> tan2(vcount, glm::vec3(0.0f));
+		auto accumTri = [&](uint32_t i0, uint32_t i1, uint32_t i2) {
+			if (i0 >= vcount || i1 >= vcount || i2 >= vcount) return;
+			const glm::vec3& p0 = data.vertices[i0].pos;
+			const glm::vec3& p1 = data.vertices[i1].pos;
+			const glm::vec3& p2 = data.vertices[i2].pos;
+			const glm::vec2& w0 = data.vertices[i0].texCoord;
+			const glm::vec2& w1 = data.vertices[i1].texCoord;
+			const glm::vec2& w2 = data.vertices[i2].texCoord;
+			const glm::vec3 x1 = p1 - p0;
+			const glm::vec3 x2 = p2 - p0;
+			const glm::vec2 s1 = w1 - w0;
+			const glm::vec2 s2 = w2 - w0;
+			const float denom = s1.x * s2.y - s2.x * s1.y;
+			if (fabsf(denom) <= 1e-12f) return; // degenerate UVs: no tangent info
+			const float r = 1.0f / denom;
+			const glm::vec3 sdir = (x1 * s2.y - x2 * s1.y) * r;
+			const glm::vec3 tdir = (x2 * s1.x - x1 * s2.x) * r;
+			tan1[i0] += sdir; tan1[i1] += sdir; tan1[i2] += sdir;
+			tan2[i0] += tdir; tan2[i1] += tdir; tan2[i2] += tdir;
+		};
+		if (!data.indices.empty()) {
+			for (size_t t = 0; t + 2 < data.indices.size() + 1; t += 3)
+				accumTri(data.indices[t], data.indices[t + 1], data.indices[t + 2]);
+		}
+		else {
+			for (uint32_t t = 0; t + 2 < vcount + 1; t += 3)
+				accumTri(t, t + 1, t + 2);
+		}
+		for (size_t i = 0; i < vcount; ++i) {
+			const glm::vec3& n = data.vertices[i].normal;
+			// Gram-Schmidt: make accumulated tangent orthogonal to N.
+			glm::vec3 t = tan1[i] - n * glm::dot(n, tan1[i]);
+			if (glm::dot(t, t) > 1e-24f) {
+				t = glm::normalize(t);
+			}
+			else {
+				// No usable UV gradient: build an arbitrary frame orthogonal to N.
+				const glm::vec3 axis =
+					(fabsf(n.y) < 0.99f) ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+				t = glm::normalize(glm::cross(axis, n));
+				if (glm::dot(t, t) <= 1e-24f) t = glm::vec3(1.0f, 0.0f, 0.0f);
+			}
+			const float w = (glm::dot(glm::cross(n, t), tan2[i]) < 0.0f) ? -1.0f : 1.0f;
+			data.vertices[i].tangent = glm::vec4(t, w);
+		}
 	}
 	uint32_t readIndex(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
 		using namespace tinygltf;
@@ -534,7 +625,13 @@ smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model
 	}
 
 
-	// Extract vertices
+	// Extract vertices. Presence flags decide which frames must be synthesized
+	// below: a missing NORMAL/TANGENT must never keep a placeholder, or
+	// normal-mapped lighting breaks on that primitive.
+	const bool hasUVs = primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end();
+	const bool hasAuthoredTangents = primitive.attributes.find("TANGENT") != primitive.attributes.end();
+	const bool hasAuthoredNormals = primitive.attributes.find("NORMAL") != primitive.attributes.end();
+
 	auto& posAcc = model.accessors[primitive.attributes.at("POSITION")];
 	data.vertices.reserve(posAcc.count);
 	for (size_t i = 0; i < posAcc.count; ++i) {
@@ -542,14 +639,14 @@ smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model
 		v.pos = readVec3ForientationFix(model, posAcc, i);
 		v.color = { 1.0f, 1.0f, 1.0f };
 		v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
-		v.normal = { 0.0f, 1.0f, 0.0f }; // will replace if normals provided
-		v.tangent = { 1.0f, 0.0f,0.0f, 1.0f }; // zero out tangent by default too ;)
+		v.normal = { 0.0f, 1.0f, 0.0f }; // replaced below if normals provided/generated
+		v.tangent = { 1.0f, 0.0f, 0.0f, 1.0f }; // replaced below if tangents provided/generated
 		data.vertices.push_back(v);
 	}
 
 
-	if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end()) {
-		auto& uvAcc = model.accessors[it->second];
+	if (hasUVs) {
+		auto& uvAcc = model.accessors[primitive.attributes.at("TEXCOORD_0")];
 		for (size_t i = 0; i < uvAcc.count && i < data.vertices.size(); ++i) {
 			glm::vec2 uv = readVec2F(model, uvAcc, i);
 			data.vertices[i].texCoord = uv; // flip V if your shader expects it: uv.y = 1.0f - uv.y;
@@ -557,12 +654,14 @@ smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model
 	}
 
 
-	if (auto it = primitive.attributes.find("TANGENT"); it != primitive.attributes.end()) {
-		auto& tangentAcc = model.accessors[it->second];
+	if (hasAuthoredTangents) {
+		auto& tangentAcc = model.accessors[primitive.attributes.at("TANGENT")];
 		for (size_t i = 0; i < tangentAcc.count && i < data.vertices.size(); ++i) {
 			glm::vec4 tangent = readVec4F(model, tangentAcc, i);
 
-			// Space conversion to my engine. Same as pos
+			// Space conversion to my engine. Same as pos.
+			// (-x, +y, -z) is a 180-degree Y rotation (det +1), so the
+			// tangent-space handedness w is preserved as-is.
 			tangent.x *= -1.0f;
 			tangent.z *= -1.0f;
 
@@ -571,8 +670,8 @@ smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model
 	}
 
 
-	if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end()) {
-		auto& nAcc = model.accessors[it->second];
+	if (hasAuthoredNormals) {
+		auto& nAcc = model.accessors[primitive.attributes.at("NORMAL")];
 		for (size_t i = 0; i < nAcc.count && i < data.vertices.size(); ++i) {
 			glm::vec3 n = readVec3ForientationFix(model, nAcc, i);
 			data.vertices[i].normal = glm::normalize(n);
@@ -585,6 +684,13 @@ smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model
 		for (size_t i = 0; i < idxAcc.count; ++i) {
 			data.indices.push_back(readIndex(model, idxAcc, i));
 		}
+	}
+
+	if (!hasAuthoredNormals) {
+		computeSmoothNormals(data);
+	}
+	if (!hasAuthoredTangents && hasUVs) {
+		generateTangents(data);
 	}
 
 
