@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -38,6 +39,16 @@ Holder<TextureHandle> LoadKtxTextureFile(
 	const std::string& fullPath,
 	const ImageCreateInfo& imageCI = {});
 
+// Same as LoadKtxTextureFile but decodes from already-loaded bytes
+// (pak-embedded payloads, VFS reads). debugName is used for the Vulkan
+// object label and log lines. Returns an empty holder on failure.
+Holder<TextureHandle> LoadKtxTextureMemory(
+	ResourceManager& ctx,
+	const void* data,
+	size_t dataSize,
+	const std::string& debugName,
+	const ImageCreateInfo& imageCI = {});
+
 // Multicore read + upload: each job's file IO, Basis transcode and Vulkan
 // image creation/upload runs on a worker thread; the returned holders are
 // collected on the calling thread. Failed jobs are skipped (logged) and
@@ -53,6 +64,24 @@ Holder<TextureHandle> LoadKtxTextureFile(
 std::unordered_map<int, Holder<TextureHandle>> LoadKtxTexturesParallel(
 	ResourceManager& ctx,
 	const std::vector<KtxLoadJob>& jobs,
+	const ImageCreateInfo& imageCI = {},
+	ParallelTextureStats* outStats = nullptr,
+	size_t maxThreads = 0);
+
+// One in-memory payload to decode + upload. key is the caller's dedup id.
+struct KtxMemoryJob {
+	int key = -1;
+	const void* data = nullptr;
+	size_t dataSize = 0;
+	std::string debugName;
+};
+
+// Parallel version of LoadKtxTextureMemory over a batch of payloads.
+// The payload memory must outlive the call (_UPLOAD joins all workers_
+// before returning). Same threading contract as LoadKtxTexturesParallel.
+std::unordered_map<int, Holder<TextureHandle>> LoadKtxTexturesParallelMemory(
+	ResourceManager& ctx,
+	const std::vector<KtxMemoryJob>& jobs,
 	const ImageCreateInfo& imageCI = {},
 	ParallelTextureStats* outStats = nullptr,
 	size_t maxThreads = 0);

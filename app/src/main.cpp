@@ -1,15 +1,18 @@
 #pragma once
 #include <iostream>
 #include <filesystem>
+#include <fstream>
 #include <array>
 #include <cmath>
 
 #include <Engine/core.h>
+#include <Engine/Asset/pak.h>
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/tonemap.h>
+#include <Engine/Vfs/vfs.h>
 #include <imgui.h>
 
 
@@ -19,6 +22,18 @@ static constexpr float default_far_clip = 50.0f;
 std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
 };
+// Cooked pak for the scene above (VFS root is the content dir, so the pak
+// holds "models/..." VFS paths). Built with:
+//   PakCooker --content-dir content --in-vfs models/Sponza/sponza.gltf
+//             --out-pak content/paks/sponza.pak
+static const char* pak_path = "content/paks/sponza.pak";
+
+// Reads a content-relative VFS path ("shaders/...", "models/...") through
+// the app overlay (loose content/ dir + mounted paks). Throws on miss.
+static std::vector<char> readContentFile(smvk::OverlayVfs& vfs, const std::string& vfsPath) {
+	std::vector<uint8_t> bytes = vfs.ReadBinary(vfsPath);
+	return std::vector<char>(bytes.begin(), bytes.end());
+}
 
 // -----------------------------------------------------------------------------
 // Directional cascade shadow-map config (resources + math live in
@@ -242,10 +257,16 @@ private:
 		m_resources.fpLightsLogical = m_rendergraph->AddExternalBuffer(
 			m_resources.fpLightsBuffer, "forwardplus lights");
 
+		// VFS overlay: loose content/ for iteration, cooked paks mounted
+		// underneath (loose files win on collisions). Shader reads below
+		// go through the same overlay so packaged builds just work.
+		smvk::OverlayVfs contentVfs;
+		contentVfs.Mount(std::make_shared<smvk::LooseBackend>("content"), 0, "content");
+
 		// Main ShaderProgram (scene-owned; shadow/bloom/tonemap programs live
 		// in their engine builders with defaults + Ensure).
-		auto vertCode = readFile("content/shaders/default.vert.hlsl.spv");
-		auto fragCode = readFile("content/shaders/default.frag.hlsl.spv");
+		auto vertCode = readContentFile(contentVfs, "shaders/default.vert.hlsl.spv");
+		auto fragCode = readContentFile(contentVfs, "shaders/default.frag.hlsl.spv");
 		m_resources.vertShader = m_context->CreateShaderModule(vertCode, "vert");
 		m_resources.fragShader = m_context->CreateShaderModule(fragCode, "frag");
 
@@ -266,16 +287,65 @@ private:
 
 		smvk::AllocateStaticVertexFmt(*m_context); // dont like this
 
-		// Import the glTF scene into a Cluster (owned by the cluster's resource
-		// pools), register it with the World, and resolve all imported scenes
-		// into the single runtime scene graph.
-		tinygltf::Model model;
-		if (!LoadModelFromAsciiFile(model, gltf_meshes_paths[0].c_str())) {
-			return false;
+		// Scene import: prefer the cooked pak (fast path, meshopt'd meshes,
+		// embedded textures), fall back to glTF via the VFS when no pak is
+		// present (dev iteration). Either way the Cluster is registered
+		// with the World and resolved into the runtime scene graph.
+		bool loadedFromPak = false;
+		{
+			std::ifstream pakFile(pak_path, std::ios::binary | std::ios::ate);
+			if (pakFile) {
+				const auto pakSize = pakFile.tellg();
+				pakFile.seekg(0);
+				auto pakImage = std::make_shared<const std::vector<uint8_t>>(
+					static_cast<size_t>(pakSize));
+				// Texture/material/mesh uploads below are synchronous, so
+				// the pak image only needs to outlive this block; the
+				// PakBackend mount serves VFS texture reads during init
+				// (below loose content/ so dev overrides win).
+				if (pakFile.read(reinterpret_cast<char*>(
+						const_cast<uint8_t*>(pakImage->data())),
+						pakSize)) {
+					std::string pakErr;
+					auto reader = smvk::PakReader::Open(
+						std::span<const uint8_t>(*pakImage), pakErr);
+					if (reader) {
+						try {
+							m_world->LoadClusterFromPak(*m_context, *reader);
+							// Serve pak-embedded textures through the VFS
+							// (below loose content/ so dev overrides win).
+							std::string mountErr;
+							if (auto pakBackend = smvk::PakBackend::Open(
+									pakImage, pak_path, mountErr)) {
+								contentVfs.Mount(pakBackend, 10, pak_path);
+								loadedFromPak = true;
+							}
+							else {
+								std::cerr << "[TestApp] PakBackend mount failed: "
+									<< mountErr << std::endl;
+							}
+						}
+						catch (const std::exception& e) {
+							std::cerr << "[TestApp] Pak load failed, falling back "
+								<< "to glTF: " << e.what() << std::endl;
+						}
+					}
+					else {
+						std::cerr << "[TestApp] Pak parse failed (" << pakErr
+							<< "), falling back to glTF" << std::endl;
+					}
+				}
+			}
 		}
+		if (!loadedFromPak) {
+			tinygltf::Model model;
+			if (!LoadModelFromAsciiFile(model, gltf_meshes_paths[0].c_str())) {
+				return false;
+			}
 
-		auto& cluster = m_world->LoadCluster(*m_context);
-		GltfToCluster(*m_context, model, gltf_meshes_paths[0], cluster);
+			auto& cluster = m_world->LoadCluster(*m_context);
+			GltfToCluster(*m_context, model, gltf_meshes_paths[0], cluster);
+		}
 		m_world->ResolveAndFixup_clusters();
 		m_context->FlushUploads();
 

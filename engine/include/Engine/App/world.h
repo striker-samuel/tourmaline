@@ -1,15 +1,20 @@
 #pragma once
 #include <memory>
+#include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
 
 #include <Engine/App/cluster.h>
+#include <Engine/Asset/mesh_optimizer.h>
 //#include <Engine/Utils/Bvh.h>
 #include <Engine/Scene/scene.h>
 
 namespace smvk {
+
+	class PakReader;
 
 	enum struct CullType {
 		CPU
@@ -71,8 +76,15 @@ namespace smvk {
 		std::vector<MeshLocation> meshLocations;
 		std::vector<MaterialLocation> materialLocations;
 		std::vector<TextureLocation> textureLocations;
+		// Per-mesh LOD markers parallel to meshLocations (cook-time
+		// instrumentation for tooling/ImGui only — the renderer ignores it).
+		std::vector<LodInfo> meshLodInfos;
 
 		Cluster& LoadCluster(ResourceManager& ctx);
+		// Deserializes a cooked pak (PakReader over caller-owned bytes) into
+		// a new registered Cluster. Throws std::runtime_error on failure.
+		// The caller issues ctx.FlushUploads() after ResolveAndFixup.
+		Cluster& LoadClusterFromPak(ResourceManager& ctx, const class PakReader& reader);
 		void UnloadCluster(smvk::Cluster&);
 
 		void RegisterCluster(std::unique_ptr<Cluster> cluster);
@@ -81,6 +93,14 @@ namespace smvk {
 
 		smvk::StaticMesh* GetMesh(uint32_t meshIndex);
 		smvk::Material* GetMaterial(uint32_t materialIndex);
+		// LOD marker for tooling (always lodIndex 0 in v1). Null when the
+		// index is out of range. Never consulted by the renderer.
+		const LodInfo* GetLodInfo(uint32_t meshIndex) const;
+
+		// First-hit URI resolution across clusters in registration order
+		// (mirrors the VFS overlay rule). Used for cross-pak references.
+		std::optional<MeshLocation> ResolveMeshAcrossClusters(const std::string& uri) const;
+		std::optional<MaterialLocation> ResolveMaterialAcrossClusters(const std::string& uri) const;
 
 		//void NewFrame();
 			//if (dirtyCull && flags.size() == scene.hierarchy.size())

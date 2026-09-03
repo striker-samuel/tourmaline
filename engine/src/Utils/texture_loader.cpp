@@ -55,6 +55,42 @@ Holder<TextureHandle> LoadKtxTextureFile(
 	}
 }
 
+Holder<TextureHandle> LoadKtxTextureMemory(
+	ResourceManager& ctx,
+	const void* data,
+	size_t dataSize,
+	const std::string& debugName,
+	const ImageCreateInfo& imageCI)
+{
+	if (data == nullptr || dataSize == 0) {
+		std::cerr << "Failed to load KTX texture (empty payload): " << debugName << std::endl;
+		return {};
+	}
+	ktxTexture2* ktxTex = nullptr;
+	const KTX_error_code loadRes = ktxTexture2_CreateFromMemory(
+		static_cast<const ktx_uint8_t*>(data),
+		static_cast<ktx_size_t>(dataSize),
+		KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+		&ktxTex);
+	if (loadRes != KTX_SUCCESS) {
+		std::cerr << "Failed to decode KTX texture: " << debugName
+			<< " code " << loadRes << std::endl;
+		return {};
+	}
+	KtxGuard guard(ktxTex);
+
+	try {
+		ImageCreateInfo ci = imageCI;
+		ci.hostTransfer = true;
+		return ctx.CreateTexture(*ktxTex, debugName.c_str(), ci);
+	}
+	catch (const std::exception& e) {
+		std::cerr << "Failed to upload KTX texture: " << debugName
+			<< " : " << e.what() << std::endl;
+		return {};
+	}
+}
+
 std::unordered_map<int, Holder<TextureHandle>> LoadKtxTexturesParallel(
 	ResourceManager& ctx,
 	const std::vector<KtxLoadJob>& jobs,
@@ -107,6 +143,90 @@ std::unordered_map<int, Holder<TextureHandle>> LoadKtxTexturesParallel(
 				// so no lock needed for correctness.
 				(void)cerrMutex;
 				Holder<TextureHandle> holder = LoadKtxTextureFile(ctx, job.path, imageCI);
+				return std::make_pair(job.key, std::move(holder));
+			}));
+		}
+
+		for (auto& f : futures) {
+			try {
+				auto [key, holder] = f.get();
+				if (holder.valid()) {
+					++stats.succeeded;
+					out.emplace(key, std::move(holder));
+				}
+				else {
+					++stats.failed;
+				}
+			}
+			catch (const std::exception& e) {
+				std::lock_guard<std::mutex> lock(cerrMutex);
+				std::cerr << "Texture worker failed: " << e.what() << std::endl;
+				++stats.failed;
+			}
+		}
+	}
+
+	const auto t1 = std::chrono::steady_clock::now();
+	stats.seconds =
+		std::chrono::duration<double>(t1 - t0).count();
+
+	if (outStats) *outStats = stats;
+	return out;
+}
+
+std::unordered_map<int, Holder<TextureHandle>> LoadKtxTexturesParallelMemory(
+	ResourceManager& ctx,
+	const std::vector<KtxMemoryJob>& jobs,
+	const ImageCreateInfo& imageCI,
+	ParallelTextureStats* outStats,
+	size_t maxThreads)
+{
+	std::unordered_map<int, Holder<TextureHandle>> out;
+	if (jobs.empty()) {
+		if (outStats) *outStats = {};
+		return out;
+	}
+
+	const auto t0 = std::chrono::steady_clock::now();
+
+	size_t threadCount = maxThreads;
+	if (threadCount == 0) {
+		threadCount = std::thread::hardware_concurrency();
+		if (threadCount == 0) threadCount = 4;
+	}
+	if (threadCount > jobs.size()) threadCount = jobs.size();
+
+	ParallelTextureStats stats{};
+	stats.requested = jobs.size();
+
+	// Payload memory must outlive the workers; every path below joins
+	// before returning, so borrowing job pointers is safe.
+	auto runOne = [&](const KtxMemoryJob& job) {
+		return LoadKtxTextureMemory(ctx, job.data, job.dataSize, job.debugName, imageCI);
+	};
+
+	if (threadCount <= 1) {
+		for (const auto& job : jobs) {
+			auto holder = runOne(job);
+			if (holder.valid()) {
+				++stats.succeeded;
+				out.emplace(job.key, std::move(holder));
+			}
+			else {
+				++stats.failed;
+			}
+		}
+	}
+	else {
+		ThreadPool pool(threadCount);
+		std::mutex cerrMutex;
+		std::vector<std::future<std::pair<int, Holder<TextureHandle>>>> futures;
+		futures.reserve(jobs.size());
+
+		for (const auto& job : jobs) {
+			futures.push_back(pool.enqueue([&, job] {
+				(void)cerrMutex;
+				Holder<TextureHandle> holder = runOne(job);
 				return std::make_pair(job.key, std::move(holder));
 			}));
 		}

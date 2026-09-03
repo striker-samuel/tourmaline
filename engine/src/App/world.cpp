@@ -2,8 +2,11 @@
 
 #include <cassert>
 #include <iostream>
+#include <stdexcept>
 
 #include <Engine/Scene/scene.h>
+#include <Engine/Asset/cluster_serializer.h>
+#include <Engine/Asset/pak.h>
 #include <Engine/Renderer/mesh.h>
 
 namespace smvk {
@@ -12,7 +15,7 @@ namespace smvk {
 	// (its Scene + resource pools). The mesh upload/destroy methods and the
 	// destructor stay in mesh.cpp; this constructor just wires the resource
 	// context and the back-pointer to the owning World.
-	Cluster::Cluster(ResourceManager& ctx)
+	Cluster::Cluster(ResourceManager* ctx)
 		: ctx_(ctx)
 	{
 	}
@@ -23,7 +26,18 @@ namespace smvk {
 
 	Cluster& World::LoadCluster(ResourceManager& ctx)
 	{
-		auto cluster = std::make_unique<Cluster>(ctx);
+		auto cluster = std::make_unique<Cluster>(&ctx);
+		Cluster& ref = *cluster;
+		RegisterCluster(std::move(cluster));
+		return ref;
+	}
+
+	Cluster& World::LoadClusterFromPak(ResourceManager& ctx, const PakReader& reader)
+	{
+		std::string err;
+		auto cluster = DeserializeCluster(ctx, reader, &err);
+		if (!cluster)
+			throw std::runtime_error("LoadClusterFromPak failed: " + err);
 		Cluster& ref = *cluster;
 		RegisterCluster(std::move(cluster));
 		return ref;
@@ -70,6 +84,7 @@ namespace smvk {
 		meshLocations.clear();
 		materialLocations.clear();
 		textureLocations.clear();
+		meshLodInfos.clear();
 		flags.clear();
 
 		// World root node (parent = -1)
@@ -142,20 +157,31 @@ namespace smvk {
 				scene.nameForNode[node + nodeOffset] = nameIdx + nameOffset;
 			}
 
-			// Remap meshForNode: cluster-local handle index -> world mesh index.
-			for (auto& [node, meshIdx] : cs.meshForNode) {
-				const uint32_t worldNode = node + nodeOffset;
-				const uint32_t worldMeshIdx =
-					static_cast<uint32_t>(meshLocations.size());
+		// Remap meshForNode: cluster-local handle index -> world mesh index.
+		for (auto& [node, meshIdx] : cs.meshForNode) {
+			const uint32_t worldNode = node + nodeOffset;
+			const uint32_t worldMeshIdx =
+				static_cast<uint32_t>(meshLocations.size());
 
-				ClusterStaticMeshHandle handle =
-					cluster.staticMeshes.getHandle(meshIdx);
+			ClusterStaticMeshHandle handle =
+				cluster.staticMeshes.getHandle(meshIdx);
 
-				meshLocations.push_back(
-					MeshLocation{ .cluster = &cluster, .handle = handle }
-				);
-				scene.meshForNode[worldNode] = worldMeshIdx;
+			meshLocations.push_back(
+				MeshLocation{ .cluster = &cluster, .handle = handle }
+			);
+			// Cook-time LOD marker for tooling (renderer ignores it).
+			LodInfo lod;
+			lod.groupId = meshIdx;
+			if (const std::string uri = cluster.GetMeshUri(handle);
+				!uri.empty()) {
+				if (auto hit = cluster.GetMeshLod(uri))
+					lod = *hit;
 			}
+			if (const StaticMesh* m = cluster.staticMeshes.get(handle))
+				lod.triCount = m->geometry.indexCount / 3;
+			meshLodInfos.push_back(lod);
+			scene.meshForNode[worldNode] = worldMeshIdx;
+		}
 
 			// Remap materialForNode: cluster-local handle index -> world mat idx.
 			for (auto& [node, matIdx] : cs.materialForNode) {
@@ -252,6 +278,37 @@ namespace smvk {
 			return nullptr;
 
 		return loc.cluster->materials.get(loc.handle);
+	}
+
+	const LodInfo* World::GetLodInfo(uint32_t meshIndex) const
+	{
+		if (meshIndex >= meshLodInfos.size())
+			return nullptr;
+		return &meshLodInfos[meshIndex];
+	}
+
+	std::optional<World::MeshLocation> World::ResolveMeshAcrossClusters(
+		const std::string& uri) const
+	{
+		for (const auto& clusterPtr : clusters) {
+			if (!clusterPtr)
+				continue;
+			if (auto hit = clusterPtr->FindMeshByUri(uri))
+				return MeshLocation{ .cluster = clusterPtr.get(), .handle = *hit };
+		}
+		return std::nullopt;
+	}
+
+	std::optional<World::MaterialLocation> World::ResolveMaterialAcrossClusters(
+		const std::string& uri) const
+	{
+		for (const auto& clusterPtr : clusters) {
+			if (!clusterPtr)
+				continue;
+			if (auto hit = clusterPtr->FindMaterialByUri(uri))
+				return MaterialLocation{ .cluster = clusterPtr.get(), .handle = *hit };
+		}
+		return std::nullopt;
 	}
 
 	// Stub culling: everything is considered visible until a real culler exists.

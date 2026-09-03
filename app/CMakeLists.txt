@@ -60,6 +60,15 @@ if(EXISTS "${APP_DIR}/content/models")
     )
 endif()
 
+# Cooked paks (PakCooker output; App prefers these over raw glTF)
+if(EXISTS "${APP_DIR}/content/paks")
+    add_custom_command(TARGET App POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${APP_DIR}/content/paks"
+                "$<TARGET_FILE_DIR:App>/content/paks"
+    )
+endif()
+
 target_include_directories(App
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include

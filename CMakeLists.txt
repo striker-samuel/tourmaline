@@ -99,8 +99,14 @@ endif()
 add_subdirectory(external/imgui)
 add_subdirectory(engine)
 add_subdirectory(app)
+add_subdirectory(tools/pak_cooker)
 add_subdirectory(samples/01_triangle)
 add_subdirectory(samples/02_blur)
+
+include(CTest)
+if(BUILD_TESTING)
+  add_subdirectory(tests)
+endif()
 
 set_property(CACHE ENGINE_BACKEND PROPERTY STRINGS
     "Vulkan"

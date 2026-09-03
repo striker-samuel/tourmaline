@@ -38,6 +38,14 @@ namespace smvk {
 			return gen_ != 0;
 		}
 
+		// Cook-only mint: fabricates a handle without a backing pool. The
+		// pak cooker uses these as stable integer ids for texture slots in
+		// MaterialValues; they must never be dereferenced against a real
+		// pool. Runtime handles still come exclusively from Pool/ShardedPool.
+		static Handle Mint(uint32_t index, uint32_t gen = 1) {
+			return Handle(index, gen);
+		}
+
 	private:
 		Handle(uint32_t index, uint32_t gen) : index_(index), gen_(gen) {};
 

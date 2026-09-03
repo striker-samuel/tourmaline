@@ -29,6 +29,28 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	if (vertexCount == 0)
 		return {};
 
+	// GPU-free cook mode: CPU geometry only (no VMA/streamer). Mirrors the
+	// runtime single-surface layout so the serializer sees the same shape.
+	if (cookMode_) {
+		StaticMesh mesh{};
+		mesh.geometry.topology = PrimitiveTopology::TriangleList;
+		mesh.geometry.vertexCount = vertexCount;
+		mesh.geometry.indexCount = indexCount;
+		mesh.geometry.aabbMin = data.aabbMin;
+		mesh.geometry.aabbMax = data.aabbMax;
+		mesh.geometry.sphereRadius =
+			glm::length(data.aabbMax - data.aabbMin) * 0.5f;
+		Surface surface{};
+		surface.firstIndex = 0;
+		surface.indexCount = indexCount;
+		surface.baseVertex = 0;
+		mesh.geometry.surfaces.push_back(surface);
+		const ClusterStaticMeshHandle handle =
+			staticMeshes.create(std::move(mesh));
+		if (retainUploads_)
+			retainedUploads_[handle.index()] = data;
+		return handle;
+	}
 
 	StaticMesh result{};
 	StaticMeshAllocation alloc{};
@@ -125,7 +147,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	const VkDeviceSize positionBytes =
 		vertexCount * sizeof(VertexPos);
 
-	static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque())->UploadDataToBuffer(
+	static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque())->UploadDataToBuffer(
 		staticVertexFmtHeap.m_staticVertexPosBuffer,
 		positions.data(),
 		positionBytes,
@@ -148,7 +170,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	const VkDeviceSize shadingBytes =
 		vertexCount * sizeof(VertexShading);
 
-	static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque())->UploadDataToBuffer(
+	static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque())->UploadDataToBuffer(
 		staticVertexFmtHeap.m_staticVertexShadingBuffer,
 		shading.data(),
 		shadingBytes,
@@ -167,7 +189,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 
 	if (indexCount > 0) {
 
-		static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque())->UploadDataToBuffer(
+		static_cast<VulkanResourceManager*>(ctx_->GetVulkanOpaque())->UploadDataToBuffer(
 			staticVertexFmtHeap.m_staticIndexBuffer,
 			data.indices.data(),
 			indexBytes,
@@ -219,6 +241,9 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 		handle.index(),
 		std::move(alloc));
 
+	if (retainUploads_)
+		retainedUploads_[handle.index()] = data;
+
 	return handle;
 }
 
@@ -232,6 +257,8 @@ void smvk::Cluster::DestroyMesh(
 {
 	if (handle.empty())
 		return;
+
+	retainedUploads_.erase(handle.index());
 
 	auto it =
 		staticVertexFmtHeap.m_allocations.find(handle.index());
@@ -279,44 +306,51 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 	const MaterialCreateInfo& info)
 {
-	smvk::Material material{};
-
 	// Resolve baseColor texture – prefer baseColorTexture, fall back to legacy diffuse
 	TextureHandle baseTex = !info.baseColorTexture.empty() ? info.baseColorTexture : info.diffuse;
 
-	material.values.diffuse = info.baseColorFactor;
-	material.values.textures[0] = baseTex.empty() ? -1 : static_cast<int>(baseTex.index());
-	material.values.textures[1] = info.metallicRoughnessTexture.empty() ? -1 : static_cast<int>(info.metallicRoughnessTexture.index());
-	material.values.textures[2] = info.normalTexture.empty() ? -1 : static_cast<int>(info.normalTexture.index());
-	material.values.textures[3] = info.occlusionTexture.empty() ? -1 : static_cast<int>(info.occlusionTexture.index());
-	material.values.textures2[0] = info.emissiveTexture.empty() ? -1 : static_cast<int>(info.emissiveTexture.index());
-	material.values.textures2[1] = -1;
-	material.values.textures2[2] = -1;
-	material.values.textures2[3] = -1;
+	MaterialValues values{};
+	values.diffuse = info.baseColorFactor;
+	values.textures[0] = baseTex.empty() ? -1 : static_cast<int>(baseTex.index());
+	values.textures[1] = info.metallicRoughnessTexture.empty() ? -1 : static_cast<int>(info.metallicRoughnessTexture.index());
+	values.textures[2] = info.normalTexture.empty() ? -1 : static_cast<int>(info.normalTexture.index());
+	values.textures[3] = info.occlusionTexture.empty() ? -1 : static_cast<int>(info.occlusionTexture.index());
+	values.textures2[0] = info.emissiveTexture.empty() ? -1 : static_cast<int>(info.emissiveTexture.index());
+	values.textures2[1] = -1;
+	values.textures2[2] = -1;
+	values.textures2[3] = -1;
 
-	material.values.params.x = info.alphaCutoff;
-	material.values.params.y = info.metallicFactor;
-	material.values.params.z = info.roughnessFactor;
-	material.values.params.w = static_cast<float>(static_cast<uint32_t>(info.shadingModel));
+	values.params.x = info.alphaCutoff;
+	values.params.y = info.metallicFactor;
+	values.params.z = info.roughnessFactor;
+	values.params.w = static_cast<float>(static_cast<uint32_t>(info.shadingModel));
 
-	material.values.params2.x = info.occlusionStrength;
-	material.values.params2.y = info.normalScale;
-	material.values.params2.z = info.emissiveStrength;
-	material.values.params2.w = 0.0f;
+	values.params2.x = info.occlusionStrength;
+	values.params2.y = info.normalScale;
+	values.params2.z = info.emissiveStrength;
+	values.params2.w = 0.0f;
 
-	material.values.emissiveFactor = glm::vec4(info.emissiveFactor, 0.0f);
-	// Sky-ambient floor (pseudo-IBL). Same irradiance convention as the
-	// directional sun (lux, see Engine/Renderer/light.h): the shader computes
-	// baseColor * ambient.rgb, so ambient.rgb = skyColor * skyLux / PI.
-	// Default: 500 lux clear sky (~10% of the 5000 lux sun), blue-tinted zenith:
-	// (0.45, 0.65, 1.0) * (500 / PI). Overridable per material later.
-	//material.values.ambient = glm::vec4(71.62f, 103.45f, 159.15f, 1.0f);
+	values.emissiveFactor = glm::vec4(info.emissiveFactor, 0.0f);
+	// Sky-ambient floor (pseudo-IBL): values.ambient keeps the MaterialValues
+	// default (10,10,10,1). See comment in mesh.h / light.h.
+	return CreateMaterialFromValues(
+		values, info.shadingModel, info.alphaMode, info.alphaCutoff, info.doubleSided);
+}
 
-	material.shadingModel = info.shadingModel;
-	material.alphaMode = info.alphaMode;
-	material.alphaCutoff = info.alphaCutoff;
-	material.doubleSided = info.doubleSided;
-	material.pipeline = MakePipelineStateForMaterial(info.alphaMode, info.doubleSided, info.shadingModel);
+smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(
+	const MaterialValues& values,
+	ShadingModel shadingModel,
+	AlphaMode alphaMode,
+	float alphaCutoff,
+	bool doubleSided)
+{
+	smvk::Material material{};
+	material.values = values;
+	material.shadingModel = shadingModel;
+	material.alphaMode = alphaMode;
+	material.alphaCutoff = alphaCutoff;
+	material.doubleSided = doubleSided;
+	material.pipeline = MakePipelineStateForMaterial(alphaMode, doubleSided, shadingModel);
 	return materials.create(std::move(material));
 }
 

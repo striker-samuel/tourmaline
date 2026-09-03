@@ -4,10 +4,14 @@
 
 #include <Engine/Utils/gltf.h>
 #include <Engine/Utils/texture_loader.h>
+#include <Engine/Asset/asset_registry.h>
+#include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/core.h>
 
 
 #include <array>
+#include <cstring>
+#include <fstream>
 #include <unordered_map>
 #include <vector>
 #include <string>
@@ -212,49 +216,30 @@ namespace {
 		default: throw std::runtime_error("Unsupported index componentType");
 		}
 	}
-	std::filesystem::path UriFromTexture(
-		const tinygltf::Model& model,
-		const GltfTextureRef& texture_ref)
-	{
-		const tinygltf::Image& img = model.images[texture_ref.imageIndex];
-
-		// Case 1: External image via URI
-		if (!img.uri.empty() && !starts_with(img.uri, "data:")) {
-			std::filesystem::path imagePath = img.uri;
-			return imagePath.lexically_normal();
-		}
-		else {
-			assert(false && "Internal textures not supported for gltf loading.");
-			return "";
-		}
+	// Reads a whole host file into bytes (HostTextureSource backend).
+	inline std::optional<std::vector<uint8_t>> ReadHostBytes(const std::filesystem::path& p) {
+		std::ifstream f(p, std::ios::binary | std::ios::ate);
+		if (!f)
+			return std::nullopt;
+		const auto size = f.tellg();
+		if (size < 0)
+			return std::nullopt;
+		std::vector<uint8_t> bytes(static_cast<size_t>(size));
+		f.seekg(0);
+		if (!bytes.empty())
+			f.read(reinterpret_cast<char*>(bytes.data()), size);
+		if (!f && !bytes.empty())
+			return std::nullopt;
+		return bytes;
 	}
-
-	inline smvk::TextureHandle LoadKtxTextureCached(
-		smvk::Cluster& cluster,
-		const std::filesystem::path& baseDir,
-		const tinygltf::Model& model,
-		const GltfTextureRef& ref,
-		std::unordered_map<int, smvk::TextureHandle>& cache)
-	{
-		auto it = cache.find(ref.imageIndex);
-		if (it != cache.end()) return it->second;
-		std::filesystem::path uri = UriFromTexture(model, ref);
-		if (uri.empty()) return {};
-		std::filesystem::path fullPath = (baseDir / uri).lexically_normal();
-		auto holder = smvk::LoadKtxTextureFile(
-			cluster.ctx_, fullPath.string());
-		if (!holder.valid()) return {};
-		smvk::TextureHandle h = holder;
-		cluster.textures.create(std::move(holder));
-		cache[ref.imageIndex] = h;
-		return h;
-	}
-};
+}; // namespace
 
 GltfToSceneImporter::GltfToSceneImporter(smvk::Cluster& inCluster, const tinygltf::Model& inModel, std::filesystem::path inGltfModelPath)
 	: cluster(inCluster)
 	, model(inModel)
 	, gltfModelPath(std::move(inGltfModelPath))
+	, textureSource(std::make_shared<HostTextureSource>(gltfModelPath.parent_path()))
+	, modelUriBase(smvk::vfs::Normalize(gltfModelPath.generic_string()))
 	, materialCache(inModel.materials.size())
 {
 	meshCache.resize(inModel.meshes.size());
@@ -263,6 +248,96 @@ GltfToSceneImporter::GltfToSceneImporter(smvk::Cluster& inCluster, const tinyglt
 			inModel.meshes[i].primitives.size()
 		);
 	}
+}
+
+void GltfToSceneImporter::setTextureSource(std::shared_ptr<TextureSource> source) {
+	if (source)
+		textureSource = std::move(source);
+}
+
+void GltfToSceneImporter::setModelUriBase(const std::string& vfsPath) {
+	const std::string n = smvk::NormalizeAssetUri(vfsPath);
+	if (!n.empty())
+		modelUriBase = smvk::AssetFilePart(n);
+}
+
+void GltfToSceneImporter::setMeshOptConfig(const smvk::MeshOptConfig& config) {
+	meshOptConfig = config;
+}
+
+// KTX2 file identifier (first 12 bytes) for cook-time payload validation.
+inline bool IsKtx2Payload(const std::vector<uint8_t>& bytes) {
+	static constexpr uint8_t kMagic[12] = {
+		0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
+	return bytes.size() >= 12 && memcmp(bytes.data(), kMagic, 12) == 0;
+}
+
+// Single memory-decode texture path shared by preloadTextures and the
+// per-material fallback: bytes come from the configured TextureSource
+// (host files or VFS). Runtime clusters decode/upload via
+// LoadKtxTextureMemory; cook-mode clusters skip the GPU entirely and mint
+// fake handles (Handle::Mint ids) that only feed MaterialValues slots and
+// the serializer's slot->uri remap. Either way the asset URI, sampler
+// params and source bytes are registered/stashed on the Cluster.
+smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int textureIndex) {
+	auto cached = textureCache.find(imageIndex);
+	if (cached != textureCache.end())
+		return cached->second;
+	if (imageIndex < 0 || imageIndex >= (int)model.images.size())
+		return {};
+	const tinygltf::Image& img = model.images[imageIndex];
+	if (img.uri.empty() || starts_with(img.uri, "data:")) {
+		assert(false && "Internal textures not supported for gltf loading.");
+		return {};
+	}
+	if (!textureSource)
+		return {};
+	auto bytes = textureSource->ReadBytes(img.uri);
+	if (!bytes || bytes->empty()) {
+		std::cerr << "Texture source missing image: " << img.uri << std::endl;
+		return {};
+	}
+	const std::string identity = textureSource->ResolveIdentity(img.uri);
+
+	smvk::TextureHandle h;
+	if (cluster.IsCookMode()) {
+		// GPU-free cook: validate the payload so broken references fail
+		// loudly at cook time, then mint a stable cook id.
+		if (!IsKtx2Payload(*bytes)) {
+			std::cerr << "Cook: not a KTX2 payload: " << img.uri << std::endl;
+			return {};
+		}
+		h = smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
+	}
+	else {
+		if (!cluster.ctx_)
+			return {};
+		auto holder = smvk::LoadKtxTextureMemory(*cluster.ctx_, bytes->data(), bytes->size(), identity);
+		if (!holder.valid())
+			return {};
+		h = holder;
+		cluster.textures.create(std::move(holder));
+	}
+	textureCache[imageIndex] = h;
+	if (!identity.empty()) {
+		cluster.RegisterTextureUri(identity, h);
+		// Persist authoring sampler (renderer still uses its default;
+		// the desc travels into paks for a future sampler pass).
+		smvk::TextureSamplerDesc samp;
+		if (textureIndex >= 0 && textureIndex < (int)model.textures.size()) {
+			const int s = model.textures[textureIndex].sampler;
+			if (s >= 0 && s < (int)model.samplers.size()) {
+				const auto& ts = model.samplers[s];
+				samp.magFilter = ts.magFilter;
+				samp.minFilter = ts.minFilter;
+				samp.wrapS = ts.wrapS;
+				samp.wrapT = ts.wrapT;
+			}
+		}
+		cluster.RegisterTextureSampler(identity, samp);
+		cluster.SetTextureSource(identity, std::move(*bytes));
+	}
+	return h;
 }
 bool LoadModelFromAsciiFile(tinygltf::Model& model, const char* filename) {
 	tinygltf::TinyGLTF loader;
@@ -448,9 +523,13 @@ void GltfToSceneImporter::preloadTextures()
 {
 	// Collect every image referenced by any material (dedup by imageIndex).
 	// Per-material creation later hits textureCache; anything missed here
-	// still loads sequentially via LoadKtxTextureCached.
+	// still loads sequentially via loadTextureForImage.
+	// Bytes come from the configured TextureSource (host or VFS) and are
+	// decoded/uploaded in parallel from memory; registration (URI, sampler,
+	// source stash) mirrors loadTextureForImage so both paths agree.
 	std::vector<int> imageIndices;
 	imageIndices.reserve(model.images.size());
+	std::unordered_map<int, int> firstTextureForImage; // imageIndex -> textureIndex (sampler)
 	{
 		std::vector<bool> seen(model.images.size(), false);
 		auto note = [&](const std::optional<GltfTextureRef>& ref) {
@@ -460,6 +539,7 @@ void GltfToSceneImporter::preloadTextures()
 			if (!seen[ref->imageIndex]) {
 				seen[ref->imageIndex] = true;
 				imageIndices.push_back(ref->imageIndex);
+				firstTextureForImage[ref->imageIndex] = ref->textureIndex;
 			}
 		};
 		for (size_t mi = 0; mi < model.materials.size(); ++mi) {
@@ -472,33 +552,113 @@ void GltfToSceneImporter::preloadTextures()
 		}
 	}
 
-	const std::filesystem::path baseDir = gltfModelPath.parent_path();
+	if (!textureSource)
+		return;
 
-	std::vector<smvk::KtxLoadJob> jobs;
-	jobs.reserve(imageIndices.size());
+	struct Pending {
+		int imageIndex = -1;
+		int textureIndex = -1;
+		std::string identity;
+		std::vector<uint8_t> bytes;
+	};
+	std::vector<Pending> pendings;
+	pendings.reserve(imageIndices.size());
 	for (int imageIndex : imageIndices) {
 		if (textureCache.find(imageIndex) != textureCache.end())
 			continue;
 		const tinygltf::Image& img = model.images[imageIndex];
 		// Embedded / data-URI images are not supported (same policy as
-		// UriFromTexture); skip them here, the sequential path asserts.
+		// loadTextureForImage); skip them here, the sequential path asserts.
 		if (img.uri.empty() || starts_with(img.uri, "data:"))
 			continue;
-		std::filesystem::path fullPath =
-			(baseDir / std::filesystem::path(img.uri)).lexically_normal();
-		jobs.push_back({ imageIndex, fullPath.string() });
+		auto bytes = textureSource->ReadBytes(img.uri);
+		if (!bytes || bytes->empty()) {
+			std::cerr << "Texture source missing image: " << img.uri << std::endl;
+			continue;
+		}
+		Pending p;
+		p.imageIndex = imageIndex;
+		auto tf = firstTextureForImage.find(imageIndex);
+		p.textureIndex = tf != firstTextureForImage.end() ? tf->second : -1;
+		p.identity = textureSource->ResolveIdentity(img.uri);
+		p.bytes = std::move(*bytes);
+		pendings.push_back(std::move(p));
 	}
 
-	if (jobs.empty()) return;
+	if (pendings.empty()) return;
+
+	// Cook mode: no GPU at all — mint stable ids, register uri/sampler/
+	// source, done. Everything here is CPU-only so no threads are needed.
+	if (cluster.IsCookMode()) {
+		for (Pending& p : pendings) {
+			if (!IsKtx2Payload(p.bytes)) {
+				std::cerr << "Cook: not a KTX2 payload: " << p.identity << std::endl;
+				continue;
+			}
+			const smvk::TextureHandle h =
+				smvk::TextureHandle::Mint(cluster.AllocCookTextureId());
+			textureCache[p.imageIndex] = h;
+			if (!p.identity.empty()) {
+				cluster.RegisterTextureUri(p.identity, h);
+				smvk::TextureSamplerDesc samp;
+				if (p.textureIndex >= 0 && p.textureIndex < (int)model.textures.size()) {
+					const int s = model.textures[p.textureIndex].sampler;
+					if (s >= 0 && s < (int)model.samplers.size()) {
+						const auto& ts = model.samplers[s];
+						samp.magFilter = ts.magFilter;
+						samp.minFilter = ts.minFilter;
+						samp.wrapS = ts.wrapS;
+						samp.wrapT = ts.wrapT;
+					}
+				}
+				cluster.RegisterTextureSampler(p.identity, samp);
+				cluster.SetTextureSource(p.identity, std::move(p.bytes));
+			}
+		}
+		std::cout << "Cook-staged " << pendings.size() << " texture payloads" << std::endl;
+		return;
+	}
+
+	std::vector<smvk::KtxMemoryJob> jobs;
+	jobs.reserve(pendings.size());
+	for (size_t i = 0; i < pendings.size(); ++i) {
+		jobs.push_back(smvk::KtxMemoryJob{
+			static_cast<int>(i),
+			pendings[i].bytes.data(),
+			pendings[i].bytes.size(),
+			pendings[i].identity,
+		});
+	}
 
 	smvk::ParallelTextureStats stats{};
-	auto holders = smvk::LoadKtxTexturesParallel(
-		cluster.ctx_, jobs, {}, &stats);
+	auto holders = cluster.ctx_
+		? smvk::LoadKtxTexturesParallelMemory(*cluster.ctx_, jobs, {}, &stats)
+		: std::unordered_map<int, smvk::Holder<smvk::TextureHandle>>{};
 
-	for (auto& [imageIndex, holder] : holders) {
-		smvk::TextureHandle h = holder;
-		cluster.textures.create(std::move(holder));
-		textureCache[imageIndex] = h;
+	for (size_t i = 0; i < pendings.size(); ++i) {
+		auto hit = holders.find(static_cast<int>(i));
+		if (hit == holders.end())
+			continue;
+		Pending& p = pendings[i];
+		smvk::TextureHandle h = hit->second;
+		cluster.textures.create(std::move(hit->second));
+		textureCache[p.imageIndex] = h;
+		if (!p.identity.empty()) {
+			cluster.RegisterTextureUri(p.identity, h);
+			smvk::TextureSamplerDesc samp;
+			if (p.textureIndex >= 0 && p.textureIndex < (int)model.textures.size()) {
+				const int s = model.textures[p.textureIndex].sampler;
+				if (s >= 0 && s < (int)model.samplers.size()) {
+					const auto& ts = model.samplers[s];
+					samp.magFilter = ts.magFilter;
+					samp.minFilter = ts.minFilter;
+					samp.wrapS = ts.wrapS;
+					samp.wrapT = ts.wrapT;
+				}
+			}
+			cluster.RegisterTextureSampler(p.identity, samp);
+			cluster.SetTextureSource(p.identity, std::move(p.bytes));
+		}
 	}
 
 	std::cout << "Preloaded " << stats.succeeded << "/" << stats.requested
@@ -557,6 +717,9 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 		def.alphaCutoff = 0.5f;
 		def.doubleSided = false;
 		defaultMaterialHandle = cluster.CreateMaterial(def);
+		if (!modelUriBase.empty())
+			cluster.RegisterMaterialUri(
+				smvk::MakeSubUri(modelUriBase, "mat.default"), defaultMaterialHandle);
 		return defaultMaterialHandle;
 	}
 
@@ -578,12 +741,9 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 			gltfMaterialIndex
 		);
 
-	const std::filesystem::path baseDir =
-		gltfModelPath.parent_path();
-
 	auto load = [&](const std::optional<GltfTextureRef>& ref) -> smvk::TextureHandle {
 		if (!ref) return {};
-		return LoadKtxTextureCached(cluster, baseDir, model, *ref, textureCache);
+		return loadTextureForImage(ref->imageIndex, ref->textureIndex);
 	};
 
 	smvk::TextureHandle baseColorHandle = load(mat.baseColorTex);
@@ -636,6 +796,11 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 	ci.doubleSided = mat.doubleSided;
 
 	slot = cluster.CreateMaterial(ci);
+	if (!modelUriBase.empty())
+		cluster.RegisterMaterialUri(
+			smvk::MakeSubUri(modelUriBase,
+				"mat." + std::to_string(gltfMaterialIndex)),
+			slot);
 
 	return slot;
 }
@@ -786,8 +951,47 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 			primitive
 		);
 
+	// Cook-time meshoptimizer pass (off by default; the cooker enables it
+	// via setMeshOptConfig). Overdraw optimization is gated off for
+	// non-opaque primitives — it can hurt cutout rendering.
+	smvk::LodInfo lod;
+	lod.groupId = static_cast<uint32_t>(gltfMeshIndex);
+	if (meshOptConfig.enabled && !data.vertices.empty() && !data.indices.empty()) {
+		bool opaque = true;
+		if (primitive.material >= 0 &&
+			primitive.material < (int)model.materials.size()) {
+			const std::string& am = model.materials[primitive.material].alphaMode;
+			opaque = am.empty() || am == "OPAQUE";
+		}
+		smvk::MeshOptConfig cfg = meshOptConfig;
+		if (!opaque)
+			cfg.overdraw = false;
+		smvk::MeshOptStats optStats;
+		const size_t inVerts = data.vertices.size();
+		if (OptimizeStaticMeshUpload(data, cfg,
+				static_cast<uint32_t>(gltfMeshIndex), &optStats, &lod)) {
+			std::cout << "MeshOpt mesh." << gltfMeshIndex << "/prim." << primitiveIndex
+				<< ": verts " << inVerts << "->" << data.vertices.size()
+				<< " tris " << optStats.triangles
+				<< " ACMR " << optStats.acmrBefore << "->" << optStats.acmrAfter
+				<< " overdraw " << optStats.overdrawBefore << "->" << optStats.overdrawAfter
+				<< std::endl;
+		}
+	}
+	else {
+		lod.triCount = static_cast<uint32_t>(data.indices.size() / 3);
+	}
+
 	slot =
 		cluster.UploadStaticMesh(data);
+
+	if (!modelUriBase.empty()) {
+		const std::string uri = smvk::MakeSubUri(modelUriBase,
+			"mesh." + std::to_string(gltfMeshIndex) +
+			"/prim." + std::to_string(primitiveIndex));
+		cluster.RegisterMeshUri(uri, slot);
+		cluster.RegisterMeshLod(uri, lod);
+	}
 
 	return slot;
 }
@@ -833,5 +1037,159 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentScene
 	for (int child : gltfNode.children) {
 		importNodeRecursive(child, groupNode, level + 1);
 	}
+}
+
+HostTextureSource::HostTextureSource(std::filesystem::path baseDir)
+	: baseDir_(std::move(baseDir)) {
+}
+
+std::optional<std::vector<uint8_t>> HostTextureSource::ReadBytes(const std::string& imageUri) {
+	if (imageUri.empty() || starts_with(imageUri, "data:"))
+		return std::nullopt;
+	const std::filesystem::path full =
+		(baseDir_ / std::filesystem::path(imageUri)).lexically_normal();
+	return ReadHostBytes(full);
+}
+
+std::string HostTextureSource::ResolveIdentity(const std::string& imageUri) const {
+	if (imageUri.empty())
+		return {};
+	const std::string joined =
+		(baseDir_.empty() ? std::filesystem::path(imageUri)
+			: (baseDir_ / std::filesystem::path(imageUri))).generic_string();
+	const std::string n = smvk::NormalizeAssetUri(joined);
+	return n.empty() ? imageUri : n;
+}
+
+VfsTextureSource::VfsTextureSource(const smvk::OverlayVfs* vfs, std::string vfsBaseDir)
+	: vfs_(vfs)
+	, vfsBaseDir_(std::move(vfsBaseDir)) {
+}
+
+std::optional<std::vector<uint8_t>> VfsTextureSource::ReadBytes(const std::string& imageUri) {
+	if (!vfs_ || imageUri.empty() || starts_with(imageUri, "data:"))
+		return std::nullopt;
+	return vfs_->TryRead(smvk::vfs::Join(vfsBaseDir_, imageUri));
+}
+
+std::string VfsTextureSource::ResolveIdentity(const std::string& imageUri) const {
+	const std::string n = smvk::NormalizeAssetUri(smvk::vfs::Join(vfsBaseDir_, imageUri));
+	return n.empty() ? imageUri : n;
+}
+
+void GltfToClusterFromVfs(
+	smvk::ResourceManager* ctx,
+	const smvk::OverlayVfs& vfs,
+	const std::string& modelVfsPath,
+	smvk::Cluster& out,
+	const smvk::MeshOptConfig& meshOpt) {
+	const std::string modelPath = smvk::NormalizeAssetUri(modelVfsPath);
+	if (modelPath.empty())
+		throw std::runtime_error("GltfToClusterFromVfs: invalid VFS path: " + modelVfsPath);
+	auto bytes = vfs.TryRead(modelPath);
+	if (!bytes)
+		throw std::runtime_error("GltfToClusterFromVfs: not in VFS: " + modelPath);
+
+	const std::string baseDir = smvk::vfs::BaseDir(modelPath);
+
+	// Route tinygltf's external reads (.bin buffers) through the VFS so the
+	// whole cook works on the overlay, never on raw host paths.
+	struct GltfFsCtx {
+		const smvk::OverlayVfs* vfs;
+		std::string baseDir;
+	} fsCtx{ &vfs, baseDir };
+	tinygltf::Model model;
+	{
+		tinygltf::FsCallbacks cbs;
+		cbs.user_data = &fsCtx;
+		cbs.ExpandFilePath = [](const std::string& path, void*) { return path; };
+		cbs.FileExists = [](const std::string& path, void* user) -> bool {
+			const auto* c = static_cast<const GltfFsCtx*>(user);
+			return c->vfs->Exists(path) ||
+				c->vfs->Exists(smvk::vfs::Join(c->baseDir, path));
+		};
+		cbs.ReadWholeFile = [](std::vector<unsigned char>* out, std::string* err,
+				const std::string& filepath, void* user) -> bool {
+			const auto* c = static_cast<const GltfFsCtx*>(user);
+			if (auto b = c->vfs->TryRead(filepath)) {
+				*out = std::move(*b);
+				return true;
+			}
+			if (auto b = c->vfs->TryRead(smvk::vfs::Join(c->baseDir, filepath))) {
+				*out = std::move(*b);
+				return true;
+			}
+			if (err)
+				*err = "VFS read failed: " + filepath;
+			return false;
+		};
+		cbs.WriteWholeFile = [](std::string*, const std::string&,
+				const std::vector<unsigned char>&, void*) { return false; };
+		cbs.GetFileSizeInBytes = [](size_t* sizeOut, std::string*,
+				const std::string& filepath, void* user) -> bool {
+			const auto* c = static_cast<const GltfFsCtx*>(user);
+			auto stat = c->vfs->Stat(filepath);
+			if (!stat)
+				stat = c->vfs->Stat(smvk::vfs::Join(c->baseDir, filepath));
+			if (!stat)
+				return false;
+			if (sizeOut)
+				*sizeOut = static_cast<size_t>(stat->size);
+			return true;
+		};
+
+		tinygltf::TinyGLTF loader;
+		loader.SetFsCallbacks(cbs);
+		std::string err, warn;
+		const std::string json(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+		if (!loader.LoadASCIIFromString(&model, &err, &warn,
+				json.c_str(), static_cast<unsigned int>(json.size()), baseDir)) {
+			throw std::runtime_error("GltfToClusterFromVfs: parse failed: " + modelPath + ": " + err);
+		}
+		if (!warn.empty())
+			std::cout << "WARN: " << warn << std::endl;
+		std::cout << "Loaded glTF from VFS: " << modelPath << std::endl;
+	}
+
+	GltfToSceneImporter importer{ out, model, std::filesystem::path(modelPath) };
+	importer.setTextureSource(
+		std::make_shared<VfsTextureSource>(&vfs, baseDir));
+	importer.setModelUriBase(modelPath);
+	importer.setMeshOptConfig(meshOpt);
+
+	// Same tail as GltfToCluster (Engine/Utils/gltf.h): cluster root,
+	// top-level glTF nodes, preload, import, fixup, flush.
+	assert(out.scene.hierarchy.empty());
+	const int root = addNode(out.scene, -1, 0);
+	out.scene.localTransform[root] = glm::mat4(1.0f);
+	out.scene.globalTransform[root] = glm::mat4(1.0f);
+
+	std::vector<int> gltfRoots;
+	if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size()) {
+		gltfRoots = model.scenes[model.defaultScene].nodes;
+	}
+	else if (!model.scenes.empty()) {
+		gltfRoots = model.scenes.front().nodes;
+	}
+	else {
+		std::vector<bool> referenced(model.nodes.size());
+		for (const auto& n : model.nodes)
+			for (int c : n.children)
+				if (c >= 0 && c < (int)model.nodes.size())
+					referenced[c] = true;
+		for (int i = 0; i < (int)model.nodes.size(); ++i)
+			if (!referenced[i]) gltfRoots.push_back(i);
+	}
+
+	importer.preloadTextures();
+
+	for (int gltfNode : gltfRoots)
+		importer.import(gltfNode);
+
+	markAsChanged(out.scene, root);
+	recalculateGlobalTransforms(out.scene);
+	if (out.ctx_)
+		out.ctx_->FlushUploads();
+	(void)ctx;
 }
 
