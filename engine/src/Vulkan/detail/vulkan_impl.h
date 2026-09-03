@@ -896,12 +896,17 @@ namespace smvk {
 			const StencilSettings& stencil = StencilSettings::DefaultDisabled(),
 			const BlendSettings& blend = BlendSettings::Opaque(),
 			const MSAASettings& msaa = MSAASettings::Count1());
+		PipelineBundle GetComputePipeline(
+			ShaderProgram& program);
 		void Clear();
 
 
 	private:
 		PipelineBundle BuildGraphicsPipeline(
 			const PipelineKey& key);
+
+		PipelineBundle BuildComputePipeline(
+			ShaderProgram& program);
 
 	private:
 		VulkanResourceManager* ctx_ = nullptr;
@@ -911,6 +916,23 @@ namespace smvk {
 			PipelineBundle,
 			PipelineKeyHash
 		> pipelines_;
+
+		struct ComputeKey {
+			ShaderModuleHandle module{};
+			std::string entry;
+			bool operator==(const ComputeKey& o) const noexcept {
+				return module == o.module && entry == o.entry;
+			}
+		};
+		struct ComputeKeyHash {
+			size_t operator()(const ComputeKey& k) const noexcept {
+				size_t h = std::hash<uint32_t>{}(k.module.index());
+				h ^= std::hash<uint32_t>{}(k.module.gen()) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				h ^= std::hash<std::string>{}(k.entry) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				return h;
+			}
+		};
+		std::unordered_map<ComputeKey, PipelineBundle, ComputeKeyHash> computePipelines_;
 	};
 
 	std::vector<VkVertexInputBindingDescription> getVkVertexInputBindingDescriptions(const VertexFormatDescription& format);

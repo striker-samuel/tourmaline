@@ -5819,7 +5819,9 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 	ImageCreateInfo depthImageCreateInfo{};
 	depthImageCreateInfo.extent = { extent_.width, extent_.height };
 	depthImageCreateInfo.format = depthFormat;
-	depthImageCreateInfo.usage = ImageUsage::DepthStencilAttachment;
+	// Sampled bit is required for Forward+ tile culling (compute reads
+	// depth as a bindless texture for per-tile min/max).
+	depthImageCreateInfo.usage = ImageUsage::DepthStencilAttachment | ImageUsage::Sampled;
 	depthImageCreateInfo.mipLevels = 1;
 	depthImageCreateInfo.arrayLayers = 1;
 	depthImageCreateInfo.name = "swapchain depth image";
@@ -6704,6 +6706,57 @@ void smvk::VulkanPipelineCache::Clear() {
 		}
 	}
 	pipelines_.clear();
+	for (auto& [key, bundle] : computePipelines_)
+	{
+		if (bundle.pipeline != VK_NULL_HANDLE)
+		{
+			DestroyGraphicsPipeline(
+				bundle.pipeline);
+		}
+	}
+	computePipelines_.clear();
+}
+
+smvk::PipelineBundle smvk::VulkanPipelineCache::GetComputePipeline(
+	ShaderProgram& program)
+{
+	assert(program.shaderCount == 1);
+	const Shader& shader = program.shaders[0];
+	assert(shader.stage == ShaderStage::Compute);
+	ComputeKey key{ shader.module, shader.entryPoint ? shader.entryPoint : "" };
+	if (auto it = computePipelines_.find(key); it != computePipelines_.end())
+		return it->second;
+	PipelineBundle bundle = BuildComputePipeline(program);
+	computePipelines_.emplace(std::move(key), bundle);
+	return bundle;
+}
+
+smvk::PipelineBundle smvk::VulkanPipelineCache::BuildComputePipeline(
+	ShaderProgram& program)
+{
+	assert(program.shaderCount == 1);
+	const Shader& shader = program.shaders[0];
+	auto shaderModule = ctx_->shaderModules_.get(shader.module);
+	assert(shaderModule && *shaderModule != VK_NULL_HANDLE);
+
+	VkPipelineShaderStageCreateInfo stageInfo{
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+		.module = *shaderModule,
+		.pName = shader.entryPoint,
+	};
+
+	const VkPipelineLayout layout = ctx_->defaultPipeLayout;
+	VkComputePipelineCreateInfo pipelineInfo{
+		.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+		.stage = stageInfo,
+		.layout = layout,
+	};
+
+	PipelineBundle bundle{};
+	CreateComputePipeline(pipelineInfo, bundle.pipeline);
+	bundle.layout = layout;
+	return bundle;
 }
 
 // ------------------------------------------------------------------
@@ -7068,6 +7121,16 @@ void smvk::RenderGraph::FreeImage(
 	}
 
 	images_.destroy(handle);
+}
+
+void smvk::RenderGraph::FreeBuffer(
+	LogicalBufferHandle handle)
+{
+	if (handle.empty())
+		return;
+	// External buffers are owned by the caller (ForwardPlus tile buffers,
+	// app light buffers) – just drop the logical alias, never the physical.
+	buffers_.destroy(handle);
 }
 void smvk::RenderGraph::ResolveImages() {
 	VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
@@ -7609,6 +7672,13 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		VkRenderingInfo renderInfo{ .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR, .renderArea = {.offset = renderOffset, .extent = renderExtent, }, .layerCount = 1, .colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()), .pColorAttachments = colorInfos.data(), };
 		renderInfo.pDepthAttachment = hasDepth ? &depthInfo : nullptr;
 		renderInfo.pStencilAttachment = hasStencil ? &depthInfo : nullptr;
+		if (pass.IsCompute()) {
+			// Compute pass: no render targets, run recording directly.
+			// Barriers above already transitioned hinted images/buffers.
+			CommandBuffer cb{ reinterpret_cast<void*>(cmd), *this, pass };
+			if (pass.recordingFunction_) pass.recordingFunction_(cb);
+			continue;
+		}
 		VkViewport vp{}; vp.x = static_cast<float>(pass.offsetX_); vp.y = static_cast<float>(pass.offsetY_); vp.width = static_cast<float>(pass.extent_.width); vp.height = static_cast<float>(pass.extent_.height); vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
 		VkRect2D scissor{}; scissor.offset = { pass.offsetX_, pass.offsetY_ }; scissor.extent = { pass.extent_.width, pass.extent_.height };
 		vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -7777,6 +7847,55 @@ void smvk::CommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCoun
 		firstInstance
 	);
 }
+void smvk::CommandBuffer::BindComputePipeline(
+	ShaderProgram& shaderProgram)
+{
+	assert(graph_ != nullptr);
+	assert(renderPass_ != nullptr);
+
+	VulkanResourceManager& vulkanCtx = *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
+	auto* cacheOpaque = static_cast<RenderGraph::PipelineCacheOpaque*>(graph_->pipelineCacheOpaque_.get());
+	auto bundle = cacheOpaque->cache.GetComputePipeline(shaderProgram);
+
+	assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid compute pipeline handle");
+
+	if (bundle.pipeline == reinterpret_cast<VkPipeline>(currentPipeline_)) {
+		return;
+	}
+
+	currentPipeline_ = reinterpret_cast<void*>(bundle.pipeline);
+	currentLayout_ = reinterpret_cast<void*>(bundle.layout);
+
+	vkCmdBindPipeline(
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
+		VK_PIPELINE_BIND_POINT_COMPUTE,
+		bundle.pipeline
+	);
+
+	vkCmdBindDescriptorSets(
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
+		VK_PIPELINE_BIND_POINT_COMPUTE,
+		vulkanCtx.defaultPipeLayout,
+		0,
+		1,
+		vulkanCtx.defaultDescriptorSets_,
+		0,
+		nullptr);
+}
+
+void smvk::CommandBuffer::Dispatch(
+	uint32_t groupCountX,
+	uint32_t groupCountY,
+	uint32_t groupCountZ)
+{
+	vkCmdDispatch(
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
+		groupCountX,
+		groupCountY,
+		groupCountZ
+	);
+}
+
 void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const void* data, ShaderStage stageMask)
 {
 	assert(currentLayout_ != nullptr);

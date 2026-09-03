@@ -7,6 +7,7 @@
 #include <Engine/core.h>
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
+#include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/tonemap.h>
 #include <imgui.h>
@@ -78,6 +79,42 @@ static smvk::CascadedShadowMapDesc MakeShadowDesc() {
 	return d;
 }
 
+// -----------------------------------------------------------------------------
+// Forward+ tiled config (resources + passes live in
+// Engine/Rendergraph/forwardplus.h)
+// -----------------------------------------------------------------------------
+static constexpr uint32_t FP_TILE_SIZE = 16;
+static constexpr uint32_t FP_MAX_LIGHTS = 1024;
+static constexpr uint32_t FP_MAX_PER_TILE = 128;
+
+static smvk::ForwardPlusDesc MakeForwardPlusDesc() {
+	smvk::ForwardPlusDesc d{};
+	d.tileSize = FP_TILE_SIZE;
+	d.maxLights = FP_MAX_LIGHTS;
+	d.maxLightsPerTile = FP_MAX_PER_TILE;
+	d.name = "forwardplus";
+	return d;
+}
+
+// Procedural demo lights (grid of points + a few orbiting spots).
+struct ForwardPlusDemo {
+	bool enabled = true;
+	int gridX = 8;
+	int gridY = 3;
+	int gridZ = 8;
+	float spacingX = 3.0f;
+	float spacingY = 2.2f;
+	float spacingZ = 1.8f;
+	float baseY = 1.2f;
+	float range = 9.0f;
+	float intensity = 60.0f;
+	bool animate = true;
+	float speed = 0.6f;
+	int spotCount = 4;
+	float spotRange = 22.0f;
+	float spotIntensity = 900.0f;
+};
+
 // Data definitions //
 struct DrawSetData {
 	float transform[16] = {
@@ -119,17 +156,21 @@ struct AppResources {
 	smvk::Holder<smvk::BufferHandle> lightsBuffer;
 	smvk::Holder<smvk::BufferHandle> materialsBuffer;
 	smvk::Holder<smvk::BufferHandle> directionalCascadeBuffer; // GpuDirectionalLightDescription per frame
+	smvk::Holder<smvk::BufferHandle> fpLightsBuffer; // ForwardPlusLight * FP_MAX_LIGHTS per frame
+	smvk::LogicalBufferHandle fpLightsLogical{}; // rendergraph alias (stable: buffer never resized)
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
 	smvk::ShaderProgram mainProgram;
-	// NOTE: shadow/bloom/tonemap programs + modules are owned by their
-	// engine builders (CascadedShadowAtlas / BloomChain / Tonemapper).
+	// NOTE: shadow/bloom/tonemap/forwardplus programs + modules are owned by
+	// their engine builders (CascadedShadowAtlas / BloomChain / Tonemapper /
+	// ForwardPlus).
 };
 
 struct ViewportResources {
 	smvk::CascadedShadowAtlas directionalShadows; // atlas + default shadow program + Ensure
 	smvk::BloomChain bloom; // separated per-mip HDR chain + default down/up programs + Ensure
 	smvk::Tonemapper tonemap; // default tonemap program + pass helper
+	smvk::ForwardPlus forwardPlus; // tile buffers + cull/depth programs + Ensure
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
 	smvk::LogicalImageViewHandle depthView;
 	smvk::HdrTarget hdr; // HDR intermediate (image + view + bindless + logical) + Ensure
@@ -193,6 +234,13 @@ private:
 			smvk::BufferType_Storage,
 			"directional cascade buffer"
 		);
+		m_resources.fpLightsBuffer = m_context->CreateBuffer(
+			sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS * m_swapchain->framesInFlight(),
+			smvk::BufferType_Storage,
+			"forwardplus lights buffer"
+		);
+		m_resources.fpLightsLogical = m_rendergraph->AddExternalBuffer(
+			m_resources.fpLightsBuffer, "forwardplus lights");
 
 		// Main ShaderProgram (scene-owned; shadow/bloom/tonemap programs live
 		// in their engine builders with defaults + Ensure).
@@ -260,6 +308,11 @@ private:
 		{
 			auto vkExt = m_swapchain->GetExtent();
 			const smvk::Extent2D extent{ vkExt.width, vkExt.height };
+			if (!m_viewportResources.forwardPlus.Ensure(*m_context, *m_rendergraph,
+				extent, MakeForwardPlusDesc(), m_swapchain->GetDepthImageViewHandle())) {
+				std::cerr << "[TestApp] Failed to create Forward+ tile buffers\n";
+				return false;
+			}
 			if (!m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, extent)) {
 				std::cerr << "[TestApp] Failed to create HDR target\n";
 				return false;
@@ -286,6 +339,7 @@ private:
 	void Shutdown() override {
 		// Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
 		WaitForDeviceIdle();
+		m_viewportResources.forwardPlus.Destroy(*m_rendergraph);
 		m_viewportResources.bloom.Destroy(*m_rendergraph);
 		m_viewportResources.directionalShadows.Destroy(*m_rendergraph);
 		m_viewportResources.hdr.Destroy(*m_rendergraph);
@@ -361,7 +415,8 @@ private:
 		light.direction[0] = lightDir.x;
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
-		light.intensity = 5000.0f;
+		//light.intensity = 5000.0f;
+		light.intensity = 10000.0f;
 		light.shadow_map_index =
 			m_context->GetBindlessIndex(
 				m_viewportResources.directionalShadows.bindless
@@ -438,6 +493,73 @@ private:
 		);
 	}
 
+	// Builds the procedural Forward+ demo light set into the per-frame upload
+	// buffer. Returns the number of lights written (clamped to FP_MAX_LIGHTS).
+	uint32_t UpdateForwardPlusLights(uint32_t currentFrame) {
+		std::vector<smvk::ForwardPlusLight> lights;
+		lights.reserve(FP_MAX_LIGHTS);
+		if (m_fpDemo.enabled) {
+			const int gx = std::max(1, m_fpDemo.gridX);
+			const int gy = std::max(1, m_fpDemo.gridY);
+			const int gz = std::max(1, m_fpDemo.gridZ);
+			const float ox = -(gx - 1) * 0.5f * m_fpDemo.spacingX;
+			const float oz = -(gz - 1) * 0.5f * m_fpDemo.spacingZ;
+			for (int iz = 0; iz < gz && lights.size() + (size_t)m_fpDemo.spotCount < FP_MAX_LIGHTS; ++iz) {
+				for (int iy = 0; iy < gy && lights.size() + (size_t)m_fpDemo.spotCount < FP_MAX_LIGHTS; ++iy) {
+					for (int ix = 0; ix < gx && lights.size() + (size_t)m_fpDemo.spotCount < FP_MAX_LIGHTS; ++ix) {
+						smvk::ForwardPlusLight l{};
+						float phase = float(ix * 7 + iy * 13 + iz * 29) * 0.35f;
+						float bob = m_fpDemo.animate
+							? std::sin(time_since_start_s * m_fpDemo.speed + phase) * 0.5f
+							: 0.0f;
+						l.position = {
+							ox + ix * m_fpDemo.spacingX,
+							m_fpDemo.baseY + iy * m_fpDemo.spacingY + bob,
+							oz + iz * m_fpDemo.spacingZ
+						};
+						l.range = m_fpDemo.range;
+						// Warm/cool checkerboard so tiling artifacts read clearly.
+						bool warm = ((ix + iy + iz) & 1) == 0;
+						l.color = warm
+							? glm::vec4(1.0f, 0.62f, 0.32f, 1.0f)
+							: glm::vec4(0.35f, 0.65f, 1.0f, 1.0f);
+						l.intensity = m_fpDemo.intensity;
+						l.type = smvk::kForwardPlusPoint;
+						lights.push_back(l);
+					}
+				}
+			}
+			// Orbiting spots to exercise the cone path.
+			for (int s = 0; s < m_fpDemo.spotCount && lights.size() < FP_MAX_LIGHTS; ++s) {
+				smvk::ForwardPlusLight l{};
+				float a = time_since_start_s * 0.4f * m_fpDemo.speed + s * 6.2831853f / std::max(1, m_fpDemo.spotCount);
+				l.position = { std::cos(a) * 6.0f, 7.0f, std::sin(a) * 4.0f };
+				l.direction = glm::normalize(glm::vec3(-l.position.x, -7.0f, -l.position.z) * 0.35f + glm::vec3(0, -1, 0));
+				l.range = m_fpDemo.spotRange;
+				l.color = glm::vec4(1.0f, 0.9f, 0.75f, 1.0f);
+				l.intensity = m_fpDemo.spotIntensity;
+				l.innerAngle = glm::radians(12.0f);
+				l.outerAngle = glm::radians(28.0f);
+				l.type = smvk::kForwardPlusSpot;
+				lights.push_back(l);
+			}
+		}
+
+		constexpr size_t FP_FRAME_STRIDE = sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS;
+		if (!lights.empty()) {
+			m_context->UploadDataToBuffer(
+				m_resources.fpLightsBuffer,
+				lights.data(),
+				sizeof(smvk::ForwardPlusLight) * lights.size(),
+				smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute),
+				smvk::AccessFlags::ShaderRead,
+				0,
+				currentFrame * FP_FRAME_STRIDE
+			);
+		}
+		return (uint32_t)lights.size();
+	}
+
 	void RebuildSwapViews() {
 		for (auto h : m_viewportResources.swapImages) {
 			m_rendergraph->FreeImageView(h);
@@ -480,6 +602,8 @@ private:
 		{
 			auto vkExt = m_swapchain->GetExtent();
 			const smvk::Extent2D extent{ vkExt.width, vkExt.height };
+			m_viewportResources.forwardPlus.Ensure(*m_context, *m_rendergraph,
+				extent, MakeForwardPlusDesc(), m_swapchain->GetDepthImageViewHandle());
 			m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, extent);
 			m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, extent, MakeBloomDesc());
 		}
@@ -487,6 +611,7 @@ private:
 		UpdateFrameUniforms(fb.frameIndex);
 		UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
+		const uint32_t fpLightCount = UpdateForwardPlusLights(fb.frameIndex);
 		//
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
@@ -518,6 +643,18 @@ private:
 			m_context->GetBufferDeviceAddress(m_resources.directionalCascadeBuffer)
 			+ fb.frameIndex * DIR_FRAME_STRIDE;
 
+		constexpr size_t FP_LIGHT_FRAME_STRIDE =
+			sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS;
+		uint64_t fpLightsAddress =
+			m_context->GetBufferDeviceAddress(m_resources.fpLightsBuffer)
+			+ fb.frameIndex * FP_LIGHT_FRAME_STRIDE;
+		const auto& fp = m_viewportResources.forwardPlus;
+		const uint64_t fpTileCountsAddress = fp.TileCountsAddress(*m_context);
+		const uint64_t fpTileIndicesAddress = fp.TileIndicesAddress(*m_context);
+		const uint32_t fpTileCountX = fp.tileCountX;
+		const uint32_t fpTileCountY = fp.tileCountY;
+
+		// Must match HLSL PushConstants in common.hlsli (field order + size).
 		struct alignas(16) PushConstants {
 			float model[16];
 			uint64_t frameUniforms;
@@ -528,6 +665,13 @@ private:
 			uint32_t comparisonSamplerId;
 			uint32_t numCascades;
 			uint32_t cascadeIndex;
+			uint64_t fpLights;
+			uint64_t fpTileCounts;
+			uint64_t fpTileIndices;
+			uint32_t fpTileCountX;
+			uint32_t fpLightCount;
+			uint32_t fpTileSize;
+			uint32_t fpMaxPerTile;
 		} pc{
 			.frameUniforms = frameUniformsAddress,
 			.lightsBuffer = lightsBufferAddress,
@@ -536,9 +680,16 @@ private:
 			.materialId = 0, // defaultMaterial
 			.comparisonSamplerId = 1,
 			.numCascades = NUM_CASCADES,
-			.cascadeIndex = 0
+			.cascadeIndex = 0,
+			.fpLights = fpLightsAddress,
+			.fpTileCounts = fpTileCountsAddress,
+			.fpTileIndices = fpTileIndicesAddress,
+			.fpTileCountX = fpTileCountX,
+			.fpLightCount = fpLightCount,
+			.fpTileSize = FP_TILE_SIZE,
+			.fpMaxPerTile = FP_MAX_PER_TILE,
 		};
-		static_assert(sizeof(PushConstants) <= 128, "PushConstants must fit in 128 bytes");
+		static_assert(sizeof(PushConstants) <= 256, "PushConstants must fit in 256 bytes (engine limit)");
 
 		// ---- Cascaded shadow map passes – one per cascade tile (builder owns offsets/extents/load ops) ----
 		{
@@ -592,6 +743,84 @@ private:
 			}
 		}
 
+		// ---- Forward+ depth prepass – fills depth for tile min/max cull ----
+		// VS-only (default.vert mainVS); no color. Masked materials can't
+		// alpha-test without a FS, so cutout quads write full-quad depth here
+		// (conservative for culling: may include a few extra lights, v1).
+		{
+			PushConstants depthPC = pc;
+			auto& prepass = m_viewportResources.forwardPlus.AddDepthPrepass(
+				*m_rendergraph, m_viewportResources.depthView,
+				{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height },
+				"ForwardPlusDepth");
+			prepass.SetRecordingFunc([this, depthPC](smvk::CommandBuffer& cmd)
+			{
+				cmd.BindRenderPipeline(
+					m_viewportResources.forwardPlus.depthProgram,
+					smvk::VertexFormat::StaticVertexFormat,
+					smvk::DepthSettings{
+						.depthFunc = smvk::CompareOp::GreaterEqual,
+						.writeEnable = true,
+						.depthTestEnable = true,
+					},
+					smvk::StencilSettings{},
+					smvk::BlendSettings{},
+					smvk::MSAASettings{},
+					smvk::RasterSettings{
+						.cullMode = smvk::CullMode::Back
+					}
+				);
+				cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
+				m_world->forEachNode(
+					smvk::IteratorFlagBit_Renderable
+					| smvk::IteratorFlagBit_Opaque
+					| smvk::IteratorFlagBit_StaticVertexFmt
+					, [&](NodeId node)
+				{
+					auto meshForNode = m_world->scene.meshForNode.find(node);
+					if (meshForNode == m_world->scene.meshForNode.end()) return;
+					auto& model = m_world->scene.globalTransform[node];
+					uint32_t meshId = meshForNode->second;
+					smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
+					PushConstants objectPC{};
+					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+					cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+					for (auto& draw_set : meshDesc->geometry.surfaces) {
+						cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+					};
+				});
+			});
+		}
+
+		// ---- Forward+ tile cull – depth + light volumes -> per-tile lists ----
+		{
+			smvk::ForwardPlusCullPush cullPC{};
+			cullPC.frameUniforms = frameUniformsAddress;
+			cullPC.lights = fpLightsAddress;
+			cullPC.tileCounts = fpTileCountsAddress;
+			cullPC.tileIndices = fpTileIndicesAddress;
+			cullPC.depthTextureIndex = m_viewportResources.forwardPlus.depthBindlessIndex;
+			cullPC.tileCountX = fpTileCountX;
+			cullPC.tileCountY = fpTileCountY;
+			cullPC.lightCount = fpLightCount;
+			cullPC.tileSize = FP_TILE_SIZE;
+			cullPC.maxLightsPerTile = FP_MAX_PER_TILE;
+			auto& cullPass = m_viewportResources.forwardPlus.AddCullPass(
+				*m_rendergraph, m_viewportResources.depthView,
+				m_resources.fpLightsLogical, "ForwardPlusCull");
+			cullPass.SetRecordingFunc([this, cullPC](smvk::CommandBuffer& cmd) mutable
+			{
+				cmd.BindComputePipeline(
+					m_viewportResources.forwardPlus.cullProgram);
+				cmd.PushConstants(0, sizeof(smvk::ForwardPlusCullPush), &cullPC,
+					smvk::ShaderStage::Compute);
+				cmd.Dispatch(
+					m_viewportResources.forwardPlus.tileCountX,
+					m_viewportResources.forwardPlus.tileCountY,
+					1);
+			});
+		}
+
 		auto& mainPass = m_rendergraph->AddPass("Main")
 			.SetOffset(0, 0)
 			.SetInputImages(
@@ -611,8 +840,10 @@ private:
 				smvk::AttachmentStoreOp::Store,
 				smvk::ClearColor(0, 0, 0, 1)
 			)
+			// Depth was filled by the Forward+ prepass: load it, test
+			// read-only (GreaterEqual = reversed-Z near-wins).
 			.SetDepth(m_viewportResources.depthView,
-				smvk::AttachmentLoadOp::Clear,
+				smvk::AttachmentLoadOp::Load,
 				smvk::AttachmentStoreOp::DontCare,
 				smvk::ClearDepthStencil(0, 0)
 			)
@@ -624,7 +855,9 @@ private:
 				smvk::VertexFormat::StaticVertexFormat,
 				smvk::DepthSettings
 				{
-					.depthFunc = smvk::CompareOp::GreaterEqual
+					.depthFunc = smvk::CompareOp::GreaterEqual,
+					.writeEnable = false,
+					.depthTestEnable = true,
 				}
 			);
 
@@ -690,6 +923,18 @@ private:
 
 		}
 			);
+		// Forward+ tile lists are device-written by the cull pass and
+		// device-read here: explicit read hints order cull -> main and emit
+		// the compute->fragment buffer barriers.
+		smvk::ForwardPlus::AddTileReadHints(mainPass,
+			m_viewportResources.forwardPlus.tileCountsLogical,
+			m_viewportResources.forwardPlus.tileIndicesLogical);
+		{
+			smvk::BufferSyncRequest fpLightRead{};
+			fpLightRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			fpLightRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+			mainPass.AddBufferHint(m_resources.fpLightsLogical, fpLightRead);
+		}
 
 		// ---------------------------------------------------------------------
 		// Bloom – HDR downsample / upsample chain (composable, see bloom.h)
@@ -781,6 +1026,34 @@ private:
 				}
 			}
 			ImGui::Separator();
+			{
+				const auto& fwd = m_viewportResources.forwardPlus;
+				ImGui::Text("Forward+: %ux%u tiles (%u)  tile %u  max/tile %u",
+					fwd.tileCountX, fwd.tileCountY, fwd.tileCount,
+					FP_TILE_SIZE, FP_MAX_PER_TILE);
+				ImGui::Checkbox("Tiled point/spot lights", &m_fpDemo.enabled);
+				ImGui::Checkbox("Animate", &m_fpDemo.animate);
+				ImGui::SliderFloat("Speed", &m_fpDemo.speed, 0.0f, 3.0f);
+				int gx = m_fpDemo.gridX, gy = m_fpDemo.gridY, gz = m_fpDemo.gridZ;
+				if (ImGui::SliderInt("Grid X", &gx, 1, 12)) m_fpDemo.gridX = gx;
+				if (ImGui::SliderInt("Grid Y", &gy, 1, 8)) m_fpDemo.gridY = gy;
+				if (ImGui::SliderInt("Grid Z", &gz, 1, 12)) m_fpDemo.gridZ = gz;
+				ImGui::SliderFloat("Spacing X", &m_fpDemo.spacingX, 0.5f, 8.0f);
+				ImGui::SliderFloat("Spacing Y", &m_fpDemo.spacingY, 0.5f, 6.0f);
+				ImGui::SliderFloat("Spacing Z", &m_fpDemo.spacingZ, 0.5f, 8.0f);
+				ImGui::SliderFloat("Range", &m_fpDemo.range, 1.0f, 30.0f);
+				ImGui::SliderFloat("Intensity (cd)", &m_fpDemo.intensity, 0.0f, 500.0f);
+				int spots = m_fpDemo.spotCount;
+				if (ImGui::SliderInt("Spots", &spots, 0, 16)) m_fpDemo.spotCount = spots;
+				ImGui::SliderFloat("Spot intensity (cd)", &m_fpDemo.spotIntensity, 0.0f, 4000.0f);
+				const int wantLights = m_fpDemo.enabled
+					? (m_fpDemo.gridX * m_fpDemo.gridY * m_fpDemo.gridZ + m_fpDemo.spotCount) : 0;
+				ImGui::Text("Lights: %d / %u%s", wantLights, FP_MAX_LIGHTS,
+					wantLights > (int)FP_MAX_LIGHTS ? "  (CLAMPED!)" : "");
+				if (fwd.depthBindlessIndex == UINT32_MAX)
+					ImGui::TextDisabled("Depth bindless: MISSING (cull falls back to empty)");
+			}
+			ImGui::Separator();
 			ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
 			ImGui::End();
 
@@ -813,6 +1086,7 @@ private:
 	std::unique_ptr<smvk::ImGuiOverlay> m_imgui{};
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
+	ForwardPlusDemo m_fpDemo{};
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target

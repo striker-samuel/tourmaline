@@ -3,6 +3,7 @@
 
 struct PSIn
 {
+    float4 clipPos : SV_Position;
     float3 color : COLOR0;
     float2 uv : TEXCOORD0;
     float3 worldPos : TEXCOORD1;
@@ -261,6 +262,73 @@ PSOut mainPS(PSIn IN)
     float3 diffuse = kD * baseColor / PI;
 
     float3 direct = (diffuse + specular) * lightColor * NdotL * shadow;
+
+    // ---------------------------------------------------------------
+    // Forward+ tiled point/spot lights (depth-prepassed, GPU-culled).
+    // Tile lists live in fpTileCounts/fpTileIndices, lights in fpLights.
+    // No shadow maps for tiled lights yet (v1).
+    // ---------------------------------------------------------------
+    if (pc.fpLightCount > 0)
+    {
+        uint fpTileSize = max(pc.fpTileSize, 1u);
+        uint tx = (uint)(IN.clipPos.x / (float)fpTileSize);
+        uint ty = (uint)(IN.clipPos.y / (float)fpTileSize);
+        if (tx < pc.fpTileCountX)
+        {
+            uint tileIdx = ty * pc.fpTileCountX + tx;
+            uint perTile = min(pc.fpMaxPerTile, (uint)MAX_FP_PER_TILE);
+            uint tcount = min(pc.fpTileCounts.Get().counts[tileIdx], perTile);
+            uint stride = max(pc.fpMaxPerTile, 1u);
+            uint nlights = min(pc.fpLightCount, (uint)MAX_FP_LIGHTS);
+            for (uint s = 0; s < tcount; ++s)
+            {
+                uint li = pc.fpTileIndices.Get().indices[tileIdx * stride + s];
+                if (li >= nlights)
+                    continue;
+                ForwardPlusLight pl = pc.fpLights.Get().lights[li];
+
+                float3 toLight = pl.position - IN.worldPos;
+                float dist = length(toLight);
+                if (pl.range > 0.0f && dist > pl.range)
+                    continue;
+                float3 Lp = toLight / max(dist, 1e-6f);
+
+                // Angular falloff for spots.
+                float angular = 1.0f;
+                if (pl.type == 1)
+                {
+                    float cosA = dot(-Lp, normalize(pl.direction));
+                    float cosInner = cos(pl.innerAngle);
+                    float cosOuter = cos(pl.outerAngle);
+                    if (cosA < cosOuter)
+                        continue;
+                    angular = smoothstep(cosOuter, cosInner, cosA);
+                }
+
+                // Frostbite-style windowed falloff, candela convention:
+                // radiance = color * intensity * window / (4 * PI * r^2).
+                float window_ = 1.0f;
+                if (pl.range > 0.0f)
+                {
+                    float x = dist / max(pl.range, 1e-6f);
+                    window_ = pow(saturate(1.0f - x * x * x * x), 2.0f);
+                }
+                float atten = window_ / max(4.0f * PI * dist * dist, 1e-2f);
+                float3 plColor = pl.color.rgb * pl.intensity;
+
+                float NdotLp = max(dot(N, Lp), 0.0f);
+                if (NdotLp <= 0.0f)
+                    continue;
+                float3 Hp = normalize(V + Lp);
+                float Dp = DistributionGGX(N, Hp, roughness);
+                float Gp = GeometrySmith(N, V, Lp, roughness);
+                float3 Fp = FresnelSchlick(max(dot(Hp, V), 0.0f), F0);
+                float3 specP = (Dp * Gp * Fp) / max(4.0f * NdotV * NdotLp, 1e-7f);
+
+                direct += (diffuse + specP) * plColor * (NdotLp * atten * angular);
+            }
+        }
+    }
 
     // Ambient / sky-IBL floor (hemispherical sky).
     // mat.ambient.rgb is the zenith sky radiance factor as an albedo

@@ -52,6 +52,14 @@ namespace smvk
 			uint32_t firstInstance = 0
 		);
 
+		void BindComputePipeline(
+			ShaderProgram& shaderProgram);
+
+		void Dispatch(
+			uint32_t groupCountX,
+			uint32_t groupCountY,
+			uint32_t groupCountZ);
+
 		void BindStaticVertexFmt();
 
 		// Access native VkCommandBuffer for integrations like ImGui.
@@ -371,6 +379,21 @@ namespace smvk
 			return *this;
 		}
 
+		// --------------------------------------------------------
+		// Compute support (Forward+ light culling, etc.)
+		// --------------------------------------------------------
+		// Marks this pass as compute: Execute() skips BeginRendering
+		// and runs the recording func directly (barriers still emitted
+		// from image/buffer hints). Compute passes must have no color
+		// or depth attachments.
+		RenderPass& MarkAsCompute()
+		{
+			isCompute_ = true;
+			return *this;
+		}
+
+		[[nodiscard]] bool IsCompute() const { return isCompute_; }
+
 
 	private:
 		friend RenderGraph;
@@ -411,6 +434,8 @@ namespace smvk
 		RecordingFunction
 			recordingFunction_{};
 
+		bool isCompute_ = false;
+
 		const char* name_ = nullptr;
 	};
 
@@ -438,6 +463,9 @@ namespace smvk
 		void FreeImage(
 			LogicalImageHandle handle);
 
+		void FreeBuffer(
+			LogicalBufferHandle handle);
+
 		// Destroys resolved views then transient images so each parent image's
 		// liveViewCount reaches zero before the image is released. External
 		// resources are owned by the caller and are left untouched.
@@ -462,7 +490,9 @@ namespace smvk
 		RenderPass& AddComputePass(
 			const char* name = nullptr)
 		{
-			return passes_.emplace_back(name);
+			RenderPass& pass = passes_.emplace_back(name);
+			pass.MarkAsCompute();
+			return pass;
 		}
 
 

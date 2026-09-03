@@ -96,6 +96,40 @@ struct DirectionalCascadeBuffer
     GpuDirectionalLightDescription dir;
 };
 
+// ---- Forward+ tiled lights (point/spot; directional stays on CSM path) ----
+// Must match C++ smvk::ForwardPlusLight (64 bytes).
+struct ForwardPlusLight
+{
+    float4 color;       // 0  linear RGB + pad
+    float3 position;    // 16 world pos
+    float range;        // 28 cutoff (m); <=0 = infinite
+    float3 direction;   // 32 normalized spot axis
+    float intensity;    // 44 candela (lm/sr)
+    float innerAngle;   // 48 radians (spot)
+    float outerAngle;   // 52 radians (spot)
+    int type;           // 56 0=point, 1=spot
+    int flags;          // 60
+};
+
+#define MAX_FP_LIGHTS 1024
+#define MAX_FP_TILES 32768
+#define MAX_FP_PER_TILE 128
+
+struct ForwardPlusLightBuffer
+{
+    ForwardPlusLight lights[MAX_FP_LIGHTS];
+};
+
+struct ForwardPlusTileCountBuffer
+{
+    uint counts[MAX_FP_TILES];
+};
+
+struct ForwardPlusTileIndexBuffer
+{
+    uint indices[MAX_FP_TILES * MAX_FP_PER_TILE];
+};
+
 struct PushConstants
 {
     float4x4 model;
@@ -111,9 +145,20 @@ struct PushConstants
     uint comparisonSamplerId;
     uint numCascades;
     uint cascadeIndex;
+    // Forward+ (opaque pass; ignored when fpLightCount == 0)
+    vk::BufferPointer<ForwardPlusLightBuffer>
+    fpLights;
+    vk::BufferPointer<ForwardPlusTileCountBuffer>
+    fpTileCounts;
+    vk::BufferPointer<ForwardPlusTileIndexBuffer>
+    fpTileIndices;
+    uint fpTileCountX;
+    uint fpLightCount;
+    uint fpTileSize;
+    uint fpMaxPerTile;
 };
 
-#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS)
+#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(FORWARDPLUS_PASS)
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
 #endif
