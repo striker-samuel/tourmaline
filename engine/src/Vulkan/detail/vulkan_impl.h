@@ -14,6 +14,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -568,8 +569,8 @@ namespace smvk {
 		VkSampler m_defaultShadowSampler{};
 		std::unique_ptr<VulkanSamplerCache> samplerCache_;
 
-		mutable bool m_needToUpdateTextures = true;
-		mutable bool m_needToUpdateSamplers = true;
+		mutable std::atomic<bool> m_needToUpdateTextures{ true };
+		mutable std::atomic<bool> m_needToUpdateSamplers{ true };
 
 		// SamplerCache API – stable index into sampler descriptor array [0, MAX_SAMPLERS)
 		uint32_t GetOrCreateSampler(const SamplerCreateInfo& ci);
@@ -834,13 +835,14 @@ namespace smvk {
 		uint32_t GetOrCreate(const SamplerCreateInfo& ci);
 
 		// Read-only access for descriptor uploads.
-		uint32_t size() const noexcept { return static_cast<uint32_t>(samplers_.size()); }
+		uint32_t size() const noexcept { std::lock_guard<std::mutex> lock(mutex_); return static_cast<uint32_t>(samplers_.size()); }
 		VkSampler at(uint32_t index) const;
 		void Clear();
 
 	private:
 		VulkanResourceManager* rm_ = nullptr;
 		// Dense array – index == descriptor array slot.
+		mutable std::mutex mutex_;
 		std::vector<VkSampler> samplers_;
 		std::vector<SamplerCreateInfo> infos_;
 		std::unordered_map<SamplerCreateInfo, uint32_t, SamplerCreateInfoHash> map_;

@@ -1,0 +1,58 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include <Engine/Memory/pool.h>
+#include <Engine/smvk.h>
+
+namespace smvk {
+
+class ResourceManager;
+
+// One texture file to read + transcode + upload. `key` is the caller's
+// dedup id (the glTF importer passes imageIndex); `path` is the resolved
+// filesystem path to a .ktx2 file.
+struct KtxLoadJob {
+	int key = -1;
+	std::string path;
+};
+
+struct ParallelTextureStats {
+	size_t requested = 0;
+	size_t succeeded = 0;
+	size_t failed = 0;
+	uint64_t uploadedBytes = 0;
+	double seconds = 0.0;
+};
+
+// Decode + transcode + Vulkan upload for a single KTX2 file on the calling
+// thread. Returns an empty holder on failure (error already logged).
+// Shared core used by the parallel batch below and by the sequential
+// fallback in the glTF importer.
+Holder<TextureHandle> LoadKtxTextureFile(
+	ResourceManager& ctx,
+	const std::string& fullPath,
+	const ImageCreateInfo& imageCI = {});
+
+// Multicore read + upload: each job's file IO, Basis transcode and Vulkan
+// image creation/upload runs on a worker thread; the returned holders are
+// collected on the calling thread. Failed jobs are skipped (logged) and
+// simply absent from the result map.
+//
+// Thread-safety: ResourceManager pools are internally locked, the upload
+// ring is mutex-guarded and VMA/vkCreate* are thread-safe for distinct
+// objects, so concurrent CreateTexture calls are safe. The caller must
+// still move the returned holders into its own (Cluster) pool and flush
+// uploads on its own thread.
+std::unordered_map<int, Holder<TextureHandle>> LoadKtxTexturesParallel(
+	ResourceManager& ctx,
+	const std::vector<KtxLoadJob>& jobs,
+	const ImageCreateInfo& imageCI = {},
+	ParallelTextureStats* outStats = nullptr,
+	size_t maxThreads = 0);
+
+} // namespace smvk

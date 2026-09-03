@@ -19,6 +19,12 @@ struct GltfToSceneImporter
 	void import(int gltfNodeIndex) {
 		importNodeRecursive(gltfNodeIndex, 0, 1);
 	}
+	// Multicore texture read + upload: decodes/transcodes all KTX2 files
+	// referenced by the scene's materials on worker threads and uploads
+	// them in parallel. Fills textureCache so per-material creation hits
+	// the cache. Safe to call once before importing nodes; missing entries
+	// still fall back to sequential load in getOrCreateMaterial.
+	void preloadTextures();
 private:
 	smvk::ClusterMaterialHandle
 		getOrCreateMaterial(int gltfMaterialIndex);
@@ -87,6 +93,8 @@ inline void GltfToCluster(
 		for (int i = 0; i < (int)inModel.nodes.size(); ++i)
 			if (!referenced[i]) gltfRoots.push_back(i);
 	}
+
+	importer.preloadTextures();
 
 	for (int gltfNode : gltfRoots)
 		importer.import(gltfNode);

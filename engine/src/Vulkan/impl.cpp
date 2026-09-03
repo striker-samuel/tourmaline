@@ -6660,6 +6660,7 @@ void smvk::VulkanPipelineCache::Clear() {
 smvk::VulkanSamplerCache::VulkanSamplerCache(VulkanResourceManager* rm) : rm_(rm) {}
 smvk::VulkanSamplerCache::~VulkanSamplerCache() { Clear(); }
 uint32_t smvk::VulkanSamplerCache::GetOrCreate(const SamplerCreateInfo& ci) {
+	std::lock_guard<std::mutex> lock(mutex_);
 	auto it = map_.find(ci);
 	if (it != map_.end()) return it->second;
 	if (samplers_.size() >= MAX_SAMPLERS) {
@@ -6677,10 +6678,12 @@ uint32_t smvk::VulkanSamplerCache::GetOrCreate(const SamplerCreateInfo& ci) {
 	return index;
 }
 VkSampler smvk::VulkanSamplerCache::at(uint32_t index) const {
+	std::lock_guard<std::mutex> lock(mutex_);
 	assert(index < samplers_.size());
 	return samplers_[index];
 }
 void smvk::VulkanSamplerCache::Clear() {
+	std::lock_guard<std::mutex> lock(mutex_);
 	for (VkSampler s : samplers_) if (s != VK_NULL_HANDLE) vkDestroySampler(device_, s, nullptr);
 	samplers_.clear();
 	infos_.clear();

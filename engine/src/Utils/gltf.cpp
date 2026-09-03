@@ -3,6 +3,7 @@
 #include "ktx.h"
 
 #include <Engine/Utils/gltf.h>
+#include <Engine/Utils/texture_loader.h>
 #include <Engine/core.h>
 
 
@@ -240,19 +241,9 @@ namespace {
 		std::filesystem::path uri = UriFromTexture(model, ref);
 		if (uri.empty()) return {};
 		std::filesystem::path fullPath = (baseDir / uri).lexically_normal();
-		ktxTexture2* ktxTex = nullptr;
-		KTX_error_code result = ktxTexture2_CreateFromNamedFile(
-			fullPath.string().c_str(),
-			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
-			&ktxTex);
-		if (result != KTX_SUCCESS) {
-			std::cerr << "Failed to load KTX texture: " << fullPath << " code " << result << std::endl;
-			return {};
-		}
-		smvk::ImageCreateInfo ktxCI{};
-		ktxCI.hostTransfer = true;
-		auto holder = cluster.ctx_.CreateTexture(*ktxTex, fullPath.string().c_str(), ktxCI);
-		ktxTexture2_Destroy(ktxTex);
+		auto holder = smvk::LoadKtxTextureFile(
+			cluster.ctx_, fullPath.string());
+		if (!holder.valid()) return {};
 		smvk::TextureHandle h = holder;
 		cluster.textures.create(std::move(holder));
 		cache[ref.imageIndex] = h;
@@ -453,6 +444,71 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
 
 	return mat;
 }
+void GltfToSceneImporter::preloadTextures()
+{
+	// Collect every image referenced by any material (dedup by imageIndex).
+	// Per-material creation later hits textureCache; anything missed here
+	// still loads sequentially via LoadKtxTextureCached.
+	std::vector<int> imageIndices;
+	imageIndices.reserve(model.images.size());
+	{
+		std::vector<bool> seen(model.images.size(), false);
+		auto note = [&](const std::optional<GltfTextureRef>& ref) {
+			if (!ref || ref->imageIndex < 0 ||
+				ref->imageIndex >= (int)model.images.size())
+				return;
+			if (!seen[ref->imageIndex]) {
+				seen[ref->imageIndex] = true;
+				imageIndices.push_back(ref->imageIndex);
+			}
+		};
+		for (size_t mi = 0; mi < model.materials.size(); ++mi) {
+			const tinygltf::Material& m = model.materials[mi];
+			note(GltfResolveTexture(model, m.pbrMetallicRoughness.baseColorTexture));
+			note(GltfResolveTexture(model, m.pbrMetallicRoughness.metallicRoughnessTexture));
+			note(GtlfResolveNormalTexture(model, m.normalTexture));
+			note(GLtfResolveOcclusionTexture(model, m.occlusionTexture));
+			note(GltfResolveTexture(model, m.emissiveTexture));
+		}
+	}
+
+	const std::filesystem::path baseDir = gltfModelPath.parent_path();
+
+	std::vector<smvk::KtxLoadJob> jobs;
+	jobs.reserve(imageIndices.size());
+	for (int imageIndex : imageIndices) {
+		if (textureCache.find(imageIndex) != textureCache.end())
+			continue;
+		const tinygltf::Image& img = model.images[imageIndex];
+		// Embedded / data-URI images are not supported (same policy as
+		// UriFromTexture); skip them here, the sequential path asserts.
+		if (img.uri.empty() || starts_with(img.uri, "data:"))
+			continue;
+		std::filesystem::path fullPath =
+			(baseDir / std::filesystem::path(img.uri)).lexically_normal();
+		jobs.push_back({ imageIndex, fullPath.string() });
+	}
+
+	if (jobs.empty()) return;
+
+	smvk::ParallelTextureStats stats{};
+	auto holders = smvk::LoadKtxTexturesParallel(
+		cluster.ctx_, jobs, {}, &stats);
+
+	for (auto& [imageIndex, holder] : holders) {
+		smvk::TextureHandle h = holder;
+		cluster.textures.create(std::move(holder));
+		textureCache[imageIndex] = h;
+	}
+
+	std::cout << "Preloaded " << stats.succeeded << "/" << stats.requested
+		<< " textures in " << stats.seconds << "s ("
+		<< (stats.failed ? std::to_string(stats.failed) + " failed, " : "")
+		<< jobs.size() << " jobs)" << std::endl;
+	// Uploads are batched into the streamer ring (256MB threshold);
+	// GltfToCluster issues the final FlushUploads after scene import.
+}
+
 glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
 {
 	if (!n.matrix.empty()) {

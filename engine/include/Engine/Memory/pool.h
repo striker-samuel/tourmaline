@@ -7,6 +7,8 @@
 
 #include <Engine/smvk.h>
 
+#include <mutex>
+
 namespace smvk {
 
 	// Forward declare destroy overloads (defined in RHI/resource_manager.cpp private TU)
@@ -105,10 +107,15 @@ namespace smvk {
 		uint32_t numObjects_ = 0;
 		uint32_t nextIndex_ = 0;
 		uint32_t capacity_ = kMaxSize;
+		// Guards concurrent create/destroy/get from texture/mesh upload
+		// worker threads (see Utils/texture_loader). Vulkan objects are
+		// distinct per call, so a single pool-level mutex is sufficient.
+		mutable std::recursive_mutex mutex_;
 
 	public:
 		PoolEntry objects_[kMaxSize] = {};
 		Handle<ObjectType> create(ImplObjectType&& obj) {
+			std::lock_guard<std::recursive_mutex> lock(mutex_);
 			uint32_t idx = 0;
 			if (freeListHead_ != kListEndSentinel) {
 				idx = freeListHead_;
@@ -117,6 +124,7 @@ namespace smvk {
 			}
 			else {
 				assert(nextIndex_ < kMaxSize && "Pool overflow – increase MAX_SIZE");
+				if (nextIndex_ >= kMaxSize) return {};
 				idx = nextIndex_++;
 				objects_[idx].obj_ = std::move(obj);
 				objects_[idx].gen_ = 1;
@@ -129,6 +137,7 @@ namespace smvk {
 		void destroy(Handle<ObjectType> handle) {
 			if (handle.empty())
 				return;
+			std::lock_guard<std::recursive_mutex> lock(mutex_);
 			assert(numObjects_ > 0);
 			const uint32_t index = handle.index();
 			assert(index < kMaxSize);
@@ -144,6 +153,7 @@ namespace smvk {
 		}
 		const ImplObjectType* get(Handle<ObjectType> handle) const {
 			if (handle.empty()) return nullptr;
+			std::lock_guard<std::recursive_mutex> lock(mutex_);
 			const uint32_t index = handle.index();
 			assert(index < kMaxSize);
 			assert(handle.gen() == objects_[index].gen_);
@@ -151,6 +161,7 @@ namespace smvk {
 		}
 		ImplObjectType* get(Handle<ObjectType> handle) {
 			if (handle.empty()) return nullptr;
+			std::lock_guard<std::recursive_mutex> lock(mutex_);
 			const uint32_t index = handle.index();
 			assert(index < kMaxSize);
 			assert(handle.gen() == objects_[index].gen_);
@@ -159,10 +170,12 @@ namespace smvk {
 		Handle<ObjectType> getHandle(uint32_t index) const {
 			assert(index < kMaxSize);
 			if (index >= kMaxSize) return {};
+			std::lock_guard<std::recursive_mutex> lock(mutex_);
 			return Handle<ObjectType>(index, objects_[index].gen_);
 		}
 		Handle<ObjectType> findObject(const ImplObjectType* obj) {
 			if (!obj) return {};
+			std::lock_guard<std::recursive_mutex> lock(mutex_);
 			for (uint32_t idx = 0; idx < nextIndex_; ++idx) {
 				if (objects_[idx].occupied_ && objects_[idx].obj_ == *obj) {
 					return Handle<ObjectType>(idx, objects_[idx].gen_);
@@ -176,6 +189,7 @@ namespace smvk {
 			return {};
 		}
 		void clear() {
+			std::lock_guard<std::recursive_mutex> lock(mutex_);
 			for (uint32_t i = 0; i < nextIndex_; ++i) {
 				objects_[i] = PoolEntry{};
 				objects_[i].gen_ = 1;
@@ -187,12 +201,14 @@ namespace smvk {
 			nextIndex_ = 0;
 		}
 		uint32_t numObjects() const {
+			std::lock_guard<std::recursive_mutex> lock(mutex_);
 			return numObjects_;
 		}
 
 		template<typename Func>
 		void forEach(Func&& func)
 		{
+			std::lock_guard<std::recursive_mutex> lock(mutex_);
 			for (uint32_t i = 0; i < kMaxSize; ++i) {
 				if (objects_[i].occupied_) func(objects_[i].obj_);
 			}
@@ -201,6 +217,7 @@ namespace smvk {
 		template<typename Func>
 		void forEachHandle(Func&& func)
 		{
+			std::lock_guard<std::recursive_mutex> lock(mutex_);
 			for (uint32_t i = 0; i < kMaxSize; ++i) {
 				if (objects_[i].occupied_) {
 					func(Handle<ObjectType>(i, objects_[i].gen_));
