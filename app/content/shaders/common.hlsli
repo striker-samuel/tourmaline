@@ -113,7 +113,7 @@ struct PushConstants
     uint cascadeIndex;
 };
 
-#ifndef TONEMAP_PASS
+#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS)
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
 #endif

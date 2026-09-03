@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include <Engine/core.h>
+#include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <imgui.h>
 
@@ -25,6 +26,30 @@ static constexpr uint32_t CASCADE_RES = 2048; // per cascade tile (2048 -> 4096 
 static constexpr float CASCADE_LAMBDA = 0.92f; // 0 = linear, 1 = logarithmic
 static constexpr float CASCADE_Z_PADDING = 1.0f;
 static constexpr smvk::Format SHADOW_FORMAT = smvk::Format::D32_Float; // stencil dropped for directional atlas (Option B)
+
+// -----------------------------------------------------------------------------
+// Bloom config (resources + passes live in Engine/Rendergraph/bloom.h,
+// mip images via MipBuilder in Engine/Rendergraph/mipchain.h)
+// -----------------------------------------------------------------------------
+static constexpr uint32_t BLOOM_MIP_COUNT = 5;
+static constexpr uint32_t BLOOM_BASE_DIVISOR = 2; // base = hdr / 2 (half-res)
+static constexpr float BLOOM_THRESHOLD = 1.0f;   // HDR prefilter knee
+static constexpr float BLOOM_KNEE = 0.25f;
+static constexpr float BLOOM_INTENSITY = 0.6f;   // tonemap composite strength
+static constexpr float BLOOM_UPSAMPLE_RADIUS = 1.0f;
+
+static smvk::BloomDesc MakeBloomDesc() {
+	smvk::BloomDesc d{};
+	d.mipCount = BLOOM_MIP_COUNT;
+	d.format = smvk::Format::RGBA16_Float;
+	d.baseDivisor = BLOOM_BASE_DIVISOR;
+	d.threshold = BLOOM_THRESHOLD;
+	d.knee = BLOOM_KNEE;
+	d.intensity = BLOOM_INTENSITY;
+	d.upsampleRadius = BLOOM_UPSAMPLE_RADIUS;
+	d.name = "bloom";
+	return d;
+}
 
 // Data definitions //
 struct DrawSetData {
@@ -72,9 +97,13 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> shadowVert;
 	smvk::Holder<smvk::ShaderModuleHandle> tonemapVert;
 	smvk::Holder<smvk::ShaderModuleHandle> tonemapFrag;
+	smvk::Holder<smvk::ShaderModuleHandle> bloomDownFrag;
+	smvk::Holder<smvk::ShaderModuleHandle> bloomUpFrag;
 	smvk::ShaderProgram mainProgram;
 	smvk::ShaderProgram shadowProgram;
 	smvk::ShaderProgram tonemapProgram;
+	smvk::ShaderProgram bloomDownProgram;
+	smvk::ShaderProgram bloomUpProgram;
 };
 
 struct HdrResources {
@@ -88,6 +117,7 @@ struct HdrResources {
 
 struct ViewportResources {
 	smvk::CascadedShadowAtlas directionalShadows; // cascade atlas builder (image + views + bindless + logical)
+	smvk::BloomChain bloom; // separated per-mip HDR chain (MipBuilder) + down/up passes
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
 	smvk::LogicalImageViewHandle depthView;
 	HdrResources hdr;
@@ -100,6 +130,7 @@ private:
 	void UpdateCamera(float dt);
 	void SetUIMode(bool ui);
 	void EnsureHdrResources();
+	void EnsureBloomResources();
 	bool m_uiMode = false;
 	//
 
@@ -197,6 +228,16 @@ private:
 		auto tonemapPS = smvk::Shader{ .module = m_resources.tonemapFrag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
 		m_resources.tonemapProgram = { .shaders = { tonemapVS, tonemapPS }, .shaderCount = 2 };
 
+		// Bloom (fullscreen triangle VS reused from tonemap + down/up PS).
+		auto bloomDownCode = readFile("content/shaders/bloom_down.frag.hlsl.spv");
+		auto bloomUpCode = readFile("content/shaders/bloom_up.frag.hlsl.spv");
+		m_resources.bloomDownFrag = m_context->CreateShaderModule(bloomDownCode, "bloomDownFrag");
+		m_resources.bloomUpFrag = m_context->CreateShaderModule(bloomUpCode, "bloomUpFrag");
+		auto bloomDownPS = smvk::Shader{ .module = m_resources.bloomDownFrag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+		auto bloomUpPS = smvk::Shader{ .module = m_resources.bloomUpFrag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+		m_resources.bloomDownProgram = { .shaders = { tonemapVS, bloomDownPS }, .shaderCount = 2 };
+		m_resources.bloomUpProgram = { .shaders = { tonemapVS, bloomUpPS }, .shaderCount = 2 };
+
 		smvk::AllocateStaticVertexFmt(*m_context); // dont like this
 
 		// Import the glTF scene into a Cluster (owned by the cluster's resource
@@ -242,6 +283,7 @@ private:
 		}
 
 		EnsureHdrResources();
+		EnsureBloomResources();
 
 		// ImGui overlay – init after swapchain/rendergraph are ready.
 		// Uses dynamic rendering; no external RenderPass needed.
@@ -259,6 +301,7 @@ private:
 	void Shutdown() override {
 		// Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
 		WaitForDeviceIdle();
+		m_viewportResources.bloom.Destroy(*m_rendergraph);
 		if (m_imgui) {
 			m_imgui->Shutdown();
 			m_imgui.reset();
@@ -329,7 +372,7 @@ private:
 		light.direction[0] = lightDir.x;
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
-		light.intensity = 4.0f;
+		light.intensity = 10.0f;
 		light.shadow_map_index =
 			m_context->GetBindlessIndex(
 				m_viewportResources.directionalShadows.bindless
@@ -424,6 +467,7 @@ private:
 			);
 		}
 		EnsureHdrResources();
+		EnsureBloomResources();
 	}
 
 	void DrawFrame() {
@@ -443,6 +487,7 @@ private:
 
 		m_rendergraph->NewFrame();
 		EnsureHdrResources();
+		EnsureBloomResources();
 		m_context->UpdateDescriptors();
 		UpdateFrameUniforms(fb.frameIndex);
 		UpdateLights(fb.frameIndex);
@@ -652,30 +697,58 @@ private:
 			);
 
 		// ---------------------------------------------------------------------
+		// Bloom – HDR downsample / upsample chain (composable, see bloom.h)
+		// ---------------------------------------------------------------------
+		// Sampler cache: linear clamp shared by bloom + tonemap blits
+		uint32_t linearSampler = m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
+			.magFilter = smvk::Filter::Linear,
+			.minFilter = smvk::Filter::Linear,
+			.mipmapMode = smvk::MipmapMode::Linear,
+			.addressU = smvk::AddressMode::ClampToEdge,
+			.addressV = smvk::AddressMode::ClampToEdge,
+			.addressW = smvk::AddressMode::ClampToEdge,
+			.maxAnisotropy = 1.0f
+		});
+		if (m_viewportResources.bloom.Valid()) {
+			m_viewportResources.bloom.AddBloomPasses(
+				*m_rendergraph,
+				m_resources.bloomDownProgram,
+				m_resources.bloomUpProgram,
+				m_viewportResources.hdr.logicalView,
+				m_viewportResources.hdr.bindlessIndex,
+				linearSampler);
+		}
+
+		// ---------------------------------------------------------------------
 		// Tonemapper – HDR (RGBA16F) → LDR swapchain (ACES / Reinhard)
 		// ---------------------------------------------------------------------
 		{
-			// Sampler cache: linear clamp for fullscreen blit, shadow sampler is at 1
-			uint32_t linearSampler = m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
-				.magFilter = smvk::Filter::Linear,
-				.minFilter = smvk::Filter::Linear,
-				.mipmapMode = smvk::MipmapMode::Linear,
-				.addressU = smvk::AddressMode::ClampToEdge,
-				.addressV = smvk::AddressMode::ClampToEdge,
-				.addressW = smvk::AddressMode::ClampToEdge,
-				.maxAnisotropy = 1.0f
-			});
-			struct TonemapPush { uint32_t hdrTextureIndex; uint32_t samplerIndex; float exposure; uint32_t tonemapMode; };
+			// Must match tonemap.frag.hlsl TonemapPush (32 bytes).
+			struct TonemapPush {
+				uint32_t hdrTextureIndex; uint32_t samplerIndex;
+				float exposure; uint32_t tonemapMode;
+				uint32_t bloomTextureIndex; float bloomIntensity;
+				uint32_t pad0; uint32_t pad1;
+			};
+			static_assert(sizeof(TonemapPush) == 32);
+			const bool bloomOn = m_viewportResources.bloom.Valid();
 			TonemapPush tp{
 				.hdrTextureIndex = m_viewportResources.hdr.bindlessIndex,
 				.samplerIndex = linearSampler,
 				.exposure = 1.0f, // FrameUniforms.exposure could be used (pow2)
-				.tonemapMode = 1  // 0=Reinhard, 1=ACES, 2=Uncharted2
+				.tonemapMode = 1,  // 0=Reinhard, 1=ACES, 2=Uncharted2
+				.bloomTextureIndex = bloomOn ? m_viewportResources.bloom.MipBindless(0) : UINT32_MAX,
+				.bloomIntensity = bloomOn ? m_viewportResources.bloom.desc.intensity : 0.0f,
+				.pad0 = 0, .pad1 = 0
 			};
+			std::vector<smvk::LogicalImageViewHandle> tonemapInputs;
+			tonemapInputs.push_back(m_viewportResources.hdr.logicalView);
+			if (bloomOn)
+				tonemapInputs.push_back(m_viewportResources.bloom.MipView(0));
 			auto& tonemapPass = m_rendergraph->AddPass("Tonemap")
 				.SetOffset(0, 0)
 				.SetExtent({ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height })
-				.SetInputImages({ m_viewportResources.hdr.logicalView })
+				.SetInputImages(tonemapInputs)
 				.SetColor(colors, smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store, smvk::ClearColor(0,0,0,1))
 				.SetRecordingFunc([this, tp](smvk::CommandBuffer& cmd){
 					cmd.BindRenderPipeline(
@@ -715,10 +788,23 @@ private:
 				for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
 					ImGui::Text(" cascade %u: [%.2f .. %.2f] splitEnd %.2f", i, splits[i], splits[i+1], splits[i+1]);
 				}
-				ImGui::Text(" lightDir: %.2f %.2f %.2f", 
+				ImGui::Text(" lightDir: %.2f %.2f %.2f",
 					glm::normalize(glm::vec3(0.2f, -1.0f, 0.5f)).x,
 					glm::normalize(glm::vec3(0.2f, -1.0f, 0.5f)).y,
 					glm::normalize(glm::vec3(0.2f, -1.0f, 0.5f)).z);
+			}
+			{
+				const auto& bloom = m_viewportResources.bloom;
+				if (bloom.Valid()) {
+					ImGui::Text("Bloom: %u mips  base %ux%u  thr %.2f knee %.2f int %.2f",
+						bloom.MipCount(),
+						bloom.MipExtent(0).width, bloom.MipExtent(0).height,
+						bloom.desc.threshold, bloom.desc.knee, bloom.desc.intensity);
+					for (uint32_t i = 0; i < bloom.MipCount(); ++i)
+						ImGui::Text(" mip %u: %ux%u", i, bloom.MipExtent(i).width, bloom.MipExtent(i).height);
+				} else {
+					ImGui::TextDisabled("Bloom: OFF");
+				}
 			}
 			ImGui::Separator();
 			ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
@@ -795,6 +881,16 @@ void TestApp::EnsureHdrResources() {
 	hdr.extent = extent;
 	hdr.logicalView = m_rendergraph->AddExternalImageView(hdr.view, smvk::Format::RGBA16_Float, "hdrLogical");
 	m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{});
+}
+
+void TestApp::EnsureBloomResources() {
+	auto vkExt = m_swapchain->GetExtent();
+	smvk::Extent2D hdrExtent{ vkExt.width, vkExt.height };
+	// Bloom tracks the HDR target; Ensure() recreates only on size/desc drift.
+	if (!m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, hdrExtent, MakeBloomDesc())) {
+		std::cerr << "[TestApp] Bloom chain unavailable (HDR "
+			<< hdrExtent.width << "x" << hdrExtent.height << ")\n";
+	}
 }
 
 void TestApp::UpdateCamera(float dt)

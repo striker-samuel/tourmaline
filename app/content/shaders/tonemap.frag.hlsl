@@ -17,6 +17,10 @@ struct TonemapPush
     uint samplerIndex;
     float exposure;
     uint tonemapMode; // 0=Reinhard, 1=ACES, 2=Uncharted2
+    uint bloomTextureIndex; // 0xffffffff = disabled
+    float bloomIntensity;
+    uint pad0;
+    uint pad1;
 };
 
 [[vk::push_constant]]
@@ -70,6 +74,13 @@ PSOut mainPS(PSIn IN)
     float3 hdr = float3(0,0,0);
     if (hdrIdx != 0xffffffff && hdrIdx < 100000)
         hdr = textures[NonUniformResourceIndex(hdrIdx)].Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).rgb;
+
+    // Bloom composite (HDR add, pre-tonemap). Disabled when index is 0xffffffff.
+    if (tp.bloomTextureIndex != 0xffffffff && tp.bloomTextureIndex < 100000 && tp.bloomIntensity > 0.0f)
+    {
+        float3 bloom = textures[NonUniformResourceIndex(tp.bloomTextureIndex)].Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).rgb;
+        hdr += bloom * tp.bloomIntensity;
+    }
 
     float3 mapped = Tonemap(hdr * exposure, mode);
     // Manual gamma – swapchain is UNORM (B8G8R8A8_SRGB would auto-convert, but we assume UNORM path)
