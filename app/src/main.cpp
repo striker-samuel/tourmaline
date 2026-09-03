@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include <Engine/core.h>
+#include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <imgui.h>
 
 
@@ -16,47 +17,14 @@ std::vector<std::string> gltf_meshes_paths = {
 };
 
 // -----------------------------------------------------------------------------
-// Cascade Shadow Map builder – upgraded
+// Directional cascade shadow-map config (resources + math live in
+// Engine/Rendergraph/cascadedshadowmap.h)
 // -----------------------------------------------------------------------------
 static constexpr uint32_t NUM_CASCADES = 4;
 static constexpr uint32_t CASCADE_RES = 2048; // per cascade tile (2048 -> 4096 atlas for 4 cascades, Option B)
 static constexpr float CASCADE_LAMBDA = 0.92f; // 0 = linear, 1 = logarithmic
 static constexpr float CASCADE_Z_PADDING = 1.0f;
 static constexpr smvk::Format SHADOW_FORMAT = smvk::Format::D32_Float; // stencil dropped for directional atlas (Option B)
-
-inline uint32_t CascadeColumns(uint32_t count) {
-	return static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<float>(count))));
-}
-inline uint32_t CascadeRows(uint32_t count) {
-	uint32_t cols = CascadeColumns(count);
-	return (count + cols - 1) / cols;
-}
-inline smvk::Extent2D CascadeAtlasExtent(uint32_t cascadeRes, uint32_t count) {
-	uint32_t cols = CascadeColumns(count);
-	uint32_t rows = CascadeRows(count);
-	return { cascadeRes * cols, cascadeRes * rows };
-}
-// Computes split distances using practical split scheme (lambda blend of log & linear)
-inline std::array<float, NUM_CASCADES + 1> ComputeCascadeSplits(float nearClip, float farClip, float lambda = CASCADE_LAMBDA) {
-	std::array<float, NUM_CASCADES + 1> splits{};
-	splits[0] = nearClip;
-	splits[NUM_CASCADES] = farClip;
-	for (uint32_t i = 1; i < NUM_CASCADES; ++i) {
-		float p = static_cast<float>(i) / static_cast<float>(NUM_CASCADES);
-		float logSplit = nearClip * std::pow(farClip / nearClip, p);
-		float linSplit = nearClip + (farClip - nearClip) * p;
-		splits[i] = lambda * logSplit + (1.0f - lambda) * linSplit;
-	}
-	return splits;
-}
-
-struct ShadowMap
-{
-	smvk::Holder<smvk::ImageHandle> image;
-	smvk::Holder<smvk::ImageViewHandle> attachmentView;
-	smvk::Holder<smvk::ImageViewHandle> sampledView;
-	smvk::Holder<smvk::BindlessImageHandle> bindless;
-};
 
 // Data definitions //
 struct DrawSetData {
@@ -119,15 +87,10 @@ struct HdrResources {
 };
 
 struct ViewportResources {
-	ShadowMap shadowmaps[8]; // shadowmaps[0] = directional cascade atlas
-
-	smvk::LogicalImageViewHandle shadowmapLogicalViews[8];
+	smvk::CascadedShadowAtlas directionalShadows; // cascade atlas builder (image + views + bindless + logical)
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
 	smvk::LogicalImageViewHandle depthView;
 	HdrResources hdr;
-	// cached atlas info for ImGui/debug
-	smvk::Extent2D shadowAtlasExtent{0,0};
-	smvk::Extent2D shadowTileExtent{ CASCADE_RES, CASCADE_RES };
 };
 
 
@@ -265,118 +228,18 @@ private:
 			"depth"
 		);
 
-		// shadowmap – cascaded atlas (upgraded builder)
-		auto& shadow = m_viewportResources.shadowmaps[0];
-
-		smvk::Format shadowMapFormat = SHADOW_FORMAT;
-		smvk::Extent2D atlasExtent = CascadeAtlasExtent(CASCADE_RES, NUM_CASCADES);
-		m_viewportResources.shadowAtlasExtent = atlasExtent;
-		smvk::ImageCreateInfo shadowMapCI{};
-		shadowMapCI.format = shadowMapFormat;
-		shadowMapCI.extent = { atlasExtent.width, atlasExtent.height, 1u };
-		shadowMapCI.mipLevels = 1u;
-		shadowMapCI.arrayLayers = 1u;
-		shadowMapCI.usage = smvk::ImageUsage::DepthStencilAttachment | smvk::ImageUsage::Sampled;
-		shadowMapCI.name = "shadowMapAtlas";
-
-		// -------------------------------------------------------------------------
-		// Image
-		// -------------------------------------------------------------------------
-
-		shadow.image =
-			m_context->CreateImage(
-				shadowMapCI,
-				nullptr
-			);
-
-
-		// -------------------------------------------------------------------------
-		// Depth attachment view
-		// -------------------------------------------------------------------------
-
-		smvk::ImageViewCreateInfo attachmentViewCI{};
-
-		attachmentViewCI.viewType =
-			smvk::ImageViewType::View2D;
-
-		attachmentViewCI.format =
-			smvk::Format::Undefined;
-
-		attachmentViewCI.subresourceRange = {
-			.aspect =
-				smvk::ImageAspect::Depth,
-
-			.baseMipLevel = 0,
-			.mipLevelCount = 1,
-
-			.baseArrayLayer = 0,
-			.arrayLayerCount = 1
-		};
-
-		attachmentViewCI.name =
-			"shadow attachment (depth only, stencil dropped)";
-
-		shadow.attachmentView =
-			m_context->CreateImageView(
-				shadow.image,
-				attachmentViewCI
-			);
-
-
-		// -------------------------------------------------------------------------
-		// Sampled view – depth only (D32, stencil dropped)
-		// -------------------------------------------------------------------------
-
-		smvk::ImageViewCreateInfo sampledViewCI{};
-
-		sampledViewCI.viewType =
-			smvk::ImageViewType::View2D;
-
-		sampledViewCI.format =
-			smvk::Format::Undefined;
-
-		sampledViewCI.subresourceRange = {
-			.aspect =
-				smvk::ImageAspect::Depth,
-
-			.baseMipLevel = 0,
-			.mipLevelCount = 1,
-
-			.baseArrayLayer = 0,
-			.arrayLayerCount = 1
-		};
-
-		sampledViewCI.name =
-			"shadow sampled";
-
-		shadow.sampledView =
-			m_context->CreateImageView(
-				shadow.image,
-				sampledViewCI
-			);
-
-
-		// -------------------------------------------------------------------------
-		// Bindless
-		// -------------------------------------------------------------------------
-
-		shadow.bindless =
-			m_context->CreateBindlessImage(
-				shadow.sampledView,
-				smvk::ImageLayout::DepthReadOnlyOptimal
-			);
-
-
-		// -------------------------------------------------------------------------
-		// Render graph
-		// -------------------------------------------------------------------------
-
-		m_viewportResources.shadowmapLogicalViews[0] =
-			m_rendergraph->AddExternalImageView(
-				shadow.sampledView,
-				shadowMapFormat,
-				"shadowMapView1"
-			);
+		// Directional cascade atlas via engine builder (ports previous inline code).
+		smvk::CascadedShadowMapDesc shadowDesc{};
+		shadowDesc.cascadeCount = NUM_CASCADES;
+		shadowDesc.cascadeResolution = CASCADE_RES;
+		shadowDesc.format = SHADOW_FORMAT;
+		shadowDesc.lambda = CASCADE_LAMBDA;
+		shadowDesc.zPadding = CASCADE_Z_PADDING;
+		shadowDesc.name = "shadowMapAtlas";
+		if (!m_viewportResources.directionalShadows.Create(*m_context, *m_rendergraph, shadowDesc)) {
+			std::cerr << "[TestApp] Failed to create cascaded shadow atlas\n";
+			return false;
+		}
 
 		EnsureHdrResources();
 
@@ -466,78 +329,29 @@ private:
 		light.direction[0] = lightDir.x;
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
-		light.intensity = 1.0f;
+		light.intensity = 4.0f;
 		light.shadow_map_index =
 			m_context->GetBindlessIndex(
-				m_viewportResources.shadowmaps[0].bindless
+				m_viewportResources.directionalShadows.bindless
 			);
 
-		// ---- Cascade builder (upgraded) ----
+		// ---- Cascade builder (engine) ----
 		auto invView = glm::inverse(cameraView);
 		auto invProj = glm::inverse(cameraProj);
-		auto splits = ComputeCascadeSplits(default_near_clip, default_far_clip, CASCADE_LAMBDA);
+		auto splits = smvk::ComputeCascadeSplits(default_near_clip, default_far_clip, CASCADE_LAMBDA, NUM_CASCADES);
 
-		smvk::GpuDirectionalLightDescription dir{};
-		dir.color = light.color;
-		dir.direction[0] = lightDir.x;
-		dir.direction[1] = lightDir.y;
-		dir.direction[2] = lightDir.z;
-		dir.flags = 0;
-		dir.intensity = light.intensity;
-		dir.shadow_map_index = light.shadow_map_index;
-		dir.numCascades = NUM_CASCADES;
-
-		uint32_t cols = CascadeColumns(NUM_CASCADES);
-		smvk::Extent2D atlasExtent = CascadeAtlasExtent(CASCADE_RES, NUM_CASCADES);
-		float invAtlasW = 1.0f / float(atlasExtent.width);
-		float invAtlasH = 1.0f / float(atlasExtent.height);
-
-		for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
-			float splitNear = splits[i];
-			float splitFar = splits[i + 1];
-			glm::mat4 lv, lp;
-			smvk::GetDirectionalLightOrthoVP(
+		smvk::GpuDirectionalLightDescription dir =
+			m_viewportResources.directionalShadows.BuildDirectionalLight(
 				lightDir,
+				light.color,
+				light.intensity,
+				light.shadow_map_index,
 				invView,
 				invProj,
-				splitNear,
-				splitFar,
-				lv,
-				lp,
-				CASCADE_Z_PADDING,
-				true,
-				(int)CASCADE_RES
-			);
-		// NOTE: do NOT Y-flip the light ortho here. Flipping only lp[1][1] (scale)
-		// without the offset term lp[3][1] breaks the NDC mapping whenever the
-		// light-space Y bounds are asymmetric -> receivers near the slice edge
-		// land outside [0,1] UV and the shader's bounds check returns "lit"
-		// (shadowed objects flicker lit as the camera moves). The flip is also
-		// unnecessary: the shadow pass and the sampling share the same lightVP,
-		// so the NDC->UV convention cancels out.
-		glm::mat4 lvp = lp * lv;
-			std::memcpy(dir.cascades[i].lightVP, glm::value_ptr(lvp), sizeof(dir.cascades[i].lightVP));
-			dir.cascades[i].splitEnd = splitFar;
-			// small depth bias per cascade – grows slightly for far cascades
-			dir.cascades[i].bias = 0.0005f * (1.0f + float(i) * 0.5f);
-			dir.cascades[i].normalBias = 0.0f;
-			dir.cascades[i].pad_ = 0.0f;
-			dir.cascades[i].invShadowSize = glm::vec2(1.0f / float(CASCADE_RES), 1.0f / float(CASCADE_RES));
-			uint32_t x = i % cols;
-			uint32_t y = i / cols;
-			float offX = float(x * CASCADE_RES);
-			float offY = float(y * CASCADE_RES);
-			dir.cascades[i].uvScale = glm::vec2(float(CASCADE_RES) * invAtlasW, float(CASCADE_RES) * invAtlasH);
-			dir.cascades[i].uvBias = glm::vec2(offX * invAtlasW, offY * invAtlasH);
-			float texelU = 0.5f * invAtlasW;
-			float texelV = 0.5f * invAtlasH;
-			dir.cascades[i].uvClampMin = dir.cascades[i].uvBias + glm::vec2(texelU, texelV);
-			dir.cascades[i].uvClampMax = dir.cascades[i].uvBias + dir.cascades[i].uvScale - glm::vec2(texelU, texelV);
-			dir.cascades[i].pad2_[0] = 0; dir.cascades[i].pad2_[1] = 0;
-		}
-		std::memcpy(dir.lightVP, dir.cascades[0].lightVP, sizeof(dir.lightVP));
+				splits,
+				CASCADE_Z_PADDING);
 		// Keep lights[0].lightVP in sync for legacy single-cascade path / debug
-		std::memcpy(light.lightVP, dir.cascades[0].lightVP, sizeof(light.lightVP));
+		std::memcpy(light.lightVP, dir.lightVP, sizeof(light.lightVP));
 
 		constexpr size_t LIGHT_FRAME_STRIDE = sizeof(smvk::Light) * MAX_LIGHTS;
 		size_t frameOffset = currentFrame * LIGHT_FRAME_STRIDE;
@@ -686,26 +500,13 @@ private:
 		};
 		static_assert(sizeof(PushConstants) <= 128, "PushConstants must fit in 128 bytes");
 
-		// ---- Cascaded shadow map passes – one per cascade tile in atlas (Option B: full-atlas renderArea, tiled viewport via engine) ----
+		// ---- Cascaded shadow map passes – one per cascade tile (builder owns offsets/extents/load ops) ----
 		{
-			uint32_t cols = CascadeColumns(NUM_CASCADES);
 			const char* cascadeNames[4] = { "ShadowCascade0", "ShadowCascade1", "ShadowCascade2", "ShadowCascade3" };
 			for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci) {
-				uint32_t x = ci % cols;
-				uint32_t y = ci / cols;
-				int32_t offX = int32_t(x * CASCADE_RES);
-				int32_t offY = int32_t(y * CASCADE_RES);
 				PushConstants cascadePC = pc;
 				cascadePC.cascadeIndex = ci;
-				auto& shadowPass = m_rendergraph->AddPass(cascadeNames[ci])
-					.SetOffset(offX, offY)
-					.SetExtent({ CASCADE_RES, CASCADE_RES })
-					.SetDepth(
-						m_viewportResources.shadowmapLogicalViews[0],
-						ci == 0 ? smvk::AttachmentLoadOp::Clear : smvk::AttachmentLoadOp::Load,
-						smvk::AttachmentStoreOp::Store,
-						smvk::ClearDepthStencil(1.0f, 0)
-					)
+				auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rendergraph, ci, cascadeNames[ci])
 					.SetRecordingFunc([this, cascadePC](smvk::CommandBuffer& cmd)
 				{
 					cmd.BindRenderPipeline(
@@ -755,7 +556,7 @@ private:
 			.SetOffset(0, 0)
 			.SetInputImages(
 				{
-					m_viewportResources.shadowmapLogicalViews[0]
+					m_viewportResources.directionalShadows.logicalView
 				}
 			)
 			.SetExtent(
@@ -906,10 +707,11 @@ private:
 				fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height, fb.swapchain->framesInFlight());
 			ImGui::Separator();
 			{
-				auto splits = ComputeCascadeSplits(default_near_clip, default_far_clip);
+				auto splits = smvk::ComputeCascadeSplits(default_near_clip, default_far_clip, CASCADE_LAMBDA, NUM_CASCADES);
+				const auto& atlas = m_viewportResources.directionalShadows;
 				ImGui::Text("CSM: %u cascades  tile %ux%u  atlas %ux%u",
 					NUM_CASCADES, CASCADE_RES, CASCADE_RES,
-					m_viewportResources.shadowAtlasExtent.width, m_viewportResources.shadowAtlasExtent.height);
+					atlas.atlasExtent.width, atlas.atlasExtent.height);
 				for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
 					ImGui::Text(" cascade %u: [%.2f .. %.2f] splitEnd %.2f", i, splits[i], splits[i+1], splits[i+1]);
 				}
