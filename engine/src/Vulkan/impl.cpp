@@ -2167,10 +2167,16 @@ smvk::UploadStreamer::UploadStreamer(VulkanResourceManager* rm, Submitter* trans
 }
 smvk::UploadStreamer::~UploadStreamer() { destroy(); }
 bool smvk::UploadStreamer::init(VkDeviceSize ringCapacity) {
-	std::lock_guard<std::mutex> lock(m_mutex);
-	if (m_ring.buffer != VK_NULL_HANDLE) return true;
+	// Total budget split across shards; each thread lazily creates its own
+	// ring on first upload so unused shards cost nothing.
+	ringCapacityPerThread_ = ringCapacity / 8;
+	if (ringCapacityPerThread_ < 32ull * 1024 * 1024) ringCapacityPerThread_ = 32ull * 1024 * 1024;
+	return ensureShardRing(states_[0]);
+}
+bool smvk::UploadStreamer::ensureShardRing(ThreadUploadState& ust) {
+	if (ust.ring.buffer != VK_NULL_HANDLE) return true;
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	ci.size = ringCapacity;
+	ci.size = ringCapacityPerThread_;
 	ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 	ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	VmaAllocationCreateInfo aci{};
@@ -2178,101 +2184,111 @@ bool smvk::UploadStreamer::init(VkDeviceSize ringCapacity) {
 	aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 	aci.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 	VmaAllocationInfo info{};
-	VkResult r = vmaCreateBuffer(m_rm->m_allocator, &ci, &aci, &m_ring.buffer, &m_ring.allocation, &info);
+	VkResult r = vmaCreateBuffer(m_rm->m_allocator, &ci, &aci, &ust.ring.buffer, &ust.ring.allocation, &info);
 	if (r != VK_SUCCESS) return false;
-	m_ring.mapped = info.pMappedData;
-	m_ring.capacity = ringCapacity;
-	m_ring.offset = 0;
+	ust.ring.mapped = info.pMappedData;
+	ust.ring.capacity = ringCapacityPerThread_;
+	ust.ring.offset = 0;
 #if defined(_DEBUG)
-	if (ringCapacity) {
+	{
 		VkDebugUtilsObjectNameInfoEXT ni{ VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
 		ni.objectType = VK_OBJECT_TYPE_BUFFER;
-		ni.objectHandle = reinterpret_cast<uint64_t>(m_ring.buffer);
-		ni.pObjectName = "UploadStreamer Ring";
+		ni.objectHandle = reinterpret_cast<uint64_t>(ust.ring.buffer);
+		ni.pObjectName = "UploadStreamer Ring (thread shard)";
 		vkSetDebugUtilsObjectNameEXT(device_, &ni);
 	}
 #endif
 	return true;
 }
 void smvk::UploadStreamer::destroy() {
-	std::lock_guard<std::mutex> lock(m_mutex);
-	if (m_curCmd != VK_NULL_HANDLE && m_hasPending) {
-		// submit any pending work before destroy
-		submitLocked(false);
+	for (auto& ust : states_) {
+		if (ust.curCmd != VK_NULL_HANDLE && ust.hasPending) {
+			// submit any pending work before destroy
+			submitState(ust, false);
+		}
 	}
-	if (m_ring.buffer != VK_NULL_HANDLE) {
-		// wait for any in-flight use
-		if (m_transfer) m_transfer->waitAll();
-		if (m_graphics && m_graphics != m_transfer) m_graphics->waitAll();
-		vmaDestroyBuffer(m_rm->m_allocator, m_ring.buffer, m_ring.allocation);
-		m_ring.buffer = VK_NULL_HANDLE;
-		m_ring.allocation = VK_NULL_HANDLE;
-		m_ring.mapped = nullptr;
-		m_ring.capacity = 0;
-		m_ring.offset = 0;
+	if (m_transfer) m_transfer->waitAll();
+	if (m_graphics && m_graphics != m_transfer) m_graphics->waitAll();
+	for (auto& ust : states_) {
+		if (ust.ring.buffer != VK_NULL_HANDLE) {
+			vmaDestroyBuffer(m_rm->m_allocator, ust.ring.buffer, ust.ring.allocation);
+			ust.ring.buffer = VK_NULL_HANDLE;
+			ust.ring.allocation = VK_NULL_HANDLE;
+			ust.ring.mapped = nullptr;
+			ust.ring.capacity = 0;
+			ust.ring.offset = 0;
+		}
+		ust.curCmd = VK_NULL_HANDLE;
+		ust.curHandle = {};
+		ust.hasPending = false;
 	}
-	m_curCmd = VK_NULL_HANDLE;
-	m_curHandle = {};
-	m_hasPending = false;
 }
-VkDeviceSize smvk::UploadStreamer::allocFromRing(VkDeviceSize size, VkDeviceSize alignment) {
-	// caller holds m_mutex
-	VkDeviceSize aligned = (m_ring.offset + alignment - 1) & ~(alignment - 1);
-	if (aligned + size > m_ring.capacity) {
+VkDeviceSize smvk::UploadStreamer::allocFromRing(ThreadUploadState& ust, VkDeviceSize size, VkDeviceSize alignment) {
+	// st is owned by the calling thread – no lock needed.
+	if (!ensureShardRing(ust)) return VK_WHOLE_SIZE;
+	VkDeviceSize aligned = (ust.ring.offset + alignment - 1) & ~(alignment - 1);
+	if (aligned + size > ust.ring.capacity) {
 		// need to flush current batch and wrap – must wait before reusing memory
-		if (m_hasPending) submitLocked(true);
-		if (size > m_ring.capacity) return VK_WHOLE_SIZE; // signal fallback to temp staging
+		if (ust.hasPending) submitState(ust, true);
+		if (size > ust.ring.capacity) return VK_WHOLE_SIZE; // signal fallback to temp staging
 		// Correctness: wait for transfer queue to finish reading old ring contents before wrap
 		m_transfer->waitAll();
-		m_ring.offset = 0;
+		ust.ring.offset = 0;
 		aligned = 0;
-		if (aligned + size > m_ring.capacity) return VK_WHOLE_SIZE;
+		if (aligned + size > ust.ring.capacity) return VK_WHOLE_SIZE;
 	}
-	m_ring.offset = aligned + size;
+	ust.ring.offset = aligned + size;
 	return aligned;
 }
-void smvk::UploadStreamer::ensureCmd() {
-	// caller holds m_mutex
-	if (m_curCmd != VK_NULL_HANDLE) return;
-	// purge already done in acquire
-	m_curHandle = m_transfer->acquire();
-	m_curCmd = m_transfer->GetCommandBuffer(m_curHandle);
-	m_hasPending = false;
+void smvk::UploadStreamer::ensureCmd(ThreadUploadState& ust) {
+	// st is owned by the calling thread – no lock needed.
+	if (ust.curCmd != VK_NULL_HANDLE) return;
+	// purge already done in acquire; acquire uses the thread-local command
+	// pool (GetThreadLocalPool) so concurrent acquires are lock-free – only
+	// the Submitter timeline counter takes a brief lock inside.
+	ust.curHandle = m_transfer->acquire();
+	ust.curCmd = m_transfer->GetCommandBuffer(ust.curHandle);
+	ust.hasPending = false;
 }
-void smvk::UploadStreamer::submitLocked(bool waitOldestIfFull) {
-	// caller holds m_mutex
-	if (!m_hasPending || m_curCmd == VK_NULL_HANDLE) {
-		if (m_curCmd != VK_NULL_HANDLE) {
-			auto tp = m_transfer->submit(m_curHandle);
-			for (auto& task : m_pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
-			m_pendingCleanups.clear();
+void smvk::UploadStreamer::submitState(ThreadUploadState& ust, bool waitOldestIfFull) {
+	// st is owned by the calling thread – no streamer lock. The Submitter
+	// and queue take their own brief locks internally.
+	if (!ust.hasPending || ust.curCmd == VK_NULL_HANDLE) {
+		if (ust.curCmd != VK_NULL_HANDLE) {
+			auto tp = m_transfer->submit(ust.curHandle);
+			for (auto& task : ust.pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
+			ust.pendingCleanups.clear();
 		}
-		m_curCmd = VK_NULL_HANDLE;
-		m_curHandle = {};
-		m_hasPending = false;
-		m_pendingBufferAcquires.clear();
-		m_pendingImageAcquires.clear();
-		m_stagedBytesSinceFlush = 0;
+		ust.curCmd = VK_NULL_HANDLE;
+		ust.curHandle = {};
+		ust.hasPending = false;
+		ust.pendingBufferAcquires.clear();
+		ust.pendingImageAcquires.clear();
+		ust.stagedBytesSinceFlush = 0;
 		return;
 	}
-	auto tp = m_transfer->submit(m_curHandle);
-	for (auto& task : m_pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
-	m_pendingCleanups.clear();
+	auto tp = m_transfer->submit(ust.curHandle);
+	for (auto& task : ust.pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
+	ust.pendingCleanups.clear();
 	// EXCLUSIVE ownership: submit acquire barriers on graphics queue waiting on transfer timeline
-	if (m_transfer != m_graphics && (!m_pendingBufferAcquires.empty() || !m_pendingImageAcquires.empty())) {
+	if (m_transfer != m_graphics && (!ust.pendingBufferAcquires.empty() || !ust.pendingImageAcquires.empty())) {
 		auto gHan = m_graphics->acquire();
 		auto gCmd = m_graphics->GetCommandBuffer(gHan);
-		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, (uint32_t)m_pendingBufferAcquires.size(), m_pendingBufferAcquires.empty() ? nullptr : m_pendingBufferAcquires.data(), (uint32_t)m_pendingImageAcquires.size(), m_pendingImageAcquires.empty() ? nullptr : m_pendingImageAcquires.data() };
+		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, (uint32_t)ust.pendingBufferAcquires.size(), ust.pendingBufferAcquires.empty() ? nullptr : ust.pendingBufferAcquires.data(), (uint32_t)ust.pendingImageAcquires.size(), ust.pendingImageAcquires.empty() ? nullptr : ust.pendingImageAcquires.data() };
 		vkCmdPipelineBarrier2(gCmd, &dep);
 		TimelineWait wait{ tp, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT };
 		m_graphics->submit(gHan, std::span<const TimelineWait>(&wait, 1));
 	}
-	m_pendingBufferAcquires.clear();
-	m_pendingImageAcquires.clear();
-	m_curCmd = VK_NULL_HANDLE;
-	m_curHandle = {};
-	m_hasPending = false;
-	m_stagedBytesSinceFlush = 0;
+	ust.pendingBufferAcquires.clear();
+	ust.pendingImageAcquires.clear();
+	ust.curCmd = VK_NULL_HANDLE;
+	ust.curHandle = {};
+	ust.hasPending = false;
+	ust.stagedBytesSinceFlush = 0;
+}
+bool smvk::UploadStreamer::hasAnyPending() const noexcept {
+	for (auto& ust : states_) if (ust.hasPending) return true;
+	return false;
 }
 void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size_t size, size_t dstOffset,
 	VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
@@ -2296,11 +2312,11 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 			return;
 		}
 	}
-	std::lock_guard<std::mutex> lock(m_mutex);
+	ThreadUploadState& ust = states_[CurrentPoolShard()];
 	Buffer* dstBuf = m_rm->buffers_.get(dst);
 	if (!dstBuf) return;
 	// allocate from ring
-	VkDeviceSize ringOff = allocFromRing(size, 16);
+	VkDeviceSize ringOff = allocFromRing(ust, size, 16);
 	if (ringOff == VK_WHOLE_SIZE) {
 		// fallback temporary staging (ring too small)
 		VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -2315,57 +2331,57 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst, const void* data, size
 		VK_CHECK(vmaCreateBuffer(m_rm->m_allocator, &ci, &aci, &tmpBuf, &tmpAlloc, &tmpInfo));
 		memcpy(tmpInfo.pMappedData, data, size);
 		vmaFlushAllocation(m_rm->m_allocator, tmpAlloc, 0, VK_WHOLE_SIZE);
-		ensureCmd();
+		ensureCmd(ust);
 		VkBufferCopy region{ 0, dstOffset, size };
-		vkCmdCopyBuffer(m_curCmd, tmpBuf, dstBuf->vkBuffer, 1, &region);
+		vkCmdCopyBuffer(ust.curCmd, tmpBuf, dstBuf->vkBuffer, 1, &region);
 		// BufferBarrier forward
 		uint32_t srcFamily = m_transfer->queueFamilyIndex();
 		uint32_t dstFamily = m_graphics->queueFamilyIndex();
 		if (srcFamily != dstFamily) {
 			VkBufferMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
 			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0,0,nullptr,1,&rel,0,nullptr };
-			vkCmdPipelineBarrier2(m_curCmd, &dep);
+			vkCmdPipelineBarrier2(ust.curCmd, &dep);
 			VkBufferMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
-			m_pendingBufferAcquires.push_back(acq);
+			ust.pendingBufferAcquires.push_back(acq);
 		}
 		else {
-			BufferBarrier(m_curCmd, dstBuf->vkBuffer, dstOffset, size, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
+			BufferBarrier(ust.curCmd, dstBuf->vkBuffer, dstOffset, size, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
 		}
-		m_hasPending = true;
+		ust.hasPending = true;
 		// defer staging destruction until transfer batch is submitted (use TimelinePoint)
-		m_pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
+		ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 		VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
-		m_stagedBytesSinceFlush += size;
-		if (m_stagedBytesSinceFlush >= kFlushThreshold) {
-			submitLocked(false);
+		ust.stagedBytesSinceFlush += size;
+		if (ust.stagedBytesSinceFlush >= kFlushThreshold) {
+			submitState(ust, false);
 		}
 		return;
 	}
 	// normal ring path
-	memcpy(static_cast<char*>(m_ring.mapped) + ringOff, data, size);
+	memcpy(static_cast<char*>(ust.ring.mapped) + ringOff, data, size);
 	// flush if non-coherent (ring is host_visible, likely coherent; still flush)
-	vmaFlushAllocation(m_rm->m_allocator, m_ring.allocation, ringOff, size);
-	ensureCmd();
+	vmaFlushAllocation(m_rm->m_allocator, ust.ring.allocation, ringOff, size);
+	ensureCmd(ust);
 	VkBufferCopy region{ ringOff, dstOffset, size };
-	vkCmdCopyBuffer(m_curCmd, m_ring.buffer, dstBuf->vkBuffer, 1, &region);
+	vkCmdCopyBuffer(ust.curCmd, ust.ring.buffer, dstBuf->vkBuffer, 1, &region);
 	// BufferBarrier forward
 	uint32_t srcFamily = m_transfer->queueFamilyIndex();
 	uint32_t dstFamily = m_graphics->queueFamilyIndex();
 	if (srcFamily != dstFamily) {
 		VkBufferMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
 		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0,0,nullptr,1,&rel,0,nullptr };
-		vkCmdPipelineBarrier2(m_curCmd, &dep);
+		vkCmdPipelineBarrier2(ust.curCmd, &dep);
 		VkBufferMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, srcFamily, dstFamily, dstBuf->vkBuffer, dstOffset, size };
-		m_pendingBufferAcquires.push_back(acq);
+		ust.pendingBufferAcquires.push_back(acq);
 	}
 	else {
-		BufferBarrier(m_curCmd, dstBuf->vkBuffer, dstOffset, size, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
+		BufferBarrier(ust.curCmd, dstBuf->vkBuffer, dstOffset, size, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess);
 	}
-	m_hasPending = true;
+	ust.hasPending = true;
 	VulkanResourceManager::BufferGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); m_rm->SetBufferSyncState(dst, st);
-	m_stagedBytesSinceFlush += size;
-	if (m_stagedBytesSinceFlush >= kFlushThreshold) {
-		submitLocked(false);
+	ust.stagedBytesSinceFlush += size;
+	if (ust.stagedBytesSinceFlush >= kFlushThreshold) {
+		submitState(ust, false);
 	}
 	// if we are batching many small uploads, don't submit yet – caller will flush
 }
@@ -2472,12 +2488,12 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 		}
 	}
 	// fallback to staging ring copy path
-	std::lock_guard<std::mutex> lock(m_mutex);
+	ThreadUploadState& ust = states_[CurrentPoolShard()];
 	// allocate from ring
-	VkDeviceSize ringOff = allocFromRing(dataSize, 16);
+	VkDeviceSize ringOff = allocFromRing(ust, dataSize, 16);
 	VmaAllocation tmpAlloc = VK_NULL_HANDLE; VkBuffer tmpBuf = VK_NULL_HANDLE; bool useTmp = false;
 	void* dstPtr = nullptr;
-	VkBuffer srcBuf = m_ring.buffer;
+	VkBuffer srcBuf = ust.ring.buffer;
 	VkDeviceSize srcOff = ringOff;
 	if (ringOff == VK_WHOLE_SIZE) {
 		// fallback temp
@@ -2493,11 +2509,11 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 		useTmp = true;
 	}
 	else {
-		dstPtr = static_cast<char*>(m_ring.mapped) + ringOff;
+		dstPtr = static_cast<char*>(ust.ring.mapped) + ringOff;
 	}
 	memcpy(dstPtr, data, dataSize);
-	vmaFlushAllocation(m_rm->m_allocator, useTmp ? tmpAlloc : m_ring.allocation, srcOff, dataSize);
-	ensureCmd();
+	vmaFlushAllocation(m_rm->m_allocator, useTmp ? tmpAlloc : ust.ring.allocation, srcOff, dataSize);
+	ensureCmd(ust);
 	// barriers and copy – we need to handle full mip chain; caller provided dataSize covering all mips, but we need regions
 	// Recompute regions similarly to UploadDataToImage2D
 	VkFormat vkFmt = toVkFormat(img->format);
@@ -2521,12 +2537,12 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 	uint32_t dstF = m_graphics->queueFamilyIndex();
 	bool needOwnership = srcF != dstF;
 	// UNDEFINED -> TRANSFER_DST
-	ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+	ImageBarrier(ust.curCmd, img->vkImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
 	// copy
 	if (img->mipLevels == 1 && img->arrayLayers == 1) {
 		VkBufferImageCopy2 r{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, srcOff, 0,0, {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, {0,0,0}, {img->extent.width, img->extent.height, 1} };
 		VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr, srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r };
-		vkCmdCopyBufferToImage2(m_curCmd, &copyInfo);
+		vkCmdCopyBufferToImage2(ust.curCmd, &copyInfo);
 	}
 	else {
 		const FormatInfo fmt = getFormatInfo(vkFmt);
@@ -2545,37 +2561,37 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 			}
 		}
 		VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr, srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)regs.size(), regs.data() };
-		vkCmdCopyBufferToImage2(m_curCmd, &copyInfo);
+		vkCmdCopyBufferToImage2(ust.curCmd, &copyInfo);
 	}
 	bool remainTransfer = (dstStages == VK_PIPELINE_STAGE_2_TRANSFER_BIT && dstAccess == VK_ACCESS_2_TRANSFER_WRITE_BIT);
 	if (!remainTransfer) {
 		if (needOwnership) {
 			VkImageMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
 			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel };
-			vkCmdPipelineBarrier2(m_curCmd, &dep);
+			vkCmdPipelineBarrier2(ust.curCmd, &dep);
 			VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
-			m_pendingImageAcquires.push_back(acq);
+			ust.pendingImageAcquires.push_back(acq);
 		}
 		else {
-			ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+			ImageBarrier(ust.curCmd, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
 		}
 	}
 	else {
 		if (needOwnership) {
 			VkImageMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
-			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel }; vkCmdPipelineBarrier2(m_curCmd, &dep);
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel }; vkCmdPipelineBarrier2(ust.curCmd, &dep);
 			VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, 0, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
-			m_pendingImageAcquires.push_back(acq);
+			ust.pendingImageAcquires.push_back(acq);
 		}
 	}
-	m_hasPending = true;
-	m_stagedBytesSinceFlush += dataSize;
-	if (m_stagedBytesSinceFlush >= kFlushThreshold) {
-		submitLocked(false);
+	ust.hasPending = true;
+	ust.stagedBytesSinceFlush += dataSize;
+	if (ust.stagedBytesSinceFlush >= kFlushThreshold) {
+		submitState(ust, false);
 	}
 	// defer staging destruction until transfer batch is submitted (TimelinePoint)
 	if (useTmp) {
-		m_pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
+		ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 	}
 	// update global sync
 	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); st.layout = remainTransfer ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask = PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
@@ -2637,11 +2653,11 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 		}
 	}
 	// Fallback to staging ring
-	std::lock_guard<std::mutex> lock(m_mutex);
-	VkDeviceSize ringOff = allocFromRing(dataSize, 16);
+	ThreadUploadState& ust = states_[CurrentPoolShard()];
+	VkDeviceSize ringOff = allocFromRing(ust, dataSize, 16);
 	VmaAllocation tmpAlloc = VK_NULL_HANDLE; VkBuffer tmpBuf = VK_NULL_HANDLE; bool useTmp = false;
 	void* dstPtr = nullptr;
-	VkBuffer srcBuf = m_ring.buffer;
+	VkBuffer srcBuf = ust.ring.buffer;
 	VkDeviceSize srcOff = ringOff;
 	if (ringOff == VK_WHOLE_SIZE) {
 		VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -2656,18 +2672,18 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 		useTmp = true;
 	}
 	else {
-		dstPtr = static_cast<char*>(m_ring.mapped) + ringOff;
+		dstPtr = static_cast<char*>(ust.ring.mapped) + ringOff;
 	}
 	memcpy(dstPtr, data, dataSize);
-	vmaFlushAllocation(m_rm->m_allocator, useTmp ? tmpAlloc : m_ring.allocation, srcOff, dataSize);
-	ensureCmd();
+	vmaFlushAllocation(m_rm->m_allocator, useTmp ? tmpAlloc : ust.ring.allocation, srcOff, dataSize);
+	ensureCmd(ust);
 	VkImageSubresourceRange fullRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers };
 	uint32_t srcF = m_transfer->queueFamilyIndex();
 	uint32_t dstF = m_graphics->queueFamilyIndex();
 	bool needOwnership = srcF != dstF;
 	// UNDEFINED or TRANSFER_DST -> TRANSFER_DST (handle host fallback case where image already in TRANSFER_DST)
 	// If host fallback transitioned to TRANSFER_DST, oldLayout should be TRANSFER_DST, not UNDEFINED. Check current layout via host transition? For simplicity, use UNDEFINED->TRANSFER_DST with IGNORED, driver will handle if already TRANSFER_DST (validation may warn but not fault for fallback)
-	ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+	ImageBarrier(ust.curCmd, img->vkImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
 	std::vector<VkBufferImageCopy2> regs2;
 	regs2.reserve(regions.size());
 	for (auto& r : regions) {
@@ -2675,60 +2691,65 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 		regs2.push_back(r2);
 	}
 	VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr, srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)regs2.size(), regs2.data() };
-	vkCmdCopyBufferToImage2(m_curCmd, &copyInfo);
+	vkCmdCopyBufferToImage2(ust.curCmd, &copyInfo);
 	if (!remainTransfer) {
 		if (needOwnership) {
 			VkImageMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
 			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel };
-			vkCmdPipelineBarrier2(m_curCmd, &dep);
+			vkCmdPipelineBarrier2(ust.curCmd, &dep);
 			VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, 0, 0, dstStages, dstAccess, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
-			m_pendingImageAcquires.push_back(acq);
+			ust.pendingImageAcquires.push_back(acq);
 		}
 		else {
-			ImageBarrier(m_curCmd, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+			ImageBarrier(ust.curCmd, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
 		}
 	}
 	else {
 		if (needOwnership) {
 			VkImageMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
-			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel }; vkCmdPipelineBarrier2(m_curCmd, &dep);
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel }; vkCmdPipelineBarrier2(ust.curCmd, &dep);
 			VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr, 0, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, srcF, dstF, img->vkImage, fullRange };
-			m_pendingImageAcquires.push_back(acq);
+			ust.pendingImageAcquires.push_back(acq);
 		}
 	}
-	m_hasPending = true;
-	m_stagedBytesSinceFlush += dataSize;
-	if (m_stagedBytesSinceFlush >= kFlushThreshold) {
-		submitLocked(false);
+	ust.hasPending = true;
+	ust.stagedBytesSinceFlush += dataSize;
+	if (ust.stagedBytesSinceFlush >= kFlushThreshold) {
+		submitState(ust, false);
 	}
 	if (useTmp) {
-		m_pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
+		ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
 	}
 	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); st.layout = remainTransfer ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask = PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
 }
-void smvk::UploadStreamer::flush() { std::lock_guard<std::mutex> lock(m_mutex); if (m_hasPending) submitLocked(true); if (m_transfer) m_transfer->purge(); }
+void smvk::UploadStreamer::flush() { for (auto& ust : states_) if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge(); }
+void smvk::UploadStreamer::flushLocal() { ThreadUploadState& ust = states_[CurrentPoolShard()]; if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge(); }
 smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
-	std::lock_guard<std::mutex> lock(m_mutex);
-	if (!m_hasPending || m_curCmd == VK_NULL_HANDLE) return TimelinePoint{};
-	// Use same path as submitLocked to ensure pending acquires and cleanups are handled
-	auto tp = m_transfer->submit(m_curHandle);
-	for (auto& task : m_pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
-	m_pendingCleanups.clear();
-	if (m_transfer != m_graphics && (!m_pendingBufferAcquires.empty() || !m_pendingImageAcquires.empty())) {
-		auto gHan = m_graphics->acquire();
-		auto gCmd = m_graphics->GetCommandBuffer(gHan);
-		VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, (uint32_t)m_pendingBufferAcquires.size(), m_pendingBufferAcquires.empty() ? nullptr : m_pendingBufferAcquires.data(), (uint32_t)m_pendingImageAcquires.size(), m_pendingImageAcquires.empty() ? nullptr : m_pendingImageAcquires.data() };
-		vkCmdPipelineBarrier2(gCmd, &dep);
-		TimelineWait wait{ tp, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT };
-		m_graphics->submit(gHan, std::span<const TimelineWait>(&wait, 1));
+	// Drains all shards (quiescent: call after workers joined). Returns the
+	// last timeline point for callers that need to chain.
+	TimelinePoint last{};
+	for (auto& ust : states_) {
+		if (!ust.hasPending || ust.curCmd == VK_NULL_HANDLE) continue;
+		auto tp = m_transfer->submit(ust.curHandle);
+		for (auto& task : ust.pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
+		ust.pendingCleanups.clear();
+		if (m_transfer != m_graphics && (!ust.pendingBufferAcquires.empty() || !ust.pendingImageAcquires.empty())) {
+			auto gHan = m_graphics->acquire();
+			auto gCmd = m_graphics->GetCommandBuffer(gHan);
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, (uint32_t)ust.pendingBufferAcquires.size(), ust.pendingBufferAcquires.empty() ? nullptr : ust.pendingBufferAcquires.data(), (uint32_t)ust.pendingImageAcquires.size(), ust.pendingImageAcquires.empty() ? nullptr : ust.pendingImageAcquires.data() };
+			vkCmdPipelineBarrier2(gCmd, &dep);
+			TimelineWait wait{ tp, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT };
+			m_graphics->submit(gHan, std::span<const TimelineWait>(&wait, 1));
+		}
+		ust.pendingBufferAcquires.clear();
+		ust.pendingImageAcquires.clear();
+		ust.curCmd = VK_NULL_HANDLE;
+		ust.curHandle = {};
+		ust.hasPending = false;
+		ust.stagedBytesSinceFlush = 0;
+		last = tp;
 	}
-	m_pendingBufferAcquires.clear();
-	m_pendingImageAcquires.clear();
-	m_curCmd = VK_NULL_HANDLE;
-	m_curHandle = {};
-	m_hasPending = false;
-	m_stagedBytesSinceFlush = 0;
-	return tp;
+	return last;
 }
 void smvk::UploadStreamer::waitAll() { flush(); if (m_transfer) m_transfer->waitAll(); if (m_graphics && m_graphics != m_transfer) m_graphics->waitAll(); }
 
@@ -2754,7 +2775,7 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 		if (buffer != staticVertexFmtHeap.m_staticVertexPosBuffer &&
 			buffer != staticVertexFmtHeap.m_staticVertexShadingBuffer &&
 			buffer != staticVertexFmtHeap.m_staticIndexBuffer) {
-			m_streamer->flush();
+			m_streamer->flushLocal();
 		}
 		return;
 	}
@@ -2838,7 +2859,7 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 				sz += (VkDeviceSize)bx * by * fmt2.bytesPerBlock * image.arrayLayers;
 			}
 			m_streamer->uploadImage(found, static_cast<const std::byte*>(data) + srcOffset, (size_t)sz, dstStages, dstAccess);
-			m_streamer->flush();
+			m_streamer->flushLocal();
 			return;
 		}
 	}
@@ -3347,7 +3368,12 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		bindlessImages_.get(handle);
 
 	// The bindless pool is intentionally also our descriptor-slot allocator.
+	// NOTE (sharded pools): handle.index() is the global sharded index
+	// (shard * kShardCapacity + local). It doubles as the descriptor-array
+	// slot, so it must stay below MAX_TEXTURES – sparse per-thread shards
+	// consume the same budget. Fails loudly instead of corrupting writes.
 	resource->descriptorIndex = handle.index();
+	assert(resource->descriptorIndex < MAX_TEXTURES && "bindless descriptor budget exhausted (sharded indices are sparse – raise MAX_TEXTURES or pack slots)");
 
 	m_needToUpdateTextures = true;
 
@@ -4538,6 +4564,7 @@ bool smvk::DeferredTask::isReady() const {
 }
 void smvk::VulkanResourceManager::AddDeferredTask(std::packaged_task<void()>&& task, smvk::CommandSubmitHandle handle)
 {
+	std::lock_guard<std::mutex> lock(m_deferredMutex);
 	if (handle.empty()) {
 		m_deferredTasks.emplace_back(std::move(task), TimelinePoint{});
 		return;
@@ -4546,6 +4573,7 @@ void smvk::VulkanResourceManager::AddDeferredTask(std::packaged_task<void()>&& t
 }
 void smvk::VulkanResourceManager::AddDeferredTask(std::packaged_task<void()>&& task, CommandSubmitHandle handle, Submitter* submitter)
 {
+	std::lock_guard<std::mutex> lock(m_deferredMutex);
 	if (handle.empty()) {
 		m_deferredTasks.emplace_back(std::move(task), TimelinePoint{});
 		return;
@@ -4554,10 +4582,12 @@ void smvk::VulkanResourceManager::AddDeferredTask(std::packaged_task<void()>&& t
 }
 void smvk::VulkanResourceManager::AddDeferredTask(std::packaged_task<void()>&& task, TimelinePoint point)
 {
+	std::lock_guard<std::mutex> lock(m_deferredMutex);
 	m_deferredTasks.emplace_back(std::move(task), point);
 }
 void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 {
+	std::lock_guard<std::mutex> lock(m_deferredMutex);
 	auto it = m_deferredTasks.begin();
 	while (it != m_deferredTasks.end() && it->isReady()) {
 		it->task_();
@@ -4571,6 +4601,7 @@ void smvk::VulkanResourceManager::FlushDeferredTasks()
 	// so every retire point is trivially satisfied. Never queries semaphores,
 	// which matters because the timeline semaphore may already be destroyed
 	// (member teardown order: swapchain before context).
+	std::lock_guard<std::mutex> lock(m_deferredMutex);
 	for (auto& t : m_deferredTasks) t.task_();
 	m_deferredTasks.clear();
 }
@@ -4759,57 +4790,78 @@ uint32_t smvk::VulkanResourceManager::GetSamplerCount() const {
 	return samplerCache_ ? samplerCache_->size() : 0;
 }
 // ============================================================================
-// Global sync bookkeeping (table handle->state, future multithreading ready)
+// Sync bookkeeping – per-thread shards, lock-free hot path.
+// Shard is decoded from the handle index so each thread only touches its
+// own map. Snapshot/Commit merge all shards and run quiescent (render
+// thread after worker join / rendergraph setup).
 // ============================================================================
 smvk::VulkanResourceManager::ImageGlobalSyncState smvk::VulkanResourceManager::GetImageSyncState(ImageHandle h) const {
 	if (h.empty()) return {};
-	std::shared_lock lock(syncMutex_);
-	auto it = imageSyncStates_.find(SyncKey(h));
-	if (it != imageSyncStates_.end()) return it->second;
+	uint32_t shard = SyncShard(h.index());
+	assert(shard < kNumPoolShards);
+	auto it = imageSyncShards_[shard].find(SyncKey(h));
+	if (it != imageSyncShards_[shard].end()) return it->second;
 	return {};
 }
 smvk::VulkanResourceManager::BufferGlobalSyncState smvk::VulkanResourceManager::GetBufferSyncState(BufferHandle h) const {
 	if (h.empty()) return {};
-	std::shared_lock lock(syncMutex_);
-	auto it = bufferSyncStates_.find(SyncKey(h));
-	if (it != bufferSyncStates_.end()) return it->second;
+	uint32_t shard = SyncShard(h.index());
+	assert(shard < kNumPoolShards);
+	auto it = bufferSyncShards_[shard].find(SyncKey(h));
+	if (it != bufferSyncShards_[shard].end()) return it->second;
 	return {};
 }
 void smvk::VulkanResourceManager::SetImageSyncState(ImageHandle h, ImageGlobalSyncState state) {
 	if (h.empty()) return;
-	std::unique_lock lock(syncMutex_);
-	imageSyncStates_[SyncKey(h)] = state;
+	uint32_t shard = SyncShard(h.index());
+	assert(shard < kNumPoolShards);
+	imageSyncShards_[shard][SyncKey(h)] = state;
 }
 void smvk::VulkanResourceManager::SetBufferSyncState(BufferHandle h, BufferGlobalSyncState state) {
 	if (h.empty()) return;
-	std::unique_lock lock(syncMutex_);
-	bufferSyncStates_[SyncKey(h)] = state;
+	uint32_t shard = SyncShard(h.index());
+	assert(shard < kNumPoolShards);
+	bufferSyncShards_[shard][SyncKey(h)] = state;
 }
 void smvk::VulkanResourceManager::RemoveImageSyncState(ImageHandle h) {
 	if (h.empty()) return;
-	std::unique_lock lock(syncMutex_);
-	imageSyncStates_.erase(SyncKey(h));
+	uint32_t shard = SyncShard(h.index());
+	assert(shard < kNumPoolShards);
+	imageSyncShards_[shard].erase(SyncKey(h));
 }
 void smvk::VulkanResourceManager::RemoveBufferSyncState(BufferHandle h) {
 	if (h.empty()) return;
-	std::unique_lock lock(syncMutex_);
-	bufferSyncStates_.erase(SyncKey(h));
+	uint32_t shard = SyncShard(h.index());
+	assert(shard < kNumPoolShards);
+	bufferSyncShards_[shard].erase(SyncKey(h));
 }
 std::unordered_map<uint64_t, smvk::VulkanResourceManager::ImageGlobalSyncState> smvk::VulkanResourceManager::SnapshotImageSyncStates() const {
-	std::shared_lock lock(syncMutex_);
-	return imageSyncStates_;
+	std::unordered_map<uint64_t, smvk::VulkanResourceManager::ImageGlobalSyncState> out;
+	for (uint32_t s = 0; s < kNumPoolShards; ++s)
+		for (auto& kv : imageSyncShards_[s]) out[kv.first] = kv.second;
+	return out;
 }
 std::unordered_map<uint64_t, smvk::VulkanResourceManager::BufferGlobalSyncState> smvk::VulkanResourceManager::SnapshotBufferSyncStates() const {
-	std::shared_lock lock(syncMutex_);
-	return bufferSyncStates_;
+	std::unordered_map<uint64_t, smvk::VulkanResourceManager::BufferGlobalSyncState> out;
+	for (uint32_t s = 0; s < kNumPoolShards; ++s)
+		for (auto& kv : bufferSyncShards_[s]) out[kv.first] = kv.second;
+	return out;
 }
 void smvk::VulkanResourceManager::CommitImageSyncStates(const std::unordered_map<uint64_t, ImageGlobalSyncState>& states) {
-	std::unique_lock lock(syncMutex_);
-	for (auto& kv : states) imageSyncStates_[kv.first] = kv.second;
+	for (auto& kv : states) {
+		uint32_t idx = static_cast<uint32_t>(kv.first & 0xffffffffull);
+		uint32_t shard = SyncShard(idx);
+		assert(shard < kNumPoolShards);
+		imageSyncShards_[shard][kv.first] = kv.second;
+	}
 }
 void smvk::VulkanResourceManager::CommitBufferSyncStates(const std::unordered_map<uint64_t, BufferGlobalSyncState>& states) {
-	std::unique_lock lock(syncMutex_);
-	for (auto& kv : states) bufferSyncStates_[kv.first] = kv.second;
+	for (auto& kv : states) {
+		uint32_t idx = static_cast<uint32_t>(kv.first & 0xffffffffull);
+		uint32_t shard = SyncShard(idx);
+		assert(shard < kNumPoolShards);
+		bufferSyncShards_[shard][kv.first] = kv.second;
+	}
 }
 // 
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BindlessImageHandle handle)

@@ -417,7 +417,14 @@ namespace smvk {
 	};
 
 	// ---------------------------------------------------------------------
-	// UploadStreamer – batched transfer hot-path
+	// UploadStreamer – batched transfer hot-path (per-thread sharded).
+	//
+	// Multithread model: one local upload context per thread. Each shard
+	// owns its StagingRing, current command buffer and pending barrier
+	// lists, so record-path uploads never touch a shared mutex. Submits
+	// still go through the shared Submitter (brief lock, once per flush –
+	// negligible vs per-object pool locks). flush()/waitAll() drain ALL
+	// shards and must run after workers joined (or on the render thread).
 	// ---------------------------------------------------------------------
 	struct UploadStreamer {
 		UploadStreamer() = default;
@@ -439,32 +446,36 @@ namespace smvk {
 			uint32_t arrayLayers, const void* data, size_t dataSize,
 			const std::vector<VkBufferImageCopy>& regions, VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		void flush();
+		// Flush only the calling thread's shard (workers call this before
+		// returning so their submits overlap with other workers' recording).
+		void flushLocal();
 		TimelinePoint flushAndGetTimeline();
 		void waitAll();
-		bool hasPending() const noexcept { return m_hasPending; }
+		bool hasPending() const { return states_[CurrentPoolShard()].hasPending; }
+		bool hasAnyPending() const noexcept;
 	private:
-		VkDeviceSize allocFromRing(VkDeviceSize size, VkDeviceSize alignment);
-		void ensureCmd();
-		void submitLocked(bool waitOldestIfFull = true);
+		struct ThreadUploadState {
+			StagingRing ring{};
+			CommandSubmitHandle curHandle{};
+			VkCommandBuffer curCmd = VK_NULL_HANDLE;
+			bool hasPending = false;
+			std::vector<VkBufferMemoryBarrier2> pendingBufferAcquires;
+			std::vector<VkImageMemoryBarrier2> pendingImageAcquires;
+			std::vector<std::packaged_task<void()>> pendingCleanups;
+			VkDeviceSize stagedBytesSinceFlush = 0;
+		};
+		ThreadUploadState states_[kNumPoolShards];
+		VkDeviceSize ringCapacityPerThread_ = 32ull * 1024 * 1024;
+		bool ensureShardRing(ThreadUploadState& st);
+		VkDeviceSize allocFromRing(ThreadUploadState& st, VkDeviceSize size, VkDeviceSize alignment);
+		void ensureCmd(ThreadUploadState& st);
+		void submitState(ThreadUploadState& st, bool waitOldestIfFull = true);
 		VulkanResourceManager* m_rm = nullptr;
 		Submitter* m_transfer = nullptr;
 		Submitter* m_graphics = nullptr;
-		StagingRing m_ring{};
-		CommandSubmitHandle m_curHandle{};
-		VkCommandBuffer m_curCmd = VK_NULL_HANDLE;
-		bool m_hasPending = false;
-		std::mutex m_mutex;
 		bool m_hostCopySupported = false;
 
-		// pending acquires for EXCLUSIVE ownership transfer
-		std::vector<VkBufferMemoryBarrier2> m_pendingBufferAcquires;
-		std::vector<VkImageMemoryBarrier2> m_pendingImageAcquires;
-		std::vector<std::pair<BufferHandle, BufferGlobalSyncState>> m_pendingBufferStates;
-		std::vector<std::pair<ImageHandle, ImageGlobalSyncState>> m_pendingImageStates;
-
-		VkDeviceSize m_stagedBytesSinceFlush = 0;
 		static constexpr VkDeviceSize kFlushThreshold = 256ull * 1024 * 1024;
-		std::vector<std::packaged_task<void()>> m_pendingCleanups;
 	};
 
 	struct DeferredTask {
@@ -544,6 +555,11 @@ namespace smvk {
 		std::vector<VkImageLayout> m_hostCopySrcLayouts;
 		std::vector<VkImageLayout> m_hostCopyDstLayouts;
 		std::vector<DeferredTask> m_deferredTasks;
+		// Guards m_deferredTasks pushes from upload worker threads (rare:
+		// only temp-staging cleanups on ring overflow). Render-thread
+		// drain (Process/Flush) must not run concurrently with worker
+		// submits – in practice FlushUploads joins workers first.
+		mutable std::mutex m_deferredMutex;
 		// Latest graphics submit retirement point (swapchain timeline).
 		// Monotonic while the swapchain lives; reset only with the semaphore.
 		VkSemaphore m_lastGraphicsSemaphore = VK_NULL_HANDLE;
@@ -553,16 +569,19 @@ namespace smvk {
 		VkPipelineLayout defaultPipeLayout{};
 		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT]{};
 
-		// Resources
-		Pool<ImageTag, Image> images_;
-		Pool<TextureTag, Texture> textures_;
-		Pool<BufferTag, Buffer> buffers_;
-		Pool<ImageViewTag, ImageView> imageViews_;
+		// Resources – one local shard per thread, no pool locks (see pool.h).
+		// create() allocates in the calling thread's shard; get()/destroy()
+		// decode the shard from the handle. Cross-thread reads after join
+		// are safe; concurrent mutation of the same entry is UB.
+		ShardedPool<ImageTag, Image> images_;
+		ShardedPool<TextureTag, Texture> textures_;
+		ShardedPool<BufferTag, Buffer> buffers_;
+		ShardedPool<ImageViewTag, ImageView> imageViews_;
 
-		Pool<SamplerTag, VkSampler> samplers_;
-		Pool<BindlessImageTag, BindlessImage> bindlessImages_;
-		Pool<DescriptorPoolTag, VkDescriptorPool> descriptorPools_;
-		Pool<ShaderModuleTag, VkShaderModule> shaderModules_; // will be removed in 1.4
+		ShardedPool<SamplerTag, VkSampler> samplers_;
+		ShardedPool<BindlessImageTag, BindlessImage> bindlessImages_;
+		ShardedPool<DescriptorPoolTag, VkDescriptorPool> descriptorPools_;
+		ShardedPool<ShaderModuleTag, VkShaderModule> shaderModules_; // will be removed in 1.4
 
 		// DEFAULTS (legacy handles – kept for ABI; new code should use samplerCache)
 		VkSampler m_defaultSampler{};
@@ -605,9 +624,13 @@ namespace smvk {
 		}
 		template<typename H> static uint64_t SyncKey(H h) noexcept { return SyncKey(h.index(), h.gen()); }
 
-		mutable std::shared_mutex syncMutex_;
-		std::unordered_map<uint64_t, ImageGlobalSyncState> imageSyncStates_;
-		std::unordered_map<uint64_t, BufferGlobalSyncState> bufferSyncStates_;
+		// Per-thread sync shards – hot path is lock-free. Shard is decoded
+		// from the handle index (index / kShardCapacity), matching the pool
+		// shard that owns the object. Writes only touch the owning thread's
+		// shard; Snapshot/Commit iterate all shards when quiescent.
+		std::unordered_map<uint64_t, ImageGlobalSyncState> imageSyncShards_[kNumPoolShards];
+		std::unordered_map<uint64_t, BufferGlobalSyncState> bufferSyncShards_[kNumPoolShards];
+		static uint32_t SyncShard(uint32_t globalIndex) noexcept { return globalIndex / kShardCapacity; }
 
 		// Global sync accessors – thread-safe.
 		ImageGlobalSyncState GetImageSyncState(ImageHandle h) const;

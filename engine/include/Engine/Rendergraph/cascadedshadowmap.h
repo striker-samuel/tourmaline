@@ -299,25 +299,25 @@ struct CascadedShadowAtlas {
 			// bounds check returns "lit". The flip is also unnecessary: the
 			// shadow pass and the sampling share the same lightVP, so the
 			// NDC->UV convention cancels out.
-			const glm::mat4 lvp = lp * lv;
-			std::memcpy(dir.cascades[i].lightVP, glm::value_ptr(lvp), sizeof(dir.cascades[i].lightVP));
-			dir.cascades[i].splitEnd = splits[i + 1];
-			// Small depth bias per cascade – grows slightly for far cascades.
-			dir.cascades[i].bias = 0.0005f * (1.0f + static_cast<float>(i) * 0.5f);
-			dir.cascades[i].normalBias = 0.0f;
-			dir.cascades[i].pad_ = 0.0f;
-			dir.cascades[i].invShadowSize =
-				glm::vec2(1.0f / static_cast<float>(tileExtent.width),
-					1.0f / static_cast<float>(tileExtent.height));
+		const glm::mat4 lvp = lp * lv;
+		std::memcpy(dir.cascades[i].lightVP, glm::value_ptr(lvp), sizeof(dir.cascades[i].lightVP));
+		dir.cascades[i].splitEnd = splits[i + 1];
+		// Small depth bias per cascade – grows slightly for far cascades.
+		dir.cascades[i].bias = 0.0005f * (1.0f + static_cast<float>(i) * 0.5f);
+		dir.cascades[i].normalBias = 0.0f;
+		dir.cascades[i].pad_ = 0.0f;
+		dir.cascades[i].invShadowSize =
+			glm::vec2(1.0f / static_cast<float>(tileExtent.width),
+				1.0f / static_cast<float>(tileExtent.height));
 
-			const uint32_t x = i % cols;
-			const uint32_t y = i / cols;
-			const float offX = static_cast<float>(x * tileExtent.width);
-			const float offY = static_cast<float>(y * tileExtent.height);
-			dir.cascades[i].uvScale = glm::vec2(
-				static_cast<float>(tileExtent.width) * invAtlasW,
-				static_cast<float>(tileExtent.height) * invAtlasH);
-			dir.cascades[i].uvBias = glm::vec2(offX * invAtlasW, offY * invAtlasH);
+		const uint32_t x = i % cols;
+		const uint32_t y = i / cols;
+		const float offX = static_cast<float>(x * tileExtent.width);
+		const float offY = static_cast<float>(y * tileExtent.height);
+		dir.cascades[i].uvScale = glm::vec2(
+			static_cast<float>(tileExtent.width) * invAtlasW,
+			static_cast<float>(tileExtent.height) * invAtlasH);
+		dir.cascades[i].uvBias = glm::vec2(offX * invAtlasW, offY * invAtlasH);
 			const float texelU = 0.5f * invAtlasW;
 			const float texelV = 0.5f * invAtlasH;
 			dir.cascades[i].uvClampMin = dir.cascades[i].uvBias + glm::vec2(texelU, texelV);

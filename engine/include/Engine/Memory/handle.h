@@ -44,6 +44,9 @@ namespace smvk {
 		template<typename ObjectType_, typename ImplObjectType>
 		friend class Pool;
 
+		template<typename ObjectType_, typename ImplObjectType>
+		friend class ShardedPool;
+
 		uint32_t index_ = 0;
 		uint32_t gen_ = 0;
 	};

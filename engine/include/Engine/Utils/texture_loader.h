@@ -43,11 +43,13 @@ Holder<TextureHandle> LoadKtxTextureFile(
 // collected on the calling thread. Failed jobs are skipped (logged) and
 // simply absent from the result map.
 //
-// Thread-safety: ResourceManager pools are internally locked, the upload
-// ring is mutex-guarded and VMA/vkCreate* are thread-safe for distinct
-// objects, so concurrent CreateTexture calls are safe. The caller must
-// still move the returned holders into its own (Cluster) pool and flush
-// uploads on its own thread.
+// Thread-safety: one local shard per thread (see Memory/pool.h). Each
+// ThreadPool worker owns a unique pool shard and a private upload ring, so
+// concurrent CreateTexture calls allocate lock-free with no pool/streamer
+// locks – only queue submit, the sampler cache and deferred-task pushes
+// take brief locks. VMA/vkCreate* are thread-safe for distinct objects.
+// The caller must join all jobs (the future .get() loop below does) before
+// using the handles on its own thread, and flush uploads on its own thread.
 std::unordered_map<int, Holder<TextureHandle>> LoadKtxTexturesParallel(
 	ResourceManager& ctx,
 	const std::vector<KtxLoadJob>& jobs,
