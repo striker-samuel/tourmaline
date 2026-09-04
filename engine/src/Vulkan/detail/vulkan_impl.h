@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <vector>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -556,6 +557,13 @@ namespace smvk {
 		void UploadDataToImage2D(const Image& image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset);
 
 		void UpdateDescriptors(uint32_t frameIndex = 0);
+
+		// Engine globals (set 0 / kBinding_EngineGlobals): time / deltaTime /
+		// frameIndex / fps, computed engine-side from the acquire rhythm and
+		// uploaded once per frame. Called by the swapchain right after the
+		// in-flight slot retires (AcquireFramebuffer). No app plumbing.
+		void FlushEngineGlobals(uint32_t frameIndex);
+
 		uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
 		uint32_t GetTextureBindlessIndex(TextureHandle handle) const;
 
@@ -629,6 +637,16 @@ namespace smvk {
 
 		Holder<DescriptorPoolHandle> defaultDescriptorPool{};
 		TextureHandle m_nilTexture{};
+
+		// Engine globals: storage buffer (one slice per frame in flight) +
+		// engine-side timing state. time/deltaTime derive from the acquire
+		// rhythm (steady clock), frameIndex counts acquires, fps is an EMA.
+		// Flushed every frame into kBinding_EngineGlobals.
+		BufferHandle m_engineGlobalsBuffer{};
+		std::chrono::steady_clock::time_point m_globalsStartTime{};
+		std::chrono::steady_clock::time_point m_globalsLastAcquireTime{};
+		uint32_t m_globalsFrameCounter = 0;
+		float m_globalsSmoothedFps = 0.0f;
 
 		// Global sync bookkeeping – use global types for UploadStreamer visibility
 		using ImageGlobalSyncState = ::smvk::ImageGlobalSyncState;

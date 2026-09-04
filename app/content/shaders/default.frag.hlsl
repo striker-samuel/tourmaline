@@ -369,11 +369,12 @@ PSOut mainPS(PSIn IN)
 
                 // Light function: procedural per-light intensity curve
                 // (flicker / pulse / cone bands). Skips backfacing pixels.
+                // Uses the engine-globals clock (globals.hlsli g_time()).
                 if (pl.functionType > 0)
                 {
                     plColor *= EvaluateLightFunction(
                         pl.functionType, pl.functionSpeed, pl.functionScale,
-                        frame.time, spotUV, pl.type == 1);
+                        g_time(), spotUV, pl.type == 1);
                 }
 
                 // Spot shadow: tile assigned by the per-frame selection;

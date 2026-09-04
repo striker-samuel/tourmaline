@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <span>
@@ -1710,6 +1711,10 @@ bool smvk::VulkanCore::Init() {
 				.shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
 				.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE,
 				.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE,
+				// engine globals binding (kBinding_EngineGlobals): the single
+				// storage-buffer descriptor is rewritten every frame while
+				// previous frames are still executing (update-after-bind).
+				.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE,
 				.descriptorBindingPartiallyBound = VK_TRUE,
 				.descriptorBindingVariableDescriptorCount = VK_TRUE,
 				.runtimeDescriptorArray = VK_TRUE,
@@ -1923,6 +1928,18 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		&pixel
 	).release();
 
+	// Engine globals buffer: one EngineGlobals slice per frame in flight,
+	// read by every shader through set 0 / kBinding_EngineGlobals.
+	// Values (time / deltaTime / frameIndex / fps) are computed engine-side
+	// from the acquire rhythm and flushed by VulkanSwapchain::AcquireFramebuffer
+	// after the in-flight slot retires. No app-side plumbing.
+	m_engineGlobalsBuffer = CreateBuffer(
+		sizeof(smvk::EngineGlobals) * MAX_FRAMES_IN_FLIGHT,
+		BufferType_Storage,
+		"engine globals"
+	).release();
+	m_globalsStartTime = std::chrono::steady_clock::now();
+
 	// ============================================================================
 	// Hardcoded Bindless Setup
 	// ============================================================================
@@ -1936,6 +1953,10 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		getDSLBinding(kBinding_Textures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
 		getDSLBinding(kBinding_Samplers, VK_DESCRIPTOR_TYPE_SAMPLER, MAX_SAMPLERS, stageFlags),
 		getDSLBinding(kBinding_StorageImages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_TEXTURES, stageFlags),
+		// Engine globals: single read-only storage buffer, one slice per frame
+		// in flight. The descriptor is rewritten every frame (update-after-bind)
+		// to point at the current frame's slice; see FlushEngineGlobals.
+		getDSLBinding(kBinding_EngineGlobals, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags),
 	};
 
 	const uint32_t flags =
@@ -1997,6 +2018,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    MAX_TEXTURES },
 		{ VK_DESCRIPTOR_TYPE_SAMPLER,          MAX_SAMPLERS },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    MAX_TEXTURES },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   MAX_FRAMES_IN_FLIGHT }, // engine globals slices
 	  }
 	};
 	defaultDescriptorPool = CreateDescriptorPool(poolSizes);
@@ -2039,6 +2061,7 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	}
 
 	destroy(this, m_nilTexture);
+	destroy(this, m_engineGlobalsBuffer);
 
 	// Flush, not Process: queued tasks may reference the swapchain timeline
 	// semaphore, which ~VulkanSwapchain already destroyed (member order).
@@ -4816,6 +4839,72 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 	m_needToUpdateTextures = false;
 	m_needToUpdateSamplers = false;
 }
+
+// Compute this frame's EngineGlobals from the acquire rhythm, upload them
+// into the frame's slice and point the engine-globals descriptor at it.
+// Called by the swapchain after the in-flight slot retires (timeline wait),
+// before any pass records, so:
+//   - the slice is safe to overwrite (previous use completed), and
+//   - the update-after-bind descriptor rewrite is visible to every command
+//     recorded this frame, while already-recorded frames keep their slice.
+void smvk::VulkanResourceManager::FlushEngineGlobals(uint32_t frameIndex)
+{
+	assert(!m_engineGlobalsBuffer.empty());
+	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+
+	const auto now = std::chrono::steady_clock::now();
+	const float time = std::chrono::duration<float>(now - m_globalsStartTime).count();
+	// First acquire has no predecessor: deltaTime stays 0.
+	const float deltaTime = m_globalsLastAcquireTime.time_since_epoch().count() != 0
+		? std::chrono::duration<float>(now - m_globalsLastAcquireTime).count()
+		: 0.0f;
+	m_globalsLastAcquireTime = now;
+	++m_globalsFrameCounter;
+	if (deltaTime > 0.0f) {
+		m_globalsSmoothedFps += (1.0f / deltaTime - m_globalsSmoothedFps) * 0.05f;
+	}
+
+	const smvk::EngineGlobals globals{
+		.time = time,
+		.deltaTime = deltaTime,
+		.frameIndex = m_globalsFrameCounter,
+		.fps = m_globalsSmoothedFps,
+	};
+
+	const size_t sliceOffset = frameIndex * sizeof(smvk::EngineGlobals);
+
+	// Same upload path as all per-frame buffers (streamer/staging + barrier +
+	// sync-state tracking), so the rendergraph barriers apply on first use.
+	UploadDataToBuffer(
+		m_engineGlobalsBuffer,
+		&globals,
+		sizeof(smvk::EngineGlobals),
+		VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+		| VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+		| VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+		VK_ACCESS_2_SHADER_READ_BIT,
+		0,
+		sliceOffset
+	);
+
+	const Buffer* buffer = buffers_.get(m_engineGlobalsBuffer);
+	assert(buffer && buffer->vkBuffer != VK_NULL_HANDLE);
+
+	VkDescriptorBufferInfo info{};
+	info.buffer = buffer->vkBuffer;
+	info.offset = sliceOffset;
+	info.range = sizeof(smvk::EngineGlobals);
+
+	VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+	write.dstSet = defaultDescriptorSets_[0]; // single global bindless set instance
+	write.dstBinding = smvk::Bindings::kBinding_EngineGlobals;
+	write.dstArrayElement = 0;
+	write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	write.descriptorCount = 1;
+	write.pBufferInfo = &info;
+	vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+}
+
 [[nodiscard]] uint32_t smvk::VulkanResourceManager::GetBindlessIndex(BindlessImageHandle handle) const
 {
 	assert(!handle.empty());
@@ -6064,6 +6153,12 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	}
 
 	SetCurrentImageIndex(imageIndex);
+
+	// Engine globals: the timeline wait above guarantees this frame's slice
+	// retired, so it can be rewritten before any pass records. The
+	// update-after-bind descriptor rewrite is visible to commands recorded
+	// from now on; previously recorded frames keep their own slice.
+	ctx_.FlushEngineGlobals(currentFrame_);
 
 	vkResetCommandPool(device_, perFrameCommandPools[currentFrame_], 0);
 

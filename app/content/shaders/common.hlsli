@@ -1,4 +1,5 @@
 #pragma once
+#include "globals.hlsli"
 #include "light.hlsli"
 #include "renderview.hlsli"
 

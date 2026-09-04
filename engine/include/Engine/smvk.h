@@ -1103,11 +1103,28 @@ namespace smvk {
 	} PipelineStageBits;
 	typedef uint32_t PipelineStage;
 
+	// Engine-wide per-frame globals (time / deltaTime / frameIndex / fps).
+	// Computed and uploaded entirely engine-side (VulkanResourceManager::
+	// FlushEngineGlobals, driven by the swapchain's AcquireFramebuffer) and
+	// exposed to every shader through bindless set 0, binding
+	// kBinding_EngineGlobals:
+	//   [[vk::binding(3, 0)]] StructuredBuffer<EngineGlobals> g_engineGlobals;
+	// Must be mirrored by HLSL 'EngineGlobals' in content/shaders/globals.hlsli.
+	struct EngineGlobals
+	{
+		float time;        // seconds since app start
+		float deltaTime;   // last frame delta (seconds)
+		uint32_t frameIndex; // absolute frame counter (wraps at 2^32)
+		float fps;         // smoothed (EMA) frames per second
+	};
+	static_assert(sizeof(EngineGlobals) == 16, "EngineGlobals must stay 16 bytes (HLSL mirror relies on it)");
+
 	enum Bindings {
 		kBinding_Textures = 0, // position 0
 		kBinding_Samplers = 1, // I thought better to alias samplers with comparisonSamplers HLSLside.
 		kBinding_StorageImages = 2,
-		kBinding_NumBindings = 3 // this should be # of all other
+		kBinding_EngineGlobals = 3, // read-only StructuredBuffer<EngineGlobals>, one slice per frame in flight
+		kBinding_NumBindings = 4 // this should be # of all other
 	};
 
 	struct QueueFamilyIndices {
