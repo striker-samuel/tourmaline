@@ -102,6 +102,31 @@ void TestValidatePushRanges() {
 	Check(!smvk::ValidatePushConstants(zero, 256), "push.validate.zerosize");
 }
 
+void TestExpandPushStagesForLayout() {
+	using smvk::PushConstantRange;
+	using smvk::ShaderStage;
+	// Engine global layout: single ALL range [0, 256). A narrow compute-only
+	// push (the ForwardPlusCull case: offset 0, size 64) must expand to ALL
+	// per VUID-vkCmdPushConstants-offset-01796.
+	const PushConstantRange engineRange{ .offset = 0, .size = smvk::kEnginePushConstantSize, .stages = ShaderStage::All };
+	const std::span<const PushConstantRange> layout(&engineRange, 1);
+	Check(smvk::ExpandPushStagesForLayout(ShaderStage::Compute, layout, 0, 64) == ShaderStage::All,
+		"push.expand.compute-to-all");
+	Check(smvk::ExpandPushStagesForLayout(ShaderStage::Vertex, layout, 0, 16) == ShaderStage::All,
+		"push.expand.vertex-to-all");
+	Check(smvk::ExpandPushStagesForLayout(ShaderStage::All, layout, 0, 256) == ShaderStage::All,
+		"push.expand.all-stable");
+	// Non-overlapping byte range leaves the mask untouched.
+	Check(smvk::ExpandPushStagesForLayout(ShaderStage::Compute, layout, 512, 64) == ShaderStage::Compute,
+		"push.expand.nooverlap");
+	// Narrow layout range unions only its own stages.
+	const PushConstantRange fragOnly{ .offset = 0, .size = 32, .stages = ShaderStage::Fragment };
+	const std::span<const PushConstantRange> fragLayout(&fragOnly, 1);
+	Check(smvk::ExpandPushStagesForLayout(ShaderStage::Compute, fragLayout, 0, 16) ==
+			(ShaderStage::Compute | ShaderStage::Fragment),
+		"push.expand.union");
+}
+
 void TestSpecializationPayload() {
 	smvk::ShaderSpecialization s0;
 	uint32_t iv = 7;
@@ -224,6 +249,7 @@ int main() {
 	TestReflectRejectsBadInput();
 	TestMergePushRanges();
 	TestValidatePushRanges();
+	TestExpandPushStagesForLayout();
 	TestSpecializationPayload();
 	TestShaderEqualityWithSpec();
 	TestDxcRoundTrip();

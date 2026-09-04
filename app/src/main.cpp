@@ -1017,7 +1017,7 @@ private:
 				cmd.BindComputePipeline(
 					m_viewportResources.forwardPlus.cullProgram);
 				cmd.PushConstants(0, sizeof(smvk::ForwardPlusCullPush), &cullPC,
-					smvk::ShaderStage::Compute);
+					smvk::ShaderStage::All);
 				cmd.Dispatch(
 					m_viewportResources.forwardPlus.tileCountX,
 					m_viewportResources.forwardPlus.tileCountY,

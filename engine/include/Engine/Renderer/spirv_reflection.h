@@ -97,4 +97,14 @@ bool ValidatePushConstants(const std::vector<PushConstantRange>& ranges,
 // Total push-constant footprint (max end offset) across merged ranges.
 uint32_t PushConstantFootprint(const std::vector<PushConstantRange>& ranges);
 
+// Expand a vkCmdPushConstants-style stage mask so it satisfies
+// VUID-vkCmdPushConstants-offset-01796 against the given pipeline layout
+// ranges: for every byte in [offset, offset + size) covered by a layout
+// range, the layout range's stages are unioned into the result. Bytes with
+// no covering range leave the mask unchanged. CPU-only, headless-safe.
+ShaderStage ExpandPushStagesForLayout(ShaderStage requested,
+                                      std::span<const PushConstantRange> layoutRanges,
+                                      uint32_t offset,
+                                      uint32_t size);
+
 } // namespace smvk

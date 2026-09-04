@@ -1962,13 +1962,11 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 
 	VK_CHECK(vkCreateDescriptorSetLayout(device_, &dslci, nullptr, &defaultSetLayout));
 
-	// Engine Wide PC block
-	//static constexpr uint32_t EnginePushConstantSize = 128;
-	static constexpr uint32_t EnginePushConstantSize = 256;
+	// Engine Wide PC block (single global range; see kEnginePushConstantSize).
 	VkPushConstantRange range{
 		.stageFlags = VK_SHADER_STAGE_ALL,
 		.offset = 0,
-		.size = EnginePushConstantSize,
+		.size = kEnginePushConstantSize,
 	};
 
 	VkPipelineLayoutCreateInfo ci{
@@ -7969,9 +7967,19 @@ void smvk::CommandBuffer::Dispatch(
 void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const void* data, ShaderStage stageMask)
 {
 	assert(currentLayout_ != nullptr);
+	assert(size > 0);
+	assert(offset + size <= kEnginePushConstantSize);
+
+	// The global pipeline layout declares a single range [0, 256) with ALL
+	// stages. VUID-vkCmdPushConstants-offset-01796 requires the call's
+	// stageFlags to include every stage of each overlapping layout range,
+	// so a narrow caller mask (e.g. COMPUTE only) must be expanded.
+	const PushConstantRange engineRange{ .offset = 0, .size = kEnginePushConstantSize, .stages = ShaderStage::All };
+	const ShaderStage expanded = ExpandPushStagesForLayout(
+		stageMask, std::span<const PushConstantRange>(&engineRange, 1), offset, size);
 
 	const VkShaderStageFlags vkStages =
-		toVkShaderStageFlags(stageMask);
+		toVkShaderStageFlags(expanded);
 
 	assert(vkStages != 0);
 

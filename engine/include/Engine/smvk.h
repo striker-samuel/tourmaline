@@ -739,6 +739,11 @@ namespace smvk {
 		bool operator==(const PushConstantRange&) const = default;
 	};
 
+	// Engine-wide push-constant budget. The global pipeline layout declares a
+	// single range [0, kEnginePushConstantSize) with ALL stages; every
+	// vkCmdPushConstants call must cover it (see VUID-vkCmdPushConstants-01796).
+	inline constexpr uint32_t kEnginePushConstantSize = 256;
+
 	struct ShaderModuleTag;
 	using ShaderModuleHandle = Handle<ShaderModuleTag>;
 	struct Shader

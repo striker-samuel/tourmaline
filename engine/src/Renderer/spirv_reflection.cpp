@@ -266,4 +266,24 @@ uint32_t PushConstantFootprint(const std::vector<PushConstantRange>& ranges)
 	return end;
 }
 
+ShaderStage ExpandPushStagesForLayout(ShaderStage requested,
+                                      std::span<const PushConstantRange> layoutRanges,
+                                      uint32_t offset,
+                                      uint32_t size)
+{
+	if (size == 0)
+		return requested;
+	const uint64_t end = static_cast<uint64_t>(offset) + size;
+	uint32_t bits = static_cast<uint32_t>(requested);
+	for (const auto& r : layoutRanges) {
+		if (r.size == 0 || r.stages == ShaderStage::None)
+			continue;
+		const uint64_t rEnd = static_cast<uint64_t>(r.offset) + r.size;
+		// Overlap test on [offset, end) vs [r.offset, rEnd).
+		if (static_cast<uint64_t>(r.offset) < end && offset < rEnd)
+			bits |= static_cast<uint32_t>(r.stages);
+	}
+	return static_cast<ShaderStage>(bits);
+}
+
 } // namespace smvk
