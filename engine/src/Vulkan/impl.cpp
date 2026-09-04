@@ -3370,8 +3370,9 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	// The bindless pool is intentionally also our descriptor-slot allocator.
 	// NOTE (sharded pools): handle.index() is the global sharded index
 	// (shard * kShardCapacity + local). It doubles as the descriptor-array
-	// slot, so it must stay below MAX_TEXTURES – sparse per-thread shards
-	// consume the same budget. Fails loudly instead of corrupting writes.
+	// slot, so it must stay below MAX_TEXTURES – guaranteed by the
+	// static_assert in Memory/pool.h (MAX_TEXTURES >= kShardedMaxSize);
+	// this runtime check stays as a loud failure instead of corrupting writes.
 	resource->descriptorIndex = handle.index();
 	assert(resource->descriptorIndex < MAX_TEXTURES && "bindless descriptor budget exhausted (sharded indices are sparse – raise MAX_TEXTURES or pack slots)");
 

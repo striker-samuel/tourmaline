@@ -261,7 +261,19 @@ PSOut mainPS(PSIn IN)
     // Diffuse is Lambert * (1/PI) folded into kD
     float3 diffuse = kD * baseColor / PI;
 
-    float3 direct = (diffuse + specular) * lightColor * NdotL * shadow;
+    // Thin cutout foliage (MASK) transmits light: wrap the diffuse NdotL
+    // so backlit/shaded leaves stay readable instead of pitch black.
+    // Front-lit (NdotL=1) is unchanged; specular keeps the true NdotL.
+    // Opaque PBR materials are untouched.
+    float NdotLWrap = NdotL;
+    if (shadingModelF == 2.0f)
+    {
+        const float w = 0.5f;
+        float t = saturate((NdotL + w) / (1.0f + w));
+        NdotLWrap = t * t;
+    }
+
+    float3 direct = (diffuse * NdotLWrap + specular * NdotL) * lightColor * shadow;
 
     // ---------------------------------------------------------------
     // Forward+ tiled point/spot lights (depth-prepassed, GPU-culled).

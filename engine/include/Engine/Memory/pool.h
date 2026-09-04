@@ -107,6 +107,11 @@ namespace smvk {
 	inline constexpr uint32_t kShardCapacity = 512;
 	inline constexpr uint32_t kShardedMaxSize = kNumPoolShards * kShardCapacity; // 8192, matches old Pool::kMaxSize
 
+	// Bindless pools alias their sharded handle index as the descriptor-array
+	// slot, so the global bindless budget must cover this entire index space.
+	static_assert(kShardedMaxSize <= MAX_TEXTURES,
+		"bindless descriptor budget must cover the full ShardedPool index space");
+
 	inline thread_local uint32_t t_poolShard = 0; // main thread == shard 0
 	inline std::atomic<uint32_t> g_nextPoolShard{1};
 

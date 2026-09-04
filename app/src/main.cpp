@@ -1,9 +1,11 @@
 #pragma once
+#include <algorithm>
 #include <iostream>
 #include <filesystem>
 #include <fstream>
 #include <array>
 #include <cmath>
+#include <vector>
 
 #include <Engine/core.h>
 #include <Engine/Asset/pak.h>
@@ -122,11 +124,11 @@ struct ForwardPlusDemo {
 	float spacingZ = 1.8f;
 	float baseY = 1.2f;
 	float range = 9.0f;
-	float intensity = 60.0f;
+	float intensity = 600.0f;
 	bool animate = true;
 	float speed = 0.6f;
 	int spotCount = 4;
-	float spotRange = 22.0f;
+	float spotRange = 100.0f;
 	float spotIntensity = 900.0f;
 };
 
@@ -176,6 +178,17 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
 	smvk::ShaderProgram mainProgram;
+	// Alpha-tested shadow-depth program for MASK cutout casters
+	// (shadow.vert mainVS + shadow.frag mainPS). Opaque casters keep
+	// the engine builder's depth-only program.
+	smvk::Holder<smvk::ShaderModuleHandle> shadowMaskedVertShader;
+	smvk::Holder<smvk::ShaderModuleHandle> shadowMaskedFragShader;
+	smvk::ShaderProgram shadowMaskedProgram;
+	// Alpha-tested depth-prepass program for MASK cutout
+	// (default.vert mainVS + shadow.frag mainPS): writes cutout-accurate
+	// depth so background behind foliage holes survives the main pass.
+	// Reuses the main VS and masked-shadow FS modules (no new shaders).
+	smvk::ShaderProgram prepassMaskedProgram;
 	// NOTE: shadow/bloom/tonemap/forwardplus programs + modules are owned by
 	// their engine builders (CascadedShadowAtlas / BloomChain / Tonemapper /
 	// ForwardPlus).
@@ -280,8 +293,47 @@ private:
 			.entryPoint = "mainPS",
 			.stage = smvk::ShaderStage::Fragment
 		};
-		m_resources.mainProgram = {
-			.shaders = {vert, frag},
+	m_resources.mainProgram = {
+		.shaders = {vert, frag},
+		.shaderCount = 2
+	};
+
+	// Masked shadow-depth program (leaf-shaped shadows for cutout).
+	auto shadowVertCode = readContentFile(contentVfs, "shaders/shadow.vert.hlsl.spv");
+	auto shadowFragCode = readContentFile(contentVfs, "shaders/shadow.frag.hlsl.spv");
+	m_resources.shadowMaskedVertShader = m_context->CreateShaderModule(shadowVertCode, "shadowMaskedVert");
+	m_resources.shadowMaskedFragShader = m_context->CreateShaderModule(shadowFragCode, "shadowMaskedFrag");
+		m_resources.shadowMaskedProgram = {
+			.shaders = {
+				smvk::Shader{
+					.module = m_resources.shadowMaskedVertShader,
+					.entryPoint = "mainVS",
+					.stage = smvk::ShaderStage::Vertex
+				},
+				smvk::Shader{
+					.module = m_resources.shadowMaskedFragShader,
+					.entryPoint = "mainPS",
+					.stage = smvk::ShaderStage::Fragment
+				}
+			},
+			.shaderCount = 2
+		};
+
+		// Masked prepass program: shadow.frag's inputs (pos/color/uv) are a
+		// subset of default.vert's outputs, so it links directly.
+		m_resources.prepassMaskedProgram = {
+			.shaders = {
+				smvk::Shader{
+					.module = m_resources.vertShader,
+					.entryPoint = "mainVS",
+					.stage = smvk::ShaderStage::Vertex
+				},
+				smvk::Shader{
+					.module = m_resources.shadowMaskedFragShader,
+					.entryPoint = "mainPS",
+					.stage = smvk::ShaderStage::Fragment
+				}
+			},
 			.shaderCount = 2
 		};
 
@@ -790,33 +842,77 @@ private:
 						}
 					);
 					cmd.PushConstants(0, sizeof(PushConstants), &cascadePC, smvk::ShaderStage::All);
-					m_world->forEachNode(
-						smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
-						, [&](NodeId node)
-					{
+					// Opaque only: BLEND transparent must not cast (full-quad depth).
+					auto drawCaster = [&](NodeId node, bool maskedPhase) {
 						auto meshForNode = m_world->scene.meshForNode.find(node);
 						if (meshForNode == m_world->scene.meshForNode.end()) return;
 						auto materialForNode = m_world->scene.materialForNode.find(node);
 						if (materialForNode == m_world->scene.materialForNode.end()) return;
+						smvk::Material* mat = m_world->GetMaterial(materialForNode->second);
+						const bool masked = mat &&
+							mat->shadingModel == smvk::ShadingModel::Masked;
+						if (masked != maskedPhase) return;
 						auto& model = m_world->scene.globalTransform[node];
-						uint32_t meshId = meshForNode->second;
-						smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
+						smvk::StaticMesh* meshDesc = m_world->GetMesh(meshForNode->second);
+						if (!meshDesc) return;
 						PushConstants objectPC{};
 						std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+						if (maskedPhase) {
+							objectPC.materialId = materialForNode->second;
+							cmd.PushConstants(offsetof(PushConstants, materialId),
+								sizeof(objectPC.materialId), &objectPC.materialId,
+								smvk::ShaderStage::All);
+						}
 						cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
 						for (auto& draw_set : meshDesc->geometry.surfaces) {
 							cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
 						};
-					});
+					};
+					// Phase 1: solid casters, depth-only program (unchanged).
+					m_world->forEachNode(
+						smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
+						| smvk::IteratorFlagBit_Opaque
+						, [&](NodeId node) { drawCaster(node, false); });
+					// Phase 2: MASK cutout casters, alpha-tested program so
+					// foliage casts leaf-shaped shadows instead of full quads.
+					// Cull off: masked foliage is double-sided in the main view.
+					cmd.BindRenderPipeline(
+						m_resources.shadowMaskedProgram,
+						smvk::VertexFormat::StaticVertexFormat,
+						smvk::DepthSettings{
+							.depthFunc = smvk::CompareOp::LessEqual,
+							.writeEnable = true,
+							.depthTestEnable = true,
+							.depthBiasEnable = true,
+							.depthBiasConstantFactor = 0.1f,
+							.depthBiasClamp = 0.0f,
+							.depthBiasSlopeFactor = 1.f
+						},
+						smvk::StencilSettings{},
+						smvk::BlendSettings{},
+						smvk::MSAASettings{},
+						smvk::RasterSettings{
+							.cullMode = smvk::CullMode::None
+						}
+					);
+					cmd.PushConstants(0, sizeof(PushConstants), &cascadePC, smvk::ShaderStage::All);
+					m_world->forEachNode(
+						smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
+						| smvk::IteratorFlagBit_Opaque
+						, [&](NodeId node) { drawCaster(node, true); });
 				});
 				(void)shadowPass;
 			}
 		}
 
 		// ---- Forward+ depth prepass – fills depth for tile min/max cull ----
-		// VS-only (default.vert mainVS); no color. Masked materials can't
-		// alpha-test without a FS, so cutout quads write full-quad depth here
-		// (conservative for culling: may include a few extra lights, v1).
+		// No color. Solid geometry uses the VS-only fast path; MASK cutout
+		// uses the alpha-tested program so holes keep background depth.
+		// (Full-quad prepass depth would poison the read-only main pass:
+		// background behind foliage holes would fail depth and render the
+		// HDR clear color = black quad halos. Excluding masked instead is
+		// NOT an option – order-independent opaque compositing needs their
+		// depth in the buffer.)
 		{
 			PushConstants depthPC = pc;
 			auto& prepass = m_viewportResources.forwardPlus.AddDepthPrepass(
@@ -825,6 +921,34 @@ private:
 				"ForwardPlusDepth");
 			prepass.SetRecordingFunc([this, depthPC](smvk::CommandBuffer& cmd)
 			{
+				auto drawPrepassNode = [&](NodeId node, bool maskedPhase) {
+					auto meshForNode = m_world->scene.meshForNode.find(node);
+					if (meshForNode == m_world->scene.meshForNode.end()) return;
+					smvk::Material* mat = nullptr;
+					if (auto materialForNode = m_world->scene.materialForNode.find(node);
+						materialForNode != m_world->scene.materialForNode.end())
+						mat = m_world->GetMaterial(materialForNode->second);
+					const bool masked = mat &&
+						mat->shadingModel == smvk::ShadingModel::Masked;
+					if (masked != maskedPhase) return;
+					auto& model = m_world->scene.globalTransform[node];
+					smvk::StaticMesh* meshDesc = m_world->GetMesh(meshForNode->second);
+					if (!meshDesc) return;
+					PushConstants objectPC{};
+					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+					if (maskedPhase) {
+						auto materialForNode = m_world->scene.materialForNode.find(node);
+						objectPC.materialId = materialForNode->second;
+						cmd.PushConstants(offsetof(PushConstants, materialId),
+							sizeof(objectPC.materialId), &objectPC.materialId,
+							smvk::ShaderStage::All);
+					}
+					cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+					for (auto& draw_set : meshDesc->geometry.surfaces) {
+						cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+					};
+				};
+				// Phase 1: solid geometry, VS-only fast path (unchanged).
 				cmd.BindRenderPipeline(
 					m_viewportResources.forwardPlus.depthProgram,
 					smvk::VertexFormat::StaticVertexFormat,
@@ -845,20 +969,30 @@ private:
 					smvk::IteratorFlagBit_Renderable
 					| smvk::IteratorFlagBit_Opaque
 					| smvk::IteratorFlagBit_StaticVertexFmt
-					, [&](NodeId node)
-				{
-					auto meshForNode = m_world->scene.meshForNode.find(node);
-					if (meshForNode == m_world->scene.meshForNode.end()) return;
-					auto& model = m_world->scene.globalTransform[node];
-					uint32_t meshId = meshForNode->second;
-					smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
-					PushConstants objectPC{};
-					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-					cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
-					for (auto& draw_set : meshDesc->geometry.surfaces) {
-						cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-					};
-				});
+					, [&](NodeId node) { drawPrepassNode(node, false); });
+				// Phase 2: MASK cutout, alpha-tested so holes keep
+				// background depth. Cull off: foliage is double-sided.
+				cmd.BindRenderPipeline(
+					m_resources.prepassMaskedProgram,
+					smvk::VertexFormat::StaticVertexFormat,
+					smvk::DepthSettings{
+						.depthFunc = smvk::CompareOp::GreaterEqual,
+						.writeEnable = true,
+						.depthTestEnable = true,
+					},
+					smvk::StencilSettings{},
+					smvk::BlendSettings{},
+					smvk::MSAASettings{},
+					smvk::RasterSettings{
+						.cullMode = smvk::CullMode::None
+					}
+				);
+				cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
+				m_world->forEachNode(
+					smvk::IteratorFlagBit_Renderable
+					| smvk::IteratorFlagBit_Opaque
+					| smvk::IteratorFlagBit_StaticVertexFmt
+					, [&](NodeId node) { drawPrepassNode(node, true); });
 			});
 		}
 
@@ -917,27 +1051,95 @@ private:
 				smvk::AttachmentStoreOp::DontCare,
 				smvk::ClearDepthStencil(0, 0)
 			)
-			.SetRecordingFunc([this, pc](smvk::CommandBuffer& cmd)
-		{
+		.SetRecordingFunc([this, pc](smvk::CommandBuffer& cmd)
+	{
+		// Depth was filled by the Forward+ prepass: main view is read-only
+		// (GreaterEqual reversed-Z, no writes) for both opaque and BLEND.
+		const smvk::DepthSettings mainDepth{
+			.depthFunc = smvk::CompareOp::GreaterEqual,
+			.writeEnable = false,
+			.depthTestEnable = true,
+		};
+		const smvk::StencilSettings noStencil{};
+		const smvk::MSAASettings noMsaa{};
 
-			cmd.BindRenderPipeline(
-				m_resources.mainProgram,
-				smvk::VertexFormat::StaticVertexFormat,
-				smvk::DepthSettings
-				{
-					.depthFunc = smvk::CompareOp::GreaterEqual,
-					.writeEnable = false,
-					.depthTestEnable = true,
-				}
+		auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId) {
+			auto& model = m_world->scene.globalTransform[node];
+			smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
+			if (!meshDesc)
+				return;
+			PushConstants pc{};
+			pc.materialId = materialId;
+			const float* modelData = glm::value_ptr(model);
+			std::copy_n(modelData, 16, pc.model);
+			cmd.PushConstants(
+				offsetof(PushConstants, materialId),
+				sizeof(pc.materialId),
+				&pc.materialId,
+				smvk::ShaderStage::All
 			);
-
 			cmd.PushConstants(
 				0,
-				sizeof(PushConstants),
+				offsetof(PushConstants, frameUniforms),
 				&pc,
 				smvk::ShaderStage::All
 			);
+			for (auto& draw_set : meshDesc->geometry.surfaces) {
+				cmd.DrawIndexed(
+					draw_set.indexCount,
+					1,
+					draw_set.firstIndex,
+					draw_set.baseVertex
+				);
+			}
+		};
 
+		auto bindForMaterial = [&](uint32_t materialId) {
+			// Per-material raster (doubleSided -> Cull None) + blend
+			// (Opaque vs AlphaBlend). Depth stays read-only above.
+			smvk::BlendSettings blend = smvk::BlendSettings::Opaque();
+			smvk::RasterSettings raster{};
+			if (smvk::Material* mat = m_world->GetMaterial(materialId)) {
+				blend = mat->pipeline.blend;
+				raster = mat->pipeline.raster;
+			}
+			cmd.BindRenderPipeline(
+				m_resources.mainProgram,
+				smvk::VertexFormat::StaticVertexFormat,
+				mainDepth,
+				noStencil,
+				blend,
+				noMsaa,
+				raster
+			);
+		};
+
+		// Initial bind BEFORE the first push: PushConstants needs a bound
+		// pipeline layout. The opaque loop rebinds per material anyway
+		// (boundMaterial starts UINT32_MAX, so the first node always
+		// rebinds if it differs).
+		cmd.BindRenderPipeline(
+			m_resources.mainProgram,
+			smvk::VertexFormat::StaticVertexFormat,
+			mainDepth,
+			noStencil,
+			smvk::BlendSettings::Opaque(),
+			noMsaa,
+			smvk::RasterSettings{}
+		);
+		cmd.PushConstants(
+			0,
+			sizeof(PushConstants),
+			&pc,
+			smvk::ShaderStage::All
+		);
+
+		// ---- Opaque + MASK cutout (alpha-tested in shader) ----
+		{
+			// UINT32_MAX forces a bind check on the first node; an
+			// identical state is deduped by the CommandBuffer's
+			// current-pipeline check, so this costs nothing.
+			uint32_t boundMaterial = UINT32_MAX;
 			m_world->forEachNode(
 				smvk::IteratorFlagBit_Renderable
 				| smvk::IteratorFlagBit_Opaque
@@ -947,52 +1149,67 @@ private:
 				[&](NodeId node)
 			{
 				auto meshForNode = m_world->scene.meshForNode.find(node);
-				if (meshForNode == m_world->scene.meshForNode.end()) {
+				if (meshForNode == m_world->scene.meshForNode.end())
 					return;
-				}
-
 				auto materialForNode = m_world->scene.materialForNode.find(node);
-				if (materialForNode == m_world->scene.materialForNode.end()) {
+				if (materialForNode == m_world->scene.materialForNode.end())
 					return;
+				const uint32_t materialId = materialForNode->second;
+				if (materialId != boundMaterial) {
+					bindForMaterial(materialId);
+					boundMaterial = materialId;
 				}
-
-				auto& model = m_world->scene.globalTransform[node];
-
-				uint32_t meshId = meshForNode->second;
-				uint32_t materialId = materialForNode->second;
-				smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
-
-				PushConstants pc{};
-				pc.materialId = materialId;
-				const float* modelData = glm::value_ptr(model);
-				std::copy_n(modelData, 16, pc.model);
-
-				cmd.PushConstants(
-					offsetof(PushConstants, materialId),
-					sizeof(pc.materialId),
-					&pc.materialId,
-					smvk::ShaderStage::All
-				);
-				cmd.PushConstants(
-					0,
-					offsetof(PushConstants, frameUniforms),
-					&pc,
-					smvk::ShaderStage::All
-				);
-
-				for (auto& draw_set : meshDesc->geometry.surfaces) {
-					cmd.DrawIndexed(
-						draw_set.indexCount,
-						1,
-						draw_set.firstIndex,
-						draw_set.baseVertex
-					);
-				};
+				drawNode(node, meshForNode->second, materialId);
 			}
 			);
-
 		}
+
+		// ---- BLEND transparent, back-to-front ----
+		// Same pass (color already cleared, depth loaded): depth test on,
+		// no depth writes, AlphaBlend from material.pipeline. Sorted by
+		// distance-to-camera so foliage/glass composites correctly.
+		{
+			struct TransparentDraw { NodeId node; uint32_t meshId; uint32_t materialId; float dist2; };
+			std::vector<TransparentDraw> draws;
+			const glm::vec3 camPos = m_cameraPositioner.cameraPosition_;
+			m_world->forEachNode(
+				smvk::IteratorFlagBit_Renderable
+				| smvk::IteratorFlagBit_Transparent
+				| smvk::IteratorFlagBit_StaticVertexFmt
+				,
+				[&](NodeId node)
+			{
+				auto meshForNode = m_world->scene.meshForNode.find(node);
+				if (meshForNode == m_world->scene.meshForNode.end())
+					return;
+				auto materialForNode = m_world->scene.materialForNode.find(node);
+				if (materialForNode == m_world->scene.materialForNode.end())
+					return;
+				const glm::mat4& model = m_world->scene.globalTransform[node];
+				const glm::vec3 center{ model[3][0], model[3][1], model[3][2] };
+				const glm::vec3 d = center - camPos;
+				draws.push_back(TransparentDraw{
+					.node = node,
+					.meshId = meshForNode->second,
+					.materialId = materialForNode->second,
+					.dist2 = glm::dot(d, d),
+				});
+			}
 			);
+			std::sort(draws.begin(), draws.end(),
+				[](const TransparentDraw& a, const TransparentDraw& b) { return a.dist2 > b.dist2; });
+
+			uint32_t boundMaterial = UINT32_MAX;
+			for (const auto& d : draws) {
+				if (d.materialId != boundMaterial) {
+					bindForMaterial(d.materialId);
+					boundMaterial = d.materialId;
+				}
+				drawNode(d.node, d.meshId, d.materialId);
+			}
+		}
+	}
+		);
 		// Forward+ tile lists are device-written by the cull pass and
 		// device-read here: explicit read hints order cull -> main and emit
 		// the compute->fragment buffer barriers.

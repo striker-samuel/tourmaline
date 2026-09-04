@@ -12,13 +12,17 @@
 #include <vector>
 #include <set>
 
-static constexpr uint32_t DEFAULT_WIDTH = 1280;
-static constexpr uint32_t DEFAULT_HEIGHT = 720;
+static constexpr uint32_t DEFAULT_WIDTH = 1920;
+static constexpr uint32_t DEFAULT_HEIGHT = 1080;
 static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 static constexpr uint32_t DESIRED_SWAPCHAIN_IMAGE_COUNT = 2;
 static constexpr uint32_t MAX_BUFFERS = 1024;
 static constexpr uint32_t MAX_LIGHTS = 64;
-static constexpr uint32_t MAX_TEXTURES = 4096;
+// Bindless descriptor budget for sampled/storage image arrays. Must cover
+// the full ShardedPool index space (kNumPoolShards * kShardCapacity =
+// 16 * 512 = 8192): sharded handle indices double as descriptor-array
+// slots in the bindless pools (see Memory/pool.h static_assert).
+static constexpr uint32_t MAX_TEXTURES = 8192;
 static constexpr uint32_t MAX_SAMPLERS = 8;
 static constexpr uint32_t MAX_MATERIALS = 1024;
 static constexpr uint32_t MAX_SHADOW_SAMPLERS = 8;

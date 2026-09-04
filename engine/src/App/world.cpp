@@ -228,11 +228,11 @@ namespace smvk {
 								f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque);
 
 							// Masked (cutout) still casts shadow but via alpha-tested path.
-							// Transparent typically does not cast shadow in this engine.
+							// Transparent (BLEND) does not cast: full-quad depth would
+							// darken behind glass/foliage. Shadow passes additionally
+							// filter Opaque so this flag is defense-in-depth.
 							if (!mat->isTransparent())
 								f |= static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
-							else
-								f |= static_cast<IteratorFlags>(IteratorFlagBit_CastShadow); // keep for now; caller may filter Transparent
 						} else {
 							f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
 								| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
