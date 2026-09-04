@@ -45,11 +45,41 @@ struct Scene {
 
 	std::vector<std::string> nodeNames;
 	std::vector<std::string> materialNames;
+
+	// Static-subtree specification. staticRoot[node] == 1 marks the root of
+	// a subtree whose transforms are frozen after the initial build: those
+	// nodes skip per-frame transform updates and BVH reconstruction, and are
+	// eligible for collapse into a single mega-mesh block (see
+	// Scene/static_merge.h). staticNode[] is the derived cache (1 = inside
+	// any static subtree); rebuilt via RebuildStaticCache().
+	std::vector<uint8_t> staticRoot;
+	std::vector<uint8_t> staticNode;
 };
 
 int addNode(Scene& scene, int parent, int level);
 
 void markAsChanged(Scene& scene, int node);
+// Dynamic-only variant: skips static nodes so frozen subtrees never enter
+// changedAtThisFrame after the initial build. Prefer this on the per-frame
+// path; use markAsChanged for initial builds / collapse baking.
+void markAsChangedDynamic(Scene& scene, int node);
+
+inline bool IsStaticNode(const Scene& scene, int node)
+{
+	return node >= 0 && (size_t)node < scene.staticNode.size() && scene.staticNode[(size_t)node] != 0;
+}
+
+inline bool IsStaticSubtreeRoot(const Scene& scene, int node)
+{
+	return node >= 0 && (size_t)node < scene.staticRoot.size() && scene.staticRoot[(size_t)node] != 0;
+}
+
+// Marks node as a static-subtree root and rebuilds the staticNode cache.
+void MarkSubtreeStatic(Scene& scene, int node);
+// Clears the root mark and rebuilds the cache.
+void ClearSubtreeStatic(Scene& scene, int node);
+// Re-derives staticNode[] from staticRoot[] via hierarchy walk.
+void RebuildStaticCache(Scene& scene);
 
 int findNodeByName(const Scene& scene, const std::string& name);
 
@@ -69,6 +99,10 @@ inline void setNodeName(Scene& scene, int node, const std::string& name)
 int getNodeLevel(const Scene& scene, int n);
 
 bool recalculateGlobalTransforms(Scene& scene);
+// Dynamic-only variant: recomputes globals for non-static changed nodes.
+// Static nodes keep their baked globals (already correct from the initial
+// full build). Returns true if any dynamic node was updated.
+bool recalculateGlobalTransformsDynamic(Scene& scene);
 
 void loadScene(const char* fileName, Scene& scene);
 void saveScene(const char* fileName, const Scene& scene);

@@ -13,6 +13,7 @@
 // prints the same data to stdout, read back from the pak via PakReader so
 // it cannot drift from the written bytes.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -25,8 +26,10 @@
 #include <vector>
 
 #include <Engine/App/cluster.h>
+#include <Engine/App/static_merge.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Utils/gltf.h>
 #include <Engine/Vfs/vfs.h>
@@ -41,6 +44,13 @@ struct Args {
 	float overdraw = 1.05f;
 	bool dumpManifest = false; // print pak contents to stdout (pak-sourced)
 	bool verify = true; // re-open the written pak with PakReader (self-check)
+	// Meshlet cook path (off by default; indirect-draw foundation only).
+	bool meshlets = false;
+	uint32_t maxVerts = 64;
+	uint32_t maxTris = 124;
+	float coneWeight = 0.0f;
+	// Collapse static subtrees into per-material mega-mesh blocks.
+	bool collapseStatic = false;
 };
 
 bool ParseArgs(int argc, char** argv, Args& out) {
@@ -83,6 +93,31 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.verify = (v == "on" || v == "1" || v == "true");
 		}
+		else if (a == "--meshlets") {
+			std::string v;
+			if (!need(v)) return false;
+			out.meshlets = (v == "on" || v == "1" || v == "true");
+		}
+		else if (a == "--max-verts") {
+			std::string v;
+			if (!need(v)) return false;
+			out.maxVerts = static_cast<uint32_t>(std::stoul(v));
+		}
+		else if (a == "--max-tris") {
+			std::string v;
+			if (!need(v)) return false;
+			out.maxTris = static_cast<uint32_t>(std::stoul(v));
+		}
+		else if (a == "--cone-weight") {
+			std::string v;
+			if (!need(v)) return false;
+			out.coneWeight = std::stof(v);
+		}
+		else if (a == "--collapse-static") {
+			std::string v;
+			if (!need(v)) return false;
+			out.collapseStatic = (v == "on" || v == "1" || v == "true");
+		}
 		else if (a == "--help" || a == "-h") {
 			return false;
 		}
@@ -101,7 +136,9 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 void Usage() {
 	std::cout << "PakCooker --content-dir content --in-vfs models/Sponza/sponza.gltf\n"
 		<< "          --out-pak content/paks/sponza.pak [--meshopt on|off]\n"
-		<< "          [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]\n";
+		<< "          [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]\n"
+		<< "          [--meshlets on|off] [--max-verts 64] [--max-tris 124]\n"
+		<< "          [--cone-weight 0] [--collapse-static on|off]\n";
 }
 
 // Little-endian cursor over a MeshBlob payload for manifest printing. Mesh
@@ -161,10 +198,24 @@ void DumpManifestFromPak(const smvk::PakReader& reader) {
 			std::cout << "    [truncated mesh blob: " << e->path << "]\n";
 			continue;
 		}
+		// Vertex/index payloads (60 B per vert, 4 B per index).
+		c.off += (size_t)vc * 60 + (size_t)ic * 4;
+		uint32_t meshlets = 0;
+		if (c.off < c.img.size()) {
+			if (c.off + 4 <= c.img.size())
+				meshlets = c.u32();
+			else
+				c.ok = false;
+		}
+		if (!c.ok) {
+			std::cout << "    [truncated mesh blob: " << e->path << "]\n";
+			continue;
+		}
 		std::cout << "    mesh " << uri
 			<< " verts=" << vc << " idx=" << ic
 			<< " lod{g=" << groupId << " i=" << lodIndex << " tris=" << tris
-			<< " acmr=" << acmr << "}\n";
+			<< " acmr=" << acmr << "}"
+			<< " meshlets=" << meshlets << "\n";
 	}
 
 	// Materials.
@@ -205,6 +256,12 @@ int main(int argc, char** argv) {
 	opt.enabled = args.meshopt;
 	opt.overdrawThreshold = args.overdraw;
 
+	smvk::MeshletConfig meshletCfg;
+	meshletCfg.enabled = args.meshlets;
+	meshletCfg.maxVertices = std::clamp(args.maxVerts, 3u, 255u);
+	meshletCfg.maxTriangles = std::clamp(args.maxTris, 1u, 512u);
+	meshletCfg.coneWeight = args.coneWeight;
+
 	// NOTE: heap-allocated — Cluster embeds multi-MB pool arrays and must
 	// never live on the (1MB) thread stack. Cook mode = GPU-free: CPU
 	// geometry + retained uploads only, textures are validated .ktx2
@@ -213,11 +270,48 @@ int main(int argc, char** argv) {
 	cluster->SetCookMode(true);
 
 	try {
-		GltfToClusterFromVfs(nullptr, vfs, args.inVfs, *cluster, opt);
+		GltfToClusterFromVfs(nullptr, vfs, args.inVfs, *cluster, opt, meshletCfg);
 	}
 	catch (const std::exception& e) {
 		std::cerr << "Import failed: " << e.what() << std::endl;
 		return 1;
+	}
+
+	// Static collapse: bake frozen subtrees into per-material mega-mesh
+	// blocks (world-baked verts, identity nodes). Runs before Serialize so
+	// the pak holds the collapsed scene.
+	if (args.collapseStatic) {
+		smvk::StaticMergeOptions mopts;
+		smvk::StaticMergeResult mr = smvk::CollapseStaticSubtrees(*cluster, mopts);
+		if (!mr.ok) {
+			std::cerr << "CollapseStaticSubtrees failed: " << mr.err << std::endl;
+			return 1;
+		}
+		std::cout << "Collapsed " << mr.srcNodesConsumed << " static nodes into "
+			<< mr.blocks.size() << " block(s)\n";
+		// Merged blocks skip the importer meshlet path; cook them here so
+		// the single-block layout also feeds the indirect future.
+		if (meshletCfg.enabled) {
+			for (const auto& b : mr.blocks) {
+				const auto h = cluster->staticMeshes.getHandle(b.meshPoolIndex);
+				const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(h);
+				if (!up)
+					continue;
+				smvk::CookedMeshlets cooked;
+				smvk::MeshletStats st;
+				std::string merr;
+				if (smvk::BuildMeshletsForUpload(*up, meshletCfg, &cooked, &st, &merr)) {
+					cluster->RegisterMeshMeshlets(b.uri, cooked);
+					if (smvk::StaticMesh* m = cluster->staticMeshes.get(h))
+						m->meshlets = std::move(cooked);
+					std::cout << "Meshlets " << b.uri << ": count " << st.meshletCount
+						<< " tris " << st.totalTriangles << std::endl;
+				}
+				else if (!merr.empty()) {
+					std::cout << "Meshlets " << b.uri << " skipped: " << merr << std::endl;
+				}
+			}
+		}
 	}
 
 	smvk::PakWriter writer;
@@ -249,6 +343,8 @@ int main(int argc, char** argv) {
 		<< "  meshes=" << stats.meshes << " materials=" << stats.materials
 		<< " textures=" << stats.textures << " (" << stats.textureBytes << " B)"
 		<< " nodes=" << stats.nodes << " pak=" << pak.size() << " B"
+		<< " staticRoots=" << stats.staticRoots
+		<< " meshleted=" << stats.meshesWithMeshlets << "/" << stats.meshletCount
 		<< " in " << secs << "s\n";
 
 	// Self-check: re-open the written file through the production reader

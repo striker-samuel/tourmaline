@@ -195,6 +195,34 @@ bool SerializeCluster(
 			reinterpret_cast<const uint8_t*>(upload->indices.data()),
 			reinterpret_cast<const uint8_t*>(upload->indices.data()) +
 				upload->indices.size() * sizeof(uint32_t));
+		// Trailing meshlet section (v2; v1 blobs end here). Always written
+		// (possibly count 0) so the layout is uniform for new paks.
+		{
+			CookedMeshlets cooked;
+			if (auto hit = cluster.GetMeshMeshlets(uri))
+				cooked = *hit;
+			PutU32(blob, static_cast<uint32_t>(cooked.meshlets.size()));
+			for (const Meshlet& m : cooked.meshlets) {
+				PutU32(blob, m.vertexOffset);
+				PutU32(blob, m.vertexCount);
+				PutU32(blob, m.triangleOffset);
+				PutU32(blob, m.triangleCount);
+				PutVec3(blob, m.boundCenter);
+				PutF32(blob, m.boundRadius);
+				PutVec3(blob, m.coneApex);
+				PutVec3(blob, m.coneAxis);
+				PutF32(blob, m.coneCutoff);
+			}
+			PutU32(blob, static_cast<uint32_t>(cooked.vertices.size()));
+			for (uint32_t v : cooked.vertices)
+				PutU32(blob, v);
+			PutU32(blob, static_cast<uint32_t>(cooked.triangles.size()));
+			blob.insert(blob.end(), cooked.triangles.begin(), cooked.triangles.end());
+			if (stats && !cooked.meshlets.empty()) {
+				stats->meshesWithMeshlets++;
+				stats->meshletCount += static_cast<uint32_t>(cooked.meshlets.size());
+			}
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Mesh, uri, std::move(blob)))
 			return fail("invalid mesh uri: " + uri);
@@ -333,6 +361,21 @@ bool SerializeCluster(
 		PutU32(blob, static_cast<uint32_t>(scene.materialNames.size()));
 		for (const auto& n : scene.materialNames)
 			PutStr(blob, n);
+		// Trailing static-subtree section (v2; v1 blobs end here).
+		{
+			PutU32(blob, nodeCount);
+			if (scene.staticRoot.size() == scene.hierarchy.size()) {
+				blob.insert(blob.end(), scene.staticRoot.begin(), scene.staticRoot.end());
+				if (stats) {
+					for (uint8_t v : scene.staticRoot)
+						if (v)
+							stats->staticRoots++;
+				}
+			}
+			else {
+				blob.insert(blob.end(), nodeCount, 0);
+			}
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene, "<cluster-local>#scene", std::move(blob)))
 			return fail("scene blob rejected");
@@ -503,7 +546,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		if (!c.ok)
 			return fail("truncated mesh metadata: " + e->path);
 		if (c.off + static_cast<size_t>(vertexCount) * sizeof(StaticVertex) +
-				static_cast<size_t>(indexCount) * sizeof(uint32_t) != c.img.size())
+				static_cast<size_t>(indexCount) * sizeof(uint32_t) > c.img.size())
 			return fail("mesh payload size mismatch: " + e->path);
 		upload.vertices.resize(vertexCount);
 		memcpy(upload.vertices.data(), c.img.data() + c.off,
@@ -512,15 +555,66 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		upload.indices.resize(indexCount);
 		memcpy(upload.indices.data(), c.img.data() + c.off,
 			static_cast<size_t>(indexCount) * sizeof(uint32_t));
+		c.off += static_cast<size_t>(indexCount) * sizeof(uint32_t);
+		// Trailing meshlet section (v2). v1 blobs end exactly here.
+		CookedMeshlets cooked;
+		if (c.off < c.img.size()) {
+			const uint32_t meshletCount = c.u32();
+			if (!c.ok || meshletCount > 1024 * 1024)
+				return fail("bad meshlet count: " + e->path);
+			cooked.meshlets.reserve(meshletCount);
+			for (uint32_t m = 0; m < meshletCount; ++m) {
+				Meshlet ml;
+				ml.vertexOffset = c.u32();
+				ml.vertexCount = c.u32();
+				ml.triangleOffset = c.u32();
+				ml.triangleCount = c.u32();
+				ml.boundCenter = c.vec3();
+				ml.boundRadius = c.f32();
+				ml.coneApex = c.vec3();
+				ml.coneAxis = c.vec3();
+				ml.coneCutoff = c.f32();
+				if (!c.ok)
+					return fail("truncated meshlet entry: " + e->path);
+				if (ml.vertexCount > 255 || ml.triangleCount > 512)
+					return fail("insane meshlet window: " + e->path);
+				cooked.meshlets.push_back(ml);
+			}
+			const uint32_t vertCount = c.u32();
+			if (!c.ok || vertCount > 64 * 1024 * 1024)
+				return fail("bad meshlet vertex count: " + e->path);
+			cooked.vertices.reserve(vertCount);
+			for (uint32_t v = 0; v < vertCount; ++v)
+				cooked.vertices.push_back(c.u32());
+			const uint32_t triBytes = c.u32();
+			if (!c.ok || triBytes > 256 * 1024 * 1024 ||
+				c.off + triBytes != c.img.size())
+				return fail("bad meshlet triangle payload: " + e->path);
+			cooked.triangles.assign(
+				c.img.data() + c.off, c.img.data() + c.off + triBytes);
+			// Cross-check windows against the payload sizes.
+			for (const Meshlet& ml : cooked.meshlets) {
+				if ((size_t)ml.vertexOffset + ml.vertexCount > cooked.vertices.size() ||
+					(size_t)ml.triangleOffset + (size_t)ml.triangleCount * 3 > cooked.triangles.size())
+					return fail("meshlet window out of range: " + e->path);
+			}
+		}
 
 		const ClusterStaticMeshHandle h = cluster->UploadStaticMesh(upload);
 		if (!h.valid())
 			return fail("UploadStaticMesh failed for: " + uri);
 		// UploadStaticMesh fills AABB only; restore the cooked sphere.
-		if (StaticMesh* m = cluster->staticMeshes.get(h))
+		if (StaticMesh* m = cluster->staticMeshes.get(h)) {
 			m->geometry.sphereRadius = sphere;
+			if (!cooked.empty())
+				m->meshlets = std::move(cooked);
+		}
 		cluster->RegisterMeshUri(uri, h);
 		cluster->RegisterMeshLod(uri, lod);
+		if (StaticMesh* m = cluster->staticMeshes.get(h)) {
+			if (m->meshlets && !m->meshlets->empty())
+				cluster->RegisterMeshMeshlets(uri, *m->meshlets);
+		}
 		meshByPakId.push_back(h);
 	}
 
@@ -601,6 +695,22 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			scene.materialNames.push_back(c.str());
 		if (!c.ok)
 			return fail("truncated scene blob");
+		// Trailing static-subtree section (v2): u32 count + count bytes.
+		// v1 blobs end exactly here (no static nodes).
+		if (c.off < c.img.size()) {
+			const uint32_t staticCount = c.u32();
+			if (!c.ok || staticCount != nodeCount)
+				return fail("bad scene static section");
+			if (c.off + staticCount != c.img.size())
+				return fail("scene blob trailing bytes mismatch");
+			scene.staticRoot.assign(
+				c.img.data() + c.off, c.img.data() + c.off + staticCount);
+			c.off += staticCount;
+		}
+		else {
+			scene.staticRoot.assign(nodeCount, 0);
+		}
+		RebuildStaticCache(scene);
 
 		markAsChanged(scene, 0);
 		recalculateGlobalTransforms(scene);

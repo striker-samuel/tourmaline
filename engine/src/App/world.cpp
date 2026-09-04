@@ -91,6 +91,8 @@ namespace smvk {
 		const int root = addNode(scene, -1, 0);
 		scene.localTransform[root] = glm::mat4(1.0f);
 		scene.globalTransform[root] = glm::mat4(1.0f);
+		scene.staticRoot.assign(scene.hierarchy.size(), 0);
+		scene.staticNode.assign(scene.hierarchy.size(), 0);
 
 		for (auto& clusterPtr : clusters) {
 			Cluster& cluster = *clusterPtr.get();
@@ -115,14 +117,26 @@ namespace smvk {
 				cs.globalTransform.begin(),
 				cs.globalTransform.end()
 			);
-			scene.nodeNames.insert(
-				scene.nodeNames.end(),
-				cs.nodeNames.begin(),
-				cs.nodeNames.end()
+		scene.nodeNames.insert(
+			scene.nodeNames.end(),
+			cs.nodeNames.begin(),
+			cs.nodeNames.end()
+		);
+		const uint32_t nodeCount =
+			static_cast<uint32_t>(cs.hierarchy.size());
+		// Carry the static-subtree spec (missing == all dynamic).
+		if (cs.staticRoot.size() == cs.hierarchy.size()) {
+			scene.staticRoot.insert(
+				scene.staticRoot.end(),
+				cs.staticRoot.begin(),
+				cs.staticRoot.end()
 			);
-
-			const uint32_t nodeCount =
-				static_cast<uint32_t>(cs.hierarchy.size());
+		}
+		else {
+			scene.staticRoot.insert(
+				scene.staticRoot.end(), nodeCount, 0);
+		}
+		scene.staticNode.insert(scene.staticNode.end(), nodeCount, 0);
 
 			// Shift parent/firstChild/nextSibling/lastSibling indices so they
 			// point into the world node array. The cluster root's parent (which
@@ -198,10 +212,11 @@ namespace smvk {
 				scene.materialForNode[worldNode] = worldMatIdx;
 			}
 
-			markAsChanged(scene, clusterRootNode);
-		}
+		markAsChanged(scene, clusterRootNode);
+	}
 
-		recalculateGlobalTransforms(scene);
+	RebuildStaticCache(scene);
+	recalculateGlobalTransforms(scene);
 
 		// Build the per-node iterator flags from the resolved scene: renderable
 		// nodes are those carrying a mesh; material drives Opaque vs Transparent.
@@ -210,8 +225,10 @@ namespace smvk {
 			if (node >= flags.size())
 				continue;
 
-			IteratorFlags f = static_cast<IteratorFlags>(IteratorFlagBit_Renderable)
-				| static_cast<IteratorFlags>(IteratorFlagBit_StaticVertexFmt);
+		IteratorFlags f = static_cast<IteratorFlags>(IteratorFlagBit_Renderable)
+			| static_cast<IteratorFlags>(IteratorFlagBit_StaticVertexFmt);
+		if (IsStaticNode(scene, (int)node))
+			f |= static_cast<IteratorFlags>(IteratorFlagBit_Static);
 
 			// Material-driven classification. Falls back to Opaque if node has
 			// no material (e.g. default).

@@ -39,7 +39,12 @@ namespace smvk {
 // file reads.
 // ---------------------------------------------------------------------------
 
-inline constexpr uint32_t kPakVersion = 1;
+// v2 adds trailing meshlet sections on Mesh blobs and a trailing
+// static-subtree section on the Scene blob (see cluster_serializer.cpp).
+// The reader accepts v1 (missing trailing sections == no meshlets / no
+// static nodes) and v2. The writer always emits v2.
+inline constexpr uint32_t kPakVersion = 2;
+inline constexpr uint32_t kPakVersionMin = 1;
 inline constexpr uint32_t kPakMagic = 0x4B504D53; // "SMPK" LE
 inline constexpr uint32_t kPakFooterMagic = 0x534D504B; // "KPMS" LE
 

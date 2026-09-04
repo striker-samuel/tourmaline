@@ -20,6 +20,8 @@ int addNode(Scene& scene, int parent, int level)
     // TODO: resize aux arrays (local/global etc.)
     scene.localTransform.push_back(glm::mat4(1.0f));
     scene.globalTransform.push_back(glm::mat4(1.0f));
+    scene.staticRoot.push_back(0);
+    scene.staticNode.push_back(0);
   }
   scene.hierarchy.push_back({ .parent = parent, .lastSibling = -1 });
   if (parent > -1) {
@@ -54,6 +56,67 @@ void markAsChanged(Scene& scene, int node)
   for (int s = scene.hierarchy[node].firstChild; s != -1; s = scene.hierarchy[s].nextSibling) {
     markAsChanged(scene, s);
   }
+}
+
+void markAsChangedDynamic(Scene& scene, int node)
+{
+  // Frozen subtrees never re-enter the dirty set after the initial build.
+  if (node >= 0 && (size_t)node < scene.staticNode.size() && scene.staticNode[(size_t)node] != 0)
+    return;
+  const int level = scene.hierarchy[node].level;
+  scene.changedAtThisFrame[level].push_back(node);
+
+  for (int s = scene.hierarchy[node].firstChild; s != -1; s = scene.hierarchy[s].nextSibling) {
+    // A static child subtree stays frozen even when its dynamic parent moves.
+    // (Its baked globals remain valid only while the static root itself is
+    // static; reparenting under a moving node is a spec error — skip it.)
+    if ((size_t)s < scene.staticNode.size() && scene.staticNode[(size_t)s] != 0)
+      continue;
+    markAsChangedDynamic(scene, s);
+  }
+}
+
+void RebuildStaticCache(Scene& scene)
+{
+  scene.staticNode.assign(scene.hierarchy.size(), 0);
+  if (scene.staticRoot.size() != scene.hierarchy.size())
+    scene.staticRoot.assign(scene.hierarchy.size(), 0);
+  std::vector<int> stack;
+  for (size_t i = 0; i < scene.hierarchy.size(); ++i) {
+    if (scene.staticRoot[i] == 0)
+      continue;
+    stack.clear();
+    stack.push_back((int)i);
+    while (!stack.empty()) {
+      const int n = stack.back();
+      stack.pop_back();
+      if (n < 0 || (size_t)n >= scene.hierarchy.size())
+        continue;
+      if (scene.staticNode[(size_t)n] != 0 && n != (int)i)
+        continue; // already covered by another root
+      scene.staticNode[(size_t)n] = 1;
+      for (int s = scene.hierarchy[(size_t)n].firstChild; s != -1; s = scene.hierarchy[(size_t)s].nextSibling)
+        stack.push_back(s);
+    }
+  }
+}
+
+void MarkSubtreeStatic(Scene& scene, int node)
+{
+  if (node < 0 || (size_t)node >= scene.hierarchy.size())
+    return;
+  if (scene.staticRoot.size() != scene.hierarchy.size())
+    scene.staticRoot.assign(scene.hierarchy.size(), 0);
+  scene.staticRoot[(size_t)node] = 1;
+  RebuildStaticCache(scene);
+}
+
+void ClearSubtreeStatic(Scene& scene, int node)
+{
+  if (node < 0 || (size_t)node >= scene.staticRoot.size())
+    return;
+  scene.staticRoot[(size_t)node] = 0;
+  RebuildStaticCache(scene);
 }
 
 int findNodeByName(const Scene& scene, const std::string& name)
@@ -99,6 +162,41 @@ bool recalculateGlobalTransforms(Scene& scene)
   return wasUpdated;
 }
 
+bool recalculateGlobalTransformsDynamic(Scene& scene)
+{
+  const bool hasStatic =
+    scene.staticNode.size() == scene.hierarchy.size() &&
+    std::any_of(scene.staticNode.begin(), scene.staticNode.end(),
+      [](uint8_t v) { return v != 0; });
+  if (!hasStatic)
+    return recalculateGlobalTransforms(scene);
+
+  bool wasUpdated = false;
+  if (!scene.changedAtThisFrame[0].empty()) {
+    const int c = scene.changedAtThisFrame[0][0];
+    const bool isStatic = (size_t)c < scene.staticNode.size() && scene.staticNode[(size_t)c] != 0;
+    if (!isStatic) {
+      scene.globalTransform[c] = scene.localTransform[c];
+      wasUpdated = true;
+    }
+    scene.changedAtThisFrame[0].clear();
+  }
+
+  for (int i = 1; i < MAX_NODE_LEVEL; i++) {
+    for (int c : scene.changedAtThisFrame[i]) {
+      const bool isStatic = (size_t)c < scene.staticNode.size() && scene.staticNode[(size_t)c] != 0;
+      if (isStatic)
+        continue;
+      const int p              = scene.hierarchy[c].parent;
+      scene.globalTransform[c] = scene.globalTransform[p] * scene.localTransform[c];
+      wasUpdated = true;
+    }
+    scene.changedAtThisFrame[i].clear();
+  }
+
+  return wasUpdated;
+}
+
 void loadMap(FILE* f, std::unordered_map<uint32_t, uint32_t>& map)
 {
   std::vector<uint32_t> ms;
@@ -123,6 +221,8 @@ void loadScene(const char* fileName, Scene& scene)
   scene.hierarchy.resize(sz);
   scene.globalTransform.resize(sz);
   scene.localTransform.resize(sz);
+  scene.staticRoot.assign(sz, 0);
+  scene.staticNode.assign(sz, 0);
   // TODO: check > -1
   // TODO: recalculate changedAtThisLevel() - find max depth of a node [or save scene.maxLevel]
   fread(scene.localTransform.data(), sizeof(glm::mat4), sz, f);
@@ -137,6 +237,20 @@ void loadScene(const char* fileName, Scene& scene)
     loadMap(f, scene.nameForNode);
     loadStringList(f, scene.nodeNames);
     loadStringList(f, scene.materialNames);
+  }
+
+  // Static-subtree section (new files only): u32 count + count bytes.
+  // Old files simply hit EOF here; leave the spec empty in that case.
+  {
+    uint32_t staticCount = 0;
+    if (fread(&staticCount, sizeof(staticCount), 1, f) == 1 &&
+        staticCount > 0 && staticCount <= 1024 * 1024) {
+      std::vector<uint8_t> roots(staticCount, 0);
+      if (fread(roots.data(), 1, staticCount, f) == staticCount && staticCount == sz) {
+        scene.staticRoot = std::move(roots);
+        RebuildStaticCache(scene);
+      }
+    }
   }
 
   fclose(f);
@@ -177,6 +291,20 @@ void saveScene(const char* fileName, const Scene& scene)
     saveMap(f, scene.nameForNode);
     saveStringList(f, scene.nodeNames);
     saveStringList(f, scene.materialNames);
+  }
+  // Static-subtree section: always written (possibly all-zero) so new
+  // loaders can rely on its presence; old loaders ignore trailing bytes.
+  {
+    const uint32_t staticCount = (uint32_t)scene.hierarchy.size();
+    fwrite(&staticCount, sizeof(staticCount), 1, f);
+    if (staticCount > 0) {
+      if (scene.staticRoot.size() == scene.hierarchy.size()) {
+        fwrite(scene.staticRoot.data(), 1, staticCount, f);
+      } else {
+        std::vector<uint8_t> zeros(staticCount, 0);
+        fwrite(zeros.data(), 1, staticCount, f);
+      }
+    }
   }
   fclose(f);
 }
@@ -304,6 +432,8 @@ void mergeScenes(
 
   scene.localTransform.push_back(glm::mat4(1.f));
   scene.globalTransform.push_back(glm::mat4(1.f));
+  scene.staticRoot.push_back(0);
+  scene.staticNode.push_back(0);
 
   if (scenes.empty())
     return;
@@ -324,6 +454,11 @@ void mergeScenes(
     mergeVectors(scene.globalTransform, s->globalTransform);
 
     mergeVectors(scene.hierarchy, s->hierarchy);
+
+    if (s->staticRoot.size() == s->hierarchy.size())
+      mergeVectors(scene.staticRoot, s->staticRoot);
+    else
+      scene.staticRoot.insert(scene.staticRoot.end(), s->hierarchy.size(), 0);
 
     mergeVectors(scene.nodeNames, s->nodeNames);
     if (mergeMaterials)
@@ -377,6 +512,9 @@ void mergeScenes(
   // now, shift levels of all nodes below the root
   for (auto i = scene.hierarchy.begin() + 1; i != scene.hierarchy.end(); i++)
     i->level++;
+
+  scene.staticNode.assign(scene.hierarchy.size(), 0);
+  RebuildStaticCache(scene);
 }
 
 void dumpSceneToDot(const char* fileName, const Scene& scene, int* visited)
@@ -492,6 +630,15 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
   // 4a) Transformations are stored in arrays, so we just erase the items as we did with the scene.hierarchy_
   eraseSelected(scene.localTransform, indicesToDelete);
   eraseSelected(scene.globalTransform, indicesToDelete);
+  if (scene.staticRoot.size() == oldSize)
+    eraseSelected(scene.staticRoot, indicesToDelete);
+  else
+    scene.staticRoot.assign(scene.hierarchy.size(), 0);
+  if (scene.staticNode.size() == oldSize)
+    eraseSelected(scene.staticNode, indicesToDelete);
+  else
+    scene.staticNode.assign(scene.hierarchy.size(), 0);
+  RebuildStaticCache(scene);
 
   // 4b) All the perFrame should change the key values with the newIndices[] array
   shiftMapIndices(scene.meshForNode, newIndices);

@@ -37,6 +37,11 @@ namespace smvk {
 		IteratorFlagBit_LightDirectional = 1u << 6,
 		IteratorFlagBit_LightSpot = 1u << 7,
 		IteratorFlagBit_LightPoint = 1u << 8,
+		// Set when the node sits inside a static subtree (see Scene::
+		// staticRoot/staticNode). Static nodes skip per-frame transform
+		// updates and dynamic BVH rebuilds; collapsed mega-mesh nodes keep
+		// this flag as well.
+		IteratorFlagBit_Static = 1u << 9,
 		//IteratorFlagBit_Skinned,
 		//IteratorFlagBit_Static
 	} IteratorFlagBits;

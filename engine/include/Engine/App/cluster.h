@@ -115,6 +115,13 @@ namespace smvk {
 		void RegisterMeshLod(const std::string& uri, const LodInfo& lod);
 		std::optional<LodInfo> GetMeshLod(const std::string& uri) const;
 
+		// Per-mesh cooked meshlets (see Asset/meshlet.h). Stamped by the
+		// importer when meshlet cooking is enabled, persisted in MeshBlobs,
+		// and loaded into StaticMesh::meshlets on deserialize. The renderer
+		// does not consume them yet (indirect path foundation only).
+		void RegisterMeshMeshlets(const std::string& uri, const CookedMeshlets& meshlets);
+		std::optional<CookedMeshlets> GetMeshMeshlets(const std::string& uri) const;
+
 		// Enumerates registered texture URIs for serialization
 		// ({uri, RHI handle} pairs, sorted by uri for deterministic paks).
 		std::vector<std::pair<std::string, TextureHandle>> ListTextureUris() const;
@@ -140,6 +147,7 @@ namespace smvk {
 		std::unordered_map<std::string, TextureSamplerDesc> textureSamplers_;
 		std::unordered_map<std::string, std::vector<uint8_t>> textureSources_;
 		std::unordered_map<std::string, LodInfo> meshLods_;
+		std::unordered_map<std::string, CookedMeshlets> meshMeshlets_;
 		bool retainUploads_ = false;
 		std::unordered_map<uint32_t, StaticMeshUpload> retainedUploads_;
 		bool cookMode_ = false;

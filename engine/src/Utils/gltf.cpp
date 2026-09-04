@@ -265,6 +265,38 @@ void GltfToSceneImporter::setMeshOptConfig(const smvk::MeshOptConfig& config) {
 	meshOptConfig = config;
 }
 
+void GltfToSceneImporter::setMeshletConfig(const smvk::MeshletConfig& config) {
+	meshletConfig = config;
+}
+
+namespace {
+// A glTF node opts into the frozen static set via authoring extras or by
+// naming convention (checked in importNodeRecursive):
+//   extras: { "smvk.static": true }  (or { "smvk": { "static": true } })
+//   -or- name starts with "STATIC_".
+bool GltfExtrasStatic(const tinygltf::Value& extras) {
+	if (!extras.IsObject())
+		return false;
+	auto truthy = [](const tinygltf::Value& v) {
+		if (v.IsBool())
+			return v.Get<bool>();
+		if (v.IsNumber())
+			return v.GetNumberAsDouble() != 0.0;
+		return false;
+	};
+	if (extras.Has("smvk.static") && truthy(extras.Get("smvk.static")))
+		return true;
+	if (extras.Has("static") && truthy(extras.Get("static")))
+		return true;
+	if (extras.Has("smvk")) {
+		const tinygltf::Value& sub = extras.Get("smvk");
+		if (sub.IsObject() && sub.Has("static") && truthy(sub.Get("static")))
+			return true;
+	}
+	return false;
+}
+} // namespace
+
 // KTX2 file identifier (first 12 bytes) for cook-time payload validation.
 inline bool IsKtx2Payload(const std::vector<uint8_t>& bytes) {
 	static constexpr uint8_t kMagic[12] = {
@@ -982,6 +1014,28 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 		lod.triCount = static_cast<uint32_t>(data.indices.size() / 3);
 	}
 
+	// Meshlet cook path (opt-in): builds from the optimized upload so the
+	// meshlet windows match the vertex-cache-friendly triangle order.
+	smvk::CookedMeshlets cooked;
+	smvk::MeshletStats meshletStats;
+	bool haveMeshlets = false;
+	if (meshletConfig.enabled && !data.vertices.empty() && !data.indices.empty()) {
+		std::string merr;
+		if (BuildMeshletsForUpload(data, meshletConfig, &cooked, &meshletStats, &merr)) {
+			haveMeshlets = true;
+			std::cout << "Meshlets mesh." << gltfMeshIndex << "/prim." << primitiveIndex
+				<< ": count " << meshletStats.meshletCount
+				<< " tris " << meshletStats.totalTriangles
+				<< " maxVerts " << meshletStats.maxVertsUsed
+				<< " maxTris " << meshletStats.maxTrisUsed
+				<< std::endl;
+		}
+		else if (!merr.empty() && merr != "meshlets disabled") {
+			std::cout << "Meshlets mesh." << gltfMeshIndex << "/prim." << primitiveIndex
+				<< " skipped: " << merr << std::endl;
+		}
+	}
+
 	slot =
 		cluster.UploadStaticMesh(data);
 
@@ -991,6 +1045,8 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 			"/prim." + std::to_string(primitiveIndex));
 		cluster.RegisterMeshUri(uri, slot);
 		cluster.RegisterMeshLod(uri, lod);
+		if (haveMeshlets)
+			cluster.RegisterMeshMeshlets(uri, cooked);
 	}
 
 	return slot;
@@ -1009,6 +1065,17 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentScene
 
 	cluster.scene.localTransform[groupNode] = GetNodeLocalTransform(gltfNode);
 	cluster.scene.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
+
+	// Static-subtree opt-in: authoring extras or STATIC_ name prefix.
+	// Flag is stamped directly; the staticNode cache is rebuilt once at the
+	// end of the import flow (see GltfToClusterFromVfs / GltfToCluster).
+	{
+		const bool wantStatic =
+			GltfExtrasStatic(gltfNode.extras) ||
+			(!gltfNode.name.empty() && gltfNode.name.rfind("STATIC_", 0) == 0);
+		if (wantStatic && (size_t)groupNode < cluster.scene.staticRoot.size())
+			cluster.scene.staticRoot[(size_t)groupNode] = 1;
+	}
 
 	// Unroll primitives into separate meshes (your current approach).
 	if (gltfNode.mesh >= 0) {
@@ -1082,7 +1149,8 @@ void GltfToClusterFromVfs(
 	const smvk::OverlayVfs& vfs,
 	const std::string& modelVfsPath,
 	smvk::Cluster& out,
-	const smvk::MeshOptConfig& meshOpt) {
+	const smvk::MeshOptConfig& meshOpt,
+	const smvk::MeshletConfig& meshlets) {
 	const std::string modelPath = smvk::NormalizeAssetUri(modelVfsPath);
 	if (modelPath.empty())
 		throw std::runtime_error("GltfToClusterFromVfs: invalid VFS path: " + modelVfsPath);
@@ -1156,6 +1224,7 @@ void GltfToClusterFromVfs(
 		std::make_shared<VfsTextureSource>(&vfs, baseDir));
 	importer.setModelUriBase(modelPath);
 	importer.setMeshOptConfig(meshOpt);
+	importer.setMeshletConfig(meshlets);
 
 	// Same tail as GltfToCluster (Engine/Utils/gltf.h): cluster root,
 	// top-level glTF nodes, preload, import, fixup, flush.
@@ -1186,6 +1255,7 @@ void GltfToClusterFromVfs(
 	for (int gltfNode : gltfRoots)
 		importer.import(gltfNode);
 
+	RebuildStaticCache(out.scene);
 	markAsChanged(out.scene, root);
 	recalculateGlobalTransforms(out.scene);
 	if (out.ctx_)

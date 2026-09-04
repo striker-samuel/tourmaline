@@ -17,6 +17,12 @@ struct ClusterSerializeStats {
 	uint32_t textures = 0;
 	uint32_t textureBytes = 0;
 	uint32_t nodes = 0;
+	// Meshlet cook output (indirect-path foundation): meshes carrying a
+	// meshlet section, and the total meshlet count across them.
+	uint32_t meshesWithMeshlets = 0;
+	uint32_t meshletCount = 0;
+	// Static-subtree roots persisted in the Scene blob.
+	uint32_t staticRoots = 0;
 };
 
 // Serializes one Cluster (scene + meshes + materials + embedded textures)

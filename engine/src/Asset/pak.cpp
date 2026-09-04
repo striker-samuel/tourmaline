@@ -195,7 +195,7 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 		outError = "bad pak magic";
 		return std::nullopt;
 	}
-	if (version != kPakVersion) {
+	if (version < kPakVersionMin || version > kPakVersion) {
 		outError = "unsupported pak version " + std::to_string(version);
 		return std::nullopt;
 	}

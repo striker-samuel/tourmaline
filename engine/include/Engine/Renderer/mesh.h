@@ -6,6 +6,7 @@
 
 #include <glm/glm.hpp>
 #include <Engine/smvk.h>
+#include <Engine/Asset/meshlet.h>
 
 namespace smvk {
 
@@ -205,6 +206,10 @@ namespace smvk {
 
 	struct StaticMesh {
 		Geometry geometry;
+		// Cook-time meshlet data for the future indirect/mesh-shader path.
+		// Empty when the mesh was cooked without meshlets. Never consulted
+		// by the current direct-draw renderer.
+		std::optional<CookedMeshlets> meshlets;
 	};
 
 	// -----------------------------------------------------------------------------

@@ -11,6 +11,7 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/meshlet.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Vfs/vfs.h>
 
@@ -44,6 +45,10 @@ struct GltfToSceneImporter
 	void setTextureSource(std::shared_ptr<TextureSource> source);
 	void setModelUriBase(const std::string& vfsPath);
 	void setMeshOptConfig(const smvk::MeshOptConfig& config);
+	// Meshlet cook config (disabled by default). When enabled,
+	// getOrCreateMesh builds meshlets from the optimized upload and stamps
+	// them on the Cluster keyed by mesh URI.
+	void setMeshletConfig(const smvk::MeshletConfig& config);
 private:
 	smvk::ClusterMaterialHandle
 		getOrCreateMaterial(int gltfMaterialIndex);
@@ -64,6 +69,7 @@ private:
 	std::shared_ptr<TextureSource> textureSource;
 	std::string modelUriBase; // normalized VFS file part for asset URIs
 	smvk::MeshOptConfig meshOptConfig{}; // disabled by default (runtime parity)
+	smvk::MeshletConfig meshletConfig{}; // disabled by default (opt-in cook)
 	std::vector<smvk::ClusterMaterialHandle> materialCache;
 	std::vector<std::vector<smvk::ClusterStaticMeshHandle>> meshCache;
 	std::unordered_map<int, smvk::TextureHandle> textureCache; // imageIndex -> handle
@@ -113,7 +119,8 @@ void GltfToClusterFromVfs(
 	const smvk::OverlayVfs& vfs,
 	const std::string& modelVfsPath,
 	smvk::Cluster& out,
-	const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{});
+	const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
+	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{});
 
 inline void GltfToCluster(
 	smvk::ResourceManager&,
@@ -161,6 +168,7 @@ inline void GltfToCluster(
 		importer.import(gltfNode);
 		//importer.importNodeRecursive(gltfNode, root, 1);
 
+	RebuildStaticCache(out.scene);
 	markAsChanged(out.scene, root);
 	recalculateGlobalTransforms(out.scene);
 	// Flush batched uploads (256MB threshold, or manual at end of whole scene)

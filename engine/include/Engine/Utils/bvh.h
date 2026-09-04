@@ -187,10 +187,13 @@ static uint32_t buildRecursive(
 }
 
 using MeshFromIndexFunc = std::function<smvk::StaticMesh(uint32_t meshIndex)>;
+// Return false to exclude a node (e.g. static/dynamic split).
+using BvhNodeFilter = std::function<bool(uint32_t node)>;
 
 BvhTree treeFromScene(
 	const Scene& scene,
-	MeshFromIndexFunc meshFromMeshIndex
+	MeshFromIndexFunc meshFromMeshIndex,
+	BvhNodeFilter filter = {}
 ) {
 	BvhTree tree;
 
@@ -207,6 +210,9 @@ BvhTree treeFromScene(
 		};
 
 	for (int i = 0; i < (int)scene.hierarchy.size(); i++) {
+
+		if (filter && !filter((uint32_t)i))
+			continue;
 
 		auto it = scene.meshForNode.find(i);
 		if (it == scene.meshForNode.end())
@@ -274,6 +280,32 @@ BvhTree treeFromScene(
 	}
 
 	return tree;
+}
+
+// Static/dynamic split: the static tree is built once (frozen subtrees +
+// collapsed mega-mesh nodes) and never rebuilt; the dynamic tree is rebuilt
+// (or refit) when dynamic transforms change. Both share the same builder.
+struct SplitBvh {
+	BvhTree statik;
+	BvhTree dynamic;
+};
+
+inline SplitBvh splitBvhFromScene(
+	const Scene& scene,
+	MeshFromIndexFunc meshFromMeshIndex)
+{
+	SplitBvh out;
+	const bool hasStatic =
+		scene.staticNode.size() == scene.hierarchy.size();
+	auto isStatic = [&](uint32_t node) -> bool {
+		return hasStatic && node < scene.staticNode.size() &&
+			scene.staticNode[node] != 0;
+		};
+	out.statik = treeFromScene(scene, meshFromMeshIndex,
+		[&](uint32_t node) { return isStatic(node); });
+	out.dynamic = treeFromScene(scene, meshFromMeshIndex,
+		[&](uint32_t node) { return !isStatic(node); });
+	return out;
 }
 
 static inline glm::vec4 normalizePlaneSafe(glm::vec4 p) {

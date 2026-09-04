@@ -39,6 +39,7 @@ void Cluster::UnregisterUri(const std::string& uri) {
 	textureSamplers_.erase(n);
 	textureSources_.erase(n);
 	meshLods_.erase(n);
+	meshMeshlets_.erase(n);
 }
 
 std::optional<ClusterStaticMeshHandle> Cluster::FindMeshByUri(const std::string& uri) const {
@@ -167,6 +168,23 @@ std::optional<LodInfo> Cluster::GetMeshLod(const std::string& uri) const {
 		return std::nullopt;
 	const auto it = meshLods_.find(n);
 	if (it == meshLods_.end())
+		return std::nullopt;
+	return it->second;
+}
+
+void Cluster::RegisterMeshMeshlets(const std::string& uri, const CookedMeshlets& meshlets) {
+	const std::string n = NormalizeAssetUri(uri);
+	if (n.empty() || meshlets.empty())
+		return;
+	meshMeshlets_[n] = meshlets;
+}
+
+std::optional<CookedMeshlets> Cluster::GetMeshMeshlets(const std::string& uri) const {
+	const std::string n = NormalizeAssetUri(uri);
+	if (n.empty())
+		return std::nullopt;
+	const auto it = meshMeshlets_.find(n);
+	if (it == meshMeshlets_.end())
 		return std::nullopt;
 	return it->second;
 }

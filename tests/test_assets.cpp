@@ -5,6 +5,7 @@
 // Hand-rolled runner (no test framework dependency): each check prints
 // PASS/FAIL, the process exits nonzero on any failure.
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -12,10 +13,13 @@
 #include <vector>
 
 #include <Engine/App/cluster.h>
+#include <Engine/App/static_merge.h>
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Scene/scene.h>
 #include <Engine/Vfs/vfs.h>
 
 namespace {
@@ -307,8 +311,127 @@ void TestClusterSerializeCook() {
 		reader->Payload(*meshes[0]).size() ==
 			4 * sizeof(StaticVertex) + 6 * sizeof(uint32_t) + (0u /*header*/) +
 			// header: uri len+bytes, counts, surfaces(0), aabb, sphere, topo, lod
-			4 + meshUri.size() + 4 + 4 + 4 + 0 + 24 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4,
+			4 + meshUri.size() + 4 + 4 + 4 + 0 + 24 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 +
+			// trailing meshlet section (v2, empty here): count + verts + tris
+			4 + 4 + 4,
 		"cook.pak.mesh.payload");
+}
+
+void TestStaticSubtrees() {
+	Scene scene;
+	const int root = addNode(scene, -1, 0);
+	const int a = addNode(scene, root, 1);
+	const int b = addNode(scene, a, 2);
+	const int c = addNode(scene, root, 1);
+	Check(!IsStaticNode(scene, a), "static.init.dynamic");
+	MarkSubtreeStatic(scene, a);
+	Check(IsStaticSubtreeRoot(scene, a), "static.root");
+	Check(IsStaticNode(scene, a) && IsStaticNode(scene, b), "static.cache.desc");
+	Check(!IsStaticNode(scene, root) && !IsStaticNode(scene, c), "static.cache.sibling");
+	// Dynamic dirty path skips frozen nodes.
+	markAsChangedDynamic(scene, root);
+	bool sawStatic = false;
+	for (int l = 0; l < MAX_NODE_LEVEL; ++l)
+		for (int n : scene.changedAtThisFrame[l])
+			if (n == a || n == b)
+				sawStatic = true;
+	Check(!sawStatic, "static.dirty.skip");
+	for (int l = 0; l < MAX_NODE_LEVEL; ++l)
+		scene.changedAtThisFrame[l].clear();
+	// Dynamic recalc leaves baked globals alone.
+	scene.globalTransform[b] = glm::mat4(2.0f);
+	markAsChanged(scene, root);
+	Check(recalculateGlobalTransformsDynamic(scene), "static.recalc.dynamic");
+	Check(scene.globalTransform[b] == glm::mat4(2.0f), "static.recalc.baked");
+	ClearSubtreeStatic(scene, a);
+	Check(!IsStaticNode(scene, a) && !IsStaticNode(scene, b), "static.clear");
+}
+
+void TestMeshlets() {
+	smvk::MeshletConfig cfg;
+	cfg.enabled = true;
+	cfg.maxVertices = 64;
+	cfg.maxTriangles = 124;
+	auto quad = MakeQuad();
+	smvk::CookedMeshlets cooked;
+	smvk::MeshletStats st;
+	Check(smvk::BuildMeshletsForUpload(quad, cfg, &cooked, &st, nullptr), "meshlet.quad.ok");
+	Check(!cooked.empty() && st.meshletCount >= 1, "meshlet.quad.count");
+	Check(st.totalTriangles == 2, "meshlet.quad.tris");
+	bool windowsOk = true;
+	for (const auto& m : cooked.meshlets) {
+		if (m.vertexCount == 0 || m.vertexCount > 64 || m.triangleCount == 0 ||
+			m.triangleCount > 124 || m.boundRadius <= 0.0f)
+			windowsOk = false;
+		if ((size_t)m.vertexOffset + m.vertexCount > cooked.vertices.size() ||
+			(size_t)m.triangleOffset + (size_t)m.triangleCount * 3 > cooked.triangles.size())
+			windowsOk = false;
+	}
+	Check(windowsOk, "meshlet.quad.windows");
+	// Indirect staging expands to the same triangle soup.
+	std::vector<uint32_t> idx;
+	std::vector<smvk::MeshletDrawCommand> cmds;
+	smvk::BuildMeshletIndirectCommands(cooked, idx, cmds);
+	Check(cmds.size() == cooked.meshlets.size() && idx.size() == 6, "meshlet.indirect.count");
+	// Disabled config fails softly with empty output.
+	smvk::MeshletConfig off;
+	smvk::CookedMeshlets empty;
+	Check(!smvk::BuildMeshletsForUpload(quad, off, &empty, nullptr, nullptr), "meshlet.disabled.false");
+	Check(empty.empty(), "meshlet.disabled.empty");
+	// Degenerate input fails softly.
+	smvk::StaticMeshUpload deg;
+	Check(!smvk::BuildMeshletsForUpload(deg, cfg, &empty, nullptr, nullptr), "meshlet.empty.false");
+}
+
+void TestStaticCollapse() {
+	using namespace smvk;
+	auto cluster = std::make_unique<Cluster>(nullptr);
+	cluster->SetCookMode(true);
+
+	// Two quads sharing one material; second translated +1 on X.
+	auto q1 = MakeQuad();
+	auto q2 = MakeQuad();
+	MaterialCreateInfo ci{};
+	const ClusterMaterialHandle math = cluster->CreateMaterial(ci);
+	const uint32_t matIdx = math.index();
+
+	const int root = addNode(cluster->scene, -1, 0);
+	const int n1 = addNode(cluster->scene, root, 1);
+	const int n2 = addNode(cluster->scene, root, 1);
+	const ClusterStaticMeshHandle h1 = cluster->UploadStaticMesh(q1);
+	const ClusterStaticMeshHandle h2 = cluster->UploadStaticMesh(q2);
+	cluster->scene.meshForNode[n1] = h1.index();
+	cluster->scene.meshForNode[n2] = h2.index();
+	cluster->scene.materialForNode[n1] = matIdx;
+	cluster->scene.materialForNode[n2] = matIdx;
+	cluster->scene.localTransform[n2] = glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+	MarkSubtreeStatic(cluster->scene, n1);
+	MarkSubtreeStatic(cluster->scene, n2);
+	markAsChanged(cluster->scene, root);
+	recalculateGlobalTransforms(cluster->scene);
+
+	StaticMergeOptions opts;
+	opts.deleteSources = true;
+	StaticMergeResult mr = CollapseStaticSubtrees(*cluster, opts);
+	Check(mr.ok, "collapse.ok");
+	Check(mr.srcNodesConsumed == 2, "collapse.consumed");
+	Check(mr.blocks.size() == 1, "collapse.singleblock");
+	if (!mr.blocks.empty()) {
+		const auto h = cluster->staticMeshes.getHandle(mr.blocks[0].meshPoolIndex);
+		const StaticMeshUpload* up = cluster->GetRetainedUpload(h);
+		Check(up && up->vertices.size() == 8 && up->indices.size() == 12, "collapse.baked.size");
+		if (up && up->vertices.size() == 8) {
+			// Second quad baked at +1 X: its min.x must be 1, first quad 0.
+			float minAll = up->vertices[0].pos.x;
+			float maxAll = up->vertices[0].pos.x;
+			for (const auto& v : up->vertices) {
+				minAll = std::min(minAll, v.pos.x);
+				maxAll = std::max(maxAll, v.pos.x);
+			}
+			Check(minAll == 0.0f && maxAll == 2.0f, "collapse.baked.transform");
+		}
+		Check(IsStaticNode(cluster->scene, mr.blocks[0].node), "collapse.block.static");
+	}
 }
 
 } // namespace
@@ -321,6 +444,9 @@ int main() {
 	TestPakBackendServesTextures();
 	TestMeshOpt();
 	TestClusterSerializeCook();
+	TestStaticSubtrees();
+	TestMeshlets();
+	TestStaticCollapse();
 	std::cout << g_checks - g_failures << "/" << g_checks << " checks passed\n";
 	return g_failures == 0 ? 0 : 1;
 }
