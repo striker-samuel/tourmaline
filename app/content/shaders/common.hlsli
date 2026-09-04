@@ -39,6 +39,7 @@ struct FrameUniforms
     float4x4 invView;
     float4x4 invProj;
     float4x4 invViewProj;
+    float4x4 prevViewProj; // last frame's proj*view (post Y-flip) – motion vectors
 
     float3 cameraPos;
     float time;
@@ -208,6 +209,8 @@ struct PushConstants
     uint spotShadowCount;
     uint spotIndex;
     uint pad_pc;
+    // Motion vector pass: last frame's model matrix per draw (176..239).
+    float4x4 prevModel;
 };
 
 #if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS)

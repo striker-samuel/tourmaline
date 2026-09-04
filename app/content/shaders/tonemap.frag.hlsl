@@ -19,8 +19,10 @@ struct TonemapPush
     uint tonemapMode; // 0=Reinhard, 1=ACES, 2=Uncharted2
     uint bloomTextureIndex; // 0xffffffff = disabled
     float bloomIntensity;
+    uint debugView; // 0=scene, 1=motion vectors
+    uint motionTextureIndex; // 0xffffffff = disabled
+    float motionDebugScale;
     uint pad0;
-    uint pad1;
 };
 
 [[vk::push_constant]]
@@ -63,6 +65,13 @@ float3 Tonemap(float3 c, uint mode)
     return ACESFilm(c); // default 1 = ACES
 }
 
+float3 HsvToRgb(float3 c)
+{
+    float4 K = float4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    float3 p = abs(frac(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * lerp(K.xxx, saturate(p - K.xxx), c.y);
+}
+
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
@@ -70,6 +79,19 @@ PSOut mainPS(PSIn IN)
     uint smpIdx = tp.samplerIndex;
     float exposure = tp.exposure;
     uint mode = tp.tonemapMode;
+
+    // Motion vector debug view: direction -> hue, magnitude -> intensity.
+    // Replaces the scene composite entirely while enabled.
+    if (tp.debugView == 1 && tp.motionTextureIndex != 0xffffffff && tp.motionTextureIndex < 100000)
+    {
+        float2 v = textures[NonUniformResourceIndex(tp.motionTextureIndex)]
+            .Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).rg;
+        v *= tp.motionDebugScale;
+        float mag = saturate(length(v));
+        float hue = atan2(v.y, v.x) * 0.15915494 + 0.5; // /2pi + 0.5
+        OUT.outColor = float4(HsvToRgb(float3(hue, 1.0, mag)), 1.0);
+        return OUT;
+    }
 
     float3 hdr = float3(0,0,0);
     if (hdrIdx != 0xffffffff && hdrIdx < 100000)

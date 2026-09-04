@@ -16,6 +16,7 @@
 #include <Engine/Rendergraph/spotshadow.h>
 #include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/msaa.h>
+#include <Engine/Rendergraph/motionvector.h>
 #include <Engine/Rendergraph/tonemap.h>
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/ui.h>
@@ -298,6 +299,7 @@ struct FrameUniforms
 	glm::mat4 invView;
 	glm::mat4 invProj;
 	glm::mat4 invViewProj;
+	glm::mat4 prevViewProj; // last frame's proj*view (post Y-flip) – motion vectors
 
 	glm::vec3 cameraPos;
 	float     time;
@@ -354,6 +356,7 @@ struct ViewportResources {
 	smvk::DepthTarget renderDepth; // scene depth at internal resolution + Ensure
 	smvk::HdrTarget hdr; // HDR intermediate (image + view + bindless + logical) + Ensure
 	smvk::MsaaTarget msaa; // transient 2x color+depth for Main, resolves to hdr
+	smvk::MotionVectors motionVectors; // RG16F motion target + program + pass helper
 	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
 	smvk::UiComposite uiComposite; // UI -> swapchain alpha composite program + pass
 	bool msaaEnabled = true; // runtime toggle (effective only if device supports)
@@ -688,6 +691,7 @@ private:
 		m_viewportResources.directionalShadows.Destroy(*m_rendergraph);
 		m_viewportResources.msaa.Destroy(*m_rendergraph);
 		m_viewportResources.hdr.Destroy(*m_rendergraph);
+		m_viewportResources.motionVectors.Destroy(*m_rendergraph);
 		m_viewportResources.renderDepth.Destroy(*m_rendergraph);
 		m_viewportResources.ui.Destroy(*m_rendergraph);
 		m_viewportResources.uiComposite.DestroyShaders();
@@ -718,6 +722,10 @@ private:
 		data.invView = glm::inverse(view);
 		data.invProj = glm::inverse(proj);
 		data.invViewProj = glm::inverse(viewProj);
+
+		// Motion vector pass: previous frame's viewProj. First frame falls
+		// back to the current one (zero motion instead of garbage).
+		data.prevViewProj = m_prevViewProjValid ? m_prevViewProj : viewProj;
 
 		data.time = time_since_start_s;
 		data.viewportSize = { width_, height_ };
@@ -1242,6 +1250,7 @@ private:
 		rebuildDepthDesc.format = m_swapchain->GetDepthFormat();
 		m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildDepthDesc);
 		m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent);
+		m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
 		smvk::MsaaDesc rebuildMsaaDesc{};
 		rebuildMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildMsaaDesc);
@@ -1277,6 +1286,7 @@ private:
 			m_viewportResources.forwardPlus.Ensure(*m_context, *m_rendergraph,
 				renderExtent, MakeForwardPlusDesc(), m_viewportResources.renderDepth.view);
 			m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent);
+			m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
 			smvk::MsaaDesc frameMsaaDesc{};
 			frameMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 			m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, frameMsaaDesc);
@@ -1362,6 +1372,7 @@ private:
 			uint32_t spotShadowCount;
 			uint32_t spotIndex;
 			uint32_t pad_pc;
+			float prevModel[16]; // motion vector pass: last frame's model (176..239)
 		} pc{
 			.frameUniforms = frameUniformsAddress,
 			.lightsBuffer = lightsBufferAddress,
@@ -1695,6 +1706,99 @@ private:
 			});
 		}
 
+		// ---------------------------------------------------------------------
+		// Motion vectors – per-pixel prevUV - currUV into RG16F (motionvector.h)
+		// Re-rasterizes opaque geometry depth-tested READ-ONLY against the 1x
+		// prepass depth (reversed-Z GreaterEqual, no writes) – identical in
+		// MSAA / non-MSAA modes, Main's transient 2x depth is never touched.
+		// MASK cutouts share the program: the FS alpha-tests only when
+		// shadingModel == Masked (Cull None phase, like the prepass).
+		// ---------------------------------------------------------------------
+		if (m_viewportResources.motionVectors.Valid()) {
+			PushConstants motionPC = pc;
+			auto& motionPass = m_viewportResources.motionVectors.AddMotionVectorPass(
+				*m_rendergraph,
+				m_viewportResources.renderDepth.logicalView,
+				m_viewportResources.motionVectors.target.logicalView,
+				renderExtent,
+				"MotionVectors");
+			motionPass.SetRecordingFunc([this, motionPC](smvk::CommandBuffer& cmd)
+			{
+				auto drawMotionNode = [&](NodeId node, bool maskedPhase) {
+					auto meshForNode = m_world->scene.meshForNode.find(node);
+					if (meshForNode == m_world->scene.meshForNode.end()) return;
+					auto materialForNode = m_world->scene.materialForNode.find(node);
+					if (materialForNode == m_world->scene.materialForNode.end()) return;
+					smvk::Material* mat = m_world->GetMaterial(materialForNode->second);
+					const bool masked = mat &&
+						mat->shadingModel == smvk::ShadingModel::Masked;
+					if (masked != maskedPhase) return;
+					auto& model = m_world->scene.globalTransform[node];
+					smvk::StaticMesh* meshDesc = m_world->GetMesh(meshForNode->second);
+					if (!meshDesc) return;
+					PushConstants objectPC{};
+					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+					// Previous frame's transform: zero motion on the first
+					// frame or after the node count changed (scene rebuild).
+					const bool prevValid =
+						m_prevGlobalTransforms.size() == m_world->scene.globalTransform.size();
+					const glm::mat4 prevModel =
+						prevValid ? m_prevGlobalTransforms[node] : model;
+					std::copy_n(glm::value_ptr(prevModel), 16, objectPC.prevModel);
+					objectPC.materialId = materialForNode->second; // FS alpha test
+					cmd.PushConstants(offsetof(PushConstants, materialId),
+						sizeof(objectPC.materialId), &objectPC.materialId,
+						smvk::ShaderStage::All);
+					cmd.PushConstants(offsetof(PushConstants, model),
+						sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+					cmd.PushConstants(offsetof(PushConstants, prevModel),
+						sizeof(objectPC.prevModel), objectPC.prevModel, smvk::ShaderStage::All);
+					for (auto& draw_set : meshDesc->geometry.surfaces) {
+						cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+					};
+				};
+				// 1x depth stays read-only in both phases (prepass owns it).
+				const smvk::DepthSettings motionDepth{
+					.depthFunc = smvk::CompareOp::GreaterEqual,
+					.writeEnable = false,
+					.depthTestEnable = true,
+				};
+				// Phase 1: solid geometry, back-culled like the prepass.
+				cmd.BindRenderPipeline(
+					m_viewportResources.motionVectors.program,
+					smvk::VertexFormat::StaticVertexFormat,
+					motionDepth,
+					smvk::StencilSettings{},
+					smvk::BlendSettings::Opaque(),
+					smvk::MSAASettings::Count1(),
+					smvk::RasterSettings{ .cullMode = smvk::CullMode::Back }
+				);
+				cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+				m_world->forEachNode(
+					smvk::IteratorFlagBit_Renderable
+					| smvk::IteratorFlagBit_Opaque
+					| smvk::IteratorFlagBit_StaticVertexFmt
+					, [&](NodeId node) { drawMotionNode(node, false); });
+				// Phase 2: MASK cutout, cull off (foliage is double-sided).
+				cmd.BindRenderPipeline(
+					m_viewportResources.motionVectors.program,
+					smvk::VertexFormat::StaticVertexFormat,
+					motionDepth,
+					smvk::StencilSettings{},
+					smvk::BlendSettings::Opaque(),
+					smvk::MSAASettings::Count1(),
+					smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+				);
+				cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+				m_world->forEachNode(
+					smvk::IteratorFlagBit_Renderable
+					| smvk::IteratorFlagBit_Opaque
+					| smvk::IteratorFlagBit_StaticVertexFmt
+					, [&](NodeId node) { drawMotionNode(node, true); });
+			});
+			(void)motionPass;
+		}
+
 		const bool useMsaa = m_viewportResources.msaaEnabled &&
 			m_context->SupportsMSAA2x() && m_viewportResources.msaa.Valid();
 		std::vector<smvk::LogicalImageViewHandle> mainInputs;
@@ -1976,6 +2080,12 @@ private:
 				bloomBindless = m_viewportResources.bloom.MipBindless(0);
 				bloomIntensity = m_viewportResources.bloom.desc.intensity;
 			}
+			smvk::LogicalImageViewHandle motionView{};
+			uint32_t motionBindless = UINT32_MAX;
+			if (m_viewportResources.motionVectors.Valid()) {
+				motionView = m_viewportResources.motionVectors.target.logicalView;
+				motionBindless = m_viewportResources.motionVectors.target.bindlessIndex;
+			}
 			auto& tonemapPass = m_viewportResources.tonemap.AddTonemapPass(
 				*m_rendergraph,
 				m_viewportResources.hdr.logicalView,
@@ -1986,7 +2096,11 @@ private:
 				linearSampler,
 				colors,
 				swapExtent,
-				"Tonemap");
+				"Tonemap",
+				motionView,
+				motionBindless,
+				m_showMotionDebug ? 1u : 0u,
+				m_motionDebugScale);
 			(void)tonemapPass;
 		}
 
@@ -2094,6 +2208,19 @@ private:
 			}
 			ImGui::Separator();
 			{
+				// Motion vector debug view (pass + target built in RenderFrame).
+				if (m_viewportResources.motionVectors.Valid()) {
+					ImGui::Checkbox("Show motion vectors", &m_showMotionDebug);
+					if (m_showMotionDebug) {
+						ImGui::SliderFloat("Motion debug scale", &m_motionDebugScale, 1.0f, 128.0f);
+						ImGui::TextDisabled("Direction -> hue, magnitude -> brightness");
+					}
+				} else {
+					ImGui::TextDisabled("Motion vectors: target/shaders missing");
+				}
+			}
+			ImGui::Separator();
+			{
 				const auto& fwd = m_viewportResources.forwardPlus;
 				ImGui::Text("Forward+: %ux%u tiles (%u)  tile %u  max/tile %u",
 					fwd.tileCountX, fwd.tileCountY, fwd.tileCount,
@@ -2184,6 +2311,12 @@ private:
 		m_rendergraph->Execute(fb);
 		m_context->ProcessDeferrredTasks();
 
+		// Snapshot this frame's camera + node transforms for the next
+		// frame's motion vector pass. Must run AFTER Execute: the motion
+		// pass recording lambda reads these members during Execute.
+		m_prevViewProj = frameData.viewProj;
+		m_prevViewProjValid = true;
+		m_prevGlobalTransforms = m_world->scene.globalTransform;
 	}
 
 
@@ -2195,6 +2328,12 @@ private:
 	smvk::CookieLibrary m_cookies{}; // baked/engine-resource gobos (see cookies.h)
 	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
+	// ---- Motion vector pass: previous-frame state + debug view ----
+	glm::mat4 m_prevViewProj{ 1.0f }; // last frame's viewProj (post Y-flip)
+	bool m_prevViewProjValid = false; // false until the first frame completes
+	std::vector<glm::mat4> m_prevGlobalTransforms; // last frame's node transforms
+	bool m_showMotionDebug = false; // tonemap debug view: motion vectors
+	float m_motionDebugScale = 16.0f; // debug view velocity amplification
 	// ---- Emissive point-light ball objects (scene-hierarchy lights) ----
 	smvk::Cluster* m_lightCluster = nullptr; // owns the shared ball resources
 	smvk::ClusterStaticMeshHandle m_ballMesh{};
