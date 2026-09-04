@@ -3,7 +3,7 @@
 struct VSIn
 {
     [[vk::location(0)]] float3 position : POSITION;
-    [[vk::location(1)]] float3 color : COLOR0;
+    [[vk::location(1)]] float4 color : COLOR0;
     [[vk::location(2)]] float2 uv : TEXCOORD0;
 };
 
@@ -24,7 +24,7 @@ VSOut mainVS(VSIn IN)
 
     float4 world = mul(pc.model, float4(IN.position, 1.0f));
 
-    OUT.color = IN.color;
+    OUT.color = IN.color.rgb;
     OUT.uv = IN.uv;
 
     // Spot-shadow pass: per-tile perspective VP from the spot buffer.

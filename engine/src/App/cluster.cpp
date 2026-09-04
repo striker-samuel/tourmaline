@@ -132,7 +132,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 
 		positions[i].pos = src.pos;
 
-		shading[i].color = src.color;
+		shading[i].color = glm::packUnorm4x8(glm::vec4(src.color, 1.0f));
 		shading[i].texCoord = src.texCoord;
 		shading[i].normal = src.normal;
 		shading[i].tangent = src.tangent;

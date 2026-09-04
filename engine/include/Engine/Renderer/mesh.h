@@ -108,12 +108,15 @@ namespace smvk {
 		glm::vec3 pos;
 	};
 
+	// GPU shading stream: color is packed via glm::packUnorm4x8 (A = 255) and
+	// fetched as Format::RGBA8_UNorm, see StaticVertexFormat below.
 	struct VertexShading {
-		glm::vec3 color;
+		uint32_t color;
 		glm::vec2 texCoord;
 		glm::vec3 normal;
 		glm::vec4 tangent;
 	};
+	static_assert(sizeof(VertexShading) == 40);
 
 
 	// CPU-side import vertex
@@ -152,10 +155,10 @@ namespace smvk {
 				.binding = 1,
 				.stride = sizeof(VertexShading),
 				.inputRate = VertexInputRate::Vertex,
-				.attributes = {
-			{
-				.semantic = VertexSemantic::Color,
-						.format = Format::RGB32_Float,
+			.attributes = {
+				{
+					.semantic = VertexSemantic::Color,
+						.format = Format::RGBA8_UNorm,
 						.offset = offsetof(VertexShading, color)
 					},
 					{

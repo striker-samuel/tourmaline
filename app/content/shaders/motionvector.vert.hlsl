@@ -10,7 +10,7 @@
 struct VSIn
 {
     [[vk::location(0)]] float3 position : POSITION;
-    [[vk::location(1)]] float3 color : COLOR0;
+    [[vk::location(1)]] float4 color : COLOR0;
     [[vk::location(2)]] float2 uv : TEXCOORD0;
 };
 struct VSOut
