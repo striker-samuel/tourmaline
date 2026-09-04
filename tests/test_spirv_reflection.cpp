@@ -102,8 +102,7 @@ void TestValidatePushRanges() {
 	Check(!smvk::ValidatePushConstants(zero, 256), "push.validate.zerosize");
 }
 
-void TestExpandPushStagesForLayout() {
-	using smvk::PushConstantRange;
+void TestExpandPushStagesForLayout() {	using smvk::PushConstantRange;
 	using smvk::ShaderStage;
 	// Engine global layout: single ALL range [0, 256). A narrow compute-only
 	// push (the ForwardPlusCull case: offset 0, size 64) must expand to ALL
@@ -181,10 +180,46 @@ void TestShaderEqualityWithSpec() {
 	Check(!(a == b), "shader.notequal.nullspec");
 }
 
+void TestDemoteSanitizeUnit() {
+	// Hand-built minimal instruction stream: header + Shader cap + Demote
+	// cap + MemoryModel + an OpConstant whose literal value mimics the demote
+	// word (walker must NOT touch operands) + one real OpDemote instruction.
+	const uint32_t kKillWord = (1u << 16) | 252u;
+	const uint32_t kDemoteWord = (1u << 16) | 5380u;
+	std::vector<uint32_t> words = {
+		0x07230203u, 0x00010000u, 0u, 10u, 0u, // header
+		0x00020011u, 1u, // OpCapability Shader
+		0x00020011u, 5379u, // OpCapability DemoteToHelperInvocation
+		0x0003000Eu, 0u, 1u, // OpMemoryModel Logical GLSL450
+		0x0004002Bu, 7u, 8u, kDemoteWord, // OpConstant ... <demote-word-as-literal>
+		kDemoteWord, // OpDemoteToHelperInvocation (real instruction)
+	};
+	std::vector<char> bytes(words.size() * 4, 0);
+	std::memcpy(bytes.data(), words.data(), bytes.size());
+
+	Check(smvk::SanitizeDemoteToKill(bytes) == 1, "sanitize.unit.count");
+	Check(bytes.size() == (words.size() - 2) * 4, "sanitize.unit.shrink");
+	if (bytes.size() == (words.size() - 2) * 4) {
+		auto* w = reinterpret_cast<const uint32_t*>(bytes.data());
+		Check(w[0] == 0x07230203u, "sanitize.unit.magic");
+		// Capability erased: words[7..8] are now MemoryModel, literal intact.
+		Check(w[7] == 0x0003000Eu, "sanitize.unit.caperased");
+		Check(w[13] == kDemoteWord, "sanitize.unit.literalintact");
+		Check(w[14] == kKillWord, "sanitize.unit.demotetokill");
+	}
+	// Idempotent: second run finds nothing.
+	Check(smvk::SanitizeDemoteToKill(bytes) == 0, "sanitize.unit.idempotent");
+
+	// Malformed input is left untouched.
+	std::vector<char> empty;
+	Check(smvk::SanitizeDemoteToKill(empty) == 0, "sanitize.unit.empty");
+	std::vector<char> odd = { 0x03, 0x02, 0x23 };
+	Check(smvk::SanitizeDemoteToKill(odd) == 0, "sanitize.unit.oddsize");
+}
+
 // End-to-end: compile HLSL with a push block + spec constants, reflect it.
 // Skipped gracefully when DXC (dxcompiler.dll) is unavailable.
-void TestDxcRoundTrip() {
-	static constexpr const char* kSrc = R"(
+void TestDxcRoundTrip() {	static constexpr const char* kSrc = R"(
 struct TestPush { uint a; uint b; float c; uint d; };
 [[vk::push_constant]] ConstantBuffer<TestPush> pc;
 [[vk::constant_id(0)]] const uint kIters = 4;
@@ -243,6 +278,45 @@ void mainCS(uint3 id : SV_DispatchThreadID) {
 	Check(smvk::ValidatePushConstants(merged, 256), "spirv.dxc.fits256");
 }
 
+// End-to-end for the demote policy: a `discard` pixel shader compiled for
+// vulkan1.3 must come out of SanitizeDemoteToKill with no demote capability
+// and a still-reflectable module. Skipped when DXC is unavailable.
+void TestDemoteSanitizeDxc() {
+	static constexpr const char* kSrc = R"(
+struct PSIn { float4 pos : SV_Position; };
+float4 mainPS(PSIn i) : SV_Target0 {
+  if (i.pos.x < 0.0f) discard;
+  return float4(1.0f, 0.0f, 0.0f, 1.0f);
+}
+)";
+	std::vector<char> spv;
+	try {
+		spv = CompileHLSLToSPIRV(kSrc, DxcShaderStage::Fragment, L"mainPS");
+	} catch (const std::exception& e) {
+		std::cout << "SKIP spirv.sanitize.dxc (DXC unavailable: " << e.what() << ")\n";
+		return;
+	}
+	auto hasDemoteCap = [](const std::vector<char>& code) {
+		if (code.size() % 4 != 0 || code.size() < 20)
+			return false;
+		auto* w = reinterpret_cast<const uint32_t*>(code.data());
+		const size_t n = code.size() / 4;
+		for (size_t i = 5; i + 1 < n; ++i) {
+			if (w[i] == 0x00020011u && w[i + 1] == 5379u)
+				return true;
+		}
+		return false;
+	};
+	Check(hasDemoteCap(spv), "spirv.sanitize.dxc.emitsdemote");
+	const uint32_t fixed = smvk::SanitizeDemoteToKill(spv);
+	Check(fixed >= 1, "spirv.sanitize.dxc.count");
+	Check(!hasDemoteCap(spv), "spirv.sanitize.dxc.capgone");
+	// Module must still parse + reflect after the rewrite.
+	smvk::SpirvReflection r =
+		smvk::ReflectSpirvBytes(std::span<const char>(spv.data(), spv.size()));
+	Check(r.valid, "spirv.sanitize.dxc.stillvalid");
+}
+
 } // namespace
 
 int main() {
@@ -250,6 +324,8 @@ int main() {
 	TestMergePushRanges();
 	TestValidatePushRanges();
 	TestExpandPushStagesForLayout();
+	TestDemoteSanitizeUnit();
+	TestDemoteSanitizeDxc();
 	TestSpecializationPayload();
 	TestShaderEqualityWithSpec();
 	TestDxcRoundTrip();

@@ -286,4 +286,56 @@ ShaderStage ExpandPushStagesForLayout(ShaderStage requested,
 	return static_cast<ShaderStage>(bits);
 }
 
+uint32_t SanitizeDemoteToKill(std::vector<char>& spirvBytes)
+{
+	// SPIR-V opcodes/words of interest.
+	constexpr uint32_t kMagic = 0x07230203u;
+	constexpr uint32_t kOpCapability = 17;
+	constexpr uint32_t kOpKill = 252;
+	constexpr uint32_t kOpDemoteToHelperInvocation = 5380;
+	constexpr uint32_t kCapDemoteToHelperInvocation = 5379;
+
+	if (spirvBytes.size() < 20 || spirvBytes.size() % 4 != 0)
+		return 0;
+
+	auto* words = reinterpret_cast<uint32_t*>(spirvBytes.data());
+	const size_t wordCount = spirvBytes.size() / 4;
+	if (words[0] != kMagic)
+		return 0;
+
+	// Walk the instruction stream (5-word header, then wc/op prefixed words).
+	// A raw word scan would risk matching literal constants or string bytes;
+	// parsing word counts keeps the rewrite exact.
+	constexpr size_t kNoCap = static_cast<size_t>(-1);
+	size_t capIndex = kNoCap;
+	uint32_t rewritten = 0;
+	size_t i = 5;
+	while (i < wordCount) {
+		const uint32_t w = words[i];
+		const uint32_t wc = w >> 16;
+		const uint32_t op = w & 0xFFFF;
+		if (wc == 0 || i + wc > wordCount)
+			return rewritten; // malformed tail: keep prior edits, stop
+		if (op == kOpCapability && wc == 2 && words[i + 1] == kCapDemoteToHelperInvocation) {
+			if (capIndex == kNoCap)
+				capIndex = i; // erasure below; keep walking with original indices
+		} else if (op == kOpDemoteToHelperInvocation && wc == 1) {
+			words[i] = (1u << 16) | kOpKill;
+			++rewritten;
+		}
+		i += wc;
+	}
+
+	if (rewritten == 0)
+		return 0; // leave modules without demote fully untouched
+
+	// Erase the capability instruction (2 words, no result id -> bound unaffected).
+	if (capIndex != kNoCap) {
+		const size_t tailWords = wordCount - (capIndex + 2);
+		std::memmove(words + capIndex, words + capIndex + 2, tailWords * sizeof(uint32_t));
+		spirvBytes.resize((wordCount - 2) * sizeof(uint32_t));
+	}
+	return rewritten;
+}
+
 } // namespace smvk

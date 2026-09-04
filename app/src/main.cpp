@@ -13,6 +13,7 @@
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/hdr.h>
+#include <Engine/Rendergraph/msaa.h>
 #include <Engine/Rendergraph/tonemap.h>
 #include <Engine/Vfs/vfs.h>
 #include <imgui.h>
@@ -202,6 +203,8 @@ struct ViewportResources {
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
 	smvk::LogicalImageViewHandle depthView;
 	smvk::HdrTarget hdr; // HDR intermediate (image + view + bindless + logical) + Ensure
+	smvk::MsaaTarget msaa; // transient 2x color+depth for Main, resolves to hdr
+	bool msaaEnabled = true; // runtime toggle (effective only if device supports)
 };
 
 
@@ -439,6 +442,13 @@ private:
 				std::cerr << "[TestApp] Failed to create HDR target\n";
 				return false;
 			}
+			{
+				smvk::MsaaDesc msaaDesc{};
+				msaaDesc.depthFormat = m_swapchain->GetDepthFormat();
+				if (!m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, extent, msaaDesc)) {
+					std::cerr << "[TestApp] MSAA target unavailable – falling back to 1x\n";
+				}
+			}
 			if (!m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, extent, MakeBloomDesc())) {
 				std::cerr << "[TestApp] Bloom chain unavailable (HDR "
 					<< extent.width << "x" << extent.height << ")\n";
@@ -464,6 +474,7 @@ private:
 		m_viewportResources.forwardPlus.Destroy(*m_rendergraph);
 		m_viewportResources.bloom.Destroy(*m_rendergraph);
 		m_viewportResources.directionalShadows.Destroy(*m_rendergraph);
+		m_viewportResources.msaa.Destroy(*m_rendergraph);
 		m_viewportResources.hdr.Destroy(*m_rendergraph);
 		if (m_imgui) {
 			m_imgui->Shutdown();
@@ -702,6 +713,9 @@ private:
 		auto vkExt = m_swapchain->GetExtent();
 		const smvk::Extent2D extent{ vkExt.width, vkExt.height };
 		m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, extent);
+		smvk::MsaaDesc rebuildMsaaDesc{};
+		rebuildMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
+		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, extent, rebuildMsaaDesc);
 		m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, extent, MakeBloomDesc());
 	}
 
@@ -727,6 +741,9 @@ private:
 			m_viewportResources.forwardPlus.Ensure(*m_context, *m_rendergraph,
 				extent, MakeForwardPlusDesc(), m_swapchain->GetDepthImageViewHandle());
 			m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, extent);
+			smvk::MsaaDesc frameMsaaDesc{};
+			frameMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
+			m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, extent, frameMsaaDesc);
 			m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, extent, MakeBloomDesc());
 		}
 		m_context->UpdateDescriptors();
@@ -1025,6 +1042,8 @@ private:
 			});
 		}
 
+		const bool useMsaa = m_viewportResources.msaaEnabled &&
+			m_context->SupportsMSAA2x() && m_viewportResources.msaa.Valid();
 		auto& mainPass = m_rendergraph->AddPass("Main")
 			.SetOffset(0, 0)
 			.SetInputImages(
@@ -1037,8 +1056,25 @@ private:
 					fb.swapchain->GetExtent().width,
 					fb.swapchain->GetExtent().height
 				}
+			);
+		if (useMsaa) {
+			// 2x MSAA color resolves into the 1x HDR intermediate.
+			mainPass.SetColorWithResolve(
+				{ m_viewportResources.msaa.colorLogical },
+				{ m_viewportResources.hdr.logicalView },
+				smvk::AttachmentLoadOp::Clear,
+				smvk::AttachmentStoreOp::DontCare,
+				smvk::ClearColor(0, 0, 0, 1)
 			)
-			.SetColor(
+			// Transient 2x depth: cleared here, written by Main.
+			// The 1x prepass depth stays reserved for Forward+ cull.
+			.SetDepth(m_viewportResources.msaa.depthLogical,
+				smvk::AttachmentLoadOp::Clear,
+				smvk::AttachmentStoreOp::DontCare,
+				smvk::ClearDepthStencil(0, 0)
+			);
+		} else {
+			mainPass.SetColor(
 				hdrColors, // HDR intermediate – tonemapper will resolve to swap
 				smvk::AttachmentLoadOp::Clear,
 				smvk::AttachmentStoreOp::Store,
@@ -1050,18 +1086,21 @@ private:
 				smvk::AttachmentLoadOp::Load,
 				smvk::AttachmentStoreOp::DontCare,
 				smvk::ClearDepthStencil(0, 0)
-			)
-		.SetRecordingFunc([this, pc](smvk::CommandBuffer& cmd)
+			);
+		}
+		mainPass.SetRecordingFunc([this, pc, useMsaa](smvk::CommandBuffer& cmd)
 	{
-		// Depth was filled by the Forward+ prepass: main view is read-only
-		// (GreaterEqual reversed-Z, no writes) for both opaque and BLEND.
+		// 1x: depth was filled by the Forward+ prepass, main is read-only.
+		// 2x: transient depth is cleared above, main writes it
+		// (GreaterEqual reversed-Z in both cases).
 		const smvk::DepthSettings mainDepth{
 			.depthFunc = smvk::CompareOp::GreaterEqual,
-			.writeEnable = false,
+			.writeEnable = useMsaa,
 			.depthTestEnable = true,
 		};
 		const smvk::StencilSettings noStencil{};
-		const smvk::MSAASettings noMsaa{};
+		const smvk::MSAASettings msaaSettings =
+			useMsaa ? smvk::MSAASettings::Count2() : smvk::MSAASettings::Count1();
 
 		auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId) {
 			auto& model = m_world->scene.globalTransform[node];
@@ -1096,7 +1135,7 @@ private:
 
 		auto bindForMaterial = [&](uint32_t materialId) {
 			// Per-material raster (doubleSided -> Cull None) + blend
-			// (Opaque vs AlphaBlend). Depth stays read-only above.
+			// (Opaque vs AlphaBlend). 1x depth is read-only, 2x writes.
 			smvk::BlendSettings blend = smvk::BlendSettings::Opaque();
 			smvk::RasterSettings raster{};
 			if (smvk::Material* mat = m_world->GetMaterial(materialId)) {
@@ -1109,7 +1148,7 @@ private:
 				mainDepth,
 				noStencil,
 				blend,
-				noMsaa,
+				msaaSettings,
 				raster
 			);
 		};
@@ -1124,7 +1163,7 @@ private:
 			mainDepth,
 			noStencil,
 			smvk::BlendSettings::Opaque(),
-			noMsaa,
+			msaaSettings,
 			smvk::RasterSettings{}
 		);
 		cmd.PushConstants(
@@ -1311,6 +1350,16 @@ private:
 				} else {
 					ImGui::TextDisabled("Bloom: OFF");
 				}
+			}
+			{
+				const bool supported = m_context->SupportsMSAA2x();
+				if (!supported)
+					m_viewportResources.msaaEnabled = false;
+				ImGui::Checkbox("MSAA 2x (Main)", &m_viewportResources.msaaEnabled);
+				if (!supported)
+					ImGui::TextDisabled("MSAA 2x unsupported – running 1x");
+				else
+					ImGui::TextDisabled(m_viewportResources.msaa.Valid() ? "MSAA 2x -> HDR resolve" : "MSAA target missing – running 1x");
 			}
 			ImGui::Separator();
 			{

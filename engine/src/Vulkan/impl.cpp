@@ -4480,6 +4480,16 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 	return { this, handle };
 }
 [[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::VulkanResourceManager::CreateShaderModule(std::vector<char> code, const char* debugName) {
+	// Engine policy: classic kill semantics for `discard`. DXC maps HLSL
+	// `discard` to OpDemoteToHelperInvocation when targeting vulkan1.3+ with
+	// no opt-out flag; that would require shaderDemoteToHelperInvocation and
+	// cost early-z on the shadow depth path. Sanitize before module creation
+	// so neither offline .spv nor runtime DXC output can declare the
+	// capability (VUID-VkShaderModuleCreateInfo-pCode-08740).
+	if (const uint32_t demotes = SanitizeDemoteToKill(code); demotes > 0) {
+		std::fprintf(stderr, "[Shader] %s: rewrote %u OpDemoteToHelperInvocation -> OpKill\n",
+			debugName ? debugName : "<unnamed>", demotes);
+	}
 	VkShaderModule shader = VK_NULL_HANDLE;
 	CreateShaderModuleIn(
 		code,
@@ -7264,6 +7274,29 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 			req.barrierMasks.stageMask = PipelineStageBit_Fragment; // mapped to COLOR_ATTACHMENT_OUTPUT
 			req.layout = ImageLayout::ColorAttachmentOptimal;
 			pu.images.emplace_back(phys, req);
+			// MSAA resolve destination – also a color-attachment write.
+			if (!att.resolveView.empty()) {
+				auto* rv = imageViews_.get(att.resolveView);
+				if (rv) {
+					ImageHandle rphys{};
+					if (rv->type == LogicalImageView::Type::ExternalPhysical) {
+						auto* rext = vctx.imageViews_.get(rv->externalViewHandle);
+						if (rext) rphys = rext->image;
+						// swapchain resolve dest has no backing image – external sync
+					}
+					else {
+						auto* rli = images_.get(rv->key.image);
+						if (rli) rphys = rli->resolvedImageHandle;
+					}
+					if (!rphys.empty() && rphys != phys) {
+						ImageSyncRequest rreq{};
+						rreq.barrierMasks.accessMask = AccessFlags::ColorAttachmentWrite;
+						rreq.barrierMasks.stageMask = PipelineStageBit_Fragment;
+						rreq.layout = ImageLayout::ColorAttachmentOptimal;
+						pu.images.emplace_back(rphys, rreq);
+					}
+				}
+			}
 		}
 		// Depth attachment
 		if (pass.hasDepthAttachment_) {
@@ -7696,6 +7729,11 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			info.loadOp = toVkAttachmentLoadOp(att.loadOp);
 			info.storeOp = toVkAttachmentStoreOp(att.storeOp);
 			info.clearValue = toVkClearValue(att.clearColor);
+			if (!att.resolveView.empty()) {
+				info.resolveImageView = GetImageView(this, att.resolveView);
+				info.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+				info.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			}
 			colorInfos.push_back(info);
 		}
 		VkRenderingAttachmentInfo depthInfo{ .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR, };

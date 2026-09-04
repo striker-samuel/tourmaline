@@ -97,6 +97,19 @@ bool ValidatePushConstants(const std::vector<PushConstantRange>& ranges,
 // Total push-constant footprint (max end offset) across merged ranges.
 uint32_t PushConstantFootprint(const std::vector<PushConstantRange>& ranges);
 
+// Rewrite OpDemoteToHelperInvocation -> OpKill and strip the
+// DemoteToHelperInvocation capability, so the module no longer requires
+// shaderDemoteToHelperInvocation (VUID-VkShaderModuleCreateInfo-pCode-08740).
+// DXC maps HLSL `discard` to OpDemote when targeting vulkan1.3+ with no
+// opt-out flag; the engine policy is classic kill semantics (no extra device
+// feature, no extra PSOs). Both ops are nullary terminators, so the rewrite
+// is a 1-word swap plus erasing the 2-word capability instruction; result
+// ids and the id bound are untouched. Operates in place on raw SPIR-V bytes
+// (size must be a multiple of 4); returns the number of demote ops rewritten
+// (0 = untouched, including malformed input which is left as-is).
+// CPU-only, headless-safe.
+uint32_t SanitizeDemoteToKill(std::vector<char>& spirvBytes);
+
 // Expand a vkCmdPushConstants-style stage mask so it satisfies
 // VUID-vkCmdPushConstants-offset-01796 against the given pipeline layout
 // ranges: for every byte in [offset, offset + size) covered by a layout

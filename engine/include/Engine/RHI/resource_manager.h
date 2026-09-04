@@ -64,6 +64,9 @@ public:
     // Mirrors VulkanPipelineCache: same SamplerCreateInfo → same index.
     uint32_t GetOrCreateSampler(const SamplerCreateInfo& ci);
     uint32_t GetSamplerCount() const;
+    // True when the physical device supports 2x MSAA for both color and
+    // depth framebuffer attachments (used for the Main pass resolve path).
+    bool SupportsMSAA2x();
 
     // Internal helpers for PIMPL firewall – used by Swapchain/RenderGraph private TUs
     struct Impl;

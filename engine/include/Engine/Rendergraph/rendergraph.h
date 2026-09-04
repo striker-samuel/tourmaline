@@ -160,6 +160,11 @@ namespace smvk
 		AttachmentStoreOp storeOp =
 			AttachmentStoreOp::Store;
 		ClearColor clearColor{};
+		// Optional MSAA resolve destination (single-sampled). When set,
+		// Execute() fills VkRenderingAttachmentInfo::resolveImageView with
+		// resolveMode AVERAGE. view is then the multisampled image whose
+		// storeOp should typically be DontCare.
+		LogicalImageViewHandle resolveView{};
 	};
 
 
@@ -223,6 +228,39 @@ namespace smvk
 					.loadOp = loadOp,
 					.storeOp = storeOp,
 					.clearColor = clearValue,
+				};
+			}
+
+			return *this;
+		}
+
+		// MSAA variant: views are multisampled, resolveViews are the
+		// single-sampled resolve destinations (same count, may be empty
+		// per-index for no-resolve). resolveViews must match views in size
+		// when provided.
+		RenderPass& SetColorWithResolve(
+			const std::vector<LogicalImageViewHandle>& views,
+			const std::vector<LogicalImageViewHandle>& resolveViews,
+			AttachmentLoadOp loadOp =
+			AttachmentLoadOp::Clear,
+			AttachmentStoreOp storeOp =
+			AttachmentStoreOp::DontCare,
+			ClearColor clearValue = {})
+		{
+			assert(resolveViews.empty() || resolveViews.size() == views.size());
+
+			colorAttachments_.resize(views.size());
+
+			for (size_t i = 0; i < views.size(); ++i)
+			{
+				assert(!views[i].empty());
+
+				colorAttachments_[i] = {
+					.view = views[i],
+					.loadOp = loadOp,
+					.storeOp = storeOp,
+					.clearColor = clearValue,
+					.resolveView = resolveViews.empty() ? LogicalImageViewHandle{} : resolveViews[i],
 				};
 			}
 

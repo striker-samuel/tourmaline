@@ -149,6 +149,14 @@ void ResourceManager::UpdateDescriptors(uint32_t frameIndex) { impl_->vulkan.Upd
 uint32_t ResourceManager::GetBindlessIndex(BindlessImageHandle handle) const { return impl_->vulkan.GetBindlessIndex(handle); }
 uint32_t ResourceManager::GetOrCreateSampler(const SamplerCreateInfo& ci) { return impl_->vulkan.GetOrCreateSampler(ci); }
 uint32_t ResourceManager::GetSamplerCount() const { return impl_->vulkan.GetSamplerCount(); }
+bool ResourceManager::SupportsMSAA2x() {
+    if (!impl_ || !impl_->vulkan.core_)
+        return false;
+    const auto& props = impl_->vulkan.core_->GetPhysicalDeviceProperties().properties;
+    constexpr VkSampleCountFlags want = VK_SAMPLE_COUNT_2_BIT;
+    return (props.limits.framebufferColorSampleCounts & want) != 0 &&
+        (props.limits.framebufferDepthSampleCounts & want) != 0;
+}
 void ResourceManager::FlushUploads() { impl_->vulkan.FlushUploads(); }
 uint64_t ResourceManager::GetBufferDeviceAddress(BufferHandle handle) const {
     auto* buf = impl_->vulkan.buffers_.get(handle);
