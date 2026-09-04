@@ -27,11 +27,16 @@ VSOut mainVS(VSIn IN)
     OUT.color = IN.color.rgb;
     OUT.uv = IN.uv;
 
-    // Spot-shadow pass: per-tile perspective VP from the spot buffer.
-    // Directional cascade pass: per-cascade ortho VP from cascade buffer.
-    // Otherwise (legacy single light): lights[0] fallback.
+    // RenderView path: every shadow pass owns an allocated view (one per
+    // directional cascade / spot tile); its VP is the single source of
+    // truth. The legacy descriptor paths below stay as fallbacks for
+    // pipelines driven without the RenderView system.
     float4x4 lightVP;
-    if (pc.spotIndex != 0xFFFFFFFFu && pc.spotShadowCount > 0u && pc.spotIndex < pc.spotShadowCount)
+    if (pc.renderViewIndex < MAX_RENDER_VIEWS)
+    {
+        lightVP = pc.renderViews.Get().views[pc.renderViewIndex].m_viewProjectionMatrix;
+    }
+    else if (pc.spotIndex != 0xFFFFFFFFu && pc.spotShadowCount > 0u && pc.spotIndex < pc.spotShadowCount)
     {
         lightVP = pc.spotShadowBuffer.Get().tiles[pc.spotIndex].lightVP;
     }

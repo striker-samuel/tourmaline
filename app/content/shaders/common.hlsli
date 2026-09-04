@@ -1,5 +1,6 @@
 #pragma once
 #include "light.hlsli"
+#include "renderview.hlsli"
 
 #define MAX_LIGHTS 64
 #define MAX_MATERIALS 1024
@@ -209,7 +210,16 @@ struct PushConstants
     uint spotShadowCount;
     uint spotIndex;
     uint pad_pc;
-    // Motion vector pass: last frame's model matrix per draw (176..239).
+    // RenderView system (see renderview.hlsli): per-frame virtual cameras
+    // (main game camera + one view per shadow cascade / spot tile / custom
+    // pass). mainRenderView indexes the game camera view; renderViewIndex
+    // is the view the current pass renders from, 0xFFFFFFFF when the pass
+    // has no view of its own (compute / post passes).
+    vk::BufferPointer<RenderViewBuffer>
+    renderViews;
+    uint mainRenderView;
+    uint renderViewIndex;
+    // Motion vector pass: last frame's model matrix per draw (192..255).
     float4x4 prevModel;
 };
 

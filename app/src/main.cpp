@@ -438,6 +438,11 @@ private:
 		);
 		m_resources.spotShadowLogical = m_rendergraph->AddExternalBuffer(
 			m_resources.spotShadowBuffer, "spot shadow tiles");
+		// RenderView slab: per-frame virtual cameras (main + shadow views).
+		if (!m_renderViews.Ensure(*m_context, m_swapchain->framesInFlight())) {
+			std::cerr << "[TestApp] Failed to create render views buffer\n";
+			return false;
+		}
 
 		// VFS overlay: loose content/ for iteration, cooked paks mounted
 		// underneath (loose files win on collisions). Shader reads below
@@ -756,7 +761,7 @@ private:
 
 	}
 
-	void UpdateLights(uint32_t currentFrame)
+	smvk::GpuDirectionalLightDescription UpdateLights(uint32_t currentFrame)
 	{
 		// Directional sun driven by the environment (single source of truth
 		// for the sky sun disc, IBL sun tint, and shadow-casting light).
@@ -821,6 +826,7 @@ private:
 			0,
 			dirOffset
 		);
+		return dir;
 	}
 
 	void UpdateMaterials(uint32_t currentFrame) {
@@ -1171,6 +1177,7 @@ private:
 		// ---- Spot-shadow caster selection (upper limit + heuristic) ----
 		m_spotShadowCount = 0;
 		m_spotShadowMapIndex = -1;
+		m_spotShadowTiles.clear();
 		if (m_fpDemo.spotShadowsEnabled && m_viewportResources.spotShadows.Valid() && !lights.empty()) {
 			const uint32_t wantMax = (uint32_t)std::clamp(m_fpDemo.spotShadowMax, 0, (int)smvk::kMaxSpotShadows);
 			const uint32_t budget = std::min(wantMax, m_viewportResources.spotShadows.slotCount);
@@ -1206,6 +1213,8 @@ private:
 					);
 					m_spotShadowCount = (uint32_t)selected.size();
 					m_spotShadowMapIndex = atlasIdx;
+					// Keep the tiles for the per-frame spot RenderViews.
+					m_spotShadowTiles = std::move(tiles);
 				}
 			}
 		}
@@ -1299,9 +1308,35 @@ private:
 		}
 		m_context->UpdateDescriptors();
 		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent);
-		UpdateLights(fb.frameIndex);
+		const smvk::GpuDirectionalLightDescription dirLight = UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
 		const uint32_t fpLightCount = UpdateForwardPlusLights(fb.frameIndex, frameData);
+
+		// ---------------------------------------------------------------------
+		// RenderView allocation (see smvk::RenderViewSet):
+		//   main camera            -> 1 view,
+		//   directional sun        -> 1 view per shadow cascade (4),
+		//   shadowed spot lights   -> 1 view per selected atlas tile.
+		// Indices are stable for the frame; the GPU slab is indexed through
+		// PushConstants::renderViews + the per-pass renderViewIndex.
+		// ---------------------------------------------------------------------
+		m_renderViews.NewFrame();
+		const uint32_t mainRenderView = m_renderViews.AllocateMainView(
+			frameData.viewProj,
+			{ static_cast<float>(renderExtent.width), static_cast<float>(renderExtent.height) });
+		const uint32_t cascadeViewBase = m_renderViews.AllocateDirectionalLightViews(
+			dirLight,
+			{ static_cast<float>(CASCADE_RES), static_cast<float>(CASCADE_RES) });
+		uint32_t spotViewBase = smvk::RenderViewSet::kInvalidIndex;
+		for (const smvk::GpuCascadeDescription& tile : m_spotShadowTiles) {
+			const uint32_t view = m_renderViews.AllocateSpotShadowView(
+				tile, { static_cast<float>(SPOT_SHADOW_RES), static_cast<float>(SPOT_SHADOW_RES) });
+			if (spotViewBase == smvk::RenderViewSet::kInvalidIndex)
+				spotViewBase = view;
+		}
+		m_renderViews.Upload(*m_context, fb.frameIndex);
+		const uint64_t renderViewsAddress =
+			m_renderViews.DeviceAddress(*m_context, fb.frameIndex);
 		//
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
@@ -1372,7 +1407,13 @@ private:
 			uint32_t spotShadowCount;
 			uint32_t spotIndex;
 			uint32_t pad_pc;
-			float prevModel[16]; // motion vector pass: last frame's model (176..239)
+			// RenderView system (see smvk::RenderViewSet): the per-frame
+			// virtual-camera slab + the main camera index. renderViewIndex is
+			// the view the current pass renders from (UINT32_MAX = none).
+			uint64_t renderViews;
+			uint32_t mainRenderView;
+			uint32_t renderViewIndex;
+			float prevModel[16]; // motion vector pass: last frame's model (192..255)
 		} pc{
 			.frameUniforms = frameUniformsAddress,
 			.lightsBuffer = lightsBufferAddress,
@@ -1394,6 +1435,9 @@ private:
 			.spotShadowCount = m_spotShadowCount,
 			.spotIndex = UINT32_MAX, // not a spot shadow pass
 			.pad_pc = 0,
+			.renderViews = renderViewsAddress,
+			.mainRenderView = mainRenderView,
+			.renderViewIndex = mainRenderView, // scene passes default to the main camera view
 		};
 		static_assert(sizeof(PushConstants) <= 256, "PushConstants must fit in 256 bytes (engine limit)");
 
@@ -1403,8 +1447,14 @@ private:
 			for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci) {
 				PushConstants cascadePC = pc;
 				cascadePC.cascadeIndex = ci;
+				// Each cascade renders from its own allocated RenderView.
+				const uint32_t casterViewIndex =
+					cascadeViewBase != smvk::RenderViewSet::kInvalidIndex
+					? cascadeViewBase + ci
+					: smvk::RenderViewSet::kInvalidIndex;
+				cascadePC.renderViewIndex = casterViewIndex;
 				auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rendergraph, ci, cascadeNames[ci])
-					.SetRecordingFunc([this, cascadePC](smvk::CommandBuffer& cmd)
+					.SetRecordingFunc([this, cascadePC, casterViewIndex](smvk::CommandBuffer& cmd)
 				{
 					cmd.BindRenderPipeline(
 						m_viewportResources.directionalShadows.program,
@@ -1439,6 +1489,17 @@ private:
 						auto& model = m_world->scene.globalTransform[node];
 						smvk::StaticMesh* meshDesc = m_world->GetMesh(meshForNode->second);
 						if (!meshDesc) return;
+						// RenderView plane cull: skip casters outside this cascade's frustum.
+						if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
+							glm::vec3 sphereCenter;
+							float sphereRadius = 0.0f;
+							smvk::MeshBoundsToWorld(
+								model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
+								sphereCenter, sphereRadius);
+							if (!smvk::RenderViewIntersectsSphere(
+								m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
+								return;
+						}
 						PushConstants objectPC{};
 						std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 						if (maskedPhase) {
@@ -1502,8 +1563,14 @@ private:
 			for (uint32_t si = 0; si < spotCount; ++si) {
 				PushConstants spotPC = pc;
 				spotPC.spotIndex = si;
+				// Each spot tile renders from its own allocated RenderView.
+				const uint32_t casterViewIndex =
+					spotViewBase != smvk::RenderViewSet::kInvalidIndex
+					? spotViewBase + si
+					: smvk::RenderViewSet::kInvalidIndex;
+				spotPC.renderViewIndex = casterViewIndex;
 				auto& spotPass = m_viewportResources.spotShadows.AddSpotPass(*m_rendergraph, si, spotNames[si])
-					.SetRecordingFunc([this, spotPC](smvk::CommandBuffer& cmd)
+					.SetRecordingFunc([this, spotPC, casterViewIndex](smvk::CommandBuffer& cmd)
 				{
 					cmd.BindRenderPipeline(
 						m_viewportResources.spotShadows.program,
@@ -1538,6 +1605,17 @@ private:
 						auto& model = m_world->scene.globalTransform[node];
 						smvk::StaticMesh* meshDesc = m_world->GetMesh(meshForNode->second);
 						if (!meshDesc) return;
+						// RenderView plane cull: skip casters outside the spot cone frustum.
+						if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
+							glm::vec3 sphereCenter;
+							float sphereRadius = 0.0f;
+							smvk::MeshBoundsToWorld(
+								model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
+								sphereCenter, sphereRadius);
+							if (!smvk::RenderViewIntersectsSphere(
+								m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
+								return;
+						}
 						PushConstants objectPC{};
 						std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 						if (maskedPhase) {
@@ -2131,6 +2209,9 @@ private:
 				const glm::vec3 toSunDbg = m_env.SunDirectionToSun();
 				ImGui::Text(" sun toSun: %.2f %.2f %.2f  int %.0f lux",
 					toSunDbg.x, toSunDbg.y, toSunDbg.z, m_env.sunIntensity);
+				ImGui::Text("RenderViews: %u allocated (main=%u, CSM @%u, spots @%u)",
+					m_renderViews.Count(), m_renderViews.MainViewIndex(),
+					cascadeViewBase, spotViewBase);
 			}
 			{
 				const auto& bloom = m_viewportResources.bloom;
@@ -2328,6 +2409,8 @@ private:
 	smvk::CookieLibrary m_cookies{}; // baked/engine-resource gobos (see cookies.h)
 	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
+	std::vector<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
+	smvk::RenderViewSet m_renderViews{}; // per-frame virtual cameras: main view + shadow cascade/spot views
 	// ---- Motion vector pass: previous-frame state + debug view ----
 	glm::mat4 m_prevViewProj{ 1.0f }; // last frame's viewProj (post Y-flip)
 	bool m_prevViewProjValid = false; // false until the first frame completes

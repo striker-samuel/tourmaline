@@ -28,5 +28,6 @@
 #include <Engine/platform.h>
 #include <Engine/Camera/camera.h> 
 #include <Engine/Renderer/light.h>
+#include <Engine/Renderer/renderview.h>
 #include <Engine/ImGui/imgui_overlay.h>
 

@@ -29,9 +29,16 @@ VSOut mainVS(VSIn IN)
     float4 world = mul(pc.model, float4(IN.position, 1.0));
     OUT.worldPos = world.xyz;
 
-    // View / projection
+    // View / projection: the main camera's RenderView is the authoritative
+    // VP for scene passes (allocated per frame, see renderview.hlsli).
+    // FrameUniforms stays as the fallback for pipelines without the system.
+    float4x4 viewProj = frame.viewProj;
+    if (pc.mainRenderView < MAX_RENDER_VIEWS)
+    {
+        viewProj = pc.renderViews.Get().views[pc.mainRenderView].m_viewProjectionMatrix;
+    }
     //float4 viewPos = mul(frame_res.view, world);
-    float4 clip = mul(frame.viewProj, world);
+    float4 clip = mul(viewProj, world);
     OUT.pos = clip;
 
     OUT.color = float3(1.0f, 1.0f, 1.0f);
