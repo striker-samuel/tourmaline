@@ -9,6 +9,8 @@ smvk::Cluster::~Cluster() {
 		DestroyMesh(han);
 	});
 
+	assert(meshAllocations_.empty());
+
 	// Materials are just pods
 	materials.clear();
 
@@ -237,9 +239,22 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	const ClusterStaticMeshHandle handle =
 		staticMeshes.create(std::move(result));
 
-	staticVertexFmtHeap.m_allocations.emplace(
+	if (handle.empty()) {
+		if (alloc.indexAllocation) {
+			vmaVirtualFree(
+				staticVertexFmtHeap.m_staticIndexBlock,
+				alloc.indexAllocation);
+		}
+		vmaVirtualFree(
+			staticVertexFmtHeap.m_staticVertexBlock,
+			alloc.vertexAllocation);
+		return {};
+	}
+
+	auto [it, inserted] = meshAllocations_.emplace(
 		handle.index(),
-		std::move(alloc));
+		new StaticMeshAllocation(std::move(alloc)));
+	assert(inserted);
 
 	if (retainUploads_)
 		retainedUploads_[handle.index()] = data;
@@ -261,29 +276,30 @@ void smvk::Cluster::DestroyMesh(
 	retainedUploads_.erase(handle.index());
 
 	auto it =
-		staticVertexFmtHeap.m_allocations.find(handle.index());
+		meshAllocations_.find(handle.index());
 
-	if (it != staticVertexFmtHeap.m_allocations.end()) {
+	if (it != meshAllocations_.end()) {
 
-		StaticMeshAllocation& allocation = it->second;
+		StaticMeshAllocation* allocation = it->second;
 
-		if (allocation.vertexAllocation) {
+		if (allocation->vertexAllocation) {
 
 			vmaVirtualFree(
 				staticVertexFmtHeap.m_staticVertexBlock,
-				allocation.vertexAllocation
+				allocation->vertexAllocation
 			);
 		}
 
-		if (allocation.indexAllocation) {
+		if (allocation->indexAllocation) {
 
 			vmaVirtualFree(
 				staticVertexFmtHeap.m_staticIndexBlock,
-				allocation.indexAllocation
+				allocation->indexAllocation
 			);
 		}
 
-		staticVertexFmtHeap.m_allocations.erase(it);
+		delete allocation;
+		meshAllocations_.erase(it);
 	}
 
 	staticMeshes.destroy(handle);

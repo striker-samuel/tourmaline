@@ -2,6 +2,8 @@
 #pragma once
 
 
+#include <unordered_map>
+
 #include <Engine/smvk.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/Renderer/mesh.h>
@@ -15,6 +17,10 @@ namespace smvk {
 
 	template<typename HandleT>
 	struct AssetRef;
+
+	// Backend-defined record of a static mesh's renderer allocations
+	// (opaque here; complete type lives in the Vulkan detail header).
+	struct StaticMeshAllocation;
 
 	using ClusterStaticMeshHandle = Handle<StaticMesh>;
 	using ClusterMaterialHandle = Handle<Material>;
@@ -150,6 +156,9 @@ namespace smvk {
 		std::unordered_map<std::string, CookedMeshlets> meshMeshlets_;
 		bool retainUploads_ = false;
 		std::unordered_map<uint32_t, StaticMeshUpload> retainedUploads_;
+		// Per-cluster static mesh allocations keyed by the local staticMeshes
+		// pool index (pool indices are only unique within one Cluster).
+		std::unordered_map<uint32_t, StaticMeshAllocation*> meshAllocations_;
 		bool cookMode_ = false;
 		uint32_t cookNextTextureId_ = 0;
 	};

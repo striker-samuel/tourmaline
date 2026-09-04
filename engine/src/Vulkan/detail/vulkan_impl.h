@@ -83,7 +83,6 @@ namespace smvk {
 		BufferHandle m_staticIndexBuffer{};
 		VmaVirtualBlock m_staticVertexBlock = VK_NULL_HANDLE;
 		VmaVirtualBlock m_staticIndexBlock = VK_NULL_HANDLE;
-		std::unordered_map<uint32_t, StaticMeshAllocation> m_allocations{};
 	} staticVertexFmtHeap;
 
 	struct Image
