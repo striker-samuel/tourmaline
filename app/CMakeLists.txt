@@ -69,6 +69,18 @@ if(EXISTS "${APP_DIR}/content/paks")
     )
 endif()
 
+# Engine-owned baked resources (light cookies, see tools/cookie_baker).
+# Staged next to the executables' working dir; the app mounts it as the
+# lowest-priority VFS backend (root dir name: "engine_resources").
+if(EXISTS "${CMAKE_SOURCE_DIR}/engine/resources")
+    add_custom_command(TARGET App POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_SOURCE_DIR}/engine/resources"
+                "$<TARGET_FILE_DIR:App>/engine_resources"
+        COMMENT "Copying engine resources to $<TARGET_FILE_DIR:App>/engine_resources"
+    )
+endif()
+
 target_include_directories(App
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -108,6 +108,7 @@ add_subdirectory(external/imgui)
 add_subdirectory(engine)
 add_subdirectory(app)
 add_subdirectory(tools/pak_cooker)
+add_subdirectory(tools/cookie_baker)
 add_subdirectory(samples/01_triangle)
 add_subdirectory(samples/02_blur)
 

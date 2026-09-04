@@ -44,6 +44,10 @@
 #*.png   binary
 #*.gif   binary
 
+# Baked texture containers must never be line-normalized or diff-merged.
+*.ktx2  binary
+*.pak   binary
+
 ###############################################################################
 # diff behavior for common document formats
 # 
