@@ -17,6 +17,8 @@
 #include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/msaa.h>
 #include <Engine/Rendergraph/tonemap.h>
+#include <Engine/Rendergraph/depth.h>
+#include <Engine/Rendergraph/ui.h>
 #include <Engine/Renderer/cookies.h>
 #include <Engine/Vfs/vfs.h>
 #include <imgui.h>
@@ -88,6 +90,40 @@ static smvk::TonemapDesc MakeTonemapDesc() {
 	d.tonemapMode = TONEMAP_MODE;
 	d.name = "Tonemap";
 	return d;
+}
+
+// -----------------------------------------------------------------------------
+// Resolution config.
+//
+// Internal resolution (render scale): the scene (HDR/MSAA/bloom/Forward+
+// depth/prepass/main) renders at swapExtent * renderScale; the tonemapper
+// already samples the HDR target by UV, so it upscales/downscales to the
+// swapchain for free. > 1 = supersampling, < 1 = GPU savings.
+//
+// Separated UI pass (ui scale): ImGui renders into its own offscreen target
+// at swapExtent * uiScale (cleared transparent), and UiComposite alpha-blends
+// it over the tonemapped swapchain. io.DisplayFramebufferScale maps ImGui's
+// screen-space draw data onto the UI target, so UI layout stays constant
+// while its resolution is configurable.
+//
+// UI DPI scale: ImGui font raster density + style layout scaling
+// (see ImGuiOverlay::ApplyDpiScale).
+// -----------------------------------------------------------------------------
+static constexpr float RENDER_SCALE_MIN = 0.25f;
+static constexpr float RENDER_SCALE_MAX = 2.0f;
+static constexpr float UI_SCALE_MIN = 0.5f;
+static constexpr float UI_SCALE_MAX = 2.0f;
+static constexpr float UI_DPI_MIN = 0.5f;
+static constexpr float UI_DPI_MAX = 3.0f;
+static constexpr float UI_FONT_BASE_SIZE = 16.0f;
+static const char* UI_FONT_PATH = "content/fonts/Roboto-Medium.ttf";
+
+static smvk::Extent2D ScaledExtent(smvk::Extent2D base, float scale) {
+	scale = std::clamp(scale, 0.1f, 4.0f);
+	return {
+		std::max(1u, static_cast<uint32_t>(std::lround(static_cast<float>(base.width) * scale))),
+		std::max(1u, static_cast<uint32_t>(std::lround(static_cast<float>(base.height) * scale))),
+	};
 }
 
 static smvk::CascadedShadowMapDesc MakeShadowDesc() {
@@ -315,9 +351,11 @@ struct ViewportResources {
 	smvk::Tonemapper tonemap; // default tonemap program + pass helper
 	smvk::ForwardPlus forwardPlus; // tile buffers + cull/depth programs + Ensure
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
-	smvk::LogicalImageViewHandle depthView;
+	smvk::DepthTarget renderDepth; // scene depth at internal resolution + Ensure
 	smvk::HdrTarget hdr; // HDR intermediate (image + view + bindless + logical) + Ensure
 	smvk::MsaaTarget msaa; // transient 2x color+depth for Main, resolves to hdr
+	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
+	smvk::UiComposite uiComposite; // UI -> swapchain alpha composite program + pass
 	bool msaaEnabled = true; // runtime toggle (effective only if device supports)
 };
 
@@ -328,6 +366,10 @@ private:
 	void UpdateCamera(float dt);
 	void SetUIMode(bool ui);
 	bool m_uiMode = false;
+	// Configurable resolution knobs (see "Resolution config" above).
+	float m_renderScale = 1.0f;
+	float m_uiScale = 1.0f;
+	float m_uiDpiScale = 1.0f; // synced from ImGuiOverlay at init (auto = monitor DPI)
 	//
 
 	void EarlyUpdate() override {
@@ -555,11 +597,8 @@ private:
 			);
 			m_viewportResources.swapImages.push_back(logicalSwapchainImage);
 		}
-		m_viewportResources.depthView = m_rendergraph->AddExternalImageView(
-			m_swapchain->GetDepthImageViewHandle(),
-			m_swapchain->GetDepthFormat(),
-			"depth"
-		);
+		// Scene depth is the app-owned DepthTarget at the internal render
+		// resolution (see RenderFrame); the swapchain-owned depth is unused.
 
 		// Directional cascade atlas + default shadow program (builder owns Ensure).
 		if (!m_viewportResources.directionalShadows.Ensure(*m_context, *m_rendergraph, MakeShadowDesc())) {
@@ -584,36 +623,56 @@ private:
 
 		{
 			auto vkExt = m_swapchain->GetExtent();
-			const smvk::Extent2D extent{ vkExt.width, vkExt.height };
+			const smvk::Extent2D swapExtent{ vkExt.width, vkExt.height };
+			const smvk::Extent2D renderExtent = ScaledExtent(swapExtent, m_renderScale);
+			const smvk::Extent2D uiExtent = ScaledExtent(swapExtent, m_uiScale);
+			smvk::DepthDesc depthDesc{};
+			depthDesc.format = m_swapchain->GetDepthFormat();
+			if (!m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, depthDesc)) {
+				std::cerr << "[TestApp] Failed to create render depth target\n";
+				return false;
+			}
 			if (!m_viewportResources.forwardPlus.Ensure(*m_context, *m_rendergraph,
-				extent, MakeForwardPlusDesc(), m_swapchain->GetDepthImageViewHandle())) {
+				renderExtent, MakeForwardPlusDesc(), m_viewportResources.renderDepth.view)) {
 				std::cerr << "[TestApp] Failed to create Forward+ tile buffers\n";
 				return false;
 			}
-			if (!m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, extent)) {
+			if (!m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent)) {
 				std::cerr << "[TestApp] Failed to create HDR target\n";
 				return false;
 			}
 			{
 				smvk::MsaaDesc msaaDesc{};
 				msaaDesc.depthFormat = m_swapchain->GetDepthFormat();
-				if (!m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, extent, msaaDesc)) {
+				if (!m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, msaaDesc)) {
 					std::cerr << "[TestApp] MSAA target unavailable – falling back to 1x\n";
 				}
 			}
-			if (!m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, extent, MakeBloomDesc())) {
+			if (!m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc())) {
 				std::cerr << "[TestApp] Bloom chain unavailable (HDR "
-					<< extent.width << "x" << extent.height << ")\n";
+					<< renderExtent.width << "x" << renderExtent.height << ")\n";
+			}
+			smvk::UiDesc uiDesc{};
+			uiDesc.format = m_swapchain->GetSurfaceFormat();
+			if (!m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, uiDesc)) {
+				std::cerr << "[TestApp] UI target unavailable – UI disabled\n";
+			}
+			if (!m_viewportResources.uiComposite.Ensure(*m_context)) {
+				std::cerr << "[TestApp] UI composite program unavailable\n";
 			}
 		}
 
 		// ImGui overlay – init after swapchain/rendergraph are ready.
 		// Uses dynamic rendering; no external RenderPass needed.
 		m_imgui = std::make_unique<smvk::ImGuiOverlay>();
-		if (!m_imgui->Init(*m_context, *m_swapchain, window)) {
+		smvk::ImGuiOverlayDesc imguiDesc{};
+		imguiDesc.fontPath = UI_FONT_PATH;
+		imguiDesc.fontBaseSize = UI_FONT_BASE_SIZE;
+		if (!m_imgui->Init(*m_context, *m_swapchain, window, imguiDesc)) {
 			std::cerr << "[TestApp] Failed to init ImGuiOverlay – continuing without UI\n";
 			m_imgui.reset();
 		} else {
+			m_uiDpiScale = m_imgui->AppliedDpiScale(); // auto = monitor content scale
 			SetUIMode(false); // start in FPS (DISABLED), I toggles to UI (NORMAL)
 		}
 
@@ -629,6 +688,9 @@ private:
 		m_viewportResources.directionalShadows.Destroy(*m_rendergraph);
 		m_viewportResources.msaa.Destroy(*m_rendergraph);
 		m_viewportResources.hdr.Destroy(*m_rendergraph);
+		m_viewportResources.renderDepth.Destroy(*m_rendergraph);
+		m_viewportResources.ui.Destroy(*m_rendergraph);
+		m_viewportResources.uiComposite.DestroyShaders();
 		if (m_imgui) {
 			m_imgui->Shutdown();
 			m_imgui.reset();
@@ -636,10 +698,10 @@ private:
 		Super::Shutdown();
 	}
 
-	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame) {
+	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent) {
 
-		int width_ = m_swapchain->GetExtent().width;
-		int height_ = m_swapchain->GetExtent().height;
+		const int width_ = renderExtent.width;
+		const int height_ = renderExtent.height;
 
 		auto view = m_camera.getViewMatrix();
 		auto proj = m_camera.getProjMatrix();
@@ -1173,12 +1235,20 @@ private:
 			);
 		}
 		auto vkExt = m_swapchain->GetExtent();
-		const smvk::Extent2D extent{ vkExt.width, vkExt.height };
-		m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, extent);
+		const smvk::Extent2D swapExtent{ vkExt.width, vkExt.height };
+		const smvk::Extent2D renderExtent = ScaledExtent(swapExtent, m_renderScale);
+		const smvk::Extent2D uiExtent = ScaledExtent(swapExtent, m_uiScale);
+		smvk::DepthDesc rebuildDepthDesc{};
+		rebuildDepthDesc.format = m_swapchain->GetDepthFormat();
+		m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildDepthDesc);
+		m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent);
 		smvk::MsaaDesc rebuildMsaaDesc{};
 		rebuildMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
-		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, extent, rebuildMsaaDesc);
-		m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, extent, MakeBloomDesc());
+		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildMsaaDesc);
+		m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc());
+		smvk::UiDesc rebuildUiDesc{};
+		rebuildUiDesc.format = m_swapchain->GetSurfaceFormat();
+		m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, rebuildUiDesc);
 	}
 
 	void DrawFrame() {
@@ -1197,20 +1267,28 @@ private:
 	void RenderFrame(smvk::Framebuffer fb) {
 
 		m_rendergraph->NewFrame();
+		const smvk::Extent2D swapExtent{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height };
+		const smvk::Extent2D renderExtent = ScaledExtent(swapExtent, m_renderScale);
+		const smvk::Extent2D uiExtent = ScaledExtent(swapExtent, m_uiScale);
 		{
-			auto vkExt = m_swapchain->GetExtent();
-			const smvk::Extent2D extent{ vkExt.width, vkExt.height };
+			smvk::DepthDesc frameDepthDesc{};
+			frameDepthDesc.format = m_swapchain->GetDepthFormat();
+			m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, frameDepthDesc);
 			m_viewportResources.forwardPlus.Ensure(*m_context, *m_rendergraph,
-				extent, MakeForwardPlusDesc(), m_swapchain->GetDepthImageViewHandle());
-			m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, extent);
+				renderExtent, MakeForwardPlusDesc(), m_viewportResources.renderDepth.view);
+			m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent);
 			smvk::MsaaDesc frameMsaaDesc{};
 			frameMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
-			m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, extent, frameMsaaDesc);
-			m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, extent, MakeBloomDesc());
+			m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, frameMsaaDesc);
+			m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc());
+			smvk::UiDesc frameUiDesc{};
+			frameUiDesc.format = m_swapchain->GetSurfaceFormat();
+			m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, frameUiDesc);
+			m_viewportResources.uiComposite.Ensure(*m_context);
 			m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc());
 		}
 		m_context->UpdateDescriptors();
-		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex);
+		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent);
 		UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
 		const uint32_t fpLightCount = UpdateForwardPlusLights(fb.frameIndex, frameData);
@@ -1508,8 +1586,8 @@ private:
 		{
 			PushConstants depthPC = pc;
 			auto& prepass = m_viewportResources.forwardPlus.AddDepthPrepass(
-				*m_rendergraph, m_viewportResources.depthView,
-				{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height },
+				*m_rendergraph, m_viewportResources.renderDepth.logicalView,
+				renderExtent,
 				"ForwardPlusDepth");
 			prepass.SetRecordingFunc([this, depthPC](smvk::CommandBuffer& cmd)
 			{
@@ -1602,7 +1680,7 @@ private:
 			cullPC.tileSize = FP_TILE_SIZE;
 			cullPC.maxLightsPerTile = FP_MAX_PER_TILE;
 			auto& cullPass = m_viewportResources.forwardPlus.AddCullPass(
-				*m_rendergraph, m_viewportResources.depthView,
+				*m_rendergraph, m_viewportResources.renderDepth.logicalView,
 				m_resources.fpLightsLogical, "ForwardPlusCull");
 			cullPass.SetRecordingFunc([this, cullPC](smvk::CommandBuffer& cmd) mutable
 			{
@@ -1626,12 +1704,7 @@ private:
 		auto& mainPass = m_rendergraph->AddPass("Main")
 			.SetOffset(0, 0)
 			.SetInputImages(mainInputs)
-			.SetExtent(
-				{
-					fb.swapchain->GetExtent().width,
-					fb.swapchain->GetExtent().height
-				}
-			);
+			.SetExtent(renderExtent);
 		if (useMsaa) {
 			// 2x MSAA color resolves into the 1x HDR intermediate.
 			mainPass.SetColorWithResolve(
@@ -1657,7 +1730,7 @@ private:
 			)
 			// Depth was filled by the Forward+ prepass: load it, test
 			// read-only (GreaterEqual = reversed-Z near-wins).
-			.SetDepth(m_viewportResources.depthView,
+			.SetDepth(m_viewportResources.renderDepth.logicalView,
 				smvk::AttachmentLoadOp::Load,
 				smvk::AttachmentStoreOp::DontCare,
 				smvk::ClearDepthStencil(0, 0)
@@ -1912,7 +1985,7 @@ private:
 				bloomIntensity,
 				linearSampler,
 				colors,
-				{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height },
+				swapExtent,
 				"Tonemap");
 			(void)tonemapPass;
 		}
@@ -1920,8 +1993,10 @@ private:
 		// ---------------------------------------------------------------------
 		// ImGui – build UI (before adding the rendergraph pass)
 		// ---------------------------------------------------------------------
-		if (m_imgui && m_imgui->IsInitialized()) {
-			m_imgui->NewFrame();
+		if (m_imgui && m_imgui->IsInitialized() && m_viewportResources.ui.Valid()) {
+			// Target extent != window size when ui scale != 1: the overlay maps
+			// ImGui draw data + font raster density onto the UI target.
+			m_imgui->NewFrame(uiExtent);
 
 			// Minimal UI – name + camera pos (as requested)
 			ImGui::Begin("VulkanToy — Debug");
@@ -1956,16 +2031,34 @@ private:
 					ImGui::TextDisabled("Bloom: OFF");
 				}
 			}
-			{
-				const bool supported = m_context->SupportsMSAA2x();
-				if (!supported)
-					m_viewportResources.msaaEnabled = false;
-				ImGui::Checkbox("MSAA 2x (Main)", &m_viewportResources.msaaEnabled);
-				if (!supported)
-					ImGui::TextDisabled("MSAA 2x unsupported – running 1x");
-				else
-					ImGui::TextDisabled(m_viewportResources.msaa.Valid() ? "MSAA 2x -> HDR resolve" : "MSAA target missing – running 1x");
-			}
+		{
+			const bool supported = m_context->SupportsMSAA2x();
+			if (!supported)
+				m_viewportResources.msaaEnabled = false;
+			ImGui::Checkbox("MSAA 2x (Main)", &m_viewportResources.msaaEnabled);
+			if (!supported)
+				ImGui::TextDisabled("MSAA 2x unsupported – running 1x");
+			else
+				ImGui::TextDisabled(m_viewportResources.msaa.Valid() ? "MSAA 2x -> HDR resolve" : "MSAA target missing – running 1x");
+		}
+		ImGui::Separator();
+		if (ImGui::CollapsingHeader("Resolution — internal res + UI pass + DPI", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Text("Scene: %ux%u (%.0f%%) -> swap %ux%u",
+				renderExtent.width, renderExtent.height, m_renderScale * 100.0f,
+				swapExtent.width, swapExtent.height);
+			ImGui::SliderFloat("Render scale", &m_renderScale,
+				RENDER_SCALE_MIN, RENDER_SCALE_MAX, "%.2fx");
+			ImGui::Text("UI pass: %ux%u (%.0f%%)",
+				uiExtent.width, uiExtent.height, m_uiScale * 100.0f);
+			ImGui::SliderFloat("UI res scale", &m_uiScale,
+				UI_SCALE_MIN, UI_SCALE_MAX, "%.2fx");
+			ImGui::SliderFloat("UI DPI scale", &m_uiDpiScale,
+				UI_DPI_MIN, UI_DPI_MAX, "%.2fx");
+			if (ImGui::IsItemEdited() && m_imgui)
+				m_imgui->ApplyDpiScale(m_uiDpiScale);
+			ImGui::TextDisabled("Render scale resizes HDR/MSAA/bloom/depth + tonemap upscales to swap.\n"
+				"UI renders into its own target and composites over the swapchain.");
+		}
 			ImGui::Separator();
 			if (ImGui::CollapsingHeader("Environment — Skydome IBL + Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
 				ImGui::Checkbox("Sky dome", &m_env.skyEnabled);
@@ -2063,19 +2156,28 @@ private:
 			// Alternative: draw directly with custom draw lists etc.
 			// ImGui::GetForegroundDrawList()->AddCircle(...);
 
-			// Register a rendergraph pass that composites ImGui over the swapchain.
-			// It uses LoadOp::Load so the scene color is preserved, and is
-			// recorded as the *last* pass so UI is on top.
-			// Internally this calls ImGui::Render() + ImGui_ImplVulkan_RenderDrawData.
-			m_imgui->AddPass(*m_rendergraph, colors[0],
-				{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height });
+			// Separated UI pass: ImGui renders into its own offscreen target
+			// (transparent clear, ui scale resolution), then UiComposite
+			// alpha-blends it over the tonemapped swapchain at swap extent.
+			// Internally AddPass calls ImGui::Render() +
+			// ImGui_ImplVulkan_RenderDrawData inside the pass recording.
+			m_imgui->AddPass(*m_rendergraph,
+				m_viewportResources.ui.logicalView, uiExtent,
+				smvk::AttachmentLoadOp::Clear, smvk::ClearColor(0, 0, 0, 0));
+			m_viewportResources.uiComposite.AddCompositePass(*m_rendergraph,
+				m_viewportResources.ui.logicalView,
+				m_viewportResources.ui.bindlessIndex,
+				linearSampler,
+				colors,
+				swapExtent,
+				"UiComposite");
 
 			// Manual alternative (equivalent, more explicit):
 			// ImGui::Render();
 			// m_rendergraph->AddPass("ImGuiManual")
 			//     .SetOffset(0,0)
-			//     .SetExtent({fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height})
-			//     .SetColor(colors, smvk::AttachmentLoadOp::Load, smvk::AttachmentStoreOp::Store)
+			//     .SetExtent(uiExtent)
+			//     .SetColor({m_viewportResources.ui.logicalView}, smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store)
 			//     .SetRecordingFunc([this](smvk::CommandBuffer& cmd){ m_imgui->Render(cmd); });
 		}
 

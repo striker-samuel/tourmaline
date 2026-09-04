@@ -4,6 +4,7 @@
 #include "volk.h"
 
 #include <Engine/ImGui/imgui_overlay.h>
+#include <Engine/platform.h>
 #include "../Vulkan/detail/vulkan_impl.h"
 
 #include <imgui.h>
@@ -31,21 +32,26 @@ ImGuiOverlay& ImGuiOverlay::operator=(ImGuiOverlay&& o) noexcept {
         descriptorPoolOpaque_ = o.descriptorPoolOpaque_;
         ctx_ = o.ctx_;
         swapchain_ = o.swapchain_;
+        desc_ = o.desc_;
+        appliedDpiScale_ = o.appliedDpiScale_;
         o.initialized_ = false;
         o.window_ = nullptr;
         o.imguiCtx_ = nullptr;
         o.descriptorPoolOpaque_ = nullptr;
         o.ctx_ = nullptr;
         o.swapchain_ = nullptr;
+        o.appliedDpiScale_ = 0.0f;
     }
     return *this;
 }
 
-bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, GLFWwindow* window) {
+bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, GLFWwindow* window,
+    const ImGuiOverlayDesc& desc) {
     if (initialized_) return true;
     ctx_ = &ctx;
     swapchain_ = &swapchain;
     window_ = window;
+    desc_ = desc;
 
     // ---- Create ImGui context ----
     IMGUI_CHECKVERSION();
@@ -143,13 +149,26 @@ bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, GLFWwindow* 
         return false;
     }
 
-    // Fonts: ImGui_ImplVulkan_CreateFontsTexture is deprecated since 1.91 – fonts are
-    // created on demand via the backend. No manual upload needed with dynamic rendering
-    // if we let ImGui create fonts lazily. However to ensure first frame has fonts,
-    // we can trigger an upload via a one-time command buffer if needed.
-    // The modern backend handles it internally; no action required.
-
     initialized_ = true;
+
+    // ---- Font + DPI (after initialized_: ApplyDpiScale needs the context) ----
+    // Fonts: ImGui 1.92 dynamic font system – glyphs rasterize on demand at
+    // base * FontScaleDpi and the Vulkan backend uploads dirty atlas textures
+    // automatically (ImGuiBackendFlags_RendererHasTextures), so no manual
+    // texture upload is needed at Init or when the DPI scale changes.
+    if (desc_.fontPath) {
+        try {
+            readFile(desc_.fontPath); // verify readable (loader reads lazily)
+            ImFont* font = io.Fonts->AddFontFromFileTTF(desc_.fontPath, desc_.fontBaseSize);
+            if (!font)
+                fprintf(stderr, "[ImGuiOverlay] AddFontFromFileTTF failed – using default font\n");
+        } catch (...) {
+            fprintf(stderr, "[ImGuiOverlay] Font '%s' unreadable – using default font\n",
+                desc_.fontPath ? desc_.fontPath : "(null)");
+        }
+    }
+    ApplyDpiScale(desc_.dpiScale > 0.0f ? desc_.dpiScale : GetWindowDpiScale());
+
     return true;
 }
 
@@ -175,13 +194,24 @@ void ImGuiOverlay::Shutdown() {
     initialized_ = false;
     ctx_ = nullptr;
     swapchain_ = nullptr;
+    appliedDpiScale_ = 0.0f;
 }
 
-void ImGuiOverlay::NewFrame() {
+void ImGuiOverlay::NewFrame(Extent2D targetExtent) {
     if (!initialized_) return;
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
+    // Map ImGui screen-space draw data onto the actual render target size
+    // (separated UI pass target != window size when ui scale != 1 or on
+    // HiDPI). 1.92 also uses this as the font rasterizer density.
+    ImGuiIO& io = ImGui::GetIO();
+    if (targetExtent.width > 0 && targetExtent.height > 0 &&
+        io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
+        io.DisplayFramebufferScale = ImVec2(
+            static_cast<float>(targetExtent.width) / io.DisplaySize.x,
+            static_cast<float>(targetExtent.height) / io.DisplaySize.y);
+    }
     ImGui::NewFrame();
 }
 
@@ -213,7 +243,9 @@ void ImGuiOverlay::Render(CommandBuffer& cmd) {
     ImGui_ImplVulkan_RenderDrawData(drawData, vkCmd);
 }
 
-void ImGuiOverlay::AddPass(RenderGraph& rg, LogicalImageViewHandle swapView, Extent2D extent) {
+void ImGuiOverlay::AddPass(RenderGraph& rg,
+    LogicalImageViewHandle colorView, Extent2D extent,
+    AttachmentLoadOp loadOp, ClearColor clear) {
     if (!initialized_) return;
     // Ensure ImGui draw data exists before submit. If the user built UI after NewFrame()
     // but didn't call Render(), do it now so the pass has something to draw.
@@ -225,8 +257,9 @@ void ImGuiOverlay::AddPass(RenderGraph& rg, LogicalImageViewHandle swapView, Ext
     auto& pass = rg.AddPass("ImGui")
         .SetOffset(0, 0)
         .SetExtent(extent)
-        // Load existing swapchain color (scene already rendered), Store after UI compositing.
-        .SetColor({swapView}, AttachmentLoadOp::Load, AttachmentStoreOp::Store, ClearColor{0,0,0,1});
+        // Swapchain: LoadOp::Load keeps the scene under the UI.
+        // Separated UI target: LoadOp::Clear + transparent clear.
+        .SetColor({colorView}, loadOp, AttachmentStoreOp::Store, clear);
 
     // No depth for UI overlay. If caller needs depth-testing UI (rare), they can
     // use SetDepth() manually via Render() path instead of AddPass().
@@ -247,6 +280,37 @@ bool ImGuiOverlay::WantsCaptureKeyboard() const {
 }
 bool ImGuiOverlay::WantsCaptureAny() const {
     return WantsCaptureMouse() || WantsCaptureKeyboard();
+}
+
+float ImGuiOverlay::GetWindowDpiScale() const {
+    if (!window_) return 1.0f;
+    float xScale = 1.0f, yScale = 1.0f;
+    glfwGetWindowContentScale(window_, &xScale, &yScale);
+    return xScale > 0.0f ? xScale : 1.0f;
+}
+
+void ImGuiOverlay::ApplyDpiScale(float scale) {
+    if (!initialized_) return;
+    if (scale <= 0.0f)
+        scale = 1.0f;
+
+    ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
+    ImGuiStyle& style = ImGui::GetStyle();
+
+    // Fresh style so ScaleAllSizes never accumulates its lossy integer
+    // rounding; keep the current color scheme (StyleColorsDark etc.).
+    ImGuiStyle fresh{};
+    fresh.ScaleAllSizes(scale);
+    for (int i = 0; i < ImGuiCol_COUNT; i++)
+        fresh.Colors[i] = style.Colors[i];
+    style = fresh;
+
+    // Dynamic fonts rasterize glyphs on demand at base * scale: crisp at any
+    // DPI, no atlas rebuild or FontGlobalScale blur. Layout + fonts now both
+    // track the scale; rasterizer density follows io.DisplayFramebufferScale
+    // (see NewFrame).
+    style.FontScaleDpi = scale;
+    appliedDpiScale_ = scale;
 }
 
 } // namespace smvk

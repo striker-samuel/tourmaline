@@ -210,7 +210,7 @@ struct PushConstants
     uint pad_pc;
 };
 
-#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(FORWARDPLUS_PASS)
+#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS)
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
 #endif

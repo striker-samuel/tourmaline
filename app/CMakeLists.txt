@@ -60,6 +60,15 @@ if(EXISTS "${APP_DIR}/content/models")
     )
 endif()
 
+# UI fonts (ImGui DPI-scaled TTF, see ImGuiOverlayDesc)
+if(EXISTS "${APP_DIR}/content/fonts")
+    add_custom_command(TARGET App POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${APP_DIR}/content/fonts"
+                "$<TARGET_FILE_DIR:App>/content/fonts"
+    )
+endif()
+
 # Cooked paks (PakCooker output; App prefers these over raw glTF)
 if(EXISTS "${APP_DIR}/content/paks")
     add_custom_command(TARGET App POST_BUILD
