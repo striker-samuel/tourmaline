@@ -17,6 +17,8 @@ target_include_directories(engine
         ${CMAKE_SOURCE_DIR}/external/tiny_obj_loader
         ${CMAKE_SOURCE_DIR}/external/tinygltf
         ${nlohmann_json_SOURCE_DIR}/single_include/nlohmann
+        ${CMAKE_SOURCE_DIR}/external/SPIRV-Reflect
+        ${CMAKE_SOURCE_DIR}/external/SPIRV-Reflect/include
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Vulkan/detail
@@ -47,6 +49,7 @@ target_link_libraries(engine
         imgui_core
         meshoptimizer
         OptickCore
+        spirv_reflect
     PRIVATE
         volk
         KTX::ktx

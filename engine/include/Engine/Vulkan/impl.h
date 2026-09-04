@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 #include <Engine/smvk.h>
 #include <Engine/Memory/pool.h>
+#include <Engine/Renderer/spirv_reflection.h>
 
 #include "volk.h"
 #include "vk_mem_alloc.h"
@@ -136,6 +137,12 @@ namespace smvk {
 		ImageHandle image{};
 		ImageViewHandle view{};
 		BindlessImageHandle bindless{};
+	};
+
+	struct ShaderModule
+	{
+		VkShaderModule module = VK_NULL_HANDLE;
+		std::vector<char> code;
 	};
 
 	struct BindlessImage
@@ -580,7 +587,7 @@ namespace smvk {
 		Pool<SamplerTag, VkSampler> samplers_;
 		Pool<BindlessImageTag, BindlessImage> bindlessImages_;
 		Pool<DescriptorPoolTag, VkDescriptorPool> descriptorPools_;
-		Pool<ShaderModuleTag, VkShaderModule> shaderModules_; // will be removed in 1.4
+		Pool<ShaderModuleTag, ShaderModule> shaderModules_;
 
 		// DEFAULTS (legacy handles – kept for ABI; new code should use samplerCache)
 		VkSampler m_defaultSampler{};
@@ -766,8 +773,20 @@ namespace smvk {
 			for (size_t i = 0; i < key.program.shaderCount; ++i) {
 				const Shader& shader = key.program.shaders[i];
 				HashValue(seed, shader.module.index());
+				HashValue(seed, shader.module.gen());
 				HashValue(seed, static_cast<uint32_t>(shader.stage));
-				HashValue(seed, std::string_view(shader.entryPoint));
+				HashValue(seed, std::string_view(shader.entryPoint ? shader.entryPoint : ""));
+				const bool hasSpec = shader.specialization && !shader.specialization->entries.empty();
+				HashValue(seed, hasSpec);
+				if (hasSpec) {
+					for (const auto& e : shader.specialization->entries) {
+						HashValue(seed, e.constantID);
+						HashValue(seed, e.offset);
+						HashValue(seed, e.size);
+					}
+					for (uint8_t b : shader.specialization->data)
+						HashValue(seed, b);
+				}
 			}
 
 			HashValue(seed, key.vertexFormat.bindings.size());

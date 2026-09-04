@@ -3,6 +3,7 @@
 #include <Engine/smvk.h>
 #include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
+#include <Engine/Renderer/spirv_reflection.h>
 #include <memory>
 #include <vector>
 #include <span>
@@ -36,6 +37,12 @@ public:
     Holder<BufferHandle> CreateBuffer(size_t size, BufferType bufferType, const char* debugName = "Buffer");
     Holder<ShaderModuleHandle> CreateShaderModule(std::vector<char> code, const char* debugName = "ShaderModule");
     Holder<DescriptorPoolHandle> CreateDescriptorPool(const std::vector<std::pair<uint32_t,uint32_t>>& poolSizes, const char* debugName = "DescriptorPool");
+
+    // SPIR-V readback (CPU-only, headless-safe). Retained bytes per module
+    // feed ReflectSpirv*; program helper merges push ranges across stages.
+    std::span<const char> GetShaderModuleCode(ShaderModuleHandle handle) const;
+    SpirvReflection ReflectShaderModule(ShaderModuleHandle handle) const;
+    std::vector<PushConstantRange> ReflectProgramPushConstants(const ShaderProgram& program) const;
 
     void* MapBuffer(BufferHandle handle);
     void UnmapBuffer(BufferHandle handle);

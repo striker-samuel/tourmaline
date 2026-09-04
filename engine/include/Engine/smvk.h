@@ -4,6 +4,10 @@
 
 #include <cassert>
 #include <array>
+#include <cstring>
+#include <cstdint>
+#include <memory>
+#include <type_traits>
 #include <tuple>
 #include <map>
 #include <future>
@@ -683,6 +687,58 @@ namespace smvk {
 	// Shader program
 	// ============================================================================
 
+	// Mirrors VkSpecializationMapEntry without leaking Vk into the RHI.
+	struct SpecializationEntry
+	{
+		uint32_t constantID = 0;
+		uint32_t offset = 0;
+		uint32_t size = 0;
+		bool operator==(const SpecializationEntry&) const = default;
+	};
+
+	// Owned specialization payload for one Shader stage.
+	// Entries describe (constantID -> byte range in data); data holds the
+	// raw little-endian values. Use Set() helpers to append typed values.
+	struct ShaderSpecialization
+	{
+		std::vector<SpecializationEntry> entries;
+		std::vector<uint8_t> data;
+
+		bool operator==(const ShaderSpecialization& other) const noexcept
+		{
+			return entries == other.entries && data == other.data;
+		}
+
+		template<typename T>
+		void Set(uint32_t constantID, const T& value)
+		{
+			static_assert(std::is_trivially_copyable_v<T>);
+			SpecializationEntry e{};
+			e.constantID = constantID;
+			e.offset = static_cast<uint32_t>(data.size());
+			e.size = static_cast<uint32_t>(sizeof(T));
+			const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&value);
+			data.insert(data.end(), bytes, bytes + sizeof(T));
+			entries.push_back(e);
+		}
+
+		void SetBool(uint32_t constantID, bool value)
+		{
+			// Vulkan expects VkBool32 for bool spec constants.
+			uint32_t v = value ? 1u : 0u;
+			Set(constantID, v);
+		}
+	};
+
+	// RHI push-constant range (mirrors VkPushConstantRange without Vk).
+	struct PushConstantRange
+	{
+		uint32_t offset = 0;
+		uint32_t size = 0;
+		ShaderStage stages = ShaderStage::None;
+		bool operator==(const PushConstantRange&) const = default;
+	};
+
 	struct ShaderModuleTag;
 	using ShaderModuleHandle = Handle<ShaderModuleTag>;
 	struct Shader
@@ -690,11 +746,22 @@ namespace smvk {
 		ShaderModuleHandle module;
 		const char* entryPoint = "main";
 		ShaderStage stage = ShaderStage::None;
+		// Optional per-stage specialization constants. Shared ownership so
+		// Shader stays copyable and PipelineKey can hold it by value.
+		std::shared_ptr<const ShaderSpecialization> specialization;
 		bool operator==(const Shader& other) const noexcept
 		{
-			return std::strcmp(entryPoint, other.entryPoint) == 0 &&
-				stage == other.stage &&
-				module == other.module;
+			const char* a = entryPoint ? entryPoint : "";
+			const char* b = other.entryPoint ? other.entryPoint : "";
+			if (std::strcmp(a, b) != 0)
+				return false;
+			if (!(stage == other.stage && module == other.module))
+				return false;
+			if (specialization == other.specialization)
+				return true;
+			if (!specialization || !other.specialization)
+				return false;
+			return *specialization == *other.specialization;
 		}
 	};
 

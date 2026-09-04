@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 #include <Engine/smvk.h>
 #include <Engine/Memory/pool.h>
+#include <Engine/Renderer/spirv_reflection.h>
 
 #include "volk.h"
 #include "vk_mem_alloc.h"
@@ -137,6 +138,14 @@ namespace smvk {
 		ImageHandle image{};
 		ImageViewHandle view{};
 		BindlessImageHandle bindless{};
+	};
+
+	struct ShaderModule
+	{
+		VkShaderModule module = VK_NULL_HANDLE;
+		// Retained SPIR-V bytes for reflection readback (push ranges,
+		// specialization constants). Populated at CreateShaderModule time.
+		std::vector<char> code;
 	};
 
 	struct BindlessImage
@@ -536,6 +545,11 @@ namespace smvk {
 
 		Holder<ShaderModuleHandle>   CreateShaderModule(std::vector<char> code, const char* debugName = "ShaderModule");
 
+		// SPIR-V readback: retained bytes + reflection (push ranges, spec consts).
+		// CPU-only, safe to call any time after CreateShaderModule.
+		std::span<const char> GetShaderModuleCode(ShaderModuleHandle handle) const;
+		SpirvReflection ReflectShaderModule(ShaderModuleHandle handle) const;
+
 		void* MapBuffer(BufferHandle handle);
 		void UnmapBuffer(BufferHandle handle);
 
@@ -581,7 +595,7 @@ namespace smvk {
 		ShardedPool<SamplerTag, VkSampler> samplers_;
 		ShardedPool<BindlessImageTag, BindlessImage> bindlessImages_;
 		ShardedPool<DescriptorPoolTag, VkDescriptorPool> descriptorPools_;
-		ShardedPool<ShaderModuleTag, VkShaderModule> shaderModules_; // will be removed in 1.4
+		ShardedPool<ShaderModuleTag, ShaderModule> shaderModules_;
 
 		// DEFAULTS (legacy handles – kept for ABI; new code should use samplerCache)
 		VkSampler m_defaultSampler{};
@@ -771,8 +785,22 @@ namespace smvk {
 			for (size_t i = 0; i < key.program.shaderCount; ++i) {
 				const Shader& shader = key.program.shaders[i];
 				HashValue(seed, shader.module.index());
+				HashValue(seed, shader.module.gen());
 				HashValue(seed, static_cast<uint32_t>(shader.stage));
-				HashValue(seed, std::string_view(shader.entryPoint));
+				HashValue(seed, std::string_view(shader.entryPoint ? shader.entryPoint : ""));
+				// Specialization constants participate in the pipeline state:
+				// same module + different spec values must miss the cache.
+				const bool hasSpec = shader.specialization && !shader.specialization->entries.empty();
+				HashValue(seed, hasSpec);
+				if (hasSpec) {
+					for (const auto& e : shader.specialization->entries) {
+						HashValue(seed, e.constantID);
+						HashValue(seed, e.offset);
+						HashValue(seed, e.size);
+					}
+					for (uint8_t b : shader.specialization->data)
+						HashValue(seed, b);
+				}
 			}
 
 			HashValue(seed, key.vertexFormat.bindings.size());
@@ -920,8 +948,11 @@ namespace smvk {
 		struct ComputeKey {
 			ShaderModuleHandle module{};
 			std::string entry;
+			std::vector<SpecializationEntry> specEntries;
+			std::vector<uint8_t> specData;
 			bool operator==(const ComputeKey& o) const noexcept {
-				return module == o.module && entry == o.entry;
+				return module == o.module && entry == o.entry &&
+					specEntries == o.specEntries && specData == o.specData;
 			}
 		};
 		struct ComputeKeyHash {
@@ -929,6 +960,13 @@ namespace smvk {
 				size_t h = std::hash<uint32_t>{}(k.module.index());
 				h ^= std::hash<uint32_t>{}(k.module.gen()) + 0x9e3779b9 + (h << 6) + (h >> 2);
 				h ^= std::hash<std::string>{}(k.entry) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				for (const auto& e : k.specEntries) {
+					h ^= std::hash<uint32_t>{}(e.constantID) + 0x9e3779b9 + (h << 6) + (h >> 2);
+					h ^= std::hash<uint32_t>{}(e.offset) + 0x9e3779b9 + (h << 6) + (h >> 2);
+					h ^= std::hash<uint32_t>{}(e.size) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				}
+				for (uint8_t b : k.specData)
+					h ^= std::hash<uint8_t>{}(b) + 0x9e3779b9 + (h << 6) + (h >> 2);
 				return h;
 			}
 		};

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.17)
-project(VulkanToy LANGUAGES CXX)
+project(VulkanToy LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -95,6 +95,14 @@ elseif (MSVC)
     add_compile_options(/showIncludes)  # MSVC: show include stack
   endif()
 endif()
+
+# SPIRV-Reflect (vendored, CPU-only reflection for push/spec readback)
+add_library(spirv_reflect STATIC external/SPIRV-Reflect/spirv_reflect.c)
+target_include_directories(spirv_reflect PUBLIC
+    ${CMAKE_SOURCE_DIR}/external/SPIRV-Reflect
+    ${CMAKE_SOURCE_DIR}/external/SPIRV-Reflect/include
+)
+set_target_properties(spirv_reflect PROPERTIES C_STANDARD 11 LINKER_LANGUAGE C)
 
 add_subdirectory(external/imgui)
 add_subdirectory(engine)

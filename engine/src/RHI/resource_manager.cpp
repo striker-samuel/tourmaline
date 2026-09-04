@@ -1,5 +1,6 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/smvk.h>
+#include <Engine/Renderer/spirv_reflection.h>
 #ifndef VK_NO_PROTOTYPES
 #define VK_NO_PROTOTYPES
 #endif
@@ -104,6 +105,22 @@ Holder<ShaderModuleHandle> ResourceManager::CreateShaderModule(std::vector<char>
     auto h = impl_->vulkan.CreateShaderModule(std::move(code), debugName);
     ShaderModuleHandle raw = h.release();
     return Holder<ShaderModuleHandle>{this, raw};
+}
+std::span<const char> ResourceManager::GetShaderModuleCode(ShaderModuleHandle handle) const {
+    return impl_->vulkan.GetShaderModuleCode(handle);
+}
+SpirvReflection ResourceManager::ReflectShaderModule(ShaderModuleHandle handle) const {
+    return impl_->vulkan.ReflectShaderModule(handle);
+}
+std::vector<PushConstantRange> ResourceManager::ReflectProgramPushConstants(const ShaderProgram& program) const {
+    std::vector<std::vector<PushConstantRange>> perModule;
+    perModule.reserve(program.shaderCount);
+    for (size_t i = 0; i < program.shaderCount; ++i) {
+        auto refl = impl_->vulkan.ReflectShaderModule(program.shaders[i].module);
+        if (refl.valid && !refl.pushConstants.empty())
+            perModule.push_back(std::move(refl.pushConstants));
+    }
+    return MergePushConstantRanges(perModule);
 }
 Holder<DescriptorPoolHandle> ResourceManager::CreateDescriptorPool(const std::vector<std::pair<uint32_t,uint32_t>>& poolSizes, const char* debugName) {
     std::vector<VkDescriptorPoolSize> vkSizes;

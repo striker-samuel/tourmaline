@@ -2073,7 +2073,7 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 
 		auto sm = shaderModules_.get(handle);
 		std::cout << "  [LEAK] ShaderModule: handle index=" << handle.index()
-			<< ", gen=" << handle.gen() << ", module=" << *sm << "\n";
+			<< ", gen=" << handle.gen() << ", module=" << sm->module << "\n";
 	});
 
 	buffers_.forEachHandle([&](BufferHandle handle) {
@@ -4482,9 +4482,9 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 	return { this, handle };
 }
 [[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::VulkanResourceManager::CreateShaderModule(std::vector<char> code, const char* debugName) {
-	VkShaderModule shader;
+	VkShaderModule shader = VK_NULL_HANDLE;
 	CreateShaderModuleIn(
-		std::move(code),
+		code,
 		shader
 	);
 #if defined(_DEBUG)
@@ -4500,7 +4500,27 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 #else
 	(void)debugName;
 #endif
-	return { this, shaderModules_.create(std::move(shader)) };
+	ShaderModule entry{};
+	entry.module = shader;
+	entry.code = std::move(code);
+	return { this, shaderModules_.create(std::move(entry)) };
+}
+
+std::span<const char> smvk::VulkanResourceManager::GetShaderModuleCode(ShaderModuleHandle handle) const {
+	auto* sm = shaderModules_.get(handle);
+	if (!sm)
+		return {};
+	return std::span<const char>(sm->code.data(), sm->code.size());
+}
+
+smvk::SpirvReflection smvk::VulkanResourceManager::ReflectShaderModule(ShaderModuleHandle handle) const {
+	auto* sm = shaderModules_.get(handle);
+	if (!sm || sm->code.empty()) {
+		SpirvReflection out;
+		out.error = "unknown shader module";
+		return out;
+	}
+	return ReflectSpirvBytes(std::span<const char>(sm->code.data(), sm->code.size()));
 }
 [[nodiscard]] smvk::Holder<smvk::DescriptorPoolHandle> smvk::VulkanResourceManager::CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName)
 {
@@ -4924,7 +4944,7 @@ void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::BufferHandle handle) 
 void smvk::destroy(smvk::VulkanResourceManager* ctx, smvk::ShaderModuleHandle handle) {
 	if (handle.empty()) { return; };
 	auto sm = ctx->shaderModules_.get(handle);
-	vkDestroyShaderModule(device_, *sm, NULL);
+	vkDestroyShaderModule(device_, sm->module, NULL);
 	ctx->shaderModules_.destroy(handle);
 }
 namespace smvk { namespace {
@@ -6233,6 +6253,15 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 	std::vector<VkPipelineShaderStageCreateInfo>shaderStages;
 	shaderStages.reserve(key.program.shaderCount);
 
+	// Specialization payloads must outlive vkCreateGraphicsPipelines below.
+	// stageSpecs is reserved upfront so &stageSpecs[i].info stays stable.
+	struct StageSpec {
+		std::vector<VkSpecializationMapEntry> entries;
+		VkSpecializationInfo info{};
+	};
+	std::vector<StageSpec> stageSpecs;
+	stageSpecs.reserve(key.program.shaderCount);
+
 	for (size_t i = 0;
 		i < key.program.shaderCount;
 		++i)
@@ -6248,9 +6277,26 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 			.sType =
 				VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage = toVkShaderStageBit(shader.stage),
-			.module = *shaderModule,
+			.module = shaderModule ? shaderModule->module : VK_NULL_HANDLE,
 			.pName = shader.entryPoint,
 		};
+		if (shader.specialization && !shader.specialization->entries.empty()) {
+			const ShaderSpecialization& spec = *shader.specialization;
+			StageSpec& ss = stageSpecs.emplace_back();
+			ss.entries.reserve(spec.entries.size());
+			for (const auto& e : spec.entries) {
+				ss.entries.push_back(VkSpecializationMapEntry{
+					.constantID = e.constantID,
+					.offset = e.offset,
+					.size = static_cast<size_t>(e.size),
+				});
+			}
+			ss.info.mapEntryCount = static_cast<uint32_t>(ss.entries.size());
+			ss.info.pMapEntries = ss.entries.data();
+			ss.info.dataSize = spec.data.size();
+			ss.info.pData = spec.data.data();
+			stageInfo.pSpecializationInfo = &ss.info;
+		}
 		shaderStages.push_back(stageInfo);
 	}
 
@@ -6725,6 +6771,10 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::GetComputePipeline(
 	const Shader& shader = program.shaders[0];
 	assert(shader.stage == ShaderStage::Compute);
 	ComputeKey key{ shader.module, shader.entryPoint ? shader.entryPoint : "" };
+	if (shader.specialization) {
+		key.specEntries = shader.specialization->entries;
+		key.specData = shader.specialization->data;
+	}
 	if (auto it = computePipelines_.find(key); it != computePipelines_.end())
 		return it->second;
 	PipelineBundle bundle = BuildComputePipeline(program);
@@ -6738,14 +6788,33 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildComputePipeline(
 	assert(program.shaderCount == 1);
 	const Shader& shader = program.shaders[0];
 	auto shaderModule = ctx_->shaderModules_.get(shader.module);
-	assert(shaderModule && *shaderModule != VK_NULL_HANDLE);
+	assert(shaderModule && shaderModule->module != VK_NULL_HANDLE);
+
+	std::vector<VkSpecializationMapEntry> specEntries;
+	VkSpecializationInfo specInfo{};
 
 	VkPipelineShaderStageCreateInfo stageInfo{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-		.module = *shaderModule,
+		.module = shaderModule->module,
 		.pName = shader.entryPoint,
 	};
+	if (shader.specialization && !shader.specialization->entries.empty()) {
+		const ShaderSpecialization& spec = *shader.specialization;
+		specEntries.reserve(spec.entries.size());
+		for (const auto& e : spec.entries) {
+			specEntries.push_back(VkSpecializationMapEntry{
+				.constantID = e.constantID,
+				.offset = e.offset,
+				.size = static_cast<size_t>(e.size),
+			});
+		}
+		specInfo.mapEntryCount = static_cast<uint32_t>(specEntries.size());
+		specInfo.pMapEntries = specEntries.data();
+		specInfo.dataSize = spec.data.size();
+		specInfo.pData = spec.data.data();
+		stageInfo.pSpecializationInfo = &specInfo;
+	}
 
 	const VkPipelineLayout layout = ctx_->defaultPipeLayout;
 	VkComputePipelineCreateInfo pipelineInfo{
