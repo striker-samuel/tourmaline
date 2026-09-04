@@ -145,6 +145,18 @@ namespace smvk {
 	glm::mat4 GetSpotLightView(
 		const SpotLight& l
 	);
+	// Perspective view-projection for a spot shadow map (Vulkan RH ZO,
+	// depth [0,1]). Shares the no-Y-flip convention with the directional
+	// path: the same matrix is used for rendering and sampling, so the
+	// NDC->UV convention cancels out. fov = outerAngle*2, far = range.
+	glm::mat4 GetSpotLightVP(
+		const glm::vec3& position,
+		const glm::vec3& direction,
+		float outerAngle,
+		float range,
+		float nearPlane = 0.5f,
+		float aspect = 1.0f
+	);
 	void GetDirectionalLightOrthoVP(
 		const glm::vec3 lightDir,
 		const glm::mat4& invCameraView,

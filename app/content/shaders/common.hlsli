@@ -115,7 +115,9 @@ struct DirectionalCascadeBuffer
 };
 
 // ---- Forward+ tiled lights (point/spot; directional stays on CSM path) ----
-// Must match C++ smvk::ForwardPlusLight (64 bytes).
+// Must match C++ smvk::ForwardPlusLight (80 bytes).
+// flags bit0 = shadow request (kForwardPlusFlag_CastShadow); shadowTile >= 0
+// means this frame assigned a spot-shadow tile (spot only, points ignore).
 struct ForwardPlusLight
 {
     float4 color;       // 0  linear RGB + pad
@@ -126,7 +128,20 @@ struct ForwardPlusLight
     float innerAngle;   // 48 radians (spot)
     float outerAngle;   // 52 radians (spot)
     int type;           // 56 0=point, 1=spot
-    int flags;          // 60
+    int flags;          // 60 bit0 = cast-shadow request
+    int shadowTile;     // 64 tile in spot atlas, -1 = unshadowed
+    int shadowMapIndex; // 68 bindless spot atlas index, -1 = unshadowed
+    float shadowBias;   // 72 receiver-depth bias (perspective)
+    float pad2_;        // 76
+};
+
+#define MAX_SPOT_SHADOWS 8
+
+// Spot-shadow tile descriptors. Reuses GpuCascadeDescription layout
+// (lightVP + atlas UV transform + bias); splitEnd stores the spot range.
+struct SpotShadowBuffer
+{
+    GpuCascadeDescription tiles[MAX_SPOT_SHADOWS];
 };
 
 #define MAX_FP_LIGHTS 1024
@@ -174,6 +189,18 @@ struct PushConstants
     uint fpLightCount;
     uint fpTileSize;
     uint fpMaxPerTile;
+    // Spot shadows (opaque pass sampling + spot depth passes).
+    // spotShadowBuffer: tile descriptors (GpuCascadeDescription tiles).
+    // spotShadowMapIndex: bindless spot atlas, UINT32_MAX when none.
+    // spotShadowCount: active tiles this frame (<= MAX_SPOT_SHADOWS).
+    // spotIndex: tile rendered by the current shadow pass,
+    //   0xFFFFFFFF when the pass is NOT a spot shadow pass.
+    vk::BufferPointer<SpotShadowBuffer>
+    spotShadowBuffer;
+    uint spotShadowMapIndex;
+    uint spotShadowCount;
+    uint spotIndex;
+    uint pad_pc;
 };
 
 #if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(FORWARDPLUS_PASS)

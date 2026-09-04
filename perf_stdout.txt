@@ -1,0 +1,16 @@
+[UploadStreamer] VK_EXT_host_image_copy enabled (optimalTilingLayoutUUID supported)
+[Vulkan] maxPushConstantsSize=256, engine requires 256
+[perf] avg frame 16.7834 ms over 240 frames
+[perf] avg frame 16.6553 ms over 240 frames
+[perf] avg frame 16.6525 ms over 240 frames
+[perf] avg frame 16.653 ms over 240 frames
+[perf] avg frame 16.6514 ms over 240 frames
+[perf] avg frame 16.6527 ms over 240 frames
+[perf] avg frame 16.6535 ms over 240 frames
+[perf] avg frame 16.6459 ms over 240 frames
+[perf] avg frame 16.6555 ms over 240 frames
+[perf] avg frame 16.6587 ms over 240 frames
+[perf] avg frame 16.6505 ms over 240 frames
+[perf] avg frame 16.652 ms over 240 frames
+[perf] avg frame 16.6502 ms over 240 frames
+[perf] avg frame 16.6554 ms over 240 frames

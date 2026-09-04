@@ -331,8 +331,11 @@ struct CascadedShadowAtlas {
 	}
 
 	// Adds one depth-only pass rendering cascadeIndex into its atlas tile.
-	// Cascade 0 clears the whole atlas, the rest load. Caller sets the
-	// recording function (bind shadow pipeline + draw casters).
+	// Every cascade clears its own tile: Execute() turns sub-rect clears into
+	// a full-area render pass + explicit vkCmdClearAttachments for the tile
+	// (scissor-clipped), so sibling tiles rendered by other passes survive.
+	// Caller sets the recording function (bind shadow pipeline + draw
+	// casters).
 	RenderPass& AddCascadePass(RenderGraph& rg, uint32_t cascadeIndex, const char* name = nullptr) const {
 		assert(Valid());
 		assert(cascadeIndex < cascadeCount);
@@ -343,7 +346,7 @@ struct CascadedShadowAtlas {
 			.SetExtent(tileExtent)
 			.SetDepth(
 				logicalView,
-				cascadeIndex == 0 ? AttachmentLoadOp::Clear : AttachmentLoadOp::Load,
+				AttachmentLoadOp::Clear,
 				AttachmentStoreOp::Store,
 				ClearDepthStencil(1.0f, 0));
 		return pass;

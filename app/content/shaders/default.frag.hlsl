@@ -289,7 +289,8 @@ PSOut mainPS(PSIn IN)
     // ---------------------------------------------------------------
     // Forward+ tiled point/spot lights (depth-prepassed, GPU-culled).
     // Tile lists live in fpTileCounts/fpTileIndices, lights in fpLights.
-    // No shadow maps for tiled lights yet (v1).
+    // Spots with shadowTile >= 0 sample the spot-shadow atlas tile
+    // (perspective, selected per frame – see SelectSpotShadowCasters).
     // ---------------------------------------------------------------
     if (pc.fpLightCount > 0)
     {
@@ -342,13 +343,22 @@ PSOut mainPS(PSIn IN)
                 float NdotLp = max(dot(N, Lp), 0.0f);
                 if (NdotLp <= 0.0f)
                     continue;
+
+                // Spot shadow: tile assigned by the per-frame selection;
+                // unshadowed lights (shadowTile < 0) contribute fully.
+                float spotShadow = 1.0f;
+                if (pl.type == 1 && pl.shadowTile >= 0)
+                    spotShadow = GetSpotShadowFactorFromPC(1, IN.worldPos, pl.shadowTile);
+                if (spotShadow <= 0.0f)
+                    continue;
+
                 float3 Hp = normalize(V + Lp);
                 float Dp = DistributionGGX(N, Hp, roughness);
                 float Gp = GeometrySmith(N, V, Lp, roughness);
                 float3 Fp = FresnelSchlick(max(dot(Hp, V), 0.0f), F0);
                 float3 specP = (Dp * Gp * Fp) / max(4.0f * NdotV * NdotLp, 1e-7f);
 
-                direct += (diffuse + specP) * plColor * (NdotLp * atten * angular);
+                direct += (diffuse + specP) * plColor * (NdotLp * atten * angular * spotShadow);
             }
         }
     }

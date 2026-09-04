@@ -38,7 +38,17 @@ namespace smvk {
 
 // ---------------------------------------------------------------------------
 // GPU light (must match HLSL ForwardPlusLight in common.hlsli / forwardplus)
-// 64 bytes, 16-byte aligned.
+// 80 bytes, 16-byte aligned.
+//
+// Shadow fields (spot only, points ignore them):
+//  shadowTile      – tile index into the spot-shadow atlas description
+//                    buffer, or -1 when this light casts no shadow this frame.
+//  shadowMapIndex  – bindless index of the spot-shadow atlas (same for all
+//                    shadowed spots in the frame), -1 when unshadowed.
+//  shadowBias      – depth bias applied to the receiver depth (perspective).
+// `flags` bit kForwardPlusFlag_CastShadow is the *request* flag: the app sets
+// it on lights allowed to cast shadows; per-frame selection then assigns
+// shadowTile/MapIndex only to the top-N casters (see spotshadow.h).
 // ---------------------------------------------------------------------------
 struct alignas(16) ForwardPlusLight {
 	glm::vec4 color = glm::vec4(1.0f);      // 0  linear RGB + pad
@@ -49,13 +59,21 @@ struct alignas(16) ForwardPlusLight {
 	float innerAngle = 0.0f;                // 48 radians (spot)
 	float outerAngle = 0.0f;                // 52 radians (spot)
 	int32_t type = 0;                       // 56 0=point, 1=spot
-	int32_t flags = 0;                      // 60
+	int32_t flags = 0;                      // 60 bit0 = shadow request
+	int32_t shadowTile = -1;                // 64 tile in spot atlas, -1 = none
+	int32_t shadowMapIndex = -1;            // 68 bindless atlas index, -1 = none
+	float shadowBias = 0.0f;                // 72 receiver-depth bias
+	float pad2_ = 0.0f;                     // 76
 };
-static_assert(sizeof(ForwardPlusLight) == 64);
+static_assert(sizeof(ForwardPlusLight) == 80);
 static_assert(sizeof(ForwardPlusLight) % 16 == 0);
 
 static constexpr uint32_t kForwardPlusPoint = 0;
 static constexpr uint32_t kForwardPlusSpot = 1;
+// Per-light controllable flag: light *may* cast a spot shadow. The frame
+// selection (upper limit + screenspace/distance heuristic) decides which
+// requesting spots actually get a tile (shadowTile >= 0).
+static constexpr int32_t kForwardPlusFlag_CastShadow = 1 << 0;
 
 struct ForwardPlusDesc {
 	uint32_t tileSize = 16;

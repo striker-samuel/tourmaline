@@ -13,8 +13,11 @@ namespace smvk {
 	// GPU material buffer layout – must match HLSL common.hlsli::MaterialValues.
 	// Keep 16-byte alignment for StructuredBuffer / buffer_device_address.
 	struct alignas(16) MaterialValues {
-		glm::vec4 ambient{ 10.f, 10.f, 10.f, 1.0f }; // 0 – sky-ambient factor: skyColor * skyLux/PI (albedo multiplier, see cluster.cpp)
-		//glm::vec4 ambient{ 71.62f, 103.45f, 159.15f, 1.0f }; // 0 – sky-ambient factor: skyColor * skyLux/PI (albedo multiplier, see cluster.cpp)
+
+		// Legacy sky-ambient factor (albedo multiplier): 0 = off by default,
+		// ambient comes from the env/IBL block. Paks round-trip this verbatim,
+		// so paks cooked with an old default keep their baked value.
+		glm::vec4 ambient{ 0.f };                       // 0 – see cluster.cpp
 		glm::vec4 diffuse{ 1.0f };                       // 16 – baseColorFactor (alias: diffuse)
 		glm::ivec4 textures{ -1 };                       // 32 – x=baseColor, y=metallicRoughness, z=normal, w=occlusion
 		glm::ivec4 textures2{ -1 };                      // 48 – x=emissive, yzw unused (-1)

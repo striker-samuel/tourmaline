@@ -1,0 +1,49 @@
+---------------- Vulkan Validation ----------------
+Message: Layer name GalaxyOverlayVkLayer does not conform to naming standard (Policy #LLP_LAYER_3)
+
+---------------- Vulkan Validation ----------------
+Message: Layer name GalaxyOverlayVkLayer_VERBOSE does not conform to naming standard (Policy #LLP_LAYER_3)
+
+---------------- Vulkan Validation ----------------
+Message: Layer name GalaxyOverlayVkLayer_DEBUG does not conform to naming standard (Policy #LLP_LAYER_3)
+
+[Shader] frag: rewrote 1 OpDemoteToHelperInvocation -> OpKill
+---------------- Vulkan Validation ----------------
+Message: vkCreateShaderModule(): pCreateInfo->pCode (spirv-val produced an error):
+Branch must appear in a block
+  OpBranch %if_merge_0
+
+Command to reproduce:
+	spirv-val <input.spv> --relax-block-layout --allow-localsizeid --target-env vulkan1.3
+
+The Vulkan spec states: If pCode is a pointer to SPIR-V code, pCode must adhere to the validation rules described by the Validation Rules within a Module section of the SPIR-V Environment appendix (https://docs.vulkan.org/spec/latest/chapters/shaders.html#VUID-VkShaderModuleCreateInfo-pCode-08737)
+
+[Shader] shadowMaskedFrag: rewrote 1 OpDemoteToHelperInvocation -> OpKill
+---------------- Vulkan Validation ----------------
+Message: vkCreateShaderModule(): pCreateInfo->pCode (spirv-val produced an error):
+Branch must appear in a block
+  OpBranch %if_merge_0
+
+Command to reproduce:
+	spirv-val <input.spv> --relax-block-layout --allow-localsizeid --target-env vulkan1.3
+
+The Vulkan spec states: If pCode is a pointer to SPIR-V code, pCode must adhere to the validation rules described by the Validation Rules within a Module section of the SPIR-V Environment appendix (https://docs.vulkan.org/spec/latest/chapters/shaders.html#VUID-VkShaderModuleCreateInfo-pCode-08737)
+
+---------------- Vulkan Validation ----------------
+Message: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+
+---------------- Vulkan Validation ----------------
+Message: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+
+---------------- Vulkan Validation ----------------
+Message: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+
+---------------- Vulkan Validation ----------------
+Message: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+
+---------------- Vulkan Validation ----------------
+Message: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+
+---------------- Vulkan Validation ----------------
+Message: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+

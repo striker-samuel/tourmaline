@@ -331,8 +331,9 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 	values.params2.w = 0.0f;
 
 	values.emissiveFactor = glm::vec4(info.emissiveFactor, 0.0f);
-	// Sky-ambient floor (pseudo-IBL): values.ambient keeps the MaterialValues
-	// default (10,10,10,1). See comment in mesh.h / light.h.
+	// values.ambient keeps the MaterialValues default (0,0,0,0): the legacy
+	// sky-ambient floor is off by default; ambient comes from the env/IBL
+	// block instead. See comment in mesh.h.
 	return CreateMaterialFromValues(
 		values, info.shadingModel, info.alphaMode, info.alphaCutoff, info.doubleSided);
 }

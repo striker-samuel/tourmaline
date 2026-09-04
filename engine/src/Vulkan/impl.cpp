@@ -7765,29 +7765,52 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		}
 		VkOffset2D renderOffset{ pass.offsetX_, pass.offsetY_ };
 		VkExtent2D renderExtent{ pass.extent_.width, pass.extent_.height };
-		if (hasDepth && colorInfos.empty()) {
-			VulkanResourceManager& vctxLocal = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
-			auto* view = imageViews_.get(pass.depthAttachment_.view);
+		// Depth-only tile passes (shadow atlases) declare a sub-rect pass
+		// area but must not run with a sub-rect *render area*: many drivers
+		// take a severe slow path when the render area does not cover the
+		// whole attachment (measured ~10 ms/pass on RTX 5070 Ti). Instead
+		// run the full attachment extent, downgrade the implicit loadOp
+		// clear to LOAD, and clear just the tile explicitly with
+		// vkCmdClearAttachments (its rect is clipped to the render area +
+		// current scissor, both of which cover exactly the tile).
+		// Tile-local clear, full-area render.
+		bool depthTileClear = false;
+		if (hasDepth && colorInfos.empty() &&
+			pass.depthAttachment_.loadOp == AttachmentLoadOp::Clear)
+		{
 			ImageHandle phys{};
-			if (view) {
-				if (view->type == LogicalImageView::Type::ExternalPhysical) {
-					auto* ext = vctxLocal.imageViews_.get(view->externalViewHandle);
+			auto* view = imageViews_.get(pass.depthAttachment_.view);
+			if (view)
+			{
+				if (view->type == LogicalImageView::Type::ExternalPhysical)
+				{
+					auto* ext = vctx.imageViews_.get(view->externalViewHandle);
 					if (ext) phys = ext->image;
 				}
-				else {
+				else
+				{
 					auto* li = images_.get(view->key.image);
 					if (li) phys = li->resolvedImageHandle;
 				}
 			}
-			if (!phys.empty()) {
-				auto* img = vctxLocal.images_.get(phys);
-				if (img && img->extent.width != 0 && img->extent.height != 0) {
-					if (img->extent.width != pass.extent_.width || img->extent.height != pass.extent_.height) {
-						renderOffset = { 0, 0 };
-						renderExtent = { img->extent.width, img->extent.height };
-					}
-				}
+			auto* img = phys.empty() ? nullptr : vctx.images_.get(phys);
+			const bool strictSubRect = img == nullptr ||
+				renderOffset.x != 0 || renderOffset.y != 0 ||
+				renderExtent.width != img->extent.width ||
+				renderExtent.height != img->extent.height;
+			if (strictSubRect && img && img->extent.width != 0 && img->extent.height != 0 &&
+				renderOffset.x >= 0 && renderOffset.y >= 0 &&
+				static_cast<uint64_t>(renderOffset.x) + renderExtent.width <= img->extent.width &&
+				static_cast<uint64_t>(renderOffset.y) + renderExtent.height <= img->extent.height)
+			{
+				depthTileClear = true;
+				renderOffset = { 0, 0 };
+				renderExtent = { img->extent.width, img->extent.height };
+				depthInfo.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
 			}
+			// Full-extent passes keep the implicit loadOp clear (fast path).
+			// Unresolvable extents keep the pass-area render + implicit clear
+			// (correct, only potentially slow on tile passes).
 		}
 		VkRenderingInfo renderInfo{ .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR, .renderArea = {.offset = renderOffset, .extent = renderExtent, }, .layerCount = 1, .colorAttachmentCount = static_cast<uint32_t>(colorInfos.size()), .pColorAttachments = colorInfos.data(), };
 		renderInfo.pDepthAttachment = hasDepth ? &depthInfo : nullptr;
@@ -7804,6 +7827,20 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		vkCmdSetViewport(cmd, 0, 1, &vp);
 		vkCmdSetScissor(cmd, 0, 1, &scissor);
 		vkCmdBeginRendering(cmd, &renderInfo);
+		if (depthTileClear)
+		{
+			VkClearAttachment clear{};
+			clear.aspectMask = hasStencil
+				? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
+				: VK_IMAGE_ASPECT_DEPTH_BIT;
+			clear.clearValue = depthInfo.clearValue;
+			VkClearRect rect{};
+			rect.rect.offset = { pass.offsetX_, pass.offsetY_ };
+			rect.rect.extent = { pass.extent_.width, pass.extent_.height };
+			rect.baseArrayLayer = 0;
+			rect.layerCount = 1;
+			vkCmdClearAttachments(cmd, 1, &clear, 1, &rect);
+		}
 		CommandBuffer cb{ reinterpret_cast<void*>(cmd), *this, pass };
 		if (pass.recordingFunction_) pass.recordingFunction_(cb);
 		vkCmdEndRendering(cmd);

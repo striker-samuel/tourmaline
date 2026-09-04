@@ -13,6 +13,7 @@
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/environment.h>
 #include <Engine/Rendergraph/forwardplus.h>
+#include <Engine/Rendergraph/spotshadow.h>
 #include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/msaa.h>
 #include <Engine/Rendergraph/tonemap.h>
@@ -115,6 +116,27 @@ static smvk::ForwardPlusDesc MakeForwardPlusDesc() {
 	return d;
 }
 
+// -----------------------------------------------------------------------------
+// Spot-shadow atlas config (tile descriptors live in spotshadow.h).
+// The atlas is fixed at kMaxSpotShadows slots; the per-frame selection picks
+// at most m_fpDemo.spotShadowMax casters (upper limit + distance/screenspace
+// heuristic, see SelectSpotShadowCasters).
+// -----------------------------------------------------------------------------
+static constexpr uint32_t SPOT_SHADOW_RES = 1024;
+static constexpr float SPOT_SHADOW_NEAR = 0.5f;
+static constexpr float SPOT_SHADOW_BIAS = 0.002f;
+
+static smvk::SpotShadowMapDesc MakeSpotShadowDesc() {
+	smvk::SpotShadowMapDesc d{};
+	d.slotCount = smvk::kMaxSpotShadows;
+	d.resolution = SPOT_SHADOW_RES;
+	d.format = smvk::Format::D32_Float;
+	d.nearPlane = SPOT_SHADOW_NEAR;
+	d.bias = SPOT_SHADOW_BIAS;
+	d.name = "spotShadowAtlas";
+	return d;
+}
+
 // Procedural demo lights (grid of points + a few orbiting spots).
 struct ForwardPlusDemo {
 	bool enabled = true;
@@ -132,6 +154,11 @@ struct ForwardPlusDemo {
 	int spotCount = 4;
 	float spotRange = 100.0f;
 	float spotIntensity = 900.0f;
+	// Spot shadows: per-light opt-in flag (demo sets it on all spots) +
+	// frame upper limit + screenspace/distance culling. Points never shadow.
+	bool spotShadowsEnabled = true;
+	int spotShadowMax = 4;               // upper limit, clamped to kMaxSpotShadows
+	float spotShadowMaxDistance = 45.0f; // hard cutoff on camera->light distance (m)
 };
 
 // Data definitions //
@@ -180,6 +207,8 @@ struct AppResources {
 	smvk::Holder<smvk::BufferHandle> directionalCascadeBuffer; // GpuDirectionalLightDescription per frame
 	smvk::Holder<smvk::BufferHandle> fpLightsBuffer; // ForwardPlusLight * FP_MAX_LIGHTS per frame
 	smvk::LogicalBufferHandle fpLightsLogical{}; // rendergraph alias (stable: buffer never resized)
+	smvk::Holder<smvk::BufferHandle> spotShadowBuffer; // GpuCascadeDescription * kMaxSpotShadows per frame
+	smvk::LogicalBufferHandle spotShadowLogical{}; // rendergraph alias (stable: buffer never resized)
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
 	smvk::ShaderProgram mainProgram;
@@ -201,6 +230,7 @@ struct AppResources {
 
 struct ViewportResources {
 	smvk::CascadedShadowAtlas directionalShadows; // atlas + default shadow program + Ensure
+	smvk::SpotShadowAtlas spotShadows; // perspective atlas for shadowed spots + Ensure
 	smvk::BloomChain bloom; // separated per-mip HDR chain + default down/up programs + Ensure
 	smvk::Tonemapper tonemap; // default tonemap program + pass helper
 	smvk::ForwardPlus forwardPlus; // tile buffers + cull/depth programs + Ensure
@@ -276,6 +306,13 @@ private:
 		);
 		m_resources.fpLightsLogical = m_rendergraph->AddExternalBuffer(
 			m_resources.fpLightsBuffer, "forwardplus lights");
+		m_resources.spotShadowBuffer = m_context->CreateBuffer(
+			sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows * m_swapchain->framesInFlight(),
+			smvk::BufferType_Storage,
+			"spot shadow tiles buffer"
+		);
+		m_resources.spotShadowLogical = m_rendergraph->AddExternalBuffer(
+			m_resources.spotShadowBuffer, "spot shadow tiles");
 
 		// VFS overlay: loose content/ for iteration, cooked paks mounted
 		// underneath (loose files win on collisions). Shader reads below
@@ -429,6 +466,11 @@ private:
 			std::cerr << "[TestApp] Failed to create cascaded shadow atlas\n";
 			return false;
 		}
+		// Spot-shadow atlas (fixed kMaxSpotShadows slots; selection caps usage).
+		// Non-fatal: without it all spots simply run unshadowed.
+		if (!m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc())) {
+			std::cerr << "[TestApp] Spot shadow atlas unavailable – spots run unshadowed\n";
+		}
 		if (!m_viewportResources.tonemap.Ensure(*m_context, MakeTonemapDesc())) {
 			std::cerr << "[TestApp] Failed to create tonemap program\n";
 			return false;
@@ -483,6 +525,7 @@ private:
 		WaitForDeviceIdle();
 		m_viewportResources.forwardPlus.Destroy(*m_rendergraph);
 		m_viewportResources.bloom.Destroy(*m_rendergraph);
+		m_viewportResources.spotShadows.Destroy(*m_rendergraph);
 		m_viewportResources.directionalShadows.Destroy(*m_rendergraph);
 		m_viewportResources.msaa.Destroy(*m_rendergraph);
 		m_viewportResources.hdr.Destroy(*m_rendergraph);
@@ -641,7 +684,12 @@ private:
 
 	// Builds the procedural Forward+ demo light set into the per-frame upload
 	// buffer. Returns the number of lights written (clamped to FP_MAX_LIGHTS).
-	uint32_t UpdateForwardPlusLights(uint32_t currentFrame) {
+	// Spot-shadow selection runs here: spots carrying the cast-shadow request
+	// flag are ranked by the screenspace/distance heuristic and the top-N
+	// (upper limit m_fpDemo.spotShadowMax) get atlas tiles; their shadowTile /
+	// shadowMapIndex are patched before upload. Results land in
+	// m_spotShadowCount / m_spotShadowMapIndex for the frame's passes.
+	uint32_t UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame) {
 		std::vector<smvk::ForwardPlusLight> lights;
 		lights.reserve(FP_MAX_LIGHTS);
 		if (m_fpDemo.enabled) {
@@ -671,6 +719,9 @@ private:
 							: glm::vec4(0.35f, 0.65f, 1.0f, 1.0f);
 						l.intensity = m_fpDemo.intensity;
 						l.type = smvk::kForwardPlusPoint;
+						// Points never cast shadows (no shadow tile).
+						l.shadowTile = -1;
+						l.shadowMapIndex = -1;
 						lights.push_back(l);
 					}
 				}
@@ -687,7 +738,56 @@ private:
 				l.innerAngle = glm::radians(12.0f);
 				l.outerAngle = glm::radians(28.0f);
 				l.type = smvk::kForwardPlusSpot;
+				// Controllable per-light flag: demo opts all spots in; the
+				// frame selection below decides which actually get tiles.
+				if (m_fpDemo.spotShadowsEnabled)
+					l.flags |= smvk::kForwardPlusFlag_CastShadow;
+				l.shadowTile = -1;
+				l.shadowMapIndex = -1;
+				l.shadowBias = SPOT_SHADOW_BIAS;
 				lights.push_back(l);
+			}
+		}
+
+		// ---- Spot-shadow caster selection (upper limit + heuristic) ----
+		m_spotShadowCount = 0;
+		m_spotShadowMapIndex = -1;
+		if (m_fpDemo.spotShadowsEnabled && m_viewportResources.spotShadows.Valid() && !lights.empty()) {
+			const uint32_t wantMax = (uint32_t)std::clamp(m_fpDemo.spotShadowMax, 0, (int)smvk::kMaxSpotShadows);
+			const uint32_t budget = std::min(wantMax, m_viewportResources.spotShadows.slotCount);
+			if (budget > 0) {
+				const float proj11 = std::abs(frame.proj[1][1]);
+				auto selected = smvk::SelectSpotShadowCasters(
+					lights, frame.viewProj, frame.cameraPos,
+					m_fpDemo.spotShadowMaxDistance, budget, proj11);
+				const int32_t atlasIdx = m_viewportResources.spotShadows.BindlessIndex(*m_context);
+				if (atlasIdx >= 0 && !selected.empty()) {
+					std::vector<smvk::GpuCascadeDescription> tiles(selected.size());
+					for (size_t k = 0; k < selected.size(); ++k) {
+						smvk::ForwardPlusLight& sl = lights[selected[k].lightIndex];
+						tiles[k] = m_viewportResources.spotShadows.BuildSpotTile(
+							glm::vec3(sl.position[0], sl.position[1], sl.position[2]),
+							glm::normalize(glm::vec3(sl.direction[0], sl.direction[1], sl.direction[2])),
+							sl.outerAngle, sl.range, atlasIdx, (uint32_t)k,
+							SPOT_SHADOW_NEAR, SPOT_SHADOW_BIAS);
+						sl.shadowTile = (int32_t)k;
+						sl.shadowMapIndex = atlasIdx;
+						sl.shadowBias = SPOT_SHADOW_BIAS;
+					}
+					constexpr size_t SPOT_FRAME_STRIDE =
+						sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows;
+					m_context->UploadDataToBuffer(
+						m_resources.spotShadowBuffer,
+						tiles.data(),
+						sizeof(smvk::GpuCascadeDescription) * tiles.size(),
+						smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment),
+						smvk::AccessFlags::ShaderRead,
+						0,
+						currentFrame * SPOT_FRAME_STRIDE
+					);
+					m_spotShadowCount = (uint32_t)selected.size();
+					m_spotShadowMapIndex = atlasIdx;
+				}
 			}
 		}
 
@@ -758,12 +858,13 @@ private:
 			frameMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 			m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, extent, frameMsaaDesc);
 			m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, extent, MakeBloomDesc());
+			m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc());
 		}
 		m_context->UpdateDescriptors();
-		UpdateFrameUniforms(fb.frameIndex);
+		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex);
 		UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
-		const uint32_t fpLightCount = UpdateForwardPlusLights(fb.frameIndex);
+		const uint32_t fpLightCount = UpdateForwardPlusLights(fb.frameIndex, frameData);
 		//
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
@@ -800,6 +901,11 @@ private:
 		uint64_t fpLightsAddress =
 			m_context->GetBufferDeviceAddress(m_resources.fpLightsBuffer)
 			+ fb.frameIndex * FP_LIGHT_FRAME_STRIDE;
+		constexpr size_t SPOT_FRAME_STRIDE =
+			sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows;
+		uint64_t spotShadowBufferAddress =
+			m_context->GetBufferDeviceAddress(m_resources.spotShadowBuffer)
+			+ fb.frameIndex * SPOT_FRAME_STRIDE;
 		const auto& fp = m_viewportResources.forwardPlus;
 		const uint64_t fpTileCountsAddress = fp.TileCountsAddress(*m_context);
 		const uint64_t fpTileIndicesAddress = fp.TileIndicesAddress(*m_context);
@@ -824,6 +930,11 @@ private:
 			uint32_t fpLightCount;
 			uint32_t fpTileSize;
 			uint32_t fpMaxPerTile;
+			uint64_t spotShadowBuffer;
+			uint32_t spotShadowMapIndex;
+			uint32_t spotShadowCount;
+			uint32_t spotIndex;
+			uint32_t pad_pc;
 		} pc{
 			.frameUniforms = frameUniformsAddress,
 			.lightsBuffer = lightsBufferAddress,
@@ -840,6 +951,11 @@ private:
 			.fpLightCount = fpLightCount,
 			.fpTileSize = FP_TILE_SIZE,
 			.fpMaxPerTile = FP_MAX_PER_TILE,
+			.spotShadowBuffer = spotShadowBufferAddress,
+			.spotShadowMapIndex = m_spotShadowMapIndex >= 0 ? (uint32_t)m_spotShadowMapIndex : UINT32_MAX,
+			.spotShadowCount = m_spotShadowCount,
+			.spotIndex = UINT32_MAX, // not a spot shadow pass
+			.pad_pc = 0,
 		};
 		static_assert(sizeof(PushConstants) <= 256, "PushConstants must fit in 256 bytes (engine limit)");
 
@@ -932,6 +1048,103 @@ private:
 						, [&](NodeId node) { drawCaster(node, true); });
 				});
 				(void)shadowPass;
+			}
+		}
+
+		// ---- Spot shadow passes – one per selected caster tile ----
+		// Selection (upper limit + screenspace/distance heuristic) ran in
+		// UpdateForwardPlusLights; m_spotShadowCount tiles are valid. Each
+		// pass renders its tile with the spot perspective VP (shadow.vert
+		// spotIndex path). Opaque + MASK phases mirror the cascade passes.
+		if (m_spotShadowCount > 0 && m_viewportResources.spotShadows.Valid()) {
+			const uint32_t spotCount = std::min(m_spotShadowCount, m_viewportResources.spotShadows.slotCount);
+			const char* spotNames[8] = { "SpotShadow0", "SpotShadow1", "SpotShadow2", "SpotShadow3",
+				"SpotShadow4", "SpotShadow5", "SpotShadow6", "SpotShadow7" };
+			static_assert(sizeof(spotNames) / sizeof(spotNames[0]) >= smvk::kMaxSpotShadows);
+			for (uint32_t si = 0; si < spotCount; ++si) {
+				PushConstants spotPC = pc;
+				spotPC.spotIndex = si;
+				auto& spotPass = m_viewportResources.spotShadows.AddSpotPass(*m_rendergraph, si, spotNames[si])
+					.SetRecordingFunc([this, spotPC](smvk::CommandBuffer& cmd)
+				{
+					cmd.BindRenderPipeline(
+						m_viewportResources.spotShadows.program,
+						smvk::VertexFormat::StaticVertexFormat,
+						smvk::DepthSettings{
+							.depthFunc = smvk::CompareOp::LessEqual,
+							.writeEnable = true,
+							.depthTestEnable = true,
+							.depthBiasEnable = true,
+							.depthBiasConstantFactor = 0.1f,
+							.depthBiasClamp = 0.0f,
+							.depthBiasSlopeFactor = 1.f
+						},
+						smvk::StencilSettings{},
+						smvk::BlendSettings{},
+						smvk::MSAASettings{},
+						smvk::RasterSettings{
+							.cullMode = smvk::CullMode::Back
+						}
+					);
+					cmd.PushConstants(0, sizeof(PushConstants), &spotPC, smvk::ShaderStage::All);
+					// Opaque only: BLEND transparent must not cast (full-quad depth).
+					auto drawCaster = [&](NodeId node, bool maskedPhase) {
+						auto meshForNode = m_world->scene.meshForNode.find(node);
+						if (meshForNode == m_world->scene.meshForNode.end()) return;
+						auto materialForNode = m_world->scene.materialForNode.find(node);
+						if (materialForNode == m_world->scene.materialForNode.end()) return;
+						smvk::Material* mat = m_world->GetMaterial(materialForNode->second);
+						const bool masked = mat &&
+							mat->shadingModel == smvk::ShadingModel::Masked;
+						if (masked != maskedPhase) return;
+						auto& model = m_world->scene.globalTransform[node];
+						smvk::StaticMesh* meshDesc = m_world->GetMesh(meshForNode->second);
+						if (!meshDesc) return;
+						PushConstants objectPC{};
+						std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+						if (maskedPhase) {
+							objectPC.materialId = materialForNode->second;
+							cmd.PushConstants(offsetof(PushConstants, materialId),
+								sizeof(objectPC.materialId), &objectPC.materialId,
+								smvk::ShaderStage::All);
+						}
+						cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+						for (auto& draw_set : meshDesc->geometry.surfaces) {
+							cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+						};
+					};
+					// Phase 1: solid casters, depth-only program.
+					m_world->forEachNode(
+						smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
+						| smvk::IteratorFlagBit_Opaque
+						, [&](NodeId node) { drawCaster(node, false); });
+					// Phase 2: MASK cutout casters, alpha-tested program.
+					cmd.BindRenderPipeline(
+						m_resources.shadowMaskedProgram,
+						smvk::VertexFormat::StaticVertexFormat,
+						smvk::DepthSettings{
+							.depthFunc = smvk::CompareOp::LessEqual,
+							.writeEnable = true,
+							.depthTestEnable = true,
+							.depthBiasEnable = true,
+							.depthBiasConstantFactor = 0.1f,
+							.depthBiasClamp = 0.0f,
+							.depthBiasSlopeFactor = 1.f
+						},
+						smvk::StencilSettings{},
+						smvk::BlendSettings{},
+						smvk::MSAASettings{},
+						smvk::RasterSettings{
+							.cullMode = smvk::CullMode::None
+						}
+					);
+					cmd.PushConstants(0, sizeof(PushConstants), &spotPC, smvk::ShaderStage::All);
+					m_world->forEachNode(
+						smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
+						| smvk::IteratorFlagBit_Opaque
+						, [&](NodeId node) { drawCaster(node, true); });
+				});
+				(void)spotPass;
 			}
 		}
 
@@ -1057,13 +1270,13 @@ private:
 
 		const bool useMsaa = m_viewportResources.msaaEnabled &&
 			m_context->SupportsMSAA2x() && m_viewportResources.msaa.Valid();
+		std::vector<smvk::LogicalImageViewHandle> mainInputs;
+		mainInputs.push_back(m_viewportResources.directionalShadows.logicalView);
+		if (m_viewportResources.spotShadows.Valid())
+			mainInputs.push_back(m_viewportResources.spotShadows.logicalView);
 		auto& mainPass = m_rendergraph->AddPass("Main")
 			.SetOffset(0, 0)
-			.SetInputImages(
-				{
-					m_viewportResources.directionalShadows.logicalView
-				}
-			)
+			.SetInputImages(mainInputs)
 			.SetExtent(
 				{
 					fb.swapchain->GetExtent().width,
@@ -1297,6 +1510,14 @@ private:
 			fpLightRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
 			mainPass.AddBufferHint(m_resources.fpLightsLogical, fpLightRead);
 		}
+		// Spot-shadow tiles are host-uploaded per frame and sampled in the
+		// main fragment shader: hint orders the upload vs. the read.
+		if (m_spotShadowCount > 0) {
+			smvk::BufferSyncRequest spotRead{};
+			spotRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			spotRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+			mainPass.AddBufferHint(m_resources.spotShadowLogical, spotRead);
+		}
 
 		// ---------------------------------------------------------------------
 		// Bloom – HDR downsample / upsample chain (composable, see bloom.h)
@@ -1456,6 +1677,19 @@ private:
 					wantLights > (int)FP_MAX_LIGHTS ? "  (CLAMPED!)" : "");
 				if (fwd.depthBindlessIndex == UINT32_MAX)
 					ImGui::TextDisabled("Depth bindless: MISSING (cull falls back to empty)");
+				ImGui::Separator();
+				ImGui::Text("Spot shadows: %u / %u tiles  atlas %ux%u",
+					m_spotShadowCount, smvk::kMaxSpotShadows,
+					m_viewportResources.spotShadows.atlasExtent.width,
+					m_viewportResources.spotShadows.atlasExtent.height);
+				ImGui::Checkbox("Spot shadows (per-light flag)", &m_fpDemo.spotShadowsEnabled);
+				int spotMax = m_fpDemo.spotShadowMax;
+				if (ImGui::SliderInt("Shadow spots max", &spotMax, 0, (int)smvk::kMaxSpotShadows))
+					m_fpDemo.spotShadowMax = spotMax;
+				ImGui::SliderFloat("Shadow max distance (m)", &m_fpDemo.spotShadowMaxDistance, 5.0f, 120.0f);
+				ImGui::TextDisabled("Select: intensity*cone*coverage/dist^2, NDC-box + distance culled");
+				if (!m_viewportResources.spotShadows.Valid())
+					ImGui::TextDisabled("Spot atlas: MISSING (spots run unshadowed)");
 			}
 			ImGui::Separator();
 			ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
@@ -1491,6 +1725,8 @@ private:
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
 	ForwardPlusDemo m_fpDemo{};
+	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
+	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
 	smvk::EnvironmentSettings m_env{};
 	smvk::Skydome m_skydome{};
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(

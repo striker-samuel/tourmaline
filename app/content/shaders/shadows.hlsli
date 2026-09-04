@@ -406,6 +406,59 @@ float GetShadowFactorCascadedFromPC(
     return GetShadowFactorCascaded(comparisonSamplerId, worldPos, light, frame, dir);
 }
 
+// ---- Spot shadows (Forward+ spots, perspective atlas tiles) ----
+// tileIndex comes from ForwardPlusLight.shadowTile. Returns 1 (lit) when the
+// receiver is outside the spot frustum – so out-of-range pixels are unaffected.
+float GetSpotShadowFactorTile(
+    uint samplerId,
+    float3 worldPos,
+    GpuCascadeDescription t,
+    uint atlasIdx
+)
+{
+    float4 clip = mul(t.lightVP, float4(worldPos, 1.0f));
+    // Behind the light (w <= 0) or beyond far plane => lit.
+    if (clip.w <= 1e-6f)
+        return 1.0f;
+    float3 ndc = clip.xyz / clip.w;
+    if (ndc.z <= 0.0f || ndc.z >= 1.0f)
+        return 1.0f;
+    float2 uv = ndc.xy * 0.5f + 0.5f;
+    if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
+        return 1.0f;
+
+    float2 uvAtlas = uv * t.uvScale + t.uvBias;
+    float receiverDepth = ndc.z - t.bias;
+    return PCFShadowAtlas(
+        samplerId,
+        uvAtlas,
+        receiverDepth,
+        atlasIdx,
+        t.uvClampMin,
+        t.uvClampMax
+    );
+}
+
+// Push-constant wrapper – main frag calls this per shadowed spot.
+float GetSpotShadowFactorFromPC(
+    uint samplerId,
+    float3 worldPos,
+    int tileIndex
+)
+{
+    if (tileIndex < 0)
+        return 1.0f;
+    if (pc.spotShadowCount == 0 || pc.spotShadowMapIndex == 0xFFFFFFFFu)
+        return 1.0f;
+    if ((uint) tileIndex >= pc.spotShadowCount)
+        return 1.0f;
+    if (pc.spotShadowCount > (uint) MAX_SPOT_SHADOWS)
+        return 1.0f;
+    uint atlasIdx = NonUniformResourceIndex(pc.spotShadowMapIndex);
+    GpuCascadeDescription t = pc.spotShadowBuffer.Get().tiles[tileIndex];
+    return GetSpotShadowFactorTile(samplerId, worldPos, t, atlasIdx);
+}
+
 float GetShadowFactorODB(
     uint comparisonSamplerId,
 	float3 worldPos,

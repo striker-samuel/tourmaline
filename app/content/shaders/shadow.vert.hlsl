@@ -27,9 +27,15 @@ VSOut mainVS(VSIn IN)
     OUT.color = IN.color;
     OUT.uv = IN.uv;
 
-    // Upgraded: fetch per-cascade VP from cascade buffer when cascades active
+    // Spot-shadow pass: per-tile perspective VP from the spot buffer.
+    // Directional cascade pass: per-cascade ortho VP from cascade buffer.
+    // Otherwise (legacy single light): lights[0] fallback.
     float4x4 lightVP;
-    if (pc.numCascades > 0 && pc.cascadeIndex < (uint)pc.numCascades)
+    if (pc.spotIndex != 0xFFFFFFFFu && pc.spotShadowCount > 0u && pc.spotIndex < pc.spotShadowCount)
+    {
+        lightVP = pc.spotShadowBuffer.Get().tiles[pc.spotIndex].lightVP;
+    }
+    else if (pc.numCascades > 0 && pc.cascadeIndex < (uint)pc.numCascades)
     {
         GpuDirectionalLightDescription dir = pc.cascadeBuffer.Get().dir;
         lightVP = dir.cascades[pc.cascadeIndex].lightVP;

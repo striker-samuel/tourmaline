@@ -334,3 +334,31 @@ glm::mat4 smvk::GetPerspectiveProjectionForLight(
 	float fovRadians = l.outerAngle * 2.0f;
 	return glm::perspective(fovRadians, aspect, nearPlane, farPlane);
 }
+
+glm::mat4 smvk::GetSpotLightVP(
+	const glm::vec3& position,
+	const glm::vec3& direction,
+	float outerAngle,
+	float range,
+	float nearPlane,
+	float aspect
+)
+{
+	glm::vec3 dir = direction;
+	if (glm::dot(dir, dir) < 1e-6f)
+		dir = glm::vec3(0.0f, -1.0f, 0.0f);
+	dir = glm::normalize(dir);
+
+	glm::vec3 up(0.0f, 1.0f, 0.0f);
+	if (glm::abs(glm::dot(dir, up)) > 0.99f)
+		up = glm::vec3(0.0f, 0.0f, 1.0f);
+
+	const glm::mat4 view = glm::lookAt(position, position + dir, up);
+	const float farPlane = std::max(range, nearPlane + 0.01f);
+	// Clamp FOV so extreme outer angles can't produce a degenerate matrix.
+	const float fov = glm::clamp(outerAngle * 2.0f, 0.05f, glm::radians(170.0f));
+	const glm::mat4 proj = glm::perspectiveRH_ZO(fov, aspect, nearPlane, farPlane);
+	// NOTE: no Y-flip (same convention as BuildDirectionalLight): the shadow
+	// pass and the sampler share this exact matrix.
+	return proj * view;
+}
