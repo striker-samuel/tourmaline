@@ -6,7 +6,8 @@
 //      1 = near, 0 = far/sky),
 //   2. unprojects tile corners via invProj -> view-space side planes,
 //   3. sphere-tests every light against the 6 tile planes,
-//   4. writes a compact index list + count.
+//   4. writes a compact index list + the true (unclamped) pass count;
+//      count > maxLightsPerTile is the shading pass' overflow signal.
 //
 // Depth buffer conventions (must match app):
 //   - infinite reversed-Z projection, clear 0 (far), GreaterEqual.
@@ -156,6 +157,10 @@ void mainCS(uint3 groupId : SV_GroupID)
         count++;
     }
 
-    // Store the clamped count (shading loops min(count, maxPerTile)).
-    pcCull.tileCounts.Get().counts[tileIdx] = min(count, maxPerTile);
+    // Store the TRUE (unclamped) count: tiles spanning big depth
+    // discontinuities can pass more lights than the list holds. The list
+    // keeps the first maxPerTile; the shading pass sees count > maxPerTile
+    // as the overflow signal and walks all lights per pixel instead, so
+    // no light is silently dropped.
+    pcCull.tileCounts.Get().counts[tileIdx] = count;
 }

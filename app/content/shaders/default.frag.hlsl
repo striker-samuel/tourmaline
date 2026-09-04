@@ -301,12 +301,22 @@ PSOut mainPS(PSIn IN)
         {
             uint tileIdx = ty * pc.fpTileCountX + tx;
             uint perTile = min(pc.fpMaxPerTile, (uint)MAX_FP_PER_TILE);
-            uint tcount = min(pc.fpTileCounts.Get().counts[tileIdx], perTile);
             uint stride = max(pc.fpMaxPerTile, 1u);
             uint nlights = min(pc.fpLightCount, (uint)MAX_FP_LIGHTS);
-            for (uint s = 0; s < tcount; ++s)
+            // Greedy overflow path: a tile spanning a big depth
+            // discontinuity (near geometry against far background/sky) can
+            // pass more lights than the per-tile list holds. counts[] then
+            // stores the true count; instead of the truncated list this
+            // pixel walks every light (the per-pixel range/cone/NdotL tests
+            // below cull exactly), so no light is dropped.
+            uint tcount = pc.fpTileCounts.Get().counts[tileIdx];
+            bool overflow = tcount > perTile;
+            uint iterCount = overflow ? nlights : min(tcount, perTile);
+            for (uint s = 0; s < iterCount; ++s)
             {
-                uint li = pc.fpTileIndices.Get().indices[tileIdx * stride + s];
+                uint li = overflow
+                    ? s
+                    : pc.fpTileIndices.Get().indices[tileIdx * stride + s];
                 if (li >= nlights)
                     continue;
                 ForwardPlusLight pl = pc.fpLights.Get().lights[li];
