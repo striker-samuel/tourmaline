@@ -1963,6 +1963,20 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	VK_CHECK(vkCreateDescriptorSetLayout(device_, &dslci, nullptr, &defaultSetLayout));
 
 	// Engine Wide PC block (single global range; see kEnginePushConstantSize).
+	// The Vulkan guarantee is only 128 bytes; 256 needs a capable device.
+	{
+		VkPhysicalDeviceProperties props{};
+		vkGetPhysicalDeviceProperties(physicalDevice_, &props);
+		const uint32_t devMax = props.limits.maxPushConstantsSize;
+		printf("[Vulkan] maxPushConstantsSize=%u, engine requires %u\n",
+			devMax, (uint32_t)kEnginePushConstantSize);
+		if (devMax < kEnginePushConstantSize) {
+			throw std::runtime_error(
+				"unsupported push-constant size: engine requires " +
+				std::to_string(kEnginePushConstantSize) + " bytes but device supports only " +
+				std::to_string(devMax) + " (Vulkan minimum is 128)");
+		}
+	}
 	VkPushConstantRange range{
 		.stageFlags = VK_SHADER_STAGE_ALL,
 		.offset = 0,
@@ -8007,6 +8021,22 @@ void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const vo
 	assert(currentLayout_ != nullptr);
 	assert(size > 0);
 	assert(offset + size <= kEnginePushConstantSize);
+	// Release builds have no asserts: close with a message instead of
+	// UB / a validation crash. Covers e.g. 126-byte (non-multiple-of-4)
+	// pushes: VUID-vkCmdPushConstants-offset-01795 requires multiples of 4.
+	if (currentLayout_ == nullptr)
+		throw std::runtime_error("unsupported push-constants: no pipeline layout bound");
+	if (size == 0 || (offset % 4) != 0 || (size % 4) != 0)
+		throw std::runtime_error(
+			"unsupported push-constant range [" + std::to_string(offset) + ", " +
+			std::to_string(offset + size) + "): offset/size must be multiples of 4");
+	if (offset + size < offset || offset + size > kEnginePushConstantSize)
+		throw std::runtime_error(
+			"unsupported push-constant range [" + std::to_string(offset) + ", " +
+			std::to_string(offset + size) + "): exceeds engine limit " +
+			std::to_string(kEnginePushConstantSize));
+	if (data == nullptr)
+		throw std::runtime_error("unsupported push-constants: null data pointer");
 
 	// The global pipeline layout declares a single range [0, 256) with ALL
 	// stages. VUID-vkCmdPushConstants-offset-01796 requires the call's

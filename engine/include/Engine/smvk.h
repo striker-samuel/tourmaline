@@ -742,6 +742,8 @@ namespace smvk {
 	// Engine-wide push-constant budget. The global pipeline layout declares a
 	// single range [0, kEnginePushConstantSize) with ALL stages; every
 	// vkCmdPushConstants call must cover it (see VUID-vkCmdPushConstants-01796).
+	// Note: Vulkan only guarantees maxPushConstantsSize >= 128, so 256 needs
+	// a capable device; startup throws "unsupported ..." otherwise.
 	inline constexpr uint32_t kEnginePushConstantSize = 256;
 
 	struct ShaderModuleTag;

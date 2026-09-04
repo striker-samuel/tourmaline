@@ -11,6 +11,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
+#include <Engine/Rendergraph/environment.h>
 #include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/msaa.h>
@@ -165,6 +166,9 @@ struct FrameUniforms
 	float farPlane;
 	float exposure;
 	float padding; // keep 16-byte alignment
+
+	// Configurable skydome IBL + fog (matches HLSL FrameUniforms.env).
+	smvk::EnvironmentFrameData env;
 };
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 
@@ -429,6 +433,12 @@ private:
 			std::cerr << "[TestApp] Failed to create tonemap program\n";
 			return false;
 		}
+		// Skydome program (fullscreen-triangle sky.vert/sky.frag). Failure is
+		// non-fatal: the Main pass simply skips the sky draw and keeps the
+		// clear color.
+		if (!m_skydome.Ensure(*m_context)) {
+			std::cerr << "[TestApp] Skydome program unavailable – running without sky\n";
+		}
 
 		{
 			auto vkExt = m_swapchain->GetExtent();
@@ -516,6 +526,8 @@ private:
 		// NOTE: FrameUniforms.exposure is currently unread by shaders; the
 		// tonemap push constant (TONEMAP_EXPOSURE) is the live knob. Keep in sync.
 		data.exposure = 0.001f;
+		// Configurable skydome IBL + fog (single source for sky/sun/fog).
+		data.env = m_env.ToFrameData();
 
 		m_context->UploadDataToBuffer(
 			m_resources.frameUniforms,
@@ -533,9 +545,11 @@ private:
 
 	void UpdateLights(uint32_t currentFrame)
 	{
-		// Keep lights[0] hardcoded directional – upgraded to cascades
-		glm::vec3 lightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.5f));
-		//lightDir.b *= sin(time_since_start_s) * 0.4;
+		// Directional sun driven by the environment (single source of truth
+		// for the sky sun disc, IBL sun tint, and shadow-casting light).
+		// lightDir points FROM the sun toward the scene (i.e. -toSun).
+		glm::vec3 toSun = m_env.SunDirectionToSun();
+		glm::vec3 lightDir = -toSun;
 		auto cameraView = m_camera.getViewMatrix();
 		auto cameraProj = m_camera.getProjMatrix();
 		// Keep Y-flip consistent with main view (UpdateFrameUniforms does proj[1][1] *= -1 for Vulkan).
@@ -544,12 +558,11 @@ private:
 
 		smvk::Light lights[MAX_LIGHTS]{};
 		smvk::Light& light = lights[0];
-		light.color = glm::vec4(1.0f, 1.f, 1.0f, 1.0f);
+		light.color = glm::vec4(m_env.sunColor, 1.0f);
 		light.direction[0] = lightDir.x;
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
-		//light.intensity = 5000.0f;
-		light.intensity = 10000.0f;
+		light.intensity = m_env.sunIntensity;
 		light.shadow_map_index =
 			m_context->GetBindlessIndex(
 				m_viewportResources.directionalShadows.bindless
@@ -1157,6 +1170,29 @@ private:
 		// pipeline layout. The opaque loop rebinds per material anyway
 		// (boundMaterial starts UINT32_MAX, so the first node always
 		// rebinds if it differs).
+		// ---- Skydome: fullscreen triangle first (depth Always, no writes) ----
+		// Opaque geometry draws over it via GreaterEqual; background pixels
+		// keep the sky HDR. Works for both 1x (HDR Load) and 2x MSAA
+		// (transient color Clear + resolve) because the sky is part of the
+		// same pass that resolves.
+		if (m_env.skyEnabled && m_skydome.ShadersValid()) {
+			cmd.BindRenderPipeline(
+				m_skydome.program,
+				smvk::VertexFormat::Empty,
+				smvk::DepthSettings::Disabled(),
+				noStencil,
+				smvk::BlendSettings::Opaque(),
+				msaaSettings,
+				smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+			);
+			cmd.PushConstants(
+				0,
+				sizeof(PushConstants),
+				&pc,
+				smvk::ShaderStage::All
+			);
+			cmd.Draw(3, 1, 0, 0);
+		}
 		cmd.BindRenderPipeline(
 			m_resources.mainProgram,
 			smvk::VertexFormat::StaticVertexFormat,
@@ -1333,10 +1369,9 @@ private:
 				for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
 					ImGui::Text(" cascade %u: [%.2f .. %.2f] splitEnd %.2f", i, splits[i], splits[i+1], splits[i+1]);
 				}
-				ImGui::Text(" lightDir: %.2f %.2f %.2f",
-					glm::normalize(glm::vec3(0.2f, -1.0f, 0.5f)).x,
-					glm::normalize(glm::vec3(0.2f, -1.0f, 0.5f)).y,
-					glm::normalize(glm::vec3(0.2f, -1.0f, 0.5f)).z);
+				const glm::vec3 toSunDbg = m_env.SunDirectionToSun();
+				ImGui::Text(" sun toSun: %.2f %.2f %.2f  int %.0f lux",
+					toSunDbg.x, toSunDbg.y, toSunDbg.z, m_env.sunIntensity);
 			}
 			{
 				const auto& bloom = m_viewportResources.bloom;
@@ -1360,6 +1395,39 @@ private:
 					ImGui::TextDisabled("MSAA 2x unsupported – running 1x");
 				else
 					ImGui::TextDisabled(m_viewportResources.msaa.Valid() ? "MSAA 2x -> HDR resolve" : "MSAA target missing – running 1x");
+			}
+			ImGui::Separator();
+			if (ImGui::CollapsingHeader("Environment — Skydome IBL + Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
+				ImGui::Checkbox("Sky dome", &m_env.skyEnabled);
+				ImGui::Checkbox("IBL ambient/spec", &m_env.iblEnabled);
+				ImGui::ColorEdit3("Zenith", &m_env.skyZenithColor.x);
+				ImGui::ColorEdit3("Horizon", &m_env.skyHorizonColor.x);
+				ImGui::ColorEdit3("Ground", &m_env.groundColor.x);
+				ImGui::SliderFloat("Sky intensity (HDR)", &m_env.skyIntensity, 0.0f, 2000.0f);
+				ImGui::SliderFloat("Sky exponent", &m_env.skyExponent, 0.25f, 8.0f);
+				ImGui::SliderFloat("IBL intensity (HDR)", &m_env.iblIntensity, 0.0f, 200.0f);
+				ImGui::Separator();
+				ImGui::Text("Sun (drives light + sky disc)");
+				ImGui::SliderFloat("Azimuth", &m_env.sunAzimuthDeg, -180.0f, 180.0f);
+				ImGui::SliderFloat("Elevation", &m_env.sunElevationDeg, -10.0f, 90.0f);
+				ImGui::ColorEdit3("Sun color", &m_env.sunColor.x);
+				ImGui::SliderFloat("Sun intensity (lux)", &m_env.sunIntensity, 0.0f, 30000.0f);
+				ImGui::Checkbox("Sun disc", &m_env.sunDiscEnabled);
+				ImGui::SliderFloat("Disc radius (deg)", &m_env.sunDiscSizeDeg, 0.1f, 10.0f);
+				ImGui::Separator();
+				ImGui::Text("Fog (HDR pre-tonemap)");
+				const char* fogModes[] = { "Off", "Exp2", "Linear" };
+				int fogMode = m_env.fogMode;
+				if (ImGui::Combo("Mode", &fogMode, fogModes, 3)) m_env.fogMode = fogMode;
+				ImGui::ColorEdit3("Fog color", &m_env.fogColor.x);
+				ImGui::SliderFloat("Fog intensity (HDR)", &m_env.fogIntensity, 0.0f, 2000.0f);
+				ImGui::SliderFloat("Density", &m_env.fogDensity, 0.0f, 0.1f, "%.4f");
+				ImGui::SliderFloat("Start (m)", &m_env.fogStart, 0.0f, 100.0f);
+				ImGui::SliderFloat("End (m)", &m_env.fogEnd, 1.0f, 200.0f);
+				ImGui::SliderFloat("Height (m)", &m_env.fogHeight, -10.0f, 30.0f);
+				ImGui::SliderFloat("Height falloff", &m_env.fogHeightFalloff, 0.0f, 2.0f);
+				if (!m_skydome.ShadersValid())
+					ImGui::TextDisabled("Sky program missing – dome skipped");
 			}
 			ImGui::Separator();
 			{
@@ -1423,6 +1491,8 @@ private:
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
 	ForwardPlusDemo m_fpDemo{};
+	smvk::EnvironmentSettings m_env{};
+	smvk::Skydome m_skydome{};
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target

@@ -100,6 +100,14 @@ void TestValidatePushRanges() {
 
 	std::vector<PushConstantRange> zero = { { 0, 0, ShaderStage::Vertex } };
 	Check(!smvk::ValidatePushConstants(zero, 256), "push.validate.zerosize");
+
+	// 126 bytes is not a multiple of 4 -> unsupported (VUID-01795); 128 is OK.
+	std::vector<PushConstantRange> odd = { { 0, 126, ShaderStage::All } };
+	std::string oddErr;
+	Check(!smvk::ValidatePushConstants(odd, 256, &oddErr) && !oddErr.empty(),
+		"push.validate.odd126");
+	std::vector<PushConstantRange> aligned128 = { { 0, 128, ShaderStage::All } };
+	Check(smvk::ValidatePushConstants(aligned128, 128), "push.validate.fits128");
 }
 
 void TestExpandPushStagesForLayout() {	using smvk::PushConstantRange;

@@ -1,5 +1,6 @@
 #include "light.hlsli"
 #include "common.hlsli"
+#include "environment.hlsli"
 
 struct PSIn
 {
@@ -211,6 +212,16 @@ PSOut mainPS(PSIn IN)
     if (shadingModelF == 1.0f)
     {
         float3 color = baseColor + emissive;
+        // Fog still applies so unlit cards (e.g. foliage impostors) fade
+        // with the rest of the scene.
+        FrameUniforms frameU = pc.frameUniforms.Get();
+        float viewDistU = length(frameU.cameraPos - IN.worldPos);
+        float fogFU = ComputeFogFactor(viewDistU, IN.worldPos.y, frameU.env);
+        if (fogFU > 0.0f)
+        {
+            float3 fogHdrU = frameU.env.fogColor.rgb * max(frameU.env.fogColor.w, 0.0f);
+            color = lerp(color, fogHdrU, fogFU);
+        }
         // Still apply occlusion? Spec says occlusion not for unlit, but we keep none.
         OUT.outColor = float4(color, baseAlpha);
         return OUT;
@@ -343,22 +354,36 @@ PSOut mainPS(PSIn IN)
     }
 
     // Ambient / sky-IBL floor (hemispherical sky).
-    // mat.ambient.rgb is the zenith sky radiance factor as an albedo
-    // multiplier = skyColor * skyLux / PI (same lux convention as the sun;
-    // default set in cluster.cpp: 500 lux ≈ 10% of the 5000 lux sun).
-    // hemi fades it out toward down-facing normals; kD keeps metals dark
-    // in shade (no specular env map yet).
-    //float hemi = 0.5f + 0.5f * N.y;
-    //float3 ambient = kD * baseColor * mat.ambient.rgb * hemi * occlusion;
+    // Configurable analytic IBL from the environment block:
+    // diffuse irradiance from EvaluateIrradiance() plus a cheap specular
+    // env reflection. When IBL is disabled (iblEnabled=0) falls back to
+    // the legacy constant-ambient path (baseColor * mat.ambient).
+    float3 irradiance = EvaluateIrradiance(N, frame.env);
+    float iblOn = saturate(frame.env.fogEndAndFlags.w);
+    float3 ambientDiffuse = kD * baseColor * irradiance * occlusion;
+    float3 legacyAmbient = baseColor * mat.ambient.rgb * occlusion;
+    float3 ambient = lerp(legacyAmbient, ambientDiffuse, iblOn);
+    // Specular IBL: reflection-vector env sample weighted by Fresnel.
+    float3 R = reflect(-V, N);
+    float3 Fenv = FresnelSchlickRoughness(NdotV, F0, roughness);
+    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, roughness, frame.env) * occlusion;
 
-    
-    float3 ambient = baseColor * mat.ambient.rgb * occlusion;
-    float3 color = direct + ambient;
+    float3 color = direct + ambient + ambientSpec;
     color = color * occlusion; // re-apply for direct as well per spec (optional)
     // Actually spec: occludedColor = lerp(color, color * occTex, strength) applied to final? We split above.
 
     // Emissive additive
     color += emissive;
+
+    // Distance + height fog (configurable, HDR pre-tonemap).
+    // viewDepth from camera distance; fog color is HDR (fogColor * intensity).
+    float viewDist = length(frame.cameraPos - IN.worldPos);
+    float fogF = ComputeFogFactor(viewDist, IN.worldPos.y, frame.env);
+    if (fogF > 0.0f)
+    {
+        float3 fogHdr = frame.env.fogColor.rgb * max(frame.env.fogColor.w, 0.0f);
+        color = lerp(color, fogHdr, fogF);
+    }
 
     // Handle alpha blending output
     // For Opaque/Masked we output baseAlpha, for Blend pipeline handles blending

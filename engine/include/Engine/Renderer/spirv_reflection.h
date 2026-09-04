@@ -88,8 +88,10 @@ SpirvReflection ReflectSpirvBytes(std::span<const uint8_t> bytes);
 std::vector<PushConstantRange> MergePushConstantRanges(
 	const std::vector<std::vector<PushConstantRange>>& perModule);
 
-// Validate that every reflected range lies within [0, maxSize) and that
-// total extent fits. Returns true when fits; otherwise fills error.
+// Validate that every reflected range lies within [0, maxSize), is a
+// multiple of 4 (VUID-vkCmdPushConstants-offset-01795), and that total
+// extent fits. Returns true when fits; otherwise fills error (with
+// "unsupported ..." for limit/alignment failures).
 bool ValidatePushConstants(const std::vector<PushConstantRange>& ranges,
                            uint32_t maxSize,
                            std::string* error = nullptr);

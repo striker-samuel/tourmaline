@@ -16,6 +16,20 @@ SamplerState samplers[];
 [[vk::binding(1, 0)]] // aliases to samplers! CAREFUL
 SamplerComparisonState comparisonSamplers[];
 
+// Configurable environment block (skydome IBL + fog).
+// Must match C++ smvk::EnvironmentFrameData (8 x float4, 128 bytes).
+struct EnvironmentFrameData
+{
+    float4 skyZenith;      // rgb zenith color (linear 0..1), w skyIntensity (HDR)
+    float4 skyHorizon;     // rgb horizon color (linear 0..1), w gradient exponent
+    float4 ground;         // rgb ground color (linear 0..1), w iblIntensity
+    float4 sunDirection;   // xyz dir TO sun (normalized), w disc cos(radius)
+    float4 sunColor;       // rgb sun color (linear 0..1), w sunIntensity (lux-like)
+    float4 fogColor;       // rgb fog color (linear 0..1), w fogIntensity (HDR)
+    float4 fogDensityHeight; // x density (exp2), y height, z heightFalloff, w linear start
+    float4 fogEndAndFlags; // x linear end, y skyMode, z fogMode, w iblEnabled
+};
+
 struct FrameUniforms
 {
     float4x4 view;
@@ -36,6 +50,10 @@ struct FrameUniforms
     float farPlane;
     float exposure;
     float padding;
+
+    // Configurable environment (skydome IBL + fog).
+    // Must match C++ smvk::EnvironmentFrameData (8 x float4).
+    EnvironmentFrameData env;
 };
 
 

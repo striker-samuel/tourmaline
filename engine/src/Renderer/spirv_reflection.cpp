@@ -242,10 +242,25 @@ bool ValidatePushConstants(const std::vector<PushConstantRange>& ranges,
 				*error = "zero-size push-constant range";
 			return false;
 		}
+		// VUID-vkCmdPushConstants-offset-01795: offset and size must be
+		// multiples of 4 (e.g. a 126-byte push is unsupported; use 128).
+		if ((r.offset % 4) != 0) {
+			if (error)
+				*error = "unsupported push-constant offset " + std::to_string(r.offset) +
+					": must be a multiple of 4";
+			return false;
+		}
+		if ((r.size % 4) != 0) {
+			if (error)
+				*error = "unsupported push-constant size " + std::to_string(r.size) +
+					" at offset " + std::to_string(r.offset) +
+					": must be a multiple of 4 (e.g. 126 bytes is invalid, use 128)";
+			return false;
+		}
 		if (r.offset + r.size > maxSize || r.offset + r.size < r.offset) {
 			if (error)
-				*error = "push-constant range [" + std::to_string(r.offset) + ", " +
-					std::to_string(r.offset + r.size) + ") exceeds limit " +
+				*error = "unsupported push-constant range [" + std::to_string(r.offset) + ", " +
+					std::to_string(r.offset + r.size) + ") exceeds device limit " +
 					std::to_string(maxSize);
 			return false;
 		}
