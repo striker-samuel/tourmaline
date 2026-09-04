@@ -95,6 +95,16 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
 
   message(STATUS "[Shaders] SOURCE_DIR = ${NORM_SOURCE_DIR}")
 
+  # Include dependencies: DXC emits no .d include files, so track the shared
+  # .hlsli headers coarsely – any header edit recompiles every shader that
+  # could include it. Critical for common.hlsli struct layouts (FrameUniforms
+  # / PushConstants C++-HLSL mirrors): stale SPIR-V silently reads shifted
+  # offsets while the freshly-recompiled shaders use the new layout.
+  file(GLOB_RECURSE SHADER_HEADERS CONFIGURE_DEPENDS
+    "${NORM_SOURCE_DIR}/*.hlsli"
+    "${NORM_SOURCE_DIR}/*.hlsl.h"
+  )
+
   if(NOT SHADERS)
     message(WARNING "[Shaders] No shaders found to compile in: ${NORM_SOURCE_DIR}")
     # Print directory contents for diagnostics
@@ -152,7 +162,7 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "⏳ DXC: ${FILE_NAME} [${_PROFILE}]"
                 COMMAND "${DXC}" -T "${_PROFILE}" ${_ENTRY_FLAGS} ${_COMMON} -Fo "${OUTPUT_FILE}" "${SHADER}"
                 COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --green "✅ DXC OK: ${FILE_NAME}"
-                DEPENDS "${SHADER}"
+                DEPENDS "${SHADER}" ${SHADER_HEADERS}
                 COMMENT "Compiling HLSL ${FILE_NAME} → SPIR-V (Vulkan 1.3)"
                 VERBATIM
             )
