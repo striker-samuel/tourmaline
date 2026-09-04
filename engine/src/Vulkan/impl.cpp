@@ -4821,6 +4821,15 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 	assert(!handle.empty());
 	return handle.index();
 }
+// Bindless descriptor-array slot of a TextureHandle's sampled view. Unlike
+// the texture pool index (which material slots happen to share by creation
+// order), this is the authoritative slot for e.g. per-light cookie textures.
+[[nodiscard]] uint32_t smvk::VulkanResourceManager::GetTextureBindlessIndex(TextureHandle handle) const
+{
+	const Texture* texture = textures_.get(handle);
+	assert(texture && !texture->bindless.empty());
+	return GetBindlessIndex(texture->bindless);
+}
 uint32_t smvk::VulkanResourceManager::GetOrCreateSampler(const SamplerCreateInfo& ci) {
 	assert(samplerCache_ && "samplerCache not initialized");
 	return samplerCache_->GetOrCreate(ci);

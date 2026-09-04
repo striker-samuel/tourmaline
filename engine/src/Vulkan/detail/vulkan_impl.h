@@ -558,6 +558,7 @@ namespace smvk {
 
 		void UpdateDescriptors(uint32_t frameIndex = 0);
 		uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
+		uint32_t GetTextureBindlessIndex(TextureHandle handle) const;
 
 		std::unique_ptr<VulkanCore> core_;
 		VmaAllocator m_allocator;

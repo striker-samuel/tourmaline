@@ -38,7 +38,7 @@ namespace smvk {
 
 // ---------------------------------------------------------------------------
 // GPU light (must match HLSL ForwardPlusLight in common.hlsli / forwardplus)
-// 80 bytes, 16-byte aligned.
+// 96 bytes, 16-byte aligned.
 //
 // Shadow fields (spot only, points ignore them):
 //  shadowTile      – tile index into the spot-shadow atlas description
@@ -49,6 +49,15 @@ namespace smvk {
 // `flags` bit kForwardPlusFlag_CastShadow is the *request* flag: the app sets
 // it on lights allowed to cast shadows; per-frame selection then assigns
 // shadowTile/MapIndex only to the top-N casters (see spotshadow.h).
+//
+// Light cookie (spot only): cookieIndex is the bindless texture index of a
+// gobo projected through the spot cone (cone-UV convention matches the
+// spot-shadow projection, see light.hlsli SpotConeUV). -1 = no cookie.
+//
+// Light function: per-light procedural intensity modulation evaluated per
+// pixel per light (Unreal-style light functions, but analytic instead of a
+// material). functionType selects the curve, functionSpeed/functionScale
+// parameterize it (see kForwardPlusFunction_*).
 // ---------------------------------------------------------------------------
 struct alignas(16) ForwardPlusLight {
 	glm::vec4 color = glm::vec4(1.0f);      // 0  linear RGB + pad
@@ -64,8 +73,12 @@ struct alignas(16) ForwardPlusLight {
 	int32_t shadowMapIndex = -1;            // 68 bindless atlas index, -1 = none
 	float shadowBias = 0.0f;                // 72 receiver-depth bias
 	float pad2_ = 0.0f;                     // 76
+	int32_t cookieIndex = -1;               // 80 bindless gobo texture, -1 = none
+	int32_t functionType = 0;               // 84 kForwardPlusFunction_*
+	float functionSpeed = 1.0f;             // 88 animation speed multiplier
+	float functionScale = 1.0f;              // 92 modulation depth / pattern scale
 };
-static_assert(sizeof(ForwardPlusLight) == 80);
+static_assert(sizeof(ForwardPlusLight) == 96);
 static_assert(sizeof(ForwardPlusLight) % 16 == 0);
 
 static constexpr uint32_t kForwardPlusPoint = 0;
@@ -74,6 +87,16 @@ static constexpr uint32_t kForwardPlusSpot = 1;
 // selection (upper limit + screenspace/distance heuristic) decides which
 // requesting spots actually get a tile (shadowTile >= 0).
 static constexpr int32_t kForwardPlusFlag_CastShadow = 1 << 0;
+
+// Light function types (must match light.hlsli EvaluateLightFunction).
+// Flicker = stepped candle-like noise over time; Pulse = sine breathing;
+// Bands = moving diagonal bands across the spot cone (spatial; spots only,
+// points fall back to Pulse). Speed scales the time axis, Scale how deep the
+// modulation dips (1 = down to black, 0 = disabled).
+static constexpr int32_t kForwardPlusFunction_None = 0;
+static constexpr int32_t kForwardPlusFunction_Flicker = 1;
+static constexpr int32_t kForwardPlusFunction_Pulse = 2;
+static constexpr int32_t kForwardPlusFunction_Bands = 3;
 
 struct ForwardPlusDesc {
 	uint32_t tileSize = 16;

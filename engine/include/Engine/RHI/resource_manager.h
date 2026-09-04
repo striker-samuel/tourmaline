@@ -56,6 +56,8 @@ public:
 
     void UpdateDescriptors(uint32_t frameIndex = 0);
     uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
+    // Bindless descriptor-array slot of a TextureHandle (its sampled view).
+    uint32_t GetTextureBindlessIndex(TextureHandle handle) const;
     uint64_t GetBufferDeviceAddress(BufferHandle handle) const;
     // Flush batched uploads (256MB threshold, or manual at end of scene)
     void FlushUploads();

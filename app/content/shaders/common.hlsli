@@ -115,9 +115,12 @@ struct DirectionalCascadeBuffer
 };
 
 // ---- Forward+ tiled lights (point/spot; directional stays on CSM path) ----
-// Must match C++ smvk::ForwardPlusLight (80 bytes).
+// Must match C++ smvk::ForwardPlusLight (96 bytes).
 // flags bit0 = shadow request (kForwardPlusFlag_CastShadow); shadowTile >= 0
 // means this frame assigned a spot-shadow tile (spot only, points ignore).
+// cookieIndex >= 0 = bindless gobo texture projected through the spot cone
+// (spot only). functionType > 0 = procedural light function (see
+// light.hlsli EvaluateLightFunction): 1 flicker, 2 pulse, 3 cone bands.
 struct ForwardPlusLight
 {
     float4 color;       // 0  linear RGB + pad
@@ -133,6 +136,10 @@ struct ForwardPlusLight
     int shadowMapIndex; // 68 bindless spot atlas index, -1 = unshadowed
     float shadowBias;   // 72 receiver-depth bias (perspective)
     float pad2_;        // 76
+    int cookieIndex;    // 80 bindless gobo texture, -1 = none
+    int functionType;   // 84 0=none, 1=flicker, 2=pulse, 3=bands
+    float functionSpeed; // 88 animation speed multiplier
+    float functionScale; // 92 modulation depth / pattern scale
 };
 
 #define MAX_SPOT_SHADOWS 8

@@ -147,6 +147,7 @@ void ResourceManager::UploadDataToImage2D(const Image& image, const void* data,
 }
 void ResourceManager::UpdateDescriptors(uint32_t frameIndex) { impl_->vulkan.UpdateDescriptors(frameIndex); }
 uint32_t ResourceManager::GetBindlessIndex(BindlessImageHandle handle) const { return impl_->vulkan.GetBindlessIndex(handle); }
+uint32_t ResourceManager::GetTextureBindlessIndex(TextureHandle handle) const { return impl_->vulkan.GetTextureBindlessIndex(handle); }
 uint32_t ResourceManager::GetOrCreateSampler(const SamplerCreateInfo& ci) { return impl_->vulkan.GetOrCreateSampler(ci); }
 uint32_t ResourceManager::GetSamplerCount() const { return impl_->vulkan.GetSamplerCount(); }
 bool ResourceManager::SupportsMSAA2x() {

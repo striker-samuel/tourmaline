@@ -319,14 +319,19 @@ PSOut mainPS(PSIn IN)
 
                 // Angular falloff for spots.
                 float angular = 1.0f;
+                float2 spotUV = float2(0.5f, 0.5f);
                 if (pl.type == 1)
                 {
-                    float cosA = dot(-Lp, normalize(pl.direction));
+                    float3 axis = normalize(pl.direction);
+                    float cosA = dot(-Lp, axis);
                     float cosInner = cos(pl.innerAngle);
                     float cosOuter = cos(pl.outerAngle);
                     if (cosA < cosOuter)
                         continue;
                     angular = smoothstep(cosOuter, cosInner, cosA);
+                    // Cone UV for the cookie / spatial light functions
+                    // (same projection as the spot-shadow tiles).
+                    spotUV = SpotConeUV(axis, -Lp, pl.outerAngle);
                 }
 
                 // Frostbite-style windowed falloff, candela convention:
@@ -343,6 +348,23 @@ PSOut mainPS(PSIn IN)
                 float NdotLp = max(dot(N, Lp), 0.0f);
                 if (NdotLp <= 0.0f)
                     continue;
+
+                // Light cookie (spot): gobo texture projected through the
+                // cone; modulates the light color (diffuse + specular).
+                if (pl.type == 1 && pl.cookieIndex >= 0)
+                {
+                    uint cookieIdx = NonUniformResourceIndex((uint)pl.cookieIndex);
+                    plColor *= textures[cookieIdx].Sample(samplers[0], spotUV).rgb;
+                }
+
+                // Light function: procedural per-light intensity curve
+                // (flicker / pulse / cone bands). Skips backfacing pixels.
+                if (pl.functionType > 0)
+                {
+                    plColor *= EvaluateLightFunction(
+                        pl.functionType, pl.functionSpeed, pl.functionScale,
+                        frame.time, spotUV, pl.type == 1);
+                }
 
                 // Spot shadow: tile assigned by the per-frame selection;
                 // unshadowed lights (shadowTile < 0) contribute fully.

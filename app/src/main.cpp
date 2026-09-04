@@ -159,6 +159,15 @@ struct ForwardPlusDemo {
 	bool spotShadowsEnabled = true;
 	int spotShadowMax = 4;               // upper limit, clamped to kMaxSpotShadows
 	float spotShadowMaxDistance = 45.0f; // hard cutoff on camera->light distance (m)
+	// Light cookies: per-spot gobo projected through the cone; spot s gets
+	// pattern s % kCookiePatternCount (soft disc / blinds / starburst).
+	bool cookiesEnabled = true;
+	// Light functions: procedural per-light intensity curve on the spots
+	// (flicker / pulse / cone bands), animated with frame time.
+	bool lightFunctionsEnabled = true;
+	int functionType = smvk::kForwardPlusFunction_Flicker;
+	float functionSpeed = 0.6f;
+	float functionScale = 0.65f;
 };
 
 // Data definitions //
@@ -172,6 +181,59 @@ struct DrawSetData {
 	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
 };
 static_assert(sizeof(DrawSetData) % 16 == 0);
+
+// Procedural light cookies (gobos) for the demo spots: RGBA8, linear,
+// sampled through the spot cone UV (see light.hlsli SpotConeUV).
+static constexpr int kCookiePatternCount = 3;
+static constexpr uint32_t kCookieTextureSize = 256;
+
+static std::vector<uint8_t> GenerateCookiePixels(int pattern) {
+	const uint32_t S = kCookieTextureSize;
+	std::vector<uint8_t> px(size_t(S) * S * 4);
+	for (uint32_t y = 0; y < S; ++y) {
+		for (uint32_t x = 0; x < S; ++x) {
+			// [-1,1] cone UV space (V matches texture rows; patterns are
+			// symmetric so the exact orientation does not matter).
+			const float u = (float(x) + 0.5f) / float(S) * 2.0f - 1.0f;
+			const float v = (float(y) + 0.5f) / float(S) * 2.0f - 1.0f;
+			const float r = std::sqrt(u * u + v * v);
+
+			float val = 0.0f;
+			glm::vec3 tint(1.0f);
+			switch (pattern) {
+			case 0: { // soft disc: gentle center-weighted pool of light
+				val = 1.0f - glm::smoothstep(0.45f, 0.95f, r);
+				tint = { 1.0f, 0.92f, 0.80f };
+				break;
+			}
+			case 1: { // window blinds: horizontal slats, cool daylight
+				const float slat = (v + 1.0f) * 0.5f * 6.0f;
+				const float f = slat - std::floor(slat);
+				val = glm::smoothstep(0.30f, 0.55f, f);
+				val *= 1.0f - glm::smoothstep(0.70f, 0.98f, r);
+				tint = { 0.95f, 0.97f, 1.0f };
+				break;
+			}
+			default: { // starburst: warm spokes + hot core
+				const float a = std::atan2(v, u);
+				val = std::pow(std::abs(std::cos(a * 4.0f)), 12.0f);
+				val *= 1.0f - glm::smoothstep(0.40f, 0.95f, r);
+				val += 0.25f * (1.0f - glm::smoothstep(0.0f, 0.35f, r));
+				tint = { 1.0f, 0.85f, 0.60f };
+				break;
+			}
+			}
+
+			const glm::vec3 c = tint * std::min(val, 1.0f);
+			const size_t i = (size_t(y) * S + x) * 4;
+			px[i + 0] = (uint8_t)(std::clamp(c.r, 0.0f, 1.0f) * 255.0f);
+			px[i + 1] = (uint8_t)(std::clamp(c.g, 0.0f, 1.0f) * 255.0f);
+			px[i + 2] = (uint8_t)(std::clamp(c.b, 0.0f, 1.0f) * 255.0f);
+			px[i + 3] = 255;
+		}
+	}
+	return px;
+}
 
 struct FrameUniforms
 {
@@ -226,6 +288,8 @@ struct AppResources {
 	// NOTE: shadow/bloom/tonemap/forwardplus programs + modules are owned by
 	// their engine builders (CascadedShadowAtlas / BloomChain / Tonemapper /
 	// ForwardPlus).
+	// Procedural light-cookie (gobo) textures assigned to the demo spots.
+	smvk::Holder<smvk::TextureHandle> cookieTextures[kCookiePatternCount];
 };
 
 struct ViewportResources {
@@ -313,6 +377,27 @@ private:
 		);
 		m_resources.spotShadowLogical = m_rendergraph->AddExternalBuffer(
 			m_resources.spotShadowBuffer, "spot shadow tiles");
+
+		// Light-cookie (gobo) textures for the demo spots. Small procedural
+		// RGBA8 images; bindless indices are resolved via the texture's
+		// sampled view (creation-order independent).
+		for (int i = 0; i < kCookiePatternCount; ++i) {
+			std::vector<uint8_t> pixels = GenerateCookiePixels(i);
+			smvk::ImageCreateInfo cookieCI{};
+			cookieCI.format = smvk::Format::RGBA8_UNorm;
+			cookieCI.extent = { kCookieTextureSize, kCookieTextureSize, 1u };
+			cookieCI.mipLevels = 1u;
+			cookieCI.arrayLayers = 1u;
+			cookieCI.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+			cookieCI.name = "lightCookie";
+			auto tex = m_context->CreateTexture(cookieCI, pixels.data());
+			if (tex.empty()) {
+				std::cerr << "[TestApp] Cookie texture " << i << " unavailable\n";
+				continue;
+			}
+			m_cookieBindless[i] = (int32_t)m_context->GetTextureBindlessIndex(tex);
+			m_resources.cookieTextures[i] = std::move(tex);
+		}
 
 		// VFS overlay: loose content/ for iteration, cooked paks mounted
 		// underneath (loose files win on collisions). Shader reads below
@@ -735,17 +820,27 @@ private:
 				l.range = m_fpDemo.spotRange;
 				l.color = glm::vec4(1.0f, 0.9f, 0.75f, 1.0f);
 				l.intensity = m_fpDemo.spotIntensity;
-				l.innerAngle = glm::radians(12.0f);
-				l.outerAngle = glm::radians(28.0f);
-				l.type = smvk::kForwardPlusSpot;
-				// Controllable per-light flag: demo opts all spots in; the
-				// frame selection below decides which actually get tiles.
-				if (m_fpDemo.spotShadowsEnabled)
-					l.flags |= smvk::kForwardPlusFlag_CastShadow;
-				l.shadowTile = -1;
-				l.shadowMapIndex = -1;
-				l.shadowBias = SPOT_SHADOW_BIAS;
-				lights.push_back(l);
+			l.innerAngle = glm::radians(12.0f);
+			l.outerAngle = glm::radians(28.0f);
+			l.type = smvk::kForwardPlusSpot;
+			// Controllable per-light flag: demo opts all spots in; the
+			// frame selection below decides which actually get tiles.
+			if (m_fpDemo.spotShadowsEnabled)
+				l.flags |= smvk::kForwardPlusFlag_CastShadow;
+			l.shadowTile = -1;
+			l.shadowMapIndex = -1;
+			l.shadowBias = SPOT_SHADOW_BIAS;
+			// Light cookie: gobo projected through the cone (spot s gets
+			// pattern s % kCookiePatternCount). -1 leaves the light clean.
+			if (m_fpDemo.cookiesEnabled)
+				l.cookieIndex = m_cookieBindless[s % kCookiePatternCount];
+			// Light function: procedural intensity curve on the spot.
+			if (m_fpDemo.lightFunctionsEnabled) {
+				l.functionType = m_fpDemo.functionType;
+				l.functionSpeed = m_fpDemo.functionSpeed;
+				l.functionScale = m_fpDemo.functionScale;
+			}
+			lights.push_back(l);
 			}
 		}
 
@@ -1687,9 +1782,20 @@ private:
 				if (ImGui::SliderInt("Shadow spots max", &spotMax, 0, (int)smvk::kMaxSpotShadows))
 					m_fpDemo.spotShadowMax = spotMax;
 				ImGui::SliderFloat("Shadow max distance (m)", &m_fpDemo.spotShadowMaxDistance, 5.0f, 120.0f);
-				ImGui::TextDisabled("Select: intensity*cone*coverage/dist^2, NDC-box + distance culled");
-				if (!m_viewportResources.spotShadows.Valid())
-					ImGui::TextDisabled("Spot atlas: MISSING (spots run unshadowed)");
+			ImGui::TextDisabled("Select: intensity*cone*coverage/dist^2, NDC-box + distance culled");
+			if (!m_viewportResources.spotShadows.Valid())
+				ImGui::TextDisabled("Spot atlas: MISSING (spots run unshadowed)");
+			ImGui::Separator();
+			ImGui::Text("Light cookies & functions");
+			ImGui::Checkbox("Spot cookies (gobo)", &m_fpDemo.cookiesEnabled);
+			ImGui::Checkbox("Light functions (spots)", &m_fpDemo.lightFunctionsEnabled);
+			const char* functionNames[] = { "None", "Flicker", "Pulse", "Cone bands" };
+			int fn = m_fpDemo.functionType;
+			if (ImGui::Combo("Function", &fn, functionNames, 4))
+				m_fpDemo.functionType = fn;
+			ImGui::SliderFloat("Fn speed", &m_fpDemo.functionSpeed, 0.05f, 5.0f);
+			ImGui::SliderFloat("Fn depth", &m_fpDemo.functionScale, 0.0f, 1.0f);
+			ImGui::TextDisabled("Cookies: soft disc / blinds / starburst per spot; patterns modulate light color");
 			}
 			ImGui::Separator();
 			ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
@@ -1725,6 +1831,7 @@ private:
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
 	ForwardPlusDemo m_fpDemo{};
+	int32_t m_cookieBindless[kCookiePatternCount] = { -1, -1, -1 };
 	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
 	smvk::EnvironmentSettings m_env{};
