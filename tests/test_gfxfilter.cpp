@@ -511,6 +511,120 @@ void TestTwoSided() {
 		"gfx.twosided.flag-skips-cone");
 }
 
+// ---------------------------------------------------------------------------
+// T5 (T1 state): temporal snapshot semantics — pure CPU, headless.
+// SnapshotVisible copies this frame's surviving set into the sidecar
+// (overwrites = rotation); InvalidateHistory disarms without freeing.
+// ---------------------------------------------------------------------------
+
+void TestTemporalSnapshot() {
+	using namespace smvk::gfx;
+	State s{};
+	const auto up = MakeSphere(24, 36, 1.0f);
+	const uint32_t m = RegisterMeshFromUpload(s, up, 0);
+	Check(m == 0, "gfx.hist.mesh-id");
+
+	smvk::RenderViewSet views;
+	views.NewFrame();
+	const glm::vec3 eye(0, 0, 4);
+	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f;
+	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+	View v{};
+	v.renderView = &views.Get(rv);
+	v.eye = eye;
+	v.width = 800;
+	v.height = 600;
+	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+	s.views.push_back(std::move(v));
+	s.viewCount = 1;
+
+	// History starts invalid; invalidating fresh state is a safe no-op.
+	Check(!Temporal(s, 0).historyValid, "gfx.hist.starts-invalid");
+	InvalidateHistory(s, 0);
+	Check(!Temporal(s, 0).historyValid, "gfx.hist.invalidate-noop");
+
+	PushDraw(s, 0, m, glm::mat4(1.0f), 0);
+	BuildBatches(s, 0);
+	const uint32_t kept = s.views[0].batchCount;
+	Check(kept > 0, "gfx.hist.kept-some");
+
+	SnapshotVisible(s, 0);
+	const TemporalView& t = Temporal(s, 0);
+	Check(t.historyValid, "gfx.hist.armed");
+	Check(t.prevBatchCount == kept, "gfx.hist.batch-count");
+	Check(t.prevDrawCount == (uint32_t)s.views[0].drawConstants.size(),
+		"gfx.hist.draw-count");
+	Check(t.prevDraws.size() == s.views[0].drawConstants.size(),
+		"gfx.hist.draws-cover");
+	bool pairsOk = t.prevBatches.size() == s.views[0].batches.size();
+	for (size_t i = 0; pairsOk && i < t.prevBatches.size(); ++i) {
+		pairsOk = t.prevBatches[i].cluster == s.views[0].batches[i].cluster
+			&& t.prevBatches[i].draw == s.views[0].batches[i].draw;
+	}
+	Check(pairsOk, "gfx.hist.pairs-match");
+	Check(t.prevRanges.size() == s.views[0].materialRanges.size(),
+		"gfx.hist.ranges-cover");
+	Check(t.width == 800 && t.height == 600, "gfx.hist.extent");
+
+	// Rotation overwrites, never appends (simulate an empty follow-up frame).
+	s.views[0].batches.clear();
+	s.views[0].drawConstants.clear();
+	s.views[0].materialRanges.clear();
+	s.views[0].batchCount = 0;
+	SnapshotVisible(s, 0);
+	const TemporalView& t2 = Temporal(s, 0);
+	Check(t2.prevBatchCount == 0 && t2.prevBatches.empty()
+		&& t2.prevDraws.empty() && t2.prevRanges.empty(),
+		"gfx.hist.rotate-overwrites");
+
+	// Invalidate disarms but keeps buffers (next frame rebuilds).
+	InvalidateHistory(s, 0);
+	Check(!Temporal(s, 0).historyValid, "gfx.hist.invalidate-disarms");
+}
+
+// ---------------------------------------------------------------------------
+// T6 (T2 state): HZB mip layout — pure CPU, headless. Guards the manual
+// mip-offset math shared (by convention) with hzb.cs.hlsl addressing.
+// ---------------------------------------------------------------------------
+
+void TestHizLayout() {
+	using namespace smvk::gfx;
+	Check(HzbMipCount(0, 0) == 0, "gfx.hiz.zero-extent");
+	Check(HzbMipCount(1, 1) == 1, "gfx.hiz.single-texel");
+	Check(HzbMipCount(64, 64) == 7, "gfx.hiz.pow2-levels");
+	Check(HzbMipCount(1920, 1080) == 11, "gfx.hiz.hd-levels");
+
+	uint32_t w = 0, h = 0;
+	HzbMipDims(1920, 1080, 0, w, h);
+	Check(w == 1920 && h == 1080, "gfx.hiz.dims-mip0");
+	HzbMipDims(1920, 1080, 1, w, h);
+	Check(w == 960 && h == 540, "gfx.hiz.dims-mip1");
+	HzbMipDims(1920, 1080, 10, w, h);
+	Check(w == 1 && h == 1, "gfx.hiz.dims-last");
+
+	Check(HzbMipOffsetFloats(1920, 1080, 0) == 0, "gfx.hiz.off-mip0");
+	Check(HzbMipOffsetFloats(1920, 1080, 1) == 1920u * 1080u, "gfx.hiz.off-mip1");
+	Check(HzbMipOffsetFloats(1920, 1080, 2) == 1920u * 1080u + 960u * 540u,
+		"gfx.hiz.off-mip2");
+	// 64x64: 4096+1024+256+64+16+4+1.
+	Check(HzbTotalFloats(64, 64) == 5461, "gfx.hiz.total-pow2");
+	Check(HzbTotalFloats(0, 5) == 0, "gfx.hiz.total-zero");
+	// Total covers the last mip exactly (no gap, no overrun).
+	{
+		const uint32_t total = HzbTotalFloats(1920, 1080);
+		uint32_t lw = 0, lh = 0;
+		HzbMipDims(1920, 1080, HzbMipCount(1920, 1080) - 1, lw, lh);
+		Check(total == HzbMipOffsetFloats(1920, 1080, 10) + lw * lh,
+			"gfx.hiz.total-tight");
+	}
+
+	// Reversed-Z conservative reduction: MIN (sky 0.0 poisons to keep).
+	Check(HzbReduce2x2(0.9f, 0.85f, 0.92f, 0.88f) == 0.85f, "gfx.hiz.reduce-min");
+	Check(HzbReduce2x2(0.0f, 0.9f, 0.8f, 0.7f) == 0.0f, "gfx.hiz.reduce-sky");
+}
+
 } // namespace
 
 int main() {
@@ -519,6 +633,8 @@ int main() {
 	TestBatching();
 	TestPreCull();
 	TestTwoSided();
+	TestTemporalSnapshot();
+	TestHizLayout();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

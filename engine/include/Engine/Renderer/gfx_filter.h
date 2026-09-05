@@ -30,6 +30,7 @@
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <vector>
@@ -59,6 +60,15 @@ typedef uint32_t CullFlags;
 // degenerate and small-prim tests still apply.
 inline constexpr uint32_t DrawFlagBit_TwoSided = 0x1;
 typedef uint32_t DrawFlags;
+
+// Draw-set buckets: geometry grouped by properties that affect
+// rasterization (Alan Wake 2 style). The seed depth pass (T3) issues one
+// PSO per bucket (opaque single-sided vs. alpha-tested double-sided);
+// views accept a mask of buckets (main view: all, shadows later).
+inline constexpr uint32_t DrawSetBit_Opaque = 0x1;
+inline constexpr uint32_t DrawSetBit_Masked = 0x2;
+inline constexpr uint32_t DrawSetMask_All = DrawSetBit_Opaque | DrawSetBit_Masked;
+typedef uint32_t DrawSetMask;
 
 // One GPU workgroup per cluster (128 threads, 1 thread per triangle).
 static constexpr uint32_t kThreadsPerCluster = 128;
@@ -198,6 +208,83 @@ struct View {
 	LogicalBufferHandle indirectLogicals[MAX_FRAMES_IN_FLIGHT]{};
 };
 
+// GPU mirror of one surviving (cluster, draw) pair ("visible meshlet").
+// Must match HLSL GfxVisible::vis elements (8 bytes).
+struct VisibleCluster {
+	uint32_t cluster = 0;
+	uint32_t draw = 0;
+};
+static_assert(sizeof(VisibleCluster) == 8);
+
+// Hierarchical-Z store for one view: MIN-reduced depth pyramid (reversed-Z
+// conservative, see hzb.hlsli) in a Storage float buffer with manual mip
+// layout (BDA style, no storage images / samplers needed). Mip 0 mirrors
+// the depth texture 1:1; mip k dims are max(1, dim >> k).
+static constexpr uint32_t kHizMaxMips = 16;
+struct HizResources {
+	uint32_t width = 0;
+	uint32_t height = 0;
+	uint32_t mipCount = 0;
+	uint32_t mipOffsets[kHizMaxMips] = {}; // float offsets into buffer
+	Holder<BufferHandle> buffer;
+	LogicalBufferHandle logical{};
+};
+// Pure-CPU HZB layout (headless-testable). Mip dims clamp at 1x1; count
+// stops when both dims are 1 (capped at kHizMaxMips).
+uint32_t HzbMipCount(uint32_t w, uint32_t h);
+void HzbMipDims(uint32_t w, uint32_t h, uint32_t mip, uint32_t& outW, uint32_t& outH);
+uint32_t HzbMipOffsetFloats(uint32_t w, uint32_t h, uint32_t mip);
+uint32_t HzbTotalFloats(uint32_t w, uint32_t h);
+// Conservative 2x2 reduction for reversed-Z (MIN: one sky pixel poisons
+// the texel to 0 -> keep; see hzb.hlsli derivation).
+inline float HzbReduce2x2(float a, float b, float c, float d) {
+	return std::min(std::min(a, b), std::min(c, d));
+}
+
+// Compute push. Must match HLSL HzbPush in hzb.hlsli (48 bytes).
+// srcMip = kHizSrcDepth copies mip 0 from the depth texture instead.
+static constexpr uint32_t kHizSrcDepth = 0xFFFFFFFFu;
+struct HzbPush {
+	uint64_t hzb = 0;
+	uint32_t srcMip = kHizSrcDepth;
+	uint32_t dstMip = 0;
+	uint32_t srcWidth = 0;
+	uint32_t srcHeight = 0;
+	uint32_t dstWidth = 0;
+	uint32_t dstHeight = 0;
+	uint32_t srcOffset = 0; // floats (ignored for depth source)
+	uint32_t dstOffset = 0; // floats
+	uint32_t depthTextureIndex = UINT32_MAX;
+	uint32_t pad = 0;
+};
+static_assert(sizeof(HzbPush) == 48);
+
+// Per-view temporal visibility state (Alan Wake 2 style). Deliberately NOT
+// part of RenderView: that struct is HLSL-mirrored (256 bytes,
+// static_asserted), so history lives in this sidecar, parallel to views.
+// prev* is last frame's surviving set (seed source for T3); curr* is this
+// frame's (rotated into prev* by SnapshotVisible, called per frame in T5).
+struct TemporalView {
+	bool historyValid = false; // false until one full visibility frame lands
+	float minimumContribution = 0.0f; // px-area threshold, T4 (0 = disabled)
+	uint32_t drawSetMask = DrawSetMask_All;
+	uint32_t width = 0, height = 0; // extent the history was built for
+	HizResources hiz;
+	// CPU snapshot (headless-testable; GPU mirror below is uploaded by
+	// UploadVisible into the frameIndex ring slice).
+	std::vector<Batch> prevBatches; // surviving (cluster, draw) pairs
+	std::vector<Draw> prevDraws; // draw constants they index into
+	std::vector<MaterialRange> prevRanges; // material buckets over prevBatches
+	uint32_t prevBatchCount = 0;
+	uint32_t prevDrawCount = 0;
+	// GPU mirror, ringed per frame in flight (same rule as View buffers:
+	// frames overlap, uploads flush immediately).
+	Holder<BufferHandle> visClusterBuffers[MAX_FRAMES_IN_FLIGHT];
+	Holder<BufferHandle> visDrawBuffers[MAX_FRAMES_IN_FLIGHT];
+	LogicalBufferHandle visClusterLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	LogicalBufferHandle visDrawLogicals[MAX_FRAMES_IN_FLIGHT]{};
+};
+
 struct State {
 	// Static (load-time): cluster-ordered global vertex ids + cluster table.
 	// Frozen after UploadStaticData, safe to share across frames.
@@ -210,7 +297,10 @@ struct State {
 	LogicalBufferHandle clusterLogical{};
 	Holder<ShaderModuleHandle> filterModule;
 	ShaderProgram filterProgram{};
+	Holder<ShaderModuleHandle> hizModule;
+	ShaderProgram hizProgram{};
 	std::vector<View> views;
+	std::vector<TemporalView> temporals; // parallel to views (same slot)
 	uint32_t viewCount = 0;
 };
 
@@ -220,6 +310,7 @@ struct State {
 
 inline constexpr const char* kGfxFilterCsPath = "content/shaders/gfxfilter.cs.hlsl.spv";
 inline constexpr const char* kGfxFilteredVsPath = "content/shaders/gfxfiltered.vert.hlsl.spv";
+inline constexpr const char* kHizCsPath = "content/shaders/hzb.cs.hlsl.spv";
 
 bool EnsureShaders(State& s, ResourceManager& ctx,
 	const char* csPath = kGfxFilterCsPath);
@@ -279,6 +370,48 @@ void BuildBatches(State& s, uint32_t view);
 // the frameIndex ring slice. Returns exact counters (trianglesProcessed
 // counts emitted triangles).
 Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
+
+// ---- Temporal visibility (T1 state, T3/T5 consumers) ----
+// Accessor (resizes the sidecar on demand so hand-built unit-test Views
+// without GPU buffers still work).
+[[nodiscard]] inline TemporalView& Temporal(State& s, uint32_t view) {
+	if (s.temporals.size() <= view)
+		s.temporals.resize(view + 1);
+	return s.temporals[view];
+}
+[[nodiscard]] inline const TemporalView& Temporal(const State& s, uint32_t view) {
+	assert(view < s.temporals.size());
+	return s.temporals[view];
+}
+// Drops history (first frame, extent drift, camera teleport, quality
+// change). Buffers are kept; the next frame rebuilds from the full path.
+void InvalidateHistory(State& s, uint32_t view);
+// CPU snapshot of this frame's surviving set into the temporal sidecar
+// (overwrites; pure CPU, headless-testable). T5 calls this per frame after
+// FinalizeView; UploadVisible mirrors it to the GPU ring slice.
+void SnapshotVisible(State& s, uint32_t view);
+// Uploads the snapshot (prevBatches as compact VisibleCluster pairs +
+// prevDraws) into the frameIndex ring slice. No-op when empty/unallocated.
+void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
+
+// ---- Hierarchical-Z (T2 build, T4 consumer) ----
+bool EnsureHizShaders(State& s, ResourceManager& ctx,
+	const char* csPath = kHizCsPath);
+// (Re)creates the view's HZB buffer for w/h (frees the old logical).
+// Resets historyValid when the size drifts (stale seed geometry extent).
+// Returns false on zero extent or allocation failure (history invalid).
+bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
+	uint32_t view, uint32_t w, uint32_t h);
+// Compute pass shell for one HZB level (caller sets the recording func
+// to PushAndDispatchHiz). dstMip 0 additionally reads depthLogical.
+RenderPass& AddHizPass(State& s, RenderGraph& rg, uint32_t view,
+	uint32_t dstMip, LogicalImageViewHandle depthLogical);
+// Recording helper: pushes HzbPush for dstMip and dispatches the level.
+// depthBindlessIndex is consumed only for dstMip 0 (UINT32_MAX otherwise).
+void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+	uint32_t view, uint32_t dstMip, uint32_t depthBindlessIndex = UINT32_MAX);
+// BDA of the view's HZB buffer (0 when unallocated; T4 skips occlusion then).
+uint64_t HizAddress(State& s, ResourceManager& ctx, uint32_t view);
 
 // ---- Pass shells (caller sets the recording func) ----
 RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view);

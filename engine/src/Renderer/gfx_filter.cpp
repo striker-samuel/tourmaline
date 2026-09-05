@@ -16,6 +16,8 @@ static constexpr size_t kBatchBufferBytes = kMaxBatches * sizeof(Batch);
 static constexpr size_t kDrawBufferBytes = kMaxDraws * sizeof(Draw);
 static constexpr size_t kFilteredBytes = kMaxBatches * kMaxClusterTris * 3 * sizeof(uint32_t);
 static constexpr size_t kIndirectBytes = kMaxBatches * 20; // VkDrawIndexedIndirectCommand
+static constexpr size_t kVisClusterBytes = kMaxBatches * sizeof(VisibleCluster);
+static constexpr size_t kVisDrawBytes = kMaxDraws * sizeof(Draw);
 
 static void RollbackSlotBuffers(RenderGraph& rg, View& v, uint32_t doneFrames) {
 	for (uint32_t f = 0; f < doneFrames; ++f) {
@@ -89,7 +91,57 @@ bool EnsureShaders(State& s, ResourceManager& ctx, const char* csPath) {
 
 bool Ensure(State& s, ResourceManager& ctx, RenderGraph& rg, const char* csPath) {
 	(void)rg; // per-(view, frame) buffers are pooled on demand by BeginView
-	return EnsureShaders(s, ctx, csPath);
+	if (!EnsureShaders(s, ctx, csPath))
+		return false;
+	return EnsureHizShaders(s, ctx);
+}
+
+bool EnsureHizShaders(State& s, ResourceManager& ctx, const char* csPath) {
+	if (s.hizProgram.shaderCount != 0 && !s.hizModule.empty())
+		return true;
+	try {
+		if (s.hizModule.empty())
+			s.hizModule = ctx.CreateShaderModule(
+				readFile(csPath ? csPath : kHizCsPath), "hizBuildCS");
+	}
+	catch (...) {
+		return false;
+	}
+	if (s.hizModule.empty())
+		return false;
+	Shader cs{ .module = s.hizModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+	s.hizProgram = { .shaders = { cs }, .shaderCount = 1 };
+	return true;
+}
+
+static void RollbackTemporalBuffers(RenderGraph& rg, TemporalView& t, uint32_t doneFrames) {
+	for (uint32_t f = 0; f < doneFrames; ++f) {
+		if (!t.visClusterLogicals[f].empty()) rg.FreeBuffer(t.visClusterLogicals[f]);
+		if (!t.visDrawLogicals[f].empty()) rg.FreeBuffer(t.visDrawLogicals[f]);
+		t.visClusterLogicals[f] = {};
+		t.visDrawLogicals[f] = {};
+	}
+	// Holders release their buffers automatically on scope exit.
+}
+
+static bool CreateTemporalBuffers(ResourceManager& ctx, RenderGraph& rg, TemporalView& t) {
+	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		t.visClusterBuffers[f] = ctx.CreateBuffer(
+			kVisClusterBytes, BufferType_Storage, "gfx visibleClusters");
+		t.visDrawBuffers[f] = ctx.CreateBuffer(
+			kVisDrawBytes, BufferType_Storage, "gfx visibleDraws");
+		if (t.visClusterBuffers[f].empty() || t.visDrawBuffers[f].empty()) {
+			RollbackTemporalBuffers(rg, t, f);
+			return false;
+		}
+		t.visClusterLogicals[f] = rg.AddExternalBuffer(t.visClusterBuffers[f], "gfx visibleClusters");
+		t.visDrawLogicals[f] = rg.AddExternalBuffer(t.visDrawBuffers[f], "gfx visibleDraws");
+		if (t.visClusterLogicals[f].empty() || t.visDrawLogicals[f].empty()) {
+			RollbackTemporalBuffers(rg, t, f + 1);
+			return false;
+		}
+	}
+	return true;
 }
 
 void Destroy(State& s, RenderGraph& rg) {
@@ -101,6 +153,16 @@ void Destroy(State& s, RenderGraph& rg) {
 			if (!v.indirectLogicals[f].empty()) rg.FreeBuffer(v.indirectLogicals[f]);
 		}
 	}
+	for (auto& t : s.temporals) {
+		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+			if (!t.visClusterLogicals[f].empty()) rg.FreeBuffer(t.visClusterLogicals[f]);
+			if (!t.visDrawLogicals[f].empty()) rg.FreeBuffer(t.visDrawLogicals[f]);
+		}
+		if (!t.hiz.logical.empty()) rg.FreeBuffer(t.hiz.logical);
+		t.hiz.logical = {};
+		t.hiz.buffer = {};
+	}
+	s.temporals.clear();
 	if (!s.filterIndexLogical.empty()) rg.FreeBuffer(s.filterIndexLogical);
 	if (!s.clusterLogical.empty()) rg.FreeBuffer(s.clusterLogical);
 	s.filterIndexLogical = {};
@@ -111,6 +173,161 @@ void Destroy(State& s, RenderGraph& rg) {
 	s.clusterBuffer = {};
 	s.filterProgram = ShaderProgram{};
 	s.filterModule = {};
+	s.hizProgram = ShaderProgram{};
+	s.hizModule = {};
+}
+
+// ---------------------------------------------------------------------------
+// Hierarchical-Z (T2)
+// ---------------------------------------------------------------------------
+
+uint32_t HzbMipCount(uint32_t w, uint32_t h) {
+	if (w == 0 || h == 0)
+		return 0;
+	uint32_t count = 1;
+	while ((w > 1 || h > 1) && count < kHizMaxMips) {
+		w = std::max(1u, w >> 1);
+		h = std::max(1u, h >> 1);
+		++count;
+	}
+	return count;
+}
+
+void HzbMipDims(uint32_t w, uint32_t h, uint32_t mip, uint32_t& outW, uint32_t& outH) {
+	for (uint32_t k = 0; k < mip; ++k) {
+		w = std::max(1u, w >> 1);
+		h = std::max(1u, h >> 1);
+	}
+	outW = w;
+	outH = h;
+}
+
+uint32_t HzbMipOffsetFloats(uint32_t w, uint32_t h, uint32_t mip) {
+	uint32_t off = 0;
+	for (uint32_t k = 0; k < mip; ++k) {
+		uint32_t kw = w, kh = h;
+		HzbMipDims(w, h, k, kw, kh);
+		off += kw * kh;
+	}
+	return off;
+}
+
+uint32_t HzbTotalFloats(uint32_t w, uint32_t h) {
+	const uint32_t count = HzbMipCount(w, h);
+	if (count == 0)
+		return 0;
+	uint32_t lw = 0, lh = 0;
+	HzbMipDims(w, h, count - 1, lw, lh);
+	return HzbMipOffsetFloats(w, h, count - 1) + lw * lh;
+}
+
+bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
+	uint32_t view, uint32_t w, uint32_t h) {
+	TemporalView& t = Temporal(s, view);
+	if (w == 0 || h == 0) {
+		t.historyValid = false;
+		return false;
+	}
+	const uint32_t wantMips = HzbMipCount(w, h);
+	if (t.hiz.width == w && t.hiz.height == h && t.hiz.mipCount == wantMips
+		&& !t.hiz.buffer.empty() && !t.hiz.logical.empty())
+		return true; // steady state: keep history
+	// Size drift: rebuild + disarm (stale seed extent).
+	if (!t.hiz.logical.empty()) rg.FreeBuffer(t.hiz.logical);
+	t.hiz.logical = {};
+	t.hiz.buffer = {};
+	t.historyValid = false;
+	t.hiz.width = w;
+	t.hiz.height = h;
+	t.hiz.mipCount = wantMips;
+	for (uint32_t m = 0; m < wantMips; ++m)
+		t.hiz.mipOffsets[m] = HzbMipOffsetFloats(w, h, m);
+	for (uint32_t m = wantMips; m < kHizMaxMips; ++m)
+		t.hiz.mipOffsets[m] = 0;
+	t.hiz.buffer = ctx.CreateBuffer(
+		(size_t)HzbTotalFloats(w, h) * sizeof(float),
+		BufferType_Storage, "gfx hiz");
+	if (t.hiz.buffer.empty())
+		return false;
+	t.hiz.logical = rg.AddExternalBuffer(t.hiz.buffer, "gfx hiz");
+	if (t.hiz.logical.empty()) {
+		t.hiz.buffer = {};
+		return false;
+	}
+	return true;
+}
+
+uint64_t HizAddress(State& s, ResourceManager& ctx, uint32_t view) {
+	if (view >= s.temporals.size())
+		return 0;
+	return ctx.GetBufferDeviceAddress(s.temporals[view].hiz.buffer);
+}
+
+RenderPass& AddHizPass(State& s, RenderGraph& rg, uint32_t view,
+	uint32_t dstMip, LogicalImageViewHandle depthLogical) {
+	assert(view < s.temporals.size());
+	TemporalView& t = s.temporals[view];
+	RenderPass& pass = rg.AddComputePass("GfxHiz");
+	BufferSyncRequest hizRW{};
+	hizRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+	hizRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+	pass.AddBufferHint(t.hiz.logical, hizRW);
+	if (dstMip == 0 && !depthLogical.empty()) {
+		ImageSyncRequest depthReq{};
+		depthReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		depthReq.barrierMasks.stageMask = PipelineStageBit_Compute;
+		depthReq.layout = ImageLayout::ShaderReadOnlyOptimal;
+		pass.AddImageHint(depthLogical, depthReq);
+	}
+	return pass;
+}
+
+void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+	uint32_t view, uint32_t dstMip, uint32_t depthBindlessIndex) {
+	assert(view < s.temporals.size());
+	TemporalView& t = s.temporals[view];
+	if (dstMip >= t.hiz.mipCount)
+		return;
+	uint32_t dw = 0, dh = 0;
+	HzbMipDims(t.hiz.width, t.hiz.height, dstMip, dw, dh);
+	if (dw == 0 || dh == 0)
+		return;
+	const uint64_t addr = ctx.GetBufferDeviceAddress(t.hiz.buffer);
+	// Null-BDA guard (same device-lost lesson as PushAndDispatch): skip the
+	// level instead of faulting; the HZB stays stale and T4 keeps geometry.
+	if (addr == 0) {
+		static uint64_t s_hizNullWarns = 0;
+		if ((s_hizNullWarns++ % 300) == 0) {
+			std::fprintf(stderr,
+				"[GfxHiz] refusing dispatch: null HZB address (view %u mip %u).\n",
+				view, dstMip);
+		}
+		return;
+	}
+	HzbPush push{};
+	push.hzb = addr;
+	push.dstMip = dstMip;
+	push.dstWidth = dw;
+	push.dstHeight = dh;
+	push.dstOffset = t.hiz.mipOffsets[dstMip];
+	push.depthTextureIndex = depthBindlessIndex;
+	if (dstMip == 0) {
+		push.srcMip = kHizSrcDepth;
+		push.srcWidth = t.hiz.width;
+		push.srcHeight = t.hiz.height;
+		push.srcOffset = 0;
+	}
+	else {
+		uint32_t sw = 0, sh = 0;
+		HzbMipDims(t.hiz.width, t.hiz.height, dstMip - 1, sw, sh);
+		push.srcMip = dstMip - 1;
+		push.srcWidth = sw;
+		push.srcHeight = sh;
+		push.srcOffset = t.hiz.mipOffsets[dstMip - 1];
+	}
+	cmd.BindComputePipeline(s.hizProgram);
+	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+	cmd.Dispatch((dw + 7) / 8, (dh + 7) / 8, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -318,9 +535,62 @@ static bool EnsureViewSlots(State& s, ResourceManager& ctx, RenderGraph& rg, uin
 		View slot{};
 		if (!CreateSlotBuffers(ctx, rg, slot))
 			return false;
+		TemporalView temporal{};
+		if (!CreateTemporalBuffers(ctx, rg, temporal)) {
+			// Unwind the view slot we just allocated (all its ring slices).
+			RollbackSlotBuffers(rg, slot, MAX_FRAMES_IN_FLIGHT);
+			return false;
+		}
 		s.views.push_back(std::move(slot));
+		s.temporals.push_back(std::move(temporal));
 	}
 	return true;
+}
+
+void InvalidateHistory(State& s, uint32_t view) {
+	if (view >= s.temporals.size())
+		return;
+	s.temporals[view].historyValid = false;
+}
+
+void SnapshotVisible(State& s, uint32_t view) {
+	assert(view < s.views.size());
+	TemporalView& t = Temporal(s, view);
+	const View& v = s.views[view];
+	t.prevBatches = v.batches;
+	t.prevDraws = v.drawConstants;
+	t.prevRanges = v.materialRanges;
+	t.prevBatchCount = v.batchCount;
+	t.prevDrawCount = (uint32_t)v.drawConstants.size();
+	t.width = v.width;
+	t.height = v.height;
+	// historyValid flips true here; the seed pass (T3) consumes prev* next
+	// frame. First snapshot after InvalidateHistory re-arms history.
+	t.historyValid = true;
+}
+
+void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
+	assert(view < s.views.size());
+	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	if (view >= s.temporals.size())
+		return;
+	TemporalView& t = s.temporals[view];
+	if (t.visClusterBuffers[frameIndex].empty() || t.visDrawBuffers[frameIndex].empty())
+		return; // headless / unallocated: CPU snapshot still stands
+	if (t.prevBatchCount > 0) {
+		std::vector<VisibleCluster> pairs;
+		pairs.reserve(t.prevBatchCount);
+		for (const Batch& b : t.prevBatches)
+			pairs.push_back(VisibleCluster{ b.cluster, b.draw });
+		ctx.UploadDataToBuffer(t.visClusterBuffers[frameIndex],
+			pairs.data(), pairs.size() * sizeof(VisibleCluster),
+			PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
+	}
+	if (!t.prevDraws.empty()) {
+		ctx.UploadDataToBuffer(t.visDrawBuffers[frameIndex],
+			t.prevDraws.data(), t.prevDraws.size() * sizeof(Draw),
+			PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
+	}
 }
 
 uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,

@@ -224,7 +224,7 @@ struct PushConstants
     float4x4 prevModel;
 };
 
-#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS)
+#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS)
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
 #endif

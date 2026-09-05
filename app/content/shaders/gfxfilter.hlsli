@@ -33,6 +33,19 @@ struct GfxBatches { uint4 batch[GFX_MAX_BATCHES]; };
 
 #define GFX_DRAW_TWOSIDED 0x1 // misc.y: double-sided, skip backface cull
 
+// Draw-set buckets (T1; mirrors C++ DrawSetBit_*). The seed depth pass
+// issues one PSO per bucket; views mask which buckets they accept.
+#define GFX_DRAWSET_OPAQUE 0x1
+#define GFX_DRAWSET_MASKED 0x2
+#define GFX_DRAWSET_ALL (GFX_DRAWSET_OPAQUE | GFX_DRAWSET_MASKED)
+
+// Temporal visibility list (T1 state; consumed by the seed pass in T3).
+// One uint2 per surviving (cluster, draw): xy = (clusterIndex, drawIndex).
+// Draws resolve through GfxDraws (model matrices); clusters through
+// GfxClusters + GfxIndices (cluster-ordered global vertex ids).
+#define GFX_MAX_VISIBLE 4096 // mirrors kMaxBatches
+struct GfxVisible { uint2 vis[GFX_MAX_VISIBLE]; };
+
 struct GfxDraw
 {
     float4x4 model;
