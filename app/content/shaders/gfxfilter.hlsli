@@ -17,21 +17,26 @@
 // Explicit bounds (this DXC rejects unsized struct members; mirrors the
 // C++ capacities in Engine/Renderer/gfx_filter.h).
 #define GFX_MAX_VERTICES 44739242   // 512MB pos heap / 12B (see mesh.cpp)
+#define GFX_POS_WORDS 134217726     // GFX_MAX_VERTICES * 3 (uint view below)
 #define GFX_MAX_CLUSTERS 262144
 #define GFX_MAX_FILTERED (4096 * 128 * 3)
 
-struct GfxPositions { float3 pos[GFX_MAX_VERTICES]; }; // static pos heap (global ids)
+// Positions as uint words (3 per vertex): the heap is packed float3
+// (stride 12), which a float3 array view cannot express under block layout
+// rules (member-array stride must align to 16). Load via asfloat.
+struct GfxPositions { uint words[GFX_POS_WORDS]; }; // static pos heap (global ids)
 struct GfxIndices   { uint idx[GFX_MAX_FILTERED]; };   // cluster-ordered global ids (owned)
 struct GfxClusters  { uint4 cluster[GFX_MAX_CLUSTERS]; }; // xy = (indexOffset, triCount)
 
 // One uint4 per batch: (clusterIndex, drawIndex, outputOffset, unused).
 struct GfxBatches { uint4 batch[GFX_MAX_BATCHES]; };
 
+#define GFX_DRAW_TWOSIDED 0x1 // misc.y: double-sided, skip backface cull
+
 struct GfxDraw
 {
     float4x4 model;
-    uint mesh;
-    uint3 pad;
+    uint4 misc; // x = mesh index, y = flags (GFX_DRAW_*); uint4 keeps 16B alignment under block rules
 };
 struct GfxDraws { GfxDraw draws[GFX_MAX_DRAWS]; };
 
@@ -56,7 +61,7 @@ struct GfxFilterPush
     vk::BufferPointer<GfxDraws>      draws;
     vk::BufferPointer<GfxFiltered>   filtered;
     vk::BufferPointer<GfxIndirect>   indirect;
-    uint64_t pad0;
+    uint2 pad0; // 8 bytes: keeps viewProj 16B-aligned (raw uint64 would emit Capability Int64)
     float4x4 viewProj;
     float3 eye;
     float pad1;

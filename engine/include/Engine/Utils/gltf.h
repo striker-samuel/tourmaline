@@ -126,13 +126,17 @@ inline void GltfToCluster(
 	smvk::ResourceManager&,
 	const tinygltf::Model& inModel,
 	std::filesystem::path inGltfModelPath,
-	smvk::Cluster& out
+	smvk::Cluster& out,
+	const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
+	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{}
 ) {
 	GltfToSceneImporter importer{
 		out,
 		inModel,
 		inGltfModelPath
 	};
+	importer.setMeshOptConfig(meshOpt);
+	importer.setMeshletConfig(meshlets);
 
 	assert(out.scene.hierarchy.empty());
 

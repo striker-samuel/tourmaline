@@ -22,6 +22,10 @@
 #include <Engine/Rendergraph/ui.h>
 #include <Engine/Renderer/cookies.h>
 #include <App/renderer.h>
+#include <App/forwardplus_renderer.h>
+#include <App/frame_context.h>
+#include <App/push_constants.h>
+using app::PushConstants;
 #include <Engine/Vfs/vfs.h>
 #include <imgui.h>
 #include <glm/gtc/constants.hpp>
@@ -35,8 +39,10 @@ std::vector<std::string> gltf_meshes_paths = {
 };
 // Cooked pak for the scene above (VFS root is the content dir, so the pak
 // holds "models/..." VFS paths). Built with:
-//   PakCooker --content-dir content --in-vfs models/Sponza/sponza.gltf
-//             --out-pak content/paks/sponza.pak
+//   PakCooker --content-dir app/content --in-vfs models/Sponza/sponza.gltf
+//             --out-pak app/content/paks/sponza.pak --meshlets on
+// (--meshlets on persists per-mesh meshlet/cone data, which the
+// GPU-driven filter consumes via RegisterMeshFromCooked.)
 static const char* pak_path = "content/paks/sponza.pak";
 
 // Reads a content-relative VFS path ("shaders/...", "models/...") through
@@ -595,7 +601,8 @@ private:
 		// (procedural path), then bake the cluster-ordered index heap.
 		// Non-fatal: unregistered meshes keep rendering via direct draws.
 		if (m_useGfxFilter) {
-			if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph, m_resources.fragShader)) {
+			m_gfxRenderer.ConfigureFrag(m_resources.fragShader);
+			if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
 				std::cerr << "[TestApp] GfxFilter unavailable - direct draws\n";
 				m_useGfxFilter = false;
 			}
@@ -608,6 +615,10 @@ private:
 				}
 			}
 		}
+		// Forward+ frame renderer (owns sizing config; references the
+		// viewport builder for storage so main-pass sampling is unchanged).
+		m_fpRenderer.Configure(&m_viewportResources.forwardPlus,
+			MakeForwardPlusDesc(), m_resources.prepassMaskedProgram);
 
 		// Light cookies: baked .ktx2 files from the engine resources mount
 		// (overridable by app content / paks through the overlay; falls
@@ -1315,8 +1326,10 @@ private:
 			smvk::DepthDesc frameDepthDesc{};
 			frameDepthDesc.format = m_swapchain->GetDepthFormat();
 			m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, frameDepthDesc);
-			m_viewportResources.forwardPlus.Ensure(*m_context, *m_rendergraph,
-				renderExtent, MakeForwardPlusDesc(), m_viewportResources.renderDepth.view);
+			// Tile counts must be fresh for consumers below; the renderer
+			// re-checks sizing at pass-build time (resize-safe).
+			m_fpRenderer.EnsureSized(*m_context, *m_rendergraph,
+				renderExtent, m_viewportResources.renderDepth.view);
 			m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent);
 			m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
 			smvk::MsaaDesc frameMsaaDesc{};
@@ -1361,25 +1374,24 @@ private:
 		const uint64_t renderViewsAddress =
 			m_renderViews.DeviceAddress(*m_context, fb.frameIndex);
 
+		// Shared frame context for IFrameRenderers (filled incrementally;
+		// pc-dependent fields arrive once pc is built below).
+		app::AppFrameContext fc{};
+		fc.ctx = m_context.get();
+		fc.rg = m_rendergraph.get();
+		fc.world = m_world.get();
+		fc.views = &m_renderViews;
+		fc.frameIndex = fb.frameIndex;
+		fc.mainViewIndex = mainRenderView;
+		fc.eye = m_cameraPositioner.cameraPosition_;
+		fc.extent = renderExtent;
+
 		// Per-view triangle filter (main camera): builds the compacted
 		// index list + indirect commands consumed by the Main pass below.
 		// Shadow/depth/motion passes stay on direct draws.
-		uint32_t gfxSlot = UINT32_MAX;
-		if (m_useGfxFilter) {
-			gfxSlot = m_gfxRenderer.FilterMainView(*m_context, *m_rendergraph,
-				*m_world, m_renderViews, mainRenderView,
-				m_cameraPositioner.cameraPosition_, renderExtent,
-				smvk::gfx::CullFlagBit_Backface | smvk::gfx::CullFlagBit_Frustum
-				| smvk::gfx::CullFlagBit_Degenerate);
-			if (gfxSlot != UINT32_MAX) {
-				auto& gfxPass = m_gfxRenderer.AddFilterPass(*m_rendergraph, gfxSlot);
-				gfxPass.SetRecordingFunc([this, gfxSlot](smvk::CommandBuffer& cmd)
-				{
-					smvk::gfx::PushAndDispatch(
-						m_gfxRenderer.State(), cmd, *m_context, gfxSlot);
-				});
-			}
-		}
+		if (m_useGfxFilter)
+			m_gfxRenderer.AppendPasses(fc);
+		const uint32_t gfxSlot = m_gfxRenderer.LastSlot();
 		//
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
@@ -1427,37 +1439,8 @@ private:
 		const uint32_t fpTileCountX = fp.tileCountX;
 		const uint32_t fpTileCountY = fp.tileCountY;
 
-		// Must match HLSL PushConstants in common.hlsli (field order + size).
-		struct alignas(16) PushConstants {
-			float model[16];
-			uint64_t frameUniforms;
-			uint64_t lightsBuffer;
-			uint64_t materialsBuffer;
-			uint64_t cascadeBuffer;
-			uint32_t materialId;
-			uint32_t comparisonSamplerId;
-			uint32_t numCascades;
-			uint32_t cascadeIndex;
-			uint64_t fpLights;
-			uint64_t fpTileCounts;
-			uint64_t fpTileIndices;
-			uint32_t fpTileCountX;
-			uint32_t fpLightCount;
-			uint32_t fpTileSize;
-			uint32_t fpMaxPerTile;
-			uint64_t spotShadowBuffer;
-			uint32_t spotShadowMapIndex;
-			uint32_t spotShadowCount;
-			uint32_t spotIndex;
-			uint32_t pad_pc;
-			// RenderView system (see smvk::RenderViewSet): the per-frame
-			// virtual-camera slab + the main camera index. renderViewIndex is
-			// the view the current pass renders from (UINT32_MAX = none).
-			uint64_t renderViews;
-			uint32_t mainRenderView;
-			uint32_t renderViewIndex;
-			float prevModel[16]; // motion vector pass: last frame's model (192..255)
-		} pc{
+		// Scene push (see App/push_constants.h; must match HLSL common.hlsli).
+		PushConstants pc{
 			.frameUniforms = frameUniformsAddress,
 			.lightsBuffer = lightsBufferAddress,
 			.materialsBuffer = materialsAddress,
@@ -1482,7 +1465,7 @@ private:
 			.mainRenderView = mainRenderView,
 			.renderViewIndex = mainRenderView, // scene passes default to the main camera view
 		};
-		static_assert(sizeof(PushConstants) <= 256, "PushConstants must fit in 256 bytes (engine limit)");
+		// (size checked in App/push_constants.h)
 
 		// ---- Cascaded shadow map passes – one per cascade tile (builder owns offsets/extents/load ops) ----
 		{
@@ -1707,125 +1690,14 @@ private:
 			}
 		}
 
-		// ---- Forward+ depth prepass – fills depth for tile min/max cull ----
-		// No color. Solid geometry uses the VS-only fast path; MASK cutout
-		// uses the alpha-tested program so holes keep background depth.
-		// (Full-quad prepass depth would poison the read-only main pass:
-		// background behind foliage holes would fail depth and render the
-		// HDR clear color = black quad halos. Excluding masked instead is
-		// NOT an option – order-independent opaque compositing needs their
-		// depth in the buffer.)
-		{
-			PushConstants depthPC = pc;
-			auto& prepass = m_viewportResources.forwardPlus.AddDepthPrepass(
-				*m_rendergraph, m_viewportResources.renderDepth.logicalView,
-				renderExtent,
-				"ForwardPlusDepth");
-			prepass.SetRecordingFunc([this, depthPC](smvk::CommandBuffer& cmd)
-			{
-				auto drawPrepassNode = [&](NodeId node, bool maskedPhase) {
-					auto meshForNode = m_world->scene.meshForNode.find(node);
-					if (meshForNode == m_world->scene.meshForNode.end()) return;
-					smvk::Material* mat = nullptr;
-					if (auto materialForNode = m_world->scene.materialForNode.find(node);
-						materialForNode != m_world->scene.materialForNode.end())
-						mat = m_world->GetMaterial(materialForNode->second);
-					const bool masked = mat &&
-						mat->shadingModel == smvk::ShadingModel::Masked;
-					if (masked != maskedPhase) return;
-					auto& model = m_world->scene.globalTransform[node];
-					smvk::StaticMesh* meshDesc = m_world->GetMesh(meshForNode->second);
-					if (!meshDesc) return;
-					PushConstants objectPC{};
-					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-					if (maskedPhase) {
-						auto materialForNode = m_world->scene.materialForNode.find(node);
-						objectPC.materialId = materialForNode->second;
-						cmd.PushConstants(offsetof(PushConstants, materialId),
-							sizeof(objectPC.materialId), &objectPC.materialId,
-							smvk::ShaderStage::All);
-					}
-					cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
-					for (auto& draw_set : meshDesc->geometry.surfaces) {
-						cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-					};
-				};
-				// Phase 1: solid geometry, VS-only fast path (unchanged).
-				cmd.BindRenderPipeline(
-					m_viewportResources.forwardPlus.depthProgram,
-					smvk::VertexFormat::StaticVertexFormat,
-					smvk::DepthSettings{
-						.depthFunc = smvk::CompareOp::GreaterEqual,
-						.writeEnable = true,
-						.depthTestEnable = true,
-					},
-					smvk::StencilSettings{},
-					smvk::BlendSettings{},
-					smvk::MSAASettings{},
-					smvk::RasterSettings{
-						.cullMode = smvk::CullMode::Back
-					}
-				);
-				cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
-				m_world->forEachNode(
-					smvk::IteratorFlagBit_Renderable
-					| smvk::IteratorFlagBit_Opaque
-					| smvk::IteratorFlagBit_StaticVertexFmt
-					, [&](NodeId node) { drawPrepassNode(node, false); });
-				// Phase 2: MASK cutout, alpha-tested so holes keep
-				// background depth. Cull off: foliage is double-sided.
-				cmd.BindRenderPipeline(
-					m_resources.prepassMaskedProgram,
-					smvk::VertexFormat::StaticVertexFormat,
-					smvk::DepthSettings{
-						.depthFunc = smvk::CompareOp::GreaterEqual,
-						.writeEnable = true,
-						.depthTestEnable = true,
-					},
-					smvk::StencilSettings{},
-					smvk::BlendSettings{},
-					smvk::MSAASettings{},
-					smvk::RasterSettings{
-						.cullMode = smvk::CullMode::None
-					}
-				);
-				cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
-				m_world->forEachNode(
-					smvk::IteratorFlagBit_Renderable
-					| smvk::IteratorFlagBit_Opaque
-					| smvk::IteratorFlagBit_StaticVertexFmt
-					, [&](NodeId node) { drawPrepassNode(node, true); });
-			});
-		}
-
-		// ---- Forward+ tile cull – depth + light volumes -> per-tile lists ----
-		{
-			smvk::ForwardPlusCullPush cullPC{};
-			cullPC.frameUniforms = frameUniformsAddress;
-			cullPC.lights = fpLightsAddress;
-			cullPC.tileCounts = fpTileCountsAddress;
-			cullPC.tileIndices = fpTileIndicesAddress;
-			cullPC.depthTextureIndex = m_viewportResources.forwardPlus.depthBindlessIndex;
-			cullPC.tileCountX = fpTileCountX;
-			cullPC.tileCountY = fpTileCountY;
-			cullPC.lightCount = fpLightCount;
-			cullPC.tileSize = FP_TILE_SIZE;
-			cullPC.maxLightsPerTile = FP_MAX_PER_TILE;
-			auto& cullPass = m_viewportResources.forwardPlus.AddCullPass(
-				*m_rendergraph, m_viewportResources.renderDepth.logicalView,
-				m_resources.fpLightsLogical, "ForwardPlusCull");
-			cullPass.SetRecordingFunc([this, cullPC](smvk::CommandBuffer& cmd) mutable
-			{
-				cmd.BindComputePipeline(
-					m_viewportResources.forwardPlus.cullProgram);
-				cmd.PushConstants(0, sizeof(smvk::ForwardPlusCullPush), &cullPC,
-					smvk::ShaderStage::All);
-				cmd.Dispatch(
-					m_viewportResources.forwardPlus.tileCountX,
-					m_viewportResources.forwardPlus.tileCountY,
-					1);
-			});
-		}
+		// ---- Forward+ passes (depth prepass + tile cull) ----
+		// Owned by ForwardPlusRenderer (see App/forwardplus_renderer.h).
+		fc.pc = pc;
+		fc.depthView = m_viewportResources.renderDepth.logicalView;
+		fc.depthViewHandle = m_viewportResources.renderDepth.view;
+		fc.fpLights = m_resources.fpLightsLogical;
+		fc.fpLightCount = fpLightCount;
+		m_fpRenderer.AppendPasses(fc);
 
 		// ---------------------------------------------------------------------
 		// Motion vectors – per-pixel prevUV - currUV into RG16F (motionvector.h)
@@ -2427,6 +2299,47 @@ private:
 			ImGui::TextDisabled("Cookies: soft disc / blinds / starburst per spot; patterns modulate light color");
 			}
 			ImGui::Separator();
+			ImGui::Text("GfxFilter (per-view triangle filter)");
+			ImGui::Checkbox("Enable filtered main view", &m_useGfxFilter);
+			{
+				// Cull-flag toggles write straight into the renderer config
+				// (takes effect next frame). FlipWinding default-off is
+				// pinned by gfxfilter_tests (det>0 == back, exactly).
+				bool b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Degenerate) != 0;
+				if (ImGui::Checkbox("Cull degenerate", &b))
+					m_gfxRenderer.config.cullFlags = b
+					? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_Degenerate
+					: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_Degenerate;
+				b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Backface) != 0;
+				if (ImGui::Checkbox("Cull backface", &b))
+					m_gfxRenderer.config.cullFlags = b
+					? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_Backface
+					: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_Backface;
+				b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Frustum) != 0;
+				if (ImGui::Checkbox("Cull frustum", &b))
+					m_gfxRenderer.config.cullFlags = b
+					? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_Frustum
+					: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_Frustum;
+				b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_SmallPrim) != 0;
+				if (ImGui::Checkbox("Cull small prims", &b))
+					m_gfxRenderer.config.cullFlags = b
+					? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_SmallPrim
+					: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_SmallPrim;
+				b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_FlipWinding) != 0;
+				if (ImGui::Checkbox("Flip winding (debug)", &b))
+					m_gfxRenderer.config.cullFlags = b
+					? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_FlipWinding
+					: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_FlipWinding;
+				const smvk::gfx::Stats gs = m_gfxRenderer.LastStats();
+				ImGui::Text("view: %u draws %u cmds %u tris | clusters %u/%u culled",
+					gs.draws, gs.commands, gs.trianglesProcessed,
+					gs.clustersCulled, gs.clustersProcessed);
+				ImGui::Text("materials: %u ranges  batches: %u",
+					(unsigned)m_gfxRenderer.LastMaterialRangeCount(),
+					m_gfxRenderer.LastBatchCount());
+				ImGui::TextDisabled("Bisect: disable flags top-down (small/backface/frustum/degen), then bypass.");
+			}
+			ImGui::Separator();
 			ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
 			ImGui::End();
 
@@ -2483,6 +2396,7 @@ private:
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	app::GfxRenderer m_gfxRenderer{};
 	bool m_useGfxFilter = true; // false = legacy direct draws (A/B)
+	app::ForwardPlusRenderer m_fpRenderer{};
 	// ---- Motion vector pass: previous-frame state + debug view ----
 	glm::mat4 m_prevViewProj{ 1.0f }; // last frame's viewProj (post Y-flip)
 	bool m_prevViewProjValid = false; // false until the first frame completes

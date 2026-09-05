@@ -52,6 +52,14 @@ typedef enum CullFlagBits {
 } CullFlagBits;
 typedef uint32_t CullFlags;
 
+// Per-draw flags (stored in Draw::flags / HLSL GfxDraw misc.y).
+// TwoSided (double-sided material, raster Cull None): backface and
+// normal-cone culling are disabled for the draw (both would otherwise
+// delete geometry the rasterizer is supposed to keep). Frustum,
+// degenerate and small-prim tests still apply.
+inline constexpr uint32_t DrawFlagBit_TwoSided = 0x1;
+typedef uint32_t DrawFlags;
+
 // One GPU workgroup per cluster (128 threads, 1 thread per triangle).
 static constexpr uint32_t kThreadsPerCluster = 128;
 static constexpr uint32_t kMaxClusterTris = 128;
@@ -72,7 +80,8 @@ static_assert(sizeof(ClusterConstants) == 16);
 struct alignas(16) Draw {
 	glm::mat4 model{};
 	uint32_t mesh = 0;
-	uint32_t pad[3] = {};
+	uint32_t flags = 0; // DrawFlags (bit 0 = two-sided: skip backface/cone cull)
+	uint32_t pad[2] = {};
 };
 static_assert(sizeof(Draw) == 80);
 
@@ -94,7 +103,7 @@ struct FilterPush {
 	uint64_t draws = 0;
 	uint64_t filtered = 0;
 	uint64_t indirect = 0;
-	uint64_t pad0 = 0;
+	uint32_t pad0[2] = {}; // HLSL uint2 (raw uint64 would emit Capability Int64)
 	glm::mat4 viewProj{};
 	glm::vec3 eye{ 0.0f };
 	float pad1 = 0.0f;
@@ -142,6 +151,7 @@ struct DrawRequest {
 	uint32_t mesh = 0;
 	uint32_t material = 0;
 	glm::mat4 model{ 1.0f };
+	DrawFlags flags = 0;
 };
 
 struct Cluster {
@@ -171,17 +181,26 @@ struct View {
 	std::vector<Draw> drawConstants;
 	std::vector<MaterialRange> materialRanges;
 	uint32_t batchCount = 0;
+	uint32_t frameIndex = 0; // which ring slice this frame's data lives in
 	Stats stats{};
-	// Per-view outputs (owned, single copy reused across frames; GPU
-	// serializes via rendergraph barriers like ForwardPlus tile bufs).
-	Holder<BufferHandle> filteredBuffer;
-	Holder<BufferHandle> indirectBuffer;
-	LogicalBufferHandle filteredLogical{};
-	LogicalBufferHandle indirectLogical{};
+	// Per-view outputs AND inputs, ringed by frame in flight.
+	// Everything mutable is per (view, frame): frames overlap (the swapchain
+	// only retires the same slot), and uploads flush immediately, so any
+	// single-copy buffer would be clobbered by the next frame while the
+	// current one still reads it. Same rule as RenderViewSet's slab.
+	Holder<BufferHandle> batchBuffers[MAX_FRAMES_IN_FLIGHT];
+	Holder<BufferHandle> drawBuffers[MAX_FRAMES_IN_FLIGHT];
+	Holder<BufferHandle> filteredBuffers[MAX_FRAMES_IN_FLIGHT];
+	Holder<BufferHandle> indirectBuffers[MAX_FRAMES_IN_FLIGHT];
+	LogicalBufferHandle batchLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	LogicalBufferHandle drawLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	LogicalBufferHandle filteredLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	LogicalBufferHandle indirectLogicals[MAX_FRAMES_IN_FLIGHT]{};
 };
 
 struct State {
 	// Static (load-time): cluster-ordered global vertex ids + cluster table.
+	// Frozen after UploadStaticData, safe to share across frames.
 	std::vector<uint32_t> filterIndices;
 	std::vector<Cluster> clusters;
 	std::vector<Mesh> meshes;
@@ -189,11 +208,6 @@ struct State {
 	Holder<BufferHandle> clusterBuffer;
 	LogicalBufferHandle filterIndexLogical{};
 	LogicalBufferHandle clusterLogical{};
-	// Shared per-frame inputs (single copy reused across frames).
-	Holder<BufferHandle> batchBuffer; // kMaxBatches * Batch
-	Holder<BufferHandle> drawBuffer;  // kMaxDraws * Draw
-	LogicalBufferHandle batchLogical{};
-	LogicalBufferHandle drawLogical{};
 	Holder<ShaderModuleHandle> filterModule;
 	ShaderProgram filterProgram{};
 	std::vector<View> views;
@@ -209,12 +223,13 @@ inline constexpr const char* kGfxFilteredVsPath = "content/shaders/gfxfiltered.v
 
 bool EnsureShaders(State& s, ResourceManager& ctx,
 	const char* csPath = kGfxFilterCsPath);
+// Creates shader only; per-(view, frame) buffers are allocated on demand
+// by BeginView (pool) so unused views cost nothing.
 bool Ensure(State& s, ResourceManager& ctx, RenderGraph& rg,
 	const char* csPath = kGfxFilterCsPath);
 void Destroy(State& s, RenderGraph& rg);
 [[nodiscard]] inline bool Valid(const State& s) {
-	return !s.batchBuffer.empty() && !s.drawBuffer.empty()
-		&& s.filterProgram.shaderCount != 0;
+	return s.filterProgram.shaderCount != 0;
 }
 
 // Mesh registration (load-time). baseVertex maps upload/cooked-local vertex
@@ -244,11 +259,26 @@ uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 	const RenderView& renderView, const glm::vec3& eye,
 	CullFlags cullFlags, uint32_t width, uint32_t height);
 void PushDraw(State& s, uint32_t view, uint32_t mesh,
-	const glm::mat4& model, uint32_t material);
+	const glm::mat4& model, uint32_t material, DrawFlags flags = 0);
+// Pure-CPU cluster test (meshoptimizer perspective cone + sphere vs planes).
+// Exported for unit tests; eye must be the camera world position.
+// twoSided skips the normal-cone (backface) part; the sphere-vs-frustum
+// part always runs. The cone test runs in world space (apex via model,
+// axis via inverse-transpose) so mirrored / non-uniform instances cull
+// the same side the rasterizer keeps.
+bool CullCluster(const Cluster& c, const glm::mat4& model,
+	const glm::mat4& invModel, const glm::vec3& eye,
+	const RenderView& renderView, bool twoSided = false);
+// Pure-CPU batch expansion: sorts draws by material, expands surviving
+// (draw x cluster) with CullCluster, fills batches/drawConstants/
+// materialRanges/stats. No GPU upload (called by FinalizeView; unit tests
+// drive it directly on a hand-built View).
+void BuildBatches(State& s, uint32_t view);
 // Sorts draws by material, expands surviving (draw x cluster) with CPU
-// sphere + cone pre-cull, uploads batches/draws/indirect zero-fill.
-// Returns exact counters (trianglesProcessed counts emitted triangles).
-Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t view);
+// sphere + cone pre-cull, uploads batches/draws/indirect zero-fill into
+// the frameIndex ring slice. Returns exact counters (trianglesProcessed
+// counts emitted triangles).
+Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
 
 // ---- Pass shells (caller sets the recording func) ----
 RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view);
@@ -257,22 +287,42 @@ void AddConsumeHints(RenderPass& pass,
 // Recording helper: pushes FilterPush and dispatches batchCount. No-op when empty.
 void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_t view);
 
-// ---- Accessors ----
+// ---- Accessors (frame slices resolved from the view's frameIndex) ----
+[[nodiscard]] inline uint32_t ViewFrame(const State& s, uint32_t view) {
+	assert(view < s.views.size());
+	return s.views[view].frameIndex;
+}
+[[nodiscard]] inline BufferHandle BatchBuffer(const State& s, uint32_t view) {
+	assert(view < s.views.size());
+	return s.views[view].batchBuffers[s.views[view].frameIndex];
+}
+[[nodiscard]] inline BufferHandle DrawBuffer(const State& s, uint32_t view) {
+	assert(view < s.views.size());
+	return s.views[view].drawBuffers[s.views[view].frameIndex];
+}
 [[nodiscard]] inline BufferHandle FilteredBuffer(const State& s, uint32_t view) {
 	assert(view < s.views.size());
-	return s.views[view].filteredBuffer;
+	return s.views[view].filteredBuffers[s.views[view].frameIndex];
 }
 [[nodiscard]] inline BufferHandle IndirectBuffer(const State& s, uint32_t view) {
 	assert(view < s.views.size());
-	return s.views[view].indirectBuffer;
+	return s.views[view].indirectBuffers[s.views[view].frameIndex];
+}
+[[nodiscard]] inline LogicalBufferHandle BatchLogical(const State& s, uint32_t view) {
+	assert(view < s.views.size());
+	return s.views[view].batchLogicals[s.views[view].frameIndex];
+}
+[[nodiscard]] inline LogicalBufferHandle DrawLogical(const State& s, uint32_t view) {
+	assert(view < s.views.size());
+	return s.views[view].drawLogicals[s.views[view].frameIndex];
 }
 [[nodiscard]] inline LogicalBufferHandle FilteredLogical(const State& s, uint32_t view) {
 	assert(view < s.views.size());
-	return s.views[view].filteredLogical;
+	return s.views[view].filteredLogicals[s.views[view].frameIndex];
 }
 [[nodiscard]] inline LogicalBufferHandle IndirectLogical(const State& s, uint32_t view) {
 	assert(view < s.views.size());
-	return s.views[view].indirectLogical;
+	return s.views[view].indirectLogicals[s.views[view].frameIndex];
 }
 [[nodiscard]] inline uint32_t BatchCount(const State& s, uint32_t view) {
 	assert(view < s.views.size());

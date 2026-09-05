@@ -36,7 +36,7 @@ ConstantBuffer<GfxFilterPush> pcF;
 
 groupshared uint gLocalCount;
 
-bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2)
+bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2, bool twoSided)
 {
     uint flags = pcF.cullFlags;
     bool cull = false;
@@ -48,31 +48,54 @@ bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2)
     }
 
     // Backface in homogeneous coordinates (Olano & Greer "2DH").
-    if ((flags & GFX_CULL_BACKFACE) != 0)
+    // Skipped for camera-plane straddlers (any w <= 0): facing is only
+    // well-defined pre-clip for fully-in-front triangles, and the
+    // determinant on unclipped coords can disagree with the rasterizer's
+    // post-clip result. Straddlers are rare; the rasterizer resolves them.
+    // Skipped for two-sided draws (double-sided materials bind with
+    // Cull None, so the rasterizer keeps both facings).
+    if ((flags & GFX_CULL_BACKFACE) != 0 && !twoSided)
     {
-        float3x3 m = float3x3(clip0.xyw, clip1.xyw, clip2.xyw);
-        bool back = determinant(m) > 0.0f;
-        if ((flags & GFX_CULL_FLIPWINDING) != 0)
-            back = !back;
-        cull = cull || back;
+        if (clip0.w > 0.0f && clip1.w > 0.0f && clip2.w > 0.0f)
+        {
+            float3x3 m = float3x3(clip0.xyw, clip1.xyw, clip2.xyw);
+            bool back = determinant(m) > 0.0f;
+            if ((flags & GFX_CULL_FLIPWINDING) != 0)
+                back = !back;
+            cull = cull || back;
+        }
     }
 
     if ((flags & GFX_CULL_FRUSTUM) != 0)
     {
+        // Near-plane guard (cf. GeometryFX verticesInFrontOfNearPlane):
+        // all-behind (w<0, standard w=-z_view convention) is invisible and
+        // culled; all-in-front gets the per-plane tests; straddlers are
+        // kept (a plane test mixing w signs can wrongly cull triangles
+        // crossing the camera plane).
         float4 c[3] = { clip0, clip1, clip2 };
-        bool outL = true, outR = true, outB = true, outT = true;
-        bool outN = true, outF = true;
-        [unroll]
-        for (int i = 0; i < 3; ++i)
+        bool allBehind = c[0].w < 0.0f && c[1].w < 0.0f && c[2].w < 0.0f;
+        bool anyBehind = c[0].w <= 0.0f || c[1].w <= 0.0f || c[2].w <= 0.0f;
+        if (allBehind)
         {
-            outL = outL && (c[i].x < -c[i].w);
-            outR = outR && (c[i].x >  c[i].w);
-            outB = outB && (c[i].y < -c[i].w);
-            outT = outT && (c[i].y >  c[i].w);
-            outN = outN && (c[i].z < 0.0f);
-            outF = outF && (c[i].z > c[i].w);
+            cull = true;
         }
-        cull = cull || outL || outR || outB || outT || outN || outF;
+        else if (!anyBehind)
+        {
+            bool outL = true, outR = true, outB = true, outT = true;
+            bool outN = true, outF = true;
+            [unroll]
+            for (int i = 0; i < 3; ++i)
+            {
+                outL = outL && (c[i].x < -c[i].w);
+                outR = outR && (c[i].x >  c[i].w);
+                outB = outB && (c[i].y < -c[i].w);
+                outT = outT && (c[i].y >  c[i].w);
+                outN = outN && (c[i].z < 0.0f);
+                outF = outF && (c[i].z > c[i].w);
+            }
+            cull = cull || outL || outR || outB || outT || outN || outF;
+        }
     }
 
     if ((flags & GFX_CULL_SMALLPRIM) != 0 && !cull)
@@ -156,10 +179,16 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
         for (int k = 0; k < 3; ++k)
         {
             uint vi = (k == 0) ? tri.x : ((k == 1) ? tri.y : tri.z);
-            float3 p = pcF.positions.Get().pos[vi];
+            uint wbase = vi * 3;
+            float3 p = float3(
+                asfloat(pcF.positions.Get().words[wbase + 0]),
+                asfloat(pcF.positions.Get().words[wbase + 1]),
+                asfloat(pcF.positions.Get().words[wbase + 2]));
             clip[k] = mul(pcF.viewProj, mul(model, float4(p, 1.0f)));
         }
-        cull = CullTriangle(tri, clip[0], clip[1], clip[2]);
+        bool twoSided =
+            (pcF.draws.Get().draws[header.y].misc.y & GFX_DRAW_TWOSIDED) != 0;
+        cull = CullTriangle(tri, clip[0], clip[1], clip[2], twoSided);
         if (!cull)
             InterlockedAdd(gLocalCount, 3, slot);
     }

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <numeric>
 
@@ -15,6 +16,54 @@ static constexpr size_t kBatchBufferBytes = kMaxBatches * sizeof(Batch);
 static constexpr size_t kDrawBufferBytes = kMaxDraws * sizeof(Draw);
 static constexpr size_t kFilteredBytes = kMaxBatches * kMaxClusterTris * 3 * sizeof(uint32_t);
 static constexpr size_t kIndirectBytes = kMaxBatches * 20; // VkDrawIndexedIndirectCommand
+
+static void RollbackSlotBuffers(RenderGraph& rg, View& v, uint32_t doneFrames) {
+	for (uint32_t f = 0; f < doneFrames; ++f) {
+		if (!v.batchLogicals[f].empty()) rg.FreeBuffer(v.batchLogicals[f]);
+		if (!v.drawLogicals[f].empty()) rg.FreeBuffer(v.drawLogicals[f]);
+		if (!v.filteredLogicals[f].empty()) rg.FreeBuffer(v.filteredLogicals[f]);
+		if (!v.indirectLogicals[f].empty()) rg.FreeBuffer(v.indirectLogicals[f]);
+		v.batchLogicals[f] = {};
+		v.drawLogicals[f] = {};
+		v.filteredLogicals[f] = {};
+		v.indirectLogicals[f] = {};
+	}
+	// Holders release their buffers automatically on scope exit.
+}
+
+static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
+	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		v.batchBuffers[f] = ctx.CreateBuffer(
+			kBatchBufferBytes, BufferType_Storage, "gfx batches");
+		v.drawBuffers[f] = ctx.CreateBuffer(
+			kDrawBufferBytes, BufferType_Storage, "gfx draws");
+		v.filteredBuffers[f] = ctx.CreateBuffer(
+			kFilteredBytes, BufferType_Storage, "gfx filteredIndices");
+		// Storage, NOT Indirect: per-frame zero-fill uploads run on the
+		// transfer queue while compute/draw run on graphics. Storage gets
+		// CONCURRENT sharing (see CreateBuffer); Indirect is EXCLUSIVE and
+		// would need explicit queue-ownership transfers every frame.
+		// Usage flags cover INDIRECT_BUFFER_BIT regardless (see
+		// bufferTypeToUsageFlags).
+		v.indirectBuffers[f] = ctx.CreateBuffer(
+			kIndirectBytes, BufferType_Storage, "gfx indirect");
+		if (v.batchBuffers[f].empty() || v.drawBuffers[f].empty()
+			|| v.filteredBuffers[f].empty() || v.indirectBuffers[f].empty()) {
+			RollbackSlotBuffers(rg, v, f);
+			return false;
+		}
+		v.batchLogicals[f] = rg.AddExternalBuffer(v.batchBuffers[f], "gfx batches");
+		v.drawLogicals[f] = rg.AddExternalBuffer(v.drawBuffers[f], "gfx draws");
+		v.filteredLogicals[f] = rg.AddExternalBuffer(v.filteredBuffers[f], "gfx filteredIndices");
+		v.indirectLogicals[f] = rg.AddExternalBuffer(v.indirectBuffers[f], "gfx indirect");
+		if (v.batchLogicals[f].empty() || v.drawLogicals[f].empty()
+			|| v.filteredLogicals[f].empty() || v.indirectLogicals[f].empty()) {
+			RollbackSlotBuffers(rg, v, f + 1);
+			return false;
+		}
+	}
+	return true;
+}
 
 // ---------------------------------------------------------------------------
 // Setup
@@ -39,47 +88,27 @@ bool EnsureShaders(State& s, ResourceManager& ctx, const char* csPath) {
 }
 
 bool Ensure(State& s, ResourceManager& ctx, RenderGraph& rg, const char* csPath) {
-	if (!s.batchBuffer.empty() && !s.drawBuffer.empty()) {
-		if (s.batchLogical.empty())
-			s.batchLogical = rg.AddExternalBuffer(s.batchBuffer, "gfx batches");
-		if (s.drawLogical.empty())
-			s.drawLogical = rg.AddExternalBuffer(s.drawBuffer, "gfx draws");
-		return EnsureShaders(s, ctx, csPath);
-	}
-	s.batchBuffer = ctx.CreateBuffer(kBatchBufferBytes, BufferType_Storage, "gfx batches");
-	s.drawBuffer = ctx.CreateBuffer(kDrawBufferBytes, BufferType_Storage, "gfx draws");
-	if (s.batchBuffer.empty() || s.drawBuffer.empty()) {
-		Destroy(s, rg);
-		return false;
-	}
-	s.batchLogical = rg.AddExternalBuffer(s.batchBuffer, "gfx batches");
-	s.drawLogical = rg.AddExternalBuffer(s.drawBuffer, "gfx draws");
-	if (s.batchLogical.empty() || s.drawLogical.empty()) {
-		Destroy(s, rg);
-		return false;
-	}
+	(void)rg; // per-(view, frame) buffers are pooled on demand by BeginView
 	return EnsureShaders(s, ctx, csPath);
 }
 
 void Destroy(State& s, RenderGraph& rg) {
-	if (!s.batchLogical.empty()) rg.FreeBuffer(s.batchLogical);
-	if (!s.drawLogical.empty()) rg.FreeBuffer(s.drawLogical);
+	for (auto& v : s.views) {
+		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+			if (!v.batchLogicals[f].empty()) rg.FreeBuffer(v.batchLogicals[f]);
+			if (!v.drawLogicals[f].empty()) rg.FreeBuffer(v.drawLogicals[f]);
+			if (!v.filteredLogicals[f].empty()) rg.FreeBuffer(v.filteredLogicals[f]);
+			if (!v.indirectLogicals[f].empty()) rg.FreeBuffer(v.indirectLogicals[f]);
+		}
+	}
 	if (!s.filterIndexLogical.empty()) rg.FreeBuffer(s.filterIndexLogical);
 	if (!s.clusterLogical.empty()) rg.FreeBuffer(s.clusterLogical);
-	s.batchLogical = {};
-	s.drawLogical = {};
 	s.filterIndexLogical = {};
 	s.clusterLogical = {};
-	for (auto& v : s.views) {
-		if (!v.filteredLogical.empty()) rg.FreeBuffer(v.filteredLogical);
-		if (!v.indirectLogical.empty()) rg.FreeBuffer(v.indirectLogical);
-	}
 	s.views.clear();
 	s.viewCount = 0;
 	s.filterIndexBuffer = {};
 	s.clusterBuffer = {};
-	s.batchBuffer = {};
-	s.drawBuffer = {};
 	s.filterProgram = ShaderProgram{};
 	s.filterModule = {};
 }
@@ -287,19 +316,8 @@ static bool EnsureViewSlots(State& s, ResourceManager& ctx, RenderGraph& rg, uin
 		return false;
 	while ((uint32_t)s.views.size() < count) {
 		View slot{};
-		slot.filteredBuffer = ctx.CreateBuffer(
-			kFilteredBytes, BufferType_Storage, "gfx filteredIndices");
-		slot.indirectBuffer = ctx.CreateBuffer(
-			kIndirectBytes, BufferType_Indirect, "gfx indirect");
-		if (slot.filteredBuffer.empty() || slot.indirectBuffer.empty())
+		if (!CreateSlotBuffers(ctx, rg, slot))
 			return false;
-		slot.filteredLogical = rg.AddExternalBuffer(slot.filteredBuffer, "gfx filteredIndices");
-		slot.indirectLogical = rg.AddExternalBuffer(slot.indirectBuffer, "gfx indirect");
-		if (slot.filteredLogical.empty() || slot.indirectLogical.empty()) {
-			if (!slot.filteredLogical.empty()) rg.FreeBuffer(slot.filteredLogical);
-			if (!slot.indirectLogical.empty()) rg.FreeBuffer(slot.indirectLogical);
-			return false;
-		}
 		s.views.push_back(std::move(slot));
 	}
 	return true;
@@ -329,7 +347,7 @@ uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 }
 
 void PushDraw(State& s, uint32_t view, uint32_t mesh,
-	const glm::mat4& model, uint32_t material) {
+	const glm::mat4& model, uint32_t material, DrawFlags flags) {
 	assert(view < s.viewCount);
 	assert(mesh < s.meshes.size());
 	View& v = s.views[view];
@@ -339,6 +357,7 @@ void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	d.mesh = mesh;
 	d.material = material;
 	d.model = model;
+	d.flags = flags;
 	v.draws.push_back(d);
 }
 
@@ -352,27 +371,70 @@ static float MaxBasisScale(const glm::mat4& m) {
 // CPU pre-cull port of GeometryFX's cluster test (AddRequest cone check)
 // using meshoptimizer perspective formulas (see meshoptimizer.h:
 // dot(normalize(apex - eye), axis) >= cutoff culls).
-static bool CullCluster(const Cluster& c, const glm::mat4& model,
+// The cone test runs in world space so mirrored / non-uniform-scale
+// instances agree with the rasterizer (object-space testing flips the
+// answer under negative-determinant transforms).
+bool CullCluster(const Cluster& c, const glm::mat4& model,
 	const glm::mat4& invModel, const glm::vec3& eye,
-	const RenderView& renderView) {
+	const RenderView& renderView, bool twoSided) {
 	const glm::vec3 worldCenter = glm::vec3(model * glm::vec4(c.boundCenter, 1.0f));
 	const float worldRadius = c.boundRadius * MaxBasisScale(model);
 	if (!RenderViewIntersectsSphere(renderView, worldCenter, worldRadius))
 		return true;
-	const glm::vec3 eyeObj = glm::vec3(invModel * glm::vec4(eye, 1.0f));
-	const glm::vec3 d = c.coneApex - eyeObj;
+	if (twoSided)
+		return false; // double-sided raster keeps both facings: no cone cull
+	const glm::vec3 worldApex = glm::vec3(model * glm::vec4(c.coneApex, 1.0f));
+	// Normal transform (inverse-transpose, direction only, renormalized).
+	const glm::vec3 axisW =
+		glm::vec3(glm::transpose(invModel) * glm::vec4(c.coneAxis, 0.0f));
+	const float axisLen2 = glm::dot(axisW, axisW);
+	if (axisLen2 < 1e-12f)
+		return false; // degenerate cone (e.g. fallback clusters): no cone cull
+	const glm::vec3 worldAxis = axisW / std::sqrt(axisLen2);
+	const glm::vec3 d = worldApex - eye;
 	const float len2 = glm::dot(d, d);
 	if (len2 < 1e-12f)
 		return false; // eye inside the apex: keep (avoids NaN)
-	if (glm::dot(d / std::sqrt(len2), c.coneAxis) >= c.coneCutoff)
+	if (glm::dot(d / std::sqrt(len2), worldAxis) >= c.coneCutoff)
 		return true;
 	return false;
 }
 
-Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t view) {
+Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
 	assert(view < s.viewCount);
+	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
 	View& v = s.views[view];
+	v.frameIndex = frameIndex;
 	v.stats.draws = (uint32_t)v.draws.size();
+
+	BuildBatches(s, view);
+
+	if (v.batchCount > 0) {
+		ctx.UploadDataToBuffer(v.batchBuffers[frameIndex],
+			v.batches.data(), v.batches.size() * sizeof(Batch),
+			PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
+	}
+	if (!v.drawConstants.empty()) {
+		ctx.UploadDataToBuffer(v.drawBuffers[frameIndex],
+			v.drawConstants.data(), v.drawConstants.size() * sizeof(Draw),
+			PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
+		// Zero-fill indirect (replaces ClearDrawIndirectArgsCS; each group
+		// writes exactly its own command slot, so no atomics are needed).
+		std::vector<uint8_t> zeros(v.batchCount * 20, 0);
+		if (!zeros.empty()) {
+			ctx.UploadDataToBuffer(v.indirectBuffers[frameIndex],
+				zeros.data(), zeros.size(),
+				PipelineStage(PipelineStageBit_Compute),
+				AccessFlags::ShaderRead | AccessFlags::ShaderWrite);
+		}
+	}
+	return v.stats;
+}
+
+void BuildBatches(State& s, uint32_t view) {
+	assert(view < s.views.size());
+	View& v = s.views[view];
+	assert(v.renderView != nullptr);
 
 	// Sort draws by material (stable: submission order kept per material).
 	// Commands are emitted in this order, so each material owns one
@@ -384,14 +446,13 @@ Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t view) {
 	});
 
 	v.drawConstants.reserve(v.draws.size());
-	std::vector<uint32_t> remap(v.draws.size(), UINT32_MAX); // old draw -> sorted draw
 	for (uint32_t sorted = 0; sorted < (uint32_t)order.size(); ++sorted) {
 		const DrawRequest& d = v.draws[order[sorted]];
 		Draw dc{};
 		dc.model = d.model;
 		dc.mesh = d.mesh;
+		dc.flags = d.flags;
 		v.drawConstants.push_back(dc);
-		remap[order[sorted]] = sorted;
 	}
 
 	uint32_t batchSlot = 0;
@@ -415,12 +476,13 @@ Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t view) {
 		if (batchSlot >= kMaxBatches)
 			break;
 		const glm::mat4 invModel = glm::inverse(d.model);
+		const bool twoSided = (d.flags & DrawFlagBit_TwoSided) != 0;
 		for (uint32_t ci = 0; ci < mesh.clusterCount; ++ci) {
 			if (batchSlot >= kMaxBatches)
 				break;
 			const Cluster& c = s.clusters[mesh.clusterStart + ci];
 			++v.stats.clustersProcessed;
-			if (CullCluster(c, d.model, invModel, v.eye, *v.renderView)) {
+			if (CullCluster(c, d.model, invModel, v.eye, *v.renderView, twoSided)) {
 				++v.stats.clustersCulled;
 				continue;
 			}
@@ -443,43 +505,25 @@ Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t view) {
 	v.batchCount = batchSlot;
 	v.stats.draws = (uint32_t)v.draws.size();
 	v.stats.commands = batchSlot;
-
-	if (v.batchCount > 0) {
-		ctx.UploadDataToBuffer(s.batchBuffer,
-			v.batches.data(), v.batches.size() * sizeof(Batch),
-			PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
-	}
-	if (!v.drawConstants.empty()) {
-		ctx.UploadDataToBuffer(s.drawBuffer,
-			v.drawConstants.data(), v.drawConstants.size() * sizeof(Draw),
-			PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
-		// Zero-fill indirect (replaces ClearDrawIndirectArgsCS; each group
-		// writes exactly its own command slot, so no atomics are needed).
-		std::vector<uint8_t> zeros(v.batchCount * 20, 0);
-		ctx.UploadDataToBuffer(v.indirectBuffer,
-			zeros.data(), zeros.size(),
-			PipelineStage(PipelineStageBit_Compute),
-			AccessFlags::ShaderRead | AccessFlags::ShaderWrite);
-	}
-	return v.stats;
 }
 
 RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view) {
 	assert(view < s.viewCount);
 	View& v = s.views[view];
+	const uint32_t f = v.frameIndex;
 	RenderPass& pass = rg.AddComputePass("GfxFilter");
 	BufferSyncRequest computeRead{};
 	computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
 	computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
 	pass.AddBufferHint(s.filterIndexLogical, computeRead);
 	pass.AddBufferHint(s.clusterLogical, computeRead);
-	pass.AddBufferHint(s.batchLogical, computeRead);
-	pass.AddBufferHint(s.drawLogical, computeRead);
+	pass.AddBufferHint(v.batchLogicals[f], computeRead);
+	pass.AddBufferHint(v.drawLogicals[f], computeRead);
 	BufferSyncRequest computeRW{};
 	computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
 	computeRW.barrierMasks.stageMask = PipelineStageBit_Compute | PipelineStageBit_Vertex;
-	pass.AddBufferHint(v.filteredLogical, computeRW);
-	pass.AddBufferHint(v.indirectLogical, computeRW);
+	pass.AddBufferHint(v.filteredLogicals[f], computeRW);
+	pass.AddBufferHint(v.indirectLogicals[f], computeRW);
 	return pass;
 }
 
@@ -500,15 +544,35 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 	View& v = s.views[view];
 	if (v.batchCount == 0)
 		return;
+	const uint32_t f = v.frameIndex;
 	cmd.BindComputePipeline(s.filterProgram);
 	FilterPush push{};
 	push.positions = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexPosBuffer);
 	push.indices = ctx.GetBufferDeviceAddress(s.filterIndexBuffer);
 	push.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
-	push.batches = ctx.GetBufferDeviceAddress(s.batchBuffer);
-	push.draws = ctx.GetBufferDeviceAddress(s.drawBuffer);
-	push.filtered = ctx.GetBufferDeviceAddress(v.filteredBuffer);
-	push.indirect = ctx.GetBufferDeviceAddress(v.indirectBuffer);
+	push.batches = ctx.GetBufferDeviceAddress(v.batchBuffers[f]);
+	push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
+	push.filtered = ctx.GetBufferDeviceAddress(v.filteredBuffers[f]);
+	push.indirect = ctx.GetBufferDeviceAddress(v.indirectBuffers[f]);
+	// A null BDA dereferenced by the filter CS is an MMU fault and takes the
+	// whole device down (Aftermath: compute read at 0xa000). Never dispatch
+	// in that state: the indirect buffers were zero-filled by FinalizeView,
+	// so skipping draws nothing instead of faulting. Loud + throttled.
+	if (push.positions == 0 || push.indices == 0 || push.clusters == 0
+		|| push.batches == 0 || push.draws == 0 || push.filtered == 0
+		|| push.indirect == 0) {
+		static uint64_t s_nullBdaWarns = 0;
+		if ((s_nullBdaWarns++ % 300) == 0) {
+			std::fprintf(stderr,
+				"[GfxFilter] refusing dispatch: null BDA (pos=%llx idx=%llx cl=%llx "
+				"batch=%llx draw=%llx filt=%llx ind=%llx). Check buffer usage flags.\n",
+				(unsigned long long)push.positions, (unsigned long long)push.indices,
+				(unsigned long long)push.clusters, (unsigned long long)push.batches,
+				(unsigned long long)push.draws, (unsigned long long)push.filtered,
+				(unsigned long long)push.indirect);
+		}
+		return;
+	}
 	push.viewProj = v.viewProj;
 	push.eye = v.eye;
 	push.cullFlags = v.cullFlags;

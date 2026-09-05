@@ -306,7 +306,14 @@ uint32_t SanitizeDemoteToKill(std::vector<char>& spirvBytes)
 	// SPIR-V opcodes/words of interest.
 	constexpr uint32_t kMagic = 0x07230203u;
 	constexpr uint32_t kOpCapability = 17;
+	constexpr uint32_t kOpLabel = 248;
+	constexpr uint32_t kOpBranch = 249;
+	constexpr uint32_t kOpBranchConditional = 250;
+	constexpr uint32_t kOpSwitch = 251;
 	constexpr uint32_t kOpKill = 252;
+	constexpr uint32_t kOpReturn = 253;
+	constexpr uint32_t kOpReturnValue = 254;
+	constexpr uint32_t kOpUnreachable = 255;
 	constexpr uint32_t kOpDemoteToHelperInvocation = 5380;
 	constexpr uint32_t kCapDemoteToHelperInvocation = 5379;
 
@@ -314,15 +321,20 @@ uint32_t SanitizeDemoteToKill(std::vector<char>& spirvBytes)
 		return 0;
 
 	auto* words = reinterpret_cast<uint32_t*>(spirvBytes.data());
-	const size_t wordCount = spirvBytes.size() / 4;
+	size_t wordCount = spirvBytes.size() / 4;
 	if (words[0] != kMagic)
 		return 0;
 
 	// Walk the instruction stream (5-word header, then wc/op prefixed words).
 	// A raw word scan would risk matching literal constants or string bytes;
 	// parsing word counts keeps the rewrite exact.
-	constexpr size_t kNoCap = static_cast<size_t>(-1);
-	size_t capIndex = kNoCap;
+	//
+	// Unlike OpKill, OpDemoteToHelperInvocation does NOT terminate its block:
+	// DXC emits `discard` as `demote; OpBranch %merge`. A bare opcode swap
+	// would strand the branch after a terminator ("Branch must appear in a
+	// block"), so the dead tail is erased through the block terminator.
+	constexpr size_t kNone = static_cast<size_t>(-1);
+	size_t capIndex = kNone;
 	uint32_t rewritten = 0;
 	size_t i = 5;
 	while (i < wordCount) {
@@ -332,11 +344,39 @@ uint32_t SanitizeDemoteToKill(std::vector<char>& spirvBytes)
 		if (wc == 0 || i + wc > wordCount)
 			return rewritten; // malformed tail: keep prior edits, stop
 		if (op == kOpCapability && wc == 2 && words[i + 1] == kCapDemoteToHelperInvocation) {
-			if (capIndex == kNoCap)
+			if (capIndex == kNone)
 				capIndex = i; // erasure below; keep walking with original indices
 		} else if (op == kOpDemoteToHelperInvocation && wc == 1) {
 			words[i] = (1u << 16) | kOpKill;
 			++rewritten;
+			// Erase the now-dead block tail: everything after the kill up
+			// to and including the block terminator. DXC's discard pattern
+			// is demote immediately followed by OpBranch; the general loop
+			// below covers that plus any dead values before the terminator.
+			// Stops at the next label/end (kill already last in block).
+			size_t j = i + wc;
+			while (j < wordCount) {
+				const uint32_t w2 = words[j];
+				const uint32_t wc2 = w2 >> 16;
+				const uint32_t op2 = w2 & 0xFFFF;
+				if (wc2 == 0 || j + wc2 > wordCount)
+					break; // malformed: stop, keep the kill
+				const bool isTerm = op2 == kOpBranch || op2 == kOpBranchConditional
+					|| op2 == kOpSwitch || op2 == kOpKill || op2 == kOpReturn
+					|| op2 == kOpReturnValue || op2 == kOpUnreachable;
+				const size_t eraseWords = (j + wc2) - (i + wc);
+				if (op2 == kOpLabel)
+					break; // kill already terminates the block: nothing dead
+				if (isTerm) {
+					std::memmove(words + i + wc, words + j + wc2,
+						(wordCount - (j + wc2)) * sizeof(uint32_t));
+					wordCount -= eraseWords;
+					if (capIndex != kNone && capIndex > i)
+						capIndex -= eraseWords;
+					break;
+				}
+				j += wc2;
+			}
 		}
 		i += wc;
 	}
@@ -345,11 +385,13 @@ uint32_t SanitizeDemoteToKill(std::vector<char>& spirvBytes)
 		return 0; // leave modules without demote fully untouched
 
 	// Erase the capability instruction (2 words, no result id -> bound unaffected).
-	if (capIndex != kNoCap) {
+	if (capIndex != kNone) {
 		const size_t tailWords = wordCount - (capIndex + 2);
 		std::memmove(words + capIndex, words + capIndex + 2, tailWords * sizeof(uint32_t));
-		spirvBytes.resize((wordCount - 2) * sizeof(uint32_t));
+		wordCount -= 2;
 	}
+	// Dead-tail erasures above also shrink the module (even with no cap).
+	spirvBytes.resize(wordCount * sizeof(uint32_t));
 	return rewritten;
 }
 

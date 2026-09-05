@@ -104,12 +104,14 @@ uint32_t PushConstantFootprint(const std::vector<PushConstantRange>& ranges);
 // shaderDemoteToHelperInvocation (VUID-VkShaderModuleCreateInfo-pCode-08740).
 // DXC maps HLSL `discard` to OpDemote when targeting vulkan1.3+ with no
 // opt-out flag; the engine policy is classic kill semantics (no extra device
-// feature, no extra PSOs). Both ops are nullary terminators, so the rewrite
-// is a 1-word swap plus erasing the 2-word capability instruction; result
-// ids and the id bound are untouched. Operates in place on raw SPIR-V bytes
-// (size must be a multiple of 4); returns the number of demote ops rewritten
-// (0 = untouched, including malformed input which is left as-is).
-// CPU-only, headless-safe.
+// feature, no extra PSOs). Demote is NOT a block terminator (DXC emits
+// `demote; OpBranch %merge`), while kill IS, so each rewrite also erases the
+// now-dead block tail through the terminator; a bare opcode swap would leave
+// a branch after a terminator ("Branch must appear in a block"). Result ids
+// outside the erased tails and the id bound are untouched. Operates in place
+// on raw SPIR-V bytes (size must be a multiple of 4); returns the number of
+// demote ops rewritten (0 = untouched, including malformed input which is
+// left as-is). CPU-only, headless-safe.
 uint32_t SanitizeDemoteToKill(std::vector<char>& spirvBytes);
 
 // Expand a vkCmdPushConstants-style stage mask so it satisfies

@@ -583,8 +583,8 @@ const char* vkResultToString(VkResult result) {
 
 // RHI to vulkan
 constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
-	VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_Index
-	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,             // BufferType_Vertex
+	VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Index (addressable: GPU-driven filter/index reads via BDA)
+	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Vertex (addressable: filter CS reads the static pos heap via BDA; null BDA = MMU fault + device lost)
 	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
 	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, // BufferType_Storage (also hosts GeometryFX-style filtered index lists)
 	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Indirect (also written by filter compute)
@@ -4515,7 +4515,8 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 		.buffer = desc.vkBuffer
 	};
 	desc.deviceAddress = (bufferType == BufferType_Uniform || bufferType == BufferType_Storage ||
-		bufferType == BufferType_Indirect)
+		bufferType == BufferType_Indirect || bufferType == BufferType_Vertex ||
+		bufferType == BufferType_Index)
 		? vkGetBufferDeviceAddress(device_, &ai) : 0;
 	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &desc.memoryFlags);
 	desc.usage = bufferTypeToUsageFlags[static_cast<size_t>(bufferType)];

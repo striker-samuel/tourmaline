@@ -225,6 +225,48 @@ void TestDemoteSanitizeUnit() {
 	Check(smvk::SanitizeDemoteToKill(odd) == 0, "sanitize.unit.oddsize");
 }
 
+void TestDemoteSanitizeBranchUnit() {
+	// DXC's real `discard` pattern: demote does NOT terminate its block, so
+	// it is followed by OpBranch %merge. A bare demote->kill opcode swap
+	// strands that branch after a terminator (spirv-val: "Branch must appear
+	// in a block"); the sanitizer must erase the dead tail too.
+	const uint32_t kKillWord = (1u << 16) | 252u;
+	const uint32_t kDemoteWord = (1u << 16) | 5380u;
+	std::vector<uint32_t> words = {
+		0x07230203u, 0x00010000u, 0u, 10u, 0u, // header
+		0x00020011u, 1u, // OpCapability Shader
+		0x00020011u, 5379u, // OpCapability DemoteToHelperInvocation
+		0x0003000Eu, 0u, 1u, // OpMemoryModel Logical GLSL450
+		0x000200F8u, 1u, // OpLabel %1
+		kDemoteWord, // OpDemoteToHelperInvocation
+		0x000200F9u, 2u, // OpBranch %2 (dead once demote becomes kill)
+		0x000200F8u, 2u, // OpLabel %2
+	};
+	std::vector<char> bytes(words.size() * 4, 0);
+	std::memcpy(bytes.data(), words.data(), bytes.size());
+
+	Check(smvk::SanitizeDemoteToKill(bytes) == 1, "sanitize.branch.count");
+	// -2 words capability, -2 words dead branch.
+	Check(bytes.size() == (words.size() - 4) * 4, "sanitize.branch.shrink");
+	if (bytes.size() == (words.size() - 4) * 4) {
+		auto* w = reinterpret_cast<const uint32_t*>(bytes.data());
+		Check(w[7] == 0x0003000Eu, "sanitize.branch.caperased");
+		Check(w[12] == kKillWord, "sanitize.branch.demotetokill");
+		// The merge label must immediately follow the kill: no stranded branch.
+		Check(w[13] == 0x000200F8u && w[14] == 2u, "sanitize.branch.tailerased");
+		// No demote opcode or capability left anywhere.
+		bool clean = true;
+		for (size_t i = 5; i + 1 < bytes.size() / 4 && clean; ++i) {
+			if (w[i] == kDemoteWord)
+				clean = false;
+			if (w[i] == 0x00020011u && w[i + 1] == 5379u)
+				clean = false;
+		}
+		Check(clean, "sanitize.branch.clean");
+	}
+	Check(smvk::SanitizeDemoteToKill(bytes) == 0, "sanitize.branch.idempotent");
+}
+
 // End-to-end: compile HLSL with a push block + spec constants, reflect it.
 // Skipped gracefully when DXC (dxcompiler.dll) is unavailable.
 void TestDxcRoundTrip() {	static constexpr const char* kSrc = R"(
@@ -319,6 +361,29 @@ float4 mainPS(PSIn i) : SV_Target0 {
 	const uint32_t fixed = smvk::SanitizeDemoteToKill(spv);
 	Check(fixed >= 1, "spirv.sanitize.dxc.count");
 	Check(!hasDemoteCap(spv), "spirv.sanitize.dxc.capgone");
+	// No rewritten kill may be followed by a stranded branch (the device-lost
+	// bug: demote is not a terminator, kill is).
+	{
+		bool noStrandedBranch = true;
+		if (spv.size() % 4 == 0 && spv.size() >= 20) {
+			auto* w = reinterpret_cast<const uint32_t*>(spv.data());
+			const size_t n = spv.size() / 4;
+			size_t i = 5;
+			while (i < n) {
+				const uint32_t wc = w[i] >> 16;
+				const uint32_t op = w[i] & 0xFFFF;
+				if (wc == 0 || i + wc > n)
+					break;
+				if (op == 252u && wc == 1 && i + 1 < n) {
+					const uint32_t nop = w[i + 1] & 0xFFFF;
+					if (nop == 249u)
+						noStrandedBranch = false;
+				}
+				i += wc;
+			}
+		}
+		Check(noStrandedBranch, "spirv.sanitize.dxc.nostrandedbranch");
+	}
 	// Module must still parse + reflect after the rewrite.
 	smvk::SpirvReflection r =
 		smvk::ReflectSpirvBytes(std::span<const char>(spv.data(), spv.size()));
@@ -333,6 +398,7 @@ int main() {
 	TestValidatePushRanges();
 	TestExpandPushStagesForLayout();
 	TestDemoteSanitizeUnit();
+	TestDemoteSanitizeBranchUnit();
 	TestDemoteSanitizeDxc();
 	TestSpecializationPayload();
 	TestShaderEqualityWithSpec();
