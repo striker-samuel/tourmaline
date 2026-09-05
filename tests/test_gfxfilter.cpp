@@ -727,8 +727,9 @@ void TestHzbOcclusion() {
 	Check(!f.behindCamera, "gfx.occ.front-testable");
 	Check(std::abs(f.centerX - 400.0f) < 1.0f && std::abs(f.centerY - 300.0f) < 1.0f,
 		"gfx.occ.front-center");
-	Check(f.radiusX > 150.0f && f.radiusX < 200.0f
-		&& f.radiusY > 110.0f && f.radiusY < 150.0f, "gfx.occ.front-radii");
+	// Radii use nearest-point depth (conservative overestimate vs radial).
+	Check(f.radiusX > 190.0f && f.radiusX < 280.0f
+		&& f.radiusY > 140.0f && f.radiusY < 215.0f, "gfx.occ.front-radii");
 	Check(f.nearestDepth > 0.0f && f.nearestDepth < 1.0f, "gfx.occ.depth-range");
 	{
 		// Nearer point = larger reversed-Z value than the center.
@@ -773,6 +774,140 @@ void TestHzbOcclusion() {
 	ClusterFootprint off = vis;
 	off.centerX = 5000.0f;
 	Check(!HzbOccluded(hzb.data(), 8, 8, mips, off), "gfx.occ.offscreen-keeps");
+
+	// Y-row discrimination: world +Y (up) must map to the TOP half of the
+	// target (rows y-down) under the engine Y-flip. Catches a row-mirror
+	// (wrong-texel) regression that mid-screen tests cannot see.
+	{
+		ClusterFootprint up = ProjectClusterFootprint(
+			glm::vec3(0, 1, 0), 0.25f, eye, viewProj, W, H);
+		Check(!up.behindCamera, "gfx.occ.up-testable");
+		Check(up.centerY < (float)H * 0.5f, "gfx.occ.up-is-top");
+		ClusterFootprint dn = ProjectClusterFootprint(
+			glm::vec3(0, -1, 0), 0.25f, eye, viewProj, W, H);
+		Check(!dn.behindCamera, "gfx.occ.down-testable");
+		Check(dn.centerY > (float)H * 0.5f, "gfx.occ.down-is-bottom");
+	}
+	// Row-index discrimination: only the addressed row occludes. A Y-mirror
+	// in fetch (vs projection) would read row H-1-y and keep here.
+	{
+		const uint32_t W8 = 8, H8 = 8;
+		const uint32_t m8 = HzbMipCount(W8, H8);
+		std::vector<float> rows(HzbTotalFloats(W8, H8), 0.0f);
+		rows[HzbMipOffsetFloats(W8, H8, 0) + 2 * W8 + 4] = 0.9f; // row 2 only
+		ClusterFootprint row{};
+		row.behindCamera = false;
+		row.centerX = 4.5f; row.centerY = 2.5f; // texel interior: single texel
+		row.radiusX = row.radiusY = 0.25f;
+		row.nearestDepth = 0.5f;
+		Check(HzbOccluded(rows.data(), W8, H8, m8, row), "gfx.occ.row-hit");
+		ClusterFootprint rowMiss = row;
+		rowMiss.centerY = 5.5f; // row 5 is far (0.0): keep
+		Check(!HzbOccluded(rows.data(), W8, H8, m8, rowMiss), "gfx.occ.row-miss-keeps");
+	}
+	// Cover conservatism: rect [5,11]^2 at level 3 (texel 8, 2x2) spans
+	// all four texels. Only texel (1,1) near -> keep (edges see far).
+	// All four near -> hidden.
+	{
+		const uint32_t W16 = 16, H16 = 16;
+		const uint32_t m16 = HzbMipCount(W16, H16);
+		Check(HzbMipForRect(6.0f, 6.0f, m16) == 3, "gfx.occ.cover-level");
+		ClusterFootprint wide{};
+		wide.behindCamera = false;
+		wide.centerX = 8.0f; wide.centerY = 8.0f;
+		wide.radiusX = wide.radiusY = 3.0f;
+		wide.nearestDepth = 0.5f;
+		std::vector<float> het(HzbTotalFloats(W16, H16), 0.0f);
+		het[HzbMipOffsetFloats(W16, H16, 3) + 1 * 2 + 1] = 0.9f;
+		Check(!HzbOccluded(het.data(), W16, H16, m16, wide), "gfx.occ.cover-keeps");
+		for (uint32_t k = 0; k < 4; ++k)
+			het[HzbMipOffsetFloats(W16, H16, 3) + k] = 0.9f;
+		Check(HzbOccluded(het.data(), W16, H16, m16, wide), "gfx.occ.cover-hidden");
+	}
+}
+
+// ---------------------------------------------------------------------------
+// T6 (T5 state): remainder difference — currVisible minus prevVisible keyed
+// by (cluster, model matrix). Pure CPU, headless.
+// ---------------------------------------------------------------------------
+
+void TestRemainderCommands() {
+	using namespace smvk::gfx;
+	State s{};
+	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+	Check(m0 == 0 && m1 == 1, "gfx.rem.mesh-ids");
+
+	smvk::RenderViewSet views;
+	views.NewFrame();
+	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f;
+	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+	auto freshView = [&]() {
+		s.views.clear();
+		s.viewCount = 0;
+		View v{};
+		v.renderView = &views.Get(rv);
+		v.eye = eye;
+		v.width = 800;
+		v.height = 600;
+		v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+		s.views.push_back(std::move(v));
+		s.viewCount = 1;
+	};
+
+	// Frame A: two draws, snapshot as baseline.
+	freshView();
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
+	BuildBatches(s, 0);
+	Check(s.views[0].batchCount == 2, "gfx.rem.frame-a-batches");
+	SnapshotVisible(s, 0);
+
+	// Frame B identical: nothing newly visible.
+	freshView();
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
+	BuildBatches(s, 0);
+	BuildRemainderCommands(s, 0);
+	Check(Temporal(s, 0).remainderCommands.empty()
+		&& Temporal(s, 0).remainderRanges.empty(),
+		"gfx.rem.static-empty");
+
+	// Frame C: m0 translated (moved instance) -> only its cluster is new.
+	// m1 untouched -> covered by the snapshot.
+	freshView();
+	glm::mat4 moved(1.0f);
+	moved[3][0] = 0.5f;
+	PushDraw(s, 0, m0, moved, 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
+	BuildBatches(s, 0);
+	BuildRemainderCommands(s, 0);
+	const TemporalView& t = Temporal(s, 0);
+	Check(t.remainderCommands.size() == 1, "gfx.rem.moved-count");
+	Check(t.remainderOpaqueCommands == 1, "gfx.rem.moved-opaque");
+	bool remOk = false;
+	if (t.remainderCommands.size() == 1 && t.remainderRanges.size() == 1) {
+		const SeedCommand& c = t.remainderCommands[0];
+		const SeedRange& r = t.remainderRanges[0];
+		// Draw order sorts mat3 first: curr draw 0 = moved m0.
+		remOk = c.firstInstance == 0
+			&& c.firstIndex == s.clusters[0].indexOffset
+			&& c.indexCount == 3
+			&& r.drawSet == DrawSetBit_Opaque && r.material == 3
+			&& r.firstCommand == 0 && r.commandCount == 1;
+	}
+	Check(remOk, "gfx.rem.moved-shape");
+
+	// No baseline (invalidated): empty even though geometry is "new" —
+	// the full prepass covered it, so pass 2 has nothing to add.
+	InvalidateHistory(s, 0);
+	BuildRemainderCommands(s, 0);
+	Check(Temporal(s, 0).remainderCommands.empty(), "gfx.rem.invalid-empty");
 }
 
 } // namespace
@@ -787,6 +922,7 @@ int main() {
 	TestHizLayout();
 	TestSeedCommands();
 	TestHzbOcclusion();
+	TestRemainderCommands();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

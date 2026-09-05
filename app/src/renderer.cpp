@@ -62,10 +62,90 @@ bool GfxRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
 	return true;
 }
 
+void GfxRenderer::RecordDepthList(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
+	uint32_t slot, bool remainder, uint64_t drawsAddr,
+	uint64_t renderViewsAddr, uint32_t renderViewIndex,
+	const PushConstants& depthPC) {
+	const std::vector<smvk::gfx::SeedRange>& ranges = remainder
+		? smvk::gfx::RemainderRanges(gfx, slot)
+		: smvk::gfx::SeedRanges(gfx, slot);
+	const uint32_t opaqueCount = remainder
+		? smvk::gfx::RemainderOpaqueCommands(gfx, slot)
+		: smvk::gfx::SeedOpaqueCommands(gfx, slot);
+	const smvk::BufferHandle indirectBuf = remainder
+		? smvk::gfx::RemainderIndirectBuffer(gfx, slot)
+		: smvk::gfx::SeedIndirectBuffer(gfx, slot);
+	cmd.BindStaticVertexFmt();
+	cmd.BindIndexBuffer(smvk::gfx::FilterIndexBuffer(gfx));
+	// NOTE: no push constants before the first BindRenderPipeline below —
+	// PushConstants asserts on a bound pipeline layout (impl.cpp).
+	// Phase 1: opaque (VS-only, back-culled like the prepass).
+	if (opaqueCount > 0) {
+		cmd.BindRenderPipeline(
+			seedOpaqueProgram,
+			smvk::VertexFormat::StaticVertexFormat,
+			smvk::DepthSettings{
+				.depthFunc = smvk::CompareOp::GreaterEqual,
+				.writeEnable = true,
+				.depthTestEnable = true,
+			},
+			smvk::StencilSettings{},
+			smvk::BlendSettings{},
+			smvk::MSAASettings{},
+			smvk::RasterSettings{ .cullMode = smvk::CullMode::Back }
+		);
+		cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
+		PushSeedConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex, drawsAddr);
+		cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
+	}
+	// Phase 2: MASK cutout (alpha-tested FS, cull off).
+	for (size_t ri = 0; ri < ranges.size(); ++ri) {
+		const smvk::gfx::SeedRange& r = ranges[ri];
+		if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
+			continue;
+		if (r.material == UINT32_MAX)
+			continue; // unknown material: no valid materialId push;
+			// the full prepass still depths these clusters (T3)
+		cmd.BindRenderPipeline(
+			seedMaskedProgram,
+			smvk::VertexFormat::StaticVertexFormat,
+			smvk::DepthSettings{
+				.depthFunc = smvk::CompareOp::GreaterEqual,
+				.writeEnable = true,
+				.depthTestEnable = true,
+			},
+			smvk::StencilSettings{},
+			smvk::BlendSettings{},
+			smvk::MSAASettings{},
+			smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+		);
+		PushConstants matPC{};
+		matPC.materialId = r.material;
+		cmd.PushConstants(
+			offsetof(PushConstants, materialId),
+			sizeof(matPC.materialId),
+			&matPC.materialId,
+			smvk::ShaderStage::All
+		);
+		cmd.PushConstants(
+			0,
+			offsetof(PushConstants, frameUniforms),
+			&depthPC,
+			smvk::ShaderStage::All
+		);
+		PushSeedConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex, drawsAddr);
+		if (remainder)
+			DrawRemainderRange(cmd, slot, (uint32_t)ri);
+		else
+			DrawSeedRange(cmd, slot, (uint32_t)ri);
+	}
+}
+
 void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 	AppFrameContext& fc = static_cast<AppFrameContext&>(base);
 	lastSlot_ = UINT32_MAX;
 	seededThisFrame_ = false;
+	remainderPending_ = false;
 	if (!fc.world || !fc.views || fc.mainViewIndex == smvk::RenderViewSet::kInvalidIndex)
 		return;
 	// NOTE: the seed pass below captures fc.pc (frame addresses for the
@@ -96,7 +176,6 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 		smvk::gfx::BuildSeedCommands(gfx, slot);
 		smvk::gfx::UploadSeed(gfx, *fc.ctx, fc.frameIndex, slot);
 		const auto& ranges = smvk::gfx::SeedRanges(gfx, slot);
-		const uint32_t opaqueCount = smvk::gfx::SeedOpaqueCommands(gfx, slot);
 		if (!ranges.empty()) {
 			smvk::RenderPass& seedPass = smvk::gfx::AddSeedPass(
 				gfx, *fc.rg, slot, fc.depthView);
@@ -110,78 +189,62 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 			const uint64_t renderViewsAddr =
 				fc.views->DeviceAddress(*fc.ctx, fc.frameIndex);
 			const uint32_t renderViewIndex = fc.mainViewIndex;
-			seedPass.SetRecordingFunc([self, ctx, slot, depthPC, renderViewsAddr, renderViewIndex, opaqueCount](smvk::CommandBuffer& cmd)
+			const uint64_t drawsAddr =
+				ctx->GetBufferDeviceAddress(smvk::gfx::VisDrawBuffer(gfx, slot));
+			seedPass.SetRecordingFunc([self, ctx, slot, depthPC, renderViewsAddr, renderViewIndex, drawsAddr](smvk::CommandBuffer& cmd)
 			{
-				const auto& seedRanges = smvk::gfx::SeedRanges(self->gfx, slot);
-				cmd.BindStaticVertexFmt();
-				cmd.BindIndexBuffer(smvk::gfx::FilterIndexBuffer(self->gfx));
-				// NOTE: no push constants before the first BindRenderPipeline
-				// below — PushConstants asserts on a bound pipeline layout
-				// (impl.cpp). Each phase pushes after its own bind.
-				// Phase 1: opaque (VS-only, back-culled like the prepass).
-				if (opaqueCount > 0) {
-					cmd.BindRenderPipeline(
-						self->seedOpaqueProgram,
-						smvk::VertexFormat::StaticVertexFormat,
-						smvk::DepthSettings{
-							.depthFunc = smvk::CompareOp::GreaterEqual,
-							.writeEnable = true,
-							.depthTestEnable = true,
-						},
-						smvk::StencilSettings{},
-						smvk::BlendSettings{},
-						smvk::MSAASettings{},
-						smvk::RasterSettings{ .cullMode = smvk::CullMode::Back }
-					);
-					cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
-					self->PushSeedConstants(cmd, *ctx, slot, renderViewsAddr, renderViewIndex);
-					cmd.DrawIndexedIndirect(smvk::gfx::SeedIndirectBuffer(self->gfx, slot),
-						0, opaqueCount, 20);
-				}
-				// Phase 2: MASK cutout (alpha-tested FS, cull off).
-				for (const smvk::gfx::SeedRange& r : seedRanges) {
-					if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
-						continue;
-					if (r.material == UINT32_MAX)
-						continue; // unknown material: no valid materialId push;
-						// the full prepass still depths these clusters (T3)
-					cmd.BindRenderPipeline(
-						self->seedMaskedProgram,
-						smvk::VertexFormat::StaticVertexFormat,
-						smvk::DepthSettings{
-							.depthFunc = smvk::CompareOp::GreaterEqual,
-							.writeEnable = true,
-							.depthTestEnable = true,
-						},
-						smvk::StencilSettings{},
-						smvk::BlendSettings{},
-						smvk::MSAASettings{},
-						smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
-					);
-					PushConstants matPC{};
-					matPC.materialId = r.material;
-					cmd.PushConstants(
-						offsetof(PushConstants, materialId),
-						sizeof(matPC.materialId),
-						&matPC.materialId,
-						smvk::ShaderStage::All
-					);
-					cmd.PushConstants(
-						0,
-						offsetof(PushConstants, frameUniforms),
-						&depthPC,
-						smvk::ShaderStage::All
-					);
-					self->PushSeedConstants(cmd, *ctx, slot, renderViewsAddr, renderViewIndex);
-					self->DrawSeedRange(cmd, slot, (uint32_t)(&r - seedRanges.data()));
-				}
+				self->RecordDepthList(cmd, *ctx, slot, false, drawsAddr,
+					renderViewsAddr, renderViewIndex, depthPC);
 			});
 			seededThisFrame_ = true;
 		}
 	}
-	// Rotation for next frame (must run after the seed block above).
-	smvk::gfx::SnapshotVisible(gfx, slot);
+	// Remainder difference (curr minus prev) for depth pass 2 (T5). Must
+	// run before rotation overwrites prev* below. Only meaningful when the
+	// seed primed depth (otherwise the full prepass covered everything).
+	if (seededThisFrame_) {
+		smvk::gfx::BuildRemainderCommands(gfx, slot);
+		smvk::gfx::UploadRemainder(gfx, *fc.ctx, fc.frameIndex, slot);
+		remainderPending_ = !smvk::gfx::RemainderRanges(gfx, slot).empty();
+	}
+	// Publish this frame's seed source, then rotate for next frame. Order
+	// matters: UploadVisible must push the OLD snapshot (prev = last
+	// frame) into the current ring slice BEFORE SnapshotVisible
+	// overwrites prev with the current frame. The seed pass above reads
+	// VisDrawBuffer(current slice), so uploading after the snapshot would
+	// hand it the current draws under the previous frame's firstInstance
+	// indices — wrong model matrices whenever the draw list churns
+	// (camera moves, frustum changes), i.e. corrupt seed depth, broken
+	// 1x Main (read-only depth) and wrong tile-cull min/max. Static
+	// scenes hide it (prev == curr, same order).
 	smvk::gfx::UploadVisible(gfx, *fc.ctx, fc.frameIndex, slot);
+	smvk::gfx::SnapshotVisible(gfx, slot);
+}
+
+void GfxRenderer::AppendRemainderPass(smvk::FrameContext& base) {
+	AppFrameContext& fc = static_cast<AppFrameContext&>(base);
+	if (lastSlot_ == UINT32_MAX || !remainderPending_)
+		return;
+	const uint32_t slot = lastSlot_;
+	smvk::RenderPass& pass = smvk::gfx::AddRemainderPass(gfx, *fc.rg, slot, fc.depthView);
+	smvk::gfx::AddSeedConsumeHints(pass,
+		gfx.filterIndexLogical,
+		smvk::gfx::DrawLogical(gfx, slot),
+		smvk::gfx::RemainderIndirectLogical(gfx, slot));
+	GfxRenderer* self = this;
+	smvk::ResourceManager* ctx = fc.ctx;
+	const PushConstants depthPC = fc.pc;
+	const uint64_t renderViewsAddr =
+		fc.views->DeviceAddress(*fc.ctx, fc.frameIndex);
+	const uint32_t renderViewIndex = fc.mainViewIndex;
+	const uint64_t drawsAddr =
+		ctx->GetBufferDeviceAddress(smvk::gfx::DrawBuffer(gfx, slot));
+	pass.SetRecordingFunc([self, ctx, slot, depthPC, renderViewsAddr, renderViewIndex, drawsAddr](smvk::CommandBuffer& cmd)
+	{
+		self->RecordDepthList(cmd, *ctx, slot, true, drawsAddr,
+			renderViewsAddr, renderViewIndex, depthPC);
+	});
+	// Counts ride on the [GfxFilter] hist: line (FilterMainView).
 }
 
 void GfxRenderer::AppendFilterDispatch(smvk::FrameContext& fc) {
@@ -323,10 +386,20 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 		});
 	const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, frameIndex, slot);
 	if ((frameCounter_++ % 300) == 0) {
+		// Temporal dashboard: prev* holds LAST frame's snapshot here (this
+		// frame's rotation runs later in AppendPasses), so the seed /
+		// remainder / HZB figures describe what the temporal loop did.
+		const smvk::gfx::TemporalView& ht = smvk::gfx::Temporal(gfx, slot);
 		fprintf(stderr,
 			"[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
 			stats.draws, stats.commands, stats.trianglesProcessed,
 			stats.clustersCulled, stats.clustersProcessed);
+		fprintf(stderr,
+			"[GfxFilter] hist: valid=%d prev=%u seed=%u/%u rem=%u/%u hiz=%umips %ux%u minContrib=%.2f\n",
+			ht.historyValid ? 1 : 0, ht.prevBatchCount,
+			(unsigned)ht.seedCommands.size(), (unsigned)ht.seedRanges.size(),
+			(unsigned)ht.remainderCommands.size(), (unsigned)ht.remainderRanges.size(),
+			ht.hiz.mipCount, ht.hiz.width, ht.hiz.height, ht.minimumContribution);
 	}
 	return slot;
 }
@@ -346,13 +419,28 @@ void GfxRenderer::PushViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceMana
 }
 
 void GfxRenderer::PushSeedConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
-	uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex) {
+	uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex,
+	uint64_t drawsAddr) {
+	(void)ctx;
+	(void)slot;
 	smvk::gfx::FilteredVsPush tail{};
-	tail.draws = ctx.GetBufferDeviceAddress(smvk::gfx::VisDrawBuffer(gfx, slot));
+	tail.draws = drawsAddr;
 	tail.renderViews = renderViewsAddr;
 	tail.renderViewIndex = renderViewIndex;
 	cmd.PushConstants(smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail,
 		smvk::ShaderStage::All);
+}
+
+void GfxRenderer::DrawRemainderRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_t rangeIdx) {
+	const std::vector<smvk::gfx::SeedRange>& ranges =
+		smvk::gfx::RemainderRanges(gfx, slot);
+	assert(rangeIdx < ranges.size());
+	const smvk::gfx::SeedRange& r = ranges[rangeIdx];
+	if (r.commandCount == 0)
+		return;
+	cmd.BindIndexBuffer(smvk::gfx::FilterIndexBuffer(gfx));
+	cmd.DrawIndexedIndirect(smvk::gfx::RemainderIndirectBuffer(gfx, slot),
+		(uint64_t)r.firstCommand * 20, r.commandCount, 20);
 }
 
 void GfxRenderer::DrawSeedRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_t rangeIdx) {

@@ -41,8 +41,8 @@ groupshared uint gClusterCull; // T4: 1 = whole cluster dropped (occlusion/contr
 // once per workgroup (thread 0). Facing-agnostic: also applies to
 // two-sided draws. Mirrors the CPU ProjectClusterFootprint /
 // HzbMipForRect / HzbOccluded helpers (same formulas, same conservatism:
-// eye-inside/behind-camera/off-target keep; single center texel at the
-// covering mip; reversed-Z hidden iff d_near < stored closest).
+// eye-inside/behind-camera/off-target keep; all overlapped texels at the
+// covering mip must occlude; reversed-Z hidden iff d_near < stored closest).
 bool ClusterOccluded(uint clusterIdx, uint drawIdx)
 {
     uint flags = pcF.cullFlags;
@@ -80,8 +80,12 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
     float cy = (clipC.y / clipC.w * 0.5f + 0.5f) * height;
     float fx = pcF.viewProj[0][0];
     float fy = abs(pcF.viewProj[1][1]);
-    float rx = wr * fx / dist * (width * 0.5f);
-    float ry = wr * fy / dist * (height * 0.5f);
+    // Extent from the nearest-point depth (clipN.w <= dist): radial dist
+    // underestimates off-axis footprints (smaller rect, finer mip) and
+    // over-culls. Nearest depth overestimates -> conservative.
+    float depthForExtent = max(clipN.w, 1e-6f);
+    float rx = wr * fx / depthForExtent * (width * 0.5f);
+    float ry = wr * fy / depthForExtent * (height * 0.5f);
     if (wantCon && pcF.minContribution > 0.0f
         && (rx * 2.0f) * (ry * 2.0f) < pcF.minContribution)
         return true;
@@ -107,11 +111,26 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
         lw = max(lw >> 1, 1u);
         lh = max(lh >> 1, 1u);
     }
-    uint tx = (uint)clamp(cx / texel, 0.0f, (float)(lw - 1u));
-    uint ty = (uint)clamp(cy / texel, 0.0f, (float)(lh - 1u));
-    float stored = pcF.hzb.Get().texels[off + ty * lw + tx];
+    // Conservative cover: the rect can straddle up to 2x2 texels at the
+    // covering mip (texel >= rect, but alignment is arbitrary). A single
+    // center texel over-culls whenever the center is occluded but the
+    // edges see far texels. Hidden only if EVERY overlapped texel occludes.
     float dNear = clipN.z / clipN.w; // reversed-Z value of nearest point
-    return dNear < stored;
+    uint tx0 = (uint)clamp(floor((cx - rx) / texel), 0.0f, (float)(lw - 1u));
+    uint tx1 = (uint)clamp(floor((cx + rx) / texel), 0.0f, (float)(lw - 1u));
+    uint ty0 = (uint)clamp(floor((cy - ry) / texel), 0.0f, (float)(lh - 1u));
+    uint ty1 = (uint)clamp(floor((cy + ry) / texel), 0.0f, (float)(lh - 1u));
+    // Bounded: rect <= texel guarantees at most 2 per axis; cap anyway.
+    for (uint ty = ty0; ty <= ty1 && ty < ty0 + 3u; ++ty)
+    {
+        for (uint tx = tx0; tx <= tx1 && tx < tx0 + 3u; ++tx)
+        {
+            float stored = pcF.hzb.Get().texels[off + ty * lw + tx];
+            if (dNear >= stored)
+                return false;
+        }
+    }
+    return true;
 }
 
 bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2, bool twoSided)

@@ -30,6 +30,11 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
 	bool Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) override;
 	void Destroy(smvk::RenderGraph& rg) override;
 	void AppendPasses(smvk::FrameContext& fc) override;
+	// Split for the temporal pipeline (T5): the prepass is skipped when the
+	// seed primed depth, and the tile cull runs after depth pass 2 so it
+	// sees complete depth. AppendPasses = Prepass + TileCull (legacy order).
+	void AppendPrepass(smvk::FrameContext& fc);
+	void AppendTileCull(smvk::FrameContext& fc);
 
 	// Resize-safe sizing outside pass building (frame-top, so tile counts
 	// are fresh for consumers that read them before AppendPasses).

@@ -381,6 +381,58 @@ void TestMeshlets() {
 	// Degenerate input fails softly.
 	smvk::StaticMeshUpload deg;
 	Check(!smvk::BuildMeshletsForUpload(deg, cfg, &empty, nullptr, nullptr), "meshlet.empty.false");
+
+	// Containment invariant: every cooked bound sphere must contain its
+	// meshlet's triangles (the HZB occlusion + cone tests rely on it; a
+	// violation false-culls visible meshlets). Grid + one long sliver
+	// forces disparate verts into shared meshlets (cf. sponza prim.49).
+	{
+		smvk::StaticMeshUpload u;
+		const int N = 8;
+		for (int iy = 0; iy <= N; ++iy)
+			for (int ix = 0; ix <= N; ++ix) {
+				smvk::StaticVertex v{};
+				v.pos = { (float)ix, (float)iy, 0.0f };
+				u.vertices.push_back(v);
+			}
+		auto at = [N](int ix, int iy) { return (uint32_t)(iy * (N + 1) + ix); };
+		for (int iy = 0; iy < N; ++iy)
+			for (int ix = 0; ix < N; ++ix) {
+				u.indices.insert(u.indices.end(), { at(ix, iy), at(ix + 1, iy), at(ix, iy + 1) });
+				u.indices.insert(u.indices.end(), { at(ix + 1, iy), at(ix + 1, iy + 1), at(ix, iy + 1) });
+			}
+		// Long sliver: two verts in the grid, one 60 units away.
+		uint32_t s0 = (uint32_t)u.vertices.size();
+		smvk::StaticVertex a{}; a.pos = { 0.0f, 0.0f, 0.0f };
+		smvk::StaticVertex b{}; b.pos = { 0.5f, 0.0f, 0.0f };
+		smvk::StaticVertex c{}; c.pos = { 60.0f, 0.5f, 0.0f };
+		u.vertices.push_back(a); u.vertices.push_back(b); u.vertices.push_back(c);
+		u.indices.insert(u.indices.end(), { s0, s0 + 1, s0 + 2 });
+		smvk::MeshletConfig sc = cfg;
+		sc.maxVertices = 64;
+		sc.maxTriangles = 32;
+		smvk::CookedMeshlets sliv;
+		Check(smvk::BuildMeshletsForUpload(u, sc, &sliv, nullptr, nullptr), "meshlet.sliver.ok");
+		bool contained = !sliv.empty();
+		for (const auto& m : sliv.meshlets) {
+			for (uint32_t t = 0; t < m.triangleCount && contained; ++t) {
+				for (uint32_t k = 0; k < 3 && contained; ++k) {
+					uint32_t local = sliv.triangles[m.triangleOffset + t * 3 + k];
+					if (local >= m.vertexCount) { contained = false; break; }
+					uint32_t vid = sliv.vertices[m.vertexOffset + local];
+					if (vid >= u.vertices.size()) { contained = false; break; }
+					const auto& p = u.vertices[vid].pos;
+					float dx = p.x - m.boundCenter.x;
+					float dy = p.y - m.boundCenter.y;
+					float dz = p.z - m.boundCenter.z;
+					float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+					if (d > m.boundRadius + 1e-3f * std::max(1.0f, m.boundRadius))
+						contained = false;
+				}
+			}
+		}
+		Check(contained, "meshlet.sliver.contained");
+	}
 }
 
 void TestStaticCollapse() {

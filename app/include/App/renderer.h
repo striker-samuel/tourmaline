@@ -12,6 +12,7 @@
 #include <Engine/Rendergraph/renderer.h>
 #include <Engine/App/world.h>
 #include <Engine/Renderer/renderview.h>
+#include <App/push_constants.h>
 
 namespace app {
 
@@ -127,12 +128,27 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	[[nodiscard]] smvk::ShaderProgram& FilteredProgram() { return filteredProgram; }
 	[[nodiscard]] smvk::gfx::State& State() { return gfx; }
 	// Seed consume side (caller has bound a seed program with its own PSO).
-	// PushSeedConstants writes the 24B VS tail push (visDraws BDA +
+	// PushSeedConstants writes the 24B VS tail push (draws BDA +
 	// render-view slab); DrawSeedRange issues one multi-draw over a seed
 	// range's commands (index buffer = cluster-ordered filter indices).
+	// drawsAddr selects the model source: visDraws snapshot (seed) or
+	// current draw constants (remainder).
 	void PushSeedConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
-		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex);
+		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex,
+		uint64_t drawsAddr);
 	void DrawSeedRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_t rangeIdx);
+	void DrawRemainderRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_t rangeIdx);
+	// Shared two-phase depth-list recorder (opaque VS-only, then masked
+	// per-material). remainder=false draws the seed list (visDraws
+	// snapshot), true draws the remainder list (current draws).
+	void RecordDepthList(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
+		uint32_t slot, bool remainder, uint64_t drawsAddr,
+		uint64_t renderViewsAddr, uint32_t renderViewIndex,
+		const PushConstants& depthPC);
+	// Depth pass 2 over the remainder list (call after AppendFilterDispatch
+	// when RemainderPending; Load/Store over seeded depth).
+	void AppendRemainderPass(smvk::FrameContext& fc);
+	[[nodiscard]] bool RemainderPending() const { return remainderPending_; }
 
 private:
 	// world mesh idx -> gfx mesh idx (UINT32_MAX = not filterable).
@@ -140,6 +156,7 @@ private:
 	uint64_t frameCounter_ = 0; // throttles the per-frame stats log
 	uint32_t lastSlot_ = UINT32_MAX;
 	bool seededThisFrame_ = false;
+	bool remainderPending_ = false;
 	smvk::ShaderModuleHandle mainFrag_{};
 	smvk::ShaderModuleHandle seedFrag_{};
 };

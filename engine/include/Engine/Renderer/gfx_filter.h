@@ -354,6 +354,15 @@ struct TemporalView {
 	uint32_t seedOpaqueCommands = 0; // leading commands using the opaque PSO
 	Holder<BufferHandle> seedIndirectBuffers[MAX_FRAMES_IN_FLIGHT];
 	LogicalBufferHandle seedIndirectLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	// Remainder command list (T5): currVisible minus prevVisible, keyed by
+	// (cluster, model matrix). Drawn by depth pass 2 after the filter so
+	// newly exposed geometry lands in depth (and the HZB refresh) the same
+	// frame it becomes visible — no one-frame holes.
+	std::vector<SeedCommand> remainderCommands;
+	std::vector<SeedRange> remainderRanges;
+	uint32_t remainderOpaqueCommands = 0;
+	Holder<BufferHandle> remainderIndirectBuffers[MAX_FRAMES_IN_FLIGHT];
+	LogicalBufferHandle remainderIndirectLogicals[MAX_FRAMES_IN_FLIGHT]{};
 };
 
 struct State {
@@ -470,12 +479,22 @@ void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 // material) ranges (pure CPU, headless-testable). Bucket comes from each
 // draw's drawSet (set at PushDraw from the material).
 void BuildSeedCommands(State& s, uint32_t view);
+// Builds the remainder list: current batches minus the snapshot, keyed by
+// (cluster, model matrix), same bucket-major layout (pure CPU,
+// headless-testable). Must run before SnapshotVisible overwrites prev*.
+void BuildRemainderCommands(State& s, uint32_t view);
 // Uploads the seed commands into the frameIndex ring slice. No-op when
 // empty/unallocated.
 void UploadSeed(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
+// Uploads the remainder commands. No-op when empty/unallocated.
+void UploadRemainder(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
 // Depth-seed pass shell over the render-depth target (caller sets the
 // recording func to PushSeedConstants + DrawSeedRange per range).
 RenderPass& AddSeedPass(State& s, RenderGraph& rg, uint32_t view,
+	LogicalImageViewHandle depthLogical);
+// Depth pass 2 shell (T5): draws the remainder list over seeded depth
+// (Load/Store). Same record pattern with the remainder ranges/buffer.
+RenderPass& AddRemainderPass(State& s, RenderGraph& rg, uint32_t view,
 	LogicalImageViewHandle depthLogical);
 // Consume-side barrier helper for the seed depth pass: cluster-ordered
 // index heap + vis draws + seed indirect as vertex-stage reads.
@@ -557,6 +576,23 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 [[nodiscard]] inline uint32_t SeedOpaqueCommands(const State& s, uint32_t view) {
 	assert(view < s.temporals.size());
 	return s.temporals[view].seedOpaqueCommands;
+}
+[[nodiscard]] inline BufferHandle RemainderIndirectBuffer(const State& s, uint32_t view) {
+	assert(view < s.temporals.size());
+	return s.temporals[view].remainderIndirectBuffers[s.views[view].frameIndex];
+}
+[[nodiscard]] inline LogicalBufferHandle RemainderIndirectLogical(const State& s, uint32_t view) {
+	assert(view < s.temporals.size());
+	return s.temporals[view].remainderIndirectLogicals[s.views[view].frameIndex];
+}
+[[nodiscard]] inline const std::vector<SeedRange>& RemainderRanges(
+	const State& s, uint32_t view) {
+	assert(view < s.temporals.size());
+	return s.temporals[view].remainderRanges;
+}
+[[nodiscard]] inline uint32_t RemainderOpaqueCommands(const State& s, uint32_t view) {
+	assert(view < s.temporals.size());
+	return s.temporals[view].remainderOpaqueCommands;
 }
 [[nodiscard]] inline LogicalBufferHandle BatchLogical(const State& s, uint32_t view) {
 	assert(view < s.views.size());

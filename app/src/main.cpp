@@ -1705,16 +1705,26 @@ private:
 			m_gfxRenderer.AppendPasses(fc);
 		gfxSlot = m_gfxRenderer.LastSlot();
 		fc.seedDepthPrimed = m_useGfxFilter && m_gfxRenderer.SeededThisFrame();
-		m_fpRenderer.AppendPasses(fc);
+		// Depth prepass (Loads seeded depth when primed, Clears otherwise).
+		m_fpRenderer.AppendPrepass(fc);
 
-		// ---- HZB build over the prepass depth (T2 module, T3 wiring) ----
+		// ---- HZB build over depth (seed or full prepass; T2 module) ----
 		// ---- Filter compute dispatch (reads this frame's HZB; T4) ----
+		// ---- Depth pass 2 over newly visible clusters (T5) + refresh ----
+		// ---- Tile cull over complete depth (moved after pass 2; T5) ----
 		if (m_useGfxFilter) {
 			m_gfxRenderer.AppendHizPasses(fc,
 				m_viewportResources.renderDepth.logicalView,
 				m_viewportResources.forwardPlus.depthBindlessIndex);
 			m_gfxRenderer.AppendFilterDispatch(fc);
+			if (m_gfxRenderer.RemainderPending()) {
+				m_gfxRenderer.AppendRemainderPass(fc);
+				m_gfxRenderer.AppendHizPasses(fc,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.forwardPlus.depthBindlessIndex);
+			}
 		}
+		m_fpRenderer.AppendTileCull(fc);
 
 		// ---------------------------------------------------------------------
 		// Motion vectors – per-pixel prevUV - currUV into RG16F (motionvector.h)

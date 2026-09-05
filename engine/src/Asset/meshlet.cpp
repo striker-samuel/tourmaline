@@ -1,6 +1,8 @@
 #include <Engine/Asset/meshlet.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include <meshoptimizer.h>
@@ -99,9 +101,41 @@ bool BuildMeshletsForUpload(
 		for (unsigned int k = 0; k < m.triangle_count * 3; ++k)
 			cooked.triangles.push_back(rawTris[m.triangle_offset + k]);
 
-		const meshopt_Bounds b = meshopt_computeMeshletBounds(
+		meshopt_Bounds b = meshopt_computeMeshletBounds(
 			&rawVerts[m.vertex_offset], &rawTris[m.triangle_offset],
 			m.triangle_count, positions, vcount, sizeof(StaticVertex));
+
+		// Verify-and-repair: the HZB occlusion + cone tests treat
+		// (boundCenter, boundRadius) as CONTAINING all meshlet triangles.
+		// A non-containing sphere yields wrong footprints -> false HZB
+		// culls of visible meshlets (observed once in the wild: sponza
+		// prim.49 meshlet 136, sliver triangle outside radius by ~2x).
+		// Expand the radius on violation (conservative direction).
+		{
+			float maxD2 = 0.0f;
+			for (unsigned int t = 0; t < m.triangle_count; ++t) {
+				for (unsigned int k = 0; k < 3; ++k) {
+					const unsigned int local = rawTris[m.triangle_offset + t * 3 + k];
+					if (local >= m.vertex_count)
+						continue;
+					const unsigned int vid = rawVerts[m.vertex_offset + local];
+					if ((size_t)vid >= vcount)
+						continue;
+					const glm::vec3& p = upload.vertices[vid].pos;
+					const float dx = p.x - b.center[0];
+					const float dy = p.y - b.center[1];
+					const float dz = p.z - b.center[2];
+					maxD2 = std::max(maxD2, dx * dx + dy * dy + dz * dz);
+				}
+			}
+			const float need = std::sqrt(maxD2);
+			if (need > b.radius + 1e-4f * std::max(1.0f, need)) {
+				std::fprintf(stderr,
+					"[Meshlets] repaired non-containing bound (meshlet %u: radius %.3f -> %.3f).\n",
+					(unsigned)cooked.meshlets.size(), b.radius, need);
+				b.radius = need;
+			}
+		}
 
 		Meshlet ml;
 		ml.vertexOffset = (uint32_t)vertCursor;

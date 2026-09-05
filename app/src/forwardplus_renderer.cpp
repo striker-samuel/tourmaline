@@ -27,6 +27,12 @@ void ForwardPlusRenderer::Destroy(smvk::RenderGraph& rg) {
 
 void ForwardPlusRenderer::AppendPasses(smvk::FrameContext& base) {
 	AppFrameContext& fc = static_cast<AppFrameContext&>(base);
+	AppendPrepass(fc);
+	AppendTileCull(fc);
+}
+
+void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
+	AppFrameContext& fc = static_cast<AppFrameContext&>(base);
 	if (!fp)
 		return;
 	smvk::ResourceManager& ctx = *fc.ctx;
@@ -37,12 +43,21 @@ void ForwardPlusRenderer::AppendPasses(smvk::FrameContext& base) {
 	if (!fp->Valid())
 		return;
 
+	// Temporal seed already primed depth (Clear in the seed pass): the
+	// direct prepass must Load it, not Clear it. It still draws every
+	// opaque node — the seed/remainder lists only cover filtered meshes,
+	// so skipping here would leave direct-fallback geometry (unregistered
+	// meshes, unknown-material masked clusters) out of depth. That breaks
+	// the 1x Main path (read-only depth test) and the tile cull min/max,
+	// while the 2x MSAA path (own transient depth) hides it.
+	// Newly visible filtered geometry additionally lands in depth pass 2.
+	const bool seeded = fc.seedDepthPrimed;
+
 	// Snapshots for the recording lambdas (recorded now, executed later at
 	// Execute(); nothing here may reference the frame-local fc).
 	smvk::World* world = fc.world;
 	const PushConstants depthPC = fc.pc;
 	const smvk::LogicalImageViewHandle depthView = fc.depthView;
-	const smvk::LogicalBufferHandle lights = fc.fpLights;
 
 	using NodeId = ::NodeId;
 
@@ -52,7 +67,7 @@ void ForwardPlusRenderer::AppendPasses(smvk::FrameContext& base) {
 	{
 		auto& prepass = fp->AddDepthPrepass(rg, depthView,
 			{ fc.extent.width, fc.extent.height }, "ForwardPlusDepth",
-			fc.seedDepthPrimed ? smvk::AttachmentLoadOp::Load
+			seeded ? smvk::AttachmentLoadOp::Load
 				: smvk::AttachmentLoadOp::Clear);
 		prepass.SetRecordingFunc([this, depthPC, world](smvk::CommandBuffer& cmd)
 		{
@@ -130,8 +145,22 @@ void ForwardPlusRenderer::AppendPasses(smvk::FrameContext& base) {
 				, [&](NodeId node) { drawPrepassNode(node, true); });
 		});
 	}
+}
+
+void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base) {
+	AppFrameContext& fc = static_cast<AppFrameContext&>(base);
+	if (!fp)
+		return;
+	smvk::ResourceManager& ctx = *fc.ctx;
+	smvk::RenderGraph& rg = *fc.rg;
+
+	fp->Ensure(ctx, rg, { fc.extent.width, fc.extent.height }, desc, fc.depthViewHandle);
+	if (!fp->Valid())
+		return;
 
 	// ---- Tile cull: depth + light volumes -> per-tile lists ----
+	// Runs after depth is complete (prepass, or seed + pass 2 when the
+	// temporal pipeline primed depth) so no light is wrongly culled.
 	{
 		smvk::ForwardPlusCullPush cullPC{};
 		cullPC.frameUniforms = fc.pc.frameUniforms;
@@ -144,7 +173,7 @@ void ForwardPlusRenderer::AppendPasses(smvk::FrameContext& base) {
 		cullPC.lightCount = fc.fpLightCount;
 		cullPC.tileSize = desc.tileSize;
 		cullPC.maxLightsPerTile = desc.maxLightsPerTile;
-		auto& cullPass = fp->AddCullPass(rg, depthView, lights, "ForwardPlusCull");
+		auto& cullPass = fp->AddCullPass(rg, fc.depthView, fc.fpLights, "ForwardPlusCull");
 		cullPass.SetRecordingFunc([this, cullPC](smvk::CommandBuffer& cmd) mutable
 		{
 			cmd.BindComputePipeline(fp->cullProgram);

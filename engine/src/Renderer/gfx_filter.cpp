@@ -120,9 +120,11 @@ static void RollbackTemporalBuffers(RenderGraph& rg, TemporalView& t, uint32_t d
 		if (!t.visClusterLogicals[f].empty()) rg.FreeBuffer(t.visClusterLogicals[f]);
 		if (!t.visDrawLogicals[f].empty()) rg.FreeBuffer(t.visDrawLogicals[f]);
 		if (!t.seedIndirectLogicals[f].empty()) rg.FreeBuffer(t.seedIndirectLogicals[f]);
+		if (!t.remainderIndirectLogicals[f].empty()) rg.FreeBuffer(t.remainderIndirectLogicals[f]);
 		t.visClusterLogicals[f] = {};
 		t.visDrawLogicals[f] = {};
 		t.seedIndirectLogicals[f] = {};
+		t.remainderIndirectLogicals[f] = {};
 	}
 	// Holders release their buffers automatically on scope exit.
 }
@@ -138,16 +140,19 @@ static bool CreateTemporalBuffers(ResourceManager& ctx, RenderGraph& rg, Tempora
 		// by the type's flags regardless (see bufferTypeToUsageFlags).
 		t.seedIndirectBuffers[f] = ctx.CreateBuffer(
 			kSeedIndirectBytes, BufferType_Storage, "gfx seedIndirect");
+		t.remainderIndirectBuffers[f] = ctx.CreateBuffer(
+			kSeedIndirectBytes, BufferType_Storage, "gfx remainderIndirect");
 		if (t.visClusterBuffers[f].empty() || t.visDrawBuffers[f].empty()
-			|| t.seedIndirectBuffers[f].empty()) {
+			|| t.seedIndirectBuffers[f].empty() || t.remainderIndirectBuffers[f].empty()) {
 			RollbackTemporalBuffers(rg, t, f);
 			return false;
 		}
 		t.visClusterLogicals[f] = rg.AddExternalBuffer(t.visClusterBuffers[f], "gfx visibleClusters");
 		t.visDrawLogicals[f] = rg.AddExternalBuffer(t.visDrawBuffers[f], "gfx visibleDraws");
 		t.seedIndirectLogicals[f] = rg.AddExternalBuffer(t.seedIndirectBuffers[f], "gfx seedIndirect");
+		t.remainderIndirectLogicals[f] = rg.AddExternalBuffer(t.remainderIndirectBuffers[f], "gfx remainderIndirect");
 		if (t.visClusterLogicals[f].empty() || t.visDrawLogicals[f].empty()
-			|| t.seedIndirectLogicals[f].empty()) {
+			|| t.seedIndirectLogicals[f].empty() || t.remainderIndirectLogicals[f].empty()) {
 			RollbackTemporalBuffers(rg, t, f + 1);
 			return false;
 		}
@@ -169,6 +174,7 @@ void Destroy(State& s, RenderGraph& rg) {
 			if (!t.visClusterLogicals[f].empty()) rg.FreeBuffer(t.visClusterLogicals[f]);
 			if (!t.visDrawLogicals[f].empty()) rg.FreeBuffer(t.visDrawLogicals[f]);
 			if (!t.seedIndirectLogicals[f].empty()) rg.FreeBuffer(t.seedIndirectLogicals[f]);
+			if (!t.remainderIndirectLogicals[f].empty()) rg.FreeBuffer(t.remainderIndirectLogicals[f]);
 		}
 		if (!t.hiz.logical.empty()) rg.FreeBuffer(t.hiz.logical);
 		t.hiz.logical = {};
@@ -254,11 +260,14 @@ ClusterFootprint ProjectClusterFootprint(const glm::vec3& worldCenter,
 	const float w = (float)width, h = (float)height;
 	f.centerX = (clipC.x / clipC.w * 0.5f + 0.5f) * w;
 	f.centerY = (clipC.y / clipC.w * 0.5f + 0.5f) * h;
-	// Radial distance overestimates off-axis extents: conservative.
+	// Extent from the nearest-point depth (clipN.w <= dist): radial dist
+	// underestimates off-axis footprints (smaller rect, finer mip) and
+	// over-culls. Nearest depth overestimates -> conservative.
 	const float fx = viewProj[0][0];
 	const float fy = std::abs(viewProj[1][1]);
-	f.radiusX = worldRadius * fx / dist * (w * 0.5f);
-	f.radiusY = worldRadius * fy / dist * (h * 0.5f);
+	const float depthForExtent = std::max(clipN.w, 1e-6f);
+	f.radiusX = worldRadius * fx / depthForExtent * (w * 0.5f);
+	f.radiusY = worldRadius * fy / depthForExtent * (h * 0.5f);
 	f.behindCamera = false;
 	return f;
 }
@@ -294,18 +303,31 @@ bool HzbOccluded(const float* hzb, uint32_t w, uint32_t h, uint32_t mips,
 	HzbMipDims(w, h, level, lw, lh);
 	if (lw == 0 || lh == 0)
 		return false;
-	// Single texel containing the rect center (its footprint covers the
-	// rect by mip-selection construction); reversed-Z: hidden iff the
-	// nearest point is farther (smaller value) than the stored closest.
-	// Clamp BEFORE the float->uint conversion: a negative center (rect
-	// hanging off the left/top edge) would otherwise wrap to a huge index.
+	// Conservative cover: the rect can straddle up to 2x2 texels at the
+	// covering mip (texel >= rect, but alignment is arbitrary). Hidden only
+	// if EVERY overlapped texel occludes; any far texel keeps.
+	// Clamp BEFORE the float->uint conversion: a negative edge (rect
+	// hanging off the left/top) would otherwise wrap to a huge index.
+	// Reversed-Z: hidden iff the nearest point is farther (smaller value)
+	// than every overlapped stored closest.
 	const float texelSize = (float)(1u << level);
-	const float fx = std::max(f.centerX / texelSize, 0.0f);
-	const float fy = std::max(f.centerY / texelSize, 0.0f);
-	uint32_t tx = std::min((uint32_t)fx, lw - 1);
-	uint32_t ty = std::min((uint32_t)fy, lh - 1);
-	const float stored = hzb[HzbMipOffsetFloats(w, h, level) + ty * lw + tx];
-	return f.nearestDepth < stored;
+	const uint32_t tx0 = std::min(
+		(uint32_t)std::max(std::floor((f.centerX - f.radiusX) / texelSize), 0.0f), lw - 1);
+	const uint32_t tx1 = std::min(
+		(uint32_t)std::max(std::floor((f.centerX + f.radiusX) / texelSize), 0.0f), lw - 1);
+	const uint32_t ty0 = std::min(
+		(uint32_t)std::max(std::floor((f.centerY - f.radiusY) / texelSize), 0.0f), lh - 1);
+	const uint32_t ty1 = std::min(
+		(uint32_t)std::max(std::floor((f.centerY + f.radiusY) / texelSize), 0.0f), lh - 1);
+	// Bounded: rect <= texel guarantees at most 2 per axis; cap anyway.
+	for (uint32_t ty = ty0; ty <= ty1 && ty < ty0 + 3; ++ty) {
+		for (uint32_t tx = tx0; tx <= tx1 && tx < tx0 + 3; ++tx) {
+			const float stored = hzb[HzbMipOffsetFloats(w, h, level) + ty * lw + tx];
+			if (f.nearestDepth >= stored)
+				return false;
+		}
+	}
+	return true;
 }
 
 bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
@@ -331,6 +353,15 @@ bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
 		t.hiz.mipOffsets[m] = HzbMipOffsetFloats(w, h, m);
 	for (uint32_t m = wantMips; m < kHizMaxMips; ++m)
 		t.hiz.mipOffsets[m] = 0;
+	// Diagnose-only: shader-side array cap (hzb.hlsli HZB_MAX_FLOATS).
+	// Exceeding it reads/writes out of bounds -> undefined HZB -> over-cull.
+	static constexpr uint32_t kHzbShaderMaxFloats = 12582912;
+	if ((uint64_t)HzbTotalFloats(w, h) > kHzbShaderMaxFloats) {
+		std::fprintf(stderr,
+			"[GfxHiz] target %ux%u needs %u floats, exceeds shader cap %u: "
+			"expect pyramid corruption.\n",
+			w, h, HzbTotalFloats(w, h), kHzbShaderMaxFloats);
+	}
 	t.hiz.buffer = ctx.CreateBuffer(
 		(size_t)HzbTotalFloats(w, h) * sizeof(float),
 		BufferType_Storage, "gfx hiz");
@@ -393,6 +424,32 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 				view, dstMip);
 		}
 		return;
+	}
+	// Diagnose-only: invalid depth bindless for the mip0 copy reads garbage
+	// (undefined values); garbage-near MIN-reduces upward and over-culls.
+	// Throttled; no behavior change.
+	if (dstMip == 0 && depthBindlessIndex == UINT32_MAX) {
+		static uint64_t s_hizDepthWarns = 0;
+		if ((s_hizDepthWarns++ % 300) == 0) {
+			std::fprintf(stderr,
+				"[GfxHiz] mip0 copy with invalid depth bindless (view %u): "
+				"HZB content undefined, expect over-cull.\n",
+				view);
+		}
+	}
+	// Diagnose-only: HZB extent vs view extent mismatch misaligns footprint
+	// rows/cols with depth rows (wrong-texel over-cull). Throttled.
+	if (view < s.views.size()) {
+		const View& v = s.views[view];
+		if ((t.hiz.width != v.width || t.hiz.height != v.height)
+			&& v.width != 0 && v.height != 0) {
+			static uint64_t s_hizExtentWarns = 0;
+			if ((s_hizExtentWarns++ % 300) == 0) {
+				std::fprintf(stderr,
+					"[GfxHiz] extent mismatch: hiz %ux%u vs view %ux%u (view %u).\n",
+					t.hiz.width, t.hiz.height, v.width, v.height, view);
+			}
+		}
 	}
 	HzbPush push{};
 	push.hzb = addr;
@@ -685,6 +742,74 @@ void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 	}
 }
 
+// One bucket-major emitter input: resolved (cluster, draw, material, set).
+struct EmitEntry {
+	uint32_t cluster = 0;
+	uint32_t draw = 0; // firstInstance: index into the draws array the VS reads
+	uint32_t material = UINT32_MAX;
+	uint32_t drawSet = DrawSetBit_Opaque;
+};
+
+// Shared bucket-major emitter: opaque commands first (single VS-only
+// multi-draw), then masked (per-material ranges for the alpha-test FS
+// push). Runs coalesce on (bucket, material).
+static void EmitBucketMajor(State& s, const std::vector<EmitEntry>& entries,
+	std::vector<SeedCommand>& outCmds, std::vector<SeedRange>& outRanges,
+	uint32_t& outOpaque) {
+	outCmds.clear();
+	outRanges.clear();
+	outOpaque = 0;
+	for (uint32_t pass = 0; pass < 2; ++pass) {
+		const uint32_t wantSet = (pass == 0) ? DrawSetBit_Opaque : DrawSetBit_Masked;
+		for (const EmitEntry& e : entries) {
+			if (e.cluster >= (uint32_t)s.clusters.size())
+				continue;
+			const bool masked = (e.drawSet & DrawSetBit_Masked) != 0;
+			if ((wantSet == DrawSetBit_Masked) != masked)
+				continue;
+			const Cluster& c = s.clusters[e.cluster];
+			SeedCommand cmd{};
+			cmd.indexCount = c.triCount * 3;
+			cmd.instanceCount = 1;
+			cmd.firstIndex = c.indexOffset; // into filterIndices
+			cmd.vertexOffset = 0;
+			cmd.firstInstance = e.draw;
+			const uint32_t slot = (uint32_t)outCmds.size();
+			if (slot >= kMaxBatches)
+				break;
+			outCmds.push_back(cmd);
+			if (!outRanges.empty()) {
+				SeedRange& tail = outRanges.back();
+				if (tail.drawSet == wantSet && tail.material == e.material
+					&& tail.firstCommand + tail.commandCount == slot) {
+					++tail.commandCount;
+					continue;
+				}
+			}
+			SeedRange r{};
+			r.drawSet = wantSet;
+			r.material = e.material;
+			r.firstCommand = slot;
+			r.commandCount = 1;
+			outRanges.push_back(r);
+		}
+		if (pass == 0)
+			outOpaque = (uint32_t)outCmds.size();
+	}
+}
+
+// Material per batch from covering ranges (ranges span batches in order).
+static void ResolveBatchMaterials(const std::vector<MaterialRange>& ranges,
+	size_t batchCount, std::vector<uint32_t>& out) {
+	out.assign(batchCount, UINT32_MAX);
+	for (const MaterialRange& r : ranges) {
+		for (uint32_t k = 0; k < r.commandCount; ++k) {
+			if (r.firstCommand + k < (uint32_t)out.size())
+				out[r.firstCommand + k] = r.material;
+		}
+	}
+}
+
 void BuildSeedCommands(State& s, uint32_t view) {
 	assert(view < s.views.size());
 	TemporalView& t = Temporal(s, view);
@@ -693,58 +818,83 @@ void BuildSeedCommands(State& s, uint32_t view) {
 	t.seedOpaqueCommands = 0;
 	if (!t.historyValid || t.prevBatches.empty())
 		return;
-	// Material per snapshot batch: prevRanges span prevBatches in order.
-	std::vector<uint32_t> batchMaterial(t.prevBatches.size(), UINT32_MAX);
-	for (const MaterialRange& r : t.prevRanges) {
-		for (uint32_t k = 0; k < r.commandCount; ++k) {
-			if (r.firstCommand + k < (uint32_t)batchMaterial.size())
-				batchMaterial[r.firstCommand + k] = r.material;
-		}
+	std::vector<uint32_t> batchMaterial;
+	ResolveBatchMaterials(t.prevRanges, t.prevBatches.size(), batchMaterial);
+	std::vector<EmitEntry> entries;
+	entries.reserve(t.prevBatches.size());
+	for (size_t i = 0; i < t.prevBatches.size(); ++i) {
+		const Batch& b = t.prevBatches[i];
+		if (b.draw >= (uint32_t)t.prevDraws.size())
+			continue;
+		EmitEntry e{};
+		e.cluster = b.cluster;
+		e.draw = b.draw; // into the visDraws snapshot
+		e.material = batchMaterial[i];
+		e.drawSet = t.prevDraws[b.draw].drawSet;
+		entries.push_back(e);
 	}
-	// Bucket-major: opaque commands first (single VS-only multi-draw),
-	// then masked (per-material ranges for the alpha-test FS push).
-	for (uint32_t pass = 0; pass < 2; ++pass) {
-		const uint32_t wantSet = (pass == 0) ? DrawSetBit_Opaque : DrawSetBit_Masked;
-		for (size_t i = 0; i < t.prevBatches.size(); ++i) {
-			const Batch& b = t.prevBatches[i];
-			if (b.draw >= (uint32_t)t.prevDraws.size())
-				continue;
-			if (b.cluster >= (uint32_t)s.clusters.size())
-				continue;
-			const uint32_t set = t.prevDraws[b.draw].drawSet;
-			const bool masked = (set & DrawSetBit_Masked) != 0;
-			if ((wantSet == DrawSetBit_Masked) != masked)
-				continue;
-			const Cluster& c = s.clusters[b.cluster];
-			SeedCommand cmd{};
-			cmd.indexCount = c.triCount * 3;
-			cmd.instanceCount = 1;
-			cmd.firstIndex = c.indexOffset; // into filterIndices
-			cmd.vertexOffset = 0;
-			cmd.firstInstance = b.draw; // into the visDraws snapshot
-			const uint32_t slot = (uint32_t)t.seedCommands.size();
-			if (slot >= kMaxBatches)
-				break;
-			t.seedCommands.push_back(cmd);
-			const uint32_t mat = batchMaterial[i];
-			if (!t.seedRanges.empty()) {
-				SeedRange& tail = t.seedRanges.back();
-				if (tail.drawSet == wantSet && tail.material == mat
-					&& tail.firstCommand + tail.commandCount == slot) {
-					++tail.commandCount;
-					continue;
-				}
-			}
-			SeedRange r{};
-			r.drawSet = wantSet;
-			r.material = mat;
-			r.firstCommand = slot;
-			r.commandCount = 1;
-			t.seedRanges.push_back(r);
-		}
-		if (pass == 0)
-			t.seedOpaqueCommands = (uint32_t)t.seedCommands.size();
+	EmitBucketMajor(s, entries, t.seedCommands, t.seedRanges, t.seedOpaqueCommands);
+}
+
+// (cluster, model) identity for the remainder difference.
+struct VisKey {
+	uint32_t cluster = UINT32_MAX;
+	glm::mat4 model{ 1.0f };
+};
+static bool VisKeyLess(const VisKey& a, const VisKey& b) {
+	if (a.cluster != b.cluster)
+		return a.cluster < b.cluster;
+	return std::memcmp(&a.model, &b.model, sizeof(glm::mat4)) < 0;
+}
+
+void BuildRemainderCommands(State& s, uint32_t view) {
+	assert(view < s.views.size());
+	TemporalView& t = Temporal(s, view);
+	t.remainderCommands.clear();
+	t.remainderRanges.clear();
+	t.remainderOpaqueCommands = 0;
+	const View& v = s.views[view];
+	if (!t.historyValid || v.batches.empty())
+		return; // no baseline (full prepass covered everything) or nothing new
+	// Sorted baseline keys from the snapshot.
+	std::vector<VisKey> prev;
+	prev.reserve(t.prevBatches.size());
+	for (const Batch& b : t.prevBatches) {
+		if (b.draw >= (uint32_t)t.prevDraws.size())
+			continue;
+		if (b.cluster >= (uint32_t)s.clusters.size())
+			continue;
+		VisKey k{};
+		k.cluster = b.cluster;
+		k.model = t.prevDraws[b.draw].model;
+		prev.push_back(k);
 	}
+	std::sort(prev.begin(), prev.end(), VisKeyLess);
+	// Material per current batch for range building.
+	std::vector<uint32_t> batchMaterial;
+	ResolveBatchMaterials(v.materialRanges, v.batches.size(), batchMaterial);
+	std::vector<EmitEntry> entries;
+	entries.reserve(v.batches.size());
+	for (size_t i = 0; i < v.batches.size(); ++i) {
+		const Batch& b = v.batches[i];
+		if (b.draw >= (uint32_t)v.drawConstants.size())
+			continue;
+		if (b.cluster >= (uint32_t)s.clusters.size())
+			continue;
+		VisKey k{};
+		k.cluster = b.cluster;
+		k.model = v.drawConstants[b.draw].model;
+		if (std::binary_search(prev.begin(), prev.end(), k, VisKeyLess))
+			continue; // seeded already: same cluster, same transform
+		EmitEntry e{};
+		e.cluster = b.cluster;
+		e.draw = b.draw; // into the CURRENT draw constants (DrawBuffer)
+		e.material = batchMaterial[i];
+		e.drawSet = v.drawConstants[b.draw].drawSet;
+		entries.push_back(e);
+	}
+	EmitBucketMajor(s, entries,
+		t.remainderCommands, t.remainderRanges, t.remainderOpaqueCommands);
 }
 
 void UploadSeed(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
@@ -759,6 +909,21 @@ void UploadSeed(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t vi
 		return;
 	ctx.UploadDataToBuffer(t.seedIndirectBuffers[frameIndex],
 		t.seedCommands.data(), t.seedCommands.size() * sizeof(SeedCommand),
+		PipelineStage(PipelineStageBit_DrawIndirect), AccessFlags::IndirectCommandRead);
+}
+
+void UploadRemainder(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
+	assert(view < s.views.size());
+	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	if (view >= s.temporals.size())
+		return;
+	TemporalView& t = s.temporals[view];
+	if (t.remainderIndirectBuffers[frameIndex].empty())
+		return;
+	if (t.remainderCommands.empty())
+		return;
+	ctx.UploadDataToBuffer(t.remainderIndirectBuffers[frameIndex],
+		t.remainderCommands.data(), t.remainderCommands.size() * sizeof(SeedCommand),
 		PipelineStage(PipelineStageBit_DrawIndirect), AccessFlags::IndirectCommandRead);
 }
 
@@ -779,6 +944,28 @@ RenderPass& AddSeedPass(State& s, RenderGraph& rg, uint32_t view,
 	indirectRead.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
 	indirectRead.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
 	pass.AddBufferHint(t.seedIndirectLogicals[v.frameIndex], indirectRead);
+	return pass;
+}
+
+// Depth pass 2 (T5): draws the remainder list over seeded depth
+// (Load/Store). Same consume pattern as the seed pass.
+RenderPass& AddRemainderPass(State& s, RenderGraph& rg, uint32_t view,
+	LogicalImageViewHandle depthLogical) {
+	assert(view < s.temporals.size());
+	TemporalView& t = s.temporals[view];
+	const View& v = s.views[view];
+	RenderPass& pass = rg.AddPass("GfxRemainderDepth");
+	Extent2D extent{ v.width, v.height };
+	pass.SetOffset(0, 0)
+		.SetExtent(extent)
+		.SetDepth(depthLogical,
+			AttachmentLoadOp::Load,
+			AttachmentStoreOp::Store,
+			ClearDepthStencil(0.0f, 0));
+	BufferSyncRequest indirectRead{};
+	indirectRead.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
+	indirectRead.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
+	pass.AddBufferHint(t.remainderIndirectLogicals[v.frameIndex], indirectRead);
 	return pass;
 }
 
