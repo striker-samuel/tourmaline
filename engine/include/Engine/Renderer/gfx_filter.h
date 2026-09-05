@@ -282,8 +282,10 @@ uint32_t HzbMipForRect(float rectW, float rectH, uint32_t mips);
 // floats in HzbMipOffsetFloats layout, MIN-reduced). True = provably
 // hidden (nearest point behind every covered texel). Rects missing the
 // target, behind-camera footprints and empty pyramids keep (false).
+// outBindingStored (optional): the MIN stored depth over the covered
+// texels — the value the cull decision hangs on (audit/debug).
 bool HzbOccluded(const float* hzb, uint32_t w, uint32_t h, uint32_t mips,
-	const ClusterFootprint& f);
+	const ClusterFootprint& f, float* outBindingStored = nullptr);
 
 // Compute push. Must match HLSL HzbPush in hzb.hlsli (48 bytes).
 // srcMip = kHizSrcDepth copies mip 0 from the depth texture instead.

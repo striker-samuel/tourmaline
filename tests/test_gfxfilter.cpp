@@ -910,6 +910,132 @@ void TestRemainderCommands() {
 	Check(Temporal(s, 0).remainderCommands.empty(), "gfx.rem.invalid-empty");
 }
 
+// ---------------------------------------------------------------------------
+// T6 (spawn-view repro): reversed-Z HZB end-to-end over a synthetic render of
+// the sponza spawn framing (cloth banners center screen, back wall behind).
+// Software-rasterizes depth exactly like the engine (reversed-Z, clear 0,
+// nearest-wins), builds the pyramid with the hzb.cs.hlsl MIN mirror, then
+// runs the CPU occlusion mirror over flat cloth patches. The cloth must
+// survive its own depth pyramid (the bounding-sphere pole lands r in FRONT
+// of the surface -> dNear > stored by construction); a wall patch behind it
+// must cull (harness validity: the test can see both directions).
+// ---------------------------------------------------------------------------
+
+void TestHzbSpawnView() {
+	using namespace smvk::gfx;
+	constexpr uint32_t W = 480, H = 270;
+	const float nearP = 0.01f;
+	const glm::vec3 eye(0.0f, 1.0f, 0.0f);
+	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 1, 1), glm::vec3(0, 1, 0));
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(45.0f), W / float(H), nearP);
+	proj[1][1] *= -1.0f; // engine Y-flip (UpdateFrameUniforms)
+	const glm::mat4 viewProj = proj * view;
+	const glm::mat4 invViewProj = glm::inverse(viewProj);
+
+	// Cloth banner (center screen, double-sided) + back wall behind it.
+	const glm::vec3 clothA(-0.5f, 0.6f, 2.0f), clothB(0.5f, 2.0f, 2.0f);
+	const glm::vec3 wallA(-4.0f, 0.0f, 5.0f), wallB(4.0f, 4.0f, 5.0f);
+
+	// Software raster: per-pixel nearest hit -> reversed-Z depth = n / |z_view|.
+	std::vector<float> depth((size_t)W * H, 0.0f); // sky = 0 (reversed-Z clear)
+	for (uint32_t y = 0; y < H; ++y) {
+		for (uint32_t x = 0; x < W; ++x) {
+			const glm::vec2 ndc((float(x) + 0.5f) / W * 2.0f - 1.0f,
+				(float(y) + 0.5f) / H * 2.0f - 1.0f);
+			// NDC z: reversed-Z maps near=1; unproject near corner + direction.
+			const glm::vec4 n4 = invViewProj * glm::vec4(ndc, 1.0f, 1.0f);
+			const glm::vec4 f4 = invViewProj * glm::vec4(ndc, 0.0f, 1.0f);
+			const glm::vec3 o = glm::vec3(n4) / n4.w;
+			const glm::vec3 d = glm::normalize(glm::vec3(f4) / f4.w - o);
+			float bestZ = -1.0f; // |z_view| of the nearest hit
+			auto quad = [&](float planeZ, const glm::vec3& a, const glm::vec3& b) {
+				if (std::abs(d.z) < 1e-9f) return;
+				const float t = (planeZ - o.z) / d.z;
+				if (t < 1e-6f) return;
+				const glm::vec3 p = o + d * t;
+				if (p.x < a.x || p.x > b.x || p.y < a.y || p.y > b.y) return;
+				const float z = std::abs((view * glm::vec4(p, 1.0f)).z);
+				if (bestZ < 0.0f || z < bestZ) bestZ = z;
+			};
+			quad(2.0f, clothA, clothB);
+			quad(5.0f, wallA, wallB);
+			if (bestZ > 0.0f)
+				depth[(size_t)y * W + x] = nearP / bestZ;
+		}
+	}
+	// Sanity: the center pixel hits the cloth interior (not sky, not wall).
+	const float centerDepth = depth[(size_t)(H / 2) * W + W / 2];
+	const float clothDepth = nearP / std::abs((view * glm::vec4(0.0f, 1.0f, 2.0f, 1.0f)).z);
+	Check(std::abs(centerDepth - clothDepth) < clothDepth * 0.05f,
+		"gfx.spawn.center-is-cloth");
+
+	// HZB build: exact hzb.cs.hlsl mirror (mip0 copy, MIN 2x2 clamped).
+	const uint32_t mips = HzbMipCount(W, H);
+	std::vector<float> hzb(HzbTotalFloats(W, H), 0.0f);
+	std::copy(depth.begin(), depth.end(), hzb.begin());
+	for (uint32_t m = 1; m < mips; ++m) {
+		uint32_t sw = 0, sh = 0, dw = 0, dh = 0;
+		HzbMipDims(W, H, m - 1, sw, sh);
+		HzbMipDims(W, H, m, dw, dh);
+		const uint32_t srcOff = HzbMipOffsetFloats(W, H, m - 1);
+		const uint32_t dstOff = HzbMipOffsetFloats(W, H, m);
+		for (uint32_t y = 0; y < dh; ++y) {
+			for (uint32_t x = 0; x < dw; ++x) {
+				const uint32_t bx = x * 2, by = y * 2;
+				const uint32_t sx1 = std::min(bx + 1, sw - 1);
+				const uint32_t sy1 = std::min(by + 1, sh - 1);
+				hzb[dstOff + y * dw + x] = HzbReduce2x2(
+					hzb[srcOff + by * sw + bx], hzb[srcOff + by * sw + sx1],
+					hzb[srcOff + sy1 * sw + bx], hzb[srcOff + sy1 * sw + sx1]);
+			}
+		}
+	}
+
+	// Cloth patches (4x4 flat grid): every one must survive its own pyramid.
+	bool allKeep = true;
+	ClusterFootprint centerF{};
+	for (uint32_t iy = 0; iy < 4; ++iy) {
+		for (uint32_t ix = 0; ix < 4; ++ix) {
+			const glm::vec3 c(clothA.x + (ix + 0.5f) * 0.25f,
+				clothA.y + (iy + 0.5f) * 0.35f, 2.0f);
+			const float r = 0.5f * std::sqrt(0.25f * 0.25f + 0.35f * 0.35f);
+			ClusterFootprint f = ProjectClusterFootprint(c, r, eye, viewProj, W, H);
+			if (f.behindCamera) { allKeep = false; continue; }
+			float stored = -1.0f;
+			const bool occ = HzbOccluded(hzb.data(), W, H, mips, f, &stored);
+			if (occ) {
+				allKeep = false;
+				std::printf("[gfx.spawn] cloth patch (%u,%u) CULLED: dNear=%.6f stored=%.6f "
+					"c=(%.1f,%.1f) r=(%.1f,%.1f)\n", ix, iy, f.nearestDepth, stored,
+					f.centerX, f.centerY, f.radiusX, f.radiusY);
+			}
+			// The user's exact case: the center-screen patch.
+			if (ix == 1 && iy == 1) centerF = f;
+		}
+	}
+	Check(allKeep, "gfx.spawn.cloth-keeps");
+	Check(!centerF.behindCamera && std::abs(centerF.centerX - W * 0.5f) < 8.0f
+		&& std::abs(centerF.centerY - H * 0.5f) < 8.0f, "gfx.spawn.center-is-center");
+	{
+		float stored = -1.0f;
+		const bool occ = HzbOccluded(hzb.data(), W, H, mips, centerF, &stored);
+		std::printf("[gfx.spawn] center patch: dNear=%.6f stored=%.6f occ=%d "
+			"(pole margin %.2fx)\n", centerF.nearestDepth, stored, occ ? 1 : 0,
+			stored > 0.0f ? centerF.nearestDepth / stored : 0.0f);
+		Check(!occ, "gfx.spawn.center-keeps");
+	}
+	// Wall patch behind the cloth interior must cull (harness sees both ways).
+	{
+		ClusterFootprint f = ProjectClusterFootprint(glm::vec3(0.0f, 1.0f, 5.0f),
+			0.3f, eye, viewProj, W, H);
+		float stored = -1.0f;
+		const bool occ = HzbOccluded(hzb.data(), W, H, mips, f, &stored);
+		std::printf("[gfx.spawn] wall patch: dNear=%.6f stored=%.6f occ=%d\n",
+			f.nearestDepth, stored, occ ? 1 : 0);
+		Check(!f.behindCamera && occ, "gfx.spawn.wall-behind-cloth-culls");
+	}
+}
+
 } // namespace
 
 int main() {
@@ -922,6 +1048,7 @@ int main() {
 	TestHizLayout();
 	TestSeedCommands();
 	TestHzbOcclusion();
+	TestHzbSpawnView();
 	TestRemainderCommands();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;

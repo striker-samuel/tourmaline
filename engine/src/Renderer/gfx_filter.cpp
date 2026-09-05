@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <numeric>
 
 namespace smvk {
@@ -285,7 +286,9 @@ uint32_t HzbMipForRect(float rectW, float rectH, uint32_t mips) {
 }
 
 bool HzbOccluded(const float* hzb, uint32_t w, uint32_t h, uint32_t mips,
-	const ClusterFootprint& f) {
+	const ClusterFootprint& f, float* outBindingStored) {
+	if (outBindingStored)
+		*outBindingStored = -1.0f;
 	if (hzb == nullptr || mips == 0 || w == 0 || h == 0)
 		return false;
 	if (f.behindCamera)
@@ -320,14 +323,20 @@ bool HzbOccluded(const float* hzb, uint32_t w, uint32_t h, uint32_t mips,
 	const uint32_t ty1 = std::min(
 		(uint32_t)std::max(std::floor((f.centerY + f.radiusY) / texelSize), 0.0f), lh - 1);
 	// Bounded: rect <= texel guarantees at most 2 per axis; cap anyway.
+	float bindingStored = std::numeric_limits<float>::max();
+	bool occluded = true;
 	for (uint32_t ty = ty0; ty <= ty1 && ty < ty0 + 3; ++ty) {
 		for (uint32_t tx = tx0; tx <= tx1 && tx < tx0 + 3; ++tx) {
 			const float stored = hzb[HzbMipOffsetFloats(w, h, level) + ty * lw + tx];
-			if (f.nearestDepth >= stored)
-				return false;
+			bindingStored = std::min(bindingStored, stored);
+			if (f.nearestDepth >= stored) {
+				occluded = false;
+			}
 		}
 	}
-	return true;
+	if (outBindingStored)
+		*outBindingStored = bindingStored;
+	return occluded;
 }
 
 bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
