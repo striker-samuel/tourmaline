@@ -625,6 +625,88 @@ void TestHizLayout() {
 	Check(HzbReduce2x2(0.0f, 0.9f, 0.8f, 0.7f) == 0.0f, "gfx.hiz.reduce-sky");
 }
 
+// ---------------------------------------------------------------------------
+// T6 (T3 state): seed command build — bucket-major reorder with
+// per-(bucket, material) ranges, drawn from the snapshot (pure CPU).
+// ---------------------------------------------------------------------------
+
+void TestSeedCommands() {
+	using namespace smvk::gfx;
+	State s{};
+	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+	Check(m0 == 0 && m1 == 1, "gfx.seed.mesh-ids");
+
+	smvk::RenderViewSet views;
+	views.NewFrame();
+	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f;
+	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+	View v{};
+	v.renderView = &views.Get(rv);
+	v.eye = eye;
+	v.width = 800;
+	v.height = 600;
+	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+	s.views.push_back(std::move(v));
+	s.viewCount = 1;
+
+	// No history -> no seed commands (ranges cleared too).
+	BuildSeedCommands(s, 0);
+	Check(Temporal(s, 0).seedCommands.empty(), "gfx.seed.no-history-empty");
+
+	// Mixed buckets, shuffled materials: opaque must come first.
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 7, 0, DrawSetBit_Masked);
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, DrawFlagBit_TwoSided, DrawSetBit_Opaque);
+	BuildBatches(s, 0);
+	Check(s.views[0].batchCount == 3, "gfx.seed.three-batches");
+	SnapshotVisible(s, 0);
+	BuildSeedCommands(s, 0);
+	const TemporalView& t = Temporal(s, 0);
+	Check(t.seedCommands.size() == 3, "gfx.seed.cmd-count");
+	Check(t.seedOpaqueCommands == 2, "gfx.seed.opaque-first");
+	Check(t.seedRanges.size() == 2, "gfx.seed.two-ranges");
+	bool rangesOk = false;
+	if (t.seedRanges.size() == 2) {
+		const SeedRange& o = t.seedRanges[0];
+		const SeedRange& mk = t.seedRanges[1];
+		rangesOk = o.drawSet == DrawSetBit_Opaque && o.material == 3
+			&& o.firstCommand == 0 && o.commandCount == 2
+			&& mk.drawSet == DrawSetBit_Masked && mk.material == 7
+			&& mk.firstCommand == 2 && mk.commandCount == 1;
+	}
+	Check(rangesOk, "gfx.seed.ranges-bucketed");
+	// Commands reference the cluster-ordered heap + snapshot draws.
+	// Clusters: m0 -> 0, m1 -> 1 (single-triangle meshes). Batch.draw is
+	// the material-sorted draw index: mat3 draws sort first, so the
+	// snapshot draws are [m0 opaque, m0 opaque, m1 masked] and the
+	// bucket-major commands are (c0,d0) (c0,d1) (c1,d2).
+	bool cmdsOk = t.seedCommands.size() == 3;
+	const uint32_t expectCluster[3] = { 0, 0, 1 };
+	const uint32_t expectDraw[3] = { 0, 1, 2 };
+	for (size_t i = 0; cmdsOk && i < 3; ++i) {
+		const SeedCommand& c = t.seedCommands[i];
+		const Cluster& cl = s.clusters[expectCluster[i]];
+		cmdsOk = c.instanceCount == 1 && c.vertexOffset == 0
+			&& c.indexCount == cl.triCount * 3
+			&& c.firstIndex == cl.indexOffset
+			&& c.firstInstance == expectDraw[i];
+	}
+	Check(cmdsOk, "gfx.seed.cmds-shape");
+
+	// Invalidating clears the seed list (no stale commands survive).
+	InvalidateHistory(s, 0);
+	BuildSeedCommands(s, 0);
+	Check(Temporal(s, 0).seedCommands.empty()
+		&& Temporal(s, 0).seedRanges.empty(),
+		"gfx.seed.invalidate-clears");
+}
+
 } // namespace
 
 int main() {
@@ -635,6 +717,7 @@ int main() {
 	TestTwoSided();
 	TestTemporalSnapshot();
 	TestHizLayout();
+	TestSeedCommands();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

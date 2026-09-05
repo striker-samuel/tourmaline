@@ -49,7 +49,9 @@ struct GfxVisible { uint2 vis[GFX_MAX_VISIBLE]; };
 struct GfxDraw
 {
     float4x4 model;
-    uint4 misc; // x = mesh index, y = flags (GFX_DRAW_*); uint4 keeps 16B alignment under block rules
+    // x = mesh index, y = flags (GFX_DRAW_*), z = draw-set bucket
+    // (GFX_DRAWSET_*); uint4 keeps 16B alignment under block rules.
+    uint4 misc;
 };
 struct GfxDraws { GfxDraw draws[GFX_MAX_DRAWS]; };
 

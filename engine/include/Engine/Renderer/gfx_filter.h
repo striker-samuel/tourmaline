@@ -91,7 +91,8 @@ struct alignas(16) Draw {
 	glm::mat4 model{};
 	uint32_t mesh = 0;
 	uint32_t flags = 0; // DrawFlags (bit 0 = two-sided: skip backface/cone cull)
-	uint32_t pad[2] = {};
+	uint32_t drawSet = DrawSetBit_Opaque; // DrawSetBits bucket (seed PSO select)
+	uint32_t pad = 0;
 };
 static_assert(sizeof(Draw) == 80);
 
@@ -162,6 +163,7 @@ struct DrawRequest {
 	uint32_t material = 0;
 	glm::mat4 model{ 1.0f };
 	DrawFlags flags = 0;
+	DrawSetMask drawSet = DrawSetBit_Opaque;
 };
 
 struct Cluster {
@@ -259,6 +261,25 @@ struct HzbPush {
 };
 static_assert(sizeof(HzbPush) == 48);
 
+// One indirect draw over the cluster-ordered index heap (20 bytes, matches
+// VkDrawIndexedIndirectCommand; firstInstance indexes the visDraws snapshot).
+struct SeedCommand {
+	uint32_t indexCount = 0;
+	uint32_t instanceCount = 1;
+	uint32_t firstIndex = 0; // clusters[c].indexOffset into filterIndices
+	int32_t vertexOffset = 0; // always 0: indices are heap-global ids
+	uint32_t firstInstance = 0; // draw index into the visDraws snapshot
+};
+static_assert(sizeof(SeedCommand) == 20);
+
+// One seed multi-draw range: same (bucket, material) throughout.
+struct SeedRange {
+	uint32_t drawSet = DrawSetBit_Opaque;
+	uint32_t material = 0;
+	uint32_t firstCommand = 0;
+	uint32_t commandCount = 0;
+};
+
 // Per-view temporal visibility state (Alan Wake 2 style). Deliberately NOT
 // part of RenderView: that struct is HLSL-mirrored (256 bytes,
 // static_asserted), so history lives in this sidecar, parallel to views.
@@ -283,6 +304,14 @@ struct TemporalView {
 	Holder<BufferHandle> visDrawBuffers[MAX_FRAMES_IN_FLIGHT];
 	LogicalBufferHandle visClusterLogicals[MAX_FRAMES_IN_FLIGHT]{};
 	LogicalBufferHandle visDrawLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	// Seed command list (T3): one indirect draw per prevBatch, reordered
+	// bucket-major (opaque runs first) with per-(bucket, material) ranges.
+	// Consumed by the seed depth pass; rebuilt from the snapshot each frame.
+	std::vector<SeedCommand> seedCommands;
+	std::vector<SeedRange> seedRanges;
+	uint32_t seedOpaqueCommands = 0; // leading commands using the opaque PSO
+	Holder<BufferHandle> seedIndirectBuffers[MAX_FRAMES_IN_FLIGHT];
+	LogicalBufferHandle seedIndirectLogicals[MAX_FRAMES_IN_FLIGHT]{};
 };
 
 struct State {
@@ -350,7 +379,8 @@ uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 	const RenderView& renderView, const glm::vec3& eye,
 	CullFlags cullFlags, uint32_t width, uint32_t height);
 void PushDraw(State& s, uint32_t view, uint32_t mesh,
-	const glm::mat4& model, uint32_t material, DrawFlags flags = 0);
+	const glm::mat4& model, uint32_t material, DrawFlags flags = 0,
+	DrawSetMask drawSet = DrawSetBit_Opaque);
 // Pure-CPU cluster test (meshoptimizer perspective cone + sphere vs planes).
 // Exported for unit tests; eye must be the camera world position.
 // twoSided skips the normal-cone (backface) part; the sphere-vs-frustum
@@ -393,6 +423,23 @@ void SnapshotVisible(State& s, uint32_t view);
 // Uploads the snapshot (prevBatches as compact VisibleCluster pairs +
 // prevDraws) into the frameIndex ring slice. No-op when empty/unallocated.
 void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
+// Builds the seed command list from the snapshot: one indirect draw per
+// prevBatch, reordered bucket-major (opaque first) with per-(bucket,
+// material) ranges (pure CPU, headless-testable). Bucket comes from each
+// draw's drawSet (set at PushDraw from the material).
+void BuildSeedCommands(State& s, uint32_t view);
+// Uploads the seed commands into the frameIndex ring slice. No-op when
+// empty/unallocated.
+void UploadSeed(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
+// Depth-seed pass shell over the render-depth target (caller sets the
+// recording func to PushSeedConstants + DrawSeedRange per range).
+RenderPass& AddSeedPass(State& s, RenderGraph& rg, uint32_t view,
+	LogicalImageViewHandle depthLogical);
+// Consume-side barrier helper for the seed depth pass: cluster-ordered
+// index heap + vis draws + seed indirect as vertex-stage reads.
+void AddSeedConsumeHints(RenderPass& pass,
+	LogicalBufferHandle indexLogical, LogicalBufferHandle visDrawLogical,
+	LogicalBufferHandle seedIndirectLogical);
 
 // ---- Hierarchical-Z (T2 build, T4 consumer) ----
 bool EnsureHizShaders(State& s, ResourceManager& ctx,
@@ -440,6 +487,34 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 [[nodiscard]] inline BufferHandle IndirectBuffer(const State& s, uint32_t view) {
 	assert(view < s.views.size());
 	return s.views[view].indirectBuffers[s.views[view].frameIndex];
+}
+[[nodiscard]] inline BufferHandle FilterIndexBuffer(const State& s) {
+	return s.filterIndexBuffer;
+}
+[[nodiscard]] inline BufferHandle SeedIndirectBuffer(const State& s, uint32_t view) {
+	assert(view < s.temporals.size());
+	return s.temporals[view].seedIndirectBuffers[s.views[view].frameIndex];
+}
+[[nodiscard]] inline LogicalBufferHandle SeedIndirectLogical(const State& s, uint32_t view) {
+	assert(view < s.temporals.size());
+	return s.temporals[view].seedIndirectLogicals[s.views[view].frameIndex];
+}
+[[nodiscard]] inline BufferHandle VisDrawBuffer(const State& s, uint32_t view) {
+	assert(view < s.temporals.size());
+	return s.temporals[view].visDrawBuffers[s.views[view].frameIndex];
+}
+[[nodiscard]] inline LogicalBufferHandle VisDrawLogical(const State& s, uint32_t view) {
+	assert(view < s.temporals.size());
+	return s.temporals[view].visDrawLogicals[s.views[view].frameIndex];
+}
+[[nodiscard]] inline const std::vector<SeedRange>& SeedRanges(
+	const State& s, uint32_t view) {
+	assert(view < s.temporals.size());
+	return s.temporals[view].seedRanges;
+}
+[[nodiscard]] inline uint32_t SeedOpaqueCommands(const State& s, uint32_t view) {
+	assert(view < s.temporals.size());
+	return s.temporals[view].seedOpaqueCommands;
 }
 [[nodiscard]] inline LogicalBufferHandle BatchLogical(const State& s, uint32_t view) {
 	assert(view < s.views.size());

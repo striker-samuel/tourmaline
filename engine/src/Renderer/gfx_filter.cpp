@@ -18,6 +18,7 @@ static constexpr size_t kFilteredBytes = kMaxBatches * kMaxClusterTris * 3 * siz
 static constexpr size_t kIndirectBytes = kMaxBatches * 20; // VkDrawIndexedIndirectCommand
 static constexpr size_t kVisClusterBytes = kMaxBatches * sizeof(VisibleCluster);
 static constexpr size_t kVisDrawBytes = kMaxDraws * sizeof(Draw);
+static constexpr size_t kSeedIndirectBytes = kMaxBatches * sizeof(SeedCommand);
 
 static void RollbackSlotBuffers(RenderGraph& rg, View& v, uint32_t doneFrames) {
 	for (uint32_t f = 0; f < doneFrames; ++f) {
@@ -118,8 +119,10 @@ static void RollbackTemporalBuffers(RenderGraph& rg, TemporalView& t, uint32_t d
 	for (uint32_t f = 0; f < doneFrames; ++f) {
 		if (!t.visClusterLogicals[f].empty()) rg.FreeBuffer(t.visClusterLogicals[f]);
 		if (!t.visDrawLogicals[f].empty()) rg.FreeBuffer(t.visDrawLogicals[f]);
+		if (!t.seedIndirectLogicals[f].empty()) rg.FreeBuffer(t.seedIndirectLogicals[f]);
 		t.visClusterLogicals[f] = {};
 		t.visDrawLogicals[f] = {};
+		t.seedIndirectLogicals[f] = {};
 	}
 	// Holders release their buffers automatically on scope exit.
 }
@@ -130,13 +133,21 @@ static bool CreateTemporalBuffers(ResourceManager& ctx, RenderGraph& rg, Tempora
 			kVisClusterBytes, BufferType_Storage, "gfx visibleClusters");
 		t.visDrawBuffers[f] = ctx.CreateBuffer(
 			kVisDrawBytes, BufferType_Storage, "gfx visibleDraws");
-		if (t.visClusterBuffers[f].empty() || t.visDrawBuffers[f].empty()) {
+		// Storage, NOT Indirect (same queue-sharing argument as the filter
+		// indirect buffers in CreateSlotBuffers); INDIRECT usage is covered
+		// by the type's flags regardless (see bufferTypeToUsageFlags).
+		t.seedIndirectBuffers[f] = ctx.CreateBuffer(
+			kSeedIndirectBytes, BufferType_Storage, "gfx seedIndirect");
+		if (t.visClusterBuffers[f].empty() || t.visDrawBuffers[f].empty()
+			|| t.seedIndirectBuffers[f].empty()) {
 			RollbackTemporalBuffers(rg, t, f);
 			return false;
 		}
 		t.visClusterLogicals[f] = rg.AddExternalBuffer(t.visClusterBuffers[f], "gfx visibleClusters");
 		t.visDrawLogicals[f] = rg.AddExternalBuffer(t.visDrawBuffers[f], "gfx visibleDraws");
-		if (t.visClusterLogicals[f].empty() || t.visDrawLogicals[f].empty()) {
+		t.seedIndirectLogicals[f] = rg.AddExternalBuffer(t.seedIndirectBuffers[f], "gfx seedIndirect");
+		if (t.visClusterLogicals[f].empty() || t.visDrawLogicals[f].empty()
+			|| t.seedIndirectLogicals[f].empty()) {
 			RollbackTemporalBuffers(rg, t, f + 1);
 			return false;
 		}
@@ -157,6 +168,7 @@ void Destroy(State& s, RenderGraph& rg) {
 		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
 			if (!t.visClusterLogicals[f].empty()) rg.FreeBuffer(t.visClusterLogicals[f]);
 			if (!t.visDrawLogicals[f].empty()) rg.FreeBuffer(t.visDrawLogicals[f]);
+			if (!t.seedIndirectLogicals[f].empty()) rg.FreeBuffer(t.seedIndirectLogicals[f]);
 		}
 		if (!t.hiz.logical.empty()) rg.FreeBuffer(t.hiz.logical);
 		t.hiz.logical = {};
@@ -593,6 +605,124 @@ void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 	}
 }
 
+void BuildSeedCommands(State& s, uint32_t view) {
+	assert(view < s.views.size());
+	TemporalView& t = Temporal(s, view);
+	t.seedCommands.clear();
+	t.seedRanges.clear();
+	t.seedOpaqueCommands = 0;
+	if (!t.historyValid || t.prevBatches.empty())
+		return;
+	// Material per snapshot batch: prevRanges span prevBatches in order.
+	std::vector<uint32_t> batchMaterial(t.prevBatches.size(), UINT32_MAX);
+	for (const MaterialRange& r : t.prevRanges) {
+		for (uint32_t k = 0; k < r.commandCount; ++k) {
+			if (r.firstCommand + k < (uint32_t)batchMaterial.size())
+				batchMaterial[r.firstCommand + k] = r.material;
+		}
+	}
+	// Bucket-major: opaque commands first (single VS-only multi-draw),
+	// then masked (per-material ranges for the alpha-test FS push).
+	for (uint32_t pass = 0; pass < 2; ++pass) {
+		const uint32_t wantSet = (pass == 0) ? DrawSetBit_Opaque : DrawSetBit_Masked;
+		for (size_t i = 0; i < t.prevBatches.size(); ++i) {
+			const Batch& b = t.prevBatches[i];
+			if (b.draw >= (uint32_t)t.prevDraws.size())
+				continue;
+			if (b.cluster >= (uint32_t)s.clusters.size())
+				continue;
+			const uint32_t set = t.prevDraws[b.draw].drawSet;
+			const bool masked = (set & DrawSetBit_Masked) != 0;
+			if ((wantSet == DrawSetBit_Masked) != masked)
+				continue;
+			const Cluster& c = s.clusters[b.cluster];
+			SeedCommand cmd{};
+			cmd.indexCount = c.triCount * 3;
+			cmd.instanceCount = 1;
+			cmd.firstIndex = c.indexOffset; // into filterIndices
+			cmd.vertexOffset = 0;
+			cmd.firstInstance = b.draw; // into the visDraws snapshot
+			const uint32_t slot = (uint32_t)t.seedCommands.size();
+			if (slot >= kMaxBatches)
+				break;
+			t.seedCommands.push_back(cmd);
+			const uint32_t mat = batchMaterial[i];
+			if (!t.seedRanges.empty()) {
+				SeedRange& tail = t.seedRanges.back();
+				if (tail.drawSet == wantSet && tail.material == mat
+					&& tail.firstCommand + tail.commandCount == slot) {
+					++tail.commandCount;
+					continue;
+				}
+			}
+			SeedRange r{};
+			r.drawSet = wantSet;
+			r.material = mat;
+			r.firstCommand = slot;
+			r.commandCount = 1;
+			t.seedRanges.push_back(r);
+		}
+		if (pass == 0)
+			t.seedOpaqueCommands = (uint32_t)t.seedCommands.size();
+	}
+}
+
+void UploadSeed(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
+	assert(view < s.views.size());
+	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	if (view >= s.temporals.size())
+		return;
+	TemporalView& t = s.temporals[view];
+	if (t.seedIndirectBuffers[frameIndex].empty())
+		return;
+	if (t.seedCommands.empty())
+		return;
+	ctx.UploadDataToBuffer(t.seedIndirectBuffers[frameIndex],
+		t.seedCommands.data(), t.seedCommands.size() * sizeof(SeedCommand),
+		PipelineStage(PipelineStageBit_DrawIndirect), AccessFlags::IndirectCommandRead);
+}
+
+RenderPass& AddSeedPass(State& s, RenderGraph& rg, uint32_t view,
+	LogicalImageViewHandle depthLogical) {
+	assert(view < s.temporals.size());
+	TemporalView& t = s.temporals[view];
+	const View& v = s.views[view];
+	RenderPass& pass = rg.AddPass("GfxSeedDepth");
+	Extent2D extent{ v.width, v.height };
+	pass.SetOffset(0, 0)
+		.SetExtent(extent)
+		.SetDepth(depthLogical,
+			AttachmentLoadOp::Clear,
+			AttachmentStoreOp::Store,
+			ClearDepthStencil(0.0f, 0));
+	BufferSyncRequest indirectRead{};
+	indirectRead.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
+	indirectRead.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
+	pass.AddBufferHint(t.seedIndirectLogicals[v.frameIndex], indirectRead);
+	return pass;
+}
+
+void AddSeedConsumeHints(RenderPass& pass,
+	LogicalBufferHandle indexLogical, LogicalBufferHandle visDrawLogical,
+	LogicalBufferHandle seedIndirectLogical) {
+	BufferSyncRequest indexRead{};
+	indexRead.barrierMasks.accessMask = AccessFlags::IndexRead;
+	indexRead.barrierMasks.stageMask = PipelineStageBit_Vertex;
+	pass.AddBufferHint(indexLogical, indexRead);
+	if (!visDrawLogical.empty()) {
+		BufferSyncRequest drawsRead{};
+		drawsRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		drawsRead.barrierMasks.stageMask = PipelineStageBit_Vertex;
+		pass.AddBufferHint(visDrawLogical, drawsRead);
+	}
+	if (!seedIndirectLogical.empty()) {
+		BufferSyncRequest indirectRead{};
+		indirectRead.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
+		indirectRead.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
+		pass.AddBufferHint(seedIndirectLogical, indirectRead);
+	}
+}
+
 uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 	const RenderView& renderView, const glm::vec3& eye,
 	CullFlags cullFlags, uint32_t width, uint32_t height) {
@@ -617,7 +747,7 @@ uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 }
 
 void PushDraw(State& s, uint32_t view, uint32_t mesh,
-	const glm::mat4& model, uint32_t material, DrawFlags flags) {
+	const glm::mat4& model, uint32_t material, DrawFlags flags, DrawSetMask drawSet) {
 	assert(view < s.viewCount);
 	assert(mesh < s.meshes.size());
 	View& v = s.views[view];
@@ -628,6 +758,7 @@ void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	d.material = material;
 	d.model = model;
 	d.flags = flags;
+	d.drawSet = drawSet;
 	v.draws.push_back(d);
 }
 
@@ -722,6 +853,7 @@ void BuildBatches(State& s, uint32_t view) {
 		dc.model = d.model;
 		dc.mesh = d.mesh;
 		dc.flags = d.flags;
+		dc.drawSet = d.drawSet;
 		v.drawConstants.push_back(dc);
 	}
 
@@ -805,7 +937,7 @@ void AddConsumeHints(RenderPass& pass,
 	pass.AddBufferHint(filteredLogical, indexRead);
 	BufferSyncRequest indirectRead{};
 	indirectRead.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
-	indirectRead.barrierMasks.stageMask = PipelineStageBit_Vertex;
+	indirectRead.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
 	pass.AddBufferHint(indirectLogical, indirectRead);
 }
 

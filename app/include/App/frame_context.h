@@ -17,6 +17,9 @@ struct AppFrameContext : public smvk::FrameContext {
 	smvk::ImageViewHandle depthViewHandle{};  // physical view (bindless)
 	smvk::LogicalBufferHandle fpLights{};     // per-frame light buffer
 	uint32_t fpLightCount = 0;
+	// T3: the GfxRenderer seeded depth this frame (prepass must Load the
+	// seed instead of Clearing). Set by main after gfx AppendPasses.
+	bool seedDepthPrimed = false;
 };
 
 } // namespace app

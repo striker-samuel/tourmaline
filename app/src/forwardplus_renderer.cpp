@@ -51,7 +51,9 @@ void ForwardPlusRenderer::AppendPasses(smvk::FrameContext& base) {
 	// uses the alpha-tested program so holes keep background depth.
 	{
 		auto& prepass = fp->AddDepthPrepass(rg, depthView,
-			{ fc.extent.width, fc.extent.height }, "ForwardPlusDepth");
+			{ fc.extent.width, fc.extent.height }, "ForwardPlusDepth",
+			fc.seedDepthPrimed ? smvk::AttachmentLoadOp::Load
+				: smvk::AttachmentLoadOp::Clear);
 		prepass.SetRecordingFunc([this, depthPC, world](smvk::CommandBuffer& cmd)
 		{
 			auto drawPrepassNode = [&](NodeId node, bool maskedPhase) {

@@ -1388,6 +1388,7 @@ static smvk::PipelineStage FromVkPipelineStage(VkPipelineStageFlags2 flags) {
 	if (flags & VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Fragment);
 	if (flags & (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT)) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Fragment);
 	if (flags & VK_PIPELINE_STAGE_2_TRANSFER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Transfer);
+	if (flags & VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_DrawIndirect);
 	return out;
 }
 static smvk::AccessFlags FromVkAccess(VkAccessFlags2 flags) {
@@ -1422,6 +1423,7 @@ static VkPipelineStageFlags2 ToVkStage(smvk::PipelineStage stage) {
 	if (stage & (smvk::PipelineStageBit_RayGeneration | smvk::PipelineStageBit_AnyHit | smvk::PipelineStageBit_ClosestHit | smvk::PipelineStageBit_Miss | smvk::PipelineStageBit_Intersection | smvk::PipelineStageBit_Callable))
 		out |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
 	if (stage & smvk::PipelineStageBit_Transfer) out |= VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+	if (stage & smvk::PipelineStageBit_DrawIndirect) out |= VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
 	// RHI Fragment maps to color attachment + depth test in Vk; expand for safety
 	if (stage & smvk::PipelineStageBit_Fragment) out |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
 	return out ? out : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;

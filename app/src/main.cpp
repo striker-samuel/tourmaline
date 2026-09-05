@@ -602,6 +602,7 @@ private:
 		// Non-fatal: unregistered meshes keep rendering via direct draws.
 		if (m_useGfxFilter) {
 			m_gfxRenderer.ConfigureFrag(m_resources.fragShader);
+			m_gfxRenderer.ConfigureSeedFrag(m_resources.shadowMaskedFragShader);
 			if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
 				std::cerr << "[TestApp] GfxFilter unavailable - direct draws\n";
 				m_useGfxFilter = false;
@@ -1386,12 +1387,11 @@ private:
 		fc.eye = m_cameraPositioner.cameraPosition_;
 		fc.extent = renderExtent;
 
-		// Per-view triangle filter (main camera): builds the compacted
-		// index list + indirect commands consumed by the Main pass below.
+		// Per-view triangle filter (main camera): appended below, after
+		// fc.pc is built (the temporal seed pass captures frame addresses)
+		// but before the Forward+ prepass (seed writes depth first).
 		// Shadow/depth/motion passes stay on direct draws.
-		if (m_useGfxFilter)
-			m_gfxRenderer.AppendPasses(fc);
-		const uint32_t gfxSlot = m_gfxRenderer.LastSlot();
+		uint32_t gfxSlot = smvk::RenderViewSet::kInvalidIndex;
 		//
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
@@ -1697,7 +1697,21 @@ private:
 		fc.depthViewHandle = m_viewportResources.renderDepth.view;
 		fc.fpLights = m_resources.fpLightsLogical;
 		fc.fpLightCount = fpLightCount;
+
+		// ---- GPU-driven filter + temporal seed (before depth prepass) ----
+		// Runs after fc.pc/depthView are built (the seed pass captures
+		// frame addresses) but before the prepass (seed writes depth first).
+		if (m_useGfxFilter)
+			m_gfxRenderer.AppendPasses(fc);
+		gfxSlot = m_gfxRenderer.LastSlot();
+		fc.seedDepthPrimed = m_useGfxFilter && m_gfxRenderer.SeededThisFrame();
 		m_fpRenderer.AppendPasses(fc);
+
+		// ---- HZB build over the prepass depth (T2 module, T3 wiring) ----
+		if (m_useGfxFilter)
+			m_gfxRenderer.AppendHizPasses(fc,
+				m_viewportResources.renderDepth.logicalView,
+				m_viewportResources.forwardPlus.depthBindlessIndex);
 
 		// ---------------------------------------------------------------------
 		// Motion vectors – per-pixel prevUV - currUV into RG16F (motionvector.h)

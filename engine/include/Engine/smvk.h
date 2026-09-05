@@ -1077,6 +1077,12 @@ namespace smvk {
 
 		PipelineStageBit_Transfer = 1u << 14,
 
+		// Draw-indirect argument reads. MUST pair with
+		// AccessFlags::IndirectCommandRead: the Vulkan VUIDs reject that
+		// access under any shader stage (e.g. Vertex), it requires
+		// DRAW_INDIRECT (or ALL_GRAPHICS/ALL_COMMANDS).
+		PipelineStageBit_DrawIndirect = 1u << 15,
+
 		// Convenience masks
 		PipelineStageBit_AllGraphics =
 		PipelineStageBit_Vertex |
@@ -1352,6 +1358,8 @@ struct ImageCreateInfo
 		if ((access & AccessFlags::TransferRead) != AccessFlags::None ||
 			(access & AccessFlags::TransferWrite) != AccessFlags::None)
 			return PipelineStageBit_Transfer;
+		if ((access & AccessFlags::IndirectCommandRead) != AccessFlags::None)
+			return PipelineStageBit_DrawIndirect;
 		return PipelineStageBit_Fragment;
 	}
 

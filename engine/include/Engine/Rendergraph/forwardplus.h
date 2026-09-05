@@ -303,16 +303,19 @@ struct ForwardPlus {
 	}
 
 	// ---- Pass shells (caller sets the recording func) ----
-	// Depth prepass: no color, depth Clear->Store over the full extent.
+	// Depth prepass: no color, depth (Clear|Load)->Store over the full
+	// extent. Load when the GfxRenderer seeded depth first (T3 temporal
+	// seed); Clear otherwise (unchanged legacy behavior).
 	RenderPass& AddDepthPrepass(RenderGraph& rg,
 		LogicalImageViewHandle depthLogical, Extent2D swapExtent,
-		const char* name = "ForwardPlusDepth") const {
+		const char* name = "ForwardPlusDepth",
+		AttachmentLoadOp depthLoad = AttachmentLoadOp::Clear) const {
 		assert(Valid());
 		RenderPass& pass = rg.AddPass(name);
 		pass.SetOffset(0, 0)
 			.SetExtent(swapExtent)
 			.SetDepth(depthLogical,
-				AttachmentLoadOp::Clear,
+				depthLoad,
 				AttachmentStoreOp::Store,
 				ClearDepthStencil(0.0f, 0));
 		return pass;

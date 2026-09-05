@@ -28,17 +28,32 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	GfxConfig config{};
 	smvk::Holder<smvk::ShaderModuleHandle> filteredVsModule;
 	smvk::ShaderProgram filteredProgram{};
+	// Seed-depth programs (T3): draw the previous frame's visible clusters
+	// straight from the cluster-ordered index heap to prime depth.
+	smvk::Holder<smvk::ShaderModuleHandle> seedVsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> seedMaskedVsModule_;
+	smvk::ShaderProgram seedOpaqueProgram{}; // VS-only (gfxseed mainVS)
+	smvk::ShaderProgram seedMaskedProgram{}; // gfxseedmasked mainVS + shadow FS
 
 	const char* Name() const override { return "GfxFilter"; }
 
 	// IFrameRenderer (ConfigureFrag must run first: the filtered VS pairs
-	// with main's frag module, owned by main).
+	// with main's frag module, owned by main; ConfigureSeedFrag provides
+	// the alpha-test FS for the masked seed phase).
 	bool Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) override;
 	void Destroy(smvk::RenderGraph& rg) override { smvk::gfx::Destroy(gfx, rg); }
-	// CPU filter + compute pass for the main view. The consume side (main
-	// opaque loop) stays in main until its push data moves into the context.
+	// CPU filter + compute pass for the main view, plus (when history is
+	// armed) the seed depth pass from the previous frame's visible set.
+	// The consume side (main opaque loop) stays in main until its push
+	// data moves into the context.
 	void AppendPasses(smvk::FrameContext& fc) override;
+	// HZB build passes over the prepass depth (call after the Forward+
+	// passes so depth is filled; T3 builds from full depth, T5 refreshes).
+	void AppendHizPasses(smvk::FrameContext& fc,
+		smvk::LogicalImageViewHandle depthLogical, uint32_t depthBindlessIndex);
 	[[nodiscard]] uint32_t LastSlot() const { return lastSlot_; }
+	// True when this frame seeded depth (prepass must Load, not Clear).
+	[[nodiscard]] bool SeededThisFrame() const { return seededThisFrame_; }
 	// Stats of the last filtered view (zeros when inactive). For the debug UI.
 	[[nodiscard]] smvk::gfx::Stats LastStats() const {
 		if (lastSlot_ == UINT32_MAX || lastSlot_ >= gfx.views.size())
@@ -57,6 +72,7 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	}
 
 	void ConfigureFrag(smvk::ShaderModuleHandle mainFrag) { mainFrag_ = mainFrag; }
+	void ConfigureSeedFrag(smvk::ShaderModuleHandle seedFrag) { seedFrag_ = seedFrag; }
 
 	// Walks world.meshLocations once after scene load/resolve. Meshes with
 	// cooked meshlets (pak path) register from those; meshes with retained
@@ -96,13 +112,22 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	}
 	[[nodiscard]] smvk::ShaderProgram& FilteredProgram() { return filteredProgram; }
 	[[nodiscard]] smvk::gfx::State& State() { return gfx; }
+	// Seed consume side (caller has bound a seed program with its own PSO).
+	// PushSeedConstants writes the 24B VS tail push (visDraws BDA +
+	// render-view slab); DrawSeedRange issues one multi-draw over a seed
+	// range's commands (index buffer = cluster-ordered filter indices).
+	void PushSeedConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
+		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex);
+	void DrawSeedRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_t rangeIdx);
 
 private:
 	// world mesh idx -> gfx mesh idx (UINT32_MAX = not filterable).
 	std::vector<uint32_t> meshMap_;
 	uint64_t frameCounter_ = 0; // throttles the per-frame stats log
 	uint32_t lastSlot_ = UINT32_MAX;
+	bool seededThisFrame_ = false;
 	smvk::ShaderModuleHandle mainFrag_{};
+	smvk::ShaderModuleHandle seedFrag_{};
 };
 
 } // namespace app
