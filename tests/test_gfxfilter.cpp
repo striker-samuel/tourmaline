@@ -594,14 +594,14 @@ void TestHizLayout() {
 	Check(HzbMipCount(0, 0) == 0, "gfx.hiz.zero-extent");
 	Check(HzbMipCount(1, 1) == 1, "gfx.hiz.single-texel");
 	Check(HzbMipCount(64, 64) == 7, "gfx.hiz.pow2-levels");
-	Check(HzbMipCount(1920, 1080) == 11, "gfx.hiz.hd-levels");
+	Check(HzbMipCount(1920, 1080) == 12, "gfx.hiz.hd-levels");
 
 	uint32_t w = 0, h = 0;
 	HzbMipDims(1920, 1080, 0, w, h);
 	Check(w == 1920 && h == 1080, "gfx.hiz.dims-mip0");
 	HzbMipDims(1920, 1080, 1, w, h);
 	Check(w == 960 && h == 540, "gfx.hiz.dims-mip1");
-	HzbMipDims(1920, 1080, 10, w, h);
+	HzbMipDims(1920, 1080, 11, w, h);
 	Check(w == 1 && h == 1, "gfx.hiz.dims-last");
 
 	Check(HzbMipOffsetFloats(1920, 1080, 0) == 0, "gfx.hiz.off-mip0");
@@ -616,7 +616,7 @@ void TestHizLayout() {
 		const uint32_t total = HzbTotalFloats(1920, 1080);
 		uint32_t lw = 0, lh = 0;
 		HzbMipDims(1920, 1080, HzbMipCount(1920, 1080) - 1, lw, lh);
-		Check(total == HzbMipOffsetFloats(1920, 1080, 10) + lw * lh,
+		Check(total == HzbMipOffsetFloats(1920, 1080, 11) + lw * lh,
 			"gfx.hiz.total-tight");
 	}
 

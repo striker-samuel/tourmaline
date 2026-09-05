@@ -205,8 +205,8 @@ uint32_t HzbMipCount(uint32_t w, uint32_t h) {
 		return 0;
 	uint32_t count = 1;
 	while ((w > 1 || h > 1) && count < kHizMaxMips) {
-		w = std::max(1u, w >> 1);
-		h = std::max(1u, h >> 1);
+		w = std::max(1u, (w + 1u) >> 1);
+		h = std::max(1u, (h + 1u) >> 1);
 		++count;
 	}
 	return count;
@@ -214,8 +214,8 @@ uint32_t HzbMipCount(uint32_t w, uint32_t h) {
 
 void HzbMipDims(uint32_t w, uint32_t h, uint32_t mip, uint32_t& outW, uint32_t& outH) {
 	for (uint32_t k = 0; k < mip; ++k) {
-		w = std::max(1u, w >> 1);
-		h = std::max(1u, h >> 1);
+		w = std::max(1u, (w + 1u) >> 1);
+		h = std::max(1u, (h + 1u) >> 1);
 	}
 	outW = w;
 	outH = h;
