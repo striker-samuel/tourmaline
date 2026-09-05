@@ -707,6 +707,74 @@ void TestSeedCommands() {
 		"gfx.seed.invalidate-clears");
 }
 
+// ---------------------------------------------------------------------------
+// T6 (T4 state): HZB occlusion mirror — pure CPU, headless. Pins the
+// projection / mip-select / compare math the CS duplicates in HLSL.
+// ---------------------------------------------------------------------------
+
+void TestHzbOcclusion() {
+	using namespace smvk::gfx;
+	const glm::vec3 eye(0, 0, 4);
+	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f; // engine Y-flip, mirrors UpdateFrameUniforms
+	const glm::mat4 viewProj = proj * view;
+	constexpr uint32_t W = 800, H = 600;
+
+	// Frontal unit sphere: centered, radii in the hundreds of px.
+	ClusterFootprint f = ProjectClusterFootprint(
+		glm::vec3(0, 0, 0), 1.0f, eye, viewProj, W, H);
+	Check(!f.behindCamera, "gfx.occ.front-testable");
+	Check(std::abs(f.centerX - 400.0f) < 1.0f && std::abs(f.centerY - 300.0f) < 1.0f,
+		"gfx.occ.front-center");
+	Check(f.radiusX > 150.0f && f.radiusX < 200.0f
+		&& f.radiusY > 110.0f && f.radiusY < 150.0f, "gfx.occ.front-radii");
+	Check(f.nearestDepth > 0.0f && f.nearestDepth < 1.0f, "gfx.occ.depth-range");
+	{
+		// Nearer point = larger reversed-Z value than the center.
+		const glm::vec4 clipC = viewProj * glm::vec4(0, 0, 0, 1);
+		const float dCenter = clipC.z / clipC.w;
+		Check(f.nearestDepth > dCenter, "gfx.occ.near-beats-center");
+	}
+
+	// Behind the projection's camera / eye-inside keep (no test possible).
+	Check(ProjectClusterFootprint(glm::vec3(0, 0, 8), 1.0f, eye,
+		viewProj, W, H).behindCamera, "gfx.occ.behind-keeps");
+	Check(ProjectClusterFootprint(glm::vec3(0, 0, 3.5f), 1.0f, eye,
+		viewProj, W, H).behindCamera, "gfx.occ.inside-keeps");
+
+	// Mip selection: smallest texel covering the rect.
+	Check(HzbMipForRect(1.0f, 1.0f, 11) == 0, "gfx.occ.mip-subtexel");
+	Check(HzbMipForRect(300.0f, 200.0f, 11) == 9, "gfx.occ.mip-rect");
+	Check(HzbMipForRect(5000.0f, 10.0f, 11) == 10, "gfx.occ.mip-clamp");
+
+	// Occlusion over an explicit pyramid (8x8 uniform 0.9 -> mips all 0.9).
+	std::vector<float> hzb(HzbTotalFloats(8, 8), 0.9f);
+	const uint32_t mips = HzbMipCount(8, 8);
+	Check(mips == 4, "gfx.hiz.tiny-levels");
+	ClusterFootprint vis{};
+	vis.behindCamera = false;
+	vis.centerX = 4.0f; vis.centerY = 4.0f;
+	vis.radiusX = 50.0f; vis.radiusY = 50.0f; // clamped mip, center texel
+	vis.nearestDepth = 0.5f; // behind the 0.9 surface
+	Check(HzbOccluded(hzb.data(), 8, 8, mips, vis), "gfx.occ.hidden");
+	vis.nearestDepth = 0.95f; // in front: keep
+	Check(!HzbOccluded(hzb.data(), 8, 8, mips, vis), "gfx.occ.visible-keeps");
+	// Sky-poisoned texel under a tiny rect: keep (conservative).
+	hzb[HzbMipOffsetFloats(8, 8, 0) + 4 * 8 + 4] = 0.0f;
+	ClusterFootprint tiny = vis;
+	tiny.radiusX = tiny.radiusY = 0.25f;
+	tiny.nearestDepth = 0.5f;
+	Check(!HzbOccluded(hzb.data(), 8, 8, mips, tiny), "gfx.occ.sky-keeps");
+	// Null/empty pyramid keeps unconditionally.
+	Check(!HzbOccluded(nullptr, 8, 8, mips, vis), "gfx.occ.null-keeps");
+	Check(!HzbOccluded(hzb.data(), 0, 0, 0, vis), "gfx.occ.empty-keeps");
+	// Fully off-target rect belongs to the frustum stages, not occlusion.
+	ClusterFootprint off = vis;
+	off.centerX = 5000.0f;
+	Check(!HzbOccluded(hzb.data(), 8, 8, mips, off), "gfx.occ.offscreen-keeps");
+}
+
 } // namespace
 
 int main() {
@@ -718,6 +786,7 @@ int main() {
 	TestTemporalSnapshot();
 	TestHizLayout();
 	TestSeedCommands();
+	TestHzbOcclusion();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

@@ -9,7 +9,11 @@
 #define GFX_CULL_BACKFACE    0x2
 #define GFX_CULL_FRUSTUM     0x8
 #define GFX_CULL_SMALLPRIM   0x20
+#define GFX_CULL_OCCLUSION   0x40 // T4: HZB sphere test (facing-agnostic)
+#define GFX_CULL_CONTRIBUTION 0x80 // T4: footprint below minContribution
 #define GFX_CULL_FLIPWINDING 0x100
+
+#include "hzb.hlsli"
 
 #define GFX_THREADS_PER_CLUSTER 128
 #define GFX_MAX_DRAWS 1024
@@ -26,7 +30,9 @@
 // rules (member-array stride must align to 16). Load via asfloat.
 struct GfxPositions { uint words[GFX_POS_WORDS]; }; // static pos heap (global ids)
 struct GfxIndices   { uint idx[GFX_MAX_FILTERED]; };   // cluster-ordered global ids (owned)
-struct GfxClusters  { uint4 cluster[GFX_MAX_CLUSTERS]; }; // xy = (indexOffset, triCount)
+// Per cluster: a = (indexOffset, triCount, 0, 0), b = (center.xyz, radius).
+struct GfxClusterData { uint4 a; float4 b; };
+struct GfxClusters  { GfxClusterData cluster[GFX_MAX_CLUSTERS]; };
 
 // One uint4 per batch: (clusterIndex, drawIndex, outputOffset, unused).
 struct GfxBatches { uint4 batch[GFX_MAX_BATCHES]; };
@@ -85,4 +91,10 @@ struct GfxFilterPush
     uint height;
     uint batchCount;
     uint2 pad2;
+    // T4 occlusion/contribution inputs (0/empty disables the tests).
+    vk::BufferPointer<HzbBuffer> hzb;
+    uint hizWidth;
+    uint hizHeight;
+    uint hizMips;
+    float minContribution; // px^2 footprint threshold (0 = off)
 };

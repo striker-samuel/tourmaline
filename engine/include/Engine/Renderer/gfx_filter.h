@@ -47,6 +47,12 @@ typedef enum CullFlagBits {
 	CullFlagBit_Backface = 0x2,
 	CullFlagBit_Frustum = 0x8,
 	CullFlagBit_SmallPrim = 0x20,
+	// HZB occlusion (T4): per-cluster sphere test against the MIN-reduced
+	// depth pyramid. Facing-agnostic: applies to two-sided draws too.
+	CullFlagBit_HzbOcclusion = 0x40,
+	// Contribution (T4): reject clusters whose screen footprint is below
+	// TemporalView::minimumContribution px^2 (0 = disabled).
+	CullFlagBit_Contribution = 0x80,
 	// Selects the opposite homogeneous-winding sign (engine Y-flip).
 	// Verify once: closed sphere must cull ~50% via backface alone.
 	CullFlagBit_FlipWinding = 0x100,
@@ -78,13 +84,17 @@ static constexpr uint32_t kMaxDraws = 1024;   // draws pushed per view
 static constexpr uint32_t kMaxMeshes = 4096;
 static constexpr uint32_t kMaxViews = 64; // mirrors kMaxRenderViews
 
-// GPU cluster entry (1x uvec4). Must match HLSL GfxClusters (16 bytes).
+// GPU cluster entry (2x uvec4). Must match HLSL GfxClusters (32 bytes):
+// (indexOffset, triCount, 0, 0) + (boundCenter.xyz, boundRadius) for the
+// per-cluster HZB occlusion / contribution tests (T4).
 struct ClusterConstants {
 	uint32_t indexOffset = 0; // into the cluster-ordered index buffer (uints)
 	uint32_t triCount = 0;
-	uint32_t pad[2] = {};
+	uint32_t pad0[2] = {};
+	glm::vec3 boundCenter{ 0.0f };
+	float boundRadius = 0.0f;
 };
-static_assert(sizeof(ClusterConstants) == 16);
+static_assert(sizeof(ClusterConstants) == 32);
 
 // Per-draw frame entry. Must match HLSL GfxDraw (80 bytes).
 struct alignas(16) Draw {
@@ -105,7 +115,7 @@ struct Batch {
 };
 static_assert(sizeof(Batch) == 16);
 
-// Compute push. Must match HLSL GfxFilterPush in gfxfilter.hlsli (168 bytes).
+// Compute push. Must match HLSL GfxFilterPush in gfxfilter.hlsli (192 bytes).
 struct FilterPush {
 	uint64_t positions = 0;
 	uint64_t indices = 0; // cluster-ordered index buffer (owned)
@@ -123,8 +133,14 @@ struct FilterPush {
 	uint32_t height = 0;
 	uint32_t batchCount = 0;
 	uint32_t pad2[2] = {};
+	// T4 occlusion/contribution inputs (0/empty disables the tests).
+	uint64_t hzb = 0; // BDA of the MIN-reduced HZB float buffer
+	uint32_t hizWidth = 0;
+	uint32_t hizHeight = 0;
+	uint32_t hizMips = 0;
+	float minContribution = 0.0f; // px^2 footprint threshold (0 = off)
 };
-static_assert(sizeof(FilterPush) == 168);
+static_assert(sizeof(FilterPush) == 192);
 
 // Filtered-path VS tail push (gfxfiltered.vert.hlsl, 24 bytes).
 // Pushed at kFilteredVsPushOffset (the main pass' unused prevModel scratch,
@@ -242,6 +258,32 @@ uint32_t HzbTotalFloats(uint32_t w, uint32_t h);
 inline float HzbReduce2x2(float a, float b, float c, float d) {
 	return std::min(std::min(a, b), std::min(c, d));
 }
+
+// Per-cluster screen-space footprint (T4). Pure-CPU mirror of the filter
+// CS math (same formulas, same conservatism); the shader duplicates them
+// in HLSL (see gfxfilter.cs.hlsl ClusterOcclusion).
+struct ClusterFootprint {
+	float centerX = 0.0f, centerY = 0.0f; // px, framebuffer y-down
+	float radiusX = 0.0f, radiusY = 0.0f; // px semi-axes (conservative)
+	float nearestDepth = 0.0f; // reversed-Z value of the nearest point
+	bool behindCamera = true; // set when untestable (eye inside / w <= 0)
+};
+// Projects a world-space bounding sphere. viewProj is the Y-flipped
+// main-view matrix; width/height is the HZB target extent. Focal lengths
+// come from viewProj fp (radial distance overestimates off-axis extents,
+// which is conservative for both tests).
+ClusterFootprint ProjectClusterFootprint(const glm::vec3& worldCenter,
+	float worldRadius, const glm::vec3& eye, const glm::mat4& viewProj,
+	uint32_t width, uint32_t height);
+// Mip whose texel covers a rectW x rectH px footprint (ceil(log2(max)),
+// clamped to [0, mips); caller guarantees mips > 0.
+uint32_t HzbMipForRect(float rectW, float rectH, uint32_t mips);
+// Conservative occlusion test over an explicit HZB image (row-major
+// floats in HzbMipOffsetFloats layout, MIN-reduced). True = provably
+// hidden (nearest point behind every covered texel). Rects missing the
+// target, behind-camera footprints and empty pyramids keep (false).
+bool HzbOccluded(const float* hzb, uint32_t w, uint32_t h, uint32_t mips,
+	const ClusterFootprint& f);
 
 // Compute push. Must match HLSL HzbPush in hzb.hlsli (48 bytes).
 // srcMip = kHizSrcDepth copies mip 0 from the depth texture instead.

@@ -35,6 +35,84 @@
 ConstantBuffer<GfxFilterPush> pcF;
 
 groupshared uint gLocalCount;
+groupshared uint gClusterCull; // T4: 1 = whole cluster dropped (occlusion/contribution)
+
+// T4 per-cluster occlusion + contribution (Alan Wake 2 style), evaluated
+// once per workgroup (thread 0). Facing-agnostic: also applies to
+// two-sided draws. Mirrors the CPU ProjectClusterFootprint /
+// HzbMipForRect / HzbOccluded helpers (same formulas, same conservatism:
+// eye-inside/behind-camera/off-target keep; single center texel at the
+// covering mip; reversed-Z hidden iff d_near < stored closest).
+bool ClusterOccluded(uint clusterIdx, uint drawIdx)
+{
+    uint flags = pcF.cullFlags;
+    bool wantOcc = (flags & GFX_CULL_OCCLUSION) != 0;
+    bool wantCon = (flags & GFX_CULL_CONTRIBUTION) != 0;
+    if (!wantOcc && !wantCon)
+        return false;
+    if (pcF.hizMips == 0)
+        return false; // no pyramid (CPU force-disables with hzb == 0)
+    float width = (float)pcF.hizWidth;
+    float height = (float)pcF.hizHeight;
+    if (width <= 0.0f || height <= 0.0f)
+        return false;
+    float4 bounds = pcF.clusters.Get().cluster[clusterIdx].b; // center, radius
+    float4x4 model = pcF.draws.Get().draws[drawIdx].model;
+    // World sphere (max-basis uniform-scale approx, mirrors the CPU cone
+    // path's MaxBasisScale).
+    float3 wc = mul(model, float4(bounds.xyz, 1.0f)).xyz;
+    float bs = max(length(model[0].xyz),
+        max(length(model[1].xyz), length(model[2].xyz)));
+    float wr = bounds.w * bs;
+    float3 toEye = pcF.eye - wc;
+    float dist = length(toEye);
+    if (dist <= wr)
+        return false; // eye inside the sphere: keep
+    float4 clipC = mul(pcF.viewProj, float4(wc, 1.0f));
+    if (clipC.w <= 0.0f)
+        return false;
+    float3 nearest = wc + (toEye / dist) * wr;
+    float4 clipN = mul(pcF.viewProj, float4(nearest, 1.0f));
+    if (clipN.w <= 0.0f)
+        return false;
+    // Framebuffer y-down == NDC-down post-Y-flip (cf. forwardplus.cs.hlsl).
+    float cx = (clipC.x / clipC.w * 0.5f + 0.5f) * width;
+    float cy = (clipC.y / clipC.w * 0.5f + 0.5f) * height;
+    float fx = pcF.viewProj[0][0];
+    float fy = abs(pcF.viewProj[1][1]);
+    float rx = wr * fx / dist * (width * 0.5f);
+    float ry = wr * fy / dist * (height * 0.5f);
+    if (wantCon && pcF.minContribution > 0.0f
+        && (rx * 2.0f) * (ry * 2.0f) < pcF.minContribution)
+        return true;
+    if (!wantOcc)
+        return false;
+    // Rect missing the target: the frustum stages own this case.
+    if (cx + rx < 0.0f || cx - rx > width || cy + ry < 0.0f || cy - ry > height)
+        return false;
+    // Mip whose texel covers the rect (ceil(log2(max))).
+    uint level = 0;
+    float texel = 1.0f;
+    float rectMax = max(rx * 2.0f, ry * 2.0f);
+    while (texel < rectMax && level + 1 < pcF.hizMips)
+    {
+        texel *= 2.0f;
+        ++level;
+    }
+    // Mip dims + float offset (mirrors HzbMipDims/HzbMipOffsetFloats).
+    uint lw = pcF.hizWidth, lh = pcF.hizHeight, off = 0;
+    for (uint k = 0; k < level; ++k)
+    {
+        off += lw * lh;
+        lw = max(lw >> 1, 1u);
+        lh = max(lh >> 1, 1u);
+    }
+    uint tx = (uint)clamp(cx / texel, 0.0f, (float)(lw - 1u));
+    uint ty = (uint)clamp(cy / texel, 0.0f, (float)(lh - 1u));
+    float stored = pcF.hzb.Get().texels[off + ty * lw + tx];
+    float dNear = clipN.z / clipN.w; // reversed-Z value of nearest point
+    return dNear < stored;
+}
 
 bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2, bool twoSided)
 {
@@ -147,7 +225,10 @@ bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2, bool twoS
 void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
 {
     if (tid == 0)
+    {
         gLocalCount = 0;
+        gClusterCull = 0;
+    }
     GroupMemoryBarrierWithGroupSync();
 
     // Batch header: (clusterIndex, drawIndex, outputOffset, unused).
@@ -159,9 +240,17 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     uint triCount = 0;
     if (gid < pcF.batchCount)
     {
-        cluster = pcF.clusters.Get().cluster[header.x].xy;
+        cluster = pcF.clusters.Get().cluster[header.x].a.xy;
         triCount = cluster.y;
     }
+
+    // T4: whole-cluster drop computed once (thread 0 has header + table).
+    if (gid < pcF.batchCount && tid == 0)
+    {
+        if (ClusterOccluded(header.x, header.y))
+            gClusterCull = 1;
+    }
+    GroupMemoryBarrierWithGroupSync();
 
     bool cull = true;
     uint slot = 0;
@@ -188,7 +277,8 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
         }
         bool twoSided =
             (pcF.draws.Get().draws[header.y].misc.y & GFX_DRAW_TWOSIDED) != 0;
-        cull = CullTriangle(tri, clip[0], clip[1], clip[2], twoSided);
+        cull = CullTriangle(tri, clip[0], clip[1], clip[2], twoSided)
+            || (gClusterCull != 0);
         if (!cull)
             InterlockedAdd(gLocalCount, 3, slot);
     }

@@ -1708,10 +1708,13 @@ private:
 		m_fpRenderer.AppendPasses(fc);
 
 		// ---- HZB build over the prepass depth (T2 module, T3 wiring) ----
-		if (m_useGfxFilter)
+		// ---- Filter compute dispatch (reads this frame's HZB; T4) ----
+		if (m_useGfxFilter) {
 			m_gfxRenderer.AppendHizPasses(fc,
 				m_viewportResources.renderDepth.logicalView,
 				m_viewportResources.forwardPlus.depthBindlessIndex);
+			m_gfxRenderer.AppendFilterDispatch(fc);
+		}
 
 		// ---------------------------------------------------------------------
 		// Motion vectors – per-pixel prevUV - currUV into RG16F (motionvector.h)
@@ -2344,6 +2347,21 @@ private:
 					m_gfxRenderer.config.cullFlags = b
 					? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_FlipWinding
 					: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_FlipWinding;
+				b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_HzbOcclusion) != 0;
+				if (ImGui::Checkbox("HZB occlusion (T4)", &b))
+					m_gfxRenderer.config.cullFlags = b
+					? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_HzbOcclusion
+					: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_HzbOcclusion;
+				b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Contribution) != 0;
+				if (ImGui::Checkbox("Contribution cull (T4)", &b))
+					m_gfxRenderer.config.cullFlags = b
+					? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_Contribution
+					: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_Contribution;
+				{
+					float mc = m_gfxRenderer.MinContribution();
+					if (ImGui::SliderFloat("Min contribution px^2", &mc, 0.0f, 16.0f))
+						m_gfxRenderer.SetMinContribution(mc);
+				}
 				const smvk::gfx::Stats gs = m_gfxRenderer.LastStats();
 				ImGui::Text("view: %u draws %u cmds %u tris | clusters %u/%u culled",
 					gs.draws, gs.commands, gs.trianglesProcessed,

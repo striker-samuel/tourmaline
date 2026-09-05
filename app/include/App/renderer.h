@@ -20,7 +20,7 @@ namespace app {
 struct GfxConfig {
 	smvk::gfx::CullFlags cullFlags =
 		smvk::gfx::CullFlagBit_Backface | smvk::gfx::CullFlagBit_Frustum
-		| smvk::gfx::CullFlagBit_Degenerate;
+		| smvk::gfx::CullFlagBit_Degenerate | smvk::gfx::CullFlagBit_HzbOcclusion;
 };
 
 struct GfxRenderer : public smvk::IFrameRenderer {
@@ -51,6 +51,20 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// passes so depth is filled; T3 builds from full depth, T5 refreshes).
 	void AppendHizPasses(smvk::FrameContext& fc,
 		smvk::LogicalImageViewHandle depthLogical, uint32_t depthBindlessIndex);
+	// Filter compute dispatch (call after AppendHizPasses: the CS reads the
+	// HZB built this frame; dispatching earlier would read last frame's or
+	// uninitialized memory). CPU expansion stays in AppendPasses.
+	void AppendFilterDispatch(smvk::FrameContext& fc);
+	[[nodiscard]] float MinContribution() const {
+		if (lastSlot_ == UINT32_MAX || lastSlot_ >= gfx.temporals.size())
+			return 0.0f;
+		return gfx.temporals[lastSlot_].minimumContribution;
+	}
+	void SetMinContribution(float px2) {
+		if (lastSlot_ == UINT32_MAX || lastSlot_ >= gfx.temporals.size())
+			return;
+		gfx.temporals[lastSlot_].minimumContribution = px2;
+	}
 	[[nodiscard]] uint32_t LastSlot() const { return lastSlot_; }
 	// True when this frame seeded depth (prepass must Load, not Clear).
 	[[nodiscard]] bool SeededThisFrame() const { return seededThisFrame_; }

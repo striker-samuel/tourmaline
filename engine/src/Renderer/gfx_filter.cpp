@@ -233,6 +233,81 @@ uint32_t HzbTotalFloats(uint32_t w, uint32_t h) {
 	return HzbMipOffsetFloats(w, h, count - 1) + lw * lh;
 }
 
+ClusterFootprint ProjectClusterFootprint(const glm::vec3& worldCenter,
+	float worldRadius, const glm::vec3& eye, const glm::mat4& viewProj,
+	uint32_t width, uint32_t height) {
+	ClusterFootprint f{};
+	const glm::vec3 toEye = eye - worldCenter;
+	const float dist = glm::length(toEye);
+	if (dist <= worldRadius || dist < 1e-6f)
+		return f; // eye inside the sphere: cannot be occluded, keep
+	const glm::vec4 clipC = viewProj * glm::vec4(worldCenter, 1.0f);
+	if (clipC.w <= 0.0f)
+		return f; // behind the camera plane: keep (rasterizer resolves)
+	// Nearest point toward the eye (exact for an outside camera).
+	const glm::vec3 nearest = worldCenter + (toEye / dist) * worldRadius;
+	const glm::vec4 clipN = viewProj * glm::vec4(nearest, 1.0f);
+	if (clipN.w <= 0.0f)
+		return f;
+	f.nearestDepth = clipN.z / clipN.w; // reversed-Z value
+	// Framebuffer y-down == NDC-down post-Y-flip (cf. forwardplus.cs.hlsl).
+	const float w = (float)width, h = (float)height;
+	f.centerX = (clipC.x / clipC.w * 0.5f + 0.5f) * w;
+	f.centerY = (clipC.y / clipC.w * 0.5f + 0.5f) * h;
+	// Radial distance overestimates off-axis extents: conservative.
+	const float fx = viewProj[0][0];
+	const float fy = std::abs(viewProj[1][1]);
+	f.radiusX = worldRadius * fx / dist * (w * 0.5f);
+	f.radiusY = worldRadius * fy / dist * (h * 0.5f);
+	f.behindCamera = false;
+	return f;
+}
+
+uint32_t HzbMipForRect(float rectW, float rectH, uint32_t mips) {
+	assert(mips > 0);
+	const float m = std::max(rectW, rectH);
+	uint32_t level = 0;
+	float texel = 1.0f;
+	while (texel < m && level + 1 < mips) {
+		texel *= 2.0f;
+		++level;
+	}
+	return level;
+}
+
+bool HzbOccluded(const float* hzb, uint32_t w, uint32_t h, uint32_t mips,
+	const ClusterFootprint& f) {
+	if (hzb == nullptr || mips == 0 || w == 0 || h == 0)
+		return false;
+	if (f.behindCamera)
+		return false;
+	const float rectW = f.radiusX * 2.0f;
+	const float rectH = f.radiusY * 2.0f;
+	if (rectW <= 0.0f || rectH <= 0.0f)
+		return false;
+	// Rect missing the target entirely: the frustum stages own this case.
+	if (f.centerX + f.radiusX < 0.0f || f.centerX - f.radiusX > (float)w
+		|| f.centerY + f.radiusY < 0.0f || f.centerY - f.radiusY > (float)h)
+		return false;
+	const uint32_t level = HzbMipForRect(rectW, rectH, mips);
+	uint32_t lw = 0, lh = 0;
+	HzbMipDims(w, h, level, lw, lh);
+	if (lw == 0 || lh == 0)
+		return false;
+	// Single texel containing the rect center (its footprint covers the
+	// rect by mip-selection construction); reversed-Z: hidden iff the
+	// nearest point is farther (smaller value) than the stored closest.
+	// Clamp BEFORE the float->uint conversion: a negative center (rect
+	// hanging off the left/top edge) would otherwise wrap to a huge index.
+	const float texelSize = (float)(1u << level);
+	const float fx = std::max(f.centerX / texelSize, 0.0f);
+	const float fy = std::max(f.centerY / texelSize, 0.0f);
+	uint32_t tx = std::min((uint32_t)fx, lw - 1);
+	uint32_t ty = std::min((uint32_t)fy, lh - 1);
+	const float stored = hzb[HzbMipOffsetFloats(w, h, level) + ty * lw + tx];
+	return f.nearestDepth < stored;
+}
+
 bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
 	uint32_t view, uint32_t w, uint32_t h) {
 	TemporalView& t = Temporal(s, view);
@@ -259,8 +334,11 @@ bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
 	t.hiz.buffer = ctx.CreateBuffer(
 		(size_t)HzbTotalFloats(w, h) * sizeof(float),
 		BufferType_Storage, "gfx hiz");
-	if (t.hiz.buffer.empty())
+	if (t.hiz.buffer.empty()) {
+		// Leave no half-built pyramid behind: the shader gates on mips.
+		t.hiz.width = t.hiz.height = t.hiz.mipCount = 0;
 		return false;
+	}
 	t.hiz.logical = rg.AddExternalBuffer(t.hiz.buffer, "gfx hiz");
 	if (t.hiz.logical.empty()) {
 		t.hiz.buffer = {};
@@ -516,6 +594,8 @@ void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
 	for (size_t i = 0; i < s.clusters.size(); ++i) {
 		table[i].indexOffset = s.clusters[i].indexOffset;
 		table[i].triCount = s.clusters[i].triCount;
+		table[i].boundCenter = s.clusters[i].boundCenter;
+		table[i].boundRadius = s.clusters[i].boundRadius;
 	}
 	s.clusterBuffer = ctx.CreateBuffer(
 		table.size() * sizeof(ClusterConstants),
@@ -926,6 +1006,9 @@ RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view) {
 	computeRW.barrierMasks.stageMask = PipelineStageBit_Compute | PipelineStageBit_Vertex;
 	pass.AddBufferHint(v.filteredLogicals[f], computeRW);
 	pass.AddBufferHint(v.indirectLogicals[f], computeRW);
+	// HZB read (T4 occlusion): built by the HZB passes earlier in the frame.
+	if (view < s.temporals.size() && !s.temporals[view].hiz.logical.empty())
+		pass.AddBufferHint(s.temporals[view].hiz.logical, computeRead);
 	return pass;
 }
 
@@ -981,6 +1064,22 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 	push.width = v.width;
 	push.height = v.height;
 	push.batchCount = v.batchCount;
+	// T4 occlusion/contribution inputs (0/empty disables the tests in the
+	// shader; the null-BDA guard above already covers the buffer set).
+	if (view < s.temporals.size()) {
+		const TemporalView& t = s.temporals[view];
+		push.hzb = ctx.GetBufferDeviceAddress(t.hiz.buffer);
+		push.hizWidth = t.hiz.width;
+		push.hizHeight = t.hiz.height;
+		push.hizMips = t.hiz.mipCount;
+		push.minContribution = t.minimumContribution;
+		// Belt and braces: the shader gates on hizMips, so a null address
+		// can never slip through to a dereference (device-lost class).
+		if (push.hzb == 0) {
+			push.hizWidth = push.hizHeight = push.hizMips = 0;
+			push.minContribution = 0.0f;
+		}
+	}
 	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
 	cmd.Dispatch(v.batchCount, 1, 1);
 }

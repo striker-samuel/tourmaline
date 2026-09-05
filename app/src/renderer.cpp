@@ -182,6 +182,12 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 	// Rotation for next frame (must run after the seed block above).
 	smvk::gfx::SnapshotVisible(gfx, slot);
 	smvk::gfx::UploadVisible(gfx, *fc.ctx, fc.frameIndex, slot);
+}
+
+void GfxRenderer::AppendFilterDispatch(smvk::FrameContext& fc) {
+	if (lastSlot_ == UINT32_MAX)
+		return;
+	const uint32_t slot = lastSlot_;
 	smvk::RenderPass& pass = AddFilterPass(*fc.rg, slot);
 	GfxRenderer* self = this;
 	smvk::ResourceManager* ctx = fc.ctx;
