@@ -2219,11 +2219,21 @@ private:
 			cmd.Draw(coneLineVerts, 1, 0, 0);
 		}
 	}
-		);
-		// Forward+ tile lists are device-written by the cull pass and
-		// device-read here: explicit read hints order cull -> main and emit
-		// the compute->fragment buffer barriers.
-		smvk::ForwardPlus::AddTileReadHints(mainPass,
+	);
+	// Filtered-path consume hints: the filter compute writes the
+	// compacted index list + indirect commands in the SAME submit Main
+	// reads them from (vertex index fetch, indirect fetch, VS BDA reads
+	// of the draws ring). Without these the graph emits no compute->
+	// vertex barrier and the fetches race the CS — geometry appears and
+	// vanishes "randomly" whenever workload/timing shifts (MSAA mode,
+	// light toggles). Covers the meshlet debug view too (cluster-ordered
+	// heap bind).
+	if (gfxSlot != UINT32_MAX)
+		m_gfxRenderer.AddMainConsumeHints(mainPass, gfxSlot);
+	// Forward+ tile lists are device-written by the cull pass and
+	// device-read here: explicit read hints order cull -> main and emit
+	// the compute->fragment buffer barriers.
+	smvk::ForwardPlus::AddTileReadHints(mainPass,
 			m_viewportResources.forwardPlus.tileCountsLogical,
 			m_viewportResources.forwardPlus.tileIndicesLogical);
 		{
@@ -2530,6 +2540,8 @@ private:
 				ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones);
 				if (!m_gfxRenderer.DebugProgramsValid())
 					ImGui::TextDisabled("Debug programs missing – views disabled");
+				if (ImGui::Button("Dump indirect audit (stderr, stalls)"))
+					m_dumpIndirectAudit = true;
 				ImGui::TextDisabled("Colors: every registered cluster direct; culled ones stay visible here.\n"
 					"Heat: red = degenerate cone (never culls), green = tight cone.");
 				const smvk::gfx::Stats gs = m_gfxRenderer.LastStats();
@@ -2576,6 +2588,17 @@ private:
 		m_rendergraph->Execute(fb);
 		m_context->ProcessDeferrredTasks();
 
+		// One-shot indirect audit (debug): downloads this frame's filter
+		// commands + HZB after Execute so the GPU results are final. Stalls
+		// (device-idle wait); button-pressed only.
+		if (m_dumpIndirectAudit) {
+			m_dumpIndirectAudit = false;
+			if (m_useGfxFilter && gfxSlot != UINT32_MAX) {
+				WaitForDeviceIdle();
+				m_gfxRenderer.DumpIndirectAudit(*m_context, gfxSlot);
+			}
+		}
+
 		// Snapshot this frame's camera + node transforms for the next
 		// frame's motion vector pass. Must run AFTER Execute: the motion
 		// pass recording lambda reads these members during Execute.
@@ -2604,6 +2627,7 @@ private:
 	bool m_debugCones = false;    // cone-axis line overlay (CPU batches)
 	smvk::Holder<smvk::BufferHandle> m_debugLines; // pos-only cone line VB
 	uint32_t m_debugLinesCap = 0; // verts allocated
+	bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
 	app::ForwardPlusRenderer m_fpRenderer{};
 	// ---- Motion vector pass: previous-frame state + debug view ----
 	glm::mat4 m_prevViewProj{ 1.0f }; // last frame's viewProj (post Y-flip)

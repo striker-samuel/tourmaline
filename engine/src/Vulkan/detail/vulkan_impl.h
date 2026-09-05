@@ -555,6 +555,9 @@ namespace smvk {
 
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		void UploadDataToImage2D(const Image& image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset);
+		// Debug readback: GPU buffer -> CPU memory (staging copy + fence
+		// wait; stalls, debug-only). Returns false on zero size / bad handle.
+		bool DownloadDataFromBuffer(BufferHandle src, void* out, size_t size, size_t srcOffset = 0);
 
 		void UpdateDescriptors(uint32_t frameIndex = 0);
 

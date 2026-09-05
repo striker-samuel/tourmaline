@@ -139,6 +139,10 @@ void ResourceManager::UploadDataToBuffer(BufferHandle buffer, const void* data, 
     VkAccessFlags2 vkAccess = toVkAccess(dstAccess);
     impl_->vulkan.UploadDataToBuffer(buffer, data, dataSize, vkStage, vkAccess, src_offset, dest_offset);
 }
+bool ResourceManager::DownloadDataFromBuffer(BufferHandle src, void* out, size_t size,
+                                               size_t srcOffset) {
+    return impl_->vulkan.DownloadDataFromBuffer(src, out, size, srcOffset);
+}
 void ResourceManager::UploadDataToImage2D(const Image& image, const void* data,
                              PipelineStage dstStages, AccessFlags dstAccess, size_t src_offset) {
     VkPipelineStageFlags2 vkStage = toVkPipelineStage(dstStages);

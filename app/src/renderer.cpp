@@ -520,6 +520,117 @@ void GfxRenderer::DrawSeedRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_
 		(uint64_t)r.firstCommand * 20, r.commandCount, 20);
 }
 
+void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
+	using namespace smvk::gfx;
+	if (slot >= gfx.views.size() || slot >= gfx.temporals.size()) {
+		std::fprintf(stderr, "[GfxAudit] bad slot %u.\n", slot);
+		return;
+	}
+	const View& v = gfx.views[slot];
+	const TemporalView& t = gfx.temporals[slot];
+	if (v.batchCount == 0 || v.batches.empty()) {
+		std::fprintf(stderr, "[GfxAudit] slot %u: no batches.\n", slot);
+		return;
+	}
+	// GPU indirect commands (one per batch; zero indexCount = GPU kill).
+	std::vector<SeedCommand> cmds(v.batchCount);
+	if (!ctx.DownloadDataFromBuffer(IndirectBuffer(gfx, slot),
+			cmds.data(), cmds.size() * sizeof(SeedCommand))) {
+		std::fprintf(stderr, "[GfxAudit] slot %u: indirect download failed.\n", slot);
+		return;
+	}
+	// GPU HZB pyramid for the CPU mirror.
+	std::vector<float> hzb;
+	bool haveHzb = false;
+	if (t.hiz.mipCount > 0 && t.hiz.width > 0 && t.hiz.height > 0 &&
+		!t.hiz.buffer.empty()) {
+		hzb.assign(HzbTotalFloats(t.hiz.width, t.hiz.height), 0.0f);
+		haveHzb = ctx.DownloadDataFromBuffer(t.hiz.buffer,
+			hzb.data(), hzb.size() * sizeof(float));
+	}
+	// Material per batch (ranges span batches in order).
+	std::vector<uint32_t> batchMat(v.batches.size(), UINT32_MAX);
+	for (const MaterialRange& r : v.materialRanges) {
+		for (uint32_t k = 0; k < r.commandCount; ++k) {
+			if (r.firstCommand + k < (uint32_t)batchMat.size())
+				batchMat[r.firstCommand + k] = r.material;
+		}
+	}
+	std::fprintf(stderr,
+		"[GfxAudit] slot %u: batches=%u flags=0x%x hiz=%ux%u/%u haveHzb=%d\n",
+		slot, v.batchCount, v.cullFlags,
+		t.hiz.width, t.hiz.height, t.hiz.mipCount, haveHzb ? 1 : 0);
+	uint32_t zeroTotal = 0, cpuOcc = 0, cpuKeep = 0, printed = 0;
+	for (uint32_t i = 0; i < v.batchCount && i < (uint32_t)v.batches.size(); ++i) {
+		if (cmds[i].indexCount != 0)
+			continue;
+		++zeroTotal;
+		const Batch& b = v.batches[i];
+		uint32_t mat = batchMat[i];
+		uint32_t tris = 0;
+		float cx = 0.0f, cy = 0.0f, rx = 0.0f, ry = 0.0f, dn = 0.0f;
+		uint32_t level = 0;
+		bool mirrorOk = false, verdict = false;
+		if (b.draw < v.drawConstants.size() && b.cluster < gfx.clusters.size()) {
+			const Draw& dc = v.drawConstants[b.draw];
+			const Cluster& c = gfx.clusters[b.cluster];
+			tris = c.triCount;
+			const float bs = std::max({
+				glm::length(glm::vec3(dc.model[0])),
+				glm::length(glm::vec3(dc.model[1])),
+				glm::length(glm::vec3(dc.model[2])) });
+			const glm::vec3 wc = glm::vec3(dc.model * glm::vec4(c.boundCenter, 1.0f));
+			const float wr = c.boundRadius * bs;
+			ClusterFootprint f = ProjectClusterFootprint(
+				wc, wr, v.eye, v.viewProj, v.width, v.height);
+			cx = f.centerX; cy = f.centerY; rx = f.radiusX; ry = f.radiusY;
+			dn = f.nearestDepth;
+			if (!f.behindCamera && haveHzb)
+				level = HzbMipForRect(rx * 2.0f, ry * 2.0f, t.hiz.mipCount);
+			mirrorOk = true;
+			verdict = haveHzb && HzbOccluded(hzb.data(),
+				t.hiz.width, t.hiz.height, t.hiz.mipCount, f);
+		}
+		if (verdict) ++cpuOcc; else ++cpuKeep;
+		if (printed < 48) {
+			++printed;
+			std::fprintf(stderr,
+				"[GfxAudit] kill b=%u cl=%u draw=%u mat=%u tris=%u | "
+				"c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f cpu=%s%s\n",
+				i, b.cluster, b.draw, mat, tris, cx, cy, rx, ry, level, dn,
+				verdict ? "OCCLUDED" : "keep",
+				mirrorOk ? "" : " (unresolved)");
+		}
+	}
+	std::fprintf(stderr,
+		"[GfxAudit] zero=%u cpuOccluded=%u cpuKeep=%u (keep = triangle kill or shader divergence; "
+		"bisect backface/frustum/smallprim to split)\n",
+		zeroTotal, cpuOcc, cpuKeep);
+}
+
+void GfxRenderer::AddMainConsumeHints(smvk::RenderPass& pass, uint32_t slot) {
+	using namespace smvk::gfx;
+	if (slot >= gfx.views.size())
+		return;
+	// Filtered index list (bound as Main's index buffer) + the GPU-written
+	// indirect commands. Engine helper covers IndexRead@Vertex and
+	// IndirectCommandRead@DrawIndirect.
+	AddConsumeHints(pass, FilteredLogical(gfx, slot), IndirectLogical(gfx, slot));
+	// gfxfiltered.vert resolves model matrices from the draws ring slice
+	// via BDA — compute/transfer-written, vertex-read.
+	smvk::BufferSyncRequest drawsRead{};
+	drawsRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+	drawsRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+	pass.AddBufferHint(DrawLogical(gfx, slot), drawsRead);
+	// The meshlet debug view binds the cluster-ordered heap as its index
+	// buffer (the seed/remainder passes hint it too; Main needs the
+	// transition whenever the debug branch runs).
+	smvk::BufferSyncRequest indexRead{};
+	indexRead.barrierMasks.accessMask = smvk::AccessFlags::IndexRead;
+	indexRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+	pass.AddBufferHint(gfx.filterIndexLogical, indexRead);
+}
+
 void GfxRenderer::DrawRange(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 	uint32_t slot, uint32_t rangeIdx) {
 	(void)ctx;

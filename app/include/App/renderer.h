@@ -152,6 +152,14 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	}
 	[[nodiscard]] smvk::ShaderProgram& FilteredProgram() { return filteredProgram; }
 	[[nodiscard]] smvk::gfx::State& State() { return gfx; }
+	// Consume-side barriers for the Main pass (filtered ranges + meshlet
+	// debug view): filtered index list (IndexRead), GPU-written indirect
+	// commands, draws ring slice (VS model matrices via BDA), and the
+	// cluster-ordered index heap (debug view bind). Without these the
+	// rendergraph emits NO compute->vertex barrier between the filter CS
+	// and Main's fetches — a same-submit race that flips with any
+	// workload change (MSAA mode, light toggles, camera motion).
+	void AddMainConsumeHints(smvk::RenderPass& pass, uint32_t slot);
 	[[nodiscard]] smvk::ShaderProgram& MeshDebugProgram() { return meshDebugProgram; }
 	[[nodiscard]] smvk::ShaderProgram& LineProgram() { return lineProgram; }
 	[[nodiscard]] bool DebugProgramsValid() const {
@@ -186,6 +194,13 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// when RemainderPending; Load/Store over seeded depth).
 	void AppendRemainderPass(smvk::FrameContext& fc);
 	[[nodiscard]] bool RemainderPending() const { return remainderPending_; }
+	// Debug audit: downloads this view's indirect commands + HZB pyramid
+	// and attributes every zero-indexCount batch (GPU kill) against the CPU
+	// mirror (HzbOccluded). CPU-agrees = HZB input/bounds fault;
+	// CPU-disagrees = triangle-stage kill or shader/mirror divergence
+	// (bisect with the backface/frustum/smallprim toggles to split those).
+	// Stalls (fence wait); call after WaitForDeviceIdle, debug-only.
+	void DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot);
 
 private:
 	// world mesh idx -> gfx mesh idx (UINT32_MAX = not filterable).

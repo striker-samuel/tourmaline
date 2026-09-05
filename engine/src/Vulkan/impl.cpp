@@ -583,11 +583,11 @@ const char* vkResultToString(VkResult result) {
 
 // RHI to vulkan
 constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
-	VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Index (addressable: GPU-driven filter/index reads via BDA)
-	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Vertex (addressable: filter CS reads the static pos heap via BDA; null BDA = MMU fault + device lost)
-	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
-	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, // BufferType_Storage (also hosts GeometryFX-style filtered index lists)
-	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Indirect (also written by filter compute)
+	VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Index (addressable: GPU-driven filter/index reads via BDA)
+	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Vertex (addressable: filter CS reads the static pos heap via BDA; null BDA = MMU fault + device lost)
+	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
+	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, // BufferType_Storage (also hosts GeometryFX-style filtered index lists)
+	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Indirect (also written by filter compute)
 	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_TransferSrc
 	VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_TransferDst
 	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_Staging: transfer with host visibility
@@ -1412,7 +1412,10 @@ static VkImageLayout ToVkImageLayout(smvk::ImageLayout layout) {
 static VkPipelineStageFlags2 ToVkStage(smvk::PipelineStage stage) {
 	if (stage == smvk::PipelineStageBit_None) return VK_PIPELINE_STAGE_2_NONE;
 	VkPipelineStageFlags2 out = 0;
-	if (stage & smvk::PipelineStageBit_Vertex) out |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+	// Vertex covers vertex-input fetch as well as the shader stage: the
+	// RHI has no separate input bit, and VERTEX_ATTRIBUTE_READ is only
+	// valid with VERTEX_INPUT/ALL_GRAPHICS/ALL_COMMANDS in the mask.
+	if (stage & smvk::PipelineStageBit_Vertex) out |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
 	if (stage & smvk::PipelineStageBit_Fragment) out |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 	if (stage & smvk::PipelineStageBit_Compute) out |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 	if (stage & smvk::PipelineStageBit_Geometry) out |= VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT;
@@ -2886,6 +2889,42 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 		SetBufferSyncState(buffer, st);
 	}
 	AddDeferredTask(std::packaged_task<void()>([this, staging = std::move(stageHan)] {destroy(this, staging); }), han);
+}
+bool smvk::VulkanResourceManager::DownloadDataFromBuffer(BufferHandle src, void* out, size_t size, size_t srcOffset) {
+	if (size == 0 || out == nullptr || src.empty())
+		return false;
+	auto srcBuf = buffers_.get(src);
+	if (!srcBuf || srcBuf->vkBuffer == VK_NULL_HANDLE)
+		return false;
+	auto stageHan = CreateBuffer(size, smvk::BufferType_Staging, "download staging").release();
+	auto stagingBuf = buffers_.get(stageHan);
+	if (!stagingBuf || stagingBuf->vkBuffer == VK_NULL_HANDLE)
+		return false;
+	auto han = m_submitter->acquire();
+	auto cmd = m_submitter->GetCommandBuffer(han);
+	// Prior writers (e.g. filter compute) -> transfer read. ALL_COMMANDS /
+	// MEMORY_ALL is the conservative src: we don't track the last writer here.
+	BufferBarrier(cmd, srcBuf->vkBuffer, srcOffset, size,
+		VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+		VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+		VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+		VK_ACCESS_2_TRANSFER_READ_BIT);
+	VkBufferCopy copyRegion{ static_cast<VkDeviceSize>(srcOffset), 0, static_cast<VkDeviceSize>(size) };
+	vkCmdCopyBuffer(cmd, srcBuf->vkBuffer, stagingBuf->vkBuffer, 1, &copyRegion);
+	BufferBarrier(cmd, stagingBuf->vkBuffer, 0, size,
+		VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+		VK_ACCESS_2_TRANSFER_WRITE_BIT,
+		VK_PIPELINE_STAGE_2_HOST_BIT,
+		VK_ACCESS_2_HOST_READ_BIT);
+	m_submitter->submit(han);
+	m_submitter->wait(han, UINT64_MAX);
+	void* mapped = MapBuffer(stageHan);
+	if (!mapped)
+		return false;
+	std::memcpy(out, mapped, size);
+	UnmapBuffer(stageHan);
+	AddDeferredTask(std::packaged_task<void()>([this, staging = std::move(stageHan)] {destroy(this, staging); }), han);
+	return true;
 }
 void smvk::VulkanResourceManager::UploadDataToImage2D(
 	const Image& image,

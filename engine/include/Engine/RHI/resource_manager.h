@@ -51,6 +51,11 @@ public:
     void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize,
                             PipelineStage dstStages, AccessFlags dstAccess,
                             size_t src_offset = 0, size_t dest_offset = 0);
+    // Debug readback: GPU buffer -> CPU memory (staging copy + fence wait;
+    // stalls, debug-only). Call only when the device is idle-ish (e.g.
+    // after WaitForDeviceIdle) or accept one-frame staleness.
+    bool DownloadDataFromBuffer(BufferHandle src, void* out, size_t size,
+                                size_t srcOffset = 0);
     void UploadDataToImage2D(const struct Image& image, const void* data,
                              PipelineStage dstStages, AccessFlags dstAccess, size_t src_offset);
 
