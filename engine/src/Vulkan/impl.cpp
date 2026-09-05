@@ -45,6 +45,9 @@ static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
 static VkQueue transferQueue_ = VK_NULL_HANDLE;
+// Set at device creation (see VulkanCore init): true when the device
+// supports VK multiDrawIndirect (drawCount > 1 in a single indirect call).
+static bool g_multiDrawIndirect = false;
 struct QueueMutex { VkQueue queue = VK_NULL_HANDLE; std::mutex mutex; };
 static QueueMutex graphicsQueueMutex;
 static QueueMutex presentQueueMutex;
@@ -583,8 +586,8 @@ constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
 	VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_Index
 	VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,             // BufferType_Vertex
 	VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Uniform
-	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Storage
-	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,           // BufferType_Indirect
+	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, // BufferType_Storage (also hosts GeometryFX-style filtered index lists)
+	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Indirect (also written by filter compute)
 	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_TransferSrc
 	VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_TransferDst
 	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_Staging: transfer with host visibility
@@ -1730,14 +1733,26 @@ bool smvk::VulkanCore::Init() {
 				.maintenance4 = VK_TRUE,
 			};
 
-			VkPhysicalDeviceFeatures2 feats2{
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-				.pNext = &deviceFeatures13,
-				.features = {
-					.samplerAnisotropy = VK_TRUE,
-					.textureCompressionBC = VK_TRUE,
-				},
-			};
+		VkPhysicalDeviceFeatures2 feats2{
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+			.pNext = &deviceFeatures13,
+			.features = {
+				.samplerAnisotropy = VK_TRUE,
+				.textureCompressionBC = VK_TRUE,
+			},
+		};
+
+		// Indirect multi-draw (per-view filter emits one command per
+		// surviving cluster, drawn with a single call per material range).
+		// Core since 1.0 but still optional: enable when present, emulate
+		// one-by-one with a startup warning when absent.
+		{
+			VkPhysicalDeviceFeatures supported{};
+			vkGetPhysicalDeviceFeatures(physicalDevice_, &supported);
+			g_multiDrawIndirect = (supported.multiDrawIndirect == VK_TRUE);
+			feats2.features.multiDrawIndirect =
+				g_multiDrawIndirect ? VK_TRUE : VK_FALSE;
+		}
 
 			std::vector<const char*> enabledExtensions = config_.deviceExtensions;
 			if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
@@ -1752,10 +1767,16 @@ bool smvk::VulkanCore::Init() {
 			createInfo.ppEnabledExtensionNames = enabledExtensions.data();
 			createInfo.enabledLayerCount = 0;
 
-			if (vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_) != VK_SUCCESS) {
-				throw std::runtime_error("failed to create logical device!");
-			}
-			volkLoadDevice(device_);
+		if (vkCreateDevice(physicalDevice_, &createInfo, nullptr, &device_) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create logical device!");
+		}
+		if (!g_multiDrawIndirect) {
+			fprintf(stderr,
+				"[Vulkan Warning] multiDrawIndirect not supported by this device; "
+				"vkCmdDrawIndexedIndirect with drawCount > 1 will be emulated "
+				"one draw at a time (slow path, expect lower throughput)\n");
+		}
+		volkLoadDevice(device_);
 
 		}
 
@@ -8108,6 +8129,47 @@ void smvk::CommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCoun
 		firstInstance
 	);
 }
+void smvk::CommandBuffer::BindIndexBuffer(BufferHandle buffer, uint64_t offset)
+{
+	VulkanResourceManager& vulkanCtx = *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
+	const Buffer* desc = vulkanCtx.buffers_.get(buffer);
+	assert(desc != nullptr && desc->vkBuffer != VK_NULL_HANDLE);
+	vkCmdBindIndexBuffer(
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
+		desc->vkBuffer,
+		static_cast<VkDeviceSize>(offset),
+		VK_INDEX_TYPE_UINT32
+	);
+}
+void smvk::CommandBuffer::DrawIndexedIndirect(BufferHandle buffer, uint64_t offset, uint32_t drawCount, uint32_t stride)
+{
+	VulkanResourceManager& vulkanCtx = *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
+	const Buffer* desc = vulkanCtx.buffers_.get(buffer);
+	assert(desc != nullptr && desc->vkBuffer != VK_NULL_HANDLE);
+	VkCommandBuffer cmd = reinterpret_cast<VkCommandBuffer>(cmdOpaque_);
+	if (g_multiDrawIndirect) {
+		vkCmdDrawIndexedIndirect(
+			cmd,
+			desc->vkBuffer,
+			static_cast<VkDeviceSize>(offset),
+			drawCount,
+			stride
+		);
+	}
+	else {
+		// Slow-path emulation: without multiDrawIndirect, drawCount must
+		// be 0 or 1 per call (VUID-vkCmdDrawIndexedIndirect-drawCount-02718).
+		for (uint32_t i = 0; i < drawCount; ++i) {
+			vkCmdDrawIndexedIndirect(
+				cmd,
+				desc->vkBuffer,
+				static_cast<VkDeviceSize>(offset) + (VkDeviceSize)i * stride,
+				1,
+				stride
+			);
+		}
+	}
+}
 void smvk::CommandBuffer::BindComputePipeline(
 	ShaderProgram& shaderProgram)
 {
@@ -8204,6 +8266,7 @@ void smvk::CommandBuffer::PushConstants(uint32_t offset, uint32_t size, const vo
 
 VkInstance smvk::GetVkInstance() { return instance_; }
 VkDevice smvk::GetVkDevice() { return device_; }
+bool smvk::SupportsMultiDrawIndirect() { return g_multiDrawIndirect; }
 VkPhysicalDevice smvk::GetVkPhysicalDevice() { return physicalDevice_; }
 VkQueue smvk::GetVkGraphicsQueue() { return graphicsQueue_; }
 VkQueue smvk::GetVkPresentQueue() { return presentQueue_; }

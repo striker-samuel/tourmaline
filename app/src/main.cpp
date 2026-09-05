@@ -21,6 +21,7 @@
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/ui.h>
 #include <Engine/Renderer/cookies.h>
+#include <App/renderer.h>
 #include <Engine/Vfs/vfs.h>
 #include <imgui.h>
 #include <glm/gtc/constants.hpp>
@@ -589,6 +590,25 @@ private:
 		// collect ball nodes, strip their shadow-caster flag.
 		FixupPointLightBallNodes();
 
+		// GeometryFX-style per-view filter (clustered): register static
+		// meshes from cooked meshlets (pak path) or retained uploads
+		// (procedural path), then bake the cluster-ordered index heap.
+		// Non-fatal: unregistered meshes keep rendering via direct draws.
+		if (m_useGfxFilter) {
+			if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph, m_resources.fragShader)) {
+				std::cerr << "[TestApp] GfxFilter unavailable - direct draws\n";
+				m_useGfxFilter = false;
+			}
+			else {
+				m_gfxRenderer.RegisterWorldMeshes(*m_world);
+				m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+				if (smvk::gfx::ClusterCount(m_gfxRenderer.State()) == 0) {
+					std::cerr << "[TestApp] GfxFilter: no clusters - direct draws\n";
+					m_useGfxFilter = false;
+				}
+			}
+		}
+
 		// Light cookies: baked .ktx2 files from the engine resources mount
 		// (overridable by app content / paks through the overlay; falls
 		// back to procedural generation when the files are missing).
@@ -884,6 +904,9 @@ private:
 	void CreatePointLightBalls() {
 		smvk::Cluster& cluster = m_world->LoadCluster(*m_context);
 		m_lightCluster = &cluster;
+		// Retain the CPU upload so the per-view filter can cook meshlet
+		// clusters at register time (see RegisterWorldMeshes).
+		cluster.SetRetainUploads(true);
 
 		const smvk::ClusterStaticMeshHandle mesh =
 			cluster.UploadStaticMesh(MakeUvSphereUpload(16, 24));
@@ -1337,6 +1360,26 @@ private:
 		m_renderViews.Upload(*m_context, fb.frameIndex);
 		const uint64_t renderViewsAddress =
 			m_renderViews.DeviceAddress(*m_context, fb.frameIndex);
+
+		// Per-view triangle filter (main camera): builds the compacted
+		// index list + indirect commands consumed by the Main pass below.
+		// Shadow/depth/motion passes stay on direct draws.
+		uint32_t gfxSlot = UINT32_MAX;
+		if (m_useGfxFilter) {
+			gfxSlot = m_gfxRenderer.FilterMainView(*m_context, *m_rendergraph,
+				*m_world, m_renderViews, mainRenderView,
+				m_cameraPositioner.cameraPosition_, renderExtent,
+				smvk::gfx::CullFlagBit_Backface | smvk::gfx::CullFlagBit_Frustum
+				| smvk::gfx::CullFlagBit_Degenerate);
+			if (gfxSlot != UINT32_MAX) {
+				auto& gfxPass = m_gfxRenderer.AddFilterPass(*m_rendergraph, gfxSlot);
+				gfxPass.SetRecordingFunc([this, gfxSlot](smvk::CommandBuffer& cmd)
+				{
+					smvk::gfx::PushAndDispatch(
+						m_gfxRenderer.State(), cmd, *m_context, gfxSlot);
+				});
+			}
+		}
 		//
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
@@ -1918,7 +1961,7 @@ private:
 				smvk::ClearDepthStencil(0, 0)
 			);
 		}
-		mainPass.SetRecordingFunc([this, pc, useMsaa](smvk::CommandBuffer& cmd)
+		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView](smvk::CommandBuffer& cmd)
 	{
 		// 1x: depth was filled by the Forward+ prepass, main is read-only.
 		// 2x: transient depth is cleared above, main writes it
@@ -1963,7 +2006,7 @@ private:
 			}
 		};
 
-		auto bindForMaterial = [&](uint32_t materialId) {
+		auto bindForMaterial = [&](uint32_t materialId, smvk::ShaderProgram& prog) {
 			// Per-material raster (doubleSided -> Cull None) + blend
 			// (Opaque vs AlphaBlend). 1x depth is read-only, 2x writes.
 			smvk::BlendSettings blend = smvk::BlendSettings::Opaque();
@@ -1973,7 +2016,7 @@ private:
 				raster = mat->pipeline.raster;
 			}
 			cmd.BindRenderPipeline(
-				m_resources.mainProgram,
+				prog,
 				smvk::VertexFormat::StaticVertexFormat,
 				mainDepth,
 				noStencil,
@@ -2027,6 +2070,29 @@ private:
 		);
 
 		// ---- Opaque + MASK cutout (alpha-tested in shader) ----
+		// Filtered path: one multi-draw per material over the compacted
+		// index list (model matrices come from the draws buffer via
+		// SV_InstanceID; materialId is pushed per range for the frag).
+		// Meshes the filter skipped (no clusters) still draw direct.
+		const bool gfxActive = m_useGfxFilter && gfxSlot != UINT32_MAX;
+		if (gfxActive) {
+			const auto& gfxRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
+			for (uint32_t ri = 0; ri < (uint32_t)gfxRanges.size(); ++ri) {
+				const uint32_t materialId = gfxRanges[ri].material;
+				bindForMaterial(materialId, m_gfxRenderer.FilteredProgram());
+				PushConstants matPC{};
+				matPC.materialId = materialId;
+				cmd.PushConstants(
+					offsetof(PushConstants, materialId),
+					sizeof(matPC.materialId),
+					&matPC.materialId,
+					smvk::ShaderStage::All
+				);
+				m_gfxRenderer.PushViewConstants(
+					cmd, *m_context, gfxSlot, renderViewsAddress, mainRenderView);
+				m_gfxRenderer.DrawRange(cmd, *m_context, gfxSlot, ri);
+			}
+		}
 		{
 			// UINT32_MAX forces a bind check on the first node; an
 			// identical state is deduped by the CommandBuffer's
@@ -2046,9 +2112,12 @@ private:
 				auto materialForNode = m_world->scene.materialForNode.find(node);
 				if (materialForNode == m_world->scene.materialForNode.end())
 					return;
+				// Filtered meshes already drew above via indirect ranges.
+				if (gfxActive && m_gfxRenderer.IsMeshFiltered(meshForNode->second))
+					return;
 				const uint32_t materialId = materialForNode->second;
 				if (materialId != boundMaterial) {
-					bindForMaterial(materialId);
+					bindForMaterial(materialId, m_resources.mainProgram);
 					boundMaterial = materialId;
 				}
 				drawNode(node, meshForNode->second, materialId);
@@ -2094,7 +2163,7 @@ private:
 			uint32_t boundMaterial = UINT32_MAX;
 			for (const auto& d : draws) {
 				if (d.materialId != boundMaterial) {
-					bindForMaterial(d.materialId);
+					bindForMaterial(d.materialId, m_resources.mainProgram);
 					boundMaterial = d.materialId;
 				}
 				drawNode(d.node, d.meshId, d.materialId);
@@ -2411,6 +2480,9 @@ private:
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
 	std::vector<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
 	smvk::RenderViewSet m_renderViews{}; // per-frame virtual cameras: main view + shadow cascade/spot views
+	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
+	app::GfxRenderer m_gfxRenderer{};
+	bool m_useGfxFilter = true; // false = legacy direct draws (A/B)
 	// ---- Motion vector pass: previous-frame state + debug view ----
 	glm::mat4 m_prevViewProj{ 1.0f }; // last frame's viewProj (post Y-flip)
 	bool m_prevViewProjValid = false; // false until the first frame completes

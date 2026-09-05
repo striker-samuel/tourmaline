@@ -1013,6 +1013,10 @@ namespace smvk {
 	VkQueue          GetVkTransferQueue();
 	VkSurfaceKHR     GetVkSurface();
 	uint32_t         GetVkGraphicsQueueFamily();
+	// True when the device was created with multiDrawIndirect enabled.
+	// CommandBuffer::DrawIndexedIndirect uses the single-call fast path
+	// then, and falls back to one-by-one emulation otherwise.
+	bool             SupportsMultiDrawIndirect();
 	uint32_t         GetVkTransferQueueFamily();
 
 }; // namespace smvk

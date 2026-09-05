@@ -52,6 +52,20 @@ namespace smvk
 			uint32_t firstInstance = 0
 		);
 
+		// Binds an arbitrary RHI buffer as the index buffer (UINT32).
+		// Used by the GeometryFX-style filter path to bind the per-view
+		// filtered index list instead of the static heap (see BindStaticVertexFmt).
+		void BindIndexBuffer(BufferHandle buffer, uint64_t offset = 0);
+
+		// Indirect indexed draws consuming VkDrawIndexedIndirectCommand
+		// entries produced by the filter compute (see Engine/Renderer/gfx_filter.h).
+		// The indirect buffer must have been created with BufferType_Indirect.
+		void DrawIndexedIndirect(
+			BufferHandle buffer,
+			uint64_t offset,
+			uint32_t drawCount,
+			uint32_t stride);
+
 		void BindComputePipeline(
 			ShaderProgram& shaderProgram);
 
