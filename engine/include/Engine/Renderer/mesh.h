@@ -137,6 +137,30 @@ namespace smvk {
 	};
 
 
+	// Debug line stream (pos-only, binding 0): powers the meshlet/cone
+	// debug views without touching the static heap (see BindVertexBuffer).
+	struct DebugLineVertex {
+		glm::vec3 pos;
+	};
+	static_assert(sizeof(DebugLineVertex) == 12);
+
+	inline const VertexFormatDescription DebugLineFormat{
+		.bindings = {
+			{
+				.binding = 0,
+				.stride = sizeof(DebugLineVertex),
+				.inputRate = VertexInputRate::Vertex,
+				.attributes = {
+					{
+						.semantic = VertexSemantic::Position,
+						.format = Format::RGB32_Float,
+						.offset = offsetof(DebugLineVertex, pos)
+					}
+				}
+			}
+		}
+	};
+
 	inline const VertexFormatDescription StaticVertexFormat{
 		.bindings = {
 			{
@@ -235,6 +259,7 @@ namespace smvk {
 	enum struct VertexFormat {
 		Empty
 		, StaticVertexFormat
+		, DebugLine
 	};
 
 	VertexFormatDescription GetVertexFormatDescription(VertexFormat format);

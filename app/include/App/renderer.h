@@ -16,6 +16,21 @@
 
 namespace app {
 
+// Debug-view pushes (share the global [0,256) push range; must mirror the
+// debug shaders byte for byte).
+struct alignas(16) MeshDebugPush {
+	float model[16];
+	float viewProj[16];
+	float color[4];
+};
+static_assert(sizeof(MeshDebugPush) == 144, "MeshDebugPush must be 144 bytes");
+
+struct alignas(16) LineDebugPush {
+	float viewProj[16];
+	float color[4];
+};
+static_assert(sizeof(LineDebugPush) == 80, "LineDebugPush must be 80 bytes");
+
 // Per-view filter config (persistent resource-side config lives on the
 // renderer; per-frame inputs arrive via FrameContext).
 struct GfxConfig {
@@ -35,6 +50,16 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	smvk::Holder<smvk::ShaderModuleHandle> seedMaskedVsModule_;
 	smvk::ShaderProgram seedOpaqueProgram{}; // VS-only (gfxseed mainVS)
 	smvk::ShaderProgram seedMaskedProgram{}; // gfxseedmasked mainVS + shadow FS
+	// Debug views (self-contained: own VS+FS, no Configure needed).
+	// Meshlet colors draw every registered cluster direct (bypasses the
+	// GPU filter, so HZB-culled meshlets stay visible); cone axes draw
+	// one line per CPU candidate batch from a transient line buffer.
+	smvk::Holder<smvk::ShaderModuleHandle> meshDebugVsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> meshDebugFragModule;
+	smvk::ShaderProgram meshDebugProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> lineVsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> lineFragModule;
+	smvk::ShaderProgram lineProgram{};
 
 	const char* Name() const override { return "GfxFilter"; }
 
@@ -127,6 +152,18 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	}
 	[[nodiscard]] smvk::ShaderProgram& FilteredProgram() { return filteredProgram; }
 	[[nodiscard]] smvk::gfx::State& State() { return gfx; }
+	[[nodiscard]] smvk::ShaderProgram& MeshDebugProgram() { return meshDebugProgram; }
+	[[nodiscard]] smvk::ShaderProgram& LineProgram() { return lineProgram; }
+	[[nodiscard]] bool DebugProgramsValid() const {
+		return meshDebugProgram.shaderCount == 2 && lineProgram.shaderCount == 2;
+	}
+	// world mesh idx -> gfx mesh idx (UINT32_MAX = not filterable).
+	[[nodiscard]] uint32_t GfxMeshForWorldMesh(uint32_t worldMesh) const {
+		return worldMesh < meshMap_.size() ? meshMap_[worldMesh] : UINT32_MAX;
+	}
+	// Stable saturated color per cluster (debug view). mode 0 = hash hue,
+	// mode 1 = cone-cutoff heat (red = degenerate/useless cone).
+	static void DebugClusterColor(uint32_t cluster, float coneCutoff, int mode, float outRgba[4]);
 	// Seed consume side (caller has bound a seed program with its own PSO).
 	// PushSeedConstants writes the 24B VS tail push (draws BDA +
 	// render-view slab); DrawSeedRange issues one multi-draw over a seed

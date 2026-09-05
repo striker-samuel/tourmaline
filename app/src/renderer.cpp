@@ -6,12 +6,47 @@
 #include <Engine/platform.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace app {
 
 static constexpr const char* kGfxSeedVsPath = "content/shaders/gfxseed.vert.hlsl.spv";
 static constexpr const char* kGfxSeedMaskedVsPath = "content/shaders/gfxseedmasked.vert.hlsl.spv";
+static constexpr const char* kMeshDebugVsPath = "content/shaders/meshdebug.vert.hlsl.spv";
+static constexpr const char* kMeshDebugFragPath = "content/shaders/meshdebug.frag.hlsl.spv";
+static constexpr const char* kLineVsPath = "content/shaders/debugline.vert.hlsl.spv";
+static constexpr const char* kLineFragPath = "content/shaders/debugline.frag.hlsl.spv";
+
+void GfxRenderer::DebugClusterColor(uint32_t cluster, float coneCutoff, int mode, float outRgba[4]) {
+	if (mode == 1) {
+		// Cone heat: cutoff ~1 (degenerate/wide, never culls) -> red,
+		// tight useful cones -> green/cyan.
+		float t = std::clamp((coneCutoff + 1.0f) * 0.5f, 0.0f, 1.0f);
+		outRgba[0] = t;
+		outRgba[1] = 1.0f - std::abs(t - 0.5f) * 2.0f * 0.5f;
+		outRgba[2] = 1.0f - t;
+		outRgba[3] = 1.0f;
+		return;
+	}
+	// Stable hash hue per cluster (golden-ratio scramble), full saturation.
+	uint32_t h = cluster * 2654435761u;
+	h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
+	const float hue = (h % 1024) / 1024.0f;
+	const float s = 0.85f, v = 0.95f;
+	const float c = v * s;
+	const float hh = hue * 6.0f;
+	const float x = c * (1.0f - std::fabs(std::fmod(hh, 2.0f) - 1.0f));
+	float r = 0.0f, g = 0.0f, b = 0.0f;
+	if (hh < 1.0f) { r = c; g = x; }
+	else if (hh < 2.0f) { r = x; g = c; }
+	else if (hh < 3.0f) { g = c; b = x; }
+	else if (hh < 4.0f) { g = x; b = c; }
+	else if (hh < 5.0f) { r = x; b = c; }
+	else { r = c; b = x; }
+	const float m = v - c;
+	outRgba[0] = r + m; outRgba[1] = g + m; outRgba[2] = b + m; outRgba[3] = 1.0f;
+}
 
 bool GfxRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
 	const char* vsPath = smvk::gfx::kGfxFilteredVsPath;
@@ -57,6 +92,36 @@ bool GfxRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
 			smvk::Shader seedFs{ .module = seedFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
 			seedMaskedProgram = { .shaders = { seedVsMasked, seedFs }, .shaderCount = 2 };
 			seedMaskedVsModule_ = std::move(seedMaskedVsModule);
+		}
+	}
+	// Debug programs (self-contained; failure only disables debug views).
+	if (meshDebugProgram.shaderCount == 0 || lineProgram.shaderCount == 0) {
+		try {
+			if (meshDebugVsModule.empty())
+				meshDebugVsModule = ctx.CreateShaderModule(
+					readFile(kMeshDebugVsPath), "meshDebugVS");
+			if (meshDebugFragModule.empty())
+				meshDebugFragModule = ctx.CreateShaderModule(
+					readFile(kMeshDebugFragPath), "meshDebugFS");
+			if (lineVsModule.empty())
+				lineVsModule = ctx.CreateShaderModule(
+					readFile(kLineVsPath), "debugLineVS");
+			if (lineFragModule.empty())
+				lineFragModule = ctx.CreateShaderModule(
+					readFile(kLineFragPath), "debugLineFS");
+		}
+		catch (...) {
+			return true; // filter works; debug views stay off
+		}
+		if (!meshDebugVsModule.empty() && !meshDebugFragModule.empty()) {
+			smvk::Shader vs{ .module = meshDebugVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+			smvk::Shader fs{ .module = meshDebugFragModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+			meshDebugProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
+		}
+		if (!lineVsModule.empty() && !lineFragModule.empty()) {
+			smvk::Shader vs{ .module = lineVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+			smvk::Shader fs{ .module = lineFragModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+			lineProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
 		}
 	}
 	return true;

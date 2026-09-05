@@ -68,6 +68,8 @@ namespace smvk {
 			return {};
 		case VertexFormat::StaticVertexFormat:
 			return StaticVertexFormat;
+		case VertexFormat::DebugLine:
+			return DebugLineFormat;
 		}
 		return{};
 	}

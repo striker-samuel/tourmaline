@@ -1727,6 +1727,59 @@ private:
 		m_fpRenderer.AppendTileCull(fc);
 
 		// ---------------------------------------------------------------------
+		// Cone-axis debug lines (CPU candidate batches -> apex/tip verts).
+		// Built + uploaded here (before Main records); the Main lambda only
+		// binds the buffer and draws. No rendergraph hints needed: content
+		// is pure CPU (batches/drawConstants/clusters vectors) + the upload
+		// barrier, same pattern as the frame-uniform uploads.
+		// ---------------------------------------------------------------------
+		uint32_t coneLineVerts = 0;
+		if (m_debugCones && m_useGfxFilter && gfxSlot != UINT32_MAX &&
+			m_gfxRenderer.DebugProgramsValid() &&
+			gfxSlot < m_gfxRenderer.State().views.size()) {
+			const smvk::gfx::State& st = m_gfxRenderer.State();
+			const smvk::gfx::View& v = st.views[gfxSlot];
+			std::vector<smvk::DebugLineVertex> lines;
+			lines.reserve(v.batches.size() * 2);
+			for (const smvk::gfx::Batch& b : v.batches) {
+				if (b.draw >= v.drawConstants.size() || b.cluster >= st.clusters.size())
+					continue;
+				const smvk::gfx::Draw& dc = v.drawConstants[b.draw];
+				const smvk::gfx::Cluster& c = st.clusters[b.cluster];
+				if (!(c.boundRadius > 0.0f))
+					continue;
+				const glm::vec3 apex = glm::vec3(dc.model * glm::vec4(c.coneApex, 1.0f));
+				glm::vec3 ax = glm::vec3(dc.model * glm::vec4(c.coneAxis, 0.0f));
+				const float alen = glm::length(ax);
+				if (!(alen > 1e-9f))
+					continue;
+				ax /= alen;
+				const float bs = std::max({
+					glm::length(glm::vec3(dc.model[0])),
+					glm::length(glm::vec3(dc.model[1])),
+					glm::length(glm::vec3(dc.model[2])) });
+				if (!(bs > 0.0f))
+					continue;
+				lines.push_back(smvk::DebugLineVertex{ apex });
+				lines.push_back(smvk::DebugLineVertex{ apex + ax * (c.boundRadius * bs) });
+			}
+			if (!lines.empty()) {
+				const size_t bytes = lines.size() * sizeof(smvk::DebugLineVertex);
+				if (m_debugLines.empty() || m_debugLinesCap < (uint32_t)lines.size()) {
+					m_debugLines = m_context->CreateBuffer(bytes,
+						smvk::BufferType_Vertex, "debug cone lines");
+					m_debugLinesCap = (uint32_t)lines.size();
+				}
+				if (!m_debugLines.empty()) {
+					m_context->UploadDataToBuffer(m_debugLines, lines.data(), bytes,
+						smvk::PipelineStageBit_Vertex,
+						smvk::AccessFlags::VertexAttributeRead);
+					coneLineVerts = (uint32_t)lines.size();
+				}
+			}
+		}
+
+		// ---------------------------------------------------------------------
 		// Motion vectors – per-pixel prevUV - currUV into RG16F (motionvector.h)
 		// Re-rasterizes opaque geometry depth-tested READ-ONLY against the 1x
 		// prepass depth (reversed-Z GreaterEqual, no writes) – identical in
@@ -1860,7 +1913,8 @@ private:
 				smvk::ClearDepthStencil(0, 0)
 			);
 		}
-		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView](smvk::CommandBuffer& cmd)
+		const glm::mat4 frameViewProj = frameData.viewProj; // debug pushes (value)
+		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, frameViewProj](smvk::CommandBuffer& cmd)
 	{
 		// 1x: depth was filled by the Forward+ prepass, main is read-only.
 		// 2x: transient depth is cleared above, main writes it
@@ -1974,7 +2028,75 @@ private:
 		// SV_InstanceID; materialId is pushed per range for the frag).
 		// Meshes the filter skipped (no clusters) still draw direct.
 		const bool gfxActive = m_useGfxFilter && gfxSlot != UINT32_MAX;
-		if (gfxActive) {
+		// Meshlet debug view (replaces shaded opaque): draws EVERY
+		// registered cluster direct with a stable per-meshlet color, so
+		// HZB-culled meshlets stay visible here. Compare with the shaded
+		// view to see exactly what the GPU filter dropped.
+		const bool meshletDbg = m_debugMeshlets && m_gfxRenderer.DebugProgramsValid();
+		if (meshletDbg) {
+			cmd.BindRenderPipeline(
+				m_gfxRenderer.MeshDebugProgram(),
+				smvk::VertexFormat::StaticVertexFormat,
+				mainDepth,
+				noStencil,
+				smvk::BlendSettings::Opaque(),
+				msaaSettings,
+				smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+			);
+			cmd.BindStaticVertexFmt();
+			cmd.BindIndexBuffer(smvk::gfx::FilterIndexBuffer(m_gfxRenderer.State()));
+			const smvk::gfx::State& dbgState = m_gfxRenderer.State();
+			app::MeshDebugPush dp{};
+			std::copy_n(glm::value_ptr(frameViewProj), 16, dp.viewProj);
+			m_world->forEachNode(
+				smvk::IteratorFlagBit_Renderable
+				| smvk::IteratorFlagBit_Opaque
+				| smvk::IteratorFlagBit_StaticVertexFmt
+				,
+				[&](NodeId node)
+			{
+				auto meshForNode = m_world->scene.meshForNode.find(node);
+				if (meshForNode == m_world->scene.meshForNode.end())
+					return;
+				if (m_world->scene.materialForNode.find(node) ==
+					m_world->scene.materialForNode.end())
+					return;
+				const uint32_t worldMesh = meshForNode->second;
+				const glm::mat4& model = m_world->scene.globalTransform[node];
+				std::copy_n(glm::value_ptr(model), 16, dp.model);
+				const uint32_t gfxMesh = m_gfxRenderer.GfxMeshForWorldMesh(worldMesh);
+				if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
+					// Not filterable: white direct fallback (nothing vanishes).
+					dp.color[0] = dp.color[1] = dp.color[2] = 0.9f; dp.color[3] = 1.0f;
+					cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
+					if (smvk::StaticMesh* meshDesc = m_world->GetMesh(worldMesh)) {
+						for (auto& draw_set : meshDesc->geometry.surfaces) {
+							cmd.DrawIndexed(draw_set.indexCount, 1,
+								draw_set.firstIndex, draw_set.baseVertex);
+						}
+					}
+					return;
+				}
+				const smvk::gfx::Mesh& gm = dbgState.meshes[gfxMesh];
+				for (uint32_t ci = 0; ci < gm.clusterCount; ++ci) {
+					const uint32_t gc = gm.clusterStart + ci;
+					if (gc >= dbgState.clusters.size())
+						continue;
+					const smvk::gfx::Cluster& cl = dbgState.clusters[gc];
+					if (cl.triCount == 0)
+						continue;
+					float rgba[4];
+					app::GfxRenderer::DebugClusterColor(
+						gc, cl.coneCutoff, m_debugMeshletMode, rgba);
+					dp.color[0] = rgba[0]; dp.color[1] = rgba[1];
+					dp.color[2] = rgba[2]; dp.color[3] = rgba[3];
+					cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
+					cmd.DrawIndexed(cl.triCount * 3, 1, cl.indexOffset, 0);
+				}
+			}
+			);
+		}
+		if (gfxActive && !meshletDbg) {
 			const auto& gfxRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
 			for (uint32_t ri = 0; ri < (uint32_t)gfxRanges.size(); ++ri) {
 				const uint32_t materialId = gfxRanges[ri].material;
@@ -1992,10 +2114,12 @@ private:
 				m_gfxRenderer.DrawRange(cmd, *m_context, gfxSlot, ri);
 			}
 		}
-		{
+		if (!meshletDbg) {
 			// UINT32_MAX forces a bind check on the first node; an
 			// identical state is deduped by the CommandBuffer's
 			// current-pipeline check, so this costs nothing.
+			// (Skipped in meshlet-debug mode: unfiltered meshes already
+			// drew white above.)
 			uint32_t boundMaterial = UINT32_MAX;
 			m_world->forEachNode(
 				smvk::IteratorFlagBit_Renderable
@@ -2067,6 +2191,32 @@ private:
 				}
 				drawNode(d.node, d.meshId, d.materialId);
 			}
+		}
+
+		// ---- Cone-axis debug overlay (LineList over the CPU batches) ----
+		// Shows the normal cone of every candidate (draw x cluster) the
+		// filter saw: apex -> apex + axis * worldRadius (yellow). Missing
+		// meshlets in the shaded view but present cones here = GPU HZB
+		// cull; missing cones = CPU pre-cull (frustum/cone).
+		if (m_debugCones && coneLineVerts > 0 && !m_debugLines.empty() &&
+			m_gfxRenderer.DebugProgramsValid()) {
+			cmd.BindRenderPipeline(
+				m_gfxRenderer.LineProgram(),
+				smvk::VertexFormat::DebugLine,
+				mainDepth,
+				noStencil,
+				smvk::BlendSettings::Opaque(),
+				msaaSettings,
+				smvk::RasterSettings{ .cullMode = smvk::CullMode::None },
+				smvk::PrimitiveTopology::LineList
+			);
+			cmd.BindVertexBuffer(m_debugLines, 0, 0);
+			app::LineDebugPush lp{};
+			std::copy_n(glm::value_ptr(frameViewProj), 16, lp.viewProj);
+			lp.color[0] = 1.0f; lp.color[1] = 1.0f;
+			lp.color[2] = 0.0f; lp.color[3] = 1.0f;
+			cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
+			cmd.Draw(coneLineVerts, 1, 0, 0);
 		}
 	}
 		);
@@ -2372,6 +2522,16 @@ private:
 					if (ImGui::SliderFloat("Min contribution px^2", &mc, 0.0f, 16.0f))
 						m_gfxRenderer.SetMinContribution(mc);
 				}
+				ImGui::Separator();
+				ImGui::Text("Meshlet debug views (bypass GPU cull)");
+				ImGui::Checkbox("Meshlet colors (replaces opaque)", &m_debugMeshlets);
+				const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
+				ImGui::Combo("Meshlet color mode", &m_debugMeshletMode, meshletModes, 2);
+				ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones);
+				if (!m_gfxRenderer.DebugProgramsValid())
+					ImGui::TextDisabled("Debug programs missing – views disabled");
+				ImGui::TextDisabled("Colors: every registered cluster direct; culled ones stay visible here.\n"
+					"Heat: red = degenerate cone (never culls), green = tight cone.");
 				const smvk::gfx::Stats gs = m_gfxRenderer.LastStats();
 				ImGui::Text("view: %u draws %u cmds %u tris | clusters %u/%u culled",
 					gs.draws, gs.commands, gs.trianglesProcessed,
@@ -2438,6 +2598,12 @@ private:
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	app::GfxRenderer m_gfxRenderer{};
 	bool m_useGfxFilter = true; // false = legacy direct draws (A/B)
+	// ---- Meshlet/cone debug views (see App/renderer.h debug programs) ----
+	bool m_debugMeshlets = false; // meshlet colors replace shaded opaque
+	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat
+	bool m_debugCones = false;    // cone-axis line overlay (CPU batches)
+	smvk::Holder<smvk::BufferHandle> m_debugLines; // pos-only cone line VB
+	uint32_t m_debugLinesCap = 0; // verts allocated
 	app::ForwardPlusRenderer m_fpRenderer{};
 	// ---- Motion vector pass: previous-frame state + debug view ----
 	glm::mat4 m_prevViewProj{ 1.0f }; // last frame's viewProj (post Y-flip)

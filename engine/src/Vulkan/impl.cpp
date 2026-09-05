@@ -7990,7 +7990,8 @@ void smvk::CommandBuffer::BindRenderPipeline(
 	const StencilSettings& stencilSettings,
 	const BlendSettings& blendSettings,
 	const MSAASettings& msaaSettings,
-	const RasterSettings& rasterSettings
+	const RasterSettings& rasterSettings,
+	PrimitiveTopology topology
 )
 {
 	assert(graph_ != nullptr);
@@ -8046,7 +8047,7 @@ void smvk::CommandBuffer::BindRenderPipeline(
 		static_cast<uint32_t>(colorAttachmentFormats.size()),
 		depthFormat,
 		stencilFormat,
-		PrimitiveTopology::TriangleList,
+		topology,
 		rasterSettings,
 		depthSettings,
 		stencilSettings,
@@ -8110,6 +8111,23 @@ void smvk::CommandBuffer::BindStaticVertexFmt()
 		vulkanCtx.buffers_.get(staticVertexFmtHeap.m_staticIndexBuffer)->vkBuffer,
 		0,
 		VK_INDEX_TYPE_UINT32
+	);
+}
+void smvk::CommandBuffer::BindVertexBuffer(BufferHandle buffer, uint32_t binding, uint64_t offset)
+{
+	VulkanResourceManager& vulkanCtx = *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
+	auto* b = vulkanCtx.buffers_.get(buffer);
+	assert(b && b->vkBuffer != VK_NULL_HANDLE);
+	if (!b || b->vkBuffer == VK_NULL_HANDLE)
+		return;
+	VkBuffer vertexBuffers[] = { b->vkBuffer };
+	VkDeviceSize offsets[] = { static_cast<VkDeviceSize>(offset) };
+	vkCmdBindVertexBuffers(
+		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
+		binding,
+		1,
+		vertexBuffers,
+		offsets
 	);
 }
 void smvk::CommandBuffer::Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance) {
