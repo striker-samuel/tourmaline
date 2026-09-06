@@ -237,7 +237,8 @@ static_assert(sizeof(VisibleCluster) == 8);
 // Hierarchical-Z store for one view: MIN-reduced depth pyramid (reversed-Z
 // conservative, see hzb.hlsli) in a Storage float buffer with manual mip
 // layout (BDA style, no storage images / samplers needed). Mip 0 mirrors
-// the depth texture 1:1; mip k dims are max(1, dim >> k).
+// the depth texture 1:1; mip k dims are max(1, ceil(dim / 2^k)) - i.e.
+// repeated dst = max((src + 1u) >> 1, 1u), clamped 2x2 covers odd edges.
 static constexpr uint32_t kHizMaxMips = 16;
 struct HizResources {
 	uint32_t width = 0;
@@ -514,8 +515,11 @@ bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
 	uint32_t view, uint32_t w, uint32_t h);
 // Compute pass shell for one HZB level (caller sets the recording func
 // to PushAndDispatchHiz). dstMip 0 additionally reads depthLogical.
+// passName labels the node in the framegraph; the post-remainder refresh
+// passes "GfxHizRefresh" so the two builds are distinguishable.
 RenderPass& AddHizPass(State& s, RenderGraph& rg, uint32_t view,
-	uint32_t dstMip, LogicalImageViewHandle depthLogical);
+	uint32_t dstMip, LogicalImageViewHandle depthLogical,
+	const char* passName = "GfxHiz");
 // Recording helper: pushes HzbPush for dstMip and dispatches the level.
 // depthBindlessIndex is consumed only for dstMip 0 (UINT32_MAX otherwise).
 void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,

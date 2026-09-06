@@ -37,99 +37,243 @@ ConstantBuffer<GfxFilterPush> pcF;
 groupshared uint gLocalCount;
 groupshared uint gClusterCull; // T4: 1 = whole cluster dropped (occlusion/contribution)
 
-// T4 per-cluster occlusion + contribution (Alan Wake 2 style), evaluated
-// once per workgroup (thread 0). Facing-agnostic: also applies to
-// two-sided draws. Mirrors the CPU ProjectClusterFootprint /
-// HzbMipForRect / HzbOccluded helpers (same formulas, same conservatism:
-// eye-inside/behind-camera/off-target keep; all overlapped texels at the
-// covering mip must occlude; reversed-Z hidden iff d_near < stored closest).
+// Conservative interval for n / w when:
+//   n in [nCenter - nRadius, nCenter + nRadius]
+//   w in [wMin, wMax], with wMin > 0.
+//
+// Treating numerator/denominator intervals independently is deliberately
+// conservative. The returned interval may be wider than the true projected
+// sphere, but it must not be narrower.
+float2 ConservativeRatioInterval(
+    float nCenter,
+    float nRadius,
+    float wMin,
+    float wMax)
+{
+    float nMin = nCenter - nRadius;
+    float nMax = nCenter + nRadius;
+
+    float r0 = nMin / wMin;
+    float r1 = nMin / wMax;
+    float r2 = nMax / wMin;
+    float r3 = nMax / wMax;
+
+    float lo = min(min(r0, r1), min(r2, r3));
+    float hi = max(max(r0, r1), max(r2, r3));
+    return float2(lo, hi);
+}
+
+// T4 per-cluster occlusion + contribution.
+//
+// IMPORTANT:
+// This version does not use the Euclidean "nearest point to eye" to derive
+// either the projected footprint or dNear. Instead it transforms the world
+// bounding sphere into conservative CLIP-coordinate intervals.
+//
+// That avoids two dangerous cases for Hi-Z:
+//   1) off-axis spheres getting a screen rect that is too small;
+//   2) Euclidean nearest-to-eye not being the nearest point in projected Z.
+//
+// A too-large bound merely misses some culling. A too-small bound can make
+// visible geometry disappear, so every failure path below returns "visible".
 bool ClusterOccluded(uint clusterIdx, uint drawIdx)
 {
     uint flags = pcF.cullFlags;
     bool wantOcc = (flags & GFX_CULL_OCCLUSION) != 0;
     bool wantCon = (flags & GFX_CULL_CONTRIBUTION) != 0;
+
     if (!wantOcc && !wantCon)
         return false;
+
     if (pcF.hizMips == 0)
-        return false; // no pyramid (CPU force-disables with hzb == 0)
-    float width = (float)pcF.hizWidth;
-    float height = (float)pcF.hizHeight;
-    if (width <= 0.0f || height <= 0.0f)
         return false;
-    float4 bounds = pcF.clusters.Get().cluster[clusterIdx].b; // center, radius
+
+    float width = (float) pcF.hizWidth;
+    float height = (float) pcF.hizHeight;
+    if (!(width > 0.0f) || !(height > 0.0f))
+        return false;
+
+    float4 bounds = pcF.clusters.Get().cluster[clusterIdx].b; // xyz center, w radius
     float4x4 model = pcF.draws.Get().draws[drawIdx].model;
-    // World sphere (max-basis uniform-scale approx, mirrors the CPU cone
-    // path's MaxBasisScale).
+
+    // World-space bounding sphere.
+    //
+    // Max basis length turns the object-space sphere into a conservative
+    // world-space sphere even under non-uniform scale.
     float3 wc = mul(model, float4(bounds.xyz, 1.0f)).xyz;
-    float bs = max(length(model[0].xyz),
-        max(length(model[1].xyz), length(model[2].xyz)));
+    // Explicit columns (._RC is row/column by position, independent of the
+    // matrix majorness): basis vectors for the world-sphere scale.
+    float bs = max(
+        length(float3(model._11, model._21, model._31)),
+        max(length(float3(model._12, model._22, model._32)),
+            length(float3(model._13, model._23, model._33))));
     float wr = bounds.w * bs;
+
+    if (!(wr >= 0.0f))
+        return false; // catches NaN
+
+    // Eye inside the sphere -> never occlusion-cull it.
     float3 toEye = pcF.eye - wc;
     float dist = length(toEye);
-    if (dist <= wr)
-        return false; // eye inside the sphere: keep
+    if (!(dist > wr))
+        return false;
+
     float4 clipC = mul(pcF.viewProj, float4(wc, 1.0f));
-    if (clipC.w <= 0.0f)
+
+    // For p = wc + delta, |delta| <= wr:
+    //
+    // clip_i(p) = clip_i(wc) + dot(viewProj row_i.xyz, delta)
+    //
+    // therefore each clip component varies by at most
+    // wr * length(row_i.xyz). Rows are spelled out with ._RC accessors
+    // (row/column by position, independent of matrix majorness): with the
+    // push uploaded untransposed, pcF.viewProj[i] would be column i, not
+    // row i, so single-subscript indexing must not be used here.
+    float xRadius = wr * length(float3(pcF.viewProj._11, pcF.viewProj._12, pcF.viewProj._13));
+    float yRadius = wr * length(float3(pcF.viewProj._21, pcF.viewProj._22, pcF.viewProj._23));
+    float zRadius = wr * length(float3(pcF.viewProj._31, pcF.viewProj._32, pcF.viewProj._33));
+    float wRadius = wr * length(float3(pcF.viewProj._41, pcF.viewProj._42, pcF.viewProj._43));
+
+    float wMin = clipC.w - wRadius;
+    float wMax = clipC.w + wRadius;
+
+    // Sphere touches/crosses the camera plane, or invalid math.
+    // Do not occlusion-cull it.
+    if (!(wMin > 1e-6f) || !(wMax >= wMin))
         return false;
-    float3 nearest = wc + (toEye / dist) * wr;
-    float4 clipN = mul(pcF.viewProj, float4(nearest, 1.0f));
-    if (clipN.w <= 0.0f)
+
+    // Conservative projected NDC intervals for the complete world sphere.
+    float2 ndcX = ConservativeRatioInterval(
+        clipC.x, xRadius, wMin, wMax);
+    float2 ndcY = ConservativeRatioInterval(
+        clipC.y, yRadius, wMin, wMax);
+
+    // Reversed-Z nearest depth = maximum projected z/w over the sphere.
+    // The interval construction is conservative, so dNear may be slightly
+    // nearer than the real sphere. That is safe: it only reduces culling.
+    float2 ndcZ = ConservativeRatioInterval(
+        clipC.z, zRadius, wMin, wMax);
+    float dNear = ndcZ.y;
+
+    // NaN / invalid depth / near-plane intersection -> keep.
+    if (!(dNear >= 0.0f))
         return false;
-    // Framebuffer y-down == NDC-down post-Y-flip (cf. forwardplus.cs.hlsl).
-    float cx = (clipC.x / clipC.w * 0.5f + 0.5f) * width;
-    float cy = (clipC.y / clipC.w * 0.5f + 0.5f) * height;
-    float fx = pcF.viewProj[0][0];
-    float fy = abs(pcF.viewProj[1][1]);
-    // Extent from the nearest-point depth (clipN.w <= dist): radial dist
-    // underestimates off-axis footprints (smaller rect, finer mip) and
-    // over-culls. Nearest depth overestimates -> conservative.
-    float depthForExtent = max(clipN.w, 1e-6f);
-    float rx = wr * fx / depthForExtent * (width * 0.5f);
-    float ry = wr * fy / depthForExtent * (height * 0.5f);
+    if (dNear > 1.0f)
+        return false;
+
+    // Framebuffer coordinates. The projection already contains the Y flip,
+    // so no additional texture-space flip is applied.
+    float x0 = (ndcX.x * 0.5f + 0.5f) * width;
+    float x1 = (ndcX.y * 0.5f + 0.5f) * width;
+    float y0 = (ndcY.x * 0.5f + 0.5f) * height;
+    float y1 = (ndcY.y * 0.5f + 0.5f) * height;
+
+    if (!(x1 >= x0) || !(y1 >= y0))
+        return false;
+
+    // Completely off-target: leave this to the frustum stages.
+    if (x1 < 0.0f || x0 > width || y1 < 0.0f || y0 > height)
+        return false;
+
+    // Clamp only after the off-target test.
+    float sx0 = clamp(x0, 0.0f, width);
+    float sx1 = clamp(x1, 0.0f, width);
+    float sy0 = clamp(y0, 0.0f, height);
+    float sy1 = clamp(y1, 0.0f, height);
+
+    float rectW = max(sx1 - sx0, 0.0f);
+    float rectH = max(sy1 - sy0, 0.0f);
+
+    // Contribution test uses a conservative upper bound on projected area.
+    // If even this upper bound is below the threshold, culling is safe.
     if (wantCon && pcF.minContribution > 0.0f
-        && (rx * 2.0f) * (ry * 2.0f) < pcF.minContribution)
+        && rectW * rectH < pcF.minContribution)
+    {
         return true;
+    }
+
     if (!wantOcc)
         return false;
-    // Rect missing the target: the frustum stages own this case.
-    if (cx + rx < 0.0f || cx - rx > width || cy + ry < 0.0f || cy - ry > height)
+
+    // Empty / subnormal projected footprint: keep.
+    if (!(rectW > 0.0f) || !(rectH > 0.0f))
         return false;
-    // Mip whose texel covers the rect (ceil(log2(max))).
+
+    // Choose the first mip whose nominal source footprint covers the
+    // rectangle's longest axis.
     uint level = 0;
     float texel = 1.0f;
-    float rectMax = max(rx * 2.0f, ry * 2.0f);
-    while (texel < rectMax && level + 1 < pcF.hizMips)
+    float rectMax = max(rectW, rectH);
+
+    while (texel < rectMax && level + 1u < pcF.hizMips)
     {
         texel *= 2.0f;
         ++level;
     }
-    // Mip dims + float offset (mirrors HzbMipDims/HzbMipOffsetFloats).
-    uint lw = pcF.hizWidth, lh = pcF.hizHeight, off = 0;
+
+    // Packed HZB mip dimensions + float offset.
+    // Must match the ceil-halved HZB builder/layout (hzb.cs.hlsl clamped
+    // 2x2 + HzbMipDims: dst = max((src + 1u) >> 1, 1u)).
+    uint lw = pcF.hizWidth;
+    uint lh = pcF.hizHeight;
+    uint off = 0;
+
     for (uint k = 0; k < level; ++k)
     {
         off += lw * lh;
-        lw = max(lw >> 1, 1u);
-        lh = max(lh >> 1, 1u);
+        lw = max((lw + 1u) >> 1, 1u);
+        lh = max((lh + 1u) >> 1, 1u);
     }
-    // Conservative cover: the rect can straddle up to 2x2 texels at the
-    // covering mip (texel >= rect, but alignment is arbitrary). A single
-    // center texel over-culls whenever the center is occluded but the
-    // edges see far texels. Hidden only if EVERY overlapped texel occludes.
-    float dNear = clipN.z / clipN.w; // reversed-Z value of nearest point
-    uint tx0 = (uint)clamp(floor((cx - rx) / texel), 0.0f, (float)(lw - 1u));
-    uint tx1 = (uint)clamp(floor((cx + rx) / texel), 0.0f, (float)(lw - 1u));
-    uint ty0 = (uint)clamp(floor((cy - ry) / texel), 0.0f, (float)(lh - 1u));
-    uint ty1 = (uint)clamp(floor((cy + ry) / texel), 0.0f, (float)(lh - 1u));
-    // Bounded: rect <= texel guarantees at most 2 per axis; cap anyway.
-    for (uint ty = ty0; ty <= ty1 && ty < ty0 + 3u; ++ty)
+
+    if (lw == 0u || lh == 0u)
+        return false;
+
+    // Ceil-halved chain covers the full extent (lw * texel >= width and
+    // lh * texel >= height; the builder's clamped 2x2 folds the odd edge
+    // into the last texel), so there is no dropped row/column and no
+    // represented-extent early-out. A floor-halved chain would need one.
+
+    uint tx0 = (uint) clamp(
+        floor(sx0 / texel), 0.0f, (float) (lw - 1u));
+    uint tx1 = (uint) clamp(
+        floor(sx1 / texel), 0.0f, (float) (lw - 1u));
+    uint ty0 = (uint) clamp(
+        floor(sy0 / texel), 0.0f, (float) (lh - 1u));
+    uint ty1 = (uint) clamp(
+        floor(sy1 / texel), 0.0f, (float) (lh - 1u));
+
+    // Empty range must NEVER mean "occluded".
+    if (tx0 > tx1 || ty0 > ty1)
+        return false;
+
+    // Tiny conservative reversed-Z bias. Moving dNear slightly toward the
+    // camera makes borderline comparisons fail toward VISIBLE.
+    float depthBias = max(1e-7f, abs(dNear) * 1e-5f);
+    float testDepth = dNear + depthBias;
+
+    // MIN HZB under reversed-Z:
+    //
+    // stored = farthest/smallest depth in that coarse texel.
+    //
+    // The sphere is occluded only when its nearest possible depth is
+    // strictly behind EVERY overlapped HZB texel.
+    //
+    // Do not cap this to an assumed 2x2 range. The chosen mip normally
+    // produces <=2 samples/axis, but sampling the actual range is safer.
+    for (uint ty = ty0; ty <= ty1; ++ty)
     {
-        for (uint tx = tx0; tx <= tx1 && tx < tx0 + 3u; ++tx)
+        for (uint tx = tx0; tx <= tx1; ++tx)
         {
             float stored = pcF.hzb.Get().texels[off + ty * lw + tx];
-            if (dNear >= stored)
+
+            // Reversed-Z: larger means closer.
+            // If the sphere is at or in front of this conservative depth,
+            // it is not fully occluded.
+            if (testDepth >= stored)
                 return false;
         }
     }
+
     return true;
 }
 
@@ -185,9 +329,9 @@ bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2, bool twoS
             for (int i = 0; i < 3; ++i)
             {
                 outL = outL && (c[i].x < -c[i].w);
-                outR = outR && (c[i].x >  c[i].w);
+                outR = outR && (c[i].x > c[i].w);
                 outB = outB && (c[i].y < -c[i].w);
-                outT = outT && (c[i].y >  c[i].w);
+                outT = outT && (c[i].y > c[i].w);
                 outN = outN && (c[i].z < 0.0f);
                 outF = outF && (c[i].z > c[i].w);
             }
@@ -216,7 +360,7 @@ bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2, bool twoS
             [unroll]
             for (int i = 0; i < 3; ++i)
             {
-                float2 ss = ndc[i] * float2((float)pcF.width, (float)pcF.height);
+                float2 ss = ndc[i] * float2((float) pcF.width, (float) pcF.height);
                 if (ss.x < -(1 << 23) || ss.x > (1 << 23) ||
                     ss.y < -(1 << 23) || ss.y > (1 << 23))
                 {
@@ -251,11 +395,11 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     GroupMemoryBarrierWithGroupSync();
 
     // Batch header: (clusterIndex, drawIndex, outputOffset, unused).
-    uint4 header = (uint4)0;
+    uint4 header = (uint4) 0;
     if (gid < pcF.batchCount)
         header = pcF.batches.Get().batch[gid];
 
-    uint2 cluster = (uint2)0;
+    uint2 cluster = (uint2) 0;
     uint triCount = 0;
     if (gid < pcF.batchCount)
     {
@@ -273,7 +417,7 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
 
     bool cull = true;
     uint slot = 0;
-    uint3 tri = (uint3)0;
+    uint3 tri = (uint3) 0;
     if (gid < pcF.batchCount && tid < triCount)
     {
         uint baseIndex = cluster.x + tid * 3;

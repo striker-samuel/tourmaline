@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -603,6 +604,18 @@ void TestHizLayout() {
 	Check(w == 960 && h == 540, "gfx.hiz.dims-mip1");
 	HzbMipDims(1920, 1080, 11, w, h);
 	Check(w == 1 && h == 1, "gfx.hiz.dims-last");
+	// Odd-extent regression (ceil-halve): the builder's clamped 2x2 folds
+	// the odd edge into the last texel, so 240x135 -> 120x68 (not 120x67).
+	HzbMipDims(240, 135, 1, w, h);
+	Check(w == 120 && h == 68, "gfx.hiz.dims-odd-ceil");
+	HzbMipDims(5, 3, 1, w, h);
+	Check(w == 3 && h == 2, "gfx.hiz.dims-5x3-mip1");
+	HzbMipDims(5, 3, 2, w, h);
+	Check(w == 2 && h == 1, "gfx.hiz.dims-5x3-mip2");
+	HzbMipDims(5, 3, 3, w, h);
+	Check(w == 1 && h == 1, "gfx.hiz.dims-5x3-mip3");
+	Check(HzbMipOffsetFloats(5, 3, 1) == 5u * 3u, "gfx.hiz.off-odd-mip1");
+	Check(HzbMipOffsetFloats(5, 3, 2) == 5u * 3u + 3u * 2u, "gfx.hiz.off-odd-mip2");
 
 	Check(HzbMipOffsetFloats(1920, 1080, 0) == 0, "gfx.hiz.off-mip0");
 	Check(HzbMipOffsetFloats(1920, 1080, 1) == 1920u * 1080u, "gfx.hiz.off-mip1");
@@ -942,11 +955,17 @@ void TestHzbSpawnView() {
 		for (uint32_t x = 0; x < W; ++x) {
 			const glm::vec2 ndc((float(x) + 0.5f) / W * 2.0f - 1.0f,
 				(float(y) + 0.5f) / H * 2.0f - 1.0f);
-			// NDC z: reversed-Z maps near=1; unproject near corner + direction.
-			const glm::vec4 n4 = invViewProj * glm::vec4(ndc, 1.0f, 1.0f);
-			const glm::vec4 f4 = invViewProj * glm::vec4(ndc, 0.0f, 1.0f);
-			const glm::vec3 o = glm::vec3(n4) / n4.w;
-			const glm::vec3 d = glm::normalize(glm::vec3(f4) / f4.w - o);
+		// NDC z: reversed-Z maps near=1; unproject near corner + direction.
+		// Infinite far plane: the far unproject lands at/beyond infinity
+		// (f4.w ~= 0), so a raw vec3(f4)/f4.w division yields inf/NaN for
+		// near-center pixels. A point at infinity IS a direction: fall back
+		// to normalize(vec3(f4)) when |w| is degenerate.
+		const glm::vec4 n4 = invViewProj * glm::vec4(ndc, 1.0f, 1.0f);
+		const glm::vec4 f4 = invViewProj * glm::vec4(ndc, 0.0f, 1.0f);
+		const glm::vec3 o = glm::vec3(n4) / n4.w;
+		const glm::vec3 d = (std::abs(f4.w) > 1e-9f)
+			? glm::normalize(glm::vec3(f4) / f4.w - o)
+			: glm::normalize(glm::vec3(f4));
 			float bestZ = -1.0f; // |z_view| of the nearest hit
 			auto quad = [&](float planeZ, const glm::vec3& a, const glm::vec3& b) {
 				if (std::abs(d.z) < 1e-9f) return;
@@ -994,6 +1013,7 @@ void TestHzbSpawnView() {
 	// Cloth patches (4x4 flat grid): every one must survive its own pyramid.
 	bool allKeep = true;
 	ClusterFootprint centerF{};
+	float bestCenterDist = std::numeric_limits<float>::max();
 	for (uint32_t iy = 0; iy < 4; ++iy) {
 		for (uint32_t ix = 0; ix < 4; ++ix) {
 			const glm::vec3 c(clothA.x + (ix + 0.5f) * 0.25f,
@@ -1009,13 +1029,24 @@ void TestHzbSpawnView() {
 					"c=(%.1f,%.1f) r=(%.1f,%.1f)\n", ix, iy, f.nearestDepth, stored,
 					f.centerX, f.centerY, f.radiusX, f.radiusY);
 			}
-			// The user's exact case: the center-screen patch.
-			if (ix == 1 && iy == 1) centerF = f;
+			// The user's exact case: the patch nearest screen center. The
+			// screen center lands on a patch boundary (and this +z view is
+			// mirrored: world -x appears right of center), so no fixed
+			// (ix,iy) is exactly centered; take the closest footprint
+			// (euclidean; pitch here is ~40x57px, nearest is ~29px away).
+			const float dx = f.centerX - (float)W * 0.5f;
+			const float dy = f.centerY - (float)H * 0.5f;
+			const float dd = std::sqrt(dx * dx + dy * dy);
+			if (dd < bestCenterDist) {
+				bestCenterDist = dd;
+				centerF = f;
+			}
 		}
 	}
 	Check(allKeep, "gfx.spawn.cloth-keeps");
-	Check(!centerF.behindCamera && std::abs(centerF.centerX - W * 0.5f) < 8.0f
-		&& std::abs(centerF.centerY - H * 0.5f) < 8.0f, "gfx.spawn.center-is-center");
+	// Nearest patch is ~29px from center; pitch is ~40x57px, so 40.0
+	// separates it cleanly from the next candidates (>= 42px).
+	Check(!centerF.behindCamera && bestCenterDist < 40.0f, "gfx.spawn.center-is-center");
 	{
 		float stored = -1.0f;
 		const bool occ = HzbOccluded(hzb.data(), W, H, mips, centerF, &stored);

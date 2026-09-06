@@ -75,8 +75,11 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	void AppendPasses(smvk::FrameContext& fc) override;
 	// HZB build passes over the prepass depth (call after the Forward+
 	// passes so depth is filled; T3 builds from full depth, T5 refreshes).
+	// passName labels the framegraph nodes ("GfxHiz" for the first build,
+	// "GfxHizRefresh" for the post-remainder rebuild over updated depth).
 	void AppendHizPasses(smvk::FrameContext& fc,
-		smvk::LogicalImageViewHandle depthLogical, uint32_t depthBindlessIndex);
+		smvk::LogicalImageViewHandle depthLogical, uint32_t depthBindlessIndex,
+		const char* passName = "GfxHiz");
 	// Filter compute dispatch (call after AppendHizPasses: the CS reads the
 	// HZB built this frame; dispatching earlier would read last frame's or
 	// uninitialized memory). CPU expansion stays in AppendPasses.

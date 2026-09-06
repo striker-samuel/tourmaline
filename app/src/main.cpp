@@ -1721,7 +1721,8 @@ private:
 				m_gfxRenderer.AppendRemainderPass(fc);
 				m_gfxRenderer.AppendHizPasses(fc,
 					m_viewportResources.renderDepth.logicalView,
-					m_viewportResources.forwardPlus.depthBindlessIndex);
+					m_viewportResources.forwardPlus.depthBindlessIndex,
+					"GfxHizRefresh");
 			}
 		}
 		m_fpRenderer.AppendTileCull(fc);

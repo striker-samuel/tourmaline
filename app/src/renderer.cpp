@@ -326,7 +326,8 @@ void GfxRenderer::AppendFilterDispatch(smvk::FrameContext& fc) {
 }
 
 void GfxRenderer::AppendHizPasses(smvk::FrameContext& base,
-	smvk::LogicalImageViewHandle depthLogical, uint32_t depthBindlessIndex) {
+	smvk::LogicalImageViewHandle depthLogical, uint32_t depthBindlessIndex,
+	const char* passName) {
 	AppFrameContext& fc = static_cast<AppFrameContext&>(base);
 	if (lastSlot_ == UINT32_MAX || lastSlot_ >= smvk::gfx::ViewCount(gfx))
 		return;
@@ -339,7 +340,8 @@ void GfxRenderer::AppendHizPasses(smvk::FrameContext& base,
 	for (uint32_t m = 0; m < t.hiz.mipCount; ++m) {
 		const bool fromDepth = (m == 0);
 		smvk::RenderPass& hizPass = smvk::gfx::AddHizPass(gfx, *fc.rg, slot, m,
-			fromDepth ? depthLogical : smvk::LogicalImageViewHandle{});
+			fromDepth ? depthLogical : smvk::LogicalImageViewHandle{},
+			passName ? passName : "GfxHiz");
 		hizPass.SetRecordingFunc([self, ctx, slot, m, depthBindlessIndex, fromDepth](smvk::CommandBuffer& cmd)
 		{
 			smvk::gfx::PushAndDispatchHiz(self->gfx, cmd, *ctx, slot, m,

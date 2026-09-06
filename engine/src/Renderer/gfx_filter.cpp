@@ -264,7 +264,11 @@ ClusterFootprint ProjectClusterFootprint(const glm::vec3& worldCenter,
 	// Extent from the nearest-point depth (clipN.w <= dist): radial dist
 	// underestimates off-axis footprints (smaller rect, finer mip) and
 	// over-culls. Nearest depth overestimates -> conservative.
-	const float fx = viewProj[0][0];
+	// Focal lengths are magnitudes: viewProj[0][0] is negative for mirrored
+	// views (e.g. looking down +z with y-up gives right = -x); a signed fx
+	// would flip the radius sign, poison rectW <= 0 and silently disable
+	// occlusion for the whole frame (fy already takes abs).
+	const float fx = std::abs(viewProj[0][0]);
 	const float fy = std::abs(viewProj[1][1]);
 	const float depthForExtent = std::max(clipN.w, 1e-6f);
 	f.radiusX = worldRadius * fx / depthForExtent * (w * 0.5f);
@@ -394,10 +398,10 @@ uint64_t HizAddress(State& s, ResourceManager& ctx, uint32_t view) {
 }
 
 RenderPass& AddHizPass(State& s, RenderGraph& rg, uint32_t view,
-	uint32_t dstMip, LogicalImageViewHandle depthLogical) {
+	uint32_t dstMip, LogicalImageViewHandle depthLogical, const char* passName) {
 	assert(view < s.temporals.size());
 	TemporalView& t = s.temporals[view];
-	RenderPass& pass = rg.AddComputePass("GfxHiz");
+	RenderPass& pass = rg.AddComputePass(passName ? passName : "GfxHiz");
 	BufferSyncRequest hizRW{};
 	hizRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
 	hizRW.barrierMasks.stageMask = PipelineStageBit_Compute;
