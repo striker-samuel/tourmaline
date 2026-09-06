@@ -23,6 +23,7 @@
 #include <Engine/Rendergraph/msaa.h>
 #include <Engine/Rendergraph/motionblur.h>
 #include <Engine/Rendergraph/motionvector.h>
+#include <Engine/Rendergraph/ssao.h>
 #include <Engine/Rendergraph/tonemap.h>
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/ui.h>
@@ -125,6 +126,32 @@ static smvk::MotionBlurDesc MakeMotionBlurDesc() {
 	d.maxRadiusPx = MOTIONBLUR_MAX_RADIUS_PX;
 	d.velocityScale = MOTIONBLUR_VELOCITY_SCALE;
 	d.name = "motionBlur";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
+// SSAO config (half-res depth-only AO, see Engine/Rendergraph/ssao.h).
+// Runs after Main, composites in the tonemapper (hdr *= AO, pre-bloom).
+// -----------------------------------------------------------------------------
+static constexpr float SSAO_RADIUS = 0.5f; // view-space sample radius (m)
+static constexpr float SSAO_BIAS = 0.025f; // self-occlusion bias
+static constexpr float SSAO_INTENSITY = 1.0f; // tonemap composite strength
+static constexpr float SSAO_MAX_DISTANCE = 25.0f; // fade-out distance (m)
+static constexpr uint32_t SSAO_SAMPLES = 16; // hemisphere taps 1..32
+static constexpr float SSAO_BLUR_SHARPNESS = 8.0f; // depth edge weight
+
+static smvk::SsaoDesc MakeSsaoDesc() {
+	smvk::SsaoDesc d{};
+	d.format = smvk::Format::R8_UNorm;
+	d.radius = SSAO_RADIUS;
+	d.bias = SSAO_BIAS;
+	d.intensity = SSAO_INTENSITY;
+	d.maxDistance = SSAO_MAX_DISTANCE;
+	d.sampleCount = SSAO_SAMPLES;
+	d.blurSharpness = SSAO_BLUR_SHARPNESS;
+	d.name = "ssao";
+	d.rawName = "ssaoRaw";
+	d.blurName = "ssaoBlur";
 	return d;
 }
 
@@ -399,6 +426,7 @@ struct ViewportResources {
 	smvk::MsaaTarget msaa; // transient 2x color+depth for Main, resolves to hdr
 	smvk::MotionVectors motionVectors; // RG16F motion target + program + pass helper
 	smvk::MotionBlur motionBlur; // blurred HDR output + velocity-gather program + pass
+	smvk::Ssao ssao; // half-res raw + blurred AO targets + programs + passes
 	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
 	smvk::UiComposite uiComposite; // UI -> swapchain alpha composite program + pass
 	bool msaaEnabled = true; // runtime toggle (effective only if device supports)
@@ -1370,6 +1398,7 @@ private:
 		m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent);
 		m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
 		m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
+		m_viewportResources.ssao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsaoDesc());
 		smvk::MsaaDesc rebuildMsaaDesc{};
 		rebuildMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildMsaaDesc);
@@ -1411,6 +1440,7 @@ private:
 			m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent);
 			m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
 			m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
+			m_viewportResources.ssao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsaoDesc());
 			smvk::MsaaDesc frameMsaaDesc{};
 			frameMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 			m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, frameMsaaDesc);
@@ -2480,10 +2510,9 @@ private:
 		}
 
 		// ---------------------------------------------------------------------
-		// Motion blur – velocity gather in HDR (see motionblur.h). Runs after
-		// Main, before Bloom/Tonemap so both consume the blurred HDR.
+		// Sampler cache: linear clamp shared by SSAO + motion blur + bloom +
+		// tonemap blits (AO upscale taps only; depth is always .Load'ed).
 		// ---------------------------------------------------------------------
-		// Sampler cache: linear clamp shared by motion blur + bloom + tonemap blits
 		uint32_t linearSampler = m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
 			.magFilter = smvk::Filter::Linear,
 			.minFilter = smvk::Filter::Linear,
@@ -2493,6 +2522,45 @@ private:
 			.addressW = smvk::AddressMode::ClampToEdge,
 			.maxAnisotropy = 1.0f
 		});
+		// ---------------------------------------------------------------------
+		// SSAO – half-res depth-only AO (see ssao.h). Runs after Main, so the
+		// 1x prepass depth is final; composites in the tonemapper below.
+		// ---------------------------------------------------------------------
+		smvk::LogicalImageViewHandle aoView{};
+		uint32_t aoBindless = UINT32_MAX;
+		float aoIntensity = 0.0f;
+		{
+			smvk::SsaoDesc ssaoDesc = MakeSsaoDesc();
+			ssaoDesc.radius = m_ssaoRadius;
+			ssaoDesc.bias = m_ssaoBias;
+			ssaoDesc.intensity = m_ssaoIntensity;
+			ssaoDesc.maxDistance = m_ssaoMaxDistance;
+			ssaoDesc.sampleCount = (uint32_t)m_ssaoSamples;
+			ssaoDesc.blurSharpness = m_ssaoBlurSharpness;
+			ssaoDesc.nearPlane = frameData.nearPlane;
+			const bool ssaoOn = m_ssaoEnabled
+				&& m_viewportResources.ssao.Valid()
+				&& m_ssaoIntensity > 0.0f;
+			if (ssaoOn) {
+				m_viewportResources.ssao.AddSsaoPasses(
+					*m_rendergraph,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.renderDepth.bindlessIndex,
+					frameUniformsAddress,
+					linearSampler,
+					ssaoDesc,
+					"Ssao",
+					"SsaoBlur");
+				aoView = m_viewportResources.ssao.OutputView();
+				aoBindless = m_viewportResources.ssao.OutputBindless();
+				aoIntensity = m_ssaoIntensity;
+			}
+		}
+
+		// ---------------------------------------------------------------------
+		// Motion blur – velocity gather in HDR (see motionblur.h). Runs after
+		// Main, before Bloom/Tonemap so both consume the blurred HDR.
+		// ---------------------------------------------------------------------
 		// Scene HDR for downstream passes: blurred output when the pass ran,
 		// sharp HDR otherwise (no copy when disabled).
 		smvk::LogicalImageViewHandle sceneHdrView = m_viewportResources.hdr.logicalView;
@@ -2567,7 +2635,10 @@ private:
 				motionView,
 				motionBindless,
 				m_showMotionDebug ? 1u : 0u,
-				m_motionDebugScale);
+				m_motionDebugScale,
+				aoView,
+				aoBindless,
+				aoIntensity);
 			(void)tonemapPass;
 		}
 
@@ -2698,6 +2769,22 @@ private:
 						ImGui::TextDisabled("Motion blur target/shaders missing – sharp HDR");
 					else
 						ImGui::TextDisabled("Gather along motion vectors, pre-tonemap HDR");
+				}
+				ImGui::Checkbox("SSAO (half-res, depth only)", &m_ssaoEnabled);
+				if (m_ssaoEnabled) {
+					ImGui::SliderFloat("AO radius (m)", &m_ssaoRadius, 0.05f, 2.0f);
+					ImGui::SliderFloat("AO bias", &m_ssaoBias, 0.0f, 0.1f);
+					ImGui::SliderFloat("AO intensity", &m_ssaoIntensity, 0.0f, 2.0f);
+					ImGui::SliderFloat("AO max distance (m)", &m_ssaoMaxDistance, 2.0f, 100.0f);
+					ImGui::SliderInt("AO samples", &m_ssaoSamples, 1, 32);
+					ImGui::SliderFloat("AO blur sharpness", &m_ssaoBlurSharpness, 0.0f, 32.0f);
+					const auto& ssao = m_viewportResources.ssao;
+					if (!ssao.Valid())
+						ImGui::TextDisabled("SSAO target/shaders missing – no AO");
+					else
+						ImGui::Text("SSAO: half %ux%u (full %ux%u)",
+							ssao.halfExtent.width, ssao.halfExtent.height,
+							ssao.fullExtent.width, ssao.fullExtent.height);
 				}
 			}
 			ImGui::Separator();
@@ -2974,6 +3061,14 @@ private:
 	int m_motionBlurSamples = (int)MOTIONBLUR_SAMPLES; // gather taps 1..32
 	float m_motionBlurMaxRadius = MOTIONBLUR_MAX_RADIUS_PX; // blur clamp (px)
 	float m_motionBlurStrength = MOTIONBLUR_VELOCITY_SCALE; // shutter scale
+	// ---- SSAO pass (half-res depth-only AO, see ssao.h) ----
+	bool m_ssaoEnabled = true; // runs after Main, composites in tonemap
+	float m_ssaoRadius = SSAO_RADIUS; // view-space sample radius (m)
+	float m_ssaoBias = SSAO_BIAS; // self-occlusion bias
+	float m_ssaoIntensity = SSAO_INTENSITY; // tonemap composite strength
+	float m_ssaoMaxDistance = SSAO_MAX_DISTANCE; // fade-out distance (m)
+	int m_ssaoSamples = (int)SSAO_SAMPLES; // hemisphere taps 1..32
+	float m_ssaoBlurSharpness = SSAO_BLUR_SHARPNESS; // blur depth edge weight
 	// ---- Emissive point-light ball objects (scene-hierarchy lights) ----
 	smvk::Cluster* m_lightCluster = nullptr; // owns the shared ball resources
 	smvk::ClusterStaticMeshHandle m_ballMesh{};

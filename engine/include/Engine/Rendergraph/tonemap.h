@@ -27,7 +27,7 @@
 
 namespace smvk {
 
-// Must match tonemap.frag.hlsl TonemapPush (40 bytes).
+// Must match tonemap.frag.hlsl TonemapPush (56 bytes).
 struct TonemapPush {
 	uint32_t hdrTextureIndex = UINT32_MAX;
 	uint32_t samplerIndex = 0;
@@ -39,8 +39,14 @@ struct TonemapPush {
 	uint32_t motionTextureIndex = UINT32_MAX; // UINT32_MAX = disabled
 	float motionDebugScale = 16.0f; // velocity amplification for debugView 1
 	uint32_t pad0 = 0;
+	// Half-res SSAO composite (pre-bloom, pre-tonemap):
+	// hdr *= lerp(1, ao, aoIntensity). UINT32_MAX = disabled.
+	uint32_t aoTextureIndex = UINT32_MAX;
+	float aoIntensity = 0.0f;
+	uint32_t pad1 = 0;
+	uint32_t pad2 = 0;
 };
-static_assert(sizeof(TonemapPush) == 40);
+static_assert(sizeof(TonemapPush) == 56);
 
 inline constexpr uint32_t kTonemapReinhard = 0;
 inline constexpr uint32_t kTonemapACES = 1;
@@ -125,7 +131,10 @@ struct Tonemapper {
 		LogicalImageViewHandle motionView = {},
 		uint32_t motionBindlessIndex = UINT32_MAX,
 		uint32_t debugView = 0,
-		float motionDebugScale = 16.0f) const {
+		float motionDebugScale = 16.0f,
+		LogicalImageViewHandle aoView = {},
+		uint32_t aoBindlessIndex = UINT32_MAX,
+		float aoIntensity = 0.0f) const {
 		assert(ShadersValid());
 		assert(!hdrView.empty());
 		assert(!swapViews.empty());
@@ -133,6 +142,7 @@ struct Tonemapper {
 		const bool bloomOn = !bloomView.empty() && bloomBindlessIndex != UINT32_MAX && bloomIntensity > 0.0f;
 		const bool motionDebugOn = debugView != 0 &&
 			!motionView.empty() && motionBindlessIndex != UINT32_MAX;
+		const bool aoOn = !aoView.empty() && aoBindlessIndex != UINT32_MAX && aoIntensity > 0.0f;
 		TonemapPush push{};
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.samplerIndex = linearSamplerIndex;
@@ -144,14 +154,20 @@ struct Tonemapper {
 		push.motionTextureIndex = motionDebugOn ? motionBindlessIndex : UINT32_MAX;
 		push.motionDebugScale = motionDebugScale;
 		push.pad0 = 0;
+		push.aoTextureIndex = aoOn ? aoBindlessIndex : UINT32_MAX;
+		push.aoIntensity = aoOn ? aoIntensity : 0.0f;
+		push.pad1 = 0;
+		push.pad2 = 0;
 
 		std::vector<LogicalImageViewHandle> inputs;
-		inputs.reserve((bloomOn ? 1 : 0) + (motionDebugOn ? 1 : 0) + 1);
+		inputs.reserve((bloomOn ? 1 : 0) + (motionDebugOn ? 1 : 0) + (aoOn ? 1 : 0) + 1);
 		inputs.push_back(hdrView);
 		if (bloomOn)
 			inputs.push_back(bloomView);
 		if (motionDebugOn)
 			inputs.push_back(motionView);
+		if (aoOn)
+			inputs.push_back(aoView);
 
 		RenderPass& pass = rg.AddPass(name ? name : overrideDesc.name);
 		pass.SetOffset(0, 0)
@@ -191,10 +207,14 @@ struct Tonemapper {
 		LogicalImageViewHandle motionView = {},
 		uint32_t motionBindlessIndex = UINT32_MAX,
 		uint32_t debugView = 0,
-		float motionDebugScale = 16.0f) const {
+		float motionDebugScale = 16.0f,
+		LogicalImageViewHandle aoView = {},
+		uint32_t aoBindlessIndex = UINT32_MAX,
+		float aoIntensity = 0.0f) const {
 		return AddTonemapPass(rg, hdrView, hdrBindlessIndex, bloomView, bloomBindlessIndex,
 			bloomIntensity, linearSamplerIndex, swapViews, swapExtent, desc, name,
-			motionView, motionBindlessIndex, debugView, motionDebugScale);
+			motionView, motionBindlessIndex, debugView, motionDebugScale,
+			aoView, aoBindlessIndex, aoIntensity);
 	}
 };
 

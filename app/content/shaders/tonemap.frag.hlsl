@@ -23,6 +23,10 @@ struct TonemapPush
     uint motionTextureIndex; // 0xffffffff = disabled
     float motionDebugScale;
     uint pad0;
+    uint aoTextureIndex; // half-res SSAO, 0xffffffff = disabled
+    float aoIntensity;
+    uint pad1;
+    uint pad2;
 };
 
 [[vk::push_constant]]
@@ -96,6 +100,14 @@ PSOut mainPS(PSIn IN)
     float3 hdr = float3(0,0,0);
     if (hdrIdx != 0xffffffff && hdrIdx < 100000)
         hdr = textures[NonUniformResourceIndex(hdrIdx)].Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).rgb;
+
+    // SSAO composite (half-res AO, bilinearly upscaled by the sampler).
+    // Pre-bloom, pre-tonemap; disabled when index is 0xffffffff.
+    if (tp.aoTextureIndex != 0xffffffff && tp.aoTextureIndex < 100000 && tp.aoIntensity > 0.0f)
+    {
+        float ao = textures[NonUniformResourceIndex(tp.aoTextureIndex)].Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).r;
+        hdr *= lerp(1.0f, saturate(ao), saturate(tp.aoIntensity));
+    }
 
     // Bloom composite (HDR add, pre-tonemap). Disabled when index is 0xffffffff.
     if (tp.bloomTextureIndex != 0xffffffff && tp.bloomTextureIndex < 100000 && tp.bloomIntensity > 0.0f)
