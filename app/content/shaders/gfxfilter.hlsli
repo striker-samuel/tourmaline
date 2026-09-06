@@ -97,4 +97,11 @@ struct GfxFilterPush
     uint hizHeight;
     uint hizMips;
     float minContribution; // px^2 footprint threshold (0 = off)
+    // Filtered-output region base (uint32 indices into the static index
+    // monoblock) for this dispatch's flight slice. Indirect firstIndex is
+    // written as indexBase + outputOffset (absolute), so draws address the
+    // monoblock directly and the index binding never switches buffers.
+    uint indexBase;
+    uint pad3;
 };
+//static_assert(sizeof(GfxFilterPush) == 200);

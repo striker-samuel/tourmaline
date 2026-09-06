@@ -135,6 +135,18 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 		uint32_t mainViewIdx, const glm::vec3& eye, const smvk::Extent2D& extent,
 		smvk::gfx::CullFlags flags);
 
+	// Debug culling freeze (set every frame by the owner while active, cleared
+	// otherwise): FilterMainView expands batches against this (view, eye)
+	// instead of the live main view, so the render camera can move freely
+	// while culling decisions stay put. Seed/remainder depth passes always
+	// stay on the live view (they write the live depth buffer); HZB must be
+	// held separately by the owner (skip AppendHizPasses) so the frozen
+	// footprints test against matching depth.
+	void SetCullOverride(uint32_t viewIndex, const glm::vec3& eye) {
+		cullOverride_ = true; cullView_ = viewIndex; cullEye_ = eye;
+	}
+	void ClearCullOverride() { cullOverride_ = false; }
+
 	smvk::RenderPass& AddFilterPass(smvk::RenderGraph& rg, uint32_t slot);
 
 	// Consume side (caller has bound FilteredProgram() with its own PSO).
@@ -204,10 +216,17 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// (bisect with the backface/frustum/smallprim toggles to split those).
 	// Stalls (fence wait); call after WaitForDeviceIdle, debug-only.
 	void DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot);
+	// DEBUG: Download and print HZB buffer contents for inspection.
+	void DumpHzb(smvk::ResourceManager& ctx, uint32_t slot);
 
 private:
 	// world mesh idx -> gfx mesh idx (UINT32_MAX = not filterable).
 	std::vector<uint32_t> meshMap_;
+	// Debug culling-freeze override (see SetCullOverride). Read once per
+	// AppendPasses for the FilterMainView call only.
+	bool cullOverride_ = false;
+	uint32_t cullView_ = UINT32_MAX;
+	glm::vec3 cullEye_{ 0.0f };
 	uint64_t frameCounter_ = 0; // throttles the per-frame stats log
 	uint32_t lastSlot_ = UINT32_MAX;
 	bool seededThisFrame_ = false;

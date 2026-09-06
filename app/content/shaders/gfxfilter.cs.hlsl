@@ -25,7 +25,7 @@
 // Indirect-arg clearing is done CPU-side (zero-fill upload before the pass),
 // replacing ClearDrawIndirectArgsCS.
 //
-// C++ mirror: Engine/Renderer/gfx_filter.h (GfxFilterPush, 168 bytes).
+// C++ mirror: Engine/Renderer/gfx_filter.h (FilterPush, 200 bytes).
 
 #define GFXFILTER_PASS
 #include "common.hlsli"
@@ -449,10 +449,12 @@ void mainCS(uint tid : SV_GroupThreadID, uint gid : SV_GroupID)
     GroupMemoryBarrierWithGroupSync();
 
     // This group owns command gid exclusively: plain stores, no atomics.
+    // firstIndex is absolute into the static index monoblock (indexBase +
+    // output slot); the input-assembly index binding never switches buffers.
     if (gid < pcF.batchCount && tid == 0)
     {
         pcF.indirect.Get().cmds[gid].indexCount = gLocalCount;
-        pcF.indirect.Get().cmds[gid].firstIndex = header.z;
+        pcF.indirect.Get().cmds[gid].firstIndex = pcF.indexBase + header.z;
         pcF.indirect.Get().cmds[gid].vertexOffset = 0; // indices are heap-global ids
         pcF.indirect.Get().cmds[gid].firstInstance = header.y; // draw id for VS
         pcF.indirect.Get().cmds[gid].instanceCount = 1;

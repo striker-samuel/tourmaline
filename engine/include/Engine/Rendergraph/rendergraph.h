@@ -54,8 +54,10 @@ namespace smvk
 		);
 
 		// Binds an arbitrary RHI buffer as the index buffer (UINT32).
-		// Used by the GeometryFX-style filter path to bind the per-view
-		// filtered index list instead of the static heap (see BindStaticVertexFmt).
+		// All index streams (mesh, cluster-ordered, filtered) live in the
+		// static index monoblock with absolute firstIndex, so in practice
+		// the offset-0 monoblock binding from BindStaticVertexFmt is the
+		// only one ever needed (see BindStaticVertexFmt).
 		void BindIndexBuffer(BufferHandle buffer, uint64_t offset = 0);
 
 		// Indirect indexed draws consuming VkDrawIndexedIndirectCommand
@@ -89,6 +91,12 @@ namespace smvk
 		void* cmdOpaque_ = nullptr;
 		void* currentPipeline_ = nullptr;
 		void* currentLayout_ = nullptr;
+#ifndef NDEBUG
+		// Debug-only: last index buffer bound on this command buffer.
+		// DrawIndexed* wrappers assert it is set, catching leaked/stale
+		// index bindings across passes (the exploded-vertices class).
+		BufferHandle boundIndexBuffer_{};
+#endif
 		RenderGraph* graph_ = nullptr;
 		RenderPass* renderPass_ = nullptr;
 	};

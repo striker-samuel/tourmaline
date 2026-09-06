@@ -143,12 +143,10 @@ void GfxRenderer::RecordDepthList(smvk::CommandBuffer& cmd, smvk::ResourceManage
 	cmd.BindStaticVertexFmt();
 	// NOTE: no push constants before the first BindRenderPipeline below —
 	// PushConstants asserts on a bound pipeline layout (impl.cpp).
-	// Also do NOT bind FilterIndexBuffer here. BindRenderPipeline rebinds
-	// rebinds the static-mesh index heap internally (BindStaticVertexFmt),
-	// so any index binding must come AFTER the pipeline bind, immediately
-	// before the draw (the masked ranges already do this via DrawSeedRange
-	// / DrawRemainderRange). Binding it here draws cluster-heap offsets
-	// against the mesh-local index buffer: exploded vertices in depth.
+	// No index binding anywhere here: mesh, cluster-ordered and filtered
+	// index regions share the static index monoblock with absolute
+	// firstIndex, so the offset-0 binding from BindStaticVertexFmt (run by
+	// every BindRenderPipeline) is correct for every draw below.
 	// Phase 1: opaque (VS-only, back-culled like the prepass).
 	if (opaqueCount > 0) {
 		cmd.BindRenderPipeline(
@@ -166,9 +164,6 @@ void GfxRenderer::RecordDepthList(smvk::CommandBuffer& cmd, smvk::ResourceManage
 		);
 		cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
 		PushSeedConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex, drawsAddr);
-		// AFTER the pipeline bind (see NOTE above): cluster-heap indices
-		// with heap-global ids (vertexOffset 0 in the SeedCommands).
-		cmd.BindIndexBuffer(smvk::gfx::FilterIndexBuffer(gfx));
 		cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
 	}
 	// Phase 2: MASK cutout (alpha-tested FS, cull off).
@@ -224,8 +219,19 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 	// NOTE: the seed pass below captures fc.pc (frame addresses for the
 	// masked FS) by value, so main must call AppendPasses after fc.pc is
 	// built but before the Forward+ prepass (seed writes depth first).
+	// Debug culling freeze: batch expansion (+ the filter CS downstream)
+	// runs against the override view/eye when set. Everything that writes
+	// the live depth buffer (seed, remainder) deliberately stays on the
+	// live main view.
+	uint32_t cullView = fc.mainViewIndex;
+	glm::vec3 cullEye = fc.eye;
+	if (cullOverride_ && fc.views && cullView_ < fc.views->Count())
+	{
+		cullView = cullView_;
+		cullEye = cullEye_;
+	}
 	lastSlot_ = FilterMainView(*fc.ctx, *fc.rg, fc.frameIndex, *fc.world,
-		*fc.views, fc.mainViewIndex, fc.eye,
+		*fc.views, cullView, cullEye,
 		{ fc.extent.width, fc.extent.height }, config.cullFlags);
 	if (lastSlot_ == UINT32_MAX)
 		return;
@@ -253,7 +259,7 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 			smvk::RenderPass& seedPass = smvk::gfx::AddSeedPass(
 				gfx, *fc.rg, slot, fc.depthView);
 			smvk::gfx::AddSeedConsumeHints(seedPass,
-				gfx.filterIndexLogical,
+				smvk::gfx::IndexHeapLogical(gfx),
 				smvk::gfx::VisDrawLogical(gfx, slot),
 				smvk::gfx::SeedIndirectLogical(gfx, slot));
 			GfxRenderer* self = this;
@@ -301,7 +307,7 @@ void GfxRenderer::AppendRemainderPass(smvk::FrameContext& base) {
 	const uint32_t slot = lastSlot_;
 	smvk::RenderPass& pass = smvk::gfx::AddRemainderPass(gfx, *fc.rg, slot, fc.depthView);
 	smvk::gfx::AddSeedConsumeHints(pass,
-		gfx.filterIndexLogical,
+		smvk::gfx::IndexHeapLogical(gfx),
 		smvk::gfx::DrawLogical(gfx, slot),
 		smvk::gfx::RemainderIndirectLogical(gfx, slot));
 	GfxRenderer* self = this;
@@ -513,7 +519,8 @@ void GfxRenderer::DrawRemainderRange(smvk::CommandBuffer& cmd, uint32_t slot, ui
 	const smvk::gfx::SeedRange& r = ranges[rangeIdx];
 	if (r.commandCount == 0)
 		return;
-	cmd.BindIndexBuffer(smvk::gfx::FilterIndexBuffer(gfx));
+	// No index bind: seed commands address the static index monoblock
+	// absolutely (offset-0 binding from BindStaticVertexFmt is correct).
 	cmd.DrawIndexedIndirect(smvk::gfx::RemainderIndirectBuffer(gfx, slot),
 		(uint64_t)r.firstCommand * 20, r.commandCount, 20);
 }
@@ -525,7 +532,7 @@ void GfxRenderer::DrawSeedRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_
 	const smvk::gfx::SeedRange& r = ranges[rangeIdx];
 	if (r.commandCount == 0)
 		return;
-	cmd.BindIndexBuffer(smvk::gfx::FilterIndexBuffer(gfx));
+	// No index bind: see DrawRemainderRange.
 	cmd.DrawIndexedIndirect(smvk::gfx::SeedIndirectBuffer(gfx, slot),
 		(uint64_t)r.firstCommand * 20, r.commandCount, 20);
 }
@@ -570,21 +577,47 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 		"[GfxAudit] slot %u: batches=%u flags=0x%x hiz=%ux%u/%u haveHzb=%d\n",
 		slot, v.batchCount, v.cullFlags,
 		t.hiz.width, t.hiz.height, t.hiz.mipCount, haveHzb ? 1 : 0);
-	uint32_t zeroTotal = 0, cpuOcc = 0, cpuKeep = 0, printed = 0;
+	uint32_t zeroTotal = 0, cpuOcc = 0, cpuKeep = 0;
+	uint32_t printedOcc = 0, printedKeep = 0;
+	// Per-class budgets: occlusion-agreeing kills used to hide behind the
+	// single 48-line cap (the first kills are usually off-screen frustum
+	// kills), making occlusion look permanently silent. Occluded and keep
+	// kills each get their own budget so both classes stay visible.
+	static constexpr uint32_t kAuditPrintPerClass = 24;
+	static constexpr uint32_t kAuditMissCap = 16;
+	// gfx mesh -> world mesh (first match) for traceability; -1 = none.
+	// Lets a "mesh X still renders" report map to the scene graph.
+	std::vector<int> gfxToWorld(gfx.meshes.size(), -1);
+	for (uint32_t w = 0; w < (uint32_t)meshMap_.size(); ++w) {
+		const uint32_t g = meshMap_[w];
+		if (g < gfxToWorld.size() && gfxToWorld[g] < 0)
+			gfxToWorld[g] = (int)w;
+	}
+	struct MeshAudit {
+		uint32_t batches = 0, tris = 0, gpuKill = 0;
+		uint32_t occKill = 0, missed = 0, aliveTris = 0;
+	};
+	std::vector<MeshAudit> meshStats(gfx.meshes.size());
+	struct MissDetail {
+		uint32_t b, cl, draw, mesh, mat, tris, alive, level;
+		float cx, cy, rx, ry, dn, stored;
+		const char* screenTag;
+	};
+	std::vector<MissDetail> misses;
+	misses.reserve(kAuditMissCap);
 	for (uint32_t i = 0; i < v.batchCount && i < (uint32_t)v.batches.size(); ++i) {
-		if (cmds[i].indexCount != 0)
-			continue;
-		++zeroTotal;
 		const Batch& b = v.batches[i];
 		uint32_t mat = batchMat[i];
-		uint32_t tris = 0;
+		uint32_t tris = 0, mesh = UINT32_MAX;
 		float cx = 0.0f, cy = 0.0f, rx = 0.0f, ry = 0.0f, dn = 0.0f;
+		float stored = -1.0f;
 		uint32_t level = 0;
-		bool mirrorOk = false, verdict = false;
+		bool mirrorOk = false, behind = false, verdict = false;
 		if (b.draw < v.drawConstants.size() && b.cluster < gfx.clusters.size()) {
 			const Draw& dc = v.drawConstants[b.draw];
 			const Cluster& c = gfx.clusters[b.cluster];
 			tris = c.triCount;
+			mesh = dc.mesh;
 			const float bs = std::max({
 				glm::length(glm::vec3(dc.model[0])),
 				glm::length(glm::vec3(dc.model[1])),
@@ -595,50 +628,134 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 				wc, wr, v.eye, v.viewProj, v.width, v.height);
 			cx = f.centerX; cy = f.centerY; rx = f.radiusX; ry = f.radiusY;
 			dn = f.nearestDepth;
+			behind = f.behindCamera;
 			if (!f.behindCamera && haveHzb)
 				level = HzbMipForRect(rx * 2.0f, ry * 2.0f, t.hiz.mipCount);
 			mirrorOk = true;
 			verdict = haveHzb && HzbOccluded(hzb.data(),
-				t.hiz.width, t.hiz.height, t.hiz.mipCount, f);
+				t.hiz.width, t.hiz.height, t.hiz.mipCount, f, &stored);
 		}
+		const bool killed = (cmds[i].indexCount == 0);
+		if (killed) ++zeroTotal;
 		if (verdict) ++cpuOcc; else ++cpuKeep;
-		if (printed < 48) {
-			++printed;
-			std::fprintf(stderr,
-				"[GfxAudit] kill b=%u cl=%u draw=%u mat=%u tris=%u | "
-				"c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f cpu=%s%s\n",
-				i, b.cluster, b.draw, mat, tris, cx, cy, rx, ry, level, dn,
-				verdict ? "OCCLUDED" : "keep",
-				mirrorOk ? "" : " (unresolved)");
+		const int world = (mesh < gfxToWorld.size()) ? gfxToWorld[mesh] : -1;
+		// Screen tag: separates occlusion hiding visible geometry from
+		// pre-empting the frustum stages (same outcome there). Mirrors the
+		// off-target condition in HzbOccluded.
+		const char* screenTag = "unresolved";
+		if (mirrorOk) {
+			const float w = (float)v.width, h = (float)v.height;
+			const bool offscreen = behind
+				|| cx + rx < 0.0f || cx - rx > w || cy + ry < 0.0f || cy - ry > h;
+			screenTag = behind ? "behindcam" : (offscreen ? "offscreen" : "screen");
+		}
+		// Per-mesh summary over kills AND survivors: answers "mesh X still
+		// renders — what did the filter think of its batches?" missed =
+		// CPU says occluded but the GPU kept the batch.
+		if (mesh < meshStats.size()) {
+			MeshAudit& ms = meshStats[mesh];
+			++ms.batches;
+			ms.tris += tris;
+			if (killed) {
+				++ms.gpuKill;
+				if (verdict) ++ms.occKill;
+			}
+			else {
+				ms.aliveTris += cmds[i].indexCount / 3;
+				if (verdict) {
+					++ms.missed;
+					if (mirrorOk && misses.size() < kAuditMissCap) {
+						MissDetail d{};
+						d.b = i; d.cl = b.cluster; d.draw = b.draw;
+						d.mesh = mesh; d.mat = mat; d.tris = tris;
+						d.alive = cmds[i].indexCount / 3; d.level = level;
+						d.cx = cx; d.cy = cy; d.rx = rx; d.ry = ry;
+						d.dn = dn; d.stored = stored; d.screenTag = screenTag;
+						misses.push_back(d);
+					}
+				}
+			}
+		}
+		if (!killed)
+			continue;
+		uint32_t& budget = verdict ? printedOcc : printedKeep;
+		if (budget < kAuditPrintPerClass) {
+			++budget;
+			if (verdict) {
+				std::fprintf(stderr,
+					"[GfxAudit] kill b=%u cl=%u draw=%u mesh=%u world=%d mat=%u tris=%u | "
+					"c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f stored=%.5f "
+					"margin=%+.5f %s cpu=OCCLUDED%s\n",
+					i, b.cluster, b.draw, mesh, world, mat, tris, cx, cy, rx, ry,
+					level, dn, stored, stored - dn, screenTag,
+					mirrorOk ? "" : " (unresolved)");
+			}
+			else {
+				std::fprintf(stderr,
+					"[GfxAudit] kill b=%u cl=%u draw=%u mesh=%u world=%d mat=%u tris=%u | "
+					"c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f stored=%.5f "
+					"%s cpu=keep%s\n",
+					i, b.cluster, b.draw, mesh, world, mat, tris, cx, cy, rx, ry,
+					level, dn, stored, screenTag,
+					mirrorOk ? "" : " (unresolved)");
+			}
 		}
 	}
+	// Misses first: CPU says occluded but the GPU kept the batch — the
+	// exact "mesh behind still renders" cases, with margins.
+	for (const MissDetail& d : misses) {
+		std::fprintf(stderr,
+			"[GfxAudit] miss b=%u cl=%u draw=%u mesh=%u mat=%u tris=%u aliveTris=%u | "
+			"c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f stored=%.5f "
+			"margin=%+.5f %s cpu=OCCLUDED-MISS\n",
+			d.b, d.cl, d.draw, d.mesh, d.mat, d.tris, d.alive,
+			d.cx, d.cy, d.rx, d.ry, d.level, d.dn, d.stored,
+			d.stored - d.dn, d.screenTag);
+	}
+	if (misses.size() == kAuditMissCap)
+		std::fprintf(stderr, "[GfxAudit] miss list capped at %u (more unprinted)\n",
+			kAuditMissCap);
+	uint32_t missedTotal = 0;
+	for (uint32_t m = 0; m < (uint32_t)meshStats.size(); ++m) {
+		const MeshAudit& ms = meshStats[m];
+		if (ms.batches == 0)
+			continue;
+		missedTotal += ms.missed;
+		std::fprintf(stderr,
+			"[GfxAudit] mesh=%u world=%d batches=%u tris=%u gpuKill=%u occKill=%u missed=%u aliveTris=%u\n",
+			m, gfxToWorld[m], ms.batches, ms.tris, ms.gpuKill, ms.occKill,
+			ms.missed, ms.aliveTris);
+	}
 	std::fprintf(stderr,
-		"[GfxAudit] zero=%u cpuOccluded=%u cpuKeep=%u (keep = triangle kill or shader divergence; "
+		"[GfxAudit] zero=%u/%u cpuOccluded=%u cpuKeep=%u missed=%u%s (keep = triangle kill or shader divergence; "
 		"bisect backface/frustum/smallprim to split)\n",
-		zeroTotal, cpuOcc, cpuKeep);
+		zeroTotal, v.batchCount, cpuOcc, cpuKeep, missedTotal,
+		(v.batchCount > 0 && zeroTotal == v.batchCount)
+			? " WARNING: every batch killed (degenerate view or stale slice?)"
+			: "");
 }
 
 void GfxRenderer::AddMainConsumeHints(smvk::RenderPass& pass, uint32_t slot) {
 	using namespace smvk::gfx;
 	if (slot >= gfx.views.size())
 		return;
-	// Filtered index list (bound as Main's index buffer) + the GPU-written
-	// indirect commands. Engine helper covers IndexRead@Vertex and
-	// IndirectCommandRead@DrawIndirect.
-	AddConsumeHints(pass, FilteredLogical(gfx, slot), IndirectLogical(gfx, slot));
+	// Filtered index region (in the static index monoblock, bound at
+	// offset 0 by BindStaticVertexFmt) + the GPU-written indirect commands.
+	// Engine helper covers IndexRead@Vertex and IndirectCommandRead@DrawIndirect.
+	AddConsumeHints(pass, IndexHeapLogical(gfx), IndirectLogical(gfx, slot));
 	// gfxfiltered.vert resolves model matrices from the draws ring slice
 	// via BDA — compute/transfer-written, vertex-read.
 	smvk::BufferSyncRequest drawsRead{};
 	drawsRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
 	drawsRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
 	pass.AddBufferHint(DrawLogical(gfx, slot), drawsRead);
-	// The meshlet debug view binds the cluster-ordered heap as its index
-	// buffer (the seed/remainder passes hint it too; Main needs the
-	// transition whenever the debug branch runs).
+	// The meshlet debug view draws cluster regions of the same monoblock
+	// (the seed/remainder passes hint it too; Main needs the transition
+	// whenever the debug branch runs).
 	smvk::BufferSyncRequest indexRead{};
 	indexRead.barrierMasks.accessMask = smvk::AccessFlags::IndexRead;
 	indexRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
-	pass.AddBufferHint(gfx.filterIndexLogical, indexRead);
+	pass.AddBufferHint(IndexHeapLogical(gfx), indexRead);
 }
 
 void GfxRenderer::DrawRange(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
@@ -650,9 +767,14 @@ void GfxRenderer::DrawRange(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx
 	const smvk::gfx::MaterialRange& r = ranges[rangeIdx];
 	if (r.commandCount == 0)
 		return;
-	cmd.BindIndexBuffer(smvk::gfx::FilteredBuffer(gfx, slot));
+	// No index bind: indirect firstIndex is absolute into the static index
+	// monoblock (offset-0 binding from BindStaticVertexFmt is correct).
 	cmd.DrawIndexedIndirect(smvk::gfx::IndirectBuffer(gfx, slot),
 		(uint64_t)r.firstCommand * 20, r.commandCount, 20);
+}
+
+void GfxRenderer::DumpHzb(smvk::ResourceManager& ctx, uint32_t slot) {
+	smvk::gfx::DumpHzb(gfx, ctx, slot);
 }
 
 } // namespace app

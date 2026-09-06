@@ -1,10 +1,14 @@
-#pragma once
 #include <algorithm>
-#include <iostream>
+#include <cmath>
+#include <cstddef>
+#include <cstring>
+#include <array>
 #include <filesystem>
 #include <fstream>
-#include <array>
-#include <cmath>
+#include <iostream>
+#include <memory>
+#include <span>
+#include <utility>
 #include <vector>
 
 #include <Engine/core.h>
@@ -29,11 +33,14 @@ using app::PushConstants;
 #include <Engine/Vfs/vfs.h>
 #include <imgui.h>
 #include <glm/gtc/constants.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
 
 // Constants //
 static constexpr float default_near_clip = 0.01f;
-static constexpr float default_far_clip = 50.0f;
+static constexpr float default_far_clip = 50.0f; // CSM/split range only; the main projection is infinite (reversed-Z)
+static constexpr float kCameraFovYDegrees = 45.0f; // vertical FOV; converted to radians for setPerspective
 std::vector<std::string> gltf_meshes_paths = {
 	"content/models/Sponza/sponza.gltf"
 };
@@ -57,10 +64,10 @@ static std::vector<char> readContentFile(smvk::OverlayVfs& vfs, const std::strin
 // Engine/Rendergraph/cascadedshadowmap.h)
 // -----------------------------------------------------------------------------
 static constexpr uint32_t NUM_CASCADES = 4;
-static constexpr uint32_t CASCADE_RES = 2048; // per cascade tile (2048 -> 4096 atlas for 4 cascades, Option B)
+static constexpr uint32_t CASCADE_RES = 2048; // per cascade tile (2048 -> 4096 atlas for 4 cascades)
 static constexpr float CASCADE_LAMBDA = 0.92f; // 0 = linear, 1 = logarithmic
 static constexpr float CASCADE_Z_PADDING = 1.0f;
-static constexpr smvk::Format SHADOW_FORMAT = smvk::Format::D32_Float; // stencil dropped for directional atlas (Option B)
+static constexpr smvk::Format SHADOW_FORMAT = smvk::Format::D32_Float; // no stencil on the directional atlas
 
 // -----------------------------------------------------------------------------
 // Bloom config (resources + passes live in Engine/Rendergraph/bloom.h,
@@ -230,18 +237,6 @@ struct PointLightBall {
 	bool active = false;
 };
 
-// Data definitions //
-struct DrawSetData {
-	float transform[16] = {
-		1.0f, 0.0f, 0.0f, 0.0f,
-		0.0f, 1.0f, 0.0f, 0.0f,
-		0.0f, 0.0f, 1.0f, 0.0f,
-		0.0f, 0.0f, 0.0f, 1.0f
-	};
-	glm::vec4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
-};
-static_assert(sizeof(DrawSetData) % 16 == 0);
-
 // Unit UV sphere (radius 1, rings x segments quads) for the emissive
 // light-ball objects. Vertex colors are white (the ball material is unlit
 // with a black base color, so only the emissive factor shows). Winding is
@@ -323,6 +318,24 @@ struct FrameUniforms
 	smvk::EnvironmentFrameData env;
 };
 static_assert(sizeof(FrameUniforms) % 16 == 0);
+// CPU/HLSL ABI: total-size alignment is not enough — each field offset must
+// match common.hlsli FrameUniforms (float4-packed, env = 8 x float4).
+static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 16 + 128);
+static_assert(offsetof(FrameUniforms, view) == 0);
+static_assert(offsetof(FrameUniforms, proj) == 64);
+static_assert(offsetof(FrameUniforms, viewProj) == 128);
+static_assert(offsetof(FrameUniforms, invView) == 192);
+static_assert(offsetof(FrameUniforms, invProj) == 256);
+static_assert(offsetof(FrameUniforms, invViewProj) == 320);
+static_assert(offsetof(FrameUniforms, prevViewProj) == 384);
+static_assert(offsetof(FrameUniforms, cameraPos) == 448);
+static_assert(offsetof(FrameUniforms, time) == 460);
+static_assert(offsetof(FrameUniforms, viewportSize) == 464);
+static_assert(offsetof(FrameUniforms, invViewportSize) == 472);
+static_assert(offsetof(FrameUniforms, nearPlane) == 480);
+static_assert(offsetof(FrameUniforms, farPlane) == 484);
+static_assert(offsetof(FrameUniforms, exposure) == 488);
+static_assert(offsetof(FrameUniforms, env) == 496);
 
 // Resources
 struct AppResources {
@@ -375,6 +388,24 @@ class TestApp : public smvk::AppImpl {
 private:
 	void UpdateCamera(float dt);
 	void SetUIMode(bool ui);
+	// Keeps the projection aspect in sync with the swapchain. Must run
+	// whenever the swapchain extent changes (init + resize); otherwise the
+	// image stretches and projection-derived data (CSM splits/frusta,
+	// selection) uses a stale aspect.
+	// NOTE: Camera::setPerspective forwards to MakeInfReversedZProjRH, whose
+	// fovY is in radians and whose far plane is infinite (zFar is ignored,
+	// near maps to depth 1). The old code passed a bare 45.0f (degrees) as
+	// radians, yielding an accidental ~58-degree vertical FOV.
+	void UpdateCameraAspect() {
+		const auto ext = m_swapchain->GetExtent();
+		if (ext.width == 0 || ext.height == 0)
+			return;
+		m_camera.setPerspective(
+			glm::radians(kCameraFovYDegrees),
+			float(ext.width) / float(ext.height),
+			default_near_clip, default_far_clip
+		);
+	}
 	bool m_uiMode = false;
 	// Configurable resolution knobs (see "Resolution config" above).
 	float m_renderScale = 1.0f;
@@ -404,13 +435,7 @@ private:
 		if (!Super::Initialize())
 			return false;
 
-		m_camera.setPerspective(
-			45.0f,
-			float(m_swapchain->GetExtent().width) / float(m_swapchain->GetExtent().height),
-			default_near_clip, default_far_clip
-		);
-		std::filesystem::path p(gltf_meshes_paths[0]);
-		//m_context->ProcessDeferrredTasks();
+		UpdateCameraAspect();
 		m_resources.frameUniforms = m_context->CreateBuffer(
 			sizeof(FrameUniforms) * m_swapchain->framesInFlight(),
 			smvk::BufferType_Uniform,
@@ -524,54 +549,55 @@ private:
 			.shaderCount = 2
 		};
 
-		smvk::AllocateStaticVertexFmt(*m_context); // dont like this
+		smvk::AllocateStaticVertexFmt(*m_context);
 
 		// Scene import: prefer the cooked pak (fast path, meshopt'd meshes,
 		// embedded textures), fall back to glTF via the VFS when no pak is
 		// present (dev iteration). Either way the Cluster is registered
 		// with the World and resolved into the runtime scene graph.
+		// The backend is opened/mounted before the world is mutated so a
+		// mount failure leaves the world untouched and the glTF fallback
+		// loads the scene exactly once.
 		bool loadedFromPak = false;
 		{
 			std::ifstream pakFile(pak_path, std::ios::binary | std::ios::ate);
 			if (pakFile) {
-				const auto pakSize = pakFile.tellg();
-				pakFile.seekg(0);
-				auto pakImage = std::make_shared<const std::vector<uint8_t>>(
-					static_cast<size_t>(pakSize));
-				// Texture/material/mesh uploads below are synchronous, so
-				// the pak image only needs to outlive this block; the
-				// PakBackend mount serves VFS texture reads during init
-				// (below loose content/ so dev overrides win).
-				if (pakFile.read(reinterpret_cast<char*>(
-						const_cast<uint8_t*>(pakImage->data())),
-						pakSize)) {
-					std::string pakErr;
-					auto reader = smvk::PakReader::Open(
-						std::span<const uint8_t>(*pakImage), pakErr);
-					if (reader) {
-						try {
-							m_world->LoadClusterFromPak(*m_context, *reader);
-							// Serve pak-embedded textures through the VFS
-							// (below loose content/ so dev overrides win).
-							std::string mountErr;
-							if (auto pakBackend = smvk::PakBackend::Open(
-									pakImage, pak_path, mountErr)) {
+				const auto pakEnd = pakFile.tellg();
+				if (pakEnd != std::ifstream::pos_type(-1)) {
+					pakFile.seekg(0);
+					auto pakImage = std::make_shared<std::vector<uint8_t>>(
+						static_cast<size_t>(pakEnd));
+					// Texture/material/mesh uploads below are synchronous, so
+					// the pak image only needs to outlive this block; the
+					// PakBackend mount serves VFS texture reads during init
+					// (below loose content/ so dev overrides win).
+					if (pakFile.read(reinterpret_cast<char*>(pakImage->data()),
+							static_cast<std::streamsize>(pakImage->size()))) {
+						std::string pakErr;
+						auto reader = smvk::PakReader::Open(
+							std::span<const uint8_t>(*pakImage), pakErr);
+						if (!reader) {
+							std::cerr << "[TestApp] Pak parse failed (" << pakErr
+								<< "), falling back to glTF" << std::endl;
+						}
+						else if (auto pakBackend = smvk::PakBackend::Open(
+								pakImage, pak_path, pakErr)) {
+							try {
+								m_world->LoadClusterFromPak(*m_context, *reader);
+								// Serve pak-embedded textures through the VFS
+								// (below loose content/ so dev overrides win).
 								contentVfs.Mount(pakBackend, 10, pak_path);
 								loadedFromPak = true;
 							}
-							else {
-								std::cerr << "[TestApp] PakBackend mount failed: "
-									<< mountErr << std::endl;
+							catch (const std::exception& e) {
+								std::cerr << "[TestApp] Pak load failed, falling back "
+									<< "to glTF: " << e.what() << std::endl;
 							}
 						}
-						catch (const std::exception& e) {
-							std::cerr << "[TestApp] Pak load failed, falling back "
-								<< "to glTF: " << e.what() << std::endl;
+						else {
+							std::cerr << "[TestApp] PakBackend mount failed: "
+								<< pakErr << std::endl;
 						}
-					}
-					else {
-						std::cerr << "[TestApp] Pak parse failed (" << pakErr
-							<< "), falling back to glTF" << std::endl;
 					}
 				}
 			}
@@ -722,6 +748,11 @@ private:
 	void Shutdown() override {
 		// Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
 		WaitForDeviceIdle();
+		// GeometryFX filter state: frees rendergraph logicals AND the
+		// static-index-monoblock virtual regions (cluster + filtered ring).
+		// Must run while the rendergraph and the static heap are alive;
+		// otherwise the regions leak and VMA asserts at heap teardown.
+		m_gfxRenderer.Destroy(*m_rendergraph);
 		m_viewportResources.forwardPlus.Destroy(*m_rendergraph);
 		m_viewportResources.bloom.Destroy(*m_rendergraph);
 		m_viewportResources.spotShadows.Destroy(*m_rendergraph);
@@ -749,7 +780,7 @@ private:
 		proj[1][1] *= -1; // viewport fix ditecrly in proj
 
 		auto viewProj = proj * view;
-		FrameUniforms data;
+		FrameUniforms data{};
 		data.cameraPos = m_cameraPositioner.cameraPosition_;
 
 		data.view = view;
@@ -774,20 +805,23 @@ private:
 		// Sun is 5000 lux (see UpdateLights); 0.001 puts a sun-facing
 		// mid-gray (albedo 0.18, N·L=1) at HDR ≈ 0.29 pre-ACES → no clipping.
 		// NOTE: FrameUniforms.exposure is currently unread by shaders; the
-		// tonemap push constant (TONEMAP_EXPOSURE) is the live knob. Keep in sync.
-		data.exposure = 0.001f;
+		// tonemap push constant (TONEMAP_EXPOSURE) is the live knob.
+		data.exposure = TONEMAP_EXPOSURE;
 		// Configurable skydome IBL + fog (single source for sky/sun/fog).
 		data.env = m_env.ToFrameData();
 
+		// Destination scope covers every consumer: BDA reads in vertex,
+		// fragment (lighting/materials/env) and compute (Forward+ cull).
+		static constexpr smvk::PipelineStage kFrameUploadStages =
+			smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute);
 		m_context->UploadDataToBuffer(
 			m_resources.frameUniforms,
 			&data,
 			sizeof(FrameUniforms)/* * 1*/,
-			smvk::PipelineStageBit_Vertex,
+			kFrameUploadStages,
 			smvk::AccessFlags::ShaderRead,
 			0,
 			currentFrame * sizeof(FrameUniforms)
-			//currentFrame * m_resources.frameUniformsBuffer.key.elementSize * m_resources.frameUniformsBuffer.key.elementCount // dynamicOffsetPerFrame
 		);
 		return data;
 
@@ -842,7 +876,7 @@ private:
 			m_resources.lightsBuffer,
 			lights,
 			sizeof(lights),
-			smvk::PipelineStageBit_Vertex,
+			smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute,
 			smvk::AccessFlags::ShaderRead,
 			0,
 			frameOffset
@@ -853,7 +887,7 @@ private:
 			m_resources.directionalCascadeBuffer,
 			&dir,
 			sizeof(dir),
-			smvk::PipelineStageBit_Vertex,
+			smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute,
 			smvk::AccessFlags::ShaderRead,
 			0,
 			dirOffset
@@ -871,32 +905,39 @@ private:
 				mat->values.params2.z = m_fpDemo.ballEmissive;
 		}
 
-		std::vector<smvk::MaterialValues> mats;
-		mats.reserve(m_world->materialLocations.size());
-
-		for (uint32_t i = 0; i < m_world->materialLocations.size(); i++) {
-			auto* mat = m_world->GetMaterial(i);
-			if (mat) {
-				mats.push_back(mat->values);
-			}
+		// Preserve world material slots: shaders index by world materialId,
+		// so a missing slot must stay a hole (default values), not shift
+		// every later material down by one.
+		const uint32_t slotCount = (uint32_t)m_world->materialLocations.size();
+		if (slotCount > MAX_MATERIALS) {
+			std::cerr << "[TestApp] Material slots (" << slotCount
+				<< ") exceed MAX_MATERIALS (" << MAX_MATERIALS
+				<< ") - clamping upload, trailing materials will use defaults\n";
+		}
+		const uint32_t uploadCount = std::min(slotCount, MAX_MATERIALS);
+		std::vector<smvk::MaterialValues> mats(uploadCount);
+		for (uint32_t i = 0; i < uploadCount; ++i) {
+			if (auto* mat = m_world->GetMaterial(i))
+				mats[i] = mat->values;
 		}
 
-		//constexpr size_t MAX_MATERIALS = 1024;
 		constexpr size_t MATERIAL_FRAME_STRIDE =
 			sizeof(smvk::MaterialValues) * MAX_MATERIALS;
 
 		size_t frameOffset =
 			currentFrame * MATERIAL_FRAME_STRIDE;
 
-		m_context->UploadDataToBuffer(
-			m_resources.materialsBuffer,
-			mats.data(),
-			sizeof(smvk::MaterialValues) * mats.size(),
-			smvk::PipelineStageBit_Vertex,
-			smvk::AccessFlags::ShaderRead,
-			0,
-			frameOffset
-		);
+		if (!mats.empty()) {
+			m_context->UploadDataToBuffer(
+				m_resources.materialsBuffer,
+				mats.data(),
+				sizeof(smvk::MaterialValues) * mats.size(),
+				smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute,
+				smvk::AccessFlags::ShaderRead,
+				0,
+				frameOffset
+			);
+		}
 	}
 
 	// ---------------------------------------------------------------------
@@ -1058,8 +1099,6 @@ private:
 		if (!m_lightCluster || m_ballMeshIdx == UINT32_MAX || m_ballMatWarmIdx == UINT32_MAX)
 			return;
 		Scene& scene = m_world->scene;
-		if (m_world->flags.size() < scene.hierarchy.size())
-			m_world->flags.resize(scene.hierarchy.size(), smvk::IteratorFlagBit_None);
 		while (m_lightBalls.size() < count) {
 			const int parent = m_lightRootNode >= 0 ? m_lightRootNode : 0;
 			const int n = addNode(scene, parent, getNodeLevel(scene, parent) + 1);
@@ -1069,8 +1108,17 @@ private:
 			scene.materialForNode[n] = m_ballMatWarmIdx;
 			scene.lightForNode[n] = (uint32_t)m_lightBalls.size();
 			setNodeName(scene, n, "PLBall_" + std::to_string(m_lightBalls.size()));
+			// Grow world bookkeeping immediately: the per-frame drive below
+			// writes flags[ball.node] in the same frame the node is created.
+			if (m_world->flags.size() <= (size_t)n)
+				m_world->flags.resize((size_t)n + 1, smvk::IteratorFlagBit_None);
+			m_world->flags[n] = smvk::IteratorFlags(
+				smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque
+				| smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_LightPoint);
 			m_lightBalls.push_back(PointLightBall{ .node = (NodeId)n, .active = false });
 		}
+		if (m_world->flags.size() < scene.hierarchy.size())
+			m_world->flags.resize(scene.hierarchy.size(), smvk::IteratorFlagBit_None);
 	}
 
 	// Per-frame ball node drive: transforms (position + bob + radius),
@@ -1171,9 +1219,12 @@ private:
 					: glm::vec4(0.35f, 0.65f, 1.0f, 1.0f);
 				l.intensity = m_fpDemo.intensity;
 				l.type = smvk::kForwardPlusPoint;
-				// Points never cast shadows (no shadow tile).
+				// Points never cast shadows (no shadow tile), carry no gobo
+				// and no light function: sentinels, not 0 (see common.hlsli).
 				l.shadowTile = -1;
 				l.shadowMapIndex = -1;
+				l.cookieIndex = -1;
+				l.functionType = smvk::kForwardPlusFunction_None;
 				lights.push_back(l);
 			}
 			// Orbiting spots to exercise the cone path.
@@ -1302,6 +1353,7 @@ private:
 		smvk::UiDesc rebuildUiDesc{};
 		rebuildUiDesc.format = m_swapchain->GetSurfaceFormat();
 		m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, rebuildUiDesc);
+		UpdateCameraAspect();
 	}
 
 	void DrawFrame() {
@@ -1323,6 +1375,7 @@ private:
 		const smvk::Extent2D swapExtent{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height };
 		const smvk::Extent2D renderExtent = ScaledExtent(swapExtent, m_renderScale);
 		const smvk::Extent2D uiExtent = ScaledExtent(swapExtent, m_uiScale);
+		UpdateCameraAspect();
 		{
 			smvk::DepthDesc frameDepthDesc{};
 			frameDepthDesc.format = m_swapchain->GetDepthFormat();
@@ -1701,28 +1754,73 @@ private:
 		// ---- GPU-driven filter + temporal seed (before depth prepass) ----
 		// Runs after fc.pc/depthView are built (the seed pass captures
 		// frame addresses) but before the prepass (seed writes depth first).
-		if (m_useGfxFilter)
+		// gfxSlot stays invalid when the filter is off so stale slots from
+		// earlier frames can never leak into consume hints or debug views.
+		gfxSlot = smvk::RenderViewSet::kInvalidIndex;
+		// Debug culling freeze (see members): capture the culling viewpoint
+		// once on the rising edge; the render camera keeps moving while
+		// batch expansion + the filter CS reuse the frozen (view, eye) and
+		// the held HZB below. Seed/remainder stay live (they prime the live
+		// depth buffer). Auto-releases on extent drift: a resized HZB would
+		// realloc while held and the filter would read an unbuilt pyramid.
+		bool cullingFrozen = false;
+		if (m_useGfxFilter) {
+			if (m_freezeCullingView && !m_frozenViewValid) {
+				m_frozenViewProj = frameData.viewProj;
+				m_frozenEye = m_cameraPositioner.cameraPosition_;
+				m_frozenExtent = renderExtent;
+				m_frozenViewValid = true;
+			}
+			if (!m_freezeCullingView)
+				m_frozenViewValid = false;
+			cullingFrozen = m_freezeCullingView && m_frozenViewValid
+				&& m_frozenExtent.width == renderExtent.width
+				&& m_frozenExtent.height == renderExtent.height;
+			if (m_freezeCullingView && !cullingFrozen) {
+				// Drifted (or capture failed): release rather than cull
+				// against a mismatched pyramid.
+				m_freezeCullingView = false;
+				m_frozenViewValid = false;
+			}
+			m_gfxRenderer.ClearCullOverride();
+			if (cullingFrozen) {
+				// CPU-side only: frustum planes + matrix for FilterMainView.
+				// Allocated after Upload(), so the GPU slab lacks this slot
+				// — nothing dereferences it on GPU (filter push carries the
+				// matrix; seed/VS stay on the live main view).
+				const uint32_t frozenView = m_renderViews.AllocateCustomView(
+					m_frozenViewProj,
+					{ (float)renderExtent.width, (float)renderExtent.height });
+				if (frozenView != smvk::RenderViewSet::kInvalidIndex)
+					m_gfxRenderer.SetCullOverride(frozenView, m_frozenEye);
+				else
+					cullingFrozen = false;
+			}
 			m_gfxRenderer.AppendPasses(fc);
-		gfxSlot = m_gfxRenderer.LastSlot();
+			gfxSlot = m_gfxRenderer.LastSlot();
+		}
 		fc.seedDepthPrimed = m_useGfxFilter && m_gfxRenderer.SeededThisFrame();
 		// Depth prepass (Loads seeded depth when primed, Clears otherwise).
 		m_fpRenderer.AppendPrepass(fc);
 
-		// ---- HZB build over depth (seed or full prepass; T2 module) ----
-		// ---- Filter compute dispatch (reads this frame's HZB; T4) ----
-		// ---- Depth pass 2 over newly visible clusters (T5) + refresh ----
-		// ---- Tile cull over complete depth (moved after pass 2; T5) ----
+		// HZB build over depth (seed or full prepass), filter compute
+		// dispatch (reads this frame's HZB), depth pass 2 over newly
+		// visible clusters + refresh, then tile cull over complete depth.
+		// Held while the culling view is frozen (frozen footprints must test
+		// against the frozen pyramid, not live depth).
 		if (m_useGfxFilter) {
-			m_gfxRenderer.AppendHizPasses(fc,
-				m_viewportResources.renderDepth.logicalView,
-				m_viewportResources.forwardPlus.depthBindlessIndex);
+			if (!cullingFrozen)
+				m_gfxRenderer.AppendHizPasses(fc,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.forwardPlus.depthBindlessIndex);
 			m_gfxRenderer.AppendFilterDispatch(fc);
 			if (m_gfxRenderer.RemainderPending()) {
 				m_gfxRenderer.AppendRemainderPass(fc);
-				m_gfxRenderer.AppendHizPasses(fc,
-					m_viewportResources.renderDepth.logicalView,
-					m_viewportResources.forwardPlus.depthBindlessIndex,
-					"GfxHizRefresh");
+				if (!cullingFrozen)
+					m_gfxRenderer.AppendHizPasses(fc,
+						m_viewportResources.renderDepth.logicalView,
+						m_viewportResources.forwardPlus.depthBindlessIndex,
+						"GfxHizRefresh");
 			}
 		}
 		m_fpRenderer.AppendTileCull(fc);
@@ -1920,9 +2018,16 @@ private:
 		// 1x: depth was filled by the Forward+ prepass, main is read-only.
 		// 2x: transient depth is cleared above, main writes it
 		// (GreaterEqual reversed-Z in both cases).
-		const smvk::DepthSettings mainDepth{
+		// Opaque writes depth in MSAA mode (transient target); transparent
+		// never writes depth in either mode.
+		const smvk::DepthSettings opaqueDepth{
 			.depthFunc = smvk::CompareOp::GreaterEqual,
 			.writeEnable = useMsaa,
+			.depthTestEnable = true,
+		};
+		const smvk::DepthSettings transparentDepth{
+			.depthFunc = smvk::CompareOp::GreaterEqual,
+			.writeEnable = false,
 			.depthTestEnable = true,
 		};
 		const smvk::StencilSettings noStencil{};
@@ -1960,9 +2065,11 @@ private:
 			}
 		};
 
-		auto bindForMaterial = [&](uint32_t materialId, smvk::ShaderProgram& prog) {
+		auto bindForMaterial = [&](uint32_t materialId, smvk::ShaderProgram& prog,
+				const smvk::DepthSettings& depth) {
 			// Per-material raster (doubleSided -> Cull None) + blend
-			// (Opaque vs AlphaBlend). 1x depth is read-only, 2x writes.
+			// (Opaque vs AlphaBlend). Depth writes follow the caller: opaque
+			// writes in 2x MSAA mode, transparent never writes.
 			smvk::BlendSettings blend = smvk::BlendSettings::Opaque();
 			smvk::RasterSettings raster{};
 			if (smvk::Material* mat = m_world->GetMaterial(materialId)) {
@@ -1972,7 +2079,7 @@ private:
 			cmd.BindRenderPipeline(
 				prog,
 				smvk::VertexFormat::StaticVertexFormat,
-				mainDepth,
+				depth,
 				noStencil,
 				blend,
 				msaaSettings,
@@ -2010,7 +2117,7 @@ private:
 		cmd.BindRenderPipeline(
 			m_resources.mainProgram,
 			smvk::VertexFormat::StaticVertexFormat,
-			mainDepth,
+			opaqueDepth,
 			noStencil,
 			smvk::BlendSettings::Opaque(),
 			msaaSettings,
@@ -2038,15 +2145,16 @@ private:
 			cmd.BindRenderPipeline(
 				m_gfxRenderer.MeshDebugProgram(),
 				smvk::VertexFormat::StaticVertexFormat,
-				mainDepth,
+				opaqueDepth,
 				noStencil,
 				smvk::BlendSettings::Opaque(),
 				msaaSettings,
 				smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
 			);
-			cmd.BindStaticVertexFmt();
-			cmd.BindIndexBuffer(smvk::gfx::FilterIndexBuffer(m_gfxRenderer.State()));
-			const smvk::gfx::State& dbgState = m_gfxRenderer.State();
+		cmd.BindStaticVertexFmt();
+		// No index bind: mesh, cluster-ordered and debug draws all address
+		// the static index monoblock absolutely (offset-0 binding above).
+		const smvk::gfx::State& dbgState = m_gfxRenderer.State();
 			app::MeshDebugPush dp{};
 			std::copy_n(glm::value_ptr(frameViewProj), 16, dp.viewProj);
 			m_world->forEachNode(
@@ -2066,23 +2174,19 @@ private:
 				const glm::mat4& model = m_world->scene.globalTransform[node];
 				std::copy_n(glm::value_ptr(model), 16, dp.model);
 				const uint32_t gfxMesh = m_gfxRenderer.GfxMeshForWorldMesh(worldMesh);
-			if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
-				// Not filterable: white direct fallback (nothing vanishes).
-				// Mesh-local surfaces need the static index heap, not the
-				// cluster heap bound above: BindRenderPipeline rebinds it
-				// internally, so restore the cluster heap afterwards.
-				cmd.BindStaticVertexFmt();
-				dp.color[0] = dp.color[1] = dp.color[2] = 0.9f; dp.color[3] = 1.0f;
-				cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
-				if (smvk::StaticMesh* meshDesc = m_world->GetMesh(worldMesh)) {
-					for (auto& draw_set : meshDesc->geometry.surfaces) {
-						cmd.DrawIndexed(draw_set.indexCount, 1,
-							draw_set.firstIndex, draw_set.baseVertex);
-					}
+		if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
+			// Not filterable: white direct fallback (nothing vanishes).
+			// Mesh-local surfaces address the same index monoblock.
+			dp.color[0] = dp.color[1] = dp.color[2] = 0.9f; dp.color[3] = 1.0f;
+			cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
+			if (smvk::StaticMesh* meshDesc = m_world->GetMesh(worldMesh)) {
+				for (auto& draw_set : meshDesc->geometry.surfaces) {
+					cmd.DrawIndexed(draw_set.indexCount, 1,
+						draw_set.firstIndex, draw_set.baseVertex);
 				}
-				cmd.BindIndexBuffer(smvk::gfx::FilterIndexBuffer(m_gfxRenderer.State()));
-				return;
 			}
+			return;
+		}
 				const smvk::gfx::Mesh& gm = dbgState.meshes[gfxMesh];
 				for (uint32_t ci = 0; ci < gm.clusterCount; ++ci) {
 					const uint32_t gc = gm.clusterStart + ci;
@@ -2094,10 +2198,13 @@ private:
 					float rgba[4];
 					app::GfxRenderer::DebugClusterColor(
 						gc, cl.coneCutoff, m_debugMeshletMode, rgba);
-					dp.color[0] = rgba[0]; dp.color[1] = rgba[1];
-					dp.color[2] = rgba[2]; dp.color[3] = rgba[3];
-					cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
-					cmd.DrawIndexed(cl.triCount * 3, 1, cl.indexOffset, 0);
+				dp.color[0] = rgba[0]; dp.color[1] = rgba[1];
+				dp.color[2] = rgba[2]; dp.color[3] = rgba[3];
+				cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
+				// Absolute into the static index monoblock (region base).
+				const uint32_t firstIndex =
+					smvk::gfx::ClusterIndexBase(dbgState) + cl.indexOffset;
+				cmd.DrawIndexed(cl.triCount * 3, 1, firstIndex, 0);
 				}
 			}
 			);
@@ -2106,7 +2213,7 @@ private:
 			const auto& gfxRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
 			for (uint32_t ri = 0; ri < (uint32_t)gfxRanges.size(); ++ri) {
 				const uint32_t materialId = gfxRanges[ri].material;
-				bindForMaterial(materialId, m_gfxRenderer.FilteredProgram());
+				bindForMaterial(materialId, m_gfxRenderer.FilteredProgram(), opaqueDepth);
 				PushConstants matPC{};
 				matPC.materialId = materialId;
 				cmd.PushConstants(
@@ -2146,7 +2253,7 @@ private:
 					return;
 				const uint32_t materialId = materialForNode->second;
 				if (materialId != boundMaterial) {
-					bindForMaterial(materialId, m_resources.mainProgram);
+					bindForMaterial(materialId, m_resources.mainProgram, opaqueDepth);
 					boundMaterial = materialId;
 				}
 				drawNode(node, meshForNode->second, materialId);
@@ -2192,7 +2299,7 @@ private:
 			uint32_t boundMaterial = UINT32_MAX;
 			for (const auto& d : draws) {
 				if (d.materialId != boundMaterial) {
-					bindForMaterial(d.materialId, m_resources.mainProgram);
+					bindForMaterial(d.materialId, m_resources.mainProgram, transparentDepth);
 					boundMaterial = d.materialId;
 				}
 				drawNode(d.node, d.meshId, d.materialId);
@@ -2209,7 +2316,7 @@ private:
 			cmd.BindRenderPipeline(
 				m_gfxRenderer.LineProgram(),
 				smvk::VertexFormat::DebugLine,
-				mainDepth,
+				transparentDepth,
 				noStencil,
 				smvk::BlendSettings::Opaque(),
 				msaaSettings,
@@ -2234,7 +2341,7 @@ private:
 	// vanishes "randomly" whenever workload/timing shifts (MSAA mode,
 	// light toggles). Covers the meshlet debug view too (cluster-ordered
 	// heap bind).
-	if (gfxSlot != UINT32_MAX)
+	if (m_useGfxFilter && gfxSlot != UINT32_MAX)
 		m_gfxRenderer.AddMainConsumeHints(mainPass, gfxSlot);
 	// Forward+ tile lists are device-written by the cull pass and
 	// device-read here: explicit read hints order cull -> main and emit
@@ -2324,7 +2431,7 @@ private:
 			// ImGui draw data + font raster density onto the UI target.
 			m_imgui->NewFrame(uiExtent);
 
-			// Minimal UI – name + camera pos (as requested)
+			// Minimal UI – name + camera pos
 			ImGui::Begin("VulkanToy — Debug");
 			ImGui::Text("Frame %.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
 			ImGui::Text("Camera pos: %.2f %.2f %.2f", m_cameraPositioner.cameraPosition_.x, m_cameraPositioner.cameraPosition_.y, m_cameraPositioner.cameraPosition_.z);
@@ -2451,7 +2558,7 @@ private:
 				ImGui::SliderFloat("Spacing Y", &m_fpDemo.spacingY, 0.5f, 6.0f);
 			ImGui::SliderFloat("Spacing Z", &m_fpDemo.spacingZ, 0.5f, 8.0f);
 				ImGui::SliderFloat("Range", &m_fpDemo.range, 1.0f, 30.0f);
-				ImGui::SliderFloat("Intensity (cd)", &m_fpDemo.intensity, 0.0f, 500.0f);
+				ImGui::SliderFloat("Intensity (cd)", &m_fpDemo.intensity, 0.0f, 2000.0f);
 				ImGui::SliderFloat("Ball radius (m)", &m_fpDemo.ballRadius, 0.02f, 0.5f);
 				ImGui::SliderFloat("Ball emissive (HDR)", &m_fpDemo.ballEmissive, 0.0f, 5000.0f);
 				int spots = m_fpDemo.spotCount;
@@ -2538,6 +2645,9 @@ private:
 					if (ImGui::SliderFloat("Min contribution px^2", &mc, 0.0f, 16.0f))
 						m_gfxRenderer.SetMinContribution(mc);
 				}
+				ImGui::Checkbox("Freeze culling view (debug)", &m_freezeCullingView);
+				ImGui::TextDisabled("Holds frustum/eye/HZB; render camera stays live.\n"
+					"Move the camera to inspect what the frozen view culled.");
 				ImGui::Separator();
 				ImGui::Text("Meshlet debug views (bypass GPU cull)");
 				ImGui::Checkbox("Meshlet colors (replaces opaque)", &m_debugMeshlets);
@@ -2548,6 +2658,9 @@ private:
 					ImGui::TextDisabled("Debug programs missing – views disabled");
 				if (ImGui::Button("Dump indirect audit (stderr, stalls)"))
 					m_dumpIndirectAudit = true;
+				ImGui::SameLine();
+				if (ImGui::Button("Dump HZB (stderr, stalls)"))
+					m_debugDumpHzb = true;
 				ImGui::TextDisabled("Colors: every registered cluster direct; culled ones stay visible here.\n"
 					"Heat: red = degenerate cone (never culls), green = tight cone.");
 				const smvk::gfx::Stats gs = m_gfxRenderer.LastStats();
@@ -2556,7 +2669,35 @@ private:
 					gs.clustersCulled, gs.clustersProcessed);
 				ImGui::Text("materials: %u ranges  batches: %u",
 					(unsigned)m_gfxRenderer.LastMaterialRangeCount(),
-					m_gfxRenderer.LastBatchCount());
+					(unsigned)m_gfxRenderer.LastBatchCount());
+				// HZB occlusion status: the CPU "clusters culled" line above
+				// never moves for GPU occlusion kills (those stay batches
+				// with indexCount 0), so surface the HZB inputs here. Any
+				// "OFF/empty/INVALID" below means the filter's occlusion
+				// test is silently disabled — use Dump HZB + Dump indirect
+				// audit (stderr) to confirm what the GPU saw.
+				{
+					const bool occOn = (m_gfxRenderer.config.cullFlags
+						& smvk::gfx::CullFlagBit_HzbOcclusion) != 0;
+					uint32_t hw = 0, hh = 0, hm = 0;
+					if (gfxSlot != smvk::RenderViewSet::kInvalidIndex
+						&& gfxSlot < m_gfxRenderer.State().temporals.size()) {
+						const smvk::gfx::TemporalView& ht =
+							m_gfxRenderer.State().temporals[gfxSlot];
+						hw = ht.hiz.width; hh = ht.hiz.height; hm = ht.hiz.mipCount;
+					}
+					const bool depthOk = m_viewportResources.forwardPlus.depthBindlessIndex
+						!= UINT32_MAX;
+					ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s",
+						hw, hh, hm, depthOk ? "ok" : "INVALID", occOn ? "on" : "OFF",
+						cullingFrozen ? "FROZEN" : "live");
+					if (!occOn)
+						ImGui::TextDisabled("HZB flag OFF: no occlusion culls possible.");
+					else if (hm == 0)
+						ImGui::TextDisabled("HZB empty: occlusion test disabled (extent 0?).");
+					else if (!depthOk)
+						ImGui::TextDisabled("Depth bindless INVALID: HZB reads garbage.");
+				}
 				ImGui::TextDisabled("Bisect: disable flags top-down (small/backface/frustum/degen), then bypass.");
 			}
 			ImGui::Separator();
@@ -2604,6 +2745,20 @@ private:
 				m_gfxRenderer.DumpIndirectAudit(*m_context, gfxSlot);
 			}
 		}
+		if (m_debugDumpHzb) {
+			m_debugDumpHzb = false;
+			if (m_useGfxFilter && gfxSlot != UINT32_MAX) {
+				WaitForDeviceIdle();
+				m_gfxRenderer.DumpHzb(*m_context, gfxSlot);
+			}
+		}
+		// Opt-in first-frame HZB dump (debug): stalls the GPU (device-idle
+		// wait), so it stays off unless explicitly enabled.
+		if (m_dumpFirstFrameHzb && m_useGfxFilter && gfxSlot != UINT32_MAX) {
+			m_dumpFirstFrameHzb = false;
+			WaitForDeviceIdle();
+			m_gfxRenderer.DumpHzb(*m_context, gfxSlot);
+		}
 
 		// Snapshot this frame's camera + node transforms for the next
 		// frame's motion vector pass. Must run AFTER Execute: the motion
@@ -2634,6 +2789,18 @@ private:
 	smvk::Holder<smvk::BufferHandle> m_debugLines; // pos-only cone line VB
 	uint32_t m_debugLinesCap = 0; // verts allocated
 	bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
+	bool m_debugDumpHzb = false;    // one-shot: dump HZB buffer contents (stderr)
+	bool m_dumpFirstFrameHzb = false; // opt-in: dump HZB once on the next frame (stalls)
+	// ---- Debug culling freeze: hold the filter's (view, eye) + HZB while
+	// the render camera moves freely, so culling decisions stay put and
+	// their effect (missing survivors, holes) is inspectable. Captured on
+	// the rising edge; auto-released on extent drift (a resized HZB would
+	// rebuild empty while held -> garbage reads).
+	bool m_freezeCullingView = false;
+	bool m_frozenViewValid = false;
+	glm::mat4 m_frozenViewProj{ 1.0f };
+	glm::vec3 m_frozenEye{ 0.0f };
+	smvk::Extent2D m_frozenExtent{ 0, 0 };
 	app::ForwardPlusRenderer m_fpRenderer{};
 	// ---- Motion vector pass: previous-frame state + debug view ----
 	glm::mat4 m_prevViewProj{ 1.0f }; // last frame's viewProj (post Y-flip)
@@ -2730,10 +2897,7 @@ void TestApp::SetUIMode(bool ui)
 }
 
 int main(int argc, const char* argv[]) {
-	if (argc > 1) {
-		std::cout << argv[0];
-	}
-
+	(void)argc; (void)argv;
 	TestApp app = TestApp();
 	try {
 		app.Run();

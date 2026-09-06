@@ -78,7 +78,7 @@ namespace smvk {
 		auto* vctx = static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque());
 		staticVertexFmtHeap.m_staticVertexPosBuffer = vctx->CreateBuffer(defaultStaticVertexHeapSize, smvk::BufferType_Vertex, "static vertex pos").release();
 		staticVertexFmtHeap.m_staticVertexShadingBuffer = vctx->CreateBuffer(defaultStaticVertexHeapSize, smvk::BufferType_Vertex, "static vertex shading").release();
-		staticVertexFmtHeap.m_staticIndexBuffer = vctx->CreateBuffer(defaultStaticIndexHeapSize, smvk::BufferType_Index, "static index").release();
+		staticVertexFmtHeap.m_staticIndexBuffer = vctx->CreateBuffer(defaultStaticIndexHeapSize, smvk::BufferType_Storage, "static index").release();
 		const VkDeviceSize maxVertices = std::min(
 			defaultStaticVertexHeapSize / sizeof(smvk::VertexPos),
 			defaultStaticVertexHeapSize / sizeof(smvk::VertexShading)

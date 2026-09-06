@@ -8151,6 +8151,9 @@ void smvk::CommandBuffer::BindStaticVertexFmt()
 		0,
 		VK_INDEX_TYPE_UINT32
 	);
+#ifndef NDEBUG
+	boundIndexBuffer_ = staticVertexFmtHeap.m_staticIndexBuffer;
+#endif
 }
 void smvk::CommandBuffer::BindVertexBuffer(BufferHandle buffer, uint32_t binding, uint64_t offset)
 {
@@ -8180,6 +8183,9 @@ void smvk::CommandBuffer::Draw(uint32_t vertexCount, uint32_t instanceCount, uin
 };
 void smvk::CommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
 {
+#ifndef NDEBUG
+	assert(!boundIndexBuffer_.empty() && "DrawIndexed with no index buffer bound (stale binding across passes?)");
+#endif
 	vkCmdDrawIndexed(
 		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
 		indexCount,
@@ -8194,6 +8200,9 @@ void smvk::CommandBuffer::BindIndexBuffer(BufferHandle buffer, uint64_t offset)
 	VulkanResourceManager& vulkanCtx = *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
 	const Buffer* desc = vulkanCtx.buffers_.get(buffer);
 	assert(desc != nullptr && desc->vkBuffer != VK_NULL_HANDLE);
+#ifndef NDEBUG
+	boundIndexBuffer_ = buffer;
+#endif
 	vkCmdBindIndexBuffer(
 		reinterpret_cast<VkCommandBuffer>(cmdOpaque_),
 		desc->vkBuffer,
@@ -8206,6 +8215,9 @@ void smvk::CommandBuffer::DrawIndexedIndirect(BufferHandle buffer, uint64_t offs
 	VulkanResourceManager& vulkanCtx = *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
 	const Buffer* desc = vulkanCtx.buffers_.get(buffer);
 	assert(desc != nullptr && desc->vkBuffer != VK_NULL_HANDLE);
+#ifndef NDEBUG
+	assert(!boundIndexBuffer_.empty() && "DrawIndexedIndirect with no index buffer bound (stale binding across passes?)");
+#endif
 	VkCommandBuffer cmd = reinterpret_cast<VkCommandBuffer>(cmdOpaque_);
 	if (g_multiDrawIndirect) {
 		vkCmdDrawIndexedIndirect(

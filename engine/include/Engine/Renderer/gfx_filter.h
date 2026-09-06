@@ -139,8 +139,14 @@ struct FilterPush {
 	uint32_t hizHeight = 0;
 	uint32_t hizMips = 0;
 	float minContribution = 0.0f; // px^2 footprint threshold (0 = off)
+	// Filtered-output region base (uint32 indices into the static index
+	// monoblock) for this dispatch's flight slice. The CS writes indirect
+	// firstIndex = indexBase + outputOffset so draws address the monoblock
+	// absolutely and the index binding never switches buffers.
+	uint32_t indexBase = 0;
+	uint32_t pad3 = 0;
 };
-static_assert(sizeof(FilterPush) == 192);
+static_assert(sizeof(FilterPush) == 200);
 
 // Filtered-path VS tail push (gfxfiltered.vert.hlsl, 24 bytes).
 // Pushed at kFilteredVsPushOffset (the main pass' unused prevModel scratch,
@@ -218,12 +224,19 @@ struct View {
 	// current one still reads it. Same rule as RenderViewSet's slab.
 	Holder<BufferHandle> batchBuffers[MAX_FRAMES_IN_FLIGHT];
 	Holder<BufferHandle> drawBuffers[MAX_FRAMES_IN_FLIGHT];
-	Holder<BufferHandle> filteredBuffers[MAX_FRAMES_IN_FLIGHT];
 	Holder<BufferHandle> indirectBuffers[MAX_FRAMES_IN_FLIGHT];
 	LogicalBufferHandle batchLogicals[MAX_FRAMES_IN_FLIGHT]{};
 	LogicalBufferHandle drawLogicals[MAX_FRAMES_IN_FLIGHT]{};
-	LogicalBufferHandle filteredLogicals[MAX_FRAMES_IN_FLIGHT]{};
 	LogicalBufferHandle indirectLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	// Filtered-index scratch lives in the static index monoblock (one index
+	// VkBuffer for mesh + cluster-ordered + filtered regions; firstIndex is
+	// absolute, so the index binding never switches). Per (view, flight)
+	// persistent regions, allocated on slot creation, freed on teardown.
+	// Base in uint32 indices; allocBits is the VMA virtual-allocation
+	// bit pattern (VmaVirtualAllocation is a uint64_t handle; this header
+	// stays VMA-free, see the static_assert in gfx_filter.cpp).
+	uint32_t filteredBase[MAX_FRAMES_IN_FLIGHT] = {};
+	uint64_t filteredAllocBits[MAX_FRAMES_IN_FLIGHT] = {};
 };
 
 // GPU mirror of one surviving (cluster, draw) pair ("visible meshlet").
@@ -371,12 +384,18 @@ struct TemporalView {
 struct State {
 	// Static (load-time): cluster-ordered global vertex ids + cluster table.
 	// Frozen after UploadStaticData, safe to share across frames.
+	// The cluster-ordered array lives in the static index monoblock (same
+	// VkBuffer as mesh + filtered regions); indexBase is region-relative in
+	// Cluster::indexOffset, absolute firstIndex = clusterIndexBase + offset.
 	std::vector<uint32_t> filterIndices;
 	std::vector<Cluster> clusters;
 	std::vector<Mesh> meshes;
-	Holder<BufferHandle> filterIndexBuffer;
+	uint32_t clusterIndexBase = 0; // region base in uint32 indices (0 = none)
+	uint64_t clusterIndexAllocBits = 0; // VMA virtual-allocation bits (see View)
+	// Rendergraph logical for the static index monoblock (all index streams
+	// share one buffer, so one hint covers mesh/cluster/filtered reads).
+	LogicalBufferHandle indexHeapLogical{};
 	Holder<BufferHandle> clusterBuffer;
-	LogicalBufferHandle filterIndexLogical{};
 	LogicalBufferHandle clusterLogical{};
 	Holder<ShaderModuleHandle> filterModule;
 	ShaderProgram filterProgram{};
@@ -526,6 +545,8 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	uint32_t view, uint32_t dstMip, uint32_t depthBindlessIndex = UINT32_MAX);
 // BDA of the view's HZB buffer (0 when unallocated; T4 skips occlusion then).
 uint64_t HizAddress(State& s, ResourceManager& ctx, uint32_t view);
+// DEBUG: Download and print HZB buffer contents for inspection.
+void DumpHzb(State& s, ResourceManager& ctx, uint32_t view);
 
 // ---- Pass shells (caller sets the recording func) ----
 RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view);
@@ -547,16 +568,21 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 	assert(view < s.views.size());
 	return s.views[view].drawBuffers[s.views[view].frameIndex];
 }
-[[nodiscard]] inline BufferHandle FilteredBuffer(const State& s, uint32_t view) {
-	assert(view < s.views.size());
-	return s.views[view].filteredBuffers[s.views[view].frameIndex];
-}
 [[nodiscard]] inline BufferHandle IndirectBuffer(const State& s, uint32_t view) {
 	assert(view < s.views.size());
 	return s.views[view].indirectBuffers[s.views[view].frameIndex];
 }
-[[nodiscard]] inline BufferHandle FilterIndexBuffer(const State& s) {
-	return s.filterIndexBuffer;
+// Static index monoblock accessor (mesh + cluster-ordered + filtered index
+// regions share one VkBuffer; draws use absolute firstIndex, offset-0 bind).
+[[nodiscard]] inline LogicalBufferHandle IndexHeapLogical(const State& s) {
+	return s.indexHeapLogical;
+}
+[[nodiscard]] inline uint32_t ClusterIndexBase(const State& s) {
+	return s.clusterIndexBase;
+}
+[[nodiscard]] inline uint32_t FilteredIndexBase(const State& s, uint32_t view) {
+	assert(view < s.views.size());
+	return s.views[view].filteredBase[s.views[view].frameIndex];
 }
 [[nodiscard]] inline BufferHandle SeedIndirectBuffer(const State& s, uint32_t view) {
 	assert(view < s.temporals.size());
@@ -607,10 +633,6 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 [[nodiscard]] inline LogicalBufferHandle DrawLogical(const State& s, uint32_t view) {
 	assert(view < s.views.size());
 	return s.views[view].drawLogicals[s.views[view].frameIndex];
-}
-[[nodiscard]] inline LogicalBufferHandle FilteredLogical(const State& s, uint32_t view) {
-	assert(view < s.views.size());
-	return s.views[view].filteredLogicals[s.views[view].frameIndex];
 }
 [[nodiscard]] inline LogicalBufferHandle IndirectLogical(const State& s, uint32_t view) {
 	assert(view < s.views.size());

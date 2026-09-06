@@ -21,16 +21,47 @@ static constexpr size_t kVisClusterBytes = kMaxBatches * sizeof(VisibleCluster);
 static constexpr size_t kVisDrawBytes = kMaxDraws * sizeof(Draw);
 static constexpr size_t kSeedIndirectBytes = kMaxBatches * sizeof(SeedCommand);
 
+static_assert(sizeof(VmaVirtualAllocation) == sizeof(uint64_t),
+	"VMA virtual allocation must fit the opaque uint64_t region fields in gfx_filter.h");
+
+// Suballocates indexCount uint32 indices from the static index monoblock
+// (one index VkBuffer for mesh + cluster-ordered + filtered regions, so
+// draws use absolute firstIndex and the index binding never switches).
+// False when the reservation is exhausted.
+static bool AllocIndexRegion(uint32_t indexCount, uint32_t& outBaseIndices, uint64_t& outAllocBits) {
+	outBaseIndices = 0;
+	outAllocBits = 0;
+	if (indexCount == 0)
+		return true;
+	VmaVirtualAllocationCreateInfo info{};
+	info.size = (VkDeviceSize)indexCount * sizeof(uint32_t);
+	info.alignment = alignof(uint32_t);
+	VmaVirtualAllocation alloc = VK_NULL_HANDLE;
+	VkDeviceSize byteOffset = 0;
+	if (vmaVirtualAllocate(staticVertexFmtHeap.m_staticIndexBlock, &info, &alloc, &byteOffset) != VK_SUCCESS)
+		return false;
+	outBaseIndices = (uint32_t)(byteOffset / sizeof(uint32_t));
+	outAllocBits = (uint64_t)alloc;
+	return true;
+}
+
+static void FreeIndexRegion(uint64_t& allocBits) {
+	if (allocBits == 0)
+		return;
+	vmaVirtualFree(staticVertexFmtHeap.m_staticIndexBlock, (VmaVirtualAllocation)allocBits);
+	allocBits = 0;
+}
+
 static void RollbackSlotBuffers(RenderGraph& rg, View& v, uint32_t doneFrames) {
 	for (uint32_t f = 0; f < doneFrames; ++f) {
 		if (!v.batchLogicals[f].empty()) rg.FreeBuffer(v.batchLogicals[f]);
 		if (!v.drawLogicals[f].empty()) rg.FreeBuffer(v.drawLogicals[f]);
-		if (!v.filteredLogicals[f].empty()) rg.FreeBuffer(v.filteredLogicals[f]);
 		if (!v.indirectLogicals[f].empty()) rg.FreeBuffer(v.indirectLogicals[f]);
 		v.batchLogicals[f] = {};
 		v.drawLogicals[f] = {};
-		v.filteredLogicals[f] = {};
 		v.indirectLogicals[f] = {};
+		FreeIndexRegion(v.filteredAllocBits[f]);
+		v.filteredBase[f] = 0;
 	}
 	// Holders release their buffers automatically on scope exit.
 }
@@ -41,8 +72,15 @@ static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
 			kBatchBufferBytes, BufferType_Storage, "gfx batches");
 		v.drawBuffers[f] = ctx.CreateBuffer(
 			kDrawBufferBytes, BufferType_Storage, "gfx draws");
-		v.filteredBuffers[f] = ctx.CreateBuffer(
-			kFilteredBytes, BufferType_Storage, "gfx filteredIndices");
+		// Filtered-index scratch is a persistent region in the static index
+		// monoblock (not a VkBuffer): draws address it absolutely, so the
+		// index binding never switches. One region per flight slice.
+		if (!AllocIndexRegion(
+			(uint32_t)(kFilteredBytes / sizeof(uint32_t)),
+			v.filteredBase[f], v.filteredAllocBits[f])) {
+			RollbackSlotBuffers(rg, v, f);
+			return false;
+		}
 		// Storage, NOT Indirect: per-frame zero-fill uploads run on the
 		// transfer queue while compute/draw run on graphics. Storage gets
 		// CONCURRENT sharing (see CreateBuffer); Indirect is EXCLUSIVE and
@@ -52,16 +90,15 @@ static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
 		v.indirectBuffers[f] = ctx.CreateBuffer(
 			kIndirectBytes, BufferType_Storage, "gfx indirect");
 		if (v.batchBuffers[f].empty() || v.drawBuffers[f].empty()
-			|| v.filteredBuffers[f].empty() || v.indirectBuffers[f].empty()) {
+			|| v.indirectBuffers[f].empty()) {
 			RollbackSlotBuffers(rg, v, f);
 			return false;
 		}
 		v.batchLogicals[f] = rg.AddExternalBuffer(v.batchBuffers[f], "gfx batches");
 		v.drawLogicals[f] = rg.AddExternalBuffer(v.drawBuffers[f], "gfx draws");
-		v.filteredLogicals[f] = rg.AddExternalBuffer(v.filteredBuffers[f], "gfx filteredIndices");
 		v.indirectLogicals[f] = rg.AddExternalBuffer(v.indirectBuffers[f], "gfx indirect");
 		if (v.batchLogicals[f].empty() || v.drawLogicals[f].empty()
-			|| v.filteredLogicals[f].empty() || v.indirectLogicals[f].empty()) {
+			|| v.indirectLogicals[f].empty()) {
 			RollbackSlotBuffers(rg, v, f + 1);
 			return false;
 		}
@@ -166,8 +203,9 @@ void Destroy(State& s, RenderGraph& rg) {
 		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
 			if (!v.batchLogicals[f].empty()) rg.FreeBuffer(v.batchLogicals[f]);
 			if (!v.drawLogicals[f].empty()) rg.FreeBuffer(v.drawLogicals[f]);
-			if (!v.filteredLogicals[f].empty()) rg.FreeBuffer(v.filteredLogicals[f]);
 			if (!v.indirectLogicals[f].empty()) rg.FreeBuffer(v.indirectLogicals[f]);
+			FreeIndexRegion(v.filteredAllocBits[f]);
+			v.filteredBase[f] = 0;
 		}
 	}
 	for (auto& t : s.temporals) {
@@ -182,13 +220,14 @@ void Destroy(State& s, RenderGraph& rg) {
 		t.hiz.buffer = {};
 	}
 	s.temporals.clear();
-	if (!s.filterIndexLogical.empty()) rg.FreeBuffer(s.filterIndexLogical);
+	if (!s.indexHeapLogical.empty()) rg.FreeBuffer(s.indexHeapLogical);
 	if (!s.clusterLogical.empty()) rg.FreeBuffer(s.clusterLogical);
-	s.filterIndexLogical = {};
+	s.indexHeapLogical = {};
 	s.clusterLogical = {};
 	s.views.clear();
 	s.viewCount = 0;
-	s.filterIndexBuffer = {};
+	FreeIndexRegion(s.clusterIndexAllocBits);
+	s.clusterIndexBase = 0;
 	s.clusterBuffer = {};
 	s.filterProgram = ShaderProgram{};
 	s.filterModule = {};
@@ -410,9 +449,22 @@ RenderPass& AddHizPass(State& s, RenderGraph& rg, uint32_t view,
 		ImageSyncRequest depthReq{};
 		depthReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
 		depthReq.barrierMasks.stageMask = PipelineStageBit_Compute;
-		depthReq.layout = ImageLayout::ShaderReadOnlyOptimal;
+		// Use DepthStencilReadOnlyOptimal to match the bindless descriptor layout
+		// (created with DepthStencilReadOnlyOptimal in DepthTarget::Create and ForwardPlus::Ensure).
+		// The render graph's depth fixup would promote ShaderReadOnlyOptimal, but being
+		// explicit avoids any layout mismatch between descriptor and actual image layout.
+		depthReq.layout = ImageLayout::DepthStencilReadOnlyOptimal;
 		pass.AddImageHint(depthLogical, depthReq);
 	}
+
+	// DEBUG: Log HZB pass creation
+	static uint64_t s_hizPassCount = 0;
+	if ((s_hizPassCount++ % 60) == 0) {
+		std::fprintf(stderr,
+			"[GfxHiz] AddHizPass view=%u mip=%u/%u depthValid=%d passName=%s\n",
+			view, dstMip, t.hiz.mipCount, !depthLogical.empty(), passName ? passName : "GfxHiz");
+	}
+
 	return pass;
 }
 
@@ -485,6 +537,17 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 		push.srcHeight = sh;
 		push.srcOffset = t.hiz.mipOffsets[dstMip - 1];
 	}
+
+	// DEBUG: Log HZB dispatch parameters
+	static uint64_t s_hizDispatchCount = 0;
+	if ((s_hizDispatchCount++ % 60) == 0) {
+		std::fprintf(stderr,
+			"[GfxHiz] Dispatch view=%u mip=%u/%u dst=%ux%u off=%u srcMip=%u src=%ux%u srcOff=%u depthIdx=%u BDA=0x%llx\n",
+			view, dstMip, t.hiz.mipCount, dw, dh, push.dstOffset,
+			push.srcMip, push.srcWidth, push.srcHeight, push.srcOffset,
+			push.depthTextureIndex, (unsigned long long)addr);
+	}
+
 	cmd.BindComputePipeline(s.hizProgram);
 	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
 	cmd.Dispatch((dw + 7) / 8, (dh + 7) / 8, 1);
@@ -649,17 +712,28 @@ uint32_t RegisterMeshFromCooked(State& s, const CookedMeshlets& cooked,
 }
 
 void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
-	if (!s.filterIndexLogical.empty()) rg.FreeBuffer(s.filterIndexLogical);
 	if (!s.clusterLogical.empty()) rg.FreeBuffer(s.clusterLogical);
-	s.filterIndexLogical = {};
 	s.clusterLogical = {};
-	s.filterIndexBuffer = {};
 	s.clusterBuffer = {};
+	FreeIndexRegion(s.clusterIndexAllocBits);
+	s.clusterIndexBase = 0;
+	// One rendergraph logical for the static index monoblock (mesh +
+	// cluster-ordered + filtered regions share one VkBuffer, so one hint
+	// covers every index stream). The heap outlives filter data; keep the
+	// logical for the State lifetime.
+	if (s.indexHeapLogical.empty())
+		s.indexHeapLogical = rg.AddExternalBuffer(
+			staticVertexFmtHeap.m_staticIndexBuffer, "static index monoblock");
 	if (s.filterIndices.empty() || s.clusters.empty())
 		return;
-	s.filterIndexBuffer = ctx.CreateBuffer(
-		s.filterIndices.size() * sizeof(uint32_t),
-		BufferType_Storage, "gfx clusterIndices");
+	if (!AllocIndexRegion((uint32_t)s.filterIndices.size(),
+		s.clusterIndexBase, s.clusterIndexAllocBits)) {
+		std::fprintf(stderr,
+			"[GfxFilter] cluster index region exhausted the static index "
+			"monoblock (%u indices): increase the reservation.\n",
+			(unsigned)s.filterIndices.size());
+		return;
+	}
 	std::vector<ClusterConstants> table(s.clusters.size());
 	for (size_t i = 0; i < s.clusters.size(); ++i) {
 		table[i].indexOffset = s.clusters[i].indexOffset;
@@ -670,15 +744,15 @@ void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
 	s.clusterBuffer = ctx.CreateBuffer(
 		table.size() * sizeof(ClusterConstants),
 		BufferType_Storage, "gfx clusters");
-	if (s.filterIndexBuffer.empty() || s.clusterBuffer.empty())
+	if (s.clusterBuffer.empty())
 		return;
-	ctx.UploadDataToBuffer(s.filterIndexBuffer,
+	ctx.UploadDataToBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
 		s.filterIndices.data(), s.filterIndices.size() * sizeof(uint32_t),
-		PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
+		PipelineStage(PipelineStageBit_Vertex), AccessFlags::IndexRead,
+		0, (size_t)s.clusterIndexBase * sizeof(uint32_t));
 	ctx.UploadDataToBuffer(s.clusterBuffer,
 		table.data(), table.size() * sizeof(ClusterConstants),
 		PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
-	s.filterIndexLogical = rg.AddExternalBuffer(s.filterIndexBuffer, "gfx clusterIndices");
 	s.clusterLogical = rg.AddExternalBuffer(s.clusterBuffer, "gfx clusters");
 }
 
@@ -780,12 +854,13 @@ static void EmitBucketMajor(State& s, const std::vector<EmitEntry>& entries,
 			const bool masked = (e.drawSet & DrawSetBit_Masked) != 0;
 			if ((wantSet == DrawSetBit_Masked) != masked)
 				continue;
-			const Cluster& c = s.clusters[e.cluster];
-			SeedCommand cmd{};
-			cmd.indexCount = c.triCount * 3;
-			cmd.instanceCount = 1;
-			cmd.firstIndex = c.indexOffset; // into filterIndices
-			cmd.vertexOffset = 0;
+		const Cluster& c = s.clusters[e.cluster];
+		SeedCommand cmd{};
+		cmd.indexCount = c.triCount * 3;
+		cmd.instanceCount = 1;
+		// Absolute into the static index monoblock (region base + offset).
+		cmd.firstIndex = s.clusterIndexBase + c.indexOffset;
+		cmd.vertexOffset = 0;
 			cmd.firstInstance = e.draw;
 			const uint32_t slot = (uint32_t)outCmds.size();
 			if (slot >= kMaxBatches)
@@ -1197,18 +1272,30 @@ RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view) {
 	BufferSyncRequest computeRead{};
 	computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
 	computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
-	pass.AddBufferHint(s.filterIndexLogical, computeRead);
+	pass.AddBufferHint(s.indexHeapLogical, computeRead);
 	pass.AddBufferHint(s.clusterLogical, computeRead);
 	pass.AddBufferHint(v.batchLogicals[f], computeRead);
 	pass.AddBufferHint(v.drawLogicals[f], computeRead);
 	BufferSyncRequest computeRW{};
 	computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
 	computeRW.barrierMasks.stageMask = PipelineStageBit_Compute | PipelineStageBit_Vertex;
-	pass.AddBufferHint(v.filteredLogicals[f], computeRW);
+	// Filtered scratch is a region of the index monoblock: the same logical
+	// covers the compute write here and the index/vertex reads downstream.
+	pass.AddBufferHint(s.indexHeapLogical, computeRW);
 	pass.AddBufferHint(v.indirectLogicals[f], computeRW);
 	// HZB read (T4 occlusion): built by the HZB passes earlier in the frame.
 	if (view < s.temporals.size() && !s.temporals[view].hiz.logical.empty())
 		pass.AddBufferHint(s.temporals[view].hiz.logical, computeRead);
+
+	// DEBUG: Log filter pass HZB binding
+	static uint64_t s_filterPassCount = 0;
+	if ((s_filterPassCount++ % 60) == 0) {
+		const TemporalView& t = s.temporals[view];
+		std::fprintf(stderr,
+			"[GfxFilter] AddFilterPass view=%u batchCount=%u hasHiz=%d hiz=%ux%u/%u mips\n",
+			view, v.batchCount, !t.hiz.logical.empty(), t.hiz.width, t.hiz.height, t.hiz.mipCount);
+	}
+
 	return pass;
 }
 
@@ -1233,12 +1320,16 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 	cmd.BindComputePipeline(s.filterProgram);
 	FilterPush push{};
 	push.positions = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexPosBuffer);
-	push.indices = ctx.GetBufferDeviceAddress(s.filterIndexBuffer);
+	// Index streams address regions of the static index monoblock: cluster
+	// reads at clusterIndexBase, filtered writes at this flight's slice.
+	const uint64_t indexHeapAddr = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticIndexBuffer);
+	push.indices = indexHeapAddr + (uint64_t)s.clusterIndexBase * sizeof(uint32_t);
 	push.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
 	push.batches = ctx.GetBufferDeviceAddress(v.batchBuffers[f]);
 	push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
-	push.filtered = ctx.GetBufferDeviceAddress(v.filteredBuffers[f]);
+	push.filtered = indexHeapAddr + (uint64_t)v.filteredBase[f] * sizeof(uint32_t);
 	push.indirect = ctx.GetBufferDeviceAddress(v.indirectBuffers[f]);
+	push.indexBase = v.filteredBase[f];
 	// A null BDA dereferenced by the filter CS is an MMU fault and takes the
 	// whole device down (Aftermath: compute read at 0xa000). Never dispatch
 	// in that state: the indirect buffers were zero-filled by FinalizeView,
@@ -1280,8 +1371,66 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 			push.minContribution = 0.0f;
 		}
 	}
+
+	// DEBUG: Log filter dispatch HZB parameters
+	static uint64_t s_filterDispatchCount = 0;
+	if ((s_filterDispatchCount++ % 60) == 0) {
+		std::fprintf(stderr,
+			"[GfxFilter] PushAndDispatch view=%u batchCount=%u cullFlags=0x%x hzb=0x%llx hiz=%ux%u/%u minContrib=%.4f\n",
+			view, v.batchCount, v.cullFlags,
+			(unsigned long long)push.hzb, push.hizWidth, push.hizHeight, push.hizMips, push.minContribution);
+	}
+
 	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
 	cmd.Dispatch(v.batchCount, 1, 1);
+}
+
+// DEBUG: Download and inspect HZB buffer contents
+void DumpHzb(State& s, ResourceManager& ctx, uint32_t view) {
+	if (view >= s.temporals.size())
+		return;
+	const TemporalView& t = s.temporals[view];
+	if (t.hiz.mipCount == 0 || t.hiz.width == 0 || t.hiz.height == 0 || t.hiz.buffer.empty()) {
+		std::fprintf(stderr, "[GfxHiz] DumpHzb: no HZB buffer (view %u)\n", view);
+		return;
+	}
+	std::vector<float> hzb(HzbTotalFloats(t.hiz.width, t.hiz.height), 0.0f);
+	if (!ctx.DownloadDataFromBuffer(t.hiz.buffer, hzb.data(), hzb.size() * sizeof(float))) {
+		std::fprintf(stderr, "[GfxHiz] DumpHzb: download failed (view %u)\n", view);
+		return;
+	}
+	std::fprintf(stderr, "[GfxHiz] DumpHzb view=%u %ux%u mips=%u totalFloats=%zu\n",
+		view, t.hiz.width, t.hiz.height, t.hiz.mipCount, hzb.size());
+	for (uint32_t m = 0; m < t.hiz.mipCount; ++m) {
+		uint32_t mw = 0, mh = 0;
+		HzbMipDims(t.hiz.width, t.hiz.height, m, mw, mh);
+		uint32_t off = t.hiz.mipOffsets[m];
+		float minV = std::numeric_limits<float>::infinity();
+		float maxV = -std::numeric_limits<float>::infinity();
+		uint32_t nanCount = 0, infCount = 0, zeroCount = 0;
+		for (uint32_t y = 0; y < mh; ++y) {
+			for (uint32_t x = 0; x < mw; ++x) {
+				float v = hzb[off + y * mw + x];
+				if (std::isnan(v)) ++nanCount;
+				else if (std::isinf(v)) ++infCount;
+				else {
+					minV = std::min(minV, v);
+					maxV = std::max(maxV, v);
+					if (v == 0.0f) ++zeroCount;
+				}
+			}
+		}
+		std::fprintf(stderr, "  mip%u: %ux%u off=%u range=[%.6f, %.6f] zeros=%u nan=%u inf=%u\n",
+			m, mw, mh, off, minV, maxV, zeroCount, nanCount, infCount);
+		// Print first few values for mip 0
+		if (m == 0 && mw * mh > 0) {
+			std::fprintf(stderr, "    sample: ");
+			for (uint32_t i = 0; i < std::min<uint32_t>(16, mw * mh); ++i) {
+				std::fprintf(stderr, "%.4f ", hzb[off + i]);
+			}
+			std::fprintf(stderr, "\n");
+		}
+	}
 }
 
 } // namespace gfx
