@@ -21,6 +21,7 @@
 #include <Engine/Rendergraph/spotshadow.h>
 #include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/msaa.h>
+#include <Engine/Rendergraph/motionblur.h>
 #include <Engine/Rendergraph/motionvector.h>
 #include <Engine/Rendergraph/tonemap.h>
 #include <Engine/Rendergraph/depth.h>
@@ -105,6 +106,25 @@ static smvk::TonemapDesc MakeTonemapDesc() {
 	d.exposure = TONEMAP_EXPOSURE;
 	d.tonemapMode = TONEMAP_MODE;
 	d.name = "Tonemap";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
+// Motion blur config (velocity gather in HDR, see
+// Engine/Rendergraph/motionblur.h). Runs after Main, before Bloom/Tonemap;
+// bloom + tonemap sample the blurred HDR when the pass runs.
+// -----------------------------------------------------------------------------
+static constexpr uint32_t MOTIONBLUR_SAMPLES = 12;
+static constexpr float MOTIONBLUR_MAX_RADIUS_PX = 24.0f;
+static constexpr float MOTIONBLUR_VELOCITY_SCALE = 1.0f;
+
+static smvk::MotionBlurDesc MakeMotionBlurDesc() {
+	smvk::MotionBlurDesc d{};
+	d.format = smvk::Format::RGBA16_Float; // must match the HDR target
+	d.sampleCount = MOTIONBLUR_SAMPLES;
+	d.maxRadiusPx = MOTIONBLUR_MAX_RADIUS_PX;
+	d.velocityScale = MOTIONBLUR_VELOCITY_SCALE;
+	d.name = "motionBlur";
 	return d;
 }
 
@@ -378,6 +398,7 @@ struct ViewportResources {
 	smvk::HdrTarget hdr; // HDR intermediate (image + view + bindless + logical) + Ensure
 	smvk::MsaaTarget msaa; // transient 2x color+depth for Main, resolves to hdr
 	smvk::MotionVectors motionVectors; // RG16F motion target + program + pass helper
+	smvk::MotionBlur motionBlur; // blurred HDR output + velocity-gather program + pass
 	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
 	smvk::UiComposite uiComposite; // UI -> swapchain alpha composite program + pass
 	bool msaaEnabled = true; // runtime toggle (effective only if device supports)
@@ -760,6 +781,7 @@ private:
 		m_viewportResources.directionalShadows.Destroy(*m_rendergraph);
 		m_viewportResources.msaa.Destroy(*m_rendergraph);
 		m_viewportResources.hdr.Destroy(*m_rendergraph);
+		m_viewportResources.motionBlur.Destroy(*m_rendergraph);
 		m_viewportResources.motionVectors.Destroy(*m_rendergraph);
 		m_viewportResources.renderDepth.Destroy(*m_rendergraph);
 		m_viewportResources.ui.Destroy(*m_rendergraph);
@@ -1347,6 +1369,7 @@ private:
 		m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildDepthDesc);
 		m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent);
 		m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
+		m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
 		smvk::MsaaDesc rebuildMsaaDesc{};
 		rebuildMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildMsaaDesc);
@@ -1387,6 +1410,7 @@ private:
 				renderExtent, m_viewportResources.renderDepth.view);
 			m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent);
 			m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
+			m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
 			smvk::MsaaDesc frameMsaaDesc{};
 			frameMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 			m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, frameMsaaDesc);
@@ -2456,9 +2480,10 @@ private:
 		}
 
 		// ---------------------------------------------------------------------
-		// Bloom – HDR downsample / upsample chain (composable, see bloom.h)
+		// Motion blur – velocity gather in HDR (see motionblur.h). Runs after
+		// Main, before Bloom/Tonemap so both consume the blurred HDR.
 		// ---------------------------------------------------------------------
-		// Sampler cache: linear clamp shared by bloom + tonemap blits
+		// Sampler cache: linear clamp shared by motion blur + bloom + tonemap blits
 		uint32_t linearSampler = m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
 			.magFilter = smvk::Filter::Linear,
 			.minFilter = smvk::Filter::Linear,
@@ -2468,12 +2493,44 @@ private:
 			.addressW = smvk::AddressMode::ClampToEdge,
 			.maxAnisotropy = 1.0f
 		});
+		// Scene HDR for downstream passes: blurred output when the pass ran,
+		// sharp HDR otherwise (no copy when disabled).
+		smvk::LogicalImageViewHandle sceneHdrView = m_viewportResources.hdr.logicalView;
+		uint32_t sceneHdrBindless = m_viewportResources.hdr.bindlessIndex;
+		{
+			smvk::MotionBlurDesc blurDesc = MakeMotionBlurDesc();
+			blurDesc.sampleCount = (uint32_t)m_motionBlurSamples;
+			blurDesc.maxRadiusPx = m_motionBlurMaxRadius;
+			blurDesc.velocityScale = m_motionBlurStrength;
+			const bool blurOn = m_motionBlurEnabled
+				&& m_viewportResources.motionBlur.Valid()
+				&& m_viewportResources.motionVectors.Valid();
+			if (blurOn) {
+				m_viewportResources.motionBlur.AddMotionBlurPass(
+					*m_rendergraph,
+					m_viewportResources.hdr.logicalView,
+					m_viewportResources.hdr.bindlessIndex,
+					m_viewportResources.motionVectors.target.logicalView,
+					m_viewportResources.motionVectors.target.bindlessIndex,
+					linearSampler,
+					renderExtent,
+					blurDesc,
+					"MotionBlur");
+				sceneHdrView = m_viewportResources.motionBlur.OutputView();
+				sceneHdrBindless = m_viewportResources.motionBlur.OutputBindless();
+			}
+		}
+
+		// ---------------------------------------------------------------------
+		// Bloom – HDR downsample / upsample chain (composable, see bloom.h)
+		// ---------------------------------------------------------------------
 		if (m_viewportResources.bloom.Valid()) {
 			// Default down/up programs owned by BloomChain (Ensure internalized).
+			// Samples the (possibly motion-blurred) scene HDR.
 			m_viewportResources.bloom.AddBloomPasses(
 				*m_rendergraph,
-				m_viewportResources.hdr.logicalView,
-				m_viewportResources.hdr.bindlessIndex,
+				sceneHdrView,
+				sceneHdrBindless,
 				linearSampler);
 		}
 
@@ -2498,8 +2555,8 @@ private:
 			}
 			auto& tonemapPass = m_viewportResources.tonemap.AddTonemapPass(
 				*m_rendergraph,
-				m_viewportResources.hdr.logicalView,
-				m_viewportResources.hdr.bindlessIndex,
+				sceneHdrView,
+				sceneHdrBindless,
 				bloomView,
 				bloomBindless,
 				bloomIntensity,
@@ -2621,7 +2678,8 @@ private:
 			}
 			ImGui::Separator();
 			{
-				// Motion vector debug view (pass + target built in RenderFrame).
+				// Motion vectors (pass + target built in RenderFrame) +
+				// motion blur (HDR velocity gather before bloom/tonemap).
 				if (m_viewportResources.motionVectors.Valid()) {
 					ImGui::Checkbox("Show motion vectors", &m_showMotionDebug);
 					if (m_showMotionDebug) {
@@ -2630,6 +2688,16 @@ private:
 					}
 				} else {
 					ImGui::TextDisabled("Motion vectors: target/shaders missing");
+				}
+				ImGui::Checkbox("Motion blur (HDR velocity gather)", &m_motionBlurEnabled);
+				if (m_motionBlurEnabled) {
+					ImGui::SliderInt("Blur samples", &m_motionBlurSamples, 1, 32);
+					ImGui::SliderFloat("Blur max radius (px)", &m_motionBlurMaxRadius, 0.0f, 64.0f);
+					ImGui::SliderFloat("Blur strength", &m_motionBlurStrength, 0.0f, 2.0f);
+					if (!m_viewportResources.motionBlur.Valid())
+						ImGui::TextDisabled("Motion blur target/shaders missing – sharp HDR");
+					else
+						ImGui::TextDisabled("Gather along motion vectors, pre-tonemap HDR");
 				}
 			}
 			ImGui::Separator();
@@ -2901,6 +2969,11 @@ private:
 	std::vector<glm::mat4> m_prevGlobalTransforms; // last frame's node transforms
 	bool m_showMotionDebug = false; // tonemap debug view: motion vectors
 	float m_motionDebugScale = 16.0f; // debug view velocity amplification
+	// ---- Motion blur pass (HDR velocity gather, see motionblur.h) ----
+	bool m_motionBlurEnabled = true; // runs after Main, before Bloom/Tonemap
+	int m_motionBlurSamples = (int)MOTIONBLUR_SAMPLES; // gather taps 1..32
+	float m_motionBlurMaxRadius = MOTIONBLUR_MAX_RADIUS_PX; // blur clamp (px)
+	float m_motionBlurStrength = MOTIONBLUR_VELOCITY_SCALE; // shutter scale
 	// ---- Emissive point-light ball objects (scene-hierarchy lights) ----
 	smvk::Cluster* m_lightCluster = nullptr; // owns the shared ball resources
 	smvk::ClusterStaticMeshHandle m_ballMesh{};
