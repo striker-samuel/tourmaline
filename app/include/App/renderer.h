@@ -44,6 +44,12 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	GfxConfig config{};
 	smvk::Holder<smvk::ShaderModuleHandle> filteredVsModule;
 	smvk::ShaderProgram filteredProgram{};
+	// Filtered motion-vector VS (gfxfilteredmotion.vert.hlsl, static
+	// geometry only: prevWorld == model). Pairs with the motion frag
+	// module owned by the viewport MotionVectors; configured lazily via
+	// EnsureFilteredMotion once the motion target exists.
+	smvk::Holder<smvk::ShaderModuleHandle> filteredMotionVsModule;
+	smvk::ShaderProgram filteredMotionProgram{};
 	// Seed-depth programs (T3): draw the previous frame's visible clusters
 	// straight from the cluster-ordered index heap to prime depth.
 	smvk::Holder<smvk::ShaderModuleHandle> seedVsModule;
@@ -116,6 +122,14 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 
 	void ConfigureFrag(smvk::ShaderModuleHandle mainFrag) { mainFrag_ = mainFrag; }
 	void ConfigureSeedFrag(smvk::ShaderModuleHandle seedFrag) { seedFrag_ = seedFrag; }
+	// Idempotent filtered-motion program creation (VS + motion frag).
+	// Returns true when the program is ready to bind.
+	bool EnsureFilteredMotion(smvk::ResourceManager& ctx,
+		smvk::ShaderModuleHandle motionFrag);
+	[[nodiscard]] bool FilteredMotionValid() const {
+		return filteredMotionProgram.shaderCount == 2 && !filteredMotionVsModule.empty();
+	}
+	[[nodiscard]] smvk::ShaderProgram& FilteredMotionProgram() { return filteredMotionProgram; }
 
 	// Walks world.meshLocations once after scene load/resolve. Meshes with
 	// cooked meshlets (pak path) register from those; meshes with retained
@@ -154,6 +168,9 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// DrawRange issues one multi-draw over the material's command range.
 	void PushViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex);
+	void PushMotionViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
+		uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex,
+		uint64_t frameUniformsAddr);
 	void DrawRange(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 		uint32_t slot, uint32_t rangeIdx);
 

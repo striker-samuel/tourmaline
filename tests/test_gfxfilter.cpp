@@ -711,6 +711,20 @@ void TestSeedCommands() {
 			&& c.firstInstance == expectDraw[i];
 	}
 	Check(cmdsOk, "gfx.seed.cmds-shape");
+	// firstIndex is absolute into the static index monoblock (region base
+	// + cluster offset), so the IA index binding never switches buffers.
+	// Headless State has no GPU region (base 0); pin the formula with a
+	// nonzero sentinel base.
+	s.clusterIndexBase = 1337u;
+	BuildSeedCommands(s, 0);
+	bool absOk = Temporal(s, 0).seedCommands.size() == 3;
+	for (size_t i = 0; absOk && i < 3; ++i) {
+		const SeedCommand& c = Temporal(s, 0).seedCommands[i];
+		absOk = c.firstIndex
+			== 1337u + s.clusters[expectCluster[i]].indexOffset;
+	}
+	Check(absOk, "gfx.seed.abs-firstindex");
+	s.clusterIndexBase = 0;
 
 	// Invalidating clears the seed list (no stale commands survive).
 	InvalidateHistory(s, 0);
@@ -1067,6 +1081,208 @@ void TestHzbSpawnView() {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// GPU-mirror agreement: C++ port of gfxfilter.cs.hlsl ClusterOccluded.
+//
+// The shader derives its footprint/depth from conservative CLIP intervals
+// (not the Euclidean nearest point the CPU ProjectClusterFootprint uses),
+// so the two mirrors can disagree on borderline cases — but only in the
+// safe direction (GPU keeps where the CPU culls). This test pins that:
+//   - the canonical occluded case culls in BOTH mirrors (effectiveness:
+//     occlusion can fire through the exact math the GPU executes);
+//   - self-depth / sky / behind-camera / eye-inside keep in BOTH;
+//   - fuzz: a GPU cull for an ON-SCREEN CPU-keep is forbidden (genuine
+//     over-cull: visible geometry would vanish). The only allowed
+//     divergence is a fully off-target CPU footprint, where the GPU
+//     merely pre-empts the frustum stages (same outcome), with high
+//     overall agreement.
+// A regression here means the HLSL and the C++ mirror drifted apart, and
+// the DumpIndirectAudit attribution (CPU mirror) no longer describes the
+// GPU — the "occlusion not working but audit disagrees" class of bug.
+// ---------------------------------------------------------------------------
+
+namespace {
+// Conservative n/w interval matching ConservativeRatioInterval in HLSL.
+std::pair<float, float> GpuRatioInterval(float nCenter, float nRadius, float wMin, float wMax) {
+	float r0 = (nCenter - nRadius) / wMin;
+	float r1 = (nCenter - nRadius) / wMax;
+	float r2 = (nCenter + nRadius) / wMin;
+	float r3 = (nCenter + nRadius) / wMax;
+	return { std::min(std::min(r0, r1), std::min(r2, r3)),
+		std::max(std::max(r0, r1), std::max(r2, r3)) };
+}
+} // namespace
+
+// Identity model (world-space sphere in, like the audit path with the model
+// already applied). Mirrors ClusterOccluded in gfxfilter.cs.hlsl step by step.
+bool GpuClusterOccluded(const glm::vec3& wc, float wr, const glm::vec3& eye,
+	const glm::mat4& viewProj, uint32_t W, uint32_t H,
+	const float* hzb, uint32_t mips) {
+	using namespace smvk::gfx;
+	if (hzb == nullptr || mips == 0 || W == 0 || H == 0)
+		return false;
+	const float width = (float)W, height = (float)H;
+	const glm::vec3 toEye = eye - wc;
+	const float dist = glm::length(toEye);
+	if (!(dist > wr))
+		return false; // eye inside: never cull
+	const glm::vec4 clipC = viewProj * glm::vec4(wc, 1.0f);
+	// HLSL viewProj._1C is row 0 (1-based row/col, layout-independent);
+	// glm m[col][row], so row r is (m[0][r], m[1][r], m[2][r]).
+	const float xRadius = wr * glm::length(glm::vec3(viewProj[0][0], viewProj[1][0], viewProj[2][0]));
+	const float yRadius = wr * glm::length(glm::vec3(viewProj[0][1], viewProj[1][1], viewProj[2][1]));
+	const float zRadius = wr * glm::length(glm::vec3(viewProj[0][2], viewProj[1][2], viewProj[2][2]));
+	const float wRadius = wr * glm::length(glm::vec3(viewProj[0][3], viewProj[1][3], viewProj[2][3]));
+	const float wMin = clipC.w - wRadius;
+	const float wMax = clipC.w + wRadius;
+	if (!(wMin > 1e-6f) || !(wMax >= wMin))
+		return false;
+	const auto ndcX = GpuRatioInterval(clipC.x, xRadius, wMin, wMax);
+	const auto ndcY = GpuRatioInterval(clipC.y, yRadius, wMin, wMax);
+	const auto ndcZ = GpuRatioInterval(clipC.z, zRadius, wMin, wMax);
+	const float dNear = ndcZ.second;
+	if (!(dNear >= 0.0f) || dNear > 1.0f)
+		return false;
+	const float x0 = (ndcX.first * 0.5f + 0.5f) * width;
+	const float x1 = (ndcX.second * 0.5f + 0.5f) * width;
+	const float y0 = (ndcY.first * 0.5f + 0.5f) * height;
+	const float y1 = (ndcY.second * 0.5f + 0.5f) * height;
+	if (!(x1 >= x0) || !(y1 >= y0))
+		return false;
+	if (x1 < 0.0f || x0 > width || y1 < 0.0f || y0 > height)
+		return false; // off-target: frustum stages own it
+	const float sx0 = std::min(std::max(x0, 0.0f), width);
+	const float sx1 = std::min(std::max(x1, 0.0f), width);
+	const float sy0 = std::min(std::max(y0, 0.0f), height);
+	const float sy1 = std::min(std::max(y1, 0.0f), height);
+	const float rectW = std::max(sx1 - sx0, 0.0f);
+	const float rectH = std::max(sy1 - sy0, 0.0f);
+	if (!(rectW > 0.0f) || !(rectH > 0.0f))
+		return false;
+	uint32_t level = 0;
+	float texel = 1.0f;
+	const float rectMax = std::max(rectW, rectH);
+	while (texel < rectMax && level + 1 < mips) {
+		texel *= 2.0f;
+		++level;
+	}
+	uint32_t lw = W, lh = H, off = 0;
+	for (uint32_t k = 0; k < level; ++k) {
+		off += lw * lh;
+		lw = std::max((lw + 1u) >> 1, 1u);
+		lh = std::max((lh + 1u) >> 1, 1u);
+	}
+	if (lw == 0 || lh == 0)
+		return false;
+	const uint32_t tx0 = std::min((uint32_t)std::max(std::floor(sx0 / texel), 0.0f), lw - 1);
+	const uint32_t tx1 = std::min((uint32_t)std::max(std::floor(sx1 / texel), 0.0f), lw - 1);
+	const uint32_t ty0 = std::min((uint32_t)std::max(std::floor(sy0 / texel), 0.0f), lh - 1);
+	const uint32_t ty1 = std::min((uint32_t)std::max(std::floor(sy1 / texel), 0.0f), lh - 1);
+	if (tx0 > tx1 || ty0 > ty1)
+		return false;
+	const float testDepth = dNear + std::max(1e-7f, std::abs(dNear) * 1e-5f);
+	for (uint32_t ty = ty0; ty <= ty1; ++ty) {
+		for (uint32_t tx = tx0; tx <= tx1; ++tx) {
+			if (testDepth >= hzb[off + ty * lw + tx])
+				return false;
+		}
+	}
+	return true;
+}
+
+void TestGpuMirrorAgreement() {
+	using namespace smvk::gfx;
+	const glm::vec3 eye(0, 0, 4);
+	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f; // engine Y-flip, mirrors UpdateFrameUniforms
+	const glm::mat4 viewProj = proj * view;
+	constexpr uint32_t W = 256, H = 256;
+	const uint32_t mips = HzbMipCount(W, H);
+
+	auto cpuVerdict = [&](const glm::vec3& c, float r, const float* hzb) {
+		return HzbOccluded(hzb, W, H, mips,
+			ProjectClusterFootprint(c, r, eye, viewProj, W, H));
+	};
+
+	// Uniform-near pyramid (0.9 everywhere): frontal unit sphere sits behind
+	// it (dNear ~0.03) so BOTH mirrors must cull — occlusion can fire.
+	std::vector<float> nearHzb(HzbTotalFloats(W, H), 0.9f);
+	const glm::vec3 front(0, 0, 0);
+	Check(cpuVerdict(front, 1.0f, nearHzb.data()), "gfx.gpumirror.cpu-culls-behind");
+	Check(GpuClusterOccluded(front, 1.0f, eye, viewProj, W, H, nearHzb.data(), mips),
+		"gfx.gpumirror.gpu-culls-behind");
+
+	// All-far pyramid (sky): nothing is hidden in either mirror.
+	std::vector<float> farHzb(HzbTotalFloats(W, H), 0.0f);
+	Check(!cpuVerdict(front, 1.0f, farHzb.data()), "gfx.gpumirror.cpu-sky-keeps");
+	Check(!GpuClusterOccluded(front, 1.0f, eye, viewProj, W, H, farHzb.data(), mips),
+		"gfx.gpumirror.gpu-sky-keeps");
+
+	// Degenerate inputs keep in both mirrors.
+	Check(!GpuClusterOccluded(glm::vec3(0, 0, 3.5f), 1.0f, eye, viewProj, W, H,
+		nearHzb.data(), mips), "gfx.gpumirror.gpu-inside-keeps");
+	Check(!GpuClusterOccluded(glm::vec3(0, 0, 8.0f), 1.0f, eye, viewProj, W, H,
+		nearHzb.data(), mips), "gfx.gpumirror.gpu-behind-keeps");
+	Check(!GpuClusterOccluded(front, 1.0f, eye, viewProj, W, H, nullptr, mips),
+		"gfx.gpumirror.gpu-null-keeps");
+
+	// Fuzz over a sloped pyramid: GPU must never cull what the CPU keeps
+	// (no over-cull divergence), with high overall agreement. Deterministic
+	// LCG so failures reproduce exactly.
+	std::vector<float> slopeHzb(HzbTotalFloats(W, H), 0.0f);
+	for (uint32_t m = 0; m < mips; ++m) {
+		uint32_t mw = 0, mh = 0;
+		HzbMipDims(W, H, m, mw, mh);
+		const uint32_t off = HzbMipOffsetFloats(W, H, m);
+		for (uint32_t y = 0; y < mh; ++y)
+			for (uint32_t x = 0; x < mw; ++x)
+				slopeHzb[off + y * mw + x] =
+					0.05f + 0.9f * (float(x + y) / float(mw + mh));
+	}
+	uint32_t rng = 0xC0FFEEu;
+	auto rnd = [&]() {
+		rng = rng * 1664525u + 1013904223u;
+		return float(rng >> 8) / float(1u << 24);
+	};
+	uint32_t overCull = 0, agree = 0;
+	constexpr uint32_t kSamples = 300;
+	for (uint32_t i = 0; i < kSamples; ++i) {
+		const glm::vec3 c(-6.0f + rnd() * 12.0f, -4.0f + rnd() * 8.0f,
+			-12.0f + rnd() * 11.0f);
+		const float r = 0.1f + rnd() * 0.7f;
+		const ClusterFootprint f = ProjectClusterFootprint(c, r, eye, viewProj, W, H);
+		const bool cpu = HzbOccluded(slopeHzb.data(), W, H, mips, f);
+		const bool gpu = GpuClusterOccluded(c, r, eye, viewProj, W, H,
+			slopeHzb.data(), mips);
+		if (gpu && !cpu) {
+			// Allowed divergence only: the CPU footprint is fully
+			// off-target, i.e. the GPU merely pre-empts the frustum
+			// stages (which own off-screen triangles and would drop
+			// them anyway). A GPU cull for an ON-SCREEN CPU-keep is a
+			// genuine over-cull (visible geometry vanishes).
+			const bool cpuOffscreen = f.behindCamera
+				|| f.centerX + f.radiusX < 0.0f || f.centerX - f.radiusX > (float)W
+				|| f.centerY + f.radiusY < 0.0f || f.centerY - f.radiusY > (float)H;
+			if (!cpuOffscreen) {
+				++overCull;
+				float stored = -1.0f;
+				HzbOccluded(slopeHzb.data(), W, H, mips, f, &stored);
+				std::printf("[gfx.gpumirror] OVERCULL c=(%.3f,%.3f,%.3f) r=%.3f "
+					"cpu c=(%.1f,%.1f) r=(%.1f,%.1f) dNear=%.6f stored=%.6f\n",
+					c.x, c.y, c.z, r, f.centerX, f.centerY, f.radiusX, f.radiusY,
+					f.nearestDepth, stored);
+			}
+		}
+		if (gpu == cpu)
+			++agree;
+	}
+	std::printf("[gfx.gpumirror] fuzz: %u/%u agree, %u over-cull\n",
+		agree, kSamples, overCull);
+	Check(overCull == 0, "gfx.gpumirror.no-overcull");
+	Check(agree >= kSamples * 9 / 10, "gfx.gpumirror.agreement");
+}
+
 } // namespace
 
 int main() {
@@ -1080,6 +1296,7 @@ int main() {
 	TestSeedCommands();
 	TestHzbOcclusion();
 	TestHzbSpawnView();
+	TestGpuMirrorAgreement();
 	TestRemainderCommands();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;

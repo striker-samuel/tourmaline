@@ -13,6 +13,11 @@ namespace app {
 
 static constexpr const char* kGfxSeedVsPath = "content/shaders/gfxseed.vert.hlsl.spv";
 static constexpr const char* kGfxSeedMaskedVsPath = "content/shaders/gfxseedmasked.vert.hlsl.spv";
+static constexpr const char* kFilteredMotionVsPath = "content/shaders/gfxfilteredmotion.vert.hlsl.spv";
+// Byte offset of the FrameUniforms BDA in the filtered-motion push (free
+// prevModel scratch at 192..256: 192..216 is the 24B filtered VS tail,
+// 216..224 carries frameUniforms; the motion FS never reads prevModel).
+static constexpr uint32_t kFilteredMotionFrameUniformsOffset = 216;
 static constexpr const char* kMeshDebugVsPath = "content/shaders/meshdebug.vert.hlsl.spv";
 static constexpr const char* kMeshDebugFragPath = "content/shaders/meshdebug.frag.hlsl.spv";
 static constexpr const char* kLineVsPath = "content/shaders/debugline.vert.hlsl.spv";
@@ -497,6 +502,36 @@ void GfxRenderer::PushViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceMana
 	tail.renderViewIndex = renderViewIndex;
 	cmd.PushConstants(smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail,
 		smvk::ShaderStage::All);
+}
+
+bool GfxRenderer::EnsureFilteredMotion(smvk::ResourceManager& ctx,
+	smvk::ShaderModuleHandle motionFrag) {
+	if (FilteredMotionValid())
+		return true;
+	if (motionFrag.empty())
+		return false;
+	try {
+		if (filteredMotionVsModule.empty())
+			filteredMotionVsModule = ctx.CreateShaderModule(
+				readFile(kFilteredMotionVsPath), "gfxFilteredMotionVS");
+	}
+	catch (...) {
+		return false;
+	}
+	if (filteredMotionVsModule.empty())
+		return false;
+	smvk::Shader vs{ .module = filteredMotionVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+	smvk::Shader fs{ .module = motionFrag, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+	filteredMotionProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
+	return true;
+}
+
+void GfxRenderer::PushMotionViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
+	uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex,
+	uint64_t frameUniformsAddr) {
+	PushViewConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex);
+	cmd.PushConstants(kFilteredMotionFrameUniformsOffset, sizeof(frameUniformsAddr),
+		&frameUniformsAddr, smvk::ShaderStage::All);
 }
 
 void GfxRenderer::PushSeedConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,

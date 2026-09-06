@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <array>
 #include <filesystem>
@@ -1443,7 +1444,9 @@ private:
 		// Per-view triangle filter (main camera): appended below, after
 		// fc.pc is built (the temporal seed pass captures frame addresses)
 		// but before the Forward+ prepass (seed writes depth first).
-		// Shadow/depth/motion passes stay on direct draws.
+		// Shadow/depth passes stay on direct draws; motion draws static
+		// filtered geometry via the HZB-culled indirect list (moved nodes
+		// fall back to direct draws with correct prevModel).
 		uint32_t gfxSlot = smvk::RenderViewSet::kInvalidIndex;
 		//
 		std::vector<smvk::LogicalImageViewHandle> colors;
@@ -1888,19 +1891,66 @@ private:
 		// ---------------------------------------------------------------------
 		if (m_viewportResources.motionVectors.Valid()) {
 			PushConstants motionPC = pc;
+			// Filtered motion path (option b): static filtered geometry
+			// draws through the HZB-culled indirect list with the
+			// gfxfilteredmotion VS (prevWorld == model). Moved filtered
+			// nodes + non-filtered meshes use the direct fallback below.
+			const bool motionFilteredActive = m_useGfxFilter
+				&& m_useFilteredMotion
+				&& gfxSlot != UINT32_MAX
+				&& m_gfxRenderer.EnsureFilteredMotion(*m_context,
+					m_viewportResources.motionVectors.fragModule);
+			// One-shot diagnostic: tells which gate keeps the filtered
+			// motion path off (filter toggle, motion toggle, no slot,
+			// program/SPV failure, or an empty material-range list).
+			{
+				static bool motionFilterLogged = false;
+				if (!motionFilterLogged) {
+					motionFilterLogged = true;
+					size_t rangeCount = 0;
+					if (gfxSlot != UINT32_MAX
+						&& gfxSlot < m_gfxRenderer.State().views.size())
+						rangeCount = m_gfxRenderer.MaterialRanges(gfxSlot).size();
+					std::fprintf(stderr,
+						"[Motion] filtered=%d (filter=%d motion=%d slot=%u prog=%d ranges=%zu)\n",
+						motionFilteredActive ? 1 : 0,
+						m_useGfxFilter ? 1 : 0, m_useFilteredMotion ? 1 : 0,
+						gfxSlot, m_gfxRenderer.FilteredMotionValid() ? 1 : 0,
+						rangeCount);
+				}
+			}
 			auto& motionPass = m_viewportResources.motionVectors.AddMotionVectorPass(
 				*m_rendergraph,
 				m_viewportResources.renderDepth.logicalView,
 				m_viewportResources.motionVectors.target.logicalView,
 				renderExtent,
 				"MotionVectors");
-			motionPass.SetRecordingFunc([this, motionPC](smvk::CommandBuffer& cmd)
+			motionPass.SetRecordingFunc([this, motionPC, motionFilteredActive, gfxSlot, renderViewsAddress, mainRenderView, frameUniformsAddress](smvk::CommandBuffer& cmd)
 			{
 				auto drawMotionNode = [&](NodeId node, bool maskedPhase) {
 					auto meshForNode = m_world->scene.meshForNode.find(node);
 					if (meshForNode == m_world->scene.meshForNode.end()) return;
 					auto materialForNode = m_world->scene.materialForNode.find(node);
 					if (materialForNode == m_world->scene.materialForNode.end()) return;
+					// Static filtered nodes are covered by the HZB-culled
+					// indirect draws below: skip them here so they rasterize
+					// once. Moved filtered nodes (model != prev) still need
+					// the direct path for their correct prevModel.
+					if (motionFilteredActive
+						&& m_gfxRenderer.IsMeshFiltered(meshForNode->second)) {
+						const bool prevValid = m_prevGlobalTransforms.size()
+							== m_world->scene.globalTransform.size();
+						if (prevValid) {
+							const glm::mat4& cur = m_world->scene.globalTransform[node];
+							const glm::mat4& prv = m_prevGlobalTransforms[node];
+							if (std::memcmp(glm::value_ptr(cur), glm::value_ptr(prv),
+									sizeof(cur)) == 0)
+								return;
+						}
+						else {
+							return; // no history: prev == curr, indirect covers it
+						}
+					}
 					smvk::Material* mat = m_world->GetMaterial(materialForNode->second);
 					const bool masked = mat &&
 						mat->shadingModel == smvk::ShadingModel::Masked;
@@ -1935,6 +1985,42 @@ private:
 					.writeEnable = false,
 					.depthTestEnable = true,
 				};
+				// Filtered static path: one HZB-culled multi-draw per
+				// material over the compacted index list (model matrices
+				// come from the draws buffer via SV_InstanceID; materialId
+				// is pushed per range for the FS alpha test). Cull follows
+				// the material (double-sided/MASK -> None, else Back).
+				if (motionFilteredActive) {
+					const auto& motionRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
+					for (uint32_t ri = 0; ri < (uint32_t)motionRanges.size(); ++ri) {
+						const uint32_t materialId = motionRanges[ri].material;
+						smvk::CullMode cull = smvk::CullMode::Back;
+						if (smvk::Material* rmat = m_world->GetMaterial(materialId)) {
+							if (rmat->isDoubleSided()
+								|| rmat->shadingModel == smvk::ShadingModel::Masked)
+								cull = smvk::CullMode::None;
+						}
+						cmd.BindRenderPipeline(
+							m_gfxRenderer.FilteredMotionProgram(),
+							smvk::VertexFormat::StaticVertexFormat,
+							motionDepth,
+							smvk::StencilSettings{},
+							smvk::BlendSettings::Opaque(),
+							smvk::MSAASettings::Count1(),
+							smvk::RasterSettings{ .cullMode = cull }
+						);
+						// Full scene push first (a pipeline must be bound
+						// before any push), then the per-range materialId
+						// and the filtered VS tail.
+						cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+						cmd.PushConstants(offsetof(PushConstants, materialId),
+							sizeof(materialId), &materialId, smvk::ShaderStage::All);
+						m_gfxRenderer.PushMotionViewConstants(
+							cmd, *m_context, gfxSlot, renderViewsAddress,
+							mainRenderView, frameUniformsAddress);
+						m_gfxRenderer.DrawRange(cmd, *m_context, gfxSlot, ri);
+					}
+				}
 				// Phase 1: solid geometry, back-culled like the prepass.
 				cmd.BindRenderPipeline(
 					m_viewportResources.motionVectors.program,
@@ -1968,6 +2054,11 @@ private:
 					| smvk::IteratorFlagBit_StaticVertexFmt
 					, [&](NodeId node) { drawMotionNode(node, true); });
 			});
+			// Filtered-path consume hints (same barriers as Main): the
+			// filter CS writes the compacted index list + indirect commands
+			// + draws ring that the motion indirect draws read.
+			if (motionFilteredActive)
+				m_gfxRenderer.AddMainConsumeHints(motionPass, gfxSlot);
 			(void)motionPass;
 		}
 
@@ -2601,6 +2692,7 @@ private:
 			ImGui::Separator();
 			ImGui::Text("GfxFilter (per-view triangle filter)");
 			ImGui::Checkbox("Enable filtered main view", &m_useGfxFilter);
+			ImGui::Checkbox("Enable filtered motion vectors", &m_useFilteredMotion);
 			{
 				// Cull-flag toggles write straight into the renderer config
 				// (takes effect next frame). FlipWinding default-off is
@@ -2782,6 +2874,7 @@ private:
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	app::GfxRenderer m_gfxRenderer{};
 	bool m_useGfxFilter = true; // false = legacy direct draws (A/B)
+	bool m_useFilteredMotion = true; // false = motion stays fully direct
 	// ---- Meshlet/cone debug views (see App/renderer.h debug programs) ----
 	bool m_debugMeshlets = false; // meshlet colors replace shaded opaque
 	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat
