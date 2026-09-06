@@ -141,9 +141,14 @@ void GfxRenderer::RecordDepthList(smvk::CommandBuffer& cmd, smvk::ResourceManage
 		? smvk::gfx::RemainderIndirectBuffer(gfx, slot)
 		: smvk::gfx::SeedIndirectBuffer(gfx, slot);
 	cmd.BindStaticVertexFmt();
-	cmd.BindIndexBuffer(smvk::gfx::FilterIndexBuffer(gfx));
 	// NOTE: no push constants before the first BindRenderPipeline below —
 	// PushConstants asserts on a bound pipeline layout (impl.cpp).
+	// Also do NOT bind FilterIndexBuffer here. BindRenderPipeline rebinds
+	// rebinds the static-mesh index heap internally (BindStaticVertexFmt),
+	// so any index binding must come AFTER the pipeline bind, immediately
+	// before the draw (the masked ranges already do this via DrawSeedRange
+	// / DrawRemainderRange). Binding it here draws cluster-heap offsets
+	// against the mesh-local index buffer: exploded vertices in depth.
 	// Phase 1: opaque (VS-only, back-culled like the prepass).
 	if (opaqueCount > 0) {
 		cmd.BindRenderPipeline(
@@ -161,6 +166,9 @@ void GfxRenderer::RecordDepthList(smvk::CommandBuffer& cmd, smvk::ResourceManage
 		);
 		cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
 		PushSeedConstants(cmd, ctx, slot, renderViewsAddr, renderViewIndex, drawsAddr);
+		// AFTER the pipeline bind (see NOTE above): cluster-heap indices
+		// with heap-global ids (vertexOffset 0 in the SeedCommands).
+		cmd.BindIndexBuffer(smvk::gfx::FilterIndexBuffer(gfx));
 		cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
 	}
 	// Phase 2: MASK cutout (alpha-tested FS, cull off).

@@ -2066,18 +2066,23 @@ private:
 				const glm::mat4& model = m_world->scene.globalTransform[node];
 				std::copy_n(glm::value_ptr(model), 16, dp.model);
 				const uint32_t gfxMesh = m_gfxRenderer.GfxMeshForWorldMesh(worldMesh);
-				if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
-					// Not filterable: white direct fallback (nothing vanishes).
-					dp.color[0] = dp.color[1] = dp.color[2] = 0.9f; dp.color[3] = 1.0f;
-					cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
-					if (smvk::StaticMesh* meshDesc = m_world->GetMesh(worldMesh)) {
-						for (auto& draw_set : meshDesc->geometry.surfaces) {
-							cmd.DrawIndexed(draw_set.indexCount, 1,
-								draw_set.firstIndex, draw_set.baseVertex);
-						}
+			if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
+				// Not filterable: white direct fallback (nothing vanishes).
+				// Mesh-local surfaces need the static index heap, not the
+				// cluster heap bound above: BindRenderPipeline rebinds it
+				// internally, so restore the cluster heap afterwards.
+				cmd.BindStaticVertexFmt();
+				dp.color[0] = dp.color[1] = dp.color[2] = 0.9f; dp.color[3] = 1.0f;
+				cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
+				if (smvk::StaticMesh* meshDesc = m_world->GetMesh(worldMesh)) {
+					for (auto& draw_set : meshDesc->geometry.surfaces) {
+						cmd.DrawIndexed(draw_set.indexCount, 1,
+							draw_set.firstIndex, draw_set.baseVertex);
 					}
-					return;
 				}
+				cmd.BindIndexBuffer(smvk::gfx::FilterIndexBuffer(m_gfxRenderer.State()));
+				return;
+			}
 				const smvk::gfx::Mesh& gm = dbgState.meshes[gfxMesh];
 				for (uint32_t ci = 0; ci < gm.clusterCount; ++ci) {
 					const uint32_t gc = gm.clusterStart + ci;
