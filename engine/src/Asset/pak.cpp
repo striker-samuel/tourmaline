@@ -5,6 +5,8 @@
 #include <cstring>
 #include <iostream>
 
+#include <Engine/Asset/compression.h>
+
 namespace smvk {
 namespace {
 
@@ -115,10 +117,32 @@ bool PakWriter::AddBlob(PakAssetKind kind, const std::string& path, std::vector<
 	p.meta.kind = kind;
 	p.meta.flags = PakEntryFlag_None;
 	p.meta.path = n;
-	p.payload = std::move(payload);
+	if (compression_ == PakCompression::Lz4) {
+		auto [stored, compressed] = CompressPakBlob(
+			std::span<const uint8_t>(payload), PakCompression::Lz4, lz4Acceleration_);
+		if (compressed) {
+			p.meta.flags = PakEntryFlag_Lz4;
+			p.payload = std::move(stored);
+		}
+		else {
+			p.payload = std::move(payload);
+		}
+	}
+	else {
+		p.payload = std::move(payload);
+	}
 	metas_.push_back(p.meta);
 	entries_.push_back(std::move(p));
 	return true;
+}
+
+size_t PakWriter::CompressedEntryCount() const {
+	size_t n = 0;
+	for (const auto& e : entries_) {
+		if (e.meta.flags & PakEntryFlag_Lz4)
+			++n;
+	}
+	return n;
 }
 
 std::vector<uint8_t> PakWriter::Finalize() const {
@@ -153,11 +177,20 @@ std::vector<uint8_t> PakWriter::Finalize() const {
 	// Footer: tocOffset, tocCount, crc32 over [0, footerCrcOff), footer magic.
 	// NOTE: the header placeholder is patched *before* the CRC so the
 	// checksum covers the final header bytes.
+	// Version is v3 when any blob is LZ4-compressed, else v2 (so old
+	// v1/v2-only readers keep accepting uncompressed paks).
 	const uint64_t tocCount = entries_.size();
+	bool anyCompressed = false;
+	for (const auto& e : entries_) {
+		if (e.meta.flags & PakEntryFlag_Lz4) {
+			anyCompressed = true;
+			break;
+		}
+	}
 	{
 		uint8_t* h = out.data();
 		memcpy(h + 0, &kPakMagic, 4);
-		const uint32_t version = kPakVersion;
+		const uint32_t version = anyCompressed ? kPakVersion : 2u;
 		const uint32_t flags = 0;
 		memcpy(h + 4, &version, 4);
 		memcpy(h + 8, &flags, 4);
@@ -254,9 +287,42 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 			outError = "pak path hash mismatch: " + e.path;
 			return std::nullopt;
 		}
+		if (e.flags & ~PakEntryFlag_Lz4) {
+			outError = "pak unknown entry flags: " + e.path;
+			return std::nullopt;
+		}
+		if ((e.flags & PakEntryFlag_Lz4) && version < 3) {
+			outError = "pak compressed entry in v" + std::to_string(version) + " pak: " + e.path;
+			return std::nullopt;
+		}
 		r.entries_.push_back(std::move(e));
 	}
+	// Decompress LZ4 blobs into reader-owned buffers so Payload() stays a
+	// simple span (transparent to cluster deserialization + PakBackend).
+	r.decompressed_.resize(r.entries_.size());
+	for (size_t i = 0; i < r.entries_.size(); ++i) {
+		const PakTocEntry& e = r.entries_[i];
+		if (!(e.flags & PakEntryFlag_Lz4))
+			continue;
+		std::span<const uint8_t> stored =
+			image.subspan(static_cast<size_t>(e.offset), static_cast<size_t>(e.size));
+		std::vector<uint8_t> raw;
+		if (!DecompressPakBlob(stored, true, raw)) {
+			outError = "pak LZ4 decompress failed: " + e.path;
+			return std::nullopt;
+		}
+		r.decompressed_[i] = std::move(raw);
+	}
 	return r;
+}
+
+size_t PakReader::CompressedEntryCount() const {
+	size_t n = 0;
+	for (const auto& e : entries_) {
+		if (e.flags & PakEntryFlag_Lz4)
+			++n;
+	}
+	return n;
 }
 
 std::vector<const PakTocEntry*> PakReader::BlobsOfKind(PakAssetKind kind) const {
@@ -278,6 +344,11 @@ const PakTocEntry* PakReader::Find(PakAssetKind kind, const std::string& normali
 }
 
 std::span<const uint8_t> PakReader::Payload(const PakTocEntry& entry) const {
+	// Entries are only ever accessed via pointers into entries_ (Find /
+	// BlobsOfKind), so pointer arithmetic recovers the owned buffer.
+	const size_t idx = static_cast<size_t>(&entry - entries_.data());
+	if (idx < decompressed_.size() && !decompressed_[idx].empty())
+		return std::span<const uint8_t>(decompressed_[idx]);
 	return image_.subspan(static_cast<size_t>(entry.offset), static_cast<size_t>(entry.size));
 }
 

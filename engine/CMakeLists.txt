@@ -55,6 +55,7 @@ target_link_libraries(engine
         KTX::ktx
         imgui_backend_glfw
         imgui_backend_vulkan
+        lz4
 )
 
 # DXC -- shader compiling HLSL->SPIRV

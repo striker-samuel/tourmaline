@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include <Engine/Asset/compression.h>
 #include <Engine/Vfs/vfs.h>
 
 namespace smvk {
@@ -41,9 +42,13 @@ namespace smvk {
 
 // v2 adds trailing meshlet sections on Mesh blobs and a trailing
 // static-subtree section on the Scene blob (see cluster_serializer.cpp).
+// v3 adds per-blob LZ4 compression (see compression.h): a TOC entry with
+// PakEntryFlag_Lz4 stores `u64 uncompressedSizeLE + LZ4 block bytes` and
+// the reader decompresses transparently. The writer emits v2 when no blob
+// compressed (so old readers keep working) and v3 otherwise.
 // The reader accepts v1 (missing trailing sections == no meshlets / no
-// static nodes) and v2. The writer always emits v2.
-inline constexpr uint32_t kPakVersion = 2;
+// static nodes), v2, and v3. The writer always emits v2 or v3.
+inline constexpr uint32_t kPakVersion = 3;
 inline constexpr uint32_t kPakVersionMin = 1;
 inline constexpr uint32_t kPakMagic = 0x4B504D53; // "SMPK" LE
 inline constexpr uint32_t kPakFooterMagic = 0x534D504B; // "KPMS" LE
@@ -57,6 +62,9 @@ enum class PakAssetKind : uint32_t {
 
 enum PakEntryFlags : uint32_t {
 	PakEntryFlag_None = 0,
+	// Blob payload is `u64 uncompressedSizeLE + LZ4 block bytes`
+	// (see compression.h). Payload() returns the decompressed bytes.
+	PakEntryFlag_Lz4 = 1u << 0,
 };
 
 struct PakTocEntry {
@@ -94,7 +102,16 @@ public:
 	PakWriter() = default;
 	// Payloads are copied. Path is normalized; empty/invalid paths fail.
 	bool AddBlob(PakAssetKind kind, const std::string& path, std::vector<uint8_t> payload);
+	// LZ4 compression for subsequently added blobs (default: None).
+	// Blobs below kCompressMinBytes or that do not shrink stay stored
+	// verbatim (flags == None), so tiny blobs never grow.
+	void SetCompression(PakCompression mode, int lz4Acceleration = 1) {
+		compression_ = mode;
+		lz4Acceleration_ = lz4Acceleration < 1 ? 1 : lz4Acceleration;
+	}
+	PakCompression Compression() const { return compression_; }
 	size_t EntryCount() const { return entries_.size(); }
+	size_t CompressedEntryCount() const;
 	const std::vector<PakTocEntry>& Entries() const { return metas_; }
 	// Serializes header+blobs+TOC+footer. Throws on failure.
 	std::vector<uint8_t> Finalize() const;
@@ -106,15 +123,20 @@ private:
 	};
 	std::vector<Pending> entries_;
 	std::vector<PakTocEntry> metas_; // mirrors entries_[].meta (stable order)
+	PakCompression compression_ = PakCompression::None;
+	int lz4Acceleration_ = 1;
 };
 
 // Parsed pak view over borrowed bytes (the caller keeps the image alive;
-// PakBackend keeps a shared image for this reason).
+// PakBackend keeps a shared image for this reason). LZ4 blobs are
+// decompressed once at Open() into reader-owned buffers; Payload()
+// transparently returns decompressed bytes for flagged entries.
 class PakReader {
 public:
 	// Validates magic/version/sizes/CRC. Nullopt on failure (reason logged).
 	static std::optional<PakReader> Open(std::span<const uint8_t> image, std::string& outError);
 	size_t EntryCount() const { return entries_.size(); }
+	size_t CompressedEntryCount() const;
 	const std::vector<PakTocEntry>& Entries() const { return entries_; }
 	std::vector<const PakTocEntry*> BlobsOfKind(PakAssetKind kind) const;
 	const PakTocEntry* Find(PakAssetKind kind, const std::string& normalizedPath) const;
@@ -123,6 +145,9 @@ public:
 private:
 	std::span<const uint8_t> image_;
 	std::vector<PakTocEntry> entries_;
+	// Decompressed bytes for entries with PakEntryFlag_Lz4, parallel to
+	// entries_ (empty for uncompressed entries).
+	std::vector<std::vector<uint8_t>> decompressed_;
 };
 
 // IVfsBackend over a loaded pak image. Serves texture entries by their

@@ -15,6 +15,9 @@ include(FetchContent)
 # MeshOptimizer
 add_subdirectory(external/meshoptimizer)
 
+# LZ4 (vendored block codec for cooked pak blobs)
+add_subdirectory(external/lz4)
+
 # GLFW
 add_subdirectory(external/glfw)
 

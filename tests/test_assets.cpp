@@ -16,6 +16,7 @@
 #include <Engine/App/static_merge.h>
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/cluster_serializer.h>
+#include <Engine/Asset/compression.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
@@ -134,6 +135,100 @@ void TestPakRoundTrip() {
 	Check(parsed.uri == "textures/a.ktx2" && parsed.magFilter == 1 &&
 		parsed.minFilter == 2 && parsed.wrapS == 3 && parsed.wrapT == 4 &&
 		parsed.ktxBytes.size() == 2 && parsed.ktxBytes[0] == 7, "pak.texpayload.fields");
+}
+
+void TestLz4Codec() {
+	// Highly compressible data round-trips.
+	std::vector<uint8_t> raw(64 * 1024, 0xAB);
+	for (size_t i = 0; i < raw.size(); i += 64)
+		raw[i] = static_cast<uint8_t>(i >> 6);
+	std::vector<uint8_t> comp;
+	Check(smvk::Lz4Compress(std::span<const uint8_t>(raw), comp), "lz4.compress.ok");
+	Check(!comp.empty() && comp.size() < raw.size(), "lz4.compress.shrinks");
+	std::vector<uint8_t> back;
+	Check(smvk::Lz4Decompress(std::span<const uint8_t>(comp), raw.size(), back), "lz4.decompress.ok");
+	Check(back == raw, "lz4.roundtrip.bytes");
+	// Wrong output size fails instead of overrunning.
+	std::vector<uint8_t> wrong;
+	Check(!smvk::Lz4Decompress(std::span<const uint8_t>(comp), raw.size() + 1, wrong), "lz4.decompress.sizemiss");
+	// Truncated block fails.
+	std::vector<uint8_t> trunc(comp.begin(), comp.end() - 1);
+	std::vector<uint8_t> truncOut;
+	Check(!smvk::Lz4Decompress(std::span<const uint8_t>(trunc), raw.size(), truncOut), "lz4.decompress.trunc");
+	// Empty input rejected.
+	std::vector<uint8_t> emptyOut;
+	Check(!smvk::Lz4Compress(std::span<const uint8_t>{}, emptyOut), "lz4.compress.empty");
+	// Blob helpers: tiny payloads stay stored verbatim.
+	std::vector<uint8_t> tiny = { 1, 2, 3, 4 };
+	auto [tinyStored, tinyFlag] = smvk::CompressPakBlob(
+		std::span<const uint8_t>(tiny), smvk::PakCompression::Lz4);
+	Check(!tinyFlag && tinyStored == tiny, "lz4.blob.tiny.raw");
+	// None mode never compresses.
+	auto [rawStored, rawFlag] = smvk::CompressPakBlob(
+		std::span<const uint8_t>(raw), smvk::PakCompression::None);
+	Check(!rawFlag && rawStored == raw, "lz4.blob.none.raw");
+	// LZ4 mode compresses the big blob with the 8-byte size prefix.
+	auto [lz4Stored, lz4Flag] = smvk::CompressPakBlob(
+		std::span<const uint8_t>(raw), smvk::PakCompression::Lz4);
+	Check(lz4Flag && lz4Stored.size() < raw.size(), "lz4.blob.shrinks");
+	std::vector<uint8_t> blobBack;
+	Check(smvk::DecompressPakBlob(std::span<const uint8_t>(lz4Stored), true, blobBack), "lz4.blob.parse");
+	Check(blobBack == raw, "lz4.blob.roundtrip");
+}
+
+void TestPakCompressedRoundTrip() {
+	smvk::PakWriter w;
+	w.SetCompression(smvk::PakCompression::Lz4);
+	// Compressible mesh-like payload (repeated vertex-ish pattern).
+	std::vector<uint8_t> big(32 * 1024, 0);
+	for (size_t i = 0; i < big.size(); ++i)
+		big[i] = static_cast<uint8_t>((i * 7) & 0xFF);
+	Check(w.AddBlob(smvk::PakAssetKind::Mesh, "models/big#mesh.0", big), "paklz4.add.big");
+	std::vector<uint8_t> scene = { 9, 9, 9 };
+	Check(w.AddBlob(smvk::PakAssetKind::Scene, "<cluster-local>#scene", scene), "paklz4.add.scene");
+	Check(w.CompressedEntryCount() == 1, "paklz4.compressed.count");
+	std::vector<uint8_t> img = w.Finalize();
+	Check(img.size() > 64, "paklz4.finalize.size");
+
+	std::string err;
+	auto r = smvk::PakReader::Open(std::span<const uint8_t>(img), err);
+	Check(r.has_value(), "paklz4.open.ok");
+	if (!r) {
+		std::cout << "  paklz4 error: " << err << "\n";
+		return;
+	}
+	Check(r->CompressedEntryCount() == 1, "paklz4.reader.count");
+	const auto* mesh = r->Find(smvk::PakAssetKind::Mesh, "models/big#mesh.0");
+	Check(mesh != nullptr, "paklz4.find.mesh");
+	if (mesh) {
+		auto payload = r->Payload(*mesh);
+		Check(payload.size() == big.size() &&
+			memcmp(payload.data(), big.data(), big.size()) == 0, "paklz4.payload.bytes");
+	}
+	// Corruption inside a compressed blob is detected at Open().
+	std::vector<uint8_t> bad = img;
+	if (bad.size() > 80)
+		bad[60] ^= 0xFF;
+	std::string err2;
+	Check(!smvk::PakReader::Open(std::span<const uint8_t>(bad), err2), "paklz4.corrupt.detected");
+
+	// Compressed textures stay servable through the VFS backend.
+	smvk::PakWriter w2;
+	w2.SetCompression(smvk::PakCompression::Lz4);
+	std::vector<uint8_t> ktx(4096, 0x5A);
+	auto tp = smvk::BuildTexturePayload("textures/big.ktx2", 1, 2, 3, 4,
+		std::span<const uint8_t>(ktx));
+	w2.AddBlob(smvk::PakAssetKind::Texture, "textures/big.ktx2", std::move(tp));
+	w2.AddBlob(smvk::PakAssetKind::Scene, "<cluster-local>#scene", { 1 });
+	auto img2 = std::make_shared<const std::vector<uint8_t>>(w2.Finalize());
+	auto backend = smvk::PakBackend::Open(img2, "lz4.pak", err);
+	Check(backend != nullptr, "paklz4.backend.open");
+	if (backend) {
+		smvk::OverlayVfs vfs;
+		vfs.Mount(backend, 0, "lz4.pak");
+		auto bytes = vfs.TryRead("textures/big.ktx2");
+		Check(bytes && bytes->size() == ktx.size() && (*bytes)[0] == 0x5A, "paklz4.backend.serve");
+	}
 }
 
 void TestPakBackendServesTextures() {
@@ -493,6 +588,8 @@ int main() {
 	TestOverlayMem();
 	TestAssetUris();
 	TestPakRoundTrip();
+	TestLz4Codec();
+	TestPakCompressedRoundTrip();
 	TestPakBackendServesTextures();
 	TestMeshOpt();
 	TestClusterSerializeCook();

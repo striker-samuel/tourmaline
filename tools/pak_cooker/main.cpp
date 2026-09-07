@@ -4,6 +4,7 @@
 //   PakCooker --content-dir content --in-vfs models/Sponza/sponza.gltf
 //             --out-pak content/paks/sponza.pak [--meshopt on|off]
 //             [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]
+//             [--compress on|off] [--lz4-accel 1]
 //
 // Reads the model JSON, .bin buffers and all .ktx2 textures through an
 // OverlayVfs with a LooseBackend over --content-dir (the same lookup rules
@@ -51,6 +52,9 @@ struct Args {
 	float coneWeight = 0.0f;
 	// Collapse static subtrees into per-material mega-mesh blocks.
 	bool collapseStatic = false;
+	// Per-blob LZ4 compression (default on: only stores when it shrinks).
+	bool compress = true;
+	int lz4Accel = 1; // 1 = best ratio, higher = faster
 };
 
 bool ParseArgs(int argc, char** argv, Args& out) {
@@ -118,6 +122,16 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.collapseStatic = (v == "on" || v == "1" || v == "true");
 		}
+		else if (a == "--compress") {
+			std::string v;
+			if (!need(v)) return false;
+			out.compress = (v == "on" || v == "1" || v == "true" || v == "lz4");
+		}
+		else if (a == "--lz4-accel") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lz4Accel = std::max(1, std::stoi(v));
+		}
 		else if (a == "--help" || a == "-h") {
 			return false;
 		}
@@ -138,7 +152,8 @@ void Usage() {
 		<< "          --out-pak content/paks/sponza.pak [--meshopt on|off]\n"
 		<< "          [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]\n"
 		<< "          [--meshlets on|off] [--max-verts 64] [--max-tris 124]\n"
-		<< "          [--cone-weight 0] [--collapse-static on|off]\n";
+		<< "          [--cone-weight 0] [--collapse-static on|off]\n"
+		<< "          [--compress on|off] [--lz4-accel 1]\n";
 }
 
 // Little-endian cursor over a MeshBlob payload for manifest printing. Mesh
@@ -315,6 +330,9 @@ int main(int argc, char** argv) {
 	}
 
 	smvk::PakWriter writer;
+	writer.SetCompression(
+		args.compress ? smvk::PakCompression::Lz4 : smvk::PakCompression::None,
+		args.lz4Accel);
 	smvk::ClusterSerializeStats stats;
 	std::string err;
 	if (!SerializeCluster(*cluster, writer, &stats, &err)) {
@@ -345,6 +363,8 @@ int main(int argc, char** argv) {
 		<< " nodes=" << stats.nodes << " pak=" << pak.size() << " B"
 		<< " staticRoots=" << stats.staticRoots
 		<< " meshleted=" << stats.meshesWithMeshlets << "/" << stats.meshletCount
+		<< " compressed=" << writer.CompressedEntryCount() << "/" << writer.EntryCount()
+		<< (args.compress ? " (lz4)" : " (raw)")
 		<< " in " << secs << "s\n";
 
 	// Self-check: re-open the written file through the production reader
