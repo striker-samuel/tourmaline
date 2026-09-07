@@ -22,6 +22,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,7 +36,7 @@ struct CascadedShadowMapDesc {
 	uint32_t cascadeCount = 4;
 	uint32_t cascadeResolution = 2048; // per-cascade tile, square
 	Format format = Format::D32_Float; // depth-only atlas, stencil dropped
-	float lambda = 0.92f;              // 0 = linear splits, 1 = logarithmic
+	float lambda = 0.8f;               // 0 = linear splits, 1 = pure logarithmic (starves far cascade)
 	float zPadding = 1.0f;             // ortho Z padding around the slice
 	const char* name = "shadowMapAtlas";
 };
@@ -280,6 +281,7 @@ struct CascadedShadowAtlas {
 
 		for (uint32_t i = 0; i < cascadeCount; ++i) {
 			glm::mat4 lv, lp;
+			float depthRange = 0.0f;
 			GetDirectionalLightOrthoVP(
 				lightDir,
 				invView,
@@ -290,7 +292,8 @@ struct CascadedShadowAtlas {
 				lp,
 				zPadding,
 				true,
-				static_cast<int>(tileExtent.width));
+				static_cast<int>(tileExtent.width),
+				&depthRange);
 
 			// NOTE: do NOT Y-flip the light ortho here. Flipping only lp[1][1]
 			// (scale) without the offset term lp[3][1] breaks the NDC mapping
@@ -302,11 +305,24 @@ struct CascadedShadowAtlas {
 		const glm::mat4 lvp = lp * lv;
 		std::memcpy(dir.cascades[i].lightVP, glm::value_ptr(lvp), sizeof(dir.cascades[i].lightVP));
 		dir.cascades[i].splitEnd = splits[i + 1];
-		// Oriented depth bias (Sec. 4.2): shadowmaps render with no HW bias and
-		// no fixed receiver bias; the receiver depth is offset by +/-k based on
-		// face orientation in shadows.hlsli. Kept at 0 for layout compat.
-		dir.cascades[i].bias = 0.0f;
-		dir.cascades[i].normalBias = 0.0f;
+		// Per-cascade bake (Sec. 4.2): shadowmaps render with no HW bias.
+		//  - normalBias (world units): ~2 texels of the cascade ortho, so
+		//    far cascades with fat texels push more than near ones. Seals
+		//    thin/colliding trim without detaching contact shadows.
+		//  - bias (NDC): worldBias/depthRange with the actual ortho depth
+		//    range, so the shader's slope-scaled offset has a uniform
+		//    world-space effect per cascade (far acne fix).
+		// normalBias clamps keep near cascades from going to zero and far
+		// ones from washing out tile detail (too much normal offset erases
+		// sub-texel self-shadowing, which reads as "barely shadowed").
+		const float orthoW = (lp[0][0] != 0.0f) ? 2.0f / lp[0][0] : 1.0f;
+		const float orthoH = (lp[1][1] != 0.0f) ? 2.0f / std::abs(lp[1][1]) : 1.0f;
+		const float texelWorld = (std::max)(orthoW, orthoH)
+			/ static_cast<float>(tileExtent.width);
+		const float normalBiasW = (std::min)((std::max)(texelWorld * 1.25f, 0.005f), 0.03f);
+		const float depthWorld = (std::min)((std::max)(texelWorld * 0.5f, 0.001f), 0.015f);
+		dir.cascades[i].bias = (depthRange > 1e-6f) ? depthWorld / depthRange : 0.0f;
+		dir.cascades[i].normalBias = normalBiasW;
 		dir.cascades[i].pad_ = 0.0f;
 		dir.cascades[i].invShadowSize =
 			glm::vec2(1.0f / static_cast<float>(tileExtent.width),

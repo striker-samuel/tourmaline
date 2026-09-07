@@ -59,7 +59,7 @@ static std::vector<char> readContentFile(smvk::OverlayVfs& vfs, const std::strin
 // -----------------------------------------------------------------------------
 static constexpr uint32_t NUM_CASCADES = 4;
 static constexpr uint32_t CASCADE_RES = 2048; // per cascade tile (2048 -> 4096 atlas for 4 cascades)
-static constexpr float CASCADE_LAMBDA = 0.92f; // 0 = linear, 1 = logarithmic
+static constexpr float CASCADE_LAMBDA = 0.8f; // 0 = linear, 1 = pure logarithmic (1.0 starves the far cascade)
 static constexpr float CASCADE_Z_PADDING = 1.0f;
 static constexpr smvk::Format SHADOW_FORMAT = smvk::Format::D32_Float; // no stencil on the directional atlas
 
@@ -217,7 +217,7 @@ static smvk::ForwardPlusDesc MakeForwardPlusDesc() {
 // -----------------------------------------------------------------------------
 static constexpr uint32_t SPOT_SHADOW_RES = 1024;
 static constexpr float SPOT_SHADOW_NEAR = 0.5f;
-static constexpr float SPOT_SHADOW_BIAS = 0.0f; // 0: oriented depth bias (Sec. 4.2) in shader
+static constexpr float SPOT_SHADOW_BIAS = 0.0005f; // NDC base for slope-scaled ODB (Sec. 4.2)
 
 static smvk::SpotShadowMapDesc MakeSpotShadowDesc() {
 	smvk::SpotShadowMapDesc d{};

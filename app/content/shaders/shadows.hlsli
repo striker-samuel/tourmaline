@@ -221,27 +221,26 @@ float PCFShadowAtlas(
     return sum / samples;
 }
 
-// Sec. 4.2 oriented depth bias (minimal NDC +/-k variant).
-// Shadowmaps render with no HW bias; the tested depth is offset by face
-// orientation instead of a fixed receiver bias. lightDirection is the light
-// travel direction (direction light travels, i.e. -L). Facing the light
-// (dot < 0) moves toward it (-k, less acne); facing away moves away (+k,
-// less peter-panning). isSSS is kept parked for a future SSS/transmission
-// path – current callers pass false.
-// float biasedWithSSS = ndc.z + GetOrientedBias(N, lightDir, true); // parked
+// Sec. 4.2 oriented depth bias (slope-scaled, per-cascade NDC).
+// Shadowmaps render with no HW bias. baseBiasNDC is the per-cascade NDC
+// bias baked on the CPU as worldBias / lightDepthRange (see
+// BuildDirectionalLight), so the world-space effect is uniform across
+// cascades instead of growing with the far ortho range. The NDotL slope
+// term gives grazing surfaces (~the far-wall acne case) more bias and
+// facing surfaces just a small constant – continuous, no +/-k step, so
+// no terminator line streak. lightDirection is the travel direction
+// (i.e. -L). isSSS parked for a future SSS/transmission path.
 float GetOrientedBias(float3 faceNormal,
 	float3 lightDirection,
+	float baseBiasNDC,
 	bool isSSS // parked: always false for now, kept just in case
 )
 {
-    // NDC units: worldBias / lightDepthRange, so 0.005 ~= 5cm at 10m
-    // ortho range. Large: kills acne, but front-face contact detachment
-    // (peter-panning look) grows with it – dial back down if contact
-    // shadows lift.
-    static float kOrientedBias = 0.005f;
-    float isFacingLight = dot(faceNormal, lightDirection) < 0;
-    bool moveTowardLight = isSSS || isFacingLight;
-    return moveTowardLight ? -kOrientedBias : kOrientedBias;
+    float nDotL = saturate(dot(faceNormal, -lightDirection));
+    float slope = 1.0f - nDotL; // 0 facing, 1 grazing/back
+    float facing = isSSS ? 1.0f : 1.0f;
+    // 30% constant (residual acne) + 70% slope (grazing acne).
+    return -baseBiasNDC * (0.3f + 0.7f * slope) * facing;
 }
 
 
@@ -268,6 +267,74 @@ float GetShadowFactor(
 }
 */
 
+
+// Samples one cascade tile; valid=false when the (normal-biased) receiver
+// falls outside the cascade light frustum so the caller can fall through
+// to the next cascade instead of popping to unshadowed.
+float SampleCascadeTile(
+    GpuCascadeDescription c,
+    float3 worldPos,
+    float3 faceNormal,
+    float3 lightDirection,
+    uint samplerId,
+    uint idx,
+    out bool valid
+)
+{
+    valid = false;
+    // Receiver-side normal bias (world units, from c.normalBias): offsets
+    // the sample point along the geometric normal before projection so
+    // thin/colliding trim doesn't leak between shadow texels. Unlike a
+    // depth-only bias it doesn't detach contact shadows along the light
+    // axis, and unlike +/-k it has no terminator discontinuity.
+    float3 biasedWorld =
+        worldPos + faceNormal * c.normalBias;
+
+    float4 clip =
+        mul(
+            c.lightVP,
+            float4(biasedWorld, 1.0f)
+        );
+
+    float3 ndc =
+        clip.xyz / clip.w;
+
+    float2 uv =
+        ndc.xy * 0.5f + 0.5f;
+
+    if (
+        ndc.z <= 0.0f ||
+        ndc.z >= 1.0f ||
+        uv.x < 0.0f ||
+        uv.x > 1.0f ||
+        uv.y < 0.0f ||
+        uv.y > 1.0f
+    )
+    {
+        return 1.0f;
+    }
+
+    float2 uvAtlas =
+        uv * c.uvScale +
+        c.uvBias;
+
+    // Sec. 4.2: slope-scaled NDC bias; c.bias is the per-cascade
+    // worldBias/depthRange baked on the CPU so far cascades don't
+    // over-bias (peter-panning) while near ones under-bias (acne).
+    float receiverDepth =
+        ndc.z + GetOrientedBias(faceNormal, lightDirection, c.bias, false);
+        // parked SSS variant: ndc.z + GetOrientedBias(faceNormal, lightDirection, c.bias, true);
+
+    valid = true;
+    return PCFShadowAtlas(
+        samplerId,
+        uvAtlas,
+        receiverDepth,
+        idx,
+        c.uvClampMin,
+        c.uvClampMax
+    );
+}
 
 float GetShadowFactorCascaded(
     uint samplerId,
@@ -296,66 +363,71 @@ float GetShadowFactorCascaded(
     float viewDepth =
         max(-viewPos.z, 0.0f);
 
-    int cascadeIdx =
+    int firstCascade =
         SelectCascadeGpu(
             viewDepth,
             dir.cascades,
             dir.numCascades
         );
 
-    GpuCascadeDescription c =
-        dir.cascades[cascadeIdx];
-
     uint idx =
         NonUniformResourceIndex(
             (uint) dir.shadow_map_index
         );
 
-    float4 clip =
-        mul(
-            c.lightVP,
-            float4(worldPos, 1.0f)
-        );
-
-    float3 ndc =
-        clip.xyz / clip.w;
-
-    float2 uv =
-        ndc.xy * 0.5f + 0.5f;
-
-    // Invalid selected cascade.
-    //
-    // If this happens often, fix the CPU-side
-    // cascade bounds/padding.
-    if (
-        ndc.z <= 0.0f ||
-        ndc.z >= 1.0f ||
-        uv.x < 0.0f ||
-        uv.x > 1.0f ||
-        uv.y < 0.0f ||
-        uv.y > 1.0f
-    )
+    // First valid cascade at/after the view-depth selection. Falling
+    // through (instead of returning lit when the selected tile misses)
+    // removes the hard pop from "fully shadowed" to "barely shadowed"
+    // when a receiver sits outside the selected cascade's light bounds.
+    int usedK = -1;
+    float shadow = 1.0f;
+    for (int k = firstCascade; k < dir.numCascades; ++k)
     {
-        return 1.0f;
+        bool valid = false;
+        float s = SampleCascadeTile(
+            dir.cascades[k],
+            worldPos,
+            faceNormal,
+            light.direction,
+            samplerId,
+            idx,
+            valid);
+        if (valid)
+        {
+            usedK = k;
+            shadow = s;
+            break;
+        }
     }
+    if (usedK < 0)
+        return 1.0f;
 
-    float2 uvAtlas =
-        uv * c.uvScale +
-        c.uvBias;
-
-    // Sec. 4.2: oriented NDC bias replaces the fixed c.bias (now 0).
-    float receiverDepth =
-        ndc.z + GetOrientedBias(faceNormal, light.direction, false);
-        // parked SSS variant: ndc.z + GetOrientedBias(faceNormal, light.direction, true);
-
-    return PCFShadowAtlas(
-        samplerId,
-        uvAtlas,
-        receiverDepth,
-        idx,
-        c.uvClampMin,
-        c.uvClampMax
-    );
+    // Border blend into the next cascade over the last 10% of this
+    // cascade's view-depth band. The next tile has fatter texels and a
+    // larger baked bias (tile detail washes out there), so a hard switch
+    // reads as a shadow-density step; lerping hides the seam.
+    if (usedK + 1 < dir.numCascades)
+    {
+        GpuCascadeDescription c = dir.cascades[usedK];
+        float splitStart = (usedK == 0) ? 0.0f : dir.cascades[usedK - 1].splitEnd;
+        float bandW = (c.splitEnd - splitStart) * 0.1f;
+        if (bandW > 1e-4f && viewDepth > c.splitEnd - bandW)
+        {
+            float t = smoothstep(c.splitEnd - bandW, c.splitEnd, viewDepth);
+            bool nextValid = false;
+            float nextShadow = SampleCascadeTile(
+                dir.cascades[usedK + 1],
+                worldPos,
+                faceNormal,
+                light.direction,
+                samplerId,
+                idx,
+                nextValid);
+            if (nextValid)
+                shadow = lerp(shadow, nextShadow, t);
+        }
+    }
+    return shadow;
 }
 //// ---- Cascaded path – atlas sampling (upgraded builder) ----
 //float GetShadowFactorCascaded(
@@ -435,7 +507,9 @@ float GetSpotShadowFactorTile(
     uint atlasIdx
 )
 {
-    float4 clip = mul(t.lightVP, float4(worldPos, 1.0f));
+    // Receiver-side normal bias, same rationale as the cascaded path.
+    float3 biasedWorld = worldPos + faceNormal * t.normalBias;
+    float4 clip = mul(t.lightVP, float4(biasedWorld, 1.0f));
     // Behind the light (w <= 0) or beyond far plane => lit.
     if (clip.w <= 1e-6f)
         return 1.0f;
@@ -447,9 +521,9 @@ float GetSpotShadowFactorTile(
         return 1.0f;
 
     float2 uvAtlas = uv * t.uvScale + t.uvBias;
-    // Sec. 4.2: oriented NDC bias replaces the fixed t.bias (now 0).
-    float receiverDepth = ndc.z + GetOrientedBias(faceNormal, spotDirection, false);
-    // parked SSS variant: ndc.z + GetOrientedBias(faceNormal, spotDirection, true);
+    // Sec. 4.2: slope-scaled bias; t.bias is baked per-tile on the CPU.
+    float receiverDepth = ndc.z + GetOrientedBias(faceNormal, spotDirection, t.bias, false);
+    // parked SSS variant: ndc.z + GetOrientedBias(faceNormal, spotDirection, t.bias, true);
     return PCFShadowAtlas(
         samplerId,
         uvAtlas,
@@ -508,10 +582,13 @@ float GetShadowFactorODB(
         return 1.0f;
 
     float receiverDepth = ndc.z;
-	
+
+    // Legacy single-map path has no per-cascade bake; use a tiny fixed
+    // NDC base (~5mm at 10m range) with the same slope scaling.
     receiverDepth += GetOrientedBias(
 		normal,
 		light.direction,
+		0.0005f,
 		false
 	);
     float shadow = textures[idx].SampleCmpLevelZero(

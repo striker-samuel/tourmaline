@@ -233,7 +233,7 @@ struct SpotShadowAtlas {
 		std::memcpy(tile.lightVP, glm::value_ptr(vp), sizeof(tile.lightVP));
 		tile.splitEnd = range;
 		tile.bias = bias;
-		tile.normalBias = 0.0f;
+		tile.normalBias = 0.02f;
 		tile.pad_ = 0.0f;
 		tile.invShadowSize = glm::vec2(
 			1.0f / static_cast<float>(tileExtent.width),

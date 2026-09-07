@@ -1,4 +1,4 @@
-#pragma once
+//#pragma once
 #define TONEMAP_PASS
 #include "common.hlsli"
 
