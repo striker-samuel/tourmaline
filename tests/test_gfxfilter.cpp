@@ -21,6 +21,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <Engine/Renderer/gfx_filter.h>
+#include <Engine/debug_log.h>
+// Detail diagnostics (winding/cull/spawn/mirror traces) print in debug
+// builds only; PASS/FAIL lines and the final summary always print.
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Camera/camera.h>
@@ -92,11 +95,13 @@ bool CheckOutwardWinding(const smvk::StaticMeshUpload& up) {
 		const glm::vec3 n = glm::cross(b - a, c - a);
 		const glm::vec3 center = (a + b + c) / 3.0f;
 		if (glm::dot(n, center) <= 0.0f) {
+#ifndef NDEBUG
 			std::cout << "[gfx.wind] inward tri " << (t / 3)
 				<< " a=(" << a.x << "," << a.y << "," << a.z << ")"
 				<< " b=(" << b.x << "," << b.y << "," << b.z << ")"
 				<< " c=(" << c.x << "," << c.y << "," << c.z << ")"
 				<< " dot=" << glm::dot(n, center) << "\n";
+#endif
 			return false;
 		}
 	}
@@ -182,16 +187,20 @@ void TestWindingSign() {
 	const double fracGeoPixel = counted ? (double)geoPixelAgree / (double)counted : 0.0;
 	const double fracDetNoFlip = counted ? (double)detPixelFrontNoFlip / (double)counted : 0.0;
 	const double fracDetFlip = counted ? (double)detPixelFrontFlip / (double)counted : 0.0;
+#ifndef NDEBUG
 	std::cout << "[gfx.wind] tris=" << total << " counted=" << counted
 		<< " agreeFlip=" << fracFlip << " agreeNoFlip=" << fracNoFlip
 		<< " geoPixel=" << fracGeoPixel
 		<< " detPixelNoFlip=" << fracDetNoFlip << " detPixelFlip=" << fracDetFlip << "\n";
+#endif
 	Check(counted > total * 7 / 10, "gfx.wind.meaningful-subset");
 	Check(fracGeoPixel > 0.98, "gfx.wind.ground-truth-matches-rasterizer");
 	// Exactly one of these must hold; whichever does selects the flag.
 	const bool noFlipRight = fracDetNoFlip > 0.98 && fracDetFlip < 0.05;
 	const bool flipRight = fracDetFlip > 0.98 && fracDetNoFlip < 0.05;
+#ifndef NDEBUG
 	std::cout << "[gfx.wind] noFlipRight=" << noFlipRight << " flipRight=" << flipRight << "\n";
+#endif
 	Check(noFlipRight != flipRight, "gfx.wind.unambiguous");
 	Check(noFlipRight, "gfx.wind.noflip-matches-rasterizer");
 }
@@ -378,9 +387,11 @@ void TestPreCull() {
 		PushDraw(s, 0, m, glm::mat4(1.0f), 0);
 		BuildBatches(s, 0);
 		const View& out = s.views[0];
+#ifndef NDEBUG
 		std::cout << "[gfx.cull] front: kept=" << out.batchCount
 			<< " culled=" << out.stats.clustersCulled
 			<< " processed=" << out.stats.clustersProcessed << "\n";
+#endif
 		Check(out.batchCount > 0, "gfx.cull.front-keeps-some");
 		Check(out.stats.clustersCulled > 0, "gfx.cull.front-culls-back");
 		Check(out.batchCount + out.stats.clustersCulled == out.stats.clustersProcessed,
@@ -475,8 +486,10 @@ void TestTwoSided() {
 		PushDraw(s, 0, m, glm::mat4(1.0f), 0, DrawFlagBit_TwoSided);
 		BuildBatches(s, 0);
 		const View& out = s.views[0];
+#ifndef NDEBUG
 		std::cout << "[gfx.twosided] single=" << singleKept
 			<< " double=" << out.batchCount << " total=" << clusterTotal << "\n";
+#endif
 		Check(singleKept < clusterTotal, "gfx.twosided.single-culls");
 		Check(out.batchCount == clusterTotal, "gfx.twosided.double-keeps-all");
 		Check(out.batchCount > singleKept, "gfx.twosided.double-keeps-more");
@@ -1039,7 +1052,7 @@ void TestHzbSpawnView() {
 			const bool occ = HzbOccluded(hzb.data(), W, H, mips, f, &stored);
 			if (occ) {
 				allKeep = false;
-				std::printf("[gfx.spawn] cloth patch (%u,%u) CULLED: dNear=%.6f stored=%.6f "
+				SMVK_DEBUG_LOG("[gfx.spawn] cloth patch (%u,%u) CULLED: dNear=%.6f stored=%.6f "
 					"c=(%.1f,%.1f) r=(%.1f,%.1f)\n", ix, iy, f.nearestDepth, stored,
 					f.centerX, f.centerY, f.radiusX, f.radiusY);
 			}
@@ -1064,7 +1077,7 @@ void TestHzbSpawnView() {
 	{
 		float stored = -1.0f;
 		const bool occ = HzbOccluded(hzb.data(), W, H, mips, centerF, &stored);
-		std::printf("[gfx.spawn] center patch: dNear=%.6f stored=%.6f occ=%d "
+		SMVK_DEBUG_LOG("[gfx.spawn] center patch: dNear=%.6f stored=%.6f occ=%d "
 			"(pole margin %.2fx)\n", centerF.nearestDepth, stored, occ ? 1 : 0,
 			stored > 0.0f ? centerF.nearestDepth / stored : 0.0f);
 		Check(!occ, "gfx.spawn.center-keeps");
@@ -1075,7 +1088,7 @@ void TestHzbSpawnView() {
 			0.3f, eye, viewProj, W, H);
 		float stored = -1.0f;
 		const bool occ = HzbOccluded(hzb.data(), W, H, mips, f, &stored);
-		std::printf("[gfx.spawn] wall patch: dNear=%.6f stored=%.6f occ=%d\n",
+		SMVK_DEBUG_LOG("[gfx.spawn] wall patch: dNear=%.6f stored=%.6f occ=%d\n",
 			f.nearestDepth, stored, occ ? 1 : 0);
 		Check(!f.behindCamera && occ, "gfx.spawn.wall-behind-cloth-culls");
 	}
@@ -1268,7 +1281,7 @@ void TestGpuMirrorAgreement() {
 				++overCull;
 				float stored = -1.0f;
 				HzbOccluded(slopeHzb.data(), W, H, mips, f, &stored);
-				std::printf("[gfx.gpumirror] OVERCULL c=(%.3f,%.3f,%.3f) r=%.3f "
+				SMVK_DEBUG_LOG("[gfx.gpumirror] OVERCULL c=(%.3f,%.3f,%.3f) r=%.3f "
 					"cpu c=(%.1f,%.1f) r=(%.1f,%.1f) dNear=%.6f stored=%.6f\n",
 					c.x, c.y, c.z, r, f.centerX, f.centerY, f.radiusX, f.radiusY,
 					f.nearestDepth, stored);
@@ -1277,7 +1290,7 @@ void TestGpuMirrorAgreement() {
 		if (gpu == cpu)
 			++agree;
 	}
-	std::printf("[gfx.gpumirror] fuzz: %u/%u agree, %u over-cull\n",
+	SMVK_DEBUG_LOG("[gfx.gpumirror] fuzz: %u/%u agree, %u over-cull\n",
 		agree, kSamples, overCull);
 	Check(overCull == 0, "gfx.gpumirror.no-overcull");
 	Check(agree >= kSamples * 9 / 10, "gfx.gpumirror.agreement");

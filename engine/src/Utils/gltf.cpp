@@ -599,9 +599,15 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
 			}
 			if (auto f = obj.find("diffuseFactor"); f != obj.end() && f->second.IsArray()) {
 				const auto& arr = f->second.Get<tinygltf::Value::Array>();
+				// tinygltf defaults baseColorFactor to [1,1,1,1] (non-empty),
+				// so emptiness can never detect "no core color" — compare
+				// against the default instead.
+				const auto& bcf = m.pbrMetallicRoughness.baseColorFactor;
+				const bool coreFactorDefault = bcf.size() < 4 ||
+					(bcf[0] == 1.0 && bcf[1] == 1.0 && bcf[2] == 1.0 && bcf[3] == 1.0);
 				const bool hasPbrColor =
 					m.pbrMetallicRoughness.baseColorTexture.index >= 0 ||
-					!m.pbrMetallicRoughness.baseColorFactor.empty();
+					!coreFactorDefault;
 				if (!hasPbrColor && arr.size() >= 3) {
 					for (int k = 0; k < 3 && k < (int)arr.size(); ++k)
 						if (arr[k].IsNumber())
@@ -1026,9 +1032,18 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 
 			// Space conversion to my engine. Same as pos.
 			// (-x, +y, -z) is a 180-degree Y rotation (det +1), so the
-			// tangent-space handedness w is preserved as-is.
-			tangent.x *= -1.0f;
-			tangent.z *= -1.0f;
+			// tangent-space handedness w is preserved as-is. Modes that
+			// skip the engine fix (1/3) leave tangents untouched; the
+			// Y-mirror (2, det -1) flips handedness, hence w.
+			if (coordFix == 1 || coordFix == 3) {
+				// Model already in engine space: no conversion.
+			} else if (coordFix == 2) {
+				tangent.y *= -1.0f;
+				tangent.w *= -1.0f;
+			} else {
+				tangent.x *= -1.0f;
+				tangent.z *= -1.0f;
+			}
 
 			data.vertices[i].tangent = tangent;
 		}

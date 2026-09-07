@@ -189,6 +189,11 @@ struct FrameUniforms
 	// Must match HLSL FrameUniforms in common.hlsli — offsets asserted below.
 	uint32_t aoTextureIndex = UINT32_MAX; // full-res composed AO bindless
 	float aoIntensity = 0.0f;            // ambient composite strength
+	// Explicit pad so env lands at offset 512 (16-byte aligned), matching
+	// HLSL FrameUniforms::aoPad. Without this the HLSL compiler packs env
+	// at offset 500, which is both a spirv-val Block-layout violation for
+	// PhysicalStorageBuffer and a CPU/GPU desync (garbage sun/IBL/fog).
+	float aoPad_[3] = {};
 	// Configurable skydome IBL + fog (matches HLSL FrameUniforms.env).
 	smvk::EnvironmentFrameData env;
 };

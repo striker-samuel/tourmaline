@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+# cook_bistro.py — stage + cook the Niagara/Lumberyard Bistro scene.
+#
+# The upstream bistro.gltf references .png images (which don't exist on disk;
+# only sibling .dds files do) plus MSFT_texture_dds alternates. The runtime /
+# PakCooker pipeline only accepts .ktx2, so this script:
+#   1. Decodes each referenced .dds via Pillow to a temp .png,
+#   2. Encodes it to .ktx2 with toktx (uastc + zstd, glTF-driven srgb/linear/
+#      normal classification, same flags as tools/ktx_bulk_convert.py),
+#   3. Stages models/Bistro/<original tree> with .ktx2 textures + a rewritten
+#      bistro.gltf whose .png image URIs point at the .ktx2 files,
+#   4. Runs PakCooker --meshlets on to produce content/paks/bistro.pak.
+#
+# Usage (PowerShell, from repo root F:/REPOS/vulkantoy):
+#   py tools/cook_bistro.py --niagara-dir F:/REPOS/niagara_bistro
+#       [--app-content app/content] [--mode uastc] [--workers 8]
+#       [--skip-convert] [--skip-pak]
+#
+# --skip-convert reuses already-staged .ktx2 files (timestamp check does this
+# automatically too). --skip-pak stops after staging (lets you run PakCooker
+# manually).
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_TOKTX = Path(r"C:\Program Files\KTX-Software\bin\toktx.exe")
+
+
+def classify_images(gltf):
+    """Map image index -> 'srgb' | 'linear' | 'normal' from material usage.
+
+    Mirrors tools/ktx_bulk_convert.py plus the bistro-required
+    KHR_materials_pbrSpecularGlossiness diffuse/specular inputs.
+    First writer wins (baseColor/emissive outrank metallic/roughness only if
+    seen first — in practice an image is used for one purpose).
+    """
+    kind = {}
+
+    def mark(tex_index, k):
+        if tex_index is None:
+            return
+        textures = gltf.get("textures", [])
+        images = gltf.get("images", [])
+        if tex_index < 0 or tex_index >= len(textures):
+            return
+        tex = textures[tex_index]
+        src = tex.get("source", -1)
+        if src is not None and 0 <= src < len(images):
+            kind.setdefault(src, k)
+        # MSFT_texture_dds alternate of the same texture shares the purpose.
+        ext = tex.get("extensions", {}).get("MSFT_texture_dds", {})
+        dsrc = ext.get("source", -1)
+        if dsrc is not None and 0 <= dsrc < len(images):
+            kind.setdefault(dsrc, k)
+
+    for mat in gltf.get("materials", []):
+        pbr = mat.get("pbrMetallicRoughness", {})
+        if isinstance(pbr.get("baseColorTexture"), dict):
+            mark(pbr["baseColorTexture"].get("index"), "srgb")
+        if isinstance(pbr.get("metallicRoughnessTexture"), dict):
+            mark(pbr["metallicRoughnessTexture"].get("index"), "linear")
+        if isinstance(mat.get("normalTexture"), dict):
+            mark(mat["normalTexture"].get("index"), "normal")
+        if isinstance(mat.get("occlusionTexture"), dict):
+            mark(mat["occlusionTexture"].get("index"), "linear")
+        if isinstance(mat.get("emissiveTexture"), dict):
+            mark(mat["emissiveTexture"].get("index"), "srgb")
+        sg = mat.get("extensions", {}).get(
+            "KHR_materials_pbrSpecularGlossiness", {})
+        if isinstance(sg.get("diffuseTexture"), dict):
+            mark(sg["diffuseTexture"].get("index"), "srgb")
+        if isinstance(sg.get("specularGlossinessTexture"), dict):
+            mark(sg["specularGlossinessTexture"].get("index"), "linear")
+    return kind
+
+
+def toktx_cmd(toktx, kind, src_png, dst_ktx, uastc_quality, zcmp):
+    cmd = [str(toktx), "--t2", "--genmipmap", "--threads", "2",
+           "--encode", "uastc", "--uastc_quality", str(uastc_quality),
+           "--uastc_rdo_l", "1.0", "--zcmp", str(zcmp)]
+    if kind == "normal":
+        cmd += ["--assign_oetf", "linear", "--assign_primaries", "none",
+                "--normal_mode"]
+    elif kind == "linear":
+        cmd += ["--assign_oetf", "linear", "--assign_primaries", "none"]
+    else:
+        cmd += ["--assign_oetf", "srgb"]
+    cmd += [str(dst_ktx), str(src_png)]
+    return cmd
+
+
+def convert_one(job):
+    """Decode DDS -> temp PNG -> toktx -> ktx2. Returns (uri, ok, msg)."""
+    from PIL import Image
+
+    uri, src_dds, dst_ktx, kind, toktx, quality, zcmp = job
+    try:
+        if dst_ktx.exists() and dst_ktx.stat().st_mtime >= src_dds.stat().st_mtime:
+            return (uri, True, "skip-up-to-date")
+        dst_ktx.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(src_dds) as im:
+            im.load()
+            if im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGBA")
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                im.save(tmp_path)
+            except Exception:
+                os.unlink(tmp_path)
+                raise
+        try:
+            cmd = toktx_cmd(toktx, kind, tmp_path, dst_ktx, quality, zcmp)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
+            if r.returncode != 0:
+                return (uri, False, f"toktx rc={r.returncode}: {r.stderr[-2000:]}")
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        return (uri, True, "ok")
+    except Exception as e:  # noqa: BLE001
+        return (uri, False, f"{type(e).__name__}: {e}")
+
+
+def validate_staged(stage, ktx_bin="ktx"):
+    """Delete staged .ktx2 files that fail `ktx validate` (e.g. torn writes
+    from a killed run — they would otherwise pass the mtime check forever).
+    Returns (valid, removed)."""
+    import shutil as _shutil
+    exe = _shutil.which(ktx_bin) or ktx_bin
+    valid = removed = 0
+    for ktx in sorted(stage.rglob("*.ktx2")):
+        try:
+            r = subprocess.run([exe, "validate", str(ktx)],
+                               capture_output=True, timeout=120)
+            if r.returncode == 0:
+                valid += 1
+            else:
+                ktx.unlink()
+                removed += 1
+                print(f"[bistro] removed invalid: {ktx.relative_to(stage)}")
+        except Exception as e:  # noqa: BLE001
+            print(f"[bistro] validate error on {ktx.name}: {e}")
+    return valid, removed
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Stage + cook Niagara Bistro.")
+    ap.add_argument("--niagara-dir", default="F:/REPOS/niagara_bistro")
+    ap.add_argument("--app-content", default=str(REPO_ROOT / "app" / "content"))
+    ap.add_argument("--scene-dir-name", default="Bistro")
+    ap.add_argument("--gltf-name", default="bistro.gltf")
+    ap.add_argument("--pak-name", default="bistro.pak")
+    ap.add_argument("--toktx", default=str(DEFAULT_TOKTX))
+    ap.add_argument("--pakcooker", default=str(REPO_ROOT / "build" / "Release" / "PakCooker.exe"))
+    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--uastc-quality", type=int, default=1)
+    ap.add_argument("--zcmp", type=int, default=12)
+    ap.add_argument("--skip-convert", action="store_true")
+    ap.add_argument("--skip-pak", action="store_true")
+    ap.add_argument("--shard", type=int, default=0,
+                    help="1-based shard index to convert (0 = all)")
+    ap.add_argument("--num-shards", type=int, default=1)
+    args = ap.parse_args()
+
+    niagara = Path(args.niagara_dir)
+    content = Path(args.app_content)
+    stage = content / "models" / args.scene_dir_name
+    src_gltf_path = niagara / args.gltf_name
+    if not src_gltf_path.exists():
+        sys.stderr.write(f"ERROR: gltf not found: {src_gltf_path}\n")
+        return 2
+    toktx = Path(args.toktx)
+    if not toktx.exists():
+        sys.stderr.write(f"ERROR: toktx not found: {toktx}\n")
+        return 2
+
+    with open(src_gltf_path, "r", encoding="utf-8") as f:
+        gltf = json.load(f)
+    images = gltf.get("images", [])
+    kinds = classify_images(gltf)
+    print(f"[bistro] images={len(images)} classified={len(kinds)}")
+
+    # Collect .png-referenced images (the cookable set) + their DDS source.
+    jobs = []
+    missing = []
+    rewritten = 0
+    for idx, img in enumerate(images):
+        uri = img.get("uri", "")
+        if not uri or uri.startswith("data:"):
+            continue
+        if not uri.lower().endswith(".png"):
+            continue  # .dds alternates: never referenced by the loader, skip
+        dds_uri = uri[:-4] + ".dds"
+        src_dds = niagara / Path(dds_uri)
+        dst_ktx = stage / (Path(uri).with_suffix(".ktx2").as_posix())
+        if not src_dds.exists():
+            missing.append(uri)
+            continue
+        kind = kinds.get(idx, "srgb")
+        jobs.append((uri, src_dds, dst_ktx, kind, toktx,
+                     args.uastc_quality, args.zcmp))
+        # Rewrite the gltf image entry to the staged ktx2 (POSIX uri).
+        img["uri"] = Path(uri).with_suffix(".ktx2").as_posix()
+        img["mimeType"] = "image/ktx2"
+        rewritten += 1
+
+    print(f"[bistro] cookable={len(jobs)} missing-dds={len(missing)} rewritten={rewritten}")
+    for m in missing[:20]:
+        print(f"[bistro]   missing DDS for: {m}")
+    if missing:
+        print(f"[bistro] WARNING: {len(missing)} textures have no DDS source "
+              f"(materials using them render untextured)")
+
+    if not args.skip_convert:
+        try:
+            from PIL import Image  # noqa: F401
+        except ImportError:
+            sys.stderr.write("ERROR: Pillow required (py -m pip install Pillow)\n")
+            return 2
+        jobs.sort(key=lambda j: j[0])
+        if args.num_shards > 1:
+            if args.shard < 1 or args.shard > args.num_shards:
+                sys.stderr.write("ERROR: --shard must be in [1, --num-shards]\n")
+                return 2
+            jobs = [j for i, j in enumerate(jobs)
+                    if i % args.num_shards == args.shard - 1]
+            print(f"[bistro] shard {args.shard}/{args.num_shards}: "
+                  f"{len(jobs)} textures")
+        t0 = time.time()
+        ok = fail = skipped = 0
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futs = {pool.submit(convert_one, j): j[0] for j in jobs}
+            done = 0
+            for fut in as_completed(futs):
+                uri, good, msg = fut.result()
+                done += 1
+                if good:
+                    ok += 1
+                    if msg == "skip-up-to-date":
+                        skipped += 1
+                else:
+                    fail += 1
+                    print(f"[bistro] FAILED {uri}: {msg}")
+                if done % 25 == 0 or done == len(jobs):
+                    dt = time.time() - t0
+                    print(f"[bistro] convert {done}/{len(jobs)} "
+                          f"(ok={ok} fail={fail}) {dt:.0f}s")
+        print(f"[bistro] convert done: ok={ok} (skipped={skipped}) "
+              f"fail={fail} in {time.time()-t0:.0f}s")
+        if fail:
+            sys.stderr.write(f"[bistro] {fail} conversions failed\n")
+            return 1
+    else:
+        print("[bistro] --skip-convert: reusing staged ktx2 files")
+
+    # Neutralize the authoring root transforms: RootNode carries a 100x
+    # scale and Level a -90 deg X rotation (DCC Z-up -> glTF Y-up export
+    # shim). The engine bakes its own glTF->engine basis fix into vertices
+    # at import, so these hierarchy-level shims would double-convert the
+    # scene (upside down, 100x). Translations are kept (scene placement).
+    for n in gltf.get("nodes", []):
+        if n.get("name") == "RootNode":
+            n["scale"] = [1.0, 1.0, 1.0]
+            print("[bistro] neutralized RootNode scale -> 1")
+        elif n.get("name") == "Level":
+            n["rotation"] = [0.0, 0.0, 0.0, 1.0]
+            print("[bistro] neutralized Level rotation -> identity")
+
+    # Copy buffers + write rewritten gltf.
+    stage.mkdir(parents=True, exist_ok=True)
+    for blob in ("bistro.bin", "bistro-anim.bin"):
+        src = niagara / blob
+        dst = stage / blob
+        if src.exists() and (not dst.exists() or
+                             dst.stat().st_mtime < src.stat().st_mtime):
+            print(f"[bistro] copying {blob} ({src.stat().st_size/1e6:.0f} MB)...")
+            shutil.copy2(src, dst)
+    # Copy any other loose files the gltf references directly (.bin only;
+    # textures are generated above).
+    with open(stage / args.gltf_name, "w", encoding="utf-8") as f:
+        json.dump(gltf, f, indent=1)
+    print(f"[bistro] wrote {stage / args.gltf_name}")
+
+    if args.skip_pak:
+        print("[bistro] --skip-pak: stopping before PakCooker")
+        return 0
+    if args.num_shards > 1:
+        print("[bistro] sharded run: stopping before PakCooker "
+              "(run without --shard/--num-shards --skip-convert to cook the pak)")
+        return 0
+
+    # Full run: a killed earlier run may have left torn .ktx2 files with fresh
+    # mtimes — validate and reconvert whatever is missing/invalid.
+    valid, removed = validate_staged(stage)
+    print(f"[bistro] staged valid={valid} removed-invalid={removed}")
+    if removed:
+        print("[bistro] re-converting repaired set...")
+        jobs_todo = [j for j in jobs
+                     if not j[2].exists()]
+        if jobs_todo:
+            from PIL import Image  # noqa: F401
+            with ThreadPoolExecutor(max_workers=args.workers) as pool:
+                for uri, good, msg in pool.map(convert_one, jobs_todo):
+                    if not good:
+                        sys.stderr.write(f"[bistro] FAILED {uri}: {msg}\n")
+                        return 1
+            print(f"[bistro] repaired {len(jobs_todo)} textures")
+
+    pakcooker = Path(args.pakcooker)
+    if not pakcooker.exists():
+        sys.stderr.write(f"ERROR: PakCooker not found: {pakcooker}\n")
+        return 2
+    out_pak = content / "paks" / args.pak_name
+    out_pak.parent.mkdir(parents=True, exist_ok=True)
+    vfs_model = f"models/{args.scene_dir_name}/{args.gltf_name}"
+    cmd = [str(pakcooker),
+           "--content-dir", str(content),
+           "--in-vfs", vfs_model,
+           "--out-pak", str(out_pak),
+           "--meshlets", "on",
+           "--meshopt", "on",
+           "--verify", "on"]
+    print(f"[bistro] running: {' '.join(cmd)}")
+    r = subprocess.run(cmd)
+    if r.returncode != 0:
+        sys.stderr.write(f"[bistro] PakCooker failed rc={r.returncode}\n")
+        return r.returncode
+    print(f"[bistro] pak OK: {out_pak} ({out_pak.stat().st_size/1e6:.1f} MB)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

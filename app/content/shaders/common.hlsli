@@ -58,6 +58,12 @@ struct FrameUniforms
     // (offsets asserted there: 492/496, env shifts to 512).
     uint aoTextureIndex; // full-res composed AO bindless, 0xffffffff = off
     float aoIntensity;   // ambient composite strength
+    // Explicit pad: env must start at offset 512 (16-byte aligned).
+    // Without this HLSL packs env at 500, which violates Block layout
+    // rules for PhysicalStorageBuffer (spirv-val: member not aligned
+    // to 16) and desyncs from the C++ struct, where the compiler pads
+    // env to 512. Mirrors C++ FrameUniforms::aoPad_.
+    float3 aoPad;
 
     // Configurable environment (skydome IBL + fog).
     // Must match C++ smvk::EnvironmentFrameData (8 x float4, 128 bytes).
