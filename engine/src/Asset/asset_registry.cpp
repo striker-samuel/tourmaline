@@ -172,6 +172,17 @@ std::optional<LodInfo> Cluster::GetMeshLod(const std::string& uri) const {
 	return it->second;
 }
 
+std::vector<std::pair<std::string, LodInfo>> Cluster::ListMeshLods() const {
+	std::vector<std::pair<std::string, LodInfo>> out;
+	out.reserve(meshLods_.size());
+	for (const auto& [uri, lod] : meshLods_)
+		out.emplace_back(uri, lod);
+	std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+		return a.first < b.first;
+	});
+	return out;
+}
+
 void Cluster::RegisterMeshMeshlets(const std::string& uri, const CookedMeshlets& meshlets) {
 	const std::string n = NormalizeAssetUri(uri);
 	if (n.empty() || meshlets.empty())

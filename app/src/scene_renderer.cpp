@@ -258,8 +258,10 @@ const SceneDesc& SceneRegistry::Bistro() {
 		/*label=*/"Bistro",
 		/*gltfPath=*/"content/models/Bistro/bistro.gltf",
 		/*pakPath=*/"content/paks/bistro.pak",
-		// Meters-scale exterior (root 100x scale + Level -90 deg X are
-		// neutralized at cook time, see tools/cook_bistro.py).
+		// Niagara glTF source (known-good geometry; authoring shims kept —
+		// RootNode 100x = FBX cm->m, Level -90d X = Z-up->Y-up; see
+		// tools/cook_bistro.py + stage_niagara_gltf.py). Default view =
+		// street level inside the block (engine-space AABB ~59x32x119 m).
 		/*camPos=*/glm::vec3(7.0f, 4.0f, 9.0f),
 		/*camTarget=*/glm::vec3(0.0f, 2.0f, 0.0f),
 		/*farClip=*/200.0f,
@@ -267,12 +269,33 @@ const SceneDesc& SceneRegistry::Bistro() {
 	};
 	return bistro;
 }
+
+const SceneDesc& SceneRegistry::BistroNiagara() {
+	// Known-good Niagara bistro.gltf (staged + root-shim neutralized by
+	// tools/stage_niagara_gltf.py). A/B against "bistro" (Lumberyard v5.2
+	// via Blender): if this one renders clean through the same direct
+	// import path, the bug is in the v5.2 conversion; if it explodes too,
+	// the bug is in the engine import/draw path. No pak is cooked for it,
+	// so the loader always takes the direct glTF branch. Textures are
+	// DDS/PNG upstream and intentionally unresolved (geometry check only).
+	static const SceneDesc bistroNiagara{
+		/*id=*/"bistro-niagara",
+		/*label=*/"Bistro (Niagara glTF)",
+		/*gltfPath=*/"content/models/BistroNiagara/bistro.gltf",
+		/*pakPath=*/"content/paks/bistro-niagara.pak",
+		/*camPos=*/glm::vec3(7.0f, 4.0f, 9.0f),
+		/*camTarget=*/glm::vec3(0.0f, 2.0f, 0.0f),
+		/*farClip=*/200.0f,
+		/*coordFix=*/0,
+	};
+	return bistroNiagara;
+}
 } // namespace app (scene registry methods; class methods open their own blocks below)
 
 namespace app {
 
 std::vector<SceneDesc> SceneRegistry::All() {
-	return { Sponza(), Bistro() };
+	return { Sponza(), Bistro(), BistroNiagara() };
 }
 
 std::optional<SceneDesc> SceneRegistry::Find(const std::string& id) {
@@ -493,7 +516,12 @@ bool SceneRenderer::Initialize() {
 		// adding a sample never copies this block.
 		const std::string sceneGltf = m_scene.gltfPath ? m_scene.gltfPath : "";
 		const std::string scenePak = m_scene.pakPath ? m_scene.pakPath : "";
+		// Unconditional phase log: Release is otherwise silent, so an init
+		// throw (e.g. bad_alloc) would name no phase. Keep these cerr lines.
+		std::cerr << "[Scene] loading '" << m_scene.id << "' (pak: " << scenePak << ")"
+			<< (m_forceGltf ? " FORCED GLTF" : "") << std::endl;
 		bool loadedFromPak = false;
+		if (!m_forceGltf)
 		{
 			std::ifstream pakFile(scenePak, std::ios::binary | std::ios::ate);
 			if (pakFile) {
@@ -518,11 +546,16 @@ bool SceneRenderer::Initialize() {
 						else if (auto pakBackend = smvk::PakBackend::Open(
 								pakImage, scenePak, pakErr)) {
 							try {
+								std::cerr << "[Scene] pak parsed, loading cluster ("
+									<< reader->EntryCount() << " entries)..." << std::endl;
 								m_world->LoadClusterFromPak(*m_context, *reader);
 								// Serve pak-embedded textures through the VFS
 								// (below loose content/ so dev overrides win).
 								contentVfs.Mount(pakBackend, 10, scenePak);
 								loadedFromPak = true;
+								std::cerr << "[Scene] pak cluster loaded: meshes="
+									<< m_world->meshLocations.size() << " materials="
+									<< m_world->materialLocations.size() << std::endl;
 							}
 							catch (const std::exception& e) {
 								std::cerr << "[SceneRenderer] Pak load failed, falling back "
@@ -556,6 +589,8 @@ bool SceneRenderer::Initialize() {
 		// Post-merge: resolve world-level ball mesh/material indices,
 		// collect ball nodes, strip their shadow-caster flag.
 		FixupPointLightBallNodes();
+		std::cerr << "[Scene] world resolved: nodes="
+			<< m_world->scene.hierarchy.size() << std::endl;
 
 		// GeometryFX-style per-view filter (clustered): register static
 		// meshes from cooked meshlets (pak path) or retained uploads
@@ -573,6 +608,8 @@ bool SceneRenderer::Initialize() {
 			else {
 				m_gfxRenderer.RegisterWorldMeshes(*m_world);
 				m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+				std::cerr << "[Scene] gfx clusters="
+					<< smvk::gfx::ClusterCount(m_gfxRenderer.State()) << std::endl;
 				if (smvk::gfx::ClusterCount(m_gfxRenderer.State()) == 0) {
 					std::cerr << "[SceneRenderer] GfxFilter: no clusters - direct draws\n";
 					m_useGfxFilter = false;

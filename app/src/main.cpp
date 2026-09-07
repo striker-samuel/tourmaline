@@ -28,6 +28,7 @@ void PrintUsage(const char* prog) {
 int main(int argc, const char* argv[]) {
 	const char* sceneId = "sponza";
 	bool minimal = false;
+	bool noPak = false;
 	for (int i = 1; i < argc; ++i) {
 		const char* a = argv[i];
 		if ((std::strcmp(a, "--scene") == 0 || std::strcmp(a, "-s") == 0) && i + 1 < argc) {
@@ -38,6 +39,9 @@ int main(int argc, const char* argv[]) {
 		}
 		else if (std::strcmp(a, "--minimal") == 0) {
 			minimal = true;
+		}
+		else if (std::strcmp(a, "--no-pak") == 0 || std::strcmp(a, "--gltf") == 0) {
+			noPak = true;
 		}
 		else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
 			PrintUsage(argv[0]);
@@ -60,6 +64,7 @@ int main(int argc, const char* argv[]) {
 	app::SceneRenderer renderer;
 	renderer.Configure(*scene,
 		minimal ? app::ScenePassConfig::Minimal() : app::ScenePassConfig::All());
+	renderer.SetForceGltf(noPak);
 	try {
 		renderer.Run();
 	}

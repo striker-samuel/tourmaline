@@ -81,8 +81,9 @@ namespace smvk {
 		std::vector<MeshLocation> meshLocations;
 		std::vector<MaterialLocation> materialLocations;
 		std::vector<TextureLocation> textureLocations;
-		// Per-mesh LOD markers parallel to meshLocations (cook-time
-		// instrumentation for tooling/ImGui only — the renderer ignores it).
+		// Per-mesh LOD markers parallel to meshLocations (cook-time chain:
+		// LOD0 + "/lodN" siblings with world-scaled error — tooling/ImGui
+		// only, the renderer ignores it).
 		std::vector<LodInfo> meshLodInfos;
 
 		Cluster& LoadCluster(ResourceManager& ctx);
@@ -98,7 +99,8 @@ namespace smvk {
 
 		smvk::StaticMesh* GetMesh(uint32_t meshIndex);
 		smvk::Material* GetMaterial(uint32_t materialIndex);
-		// LOD marker for tooling (always lodIndex 0 in v1). Null when the
+		// LOD marker for tooling (LOD0 + cooked "/lodN" siblings; the
+		// renderer still ignores lodIndex/screenThreshold). Null when the
 		// index is out of range. Never consulted by the renderer.
 		const LodInfo* GetLodInfo(uint32_t meshIndex) const;
 

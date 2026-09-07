@@ -2,7 +2,9 @@
 #pragma once
 
 
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <Engine/smvk.h>
 #include <Engine/Memory/pool.h>
@@ -120,6 +122,8 @@ namespace smvk {
 		// not branch on it.
 		void RegisterMeshLod(const std::string& uri, const LodInfo& lod);
 		std::optional<LodInfo> GetMeshLod(const std::string& uri) const;
+		// All LOD markers for cook post-passes (see FinalizeLodWorldErrors).
+		std::vector<std::pair<std::string, LodInfo>> ListMeshLods() const;
 
 		// Per-mesh cooked meshlets (see Asset/meshlet.h). Stamped by the
 		// importer when meshlet cooking is enabled, persisted in MeshBlobs,

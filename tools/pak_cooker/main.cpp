@@ -4,6 +4,7 @@
 //   PakCooker --content-dir content --in-vfs models/Sponza/sponza.gltf
 //             --out-pak content/paks/sponza.pak [--meshopt on|off]
 //             [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]
+//             [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]
 //             [--compress on|off] [--lz4-accel 1]
 //
 // Reads the model JSON, .bin buffers and all .ktx2 textures through an
@@ -45,6 +46,10 @@ struct Args {
 	float overdraw = 1.05f;
 	bool dumpManifest = false; // print pak contents to stdout (pak-sourced)
 	bool verify = true; // re-open the written pak with PakReader (self-check)
+	// Cooked LOD chain (meshopt_simplify, sibling blobs "<base>/lodN").
+	bool lods = false;
+	std::string lodRatios = "0.6,0.3,0.12";
+	float lodError = 0.02f; // relative error budget per simplify call
 	// Meshlet cook path (off by default; indirect-draw foundation only).
 	bool meshlets = false;
 	uint32_t maxVerts = 64;
@@ -56,6 +61,29 @@ struct Args {
 	bool compress = true;
 	int lz4Accel = 1; // 1 = best ratio, higher = faster
 };
+
+std::vector<float> ParseLodRatios(const std::string& s) {
+	std::vector<float> out;
+	size_t pos = 0;
+	while (pos <= s.size()) {
+		size_t comma = s.find(',', pos);
+		const std::string tok = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+		try {
+			const float v = std::stof(tok);
+			if (v > 0.0f && v < 1.0f)
+				out.push_back(v);
+			else
+				std::cerr << "Ignoring out-of-range lod ratio: " << tok << std::endl;
+		}
+		catch (...) {
+			std::cerr << "Ignoring bad lod ratio: " << tok << std::endl;
+		}
+		if (comma == std::string::npos)
+			break;
+		pos = comma + 1;
+	}
+	return out;
+}
 
 bool ParseArgs(int argc, char** argv, Args& out) {
 	for (int i = 1; i < argc; ++i) {
@@ -96,6 +124,19 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			std::string v;
 			if (!need(v)) return false;
 			out.verify = (v == "on" || v == "1" || v == "true");
+		}
+		else if (a == "--lods") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lods = (v == "on" || v == "1" || v == "true");
+		}
+		else if (a == "--lod-ratios") {
+			if (!need(out.lodRatios)) return false;
+		}
+		else if (a == "--lod-error") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lodError = std::stof(v);
 		}
 		else if (a == "--meshlets") {
 			std::string v;
@@ -151,6 +192,7 @@ void Usage() {
 	std::cout << "PakCooker --content-dir content --in-vfs models/Sponza/sponza.gltf\n"
 		<< "          --out-pak content/paks/sponza.pak [--meshopt on|off]\n"
 		<< "          [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]\n"
+		<< "          [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]\n"
 		<< "          [--meshlets on|off] [--max-verts 64] [--max-tris 124]\n"
 		<< "          [--cone-weight 0] [--collapse-static on|off]\n"
 		<< "          [--compress on|off] [--lz4-accel 1]\n";
@@ -204,8 +246,8 @@ void DumpManifestFromPak(const smvk::PakReader& reader) {
 		(void)c.u32(); // topology
 		const uint32_t groupId = c.u32();
 		const uint32_t lodIndex = c.u32();
-		(void)c.u32(); // candidateCount
-		(void)c.f32(); // simplifyError
+		const uint32_t candidates = c.u32();
+		const float simplifyError = c.f32();
 		(void)c.f32(); // screenThreshold
 		const uint32_t tris = c.u32();
 		const float acmr = c.f32();
@@ -228,7 +270,8 @@ void DumpManifestFromPak(const smvk::PakReader& reader) {
 		}
 		std::cout << "    mesh " << uri
 			<< " verts=" << vc << " idx=" << ic
-			<< " lod{g=" << groupId << " i=" << lodIndex << " tris=" << tris
+			<< " lod{g=" << groupId << " i=" << lodIndex << " n=" << candidates
+			<< " tris=" << tris << " err=" << simplifyError
 			<< " acmr=" << acmr << "}"
 			<< " meshlets=" << meshlets << "\n";
 	}
@@ -270,6 +313,9 @@ int main(int argc, char** argv) {
 	smvk::MeshOptConfig opt;
 	opt.enabled = args.meshopt;
 	opt.overdrawThreshold = args.overdraw;
+	opt.generateLods = args.lods;
+	opt.lodRatios = ParseLodRatios(args.lodRatios);
+	opt.lodTargetError = std::clamp(args.lodError, 0.0f, 1.0f);
 
 	smvk::MeshletConfig meshletCfg;
 	meshletCfg.enabled = args.meshlets;

@@ -71,6 +71,7 @@ struct SceneDesc {
 struct SceneRegistry {
 	static const SceneDesc& Sponza();
 	static const SceneDesc& Bistro();
+	static const SceneDesc& BistroNiagara();
 	static std::vector<SceneDesc> All();
 	// Empty optional when the id is unknown (caller prints usage).
 	static std::optional<SceneDesc> Find(const std::string& id);
@@ -272,6 +273,10 @@ public:
 	void Configure(SceneDesc scene, ScenePassConfig passes);
 	const SceneDesc& GetScene() const { return m_scene; }
 	ScenePassConfig& Passes() { return m_passes; }
+	// Debug: skip the cooked pak and import the scene straight from the
+	// SceneDesc glTF path (loose content). A/B against the pak to tell
+	// pak/meshlet bugs apart from import/draw-path bugs.
+	void SetForceGltf(bool v) { m_forceGltf = v; }
 
 protected:
 	void UpdateCamera(float dt);
@@ -340,6 +345,7 @@ protected:
 
 	SceneDesc m_scene{};
 	ScenePassConfig m_passes{};
+	bool m_forceGltf = false;
 
 	std::unique_ptr<smvk::ImGuiOverlay> m_imgui{};
 	AppResources m_resources{};

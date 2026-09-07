@@ -810,35 +810,62 @@ void GltfToSceneImporter::preloadTextures()
 	// GltfToCluster issues the final FlushUploads after scene import.
 }
 
-glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n)
-{
-	if (!n.matrix.empty()) {
-		glm::mat4 m(1.0f);
-		memcpy(glm::value_ptr(m), n.matrix.data(), sizeof(float) * 16);
+// Basis conversion C for node local transforms. Vertices are baked as
+// v' = C * v, so every local matrix must be conjugated to stay consistent:
+// M' = C * M * C^-1 (C is its own inverse). For TRS this is t' = C*t,
+// R' = C*R*C, S unchanged (diagonal commutes). coordFix modes mirror
+// readVec3ForientationFix / SurfaceDataFromGltfPrimitive:
+//   0 = engine fix (180 deg Y: -X,+Y,-Z, det +1, winding preserved)
+//   1/3 = skip (already in engine space)
+//   2 = Y mirror (det -1; conjugates translations the same way, but note
+//       mirrored winding is NOT reflipped here — same limitation as the
+//       vertex path, which also leaves indices untouched).
+inline glm::mat4 ConvertNodeLocalTransform(const glm::mat4& m, int coordFix) {
+	if (coordFix == 1 || coordFix == 3)
 		return m;
+	glm::mat4 c(1.0f);
+	if (coordFix == 2) {
+		c[1][1] = -1.0f;
+	} else {
+		c[0][0] = -1.0f;
+		c[2][2] = -1.0f;
 	}
+	return c * m * c;
+}
 
-	glm::vec3 t(0.0f);
-	glm::quat r(1, 0, 0, 0);
-	glm::vec3 s(1.0f);
+glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n, int coordFix)
+{
+	glm::mat4 m(1.0f);
+	if (!n.matrix.empty() && n.matrix.size() >= 16) {
+		// tinygltf stores matrices as doubles in column-major order;
+		// convert element-wise (memcpy would reinterpret double bits).
+		float* dst = glm::value_ptr(m);
+		for (int i = 0; i < 16; ++i)
+			dst[i] = static_cast<float>(n.matrix[i]);
+	} else {
+		glm::vec3 t(0.0f);
+		glm::quat r(1, 0, 0, 0);
+		glm::vec3 s(1.0f);
 
-	if (!n.translation.empty())
-		t = glm::vec3(n.translation[0], n.translation[1], n.translation[2]);
+		if (!n.translation.empty())
+			t = glm::vec3(n.translation[0], n.translation[1], n.translation[2]);
 
-	if (!n.rotation.empty())
-		r = glm::quat(
-			n.rotation[3],
-			n.rotation[0],
-			n.rotation[1],
-			n.rotation[2]
-		);
+		if (!n.rotation.empty())
+			r = glm::quat(
+				n.rotation[3],
+				n.rotation[0],
+				n.rotation[1],
+				n.rotation[2]
+			);
 
-	if (!n.scale.empty())
-		s = glm::vec3(n.scale[0], n.scale[1], n.scale[2]);
+		if (!n.scale.empty())
+			s = glm::vec3(n.scale[0], n.scale[1], n.scale[2]);
 
-	return glm::translate(glm::mat4(1.0f), t)
-		* glm::mat4_cast(r)
-		* glm::scale(glm::mat4(1.0f), s);
+		m = glm::translate(glm::mat4(1.0f), t)
+			* glm::mat4_cast(r)
+			* glm::scale(glm::mat4(1.0f), s);
+	}
+	return ConvertNodeLocalTransform(m, coordFix);
 }
 
 smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex)
@@ -1170,6 +1197,25 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 		}
 	}
 
+	// Cooked LOD chain (opt-in via MeshOptConfig::generateLods): simplify
+	// LOD0 into sibling uploads. Local errors are recorded here; world
+	// scaling by node scale happens in FinalizeLodWorldErrors once globals
+	// are final (shared meshes use the max instanced scale).
+	std::vector<smvk::CookedLod> lodChain;
+	if (meshOptConfig.generateLods && !data.vertices.empty() && !data.indices.empty()) {
+		if (smvk::BuildLodChainForUpload(data, meshOptConfig, lodChain)) {
+#ifndef NDEBUG
+			for (size_t li = 0; li < lodChain.size(); ++li) {
+				std::cout << "LOD mesh." << gltfMeshIndex << "/prim." << primitiveIndex
+					<< "/lod" << (li + 1)
+					<< ": tris " << lodChain[li].triCount
+					<< " localErr " << lodChain[li].localError
+					<< std::endl;
+			}
+#endif
+		}
+	}
+
 	slot =
 		cluster.UploadStaticMesh(data);
 
@@ -1177,10 +1223,31 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 		const std::string uri = smvk::MakeSubUri(modelUriBase,
 			"mesh." + std::to_string(gltfMeshIndex) +
 			"/prim." + std::to_string(primitiveIndex));
+		lod.candidateCount = static_cast<uint32_t>(1 + lodChain.size());
+		lod.lodIndex = 0;
+		lod.simplifyError = 0.0f;
 		cluster.RegisterMeshUri(uri, slot);
 		cluster.RegisterMeshLod(uri, lod);
 		if (haveMeshlets)
 			cluster.RegisterMeshMeshlets(uri, cooked);
+		// Siblings share the base groupId; scene keeps referencing LOD0.
+		for (size_t li = 0; li < lodChain.size(); ++li) {
+			const smvk::CookedLod& kept = lodChain[li];
+			const auto lh = cluster.UploadStaticMesh(kept.upload);
+			if (!lh.valid())
+				continue;
+			const std::string lodUri = smvk::LodSiblingUri(uri, static_cast<uint32_t>(li + 1));
+			cluster.RegisterMeshUri(lodUri, lh);
+			smvk::LodInfo llod;
+			llod.groupId = lod.groupId;
+			llod.lodIndex = static_cast<uint32_t>(li + 1);
+			llod.candidateCount = lod.candidateCount;
+			llod.simplifyError = kept.localError; // scaled to world in finalize
+			llod.screenThreshold = -1.0f;
+			llod.triCount = kept.triCount;
+			llod.acmr = 0.0f;
+			cluster.RegisterMeshLod(lodUri, llod);
+		}
 	}
 
 	return slot;
@@ -1207,7 +1274,7 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentScene
 		cluster.scene.nameForNode[groupNode] = nameIndex;
 	}
 
-	cluster.scene.localTransform[groupNode] = GetNodeLocalTransform(gltfNode);
+	cluster.scene.localTransform[groupNode] = GetNodeLocalTransform(gltfNode, coordFix_);
 	cluster.scene.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
 
 	// Static-subtree opt-in: authoring extras or STATIC_ name prefix.
@@ -1412,6 +1479,8 @@ void GltfToClusterFromVfs(
 	RebuildStaticCache(out.scene);
 	markAsChanged(out.scene, root);
 	recalculateGlobalTransforms(out.scene);
+	// Bake node world scale into cooked LOD errors (max over instances).
+	smvk::FinalizeLodWorldErrors(out);
 	if (out.ctx_)
 		out.ctx_->FlushUploads();
 	(void)ctx;

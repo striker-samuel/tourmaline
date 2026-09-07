@@ -79,8 +79,13 @@ typedef uint32_t DrawSetMask;
 // One GPU workgroup per cluster (128 threads, 1 thread per triangle).
 static constexpr uint32_t kThreadsPerCluster = 128;
 static constexpr uint32_t kMaxClusterTris = 128;
-static constexpr uint32_t kMaxBatches = 4096; // surviving (draw x cluster) per view
-static constexpr uint32_t kMaxDraws = 1024;   // draws pushed per view
+// Bistro-scale scenes need headroom here: ~2.9k draws / ~49k meshlet
+// clusters (Sponza fits the old 1k/4k). Cost is one filtered-index ring
+// slice per flight (kMaxBatches * kMaxClusterTris * 3 uints = 96MB at 64k)
+// inside the 512MB static index monoblock — keep monoblock sizing in sync
+// (see AllocateStaticVertexFmt in engine/src/Renderer/mesh.cpp).
+static constexpr uint32_t kMaxBatches = 65536; // surviving (draw x cluster) per view
+static constexpr uint32_t kMaxDraws = 4096;   // draws pushed per view
 static constexpr uint32_t kMaxMeshes = 4096;
 static constexpr uint32_t kMaxViews = 64; // mirrors kMaxRenderViews
 

@@ -189,6 +189,8 @@ inline void GltfToCluster(
 	RebuildStaticCache(out.scene);
 	markAsChanged(out.scene, root);
 	recalculateGlobalTransforms(out.scene);
+	// Bake node world scale into cooked LOD errors (max over instances).
+	smvk::FinalizeLodWorldErrors(out);
 	// Flush batched uploads (256MB threshold, or manual at end of whole scene)
 	if (out.ctx_)
 		out.ctx_->FlushUploads();

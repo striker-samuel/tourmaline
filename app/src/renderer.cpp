@@ -508,7 +508,13 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 				materialForNode->second, drawFlags, drawSet);
 		});
 	const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, frameIndex, slot);
+	// NOTE: unconditional (not SMVK_DEBUG_LOG): this is the only per-run
+	// visibility into filter load (draws/batches vs kMaxDraws/kMaxBatches).
 	if ((frameCounter_++ % 300) == 0) {
+		std::fprintf(stderr,
+			"[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
+			stats.draws, stats.commands, stats.trianglesProcessed,
+			stats.clustersCulled, stats.clustersProcessed);
 		// Temporal dashboard: prev* holds LAST frame's snapshot here (this
 		// frame's rotation runs later in AppendPasses), so the seed /
 		// remainder / HZB figures describe what the temporal loop did.

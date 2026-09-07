@@ -885,10 +885,18 @@ static void EmitBucketMajor(State& s, const std::vector<EmitEntry>& entries,
 		// Absolute into the static index monoblock (region base + offset).
 		cmd.firstIndex = s.clusterIndexBase + c.indexOffset;
 		cmd.vertexOffset = 0;
-			cmd.firstInstance = e.draw;
-			const uint32_t slot = (uint32_t)outCmds.size();
-			if (slot >= kMaxBatches)
-				break;
+		cmd.firstInstance = e.draw;
+		const uint32_t slot = (uint32_t)outCmds.size();
+		if (slot >= kMaxBatches) {
+			static bool warnedSeedCap = false;
+			if (!warnedSeedCap) {
+				warnedSeedCap = true;
+				std::fprintf(stderr,
+					"[GfxFilter] seed emitter: batch cap %u hit, dropping "
+					"commands (increase kMaxBatches).\n", kMaxBatches);
+			}
+			break;
+		}
 			outCmds.push_back(cmd);
 			if (!outRanges.empty()) {
 				SeedRange& tail = outRanges.back();
@@ -1146,8 +1154,16 @@ void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	assert(view < s.viewCount);
 	assert(mesh < s.meshes.size());
 	View& v = s.views[view];
-	if (v.draws.size() >= kMaxDraws)
+	if (v.draws.size() >= kMaxDraws) {
+		static bool warnedDrawCap = false;
+		if (!warnedDrawCap) {
+			warnedDrawCap = true;
+			std::fprintf(stderr,
+				"[GfxFilter] PushDraw: draw cap %u hit, dropping draws "
+				"(increase kMaxDraws).\n", kMaxDraws);
+		}
 		return;
+	}
 	DrawRequest d{};
 	d.mesh = mesh;
 	d.material = material;
@@ -1279,13 +1295,29 @@ void BuildBatches(State& s, uint32_t view) {
 			cmdMaterial = d.material;
 			rangeStart = batchSlot;
 		}
-		if (batchSlot >= kMaxBatches)
+		if (batchSlot >= kMaxBatches) {
+			static bool warnedBatchCap = false;
+			if (!warnedBatchCap) {
+				warnedBatchCap = true;
+				std::fprintf(stderr,
+					"[GfxFilter] BuildBatches: batch cap %u hit, dropping "
+					"clusters (increase kMaxBatches).\n", kMaxBatches);
+			}
 			break;
+		}
 		const glm::mat4 invModel = glm::inverse(d.model);
 		const bool twoSided = (d.flags & DrawFlagBit_TwoSided) != 0;
 		for (uint32_t ci = 0; ci < mesh.clusterCount; ++ci) {
-			if (batchSlot >= kMaxBatches)
+			if (batchSlot >= kMaxBatches) {
+				static bool warnedInnerCap = false;
+				if (!warnedInnerCap) {
+					warnedInnerCap = true;
+					std::fprintf(stderr,
+						"[GfxFilter] BuildBatches: batch cap %u hit, dropping "
+						"clusters (increase kMaxBatches).\n", kMaxBatches);
+				}
 				break;
+			}
 			const Cluster& c = s.clusters[mesh.clusterStart + ci];
 			++v.stats.clustersProcessed;
 			if (CullCluster(c, d.model, invModel, v.eye, *v.renderView, twoSided)) {

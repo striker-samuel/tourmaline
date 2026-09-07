@@ -169,6 +169,8 @@ def main():
     ap.add_argument("--zcmp", type=int, default=12)
     ap.add_argument("--skip-convert", action="store_true")
     ap.add_argument("--skip-pak", action="store_true")
+    ap.add_argument("--meshlets", default="on",
+                    help="PakCooker meshlets path: 'on' (default) or 'off'")
     ap.add_argument("--shard", type=int, default=0,
                     help="1-based shard index to convert (0 = all)")
     ap.add_argument("--num-shards", type=int, default=1)
@@ -265,18 +267,12 @@ def main():
     else:
         print("[bistro] --skip-convert: reusing staged ktx2 files")
 
-    # Neutralize the authoring root transforms: RootNode carries a 100x
-    # scale and Level a -90 deg X rotation (DCC Z-up -> glTF Y-up export
-    # shim). The engine bakes its own glTF->engine basis fix into vertices
-    # at import, so these hierarchy-level shims would double-convert the
-    # scene (upside down, 100x). Translations are kept (scene placement).
-    for n in gltf.get("nodes", []):
-        if n.get("name") == "RootNode":
-            n["scale"] = [1.0, 1.0, 1.0]
-            print("[bistro] neutralized RootNode scale -> 1")
-        elif n.get("name") == "Level":
-            n["rotation"] = [0.0, 0.0, 0.0, 1.0]
-            print("[bistro] neutralized Level rotation -> identity")
+    # NOTE: the RootNode 100x scale (FBX cm->m) and Level -90d X (DCC
+    # Z-up -> glTF Y-up) shims are KEPT VERBATIM. They are load-bearing:
+    # world AABB with shims is 111x32x119 m, without 1.1x1.2x0.3 m. The
+    # old neutralization here predated the node-transform conjugation fix
+    # in engine/src/Utils/gltf.cpp (C*M*C) and produced a tiny scene on
+    # its side. No node transform rewriting happens at cook time.
 
     # Copy buffers + write rewritten gltf.
     stage.mkdir(parents=True, exist_ok=True)
@@ -329,7 +325,7 @@ def main():
            "--content-dir", str(content),
            "--in-vfs", vfs_model,
            "--out-pak", str(out_pak),
-           "--meshlets", "on",
+           "--meshlets", args.meshlets,
            "--meshopt", "on",
            "--verify", "on"]
     print(f"[bistro] running: {' '.join(cmd)}")

@@ -308,6 +308,129 @@ void TestMeshOpt() {
 	Check(q2.vertices.size() == 4, "meshopt.disabled.untouched");
 }
 
+smvk::StaticMeshUpload MakeGrid(int n) {
+	smvk::StaticMeshUpload u;
+	for (int iy = 0; iy <= n; ++iy)
+		for (int ix = 0; ix <= n; ++ix) {
+			smvk::StaticVertex v{};
+			v.pos = { (float)ix, (float)iy, 0.1f * sinf((float)ix * 0.7f) * cosf((float)iy * 0.7f) };
+			v.color = { 1, 1, 1 };
+			v.texCoord = { (float)ix / n, (float)iy / n };
+			v.normal = { 0, 0, 1 };
+			v.tangent = { 1, 0, 0, 1 };
+			u.vertices.push_back(v);
+		}
+	auto at = [n](int ix, int iy) { return (uint32_t)(iy * (n + 1) + ix); };
+	for (int iy = 0; iy < n; ++iy)
+		for (int ix = 0; ix < n; ++ix) {
+			u.indices.insert(u.indices.end(), { at(ix, iy), at(ix + 1, iy), at(ix, iy + 1) });
+			u.indices.insert(u.indices.end(), { at(ix + 1, iy), at(ix + 1, iy + 1), at(ix, iy + 1) });
+		}
+	u.aabbMin = { 0, 0, -1 };
+	u.aabbMax = { (float)n, (float)n, 1 };
+	return u;
+}
+
+void TestLodChain() {
+	// LOD chain on a tessellated grid: ratios must yield a strictly
+	// coarser chain with finite, non-negative local errors.
+	smvk::MeshOptConfig cfg;
+	cfg.generateLods = true;
+	cfg.lodRatios = { 0.6f, 0.3f, 0.12f };
+	cfg.lodTargetError = 0.05f;
+	auto grid = MakeGrid(16);
+	const size_t baseTris = grid.indices.size() / 3;
+	std::vector<smvk::CookedLod> chain;
+	Check(smvk::BuildLodChainForUpload(grid, cfg, chain), "lod.grid.valid");
+	Check(!chain.empty(), "lod.grid.nonempty");
+	bool strictlyCoarser = true;
+	size_t prev = baseTris;
+	for (const auto& l : chain) {
+		if (l.triCount >= prev)
+			strictlyCoarser = false;
+		prev = l.triCount;
+		if (!std::isfinite(l.relativeError) || !std::isfinite(l.localError) ||
+			l.relativeError < 0.0f || l.localError < 0.0f)
+			strictlyCoarser = false;
+		if (l.upload.vertices.empty() || l.upload.indices.empty())
+			strictlyCoarser = false;
+	}
+	Check(strictlyCoarser, "lod.grid.coarser");
+	Check(chain.size() <= cfg.lodRatios.size(), "lod.grid.bounded");
+
+	// Tiny mesh: 2-tri quad must be fully filtered (min triangles = 8).
+	auto quad = MakeQuad();
+	std::vector<smvk::CookedLod> tiny;
+	Check(smvk::BuildLodChainForUpload(quad, cfg, tiny), "lod.tiny.valid");
+	Check(tiny.empty(), "lod.tiny.filtered");
+
+	// Degenerate input fails softly.
+	smvk::StaticMeshUpload empty;
+	std::vector<smvk::CookedLod> deg;
+	Check(!smvk::BuildLodChainForUpload(empty, cfg, deg), "lod.empty.false");
+
+	// URI helpers round-trip.
+	const std::string base = "models/q.gltf#mesh.0/prim.0";
+	const std::string sib = smvk::LodSiblingUri(base, 2);
+	Check(sib == base + "/lod2", "lod.uri.sibling");
+	Check(smvk::BaseMeshUriForLod(sib) == base, "lod.uri.base");
+	Check(smvk::BaseMeshUriForLod(base) == base, "lod.uri.base.passthrough");
+
+	// Node scale: identity 1, max axis wins, translation ignored.
+	Check(smvk::MaxScaleOfMatrix(glm::mat4(1.0f)) == 1.0f, "lod.scale.identity");
+	{
+		glm::mat4 m(1.0f);
+		m[0] = glm::vec4(2.0f, 0, 0, 0);
+		m[1] = glm::vec4(0, 3.0f, 0, 0);
+		m[2] = glm::vec4(0, 0, 4.0f, 0);
+		m[3] = glm::vec4(100.0f, 0, 0, 1);
+		Check(smvk::MaxScaleOfMatrix(m) == 4.0f, "lod.scale.maxaxis");
+	}
+
+	// World-error finalize: local error * max node scale over instances.
+	{
+		using namespace smvk;
+		auto cluster = std::make_unique<Cluster>(nullptr);
+		cluster->SetCookMode(true);
+		auto q = MakeQuad();
+		const auto h = cluster->UploadStaticMesh(q);
+		const std::string uri = "models/q.gltf#mesh.9/prim.0";
+		cluster->RegisterMeshUri(uri, h);
+		LodInfo lod0;
+		lod0.groupId = 9;
+		lod0.lodIndex = 0;
+		lod0.candidateCount = 2;
+		lod0.triCount = 2;
+		cluster->RegisterMeshLod(uri, lod0);
+		// Fake LOD1 upload (same quad) with local error 0.5.
+		const auto h1 = cluster->UploadStaticMesh(q);
+		const std::string uri1 = LodSiblingUri(uri, 1);
+		cluster->RegisterMeshUri(uri1, h1);
+		LodInfo lod1;
+		lod1.groupId = 9;
+		lod1.lodIndex = 1;
+		lod1.candidateCount = 2;
+		lod1.simplifyError = 0.5f;
+		lod1.triCount = 1;
+		cluster->RegisterMeshLod(uri1, lod1);
+
+		const int root = addNode(cluster->scene, -1, 0);
+		const int n1 = addNode(cluster->scene, root, 1);
+		const int n2 = addNode(cluster->scene, root, 1);
+		cluster->scene.meshForNode[n1] = h.index();
+		cluster->scene.meshForNode[n2] = h.index();
+		cluster->scene.localTransform[n1] = glm::mat4(1.0f);
+		cluster->scene.localTransform[n2] = glm::scale(glm::mat4(1.0f), glm::vec3(3.0f));
+		markAsChanged(cluster->scene, root);
+		recalculateGlobalTransforms(cluster->scene);
+		FinalizeLodWorldErrors(*cluster);
+		auto got = cluster->GetMeshLod(uri1);
+		Check(got && fabsf(got->simplifyError - 1.5f) < 1e-4f, "lod.finalize.maxscale");
+		auto got0 = cluster->GetMeshLod(uri);
+		Check(got0 && got0->simplifyError == 0.0f, "lod.finalize.lod0.zero");
+	}
+}
+
 void TestClusterSerializeCook() {
 	using namespace smvk;
 	// GPU-free cook cluster: CPU geometry + minted texture ids only.
@@ -592,6 +715,7 @@ int main() {
 	TestPakCompressedRoundTrip();
 	TestPakBackendServesTextures();
 	TestMeshOpt();
+	TestLodChain();
 	TestClusterSerializeCook();
 	TestStaticSubtrees();
 	TestMeshlets();
