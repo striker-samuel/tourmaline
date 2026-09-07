@@ -1,5 +1,6 @@
 #define SSAO_PASS
 #include "common.hlsli"
+#include "ao.hlsli"
 
 struct PSIn
 {
@@ -35,21 +36,23 @@ PSOut mainPS(PSIn IN)
     SamplerState smp = samplers[NonUniformResourceIndex(bp.samplerIndex)];
     float nearPlane = max(bp.nearPlane, 1e-4f);
 
-    // Center linear distance from full-res depth (2x2 box, sky-safe).
+    // Center 2x2 block from full-res depth. Strict classification, same
+    // rule as the raw pass: any background tap (sky / clear / OOB Load)
+    // marks the block unoccluded — raw already wrote 1.0 there — and the
+    // gather is skipped entirely so mixed blocks never average geo taps
+    // into sky pixels.
     int2 fullBase = int2(IN.pos.xy) * 2;
     float d00 = depthTex.Load(int3(fullBase, 0)).r;
     float d10 = depthTex.Load(int3(fullBase + int2(1, 0), 0)).r;
     float d01 = depthTex.Load(int3(fullBase + int2(0, 1), 0)).r;
     float d11 = depthTex.Load(int3(fullBase + int2(1, 1), 0)).r;
-    float dSum = 0.0f;
-    float dCount = 0.0f;
-    if (d00 > 1e-6f) { dSum += d00; dCount += 1.0f; }
-    if (d10 > 1e-6f) { dSum += d10; dCount += 1.0f; }
-    if (d01 > 1e-6f) { dSum += d01; dCount += 1.0f; }
-    if (d11 > 1e-6f) { dSum += d11; dCount += 1.0f; }
-    float centerDist = (dCount > 0.5f)
-        ? nearPlane / max(dSum / dCount, 1e-6f)
-        : 1e6f; // sky: accept everything, raw is 1.0 there anyway
+    if (AoIsBackground(d00) || AoIsBackground(d10) ||
+        AoIsBackground(d01) || AoIsBackground(d11))
+    {
+        OUT.outColor = float4(1.0f, 1.0f, 1.0f, 1.0f);
+        return OUT;
+    }
+    float centerDist = AoViewDist((d00 + d10 + d01 + d11) * 0.25f, nearPlane);
 
     // 5x5 gaussian-ish blur, depth-rejected across discontinuities.
     float acc = 0.0f;
@@ -64,17 +67,13 @@ PSOut mainPS(PSIn IN)
 
             int2 tapFull = fullBase + int2(x * 2, y * 2);
             float tapD = depthTex.Load(int3(tapFull, 0)).r;
-            float tapDist = (tapD > 1e-6f)
-                ? nearPlane / max(tapD, 1e-6f)
-                : 1e6f;
+            float tapDist = AoIsBackground(tapD)
+                ? kAoSkyDist
+                : AoViewDist(tapD, nearPlane);
 
             float wx = (x == 0) ? 6.0f : ((abs(x) == 1) ? 4.0f : 1.0f);
             float wy = (y == 0) ? 6.0f : ((abs(y) == 1) ? 4.0f : 1.0f);
-            float w = wx * wy;
-            // Relative depth gate: same surface keeps full weight, a step
-            // of (1/sharpness) of the view distance kills the tap.
-            float depthDiff = abs(tapDist - centerDist) / max(centerDist, 1e-3f);
-            w *= exp(-depthDiff * bp.sharpness);
+            float w = wx * wy * AoEdgeWeight(tapDist, centerDist, bp.sharpness);
             acc += tapAo * w;
             wSum += w;
         }

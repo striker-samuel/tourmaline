@@ -221,18 +221,33 @@ float PCFShadowAtlas(
     return sum / samples;
 }
 
+// Sec. 4.2 oriented depth bias (minimal NDC +/-k variant).
+// Shadowmaps render with no HW bias; the tested depth is offset by face
+// orientation instead of a fixed receiver bias. lightDirection is the light
+// travel direction (direction light travels, i.e. -L). Facing the light
+// (dot < 0) moves toward it (-k, less acne); facing away moves away (+k,
+// less peter-panning). isSSS is kept parked for a future SSS/transmission
+// path – current callers pass false.
+// float biasedWithSSS = ndc.z + GetOrientedBias(N, lightDir, true); // parked
 float GetOrientedBias(float3 faceNormal,
 	float3 lightDirection,
-	bool isSSS
+	bool isSSS // parked: always false for now, kept just in case
 )
 {
-    static float kOrientedBias = 0.00002f;
+    // NDC units: worldBias / lightDepthRange, so 0.005 ~= 5cm at 10m
+    // ortho range. Large: kills acne, but front-face contact detachment
+    // (peter-panning look) grows with it – dial back down if contact
+    // shadows lift.
+    static float kOrientedBias = 0.005f;
     float isFacingLight = dot(faceNormal, lightDirection) < 0;
     bool moveTowardLight = isSSS || isFacingLight;
     return moveTowardLight ? -kOrientedBias : kOrientedBias;
 }
 
 
+// PARKED (legacy single-map path, kept in code): single lightVP PCF without
+// oriented bias. Not called while cascades are active.
+/*
 float GetShadowFactor(
     uint comparisonSamplerId,
 	float3 worldPos,
@@ -251,11 +266,13 @@ float GetShadowFactor(
         return 1.0f;
     return PCFShadow(1, uv, ndc.z, idx);
 }
+*/
 
 
 float GetShadowFactorCascaded(
     uint samplerId,
     float3 worldPos,
+    float3 faceNormal,
     Light light,
     FrameUniforms frame,
     GpuDirectionalLightDescription dir
@@ -266,11 +283,8 @@ float GetShadowFactorCascaded(
         dir.numCascades <= 0
     )
     {
-        return GetShadowFactor(
-            samplerId,
-            worldPos,
-            light
-        );
+        // Legacy single-map fallback is parked (see GetShadowFactor above).
+        return 1.0f;
     }
 
     float3 viewPos =
@@ -329,8 +343,10 @@ float GetShadowFactorCascaded(
         uv * c.uvScale +
         c.uvBias;
 
+    // Sec. 4.2: oriented NDC bias replaces the fixed c.bias (now 0).
     float receiverDepth =
-        ndc.z - c.bias;
+        ndc.z + GetOrientedBias(faceNormal, light.direction, false);
+        // parked SSS variant: ndc.z + GetOrientedBias(faceNormal, light.direction, true);
 
     return PCFShadowAtlas(
         samplerId,
@@ -398,12 +414,13 @@ float GetShadowFactorCascaded(
 float GetShadowFactorCascadedFromPC(
     uint comparisonSamplerId,
     float3 worldPos,
+    float3 faceNormal,
     Light light
 )
 {
     FrameUniforms frame = pc.frameUniforms.Get();
     GpuDirectionalLightDescription dir = pc.cascadeBuffer.Get().dir;
-    return GetShadowFactorCascaded(comparisonSamplerId, worldPos, light, frame, dir);
+    return GetShadowFactorCascaded(comparisonSamplerId, worldPos, faceNormal, light, frame, dir);
 }
 
 // ---- Spot shadows (Forward+ spots, perspective atlas tiles) ----
@@ -412,6 +429,8 @@ float GetShadowFactorCascadedFromPC(
 float GetSpotShadowFactorTile(
     uint samplerId,
     float3 worldPos,
+    float3 faceNormal,
+    float3 spotDirection,
     GpuCascadeDescription t,
     uint atlasIdx
 )
@@ -428,7 +447,9 @@ float GetSpotShadowFactorTile(
         return 1.0f;
 
     float2 uvAtlas = uv * t.uvScale + t.uvBias;
-    float receiverDepth = ndc.z - t.bias;
+    // Sec. 4.2: oriented NDC bias replaces the fixed t.bias (now 0).
+    float receiverDepth = ndc.z + GetOrientedBias(faceNormal, spotDirection, false);
+    // parked SSS variant: ndc.z + GetOrientedBias(faceNormal, spotDirection, true);
     return PCFShadowAtlas(
         samplerId,
         uvAtlas,
@@ -443,6 +464,8 @@ float GetSpotShadowFactorTile(
 float GetSpotShadowFactorFromPC(
     uint samplerId,
     float3 worldPos,
+    float3 faceNormal,
+    float3 spotDirection,
     int tileIndex
 )
 {
@@ -456,7 +479,7 @@ float GetSpotShadowFactorFromPC(
         return 1.0f;
     uint atlasIdx = NonUniformResourceIndex(pc.spotShadowMapIndex);
     GpuCascadeDescription t = pc.spotShadowBuffer.Get().tiles[tileIndex];
-    return GetSpotShadowFactorTile(samplerId, worldPos, t, atlasIdx);
+    return GetSpotShadowFactorTile(samplerId, worldPos, faceNormal, spotDirection, t, atlasIdx);
 }
 
 float GetShadowFactorODB(

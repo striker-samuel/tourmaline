@@ -3,7 +3,9 @@
 #include <App/push_constants.h>
 
 #include <Engine/Renderer/mesh.h>
+#include <Engine/debug_log.h>
 #include <Engine/platform.h>
+#include <Engine/Profile/profile.h>
 
 #include <algorithm>
 #include <cmath>
@@ -221,6 +223,8 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 	remainderPending_ = false;
 	if (!fc.world || !fc.views || fc.mainViewIndex == smvk::RenderViewSet::kInvalidIndex)
 		return;
+
+	SMVK_PROFILE_RENDER("GfxAppendPasses");
 	// NOTE: the seed pass below captures fc.pc (frame addresses for the
 	// masked FS) by value, so main must call AppendPasses after fc.pc is
 	// built but before the Forward+ prepass (seed writes depth first).
@@ -250,8 +254,11 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 			smvk::gfx::InvalidateHistory(gfx, slot);
 	}
 	// HZB sizing (steady-state early-out; rebuilds disarm history).
-	smvk::gfx::EnsureHiz(gfx, *fc.ctx, *fc.rg, slot,
-		fc.extent.width, fc.extent.height);
+	{
+		SMVK_PROFILE_SCOPE("GfxEnsureHiz");
+		smvk::gfx::EnsureHiz(gfx, *fc.ctx, *fc.rg, slot,
+			fc.extent.width, fc.extent.height);
+	}
 	// Seed depth from last frame's visible set (prev* intact: rotation into
 	// prev* happens below, after the seed block).
 	if (smvk::gfx::Temporal(gfx, slot).historyValid
@@ -277,6 +284,7 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 				ctx->GetBufferDeviceAddress(smvk::gfx::VisDrawBuffer(gfx, slot));
 			seedPass.SetRecordingFunc([self, ctx, slot, depthPC, renderViewsAddr, renderViewIndex, drawsAddr](smvk::CommandBuffer& cmd)
 			{
+				// GPU context + pass scope come from RenderGraph::Execute.
 				self->RecordDepthList(cmd, *ctx, slot, false, drawsAddr,
 					renderViewsAddr, renderViewIndex, depthPC);
 			});
@@ -323,8 +331,9 @@ void GfxRenderer::AppendRemainderPass(smvk::FrameContext& base) {
 	const uint32_t renderViewIndex = fc.mainViewIndex;
 	const uint64_t drawsAddr =
 		ctx->GetBufferDeviceAddress(smvk::gfx::DrawBuffer(gfx, slot));
-	pass.SetRecordingFunc([self, ctx, slot, depthPC, renderViewsAddr, renderViewIndex, drawsAddr](smvk::CommandBuffer& cmd)
+pass.SetRecordingFunc([self, ctx, slot, depthPC, renderViewsAddr, renderViewIndex, drawsAddr](smvk::CommandBuffer& cmd)
 	{
+		// GPU context + pass scope come from RenderGraph::Execute.
 		self->RecordDepthList(cmd, *ctx, slot, true, drawsAddr,
 			renderViewsAddr, renderViewIndex, depthPC);
 	});
@@ -335,11 +344,16 @@ void GfxRenderer::AppendFilterDispatch(smvk::FrameContext& fc) {
 	if (lastSlot_ == UINT32_MAX)
 		return;
 	const uint32_t slot = lastSlot_;
+
+	SMVK_PROFILE_RENDER("GfxAppendFilterDispatch");
+	SMVK_PROFILE_TAG("slot", slot);
+
 	smvk::RenderPass& pass = AddFilterPass(*fc.rg, slot);
 	GfxRenderer* self = this;
 	smvk::ResourceManager* ctx = fc.ctx;
 	pass.SetRecordingFunc([self, ctx, slot](smvk::CommandBuffer& cmd)
 	{
+		// GPU context + pass scope come from RenderGraph::Execute.
 		smvk::gfx::PushAndDispatch(self->gfx, cmd, *ctx, slot);
 	});
 }
@@ -354,6 +368,10 @@ void GfxRenderer::AppendHizPasses(smvk::FrameContext& base,
 	const smvk::gfx::TemporalView& t = smvk::gfx::Temporal(gfx, slot);
 	if (t.hiz.mipCount == 0)
 		return;
+
+	SMVK_PROFILE_RENDER("GfxAppendHizPasses");
+	SMVK_PROFILE_TAG("mipCount", t.hiz.mipCount);
+
 	GfxRenderer* self = this;
 	smvk::ResourceManager* ctx = fc.ctx;
 	for (uint32_t m = 0; m < t.hiz.mipCount; ++m) {
@@ -363,6 +381,18 @@ void GfxRenderer::AppendHizPasses(smvk::FrameContext& base,
 			passName ? passName : "GfxHiz");
 		hizPass.SetRecordingFunc([self, ctx, slot, m, depthBindlessIndex, fromDepth](smvk::CommandBuffer& cmd)
 		{
+			// Per-mip GPU scope (the pass-level scope uses the shared
+			// "GfxHiz" name). Static literals: Optick stores the name
+			// pointer, so run-time names must have static storage.
+			static const char* const kHizMipGpuNames[16] = {
+				"GfxHizMip0", "GfxHizMip1", "GfxHizMip2", "GfxHizMip3",
+				"GfxHizMip4", "GfxHizMip5", "GfxHizMip6", "GfxHizMip7",
+				"GfxHizMip8", "GfxHizMip9", "GfxHizMip10", "GfxHizMip11",
+				"GfxHizMip12", "GfxHizMip13", "GfxHizMip14", "GfxHizMip15",
+			};
+			::smvk::profiler::GpuPassScope hizMipScope(
+				kHizMipGpuNames[m < 16 ? m : 15], __FILE__, __LINE__);
+			SMVK_PROFILE_TAG("mip", m);
 			smvk::gfx::PushAndDispatchHiz(self->gfx, cmd, *ctx, slot, m,
 				fromDepth ? depthBindlessIndex : UINT32_MAX);
 		});
@@ -404,11 +434,11 @@ void GfxRenderer::RegisterWorldMeshes(smvk::World& world) {
 		}
 		meshMap_[i] = gfxMesh;
 	}
-	fprintf(stderr,
+	SMVK_DEBUG_LOG(
 		"[GfxFilter] meshes: %u cooked + %u runtime-cooked = %u filtered, %u direct (%llu tris)\n",
 		fromCooked, fromUpload, fromCooked + fromUpload, skipped,
 		(unsigned long long)skippedTris);
-	fprintf(stderr,
+	SMVK_DEBUG_LOG(
 		"[GfxFilter] clusters: %u, filter indices: %llu\n",
 		smvk::gfx::ClusterCount(gfx),
 		(unsigned long long)gfx.filterIndices.size());
@@ -422,6 +452,11 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 	uint32_t frameIndex, smvk::World& world, const smvk::RenderViewSet& views,
 	uint32_t mainViewIdx, const glm::vec3& eye, const smvk::Extent2D& extent,
 	smvk::gfx::CullFlags flags) {
+
+	SMVK_PROFILE_RENDER("GfxFilterMainView");
+	SMVK_PROFILE_TAG("extentWidth", extent.width);
+	SMVK_PROFILE_TAG("extentHeight", extent.height);
+
 	smvk::gfx::BeginFrame(gfx);
 	if (mainViewIdx == smvk::RenderViewSet::kInvalidIndex)
 		return UINT32_MAX;
@@ -430,6 +465,8 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 		flags, extent.width, extent.height);
 	if (slot == UINT32_MAX)
 		return UINT32_MAX;
+
+	SMVK_PROFILE_SCOPE("GfxFilterPushDraws");
 	world.forEachNode(
 		smvk::IteratorFlagBit_Renderable
 		| smvk::IteratorFlagBit_Opaque
@@ -476,11 +513,11 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 		// frame's rotation runs later in AppendPasses), so the seed /
 		// remainder / HZB figures describe what the temporal loop did.
 		const smvk::gfx::TemporalView& ht = smvk::gfx::Temporal(gfx, slot);
-		fprintf(stderr,
+		SMVK_DEBUG_LOG(
 			"[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
 			stats.draws, stats.commands, stats.trianglesProcessed,
 			stats.clustersCulled, stats.clustersProcessed);
-		fprintf(stderr,
+		SMVK_DEBUG_LOG(
 			"[GfxFilter] hist: valid=%d prev=%u seed=%u/%u rem=%u/%u hiz=%umips %ux%u minContrib=%.2f\n",
 			ht.historyValid ? 1 : 0, ht.prevBatchCount,
 			(unsigned)ht.seedCommands.size(), (unsigned)ht.seedRanges.size(),
@@ -575,20 +612,20 @@ void GfxRenderer::DrawSeedRange(smvk::CommandBuffer& cmd, uint32_t slot, uint32_
 void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 	using namespace smvk::gfx;
 	if (slot >= gfx.views.size() || slot >= gfx.temporals.size()) {
-		std::fprintf(stderr, "[GfxAudit] bad slot %u.\n", slot);
+		SMVK_DEBUG_LOG( "[GfxAudit] bad slot %u.\n", slot);
 		return;
 	}
 	const View& v = gfx.views[slot];
 	const TemporalView& t = gfx.temporals[slot];
 	if (v.batchCount == 0 || v.batches.empty()) {
-		std::fprintf(stderr, "[GfxAudit] slot %u: no batches.\n", slot);
+		SMVK_DEBUG_LOG( "[GfxAudit] slot %u: no batches.\n", slot);
 		return;
 	}
 	// GPU indirect commands (one per batch; zero indexCount = GPU kill).
 	std::vector<SeedCommand> cmds(v.batchCount);
 	if (!ctx.DownloadDataFromBuffer(IndirectBuffer(gfx, slot),
 			cmds.data(), cmds.size() * sizeof(SeedCommand))) {
-		std::fprintf(stderr, "[GfxAudit] slot %u: indirect download failed.\n", slot);
+		SMVK_DEBUG_LOG( "[GfxAudit] slot %u: indirect download failed.\n", slot);
 		return;
 	}
 	// GPU HZB pyramid for the CPU mirror.
@@ -608,7 +645,7 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 				batchMat[r.firstCommand + k] = r.material;
 		}
 	}
-	std::fprintf(stderr,
+	SMVK_DEBUG_LOG(
 		"[GfxAudit] slot %u: batches=%u flags=0x%x hiz=%ux%u/%u haveHzb=%d\n",
 		slot, v.batchCount, v.cullFlags,
 		t.hiz.width, t.hiz.height, t.hiz.mipCount, haveHzb ? 1 : 0);
@@ -717,7 +754,7 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 		if (budget < kAuditPrintPerClass) {
 			++budget;
 			if (verdict) {
-				std::fprintf(stderr,
+				SMVK_DEBUG_LOG(
 					"[GfxAudit] kill b=%u cl=%u draw=%u mesh=%u world=%d mat=%u tris=%u | "
 					"c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f stored=%.5f "
 					"margin=%+.5f %s cpu=OCCLUDED%s\n",
@@ -726,7 +763,7 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 					mirrorOk ? "" : " (unresolved)");
 			}
 			else {
-				std::fprintf(stderr,
+				SMVK_DEBUG_LOG(
 					"[GfxAudit] kill b=%u cl=%u draw=%u mesh=%u world=%d mat=%u tris=%u | "
 					"c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f stored=%.5f "
 					"%s cpu=keep%s\n",
@@ -739,7 +776,7 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 	// Misses first: CPU says occluded but the GPU kept the batch — the
 	// exact "mesh behind still renders" cases, with margins.
 	for (const MissDetail& d : misses) {
-		std::fprintf(stderr,
+		SMVK_DEBUG_LOG(
 			"[GfxAudit] miss b=%u cl=%u draw=%u mesh=%u mat=%u tris=%u aliveTris=%u | "
 			"c=(%.1f,%.1f) r=(%.1f,%.1f) mip=%u dNear=%.5f stored=%.5f "
 			"margin=%+.5f %s cpu=OCCLUDED-MISS\n",
@@ -748,7 +785,7 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 			d.stored - d.dn, d.screenTag);
 	}
 	if (misses.size() == kAuditMissCap)
-		std::fprintf(stderr, "[GfxAudit] miss list capped at %u (more unprinted)\n",
+		SMVK_DEBUG_LOG( "[GfxAudit] miss list capped at %u (more unprinted)\n",
 			kAuditMissCap);
 	uint32_t missedTotal = 0;
 	for (uint32_t m = 0; m < (uint32_t)meshStats.size(); ++m) {
@@ -756,12 +793,12 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 		if (ms.batches == 0)
 			continue;
 		missedTotal += ms.missed;
-		std::fprintf(stderr,
+		SMVK_DEBUG_LOG(
 			"[GfxAudit] mesh=%u world=%d batches=%u tris=%u gpuKill=%u occKill=%u missed=%u aliveTris=%u\n",
 			m, gfxToWorld[m], ms.batches, ms.tris, ms.gpuKill, ms.occKill,
 			ms.missed, ms.aliveTris);
 	}
-	std::fprintf(stderr,
+	SMVK_DEBUG_LOG(
 		"[GfxAudit] zero=%u/%u cpuOccluded=%u cpuKeep=%u missed=%u%s (keep = triangle kill or shader divergence; "
 		"bisect backface/frustum/smallprim to split)\n",
 		zeroTotal, v.batchCount, cpuOcc, cpuKeep, missedTotal,

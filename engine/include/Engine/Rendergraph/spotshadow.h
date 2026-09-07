@@ -42,7 +42,7 @@ struct SpotShadowMapDesc {
 	uint32_t resolution = 1024;             // per-tile res, square
 	Format format = Format::D32_Float;      // depth-only atlas
 	float nearPlane = 0.5f;                 // perspective near for all spots
-	float bias = 0.002f;                    // receiver-depth bias (perspective)
+	float bias = 0.0f;                      // receiver-depth bias (perspective) – 0: oriented depth bias in shader
 	const char* name = "spotShadowAtlas";
 };
 
@@ -224,7 +224,7 @@ struct SpotShadowAtlas {
 		int32_t shadowMapIndex,
 		uint32_t tileIndex,
 		float nearPlane = 0.5f,
-		float bias = 0.002f) const {
+		float bias = 0.0f) const {
 		assert(Valid());
 		assert(tileIndex < slotCount);
 

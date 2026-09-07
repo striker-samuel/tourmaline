@@ -1,6 +1,8 @@
 #include <Engine/Renderer/gfx_filter.h>
+#include <Engine/debug_log.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Renderer/mesh.h>
+#include <Engine/Profile/profile.h>
 #include "../Vulkan/detail/vulkan_impl.h"
 
 #include <algorithm>
@@ -409,7 +411,7 @@ bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
 	// Exceeding it reads/writes out of bounds -> undefined HZB -> over-cull.
 	static constexpr uint32_t kHzbShaderMaxFloats = 12582912;
 	if ((uint64_t)HzbTotalFloats(w, h) > kHzbShaderMaxFloats) {
-		std::fprintf(stderr,
+		SMVK_DEBUG_LOG(
 			"[GfxHiz] target %ux%u needs %u floats, exceeds shader cap %u: "
 			"expect pyramid corruption.\n",
 			w, h, HzbTotalFloats(w, h), kHzbShaderMaxFloats);
@@ -440,6 +442,11 @@ RenderPass& AddHizPass(State& s, RenderGraph& rg, uint32_t view,
 	uint32_t dstMip, LogicalImageViewHandle depthLogical, const char* passName) {
 	assert(view < s.temporals.size());
 	TemporalView& t = s.temporals[view];
+
+	SMVK_PROFILE_RENDER("GfxAddHizPass");
+	SMVK_PROFILE_TAG("mip", dstMip);
+	SMVK_PROFILE_TAG("mipCount", t.hiz.mipCount);
+
 	RenderPass& pass = rg.AddComputePass(passName ? passName : "GfxHiz");
 	BufferSyncRequest hizRW{};
 	hizRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
@@ -460,7 +467,7 @@ RenderPass& AddHizPass(State& s, RenderGraph& rg, uint32_t view,
 	// DEBUG: Log HZB pass creation
 	static uint64_t s_hizPassCount = 0;
 	if ((s_hizPassCount++ % 60) == 0) {
-		std::fprintf(stderr,
+		SMVK_DEBUG_LOG(
 			"[GfxHiz] AddHizPass view=%u mip=%u/%u depthValid=%d passName=%s\n",
 			view, dstMip, t.hiz.mipCount, !depthLogical.empty(), passName ? passName : "GfxHiz");
 	}
@@ -474,6 +481,11 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	TemporalView& t = s.temporals[view];
 	if (dstMip >= t.hiz.mipCount)
 		return;
+
+	SMVK_PROFILE_SCOPE("GfxPushAndDispatchHiz");
+	SMVK_PROFILE_TAG("dstMip", dstMip);
+	SMVK_PROFILE_TAG("mipCount", t.hiz.mipCount);
+
 	uint32_t dw = 0, dh = 0;
 	HzbMipDims(t.hiz.width, t.hiz.height, dstMip, dw, dh);
 	if (dw == 0 || dh == 0)
@@ -484,7 +496,7 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	if (addr == 0) {
 		static uint64_t s_hizNullWarns = 0;
 		if ((s_hizNullWarns++ % 300) == 0) {
-			std::fprintf(stderr,
+			SMVK_DEBUG_LOG(
 				"[GfxHiz] refusing dispatch: null HZB address (view %u mip %u).\n",
 				view, dstMip);
 		}
@@ -496,7 +508,7 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	if (dstMip == 0 && depthBindlessIndex == UINT32_MAX) {
 		static uint64_t s_hizDepthWarns = 0;
 		if ((s_hizDepthWarns++ % 300) == 0) {
-			std::fprintf(stderr,
+			SMVK_DEBUG_LOG(
 				"[GfxHiz] mip0 copy with invalid depth bindless (view %u): "
 				"HZB content undefined, expect over-cull.\n",
 				view);
@@ -510,7 +522,7 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 			&& v.width != 0 && v.height != 0) {
 			static uint64_t s_hizExtentWarns = 0;
 			if ((s_hizExtentWarns++ % 300) == 0) {
-				std::fprintf(stderr,
+				SMVK_DEBUG_LOG(
 					"[GfxHiz] extent mismatch: hiz %ux%u vs view %ux%u (view %u).\n",
 					t.hiz.width, t.hiz.height, v.width, v.height, view);
 			}
@@ -541,7 +553,7 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	// DEBUG: Log HZB dispatch parameters
 	static uint64_t s_hizDispatchCount = 0;
 	if ((s_hizDispatchCount++ % 60) == 0) {
-		std::fprintf(stderr,
+		SMVK_DEBUG_LOG(
 			"[GfxHiz] Dispatch view=%u mip=%u/%u dst=%ux%u off=%u srcMip=%u src=%ux%u srcOff=%u depthIdx=%u BDA=0x%llx\n",
 			view, dstMip, t.hiz.mipCount, dw, dh, push.dstOffset,
 			push.srcMip, push.srcWidth, push.srcHeight, push.srcOffset,
@@ -793,6 +805,11 @@ void SnapshotVisible(State& s, uint32_t view) {
 	assert(view < s.views.size());
 	TemporalView& t = Temporal(s, view);
 	const View& v = s.views[view];
+
+	SMVK_PROFILE_SCOPE("GfxSnapshotVisible");
+	SMVK_PROFILE_TAG("batches", v.batches.size());
+	SMVK_PROFILE_TAG("draws", v.drawConstants.size());
+
 	t.prevBatches = v.batches;
 	t.prevDraws = v.drawConstants;
 	t.prevRanges = v.materialRanges;
@@ -813,7 +830,13 @@ void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 	TemporalView& t = s.temporals[view];
 	if (t.visClusterBuffers[frameIndex].empty() || t.visDrawBuffers[frameIndex].empty())
 		return; // headless / unallocated: CPU snapshot still stands
+
+	SMVK_PROFILE_SCOPE("GfxUploadVisible");
+	SMVK_PROFILE_TAG("prevBatchCount", t.prevBatchCount);
+	SMVK_PROFILE_TAG("prevDrawCount", t.prevDrawCount);
+
 	if (t.prevBatchCount > 0) {
+		SMVK_PROFILE_SCOPE("GfxUploadVisClusters");
 		std::vector<VisibleCluster> pairs;
 		pairs.reserve(t.prevBatchCount);
 		for (const Batch& b : t.prevBatches)
@@ -823,6 +846,7 @@ void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 			PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
 	}
 	if (!t.prevDraws.empty()) {
+		SMVK_PROFILE_SCOPE("GfxUploadVisDraws");
 		ctx.UploadDataToBuffer(t.visDrawBuffers[frameIndex],
 			t.prevDraws.data(), t.prevDraws.size() * sizeof(Draw),
 			PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
@@ -906,6 +930,10 @@ void BuildSeedCommands(State& s, uint32_t view) {
 	t.seedOpaqueCommands = 0;
 	if (!t.historyValid || t.prevBatches.empty())
 		return;
+
+	SMVK_PROFILE_RENDER("GfxBuildSeedCommands");
+	SMVK_PROFILE_TAG("prevBatches", t.prevBatches.size());
+
 	std::vector<uint32_t> batchMaterial;
 	ResolveBatchMaterials(t.prevRanges, t.prevBatches.size(), batchMaterial);
 	std::vector<EmitEntry> entries;
@@ -944,6 +972,10 @@ void BuildRemainderCommands(State& s, uint32_t view) {
 	const View& v = s.views[view];
 	if (!t.historyValid || v.batches.empty())
 		return; // no baseline (full prepass covered everything) or nothing new
+
+	SMVK_PROFILE_RENDER("GfxBuildRemainderCommands");
+	SMVK_PROFILE_TAG("currBatches", v.batches.size());
+	SMVK_PROFILE_TAG("prevBatches", t.prevBatches.size());
 	// Sorted baseline keys from the snapshot.
 	std::vector<VisKey> prev;
 	prev.reserve(t.prevBatches.size());
@@ -995,6 +1027,10 @@ void UploadSeed(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t vi
 		return;
 	if (t.seedCommands.empty())
 		return;
+
+	SMVK_PROFILE_SCOPE("GfxUploadSeed");
+	SMVK_PROFILE_TAG("commands", t.seedCommands.size());
+
 	ctx.UploadDataToBuffer(t.seedIndirectBuffers[frameIndex],
 		t.seedCommands.data(), t.seedCommands.size() * sizeof(SeedCommand),
 		PipelineStage(PipelineStageBit_DrawIndirect), AccessFlags::IndirectCommandRead);
@@ -1010,6 +1046,10 @@ void UploadRemainder(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32
 		return;
 	if (t.remainderCommands.empty())
 		return;
+
+	SMVK_PROFILE_SCOPE("GfxUploadRemainder");
+	SMVK_PROFILE_TAG("commands", t.remainderCommands.size());
+
 	ctx.UploadDataToBuffer(t.remainderIndirectBuffers[frameIndex],
 		t.remainderCommands.data(), t.remainderCommands.size() * sizeof(SeedCommand),
 		PipelineStage(PipelineStageBit_DrawIndirect), AccessFlags::IndirectCommandRead);
@@ -1163,14 +1203,19 @@ Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 	v.frameIndex = frameIndex;
 	v.stats.draws = (uint32_t)v.draws.size();
 
+	SMVK_PROFILE_RENDER("GfxFinalizeView");
+	SMVK_PROFILE_TAG("draws", v.draws.size());
+
 	BuildBatches(s, view);
 
 	if (v.batchCount > 0) {
+		SMVK_PROFILE_SCOPE("GfxUploadBatches");
 		ctx.UploadDataToBuffer(v.batchBuffers[frameIndex],
 			v.batches.data(), v.batches.size() * sizeof(Batch),
 			PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
 	}
 	if (!v.drawConstants.empty()) {
+		SMVK_PROFILE_SCOPE("GfxUploadDraws");
 		ctx.UploadDataToBuffer(v.drawBuffers[frameIndex],
 			v.drawConstants.data(), v.drawConstants.size() * sizeof(Draw),
 			PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
@@ -1178,6 +1223,7 @@ Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 		// writes exactly its own command slot, so no atomics are needed).
 		std::vector<uint8_t> zeros(v.batchCount * 20, 0);
 		if (!zeros.empty()) {
+			SMVK_PROFILE_SCOPE("GfxUploadIndirect");
 			ctx.UploadDataToBuffer(v.indirectBuffers[frameIndex],
 				zeros.data(), zeros.size(),
 				PipelineStage(PipelineStageBit_Compute),
@@ -1191,6 +1237,9 @@ void BuildBatches(State& s, uint32_t view) {
 	assert(view < s.views.size());
 	View& v = s.views[view];
 	assert(v.renderView != nullptr);
+
+	SMVK_PROFILE_RENDER("GfxBuildBatches");
+	SMVK_PROFILE_TAG("draws", v.draws.size());
 
 	// Sort draws by material (stable: submission order kept per material).
 	// Commands are emitted in this order, so each material owns one
@@ -1262,12 +1311,22 @@ void BuildBatches(State& s, uint32_t view) {
 	v.batchCount = batchSlot;
 	v.stats.draws = (uint32_t)v.draws.size();
 	v.stats.commands = batchSlot;
+	// Aggregate cull telemetry on the GfxBuildBatches scope: per-cluster
+	// events would flood the profiler (10k+ ns-scale events per frame).
+	SMVK_PROFILE_TAG("batches", v.batchCount);
+	SMVK_PROFILE_TAG("clustersProcessed", v.stats.clustersProcessed);
+	SMVK_PROFILE_TAG("clustersCulled", v.stats.clustersCulled);
+	SMVK_PROFILE_TAG("trianglesProcessed", v.stats.trianglesProcessed);
 }
 
 RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view) {
 	assert(view < s.viewCount);
 	View& v = s.views[view];
 	const uint32_t f = v.frameIndex;
+	
+	SMVK_PROFILE_RENDER("GfxAddFilterPass");
+	SMVK_PROFILE_TAG("batchCount", v.batchCount);
+
 	RenderPass& pass = rg.AddComputePass("GfxFilter");
 	BufferSyncRequest computeRead{};
 	computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
@@ -1291,7 +1350,7 @@ RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view) {
 	static uint64_t s_filterPassCount = 0;
 	if ((s_filterPassCount++ % 60) == 0) {
 		const TemporalView& t = s.temporals[view];
-		std::fprintf(stderr,
+		SMVK_DEBUG_LOG(
 			"[GfxFilter] AddFilterPass view=%u batchCount=%u hasHiz=%d hiz=%ux%u/%u mips\n",
 			view, v.batchCount, !t.hiz.logical.empty(), t.hiz.width, t.hiz.height, t.hiz.mipCount);
 	}
@@ -1316,6 +1375,10 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 	View& v = s.views[view];
 	if (v.batchCount == 0)
 		return;
+
+	SMVK_PROFILE_SCOPE("GfxPushAndDispatch");
+	SMVK_PROFILE_TAG("batchCount", v.batchCount);
+
 	const uint32_t f = v.frameIndex;
 	cmd.BindComputePipeline(s.filterProgram);
 	FilterPush push{};
@@ -1339,7 +1402,7 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 		|| push.indirect == 0) {
 		static uint64_t s_nullBdaWarns = 0;
 		if ((s_nullBdaWarns++ % 300) == 0) {
-			std::fprintf(stderr,
+			SMVK_DEBUG_LOG(
 				"[GfxFilter] refusing dispatch: null BDA (pos=%llx idx=%llx cl=%llx "
 				"batch=%llx draw=%llx filt=%llx ind=%llx). Check buffer usage flags.\n",
 				(unsigned long long)push.positions, (unsigned long long)push.indices,
@@ -1375,7 +1438,7 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 	// DEBUG: Log filter dispatch HZB parameters
 	static uint64_t s_filterDispatchCount = 0;
 	if ((s_filterDispatchCount++ % 60) == 0) {
-		std::fprintf(stderr,
+		SMVK_DEBUG_LOG(
 			"[GfxFilter] PushAndDispatch view=%u batchCount=%u cullFlags=0x%x hzb=0x%llx hiz=%ux%u/%u minContrib=%.4f\n",
 			view, v.batchCount, v.cullFlags,
 			(unsigned long long)push.hzb, push.hizWidth, push.hizHeight, push.hizMips, push.minContribution);
@@ -1391,15 +1454,15 @@ void DumpHzb(State& s, ResourceManager& ctx, uint32_t view) {
 		return;
 	const TemporalView& t = s.temporals[view];
 	if (t.hiz.mipCount == 0 || t.hiz.width == 0 || t.hiz.height == 0 || t.hiz.buffer.empty()) {
-		std::fprintf(stderr, "[GfxHiz] DumpHzb: no HZB buffer (view %u)\n", view);
+		SMVK_DEBUG_LOG( "[GfxHiz] DumpHzb: no HZB buffer (view %u)\n", view);
 		return;
 	}
 	std::vector<float> hzb(HzbTotalFloats(t.hiz.width, t.hiz.height), 0.0f);
 	if (!ctx.DownloadDataFromBuffer(t.hiz.buffer, hzb.data(), hzb.size() * sizeof(float))) {
-		std::fprintf(stderr, "[GfxHiz] DumpHzb: download failed (view %u)\n", view);
+		SMVK_DEBUG_LOG( "[GfxHiz] DumpHzb: download failed (view %u)\n", view);
 		return;
 	}
-	std::fprintf(stderr, "[GfxHiz] DumpHzb view=%u %ux%u mips=%u totalFloats=%zu\n",
+	SMVK_DEBUG_LOG( "[GfxHiz] DumpHzb view=%u %ux%u mips=%u totalFloats=%zu\n",
 		view, t.hiz.width, t.hiz.height, t.hiz.mipCount, hzb.size());
 	for (uint32_t m = 0; m < t.hiz.mipCount; ++m) {
 		uint32_t mw = 0, mh = 0;
@@ -1420,15 +1483,15 @@ void DumpHzb(State& s, ResourceManager& ctx, uint32_t view) {
 				}
 			}
 		}
-		std::fprintf(stderr, "  mip%u: %ux%u off=%u range=[%.6f, %.6f] zeros=%u nan=%u inf=%u\n",
+		SMVK_DEBUG_LOG( "  mip%u: %ux%u off=%u range=[%.6f, %.6f] zeros=%u nan=%u inf=%u\n",
 			m, mw, mh, off, minV, maxV, zeroCount, nanCount, infCount);
 		// Print first few values for mip 0
 		if (m == 0 && mw * mh > 0) {
-			std::fprintf(stderr, "    sample: ");
+			SMVK_DEBUG_LOG( "    sample: ");
 			for (uint32_t i = 0; i < std::min<uint32_t>(16, mw * mh); ++i) {
-				std::fprintf(stderr, "%.4f ", hzb[off + i]);
+				SMVK_DEBUG_LOG( "%.4f ", hzb[off + i]);
 			}
-			std::fprintf(stderr, "\n");
+			SMVK_DEBUG_LOG( "\n");
 		}
 	}
 }

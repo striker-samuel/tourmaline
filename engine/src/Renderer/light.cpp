@@ -132,7 +132,8 @@ void smvk::GetDirectionalLightOrthoVP(
 	glm::mat4& outProj,
 	float zPadding,
 	bool enableTexelSnap,
-	int shadowMapRes
+	int shadowMapRes,
+	float* outDepthRange
 )
 {
 	if (!(shadowFar > shadowNear))
@@ -302,6 +303,9 @@ void smvk::GetDirectionalLightOrthoVP(
 		zNear,
 		zFar
 	);
+
+	if (outDepthRange != nullptr)
+		*outDepthRange = zFar - zNear;
 
 	// Debufging fit
 	//glm::mat4 lightVP =

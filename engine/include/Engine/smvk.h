@@ -28,7 +28,7 @@ static constexpr uint32_t MAX_LIGHTS = 64;
 // slots in the bindless pools (see Memory/pool.h static_assert).
 static constexpr uint32_t MAX_TEXTURES = 8192;
 static constexpr uint32_t MAX_SAMPLERS = 8;
-static constexpr uint32_t MAX_MATERIALS = 1024;
+static constexpr uint32_t MAX_MATERIALS = 4096;
 static constexpr uint32_t MAX_SHADOW_SAMPLERS = 8;
 static constexpr uint32_t MAX_COLOR_ATTACHEMNTS = 4096;
 

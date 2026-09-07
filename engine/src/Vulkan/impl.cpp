@@ -2783,8 +2783,12 @@ void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* d
 	}
 	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); st.layout = remainTransfer ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask = PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
 }
-void smvk::UploadStreamer::flush() { for (auto& ust : states_) if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge(); }
-void smvk::UploadStreamer::flushLocal() { ThreadUploadState& ust = states_[CurrentPoolShard()]; if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge(); }
+void smvk::UploadStreamer::flush() {
+	SMVK_PROFILE_STREAM("UploadFlush");
+	for (auto& ust : states_) if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge(); }
+void smvk::UploadStreamer::flushLocal() {
+	SMVK_PROFILE_STREAM("UploadFlushLocal");
+	ThreadUploadState& ust = states_[CurrentPoolShard()]; if (ust.hasPending) submitState(ust, true); if (m_transfer) m_transfer->purge(); }
 smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
 	// Drains all shards (quiescent: call after workers joined). Returns the
 	// last timeline point for callers that need to chain.
@@ -2812,7 +2816,9 @@ smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
 	}
 	return last;
 }
-void smvk::UploadStreamer::waitAll() { flush(); if (m_transfer) m_transfer->waitAll(); if (m_graphics && m_graphics != m_transfer) m_graphics->waitAll(); }
+void smvk::UploadStreamer::waitAll() {
+	SMVK_PROFILE_STREAM("UploadWaitAll");
+	flush(); if (m_transfer) m_transfer->waitAll(); if (m_graphics && m_graphics != m_transfer) m_graphics->waitAll(); }
 
 void smvk::VulkanResourceManager::FlushUploads() { if (m_streamer) m_streamer->flush(); }
 void smvk::VulkanResourceManager::WaitForUploads() { if (m_streamer) m_streamer->waitAll(); }
@@ -6260,6 +6266,7 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 {
 	SMVK_PROFILE_SCOPE_COLOR("Present", Optick::Color::SteelBlue);
+	SMVK_PROFILE_GPU_FLIP(fb.swapchain.vk_swapchain_); // GPU profiling for present
 	ImageBarrier(
 		fb.commandBuffer,
 		GetCurrentImage(),
@@ -7801,7 +7808,18 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	auto imageStates = vctx.SnapshotImageSyncStates();
 	auto bufferStates = vctx.SnapshotBufferSyncStates();
 
+	// One GPU context per command buffer: every pass scope below (and any
+	// GPU event emitted inside a recording lambda) writes its timestamp
+	// pairs into this context.
+	SMVK_PROFILE_GPU_CONTEXT(cmd);
+
 	for (size_t sIdx : sorted) {
+		// Per-pass CPU+GPU scope covering barriers + recording. RenderPass
+		// names may be null (default ctor); Optick hashes the name and a
+		// null pointer crashes the profiler, so substitute a stable literal.
+		::smvk::profiler::GpuPassScope passGpuScope(
+			passes_[sIdx].name_ ? passes_[sIdx].name_ : "UnnamedRenderPass",
+			__FILE__, __LINE__);
 		// Per-pass barriers (fix #1) – update imageStates/bufferStates as we go
 		{
 			const auto& pu = usages[sIdx];

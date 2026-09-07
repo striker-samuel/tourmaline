@@ -302,8 +302,10 @@ struct CascadedShadowAtlas {
 		const glm::mat4 lvp = lp * lv;
 		std::memcpy(dir.cascades[i].lightVP, glm::value_ptr(lvp), sizeof(dir.cascades[i].lightVP));
 		dir.cascades[i].splitEnd = splits[i + 1];
-		// Small depth bias per cascade – grows slightly for far cascades.
-		dir.cascades[i].bias = 0.0005f * (1.0f + static_cast<float>(i) * 0.5f);
+		// Oriented depth bias (Sec. 4.2): shadowmaps render with no HW bias and
+		// no fixed receiver bias; the receiver depth is offset by +/-k based on
+		// face orientation in shadows.hlsli. Kept at 0 for layout compat.
+		dir.cascades[i].bias = 0.0f;
 		dir.cascades[i].normalBias = 0.0f;
 		dir.cascades[i].pad_ = 0.0f;
 		dir.cascades[i].invShadowSize =

@@ -167,7 +167,11 @@ namespace smvk {
 		glm::mat4& outProj,
 		float zPadding,
 		bool enableTexelSnap,
-		int shadowMapRes
+		int shadowMapRes,
+		// Optional: receives the ortho depth range (zFar - zNear, world units)
+		// so callers can scale NDC-space biases (e.g. oriented depth bias
+		// magnitude = worldBias / range). May be nullptr.
+		float* outDepthRange = nullptr
 	);
 	glm::mat4 GetPerspectiveProjectionForLight(
 		const SpotLight& l,

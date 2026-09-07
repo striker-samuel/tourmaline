@@ -10,6 +10,7 @@
 
 
 #include <array>
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <unordered_map>
@@ -96,9 +97,18 @@ namespace {
 		if (s == "BLEND") return GltfAlphaMode::Blend;
 		return GltfAlphaMode::Opaque; // default or "OPAQUE"
 	}
-	glm::vec3 readVec3ForientationFix(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
+	static glm::vec3 readVec3ForientationFix(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i, int coordFix) {
 		// Expect FLOAT VEC3
 		const float* p = reinterpret_cast<const float*>(gltfPtr(m, a, i));
+		if (coordFix == 1 || coordFix == 3) {
+			// 1: skip engine fix (model already in engine space).
+			// 3: same + RootNode/Level hierarchy is neutralized by the
+			//    scene preTransform (see bistro SceneDesc).
+			return glm::vec3(p[0], p[1], p[2]);
+		}
+		if (coordFix == 2) {
+			return glm::vec3(p[0], -p[1], p[2]);
+		}
 		return glm::vec3(p[0] * -1, p[1], p[2] * -1);
 	}
 	glm::vec4 readVec4F(const tinygltf::Model& m, const tinygltf::Accessor& a, size_t i) {
@@ -377,9 +387,11 @@ bool LoadModelFromAsciiFile(tinygltf::Model& model, const char* filename) {
 	std::string warn;
 
 	bool res = loader.LoadASCIIFromFile(&model, &err, &warn, filename);
+#ifndef NDEBUG
 	if (!warn.empty()) {
 		std::cout << "WARN: " << warn << std::endl;
 	}
+#endif
 
 	if (!err.empty()) {
 		std::cout << "ERR: " << err << std::endl;
@@ -387,8 +399,10 @@ bool LoadModelFromAsciiFile(tinygltf::Model& model, const char* filename) {
 
 	if (!res)
 		std::cout << "Failed to load glTF: " << filename << std::endl;
+#ifndef NDEBUG
 	else
 		std::cout << "Loaded glTF: " << filename << std::endl;
+#endif
 
 	return res;
 }
@@ -425,7 +439,7 @@ std::optional<GltfTextureRef> GtlfResolveNormalTexture(const tinygltf::Model& mo
 	if (out.imageIndex < 0) return std::nullopt;
 	return out;
 }
-std::optional<GltfTextureRef> GLtfResolveOcclusionTexture(const tinygltf::Model& model, const tinygltf::OcclusionTextureInfo& occ)
+	std::optional<GltfTextureRef> GLtfResolveOcclusionTexture(const tinygltf::Model& model, const tinygltf::OcclusionTextureInfo& occ)
 {
 	if (occ.index < 0 || occ.index >= (int)model.textures.size()) return std::nullopt;
 	const tinygltf::Texture& tex = model.textures[occ.index];
@@ -441,6 +455,37 @@ std::optional<GltfTextureRef> GLtfResolveOcclusionTexture(const tinygltf::Model&
 
 	if (out.imageIndex < 0) return std::nullopt;
 	return out;
+}
+// Resolves a raw texture index (used by material extensions that carry
+// plain {index, texCoord} objects instead of TextureInfo, e.g.
+// KHR_materials_pbrSpecularGlossiness diffuse/specular textures).
+std::optional<GltfTextureRef> GltfResolveTextureIndex(const tinygltf::Model& model, int texIndex, int texCoord = 0)
+{
+	if (texIndex < 0 || texIndex >= (int)model.textures.size()) return std::nullopt;
+	const tinygltf::Texture& tex = model.textures[texIndex];
+	GltfTextureRef out{};
+	out.textureIndex = texIndex;
+	out.texCoord = texCoord;
+	if (tex.source >= 0 && tex.source < (int)model.images.size())
+		out.imageIndex = tex.source;
+	if (tex.sampler >= 0 && tex.sampler < (int)model.samplers.size())
+		out.samplerIndex = tex.sampler;
+	if (out.imageIndex < 0) return std::nullopt;
+	return out;
+}
+// Reads an extension sub-object integer (tinygltf::Value numbers are double).
+int GltfExtensionTextureIndex(const tinygltf::Value::Object& obj, const char* key)
+{
+	auto f = obj.find(key);
+	if (f == obj.end() || !f->second.IsObject()) return -1;
+	const auto& t = f->second.Get<tinygltf::Value::Object>();
+	auto fi = t.find("index");
+	if (fi == t.end() || !fi->second.IsNumber()) return -1;
+	int texCoord = 0;
+	if (auto tc = t.find("texCoord"); tc != t.end() && tc->second.IsNumber())
+		texCoord = static_cast<int>(tc->second.GetNumberAsDouble());
+	(void)texCoord;
+	return static_cast<int>(fi->second.GetNumberAsDouble());
 }
 static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIndex)
 {
@@ -536,6 +581,53 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
 		}
 	}
 
+	// KHR_materials_pbrSpecularGlossiness fallback (FBX2glTF assets such as
+	// Bistro: 234/254 materials carry ONLY this extension, no core
+	// pbrMetallicRoughness textures). diffuseTexture/diffuseFactor map onto
+	// the metal-rough base color; glossinessFactor tunes roughness
+	// (metallic forced to dielectric 0). The specular-glossiness packing
+	// (specular RGB + glossiness A) has no metal-rough equivalent, so that
+	// texture is intentionally skipped.
+	{
+		auto it = m.extensions.find("KHR_materials_pbrSpecularGlossiness");
+		if (it != m.extensions.end() && it->second.IsObject()) {
+			const auto& obj = it->second.Get<tinygltf::Value::Object>();
+			const int diffuseIdx = GltfExtensionTextureIndex(obj, "diffuseTexture");
+			if (!mat.baseColorTex) {
+				if (auto t = GltfResolveTextureIndex(model, diffuseIdx))
+					mat.baseColorTex = *t;
+			}
+			if (auto f = obj.find("diffuseFactor"); f != obj.end() && f->second.IsArray()) {
+				const auto& arr = f->second.Get<tinygltf::Value::Array>();
+				const bool hasPbrColor =
+					m.pbrMetallicRoughness.baseColorTexture.index >= 0 ||
+					!m.pbrMetallicRoughness.baseColorFactor.empty();
+				if (!hasPbrColor && arr.size() >= 3) {
+					for (int k = 0; k < 3 && k < (int)arr.size(); ++k)
+						if (arr[k].IsNumber())
+							mat.baseColorFactor[k] = arr[k].GetNumberAsDouble();
+					if (arr.size() >= 4 && arr[3].IsNumber())
+						mat.baseColorFactor[3] = arr[3].GetNumberAsDouble();
+				}
+			}
+			// Dielectric default for spec-gloss-only materials; glossiness
+			// inverts to roughness when the core block is at its default.
+			const bool coreUntouched =
+				m.pbrMetallicRoughness.metallicFactor == 1.0 &&
+				m.pbrMetallicRoughness.roughnessFactor == 1.0;
+			if (coreUntouched) {
+				mat.metallicFactor = 0.0;
+				if (auto f = obj.find("glossinessFactor"); f != obj.end() && f->second.IsNumber()) {
+					const double gloss = f->second.GetNumberAsDouble();
+					mat.roughnessFactor = std::clamp(1.0 - gloss, 0.05, 1.0);
+				}
+				else {
+					mat.roughnessFactor = 0.6;
+				}
+			}
+		}
+	}
+
 	// -------------------------------------------------------------------------
 	// Rasterization
 	// -------------------------------------------------------------------------
@@ -581,6 +673,13 @@ void GltfToSceneImporter::preloadTextures()
 			note(GtlfResolveNormalTexture(model, m.normalTexture));
 			note(GLtfResolveOcclusionTexture(model, m.occlusionTexture));
 			note(GltfResolveTexture(model, m.emissiveTexture));
+			// Spec-gloss diffuse fallback (see ExtractMaterial): preload so
+			// the per-material path hits the cache.
+			if (auto it = m.extensions.find("KHR_materials_pbrSpecularGlossiness");
+				it != m.extensions.end() && it->second.IsObject()) {
+				const auto& obj = it->second.Get<tinygltf::Value::Object>();
+				note(GltfResolveTextureIndex(model, GltfExtensionTextureIndex(obj, "diffuseTexture")));
+			}
 		}
 	}
 
@@ -647,7 +746,9 @@ void GltfToSceneImporter::preloadTextures()
 				cluster.SetTextureSource(p.identity, std::move(p.bytes));
 			}
 		}
+#ifndef NDEBUG
 		std::cout << "Cook-staged " << pendings.size() << " texture payloads" << std::endl;
+#endif
 		return;
 	}
 
@@ -693,10 +794,12 @@ void GltfToSceneImporter::preloadTextures()
 		}
 	}
 
+#ifndef NDEBUG
 	std::cout << "Preloaded " << stats.succeeded << "/" << stats.requested
 		<< " textures in " << stats.seconds << "s ("
 		<< (stats.failed ? std::to_string(stats.failed) + " failed, " : "")
 		<< jobs.size() << " jobs)" << std::endl;
+#endif
 	// Uploads are batched into the streamer ring (256MB threshold);
 	// GltfToCluster issues the final FlushUploads after scene import.
 }
@@ -836,7 +939,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 
 	return slot;
 }
-smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, const tinygltf::Primitive& primitive) {
+static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, const tinygltf::Primitive& primitive, int coordFix) {
 	smvk::StaticMeshUpload data;
 	// AABB. for culling	
 	{
@@ -857,8 +960,17 @@ smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model
 			glm::vec3 aabbMax(max[0], max[1], max[2]);
 
 			// Apply same conversion as positions
-			glm::vec3 c0(-aabbMin.x, aabbMin.y, -aabbMin.z);
-			glm::vec3 c1(-aabbMax.x, aabbMax.y, -aabbMax.z);
+			glm::vec3 c0, c1;
+			if (coordFix == 1 || coordFix == 3) {
+				c0 = aabbMin;
+				c1 = aabbMax;
+			} else if (coordFix == 2) {
+				c0 = glm::vec3(aabbMin.x, -aabbMin.y, aabbMin.z);
+				c1 = glm::vec3(aabbMax.x, -aabbMax.y, aabbMax.z);
+			} else {
+				c0 = glm::vec3(-aabbMin.x, aabbMin.y, -aabbMin.z);
+				c1 = glm::vec3(-aabbMax.x, aabbMax.y, -aabbMax.z);
+			}
 
 			glm::vec3 mn = glm::min(c0, c1);
 			glm::vec3 mx = glm::max(c0, c1);
@@ -889,7 +1001,7 @@ smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model
 	data.vertices.reserve(posAcc.count);
 	for (size_t i = 0; i < posAcc.count; ++i) {
 		smvk::StaticVertex v{};
-		v.pos = readVec3ForientationFix(model, posAcc, i);
+		v.pos = readVec3ForientationFix(model, posAcc, i, coordFix);
 		v.color = { 1.0f, 1.0f, 1.0f };
 		v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
 		v.normal = { 0.0f, 1.0f, 0.0f }; // replaced below if normals provided/generated
@@ -926,7 +1038,7 @@ smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model
 	if (hasAuthoredNormals) {
 		auto& nAcc = model.accessors[primitive.attributes.at("NORMAL")];
 		for (size_t i = 0; i < nAcc.count && i < data.vertices.size(); ++i) {
-			glm::vec3 n = readVec3ForientationFix(model, nAcc, i);
+			glm::vec3 n = readVec3ForientationFix(model, nAcc, i, coordFix);
 			data.vertices[i].normal = glm::normalize(n);
 		}
 	}
@@ -980,7 +1092,8 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 	auto data =
 		SurfaceDataFromGltfPrimitive(
 			model,
-			primitive
+			primitive,
+			coordFix_
 		);
 
 	// Cook-time meshoptimizer pass (off by default; the cooker enables it
@@ -1002,12 +1115,14 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 		const size_t inVerts = data.vertices.size();
 		if (OptimizeStaticMeshUpload(data, cfg,
 				static_cast<uint32_t>(gltfMeshIndex), &optStats, &lod)) {
+#ifndef NDEBUG
 			std::cout << "MeshOpt mesh." << gltfMeshIndex << "/prim." << primitiveIndex
 				<< ": verts " << inVerts << "->" << data.vertices.size()
 				<< " tris " << optStats.triangles
 				<< " ACMR " << optStats.acmrBefore << "->" << optStats.acmrAfter
 				<< " overdraw " << optStats.overdrawBefore << "->" << optStats.overdrawAfter
 				<< std::endl;
+#endif
 		}
 	}
 	else {
@@ -1023,16 +1138,20 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 		std::string merr;
 		if (BuildMeshletsForUpload(data, meshletConfig, &cooked, &meshletStats, &merr)) {
 			haveMeshlets = true;
+#ifndef NDEBUG
 			std::cout << "Meshlets mesh." << gltfMeshIndex << "/prim." << primitiveIndex
 				<< ": count " << meshletStats.meshletCount
 				<< " tris " << meshletStats.totalTriangles
 				<< " maxVerts " << meshletStats.maxVertsUsed
 				<< " maxTris " << meshletStats.maxTrisUsed
 				<< std::endl;
+#endif
 		}
 		else if (!merr.empty() && merr != "meshlets disabled") {
+#ifndef NDEBUG
 			std::cout << "Meshlets mesh." << gltfMeshIndex << "/prim." << primitiveIndex
 				<< " skipped: " << merr << std::endl;
+#endif
 		}
 	}
 
@@ -1050,6 +1169,16 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 	}
 
 	return slot;
+}
+
+void GltfToSceneImporter::applyPreTransform(Scene& scene, int rootNode) {
+	// Identity fast path (exact float compare is fine for a default matrix).
+	static const glm::mat4 kIdentity{ 1.0f };
+	if (preTransform_ == kIdentity)
+		return;
+	if (rootNode < 0 || (size_t)rootNode >= scene.localTransform.size())
+		return;
+	scene.localTransform[(size_t)rootNode] = preTransform_ * scene.localTransform[(size_t)rootNode];
 }
 void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentSceneNode, int level) {
 	const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];
@@ -1150,7 +1279,9 @@ void GltfToClusterFromVfs(
 	const std::string& modelVfsPath,
 	smvk::Cluster& out,
 	const smvk::MeshOptConfig& meshOpt,
-	const smvk::MeshletConfig& meshlets) {
+	const smvk::MeshletConfig& meshlets,
+	int coordFix,
+	const glm::mat4& preTransform) {
 	const std::string modelPath = smvk::NormalizeAssetUri(modelVfsPath);
 	if (modelPath.empty())
 		throw std::runtime_error("GltfToClusterFromVfs: invalid VFS path: " + modelVfsPath);
@@ -1215,8 +1346,12 @@ void GltfToClusterFromVfs(
 			throw std::runtime_error("GltfToClusterFromVfs: parse failed: " + modelPath + ": " + err);
 		}
 		if (!warn.empty())
+#ifndef NDEBUG
 			std::cout << "WARN: " << warn << std::endl;
 		std::cout << "Loaded glTF from VFS: " << modelPath << std::endl;
+#else
+			(void)warn;
+#endif
 	}
 
 	GltfToSceneImporter importer{ out, model, std::filesystem::path(modelPath) };
@@ -1225,6 +1360,8 @@ void GltfToClusterFromVfs(
 	importer.setModelUriBase(modelPath);
 	importer.setMeshOptConfig(meshOpt);
 	importer.setMeshletConfig(meshlets);
+	importer.setCoordFix(coordFix);
+	importer.setPreTransform(preTransform);
 
 	// Same tail as GltfToCluster (Engine/Utils/gltf.h): cluster root,
 	// top-level glTF nodes, preload, import, fixup, flush.
@@ -1254,6 +1391,8 @@ void GltfToClusterFromVfs(
 
 	for (int gltfNode : gltfRoots)
 		importer.import(gltfNode);
+
+	importer.applyPreTransform(out.scene, root);
 
 	RebuildStaticCache(out.scene);
 	markAsChanged(out.scene, root);

@@ -3,6 +3,7 @@
 
 #include <Engine/App/world.h>
 #include <Engine/Renderer/mesh.h>
+#include <Engine/Profile/profile.h>
 
 #include <algorithm>
 #include <cstring>
@@ -38,6 +39,8 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 	smvk::ResourceManager& ctx = *fc.ctx;
 	smvk::RenderGraph& rg = *fc.rg;
 
+	SMVK_PROFILE_CATEGORY("ForwardPlusDepth", Optick::Category::Rendering);
+
 	// Resize-safe (mirrors the old frame-top Ensure in main).
 	fp->Ensure(ctx, rg, { fc.extent.width, fc.extent.height }, desc, fc.depthViewHandle);
 	if (!fp->Valid())
@@ -71,6 +74,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 				: smvk::AttachmentLoadOp::Clear);
 		prepass.SetRecordingFunc([this, depthPC, world](smvk::CommandBuffer& cmd)
 		{
+			// GPU context + pass scope come from RenderGraph::Execute.
 			auto drawPrepassNode = [&](NodeId node, bool maskedPhase) {
 				auto meshForNode = world->scene.meshForNode.find(node);
 				if (meshForNode == world->scene.meshForNode.end()) return;
@@ -154,6 +158,11 @@ void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base) {
 	smvk::ResourceManager& ctx = *fc.ctx;
 	smvk::RenderGraph& rg = *fc.rg;
 
+	SMVK_PROFILE_CATEGORY("ForwardPlusCull", Optick::Category::Rendering);
+	SMVK_PROFILE_TAG("tileCountX", fp->tileCountX);
+	SMVK_PROFILE_TAG("tileCountY", fp->tileCountY);
+	SMVK_PROFILE_TAG("lightCount", fc.fpLightCount);
+
 	fp->Ensure(ctx, rg, { fc.extent.width, fc.extent.height }, desc, fc.depthViewHandle);
 	if (!fp->Valid())
 		return;
@@ -174,12 +183,13 @@ void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base) {
 		cullPC.tileSize = desc.tileSize;
 		cullPC.maxLightsPerTile = desc.maxLightsPerTile;
 		auto& cullPass = fp->AddCullPass(rg, fc.depthView, fc.fpLights, "ForwardPlusCull");
-		cullPass.SetRecordingFunc([this, cullPC](smvk::CommandBuffer& cmd) mutable
+		cullPass.SetRecordingFunc([this, cullPC, tileCountX = fp->tileCountX, tileCountY = fp->tileCountY](smvk::CommandBuffer& cmd) mutable
 		{
+			// GPU context + pass scope come from RenderGraph::Execute.
 			cmd.BindComputePipeline(fp->cullProgram);
 			cmd.PushConstants(0, sizeof(smvk::ForwardPlusCullPush), &cullPC,
 				smvk::ShaderStage::All);
-			cmd.Dispatch(fp->tileCountX, fp->tileCountY, 1);
+			cmd.Dispatch(tileCountX, tileCountY, 1);
 		});
 	}
 }

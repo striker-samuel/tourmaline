@@ -146,6 +146,11 @@ PSOut mainPS(PSIn IN)
     // Double-sided handling: flip if backface when no culling
     if (!IN.isFrontFace)
         N = -N;
+    // Geometric (unmapped) normal for shadow-bias facing classification.
+    // ODB must key off the face orientation, not the normal-mapped shading
+    // normal: map perturbation would flip the +/-k sign per-pixel and the
+    // bias would sprinkle acne/detachment noise over textured surfaces.
+    float3 geomN = N;
 
     if (normalIdx >= 0)
     {
@@ -251,9 +256,10 @@ PSOut mainPS(PSIn IN)
     if (light.shadow_map_index >= 0)
     {
         if (pc.numCascades > 0)
-            shadow = GetShadowFactorCascadedFromPC(1, IN.worldPos, light);
-        else
-            shadow = GetShadowFactor(1, IN.worldPos, light);
+            shadow = GetShadowFactorCascadedFromPC(1, IN.worldPos, geomN, light);
+        // PARKED: legacy single-map path kept in shadows.hlsli but disabled.
+        // else
+        //     shadow = GetShadowFactor(1, IN.worldPos, light);
     }
 
     // Cook-Torrance BRDF
@@ -379,9 +385,10 @@ PSOut mainPS(PSIn IN)
 
                 // Spot shadow: tile assigned by the per-frame selection;
                 // unshadowed lights (shadowTile < 0) contribute fully.
+                // Oriented NDC bias uses geometric normal + spot travel dir.
                 float spotShadow = 1.0f;
                 if (pl.type == 1 && pl.shadowTile >= 0)
-                    spotShadow = GetSpotShadowFactorFromPC(1, IN.worldPos, pl.shadowTile);
+                    spotShadow = GetSpotShadowFactorFromPC(1, IN.worldPos, geomN, pl.direction, pl.shadowTile);
                 if (spotShadow <= 0.0f)
                     continue;
 
@@ -403,13 +410,27 @@ PSOut mainPS(PSIn IN)
     // the legacy constant-ambient path (baseColor * mat.ambient).
     float3 irradiance = EvaluateIrradiance(N, frame.env);
     float iblOn = saturate(frame.env.fogEndAndFlags.w);
-    float3 ambientDiffuse = kD * baseColor * irradiance * occlusion;
-    float3 legacyAmbient = baseColor * mat.ambient.rgb * occlusion;
+    // SSAO: the SsaoCompose pass already upscaled the half-res AO to full
+    // res with full-res depth authority (ao.hlsli), so this shader only
+    // .Loads the composed R8 — never the depth image: Main ATTACHES depth,
+    // and sampling an attached image is a layout clash (UB, garbage reads).
+    // AO is a lighting term: it scales ambient/indirect only. This shader
+    // only shades pixels that passed the prepass depth test, so background
+    // (sky) can structurally never receive AO.
+    float ao = 1.0f;
+    if (frame.aoTextureIndex != 0xffffffffu && frame.aoIntensity > 0.0f)
+    {
+        Texture2D aoTex = textures[NonUniformResourceIndex(frame.aoTextureIndex)];
+        ao = aoTex.Load(int3(int2(IN.clipPos.xy), 0)).r;
+        ao = lerp(1.0f, saturate(ao), saturate(frame.aoIntensity));
+    }
+    float3 ambientDiffuse = kD * baseColor * irradiance * occlusion * ao;
+    float3 legacyAmbient = baseColor * mat.ambient.rgb * occlusion * ao;
     float3 ambient = lerp(legacyAmbient, ambientDiffuse, iblOn);
     // Specular IBL: reflection-vector env sample weighted by Fresnel.
     float3 R = reflect(-V, N);
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, roughness);
-    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, roughness, frame.env) * occlusion;
+    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, roughness, frame.env) * occlusion * ao;
 
     float3 color = direct + ambient + ambientSpec;
     color = color * occlusion; // re-apply for direct as well per spec (optional)

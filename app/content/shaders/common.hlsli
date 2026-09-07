@@ -4,7 +4,7 @@
 #include "renderview.hlsli"
 
 #define MAX_LIGHTS 64
-#define MAX_MATERIALS 1024
+#define MAX_MATERIALS 4096
 
 //#define kBinding_Textures 0
 //#define kBinding_Samplers 1
@@ -52,10 +52,15 @@ struct FrameUniforms
     float nearPlane;
     float farPlane;
     float exposure;
-    float padding;
+    // SSAO consumption (lighting-pass ambient): the FULL-res composed AO
+    // (upscaled by the SsaoCompose pass with depth authority, see
+    // ao.hlsli). Mirrors the C++ FrameUniforms in App/scene_renderer.h
+    // (offsets asserted there: 492/496, env shifts to 512).
+    uint aoTextureIndex; // full-res composed AO bindless, 0xffffffff = off
+    float aoIntensity;   // ambient composite strength
 
     // Configurable environment (skydome IBL + fog).
-    // Must match C++ smvk::EnvironmentFrameData (8 x float4).
+    // Must match C++ smvk::EnvironmentFrameData (8 x float4, 128 bytes).
     EnvironmentFrameData env;
 };
 

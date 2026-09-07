@@ -9,11 +9,21 @@
 // Pipeline (all at half res, i.e. full extent / 2):
 //   raw:  depth (.Load, no sampler: D32 has no linear filtering) ->
 //         view-space hemisphere test around a depth-derived normal,
-//         IGN-rotated Hammersley kernel, range-checked -> R8 AO
+//         IGN-rotated Hammersley kernel, range-checked -> R8 AO.
+//         Blocks with ANY background tap (sky/clear/OOB) stay unoccluded:
+//         averaging across a foreground/background discontinuity fabricates
+//         a center that smears occlusion toward the sky.
 //   blur: 5x5 depth-weighted (bilateral-ish) blur of the raw AO, depth
-//         still .Load'ed at full res so edges don't bleed
-// Composite happens in the tonemapper: hdr *= lerp(1, ao, intensity)
-// (pre-bloom, pre-tonemap), so no extra full-res target is needed.
+//         still .Load'ed at full res so edges don't bleed; background
+//         blocks skip the gather entirely.
+//   compose: FULL-res depth-guided upsample of the blurred AO (ao.hlsli
+//         AoUpsample) into a full-res R8 target. The upsample runs in its
+//         own pass because the depth image must only be a barriered
+//         sampled input here — passes that ATTACH depth (motion vectors,
+//         Main) can never also sample it (layout clash = UB).
+// Composite happens in the opaque lighting pass (consumer-side): the app's
+// default.frag .Loads the composed AO and scales the ambient/indirect
+// term; sky never runs that shader, so background can never receive AO.
 //
 // Depth conventions (must match app + forwardplus.cs.hlsl):
 //   - infinite reversed-Z projection, clear 0 (far), GreaterEqual.
@@ -21,9 +31,11 @@
 //   - NDC mapping with the engine viewport (y down in framebuffer):
 //       ndcX = (px / w) * 2 - 1, ndcY = (py / h) * 2 - 1.
 //
-// Placement: after Main (HDR + 1x prepass depth are filled), before
-// Bloom/Tonemap. The 1x prepass depth is valid in both 1x and MSAA modes
-// (same contract as the MotionVectors pass).
+// Placement: after every depth-writing pass (the Forward+ prepass fills
+// the 1x depth; gfx remainder / motion vectors may follow) and BEFORE the
+// opaque forward pass, so the lighting can sample the blurred AO. The 1x
+// prepass depth is valid in both 1x and MSAA modes (same contract as the
+// MotionVectors pass).
 //
 // Usage (app/src/main.cpp):
 //   smvk::Ssao ssao;
@@ -31,7 +43,7 @@
 //   if (enabled && ssao.Valid())
 //     ssao.AddSsaoPasses(rg, depthView, depthBindless, frameUniformsAddr,
 //                        linearSampler, desc);
-//   ... ssao.OutputView() / ssao.OutputBindless() -> tonemap AO input ...
+//   ... ssao.OutputView() / ssao.OutputBindless() -> opaque pass AO input ...
 
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
@@ -48,7 +60,7 @@ struct SsaoDesc {
 	Format format = Format::R8_UNorm; // single-channel AO, color-renderable
 	float radius = 0.5f;              // view-space sample radius (m)
 	float bias = 0.025f;              // self-occlusion bias (view units)
-	float intensity = 1.0f;           // tonemap-side strength (0 = off)
+	float intensity = 1.0f;           // consumer-side strength (0 = off)
 	float maxDistance = 25.0f;        // AO fade-out distance (m)
 	uint32_t sampleCount = 16;        // hemisphere taps, 1..32
 	float blurSharpness = 8.0f;       // depth edge weight (higher = tighter)
@@ -56,6 +68,7 @@ struct SsaoDesc {
 	const char* name = "ssao";
 	const char* rawName = "ssaoRaw";
 	const char* blurName = "ssaoBlur";
+	const char* composeName = "ssaoComposed";
 };
 
 // Must match ssao.frag.hlsl SsaoPush (48 bytes).
@@ -65,7 +78,7 @@ struct SsaoPush {
 	uint32_t sampleCount = 16;
 	float radius = 0.5f;
 	float bias = 0.025f;
-	float intensity = 1.0f; // reserved (composite lives in tonemap)
+	float intensity = 1.0f; // reserved (composite lives in the opaque ambient)
 	float maxDistance = 25.0f;
 	float invDepthW = 0.0f; // 1 / full-res depth width
 	float invDepthH = 0.0f; // 1 / full-res depth height
@@ -87,10 +100,28 @@ struct SsaoBlurPush {
 };
 static_assert(sizeof(SsaoBlurPush) == 32);
 
+// Must match ssao_compose.frag.hlsl SsaoComposePush (32 bytes).
+// Upsamples the half-res blurred AO to full res with full-res depth
+// authority (see ao.hlsli AoUpsample). Runs in its own pass so the depth
+// image is only ever a sampled input there — passes that ATTACH depth
+// (motion vectors, Main) must never also sample it bindlessly: the
+// attachment/sampled layout clash is UB and reads garbage.
+struct SsaoComposePush {
+	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (nearPlane)
+	uint32_t aoTextureIndex = UINT32_MAX; // half-res blurred AO
+	uint32_t depthTextureIndex = UINT32_MAX; // full-res depth (authority)
+	float sharpness = 8.0f; // upsample edge weight
+	float invDepthW = 0.0f; // 1 / full-res depth width
+	float invDepthH = 0.0f; // 1 / full-res depth height
+	uint32_t pad0 = 0;
+};
+static_assert(sizeof(SsaoComposePush) == 32);
+
 // Default SPVs (fullscreen-triangle VS shared with tonemap + SSAO PS).
 inline constexpr const char* kSsaoVsPath = "content/shaders/tonemap.vert.hlsl.spv";
 inline constexpr const char* kSsaoPsPath = "content/shaders/ssao.frag.hlsl.spv";
 inline constexpr const char* kSsaoBlurPsPath = "content/shaders/ssao_blur.frag.hlsl.spv";
+inline constexpr const char* kSsaoComposePsPath = "content/shaders/ssao_compose.frag.hlsl.spv";
 
 struct Ssao {
 	// Half-res target helper (raw + blurred AO share the layout).
@@ -105,27 +136,36 @@ struct Ssao {
 
 	Target raw; // half-res raw AO (DontCare -> Store)
 	Target blurred; // half-res depth-blurred AO (DontCare -> Store)
+	Target composed; // FULL-res depth-guided upsample of blurred (DontCare -> Store)
 	Extent2D fullExtent{ 0, 0 }; // depth/HDR extent the half-res derives from
 	Extent2D halfExtent{ 0, 0 }; // max(1, full / 2) per axis
 	Format format = Format::R8_UNorm;
 
-	// Default programs (fullscreen VS + raw/blur PS).
+	// Default programs (fullscreen VS + raw/blur/compose PS).
 	Holder<ShaderModuleHandle> vsModule;
 	Holder<ShaderModuleHandle> rawFragModule;
 	Holder<ShaderModuleHandle> blurFragModule;
+	Holder<ShaderModuleHandle> composeFragModule;
 	ShaderProgram rawProgram{};
 	ShaderProgram blurProgram{};
+	ShaderProgram composeProgram{};
 	SsaoDesc desc{};
 
-	[[nodiscard]] bool TargetsValid() const { return raw.Valid() && blurred.Valid(); }
+	[[nodiscard]] bool TargetsValid() const {
+		return raw.Valid() && blurred.Valid() && composed.Valid();
+	}
 	[[nodiscard]] bool ShadersValid() const {
 		return rawProgram.shaderCount != 0 && blurProgram.shaderCount != 0 &&
-			!vsModule.empty() && !rawFragModule.empty() && !blurFragModule.empty();
+			composeProgram.shaderCount != 0 &&
+			!vsModule.empty() && !rawFragModule.empty() && !blurFragModule.empty() &&
+			!composeFragModule.empty();
 	}
 	[[nodiscard]] bool Valid() const { return TargetsValid() && ShadersValid(); }
 
-	[[nodiscard]] LogicalImageViewHandle OutputView() const { return blurred.logical; }
-	[[nodiscard]] uint32_t OutputBindless() const { return blurred.bindlessIndex; }
+	// Consumer output: the FULL-res composed AO (safe to .Load from any
+	// pass that only samples it; never requires depth).
+	[[nodiscard]] LogicalImageViewHandle OutputView() const { return composed.logical; }
+	[[nodiscard]] uint32_t OutputBindless() const { return composed.bindlessIndex; }
 
 	static Extent2D HalfExtentFor(Extent2D full) {
 		return {
@@ -137,38 +177,47 @@ struct Ssao {
 	bool EnsureShaders(ResourceManager& ctx,
 		const char* vsPath = kSsaoVsPath,
 		const char* rawPath = kSsaoPsPath,
-		const char* blurPath = kSsaoBlurPsPath) {
+		const char* blurPath = kSsaoBlurPsPath,
+		const char* composePath = kSsaoComposePsPath) {
 		if (ShadersValid())
 			return true;
 		try {
 			const std::string vs = vsPath ? vsPath : kSsaoVsPath;
 			const std::string raw = rawPath ? rawPath : kSsaoPsPath;
 			const std::string blur = blurPath ? blurPath : kSsaoBlurPsPath;
+			const std::string compose = composePath ? composePath : kSsaoComposePsPath;
 			if (vsModule.empty())
 				vsModule = ctx.CreateShaderModule(readFile(vs), "ssaoVert");
 			if (rawFragModule.empty())
 				rawFragModule = ctx.CreateShaderModule(readFile(raw), "ssaoRawFrag");
 			if (blurFragModule.empty())
 				blurFragModule = ctx.CreateShaderModule(readFile(blur), "ssaoBlurFrag");
+			if (composeFragModule.empty())
+				composeFragModule = ctx.CreateShaderModule(readFile(compose), "ssaoComposeFrag");
 		} catch (...) {
 			return false;
 		}
-		if (vsModule.empty() || rawFragModule.empty() || blurFragModule.empty())
+		if (vsModule.empty() || rawFragModule.empty() || blurFragModule.empty() ||
+			composeFragModule.empty())
 			return false;
 		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
 		Shader rawPS{ .module = rawFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		Shader blurPS{ .module = blurFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+		Shader composePS{ .module = composeFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		rawProgram = { .shaders = { vs, rawPS }, .shaderCount = 2 };
 		blurProgram = { .shaders = { vs, blurPS }, .shaderCount = 2 };
+		composeProgram = { .shaders = { vs, composePS }, .shaderCount = 2 };
 		return true;
 	}
 
 	void DestroyShaders() {
 		rawProgram = ShaderProgram{};
 		blurProgram = ShaderProgram{};
+		composeProgram = ShaderProgram{};
 		vsModule = {};
 		rawFragModule = {};
 		blurFragModule = {};
+		composeFragModule = {};
 	}
 
 	static bool CreateTarget(ResourceManager& ctx, RenderGraph& rg,
@@ -228,30 +277,38 @@ struct Ssao {
 	bool Create(ResourceManager& ctx, RenderGraph& rg, Extent2D full, const SsaoDesc& d,
 		const char* vsPath = kSsaoVsPath,
 		const char* rawPath = kSsaoPsPath,
-		const char* blurPath = kSsaoBlurPsPath) {
+		const char* blurPath = kSsaoBlurPsPath,
+		const char* composePath = kSsaoComposePsPath) {
 		if (full.width == 0 || full.height == 0)
 			return false;
 		DestroyTargets(rg);
 		const Extent2D half = HalfExtentFor(full);
-		Target newRaw, newBlur;
+		Target newRaw, newBlur, newComposed;
 		if (!CreateTarget(ctx, rg, half, d.format, d.rawName, newRaw))
 			return false;
 		if (!CreateTarget(ctx, rg, half, d.format, d.blurName, newBlur)) {
 			DestroyTarget(rg, newRaw);
 			return false;
 		}
+		if (!CreateTarget(ctx, rg, full, d.format, d.composeName, newComposed)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			return false;
+		}
 		raw = std::move(newRaw);
 		blurred = std::move(newBlur);
+		composed = std::move(newComposed);
 		fullExtent = full;
 		halfExtent = half;
 		format = d.format;
 		desc = d;
-		return EnsureShaders(ctx, vsPath, rawPath, blurPath);
+		return EnsureShaders(ctx, vsPath, rawPath, blurPath, composePath);
 	}
 
 	void DestroyTargets(RenderGraph& rg) {
 		DestroyTarget(rg, raw);
 		DestroyTarget(rg, blurred);
+		DestroyTarget(rg, composed);
 		fullExtent = { 0, 0 };
 		halfExtent = { 0, 0 };
 	}
@@ -261,14 +318,15 @@ struct Ssao {
 	bool Ensure(ResourceManager& ctx, RenderGraph& rg, Extent2D full, const SsaoDesc& d,
 		const char* vsPath = kSsaoVsPath,
 		const char* rawPath = kSsaoPsPath,
-		const char* blurPath = kSsaoBlurPsPath) {
+		const char* blurPath = kSsaoBlurPsPath,
+		const char* composePath = kSsaoComposePsPath) {
 		if (TargetsValid() &&
 			fullExtent.width == full.width && fullExtent.height == full.height &&
 			format == d.format) {
 			desc = d;
-			return EnsureShaders(ctx, vsPath, rawPath, blurPath);
+			return EnsureShaders(ctx, vsPath, rawPath, blurPath, composePath);
 		}
-		return Create(ctx, rg, full, d, vsPath, rawPath, blurPath);
+		return Create(ctx, rg, full, d, vsPath, rawPath, blurPath, composePath);
 	}
 
 	void Destroy(RenderGraph& rg) {
@@ -286,7 +344,8 @@ struct Ssao {
 		uint32_t linearSamplerIndex,
 		const SsaoDesc& overrideDesc,
 		const char* rawName = "Ssao",
-		const char* blurName = "SsaoBlur") const {
+		const char* blurName = "SsaoBlur",
+		const char* composeName = "SsaoCompose") const {
 		assert(Valid());
 		assert(!depthView.empty() && depthBindlessIndex != UINT32_MAX);
 		assert(frameUniformsAddr != 0);
@@ -361,6 +420,44 @@ struct Ssao {
 				cmd.Draw(3, 1, 0, 0); // fullscreen triangle
 			});
 		}
+
+		// ---- Compose: blurred half-res AO + full-res depth -> FULL-res AO ----
+		// The depth-guided upsample (ao.hlsli AoUpsample) runs HERE, in a
+		// pass that never attaches depth, so every depth read is a properly
+		// barriered sampled input. Consumers (opaque ambient) then only
+		// .Load the composed R8 — passes that attach depth (motion vectors,
+		// Main) must never also sample it: the layout clash is UB.
+		{
+			SsaoComposePush push{};
+			push.frameUniforms = frameUniformsAddr;
+			push.aoTextureIndex = blurred.bindlessIndex;
+			push.depthTextureIndex = depthBindlessIndex;
+			push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
+			push.invDepthW = 1.0f / static_cast<float>(std::max(1u, fullExtent.width));
+			push.invDepthH = 1.0f / static_cast<float>(std::max(1u, fullExtent.height));
+			push.pad0 = 0;
+
+			RenderPass& pass = rg.AddPass(composeName ? composeName : "SsaoCompose");
+			pass.SetOffset(0, 0)
+				.SetExtent(fullExtent)
+				.SetInputImages({ blurred.logical, depthView })
+				.SetColor({ composed.logical },
+					AttachmentLoadOp::DontCare,
+					AttachmentStoreOp::Store);
+			ShaderProgram progCopy = composeProgram; // copyable (handles only)
+			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
+				cmd.BindRenderPipeline(
+					progCopy,
+					VertexFormat::Empty,
+					DepthSettings::Disabled(),
+					StencilSettings::DefaultDisabled(),
+					BlendSettings::Opaque(),
+					MSAASettings::Count1(),
+					RasterSettings{ .cullMode = CullMode::None });
+				cmd.PushConstants(0, sizeof(SsaoComposePush), &push, ShaderStage::All);
+				cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+			});
+		}
 	}
 
 	// Uses the stored desc from Ensure().
@@ -370,9 +467,10 @@ struct Ssao {
 		uint64_t frameUniformsAddr,
 		uint32_t linearSamplerIndex,
 		const char* rawName = "Ssao",
-		const char* blurName = "SsaoBlur") const {
+		const char* blurName = "SsaoBlur",
+		const char* composeName = "SsaoCompose") const {
 		AddSsaoPasses(rg, depthView, depthBindlessIndex, frameUniformsAddr,
-			linearSamplerIndex, desc, rawName, blurName);
+			linearSamplerIndex, desc, rawName, blurName, composeName);
 	}
 };
 

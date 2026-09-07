@@ -49,6 +49,10 @@ struct GltfToSceneImporter
 	// getOrCreateMesh builds meshlets from the optimized upload and stamps
 	// them on the Cluster keyed by mesh URI.
 	void setMeshletConfig(const smvk::MeshletConfig& config);
+	void setCoordFix(int mode) { coordFix_ = mode; }
+	void setPreTransform(const glm::mat4& m) { preTransform_ = m; }
+	// Multiplies the scene root's local transform by preTransform_ (left).
+	void applyPreTransform(Scene& scene, int rootNode);
 private:
 	smvk::ClusterMaterialHandle
 		getOrCreateMaterial(int gltfMaterialIndex);
@@ -70,6 +74,8 @@ private:
 	std::string modelUriBase; // normalized VFS file part for asset URIs
 	smvk::MeshOptConfig meshOptConfig{}; // disabled by default (runtime parity)
 	smvk::MeshletConfig meshletConfig{}; // disabled by default (opt-in cook)
+	int coordFix_ = 0; // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale
+	glm::mat4 preTransform_{ 1.0f };
 	std::vector<smvk::ClusterMaterialHandle> materialCache;
 	std::vector<std::vector<smvk::ClusterStaticMeshHandle>> meshCache;
 	std::unordered_map<int, smvk::TextureHandle> textureCache; // imageIndex -> handle
@@ -120,7 +126,9 @@ void GltfToClusterFromVfs(
 	const std::string& modelVfsPath,
 	smvk::Cluster& out,
 	const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
-	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{});
+	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
+	int coordFix = 0,
+	const glm::mat4& preTransform = glm::mat4(1.0f));
 
 inline void GltfToCluster(
 	smvk::ResourceManager&,
@@ -128,7 +136,9 @@ inline void GltfToCluster(
 	std::filesystem::path inGltfModelPath,
 	smvk::Cluster& out,
 	const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
-	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{}
+	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
+	int coordFix = 0, // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale
+	const glm::mat4& preTransform = glm::mat4(1.0f)
 ) {
 	GltfToSceneImporter importer{
 		out,
@@ -137,6 +147,8 @@ inline void GltfToCluster(
 	};
 	importer.setMeshOptConfig(meshOpt);
 	importer.setMeshletConfig(meshlets);
+	importer.setCoordFix(coordFix);
+	importer.setPreTransform(preTransform);
 
 	assert(out.scene.hierarchy.empty());
 
@@ -171,6 +183,8 @@ inline void GltfToCluster(
 	for (int gltfNode : gltfRoots)
 		importer.import(gltfNode);
 		//importer.importNodeRecursive(gltfNode, root, 1);
+
+	importer.applyPreTransform(out.scene, root);
 
 	RebuildStaticCache(out.scene);
 	markAsChanged(out.scene, root);

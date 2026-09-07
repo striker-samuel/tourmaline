@@ -1,5 +1,6 @@
 #define SSAO_PASS
 #include "common.hlsli"
+#include "ao.hlsli"
 
 struct PSIn
 {
@@ -51,12 +52,6 @@ float SsaoRadicalInverse(uint i)
     return float(bits) * 2.3283064365386963e-10;
 }
 
-float SsaoLinearDist(float ndcDepth, float nearPlane)
-{
-    // Infinite reversed-Z: view distance (-z) = near / d.
-    return nearPlane / max(ndcDepth, 1e-6f);
-}
-
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
@@ -72,21 +67,23 @@ PSOut mainPS(PSIn IN)
     float d10 = depthTex.Load(int3(fullBase + int2(1, 0), 0)).r;
     float d01 = depthTex.Load(int3(fullBase + int2(0, 1), 0)).r;
     float d11 = depthTex.Load(int3(fullBase + int2(1, 1), 0)).r;
-    // Out-of-bounds Loads return 0: fall back to valid taps only.
-    float dSum = 0.0f;
-    float dCount = 0.0f;
-    if (d00 > 1e-6f) { dSum += d00; dCount += 1.0f; }
-    if (d10 > 1e-6f) { dSum += d10; dCount += 1.0f; }
-    if (d01 > 1e-6f) { dSum += d01; dCount += 1.0f; }
-    if (d11 > 1e-6f) { dSum += d11; dCount += 1.0f; }
-    if (dCount < 0.5f)
+    // Strict block classification: a block is a valid AO receiver only
+    // when ALL four taps are geometry. Any background tap (sky, clear, or
+    // an out-of-bounds Load returning 0 at odd-extent borders) marks the
+    // whole block unoccluded — averaging "valid taps only" across a
+    // foreground/background discontinuity fabricates a center that smears
+    // occlusion toward the sky (streaks). The geometry side keeps its AO
+    // through the pure-geo neighbor blocks + the consumer's depth-guided
+    // upsample (see ao.hlsli).
+    if (AoIsBackground(d00) || AoIsBackground(d10) ||
+        AoIsBackground(d01) || AoIsBackground(d11))
     {
-        OUT.outColor = float4(1.0f, 1.0f, 1.0f, 1.0f); // sky / clear: unoccluded
+        OUT.outColor = float4(1.0f, 1.0f, 1.0f, 1.0f);
         return OUT;
     }
-    float dCenter = dSum / dCount;
+    float dCenter = (d00 + d10 + d01 + d11) * 0.25f;
 
-    float centerDist = SsaoLinearDist(dCenter, nearPlane);
+    float centerDist = AoViewDist(dCenter, nearPlane);
     if (centerDist > sp.maxDistance)
     {
         OUT.outColor = float4(1.0f, 1.0f, 1.0f, 1.0f);
@@ -101,10 +98,18 @@ PSOut mainPS(PSIn IN)
     float centerZ = -center.z; // positive view distance
 
     // Depth-derived normal from full-res neighbors (one half-res step over).
+    // A background neighbor means this block sits on a silhouette: the old
+    // dCenter substitution fabricated a planar normal across the edge and
+    // the rotated kernel smeared occlusion into the sky (streaks). Stay
+    // unoccluded instead — the consumer's depth-guided upsample keeps the
+    // pure-geo interior fully shaded.
     float dPx = depthTex.Load(int3(fullBase + int2(2, 0), 0)).r;
     float dPy = depthTex.Load(int3(fullBase + int2(0, 2), 0)).r;
-    if (dPx <= 1e-6f) dPx = dCenter;
-    if (dPy <= 1e-6f) dPy = dCenter;
+    if (AoIsBackground(dPx) || AoIsBackground(dPy))
+    {
+        OUT.outColor = float4(1.0f, 1.0f, 1.0f, 1.0f);
+        return OUT;
+    }
     float2 ndcPx = ndcXY + float2(2.0f * sp.invDepthW * 2.0f, 0.0f);
     float2 ndcPy = ndcXY + float2(0.0f, 2.0f * sp.invDepthH * 2.0f);
     float3 posX = SsaoUnprojectView(ndcPx, dPx, frame.invProj);
@@ -145,9 +150,9 @@ PSOut mainPS(PSIn IN)
             continue;
         int2 sampPx = int2(sampUv * float2(1.0f / sp.invDepthW, 1.0f / sp.invDepthH));
         float sampD = depthTex.Load(int3(sampPx, 0)).r;
-        if (sampD <= 1e-6f)
+        if (AoIsBackground(sampD))
             continue; // sky behind the kernel: no occluder
-        float sampDist = SsaoLinearDist(sampD, nearPlane);
+        float sampDist = AoViewDist(sampD, nearPlane);
         float sampZ = -samp.z;
 
         // Occluder in front of the kernel point, within the radius shell.

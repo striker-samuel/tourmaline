@@ -103,6 +103,10 @@ PSOut mainPS(PSIn IN)
 
     // SSAO composite (half-res AO, bilinearly upscaled by the sampler).
     // Pre-bloom, pre-tonemap; disabled when index is 0xffffffff.
+    // NOTE: this app consumes SSAO in the opaque lighting pass instead
+    // (default.frag.hlsl + ao.hlsli, depth-guided upsample); this path is
+    // dormant here. The plain bilinear tap below has no depth authority —
+    // it would leak AO across geometry/sky silhouettes if ever reused.
     if (tp.aoTextureIndex != 0xffffffff && tp.aoTextureIndex < 100000 && tp.aoIntensity > 0.0f)
     {
         float ao = textures[NonUniformResourceIndex(tp.aoTextureIndex)].Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).r;

@@ -50,7 +50,7 @@ public:
 	void setSpeed(const glm::vec3& speed);
 	void resetMousePosition(const glm::vec2& p);
 	void setUpVector(const glm::vec3& up);
-	inline void lookAt(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up);
+	void lookAt(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up);
 	glm::vec3 getForward() const;
 	void reset();
 
@@ -72,7 +72,7 @@ public:
 	float rotationSpeed_ = 50.0f;
 
 	float damping_ = 0.5f; // seconds, time constant for velocity decay when no input
-	float acceleration_ = 2.4f; // meters/sec², how fast speed builds while moving
+	float acceleration_ = 2.4f; // meters/secï¿½, how fast speed builds while moving
 
 	float maxSpeed_ = 2.0f; //m/s
 	float fastCoef_ = 4.0f; // raw multiplier
