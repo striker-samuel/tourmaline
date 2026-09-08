@@ -9,11 +9,14 @@
 #      - Blender leaves metallicFactor absent (spec default 1.0 = fully
 #        metallic). Lumberyard v5.2 is dielectric except metals; the FBX
 #        specular packing did not survive, so force metallicFactor = 0.0.
-#      - Blender marks everything BLEND + doubleSided. The engine has no
-#        transparent path for this scene; force OPAQUE, except foliage-like
-#        materials which become MASK (cutout) + keep doubleSided.
+#      - Blender marks everything BLEND + doubleSided. Force OPAQUE, except
+#        foliage-like materials which become MASK (cutout) + keep
+#        doubleSided, and glass materials (KHR_materials_transmission or
+#        frosted/frozen/decal in the name) which become BLEND transparent
+#        + doubleSided with alpha derived from (1 - transmissionFactor).
 #      - Drop KHR_materials_specular (engine ignores it; saves ~130 tiny
-#        placeholder textures from the cook).
+#        placeholder textures from the cook). Transmission is kept as the
+#        glass marker.
 #   3. Convert each referenced .png to .ktx2 with toktx (uastc + zstd,
 #      usage-classified srgb/linear/normal, same flags as ktx_bulk_convert).
 #   4. Stage app/content/models/Bistro/<gltf,bin,ktx2> with rewritten image
@@ -39,30 +42,109 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TOKTX = Path(r"C:\Program Files\KTX-Software\bin\toktx.exe")
 
-# Materials whose name contains one of these become alpha-cutout (MASK);
-# everything else is forced OPAQUE (Blender exports all as BLEND).
+# Materials whose name contains one of these become alpha-cutout (MASK).
+# "forge" covers the wrought-iron window frames/grilles next to the glass.
 MASK_KEYWORDS = (
     "foliage", "leaves", "leaf", "ivy", "flowers", "flower", "hedges",
-    "hedge", "tree", "linde", "plant", "bux",
+    "hedge", "tree", "linde", "plant", "bux", "forge",
+)
+
+# Glass materials become alpha-blended transparent (BLEND). The engine
+# has no transmission path, so transmissive glass (windows) is
+# approximated with alpha blend: double-sided, depth-test/no-write and
+# back-to-front sorted via the Transparent draw set (no shadow or
+# depth-prepass caster, bypasses the opaque/masked gfx-filter buckets).
+# Name fallback covers non-transmissive window glass (frosted/frozen) and
+# decals. Deliberately NOT a broad "glass" match: that would also catch
+# cutout frames (forge_windows_01, glass_ornament) and opaque contents
+# (foam, liquid, wine), which must keep their MASK/OPAQUE modes.
+BLEND_KEYWORDS = (
+    "frosted", "frozen", "decal",
 )
 
 
+def _transmission_factor(mat):
+    exts = mat.get("extensions", {})
+    tm = exts.get("KHR_materials_transmission", {})
+    if isinstance(tm, dict):
+        try:
+            return float(tm.get("transmissionFactor", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
+def _set_glass_alpha(mat, pbr, exts, alpha):
+    """Stamp a < 1 alpha without breaking the spec-gloss color fallback.
+
+    The engine prefers the core baseColorFactor when present and falls
+    back to the KHR_materials_pbrSpecularGlossiness diffuseFactor/
+    diffuseTexture otherwise (see engine/src/Utils/gltf.cpp). Writing a
+    core factor onto a spec-gloss-only material would shadow its texture
+    (and a bare metallicFactor stamp would defeat the glossiness ->
+    roughness mapping, which keys off untouched core defaults), so: core
+    factor when one already exists, spec-gloss diffuseFactor when that
+    carries the color, and a fresh dielectric core block only when the
+    material has no color anywhere (e.g. transmission-only glass).
+    Existing alphas < 1 are always kept.
+    """
+    bcf = pbr.get("baseColorFactor") if isinstance(pbr, dict) else None
+    if isinstance(bcf, list) and len(bcf) >= 4:
+        if bcf[3] >= 0.999:
+            bcf[3] = alpha
+        return
+    sg = exts.get("KHR_materials_pbrSpecularGlossiness")
+    if isinstance(sg, dict):
+        df = sg.get("diffuseFactor")
+        if isinstance(df, list) and len(df) >= 4:
+            if df[3] >= 0.999:
+                df[3] = alpha
+            return
+    if pbr is None:
+        pbr = {}
+        mat["pbrMetallicRoughness"] = pbr
+    if "baseColorFactor" not in pbr:
+        pbr["baseColorFactor"] = [1.0, 1.0, 1.0, alpha]
+        pbr["metallicFactor"] = 0.0
+
+
 def fix_materials(gltf):
-    """Engine-targeted material fixups. Returns (n_metal_fixed, n_mask, n_opaque)."""
-    n_metal = n_mask = n_opaque = 0
+    """Engine-targeted material fixups. Returns (n_metal_fixed, n_mask, n_blend, n_opaque)."""
+    n_metal = n_mask = n_blend = n_opaque = 0
     for mat in gltf.get("materials", []):
-        pbr = mat.setdefault("pbrMetallicRoughness", {})
         # Absent metallicFactor defaults to 1.0 (fully metallic) per spec;
-        # force dielectric. Keep Blender's converted roughnessFactor (~0.55).
-        if pbr.get("metallicFactor", 1.0) != 0.0:
+        # force dielectric on materials that already carry a core block.
+        # NOTE: never create the block just to stamp this: a fresh stub
+        # would defeat the engine's spec-gloss fallback (glossiness ->
+        # roughness keys off untouched core defaults). Pbr-less glass gets
+        # its dielectric core from _set_glass_alpha instead.
+        pbr = mat.get("pbrMetallicRoughness")
+        if isinstance(pbr, dict) and pbr.get("metallicFactor", 1.0) != 0.0:
             pbr["metallicFactor"] = 0.0
             n_metal += 1
         # Drop specular extension (engine ignores it; placeholders only).
+        # Transmission is kept: it marks glass for the BLEND mapping below
+        # (and the engine importer reads it too for direct-gltf loads).
         exts = mat.get("extensions", {})
         if "KHR_materials_specular" in exts:
             del exts["KHR_materials_specular"]
         name = mat.get("name", "").lower()
-        if any(k in name for k in MASK_KEYWORDS):
+        transmission = _transmission_factor(mat)
+        if transmission > 0.001 or any(k in name for k in BLEND_KEYWORDS):
+            # Transparent glass: alpha derives from (1 - transmission) so
+            # clear panes (~0.9) read ~0.1 and dirty panes (~0.66) ~0.34.
+            # Decals keep their factors (texture alpha drives); only
+            # non-transmissive window glass (frosted/frozen) falls back
+            # to 0.25.
+            mat["alphaMode"] = "BLEND"
+            mat["doubleSided"] = True
+            if transmission > 0.001:
+                _set_glass_alpha(mat, pbr, exts,
+                                 min(max(1.0 - transmission, 0.05), 1.0))
+            elif any(k in name for k in ("frosted", "frozen")):
+                _set_glass_alpha(mat, pbr, exts, 0.25)
+            n_blend += 1
+        elif any(k in name for k in MASK_KEYWORDS):
             mat["alphaMode"] = "MASK"
             mat["alphaCutoff"] = 0.5
             mat["doubleSided"] = True
@@ -76,7 +158,7 @@ def fix_materials(gltf):
         used.update(mat.get("extensions", {}).keys())
     ext_used = gltf.get("extensionsUsed", [])
     gltf["extensionsUsed"] = [e for e in ext_used if e in used]
-    return n_metal, n_mask, n_opaque
+    return n_metal, n_mask, n_blend, n_opaque
 
 
 def classify_images(gltf):
@@ -175,8 +257,8 @@ def main():
     with open(src_gltf_path, "r", encoding="utf-8") as f:
         gltf = json.load(f)
 
-    n_metal, n_mask, n_opaque = fix_materials(gltf)
-    print(f"[bistro-v5] materials: metallic->0: {n_metal}, mask: {n_mask}, opaque: {n_opaque}")
+    n_metal, n_mask, n_blend, n_opaque = fix_materials(gltf)
+    print(f"[bistro-v5] materials: metallic->0: {n_metal}, mask: {n_mask}, blend: {n_blend}, opaque: {n_opaque}")
 
     images = gltf.get("images", [])
     kinds = classify_images(gltf)

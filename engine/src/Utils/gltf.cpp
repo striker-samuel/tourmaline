@@ -639,6 +639,25 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
 		}
 	}
 
+	// KHR_materials_transmission -> BLEND transparent. The engine has
+	// no transmission path, so transmissive glass (e.g. Bistro windows)
+	// is approximated with alpha blend. Alpha derives from
+	// (1 - transmissionFactor) unless the material already carries an
+	// alpha < 1. Double-sided so panes are visible from both sides
+	// (pipeline cull None via doubleSided).
+	// Downstream this yields AlphaMode::Blend -> IteratorFlagBit_Transparent
+	// (back-to-front sorted transparent pass, no shadow/depth-prepass
+	// caster, bypasses the opaque/masked gfx-filter draw sets) with
+	// AlphaBlend + depth-test/no-write from MakePipelineStateForMaterial.
+	double transmissionFactor = 0.0;
+	if (auto it = m.extensions.find("KHR_materials_transmission");
+		it != m.extensions.end() && it->second.IsObject()) {
+		const auto& obj = it->second.Get<tinygltf::Value::Object>();
+		if (auto f = obj.find("transmissionFactor");
+			f != obj.end() && f->second.IsNumber())
+			transmissionFactor = f->second.GetNumberAsDouble();
+	}
+
 	// -------------------------------------------------------------------------
 	// Rasterization
 	// -------------------------------------------------------------------------
@@ -651,6 +670,18 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
 
 	mat.doubleSided =
 		m.doubleSided;
+
+	// Transmissive override last so it wins over the raw copy above.
+	// Metallic is forced dielectric: transmissive panes are glass, and
+	// an absent core factor defaults to 1.0 (fully metallic) per spec.
+	if (transmissionFactor > 0.001) {
+		mat.alphaMode = GltfAlphaMode::Blend;
+		mat.metallicFactor = 0.0;
+		if (mat.baseColorFactor[3] >= 0.999)
+			mat.baseColorFactor[3] =
+				std::clamp(1.0 - transmissionFactor, 0.05, 1.0);
+		mat.doubleSided = true;
+	}
 
 	return mat;
 }
