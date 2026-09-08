@@ -18,6 +18,7 @@
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/environment.h>
+#include <Engine/Rendergraph/exposure.h>
 #include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/spotshadow.h>
 #include <Engine/Rendergraph/hdr.h>
@@ -99,6 +100,24 @@ static smvk::TonemapDesc MakeTonemapDesc() {
 	d.exposure = TONEMAP_EXPOSURE;
 	d.tonemapMode = TONEMAP_MODE;
 	d.name = "Tonemap";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
+// Auto-exposure config (histogram meter + CPU eye adaptation, see
+// Engine/Rendergraph/exposure.h). The HDR buffer is pre-exposure, so the
+// metered percentile luminance is exposure-independent; the smoothed
+// exposure converges near TONEMAP_EXPOSURE for the default sunlit view.
+// -----------------------------------------------------------------------------
+static smvk::ExposureDesc MakeExposureDesc() {
+	smvk::ExposureDesc d{};
+	d.bins = smvk::kExposureBinCount;
+	d.minLogLum = -10.0f; // ~0.001 pre-exposure (deep shadow)
+	d.maxLogLum = 12.0f;  // ~4096 pre-exposure (sun disc / fireflies)
+	d.sampleStep = 4;     // every 4th pixel per axis (~6% of texels)
+	d.keyValue = 0.18f;   // middle-grey target
+	d.percentile = 0.6f;  // robust to sky/sun outliers
+	d.name = "exposure";
 	return d;
 }
 
@@ -199,7 +218,11 @@ static smvk::CascadedShadowMapDesc MakeShadowDesc() {
 // -----------------------------------------------------------------------------
 static constexpr uint32_t FP_TILE_SIZE = 16;
 static constexpr uint32_t FP_MAX_LIGHTS = 1024;
-static constexpr uint32_t FP_MAX_PER_TILE = 128;
+// Hard per-tile list cap. Overflow lights pop (accepted): the shading pass
+// walks only the first FP_MAX_PER_TILE list entries per tile. Spots are
+// written to the light buffer before the point grid so the few expensive
+// cone lights never lose their slots to the crowd.
+static constexpr uint32_t FP_MAX_PER_TILE = 8;
 
 static smvk::ForwardPlusDesc MakeForwardPlusDesc() {
 	smvk::ForwardPlusDesc d{};
@@ -319,61 +342,6 @@ void SceneRenderer::Configure(SceneDesc scene, ScenePassConfig passes) {
 	// stable pointer to m_cameraPositioner, so lookAt is assignment-safe).
 	m_cameraPositioner.lookAt(scene.camPos, scene.camTarget,
 		glm::vec3(0.0f, 1.0f, 0.0f));
-}
-
-// Unit UV sphere (radius 1, rings x segments quads) for the emissive
-// light-ball objects. Vertex colors are white (the ball material is unlit
-// with a black base color, so only the emissive factor shows). Winding is
-// CCW viewed from outside (glTF convention); the ball material is also
-// double-sided so rasterization is winding-agnostic.
-static smvk::StaticMeshUpload MakeUvSphereUpload(int rings, int segments)
-{
-	smvk::StaticMeshUpload out{};
-	out.vertices.reserve((size_t)(rings + 1) * (segments + 1));
-	out.indices.reserve((size_t)rings * segments * 6);
-
-	for (int iy = 0; iy <= rings; ++iy) {
-		const float v = float(iy) / float(rings);
-		const float theta = v * glm::pi<float>();
-		const float ct = std::cos(theta);
-		const float st = std::sin(theta);
-		for (int ix = 0; ix <= segments; ++ix) {
-			const float u = float(ix) / float(segments);
-			const float phi = u * 2.0f * glm::pi<float>();
-			const float cp = std::cos(phi);
-			const float sp = std::sin(phi);
-			smvk::StaticVertex vtx{};
-			vtx.pos = { st * cp, ct, st * sp };
-			vtx.normal = vtx.pos;
-			vtx.color = { 1.0f, 1.0f, 1.0f };
-			vtx.texCoord = { u, 1.0f - v };
-			vtx.tangent = { -sp, 0.0f, cp, 1.0f };
-			out.vertices.push_back(vtx);
-		}
-	}
-
-	const auto idx = [segments](int iy, int ix) {
-		return (uint32_t)(iy * (segments + 1) + ix);
-	};
-	for (int iy = 0; iy < rings; ++iy) {
-		for (int ix = 0; ix < segments; ++ix) {
-			const uint32_t a = idx(iy, ix);
-			const uint32_t b = idx(iy, ix + 1);
-			const uint32_t c = idx(iy + 1, ix);
-			const uint32_t d = idx(iy + 1, ix + 1);
-			out.indices.push_back(a); out.indices.push_back(b); out.indices.push_back(c);
-			out.indices.push_back(b); out.indices.push_back(d); out.indices.push_back(c);
-		}
-	}
-
-	smvk::Surface surface{};
-	surface.firstIndex = 0;
-	surface.indexCount = (uint32_t)out.indices.size();
-	surface.baseVertex = 0;
-	out.surfaces.push_back(surface);
-	out.aabbMin = { -1.0f, -1.0f, -1.0f };
-	out.aabbMax = { 1.0f, 1.0f, 1.0f };
-	return out;
 }
 
 // FrameUniforms / AppResources / ViewportResources live in
@@ -586,15 +554,7 @@ bool SceneRenderer::Initialize() {
 			GltfToCluster(*m_context, model, sceneGltf, cluster, smvk::MeshOptConfig{}, smvk::MeshletConfig{}, m_scene.coordFix, m_scene.preTransform);
 		}
 
-		// Emissive point-light balls: a procedural cluster with one scene
-		// node per demo point light. Must be registered before the world
-		// merge so the nodes land in the runtime scene graph.
-		CreatePointLightBalls();
-
 		m_world->ResolveAndFixup_clusters();
-		// Post-merge: resolve world-level ball mesh/material indices,
-		// collect ball nodes, strip their shadow-caster flag.
-		FixupPointLightBallNodes();
 		std::cerr << "[Scene] world resolved: nodes="
 			<< m_world->scene.hierarchy.size() << std::endl;
 
@@ -659,6 +619,12 @@ bool SceneRenderer::Initialize() {
 		if (!m_viewportResources.tonemap.Ensure(*m_context, MakeTonemapDesc())) {
 			std::cerr << "[SceneRenderer] Failed to create tonemap program\n";
 			return false;
+		}
+		// Histogram meter for auto-exposure (extent-independent buffer +
+		// compute program). Non-fatal: without it the frame falls back to
+		// manual exposure.
+		if (!m_viewportResources.exposure.Ensure(*m_context, *m_rendergraph, MakeExposureDesc())) {
+			std::cerr << "[SceneRenderer] Exposure meter unavailable – manual exposure only\n";
 		}
 		// Skydome program (fullscreen-triangle sky.vert/sky.frag). Failure is
 		// non-fatal: the Main pass simply skips the sky draw and keeps the
@@ -734,6 +700,8 @@ void SceneRenderer::Shutdown() {
 		// otherwise the regions leak and VMA asserts at heap teardown.
 		m_gfxRenderer.Destroy(*m_rendergraph);
 		m_viewportResources.forwardPlus.Destroy(*m_rendergraph);
+		m_viewportResources.exposure.Destroy(*m_rendergraph);
+		m_viewportResources.exposure.DestroyShaders();
 		m_viewportResources.bloom.Destroy(*m_rendergraph);
 		m_viewportResources.spotShadows.Destroy(*m_rendergraph);
 		m_viewportResources.directionalShadows.Destroy(*m_rendergraph);
@@ -786,8 +754,9 @@ void SceneRenderer::Shutdown() {
 		// Sun is 5000 lux (see UpdateLights); 0.001 puts a sun-facing
 		// mid-gray (albedo 0.18, N·L=1) at HDR ≈ 0.29 pre-ACES → no clipping.
 		// NOTE: FrameUniforms.exposure is currently unread by shaders; the
-		// tonemap push constant (TONEMAP_EXPOSURE) is the live knob.
-		data.exposure = TONEMAP_EXPOSURE;
+		// tonemap push constant is the live knob. Kept in sync with the
+		// effective exposure (auto-adapted or manual) for future readers.
+		data.exposure = EffectiveExposure();
 		// SSAO consumption (lighting-pass ambient; see ao.hlsli +
 		// default.frag.hlsl): the SsaoCompose pass already upscaled the AO
 		// to full res with depth authority, so the fragment only .Loads it.
@@ -888,15 +857,6 @@ void SceneRenderer::Shutdown() {
 	}
 
 	void SceneRenderer::UpdateMaterials(uint32_t currentFrame) {
-		// Keep the shared emissive-ball materials in sync with the demo knob
-		// (bloom feeds off this; uploaded below with all other materials).
-		if (m_lightCluster) {
-			if (smvk::Material* mat = m_world->GetMaterial(m_ballMatWarmIdx))
-				mat->values.params2.z = m_fpDemo.ballEmissive;
-			if (smvk::Material* mat = m_world->GetMaterial(m_ballMatCoolIdx))
-				mat->values.params2.z = m_fpDemo.ballEmissive;
-		}
-
 		// Preserve world material slots: shaders index by world materialId,
 		// so a missing slot must stay a hole (default values), not shift
 		// every later material down by one.
@@ -932,281 +892,143 @@ void SceneRenderer::Shutdown() {
 		}
 	}
 
+	// Histogram readback kill switch. OFF: the per-frame download path in
+	// the engine (DownloadDataFromBuffer) allocates a staging buffer per
+	// call and defers its destroy through destroy -> DeferDestroy ->
+	// AddDeferredTask, which re-enters the deferred-task queue from inside
+	// ProcessDeferrredTasks' locked drain loop (re-locking the non-recursive
+	// m_deferredMutex — UB, intermittent crashes/freezes). Re-enable only
+	// after the engine readback is reworked (persistent staging buffer, no
+	// per-call deferred destroys).
+	static constexpr bool kHistogramReadbackEnabled = false;
+
+	// Post-Execute eye adaptation (see exposure.h): downloads the 256-byte
+	// histogram (observes the previous frame — submitted before present, so
+	// minimal stall), refreshes the debug copy, and damps m_exposureAdapted
+	// toward the percentile target. Holds the current exposure when the
+	// meter is missing or the histogram is empty (first frames).
+	void SceneRenderer::UpdateAutoExposure() {
+		if (!kHistogramReadbackEnabled)
+			return; // readback disabled (see above): hold the seed/manual exposure
+		if (!m_autoExposureEnabled || !m_passes.exposure)
+			return;
+		auto& meter = m_viewportResources.exposure;
+		if (!meter.Valid())
+			return;
+		std::array<uint32_t, smvk::kExposureBinCount> bins{};
+		if (!m_context->DownloadDataFromBuffer(meter.histogramBuffer,
+				bins.data(), sizeof(uint32_t) * bins.size()))
+			return;
+		uint32_t total = 0;
+		for (size_t i = 0; i < bins.size(); ++i) {
+			meter.lastBins[i] = bins[i];
+			total += bins[i];
+			m_exposureBinsUi[i] = static_cast<float>(bins[i]);
+		}
+		meter.lastTotal = total;
+		m_exposureSamples = total;
+		if (total == 0)
+			return;
+		if (const float lum = meter.PercentileLuminance(); lum > 0.0f) {
+			float target = meter.desc.keyValue * exp2f(m_exposureEvBias) / lum;
+			target = std::clamp(target, m_exposureMin, m_exposureMax);
+			m_exposureTarget = target;
+		}
+		m_exposureAdapted = meter.Adapt(m_exposureAdapted, m_exposureEvBias,
+			m_exposureSpeedToDark, m_exposureSpeedToBright,
+			m_exposureMin, m_exposureMax, delta_time_s);
+	}
+
 	// ---------------------------------------------------------------------
-	// Emissive point-light ball objects (lights as real scene nodes).
+	// Procedural Forward+ demo lights.
 	//
-	// CreatePointLightBalls() builds a procedural Cluster (shared UV-sphere
-	// mesh + two unlit emissive materials) with one scene node per demo
-	// point light; the world merge folds it into the scene graph.
-	// FixupPointLightBallNodes() then resolves world-level mesh/material
-	// indices, collects the ball nodes and strips their shadow-caster flag
-	// (emissive balls never cast shadows). Per frame,
-	// UpdatePointLightBalls() drives the nodes: local transforms (bob
-	// animation, radius), warm/cool material assignment and iterator flags;
-	// the Forward+ light buffer is built from the resolved global
-	// transforms in UpdateForwardPlusLights.
+	// The demo light set is pure data (no scene nodes, no emissive ball
+	// meshes): UpdateForwardPlusLights() computes the point grid (with the
+	// bob animation) and the orbiting spots on the CPU and uploads the
+	// Forward+ light buffer directly. The ImGui overlay draws the lights
+	// as colored points + indices (see the UI block in RenderFrame).
 	// ---------------------------------------------------------------------
-	void SceneRenderer::CreatePointLightBalls() {
-		smvk::Cluster& cluster = m_world->LoadCluster(*m_context);
-		m_lightCluster = &cluster;
-		// Retain the CPU upload so the per-view filter can cook meshlet
-		// clusters at register time (see RegisterWorldMeshes).
-		cluster.SetRetainUploads(true);
-
-		const smvk::ClusterStaticMeshHandle mesh =
-			cluster.UploadStaticMesh(MakeUvSphereUpload(16, 24));
-		if (mesh.empty()) {
-			std::cerr << "[SceneRenderer] Light-ball mesh upload failed - scene-node lights disabled\n";
-			m_lightCluster = nullptr;
-			return;
-		}
-
-		// Unlit + black base color: the ball shows pure emissive (no PBR
-		// lighting, no shadow sampling). Double-sided so winding of the
-		// procedural sphere never matters.
-		smvk::MaterialCreateInfo warmCi{};
-		warmCi.shadingModel = smvk::ShadingModel::Unlit;
-		warmCi.alphaMode = smvk::AlphaMode::Opaque;
-		warmCi.doubleSided = true;
-		warmCi.baseColorFactor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-		warmCi.emissiveFactor = { 1.0f, 0.62f, 0.32f };
-		warmCi.emissiveStrength = m_fpDemo.ballEmissive;
-		const smvk::ClusterMaterialHandle warmMat = cluster.CreateMaterial(warmCi);
-
-		smvk::MaterialCreateInfo coolCi = warmCi;
-		coolCi.emissiveFactor = { 0.35f, 0.65f, 1.0f };
-		const smvk::ClusterMaterialHandle coolMat = cluster.CreateMaterial(coolCi);
-
-		if (warmMat.empty() || coolMat.empty()) {
-			std::cerr << "[SceneRenderer] Light-ball material creation failed - scene-node lights disabled\n";
-			m_lightCluster = nullptr;
-			return;
-		}
-		m_ballMesh = mesh;
-		m_ballMatWarm = warmMat;
-		m_ballMatCool = coolMat;
-
-		// One node per current grid light under a named "PointLights" root.
-		// Nodes stay dynamic (no staticRoot mark) so the bob animation and
-		// runtime pool growth keep working.
-		Scene& cs = cluster.scene;
-		const int root = addNode(cs, -1, 0);
-		cs.localTransform[root] = glm::mat4(1.0f);
-		cs.globalTransform[root] = glm::mat4(1.0f);
-		setNodeName(cs, root, "PointLights");
-
-		const int gx = std::max(1, m_fpDemo.gridX);
-		const int gy = std::max(1, m_fpDemo.gridY);
-		const int gz = std::max(1, m_fpDemo.gridZ);
-		const float ox = -(gx - 1) * 0.5f * m_fpDemo.spacingX;
-		const float oz = -(gz - 1) * 0.5f * m_fpDemo.spacingZ;
-		uint32_t ballIdx = 0;
-		for (int iz = 0; iz < gz; ++iz) {
-			for (int iy = 0; iy < gy; ++iy) {
-				for (int ix = 0; ix < gx; ++ix) {
-					const int n = addNode(cs, root, 1);
-					const glm::vec3 pos(
-						ox + ix * m_fpDemo.spacingX,
-						m_fpDemo.baseY + iy * m_fpDemo.spacingY,
-						oz + iz * m_fpDemo.spacingZ
-					);
-					cs.localTransform[n] =
-						glm::translate(glm::mat4(1.0f), pos) *
-						glm::scale(glm::mat4(1.0f), glm::vec3(m_fpDemo.ballRadius));
-					cs.globalTransform[n] = glm::mat4(1.0f); // resolved by the merge
-					cs.meshForNode[n] = mesh.index();
-					// Warm/cool checkerboard (kept in sync per frame).
-					const bool warm = ((ix + iy + iz) & 1) == 0;
-					cs.materialForNode[n] = (warm ? warmMat : coolMat).index();
-					setNodeName(cs, n, "PLBall_" + std::to_string(ballIdx));
-					++ballIdx;
-				}
-			}
-		}
-		// No markAsChanged here: ResolveAndFixup_clusters() marks each
-		// cluster root and resolves the appended subtree.
-	}
-
-	void SceneRenderer::FixupPointLightBallNodes() {
-		if (!m_lightCluster)
-			return;
-		Scene& scene = m_world->scene;
-
-		// Resolve world-level indices for the shared ball mesh + materials
-		// (needed to grow the pool at runtime and to assign materials).
-		m_ballMeshIdx = UINT32_MAX;
-		for (uint32_t i = 0; i < m_world->meshLocations.size(); ++i) {
-			const auto& loc = m_world->meshLocations[i];
-			if (loc.cluster == m_lightCluster && loc.handle == m_ballMesh) {
-				m_ballMeshIdx = i;
-				break;
-			}
-		}
-		m_ballMatWarmIdx = UINT32_MAX;
-		m_ballMatCoolIdx = UINT32_MAX;
-		for (uint32_t i = 0; i < m_world->materialLocations.size(); ++i) {
-			const auto& loc = m_world->materialLocations[i];
-			if (loc.cluster != m_lightCluster)
-				continue;
-			if (loc.handle == m_ballMatWarm)
-				m_ballMatWarmIdx = i;
-			else if (loc.handle == m_ballMatCool)
-				m_ballMatCoolIdx = i;
-		}
-		m_lightRootNode = findNodeByName(scene, "PointLights");
-
-		// Collect ball nodes (hierarchy scan keeps creation/grid order) and
-		// stamp them as scene light objects that never cast shadows.
-		m_lightBalls.clear();
-		for (uint32_t n = 0; n < scene.hierarchy.size(); ++n) {
-			if (getNodeName(scene, (int)n).rfind("PLBall_", 0) != 0)
-				continue;
-			if (n < m_world->flags.size()) {
-				m_world->flags[n] &= ~smvk::IteratorFlags(smvk::IteratorFlagBit_CastShadow);
-				m_world->flags[n] |= smvk::IteratorFlagBit_LightPoint;
-			}
-			scene.lightForNode[n] = (uint32_t)m_lightBalls.size();
-			m_lightBalls.push_back(PointLightBall{ .node = n, .active = false });
-		}
-
-		if (m_lightBalls.empty() || m_ballMeshIdx == UINT32_MAX ||
-			m_ballMatWarmIdx == UINT32_MAX || m_ballMatCoolIdx == UINT32_MAX ||
-			m_lightRootNode < 0) {
-			std::cerr << "[SceneRenderer] Light-ball fixup failed (nodes=" << m_lightBalls.size()
-				<< ") - scene-node lights disabled\n";
-			m_lightCluster = nullptr;
-			m_lightBalls.clear();
-		} else {
-#ifndef NDEBUG
-			std::cout << "[SceneRenderer] Scene-node point lights: " << m_lightBalls.size()
-				<< " emissive balls under 'PointLights' (mesh slot " << m_ballMeshIdx
-				<< ", warm/cool materials " << m_ballMatWarmIdx << "/"
-				<< m_ballMatCoolIdx << ")\n";
-#endif
-		}
-	}
-
-	// Grows the ball node pool on demand (grid sliders). New nodes are
-	// appended directly to the resolved world scene (the ball cluster is
-	// merged once at startup) and share the cluster's mesh/materials.
-	void SceneRenderer::EnsurePointLightBalls(uint32_t count) {
-		if (!m_lightCluster || m_ballMeshIdx == UINT32_MAX || m_ballMatWarmIdx == UINT32_MAX)
-			return;
-		Scene& scene = m_world->scene;
-		while (m_lightBalls.size() < count) {
-			const int parent = m_lightRootNode >= 0 ? m_lightRootNode : 0;
-			const int n = addNode(scene, parent, getNodeLevel(scene, parent) + 1);
-			scene.localTransform[n] = glm::mat4(1.0f);
-			scene.globalTransform[n] = glm::mat4(1.0f);
-			scene.meshForNode[n] = m_ballMeshIdx;
-			scene.materialForNode[n] = m_ballMatWarmIdx;
-			scene.lightForNode[n] = (uint32_t)m_lightBalls.size();
-			setNodeName(scene, n, "PLBall_" + std::to_string(m_lightBalls.size()));
-			// Grow world bookkeeping immediately: the per-frame drive below
-			// writes flags[ball.node] in the same frame the node is created.
-			if (m_world->flags.size() <= (size_t)n)
-				m_world->flags.resize((size_t)n + 1, smvk::IteratorFlagBit_None);
-			m_world->flags[n] = smvk::IteratorFlags(
-				smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque
-				| smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_LightPoint);
-			m_lightBalls.push_back(PointLightBall{ .node = (NodeId)n, .active = false });
-		}
-		if (m_world->flags.size() < scene.hierarchy.size())
-			m_world->flags.resize(scene.hierarchy.size(), smvk::IteratorFlagBit_None);
-	}
-
-	// Per-frame ball node drive: transforms (position + bob + radius),
-	// warm/cool material of the visible ball, and iterator flags. Active
-	// balls render (Renderable|Opaque) but never enter shadow passes
-	// (no CastShadow); inactive pool leftovers stay as inert light nodes.
-	void SceneRenderer::UpdatePointLightBalls() {
-		m_activePointBalls = 0;
-		if (!m_lightCluster)
-			return;
-
-		const int gx = std::max(1, m_fpDemo.gridX);
-		const int gy = std::max(1, m_fpDemo.gridY);
-		const int gz = std::max(1, m_fpDemo.gridZ);
-		const uint32_t gridCount = (uint32_t)gx * (uint32_t)gy * (uint32_t)gz;
-		const uint32_t spotReserve = (uint32_t)std::max(0, m_fpDemo.spotCount);
-		if (m_fpDemo.enabled && FP_MAX_LIGHTS > spotReserve)
-			m_activePointBalls = std::min(gridCount, FP_MAX_LIGHTS - spotReserve);
-		EnsurePointLightBalls(m_activePointBalls);
-
-		Scene& scene = m_world->scene;
-		const float ox = -(gx - 1) * 0.5f * m_fpDemo.spacingX;
-		const float oz = -(gz - 1) * 0.5f * m_fpDemo.spacingZ;
-		for (uint32_t i = 0; i < m_activePointBalls && i < m_lightBalls.size(); ++i) {
-			PointLightBall& ball = m_lightBalls[i];
-			const uint32_t ix = i % (uint32_t)gx;
-			const uint32_t iy = (i / (uint32_t)gx) % (uint32_t)gy;
-			const uint32_t iz = i / ((uint32_t)gx * (uint32_t)gy);
-			const bool warm = ((ix + iy + iz) & 1) == 0;
-			const float phase = float(ix * 7 + iy * 13 + iz * 29) * 0.35f;
-			const float bob = m_fpDemo.animate
-				? std::sin(time_since_start_s * m_fpDemo.speed + phase) * 0.5f
-				: 0.0f;
-			const glm::vec3 pos(
-				ox + ix * m_fpDemo.spacingX,
-				m_fpDemo.baseY + iy * m_fpDemo.spacingY + bob,
-				oz + iz * m_fpDemo.spacingZ
-			);
-			scene.localTransform[ball.node] =
-				glm::translate(glm::mat4(1.0f), pos) *
-				glm::scale(glm::mat4(1.0f), glm::vec3(m_fpDemo.ballRadius));
-			// Keep the visible ball color in sync with the light checkerboard.
-			scene.materialForNode[ball.node] = warm ? m_ballMatWarmIdx : m_ballMatCoolIdx;
-			markAsChangedDynamic(scene, (int)ball.node);
-			if (ball.node < m_world->flags.size())
-				m_world->flags[ball.node] = smvk::IteratorFlags(
-					smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque
-					| smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_LightPoint);
-			ball.active = true;
-		}
-		// Pool leftovers (grid shrank / demo disabled): inert light nodes -
-		// no render, no shadow contribution, no Forward+ light.
-		for (size_t i = m_activePointBalls; i < m_lightBalls.size(); ++i) {
-			PointLightBall& ball = m_lightBalls[i];
-			ball.active = false;
-			if (ball.node < m_world->flags.size() &&
-				(m_world->flags[ball.node] & smvk::IteratorFlagBit_Renderable))
-				m_world->flags[ball.node] = smvk::IteratorFlagBit_LightPoint;
-		}
-		if (m_activePointBalls > 0)
-			recalculateGlobalTransformsDynamic(scene);
-	}
-
 	// Builds the procedural Forward+ demo light set into the per-frame upload
 	// buffer. Returns the number of lights written (clamped to FP_MAX_LIGHTS).
-	// Point lights come from the emissive ball scene nodes (positions are
-	// their resolved global transforms); spots stay procedural orbiters.
+	// Spots are written FIRST: per-tile lists keep only the first
+	// FP_MAX_PER_TILE passing lights, so the few (expensive) cone lights must
+	// not compete with the point crowd for those slots. A CPU copy is kept in
+	// m_debugLights for the ImGui light-point overlay.
 	// Spot-shadow selection runs here: spots carrying the cast-shadow request
 	// flag are ranked by the screenspace/distance heuristic and the top-N
 	// (upper limit m_fpDemo.spotShadowMax) get atlas tiles; their shadowTile /
 	// shadowMapIndex are patched before upload. Results land in
 	// m_spotShadowCount / m_spotShadowMapIndex for the frame's passes.
 	uint32_t SceneRenderer::UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame) {
-		// Drive the ball scene nodes first (transforms + flags + globals).
-		UpdatePointLightBalls();
-
 		std::vector<smvk::ForwardPlusLight> lights;
 		lights.reserve(FP_MAX_LIGHTS);
+		m_debugLights.clear();
 		if (m_fpDemo.enabled) {
 			const int gx = std::max(1, m_fpDemo.gridX);
 			const int gy = std::max(1, m_fpDemo.gridY);
 			const int gz = std::max(1, m_fpDemo.gridZ);
-			const uint32_t ballCount =
-				std::min(m_activePointBalls, (uint32_t)m_lightBalls.size());
-			for (uint32_t i = 0; i < ballCount && lights.size() < FP_MAX_LIGHTS; ++i) {
-				const glm::mat4& model = m_world->scene.globalTransform[m_lightBalls[i].node];
+			const uint32_t gridCount = (uint32_t)gx * (uint32_t)gy * (uint32_t)gz;
+			const uint32_t spotReserve = (uint32_t)std::max(0, m_fpDemo.spotCount);
+			const uint32_t pointCount = (FP_MAX_LIGHTS > spotReserve)
+				? std::min(gridCount, FP_MAX_LIGHTS - spotReserve)
+				: 0;
+
+			// Orbiting spots to exercise the cone path (written first —
+			// see the comment above).
+			for (int s = 0; s < m_fpDemo.spotCount && lights.size() < FP_MAX_LIGHTS; ++s) {
+				smvk::ForwardPlusLight l{};
+				float a = time_since_start_s * 0.4f * m_fpDemo.speed + s * 6.2831853f / std::max(1, m_fpDemo.spotCount);
+				l.position = { std::cos(a) * 6.0f, 7.0f, std::sin(a) * 4.0f };
+				l.direction = glm::normalize(glm::vec3(-l.position.x, -7.0f, -l.position.z) * 0.35f + glm::vec3(0, -1, 0));
+				l.range = m_fpDemo.spotRange;
+				l.color = glm::vec4(1.0f, 0.9f, 0.75f, 1.0f);
+				l.intensity = m_fpDemo.spotIntensity;
+				l.innerAngle = glm::radians(12.0f);
+				l.outerAngle = glm::radians(28.0f);
+				l.type = smvk::kForwardPlusSpot;
+				// Controllable per-light flag: demo opts all spots in; the
+				// frame selection below decides which actually get tiles.
+				if (m_fpDemo.spotShadowsEnabled)
+					l.flags |= smvk::kForwardPlusFlag_CastShadow;
+				l.shadowTile = -1;
+				l.shadowMapIndex = -1;
+				l.shadowBias = SPOT_SHADOW_BIAS;
+				// Light cookie: gobo projected through the cone (spot s gets
+				// pattern s % kCookiePatternCount). -1 leaves the light clean.
+				if (m_fpDemo.cookiesEnabled)
+					l.cookieIndex = m_cookies.Bindless(s % smvk::kCookiePatternCount);
+				// Light function: procedural intensity curve on the spot.
+				if (m_fpDemo.lightFunctionsEnabled) {
+					l.functionType = m_fpDemo.functionType;
+					l.functionSpeed = m_fpDemo.functionSpeed;
+					l.functionScale = m_fpDemo.functionScale;
+				}
+				lights.push_back(l);
+				m_debugLights.push_back({ glm::vec3(l.position), glm::vec3(l.color),
+					(int)smvk::kForwardPlusSpot });
+			}
+
+			// Point grid (positions were scene-node ball transforms before;
+			// same placement/bob math, now pure CPU arithmetic).
+			const float ox = -(gx - 1) * 0.5f * m_fpDemo.spacingX;
+			const float oz = -(gz - 1) * 0.5f * m_fpDemo.spacingZ;
+			for (uint32_t i = 0; i < pointCount && lights.size() < FP_MAX_LIGHTS; ++i) {
 				const uint32_t ix = i % (uint32_t)gx;
 				const uint32_t iy = (i / (uint32_t)gx) % (uint32_t)gy;
 				const uint32_t iz = i / ((uint32_t)gx * (uint32_t)gy);
+				const float phase = float(ix * 7 + iy * 13 + iz * 29) * 0.35f;
+				const float bob = m_fpDemo.animate
+					? std::sin(time_since_start_s * m_fpDemo.speed + phase) * 0.5f
+					: 0.0f;
+				const glm::vec3 pos(
+					ox + ix * m_fpDemo.spacingX,
+					m_fpDemo.baseY + iy * m_fpDemo.spacingY + bob,
+					oz + iz * m_fpDemo.spacingZ
+				);
 				smvk::ForwardPlusLight l{};
-				l.position = { model[3][0], model[3][1], model[3][2] };
+				l.position = pos;
 				l.range = m_fpDemo.range;
-				// Warm/cool checkerboard so tiling artifacts read clearly
-				// (matches the visible ball's emissive material).
+				// Warm/cool checkerboard so tiling artifacts read clearly.
 				const bool warm = ((ix + iy + iz) & 1) == 0;
 				l.color = warm
 					? glm::vec4(1.0f, 0.62f, 0.32f, 1.0f)
@@ -1220,37 +1042,8 @@ void SceneRenderer::Shutdown() {
 				l.cookieIndex = -1;
 				l.functionType = smvk::kForwardPlusFunction_None;
 				lights.push_back(l);
-			}
-			// Orbiting spots to exercise the cone path.
-			for (int s = 0; s < m_fpDemo.spotCount && lights.size() < FP_MAX_LIGHTS; ++s) {
-				smvk::ForwardPlusLight l{};
-				float a = time_since_start_s * 0.4f * m_fpDemo.speed + s * 6.2831853f / std::max(1, m_fpDemo.spotCount);
-				l.position = { std::cos(a) * 6.0f, 7.0f, std::sin(a) * 4.0f };
-				l.direction = glm::normalize(glm::vec3(-l.position.x, -7.0f, -l.position.z) * 0.35f + glm::vec3(0, -1, 0));
-				l.range = m_fpDemo.spotRange;
-				l.color = glm::vec4(1.0f, 0.9f, 0.75f, 1.0f);
-				l.intensity = m_fpDemo.spotIntensity;
-			l.innerAngle = glm::radians(12.0f);
-			l.outerAngle = glm::radians(28.0f);
-			l.type = smvk::kForwardPlusSpot;
-			// Controllable per-light flag: demo opts all spots in; the
-			// frame selection below decides which actually get tiles.
-			if (m_fpDemo.spotShadowsEnabled)
-				l.flags |= smvk::kForwardPlusFlag_CastShadow;
-			l.shadowTile = -1;
-			l.shadowMapIndex = -1;
-			l.shadowBias = SPOT_SHADOW_BIAS;
-			// Light cookie: gobo projected through the cone (spot s gets
-			// pattern s % kCookiePatternCount). -1 leaves the light clean.
-			if (m_fpDemo.cookiesEnabled)
-				l.cookieIndex = m_cookies.Bindless(s % smvk::kCookiePatternCount);
-			// Light function: procedural intensity curve on the spot.
-			if (m_fpDemo.lightFunctionsEnabled) {
-				l.functionType = m_fpDemo.functionType;
-				l.functionSpeed = m_fpDemo.functionSpeed;
-				l.functionScale = m_fpDemo.functionScale;
-			}
-			lights.push_back(l);
+				m_debugLights.push_back({ pos, glm::vec3(l.color),
+					(int)smvk::kForwardPlusPoint });
 			}
 		}
 
@@ -1478,6 +1271,18 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 			m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, frameUiDesc);
 			m_viewportResources.uiComposite.Ensure(*m_context);
 			m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc());
+			m_viewportResources.exposure.Ensure(*m_context, *m_rendergraph, MakeExposureDesc());
+		}
+		// Effective exposure for this frame (adapted last frame, 1-frame lag).
+		const float frameExposure = EffectiveExposure();
+		// Exposure-aware bloom: the threshold/knee are authored for the
+		// reference (manual) exposure; scale them so bloom strength stays
+		// constant as auto-exposure shifts. Applied after Ensure (which
+		// resets desc to MakeBloomDesc) and before the bloom passes below.
+		if (m_viewportResources.bloom.Valid() && TONEMAP_EXPOSURE > 0.0f) {
+			const float bloomScale = frameExposure / TONEMAP_EXPOSURE;
+			m_viewportResources.bloom.desc.threshold = BLOOM_THRESHOLD * bloomScale;
+			m_viewportResources.bloom.desc.knee = BLOOM_KNEE * bloomScale;
 		}
 		m_context->UpdateDescriptors();
 		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent);
@@ -2684,6 +2489,55 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
+		// Exposure histogram – log2-luminance meter of the scene HDR
+		// (see exposure.h). Runs before Bloom/Tonemap so it meters exactly
+		// what they consume. The CPU zeroes the buffer (transfer write),
+		// the compute pass accumulates, and UpdateAutoExposure() downloads
+		// + adapts after Execute for next frame's tonemap/bloom.
+		// ---------------------------------------------------------------------
+		{
+			SMVK_PROFILE_CATEGORY("ExposureHistogram", Optick::Category::Rendering);
+			auto& meter = m_viewportResources.exposure;
+			if (m_passes.exposure && m_autoExposureEnabled &&
+				meter.Valid() && meter.ShadersValid() &&
+				!sceneHdrView.empty() && sceneHdrBindless != UINT32_MAX &&
+				renderExtent.width != 0 && renderExtent.height != 0) {
+				// Reset the bins (transfer write; the compute hint below
+				// transitions the buffer to Compute R/W via barrier).
+				static constexpr uint32_t kZeroBins[smvk::kExposureBinCount] = {};
+				m_context->UploadDataToBuffer(meter.histogramBuffer,
+					kZeroBins, sizeof(kZeroBins),
+					smvk::PipelineStageBit_Transfer,
+					smvk::AccessFlags::TransferWrite, 0, 0);
+				smvk::ExposureHistogramPush expPush{};
+				expPush.histogramAddress = meter.HistogramAddress(*m_context);
+				expPush.hdrTextureIndex = sceneHdrBindless;
+				expPush.width = renderExtent.width;
+				expPush.height = renderExtent.height;
+				expPush.minLogLum = meter.desc.minLogLum;
+				expPush.maxLogLum = meter.desc.maxLogLum;
+				expPush.binCount = meter.desc.bins;
+				expPush.sampleStep = meter.desc.sampleStep;
+				const uint32_t dx =
+					smvk::ExposureMeter::DispatchXFor(renderExtent, meter.desc.sampleStep);
+				const uint32_t dy =
+					smvk::ExposureMeter::DispatchYFor(renderExtent, meter.desc.sampleStep);
+				if (expPush.histogramAddress != 0 && dx != 0 && dy != 0) {
+					smvk::ShaderProgram histProg = meter.histogramProgram;
+					smvk::RenderPass& histPass = meter.AddHistogramPass(
+						*m_rendergraph, sceneHdrView, expPush, "ExposureHistogram");
+					histPass.SetRecordingFunc(
+						[histProg, expPush, dx, dy](smvk::CommandBuffer& cmd) mutable {
+							cmd.BindComputePipeline(histProg);
+							cmd.PushConstants(0, sizeof(smvk::ExposureHistogramPush),
+								&expPush, smvk::ShaderStage::All);
+							cmd.Dispatch(dx, dy, 1);
+						});
+				}
+			}
+		}
+
+		// ---------------------------------------------------------------------
 		// Bloom – HDR downsample / upsample chain (composable, see bloom.h)
 		// ---------------------------------------------------------------------
 		{
@@ -2719,6 +2573,8 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				motionView = m_viewportResources.motionVectors.target.logicalView;
 				motionBindless = m_viewportResources.motionVectors.target.bindlessIndex;
 			}
+		smvk::TonemapDesc tonemapDesc = m_viewportResources.tonemap.desc;
+		tonemapDesc.exposure = frameExposure;
 		auto& tonemapPass = m_viewportResources.tonemap.AddTonemapPass(
 			*m_rendergraph,
 			sceneHdrView,
@@ -2729,6 +2585,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			linearSampler,
 			colors,
 			swapExtent,
+			tonemapDesc,
 			"Tonemap",
 			motionView,
 			motionBindless,
@@ -2799,6 +2656,34 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					ImGui::TextDisabled("Bloom: OFF");
 				}
 			}
+		if (ImGui::CollapsingHeader("Exposure — histogram eye adaptation", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Checkbox("Auto-exposure", &m_autoExposureEnabled);
+			ImGui::SliderFloat("Manual exposure", &m_manualExposure,
+				0.00005f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
+			ImGui::SliderFloat("EV bias", &m_exposureEvBias, -4.0f, 4.0f, "%.1f");
+			ImGui::SliderFloat("Adapt to dark (/s)", &m_exposureSpeedToDark, 0.1f, 8.0f, "%.2f");
+			ImGui::SliderFloat("Adapt to bright (/s)", &m_exposureSpeedToBright, 0.1f, 8.0f, "%.2f");
+			ImGui::SliderFloat("Min exposure", &m_exposureMin,
+				0.000001f, 0.001f, "%.6f", ImGuiSliderFlags_Logarithmic);
+			ImGui::SliderFloat("Max exposure", &m_exposureMax,
+				0.005f, 0.1f, "%.4f", ImGuiSliderFlags_Logarithmic);
+			if (m_exposureMin > m_exposureMax)
+				std::swap(m_exposureMin, m_exposureMax);
+			const float effExposure = EffectiveExposure();
+			ImGui::Text("Exposure: %.5f (target %.5f)  metered %u px",
+				effExposure, m_exposureTarget, m_exposureSamples);
+			float histPeak = 1.0f;
+			for (float v : m_exposureBinsUi)
+				histPeak = std::max(histPeak, v);
+			ImGui::PlotHistogram("##expHist", m_exposureBinsUi,
+				(int)smvk::kExposureBinCount, 0, nullptr, 0.0f, histPeak, ImVec2(0, 48));
+			if (!m_viewportResources.exposure.Valid())
+				ImGui::TextDisabled("Meter missing – manual exposure only");
+			else
+				ImGui::TextDisabled("Bloom threshold scales with exposure (ref %.4f); percentile %.0f%%, key %.2f",
+					TONEMAP_EXPOSURE, m_viewportResources.exposure.desc.percentile * 100.0f,
+					m_viewportResources.exposure.desc.keyValue);
+		}
 		{
 			const bool supported = m_context->SupportsMSAA2x();
 			if (!supported)
@@ -2931,8 +2816,6 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			ImGui::SliderFloat("Spacing Z", &m_fpDemo.spacingZ, 0.5f, 8.0f);
 				ImGui::SliderFloat("Range", &m_fpDemo.range, 1.0f, 30.0f);
 				ImGui::SliderFloat("Intensity (cd)", &m_fpDemo.intensity, 0.0f, 2000.0f);
-				ImGui::SliderFloat("Ball radius (m)", &m_fpDemo.ballRadius, 0.02f, 0.5f);
-				ImGui::SliderFloat("Ball emissive (HDR)", &m_fpDemo.ballEmissive, 0.0f, 5000.0f);
 				int spots = m_fpDemo.spotCount;
 				if (ImGui::SliderInt("Spots", &spots, 0, 16)) m_fpDemo.spotCount = spots;
 				ImGui::SliderFloat("Spot intensity (cd)", &m_fpDemo.spotIntensity, 0.0f, 4000.0f);
@@ -2940,9 +2823,16 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					? (m_fpDemo.gridX * m_fpDemo.gridY * m_fpDemo.gridZ + m_fpDemo.spotCount) : 0;
 				ImGui::Text("Lights: %d / %u%s", wantLights, FP_MAX_LIGHTS,
 					wantLights > (int)FP_MAX_LIGHTS ? "  (CLAMPED!)" : "");
-				ImGui::Text("Light balls: %u active / %u nodes (scene hierarchy)",
-					m_activePointBalls, (uint32_t)m_lightBalls.size());
-				ImGui::TextDisabled("Point lights = emissive ball nodes (unlit, never cast shadows)");
+				ImGui::TextDisabled("Tiles cap at %u lights: overflow pops (spots win slots, written first)",
+					FP_MAX_PER_TILE);
+				ImGui::Checkbox("Light points (overlay)", &m_fpDemo.showLightPoints);
+				ImGui::Checkbox("Light numbers (overlay)", &m_fpDemo.showLightNumbers);
+				if (m_fpDemo.showLightPoints || m_fpDemo.showLightNumbers) {
+					ImGui::SliderFloat("Overlay point size (px)", &m_fpDemo.lightPointSize, 2.0f, 16.0f);
+					ImGui::SliderInt("Overlay max labels", &m_fpDemo.maxLightLabels, 0, 1024);
+				}
+				ImGui::TextDisabled("Lights draw in the UI pass (points = light color, spots diamond);\n"
+					"no depth test: occluded lights stay visible (debug intent)");
 				if (fwd.depthBindlessIndex == UINT32_MAX)
 					ImGui::TextDisabled("Depth bindless: MISSING (cull falls back to empty)");
 				ImGui::Separator();
@@ -3077,8 +2967,58 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
 			ImGui::End();
 
-			// Alternative: draw directly with custom draw lists etc.
-			// ImGui::GetForegroundDrawList()->AddCircle(...);
+			// Forward+ light debug overlay: project the CPU light copy
+			// (m_debugLights, filled in UpdateForwardPlusLights) through the
+			// frame viewProj into the ImGui foreground draw list. It rides
+			// the UI pass and composites over the tonemapped scene. No depth
+			// test: occluded / behind-camera lights stay visible (debug).
+			if (m_fpDemo.enabled && (m_fpDemo.showLightPoints || m_fpDemo.showLightNumbers)
+				&& !m_debugLights.empty()) {
+				ImDrawList* dl = ImGui::GetForegroundDrawList();
+				const ImVec2 disp = ImGui::GetIO().DisplaySize;
+				const float r = std::max(m_fpDemo.lightPointSize, 1.0f);
+				const auto toSrgb8 = [](float c) {
+					c = std::min(std::max(c, 0.0f), 1.0f);
+					return (int)std::lround(std::pow(c, 1.0f / 2.2f) * 255.0f);
+				};
+				uint32_t labels = 0;
+				const uint32_t maxLabels =
+					(uint32_t)std::max(0, m_fpDemo.maxLightLabels);
+				for (uint32_t i = 0; i < m_debugLights.size(); ++i) {
+					const DebugLight& l = m_debugLights[i];
+					const glm::vec4 clip =
+						frameData.viewProj * glm::vec4(l.position, 1.0f);
+					if (clip.w <= 1e-4f)
+						continue; // behind the camera / degenerate
+					const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+					if (std::abs(ndc.x) > 1.0f || std::abs(ndc.y) > 1.0f)
+						continue; // off-screen
+					// viewProj is post-Y-flip (Vulkan framebuffer y-down), so
+					// NDC maps straight onto ImGui's y-down display space.
+					const ImVec2 pt(
+						(ndc.x * 0.5f + 0.5f) * disp.x,
+						(ndc.y * 0.5f + 0.5f) * disp.y);
+					const ImU32 col = IM_COL32(toSrgb8(l.color.r), toSrgb8(l.color.g),
+						toSrgb8(l.color.b), 220);
+					if (l.type == (int)smvk::kForwardPlusSpot) {
+						// Spots: diamond marker so cones read differently.
+						dl->AddQuadFilled(
+							ImVec2(pt.x, pt.y - r), ImVec2(pt.x + r, pt.y),
+							ImVec2(pt.x, pt.y + r), ImVec2(pt.x - r, pt.y), col);
+					} else {
+						dl->AddCircleFilled(pt, r, col);
+					}
+					if (m_fpDemo.showLightNumbers && labels < maxLabels) {
+						char label[16];
+						snprintf(label, sizeof(label), "%u", i);
+						dl->AddText(ImVec2(pt.x + r + 2.0f + 1.0f, pt.y - r + 1.0f),
+							IM_COL32(0, 0, 0, 200), label);
+						dl->AddText(ImVec2(pt.x + r + 2.0f, pt.y - r),
+							IM_COL32_WHITE, label);
+						++labels;
+					}
+				}
+			}
 
 			// Separated UI pass: ImGui renders into its own offscreen target
 			// (transparent clear, ui scale resolution), then UiComposite
@@ -3107,6 +3047,8 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 
 		m_rendergraph->Execute(fb);
 		m_context->ProcessDeferrredTasks();
+		// Eye adaptation for next frame's tonemap/bloom (1-frame lag).
+		UpdateAutoExposure();
 
 		// One-shot indirect audit (debug): downloads this frame's filter
 		// commands + HZB after Execute so the GPU results are final. Stalls

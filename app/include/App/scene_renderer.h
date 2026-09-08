@@ -30,6 +30,7 @@
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/environment.h>
+#include <Engine/Rendergraph/exposure.h>
 #include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/motionblur.h>
@@ -93,6 +94,7 @@ struct ScenePassConfig {
 	bool motionBlur = true;         // HDR velocity-gather blur
 	bool ssao = true;               // half-res depth AO
 	bool bloom = true;              // HDR bloom chain
+	bool exposure = true;           // histogram meter + CPU eye adaptation
 	bool tonemap = true;            // HDR -> swapchain tonemap
 	bool ui = true;                 // separated ImGui target + composite
 	bool msaa = true;               // 2x MSAA Main (when device supports it)
@@ -111,6 +113,7 @@ struct ScenePassConfig {
 		c.motionBlur = false;
 		c.ssao = false;
 		c.bloom = false;
+		c.exposure = false;
 		c.ui = false;
 		c.msaa = false;
 		c.skydome = false;
@@ -119,6 +122,8 @@ struct ScenePassConfig {
 };
 
 // Procedural demo lights (grid of points + a few orbiting spots).
+// Point lights are pure GPU lights (no scene nodes / emissive balls);
+// the ImGui overlay draws them as colored points + indices.
 struct ForwardPlusDemo {
 	bool enabled = true;
 	int gridX = 8;
@@ -149,20 +154,12 @@ struct ForwardPlusDemo {
 	int functionType = smvk::kForwardPlusFunction_Flicker;
 	float functionSpeed = 0.6f;
 	float functionScale = 0.65f;
-	// Emissive ball objects for the point lights (see PointLightBall): the
-	// point lights are real nodes in the scene graph, each carrying a small
-	// unlit emissive sphere. Balls never cast shadows (flag cleared).
-	float ballRadius = 0.12f;     // world-space radius of each ball (m)
-	float ballEmissive = 1200.0f; // HDR emissive strength (bloom threshold ~1000)
-};
-
-// One scene-graph node per demo point light: an emissive ball mesh with an
-// unlit material. The node's global transform is the light position (the
-// Forward+ light buffer is built from it, see UpdateForwardPlusLights);
-// the ball itself renders as pure emissive (no lighting, no shadows).
-struct PointLightBall {
-	NodeId node = UINT32_MAX;
-	bool active = false;
+	// Debug overlay: project light positions into the ImGui pass and draw
+	// them as colored points with their light-buffer index.
+	bool showLightPoints = true;
+	bool showLightNumbers = true;
+	float lightPointSize = 6.0f; // ImGui circle radius (px)
+	int maxLightLabels = 256;    // cap text draws (points are all drawn)
 };
 
 struct FrameUniforms
@@ -261,6 +258,7 @@ struct ViewportResources {
 	smvk::MsaaTarget msaa; // transient 2x color+depth for Main, resolves to hdr
 	smvk::MotionVectors motionVectors; // RG16F motion target + program + pass helper
 	smvk::MotionBlur motionBlur; // blurred HDR output + velocity-gather program + pass
+	smvk::ExposureMeter exposure; // histogram meter + compute program (auto-exposure)
 	smvk::Ssao ssao; // half-res raw + blurred AO targets + programs + passes
 	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
 	smvk::UiComposite uiComposite; // UI -> swapchain alpha composite program + pass
@@ -339,11 +337,7 @@ protected:
 	smvk::GpuDirectionalLightDescription UpdateLights(uint32_t currentFrame);
 	void UpdateMaterials(uint32_t currentFrame);
 
-	// Emissive point-light ball objects (lights as real scene nodes).
-	void CreatePointLightBalls();
-	void FixupPointLightBallNodes();
-	void EnsurePointLightBalls(uint32_t count);
-	void UpdatePointLightBalls();
+	// Procedural Forward+ demo lights (no scene nodes; see UpdateForwardPlusLights).
 	uint32_t UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame);
 
 	void RebuildSwapViews();
@@ -428,6 +422,32 @@ protected:
 	int m_motionBlurSamples = 12; // gather taps 1..32
 	float m_motionBlurMaxRadius = 24.0f; // blur clamp (px)
 	float m_motionBlurStrength = 1.0f; // shutter scale
+	// ---- Auto-exposure (histogram meter + CPU eye adaptation, see
+	// exposure.h). Meters the (possibly motion-blurred) scene HDR before
+	// Bloom/Tonemap; the smoothed exposure feeds the tonemap push next
+	// frame (1-frame lag) and scales the bloom threshold/knee so bloom
+	// strength stays constant as exposure shifts.
+	bool m_autoExposureEnabled = true;
+	float m_manualExposure = 0.001f; // used when auto is off (== TONEMAP_EXPOSURE)
+	float m_exposureAdapted = 0.001f; // smoothed exposure (seeded to manual)
+	float m_exposureTarget = 0.001f; // last computed target (debug readout)
+	float m_exposureEvBias = 0.0f; // user EV trim (-4..+4)
+	float m_exposureSpeedToDark = 1.0f; // adapt rate when exposure rises (/s)
+	float m_exposureSpeedToBright = 3.0f; // adapt rate when exposure falls (/s)
+	float m_exposureMin = 0.00001f; // absolute clamp (dark interior safe)
+	float m_exposureMax = 0.05f; // absolute clamp (night-sky safe)
+	// CPU copy of the last histogram for the debug plot (filled by the
+	// post-Execute readback; floats for ImGui::PlotHistogram).
+	float m_exposureBinsUi[smvk::kExposureBinCount] = {};
+	uint32_t m_exposureSamples = 0; // metered pixels last frame
+	// Effective tonemap exposure: adapted when auto is on, the pass is in
+	// the set and the meter is live; manual otherwise.
+	float EffectiveExposure() const {
+		const bool active = m_autoExposureEnabled && m_passes.exposure &&
+			m_viewportResources.exposure.Valid();
+		return active ? m_exposureAdapted : m_manualExposure;
+	}
+	void UpdateAutoExposure(); // download + Adapt (call after Execute)
 	// ---- SSAO pass (half-res depth-only AO, see ssao.h) ----
 	bool m_ssaoEnabled = true; // runs before Main, composites in opaque ambient
 	float m_ssaoRadius = 0.5f; // view-space sample radius (m)
@@ -436,17 +456,15 @@ protected:
 	float m_ssaoMaxDistance = 25.0f; // fade-out distance (m)
 	int m_ssaoSamples = 16; // hemisphere taps 1..32
 	float m_ssaoBlurSharpness = 8.0f; // blur depth edge weight
-	// ---- Emissive point-light ball objects (scene-hierarchy lights) ----
-	smvk::Cluster* m_lightCluster = nullptr; // owns the shared ball resources
-	smvk::ClusterStaticMeshHandle m_ballMesh{};
-	smvk::ClusterMaterialHandle m_ballMatWarm{};
-	smvk::ClusterMaterialHandle m_ballMatCool{};
-	uint32_t m_ballMeshIdx = UINT32_MAX;      // world-level slot (post-merge)
-	uint32_t m_ballMatWarmIdx = UINT32_MAX;   // world-level slot (post-merge)
-	uint32_t m_ballMatCoolIdx = UINT32_MAX;   // world-level slot (post-merge)
-	int m_lightRootNode = -1;                 // "PointLights" hierarchy root
-	std::vector<PointLightBall> m_lightBalls; // node pool (grows on demand)
-	uint32_t m_activePointBalls = 0;          // active pool prefix this frame
+	// ---- Forward+ light debug overlay (drawn in the ImGui UI pass) ----
+	// CPU copy of the last light set (positions/colors/types), projected
+	// through the frame viewProj and drawn as points + buffer indices.
+	struct DebugLight {
+		glm::vec3 position{};
+		glm::vec3 color{}; // linear RGB
+		int type = 0;      // 0=point, 1=spot (kForwardPlusPoint/Spot)
+	};
+	std::vector<DebugLight> m_debugLights;
 	smvk::EnvironmentSettings m_env{};
 	smvk::Skydome m_skydome{};
 	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(

@@ -38,3 +38,16 @@ set_target_properties(GfxFilterTests PROPERTIES
 )
 
 add_test(NAME gfxfilter_tests COMMAND GfxFilterTests)
+
+add_executable(ExposureTests test_exposure.cpp)
+
+target_link_libraries(ExposureTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(ExposureTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME exposure_tests COMMAND ExposureTests)

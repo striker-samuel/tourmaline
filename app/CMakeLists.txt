@@ -139,4 +139,21 @@ if(COMPILED_SHADER_OUTPUTS)
     add_dependencies(App compile_shaders_target)
 else()
     message(WARNING "No shaders found to compile!")
+endif()
+
+# The app loads "content/shaders/*.spv" relative to its working directory,
+# so the DXC outputs (in ${CMAKE_BINARY_DIR}/content/shaders) must be synced
+# next to the exe like the other content dirs above. Without this, newly
+# added shaders silently fail to load at runtime (readFile throws inside
+# EnsureShaders -> builder stays invalid -> feature dead with no crash).
+if(COMPILED_SHADER_OUTPUTS)
+    add_custom_target(AppSyncShaders ALL
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/content/shaders"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:App>/content/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_BINARY_DIR}/content/shaders"
+                "$<TARGET_FILE_DIR:App>/content/shaders"
+        COMMENT "Syncing compiled shaders next to App.exe"
+    )
+    add_dependencies(AppSyncShaders compile_shaders_target)
 endif() 
