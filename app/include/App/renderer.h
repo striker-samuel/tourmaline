@@ -144,10 +144,12 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// sphere pre-cull, then cluster expansion with cone culling inside
 	// gfx::FinalizeView. frameIndex is the swapchain frame slot (rings all
 	// mutable buffers, cf. RenderViewSet). Returns the gfx view slot.
-	// `lod` (may be null = LOD0 everywhere): when set, lod==0 instances go
-	// through the indirect ranges and lod>0 instances fall back to the
-	// direct path — the same World::LodIndexForNode cache the main pass
-	// reads, so both sides of the split agree per node per frame.
+	// `lod` (may be null = LOD0 everywhere): when set, the per-node
+	// World::LodIndexForNode decision selects which registered LOD sibling
+	// is pushed, so every LOD stays in the HZB-culled indirect ranges.
+	// Only LODs whose registration failed fall back to the direct path —
+	// the same cache the main pass reads, so both sides agree per node
+	// per frame.
 	uint32_t FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		uint32_t frameIndex, smvk::World& world, const smvk::RenderViewSet& views,
 		uint32_t mainViewIdx, const glm::vec3& eye, const smvk::Extent2D& extent,
@@ -202,8 +204,20 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 		return meshDebugProgram.shaderCount == 2 && lineProgram.shaderCount == 2;
 	}
 	// world mesh idx -> gfx mesh idx (UINT32_MAX = not filterable).
+	// LOD0 entry (kept for the meshlet debug view fallback + audits).
 	[[nodiscard]] uint32_t GfxMeshForWorldMesh(uint32_t worldMesh) const {
 		return worldMesh < meshMap_.size() ? meshMap_[worldMesh] : UINT32_MAX;
+	}
+	// world mesh idx + LOD -> gfx mesh idx (UINT32_MAX = that LOD draws
+	// direct). Every registered LOD sibling gets its own gfx mesh so the
+	// selected LOD stays in the HZB-culled indirect ranges.
+	[[nodiscard]] uint32_t GfxMeshForLod(uint32_t worldMesh, uint32_t lod) const {
+		if (worldMesh >= lodMeshMap_.size())
+			return UINT32_MAX;
+		const auto& chain = lodMeshMap_[worldMesh];
+		if (lod >= chain.size())
+			return UINT32_MAX;
+		return chain[lod];
 	}
 	// Stable saturated color per cluster (debug view). mode 0 = hash hue,
 	// mode 1 = cone-cutoff heat (red = degenerate/useless cone).
@@ -243,6 +257,9 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 private:
 	// world mesh idx -> gfx mesh idx (UINT32_MAX = not filterable).
 	std::vector<uint32_t> meshMap_;
+	// world mesh idx -> per-LOD gfx mesh idx (lodMeshMap_[w][l], UINT32_MAX
+	// = that LOD draws direct; [w][0] always mirrors meshMap_[w]).
+	std::vector<std::vector<uint32_t>> lodMeshMap_;
 	// Debug culling-freeze override (see SetCullOverride). Read once per
 	// AppendPasses for the FilterMainView call only.
 	bool cullOverride_ = false;

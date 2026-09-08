@@ -11,6 +11,7 @@
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/meshlet.h>
 #include <Engine/Utils/texture_loader.h>
 
 namespace smvk {
@@ -600,6 +601,21 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			}
 		}
 
+		// Meshes cooked without meshlets (notably every "/lodN" sibling:
+		// the cooker only stamps LOD0) would stay off the GPU filter and
+		// draw direct, unculled by frustum/HZB. The blob carries the full
+		// vertex/index payloads, so build the missing meshlets here from
+		// the upload (same config as the cook path). Failure keeps the
+		// old direct fallback; success makes the mesh filterable.
+		if (cooked.empty() && !upload.vertices.empty() && !upload.indices.empty()
+			&& (upload.indices.size() % 3) == 0) {
+			MeshletConfig mcfg{};
+			mcfg.enabled = true;
+			CookedMeshlets built{};
+			if (BuildMeshletsForUpload(upload, mcfg, &built, nullptr, nullptr)
+				&& !built.empty())
+				cooked = std::move(built);
+		}
 		const ClusterStaticMeshHandle h = cluster->UploadStaticMesh(upload);
 		if (!h.valid())
 			return fail("UploadStaticMesh failed for: " + uri);

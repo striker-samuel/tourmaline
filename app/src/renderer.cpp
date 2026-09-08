@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <unordered_map>
 
 namespace app {
 
@@ -402,24 +403,35 @@ void GfxRenderer::AppendHizPasses(smvk::FrameContext& base,
 
 void GfxRenderer::RegisterWorldMeshes(smvk::World& world) {
 	meshMap_.assign(world.meshLocations.size(), UINT32_MAX);
+	lodMeshMap_.clear();
+	lodMeshMap_.resize(world.meshLocations.size());
 	uint32_t fromCooked = 0, fromUpload = 0, skipped = 0;
 	uint64_t skippedTris = 0;
-	for (size_t i = 0; i < world.meshLocations.size(); ++i) {
-		const smvk::World::MeshLocation& loc = world.meshLocations[i];
-		if (!loc.cluster) {
-			++skipped;
-			continue;
+	// Dedupe: distinct base meshes can share one LOD sibling URI, and the
+	// same base mesh is never registered twice. Key = owning cluster +
+	// pool index (stable for the register pass; all clusters are alive).
+	struct LocKey {
+		const void* cluster = nullptr;
+		uint32_t index = 0;
+		bool operator==(const LocKey& o) const {
+			return cluster == o.cluster && index == o.index;
 		}
-		// LOD chains stay registered on their LOD0 payload: FilterMainView
-		// pushes only lod==0 instances into the indirect ranges (HZB-culled)
-		// while the direct fallback draws lod>0 siblings, so each instance
-		// rasterizes exactly once without giving up the filter.
-		(void)world;
+	};
+	struct LocHash {
+		size_t operator()(const LocKey& k) const noexcept {
+			return std::hash<const void*>{}(k.cluster) * 31u + k.index;
+		}
+	};
+	std::unordered_map<LocKey, uint32_t, LocHash> done;
+	auto registerOne = [&](const smvk::World::MeshLocation& loc) -> uint32_t {
+		if (!loc.cluster || !loc.handle.valid())
+			return UINT32_MAX;
+		const LocKey key{ loc.cluster, loc.handle.index() };
+		if (auto it = done.find(key); it != done.end())
+			return it->second;
 		const smvk::StaticMesh* mesh = loc.cluster->staticMeshes.get(loc.handle);
-		if (!mesh || mesh->geometry.surfaces.empty()) {
-			++skipped;
-			continue;
-		}
+		if (!mesh || mesh->geometry.surfaces.empty())
+			return UINT32_MAX;
 		const uint32_t baseVertex =
 			(uint32_t)std::max<int32_t>(mesh->geometry.surfaces[0].baseVertex, 0);
 		uint32_t gfxMesh = UINT32_MAX;
@@ -434,11 +446,35 @@ void GfxRenderer::RegisterWorldMeshes(smvk::World& world) {
 			if (gfxMesh != UINT32_MAX)
 				++fromUpload;
 		}
-		if (gfxMesh == UINT32_MAX) {
-			++skipped;
+		if (gfxMesh == UINT32_MAX)
 			skippedTris += mesh->geometry.indexCount / 3;
+		done.emplace(key, gfxMesh);
+		return gfxMesh;
+	};
+	// Every LOD sibling gets its own gfx mesh so FilterMainView can push
+	// the selected LOD into the HZB-culled indirect ranges (previously
+	// only LOD0 was registered and LOD>0 drew direct, unculled).
+	for (size_t i = 0; i < world.meshLocations.size(); ++i) {
+		const uint32_t chainLen = world.LodChainLength((uint32_t)i);
+		if (chainLen <= 1) {
+			const uint32_t g = registerOne(world.meshLocations[i]);
+			if (g == UINT32_MAX)
+				++skipped;
+			meshMap_[i] = g;
+			lodMeshMap_[i] = { g };
+			continue;
 		}
-		meshMap_[i] = gfxMesh;
+		std::vector<uint32_t> perLod;
+		perLod.reserve(chainLen);
+		for (uint32_t l = 0; l < chainLen; ++l) {
+			auto hit = world.ResolveLodMesh((uint32_t)i, l);
+			const uint32_t g = hit ? registerOne(*hit) : UINT32_MAX;
+			if (g == UINT32_MAX)
+				++skipped;
+			perLod.push_back(g);
+		}
+		meshMap_[i] = perLod.empty() ? UINT32_MAX : perLod[0];
+		lodMeshMap_[i] = std::move(perLod);
 	}
 	SMVK_DEBUG_LOG(
 		"[GfxFilter] meshes: %u cooked + %u runtime-cooked = %u filtered, %u direct (%llu tris)\n",
@@ -485,22 +521,29 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 			if (materialForNode == world.scene.materialForNode.end())
 				return;
 			const uint32_t worldMesh = meshForNode->second;
-			if (worldMesh >= meshMap_.size() || meshMap_[worldMesh] == UINT32_MAX)
-				return; // not filterable: legacy direct path still draws it
+			if (worldMesh >= meshMap_.size())
+				return; // unknown mesh: legacy direct path still draws it
 			const glm::mat4& model = world.scene.globalTransform[node];
-			// LOD split (World::LodIndexForNode shares the halfrate cache
-			// with every direct-draw consumer, so both sides of the split
-			// see the same decision for a node within a frame):
-			// lod==0 stays in the HZB-culled indirect ranges, lod>0 falls
-			// through to the direct fallback which draws the selected
-			// sibling. Each instance draws once.
-			if (lod) {
-				const uint32_t chainLen = world.LodChainLength(worldMesh);
-				if (chainLen > 1 && world.LodIndexForNode(node, worldMesh, *lod) > 0)
-					return;
-			}
-			// Mesh-level sphere pre-cull (same test as the shadow passes).
-			if (const smvk::StaticMesh* meshDesc = world.GetMesh(worldMesh)) {
+			// LOD-aware push (World::LodIndexForNode shares the halfrate
+			// cache with every direct-draw consumer, so both sides agree
+			// per node per frame): the selected sibling's gfx mesh goes
+			// into the HZB-culled indirect ranges. Only a sibling whose
+			// registration failed falls through to the direct fallback,
+			// so each instance still rasterizes exactly once.
+			uint32_t lodIdx = 0;
+			if (lod && world.LodChainLength(worldMesh) > 1)
+				lodIdx = world.LodIndexForNode(node, worldMesh, *lod);
+			uint32_t gfxMesh = UINT32_MAX;
+			if (worldMesh < lodMeshMap_.size()
+				&& lodIdx < lodMeshMap_[worldMesh].size())
+				gfxMesh = lodMeshMap_[worldMesh][lodIdx];
+			else if (worldMesh < meshMap_.size())
+				gfxMesh = meshMap_[worldMesh];
+			if (gfxMesh == UINT32_MAX)
+				return; // that LOD not filterable: direct path draws it
+			// Mesh-level sphere pre-cull on the SELECTED sibling's bounds
+			// (same test as the shadow passes; LOD siblings can differ).
+			if (smvk::StaticMesh* meshDesc = world.GetLodMesh(worldMesh, lodIdx)) {
 				glm::vec3 center;
 				float radius = 0.0f;
 				smvk::MeshBoundsToWorld(model, meshDesc->geometry.aabbMin,
@@ -521,7 +564,7 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 				if (mat->shadingModel == smvk::ShadingModel::Masked)
 					drawSet = smvk::gfx::DrawSetBit_Masked;
 			}
-			smvk::gfx::PushDraw(gfx, slot, meshMap_[worldMesh], model,
+			smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
 				materialForNode->second, drawFlags, drawSet);
 		});
 	const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, frameIndex, slot);
@@ -683,6 +726,12 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 	// gfx mesh -> world mesh (first match) for traceability; -1 = none.
 	// Lets a "mesh X still renders" report map to the scene graph.
 	std::vector<int> gfxToWorld(gfx.meshes.size(), -1);
+	for (uint32_t w = 0; w < (uint32_t)lodMeshMap_.size(); ++w) {
+		for (uint32_t g : lodMeshMap_[w]) {
+			if (g < gfxToWorld.size() && gfxToWorld[g] < 0)
+				gfxToWorld[g] = (int)w;
+		}
+	}
 	for (uint32_t w = 0; w < (uint32_t)meshMap_.size(); ++w) {
 		const uint32_t g = meshMap_[w];
 		if (g < gfxToWorld.size() && gfxToWorld[g] < 0)

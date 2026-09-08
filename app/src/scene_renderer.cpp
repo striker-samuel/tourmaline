@@ -2065,12 +2065,13 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					// Static filtered nodes are covered by the HZB-culled
 					// indirect draws below: skip them here so they rasterize
 					// once. Moved filtered nodes (model != prev) still need
-					// the direct path for their correct prevModel. LOD>0
-					// instances are NOT in the indirect ranges (FilterMainView
-					// pushes lod==0 only) so they always take the direct path.
+					// the direct path for their correct prevModel. Every
+					// registered LOD sibling is in the indirect ranges
+					// (FilterMainView pushes the selected LOD), so only
+					// unregistered LODs take the direct path.
 					if (motionFilteredActive
-						&& m_gfxRenderer.IsMeshFiltered(meshForNode->second)
-						&& LodIndexForNode(node, meshForNode->second) == 0) {
+						&& m_gfxRenderer.GfxMeshForLod(meshForNode->second,
+							LodIndexForNode(node, meshForNode->second)) != UINT32_MAX) {
 						const bool prevValid = m_prevGlobalTransforms.size()
 							== m_world->scene.globalTransform.size();
 						if (prevValid) {
@@ -2450,13 +2451,17 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				const uint32_t worldMesh = meshForNode->second;
 				const glm::mat4& model = m_world->scene.globalTransform[node];
 				std::copy_n(glm::value_ptr(model), 16, dp.model);
-				const uint32_t gfxMesh = m_gfxRenderer.GfxMeshForWorldMesh(worldMesh);
+				// Debug the SELECTED sibling: every registered LOD has its
+				// own gfx mesh (see RegisterWorldMeshes), so the overlay
+				// shows what the filter actually culled for this instance.
+				const uint32_t gfxMesh = m_gfxRenderer.GfxMeshForLod(worldMesh,
+					LodIndexForNode(node, worldMesh));
 		if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
 			// Not filterable: white direct fallback (nothing vanishes).
 			// Mesh-local surfaces address the same index monoblock.
 			dp.color[0] = dp.color[1] = dp.color[2] = 0.9f; dp.color[3] = 1.0f;
 			cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
-			if (smvk::StaticMesh* meshDesc = m_world->GetMesh(worldMesh)) {
+			if (smvk::StaticMesh* meshDesc = LodMeshForNode(node, worldMesh)) {
 				for (auto& draw_set : meshDesc->geometry.surfaces) {
 					cmd.DrawIndexed(draw_set.indexCount, 1,
 						draw_set.firstIndex, draw_set.baseVertex);
@@ -2525,11 +2530,12 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				auto materialForNode = m_world->scene.materialForNode.find(node);
 				if (materialForNode == m_world->scene.materialForNode.end())
 					return;
-				// Filtered lod==0 instances already drew above via indirect
-				// ranges. LOD>0 instances are not in the ranges (see
-				// FilterMainView) and fall through to the direct LOD draw.
-				if (gfxActive && m_gfxRenderer.IsMeshFiltered(meshForNode->second)
-					&& LodIndexForNode(node, meshForNode->second) == 0)
+				// Filtered instances already drew above via indirect
+				// ranges (FilterMainView pushes the selected LOD sibling).
+				// Only LODs whose registration failed fall through to the
+				// direct LOD draw, so each instance rasterizes once.
+				if (gfxActive && m_gfxRenderer.GfxMeshForLod(meshForNode->second,
+					LodIndexForNode(node, meshForNode->second)) != UINT32_MAX)
 					return;
 				const uint32_t materialId = materialForNode->second;
 				if (materialId != boundMaterial) {

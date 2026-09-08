@@ -1269,12 +1269,32 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 		if (haveMeshlets)
 			cluster.RegisterMeshMeshlets(uri, cooked);
 		// Siblings share the base groupId; scene keeps referencing LOD0.
+		// Each sibling gets its own meshlets (same config as LOD0) so the
+		// GPU filter can register every LOD: without them siblings draw
+		// direct, unculled by frustum/HZB (freeze-view leak).
 		for (size_t li = 0; li < lodChain.size(); ++li) {
 			const smvk::CookedLod& kept = lodChain[li];
 			const auto lh = cluster.UploadStaticMesh(kept.upload);
 			if (!lh.valid())
 				continue;
 			const smvk::StringViewT lodUri = smvk::LodSiblingUri(uri, static_cast<uint32_t>(li + 1));
+			if (meshletConfig.enabled && !kept.upload.vertices.empty()
+				&& !kept.upload.indices.empty()) {
+				smvk::CookedMeshlets lodCooked;
+				smvk::MeshletStats lodStats;
+				std::string lodErr;
+				if (BuildMeshletsForUpload(kept.upload, meshletConfig,
+						&lodCooked, &lodStats, &lodErr)
+					&& !lodCooked.empty()) {
+					cluster.RegisterMeshMeshlets(lodUri, lodCooked);
+				}
+#ifndef NDEBUG
+				else if (!lodErr.empty() && lodErr != "meshlets disabled") {
+					std::cout << "Meshlets mesh." << gltfMeshIndex << "/prim." << primitiveIndex
+						<< "/lod" << (li + 1) << " skipped: " << lodErr << std::endl;
+				}
+#endif
+			}
 			cluster.RegisterMeshUri(lodUri, lh);
 			smvk::LodInfo llod;
 			llod.groupId = lod.groupId;

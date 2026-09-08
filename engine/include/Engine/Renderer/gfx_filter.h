@@ -86,7 +86,9 @@ static constexpr uint32_t kMaxClusterTris = 128;
 // (see AllocateStaticVertexFmt in engine/src/Renderer/mesh.cpp).
 static constexpr uint32_t kMaxBatches = 65536; // surviving (draw x cluster) per view
 static constexpr uint32_t kMaxDraws = 4096;   // draws pushed per view
-static constexpr uint32_t kMaxMeshes = 4096;
+// Sized for LOD chains: every cooked sibling registers its own gfx mesh
+// (~3x the LOD0-only count), so headroom over the pre-LOD 4k budget.
+static constexpr uint32_t kMaxMeshes = 8192;
 static constexpr uint32_t kMaxViews = 64; // mirrors kMaxRenderViews
 
 // GPU cluster entry (2x uvec4). Must match HLSL GfxClusters (32 bytes):
