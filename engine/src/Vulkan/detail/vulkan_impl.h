@@ -721,6 +721,20 @@ namespace smvk {
 		void ClearFramebufferResized() { framebufferResized = false; }
 		uint32_t GetCurrentImageIndex() const { return currentImageIndex_; }
 		uint32_t GetCurrentFrameIndex() const { return currentFrame_; }
+		// VSync / presentation-mode control. The requested mode takes effect
+		// on the next Create/Recreate; the active mode is what the running
+		// swapchain was actually created with (fallback when unsupported).
+		// Defaults to MAILBOX (no VSync, no tearing).
+		void SetRequestedPresentMode(VkPresentModeKHR mode) { requestedPresentMode_ = mode; }
+		VkPresentModeKHR GetRequestedPresentMode() const { return requestedPresentMode_; }
+		VkPresentModeKHR GetActivePresentMode() const { return activePresentMode_; }
+		std::vector<VkPresentModeKHR> GetAvailablePresentModes() const;
+		// Frame GPU time (ms) of the last retired frame, measured with
+		// per-frame timestamp queries around the whole command buffer.
+		// Valid once a full frame has retired (HasGpuTiming); until then the
+		// overlay should show CPU time only.
+		double GetLastGpuMs() const { return lastGpuMs_; }
+		bool HasGpuTiming() const { return gpuTimingValid_; }
 		VkSemaphore GetImageAvailableSemaphore() const { return imageAvailableSemaphores_.at(currentFrame_); }
 		VkFence GetInFlightFence() const { return inFlightFences_.at(currentFrame_); }
 		VkSemaphore GetRenderFinishedSemaphore(uint32_t imageIndex) const { return renderFinishedSemaphores_.at(imageIndex); }
@@ -766,6 +780,21 @@ namespace smvk {
 		uint32_t desiredImageCount_ = DESIRED_SWAPCHAIN_IMAGE_COUNT;
 		uint32_t currentImageIndex_ = 0;
 		uint32_t currentFrame_ = 0;
+
+		// Presentation mode: requested (next Create/Recreate) vs active.
+		VkPresentModeKHR requestedPresentMode_ = VK_PRESENT_MODE_MAILBOX_KHR;
+		VkPresentModeKHR activePresentMode_ = VK_PRESENT_MODE_FIFO_KHR;
+
+		// Per-frame timestamp query pools (2 queries each: frame start/end)
+		// for the CPU/GPU time split overlay. Indexed by frame slot
+		// (currentFrame_ < MAX_FRAMES_IN_FLIGHT), so they survive Recreate.
+		VkQueryPool timestampPools_[MAX_FRAMES_IN_FLIGHT]{};
+		bool timestampWritten_[MAX_FRAMES_IN_FLIGHT] = {};
+		float timestampPeriod_ = 0.0f; // ns per timestamp tick
+		double lastGpuMs_ = 0.0;
+		bool gpuTimingValid_ = false;
+		void CreateTimestampPools();
+		void DestroyTimestampPools();
 
 		void CreateSwapchain();
 		void CreateImageViews();

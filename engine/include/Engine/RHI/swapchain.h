@@ -44,6 +44,17 @@ public:
     Framebuffer AcquireFramebuffer();
     void EndAndPresentFramebuffer(Framebuffer& fb);
 
+    // VSync / presentation-mode control (takes effect on next Recreate).
+    void SetPresentMode(PresentMode mode);
+    PresentMode GetPresentMode() const;
+    PresentMode GetActivePresentMode() const;
+    std::vector<PresentMode> GetAvailablePresentModes() const;
+
+    // GPU frame time (ms) of the last retired frame, for the CPU/GPU
+    // split overlay. False until a full frame has retired.
+    double GetGpuFrameMs() const;
+    bool HasGpuTiming() const;
+
     // Exposed for compatibility – preferred via GetExtent/GetImageCount
     uint32_t framesInFlight() const;
     int GetWindowWidth() const;

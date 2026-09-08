@@ -2,12 +2,17 @@
 #pragma once
 
 
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include <Engine/smvk.h>
+#include <Engine/Memory/arena.h>
+#include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
+#include <Engine/Memory/string_view.h>
+#include <Engine/Memory/uri_map.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/asset_registry.h>
@@ -92,18 +97,24 @@ namespace smvk {
 		// bytes back a path; these maps only resolve an already-loaded
 		// asset inside this Cluster. Main-thread only (Cluster pools are
 		// externally synchronized, see Memory/pool.h).
+		//
+		// Storage is string-free: keys are StringViewT slices owned by the
+		// per-Cluster uriArena_ (freed wholesale with the Cluster) and the
+		// maps are open-addressing UriMaps — lookups take caller views and
+		// never allocate (the previous std::unordered_map<std::string,...>
+		// round-tripped a std::string per lookup).
 		// ------------------------------------------------------------------
-		bool RegisterMeshUri(const std::string& uri, ClusterStaticMeshHandle handle);
-		bool RegisterMaterialUri(const std::string& uri, ClusterMaterialHandle handle);
+		bool RegisterMeshUri(StringViewT uri, ClusterStaticMeshHandle handle);
+		bool RegisterMaterialUri(StringViewT uri, ClusterMaterialHandle handle);
 		// Textures live in the global RHI pool for binding (materials store
 		// RHI TextureHandles); the Cluster pool only owns lifetime Holders.
 		// The uri map therefore stores the RHI handle used at bind time.
-		bool RegisterTextureUri(const std::string& uri, TextureHandle handle);
-		void UnregisterUri(const std::string& uri);
+		bool RegisterTextureUri(StringViewT uri, TextureHandle handle);
+		void UnregisterUri(StringViewT uri);
 
-		std::optional<ClusterStaticMeshHandle> FindMeshByUri(const std::string& uri) const;
-		std::optional<ClusterMaterialHandle> FindMaterialByUri(const std::string& uri) const;
-		std::optional<TextureHandle> FindTextureByUri(const std::string& uri) const;
+		std::optional<ClusterStaticMeshHandle> FindMeshByUri(StringViewT uri) const;
+		std::optional<ClusterMaterialHandle> FindMaterialByUri(StringViewT uri) const;
+		std::optional<TextureHandle> FindTextureByUri(StringViewT uri) const;
 
 		// Resolves an AssetRef in place: keeps ref.uri, fills cluster/handle
 		// on hit, clears resolution on miss. Returns true on hit.
@@ -111,53 +122,57 @@ namespace smvk {
 		bool ResolveAssetRef(AssetRef<HandleT>& ref);
 
 		// Reverse lookup for serialization: asset handle -> stored uri.
-		// Returns "" when the handle was created without a registered uri
-		// (procedural/default assets); the serializer then assigns a
-		// "<cluster-local>#..." fallback uri.
-		std::string GetMeshUri(ClusterStaticMeshHandle handle) const;
-		std::string GetMaterialUri(ClusterMaterialHandle handle) const;
+		// Returns an empty view when the handle was created without a
+		// registered uri (procedural/default assets); the serializer then
+		// assigns a "<cluster-local>#..." fallback uri. The view points
+		// into the cluster's uri arena and stays valid for the cluster's
+		// lifetime.
+		StringViewT GetMeshUri(ClusterStaticMeshHandle handle) const;
+		StringViewT GetMaterialUri(ClusterMaterialHandle handle) const;
 
-		// Per-mesh LOD marker (cook-time instrumentation, see
-		// Asset/mesh_optimizer.h). Stored into MeshBlobs; the renderer does
-		// not branch on it.
-		void RegisterMeshLod(const std::string& uri, const LodInfo& lod);
-		std::optional<LodInfo> GetMeshLod(const std::string& uri) const;
+		// Per-mesh LOD marker (see Asset/mesh_optimizer.h). Stored into
+		// MeshBlobs; the renderer does not branch on it.
+		void RegisterMeshLod(StringViewT uri, const LodInfo& lod);
+		std::optional<LodInfo> GetMeshLod(StringViewT uri) const;
 		// All LOD markers for cook post-passes (see FinalizeLodWorldErrors).
-		std::vector<std::pair<std::string, LodInfo>> ListMeshLods() const;
+		std::vector<std::pair<StringViewT, LodInfo>> ListMeshLods() const;
 
 		// Per-mesh cooked meshlets (see Asset/meshlet.h). Stamped by the
 		// importer when meshlet cooking is enabled, persisted in MeshBlobs,
 		// and loaded into StaticMesh::meshlets on deserialize. The renderer
 		// does not consume them yet (indirect path foundation only).
-		void RegisterMeshMeshlets(const std::string& uri, const CookedMeshlets& meshlets);
-		std::optional<CookedMeshlets> GetMeshMeshlets(const std::string& uri) const;
+		void RegisterMeshMeshlets(StringViewT uri, const CookedMeshlets& meshlets);
+		std::optional<CookedMeshlets> GetMeshMeshlets(StringViewT uri) const;
 
 		// Enumerates registered texture URIs for serialization
 		// ({uri, RHI handle} pairs, sorted by uri for deterministic paks).
-		std::vector<std::pair<std::string, TextureHandle>> ListTextureUris() const;
+		std::vector<std::pair<StringViewT, TextureHandle>> ListTextureUris() const;
 
 		// glTF sampler parameters per texture uri (persisted into paks;
 		// the renderer still uses its default sampler until sampler
 		// selection is wired up — see Asset/asset_registry.h notes).
-		void RegisterTextureSampler(const std::string& uri, const TextureSamplerDesc& desc);
-		std::optional<TextureSamplerDesc> GetTextureSampler(const std::string& uri) const;
+		void RegisterTextureSampler(StringViewT uri, const TextureSamplerDesc& desc);
+		std::optional<TextureSamplerDesc> GetTextureSampler(StringViewT uri) const;
 
 		// Embedded source bytes per texture uri (populated by the importer
 		// so the cooker can embed .ktx2 payloads without re-reading the
 		// host fs; also populated on pak load so re-cook works).
 		// Call ReleaseTextureSources() to drop the copies at runtime.
-		void SetTextureSource(const std::string& uri, std::vector<uint8_t> bytes);
-		const std::vector<uint8_t>* GetTextureSource(const std::string& uri) const;
+		void SetTextureSource(StringViewT uri, std::vector<uint8_t> bytes);
+		const std::vector<uint8_t>* GetTextureSource(StringViewT uri) const;
 		void ReleaseTextureSources();
 
 	private:
-		std::unordered_map<std::string, ClusterStaticMeshHandle> meshByUri_;
-		std::unordered_map<std::string, ClusterMaterialHandle> materialByUri_;
-		std::unordered_map<std::string, TextureHandle> textureByUri_;
-		std::unordered_map<std::string, TextureSamplerDesc> textureSamplers_;
-		std::unordered_map<std::string, std::vector<uint8_t>> textureSources_;
-		std::unordered_map<std::string, LodInfo> meshLods_;
-		std::unordered_map<std::string, CookedMeshlets> meshMeshlets_;
+		// Owned URI key storage for all maps below; freed wholesale with
+		// the Cluster (see asset_registry.cpp registration flow).
+		Arena uriArena_;
+		UriMap<ClusterStaticMeshHandle> meshByUri_;
+		UriMap<ClusterMaterialHandle> materialByUri_;
+		UriMap<TextureHandle> textureByUri_;
+		UriMap<TextureSamplerDesc> textureSamplers_;
+		UriMap<std::vector<uint8_t>> textureSources_;
+		UriMap<LodInfo> meshLods_;
+		UriMap<CookedMeshlets> meshMeshlets_;
 		bool retainUploads_ = false;
 		std::unordered_map<uint32_t, StaticMeshUpload> retainedUploads_;
 		// Per-cluster static mesh allocations keyed by the local staticMeshes
@@ -167,12 +182,12 @@ namespace smvk {
 		uint32_t cookNextTextureId_ = 0;
 	};
 
-	template<typename HandleT>
-	struct AssetRef {
-		std::string uri;
+template<typename HandleT>
+struct AssetRef {
+	StringViewT uri;
 
-		Cluster* cluster = nullptr;
-		HandleT handle{};
+	Cluster* cluster = nullptr;
+	HandleT handle{};
 
 		bool resolved() const {
 			return cluster != nullptr && handle.valid();

@@ -1,0 +1,78 @@
+#pragma once
+// Linear (bump) allocators for URI/string scratch (see Memory/string_view.h).
+//
+// Two arenas exist:
+//   - AppArena(): process-lifetime storage. Per-Cluster URI keys are NOT
+//     freed individually — each Cluster owns a private Arena instead, so
+//     unloading a cluster releases all of its strings wholesale.
+//   - FrameArena(): per-frame scratch (sibling URI probing, normalized URI
+//     builds). Reset once per frame by the renderer; views into it never
+//     cross a frame boundary.
+//
+// Blocks are chunked: a request larger than the current block's remainder
+// (or than blockSize itself) gets a dedicated block. Reset() frees every
+// block — the frame arena stabilizes at its high-water mark instead of
+// churning malloc.
+
+#include <cstdint>
+#include <cstddef>
+#include <memory>
+#include <vector>
+
+#include <Engine/Memory/string_view.h>
+
+namespace smvk {
+
+class Arena {
+public:
+	explicit Arena(size_t blockSize = kDefaultBlockSize)
+		: blockSize_(blockSize < 64 ? 64 : blockSize) {}
+	Arena(const Arena&) = delete;
+	Arena& operator=(const Arena&) = delete;
+	Arena(Arena&&) = default;
+	Arena& operator=(Arena&&) = default;
+
+	// Raw bump allocation with alignment (>= 8, defaults to 16).
+	[[nodiscard]] void* Allocate(size_t size, size_t align = 16);
+	// Placement-constructs T in the arena (never freed individually).
+	template<typename T, typename... Args>
+	[[nodiscard]] T* Create(Args&&... args) {
+		void* p = Allocate(sizeof(T), alignof(T));
+		return new (p) T(std::forward<Args>(args)...);
+	}
+	// Copies the string into the arena, NUL-terminated, returns the view.
+	[[nodiscard]] StringViewT AllocateString(StringViewT s);
+	// printf-style formatting into the arena (URI construction etc.).
+	[[nodiscard]] StringViewT FormatString(const char* fmt, ...);
+
+	// Frees every block. The frame arena calls this once per frame; a
+	// cluster's private arena effectively calls it from the destructor.
+	void Reset();
+	[[nodiscard]] size_t UsedBytes() const { return totalUsed_; }
+	[[nodiscard]] size_t BlockCount() const { return blocks_.size(); }
+
+	static constexpr size_t kDefaultBlockSize = size_t(1) << 20; // 1 MiB
+
+private:
+	struct Block {
+		std::unique_ptr<uint8_t[]> data;
+		size_t size = 0;
+		size_t used = 0;
+	};
+	std::vector<Block> blocks_;
+	size_t blockSize_ = kDefaultBlockSize;
+	size_t totalUsed_ = 0;
+
+	size_t BlockRemainder() const {
+		return blocks_.empty() ? 0
+			: blocks_.back().size - blocks_.back().used;
+	}
+};
+
+// Process-lifetime arena (app boot..shutdown; grows monotonically).
+[[nodiscard]] Arena& AppArena();
+// Per-frame scratch; ResetFrameArena() at frame start.
+[[nodiscard]] Arena& FrameArena();
+void ResetFrameArena();
+
+} // namespace smvk

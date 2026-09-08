@@ -292,22 +292,26 @@ float MaxScaleOfMatrix(const glm::mat4& m) {
 	return (std::isfinite(s) && s > 0.0f) ? s : 1.0f;
 }
 
-std::string LodSiblingUri(const std::string& baseUri, uint32_t lodIndex) {
-	return baseUri + "/lod" + std::to_string(lodIndex);
+StringViewT LodSiblingUri(StringViewT baseUri, uint32_t lodIndex, Arena& scratch) {
+	return scratch.FormatString("%.*s/lod%u",
+		static_cast<int>(baseUri.size()), baseUri.data(), lodIndex);
 }
 
-std::string BaseMeshUriForLod(const std::string& uri) {
-	// Strip a trailing "/lodN" (N >= 1 digits) if present.
-	const size_t slash = uri.rfind("/lod");
-	if (slash == std::string::npos)
+StringViewT BaseMeshUriForLod(StringViewT uri) {
+	// Strip a trailing "/lodN" (N >= 1 digits) if present (pure view slice).
+	const size_t slash = uri.rfind('/');
+	if (slash == StringViewT::npos || slash == 0)
+		return uri;
+	const StringViewT tail = uri.substr(slash + 1);
+	if (!tail.starts_with("lod"))
 		return uri;
 	bool digits = false;
-	for (size_t i = slash + 4; i < uri.size(); ++i) {
-		if (uri[i] < '0' || uri[i] > '9')
+	for (size_t i = 3; i < tail.size(); ++i) {
+		if (tail[i] < '0' || tail[i] > '9')
 			return uri;
 		digits = true;
 	}
-	return (digits && slash > 0) ? uri.substr(0, slash) : uri;
+	return digits ? uri.substr(0, slash) : uri;
 }
 
 void FinalizeLodWorldErrors(Cluster& cluster) {
@@ -335,25 +339,27 @@ void FinalizeLodWorldErrors(Cluster& cluster) {
 		if (it == maxScaleByMesh.end() || s > it->second)
 			maxScaleByMesh[meshIdx] = s;
 	}
-	// Base URI -> pool index (LOD0 handle) for scale lookup.
-	std::unordered_map<std::string, uint32_t> poolByBaseUri;
+	// Base URI -> pool index (LOD0 handle) for scale lookup. Keys are
+	// cluster-arena views (GetMeshUri) — stable for the cluster lifetime,
+	// so the UriMap stores them directly.
+	UriMap<uint32_t> poolByBaseUri;
 	for (const auto& [node, meshIdx] : scene.meshForNode) {
 		ClusterStaticMeshHandle h = cluster.staticMeshes.getHandle(meshIdx);
 		if (!h.valid())
 			continue;
-		const std::string baseUri = cluster.GetMeshUri(h);
+		const StringViewT baseUri = BaseMeshUriForLod(cluster.GetMeshUri(h));
 		if (!baseUri.empty())
-			poolByBaseUri.emplace(baseUri, meshIdx);
+			poolByBaseUri.Insert(baseUri, meshIdx);
 	}
 
 	for (const auto& [uri, lod] : lodEntries) {
 		if (lod.lodIndex == 0)
 			continue;
-		const std::string baseUri = BaseMeshUriForLod(uri);
-		auto bit = poolByBaseUri.find(baseUri);
-		if (bit == poolByBaseUri.end())
+		const StringViewT baseUri = BaseMeshUriForLod(uri);
+		const uint32_t* poolIdx = poolByBaseUri.Find(baseUri);
+		if (!poolIdx)
 			continue;
-		auto sit = maxScaleByMesh.find(bit->second);
+		auto sit = maxScaleByMesh.find(*poolIdx);
 		const float nodeScale = (sit != maxScaleByMesh.end()) ? sit->second : 1.0f;
 		LodInfo scaled = lod;
 		scaled.simplifyError = lod.simplifyError * nodeScale;

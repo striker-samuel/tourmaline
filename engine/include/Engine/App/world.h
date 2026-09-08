@@ -26,6 +26,18 @@ namespace smvk {
 		glm::mat4 viewProj{};
 	};
 
+	// Per-frame inputs for error-driven LOD selection (see World::
+	// LodIndexForNode). frameId is renderer-supplied and MONOTONIC (the
+	// RHI ring index is NOT — it wraps); it keys the halfrate parity
+	// split and the per-node decision stamps.
+	struct LodFrameInputs {
+		uint64_t frameId = 0;
+		glm::vec3 eye{ 0.0f };
+		float viewportHeight = 1080.0f;
+		float fovY = 0.7853982f; // 45 deg
+		float pixelBudget = 1.0f;
+	};
+
 	typedef enum IteratorFlagBits {
 		IteratorFlagBit_None = 0,
 		IteratorFlagBit_Renderable = 1u << 0,
@@ -137,10 +149,33 @@ namespace smvk {
 		// ResolveAndFixup_clusters().
 		mutable std::vector<LodChain> lodChains;
 
+		// ---- Halfrate LOD updates (staggered halves) ------------------
+		// Per-node LOD decisions are cached and refreshed on a parity
+		// split: on tick T, only nodes with (node & 1) == (tick & 1)
+		// recompute; every other node serves its last decision (1 frame
+		// stale at worst). All passes inside one frame observe the SAME
+		// value for a node (the first computation of a refresh frame wins
+		// and is stamped), so filter/direct splits stay consistent even
+		// when queried with different eyes (debug cull override).
+		// Cached per-node LOD index for this frame's inputs. Same frameId
+		// → same value for a node; refresh cadence is the parity split
+		// above (bootstrap computes nodes the first time they're seen).
+		uint32_t LodIndexForNode(NodeId node, uint32_t worldMesh,
+			const LodFrameInputs& inputs) const;
+		// Drops every cached decision (parameter tweak / scene edit).
+		void InvalidateLodCache();
+		// Cache storage (lazily sized to the node count; reset by
+		// ResolveAndFixup_clusters).
+		mutable std::vector<uint8_t> nodeLod_;
+		mutable std::vector<uint64_t> nodeLodStamp_; // frameId of computation
+		mutable uint64_t lodTick_ = 0;               // parity source
+		mutable uint64_t lodLastFrameId_ = ~uint64_t(0);
+		mutable LodFrameInputs lodInputs_{};
+
 		// First-hit URI resolution across clusters in registration order
 		// (mirrors the VFS overlay rule). Used for cross-pak references.
-		std::optional<MeshLocation> ResolveMeshAcrossClusters(const std::string& uri) const;
-		std::optional<MaterialLocation> ResolveMaterialAcrossClusters(const std::string& uri) const;
+		std::optional<MeshLocation> ResolveMeshAcrossClusters(StringViewT uri) const;
+		std::optional<MaterialLocation> ResolveMaterialAcrossClusters(StringViewT uri) const;
 
 		//void NewFrame();
 			//if (dirtyCull && flags.size() == scene.hierarchy.size())

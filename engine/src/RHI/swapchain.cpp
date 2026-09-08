@@ -3,6 +3,26 @@
 #include <Engine/RHI/resource_manager.h>
 
 namespace smvk {
+
+namespace {
+VkPresentModeKHR ToVkPresentMode(PresentMode mode) {
+    switch (mode) {
+    case PresentMode::Mailbox: return VK_PRESENT_MODE_MAILBOX_KHR;
+    case PresentMode::Immediate: return VK_PRESENT_MODE_IMMEDIATE_KHR;
+    case PresentMode::Fifo:
+    default: return VK_PRESENT_MODE_FIFO_KHR;
+    }
+}
+PresentMode FromVkPresentMode(VkPresentModeKHR mode) {
+    switch (mode) {
+    case VK_PRESENT_MODE_MAILBOX_KHR: return PresentMode::Mailbox;
+    case VK_PRESENT_MODE_IMMEDIATE_KHR: return PresentMode::Immediate;
+    case VK_PRESENT_MODE_FIFO_KHR:
+    default: return PresentMode::Fifo;
+    }
+}
+} // namespace
+
 struct Swapchain::Impl {
     std::unique_ptr<VulkanSwapchain> vulkan;
 };
@@ -49,6 +69,28 @@ void Swapchain::EndAndPresentFramebuffer(Framebuffer& fb) {
     VulkanFrameBuffer vfb{fb.frameIndex, fb.imageIndex, reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque), *impl_->vulkan};
     impl_->vulkan->EndAndPresentFramebuffer(vfb);
 }
+void Swapchain::SetPresentMode(PresentMode mode) {
+    impl_->vulkan->SetRequestedPresentMode(ToVkPresentMode(mode));
+}
+PresentMode Swapchain::GetPresentMode() const {
+    return FromVkPresentMode(impl_->vulkan->GetRequestedPresentMode());
+}
+PresentMode Swapchain::GetActivePresentMode() const {
+    return FromVkPresentMode(impl_->vulkan->GetActivePresentMode());
+}
+std::vector<PresentMode> Swapchain::GetAvailablePresentModes() const {
+    std::vector<PresentMode> out;
+    for (VkPresentModeKHR m : impl_->vulkan->GetAvailablePresentModes()) {
+        // Only surface the modes the overlay offers; others (e.g.
+        // FIFO_RELAXED) still work as automatic fallbacks.
+        if (m == VK_PRESENT_MODE_FIFO_KHR || m == VK_PRESENT_MODE_MAILBOX_KHR ||
+            m == VK_PRESENT_MODE_IMMEDIATE_KHR)
+            out.push_back(FromVkPresentMode(m));
+    }
+    return out;
+}
+double Swapchain::GetGpuFrameMs() const { return impl_->vulkan->GetLastGpuMs(); }
+bool Swapchain::HasGpuTiming() const { return impl_->vulkan->HasGpuTiming(); }
 Swapchain::Impl* Swapchain::GetImpl() { return impl_.get(); }
 const Swapchain::Impl* Swapchain::GetImpl() const { return impl_.get(); }
 

@@ -2,11 +2,12 @@
 
 #include <cmath>
 #include <cstdint>
-#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
 
+#include <Engine/Memory/arena.h>
+#include <Engine/Memory/string_view.h>
 #include <Engine/Renderer/mesh.h>
 
 namespace smvk {
@@ -127,10 +128,12 @@ bool BuildLodChainForUpload(
 // non-uniform scale — world error = local error * this.
 float MaxScaleOfMatrix(const glm::mat4& m);
 
-// Sibling URI helpers: "<base>/lodN" for N >= 1; base extraction strips
-// that suffix (returns the input unchanged when it is not a LOD URI).
-std::string LodSiblingUri(const std::string& baseUri, uint32_t lodIndex);
-std::string BaseMeshUriForLod(const std::string& uri);
+// Sibling URI helpers: "<base>/lodN" for N >= 1 (composed into `scratch`,
+// default the frame arena — never stored); base extraction strips that
+// suffix as a pure view slice (returns the input unchanged otherwise).
+[[nodiscard]] StringViewT LodSiblingUri(StringViewT baseUri, uint32_t lodIndex,
+	Arena& scratch = FrameArena());
+[[nodiscard]] StringViewT BaseMeshUriForLod(StringViewT uri);
 
 // ---------------------------------------------------------------------------
 // Error-driven LOD transitions (runtime selection from the simplifier error).

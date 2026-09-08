@@ -303,6 +303,16 @@ protected:
 	float m_renderScale = 1.0f;
 	float m_uiScale = 1.0f;
 	float m_uiDpiScale = 1.0f; // synced from ImGuiOverlay at init (auto = monitor DPI)
+	// VSync / presentation mode (overlay combo; applied via swapchain Recreate).
+	smvk::PresentMode m_presentMode = smvk::PresentMode::Mailbox; // default: no VSync
+	// Frame timing: CPU wall time vs GPU execution time (EMA-smoothed ms
+	// for the debug overlay). GPU lags 1-2 frames (retired-frame readback).
+	double m_cpuMsSmooth = 0.0;
+	double m_gpuMsSmooth = 0.0;
+	bool m_gpuTimingValid = false;
+	// Acquire wait (in-flight fence + vkAcquireNextImageKHR, vsync-paced
+	// under FIFO): idle time, reported separately so CPU stays busy-only.
+	double m_waitMsSmooth = 0.0;
 
 	void EarlyUpdate() override {
 		Super::EarlyUpdate();
@@ -353,9 +363,15 @@ protected:
 	void ResetLodStats();
 	// Runtime LOD switch: pixel budget for the projected simplifier error
 	// (~1px = conservative, higher = more aggressive). Disabled = always LOD0.
+	// Per-node decisions are cached in the World and refreshed on a
+	// staggered-halves cadence (half the nodes per frame — see World::
+	// LodIndexForNode); m_lodFrameInputs.frameId is the monotonic key.
 	bool m_lodEnabled = true;
-	float m_lodPixelBudget = 1.0f;
-	float m_lodViewportHeight = 1080.0f; // refreshed per frame from renderExtent
+	smvk::LodFrameInputs m_lodFrameInputs{};
+	float m_lodPixelBudget = 1.0f;      // mirrors m_lodFrameInputs.pixelBudget
+	float m_lodViewportHeight = 1080.0f; // mirrors m_lodFrameInputs.viewportHeight
+	uint64_t m_lodFrameId = 0;         // monotonic per-frame counter
+	float m_lodBudgetApplied = -1.0f;  // budget at last InvalidateLodCache
 	uint64_t m_lodDraws = 0;     // direct draws this frame
 	uint64_t m_lodSwitched = 0;  // ... served by LOD1+
 	uint32_t m_lodChainMeshes = 0; // world meshes with a cooked chain (per frame)

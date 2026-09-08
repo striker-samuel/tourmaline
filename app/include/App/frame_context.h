@@ -3,6 +3,7 @@
 // and handles frame renderers need (filled by main per frame, read by
 // IFrameRenderer::AppendPasses implementations).
 
+#include <Engine/App/world.h>
 #include <Engine/Rendergraph/renderer.h>
 
 #include <App/push_constants.h>
@@ -22,14 +23,13 @@ struct AppFrameContext : public smvk::FrameContext {
 	// T3: the GfxRenderer seeded depth this frame (prepass must Load the
 	// seed instead of Clearing). Set by main after gfx AppendPasses.
 	bool seedDepthPrimed = false;
-	// Error-driven LOD (see Engine/Asset/mesh_optimizer.h): the prepass
-	// runs inside ForwardPlusRenderer, so it reads selection inputs here
-	// instead of SceneRenderer members. Distance = node world pos to eye.
+	// Error-driven LOD (see Engine/Asset/mesh_optimizer.h): selection
+	// inputs shared by every consumer this frame (prepass, main, gfx
+	// filter). World::LodIndexForNode keys its halfrate parity cache on
+	// lodInputs.frameId; all passes therefore observe identical per-node
+	// decisions within a frame.
 	bool lodEnabled = false;
-	glm::vec3 lodEye{ 0.0f };
-	float lodViewportHeight = 1080.0f;
-	float lodFovY = 0.7853982f; // 45 deg
-	float lodPixelBudget = 1.0f;
+	smvk::LodFrameInputs lodInputs{};
 };
 
 } // namespace app

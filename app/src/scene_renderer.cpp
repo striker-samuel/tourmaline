@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -391,6 +392,9 @@ bool SceneRenderer::Initialize() {
 		if (!Super::Initialize())
 			return false;
 
+		// Default to no-VSync (mailbox); the overlay combo can change it
+		// later (applies via Recreate in DrawFrame).
+		m_swapchain->SetPresentMode(m_presentMode);
 		UpdateCameraAspect();
 		m_resources.frameUniforms = m_context->CreateBuffer(
 			sizeof(FrameUniforms) * m_swapchain->framesInFlight(),
@@ -1314,19 +1318,15 @@ void SceneRenderer::Shutdown() {
 	// world translation to the render camera; the world-space simplifier
 	// error of each cooked sibling projects to pixels via
 	// LodProjectedPixelError() and the coarsest in-budget LOD wins.
+	// Decisions are cached per node in the World and refreshed on a
+	// staggered-halves cadence (half the nodes per frame; see World::
+	// LodIndexForNode) — this is the "make LOD update halfrate" hook.
 	uint32_t SceneRenderer::LodIndexForNode(NodeId node, uint32_t worldMesh) const {
 		if (!m_lodEnabled || !m_world)
 			return 0;
 		if (m_world->LodChainLength(worldMesh) <= 1)
 			return 0;
-		if (node >= m_world->scene.globalTransform.size())
-			return 0;
-		const glm::mat4& model = m_world->scene.globalTransform[node];
-		const glm::vec3 center{ model[3][0], model[3][1], model[3][2] };
-		const float distance = glm::length(center - m_cameraPositioner.cameraPosition_);
-		const float fovY = glm::radians(kCameraFovYDegrees);
-		return m_world->SelectLodIndex(worldMesh, distance,
-			m_lodViewportHeight, fovY, m_lodPixelBudget);
+		return m_world->LodIndexForNode(node, worldMesh, m_lodFrameInputs);
 	}
 
 	smvk::StaticMesh* SceneRenderer::LodMeshForNode(NodeId node, uint32_t worldMesh,
@@ -1338,14 +1338,7 @@ void SceneRenderer::Shutdown() {
 			return base;
 		if (m_world->LodChainLength(worldMesh) <= 1)
 			return base;
-		if (node >= m_world->scene.globalTransform.size())
-			return base;
-		const glm::mat4& model = m_world->scene.globalTransform[node];
-		const glm::vec3 center{ model[3][0], model[3][1], model[3][2] };
-		const float distance = glm::length(center - m_cameraPositioner.cameraPosition_);
-		const float fovY = glm::radians(kCameraFovYDegrees);
-		const uint32_t lod = m_world->SelectLodIndex(worldMesh, distance,
-			m_lodViewportHeight, fovY, m_lodPixelBudget);
+		const uint32_t lod = m_world->LodIndexForNode(node, worldMesh, m_lodFrameInputs);
 		if (outLod)
 			*outLod = lod;
 		++m_lodDraws;
@@ -1412,16 +1405,46 @@ void SceneRenderer::Shutdown() {
 	}
 
 	void SceneRenderer::DrawFrame() {
+		// Frame-arena scratch (URI probing, normalized rewrites) is
+		// dead at frame end by definition — recycle the blocks.
+		smvk::ResetFrameArena();
+		// Presentation-mode change from the overlay combo: recreate with
+		// the new mode (same path as a resize).
+		if (m_presentMode != m_swapchain->GetPresentMode()) {
+			m_swapchain->SetPresentMode(m_presentMode);
+			m_swapchain->Recreate();
+			RebuildSwapViews();
+			m_swapchain->ClearFramebufferResized();
+		}
 		if (m_swapchain->FramebufferResized()) {
 			m_swapchain->Recreate();
 			RebuildSwapViews();
 			m_swapchain->ClearFramebufferResized();
 		}
 
+		const auto frameStart = std::chrono::steady_clock::now();
 		auto fb = m_swapchain->AcquireFramebuffer();
+		// Busy-only CPU clock: starts after acquire returns, so the
+		// in-flight fence + vkAcquireNextImageKHR wait (idle, vsync-paced
+		// under FIFO) is excluded from CPU and reported as wait instead.
+		const auto busyStart = std::chrono::steady_clock::now();
 		UpdateDeltaTime();
 		RenderFrame(fb);
 		m_swapchain->EndAndPresentFramebuffer(fb);
+		// CPU/GPU time split: CPU = busy time on this thread (record +
+		// submit + present); wait = acquire idle; GPU = timestamp query
+		// around the command buffer (retired frame, lags ~1 frame).
+		const auto frameEnd = std::chrono::steady_clock::now();
+		const double waitMs = std::chrono::duration<double, std::milli>(
+			busyStart - frameStart).count();
+		const double cpuMs = std::chrono::duration<double, std::milli>(
+			frameEnd - busyStart).count();
+		constexpr double kEmaAlpha = 0.08;
+		m_cpuMsSmooth += (cpuMs - m_cpuMsSmooth) * kEmaAlpha;
+		m_waitMsSmooth += (waitMs - m_waitMsSmooth) * kEmaAlpha;
+		m_gpuTimingValid = m_swapchain->HasGpuTiming();
+		if (m_gpuTimingValid)
+			m_gpuMsSmooth += (m_swapchain->GetGpuFrameMs() - m_gpuMsSmooth) * kEmaAlpha;
 	}
 
 void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
@@ -1499,14 +1522,23 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		fc.mainViewIndex = mainRenderView;
 		fc.eye = m_cameraPositioner.cameraPosition_;
 		fc.extent = renderExtent;
-		// Error-driven LOD frame inputs (shared with the prepass renderer).
-		m_lodViewportHeight = static_cast<float>(renderExtent.height);
+		// Error-driven LOD frame inputs (shared with every consumer: the
+		// prepass, main pass and the gfx filter all read the same struct;
+		// the World's halfrate parity cache keys on frameId).
 		ResetLodStats();
+		m_lodFrameId = m_lodFrameId + 1; // monotonic (fb.frameIndex wraps)
+		m_lodViewportHeight = static_cast<float>(renderExtent.height);
+		m_lodFrameInputs.frameId = m_lodFrameId;
+		m_lodFrameInputs.eye = m_cameraPositioner.cameraPosition_;
+		m_lodFrameInputs.viewportHeight = m_lodViewportHeight;
+		m_lodFrameInputs.fovY = glm::radians(kCameraFovYDegrees);
+		m_lodFrameInputs.pixelBudget = m_lodPixelBudget;
+		if (m_world && m_lodBudgetApplied != m_lodPixelBudget) {
+			m_world->InvalidateLodCache(); // budget tweak: refresh all nodes
+			m_lodBudgetApplied = m_lodPixelBudget;
+		}
 		fc.lodEnabled = m_lodEnabled;
-		fc.lodEye = m_cameraPositioner.cameraPosition_;
-		fc.lodViewportHeight = m_lodViewportHeight;
-		fc.lodFovY = glm::radians(kCameraFovYDegrees);
-		fc.lodPixelBudget = m_lodPixelBudget;
+		fc.lodInputs = m_lodFrameInputs;
 
 		// Per-view triangle filter (main camera): appended below, after
 		// fc.pc is built (the temporal seed pass captures frame addresses)
@@ -2707,9 +2739,27 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			// ImGui draw data + font raster density onto the UI target.
 			m_imgui->NewFrame(uiExtent);
 
-			// Minimal UI – name + camera pos
-			ImGui::Begin("VulkanToy — Debug");
-			ImGui::Text("Frame %.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
+		// Minimal UI – name + camera pos
+		ImGui::Begin("VulkanToy — Debug");
+		ImGui::Text("Frame %.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
+		if (m_gpuTimingValid)
+			ImGui::Text("CPU %.3f ms (wait %.3f ms)  GPU %.3f ms", m_cpuMsSmooth, m_waitMsSmooth, m_gpuMsSmooth);
+		else
+			ImGui::Text("CPU %.3f ms (wait %.3f ms)  GPU ... (warming up)", m_cpuMsSmooth, m_waitMsSmooth);
+		{
+			// VSync / presentation mode. Applies on the next frame via
+			// Recreate (see DrawFrame); the active mode may fall back when
+			// the driver lacks the requested one.
+			const char* modeNames[] = { "VSync (FIFO)", "No VSync (Mailbox)", "No VSync (Immediate)" };
+			int modeIdx = static_cast<int>(m_presentMode);
+			if (ImGui::Combo("Present mode", &modeIdx, modeNames, 3))
+				m_presentMode = static_cast<smvk::PresentMode>(modeIdx);
+			const smvk::PresentMode active = fb.swapchain->GetActivePresentMode();
+			if (active != m_presentMode)
+				ImGui::TextDisabled("Active: %s (requested unavailable?)", smvk::ToString(active));
+			else
+				ImGui::TextDisabled("Active: %s", smvk::ToString(active));
+		}
 			ImGui::Text("Camera pos: %.2f %.2f %.2f", m_cameraPositioner.cameraPosition_.x, m_cameraPositioner.cameraPosition_.y, m_cameraPositioner.cameraPosition_.z);
 			ImGui::Text("Swapchain %ux%u  framesInFlight=%u",
 				fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height, fb.swapchain->framesInFlight());

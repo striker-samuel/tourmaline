@@ -5837,10 +5837,12 @@ smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context, GLFWwindo
 		allocInfo.commandBufferCount = 1;
 		VK_CHECK(vkAllocateCommandBuffers(device_, &allocInfo, &commandBuffers[i]));
 	}
+	CreateTimestampPools();
 }
 smvk::VulkanSwapchain::~VulkanSwapchain() {
 
 	vkDeviceWaitIdle(device_);
+	DestroyTimestampPools();
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		vkDestroyCommandPool(device_, perFrameCommandPools[i], nullptr);
 		// this freeds all the commands too
@@ -5908,7 +5910,22 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 	SwapChainSupportDetails support = querySwapChainSupport(physicalDevice_, surface_);
 	VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(support.formats);
 	VkExtent2D swapExtent = chooseSwapExtent(support.capabilities, window_);
+	// Requested mode wins when supported; otherwise prefer no-VSync
+	// fallbacks (mailbox, then immediate) before guaranteed FIFO.
 	VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+	{
+		const auto& modes = support.presentModes;
+		auto has = [&](VkPresentModeKHR m) {
+			return std::find(modes.begin(), modes.end(), m) != modes.end();
+		};
+		if (has(requestedPresentMode_))
+			presentMode = requestedPresentMode_;
+		else if (has(VK_PRESENT_MODE_MAILBOX_KHR))
+			presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+		else if (has(VK_PRESENT_MODE_IMMEDIATE_KHR))
+			presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+	}
+	activePresentMode_ = presentMode;
 
 	uint32_t imageCount = DESIRED_SWAPCHAIN_IMAGE_COUNT;
 	minImageCount_ = support.capabilities.minImageCount;
@@ -5971,6 +5988,35 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 	this->extent_ = swapExtent;
 
 	glfwGetWindowSize(window_, &windowWidth, &windowHeight);
+}
+std::vector<VkPresentModeKHR> smvk::VulkanSwapchain::GetAvailablePresentModes() const {
+	return querySwapChainSupport(physicalDevice_, surface_).presentModes;
+}
+void smvk::VulkanSwapchain::CreateTimestampPools() {
+	DestroyTimestampPools();
+	VkPhysicalDeviceProperties props{};
+	vkGetPhysicalDeviceProperties(physicalDevice_, &props);
+	timestampPeriod_ = props.limits.timestampPeriod;
+	VkQueryPoolCreateInfo info{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+	info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+	info.queryCount = 2;
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+		if (vkCreateQueryPool(device_, &info, nullptr, &timestampPools_[i]) != VK_SUCCESS)
+			timestampPools_[i] = VK_NULL_HANDLE;
+		timestampWritten_[i] = false;
+	}
+	gpuTimingValid_ = false;
+	lastGpuMs_ = 0.0;
+}
+void smvk::VulkanSwapchain::DestroyTimestampPools() {
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+		if (timestampPools_[i] != VK_NULL_HANDLE) {
+			vkDestroyQueryPool(device_, timestampPools_[i], nullptr);
+			timestampPools_[i] = VK_NULL_HANDLE;
+		}
+		timestampWritten_[i] = false;
+	}
+	gpuTimingValid_ = false;
 }
 void smvk::VulkanSwapchain::CreateImageViews() {
 	const uint32_t count = static_cast<uint32_t>(images_.size());
@@ -6203,6 +6249,19 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 		}
 	}
 
+	// Frame retired => its start/end timestamps are ready. Pull the GPU
+	// time for the CPU/GPU split overlay (non-blocking; the timeline wait
+	// above already guarantees completion, first frames just have no data).
+	if (timestampWritten_[currentFrame_] && timestampPools_[currentFrame_] != VK_NULL_HANDLE) {
+		uint64_t ticks[2] = { 0, 0 };
+		VkResult qr = vkGetQueryPoolResults(device_, timestampPools_[currentFrame_],
+			0, 2, sizeof(ticks), ticks, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+		if (qr == VK_SUCCESS && timestampPeriod_ > 0.0f && ticks[1] > ticks[0]) {
+			lastGpuMs_ = double(ticks[1] - ticks[0]) * double(timestampPeriod_) / 1e6;
+			gpuTimingValid_ = true;
+		}
+	}
+
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(
 		device_,
@@ -6254,6 +6313,13 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	dep.pImageMemoryBarriers = &barrierToColorAttachment;
 	vkCmdPipelineBarrier2(commandBuffers[currentFrame_], &dep);
 
+	// GPU frame timer: whole command buffer (all rendergraph passes).
+	if (timestampPools_[currentFrame_] != VK_NULL_HANDLE) {
+		vkCmdResetQueryPool(commandBuffers[currentFrame_], timestampPools_[currentFrame_], 0, 2);
+		vkCmdWriteTimestamp(commandBuffers[currentFrame_], VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			timestampPools_[currentFrame_], 0);
+	}
+
 	VulkanFrameBuffer frameBufferContext_{
 		.frameIndex = currentFrame_,
 		.imageIndex = currentImageIndex_,
@@ -6288,6 +6354,11 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	);
 
 	// 
+	if (timestampPools_[fb.frameIndex] != VK_NULL_HANDLE) {
+		vkCmdWriteTimestamp(fb.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			timestampPools_[fb.frameIndex], 1);
+		timestampWritten_[fb.frameIndex] = true;
+	}
 	if (vkEndCommandBuffer(fb.commandBuffer) != VK_SUCCESS) {
 		throw std::runtime_error("failed to record command buffer!");
 	}

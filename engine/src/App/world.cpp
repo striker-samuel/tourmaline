@@ -186,7 +186,7 @@ namespace smvk {
 			// Cook-time LOD marker (LOD0; siblings resolve via SelectLodIndex).
 			LodInfo lod;
 			lod.groupId = meshIdx;
-			if (const std::string uri = cluster.GetMeshUri(handle);
+			if (const StringViewT uri = cluster.GetMeshUri(handle);
 				!uri.empty()) {
 				if (auto hit = cluster.GetMeshLod(uri))
 					lod = *hit;
@@ -307,11 +307,12 @@ namespace smvk {
 
 	// Resolve every world mesh's cooked "/lodN" chain once (called at the
 	// end of ResolveAndFixup_clusters; hot paths below only index the
-	// cache). URI probing + GetMeshUri's linear scan happen here, once per
-	// scene build, instead of once per draw per pass per frame.
+	// cache). Sibling URIs are composed into the frame arena and consumed
+	// immediately; only resolved MeshLocations + errors are stored.
 	void World::RebuildLodChains() {
 		lodChains.clear();
 		lodChains.resize(meshLocations.size());
+		InvalidateLodCache();
 		for (uint32_t i = 0; i < (uint32_t)meshLocations.size(); ++i) {
 			LodChain& chain = lodChains[i];
 			const MeshLocation& lod0 = meshLocations[i];
@@ -319,12 +320,12 @@ namespace smvk {
 				continue;
 			chain.lods.push_back(lod0);
 			chain.errors.push_back(0.0f);
-			const std::string base =
+			const StringViewT base =
 				BaseMeshUriForLod(lod0.cluster->GetMeshUri(lod0.handle));
 			if (base.empty())
 				continue;
 			for (uint32_t li = 1; li < 16; ++li) {
-				const std::string uri = LodSiblingUri(base, li);
+				const StringViewT uri = LodSiblingUri(base, li);
 				bool found = false;
 				float err = 0.0f;
 				for (const auto& clusterPtr : clusters) {
@@ -346,6 +347,50 @@ namespace smvk {
 				chain.errors.push_back(err);
 			}
 		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Halfrate LOD cache (staggered halves; see world.h).
+	// ---------------------------------------------------------------------------
+
+	void World::InvalidateLodCache() {
+		nodeLod_.clear();
+		nodeLodStamp_.clear();
+		lodTick_ = 0;
+		lodLastFrameId_ = ~uint64_t(0);
+	}
+
+	uint32_t World::LodIndexForNode(NodeId node, uint32_t worldMesh,
+		const LodFrameInputs& inputs) const {
+		// Frame rollover: adopt this frame's inputs, tick the parity.
+		if (inputs.frameId != lodLastFrameId_) {
+			lodLastFrameId_ = inputs.frameId;
+			lodInputs_ = inputs;
+			++lodTick_;
+		}
+		if (node < 0)
+			return 0;
+		const uint32_t n = node;
+		if (n >= nodeLod_.size()) {
+			nodeLod_.assign(scene.hierarchy.size(), 0);
+			nodeLodStamp_.assign(scene.hierarchy.size(), 0);
+		}
+		if (n >= nodeLod_.size())
+			return 0; // node outside the graph
+		const bool computedThisFrame = nodeLodStamp_[n] == inputs.frameId;
+		if (!computedThisFrame) {
+			const bool parityDue = (lodTick_ & 1) == (n & 1);
+			const bool hasOld = nodeLodStamp_[n] != 0;
+			if (parityDue || !hasOld) {
+				nodeLod_[n] = static_cast<uint8_t>(SelectLodIndex(worldMesh,
+					glm::length(glm::vec3(scene.globalTransform[n][3])
+						- lodInputs_.eye),
+					lodInputs_.viewportHeight, lodInputs_.fovY,
+					lodInputs_.pixelBudget));
+				nodeLodStamp_[n] = inputs.frameId;
+			}
+		}
+		return nodeLod_[n];
 	}
 
 	static void EnsureLodChainsCached(const World& w) {
@@ -409,29 +454,29 @@ namespace smvk {
 			viewportHeightPx, fovYRadians, maxPixelError);
 	}
 
-	std::optional<World::MeshLocation> World::ResolveMeshAcrossClusters(
-		const std::string& uri) const
-	{
-		for (const auto& clusterPtr : clusters) {
-			if (!clusterPtr)
-				continue;
-			if (auto hit = clusterPtr->FindMeshByUri(uri))
-				return MeshLocation{ .cluster = clusterPtr.get(), .handle = *hit };
-		}
-		return std::nullopt;
+std::optional<World::MeshLocation> World::ResolveMeshAcrossClusters(
+	StringViewT uri) const
+{
+	for (const auto& clusterPtr : clusters) {
+		if (!clusterPtr)
+			continue;
+		if (auto hit = clusterPtr->FindMeshByUri(uri))
+			return MeshLocation{ .cluster = clusterPtr.get(), .handle = *hit };
 	}
+	return std::nullopt;
+}
 
-	std::optional<World::MaterialLocation> World::ResolveMaterialAcrossClusters(
-		const std::string& uri) const
-	{
-		for (const auto& clusterPtr : clusters) {
-			if (!clusterPtr)
-				continue;
-			if (auto hit = clusterPtr->FindMaterialByUri(uri))
-				return MaterialLocation{ .cluster = clusterPtr.get(), .handle = *hit };
-		}
-		return std::nullopt;
+std::optional<World::MaterialLocation> World::ResolveMaterialAcrossClusters(
+	StringViewT uri) const
+{
+	for (const auto& clusterPtr : clusters) {
+		if (!clusterPtr)
+			continue;
+		if (auto hit = clusterPtr->FindMaterialByUri(uri))
+			return MaterialLocation{ .cluster = clusterPtr.get(), .handle = *hit };
 	}
+	return std::nullopt;
+}
 
 	// Stub culling: everything is considered visible until a real culler exists.
 	void World::Cull(CullConfiguration config)

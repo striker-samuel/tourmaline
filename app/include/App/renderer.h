@@ -144,11 +144,14 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// sphere pre-cull, then cluster expansion with cone culling inside
 	// gfx::FinalizeView. frameIndex is the swapchain frame slot (rings all
 	// mutable buffers, cf. RenderViewSet). Returns the gfx view slot.
+	// `lod` (may be null = LOD0 everywhere): when set, lod==0 instances go
+	// through the indirect ranges and lod>0 instances fall back to the
+	// direct path — the same World::LodIndexForNode cache the main pass
+	// reads, so both sides of the split agree per node per frame.
 	uint32_t FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		uint32_t frameIndex, smvk::World& world, const smvk::RenderViewSet& views,
 		uint32_t mainViewIdx, const glm::vec3& eye, const smvk::Extent2D& extent,
-		smvk::gfx::CullFlags flags, bool lodEnabled = false, float lodFovY = 0.7853982f,
-		float lodPixelBudget = 1.0f);
+		smvk::gfx::CullFlags flags, const smvk::LodFrameInputs* lod = nullptr);
 
 	// Debug culling freeze (set every frame by the owner while active, cleared
 	// otherwise): FilterMainView expands batches against this (view, eye)

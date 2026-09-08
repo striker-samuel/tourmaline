@@ -242,7 +242,7 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 	lastSlot_ = FilterMainView(*fc.ctx, *fc.rg, fc.frameIndex, *fc.world,
 		*fc.views, cullView, cullEye,
 		{ fc.extent.width, fc.extent.height }, config.cullFlags,
-		fc.lodEnabled, fc.lodFovY, fc.lodPixelBudget);
+		fc.lodEnabled ? &fc.lodInputs : nullptr);
 	if (lastSlot_ == UINT32_MAX)
 		return;
 	const uint32_t slot = lastSlot_;
@@ -457,7 +457,7 @@ void GfxRenderer::UploadStaticData(smvk::ResourceManager& ctx, smvk::RenderGraph
 uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 	uint32_t frameIndex, smvk::World& world, const smvk::RenderViewSet& views,
 	uint32_t mainViewIdx, const glm::vec3& eye, const smvk::Extent2D& extent,
-	smvk::gfx::CullFlags flags, bool lodEnabled, float lodFovY, float lodPixelBudget) {
+	smvk::gfx::CullFlags flags, const smvk::LodFrameInputs* lod) {
 
 	SMVK_PROFILE_RENDER("GfxFilterMainView");
 	SMVK_PROFILE_TAG("extentWidth", extent.width);
@@ -488,15 +488,15 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 			if (worldMesh >= meshMap_.size() || meshMap_[worldMesh] == UINT32_MAX)
 				return; // not filterable: legacy direct path still draws it
 			const glm::mat4& model = world.scene.globalTransform[node];
-			// LOD split (chains resolved via the cached World chains, no
-			// URI work here): lod==0 stays in the HZB-culled indirect
-			// ranges, lod>0 falls through to the direct fallback which
-			// draws the selected sibling. Each instance draws once.
-			if (lodEnabled && world.LodChainLength(worldMesh) > 1) {
-				const glm::vec3 lodCenter{ model[3][0], model[3][1], model[3][2] };
-				const float lodDist = glm::length(lodCenter - eye);
-				if (world.SelectLodIndex(worldMesh, lodDist,
-						static_cast<float>(extent.height), lodFovY, lodPixelBudget) > 0)
+			// LOD split (World::LodIndexForNode shares the halfrate cache
+			// with every direct-draw consumer, so both sides of the split
+			// see the same decision for a node within a frame):
+			// lod==0 stays in the HZB-culled indirect ranges, lod>0 falls
+			// through to the direct fallback which draws the selected
+			// sibling. Each instance draws once.
+			if (lod) {
+				const uint32_t chainLen = world.LodChainLength(worldMesh);
+				if (chainLen > 1 && world.LodIndexForNode(node, worldMesh, *lod) > 0)
 					return;
 			}
 			// Mesh-level sphere pre-cull (same test as the shadow passes).

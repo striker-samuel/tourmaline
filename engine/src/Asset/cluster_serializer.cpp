@@ -32,7 +32,7 @@ void PutF32(std::vector<uint8_t>& out, float v) {
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
 	out.insert(out.end(), p, p + 4);
 }
-void PutStr(std::vector<uint8_t>& out, const std::string& s) {
+void PutStr(std::vector<uint8_t>& out, StringViewT s) {
 	PutU32(out, static_cast<uint32_t>(s.size()));
 	out.insert(out.end(), s.begin(), s.end());
 }
@@ -132,7 +132,7 @@ bool SerializeCluster(
 	for (uint32_t i = 0; i < meshHandles.size(); ++i) {
 		const auto h = meshHandles[i];
 		meshPakId[h.index()] = i;
-		std::string uri = cluster.GetMeshUri(h);
+		std::string uri = cluster.GetMeshUri(h).Str();
 		if (uri.empty())
 			uri = "<cluster-local>#mesh." + std::to_string(h.index());
 		meshUris.push_back(uri);
@@ -240,7 +240,7 @@ bool SerializeCluster(
 	// indices; paks store VFS paths).
 	std::unordered_map<uint32_t, std::string> rhiIndexToUri;
 	for (const auto& [uri, rhi] : cluster.ListTextureUris())
-		rhiIndexToUri[rhi.index()] = uri;
+		rhiIndexToUri[rhi.index()] = uri.Str();
 
 	auto texUriForRhi = [&](int rhiIndex) -> std::string {
 		if (rhiIndex < 0)
@@ -252,7 +252,7 @@ bool SerializeCluster(
 	for (uint32_t i = 0; i < matHandles.size(); ++i) {
 		const auto h = matHandles[i];
 		matPakId[h.index()] = i;
-		std::string uri = cluster.GetMaterialUri(h);
+		std::string uri = cluster.GetMaterialUri(h).Str();
 		if (uri.empty())
 			uri = "<cluster-local>#mat." + std::to_string(h.index());
 		matUris.push_back(uri);
@@ -286,20 +286,20 @@ bool SerializeCluster(
 		(void)rhi;
 		const std::vector<uint8_t>* src = cluster.GetTextureSource(uri);
 		if (!src || src->empty())
-			return fail("missing embedded .ktx2 source for texture: " + uri +
+			return fail("missing embedded .ktx2 source for texture: " + uri.Str() +
 				" (importer must stash source bytes via SetTextureSource)");
 		TextureSamplerDesc samp;
 		if (auto hit = cluster.GetTextureSampler(uri))
 			samp = *hit;
 		std::vector<uint8_t> blob = BuildTexturePayload(
-			uri, samp.magFilter, samp.minFilter, samp.wrapS, samp.wrapT,
+			uri.Str(), samp.magFilter, samp.minFilter, samp.wrapS, samp.wrapT,
 			std::span<const uint8_t>(*src));
 		textureBytes += src->size();
 		// TextureBlob TOC path = the file part (VFS path) so PakBackend can
 		// serve the .ktx2 bytes through the VFS overlay.
 		const std::string filePart = AssetFilePart(uri);
 		if (filePart.empty())
-			return fail("texture uri has no VFS file part: " + uri);
+			return fail("texture uri has no VFS file part: " + uri.Str());
 		if (!writer.AddBlob(PakAssetKind::Texture, filePart, std::move(blob)))
 			return fail("invalid texture path: " + filePart);
 	}

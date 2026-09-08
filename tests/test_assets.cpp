@@ -97,6 +97,79 @@ void TestAssetUris() {
 	Check(smvk::AssetFilePart("models/s.gltf#mat.3") == "models/s.gltf", "uri.filepart");
 }
 
+void TestStringViewArena() {
+	using namespace smvk;
+	// StringViewT basics: slicing, search, compare, char* interop.
+	StringViewT v = "models/b.gltf#mesh.3";
+	Check(v.size() == 19 && !v.empty(), "sv.size");
+	Check(v.substr(0, 10) == "models/b.g", "sv.substr");
+	Check(v.find('#') == 12, "sv.find");
+	Check(v.find("mesh") == 13, "sv.findstr");
+	Check(v.starts_with("models") && v.ends_with(".3"), "sv.prefix");
+	Check(v.contains('#') && !v.contains('?'), "sv.contains");
+	Check(StringViewT("a/b").rfind('/') == 1, "sv.rfind");
+	Check(StringViewT("  hi  ").trim() == "hi", "sv.trim");
+	Check(StringViewT() == "" && StringViewT("").valid(), "sv.emptyview");
+	Check(StringViewT("abc").Str() == std::string("abc"), "sv.str");
+	Check(StringViewT("b") > StringViewT("a") && StringViewT("a") < StringViewT("ab"), "sv.order");
+
+	// Arena: bump allocation, string copies, format, reset.
+	Arena a(256);
+	StringViewT s = a.AllocateString("hello world");
+	Check(s == "hello world", "arena.string");
+	const uint64_t* big = a.Create<uint64_t>(0xDEADBEEFCAFEull);
+	Check(*big == 0xDEADBEEFCAFEull, "arena.create");
+	StringViewT f = a.FormatString("%s/%u", "mesh", 7u);
+	Check(f == "mesh/7", "arena.format");
+	const size_t used = a.UsedBytes();
+	Check(used > 0, "arena.used");
+	Check(a.BlockCount() >= 1, "arena.blocks");
+	// Oversized request gets a dedicated block.
+	void* huge = a.Allocate(a.BlockCount() * 1024 * 1024 + 4096);
+	Check(huge != nullptr, "arena.huge");
+	a.Reset();
+	Check(a.UsedBytes() == 0 && a.BlockCount() == 0, "arena.reset");
+
+	// ConcatInto composes without std::string.
+	Arena b(256);
+	Check(ConcatInto(b, "models", "/q.gltf") == "models/q.gltf", "arena.concat");
+	Check(ConcatInto(b, "", "x") == "x" && ConcatInto(b, "x", "") == "x", "arena.concat.empty");
+
+	// UriMap: insert/find/erase/tombstones/growth over string keys.
+	UriMap<uint32_t> m;
+	Check(m.Find("missing") == nullptr, "umap.find.miss");
+	m.Insert("models/a.gltf#mesh.0", 0);
+	m.Insert("models/a.gltf#mesh.1", 1);
+	m.Insert("models/b.gltf#mesh.0", 2);
+	Check(m.Size() == 3, "umap.size");
+	Check(m.Find("models/a.gltf#mesh.0") && *m.Find("models/a.gltf#mesh.0") == 0, "umap.find");
+	Check(*m.Find("models/b.gltf#mesh.0") == 2, "umap.find2");
+	m.Insert("models/a.gltf#mesh.1", 11); // replace keeps one entry
+	Check(m.Size() == 3 && *m.Find("models/a.gltf#mesh.1") == 11, "umap.replace");
+	Check(m.Erase("models/a.gltf#mesh.0"), "umap.erase");
+	Check(!m.Find("models/a.gltf#mesh.0"), "umap.erase.gone");
+	// Stress growth + tombstone probing.
+	UriMap<int> big2;
+	std::vector<StringViewT> keys;
+	keys.reserve(500);
+	for (int i = 0; i < 500; ++i) {
+		keys.push_back(AppArena().FormatString("stress/key.%d", i));
+		big2.Insert(keys.back(), i);
+		if (i % 3 == 0)
+			big2.Erase(keys.back());
+	}
+	int found = 0, missing = 0;
+	for (int i = 0; i < 500; ++i) {
+		if (i % 3 == 0) {
+			if (!big2.Find(keys[i]))
+				++missing;
+		}
+		else if (big2.Find(keys[i]) && *big2.Find(keys[i]) == i)
+			++found;
+	}
+	Check(found == 334 && missing == 167, "umap.stress");
+}
+
 void TestPakRoundTrip() {
 	smvk::PakWriter w;
 	Check(!w.AddBlob(smvk::PakAssetKind::Texture, "../evil", { 1 }), "pak.reject.escape");
@@ -370,9 +443,9 @@ void TestLodChain() {
 	std::vector<smvk::CookedLod> deg;
 	Check(!smvk::BuildLodChainForUpload(empty, cfg, deg), "lod.empty.false");
 
-	// URI helpers round-trip.
+	// URI helpers round-trip (views + arenas, no std::string round-trip).
 	const std::string base = "models/q.gltf#mesh.0/prim.0";
-	const std::string sib = smvk::LodSiblingUri(base, 2);
+	const smvk::StringViewT sib = smvk::LodSiblingUri(base, 2);
 	Check(sib == base + "/lod2", "lod.uri.sibling");
 	Check(smvk::BaseMeshUriForLod(sib) == base, "lod.uri.base");
 	Check(smvk::BaseMeshUriForLod(base) == base, "lod.uri.base.passthrough");
@@ -405,7 +478,7 @@ void TestLodChain() {
 		cluster->RegisterMeshLod(uri, lod0);
 		// Fake LOD1 upload (same quad) with local error 0.5.
 		const auto h1 = cluster->UploadStaticMesh(q);
-		const std::string uri1 = LodSiblingUri(uri, 1);
+		const smvk::StringViewT uri1 = LodSiblingUri(uri, 1);
 		cluster->RegisterMeshUri(uri1, h1);
 		LodInfo lod1;
 		lod1.groupId = 9;
@@ -484,7 +557,7 @@ void TestLodSelection() {
 		lod0.triCount = 2;
 		cluster->RegisterMeshLod(uri, lod0);
 		const auto h1 = cluster->UploadStaticMesh(q);
-		const std::string uri1 = LodSiblingUri(uri, 1);
+		const smvk::StringViewT uri1 = LodSiblingUri(uri, 1);
 		cluster->RegisterMeshUri(uri1, h1);
 		LodInfo lod1;
 		lod1.groupId = 4;
@@ -515,6 +588,46 @@ void TestLodSelection() {
 		Check(world.SelectLodIndex(0, 100.0f, h, fov, 1.0f) == 0, "lod.world.near");
 		Check(world.SelectLodIndex(0, 5000.0f, h, fov, 1.0f) == 1, "lod.world.far");
 		Check(world.GetLodMesh(0, 1) != nullptr, "lod.world.mesh");
+
+		// ---- Halfrate LOD cache (staggered halves) ----------------------
+		// Node n1 sits at the origin scaled 3x; drive the eye instead of
+		// the node: far eye (5000m) -> LOD1 in budget, near eye (100m)
+		// -> LOD0 (err 1.5 projects ~19.5px).
+		NodeId rn = 0;
+		for (auto& [nd, midx] : world.scene.meshForNode)
+			rn = nd; // the single renderable node
+		LodFrameInputs in{};
+		in.viewportHeight = h;
+		in.fovY = fov;
+		in.pixelBudget = 1.0f;
+		// Frame 1 (tick 1, odd): even node not due yet, bootstrap computes
+		// anyway — far inputs select LOD1.
+		in.frameId = 1;
+		in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
+		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.halfrate.bootstrap");
+		// Frame 2 (tick 2, even): even node IS due — near inputs recompute
+		// to LOD0.
+		in.frameId = 2;
+		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
+		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.halfrate.refresh");
+		// Frame 3 (tick 3, odd): even node NOT due — far inputs are
+		// ignored this frame, the cached LOD0 decision is served (this is
+		// the halfrate: 1-frame-stale at worst, half the work per frame).
+		in.frameId = 3;
+		in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
+		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.halfrate.stale");
+		// Frame 4 (tick 4, even): due again — far inputs win once more.
+		in.frameId = 4;
+		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.halfrate.nextrefresh");
+		// Same frame, different eye: the stamped decision is served to
+		// every consumer (filter/prepass/main consistency within a frame).
+		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
+		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.halfrate.sameframe");
+		// Invalidate forces a recompute on the very next call.
+		world.InvalidateLodCache();
+		in.frameId = 5;
+		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
+		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.halfrate.invalidate");
 	}
 }
 

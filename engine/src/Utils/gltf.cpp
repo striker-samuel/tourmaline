@@ -266,7 +266,7 @@ void GltfToSceneImporter::setTextureSource(std::shared_ptr<TextureSource> source
 }
 
 void GltfToSceneImporter::setModelUriBase(const std::string& vfsPath) {
-	const std::string n = smvk::NormalizeAssetUri(vfsPath);
+	const smvk::StringViewT n = smvk::NormalizeAssetUri(vfsPath);
 	if (!n.empty())
 		modelUriBase = smvk::AssetFilePart(n);
 }
@@ -1258,7 +1258,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 		cluster.UploadStaticMesh(data);
 
 	if (!modelUriBase.empty()) {
-		const std::string uri = smvk::MakeSubUri(modelUriBase,
+		const smvk::StringViewT uri = smvk::MakeSubUri(modelUriBase,
 			"mesh." + std::to_string(gltfMeshIndex) +
 			"/prim." + std::to_string(primitiveIndex));
 		lod.candidateCount = static_cast<uint32_t>(1 + lodChain.size());
@@ -1274,7 +1274,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 			const auto lh = cluster.UploadStaticMesh(kept.upload);
 			if (!lh.valid())
 				continue;
-			const std::string lodUri = smvk::LodSiblingUri(uri, static_cast<uint32_t>(li + 1));
+			const smvk::StringViewT lodUri = smvk::LodSiblingUri(uri, static_cast<uint32_t>(li + 1));
 			cluster.RegisterMeshUri(lodUri, lh);
 			smvk::LodInfo llod;
 			llod.groupId = lod.groupId;
@@ -1373,8 +1373,8 @@ std::string HostTextureSource::ResolveIdentity(const std::string& imageUri) cons
 	const std::string joined =
 		(baseDir_.empty() ? std::filesystem::path(imageUri)
 			: (baseDir_ / std::filesystem::path(imageUri))).generic_string();
-	const std::string n = smvk::NormalizeAssetUri(joined);
-	return n.empty() ? imageUri : n;
+	const smvk::StringViewT n = smvk::NormalizeAssetUri(joined);
+	return n.empty() ? imageUri : n.Str();
 }
 
 VfsTextureSource::VfsTextureSource(const smvk::OverlayVfs* vfs, std::string vfsBaseDir)
@@ -1389,8 +1389,8 @@ std::optional<std::vector<uint8_t>> VfsTextureSource::ReadBytes(const std::strin
 }
 
 std::string VfsTextureSource::ResolveIdentity(const std::string& imageUri) const {
-	const std::string n = smvk::NormalizeAssetUri(smvk::vfs::Join(vfsBaseDir_, imageUri));
-	return n.empty() ? imageUri : n;
+	const smvk::StringViewT n = smvk::NormalizeAssetUri(smvk::vfs::Join(vfsBaseDir_, imageUri));
+	return n.empty() ? imageUri : n.Str();
 }
 
 void GltfToClusterFromVfs(
@@ -1402,7 +1402,7 @@ void GltfToClusterFromVfs(
 	const smvk::MeshletConfig& meshlets,
 	int coordFix,
 	const glm::mat4& preTransform) {
-	const std::string modelPath = smvk::NormalizeAssetUri(modelVfsPath);
+	const std::string modelPath = smvk::NormalizeAssetUri(modelVfsPath).Str();
 	if (modelPath.empty())
 		throw std::runtime_error("GltfToClusterFromVfs: invalid VFS path: " + modelVfsPath);
 	auto bytes = vfs.TryRead(modelPath);
