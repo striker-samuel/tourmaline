@@ -7,7 +7,6 @@
 #include "volk.h"
 #include <GLFW/glfw3.h>
 #include "../Vulkan/detail/vulkan_impl.h"
-#include "detail/resource_manager_detail.h"
 #include <ktx.h>
 
 namespace smvk {
