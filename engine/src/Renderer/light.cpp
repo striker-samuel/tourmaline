@@ -235,52 +235,62 @@ void smvk::GetDirectionalLightOrthoVP(
 	//
 	// Optional texel snapping.
 	//
-	// Snap the orthographic projection center in light space while preserving
-	// the dynamically calculated width/height.
+	// Snap the light view's translation column (the light-space position of
+	// the world origin) onto the texel grid. The slice cannot do this job:
+	// the view is glued to the frustum-slice center, so every light-space
+	// quantity derived from the slice (bounds, center, their deltas) is
+	// invariant under pure camera translation, and quantizing any of them
+	// cannot stop the texel grid from sliding. Rounding the view origin
+	// instead makes the world-space texel grid jump in whole-texel steps as
+	// the camera translates, which removes the shadow-edge shimmer.
 	//
 	if (enableTexelSnap && shadowMapRes > 0)
 	{
-		const float width = maxX - minX;
-		const float height = maxY - minY;
+		// Provisional texel sizes from the tight fit.
+		const float unitsPerTexelX0 =
+			(maxX - minX) / static_cast<float>(shadowMapRes);
 
+		const float unitsPerTexelY0 =
+			(maxY - minY) / static_cast<float>(shadowMapRes);
+
+		// Grow the window two texels per axis: the quantized view leaves
+		// the slice up to one texel off-center, so the tight fit alone
+		// could clip a texel-wide strip at the edge.
+		minX -= 2.0f * unitsPerTexelX0;
+		maxX += 2.0f * unitsPerTexelX0;
+		minY -= 2.0f * unitsPerTexelY0;
+		maxY += 2.0f * unitsPerTexelY0;
+
+		// Texel sizes of the grown window; quantization must use the final
+		// size so each grid step is exactly one texel.
 		const float unitsPerTexelX =
-			width / static_cast<float>(shadowMapRes);
+			(maxX - minX) / static_cast<float>(shadowMapRes);
 
 		const float unitsPerTexelY =
-			height / static_cast<float>(shadowMapRes);
+			(maxY - minY) / static_cast<float>(shadowMapRes);
 
-		glm::vec2 centerLS(
-			(minX + maxX) * 0.5f,
-			(minY + maxY) * 0.5f
-		);
+		const float snappedX =
+			std::floor(outView[3][0] / unitsPerTexelX) * unitsPerTexelX;
 
-		glm::vec2 snappedCenter;
+		const float snappedY =
+			std::floor(outView[3][1] / unitsPerTexelY) * unitsPerTexelY;
 
-		snappedCenter.x =
-			std::floor(centerLS.x / unitsPerTexelX) *
-			unitsPerTexelX;
+		const float dx = snappedX - outView[3][0];
+		const float dy = snappedY - outView[3][1];
 
-		snappedCenter.y =
-			std::floor(centerLS.y / unitsPerTexelY) *
-			unitsPerTexelY;
-
-		const glm::vec2 delta =
-			snappedCenter - centerLS;
-
-		// Move the light-space coordinate system itself.
+		// Move the light-space coordinate system itself. Z is untouched
+		// (delta.z = 0), so the depth fit below is unaffected.
 		outView =
 			glm::translate(
 				glm::mat4(1.0f),
-				glm::vec3(delta.x, delta.y, 0.0f)
+				glm::vec3(dx, dy, 0.0f)
 			) *
 			outView;
 
-		// Since the view matrix moved by delta, shift the bounds by the same
-		// amount.
-		minX += delta.x;
-		maxX += delta.x;
-		minY += delta.y;
-		maxY += delta.y;
+		// Deliberately do NOT shift minX/maxX/minY/maxY along with the
+		// view: the ortho offset exactly cancels a matching view shift
+		// (ortho(l + d, r + d) = ortho(l, r) * T(-d)), which is what made
+		// the previous center-snapping implementation a no-op.
 	}
 
 	//

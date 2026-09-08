@@ -51,3 +51,16 @@ set_target_properties(ExposureTests PROPERTIES
 )
 
 add_test(NAME exposure_tests COMMAND ExposureTests)
+
+add_executable(LightTests test_light.cpp)
+
+target_link_libraries(LightTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(LightTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME light_tests COMMAND LightTests)
