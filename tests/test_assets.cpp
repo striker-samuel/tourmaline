@@ -432,6 +432,45 @@ void TestLodChain() {
 	Check(strictlyCoarser, "lod.grid.coarser");
 	Check(chain.size() <= cfg.lodRatios.size(), "lod.grid.bounded");
 
+	// Sibling normals/tangents must be re-derived from the decimated
+	// topology: LOD0's baked frame (here flat (0,0,1) for a bumpy grid)
+	// interpolates wrongly over the new triangles and shades black.
+	// Independently re-accumulate area-weighted normals per sibling and
+	// compare against what was cooked.
+	bool framesRecooked = true;
+	for (const auto& l : chain) {
+		const auto& up = l.upload;
+		std::vector<glm::vec3> acc(up.vertices.size(), glm::vec3(0.0f));
+		for (size_t t = 0; t + 2 < up.indices.size() + 1; t += 3) {
+			const uint32_t i0 = up.indices[t], i1 = up.indices[t + 1], i2 = up.indices[t + 2];
+			const glm::vec3 fn = glm::cross(
+				up.vertices[i1].pos - up.vertices[i0].pos,
+				up.vertices[i2].pos - up.vertices[i0].pos);
+			acc[i0] += fn; acc[i1] += fn; acc[i2] += fn;
+		}
+		for (size_t i = 0; i < up.vertices.size(); ++i) {
+			const glm::vec3 n = up.vertices[i].normal;
+			if (!std::isfinite(n.x) || !std::isfinite(n.y) || !std::isfinite(n.z) ||
+				fabsf(glm::length(n) - 1.0f) > 1e-4f) {
+				framesRecooked = false; break;
+			}
+			const glm::vec3 expect = (glm::dot(acc[i], acc[i]) > 1e-24f)
+				? glm::normalize(acc[i]) : glm::vec3(0.0f, 1.0f, 0.0f);
+			if (glm::dot(n, expect) < 0.999f) { // stale LOD0 (0,0,1) fails here
+				framesRecooked = false; break;
+			}
+			const glm::vec4 tan = up.vertices[i].tangent;
+			if (!std::isfinite(tan.x) || !std::isfinite(tan.y) || !std::isfinite(tan.z) ||
+				fabsf(glm::length(glm::vec3(tan)) - 1.0f) > 1e-4f ||
+				fabsf(fabsf(tan.w) - 1.0f) > 1e-4f ||
+				fabsf(glm::dot(glm::vec3(tan), n)) > 1e-3f) {
+				framesRecooked = false; break;
+			}
+		}
+		if (!framesRecooked) break;
+	}
+	Check(framesRecooked, "lod.grid.frames.recooked");
+
 	// Tiny mesh: 2-tri quad must be fully filtered (min triangles = 8).
 	auto quad = MakeQuad();
 	std::vector<smvk::CookedLod> tiny;

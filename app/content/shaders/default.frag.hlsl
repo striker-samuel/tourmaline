@@ -315,29 +315,33 @@ PSOut mainPS(PSIn IN)
             uint perTile = min(pc.fpMaxPerTile, (uint)MAX_FP_PER_TILE);
             uint stride = max(pc.fpMaxPerTile, 1u);
             uint nlights = min(pc.fpLightCount, (uint)MAX_FP_LIGHTS);
-            // Greedy overflow path: a tile spanning a big depth
-            // discontinuity (near geometry against far background/sky) can
-            // pass more lights than the per-tile list holds. counts[] then
-            // stores the true count; instead of the truncated list this
-            // pixel walks every light (the per-pixel range/cone/NdotL tests
-            // below cull exactly), so no light is dropped.
-            uint tcount = pc.fpTileCounts.Get().counts[tileIdx];
-            bool overflow = tcount > perTile;
-            uint iterCount = overflow ? nlights : min(tcount, perTile);
-            for (uint s = 0; s < iterCount; ++s)
+            // Hard cap: a tile can pass more lights than the list holds
+            // (big depth discontinuities). counts[] stores the true count
+            // (debug value) but shading walks only the first perTile list
+            // entries — overflow lights pop instead of the old
+            // walk-every-light fallback (accepted trade-off; spots are
+            // written to the light buffer first so they keep their slots).
+            uint tcount = min(pc.fpTileCounts.Get().counts[tileIdx], perTile);
+            for (uint s = 0; s < tcount; ++s)
             {
-                uint li = overflow
-                    ? s
-                    : pc.fpTileIndices.Get().indices[tileIdx * stride + s];
+                uint li = pc.fpTileIndices.Get().indices[tileIdx * stride + s];
                 if (li >= nlights)
                     continue;
                 ForwardPlusLight pl = pc.fpLights.Get().lights[li];
 
+                // Cheapest reject first: squared distance vs squared range.
+                // No sqrt / division until the light survives this test.
                 float3 toLight = pl.position - IN.worldPos;
-                float dist = length(toLight);
-                if (pl.range > 0.0f && dist > pl.range)
+                float dist2 = dot(toLight, toLight);
+                if (pl.range > 0.0f && dist2 > pl.range * pl.range)
                     continue;
+                float dist = sqrt(dist2);
                 float3 Lp = toLight / max(dist, 1e-6f);
+
+                // Backface reject before any spot-cone / falloff work.
+                float NdotLp = max(dot(N, Lp), 0.0f);
+                if (NdotLp <= 0.0f)
+                    continue;
 
                 // Angular falloff for spots.
                 float angular = 1.0f;
@@ -367,10 +371,6 @@ PSOut mainPS(PSIn IN)
                 float atten = window_ / max(4.0f * PI * dist * dist, 1e-2f);
                 float3 plColor = pl.color.rgb * pl.intensity;
 
-                float NdotLp = max(dot(N, Lp), 0.0f);
-                if (NdotLp <= 0.0f)
-                    continue;
-
                 // Light cookie (spot): gobo texture projected through the
                 // cone; modulates the light color (diffuse + specular).
                 if (pl.type == 1 && pl.cookieIndex >= 0)
@@ -380,7 +380,7 @@ PSOut mainPS(PSIn IN)
                 }
 
                 // Light function: procedural per-light intensity curve
-                // (flicker / pulse / cone bands). Skips backfacing pixels.
+                // (flicker / pulse / cone bands).
                 // Uses the engine-globals clock (globals.hlsli g_time()).
                 if (pl.functionType > 0)
                 {

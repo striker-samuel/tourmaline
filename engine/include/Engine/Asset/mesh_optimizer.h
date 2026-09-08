@@ -95,6 +95,21 @@ struct CookedLod {
 	uint32_t triCount = 0;
 };
 
+// ---------------------------------------------------------------------------
+// Tangent-frame synthesis (shared by the importer and the LOD cooker).
+//
+// meshopt_simplify only tracks positions, so decimated vertices keep the
+// pre-simplification frame: interpolating those normals/tangents across
+// the new, larger triangles shades wrongly (even back-facing -> black).
+// ComputeSmoothNormals re-derives area-weighted smooth normals from the
+// upload's own indices; GenerateTangents re-derives UV-gradient tangents
+// (Lengyel) Gram-Schmidt orthogonalized against N with a handedness sign.
+// Creases survive because crease vertices are duplicated. Call
+// ComputeSmoothNormals first (GenerateTangents consumes its normals).
+// ---------------------------------------------------------------------------
+void ComputeSmoothNormals(StaticMeshUpload& upload);
+void GenerateTangents(StaticMeshUpload& upload);
+
 // Optimizes upload in place. The caller gates config.overdraw for surfaces
 // that need it (the importer disables overdraw for Blend/Mask materials:
 // overdraw optimization can hurt cutout rendering). lodGroupId stamps stats

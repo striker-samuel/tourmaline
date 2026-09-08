@@ -22,7 +22,9 @@ struct PSOut
 
 PSOut mainPS(PSIn IN)
 {
-    PSOut OUT;
-    OUT.outColor = IN.color;
-    return OUT;
+     PSOut OUT;
+     // Gamma encode so debug colors survive the tonemap pass's
+     // gamma decode (pow(..., 1/2.2)) — otherwise they appear too dark.
+     OUT.outColor = pow(IN.color, 1.0f / 2.2f);
+     return OUT;
 }

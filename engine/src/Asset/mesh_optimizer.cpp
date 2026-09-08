@@ -51,6 +51,87 @@ void RecomputeBounds(StaticMeshUpload& upload) {
 
 } // namespace
 
+void ComputeSmoothNormals(StaticMeshUpload& upload) {
+	const size_t vcount = upload.vertices.size();
+	if (vcount == 0) return;
+	for (auto& v : upload.vertices) v.normal = glm::vec3(0.0f);
+	auto accumTri = [&](uint32_t i0, uint32_t i1, uint32_t i2) {
+		if (i0 >= vcount || i1 >= vcount || i2 >= vcount) return;
+		const glm::vec3& p0 = upload.vertices[i0].pos;
+		const glm::vec3& p1 = upload.vertices[i1].pos;
+		const glm::vec3& p2 = upload.vertices[i2].pos;
+		const glm::vec3 fn = glm::cross(p1 - p0, p2 - p0);
+		if (glm::dot(fn, fn) <= 1e-24f) return; // degenerate
+		upload.vertices[i0].normal += fn;
+		upload.vertices[i1].normal += fn;
+		upload.vertices[i2].normal += fn;
+	};
+	if (!upload.indices.empty()) {
+		for (size_t t = 0; t + 2 < upload.indices.size() + 1; t += 3)
+			accumTri(upload.indices[t], upload.indices[t + 1], upload.indices[t + 2]);
+	}
+	else {
+		for (uint32_t t = 0; t + 2 < vcount + 1; t += 3)
+			accumTri(t, t + 1, t + 2);
+	}
+	for (auto& v : upload.vertices) {
+		const float l2 = glm::dot(v.normal, v.normal);
+		v.normal = (l2 > 1e-24f) ? glm::normalize(v.normal) : glm::vec3(0.0f, 1.0f, 0.0f);
+	}
+}
+
+void GenerateTangents(StaticMeshUpload& upload) {
+	const size_t vcount = upload.vertices.size();
+	if (vcount == 0) return;
+	std::vector<glm::vec3> tan1(vcount, glm::vec3(0.0f));
+	std::vector<glm::vec3> tan2(vcount, glm::vec3(0.0f));
+	auto accumTri = [&](uint32_t i0, uint32_t i1, uint32_t i2) {
+		if (i0 >= vcount || i1 >= vcount || i2 >= vcount) return;
+		const glm::vec3& p0 = upload.vertices[i0].pos;
+		const glm::vec3& p1 = upload.vertices[i1].pos;
+		const glm::vec3& p2 = upload.vertices[i2].pos;
+		const glm::vec2& w0 = upload.vertices[i0].texCoord;
+		const glm::vec2& w1 = upload.vertices[i1].texCoord;
+		const glm::vec2& w2 = upload.vertices[i2].texCoord;
+		const glm::vec3 x1 = p1 - p0;
+		const glm::vec3 x2 = p2 - p0;
+		const glm::vec2 s1 = w1 - w0;
+		const glm::vec2 s2 = w2 - w0;
+		const float denom = s1.x * s2.y - s2.x * s1.y;
+		if (fabsf(denom) <= 1e-12f) return; // degenerate UVs: no tangent info
+		const float r = 1.0f / denom;
+		const glm::vec3 sdir = (x1 * s2.y - x2 * s1.y) * r;
+		const glm::vec3 tdir = (x2 * s1.x - x1 * s2.x) * r;
+		tan1[i0] += sdir; tan1[i1] += sdir; tan1[i2] += sdir;
+		tan2[i0] += tdir; tan2[i1] += tdir; tan2[i2] += tdir;
+	};
+	if (!upload.indices.empty()) {
+		for (size_t t = 0; t + 2 < upload.indices.size() + 1; t += 3)
+			accumTri(upload.indices[t], upload.indices[t + 1], upload.indices[t + 2]);
+	}
+	else {
+		for (uint32_t t = 0; t + 2 < vcount + 1; t += 3)
+			accumTri(t, t + 1, t + 2);
+	}
+	for (size_t i = 0; i < vcount; ++i) {
+		const glm::vec3& n = upload.vertices[i].normal;
+		// Gram-Schmidt: make accumulated tangent orthogonal to N.
+		glm::vec3 t = tan1[i] - n * glm::dot(n, tan1[i]);
+		if (glm::dot(t, t) > 1e-24f) {
+			t = glm::normalize(t);
+		}
+		else {
+			// No usable UV gradient: build an arbitrary frame orthogonal to N.
+			const glm::vec3 axis =
+				(fabsf(n.y) < 0.99f) ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+			t = glm::normalize(glm::cross(axis, n));
+			if (glm::dot(t, t) <= 1e-24f) t = glm::vec3(1.0f, 0.0f, 0.0f);
+		}
+		const float w = (glm::dot(glm::cross(n, t), tan2[i]) < 0.0f) ? -1.0f : 1.0f;
+		upload.vertices[i].tangent = glm::vec4(t, w);
+	}
+}
+
 bool OptimizeStaticMeshUpload(
 	StaticMeshUpload& upload,
 	const MeshOptConfig& config,
@@ -259,6 +340,13 @@ bool BuildLodChainForUpload(
 		kept.upload.vertices = std::move(verts);
 		kept.upload.indices = std::move(remapped);
 		kept.upload.surfaces = lod0.surfaces; // single-surface layout preserved
+		// The simplifier only tracks positions: surviving vertices still
+		// carry LOD0's normals/tangents, which no longer match the decimated
+		// topology and shade black where they interpolate backwards. Re-derive
+		// the frame from this LOD's own connectivity (creases survive because
+		// crease vertices are duplicated).
+		ComputeSmoothNormals(kept.upload);
+		GenerateTangents(kept.upload);
 		kept.relativeError = relativeError;
 		kept.localError = relativeError * localScale;
 		kept.triCount = static_cast<uint32_t>(resultTris);
