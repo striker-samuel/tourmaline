@@ -9,7 +9,7 @@
 #      normal classification, same flags as tools/ktx_bulk_convert.py),
 #   3. Stages models/Bistro/<original tree> with .ktx2 textures + a rewritten
 #      bistro.gltf whose .png image URIs point at the .ktx2 files,
-#   4. Runs PakCooker --meshlets on to produce content/paks/bistro.pak.
+#   4. Runs PakCooker --meshlets on --lods on to produce content/paks/bistro.pak.
 #
 # Usage (PowerShell, from repo root F:/REPOS/vulkantoy):
 #   py tools/cook_bistro.py --niagara-dir F:/REPOS/niagara_bistro
@@ -181,6 +181,12 @@ def main():
     ap.add_argument("--skip-pak", action="store_true")
     ap.add_argument("--meshlets", default="on",
                     help="PakCooker meshlets path: 'on' (default) or 'off'")
+    ap.add_argument("--lods", default="on",
+                    help="PakCooker LOD chain: 'on' (default) or 'off'")
+    ap.add_argument("--lod-ratios", default="0.6,0.3,0.12",
+                    help="Triangle-count ratios vs LOD0 for PakCooker --lod-ratios")
+    ap.add_argument("--lod-error", type=float, default=0.02,
+                    help="Relative simplifier error budget for PakCooker --lod-error")
     ap.add_argument("--shard", type=int, default=0,
                     help="1-based shard index to convert (0 = all)")
     ap.add_argument("--num-shards", type=int, default=1)
@@ -336,6 +342,9 @@ def main():
            "--in-vfs", vfs_model,
            "--out-pak", str(out_pak),
            "--meshlets", args.meshlets,
+           "--lods", args.lods,
+           "--lod-ratios", args.lod_ratios,
+           "--lod-error", str(args.lod_error),
            "--meshopt", "on",
            "--verify", "on"]
     print(f"[bistro] running: {' '.join(cmd)}")

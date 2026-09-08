@@ -240,6 +240,12 @@ def main():
     ap.add_argument("--skip-pak", action="store_true")
     ap.add_argument("--meshlets", default="on",
                     help="PakCooker meshlets path: 'on' (default) or 'off'")
+    ap.add_argument("--lods", default="on",
+                    help="PakCooker LOD chain: 'on' (default) or 'off'")
+    ap.add_argument("--lod-ratios", default="0.6,0.3,0.12",
+                    help="Triangle-count ratios vs LOD0 for PakCooker --lod-ratios")
+    ap.add_argument("--lod-error", type=float, default=0.02,
+                    help="Relative simplifier error budget for PakCooker --lod-error")
     args = ap.parse_args()
 
     src = Path(args.src_dir)
@@ -350,6 +356,9 @@ def main():
            "--in-vfs", vfs_model,
            "--out-pak", str(out_pak),
            "--meshlets", args.meshlets,
+           "--lods", args.lods,
+           "--lod-ratios", args.lod_ratios,
+           "--lod-error", str(args.lod_error),
            "--meshopt", "on",
            "--verify", "on"]
     print(f"[bistro-v5] running: {' '.join(cmd)}")

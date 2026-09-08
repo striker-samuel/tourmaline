@@ -7,6 +7,8 @@
 
 #include <App/push_constants.h>
 
+#include <glm/glm.hpp>
+
 namespace app {
 
 struct AppFrameContext : public smvk::FrameContext {
@@ -20,6 +22,14 @@ struct AppFrameContext : public smvk::FrameContext {
 	// T3: the GfxRenderer seeded depth this frame (prepass must Load the
 	// seed instead of Clearing). Set by main after gfx AppendPasses.
 	bool seedDepthPrimed = false;
+	// Error-driven LOD (see Engine/Asset/mesh_optimizer.h): the prepass
+	// runs inside ForwardPlusRenderer, so it reads selection inputs here
+	// instead of SceneRenderer members. Distance = node world pos to eye.
+	bool lodEnabled = false;
+	glm::vec3 lodEye{ 0.0f };
+	float lodViewportHeight = 1080.0f;
+	float lodFovY = 0.7853982f; // 45 deg
+	float lodPixelBudget = 1.0f;
 };
 
 } // namespace app

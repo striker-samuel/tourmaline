@@ -340,6 +340,27 @@ protected:
 	void DrawFrame() override;
 	void RenderFrame(smvk::Framebuffer fb);
 
+	// Error-driven LOD selection (see Engine/Asset/mesh_optimizer.h): the
+	// scene references LOD0; cooked "/lodN" siblings are picked per instance
+	// from their world-space simplifier error projected to pixels at the
+	// instance distance. Returns the LOD mesh (LOD0 fallback when disabled
+	// or uncooked). `outLod` receives the selected index for stats.
+	smvk::StaticMesh* LodMeshForNode(NodeId node, uint32_t worldMesh,
+		uint32_t* outLod = nullptr);
+	// Cheap LOD index for filter/direct split decisions (cached chains, no
+	// mesh fetch). Returns 0 when LODs are disabled or uncooked.
+	uint32_t LodIndexForNode(NodeId node, uint32_t worldMesh) const;
+	void ResetLodStats();
+	// Runtime LOD switch: pixel budget for the projected simplifier error
+	// (~1px = conservative, higher = more aggressive). Disabled = always LOD0.
+	bool m_lodEnabled = true;
+	float m_lodPixelBudget = 1.0f;
+	float m_lodViewportHeight = 1080.0f; // refreshed per frame from renderExtent
+	uint64_t m_lodDraws = 0;     // direct draws this frame
+	uint64_t m_lodSwitched = 0;  // ... served by LOD1+
+	uint32_t m_lodChainMeshes = 0; // world meshes with a cooked chain (per frame)
+	uint32_t m_lodChainLods = 0;   // total cooked siblings (per frame)
+
 	static constexpr float default_near_clip = 0.01f;
 	static constexpr float kCameraFovYDegrees = 45.0f;
 

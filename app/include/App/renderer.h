@@ -147,7 +147,8 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	uint32_t FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		uint32_t frameIndex, smvk::World& world, const smvk::RenderViewSet& views,
 		uint32_t mainViewIdx, const glm::vec3& eye, const smvk::Extent2D& extent,
-		smvk::gfx::CullFlags flags);
+		smvk::gfx::CullFlags flags, bool lodEnabled = false, float lodFovY = 0.7853982f,
+		float lodPixelBudget = 1.0f);
 
 	// Debug culling freeze (set every frame by the owner while active, cleared
 	// otherwise): FilterMainView expands batches against this (view, eye)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -25,13 +26,13 @@ struct MeshOptConfig {
 	bool vertexFetch = true; // optimizeVertexFetch (runs last)
 	float overdrawThreshold = 1.05f;
 
-	// LOD instrumentation (UNPLUGGED — see LodInfo below).
+	// LOD instrumentation (see LodInfo below).
 	bool recordLodCandidates = true;
 
 	// Cooked LOD chain (meshopt_simplify, cook-time only). When true,
 	// the importer emits sibling blobs "<base>/lodN" (N >= 1) sharing the
-	// base groupId; the scene keeps referencing LOD0. The renderer still
-	// ignores lodIndex/screenThreshold (selection hook unplugged).
+	// base groupId; the scene keeps referencing LOD0. The renderer selects
+	// siblings at draw time from LodInfo::simplifyError (see below).
 	bool generateLods = false;
 	// Triangle-count ratios vs LOD0, coarsest-last. Default 60/30/12%.
 	std::vector<float> lodRatios{ 0.6f, 0.3f, 0.12f };
@@ -68,8 +69,9 @@ struct MeshOptStats {
 // is the WORLD-space absolute geometric error in the same units as vertex
 // positions (local meshoptimizer error scaled by meshopt_simplifyScale and
 // by the max node world scale of all instances — see FinalizeLodWorldErrors).
-// The renderer MUST NOT branch on lodIndex / screenThreshold yet — the
-// selection hook is intentionally unplugged (no runtime LOD switching).
+// The renderer selects a LOD per instance from simplifyError via
+// LodProjectedPixelError() below (screen-space error budget); lodIndex /
+// screenThreshold stay as informational markers (screenThreshold reserved).
 // ---------------------------------------------------------------------------
 
 struct LodInfo {
@@ -129,6 +131,83 @@ float MaxScaleOfMatrix(const glm::mat4& m);
 // that suffix (returns the input unchanged when it is not a LOD URI).
 std::string LodSiblingUri(const std::string& baseUri, uint32_t lodIndex);
 std::string BaseMeshUriForLod(const std::string& uri);
+
+// ---------------------------------------------------------------------------
+// Error-driven LOD transitions (runtime selection from the simplifier error).
+//
+// meshopt_simplify reports a *geometric* error in world units
+// (LodInfo::simplifyError). A world-space deviation `err` at view distance
+// `d` projects to roughly
+//
+//   pixels = err * (viewportHeightPx / (2 * tan(fovY/2))) / d
+//
+// (perspective projection of a view-perpendicular segment; matches gltfpack
+// screen-error semantics). The renderer picks the coarsest LOD whose
+// projected error stays within a pixel budget (typically ~1px), so
+// transitions are driven directly by the simplifier's error rate — no baked
+// distance thresholds, no per-mesh tuning.
+//
+// Helpers are pure/free so cook tooling, tests and the renderer share one
+// formula.
+// ---------------------------------------------------------------------------
+
+// Projected screen-space error in pixels for a world-space geometric error.
+inline float LodProjectedPixelError(float simplifyErrorWorld, float distance,
+	float viewportHeightPx, float fovYRadians) {
+	// LOD0 (zero error) never projects; degenerate views never select.
+	if (!(simplifyErrorWorld > 0.0f))
+		return 0.0f;
+	if (!(distance > 0.0f) || !(viewportHeightPx > 0.0f) || !(fovYRadians > 0.0f))
+		return 0.0f;
+	const float half = fovYRadians * 0.5f;
+	const float t = tanf(half);
+	if (!(t > 0.0f))
+		return 0.0f;
+	return simplifyErrorWorld * viewportHeightPx / (2.0f * t * distance);
+}
+
+// View distance at which `simplifyErrorWorld` projects to exactly
+// `maxPixelError`. Beyond this distance the LOD is within budget.
+inline float LodSwitchDistance(float simplifyErrorWorld, float viewportHeightPx,
+	float fovYRadians, float maxPixelError) {
+	if (!(simplifyErrorWorld > 0.0f) || !(maxPixelError > 0.0f))
+		return 0.0f;
+	if (!(viewportHeightPx > 0.0f) || !(fovYRadians > 0.0f))
+		return 0.0f;
+	const float half = fovYRadians * 0.5f;
+	const float t = tanf(half);
+	if (!(t > 0.0f))
+		return 0.0f;
+	return simplifyErrorWorld * viewportHeightPx / (2.0f * t * maxPixelError);
+}
+
+// Pick the coarsest LOD whose projected error is within budget.
+// `errorsByLod` is ordered LOD0..N (LOD0 error must be 0); entries with
+// non-finite/negative error are treated as unusable (skipped, never picked
+// beyond the last good one). Returns 0 when nothing coarser is in budget.
+inline uint32_t SelectLodIndexForDistance(const float* errorsByLod, uint32_t count,
+	float distance, float viewportHeightPx, float fovYRadians, float maxPixelError) {
+	if (!errorsByLod || count == 0)
+		return 0;
+	if (!(distance > 0.0f) || !(maxPixelError >= 0.0f))
+		return 0;
+	uint32_t best = 0;
+	for (uint32_t i = 1; i < count; ++i) {
+		const float e = errorsByLod[i];
+		if (!(e >= 0.0f) || !std::isfinite(e))
+			break; // broken chain: stop at the last good LOD
+		if (e <= 0.0f) {
+			best = i; // zero-error sibling: always safe, keep going coarser
+			continue;
+		}
+		const float px = LodProjectedPixelError(e, distance, viewportHeightPx, fovYRadians);
+		if (px <= maxPixelError)
+			best = i;
+		else
+			break; // errors grow coarser; further LODs only project larger
+	}
+	return (best < count) ? best : count - 1;
+}
 
 // Cook-time post-pass: after the scene's global transforms are final,
 // scales every LOD sibling's locally-recorded simplifyError by the max

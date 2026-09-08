@@ -183,7 +183,7 @@ namespace smvk {
 			meshLocations.push_back(
 				MeshLocation{ .cluster = &cluster, .handle = handle }
 			);
-			// Cook-time LOD marker for tooling (renderer ignores it).
+			// Cook-time LOD marker (LOD0; siblings resolve via SelectLodIndex).
 			LodInfo lod;
 			lod.groupId = meshIdx;
 			if (const std::string uri = cluster.GetMeshUri(handle);
@@ -270,6 +270,7 @@ namespace smvk {
 			flags[node] = f;
 		}
 
+		RebuildLodChains();
 		dirtyCull = true;
 	}
 
@@ -302,6 +303,110 @@ namespace smvk {
 		if (meshIndex >= meshLodInfos.size())
 			return nullptr;
 		return &meshLodInfos[meshIndex];
+	}
+
+	// Resolve every world mesh's cooked "/lodN" chain once (called at the
+	// end of ResolveAndFixup_clusters; hot paths below only index the
+	// cache). URI probing + GetMeshUri's linear scan happen here, once per
+	// scene build, instead of once per draw per pass per frame.
+	void World::RebuildLodChains() {
+		lodChains.clear();
+		lodChains.resize(meshLocations.size());
+		for (uint32_t i = 0; i < (uint32_t)meshLocations.size(); ++i) {
+			LodChain& chain = lodChains[i];
+			const MeshLocation& lod0 = meshLocations[i];
+			if (lod0.cluster == nullptr || !lod0.handle.valid())
+				continue;
+			chain.lods.push_back(lod0);
+			chain.errors.push_back(0.0f);
+			const std::string base =
+				BaseMeshUriForLod(lod0.cluster->GetMeshUri(lod0.handle));
+			if (base.empty())
+				continue;
+			for (uint32_t li = 1; li < 16; ++li) {
+				const std::string uri = LodSiblingUri(base, li);
+				bool found = false;
+				float err = 0.0f;
+				for (const auto& clusterPtr : clusters) {
+					if (!clusterPtr)
+						continue;
+					if (auto hit = clusterPtr->GetMeshLod(uri)) {
+						err = hit->simplifyError;
+						found = true;
+						break;
+					}
+				}
+				if (!found)
+					break;
+				auto meshHit = ResolveMeshAcrossClusters(uri);
+				if (!meshHit || meshHit->cluster == nullptr ||
+					!meshHit->handle.valid())
+					break;
+				chain.lods.push_back(*meshHit);
+				chain.errors.push_back(err);
+			}
+		}
+	}
+
+	static void EnsureLodChainsCached(const World& w) {
+		if (w.lodChains.size() != w.meshLocations.size())
+			const_cast<World&>(w).RebuildLodChains();
+	}
+
+	uint32_t World::LodChainLength(uint32_t meshIndex) const {
+		EnsureLodChainsCached(*this);
+		if (meshIndex >= lodChains.size())
+			return 1;
+		const size_t n = lodChains[meshIndex].lods.size();
+		return n == 0 ? 1 : (uint32_t)n;
+	}
+
+	std::optional<World::MeshLocation> World::ResolveLodMesh(
+		uint32_t meshIndex, uint32_t lodIndex) const {
+		EnsureLodChainsCached(*this);
+		if (meshIndex >= lodChains.size())
+			return std::nullopt;
+		const LodChain& chain = lodChains[meshIndex];
+		if (lodIndex >= chain.lods.size())
+			return std::nullopt;
+		const MeshLocation& loc = chain.lods[lodIndex];
+		if (loc.cluster == nullptr || !loc.handle.valid())
+			return std::nullopt;
+		return loc;
+	}
+
+	StaticMesh* World::GetLodMesh(uint32_t meshIndex, uint32_t lodIndex) {
+		auto hit = ResolveLodMesh(meshIndex, lodIndex);
+		if (!hit || hit->cluster == nullptr || !hit->handle.valid())
+			return GetMesh(meshIndex); // missing sibling: fall back to LOD0
+		if (StaticMesh* m = hit->cluster->staticMeshes.get(hit->handle))
+			return m;
+		return GetMesh(meshIndex);
+	}
+
+	float World::LodErrorAt(uint32_t meshIndex, uint32_t lodIndex) const {
+		EnsureLodChainsCached(*this);
+		if (meshIndex >= lodChains.size())
+			return 0.0f;
+		const LodChain& chain = lodChains[meshIndex];
+		if (lodIndex >= chain.errors.size())
+			return 0.0f;
+		return chain.errors[lodIndex];
+	}
+
+	uint32_t World::SelectLodIndex(uint32_t meshIndex, float distance,
+		float viewportHeightPx, float fovYRadians, float maxPixelError) const {
+		if (!(distance > 0.0f) || !(maxPixelError >= 0.0f))
+			return 0;
+		EnsureLodChainsCached(*this);
+		if (meshIndex >= lodChains.size())
+			return 0;
+		const LodChain& chain = lodChains[meshIndex];
+		if (chain.errors.size() <= 1)
+			return 0;
+		return SelectLodIndexForDistance(chain.errors.data(),
+			(uint32_t)chain.errors.size(), distance,
+			viewportHeightPx, fovYRadians, maxPixelError);
 	}
 
 	std::optional<World::MeshLocation> World::ResolveMeshAcrossClusters(

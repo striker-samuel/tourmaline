@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
 namespace app {
@@ -61,6 +62,11 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 	smvk::World* world = fc.world;
 	const PushConstants depthPC = fc.pc;
 	const smvk::LogicalImageViewHandle depthView = fc.depthView;
+	const bool lodEnabled = fc.lodEnabled;
+	const glm::vec3 lodEye = fc.lodEye;
+	const float lodViewportHeight = fc.lodViewportHeight;
+	const float lodFovY = fc.lodFovY;
+	const float lodPixelBudget = fc.lodPixelBudget;
 
 	using NodeId = ::NodeId;
 
@@ -72,7 +78,8 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 			{ fc.extent.width, fc.extent.height }, "ForwardPlusDepth",
 			seeded ? smvk::AttachmentLoadOp::Load
 				: smvk::AttachmentLoadOp::Clear);
-		prepass.SetRecordingFunc([this, depthPC, world](smvk::CommandBuffer& cmd)
+		prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodEye,
+			lodViewportHeight, lodFovY, lodPixelBudget](smvk::CommandBuffer& cmd)
 		{
 			// GPU context + pass scope come from RenderGraph::Execute.
 			auto drawPrepassNode = [&](NodeId node, bool maskedPhase) {
@@ -86,7 +93,21 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 					mat->shadingModel == smvk::ShadingModel::Masked;
 				if (masked != maskedPhase) return;
 				auto& model = world->scene.globalTransform[node];
-				smvk::StaticMesh* meshDesc = world->GetMesh(meshForNode->second);
+				// Error-driven LOD (same budget as the main view): the
+				// prepass fills the depth the tile cull + Main test
+				// against, so it must rasterize the same LOD Main draws.
+				smvk::StaticMesh* meshDesc = nullptr;
+				if (lodEnabled && node < world->scene.globalTransform.size()) {
+					const glm::mat4& m = world->scene.globalTransform[node];
+					const glm::vec3 center{ m[3][0], m[3][1], m[3][2] };
+					const float distance = glm::length(center - lodEye);
+					const uint32_t lod = world->SelectLodIndex(meshForNode->second,
+						distance, lodViewportHeight, lodFovY, lodPixelBudget);
+					meshDesc = world->GetLodMesh(meshForNode->second, lod);
+				}
+				else {
+					meshDesc = world->GetMesh(meshForNode->second);
+				}
 				if (!meshDesc) return;
 				PushConstants objectPC{};
 				std::copy_n(glm::value_ptr(model), 16, objectPC.model);

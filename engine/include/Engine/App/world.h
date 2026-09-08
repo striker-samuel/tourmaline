@@ -82,8 +82,8 @@ namespace smvk {
 		std::vector<MaterialLocation> materialLocations;
 		std::vector<TextureLocation> textureLocations;
 		// Per-mesh LOD markers parallel to meshLocations (cook-time chain:
-		// LOD0 + "/lodN" siblings with world-scaled error — tooling/ImGui
-		// only, the renderer ignores it).
+		// LOD0 + "/lodN" siblings with world-scaled simplifier error used
+		// for runtime LOD selection — see SelectLodIndex).
 		std::vector<LodInfo> meshLodInfos;
 
 		Cluster& LoadCluster(ResourceManager& ctx);
@@ -99,10 +99,43 @@ namespace smvk {
 
 		smvk::StaticMesh* GetMesh(uint32_t meshIndex);
 		smvk::Material* GetMaterial(uint32_t materialIndex);
-		// LOD marker for tooling (LOD0 + cooked "/lodN" siblings; the
-		// renderer still ignores lodIndex/screenThreshold). Null when the
-		// index is out of range. Never consulted by the renderer.
+		// LOD marker for tooling (LOD0 + cooked "/lodN" siblings with
+		// world-scaled simplifier error). Null when the index is out of range.
 		const LodInfo* GetLodInfo(uint32_t meshIndex) const;
+
+		// Runtime LOD chain over cooked "/lodN" siblings (see mesh_optimizer.h).
+		// The scene always references LOD0; siblings share the base URI and
+		// are resolved here per instance. Length is >= 1 (LOD0 alone when
+		// nothing was cooked). ResolveLodMesh() misses (nullopt) past the end.
+		// Chains are resolved once in ResolveAndFixup_clusters() into
+		// lodChains (hot paths below are O(1): no URI strings, no cluster
+		// scans — the previous per-draw probing showed up as a major CPU
+		// regression once every Bistro mesh had a cooked chain).
+		struct LodChain {
+			// Resolved sibling locations, LOD0..N (lods[0] == meshLocations[i]).
+			std::vector<MeshLocation> lods;
+			// World-space simplifier error per entry (errors[0] == 0).
+			std::vector<float> errors;
+		};
+		uint32_t LodChainLength(uint32_t meshIndex) const;
+		std::optional<MeshLocation> ResolveLodMesh(uint32_t meshIndex, uint32_t lodIndex) const;
+		smvk::StaticMesh* GetLodMesh(uint32_t meshIndex, uint32_t lodIndex);
+		void RebuildLodChains();
+		// Simplifier error for a chain entry (0 for LOD0, world units).
+		// Falls back to 0 when the marker is missing.
+		float LodErrorAt(uint32_t meshIndex, uint32_t lodIndex) const;
+		// Error-driven selection: coarsest LOD whose projected screen error
+		// (LodProjectedPixelError over each entry's simplifyError) stays
+		// within maxPixelError at `distance`. Returns 0 (full mesh) when no
+		// chain was cooked or nothing coarser is in budget.
+		uint32_t SelectLodIndex(uint32_t meshIndex, float distance,
+			float viewportHeightPx, float fovYRadians, float maxPixelError) const;
+
+		// Cached LOD chains parallel to meshLocations (see RebuildLodChains).
+		// Mutable so const hot paths (LodChainLength/SelectLodIndex) can
+		// lazily rebuild after direct cluster edits that bypassed
+		// ResolveAndFixup_clusters().
+		mutable std::vector<LodChain> lodChains;
 
 		// First-hit URI resolution across clusters in registration order
 		// (mirrors the VFS overlay rule). Used for cross-pak references.

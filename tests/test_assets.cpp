@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <Engine/App/cluster.h>
+#include <Engine/App/world.h>
 #include <Engine/App/static_merge.h>
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/cluster_serializer.h>
@@ -431,6 +432,92 @@ void TestLodChain() {
 	}
 }
 
+void TestLodSelection() {
+	// Error-driven transitions share one formula (cook, tests, renderer).
+	using namespace smvk;
+	const float fov = 0.7853982f; // 45 deg
+	const float h = 1080.0f;
+	// LOD0 / degenerate inputs never project.
+	Check(LodProjectedPixelError(0.0f, 10.0f, h, fov) == 0.0f, "lod.px.zero");
+	Check(LodProjectedPixelError(0.02f, 0.0f, h, fov) == 0.0f, "lod.px.nodist");
+	// Known value: 0.02m at 1m, 1080p/45deg ~= 26.07px.
+	{
+		const float px = LodProjectedPixelError(0.02f, 1.0f, h, fov);
+		Check(fabsf(px - 26.07f) < 0.05f, "lod.px.value");
+	}
+	// Switch distance is the inverse: error projects to exactly the budget.
+	{
+		const float d = LodSwitchDistance(0.02f, h, fov, 1.0f);
+		Check(fabsf(d - 26.07f) < 0.05f, "lod.switch.value");
+		Check(fabsf(LodProjectedPixelError(0.02f, d, h, fov) - 1.0f) < 1e-3f,
+			"lod.switch.roundtrip");
+	}
+	// Coarsest-in-budget wins; errors grow coarser so the first miss stops.
+	{
+		const float errors[] = { 0.0f, 0.01f, 0.05f };
+		// d=5: LOD1 projects ~2.6px > 1px budget -> LOD0.
+		Check(SelectLodIndexForDistance(errors, 3, 5.0f, h, fov, 1.0f) == 0,
+			"lod.sel.near");
+		// d=50: LOD1 ~0.26px in budget, LOD2 ~1.3px out -> LOD1.
+		Check(SelectLodIndexForDistance(errors, 3, 50.0f, h, fov, 1.0f) == 1,
+			"lod.sel.mid");
+		// d=500: everything in budget -> coarsest (LOD2).
+		Check(SelectLodIndexForDistance(errors, 3, 500.0f, h, fov, 1.0f) == 2,
+			"lod.sel.far");
+		// Empty chain -> LOD0.
+		Check(SelectLodIndexForDistance(nullptr, 0, 500.0f, h, fov, 1.0f) == 0,
+			"lod.sel.empty");
+	}
+	// World chain resolution over cooked "/lodN" siblings (headless: cook
+	// cluster registered with a World, no GPU involved).
+	{
+		auto cluster = std::make_unique<Cluster>(nullptr);
+		cluster->SetCookMode(true);
+		auto q = MakeQuad();
+		const auto mh = cluster->UploadStaticMesh(q);
+		const std::string uri = "models/q.gltf#mesh.4/prim.0";
+		cluster->RegisterMeshUri(uri, mh);
+		LodInfo lod0;
+		lod0.groupId = 4;
+		lod0.lodIndex = 0;
+		lod0.candidateCount = 2;
+		lod0.triCount = 2;
+		cluster->RegisterMeshLod(uri, lod0);
+		const auto h1 = cluster->UploadStaticMesh(q);
+		const std::string uri1 = LodSiblingUri(uri, 1);
+		cluster->RegisterMeshUri(uri1, h1);
+		LodInfo lod1;
+		lod1.groupId = 4;
+		lod1.lodIndex = 1;
+		lod1.candidateCount = 2;
+		lod1.simplifyError = 0.5f; // local; finalize scales by node scale
+		lod1.triCount = 1;
+		cluster->RegisterMeshLod(uri1, lod1);
+		const int root = addNode(cluster->scene, -1, 0);
+		const int n1 = addNode(cluster->scene, root, 1);
+		cluster->scene.meshForNode[n1] = mh.index();
+		cluster->scene.localTransform[n1] = glm::scale(glm::mat4(1.0f), glm::vec3(3.0f));
+		markAsChanged(cluster->scene, root);
+		recalculateGlobalTransforms(cluster->scene);
+		FinalizeLodWorldErrors(*cluster); // sibling world error = 1.5
+
+		World world;
+		world.RegisterCluster(std::move(cluster));
+		world.ResolveAndFixup_clusters();
+		Check(world.meshLocations.size() == 1, "lod.world.meshes");
+		Check(world.LodChainLength(0) == 2, "lod.world.chainlen");
+		Check(world.ResolveLodMesh(0, 0).has_value(), "lod.world.lod0");
+		Check(world.ResolveLodMesh(0, 1).has_value(), "lod.world.lod1");
+		Check(!world.ResolveLodMesh(0, 2).has_value(), "lod.world.lod2.miss");
+		Check(fabsf(world.LodErrorAt(0, 1) - 1.5f) < 1e-4f, "lod.world.error");
+		// err 1.5 projects ~19.5px at 100m (over budget -> LOD0),
+		// ~0.39px at 5000m (in budget -> LOD1).
+		Check(world.SelectLodIndex(0, 100.0f, h, fov, 1.0f) == 0, "lod.world.near");
+		Check(world.SelectLodIndex(0, 5000.0f, h, fov, 1.0f) == 1, "lod.world.far");
+		Check(world.GetLodMesh(0, 1) != nullptr, "lod.world.mesh");
+	}
+}
+
 void TestClusterSerializeCook() {
 	using namespace smvk;
 	// GPU-free cook cluster: CPU geometry + minted texture ids only.
@@ -716,6 +803,7 @@ int main() {
 	TestPakBackendServesTextures();
 	TestMeshOpt();
 	TestLodChain();
+	TestLodSelection();
 	TestClusterSerializeCook();
 	TestStaticSubtrees();
 	TestMeshlets();

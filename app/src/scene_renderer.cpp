@@ -236,7 +236,9 @@ static smvk::SpotShadowMapDesc MakeSpotShadowDesc() {
 //             --in-vfs models/Sponza/sponza.gltf
 //             --out-pak app/content/paks/sponza.pak --meshlets on
 //   Bistro: py tools/cook_bistro.py --niagara-dir F:/REPOS/niagara_bistro
-//             (stages models/Bistro + cooks content/paks/bistro.pak)
+//             (stages models/Bistro + cooks content/paks/bistro.pak with
+//             --meshlets on --lods on; transitions use each LOD's cooked
+//             simplifier error projected to pixels, see LodMeshForNode).
 namespace app {
 
 const SceneDesc& SceneRegistry::Sponza() {
@@ -1308,6 +1310,69 @@ void SceneRenderer::Shutdown() {
 		return (uint32_t)lights.size();
 	}
 
+	// Error-driven LOD pick for one instance. Distance comes from the node's
+	// world translation to the render camera; the world-space simplifier
+	// error of each cooked sibling projects to pixels via
+	// LodProjectedPixelError() and the coarsest in-budget LOD wins.
+	uint32_t SceneRenderer::LodIndexForNode(NodeId node, uint32_t worldMesh) const {
+		if (!m_lodEnabled || !m_world)
+			return 0;
+		if (m_world->LodChainLength(worldMesh) <= 1)
+			return 0;
+		if (node >= m_world->scene.globalTransform.size())
+			return 0;
+		const glm::mat4& model = m_world->scene.globalTransform[node];
+		const glm::vec3 center{ model[3][0], model[3][1], model[3][2] };
+		const float distance = glm::length(center - m_cameraPositioner.cameraPosition_);
+		const float fovY = glm::radians(kCameraFovYDegrees);
+		return m_world->SelectLodIndex(worldMesh, distance,
+			m_lodViewportHeight, fovY, m_lodPixelBudget);
+	}
+
+	smvk::StaticMesh* SceneRenderer::LodMeshForNode(NodeId node, uint32_t worldMesh,
+		uint32_t* outLod) {
+		if (outLod)
+			*outLod = 0;
+		smvk::StaticMesh* base = m_world->GetMesh(worldMesh);
+		if (!base || !m_lodEnabled)
+			return base;
+		if (m_world->LodChainLength(worldMesh) <= 1)
+			return base;
+		if (node >= m_world->scene.globalTransform.size())
+			return base;
+		const glm::mat4& model = m_world->scene.globalTransform[node];
+		const glm::vec3 center{ model[3][0], model[3][1], model[3][2] };
+		const float distance = glm::length(center - m_cameraPositioner.cameraPosition_);
+		const float fovY = glm::radians(kCameraFovYDegrees);
+		const uint32_t lod = m_world->SelectLodIndex(worldMesh, distance,
+			m_lodViewportHeight, fovY, m_lodPixelBudget);
+		if (outLod)
+			*outLod = lod;
+		++m_lodDraws;
+		if (lod > 0) {
+			++m_lodSwitched;
+			if (smvk::StaticMesh* m = m_world->GetLodMesh(worldMesh, lod))
+				return m;
+		}
+		return base;
+	}
+
+	void SceneRenderer::ResetLodStats() {
+		m_lodDraws = 0;
+		m_lodSwitched = 0;
+		m_lodChainMeshes = 0;
+		m_lodChainLods = 0;
+		if (m_world) {
+			for (uint32_t i = 0; i < (uint32_t)m_world->meshLocations.size(); ++i) {
+				const uint32_t n = m_world->LodChainLength(i);
+				if (n > 1) {
+					++m_lodChainMeshes;
+					m_lodChainLods += n - 1;
+				}
+			}
+		}
+	}
+
 	void SceneRenderer::RebuildSwapViews() {
 		for (auto h : m_viewportResources.swapImages) {
 			m_rendergraph->FreeImageView(h);
@@ -1434,6 +1499,14 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		fc.mainViewIndex = mainRenderView;
 		fc.eye = m_cameraPositioner.cameraPosition_;
 		fc.extent = renderExtent;
+		// Error-driven LOD frame inputs (shared with the prepass renderer).
+		m_lodViewportHeight = static_cast<float>(renderExtent.height);
+		ResetLodStats();
+		fc.lodEnabled = m_lodEnabled;
+		fc.lodEye = m_cameraPositioner.cameraPosition_;
+		fc.lodViewportHeight = m_lodViewportHeight;
+		fc.lodFovY = glm::radians(kCameraFovYDegrees);
+		fc.lodPixelBudget = m_lodPixelBudget;
 
 		// Per-view triangle filter (main camera): appended below, after
 		// fc.pc is built (the temporal seed pass captures frame addresses)
@@ -1573,7 +1646,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 							mat->shadingModel == smvk::ShadingModel::Masked;
 						if (masked != maskedPhase) return;
 						auto& model = m_world->scene.globalTransform[node];
-						smvk::StaticMesh* meshDesc = m_world->GetMesh(meshForNode->second);
+						smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshForNode->second);
 						if (!meshDesc) return;
 						// RenderView plane cull: skip casters outside this cascade's frustum.
 						if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
@@ -1697,7 +1770,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 							mat->shadingModel == smvk::ShadingModel::Masked;
 						if (masked != maskedPhase) return;
 						auto& model = m_world->scene.globalTransform[node];
-						smvk::StaticMesh* meshDesc = m_world->GetMesh(meshForNode->second);
+						smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshForNode->second);
 						if (!meshDesc) return;
 						// RenderView plane cull: skip casters outside the spot cone frustum.
 						if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
@@ -1960,9 +2033,12 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					// Static filtered nodes are covered by the HZB-culled
 					// indirect draws below: skip them here so they rasterize
 					// once. Moved filtered nodes (model != prev) still need
-					// the direct path for their correct prevModel.
+					// the direct path for their correct prevModel. LOD>0
+					// instances are NOT in the indirect ranges (FilterMainView
+					// pushes lod==0 only) so they always take the direct path.
 					if (motionFilteredActive
-						&& m_gfxRenderer.IsMeshFiltered(meshForNode->second)) {
+						&& m_gfxRenderer.IsMeshFiltered(meshForNode->second)
+						&& LodIndexForNode(node, meshForNode->second) == 0) {
 						const bool prevValid = m_prevGlobalTransforms.size()
 							== m_world->scene.globalTransform.size();
 						if (prevValid) {
@@ -1981,7 +2057,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 						mat->shadingModel == smvk::ShadingModel::Masked;
 					if (masked != maskedPhase) return;
 					auto& model = m_world->scene.globalTransform[node];
-					smvk::StaticMesh* meshDesc = m_world->GetMesh(meshForNode->second);
+					smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshForNode->second);
 					if (!meshDesc) return;
 					PushConstants objectPC{};
 					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
@@ -2205,7 +2281,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 
 		auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId) {
 			auto& model = m_world->scene.globalTransform[node];
-			smvk::StaticMesh* meshDesc = m_world->GetMesh(meshId);
+			smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
 			if (!meshDesc)
 				return;
 			PushConstants pc{};
@@ -2417,8 +2493,11 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				auto materialForNode = m_world->scene.materialForNode.find(node);
 				if (materialForNode == m_world->scene.materialForNode.end())
 					return;
-				// Filtered meshes already drew above via indirect ranges.
-				if (gfxActive && m_gfxRenderer.IsMeshFiltered(meshForNode->second))
+				// Filtered lod==0 instances already drew above via indirect
+				// ranges. LOD>0 instances are not in the ranges (see
+				// FilterMainView) and fall through to the direct LOD draw.
+				if (gfxActive && m_gfxRenderer.IsMeshFiltered(meshForNode->second)
+					&& LodIndexForNode(node, meshForNode->second) == 0)
 					return;
 				const uint32_t materialId = materialForNode->second;
 				if (materialId != boundMaterial) {
@@ -2675,6 +2754,19 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				ImGui::TextDisabled(m_viewportResources.msaa.Valid() ? "MSAA 2x -> HDR resolve" : "MSAA target missing – running 1x");
 		}
 		ImGui::Separator();
+		if (ImGui::CollapsingHeader("LODs — error-driven switches", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Checkbox("Enable LODs", &m_lodEnabled);
+			ImGui::SliderFloat("Pixel budget (px)", &m_lodPixelBudget, 0.25f, 8.0f, "%.2f");
+			ImGui::Text("Cooked: %u meshes / %u siblings | draws: %llu (%llu switched)",
+				m_lodChainMeshes, m_lodChainLods,
+				(unsigned long long)m_lodDraws, (unsigned long long)m_lodSwitched);
+			ImGui::TextDisabled("Transition = projected simplifier error (world err * H / "
+				"(2*tan(fov/2)*dist) <= budget). LOD0 stays in the GPU filter; LOD1+ draws direct.");
+			if (!m_lodEnabled)
+				ImGui::TextDisabled("LODs OFF – always LOD0.");
+			else if (m_lodChainMeshes == 0)
+				ImGui::TextDisabled("No cooked LOD chain in this scene – cook with --lods on.");
+		}
 		if (ImGui::CollapsingHeader("Resolution — internal res + UI pass + DPI", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Text("Scene: %ux%u (%.0f%%) -> swap %ux%u",
 				renderExtent.width, renderExtent.height, m_renderScale * 100.0f,
