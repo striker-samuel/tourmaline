@@ -26,7 +26,7 @@ void PrintUsage(const char* prog) {
 } // namespace
 
 int main(int argc, const char* argv[]) {
-	const char* sceneId = "sponza";
+	const char* sceneId = "bistro";
 	bool minimal = false;
 	bool noPak = false;
 	for (int i = 1; i < argc; ++i) {

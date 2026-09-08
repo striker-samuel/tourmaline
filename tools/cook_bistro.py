@@ -99,7 +99,8 @@ def toktx_cmd(toktx, kind, src_png, dst_ktx, uastc_quality, zcmp):
 
 
 def convert_one(job):
-    """Decode DDS -> temp PNG -> toktx -> ktx2. Returns (uri, ok, msg)."""
+    """Decode DDS -> (green-flip normals) -> temp PNG -> toktx -> ktx2.
+    Returns (uri, ok, msg)."""
     from PIL import Image
 
     uri, src_dds, dst_ktx, kind, toktx, quality, zcmp = job
@@ -111,6 +112,15 @@ def convert_one(job):
             im.load()
             if im.mode not in ("RGB", "RGBA"):
                 im = im.convert("RGBA")
+            if kind == "normal":
+                # Lumberyard ships DirectX-style normal maps (green = -Y).
+                # The engine's TBN follows the glTF/OpenGL convention
+                # (green = +Y, validated against sponza): flip green.
+                if im.mode != "RGBA":
+                    im = im.convert("RGBA")
+                r, g, b, a = im.split()
+                g = g.point(lambda v: 255 - v)
+                im = Image.merge("RGBA", (r, g, b, a))
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                 tmp_path = tmp.name
             try:

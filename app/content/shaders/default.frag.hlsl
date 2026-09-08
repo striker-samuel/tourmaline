@@ -177,12 +177,18 @@ PSOut mainPS(PSIn IN)
         tw = (tw == 0.0f || isnan(tw)) ? 1.0f : sign(tw);
         float3 B = cross(N, T) * tw;
 
-        float3 mapN = textures[NonUniformResourceIndex((uint)normalIdx)]
-            .Sample(samplers[0], IN.uv).xyz * 2.0f - 1.0f;
+        float2 mapXY = textures[NonUniformResourceIndex((uint)normalIdx)]
+            .Sample(samplers[0], IN.uv).xy * 2.0f - 1.0f;
 
         // glTF normalTexture.scale applies to XY.
-        mapN.xy *= normalScale;
-        mapN = normalize(mapN);
+        mapXY *= normalScale;
+
+        // Normal maps are cooked two-channel (toktx --normal_mode, UASTC
+        // RRRG): the Z channel is dropped and transcodes to B=0. Sampled
+        // as Z, 0*2-1 = -1 flips every normal into the surface and
+        // peppered black/white acne. Reconstruct Z on the unit sphere.
+        float mapZ = sqrt(saturate(1.0f - dot(mapXY, mapXY)));
+        float3 mapN = normalize(float3(mapXY, mapZ));
 
         // Tangent-space -> world-space. Final length check: with T,B unit and
         // orthogonal this is near-unit already, but never normalize blind.

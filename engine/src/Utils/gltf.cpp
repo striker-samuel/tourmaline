@@ -618,6 +618,11 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
 			}
 			// Dielectric default for spec-gloss-only materials; glossiness
 			// inverts to roughness when the core block is at its default.
+			// LUMBERYARD BISTRO NOTE: the spec-gloss specularGlossinessTexture
+			// is a near-constant specular COLOR (gray RGB, A=255) — FBX2glTF
+			// wired the FBX SpecularColor slot; there is no ORM packing and
+			// no per-pixel gloss (A is constant). Per-material gloss lives in
+			// glossinessFactor only, so the texture is never sampled.
 			const bool coreUntouched =
 				m.pbrMetallicRoughness.metallicFactor == 1.0 &&
 				m.pbrMetallicRoughness.roughnessFactor == 1.0;
@@ -680,7 +685,9 @@ void GltfToSceneImporter::preloadTextures()
 			note(GLtfResolveOcclusionTexture(model, m.occlusionTexture));
 			note(GltfResolveTexture(model, m.emissiveTexture));
 			// Spec-gloss diffuse fallback (see ExtractMaterial): preload so
-			// the per-material path hits the cache.
+			// the per-material path hits the cache. specularGlossinessTexture
+			// is never sampled (its pixels are a specular color, not ORM),
+			// so only the diffuse needs preloading here.
 			if (auto it = m.extensions.find("KHR_materials_pbrSpecularGlossiness");
 				it != m.extensions.end() && it->second.IsObject()) {
 				const auto& obj = it->second.Get<tinygltf::Value::Object>();

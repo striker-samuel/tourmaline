@@ -16,14 +16,14 @@
 #include "hzb.hlsli"
 
 #define GFX_THREADS_PER_CLUSTER 128
-#define GFX_MAX_DRAWS 1024
-#define GFX_MAX_BATCHES 4096
+#define GFX_MAX_DRAWS 4096
+#define GFX_MAX_BATCHES 65536
 // Explicit bounds (this DXC rejects unsized struct members; mirrors the
 // C++ capacities in Engine/Renderer/gfx_filter.h).
 #define GFX_MAX_VERTICES 44739242   // 512MB pos heap / 12B (see mesh.cpp)
 #define GFX_POS_WORDS 134217726     // GFX_MAX_VERTICES * 3 (uint view below)
 #define GFX_MAX_CLUSTERS 262144
-#define GFX_MAX_FILTERED (4096 * 128 * 3)
+#define GFX_MAX_FILTERED (65536 * 128 * 3)
 
 // Positions as uint words (3 per vertex): the heap is packed float3
 // (stride 12), which a float3 array view cannot express under block layout
@@ -49,7 +49,7 @@ struct GfxBatches { uint4 batch[GFX_MAX_BATCHES]; };
 // One uint2 per surviving (cluster, draw): xy = (clusterIndex, drawIndex).
 // Draws resolve through GfxDraws (model matrices); clusters through
 // GfxClusters + GfxIndices (cluster-ordered global vertex ids).
-#define GFX_MAX_VISIBLE 4096 // mirrors kMaxBatches
+#define GFX_MAX_VISIBLE 65536 // mirrors kMaxBatches
 struct GfxVisible { uint2 vis[GFX_MAX_VISIBLE]; };
 
 struct GfxDraw
