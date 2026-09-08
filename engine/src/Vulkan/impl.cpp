@@ -1,7 +1,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <iostream>
+#include <iterator>
 #include <span>
 
 //#define DEBUG_COMMAND_SUBMISSION
@@ -2088,6 +2090,7 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 
 	destroy(this, m_nilTexture);
 	destroy(this, m_engineGlobalsBuffer);
+	destroy(this, m_readbackStaging);
 
 	// Flush, not Process: queued tasks may reference the swapchain timeline
 	// semaphore, which ~VulkanSwapchain already destroyed (member order).
@@ -2894,7 +2897,11 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 		st.masks.accessMask = FromVkAccess(dstAccess);
 		SetBufferSyncState(buffer, st);
 	}
-	AddDeferredTask(std::packaged_task<void()>([this, staging = std::move(stageHan)] {destroy(this, staging); }), han);
+	// 3-arg AddDeferredTask WITH the submitter: the destroy retires when
+	// this submit completes (the 2-arg legacy path treats the handle as
+	// always-ready, which could destroy the staging while the copy was
+	// still in flight).
+	AddDeferredTask(std::packaged_task<void()>([this, staging = std::move(stageHan)] {destroy(this, staging); }), han, m_submitter);
 }
 bool smvk::VulkanResourceManager::DownloadDataFromBuffer(BufferHandle src, void* out, size_t size, size_t srcOffset) {
 	if (size == 0 || out == nullptr || src.empty())
@@ -2902,8 +2909,13 @@ bool smvk::VulkanResourceManager::DownloadDataFromBuffer(BufferHandle src, void*
 	auto srcBuf = buffers_.get(src);
 	if (!srcBuf || srcBuf->vkBuffer == VK_NULL_HANDLE)
 		return false;
-	auto stageHan = CreateBuffer(size, smvk::BufferType_Staging, "download staging").release();
-	auto stagingBuf = buffers_.get(stageHan);
+	// Persistent staging: no per-call buffer create and no deferred
+	// destroy (the old per-call staging destroy re-entered the deferred
+	// task queue from inside ProcessDeferrredTasks' locked drain loop,
+	// re-locking the non-recursive m_deferredMutex = UB).
+	if (!EnsureReadbackStaging(static_cast<VkDeviceSize>(size)))
+		return false;
+	auto stagingBuf = buffers_.get(m_readbackStaging);
 	if (!stagingBuf || stagingBuf->vkBuffer == VK_NULL_HANDLE)
 		return false;
 	auto han = m_submitter->acquire();
@@ -2924,12 +2936,36 @@ bool smvk::VulkanResourceManager::DownloadDataFromBuffer(BufferHandle src, void*
 		VK_ACCESS_2_HOST_READ_BIT);
 	m_submitter->submit(han);
 	m_submitter->wait(han, UINT64_MAX);
-	void* mapped = MapBuffer(stageHan);
+	// Safe to reuse on the next call: every download waits for its own
+	// copy before returning, so the staging is never read in flight.
+	void* mapped = MapBuffer(m_readbackStaging);
 	if (!mapped)
 		return false;
 	std::memcpy(out, mapped, size);
-	UnmapBuffer(stageHan);
-	AddDeferredTask(std::packaged_task<void()>([this, staging = std::move(stageHan)] {destroy(this, staging); }), han);
+	UnmapBuffer(m_readbackStaging);
+	return true;
+}
+
+bool smvk::VulkanResourceManager::EnsureReadbackStaging(VkDeviceSize size) {
+	static constexpr VkDeviceSize kMinBytes = 256ull * 1024;       // 256 KiB floor
+	static constexpr VkDeviceSize kMaxBytes = 256ull * 1024 * 1024; // sanity cap
+	if (!m_readbackStaging.empty() && m_readbackStagingSize >= size)
+		return true;
+	if (size > kMaxBytes)
+		return false;
+	VkDeviceSize want = kMinBytes;
+	while (want < size)
+		want *= 2;
+	// HOST_ACCESS_RANDOM: the CPU READS this buffer (copy results), so
+	// cached memory beats the default sequential-write (write-combined).
+	Holder<BufferHandle> grown = CreateBuffer(want, smvk::BufferType_Staging,
+		"readback staging", VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+	if (grown.empty())
+		return false;
+	if (!m_readbackStaging.empty())
+		destroy(this, m_readbackStaging); // old staging retires via DeferDestroy
+	m_readbackStaging = grown.release();
+	m_readbackStagingSize = want;
 	return true;
 }
 void smvk::VulkanResourceManager::UploadDataToImage2D(
@@ -4514,7 +4550,7 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 	return handle;
 }
 
-[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::VulkanResourceManager::CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName) {
+[[nodiscard]] smvk::Holder<smvk::BufferHandle> smvk::VulkanResourceManager::CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName, VmaAllocationCreateFlags vmaAllocFlags) {
 	Buffer desc{};
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	ci.size = size;
@@ -4536,7 +4572,13 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 	VmaAllocationCreateInfo aci{};
 	aci.usage = bufferTypeToVmaUsage[static_cast<size_t>(bufferType)];
 	if (bufferType == BufferType_Staging) {
-		aci.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+		// CPU-read staging (readback) opts into HOST_ACCESS_RANDOM so VMA
+		// picks cached memory; CPU-write staging (uploads) keeps
+		// SEQUENTIAL_WRITE. Passing both to VMA is invalid, so it's either/or.
+		if (vmaAllocFlags & VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT)
+			aci.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+		else
+			aci.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 		// Optional/redundant if you want to strictly require it.
 		aci.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 	}
@@ -4663,17 +4705,25 @@ smvk::SpirvReflection smvk::VulkanResourceManager::ReflectShaderModule(ShaderMod
 	return { this, descriptorPools_.create(std::move(dpool)) };
 }
 [[nodiscard]] void* smvk::VulkanResourceManager::MapBuffer(BufferHandle  handle) {
-	void* mapped = nullptr;
-	assert(!handle.empty());
+	// Hardened: in Release the asserts below compile out, and an empty /
+	// retired handle would reach vmaMapMemory with a null allocation
+	// (nullptr deref). Return null instead; callers treat it as failure.
+	if (handle.empty())
+		return nullptr;
 	auto buf = this->buffers_.get(handle);
-	assert(buf != nullptr);
-	VK_CHECK(vmaMapMemory(m_allocator, buf->vma_alloc, &mapped));
+	if (!buf || buf->vma_alloc == VK_NULL_HANDLE)
+		return nullptr;
+	void* mapped = nullptr;
+	if (vmaMapMemory(m_allocator, buf->vma_alloc, &mapped) != VK_SUCCESS)
+		return nullptr;
 	return mapped;
 }
 void smvk::VulkanResourceManager::UnmapBuffer(BufferHandle handle) {
-	assert(!handle.empty());
+	if (handle.empty())
+		return;
 	auto buf = this->buffers_.get(handle);
-	assert(buf != nullptr);
+	if (!buf || buf->vma_alloc == VK_NULL_HANDLE)
+		return;
 	// Not required for HOST_COHERENT memory, but harmless if you want to support
 	// non-coherent staging buffers later.
 	// vmaFlushAllocation(m_allocator, staging->vma_alloc, 0, stagingBufferSize);
@@ -4722,13 +4772,24 @@ void smvk::VulkanResourceManager::AddDeferredTask(std::packaged_task<void()>&& t
 }
 void smvk::VulkanResourceManager::ProcessDeferrredTasks()
 {
-	std::lock_guard<std::mutex> lock(m_deferredMutex);
-	auto it = m_deferredTasks.begin();
-	while (it != m_deferredTasks.end() && it->isReady()) {
-		it->task_();
-		++it;
+	std::vector<DeferredTask> ready;
+	{
+		std::lock_guard<std::mutex> lock(m_deferredMutex);
+		auto it = m_deferredTasks.begin();
+		while (it != m_deferredTasks.end() && it->isReady())
+			++it;
+		ready.assign(std::make_move_iterator(m_deferredTasks.begin()),
+			std::make_move_iterator(it));
+		m_deferredTasks.erase(m_deferredTasks.begin(), it);
 	}
-	m_deferredTasks.erase(m_deferredTasks.begin(), it);
+	// Run ready tasks OUTSIDE the lock: tasks may enqueue more deferred
+	// work (destroy -> DeferDestroy -> AddDeferredTask), which previously
+	// re-entered this non-recursive mutex from inside the drain loop (UB:
+	// deadlock or fast-fail depending on the CRT). Appends made during
+	// the run land behind the not-ready remainder, so the FIFO-by-retire-
+	// point order is preserved.
+	for (auto& task : ready)
+		task.task_();
 }
 void smvk::VulkanResourceManager::FlushDeferredTasks()
 {
@@ -4736,9 +4797,20 @@ void smvk::VulkanResourceManager::FlushDeferredTasks()
 	// so every retire point is trivially satisfied. Never queries semaphores,
 	// which matters because the timeline semaphore may already be destroyed
 	// (member teardown order: swapchain before context).
-	std::lock_guard<std::mutex> lock(m_deferredMutex);
-	for (auto& t : m_deferredTasks) t.task_();
-	m_deferredTasks.clear();
+	for (;;) {
+		std::vector<DeferredTask> batch;
+		{
+			std::lock_guard<std::mutex> lock(m_deferredMutex);
+			if (m_deferredTasks.empty())
+				break;
+			batch = std::move(m_deferredTasks);
+			m_deferredTasks.clear();
+		}
+		// Outside the lock, same reason as ProcessDeferrredTasks: tasks may
+		// re-enqueue (destroy chains); the loop drains those next iteration.
+		for (auto& task : batch)
+			task.task_();
+	}
 }
 void smvk::VulkanResourceManager::NotifyGraphicsSubmit(VkSemaphore semaphore, uint64_t value)
 {
@@ -7644,22 +7716,32 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 	return out;
 }
 
-std::vector<size_t> smvk::RenderGraph::TopologicalSort(const std::vector<PassUsage>& usages) const
+const std::vector<size_t>& smvk::RenderGraph::TopologicalSort(const std::vector<PassUsage>& usages) const
 {
 	size_t n = usages.size();
+	topoSorted_.clear();
 	if (n <= 1) {
-		std::vector<size_t> r(n);
-		for (size_t i = 0; i < n; ++i) r[i] = i;
-		return r;
+		topoSorted_.reserve(n);
+		for (size_t i = 0; i < n; ++i) topoSorted_.push_back(i);
+		return topoSorted_;
 	}
-	std::vector<std::vector<size_t>> adj(n);
-	std::vector<int> indeg(n, 0);
+	// Reused scratch (mutable members): adjacency/indegree/frontier and
+	// the resource bookkeeping maps used to be rebuilt from scratch every
+	// Execute. clear() keeps the maps' bucket arrays and the adjacency
+	// rows' capacity.
+	if (topoAdj_.size() < n) topoAdj_.resize(n);
+	for (size_t i = 0; i < n; ++i) topoAdj_[i].clear();
+	topoIndeg_.assign(n, 0);
+	topoLastWriterImage_.clear();
+	topoLastReadersImage_.clear();
+	topoLastWriterBuffer_.clear();
+	topoLastReadersBuffer_.clear();
 	// Map resource -> last writer / readers tracking for edge generation
 	// We preserve insertion order hazard: iterate passes in order, for each resource add edge from previous access that hazards
-	std::unordered_map<uint64_t, size_t> lastWriterImage; // phys key -> pass idx
-	std::unordered_map<uint64_t, std::vector<size_t>> lastReadersImage;
-	std::unordered_map<uint64_t, size_t> lastWriterBuffer;
-	std::unordered_map<uint64_t, std::vector<size_t>> lastReadersBuffer;
+	auto& lastWriterImage = topoLastWriterImage_;
+	auto& lastReadersImage = topoLastReadersImage_;
+	auto& lastWriterBuffer = topoLastWriterBuffer_;
+	auto& lastReadersBuffer = topoLastReadersBuffer_;
 	auto keyFor = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
 	for (size_t i = 0; i < n; ++i) {
 		const auto& pu = usages[i];
@@ -7671,12 +7753,12 @@ std::vector<size_t> smvk::RenderGraph::TopologicalSort(const std::vector<PassUsa
 				auto itW = lastWriterImage.find(k);
 				if (itW != lastWriterImage.end()) {
 					size_t src = itW->second;
-					if (src != i) { adj[src].push_back(i); indeg[i]++; }
+					if (src != i) { topoAdj_[src].push_back(i); topoIndeg_[i]++; }
 				}
 				// WAR: last readers -> this
 				auto itR = lastReadersImage.find(k);
 				if (itR != lastReadersImage.end()) {
-					for (size_t r : itR->second) { adj[r].push_back(i); indeg[i]++; }
+					for (size_t r : itR->second) { topoAdj_[r].push_back(i); topoIndeg_[i]++; }
 					itR->second.clear();
 				}
 				lastWriterImage[k] = i;
@@ -7686,7 +7768,7 @@ std::vector<size_t> smvk::RenderGraph::TopologicalSort(const std::vector<PassUsa
 				auto itW = lastWriterImage.find(k);
 				if (itW != lastWriterImage.end()) {
 					size_t src = itW->second;
-					adj[src].push_back(i); indeg[i]++;
+					topoAdj_[src].push_back(i); topoIndeg_[i]++;
 				}
 				lastReadersImage[k].push_back(i);
 			}
@@ -7696,45 +7778,47 @@ std::vector<size_t> smvk::RenderGraph::TopologicalSort(const std::vector<PassUsa
 			bool isWrite = IsWriteAccess(p.second.barrierMasks.accessMask);
 			if (isWrite) {
 				auto itW = lastWriterBuffer.find(k);
-				if (itW != lastWriterBuffer.end()) { adj[itW->second].push_back(i); indeg[i]++; }
+				if (itW != lastWriterBuffer.end()) { topoAdj_[itW->second].push_back(i); topoIndeg_[i]++; }
 				auto itR = lastReadersBuffer.find(k);
 				if (itR != lastReadersBuffer.end()) {
-					for (size_t r : itR->second) { adj[r].push_back(i); indeg[i]++; }
+					for (size_t r : itR->second) { topoAdj_[r].push_back(i); topoIndeg_[i]++; }
 					itR->second.clear();
 				}
 				lastWriterBuffer[k] = i;
 			}
 			else {
 				auto itW = lastWriterBuffer.find(k);
-				if (itW != lastWriterBuffer.end()) { adj[itW->second].push_back(i); indeg[i]++; }
+				if (itW != lastWriterBuffer.end()) { topoAdj_[itW->second].push_back(i); topoIndeg_[i]++; }
 				lastReadersBuffer[k].push_back(i);
 			}
 		}
 	}
-	// Kahn – stable (prefer lower original index)
-	std::vector<size_t> sorted;
-	sorted.reserve(n);
-	// Use ordered set via vector + sort
-	std::vector<size_t> zero;
-	for (size_t i = 0; i < n; ++i) if (indeg[i] == 0) zero.push_back(i);
-	std::sort(zero.begin(), zero.end());
+	// Kahn over a min-heap (stable: prefer lower original index). The
+	// old code kept the ready set in a vector and re-sorted ALL of it
+	// after every release — O(n^2 log n) per Execute.
+	auto& zero = topoHeap_;
+	zero.clear();
+	topoSorted_.reserve(n);
+	for (size_t i = 0; i < n; ++i) if (topoIndeg_[i] == 0) zero.push_back(i);
+	std::make_heap(zero.begin(), zero.end(), std::greater<size_t>());
 	while (!zero.empty()) {
-		size_t u = zero.front(); zero.erase(zero.begin());
-		sorted.push_back(u);
-		for (size_t v : adj[u]) {
-			if (--indeg[v] == 0) {
+		std::pop_heap(zero.begin(), zero.end(), std::greater<size_t>());
+		size_t u = zero.back(); zero.pop_back();
+		topoSorted_.push_back(u);
+		for (size_t v : topoAdj_[u]) {
+			if (--topoIndeg_[v] == 0) {
 				zero.push_back(v);
-				std::sort(zero.begin(), zero.end());
+				std::push_heap(zero.begin(), zero.end(), std::greater<size_t>());
 			}
 		}
 	}
-	if (sorted.size() != n) {
+	if (topoSorted_.size() != n) {
 		// Cycle – fall back to insertion order and assert
 		assert(false && "RenderGraph cycle detected in pass dependencies");
-		sorted.clear();
-		for (size_t i = 0; i < n; ++i) sorted.push_back(i);
+		topoSorted_.clear();
+		for (size_t i = 0; i < n; ++i) topoSorted_.push_back(i);
 	}
-	return sorted;
+	return topoSorted_;
 }
 
 void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>& sortedOrder, const std::vector<PassUsage>& usages)
@@ -7871,7 +7955,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	ResolveBuffers();
 
 	auto usages = CollectPassUsages();
-	auto sorted = TopologicalSort(usages);
+	const std::vector<size_t>& sorted = TopologicalSort(usages);
 
 	VkCommandBuffer cmd =
 		reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque);
@@ -8125,6 +8209,27 @@ void smvk::CommandBuffer::BindRenderPipeline(
 	assert(graph_ != nullptr);
 	assert(renderPass_ != nullptr);
 
+	// Fast path: identical input state already bound in this pass.
+	// Attachment formats are pass-invariants (CommandBuffer is
+	// per-pass), so they are not part of the comparison. Skips the
+	// pipeline-cache key build (vector allocs + ~100-way hash) and the
+	// redundant vkCmdBind* calls that even the cache's own
+	// current-pipeline dedup used to pay.
+	if (graphicsBound_
+		&& vertexFormat == boundVertexFormat_
+		&& topology == boundTopology_
+		&& msaaSettings.samples == boundMsaa_.samples
+		&& !(depthSettings < boundDepth_) && !(boundDepth_ < depthSettings)
+		&& !(stencilSettings < boundStencil_) && !(boundStencil_ < stencilSettings)
+		&& !(blendSettings < boundBlend_) && !(boundBlend_ < blendSettings)
+		&& !(rasterSettings < boundRaster_) && !(boundRaster_ < rasterSettings)
+		&& shaderProgram == boundProgram_)
+	{
+		currentPipeline_ = graphicsPipeline_;
+		currentLayout_ = graphicsLayout_;
+		return;
+	}
+
 	switch (vertexFormat)
 	{
 	case VertexFormat::StaticVertexFormat:
@@ -8135,17 +8240,32 @@ void smvk::CommandBuffer::BindRenderPipeline(
 	default:
 		break;
 	}
-	VertexFormatDescription formatDescription{};
-	formatDescription = GetVertexFormatDescription(vertexFormat);
+	const VertexFormatDescription& formatDescription =
+		GetVertexFormatDescription(vertexFormat);
 
-	std::vector<smvk::Format> colorAttachmentFormats;
-	colorAttachmentFormats.reserve(renderPass_->colorAttachments_.size());
-	for (auto& attachment : renderPass_->colorAttachments_)
-	{
-		colorAttachmentFormats.push_back(
-			graph_->GetResolvedImageViewFormat(
-				attachment.view)
-		);
+	// Attachment formats feed the pipeline cache key. Small fixed
+	// storage (passes have few attachments); heap fallback keeps a wide
+	// pass correct.
+	Format colorFormatsStack[8];
+	std::vector<Format> colorFormatsHeap;
+	const Format* colorFormats = colorFormatsStack;
+	if (renderPass_->colorAttachments_.size() <= 8) {
+		uint32_t i = 0;
+		for (const auto& attachment : renderPass_->colorAttachments_)
+		{
+			assert(!attachment.view.empty());
+			colorFormatsStack[i++] =
+				graph_->GetResolvedImageViewFormat(attachment.view);
+		}
+	}
+	else {
+		colorFormatsHeap.reserve(renderPass_->colorAttachments_.size());
+		for (const auto& attachment : renderPass_->colorAttachments_)
+		{
+			colorFormatsHeap.push_back(
+				graph_->GetResolvedImageViewFormat(attachment.view));
+		}
+		colorFormats = colorFormatsHeap.data();
 	}
 	smvk::Format depthFormat =
 		smvk::Format::Undefined;
@@ -8171,8 +8291,8 @@ void smvk::CommandBuffer::BindRenderPipeline(
 	auto bundle = cacheOpaque->cache.GetRenderPipeline(
 		shaderProgram,
 		formatDescription,
-		colorAttachmentFormats.data(),
-		static_cast<uint32_t>(colorAttachmentFormats.size()),
+		colorFormats,
+		static_cast<uint32_t>(renderPass_->colorAttachments_.size()),
 		depthFormat,
 		stencilFormat,
 		topology,
@@ -8184,6 +8304,20 @@ void smvk::CommandBuffer::BindRenderPipeline(
 	);
 
 	assert(bundle.pipeline != VK_NULL_HANDLE && "Invalid pipeline handle");
+
+	// Remember the input state so later redundant binds take the fast
+	// path above.
+	graphicsBound_ = true;
+	boundProgram_ = shaderProgram;
+	boundVertexFormat_ = vertexFormat;
+	boundDepth_ = depthSettings;
+	boundStencil_ = stencilSettings;
+	boundBlend_ = blendSettings;
+	boundMsaa_ = msaaSettings;
+	boundRaster_ = rasterSettings;
+	boundTopology_ = topology;
+	graphicsPipeline_ = reinterpret_cast<void*>(bundle.pipeline);
+	graphicsLayout_ = reinterpret_cast<void*>(bundle.layout);
 
 	if (bundle.pipeline == reinterpret_cast<VkPipeline>(currentPipeline_)) {
 		return;
@@ -8246,6 +8380,10 @@ void smvk::CommandBuffer::BindStaticVertexFmt()
 }
 void smvk::CommandBuffer::BindVertexBuffer(BufferHandle buffer, uint32_t binding, uint64_t offset)
 {
+	// Manual vertex rebind: the graphics-bind fast path skips the
+	// BindStaticVertexFmt() that BindRenderPipeline would re-issue, so
+	// drop the cached state to stay conservative.
+	graphicsBound_ = false;
 	VulkanResourceManager& vulkanCtx = *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
 	auto* b = vulkanCtx.buffers_.get(buffer);
 	assert(b && b->vkBuffer != VK_NULL_HANDLE);
@@ -8286,6 +8424,8 @@ void smvk::CommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCoun
 }
 void smvk::CommandBuffer::BindIndexBuffer(BufferHandle buffer, uint64_t offset)
 {
+	// Manual index rebind: see BindVertexBuffer.
+	graphicsBound_ = false;
 	VulkanResourceManager& vulkanCtx = *static_cast<VulkanResourceManager*>(graph_->ctx_.GetVulkanOpaque());
 	const Buffer* desc = vulkanCtx.buffers_.get(buffer);
 	assert(desc != nullptr && desc->vkBuffer != VK_NULL_HANDLE);

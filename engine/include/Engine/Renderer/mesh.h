@@ -262,7 +262,9 @@ namespace smvk {
 		, DebugLine
 	};
 
-	VertexFormatDescription GetVertexFormatDescription(VertexFormat format);
+	// Returns the static description for the given format (no per-call
+	// copies: BindRenderPipeline runs this on every bind).
+	const VertexFormatDescription& GetVertexFormatDescription(VertexFormat format);
 
 
 

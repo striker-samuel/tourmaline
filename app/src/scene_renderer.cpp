@@ -892,15 +892,13 @@ void SceneRenderer::Shutdown() {
 		}
 	}
 
-	// Histogram readback kill switch. OFF: the per-frame download path in
-	// the engine (DownloadDataFromBuffer) allocates a staging buffer per
-	// call and defers its destroy through destroy -> DeferDestroy ->
-	// AddDeferredTask, which re-enters the deferred-task queue from inside
-	// ProcessDeferrredTasks' locked drain loop (re-locking the non-recursive
-	// m_deferredMutex — UB, intermittent crashes/freezes). Re-enable only
-	// after the engine readback is reworked (persistent staging buffer, no
-	// per-call deferred destroys).
-	static constexpr bool kHistogramReadbackEnabled = false;
+	// Histogram readback switch. ON: the engine download now uses a
+	// persistent grow-on-demand staging buffer (no per-call staging
+	// create/deferred destroy) and ProcessDeferrredTasks runs ready tasks
+	// outside its mutex, so the old re-entrancy hazard (destroy ->
+	// DeferDestroy -> AddDeferredTask re-locking the drain's non-recursive
+	// m_deferredMutex) is gone.
+	static constexpr bool kHistogramReadbackEnabled = true;
 
 	// Post-Execute eye adaptation (see exposure.h): downloads the 256-byte
 	// histogram (observes the previous frame — submitted before present, so
@@ -1473,47 +1471,47 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					);
 					cmd.PushConstants(0, sizeof(PushConstants), &cascadePC, smvk::ShaderStage::All);
 					// Opaque only: BLEND transparent must not cast (full-quad depth).
-					auto drawCaster = [&](NodeId node, bool maskedPhase) {
-						auto meshForNode = m_world->scene.meshForNode.find(node);
-						if (meshForNode == m_world->scene.meshForNode.end()) return;
-						auto materialForNode = m_world->scene.materialForNode.find(node);
-						if (materialForNode == m_world->scene.materialForNode.end()) return;
-						smvk::Material* mat = m_world->GetMaterial(materialForNode->second);
-						const bool masked = mat &&
-							mat->shadingModel == smvk::ShadingModel::Masked;
-						if (masked != maskedPhase) return;
-						auto& model = m_world->scene.globalTransform[node];
-						smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshForNode->second);
-						if (!meshDesc) return;
-						// RenderView plane cull: skip casters outside this cascade's frustum.
-						if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
-							glm::vec3 sphereCenter;
-							float sphereRadius = 0.0f;
-							smvk::MeshBoundsToWorld(
-								model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
-								sphereCenter, sphereRadius);
-							if (!smvk::RenderViewIntersectsSphere(
-								m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
-								return;
-						}
-						PushConstants objectPC{};
-						std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-						if (maskedPhase) {
-							objectPC.materialId = materialForNode->second;
-							cmd.PushConstants(offsetof(PushConstants, materialId),
-								sizeof(objectPC.materialId), &objectPC.materialId,
-								smvk::ShaderStage::All);
-						}
-						cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
-						for (auto& draw_set : meshDesc->geometry.surfaces) {
-							cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-						};
+					auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
+					// Passes that fetch material state require one (the
+					// prepass deliberately draws material-less meshes).
+					if (item.material == smvk::World::kInvalidIndex)
+						return;
+					// Masked (cutout) flag replaces the per-node material
+					// fetch the phase split used to pay.
+					if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
+						return;
+					auto& model = m_world->scene.globalTransform[item.node];
+					smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
+					if (!meshDesc) return;
+					// RenderView plane cull: skip casters outside this cascade's frustum.
+					if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
+						glm::vec3 sphereCenter;
+						float sphereRadius = 0.0f;
+						smvk::MeshBoundsToWorld(
+							model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
+							sphereCenter, sphereRadius);
+						if (!smvk::RenderViewIntersectsSphere(
+							m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
+							return;
+					}
+					PushConstants objectPC{};
+					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+					if (maskedPhase) {
+						objectPC.materialId = item.material;
+						cmd.PushConstants(offsetof(PushConstants, materialId),
+							sizeof(objectPC.materialId), &objectPC.materialId,
+							smvk::ShaderStage::All);
+					}
+					cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+					for (auto& draw_set : meshDesc->geometry.surfaces) {
+						cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
 					};
+				};
 					// Phase 1: solid casters, depth-only program (unchanged).
-					m_world->forEachNode(
+					m_world->forEachRenderItem(
 						smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
 						| smvk::IteratorFlagBit_Opaque
-						, [&](NodeId node) { drawCaster(node, false); });
+						, [&](const smvk::World::RenderItem& item) { drawCaster(item, false); });
 					// Phase 2: MASK cutout casters, alpha-tested program so
 					// foliage casts leaf-shaped shadows instead of full quads.
 					// Cull off: masked foliage is double-sided in the main view.
@@ -1536,12 +1534,12 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 							.cullMode = smvk::CullMode::None
 						}
 					);
-					cmd.PushConstants(0, sizeof(PushConstants), &cascadePC, smvk::ShaderStage::All);
-					m_world->forEachNode(
-						smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
-						| smvk::IteratorFlagBit_Opaque
-						, [&](NodeId node) { drawCaster(node, true); });
-				});
+				cmd.PushConstants(0, sizeof(PushConstants), &cascadePC, smvk::ShaderStage::All);
+				m_world->forEachRenderItem(
+					smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
+					| smvk::IteratorFlagBit_Opaque
+					, [&](const smvk::World::RenderItem& item) { drawCaster(item, true); });
+			});
 				(void)shadowPass;
 			}
 		}
@@ -1597,47 +1595,43 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					);
 					cmd.PushConstants(0, sizeof(PushConstants), &spotPC, smvk::ShaderStage::All);
 					// Opaque only: BLEND transparent must not cast (full-quad depth).
-					auto drawCaster = [&](NodeId node, bool maskedPhase) {
-						auto meshForNode = m_world->scene.meshForNode.find(node);
-						if (meshForNode == m_world->scene.meshForNode.end()) return;
-						auto materialForNode = m_world->scene.materialForNode.find(node);
-						if (materialForNode == m_world->scene.materialForNode.end()) return;
-						smvk::Material* mat = m_world->GetMaterial(materialForNode->second);
-						const bool masked = mat &&
-							mat->shadingModel == smvk::ShadingModel::Masked;
-						if (masked != maskedPhase) return;
-						auto& model = m_world->scene.globalTransform[node];
-						smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshForNode->second);
-						if (!meshDesc) return;
-						// RenderView plane cull: skip casters outside the spot cone frustum.
-						if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
-							glm::vec3 sphereCenter;
-							float sphereRadius = 0.0f;
-							smvk::MeshBoundsToWorld(
-								model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
-								sphereCenter, sphereRadius);
-							if (!smvk::RenderViewIntersectsSphere(
-								m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
-								return;
-						}
-						PushConstants objectPC{};
-						std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-						if (maskedPhase) {
-							objectPC.materialId = materialForNode->second;
-							cmd.PushConstants(offsetof(PushConstants, materialId),
-								sizeof(objectPC.materialId), &objectPC.materialId,
-								smvk::ShaderStage::All);
-						}
-						cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
-						for (auto& draw_set : meshDesc->geometry.surfaces) {
-							cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-						};
+					auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
+					if (item.material == smvk::World::kInvalidIndex)
+						return;
+					if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
+						return;
+					auto& model = m_world->scene.globalTransform[item.node];
+					smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
+					if (!meshDesc) return;
+					// RenderView plane cull: skip casters outside the spot cone frustum.
+					if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
+						glm::vec3 sphereCenter;
+						float sphereRadius = 0.0f;
+						smvk::MeshBoundsToWorld(
+							model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
+							sphereCenter, sphereRadius);
+						if (!smvk::RenderViewIntersectsSphere(
+							m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
+							return;
+					}
+					PushConstants objectPC{};
+					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+					if (maskedPhase) {
+						objectPC.materialId = item.material;
+						cmd.PushConstants(offsetof(PushConstants, materialId),
+							sizeof(objectPC.materialId), &objectPC.materialId,
+							smvk::ShaderStage::All);
+					}
+					cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+					for (auto& draw_set : meshDesc->geometry.surfaces) {
+						cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
 					};
+				};
 					// Phase 1: solid casters, depth-only program.
-					m_world->forEachNode(
+					m_world->forEachRenderItem(
 						smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
 						| smvk::IteratorFlagBit_Opaque
-						, [&](NodeId node) { drawCaster(node, false); });
+						, [&](const smvk::World::RenderItem& item) { drawCaster(item, false); });
 					// Phase 2: MASK cutout casters, alpha-tested program.
 					cmd.BindRenderPipeline(
 						m_resources.shadowMaskedProgram,
@@ -1658,11 +1652,11 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 							.cullMode = smvk::CullMode::None
 						}
 					);
-					cmd.PushConstants(0, sizeof(PushConstants), &spotPC, smvk::ShaderStage::All);
-					m_world->forEachNode(
-						smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
-						| smvk::IteratorFlagBit_Opaque
-						, [&](NodeId node) { drawCaster(node, true); });
+				cmd.PushConstants(0, sizeof(PushConstants), &spotPC, smvk::ShaderStage::All);
+				m_world->forEachRenderItem(
+					smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
+					| smvk::IteratorFlagBit_Opaque
+					, [&](const smvk::World::RenderItem& item) { drawCaster(item, true); });
 				});
 				(void)spotPass;
 			}
@@ -1862,11 +1856,9 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			motionPass.SetRecordingFunc([this, motionPC, motionFilteredActive, gfxSlot, renderViewsAddress, mainRenderView, frameUniformsAddress](smvk::CommandBuffer& cmd)
 			{
 				// GPU context + pass scope come from RenderGraph::Execute.
-				auto drawMotionNode = [&](NodeId node, bool maskedPhase) {
-					auto meshForNode = m_world->scene.meshForNode.find(node);
-					if (meshForNode == m_world->scene.meshForNode.end()) return;
-					auto materialForNode = m_world->scene.materialForNode.find(node);
-					if (materialForNode == m_world->scene.materialForNode.end()) return;
+				auto drawMotionNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
+					if (item.material == smvk::World::kInvalidIndex)
+						return;
 					// Static filtered nodes are covered by the HZB-culled
 					// indirect draws below: skip them here so they rasterize
 					// once. Moved filtered nodes (model != prev) still need
@@ -1875,13 +1867,13 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					// (FilterMainView pushes the selected LOD), so only
 					// unregistered LODs take the direct path.
 					if (motionFilteredActive
-						&& m_gfxRenderer.GfxMeshForLod(meshForNode->second,
-							LodIndexForNode(node, meshForNode->second)) != UINT32_MAX) {
+						&& m_gfxRenderer.GfxMeshForLod(item.mesh,
+							LodIndexForNode(item.node, item.mesh)) != UINT32_MAX) {
 						const bool prevValid = m_prevGlobalTransforms.size()
 							== m_world->scene.globalTransform.size();
 						if (prevValid) {
-							const glm::mat4& cur = m_world->scene.globalTransform[node];
-							const glm::mat4& prv = m_prevGlobalTransforms[node];
+							const glm::mat4& cur = m_world->scene.globalTransform[item.node];
+							const glm::mat4& prv = m_prevGlobalTransforms[item.node];
 							if (std::memcmp(glm::value_ptr(cur), glm::value_ptr(prv),
 									sizeof(cur)) == 0)
 								return;
@@ -1890,12 +1882,10 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 							return; // no history: prev == curr, indirect covers it
 						}
 					}
-					smvk::Material* mat = m_world->GetMaterial(materialForNode->second);
-					const bool masked = mat &&
-						mat->shadingModel == smvk::ShadingModel::Masked;
-					if (masked != maskedPhase) return;
-					auto& model = m_world->scene.globalTransform[node];
-					smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshForNode->second);
+					if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
+						return;
+					auto& model = m_world->scene.globalTransform[item.node];
+					smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
 					if (!meshDesc) return;
 					PushConstants objectPC{};
 					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
@@ -1904,9 +1894,9 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					const bool prevValid =
 						m_prevGlobalTransforms.size() == m_world->scene.globalTransform.size();
 					const glm::mat4 prevModel =
-						prevValid ? m_prevGlobalTransforms[node] : model;
+						prevValid ? m_prevGlobalTransforms[item.node] : model;
 					std::copy_n(glm::value_ptr(prevModel), 16, objectPC.prevModel);
-					objectPC.materialId = materialForNode->second; // FS alpha test
+					objectPC.materialId = item.material; // FS alpha test
 					cmd.PushConstants(offsetof(PushConstants, materialId),
 						sizeof(objectPC.materialId), &objectPC.materialId,
 						smvk::ShaderStage::All);
@@ -1970,12 +1960,12 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					smvk::MSAASettings::Count1(),
 					smvk::RasterSettings{ .cullMode = smvk::CullMode::Back }
 				);
-				cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
-				m_world->forEachNode(
-					smvk::IteratorFlagBit_Renderable
-					| smvk::IteratorFlagBit_Opaque
-					| smvk::IteratorFlagBit_StaticVertexFmt
-					, [&](NodeId node) { drawMotionNode(node, false); });
+			cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+			m_world->forEachRenderItem(
+				smvk::IteratorFlagBit_Renderable
+				| smvk::IteratorFlagBit_Opaque
+				| smvk::IteratorFlagBit_StaticVertexFmt
+				, [&](const smvk::World::RenderItem& item) { drawMotionNode(item, false); });
 				// Phase 2: MASK cutout, cull off (foliage is double-sided).
 				cmd.BindRenderPipeline(
 					m_viewportResources.motionVectors.program,
@@ -1986,13 +1976,13 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					smvk::MSAASettings::Count1(),
 					smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
 				);
-				cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
-				m_world->forEachNode(
-					smvk::IteratorFlagBit_Renderable
-					| smvk::IteratorFlagBit_Opaque
-					| smvk::IteratorFlagBit_StaticVertexFmt
-					, [&](NodeId node) { drawMotionNode(node, true); });
-			});
+			cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+			m_world->forEachRenderItem(
+				smvk::IteratorFlagBit_Renderable
+				| smvk::IteratorFlagBit_Opaque
+				| smvk::IteratorFlagBit_StaticVertexFmt
+				, [&](const smvk::World::RenderItem& item) { drawMotionNode(item, true); });
+		});
 			// Filtered-path consume hints (same barriers as Main): the
 			// filter CS writes the compacted index list + indirect commands
 			// + draws ring that the motion indirect draws read.
@@ -2240,33 +2230,29 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		const smvk::gfx::State& dbgState = m_gfxRenderer.State();
 			MeshDebugPush dp{};
 			std::copy_n(glm::value_ptr(frameViewProj), 16, dp.viewProj);
-			m_world->forEachNode(
+			m_world->forEachRenderItem(
 				smvk::IteratorFlagBit_Renderable
 				| smvk::IteratorFlagBit_Opaque
 				| smvk::IteratorFlagBit_StaticVertexFmt
 				,
-				[&](NodeId node)
+				[&](const smvk::World::RenderItem& item)
 			{
-				auto meshForNode = m_world->scene.meshForNode.find(node);
-				if (meshForNode == m_world->scene.meshForNode.end())
+				if (item.material == smvk::World::kInvalidIndex)
 					return;
-				if (m_world->scene.materialForNode.find(node) ==
-					m_world->scene.materialForNode.end())
-					return;
-				const uint32_t worldMesh = meshForNode->second;
-				const glm::mat4& model = m_world->scene.globalTransform[node];
+				const uint32_t worldMesh = item.mesh;
+				const glm::mat4& model = m_world->scene.globalTransform[item.node];
 				std::copy_n(glm::value_ptr(model), 16, dp.model);
 				// Debug the SELECTED sibling: every registered LOD has its
 				// own gfx mesh (see RegisterWorldMeshes), so the overlay
 				// shows what the filter actually culled for this instance.
 				const uint32_t gfxMesh = m_gfxRenderer.GfxMeshForLod(worldMesh,
-					LodIndexForNode(node, worldMesh));
+					LodIndexForNode(item.node, worldMesh));
 		if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
 			// Not filterable: white direct fallback (nothing vanishes).
 			// Mesh-local surfaces address the same index monoblock.
 			dp.color[0] = dp.color[1] = dp.color[2] = 0.9f; dp.color[3] = 1.0f;
 			cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
-			if (smvk::StaticMesh* meshDesc = LodMeshForNode(node, worldMesh)) {
+			if (smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, worldMesh)) {
 				for (auto& draw_set : meshDesc->geometry.surfaces) {
 					cmd.DrawIndexed(draw_set.indexCount, 1,
 						draw_set.firstIndex, draw_set.baseVertex);
@@ -2321,33 +2307,29 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			// (Skipped in meshlet-debug mode: unfiltered meshes already
 			// drew white above.)
 			uint32_t boundMaterial = UINT32_MAX;
-			m_world->forEachNode(
+			m_world->forEachRenderItem(
 				smvk::IteratorFlagBit_Renderable
 				| smvk::IteratorFlagBit_Opaque
 				//| smvk::IteratorFlagBit_PassedCullTest
 				| smvk::IteratorFlagBit_StaticVertexFmt
 				,
-				[&](NodeId node)
+				[&](const smvk::World::RenderItem& item)
 			{
-				auto meshForNode = m_world->scene.meshForNode.find(node);
-				if (meshForNode == m_world->scene.meshForNode.end())
-					return;
-				auto materialForNode = m_world->scene.materialForNode.find(node);
-				if (materialForNode == m_world->scene.materialForNode.end())
+				if (item.material == smvk::World::kInvalidIndex)
 					return;
 				// Filtered instances already drew above via indirect
 				// ranges (FilterMainView pushes the selected LOD sibling).
 				// Only LODs whose registration failed fall through to the
 				// direct LOD draw, so each instance rasterizes once.
-				if (gfxActive && m_gfxRenderer.GfxMeshForLod(meshForNode->second,
-					LodIndexForNode(node, meshForNode->second)) != UINT32_MAX)
+				if (gfxActive && m_gfxRenderer.GfxMeshForLod(item.mesh,
+					LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
 					return;
-				const uint32_t materialId = materialForNode->second;
+				const uint32_t materialId = item.material;
 				if (materialId != boundMaterial) {
 					bindForMaterial(materialId, m_resources.mainProgram, opaqueDepth);
 					boundMaterial = materialId;
 				}
-				drawNode(node, meshForNode->second, materialId);
+				drawNode(item.node, item.mesh, materialId);
 			}
 			);
 		}
@@ -2360,26 +2342,22 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			struct TransparentDraw { NodeId node; uint32_t meshId; uint32_t materialId; float dist2; };
 			std::vector<TransparentDraw> draws;
 			const glm::vec3 camPos = m_cameraPositioner.cameraPosition_;
-			m_world->forEachNode(
+			m_world->forEachRenderItem(
 				smvk::IteratorFlagBit_Renderable
 				| smvk::IteratorFlagBit_Transparent
 				| smvk::IteratorFlagBit_StaticVertexFmt
 				,
-				[&](NodeId node)
+				[&](const smvk::World::RenderItem& item)
 			{
-				auto meshForNode = m_world->scene.meshForNode.find(node);
-				if (meshForNode == m_world->scene.meshForNode.end())
+				if (item.material == smvk::World::kInvalidIndex)
 					return;
-				auto materialForNode = m_world->scene.materialForNode.find(node);
-				if (materialForNode == m_world->scene.materialForNode.end())
-					return;
-				const glm::mat4& model = m_world->scene.globalTransform[node];
+				const glm::mat4& model = m_world->scene.globalTransform[item.node];
 				const glm::vec3 center{ model[3][0], model[3][1], model[3][2] };
 				const glm::vec3 d = center - camPos;
 				draws.push_back(TransparentDraw{
-					.node = node,
-					.meshId = meshForNode->second,
-					.materialId = materialForNode->second,
+					.node = item.node,
+					.meshId = item.mesh,
+					.materialId = item.material,
 					.dist2 = glm::dot(d, d),
 				});
 			}

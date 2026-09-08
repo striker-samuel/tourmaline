@@ -54,6 +54,11 @@ namespace smvk {
 		// updates and dynamic BVH rebuilds; collapsed mega-mesh nodes keep
 		// this flag as well.
 		IteratorFlagBit_Static = 1u << 9,
+		// Cutout material (ShadingModel::Masked): alpha-tested draw path.
+		// Set alongside Opaque so the masked/solid phase splits in the
+		// shadow, prepass and motion passes test one bit instead of
+		// fetching the material per node per pass.
+		IteratorFlagBit_Masked = 1u << 10,
 		//IteratorFlagBit_Skinned,
 		//IteratorFlagBit_Static
 	} IteratorFlagBits;
@@ -73,6 +78,59 @@ namespace smvk {
 		mutable bool dirtyCull = true;
 		std::vector<IteratorFlags> flags; // indexed by node
 		std::vector<std::unique_ptr<Cluster>> clusters;
+
+		// ---- Compact draw list (hot-path iterator) --------------------
+		// Built once per ResolveAndFixup_clusters() and kept in sync by
+		// Cull(). Every renderable node (mesh attached) appears exactly
+		// once, sorted by material so per-material pipeline binds run
+		// once per material per pass. Node id + world-level mesh/material
+		// indices are precomputed here: iterating this list replaces the
+		// per-node scene.meshForNode / materialForNode hash lookups and
+		// the full hierarchy scan of forEachNode (which every pass used
+		// to repeat, ~20-30 times per frame).
+		// material == kInvalidIndex marks a mesh node with no material;
+		// passes that require one (all but the depth prepass) skip it.
+		static constexpr uint32_t kInvalidIndex = 0xFFFFFFFFu;
+		struct RenderItem {
+			NodeId node;
+			uint32_t mesh;     // world mesh index (meshLocations)
+			uint32_t material; // world material index (materialLocations)
+			IteratorFlags flags;
+		};
+		std::vector<RenderItem> drawItems; // material-sorted; see above
+
+		// SoA mirror of drawItems[].flags: a dense flags-only column the
+		// SIMD scan in ItemIndicesFor walks 8 items per iteration.
+		std::vector<IteratorFlags> itemFlags;
+
+		// Lazily cooked index lists into drawItems, keyed by the
+		// required-flags combination (call sites use ~3 distinct combos).
+		// Built once per combo on first request — vectorized on AVX2
+		// (AND + CMPEQ + movemask + bit-scan over itemFlags) — and
+		// invalidated whenever flags change (ResolveAndFixup rebuild,
+		// Cull). Hot passes then iterate a contiguous, prefiltered
+		// uint32 index array: no per-item flag test, no branch
+		// mispredicts, and pairs perfectly with the material sort.
+		mutable std::unordered_map<IteratorFlags, std::vector<uint32_t>> flagLists;
+
+		// Returns the cooked item-index list for a flag combination
+		// (lazily built; see flagLists above).
+		const std::vector<uint32_t>& ItemIndicesFor(IteratorFlags requiredFlags) const;
+
+		// Hot-path iterator over drawItems (see above). `func` takes
+		// const RenderItem&. The flag test is resolved through the
+		// cooked index list, not per-item.
+		template<typename Func>
+		void forEachRenderItem(IteratorFlags requiredFlags, Func&& func) const
+		{
+			if (requiredFlags == static_cast<IteratorFlags>(IteratorFlagBit_None)) {
+				for (const RenderItem& item : drawItems)
+					func(item);
+				return;
+			}
+			for (uint32_t idx : ItemIndicesFor(requiredFlags))
+				func(drawItems[idx]);
+		}
 
 		// Resource lookup into clusters
 		struct MeshLocation {

@@ -61,17 +61,21 @@ namespace smvk {
 		return out;
 	}
 
-	VertexFormatDescription GetVertexFormatDescription(VertexFormat format) {
+	const VertexFormatDescription& GetVertexFormatDescription(VertexFormat format) {
 		switch (format)
 		{
 		case VertexFormat::Empty:
-			return {};
+		{
+			static const VertexFormatDescription emptyFormat{};
+			return emptyFormat;
+		}
 		case VertexFormat::StaticVertexFormat:
 			return StaticVertexFormat;
 		case VertexFormat::DebugLine:
 			return DebugLineFormat;
 		}
-		return{};
+		static const VertexFormatDescription fallbackFormat{};
+		return fallbackFormat;
 	}
 	void AllocateStaticVertexFmt(smvk::ResourceManager& ctx)
 	{

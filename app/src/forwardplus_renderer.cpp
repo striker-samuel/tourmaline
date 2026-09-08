@@ -78,17 +78,14 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 		prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodInputs](smvk::CommandBuffer& cmd)
 		{
 			// GPU context + pass scope come from RenderGraph::Execute.
-			auto drawPrepassNode = [&](NodeId node, bool maskedPhase) {
-				auto meshForNode = world->scene.meshForNode.find(node);
-				if (meshForNode == world->scene.meshForNode.end()) return;
-				smvk::Material* mat = nullptr;
-				if (auto materialForNode = world->scene.materialForNode.find(node);
-					materialForNode != world->scene.materialForNode.end())
-					mat = world->GetMaterial(materialForNode->second);
-				const bool masked = mat &&
-					mat->shadingModel == smvk::ShadingModel::Masked;
-				if (masked != maskedPhase) return;
-				auto& model = world->scene.globalTransform[node];
+			auto drawPrepassNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
+				// Masked (cutout) flag replaces the per-node material
+				// fetch the phase split used to pay. Material-less meshes
+				// carry no flag and stay in the solid phase (drawn, like
+				// the old mat == nullptr path).
+				if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
+					return;
+				auto& model = world->scene.globalTransform[item.node];
 				// Error-driven LOD (same budget as the main view): the
 				// prepass fills the depth the tile cull + Main test
 				// against, so it must rasterize the same LOD Main draws.
@@ -97,19 +94,18 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 				// and filter all share one decision per node per frame.
 				smvk::StaticMesh* meshDesc = nullptr;
 				if (lodEnabled) {
-					const uint32_t lod = world->LodIndexForNode(node,
-						meshForNode->second, lodInputs);
-					meshDesc = world->GetLodMesh(meshForNode->second, lod);
+					const uint32_t lod = world->LodIndexForNode(item.node,
+						item.mesh, lodInputs);
+					meshDesc = world->GetLodMesh(item.mesh, lod);
 				}
 				else {
-					meshDesc = world->GetMesh(meshForNode->second);
+					meshDesc = world->GetMesh(item.mesh);
 				}
 				if (!meshDesc) return;
 				PushConstants objectPC{};
 				std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 				if (maskedPhase) {
-					auto materialForNode = world->scene.materialForNode.find(node);
-					objectPC.materialId = materialForNode->second;
+					objectPC.materialId = item.material;
 					cmd.PushConstants(offsetof(PushConstants, materialId),
 						sizeof(objectPC.materialId), &objectPC.materialId,
 						smvk::ShaderStage::All);
@@ -135,12 +131,12 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 					.cullMode = smvk::CullMode::Back
 				}
 			);
-			cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
-			world->forEachNode(
-				smvk::IteratorFlagBit_Renderable
-				| smvk::IteratorFlagBit_Opaque
-				| smvk::IteratorFlagBit_StaticVertexFmt
-				, [&](NodeId node) { drawPrepassNode(node, false); });
+		cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
+		world->forEachRenderItem(
+			smvk::IteratorFlagBit_Renderable
+			| smvk::IteratorFlagBit_Opaque
+			| smvk::IteratorFlagBit_StaticVertexFmt
+			, [&](const smvk::World::RenderItem& item) { drawPrepassNode(item, false); });
 			// Phase 2: MASK cutout, alpha-tested so holes keep
 			// background depth. Cull off: foliage is double-sided.
 			cmd.BindRenderPipeline(
@@ -158,12 +154,12 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 					.cullMode = smvk::CullMode::None
 				}
 			);
-			cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
-			world->forEachNode(
-				smvk::IteratorFlagBit_Renderable
-				| smvk::IteratorFlagBit_Opaque
-				| smvk::IteratorFlagBit_StaticVertexFmt
-				, [&](NodeId node) { drawPrepassNode(node, true); });
+		cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
+		world->forEachRenderItem(
+			smvk::IteratorFlagBit_Renderable
+			| smvk::IteratorFlagBit_Opaque
+			| smvk::IteratorFlagBit_StaticVertexFmt
+			, [&](const smvk::World::RenderItem& item) { drawPrepassNode(item, true); });
 		});
 	}
 }

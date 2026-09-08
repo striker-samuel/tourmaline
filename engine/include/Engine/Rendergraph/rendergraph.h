@@ -4,8 +4,10 @@
 #include <Engine/Renderer/mesh.h>
 
 #include <cassert>
+#include <cstddef>
 #include <functional>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -99,6 +101,31 @@ namespace smvk
 #endif
 		RenderGraph* graph_ = nullptr;
 		RenderPass* renderPass_ = nullptr;
+
+		// ---- Graphics-bind fast path -------------------------------
+		// BindRenderPipeline used to pay the full pipeline-cache lookup
+		// (format copy + several vector allocs + a ~100-way hash combine)
+		// even when the requested pipeline was already bound. Recorders
+		// rebind per phase and per material, so the redundant case is
+		// common. A CommandBuffer is per-pass (RenderGraph::Execute) and
+		// attachment formats are pass-invariants, so remembering the raw
+		// input state of the last graphics bind in this pass is enough to
+		// skip the lookup and the vkCmdBind* re-issue entirely.
+		bool graphicsBound_ = false;
+		ShaderProgram boundProgram_{};
+		VertexFormat boundVertexFormat_ = VertexFormat::Empty;
+		DepthSettings boundDepth_{};
+		StencilSettings boundStencil_{};
+		BlendSettings boundBlend_{};
+		MSAASettings boundMsaa_{};
+		RasterSettings boundRaster_{};
+		PrimitiveTopology boundTopology_ = PrimitiveTopology::TriangleList;
+		// Last graphics bundle: a redundant bind after a compute bind
+		// (which overwrites currentPipeline_) restores the cached
+		// pointers without re-recording vkCmdBindPipeline — the graphics
+		// bind point still holds the right pipeline.
+		void* graphicsPipeline_ = nullptr;
+		void* graphicsLayout_ = nullptr;
 	};
 
 	using LogicalBufferHandle =
@@ -807,8 +834,22 @@ namespace smvk
 		std::vector<PassUsage> CollectPassUsages() const;
 		static bool IsWriteImage(const ImageSyncRequest& r) { return IsWriteAccess(r.barrierMasks.accessMask); }
 		static bool IsWriteBuffer(const BufferSyncRequest& r) { return IsWriteAccess(r.barrierMasks.accessMask); }
-		std::vector<size_t> TopologicalSort(const std::vector<PassUsage>& usages) const;
+		// Returns an internally-owned order (reused across frames): the
+		// sort used to rebuild its adjacency, indegree and frontier
+		// buffers — and re-sort the whole ready set on every release —
+		// once per Execute.
+		const std::vector<size_t>& TopologicalSort(const std::vector<PassUsage>& usages) const;
 		void EmitBarriers(void* cmdOpaque, const std::vector<size_t>& sortedOrder, const std::vector<PassUsage>& usages);
+
+		// TopologicalSort scratch (mutable: reused across frames).
+		mutable std::vector<size_t> topoSorted_;
+		mutable std::vector<size_t> topoHeap_;
+		mutable std::vector<std::vector<size_t>> topoAdj_;
+		mutable std::vector<int> topoIndeg_;
+		mutable std::unordered_map<uint64_t, size_t> topoLastWriterImage_;
+		mutable std::unordered_map<uint64_t, std::vector<size_t>> topoLastReadersImage_;
+		mutable std::unordered_map<uint64_t, size_t> topoLastWriterBuffer_;
+		mutable std::unordered_map<uint64_t, std::vector<size_t>> topoLastReadersBuffer_;
 
 	public:
 

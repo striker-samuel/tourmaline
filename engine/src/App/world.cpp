@@ -4,6 +4,11 @@
 #include <iostream>
 #include <stdexcept>
 
+#include <algorithm>
+#include <bit>
+#include <immintrin.h>
+#include <intrin.h>
+
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
@@ -218,8 +223,8 @@ namespace smvk {
 	RebuildStaticCache(scene);
 	recalculateGlobalTransforms(scene);
 
-		// Build the per-node iterator flags from the resolved scene: renderable
-		// nodes are those carrying a mesh; material drives Opaque vs Transparent.
+	// Build the per-node iterator flags from the resolved scene: renderable
+	// nodes are those carrying a mesh; material drives Opaque vs Transparent.
 		flags.assign(scene.hierarchy.size(), IteratorFlagBit_None);
 		for (auto& [node, meshIdx] : scene.meshForNode) {
 			if (node >= flags.size())
@@ -241,15 +246,17 @@ namespace smvk {
 						if (auto* mat = loc.cluster->materials.get(loc.handle)) {
 							if (mat->isTransparent())
 								f |= static_cast<IteratorFlags>(IteratorFlagBit_Transparent);
-							else
-								f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque);
+							else {
+								f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
+									| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
 
 							// Masked (cutout) still casts shadow but via alpha-tested path.
 							// Transparent (BLEND) does not cast: full-quad depth would
 							// darken behind glass/foliage. Shadow passes additionally
 							// filter Opaque so this flag is defense-in-depth.
-							if (!mat->isTransparent())
-								f |= static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
+								if (mat->shadingModel == ShadingModel::Masked)
+									f |= static_cast<IteratorFlags>(IteratorFlagBit_Masked);
+							}
 						} else {
 							f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
 								| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
@@ -269,6 +276,38 @@ namespace smvk {
 
 			flags[node] = f;
 		}
+
+		// Compact draw list for the hot-pass iterator (forEachRenderItem):
+		// one entry per renderable node with mesh + material indices
+		// precomputed, material-sorted so per-material pipeline binds and
+		// phase splits happen once per material per pass instead of per
+		// node. stable_sort keeps hierarchy order within a material.
+		drawItems.clear();
+		drawItems.reserve(scene.meshForNode.size());
+		flagLists.clear();
+		for (auto& [node, meshIdx] : scene.meshForNode) {
+			if (node >= flags.size())
+				continue;
+			const auto matIt = scene.materialForNode.find(node);
+			drawItems.push_back(RenderItem{
+				.node = node,
+				.mesh = meshIdx,
+				.material = (matIt != scene.materialForNode.end())
+					? matIt->second : kInvalidIndex,
+				.flags = flags[node],
+			});
+		}
+		std::stable_sort(drawItems.begin(), drawItems.end(),
+			[](const RenderItem& a, const RenderItem& b) {
+				return a.material < b.material;
+			});
+		// SoA flags mirror, rebuilt AFTER the sort so index i means the
+		// same item in both arrays (the SIMD scan in ItemIndicesFor
+		// walks this column).
+		itemFlags.clear();
+		itemFlags.reserve(drawItems.size());
+		for (const RenderItem& item : drawItems)
+			itemFlags.push_back(item.flags);
 
 		RebuildLodChains();
 		dirtyCull = true;
@@ -484,7 +523,88 @@ std::optional<World::MaterialLocation> World::ResolveMaterialAcrossClusters(
 		for (uint32_t i = 0; i < flags.size(); ++i) {
 			flags[i] |= static_cast<IteratorFlags>(IteratorFlagBit_PassedCullTest);
 		}
+		// Keep the compact draw list in sync with flags[] (its entries
+		// carry a copy; see forEachRenderItem) and drop the cooked index
+		// lists — the flag bits they were built from just changed.
+		for (size_t i = 0; i < drawItems.size() && i < itemFlags.size(); ++i) {
+			drawItems[i].flags |= static_cast<IteratorFlags>(IteratorFlagBit_PassedCullTest);
+			itemFlags[i] = drawItems[i].flags;
+		}
+		flagLists.clear();
 		dirtyCull = false;
+	}
+
+	// ---------------------------------------------------------------------------
+	// SIMD flag-list cooking (see world.h flagLists).
+	// ---------------------------------------------------------------------------
+
+	namespace {
+
+		// One-time AVX2 probe (leaf 7, EBX[5]; OSXSAVE required for the
+		// OS to preserve the wide registers across context switches).
+		// Explicit intrinsics compile on MSVC without /arch:AVX2, so the
+		// probe gates the code path at runtime instead.
+		bool CpuHasAvx2()
+		{
+			static const bool has = [] {
+				int regs[4];
+				__cpuid(regs, 0);
+				if (regs[0] < 7)
+					return false;
+				__cpuid(regs, 1);
+				const bool osxsave = (regs[2] & (1u << 27)) != 0;
+				if (!osxsave)
+					return false;
+				__cpuidex(regs, 7, 0);
+				return (regs[1] & (1u << 5)) != 0;
+			}();
+			return has;
+		}
+
+	} // namespace
+
+	const std::vector<uint32_t>& World::ItemIndicesFor(IteratorFlags requiredFlags) const
+	{
+		if (auto it = flagLists.find(requiredFlags); it != flagLists.end())
+			return it->second;
+
+		std::vector<uint32_t>& indices = flagLists[requiredFlags];
+		const size_t n = itemFlags.size();
+		indices.reserve(n);
+
+		if (CpuHasAvx2()) {
+			// 8-wide scan of the dense flags column: AND + CMPEQ against
+			// the broadcast mask, movemask compresses the lane results
+			// into a bitmask, then bit-scan emits only the passing
+			// indices. Matches the scalar test exactly: all required bits
+			// set; extra bits ignored.
+			const __m256i req = _mm256_set1_epi32(static_cast<int>(requiredFlags));
+			size_t i = 0;
+			for (; i + 8 <= n; i += 8) {
+				const __m256i f = _mm256_loadu_si256(
+					reinterpret_cast<const __m256i*>(&itemFlags[i]));
+				const __m256i pass = _mm256_cmpeq_epi32(
+					_mm256_and_si256(f, req), req);
+				uint32_t mask = static_cast<uint32_t>(
+					_mm256_movemask_ps(_mm256_castsi256_ps(pass)));
+				while (mask != 0) {
+					const uint32_t bit = std::countr_zero(mask);
+					indices.push_back(static_cast<uint32_t>(i + bit));
+					mask &= mask - 1;
+				}
+			}
+			for (; i < n; ++i) {
+				if ((itemFlags[i] & requiredFlags) == requiredFlags)
+					indices.push_back(static_cast<uint32_t>(i));
+			}
+		}
+		else {
+			for (size_t i = 0; i < n; ++i) {
+				if ((itemFlags[i] & requiredFlags) == requiredFlags)
+					indices.push_back(static_cast<uint32_t>(i));
+			}
+		}
+		return indices;
 	}
 
 } // namespace smvk

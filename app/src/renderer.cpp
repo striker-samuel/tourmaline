@@ -509,21 +509,17 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 		return UINT32_MAX;
 
 	SMVK_PROFILE_SCOPE("GfxFilterPushDraws");
-	world.forEachNode(
+	world.forEachRenderItem(
 		smvk::IteratorFlagBit_Renderable
 		| smvk::IteratorFlagBit_Opaque
 		| smvk::IteratorFlagBit_StaticVertexFmt,
-		[&](NodeId node) {
-			auto meshForNode = world.scene.meshForNode.find(node);
-			if (meshForNode == world.scene.meshForNode.end())
+		[&](const smvk::World::RenderItem& item) {
+			if (item.material == smvk::World::kInvalidIndex)
 				return;
-			auto materialForNode = world.scene.materialForNode.find(node);
-			if (materialForNode == world.scene.materialForNode.end())
-				return;
-			const uint32_t worldMesh = meshForNode->second;
+			const uint32_t worldMesh = item.mesh;
 			if (worldMesh >= meshMap_.size())
 				return; // unknown mesh: legacy direct path still draws it
-			const glm::mat4& model = world.scene.globalTransform[node];
+			const glm::mat4& model = world.scene.globalTransform[item.node];
 			// LOD-aware push (World::LodIndexForNode shares the halfrate
 			// cache with every direct-draw consumer, so both sides agree
 			// per node per frame): the selected sibling's gfx mesh goes
@@ -532,7 +528,7 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 			// so each instance still rasterizes exactly once.
 			uint32_t lodIdx = 0;
 			if (lod && world.LodChainLength(worldMesh) > 1)
-				lodIdx = world.LodIndexForNode(node, worldMesh, *lod);
+				lodIdx = world.LodIndexForNode(item.node, worldMesh, *lod);
 			uint32_t gfxMesh = UINT32_MAX;
 			if (worldMesh < lodMeshMap_.size()
 				&& lodIdx < lodMeshMap_[worldMesh].size())
@@ -557,15 +553,14 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 			// (opaque vs. alpha-tested) selects the seed depth PSO in T3.
 			smvk::gfx::DrawFlags drawFlags = 0;
 			smvk::gfx::DrawSetMask drawSet = smvk::gfx::DrawSetBit_Opaque;
-			if (const smvk::Material* mat =
-				world.GetMaterial(materialForNode->second)) {
+			if (const smvk::Material* mat = world.GetMaterial(item.material)) {
 				if (mat->isDoubleSided())
 					drawFlags |= smvk::gfx::DrawFlagBit_TwoSided;
 				if (mat->shadingModel == smvk::ShadingModel::Masked)
 					drawSet = smvk::gfx::DrawSetBit_Masked;
 			}
 			smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
-				materialForNode->second, drawFlags, drawSet);
+				item.material, drawFlags, drawSet);
 		});
 	const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, frameIndex, slot);
 	// NOTE: unconditional (not SMVK_DEBUG_LOG): this is the only per-run

@@ -540,7 +540,7 @@ namespace smvk {
 		void                          SetImageViewVkView(ImageViewHandle handle, VkImageView vkView);
 		ImageViewHandle               RecreateImageView(ImageViewHandle handle, ImageHandle image, const ImageViewCreateInfo& createInfo);
 		ImageHandle                   RecreateImage(ImageHandle handle, const ImageCreateInfo& createInfo, const void* data = nullptr);
-		Holder<BufferHandle>         CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = "Buffer");
+		Holder<BufferHandle>         CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = "Buffer", VmaAllocationCreateFlags vmaAllocFlags = 0);
 		Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = "DescriptorPool");
 
 		Holder<ShaderModuleHandle>   CreateShaderModule(std::vector<char> code, const char* debugName = "ShaderModule");
@@ -555,9 +555,15 @@ namespace smvk {
 
 		void UploadDataToBuffer(BufferHandle buffer, const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset = 0, size_t dest_offset = 0);
 		void UploadDataToImage2D(const Image& image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset);
-		// Debug readback: GPU buffer -> CPU memory (staging copy + fence
-		// wait; stalls, debug-only). Returns false on zero size / bad handle.
+		// GPU buffer -> CPU memory: one copy into a persistent grow-on-demand
+		// staging buffer, a wait for that copy, then a memcpy. Render-thread
+		// only (shares the graphics submitter + the shared staging buffer).
+		// Returns false on zero size / bad handle / staging alloc failure.
 		bool DownloadDataFromBuffer(BufferHandle src, void* out, size_t size, size_t srcOffset = 0);
+		// Grows the persistent readback staging to cover `size` bytes
+		// (power-of-two steps, 256 KiB floor). The old buffer retires via
+		// DeferDestroy. Render-thread only, like the download itself.
+		bool EnsureReadbackStaging(VkDeviceSize size);
 
 		void UpdateDescriptors(uint32_t frameIndex = 0);
 
@@ -650,6 +656,15 @@ namespace smvk {
 		std::chrono::steady_clock::time_point m_globalsLastAcquireTime{};
 		uint32_t m_globalsFrameCounter = 0;
 		float m_globalsSmoothedFps = 0.0f;
+
+		// Persistent readback staging (DownloadDataFromBuffer): grow-on-
+		// demand, reused across calls (each call waits for its own copy
+		// before returning, so no in-flight overlap), freed in teardown.
+		// Replaces the old per-call staging create + deferred destroy,
+		// which churned allocations per frame and re-entered the
+		// deferred-task queue from inside the drain loop.
+		BufferHandle m_readbackStaging{};
+		VkDeviceSize m_readbackStagingSize = 0;
 
 		// Global sync bookkeeping – use global types for UploadStreamer visibility
 		using ImageGlobalSyncState = ::smvk::ImageGlobalSyncState;
