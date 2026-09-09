@@ -11,6 +11,7 @@
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <utility>
 
 namespace smvk {
 namespace gfx {
@@ -289,31 +290,55 @@ ClusterFootprint ProjectClusterFootprint(const glm::vec3& worldCenter,
 	const float dist = glm::length(toEye);
 	if (dist <= worldRadius || dist < 1e-6f)
 		return f; // eye inside the sphere: cannot be occluded, keep
+	// Clip-space intervals (same math as gfxfilter.cs.hlsl
+	// ClusterOccluded, unguarded — callers add the jitter guard): pinhole
+	// focal lengths (viewProj[0][0] as fx) are only valid for axis-aligned
+	// views (yaw mixes rotation into them and collapses the footprint),
+	// while row lengths are exact under any rotation. Rows use glm
+	// m[col][row]: row r is (m[0][r], m[1][r], m[2][r]).
 	const glm::vec4 clipC = viewProj * glm::vec4(worldCenter, 1.0f);
-	if (clipC.w <= 0.0f)
-		return f; // behind the camera plane: keep (rasterizer resolves)
-	// Nearest point toward the eye (exact for an outside camera).
-	const glm::vec3 nearest = worldCenter + (toEye / dist) * worldRadius;
-	const glm::vec4 clipN = viewProj * glm::vec4(nearest, 1.0f);
-	if (clipN.w <= 0.0f)
+	const float xRadius = worldRadius * glm::length(
+		glm::vec3(viewProj[0][0], viewProj[1][0], viewProj[2][0]));
+	const float yRadius = worldRadius * glm::length(
+		glm::vec3(viewProj[0][1], viewProj[1][1], viewProj[2][1]));
+	const float zRadius = worldRadius * glm::length(
+		glm::vec3(viewProj[0][2], viewProj[1][2], viewProj[2][2]));
+	const float wRadius = worldRadius * glm::length(
+		glm::vec3(viewProj[0][3], viewProj[1][3], viewProj[2][3]));
+	const float wMin = clipC.w - wRadius;
+	const float wMax = clipC.w + wRadius;
+	if (!(wMin > 1e-6f) || !(wMax >= wMin))
+		return f; // touches/crosses the camera plane: keep
+	auto interval = [](float nc, float nr, float wLo, float wHi) {
+		const float r0 = (nc - nr) / wLo, r1 = (nc - nr) / wHi;
+		const float r2 = (nc + nr) / wLo, r3 = (nc + nr) / wHi;
+		return std::pair<float, float>{
+			std::min(std::min(r0, r1), std::min(r2, r3)),
+			std::max(std::max(r0, r1), std::max(r2, r3)) };
+	};
+	const auto ndcX = interval(clipC.x, xRadius, wMin, wMax);
+	const auto ndcY = interval(clipC.y, yRadius, wMin, wMax);
+	const auto ndcZ = interval(clipC.z, zRadius, wMin, wMax);
+	const float dNear = ndcZ.second; // reversed-Z nearest over the sphere
+	if (!(dNear >= 0.0f) || dNear > 1.0f || !std::isfinite(dNear))
 		return f;
-	f.nearestDepth = clipN.z / clipN.w; // reversed-Z value
 	// Framebuffer y-down == NDC-down post-Y-flip (cf. forwardplus.cs.hlsl).
 	const float w = (float)width, h = (float)height;
-	f.centerX = (clipC.x / clipC.w * 0.5f + 0.5f) * w;
-	f.centerY = (clipC.y / clipC.w * 0.5f + 0.5f) * h;
-	// Extent from the nearest-point depth (clipN.w <= dist): radial dist
-	// underestimates off-axis footprints (smaller rect, finer mip) and
-	// over-culls. Nearest depth overestimates -> conservative.
-	// Focal lengths are magnitudes: viewProj[0][0] is negative for mirrored
-	// views (e.g. looking down +z with y-up gives right = -x); a signed fx
-	// would flip the radius sign, poison rectW <= 0 and silently disable
-	// occlusion for the whole frame (fy already takes abs).
-	const float fx = std::abs(viewProj[0][0]);
-	const float fy = std::abs(viewProj[1][1]);
-	const float depthForExtent = std::max(clipN.w, 1e-6f);
-	f.radiusX = worldRadius * fx / depthForExtent * (w * 0.5f);
-	f.radiusY = worldRadius * fy / depthForExtent * (h * 0.5f);
+	const float x0 = (ndcX.first * 0.5f + 0.5f) * w;
+	const float x1 = (ndcX.second * 0.5f + 0.5f) * w;
+	const float y0 = (ndcY.first * 0.5f + 0.5f) * h;
+	const float y1 = (ndcY.second * 0.5f + 0.5f) * h;
+	if (!std::isfinite(x0) || !std::isfinite(x1)
+		|| !std::isfinite(y0) || !std::isfinite(y1))
+		return f;
+	f.centerX = (x0 + x1) * 0.5f;
+	f.centerY = (y0 + y1) * 0.5f;
+	f.radiusX = std::max((x1 - x0) * 0.5f, 0.0f);
+	f.radiusY = std::max((y1 - y0) * 0.5f, 0.0f);
+	f.nearestDepth = dNear;
+	// Fully off-target footprints stay testable (behindCamera=false) so the
+	// audit tags them offscreen; HzbOccluded keeps them like the frustum
+	// stages would.
 	f.behindCamera = false;
 	return f;
 }

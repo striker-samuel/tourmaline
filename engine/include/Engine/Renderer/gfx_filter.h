@@ -290,9 +290,10 @@ struct ClusterFootprint {
 	bool behindCamera = true; // set when untestable (eye inside / w <= 0)
 };
 // Projects a world-space bounding sphere. viewProj is the Y-flipped
-// main-view matrix; width/height is the HZB target extent. Focal lengths
-// come from viewProj fp (radial distance overestimates off-axis extents,
-// which is conservative for both tests).
+// main-view matrix; width/height is the HZB target extent. The footprint
+// is the conservative clip-interval projection (radii from viewProj row
+// lengths, exact under any rotation); the shader widens it by the jitter
+// guard, the audit adds +1px to match (see GfxRenderer::DumpIndirectAudit).
 ClusterFootprint ProjectClusterFootprint(const glm::vec3& worldCenter,
 	float worldRadius, const glm::vec3& eye, const glm::mat4& viewProj,
 	uint32_t width, uint32_t height);
