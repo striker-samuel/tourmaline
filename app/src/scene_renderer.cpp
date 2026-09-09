@@ -981,6 +981,13 @@ void SceneRenderer::Shutdown() {
 			return; // readback disabled (see above): hold the seed/manual exposure
 		if (!m_autoExposureEnabled || !m_passes.exposure)
 			return;
+		// The meshlet debug view fills HDR with exposure-compensated flat
+		// colors (see the dbgGain pre-scale in Main): metering them would
+		// drive the adapted exposure to minimum and feed back into ever
+		// larger gains. Hold the last scene exposure while debug overwrites
+		// HDR (the held value also keeps the debug gain itself stable).
+		if (m_debugMeshlets && m_gfxRenderer.DebugProgramsValid())
+			return;
 		auto& meter = m_viewportResources.exposure;
 		if (!meter.Valid())
 			return;
@@ -2356,8 +2363,16 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		// No index bind: mesh, cluster-ordered and debug draws all address
 		// the static index monoblock absolutely (offset-0 binding above).
 		const smvk::gfx::State& dbgState = m_gfxRenderer.State();
-			MeshDebugPush dp{};
-			std::copy_n(glm::value_ptr(frameViewProj), 16, dp.viewProj);
+		MeshDebugPush dp{};
+		std::copy_n(glm::value_ptr(frameViewProj), 16, dp.viewProj);
+		// Debug colors are authored as display colors, but they travel
+		// through the HDR target + tonemap (hdr * exposure -> ACES). With
+		// physical light units the exposure is ~0.001, which crushes every
+		// flat color to black. Pre-scale by 1/exposure so hdr * exposure
+		// reproduces the authored color (ACES still shapes it, hues stay
+		// distinct); guards the divide for pathological exposures.
+		const float dbgExposure = EffectiveExposure();
+		const float dbgGain = (dbgExposure > 1e-9f) ? 1.0f / dbgExposure : 1.0f;
 			m_world->forEachRenderItem(
 				smvk::IteratorFlagBit_Renderable
 				| smvk::IteratorFlagBit_Opaque
@@ -2378,7 +2393,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
 			// Not filterable: white direct fallback (nothing vanishes).
 			// Mesh-local surfaces address the same index monoblock.
-			dp.color[0] = dp.color[1] = dp.color[2] = 0.9f; dp.color[3] = 1.0f;
+			dp.color[0] = dp.color[1] = dp.color[2] = 0.9f * dbgGain; dp.color[3] = 1.0f;
 			cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
 			if (smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, worldMesh)) {
 				for (auto& draw_set : meshDesc->geometry.surfaces) {
@@ -2397,10 +2412,10 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					if (cl.triCount == 0)
 						continue;
 					float rgba[4];
-					GfxRenderer::DebugClusterColor(
-						gc, cl.coneCutoff, m_debugMeshletMode, rgba);
-				dp.color[0] = rgba[0]; dp.color[1] = rgba[1];
-				dp.color[2] = rgba[2]; dp.color[3] = rgba[3];
+				GfxRenderer::DebugClusterColor(
+					gc, cl.coneCutoff, m_debugMeshletMode, rgba);
+			dp.color[0] = rgba[0] * dbgGain; dp.color[1] = rgba[1] * dbgGain;
+			dp.color[2] = rgba[2] * dbgGain; dp.color[3] = rgba[3];
 				cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
 				// Absolute into the static index monoblock (region base).
 				const uint32_t firstIndex =
@@ -2523,7 +2538,11 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			cmd.BindVertexBuffer(m_debugLines, 0, 0);
 			LineDebugPush lp{};
 			std::copy_n(glm::value_ptr(frameViewProj), 16, lp.viewProj);
-			lp.color[0] = 1.0f; lp.color[1] = 1.0f;
+			// Same HDR/exposure path as the meshlet colors above: pre-scale
+			// so the tonemap reproduces yellow instead of black.
+			const float lineExposure = EffectiveExposure();
+			const float lineGain = (lineExposure > 1e-9f) ? 1.0f / lineExposure : 1.0f;
+			lp.color[0] = 1.0f * lineGain; lp.color[1] = 1.0f * lineGain;
 			lp.color[2] = 0.0f; lp.color[3] = 1.0f;
 			cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
 			cmd.Draw(coneLineVerts, 1, 0, 0);
