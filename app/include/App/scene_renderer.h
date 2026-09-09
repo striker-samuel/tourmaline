@@ -414,10 +414,13 @@ protected:
 	// ---- Meshlet/cone debug views (see App/renderer.h debug programs) ----
 	bool m_debugMeshlets = false; // meshlet colors replace shaded opaque
 	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat
+	bool m_hideTransparent = false; // debug: skip all transparent draws (bisect blending/overdraw out)
 	bool m_debugCones = false;    // cone-axis line overlay (CPU batches)
 	smvk::Holder<smvk::BufferHandle> m_debugLines; // pos-only cone line VB
 	uint32_t m_debugLinesCap = 0; // verts allocated
 	bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
+	bool m_dumpAuditEachFrame = false; // TEMPORARY auto-latch: audit every frame (slideshow), print on over-cull hits
+	uint32_t m_autoAuditHits = 0; // latched over-cull frames (auto-disables at the cap)
 	bool m_debugDumpHzb = false;    // one-shot: dump HZB buffer contents (stderr)
 	bool m_dumpFirstFrameHzb = false; // opt-in: dump HZB once on the next frame (stalls)
 	// ---- Debug culling freeze: hold the filter's (view, eye) + HZB while
