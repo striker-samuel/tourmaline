@@ -984,8 +984,11 @@ void SceneRenderer::Shutdown() {
 		auto& meter = m_viewportResources.exposure;
 		if (!meter.Valid())
 			return;
+		// This frame's flight slice (recorded in RenderFrame): the only
+		// slice this frame zeroed + accumulated, so no cross-flight torn
+		// reads even when frames overlap.
 		std::array<uint32_t, smvk::kExposureBinCount> bins{};
-		if (!m_context->DownloadDataFromBuffer(meter.histogramBuffer,
+		if (!m_context->DownloadDataFromBuffer(meter.HistogramBuffer(m_exposureFrame),
 				bins.data(), sizeof(uint32_t) * bins.size()))
 			return;
 		uint32_t total = 0;
@@ -2594,15 +2597,20 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				meter.Valid() && meter.ShadersValid() &&
 				!sceneHdrView.empty() && sceneHdrBindless != UINT32_MAX &&
 				renderExtent.width != 0 && renderExtent.height != 0) {
-				// Reset the bins (transfer write; the compute hint below
-				// transitions the buffer to Compute R/W via barrier).
+				// Reset the slice's bins (transfer write; the compute hint
+				// below transitions the buffer to Compute R/W via barrier).
+				// Per-flight slice (see exposure.h): the zero-fill submits
+				// immediately at record time, so sharing one buffer across
+				// flights would let this frame's zero clobber the previous
+				// frame's still-accumulating bins.
 				static constexpr uint32_t kZeroBins[smvk::kExposureBinCount] = {};
-				m_context->UploadDataToBuffer(meter.histogramBuffer,
+				m_context->UploadDataToBuffer(meter.HistogramBuffer(fb.frameIndex),
 					kZeroBins, sizeof(kZeroBins),
 					smvk::PipelineStageBit_Transfer,
 					smvk::AccessFlags::TransferWrite, 0, 0);
+				m_exposureFrame = fb.frameIndex;
 				smvk::ExposureHistogramPush expPush{};
-				expPush.histogramAddress = meter.HistogramAddress(*m_context);
+				expPush.histogramAddress = meter.HistogramAddress(*m_context, fb.frameIndex);
 				expPush.hdrTextureIndex = sceneHdrBindless;
 				expPush.width = renderExtent.width;
 				expPush.height = renderExtent.height;
@@ -2617,7 +2625,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				if (expPush.histogramAddress != 0 && dx != 0 && dy != 0) {
 					smvk::ShaderProgram histProg = meter.histogramProgram;
 					smvk::RenderPass& histPass = meter.AddHistogramPass(
-						*m_rendergraph, sceneHdrView, expPush, "ExposureHistogram");
+						*m_rendergraph, sceneHdrView, expPush, fb.frameIndex, "ExposureHistogram");
 					histPass.SetRecordingFunc(
 						[histProg, expPush, dx, dy](smvk::CommandBuffer& cmd) mutable {
 							cmd.BindComputePipeline(histProg);

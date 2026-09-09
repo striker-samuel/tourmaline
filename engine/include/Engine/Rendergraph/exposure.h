@@ -8,16 +8,23 @@
 // from AddImageHint (read) + AddBufferHint (write).
 //
 // Pipeline (see app/src/scene_renderer.cpp):
-//   1. Per frame, the CPU zeroes the 64-bin buffer via UploadDataToBuffer
-//      (TransferWrite; the compute hint below promotes it to Compute R/W).
+//   1. Per frame, the CPU zeroes the flight slice's 64-bin buffer via
+//      UploadDataToBuffer (TransferWrite; the compute hint below promotes
+//      it to Compute R/W). The buffer is ringed per frame in flight
+//      (like the gfx filter's batch/draw/indirect slices): the zero-fill
+//      is an immediate transfer-queue submit at record time, so a single
+//      shared buffer would let frame N+1's zero clobber frame N's still
+//      accumulating bins once the pipeline fills (startup lockstep works,
+//      then the meter goes quiet) — per-flight slices make the clobber
+//      structurally impossible.
 //   2. ExposureHistogram compute (16x16 threads/group, sampleStep stride)
 //      builds a log2-luminance histogram of the (possibly motion-blurred)
-//      scene HDR into the buffer via groupshared combine + global atomics.
-//   3. After RenderGraph::Execute, the app downloads the 256-byte buffer
-//      (DownloadDataFromBuffer; submitted before the frame present, so it
-//      observes the previous frame — natural 1-frame lag, minimal stall),
-//      finds the percentile luminance on the CPU and exponentially damps
-//      the smoothed exposure toward keyValue * 2^evBias / meteredLum.
+//      scene HDR into the slice via groupshared combine + global atomics.
+//   3. After RenderGraph::Execute, the app downloads the slice's 256-byte
+//      buffer (DownloadDataFromBuffer; submitted before the frame present,
+//      so it observes the previous frame — natural 1-frame lag, minimal
+//      stall), finds the percentile luminance on the CPU and exponentially
+//      damps the smoothed exposure toward keyValue * 2^evBias / meteredLum.
 //   4. The smoothed exposure feeds the tonemap push next frame, and the
 //      bloom threshold/knee are scaled exposure-relative so bloom strength
 //      stays constant as exposure shifts.
@@ -75,8 +82,14 @@ inline constexpr const char* kExposureHistogramCsPath =
 	"content/shaders/exposure_histogram.cs.hlsl.spv";
 
 struct ExposureMeter {
-	Holder<BufferHandle> histogramBuffer;
-	LogicalBufferHandle histogramLogical{};
+	// Histogram storage, ringed per frame in flight (see pipeline note
+	// above): frames overlap (the swapchain only retires the same slot),
+	// and the zero-fill is an immediate transfer submit at record time, so
+	// any single-copy buffer would be clobbered by the next frame while the
+	// current one still accumulates. Same rule as the gfx filter's per-view
+	// ring slices and RenderViewSet's slab.
+	Holder<BufferHandle> histogramBuffers[MAX_FRAMES_IN_FLIGHT];
+	LogicalBufferHandle histogramLogicals[MAX_FRAMES_IN_FLIGHT]{};
 	ExposureDesc desc{};
 
 	Holder<ShaderModuleHandle> histogramModule;
@@ -87,7 +100,19 @@ struct ExposureMeter {
 	uint32_t lastTotal = 0;
 
 	[[nodiscard]] bool Valid() const {
-		return !histogramBuffer.empty() && !histogramLogical.empty();
+		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+			if (histogramBuffers[f].empty() || histogramLogicals[f].empty())
+				return false;
+		}
+		return true;
+	}
+	[[nodiscard]] BufferHandle HistogramBuffer(uint32_t frameIndex) const {
+		assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+		return histogramBuffers[frameIndex];
+	}
+	[[nodiscard]] LogicalBufferHandle HistogramLogical(uint32_t frameIndex) const {
+		assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+		return histogramLogicals[frameIndex];
 	}
 	[[nodiscard]] bool ShadersValid() const {
 		return histogramProgram.shaderCount != 0 && !histogramModule.empty();
@@ -120,37 +145,46 @@ struct ExposureMeter {
 		histogramModule = {};
 	}
 
-	// Extent-independent (the buffer is always 64 uints); creates once.
+	// Extent-independent (each slice is always 64 uints); creates all
+	// flight slices once.
 	bool Create(ResourceManager& ctx, RenderGraph& rg, const ExposureDesc& d,
 		const char* csPath = kExposureHistogramCsPath) {
 		if (d.bins == 0 || d.bins > kExposureBinCount)
 			return false;
 		Destroy(rg);
-		Holder<BufferHandle> buf = ctx.CreateBuffer(
-			kExposureHistogramBytes, BufferType_Storage, "exposure histogram");
-		if (buf.empty())
-			return false;
-		LogicalBufferHandle logical = rg.AddExternalBuffer(buf, "exposure histogram");
-		if (logical.empty())
-			return false;
-		histogramBuffer = std::move(buf);
-		histogramLogical = logical;
+		static constexpr uint32_t kZero[kExposureBinCount] = {};
+		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+			Holder<BufferHandle> buf = ctx.CreateBuffer(
+				kExposureHistogramBytes, BufferType_Storage, "exposure histogram");
+			if (buf.empty()) {
+				Destroy(rg);
+				return false;
+			}
+			LogicalBufferHandle logical = rg.AddExternalBuffer(buf, "exposure histogram");
+			if (logical.empty()) {
+				Destroy(rg);
+				return false;
+			}
+			histogramBuffers[f] = std::move(buf);
+			histogramLogicals[f] = logical;
+			ctx.UploadDataToBuffer(histogramBuffers[f], kZero, sizeof(kZero),
+				PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+		}
 		desc = d;
 		// Zero so the first adaptation (before any GPU write lands) sees
 		// total == 0 and holds the seed exposure instead of garbage.
-		static constexpr uint32_t kZero[kExposureBinCount] = {};
-		ctx.UploadDataToBuffer(histogramBuffer, kZero, sizeof(kZero),
-			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
 		lastBins.fill(0);
 		lastTotal = 0;
 		return EnsureShaders(ctx, csPath);
 	}
 
 	void Destroy(RenderGraph& rg) {
-		if (!histogramLogical.empty())
-			rg.FreeBuffer(histogramLogical);
-		histogramLogical = {};
-		histogramBuffer = {};
+		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+			if (!histogramLogicals[f].empty())
+				rg.FreeBuffer(histogramLogicals[f]);
+			histogramLogicals[f] = {};
+			histogramBuffers[f] = {};
+		}
 		lastBins.fill(0);
 		lastTotal = 0;
 	}
@@ -164,8 +198,8 @@ struct ExposureMeter {
 		return Create(ctx, rg, d, csPath);
 	}
 
-	uint64_t HistogramAddress(ResourceManager& ctx) const {
-		return ctx.GetBufferDeviceAddress(histogramBuffer);
+	uint64_t HistogramAddress(ResourceManager& ctx, uint32_t frameIndex) const {
+		return ctx.GetBufferDeviceAddress(HistogramBuffer(frameIndex));
 	}
 
 	// Dispatch dimensions for the current desc/extent (16x16 threads,
@@ -179,15 +213,18 @@ struct ExposureMeter {
 		return (extent.height + tile - 1) / tile;
 	}
 
-	// Compute pass shell: caller zeroes the buffer first (CPU upload above),
-	// then sets the recording func (bind program, push, dispatch). Captures
-	// only copyable handles/values, safe once this returns.
+	// Compute pass shell for one flight slice: caller zeroes the slice
+	// first (CPU upload above), then sets the recording func (bind program,
+	// push, dispatch). Captures only copyable handles/values, safe once
+	// this returns.
 	RenderPass& AddHistogramPass(RenderGraph& rg,
 		LogicalImageViewHandle hdrView,
 		const ExposureHistogramPush& push,
+		uint32_t frameIndex,
 		const char* name = "ExposureHistogram") const {
 		assert(Valid());
 		assert(!hdrView.empty());
+		assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
 		RenderPass& pass = rg.AddComputePass(name);
 		ImageSyncRequest hdrReq{};
 		hdrReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
@@ -198,7 +235,7 @@ struct ExposureMeter {
 		histReq.barrierMasks.accessMask =
 			AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
 		histReq.barrierMasks.stageMask = PipelineStageBit_Compute;
-		pass.AddBufferHint(histogramLogical, histReq);
+		pass.AddBufferHint(histogramLogicals[frameIndex], histReq);
 		// Recording func is set by the caller (needs program + dispatch).
 		(void)push;
 		return pass;

@@ -527,6 +527,9 @@ protected:
 	// post-Execute readback; floats for ImGui::PlotHistogram).
 	float m_exposureBinsUi[smvk::kExposureBinCount] = {};
 	uint32_t m_exposureSamples = 0; // metered pixels last frame
+	// Flight slice this frame's histogram lives in (recorded in
+	// RenderFrame; the download after Execute reads the same slice).
+	uint32_t m_exposureFrame = 0;
 	// Effective tonemap exposure: adapted when auto is on, the pass is in
 	// the set and the meter is live; manual otherwise.
 	float EffectiveExposure() const {
