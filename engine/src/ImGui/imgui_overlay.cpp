@@ -115,7 +115,13 @@ bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, GLFWwindow* 
     VkPhysicalDevice physicalDevice = GetVkPhysicalDevice();
     VkQueue graphicsQueue = GetVkGraphicsQueue();
 
-    VkFormat colorFormat = toVkFormat(swapchain.GetSurfaceFormat());
+    // The backend pipeline's rendering format must match the target ImGui
+    // actually draws into: the separated UI target (desc.colorFormat) or,
+    // when unset, the swapchain itself (direct-to-swapchain draws).
+    const Format uiColorFormat = desc_.colorFormat != Format::Undefined
+        ? desc_.colorFormat
+        : swapchain.GetSurfaceFormat();
+    VkFormat colorFormat = toVkFormat(uiColorFormat);
     VkFormat depthFormat = VK_FORMAT_UNDEFINED; // UI pass has no depth; could use swap depthFormat if we ever depth-test UI.
 
     VkPipelineRenderingCreateInfo renderingCreateInfo{};

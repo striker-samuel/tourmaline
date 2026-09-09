@@ -930,6 +930,20 @@ static void ResolveBatchMaterials(const std::vector<MaterialRange>& ranges,
 	}
 }
 
+// (cluster, model) identity shared by the seed intersection (below) and
+// the remainder difference. Same cluster + same transform == same
+// triangles == same depth, so seeding it reproduces exactly what the
+// prepass would write.
+struct VisKey {
+	uint32_t cluster = UINT32_MAX;
+	glm::mat4 model{ 1.0f };
+};
+static bool VisKeyLess(const VisKey& a, const VisKey& b) {
+	if (a.cluster != b.cluster)
+		return a.cluster < b.cluster;
+	return std::memcmp(&a.model, &b.model, sizeof(glm::mat4)) < 0;
+}
+
 void BuildSeedCommands(State& s, uint32_t view) {
 	assert(view < s.views.size());
 	TemporalView& t = Temporal(s, view);
@@ -942,6 +956,31 @@ void BuildSeedCommands(State& s, uint32_t view) {
 	SMVK_PROFILE_RENDER("GfxBuildSeedCommands");
 	SMVK_PROFILE_TAG("prevBatches", t.prevBatches.size());
 
+	// Seed ONLY the intersection of the snapshot with this frame's batches
+	// (same cluster, same transform). The prepass Loads seeded depth and
+	// draws full current geometry over it (nearest-wins), and 1x Main then
+	// tests read-only (GreaterEqual) against that buffer — so any stale
+	// seed content that is NEARER than current geometry kills Main pixels
+	// (skybox holes for a frame). Stale == LOD flip (sibling clusters have
+	// disjoint ids) or moved instance (model differs): both miss the
+	// intersection and fall through to the prepass + remainder instead.
+	// Same cluster + same model replays bit-identical depth, which can
+	// only ever tie (pass) — never poison.
+	const View& v = s.views[view];
+	std::vector<VisKey> curr;
+	curr.reserve(v.batches.size());
+	for (const Batch& b : v.batches) {
+		if (b.draw >= (uint32_t)v.drawConstants.size())
+			continue;
+		if (b.cluster >= (uint32_t)s.clusters.size())
+			continue;
+		VisKey k{};
+		k.cluster = b.cluster;
+		k.model = v.drawConstants[b.draw].model;
+		curr.push_back(k);
+	}
+	std::sort(curr.begin(), curr.end(), VisKeyLess);
+
 	std::vector<uint32_t> batchMaterial;
 	ResolveBatchMaterials(t.prevRanges, t.prevBatches.size(), batchMaterial);
 	std::vector<EmitEntry> entries;
@@ -950,6 +989,11 @@ void BuildSeedCommands(State& s, uint32_t view) {
 		const Batch& b = t.prevBatches[i];
 		if (b.draw >= (uint32_t)t.prevDraws.size())
 			continue;
+		VisKey k{};
+		k.cluster = b.cluster;
+		k.model = t.prevDraws[b.draw].model;
+		if (!std::binary_search(curr.begin(), curr.end(), k, VisKeyLess))
+			continue; // LOD-flipped or moved since: prepass owns it
 		EmitEntry e{};
 		e.cluster = b.cluster;
 		e.draw = b.draw; // into the visDraws snapshot
@@ -960,16 +1004,8 @@ void BuildSeedCommands(State& s, uint32_t view) {
 	EmitBucketMajor(s, entries, t.seedCommands, t.seedRanges, t.seedOpaqueCommands);
 }
 
-// (cluster, model) identity for the remainder difference.
-struct VisKey {
-	uint32_t cluster = UINT32_MAX;
-	glm::mat4 model{ 1.0f };
-};
-static bool VisKeyLess(const VisKey& a, const VisKey& b) {
-	if (a.cluster != b.cluster)
-		return a.cluster < b.cluster;
-	return std::memcmp(&a.model, &b.model, sizeof(glm::mat4)) < 0;
-}
+// (cluster, model) identity for the remainder difference (shared VisKey
+// above, same ordering as the seed intersection).
 
 void BuildRemainderCommands(State& s, uint32_t view) {
 	assert(view < s.views.size());

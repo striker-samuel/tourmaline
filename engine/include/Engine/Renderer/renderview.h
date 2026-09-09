@@ -68,7 +68,16 @@ static_assert(sizeof(RenderView) % 16 == 0);
 // the six resulting half-spaces always describe the visible volume. Planes
 // are normalized; a point p is inside when
 // dot(plane.xyz, p) + plane.w >= 0 for all six planes.
-inline void ExtractViewPlanes(const glm::mat4& vp, glm::vec4 outPlanes[6])
+//
+// guardNdcX/Y dilate the left/right and bottom/top half-spaces by that many
+// NDC units (callers convert pixels via 2*guardPx/extent). The dilation is
+// strictly conservative: the inside set only grows, so culling keeps a
+// boundary band instead of dropping it. Used by jittered views (SMAA T2x
+// swings the frustum by +/-0.25 px each frame): without a guard,
+// boundary clusters flicker in/out on alternating frames. Near/far stay
+// exact (subpixel jitter never moves depth).
+inline void ExtractViewPlanes(const glm::mat4& vp, glm::vec4 outPlanes[6],
+	float guardNdcX = 0.0f, float guardNdcY = 0.0f)
 {
 	const auto row = [&vp](int r) {
 		return glm::vec4(vp[0][r], vp[1][r], vp[2][r], vp[3][r]);
@@ -79,10 +88,10 @@ inline void ExtractViewPlanes(const glm::mat4& vp, glm::vec4 outPlanes[6])
 	const glm::vec4 row3 = row(3);
 
 	glm::vec4 planes[6] = {
-		row3 + row0, // left   (x_ndc = -1)
-		row3 - row0, // right  (x_ndc = +1)
-		row3 + row1, // bottom (y_ndc = -1)
-		row3 - row1, // top    (y_ndc = +1)
+		row3 * (1.0f + guardNdcX) + row0, // left   (x_ndc = -1)
+		row3 * (1.0f + guardNdcX) - row0, // right  (x_ndc = +1)
+		row3 * (1.0f + guardNdcY) + row1, // bottom (y_ndc = -1)
+		row3 * (1.0f + guardNdcY) - row1, // top    (y_ndc = +1)
 		row2,        // z_ndc = 0 (near for ZO, far for reversed-Z)
 		row3 - row2, // z_ndc = 1 (far for ZO, near for reversed-Z)
 	};
@@ -182,17 +191,25 @@ public:
 	}
 
 	// Generic allocation (world-space viewProj + target size in pixels).
+	// cullingGuardPx dilates the frustum planes by that many target pixels
+	// (see ExtractViewPlanes): pass > 0 for views whose projection jitters
+	// per frame (main camera under SMAA T2x), 0 for exact views (shadows).
 	uint32_t AllocateView(
 		const glm::mat4& viewProj,
 		const glm::vec2& targetSize,
-		RenderViewFlags flags) {
+		RenderViewFlags flags,
+		float cullingGuardPx = 0.0f) {
 		if (count_ >= kMaxRenderViews)
 			return kInvalidIndex;
 		RenderView v;
 		std::memset(&v, 0, sizeof(v));
 		v.m_viewProjectionMatrix = viewProj;
 		v.m_inverseViewProjectionMatrix = glm::inverse(viewProj);
-		ExtractViewPlanes(viewProj, v.m_viewPlanes);
+		const float guardNdcX = (targetSize.x > 0.0f && cullingGuardPx > 0.0f)
+			? 2.0f * cullingGuardPx / targetSize.x : 0.0f;
+		const float guardNdcY = (targetSize.y > 0.0f && cullingGuardPx > 0.0f)
+			? 2.0f * cullingGuardPx / targetSize.y : 0.0f;
+		ExtractViewPlanes(viewProj, v.m_viewPlanes, guardNdcX, guardNdcY);
 		v.m_renderTargetSize = glm::vec4(
 			targetSize.x, targetSize.y,
 			targetSize.x > 0.0f ? 1.0f / targetSize.x : 0.0f,
@@ -205,8 +222,9 @@ public:
 	// Main game camera -> exactly 1 view (first allocation wins MainViewIndex).
 	uint32_t AllocateMainView(
 		const glm::mat4& viewProj,
-		const glm::vec2& targetSize) {
-		const uint32_t index = AllocateView(viewProj, targetSize, RenderViewFlagBit_MainView);
+		const glm::vec2& targetSize,
+		float cullingGuardPx = 0.0f) {
+		const uint32_t index = AllocateView(viewProj, targetSize, RenderViewFlagBit_MainView, cullingGuardPx);
 		if (mainView_ == kInvalidIndex)
 			mainView_ = index;
 		return index;
@@ -244,8 +262,10 @@ public:
 	// Any other custom pass.
 	uint32_t AllocateCustomView(
 		const glm::mat4& viewProj,
-		const glm::vec2& targetSize) {
-		return AllocateView(viewProj, targetSize, RenderViewFlagBit_Custom);
+		const glm::vec2& targetSize,
+		float cullingGuardPx = 0.0f) {
+		return AllocateView(
+			viewProj, targetSize, RenderViewFlagBit_Custom, cullingGuardPx);
 	}
 
 	// ---------------------------------------------------------------

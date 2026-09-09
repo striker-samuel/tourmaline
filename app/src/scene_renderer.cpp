@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <array>
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <iostream>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -201,6 +203,14 @@ static smvk::Extent2D ScaledExtent(smvk::Extent2D base, float scale) {
 	};
 }
 
+// Frustum guard band (px, internal resolution) for the main camera views.
+// The SMAA T2x projection jitter swings the frustum by +/-0.25 px every
+// frame; exact plane tests would drop/re-add boundary clusters on
+// alternating frames (visible popping). A 1 px conservative dilation keeps
+// the boundary band on both phases - it can only reduce culling, never
+// punch holes. Shadow views stay exact (their projections never jitter).
+static constexpr float kMainViewCullGuardPx = 1.0f;
+
 static smvk::CascadedShadowMapDesc MakeShadowDesc() {
 	smvk::CascadedShadowMapDesc d{};
 	d.cascadeCount = NUM_CASCADES;
@@ -360,10 +370,25 @@ bool SceneRenderer::Initialize() {
 		if (!Super::Initialize())
 			return false;
 
+		// AA mode override for A/B runs without UI interaction
+		// (off | msaa | smaa1x | t2x). The ImGui combo stays live after.
+		if (const char* aaEnv = std::getenv("VULKANTOY_AA")) {
+			const std::string_view aa{ aaEnv };
+			if (aa == "off") m_aaMode = AaMode::Off;
+			else if (aa == "msaa") m_aaMode = AaMode::Msaa2x;
+			else if (aa == "smaa1x") m_aaMode = AaMode::Smaa1x;
+			else if (aa == "t2x") m_aaMode = AaMode::SmaaT2x;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_AA value: " << aa << "\n";
+		}
+
 		// Default to no-VSync (mailbox); the overlay combo can change it
 		// later (applies via Recreate in DrawFrame).
 		m_swapchain->SetPresentMode(m_presentMode);
-		UpdateCameraAspect();
+		{
+			const auto vkExt = m_swapchain->GetExtent();
+			UpdateCameraAspect(ScaledExtent(
+				smvk::Extent2D{ vkExt.width, vkExt.height }, m_renderScale));
+		}
 		m_resources.frameUniforms = m_context->CreateBuffer(
 			sizeof(FrameUniforms) * m_swapchain->framesInFlight(),
 			smvk::BufferType_Uniform,
@@ -591,6 +616,11 @@ bool SceneRenderer::Initialize() {
 		// (overridable by app content / paks through the overlay; falls
 		// back to procedural generation when the files are missing).
 		m_cookies.Ensure(*m_context, contentVfs);
+		// SMAA precomputed LUTs (official area/search tables, embedded in
+		// the engine - see Engine/Rendergraph/smaa.h). Uploaded once here so
+		// the staged uploads join the cookie flush below.
+		if (!m_viewportResources.smaa.EnsureLuts(*m_context))
+			std::cerr << "[SceneRenderer] SMAA LUT upload failed - SMAA unavailable\n";
 		m_context->FlushUploads();
 
 
@@ -664,11 +694,11 @@ bool SceneRenderer::Initialize() {
 				std::cerr << "[SceneRenderer] Bloom chain unavailable (HDR "
 					<< renderExtent.width << "x" << renderExtent.height << ")\n";
 			}
-			smvk::UiDesc uiDesc{};
-			uiDesc.format = m_swapchain->GetSurfaceFormat();
-			if (!m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, uiDesc)) {
-				std::cerr << "[SceneRenderer] UI target unavailable – UI disabled\n";
-			}
+		smvk::UiDesc uiDesc{};
+		uiDesc.format = LdrUnormSibling();
+		if (!m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, uiDesc)) {
+			std::cerr << "[SceneRenderer] UI target unavailable – UI disabled\n";
+		}
 			if (!m_viewportResources.uiComposite.Ensure(*m_context)) {
 				std::cerr << "[SceneRenderer] UI composite program unavailable\n";
 			}
@@ -680,6 +710,7 @@ bool SceneRenderer::Initialize() {
 		smvk::ImGuiOverlayDesc imguiDesc{};
 		imguiDesc.fontPath = UI_FONT_PATH;
 		imguiDesc.fontBaseSize = UI_FONT_BASE_SIZE;
+		imguiDesc.colorFormat = LdrUnormSibling(); // must match the UI target above
 		if (!m_imgui->Init(*m_context, *m_swapchain, window, imguiDesc)) {
 			std::cerr << "[SceneRenderer] Failed to init ImGuiOverlay – continuing without UI\n";
 			m_imgui.reset();
@@ -706,6 +737,7 @@ void SceneRenderer::Shutdown() {
 		m_viewportResources.spotShadows.Destroy(*m_rendergraph);
 		m_viewportResources.directionalShadows.Destroy(*m_rendergraph);
 		m_viewportResources.msaa.Destroy(*m_rendergraph);
+		m_viewportResources.smaa.Destroy(*m_rendergraph);
 		m_viewportResources.hdr.Destroy(*m_rendergraph);
 		m_viewportResources.motionBlur.Destroy(*m_rendergraph);
 		m_viewportResources.motionVectors.Destroy(*m_rendergraph);
@@ -719,6 +751,13 @@ void SceneRenderer::Shutdown() {
 		Super::Shutdown();
 	}
 
+	smvk::SmaaImageState& SceneRenderer::SmaaStateFor(uint32_t imageIndex) {
+		const uint32_t count = m_swapchain ? std::max(m_swapchain->GetImageCount(), 1u) : 1u;
+		if (m_smaaImageStates.size() != count)
+			m_smaaImageStates.assign(count, smvk::SmaaImageState{});
+		return m_smaaImageStates[std::min(imageIndex, count - 1u)];
+	}
+
 	FrameUniforms SceneRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent) {
 
 		const int width_ = renderExtent.width;
@@ -727,6 +766,38 @@ void SceneRenderer::Shutdown() {
 		auto view = m_camera.getViewMatrix();
 		auto proj = m_camera.getProjMatrix();
 		proj[1][1] *= -1; // viewport fix ditecrly in proj
+
+		// Unjittered snapshot for 2D overlays (ImGui light markers/labels):
+		// the UI layer is neither jittered nor temporally resolved, so it
+		// must project with the stable matrix (see m_unjitteredViewProj).
+		m_unjitteredViewProj = proj * view;
+
+		// SMAA T2x sub-pixel jitter: alternate the sample position between
+		// the two diagonal quarter-pixel offsets (official T2x pattern,
+		// paired with the subsampleIndices table in smaa.h). Applied to proj
+		// so viewProj / invProj / prevViewProj all stay consistent, and
+		// quantized to render-extent (internal resolution) texels: the
+		// jitter perturbs scene rasterization, which happens at renderExtent
+		// (swapExtent * renderScale), so a quarter-pixel must be measured in
+		// render pixels. Quantizing to swap-extent texels instead under- or
+		// over-shifts the raster (0.25/renderScale render px), breaking the
+		// temporal coverage and swinging the culling frustum/HZB by the
+		// wrong amount whenever renderScale != 1. NDC is y-down after
+		// the Y-flip above, so both axes share one sign (the official table
+		// assumes bottom-to-top y; the physical corner pair is unchanged).
+		if (SmaaT2xActive()) {
+			// Phase belongs to this record's swapchain image (snapshot in
+			// m_smaaFrameParams), never the render-loop counter - see smaa.h.
+			const float s = (m_smaaFrameParams.parity == 0) ? 0.25f : -0.25f;
+			const float jx = s * 2.0f / float(renderExtent.width);
+			const float jy = s * 2.0f / float(renderExtent.height);
+			// Clip-space translation x' = x + jx * w (glm column-major
+			// [col][row]: add jx * w-row to the x-row, jy to the y-row).
+			for (int c = 0; c < 4; ++c) {
+				proj[c][0] += jx * proj[c][3];
+				proj[c][1] += jy * proj[c][3];
+			}
+		}
 
 		auto viewProj = proj * view;
 		FrameUniforms data{};
@@ -1190,9 +1261,15 @@ void SceneRenderer::Shutdown() {
 		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildMsaaDesc);
 		m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc());
 		smvk::UiDesc rebuildUiDesc{};
-		rebuildUiDesc.format = m_swapchain->GetSurfaceFormat();
+		rebuildUiDesc.format = LdrUnormSibling();
 		m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, rebuildUiDesc);
-		UpdateCameraAspect();
+		smvk::SmaaDesc rebuildSmaaDesc{};
+		rebuildSmaaDesc.ldrFormat = LdrUnormSibling();
+		m_viewportResources.smaa.Ensure(*m_context, *m_rendergraph, swapExtent, rebuildSmaaDesc);
+		// Recreated history targets hold garbage - the resolve must not
+		// blend against them until the T2x chain refills the ping-pong.
+		m_smaaImageStates.clear();
+		UpdateCameraAspect(renderExtent);
 	}
 
 	void SceneRenderer::DrawFrame() {
@@ -1246,7 +1323,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 	const smvk::Extent2D swapExtent{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height };
 	const smvk::Extent2D renderExtent = ScaledExtent(swapExtent, m_renderScale);
 	const smvk::Extent2D uiExtent = ScaledExtent(swapExtent, m_uiScale);
-	UpdateCameraAspect();
+	UpdateCameraAspect(renderExtent);
 	{
 		SMVK_PROFILE_SCOPE("SceneRenderer_ResourceEnsure");
 		smvk::DepthDesc frameDepthDesc{};
@@ -1264,10 +1341,17 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 			frameMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 			m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, frameMsaaDesc);
 			m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc());
-			smvk::UiDesc frameUiDesc{};
-			frameUiDesc.format = m_swapchain->GetSurfaceFormat();
-			m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, frameUiDesc);
-			m_viewportResources.uiComposite.Ensure(*m_context);
+		smvk::UiDesc frameUiDesc{};
+		frameUiDesc.format = LdrUnormSibling();
+		m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, frameUiDesc);
+		m_viewportResources.uiComposite.Ensure(*m_context);
+		smvk::SmaaDesc frameSmaaDesc{};
+		frameSmaaDesc.ldrFormat = LdrUnormSibling();
+		m_viewportResources.smaa.Ensure(*m_context, *m_rendergraph, swapExtent, frameSmaaDesc);
+		// AA mode combo (Off / MSAA 2x / SMAA 1x / SMAA T2x): MSAA runs
+		// only in its own mode (SMAA after an MSAA resolve wastes the
+		// resolve; device support is still gated at the Main pass).
+		m_viewportResources.msaaEnabled = (m_aaMode == AaMode::Msaa2x);
 			m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc());
 			m_viewportResources.exposure.Ensure(*m_context, *m_rendergraph, MakeExposureDesc());
 		}
@@ -1283,6 +1367,23 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 			m_viewportResources.bloom.desc.knee = BLOOM_KNEE * bloomScale;
 		}
 		m_context->UpdateDescriptors();
+		// SMAA T2x presentation-cadence state (see SmaaImageState in smaa.h):
+		// one slot per swapchain image, advanced once per recorded frame. Any
+		// AA-mode change invalidates every image (a T2x -> 1x/Off -> T2x
+		// round-trip would otherwise reuse ancient history).
+		const uint64_t smaaRecordId = ++m_smaaRecordCounter;
+		if (m_aaMode != m_smaaLastMode) {
+			m_smaaImageStates.clear();
+			m_smaaLastMode = m_aaMode;
+		}
+		// Per-image T2x snapshot for this record: the jitter below, the
+		// history slot + subsample indices of the SMAA chain and the overlay
+		// all read this one snapshot so they always agree. Evaluated after
+		// Ensure so SmaaActive() matches the chain-emission gate below (the
+		// first record after (re)creation degrades to a warmup record).
+		m_smaaFrameParams = smvk::SmaaBeginFrame(
+			SmaaStateFor(fb.imageIndex), SmaaT2xActive(), smaaRecordId);
+		m_smaaFrameRanT2x = false; // set where the T2x chain is emitted
 		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent);
 		const smvk::GpuDirectionalLightDescription dirLight = UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
@@ -1299,7 +1400,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		m_renderViews.NewFrame();
 		const uint32_t mainRenderView = m_renderViews.AllocateMainView(
 			frameData.viewProj,
-			{ static_cast<float>(renderExtent.width), static_cast<float>(renderExtent.height) });
+			{ static_cast<float>(renderExtent.width), static_cast<float>(renderExtent.height) },
+			kMainViewCullGuardPx);
 		const uint32_t cascadeViewBase = m_renderViews.AllocateDirectionalLightViews(
 			dirLight,
 			{ static_cast<float>(CASCADE_RES), static_cast<float>(CASCADE_RES) });
@@ -2004,6 +2106,18 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		.addressW = smvk::AddressMode::ClampToEdge,
 		.maxAnisotropy = 1.0f
 	});
+	// Nearest/clamp sampler for SMAA: the edge pass reads the color input
+	// and the resolve fetches its samples with point filtering (official
+	// SMAASamplePoint; everything else in the chain stays linear).
+	uint32_t pointSampler = m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
+		.magFilter = smvk::Filter::Nearest,
+		.minFilter = smvk::Filter::Nearest,
+		.mipmapMode = smvk::MipmapMode::Nearest,
+		.addressU = smvk::AddressMode::ClampToEdge,
+		.addressV = smvk::AddressMode::ClampToEdge,
+		.addressW = smvk::AddressMode::ClampToEdge,
+		.maxAnisotropy = 1.0f
+	});
 	// ---------------------------------------------------------------------
 	// SSAO – half-res depth-only AO (see ssao.h). Runs BEFORE Main: every
 	// depth-writing pass (Forward+ prepass, gfx remainder, motion vectors)
@@ -2532,8 +2646,14 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// Tonemapper – HDR (RGBA16F) → LDR swapchain (see tonemap.h)
+		// Tonemapper – HDR (RGBA16F) → LDR swapchain (see tonemap.h).
+		// With SMAA active the pass is retargeted onto the offscreen LDR
+		// target owned by the SMAA builder (the swapchain cannot be
+		// sampled); the SMAA resolve then writes the swapchain.
 		// ---------------------------------------------------------------------
+		const bool smaaActive = SmaaActive();
+		const bool smaaT2x = smaaActive && m_aaMode == AaMode::SmaaT2x;
+		const bool swapIsSrgb = SwapchainIsSrgb();
 		{
 			SMVK_PROFILE_CATEGORY("Tonemap", Optick::Category::Rendering);
 			const bool bloomOn = m_passes.bloom && m_viewportResources.bloom.Valid();
@@ -2551,6 +2671,9 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				motionView = m_viewportResources.motionVectors.target.logicalView;
 				motionBindless = m_viewportResources.motionVectors.target.bindlessIndex;
 			}
+		std::vector<smvk::LogicalImageViewHandle> tonemapTargets = colors;
+		if (smaaActive)
+			tonemapTargets = { m_viewportResources.smaa.ldr.logicalView };
 		smvk::TonemapDesc tonemapDesc = m_viewportResources.tonemap.desc;
 		tonemapDesc.exposure = frameExposure;
 		auto& tonemapPass = m_viewportResources.tonemap.AddTonemapPass(
@@ -2561,15 +2684,52 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			bloomBindless,
 			bloomIntensity,
 			linearSampler,
-			colors,
+			tonemapTargets,
 			swapExtent,
 			tonemapDesc,
 			"Tonemap",
 			motionView,
 			motionBindless,
 			m_showMotionDebug ? 1u : 0u,
-			m_motionDebugScale);
+			m_motionDebugScale,
+			{},
+			UINT32_MAX,
+			0.0f,
+			smaaActive || !swapIsSrgb);
 		(void)tonemapPass;
+		}
+
+		// ---------------------------------------------------------------------
+		// SMAA – LDR post-tonemap antialiasing (see Engine/Rendergraph/smaa.h):
+		// luma edges → blend weights → neighborhood blending, plus the T2x
+		// temporal resolve over the velocity buffer.
+		// ---------------------------------------------------------------------
+		if (smaaActive) {
+			SMVK_PROFILE_CATEGORY("SMAA", Optick::Category::Rendering);
+			m_smaaFrameRanT2x = smaaT2x;
+			// Official T2x subsample table (@SUBSAMPLE_INDICES in
+			// smaa.hlsli): phase A/B → (1,1,1,0)/(2,2,2,0); SMAA 1x → zeros.
+			// Phase/slot/valid come from this record's image snapshot, so the
+			// triple always agrees even when Mailbox drops other records.
+			float subsample[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			if (smaaT2x && m_smaaFrameParams.parity == 0) {
+				subsample[0] = subsample[1] = subsample[2] = 1.0f;
+			} else if (smaaT2x) {
+				subsample[0] = subsample[1] = subsample[2] = 2.0f;
+			}
+			m_viewportResources.smaa.AddSmaaPasses(
+				*m_rendergraph,
+				m_viewportResources.motionVectors.target.logicalView,
+				m_viewportResources.motionVectors.target.bindlessIndex,
+				linearSampler,
+				pointSampler,
+				smaaT2x,
+				m_smaaFrameParams.historyValid,
+				subsample,
+				m_smaaFrameParams.parity,
+				colors,
+				swapExtent,
+				swapIsSrgb);
 		}
 
 		// ---------------------------------------------------------------------
@@ -2663,14 +2823,31 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					m_viewportResources.exposure.desc.keyValue);
 		}
 		{
-			const bool supported = m_context->SupportsMSAA2x();
-			if (!supported)
-				m_viewportResources.msaaEnabled = false;
-			ImGui::Checkbox("MSAA 2x (Main)", &m_viewportResources.msaaEnabled);
-			if (!supported)
-				ImGui::TextDisabled("MSAA 2x unsupported – running 1x");
-			else
-				ImGui::TextDisabled(m_viewportResources.msaa.Valid() ? "MSAA 2x -> HDR resolve" : "MSAA target missing – running 1x");
+			// AA mode combo (Off / MSAA 2x / SMAA 1x / SMAA T2x). msaaEnabled
+			// is derived from the mode every frame (see the Ensure block), so
+			// the combo is the single source of truth.
+			const char* aaNames[] = { "Off", "MSAA 2x", "SMAA 1x", "SMAA T2x" };
+			int aaIdx = static_cast<int>(m_aaMode);
+			if (ImGui::Combo("Antialiasing", &aaIdx, aaNames, 4))
+				m_aaMode = static_cast<AaMode>(aaIdx);
+			if (m_aaMode == AaMode::Msaa2x) {
+				if (!m_context->SupportsMSAA2x())
+					ImGui::TextDisabled("MSAA 2x unsupported - running 1x");
+				else
+					ImGui::TextDisabled(m_viewportResources.msaa.Valid()
+						? "MSAA 2x -> HDR resolve" : "MSAA target missing - running 1x");
+			} else if (m_aaMode == AaMode::Smaa1x || m_aaMode == AaMode::SmaaT2x) {
+				if (!m_viewportResources.smaa.Valid())
+					ImGui::TextDisabled("SMAA unavailable (shaders/LUTs missing - rebuild?)");
+				else if (!(m_passes.motionVectors && m_viewportResources.motionVectors.Valid()))
+					ImGui::TextDisabled("SMAA needs the motion-vector pass - disabled");
+				else if (m_aaMode == AaMode::SmaaT2x)
+					ImGui::TextDisabled("SMAA T2x: quarter-pixel jitter + temporal resolve%s [img=%u par=%u]",
+						m_smaaFrameParams.historyValid ? "" : " (history warming up)",
+						fb.imageIndex, m_smaaFrameParams.parity);
+				else
+					ImGui::TextDisabled("SMAA 1x: edges -> weights -> neighborhood blend");
+			}
 		}
 		ImGui::Separator();
 		if (ImGui::CollapsingHeader("LODs — error-driven switches", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -2947,8 +3124,10 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 
 			// Forward+ light debug overlay: project the CPU light copy
 			// (m_debugLights, filled in UpdateForwardPlusLights) through the
-			// frame viewProj into the ImGui foreground draw list. It rides
-			// the UI pass and composites over the tonemapped scene. No depth
+			// UNJITTERED viewProj into the ImGui foreground draw list. It
+			// rides the UI pass and composites over the tonemapped scene.
+			// The jittered frame matrix would buzz every marker +/-0.25 px
+			// per frame (the UI layer has no temporal resolve). No depth
 			// test: occluded / behind-camera lights stay visible (debug).
 			if (m_fpDemo.enabled && (m_fpDemo.showLightPoints || m_fpDemo.showLightNumbers)
 				&& !m_debugLights.empty()) {
@@ -2965,7 +3144,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				for (uint32_t i = 0; i < m_debugLights.size(); ++i) {
 					const DebugLight& l = m_debugLights[i];
 					const glm::vec4 clip =
-						frameData.viewProj * glm::vec4(l.position, 1.0f);
+						m_unjitteredViewProj * glm::vec4(l.position, 1.0f);
 					if (clip.w <= 1e-4f)
 						continue; // behind the camera / degenerate
 					const glm::vec3 ndc = glm::vec3(clip) / clip.w;
@@ -3012,6 +3191,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				linearSampler,
 				colors,
 				swapExtent,
+				swapIsSrgb,
 				"UiComposite");
 
 			// Manual alternative (equivalent, more explicit):
@@ -3059,6 +3239,13 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		m_prevViewProj = frameData.viewProj;
 		m_prevViewProjValid = true;
 		m_prevGlobalTransforms = m_world->scene.globalTransform;
+		// SMAA T2x temporal state for this record's swapchain image: the
+		// neighborhood pass wrote history[parity] during Execute (when the
+		// T2x chain ran). Indexed by image, not by render count, so dropped
+		// (Mailbox) records only stall that image's alternation instead of
+		// desyncing the on-screen phase sequence. A non-T2x record freezes
+		// the phase and invalidates (see SmaaEndFrame).
+		smvk::SmaaEndFrame(SmaaStateFor(fb.imageIndex), m_smaaFrameRanT2x, smaaRecordId);
 	}
 }
 

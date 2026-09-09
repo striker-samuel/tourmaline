@@ -16,6 +16,12 @@ struct ImGuiOverlayDesc {
     float fontBaseSize = 16.0f;
     // <= 0.0f -> auto (GLFW window content scale).
     float dpiScale = 0.0f;
+    // Color attachment format ImGui renders into (drives the backend
+    // pipeline's rendering format). Undefined = the swapchain surface
+    // format (direct-to-swapchain draws). A separated UI target must pass
+    // its own format - the UNORM sibling of the surface format, since
+    // ImGui authors sRGB-encoded colors that must be stored raw.
+    Format colorFormat = Format::Undefined;
 };
 
 class ImGuiOverlay {

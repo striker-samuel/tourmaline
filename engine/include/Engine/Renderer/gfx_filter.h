@@ -503,10 +503,13 @@ void SnapshotVisible(State& s, uint32_t view);
 // Uploads the snapshot (prevBatches as compact VisibleCluster pairs +
 // prevDraws) into the frameIndex ring slice. No-op when empty/unallocated.
 void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
-// Builds the seed command list from the snapshot: one indirect draw per
-// prevBatch, reordered bucket-major (opaque first) with per-(bucket,
-// material) ranges (pure CPU, headless-testable). Bucket comes from each
-// draw's drawSet (set at PushDraw from the material).
+// Builds the seed command list from the snapshot intersected with the
+// current view's batches (same cluster + same transform only — a stale
+// prev-LOD sibling or moved instance would otherwise replay nearer depth
+// that the read-only Main fails against; see BuildSeedCommands). One
+// indirect draw per surviving prevBatch, reordered bucket-major (opaque
+// first) with per-(bucket, material) ranges (pure CPU, headless-testable).
+// Bucket comes from each draw's drawSet (set at PushDraw from the material).
 void BuildSeedCommands(State& s, uint32_t view);
 // Builds the remainder list: current batches minus the snapshot, keyed by
 // (cluster, model matrix), same bucket-major layout (pure CPU,

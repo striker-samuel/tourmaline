@@ -537,15 +537,42 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 				gfxMesh = meshMap_[worldMesh];
 			if (gfxMesh == UINT32_MAX)
 				return; // that LOD not filterable: direct path draws it
-			// Mesh-level sphere pre-cull on the SELECTED sibling's bounds
-			// (same test as the shadow passes; LOD siblings can differ).
-			if (smvk::StaticMesh* meshDesc = world.GetLodMesh(worldMesh, lodIdx)) {
-				glm::vec3 center;
-				float radius = 0.0f;
-				smvk::MeshBoundsToWorld(model, meshDesc->geometry.aabbMin,
-					meshDesc->geometry.aabbMax, center, radius);
-				if (!smvk::RenderViewIntersectsSphere(view, center, radius))
+			// Mesh-level sphere pre-cull on CONSERVATIVE bounds: LOD
+			// siblings may have tighter/smaller AABBs than LOD0, so
+			// culling on the selected sibling alone drops instances the
+			// direct path skips (it sees GfxMeshForLod != UINT32_MAX) and
+			// neither path draws -> 1-frame holes while the camera moves
+			// and the halfrate cache flips siblings. Keep the instance
+			// when EITHER the base or the selected sibling intersects;
+			// per-cluster GPU culling still rejects truly hidden meshlets.
+			{
+				smvk::StaticMesh* baseDesc = world.GetMesh(worldMesh);
+				smvk::StaticMesh* selDesc = world.GetLodMesh(worldMesh, lodIdx);
+				bool baseHit = true, selHit = true;
+				glm::vec3 baseC{ 0.0f }; float baseR = 0.0f;
+				glm::vec3 selC{ 0.0f }; float selR = 0.0f;
+				if (baseDesc) {
+					smvk::MeshBoundsToWorld(model, baseDesc->geometry.aabbMin,
+						baseDesc->geometry.aabbMax, baseC, baseR);
+					baseHit = smvk::RenderViewIntersectsSphere(view, baseC, baseR);
+				}
+				if (selDesc && selDesc != baseDesc) {
+					smvk::MeshBoundsToWorld(model, selDesc->geometry.aabbMin,
+						selDesc->geometry.aabbMax, selC, selR);
+					selHit = smvk::RenderViewIntersectsSphere(view, selC, selR);
+				}
+				else if (selDesc) {
+					selC = baseC; selR = baseR; selHit = baseHit;
+				}
+				if (!baseHit && !selHit)
 					return;
+				if (baseHit != selHit) {
+					static uint64_t s_lodBoundsDisagree = 0;
+					if ((++s_lodBoundsDisagree % 512) == 1) {
+						SMVK_DEBUG_LOG("[GfxFilter] LOD bounds disagree mesh=%u lod=%u baseHit=%d selHit=%d\n",
+							worldMesh, lodIdx, baseHit ? 1 : 0, selHit ? 1 : 0);
+					}
+				}
 			}
 			// Double-sided materials bind with Cull None (see
 			// bindForMaterial): the filter must not backface/cone-cull
@@ -765,6 +792,11 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 			const float wr = c.boundRadius * bs;
 			ClusterFootprint f = ProjectClusterFootprint(
 				wc, wr, v.eye, v.viewProj, v.width, v.height);
+			// Match the GPU jitter guard (GFX_CULL_GUARD_PX): the filter
+			// widens the tested rect by a pixel each side, so the mirror
+			// must too or every guarded keep reads as a CPU/GPU "miss".
+			f.radiusX += 1.0f;
+			f.radiusY += 1.0f;
 			cx = f.centerX; cy = f.centerY; rx = f.radiusX; ry = f.radiusY;
 			dn = f.nearestDepth;
 			behind = f.behindCamera;

@@ -38,7 +38,7 @@ struct TonemapPush {
 	uint32_t debugView = 0; // 0=scene, 1=motion vectors (motionTextureIndex)
 	uint32_t motionTextureIndex = UINT32_MAX; // UINT32_MAX = disabled
 	float motionDebugScale = 16.0f; // velocity amplification for debugView 1
-	uint32_t pad0 = 0;
+	uint32_t gammaEncode = 0; // 1 = write encoded bytes (UNORM LDR target), 0 = linear into the sRGB swapchain
 	// Half-res SSAO composite (pre-bloom, pre-tonemap):
 	// hdr *= lerp(1, ao, aoIntensity). UINT32_MAX = disabled.
 	uint32_t aoTextureIndex = UINT32_MAX;
@@ -117,6 +117,9 @@ struct Tonemapper {
 	// bloomView may be empty (or bloomBindless UINT32_MAX) to disable bloom.
 	// debugView 1 samples motionView/motionBindless instead of compositing
 	// the scene (motion vector debug visualization).
+	// gammaEncodeOutput: set when the color targets are NOT hardware-sRGB
+	// (the SMAA ldr intermediate, or a non-sRGB surface fallback) - the
+	// shader then writes sRGB-encoded bytes itself.
 	RenderPass& AddTonemapPass(RenderGraph& rg,
 		LogicalImageViewHandle hdrView,
 		uint32_t hdrBindlessIndex,
@@ -134,7 +137,8 @@ struct Tonemapper {
 		float motionDebugScale = 16.0f,
 		LogicalImageViewHandle aoView = {},
 		uint32_t aoBindlessIndex = UINT32_MAX,
-		float aoIntensity = 0.0f) const {
+		float aoIntensity = 0.0f,
+		bool gammaEncodeOutput = false) const {
 		assert(ShadersValid());
 		assert(!hdrView.empty());
 		assert(!swapViews.empty());
@@ -153,7 +157,7 @@ struct Tonemapper {
 		push.debugView = motionDebugOn ? debugView : 0;
 		push.motionTextureIndex = motionDebugOn ? motionBindlessIndex : UINT32_MAX;
 		push.motionDebugScale = motionDebugScale;
-		push.pad0 = 0;
+		push.gammaEncode = gammaEncodeOutput ? 1u : 0u;
 		push.aoTextureIndex = aoOn ? aoBindlessIndex : UINT32_MAX;
 		push.aoIntensity = aoOn ? aoIntensity : 0.0f;
 		push.pad1 = 0;
@@ -210,11 +214,12 @@ struct Tonemapper {
 		float motionDebugScale = 16.0f,
 		LogicalImageViewHandle aoView = {},
 		uint32_t aoBindlessIndex = UINT32_MAX,
-		float aoIntensity = 0.0f) const {
+		float aoIntensity = 0.0f,
+		bool gammaEncodeOutput = false) const {
 		return AddTonemapPass(rg, hdrView, hdrBindlessIndex, bloomView, bloomBindlessIndex,
 			bloomIntensity, linearSamplerIndex, swapViews, swapExtent, desc, name,
 			motionView, motionBindlessIndex, debugView, motionDebugScale,
-			aoView, aoBindlessIndex, aoIntensity);
+			aoView, aoBindlessIndex, aoIntensity, gammaEncodeOutput);
 	}
 };
 

@@ -18,6 +18,28 @@ SamplerState samplers[];
 [[vk::binding(1, 0)]] // aliases to samplers! CAREFUL
 SamplerComparisonState comparisonSamplers[];
 
+// Exact sRGB transfer functions shared by the LDR-out passes: the swapchain
+// is an _SRGB format (hardware encodes on store), while the SMAA/UI LDR
+// intermediates are UNORM holding already-encoded bytes.
+float3 SrgbEncode(float3 c)
+{
+    c = saturate(c);
+    float3 lo = c * 12.92f;
+    float3 hi = 1.055f * pow(c, 1.0f / 2.4f) - 0.055f;
+    return select(c <= 0.0031308f, lo, hi);
+}
+
+float3 SrgbDecode(float3 c)
+{
+    c = saturate(c);
+    float3 lo = c / 12.92f;
+    float3 hi = pow((c + 0.055f) / 1.055f, 2.4f);
+    // NOTE: decode threshold lives in the *encoded* domain (0.04045), not
+    // the linear-domain 0.0031308 used by SrgbEncode above. Using the encode
+    // threshold here lifts near-blacks by up to ~165% (e.g. 0.005 -> 2.6x).
+    return select(c <= 0.04045f, lo, hi);
+}
+
 // Configurable environment block (skydome IBL + fog).
 // Must match C++ smvk::EnvironmentFrameData (8 x float4, 128 bytes).
 struct EnvironmentFrameData
@@ -235,7 +257,7 @@ struct PushConstants
     float4x4 prevModel;
 };
 
-#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(SSAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS)
+#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(SSAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS)
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
 #endif

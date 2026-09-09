@@ -175,11 +175,14 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
     if (x1 < 0.0f || x0 > width || y1 < 0.0f || y0 > height)
         return false;
 
-    // Clamp only after the off-target test.
-    float sx0 = clamp(x0, 0.0f, width);
-    float sx1 = clamp(x1, 0.0f, width);
-    float sy0 = clamp(y0, 0.0f, height);
-    float sy1 = clamp(y1, 0.0f, height);
+    // Clamp only after the off-target test, then widen by the jitter guard
+    // (conservative: more overlapped texels must ALL occlude, so this only
+    // keeps; both jitter phases test a superset and agree instead of
+    // flickering boundary clusters).
+    float sx0 = clamp(clamp(x0, 0.0f, width) - GFX_CULL_GUARD_PX, 0.0f, width);
+    float sx1 = clamp(clamp(x1, 0.0f, width) + GFX_CULL_GUARD_PX, 0.0f, width);
+    float sy0 = clamp(clamp(y0, 0.0f, height) - GFX_CULL_GUARD_PX, 0.0f, height);
+    float sy1 = clamp(clamp(y1, 0.0f, height) + GFX_CULL_GUARD_PX, 0.0f, height);
 
     float rectW = max(sx1 - sx0, 0.0f);
     float rectH = max(sy1 - sy0, 0.0f);
@@ -323,15 +326,21 @@ bool CullTriangle(uint3 tri, float4 clip0, float4 clip1, float4 clip2, bool twoS
         }
         else if (!anyBehind)
         {
+            // Guard band in clip space: 1 px each side (NDC half-width 1 =
+            // width/2 px). Near/far stay exact (jitter never moves depth).
+            const float guardX = GFX_CULL_GUARD_PX * 2.0f / max((float) pcF.width, 1.0f);
+            const float guardY = GFX_CULL_GUARD_PX * 2.0f / max((float) pcF.height, 1.0f);
             bool outL = true, outR = true, outB = true, outT = true;
             bool outN = true, outF = true;
             [unroll]
             for (int i = 0; i < 3; ++i)
             {
-                outL = outL && (c[i].x < -c[i].w);
-                outR = outR && (c[i].x > c[i].w);
-                outB = outB && (c[i].y < -c[i].w);
-                outT = outT && (c[i].y > c[i].w);
+                const float ex = c[i].w * guardX;
+                const float ey = c[i].w * guardY;
+                outL = outL && (c[i].x < -(c[i].w + ex));
+                outR = outR && (c[i].x > (c[i].w + ex));
+                outB = outB && (c[i].y < -(c[i].w + ey));
+                outT = outT && (c[i].y > (c[i].w + ey));
                 outN = outN && (c[i].z < 0.0f);
                 outF = outF && (c[i].z > c[i].w);
             }

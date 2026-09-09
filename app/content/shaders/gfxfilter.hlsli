@@ -13,6 +13,15 @@
 #define GFX_CULL_CONTRIBUTION 0x80 // T4: footprint below minContribution
 #define GFX_CULL_FLIPWINDING 0x100
 
+// Conservative culling guard band (px, internal resolution) for the main
+// view. The SMAA T2x projection jitter swings clip edges by +/-0.25 px per
+// frame; exact boundary tests would cull edge clusters/triangles on
+// alternating frames (visible popping). The guard only ever keeps more
+// (never punches holes): the frustum test widens, the occlusion footprint
+// covers more texels (all must occlude), the contribution area grows.
+// Mirrors kMainViewCullGuardPx (app) and the RenderView plane dilation.
+#define GFX_CULL_GUARD_PX 1.0f
+
 #include "hzb.hlsli"
 
 #define GFX_THREADS_PER_CLUSTER 128

@@ -64,3 +64,16 @@ set_target_properties(LightTests PROPERTIES
 )
 
 add_test(NAME light_tests COMMAND LightTests)
+
+add_executable(SmaaJitterTests test_smaajitter.cpp)
+
+target_link_libraries(SmaaJitterTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(SmaaJitterTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME smaajitter_tests COMMAND SmaaJitterTests)

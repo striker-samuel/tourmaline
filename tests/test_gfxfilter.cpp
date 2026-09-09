@@ -748,6 +748,96 @@ void TestSeedCommands() {
 }
 
 // ---------------------------------------------------------------------------
+// Seed/current intersection: the seed may only replay prev batches whose
+// (cluster, model) survives into this frame's batches. A stale prev-LOD
+// sibling or moved instance would otherwise replay nearer depth that the
+// read-only Main (GreaterEqual over Load'ed seed + full prepass) fails
+// against — one frame of skybox holes on every LOD flip. Pure CPU.
+// ---------------------------------------------------------------------------
+
+void TestSeedIntersection() {
+	using namespace smvk::gfx;
+	State s{};
+	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+	const uint32_t m2 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(4, 0, 0), glm::vec3(5, 0, 0), glm::vec3(4, 1, 0)), 6);
+	Check(m0 == 0 && m1 == 1 && m2 == 2, "gfx.seedix.mesh-ids");
+
+	smvk::RenderViewSet views;
+	views.NewFrame();
+	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f;
+	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+	auto freshView = [&]() {
+		s.views.clear();
+		s.viewCount = 0;
+		View v{};
+		v.renderView = &views.Get(rv);
+		v.eye = eye;
+		v.width = 800;
+		v.height = 600;
+		v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+		s.views.push_back(std::move(v));
+		s.viewCount = 1;
+	};
+
+	// Frame A baseline: m0 (opaque mat3) + m1 (opaque mat5).
+	freshView();
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 5, 0, DrawSetBit_Opaque);
+	BuildBatches(s, 0);
+	Check(s.views[0].batchCount == 2, "gfx.seedix.frame-a-batches");
+	SnapshotVisible(s, 0);
+
+	// Frame B identical: the whole snapshot is still current -> full seed.
+	freshView();
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 5, 0, DrawSetBit_Opaque);
+	BuildBatches(s, 0);
+	BuildSeedCommands(s, 0);
+	Check(Temporal(s, 0).seedCommands.size() == 2, "gfx.seedix.stable-full-seed");
+
+	// Frame C (LOD flip): m0's slot now draws sibling m2 (disjoint cluster
+	// ids), m1 unchanged. Seed must carry only m1's prev batch — replaying
+	// m0's stale cluster would poison depth Main tests read-only.
+	freshView();
+	PushDraw(s, 0, m2, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 5, 0, DrawSetBit_Opaque);
+	BuildBatches(s, 0);
+	BuildSeedCommands(s, 0);
+	bool flipOk = false;
+	if (Temporal(s, 0).seedCommands.size() == 1) {
+		const SeedCommand& c = Temporal(s, 0).seedCommands[0];
+		// Prev snapshot draws sorted mat3 first: [m0, m1], so m1 == draw 1.
+		flipOk = c.firstIndex == s.clusters[1].indexOffset
+			&& c.firstInstance == 1
+			&& c.indexCount == 3;
+	}
+	Check(flipOk, "gfx.seedix.lod-flip-seeds-survivor-only");
+
+	// Frame D (moved instance): m0 translated, m1 static. Only m1 seeds.
+	freshView();
+	glm::mat4 moved(1.0f);
+	moved[3][0] = 0.5f;
+	PushDraw(s, 0, m0, moved, 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 5, 0, DrawSetBit_Opaque);
+	BuildBatches(s, 0);
+	BuildSeedCommands(s, 0);
+	bool movedOk = false;
+	if (Temporal(s, 0).seedCommands.size() == 1) {
+		const SeedCommand& c = Temporal(s, 0).seedCommands[0];
+		movedOk = c.firstIndex == s.clusters[1].indexOffset
+			&& c.firstInstance == 1;
+	}
+	Check(movedOk, "gfx.seedix.moved-seeds-static-only");
+}
+
+// ---------------------------------------------------------------------------
 // T6 (T4 state): HZB occlusion mirror — pure CPU, headless. Pins the
 // projection / mip-select / compare math the CS duplicates in HLSL.
 // ---------------------------------------------------------------------------
@@ -1296,6 +1386,100 @@ void TestGpuMirrorAgreement() {
 	Check(agree >= kSamples * 9 / 10, "gfx.gpumirror.agreement");
 }
 
+// ---------------------------------------------------------------------------
+// T2x jitter vs frustum culling stability.
+//
+// The app jitters the main projection by +/-0.25 px every frame (SMAA T2x,
+// see SceneRenderer::UpdateFrameUniforms). Exact plane tests drop/re-add
+// boundary clusters on alternating frames (visible popping); the main view
+// therefore carries a 1 px conservative guard band (kMainViewCullGuardPx,
+// RenderViewSet::AllocateMainView guard arg). This test sweeps a small
+// sphere across the right frustum edge in fine steps and checks, for both
+// jitter phases, that:
+//   - exact (guard 0) views DISAGREE on at least one step (the test setup
+//     reproduces the flicker, so a zero guarded count is meaningful), and
+//   - guarded views NEVER disagree (the fix kills the flicker), only ever
+//     keep more (conservative), and still cull far-outside geometry.
+// Deterministic: fixed grid, no RNG.
+// ---------------------------------------------------------------------------
+
+static glm::mat4 JitteredProjForTest(const glm::mat4& proj, float jxPx, float jyPx,
+	float w, float h) {
+	glm::mat4 j = proj;
+	const float jx = jxPx * 2.0f / w;
+	const float jy = jyPx * 2.0f / h;
+	for (int c = 0; c < 4; ++c) {
+		j[c][0] += jx * j[c][3];
+		j[c][1] += jy * j[c][3];
+	}
+	return j;
+}
+
+void TestJitterCullStability() {
+	constexpr float W = 800.0f, H = 600.0f;
+	constexpr float kGuardPx = 1.0f;
+	constexpr float kPxNdcX = 2.0f / W;
+
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), W / H, 0.1f);
+	proj[1][1] *= -1.0f; // app Vulkan Y-flip (cf. UpdateFrameUniforms)
+	const glm::mat4 view = glm::mat4(1.0f); // camera at origin, looking -Z
+
+	// App T2x phases, measured in render (internal) pixels.
+	const glm::mat4 vpA = JitteredProjForTest(proj, +0.25f, +0.25f, W, H) * view;
+	const glm::mat4 vpB = JitteredProjForTest(proj, -0.25f, -0.25f, W, H) * view;
+
+	auto keepsSphere = [](const glm::mat4& vp, const glm::vec3& c, float r, float guardPx) {
+		smvk::RenderViewSet views;
+		views.NewFrame();
+		const uint32_t rv = views.AllocateMainView(vp, { W, H }, guardPx);
+		return smvk::RenderViewIntersectsSphere(views.Get(rv), c, r);
+	};
+
+	// Small sphere (~1 px at depth 5) swept across the right edge.
+	// A 1 px guard cannot remove the keep/cull boundary itself (it moves it
+	// outward); what it guarantees is VISIBLE stability: anything the exact
+	// test keeps in either phase (hence potentially rasterized) is kept by
+	// the guarded test in both phases. Guarded-only disagreements live
+	// fully outside both nominal frusta and are rasterizer-clipped in every
+	// phase, i.e. identical (invisible) images.
+	const float fx = std::abs(proj[0][0]);
+	const float d = 5.0f;
+	const float r = 0.01f;
+	uint32_t exactDisagree = 0, visibleFlicker = 0, guardOverCull = 0;
+	constexpr int kSteps = 6001;
+	for (int i = 0; i < kSteps; ++i) {
+		const float xNdc = 1.0f + (float(i) / float(kSteps - 1) * 6.0f - 3.0f) * kPxNdcX;
+		const glm::vec3 c(xNdc * d / fx, 0.0f, -d);
+		const bool eA = keepsSphere(vpA, c, r, 0.0f);
+		const bool eB = keepsSphere(vpB, c, r, 0.0f);
+		const bool gA = keepsSphere(vpA, c, r, kGuardPx);
+		const bool gB = keepsSphere(vpB, c, r, kGuardPx);
+		if (eA != eB)
+			++exactDisagree;
+		if ((eA || eB) && !(gA && gB))
+			++visibleFlicker; // visible in a phase, dropped in another
+		if ((!gA && eA) || (!gB && eB))
+			++guardOverCull; // guard must only ever keep more
+	}
+#ifndef NDEBUG
+	std::cout << "[gfx.jitter] exact-disagree=" << exactDisagree
+		<< " visible-flicker=" << visibleFlicker
+		<< " guard-overcull=" << guardOverCull << "\n";
+#endif
+	Check(exactDisagree > 0, "gfx.jitter.setup-reproduces-flicker");
+	Check(visibleFlicker == 0, "gfx.jitter.guard-kills-visible-flicker");
+	Check(guardOverCull == 0, "gfx.jitter.guard-conservative");
+
+	// Far-outside geometry still culls with the guard on (both phases).
+	const glm::vec3 far(1.5f * d / fx, 0.0f, -d);
+	Check(!keepsSphere(vpA, far, r, kGuardPx), "gfx.jitter.guard-still-culls-a");
+	Check(!keepsSphere(vpB, far, r, kGuardPx), "gfx.jitter.guard-still-culls-b");
+	// Deep-inside geometry still keeps without the guard (sanity).
+	const glm::vec3 inside(0.0f, 0.0f, -d);
+	Check(keepsSphere(vpA, inside, r, 0.0f), "gfx.jitter.exact-keeps-inside-a");
+	Check(keepsSphere(vpB, inside, r, 0.0f), "gfx.jitter.exact-keeps-inside-b");
+}
+
 } // namespace
 
 int main() {
@@ -1307,10 +1491,12 @@ int main() {
 	TestTemporalSnapshot();
 	TestHizLayout();
 	TestSeedCommands();
+	TestSeedIntersection();
 	TestHzbOcclusion();
 	TestHzbSpawnView();
 	TestGpuMirrorAgreement();
 	TestRemainderCommands();
+	TestJitterCullStability();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

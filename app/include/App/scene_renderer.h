@@ -36,6 +36,7 @@
 #include <Engine/Rendergraph/motionblur.h>
 #include <Engine/Rendergraph/motionvector.h>
 #include <Engine/Rendergraph/msaa.h>
+#include <Engine/Rendergraph/smaa.h>
 #include <Engine/Rendergraph/spotshadow.h>
 #include <Engine/Rendergraph/ssao.h>
 #include <Engine/Rendergraph/tonemap.h>
@@ -99,6 +100,7 @@ struct ScenePassConfig {
 	bool ui = true;                 // separated ImGui target + composite
 	bool msaa = true;               // 2x MSAA Main (when device supports it)
 	bool skydome = true;            // fullscreen-triangle sky in Main
+	bool smaa = true;               // SMAA post-process chain (mode via UI AA combo)
 
 	static ScenePassConfig All() { return ScenePassConfig{}; }
 	static ScenePassConfig Minimal() {
@@ -117,8 +119,21 @@ struct ScenePassConfig {
 		c.ui = false;
 		c.msaa = false;
 		c.skydome = false;
+		c.smaa = false;
 		return c;
 	}
+};
+
+// ---------------------------------------------------------------------------
+// Antialiasing mode (ImGui combo). MSAA 2x and SMAA are mutually exclusive:
+// running SMAA on top of an MSAA-resolved image wastes the resolve without
+// adding subpixel coverage (SMAA S2x/4x are separate, unported modes).
+// ---------------------------------------------------------------------------
+enum class AaMode : int {
+	Off = 0,
+	Msaa2x = 1,
+	Smaa1x = 2,
+	SmaaT2x = 3,
 };
 
 // Procedural demo lights (grid of points + a few orbiting spots).
@@ -262,6 +277,7 @@ struct ViewportResources {
 	smvk::Ssao ssao; // half-res raw + blurred AO targets + programs + passes
 	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
 	smvk::UiComposite uiComposite; // UI -> swapchain alpha composite program + pass
+	smvk::Smaa smaa; // LDR target + edges/weights/history + LUTs + programs (see smaa.h)
 	bool msaaEnabled = true; // runtime toggle (effective only if device supports)
 };
 
@@ -279,20 +295,24 @@ public:
 protected:
 	void UpdateCamera(float dt);
 	void SetUIMode(bool ui);
-	// Keeps the projection aspect in sync with the swapchain. Must run
-	// whenever the swapchain extent changes (init + resize); otherwise the
-	// image stretches and projection-derived data (CSM splits/frusta,
-	// selection) uses a stale aspect.
+	// Keeps the projection aspect in sync with the rendered (internal)
+	// extent. Must run whenever the swapchain extent or render scale
+	// changes (init + resize); otherwise the image stretches and
+	// projection-derived data (CSM splits/frusta, selection) uses a stale
+	// aspect. Takes the internal extent (not the swapchain): the scene
+	// rasterizes at renderExtent, and LOD pixel budgets, the GPU filter
+	// dimensions and motion-vector UVs all derive from it, so the aspect
+	// must describe the same image (differs from the swapchain ratio by
+	// rounding once renderScale != 1).
 	// NOTE: Camera::setPerspective forwards to MakeInfReversedZProjRH, whose
 	// fovY is in radians and whose far plane is infinite (zFar is ignored,
 	// near maps to depth 1).
-	void UpdateCameraAspect() {
-		const auto ext = m_swapchain->GetExtent();
-		if (ext.width == 0 || ext.height == 0)
+	void UpdateCameraAspect(smvk::Extent2D extent) {
+		if (extent.width == 0 || extent.height == 0)
 			return;
 		m_camera.setPerspective(
 			glm::radians(kCameraFovYDegrees),
-			float(ext.width) / float(ext.height),
+			float(extent.width) / float(extent.height),
 			default_near_clip, m_scene.farClip
 		);
 	}
@@ -413,6 +433,11 @@ protected:
 	app::ForwardPlusRenderer m_fpRenderer{};
 	// ---- Motion vector pass: previous-frame state + debug view ----
 	glm::mat4 m_prevViewProj{ 1.0f }; // last frame's viewProj (post Y-flip)
+	// This frame's viewProj WITHOUT the SMAA T2x subpixel jitter (post
+	// Y-flip). 2D ImGui overlays (light markers/labels) must project with
+	// this: the UI layer is not jittered or temporally resolved, so the
+	// jittered matrix would make every marker buzz +/-0.25 px per frame.
+	glm::mat4 m_unjitteredViewProj{ 1.0f };
 	bool m_prevViewProjValid = false; // false until the first frame completes
 	std::vector<glm::mat4> m_prevGlobalTransforms; // last frame's node transforms
 	bool m_showMotionDebug = false; // tonemap debug view: motion vectors
@@ -422,6 +447,68 @@ protected:
 	int m_motionBlurSamples = 12; // gather taps 1..32
 	float m_motionBlurMaxRadius = 24.0f; // blur clamp (px)
 	float m_motionBlurStrength = 1.0f; // shutter scale
+	// ---- SMAA post-process antialiasing (see Engine/Rendergraph/smaa.h) ----
+	// AA mode combo drives everything (MSAA 2x only runs in its own mode):
+	// Off / Msaa2x / Smaa1x / SmaaT2x. T2x adds a quarter-pixel alternating
+	// camera jitter (UpdateFrameUniforms) and the temporal resolve.
+	AaMode m_aaMode = AaMode::SmaaT2x;
+	// Per-swapchain-image T2x state (see SmaaImageState in smaa.h). The T2x
+	// phase MUST belong to the presented image, not the render-loop counter:
+	// Mailbox/Immediate drops recorded frames, so a global toggle produces
+	// irregular on-screen phase sequences and the resolve judders. Indexed
+	// by fb.imageIndex (acquire precedes recording) - never fb.frameIndex,
+	// whose flight slots recycle across images. Sized on first use; cleared
+	// on rebuild and on any AA-mode change.
+	std::vector<smvk::SmaaImageState> m_smaaImageStates;
+	// Monotonic record counter for history staleness (SmaaBeginFrame age
+	// check); advanced once per RenderFrame.
+	uint64_t m_smaaRecordCounter = 0;
+	// Last AA mode seen by RenderFrame; any change invalidates every image's
+	// history (covers T2x -> 1x/Off -> T2x round-trips reusing ancient data).
+	AaMode m_smaaLastMode = AaMode::SmaaT2x;
+	// This record's per-image snapshot (filled at the top of RenderFrame so
+	// UpdateFrameUniforms, the pass builders and the overlay all agree).
+	smvk::SmaaImageFrameParams m_smaaFrameParams{};
+	// True when this record emitted the T2x chain (end-step input).
+	bool m_smaaFrameRanT2x = false;
+	// This record's swapchain-image T2x state (see SmaaImageState). Sizes to
+	// the swapchain image count on first use / count change (fresh states).
+	smvk::SmaaImageState& SmaaStateFor(uint32_t imageIndex);
+
+	bool SmaaRequested() const {
+		return m_passes.smaa
+			&& (m_aaMode == AaMode::Smaa1x || m_aaMode == AaMode::SmaaT2x);
+	}
+	// Motion vectors are a hard requirement (the neighborhood pass packs
+	// velocity into alpha even in 1x mode), and so are the LUTs + programs.
+	bool SmaaActive() const {
+		return SmaaRequested() && m_viewportResources.smaa.Valid()
+			&& m_passes.motionVectors && m_viewportResources.motionVectors.Valid();
+	}
+	bool SmaaT2xActive() const {
+		return SmaaActive() && m_aaMode == AaMode::SmaaT2x;
+	}
+	// UNORM sibling of the swapchain surface format. Used by the SMAA LDR
+	// chain and the UI target: both hold gamma-encoded bytes that must be
+	// stored raw (an _SRGB target would double-encode them on store); the
+	// channel order matches the swapchain so the decode-on-write (smaa.h /
+	// ui_composite) restores the tonemapper's values. Exotic surface
+	// formats fall back to BGRA8.
+	smvk::Format LdrUnormSibling() const {
+		const smvk::Format surface = m_swapchain->GetSurfaceFormat();
+		if (surface == smvk::Format::BGRA8_SRGB || surface == smvk::Format::BGRA8_UNorm)
+			return smvk::Format::BGRA8_UNorm;
+		if (surface == smvk::Format::RGBA8_SRGB || surface == smvk::Format::RGBA8_UNorm)
+			return smvk::Format::RGBA8_UNorm;
+		return smvk::Format::BGRA8_UNorm;
+	}
+	// True when the chosen surface format is hardware-sRGB: swap-writing
+	// passes then output linear (the store encodes); manual encode/decode
+	// is keyed off this for the UNORM fallbacks.
+	bool SwapchainIsSrgb() const {
+		const smvk::Format surface = m_swapchain->GetSurfaceFormat();
+		return surface == smvk::Format::BGRA8_SRGB || surface == smvk::Format::RGBA8_SRGB;
+	}
 	// ---- Auto-exposure (histogram meter + CPU eye adaptation, see
 	// exposure.h). Meters the (possibly motion-blurred) scene HDR before
 	// Bloom/Tonemap; the smoothed exposure feeds the tonemap push next

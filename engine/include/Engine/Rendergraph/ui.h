@@ -3,9 +3,10 @@
 //
 // UiTarget: offscreen color target ImGui renders into (cleared transparent),
 // sized independently of both the scene (render scale) and the swapchain
-// (ui scale). Format should match the swapchain surface format so the ImGui
-// backend pipeline stays compatible and colors are identical to a direct
-// swapchain render.
+// (ui scale). Format is the UNORM sibling of the swapchain surface format:
+// ImGui authors sRGB-encoded colors and fonts, which must be stored raw
+// (an _SRGB target would double-encode them on store); the composite pass
+// decodes for the sRGB swapchain (see UiCompositePush::decodeOutput).
 //
 // UiComposite: fullscreen-triangle pass that samples the UI target and
 // alpha-blends it over the tonemapped swapchain (srcAlpha / oneMinusSrcAlpha).
@@ -17,7 +18,8 @@
 //   imgui->NewFrame(ui.extent);     // io.DisplayFramebufferScale = target
 //   imgui->AddPass(rg, ui.logicalView, ui.extent, Clear, {0,0,0,0});
 //   uiComposite.AddCompositePass(rg, ui.logicalView, ui.bindlessIndex,
-//                                linearSampler, swapViews, swapExtent);
+//                                linearSampler, swapViews, swapExtent,
+//                                swapIsSrgb);
 
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
@@ -31,7 +33,7 @@
 namespace smvk {
 
 struct UiDesc {
-	Format format = Format::BGRA8_SRGB; // match swapchain surface format
+	Format format = Format::BGRA8_UNorm; // UNORM sibling of the swapchain surface format
 	const char* name = "ui";
 	const char* viewName = "uiView";
 	const char* logicalName = "uiLogical";
@@ -44,7 +46,7 @@ struct UiTarget {
 	uint32_t bindlessIndex = UINT32_MAX;
 	LogicalImageViewHandle logicalView;
 	Extent2D extent{ 0, 0 };
-	Format format = Format::BGRA8_SRGB;
+	Format format = Format::BGRA8_UNorm;
 
 	[[nodiscard]] bool Valid() const { return !image.empty(); }
 
@@ -123,7 +125,7 @@ struct UiTarget {
 struct UiCompositePush {
 	uint32_t uiTextureIndex = UINT32_MAX;
 	uint32_t samplerIndex = 0;
-	uint32_t pad0 = 0;
+	uint32_t decodeOutput = 0; // 1 = decode to linear for the sRGB swapchain store
 	uint32_t pad1 = 0;
 };
 static_assert(sizeof(UiCompositePush) == 16);
@@ -178,13 +180,18 @@ struct UiComposite {
 
 	// Emits the UI target -> swapchain alpha-blend pass. Loads the
 	// tonemapped scene (written by the previous swap write) and composites
-	// the UI on top. Captures only copyable handles/indices.
+	// the UI on top. decodeOutput: set when the swapchain surface format is
+	// an _SRGB variant - the shader decodes the sampled (encoded) UI bytes
+	// to linear so the hardware store encode restores them; with a
+	// non-sRGB surface they pass through raw. Captures only copyable
+	// handles/indices.
 	RenderPass& AddCompositePass(RenderGraph& rg,
 		LogicalImageViewHandle uiView,
 		uint32_t uiBindlessIndex,
 		uint32_t linearSamplerIndex,
 		const std::vector<LogicalImageViewHandle>& swapViews,
 		Extent2D swapExtent,
+		bool decodeOutput = false,
 		const char* name = nullptr) const {
 		assert(ShadersValid());
 		assert(!uiView.empty());
@@ -193,6 +200,7 @@ struct UiComposite {
 		UiCompositePush push{};
 		push.uiTextureIndex = uiBindlessIndex;
 		push.samplerIndex = linearSamplerIndex;
+		push.decodeOutput = decodeOutput ? 1u : 0u;
 
 		RenderPass& pass = rg.AddPass(name ? name : "UiComposite");
 		pass.SetOffset(0, 0)

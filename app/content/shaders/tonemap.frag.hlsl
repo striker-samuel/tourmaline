@@ -22,7 +22,7 @@ struct TonemapPush
     uint debugView; // 0=scene, 1=motion vectors
     uint motionTextureIndex; // 0xffffffff = disabled
     float motionDebugScale;
-    uint pad0;
+    uint gammaEncode; // 1 = write encoded bytes (UNORM LDR target), 0 = linear into the sRGB swapchain
     uint aoTextureIndex; // half-res SSAO, 0xffffffff = disabled
     float aoIntensity;
     uint pad1;
@@ -93,7 +93,8 @@ PSOut mainPS(PSIn IN)
         v *= tp.motionDebugScale;
         float mag = saturate(length(v));
         float hue = atan2(v.y, v.x) * 0.15915494 + 0.5; // /2pi + 0.5
-        OUT.outColor = float4(HsvToRgb(float3(hue, 1.0, mag)), 1.0);
+        float3 rgb = HsvToRgb(float3(hue, 1.0, mag));
+        OUT.outColor = float4(tp.gammaEncode ? SrgbEncode(rgb) : rgb, 1.0f);
         return OUT;
     }
 
@@ -121,8 +122,9 @@ PSOut mainPS(PSIn IN)
     }
 
     float3 mapped = Tonemap(hdr * exposure, mode);
-    // Manual gamma – swapchain is UNORM (B8G8R8A8_SRGB would auto-convert, but we assume UNORM path)
-    float3 ldr = pow(saturate(mapped), 1.0f/2.2f);
+    // sRGB swapchain: store linear, the hardware encodes. Only the UNORM
+    // SMAA ldr target (gammaEncode) needs the curve applied here.
+    float3 ldr = tp.gammaEncode ? SrgbEncode(mapped) : saturate(mapped);
     OUT.outColor = float4(ldr, 1.0f);
     return OUT;
 }
