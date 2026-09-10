@@ -2,6 +2,12 @@
 // Forward+ frame renderer: depth prepass (fills depth for tile min/max)
 // + tile light cull, moved out of main.cpp behind IFrameRenderer.
 //
+// Depth is opaque-only (solid + MASK cutout). AlphaMode::Blend transparent
+// never writes depth — even dithered screen-door — so SSAO/HZB/tile-cull
+// observe the background behind glass instead of the glass surface.
+// Tradeoff: no prepass ordering/HZB/cull benefits for transparent (it
+// tests against opaque depth, writes none), matching classic forward.
+//
 // References the existing smvk::ForwardPlus builder owned by the viewport
 // resources (tile buffers, programs stay where the main pass expects them)
 // and adds sizing config. Per-frame inputs (depth target, light buffer,

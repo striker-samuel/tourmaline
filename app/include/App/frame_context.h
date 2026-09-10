@@ -31,8 +31,11 @@ struct AppFrameContext : public smvk::FrameContext {
 	bool lodEnabled = false;
 	smvk::LodFrameInputs lodInputs{};
 	// Dithered transparency (default) vs classic alpha blend for
-	// AlphaMode::Blend materials. Mirrors SceneRenderer::m_transparentMode;
-	// consumed by the depth prepass (dithered transparents join depth).
+	// AlphaMode::Blend materials. Mirrors SceneRenderer::m_transparentMode.
+	// The depth prepass intentionally ignores it: transparent is always
+	// excluded from depth so SSAO/HZB/tile-cull see opaque only.
+	// (Main + MotionVectors branch on the mode directly today; kept here
+	// for frame renderers that need it without reaching into SceneRenderer.)
 	bool ditheredTransparency = true;
 };
 

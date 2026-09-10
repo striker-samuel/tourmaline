@@ -1822,6 +1822,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		// depth buffer). Auto-releases on extent drift: a resized HZB would
 		// realloc while held and the filter would read an unbuilt pyramid.
 		bool cullingFrozen = false;
+		uint32_t frozenViewIdx = smvk::RenderViewSet::kInvalidIndex;
 		// Pass-config gate for the whole GPU-driven filter leg (seed +
 		// HZB + dispatch + remainder). When off, gfxSlot stays invalid and
 		// every consumer falls back to direct draws.
@@ -1850,11 +1851,11 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				// Allocated after Upload(), so the GPU slab lacks this slot
 				// — nothing dereferences it on GPU (filter push carries the
 				// matrix; seed/VS stay on the live main view).
-				const uint32_t frozenView = m_renderViews.AllocateCustomView(
+				frozenViewIdx = m_renderViews.AllocateCustomView(
 					m_frozenViewProj,
 					{ (float)renderExtent.width, (float)renderExtent.height });
-				if (frozenView != smvk::RenderViewSet::kInvalidIndex)
-					m_gfxRenderer.SetCullOverride(frozenView, m_frozenEye);
+				if (frozenViewIdx != smvk::RenderViewSet::kInvalidIndex)
+					m_gfxRenderer.SetCullOverride(frozenViewIdx, m_frozenEye);
 				else
 					cullingFrozen = false;
 			}
@@ -1888,6 +1889,17 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 		if (m_passes.forwardPlusCull)
 			m_fpRenderer.AppendTileCull(fc);
+
+		// Transparent frustum-cull views (snapshots: recording lambdas run
+		// at Execute, after this function may have returned for the next
+		// frame's NewFrame). Main follows the culling-freeze override so
+		// transparent matches the frozen opaque decisions while inspecting;
+		// motion + prepass stay live (they prime live depth / live velocity).
+		const uint32_t transparentCullIdx =
+			(cullingFrozen && frozenViewIdx != smvk::RenderViewSet::kInvalidIndex)
+			? frozenViewIdx : mainRenderView;
+		const smvk::RenderView transparentCullView = m_renderViews.Get(transparentCullIdx);
+		const smvk::RenderView liveMainCullView = m_renderViews.Get(mainRenderView);
 
 		// ---------------------------------------------------------------------
 		// Cone-axis debug lines (CPU candidate batches -> apex/tip verts).
@@ -1992,7 +2004,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				m_viewportResources.motionVectors.target.logicalView,
 				renderExtent,
 				"MotionVectors");
-			motionPass.SetRecordingFunc([this, motionPC, motionFilteredActive, gfxSlot, renderViewsAddress, mainRenderView, frameUniformsAddress](smvk::CommandBuffer& cmd)
+			motionPass.SetRecordingFunc([this, motionPC, motionFilteredActive, gfxSlot, renderViewsAddress, mainRenderView, frameUniformsAddress, liveMainCullView](smvk::CommandBuffer& cmd)
 			{
 				// GPU context + pass scope come from RenderGraph::Execute.
 			auto drawMotionNode = [&](const smvk::World::RenderItem& item, bool maskedPhase, bool ignoreFilter = false) {
@@ -2145,6 +2157,29 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 							else if (doubleSidedPhase) {
 								return;
 							}
+							// Frustum cull: transparent never enters the gfx
+							// filter, so test the conservative LOD union here
+							// (keep when either sibling intersects, matching
+							// FilterMainView) to skip off-screen instances.
+							{
+								const glm::mat4& model = m_world->scene.globalTransform[item.node];
+								const uint32_t lodIdx = LodIndexForNode(item.node, item.mesh);
+								smvk::StaticMesh* baseDesc = m_world->GetMesh(item.mesh);
+								smvk::StaticMesh* selDesc = m_world->GetLodMesh(item.mesh, lodIdx);
+								if (baseDesc) {
+									glm::vec3 c{ 0.0f }; float r = 0.0f;
+									smvk::MeshBoundsToWorld(model, baseDesc->geometry.aabbMin,
+										baseDesc->geometry.aabbMax, c, r);
+									bool visible = smvk::RenderViewIntersectsSphere(liveMainCullView, c, r);
+									if (!visible && selDesc && selDesc != baseDesc) {
+										smvk::MeshBoundsToWorld(model, selDesc->geometry.aabbMin,
+											selDesc->geometry.aabbMax, c, r);
+										visible = smvk::RenderViewIntersectsSphere(liveMainCullView, c, r);
+									}
+									if (!visible)
+										return;
+								}
+							}
 							drawMotionNode(item, false, true);
 						});
 				};
@@ -2208,7 +2243,9 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 	// ---------------------------------------------------------------------
 	// SSAO – half-res depth-only AO (see ssao.h). Runs BEFORE Main: every
 	// depth-writing pass (Forward+ prepass, gfx remainder, motion vectors)
-	// is done, so the 1x prepass depth is final. The raw + blur passes
+	// is done, so the 1x prepass depth is final. Depth is opaque-only
+	// (transparent excluded by design) so glass reveals the AO behind it
+	// instead of occluding like a wall. The raw + blur passes
 	// denoise at half res; the compose pass upscales to full res with
 	// depth authority (ao.hlsli); Main's opaque ambient only .Loads the
 	// composed AO (it must never sample depth — Main attaches it).
@@ -2287,7 +2324,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			);
 		}
 		const glm::mat4 frameViewProj = frameData.viewProj; // debug pushes (value)
-		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, frameViewProj](smvk::CommandBuffer& cmd)
+		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, frameViewProj, transparentCullView](smvk::CommandBuffer& cmd)
 	{
 		// 1x: depth was filled by the Forward+ prepass, main is read-only.
 		// 2x: transient depth is cleared above, main writes it
@@ -2545,9 +2582,11 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 
 		// ---- Transparent (AlphaMode::Blend): dithered (default) or alpha blend ----
 		// Dithered: screen-door discard in shader, opaque pipeline state
-		// (blend off, depth test follows the opaque path). Depth was resolved
-		// by the prepass (1x read-only) or written inline (MSAA transient),
-		// so no sorting is needed – order-independent like opaque.
+		// (blend off, depth test follows the opaque path). Depth holds
+		// opaque only (transparent excluded from the prepass by design),
+		// so transparents test against it read-only in 1x; in MSAA they
+		// write the transient target inline like opaque, so no sorting is
+		// needed – order-independent like opaque.
 		// Blended: classic back-to-front AlphaBlend, depth test on, no
 		// depth writes, sorted by distance-to-camera.
 		// m_hideTransparent (debug) skips the whole leg to bisect blending
@@ -2569,6 +2608,28 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				if (item.material == smvk::World::kInvalidIndex)
 					return;
 				const glm::mat4& model = m_world->scene.globalTransform[item.node];
+				// Frustum cull: transparent never enters the gfx filter, so
+				// test the conservative LOD union here (keep when either
+				// the base or the selected sibling intersects, matching
+				// FilterMainView) instead of drawing off-screen instances.
+				{
+					const uint32_t lodIdx = LodIndexForNode(item.node, item.mesh);
+					smvk::StaticMesh* baseDesc = m_world->GetMesh(item.mesh);
+					smvk::StaticMesh* selDesc = m_world->GetLodMesh(item.mesh, lodIdx);
+					if (baseDesc) {
+						glm::vec3 c{ 0.0f }; float r = 0.0f;
+						smvk::MeshBoundsToWorld(model, baseDesc->geometry.aabbMin,
+							baseDesc->geometry.aabbMax, c, r);
+						bool visible = smvk::RenderViewIntersectsSphere(transparentCullView, c, r);
+						if (!visible && selDesc && selDesc != baseDesc) {
+							smvk::MeshBoundsToWorld(model, selDesc->geometry.aabbMin,
+								selDesc->geometry.aabbMax, c, r);
+							visible = smvk::RenderViewIntersectsSphere(transparentCullView, c, r);
+						}
+						if (!visible)
+							return;
+					}
+				}
 				const glm::vec3 center{ model[3][0], model[3][1], model[3][2] };
 				const glm::vec3 d = center - camPos;
 				draws.push_back(TransparentDraw{
