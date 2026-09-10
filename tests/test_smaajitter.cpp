@@ -2,8 +2,9 @@
 // math (SceneRenderer::UpdateFrameUniforms + the resolve reprojection).
 //
 // What it pins down:
-//   1. Amplitude: each phase shifts the raster by exactly 0.25 px per axis
-//      (0.5 px frame-to-frame). Twice that would mean the jitter is applied
+//   1. Amplitude: each phase shifts the raster by exactly 0.25 chain
+//      (swap) px per axis (0.5 px frame-to-frame), at renderScale == 1
+//      and under scaling. Twice that would mean the jitter is applied
 //      twice ("double jitter") or measured in the wrong pixels.
 //   2. Phase pairing: parity 0 -> (+0.25, +0.25) px y-down, parity 1 ->
 //      (-0.25, -0.25) px y-down, matching subsampleIndices (1,1,1,0) /
@@ -49,7 +50,7 @@ void Check(bool cond, const char* name) {
 
 // Replica of the UpdateFrameUniforms jitter block (app/src/scene_renderer.cpp):
 // quarter-pixel NDC translation injected into the x/y rows, quantized to
-// render-extent (internal resolution) texels.
+// swap-extent (chain resolution) texels.
 glm::mat4 ApplyT2xJitterForTest(const glm::mat4& proj, float paritySign,
 	float extentW, float extentH) {
 	glm::mat4 j = proj;
@@ -62,65 +63,81 @@ glm::mat4 ApplyT2xJitterForTest(const glm::mat4& proj, float paritySign,
 	return j;
 }
 
-void TestT2xJitterMath() {
-	constexpr float W = 1920.0f, H = 1080.0f;
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), W / H, 0.1f);
+// One jitter case: camera aspect from the render extent, jitter quantized
+// to the swap extent, pixel deltas measured in swap (chain) pixels. The
+// render==swap case is the VSync default; the scaled case pins that the
+// swing stays exactly 0.5 chain px when renderScale != 1 (render-quantized
+// jitter would give 0.75 here and break the subsample pairing).
+void CheckT2xJitterCase(float renderW, float renderH,
+	float swapW, float swapH, const char* tag) {
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), renderW / renderH, 0.1f);
 	proj[1][1] *= -1.0f; // app Vulkan Y-flip (y-down NDC)
 	const glm::vec3 eye(2.0f, 1.0f, 6.0f);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.0f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
 
 	const glm::mat4 vpBase = proj * view;
-	const glm::mat4 vpA = ApplyT2xJitterForTest(proj, +0.25f, W, H) * view;
-	const glm::mat4 vpB = ApplyT2xJitterForTest(proj, -0.25f, W, H) * view;
+	const glm::mat4 vpA = ApplyT2xJitterForTest(proj, +0.25f, swapW, swapH) * view;
+	const glm::mat4 vpB = ApplyT2xJitterForTest(proj, -0.25f, swapW, swapH) * view;
 
 	// Static probe point, well inside the frustum.
 	const glm::vec4 P(0.5f, 0.7f, -1.0f, 1.0f);
 	auto toPx = [&](const glm::mat4& vp) {
 		const glm::vec4 clip = vp * P;
 		const glm::vec2 ndc = glm::vec2(clip) / clip.w;
-		return glm::vec2((ndc.x * 0.5f + 0.5f) * W, (ndc.y * 0.5f + 0.5f) * H);
+		return glm::vec2((ndc.x * 0.5f + 0.5f) * swapW, (ndc.y * 0.5f + 0.5f) * swapH);
 	};
 	const glm::vec2 pxBase = toPx(vpBase);
 	const glm::vec2 pxA = toPx(vpA);
 	const glm::vec2 pxB = toPx(vpB);
 
-	// 1. Amplitude: exactly a quarter pixel per phase per axis.
+	char name[96];
+#define SMAA_CHECK(cond, suffix) \
+	std::snprintf(name, sizeof(name), "smaajitter.%s-%s", tag, suffix); \
+	Check(cond, name)
+
+	// 1. Amplitude: exactly a quarter chain-pixel per phase per axis.
 	const glm::vec2 dA = pxA - pxBase;
 	const glm::vec2 dB = pxB - pxBase;
 	const glm::vec2 swing = pxA - pxB;
 #ifndef NDEBUG
-	std::cout << "[smaajitter] dA=(" << dA.x << "," << dA.y << ") "
+	std::cout << "[smaajitter:" << tag << "] dA=(" << dA.x << "," << dA.y << ") "
 		<< "dB=(" << dB.x << "," << dB.y << ") "
 		<< "swing=(" << swing.x << "," << swing.y << ")\n";
 #endif
-	Check(std::abs(dA.x - 0.25f) < 1e-3f, "smaajitter.phase-a-x-quarter-px");
-	Check(std::abs(dA.y - 0.25f) < 1e-3f, "smaajitter.phase-a-y-quarter-px");
-	Check(std::abs(dB.x + 0.25f) < 1e-3f, "smaajitter.phase-b-x-quarter-px");
-	Check(std::abs(dB.y + 0.25f) < 1e-3f, "smaajitter.phase-b-y-quarter-px");
-	Check(std::abs(swing.x - 0.5f) < 1e-3f, "smaajitter.frame-swing-x-half-px");
-	Check(std::abs(swing.y - 0.5f) < 1e-3f, "smaajitter.frame-swing-y-half-px");
+	SMAA_CHECK(std::abs(dA.x - 0.25f) < 1e-3f, "phase-a-x-quarter-px");
+	SMAA_CHECK(std::abs(dA.y - 0.25f) < 1e-3f, "phase-a-y-quarter-px");
+	SMAA_CHECK(std::abs(dB.x + 0.25f) < 1e-3f, "phase-b-x-quarter-px");
+	SMAA_CHECK(std::abs(dB.y + 0.25f) < 1e-3f, "phase-b-y-quarter-px");
+	SMAA_CHECK(std::abs(swing.x - 0.5f) < 1e-3f, "frame-swing-x-half-px");
+	SMAA_CHECK(std::abs(swing.y - 0.5f) < 1e-3f, "frame-swing-y-half-px");
 
 	// 2. Phase pairing: y-down corner signs (official table is bottom-to-top).
-	Check(dA.x > 0.0f && dA.y > 0.0f, "smaajitter.phase-a-corner-plus-plus");
-	Check(dB.x < 0.0f && dB.y < 0.0f, "smaajitter.phase-b-corner-minus-minus");
+	SMAA_CHECK(dA.x > 0.0f && dA.y > 0.0f, "phase-a-corner-plus-plus");
+	SMAA_CHECK(dB.x < 0.0f && dB.y < 0.0f, "phase-b-corner-minus-minus");
 
 	// 3. Reprojection: prevUV - currUV, sampled at texcoord + velocity,
 	// lands back on the previous frame's UV of the same surface point.
-	const glm::vec2 uvA = glm::vec2((pxA.x / W), (pxA.y / H));
-	const glm::vec2 uvB = glm::vec2((pxB.x / W), (pxB.y / H));
+	const glm::vec2 uvA = glm::vec2((pxA.x / swapW), (pxA.y / swapH));
+	const glm::vec2 uvB = glm::vec2((pxB.x / swapW), (pxB.y / swapH));
 	const glm::vec2 v = uvB - uvA; // motion buffer content (prev - curr)
 	const glm::vec2 reprojected = uvA + v; // resolve fetch (double negation)
-	const float errPx = glm::length((reprojected - uvB) * glm::vec2(W, H));
-	Check(errPx < 1e-3f, "smaajitter.reprojection-exact");
+	const float errPx = glm::length((reprojected - uvB) * glm::vec2(swapW, swapH));
+	SMAA_CHECK(errPx < 1e-3f, "reprojection-exact");
 
 	// 4. Depth untouched by jitter (infinite reversed-Z w-row intact).
 	const glm::vec4 clipA = vpA * P;
 	const glm::vec4 clipB = vpB * P;
 	const glm::vec4 clip0 = vpBase * P;
-	Check(std::abs(clipA.z - clip0.z) < 1e-6f, "smaajitter.depth-untouched-a");
-	Check(std::abs(clipB.z - clip0.z) < 1e-6f, "smaajitter.depth-untouched-b");
-	Check(std::abs(clipA.w - clip0.w) < 1e-6f, "smaajitter.w-untouched-a");
-	Check(std::abs(clipB.w - clip0.w) < 1e-6f, "smaajitter.w-untouched-b");
+	SMAA_CHECK(std::abs(clipA.z - clip0.z) < 1e-6f, "depth-untouched-a");
+	SMAA_CHECK(std::abs(clipB.z - clip0.z) < 1e-6f, "depth-untouched-b");
+	SMAA_CHECK(std::abs(clipA.w - clip0.w) < 1e-6f, "w-untouched-a");
+	SMAA_CHECK(std::abs(clipB.w - clip0.w) < 1e-6f, "w-untouched-b");
+#undef SMAA_CHECK
+}
+
+void TestT2xJitterMath() {
+	CheckT2xJitterCase(1920.0f, 1080.0f, 1920.0f, 1080.0f, "scale-100");
+	CheckT2xJitterCase(1280.0f, 720.0f, 1920.0f, 1080.0f, "scale-67");
 }
 
 // ---------------------------------------------------------------------------

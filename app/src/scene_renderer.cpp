@@ -751,7 +751,7 @@ void SceneRenderer::Shutdown() {
 		Super::Shutdown();
 	}
 
-	FrameUniforms SceneRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent) {
+	FrameUniforms SceneRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent) {
 
 		const int width_ = renderExtent.width;
 		const int height_ = renderExtent.height;
@@ -769,21 +769,22 @@ void SceneRenderer::Shutdown() {
 		// the two diagonal quarter-pixel offsets (official T2x pattern,
 		// paired with the subsampleIndices table in smaa.h). Applied to proj
 		// so viewProj / invProj / prevViewProj all stay consistent, and
-		// quantized to render-extent (internal resolution) texels: the
-		// jitter perturbs scene rasterization, which happens at renderExtent
-		// (swapExtent * renderScale), so a quarter-pixel must be measured in
-		// render pixels. Quantizing to swap-extent texels instead under- or
-		// over-shifts the raster (0.25/renderScale render px), breaking the
-		// temporal coverage and swinging the culling frustum/HZB by the
-		// wrong amount whenever renderScale != 1. NDC is y-down after
-		// the Y-flip above, so both axes share one sign (the official table
-		// assumes bottom-to-top y; the physical corner pair is unchanged).
+		// quantized to swap-extent (chain/output resolution) texels: the
+		// two phases are combined by the resolve, which runs at swapExtent,
+		// so the frame-to-frame swing must be exactly 0.5 chain px at any
+		// renderScale for the area-table hint to match. In render pixels
+		// that is 0.25*renderScale (<=0.5px over the 0.25-2.0 scale range,
+		// inside the 1px culling guard); reprojection stays exact regardless
+		// because the motion vectors carry the true offset. NDC is y-down
+		// after the Y-flip above, so both axes share one sign (the official
+		// table assumes bottom-to-top y; the physical corner pair is
+		// unchanged).
 		if (SmaaT2xActive()) {
 			// Phase is the global record toggle (snapshot in
 			// m_smaaFrameParams), never per-image - see SmaaT2xState.
 			const float s = (m_smaaFrameParams.parity == 0) ? 0.25f : -0.25f;
-			const float jx = s * 2.0f / float(renderExtent.width);
-			const float jy = s * 2.0f / float(renderExtent.height);
+			const float jx = s * 2.0f / float(swapExtent.width);
+			const float jy = s * 2.0f / float(swapExtent.height);
 			// Clip-space translation x' = x + jx * w (glm column-major
 			// [col][row]: add jx * w-row to the x-row, jy to the y-row).
 			for (int c = 0; c < 4; ++c) {
@@ -1361,6 +1362,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		m_viewportResources.uiComposite.Ensure(*m_context);
 		smvk::SmaaDesc frameSmaaDesc{};
 		frameSmaaDesc.ldrFormat = LdrUnormSibling();
+		// Silent target recreation (extent/format drift outside
+		// RebuildSwapViews) loses history content: invalidate first so the
+		// next T2x record warms up instead of blending against garbage.
+		// RebuildSwapViews invalidates unconditionally; this guard covers
+		// any other drift path (including first creation).
+		if (!m_viewportResources.smaa.TargetsValid()
+			|| m_viewportResources.smaa.extent.width != swapExtent.width
+			|| m_viewportResources.smaa.extent.height != swapExtent.height
+			|| m_viewportResources.smaa.ldr.format != frameSmaaDesc.ldrFormat)
+			smvk::SmaaInvalidateHistory(m_smaaT2x);
 		m_viewportResources.smaa.Ensure(*m_context, *m_rendergraph, swapExtent, frameSmaaDesc);
 		// AA mode combo (Off / MSAA 2x / SMAA 1x / SMAA T2x): MSAA runs
 		// only in its own mode (SMAA after an MSAA resolve wastes the
@@ -1396,7 +1407,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		// first record after (re)creation degrades to a warmup record).
 		m_smaaFrameParams = smvk::SmaaBeginFrame(m_smaaT2x, SmaaT2xActive());
 		m_smaaFrameRanT2x = false; // set where the T2x chain is emitted
-		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent);
+		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent, swapExtent);
 		const smvk::GpuDirectionalLightDescription dirLight = UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
 		const uint32_t fpLightCount = UpdateForwardPlusLights(fb.frameIndex, frameData);

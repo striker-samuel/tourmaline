@@ -39,14 +39,13 @@
 // so the y sign flips while the physical corner pair is unchanged):
 //   phase 0: jitter (+0.25, +0.25) px y-down  -> float4(1, 1, 1, 0)
 //   phase 1: jitter (-0.25, -0.25) px y-down  -> float4(2, 2, 2, 0)
-// Pixels here are INTERNAL (render resolution) pixels: the jitter perturbs
-// scene rasterization, which runs at renderExtent, so the quarter-pixel is
-// measured there (SceneRenderer::UpdateFrameUniforms). At renderScale == 1
-// the subsample indices pair exactly; under scaling they stay the closest
-// official pattern (approximate weights hint, exact temporal coverage).
-// The app applies the jitter to the projection; the motion-vector pass
-// inherits it through prevViewProj, which is what the resolve's
-// reprojection needs. SMAA 1x passes float4(0, 0, 0, 0) and no jitter.
+// Pixels here are CHAIN (swap/output resolution) pixels: the two phases
+// are combined by the resolve at swapExtent, so the quarter-pixel is
+// measured there (SceneRenderer::UpdateFrameUniforms) and the subsample
+// indices pair exactly at any renderScale. In render pixels the shift is
+// 0.25*renderScale; reprojection stays exact regardless because the
+// motion-vector pass inherits the true offset through prevViewProj.
+// SMAA 1x passes float4(0, 0, 0, 0) and no jitter.
 //
 // Phase ownership (record cadence, NOT per swapchain image): the T2x phase
 // is a property of the recorded-frame sequence - a single global toggle

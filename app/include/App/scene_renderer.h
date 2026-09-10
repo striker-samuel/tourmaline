@@ -354,7 +354,7 @@ protected:
 	bool Initialize() override;
 	void Shutdown() override;
 
-	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent);
+	FrameUniforms UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent);
 	smvk::GpuDirectionalLightDescription UpdateLights(uint32_t currentFrame);
 	void UpdateMaterials(uint32_t currentFrame);
 
