@@ -217,10 +217,10 @@ void Destroy(State& s, RenderGraph& rg) {
 			if (!t.visDrawLogicals[f].empty()) rg.FreeBuffer(t.visDrawLogicals[f]);
 			if (!t.seedIndirectLogicals[f].empty()) rg.FreeBuffer(t.seedIndirectLogicals[f]);
 			if (!t.remainderIndirectLogicals[f].empty()) rg.FreeBuffer(t.remainderIndirectLogicals[f]);
+			if (!t.hiz[f].logical.empty()) rg.FreeBuffer(t.hiz[f].logical);
+			t.hiz[f].logical = {};
+			t.hiz[f].buffer = {};
 		}
-		if (!t.hiz.logical.empty()) rg.FreeBuffer(t.hiz.logical);
-		t.hiz.logical = {};
-		t.hiz.buffer = {};
 	}
 	s.temporals.clear();
 	if (!s.indexHeapLogical.empty()) rg.FreeBuffer(s.indexHeapLogical);
@@ -412,26 +412,28 @@ bool HzbOccluded(const float* hzb, uint32_t w, uint32_t h, uint32_t mips,
 bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
 	uint32_t view, uint32_t w, uint32_t h) {
 	TemporalView& t = Temporal(s, view);
+	assert(view < s.views.size());
+	HizResources& hz = t.hiz[s.views[view].frameIndex];
 	if (w == 0 || h == 0) {
 		t.historyValid = false;
 		return false;
 	}
 	const uint32_t wantMips = HzbMipCount(w, h);
-	if (t.hiz.width == w && t.hiz.height == h && t.hiz.mipCount == wantMips
-		&& !t.hiz.buffer.empty() && !t.hiz.logical.empty())
+	if (hz.width == w && hz.height == h && hz.mipCount == wantMips
+		&& !hz.buffer.empty() && !hz.logical.empty())
 		return true; // steady state: keep history
 	// Size drift: rebuild + disarm (stale seed extent).
-	if (!t.hiz.logical.empty()) rg.FreeBuffer(t.hiz.logical);
-	t.hiz.logical = {};
-	t.hiz.buffer = {};
+	if (!hz.logical.empty()) rg.FreeBuffer(hz.logical);
+	hz.logical = {};
+	hz.buffer = {};
 	t.historyValid = false;
-	t.hiz.width = w;
-	t.hiz.height = h;
-	t.hiz.mipCount = wantMips;
+	hz.width = w;
+	hz.height = h;
+	hz.mipCount = wantMips;
 	for (uint32_t m = 0; m < wantMips; ++m)
-		t.hiz.mipOffsets[m] = HzbMipOffsetFloats(w, h, m);
+		hz.mipOffsets[m] = HzbMipOffsetFloats(w, h, m);
 	for (uint32_t m = wantMips; m < kHizMaxMips; ++m)
-		t.hiz.mipOffsets[m] = 0;
+		hz.mipOffsets[m] = 0;
 	// Diagnose-only: shader-side array cap (hzb.hlsli HZB_MAX_FLOATS).
 	// Exceeding it reads/writes out of bounds -> undefined HZB -> over-cull.
 	static constexpr uint32_t kHzbShaderMaxFloats = 12582912;
@@ -441,42 +443,44 @@ bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
 			"expect pyramid corruption.\n",
 			w, h, HzbTotalFloats(w, h), kHzbShaderMaxFloats);
 	}
-	t.hiz.buffer = ctx.CreateBuffer(
+	hz.buffer = ctx.CreateBuffer(
 		(size_t)HzbTotalFloats(w, h) * sizeof(float),
 		BufferType_Storage, "gfx hiz");
-	if (t.hiz.buffer.empty()) {
+	if (hz.buffer.empty()) {
 		// Leave no half-built pyramid behind: the shader gates on mips.
-		t.hiz.width = t.hiz.height = t.hiz.mipCount = 0;
+		hz.width = hz.height = hz.mipCount = 0;
 		return false;
 	}
-	t.hiz.logical = rg.AddExternalBuffer(t.hiz.buffer, "gfx hiz");
-	if (t.hiz.logical.empty()) {
-		t.hiz.buffer = {};
+	hz.logical = rg.AddExternalBuffer(hz.buffer, "gfx hiz");
+	if (hz.logical.empty()) {
+		hz.buffer = {};
 		return false;
 	}
 	return true;
 }
 
 uint64_t HizAddress(State& s, ResourceManager& ctx, uint32_t view) {
-	if (view >= s.temporals.size())
+	if (view >= s.temporals.size() || view >= s.views.size())
 		return 0;
-	return ctx.GetBufferDeviceAddress(s.temporals[view].hiz.buffer);
+	return ctx.GetBufferDeviceAddress(s.temporals[view].hiz[s.views[view].frameIndex].buffer);
 }
 
 RenderPass& AddHizPass(State& s, RenderGraph& rg, uint32_t view,
 	uint32_t dstMip, LogicalImageViewHandle depthLogical, const char* passName) {
 	assert(view < s.temporals.size());
+	assert(view < s.views.size());
 	TemporalView& t = s.temporals[view];
+	HizResources& hz = t.hiz[s.views[view].frameIndex];
 
 	SMVK_PROFILE_RENDER("GfxAddHizPass");
 	SMVK_PROFILE_TAG("mip", dstMip);
-	SMVK_PROFILE_TAG("mipCount", t.hiz.mipCount);
+	SMVK_PROFILE_TAG("mipCount", hz.mipCount);
 
 	RenderPass& pass = rg.AddComputePass(passName ? passName : "GfxHiz");
 	BufferSyncRequest hizRW{};
 	hizRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
 	hizRW.barrierMasks.stageMask = PipelineStageBit_Compute;
-	pass.AddBufferHint(t.hiz.logical, hizRW);
+	pass.AddBufferHint(hz.logical, hizRW);
 	if (dstMip == 0 && !depthLogical.empty()) {
 		ImageSyncRequest depthReq{};
 		depthReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
@@ -494,7 +498,7 @@ RenderPass& AddHizPass(State& s, RenderGraph& rg, uint32_t view,
 	if ((s_hizPassCount++ % 60) == 0) {
 		SMVK_DEBUG_LOG(
 			"[GfxHiz] AddHizPass view=%u mip=%u/%u depthValid=%d passName=%s\n",
-			view, dstMip, t.hiz.mipCount, !depthLogical.empty(), passName ? passName : "GfxHiz");
+			view, dstMip, hz.mipCount, !depthLogical.empty(), passName ? passName : "GfxHiz");
 	}
 
 	return pass;
@@ -503,19 +507,21 @@ RenderPass& AddHizPass(State& s, RenderGraph& rg, uint32_t view,
 void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	uint32_t view, uint32_t dstMip, uint32_t depthBindlessIndex) {
 	assert(view < s.temporals.size());
+	assert(view < s.views.size());
 	TemporalView& t = s.temporals[view];
-	if (dstMip >= t.hiz.mipCount)
+	HizResources& hz = t.hiz[s.views[view].frameIndex];
+	if (dstMip >= hz.mipCount)
 		return;
 
 	SMVK_PROFILE_SCOPE("GfxPushAndDispatchHiz");
 	SMVK_PROFILE_TAG("dstMip", dstMip);
-	SMVK_PROFILE_TAG("mipCount", t.hiz.mipCount);
+	SMVK_PROFILE_TAG("mipCount", hz.mipCount);
 
 	uint32_t dw = 0, dh = 0;
-	HzbMipDims(t.hiz.width, t.hiz.height, dstMip, dw, dh);
+	HzbMipDims(hz.width, hz.height, dstMip, dw, dh);
 	if (dw == 0 || dh == 0)
 		return;
-	const uint64_t addr = ctx.GetBufferDeviceAddress(t.hiz.buffer);
+	const uint64_t addr = ctx.GetBufferDeviceAddress(hz.buffer);
 	// Null-BDA guard (same device-lost lesson as PushAndDispatch): skip the
 	// level instead of faulting; the HZB stays stale and T4 keeps geometry.
 	// Explicit fprintf (not SMVK_DEBUG_LOG): this fires on real faults and
@@ -544,15 +550,15 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	// Diagnose-only: HZB extent vs view extent mismatch misaligns footprint
 	// rows/cols with depth rows (wrong-texel over-cull). Throttled explicit
 	// fprintf (Release-visible).
-	if (view < s.views.size()) {
+	{
 		const View& v = s.views[view];
-		if ((t.hiz.width != v.width || t.hiz.height != v.height)
+		if ((hz.width != v.width || hz.height != v.height)
 			&& v.width != 0 && v.height != 0) {
 			static uint64_t s_hizExtentWarns = 0;
 			if ((s_hizExtentWarns++ % 300) == 0) {
 				std::fprintf(stderr,
 					"[GfxHiz] extent mismatch: hiz %ux%u vs view %ux%u (view %u).\n",
-					t.hiz.width, t.hiz.height, v.width, v.height, view);
+					hz.width, hz.height, v.width, v.height, view);
 			}
 		}
 	}
@@ -561,21 +567,21 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	push.dstMip = dstMip;
 	push.dstWidth = dw;
 	push.dstHeight = dh;
-	push.dstOffset = t.hiz.mipOffsets[dstMip];
+	push.dstOffset = hz.mipOffsets[dstMip];
 	push.depthTextureIndex = depthBindlessIndex;
 	if (dstMip == 0) {
 		push.srcMip = kHizSrcDepth;
-		push.srcWidth = t.hiz.width;
-		push.srcHeight = t.hiz.height;
+		push.srcWidth = hz.width;
+		push.srcHeight = hz.height;
 		push.srcOffset = 0;
 	}
 	else {
 		uint32_t sw = 0, sh = 0;
-		HzbMipDims(t.hiz.width, t.hiz.height, dstMip - 1, sw, sh);
+		HzbMipDims(hz.width, hz.height, dstMip - 1, sw, sh);
 		push.srcMip = dstMip - 1;
 		push.srcWidth = sw;
 		push.srcHeight = sh;
-		push.srcOffset = t.hiz.mipOffsets[dstMip - 1];
+		push.srcOffset = hz.mipOffsets[dstMip - 1];
 	}
 
 	// DEBUG: Log HZB dispatch parameters
@@ -583,7 +589,7 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	if ((s_hizDispatchCount++ % 60) == 0) {
 		SMVK_DEBUG_LOG(
 			"[GfxHiz] Dispatch view=%u mip=%u/%u dst=%ux%u off=%u srcMip=%u src=%ux%u srcOff=%u depthIdx=%u BDA=0x%llx\n",
-			view, dstMip, t.hiz.mipCount, dw, dh, push.dstOffset,
+			view, dstMip, hz.mipCount, dw, dh, push.dstOffset,
 			push.srcMip, push.srcWidth, push.srcHeight, push.srcOffset,
 			push.depthTextureIndex, (unsigned long long)addr);
 	}
@@ -1439,16 +1445,19 @@ RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view) {
 	pass.AddBufferHint(s.indexHeapLogical, computeRW);
 	pass.AddBufferHint(v.indirectLogicals[f], computeRW);
 	// HZB read (T4 occlusion): built by the HZB passes earlier in the frame.
-	if (view < s.temporals.size() && !s.temporals[view].hiz.logical.empty())
-		pass.AddBufferHint(s.temporals[view].hiz.logical, computeRead);
+	// Current flight's slice (same rule as every other ringed buffer).
+	if (view < s.temporals.size() && view < s.views.size()
+		&& !s.temporals[view].hiz[s.views[view].frameIndex].logical.empty())
+		pass.AddBufferHint(s.temporals[view].hiz[s.views[view].frameIndex].logical, computeRead);
 
 	// DEBUG: Log filter pass HZB binding
 	static uint64_t s_filterPassCount = 0;
 	if ((s_filterPassCount++ % 60) == 0) {
 		const TemporalView& t = s.temporals[view];
+		const HizResources& hz = t.hiz[s.views[view].frameIndex];
 		SMVK_DEBUG_LOG(
 			"[GfxFilter] AddFilterPass view=%u batchCount=%u hasHiz=%d hiz=%ux%u/%u mips\n",
-			view, v.batchCount, !t.hiz.logical.empty(), t.hiz.width, t.hiz.height, t.hiz.mipCount);
+			view, v.batchCount, !hz.logical.empty(), hz.width, hz.height, hz.mipCount);
 	}
 
 	return pass;
@@ -1516,12 +1525,14 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 	push.batchCount = v.batchCount;
 	// T4 occlusion/contribution inputs (0/empty disables the tests in the
 	// shader; the null-BDA guard above already covers the buffer set).
-	if (view < s.temporals.size()) {
+	// Current flight's HZB slice (same rule as every other ringed buffer).
+	if (view < s.temporals.size() && view < s.views.size()) {
 		const TemporalView& t = s.temporals[view];
-		push.hzb = ctx.GetBufferDeviceAddress(t.hiz.buffer);
-		push.hizWidth = t.hiz.width;
-		push.hizHeight = t.hiz.height;
-		push.hizMips = t.hiz.mipCount;
+		const HizResources& hz = t.hiz[s.views[view].frameIndex];
+		push.hzb = ctx.GetBufferDeviceAddress(hz.buffer);
+		push.hizWidth = hz.width;
+		push.hizHeight = hz.height;
+		push.hizMips = hz.mipCount;
 		push.minContribution = t.minimumContribution;
 		// Belt and braces: the shader gates on hizMips, so a null address
 		// can never slip through to a dereference (device-lost class).
@@ -1544,26 +1555,28 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 	cmd.Dispatch(v.batchCount, 1, 1);
 }
 
-// DEBUG: Download and inspect HZB buffer contents
+// DEBUG: Download and inspect HZB buffer contents (current flight's
+// slice, same rule as every other ringed buffer).
 void DumpHzb(State& s, ResourceManager& ctx, uint32_t view) {
-	if (view >= s.temporals.size())
+	if (view >= s.temporals.size() || view >= s.views.size())
 		return;
 	const TemporalView& t = s.temporals[view];
-	if (t.hiz.mipCount == 0 || t.hiz.width == 0 || t.hiz.height == 0 || t.hiz.buffer.empty()) {
+	const HizResources& hz = t.hiz[s.views[view].frameIndex];
+	if (hz.mipCount == 0 || hz.width == 0 || hz.height == 0 || hz.buffer.empty()) {
 		SMVK_DEBUG_LOG( "[GfxHiz] DumpHzb: no HZB buffer (view %u)\n", view);
 		return;
 	}
-	std::vector<float> hzb(HzbTotalFloats(t.hiz.width, t.hiz.height), 0.0f);
-	if (!ctx.DownloadDataFromBuffer(t.hiz.buffer, hzb.data(), hzb.size() * sizeof(float))) {
+	std::vector<float> hzb(HzbTotalFloats(hz.width, hz.height), 0.0f);
+	if (!ctx.DownloadDataFromBuffer(hz.buffer, hzb.data(), hzb.size() * sizeof(float))) {
 		SMVK_DEBUG_LOG( "[GfxHiz] DumpHzb: download failed (view %u)\n", view);
 		return;
 	}
 	SMVK_DEBUG_LOG( "[GfxHiz] DumpHzb view=%u %ux%u mips=%u totalFloats=%zu\n",
-		view, t.hiz.width, t.hiz.height, t.hiz.mipCount, hzb.size());
-	for (uint32_t m = 0; m < t.hiz.mipCount; ++m) {
+		view, hz.width, hz.height, hz.mipCount, hzb.size());
+	for (uint32_t m = 0; m < hz.mipCount; ++m) {
 		uint32_t mw = 0, mh = 0;
-		HzbMipDims(t.hiz.width, t.hiz.height, m, mw, mh);
-		uint32_t off = t.hiz.mipOffsets[m];
+		HzbMipDims(hz.width, hz.height, m, mw, mh);
+		uint32_t off = hz.mipOffsets[m];
 		float minV = std::numeric_limits<float>::infinity();
 		float maxV = -std::numeric_limits<float>::infinity();
 		uint32_t nanCount = 0, infCount = 0, zeroCount = 0;

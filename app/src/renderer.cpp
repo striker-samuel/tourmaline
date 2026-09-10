@@ -368,15 +368,17 @@ void GfxRenderer::AppendHizPasses(smvk::FrameContext& base,
 		return;
 	const uint32_t slot = lastSlot_;
 	const smvk::gfx::TemporalView& t = smvk::gfx::Temporal(gfx, slot);
-	if (t.hiz.mipCount == 0)
+	// Current flight's pyramid (same rule as every other ringed buffer;
+	// slices can disagree briefly across a resize before all rebuild).
+	if (t.hiz[fc.frameIndex].mipCount == 0)
 		return;
 
 	SMVK_PROFILE_RENDER("GfxAppendHizPasses");
-	SMVK_PROFILE_TAG("mipCount", t.hiz.mipCount);
+	SMVK_PROFILE_TAG("mipCount", t.hiz[fc.frameIndex].mipCount);
 
 	GfxRenderer* self = this;
 	smvk::ResourceManager* ctx = fc.ctx;
-	for (uint32_t m = 0; m < t.hiz.mipCount; ++m) {
+	for (uint32_t m = 0; m < t.hiz[fc.frameIndex].mipCount; ++m) {
 		const bool fromDepth = (m == 0);
 		smvk::RenderPass& hizPass = smvk::gfx::AddHizPass(gfx, *fc.rg, slot, m,
 			fromDepth ? depthLogical : smvk::LogicalImageViewHandle{},
@@ -601,6 +603,7 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 		// frame's rotation runs later in AppendPasses), so the seed /
 		// remainder / HZB figures describe what the temporal loop did.
 		const smvk::gfx::TemporalView& ht = smvk::gfx::Temporal(gfx, slot);
+		const smvk::gfx::HizResources& hh = ht.hiz[frameIndex];
 		SMVK_DEBUG_LOG(
 			"[GfxFilter] view: %u draws, %u batches, %u tris processed, %u/%u clusters culled\n",
 			stats.draws, stats.commands, stats.trianglesProcessed,
@@ -610,7 +613,7 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 			ht.historyValid ? 1 : 0, ht.prevBatchCount,
 			(unsigned)ht.seedCommands.size(), (unsigned)ht.seedRanges.size(),
 			(unsigned)ht.remainderCommands.size(), (unsigned)ht.remainderRanges.size(),
-			ht.hiz.mipCount, ht.hiz.width, ht.hiz.height, ht.minimumContribution);
+			hh.mipCount, hh.width, hh.height, ht.minimumContribution);
 	}
 	return slot;
 }
@@ -705,6 +708,9 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 	}
 	const View& v = gfx.views[slot];
 	const TemporalView& t = gfx.temporals[slot];
+	// Audit the current flight's HZB slice (same rule as every other ringed
+	// buffer: the GPU wrote this frame's slice).
+	const smvk::gfx::HizResources& hz = t.hiz[v.frameIndex];
 	if (v.batchCount == 0 || v.batches.empty()) {
 		SMVK_DEBUG_LOG( "[GfxAudit] slot %u: no batches.\n", slot);
 		return;
@@ -719,10 +725,10 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 	// GPU HZB pyramid for the CPU mirror.
 	std::vector<float> hzb;
 	bool haveHzb = false;
-	if (t.hiz.mipCount > 0 && t.hiz.width > 0 && t.hiz.height > 0 &&
-		!t.hiz.buffer.empty()) {
-		hzb.assign(HzbTotalFloats(t.hiz.width, t.hiz.height), 0.0f);
-		haveHzb = ctx.DownloadDataFromBuffer(t.hiz.buffer,
+	if (hz.mipCount > 0 && hz.width > 0 && hz.height > 0 &&
+		!hz.buffer.empty()) {
+		hzb.assign(HzbTotalFloats(hz.width, hz.height), 0.0f);
+		haveHzb = ctx.DownloadDataFromBuffer(hz.buffer,
 			hzb.data(), hzb.size() * sizeof(float));
 	}
 	// Material per batch (ranges span batches in order).
@@ -736,7 +742,7 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 	SMVK_DEBUG_LOG(
 		"[GfxAudit] slot %u: batches=%u flags=0x%x hiz=%ux%u/%u haveHzb=%d\n",
 		slot, v.batchCount, v.cullFlags,
-		t.hiz.width, t.hiz.height, t.hiz.mipCount, haveHzb ? 1 : 0);
+		hz.width, hz.height, hz.mipCount, haveHzb ? 1 : 0);
 	uint32_t zeroTotal = 0, cpuOcc = 0, cpuKeep = 0;
 	uint32_t printedOcc = 0, printedKeep = 0;
 	// Per-class budgets: occlusion-agreeing kills used to hide behind the
@@ -801,10 +807,10 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 			dn = f.nearestDepth;
 			behind = f.behindCamera;
 			if (!f.behindCamera && haveHzb)
-				level = HzbMipForRect(rx * 2.0f, ry * 2.0f, t.hiz.mipCount);
+				level = HzbMipForRect(rx * 2.0f, ry * 2.0f, hz.mipCount);
 			mirrorOk = true;
 			verdict = haveHzb && HzbOccluded(hzb.data(),
-				t.hiz.width, t.hiz.height, t.hiz.mipCount, f, &stored);
+				hz.width, hz.height, hz.mipCount, f, &stored);
 		}
 		const bool killed = (cmds[i].indexCount == 0);
 		if (killed) ++zeroTotal;

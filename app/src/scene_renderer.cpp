@@ -3170,9 +3170,9 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					uint32_t hw = 0, hh = 0, hm = 0;
 					if (gfxSlot != smvk::RenderViewSet::kInvalidIndex
 						&& gfxSlot < m_gfxRenderer.State().temporals.size()) {
-						const smvk::gfx::TemporalView& ht =
-							m_gfxRenderer.State().temporals[gfxSlot];
-						hw = ht.hiz.width; hh = ht.hiz.height; hm = ht.hiz.mipCount;
+						const smvk::gfx::HizResources& hz =
+							smvk::gfx::Hiz(m_gfxRenderer.State(), gfxSlot);
+						hw = hz.width; hh = hz.height; hm = hz.mipCount;
 					}
 					const bool depthOk = m_viewportResources.forwardPlus.depthBindlessIndex
 						!= UINT32_MAX;

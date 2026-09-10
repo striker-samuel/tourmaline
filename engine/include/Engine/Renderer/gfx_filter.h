@@ -356,7 +356,11 @@ struct TemporalView {
 	float minimumContribution = 0.0f; // px-area threshold, T4 (0 = disabled)
 	uint32_t drawSetMask = DrawSetMask_All;
 	uint32_t width = 0, height = 0; // extent the history was built for
-	HizResources hiz;
+	// HZB pyramid, ringed per frame in flight (same rule as View buffers
+	// and the vis/seed/remainder mirrors: frames overlap, uploads flush
+	// immediately, and a single shared pyramid would be clobbered by the
+	// next frame while the current one still reads it).
+	HizResources hiz[MAX_FRAMES_IN_FLIGHT];
 	// CPU snapshot (headless-testable; GPU mirror below is uploaded by
 	// UploadVisible into the frameIndex ring slice).
 	std::vector<Batch> prevBatches; // surviving (cluster, draw) pairs
@@ -570,6 +574,16 @@ void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_
 [[nodiscard]] inline uint32_t ViewFrame(const State& s, uint32_t view) {
 	assert(view < s.views.size());
 	return s.views[view].frameIndex;
+}
+// HZB pyramid slice for this view's current flight (same rule as every
+// other per-frame mutable above).
+[[nodiscard]] inline HizResources& Hiz(State& s, uint32_t view) {
+	assert(view < s.temporals.size() && view < s.views.size());
+	return s.temporals[view].hiz[s.views[view].frameIndex];
+}
+[[nodiscard]] inline const HizResources& Hiz(const State& s, uint32_t view) {
+	assert(view < s.temporals.size() && view < s.views.size());
+	return s.temporals[view].hiz[s.views[view].frameIndex];
 }
 [[nodiscard]] inline BufferHandle BatchBuffer(const State& s, uint32_t view) {
 	assert(view < s.views.size());
