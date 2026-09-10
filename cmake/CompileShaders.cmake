@@ -152,6 +152,15 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 list(APPEND _COMMON -O3 -Qstrip_debug)
             endif()
 
+            # Deferred-shadow debug visualizers (paper 5.3/5.4): per-pixel
+            # diagnostic paths, resolved by the root CMakeLists (auto = Debug
+            # trees only; VULKANTOY_DS_VIZ=ON forces them into optimized
+            # builds, e.g. the x64-Release-DSViz preset). Release presets
+            # without the flag never see the code — zero shader cost.
+            if (DS_VIZ_ON)
+                list(APPEND _COMMON -DDS_DEBUG_VIZ=1)
+            endif()
+
 	        if (CS_INCLUDE_DIRS)
               foreach(INC ${CS_INCLUDE_DIRS})
                     list(APPEND _COMMON -I "${INC}")

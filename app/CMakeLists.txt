@@ -102,6 +102,15 @@ target_include_directories(App
 
 target_compile_definitions(App PRIVATE ENGINE_VULKAN)
 
+# Deferred-shadow debug visualizers (paper 5.3/5.4): resolved by the root
+# CMakeLists (auto = Debug trees; VULKANTOY_DS_VIZ=ON forces them into
+# optimized builds — see the x64-Release-DSViz CMakeSettings preset). The
+# same define is passed to DXC (CompileShaders.cmake); clean release trees
+# compile the visualizer UI, uniform fields and shader paths out entirely.
+if(DS_VIZ_ON)
+    target_compile_definitions(App PRIVATE DS_DEBUG_VIZ=1)
+endif()
+
 target_link_libraries(App
     PRIVATE
         engine

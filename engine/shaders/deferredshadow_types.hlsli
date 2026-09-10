@@ -37,7 +37,11 @@ struct DsTileLightMaskBuffer
 
 struct DsTileStateBuffer
 {
-    uint states[DS_MAX_TILES * 2]; // {slotID, count} per Shadow Tile
+    // 4 uints per Shadow Tile: {slotID, count, approxCount, earlyCount}.
+    // count is the EARLY count after phase 3 and the FINAL count after
+    // phase 4; approxCount (phase 2 reservation) and earlyCount (phase 3)
+    // persist for the debug visualizers (paper 5.4: approx vs accurate).
+    uint states[DS_MAX_TILES * 4];
 };
 
 struct DsLightListBuffer

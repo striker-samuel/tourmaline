@@ -425,6 +425,20 @@ bool SceneRenderer::Initialize() {
 			if (dumpFrame >= 0)
 				m_dumpAtFrame = dumpFrame;
 		}
+#if defined(DS_DEBUG_VIZ)
+		// Deferred-shadow visualizer mode for headless runs (0..7, see
+		// DsDebugViz): pairs with VULKANTOY_CAPTURE to bisect the pipeline
+		// without UI interaction. Debug builds only (release compiles the
+		// visualizers out; the env var reads as off there).
+		if (const char* vizEnv = std::getenv("VULKANTOY_DS_VIZ")) {
+			const int viz = std::atoi(vizEnv);
+			if (viz >= 0 && viz <= static_cast<int>(DsDebugViz::LightVis))
+				m_dsDebugMode = static_cast<DsDebugViz>(viz);
+			else
+				std::cerr << "[SceneRenderer] unknown VULKANTOY_DS_VIZ value: "
+					<< viz << " (0..7)\n";
+		}
+#endif
 		// Screenshot capture at a fixed frame number (no F7 needed for
 		// headless A/B runs; same PNG export path as the UI capture).
 		if (const char* capEnv = std::getenv("VULKANTOY_CAPTURE")) {
@@ -991,12 +1005,34 @@ void SceneRenderer::Shutdown() {
 			data.dsVisibility = ds.VisibilityAddress(*m_context, currentFrame);
 			data.dsTileCountX = ds.tileCountX;
 			data.dsEnabled = 1u;
+#if defined(DS_DEBUG_VIZ)
+			// Visualizer inputs (paper 5.3/5.4): the phase-1/phase-2
+			// TileGroup masks for the light-scoped modes + the panel's
+			// mode/light/overlay selection. Gated off with the pipeline
+			// so the shader never sees a mode without fresh buffers.
+			data.dsTileMasks = ds.TileMasksAddress(*m_context, currentFrame);
+			data.dsTileGroupMasks = ds.TileGroupMasksAddress(*m_context, currentFrame);
+			data.dsDebugMode = static_cast<uint32_t>(m_dsDebugMode);
+			data.dsDebugLight = static_cast<uint32_t>(
+				std::clamp(m_dsDebugLight, 0, std::max(0, (int)m_dsLightCount - 1)));
+			data.dsDebugFlags = m_dsDebugOverlay ? 1u : 0u;
+			data.dsDebugCountCeil = static_cast<uint32_t>(
+				std::clamp(m_dsDebugCountCeil, 1, (int)smvk::kDsMaxLightsPerTile));
+#endif
 		} else {
 			data.dsTileState = 0;
 			data.dsLightList = 0;
 			data.dsVisibility = 0;
 			data.dsTileCountX = 0;
 			data.dsEnabled = 0u;
+#if defined(DS_DEBUG_VIZ)
+			data.dsTileMasks = 0;
+			data.dsTileGroupMasks = 0;
+			data.dsDebugMode = 0;
+			data.dsDebugLight = 0;
+			data.dsDebugFlags = 0;
+			data.dsDebugCountCeil = 32;
+#endif
 		}
 
 		// Destination scope covers every consumer: BDA reads in vertex,
@@ -1151,9 +1187,17 @@ void SceneRenderer::Shutdown() {
 		// cascade shaders): metering them would drive the adapted exposure
 		// to minimum and feed back into ever larger gains. Hold the last
 		// scene exposure while any debug view overwrites HDR (the held
-		// value also keeps the debug gain itself stable).
+		// value also keeps the debug gain itself stable). The DS
+		// visualizers (debug builds, overlay or flat) tint/replace the
+		// lit HDR the same way, so any active mode freezes adaptation at
+		// the pre-switch value too; turning the view/mode off resumes
+		// adapting from the held exposure.
 		if (m_debugView != DebugView::Lit)
 			return;
+#if defined(DS_DEBUG_VIZ)
+		if (m_dsDebugMode != DsDebugViz::Off)
+			return;
+#endif
 		auto& meter = m_viewportResources.exposure;
 		if (!meter.Valid())
 			return;
@@ -1360,7 +1404,27 @@ void SceneRenderer::Shutdown() {
 	// order the capped forward+ list relies on.)
 	if (DsActive() && !lights.empty()) {
 		smvk::DsSortLightsByNearDistance(lights, frame.view);
+#if defined(DS_DEBUG_VIZ)
+		// Sorted-buffer snapshot for the visualizer UI: the light count
+		// (slider clamp) + the selected light's post-sort identity for
+		// the ImGui marker. Indices in dsDebugLight refer to THIS order.
+		m_dsLightCount = (uint32_t)lights.size();
+		const uint32_t li = std::min((uint32_t)std::max(0, m_dsDebugLight),
+			m_dsLightCount - 1);
+		const smvk::ForwardPlusLight& L = lights[li];
+		m_dsDebugLightPos = glm::vec3(L.position);
+		m_dsDebugLightColor = glm::vec3(L.color);
+		m_dsDebugLightType = (int)L.type;
+		m_dsDebugLightRange = L.range;
+		m_dsDebugLightValid = true;
+#endif
 	}
+#if defined(DS_DEBUG_VIZ)
+	else {
+		m_dsLightCount = 0;
+		m_dsDebugLightValid = false;
+	}
+#endif
 
 	constexpr size_t FP_FRAME_STRIDE = sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS;
 	if (!lights.empty()) {
@@ -1623,7 +1687,7 @@ void SceneRenderer::Shutdown() {
 
 		// ---- Phase 3/4 output: tile state + sampled final entries ----
 		{
-			std::vector<uint32_t> state(size_t(tiles) * 2, 0);
+			std::vector<uint32_t> state(size_t(tiles) * 4, 0);
 			if (!m_context->DownloadDataFromBuffer(ds.TileStateBuffer(frameIndex),
 				state.data(), state.size() * sizeof(uint32_t))) {
 				std::fprintf(stderr, "[ds-dump] tileState download FAILED\n");
@@ -1631,9 +1695,15 @@ void SceneRenderer::Shutdown() {
 			}
 			uint32_t tilesWithLights = 0;
 			uint64_t totalEntries = 0;
+#if defined(DS_DEBUG_VIZ)
+			// Debug builds only: phase 2/3 store the approx/early telemetry
+			// under DS_DEBUG_VIZ; release tiles keep zeros here.
+			uint64_t totalApprox = 0;
+			uint64_t totalEarly = 0;
+#endif
 			uint32_t maxCount = 0;
 			for (uint32_t t = 0; t < tiles; ++t) {
-				const uint32_t c = state[t * 2 + 1];
+				const uint32_t c = state[t * 4 + 1];
 				if (c > (uint32_t)smvk::kDsMaxLightsPerTile) {
 					std::fprintf(stderr, "[ds-dump] tile %u: count %u > cap!\n", t, c);
 					continue;
@@ -1641,12 +1711,24 @@ void SceneRenderer::Shutdown() {
 				if (c > 0)
 					++tilesWithLights;
 				totalEntries += c;
+#if defined(DS_DEBUG_VIZ)
+				totalApprox += state[t * 4 + 2];
+				totalEarly += state[t * 4 + 3];
+#endif
 				maxCount = std::max(maxCount, c);
 			}
+#if defined(DS_DEBUG_VIZ)
+			std::fprintf(stderr,
+				"[ds-dump] tiles: %ux%u withLights=%u entries=%llu maxPerTile=%u (approx=%llu early=%llu)\n",
+				ds.tileCountX, ds.tileCountY, tilesWithLights,
+				(unsigned long long)totalEntries, maxCount,
+				(unsigned long long)totalApprox, (unsigned long long)totalEarly);
+#else
 			std::fprintf(stderr,
 				"[ds-dump] tiles: %ux%u withLights=%u entries=%llu maxPerTile=%u\n",
 				ds.tileCountX, ds.tileCountY, tilesWithLights,
 				(unsigned long long)totalEntries, maxCount);
+#endif
 
 			// Sample final entries around screen center.
 			std::vector<uint32_t> list;
@@ -1658,9 +1740,9 @@ void SceneRenderer::Shutdown() {
 			for (int s = 0; s < 3; ++s) {
 				const uint32_t tx = std::min(samples[s][0], ds.tileCountX - 1);
 				const uint32_t ty = std::min(samples[s][1], ds.tileCountY - 1);
-				const uint32_t t = ty * ds.tileCountX + tx;
-				const uint32_t slot = state[t * 2];
-				const uint32_t count = state[t * 2 + 1];
+			const uint32_t t = ty * ds.tileCountX + tx;
+			const uint32_t slot = state[t * 4];
+			const uint32_t count = state[t * 4 + 1];
 				if (count == 0) {
 					std::fprintf(stderr, "[ds-dump] tile(%u,%u): empty\n", tx, ty);
 					continue;
@@ -4253,6 +4335,62 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				ImGui::TextDisabled("CPU phase 1: zBins (1024) + 64px tile masks; GPU phases:\n"
 					"2 approx froxel cull, 3 per-pixel narrow, 4 PCF visibility\n"
 					"(%s path active)", DsActive() ? "deferred" : "inline forward+");
+#if defined(DS_DEBUG_VIZ)
+				// ---- Deferred-shadow debug visualizers (paper 5.3/5.4).
+				// Debug builds only (DS_DEBUG_VIZ): F6 cycles the combo. ----
+				ImGui::Separator();
+				ImGui::Text("DS visualizers (F6/Y cycles)");
+				{
+					const char* vizNames[] = {
+						"Off",
+						"Light count approx (ph2)",
+						"Light count accurate (ph3)",
+						"Light count final (ph4)",
+						"Count diff approx-accurate",
+						"Cull step (light)",
+						"Light list (light)",
+						"Light visibility (light)",
+					};
+					int viz = static_cast<int>(m_dsDebugMode);
+					if (ImGui::Combo("Visualizer", &viz, vizNames, 8))
+						m_dsDebugMode = static_cast<DsDebugViz>(viz);
+					const bool vizOn = m_dsDebugMode != DsDebugViz::Off;
+					const bool lightScoped = vizOn && m_dsDebugMode >= DsDebugViz::CullStep;
+					if (vizOn && !DsActive())
+						ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+							"Pipeline off: enable deferred shadows (H) first");
+					if (vizOn)
+						ImGui::Checkbox("Overlay over lit", &m_dsDebugOverlay);
+					if (m_dsDebugMode >= DsDebugViz::CountApprox
+						&& m_dsDebugMode <= DsDebugViz::CountDiff) {
+						ImGui::SliderInt("Heat ceiling (lights)",
+							&m_dsDebugCountCeil, 1, (int)smvk::kDsMaxLightsPerTile);
+						ImGui::TextDisabled("Heat: 0=black, blue/cyan/green/yellow -> red at ceiling.\n"
+							"8px Shadow Tiles, faint grid = 64px TileGroups.");
+					}
+					if (lightScoped) {
+						const int maxLight = std::max(0, (int)m_dsLightCount - 1);
+						ImGui::SliderInt("Debug light (sorted idx)", &m_dsDebugLight,
+							0, maxLight);
+						if (m_dsDebugLightValid) {
+							ImGui::Text("Light %d: %s  range %.1f m", m_dsDebugLight,
+								m_dsDebugLightType == (int)smvk::kForwardPlusSpot ? "spot" : "point",
+								m_dsDebugLightRange);
+						}
+						if (m_dsDebugMode == DsDebugViz::CullStep)
+							ImGui::TextDisabled("Last step passed: RED ph1 mask / ORANGE ph2 zBin-froxel\n"
+								"(on lit pixels = ERRONEOUS CULL), BLUE ph4 all-shadow drop,\n"
+								"GREEN full pass (brightness = visibility).");
+						else if (m_dsDebugMode == DsDebugViz::LightList)
+							ImGui::TextDisabled("RED in no list / ORANGE ph1 mask only (erroneous),\n"
+								"YELLOW early only (shadow-dropped), GREEN final list\n"
+								"(brightness = visibility, dim = sibling-pixel coverage).");
+						else
+							ImGui::TextDisabled("WHITE lit -> BLACK shadowed (precomputed byte);\n"
+								"dark blue = not in the final list.");
+					}
+				}
+#endif
 			}
 			ImGui::Separator();
 			ImGui::Text("GfxFilter (per-view triangle filter)");
@@ -4397,6 +4535,10 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			ImGui::TextDisabled("Keys: M blur  O SSAO  B bloom  X exposure  V vectors");
 			ImGui::TextDisabled("      L LODs  F lights  G filter  C cookies  K sky");
 			ImGui::TextDisabled("      F1 lit  F2 unlit  F3 meshlets  F4 cascades  F5 LOD colors");
+#if defined(DS_DEBUG_VIZ)
+			ImGui::TextDisabled("      F6/Y DS visualizer (%s)",
+				m_dsDebugMode == DsDebugViz::Off ? "off" : "on");
+#endif
 			ImGui::TextDisabled("      T transparency  Z/1-4 AA  U dock (%s)", UiDockName());
 			ImGui::End();
 
@@ -4443,17 +4585,47 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					} else {
 						dl->AddCircleFilled(pt, r, col);
 					}
-					if (m_fpDemo.showLightNumbers && labels < maxLabels) {
-						char label[16];
-						snprintf(label, sizeof(label), "%u", i);
-						dl->AddText(ImVec2(pt.x + r + 2.0f + 1.0f, pt.y - r + 1.0f),
-							IM_COL32(0, 0, 0, 200), label);
-						dl->AddText(ImVec2(pt.x + r + 2.0f, pt.y - r),
-							IM_COL32_WHITE, label);
-						++labels;
-					}
+				if (m_fpDemo.showLightNumbers && labels < maxLabels) {
+					char label[16];
+					snprintf(label, sizeof(label), "%u", i);
+					dl->AddText(ImVec2(pt.x + r + 2.0f + 1.0f, pt.y - r + 1.0f),
+						IM_COL32(0, 0, 0, 200), label);
+					dl->AddText(ImVec2(pt.x + r + 2.0f, pt.y - r),
+						IM_COL32_WHITE, label);
+					++labels;
 				}
 			}
+		}
+
+#if defined(DS_DEBUG_VIZ)
+		// DS visualizer: selected-light marker. White ring + "DS#<idx>" at
+		// the light's captured POST-SORT position (m_debugLights above holds
+		// the pre-sort order, which does not match dsDebugLight's index
+		// space). Drawn only while a light-scoped mode is active.
+		if (m_dsDebugMode >= DsDebugViz::CullStep && m_dsDebugLightValid
+			&& DsActive()) {
+			ImDrawList* dl = ImGui::GetForegroundDrawList();
+			const ImVec2 disp = ImGui::GetIO().DisplaySize;
+			const glm::vec4 clip =
+				m_unjitteredViewProj * glm::vec4(m_dsDebugLightPos, 1.0f);
+			if (clip.w > 1e-4f) {
+				const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+				if (std::abs(ndc.x) <= 1.0f && std::abs(ndc.y) <= 1.0f) {
+					const ImVec2 pt(
+						(ndc.x * 0.5f + 0.5f) * disp.x,
+						(ndc.y * 0.5f + 0.5f) * disp.y);
+					dl->AddCircle(pt, std::max(m_fpDemo.lightPointSize, 4.0f) + 5.0f,
+						IM_COL32_WHITE, 24, 2.0f);
+					char label[32];
+					snprintf(label, sizeof(label), "DS#%d", m_dsDebugLight);
+					dl->AddText(ImVec2(pt.x + 1.0f, pt.y - 26.0f + 1.0f),
+						IM_COL32(0, 0, 0, 200), label);
+					dl->AddText(ImVec2(pt.x, pt.y - 26.0f), IM_COL32_WHITE, label);
+				}
+			}
+		}
+#endif
+
 
 			// Separated UI pass: ImGui renders into its own offscreen target
 			// (transparent clear, ui scale resolution), then UiComposite

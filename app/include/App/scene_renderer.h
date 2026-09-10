@@ -168,14 +168,37 @@ enum class DebugView : int {
 	Lods = 4,     // F5: LOD index by color (flat, direct draws)
 };
 
+#if defined(DS_DEBUG_VIZ)
+// ---------------------------------------------------------------------------
+// Deferred-shadow debug visualizers (paper sections 5.3/5.4; debug builds
+// only — DS_DEBUG_VIZ, see app/CMakeLists.txt + CompileShaders.cmake).
+// Rendered in default_lit.frag.hlsl, blended over the lit image or
+// replacing it. Numeric values must match the DS_VIZ_* defines in
+// engine/shaders/deferredshadow.hlsli.
+// ---------------------------------------------------------------------------
+enum class DsDebugViz : int {
+	Off = 0,            // visualizer off (lit image untouched)
+	CountApprox = 1,    // 5.4a: phase-2 approximated lights per Shadow Tile
+	CountAccurate = 2,  // 5.4b: phase-3 early-list size per Shadow Tile
+	CountFinal = 3,    // phase-4 final-list size per Shadow Tile
+	CountDiff = 4,      // 5.4c: approx - accurate (where phase 2 is weakest)
+	CullStep = 5,      // 5.3a: last culling step passed by the selected light
+	LightList = 6,      // 5.3b: which light list holds the selected light
+	LightVis = 7,       // selected light per-pixel visibility byte
+};
+#endif
+
 // Procedural demo lights (grid of points + a few orbiting spots).
 // Point lights are pure GPU lights (no scene nodes / emissive balls);
 // the ImGui overlay draws them as colored points + indices.
 struct ForwardPlusDemo {
 	bool enabled = true;
-	int gridX = 8;
-	int gridY = 3;
-	int gridZ = 8;
+	// Grid defaults sit at the UI slider maxima (12x8x12 -> 1152 grid
+	// lights, clamped to FP_MAX_LIGHTS minus the spot reserve): the dense
+	// crowd is the stress case the deferred-shadow pipeline is built for.
+	int gridX = 12;
+	int gridY = 8;
+	int gridZ = 12;
 	float spacingX = 3.0f;
 	float spacingY = 2.2f;
 	float spacingZ = 1.8f;
@@ -246,16 +269,38 @@ struct FrameUniforms
 	// side declares matching vk::BufferPointer fields. dsEnabled flips the
 	// default_lit consumer between the deferred lists and the inline
 	// forward+ shadow path (A/B). ----
-	uint64_t dsTileState = 0;   // 640 per-tile {slot, count}
+	uint64_t dsTileState = 0;   // 640 per-tile {slot, count, approx, early}
 	uint64_t dsLightList = 0;   // 648 final packed entries
 	uint64_t dsVisibility = 0;  // 656 64B visibility slots
 	uint32_t dsTileCountX = 0;  // 664 8px shadow tiles per row
 	uint32_t dsEnabled = 0;     // 668 1 = shade from the deferred lists
+#if defined(DS_DEBUG_VIZ)
+	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4, debug builds
+	// only — CMake defines DS_DEBUG_VIZ for the App target and for DXC in
+	// Debug trees; release compiles fields + UI + shader paths out, so
+	// the release layout is the 672 B prefix of this one). Tile-state
+	// counts + per-light culling/list diagnostics blended over the lit
+	// image in default_lit. dsTileMasks/dsTileGroupMasks are the phase-1
+	// (CPU) and phase-2 (GPU) TileGroup light masks the light-scoped
+	// modes re-query; dsDebug* select mode / light / flags / heat scale. ----
+	uint64_t dsTileMasks = 0;      // 672 phase-1 CPU TileGroup masks (viz)
+	uint64_t dsTileGroupMasks = 0; // 680 phase-2 GPU TileGroup masks (viz)
+	uint32_t dsDebugMode = 0;      // 688 app::DsDebugViz (0 = off)
+	uint32_t dsDebugLight = 0;     // 692 selected light (sorted index)
+	uint32_t dsDebugFlags = 0;     // 696 bit0 = blend over lit
+	uint32_t dsDebugCountCeil = 32; // 700 count-heat ceiling (lights)
+#endif
 };
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 // CPU/HLSL ABI: total-size alignment is not enough — each field offset must
-// match common.hlsli FrameUniforms (float4-packed, env = 8 x float4).
+// match common.hlsli FrameUniforms (float4-packed, env = 8 x float4). The
+// visualizer tail (DS_DEBUG_VIZ, debug trees only) keeps the release
+// layout a strict 672 B prefix of the debug one.
+#if defined(DS_DEBUG_VIZ)
+static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32 + 32);
+#else
 static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32);
+#endif
 static_assert(offsetof(FrameUniforms, view) == 0);
 static_assert(offsetof(FrameUniforms, proj) == 64);
 static_assert(offsetof(FrameUniforms, viewProj) == 128);
@@ -278,6 +323,14 @@ static_assert(offsetof(FrameUniforms, dsLightList) == 648);
 static_assert(offsetof(FrameUniforms, dsVisibility) == 656);
 static_assert(offsetof(FrameUniforms, dsTileCountX) == 664);
 static_assert(offsetof(FrameUniforms, dsEnabled) == 668);
+#if defined(DS_DEBUG_VIZ)
+static_assert(offsetof(FrameUniforms, dsTileMasks) == 672);
+static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 680);
+static_assert(offsetof(FrameUniforms, dsDebugMode) == 688);
+static_assert(offsetof(FrameUniforms, dsDebugLight) == 692);
+static_assert(offsetof(FrameUniforms, dsDebugFlags) == 696);
+static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 700);
+#endif
 
 // Resources
 struct AppResources {
@@ -491,6 +544,18 @@ protected:
 		if (m_input.isKeyPressed(GLFW_KEY_F5)) {
 			m_debugView = DebugView::Lods;
 		}
+#if defined(DS_DEBUG_VIZ)
+		// Deferred-shadow visualizer cycle (F6 or Y): Off -> counts -> diff ->
+		// light-scoped modes. Needs the pipeline on (H); see the panel's
+		// "DS visualizers" block for the mode list. Y is the fallback key:
+		// some keyboards/overlays remap or swallow function keys, never
+		// letters.
+		if (m_input.isKeyPressed(GLFW_KEY_F6) || m_input.isKeyPressed(GLFW_KEY_Y)) {
+			m_dsDebugMode = static_cast<DsDebugViz>(
+				(static_cast<int>(m_dsDebugMode) + 1)
+				% (static_cast<int>(DsDebugViz::LightVis) + 1));
+		}
+#endif
 	}
 
 	void CycleUiDock() {
@@ -637,6 +702,24 @@ protected:
 	app::ForwardPlusRenderer m_fpRenderer{};
 	// ---- Deferred shadows (tiled/zBin pipeline; H toggles) ----
 	bool m_dsEnabled = true;
+#if defined(DS_DEBUG_VIZ)
+	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4; debug builds
+	// only). Mode/light/overlay ride FrameUniforms (dsDebug*); the
+	// light index refers to the SORTED light buffer (phase 1 sorts by
+	// near distance AFTER the spot-shadow selection, so it differs from
+	// the ImGui overlay's m_debugLights order). ----
+	DsDebugViz m_dsDebugMode = DsDebugViz::Off;
+	int m_dsDebugLight = 0;             // selected light (sorted index)
+	bool m_dsDebugOverlay = true;       // blend over lit (vs flat replace)
+	int m_dsDebugCountCeil = 32;         // count-heat ceiling (lights)
+	uint32_t m_dsLightCount = 0;        // sorted lights this frame (UI clamp)
+	// Selected light captured post-sort for the ImGui marker (sorted order).
+	glm::vec3 m_dsDebugLightPos{ 0.0f };
+	glm::vec3 m_dsDebugLightColor{ 1.0f };
+	int m_dsDebugLightType = 0;         // 0=point, 1=spot
+	float m_dsDebugLightRange = 0.0f;
+	bool m_dsDebugLightValid = false;
+#endif
 	// Retired-slice counter readback for the debug overlay (list/vis slot
 	// peaks, ~2 frames old — same lag as the exposure meter). Includes
 	// the phase 3/4 classification histogram (telemetry).

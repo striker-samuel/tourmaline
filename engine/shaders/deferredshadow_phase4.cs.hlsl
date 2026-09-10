@@ -103,9 +103,9 @@ void mainCS(uint3 tid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     const bool validTile = all(tileCoord < uint2(pcDS.tileCountX, pcDS.tileCountY));
     const uint tileIdx = tileCoord.y * pcDS.tileCountX + tileCoord.x;
 
-    const uint slot = validTile ? pcDS.tileState.Get().states[tileIdx * 2u] : 0u;
+    const uint slot = validTile ? pcDS.tileState.Get().states[tileIdx * 4u] : 0u;
     const uint earlyCount = validTile
-        ? min(pcDS.tileState.Get().states[tileIdx * 2u + 1u], (uint)DS_MAX_LIGHTS_PER_TILE)
+        ? min(pcDS.tileState.Get().states[tileIdx * 4u + 1u], (uint)DS_MAX_LIGHTS_PER_TILE)
         : 0u;
 
     // ---- Per-pixel inputs ----
@@ -220,7 +220,7 @@ void mainCS(uint3 tid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     }
 
     if (laneIdx == 0u && validTile) {
-        pcDS.tileState.Get().states[tileIdx * 2u + 1u] = finalCount;
+        pcDS.tileState.Get().states[tileIdx * 4u + 1u] = finalCount;
         // Telemetry: total final entries.
         InterlockedAdd(pcDS.counters.Get().sumFinal, finalCount);
     }

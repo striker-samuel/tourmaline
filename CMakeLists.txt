@@ -63,6 +63,29 @@ endif()
 add_subdirectory(external/json)
 add_subdirectory(external/volk)
 
+# --- Deferred-shadow debug visualizers (paper 5.3/5.4) -------------------------
+# Per-pixel pipeline diagnostics: light culling steps, light-list membership,
+# per-Shadow-Tile light counts (see engine/shaders/deferredshadow.hlsli +
+# the "DS visualizers" ImGui block). Compiled in via DS_DEBUG_VIZ for the
+# App target (app/CMakeLists.txt) and for DXC (CompileShaders.cmake).
+#   unset/-D...="" -> auto: ON in Debug trees, OFF everywhere else
+#                     (x64-Release stays clean, zero cost)
+#   -DVULKANTOY_DS_VIZ=ON  -> force ON at any optimization level
+#                     (the x64-Release-DSViz CMakeSettings preset: release
+#                      -O2 C++ / -O3 shaders WITH visualizers)
+#   -DVULKANTOY_DS_VIZ=OFF -> force OFF even in Debug trees
+set(VULKANTOY_DS_VIZ "" CACHE BOOL
+    "Deferred-shadow debug visualizers (empty = auto: Debug builds only)")
+if(VULKANTOY_DS_VIZ)
+  set(DS_VIZ_ON ON)
+elseif(VULKANTOY_DS_VIZ STREQUAL "" AND CMAKE_BUILD_TYPE MATCHES "Debug")
+  set(DS_VIZ_ON ON)
+else()
+  set(DS_VIZ_ON OFF)
+endif()
+message(STATUS "Deferred-shadow visualizers: ${DS_VIZ_ON}"
+  " (VULKANTOY_DS_VIZ='${VULKANTOY_DS_VIZ}', build type '${CMAKE_BUILD_TYPE}')")
+
 # --- Optick profiler ----------------------------------------------------------
 option(ENABLE_OPTICK "Enable Optick CPU/GPU profiling" ON)
 if(ENABLE_OPTICK)

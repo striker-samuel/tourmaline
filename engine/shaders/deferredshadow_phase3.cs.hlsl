@@ -90,7 +90,7 @@ void mainCS(uint3 tid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     // ---- Thread 0: replay the walk, read the votes, emit the early list ----
     if (laneIdx == 0) {
         const uint tileIdx = tileCoord.y * pcDS.tileCountX + tileCoord.x;
-        const uint slot = pcDS.tileState.Get().states[tileIdx * 2u];
+        const uint slot = pcDS.tileState.Get().states[tileIdx * 4u];
         uint count = 0u;
         uint packed = 0u;
         uint ordinal2 = 0u;
@@ -120,7 +120,12 @@ void mainCS(uint3 tid : SV_GroupThreadID, uint3 gid : SV_GroupID)
         if (count > 0u && (count % 3u) != 0u
             && slot + count / 3u < DS_MAX_LIST_UINTS)
             pcDS.lightList.Get().entries[slot + count / 3u] = packed;
-        pcDS.tileState.Get().states[tileIdx * 2u + 1u] = count;
+        pcDS.tileState.Get().states[tileIdx * 4u + 1u] = count;
+#if defined(DS_DEBUG_VIZ)
+        // Telemetry for the count visualizers (paper 5.4): the tile's
+        // early-list size survives phase 4's in-place final-list write.
+        pcDS.tileState.Get().states[tileIdx * 4u + 3u] = count; // early
+#endif
         // Telemetry: total early entries (races across tiles are fine).
         InterlockedAdd(pcDS.counters.Get().sumEarly, count);
     }

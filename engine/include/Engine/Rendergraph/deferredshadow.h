@@ -88,11 +88,14 @@ static constexpr uint32_t kDsMaxVisSlots = 256u << 10; // 64B each, 16 MB
 static constexpr uint32_t kDsMaxLightsPerTile = 96;
 static constexpr uint32_t kDsSlotAllLit = 0x3FFFFFu;
 static constexpr float kDsInfiniteRange = 1e6f;
+// Tile state = 4 uints per Shadow Tile {slot, count, approx, early}. The
+// 4-uint layout is UNCONDITIONAL (shared shader ABI); the approx/early
+// telemetry words are written only in DS_DEBUG_VIZ builds (see the phase
+// shaders) and read by the light-count visualizers (paper 5.4).
 static constexpr size_t kDsZBinBytes = sizeof(uint32_t) * 4 * kDsZBinCount;
 static constexpr size_t kDsTileMaskBytes =
     sizeof(uint32_t) * (1 + kDsMaxLightGroups) * kDsMaxTileGroups;
-static constexpr size_t kDsTileStateBytes = sizeof(uint32_t) * 2 * kDsMaxTiles;
-static constexpr size_t kDsLightListBytes = sizeof(uint32_t) * kDsMaxListUInts;
+static constexpr size_t kDsTileStateBytes = sizeof(uint32_t) * 4 * kDsMaxTiles;static constexpr size_t kDsLightListBytes = sizeof(uint32_t) * kDsMaxListUInts;
 static constexpr size_t kDsVisibilityBytes = uint64_t(kDsMaxVisSlots) * 64;
 // Counters + the phase 3/4 classification histogram (see DsCounters).
 static constexpr uint32_t kDsCounterCount = 10;

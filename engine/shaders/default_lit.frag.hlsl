@@ -417,8 +417,8 @@ PSOut mainPS(PSIn IN)
         {
             const uint tileIdx = (pix.y >> 3) * frame.dsTileCountX + (pix.x >> 3);
             const uint2 st = uint2(
-                frame.dsTileState.Get().states[tileIdx * 2u],
-                min(frame.dsTileState.Get().states[tileIdx * 2u + 1u],
+                frame.dsTileState.Get().states[tileIdx * 4u],
+                min(frame.dsTileState.Get().states[tileIdx * 4u + 1u],
                     (uint)DS_MAX_LIGHTS_PER_TILE));
             // Pixel index inside the Shadow Tile (phase-4 byte mapping).
             const uint localIdx = (pix.x & 7u) + (pix.y & 7u) * 8u;
@@ -514,6 +514,29 @@ PSOut mainPS(PSIn IN)
         float3 fogHdr = frame.env.fogColor.rgb * max(frame.env.fogColor.w, 0.0f);
         color = lerp(color, fogHdr, fogF);
     }
+
+#if defined(DS_DEBUG_VIZ)
+    // Deferred-shadow debug visualizers (paper 5.3/5.4): per-tile light
+    // counts + per-light culling/list diagnostics, over the lit image
+    // (debug builds only; compiled out of release entirely). Like the
+    // other debug views the output is pre-scaled by 1/exposure so the
+    // flat palette survives the physical-units HDR + ACES chain.
+    if (frame.dsEnabled != 0u && frame.dsDebugMode != (uint)DS_VIZ_OFF)
+    {
+        const uint2 vizPix = (uint2)IN.clipPos.xy;
+        if (vizPix.x < (uint)frame.viewportSize.x
+            && vizPix.y < (uint)frame.viewportSize.y)
+        {
+            float3 viz = DsVisualize(frame, pc.fpLights, nlights, IN.worldPos,
+                vizPix, frame.dsDebugMode, frame.dsDebugLight);
+            viz /= max(frame.exposure, 1e-6f);
+            if ((frame.dsDebugFlags & 1u) != 0u)
+                color = lerp(color, viz, 0.65f); // over the game
+            else
+                color = viz;                    // flat replacement
+        }
+    }
+#endif
 
     // Handle alpha blending output
     // For Opaque/Masked we output baseAlpha, for Blend pipeline handles blending.

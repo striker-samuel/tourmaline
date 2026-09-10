@@ -309,7 +309,14 @@ void mainCS(uint3 tid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     if (validTile) {
         const uint tileIdx = tileCoord.y * pcDS.tileCountX + tileCoord.x;
         const uint slot = min(gsBase + gsPrefix[laneIdx], DS_MAX_LIST_UINTS);
-        pcDS.tileState.Get().states[tileIdx * 2u] = slot;
-        pcDS.tileState.Get().states[tileIdx * 2u + 1u] = 0u; // count (phase 3)
+        pcDS.tileState.Get().states[tileIdx * 4u] = slot;
+        pcDS.tileState.Get().states[tileIdx * 4u + 1u] = 0u; // count (phase 3)
+#if defined(DS_DEBUG_VIZ)
+        // Telemetry for the count visualizers (paper 5.4): the tile's
+        // approximated candidate count. Debug builds only — the store
+        // is dead weight in release.
+        pcDS.tileState.Get().states[tileIdx * 4u + 2u] = count; // approx
+        pcDS.tileState.Get().states[tileIdx * 4u + 3u] = 0u; // early (phase 3)
+#endif
     }
 }

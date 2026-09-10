@@ -215,7 +215,8 @@ struct ForwardPlusTileIndexBuffer
 // Moved below the Forward+ light structs so it can carry typed pointers
 // into the deferred-shadow buffers (deferredshadow_types.hlsli above).
 // Offsets mirror the C++ FrameUniforms in App/scene_renderer.h (asserted
-// there): env at 512, deferred-shadow fields at 640, total 672.
+// there): env at 512, deferred-shadow fields at 640; visualizer fields
+// (DS_DEBUG_VIZ only) follow at 672 — release keeps the 672 B prefix.
 struct FrameUniforms
 {
     float4x4 view;
@@ -256,11 +257,24 @@ struct FrameUniforms
     // ---- Deferred shadows (tiled/zBin pipeline, see deferredshadow*.hlsli).
     // Consumer-side view of this frame's per-flight buffers; the app
     // flips dsEnabled per frame (A/B against the inline forward+ path).
-    vk::BufferPointer<DsTileStateBuffer> dsTileState;  // 640 {slot,count}/tile
+    vk::BufferPointer<DsTileStateBuffer> dsTileState;  // 640 {slot,count,approx,early}/tile
     vk::BufferPointer<DsLightListBuffer> dsLightList;  // 648 final entries
     vk::BufferPointer<DsVisibilityBuffer> dsVisibility; // 656 64B slots
     uint dsTileCountX;                                 // 664 8px tiles/row
     uint dsEnabled;                                    // 668 1 = consume lists
+    // ---- Deferred-shadow debug visualizers (paper 5.3/5.4). Debug-build
+    // only (DS_DEBUG_VIZ): tail fields so the release layout (672 B) is a
+    // strict prefix of the debug layout (704 B). The light-scoped modes
+    // re-query the phase-1 (CPU) and phase-2 (GPU) TileGroup masks;
+    // dsDebug* pick mode / light / flags / heat scale.
+#if defined(DS_DEBUG_VIZ)
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 672 phase-1 masks
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 680 phase-2 masks
+    uint dsDebugMode;      // 688 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
+    uint dsDebugLight;     // 692 selected light (sorted index)
+    uint dsDebugFlags;     // 696 bit0 = blend over lit
+    uint dsDebugCountCeil; // 700 count-heat ceiling (lights)
+#endif
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms
