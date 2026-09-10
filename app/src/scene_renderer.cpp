@@ -589,6 +589,17 @@ bool SceneRenderer::Initialize() {
 			GltfToCluster(*m_context, model, sceneGltf, cluster, smvk::MeshOptConfig{}, smvk::MeshletConfig{}, m_scene.coordFix, m_scene.preTransform);
 		}
 
+		// Freeze everything static (no recook needed): the exporters stamp
+		// no STATIC_ marks, so cooked paks carry staticRoots=0 and the
+		// World's static BVH would stay empty. These scenes never animate,
+		// so mark each cluster root static here; Resolve carries the spec
+		// into the world scene and RebuildStaticBvh picks it up. Future
+		// dynamic nodes must ClearSubtreeStatic() before Resolve to opt out.
+		for (auto& clusterPtr : m_world->clusters) {
+			if (clusterPtr && !clusterPtr->scene.hierarchy.empty())
+				MarkSubtreeStatic(clusterPtr->scene, 0);
+		}
+
 		m_world->ResolveAndFixup_clusters();
 		std::cerr << "[Scene] world resolved: nodes="
 			<< m_world->scene.hierarchy.size() << std::endl;

@@ -9,7 +9,7 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/mesh_optimizer.h>
-//#include <Engine/Utils/Bvh.h>
+#include <Engine/Utils/bvh.h>
 #include <Engine/Scene/scene.h>
 
 namespace smvk {
@@ -235,9 +235,39 @@ namespace smvk {
 		std::optional<MeshLocation> ResolveMeshAcrossClusters(StringViewT uri) const;
 		std::optional<MaterialLocation> ResolveMaterialAcrossClusters(StringViewT uri) const;
 
+		// ---- Static BVH for CPU frustum culling ---------------------
+		// Built once from frozen static-subtree nodes (see Scene::
+		// staticNode) at the end of ResolveAndFixup_clusters(); static
+		// globals never move per frame so the tree stays valid until the
+		// next resolve. Bounds are the LOD-chain union per instance so any
+		// LodIndexForNode selection stays inside the cached AABB.
+		// Dynamic nodes are NOT in this tree: callers brute-force a sphere
+		// test per dynamic item (few, moving) while static items do one
+		// O(1) mask lookup after a single frustumCullBVH walk.
+		mutable ::BvhTree staticBvh_;
+		mutable bool staticBvhValid_ = false;
+		// (Re)builds staticBvh_ from the current scene. Cheap no-op when
+		// there are no static mesh nodes (leaves the tree empty).
+		void RebuildStaticBvh();
+		void InvalidateStaticBvh();
+		// Lazily rebuilds when invalid; returns the cached static tree.
+		const ::BvhTree& EnsureStaticBvh() const;
+		[[nodiscard]] bool HasStaticBvh() const {
+			return staticBvhValid_ && !staticBvh_.nodes.empty()
+				&& !staticBvh_.primIndices.empty();
+		}
+		// Frustum-culls the static tree against caller planes (e.g. the
+		// main RenderView's 6 guarded planes) and returns a per-node mask
+		// sized to scene.hierarchy.size(): 1 = static node visible OR any
+		// non-static node (pass-through; caller sphere-tests dynamic),
+		// 0 = static node culled. Empty vector = nothing cached / no
+		// culling (caller must draw everything).
+		std::vector<uint8_t> StaticVisibilityMask(
+			const glm::vec4* planes, int planeCount) const;
+
 		//void NewFrame();
-			//if (dirtyCull && flags.size() == scene.hierarchy.size())
-			//	Cull(CullConfiguration{});
+		//if (dirtyCull && flags.size() == scene.hierarchy.size())
+		//	Cull(CullConfiguration{});
 		//void EndFrame();
 
 		template<typename Func>

@@ -8,6 +8,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cstdint>
+#include <memory>
+#include <vector>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -50,12 +53,14 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 
 	// Temporal seed already primed depth (Clear in the seed pass): the
 	// direct prepass must Load it, not Clear it. It still draws every
-	// opaque node — the seed/remainder lists only cover filtered meshes,
-	// so skipping here would leave direct-fallback geometry (unregistered
-	// meshes, unknown-material masked clusters) out of depth. That breaks
-	// the 1x Main path (read-only depth test) and the tile cull min/max,
-	// while the 2x MSAA path (own transient depth) hides it.
-	// Newly visible filtered geometry additionally lands in depth pass 2.
+	// *visible* opaque node — the seed/remainder lists only cover filtered
+	// meshes, so skipping here would leave direct-fallback geometry
+	// (unregistered meshes, unknown-material masked clusters) out of depth.
+	// That breaks the 1x Main path (read-only depth test) and the tile
+	// cull min/max, while the 2x MSAA path (own transient depth) hides it.
+	// Frustum culling below only removes off-screen nodes, so on-screen
+	// fallback geometry is still covered. Newly visible filtered geometry
+	// additionally lands in depth pass 2.
 	const bool seeded = fc.seedDepthPrimed;
 	// Depth is opaque-only (solid + MASK cutout). AlphaMode::Blend
 	// transparent is excluded in both modes (dithered and blended) so it
@@ -76,6 +81,29 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 	const bool lodEnabled = fc.lodEnabled;
 	const smvk::LodFrameInputs lodInputs = fc.lodInputs;
 
+	// ---- CPU frustum culling for the prepass ----
+	// Static nodes: single frustumCullBVH walk over the World's cached
+	// static tree (built once in ResolveAndFixup_clusters from frozen
+	// static-subtree globals, LOD-union bounds). Dynamic nodes: per-item
+	// sphere test below (they never enter the static tree).
+	// Both tests are conservative (guarded main-view planes + LOD-union
+	// spheres), so a culled node is guaranteed off-screen: skipping it
+	// cannot punch holes in depth. When no view/BVH is available the mask
+	// stays empty and the prepass falls back to drawing everything.
+	smvk::RenderView mainView{};
+	bool hasMainView = false;
+	if (fc.views && fc.mainViewIndex != smvk::RenderViewSet::kInvalidIndex
+		&& fc.mainViewIndex < fc.views->Count()) {
+		mainView = fc.views->Get(fc.mainViewIndex);
+		hasMainView = true;
+	}
+	std::shared_ptr<std::vector<uint8_t>> staticMask;
+	if (hasMainView && world) {
+		auto mask = world->StaticVisibilityMask(mainView.m_viewPlanes, 6);
+		if (!mask.empty())
+			staticMask = std::make_shared<std::vector<uint8_t>>(std::move(mask));
+	}
+
 	using NodeId = ::NodeId;
 
 	// ---- Depth prepass: fills depth for tile min/max cull ----
@@ -87,7 +115,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 			{ fc.extent.width, fc.extent.height }, "ForwardPlusDepth",
 			seeded ? smvk::AttachmentLoadOp::Load
 				: smvk::AttachmentLoadOp::Clear);
-		prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodInputs](smvk::CommandBuffer& cmd)
+		prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodInputs, staticMask, mainView, hasMainView](smvk::CommandBuffer& cmd)
 		{
 			// GPU context + pass scope come from RenderGraph::Execute.
 			auto drawPrepassNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
@@ -97,7 +125,47 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 				// the old mat == nullptr path).
 				if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
 					return;
+				// Static frustum cull: O(1) mask lookup from the single
+				// frustumCullBVH walk at Append time (dynamic nodes are
+				// always 1 here and get sphere-tested below).
+				if (staticMask && item.node < staticMask->size()
+					&& (*staticMask)[item.node] == 0)
+					return;
+				if (item.node >= world->scene.globalTransform.size())
+					return;
 				auto& model = world->scene.globalTransform[item.node];
+				// Dynamic frustum cull: conservative LOD-union sphere test
+				// against the guarded main-view planes (mirrors
+				// GfxRenderer::FilterMainView). Keep the instance when
+				// EITHER the base or the selected LOD sibling intersects so
+				// halfrate LOD flips can never open a 1-frame depth hole.
+				if (hasMainView
+					&& (item.flags & smvk::IteratorFlagBit_Static) == 0) {
+					if (smvk::StaticMesh* baseDesc = world->GetMesh(item.mesh)) {
+						glm::vec3 c{ 0.0f };
+						float r = 0.0f;
+						smvk::MeshBoundsToWorld(model, baseDesc->geometry.aabbMin,
+							baseDesc->geometry.aabbMax, c, r);
+						if (!smvk::RenderViewIntersectsSphere(mainView, c, r)) {
+							bool visible = false;
+							if (lodEnabled) {
+								const uint32_t lod = world->LodIndexForNode(
+									item.node, item.mesh, lodInputs);
+								if (smvk::StaticMesh* selDesc =
+									world->GetLodMesh(item.mesh, lod);
+									selDesc && selDesc != baseDesc) {
+									smvk::MeshBoundsToWorld(model,
+										selDesc->geometry.aabbMin,
+										selDesc->geometry.aabbMax, c, r);
+									visible = smvk::RenderViewIntersectsSphere(
+										mainView, c, r);
+								}
+							}
+							if (!visible)
+								return;
+						}
+					}
+				}
 				// Error-driven LOD (same budget as the main view): the
 				// prepass fills the depth the tile cull + Main test
 				// against, so it must rasterize the same LOD Main draws.

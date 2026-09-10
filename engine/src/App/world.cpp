@@ -310,6 +310,7 @@ namespace smvk {
 			itemFlags.push_back(item.flags);
 
 		RebuildLodChains();
+		RebuildStaticBvh();
 		dirtyCull = true;
 	}
 
@@ -532,6 +533,121 @@ std::optional<World::MaterialLocation> World::ResolveMaterialAcrossClusters(
 		}
 		flagLists.clear();
 		dirtyCull = false;
+	}
+
+	// ---------------------------------------------------------------------------
+	// Static BVH for CPU frustum culling (see world.h).
+	// ---------------------------------------------------------------------------
+
+	void World::InvalidateStaticBvh() {
+		staticBvhValid_ = false;
+		staticBvh_.nodes.clear();
+		staticBvh_.primIndices.clear();
+		staticBvh_.primToNode.clear();
+	}
+
+	namespace {
+		// World-space AABB of a mesh under `model` (8-corner transform so
+		// rotation/scale stay conservative).
+		::Aabb WorldAabbForMesh(const StaticMesh* mesh, const glm::mat4& model) {
+			::Aabb out = ::Aabb::empty();
+			if (!mesh)
+				return out;
+			const glm::vec3 localMin = mesh->geometry.aabbMin;
+			const glm::vec3 localMax = mesh->geometry.aabbMax;
+			const glm::vec3 corners[8] = {
+				{localMin.x, localMin.y, localMin.z},
+				{localMin.x, localMin.y, localMax.z},
+				{localMin.x, localMax.y, localMin.z},
+				{localMin.x, localMax.y, localMax.z},
+				{localMax.x, localMin.y, localMin.z},
+				{localMax.x, localMin.y, localMax.z},
+				{localMax.x, localMax.y, localMin.z},
+				{localMax.x, localMax.y, localMax.z},
+			};
+			for (const auto& c : corners) {
+				glm::vec4 wp4 = model * glm::vec4(c, 1.0f);
+				out.expand(glm::vec3(wp4));
+			}
+			return out;
+		}
+	} // namespace
+
+	void World::RebuildStaticBvh() {
+		InvalidateStaticBvh();
+		EnsureLodChainsCached(*this);
+		std::vector<::Partition> prims;
+		prims.reserve(scene.meshForNode.size());
+		for (const auto& [node, worldMeshIdx] : scene.meshForNode) {
+			if (!IsStaticNode(scene, (int)node))
+				continue;
+			if (worldMeshIdx >= meshLocations.size())
+				continue;
+			StaticMesh* base = GetMesh(worldMeshIdx);
+			if (!base)
+				continue;
+			const glm::mat4& model = scene.globalTransform[node];
+			::Aabb bounds = WorldAabbForMesh(base, model);
+			// LOD-chain union: any LodIndexForNode selection stays inside.
+			if (worldMeshIdx < lodChains.size()) {
+				const LodChain& chain = lodChains[worldMeshIdx];
+				for (size_t li = 1; li < chain.lods.size(); ++li) {
+					const MeshLocation& loc = chain.lods[li];
+					if (!loc.cluster || !loc.handle.valid())
+						continue;
+					if (const StaticMesh* m = loc.cluster->staticMeshes.get(loc.handle))
+						bounds.expand(WorldAabbForMesh(m, model));
+				}
+			}
+			const glm::vec3 c = bounds.centroid();
+			prims.push_back(::Partition{ bounds, c, node });
+		}
+		const uint32_t N = static_cast<uint32_t>(prims.size());
+		staticBvh_.primIndices.resize(N);
+		for (uint32_t i = 0; i < N; ++i)
+			staticBvh_.primIndices[i] = i;
+		staticBvh_.nodes.reserve(N * 2);
+		staticBvh_.primToNode.clear();
+		if (N > 0)
+			::buildRecursive(staticBvh_, prims, 0, N, /*maxLeafSize=*/4);
+		staticBvh_.primToNode.resize(N);
+		for (uint32_t slot = 0; slot < N; ++slot) {
+			const uint32_t primId = staticBvh_.primIndices[slot];
+			staticBvh_.primToNode[slot] = prims[primId].node;
+		}
+		staticBvhValid_ = true;
+	}
+
+	const ::BvhTree& World::EnsureStaticBvh() const {
+		if (!staticBvhValid_)
+			const_cast<World*>(this)->RebuildStaticBvh();
+		return staticBvh_;
+	}
+
+	std::vector<uint8_t> World::StaticVisibilityMask(
+		const glm::vec4* planes, int planeCount) const {
+		const ::BvhTree& tree = EnsureStaticBvh();
+		if (tree.nodes.empty() || tree.primIndices.empty() || !planes || planeCount <= 0)
+			return {};
+		std::vector<int> slots;
+		slots.reserve(tree.primIndices.size());
+		::frustumCullBVH(tree, 0, planes, planeCount, slots);
+		std::vector<uint8_t> mask(scene.hierarchy.size(), 0);
+		// Dynamic (non-static) nodes pass through: the caller sphere-tests
+		// them per item. Static nodes default to culled; visible ones are
+		// stamped below.
+		for (size_t i = 0; i < mask.size(); ++i) {
+			if (!IsStaticNode(scene, (int)i))
+				mask[i] = 1;
+		}
+		for (int slot : slots) {
+			if (slot < 0 || (size_t)slot >= tree.primToNode.size())
+				continue;
+			const uint32_t node = tree.primToNode[(size_t)slot];
+			if (node < mask.size())
+				mask[node] = 1;
+		}
+		return mask;
 	}
 
 	// ---------------------------------------------------------------------------

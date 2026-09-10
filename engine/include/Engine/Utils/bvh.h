@@ -6,6 +6,8 @@
 #include <limits>
 #include <algorithm>
 #include <cstdint>
+#include <cfloat>
+#include <cmath>
 
 #include <Engine/Scene/scene.h>
 //#include <Engine/App/cluster.h>
@@ -190,7 +192,7 @@ using MeshFromIndexFunc = std::function<smvk::StaticMesh(uint32_t meshIndex)>;
 // Return false to exclude a node (e.g. static/dynamic split).
 using BvhNodeFilter = std::function<bool(uint32_t node)>;
 
-BvhTree treeFromScene(
+inline BvhTree treeFromScene(
 	const Scene& scene,
 	MeshFromIndexFunc meshFromMeshIndex,
 	BvhNodeFilter filter = {}
@@ -313,7 +315,7 @@ static inline glm::vec4 normalizePlaneSafe(glm::vec4 p) {
 	return (len > 0.0f) ? (p / len) : p;
 }
 
-int getFrustumPlanes_ZO_InfiniteFar(
+inline int getFrustumPlanes_ZO_InfiniteFar(
 	const glm::mat4& VP,
 	const glm::vec3& camPos,
 	glm::vec4 planes[6]
@@ -358,7 +360,7 @@ inline bool aabbInFrustum(
 }
 
 
-void frustumCullBVH(
+inline void frustumCullBVH(
 	const BvhTree& tree,
 	int rootIndex,
 	const glm::vec4* planes,
@@ -394,7 +396,7 @@ void frustumCullBVH(
 	}
 }
 
-void frustumCullBVH(
+inline void frustumCullBVH(
 	const BvhTree& tree,
 	int rootIndex,
 	const glm::mat4& viewProj,
