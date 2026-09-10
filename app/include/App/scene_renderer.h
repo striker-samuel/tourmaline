@@ -367,8 +367,9 @@ protected:
 	double m_cpuMsSmooth = 0.0;
 	double m_gpuMsSmooth = 0.0;
 	bool m_gpuTimingValid = false;
-	// Acquire wait (in-flight fence + vkAcquireNextImageKHR, vsync-paced
-	// under FIFO): idle time, reported separately so CPU stays busy-only.
+	// Acquire wait (in-flight fence + vkAcquireNextImageKHR) plus the
+	// vkQueuePresentKHR throttle (vsync-paced under FIFO): idle time,
+	// reported separately so CPU stays busy-only.
 	double m_waitMsSmooth = 0.0;
 
 	void EarlyUpdate() override {

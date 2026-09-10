@@ -1567,13 +1567,17 @@ void SceneRenderer::Shutdown() {
 		RenderFrame(fb);
 		m_swapchain->EndAndPresentFramebuffer(fb);
 		// CPU/GPU time split: CPU = busy time on this thread (record +
-		// submit + present); wait = acquire idle; GPU = timestamp query
-		// around the command buffer (retired frame, lags ~1 frame).
+		// submit); wait = acquire idle + vkQueuePresentKHR throttle
+		// (vsync-paced under FIFO); GPU = timestamp query around the
+		// command buffer (retired frame, lags ~1 frame).
 		const auto frameEnd = std::chrono::steady_clock::now();
-		const double waitMs = std::chrono::duration<double, std::milli>(
-			busyStart - frameStart).count();
-		const double cpuMs = std::chrono::duration<double, std::milli>(
-			frameEnd - busyStart).count();
+		const double presentWaitMs = m_swapchain->GetPresentWaitMs();
+		double waitMs = std::chrono::duration<double, std::milli>(
+			busyStart - frameStart).count() + presentWaitMs;
+		double cpuMs = std::chrono::duration<double, std::milli>(
+			frameEnd - busyStart).count() - presentWaitMs;
+		if (cpuMs < 0.0)
+			cpuMs = 0.0;
 		constexpr double kEmaAlpha = 0.08;
 		m_cpuMsSmooth += (cpuMs - m_cpuMsSmooth) * kEmaAlpha;
 		m_waitMsSmooth += (waitMs - m_waitMsSmooth) * kEmaAlpha;

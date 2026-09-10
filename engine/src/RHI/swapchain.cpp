@@ -91,6 +91,7 @@ std::vector<PresentMode> Swapchain::GetAvailablePresentModes() const {
 }
 double Swapchain::GetGpuFrameMs() const { return impl_->vulkan->GetLastGpuMs(); }
 bool Swapchain::HasGpuTiming() const { return impl_->vulkan->HasGpuTiming(); }
+double Swapchain::GetPresentWaitMs() const { return impl_->vulkan->GetLastPresentWaitMs(); }
 Swapchain::Impl* Swapchain::GetImpl() { return impl_.get(); }
 const Swapchain::Impl* Swapchain::GetImpl() const { return impl_.get(); }
 

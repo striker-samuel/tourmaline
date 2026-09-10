@@ -755,6 +755,9 @@ namespace smvk {
 		// overlay should show CPU time only.
 		double GetLastGpuMs() const { return lastGpuMs_; }
 		bool HasGpuTiming() const { return gpuTimingValid_; }
+		// Last vkQueuePresentKHR wall time (ms). Under FIFO VSync the
+		// present blocks for the vertical blank — idle wait, not CPU work.
+		double GetLastPresentWaitMs() const { return lastPresentWaitMs_; }
 		VkSemaphore GetImageAvailableSemaphore() const { return imageAvailableSemaphores_.at(currentFrame_); }
 		VkFence GetInFlightFence() const { return inFlightFences_.at(currentFrame_); }
 		VkSemaphore GetRenderFinishedSemaphore(uint32_t imageIndex) const { return renderFinishedSemaphores_.at(imageIndex); }
@@ -813,6 +816,7 @@ namespace smvk {
 		float timestampPeriod_ = 0.0f; // ns per timestamp tick
 		double lastGpuMs_ = 0.0;
 		bool gpuTimingValid_ = false;
+		double lastPresentWaitMs_ = 0.0;
 		void CreateTimestampPools();
 		void DestroyTimestampPools();
 

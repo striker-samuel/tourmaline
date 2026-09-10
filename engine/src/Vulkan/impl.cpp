@@ -6524,7 +6524,12 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			presentInfo.swapchainCount = 1;
 			presentInfo.pSwapchains = swapChains;
 			presentInfo.pImageIndices = &currentImageIndex_;
+			// FIFO VSync throttles inside vkQueuePresentKHR (vertical-blank
+			// wait). Time it so the caller can report it as wait, not CPU.
+			const auto presentStart = std::chrono::steady_clock::now();
 			VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+			lastPresentWaitMs_ = std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - presentStart).count();
 			if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
 				framebufferResized) {
 				framebufferResized = false;
@@ -6553,7 +6558,10 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 				presentInfo.swapchainCount = 1;
 				presentInfo.pSwapchains = swapChains;
 				presentInfo.pImageIndices = &currentImageIndex_;
+				const auto presentStart = std::chrono::steady_clock::now();
 				VkResult result = vkQueuePresentKHR(presentQueue_, &presentInfo);
+				lastPresentWaitMs_ = std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now() - presentStart).count();
 				if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
 					framebufferResized) {
 					framebufferResized = false;

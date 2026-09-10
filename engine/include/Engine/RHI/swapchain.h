@@ -54,6 +54,9 @@ public:
     // split overlay. False until a full frame has retired.
     double GetGpuFrameMs() const;
     bool HasGpuTiming() const;
+    // Last vkQueuePresentKHR wall time (ms): FIFO VSync throttle, i.e.
+    // wait rather than CPU work.
+    double GetPresentWaitMs() const;
 
     // Exposed for compatibility – preferred via GetExtent/GetImageCount
     uint32_t framesInFlight() const;
