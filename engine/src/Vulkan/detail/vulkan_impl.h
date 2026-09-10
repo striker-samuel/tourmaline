@@ -560,6 +560,11 @@ namespace smvk {
 		// only (shares the graphics submitter + the shared staging buffer).
 		// Returns false on zero size / bad handle / staging alloc failure.
 		bool DownloadDataFromBuffer(BufferHandle src, void* out, size_t size, size_t srcOffset = 0);
+		// GPU color image (layer 0, mip 0, tightly packed) -> CPU memory.
+		// currentLayout must be the image's ACTUAL layout (the rendergraph
+		// does not write sync states back; Undefined would discard the
+		// contents on transition). Transitions to TRANSFER_SRC and back.
+		bool DownloadDataFromImage(ImageHandle src, ImageLayout currentLayout, void* out, size_t size);
 		// Grows the persistent readback staging to cover `size` bytes
 		// (power-of-two steps, 256 KiB floor). The old buffer retires via
 		// DeferDestroy. Render-thread only, like the download itself.

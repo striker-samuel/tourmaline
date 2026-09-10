@@ -3,7 +3,7 @@
 // Motion vector FS: per-pixel UV delta (prevUV - currUV) into an RG16F
 // target. MASK (alpha-tested) cutouts reuse the shadow.frag alpha test so
 // foliage gets leaf-shaped motion; opaque materials skip the texture fetch
-// (shadingModel check mirrors default.frag: ShadingModel::Masked == 2).
+// (shadingModel check mirrors default_lit.frag: ShadingModel::Masked == 2).
 
 struct PSIn
 {

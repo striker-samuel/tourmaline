@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -34,6 +35,7 @@
 #include <Engine/Renderer/cookies.h>
 #include <App/renderer.h>
 #include <App/forwardplus_renderer.h>
+#include "lut_io.h"
 #include <App/frame_context.h>
 #include <App/push_constants.h>
 using app::PushConstants;
@@ -144,7 +146,7 @@ static smvk::MotionBlurDesc MakeMotionBlurDesc() {
 
 // -----------------------------------------------------------------------------
 // SSAO config (half-res depth-only AO, see Engine/Rendergraph/ssao.h).
-// Runs before Main; composites in the opaque ambient (default.frag.hlsl
+// Runs before Main; composites in the opaque ambient (default_lit.frag.hlsl
 // upsamples the half-res AO with full-res depth authority, see ao.hlsli).
 // -----------------------------------------------------------------------------
 static constexpr float SSAO_RADIUS = 0.5f; // view-space sample radius (m)
@@ -454,9 +456,9 @@ bool SceneRenderer::Initialize() {
 		// Main ShaderProgram (scene-owned; shadow/bloom/tonemap programs live
 		// in their engine builders with defaults + Ensure).
 		auto vertCode = readContentFile(contentVfs, "shaders/default.vert.hlsl.spv");
-		auto fragCode = readContentFile(contentVfs, "shaders/default.frag.hlsl.spv");
+		auto fragCode = readContentFile(contentVfs, "shaders/default_lit.frag.hlsl.spv");
 		m_resources.vertShader = m_context->CreateShaderModule(vertCode, "vert");
-		m_resources.fragShader = m_context->CreateShaderModule(fragCode, "frag");
+		m_resources.fragShader = m_context->CreateShaderModule(fragCode, "fragLit");
 
 		auto vert = smvk::Shader{
 			.module = m_resources.vertShader,
@@ -472,6 +474,58 @@ bool SceneRenderer::Initialize() {
 		.shaders = {vert, frag},
 		.shaderCount = 2
 	};
+
+		// Debug-view fragments (F2 unlit, F4 cascade coverage): same VS as
+		// main. Failure is non-fatal (program stays at shaderCount 0 and the
+		// view falls back to Lit at record time).
+		try {
+			auto unlitCode = readContentFile(contentVfs, "shaders/default_unlit.frag.hlsl.spv");
+			m_resources.fragUnlitShader = m_context->CreateShaderModule(unlitCode, "fragUnlit");
+		}
+		catch (...) {
+			std::cerr << "[SceneRenderer] default_unlit unavailable - F2 falls back to Lit\n";
+		}
+		try {
+			auto cascadeCode = readContentFile(contentVfs, "shaders/default_cascade_debug.frag.hlsl.spv");
+			m_resources.fragCascadeShader = m_context->CreateShaderModule(cascadeCode, "fragCascade");
+		}
+		catch (...) {
+			std::cerr << "[SceneRenderer] default_cascade_debug unavailable - F4 falls back to Lit\n";
+		}
+		if (!m_resources.fragUnlitShader.empty()) {
+			m_resources.unlitProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.fragUnlitShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+		if (!m_resources.fragCascadeShader.empty()) {
+			m_resources.cascadeProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.fragCascadeShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
 
 	// Masked shadow-depth program (leaf-shaped shadows for cutout).
 	auto shadowVertCode = readContentFile(contentVfs, "shaders/shadow.vert.hlsl.spv");
@@ -643,6 +697,9 @@ bool SceneRenderer::Initialize() {
 		if (!m_viewportResources.smaa.EnsureLuts(*m_context))
 			std::cerr << "[SceneRenderer] SMAA LUT upload failed - SMAA unavailable\n";
 		m_context->FlushUploads();
+		// Artistic LUTs: seed the neutral strip + list editable strips.
+		ScanLutFiles();
+		ExportNeutralLut();
 
 
 		// FRAME RESOURCES
@@ -765,6 +822,14 @@ void SceneRenderer::Shutdown() {
 		m_viewportResources.renderDepth.Destroy(*m_rendergraph);
 		m_viewportResources.ui.Destroy(*m_rendergraph);
 		m_viewportResources.uiComposite.DestroyShaders();
+		if (!m_captureLogical.empty()) {
+			m_rendergraph->FreeImageView(m_captureLogical);
+			m_captureLogical = {};
+		}
+		m_captureView = {};
+		m_captureImage = {};
+		m_lutTexture = {};
+		m_lutBindless = UINT32_MAX;
 		if (m_imgui) {
 			m_imgui->Shutdown();
 			m_imgui.reset();
@@ -844,7 +909,7 @@ void SceneRenderer::Shutdown() {
 		// effective exposure (auto-adapted or manual) for future readers.
 		data.exposure = EffectiveExposure();
 		// SSAO consumption (lighting-pass ambient; see ao.hlsli +
-		// default.frag.hlsl): the SsaoCompose pass already upscaled the AO
+		// default_lit.frag.hlsl): the SsaoCompose pass already upscaled the AO
 		// to full res with depth authority, so the fragment only .Loads it.
 		// Mirrors the AddSsaoPasses gate below so the shader flag and the
 		// emitted passes always agree.
@@ -1004,12 +1069,13 @@ void SceneRenderer::Shutdown() {
 			return; // readback disabled (see above): hold the seed/manual exposure
 		if (!m_autoExposureEnabled || !m_passes.exposure)
 			return;
-		// The meshlet debug view fills HDR with exposure-compensated flat
-		// colors (see the dbgGain pre-scale in Main): metering them would
-		// drive the adapted exposure to minimum and feed back into ever
-		// larger gains. Hold the last scene exposure while debug overwrites
-		// HDR (the held value also keeps the debug gain itself stable).
-		if (m_debugMeshlets && m_gfxRenderer.DebugProgramsValid())
+		// Debug views fill HDR with exposure-compensated flat colors (see
+		// the dbgGain pre-scale in Main and the /exposure in the unlit +
+		// cascade shaders): metering them would drive the adapted exposure
+		// to minimum and feed back into ever larger gains. Hold the last
+		// scene exposure while any debug view overwrites HDR (the held
+		// value also keeps the debug gain itself stable).
+		if (m_debugView != DebugView::Lit)
 			return;
 		auto& meter = m_viewportResources.exposure;
 		if (!meter.Valid())
@@ -1320,6 +1386,159 @@ void SceneRenderer::Shutdown() {
 		UpdateCameraAspect(renderExtent);
 	}
 
+	// ---------------------------------------------------------------------
+	// Artistic LUT grading (TPP-style 32^3 strip, see tonemap.h). The strip
+	// is 1024x32 sRGB-encoded PNG (32 tiles along x, blue = tile, red =
+	// column, green = row); Photoshop edits the bytes directly.
+	// ---------------------------------------------------------------------
+	void SceneRenderer::ScanLutFiles() {
+		m_lutFiles.clear();
+		std::error_code ec;
+		std::filesystem::create_directories("content/luts", ec);
+		for (const auto& entry : std::filesystem::directory_iterator("content/luts", ec)) {
+			if (!entry.is_regular_file())
+				continue;
+			if (_stricmp(entry.path().extension().string().c_str(), ".png") != 0)
+				continue;
+			m_lutFiles.push_back(entry.path().filename().string());
+		}
+		std::sort(m_lutFiles.begin(), m_lutFiles.end());
+	}
+
+	bool SceneRenderer::LoadLut(const std::string& file) {
+		std::vector<uint8_t> rgba;
+		int w = 0, h = 0;
+		const std::string path = "content/luts/" + file;
+		if (!LutLoadPng(path.c_str(), rgba, w, h)) {
+			std::cerr << "[SceneRenderer] LUT decode failed: " << path << "\n";
+			return false;
+		}
+		if (w != 1024 || h != 32) {
+			std::cerr << "[SceneRenderer] LUT " << file << " is " << w << "x" << h
+				<< ", expected 1024x32 (32^3 strip)\n";
+			return false;
+		}
+
+		smvk::ImageCreateInfo ci{};
+		ci.extent = { 1024, 32, 1 };
+		ci.format = smvk::Format::RGBA8_SRGB; // sRGB view: sampling lands in linear
+		ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+		ci.mipLevels = 1;
+		ci.arrayLayers = 1;
+		ci.name = "colorLut";
+		auto tex = m_context->CreateTexture(ci, rgba.data());
+		if (tex.empty())
+			return false;
+		m_lutTexture = std::move(tex); // old texture retires via Holder
+		m_lutBindless = m_context->GetTextureBindlessIndex(m_lutTexture);
+		m_context->FlushUploads();
+		m_lutFile = file;
+		std::cout << "[SceneRenderer] LUT loaded: " << file
+			<< " (bindless " << m_lutBindless << ")\n";
+		return true;
+	}
+
+	void SceneRenderer::ExportNeutralLut() {
+		// Identity strip, sRGB-encoded bytes (matches common.hlsli SrgbEncode):
+		// pixel(i,j,t) = srgbEncode(i/31, j/31, t/31). Editing these bytes in
+		// Photoshop and loading the result back gives the grading.
+		constexpr int W = 1024, H = 32;
+		std::vector<uint8_t> px(static_cast<size_t>(W) * H * 4);
+		const auto srgb8 = [](float c) {
+			c = std::min(std::max(c, 0.0f), 1.0f);
+			const float lo = c * 12.92f;
+			const float hi = 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
+			const float v = c <= 0.0031308f ? lo : hi;
+			return static_cast<uint8_t>(std::lround(v * 255.0f));
+		};
+		for (int t = 0; t < 32; ++t) {
+			for (int j = 0; j < 32; ++j) {
+				for (int i = 0; i < 32; ++i) {
+					uint8_t* o = &px[(static_cast<size_t>(j) * W
+						+ static_cast<size_t>(t) * 32 + i) * 4];
+					o[0] = srgb8(i / 31.0f);
+					o[1] = srgb8(j / 31.0f);
+					o[2] = srgb8(t / 31.0f);
+					o[3] = 255;
+				}
+			}
+		}
+		std::error_code ec;
+		std::filesystem::create_directories("exports", ec);
+		if (LutWritePng("exports/lut_neutral.png", W, H, px.data()))
+			std::cout << "[SceneRenderer] neutral LUT strip exported: exports/lut_neutral.png\n";
+		else
+			std::cerr << "[SceneRenderer] neutral LUT export failed (exports/lut_neutral.png)\n";
+		// Seed the editable copy into content/luts once; never overwrite (the
+		// user may have graded it already - F7 always refreshes exports/).
+		if (!std::filesystem::exists("content/luts/neutral.png", ec))
+			LutWritePng("content/luts/neutral.png", W, H, px.data());
+	}
+
+	void SceneRenderer::EnsureCaptureTarget(smvk::Extent2D extent) {
+		if (!m_captureImage.empty() &&
+			m_captureExtent.width == extent.width && m_captureExtent.height == extent.height)
+			return;
+		if (!m_captureLogical.empty()) {
+			m_rendergraph->FreeImageView(m_captureLogical);
+			m_captureLogical = {};
+		}
+		m_captureView = {};
+		m_captureImage = {};
+		smvk::ImageCreateInfo ci{};
+		ci.extent = { extent.width, extent.height, 1 };
+		ci.format = smvk::Format::RGBA8_SRGB; // same store path as the swapchain
+		ci.usage = smvk::ImageUsage::ColorAttachment | smvk::ImageUsage::TransferSrc;
+		ci.mipLevels = 1;
+		ci.arrayLayers = 1;
+		ci.name = "capture";
+		m_captureImage = m_context->CreateImage(ci, nullptr);
+		if (m_captureImage.empty())
+			return;
+		smvk::ImageViewCreateInfo vci{};
+		vci.viewType = smvk::ImageViewType::View2D;
+		vci.format = smvk::Format::Undefined; // inherit
+		vci.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 };
+		vci.name = "captureView";
+		m_captureView = m_context->CreateImageView(m_captureImage, vci);
+		if (m_captureView.empty()) {
+			m_captureImage = {};
+			return;
+		}
+		m_captureLogical = m_rendergraph->AddExternalImageView(
+			m_captureView, smvk::Format::RGBA8_SRGB, "captureLogical");
+		m_captureExtent = extent;
+	}
+
+	void SceneRenderer::ExportScreenshot(smvk::Extent2D extent) {
+		if (m_captureImage.empty()) {
+			std::cerr << "[SceneRenderer] capture target unavailable - screenshot skipped\n";
+			return;
+		}
+		std::vector<uint8_t> px(static_cast<size_t>(extent.width) * extent.height * 4);
+		// The capture pass leaves the image in COLOR_ATTACHMENT_OPTIMAL (the
+		// rendergraph does not write sync states back, so the layout is
+		// declared explicitly - Undefined would discard the contents).
+		if (!m_context->DownloadDataFromImage(m_captureImage,
+				smvk::ImageLayout::ColorAttachmentOptimal, px.data(), px.size())) {
+			std::cerr << "[SceneRenderer] screenshot readback failed\n";
+			return;
+		}
+		const std::time_t t = std::chrono::system_clock::to_time_t(
+			std::chrono::system_clock::now());
+		std::tm tmv{};
+		localtime_s(&tmv, &t);
+		char stamp[32];
+		std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tmv);
+		std::error_code ec;
+		std::filesystem::create_directories("exports", ec);
+		const std::string path = "exports/screenshot_" + std::string(stamp) + ".png";
+		if (LutWritePng(path.c_str(), extent.width, extent.height, px.data()))
+			std::cout << "[SceneRenderer] screenshot exported: " << path << "\n";
+		else
+			std::cerr << "[SceneRenderer] screenshot write failed (" << path << ")\n";
+	}
+
 	void SceneRenderer::DrawFrame() {
 		// Frame-arena scratch (URI probing, normalized rewrites) is
 		// dead at frame end by definition — recycle the blocks.
@@ -1361,6 +1580,14 @@ void SceneRenderer::Shutdown() {
 		m_gpuTimingValid = m_swapchain->HasGpuTiming();
 		if (m_gpuTimingValid)
 			m_gpuMsSmooth += (m_swapchain->GetGpuFrameMs() - m_gpuMsSmooth) * kEmaAlpha;
+		if (m_captureReadbackPending) {
+			// The frame's submit (RenderFrame records, EndAndPresent
+			// submits) wrote the capture target; it is now safe to stall
+			// for the readback (F7-pressed only).
+			m_captureReadbackPending = false;
+			WaitForDeviceIdle();
+			ExportScreenshot(m_captureExtent);
+		}
 	}
 
 void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
@@ -2307,7 +2534,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 	mainInputs.push_back(m_viewportResources.directionalShadows.logicalView);
 	if (m_viewportResources.spotShadows.Valid())
 		mainInputs.push_back(m_viewportResources.spotShadows.logicalView);
-	// Blurred half-res AO is sampled by the opaque ambient (default.frag):
+	// Blurred half-res AO is sampled by the opaque ambient (default_lit.frag):
 	// SetInputImages emits the read barrier + layout transition.
 	if (!aoView.empty())
 		mainInputs.push_back(aoView);
@@ -2470,11 +2697,48 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		// SV_InstanceID; materialId is pushed per range for the frag).
 		// Meshes the filter skipped (no clusters) still draw direct.
 		const bool gfxActive = m_useGfxFilter && gfxSlot != UINT32_MAX;
-		// Meshlet debug view (replaces shaded opaque): draws EVERY
-		// registered cluster direct with a stable per-meshlet color, so
-		// HZB-culled meshlets stay visible here. Compare with the shaded
-		// view to see exactly what the GPU filter dropped.
-		const bool meshletDbg = m_debugMeshlets && m_gfxRenderer.DebugProgramsValid();
+		// Debug views (F1..F5) replace the shaded opaque leg. Meshlet mode
+		// draws EVERY registered cluster direct with a stable per-meshlet
+		// color, so HZB-culled meshlets stay visible here. Compare with
+		// the shaded view to see exactly what the GPU filter dropped.
+		// Unlit / cascade / LOD views likewise bypass the filter with
+		// direct draws (no filtered-VS variant exists for them).
+		// Missing programs fall back to Lit so a bad cook never blanks
+		// the frame.
+		DebugView effView = m_debugView;
+		if ((effView == DebugView::Meshlets || effView == DebugView::Lods)
+			&& !m_gfxRenderer.DebugProgramsValid())
+			effView = DebugView::Lit;
+		if (effView == DebugView::Unlit && m_resources.unlitProgram.shaderCount != 2)
+			effView = DebugView::Lit;
+		if (effView == DebugView::Cascades && m_resources.cascadeProgram.shaderCount != 2)
+			effView = DebugView::Lit;
+		const bool meshletDbg = (effView == DebugView::Meshlets);
+		const bool lodDbg = (effView == DebugView::Lods);
+		const bool flatDbg = meshletDbg || lodDbg; // meshDebugProgram path
+		const bool unlitDbg = (effView == DebugView::Unlit);
+		const bool cascadeDbg = (effView == DebugView::Cascades);
+		const bool directDbg = unlitDbg || cascadeDbg; // default.vert + debug FS
+		const bool bypassFilter = (effView != DebugView::Lit);
+		// LOD palette (display colors; pre-scaled by dbgGain like meshlets
+		// so they survive the HDR -> tonemap path).
+		static const float kLodPalette[8][3] = {
+			{ 0.20f, 0.90f, 0.30f }, // LOD0 green
+			{ 0.95f, 0.85f, 0.20f }, // LOD1 yellow
+			{ 1.00f, 0.55f, 0.15f }, // LOD2 orange
+			{ 1.00f, 0.20f, 0.20f }, // LOD3 red
+			{ 1.00f, 0.20f, 1.00f }, // LOD4+ magenta
+			{ 1.00f, 0.20f, 1.00f },
+			{ 1.00f, 0.20f, 1.00f },
+			{ 1.00f, 0.20f, 1.00f },
+		};
+		// Exposure compensation shared by the flat debug views (meshlets +
+		// LODs): authored display colors travel through HDR + tonemap
+		// (hdr * exposure -> ACES); pre-scale by 1/exposure so the
+		// tonemapper reproduces them (ACES still shapes, hues stay
+		// distinct). The unlit/cascade shaders do this in-shader.
+		const float flatExposure = EffectiveExposure();
+		const float flatGain = (flatExposure > 1e-9f) ? 1.0f / flatExposure : 1.0f;
 		if (meshletDbg) {
 			cmd.BindRenderPipeline(
 				m_gfxRenderer.MeshDebugProgram(),
@@ -2551,7 +2815,93 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			}
 			);
 		}
-		if (gfxActive && !meshletDbg) {
+		// LOD debug view (F5): every opaque instance direct with a flat
+		// color for its SELECTED LOD sibling (green LOD0 -> red LOD3,
+		// magenta beyond). Uses the meshDebugProgram, bypasses the filter.
+		if (lodDbg) {
+			cmd.BindRenderPipeline(
+				m_gfxRenderer.MeshDebugProgram(),
+				smvk::VertexFormat::StaticVertexFormat,
+				opaqueDepth,
+				noStencil,
+				smvk::BlendSettings::Opaque(),
+				msaaSettings,
+				smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+			);
+			cmd.BindStaticVertexFmt();
+			MeshDebugPush lp2{};
+			std::copy_n(glm::value_ptr(frameViewProj), 16, lp2.viewProj);
+			m_world->forEachRenderItem(
+				smvk::IteratorFlagBit_Renderable
+				| smvk::IteratorFlagBit_Opaque
+				| smvk::IteratorFlagBit_StaticVertexFmt
+				,
+				[&](const smvk::World::RenderItem& item)
+			{
+				if (item.material == smvk::World::kInvalidIndex)
+					return;
+				const glm::mat4& model = m_world->scene.globalTransform[item.node];
+				std::copy_n(glm::value_ptr(model), 16, lp2.model);
+				uint32_t lod = 0;
+				smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh, &lod);
+				if (!meshDesc)
+					return;
+				const float* pal = kLodPalette[lod < 8 ? lod : 4];
+				lp2.color[0] = pal[0] * flatGain;
+				lp2.color[1] = pal[1] * flatGain;
+				lp2.color[2] = pal[2] * flatGain;
+				lp2.color[3] = 1.0f;
+				cmd.PushConstants(0, sizeof(lp2), &lp2, smvk::ShaderStage::All);
+				for (auto& draw_set : meshDesc->geometry.surfaces) {
+					cmd.DrawIndexed(draw_set.indexCount, 1,
+						draw_set.firstIndex, draw_set.baseVertex);
+				}
+			}
+			);
+		}
+		// Unlit (F2) / cascade (F4) views: every opaque instance direct
+		// with the debug fragment program. Full push per draw (model +
+		// materialId over the captured frame addresses): the flat debug
+		// pushes above clobber the shared push range, so delta pushes
+		// alone would read garbage frame addresses here.
+		if (directDbg) {
+			smvk::ShaderProgram& dbgProg =
+				unlitDbg ? m_resources.unlitProgram : m_resources.cascadeProgram;
+			uint32_t boundMaterial = UINT32_MAX;
+			m_world->forEachRenderItem(
+				smvk::IteratorFlagBit_Renderable
+				| smvk::IteratorFlagBit_Opaque
+				| smvk::IteratorFlagBit_StaticVertexFmt
+				,
+				[&](const smvk::World::RenderItem& item)
+			{
+				if (item.material == smvk::World::kInvalidIndex)
+					return;
+				const uint32_t materialId = item.material;
+				if (materialId != boundMaterial) {
+					bindForMaterial(materialId, dbgProg, opaqueDepth);
+					boundMaterial = materialId;
+				}
+				auto& model = m_world->scene.globalTransform[item.node];
+				smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
+				if (!meshDesc)
+					return;
+				PushConstants objPC = pc;
+				objPC.materialId = materialId;
+				std::copy_n(glm::value_ptr(model), 16, objPC.model);
+				cmd.PushConstants(0, sizeof(PushConstants), &objPC, smvk::ShaderStage::All);
+				for (auto& draw_set : meshDesc->geometry.surfaces) {
+					cmd.DrawIndexed(
+						draw_set.indexCount,
+						1,
+						draw_set.firstIndex,
+						draw_set.baseVertex
+					);
+				}
+			}
+			);
+		}
+		if (gfxActive && !bypassFilter) {
 			const auto& gfxRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
 			for (uint32_t ri = 0; ri < (uint32_t)gfxRanges.size(); ++ri) {
 				const uint32_t materialId = gfxRanges[ri].material;
@@ -2569,12 +2919,12 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				m_gfxRenderer.DrawRange(cmd, *m_context, gfxSlot, ri);
 			}
 		}
-		if (!meshletDbg) {
+		if (!bypassFilter) {
 			// UINT32_MAX forces a bind check on the first node; an
 			// identical state is deduped by the CommandBuffer's
 			// current-pipeline check, so this costs nothing.
-			// (Skipped in meshlet-debug mode: unfiltered meshes already
-			// drew white above.)
+			// (Skipped in debug views: those drew everything direct above,
+			// filter bypassed so culled data stays visible.)
 			uint32_t boundMaterial = UINT32_MAX;
 			m_world->forEachRenderItem(
 				smvk::IteratorFlagBit_Renderable
@@ -2669,8 +3019,52 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					[](const TransparentDraw& a, const TransparentDraw& b) { return a.dist2 > b.dist2; });
 			}
 
+			// Transparent follows the opaque debug view (Unlit/Cascades shade
+			// it with the same debug FS via full pushes; LODs draws it flat
+			// in the instance LOD color). Meshlets keeps the legacy look
+			// (transparent stays lit).
+			smvk::ShaderProgram* transProg = &m_resources.mainProgram;
+			if (unlitDbg) transProg = &m_resources.unlitProgram;
+			else if (cascadeDbg) transProg = &m_resources.cascadeProgram;
+			MeshDebugPush transLp{};
+			if (lodDbg)
+				std::copy_n(glm::value_ptr(frameViewProj), 16, transLp.viewProj);
+
 			uint32_t boundMaterial = UINT32_MAX;
 			for (const auto& d : draws) {
+				if (lodDbg) {
+					// Flat LOD color (self-contained push; ignores material).
+					uint32_t lod = 0;
+					smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId, &lod);
+					if (!meshDesc)
+						continue;
+					if (d.materialId != boundMaterial) {
+						cmd.BindRenderPipeline(
+							m_gfxRenderer.MeshDebugProgram(),
+							smvk::VertexFormat::StaticVertexFormat,
+							ditheredTransp ? opaqueDepth : transparentDepth,
+							noStencil,
+							smvk::BlendSettings::Opaque(),
+							msaaSettings,
+							smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+						);
+						cmd.BindStaticVertexFmt();
+						boundMaterial = d.materialId;
+					}
+					const glm::mat4& model = m_world->scene.globalTransform[d.node];
+					std::copy_n(glm::value_ptr(model), 16, transLp.model);
+					const float* pal = kLodPalette[lod < 8 ? lod : 4];
+					transLp.color[0] = pal[0] * flatGain;
+					transLp.color[1] = pal[1] * flatGain;
+					transLp.color[2] = pal[2] * flatGain;
+					transLp.color[3] = 1.0f;
+					cmd.PushConstants(0, sizeof(transLp), &transLp, smvk::ShaderStage::All);
+					for (auto& draw_set : meshDesc->geometry.surfaces) {
+						cmd.DrawIndexed(draw_set.indexCount, 1,
+							draw_set.firstIndex, draw_set.baseVertex);
+					}
+					continue;
+				}
 				if (d.materialId != boundMaterial) {
 					if (ditheredTransp) {
 						// Opaque state: the shader discard did the work.
@@ -2682,7 +3076,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 							raster = mat->pipeline.raster;
 						}
 						cmd.BindRenderPipeline(
-							m_resources.mainProgram,
+							*transProg,
 							smvk::VertexFormat::StaticVertexFormat,
 							opaqueDepth,
 							noStencil,
@@ -2691,9 +3085,31 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 							raster
 						);
 					} else {
-						bindForMaterial(d.materialId, m_resources.mainProgram, transparentDepth);
+						bindForMaterial(d.materialId, *transProg, transparentDepth);
 					}
 					boundMaterial = d.materialId;
+				}
+				if (directDbg) {
+					// Full push: the flat debug pushes above clobbered the
+					// shared push range, so delta pushes would read garbage
+					// frame addresses here.
+					auto& model = m_world->scene.globalTransform[d.node];
+					smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
+					if (!meshDesc)
+						continue;
+					PushConstants objPC = pc;
+					objPC.materialId = d.materialId;
+					std::copy_n(glm::value_ptr(model), 16, objPC.model);
+					cmd.PushConstants(0, sizeof(PushConstants), &objPC, smvk::ShaderStage::All);
+					for (auto& draw_set : meshDesc->geometry.surfaces) {
+						cmd.DrawIndexed(
+							draw_set.indexCount,
+							1,
+							draw_set.firstIndex,
+							draw_set.baseVertex
+						);
+					}
+					continue;
 				}
 				drawNode(d.node, d.meshId, d.materialId);
 			}
@@ -2926,6 +3342,17 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		std::vector<smvk::LogicalImageViewHandle> tonemapTargets = colors;
 		if (smaaActive)
 			tonemapTargets = { m_viewportResources.smaa.ldr.logicalView };
+		const bool lutOn = !m_lutFile.empty()
+			&& m_lutBindless != UINT32_MAX && m_lutIntensity > 0.0f;
+		// Screenshot frame: the composite is drawn once more into an sRGB
+		// capture target (the tonemap PS writes a single SV_Target, so a
+		// multi-attachment pass would leave the capture at its clear value).
+		// Scene-only on purpose - the capture is a grading reference.
+		bool captureThisFrame = false;
+		if (m_captureQueued) {
+			EnsureCaptureTarget(swapExtent);
+			captureThisFrame = !m_captureLogical.empty();
+		}
 		smvk::TonemapDesc tonemapDesc = m_viewportResources.tonemap.desc;
 		tonemapDesc.exposure = frameExposure;
 		auto& tonemapPass = m_viewportResources.tonemap.AddTonemapPass(
@@ -2947,8 +3374,34 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			{},
 			UINT32_MAX,
 			0.0f,
-			smaaActive || !swapIsSrgb);
+			smaaActive || !swapIsSrgb,
+			lutOn ? m_lutBindless : UINT32_MAX,
+			m_lutIntensity);
 		(void)tonemapPass;
+		if (captureThisFrame) {
+			m_viewportResources.tonemap.AddTonemapPass(
+				*m_rendergraph,
+				sceneHdrView,
+				sceneHdrBindless,
+				bloomView,
+				bloomBindless,
+				bloomIntensity,
+				linearSampler,
+				{ m_captureLogical },
+				swapExtent,
+				tonemapDesc,
+				"TonemapCapture",
+				motionView,
+				motionBindless,
+				m_showMotionDebug ? 1u : 0u,
+				m_motionDebugScale,
+				{},
+				UINT32_MAX,
+				0.0f,
+				false,
+				lutOn ? m_lutBindless : UINT32_MAX,
+				m_lutIntensity);
+		}
 		}
 
 		// ---------------------------------------------------------------------
@@ -3384,10 +3837,18 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				ImGui::TextDisabled("Holds frustum/eye/HZB; render camera stays live.\n"
 					"Move the camera to inspect what the frozen view culled.");
 				ImGui::Separator();
-				ImGui::Text("Meshlet debug views (bypass GPU cull)");
-				ImGui::Checkbox("Meshlet colors (replaces opaque)", &m_debugMeshlets);
+				ImGui::Text("Debug views (bypass GPU cull, F1..F5)");
+				{
+					const char* viewNames[] = {
+						"F1 Lit", "F2 Unlit", "F3 Meshlets",
+						"F4 Cascades", "F5 LODs",
+					};
+					int view = static_cast<int>(m_debugView);
+					if (ImGui::Combo("Debug view", &view, viewNames, 5))
+						m_debugView = static_cast<DebugView>(view);
+				}
 				const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
-				ImGui::Combo("Meshlet color mode", &m_debugMeshletMode, meshletModes, 2);
+				ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
 				ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones);
 				ImGui::Checkbox("Hide transparent (debug, bisect blending)", &m_hideTransparent);
 				if (!m_gfxRenderer.DebugProgramsValid())
@@ -3437,9 +3898,36 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				ImGui::TextDisabled("Bisect: disable flags top-down (small/backface/frustum/degen), then bypass.");
 			}
 			ImGui::Separator();
+			ImGui::Text("Color grading (TPP-style LUT)");
+			{
+				const char* current = m_lutFile.empty() ? "Off" : m_lutFile.c_str();
+				if (ImGui::BeginCombo("Color LUT", current)) {
+					if (ImGui::Selectable("Off", m_lutFile.empty())) {
+						m_lutFile.clear();
+						m_lutTexture = {};
+						m_lutBindless = UINT32_MAX;
+					}
+					for (const std::string& f : m_lutFiles) {
+						const bool selected = (m_lutFile == f);
+						if (ImGui::Selectable(f.c_str(), selected))
+							LoadLut(f);
+					}
+					ImGui::EndCombo();
+				}
+				if (!m_lutFile.empty())
+					ImGui::SliderFloat("LUT intensity", &m_lutIntensity, 0.0f, 1.0f, "%.2f");
+				ImGui::SameLine();
+				if (ImGui::Button("Rescan"))
+					ScanLutFiles();
+				ImGui::TextDisabled(
+					"F7: export neutral strip + screenshot to exports/.\n"
+					"PS: grade the 1024x32 strip, save PNG into content/luts/.");
+			}
+			ImGui::Separator();
 			ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
 			ImGui::TextDisabled("Keys: M blur  O SSAO  B bloom  X exposure  V vectors");
 			ImGui::TextDisabled("      L LODs  F lights  G filter  C cookies  K sky");
+			ImGui::TextDisabled("      F1 lit  F2 unlit  F3 meshlets  F4 cascades  F5 LOD colors");
 			ImGui::TextDisabled("      T transparency  Z/1-4 AA  U dock (%s)", UiDockName());
 			ImGui::End();
 
@@ -3525,6 +4013,13 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		m_rendergraph->Execute(fb);
+		if (m_captureQueued) {
+			// The capture target was written by the frame's commands, but the
+			// submit happens in EndAndPresentFramebuffer (after RenderFrame
+			// returns) - the readback must wait for it. DrawFrame picks this up.
+			m_captureQueued = false;
+			m_captureReadbackPending = true;
+		}
 		m_context->ProcessDeferrredTasks();
 		// Eye adaptation already ran at record time (before this frame's
 		// zero-fill); nothing to download here — the histogram compute was

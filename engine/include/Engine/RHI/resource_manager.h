@@ -56,6 +56,14 @@ public:
     // after WaitForDeviceIdle) or accept one-frame staleness.
     bool DownloadDataFromBuffer(BufferHandle src, void* out, size_t size,
                                 size_t srcOffset = 0);
+    // Debug readback: GPU color image (layer 0, mip 0, tightly packed) ->
+    // CPU memory. currentLayout must be the image's ACTUAL layout (the
+    // rendergraph does not write sync states back; a guessed Undefined
+    // would discard the contents on transition). The copy transitions to
+    // TRANSFER_SRC and back, so the layout is preserved. out must hold
+    // width * height * bytes-per-texel bytes.
+    bool DownloadDataFromImage(ImageHandle src, ImageLayout currentLayout,
+                               void* out, size_t size);
     void UploadDataToImage2D(const struct Image& image, const void* data,
                              PipelineStage dstStages, AccessFlags dstAccess, size_t src_offset);
 

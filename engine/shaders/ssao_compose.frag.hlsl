@@ -5,7 +5,7 @@
 // SSAO compose: depth-guided bilateral upsample of the half-res blurred AO
 // to FULL resolution (see ao.hlsli AoUpsample). Runs in its own pass so the
 // full-res depth is only ever a barriered sampled input here; consumers
-// (opaque ambient in default.frag) then plain .Load the composed R8 —
+// (opaque ambient in default_lit.frag) then plain .Load the composed R8 —
 // passes that ATTACH depth must never also sample it (layout clash = UB).
 
 struct PSIn

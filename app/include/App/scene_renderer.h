@@ -150,6 +150,21 @@ enum class AaMode : int {
 	SmaaT2x = 3,
 };
 
+// ---------------------------------------------------------------------------
+// Main-view debug visualization (F1..F5). Lit is the full PBR path; the rest
+// replace the opaque leg with a flat debug program so lighting/culling/LOD
+// artifacts bisect out in one keypress. Meshlets/Lods reuse the flat
+// meshDebugProgram (per-cluster / per-LOD colors); Unlit/Cascades have their
+// own fragment shaders pairing with default.vert.hlsl.
+// ---------------------------------------------------------------------------
+enum class DebugView : int {
+	Lit = 0,      // F1: full PBR (default_lit)
+	Unlit = 1,    // F2: baseColor + emissive, no lighting (default_unlit)
+	Meshlets = 2, // F3: per-cluster colors, bypasses GPU cull (meshdebug)
+	Cascades = 3, // F4: shadow cascade coverage (default_cascade_debug)
+	Lods = 4,     // F5: LOD index by color (flat, direct draws)
+};
+
 // Procedural demo lights (grid of points + a few orbiting spots).
 // Point lights are pure GPU lights (no scene nodes / emissive balls);
 // the ImGui overlay draws them as colored points + indices.
@@ -257,8 +272,15 @@ struct AppResources {
 	smvk::Holder<smvk::BufferHandle> spotShadowBuffer; // GpuCascadeDescription * kMaxSpotShadows per frame
 	smvk::LogicalBufferHandle spotShadowLogical{}; // rendergraph alias (stable: buffer never resized)
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
-	smvk::Holder<smvk::ShaderModuleHandle> fragShader;
+	smvk::Holder<smvk::ShaderModuleHandle> fragShader; // default_lit (F1)
 	smvk::ShaderProgram mainProgram;
+	// Debug-view fragment programs (F2/F4): same default.vert VS, flat FS.
+	// Loaded alongside main; missing modules leave the program at
+	// shaderCount 0 and the view falls back to Lit.
+	smvk::Holder<smvk::ShaderModuleHandle> fragUnlitShader;   // default_unlit (F2)
+	smvk::Holder<smvk::ShaderModuleHandle> fragCascadeShader; // default_cascade_debug (F4)
+	smvk::ShaderProgram unlitProgram;
+	smvk::ShaderProgram cascadeProgram;
 	// Alpha-tested shadow-depth program for MASK cutout casters
 	// (shadow.vert mainVS + shadow.frag mainPS). Opaque casters keep
 	// the engine builder's depth-only program.
@@ -425,6 +447,27 @@ protected:
 		if (m_input.isKeyPressed(GLFW_KEY_4)) {
 			m_aaMode = AaMode::SmaaT2x;
 		}
+		if (m_input.isKeyPressed(GLFW_KEY_F7)) {
+			ExportNeutralLut();
+			m_captureQueued = true;
+		}
+		// Debug views (F1..F5): F1 lit, F2 unlit, F3 meshlets, F4 shadow
+		// cascades, F5 LODs by color.
+		if (m_input.isKeyPressed(GLFW_KEY_F1)) {
+			m_debugView = DebugView::Lit;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_F2)) {
+			m_debugView = DebugView::Unlit;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_F3)) {
+			m_debugView = DebugView::Meshlets;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_F4)) {
+			m_debugView = DebugView::Cascades;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_F5)) {
+			m_debugView = DebugView::Lods;
+		}
 	}
 
 	void CycleUiDock() {
@@ -520,7 +563,9 @@ protected:
 	bool m_useGfxFilter = true; // false = legacy direct draws (A/B)
 	bool m_useFilteredMotion = true; // false = motion stays fully direct
 	// ---- Meshlet/cone debug views (see App/renderer.h debug programs) ----
-	bool m_debugMeshlets = false; // meshlet colors replace shaded opaque
+	// m_debugView selects the Main opaque program (F1..F5); anything but Lit
+	// bypasses the GPU filter with direct draws so culled data stays visible.
+	DebugView m_debugView = DebugView::Lit;
 	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat
 	bool m_hideTransparent = false; // debug: skip all transparent draws (bisect blending/overdraw out)
 	// Transparency technique for AlphaMode::Blend materials (default:
@@ -559,6 +604,28 @@ protected:
 	int m_motionBlurSamples = 12; // gather taps 1..32
 	float m_motionBlurMaxRadius = 24.0f; // blur clamp (px)
 	float m_motionBlurStrength = 1.0f; // shutter scale
+	// ---- Artistic LUT grading (TPP-style 32^3 strip, see tonemap.h) ----
+	// content/luts/*.png: 1024x32 sRGB-encoded strips. F7 exports the
+	// neutral strip + a screenshot reference into exports/ for Photoshop.
+	smvk::Holder<smvk::TextureHandle> m_lutTexture;
+	uint32_t m_lutBindless = UINT32_MAX;
+	std::string m_lutFile; // "" = off
+	float m_lutIntensity = 1.0f;
+	std::vector<std::string> m_lutFiles;
+	// Screenshot capture: the tonemap pass writes one extra RGBA8_SRGB
+	// target on the capture frame; the bytes read back to PNG after Execute.
+	smvk::Holder<smvk::ImageHandle> m_captureImage;
+	smvk::Holder<smvk::ImageViewHandle> m_captureView;
+	smvk::LogicalImageViewHandle m_captureLogical{};
+	smvk::Extent2D m_captureExtent{ 0, 0 };
+	bool m_captureQueued = false; // emit the capture pass this frame
+	bool m_captureReadbackPending = false; // read back after the submit (DrawFrame)
+
+	void ScanLutFiles();
+	bool LoadLut(const std::string& file);
+	void ExportNeutralLut();
+	void EnsureCaptureTarget(smvk::Extent2D extent);
+	void ExportScreenshot(smvk::Extent2D extent);
 	// ---- SMAA post-process antialiasing (see Engine/Rendergraph/smaa.h) ----
 	// AA mode combo drives everything (MSAA 2x only runs in its own mode):
 	// Off / Msaa2x / Smaa1x / SmaaT2x. T2x adds a quarter-pixel alternating
@@ -652,7 +719,7 @@ protected:
 	bool m_ssaoEnabled = true; // runs before Main, composites in opaque ambient
 	float m_ssaoRadius = 0.5f; // view-space sample radius (m)
 	float m_ssaoBias = 0.025f; // self-occlusion bias
-	float m_ssaoIntensity = 1.0f; // ambient composite strength (default.frag)
+	float m_ssaoIntensity = 1.0f; // ambient composite strength (default_lit.frag)
 	float m_ssaoMaxDistance = 25.0f; // fade-out distance (m)
 	int m_ssaoSamples = 16; // hemisphere taps 1..32
 	float m_ssaoBlurSharpness = 8.0f; // blur depth edge weight

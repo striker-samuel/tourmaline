@@ -2949,6 +2949,65 @@ bool smvk::VulkanResourceManager::DownloadDataFromBuffer(BufferHandle src, void*
 	return true;
 }
 
+bool smvk::VulkanResourceManager::DownloadDataFromImage(ImageHandle src, ImageLayout currentLayout, void* out, size_t outSize) {
+	if (outSize == 0 || out == nullptr || src.empty())
+		return false;
+	auto srcImg = images_.get(src);
+	if (!srcImg || srcImg->vkImage == VK_NULL_HANDLE)
+		return false;
+	if (!EnsureReadbackStaging(static_cast<VkDeviceSize>(outSize)))
+		return false;
+	auto stagingBuf = buffers_.get(m_readbackStaging);
+	if (!stagingBuf || stagingBuf->vkBuffer == VK_NULL_HANDLE)
+		return false;
+
+	// vkCmdCopyImageToBuffer sources are only GENERAL / TRANSFER_SRC_OPTIMAL:
+	// transition out of the caller-declared ACTUAL layout for the copy and
+	// back afterwards. Never pass Undefined here - that discards contents.
+	const VkImageLayout tracked = ToVkImageLayout(currentLayout);
+	const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+	const bool needTransition =
+		tracked != VK_IMAGE_LAYOUT_GENERAL && tracked != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
+	auto han = m_submitter->acquire();
+	auto cmd = m_submitter->GetCommandBuffer(han);
+	if (needTransition) {
+		ImageBarrier(cmd, srcImg->vkImage, tracked, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, range,
+			VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+			VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+			VK_ACCESS_2_TRANSFER_READ_BIT,
+			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+	}
+	VkBufferImageCopy region{};
+	region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+	region.imageExtent = { srcImg->extent.width, srcImg->extent.height, srcImg->extent.depth };
+	vkCmdCopyImageToBuffer(cmd, srcImg->vkImage,
+		needTransition ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : tracked,
+		stagingBuf->vkBuffer, 1, &region);
+	if (needTransition) {
+		ImageBarrier(cmd, srcImg->vkImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tracked, range,
+			VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+			VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+	}
+	BufferBarrier(cmd, stagingBuf->vkBuffer, 0, outSize,
+		VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+		VK_ACCESS_2_TRANSFER_WRITE_BIT,
+		VK_PIPELINE_STAGE_2_HOST_BIT,
+		VK_ACCESS_2_HOST_READ_BIT);
+	m_submitter->submit(han);
+	m_submitter->wait(han, UINT64_MAX);
+	void* mapped = MapBuffer(m_readbackStaging);
+	if (!mapped)
+		return false;
+	std::memcpy(out, mapped, outSize);
+	UnmapBuffer(m_readbackStaging);
+	return true;
+}
+
 bool smvk::VulkanResourceManager::EnsureReadbackStaging(VkDeviceSize size) {
 	static constexpr VkDeviceSize kMinBytes = 256ull * 1024;       // 256 KiB floor
 	static constexpr VkDeviceSize kMaxBytes = 256ull * 1024 * 1024; // sanity cap

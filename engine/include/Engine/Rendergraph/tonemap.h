@@ -7,7 +7,12 @@
 // SetColor (write) + SetInputImages (read).
 //
 // Composite: hdr += bloom * intensity (pre-tonemap), then Tonemap(hdr * exposure)
-// then gamma 1/2.2. Bloom disabled when bloomTextureIndex == UINT32_MAX.
+// then optional artistic LUT (TPP-style 32^3 strip, linear) then straight
+// linear LDR into the sRGB swapchain (the hardware encodes on store).
+// gammaEncode=1 is the exception: the pass then writes sRGB-encoded
+// bytes itself, for a UNORM LDR intermediate (the SMAA chain - see smaa.h) or
+// when the surface fell back to a non-sRGB format. Bloom disabled when
+// bloomTextureIndex == UINT32_MAX.
 //
 // Usage (app/src/main.cpp):
 //   smvk::Tonemapper tonemap;
@@ -43,8 +48,10 @@ struct TonemapPush {
 	// hdr *= lerp(1, ao, aoIntensity). UINT32_MAX = disabled.
 	uint32_t aoTextureIndex = UINT32_MAX;
 	float aoIntensity = 0.0f;
-	uint32_t pad1 = 0;
-	uint32_t pad2 = 0;
+	// Artistic grading: TPP-style 32^3 LUT strip (1024x32) sampled in
+	// linear post-tonemap, pre-encode. UINT32_MAX = disabled.
+	uint32_t lutTextureIndex = UINT32_MAX;
+	float lutIntensity = 0.0f;
 };
 static_assert(sizeof(TonemapPush) == 56);
 
@@ -120,6 +127,10 @@ struct Tonemapper {
 	// gammaEncodeOutput: set when the color targets are NOT hardware-sRGB
 	// (the SMAA ldr intermediate, or a non-sRGB surface fallback) - the
 	// shader then writes sRGB-encoded bytes itself.
+	// lutBindlessIndex: bindless slot of a 1024x32 LUT strip (32^3, RGBA8,
+	// sRGB view) applied in linear post-tonemap when lutIntensity > 0. The
+	// strip is immutable (like the SMAA area/search LUTs), so it needs no
+	// input-image barrier declaration.
 	RenderPass& AddTonemapPass(RenderGraph& rg,
 		LogicalImageViewHandle hdrView,
 		uint32_t hdrBindlessIndex,
@@ -138,7 +149,9 @@ struct Tonemapper {
 		LogicalImageViewHandle aoView = {},
 		uint32_t aoBindlessIndex = UINT32_MAX,
 		float aoIntensity = 0.0f,
-		bool gammaEncodeOutput = false) const {
+		bool gammaEncodeOutput = false,
+		uint32_t lutBindlessIndex = UINT32_MAX,
+		float lutIntensity = 0.0f) const {
 		assert(ShadersValid());
 		assert(!hdrView.empty());
 		assert(!swapViews.empty());
@@ -160,8 +173,9 @@ struct Tonemapper {
 		push.gammaEncode = gammaEncodeOutput ? 1u : 0u;
 		push.aoTextureIndex = aoOn ? aoBindlessIndex : UINT32_MAX;
 		push.aoIntensity = aoOn ? aoIntensity : 0.0f;
-		push.pad1 = 0;
-		push.pad2 = 0;
+		const bool lutOn = lutBindlessIndex != UINT32_MAX && lutIntensity > 0.0f;
+		push.lutTextureIndex = lutOn ? lutBindlessIndex : UINT32_MAX;
+		push.lutIntensity = lutOn ? lutIntensity : 0.0f;
 
 		std::vector<LogicalImageViewHandle> inputs;
 		inputs.reserve((bloomOn ? 1 : 0) + (motionDebugOn ? 1 : 0) + (aoOn ? 1 : 0) + 1);
@@ -215,11 +229,14 @@ struct Tonemapper {
 		LogicalImageViewHandle aoView = {},
 		uint32_t aoBindlessIndex = UINT32_MAX,
 		float aoIntensity = 0.0f,
-		bool gammaEncodeOutput = false) const {
+		bool gammaEncodeOutput = false,
+		uint32_t lutBindlessIndex = UINT32_MAX,
+		float lutIntensity = 0.0f) const {
 		return AddTonemapPass(rg, hdrView, hdrBindlessIndex, bloomView, bloomBindlessIndex,
 			bloomIntensity, linearSamplerIndex, swapViews, swapExtent, desc, name,
 			motionView, motionBindlessIndex, debugView, motionDebugScale,
-			aoView, aoBindlessIndex, aoIntensity, gammaEncodeOutput);
+			aoView, aoBindlessIndex, aoIntensity, gammaEncodeOutput,
+			lutBindlessIndex, lutIntensity);
 	}
 };
 

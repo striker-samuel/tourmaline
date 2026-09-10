@@ -22,7 +22,7 @@
 //         sampled input here — passes that ATTACH depth (motion vectors,
 //         Main) can never also sample it (layout clash = UB).
 // Composite happens in the opaque lighting pass (consumer-side): the app's
-// default.frag .Loads the composed AO and scales the ambient/indirect
+// default_lit.frag .Loads the composed AO and scales the ambient/indirect
 // term; sky never runs that shader, so background can never receive AO.
 //
 // Depth conventions (must match app + forwardplus.cs.hlsl):

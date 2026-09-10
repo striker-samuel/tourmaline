@@ -25,8 +25,8 @@ struct TonemapPush
     uint gammaEncode; // 1 = write encoded bytes (UNORM LDR target), 0 = linear into the sRGB swapchain
     uint aoTextureIndex; // half-res SSAO, 0xffffffff = disabled
     float aoIntensity;
-    uint pad1;
-    uint pad2;
+    uint lutTextureIndex; // 1024x32 LUT strip (32^3), 0xffffffff = disabled
+    float lutIntensity;
 };
 
 [[vk::push_constant]]
@@ -76,6 +76,27 @@ float3 HsvToRgb(float3 c)
     return c.z * lerp(K.xxx, saturate(p - K.xxx), c.y);
 }
 
+// Artistic grading: TPP-style 32x32x32 LUT stored as a 1024x32 strip (32
+// tiles along x, blue = tile, red = column, green = row). The strip bytes
+// are sRGB-encoded (authored in Photoshop) and the texture uses an _SRGB
+// view, so sampling lands in linear space - the grading composites in
+// linear, pre-encode. The sampler is linear/clamp (tp.samplerIndex).
+float3 SampleLut(float3 c)
+{
+    c = saturate(c);
+    float blue = c.b * 31.0f;
+    float tile = floor(blue);
+    float fracB = blue - tile;
+    Texture2D lut = textures[NonUniformResourceIndex(tp.lutTextureIndex)];
+    SamplerState smp = samplers[NonUniformResourceIndex(tp.samplerIndex)];
+    float2 uv0 = float2((tile * 32.0f + c.r * 31.0f + 0.5f) / 1024.0f,
+                        (c.g * 31.0f + 0.5f) / 32.0f);
+    float2 uv1 = float2(uv0.x + 32.0f / 1024.0f, uv0.y);
+    float3 a = lut.Sample(smp, uv0).rgb;
+    float3 b = lut.Sample(smp, uv1).rgb;
+    return lerp(a, b, fracB);
+}
+
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
@@ -105,7 +126,7 @@ PSOut mainPS(PSIn IN)
     // SSAO composite (half-res AO, bilinearly upscaled by the sampler).
     // Pre-bloom, pre-tonemap; disabled when index is 0xffffffff.
     // NOTE: this app consumes SSAO in the opaque lighting pass instead
-    // (default.frag.hlsl + ao.hlsli, depth-guided upsample); this path is
+    // (default_lit.frag.hlsl + ao.hlsli, depth-guided upsample); this path is
     // dormant here. The plain bilinear tap below has no depth authority —
     // it would leak AO across geometry/sky silhouettes if ever reused.
     if (tp.aoTextureIndex != 0xffffffff && tp.aoTextureIndex < 100000 && tp.aoIntensity > 0.0f)
@@ -122,6 +143,8 @@ PSOut mainPS(PSIn IN)
     }
 
     float3 mapped = Tonemap(hdr * exposure, mode);
+    if (tp.lutTextureIndex != 0xffffffff && tp.lutTextureIndex < 100000 && tp.lutIntensity > 0.0f)
+        mapped = lerp(mapped, SampleLut(mapped), saturate(tp.lutIntensity));
     // sRGB swapchain: store linear, the hardware encodes. Only the UNORM
     // SMAA ldr target (gammaEncode) needs the curve applied here.
     float3 ldr = tp.gammaEncode ? SrgbEncode(mapped) : saturate(mapped);
