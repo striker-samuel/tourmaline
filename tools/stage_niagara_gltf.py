@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 SRC = Path(r"F:/REPOS/niagara_bistro")
-DST = Path(r"F:/REPOS/vulkantoy/app/content/models/BistroNiagara")
+DST = Path(r"F:/content/models/BistroNiagara")
 
 def main():
     DST.mkdir(parents=True, exist_ok=True)

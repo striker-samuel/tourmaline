@@ -2,7 +2,7 @@
 // SMAA - Enhanced Subpixel Morphological Antialiasing (SMAA 1x + SMAA T2x).
 //
 // Port of the official implementation (https://github.com/iryoku/smaa, MIT -
-// see the license headers in app/content/shaders/smaa.hlsli and
+// see the license headers in engine/shaders/smaa.hlsli and
 // engine/include/Engine/Rendergraph/smaa_area_tex.h, plus the entry in
 // THIRD_PARTY_NOTICES.md) onto this engine's rendergraph conventions.
 //
@@ -152,7 +152,7 @@ inline void SmaaEndFrame(SmaaImageState& st, bool ranT2x, uint64_t recordCounter
 	st.parity ^= 1u;
 }
 
-// Must match SmaaPush in app/content/shaders/smaa_push.hlsli (80 bytes,
+// Must match SmaaPush in engine/shaders/smaa_push.hlsli (80 bytes,
 // all scalars). One shared layout for every SMAA pass; each pass fills
 // only the fields it reads.
 struct SmaaPush {
@@ -187,7 +187,7 @@ struct SmaaDesc {
 	const char* name = "smaa";
 };
 
-// Default SPVs (compiled from app/content/shaders by the CMake shader step).
+// Default SPVs (compiled from engine/shaders by the CMake shader step).
 inline constexpr const char* kSmaaEdgeVsPath = "content/shaders/smaa_edge.vert.hlsl.spv";
 inline constexpr const char* kSmaaEdgePsPath = "content/shaders/smaa_edge.frag.hlsl.spv";
 inline constexpr const char* kSmaaWeightsVsPath = "content/shaders/smaa_weights.vert.hlsl.spv";

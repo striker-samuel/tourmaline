@@ -366,3 +366,9 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# --- VulkanToy binary content (external store) ---
+# Large scene binaries live in F:/content (VULKANTOY_CONTENT_DIR), not in git.
+# The build syncs them next to App.exe. Never commit these paths.
+/app/content/models/
+/app/content/paks/

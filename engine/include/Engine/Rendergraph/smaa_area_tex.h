@@ -5,7 +5,7 @@
 // Byte-exact copy of Textures/AreaTex.h from the official SMAA repository
 // (https://github.com/iryoku/smaa; see the license below and the entry in
 // THIRD_PARTY_NOTICES.md). 160x560 R8G8_UNorm, sampled via .rg
-// (SMAA_AREATEX_SELECT in app/content/shaders/smaa.hlsli). Uploaded once
+// (SMAA_AREATEX_SELECT in engine/shaders/smaa.hlsli). Uploaded once
 // by Engine/Rendergraph/smaa.h (Smaa::EnsureLuts).
 //--------------------------------------------------------------------------------------------------
 

@@ -49,5 +49,11 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
         float d = pcH.hzb.Get().texels[pcH.srcOffset + sy1 * pcH.srcWidth + sx1];
         v = min(min(a, b), min(c, d));
     }
-    pcH.hzb.Get().texels[dstIdx] = v;
+    // Sanitize: one NaN/Inf-near poisons MIN upward into over-cull (fast
+    // yaw exposes it as a 1+ frame pop). Far/sky is 0 under reversed-Z,
+    // so collapse non-finite to 0 (keep-safe).
+    if (!isnan(v) && !isinf(v))
+        pcH.hzb.Get().texels[dstIdx] = v;
+    else
+        pcH.hzb.Get().texels[dstIdx] = 0.0f;
 }

@@ -6,7 +6,7 @@
 // (https://github.com/iryoku/smaa; see the license below and the entry in
 // THIRD_PARTY_NOTICES.md). 64x16 R8_UNorm - the packed/cropped size the
 // shader coordinates account for (SMAA_SEARCHTEX_PACKED_SIZE in
-// app/content/shaders/smaa.hlsli). Uploaded once by
+// engine/shaders/smaa.hlsli). Uploaded once by
 // Engine/Rendergraph/smaa.h (Smaa::EnsureLuts).
 //--------------------------------------------------------------------------------------------------
 

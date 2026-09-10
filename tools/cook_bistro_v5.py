@@ -19,8 +19,8 @@
 #        glass marker.
 #   3. Convert each referenced .png to .ktx2 with toktx (uastc + zstd,
 #      usage-classified srgb/linear/normal, same flags as ktx_bulk_convert).
-#   4. Stage app/content/models/Bistro/<gltf,bin,ktx2> with rewritten image
-#      URIs, then run PakCooker --meshlets on -> content/paks/bistro.pak.
+#   4. Stage F:/content/models/Bistro/<gltf,bin,ktx2> with rewritten image
+#      URIs, then run PakCooker --meshlets on -> F:/content/paks/bistro.pak.
 #
 # Usage (PowerShell, from repo root F:/REPOS/vulkantoy):
 #   py tools/cook_bistro_v5.py --src-dir C:/Users/samuel/AppData/Local/Temp/opencode/bistro_blender
@@ -227,7 +227,7 @@ def main():
     ap = argparse.ArgumentParser(description="Stage + cook Lumberyard Bistro v5.2.")
     ap.add_argument("--src-dir", required=True,
                     help="Blender glTF-separate export dir (bistro.gltf + .bin + .png)")
-    ap.add_argument("--app-content", default=str(REPO_ROOT / "app" / "content"))
+    ap.add_argument("--app-content", default=r"F:/content")
     ap.add_argument("--scene-dir-name", default="Bistro")
     ap.add_argument("--gltf-name", default="bistro.gltf")
     ap.add_argument("--pak-name", default="bistro.pak")

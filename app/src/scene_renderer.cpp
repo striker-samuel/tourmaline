@@ -266,9 +266,9 @@ static smvk::SpotShadowMapDesc MakeSpotShadowDesc() {
 
 // Scene samples (one row per sample; the framegraph is shared, so adding a
 // sample never copies pass code). Cook commands:
-//   Sponza: PakCooker --content-dir app/content
+//   Sponza: PakCooker --content-dir F:/content
 //             --in-vfs models/Sponza/sponza.gltf
-//             --out-pak app/content/paks/sponza.pak --meshlets on
+//             --out-pak F:/content/paks/sponza.pak --meshlets on
 //   Bistro: py tools/cook_bistro.py --niagara-dir F:/REPOS/niagara_bistro
 //             (stages models/Bistro + cooks content/paks/bistro.pak with
 //             --meshlets on --lods on; transitions use each LOD's cooked

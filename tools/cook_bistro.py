@@ -13,7 +13,7 @@
 #
 # Usage (PowerShell, from repo root F:/REPOS/vulkantoy):
 #   py tools/cook_bistro.py --niagara-dir F:/REPOS/niagara_bistro
-#       [--app-content app/content] [--mode uastc] [--workers 8]
+#       [--app-content F:/content] [--mode uastc] [--workers 8]
 #       [--skip-convert] [--skip-pak]
 #
 # --skip-convert reuses already-staged .ktx2 files (timestamp check does this
@@ -168,7 +168,7 @@ def validate_staged(stage, ktx_bin="ktx"):
 def main():
     ap = argparse.ArgumentParser(description="Stage + cook Niagara Bistro.")
     ap.add_argument("--niagara-dir", default="F:/REPOS/niagara_bistro")
-    ap.add_argument("--app-content", default=str(REPO_ROOT / "app" / "content"))
+    ap.add_argument("--app-content", default=r"F:/content")
     ap.add_argument("--scene-dir-name", default="Bistro")
     ap.add_argument("--gltf-name", default="bistro.gltf")
     ap.add_argument("--pak-name", default="bistro.pak")

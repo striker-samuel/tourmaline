@@ -1,5 +1,5 @@
 // motionblur_tests: CPU-side contract test for the depth-aware velocity
-// gather (app/content/shaders/motionblur.frag.hlsl).
+// gather (engine/shaders/motionblur.frag.hlsl).
 //
 // What it pins down:
 //   1. Thin-foreground preservation: a 3px near bar under large velocity

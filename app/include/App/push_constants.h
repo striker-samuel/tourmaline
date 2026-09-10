@@ -1,6 +1,6 @@
 #pragma once
 // Scene push constants shared by main.cpp and frame renderers.
-// Must match HLSL PushConstants in app/content/shaders/common.hlsli
+// Must match HLSL PushConstants in engine/shaders/common.hlsli
 // (field order + size). Was previously a main.cpp-local struct.
 
 #include <cstddef>

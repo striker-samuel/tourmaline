@@ -8,11 +8,11 @@ file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS
 add_executable(App ${APP_SOURCES})
 
 set(APP_DIR         "${CMAKE_CURRENT_SOURCE_DIR}")   # F:/REPOS/vulkantoy/app
-set(APP_SHADERS_DIR "${APP_DIR}/content/shaders")
+set(ENGINE_SHADERS_DIR "${CMAKE_SOURCE_DIR}/engine/shaders")
 set(APP_INCLUDE_DIR "${APP_DIR}/include")
 
 message(STATUS "APP_DIR = ${APP_DIR}")
-message(STATUS "APP_SHADERS_DIR = ${APP_SHADERS_DIR}")
+message(STATUS "ENGINE_SHADERS_DIR = ${ENGINE_SHADERS_DIR}")
 message(STATUS "APP_INCLUDE_DIR = ${APP_INCLUDE_DIR}")
 
 
@@ -34,6 +34,30 @@ set_target_properties(App PROPERTIES
 
 
 
+# Runtime content layout next to App.exe is always:
+#   content/models, content/paks, content/fonts, content/textures, content/luts
+# Large binaries (models/, paks/) live OUTSIDE git in VULKANTOY_CONTENT_DIR
+# (default F:/content, overridable via -DVULKANTOY_CONTENT_DIR or the env var).
+# Small tracked dirs (fonts/, ...) fall back to the legacy app/content tree.
+if(DEFINED ENV{VULKANTOY_CONTENT_DIR})
+    set(_VULKANTOY_CONTENT_DEFAULT "$ENV{VULKANTOY_CONTENT_DIR}")
+else()
+    set(_VULKANTOY_CONTENT_DEFAULT "F:/content")
+endif()
+set(VULKANTOY_CONTENT_DIR "${_VULKANTOY_CONTENT_DEFAULT}" CACHE PATH
+    "External binary content root (models/, paks/, ...). Not stored in git; synced next to App.exe at build time.")
+message(STATUS "VULKANTOY_CONTENT_DIR = ${VULKANTOY_CONTENT_DIR}")
+
+function(_vulkantoy_resolve_content_dir NAME OUT_VAR)
+    if(EXISTS "${VULKANTOY_CONTENT_DIR}/${NAME}")
+        set(${OUT_VAR} "${VULKANTOY_CONTENT_DIR}/${NAME}" PARENT_SCOPE)
+    elseif(EXISTS "${APP_DIR}/content/${NAME}")
+        set(${OUT_VAR} "${APP_DIR}/content/${NAME}" PARENT_SCOPE)
+    else()
+        set(${OUT_VAR} "" PARENT_SCOPE)
+    endif()
+endfunction()
+
 add_custom_command(TARGET App POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:App>/content/textures
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:App>/content/models
@@ -41,42 +65,22 @@ add_custom_command(TARGET App POST_BUILD
     COMMENT "📦 Copying resource folders (shaders, textures, models) to App runtime directory"
 )
 
-# Copy resource dirs only if they exist in the source tree.
-# (cmake -E copy_directory errors out when the source dir is missing,
-# which would fail the whole POST_BUILD step.)
-if(EXISTS "${APP_DIR}/content/textures")
-    add_custom_command(TARGET App POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${APP_DIR}/content/textures"
-                "$<TARGET_FILE_DIR:App>/content/textures"
-    )
-endif()
-
-if(EXISTS "${APP_DIR}/content/models")
-    add_custom_command(TARGET App POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${APP_DIR}/content/models"
-                "$<TARGET_FILE_DIR:App>/content/models"
-    )
-endif()
-
-# UI fonts (ImGui DPI-scaled TTF, see ImGuiOverlayDesc)
-if(EXISTS "${APP_DIR}/content/fonts")
-    add_custom_command(TARGET App POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${APP_DIR}/content/fonts"
-                "$<TARGET_FILE_DIR:App>/content/fonts"
-    )
-endif()
-
-# Cooked paks (PakCooker output; App prefers these over raw glTF)
-if(EXISTS "${APP_DIR}/content/paks")
-    add_custom_command(TARGET App POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${APP_DIR}/content/paks"
-                "$<TARGET_FILE_DIR:App>/content/paks"
-    )
-endif()
+# Sync each content subdir from the external store (preferred) or the
+# legacy in-repo tree (fallback). copy_directory creates the destination,
+# so a missing source simply skips that subdir.
+foreach(_CONTENT_SUB IN ITEMS models paks fonts textures luts)
+    _vulkantoy_resolve_content_dir(${_CONTENT_SUB} _CONTENT_SRC)
+    if(_CONTENT_SRC)
+        message(STATUS "Content '${_CONTENT_SUB}' <- ${_CONTENT_SRC}")
+        add_custom_command(TARGET App POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${_CONTENT_SRC}"
+                    "$<TARGET_FILE_DIR:App>/content/${_CONTENT_SUB}"
+        )
+    elseif(_CONTENT_SUB STREQUAL "models" OR _CONTENT_SUB STREQUAL "paks")
+        message(WARNING "Content '${_CONTENT_SUB}' not found in ${VULKANTOY_CONTENT_DIR} nor ${APP_DIR}/content - scenes needing it will fail at runtime.")
+    endif()
+endforeach()
 
 # Engine-owned baked resources (light cookies, see tools/cookie_baker).
 # Staged next to the executables' working dir; the app mounts it as the
@@ -124,11 +128,11 @@ add_custom_command(TARGET App POST_BUILD
 set(COMPILED_SHADER_OUTPUTS)
 
 compile_shaders(
-  "${APP_SHADERS_DIR}"
+  "${ENGINE_SHADERS_DIR}"
   "${CMAKE_BINARY_DIR}/content/shaders"
   App
   INCLUDE_DIRS
-    "${APP_SHADERS_DIR}"
+    "${ENGINE_SHADERS_DIR}"
     "${APP_INCLUDE_DIR}"
     "${APP_DIR}"
 )
