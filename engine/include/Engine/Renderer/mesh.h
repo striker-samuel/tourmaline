@@ -117,15 +117,19 @@ namespace smvk {
 		glm::vec3 pos;
 	};
 
-	// GPU shading stream: color is packed via glm::packUnorm4x8 (A = 255) and
-	// fetched as Format::RGBA8_UNorm, see StaticVertexFormat below.
+	// GPU shading stream (16 bytes): color is packed via
+	// vertexpack::PackColorUnorm8 and fetched as Format::RGBA8_UNorm, uv via
+	// vertexpack::PackUvHalf fetched as Format::RG16_Float, normal/tangent
+	// via PackNormalOct/PackTangentOct fetched as Format::R32_UInt and
+	// unpacked by hand in the vertex shader (see vertex_pack.hlsli).
+	// The bitangent is never stored (B = cross(N, T) * w in the fragment).
 	struct VertexShading {
-		uint32_t color;
-		glm::vec2 texCoord;
-		glm::vec3 normal;
-		glm::vec4 tangent;
+		uint32_t color;      // RGBA8_UNORM
+		uint32_t uv;         // RG16_FLOAT (packHalf2x16)
+		uint32_t normal;     // custom oct encoding (16+16)
+		uint32_t tangent;    // custom oct encoding (16+15) + handedness bit
 	};
-	static_assert(sizeof(VertexShading) == 40);
+	static_assert(sizeof(VertexShading) == 16);
 
 
 	// CPU-side import vertex
@@ -196,17 +200,17 @@ namespace smvk {
 					},
 					{
 						.semantic = VertexSemantic::TexCoord0,
-						.format = Format::RG32_Float,
-						.offset = offsetof(VertexShading, texCoord)
+						.format = Format::RG16_Float,
+						.offset = offsetof(VertexShading, uv)
 					},
 					{
 						.semantic = VertexSemantic::Normal,
-						.format = Format::RGB32_Float,
+						.format = Format::R32_UInt,
 						.offset = offsetof(VertexShading, normal)
 					},
 					{
 						.semantic = VertexSemantic::Tangent,
-						.format = Format::RGBA32_Float,
+						.format = Format::R32_UInt,
 						.offset = offsetof(VertexShading, tangent)
 					}
 				}

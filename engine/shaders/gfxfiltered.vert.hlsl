@@ -11,6 +11,7 @@
 //     fragment shader. All other shading (normal/tangent) is identical.
 #define GFXFILTERED_PASS
 #include "common.hlsli"
+#include "vertex_pack.hlsli"
 #include "gfxfilter.hlsli"
 
 struct FilteredVsMainPush
@@ -35,8 +36,8 @@ struct VSIn
     [[vk::location(0)]] float3 position : POSITION;
     [[vk::location(1)]] float4 color : COLOR0;
     [[vk::location(2)]] float2 uv : TEXCOORD0;
-    [[vk::location(3)]] float3 normal : NORMAL;
-    [[vk::location(4)]] float4 tangent : TANGENT;
+    [[vk::location(3)]] uint normalPacked : NORMAL;
+    [[vk::location(4)]] uint tangentPacked : TANGENT;
     uint instanceID : SV_InstanceID;
 };
 struct VSOut
@@ -64,6 +65,10 @@ VSOut mainVS(VSIn IN)
     OUT.color = float3(1.0f, 1.0f, 1.0f);
     OUT.uv = IN.uv;
 
+    // Packed shading stream: normal/tangent ride as R32_UInt oct words.
+    float3 normal = OctDecodeNormal(IN.normalPacked);
+    float4 tangent = OctDecodeTangent(IN.tangentPacked);
+
     float3x3 M3 = (float3x3) model;
     float det = M3[0][0] * (M3[1][1] * M3[2][2] - M3[1][2] * M3[2][1])
               - M3[0][1] * (M3[1][0] * M3[2][2] - M3[1][2] * M3[2][0])
@@ -85,16 +90,16 @@ VSOut mainVS(VSIn IN)
         adj[2][1] = -(M3[0][0] * M3[1][2] - M3[0][2] * M3[1][0]);
         adj[2][2] =  (M3[0][0] * M3[1][1] - M3[0][1] * M3[1][0]);
 
-        worldNormal = mul(adj / det, IN.normal);
+        worldNormal = mul(adj / det, normal);
     }
     else
     {
-        worldNormal = mul(M3, IN.normal);
+        worldNormal = mul(M3, normal);
     }
     OUT.normal = normalize(worldNormal);
 
-    float3 worldTangent = mul(M3, IN.tangent.xyz);
-    float handedness = IN.tangent.w * (det < 0.0f ? -1.0f : 1.0f);
+    float3 worldTangent = mul(M3, tangent.xyz);
+    float handedness = tangent.w * (det < 0.0f ? -1.0f : 1.0f);
     OUT.tangent = float4(normalize(worldTangent), handedness);
 
     return OUT;

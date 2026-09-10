@@ -1,12 +1,13 @@
 #include "common.hlsli"
+#include "vertex_pack.hlsli"
 
 struct VSIn
 {
     [[vk::location(0)]] float3 position : POSITION;
     [[vk::location(1)]] float4 color : COLOR0;
     [[vk::location(2)]] float2 uv : TEXCOORD0;
-    [[vk::location(3)]] float3 normal : NORMAL;
-    [[vk::location(4)]] float4 tangent : TANGENT;
+    [[vk::location(3)]] uint normalPacked : NORMAL;
+    [[vk::location(4)]] uint tangentPacked : TANGENT;
     uint instanceID : SV_InstanceID;
 };
 struct VSOut
@@ -49,6 +50,10 @@ VSOut mainVS(VSIn IN)
     // - Tangent xyz uses (float3x3)model, handedness w is flipped if model determinant <0 (mirrored).
     // - Main view uses a Y-flipped proj (proj[1][1]*=-1); front-face winding is
     //   defined by the pipeline RasterSettings (FrontFace::CounterClockwise).
+    // Packed shading stream: normal/tangent ride as R32_UInt oct words.
+    float3 normal = OctDecodeNormal(IN.normalPacked);
+    float4 tangent = OctDecodeTangent(IN.tangentPacked);
+
     float3x3 M3 = (float3x3) pc.model;
 
     // determinant of M3
@@ -79,16 +84,16 @@ VSOut mainVS(VSIn IN)
         // So for normal transform we need C / det (not transpose).
         float3x3 invTrans = adj / det;
         // Equivalent to transpose(inverse(M3)). Use mul(invTrans, normal) for column vector.
-        worldNormal = mul(invTrans, IN.normal);
+        worldNormal = mul(invTrans, normal);
     }
     else
     {
-        worldNormal = mul(M3, IN.normal);
+        worldNormal = mul(M3, normal);
     }
     OUT.normal = normalize(worldNormal);
 
-    float3 worldTangent = mul(M3, IN.tangent.xyz);
-    float handedness = IN.tangent.w * (det < 0.0f ? -1.0f : 1.0f);
+    float3 worldTangent = mul(M3, tangent.xyz);
+    float handedness = tangent.w * (det < 0.0f ? -1.0f : 1.0f);
     OUT.tangent = float4(normalize(worldTangent), handedness);
 
     return OUT;

@@ -1,5 +1,6 @@
 #include <Engine/core.h>
 #include <Engine/App/cluster.h>
+#include <Engine/Renderer/vertex_pack.h>
 #include "../Vulkan/detail/vulkan_impl.h"
 
 
@@ -132,10 +133,11 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 
 		positions[i].pos = src.pos;
 
-		shading[i].color = glm::packUnorm4x8(glm::vec4(src.color, 1.0f));
-		shading[i].texCoord = src.texCoord;
-		shading[i].normal = src.normal;
-		shading[i].tangent = src.tangent;
+		shading[i].color = vertexpack::PackColorUnorm8(src.color);
+		shading[i].uv = vertexpack::PackUvHalf(src.texCoord);
+		shading[i].normal = vertexpack::PackNormalOct(src.normal);
+		shading[i].tangent = vertexpack::PackTangentOct(
+			glm::vec3(src.tangent), src.tangent.w);
 	}
 
 

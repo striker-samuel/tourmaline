@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -21,6 +22,7 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Renderer/vertex_pack.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Vfs/vfs.h>
 
@@ -928,6 +930,71 @@ void TestMeshlets() {
 	}
 }
 
+void TestVertexPack() {
+	using namespace smvk;
+	using namespace smvk::vertexpack;
+
+	// Packed shading stream: 16 bytes, fixed member offsets (the Vulkan
+	// attribute table in mesh.h mirrors these).
+	Check(sizeof(VertexShading) == 16, "vpack.sizeof");
+	Check(offsetof(VertexShading, color) == 0 &&
+		offsetof(VertexShading, uv) == 4 &&
+		offsetof(VertexShading, normal) == 8 &&
+		offsetof(VertexShading, tangent) == 12, "vpack.offsets");
+
+	// Normal oct round-trip: axes, diagonals, skewed, degenerate zero.
+	const glm::vec3 normalCases[] = {
+		{ 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f },
+		{ 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f },
+		{ 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, -1.0f },
+		{ 1.0f, 1.0f, 1.0f }, { -1.0f, 1.0f, -1.0f },
+		{ 0.3f, -0.7f, 0.648f },
+		{ 0.0f, 0.0f, 0.0f }, // degenerate -> +Z fallback
+	};
+	bool normalsOk = true;
+	for (const auto& n : normalCases) {
+		const glm::vec3 out = UnpackNormalOct(PackNormalOct(n));
+		const glm::vec3 ref =
+			(glm::dot(n, n) > 1e-24f) ? glm::normalize(n) : glm::vec3(0.0f, 0.0f, 1.0f);
+		if (glm::dot(out, ref) < 0.9999f)
+			normalsOk = false;
+	}
+	Check(normalsOk, "vpack.normal.roundtrip");
+
+	// Tangent oct round-trip incl. handedness bit; w==0 packs as +1
+	// (matches the fragment-shader placeholder fallback).
+	bool tangentsOk = true;
+	const glm::vec4 tangentCases[] = {
+		{ 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, -1.0f },
+		{ 0.0f, 0.0f, 1.0f, 0.0f }, { 0.577f, 0.577f, 0.577f, -1.0f },
+		{ 0.0f, 0.0f, 0.0f, 1.0f }, // degenerate -> +X fallback
+	};
+	for (const auto& t : tangentCases) {
+		const glm::vec4 out = UnpackTangentOct(PackTangentOct(glm::vec3(t), t.w));
+		const glm::vec3 ref = glm::normalize(glm::vec3(t));
+		const float refW = (t.w < 0.0f) ? -1.0f : 1.0f;
+		if (glm::dot(glm::vec3(out), ref) < 0.999f)
+			tangentsOk = false;
+		if (out.w != refW)
+			tangentsOk = false;
+	}
+	Check(tangentsOk, "vpack.tangent.roundtrip");
+
+	// uv half round-trip over typical glTF ranges.
+	bool uvOk = true;
+	const glm::vec2 uvCases[] = {
+		{ 0.0f, 0.0f }, { 0.25f, 0.75f }, { 3.5f, -1.25f }, { 17.0f, 0.5f },
+	};
+	for (const auto& uv : uvCases) {
+		const uint32_t packed = PackUvHalf(uv);
+		glm::vec2 unpacked = glm::unpackHalf2x16(packed);
+		const glm::vec2 err = glm::abs(unpacked - uv);
+		if (!(err.x < 0.01f && err.y < 0.01f))
+			uvOk = false;
+	}
+	Check(uvOk, "vpack.uv.roundtrip");
+}
+
 void TestStaticCollapse() {
 	using namespace smvk;
 	auto cluster = std::make_unique<Cluster>(nullptr);
@@ -992,6 +1059,7 @@ int main() {
 	TestMeshOpt();
 	TestLodChain();
 	TestLodSelection();
+	TestVertexPack();
 	TestClusterSerializeCook();
 	TestStaticSubtrees();
 	TestMeshlets();
