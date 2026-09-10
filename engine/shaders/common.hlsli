@@ -40,6 +40,45 @@ float3 SrgbDecode(float3 c)
     return select(c <= 0.04045f, lo, hi);
 }
 
+// -------------------------------------------------------------------------
+// Dithered (screen-door) transparency for AlphaMode::Blend materials.
+// Opaque pipeline state (depth write on, blending off); pixels are kept
+// with probability ~= alpha via an ordered Bayer threshold. Temporal AA
+// (SMAA T2x) integrates the pattern over frames; without it a static
+// 4x4 Bayer reads as a fine stipple.
+//
+// The frame selects the technique via pc.pad_pc (0 = dithered, the
+// default; 1 = classic alpha blend). Helpers take plain args so passes
+// with their own push layout (GFXSEED/GFXFILTERED/...) still compile.
+// -------------------------------------------------------------------------
+
+// 4x4 Bayer threshold in (0,1): pixel coords -> threshold.
+float DitherBayer4(float2 pix)
+{
+    uint x = (uint)pix.x & 3u;
+    uint y = (uint)pix.y & 3u;
+    uint idx = y * 4u + x;
+    // Bayer 4x4 / 16, biased +0.5 so alpha==0 keeps nothing, alpha==1 keeps all.
+    float bayer[16] = {
+        0.0f / 16.0f,  8.0f / 16.0f,  2.0f / 16.0f, 10.0f / 16.0f,
+        12.0f / 16.0f, 4.0f / 16.0f, 14.0f / 16.0f,  6.0f / 16.0f,
+        3.0f / 16.0f, 11.0f / 16.0f,  1.0f / 16.0f,  9.0f / 16.0f,
+        15.0f / 16.0f, 7.0f / 16.0f, 13.0f / 16.0f,  5.0f / 16.0f
+    };
+    return (bayer[idx] + 0.5f / 16.0f);
+}
+
+// True when a Blend-material fragment with the given alpha survives.
+// Opaque / Mask materials never reach here (alphaMode check by caller).
+bool DitherKeep(float alpha, float2 pix)
+{
+    if (alpha <= 0.0f)
+        return false;
+    if (alpha >= 1.0f)
+        return true;
+    return alpha > DitherBayer4(pix);
+}
+
 // Configurable environment block (skydome IBL + fog).
 // Must match C++ smvk::EnvironmentFrameData (8 x float4, 128 bytes).
 struct EnvironmentFrameData
@@ -106,7 +145,7 @@ struct MaterialValues
     int4 tex;                // 32 x=baseColor, y=metallicRoughness, z=normal, w=occlusion
     int4 tex2;               // 48 x=emissive, yzw unused (-1)
     float4 params;           // 64 x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
-    float4 params2;          // 80 x=occlusionStrength, y=normalScale, z=emissiveStrength, w=unused
+    float4 params2;          // 80 x=occlusionStrength, y=normalScale, z=emissiveStrength, w=alphaMode (0=Opaque,1=Mask,2=Blend)
     float4 emissiveFactor;   // 96 xyz=emissiveFactor, w=pad
 };
 
@@ -243,6 +282,9 @@ struct PushConstants
     uint spotShadowMapIndex;
     uint spotShadowCount;
     uint spotIndex;
+    // Transparency technique for AlphaMode::Blend materials (see DitherKeep
+    // above): 0 = dithered screen-door (default, opaque state), 1 = classic
+    // alpha blend. Must match App/push_constants.h pad_pc.
     uint pad_pc;
     // RenderView system (see renderview.hlsli): per-frame virtual cameras
     // (main game camera + one view per shadow cascade / spot tile / custom

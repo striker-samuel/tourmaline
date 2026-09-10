@@ -421,6 +421,9 @@ protected:
 	bool m_debugMeshlets = false; // meshlet colors replace shaded opaque
 	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat
 	bool m_hideTransparent = false; // debug: skip all transparent draws (bisect blending/overdraw out)
+	// Transparency technique for AlphaMode::Blend materials (default:
+	// dithered screen-door, opaque state; optional classic alpha blend).
+	smvk::TransparentMode m_transparentMode = smvk::TransparentMode::Dithered;
 	bool m_debugCones = false;    // cone-axis line overlay (CPU batches)
 	smvk::Holder<smvk::BufferHandle> m_debugLines; // pos-only cone line VB
 	uint32_t m_debugLinesCap = 0; // verts allocated

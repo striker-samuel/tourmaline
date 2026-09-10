@@ -253,7 +253,8 @@ bool OptimizeStaticMeshUpload(
 bool BuildLodChainForUpload(
 	const StaticMeshUpload& lod0,
 	const MeshOptConfig& config,
-	std::vector<CookedLod>& out) {
+	std::vector<CookedLod>& out,
+	bool preserveCoverage) {
 	out.clear();
 	const size_t vcount = lod0.vertices.size();
 	const size_t icount = lod0.indices.size();
@@ -272,6 +273,22 @@ bool BuildLodChainForUpload(
 	size_t lastKeptIndices = icount;
 	const float targetError = std::clamp(config.lodTargetError, 0.0f, 1.0f);
 
+	// Cutout foliage: pack UVs as a dense attribute buffer so the
+	// attribute-aware simplifier can penalize UV distortion (which is what
+	// the alpha test samples). Weights are in UV units; ~0.5 keeps UV
+	// fidelity important without fully vetoing decimation.
+	std::vector<float> cutoutAttrs;
+	const float* cutoutAttrPtr = nullptr;
+	float cutoutWeights[2] = { 0.5f, 0.5f };
+	if (preserveCoverage) {
+		cutoutAttrs.resize(vcount * 2);
+		for (size_t i = 0; i < vcount; ++i) {
+			cutoutAttrs[i * 2 + 0] = lod0.vertices[i].texCoord.x;
+			cutoutAttrs[i * 2 + 1] = lod0.vertices[i].texCoord.y;
+		}
+		cutoutAttrPtr = cutoutAttrs.data();
+	}
+
 	std::vector<unsigned int> dest(icount);
 	for (float ratio : config.lodRatios) {
 		if (!(ratio > 0.0f) || !(ratio < 1.0f))
@@ -283,12 +300,27 @@ bool BuildLodChainForUpload(
 			continue; // must be coarser than the last kept LOD
 
 		float relativeError = 0.0f;
-		const size_t resultCount = meshopt_simplify(
-			dest.data(),
-			lod0.indices.data(), icount,
-			positions, vcount, sizeof(StaticVertex),
-			targetIndices, targetError, config.lodSimplifyOptions,
-			&relativeError);
+		size_t resultCount = 0;
+		if (preserveCoverage) {
+			const unsigned options =
+				config.lodSimplifyOptions | meshopt_SimplifyLockBorder;
+			resultCount = meshopt_simplifyWithAttributes(
+				dest.data(),
+				lod0.indices.data(), icount,
+				positions, vcount, sizeof(StaticVertex),
+				cutoutAttrPtr, sizeof(float) * 2,
+				cutoutWeights, 2, nullptr,
+				targetIndices, targetError, options,
+				&relativeError);
+		}
+		else {
+			resultCount = meshopt_simplify(
+				dest.data(),
+				lod0.indices.data(), icount,
+				positions, vcount, sizeof(StaticVertex),
+				targetIndices, targetError, config.lodSimplifyOptions,
+				&relativeError);
+		}
 
 		// --- Error-driven filter: drop broken candidates. ---
 		if (resultCount < 3 || (resultCount % 3) != 0)

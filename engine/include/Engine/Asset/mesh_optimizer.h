@@ -124,19 +124,28 @@ bool OptimizeStaticMeshUpload(
 	LodInfo* outLod = nullptr);
 
 // Builds the cooked LOD chain for an already-optimized LOD0 upload via
-// meshopt_simplify (positions only) + vertex-cache/fetch cleanup. Each
-// lodRatios entry is attempted in order against LOD0 with lodTargetError;
-// the result error (relative) is converted to a local absolute error via
+// meshopt_simplify (+ vertex-cache/fetch cleanup). Each lodRatios entry is
+// attempted in order against LOD0 with lodTargetError; the result error
+// (relative) is converted to a local absolute error via
 // meshopt_simplifyScale. Candidates are FILTERED by that error + reduction:
 // dropped when broken (0 indices, non-triangle count, NaN/inf error),
 // tiny (< lodMinTriangles tris), or not coarser enough (< lodMinReduction
 // fewer tris than the last kept LOD). Returns true when the input was valid
 // (out may still be empty when every candidate was filtered); false on
 // degenerate input. Never touches the LOD0 upload.
+//
+// preserveCoverage must be true for alpha-tested (MASK) / blended cutout
+// foliage: the simplifier then uses meshopt_simplifyWithAttributes on the
+// UVs plus meshopt_SimplifyLockBorder so quad borders can't collapse and
+// UV distortion (which drives the alpha-test) is part of the error metric.
+// Positions-only simplify destroys cutout silhouettes: borders shrink and
+// stretched UVs flip the alpha test, flashing background/sky through the
+// leaves on every LOD switch.
 bool BuildLodChainForUpload(
 	const StaticMeshUpload& lod0,
 	const MeshOptConfig& config,
-	std::vector<CookedLod>& out);
+	std::vector<CookedLod>& out,
+	bool preserveCoverage = false);
 
 // Max world scale of a node matrix: max length of the three basis columns.
 // Matches gltfpack's getScale() (max abs scale axis); conservative for

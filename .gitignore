@@ -372,3 +372,8 @@ FodyWeavers.xsd
 # The build syncs them next to App.exe. Never commit these paths.
 /app/content/models/
 /app/content/paks/
+
+
+#Opencode
+# opencode likes to build here
+/build

@@ -56,6 +56,11 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 	// while the 2x MSAA path (own transient depth) hides it.
 	// Newly visible filtered geometry additionally lands in depth pass 2.
 	const bool seeded = fc.seedDepthPrimed;
+	// Dithered transparency (default): Blend materials render with opaque
+	// state + screen-door discard, so they join the depth prepass like
+	// cutout (alpha-tested program dithers via shadow.frag). Blended mode
+	// keeps the legacy behavior (transparent excluded from depth).
+	const bool dithered = fc.ditheredTransparency;
 
 	// Snapshots for the recording lambdas (recorded now, executed later at
 	// Execute(); nothing here may reference the frame-local fc).
@@ -75,7 +80,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 			{ fc.extent.width, fc.extent.height }, "ForwardPlusDepth",
 			seeded ? smvk::AttachmentLoadOp::Load
 				: smvk::AttachmentLoadOp::Clear);
-		prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodInputs](smvk::CommandBuffer& cmd)
+		prepass.SetRecordingFunc([this, depthPC, world, lodEnabled, lodInputs, dithered](smvk::CommandBuffer& cmd)
 		{
 			// GPU context + pass scope come from RenderGraph::Execute.
 			auto drawPrepassNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
@@ -160,6 +165,71 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 			| smvk::IteratorFlagBit_Opaque
 			| smvk::IteratorFlagBit_StaticVertexFmt
 			, [&](const smvk::World::RenderItem& item) { drawPrepassNode(item, true); });
+			// Phase 3: dithered transparent – same alpha-tested program
+			// (shadow.frag screen-doors Blend materials when the frame
+			// requests dithering). Culling follows the material (single-
+			// sided glass backfaces must stay culled so the main view,
+			// which culls them too, agrees on depth).
+			if (dithered) {
+				auto drawDithered = [&](bool doubleSidedPhase) {
+					world->forEachRenderItem(
+						smvk::IteratorFlagBit_Renderable
+						| smvk::IteratorFlagBit_Transparent
+						| smvk::IteratorFlagBit_StaticVertexFmt
+						, [&](const smvk::World::RenderItem& item) {
+							if (item.material == smvk::World::kInvalidIndex)
+								return;
+							if (const smvk::Material* mat = world->GetMaterial(item.material)) {
+								if (mat->isDoubleSided() != doubleSidedPhase)
+									return;
+							}
+							else if (doubleSidedPhase) {
+								return; // material-less: single-sided phase
+							}
+							auto& model = world->scene.globalTransform[item.node];
+						smvk::StaticMesh* meshDesc = nullptr;
+						if (lodEnabled) {
+							const uint32_t lod = world->LodIndexForNode(item.node,
+								item.mesh, lodInputs);
+							meshDesc = world->GetLodMesh(item.mesh, lod);
+						}
+						else {
+							meshDesc = world->GetMesh(item.mesh);
+						}
+						if (!meshDesc) return;
+						PushConstants objectPC{};
+						std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+						objectPC.materialId = item.material;
+						cmd.PushConstants(offsetof(PushConstants, materialId),
+							sizeof(objectPC.materialId), &objectPC.materialId,
+							smvk::ShaderStage::All);
+						cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+						for (auto& draw_set : meshDesc->geometry.surfaces) {
+							cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+						};
+					});
+				};
+				auto bindDithered = [&](smvk::CullMode cull) {
+					cmd.BindRenderPipeline(
+						prepassMaskedProgram,
+						smvk::VertexFormat::StaticVertexFormat,
+						smvk::DepthSettings{
+							.depthFunc = smvk::CompareOp::GreaterEqual,
+							.writeEnable = true,
+							.depthTestEnable = true,
+						},
+						smvk::StencilSettings{},
+						smvk::BlendSettings{},
+						smvk::MSAASettings{},
+						smvk::RasterSettings{ .cullMode = cull }
+					);
+					cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
+				};
+				bindDithered(smvk::CullMode::Back);
+				drawDithered(false);
+				bindDithered(smvk::CullMode::None);
+				drawDithered(true);
+			}
 		});
 	}
 }

@@ -477,6 +477,42 @@ void TestLodChain() {
 	Check(smvk::BuildLodChainForUpload(quad, cfg, tiny), "lod.tiny.valid");
 	Check(tiny.empty(), "lod.tiny.filtered");
 
+	// Cutout path (preserveCoverage): UV-aware simplify + locked borders.
+	// Foliage quads sample coverage from the alpha texture via UVs, so a
+	// positions-only decimation that collapses borders / stretches UVs
+	// flashes background through the leaves on every LOD switch.
+	{
+		auto cut = MakeGrid(16);
+		std::vector<smvk::CookedLod> cchain;
+		Check(smvk::BuildLodChainForUpload(cut, cfg, cchain, true), "lod.cutout.valid");
+		Check(!cchain.empty(), "lod.cutout.nonempty");
+		// Locked borders: every LOD0 edge vertex must survive bit-exact in
+		// each kept sibling (border verts are never moved or removed).
+		const int n = 16;
+		bool bordersKept = true;
+		for (const auto& l : cchain) {
+			for (const auto& v : cut.vertices) {
+				const bool edge = v.pos.x == 0.0f || v.pos.x == (float)n ||
+					v.pos.y == 0.0f || v.pos.y == (float)n;
+				if (!edge)
+					continue;
+				bool found = false;
+				for (const auto& kv : l.upload.vertices) {
+					if (kv.pos == v.pos) { found = true; break; }
+				}
+				if (!found) { bordersKept = false; break; }
+			}
+			if (!bordersKept)
+				break;
+			if (!std::isfinite(l.relativeError) || !std::isfinite(l.localError) ||
+				l.relativeError < 0.0f || l.localError < 0.0f) {
+				bordersKept = false;
+				break;
+			}
+		}
+		Check(bordersKept, "lod.cutout.borders");
+	}
+
 	// Degenerate input fails softly.
 	smvk::StaticMeshUpload empty;
 	std::vector<smvk::CookedLod> deg;

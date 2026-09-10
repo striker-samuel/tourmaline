@@ -381,6 +381,16 @@ bool SceneRenderer::Initialize() {
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_AA value: " << aa << "\n";
 		}
 
+		// Transparency technique override for A/B runs without UI
+		// interaction (dither | blend). Default is dithered; the ImGui
+		// combo stays live after.
+		if (const char* trEnv = std::getenv("VULKANTOY_TRANSPARENCY")) {
+			const std::string_view tr{ trEnv };
+			if (tr == "dither" || tr == "dithered") m_transparentMode = smvk::TransparentMode::Dithered;
+			else if (tr == "blend" || tr == "blended") m_transparentMode = smvk::TransparentMode::Blended;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_TRANSPARENCY value: " << tr << "\n";
+		}
+
 		// Default to no-VSync (mailbox); the overlay combo can change it
 		// later (applies via Recreate in DrawFrame).
 		m_swapchain->SetPresentMode(m_presentMode);
@@ -1467,6 +1477,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		}
 		fc.lodEnabled = m_lodEnabled;
 		fc.lodInputs = m_lodFrameInputs;
+		fc.ditheredTransparency =
+			(m_transparentMode == smvk::TransparentMode::Dithered);
 
 		// Per-view triangle filter (main camera): appended below, after
 		// fc.pc is built (the temporal seed pass captures frame addresses)
@@ -1542,8 +1554,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 			.spotShadowBuffer = spotShadowBufferAddress,
 			.spotShadowMapIndex = m_spotShadowMapIndex >= 0 ? (uint32_t)m_spotShadowMapIndex : UINT32_MAX,
 			.spotShadowCount = m_spotShadowCount,
-			.spotIndex = UINT32_MAX, // not a spot shadow pass
-			.pad_pc = 0,
+		.spotIndex = UINT32_MAX, // not a spot shadow pass
+		// Transparency technique for Blend materials: 0 = dithered
+		// screen-door (default, opaque state), 1 = classic alpha blend.
+		.pad_pc = (m_transparentMode == smvk::TransparentMode::Blended) ? 1u : 0u,
 			.renderViews = renderViewsAddress,
 			.mainRenderView = mainRenderView,
 			.renderViewIndex = mainRenderView, // scene passes default to the main camera view
@@ -1981,19 +1995,21 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			motionPass.SetRecordingFunc([this, motionPC, motionFilteredActive, gfxSlot, renderViewsAddress, mainRenderView, frameUniformsAddress](smvk::CommandBuffer& cmd)
 			{
 				// GPU context + pass scope come from RenderGraph::Execute.
-				auto drawMotionNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
-					if (item.material == smvk::World::kInvalidIndex)
-						return;
-					// Static filtered nodes are covered by the HZB-culled
-					// indirect draws below: skip them here so they rasterize
-					// once. Moved filtered nodes (model != prev) still need
-					// the direct path for their correct prevModel. Every
-					// registered LOD sibling is in the indirect ranges
-					// (FilterMainView pushes the selected LOD), so only
-					// unregistered LODs take the direct path.
-					if (motionFilteredActive
-						&& m_gfxRenderer.GfxMeshForLod(item.mesh,
-							LodIndexForNode(item.node, item.mesh)) != UINT32_MAX) {
+			auto drawMotionNode = [&](const smvk::World::RenderItem& item, bool maskedPhase, bool ignoreFilter = false) {
+				if (item.material == smvk::World::kInvalidIndex)
+					return;
+				// Static filtered nodes are covered by the HZB-culled
+				// indirect draws below: skip them here so they rasterize
+				// once. Moved filtered nodes (model != prev) still need
+				// the direct path for their correct prevModel. Every
+				// registered LOD sibling is in the indirect ranges
+				// (FilterMainView pushes the selected LOD), so only
+				// unregistered LODs take the direct path.
+				// Dithered transparents never enter the filter (opaque-only
+				// push), so their leg passes ignoreFilter to always draw.
+				if (!ignoreFilter && motionFilteredActive
+					&& m_gfxRenderer.GfxMeshForLod(item.mesh,
+						LodIndexForNode(item.node, item.mesh)) != UINT32_MAX) {
 						const bool prevValid = m_prevGlobalTransforms.size()
 							== m_world->scene.globalTransform.size();
 						if (prevValid) {
@@ -2101,13 +2117,61 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					smvk::MSAASettings::Count1(),
 					smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
 				);
-			cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
-			m_world->forEachRenderItem(
-				smvk::IteratorFlagBit_Renderable
-				| smvk::IteratorFlagBit_Opaque
-				| smvk::IteratorFlagBit_StaticVertexFmt
-				, [&](const smvk::World::RenderItem& item) { drawMotionNode(item, true); });
-		});
+		cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+		m_world->forEachRenderItem(
+			smvk::IteratorFlagBit_Renderable
+			| smvk::IteratorFlagBit_Opaque
+			| smvk::IteratorFlagBit_StaticVertexFmt
+			, [&](const smvk::World::RenderItem& item) { drawMotionNode(item, true); });
+			// Phase 3: dithered transparent (screen-door, opaque state).
+			// The FS dithers with the same pattern as the main view.
+			// Culling follows the material so motion exists exactly for
+			// the pixels the color pass kept. Skipped in blend mode
+			// (transparent has no motion vectors there, as before).
+			if (m_transparentMode == smvk::TransparentMode::Dithered
+				&& !m_hideTransparent) {
+				auto drawDitheredMotion = [&](bool doubleSidedPhase) {
+					m_world->forEachRenderItem(
+						smvk::IteratorFlagBit_Renderable
+						| smvk::IteratorFlagBit_Transparent
+						| smvk::IteratorFlagBit_StaticVertexFmt
+						, [&](const smvk::World::RenderItem& item) {
+							if (item.material == smvk::World::kInvalidIndex)
+								return;
+							if (const smvk::Material* mat = m_world->GetMaterial(item.material)) {
+								if (mat->isDoubleSided() != doubleSidedPhase)
+									return;
+							}
+							else if (doubleSidedPhase) {
+								return;
+							}
+							drawMotionNode(item, false, true);
+						});
+				};
+				cmd.BindRenderPipeline(
+					m_viewportResources.motionVectors.program,
+					smvk::VertexFormat::StaticVertexFormat,
+					motionDepth,
+					smvk::StencilSettings{},
+					smvk::BlendSettings::Opaque(),
+					smvk::MSAASettings::Count1(),
+					smvk::RasterSettings{ .cullMode = smvk::CullMode::Back }
+				);
+				cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+				drawDitheredMotion(false);
+				cmd.BindRenderPipeline(
+					m_viewportResources.motionVectors.program,
+					smvk::VertexFormat::StaticVertexFormat,
+					motionDepth,
+					smvk::StencilSettings{},
+					smvk::BlendSettings::Opaque(),
+					smvk::MSAASettings::Count1(),
+					smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+				);
+				cmd.PushConstants(0, sizeof(PushConstants), &motionPC, smvk::ShaderStage::All);
+				drawDitheredMotion(true);
+			}
+	});
 			// Filtered-path consume hints (same barriers as Main): the
 			// filter CS writes the compacted index list + indirect commands
 			// + draws ring that the motion indirect draws read.
@@ -2479,13 +2543,18 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			);
 		}
 
-		// ---- BLEND transparent, back-to-front ----
-		// Same pass (color already cleared, depth loaded): depth test on,
-		// no depth writes, AlphaBlend from material.pipeline. Sorted by
-		// distance-to-camera so foliage/glass composites correctly.
+		// ---- Transparent (AlphaMode::Blend): dithered (default) or alpha blend ----
+		// Dithered: screen-door discard in shader, opaque pipeline state
+		// (blend off, depth test follows the opaque path). Depth was resolved
+		// by the prepass (1x read-only) or written inline (MSAA transient),
+		// so no sorting is needed – order-independent like opaque.
+		// Blended: classic back-to-front AlphaBlend, depth test on, no
+		// depth writes, sorted by distance-to-camera.
 		// m_hideTransparent (debug) skips the whole leg to bisect blending
 		// artifacts out of hole reports.
 		{
+			const bool ditheredTransp =
+				(m_transparentMode == smvk::TransparentMode::Dithered);
 			struct TransparentDraw { NodeId node; uint32_t meshId; uint32_t materialId; float dist2; };
 			std::vector<TransparentDraw> draws;
 			const glm::vec3 camPos = m_cameraPositioner.cameraPosition_;
@@ -2511,13 +2580,35 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			}
 			);
 			}
-			std::sort(draws.begin(), draws.end(),
-				[](const TransparentDraw& a, const TransparentDraw& b) { return a.dist2 > b.dist2; });
+			if (!ditheredTransp) {
+				std::sort(draws.begin(), draws.end(),
+					[](const TransparentDraw& a, const TransparentDraw& b) { return a.dist2 > b.dist2; });
+			}
 
 			uint32_t boundMaterial = UINT32_MAX;
 			for (const auto& d : draws) {
 				if (d.materialId != boundMaterial) {
-					bindForMaterial(d.materialId, m_resources.mainProgram, transparentDepth);
+					if (ditheredTransp) {
+						// Opaque state: the shader discard did the work.
+						// Blend off (bindForMaterial would return AlphaBlend
+						// from material.pipeline); depth follows opaque.
+						smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
+						smvk::RasterSettings raster{};
+						if (smvk::Material* mat = m_world->GetMaterial(d.materialId)) {
+							raster = mat->pipeline.raster;
+						}
+						cmd.BindRenderPipeline(
+							m_resources.mainProgram,
+							smvk::VertexFormat::StaticVertexFormat,
+							opaqueDepth,
+							noStencil,
+							opaqueBlend,
+							msaaSettings,
+							raster
+						);
+					} else {
+						bindForMaterial(d.materialId, m_resources.mainProgram, transparentDepth);
+					}
 					boundMaterial = d.materialId;
 				}
 				drawNode(d.node, d.meshId, d.materialId);
@@ -2918,6 +3009,20 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 						fb.imageIndex, m_smaaFrameParams.parity);
 				else
 					ImGui::TextDisabled("SMAA 1x: edges -> weights -> neighborhood blend");
+			}
+			{
+				// Transparency technique for Blend materials (default:
+				// dithered screen-door, opaque state; optional blend).
+				const char* transpModes[] = { "Dithered (default)", "Alpha blend" };
+				int transpIdx = (m_transparentMode == smvk::TransparentMode::Blended) ? 1 : 0;
+				if (ImGui::Combo("Transparency", &transpIdx, transpModes, 2))
+					m_transparentMode = (transpIdx == 1)
+						? smvk::TransparentMode::Blended
+						: smvk::TransparentMode::Dithered;
+				if (transpIdx == 0)
+					ImGui::TextDisabled("Screen-door: depth-writing, order-independent (SMAA T2x integrates it).");
+				else
+					ImGui::TextDisabled("Classic back-to-front blend: no depth write, sorted.");
 			}
 		}
 		ImGui::Separator();

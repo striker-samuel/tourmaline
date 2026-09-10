@@ -363,6 +363,12 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(
 {
 	smvk::Material material{};
 	material.values = values;
+	// Authoritative alphaMode mirror for the shader (params2.w): Blend
+	// materials need screen-door dither in the fragment shader, but
+	// shadingModel alone cannot distinguish them from Opaque (both are
+	// DefaultLit). Enforced here so cooked paks (whose blob predates the
+	// encoding) backfill correctly on deserialize.
+	material.values.params2.w = static_cast<float>(static_cast<uint32_t>(alphaMode));
 	material.shadingModel = shadingModel;
 	material.alphaMode = alphaMode;
 	material.alphaCutoff = alphaCutoff;

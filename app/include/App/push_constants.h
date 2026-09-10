@@ -30,6 +30,9 @@ struct alignas(16) PushConstants {
 	uint32_t spotShadowMapIndex;
 	uint32_t spotShadowCount;
 	uint32_t spotIndex;
+	// Transparency technique for AlphaMode::Blend materials (must match
+	// HLSL PushConstants::pad_pc in engine/shaders/common.hlsli):
+	// 0 = dithered screen-door (default, opaque state), 1 = alpha blend.
 	uint32_t pad_pc;
 	// RenderView system (see smvk::RenderViewSet): the per-frame
 	// virtual-camera slab + the main camera index. renderViewIndex is

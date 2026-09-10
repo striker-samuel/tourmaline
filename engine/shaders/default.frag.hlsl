@@ -123,6 +123,15 @@ PSOut mainPS(PSIn IN)
     if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
         discard;
 
+    // Dithered transparency for Blend (alphaMode == 2 in params2.w):
+    // screen-door discard, opaque output. Blend mode skips this and
+    // relies on the AlphaBlend pipeline state instead.
+    float alphaModeF = mat.params2.w;
+    const bool ditheredTransp = (pc.pad_pc == 0);
+    const bool isBlendMat = (alphaModeF == 2.0f);
+    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, IN.clipPos.xy))
+        discard;
+
     // ---------------------------------------------------------------
     // Metallic-roughness
     // glTF metallicRoughnessTexture: G=roughness, B=metallic
@@ -234,7 +243,8 @@ PSOut mainPS(PSIn IN)
             color = lerp(color, fogHdrU, fogFU);
         }
         // Still apply occlusion? Spec says occlusion not for unlit, but we keep none.
-        OUT.outColor = float4(color, baseAlpha);
+        // Dithered Blend writes opaque (alpha 1): no blending downstream.
+        OUT.outColor = float4(color, (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
         return OUT;
     }
 
@@ -456,7 +466,8 @@ PSOut mainPS(PSIn IN)
     }
 
     // Handle alpha blending output
-    // For Opaque/Masked we output baseAlpha, for Blend pipeline handles blending
-    OUT.outColor = float4(color, baseAlpha);
+    // For Opaque/Masked we output baseAlpha, for Blend pipeline handles blending.
+    // Dithered Blend outputs opaque alpha (the discard above did the work).
+    OUT.outColor = float4(color, (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
     return OUT;
 }

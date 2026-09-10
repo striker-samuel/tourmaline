@@ -1155,7 +1155,17 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 	// are final (shared meshes use the max instanced scale).
 	std::vector<smvk::CookedLod> lodChain;
 	if (meshOptConfig.generateLods && !data.vertices.empty() && !data.indices.empty()) {
-		if (smvk::BuildLodChainForUpload(data, meshOptConfig, lodChain)) {
+		// Alpha cutout (MASK) and blended foliage sample coverage from the
+		// base-color alpha via the UVs: positions-only simplify collapses
+		// quad borders and stretches UVs, flashing background through the
+		// leaves on every LOD switch. Use the coverage-preserving path.
+		bool preserveCoverage = false;
+		if (primitive.material >= 0 &&
+			primitive.material < (int)model.materials.size()) {
+			const std::string& am = model.materials[primitive.material].alphaMode;
+			preserveCoverage = (am == "MASK" || am == "BLEND");
+		}
+		if (smvk::BuildLodChainForUpload(data, meshOptConfig, lodChain, preserveCoverage)) {
 #ifndef NDEBUG
 			for (size_t li = 0; li < lodChain.size(); ++li) {
 				std::cout << "LOD mesh." << gltfMeshIndex << "/prim." << primitiveIndex

@@ -30,6 +30,15 @@ void mainPS(PSIn IN)
         baseAlpha *= s.a;
     }
 
-    if (baseAlpha < alphaCutoff)
+    // Dithered Blend (alphaMode == 2, dithered frame): screen-door discard
+    // so the depth prepass stores dithered depth for transparent materials.
+    // Masked and blended-Blend keep the classic alpha-cutout test.
+    float alphaModeF = mat.params2.w;
+    if (alphaModeF == 2.0f && pc.pad_pc == 0)
+    {
+        if (!DitherKeep(baseAlpha, IN.clipPos.xy))
+            discard;
+    }
+    else if (baseAlpha < alphaCutoff)
         discard;
 }

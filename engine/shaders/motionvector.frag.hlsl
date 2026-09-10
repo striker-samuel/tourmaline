@@ -36,6 +36,21 @@ PSOut mainPS(PSIn IN)
         if (baseAlpha < alphaCutoff)
             discard;
     }
+    // Dithered Blend: same screen-door pattern as the main view so motion
+    // vectors exist exactly for the pixels the color pass kept.
+    if (mat.params2.w == 2.0f && pc.pad_pc == 0)
+    {
+        float baseAlpha = mat.diffuse.a;
+        int baseColorIdx = mat.tex.x;
+        if (baseColorIdx >= 0)
+        {
+            float4 s = textures[NonUniformResourceIndex((uint)baseColorIdx)]
+                .Sample(samplers[0], IN.uv);
+            baseAlpha *= s.a;
+        }
+        if (!DitherKeep(baseAlpha, IN.pos.xy))
+            discard;
+    }
 
     FrameUniforms frame = pc.frameUniforms.Get();
 

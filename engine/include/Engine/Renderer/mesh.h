@@ -22,7 +22,7 @@ namespace smvk {
 		glm::ivec4 textures{ -1 };                       // 32 – x=baseColor, y=metallicRoughness, z=normal, w=occlusion
 		glm::ivec4 textures2{ -1 };                      // 48 – x=emissive, yzw unused (-1)
 		glm::vec4 params{ 0.5f, 1.0f, 1.0f, 0.0f };       // 64 – x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
-		glm::vec4 params2{ 1.0f, 1.0f, 1.0f, 0.0f };      // 80 – x=occlusionStrength, y=normalScale, z=emissiveStrength, w=unused
+		glm::vec4 params2{ 1.0f, 1.0f, 1.0f, 0.0f };      // 80 – x=occlusionStrength, y=normalScale, z=emissiveStrength, w=alphaMode (0=Opaque,1=Mask,2=Blend)
 		glm::vec4 emissiveFactor{ 0.0f, 0.0f, 0.0f, 0.0f }; // 96 – xyz=emissiveFactor, w=pad
 	};
 	static_assert(sizeof(MaterialValues) % 16 == 0);
@@ -42,6 +42,15 @@ namespace smvk {
 		Opaque = 0,
 		Mask,
 		Blend,
+	};
+
+	// Runtime transparency technique for AlphaMode::Blend materials.
+	// Dithered (default): screen-door discard in shader, opaque pipeline
+	// state (depth write on, blending off) – no sorting, correct depth/MSAA.
+	// Blended: classic back-to-front alpha blending (no depth write).
+	enum class TransparentMode : uint8_t {
+		Dithered = 0,
+		Blended,
 	};
 
 	struct MaterialPipelineState {

@@ -30,6 +30,10 @@ struct AppFrameContext : public smvk::FrameContext {
 	// decisions within a frame.
 	bool lodEnabled = false;
 	smvk::LodFrameInputs lodInputs{};
+	// Dithered transparency (default) vs classic alpha blend for
+	// AlphaMode::Blend materials. Mirrors SceneRenderer::m_transparentMode;
+	// consumed by the depth prepass (dithered transparents join depth).
+	bool ditheredTransparency = true;
 };
 
 } // namespace app
