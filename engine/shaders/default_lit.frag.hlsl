@@ -77,6 +77,95 @@ float3 LinearToSRGB(float3 c)
 
 // -------------------------------------------------------------------------
 
+// Per-forward-plus-light accumulation shared by the inline forward+
+// shadow path and the deferred-shadow consumer (below): bounds/cone
+// rejects, Frostbite windowed falloff, cookie + light function and
+// Cook-Torrance. Only the shadow factor source differs: sampled inline
+// (useInlineShadow, A/B path) or precomputed visibility from the
+// deferred-shadow pipeline (vis).
+void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
+    float3 geomN, float3 N, float3 V, float3 F0, float roughness,
+    float3 diffuse, float NdotV, bool useInlineShadow, float vis,
+    inout float3 direct)
+{
+    // Cheapest reject first: squared distance vs squared range.
+    // No sqrt / division until the light survives this test.
+    float3 toLight = pl.position - worldPos;
+    float dist2 = dot(toLight, toLight);
+    if (pl.range > 0.0f && dist2 > pl.range * pl.range)
+        return;
+    float dist = sqrt(dist2);
+    float3 Lp = toLight / max(dist, 1e-6f);
+
+    // Backface reject before any spot-cone / falloff work.
+    float NdotLp = max(dot(N, Lp), 0.0f);
+    if (NdotLp <= 0.0f)
+        return;
+
+    // Angular falloff for spots.
+    float angular = 1.0f;
+    float2 spotUV = float2(0.5f, 0.5f);
+    if (pl.type == 1)
+    {
+        float3 axis = normalize(pl.direction);
+        float cosA = dot(-Lp, axis);
+        float cosInner = cos(pl.innerAngle);
+        float cosOuter = cos(pl.outerAngle);
+        if (cosA < cosOuter)
+            return;
+        angular = smoothstep(cosOuter, cosInner, cosA);
+        // Cone UV for the cookie / spatial light functions
+        // (same projection as the spot-shadow tiles).
+        spotUV = SpotConeUV(axis, -Lp, pl.outerAngle);
+    }
+
+    // Frostbite-style windowed falloff, candela convention:
+    // radiance = color * intensity * window / (4 * PI * r^2).
+    float window_ = 1.0f;
+    if (pl.range > 0.0f)
+    {
+        float x = dist / max(pl.range, 1e-6f);
+        window_ = pow(saturate(1.0f - x * x * x * x), 2.0f);
+    }
+    float atten = window_ / max(4.0f * PI * dist * dist, 1e-2f);
+    float3 plColor = pl.color.rgb * pl.intensity;
+
+    // Light cookie (spot): gobo texture projected through the
+    // cone; modulates the light color (diffuse + specular).
+    if (pl.type == 1 && pl.cookieIndex >= 0)
+    {
+        uint cookieIdx = NonUniformResourceIndex((uint)pl.cookieIndex);
+        plColor *= textures[cookieIdx].Sample(samplers[0], spotUV).rgb;
+    }
+
+    // Light function: procedural per-light intensity curve
+    // (flicker / pulse / cone bands).
+    // Uses the engine-globals clock (globals.hlsli g_time()).
+    if (pl.functionType > 0)
+    {
+        plColor *= EvaluateLightFunction(
+            pl.functionType, pl.functionSpeed, pl.functionScale,
+            g_time(), spotUV, pl.type == 1);
+    }
+
+    // Shadow factor: inline spot-atlas sample (legacy path) or the
+    // deferred-shadow pipeline's precomputed per-pixel visibility.
+    float shadowFactor = vis;
+    if (useInlineShadow && pl.type == 1 && pl.shadowTile >= 0)
+        shadowFactor = GetSpotShadowFactorFromPC(1, worldPos, geomN,
+            pl.direction, pl.shadowTile);
+    if (shadowFactor <= 0.0f)
+        return;
+
+    float3 Hp = normalize(V + Lp);
+    float Dp = DistributionGGX(N, Hp, roughness);
+    float Gp = GeometrySmith(N, V, Lp, roughness);
+    float3 Fp = FresnelSchlick(max(dot(Hp, V), 0.0f), F0);
+    float3 specP = (Dp * Gp * Fp) / max(4.0f * NdotV * NdotLp, 1e-7f);
+
+    direct += (diffuse + specP) * plColor * (NdotLp * atten * angular * shadowFactor);
+}
+
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
@@ -309,12 +398,49 @@ PSOut mainPS(PSIn IN)
     float3 direct = (diffuse * NdotLWrap + specular * NdotL) * lightColor * shadow;
 
     // ---------------------------------------------------------------
-    // Forward+ tiled point/spot lights (depth-prepassed, GPU-culled).
-    // Tile lists live in fpTileCounts/fpTileIndices, lights in fpLights.
-    // Spots with shadowTile >= 0 sample the spot-shadow atlas tile
-    // (perspective, selected per frame – see SelectSpotShadowCasters).
+    // Forward+ tiled point/spot lights (depth-prepassed, GPU-culled),
+    // two shadow paths (H toggles at runtime):
+    //  - Deferred shadows (frame.dsEnabled): iterate the phase-4 FINAL
+    //    light list of the pixel's 8x8 Shadow Tile; per-light shadow
+    //    factor is the precomputed VisibilityBuffer value (fully-lit
+    //    flag or one byte from the tile's 64B slot) — no atlas sampling
+    //    in the lighting pass.
+    //  - Legacy: iterate the forward+ tile index lists and sample the
+    //    spot-shadow atlas tile inline.
+    // Directional light + CSM above is shared by both paths.
     // ---------------------------------------------------------------
-    if (pc.fpLightCount > 0)
+    const uint nlights = min(pc.fpLightCount, (uint)MAX_FP_LIGHTS);
+    if (frame.dsEnabled != 0u && frame.dsTileCountX > 0u)
+    {
+        const uint2 pix = (uint2)IN.clipPos.xy;
+        if (pix.x < (uint)frame.viewportSize.x && pix.y < (uint)frame.viewportSize.y)
+        {
+            const uint tileIdx = (pix.y >> 3) * frame.dsTileCountX + (pix.x >> 3);
+            const uint2 st = uint2(
+                frame.dsTileState.Get().states[tileIdx * 2u],
+                min(frame.dsTileState.Get().states[tileIdx * 2u + 1u],
+                    (uint)DS_MAX_LIGHTS_PER_TILE));
+            // Pixel index inside the Shadow Tile (phase-4 byte mapping).
+            const uint localIdx = (pix.x & 7u) + (pix.y & 7u) * 8u;
+            for (uint i = 0u; i < st.y; ++i)
+            {
+                if (st.x + i >= (uint)DS_MAX_LIST_UINTS)
+                    break; // saturated/invalid slot: nothing valid follows
+                const uint entry = frame.dsLightList.Get().entries[st.x + i];
+                const uint li = entry & 0x3FFu;
+                const uint slotInfo = entry >> DS_LIGHT_IDX_BITS;
+                float vis = 1.0f;
+                if (slotInfo != DS_SLOT_ALL_LIT)
+                    vis = DsLoadVisibility(frame.dsVisibility, slotInfo, localIdx);
+                if (li >= nlights)
+                    continue;
+                EvaluateForwardPlusLight(pc.fpLights.Get().lights[li],
+                    IN.worldPos, geomN, N, V, F0, roughness, diffuse, NdotV,
+                    false, vis, direct);
+            }
+        }
+    }
+    else if (pc.fpLightCount > 0)
     {
         uint fpTileSize = max(pc.fpTileSize, 1u);
         uint tx = (uint)(IN.clipPos.x / (float)fpTileSize);
@@ -324,7 +450,6 @@ PSOut mainPS(PSIn IN)
             uint tileIdx = ty * pc.fpTileCountX + tx;
             uint perTile = min(pc.fpMaxPerTile, (uint)MAX_FP_PER_TILE);
             uint stride = max(pc.fpMaxPerTile, 1u);
-            uint nlights = min(pc.fpLightCount, (uint)MAX_FP_LIGHTS);
             // Hard cap: a tile can pass more lights than the list holds
             // (big depth discontinuities). counts[] stores the true count
             // (debug value) but shading walks only the first perTile list
@@ -337,84 +462,9 @@ PSOut mainPS(PSIn IN)
                 uint li = pc.fpTileIndices.Get().indices[tileIdx * stride + s];
                 if (li >= nlights)
                     continue;
-                ForwardPlusLight pl = pc.fpLights.Get().lights[li];
-
-                // Cheapest reject first: squared distance vs squared range.
-                // No sqrt / division until the light survives this test.
-                float3 toLight = pl.position - IN.worldPos;
-                float dist2 = dot(toLight, toLight);
-                if (pl.range > 0.0f && dist2 > pl.range * pl.range)
-                    continue;
-                float dist = sqrt(dist2);
-                float3 Lp = toLight / max(dist, 1e-6f);
-
-                // Backface reject before any spot-cone / falloff work.
-                float NdotLp = max(dot(N, Lp), 0.0f);
-                if (NdotLp <= 0.0f)
-                    continue;
-
-                // Angular falloff for spots.
-                float angular = 1.0f;
-                float2 spotUV = float2(0.5f, 0.5f);
-                if (pl.type == 1)
-                {
-                    float3 axis = normalize(pl.direction);
-                    float cosA = dot(-Lp, axis);
-                    float cosInner = cos(pl.innerAngle);
-                    float cosOuter = cos(pl.outerAngle);
-                    if (cosA < cosOuter)
-                        continue;
-                    angular = smoothstep(cosOuter, cosInner, cosA);
-                    // Cone UV for the cookie / spatial light functions
-                    // (same projection as the spot-shadow tiles).
-                    spotUV = SpotConeUV(axis, -Lp, pl.outerAngle);
-                }
-
-                // Frostbite-style windowed falloff, candela convention:
-                // radiance = color * intensity * window / (4 * PI * r^2).
-                float window_ = 1.0f;
-                if (pl.range > 0.0f)
-                {
-                    float x = dist / max(pl.range, 1e-6f);
-                    window_ = pow(saturate(1.0f - x * x * x * x), 2.0f);
-                }
-                float atten = window_ / max(4.0f * PI * dist * dist, 1e-2f);
-                float3 plColor = pl.color.rgb * pl.intensity;
-
-                // Light cookie (spot): gobo texture projected through the
-                // cone; modulates the light color (diffuse + specular).
-                if (pl.type == 1 && pl.cookieIndex >= 0)
-                {
-                    uint cookieIdx = NonUniformResourceIndex((uint)pl.cookieIndex);
-                    plColor *= textures[cookieIdx].Sample(samplers[0], spotUV).rgb;
-                }
-
-                // Light function: procedural per-light intensity curve
-                // (flicker / pulse / cone bands).
-                // Uses the engine-globals clock (globals.hlsli g_time()).
-                if (pl.functionType > 0)
-                {
-                    plColor *= EvaluateLightFunction(
-                        pl.functionType, pl.functionSpeed, pl.functionScale,
-                        g_time(), spotUV, pl.type == 1);
-                }
-
-                // Spot shadow: tile assigned by the per-frame selection;
-                // unshadowed lights (shadowTile < 0) contribute fully.
-                // Oriented NDC bias uses geometric normal + spot travel dir.
-                float spotShadow = 1.0f;
-                if (pl.type == 1 && pl.shadowTile >= 0)
-                    spotShadow = GetSpotShadowFactorFromPC(1, IN.worldPos, geomN, pl.direction, pl.shadowTile);
-                if (spotShadow <= 0.0f)
-                    continue;
-
-                float3 Hp = normalize(V + Lp);
-                float Dp = DistributionGGX(N, Hp, roughness);
-                float Gp = GeometrySmith(N, V, Lp, roughness);
-                float3 Fp = FresnelSchlick(max(dot(Hp, V), 0.0f), F0);
-                float3 specP = (Dp * Gp * Fp) / max(4.0f * NdotV * NdotLp, 1e-7f);
-
-                direct += (diffuse + specP) * plColor * (NdotLp * atten * angular * spotShadow);
+                EvaluateForwardPlusLight(pc.fpLights.Get().lights[li],
+                    IN.worldPos, geomN, N, V, F0, roughness, diffuse, NdotV,
+                    true, 1.0f, direct);
             }
         }
     }

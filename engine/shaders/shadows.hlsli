@@ -207,9 +207,15 @@ float PCFShadowAtlas(
             );
 
             float d = textures[shadowIdx]
-                .Sample(
+                // SampleLevel (not Sample): the atlas is single-mip so the
+                // LOD is always 0, and implicit-LOD sampling is illegal in
+                // compute (the deferred-shadow phase 4 samples this from
+                // a CS — DXC would emit derivative-group capabilities no
+                // driver feature enables here).
+                .SampleLevel(
                     samplers[samplerId],
-                    sampleUV
+                    sampleUV,
+                    0
                 )
                 .r;
 
@@ -482,7 +488,10 @@ float GetShadowFactorCascaded(
 //    return shadow;
 //}
 
-// Legacy wrapper that pulls cascade buffer from push constants – main frag will call this
+// Legacy wrapper that pulls cascade buffer from push constants – main frag will call this.
+// Guarded: deferred-shadow compute passes include this header with their
+// own push layout (no scene-wide `pc`; see common.hlsli ENGINE_HAS_PC).
+#ifdef ENGINE_HAS_PC
 float GetShadowFactorCascadedFromPC(
     uint comparisonSamplerId,
     float3 worldPos,
@@ -494,6 +503,7 @@ float GetShadowFactorCascadedFromPC(
     GpuDirectionalLightDescription dir = pc.cascadeBuffer.Get().dir;
     return GetShadowFactorCascaded(comparisonSamplerId, worldPos, faceNormal, light, frame, dir);
 }
+#endif // ENGINE_HAS_PC
 
 // ---- Spot shadows (Forward+ spots, perspective atlas tiles) ----
 // tileIndex comes from ForwardPlusLight.shadowTile. Returns 1 (lit) when the
@@ -534,7 +544,109 @@ float GetSpotShadowFactorTile(
     );
 }
 
+// PCSS (Fernando 2005) over a perspective spot-shadow atlas tile — the
+// deferred-shadow phase 4 visibility technique (paper 2.4; any shadow
+// technique substitutes). Steps:
+//   1. blocker search: average shadow depths closer than the receiver
+//      over a fixed radius (the light's projected size),
+//   2. penumbra estimation: width ~ lightSize * (zRecv - zBlocker) /
+//      zBlocker, projected into tile UV through the perspective,
+//   3. variable-width PCF.
+// Eye depth from the RH_ZO NDC: z = far*near / (far - ndc.z*(far-near)).
+// All radii are computed in TILE UV and scaled by t.uvScale for the
+// atlas; every tap clamps into the tile (same discipline as
+// PCFShadowAtlas). outerAngle is the spot's half angle (light struct).
+float PcssSpotShadow(
+    uint samplerId,
+    float3 worldPos,
+    float3 faceNormal,
+    float3 spotDirection,
+    GpuCascadeDescription t,
+    uint atlasIdx,
+    float lightSize,     // world-space diameter of the emitting sphere
+    float nearPlane,     // spot shadow projection near (SPOT_SHADOW_NEAR)
+    float outerAngle     // spot half angle (radians)
+)
+{
+    // Same receiver bias + projection as GetSpotShadowFactorTile.
+    const float3 biasedWorld = worldPos + faceNormal * t.normalBias;
+    const float4 clip = mul(t.lightVP, float4(biasedWorld, 1.0f));
+    if (clip.w <= 1e-6f)
+        return 1.0f;
+    const float3 ndc = clip.xyz / clip.w;
+    if (ndc.z <= 0.0f || ndc.z >= 1.0f)
+        return 1.0f;
+    const float2 uv = ndc.xy * 0.5f + 0.5f;
+    if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
+        return 1.0f;
+    const float2 uvAtlas = uv * t.uvScale + t.uvBias;
+    const float receiverDepth =
+        ndc.z + GetOrientedBias(faceNormal, spotDirection, t.bias, false);
+
+    uint aw, ah;
+    textures[atlasIdx].GetDimensions(aw, ah);
+    const float tileRes = max(float(aw) * t.uvScale.x, 1.0f);
+    const float tanOuter = max(tan(min(outerAngle, 1.45f)), 1e-3f);
+    const float farP = max(t.splitEnd, nearPlane + 0.01f);
+    // Eye distances (RH_ZO perspective inversion; monotone in ndc.z).
+    const float zRecv = farP * nearPlane
+        / max(farP - ndc.z * (farP - nearPlane), 1e-4f);
+    // The frustum face at eye depth z is 2*z*tanOuter wide and the tile
+    // spans it: world-to-tile-UV scale = 1 / (2*z*tanOuter).
+
+    // ---- 1) Blocker search (3x3 over the light's projected size) ----
+    float rSearchUV = lightSize / max(2.0f * zRecv * tanOuter, 1e-4f);
+    rSearchUV = clamp(rSearchUV, 1.5f / tileRes, 12.0f / tileRes);
+    float blockerSum = 0.0f;
+    uint blockerCount = 0u;
+    [unroll]
+    for (int y = -1; y <= 1; ++y) {
+        [unroll]
+        for (int x = -1; x <= 1; ++x) {
+            const float2 tapUV = clamp(
+                uvAtlas + float2(x, y) * rSearchUV * t.uvScale,
+                t.uvClampMin, t.uvClampMax);
+            const float d = textures[atlasIdx]
+                .SampleLevel(samplers[samplerId], tapUV, 0).r;
+            if (d < receiverDepth) { // in front of the receiver: blocker
+                blockerSum += d;
+                blockerCount += 1u;
+            }
+        }
+    }
+    if (blockerCount == 0u)
+        return 1.0f; // unoccluded
+
+    // ---- 2) Penumbra estimation (eye-space similar triangles) ----
+    const float ndcBlocker = blockerSum / float(blockerCount);
+    const float zBlocker = farP * nearPlane
+        / max(farP - ndcBlocker * (farP - nearPlane), 1e-4f);
+    float rPenUV = lightSize * (zRecv - zBlocker)
+        / max(zBlocker * 2.0f * zRecv * tanOuter, 1e-4f);
+    rPenUV = clamp(rPenUV, 0.75f / tileRes, 16.0f / tileRes);
+
+    // ---- 3) Variable-width PCF (3x3) ----
+    float sum = 0.0f;
+    [unroll]
+    for (int py = -1; py <= 1; ++py) {
+        [unroll]
+        for (int px = -1; px <= 1; ++px) {
+            const float2 tapUV = clamp(
+                uvAtlas + float2(px, py) * rPenUV * t.uvScale,
+                t.uvClampMin, t.uvClampMax);
+            const float d = textures[atlasIdx]
+                .SampleLevel(samplers[samplerId], tapUV, 0).r;
+            sum += (receiverDepth <= d) ? 1.0f : 0.0f;
+        }
+    }
+    return sum / 9.0f;
+}
+
 // Push-constant wrapper – main frag calls this per shadowed spot.
+// Guarded like GetShadowFactorCascadedFromPC above (no `pc` in the
+// deferred-shadow compute passes, which call GetSpotShadowFactorTile
+// directly through their own push layout).
+#ifdef ENGINE_HAS_PC
 float GetSpotShadowFactorFromPC(
     uint samplerId,
     float3 worldPos,
@@ -555,6 +667,8 @@ float GetSpotShadowFactorFromPC(
     GpuCascadeDescription t = pc.spotShadowBuffer.Get().tiles[tileIndex];
     return GetSpotShadowFactorTile(samplerId, worldPos, faceNormal, spotDirection, t, atlasIdx);
 }
+
+#endif // ENGINE_HAS_PC
 
 float GetShadowFactorODB(
     uint comparisonSamplerId,

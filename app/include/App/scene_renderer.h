@@ -28,6 +28,7 @@
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
+#include <Engine/Rendergraph/deferredshadow.h>
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/environment.h>
 #include <Engine/Rendergraph/exposure.h>
@@ -101,6 +102,7 @@ struct ScenePassConfig {
 	bool msaa = true;               // 2x MSAA Main (when device supports it)
 	bool skydome = true;            // fullscreen-triangle sky in Main
 	bool smaa = true;               // SMAA post-process chain (mode via UI AA combo)
+	bool deferredShadows = true;    // tiled/zBin deferred-shadow pipeline (H toggles at runtime)
 
 	static ScenePassConfig All() { return ScenePassConfig{}; }
 	static ScenePassConfig Minimal() {
@@ -120,6 +122,7 @@ struct ScenePassConfig {
 		c.msaa = false;
 		c.skydome = false;
 		c.smaa = false;
+		c.deferredShadows = false;
 		return c;
 	}
 };
@@ -238,11 +241,21 @@ struct FrameUniforms
 	float aoPad_[3] = {};
 	// Configurable skydome IBL + fog (matches HLSL FrameUniforms.env).
 	smvk::EnvironmentFrameData env;
+	// ---- Deferred shadows (tiled/zBin pipeline, see
+	// smvk::DeferredShadows + deferredshadow*.hlsli). Raw BDAs: the HLSL
+	// side declares matching vk::BufferPointer fields. dsEnabled flips the
+	// default_lit consumer between the deferred lists and the inline
+	// forward+ shadow path (A/B). ----
+	uint64_t dsTileState = 0;   // 640 per-tile {slot, count}
+	uint64_t dsLightList = 0;   // 648 final packed entries
+	uint64_t dsVisibility = 0;  // 656 64B visibility slots
+	uint32_t dsTileCountX = 0;  // 664 8px shadow tiles per row
+	uint32_t dsEnabled = 0;     // 668 1 = shade from the deferred lists
 };
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 // CPU/HLSL ABI: total-size alignment is not enough — each field offset must
 // match common.hlsli FrameUniforms (float4-packed, env = 8 x float4).
-static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128);
+static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32);
 static_assert(offsetof(FrameUniforms, view) == 0);
 static_assert(offsetof(FrameUniforms, proj) == 64);
 static_assert(offsetof(FrameUniforms, viewProj) == 128);
@@ -260,6 +273,11 @@ static_assert(offsetof(FrameUniforms, exposure) == 488);
 static_assert(offsetof(FrameUniforms, aoTextureIndex) == 492);
 static_assert(offsetof(FrameUniforms, aoIntensity) == 496);
 static_assert(offsetof(FrameUniforms, env) == 512);
+static_assert(offsetof(FrameUniforms, dsTileState) == 640);
+static_assert(offsetof(FrameUniforms, dsLightList) == 648);
+static_assert(offsetof(FrameUniforms, dsVisibility) == 656);
+static_assert(offsetof(FrameUniforms, dsTileCountX) == 664);
+static_assert(offsetof(FrameUniforms, dsEnabled) == 668);
 
 // Resources
 struct AppResources {
@@ -303,6 +321,7 @@ struct ViewportResources {
 	smvk::BloomChain bloom; // separated per-mip HDR chain + default down/up programs + Ensure
 	smvk::Tonemapper tonemap; // default tonemap program + pass helper
 	smvk::ForwardPlus forwardPlus; // tile buffers + cull/depth programs + Ensure
+	smvk::DeferredShadows deferredShadows; // fixed-size ring buffers + 3 phase programs
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
 	smvk::DepthTarget renderDepth; // scene depth at internal resolution + Ensure
 	smvk::HdrTarget hdr; // HDR intermediate (image + view + bindless + logical) + Ensure
@@ -417,6 +436,9 @@ protected:
 		if (m_input.isKeyPressed(GLFW_KEY_F)) {
 			m_fpDemo.enabled = !m_fpDemo.enabled;
 		}
+		if (m_input.isKeyPressed(GLFW_KEY_H)) {
+			m_dsEnabled = !m_dsEnabled;
+		}
 		if (m_input.isKeyPressed(GLFW_KEY_G)) {
 			m_useGfxFilter = !m_useGfxFilter;
 		}
@@ -507,6 +529,24 @@ protected:
 	// Procedural Forward+ demo lights (no scene nodes; see UpdateForwardPlusLights).
 	uint32_t UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame);
 
+	// ---- Deferred shadows (Square-Enix-style tiled/zBin pipeline, see
+	// smvk::DeferredShadows) ----
+	// Single gate for every consumer (FrameUniforms dsEnabled, phase-1
+	// uploads, phases 2-4 dispatch, Main read hints) so they can never
+	// disagree and feed the lighting pass stale buffer contents.
+	bool DsActive() const {
+		return m_passes.deferredShadows && m_dsEnabled
+			&& m_viewportResources.deferredShadows.Valid()
+			&& m_viewportResources.deferredShadows.ShadersValid();
+	}
+	// Phases 2-4 compute passes (called after the Forward+ tile cull
+	// spot, i.e. over complete depth).
+	void AppendDeferredShadowPhases(uint32_t frameIndex,
+		uint64_t frameUniformsAddress, uint64_t fpLightsAddress,
+		uint64_t spotShadowBufferAddress, uint32_t fpLightCount,
+		smvk::LogicalImageViewHandle depthView,
+		smvk::LogicalBufferHandle fpLightsLogical);
+
 	void RebuildSwapViews();
 	void DrawFrame() override;
 	void RenderFrame(smvk::Framebuffer fb);
@@ -577,7 +617,13 @@ protected:
 	uint32_t m_debugLinesCap = 0; // verts allocated
 	bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
 	bool m_debugDumpHzb = false;    // one-shot: dump HZB buffer contents (stderr)
-	bool m_dumpFirstFrameHzb = false; // opt-in: dump HZB once on the next frame (stalls)
+	bool m_dumpFirstFrameHzb = false;      // opt-in: dump HZB once on the next frame (stalls)
+	int m_dumpAtFrame = -1;                // opt-in (VULKANTOY_DS_DUMP=<frame>): one-shot deferred-shadow dump (stalls)
+	void DumpDeferredShadows(uint32_t frameIndex); // post-Execute one-shot (stalls)
+	// Headless A/B helpers: auto-capture at a fixed frame (env
+	// VULKANTOY_CAPTURE=<n>; -1 = off) keyed on the render-frame counter.
+	int m_captureAtFrame = -1;
+	uint64_t m_frameCounter = 0;
 	// ---- Debug culling freeze: hold the filter's (view, eye) + HZB while
 	// the render camera moves freely, so culling decisions stay put and
 	// their effect (missing survivors, holes) is inspectable. Captured on
@@ -589,6 +635,25 @@ protected:
 	glm::vec3 m_frozenEye{ 0.0f };
 	smvk::Extent2D m_frozenExtent{ 0, 0 };
 	app::ForwardPlusRenderer m_fpRenderer{};
+	// ---- Deferred shadows (tiled/zBin pipeline; H toggles) ----
+	bool m_dsEnabled = true;
+	// Retired-slice counter readback for the debug overlay (list/vis slot
+	// peaks, ~2 frames old — same lag as the exposure meter). Includes
+	// the phase 3/4 classification histogram (telemetry).
+	struct DsStats {
+		uint32_t listSlots = 0;
+		uint32_t visSlots = 0;
+		uint32_t clsAllLit = 0;
+		uint32_t clsAllShadow = 0;
+		uint32_t clsPenumbra = 0;
+		uint32_t sumEarly = 0;
+		uint32_t sumFinal = 0;
+		uint32_t dbgSpotCone = 0;
+		uint32_t dbgSpotClip = 0;
+	};
+	DsStats m_dsStats{};
+	std::vector<uint32_t> m_dsZBinStaging;  // 4 * kDsZBinCount
+	std::vector<uint32_t> m_dsMaskStaging;  // per-TileGroup mask entries
 	// ---- Motion vector pass: previous-frame state + debug view ----
 	glm::mat4 m_prevViewProj{ 1.0f }; // last frame's viewProj (post Y-flip)
 	// This frame's viewProj WITHOUT the SMAA T2x subpixel jitter (post

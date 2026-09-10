@@ -1,4 +1,7 @@
-#include <algorithm>
+﻿#include <algorithm>
+#include <array>
+#include <bit>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -96,7 +99,7 @@ static smvk::BloomDesc MakeBloomDesc() {
 // -----------------------------------------------------------------------------
 // Tonemap config (program + pass live in Engine/Rendergraph/tonemap.h)
 // -----------------------------------------------------------------------------
-static constexpr float TONEMAP_EXPOSURE = 0.001f; // sun 5000 lux * 0.001 ≈ HDR 5 pre-ACES
+static constexpr float TONEMAP_EXPOSURE = 0.001f; // sun 5000 lux * 0.001 â‰ˆ HDR 5 pre-ACES
 static constexpr uint32_t TONEMAP_MODE = 1; // 0=Reinhard, 1=ACES, 2=Uncharted2
 
 static smvk::TonemapDesc MakeTonemapDesc() {
@@ -296,7 +299,7 @@ const SceneDesc& SceneRegistry::Bistro() {
 		/*label=*/"Bistro",
 		/*gltfPath=*/"content/models/Bistro/bistro.gltf",
 		/*pakPath=*/"content/paks/bistro.pak",
-		// Niagara glTF source (known-good geometry; authoring shims kept —
+		// Niagara glTF source (known-good geometry; authoring shims kept â€”
 		// RootNode 100x = FBX cm->m, Level -90d X = Z-up->Y-up; see
 		// tools/cook_bistro.py + stage_niagara_gltf.py). Default view =
 		// street level inside the block (engine-space AABB ~59x32x119 m).
@@ -354,6 +357,19 @@ void SceneRenderer::Configure(SceneDesc scene, ScenePassConfig passes) {
 	// stable pointer to m_cameraPositioner, so lookAt is assignment-safe).
 	m_cameraPositioner.lookAt(scene.camPos, scene.camTarget,
 		glm::vec3(0.0f, 1.0f, 0.0f));
+	// Debug: rotate the default view around world up (degrees) — A/B runs
+	// without mouse input (e.g. sponza spawns facing away from the demo
+	// light grid; VULKANTOY_CAM_YAW=90 turns to face it).
+	if (const char* yawEnv = std::getenv("VULKANTOY_CAM_YAW")) {
+		const float yaw = std::strtof(yawEnv, nullptr);
+		const glm::vec3 dir = glm::normalize(scene.camTarget - scene.camPos);
+		const float rad = glm::radians(yaw);
+		const glm::vec3 rot(
+			dir.x * std::cos(rad) + dir.z * std::sin(rad), dir.y,
+			-dir.x * std::sin(rad) + dir.z * std::cos(rad));
+		m_cameraPositioner.lookAt(scene.camPos, scene.camPos + rot,
+			glm::vec3(0.0f, 1.0f, 0.0f));
+	}
 }
 
 // FrameUniforms / AppResources / ViewportResources live in
@@ -391,6 +407,48 @@ bool SceneRenderer::Initialize() {
 			if (tr == "dither" || tr == "dithered") m_transparentMode = smvk::TransparentMode::Dithered;
 			else if (tr == "blend" || tr == "blended") m_transparentMode = smvk::TransparentMode::Blended;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_TRANSPARENCY value: " << tr << "\n";
+		}
+
+		// Deferred shadows override for A/B runs without UI interaction
+		// (1 | 0). Runtime H toggle + the ImGui checkbox stay live after.
+		if (const char* dsEnv = std::getenv("VULKANTOY_DS")) {
+			const std::string_view ds{ dsEnv };
+			if (ds == "1" || ds == "on") m_dsEnabled = true;
+			else if (ds == "0" || ds == "off") m_dsEnabled = false;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DS value: " << ds << "\n";
+		}
+		// One-shot deferred-shadow buffer dump after frame <n> Execute
+		// (stalls like the HZB dump; see DumpDeferredShadows). Frame 0 is
+		// warmup (seed/targets), so steady-state frames are the useful ones.
+		if (const char* dumpEnv = std::getenv("VULKANTOY_DS_DUMP")) {
+			const int dumpFrame = std::atoi(dumpEnv);
+			if (dumpFrame >= 0)
+				m_dumpAtFrame = dumpFrame;
+		}
+		// Screenshot capture at a fixed frame number (no F7 needed for
+		// headless A/B runs; same PNG export path as the UI capture).
+		if (const char* capEnv = std::getenv("VULKANTOY_CAPTURE")) {
+			m_captureAtFrame = std::atoi(capEnv);
+		}
+		// Freeze the demo light animation (bob/orbit/flicker) so A/B
+		// screenshot comparisons isolate the rendering change instead of
+		// the wall-clock phase of the animated lights.
+		if (const char* statEnv = std::getenv("VULKANTOY_LIGHTS_STATIC")) {
+			if (std::atoi(statEnv) != 0) {
+				m_fpDemo.animate = false;
+				m_fpDemo.lightFunctionsEnabled = false;
+			}
+		}
+		// Deterministic A/B helpers: manual exposure + IBL off remove the
+		// two global feedback paths (eye adaptation, sky IBL ambient) so
+		// pixel diffs isolate the per-light shading change.
+		if (const char* expEnv = std::getenv("VULKANTOY_AUTO_EXPOSURE")) {
+			if (std::atoi(expEnv) == 0)
+				m_autoExposureEnabled = false;
+		}
+		if (const char* iblEnv = std::getenv("VULKANTOY_IBL")) {
+			if (std::atoi(iblEnv) == 0)
+				m_env.iblEnabled = false;
 		}
 
 		// Default to no-VSync (mailbox); the overlay combo can change it
@@ -722,7 +780,7 @@ bool SceneRenderer::Initialize() {
 		// Spot-shadow atlas (fixed kMaxSpotShadows slots; selection caps usage).
 		// Non-fatal: without it all spots simply run unshadowed.
 		if (!m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc())) {
-			std::cerr << "[SceneRenderer] Spot shadow atlas unavailable – spots run unshadowed\n";
+			std::cerr << "[SceneRenderer] Spot shadow atlas unavailable â€“ spots run unshadowed\n";
 		}
 		if (!m_viewportResources.tonemap.Ensure(*m_context, MakeTonemapDesc())) {
 			std::cerr << "[SceneRenderer] Failed to create tonemap program\n";
@@ -732,13 +790,13 @@ bool SceneRenderer::Initialize() {
 		// compute program). Non-fatal: without it the frame falls back to
 		// manual exposure.
 		if (!m_viewportResources.exposure.Ensure(*m_context, *m_rendergraph, MakeExposureDesc())) {
-			std::cerr << "[SceneRenderer] Exposure meter unavailable – manual exposure only\n";
+			std::cerr << "[SceneRenderer] Exposure meter unavailable â€“ manual exposure only\n";
 		}
 		// Skydome program (fullscreen-triangle sky.vert/sky.frag). Failure is
 		// non-fatal: the Main pass simply skips the sky draw and keeps the
 		// clear color.
 		if (!m_skydome.Ensure(*m_context)) {
-			std::cerr << "[SceneRenderer] Skydome program unavailable – running without sky\n";
+			std::cerr << "[SceneRenderer] Skydome program unavailable â€“ running without sky\n";
 		}
 
 		{
@@ -765,7 +823,7 @@ bool SceneRenderer::Initialize() {
 				smvk::MsaaDesc msaaDesc{};
 				msaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 				if (!m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, msaaDesc)) {
-					std::cerr << "[SceneRenderer] MSAA target unavailable – falling back to 1x\n";
+					std::cerr << "[SceneRenderer] MSAA target unavailable â€“ falling back to 1x\n";
 				}
 			}
 			if (!m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc())) {
@@ -775,14 +833,14 @@ bool SceneRenderer::Initialize() {
 		smvk::UiDesc uiDesc{};
 		uiDesc.format = LdrUnormSibling();
 		if (!m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, uiDesc)) {
-			std::cerr << "[SceneRenderer] UI target unavailable – UI disabled\n";
+			std::cerr << "[SceneRenderer] UI target unavailable â€“ UI disabled\n";
 		}
 			if (!m_viewportResources.uiComposite.Ensure(*m_context)) {
 				std::cerr << "[SceneRenderer] UI composite program unavailable\n";
 			}
 		}
 
-		// ImGui overlay – init after swapchain/rendergraph are ready.
+		// ImGui overlay â€“ init after swapchain/rendergraph are ready.
 		// Uses dynamic rendering; no external RenderPass needed.
 		m_imgui = std::make_unique<smvk::ImGuiOverlay>();
 		smvk::ImGuiOverlayDesc imguiDesc{};
@@ -790,7 +848,7 @@ bool SceneRenderer::Initialize() {
 		imguiDesc.fontBaseSize = UI_FONT_BASE_SIZE;
 		imguiDesc.colorFormat = LdrUnormSibling(); // must match the UI target above
 		if (!m_imgui->Init(*m_context, *m_swapchain, window, imguiDesc)) {
-			std::cerr << "[SceneRenderer] Failed to init ImGuiOverlay – continuing without UI\n";
+			std::cerr << "[SceneRenderer] Failed to init ImGuiOverlay â€“ continuing without UI\n";
 			m_imgui.reset();
 		} else {
 			m_uiDpiScale = m_imgui->AppliedDpiScale(); // auto = monitor content scale
@@ -903,7 +961,7 @@ void SceneRenderer::Shutdown() {
 		data.farPlane = m_scene.farClip;
 		// Linear exposure multiplier for the tonemapper (ACES).
 		// Sun is 5000 lux (see UpdateLights); 0.001 puts a sun-facing
-		// mid-gray (albedo 0.18, N·L=1) at HDR ≈ 0.29 pre-ACES → no clipping.
+		// mid-gray (albedo 0.18, NÂ·L=1) at HDR â‰ˆ 0.29 pre-ACES â†’ no clipping.
 		// NOTE: FrameUniforms.exposure is currently unread by shaders; the
 		// tonemap push constant is the live knob. Kept in sync with the
 		// effective exposure (auto-adapted or manual) for future readers.
@@ -921,6 +979,25 @@ void SceneRenderer::Shutdown() {
 		data.aoIntensity = ssaoOn ? m_ssaoIntensity : 0.0f;
 		// Configurable skydome IBL + fog (single source for sky/sun/fog).
 		data.env = m_env.ToFrameData();
+
+		// Deferred shadows: consumer-side BDAs + the frame's on/off flag.
+		// DsActive() is the single gate shared with the phase-1 upload and
+		// the phase 2-4 dispatch below, so the flag can never advertise
+		// lists that were not (re)built this frame.
+		if (DsActive()) {
+			const smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
+			data.dsTileState = ds.TileStateAddress(*m_context, currentFrame);
+			data.dsLightList = ds.LightListAddress(*m_context, currentFrame);
+			data.dsVisibility = ds.VisibilityAddress(*m_context, currentFrame);
+			data.dsTileCountX = ds.tileCountX;
+			data.dsEnabled = 1u;
+		} else {
+			data.dsTileState = 0;
+			data.dsLightList = 0;
+			data.dsVisibility = 0;
+			data.dsTileCountX = 0;
+			data.dsEnabled = 0u;
+		}
 
 		// Destination scope covers every consumer: BDA reads in vertex,
 		// fragment (lighting/materials/env) and compute (Forward+ cull).
@@ -1055,7 +1132,7 @@ void SceneRenderer::Shutdown() {
 	// histogram for frameIndex BEFORE this frame zeroes it. The download
 	// must precede both the zero-fill and the main-submit of this frame:
 	// UpdateAutoExposure used to run after Execute (but Execute only
-	// records into fb.commandBuffer — EndAndPresent submits it later), so
+	// records into fb.commandBuffer â€” EndAndPresent submits it later), so
 	// the download's copy was submitted BEFORE this frame's histogram
 	// compute and could only ever observe the just-zeroed buffer (flat
 	// ImGui plot; a stale nonzero flash only when transfer/GPU timing
@@ -1082,7 +1159,7 @@ void SceneRenderer::Shutdown() {
 			return;
 		// Current flight slice, read BEFORE this frame's zero-fill below.
 		// Acquire already retired this slot, so its bins are the completed
-		// accumulation from two frames ago — no cross-flight torn reads and
+		// accumulation from two frames ago â€” no cross-flight torn reads and
 		// no wait on the still-in-flight previous frame.
 		if (frameIndex >= ::MAX_FRAMES_IN_FLIGHT)
 			return;
@@ -1156,7 +1233,7 @@ void SceneRenderer::Shutdown() {
 				? std::min(gridCount, FP_MAX_LIGHTS - spotReserve)
 				: 0;
 
-			// Orbiting spots to exercise the cone path (written first —
+			// Orbiting spots to exercise the cone path (written first â€”
 			// see the comment above).
 			for (int s = 0; s < m_fpDemo.spotCount && lights.size() < FP_MAX_LIGHTS; ++s) {
 				smvk::ForwardPlusLight l{};
@@ -1275,19 +1352,346 @@ void SceneRenderer::Shutdown() {
 			}
 		}
 
-		constexpr size_t FP_FRAME_STRIDE = sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS;
-		if (!lights.empty()) {
-			m_context->UploadDataToBuffer(
-				m_resources.fpLightsBuffer,
-				lights.data(),
-				sizeof(smvk::ForwardPlusLight) * lights.size(),
-				smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute),
-				smvk::AccessFlags::ShaderRead,
-				0,
-				currentFrame * FP_FRAME_STRIDE
-			);
+	// ---- Deferred shadows, phase 1 (CPU Prepare, paper 2.1) ----
+	// Sort by closest distance to the near plane BEFORE the upload: the
+	// GPU light buffer and every zBin index refer to this order. Runs
+	// after the spot-shadow selection so patched shadowTile fields travel
+	// with their lights. (When the pipeline is off, keep the spots-first
+	// order the capped forward+ list relies on.)
+	if (DsActive() && !lights.empty()) {
+		smvk::DsSortLightsByNearDistance(lights, frame.view);
+	}
+
+	constexpr size_t FP_FRAME_STRIDE = sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS;
+	if (!lights.empty()) {
+		m_context->UploadDataToBuffer(
+			m_resources.fpLightsBuffer,
+			lights.data(),
+			sizeof(smvk::ForwardPlusLight) * lights.size(),
+			smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute),
+			smvk::AccessFlags::ShaderRead,
+			0,
+			currentFrame * FP_FRAME_STRIDE
+		);
+	}
+
+	// zBins + Tile Light Masks + counter reset (same flight slice the
+	// phases below use). Uploads run even with zero lights so the buffers
+	// are always freshly zeroed â€” the phases then emit empty lists and
+	// the consumer iterates nothing (no stale-data path exists).
+	if (DsActive()) {
+		smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
+		// Stats readback of the RETIRED slice BEFORE the zero (exposure
+		// pattern: this slot completed ~2 frames ago, no stall).
+		{
+			uint32_t counters[smvk::kDsCounterCount] = {};
+			if (m_context->DownloadDataFromBuffer(ds.CounterBuffer(currentFrame),
+				counters, sizeof(counters))) {
+				m_dsStats.listSlots = counters[0];
+				m_dsStats.visSlots = counters[1];
+				m_dsStats.clsAllLit = counters[2];
+				m_dsStats.clsAllShadow = counters[3];
+				m_dsStats.clsPenumbra = counters[4];
+				m_dsStats.sumEarly = counters[5];
+				m_dsStats.sumFinal = counters[6];
+				m_dsStats.dbgSpotCone = counters[7];
+				m_dsStats.dbgSpotClip = counters[8];
+			}
+			// Throttled telemetry (exposure-style): flexible-allocation
+			// peaks vs the fixed caps; saturation means tiles/lights
+			// degrade (clamped stores, shadows read as fully lit).
+			static uint64_t s_dsTick = 0;
+			const uint64_t tick = s_dsTick++;
+			if (tick < 5 || tick % 600 == 0) {
+				std::fprintf(stderr,
+					"[ds] list=%u/%u vis=%u/%u early=%u final=%u lit=%u shadow=%u penumbra=%u spotCone=%u spotClip=%u lights=%u\n",
+					m_dsStats.listSlots, smvk::kDsMaxListUInts,
+					m_dsStats.visSlots, smvk::kDsMaxVisSlots,
+					m_dsStats.sumEarly, m_dsStats.sumFinal,
+					m_dsStats.clsAllLit, m_dsStats.clsAllShadow, m_dsStats.clsPenumbra,
+					m_dsStats.dbgSpotCone, m_dsStats.dbgSpotClip,
+					(uint32_t)lights.size());
+			}
 		}
+		// Zero this frame's flexible-allocation counters (transfer write;
+		// the phase-2 pass hint promotes them to Compute R/W).
+		static constexpr uint32_t kZeroCounters[smvk::kDsCounterCount] = {};
+		m_context->UploadDataToBuffer(ds.CounterBuffer(currentFrame),
+			kZeroCounters, sizeof(kZeroCounters),
+			smvk::PipelineStageBit_Transfer, smvk::AccessFlags::TransferWrite,
+			0, 0);
+		// zBins (min/max + ranged min/max per depth bin, sorted indices).
+		smvk::DsBuildZBins(lights, frame.view, frame.nearPlane, frame.farPlane,
+			m_dsZBinStaging);
+		m_context->UploadDataToBuffer(ds.ZBinsBuffer(currentFrame),
+			m_dsZBinStaging.data(),
+			std::min(m_dsZBinStaging.size() * sizeof(uint32_t), smvk::kDsZBinBytes),
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead,
+			0, 0);
+		// Tile Light Masks (64x64px TileGroup granularity, figure 4). The
+		// builder derives the same group grid from the same extent, so the
+		// staging layout matches the GPU buffers exactly.
+		uint32_t maskGX = 0, maskGY = 0;
+		smvk::DsBuildTileMasks(lights, frame.view, frame.proj,
+			(uint32_t)frame.viewportSize.x, (uint32_t)frame.viewportSize.y,
+			m_dsMaskStaging, maskGX, maskGY);
+		assert(maskGX == ds.groupCountX && maskGY == ds.groupCountY);
+		m_context->UploadDataToBuffer(ds.TileMasksBuffer(currentFrame),
+			m_dsMaskStaging.data(),
+			std::min(m_dsMaskStaging.size() * sizeof(uint32_t), smvk::kDsTileMaskBytes),
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead,
+			0, 0);
+	}
 		return (uint32_t)lights.size();
+	}
+
+	// ---------------------------------------------------------------------
+	// Deferred shadows, phases 2-4 (GPU). Appended right where the legacy
+	// forward+ tile cull would run â€” i.e. over the complete depth buffer
+	// (seed + prepass + remainder). Each phase is its own compute pass so
+	// the rendergraph emits the RAW/WAW buffer barriers between them.
+	// ---------------------------------------------------------------------
+	void SceneRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
+		uint64_t frameUniformsAddress, uint64_t fpLightsAddress,
+		uint64_t spotShadowBufferAddress, uint32_t fpLightCount,
+		smvk::LogicalImageViewHandle depthView,
+		smvk::LogicalBufferHandle fpLightsLogical)
+	{
+		smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
+		if (!ds.Valid() || !ds.ShadersValid())
+			return;
+
+		SMVK_PROFILE_CATEGORY("DeferredShadows", Optick::Category::Rendering);
+		SMVK_PROFILE_TAG("dsTileCountX", ds.tileCountX);
+		SMVK_PROFILE_TAG("dsLightCount", fpLightCount);
+
+		smvk::DsPhasePush push{};
+		push.frameUniforms = frameUniformsAddress;
+		push.lights = fpLightsAddress;
+		push.zbins = ds.ZBinsAddress(*m_context, frameIndex);
+		push.tileMasks = ds.TileMasksAddress(*m_context, frameIndex);
+		push.tileGroupMasks = ds.TileGroupMasksAddress(*m_context, frameIndex);
+		push.tileState = ds.TileStateAddress(*m_context, frameIndex);
+		push.lightList = ds.LightListAddress(*m_context, frameIndex);
+		push.visibility = ds.VisibilityAddress(*m_context, frameIndex);
+		push.counters = ds.CountersAddress(*m_context, frameIndex);
+		push.spotShadowBuffer = spotShadowBufferAddress;
+		push.spotShadowMapIndex =
+			m_spotShadowMapIndex >= 0 ? (uint32_t)m_spotShadowMapIndex : UINT32_MAX;
+		push.spotShadowCount = m_spotShadowCount;
+		push.lightCount = std::min(fpLightCount, FP_MAX_LIGHTS);
+		push.tileCountX = ds.tileCountX;
+		push.tileCountY = ds.tileCountY;
+		push.groupCountX = ds.groupCountX;
+		push.groupCountY = ds.groupCountY;
+		push.depthTextureIndex = m_viewportResources.forwardPlus.depthBindlessIndex;
+		// PCSS (paper 2.4): spot visibility uses Percentage Closer Soft
+		// Shadows; the near plane inverts NDC->eye depth and the light
+		// size sets the blocker search + penumbra widths.
+		push.spotShadowNear = SPOT_SHADOW_NEAR;
+		push.pcssLightSize = 0.35f; // demo spots: ~35cm emitting sphere
+
+		// Phase 2 â€” Find Lights Approximate (one TileGroup per work unit).
+		{
+			auto& pass = ds.AddPhase2Pass(*m_rendergraph, depthView,
+				fpLightsLogical, frameIndex);
+			auto program = ds.phasePrograms[0];
+			const uint32_t gx = ds.groupCountX;
+			const uint32_t gy = ds.groupCountY;
+			pass.SetRecordingFunc([program, push, gx, gy](smvk::CommandBuffer& cmd) mutable {
+				cmd.BindComputePipeline(program);
+				cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
+				cmd.Dispatch(gx, gy, 1);
+			});
+		}
+		// Phase 3 â€” Find Lights Accurate (one Shadow Tile per work unit).
+		{
+			auto& pass = ds.AddPhase3Pass(*m_rendergraph, depthView,
+				fpLightsLogical, frameIndex);
+			auto program = ds.phasePrograms[1];
+			const uint32_t tx = ds.tileCountX;
+			const uint32_t ty = ds.tileCountY;
+			pass.SetRecordingFunc([program, push, tx, ty](smvk::CommandBuffer& cmd) mutable {
+				cmd.BindComputePipeline(program);
+				cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
+				cmd.Dispatch(tx, ty, 1);
+			});
+		}
+		// Phase 4 â€” Generate Deferred Shadows (samples the spot atlas).
+		{
+			auto& pass = ds.AddPhase4Pass(*m_rendergraph, depthView,
+				fpLightsLogical, m_resources.spotShadowLogical,
+				m_spotShadowCount > 0 ? m_viewportResources.spotShadows.logicalView
+					: smvk::LogicalImageViewHandle{},
+				frameIndex);
+			auto program = ds.phasePrograms[2];
+			const uint32_t tx = ds.tileCountX;
+			const uint32_t ty = ds.tileCountY;
+			pass.SetRecordingFunc([program, push, tx, ty](smvk::CommandBuffer& cmd) mutable {
+				cmd.BindComputePipeline(program);
+				cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
+				cmd.Dispatch(tx, ty, 1);
+			});
+		}
+	}
+
+	// ---------------------------------------------------------------------
+	// Deferred shadows debug dump (VULKANTOY_DS_DUMP=1; post-Execute one
+	// shot, stalls). Prints per-phase results so headless runs can bisect
+	// the pipeline: phase 2's TileGroup masks (groups with lights, set
+	// bits, group-mask consistency) and phase 3/4's per-tile state (tiles
+	// with lights, entry totals, slot classification, center-tile list
+	// entries decoded as light index + visibility slot / fully-lit flag).
+	// ---------------------------------------------------------------------
+	void SceneRenderer::DumpDeferredShadows(uint32_t frameIndex) {
+		const smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
+		if (!ds.Valid())
+			return;
+		const uint32_t tiles = ds.tileCountX * ds.tileCountY;
+		const uint32_t groups = ds.groupCountX * ds.groupCountY;
+		constexpr uint32_t kEntries = 1 + smvk::kDsMaxLightGroups;
+
+		std::fprintf(stderr,
+			"[ds-dump] frame=%u spotTiles=%u mapIdx=%d (retired stats: list=%u vis=%u lit=%u shadow=%u penumbra=%u early=%u final=%u)\n",
+			frameIndex, m_spotShadowCount, m_spotShadowMapIndex,
+			m_dsStats.listSlots, m_dsStats.visSlots, m_dsStats.clsAllLit,
+			m_dsStats.clsAllShadow, m_dsStats.clsPenumbra,
+			m_dsStats.sumEarly, m_dsStats.sumFinal);
+
+		// ---- Phase 1 output (CPU Tile Light Masks, phase 2's input) ----
+		{
+			std::vector<uint32_t> masks(size_t(groups) * kEntries, 0);
+			if (m_context->DownloadDataFromBuffer(ds.TileMasksBuffer(frameIndex),
+				masks.data(), masks.size() * sizeof(uint32_t))) {
+				uint32_t withLights = 0, spotGroups = 0;
+				uint64_t totalBits = 0;
+				for (uint32_t g = 0; g < groups; ++g) {
+					const size_t base = size_t(g) * kEntries;
+					uint32_t bits = 0;
+					for (uint32_t k = 0; k < smvk::kDsMaxLightGroups; ++k)
+						bits += std::popcount(masks[base + 1 + k]);
+					if (bits > 0)
+						++withLights;
+					totalBits += bits;
+					// After the near-distance sort the long-range spots sit
+					// at sorted indices 0..3 (sort key 0); their presence in
+					// the CPU mask isolates phase-1 from the GPU phases.
+					if ((masks[base + 1] & 0xFu) != 0)
+						++spotGroups;
+				}
+				std::fprintf(stderr,
+					"[ds-dump] phase1 masks: groups=%u withLights=%u bits=%llu spotBits(0..3)=%u\n",
+					groups, withLights, (unsigned long long)totalBits, spotGroups);
+			}
+		}
+
+		// ---- Phase 2 output: TileGroup light masks ----
+		{
+			std::vector<uint32_t> masks(size_t(groups) * kEntries, 0);
+			if (m_context->DownloadDataFromBuffer(ds.TileGroupMasksBuffer(frameIndex),
+				masks.data(), masks.size() * sizeof(uint32_t))) {
+				uint32_t groupsWithLights = 0;
+				uint32_t inconsistent = 0;
+				uint32_t spotGroups[4] = {};
+				uint64_t totalBits = 0;
+				for (uint32_t g = 0; g < groups; ++g) {
+					const size_t base = size_t(g) * kEntries;
+					uint32_t bits = 0;
+					uint32_t recomputed = 0;
+					for (uint32_t k = 0; k < smvk::kDsMaxLightGroups; ++k) {
+						bits += std::popcount(masks[base + 1 + k]);
+						if (masks[base + 1 + k] != 0)
+							recomputed |= 1u << k;
+					}
+					if (bits > 0)
+						++groupsWithLights;
+					totalBits += bits;
+					if (recomputed != masks[base])
+						++inconsistent;
+					// Sorted indices 0..3 = the spots (see phase-1 note).
+					for (uint32_t s = 0; s < 4; ++s)
+						if ((masks[base + 1] & (1u << s)) != 0)
+							++spotGroups[s];
+				}
+				std::fprintf(stderr,
+					"[ds-dump] phase2 masks: groups=%u withLights=%u bits=%llu inconsistent=%u spotGroups=[%u %u %u %u]\n",
+					groups, groupsWithLights,
+					(unsigned long long)totalBits, inconsistent,
+					spotGroups[0], spotGroups[1], spotGroups[2], spotGroups[3]);
+			}
+		}
+
+		// ---- Phase 3/4 output: tile state + sampled final entries ----
+		{
+			std::vector<uint32_t> state(size_t(tiles) * 2, 0);
+			if (!m_context->DownloadDataFromBuffer(ds.TileStateBuffer(frameIndex),
+				state.data(), state.size() * sizeof(uint32_t))) {
+				std::fprintf(stderr, "[ds-dump] tileState download FAILED\n");
+				return;
+			}
+			uint32_t tilesWithLights = 0;
+			uint64_t totalEntries = 0;
+			uint32_t maxCount = 0;
+			for (uint32_t t = 0; t < tiles; ++t) {
+				const uint32_t c = state[t * 2 + 1];
+				if (c > (uint32_t)smvk::kDsMaxLightsPerTile) {
+					std::fprintf(stderr, "[ds-dump] tile %u: count %u > cap!\n", t, c);
+					continue;
+				}
+				if (c > 0)
+					++tilesWithLights;
+				totalEntries += c;
+				maxCount = std::max(maxCount, c);
+			}
+			std::fprintf(stderr,
+				"[ds-dump] tiles: %ux%u withLights=%u entries=%llu maxPerTile=%u\n",
+				ds.tileCountX, ds.tileCountY, tilesWithLights,
+				(unsigned long long)totalEntries, maxCount);
+
+			// Sample final entries around screen center.
+			std::vector<uint32_t> list;
+			const uint32_t samples[3][2] = {
+				{ ds.tileCountX / 2, ds.tileCountY / 2 },
+				{ ds.tileCountX / 4, ds.tileCountY / 4 },
+				{ (ds.tileCountX * 3) / 4, (ds.tileCountY * 3) / 4 },
+			};
+			for (int s = 0; s < 3; ++s) {
+				const uint32_t tx = std::min(samples[s][0], ds.tileCountX - 1);
+				const uint32_t ty = std::min(samples[s][1], ds.tileCountY - 1);
+				const uint32_t t = ty * ds.tileCountX + tx;
+				const uint32_t slot = state[t * 2];
+				const uint32_t count = state[t * 2 + 1];
+				if (count == 0) {
+					std::fprintf(stderr, "[ds-dump] tile(%u,%u): empty\n", tx, ty);
+					continue;
+				}
+				if (slot >= smvk::kDsMaxListUInts) {
+					std::fprintf(stderr, "[ds-dump] tile(%u,%u): BAD slot %u\n",
+						tx, ty, slot);
+					continue;
+				}
+				const uint32_t n = std::min<uint32_t>(count, 8);
+				list.resize(n);
+				if (!m_context->DownloadDataFromBuffer(ds.LightListBuffer(frameIndex),
+					list.data(), size_t(n) * sizeof(uint32_t),
+					size_t(slot) * sizeof(uint32_t))) {
+					std::fprintf(stderr, "[ds-dump] tile(%u,%u): list download FAILED\n",
+						tx, ty);
+					continue;
+				}
+				std::fprintf(stderr, "[ds-dump] tile(%u,%u): slot=%u count=%u first%u=[",
+					tx, ty, slot, count, n);
+				for (uint32_t i = 0; i < n; ++i) {
+					const uint32_t li = list[i] & 0x3FFu;
+					const uint32_t slotInfo = list[i] >> 10;
+					const char* kind = (slotInfo == smvk::kDsSlotAllLit) ? "lit"
+						: (slotInfo < smvk::kDsMaxVisSlots ? "slot" : "BAD");
+					std::fprintf(stderr, "%s %u(%s)%s", i ? " " : "", li, kind,
+						li >= 1024u ? "!" : "");
+				}
+				std::fprintf(stderr, "]\n");
+			}
+		}
 	}
 
 	// Error-driven LOD pick for one instance. Distance comes from the node's
@@ -1296,7 +1700,7 @@ void SceneRenderer::Shutdown() {
 	// LodProjectedPixelError() and the coarsest in-budget LOD wins.
 	// Decisions are cached per node in the World and refreshed on a
 	// staggered-halves cadence (half the nodes per frame; see World::
-	// LodIndexForNode) — this is the "make LOD update halfrate" hook.
+	// LodIndexForNode) â€” this is the "make LOD update halfrate" hook.
 	uint32_t SceneRenderer::LodIndexForNode(NodeId node, uint32_t worldMesh) const {
 		if (!m_lodEnabled || !m_world)
 			return 0;
@@ -1541,7 +1945,7 @@ void SceneRenderer::Shutdown() {
 
 	void SceneRenderer::DrawFrame() {
 		// Frame-arena scratch (URI probing, normalized rewrites) is
-		// dead at frame end by definition — recycle the blocks.
+		// dead at frame end by definition â€” recycle the blocks.
 		smvk::ResetFrameArena();
 		// Presentation-mode change from the overlay combo: recreate with
 		// the new mode (same path as a resize).
@@ -1598,6 +2002,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 	SMVK_PROFILE_FUNCTION();
 	SMVK_PROFILE_TAG("frameIndex", fb.frameIndex);
 
+	m_frameCounter += 1;
 	m_rendergraph->NewFrame();
 	const smvk::Extent2D swapExtent{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height };
 	const smvk::Extent2D renderExtent = ScaledExtent(swapExtent, m_renderScale);
@@ -1612,6 +2017,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 			// re-checks sizing at pass-build time (resize-safe).
 			m_fpRenderer.EnsureSized(*m_context, *m_rendergraph,
 				renderExtent, m_viewportResources.renderDepth.view);
+			// Deferred shadows: fixed-size buffers, so Ensure only
+			// refreshes the tile/group grids on extent drift.
+			m_viewportResources.deferredShadows.Ensure(*m_context,
+				*m_rendergraph, renderExtent);
 			m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent);
 			m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
 			m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
@@ -1744,7 +2153,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		//
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
-		// HDR target for scene – intermediate before tonemap
+		// HDR target for scene â€“ intermediate before tonemap
 		std::vector<smvk::LogicalImageViewHandle> hdrColors;
 		hdrColors.push_back(m_viewportResources.hdr.logicalView);
 
@@ -1818,7 +2227,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 };
 	// (size checked in App/push_constants.h)
 
-	// ---- Cascaded shadow map passes – one per cascade tile (builder owns offsets/extents/load ops) ----
+	// ---- Cascaded shadow map passes â€“ one per cascade tile (builder owns offsets/extents/load ops) ----
 	// Pass-config gate: no shadow sampling without tiles (the main
 	// shader reads cascadeBuffer regardless; tiles just stay cleared).
 	if (m_passes.directionalShadows)
@@ -1937,7 +2346,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			}
 		}
 
-		// ---- Spot shadow passes – one per selected caster tile ----
+		// ---- Spot shadow passes â€“ one per selected caster tile ----
 		// Selection (upper limit + screenspace/distance heuristic) ran in
 		// UpdateForwardPlusLights; m_spotShadowCount tiles are valid. Each
 		// pass renders its tile with the spot perspective VP (shadow.vert
@@ -2103,7 +2512,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			if (cullingFrozen) {
 				// CPU-side only: frustum planes + matrix for FilterMainView.
 				// Allocated after Upload(), so the GPU slab lacks this slot
-				// — nothing dereferences it on GPU (filter push carries the
+				// â€” nothing dereferences it on GPU (filter push carries the
 				// matrix; seed/VS stay on the live main view).
 				frozenViewIdx = m_renderViews.AllocateCustomView(
 					m_frozenViewProj,
@@ -2141,8 +2550,19 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 						"GfxHizRefresh");
 			}
 		}
-		if (m_passes.forwardPlusCull)
-			m_fpRenderer.AppendTileCull(fc);
+	// ---- Light culling ----
+	// Deferred shadows ON: the lighting pass consumes the phase-4 final
+	// light lists instead of the forward+ tile lists, so the classic
+	// forward+ tile cull is skipped (dead work) and the 3-phase GPU
+	// pipeline runs instead (still over the complete depth below).
+	// Deferred shadows OFF: legacy forward+ cull (A/B path).
+	const bool dsOn = DsActive();
+	if (m_passes.forwardPlusCull && !dsOn)
+		m_fpRenderer.AppendTileCull(fc);
+	if (dsOn)
+		AppendDeferredShadowPhases(fb.frameIndex,
+			frameUniformsAddress, fpLightsAddress, spotShadowBufferAddress,
+			fpLightCount, fc.depthView, fc.fpLights);
 
 		// Transparent frustum-cull views (snapshots: recording lambdas run
 		// at Execute, after this function may have returned for the next
@@ -2209,9 +2629,9 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// Motion vectors – per-pixel prevUV - currUV into RG16F (motionvector.h)
+		// Motion vectors â€“ per-pixel prevUV - currUV into RG16F (motionvector.h)
 		// Re-rasterizes opaque geometry depth-tested READ-ONLY against the 1x
-		// prepass depth (reversed-Z GreaterEqual, no writes) – identical in
+		// prepass depth (reversed-Z GreaterEqual, no writes) â€“ identical in
 		// MSAA / non-MSAA modes, Main's transient 2x depth is never touched.
 		// MASK cutouts share the program: the FS alpha-tests only when
 		// shadingModel == Masked (Cull None phase, like the prepass).
@@ -2495,14 +2915,14 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		.maxAnisotropy = 1.0f
 	});
 	// ---------------------------------------------------------------------
-	// SSAO – half-res depth-only AO (see ssao.h). Runs BEFORE Main: every
+	// SSAO â€“ half-res depth-only AO (see ssao.h). Runs BEFORE Main: every
 	// depth-writing pass (Forward+ prepass, gfx remainder, motion vectors)
 	// is done, so the 1x prepass depth is final. Depth is opaque-only
 	// (transparent excluded by design) so glass reveals the AO behind it
 	// instead of occluding like a wall. The raw + blur passes
 	// denoise at half res; the compose pass upscales to full res with
 	// depth authority (ao.hlsli); Main's opaque ambient only .Loads the
-	// composed AO (it must never sample depth — Main attaches it).
+	// composed AO (it must never sample depth â€” Main attaches it).
 	// ---------------------------------------------------------------------
 	smvk::LogicalImageViewHandle aoView{};
 	{
@@ -2564,7 +2984,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			);
 		} else {
 			mainPass.SetColor(
-				hdrColors, // HDR intermediate – tonemapper will resolve to swap
+				hdrColors, // HDR intermediate â€“ tonemapper will resolve to swap
 				smvk::AttachmentLoadOp::Clear,
 				smvk::AttachmentStoreOp::Store,
 				smvk::ClearColor(0, 0, 0, 1)
@@ -2963,7 +3383,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		// opaque only (transparent excluded from the prepass by design),
 		// so transparents test against it read-only in 1x; in MSAA they
 		// write the transient target inline like opaque, so no sorting is
-		// needed – order-independent like opaque.
+		// needed â€“ order-independent like opaque.
 		// Blended: classic back-to-front AlphaBlend, depth test on, no
 		// depth writes, sorted by distance-to-camera.
 		// m_hideTransparent (debug) skips the whole leg to bisect blending
@@ -3154,7 +3574,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 	// compacted index list + indirect commands in the SAME submit Main
 	// reads them from (vertex index fetch, indirect fetch, VS BDA reads
 	// of the draws ring). Without these the graph emits no compute->
-	// vertex barrier and the fetches race the CS — geometry appears and
+	// vertex barrier and the fetches race the CS â€” geometry appears and
 	// vanishes "randomly" whenever workload/timing shifts (MSAA mode,
 	// light toggles). Covers the meshlet debug view too (cluster-ordered
 	// heap bind).
@@ -3162,10 +3582,20 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		m_gfxRenderer.AddMainConsumeHints(mainPass, gfxSlot);
 	// Forward+ tile lists are device-written by the cull pass and
 	// device-read here: explicit read hints order cull -> main and emit
-	// the compute->fragment buffer barriers.
-	smvk::ForwardPlus::AddTileReadHints(mainPass,
+	// the compute->fragment buffer barriers. With deferred shadows ON the
+	// lighting pass instead reads the phase-4 outputs (final light list,
+	// visibility buffer, tile state) â€” same fragment-stage read pattern.
+	if (dsOn) {
+		const smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
+		smvk::DeferredShadows::AddMainReadHints(mainPass,
+			ds.TileStateLogical(fb.frameIndex),
+			ds.LightListLogical(fb.frameIndex),
+			ds.VisibilityLogical(fb.frameIndex));
+	} else {
+		smvk::ForwardPlus::AddTileReadHints(mainPass,
 			m_viewportResources.forwardPlus.tileCountsLogical,
 			m_viewportResources.forwardPlus.tileIndicesLogical);
+	}
 		{
 			smvk::BufferSyncRequest fpLightRead{};
 			fpLightRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
@@ -3182,7 +3612,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 	// ---------------------------------------------------------------------
-	// Motion blur – velocity gather in HDR (see motionblur.h). Runs after
+	// Motion blur â€“ velocity gather in HDR (see motionblur.h). Runs after
 	// Main, before Bloom/Tonemap so both consume the blurred HDR.
 	// ---------------------------------------------------------------------
 		// Scene HDR for downstream passes: blurred output when the pass ran,
@@ -3215,7 +3645,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// Exposure histogram – log2-luminance meter of the scene HDR
+		// Exposure histogram â€“ log2-luminance meter of the scene HDR
 		// (see exposure.h). Runs before Bloom/Tonemap so it meters exactly
 		// what they consume. UpdateAutoExposure() downloads + adapts FIRST
 		// (this slot retired at Acquire), then the CPU zeroes the buffer
@@ -3248,7 +3678,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				// the download copy must be submitted before this frame's
 				// zero + compute, otherwise it observes the just-zeroed
 				// buffer. This slot retired at Acquire, so the bins are the
-				// completed accumulation (~2 frames old) — no extra stall.
+				// completed accumulation (~2 frames old) â€” no extra stall.
 				UpdateAutoExposure(fb.frameIndex);
 				// Reset the slice's bins (transfer write; the compute hint
 				// below transitions the buffer to Compute R/W via barrier).
@@ -3302,7 +3732,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// Bloom – HDR downsample / upsample chain (composable, see bloom.h)
+		// Bloom â€“ HDR downsample / upsample chain (composable, see bloom.h)
 		// ---------------------------------------------------------------------
 		{
 			SMVK_PROFILE_CATEGORY("Bloom", Optick::Category::Rendering);
@@ -3318,7 +3748,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// Tonemapper – HDR (RGBA16F) → LDR swapchain (see tonemap.h).
+		// Tonemapper â€“ HDR (RGBA16F) â†’ LDR swapchain (see tonemap.h).
 		// With SMAA active the pass is retargeted onto the offscreen LDR
 		// target owned by the SMAA builder (the swapchain cannot be
 		// sampled); the SMAA resolve then writes the swapchain.
@@ -3353,6 +3783,9 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		// multi-attachment pass would leave the capture at its clear value).
 		// Scene-only on purpose - the capture is a grading reference.
 		bool captureThisFrame = false;
+		// Env-requested capture (VULKANTOY_CAPTURE=<frame>): F7-less A/B.
+		if (m_captureAtFrame >= 0 && m_frameCounter == (uint64_t)m_captureAtFrame)
+			m_captureQueued = true;
 		if (m_captureQueued) {
 			EnsureCaptureTarget(swapExtent);
 			captureThisFrame = !m_captureLogical.empty();
@@ -3409,15 +3842,15 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// SMAA – LDR post-tonemap antialiasing (see Engine/Rendergraph/smaa.h):
-		// luma edges → blend weights → neighborhood blending, plus the T2x
+		// SMAA â€“ LDR post-tonemap antialiasing (see Engine/Rendergraph/smaa.h):
+		// luma edges â†’ blend weights â†’ neighborhood blending, plus the T2x
 		// temporal resolve over the velocity buffer.
 		// ---------------------------------------------------------------------
 		if (smaaActive) {
 			SMVK_PROFILE_CATEGORY("SMAA", Optick::Category::Rendering);
 			m_smaaFrameRanT2x = smaaT2x;
 		// Official T2x subsample table (@SUBSAMPLE_INDICES in
-		// smaa.hlsli): phase A/B → (1,1,1,0)/(2,2,2,0); SMAA 1x → zeros.
+		// smaa.hlsli): phase A/B â†’ (1,1,1,0)/(2,2,2,0); SMAA 1x â†’ zeros.
 		// Phase/slot/valid come from this record's global snapshot, so
 		// the triple always agrees.
 			float subsample[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -3442,14 +3875,14 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// ImGui – build UI (before adding the rendergraph pass)
+		// ImGui â€“ build UI (before adding the rendergraph pass)
 		// ---------------------------------------------------------------------
 		if (m_passes.ui && m_imgui && m_imgui->IsInitialized() && m_viewportResources.ui.Valid()) {
 			// Target extent != window size when ui scale != 1: the overlay maps
 			// ImGui draw data + font raster density onto the UI target.
 			m_imgui->NewFrame(uiExtent);
 
-		// Minimal UI – name + camera pos
+		// Minimal UI â€“ name + camera pos
 		// Pinned debug panel: side bars (Right/Left, full height) or a
 		// corner overlay. U cycles Right -> Left -> TL -> TR -> BL -> BR.
 		// The dock pos/size is forced only on dock change (or first frame);
@@ -3490,7 +3923,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			ImGui::SetNextWindowSize(size, dockCond);
 			m_uiDockDirty = false;
 		}
-		ImGui::Begin("VulkanToy — Debug");
+		ImGui::Begin("VulkanToy â€” Debug");
 		{
 			// Dock selector + cycle button (same action as the U shortcut).
 			const char* dockNames[] = { "Right", "Left", "TopLeft", "TopRight", "BottomLeft", "BottomRight" };
@@ -3554,7 +3987,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					ImGui::TextDisabled("Bloom: OFF");
 				}
 			}
-		if (ImGui::CollapsingHeader("Exposure — histogram eye adaptation", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (ImGui::CollapsingHeader("Exposure â€” histogram eye adaptation", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Checkbox("Auto-exposure (X)", &m_autoExposureEnabled);
 			ImGui::SliderFloat("Manual exposure", &m_manualExposure,
 				0.00005f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
@@ -3576,7 +4009,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			ImGui::PlotHistogram("##expHist", m_exposureBinsUi,
 				(int)smvk::kExposureBinCount, 0, nullptr, 0.0f, histPeak, ImVec2(0, 48));
 			if (!m_viewportResources.exposure.Valid())
-				ImGui::TextDisabled("Meter missing – manual exposure only");
+				ImGui::TextDisabled("Meter missing â€“ manual exposure only");
 			else
 				ImGui::TextDisabled("Bloom threshold scales with exposure (ref %.4f); percentile %.0f%%, key %.2f",
 					TONEMAP_EXPOSURE, m_viewportResources.exposure.desc.percentile * 100.0f,
@@ -3624,7 +4057,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			}
 		}
 		ImGui::Separator();
-		if (ImGui::CollapsingHeader("LODs — error-driven switches", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (ImGui::CollapsingHeader("LODs â€” error-driven switches", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Checkbox("Enable LODs (L)", &m_lodEnabled);
 			ImGui::SliderFloat("Pixel budget (px)", &m_lodPixelBudget, 0.25f, 8.0f, "%.2f");
 			ImGui::Text("Cooked: %u meshes / %u siblings | draws: %llu (%llu switched)",
@@ -3633,11 +4066,11 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			ImGui::TextDisabled("Transition = projected simplifier error (world err * H / "
 				"(2*tan(fov/2)*dist) <= budget). LOD0 stays in the GPU filter; LOD1+ draws direct.");
 			if (!m_lodEnabled)
-				ImGui::TextDisabled("LODs OFF – always LOD0.");
+				ImGui::TextDisabled("LODs OFF â€“ always LOD0.");
 			else if (m_lodChainMeshes == 0)
-				ImGui::TextDisabled("No cooked LOD chain in this scene – cook with --lods on.");
+				ImGui::TextDisabled("No cooked LOD chain in this scene â€“ cook with --lods on.");
 		}
-		if (ImGui::CollapsingHeader("Resolution — internal res + UI pass + DPI", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (ImGui::CollapsingHeader("Resolution â€” internal res + UI pass + DPI", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Text("Scene: %ux%u (%.0f%%) -> swap %ux%u",
 				renderExtent.width, renderExtent.height, m_renderScale * 100.0f,
 				swapExtent.width, swapExtent.height);
@@ -3655,7 +4088,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				"UI renders into its own target and composites over the swapchain.");
 		}
 			ImGui::Separator();
-			if (ImGui::CollapsingHeader("Environment — Skydome IBL + Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
+			if (ImGui::CollapsingHeader("Environment â€” Skydome IBL + Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
 				ImGui::Checkbox("Sky dome (K)", &m_env.skyEnabled);
 				ImGui::Checkbox("IBL ambient/spec", &m_env.iblEnabled);
 				ImGui::ColorEdit3("Zenith", &m_env.skyZenithColor.x);
@@ -3685,7 +4118,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				ImGui::SliderFloat("Height (m)", &m_env.fogHeight, -10.0f, 30.0f);
 				ImGui::SliderFloat("Height falloff", &m_env.fogHeightFalloff, 0.0f, 2.0f);
 				if (!m_skydome.ShadersValid())
-					ImGui::TextDisabled("Sky program missing – dome skipped");
+					ImGui::TextDisabled("Sky program missing â€“ dome skipped");
 			}
 			ImGui::Separator();
 			{
@@ -3706,7 +4139,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					ImGui::SliderFloat("Blur max radius (px)", &m_motionBlurMaxRadius, 0.0f, 64.0f);
 					ImGui::SliderFloat("Blur strength", &m_motionBlurStrength, 0.0f, 2.0f);
 					if (!m_viewportResources.motionBlur.Valid())
-						ImGui::TextDisabled("Motion blur target/shaders missing – sharp HDR");
+						ImGui::TextDisabled("Motion blur target/shaders missing â€“ sharp HDR");
 					else
 						ImGui::TextDisabled("Gather along motion vectors, pre-tonemap HDR");
 				}
@@ -3720,7 +4153,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					ImGui::SliderFloat("AO blur sharpness", &m_ssaoBlurSharpness, 0.0f, 32.0f);
 					const auto& ssao = m_viewportResources.ssao;
 					if (!ssao.Valid())
-						ImGui::TextDisabled("SSAO target/shaders missing – no AO");
+						ImGui::TextDisabled("SSAO target/shaders missing â€“ no AO");
 					else
 						ImGui::Text("SSAO: half %ux%u (full %ux%u)",
 							ssao.halfExtent.width, ssao.halfExtent.height,
@@ -3790,6 +4223,38 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			ImGui::TextDisabled("Cookies: soft disc / blinds / starburst per spot; patterns modulate light color");
 			}
 			ImGui::Separator();
+			{
+				// Deferred shadows (Square-Enix-style tiled/zBin pipeline).
+				// A/B against the inline forward+ shadow path; the counters
+				// are the retired-slice peaks (~2 frames old).
+				ImGui::Text("Deferred shadows (tiled/zBin, 5-phase)");
+				ImGui::Checkbox("Enable (H)", &m_dsEnabled);
+				ImGui::SameLine();
+				ImGui::TextDisabled(m_passes.deferredShadows ? "" : "(pass disabled)");
+				const smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
+				if (ds.Valid()) {
+					ImGui::Text("Shadow tiles: %ux%u (8px)  TileGroups: %ux%u (64px)",
+						ds.tileCountX, ds.tileCountY, ds.groupCountX, ds.groupCountY);
+					ImGui::Text("Light list: %u / %u uints (%.1f MB used)",
+						m_dsStats.listSlots, smvk::kDsMaxListUInts,
+						float(m_dsStats.listSlots) * 4.0f / (1024.0f * 1024.0f));
+					ImGui::Text("Visibility: %u / %u slots x 64B (%.1f MB used)",
+						m_dsStats.visSlots, smvk::kDsMaxVisSlots,
+						float(m_dsStats.visSlots) * 64.0f / (1024.0f * 1024.0f));
+					if (m_dsStats.listSlots >= smvk::kDsMaxListUInts)
+						ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+							"Light list SATURATED: tiles clamp (lights drop to fully lit)");
+					if (m_dsStats.visSlots >= smvk::kDsMaxVisSlots)
+						ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+							"Visibility SATURATED: partial shadows degrade to fully lit");
+				} else {
+					ImGui::TextDisabled("Buffers/shaders missing (extent cap?); pipeline off");
+				}
+				ImGui::TextDisabled("CPU phase 1: zBins (1024) + 64px tile masks; GPU phases:\n"
+					"2 approx froxel cull, 3 per-pixel narrow, 4 PCF visibility\n"
+					"(%s path active)", DsActive() ? "deferred" : "inline forward+");
+			}
+			ImGui::Separator();
 			ImGui::Text("GfxFilter (per-view triangle filter)");
 			ImGui::Checkbox("Enable filtered main view (G)", &m_useGfxFilter);
 			ImGui::Checkbox("Enable filtered motion vectors", &m_useFilteredMotion);
@@ -3856,7 +4321,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones);
 				ImGui::Checkbox("Hide transparent (debug, bisect blending)", &m_hideTransparent);
 				if (!m_gfxRenderer.DebugProgramsValid())
-					ImGui::TextDisabled("Debug programs missing – views disabled");
+					ImGui::TextDisabled("Debug programs missing â€“ views disabled");
 				if (ImGui::Button("Dump indirect audit (stderr, stalls)"))
 					m_dumpIndirectAudit = true;
 				ImGui::SameLine();
@@ -3875,7 +4340,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				// never moves for GPU occlusion kills (those stay batches
 				// with indexCount 0), so surface the HZB inputs here. Any
 				// "OFF/empty/INVALID" below means the filter's occlusion
-				// test is silently disabled — use Dump HZB + Dump indirect
+				// test is silently disabled â€” use Dump HZB + Dump indirect
 				// audit (stderr) to confirm what the GPU saw.
 				{
 					const bool occOn = (m_gfxRenderer.config.cullFlags
@@ -4026,7 +4491,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 		m_context->ProcessDeferrredTasks();
 		// Eye adaptation already ran at record time (before this frame's
-		// zero-fill); nothing to download here — the histogram compute was
+		// zero-fill); nothing to download here â€” the histogram compute was
 		// just recorded into fb.commandBuffer and submits in EndAndPresent.
 
 		// One-shot indirect audit (debug): downloads this frame's filter
@@ -4052,6 +4517,16 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			m_dumpFirstFrameHzb = false;
 			WaitForDeviceIdle();
 			m_gfxRenderer.DumpHzb(*m_context, gfxSlot);
+		}
+		// Opt-in deferred-shadow dump (VULKANTOY_DS_DUMP=<frame>): one
+		// shot after Execute with the phase results final. Stalls
+		// (device-idle wait), so it stays off unless explicitly enabled.
+		if (m_dumpAtFrame >= 0 && m_frameCounter == (uint64_t)m_dumpAtFrame) {
+			m_dumpAtFrame = -1;
+			if (DsActive()) {
+				WaitForDeviceIdle();
+				DumpDeferredShadows(fb.frameIndex);
+			}
 		}
 
 		// Snapshot this frame's camera + node transforms for the next

@@ -93,44 +93,11 @@ struct EnvironmentFrameData
     float4 fogEndAndFlags; // x linear end, y skyMode, z fogMode, w iblEnabled
 };
 
-struct FrameUniforms
-{
-    float4x4 view;
-    float4x4 proj;
-    float4x4 viewProj;
-
-    float4x4 invView;
-    float4x4 invProj;
-    float4x4 invViewProj;
-    float4x4 prevViewProj; // last frame's proj*view (post Y-flip) – motion vectors
-
-    float3 cameraPos;
-    float time;
-
-    float2 viewportSize;
-    float2 invViewportSize;
-
-    float nearPlane;
-    float farPlane;
-    float exposure;
-    // SSAO consumption (lighting-pass ambient): the FULL-res composed AO
-    // (upscaled by the SsaoCompose pass with depth authority, see
-    // ao.hlsli). Mirrors the C++ FrameUniforms in App/scene_renderer.h
-    // (offsets asserted there: 492/496, env shifts to 512).
-    uint aoTextureIndex; // full-res composed AO bindless, 0xffffffff = off
-    float aoIntensity;   // ambient composite strength
-    // Explicit pad: env must start at offset 512 (16-byte aligned).
-    // Without this HLSL packs env at 500, which violates Block layout
-    // rules for PhysicalStorageBuffer (spirv-val: member not aligned
-    // to 16) and desyncs from the C++ struct, where the compiler pads
-    // env to 512. Mirrors C++ FrameUniforms::aoPad_.
-    float3 aoPad;
-
-    // Configurable environment (skydome IBL + fog).
-    // Must match C++ smvk::EnvironmentFrameData (8 x float4, 128 bytes).
-    EnvironmentFrameData env;
-};
-
+// Deferred-shadow buffer types (constants + fixed-size GPU structs with
+// no dependencies). Included here so FrameUniforms below can carry typed
+// pointers to them; the push struct + helpers live in deferredshadow.hlsli
+// (included after FrameUniforms / ForwardPlusLight are complete).
+#include "deferredshadow_types.hlsli"
 
 struct LightBuffer
 {
@@ -245,6 +212,62 @@ struct ForwardPlusTileIndexBuffer
     uint indices[MAX_FP_TILES * MAX_FP_PER_TILE];
 };
 
+// Moved below the Forward+ light structs so it can carry typed pointers
+// into the deferred-shadow buffers (deferredshadow_types.hlsli above).
+// Offsets mirror the C++ FrameUniforms in App/scene_renderer.h (asserted
+// there): env at 512, deferred-shadow fields at 640, total 672.
+struct FrameUniforms
+{
+    float4x4 view;
+    float4x4 proj;
+    float4x4 viewProj;
+
+    float4x4 invView;
+    float4x4 invProj;
+    float4x4 invViewProj;
+    float4x4 prevViewProj; // last frame's proj*view (post Y-flip) – motion vectors
+
+    float3 cameraPos;
+    float time;
+
+    float2 viewportSize;
+    float2 invViewportSize;
+
+    float nearPlane;
+    float farPlane;
+    float exposure;
+    // SSAO consumption (lighting-pass ambient): the FULL-res composed AO
+    // (upscaled by the SsaoCompose pass with depth authority, see
+    // ao.hlsli). Mirrors the C++ FrameUniforms in App/scene_renderer.h
+    // (offsets asserted there: 492/496, env shifts to 512).
+    uint aoTextureIndex; // full-res composed AO bindless, 0xffffffff = off
+    float aoIntensity;   // ambient composite strength
+    // Explicit pad: env must start at offset 512 (16-byte aligned).
+    // Without this HLSL packs env at 500, which violates Block layout
+    // rules for PhysicalStorageBuffer (spirv-val: member not aligned
+    // to 16) and desyncs from the C++ struct, where the compiler pads
+    // env to 512. Mirrors C++ FrameUniforms::aoPad_.
+    float3 aoPad;
+
+    // Configurable environment (skydome IBL + fog).
+    // Must match C++ smvk::EnvironmentFrameData (8 x float4, 128 bytes).
+    EnvironmentFrameData env;
+
+    // ---- Deferred shadows (tiled/zBin pipeline, see deferredshadow*.hlsli).
+    // Consumer-side view of this frame's per-flight buffers; the app
+    // flips dsEnabled per frame (A/B against the inline forward+ path).
+    vk::BufferPointer<DsTileStateBuffer> dsTileState;  // 640 {slot,count}/tile
+    vk::BufferPointer<DsLightListBuffer> dsLightList;  // 648 final entries
+    vk::BufferPointer<DsVisibilityBuffer> dsVisibility; // 656 64B slots
+    uint dsTileCountX;                                 // 664 8px tiles/row
+    uint dsEnabled;                                    // 668 1 = consume lists
+};
+
+// Deferred-shadow push constants + shared helpers (needs FrameUniforms
+// and ForwardPlusLight above; includes deferredshadow_types.hlsli again,
+// which is guarded and free-standing).
+#include "deferredshadow.hlsli"
+
 struct PushConstants
 {
     float4x4 model;
@@ -299,7 +322,12 @@ struct PushConstants
     float4x4 prevModel;
 };
 
-#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(SSAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS)
+#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(SSAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS)
+// ENGINE_HAS_PC: this translation unit sees the scene-wide `pc` push
+// constants. Passes with their own push layout (FORWARDPLUS/HZB/DS/...)
+// leave it undefined so headers can guard pc-dependent helpers (see
+// shadows.hlsli FromPC wrappers).
+#define ENGINE_HAS_PC
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
 #endif
