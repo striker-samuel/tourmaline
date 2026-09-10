@@ -10,12 +10,23 @@ glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNe
 		0.0f, 0.0f, zNear, 0.0f);
 }
 
+glm::mat4 MakeReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear, float zFar)
+{
+	assert(zFar > zNear && zNear > 0.0f);
+	float f = 1.0f / tan(fovY_radians / 2.0f);
+	return glm::mat4(
+		f / aspectWbyH, 0.0f, 0.0f, 0.0f,
+		0.0f, f, 0.0f, 0.0f,
+		0.0f, 0.0f, zNear / (zFar - zNear), -1.0f,
+		0.0f, 0.0f, zNear * zFar / (zFar - zNear), 0.0f);
+}
+
 Camera::Camera(CameraPositionerInterface& positioner) : positioner_(&positioner) { proj_ = glm::mat4(1.0f); }
 glm::mat4 Camera::getViewMatrix() const { return positioner_->getViewMatrix(); }
 glm::vec3 Camera::getPosition() const { return positioner_->getPosition(); }
 glm::mat4 Camera::getProjMatrix() const { return proj_; }
 void Camera::setOrtho2D(float width, float height) { proj_ = glm::ortho(0.0f, width, 0.0f, height, -1.0f, 1.0f); }
-void Camera::setPerspective(float fovY, float aspect, float zNear, float zFar) { proj_ = MakeInfReversedZProjRH(fovY, aspect, zNear); }
+void Camera::setPerspective(float fovY, float aspect, float zNear, float zFar) { proj_ = MakeReversedZProjRH(fovY, aspect, zNear, zFar); }
 CameraPositioner_FirstPerson::CameraPositioner_FirstPerson(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up)
 	: cameraPosition_(pos)
 	, cameraOrientation_(glm::lookAt(pos, target, up))

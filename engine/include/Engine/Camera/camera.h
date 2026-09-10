@@ -8,6 +8,14 @@
 // InfiniteReversedZ projection. For better precission up close and no cutoff
 glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear);
 
+// Finite reversed-Z projection (Vulkan ZO, right-handed): maps
+// [zNear, zFar] to depth [1, 0] (near = 1, far = 0, like the infinite
+// form, whose limit it recovers as zFar -> infinity). Prefer this for the
+// main view: unprojecting sky/far depth yields finite positions instead of
+// infinities (no NaN class downstream), and the frustum near/far planes
+// are functional instead of degenerate. Requires zFar > zNear.
+glm::mat4 MakeReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear, float zFar);
+
 class CameraPositionerInterface
 {
 public:

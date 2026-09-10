@@ -304,16 +304,17 @@ protected:
 	// dimensions and motion-vector UVs all derive from it, so the aspect
 	// must describe the same image (differs from the swapchain ratio by
 	// rounding once renderScale != 1).
-	// NOTE: Camera::setPerspective forwards to MakeInfReversedZProjRH, whose
-	// fovY is in radians and whose far plane is infinite (zFar is ignored,
-	// near maps to depth 1).
+	// NOTE: Camera::setPerspective forwards to MakeReversedZProjRH, whose
+	// fovY is in radians and whose depth maps [near, far] -> [1, 0]
+	// (reversed-Z: near maps to depth 1, far to 0, like the old infinite
+	// form, whose limit it recovers as far -> infinity).
 	void UpdateCameraAspect(smvk::Extent2D extent) {
 		if (extent.width == 0 || extent.height == 0)
 			return;
 		m_camera.setPerspective(
 			glm::radians(kCameraFovYDegrees),
 			float(extent.width) / float(extent.height),
-			default_near_clip, m_scene.farClip
+			default_near_clip, kMainViewFarPlane
 		);
 	}
 	bool m_uiMode = false;
@@ -393,6 +394,11 @@ protected:
 
 	static constexpr float default_near_clip = 0.01f;
 	static constexpr float kCameraFovYDegrees = 45.0f;
+	// Finite far plane for the MAIN VIEW projection (reversed-Z). Scene
+	// metadata (m_scene.farClip) stays per-scene for shadows/LOD; only the
+	// projection is finite, so unprojecting far/sky depth yields finite
+	// positions and the frustum far plane is functional.
+	static constexpr float kMainViewFarPlane = 100000.0f;
 
 	SceneDesc m_scene{};
 	ScenePassConfig m_passes{};

@@ -65,6 +65,19 @@ set_target_properties(LightTests PROPERTIES
 
 add_test(NAME light_tests COMMAND LightTests)
 
+add_executable(CameraTests test_camera.cpp)
+
+target_link_libraries(CameraTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(CameraTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME camera_tests COMMAND CameraTests)
+
 add_executable(SmaaJitterTests test_smaajitter.cpp)
 
 target_link_libraries(SmaaJitterTests
