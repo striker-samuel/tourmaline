@@ -8,9 +8,15 @@
 // from AddImageHint (read) + AddBufferHint (write).
 //
 // Pipeline (see app/src/scene_renderer.cpp):
-//   1. Per frame, the CPU zeroes the flight slice's 64-bin buffer via
-//      UploadDataToBuffer (TransferWrite; the compute hint below promotes
-//      it to Compute R/W). The buffer is ringed per frame in flight
+//   1. Per frame, the CPU downloads the flight slice's 64-bin buffer FIRST
+//      (this slot retired at Acquire, so the bins are the completed
+//      accumulation ~2 frames old — no stall), adapts the smoothed
+//      exposure, then zeroes the slice via UploadDataToBuffer
+//      (TransferWrite; the compute hint below promotes it to Compute R/W).
+//      The download MUST precede the zero-fill and the main submit: Execute
+//      only records into the frame command buffer (submitted later in
+//      EndAndPresent), so a post-Execute download's copy runs BEFORE the
+//      histogram compute and observes only zeros. The buffer is ringed per
 //      (like the gfx filter's batch/draw/indirect slices): the zero-fill
 //      is an immediate transfer-queue submit at record time, so a single
 //      shared buffer would let frame N+1's zero clobber frame N's still
@@ -20,10 +26,9 @@
 //   2. ExposureHistogram compute (16x16 threads/group, sampleStep stride)
 //      builds a log2-luminance histogram of the (possibly motion-blurred)
 //      scene HDR into the slice via groupshared combine + global atomics.
-//   3. After RenderGraph::Execute, the app downloads the slice's 256-byte
-//      buffer (DownloadDataFromBuffer; submitted before the frame present,
-//      so it observes the previous frame — natural 1-frame lag, minimal
-//      stall), finds the percentile luminance on the CPU and exponentially
+//   3. At the next frame's record time, the app downloads the slice's
+//      256-byte buffer (DownloadDataFromBuffer; the slot retired at Acquire
+//      so no extra stall — natural ~2-frame lag), finds the percentile luminance on the CPU and exponentially
 //      damps the smoothed exposure toward keyValue * 2^evBias / meteredLum.
 //   4. The smoothed exposure feeds the tonemap push next frame, and the
 //      bloom threshold/knee are scaled exposure-relative so bloom strength

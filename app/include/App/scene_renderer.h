@@ -543,7 +543,7 @@ protected:
 			m_viewportResources.exposure.Valid();
 		return active ? m_exposureAdapted : m_manualExposure;
 	}
-	void UpdateAutoExposure(); // download + Adapt (call after Execute)
+	void UpdateAutoExposure(uint32_t frameIndex); // download slice BEFORE zero + Adapt (call at record time)
 	// ---- SSAO pass (half-res depth-only AO, see ssao.h) ----
 	bool m_ssaoEnabled = true; // runs before Main, composites in opaque ambient
 	float m_ssaoRadius = 0.5f; // view-space sample radius (m)

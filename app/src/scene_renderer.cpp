@@ -986,12 +986,20 @@ void SceneRenderer::Shutdown() {
 	// m_deferredMutex) is gone.
 	static constexpr bool kHistogramReadbackEnabled = true;
 
-	// Post-Execute eye adaptation (see exposure.h): downloads the 256-byte
-	// histogram (observes the previous frame — submitted before present, so
-	// minimal stall), refreshes the debug copy, and damps m_exposureAdapted
-	// toward the percentile target. Holds the current exposure when the
-	// meter is missing or the histogram is empty (first frames).
-	void SceneRenderer::UpdateAutoExposure() {
+	// Pre-record eye adaptation (see exposure.h): downloads the 256-byte
+	// histogram for frameIndex BEFORE this frame zeroes it. The download
+	// must precede both the zero-fill and the main-submit of this frame:
+	// UpdateAutoExposure used to run after Execute (but Execute only
+	// records into fb.commandBuffer — EndAndPresent submits it later), so
+	// the download's copy was submitted BEFORE this frame's histogram
+	// compute and could only ever observe the just-zeroed buffer (flat
+	// ImGui plot; a stale nonzero flash only when transfer/GPU timing
+	// slipped). Reading the current flight slice after Acquire (which
+	// retires this slot) yields the completed 2-frames-ago accumulation
+	// with no extra stall. Refreshes the debug copy, and damps
+	// m_exposureAdapted toward the percentile target. Holds the current
+	// exposure when the meter is missing or the histogram is empty.
+	void SceneRenderer::UpdateAutoExposure(uint32_t frameIndex) {
 		if (!kHistogramReadbackEnabled)
 			return; // readback disabled (see above): hold the seed/manual exposure
 		if (!m_autoExposureEnabled || !m_passes.exposure)
@@ -1006,11 +1014,15 @@ void SceneRenderer::Shutdown() {
 		auto& meter = m_viewportResources.exposure;
 		if (!meter.Valid())
 			return;
-		// This frame's flight slice (recorded in RenderFrame): the only
-		// slice this frame zeroed + accumulated, so no cross-flight torn
-		// reads even when frames overlap.
+		// Current flight slice, read BEFORE this frame's zero-fill below.
+		// Acquire already retired this slot, so its bins are the completed
+		// accumulation from two frames ago — no cross-flight torn reads and
+		// no wait on the still-in-flight previous frame.
+		if (frameIndex >= ::MAX_FRAMES_IN_FLIGHT)
+			return;
+		m_exposureFrame = frameIndex;
 		std::array<uint32_t, smvk::kExposureBinCount> bins{};
-		if (!m_context->DownloadDataFromBuffer(meter.HistogramBuffer(m_exposureFrame),
+		if (!m_context->DownloadDataFromBuffer(meter.HistogramBuffer(frameIndex),
 				bins.data(), sizeof(uint32_t) * bins.size()))
 			return;
 		uint32_t total = 0;
@@ -2785,9 +2797,10 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		// ---------------------------------------------------------------------
 		// Exposure histogram – log2-luminance meter of the scene HDR
 		// (see exposure.h). Runs before Bloom/Tonemap so it meters exactly
-		// what they consume. The CPU zeroes the buffer (transfer write),
-		// the compute pass accumulates, and UpdateAutoExposure() downloads
-		// + adapts after Execute for next frame's tonemap/bloom.
+		// what they consume. UpdateAutoExposure() downloads + adapts FIRST
+		// (this slot retired at Acquire), then the CPU zeroes the buffer
+		// (transfer write) and the compute pass accumulates for a future
+		// frame's tonemap/bloom.
 		// ---------------------------------------------------------------------
 		{
 			SMVK_PROFILE_CATEGORY("ExposureHistogram", Optick::Category::Rendering);
@@ -2811,6 +2824,12 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				}
 			}
 			if (meterGate) {
+				// Readback BEFORE the zero-fill below (same queue, FIFO):
+				// the download copy must be submitted before this frame's
+				// zero + compute, otherwise it observes the just-zeroed
+				// buffer. This slot retired at Acquire, so the bins are the
+				// completed accumulation (~2 frames old) — no extra stall.
+				UpdateAutoExposure(fb.frameIndex);
 				// Reset the slice's bins (transfer write; the compute hint
 				// below transitions the buffer to Compute R/W via barrier).
 				// Per-flight slice (see exposure.h): the zero-fill submits
@@ -2822,7 +2841,6 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					kZeroBins, sizeof(kZeroBins),
 					smvk::PipelineStageBit_Transfer,
 					smvk::AccessFlags::TransferWrite, 0, 0);
-				m_exposureFrame = fb.frameIndex;
 				smvk::ExposureHistogramPush expPush{};
 				expPush.histogramAddress = meter.HistogramAddress(*m_context, fb.frameIndex);
 				expPush.hdrTextureIndex = sceneHdrBindless;
@@ -3454,8 +3472,9 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 
 		m_rendergraph->Execute(fb);
 		m_context->ProcessDeferrredTasks();
-		// Eye adaptation for next frame's tonemap/bloom (1-frame lag).
-		UpdateAutoExposure();
+		// Eye adaptation already ran at record time (before this frame's
+		// zero-fill); nothing to download here — the histogram compute was
+		// just recorded into fb.commandBuffer and submits in EndAndPresent.
 
 		// One-shot indirect audit (debug): downloads this frame's filter
 		// commands + HZB after Execute so the GPU results are final. Stalls
