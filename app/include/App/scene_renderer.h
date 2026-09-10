@@ -125,6 +125,20 @@ struct ScenePassConfig {
 };
 
 // ---------------------------------------------------------------------------
+// Debug-UI dock position. The panel is pinned (via SetNextWindowPos/Size)
+// instead of floating: Right/Left are full-height side bars, the four
+// corners are floating overlays. U cycles through them at runtime.
+// ---------------------------------------------------------------------------
+enum class UiDock : int {
+	Right = 0,
+	Left = 1,
+	TopLeft = 2,
+	TopRight = 3,
+	BottomLeft = 4,
+	BottomRight = 5,
+};
+
+// ---------------------------------------------------------------------------
 // Antialiasing mode (ImGui combo). MSAA 2x and SMAA are mutually exclusive:
 // running SMAA on top of an MSAA-resolved image wastes the resolve without
 // adding subpixel coverage (SMAA S2x/4x are separate, unported modes).
@@ -318,6 +332,8 @@ protected:
 		);
 	}
 	bool m_uiMode = false;
+	UiDock m_uiDock = UiDock::Right; // side-pinned panel; U cycles corners/sides
+	bool m_uiDockDirty = true; // true = apply dock pos/size once, then let user resize stick
 	// Configurable resolution knobs (see "Resolution config" in the .cpp).
 	float m_renderScale = 1.0f;
 	float m_uiScale = 1.0f;
@@ -339,12 +355,98 @@ protected:
 
 	void Update() {
 		Super::Update();
-		if (m_input.isKeyPressed(GLFW_KEY_I)) {
-			SetUIMode(!m_uiMode);
-		}
+		HandleShortcuts();
 		if (!m_uiMode) {
 			UpdateCamera(delta_time_s);
 		}
+	}
+
+	// Global feature shortcuts (work in both FPS and UI modes so A/B
+	// comparisons don't require opening the panel; see the footer readout
+	// in RenderFrame for the full list). WASDQE/Space/Shift/Ctrl are
+	// reserved for camera movement and are never used here.
+	void HandleShortcuts() {
+		if (m_input.isKeyPressed(GLFW_KEY_I)) {
+			SetUIMode(!m_uiMode);
+		}
+		// U cycles the debug-panel dock: Right -> Left -> corners.
+		if (m_input.isKeyPressed(GLFW_KEY_U)) {
+			CycleUiDock();
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_M)) {
+			m_motionBlurEnabled = !m_motionBlurEnabled;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_O)) {
+			m_ssaoEnabled = !m_ssaoEnabled;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_B)) {
+			m_bloomEnabled = !m_bloomEnabled;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_X)) {
+			m_autoExposureEnabled = !m_autoExposureEnabled;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_V)) {
+			m_showMotionDebug = !m_showMotionDebug;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_L)) {
+			m_lodEnabled = !m_lodEnabled;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_F)) {
+			m_fpDemo.enabled = !m_fpDemo.enabled;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_G)) {
+			m_useGfxFilter = !m_useGfxFilter;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_C)) {
+			m_fpDemo.cookiesEnabled = !m_fpDemo.cookiesEnabled;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_K)) {
+			m_env.skyEnabled = !m_env.skyEnabled;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_T)) {
+			m_transparentMode = (m_transparentMode == smvk::TransparentMode::Blended)
+				? smvk::TransparentMode::Dithered
+				: smvk::TransparentMode::Blended;
+		}
+		// Z cycles AA: Off -> MSAA 2x -> SMAA 1x -> SMAA T2x. 1..4 jump
+		// directly to a mode.
+		if (m_input.isKeyPressed(GLFW_KEY_Z)) {
+			m_aaMode = static_cast<AaMode>((static_cast<int>(m_aaMode) + 1) % 4);
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_1)) {
+			m_aaMode = AaMode::Off;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_2)) {
+			m_aaMode = AaMode::Msaa2x;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_3)) {
+			m_aaMode = AaMode::Smaa1x;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_4)) {
+			m_aaMode = AaMode::SmaaT2x;
+		}
+	}
+
+	void CycleUiDock() {
+		m_uiDock = static_cast<UiDock>((static_cast<int>(m_uiDock) + 1) % 6);
+		m_uiDockDirty = true;
+	}
+	void SetUiDock(UiDock dock) {
+		if (m_uiDock != dock) {
+			m_uiDock = dock;
+			m_uiDockDirty = true;
+		}
+	}
+	const char* UiDockName() const {
+		switch (m_uiDock) {
+		case UiDock::Right: return "Right";
+		case UiDock::Left: return "Left";
+		case UiDock::TopLeft: return "TopLeft";
+		case UiDock::TopRight: return "TopRight";
+		case UiDock::BottomLeft: return "BottomLeft";
+		case UiDock::BottomRight: return "BottomRight";
+		}
+		return "Right";
 	}
 
 	void LateUpdate() {
@@ -453,7 +555,7 @@ protected:
 	bool m_showMotionDebug = false; // tonemap debug view: motion vectors
 	float m_motionDebugScale = 16.0f; // debug view velocity amplification
 	// ---- Motion blur pass (HDR velocity gather, see motionblur.h) ----
-	bool m_motionBlurEnabled = true; // runs after Main, before Bloom/Tonemap
+	bool m_motionBlurEnabled = true; // runs after Main, before Bloom/Tonemap (M)
 	int m_motionBlurSamples = 12; // gather taps 1..32
 	float m_motionBlurMaxRadius = 24.0f; // blur clamp (px)
 	float m_motionBlurStrength = 1.0f; // shutter scale
@@ -544,6 +646,8 @@ protected:
 		return active ? m_exposureAdapted : m_manualExposure;
 	}
 	void UpdateAutoExposure(uint32_t frameIndex); // download slice BEFORE zero + Adapt (call at record time)
+	// ---- Bloom chain (HDR down/up, see bloom.h) ----
+	bool m_bloomEnabled = true; // runs before Tonemap; gated with m_passes.bloom (B)
 	// ---- SSAO pass (half-res depth-only AO, see ssao.h) ----
 	bool m_ssaoEnabled = true; // runs before Main, composites in opaque ambient
 	float m_ssaoRadius = 0.5f; // view-space sample radius (m)

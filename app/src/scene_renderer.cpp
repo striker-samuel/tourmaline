@@ -2886,7 +2886,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		// ---------------------------------------------------------------------
 		{
 			SMVK_PROFILE_CATEGORY("Bloom", Optick::Category::Rendering);
-			if (m_passes.bloom && m_viewportResources.bloom.Valid()) {
+			if (m_passes.bloom && m_bloomEnabled && m_viewportResources.bloom.Valid()) {
 				// Default down/up programs owned by BloomChain (Ensure internalized).
 				// Samples the (possibly motion-blurred) scene HDR.
 				m_viewportResources.bloom.AddBloomPasses(
@@ -2908,7 +2908,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		const bool swapIsSrgb = SwapchainIsSrgb();
 		{
 			SMVK_PROFILE_CATEGORY("Tonemap", Optick::Category::Rendering);
-			const bool bloomOn = m_passes.bloom && m_viewportResources.bloom.Valid();
+			const bool bloomOn = m_passes.bloom && m_bloomEnabled && m_viewportResources.bloom.Valid();
 			smvk::LogicalImageViewHandle bloomView{};
 			uint32_t bloomBindless = UINT32_MAX;
 			float bloomIntensity = 0.0f;
@@ -2993,7 +2993,57 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			m_imgui->NewFrame(uiExtent);
 
 		// Minimal UI – name + camera pos
+		// Pinned debug panel: side bars (Right/Left, full height) or a
+		// corner overlay. U cycles Right -> Left -> TL -> TR -> BL -> BR.
+		// The dock pos/size is forced only on dock change (or first frame);
+		// afterwards the user's manual move/resize sticks (FirstUseEver).
+		{
+			const ImVec2 disp = ImGui::GetIO().DisplaySize;
+			const float pad = 8.0f;
+			const float sideW = 480.0f;
+			ImVec2 pos{ 0, 0 }, size{ 0, 0 };
+			switch (m_uiDock) {
+			case UiDock::Right:
+				pos = ImVec2(disp.x - sideW - pad, pad);
+				size = ImVec2(sideW, disp.y - pad * 2.0f);
+				break;
+			case UiDock::Left:
+				pos = ImVec2(pad, pad);
+				size = ImVec2(sideW, disp.y - pad * 2.0f);
+				break;
+			case UiDock::TopLeft:
+				pos = ImVec2(pad, pad);
+				size = ImVec2(sideW, disp.y * 0.85f);
+				break;
+			case UiDock::TopRight:
+				pos = ImVec2(disp.x - sideW - pad, pad);
+				size = ImVec2(sideW, disp.y * 0.85f);
+				break;
+			case UiDock::BottomLeft:
+				pos = ImVec2(pad, disp.y * 0.15f - pad);
+				size = ImVec2(sideW, disp.y * 0.85f);
+				break;
+			case UiDock::BottomRight:
+				pos = ImVec2(disp.x - sideW - pad, disp.y * 0.15f - pad);
+				size = ImVec2(sideW, disp.y * 0.85f);
+				break;
+			}
+			const ImGuiCond dockCond = m_uiDockDirty ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+			ImGui::SetNextWindowPos(pos, dockCond);
+			ImGui::SetNextWindowSize(size, dockCond);
+			m_uiDockDirty = false;
+		}
 		ImGui::Begin("VulkanToy — Debug");
+		{
+			// Dock selector + cycle button (same action as the U shortcut).
+			const char* dockNames[] = { "Right", "Left", "TopLeft", "TopRight", "BottomLeft", "BottomRight" };
+			int dockIdx = static_cast<int>(m_uiDock);
+			if (ImGui::Combo("UI dock", &dockIdx, dockNames, 6))
+				SetUiDock(static_cast<UiDock>(dockIdx));
+			ImGui::SameLine();
+			if (ImGui::Button("Cycle (U)"))
+				CycleUiDock();
+		}
 		ImGui::Text("Frame %.1f FPS (%.3f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
 		if (m_gpuTimingValid)
 			ImGui::Text("CPU %.3f ms (wait %.3f ms)  GPU %.3f ms", m_cpuMsSmooth, m_waitMsSmooth, m_gpuMsSmooth);
@@ -3033,9 +3083,10 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					m_renderViews.Count(), m_renderViews.MainViewIndex(),
 					cascadeViewBase, spotViewBase);
 			}
-			{
-				const auto& bloom = m_viewportResources.bloom;
-				if (bloom.Valid()) {
+		{
+			const auto& bloom = m_viewportResources.bloom;
+			ImGui::Checkbox("Bloom (B)", &m_bloomEnabled);
+			if (bloom.Valid() && m_bloomEnabled) {
 					ImGui::Text("Bloom: %u mips  base %ux%u  thr %.2f knee %.2f int %.2f",
 						bloom.MipCount(),
 						bloom.MipExtent(0).width, bloom.MipExtent(0).height,
@@ -3047,7 +3098,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				}
 			}
 		if (ImGui::CollapsingHeader("Exposure — histogram eye adaptation", ImGuiTreeNodeFlags_DefaultOpen)) {
-			ImGui::Checkbox("Auto-exposure", &m_autoExposureEnabled);
+			ImGui::Checkbox("Auto-exposure (X)", &m_autoExposureEnabled);
 			ImGui::SliderFloat("Manual exposure", &m_manualExposure,
 				0.00005f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
 			ImGui::SliderFloat("EV bias", &m_exposureEvBias, -4.0f, 4.0f, "%.1f");
@@ -3080,7 +3131,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			// the combo is the single source of truth.
 			const char* aaNames[] = { "Off", "MSAA 2x", "SMAA 1x", "SMAA T2x" };
 			int aaIdx = static_cast<int>(m_aaMode);
-			if (ImGui::Combo("Antialiasing", &aaIdx, aaNames, 4))
+			if (ImGui::Combo("Antialiasing (Z / 1-4)", &aaIdx, aaNames, 4))
 				m_aaMode = static_cast<AaMode>(aaIdx);
 			if (m_aaMode == AaMode::Msaa2x) {
 				if (!m_context->SupportsMSAA2x())
@@ -3105,7 +3156,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				// dithered screen-door, opaque state; optional blend).
 				const char* transpModes[] = { "Dithered (default)", "Alpha blend" };
 				int transpIdx = (m_transparentMode == smvk::TransparentMode::Blended) ? 1 : 0;
-				if (ImGui::Combo("Transparency", &transpIdx, transpModes, 2))
+				if (ImGui::Combo("Transparency (T)", &transpIdx, transpModes, 2))
 					m_transparentMode = (transpIdx == 1)
 						? smvk::TransparentMode::Blended
 						: smvk::TransparentMode::Dithered;
@@ -3117,7 +3168,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 		ImGui::Separator();
 		if (ImGui::CollapsingHeader("LODs — error-driven switches", ImGuiTreeNodeFlags_DefaultOpen)) {
-			ImGui::Checkbox("Enable LODs", &m_lodEnabled);
+			ImGui::Checkbox("Enable LODs (L)", &m_lodEnabled);
 			ImGui::SliderFloat("Pixel budget (px)", &m_lodPixelBudget, 0.25f, 8.0f, "%.2f");
 			ImGui::Text("Cooked: %u meshes / %u siblings | draws: %llu (%llu switched)",
 				m_lodChainMeshes, m_lodChainLods,
@@ -3148,7 +3199,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 			ImGui::Separator();
 			if (ImGui::CollapsingHeader("Environment — Skydome IBL + Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
-				ImGui::Checkbox("Sky dome", &m_env.skyEnabled);
+				ImGui::Checkbox("Sky dome (K)", &m_env.skyEnabled);
 				ImGui::Checkbox("IBL ambient/spec", &m_env.iblEnabled);
 				ImGui::ColorEdit3("Zenith", &m_env.skyZenithColor.x);
 				ImGui::ColorEdit3("Horizon", &m_env.skyHorizonColor.x);
@@ -3184,7 +3235,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				// Motion vectors (pass + target built in RenderFrame) +
 				// motion blur (HDR velocity gather before bloom/tonemap).
 		if (m_passes.motionVectors && m_viewportResources.motionVectors.Valid()) {
-					ImGui::Checkbox("Show motion vectors", &m_showMotionDebug);
+					ImGui::Checkbox("Show motion vectors (V)", &m_showMotionDebug);
 					if (m_showMotionDebug) {
 						ImGui::SliderFloat("Motion debug scale", &m_motionDebugScale, 1.0f, 128.0f);
 						ImGui::TextDisabled("Direction -> hue, magnitude -> brightness");
@@ -3192,7 +3243,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				} else {
 					ImGui::TextDisabled("Motion vectors: target/shaders missing");
 				}
-				ImGui::Checkbox("Motion blur (HDR velocity gather)", &m_motionBlurEnabled);
+				ImGui::Checkbox("Motion blur (M) (HDR velocity gather)", &m_motionBlurEnabled);
 				if (m_motionBlurEnabled) {
 					ImGui::SliderInt("Blur samples", &m_motionBlurSamples, 1, 32);
 					ImGui::SliderFloat("Blur max radius (px)", &m_motionBlurMaxRadius, 0.0f, 64.0f);
@@ -3202,7 +3253,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					else
 						ImGui::TextDisabled("Gather along motion vectors, pre-tonemap HDR");
 				}
-				ImGui::Checkbox("SSAO (half-res, depth only)", &m_ssaoEnabled);
+				ImGui::Checkbox("SSAO (O) (half-res, depth only)", &m_ssaoEnabled);
 				if (m_ssaoEnabled) {
 					ImGui::SliderFloat("AO radius (m)", &m_ssaoRadius, 0.05f, 2.0f);
 					ImGui::SliderFloat("AO bias", &m_ssaoBias, 0.0f, 0.1f);
@@ -3225,7 +3276,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				ImGui::Text("Forward+: %ux%u tiles (%u)  tile %u  max/tile %u",
 					fwd.tileCountX, fwd.tileCountY, fwd.tileCount,
 					FP_TILE_SIZE, FP_MAX_PER_TILE);
-				ImGui::Checkbox("Tiled point/spot lights", &m_fpDemo.enabled);
+				ImGui::Checkbox("Tiled point/spot lights (F)", &m_fpDemo.enabled);
 				ImGui::Checkbox("Animate", &m_fpDemo.animate);
 				ImGui::SliderFloat("Speed", &m_fpDemo.speed, 0.0f, 3.0f);
 				int gx = m_fpDemo.gridX, gy = m_fpDemo.gridY, gz = m_fpDemo.gridZ;
@@ -3271,7 +3322,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				ImGui::TextDisabled("Spot atlas: MISSING (spots run unshadowed)");
 			ImGui::Separator();
 			ImGui::Text("Light cookies & functions");
-			ImGui::Checkbox("Spot cookies (gobo)", &m_fpDemo.cookiesEnabled);
+			ImGui::Checkbox("Spot cookies (C) (gobo)", &m_fpDemo.cookiesEnabled);
 			ImGui::Checkbox("Light functions (spots)", &m_fpDemo.lightFunctionsEnabled);
 			const char* functionNames[] = { "None", "Flicker", "Pulse", "Cone bands" };
 			int fn = m_fpDemo.functionType;
@@ -3283,7 +3334,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			}
 			ImGui::Separator();
 			ImGui::Text("GfxFilter (per-view triangle filter)");
-			ImGui::Checkbox("Enable filtered main view", &m_useGfxFilter);
+			ImGui::Checkbox("Enable filtered main view (G)", &m_useGfxFilter);
 			ImGui::Checkbox("Enable filtered motion vectors", &m_useFilteredMotion);
 			{
 				// Cull-flag toggles write straight into the renderer config
@@ -3387,6 +3438,9 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			}
 			ImGui::Separator();
 			ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
+			ImGui::TextDisabled("Keys: M blur  O SSAO  B bloom  X exposure  V vectors");
+			ImGui::TextDisabled("      L LODs  F lights  G filter  C cookies  K sky");
+			ImGui::TextDisabled("      T transparency  Z/1-4 AA  U dock (%s)", UiDockName());
 			ImGui::End();
 
 			// Forward+ light debug overlay: project the CPU light copy
