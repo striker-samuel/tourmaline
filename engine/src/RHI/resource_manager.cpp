@@ -36,7 +36,12 @@ static VkImageLayout toVkImageLayout(ImageLayout layout) {
 static VkPipelineStageFlags2 toVkPipelineStage(PipelineStage stage) {
     if (stage == PipelineStageBit_None) return VK_PIPELINE_STAGE_2_NONE;
     VkPipelineStageFlags2 out = 0;
-    if (stage & PipelineStageBit_Vertex) out |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+    // Vertex covers vertex-input fetch as well as the shader stage (must
+    // match impl.cpp ToVkStage): INDEX_READ is only valid with
+    // INDEX_INPUT/VERTEX_INPUT/ALL_GRAPHICS/ALL_COMMANDS in the mask
+    // (VUID-VkBufferMemoryBarrier2-dstAccessMask-03901), and the upload
+    // path emits e.g. IndexRead under the Vertex bit.
+    if (stage & PipelineStageBit_Vertex) out |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
     if (stage & PipelineStageBit_Fragment) out |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     if (stage & PipelineStageBit_Compute) out |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     if (stage & PipelineStageBit_Geometry) out |= VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT;
@@ -48,6 +53,8 @@ static VkPipelineStageFlags2 toVkPipelineStage(PipelineStage stage) {
     // AnyHit etc map to same ray tracing bit for simplicity
     if (stage & (PipelineStageBit_AnyHit | PipelineStageBit_ClosestHit | PipelineStageBit_Miss | PipelineStageBit_Intersection | PipelineStageBit_Callable))
         out |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    if (stage & PipelineStageBit_Transfer) out |= VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    if (stage & PipelineStageBit_DrawIndirect) out |= VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
     return out ? out : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 }
 static VkAccessFlags2 toVkAccess(AccessFlags access) {

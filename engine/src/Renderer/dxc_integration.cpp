@@ -72,6 +72,11 @@ std::vector<char> CompileHLSLToSPIRV(
 #ifndef NDEBUG
         L"-Zi",
         L"-Qembed_debug",
+        // NOTE: keep vulkan (not vulkan-with-source): DXC emits invalid
+        // DebugLine column ends vs the embedded source for some shaders,
+        // rejected by spirv-val ("Column End ... larger then Line ...
+        // column length ... found in the DebugSource text").
+        L"-fspv-debug=vulkan",
 #else
         L"-O3",
 #endif

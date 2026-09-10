@@ -592,7 +592,7 @@ constexpr VkBufferUsageFlags bufferTypeToUsageFlags[9] = {
 	VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, // BufferType_Indirect (also written by filter compute)
 	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_TransferSrc
 	VK_BUFFER_USAGE_TRANSFER_DST_BIT,              // BufferType_TransferDst
-	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,              // BufferType_Staging: transfer with host visibility
+	VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, // BufferType_Staging: host-visible scratch, both directions (uploads read from it, readback copies into it)
 	0,                                             // BufferType_Count sentinel
 };
 
@@ -1378,6 +1378,9 @@ static smvk::PipelineStage FromVkPipelineStage(VkPipelineStageFlags2 flags) {
 	if (flags == VK_PIPELINE_STAGE_2_NONE) return smvk::PipelineStageBit_None;
 	smvk::PipelineStage out = smvk::PipelineStageBit_None;
 	if (flags & VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Vertex);
+	// Vertex covers vertex-input fetch (see ToVkStage): fold both input
+	// bits back so stage masks round-trip instead of collapsing to None.
+	if (flags & (VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT)) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Vertex);
 	if (flags & VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Fragment);
 	if (flags & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Compute);
 	if (flags & VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT) out = static_cast<smvk::PipelineStage>(out | smvk::PipelineStageBit_Geometry);
@@ -4628,16 +4631,6 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 	return { this, handle };
 }
 [[nodiscard]] smvk::Holder<smvk::ShaderModuleHandle> smvk::VulkanResourceManager::CreateShaderModule(std::vector<char> code, const char* debugName) {
-	// Engine policy: classic kill semantics for `discard`. DXC maps HLSL
-	// `discard` to OpDemoteToHelperInvocation when targeting vulkan1.3+ with
-	// no opt-out flag; that would require shaderDemoteToHelperInvocation and
-	// cost early-z on the shadow depth path. Sanitize before module creation
-	// so neither offline .spv nor runtime DXC output can declare the
-	// capability (VUID-VkShaderModuleCreateInfo-pCode-08740).
-	if (const uint32_t demotes = SanitizeDemoteToKill(code); demotes > 0) {
-		std::fprintf(stderr, "[Shader] %s: rewrote %u OpDemoteToHelperInvocation -> OpKill\n",
-			debugName ? debugName : "<unnamed>", demotes);
-	}
 	VkShaderModule shader = VK_NULL_HANDLE;
 	CreateShaderModuleIn(
 		code,
@@ -7913,6 +7906,16 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 			if (src.masks.accessMask != req.barrierMasks.accessMask || src.masks.stageMask != req.barrierMasks.stageMask) {
 				if (!(!srcIsWrite && !dstIsWrite)) needBarrier = true;
 			}
+			// WAW / RAW on the same buffer with identical masks still needs
+			// an execution + memory barrier for ordering/visibility (e.g.
+			// the HZB pyramid: every mip pass uses ShaderRead|ShaderWrite
+			// @Compute on the same VkBuffer; without this, mip N+1 reads
+			// unfinished mip N -> stale near -> over-cull on fast camera
+			// moves, exposed in Release where validation adds no
+			// serialization). Mirrors the image path's WAW clause above.
+			else if (srcIsWrite && dstIsWrite) {
+				needBarrier = true;
+			}
 			// First use from None with no access – still may need barrier if dst is read after write globally, but local None -> need barrier if dst is read? For buffer from Undefined, we still need barrier if dst access != None
 			if (src.masks.accessMask == AccessFlags::None && req.barrierMasks.accessMask != AccessFlags::None) needBarrier = true;
 
@@ -8042,6 +8045,12 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				bool needBarrier = false;
 				if (src.masks.accessMask != req.barrierMasks.accessMask || src.masks.stageMask != req.barrierMasks.stageMask) {
 					if (!(!srcIsWrite && !dstIsWrite)) needBarrier = true;
+				}
+				// Same-mask WAW still needs a barrier (see EmitBarriers
+				// above: HZB mip chain reuses ShaderRead|ShaderWrite
+				// @Compute on one buffer; mip N+1 must see mip N).
+				else if (srcIsWrite && dstIsWrite) {
+					needBarrier = true;
 				}
 				if (src.masks.accessMask == AccessFlags::None && req.barrierMasks.accessMask != AccessFlags::None) needBarrier = true;
 				if (needBarrier) {

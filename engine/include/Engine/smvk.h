@@ -1382,6 +1382,11 @@ struct ImageCreateInfo
 			return PipelineStageBit_Transfer;
 		if ((access & AccessFlags::IndirectCommandRead) != AccessFlags::None)
 			return PipelineStageBit_DrawIndirect;
+		// INDEX_READ requires INDEX_INPUT/VERTEX_INPUT/ALL_GRAPHICS/
+		// ALL_COMMANDS (VUID-03901): the RHI Vertex bit expands to
+		// VERTEX_SHADER|VERTEX_INPUT in both Vk translators.
+		if ((access & AccessFlags::IndexRead) != AccessFlags::None)
+			return PipelineStageBit_Vertex;
 		return PipelineStageBit_Fragment;
 	}
 

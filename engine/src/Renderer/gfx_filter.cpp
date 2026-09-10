@@ -451,6 +451,19 @@ bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
 		hz.width = hz.height = hz.mipCount = 0;
 		return false;
 	}
+	// Fresh pyramid starts as far (0 under reversed-Z = keep-safe). Without
+	// this, a rebuild leaves garbage that MIN-reduces upward into a 1-frame
+	// over-cull pop on fast yaw / fly-through (Release exposes it; Debug
+	// validation + timing usually masks it). Resizes are rare, so a full
+	// zero-fill is affordable.
+	{
+		std::vector<uint8_t> zeros((size_t)HzbTotalFloats(w, h) * sizeof(float), 0);
+		if (!zeros.empty()) {
+			ctx.UploadDataToBuffer(hz.buffer, zeros.data(), zeros.size(),
+				PipelineStage(PipelineStageBit_Compute),
+				AccessFlags::ShaderRead | AccessFlags::ShaderWrite);
+		}
+	}
 	hz.logical = rg.AddExternalBuffer(hz.buffer, "gfx hiz");
 	if (hz.logical.empty()) {
 		hz.buffer = {};

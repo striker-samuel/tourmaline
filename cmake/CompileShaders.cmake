@@ -139,7 +139,15 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 -fvk-use-dx-layout
             )
             if (CMAKE_BUILD_TYPE MATCHES "Debug")
-                list(APPEND _COMMON -Od -Zi -Qembed_debug -fspv-debug=vulkan-with-source)
+                # NOTE: do NOT use -fspv-debug=vulkan-with-source here. DXC
+                # 1.9.5399 emits DebugLine/DebugLexicalBlock column ends past
+                # the embedded source line length for some shaders (SMAA set),
+                # and its internal spirv-val rejects it:
+                # "generated SPIR-V is invalid ... Column End ... larger then
+                # Line ... column length ... found in the DebugSource text"
+                # (fatal error, no .spv emitted). -fspv-debug=vulkan keeps
+                # line info without embedded source and validates clean.
+                list(APPEND _COMMON -Od -Zi -Qembed_debug -fspv-debug=vulkan)
             else()
                 list(APPEND _COMMON -O3 -Qstrip_debug)
             endif()
