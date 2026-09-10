@@ -751,13 +751,6 @@ void SceneRenderer::Shutdown() {
 		Super::Shutdown();
 	}
 
-	smvk::SmaaImageState& SceneRenderer::SmaaStateFor(uint32_t imageIndex) {
-		const uint32_t count = m_swapchain ? std::max(m_swapchain->GetImageCount(), 1u) : 1u;
-		if (m_smaaImageStates.size() != count)
-			m_smaaImageStates.assign(count, smvk::SmaaImageState{});
-		return m_smaaImageStates[std::min(imageIndex, count - 1u)];
-	}
-
 	FrameUniforms SceneRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent) {
 
 		const int width_ = renderExtent.width;
@@ -786,8 +779,8 @@ void SceneRenderer::Shutdown() {
 		// the Y-flip above, so both axes share one sign (the official table
 		// assumes bottom-to-top y; the physical corner pair is unchanged).
 		if (SmaaT2xActive()) {
-			// Phase belongs to this record's swapchain image (snapshot in
-			// m_smaaFrameParams), never the render-loop counter - see smaa.h.
+			// Phase is the global record toggle (snapshot in
+			// m_smaaFrameParams), never per-image - see SmaaT2xState.
 			const float s = (m_smaaFrameParams.parity == 0) ? 0.25f : -0.25f;
 			const float jx = s * 2.0f / float(renderExtent.width);
 			const float jy = s * 2.0f / float(renderExtent.height);
@@ -1289,7 +1282,7 @@ void SceneRenderer::Shutdown() {
 		m_viewportResources.smaa.Ensure(*m_context, *m_rendergraph, swapExtent, rebuildSmaaDesc);
 		// Recreated history targets hold garbage - the resolve must not
 		// blend against them until the T2x chain refills the ping-pong.
-		m_smaaImageStates.clear();
+		smvk::SmaaInvalidateHistory(m_smaaT2x);
 		UpdateCameraAspect(renderExtent);
 	}
 
@@ -1388,22 +1381,20 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 			m_viewportResources.bloom.desc.knee = BLOOM_KNEE * bloomScale;
 		}
 		m_context->UpdateDescriptors();
-		// SMAA T2x presentation-cadence state (see SmaaImageState in smaa.h):
-		// one slot per swapchain image, advanced once per recorded frame. Any
-		// AA-mode change invalidates every image (a T2x -> 1x/Off -> T2x
-		// round-trip would otherwise reuse ancient history).
-		const uint64_t smaaRecordId = ++m_smaaRecordCounter;
+		// SMAA T2x global toggle (see SmaaT2xState in smaa.h): one phase
+		// for the recorded-frame sequence, advanced once per T2x record.
+		// Any AA-mode change invalidates the history (a T2x -> 1x/Off ->
+		// T2x round-trip would otherwise reuse ancient history).
 		if (m_aaMode != m_smaaLastMode) {
-			m_smaaImageStates.clear();
+			smvk::SmaaInvalidateHistory(m_smaaT2x);
 			m_smaaLastMode = m_aaMode;
 		}
-		// Per-image T2x snapshot for this record: the jitter below, the
+		// Global T2x snapshot for this record: the jitter below, the
 		// history slot + subsample indices of the SMAA chain and the overlay
 		// all read this one snapshot so they always agree. Evaluated after
 		// Ensure so SmaaActive() matches the chain-emission gate below (the
 		// first record after (re)creation degrades to a warmup record).
-		m_smaaFrameParams = smvk::SmaaBeginFrame(
-			SmaaStateFor(fb.imageIndex), SmaaT2xActive(), smaaRecordId);
+		m_smaaFrameParams = smvk::SmaaBeginFrame(m_smaaT2x, SmaaT2xActive());
 		m_smaaFrameRanT2x = false; // set where the T2x chain is emitted
 		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent);
 		const smvk::GpuDirectionalLightDescription dirLight = UpdateLights(fb.frameIndex);
@@ -2776,10 +2767,10 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		if (smaaActive) {
 			SMVK_PROFILE_CATEGORY("SMAA", Optick::Category::Rendering);
 			m_smaaFrameRanT2x = smaaT2x;
-			// Official T2x subsample table (@SUBSAMPLE_INDICES in
-			// smaa.hlsli): phase A/B → (1,1,1,0)/(2,2,2,0); SMAA 1x → zeros.
-			// Phase/slot/valid come from this record's image snapshot, so the
-			// triple always agrees even when Mailbox drops other records.
+		// Official T2x subsample table (@SUBSAMPLE_INDICES in
+		// smaa.hlsli): phase A/B → (1,1,1,0)/(2,2,2,0); SMAA 1x → zeros.
+		// Phase/slot/valid come from this record's global snapshot, so
+		// the triple always agrees.
 			float subsample[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 			if (smaaT2x && m_smaaFrameParams.parity == 0) {
 				subsample[0] = subsample[1] = subsample[2] = 1.0f;
@@ -3309,13 +3300,11 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		m_prevViewProj = frameData.viewProj;
 		m_prevViewProjValid = true;
 		m_prevGlobalTransforms = m_world->scene.globalTransform;
-		// SMAA T2x temporal state for this record's swapchain image: the
-		// neighborhood pass wrote history[parity] during Execute (when the
-		// T2x chain ran). Indexed by image, not by render count, so dropped
-		// (Mailbox) records only stall that image's alternation instead of
-		// desyncing the on-screen phase sequence. A non-T2x record freezes
+		// SMAA T2x global toggle: the neighborhood pass wrote
+		// history[parity] during Execute (when the T2x chain ran), so the
+		// next record blends against this one. A non-T2x record freezes
 		// the phase and invalidates (see SmaaEndFrame).
-		smvk::SmaaEndFrame(SmaaStateFor(fb.imageIndex), m_smaaFrameRanT2x, smaaRecordId);
+		smvk::SmaaEndFrame(m_smaaT2x, m_smaaFrameRanT2x);
 	}
 }
 

@@ -21,6 +21,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <iostream>
 #include <vector>
 
@@ -123,110 +124,83 @@ void TestT2xJitterMath() {
 }
 
 // ---------------------------------------------------------------------------
-// Per-image T2x state machine (SmaaBeginFrame / SmaaEndFrame).
+// Global T2x toggle (SmaaBeginFrame / SmaaEndFrame).
 //
-// Simulates record sequences over a 3-image swapchain with Mailbox-style
-// drops (recorded but never displayed) and repeats, and checks that every
-// record is self-consistent: its jitter phase, history slot and validity
-// always agree, each image alternates its own phases, validity is granted
-// only after that image's own first T2x write, and mode switches / stale
-// histories invalidate. A global render-counter scheme would fail the drop
-// cases (the old bug); per-image state passes them by construction.
+// Regression test for the VSync T2x judder: the phase must strictly
+// alternate across CONSECUTIVE records (P0,P1,P0,P1...), whatever swapchain
+// image each record targets. The previous per-image keying made each image
+// alternate with itself, but FIFO display cycles images, so the screen
+// showed P0,P0,P1,P1 (holds + 0.5px jumps) while the shared slots fed
+// 2-record-old colors to 1-record-old velocities. This drives 2- and
+// 3-image FIFO acquire sequences through the global toggle and asserts
+// on-screen alternation, plus warmup / off-record freeze / explicit
+// invalidation. No GPU required.
 // ---------------------------------------------------------------------------
 
-void TestSmaaImageState() {
+void TestSmaaGlobalToggle() {
 	using namespace smvk;
-	constexpr uint32_t kImages = 3;
-	std::vector<SmaaImageState> st(kImages);
-	uint64_t counter = 0;
 
-	struct Record {
-		uint32_t image;
-		uint32_t parity;
-		bool valid;
-	};
-	auto record = [&](uint32_t img, bool t2x) {
-		++counter;
-		const SmaaImageFrameParams p = SmaaBeginFrame(st[img], t2x, counter);
-		Record r{ img, p.parity, p.historyValid };
-		SmaaEndFrame(st[img], t2x, counter);
-		return r;
-	};
-
-	// Strict round-robin (FIFO-like): images cycle, each alternates phases.
-	std::vector<Record> seq;
-	for (int i = 0; i < 9; ++i)
-		seq.push_back(record((uint32_t)(i % kImages), true));
-	bool alternating = true;
-	for (uint32_t img = 0; img < kImages; ++img) {
-		uint32_t expect = 0;
-		bool first = true;
-		for (const Record& r : seq) {
-			if (r.image != img)
-				continue;
-			if (first) {
-				// First record warms up (passthrough), phase starts at 0.
-				if (r.valid || r.parity != 0)
-					alternating = false;
-				expect = 1;
-				first = false;
-			} else {
-				if (r.parity != expect || !r.valid)
-					alternating = false;
-				expect ^= 1u;
-			}
+	// FIFO acquire order over 2 and 3 swapchain images: consecutive
+	// records (consecutive presented frames under VSync) alternate, and
+	// every record after the first blends.
+	for (uint32_t kImages : { 2u, 3u }) {
+		SmaaT2xState st;
+		bool ok = true;
+		const int n = 2 * (int)kImages + 2;
+		for (int i = 0; i < n; ++i) {
+			const uint32_t img = (uint32_t)(i % (int)kImages);
+			(void)img; // acquire order only: the phase must not depend on it
+			const SmaaFrameParams p = SmaaBeginFrame(st, true);
+			if (p.parity != (uint32_t)(i % 2))
+				ok = false;
+			if (p.historyValid != (i != 0))
+				ok = false;
+			SmaaEndFrame(st, true);
 		}
+		char name[64];
+		std::snprintf(name, sizeof(name),
+			"smaaglobal.fifo-%u-consecutive-alternates-and-warms-up", kImages);
+		Check(ok, name);
 	}
-	Check(alternating, "smaastate.roundrobin-alternates-and-warms-up");
 
-	// Mailbox drops: record images 0,1,2,0,1,2 but "display" only a subset.
-	// Dropped records must not corrupt the displayed ones: re-record image 0
-	// afterwards and require a valid, opposite-phase snapshot pairing with
-	// its own previous record (self-consistency, not global pairing).
-	st.assign(kImages, SmaaImageState{});
-	counter = 0;
-	const Record r0a = record(0, true); // warms up
-	const Record r1 = record(1, true);  // dropped by mailbox
-	const Record r2 = record(2, true);  // dropped by mailbox
-	const Record r0b = record(0, true); // displayed after the drops
-	Check(!r0a.valid && r0a.parity == 0, "smaastate.first-record-warms-up");
-	Check(r0b.valid, "smaastate.valid-after-own-write-despite-drops");
-	Check(r0b.parity == (r0a.parity ^ 1u), "smaastate.phase-toggles-per-own-record");
-	Check(r1.parity == 0 && r2.parity == 0, "smaastate.fresh-images-start-at-zero");
-	(void)r1; (void)r2;
+	// Non-T2x record freezes the phase and invalidates (never blend stale);
+	// re-entry warms up on the frozen phase, then alternation resumes.
+	{
+		SmaaT2xState st;
+		SmaaEndFrame(st, true);  // record 0 ran T2x: parity 0->1, valid
+		SmaaEndFrame(st, false); // off/1x record: freeze + invalidate
+		const SmaaFrameParams p = SmaaBeginFrame(st, true);
+		Check(!p.historyValid, "smaaglobal.off-record-invalidates");
+		Check(p.parity == 1, "smaaglobal.off-record-freezes-phase");
+		SmaaEndFrame(st, true); // re-entry warms up: valid, parity 1->0
+		const SmaaFrameParams q = SmaaBeginFrame(st, true);
+		Check(q.historyValid && q.parity == 0, "smaaglobal.reentry-resumes-alternation");
+	}
 
-	// Non-T2x record freezes the phase and invalidates (never blend stale).
-	const Record r0c = record(0, false);
-	Check(!r0c.valid && r0c.parity == 0, "smaastate.off-record-invalidates-parity-kept");
-	const Record r0d = record(0, true);
-	Check(!r0d.valid, "smaastate.reentry-warms-up");
+	// SMAA 1x snapshot is zeros (no jitter, passthrough).
+	{
+		SmaaT2xState st;
+		SmaaEndFrame(st, true);
+		const SmaaFrameParams p = SmaaBeginFrame(st, false);
+		Check(p.parity == 0 && !p.historyValid, "smaaglobal.1x-snapshot-is-zero");
+	}
 
-	// Stale history (shared slots overwritten by many other records) ages out.
-	st.assign(kImages, SmaaImageState{});
-	counter = 0;
-	record(0, true);
-	for (int i = 0; i < (int)(kSmaaHistoryMaxAgeRecords + 2); ++i)
-		record(1, true);
-	++counter;
-	const SmaaImageFrameParams stale = SmaaBeginFrame(st[0], true, counter);
-	Check(!stale.historyValid, "smaastate.ancient-history-invalid");
-	Check(stale.parity == 1, "smaastate.stale-keeps-own-parity");
-
-	// Fresh history within the age bound stays valid.
-	st.assign(kImages, SmaaImageState{});
-	counter = 0;
-	record(0, true);
-	record(1, true);
-	++counter;
-	const SmaaImageFrameParams fresh = SmaaBeginFrame(st[0], true, counter);
-	Check(fresh.historyValid, "smaastate.fresh-history-valid");
+	// Explicit invalidation (rebuild / AA-mode change) resets to phase 0.
+	{
+		SmaaT2xState st;
+		SmaaEndFrame(st, true);
+		SmaaEndFrame(st, true);
+		SmaaInvalidateHistory(st);
+		const SmaaFrameParams p = SmaaBeginFrame(st, true);
+		Check(!p.historyValid && p.parity == 0, "smaaglobal.invalidate-resets");
+	}
 }
 
 } // namespace
 
 int main() {
 	TestT2xJitterMath();
-	TestSmaaImageState();
+	TestSmaaGlobalToggle();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

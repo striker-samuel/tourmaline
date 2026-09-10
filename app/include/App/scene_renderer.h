@@ -459,28 +459,24 @@ protected:
 	// Off / Msaa2x / Smaa1x / SmaaT2x. T2x adds a quarter-pixel alternating
 	// camera jitter (UpdateFrameUniforms) and the temporal resolve.
 	AaMode m_aaMode = AaMode::SmaaT2x;
-	// Per-swapchain-image T2x state (see SmaaImageState in smaa.h). The T2x
-	// phase MUST belong to the presented image, not the render-loop counter:
-	// Mailbox/Immediate drops recorded frames, so a global toggle produces
-	// irregular on-screen phase sequences and the resolve judders. Indexed
-	// by fb.imageIndex (acquire precedes recording) - never fb.frameIndex,
-	// whose flight slots recycle across images. Sized on first use; cleared
-	// on rebuild and on any AA-mode change.
-	std::vector<smvk::SmaaImageState> m_smaaImageStates;
-	// Monotonic record counter for history staleness (SmaaBeginFrame age
-	// check); advanced once per RenderFrame.
-	uint64_t m_smaaRecordCounter = 0;
-	// Last AA mode seen by RenderFrame; any change invalidates every image's
-	// history (covers T2x -> 1x/Off -> T2x round-trips reusing ancient data).
+	// Global T2x toggle (see SmaaT2xState in smaa.h). The phase belongs to
+	// the recorded-frame sequence, not the swapchain image: every T2x
+	// record writes history[parity] and blends against history[parity^1]
+	// (the immediately preceding record, matching the global prevViewProj
+	// the motion pass diffs against). Under VSync FIFO this displays
+	// strict P0,P1,P0,P1; Mailbox/Immediate drops only skip a phase on
+	// screen while each resolve stays a correct consecutive-record blend.
+	// Invalidated on rebuild and on any AA-mode change (history targets
+	// recreated / stale data from an older T2x run).
+	smvk::SmaaT2xState m_smaaT2x;
+	// Last AA mode seen by RenderFrame; any change invalidates the history
+	// (covers T2x -> 1x/Off -> T2x round-trips reusing ancient data).
 	AaMode m_smaaLastMode = AaMode::SmaaT2x;
-	// This record's per-image snapshot (filled at the top of RenderFrame so
+	// This record's snapshot (filled at the top of RenderFrame so
 	// UpdateFrameUniforms, the pass builders and the overlay all agree).
-	smvk::SmaaImageFrameParams m_smaaFrameParams{};
+	smvk::SmaaFrameParams m_smaaFrameParams{};
 	// True when this record emitted the T2x chain (end-step input).
 	bool m_smaaFrameRanT2x = false;
-	// This record's swapchain-image T2x state (see SmaaImageState). Sizes to
-	// the swapchain image count on first use / count change (fresh states).
-	smvk::SmaaImageState& SmaaStateFor(uint32_t imageIndex);
 
 	bool SmaaRequested() const {
 		return m_passes.smaa

@@ -48,19 +48,23 @@
 // inherits it through prevViewProj, which is what the resolve's
 // reprojection needs. SMAA 1x passes float4(0, 0, 0, 0) and no jitter.
 //
-// Phase ownership (presentation cadence, not the render-loop counter): the
-// T2x phase MUST belong to the presented swapchain image. A global toggle
-// advanced per recorded frame breaks under Mailbox/Immediate presentation,
-// which silently drops recorded frames - the on-screen phase sequence goes
-// P0,P1,P1,P0... and the resolve judders (reads as doubled jitter). Keying
-// the phase to the swapchain image index (known at record time, right after
-// acquire) keeps every recorded frame self-consistent - its jitter, history
-// slot and subsample triple always agree, and each image strictly alternates
-// its own phases across its appearances - so a dropped frame degrades to a
-// static hold, never a wrong resolve. The shared ping-pong history slots are
-// kept: under drops the slot pairing is opportunistic (fresh content,
-// possibly same phase - a mild quality dip), under strict alternation it is
-// exact. See SmaaImageState below (pure CPU, headless-testable).
+// Phase ownership (record cadence, NOT per swapchain image): the T2x phase
+// is a property of the recorded-frame sequence - a single global toggle
+// advanced once per T2x record. Every record writes history[parity] and
+// blends against history[parity^1], which then always holds the
+// immediately preceding record: exactly the frame the motion-vector pass
+// diffs against (prevViewProj is likewise last-record), so each record is
+// self-consistent whatever image it targets and whatever the present mode.
+// Under VSync FIFO this displays strict P0,P1,P0,P1. Under
+// Mailbox/Immediate a replaced present only skips a phase on screen
+// (P0,P1,P1,P0...); the resolve itself stays correct because it always
+// blends consecutive records. (The previous per-image keying made each
+// image alternate with itself, but the screen cycles images, so FIFO
+// displayed P0,P0,P1,P1 - holds plus 0.5px jumps - and served 2-record-old
+// colors to 1-record-old velocities. Deliberately not guarded by image
+// order: any acquire order is record-consistent, so order-based
+// invalidation would only flash passthrough frames.)
+// See SmaaT2xState below (pure CPU, headless-testable).
 //
 // Velocity buffer: MotionVectors' RG16F target (prevUV - currUV in UV
 // units - resolution independent, so the chain running at swap extent
@@ -100,56 +104,52 @@
 
 namespace smvk {
 
-// Per-swapchain-image T2x temporal state. The app holds one per swapchain
-// image (sized by GetImageCount, cleared on rebuild) and indexes it by
-// fb.imageIndex - NEVER fb.frameIndex (flight slots recycle across images,
-// which would reintroduce the global-counter bug this replaces).
-struct SmaaImageState {
-	uint32_t parity = 0;       // T2x phase == history slot this record writes
-	bool historyValid = false; // this image has a previous neighborhood output
-	uint64_t lastRecord = 0;   // record counter of this image's last T2x write
-};
-
-// Record-time snapshot for one image: jitter sign, history slot and
-// subsample indices all derive from parity; the resolve blends only against
-// this image's own previous output (modulo shared-slot reuse, see above).
-struct SmaaImageFrameParams {
+// Global T2x temporal state: one per renderer, advanced once per recorded
+// frame (CPU-sequential in RenderFrame, before Execute). parity is the T2x
+// phase == the history slot the next record writes; historyValid gates the
+// resolve blend (false = passthrough of the current subsample).
+struct SmaaT2xState {
 	uint32_t parity = 0;
 	bool historyValid = false;
 };
 
-// Max recorded-frame age of an image's history before it is treated as
-// stale (shared slots get overwritten by other images; static pixels stay
-// valid indefinitely, moving pixels self-attenuate via velocity weighting,
-// so this is a backstop, not the primary correctness mechanism).
-inline constexpr uint64_t kSmaaHistoryMaxAgeRecords = 8;
+// Record-time snapshot: jitter sign, history slot and subsample indices
+// all derive from parity; historyValid allows the resolve blend.
+struct SmaaFrameParams {
+	uint32_t parity = 0;
+	bool historyValid = false;
+};
 
-// Record-time snapshot (runs before Execute, CPU-sequential with the rest
-// of RenderFrame). Zeros when T2x is off: SMAA 1x subsample + passthrough.
-inline SmaaImageFrameParams SmaaBeginFrame(const SmaaImageState& st,
-	bool t2xActive, uint64_t recordCounter) {
-	SmaaImageFrameParams p{};
+// Record-time snapshot (runs before Execute). Zeros when T2x is off:
+// SMAA 1x subsample + passthrough.
+inline SmaaFrameParams SmaaBeginFrame(const SmaaT2xState& st, bool t2xActive) {
+	SmaaFrameParams p{};
 	if (!t2xActive)
 		return p;
 	p.parity = st.parity & 1u;
-	p.historyValid = st.historyValid
-		&& (recordCounter >= st.lastRecord)
-		&& (recordCounter - st.lastRecord <= kSmaaHistoryMaxAgeRecords);
+	p.historyValid = st.historyValid;
 	return p;
 }
 
-// End-of-record step (runs after Execute, CPU-sequential like the old
-// global toggle). ranT2x mirrors the chain-emission gate: a non-T2x record
-// freezes the phase and invalidates, so the next T2x record for this image
-// warms up instead of blending against stale history.
-inline void SmaaEndFrame(SmaaImageState& st, bool ranT2x, uint64_t recordCounter) {
+// End-of-record step (runs after Execute). ranT2x mirrors the
+// chain-emission gate: a non-T2x record freezes the phase and invalidates,
+// so the next T2x record warms up instead of blending against stale
+// history.
+inline void SmaaEndFrame(SmaaT2xState& st, bool ranT2x) {
 	if (!ranT2x) {
 		st.historyValid = false;
 		return;
 	}
 	st.historyValid = true;
-	st.lastRecord = recordCounter;
 	st.parity ^= 1u;
+}
+
+// Explicit invalidation for history-content loss the toggle cannot see:
+// swapchain rebuild (targets recreated) and AA-mode changes (stale data
+// from an older T2x run). Resets parity so the jitter restarts at phase 0.
+inline void SmaaInvalidateHistory(SmaaT2xState& st) {
+	st.historyValid = false;
+	st.parity = 0;
 }
 
 // Must match SmaaPush in engine/shaders/smaa_push.hlsli (80 bytes,
