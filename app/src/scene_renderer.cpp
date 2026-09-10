@@ -210,12 +210,6 @@ static smvk::Extent2D ScaledExtent(smvk::Extent2D base, float scale) {
 // the boundary band on both phases - it can only reduce culling, never
 // punch holes. Shadow views stay exact (their projections never jitter).
 static constexpr float kMainViewCullGuardPx = 1.0f;
-// TEMPORARY auto-latch tuning (see the checkbox): trip on this many
-// on-screen over-cull disagrees in one frame (single-texel float noise
-// can flip 1-3 borderline batches; real holes are dozens+), stop after
-// this many latched dumps so interactivity returns.
-static constexpr uint32_t kAutoAuditTrip = 4;
-static constexpr uint32_t kAutoAuditMaxDumps = 3;
 
 static smvk::CascadedShadowMapDesc MakeShadowDesc() {
 	smvk::CascadedShadowMapDesc d{};
@@ -3155,21 +3149,6 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				ImGui::SameLine();
 				if (ImGui::Button("Dump HZB (stderr, stalls)"))
 					m_debugDumpHzb = true;
-				// TEMPORARY auto-latch for transient culls: audits EVERY
-				// frame (slideshow: device-idle + ~12MB downloads per
-				// frame) and prints only frames where on-screen GPU kills
-				// exceed the trip count, then auto-disables. Catches
-				// 1-frame holes no hand-timing can hit. REMOVE with the
-				// transient hunt.
-				if (ImGui::Checkbox("Auto-audit/HZB every frame (SLOW, catch transients)", &m_dumpAuditEachFrame)) {
-					m_autoAuditHits = 0;
-					if (m_dumpAuditEachFrame)
-						std::fprintf(stderr, "[GfxAudit] auto-latch ARMED (trip=%u, maxdumps=%u)\n",
-							kAutoAuditTrip, kAutoAuditMaxDumps);
-					else
-						std::fprintf(stderr, "[GfxAudit] auto-latch off (%u hits latched)\n",
-							m_autoAuditHits);
-				}
 				ImGui::TextDisabled("Colors: every registered cluster direct; culled ones stay visible here.\n"
 					"Heat: red = degenerate cone (never culls), green = tight cone.");
 				const smvk::gfx::Stats gs = m_gfxRenderer.LastStats();
@@ -3306,26 +3285,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			m_dumpIndirectAudit = false;
 			if (m_useGfxFilter && gfxSlot != UINT32_MAX) {
 				WaitForDeviceIdle();
-				(void)m_gfxRenderer.DumpIndirectAudit(*m_context, gfxSlot);
-			}
-		}
-		// TEMPORARY per-frame latch (see checkbox): catches transient
-		// 1-frame over-culls by auditing every frame; prints only tripping
-		// frames, then auto-disables. Slideshow-slow while armed.
-		if (m_dumpAuditEachFrame) {
-			if (m_useGfxFilter && gfxSlot != UINT32_MAX) {
-				WaitForDeviceIdle();
-				const uint32_t overCull =
-					m_gfxRenderer.DumpIndirectAudit(*m_context, gfxSlot);
-				if (overCull >= kAutoAuditTrip) {
-					std::fprintf(stderr,
-						"[GfxAudit] LATCHED over-cull frame: %u on-screen disagrees (hit %u/%u) — auto-disabling at cap\n",
-						overCull, m_autoAuditHits + 1, kAutoAuditMaxDumps);
-					if (++m_autoAuditHits >= kAutoAuditMaxDumps) {
-						m_dumpAuditEachFrame = false;
-						std::fprintf(stderr, "[GfxAudit] auto-latch off (cap reached)\n");
-					}
-				}
+				m_gfxRenderer.DumpIndirectAudit(*m_context, gfxSlot);
 			}
 		}
 		if (m_debugDumpHzb) {

@@ -518,10 +518,12 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	const uint64_t addr = ctx.GetBufferDeviceAddress(t.hiz.buffer);
 	// Null-BDA guard (same device-lost lesson as PushAndDispatch): skip the
 	// level instead of faulting; the HZB stays stale and T4 keeps geometry.
+	// Explicit fprintf (not SMVK_DEBUG_LOG): this fires on real faults and
+	// must be visible in Release builds too.
 	if (addr == 0) {
 		static uint64_t s_hizNullWarns = 0;
 		if ((s_hizNullWarns++ % 300) == 0) {
-			SMVK_DEBUG_LOG(
+			std::fprintf(stderr,
 				"[GfxHiz] refusing dispatch: null HZB address (view %u mip %u).\n",
 				view, dstMip);
 		}
@@ -529,25 +531,26 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	}
 	// Diagnose-only: invalid depth bindless for the mip0 copy reads garbage
 	// (undefined values); garbage-near MIN-reduces upward and over-culls.
-	// Throttled; no behavior change.
+	// Throttled explicit fprintf (Release-visible); no behavior change.
 	if (dstMip == 0 && depthBindlessIndex == UINT32_MAX) {
 		static uint64_t s_hizDepthWarns = 0;
 		if ((s_hizDepthWarns++ % 300) == 0) {
-			SMVK_DEBUG_LOG(
+			std::fprintf(stderr,
 				"[GfxHiz] mip0 copy with invalid depth bindless (view %u): "
 				"HZB content undefined, expect over-cull.\n",
 				view);
 		}
 	}
 	// Diagnose-only: HZB extent vs view extent mismatch misaligns footprint
-	// rows/cols with depth rows (wrong-texel over-cull). Throttled.
+	// rows/cols with depth rows (wrong-texel over-cull). Throttled explicit
+	// fprintf (Release-visible).
 	if (view < s.views.size()) {
 		const View& v = s.views[view];
 		if ((t.hiz.width != v.width || t.hiz.height != v.height)
 			&& v.width != 0 && v.height != 0) {
 			static uint64_t s_hizExtentWarns = 0;
 			if ((s_hizExtentWarns++ % 300) == 0) {
-				SMVK_DEBUG_LOG(
+				std::fprintf(stderr,
 					"[GfxHiz] extent mismatch: hiz %ux%u vs view %ux%u (view %u).\n",
 					t.hiz.width, t.hiz.height, v.width, v.height, view);
 			}
