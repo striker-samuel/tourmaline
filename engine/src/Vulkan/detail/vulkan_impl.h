@@ -480,6 +480,12 @@ namespace smvk {
 		VkDeviceSize allocFromRing(ThreadUploadState& st, VkDeviceSize size, VkDeviceSize alignment);
 		void ensureCmd(ThreadUploadState& st);
 		void submitState(ThreadUploadState& st, bool waitOldestIfFull = true);
+		// Submit a transfer-queue batch. When the upload queue is distinct
+		// from graphics, the submit waits on the latest swapchain
+		// retirement point so batches never overwrite data that in-flight
+		// frames still read (cross-queue equivalent of the old same-queue
+		// FIFO). GPU-side wait only; the CPU never blocks.
+		TimelinePoint submitTransfer(CommandSubmitHandle h);
 		VulkanResourceManager* m_rm = nullptr;
 		Submitter* m_transfer = nullptr;
 		Submitter* m_graphics = nullptr;
