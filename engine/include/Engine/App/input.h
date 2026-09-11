@@ -541,7 +541,7 @@ private:
 
     std::vector<GamepadState> gamepads_;
     float stickDeadzone_ = 0.12f;   // left stick (radial)
-    float lookDeadzone_ = 0.10f;    // right stick (radial)
-    float triggerDeadzone_ = 0.05f; // triggers (0..1 cut + rescale)
+    float lookDeadzone_ = 0.20f;    // right stick (radial; drifty pads need it big)
+    float triggerDeadzone_ = 0.05f;  // triggers (0..1 cut + rescale)
     std::array<std::vector<int>, static_cast<size_t>(Action::Count)> actionKeys_;
 };

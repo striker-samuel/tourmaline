@@ -1002,6 +1002,11 @@ protected:
 		glm::vec3(0.0f, 1.0f, 0.0f) //up
 	);
 	Camera m_camera = Camera(m_cameraPositioner);
+	// Virtual cursor for FPS mouselook: SDL relative mode warps the real
+	// cursor, so absolute positions are garbage while captured. The look
+	// deltas (xrel/yrel, valid in BOTH relative and normal mode) fold
+	// into this unbounded NDC-space position that feeds the positioner.
+	glm::vec2 m_virtualMouse{ 0.0f };
 	// ---- Texture streaming (mip-tail residency, see
 	// Engine/Renderer/texture_streamer.h). Owns residency for every
 	// glTF-loaded texture; pak-loaded textures stay full-resident until

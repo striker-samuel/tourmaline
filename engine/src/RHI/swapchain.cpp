@@ -9,6 +9,7 @@ VkPresentModeKHR ToVkPresentMode(PresentMode mode) {
     switch (mode) {
     case PresentMode::Mailbox: return VK_PRESENT_MODE_MAILBOX_KHR;
     case PresentMode::Immediate: return VK_PRESENT_MODE_IMMEDIATE_KHR;
+    case PresentMode::FifoRelaxed: return VK_PRESENT_MODE_FIFO_RELAXED_KHR;
     case PresentMode::Fifo:
     default: return VK_PRESENT_MODE_FIFO_KHR;
     }
@@ -17,6 +18,7 @@ PresentMode FromVkPresentMode(VkPresentModeKHR mode) {
     switch (mode) {
     case VK_PRESENT_MODE_MAILBOX_KHR: return PresentMode::Mailbox;
     case VK_PRESENT_MODE_IMMEDIATE_KHR: return PresentMode::Immediate;
+    case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return PresentMode::FifoRelaxed;
     case VK_PRESENT_MODE_FIFO_KHR:
     default: return PresentMode::Fifo;
     }
@@ -84,7 +86,7 @@ std::vector<PresentMode> Swapchain::GetAvailablePresentModes() const {
         // Only surface the modes the overlay offers; others (e.g.
         // FIFO_RELAXED) still work as automatic fallbacks.
         if (m == VK_PRESENT_MODE_FIFO_KHR || m == VK_PRESENT_MODE_MAILBOX_KHR ||
-            m == VK_PRESENT_MODE_IMMEDIATE_KHR)
+            m == VK_PRESENT_MODE_IMMEDIATE_KHR || m == VK_PRESENT_MODE_FIFO_RELAXED_KHR)
             out.push_back(FromVkPresentMode(m));
     }
     return out;

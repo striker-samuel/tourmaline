@@ -6708,8 +6708,10 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 	SwapChainSupportDetails support = querySwapChainSupport(physicalDevice_, surface_);
 	VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(support.formats);
 	VkExtent2D swapExtent = chooseSwapExtent(support.capabilities, window_);
-	// Requested mode wins when supported; otherwise prefer no-VSync
-	// fallbacks (mailbox, then immediate) before guaranteed FIFO.
+	// Requested mode wins when supported; otherwise fall back without the
+	// strict-FIFO 30fps lock first: mailbox (tear-free, no halving), then
+	// relaxed (vsync on time, immediate next blank when late), then
+	// immediate, and only then spec-guaranteed FIFO.
 	VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
 	{
 		const auto& modes = support.presentModes;
@@ -6720,6 +6722,8 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 			presentMode = requestedPresentMode_;
 		else if (has(VK_PRESENT_MODE_MAILBOX_KHR))
 			presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+		else if (has(VK_PRESENT_MODE_FIFO_RELAXED_KHR))
+			presentMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
 		else if (has(VK_PRESENT_MODE_IMMEDIATE_KHR))
 			presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
 	}

@@ -2611,8 +2611,9 @@ void SceneRenderer::Shutdown() {
 		// Benchmark split report (once, alongside App's [perf] avg line;
 		// benchFrames_ counts up in MainLoop right after this DrawFrame).
 		if (frameBudget_ > 0 && benchFrames_ + 1 >= frameBudget_) {
-			std::printf("[perf] cpu %.3f ms wait %.3f ms gpu %s\n", m_cpuMsSmooth, m_waitMsSmooth,
-				m_gpuTimingValid ? (std::to_string(m_gpuMsSmooth) + " ms").c_str() : "(warming up)");
+			std::printf("[perf] cpu %.3f ms wait %.3f ms gpu %s present %s\n", m_cpuMsSmooth, m_waitMsSmooth,
+				m_gpuTimingValid ? (std::to_string(m_gpuMsSmooth) + " ms").c_str() : "(warming up)",
+				smvk::ToString(m_swapchain->GetActivePresentMode()));
 			const double n = (double)(benchFrames_ + 1); // this DrawFrame already accumulated
 			std::printf("[perf] phases updates %.3f ms (u/l/m %.3f + stream %.3f + fp %.3f [gen %.3f up %.3f ds %.3f]) passes %.3f ms (preA %.3f preB %.3f preC %.3f postMain %.3f) readbacks %.3f ms ui %.3f ms execute %.3f ms\n",
 				s_benchUpdates / n, s_benchUpdA / n, s_benchStream / n, s_benchFp / n,
@@ -4622,10 +4623,12 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				// VSync / presentation mode. Applies on the next frame via
 				// Recreate (see DrawFrame); the active mode may fall back when
 				// the driver lacks the requested one. FIFO is strict (missed
-				// 16.6ms -> 30fps lock); Mailbox stays tear-free at 60Hz.
-				const char* modeNames[] = { "VSync FIFO (strict)", "VSync Mailbox (smooth)", "Uncapped Immediate" };
+				// 16.6ms -> 30fps lock); Mailbox stays tear-free at 60Hz;
+				// FIFO relaxed vsyncs on time and never locks to half rate.
+				const char* modeNames[] = { "VSync FIFO (strict)", "VSync Mailbox (smooth)",
+					"Uncapped Immediate", "VSync FIFO relaxed (no 30fps lock)" };
 					int modeIdx = static_cast<int>(m_presentMode);
-					if (ImGui::Combo("Present mode", &modeIdx, modeNames, 3))
+					if (ImGui::Combo("Present mode", &modeIdx, modeNames, 4))
 						m_presentMode = static_cast<smvk::PresentMode>(modeIdx);
 					ImGui::SliderFloat("Render scale", &m_renderScale,
 						RENDER_SCALE_MIN, RENDER_SCALE_MAX, "%.2fx");
@@ -5673,35 +5676,34 @@ void SceneRenderer::UpdateCamera(float dt)
 		movement.vertical_ = 0.0f;
 	}
 
-	// If ImGui wants mouse, don't apply FPS mouselook unless right-button held?
-	// We keep mouse handling outside the keyboard capture branch so cursor
-	// reset still works; the positioner internally ignores updates when not pressed.
-
-	// NDC, but to frameBuffer dimensions. 
-	//glm::vec2 mousePos = glm::vec2(
-	//	(static_cast<float>(m_input.getMouseX()) / static_cast<float>(swapchain->GetExtent().width)) * 2.0f - 1.0f,
-	//	1.0f - (static_cast<float>(m_input.getMouseY()) / static_cast<float>(swapchain->GetExtent().height)) * 2.0f
-	//);
-
-	// NDC, to window dimensions. These two may not match, depends on DPI settings. Be careful.
-	// m_input should be normalized and not be affected by resolution!
-	glm::vec2 mousePos = glm::vec2(
-		(static_cast<float>(m_input.getMouseX()) / static_cast<float>(m_swapchain->GetWindowWidth())) * 2.0f - 1.0f,
-		1.0f - (static_cast<float>(m_input.getMouseY()) / static_cast<float>(m_swapchain->GetWindowHeight())) * 2.0f
-	);
-
-	const bool mousePressed =
-		m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT);
+	// ---- Mouselook (SDL relative deltas -> virtual cursor) ----
+	// SDL relative mode warps the OS cursor every frame, so the absolute
+	// x/y positions the old GLFW path consumed are garbage while captured
+	// (they ping-pong around the warp point) — that is what broke mouse
+	// look. xrel/yrel are valid in BOTH captured and normal modes, so
+	// fold them into an unbounded virtual NDC cursor (y down — same
+	// mapping the old getMouseX/getMouseY path produced, so
+	// rotationSpeed_ keeps its calibration). The cursor is captured in
+	// FPS mode (nothing to click), so look is always active here; UI
+	// mode never reaches UpdateCamera.
+	{
+		const float w = static_cast<float>(std::max(1, m_swapchain->GetWindowWidth()));
+		const float h = static_cast<float>(std::max(1, m_swapchain->GetWindowHeight()));
+		m_virtualMouse.x += (m_input.getRelativeDeltaX() / w) * 2.0f;
+		m_virtualMouse.y += (m_input.getRelativeDeltaY() / h) * 2.0f;
+	}
+	const glm::vec2 mousePos = m_virtualMouse;
 
 	if (m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT))
 	{
+		// Zero the pending delta so a click never yanks the camera.
 		m_cameraPositioner.resetMousePosition(mousePos);
 	}
 
 	m_cameraPositioner.update(
 		static_cast<double>(dt),
 		mousePos,
-		mousePressed
+		true
 	);
 }
 
@@ -5715,12 +5717,9 @@ void SceneRenderer::SetUIMode(bool ui)
 		// Center cursor for UI interaction; let ImGui take over.
 		// Don't reset camera mouse pos on mode switch to avoid jump when returning to FPS.
 	} else {
-		// When returning to FPS, sync positioner to current mouse to avoid jump.
-		glm::vec2 mousePos = glm::vec2(
-			(static_cast<float>(m_input.getMouseX()) / static_cast<float>(m_swapchain->GetWindowWidth())) * 2.0f - 1.0f,
-			1.0f - (static_cast<float>(m_input.getMouseY()) / static_cast<float>(m_swapchain->GetWindowHeight())) * 2.0f
-		);
-		m_cameraPositioner.resetMousePosition(mousePos);
+		// When returning to FPS, sync positioner to the virtual cursor so
+		// the first relative delta doesn't yank the camera.
+		m_cameraPositioner.resetMousePosition(m_virtualMouse);
 	}
 }
 
