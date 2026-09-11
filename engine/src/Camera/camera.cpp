@@ -1,5 +1,7 @@
 #include <Engine/Camera/camera.h>
 
+#include <glm/gtc/quaternion.hpp>
+
 glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear)
 {
 	float f = 1.0f / tan(fovY_radians / 2.0f);
@@ -125,6 +127,12 @@ void CameraPositioner_FirstPerson::lookAt(const glm::vec3& pos, const glm::vec3&
 glm::vec3 CameraPositioner_FirstPerson::getForward() const {
 	const glm::mat4 rot = glm::mat4_cast(cameraOrientation_);
 	return -glm::vec3(rot[0][2], rot[1][2], rot[2][2]);
+}
+glm::quat CameraPositioner_FirstPerson::getOrientation() const {
+	return cameraOrientation_;
+}
+glm::vec3 CameraPositioner_FirstPerson::getEulerDegrees() const {
+	return glm::degrees(glm::eulerAngles(cameraOrientation_));
 }
 void CameraPositioner_FirstPerson::reset() {
 	cameraOrientation_ = starting_cameraOrientation;

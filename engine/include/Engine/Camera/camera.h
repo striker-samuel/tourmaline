@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #include "Engine/core.h"
+#include <glm/gtc/quaternion.hpp>
 
 // InfiniteReversedZ projection. For better precission up close and no cutoff
 glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear);
@@ -60,6 +61,9 @@ public:
 	void setUpVector(const glm::vec3& up);
 	void lookAt(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up);
 	glm::vec3 getForward() const;
+	glm::quat getOrientation() const;
+	// x = pitch, y = yaw, z = roll, in degrees (glm eulerAngles convention).
+	glm::vec3 getEulerDegrees() const;
 	void reset();
 
 public:
