@@ -848,6 +848,32 @@ void InvalidateHistory(State& s, uint32_t view) {
 	s.temporals[view].historyValid = false;
 }
 
+// Key-sorted (cluster, model) entries for one batch list (same skips the
+// pre-merge VisKey paths made: invalid draw index, invalid cluster).
+// batch keeps the ORIGINAL list slot so the emit walks below preserve
+// BuildBatches' material grouping (ranges stay coalesced).
+static void BuildVisKeys(const std::vector<Batch>& batches,
+	const std::vector<Draw>& draws, uint32_t clusterCount,
+	std::vector<detail::VisKeyEntry>& out) {
+	out.clear();
+	out.reserve(batches.size());
+	for (uint32_t i = 0; i < (uint32_t)batches.size(); ++i) {
+		const Batch& b = batches[i];
+		if (b.draw >= (uint32_t)draws.size())
+			continue;
+		if (b.cluster >= clusterCount)
+			continue;
+		detail::VisKeyEntry e{};
+		e.key = detail::MakeVisKey(draws[b.draw].model, b.cluster);
+		e.batch = i;
+		out.push_back(e);
+	}
+	std::sort(out.begin(), out.end(),
+		[](const detail::VisKeyEntry& a, const detail::VisKeyEntry& b) {
+			return a.key < b.key;
+		});
+}
+
 void SnapshotVisible(State& s, uint32_t view) {
 	assert(view < s.views.size());
 	TemporalView& t = Temporal(s, view);
@@ -864,6 +890,17 @@ void SnapshotVisible(State& s, uint32_t view) {
 	t.prevDrawCount = (uint32_t)v.drawConstants.size();
 	t.width = v.width;
 	t.height = v.height;
+	// Key-sorted (cluster, model) identities of the new snapshot: reuse
+	// this frame's curr keys when a builder already sorted them (they
+	// index the same batch list prevBatches just copied), else sort.
+	// Swap keeps both vectors' capacity alive across frames.
+	if (t.currKeysSerial == v.batchesSerial) {
+		t.prevKeys.swap(t.currKeys);
+		t.currKeys.clear();
+		t.currKeysSerial = UINT64_MAX;
+	} else {
+		BuildVisKeys(v.batches, v.drawConstants, (uint32_t)s.clusters.size(), t.prevKeys);
+	}
 	// historyValid flips true here; the seed pass (T3) consumes prev* next
 	// frame. First snapshot after InvalidateHistory re-arms history.
 	t.historyValid = true;
@@ -884,12 +921,12 @@ void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 
 	if (t.prevBatchCount > 0) {
 		SMVK_PROFILE_SCOPE("GfxUploadVisClusters");
-		std::vector<VisibleCluster> pairs;
-		pairs.reserve(t.prevBatchCount);
+		t.visPairScratch.clear();
+		t.visPairScratch.reserve(t.prevBatchCount);
 		for (const Batch& b : t.prevBatches)
-			pairs.push_back(VisibleCluster{ b.cluster, b.draw });
+			t.visPairScratch.push_back(VisibleCluster{ b.cluster, b.draw });
 		ctx.UploadDataToBuffer(t.visClusterBuffers[frameIndex],
-			pairs.data(), pairs.size() * sizeof(VisibleCluster),
+			t.visPairScratch.data(), t.visPairScratch.size() * sizeof(VisibleCluster),
 			PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
 	}
 	if (!t.prevDraws.empty()) {
@@ -900,18 +937,10 @@ void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 	}
 }
 
-// One bucket-major emitter input: resolved (cluster, draw, material, set).
-struct EmitEntry {
-	uint32_t cluster = 0;
-	uint32_t draw = 0; // firstInstance: index into the draws array the VS reads
-	uint32_t material = UINT32_MAX;
-	uint32_t drawSet = DrawSetBit_Opaque;
-};
-
 // Shared bucket-major emitter: opaque commands first (single VS-only
 // multi-draw), then masked (per-material ranges for the alpha-test FS
 // push). Runs coalesce on (bucket, material).
-static void EmitBucketMajor(State& s, const std::vector<EmitEntry>& entries,
+static void EmitBucketMajor(State& s, const std::vector<detail::EmitEntry>& entries,
 	std::vector<SeedCommand>& outCmds, std::vector<SeedRange>& outRanges,
 	uint32_t& outOpaque) {
 	outCmds.clear();
@@ -919,7 +948,7 @@ static void EmitBucketMajor(State& s, const std::vector<EmitEntry>& entries,
 	outOpaque = 0;
 	for (uint32_t pass = 0; pass < 2; ++pass) {
 		const uint32_t wantSet = (pass == 0) ? DrawSetBit_Opaque : DrawSetBit_Masked;
-		for (const EmitEntry& e : entries) {
+		for (const detail::EmitEntry& e : entries) {
 			if (e.cluster >= (uint32_t)s.clusters.size())
 				continue;
 			const bool masked = (e.drawSet & DrawSetBit_Masked) != 0;
@@ -938,7 +967,7 @@ static void EmitBucketMajor(State& s, const std::vector<EmitEntry>& entries,
 			static bool warnedSeedCap = false;
 			if (!warnedSeedCap) {
 				warnedSeedCap = true;
-				std::fprintf(stderr,
+				SMVK_DEBUG_LOG(
 					"[GfxFilter] seed emitter: batch cap %u hit, dropping "
 					"commands (increase kMaxBatches).\n", kMaxBatches);
 			}
@@ -977,135 +1006,116 @@ static void ResolveBatchMaterials(const std::vector<MaterialRange>& ranges,
 	}
 }
 
-// (cluster, model) identity shared by the seed intersection (below) and
-// the remainder difference. Same cluster + same transform == same
-// triangles == same depth, so seeding it reproduces exactly what the
-// prepass would write.
-struct VisKey {
-	uint32_t cluster = UINT32_MAX;
-	glm::mat4 model{ 1.0f };
-};
-static bool VisKeyLess(const VisKey& a, const VisKey& b) {
-	if (a.cluster != b.cluster)
-		return a.cluster < b.cluster;
-	return std::memcmp(&a.model, &b.model, sizeof(glm::mat4)) < 0;
+// Seed ONLY the intersection of the snapshot with this frame's batches
+// (same cluster, same transform). The prepass Loads seeded depth and
+// draws full current geometry over it (nearest-wins), and 1x Main then
+// tests read-only (GreaterEqual) against that buffer — so any stale
+// seed content that is NEARER than current geometry kills Main pixels
+// (skybox holes for a frame). Stale == LOD flip (sibling clusters have
+// disjoint ids) or moved instance (model differs): both miss the
+// intersection and fall through to the prepass + remainder instead.
+// Same cluster + same model replays bit-identical depth, which can
+// only ever tie (pass) — never poison.
+//
+// One sorted-key merge (detail::MergeKeyMasks) yields membership masks
+// for both outputs; the emit walks keep the ORIGINAL batch order so
+// material grouping (BuildBatches sorts draws by material) leaves the
+// (bucket, material) ranges coalesced exactly as before. All scratch
+// lives in TemporalView: the steady-state rebuild allocates nothing.
+static void BuildBothCommands(State& s, uint32_t view, bool wantSeed, bool wantRemainder) {
+	assert(view < s.views.size());
+	TemporalView& t = Temporal(s, view);
+	const View& v = s.views[view];
+
+	if (wantSeed) {
+		t.seedCommands.clear();
+		t.seedRanges.clear();
+		t.seedOpaqueCommands = 0;
+	}
+	if (wantRemainder) {
+		t.remainderCommands.clear();
+		t.remainderRanges.clear();
+		t.remainderOpaqueCommands = 0;
+	}
+	// Same guards as the pre-merge builders.
+	const bool doSeed = wantSeed && t.historyValid && !t.prevBatches.empty();
+	const bool doRemainder = wantRemainder && t.historyValid && !v.batches.empty();
+	if (!doSeed && !doRemainder)
+		return;
+
+	SMVK_PROFILE_RENDER("GfxBuildSeedAndRemainder");
+	SMVK_PROFILE_TAG("currBatches", v.batches.size());
+	SMVK_PROFILE_TAG("prevBatches", t.prevBatches.size());
+
+	// This frame's sorted curr keys: one sort serves both outputs and is
+	// rotated into the snapshot by SnapshotVisible (serial-gated; the
+	// memo never holds hand-built serial 0).
+	if (t.currKeysSerial != v.batchesSerial) {
+		BuildVisKeys(v.batches, v.drawConstants, (uint32_t)s.clusters.size(), t.currKeys);
+		t.currKeysSerial = v.batchesSerial != 0 ? v.batchesSerial : UINT64_MAX;
+	}
+
+	// Membership masks over the ORIGINAL batch lists (zero default:
+	// entries absent from the key arrays — invalid draw/cluster — never
+	// seed and never remainder, like the pre-merge guards).
+	t.seedMaskScratch.assign(t.prevBatches.size(), 0);
+	t.remainderMaskScratch.assign(v.batches.size(), 0);
+	const auto modelEq = [&](uint32_t prevBatch, uint32_t currBatch) {
+		const glm::mat4& prevModel = t.prevDraws[t.prevBatches[prevBatch].draw].model;
+		const glm::mat4& currModel = v.drawConstants[v.batches[currBatch].draw].model;
+		return std::memcmp(&prevModel, &currModel, sizeof(glm::mat4)) == 0;
+	};
+	detail::MergeKeyMasks(t.prevKeys.data(), t.prevKeys.size(),
+		t.currKeys.data(), t.currKeys.size(), modelEq,
+		t.seedMaskScratch.data(), t.remainderMaskScratch.data());
+
+	if (doSeed) {
+		ResolveBatchMaterials(t.prevRanges, t.prevBatches.size(), t.batchMaterialScratch);
+		t.emitScratch.clear();
+		t.emitScratch.reserve(t.prevBatches.size());
+		for (uint32_t i = 0; i < (uint32_t)t.prevBatches.size(); ++i) {
+			if (!t.seedMaskScratch[i])
+				continue; // LOD-flipped or moved since: prepass owns it
+			const Batch& b = t.prevBatches[i];
+			detail::EmitEntry e{};
+			e.cluster = b.cluster;
+			e.draw = b.draw; // into the visDraws snapshot
+			e.material = t.batchMaterialScratch[i];
+			e.drawSet = t.prevDraws[b.draw].drawSet;
+			t.emitScratch.push_back(e);
+		}
+		EmitBucketMajor(s, t.emitScratch, t.seedCommands, t.seedRanges, t.seedOpaqueCommands);
+	}
+	if (doRemainder) {
+		ResolveBatchMaterials(v.materialRanges, v.batches.size(), t.batchMaterialScratch);
+		t.emitScratch.clear();
+		t.emitScratch.reserve(v.batches.size());
+		for (uint32_t i = 0; i < (uint32_t)v.batches.size(); ++i) {
+			if (!t.remainderMaskScratch[i])
+				continue; // seeded already: same cluster, same transform
+			const Batch& b = v.batches[i];
+			detail::EmitEntry e{};
+			e.cluster = b.cluster;
+			e.draw = b.draw; // into the CURRENT draw constants (DrawBuffer)
+			e.material = t.batchMaterialScratch[i];
+			e.drawSet = v.drawConstants[b.draw].drawSet;
+			t.emitScratch.push_back(e);
+		}
+		EmitBucketMajor(s, t.emitScratch,
+			t.remainderCommands, t.remainderRanges, t.remainderOpaqueCommands);
+	}
 }
 
 void BuildSeedCommands(State& s, uint32_t view) {
-	assert(view < s.views.size());
-	TemporalView& t = Temporal(s, view);
-	t.seedCommands.clear();
-	t.seedRanges.clear();
-	t.seedOpaqueCommands = 0;
-	if (!t.historyValid || t.prevBatches.empty())
-		return;
-
-	SMVK_PROFILE_RENDER("GfxBuildSeedCommands");
-	SMVK_PROFILE_TAG("prevBatches", t.prevBatches.size());
-
-	// Seed ONLY the intersection of the snapshot with this frame's batches
-	// (same cluster, same transform). The prepass Loads seeded depth and
-	// draws full current geometry over it (nearest-wins), and 1x Main then
-	// tests read-only (GreaterEqual) against that buffer — so any stale
-	// seed content that is NEARER than current geometry kills Main pixels
-	// (skybox holes for a frame). Stale == LOD flip (sibling clusters have
-	// disjoint ids) or moved instance (model differs): both miss the
-	// intersection and fall through to the prepass + remainder instead.
-	// Same cluster + same model replays bit-identical depth, which can
-	// only ever tie (pass) — never poison.
-	const View& v = s.views[view];
-	std::vector<VisKey> curr;
-	curr.reserve(v.batches.size());
-	for (const Batch& b : v.batches) {
-		if (b.draw >= (uint32_t)v.drawConstants.size())
-			continue;
-		if (b.cluster >= (uint32_t)s.clusters.size())
-			continue;
-		VisKey k{};
-		k.cluster = b.cluster;
-		k.model = v.drawConstants[b.draw].model;
-		curr.push_back(k);
-	}
-	std::sort(curr.begin(), curr.end(), VisKeyLess);
-
-	std::vector<uint32_t> batchMaterial;
-	ResolveBatchMaterials(t.prevRanges, t.prevBatches.size(), batchMaterial);
-	std::vector<EmitEntry> entries;
-	entries.reserve(t.prevBatches.size());
-	for (size_t i = 0; i < t.prevBatches.size(); ++i) {
-		const Batch& b = t.prevBatches[i];
-		if (b.draw >= (uint32_t)t.prevDraws.size())
-			continue;
-		VisKey k{};
-		k.cluster = b.cluster;
-		k.model = t.prevDraws[b.draw].model;
-		if (!std::binary_search(curr.begin(), curr.end(), k, VisKeyLess))
-			continue; // LOD-flipped or moved since: prepass owns it
-		EmitEntry e{};
-		e.cluster = b.cluster;
-		e.draw = b.draw; // into the visDraws snapshot
-		e.material = batchMaterial[i];
-		e.drawSet = t.prevDraws[b.draw].drawSet;
-		entries.push_back(e);
-	}
-	EmitBucketMajor(s, entries, t.seedCommands, t.seedRanges, t.seedOpaqueCommands);
+	BuildBothCommands(s, view, true, false);
 }
 
-// (cluster, model) identity for the remainder difference (shared VisKey
-// above, same ordering as the seed intersection).
+void BuildSeedAndRemainder(State& s, uint32_t view) {
+	BuildBothCommands(s, view, true, true);
+}
 
 void BuildRemainderCommands(State& s, uint32_t view) {
-	assert(view < s.views.size());
-	TemporalView& t = Temporal(s, view);
-	t.remainderCommands.clear();
-	t.remainderRanges.clear();
-	t.remainderOpaqueCommands = 0;
-	const View& v = s.views[view];
-	if (!t.historyValid || v.batches.empty())
-		return; // no baseline (full prepass covered everything) or nothing new
-
-	SMVK_PROFILE_RENDER("GfxBuildRemainderCommands");
-	SMVK_PROFILE_TAG("currBatches", v.batches.size());
-	SMVK_PROFILE_TAG("prevBatches", t.prevBatches.size());
-	// Sorted baseline keys from the snapshot.
-	std::vector<VisKey> prev;
-	prev.reserve(t.prevBatches.size());
-	for (const Batch& b : t.prevBatches) {
-		if (b.draw >= (uint32_t)t.prevDraws.size())
-			continue;
-		if (b.cluster >= (uint32_t)s.clusters.size())
-			continue;
-		VisKey k{};
-		k.cluster = b.cluster;
-		k.model = t.prevDraws[b.draw].model;
-		prev.push_back(k);
-	}
-	std::sort(prev.begin(), prev.end(), VisKeyLess);
-	// Material per current batch for range building.
-	std::vector<uint32_t> batchMaterial;
-	ResolveBatchMaterials(v.materialRanges, v.batches.size(), batchMaterial);
-	std::vector<EmitEntry> entries;
-	entries.reserve(v.batches.size());
-	for (size_t i = 0; i < v.batches.size(); ++i) {
-		const Batch& b = v.batches[i];
-		if (b.draw >= (uint32_t)v.drawConstants.size())
-			continue;
-		if (b.cluster >= (uint32_t)s.clusters.size())
-			continue;
-		VisKey k{};
-		k.cluster = b.cluster;
-		k.model = v.drawConstants[b.draw].model;
-		if (std::binary_search(prev.begin(), prev.end(), k, VisKeyLess))
-			continue; // seeded already: same cluster, same transform
-		EmitEntry e{};
-		e.cluster = b.cluster;
-		e.draw = b.draw; // into the CURRENT draw constants (DrawBuffer)
-		e.material = batchMaterial[i];
-		e.drawSet = v.drawConstants[b.draw].drawSet;
-		entries.push_back(e);
-	}
-	EmitBucketMajor(s, entries,
-		t.remainderCommands, t.remainderRanges, t.remainderOpaqueCommands);
+	BuildBothCommands(s, view, false, true);
 }
 
 void UploadSeed(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
@@ -1228,6 +1238,9 @@ uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 	v.materialRanges.clear();
 	v.batchCount = 0;
 	v.stats = Stats{};
+	// Fresh stamp: cached curr keys from a previous frame of this slot
+	// are now invalid (the lists were just cleared).
+	v.batchesSerial = s.nextBatchesSerial++;
 	++s.viewCount;
 	return slot;
 }
@@ -1320,7 +1333,8 @@ Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 			PipelineStage(PipelineStageBit_Compute), AccessFlags::ShaderRead);
 		// Zero-fill indirect (replaces ClearDrawIndirectArgsCS; each group
 		// writes exactly its own command slot, so no atomics are needed).
-		std::vector<uint8_t> zeros(v.batchCount * 20, 0);
+		std::vector<uint8_t>& zeros = v.indirectZeroScratch;
+		zeros.assign(v.batchCount * 20, 0);
 		if (!zeros.empty()) {
 			SMVK_PROFILE_SCOPE("GfxUploadIndirect");
 			ctx.UploadDataToBuffer(v.indirectBuffers[frameIndex],
@@ -1343,7 +1357,8 @@ void BuildBatches(State& s, uint32_t view) {
 	// Sort draws by material (stable: submission order kept per material).
 	// Commands are emitted in this order, so each material owns one
 	// contiguous indirect range (single multi-draw per material).
-	std::vector<uint32_t> order(v.draws.size());
+	std::vector<uint32_t>& order = v.drawOrderScratch;
+	order.resize(v.draws.size());
 	std::iota(order.begin(), order.end(), 0u);
 	std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
 		return v.draws[a].material < v.draws[b].material;
@@ -1382,7 +1397,7 @@ void BuildBatches(State& s, uint32_t view) {
 			static bool warnedBatchCap = false;
 			if (!warnedBatchCap) {
 				warnedBatchCap = true;
-				std::fprintf(stderr,
+				SMVK_DEBUG_LOG(
 					"[GfxFilter] BuildBatches: batch cap %u hit, dropping "
 					"clusters (increase kMaxBatches).\n", kMaxBatches);
 			}
@@ -1395,7 +1410,7 @@ void BuildBatches(State& s, uint32_t view) {
 				static bool warnedInnerCap = false;
 				if (!warnedInnerCap) {
 					warnedInnerCap = true;
-					std::fprintf(stderr,
+					SMVK_DEBUG_LOG(
 						"[GfxFilter] BuildBatches: batch cap %u hit, dropping "
 						"clusters (increase kMaxBatches).\n", kMaxBatches);
 				}
@@ -1424,6 +1439,9 @@ void BuildBatches(State& s, uint32_t view) {
 		v.materialRanges.push_back(r);
 	}
 	v.batchCount = batchSlot;
+	// Fresh stamp once the lists are final: the temporal key cache treats
+	// keys built from these batches as valid until the next stamp.
+	v.batchesSerial = s.nextBatchesSerial++;
 	v.stats.draws = (uint32_t)v.draws.size();
 	v.stats.commands = batchSlot;
 	// Aggregate cull telemetry on the GfxBuildBatches scope: per-cluster

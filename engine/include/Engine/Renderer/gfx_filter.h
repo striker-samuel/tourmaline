@@ -32,7 +32,9 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 namespace smvk {
@@ -223,7 +225,16 @@ struct View {
 	std::vector<MaterialRange> materialRanges;
 	uint32_t batchCount = 0;
 	uint32_t frameIndex = 0; // which ring slice this frame's data lives in
+	// Version stamp of the batches/drawConstants lists (bumped by BeginView
+	// and BuildBatches). The temporal key cache gates on it: a stale
+	// sorted-key array can never be reused against mutated batches.
+	// Hand-built lists (unit tests) keep 0 and always rebuild.
+	uint64_t batchesSerial = 0;
 	Stats stats{};
+	// Per-frame build scratch (capacity retained across frames: the
+	// steady-state batch build allocates nothing).
+	std::vector<uint32_t> drawOrderScratch; // material sort permutation
+	std::vector<uint8_t> indirectZeroScratch; // zero-fill upload bytes
 	// Per-view outputs AND inputs, ringed by frame in flight.
 	// Everything mutable is per (view, frame): frames overlap (the swapchain
 	// only retires the same slot), and uploads flush immediately, so any
@@ -346,6 +357,92 @@ struct SeedRange {
 	uint32_t commandCount = 0;
 };
 
+// (cluster, model) identity reduced to one u64 sort key: 32-bit bitwise
+// hash of the 16 model-matrix words in the high half, cluster id in the
+// low half. Hashing raw bits is exactly consistent with memcmp equality
+// (-0.0 vs +0.0 and NaN payloads included); MergeKeyMasks verifies key
+// ties with a real compare, so hash collisions cannot change semantics.
+// This replaces the old 72-byte VisKey struct + memcmp comparator: the
+// seed/remainder set ops become one std::sort over u64s and one linear
+// merge instead of two struct sorts plus ~2x batchCount cache-hostile
+// binary searches per frame.
+namespace detail {
+
+struct VisKeyEntry {
+	uint64_t key = 0;
+	uint32_t batch = 0; // ORIGINAL slot in the batch list it was built from
+};
+
+[[nodiscard]] inline uint64_t MakeVisKey(const glm::mat4& model, uint32_t cluster) {
+	uint32_t words[16];
+	std::memcpy(words, &model, sizeof(words));
+	uint32_t h = 0x9e3779b9u;
+	for (const uint32_t w : words)
+		h = (h ^ w) * 0x85ebca6bu;
+	h ^= h >> 16; h *= 0x7feb352du;
+	h ^= h >> 15; h *= 0x846ca68bu;
+	h ^= h >> 16;
+	return (uint64_t(h) << 32) | cluster;
+}
+
+// Linear merge of two key-sorted entry arrays (ascending key) into
+// membership masks indexed by each entry's original batch slot:
+//   outSeed[prev.batch]      = 1 when a bit-identical model matches in curr
+//   outRemainder[curr.batch] = 1 when no bit-identical match exists in prev
+// modelEq(prevBatch, currBatch) resolves key ties (hash collisions) with
+// the exact memcmp semantics — also the seam unit tests use to force
+// worst-case tie groups. O(prev + curr); tie groups are duplicates only.
+template <typename ModelEq>
+void MergeKeyMasks(const VisKeyEntry* prev, size_t prevCount,
+	const VisKeyEntry* curr, size_t currCount, ModelEq modelEq,
+	uint8_t* outSeed, uint8_t* outRemainder) {
+	size_t i = 0, j = 0;
+	while (i < prevCount && j < currCount) {
+		if (prev[i].key < curr[j].key) {
+			outSeed[prev[i++].batch] = 0;
+		} else if (prev[i].key > curr[j].key) {
+			outRemainder[curr[j++].batch] = 1;
+		} else {
+			// Tie group: every entry on both sides shares this key. Each
+			// entry matches iff ANY cross pair has a bit-identical model
+			// (the old binary_search "exists" semantics, duplicates
+			// included).
+			size_t i2 = i;
+			while (i2 < prevCount && prev[i2].key == prev[i].key) ++i2;
+			size_t j2 = j;
+			while (j2 < currCount && curr[j2].key == curr[j].key) ++j2;
+			for (size_t a = i; a < i2; ++a) {
+				bool matched = false;
+				for (size_t b = j; b < j2 && !matched; ++b)
+					matched = modelEq(prev[a].batch, curr[b].batch);
+				outSeed[prev[a].batch] = matched ? 1 : 0;
+			}
+			for (size_t b = j; b < j2; ++b) {
+				bool matched = false;
+				for (size_t a = i; a < i2 && !matched; ++a)
+					matched = modelEq(prev[a].batch, curr[b].batch);
+				outRemainder[curr[b].batch] = matched ? 0 : 1;
+			}
+			i = i2;
+			j = j2;
+		}
+	}
+	for (; i < prevCount; ++i)
+		outSeed[prev[i].batch] = 0;
+	for (; j < currCount; ++j)
+		outRemainder[curr[j].batch] = 1;
+}
+
+// One bucket-major emitter input: resolved (cluster, draw, material, set).
+struct EmitEntry {
+	uint32_t cluster = 0;
+	uint32_t draw = 0; // firstInstance: index into the draws array the VS reads
+	uint32_t material = UINT32_MAX;
+	uint32_t drawSet = DrawSetBit_Opaque;
+};
+
+} // namespace detail
+
 // Per-view temporal visibility state (Alan Wake 2 style). Deliberately NOT
 // part of RenderView: that struct is HLSL-mirrored (256 bytes,
 // static_asserted), so history lives in this sidecar, parallel to views.
@@ -368,6 +465,25 @@ struct TemporalView {
 	std::vector<MaterialRange> prevRanges; // material buckets over prevBatches
 	uint32_t prevBatchCount = 0;
 	uint32_t prevDrawCount = 0;
+	// Key-sorted (cluster, model) identities (detail::MakeVisKey).
+	// prevKeys mirrors prevBatches whenever historyValid (stamped by
+	// SnapshotVisible); currKeys is this frame's v.batches scratch, gated
+	// by currKeysSerial == View::batchesSerial so a stale sort can never
+	// be merged against mutated batches (hand-built serial 0 never
+	// matches: the memo only holds stamped serials).
+	std::vector<detail::VisKeyEntry> prevKeys;
+	std::vector<detail::VisKeyEntry> currKeys;
+	uint64_t currKeysSerial = UINT64_MAX; // UINT64_MAX = never built
+	// Per-frame seed/remainder build scratch (capacity retained: the
+	// steady-state rebuild allocates nothing). Masks are indexed by the
+	// ORIGINAL batch slots; emitScratch feeds EmitBucketMajor in the
+	// original batch order so (bucket, material) ranges stay coalesced.
+	std::vector<uint8_t> seedMaskScratch;
+	std::vector<uint8_t> remainderMaskScratch;
+	std::vector<uint32_t> batchMaterialScratch;
+	std::vector<detail::EmitEntry> emitScratch;
+	// UploadVisible compaction scratch (prev batch pairs for the ring slice).
+	std::vector<VisibleCluster> visPairScratch;
 	// GPU mirror, ringed per frame in flight (same rule as View buffers:
 	// frames overlap, uploads flush immediately).
 	Holder<BufferHandle> visClusterBuffers[MAX_FRAMES_IN_FLIGHT];
@@ -416,6 +532,7 @@ struct State {
 	std::vector<View> views;
 	std::vector<TemporalView> temporals; // parallel to views (same slot)
 	uint32_t viewCount = 0;
+	uint64_t nextBatchesSerial = 1; // batchesSerial source (0 = hand-built)
 };
 
 // ---------------------------------------------------------------------------
@@ -516,6 +633,12 @@ void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 // first) with per-(bucket, material) ranges (pure CPU, headless-testable).
 // Bucket comes from each draw's drawSet (set at PushDraw from the material).
 void BuildSeedCommands(State& s, uint32_t view);
+// Fused steady-state path: one sorted-key merge builds BOTH lists (sorts
+// the current batches' (cluster, model) keys once, merges them against
+// the snapshot's cached prevKeys). Output identical to running the two
+// builders back to back; AppendPasses uses this one (pure CPU,
+// headless-testable).
+void BuildSeedAndRemainder(State& s, uint32_t view);
 // Builds the remainder list: current batches minus the snapshot, keyed by
 // (cluster, model matrix), same bucket-major layout (pure CPU,
 // headless-testable). Must run before SnapshotVisible overwrites prev*.

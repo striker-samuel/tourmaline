@@ -266,7 +266,10 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 	if (smvk::gfx::Temporal(gfx, slot).historyValid
 		&& seedOpaqueProgram.shaderCount != 0
 		&& seedMaskedProgram.shaderCount != 0) {
-		smvk::gfx::BuildSeedCommands(gfx, slot);
+		// One sorted-key merge builds BOTH the seed intersection and the
+		// remainder difference before prev* rotates below (they share the
+		// curr sort; calling the builders separately would sort twice).
+		smvk::gfx::BuildSeedAndRemainder(gfx, slot);
 		smvk::gfx::UploadSeed(gfx, *fc.ctx, fc.frameIndex, slot);
 		const auto& ranges = smvk::gfx::SeedRanges(gfx, slot);
 		if (!ranges.empty()) {
@@ -293,11 +296,11 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 			seededThisFrame_ = true;
 		}
 	}
-	// Remainder difference (curr minus prev) for depth pass 2 (T5). Must
-	// run before rotation overwrites prev* below. Only meaningful when the
-	// seed primed depth (otherwise the full prepass covered everything).
+	// Remainder upload for depth pass 2 (T5): the difference (curr minus
+	// prev) was built together with the seed above, before rotation
+	// overwrites prev* below. Only meaningful when the seed primed depth
+	// (otherwise the full prepass covered everything).
 	if (seededThisFrame_) {
-		smvk::gfx::BuildRemainderCommands(gfx, slot);
 		smvk::gfx::UploadRemainder(gfx, *fc.ctx, fc.frameIndex, slot);
 		remainderPending_ = !smvk::gfx::RemainderRanges(gfx, slot).empty();
 	}

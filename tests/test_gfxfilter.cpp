@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <numeric>
@@ -1041,6 +1042,165 @@ void TestRemainderCommands() {
 }
 
 // ---------------------------------------------------------------------------
+// Sorted-key merge machinery (detail::MakeVisKey / detail::MergeKeyMasks):
+// the seed/remainder split reduces (cluster, model) to u64 keys. Hash ties
+// must verify with a real memcmp or a collision would seed stale depth —
+// the exact bug the intersection exists to prevent. Drives the merge
+// with every key tied (worst-case collisions) plus a distinct-key pass.
+// Pure CPU.
+// ---------------------------------------------------------------------------
+
+void TestVisKeyMerge() {
+	using namespace smvk::gfx;
+	const glm::mat4 A(1.0f);
+	glm::mat4 B(1.0f);
+	B[3][0] = 0.5f;
+
+	// MakeVisKey: same bits -> same key; moved -> different; -0.0 vs
+	// +0.0 stays distinct (bitwise, matching the memcmp identity); the
+	// cluster id rides the low bits.
+	glm::mat4 negZero(1.0f);
+	negZero[0][0] = -0.0f;
+	Check(detail::MakeVisKey(A, 0) == detail::MakeVisKey(A, 0), "gfx.viskey.stable");
+	Check(detail::MakeVisKey(A, 0) != detail::MakeVisKey(B, 0), "gfx.viskey.moved-distinct");
+	Check(detail::MakeVisKey(A, 0) != detail::MakeVisKey(negZero, 0), "gfx.viskey.negzero-distinct");
+	Check(detail::MakeVisKey(A, 0) != detail::MakeVisKey(A, 1), "gfx.viskey.cluster-distinct");
+
+	// Worst case: every key collides (as if all model hashes tied). Prev
+	// = A, B, A (batches 0,1,2); curr = B, A (batches 0,1). Tie-group
+	// verification must match across models: A's find A's, B finds B.
+	{
+		const glm::mat4 prevModels[3] = { A, B, A };
+		const glm::mat4 currModels[2] = { B, A };
+		const auto modelEq = [&](uint32_t p, uint32_t c) {
+			return std::memcmp(&prevModels[p], &currModels[c], sizeof(glm::mat4)) == 0;
+		};
+		const detail::VisKeyEntry tiedPrev[3] = { {1, 0}, {1, 1}, {1, 2} };
+		const detail::VisKeyEntry tiedCurr[2] = { {1, 0}, {1, 1} };
+		uint8_t seed[3] = {}, rem[2] = {};
+		detail::MergeKeyMasks(tiedPrev, 3, tiedCurr, 2, modelEq, seed, rem);
+		Check(seed[0] == 1 && seed[1] == 1 && seed[2] == 1, "gfx.viskey.tied-all-match");
+		Check(rem[0] == 0 && rem[1] == 0, "gfx.viskey.tied-no-remainder");
+	}
+
+	// Same key, different model bits: the verify must REJECT (collision
+	// cannot seed stale depth) and the curr entry must fall to remainder.
+	{
+		const glm::mat4 prevModels[1] = { A };
+		const glm::mat4 currModels[1] = { B };
+		const auto modelEq = [&](uint32_t p, uint32_t c) {
+			return std::memcmp(&prevModels[p], &currModels[c], sizeof(glm::mat4)) == 0;
+		};
+		const detail::VisKeyEntry collidePrev[1] = { {7, 0} };
+		const detail::VisKeyEntry collideCurr[1] = { {7, 0} };
+		uint8_t seed[1] = {}, rem[1] = {};
+		detail::MergeKeyMasks(collidePrev, 1, collideCurr, 1, modelEq, seed, rem);
+		Check(seed[0] == 0, "gfx.viskey.collision-rejects");
+		Check(rem[0] == 1, "gfx.viskey.collision-remainders");
+	}
+
+	// Distinct keys (sorted fast paths + one tie with equal models):
+	// prev = keys {1, 3} -> A, B; curr = keys {2, 3, 5} -> B, B, A. Only
+	// the key-3 pair matches; everything else lands on its side of the
+	// difference (curr key 2 and key 5 -> remainder, prev key 1 -> no seed).
+	{
+		const glm::mat4 prevModels[2] = { A, B };
+		const glm::mat4 currModels[3] = { B, B, A };
+		const auto modelEq = [&](uint32_t p, uint32_t c) {
+			return std::memcmp(&prevModels[p], &currModels[c], sizeof(glm::mat4)) == 0;
+		};
+		const detail::VisKeyEntry distinctPrev[2] = { {1, 0}, {3, 1} };
+		const detail::VisKeyEntry distinctCurr[3] = { {2, 0}, {3, 1}, {5, 2} };
+		uint8_t seed[2] = {}, rem[3] = {};
+		detail::MergeKeyMasks(distinctPrev, 2, distinctCurr, 3, modelEq, seed, rem);
+		Check(seed[0] == 0 && seed[1] == 1, "gfx.viskey.sorted-merge-seed");
+		Check(rem[0] == 1 && rem[1] == 0 && rem[2] == 1, "gfx.viskey.sorted-merge-remainder");
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Multiset semantics end-to-end: identical co-located instances produce
+// duplicate (cluster, model) keys; BOTH must seed (the pre-merge
+// binary_search kept them), the fused builder must produce the same
+// coalesced ranges, and SnapshotVisible's key rotation (memo path) must
+// keep the next frame's full seed intact. Pure CPU.
+// ---------------------------------------------------------------------------
+
+void TestSeedDuplicateBatches() {
+	using namespace smvk::gfx;
+	State s{};
+	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+	Check(m0 == 0 && m1 == 1, "gfx.seeddup.mesh-ids");
+
+	smvk::RenderViewSet views;
+	views.NewFrame();
+	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f;
+	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+	auto freshView = [&]() {
+		s.views.clear();
+		s.viewCount = 0;
+		View v{};
+		v.renderView = &views.Get(rv);
+		v.eye = eye;
+		v.width = 800;
+		v.height = 600;
+		v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+		s.views.push_back(std::move(v));
+		s.viewCount = 1;
+	};
+
+	// Frame A: m0 drawn twice with the SAME transform (identical co-located
+	// instances -> duplicate keys) + m1.
+	freshView();
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	BuildBatches(s, 0);
+	Check(s.views[0].batchCount == 3, "gfx.seeddup.frame-a-batches");
+	SnapshotVisible(s, 0);
+
+	// Frame B identical: both duplicates must seed, remainder empty, one
+	// material -> one coalesced range over all three commands.
+	freshView();
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	BuildBatches(s, 0);
+	BuildSeedAndRemainder(s, 0);
+	const TemporalView& t = Temporal(s, 0);
+	Check(t.seedCommands.size() == 3, "gfx.seeddup.dup-seeds-both");
+	Check(t.seedOpaqueCommands == 3, "gfx.seeddup.all-opaque");
+	Check(t.remainderCommands.empty() && t.remainderRanges.empty(),
+		"gfx.seeddup.remainder-empty");
+	bool rangeOk = t.seedRanges.size() == 1;
+	if (rangeOk) {
+		const SeedRange& r = t.seedRanges[0];
+		rangeOk = r.drawSet == DrawSetBit_Opaque && r.material == 3
+			&& r.firstCommand == 0 && r.commandCount == 3;
+	}
+	Check(rangeOk, "gfx.seeddup.range-coalesced");
+
+	// Frame B -> C rotation through the memo path: SnapshotVisible reuses
+	// the builder's sorted curr keys instead of re-sorting. Frame C must
+	// still full-seed from the rotated keys.
+	SnapshotVisible(s, 0);
+	freshView();
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque);
+	BuildBatches(s, 0);
+	BuildSeedAndRemainder(s, 0);
+	Check(Temporal(s, 0).seedCommands.size() == 3,
+		"gfx.seeddup.key-rotate-full-seed");
+}
+
+// ---------------------------------------------------------------------------
 // T6 (spawn-view repro): reversed-Z HZB end-to-end over a synthetic render of
 // the sponza spawn framing (cloth banners center screen, back wall behind).
 // Software-rasterizes depth exactly like the engine (reversed-Z, clear 0,
@@ -1496,6 +1656,8 @@ int main() {
 	TestHzbSpawnView();
 	TestGpuMirrorAgreement();
 	TestRemainderCommands();
+	TestVisKeyMerge();
+	TestSeedDuplicateBatches();
 	TestJitterCullStability();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
