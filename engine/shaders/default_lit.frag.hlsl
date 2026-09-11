@@ -350,7 +350,10 @@ PSOut mainPS(PSIn IN)
         }
         // Still apply occlusion? Spec says occlusion not for unlit, but we keep none.
         // Dithered Blend writes opaque (alpha 1): no blending downstream.
-        OUT.outColor = float4(color, (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
+        // Clamp to finite half range: the RGBA16F target rounds anything
+        // above 65504 to +inf (specular x lux-scale intensity overflows),
+        // and inf texels NaN the bloom/tonemap chain.
+        OUT.outColor = float4(SanitizeHdr(color), (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
         return OUT;
     }
 
@@ -548,7 +551,7 @@ PSOut mainPS(PSIn IN)
             {
                 const float3 giEDbg = SgGiDiffuseIrradiance(giAmps, N)
                     * max(frame.giIntensity, 0.0f) * max(frame.exposure, 1e-6f);
-                OUT.outColor = float4(giEDbg, 1.0f);
+                OUT.outColor = float4(SanitizeHdr(giEDbg), 1.0f);
                 return OUT;
             }
             const float giSharp = SG_GI_SHARPNESS / 4.0f; // fixed basis: 1.0
@@ -559,7 +562,7 @@ PSOut mainPS(PSIn IN)
                 diag += float3(0.4f, 0.0f, 0.4f); // fallback flag: violet tint
             // Fixed 0..1 palette: pre-scale by 1/exposure so it survives
             // the ACES chain (same convention as the DS visualizers).
-            OUT.outColor = float4(diag / max(frame.exposure, 1e-6f), 1.0f);
+            OUT.outColor = float4(SanitizeHdr(diag / max(frame.exposure, 1e-6f)), 1.0f);
             return OUT;
         }
         if (giCovered)
@@ -622,6 +625,9 @@ PSOut mainPS(PSIn IN)
     // Handle alpha blending output
     // For Opaque/Masked we output baseAlpha, for Blend pipeline handles blending.
     // Dithered Blend outputs opaque alpha (the discard above did the work).
-    OUT.outColor = float4(color, (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
+    // SanitizeHdr: Cook-Torrance x lux-scale lightColor can exceed the half-
+    // float max of the RGBA16F target (65504); unclamped it stores as +inf
+    // and NaNs the tonemap (inf/inf) / bloom chain.
+    OUT.outColor = float4(SanitizeHdr(color), (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
     return OUT;
 }

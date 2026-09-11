@@ -48,7 +48,7 @@ PSOut mainPS(PSIn IN)
     uint n = clamp(mp.sampleCount, 1, 32);
     if (lenPx < 0.5 || n == 1 || mp.maxRadiusPx <= 0.0f)
     {
-        OUT.outColor = float4(hdr.Sample(smp, IN.uv).rgb, 1.0f);
+        OUT.outColor = float4(SanitizeHdr(hdr.Sample(smp, IN.uv).rgb), 1.0f);
         return OUT;
     }
 
@@ -65,7 +65,9 @@ PSOut mainPS(PSIn IN)
         if (i >= n)
             break;
         float t = (n == 1) ? 0.0 : (float(i) / float(n - 1) - 0.5);
-        acc += hdr.Sample(smp, IN.uv + vClampedUv * t).rgb;
+        // Per-tap sanitize (bloom_down discipline): one +inf HDR texel
+        // would poison the average written back into the RGBA16F chain.
+        acc += SanitizeHdr(hdr.Sample(smp, IN.uv + vClampedUv * t).rgb);
     }
     OUT.outColor = float4(acc / float(n), 1.0f);
     return OUT;

@@ -92,6 +92,6 @@ PSOut mainPS(PSIn IN)
         color = lerp(color, fogHdr, fogF);
     }
 
-    OUT.outColor = float4(color, (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
+    OUT.outColor = float4(SanitizeHdr(color), (isBlendMat && ditheredTransp) ? 1.0f : baseAlpha);
     return OUT;
 }

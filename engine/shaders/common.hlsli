@@ -49,6 +49,22 @@ float3 SrgbDecode(float3 c)
     return select(c <= 0.04045f, lo, hi);
 }
 
+// Max finite half-float value. The HDR scene target is RGBA16F: any
+// lighting result above this rounds to +inf on store (fp16 round-to-inf),
+// and a single inf texel poisons the whole downstream chain (bloom Karis
+// weights 1/(1+inf) = 0, tonemap inf/inf = NaN -> saturate(NaN) = 0:
+// flickering black blocks). HDR writers clamp to it; consumers sanitize
+// their taps against it.
+static const float kMaxFiniteHalf = 65504.0f;
+
+// NaN -> 0, clamp into [0, max finite half]. Identical look for all
+// finite input: only values that would store as inf change.
+float3 SanitizeHdr(float3 c)
+{
+    c = select(isnan(c), float3(0.0f, 0.0f, 0.0f), c);
+    return clamp(c, float3(0.0f, 0.0f, 0.0f), float3(kMaxFiniteHalf, kMaxFiniteHalf, kMaxFiniteHalf));
+}
+
 // -------------------------------------------------------------------------
 // Dithered (screen-door) transparency for AlphaMode::Blend materials.
 // Opaque pipeline state (depth write on, blending off); pixels are kept

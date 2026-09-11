@@ -37,13 +37,12 @@ float BloomLuma(float3 c)
 // NaN then spreads through every downsample level, the tent upsample smears
 // it back up into screen-sized blocks, and the tonemap composites
 // hdr += NaN with saturate(NaN) -> 0: big black squares that toggle with
-// bloom. Clamp taps to finite half range so the chain only carries finite
-// energy; identical look for all finite input.
-static const float kBloomTapMax = 65504.0f; // max finite half
+// bloom. Clamp taps to finite half range (SanitizeHdr, common.hlsli) so
+// the chain only carries finite energy; identical look for all finite
+// input.
 float3 SanitizeBloomTap(float3 c)
 {
-    c = select(isnan(c), float3(0.0f, 0.0f, 0.0f), c);
-    return clamp(c, float3(0.0f, 0.0f, 0.0f), float3(kBloomTapMax, kBloomTapMax, kBloomTapMax));
+    return SanitizeHdr(c);
 }
 
 // Soft-knee prefilter (Unreal/Karis): keeps highlights, rolls off below threshold.

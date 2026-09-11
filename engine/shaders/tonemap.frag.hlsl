@@ -121,7 +121,10 @@ PSOut mainPS(PSIn IN)
 
     float3 hdr = float3(0,0,0);
     if (hdrIdx != 0xffffffff && hdrIdx < 100000)
-        hdr = textures[NonUniformResourceIndex(hdrIdx)].Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).rgb;
+        // Sanitize: a stale/foreign +inf texel in the RGBA16F target turns
+        // Reinhard/ACES into inf/inf = NaN -> saturate(NaN) = 0 (black
+        // blocks); same discipline as bloom_down's tap clamp.
+        hdr = SanitizeHdr(textures[NonUniformResourceIndex(hdrIdx)].Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).rgb);
 
     // SSAO composite (half-res AO, bilinearly upscaled by the sampler).
     // Pre-bloom, pre-tonemap; disabled when index is 0xffffffff.

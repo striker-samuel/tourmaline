@@ -41,6 +41,6 @@ PSOut mainPS(PSIn IN)
         sky = lerp(sky, fogHdr, band * 0.5f);
     }
 
-    OUT.outColor = float4(sky, 1.0f);
+    OUT.outColor = float4(SanitizeHdr(sky), 1.0f);
     return OUT;
 }
