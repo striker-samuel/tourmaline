@@ -464,6 +464,15 @@ bool SceneRenderer::Initialize() {
 				m_fpDemo.lightFunctionsEnabled = false;
 			}
 		}
+		// Mute the forward+ demo lights entirely (1 | 0): removes their
+		// direct light + tile passes from A/B runs (pure sun + GI frame;
+		// runtime F toggle + the ImGui checkbox stay live after).
+		if (const char* lightsEnv = std::getenv("VULKANTOY_LIGHTS")) {
+			const std::string_view lights{ lightsEnv };
+			if (lights == "1" || lights == "on") m_fpDemo.enabled = true;
+			else if (lights == "0" || lights == "off") m_fpDemo.enabled = false;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_LIGHTS value: " << lights << "\n";
+		}
 		// Deterministic A/B helpers: manual exposure + IBL off remove the
 		// two global feedback paths (eye adaptation, sky IBL ambient) so
 		// pixel diffs isolate the per-light shading change.
