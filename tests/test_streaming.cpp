@@ -124,6 +124,22 @@ void TestFeedbackAbi() {
 		"feedback: no-report sentinel is 0xFFFFFFFF");
 }
 
+void TestResolveFullMip() {
+	using smvk::TextureStreamer;
+	// Resident level r == full-chain mip residentBase + r.
+	Check(TextureStreamer::ResolveFullMip(4, 13, 0) == 4u,
+		"resolve: sharpest resident lod maps to residentBase");
+	Check(TextureStreamer::ResolveFullMip(4, 13, 3) == 7u,
+		"resolve: lod adds onto residentBase");
+	// Clamps to the tail: reports past the end stay resident.
+	Check(TextureStreamer::ResolveFullMip(10, 13, 9) == 12u,
+		"resolve: overshoot clamps to tail mip");
+	Check(TextureStreamer::ResolveFullMip(0, 13, 0) == 0u,
+		"resolve: full-resident texture asks mip 0");
+	Check(TextureStreamer::ResolveFullMip(0, 1, 5) == 0u,
+		"resolve: single-mip texture always asks mip 0");
+}
+
 } // namespace
 
 int main() {
@@ -131,6 +147,7 @@ int main() {
 	TestWantedMipCoverage();
 	TestWantedMipDistance();
 	TestFeedbackAbi();
+	TestResolveFullMip();
 	std::cout << g_checks - g_failures << "/" << g_checks
 		<< " streaming checks passed\n";
 	return g_failures == 0 ? 0 : 1;

@@ -177,7 +177,11 @@ struct MotionVectors {
 	}
 
 	// Emits the motion pass: RG16F color (clear 0) + 1x depth loaded
-	// read-only (prepass filled it). Caller records draws.
+	// read-only (prepass filled it) and STORED (Main, SSAO, the tile
+	// cull and deferred shadows all consume it downstream — DontCare
+	// here discards it out from under them: fullscreen corruption with
+	// Main falling back to draw-order (far wall covers the hall) plus
+	// depth-fighting speckles). Caller records draws.
 	RenderPass& AddMotionVectorPass(RenderGraph& rg,
 		LogicalImageViewHandle depthView,
 		LogicalImageViewHandle motionView,
@@ -198,7 +202,7 @@ struct MotionVectors {
 				ClearColor(0, 0, 0, 0))
 			.SetDepth(depthView,
 				AttachmentLoadOp::Load,
-				AttachmentStoreOp::DontCare,
+				AttachmentStoreOp::Store,
 				ClearDepthStencil(0, 0));
 		return pass;
 	}

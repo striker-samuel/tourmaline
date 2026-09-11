@@ -1762,6 +1762,16 @@ bool smvk::VulkanCore::Init() {
 			g_multiDrawIndirect = (supported.multiDrawIndirect == VK_TRUE);
 			feats2.features.multiDrawIndirect =
 				g_multiDrawIndirect ? VK_TRUE : VK_FALSE;
+			// Fragment-stage storage writes (texture-streaming feedback
+			// atomics in the materials, set 0 binding 4): core-optional
+			// since 1.0, universal on desktop. No emulation exists, so a
+			// device without it cannot run the materials — fail loudly.
+			feats2.features.fragmentStoresAndAtomics = VK_TRUE;
+			if (supported.fragmentStoresAndAtomics != VK_TRUE) {
+				throw std::runtime_error(
+					"device lacks fragmentStoresAndAtomics (required for "
+					"texture-streaming GPU feedback)");
+			}
 		}
 
 			std::vector<const char*> enabledExtensions = config_.deviceExtensions;
@@ -1971,6 +1981,28 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	).release();
 	m_globalsStartTime = std::chrono::steady_clock::now();
 
+	// Texture-streaming feedback ring: one uint per bindless slot,
+	// pre-filled with the no-report sentinel (0xFF) so the first consume
+	// before any GPU write observes "no demand", not garbage.
+	{
+		static std::vector<uint32_t> s_feedbackInit;
+		if (s_feedbackInit.empty())
+			s_feedbackInit.assign(MAX_TEXTURES, 0xFFFFFFFFu);
+		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+			m_feedbackBuffers[f] = CreateBuffer(
+				static_cast<VkDeviceSize>(MAX_TEXTURES) * sizeof(uint32_t),
+				BufferType_Storage,
+				"texture feedback"
+			).release();
+			UploadDataToBuffer(m_feedbackBuffers[f],
+				s_feedbackInit.data(),
+				s_feedbackInit.size() * sizeof(uint32_t),
+				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+				VK_ACCESS_2_SHADER_WRITE_BIT,
+				0, 0);
+		}
+	}
+
 	// ============================================================================
 	// Hardcoded Bindless Setup
 	// ============================================================================
@@ -1988,6 +2020,12 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		// in flight. The descriptor is rewritten every frame (update-after-bind)
 		// to point at the current frame's slice; see FlushEngineGlobals.
 		getDSLBinding(kBinding_EngineGlobals, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags),
+		// Texture-streaming feedback: one uint per bindless texture slot,
+		// written by fragment shaders (InterlockedMin, sharpest demand wins)
+		// and read back on the CPU every N frames. Ringed per flight like
+		// the exposure histogram; the descriptor is rewritten every frame
+		// to the current flight slice (see FlushTextureFeedback).
+		getDSLBinding(kBinding_TextureFeedback, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags),
 	};
 
 	const uint32_t flags =
@@ -2049,7 +2087,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    MAX_TEXTURES },
 		{ VK_DESCRIPTOR_TYPE_SAMPLER,          MAX_SAMPLERS },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    MAX_TEXTURES },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   MAX_FRAMES_IN_FLIGHT }, // engine globals slices
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   2 * MAX_FRAMES_IN_FLIGHT }, // engine globals + texture-feedback slices
 	  }
 	};
 	defaultDescriptorPool = CreateDescriptorPool(poolSizes);
@@ -2906,33 +2944,45 @@ void smvk::VulkanResourceManager::UploadDataToBuffer(
 	// still in flight).
 	AddDeferredTask(std::packaged_task<void()>([this, staging = std::move(stageHan)] {destroy(this, staging); }), han, m_submitter);
 }
-bool smvk::VulkanResourceManager::DownloadDataFromBuffer(BufferHandle src, void* out, size_t size, size_t srcOffset) {
-	if (size == 0 || out == nullptr || src.empty())
+bool smvk::VulkanResourceManager::DownloadDataFromBuffers(std::span<const smvk::BufferDownload> downloads) {
+	if (downloads.empty())
 		return false;
-	auto srcBuf = buffers_.get(src);
-	if (!srcBuf || srcBuf->vkBuffer == VK_NULL_HANDLE)
-		return false;
-	// Persistent staging: no per-call buffer create and no deferred
-	// destroy (the old per-call staging destroy re-entered the deferred
-	// task queue from inside ProcessDeferrredTasks' locked drain loop,
-	// re-locking the non-recursive m_deferredMutex = UB).
-	if (!EnsureReadbackStaging(static_cast<VkDeviceSize>(size)))
+	// Validate everything up front: all-or-nothing, no partial copies.
+	uint64_t total = 0;
+	for (const smvk::BufferDownload& d : downloads) {
+		if (d.size == 0 || d.out == nullptr || d.src.empty())
+			return false;
+		auto srcBuf = buffers_.get(d.src);
+		if (!srcBuf || srcBuf->vkBuffer == VK_NULL_HANDLE)
+			return false;
+		total += static_cast<uint64_t>(d.size);
+	}
+	// Same persistent staging as the single-copy path (see comment there).
+	if (!EnsureReadbackStaging(static_cast<VkDeviceSize>(total)))
 		return false;
 	auto stagingBuf = buffers_.get(m_readbackStaging);
 	if (!stagingBuf || stagingBuf->vkBuffer == VK_NULL_HANDLE)
 		return false;
 	auto han = m_submitter->acquire();
 	auto cmd = m_submitter->GetCommandBuffer(han);
-	// Prior writers (e.g. filter compute) -> transfer read. ALL_COMMANDS /
-	// MEMORY_ALL is the conservative src: we don't track the last writer here.
-	BufferBarrier(cmd, srcBuf->vkBuffer, srcOffset, size,
-		VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-		VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-		VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-		VK_ACCESS_2_TRANSFER_READ_BIT);
-	VkBufferCopy copyRegion{ static_cast<VkDeviceSize>(srcOffset), 0, static_cast<VkDeviceSize>(size) };
-	vkCmdCopyBuffer(cmd, srcBuf->vkBuffer, stagingBuf->vkBuffer, 1, &copyRegion);
-	BufferBarrier(cmd, stagingBuf->vkBuffer, 0, size,
+	uint64_t stagingOffset = 0;
+	for (const smvk::BufferDownload& d : downloads) {
+		auto srcBuf = buffers_.get(d.src);
+		// Prior writers -> transfer read. ALL_COMMANDS / MEMORY_ALL is the
+		// conservative src: the last writer is not tracked here.
+		BufferBarrier(cmd, srcBuf->vkBuffer, d.srcOffset, d.size,
+			VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+			VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+			VK_ACCESS_2_TRANSFER_READ_BIT);
+		VkBufferCopy copyRegion{
+			static_cast<VkDeviceSize>(d.srcOffset),
+			static_cast<VkDeviceSize>(stagingOffset),
+			static_cast<VkDeviceSize>(d.size) };
+		vkCmdCopyBuffer(cmd, srcBuf->vkBuffer, stagingBuf->vkBuffer, 1, &copyRegion);
+		stagingOffset += static_cast<uint64_t>(d.size);
+	}
+	BufferBarrier(cmd, stagingBuf->vkBuffer, 0, static_cast<VkDeviceSize>(total),
 		VK_PIPELINE_STAGE_2_TRANSFER_BIT,
 		VK_ACCESS_2_TRANSFER_WRITE_BIT,
 		VK_PIPELINE_STAGE_2_HOST_BIT,
@@ -2944,9 +2994,21 @@ bool smvk::VulkanResourceManager::DownloadDataFromBuffer(BufferHandle src, void*
 	void* mapped = MapBuffer(m_readbackStaging);
 	if (!mapped)
 		return false;
-	std::memcpy(out, mapped, size);
+	const uint8_t* base = static_cast<const uint8_t*>(mapped);
+	uint64_t offset = 0;
+	for (const smvk::BufferDownload& d : downloads) {
+		std::memcpy(d.out, base + offset, d.size);
+		offset += static_cast<uint64_t>(d.size);
+	}
 	UnmapBuffer(m_readbackStaging);
 	return true;
+}
+
+bool smvk::VulkanResourceManager::DownloadDataFromBuffer(BufferHandle src, void* out, size_t size, size_t srcOffset) {
+	if (size == 0 || out == nullptr || src.empty())
+		return false;
+	const smvk::BufferDownload single{ src, out, size, srcOffset };
+	return DownloadDataFromBuffers(std::span<const smvk::BufferDownload>(&single, 1));
 }
 
 bool smvk::VulkanResourceManager::DownloadDataFromImage(ImageHandle src, ImageLayout currentLayout, void* out, size_t outSize) {
@@ -5670,6 +5732,33 @@ void smvk::VulkanResourceManager::FlushEngineGlobals(uint32_t frameIndex)
 	write.descriptorCount = 1;
 	write.pBufferInfo = &info;
 	vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+}
+
+void smvk::VulkanResourceManager::FlushTextureFeedback(uint32_t frameIndex)
+{
+	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	const Buffer* buffer = buffers_.get(m_feedbackBuffers[frameIndex]);
+	assert(buffer && buffer->vkBuffer != VK_NULL_HANDLE);
+
+	VkDescriptorBufferInfo info{};
+	info.buffer = buffer->vkBuffer;
+	info.offset = 0;
+	info.range = VK_WHOLE_SIZE;
+
+	VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+	write.dstSet = defaultDescriptorSets_[0]; // single global bindless set instance
+	write.dstBinding = smvk::Bindings::kBinding_TextureFeedback;
+	write.dstArrayElement = 0;
+	write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	write.descriptorCount = 1;
+	write.pBufferInfo = &info;
+	vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+}
+
+smvk::BufferHandle smvk::VulkanResourceManager::GetTextureFeedbackBuffer(uint32_t frameIndex)
+{
+	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	return m_feedbackBuffers[frameIndex];
 }
 
 [[nodiscard]] uint32_t smvk::VulkanResourceManager::GetBindlessIndex(BindlessImageHandle handle) const

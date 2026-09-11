@@ -152,6 +152,43 @@ void TextureStreamer::RequestMip(TextureHandle handle, uint32_t wantedFullMip, u
 	e.lastRequestFrame = frameIndex;
 }
 
+uint32_t TextureStreamer::ResolveFullMip(uint32_t residentBase, uint32_t fullMips, uint32_t reportedLod)
+{
+	if (fullMips == 0)
+		return 0;
+	const uint64_t want = static_cast<uint64_t>(residentBase) + reportedLod;
+	return static_cast<uint32_t>(std::min<uint64_t>(want, fullMips - 1));
+}
+
+void TextureStreamer::RequestMipFromLod(TextureHandle handle, uint32_t residentLod, uint32_t frameIndex)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	auto it = entries_.find(EntryKey(handle));
+	if (it == entries_.end())
+		return;
+	Entry& e = it->second;
+	const uint32_t want = ResolveFullMip(e.residentBase, e.fullMips, residentLod);
+	if (!e.everRequested || want < e.desiredBase)
+		e.desiredBase = want;
+	e.everRequested = true;
+	e.lastRequestFrame = frameIndex;
+}
+
+std::vector<TextureHandle> TextureStreamer::BuildBindlessSlotMap() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	std::vector<TextureHandle> map;
+	for (const auto& [key, e] : entries_)
+	{
+		(void)key;
+		const uint32_t slot = ctx_.GetTextureBindlessIndex(e.handle);
+		if (slot >= map.size())
+			map.resize(static_cast<size_t>(slot) + 1);
+		map[slot] = e.handle;
+	}
+	return map;
+}
+
 void TextureStreamer::RequestMipsByDistance(const std::unordered_map<uint32_t, float>& minDistBySlot,
 	float viewportHeightPx, float fovYRad, uint32_t frameIndex, float approxWorldSize)
 {

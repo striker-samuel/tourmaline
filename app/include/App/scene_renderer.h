@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -28,6 +29,7 @@
 #include <Engine/Renderer/cookies.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/texture_streamer.h>
+#include <Engine/Renderer/texture_feedback.h>
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/deferredshadow.h>
@@ -107,8 +109,7 @@ struct ScenePassConfig {
 	bool deferredShadows = true;    // tiled/zBin deferred-shadow pipeline (H toggles at runtime)
 
 	static ScenePassConfig All() { return ScenePassConfig{}; }
-	static ScenePassConfig Minimal() {
-		ScenePassConfig c{};
+	static ScenePassConfig Minimal() {		ScenePassConfig c{};
 		c.directionalShadows = false;
 		c.spotShadows = false;
 		c.forwardPlusPrepass = false;
@@ -125,6 +126,15 @@ struct ScenePassConfig {
 		c.skydome = false;
 		c.smaa = false;
 		c.deferredShadows = false;
+		return c;
+	}
+	// Bisection config: filtered Main + HZB + tonemap only (depth prepass
+	// feeds the occluder/HZB chain, the GPU filter picks draws, Main shades
+	// survivors). Everything else off.
+	static ScenePassConfig FilterOnly() {
+		ScenePassConfig c = Minimal();
+		c.forwardPlusPrepass = true;
+		c.gfxFilter = true;
 		return c;
 	}
 };
@@ -990,9 +1000,23 @@ protected:
 	// the pak backend learns to hand over payloads (follow-up).
 	bool m_textureStreamingEnabled = true;
 	std::unique_ptr<smvk::TextureStreamer> m_textureStreamer;
+	// GPU feedback consumer (Skull & Bones style readback, see
+	// Engine/Renderer/texture_feedback.h). Lives alongside the streamer;
+	// null together with it when streaming is disabled.
+	std::unique_ptr<smvk::TextureFeedback> m_textureFeedback;
 	// CPU demand + budget tick. streamFrame must be monotonic (NOT the
 	// swapchain slot); call once per RenderFrame after UpdateMaterials.
 	void UpdateTextureStreaming(const FrameUniforms& frameData, smvk::Extent2D renderExtent);
+	// True when this frame may meter exposure (auto + pass + lit view).
+	// Shared by the histogram download and the batched feedback pairing.
+	bool ExposureMeteringActive() const;
+	// Bins -> percentile target + damped adapt (tail of UpdateAutoExposure).
+	void AdaptExposureFromBins(const std::array<uint32_t, smvk::kExposureBinCount>& bins);
+	// Combined GPU->CPU readback tick (replaces the lone UpdateAutoExposure
+	// call): on GPU-feedback frames the histogram + feedback downloads
+	// share ONE submit + wait; otherwise the existing single download runs.
+	// Always clears the feedback slice afterwards (download-before-clear).
+	void UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame);
 };
 
 } // namespace app

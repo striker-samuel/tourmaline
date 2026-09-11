@@ -52,7 +52,12 @@ PSOut mainPS(PSIn IN)
     float baseAlpha = mat.diffuse.a;
     int baseColorIdx = mat.tex.x;
     if (baseColorIdx >= 0)
-        baseAlpha *= textures[NonUniformResourceIndex((uint)baseColorIdx)].Sample(samplers[0], IN.uv).a;
+    {
+        uint slot = (uint)baseColorIdx;
+        Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
+        baseAlpha *= baseTex.Sample(samplers[0], IN.uv).a;
+        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.clipPos.xy);
+    }
     if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
         discard;
 

@@ -45,7 +45,12 @@ PSOut mainPS(PSIn IN)
 
     float4 baseSample = float4(1, 1, 1, 1);
     if (baseColorIdx >= 0)
-        baseSample = textures[NonUniformResourceIndex((uint)baseColorIdx)].Sample(samplers[0], IN.uv);
+    {
+        uint slot = (uint)baseColorIdx;
+        Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
+        baseSample = baseTex.Sample(samplers[0], IN.uv);
+        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.clipPos.xy);
+    }
     float3 baseColor = baseColorFactor * IN.color * baseSample.rgb;
     float baseAlpha = baseAlphaFactor * baseSample.a;
 
@@ -63,7 +68,10 @@ PSOut mainPS(PSIn IN)
     float3 emissive = emissiveFactor * emissiveStrength;
     if (emissiveIdx >= 0)
     {
-        float3 eSample = textures[NonUniformResourceIndex((uint)emissiveIdx)].Sample(samplers[0], IN.uv).rgb;
+        uint slot = (uint)emissiveIdx;
+        Texture2D eTex = textures[NonUniformResourceIndex(slot)];
+        float3 eSample = eTex.Sample(samplers[0], IN.uv).rgb;
+        TS_ReportUsage(slot, eTex, samplers[0], IN.uv, IN.clipPos.xy);
         emissive *= eSample;
     }
 

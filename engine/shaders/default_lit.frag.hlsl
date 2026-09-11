@@ -203,7 +203,12 @@ PSOut mainPS(PSIn IN)
     // ---------------------------------------------------------------
     float4 baseSample = float4(1,1,1,1);
     if (baseColorIdx >= 0)
-        baseSample = textures[NonUniformResourceIndex((uint)baseColorIdx)].Sample(samplers[0], IN.uv);
+    {
+        uint slot = (uint)baseColorIdx;
+        Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
+        baseSample = baseTex.Sample(samplers[0], IN.uv);
+        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.clipPos.xy);
+    }
     // glTF: baseColor = baseColorFactor * vertexColor * texture
     float3 baseColor = baseColorFactor * IN.color * baseSample.rgb;
     float  baseAlpha = baseAlphaFactor * baseSample.a;
@@ -230,7 +235,10 @@ PSOut mainPS(PSIn IN)
     float roughness = roughnessFactor;
     if (mrIdx >= 0)
     {
-        float4 mrSample = textures[NonUniformResourceIndex((uint)mrIdx)].Sample(samplers[0], IN.uv);
+        uint slot = (uint)mrIdx;
+        Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
+        float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
+        TS_ReportUsage(slot, mrTex, samplers[0], IN.uv, IN.clipPos.xy);
         // Spec says: roughness = G * factor, metallic = B * factor
         roughness *= mrSample.g;
         metallic  *= mrSample.b;
@@ -278,6 +286,8 @@ PSOut mainPS(PSIn IN)
 
         float2 mapXY = textures[NonUniformResourceIndex((uint)normalIdx)]
             .Sample(samplers[0], IN.uv).xy * 2.0f - 1.0f;
+        TS_ReportUsage((uint)normalIdx,
+            textures[NonUniformResourceIndex((uint)normalIdx)], samplers[0], IN.uv, IN.clipPos.xy);
 
         // glTF normalTexture.scale applies to XY.
         mapXY *= normalScale;
@@ -301,7 +311,10 @@ PSOut mainPS(PSIn IN)
     float occlusion = 1.0f;
     if (occIdx >= 0)
     {
-        float occSample = textures[NonUniformResourceIndex((uint)occIdx)].Sample(samplers[0], IN.uv).r;
+        uint slot = (uint)occIdx;
+        Texture2D occTex = textures[NonUniformResourceIndex(slot)];
+        float occSample = occTex.Sample(samplers[0], IN.uv).r;
+        TS_ReportUsage(slot, occTex, samplers[0], IN.uv, IN.clipPos.xy);
         occlusion = lerp(1.0f, occSample, occlusionStrength);
     }
 
@@ -311,7 +324,10 @@ PSOut mainPS(PSIn IN)
     float3 emissive = emissiveFactor * emissiveStrength;
     if (emissiveIdx >= 0)
     {
-        float3 eSample = textures[NonUniformResourceIndex((uint)emissiveIdx)].Sample(samplers[0], IN.uv).rgb;
+        uint slot = (uint)emissiveIdx;
+        Texture2D eTex = textures[NonUniformResourceIndex(slot)];
+        float3 eSample = eTex.Sample(samplers[0], IN.uv).rgb;
+        TS_ReportUsage(slot, eTex, samplers[0], IN.uv, IN.clipPos.xy);
         emissive *= eSample;
     }
 

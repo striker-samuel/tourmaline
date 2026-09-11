@@ -416,10 +416,25 @@ bool SceneRenderer::Initialize() {
 		if (!Super::Initialize())
 			return false;
 
+		// Env values arrive with shell quoting artifacts (notably a
+		// trailing space from `set VAR=x && ...` in cmd, which broke
+		// string-compared toggles while atoi-based ones survived). Trim
+		// ASCII whitespace so "0 " behaves like "0".
+		auto trimEnv = [](const char* s) -> std::string_view {
+			std::string_view v{ s ? s : "" };
+			while (!v.empty() && (v.front() == ' ' || v.front() == '\t'
+				|| v.front() == '\r' || v.front() == '\n'))
+				v.remove_prefix(1);
+			while (!v.empty() && (v.back() == ' ' || v.back() == '\t'
+				|| v.back() == '\r' || v.back() == '\n'))
+				v.remove_suffix(1);
+			return v;
+		};
+
 		// AA mode override for A/B runs without UI interaction
 		// (off | msaa | smaa1x | t2x). The ImGui combo stays live after.
 		if (const char* aaEnv = std::getenv("VULKANTOY_AA")) {
-			const std::string_view aa{ aaEnv };
+			const std::string_view aa = trimEnv(aaEnv);
 			if (aa == "off") m_aaMode = AaMode::Off;
 			else if (aa == "msaa") m_aaMode = AaMode::Msaa2x;
 			else if (aa == "smaa1x") m_aaMode = AaMode::Smaa1x;
@@ -442,7 +457,7 @@ bool SceneRenderer::Initialize() {
 		// interaction (dither | blend). Default is dithered; the ImGui
 		// combo stays live after.
 		if (const char* trEnv = std::getenv("VULKANTOY_TRANSPARENCY")) {
-			const std::string_view tr{ trEnv };
+			const std::string_view tr = trimEnv(trEnv);
 			if (tr == "dither" || tr == "dithered") m_transparentMode = smvk::TransparentMode::Dithered;
 			else if (tr == "blend" || tr == "blended") m_transparentMode = smvk::TransparentMode::Blended;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_TRANSPARENCY value: " << tr << "\n";
@@ -451,7 +466,7 @@ bool SceneRenderer::Initialize() {
 		// Deferred shadows override for A/B runs without UI interaction
 		// (1 | 0). Runtime H toggle + the ImGui checkbox stay live after.
 		if (const char* dsEnv = std::getenv("VULKANTOY_DS")) {
-			const std::string_view ds{ dsEnv };
+			const std::string_view ds = trimEnv(dsEnv);
 			if (ds == "1" || ds == "on") m_dsEnabled = true;
 			else if (ds == "0" || ds == "off") m_dsEnabled = false;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DS value: " << ds << "\n";
@@ -496,7 +511,7 @@ bool SceneRenderer::Initialize() {
 		// direct light + tile passes from A/B runs (pure sun + GI frame;
 		// runtime F toggle + the ImGui checkbox stay live after).
 		if (const char* lightsEnv = std::getenv("VULKANTOY_LIGHTS")) {
-			const std::string_view lights{ lightsEnv };
+			const std::string_view lights = trimEnv(lightsEnv);
 			if (lights == "1" || lights == "on") m_fpDemo.enabled = true;
 			else if (lights == "0" || lights == "off") m_fpDemo.enabled = false;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_LIGHTS value: " << lights << "\n";
@@ -519,7 +534,7 @@ bool SceneRenderer::Initialize() {
 		// 0/off -> analytic sky IBL (falling back out of GI mode). The
 		// runtime N cycle stays live after.
 		if (const char* giEnv = std::getenv("VULKANTOY_GI")) {
-			const std::string_view gi{ giEnv };
+			const std::string_view gi = trimEnv(giEnv);
 			if (gi == "1" || gi == "on") m_ambientMode = AmbientMode::Gi;
 			else if (gi == "0" || gi == "off") {
 				if (m_ambientMode == AmbientMode::Gi)
@@ -724,6 +739,12 @@ bool SceneRenderer::Initialize() {
 		// outlive it (they do: world owns both). Conservative defaults:
 		// <=1K textures load full, 2K/4K load capped and upgrade on
 		// demand within a few frames.
+		// Kill switch for A/B (VULKANTOY_STREAMING=0): full-resident
+		// legacy loads, no streamer, no feedback.
+		if (const char* streamEnv = std::getenv("VULKANTOY_STREAMING")) {
+			if (std::atoi(streamEnv) == 0)
+				m_textureStreamingEnabled = false;
+		}
 		if (m_textureStreamingEnabled && !m_textureStreamer) {
 			smvk::TextureStreamerConfig streamCfg;
 			streamCfg.budgetBytes = 256ull * 1024 * 1024;
@@ -738,6 +759,14 @@ bool SceneRenderer::Initialize() {
 		}
 		smvk::TextureStreamer* sceneStreamer =
 			(m_textureStreamingEnabled && m_textureStreamer) ? m_textureStreamer.get() : nullptr;
+		// GPU feedback consumer for the streamer above (null together with
+		// it; the RHI owns the device ring buffers either way so the
+		// binding is always valid for the shaders).
+		if (sceneStreamer && !m_textureFeedback) {
+			m_textureFeedback =
+				std::make_unique<smvk::TextureFeedback>(*m_context);
+			m_textureFeedback->SetSlotCount(MAX_TEXTURES);
+		}
 
 		// Scene import: prefer the cooked pak (fast path, meshopt'd meshes,
 		// embedded textures), fall back to glTF via the VFS when no pak is
@@ -1192,8 +1221,7 @@ void SceneRenderer::Shutdown() {
 		FrameUniforms data{};
 		data.cameraPos = m_cameraPositioner.cameraPosition_;
 
-		data.view = view;
-		data.proj = proj;
+		data.view = view;		data.proj = proj;
 		data.viewProj = viewProj;
 
 		data.invView = glm::inverse(view);
@@ -1494,8 +1522,31 @@ void SceneRenderer::Shutdown() {
 	void SceneRenderer::UpdateAutoExposure(uint32_t frameIndex) {
 		if (!kHistogramReadbackEnabled)
 			return; // readback disabled (see above): hold the seed/manual exposure
-		if (!m_autoExposureEnabled || !m_passes.exposure)
+		if (!ExposureMeteringActive())
 			return;
+		auto& meter = m_viewportResources.exposure;
+		if (!meter.Valid())
+			return;
+		// Current flight slice, read BEFORE this frame's zero-fill below.
+		// Acquire already retired this slot, so its bins are the completed
+		// accumulation from two frames ago — no cross-flight torn reads and
+		// no wait on the still-in-flight previous frame.
+		if (frameIndex >= ::MAX_FRAMES_IN_FLIGHT)
+			return;
+		m_exposureFrame = frameIndex;
+		std::array<uint32_t, smvk::kExposureBinCount> bins{};
+		if (!m_context->DownloadDataFromBuffer(meter.HistogramBuffer(frameIndex),
+				bins.data(), sizeof(uint32_t) * bins.size()))
+			return;
+		AdaptExposureFromBins(bins);
+	}
+
+	// Metering gates shared by the histogram download and the batched
+	// feedback pairing (debug views hold the last scene exposure; see the
+	// note on UpdateAutoExposure).
+	bool SceneRenderer::ExposureMeteringActive() const {
+		if (!m_autoExposureEnabled || !m_passes.exposure)
+			return false;
 		// Debug views fill HDR with exposure-compensated flat colors (see
 		// the dbgGain pre-scale in Main and the /exposure in the unlit +
 		// cascade shaders): metering them would drive the adapted exposure
@@ -1507,25 +1558,19 @@ void SceneRenderer::Shutdown() {
 		// the pre-switch value too; turning the view/mode off resumes
 		// adapting from the held exposure.
 		if (m_debugView != DebugView::Lit)
-			return;
+			return false;
 #if defined(DS_DEBUG_VIZ)
 		if (m_dsDebugMode != DsDebugViz::Off)
-			return;
+			return false;
 #endif
+		return true;
+	}
+
+	// Bins -> percentile target + damped adapt (tail of UpdateAutoExposure,
+	// shared by the single and batched download paths).
+	void SceneRenderer::AdaptExposureFromBins(
+		const std::array<uint32_t, smvk::kExposureBinCount>& bins) {
 		auto& meter = m_viewportResources.exposure;
-		if (!meter.Valid())
-			return;
-		// Current flight slice, read BEFORE this frame's zero-fill below.
-		// Acquire already retired this slot, so its bins are the completed
-		// accumulation from two frames ago â€” no cross-flight torn reads and
-		// no wait on the still-in-flight previous frame.
-		if (frameIndex >= ::MAX_FRAMES_IN_FLIGHT)
-			return;
-		m_exposureFrame = frameIndex;
-		std::array<uint32_t, smvk::kExposureBinCount> bins{};
-		if (!m_context->DownloadDataFromBuffer(meter.HistogramBuffer(frameIndex),
-				bins.data(), sizeof(uint32_t) * bins.size()))
-			return;
 		uint32_t total = 0;
 		for (size_t i = 0; i < bins.size(); ++i) {
 			meter.lastBins[i] = bins[i];
@@ -1555,6 +1600,64 @@ void SceneRenderer::Shutdown() {
 		m_exposureAdapted = meter.Adapt(m_exposureAdapted, m_exposureEvBias,
 			m_exposureSpeedToDark, m_exposureSpeedToBright,
 			m_exposureMin, m_exposureMax, delta_time_s);
+	}
+
+	// Combined GPU->CPU readback tick (replaces the lone UpdateAutoExposure
+	// call). On GPU-feedback frames the histogram + feedback downloads
+	// share ONE submit + wait through the persistent staging (see
+	// ResourceManager::DownloadDataFromBuffers); otherwise each path runs
+	// alone as before. The feedback clear always runs AFTER the consume
+	// (download-before-clear, same order as the exposure zero-fill below).
+	void SceneRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
+		const bool feedbackActive = m_textureStreamingEnabled
+			&& m_textureStreamer && m_textureFeedback
+			&& m_textureFeedback->GetSlotCount() > 0;
+		const bool feedbackTick = feedbackActive
+			&& ((m_frameCounter & 3u) == 2u);
+		auto& meter = m_viewportResources.exposure;
+		const bool meterValid = meter.Valid()
+			&& frameSlot < static_cast<uint32_t>(::MAX_FRAMES_IN_FLIGHT);
+		const bool exposureTick = kHistogramReadbackEnabled
+			&& ExposureMeteringActive() && meterValid;
+
+		if (feedbackTick && exposureTick) {
+			std::array<uint32_t, smvk::kExposureBinCount> bins{};
+			const uint32_t fbSlots = m_textureFeedback->GetSlotCount();
+			std::vector<uint32_t> fb(fbSlots, smvk::TextureFeedback::kNoReport);
+			const smvk::BufferDownload dls[2] = {
+				{ meter.HistogramBuffer(frameSlot), bins.data(),
+					bins.size() * sizeof(uint32_t), 0 },
+				{ m_context->GetTextureFeedbackBuffer(frameSlot), fb.data(),
+					fb.size() * sizeof(uint32_t), 0 },
+			};
+			if (m_context->DownloadDataFromBuffers(dls)) {
+				m_exposureFrame = frameSlot;
+				AdaptExposureFromBins(bins);
+				const uint32_t reported = m_textureFeedback->ForwardDownloaded(
+					*m_textureStreamer, fb.data(), fb.size(), streamFrame);
+				if ((m_frameCounter & 63u) == 2u) {
+					std::fprintf(stderr,
+						"[streamfb] tick=%llu slice=%u reported=%u\n",
+						(unsigned long long)m_frameCounter, frameSlot, reported);
+				}
+			}
+		}
+		else {
+			if (exposureTick)
+				UpdateAutoExposure(frameSlot);
+			if (feedbackTick) {
+				const uint32_t reported = m_textureFeedback->ConsumeAndForward(
+					*m_textureStreamer, frameSlot, streamFrame);
+				if ((m_frameCounter & 63u) == 2u) {
+					std::fprintf(stderr,
+						"[streamfb] tick=%llu slice=%u reported=%u (solo)\n",
+						(unsigned long long)m_frameCounter, frameSlot, reported);
+				}
+			}
+		}
+
+		if (feedbackActive)
+			m_textureFeedback->ClearForFrame(frameSlot);
 	}
 
 	// ---------------------------------------------------------------------
@@ -2529,6 +2632,11 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 			m_viewportResources.bloom.desc.knee = BLOOM_KNEE * bloomScale;
 		}
 		m_context->UpdateDescriptors();
+		// Texture-streaming feedback slice for this record. Unconditional:
+		// materials always declare the binding, and update-after-bind keeps
+		// the rewrite visible to this frame's commands. Without a streamer
+		// the writes are simply never consumed.
+		m_context->BindTextureFeedbackSlice(fb.frameIndex);
 		// SMAA T2x global toggle (see SmaaT2xState in smaa.h): one phase
 		// for the recorded-frame sequence, advanced once per T2x record.
 		// Any AA-mode change invalidates the history (a T2x -> 1x/Off ->
@@ -4165,13 +4273,14 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 						renderExtent.width, renderExtent.height);
 				}
 			}
+			// Combined GPU->CPU readback tick (histogram + texture-streaming
+			// feedback, one shared submit + wait on feedback frames). Runs
+			// even when the exposure meter itself is gated off so feedback
+			// consume/clear never stalls. Downloads precede the zero-fill
+			// below (same queue, FIFO).
+			UpdateReadbacks(fb.frameIndex,
+				static_cast<uint32_t>(m_frameCounter));
 			if (meterGate) {
-				// Readback BEFORE the zero-fill below (same queue, FIFO):
-				// the download copy must be submitted before this frame's
-				// zero + compute, otherwise it observes the just-zeroed
-				// buffer. This slot retired at Acquire, so the bins are the
-				// completed accumulation (~2 frames old) â€” no extra stall.
-				UpdateAutoExposure(fb.frameIndex);
 				// Reset the slice's bins (transfer write; the compute hint
 				// below transitions the buffer to Compute R/W via barrier).
 				// Per-flight slice (see exposure.h): the zero-fill submits
@@ -4541,6 +4650,11 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 						tstats.textureCount, tstats.fullResidentCount,
 						resMiB, fullMiB, savedPct,
 						tstats.upgradesLastUpdate, tstats.downgradesLastUpdate);
+					if (m_textureFeedback) {
+						ImGui::Text("GPU feedback: %u slots  %u reported last consume",
+							m_textureFeedback->GetSlotCount(),
+							m_textureFeedback->GetLastReported());
+					}
 				}
 				else {
 					ImGui::TextDisabled("Streaming: off (full-resident)");

@@ -18,6 +18,15 @@ SamplerState samplers[];
 [[vk::binding(1, 0)]] // aliases to samplers! CAREFUL
 SamplerComparisonState comparisonSamplers[];
 
+// Texture-streaming GPU feedback (Skull & Bones style, see
+// texture_streaming.hlsli): one uint per bindless texture slot, published
+// by materials with InterlockedMin. Always bound (RHI-owned per-flight
+// ring, rewritten to the current slice every frame); consumed on the CPU
+// every 4th frame.
+[[vk::binding(4, 0)]]
+RWStructuredBuffer<uint> g_texFeedback;
+#include "texture_streaming.hlsli"
+
 // Exact sRGB transfer functions shared by the LDR-out passes: the swapchain
 // is an _SRGB format (hardware encodes on store), while the SMAA/UI LDR
 // intermediates are UNORM holding already-encoded bytes.

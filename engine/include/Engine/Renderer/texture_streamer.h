@@ -14,12 +14,13 @@
 // image IN PLACE (same TextureHandle / ImageViewHandle / bindless slot),
 // so baked MaterialValues indices never go stale.
 //
-// Feedback (what SHOULD be resident):
-//   v1 (this file): CPU heuristic from screen coverage / distance.
-//   v2 (scaffolded in texture_feedback.h + texture_streaming.hlsli):
-//       GPU readback – shaders report the sampled LOD per texture into a
-//       feedback buffer (Skull & Bones, GPU Zen 3), read back 1-2 frames
-//       late, consumed here via RequestMip().
+// Feedback (what SHOULD be resident) is the minimum of two sources:
+//   * GPU readback (Skull & Bones, GPU Zen 3): materials report the sampled
+//     LOD per texture into a device buffer (see texture_streaming.hlsli +
+//     texture_feedback.h); consumed every 4th frame via RequestMipFromLod.
+//   * CPU heuristic: screen-coverage / distance demand (WantedMipFor*,
+//     driven by the scene pass) covers pre-warming and edge cases.
+// Both feed the same min-demand; Update() enforces the budget either way.
 //
 // Granite path: when sparse residency lands, only the RHI retarget changes
 // (bind physical tiles instead of reallocating); this manager, the budget
@@ -99,6 +100,15 @@ public:
 	// Update(), which then decays it back toward the floor.
 	void RequestMip(TextureHandle handle, uint32_t wantedFullMip, uint32_t frameIndex);
 
+	// GPU-feedback input: RESIDENT-relative LOD as reported by the shader
+	// (0 = sharpest resident mip). Converted to a full-chain mip with the
+	// entry's residentBase (resident level r == full mip residentBase + r)
+	// and fed to RequestMip. Out-of-range reports clamp to the tail.
+	void RequestMipFromLod(TextureHandle handle, uint32_t residentLod, uint32_t frameIndex);
+
+	// Pure conversion behind RequestMipFromLod (device-free, unit-tested).
+	static uint32_t ResolveFullMip(uint32_t residentBase, uint32_t fullMips, uint32_t reportedLod);
+
 	// Batch demand from the scene pass: bindless slot -> closest camera
 	// distance (meters) among this frame's instances sampling it. Entries
 	// are matched by their CURRENT bindless slot (stable across retargets);
@@ -107,6 +117,13 @@ public:
 	void RequestMipsByDistance(const std::unordered_map<uint32_t, float>& minDistBySlot,
 		float viewportHeightPx, float fovYRad, uint32_t frameIndex,
 		float approxWorldSize = 2.0f);
+
+	// Bindless slot -> streamed TextureHandle snapshot for the GPU
+	// feedback consume (TextureFeedback::ForwardDownloaded). Slots without
+	// a streamed texture hold an empty handle. Sized to the highest live
+	// slot + 1 (may be shorter than the consume range; the consumer takes
+	// the minimum).
+	std::vector<TextureHandle> BuildBindlessSlotMap() const;
 
 	// CPU heuristic: which full-chain mip satisfies `screenCoveragePx`
 	// pixels of coverage for a texture with baseLongSide texels.

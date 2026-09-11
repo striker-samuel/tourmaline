@@ -159,6 +159,15 @@ bool ResourceManager::DownloadDataFromBuffer(BufferHandle src, void* out, size_t
                                                size_t srcOffset) {
     return impl_->vulkan.DownloadDataFromBuffer(src, out, size, srcOffset);
 }
+bool ResourceManager::DownloadDataFromBuffers(std::span<const BufferDownload> downloads) {
+    return impl_->vulkan.DownloadDataFromBuffers(downloads);
+}
+BufferHandle ResourceManager::GetTextureFeedbackBuffer(uint32_t flightSlot) {
+    return impl_->vulkan.GetTextureFeedbackBuffer(flightSlot);
+}
+void ResourceManager::BindTextureFeedbackSlice(uint32_t flightSlot) {
+    impl_->vulkan.FlushTextureFeedback(flightSlot);
+}
 bool ResourceManager::DownloadDataFromImage(ImageHandle src, ImageLayout currentLayout, void* out, size_t size) {
     return impl_->vulkan.DownloadDataFromImage(src, currentLayout, out, size);
 }

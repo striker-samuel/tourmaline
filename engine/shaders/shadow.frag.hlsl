@@ -25,8 +25,10 @@ void mainPS(PSIn IN)
     int baseColorIdx = mat.tex.x;
     if (baseColorIdx >= 0)
     {
-        float4 s = textures[NonUniformResourceIndex((uint)baseColorIdx)]
-            .Sample(samplers[0], IN.uv);
+        uint slot = (uint)baseColorIdx;
+        Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
+        float4 s = baseTex.Sample(samplers[0], IN.uv);
+        TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.clipPos.xy);
         baseAlpha *= s.a;
     }
 

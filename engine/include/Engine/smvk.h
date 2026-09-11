@@ -1164,7 +1164,8 @@ namespace smvk {
 		kBinding_Samplers = 1, // I thought better to alias samplers with comparisonSamplers HLSLside.
 		kBinding_StorageImages = 2,
 		kBinding_EngineGlobals = 3, // read-only StructuredBuffer<EngineGlobals>, one slice per frame in flight
-		kBinding_NumBindings = 4 // this should be # of all other
+		kBinding_TextureFeedback = 4, // RWStructuredBuffer<uint>: GPU texture-streaming feedback (one uint per bindless slot, rewritten per flight slice)
+		kBinding_NumBindings = 5 // this should be # of all other
 	};
 
 	struct QueueFamilyIndices {
@@ -1302,7 +1303,7 @@ struct ImageCreateInfo
 		const char* name = nullptr;
 	};
 
-	struct ImageTag;
+ 	struct ImageTag;
 	struct ImageViewTag;
 	struct BufferTag;
 	struct TextureTag;
@@ -1317,6 +1318,16 @@ struct ImageCreateInfo
 	using SamplerHandle = Handle<SamplerTag>;
 	using BindlessImageHandle = Handle<BindlessImageTag>;
 	using DescriptorPoolHandle = Handle<DescriptorPoolTag>;
+
+	// One GPU->CPU buffer copy for a batched readback (see
+	// ResourceManager::DownloadDataFromBuffers): multiple sources share one
+	// staging allocation, one submit and one wait instead of one per copy.
+	struct BufferDownload {
+		BufferHandle src{};
+		void* out = nullptr;
+		size_t size = 0;
+		size_t srcOffset = 0;
+	};
 
 	// Forward declaration for PIMPL firewall – concrete type lives in RHI/resource_manager.h
 	class ResourceManager;
