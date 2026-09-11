@@ -155,6 +155,18 @@ enum class AaMode : int {
 };
 
 // ---------------------------------------------------------------------------
+// Ambient source selection (N cycles): the baked GI probe volume and the
+// analytic sky IBL are MUTUALLY EXCLUSIVE — one, the other, or both off.
+// The ambient is the only thing this drives; the visible sky dome (K) and
+// the direct sun / cascaded shadows are unaffected.
+// ---------------------------------------------------------------------------
+enum class AmbientMode : int {
+	Gi = 0,    // baked SG-GI probes replace the analytic ambient
+	SkyIbl = 1, // analytic sky IBL (EvaluateIrradiance/SpecularEnv)
+	Off = 2,   // neither: direct light only (pure sun frame)
+};
+
+// ---------------------------------------------------------------------------
 // Main-view debug visualization (F1..F5). Lit is the full PBR path; the rest
 // replace the opaque leg with a flat debug program so lighting/culling/LOD
 // artifacts bisect out in one keypress. Meshlets/Lods reuse the flat
@@ -527,10 +539,11 @@ protected:
 		if (m_input.isKeyPressed(GLFW_KEY_G)) {
 			m_useGfxFilter = !m_useGfxFilter;
 		}
-		// SG-GI probe volume: N toggles the baked ambient (A/B against the
-		// analytic sky IBL), F8 flips the flat irradiance debug view.
+		// Ambient source: N cycles GI -> sky IBL -> both off (the baked
+		// probes and the analytic sky ambient are mutually exclusive).
+		// F8 flips the flat probe-irradiance debug view.
 		if (m_input.isKeyPressed(GLFW_KEY_N)) {
-			m_giEnabled = !m_giEnabled;
+			CycleAmbientMode();
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_F8)) {
 			m_giDebug = !m_giDebug;
@@ -744,10 +757,11 @@ protected:
 	bool m_dsEnabled = true;
 	// ---- SG-GI baked probe volume (tools/gi_baker output, see
 	// smvk::gi + Engine/GI). Loaded once at scene init from
-	// content/gi/<scene>.sggi (loose content or a pak); when present it
-	// replaces the analytic sky IBL ambient with path-traced probes.
-	// N toggles, F8 shows the flat irradiance debug view. ----
-	bool m_giEnabled = true;      // user toggle (A/B against the sky IBL)
+	// content/gi/<scene>.sggi (loose content or a pak). N cycles the
+	// ambient source: Gi -> SkyIbl -> Off (see AmbientMode — the probes
+	// and the analytic sky IBL are mutually exclusive). F8 shows the
+	// flat irradiance debug view. ----
+	AmbientMode m_ambientMode = AmbientMode::Gi; // N cycles
 	bool m_giDebug = false;       // F8: flat probe-irradiance debug view
 	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
 	bool m_giShowProbes = false;  // probe-point overlay (ImGui foreground,
@@ -763,7 +777,11 @@ protected:
 	uint64_t m_giGridAddress = 0;
 	uint64_t m_giCellsAddress = 0;
 	uint64_t m_giIndicesAddress = 0;
-	bool GiActive() const { return m_giLoaded && m_giEnabled; }
+	bool GiActive() const { return m_giLoaded && m_ambientMode == AmbientMode::Gi; }
+	void CycleAmbientMode() {
+		m_ambientMode = static_cast<AmbientMode>(
+			(static_cast<int>(m_ambientMode) + 1) % 3);
+	}
 	void LoadGiVolume(smvk::OverlayVfs& vfs);
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4; debug builds

@@ -169,6 +169,7 @@ struct GiSceneBuildOptions {
 	std::unordered_map<uint32_t, glm::vec3> texelAvg;
 	bool includeMaskedCutout = true;  // alpha-tested foliage/walls as opaque
 	bool skipBlended = true;          // glass/translucent never bounces
+	bool includeEmissive = true;       // emissive geometry as area lights
 };
 
 // Extracts world-space opaque triangles + materials from a cook-mode

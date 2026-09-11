@@ -68,6 +68,7 @@ struct Args {
 	float sunIntensity = 10000.0f;
 	float skyIntensity = 600.0f;
 	bool textures = true;
+	bool emissive = true;
 	bool verify = true;
 };
 
@@ -117,6 +118,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v, i)) return false;
 			out.textures = (v == "on" || v == "1" || v == "true");
 		}
+		else if (a == "--emissive") {
+			std::string v;
+			if (!need(v, i)) return false;
+			out.emissive = (v == "on" || v == "1" || v == "true");
+		}
 		else if (a == "--verify") {
 			std::string v;
 			if (!need(v, i)) return false;
@@ -144,7 +150,8 @@ void Usage() {
 		<< "         [--root 8.0] [--min-brick 0.25] [--max-probes 262144]\n"
 		<< "         [--tolerance 0.12] [--near-factor 1.0] [--waves 8] [--threads 0]\n"
 		<< "         [--sun-azimuth 30] [--sun-elevation 55] [--sun-intensity 10000]\n"
-		<< "         [--sky-intensity 600] [--textures on|off] [--verify on|off]\n";
+		<< "         [--sky-intensity 600] [--textures on|off] [--emissive on|off]\n"
+		<< "         [--verify on|off]\n";
 }
 
 // Scene-id -> glTF vfs path (mirrors app::SceneRegistry).
@@ -301,6 +308,7 @@ int main(int argc, char** argv) {
 	buildOpts.env.sunElevationDeg = args.sunElevation;
 	buildOpts.env.sunIntensity = args.sunIntensity;
 	buildOpts.env.skyIntensity = args.skyIntensity;
+	buildOpts.includeEmissive = args.emissive;
 
 	smvk::gi::GiTraceScene traceScene;
 	std::string err;

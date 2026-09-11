@@ -243,8 +243,10 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 				base *= it->second;
 		}
 		gm.albedo = base * (1.0f - metallic);
-		gm.emissive = glm::vec3(mat.values.emissiveFactor) * mat.values.params2.z;
-		if (mat.values.textures2.x >= 0) {
+		gm.emissive = opts.includeEmissive
+			? glm::vec3(mat.values.emissiveFactor) * mat.values.params2.z
+			: glm::vec3(0.0f);
+		if (opts.includeEmissive && mat.values.textures2.x >= 0) {
 			if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures2.x));
 				it != opts.texelAvg.end())
 				gm.emissive *= it->second;

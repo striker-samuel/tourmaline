@@ -481,15 +481,22 @@ bool SceneRenderer::Initialize() {
 				m_autoExposureEnabled = false;
 		}
 		if (const char* iblEnv = std::getenv("VULKANTOY_IBL")) {
-			if (std::atoi(iblEnv) == 0)
-				m_env.iblEnabled = false;
+			// Mute the analytic sky ambient (AmbientMode: sky -> off; the
+			// ambient sources are mutually exclusive, see AmbientMode).
+			if (std::atoi(iblEnv) == 0 && m_ambientMode == AmbientMode::SkyIbl)
+				m_ambientMode = AmbientMode::Off;
 		}
-		// SG-GI probe volume override for A/B runs without UI interaction
-		// (1 | 0). Runtime N toggle + the ImGui checkbox stay live after.
+		// SG-GI ambient override for A/B runs without UI interaction:
+		// VULKANTOY_GI selects the ambient source — 1/on -> baked probes,
+		// 0/off -> analytic sky IBL (falling back out of GI mode). The
+		// runtime N cycle stays live after.
 		if (const char* giEnv = std::getenv("VULKANTOY_GI")) {
 			const std::string_view gi{ giEnv };
-			if (gi == "1" || gi == "on") m_giEnabled = true;
-			else if (gi == "0" || gi == "off") m_giEnabled = false;
+			if (gi == "1" || gi == "on") m_ambientMode = AmbientMode::Gi;
+			else if (gi == "0" || gi == "off") {
+				if (m_ambientMode == AmbientMode::Gi)
+					m_ambientMode = AmbientMode::SkyIbl;
+			}
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_GI value: " << gi << "\n";
 		}
 		// F8 irradiance debug view for headless runs (same as the F8 key).
@@ -1158,6 +1165,12 @@ void SceneRenderer::Shutdown() {
 		data.aoIntensity = ssaoOn ? m_ssaoIntensity : 0.0f;
 		// Configurable skydome IBL + fog (single source for sky/sun/fog).
 		data.env = m_env.ToFrameData();
+		// Ambient source mutual exclusion (N cycles Gi -> SkyIbl -> Off):
+		// the analytic sky IBL flag is forced off unless the ambient mode
+		// selects it; the GI block below only enables probes in Gi mode.
+		// One ambient source or none — never both.
+		data.env.fogEndAndFlags.w =
+			(m_ambientMode == AmbientMode::SkyIbl) ? 1.0f : 0.0f;
 
 		// Deferred shadows: consumer-side BDAs + the frame's on/off flag.
 		// DsActive() is the single gate shared with the phase-1 upload and
@@ -4416,8 +4429,18 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					m_viewportResources.exposure.desc.keyValue);
 		}
 		if (ImGui::CollapsingHeader("GI â€” SG probe volume (baked)", ImGuiTreeNodeFlags_DefaultOpen)) {
+			// Ambient mode line (N cycles; probes and sky IBL are mutually
+			// exclusive — see AmbientMode).
+			{
+				static const char* const kModeNames[3] =
+					{ "Baked GI probes", "Sky IBL", "Off" };
+				int modeIdx = static_cast<int>(m_ambientMode);
+				if (ImGui::Combo("Ambient source (N)", &modeIdx, kModeNames, 3))
+					m_ambientMode = static_cast<AmbientMode>(std::clamp(modeIdx, 0, 2));
+				ImGui::TextDisabled("N cycles ambient: %s (GI and sky IBL mutually exclusive)",
+					kModeNames[static_cast<int>(m_ambientMode)]);
+			}
 			if (m_giLoaded) {
-				ImGui::Checkbox("Baked GI ambient (N)", &m_giEnabled);
 				ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
 				ImGui::Checkbox("Irradiance debug view (F8)", &m_giDebug);
 				ImGui::Checkbox("Probe points overlay", &m_giShowProbes);
@@ -4518,7 +4541,15 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			ImGui::Separator();
 			if (ImGui::CollapsingHeader("Environment â€” Skydome IBL + Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
 				ImGui::Checkbox("Sky dome (K)", &m_env.skyEnabled);
-				ImGui::Checkbox("IBL ambient/spec", &m_env.iblEnabled);
+				// Ambient source gate: drives the N-cycled AmbientMode (the
+				// analytic sky IBL and the baked GI probes are mutually
+				// exclusive — see the GI panel combo).
+				{
+					bool iblOn = (m_ambientMode == AmbientMode::SkyIbl);
+					if (ImGui::Checkbox("IBL ambient/spec (N)", &iblOn))
+						m_ambientMode = iblOn
+							? AmbientMode::SkyIbl : AmbientMode::Off;
+				}
 				ImGui::ColorEdit3("Zenith", &m_env.skyZenithColor.x);
 				ImGui::ColorEdit3("Horizon", &m_env.skyHorizonColor.x);
 				ImGui::ColorEdit3("Ground", &m_env.groundColor.x);
@@ -4880,6 +4911,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
 			ImGui::TextDisabled("Keys: M blur  O SSAO  B bloom  X exposure  V vectors");
 			ImGui::TextDisabled("      L LODs  F lights  G filter  C cookies  K sky");
+			ImGui::TextDisabled("      N ambient GI/sky/off  F8 GI irradiance view");
 			ImGui::TextDisabled("      F1 lit  F2 unlit  F3 meshlets  F4 cascades  F5 LOD colors");
 #if defined(DS_DEBUG_VIZ)
 			ImGui::TextDisabled("      F6/Y DS visualizer (%s)",
