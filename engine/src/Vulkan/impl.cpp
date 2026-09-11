@@ -4781,6 +4781,29 @@ void smvk::VulkanResourceManager::UnmapBuffer(BufferHandle handle) {
 	// vmaFlushAllocation(m_allocator, staging->vma_alloc, 0, stagingBufferSize);
 	vmaUnmapMemory(m_allocator, buf->vma_alloc);
 }
+std::vector<smvk::GpuMemoryHeap> smvk::VulkanResourceManager::GetGpuMemoryInfo() const {
+	std::vector<smvk::GpuMemoryHeap> out;
+	if (m_allocator == VK_NULL_HANDLE || physicalDevice_ == VK_NULL_HANDLE)
+		return out;
+	VkPhysicalDeviceMemoryProperties memProps{};
+	vkGetPhysicalDeviceMemoryProperties(physicalDevice_, &memProps);
+	if (memProps.memoryHeapCount == 0)
+		return out;
+	std::vector<VmaBudget> budgets(memProps.memoryHeapCount);
+	vmaGetHeapBudgets(m_allocator, budgets.data());
+	out.reserve(memProps.memoryHeapCount);
+	for (uint32_t i = 0; i < memProps.memoryHeapCount; ++i) {
+		smvk::GpuMemoryHeap h{};
+		h.heapSizeBytes = memProps.memoryHeaps[i].size;
+		h.budgetBytes = budgets[i].budget;
+		h.usageBytes = budgets[i].usage;
+		h.allocationBytes = budgets[i].statistics.allocationBytes;
+		h.blockBytes = budgets[i].statistics.blockBytes;
+		h.deviceLocal = (memProps.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+		out.push_back(h);
+	}
+	return out;
+}
 bool smvk::DeferredTask::isReady() const {
 	if (retirePoint_.semaphore != VK_NULL_HANDLE && retirePoint_.value != 0) {
 		uint64_t v = 0;

@@ -163,6 +163,11 @@ uint32_t ResourceManager::GetBindlessIndex(BindlessImageHandle handle) const { r
 uint32_t ResourceManager::GetTextureBindlessIndex(TextureHandle handle) const { return impl_->vulkan.GetTextureBindlessIndex(handle); }
 uint32_t ResourceManager::GetOrCreateSampler(const SamplerCreateInfo& ci) { return impl_->vulkan.GetOrCreateSampler(ci); }
 uint32_t ResourceManager::GetSamplerCount() const { return impl_->vulkan.GetSamplerCount(); }
+std::vector<GpuMemoryHeap> ResourceManager::GetGpuMemoryInfo() const {
+    if (!impl_)
+        return {};
+    return impl_->vulkan.GetGpuMemoryInfo();
+}
 bool ResourceManager::SupportsMSAA2x() {
     if (!impl_ || !impl_->vulkan.core_)
         return false;

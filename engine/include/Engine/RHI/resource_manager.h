@@ -82,6 +82,10 @@ public:
     // True when the physical device supports 2x MSAA for both color and
     // depth framebuffer attachments (used for the Main pass resolve path).
     bool SupportsMSAA2x();
+    // GPU memory snapshot: one entry per Vk memory heap (VMA budgets +
+    // heap sizes). Cheap (VMA throttles OS queries internally); safe to
+    // call once per frame for the debug UI / console stats.
+    std::vector<GpuMemoryHeap> GetGpuMemoryInfo() const;
 
     // Internal helpers for PIMPL firewall – used by Swapchain/RenderGraph private TUs
     struct Impl;

@@ -2015,6 +2015,57 @@ void SceneRenderer::Shutdown() {
 		}
 	}
 
+	void SceneRenderer::RefreshGpuMemoryStats(bool force) {
+		if (!m_context)
+			return;
+		const double now = glfwGetTime();
+		if (!force && (now - m_gpuMemLastQuerySec) < 1.0)
+			return;
+		m_gpuMemLastQuerySec = now;
+		const auto t0 = std::chrono::steady_clock::now();
+		m_gpuMemHeaps = m_context->GetGpuMemoryInfo();
+		const auto t1 = std::chrono::steady_clock::now();
+		m_gpuMemQueryUs = std::chrono::duration<double, std::micro>(t1 - t0).count();
+	}
+
+	void SceneRenderer::LogGpuMemoryToConsole() {
+		RefreshGpuMemoryStats(true);
+		if (m_gpuMemHeaps.empty()) {
+			std::fprintf(stderr, "[GPU memory] no heap data (headless?)\n");
+			fflush(stderr);
+			return;
+		}
+		uint64_t totalUsed = 0, totalBudget = 0;
+		for (const auto& h : m_gpuMemHeaps) {
+			totalUsed += h.usageBytes;
+			totalBudget += h.budgetBytes;
+		}
+		// Coalesce into ONE stderr write: each fprintf(stderr) flushes
+		// separately on Windows (console lock + flush per call), so N
+		// calls per snapshot is N times the syscall cost.
+		char buf[1024];
+		int n = snprintf(buf, sizeof(buf), "[GPU memory] total %.1f / %.1f MiB (%.1f%%)",
+			(double)totalUsed / (1024.0 * 1024.0),
+			(double)totalBudget / (1024.0 * 1024.0),
+			totalBudget > 0 ? 100.0 * (double)totalUsed / (double)totalBudget : 0.0);
+		for (size_t i = 0; i < m_gpuMemHeaps.size() && n > 0 && (size_t)n < sizeof(buf); ++i) {
+			const auto& h = m_gpuMemHeaps[i];
+			n += snprintf(buf + n, sizeof(buf) - (size_t)n, "%s heap%zu(%s) %.1f/%.1f MiB %.1f%% (heap %.0f MiB)",
+				i ? " |" : ":", i, h.deviceLocal ? "VRAM" : "host",
+				(double)h.usageBytes / (1024.0 * 1024.0),
+				(double)h.budgetBytes / (1024.0 * 1024.0),
+				h.budgetBytes > 0 ? 100.0 * (double)h.usageBytes / (double)h.budgetBytes : 0.0,
+				(double)h.heapSizeBytes / (1024.0 * 1024.0));
+		}
+		if ((size_t)n < sizeof(buf) - 2) {
+			buf[n++] = '\n';
+			buf[n] = '\0';
+		}
+		std::fputs(buf, stderr);
+		fflush(stderr);
+		m_gpuMemLastLogSec = glfwGetTime();
+	}
+
 	void SceneRenderer::RebuildSwapViews() {
 		for (auto h : m_viewportResources.swapImages) {
 			m_rendergraph->FreeImageView(h);
@@ -2257,6 +2308,11 @@ void SceneRenderer::Shutdown() {
 		m_gpuTimingValid = m_swapchain->HasGpuTiming();
 		if (m_gpuTimingValid)
 			m_gpuMsSmooth += (m_swapchain->GetGpuFrameMs() - m_gpuMsSmooth) * kEmaAlpha;
+		// Periodic console snapshot of GPU memory (opt-in, every ~10 s).
+		// Same numbers as the ImGui bar; "log to console" button forces
+		// one immediately regardless of this toggle.
+		if (m_gpuMemConsoleAutoLog && glfwGetTime() - m_gpuMemLastLogSec >= 10.0)
+			LogGpuMemoryToConsole();
 		if (m_captureReadbackPending) {
 			// The frame's submit (RenderFrame records, EndAndPresent
 			// submits) wrote the capture target; it is now safe to stall
@@ -4225,6 +4281,81 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			ImGui::Text("Camera pos: %.2f %.2f %.2f", m_cameraPositioner.cameraPosition_.x, m_cameraPositioner.cameraPosition_.y, m_cameraPositioner.cameraPosition_.z);
 			ImGui::Text("Swapchain %ux%u  framesInFlight=%u",
 				fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height, fb.swapchain->framesInFlight());
+			{
+				// ---- GPU memory (VMA budgets, VK_EXT_memory_budget) ----
+				// Throttled to 1 Hz (see RefreshGpuMemoryStats); the bar
+				// shows total usage vs budget. Query cost is shown so a
+				// slow driver budget query can't hide behind this UI.
+				RefreshGpuMemoryStats(false);
+				auto fmtMiB = [](uint64_t bytes, char* out, size_t n) {
+					const double mib = (double)bytes / (1024.0 * 1024.0);
+					if (mib >= 1024.0)
+						snprintf(out, n, "%.2f GiB", mib / 1024.0);
+					else
+						snprintf(out, n, "%.0f MiB", mib);
+				};
+				if (!m_gpuMemHeaps.empty()) {
+					uint64_t totalUsed = 0, totalBudget = 0;
+					for (const auto& h : m_gpuMemHeaps) {
+						totalUsed += h.usageBytes;
+						totalBudget += h.budgetBytes;
+					}
+					const float frac = totalBudget > 0
+						? (float)((double)totalUsed / (double)totalBudget) : 0.0f;
+					char usedS[32], budgetS[32];
+					fmtMiB(totalUsed, usedS, sizeof(usedS));
+					fmtMiB(totalBudget, budgetS, sizeof(budgetS));
+					char overlay[64];
+					snprintf(overlay, sizeof(overlay), "%s / %s (%.1f%%)",
+						usedS, budgetS, frac * 100.0f);
+					// Bar color ramps green -> yellow -> red with pressure.
+					const ImVec4 barCol = frac < 0.6f
+						? ImVec4(0.20f, 0.70f, 0.30f, 1.0f)
+						: (frac < 0.85f ? ImVec4(0.85f, 0.75f, 0.20f, 1.0f)
+							: ImVec4(0.85f, 0.25f, 0.20f, 1.0f));
+					ImGui::Text("GPU memory %s", overlay);
+					ImGui::PushStyleColor(ImGuiCol_PlotHistogram, barCol);
+					ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), overlay);
+					ImGui::PopStyleColor();
+					// Per-heap breakdown (collapsed by default: VRAM heap only
+					// matters on most discrete GPUs; integrated shows host).
+					if (ImGui::SmallButton(m_gpuMemShowAllHeaps ? "heaps: all [-]" : "heaps: details [+]"))
+						m_gpuMemShowAllHeaps = !m_gpuMemShowAllHeaps;
+					ImGui::SameLine();
+					if (ImGui::SmallButton("log to console"))
+						LogGpuMemoryToConsole();
+					ImGui::SameLine();
+					ImGui::Checkbox("auto-log 10s", &m_gpuMemConsoleAutoLog);
+					ImGui::TextDisabled("query %.0f us @1Hz%s", m_gpuMemQueryUs,
+						m_gpuMemConsoleAutoLog ? "" : " (console auto-log off)");
+					const size_t showCount = m_gpuMemShowAllHeaps ? m_gpuMemHeaps.size() : 1;
+					for (size_t i = 0; i < m_gpuMemHeaps.size() && i < showCount; ++i) {
+						// Default view: the first DEVICE_LOCAL heap (VRAM).
+						size_t idx = i;
+						if (!m_gpuMemShowAllHeaps) {
+							idx = 0;
+							for (size_t k = 0; k < m_gpuMemHeaps.size(); ++k) {
+								if (m_gpuMemHeaps[k].deviceLocal) { idx = k; break; }
+							}
+						}
+						const auto& h = m_gpuMemHeaps[idx];
+						const float hf = h.budgetBytes > 0
+							? (float)((double)h.usageBytes / (double)h.budgetBytes) : 0.0f;
+						char hu[32], hb[32], hs[32], hov[80];
+						fmtMiB(h.usageBytes, hu, sizeof(hu));
+						fmtMiB(h.budgetBytes, hb, sizeof(hb));
+						fmtMiB(h.heapSizeBytes, hs, sizeof(hs));
+						snprintf(hov, sizeof(hov), "heap%zu %s %s/%s %.1f%% (heap %s)",
+							idx, h.deviceLocal ? "VRAM" : "host",
+							hu, hb, hf * 100.0f, hs);
+						ImGui::ProgressBar(hf, ImVec2(-1.0f, 0.0f), hov);
+						if (!m_gpuMemShowAllHeaps)
+							break;
+					}
+				} else {
+					ImGui::TextDisabled("GPU memory: no heap data");
+				}
+			}
 			ImGui::Separator();
 			{
 		auto splits = smvk::ComputeCascadeSplits(default_near_clip, m_scene.farClip, CASCADE_LAMBDA, NUM_CASCADES);

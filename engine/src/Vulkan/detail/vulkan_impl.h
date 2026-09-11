@@ -580,6 +580,7 @@ namespace smvk {
 
 		uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
 		uint32_t GetTextureBindlessIndex(TextureHandle handle) const;
+		std::vector<GpuMemoryHeap> GetGpuMemoryInfo() const;
 
 		std::unique_ptr<VulkanCore> core_;
 		VmaAllocator m_allocator;

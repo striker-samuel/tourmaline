@@ -31,6 +31,21 @@ float BloomLuma(float3 c)
     return dot(c, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
+// A single +inf tap (half-float overflow of sun/specular highlights in the
+// RGBA16F HDR target) poisons the Karis average below: w = 1/(1+inf) = 0,
+// so the tap contribution inf*0 = NaN (and Prefilter hits inf/inf = NaN).
+// NaN then spreads through every downsample level, the tent upsample smears
+// it back up into screen-sized blocks, and the tonemap composites
+// hdr += NaN with saturate(NaN) -> 0: big black squares that toggle with
+// bloom. Clamp taps to finite half range so the chain only carries finite
+// energy; identical look for all finite input.
+static const float kBloomTapMax = 65504.0f; // max finite half
+float3 SanitizeBloomTap(float3 c)
+{
+    c = select(isnan(c), float3(0.0f, 0.0f, 0.0f), c);
+    return clamp(c, float3(0.0f, 0.0f, 0.0f), float3(kBloomTapMax, kBloomTapMax, kBloomTapMax));
+}
+
 // Soft-knee prefilter (Unreal/Karis): keeps highlights, rolls off below threshold.
 float3 Prefilter(float3 c, float threshold, float knee)
 {
@@ -45,19 +60,19 @@ float3 Prefilter(float3 c, float threshold, float knee)
 // Each tap weighted by 1/(1+luma), renormalized – bright outliers don't dominate.
 float3 Downsample13(Texture2D src, SamplerState smp, float2 uv, float2 texel)
 {
-    float3 s0  = src.Sample(smp, uv + texel * float2(-2.0f, -2.0f)).rgb;
-    float3 s1  = src.Sample(smp, uv + texel * float2( 0.0f, -2.0f)).rgb;
-    float3 s2  = src.Sample(smp, uv + texel * float2( 2.0f, -2.0f)).rgb;
-    float3 s3  = src.Sample(smp, uv + texel * float2(-1.0f, -1.0f)).rgb;
-    float3 s4  = src.Sample(smp, uv + texel * float2( 1.0f, -1.0f)).rgb;
-    float3 s5  = src.Sample(smp, uv + texel * float2(-1.0f,  1.0f)).rgb;
-    float3 s6  = src.Sample(smp, uv + texel * float2( 1.0f,  1.0f)).rgb;
-    float3 s7  = src.Sample(smp, uv + texel * float2(-2.0f,  0.0f)).rgb;
-    float3 s8  = src.Sample(smp, uv + texel * float2( 2.0f,  0.0f)).rgb;
-    float3 s9  = src.Sample(smp, uv + texel * float2(-2.0f,  2.0f)).rgb;
-    float3 s10 = src.Sample(smp, uv + texel * float2( 0.0f,  2.0f)).rgb;
-    float3 s11 = src.Sample(smp, uv + texel * float2( 2.0f,  2.0f)).rgb;
-    float3 s12 = src.Sample(smp, uv).rgb;
+    float3 s0  = SanitizeBloomTap(src.Sample(smp, uv + texel * float2(-2.0f, -2.0f)).rgb);
+    float3 s1  = SanitizeBloomTap(src.Sample(smp, uv + texel * float2( 0.0f, -2.0f)).rgb);
+    float3 s2  = SanitizeBloomTap(src.Sample(smp, uv + texel * float2( 2.0f, -2.0f)).rgb);
+    float3 s3  = SanitizeBloomTap(src.Sample(smp, uv + texel * float2(-1.0f, -1.0f)).rgb);
+    float3 s4  = SanitizeBloomTap(src.Sample(smp, uv + texel * float2( 1.0f, -1.0f)).rgb);
+    float3 s5  = SanitizeBloomTap(src.Sample(smp, uv + texel * float2(-1.0f,  1.0f)).rgb);
+    float3 s6  = SanitizeBloomTap(src.Sample(smp, uv + texel * float2( 1.0f,  1.0f)).rgb);
+    float3 s7  = SanitizeBloomTap(src.Sample(smp, uv + texel * float2(-2.0f,  0.0f)).rgb);
+    float3 s8  = SanitizeBloomTap(src.Sample(smp, uv + texel * float2( 2.0f,  0.0f)).rgb);
+    float3 s9  = SanitizeBloomTap(src.Sample(smp, uv + texel * float2(-2.0f,  2.0f)).rgb);
+    float3 s10 = SanitizeBloomTap(src.Sample(smp, uv + texel * float2( 0.0f,  2.0f)).rgb);
+    float3 s11 = SanitizeBloomTap(src.Sample(smp, uv + texel * float2( 2.0f,  2.0f)).rgb);
+    float3 s12 = SanitizeBloomTap(src.Sample(smp, uv).rgb);
 
     float w0 = 1.0f / (1.0f + BloomLuma(s0));
     float w1 = 1.0f / (1.0f + BloomLuma(s1));

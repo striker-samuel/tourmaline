@@ -466,6 +466,15 @@ protected:
 	// vkQueuePresentKHR throttle (vsync-paced under FIFO): idle time,
 	// reported separately so CPU stays busy-only.
 	double m_waitMsSmooth = 0.0;
+	// ---- GPU memory stats (VMA budgets, refreshed at most 1 Hz, UI only) ----
+	std::vector<smvk::GpuMemoryHeap> m_gpuMemHeaps{};
+	double m_gpuMemLastQuerySec = -1e9; // throttle: max 1 Hz
+	double m_gpuMemLastLogSec = -1e9; // console: max ~1 per 10 s (when enabled)
+	double m_gpuMemQueryUs = 0.0; // last query wall time (µs, shown in UI)
+	bool m_gpuMemShowAllHeaps = false; // collapsed by default: VRAM heap only
+	bool m_gpuMemConsoleAutoLog = false; // periodic stderr snapshot; button always works
+	void RefreshGpuMemoryStats(bool force = false); // throttled query
+	void LogGpuMemoryToConsole(); // fprintf(stderr) one snapshot
 
 	void EarlyUpdate() override {
 		Super::EarlyUpdate();

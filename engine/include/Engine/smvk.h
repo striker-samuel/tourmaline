@@ -1075,9 +1075,21 @@ namespace smvk {
 		}
 	};
 
-	typedef uint64_t BufferDeviceAddress;
+ typedef uint64_t BufferDeviceAddress;
 
-	typedef enum PipelineStageBits {
+ // GPU memory heap snapshot (RHI-opaque, no Vk leakage).
+ // Sourced from VMA (vmaGetHeapBudgets, VK_EXT_memory_budget) +
+ // VkPhysicalDeviceMemoryProperties heap sizes.
+ struct GpuMemoryHeap {
+ uint64_t heapSizeBytes = 0; // VkMemoryHeap::size (total heap)
+ uint64_t budgetBytes = 0; // VMA budget (OS-reported usable budget)
+ uint64_t usageBytes = 0; // VMA usage (all Vulkan allocations on heap)
+ uint64_t allocationBytes = 0; // VMA stats: committed VkDeviceMemory
+ uint64_t blockBytes = 0; // VMA stats: block bytes (incl. free inside blocks)
+ bool deviceLocal = false; // heap is DEVICE_LOCAL (likely VRAM)
+ };
+
+ typedef enum PipelineStageBits {
 		PipelineStageBit_None = 0,
 
 		PipelineStageBit_Vertex = 1u << 0,
