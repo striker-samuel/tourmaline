@@ -9,6 +9,7 @@
 #include <Engine/core.h>
 #include <Engine/Renderer/dxc_integration.h>
 #include <imgui.h>
+#include <SDL3/SDL_video.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -246,9 +247,11 @@ private:
 		if (!m_imgui->Init(*m_context, *m_swapchain, window)) {
 			std::cerr << "[02_blur] ImGui init failed – continuing without UI\n";
 			m_imgui.reset();
+		} else {
+			imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
 		}
 		// Image viewer: always interact with the UI.
-		glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+		SetRelativeMouseMode(false);
 
 		return true;
 	}
@@ -285,20 +288,22 @@ private:
 	}
 
 	// Resize the OS window so the framebuffer matches the image 1:1
-	// (clamped to the monitor work area so huge images stay on screen).
+	// (clamped to the display usable area so huge images stay on screen).
 	void SizeWindowToImage(int w, int h) {
 		int maxW = w, maxH = h;
-		if (GLFWmonitor* mon = glfwGetPrimaryMonitor()) {
-			int x = 0, y = 0, mw = 0, mh = 0;
-			glfwGetMonitorWorkarea(mon, &x, &y, &mw, &mh);
-			if (mw > 0 && mh > 0) {
-				maxW = std::min(w, std::max(64, mw - 80));
-				maxH = std::min(h, std::max(64, mh - 120));
+		SDL_DisplayID disp = SDL_GetPrimaryDisplay();
+		if (disp != 0) {
+			SDL_Rect bounds{};
+			if (SDL_GetDisplayUsableBounds(disp, &bounds)) {
+				if (bounds.w > 0 && bounds.h > 0) {
+					maxW = std::min(w, std::max(64, bounds.w - 80));
+					maxH = std::min(h, std::max(64, bounds.h - 120));
+				}
 			}
 		}
 		maxW = std::max(64, maxW);
 		maxH = std::max(64, maxH);
-		glfwSetWindowSize(window, maxW, maxH);
+		SDL_SetWindowSize(window, maxW, maxH);
 		// Keep aspect when clamped: letterbox via composite stretch is
 		// acceptable for this sample; 1:1 when it fits (the common case).
 	}

@@ -116,3 +116,14 @@ set_target_properties(StreamingTests PROPERTIES
 )
 
 add_test(NAME streaming_tests COMMAND StreamingTests)
+
+# SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
+vulkantoy_stage_sdl3(AssetTests)
+vulkantoy_stage_sdl3(SpirvReflectionTests)
+vulkantoy_stage_sdl3(GfxFilterTests)
+vulkantoy_stage_sdl3(ExposureTests)
+vulkantoy_stage_sdl3(LightTests)
+vulkantoy_stage_sdl3(CameraTests)
+vulkantoy_stage_sdl3(SmaaJitterTests)
+vulkantoy_stage_sdl3(GiTests)
+vulkantoy_stage_sdl3(StreamingTests)

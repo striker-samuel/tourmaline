@@ -1,8 +1,10 @@
 #pragma once
-#include <GLFW/glfw3.h>
 #include <Engine/smvk.h>
 #include <Engine/RHI/resource_manager.h>
 #include <memory>
+
+// SDL3 windowing (forward-declared; .cpp includes <SDL3/SDL_video.h>).
+struct SDL_Window;
 
 namespace smvk {
 
@@ -15,7 +17,7 @@ struct Framebuffer {
 
 class Swapchain {
 public:
-    Swapchain(ResourceManager& ctx, ::GLFWwindow* window);
+    Swapchain(ResourceManager& ctx, SDL_Window* window);
     ~Swapchain();
 
     Swapchain(const Swapchain&) = delete;

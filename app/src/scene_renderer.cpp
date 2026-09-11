@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>
@@ -57,6 +57,11 @@ using app::PushConstants;
 
 // Reads a content-relative VFS path ("shaders/...", "models/...") through
 // the app overlay (loose content/ dir + mounted paks). Throws on miss.
+// Bench phase accumulators (RenderFrame sub-timings, --bench only).
+static double s_benchUpdates = 0.0, s_benchPasses = 0.0, s_benchReadbacks = 0.0,
+	s_benchUi = 0.0, s_benchExecute = 0.0, s_benchUpdA = 0.0, s_benchUpdB = 0.0,
+	s_benchStream = 0.0, s_benchFp = 0.0;
+
 static std::vector<char> readContentFile(smvk::OverlayVfs& vfs, const std::string& vfsPath) {
 	std::vector<uint8_t> bytes = vfs.ReadBinary(vfsPath);
 	return std::vector<char>(bytes.begin(), bytes.end());
@@ -99,7 +104,7 @@ static smvk::BloomDesc MakeBloomDesc() {
 // -----------------------------------------------------------------------------
 // Tonemap config (program + pass live in Engine/Rendergraph/tonemap.h)
 // -----------------------------------------------------------------------------
-static constexpr float TONEMAP_EXPOSURE = 0.001f; // sun 5000 lux * 0.001 â‰ˆ HDR 5 pre-ACES
+static constexpr float TONEMAP_EXPOSURE = 0.001f; // sun 5000 lux * 0.001 ≈ HDR 5 pre-ACES
 static constexpr uint32_t TONEMAP_MODE = 1; // 0=Reinhard, 1=ACES, 2=Uncharted2
 
 static smvk::TonemapDesc MakeTonemapDesc() {
@@ -357,7 +362,7 @@ void SceneRenderer::Configure(SceneDesc scene, ScenePassConfig passes) {
 	// stable pointer to m_cameraPositioner, so lookAt is assignment-safe).
 	m_cameraPositioner.lookAt(scene.camPos, scene.camTarget,
 		glm::vec3(0.0f, 1.0f, 0.0f));
-	// Debug: rotate the default view around world up (degrees) — A/B runs
+	// Debug: rotate the default view around world up (degrees) � A/B runs
 	// without mouse input (e.g. sponza spawns facing away from the demo
 	// light grid; VULKANTOY_CAM_YAW=90 turns to face it).
 	glm::vec3 dir = glm::normalize(scene.camTarget - scene.camPos);
@@ -530,7 +535,7 @@ bool SceneRenderer::Initialize() {
 				m_ambientMode = AmbientMode::Off;
 		}
 		// SG-GI ambient override for A/B runs without UI interaction:
-		// VULKANTOY_GI selects the ambient source — 1/on -> baked probes,
+		// VULKANTOY_GI selects the ambient source � 1/on -> baked probes,
 		// 0/off -> analytic sky IBL (falling back out of GI mode). The
 		// runtime N cycle stays live after.
 		if (const char* giEnv = std::getenv("VULKANTOY_GI")) {
@@ -558,8 +563,8 @@ bool SceneRenderer::Initialize() {
 				m_giShowProbes = true;
 		}
 
-		// Default to no-VSync (mailbox); the overlay combo can change it
-		// later (applies via Recreate in DrawFrame).
+		// Tear-free VSync without the strict-FIFO 30fps lock (see PresentMode);
+		// the overlay combo can change it later (applies via Recreate in DrawFrame).
 		m_swapchain->SetPresentMode(m_presentMode);
 		{
 			const auto vkExt = m_swapchain->GetExtent();
@@ -858,6 +863,18 @@ bool SceneRenderer::Initialize() {
 		std::cerr << "[Scene] world resolved: nodes="
 			<< m_world->scene.hierarchy.size() << std::endl;
 
+		// Fit the procedural Forward+ light grid to the loaded scene's
+		// world bounds so the crowd fills Bistro/Sponza instead of
+		// clustering around the origin.
+		{
+			const ::Aabb bounds = m_world->ComputeSceneBounds();
+			if (bounds.mx.x >= bounds.mn.x && bounds.mx.y >= bounds.mn.y && bounds.mx.z >= bounds.mn.z) {
+				m_fpDemo.FitToBounds(bounds.mn, bounds.mx);
+				std::cerr << "[Scene] bounds min=(" << bounds.mn.x << "," << bounds.mn.y << "," << bounds.mn.z
+					<< ") max=(" << bounds.mx.x << "," << bounds.mx.y << "," << bounds.mx.z << ")\n";
+			}
+		}
+
 		// GeometryFX-style per-view filter (clustered): register static
 		// meshes from cooked meshlets (pak path) or retained uploads
 		// (procedural path), then bake the cluster-ordered index heap.
@@ -926,7 +943,7 @@ bool SceneRenderer::Initialize() {
 		// Spot-shadow atlas (fixed kMaxSpotShadows slots; selection caps usage).
 		// Non-fatal: without it all spots simply run unshadowed.
 		if (!m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc())) {
-			std::cerr << "[SceneRenderer] Spot shadow atlas unavailable â€“ spots run unshadowed\n";
+			std::cerr << "[SceneRenderer] Spot shadow atlas unavailable – spots run unshadowed\n";
 		}
 		if (!m_viewportResources.tonemap.Ensure(*m_context, MakeTonemapDesc())) {
 			std::cerr << "[SceneRenderer] Failed to create tonemap program\n";
@@ -936,13 +953,13 @@ bool SceneRenderer::Initialize() {
 		// compute program). Non-fatal: without it the frame falls back to
 		// manual exposure.
 		if (!m_viewportResources.exposure.Ensure(*m_context, *m_rendergraph, MakeExposureDesc())) {
-			std::cerr << "[SceneRenderer] Exposure meter unavailable â€“ manual exposure only\n";
+			std::cerr << "[SceneRenderer] Exposure meter unavailable – manual exposure only\n";
 		}
 		// Skydome program (fullscreen-triangle sky.vert/sky.frag). Failure is
 		// non-fatal: the Main pass simply skips the sky draw and keeps the
 		// clear color.
 		if (!m_skydome.Ensure(*m_context)) {
-			std::cerr << "[SceneRenderer] Skydome program unavailable â€“ running without sky\n";
+			std::cerr << "[SceneRenderer] Skydome program unavailable – running without sky\n";
 		}
 
 		{
@@ -980,7 +997,7 @@ bool SceneRenderer::Initialize() {
 				smvk::MsaaDesc msaaDesc{};
 				msaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 				if (!m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, msaaDesc)) {
-					std::cerr << "[SceneRenderer] MSAA target unavailable â€“ falling back to 1x\n";
+					std::cerr << "[SceneRenderer] MSAA target unavailable – falling back to 1x\n";
 				}
 			}
 			if (!m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc())) {
@@ -990,14 +1007,14 @@ bool SceneRenderer::Initialize() {
 		smvk::UiDesc uiDesc{};
 		uiDesc.format = LdrUnormSibling();
 		if (!m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, uiDesc)) {
-			std::cerr << "[SceneRenderer] UI target unavailable â€“ UI disabled\n";
+			std::cerr << "[SceneRenderer] UI target unavailable – UI disabled\n";
 		}
 			if (!m_viewportResources.uiComposite.Ensure(*m_context)) {
 				std::cerr << "[SceneRenderer] UI composite program unavailable\n";
 			}
 		}
 
-		// ImGui overlay â€“ init after swapchain/rendergraph are ready.
+		// ImGui overlay – init after swapchain/rendergraph are ready.
 		// Uses dynamic rendering; no external RenderPass needed.
 		m_imgui = std::make_unique<smvk::ImGuiOverlay>();
 		smvk::ImGuiOverlayDesc imguiDesc{};
@@ -1005,11 +1022,13 @@ bool SceneRenderer::Initialize() {
 		imguiDesc.fontBaseSize = UI_FONT_BASE_SIZE;
 		imguiDesc.colorFormat = LdrUnormSibling(); // must match the UI target above
 		if (!m_imgui->Init(*m_context, *m_swapchain, window, imguiDesc)) {
-			std::cerr << "[SceneRenderer] Failed to init ImGuiOverlay â€“ continuing without UI\n";
+			std::cerr << "[SceneRenderer] Failed to init ImGuiOverlay – continuing without UI\n";
 			m_imgui.reset();
 		} else {
 			m_uiDpiScale = m_imgui->AppliedDpiScale(); // auto = monitor content scale
 			SetUIMode(false); // start in FPS (DISABLED), I toggles to UI (NORMAL)
+			// Feed every SDL event to the ImGui SDL3 backend (App::PollEvents).
+			imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
 		}
 
 		return true;
@@ -1240,7 +1259,7 @@ void SceneRenderer::Shutdown() {
 		data.farPlane = m_scene.farClip;
 		// Linear exposure multiplier for the tonemapper (ACES).
 		// Sun is 5000 lux (see UpdateLights); 0.001 puts a sun-facing
-		// mid-gray (albedo 0.18, NÂ·L=1) at HDR â‰ˆ 0.29 pre-ACES â†’ no clipping.
+		// mid-gray (albedo 0.18, N·L=1) at HDR ≈ 0.29 pre-ACES → no clipping.
 		// NOTE: FrameUniforms.exposure is currently unread by shaders; the
 		// tonemap push constant is the live knob. Kept in sync with the
 		// effective exposure (auto-adapted or manual) for future readers.
@@ -1261,7 +1280,7 @@ void SceneRenderer::Shutdown() {
 		// Ambient source mutual exclusion (N cycles Gi -> SkyIbl -> Off):
 		// the analytic sky IBL flag is forced off unless the ambient mode
 		// selects it; the GI block below only enables probes in Gi mode.
-		// One ambient source or none — never both.
+		// One ambient source or none � never both.
 		data.env.fogEndAndFlags.w =
 			(m_ambientMode == AmbientMode::SkyIbl) ? 1.0f : 0.0f;
 
@@ -1510,7 +1529,7 @@ void SceneRenderer::Shutdown() {
 	// histogram for frameIndex BEFORE this frame zeroes it. The download
 	// must precede both the zero-fill and the main-submit of this frame:
 	// UpdateAutoExposure used to run after Execute (but Execute only
-	// records into fb.commandBuffer â€” EndAndPresent submits it later), so
+	// records into fb.commandBuffer — EndAndPresent submits it later), so
 	// the download's copy was submitted BEFORE this frame's histogram
 	// compute and could only ever observe the just-zeroed buffer (flat
 	// ImGui plot; a stale nonzero flash only when transfer/GPU timing
@@ -1529,7 +1548,7 @@ void SceneRenderer::Shutdown() {
 			return;
 		// Current flight slice, read BEFORE this frame's zero-fill below.
 		// Acquire already retired this slot, so its bins are the completed
-		// accumulation from two frames ago — no cross-flight torn reads and
+		// accumulation from two frames ago � no cross-flight torn reads and
 		// no wait on the still-in-flight previous frame.
 		if (frameIndex >= ::MAX_FRAMES_IN_FLIGHT)
 			return;
@@ -1617,8 +1636,13 @@ void SceneRenderer::Shutdown() {
 		auto& meter = m_viewportResources.exposure;
 		const bool meterValid = meter.Valid()
 			&& frameSlot < static_cast<uint32_t>(::MAX_FRAMES_IN_FLIGHT);
+		// Histogram readback every 4th frame (aligned with feedbackTick so
+		// both share ONE submit+wait). Adaptation is time-damped, so a 4x
+		// slower refresh is visually identical and removes a per-frame
+		// synchronous GPU round-trip stall from the render thread.
 		const bool exposureTick = kHistogramReadbackEnabled
-			&& ExposureMeteringActive() && meterValid;
+			&& ExposureMeteringActive() && meterValid
+			&& ((m_frameCounter & 3u) == 2u);
 
 		if (feedbackTick && exposureTick) {
 			std::array<uint32_t, smvk::kExposureBinCount> bins{};
@@ -1694,13 +1718,27 @@ void SceneRenderer::Shutdown() {
 				? std::min(gridCount, FP_MAX_LIGHTS - spotReserve)
 				: 0;
 
-			// Orbiting spots to exercise the cone path (written first â€”
-			// see the comment above).
-			for (int s = 0; s < m_fpDemo.spotCount && lights.size() < FP_MAX_LIGHTS; ++s) {
-				smvk::ForwardPlusLight l{};
-				float a = time_since_start_s * 0.4f * m_fpDemo.speed + s * 6.2831853f / std::max(1, m_fpDemo.spotCount);
-				l.position = { std::cos(a) * 6.0f, 7.0f, std::sin(a) * 4.0f };
-				l.direction = glm::normalize(glm::vec3(-l.position.x, -7.0f, -l.position.z) * 0.35f + glm::vec3(0, -1, 0));
+		// Orbiting spots to exercise the cone path (written first —
+		// see the comment above). Centered on the fitted scene bounds
+		// (or the origin in manual mode) so they orbit the visible scene.
+		const glm::vec3 fitCenter = m_fpDemo.fitValid
+			? (m_fpDemo.fitMin + m_fpDemo.fitMax) * 0.5f
+			: glm::vec3(0.0f);
+		const glm::vec3 fitExtent = m_fpDemo.fitValid
+			? (m_fpDemo.fitMax - m_fpDemo.fitMin)
+			: glm::vec3(12.0f, 7.0f, 8.0f);
+		const bool useFit = m_fpDemo.enabled && m_fpDemo.fitToSceneBounds && m_fpDemo.fitValid;
+		const glm::vec3 orbitC = useFit ? fitCenter : glm::vec3(0.0f);
+		const float orbitRX = useFit ? std::max(2.0f, fitExtent.x * 0.25f) : 6.0f;
+		const float orbitRZ = useFit ? std::max(2.0f, fitExtent.z * 0.25f) : 4.0f;
+		const float orbitY = useFit
+			? fitCenter.y + std::max(1.0f, fitExtent.y * 0.35f)
+			: 7.0f;
+		for (int s = 0; s < m_fpDemo.spotCount && lights.size() < FP_MAX_LIGHTS; ++s) {
+			smvk::ForwardPlusLight l{};
+			float a = time_since_start_s * 0.4f * m_fpDemo.speed + s * 6.2831853f / std::max(1, m_fpDemo.spotCount);
+			l.position = { orbitC.x + std::cos(a) * orbitRX, orbitY, orbitC.z + std::sin(a) * orbitRZ };
+				l.direction = glm::normalize((orbitC - glm::vec3(l.position)) * 0.35f + glm::vec3(0, -1, 0));
 				l.range = m_fpDemo.spotRange;
 				l.color = glm::vec4(1.0f, 0.9f, 0.75f, 1.0f);
 				l.intensity = m_fpDemo.spotIntensity;
@@ -1729,10 +1767,20 @@ void SceneRenderer::Shutdown() {
 					(int)smvk::kForwardPlusSpot });
 			}
 
-			// Point grid (positions were scene-node ball transforms before;
-			// same placement/bob math, now pure CPU arithmetic).
-			const float ox = -(gx - 1) * 0.5f * m_fpDemo.spacingX;
-			const float oz = -(gz - 1) * 0.5f * m_fpDemo.spacingZ;
+		// Point grid (positions were scene-node ball transforms before;
+		// same placement/bob math, now pure CPU arithmetic). Fit mode
+		// centers the grid on the scene bounds with spacing derived as
+		// extent / (count - 1); manual mode uses spacingX/Y/Z + baseY.
+		float effSX = m_fpDemo.spacingX, effSY = m_fpDemo.spacingY, effSZ = m_fpDemo.spacingZ;
+		float yBase = m_fpDemo.baseY;
+		if (useFit) {
+			effSX = (gx > 1) ? fitExtent.x / float(gx - 1) : 0.0f;
+			effSY = (gy > 1) ? fitExtent.y / float(gy - 1) : 0.0f;
+			effSZ = (gz > 1) ? fitExtent.z / float(gz - 1) : 0.0f;
+			yBase = m_fpDemo.fitMin.y;
+		}
+		const float ox = (useFit ? fitCenter.x : 0.0f) - (gx - 1) * 0.5f * effSX;
+		const float oz = (useFit ? fitCenter.z : 0.0f) - (gz - 1) * 0.5f * effSZ;
 			for (uint32_t i = 0; i < pointCount && lights.size() < FP_MAX_LIGHTS; ++i) {
 				const uint32_t ix = i % (uint32_t)gx;
 				const uint32_t iy = (i / (uint32_t)gx) % (uint32_t)gy;
@@ -1741,11 +1789,11 @@ void SceneRenderer::Shutdown() {
 				const float bob = m_fpDemo.animate
 					? std::sin(time_since_start_s * m_fpDemo.speed + phase) * 0.5f
 					: 0.0f;
-				const glm::vec3 pos(
-					ox + ix * m_fpDemo.spacingX,
-					m_fpDemo.baseY + iy * m_fpDemo.spacingY + bob,
-					oz + iz * m_fpDemo.spacingZ
-				);
+			const glm::vec3 pos(
+				ox + ix * effSX,
+				yBase + iy * effSY + bob,
+				oz + iz * effSZ
+			);
 				smvk::ForwardPlusLight l{};
 				l.position = pos;
 				l.range = m_fpDemo.range;
@@ -1858,13 +1906,15 @@ void SceneRenderer::Shutdown() {
 
 	// zBins + Tile Light Masks + counter reset (same flight slice the
 	// phases below use). Uploads run even with zero lights so the buffers
-	// are always freshly zeroed â€” the phases then emit empty lists and
+	// are always freshly zeroed — the phases then emit empty lists and
 	// the consumer iterates nothing (no stale-data path exists).
 	if (DsActive()) {
 		smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
 		// Stats readback of the RETIRED slice BEFORE the zero (exposure
 		// pattern: this slot completed ~2 frames ago, no stall).
-		{
+		// Diagnostic counters only: refresh every 8th frame so the
+		// synchronous round-trip doesn't stall every frame.
+		if ((m_frameCounter & 7u) == 0u) {
 			uint32_t counters[smvk::kDsCounterCount] = {};
 			if (m_context->DownloadDataFromBuffer(ds.CounterBuffer(currentFrame),
 				counters, sizeof(counters))) {
@@ -1928,7 +1978,7 @@ void SceneRenderer::Shutdown() {
 
 	// ---------------------------------------------------------------------
 	// Deferred shadows, phases 2-4 (GPU). Appended right where the legacy
-	// forward+ tile cull would run â€” i.e. over the complete depth buffer
+	// forward+ tile cull would run — i.e. over the complete depth buffer
 	// (seed + prepass + remainder). Each phase is its own compute pass so
 	// the rendergraph emits the RAW/WAW buffer barriers between them.
 	// ---------------------------------------------------------------------
@@ -1972,7 +2022,7 @@ void SceneRenderer::Shutdown() {
 		push.spotShadowNear = SPOT_SHADOW_NEAR;
 		push.pcssLightSize = 0.35f; // demo spots: ~35cm emitting sphere
 
-		// Phase 2 â€” Find Lights Approximate (one TileGroup per work unit).
+		// Phase 2 — Find Lights Approximate (one TileGroup per work unit).
 		{
 			auto& pass = ds.AddPhase2Pass(*m_rendergraph, depthView,
 				fpLightsLogical, frameIndex);
@@ -1985,7 +2035,7 @@ void SceneRenderer::Shutdown() {
 				cmd.Dispatch(gx, gy, 1);
 			});
 		}
-		// Phase 3 â€” Find Lights Accurate (one Shadow Tile per work unit).
+		// Phase 3 — Find Lights Accurate (one Shadow Tile per work unit).
 		{
 			auto& pass = ds.AddPhase3Pass(*m_rendergraph, depthView,
 				fpLightsLogical, frameIndex);
@@ -1998,7 +2048,7 @@ void SceneRenderer::Shutdown() {
 				cmd.Dispatch(tx, ty, 1);
 			});
 		}
-		// Phase 4 â€” Generate Deferred Shadows (samples the spot atlas).
+		// Phase 4 — Generate Deferred Shadows (samples the spot atlas).
 		{
 			auto& pass = ds.AddPhase4Pass(*m_rendergraph, depthView,
 				fpLightsLogical, m_resources.spotShadowLogical,
@@ -2199,7 +2249,7 @@ void SceneRenderer::Shutdown() {
 	// LodProjectedPixelError() and the coarsest in-budget LOD wins.
 	// Decisions are cached per node in the World and refreshed on a
 	// staggered-halves cadence (half the nodes per frame; see World::
-	// LodIndexForNode) â€” this is the "make LOD update halfrate" hook.
+	// LodIndexForNode) — this is the "make LOD update halfrate" hook.
 	uint32_t SceneRenderer::LodIndexForNode(NodeId node, uint32_t worldMesh) const {
 		if (!m_lodEnabled || !m_world)
 			return 0;
@@ -2248,7 +2298,7 @@ void SceneRenderer::Shutdown() {
 	void SceneRenderer::RefreshGpuMemoryStats(bool force) {
 		if (!m_context)
 			return;
-		const double now = glfwGetTime();
+		const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 		if (!force && (now - m_gpuMemLastQuerySec) < 1.0)
 			return;
 		m_gpuMemLastQuerySec = now;
@@ -2293,7 +2343,7 @@ void SceneRenderer::Shutdown() {
 		}
 		std::fputs(buf, stderr);
 		fflush(stderr);
-		m_gpuMemLastLogSec = glfwGetTime();
+		m_gpuMemLastLogSec = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 	}
 
 	void SceneRenderer::RebuildSwapViews() {
@@ -2501,7 +2551,7 @@ void SceneRenderer::Shutdown() {
 
 	void SceneRenderer::DrawFrame() {
 		// Frame-arena scratch (URI probing, normalized rewrites) is
-		// dead at frame end by definition â€” recycle the blocks.
+		// dead at frame end by definition — recycle the blocks.
 		smvk::ResetFrameArena();
 		// Presentation-mode change from the overlay combo: recreate with
 		// the new mode (same path as a resize).
@@ -2544,10 +2594,21 @@ void SceneRenderer::Shutdown() {
 		m_gpuTimingValid = m_swapchain->HasGpuTiming();
 		if (m_gpuTimingValid)
 			m_gpuMsSmooth += (m_swapchain->GetGpuFrameMs() - m_gpuMsSmooth) * kEmaAlpha;
+		// Benchmark split report (once, alongside App's [perf] avg line;
+		// benchFrames_ counts up in MainLoop right after this DrawFrame).
+		if (frameBudget_ > 0 && benchFrames_ + 1 >= frameBudget_) {
+			std::printf("[perf] cpu %.3f ms wait %.3f ms gpu %s\n", m_cpuMsSmooth, m_waitMsSmooth,
+				m_gpuTimingValid ? (std::to_string(m_gpuMsSmooth) + " ms").c_str() : "(warming up)");
+			const double n = (double)(benchFrames_ + 1); // this DrawFrame already accumulated
+			std::printf("[perf] phases updates %.3f ms (u/l/m %.3f + stream %.3f + fp %.3f) passes %.3f ms readbacks %.3f ms ui %.3f ms execute %.3f ms\n",
+				s_benchUpdates / n, s_benchUpdA / n, s_benchStream / n, s_benchFp / n, s_benchPasses / n, s_benchReadbacks / n,
+				s_benchUi / n, s_benchExecute / n);
+			std::fflush(stdout);
+		}
 		// Periodic console snapshot of GPU memory (opt-in, every ~10 s).
 		// Same numbers as the ImGui bar; "log to console" button forces
 		// one immediately regardless of this toggle.
-		if (m_gpuMemConsoleAutoLog && glfwGetTime() - m_gpuMemLastLogSec >= 10.0)
+		if (m_gpuMemConsoleAutoLog && std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() - m_gpuMemLastLogSec >= 10.0)
 			LogGpuMemoryToConsole();
 		if (m_captureReadbackPending) {
 			// The frame's submit (RenderFrame records, EndAndPresent
@@ -2652,11 +2713,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		// first record after (re)creation degrades to a warmup record).
 		m_smaaFrameParams = smvk::SmaaBeginFrame(m_smaaT2x, SmaaT2xActive());
 		m_smaaFrameRanT2x = false; // set where the T2x chain is emitted
+		// Bench phase timers (active only with --bench past warmup).
+		using bench_clk = std::chrono::steady_clock;
+		const bool benchPhase = frameBudget_ > 0 && benchWarmup_ >= 10;
+		const auto rfT0 = bench_clk::now();
+		bench_clk::time_point rfT2, rfT3; // assigned in the exposure block below
 		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent, swapExtent);
 		const smvk::GpuDirectionalLightDescription dirLight = UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
+		const auto rfT0b = bench_clk::now();
 		UpdateTextureStreaming(frameData, renderExtent);
+		const auto rfT0c = bench_clk::now();
 		const uint32_t fpLightCount = UpdateForwardPlusLights(fb.frameIndex, frameData);
+		const auto rfT1 = bench_clk::now();
 
 		// ---------------------------------------------------------------------
 		// RenderView allocation (see smvk::RenderViewSet):
@@ -2726,7 +2795,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		//
 		std::vector<smvk::LogicalImageViewHandle> colors;
 		colors.push_back(m_viewportResources.swapImages[fb.imageIndex]);
-		// HDR target for scene â€“ intermediate before tonemap
+		// HDR target for scene – intermediate before tonemap
 		std::vector<smvk::LogicalImageViewHandle> hdrColors;
 		hdrColors.push_back(m_viewportResources.hdr.logicalView);
 
@@ -2800,7 +2869,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 };
 	// (size checked in App/push_constants.h)
 
-	// ---- Cascaded shadow map passes â€“ one per cascade tile (builder owns offsets/extents/load ops) ----
+	// ---- Cascaded shadow map passes – one per cascade tile (builder owns offsets/extents/load ops) ----
 	// Pass-config gate: no shadow sampling without tiles (the main
 	// shader reads cascadeBuffer regardless; tiles just stay cleared).
 	if (m_passes.directionalShadows)
@@ -2919,7 +2988,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			}
 		}
 
-		// ---- Spot shadow passes â€“ one per selected caster tile ----
+		// ---- Spot shadow passes – one per selected caster tile ----
 		// Selection (upper limit + screenspace/distance heuristic) ran in
 		// UpdateForwardPlusLights; m_spotShadowCount tiles are valid. Each
 		// pass renders its tile with the spot perspective VP (shadow.vert
@@ -3098,7 +3167,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			if (cullingFrozen) {
 				// CPU-side only: frustum planes + matrix for FilterMainView.
 				// Allocated after Upload(), so the GPU slab lacks this slot
-				// â€” nothing dereferences it on GPU (filter push carries the
+				// — nothing dereferences it on GPU (filter push carries the
 				// matrix; seed/VS stay on the live main view).
 				frozenViewIdx = m_renderViews.AllocateCustomView(
 					m_frozenViewProj,
@@ -3229,9 +3298,9 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// Motion vectors â€“ per-pixel prevUV - currUV into RG16F (motionvector.h)
+		// Motion vectors – per-pixel prevUV - currUV into RG16F (motionvector.h)
 		// Re-rasterizes opaque geometry depth-tested READ-ONLY against the 1x
-		// prepass depth (reversed-Z GreaterEqual, no writes) â€“ identical in
+		// prepass depth (reversed-Z GreaterEqual, no writes) – identical in
 		// MSAA / non-MSAA modes, Main's transient 2x depth is never touched.
 		// MASK cutouts share the program: the FS alpha-tests only when
 		// shadingModel == Masked (Cull None phase, like the prepass).
@@ -3515,14 +3584,14 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		.maxAnisotropy = 1.0f
 	});
 	// ---------------------------------------------------------------------
-	// SSAO â€“ half-res depth-only AO (see ssao.h). Runs BEFORE Main: every
+	// SSAO – half-res depth-only AO (see ssao.h). Runs BEFORE Main: every
 	// depth-writing pass (Forward+ prepass, gfx remainder, motion vectors)
 	// is done, so the 1x prepass depth is final. Depth is opaque-only
 	// (transparent excluded by design) so glass reveals the AO behind it
 	// instead of occluding like a wall. The raw + blur passes
 	// denoise at half res; the compose pass upscales to full res with
 	// depth authority (ao.hlsli); Main's opaque ambient only .Loads the
-	// composed AO (it must never sample depth â€” Main attaches it).
+	// composed AO (it must never sample depth — Main attaches it).
 	// ---------------------------------------------------------------------
 	smvk::LogicalImageViewHandle aoView{};
 	{
@@ -3584,7 +3653,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			);
 		} else {
 			mainPass.SetColor(
-				hdrColors, // HDR intermediate â€“ tonemapper will resolve to swap
+				hdrColors, // HDR intermediate – tonemapper will resolve to swap
 				smvk::AttachmentLoadOp::Clear,
 				smvk::AttachmentStoreOp::Store,
 				smvk::ClearColor(0, 0, 0, 1)
@@ -3983,7 +4052,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		// opaque only (transparent excluded from the prepass by design),
 		// so transparents test against it read-only in 1x; in MSAA they
 		// write the transient target inline like opaque, so no sorting is
-		// needed â€“ order-independent like opaque.
+		// needed – order-independent like opaque.
 		// Blended: classic back-to-front AlphaBlend, depth test on, no
 		// depth writes, sorted by distance-to-camera.
 		// m_hideTransparent (debug) skips the whole leg to bisect blending
@@ -4174,7 +4243,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 	// compacted index list + indirect commands in the SAME submit Main
 	// reads them from (vertex index fetch, indirect fetch, VS BDA reads
 	// of the draws ring). Without these the graph emits no compute->
-	// vertex barrier and the fetches race the CS â€” geometry appears and
+	// vertex barrier and the fetches race the CS — geometry appears and
 	// vanishes "randomly" whenever workload/timing shifts (MSAA mode,
 	// light toggles). Covers the meshlet debug view too (cluster-ordered
 	// heap bind).
@@ -4184,7 +4253,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 	// device-read here: explicit read hints order cull -> main and emit
 	// the compute->fragment buffer barriers. With deferred shadows ON the
 	// lighting pass instead reads the phase-4 outputs (final light list,
-	// visibility buffer, tile state) â€” same fragment-stage read pattern.
+	// visibility buffer, tile state) — same fragment-stage read pattern.
 	if (dsOn) {
 		const smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
 		smvk::DeferredShadows::AddMainReadHints(mainPass,
@@ -4212,7 +4281,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 	// ---------------------------------------------------------------------
-	// Motion blur â€“ velocity gather in HDR (see motionblur.h). Runs after
+	// Motion blur – velocity gather in HDR (see motionblur.h). Runs after
 	// Main, before Bloom/Tonemap so both consume the blurred HDR.
 	// ---------------------------------------------------------------------
 		// Scene HDR for downstream passes: blurred output when the pass ran,
@@ -4245,7 +4314,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// Exposure histogram â€“ log2-luminance meter of the scene HDR
+		// Exposure histogram – log2-luminance meter of the scene HDR
 		// (see exposure.h). Runs before Bloom/Tonemap so it meters exactly
 		// what they consume. UpdateAutoExposure() downloads + adapts FIRST
 		// (this slot retired at Acquire), then the CPU zeroes the buffer
@@ -4273,13 +4342,15 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 						renderExtent.width, renderExtent.height);
 				}
 			}
-			// Combined GPU->CPU readback tick (histogram + texture-streaming
-			// feedback, one shared submit + wait on feedback frames). Runs
-			// even when the exposure meter itself is gated off so feedback
-			// consume/clear never stalls. Downloads precede the zero-fill
-			// below (same queue, FIFO).
-			UpdateReadbacks(fb.frameIndex,
-				static_cast<uint32_t>(m_frameCounter));
+		// Combined GPU->CPU readback tick (histogram + texture-streaming
+		// feedback, one shared submit + wait on feedback frames). Runs
+		// even when the exposure meter itself is gated off so feedback
+		// consume/clear never stalls. Downloads precede the zero-fill
+		// below (same queue, FIFO).
+		rfT2 = bench_clk::now();
+		UpdateReadbacks(fb.frameIndex,
+			static_cast<uint32_t>(m_frameCounter));
+		rfT3 = bench_clk::now();
 			if (meterGate) {
 				// Reset the slice's bins (transfer write; the compute hint
 				// below transitions the buffer to Compute R/W via barrier).
@@ -4333,7 +4404,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// Bloom â€“ HDR downsample / upsample chain (composable, see bloom.h)
+		// Bloom – HDR downsample / upsample chain (composable, see bloom.h)
 		// ---------------------------------------------------------------------
 		{
 			SMVK_PROFILE_CATEGORY("Bloom", Optick::Category::Rendering);
@@ -4349,7 +4420,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// Tonemapper â€“ HDR (RGBA16F) â†’ LDR swapchain (see tonemap.h).
+		// Tonemapper – HDR (RGBA16F) → LDR swapchain (see tonemap.h).
 		// With SMAA active the pass is retargeted onto the offscreen LDR
 		// target owned by the SMAA builder (the swapchain cannot be
 		// sampled); the SMAA resolve then writes the swapchain.
@@ -4443,15 +4514,15 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// SMAA â€“ LDR post-tonemap antialiasing (see Engine/Rendergraph/smaa.h):
-		// luma edges â†’ blend weights â†’ neighborhood blending, plus the T2x
+		// SMAA – LDR post-tonemap antialiasing (see Engine/Rendergraph/smaa.h):
+		// luma edges → blend weights → neighborhood blending, plus the T2x
 		// temporal resolve over the velocity buffer.
 		// ---------------------------------------------------------------------
 		if (smaaActive) {
 			SMVK_PROFILE_CATEGORY("SMAA", Optick::Category::Rendering);
 			m_smaaFrameRanT2x = smaaT2x;
 		// Official T2x subsample table (@SUBSAMPLE_INDICES in
-		// smaa.hlsli): phase A/B â†’ (1,1,1,0)/(2,2,2,0); SMAA 1x â†’ zeros.
+		// smaa.hlsli): phase A/B → (1,1,1,0)/(2,2,2,0); SMAA 1x → zeros.
 		// Phase/slot/valid come from this record's global snapshot, so
 		// the triple always agrees.
 			float subsample[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -4476,7 +4547,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 
 		// ---------------------------------------------------------------------
-		// ImGui â€“ build UI (before adding the rendergraph pass)
+		// ImGui – build UI (before adding the rendergraph pass)
 		// ---------------------------------------------------------------------
 		if (m_passes.ui && m_imgui && m_imgui->IsInitialized() && m_viewportResources.ui.Valid()) {
 			// Target extent != window size when ui scale != 1: the overlay maps
@@ -4503,7 +4574,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
 			ImGui::SetNextWindowSize(size, ImGuiCond_Always);
 		}
-		ImGui::Begin("VulkanToy — Debug", nullptr,
+		ImGui::Begin("VulkanToy � Debug", nullptr,
 			ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 		{
 			// Dock selector + cycle button (same action as the U shortcut).
@@ -4526,11 +4597,12 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			// here besides the control itself (numbers live in Stats).
 			// ---------------------------------------------------------
 			if (ImGui::BeginTabItem("Quality")) {
-				if (ImGui::CollapsingHeader("Frame — present + resolution", ImGuiTreeNodeFlags_DefaultOpen)) {
-					// VSync / presentation mode. Applies on the next frame via
-					// Recreate (see DrawFrame); the active mode may fall back when
-					// the driver lacks the requested one.
-					const char* modeNames[] = { "VSync (FIFO)", "No VSync (Mailbox)", "No VSync (Immediate)" };
+				if (ImGui::CollapsingHeader("Frame � present + resolution", ImGuiTreeNodeFlags_DefaultOpen)) {
+				// VSync / presentation mode. Applies on the next frame via
+				// Recreate (see DrawFrame); the active mode may fall back when
+				// the driver lacks the requested one. FIFO is strict (missed
+				// 16.6ms -> 30fps lock); Mailbox stays tear-free at 60Hz.
+				const char* modeNames[] = { "VSync FIFO (strict)", "VSync Mailbox (smooth)", "Uncapped Immediate" };
 					int modeIdx = static_cast<int>(m_presentMode);
 					if (ImGui::Combo("Present mode", &modeIdx, modeNames, 3))
 						m_presentMode = static_cast<smvk::PresentMode>(modeIdx);
@@ -4566,7 +4638,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					else
 						ImGui::TextDisabled("Classic back-to-front blend: no depth write, sorted.");
 				}
-				if (ImGui::CollapsingHeader("Exposure — histogram eye adaptation", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::CollapsingHeader("Exposure � histogram eye adaptation", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Auto-exposure (X)", &m_autoExposureEnabled);
 					ImGui::SliderFloat("Manual exposure", &m_manualExposure,
 						0.00005f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
@@ -4580,11 +4652,11 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					if (m_exposureMin > m_exposureMax)
 						std::swap(m_exposureMin, m_exposureMax);
 				}
-				if (ImGui::CollapsingHeader("Environment — Skydome IBL + Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::CollapsingHeader("Environment � Skydome IBL + Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Sky dome (K)", &m_env.skyEnabled);
 					// Ambient source gate: drives the N-cycled AmbientMode (the
 					// analytic sky IBL and the baked GI probes are mutually
-					// exclusive — see the GI tab section).
+					// exclusive � see the GI tab section).
 					{
 						bool iblOn = (m_ambientMode == AmbientMode::SkyIbl);
 						if (ImGui::Checkbox("IBL ambient/spec (N)", &iblOn))
@@ -4618,11 +4690,11 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					ImGui::SliderFloat("Height (m)", &m_env.fogHeight, -10.0f, 30.0f);
 					ImGui::SliderFloat("Height falloff", &m_env.fogHeightFalloff, 0.0f, 2.0f);
 					if (!m_skydome.ShadersValid())
-						ImGui::TextDisabled("Sky program missing – dome skipped");
+						ImGui::TextDisabled("Sky program missing � dome skipped");
 				}
-				if (ImGui::CollapsingHeader("GI — ambient source + intensity", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::CollapsingHeader("GI � ambient source + intensity", ImGuiTreeNodeFlags_DefaultOpen)) {
 					// Ambient mode line (N cycles; probes and sky IBL are mutually
-					// exclusive — see AmbientMode). Debug view + probe overlay
+					// exclusive � see AmbientMode). Debug view + probe overlay
 					// live in the Debug tab.
 					{
 						static const char* const kModeNames[3] =
@@ -4668,9 +4740,22 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					if (ImGui::SliderInt("Grid X", &gx, 1, 12)) m_fpDemo.gridX = gx;
 					if (ImGui::SliderInt("Grid Y", &gy, 1, 8)) m_fpDemo.gridY = gy;
 					if (ImGui::SliderInt("Grid Z", &gz, 1, 12)) m_fpDemo.gridZ = gz;
-					ImGui::SliderFloat("Spacing X", &m_fpDemo.spacingX, 0.5f, 8.0f);
-					ImGui::SliderFloat("Spacing Y", &m_fpDemo.spacingY, 0.5f, 6.0f);
-					ImGui::SliderFloat("Spacing Z", &m_fpDemo.spacingZ, 0.5f, 8.0f);
+				ImGui::SliderFloat("Spacing X", &m_fpDemo.spacingX, 0.5f, 8.0f);
+				ImGui::SliderFloat("Spacing Y", &m_fpDemo.spacingY, 0.5f, 6.0f);
+				ImGui::SliderFloat("Spacing Z", &m_fpDemo.spacingZ, 0.5f, 8.0f);
+				ImGui::Checkbox("Fit grid to scene bounds", &m_fpDemo.fitToSceneBounds);
+				if (m_fpDemo.fitValid) {
+					ImGui::TextDisabled("Bounds min (%.1f, %.1f, %.1f) max (%.1f, %.1f, %.1f)",
+						m_fpDemo.fitMin.x, m_fpDemo.fitMin.y, m_fpDemo.fitMin.z,
+						m_fpDemo.fitMax.x, m_fpDemo.fitMax.y, m_fpDemo.fitMax.z);
+				} else {
+					ImGui::TextDisabled("Bounds: unavailable (manual placement)");
+				}
+				if (ImGui::Button("Refit to scene")) {
+					const ::Aabb bounds = m_world->ComputeSceneBounds();
+					if (bounds.mx.x >= bounds.mn.x && bounds.mx.y >= bounds.mn.y && bounds.mx.z >= bounds.mn.z)
+						m_fpDemo.FitToBounds(bounds.mn, bounds.mx);
+				}
 					ImGui::SliderFloat("Range", &m_fpDemo.range, 1.0f, 30.0f);
 					ImGui::SliderFloat("Intensity (cd)", &m_fpDemo.intensity, 0.0f, 2000.0f);
 					int spots = m_fpDemo.spotCount;
@@ -4702,7 +4787,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					ImGui::SameLine();
 					ImGui::TextDisabled(m_passes.deferredShadows ? "" : "(pass disabled)");
 				}
-				if (ImGui::CollapsingHeader("GfxFilter — culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::CollapsingHeader("GfxFilter � culling", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Enable filtered main view (G)", &m_useGfxFilter);
 					ImGui::Checkbox("Enable filtered motion vectors", &m_useFilteredMotion);
 					// Cull-flag toggles write straight into the renderer config
@@ -4752,7 +4837,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 							m_gfxRenderer.SetMinContribution(mc);
 					}
 				}
-				if (ImGui::CollapsingHeader("LODs — error-driven switches", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::CollapsingHeader("LODs � error-driven switches", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Enable LODs (L)", &m_lodEnabled);
 					ImGui::SliderFloat("Pixel budget (px)", &m_lodPixelBudget, 0.25f, 8.0f, "%.2f");
 				}
@@ -4807,7 +4892,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones);
 					ImGui::Checkbox("Hide transparent (debug, bisect blending)", &m_hideTransparent);
 					if (!m_gfxRenderer.DebugProgramsValid())
-						ImGui::TextDisabled("Debug programs missing – views disabled");
+						ImGui::TextDisabled("Debug programs missing � views disabled");
 					ImGui::TextDisabled("Colors: every registered cluster direct; culled ones stay visible here.\n"
 						"Heat: red = degenerate cone (never culls), green = tight cone.");
 					ImGui::TextDisabled("Bisect: disable flags top-down (small/backface/frustum/degen), then bypass.");
@@ -4928,6 +5013,29 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 						ImGui::Text("Camera fwd: %.3f %.3f %.3f", fwd.x, fwd.y, fwd.z);
 						ImGui::TextDisabled("Camera quat: %.3f %.3f %.3f %.3f", q.x, q.y, q.z, q.w);
 					}
+					// Controller status: name + live stick state, or "none".
+					if (m_input.hasGamepad()) {
+						ImGui::Text("Gamepad: %s", m_input.gamepadName(0).c_str());
+						ImGui::TextDisabled("LX %+.2f LY %+.2f  RX %+.2f RY %+.2f",
+							m_input.gamepadAxis(0, SDL_GAMEPAD_AXIS_LEFTX),
+							m_input.gamepadAxis(0, SDL_GAMEPAD_AXIS_LEFTY),
+							m_input.gamepadAxis(0, SDL_GAMEPAD_AXIS_RIGHTX),
+							m_input.gamepadAxis(0, SDL_GAMEPAD_AXIS_RIGHTY));
+						ImGui::TextDisabled("Left stick move, right stick look, LT/RT down/up, RB sprint, Start UI");
+					} else {
+						ImGui::TextDisabled("Gamepad: none connected");
+					}
+					{
+						float dzMove = m_input.stickDeadzone();
+						float dzLook = m_input.lookDeadzone();
+						float dzTrig = m_input.triggerDeadzone();
+						if (ImGui::SliderFloat("Move deadzone", &dzMove, 0.0f, 0.5f))
+							m_input.setStickDeadzone(dzMove);
+						if (ImGui::SliderFloat("Look deadzone", &dzLook, 0.0f, 0.5f))
+							m_input.setLookDeadzone(dzLook);
+						if (ImGui::SliderFloat("Trigger deadzone", &dzTrig, 0.0f, 0.5f))
+							m_input.setTriggerDeadzone(dzTrig);
+					}
 					ImGui::Text("Swapchain %ux%u  framesInFlight=%u",
 						fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height, fb.swapchain->framesInFlight());
 					ImGui::Text("Scene: %ux%u (%.0f%%) -> swap %ux%u",
@@ -5036,7 +5144,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 						ImGui::TextDisabled("Streaming: off (full-resident)");
 					}
 				}
-				if (ImGui::CollapsingHeader("Shadows — CSM + spots + deferred", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::CollapsingHeader("Shadows � CSM + spots + deferred", ImGuiTreeNodeFlags_DefaultOpen)) {
 					auto splits = smvk::ComputeCascadeSplits(default_near_clip, m_scene.farClip, CASCADE_LAMBDA, NUM_CASCADES);
 					const auto& atlas = m_viewportResources.directionalShadows;
 					ImGui::Text("CSM: %u cascades  tile %ux%u  atlas %ux%u",
@@ -5106,7 +5214,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					ImGui::PlotHistogram("##expHist", m_exposureBinsUi,
 						(int)smvk::kExposureBinCount, 0, nullptr, 0.0f, histPeak, ImVec2(0, 48));
 					if (!m_viewportResources.exposure.Valid())
-						ImGui::TextDisabled("Meter missing – manual exposure only");
+						ImGui::TextDisabled("Meter missing � manual exposure only");
 					else
 						ImGui::TextDisabled("Bloom threshold scales with exposure (ref %.4f); percentile %.0f%%, key %.2f",
 							TONEMAP_EXPOSURE, m_viewportResources.exposure.desc.percentile * 100.0f,
@@ -5151,12 +5259,12 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 						ImGui::TextDisabled("AA: off");
 					}
 					if (!m_viewportResources.motionBlur.Valid())
-						ImGui::TextDisabled("Motion blur target/shaders missing – sharp HDR");
+						ImGui::TextDisabled("Motion blur target/shaders missing � sharp HDR");
 					else
 						ImGui::TextDisabled("Motion blur: gather along motion vectors, pre-tonemap HDR");
 					const auto& ssao = m_viewportResources.ssao;
 					if (!ssao.Valid())
-						ImGui::TextDisabled("SSAO target/shaders missing – no AO");
+						ImGui::TextDisabled("SSAO target/shaders missing � no AO");
 					else
 						ImGui::Text("SSAO: half %ux%u (full %ux%u)",
 							ssao.halfExtent.width, ssao.halfExtent.height,
@@ -5188,7 +5296,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					// never moves for GPU occlusion kills (those stay batches
 					// with indexCount 0), so surface the HZB inputs here. Any
 					// "OFF/empty/INVALID" below means the filter's occlusion
-					// test is silently disabled — use Dump HZB + Dump indirect
+					// test is silently disabled � use Dump HZB + Dump indirect
 					// audit (stderr, Debug tab) to confirm what the GPU saw.
 					{
 						const bool occOn = (m_gfxRenderer.config.cullFlags
@@ -5222,12 +5330,16 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					ImGui::TextDisabled("Transition = projected simplifier error (world err * H / "
 						"(2*tan(fov/2)*dist) <= budget). LOD0 stays in the GPU filter; LOD1+ draws direct.");
 					if (!m_lodEnabled)
-						ImGui::TextDisabled("LODs OFF – always LOD0.");
+						ImGui::TextDisabled("LODs OFF � always LOD0.");
 					else if (m_lodChainMeshes == 0)
-						ImGui::TextDisabled("No cooked LOD chain in this scene – cook with --lods on.");
+						ImGui::TextDisabled("No cooked LOD chain in this scene � cook with --lods on.");
 				}
 				ImGui::Separator();
 				ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
+				if (m_input.hasGamepad())
+					ImGui::TextDisabled("[Gamepad] %s connected (Start = UI)", m_input.gamepadName(0).c_str());
+				else
+					ImGui::TextDisabled("[Gamepad] none connected");
 				ImGui::TextDisabled("Keys: M blur  O SSAO  B bloom  X exposure  V vectors");
 				ImGui::TextDisabled("      L LODs  F lights  G filter  C cookies  K sky");
 				ImGui::TextDisabled("      N ambient GI/sky/off  F8 GI irradiance view");
@@ -5416,7 +5528,21 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			//     .SetRecordingFunc([this](smvk::CommandBuffer& cmd){ m_imgui->Render(cmd); });
 		}
 
+		const auto rfT4 = bench_clk::now();
 		m_rendergraph->Execute(fb);
+		const auto rfT5 = bench_clk::now();
+		if (benchPhase) {
+			using msd = std::chrono::duration<double, std::milli>;
+			s_benchUpdA += msd(rfT0b - rfT0).count();
+			s_benchUpdB += msd(rfT1 - rfT0b).count();
+			s_benchStream += msd(rfT0c - rfT0b).count();
+			s_benchFp += msd(rfT1 - rfT0c).count();
+			s_benchUpdates += msd(rfT1 - rfT0).count();
+			s_benchPasses += msd(rfT2 - rfT1).count();
+			s_benchReadbacks += msd(rfT3 - rfT2).count();
+			s_benchUi += msd(rfT4 - rfT3).count();
+			s_benchExecute += msd(rfT5 - rfT4).count();
+		}
 		if (m_captureQueued) {
 			// The capture target was written by the frame's commands, but the
 			// submit happens in EndAndPresentFramebuffer (after RenderFrame
@@ -5426,7 +5552,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		}
 		m_context->ProcessDeferrredTasks();
 		// Eye adaptation already ran at record time (before this frame's
-		// zero-fill); nothing to download here â€” the histogram compute was
+		// zero-fill); nothing to download here — the histogram compute was
 		// just recorded into fb.commandBuffer and submits in EndAndPresent.
 
 		// One-shot indirect audit (debug): downloads this frame's filter
@@ -5498,6 +5624,29 @@ void SceneRenderer::UpdateCamera(float dt)
 		m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
 		m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
 
+	// Gamepad camera: left stick moves (camera-relative), right stick
+	// looks, triggers rise/sink, right shoulder sprints. Mouse/keyboard
+	// above keep working — inputs sum. Sticks use radial deadzones with
+	// rescaling (see Input deadzone sliders in Stats).
+	if (m_input.hasGamepad()) {
+		float lx = 0.0f, ly = 0.0f, rx = 0.0f, ry = 0.0f;
+		m_input.gamepadStick(0, true, lx, ly);
+		m_input.gamepadStick(0, false, rx, ry);
+		movement.stickMove_.x = lx;
+		movement.stickMove_.y = -ly;
+		movement.stickLook_.x = rx;
+		movement.stickLook_.y = -ry;
+		movement.vertical_ =
+			m_input.gamepadTrigger(0, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) -
+			m_input.gamepadTrigger(0, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+		movement.fastSpeed_ = movement.fastSpeed_ ||
+			m_input.gamepadButtonHeld(0, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+	} else {
+		movement.stickMove_ = glm::vec2(0.0f);
+		movement.stickLook_ = glm::vec2(0.0f);
+		movement.vertical_ = 0.0f;
+	}
+
 	// If ImGui wants mouse, don't apply FPS mouselook unless right-button held?
 	// We keep mouse handling outside the keyboard capture branch so cursor
 	// reset still works; the positioner internally ignores updates when not pressed.
@@ -5533,7 +5682,9 @@ void SceneRenderer::UpdateCamera(float dt)
 void SceneRenderer::SetUIMode(bool ui)
 {
 	m_uiMode = ui;
-	glfwSetInputMode(window, GLFW_CURSOR, ui ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+	// SDL3: relative mode captures the mouse for FPS; normal mode frees it
+	// for ImGui interaction (replaces glfwSetInputMode CURSOR_DISABLED/NORMAL).
+	SetRelativeMouseMode(!ui);
 	if (ui) {
 		// Center cursor for UI interaction; let ImGui take over.
 		// Don't reset camera mouse pos on mode switch to avoid jump when returning to FPS.

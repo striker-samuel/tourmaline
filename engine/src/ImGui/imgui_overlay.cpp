@@ -8,8 +8,10 @@
 #include "../Vulkan/detail/vulkan_impl.h"
 
 #include <imgui.h>
-#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_sdl3.h>
 #include <backends/imgui_impl_vulkan.h>
+
+#include <SDL3/SDL_video.h>
 
 #include <cstdio>
 
@@ -45,7 +47,7 @@ ImGuiOverlay& ImGuiOverlay::operator=(ImGuiOverlay&& o) noexcept {
     return *this;
 }
 
-bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, GLFWwindow* window,
+bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, SDL_Window* window,
     const ImGuiOverlayDesc& desc) {
     if (initialized_) return true;
     ctx_ = &ctx;
@@ -68,11 +70,11 @@ bool ImGuiOverlay::Init(ResourceManager& ctx, Swapchain& swapchain, GLFWwindow* 
     // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
-    // ---- Init GLFW backend ----
-    // Use install_callbacks = true so ImGui chains to App's already-installed callbacks.
-    // App::Initialize sets its callbacks BEFORE this Init, so chaining works.
-    if (!ImGui_ImplGlfw_InitForVulkan(window, true)) {
-        fprintf(stderr, "[ImGuiOverlay] ImGui_ImplGlfw_InitForVulkan failed\n");
+    // ---- Init SDL3 backend ----
+    // App::PollEvents forwards every SDL event to ImGui via ProcessEvent
+    // (see imguiEventHook_), so no install-callbacks step is needed.
+    if (!ImGui_ImplSDL3_InitForVulkan(window)) {
+        fprintf(stderr, "[ImGuiOverlay] ImGui_ImplSDL3_InitForVulkan failed\n");
         return false;
     }
 
@@ -187,7 +189,7 @@ void ImGuiOverlay::Shutdown() {
 
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
     ImGui_ImplVulkan_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
 
     if (descriptorPoolOpaque_) {
@@ -207,7 +209,7 @@ void ImGuiOverlay::NewFrame(Extent2D targetExtent) {
     if (!initialized_) return;
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(imguiCtx_));
     ImGui_ImplVulkan_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
     // Map ImGui screen-space draw data onto the actual render target size
     // (separated UI pass target != window size when ui scale != 1 or on
     // HiDPI). 1.92 also uses this as the font rasterizer density.
@@ -290,9 +292,17 @@ bool ImGuiOverlay::WantsCaptureAny() const {
 
 float ImGuiOverlay::GetWindowDpiScale() const {
     if (!window_) return 1.0f;
-    float xScale = 1.0f, yScale = 1.0f;
-    glfwGetWindowContentScale(window_, &xScale, &yScale);
-    return xScale > 0.0f ? xScale : 1.0f;
+    float scale = SDL_GetWindowDisplayScale(window_);
+    if (scale == 0.0f) {
+        fprintf(stderr, "[ImGuiOverlay] SDL_GetWindowDisplayScale failed: %s\n",
+            SDL_GetError());
+        return 1.0f;
+    }
+    return scale;
+}
+
+bool ImGuiOverlay::ProcessEvent(const void* sdlEvent) {
+    return ImGui_ImplSDL3_ProcessEvent(static_cast<const SDL_Event*>(sdlEvent));
 }
 
 void ImGuiOverlay::ApplyDpiScale(float scale) {

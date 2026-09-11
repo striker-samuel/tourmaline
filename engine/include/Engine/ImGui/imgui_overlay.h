@@ -2,7 +2,9 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/RHI/swapchain.h>
 #include <Engine/Rendergraph/rendergraph.h>
-#include <GLFW/glfw3.h>
+
+// SDL3 windowing (forward-declared; .cpp includes <SDL3/SDL_video.h>).
+struct SDL_Window;
 
 namespace smvk {
 
@@ -14,7 +16,7 @@ struct ImGuiOverlayDesc {
     // Base pixel size the font is loaded at; ImGui 1.92 dynamic fonts
     // rasterize glyphs on demand at base * DPI scale, so this stays unscaled.
     float fontBaseSize = 16.0f;
-    // <= 0.0f -> auto (GLFW window content scale).
+    // <= 0.0f -> auto (SDL window display scale).
     float dpiScale = 0.0f;
     // Color attachment format ImGui renders into (drives the backend
     // pipeline's rendering format). Undefined = the swapchain surface
@@ -35,16 +37,16 @@ public:
     ImGuiOverlay& operator=(ImGuiOverlay&&) noexcept;
 
     // Must be called after ResourceManager + Swapchain are created and window exists.
-    // Creates ImGui context, GLFW + Vulkan backends (dynamic rendering, no manual RenderPass),
+    // Creates ImGui context, SDL3 + Vulkan backends (dynamic rendering, no manual RenderPass),
     // loads the desc font and applies the desc DPI scale.
-    bool Init(ResourceManager& ctx, Swapchain& swapchain, GLFWwindow* window,
+    bool Init(ResourceManager& ctx, Swapchain& swapchain, SDL_Window* window,
               const ImGuiOverlayDesc& desc = {});
     void Shutdown();
 
     bool IsInitialized() const { return initialized_; }
 
     // Call at start of each frame BEFORE building ImGui UI.
-    // Handles ImGui_ImplVulkan_NewFrame / ImGui_ImplGlfw_NewFrame / ImGui::NewFrame.
+    // Handles ImGui_ImplVulkan_NewFrame / ImGui_ImplSDL3_NewFrame / ImGui::NewFrame.
     // targetExtent: pixel size of the color target ImGui will be rendered into
     // (the separated UI pass target, or the swapchain). When non-zero, sets
     // io.DisplayFramebufferScale = targetExtent / DisplaySize so draw data and
@@ -72,6 +74,11 @@ public:
     bool WantsCaptureKeyboard() const;
     bool WantsCaptureAny() const;
 
+    // Forwards one SDL event to the ImGui SDL3 backend. Wire it to
+    // App::imguiEventHook_ after Init so App::PollEvents feeds ImGui:
+    //   imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
+    static bool ProcessEvent(const void* sdlEvent);
+
     // ---- DPI control ----
     // Monitor content scale of the window (1.0 on standard displays).
     float GetWindowDpiScale() const;
@@ -85,7 +92,7 @@ public:
 
 private:
     bool initialized_ = false;
-    GLFWwindow* window_ = nullptr;
+    SDL_Window* window_ = nullptr;
     void* imguiCtx_ = nullptr;
     void* descriptorPoolOpaque_ = nullptr; // VkDescriptorPool
     ResourceManager* ctx_ = nullptr;

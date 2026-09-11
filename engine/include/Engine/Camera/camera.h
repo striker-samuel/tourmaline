@@ -78,10 +78,20 @@ public:
 
 		bool fastSpeed_ = false;
 
+		// Analog gamepad input (-1..1, applied alongside the digital keys):
+		// stickMove.x = strafe right+, .y = forward+ (left stick),
+		// stickLook.x = yaw right+, .y = pitch up+ (right stick),
+		// vertical = up+ / down- (triggers).
+		glm::vec2 stickMove_{ 0.0f };
+		glm::vec2 stickLook_{ 0.0f };
+		float vertical_ = 0.0f;
 	} movement_;
 
 	//rotationSpeed is in radians per second per NDC mouse unit
 	float rotationSpeed_ = 50.0f;
+
+	// Right-stick look rate (rad/s at full deflection).
+	float stickLookSpeed_ = 2.8f;
 
 	float damping_ = 0.5f; // seconds, time constant for velocity decay when no input
 	float acceleration_ = 2.4f; // meters/sec�, how fast speed builds while moving

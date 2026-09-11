@@ -32,6 +32,8 @@ void PrintUsage(const char* prog) {
 	const char* withCsv = nullptr;
 	const char* withoutCsv = nullptr;
 	bool noPak = false;
+	int benchFrames = 0;
+	const char* presentMode = nullptr;
 	for (int i = 1; i < argc; ++i) {
 		const char* a = argv[i];
 		if ((std::strcmp(a, "--scene") == 0 || std::strcmp(a, "-s") == 0) && i + 1 < argc) {
@@ -60,6 +62,18 @@ void PrintUsage(const char* prog) {
 		}
 		else if (std::strcmp(a, "--no-pak") == 0 || std::strcmp(a, "--gltf") == 0) {
 			noPak = true;
+		}
+		else if ((std::strcmp(a, "--bench") == 0) && i + 1 < argc) {
+			benchFrames = std::atoi(argv[++i]);
+		}
+		else if (std::strncmp(a, "--bench=", 8) == 0) {
+			benchFrames = std::atoi(a + 8);
+		}
+		else if ((std::strcmp(a, "--present") == 0) && i + 1 < argc) {
+			presentMode = argv[++i];
+		}
+		else if (std::strncmp(a, "--present=", 10) == 0) {
+			presentMode = a + 10;
 		}
 		else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
 			PrintUsage(argv[0]);
@@ -118,6 +132,20 @@ void PrintUsage(const char* prog) {
 	applyCsv(withoutCsv, false);
 	renderer.Configure(*scene, passCfg);
 	renderer.SetForceGltf(noPak);
+	if (presentMode) {
+		if (std::strcmp(presentMode, "fifo") == 0)
+			renderer.SetPresentMode(smvk::PresentMode::Fifo);
+		else if (std::strcmp(presentMode, "mailbox") == 0)
+			renderer.SetPresentMode(smvk::PresentMode::Mailbox);
+		else if (std::strcmp(presentMode, "immediate") == 0)
+			renderer.SetPresentMode(smvk::PresentMode::Immediate);
+		else {
+			std::cerr << "Unknown present mode: '" << presentMode << "' (fifo|mailbox|immediate)\n";
+			return EXIT_FAILURE;
+		}
+	}
+	if (benchFrames > 0)
+		renderer.SetFrameBudget(benchFrames);
 	try {
 		renderer.Run();
 	}

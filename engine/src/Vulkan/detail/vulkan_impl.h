@@ -1,6 +1,5 @@
 #pragma once
 
-#include <GLFW/glfw3.h>
 #include <Engine/smvk.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/Renderer/spirv_reflection.h>
@@ -47,6 +46,8 @@ inline const char* vkResultToString(VkResult result);
         }                                                               \
     } while (0)
 
+
+struct SDL_Window;
 
 namespace smvk {
 
@@ -269,7 +270,7 @@ namespace smvk {
 		bool Init();
 	};
 
-	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, ::GLFWwindow* window);
+	std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, SDL_Window* window);
 	//std::unique_ptr<smvk::VulkanCore> CreateVulkanCoreHeadless(smvk::VulkanCore::CoreConfiguration config);
 
 	struct CommandBufferPool;
@@ -501,7 +502,7 @@ namespace smvk {
 	//struct IResourceManager {};
 	struct VulkanResourceManager final /*: public IResourceManager*/ {
 
-		VulkanResourceManager(VulkanCore::CoreConfiguration configuration = VulkanCore::CoreConfiguration(), ::GLFWwindow* window=nullptr);
+		VulkanResourceManager(VulkanCore::CoreConfiguration configuration = VulkanCore::CoreConfiguration(), SDL_Window* window=nullptr);
 		~VulkanResourceManager();
 		VulkanResourceManager(const VulkanResourceManager&) = delete;
 		VulkanResourceManager& operator=(const VulkanResourceManager&) = delete;
@@ -734,7 +735,7 @@ namespace smvk {
 
 		VulkanSwapchain(
 			VulkanResourceManager& context
-			, ::GLFWwindow* window
+			, SDL_Window* window
 		);
 		VulkanSwapchain(const VulkanSwapchain&) = delete;
 		VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
@@ -790,7 +791,7 @@ namespace smvk {
 
 		//private:
 		VulkanResourceManager& ctx_;
-		::GLFWwindow* window_ = nullptr;
+		SDL_Window* window_ = nullptr;
 		VkSwapchainKHR vk_swapchain_ = VK_NULL_HANDLE;
 
 		Format surfaceFormat{};
@@ -827,6 +828,9 @@ namespace smvk {
 		uint32_t currentFrame_ = 0;
 
 		// Presentation mode: requested (next Create/Recreate) vs active.
+		// Mailbox default: tear-free like FIFO but never halves to 30fps
+		// when a frame misses the 16.6ms budget (FIFO is spec-guaranteed
+		// and stays the fallback).
 		VkPresentModeKHR requestedPresentMode_ = VK_PRESENT_MODE_MAILBOX_KHR;
 		VkPresentModeKHR activePresentMode_ = VK_PRESENT_MODE_FIFO_KHR;
 

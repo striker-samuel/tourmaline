@@ -45,6 +45,7 @@ endif()
 target_link_libraries(engine
     PUBLIC
         glfw
+        SDL3::SDL3
         glm
         imgui_core
         meshoptimizer
@@ -54,6 +55,7 @@ target_link_libraries(engine
         volk
         KTX::ktx
         imgui_backend_glfw
+        imgui_backend_sdl3
         imgui_backend_vulkan
         lz4
 )
@@ -85,5 +87,12 @@ add_custom_command(TARGET engine POST_BUILD
 add_custom_command(TARGET engine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:OptickCore>"
+        "$<TARGET_FILE_DIR:engine>"
+)
+
+# SDL3 is SHARED (vendored prebuilt) -> its DLL must sit next to the exe.
+add_custom_command(TARGET engine POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:SDL3::SDL3>"
         "$<TARGET_FILE_DIR:engine>"
 )

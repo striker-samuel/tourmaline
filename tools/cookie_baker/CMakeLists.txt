@@ -25,3 +25,5 @@ add_custom_command(TARGET CookieBaker POST_BUILD
         "$<TARGET_FILE:OptickCore>"
         "$<TARGET_FILE_DIR:CookieBaker>"
 )
+
+vulkantoy_stage_sdl3(CookieBaker)

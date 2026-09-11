@@ -18,8 +18,25 @@ add_subdirectory(external/meshoptimizer)
 # LZ4 (vendored block codec for cooked pak blobs)
 add_subdirectory(external/lz4)
 
-# GLFW
+# GLFW (legacy windowing; retained for samples compat — engine uses SDL3)
 add_subdirectory(external/glfw)
+
+# SDL3 (vendored prebuilt dev package: include/ + lib/<arch>/ + cmake/)
+# Provides windowing, input (keyboard/mouse/gamepad) and audio.
+list(PREPEND CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/external/SDL3-3.4.16")
+set(SDL3_DIR "${CMAKE_SOURCE_DIR}/external/SDL3-3.4.16/cmake" CACHE PATH "SDL3 config dir" FORCE)
+find_package(SDL3 CONFIG REQUIRED)
+
+# Stage SDL3.dll next to an executable (engine links SDL3 PUBLIC, so every
+# consumer exe carries the import; Windows loads the DLL from the exe dir).
+function(vulkantoy_stage_sdl3 TARGET)
+    add_custom_command(TARGET ${TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:SDL3::SDL3>"
+            "$<TARGET_FILE_DIR:${TARGET}>"
+        COMMENT "Staging SDL3.dll next to ${TARGET}"
+    )
+endfunction()
 
 # GLM (header-only)
 add_subdirectory(external/glm)

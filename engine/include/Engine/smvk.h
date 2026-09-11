@@ -61,8 +61,10 @@ namespace smvk {
 	};
 
 	// Swapchain presentation mode (VSync control).
-	//   Fifo      = VSync on (waits for vertical blank, no tearing).
-	//   Mailbox   = no VSync, no tearing (latest ready image, may drop frames).
+	//   Fifo      = strict VSync (waits for vertical blank, no tearing, but
+	//               any frame over budget locks to half refresh: 30fps on 60Hz).
+	//   Mailbox   = tear-free VSync without the halving (latest ready image
+	//               each blank; may drop frames under load, never tears).
 	//   Immediate = no VSync, tearing allowed (lowest latency).
 	enum class PresentMode : uint8_t
 	{
@@ -73,14 +75,14 @@ namespace smvk {
 
 	inline const char* ToString(PresentMode mode) {
 		switch (mode) {
-		case PresentMode::Fifo: return "VSync (FIFO)";
-		case PresentMode::Mailbox: return "No VSync (Mailbox)";
-		case PresentMode::Immediate: return "No VSync (Immediate)";
+		case PresentMode::Fifo: return "VSync FIFO (strict)";
+		case PresentMode::Mailbox: return "VSync Mailbox (smooth)";
+		case PresentMode::Immediate: return "Uncapped Immediate";
 		default: return "Unknown";
 		}
 	}
 
-	inline bool IsVSync(PresentMode mode) { return mode == PresentMode::Fifo; }
+	inline bool IsVSync(PresentMode mode) { return mode != PresentMode::Immediate; }
 
 	// ============================================================================
 	// Formats

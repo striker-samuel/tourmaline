@@ -42,6 +42,17 @@ CameraPositioner_FirstPerson::CameraPositioner_FirstPerson(const glm::vec3& pos,
 
 void CameraPositioner_FirstPerson::update(double deltaSeconds, const glm::vec2& mousePos, bool mousePressed)
 {
+	// Right-stick look: same euler mapping as the mouse path
+	// (x = yaw right+, y = pitch), scaled by stick rate * dt.
+	const glm::vec2 stick = movement_.stickLook_;
+	if (stick != glm::vec2(0.0f))
+	{
+		const glm::vec2 euler = stick * stickLookSpeed_ * static_cast<float>(deltaSeconds);
+		const glm::quat deltaQuat = glm::quat(glm::vec3(-euler.y, euler.x, 0.0f));
+		cameraOrientation_ = deltaQuat * cameraOrientation_;
+		cameraOrientation_ = glm::normalize(cameraOrientation_);
+		setUpVector(up_);
+	}
 	if (mousePressed)
 	{
 		const glm::vec2 delta = mousePos - mousePos_;
@@ -73,6 +84,12 @@ void CameraPositioner_FirstPerson::update(double deltaSeconds, const glm::vec2& 
 
 	if (movement_.up_) accel += up;
 	if (movement_.down_) accel -= up;
+
+	// Analog gamepad move (left stick camera-relative + trigger vertical),
+	// full deflection ~= one digital key press.
+	accel += right * movement_.stickMove_.x;
+	accel += forward * movement_.stickMove_.y;
+	accel += up * movement_.vertical_;
 
 	if (movement_.fastSpeed_) accel *= fastCoef_;
 

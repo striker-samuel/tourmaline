@@ -252,6 +252,11 @@ namespace smvk {
 		void InvalidateStaticBvh();
 		// Lazily rebuilds when invalid; returns the cached static tree.
 		const ::BvhTree& EnsureStaticBvh() const;
+		// World-space AABB over every mesh instance (union of the
+		// per-instance mesh AABBs under their global transforms). Used to
+		// fit procedural content (e.g. the Forward+ demo light grid) to the
+		// loaded scene. Empty (infinities) when the world holds no geometry.
+		::Aabb ComputeSceneBounds() const;
 		[[nodiscard]] bool HasStaticBvh() const {
 			return staticBvhValid_ && !staticBvh_.nodes.empty()
 				&& !staticBvh_.primIndices.empty();

@@ -1,14 +1,20 @@
 #pragma once
 //
-#include <GLFW/glfw3.h>
+// SDL3 application host: window, event pump (feeds Input), audio engine,
+// graphics members (context/swapchain/rendergraph/world).
+//
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/RHI/swapchain.h>
+#include <Engine/Audio/audio.h>
 
 #include "input.h"
 #include <algorithm>
 #include <cassert>
 #include <future>
 #include <memory>
+
+// SDL3 windowing (forward-declared; .cpp includes <SDL3/SDL_video.h>).
+struct SDL_Window;
 
 namespace smvk
 {
@@ -18,6 +24,7 @@ namespace smvk
 	class App {
 	public:
 		Input m_input{};
+		audio::AudioEngine m_audio{};
 		App() = default;
 		virtual ~App();
 		virtual bool Initialize() = 0;
@@ -29,6 +36,17 @@ namespace smvk
 		bool Run();
 		void MainLoop();
 		void UpdateDeltaTime();
+
+		// Window helpers (SDL3).
+		SDL_Window* GetWindow() const { return window; }
+		bool ShouldClose() const { return windowShouldClose_; }
+		void RequestClose() { windowShouldClose_ = true; }
+		void SetRelativeMouseMode(bool enabled);
+		bool GetRelativeMouseMode() const { return relativeMouseMode_; }
+		// Benchmark: auto-quit after N frames and report average frame time
+		// (`--bench N` in App/main.cpp). 0 = run interactively (default).
+		void SetFrameBudget(int n) { frameBudget_ = n; }
+
 	protected:
 #pragma region ===[ App / Core State ]===
 		float delta_time_s = .0f;
@@ -44,8 +62,21 @@ namespace smvk
 		void WaitForDeviceIdle();
 #pragma endregion
 
-#pragma region ===[ GLFW / Window State ]===
-		GLFWwindow * window = nullptr;
+#pragma region ===[ SDL3 / Window State ]===
+		SDL_Window* window = nullptr;
+		bool windowShouldClose_ = false;
+		bool relativeMouseMode_ = false;
+		int frameBudget_ = 0;   // benchmark frame budget (0 = interactive)
+		int benchFrames_ = 0;   // measured frames (post warmup)
+		int benchWarmup_ = 0;   // warmup frames skipped from stats
+		double benchAccum_ = 0.0;
+		// Drains the SDL queue into m_input; returns false when quit requested.
+		// Also forwards events to the ImGui SDL3 backend when hooked.
+		bool PollEvents();
+		// Optional ImGui event hook (set by scenes owning an ImGuiOverlay).
+		// Signature matches ImGui_ImplSDL3_ProcessEvent(const SDL_Event*).
+		using ImGuiEventFn = bool(*)(const void* sdlEvent);
+		ImGuiEventFn imguiEventHook_ = nullptr;
 #pragma endregion
 
 #pragma region Events
@@ -53,39 +84,6 @@ namespace smvk
 		virtual void Update() {}
 		virtual void LateUpdate() {}
 		virtual void OnFramebufferResized(int width, int height);
-#pragma endregion
-
-#pragma region ===[ GlfwCallbacks ]===
-
-		static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
-
-		static void keyCallback(
-			GLFWwindow* window,
-			int key,
-			int scancode,
-			int action,
-			int mods
-		);
-
-		static void mouseButtonCallback(
-			GLFWwindow* window,
-			int button,
-			int action,
-			int mods
-		);
-
-		static void cursorPositionCallback(
-			GLFWwindow* window,
-			double xpos,
-			double ypos
-		);
-
-		static void scrollCallback(
-			GLFWwindow* window,
-			double xoffset,
-			double yoffset
-		);
-
 #pragma endregion
 	};
 

@@ -19,3 +19,5 @@ add_custom_command(TARGET PakCooker POST_BUILD
         "$<TARGET_FILE:OptickCore>"
         "$<TARGET_FILE_DIR:PakCooker>"
 )
+
+vulkantoy_stage_sdl3(PakCooker)

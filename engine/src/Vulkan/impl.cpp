@@ -20,7 +20,9 @@
 #define VOLK_IMPLEMENTATION
 
 #include "volk.h"
-#include <GLFW/glfw3.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_video.h>
+#include <SDL3/SDL_vulkan.h>
 
 #include "../Vulkan/detail/vulkan_impl.h"
 #include <Engine/Vulkan/vulkanApp.h>
@@ -501,15 +503,15 @@ namespace {
 
 		return availableFormats[0];
 	}
-	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window) {
+	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, SDL_Window* window) {
 
 		if (capabilities.currentExtent.width !=
 			std::numeric_limits<uint32_t>::max()) {
 			return capabilities.currentExtent;
 		}
 		else {
-			int width, height;
-			glfwGetFramebufferSize(window, &width, &height);
+			int width = 0, height = 0;
+			SDL_GetWindowSizeInPixels(window, &width, &height);
 
 			VkExtent2D actualExtent = { static_cast<uint32_t>(width),
 									   static_cast<uint32_t>(height) };
@@ -524,13 +526,16 @@ namespace {
 			return actualExtent;
 		}
 	}
-	std::vector<const char*> getRequiredExtensionsForGlfw(bool enableValidationLayers) {
-		uint32_t glfwExtensionCount = 0;
-		const char** glfwExtensions;
-		glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+	std::vector<const char*> getRequiredExtensionsForSDL(bool enableValidationLayers) {
+		uint32_t sdlExtensionCount = 0;
+		char const* const* sdlExtensions =
+			SDL_Vulkan_GetInstanceExtensions(&sdlExtensionCount);
 
-		std::vector<const char*> extensions(glfwExtensions,
-			glfwExtensions + glfwExtensionCount);
+		std::vector<const char*> extensions;
+		if (sdlExtensions && sdlExtensionCount > 0) {
+			extensions.assign(sdlExtensions,
+				sdlExtensions + sdlExtensionCount);
+		}
 
 		if (enableValidationLayers) {
 			extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -1581,7 +1586,7 @@ int smvk::VulkanCore::CreateInstance() {
 	.pfnUserCallback = debugCallback
 	};
 
-	auto extensions = getRequiredExtensionsForGlfw(enableValidationLayers);
+	auto extensions = getRequiredExtensionsForSDL(enableValidationLayers);
 
 	VkInstanceCreateInfo createInfo{};
 	createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -1858,15 +1863,15 @@ inline smvk::VulkanCore::~VulkanCore() {
 	presentQueue_ = VK_NULL_HANDLE;
 	transferQueue_ = VK_NULL_HANDLE;
 }
-std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, GLFWwindow* window) {
+std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, SDL_Window* window) {
 	assert(window != nullptr && "window was nullptr!");
 
 	auto unique = std::make_unique<VulkanCore>(config);
 	auto core = unique.get();
 
 	core->CreateInstance();
-	if (glfwCreateWindowSurface(instance_, window, nullptr, &surface_) != VK_SUCCESS) {
-		throw std::runtime_error("failed to create window surface!");
+	if (!SDL_Vulkan_CreateSurface(window, instance_, nullptr, &surface_)) {
+		throw std::runtime_error(std::string("failed to create window surface: ") + SDL_GetError());
 	}
 	core->Init();
 	return unique;
@@ -1876,7 +1881,7 @@ std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanC
 // ResourceContext
 smvk::VulkanResourceManager::VulkanResourceManager(
 	VulkanCore::CoreConfiguration configuration,
-	GLFWwindow* window)
+	SDL_Window* window)
 	: core_(CreateVulkanCoreWithWindow(configuration, window))
 {
 	//assert(window != nullptr && "headless not implemented yet");
@@ -2131,6 +2136,8 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 
 	destroy(this, m_nilTexture);
 	destroy(this, m_engineGlobalsBuffer);
+	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f)
+		destroy(this, m_feedbackBuffers[f]);
 	destroy(this, m_readbackStaging);
 
 	// Flush, not Process: queued tasks may reference the swapchain timeline
@@ -6591,7 +6598,7 @@ void smvk::Submitter::recycleSlot(
 }
 
 // VulkanSwapchain
-smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context, GLFWwindow* window/*, uint32_t framesInFlight, uint32_t desiredImageCount*/)
+smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context, SDL_Window* window/*, uint32_t framesInFlight, uint32_t desiredImageCount*/)
 	: ctx_(context)
 	, window_(window)
 {
@@ -6640,16 +6647,20 @@ smvk::VulkanSwapchain::~VulkanSwapchain() {
 }
 void smvk::VulkanSwapchain::Recreate() {
 	// No new sync objects. Should investigate, can iamge# change? on OOD
+	static uint64_t recreateCount = 0;
+	fprintf(stderr, "[swapchain] Recreate #%llu\n", (unsigned long long)++recreateCount);
 	int width = 0;
 	int height = 0;
 
-	glfwGetFramebufferSize(window_, &width, &height);
+	SDL_GetWindowSizeInPixels(window_, &width, &height);
 	while (width == 0 || height == 0) {
-		glfwGetFramebufferSize(window_, &width, &height);
-		glfwWaitEvents();
+		// Block until the window is restored; SDL_WaitEvent pumps the OS
+		// queue so minimize/restore can proceed.
+		SDL_WaitEvent(nullptr);
+		SDL_GetWindowSizeInPixels(window_, &width, &height);
 	}
 
-	glfwGetWindowSize(window_, &windowWidth, &windowHeight);
+	SDL_GetWindowSize(window_, &windowWidth, &windowHeight);
 
 	extent_.width = width;
 	extent_.height = height;
@@ -6774,7 +6785,7 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 	this->surfaceFormat = fromVkFormat(surfaceFormat.format);
 	this->extent_ = swapExtent;
 
-	glfwGetWindowSize(window_, &windowWidth, &windowHeight);
+	SDL_GetWindowSize(window_, &windowWidth, &windowHeight);
 }
 std::vector<VkPresentModeKHR> smvk::VulkanSwapchain::GetAvailablePresentModes() const {
 	return querySwapChainSupport(physicalDevice_, surface_).presentModes;
@@ -7992,38 +8003,37 @@ bool smvk::App::Initialize() {
 
 	if (volkInitialize() != VK_SUCCESS) {
 		std::cerr << "Failed to initialize Volk\n";
-		glfwTerminate();
 		return false;
 	};
 
-	// GLFW;
-
-	if (!glfwInit()) {
-		std::cerr << "Failed to initialize GLFW\n";
+	// SDL3: video + gamepad + audio subsystems. Joystick events are needed
+	// for SDL_EVENT_GAMEPAD_* hotplug; audio init is lazy (AudioEngine inits
+	// SDL_INIT_AUDIO itself if the app enables sound).
+	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
+		std::cerr << "Failed to initialize SDL3: " << SDL_GetError() << "\n";
 		return false;
 	}
-	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
 	int width_ = DEFAULT_WIDTH;
 	int height_ = DEFAULT_HEIGHT;
-	window = glfwCreateWindow(width_, height_, "Vulkan", nullptr, nullptr);
+	window = SDL_CreateWindow("Vulkan", width_, height_,
+		SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
 
 	if (!window) {
-		std::cerr << "Failed to create GLFW window\n";
-		glfwTerminate();
+		std::cerr << "Failed to create SDL3 window: " << SDL_GetError() << "\n";
+		SDL_Quit();
 		return false;
 	}
-	glfwMakeContextCurrent(window);
-	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-	glfwSetWindowTitle(window, /*ENGINE_NAME*/ "samuelmartin.1999@outlok.com");
+	SDL_SetWindowTitle(window, /*ENGINE_NAME*/ "samuelmartin.1999@outlok.com");
+	// Capture the mouse like the old GLFW_CURSOR_DISABLED default; scenes
+	// that need a cursor (image viewers, editors) call SetRelativeMouseMode(false).
+	SetRelativeMouseMode(true);
 
-	glfwSetKeyCallback(window, keyCallback);
-	glfwSetMouseButtonCallback(window, mouseButtonCallback);
-	glfwSetCursorPosCallback(window, cursorPositionCallback);
-	glfwSetScrollCallback(window, scrollCallback);
-
-	glfwSetWindowUserPointer(window, this);
-	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+	// Audio: best-effort, never fatal. Mixer thread pins to the dedicated core.
+	audio::Config audioCfg;
+	if (!m_audio.Init(audioCfg)) {
+		std::cerr << "[Audio] disabled: " << m_audio.LastError() << "\n";
+	}
 
 	m_context = std::make_unique<ResourceManager>(window);
 	m_swapchain = std::make_unique<Swapchain>(
@@ -8076,13 +8086,14 @@ void smvk::App::Shutdown() {
 smvk::App::~App()
 {
 	WaitForDeviceIdle();
+	m_audio.Shutdown();
 	// Members m_world/m_rendergraph/m_swapchain/m_context destroyed automatically
 	// (App holds them directly; window is last member so destroyed after Vulkan).
 	if (window) {
-		glfwDestroyWindow(window);
+		SDL_DestroyWindow(window);
 		window = nullptr;
 	}
-	glfwTerminate();
+	SDL_Quit();
 }
 
 

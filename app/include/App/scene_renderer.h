@@ -226,6 +226,20 @@ struct ForwardPlusDemo {
 	float baseY = 1.2f;
 	float range = 9.0f;
 	float intensity = 600.0f;
+	// Fit-to-scene: when true the point grid is centered on the loaded
+	// scene's world bounds and the per-axis spacing is derived as
+	// extent / (count - 1), so the crowd fills the scene (e.g. Bistro)
+	// instead of clustering around the origin. Spacing/baseY above are
+	// the manual fallback (fit off). Refit at load; the UI can refit.
+	bool fitToSceneBounds = true;
+	glm::vec3 fitMin{ 0.0f }; // scene bounds at last fit (read-only in UI)
+	glm::vec3 fitMax{ 0.0f };
+	bool fitValid = false;    // false = bounds empty, manual placement used
+	void FitToBounds(const glm::vec3& mn, const glm::vec3& mx) {
+		fitMin = mn;
+		fitMax = mx;
+		fitValid = mx.x >= mn.x && mx.y >= mn.y && mx.z >= mn.z;
+	}
 	bool animate = true;
 	float speed = 0.6f;
 	int spotCount = 4;
@@ -447,6 +461,8 @@ public:
 	// SceneDesc glTF path (loose content). A/B against the pak to tell
 	// pak/meshlet bugs apart from import/draw-path bugs.
 	void SetForceGltf(bool v) { m_forceGltf = v; }
+	// CLI overrides (main.cpp): fixed present mode + benchmark frame budget.
+	void SetPresentMode(smvk::PresentMode m) { m_presentMode = m; }
 
 protected:
 	void UpdateCamera(float dt);
@@ -480,7 +496,9 @@ protected:
 	float m_uiScale = 1.0f;
 	float m_uiDpiScale = 1.0f; // synced from ImGuiOverlay at init (auto = monitor DPI)
 	// VSync / presentation mode (overlay combo; applied via swapchain Recreate).
-	smvk::PresentMode m_presentMode = smvk::PresentMode::Mailbox; // default: no VSync
+	// Mailbox default: tear-free like FIFO but never stair-steps to 30fps
+	// when a frame misses 16.6ms (strict FIFO would).
+	smvk::PresentMode m_presentMode = smvk::PresentMode::Mailbox;
 	// Frame timing: CPU wall time vs GPU execution time (EMA-smoothed ms
 	// for the debug overlay). GPU lags 1-2 frames (retired-frame readback).
 	double m_cpuMsSmooth = 0.0;
@@ -518,6 +536,12 @@ protected:
 	// reserved for camera movement and are never used here.
 	void HandleShortcuts() {
 		if (m_input.isKeyPressed(GLFW_KEY_I)) {
+			SetUIMode(!m_uiMode);
+		}
+		// Gamepad Start mirrors I (UI <-> FPS) so controller-only users
+		// can reach the debug panel.
+		if (m_input.hasGamepad() &&
+			m_input.gamepadButtonPressed(0, SDL_GAMEPAD_BUTTON_START)) {
 			SetUIMode(!m_uiMode);
 		}
 		// U toggles the fixed debug-panel side: Right <-> Left.

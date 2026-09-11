@@ -618,6 +618,24 @@ std::optional<World::MaterialLocation> World::ResolveMaterialAcrossClusters(
 		staticBvhValid_ = true;
 	}
 
+	::Aabb World::ComputeSceneBounds() const {
+		::Aabb out = ::Aabb::empty();
+		for (const auto& [node, worldMeshIdx] : scene.meshForNode) {
+			if (worldMeshIdx >= meshLocations.size())
+				continue;
+			const MeshLocation& loc = meshLocations[worldMeshIdx];
+			if (loc.cluster == nullptr || !loc.handle.valid())
+				continue;
+			const StaticMesh* base = loc.cluster->staticMeshes.get(loc.handle);
+			if (!base)
+				continue;
+			if (node >= scene.globalTransform.size())
+				continue;
+			out.expand(WorldAabbForMesh(base, scene.globalTransform[node]));
+		}
+		return out;
+	}
+
 	const ::BvhTree& World::EnsureStaticBvh() const {
 		if (!staticBvhValid_)
 			const_cast<World*>(this)->RebuildStaticBvh();

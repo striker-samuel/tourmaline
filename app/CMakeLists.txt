@@ -132,6 +132,9 @@ add_custom_command(TARGET App POST_BUILD
         "$<TARGET_FILE_DIR:App>"
 )
 
+# SDL3 is SHARED (vendored prebuilt): stage its DLL next to App.exe
+vulkantoy_stage_sdl3(App)
+
 
 # Shader compile outputs will be collected in this list
 set(COMPILED_SHADER_OUTPUTS)

@@ -27,7 +27,7 @@ struct Swapchain::Impl {
     std::unique_ptr<VulkanSwapchain> vulkan;
 };
 
-Swapchain::Swapchain(ResourceManager& ctx, ::GLFWwindow* window) : impl_(std::make_unique<Impl>()) {
+Swapchain::Swapchain(ResourceManager& ctx, SDL_Window* window) : impl_(std::make_unique<Impl>()) {
     auto* vm = static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque());
     impl_->vulkan = std::make_unique<VulkanSwapchain>(*vm, window);
 }

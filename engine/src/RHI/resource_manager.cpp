@@ -5,7 +5,7 @@
 #define VK_NO_PROTOTYPES
 #endif
 #include "volk.h"
-#include <GLFW/glfw3.h>
+#include <SDL3/SDL_video.h>
 #include "../Vulkan/detail/vulkan_impl.h"
 #include <ktx.h>
 
@@ -13,7 +13,7 @@ namespace smvk {
 
 struct ResourceManager::Impl {
     VulkanResourceManager vulkan;
-    Impl(::GLFWwindow* w) : vulkan({}, w) {}
+    Impl(SDL_Window* w) : vulkan({}, w) {}
     VulkanResourceManager* getVulkan() { return &vulkan; }
 };
 
@@ -61,7 +61,7 @@ static VkAccessFlags2 toVkAccess(AccessFlags access) {
     return static_cast<VkAccessFlags2>(static_cast<uint32_t>(access));
 }
 
-ResourceManager::ResourceManager(::GLFWwindow* window) : impl_(std::make_unique<Impl>(window)) {}
+ResourceManager::ResourceManager(SDL_Window* window) : impl_(std::make_unique<Impl>(window)) {}
 ResourceManager::~ResourceManager() = default;
 ResourceManager::ResourceManager(ResourceManager&&) noexcept = default;
 ResourceManager& ResourceManager::operator=(ResourceManager&&) noexcept = default;

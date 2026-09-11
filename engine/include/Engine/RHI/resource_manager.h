@@ -1,6 +1,8 @@
 #pragma once
-#include <GLFW/glfw3.h>
 #include <Engine/smvk.h>
+// Windowing is SDL3 (see App/app.h). Forward-declared so RHI headers stay
+// light; .cpp files include <SDL3/SDL_video.h>.
+struct SDL_Window;
 #include <Engine/Memory/handle.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/Renderer/spirv_reflection.h>
@@ -15,7 +17,7 @@ namespace smvk {
 class ResourceManager {
 public:
     // Creates Vulkan core + allocator. window may be nullptr for headless.
-    explicit ResourceManager(::GLFWwindow* window = nullptr);
+    explicit ResourceManager(SDL_Window* window = nullptr);
     ~ResourceManager();
 
     ResourceManager(const ResourceManager&) = delete;
