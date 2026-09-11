@@ -140,17 +140,14 @@ struct ScenePassConfig {
 };
 
 // ---------------------------------------------------------------------------
-// Debug-UI dock position. The panel is pinned (via SetNextWindowPos/Size)
-// instead of floating: Right/Left are full-height side bars, the four
-// corners are floating overlays. U cycles through them at runtime.
+// Debug-UI dock position. Fixed full-height side bar (no floating): Right
+// or Left. U toggles the side. The panel position/size is enforced every
+// frame (ImGuiWindowFlags_NoMove | NoResize) with a TabBar inside
+// (Quality / Debug / Stats).
 // ---------------------------------------------------------------------------
 enum class UiDock : int {
 	Right = 0,
 	Left = 1,
-	TopLeft = 2,
-	TopRight = 3,
-	BottomLeft = 4,
-	BottomRight = 5,
 };
 
 // ---------------------------------------------------------------------------
@@ -477,8 +474,7 @@ protected:
 		);
 	}
 	bool m_uiMode = false;
-	UiDock m_uiDock = UiDock::Right; // side-pinned panel; U cycles corners/sides
-	bool m_uiDockDirty = true; // true = apply dock pos/size once, then let user resize stick
+	UiDock m_uiDock = UiDock::Right; // fixed side bar; U toggles Right <-> Left
 	// Configurable resolution knobs (see "Resolution config" in the .cpp).
 	float m_renderScale = 1.0f;
 	float m_uiScale = 1.0f;
@@ -524,7 +520,7 @@ protected:
 		if (m_input.isKeyPressed(GLFW_KEY_I)) {
 			SetUIMode(!m_uiMode);
 		}
-		// U cycles the debug-panel dock: Right -> Left -> corners.
+		// U toggles the fixed debug-panel side: Right <-> Left.
 		if (m_input.isKeyPressed(GLFW_KEY_U)) {
 			CycleUiDock();
 		}
@@ -629,25 +625,13 @@ protected:
 	}
 
 	void CycleUiDock() {
-		m_uiDock = static_cast<UiDock>((static_cast<int>(m_uiDock) + 1) % 6);
-		m_uiDockDirty = true;
+		m_uiDock = (m_uiDock == UiDock::Right) ? UiDock::Left : UiDock::Right;
 	}
 	void SetUiDock(UiDock dock) {
-		if (m_uiDock != dock) {
-			m_uiDock = dock;
-			m_uiDockDirty = true;
-		}
+		m_uiDock = (dock == UiDock::Left) ? UiDock::Left : UiDock::Right;
 	}
 	const char* UiDockName() const {
-		switch (m_uiDock) {
-		case UiDock::Right: return "Right";
-		case UiDock::Left: return "Left";
-		case UiDock::TopLeft: return "TopLeft";
-		case UiDock::TopRight: return "TopRight";
-		case UiDock::BottomLeft: return "BottomLeft";
-		case UiDock::BottomRight: return "BottomRight";
-		}
-		return "Right";
+		return (m_uiDock == UiDock::Left) ? "Left" : "Right";
 	}
 
 	void LateUpdate() {
