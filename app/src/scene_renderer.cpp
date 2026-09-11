@@ -299,12 +299,12 @@ const SceneDesc& SceneRegistry::Bistro() {
 		/*label=*/"Bistro",
 		/*gltfPath=*/"content/models/Bistro/bistro.gltf",
 		/*pakPath=*/"content/paks/bistro.pak",
-		// Niagara glTF source (known-good geometry; authoring shims kept â€”
-		// RootNode 100x = FBX cm->m, Level -90d X = Z-up->Y-up; see
-		// tools/cook_bistro.py + stage_niagara_gltf.py). Default view =
-		// street level inside the block (engine-space AABB ~59x32x119 m).
-		/*camPos=*/glm::vec3(7.0f, 4.0f, 9.0f),
-		/*camTarget=*/glm::vec3(0.0f, 2.0f, 0.0f),
+		// Canon test view (user-specified): mid-street, looking down the
+		// road toward the far corner; yaw -80.4 / pitch -4.0 from pos
+		// (27.61, 2.26, -10.19), fwd (-0.986, 0.012, -0.167).
+		/*camPos=*/glm::vec3(27.61f, 2.26f, -10.19f),
+		/*camTarget=*/glm::vec3(27.61f, 2.26f, -10.19f)
+			+ glm::vec3(-0.986f, 0.012f, -0.167f),
 		/*farClip=*/200.0f,
 		/*coordFix=*/0,
 	};
@@ -360,16 +360,44 @@ void SceneRenderer::Configure(SceneDesc scene, ScenePassConfig passes) {
 	// Debug: rotate the default view around world up (degrees) — A/B runs
 	// without mouse input (e.g. sponza spawns facing away from the demo
 	// light grid; VULKANTOY_CAM_YAW=90 turns to face it).
-	if (const char* yawEnv = std::getenv("VULKANTOY_CAM_YAW")) {
-		const float yaw = std::strtof(yawEnv, nullptr);
-		const glm::vec3 dir = glm::normalize(scene.camTarget - scene.camPos);
-		const float rad = glm::radians(yaw);
-		const glm::vec3 rot(
-			dir.x * std::cos(rad) + dir.z * std::sin(rad), dir.y,
-			-dir.x * std::sin(rad) + dir.z * std::cos(rad));
-		m_cameraPositioner.lookAt(scene.camPos, scene.camPos + rot,
-			glm::vec3(0.0f, 1.0f, 0.0f));
+	glm::vec3 dir = glm::normalize(scene.camTarget - scene.camPos);
+	bool dirOverridden = false;
+	if (const char* fwdEnv = std::getenv("VULKANTOY_CAM_FWD")) {
+		// Absolute forward override ("x,y,z"): wins over the yaw env so a
+		// fully specified diagnostic camera reproduces exactly.
+		glm::vec3 fwd(0.0f);
+		if (std::sscanf(fwdEnv, "%f,%f,%f", &fwd.x, &fwd.y, &fwd.z) == 3
+			&& glm::length(fwd) > 1e-4f) {
+			dir = glm::normalize(fwd);
+			dirOverridden = true;
+		} else {
+			std::cerr << "[SceneRenderer] bad VULKANTOY_CAM_FWD (want x,y,z): "
+				<< fwdEnv << "\n";
+		}
 	}
+	if (!dirOverridden) {
+		if (const char* yawEnv = std::getenv("VULKANTOY_CAM_YAW")) {
+			const float yaw = std::strtof(yawEnv, nullptr);
+			const float rad = glm::radians(yaw);
+			dir = glm::vec3(
+				dir.x * std::cos(rad) + dir.z * std::sin(rad), dir.y,
+				-dir.x * std::sin(rad) + dir.z * std::cos(rad));
+		}
+	}
+	// Debug: override the spawn position ("x,y,z"); composes with the
+	// yaw env (the view keeps looking along the yaw-rotated default
+	// direction) or with the absolute VULKANTOY_CAM_FWD.
+	if (const char* posEnv = std::getenv("VULKANTOY_CAM_POS")) {
+		glm::vec3 pos(scene.camPos);
+		if (std::sscanf(posEnv, "%f,%f,%f", &pos.x, &pos.y, &pos.z) == 3) {
+			m_cameraPositioner.lookAt(pos, pos + dir, glm::vec3(0.0f, 1.0f, 0.0f));
+			return;
+		}
+		std::cerr << "[SceneRenderer] bad VULKANTOY_CAM_POS (want x,y,z): "
+			<< posEnv << "\n";
+	}
+	m_cameraPositioner.lookAt(scene.camPos, scene.camPos + dir,
+		glm::vec3(0.0f, 1.0f, 0.0f));
 }
 
 // FrameUniforms / AppResources / ViewportResources live in
@@ -4292,6 +4320,14 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				ImGui::TextDisabled("Active: %s", smvk::ToString(active));
 		}
 			ImGui::Text("Camera pos: %.2f %.2f %.2f", m_cameraPositioner.cameraPosition_.x, m_cameraPositioner.cameraPosition_.y, m_cameraPositioner.cameraPosition_.z);
+			{
+				const glm::vec3 euler = m_cameraPositioner.getEulerDegrees(); // x=pitch, y=yaw, z=roll
+				const glm::vec3 fwd = m_cameraPositioner.getForward();
+				const glm::quat q = m_cameraPositioner.getOrientation();
+				ImGui::Text("Camera rot yaw: %.1f pitch: %.1f roll: %.1f (deg)", euler.y, euler.x, euler.z);
+				ImGui::Text("Camera fwd: %.3f %.3f %.3f", fwd.x, fwd.y, fwd.z);
+				ImGui::TextDisabled("Camera quat: %.3f %.3f %.3f %.3f", q.x, q.y, q.z, q.w);
+			}
 			ImGui::Text("Swapchain %ux%u  framesInFlight=%u",
 				fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height, fb.swapchain->framesInFlight());
 			{

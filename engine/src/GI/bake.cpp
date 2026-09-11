@@ -352,6 +352,7 @@ struct BakeBrick {
 	uint32_t level = 0;
 	bool hasProbe = false;
 	bool subdivided = false;
+	bool nearSurface = false; // geometry-stage classification (transient)
 	glm::vec3 probePos{};
 	float error = 0.0f;
 	glm::vec3 amps[kSgLobeCount]{};
@@ -422,9 +423,11 @@ bool RelocateProbe(const TriangleBvh& bvh, const BakeBrick& brick,
 		if (bestDist >= clearance)
 			break;
 	}
-	// Soft accept: partially-clear probes are still useful (their baked
-	// visibility distances keep the runtime honest about the walls).
-	if (bestDist > 0.0f && bestDist >= std::min(clearance, brick.size * 0.05f + 1e-3f)) {
+	// Trapped probes are DROPPED, not soft-accepted: a probe hugging
+	// geometry bakes dark (occluded) radiance and records near-zero
+	// visibility distances, rejecting everything around itself — dark
+	// polka dots. Leaving the region to its neighbors is strictly better.
+	if (bestDist >= std::max(0.03f, brick.size * 0.1f)) {
 		outPos = best;
 		return true;
 	}
@@ -542,55 +545,79 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 	}
 
 	std::vector<BakeBrick> bricks;
-	// Subdivides near geometry (distance-to-surface heuristic). One probe
-	// per leaf; empty space stays coarse. The leaf budget (--max-probes)
-	// forces over-budget branches to stay coarse instead of abandoning
-	// them (every region keeps at least one probe; no coverage holes).
-	uint32_t geometryLeaves = 0;
-	auto geometryRefine = [&](auto&& self, const glm::vec3& center, float size,
-			uint32_t level) -> void {
-		if (bricks.size() > cfg.maxProbes * 4u + 128u)
-			return; // hard safety valve (pathological inputs)
-		BakeBrick b{};
-		b.center = center;
-		b.size = size;
-		b.level = level;
-		const uint32_t idx = uint32_t(bricks.size());
-		bricks.push_back(b);
-
-		if (size * 0.5f + 1e-6f < cfg.minBrickSize) {
-			++geometryLeaves;
-			return; // finest level reached
-		}
-		if (geometryLeaves >= cfg.maxProbes) {
-			++geometryLeaves;
-			return; // leaf budget spent: stay coarse rather than hole out
-		}
-		// Conservative near-surface test: lower bound on the true brick
-		// distance via the center distance minus the half diagonal.
-		const float halfDiag = size * 0.8660254f;
-		const float dist = scene.Bvh().ClosestDistance(center) - halfDiag;
-		if (dist < size * cfg.nearSurfaceFactor) {
-			bricks[idx].subdivided = true;
-			const float half = size * 0.5f;
-			const float q = size * 0.25f;
-			for (int sx = -1; sx <= 1; sx += 2)
-				for (int sy = -1; sy <= 1; sy += 2)
-					for (int sz = -1; sz <= 1; sz += 2)
-						self(self, center + glm::vec3(sx, sy, sz) * q, half, level + 1);
-		} else {
-			++geometryLeaves;
-		}
-	};
+	// Geometry refinement (distance-to-surface heuristic): BREADTH-FIRST,
+	// one octree level at a time, so every region reaches the same depth
+	// before any region gets finer. The depth-first predecessor granted
+	// fine probes to whichever region the recursion visited FIRST — with
+	// a probe budget it starved the late-processed regions (whole streets
+	// stranded on coarse L0-only probes). The geometry stage spends at
+	// most kGeometryBudgetShare of the budget; the error-driven waves own
+	// the rest and push deeper where lighting actually varies.
 	{
 		const float rs = cfg.rootBrickSize;
 		glm::vec3 lo(std::floor(bmin.x / rs), std::floor(bmin.y / rs), std::floor(bmin.z / rs));
 		glm::vec3 hi(std::floor(bmax.x / rs), std::floor(bmax.y / rs), std::floor(bmax.z / rs));
 		for (float x = lo.x; x <= hi.x; ++x)
 			for (float y = lo.y; y <= hi.y; ++y)
-				for (float z = lo.z; z <= hi.z; ++z)
-					geometryRefine(geometryRefine,
-						glm::vec3(x + 0.5f, y + 0.5f, z + 0.5f) * rs, rs, 0);
+				for (float z = lo.z; z <= hi.z; ++z) {
+					BakeBrick b{};
+					b.center = glm::vec3(x + 0.5f, y + 0.5f, z + 0.5f) * rs;
+					b.size = rs;
+					b.level = 0;
+					bricks.push_back(b);
+				}
+		uint32_t leafCount = uint32_t(bricks.size());
+		const uint32_t geometryBudget =
+			std::max<uint32_t>(64u, uint32_t(float(cfg.maxProbes) * 0.6f));
+		for (uint32_t level = 0; level + 1 < kSgGiMaxLevels; ++level) {
+			const float size = cfg.rootBrickSize / float(1u << level);
+			if (size * 0.5f + 1e-6f < cfg.minBrickSize)
+				break; // finest level reached everywhere
+			// Near-surface classification for this level's leaves
+			// (conservative: center distance minus the half diagonal).
+			const float halfDiag = size * 0.8660254f;
+			uint32_t candidates = 0;
+			for (BakeBrick& b : bricks) {
+				if (b.subdivided || b.level != level || b.nearSurface)
+					continue;
+				const float dist = scene.Bvh().ClosestDistance(b.center) - halfDiag;
+				b.nearSurface = (dist < size * cfg.nearSurfaceFactor);
+				if (b.nearSurface)
+					++candidates;
+			}
+			if (candidates == 0)
+				break; // nothing near geometry at this depth
+			// Budget gate: subdividing all candidates must keep the level's
+			// leaf count inside the geometry share — otherwise EVERY region
+			// stays at this depth (spatially fair), and only the error
+			// waves may go deeper.
+			if (leafCount + 7u * candidates > geometryBudget)
+				break;
+			for (uint32_t i = 0; i < bricks.size(); ++i) {
+				BakeBrick& b = bricks[i];
+				if (b.subdivided || b.level != level || !b.nearSurface)
+					continue;
+				// Copy before the push_backs below: bricks reallocates.
+				const glm::vec3 center = b.center;
+				const uint32_t nextLevel = level + 1;
+				b.subdivided = true;
+				b.hasProbe = false; // placeholder; children are the leaves now
+				const float half = size * 0.5f;
+				const float q = size * 0.25f;
+				for (int sx = -1; sx <= 1; sx += 2) {
+					for (int sy = -1; sy <= 1; sy += 2) {
+						for (int sz = -1; sz <= 1; sz += 2) {
+							BakeBrick c{};
+							c.center = center + glm::vec3(sx, sy, sz) * q;
+							c.size = half;
+							c.level = nextLevel;
+							bricks.push_back(c);
+						}
+					}
+				}
+			}
+			leafCount += 7u * candidates;
+		}
 	}
 	stats.bricksBuilt = uint32_t(bricks.size());
 	{

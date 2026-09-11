@@ -196,14 +196,16 @@ void SgGiVolume::BuildGrids() {
 bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) const {
 	for (uint32_t i = 0; i < kSgLobeCount; ++i)
 		outAmps[i] = glm::vec3(0.0f);
-	// Two parallel blends: visibility-weighted (anti-leak) and plain
-	// distance-weighted. When every covering probe is visibility-rejected
-	// (dense clutter), the distance blend keeps the point covered —
-	// coverage never collapses, worst case a leak in a pathological spot.
+	// Primary blend: visibility-weighted partition of unity (anti-leak).
+	// Safety net: when every covering probe is visibility-rejected
+	// (deep clutter), fall back to the NEAREST covering probe instead of
+	// blending all of them — blending occluded probes from the far side of
+	// walls leaks their dark radiance (regional dark artifacts); the
+	// nearest probe is almost always the same-side "own brick" one.
 	glm::vec3 ampsVis[kSgLobeCount] = {};
-	glm::vec3 ampsDist[kSgLobeCount] = {};
 	float weightVis = 0.0f;
-	float weightDist = 0.0f;
+	uint32_t nearestIdx = 0;
+	float nearestDist2 = std::numeric_limits<float>::infinity();
 	for (uint32_t lvl = 0; lvl < levelCount && lvl < levelGrids_.size(); ++lvl) {
 		const LevelGrid& grid = levelGrids_[lvl];
 		const float cs = cellSize[lvl];
@@ -225,9 +227,12 @@ bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) c
 			const float w = ProbeWeight(pos, p);
 			if (w <= 0.0f)
 				continue;
-			weightDist += w;
-			for (uint32_t i = 0; i < kSgLobeCount; ++i)
-				ampsDist[i] += p.amps[i] * w;
+			const glm::vec3 d = pos - p.position;
+			const float dist2 = glm::dot(d, d);
+			if (dist2 < nearestDist2) {
+				nearestDist2 = dist2;
+				nearestIdx = probeIdx;
+			}
 			const float wv = w * VisibilityFactor(pos, p);
 			if (wv <= 0.0f)
 				continue;
@@ -242,10 +247,9 @@ bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) c
 			outAmps[i] = ampsVis[i] * inv;
 		return true;
 	}
-	if (weightDist >= 1e-4f) {
-		const float inv = 1.0f / weightDist;
+	if (nearestDist2 < std::numeric_limits<float>::infinity()) {
 		for (uint32_t i = 0; i < kSgLobeCount; ++i)
-			outAmps[i] = ampsDist[i] * inv;
+			outAmps[i] = probes[nearestIdx].amps[i];
 		return true;
 	}
 	return false;
