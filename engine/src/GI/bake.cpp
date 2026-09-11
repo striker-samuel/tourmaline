@@ -741,6 +741,249 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 	stats.refineWaves = wave + 1;
 
 	// ------------------------------------------------------------------
+	// Diffusion procedure: the brick lattice is a relaxation FIXED POINT
+	// (grid-aligned interpolation reads as polka dots) and per-probe MC
+	// noise makes every probe its own colored patch (cyan sky probes,
+	// warm bounce probes, black occluded probes). Two diffusive passes:
+	//
+	//  1. PLACEMENT diffusion: jitter each probe inside its brick to
+	//     break the lattice symmetry, then relax with same-level
+	//     repulsion for a few iterations — probes spread like particles
+	//     diffusing to an even (blue-noise-ish) spacing, and the free
+	//     space constraint keeps them out of geometry. The rigid grid
+	//     pattern dissolves into an organic distribution.
+	//  2. RADIANCE diffusion: a few Laplacian (heat equation) passes over
+	//     the same-level neighbor graph — neighboring probes exchange
+	//     amplitude mass until the field is spatially smooth, wiping the
+	//     independent per-probe sampling noise the interpolation would
+	//     otherwise show as dots.
+	// ------------------------------------------------------------------
+	{
+		// Collect live probes per level with a uniform neighbor grid
+		// (cell = brick size of that level).
+		struct LevelCloud {
+			std::vector<uint32_t> probeBricks; // indices into `bricks`
+			glm::vec3 gmin{ 0.0f };
+			uint32_t dims[3] = { 1, 1, 1 };
+			float cell = 1.0f;
+			std::vector<uint32_t> cellStart; // dims^3 + 1
+		};
+		uint32_t maxLvl = 0;
+		for (const BakeBrick& b : bricks)
+			if (b.hasProbe)
+				maxLvl = std::max(maxLvl, b.level);
+		std::vector<LevelCloud> clouds(maxLvl + 1);
+		for (uint32_t lvl = 0; lvl <= maxLvl; ++lvl) {
+			LevelCloud& cloud = clouds[lvl];
+			cloud.cell = cfg.rootBrickSize / float(1u << lvl);
+			glm::vec3 gmin(1e30f), gmax(-1e30f);
+			for (uint32_t i = 0; i < bricks.size(); ++i) {
+				if (!bricks[i].hasProbe || bricks[i].level != lvl)
+					continue;
+				cloud.probeBricks.push_back(i);
+				gmin = glm::min(gmin, bricks[i].probePos);
+				gmax = glm::max(gmax, bricks[i].probePos);
+			}
+			if (cloud.probeBricks.empty())
+				continue;
+			cloud.gmin = gmin - 0.001f;
+			const glm::vec3 ext = gmax - cloud.gmin + 0.002f;
+			for (uint32_t a = 0; a < 3; ++a)
+				cloud.dims[a] = std::max(1u, uint32_t(ext[a] / cloud.cell) + 1u);
+			const uint32_t cells = cloud.dims[0] * cloud.dims[1] * cloud.dims[2];
+			cloud.cellStart.assign(cells + 1, 0);
+			auto cellOf = [&](const glm::vec3& p, uint32_t (&out)[3]) {
+				for (uint32_t a = 0; a < 3; ++a) {
+					int32_t c = int32_t(std::floor((p[a] - cloud.gmin[a]) / cloud.cell));
+					out[a] = uint32_t(std::clamp(c, 0, int32_t(cloud.dims[a]) - 1));
+				}
+			};
+			for (uint32_t k = 0; k < cloud.probeBricks.size(); ++k) {
+				uint32_t c[3];
+				cellOf(bricks[cloud.probeBricks[k]].probePos, c);
+				++cloud.cellStart[c[0] + cloud.dims[0] * (c[1] + cloud.dims[1] * c[2])];
+			}
+			uint32_t sum = 0;
+			for (uint32_t c = 0; c < cells; ++c) {
+				const uint32_t n = cloud.cellStart[c];
+				cloud.cellStart[c] = sum;
+				sum += n;
+			}
+			cloud.cellStart[cells] = sum;
+			std::vector<uint32_t> fill(cells, 0);
+			std::vector<uint32_t> ordered(cloud.probeBricks.size());
+			for (uint32_t k = 0; k < cloud.probeBricks.size(); ++k) {
+				uint32_t c[3];
+				cellOf(bricks[cloud.probeBricks[k]].probePos, c);
+				const uint32_t ci = c[0] + cloud.dims[0] * (c[1] + cloud.dims[1] * c[2]);
+				ordered[cloud.cellStart[ci] + fill[ci]++] = cloud.probeBricks[k];
+			}
+			cloud.probeBricks = std::move(ordered);
+		}
+
+		// ---- (1) Placement diffusion: jitter + repulsion relaxation ----
+		const uint32_t iterations = std::min(cfg.diffusionIterations, 32u);
+		for (uint32_t lvl = 0; lvl < clouds.size(); ++lvl) {
+			LevelCloud& cloud = clouds[lvl];
+			if (cloud.probeBricks.empty())
+				continue;
+			const float size = cloud.cell;
+			// Deterministic jitter (seeded by level) breaks the lattice.
+			Pcg32 jitter(0x9e3779b9u + uint64_t(lvl) * 126271u);
+			for (uint32_t k = 0; k < cloud.probeBricks.size(); ++k) {
+				BakeBrick& b = bricks[cloud.probeBricks[k]];
+				const glm::vec3 offset(
+					(jitter.Float() - 0.5f), (jitter.Float() - 0.5f),
+					(jitter.Float() - 0.5f));
+				const glm::vec3 cand = glm::clamp(
+					b.probePos + offset * size * 0.4f,
+					b.center - size * 0.5f, b.center + size * 0.5f);
+				if (scene.Bvh().ClosestDistance(cand) >= std::max(0.03f, size * 0.1f))
+					b.probePos = cand;
+			}
+			// Repulsion relaxation: probes push apart to an even spacing.
+			const float targetSpacing = size * 0.85f;
+			for (uint32_t iter = 0; iter < iterations; ++iter) {
+				for (uint32_t k = 0; k < cloud.probeBricks.size(); ++k) {
+					BakeBrick& b = bricks[cloud.probeBricks[k]];
+					glm::vec3 disp(0.0f);
+					uint32_t c0[3];
+					for (uint32_t a = 0; a < 3; ++a)
+						c0[a] = uint32_t(std::clamp(
+							int32_t(std::floor((b.probePos[a] - cloud.gmin[a]) / cloud.cell)),
+							0, int32_t(cloud.dims[a]) - 1));
+					for (int dx = -1; dx <= 1; ++dx) {
+						for (int dy = -1; dy <= 1; ++dy) {
+							for (int dz = -1; dz <= 1; ++dz) {
+								const int cx = int(c0[0]) + dx;
+								const int cy = int(c0[1]) + dy;
+								const int cz = int(c0[2]) + dz;
+								if (cx < 0 || cy < 0 || cz < 0
+									|| cx >= int(cloud.dims[0]) || cy >= int(cloud.dims[1])
+									|| cz >= int(cloud.dims[2]))
+									continue;
+								const uint32_t ci = uint32_t(cx)
+									+ cloud.dims[0] * (uint32_t(cy)
+										+ cloud.dims[1] * uint32_t(cz));
+								for (uint32_t s = cloud.cellStart[ci];
+									s < cloud.cellStart[ci + 1]; ++s) {
+									const uint32_t j = cloud.probeBricks[s];
+									if (j == cloud.probeBricks[k])
+										continue;
+									const glm::vec3 d = b.probePos - bricks[j].probePos;
+									const float dist = glm::length(d);
+									if (dist >= targetSpacing || dist < 1e-5f)
+										continue;
+									disp += (d / dist)
+										* ((targetSpacing - dist) / targetSpacing);
+								}
+							}
+						}
+					}
+					if (glm::dot(disp, disp) < 1e-8f)
+						continue;
+					glm::vec3 cand = b.probePos + disp * (size * 0.2f);
+					cand = glm::clamp(cand,
+						b.center - size * 0.5f, b.center + size * 0.5f);
+					if (scene.Bvh().ClosestDistance(cand) >= std::max(0.03f, size * 0.1f))
+						b.probePos = cand;
+				}
+			}
+		}
+
+		// Re-trace the 6-axis visibility from the relaxed positions (the
+		// baked distances belong to the final placement).
+		{
+			static const glm::vec3 kAxes[6] = {
+				{ 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 },
+				{ 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 },
+			};
+			for (BakeBrick& b : bricks) {
+				if (!b.hasProbe)
+					continue;
+				for (uint32_t k = 0; k < 6; ++k) {
+					TriangleBvh::Hit h;
+					float d = cfg.visibilityMaxDistance;
+					if (scene.Bvh().Raycast(b.probePos, kAxes[k],
+							cfg.visibilityMaxDistance, h))
+						d = std::min(h.t, cfg.visibilityMaxDistance);
+					b.vis[k] = std::max(d, 0.0f);
+				}
+			}
+		}
+
+		// ---- (2) Radiance diffusion: Laplacian smoothing over the
+		// same-level neighbor graph (heat equation on the probe field).
+		// Neighboring probes exchange amplitude mass; per-probe Monte
+		// Carlo noise equalizes instead of reading as colored dots.
+		for (uint32_t pass = 0; pass < cfg.smoothingPasses; ++pass) {
+			for (uint32_t lvl = 0; lvl < clouds.size(); ++lvl) {
+				LevelCloud& cloud = clouds[lvl];
+				if (cloud.probeBricks.empty())
+					continue;
+				const float size = cloud.cell;
+				const float r = cfg.probeSupportFactor * size;
+				const float r2 = r * r;
+				// Jacobi update: snapshot of deltas, applied after gather.
+				std::vector<glm::vec3> delta(cloud.probeBricks.size() * kSgLobeCount);
+				for (uint32_t k = 0; k < cloud.probeBricks.size(); ++k) {
+					const BakeBrick& b = bricks[cloud.probeBricks[k]];
+					uint32_t c0[3];
+					for (uint32_t a = 0; a < 3; ++a)
+						c0[a] = uint32_t(std::clamp(
+							int32_t(std::floor((b.probePos[a] - cloud.gmin[a]) / cloud.cell)),
+							0, int32_t(cloud.dims[a]) - 1));
+					glm::vec3 avg[kSgLobeCount] = {};
+					float wsum = 0.0f;
+					for (int dx = -1; dx <= 1; ++dx) {
+						for (int dy = -1; dy <= 1; ++dy) {
+							for (int dz = -1; dz <= 1; ++dz) {
+								const int cx = int(c0[0]) + dx;
+								const int cy = int(c0[1]) + dy;
+								const int cz = int(c0[2]) + dz;
+								if (cx < 0 || cy < 0 || cz < 0
+									|| cx >= int(cloud.dims[0]) || cy >= int(cloud.dims[1])
+									|| cz >= int(cloud.dims[2]))
+									continue;
+								const uint32_t ci = uint32_t(cx)
+									+ cloud.dims[0] * (uint32_t(cy)
+										+ cloud.dims[1] * uint32_t(cz));
+								for (uint32_t s = cloud.cellStart[ci];
+									s < cloud.cellStart[ci + 1]; ++s) {
+									const uint32_t j = cloud.probeBricks[s];
+									if (j == cloud.probeBricks[k])
+										continue;
+									const BakeBrick& nb = bricks[j];
+									const glm::vec3 d = b.probePos - nb.probePos;
+									const float dist2 = glm::dot(d, d);
+									if (dist2 >= r2)
+										continue;
+									const float x2 = dist2 / r2;
+									const float x2m = 1.0f - x2;
+									const float w = x2m * x2m * x2m;
+									wsum += w;
+									for (uint32_t i = 0; i < kSgLobeCount; ++i)
+										avg[i] += nb.amps[i] * w;
+								}
+							}
+						}
+					}
+					if (wsum <= 1e-4f)
+						continue;
+					for (uint32_t i = 0; i < kSgLobeCount; ++i)
+						delta[k * kSgLobeCount + i] =
+							(avg[i] / wsum - b.amps[i]) * cfg.smoothingLambda;
+				}
+				for (uint32_t k = 0; k < cloud.probeBricks.size(); ++k) {
+					BakeBrick& b = bricks[cloud.probeBricks[k]];
+					for (uint32_t i = 0; i < kSgLobeCount; ++i)
+						b.amps[i] += delta[k * kSgLobeCount + i];
+				}
+			}
+		}
+	}
+
+	// ------------------------------------------------------------------
 	// Assemble the volume
 	// ------------------------------------------------------------------
 	uint32_t maxLevel = 0;
@@ -759,7 +1002,7 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 	outVolume.levelCount = std::min(maxLevel + 1, kSgGiMaxLevels);
 	for (uint32_t lvl = 0; lvl < outVolume.levelCount; ++lvl) {
 		const float brickSize = cfg.rootBrickSize / float(1u << lvl);
-		// Cell = 2 bricks: a probe sphere (R = half diagonal ~= 0.87 brick)
+		// Cell = 2 bricks: a probe sphere (R = probeSupportFactor x brick)
 		// always intersects <= 2 cells per axis.
 		outVolume.cellSize[lvl] = brickSize * 2.0f;
 	}
@@ -770,7 +1013,7 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 			continue;
 		SgProbe p{};
 		p.position = b.probePos;
-		p.radius = b.size * 0.87f;
+		p.radius = b.size * cfg.probeSupportFactor;
 		for (uint32_t i = 0; i < kSgLobeCount; ++i)
 			p.amps[i] = b.amps[i];
 		for (uint32_t k = 0; k < 6; ++k)

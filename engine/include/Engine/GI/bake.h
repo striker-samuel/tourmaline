@@ -197,6 +197,15 @@ struct SgGiBakeConfig {
 	float probeClearanceFactor = 0.2f;  // keep probes >= factor * brickSize from surfaces
 	float probeMinClearance = 0.03f;   // absolute clearance floor (m)
 	float visibilityMaxDistance = 2.5f; // 6-axis obstacle distance cap (m)
+	float probeSupportFactor = 1.25f;  // support radius = factor * brickSize
+	                                     // (>1: neighboring probes overlap,
+	                                     // blends mix more probes and stay
+	                                     // smooth under visibility rejects)
+	// Diffusion procedure (see bake.cpp): placement relaxation +
+	// radiance smoothing passes over the probe graph.
+	uint32_t diffusionIterations = 8;  // repulsion relaxation passes (0 = off)
+	uint32_t smoothingPasses = 3;      // Laplacian radiance passes (0 = off)
+	float smoothingLambda = 0.6f;      // Laplacian step size per pass
 	uint32_t threadCount = 0;          // 0 = hardware concurrency
 	uint32_t seed = 1;
 };
