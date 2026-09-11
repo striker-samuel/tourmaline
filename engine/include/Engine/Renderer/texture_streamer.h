@@ -1,0 +1,182 @@
+#pragma once
+
+// Texture streaming (Granite-lite): mip-tail residency with Skull & Bones
+// style feedback-driven upgrades.
+//
+// The problem: every KTX2 texture uploads ALL mips into VRAM at load. A 4K
+// BC7 texture is ~16 MiB resident even when it covers 20 pixels.
+//
+// The model: each streamed texture keeps its full mip chain conceptually,
+// but only the contiguous tail [residentBase, fullMips) is backed by VRAM.
+// The VkImage is allocated at the tail resolution (base extent >>
+// residentBase) with (fullMips - residentBase) levels, so normalized-UV
+// sampling just works at lower detail. Changing residency reallocates the
+// image IN PLACE (same TextureHandle / ImageViewHandle / bindless slot),
+// so baked MaterialValues indices never go stale.
+//
+// Feedback (what SHOULD be resident):
+//   v1 (this file): CPU heuristic from screen coverage / distance.
+//   v2 (scaffolded in texture_feedback.h + texture_streaming.hlsli):
+//       GPU readback – shaders report the sampled LOD per texture into a
+//       feedback buffer (Skull & Bones, GPU Zen 3), read back 1-2 frames
+//       late, consumed here via RequestMip().
+//
+// Granite path: when sparse residency lands, only the RHI retarget changes
+// (bind physical tiles instead of reallocating); this manager, the budget
+// and the feedback inputs stay identical.
+//
+// Threading: render thread only. Update() must run between frames, followed
+// by ResourceManager::FlushUploads() to kick the re-uploads.
+
+#include <Engine/smvk.h>
+#include <Engine/Memory/pool.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace smvk {
+
+class ResourceManager;
+
+struct TextureStreamerConfig {
+	uint64_t budgetBytes = 256ull * 1024 * 1024; // VRAM budget for streamed textures
+	uint32_t minResidentMips = 2;   // floor: always keep >= N tail mips (tiny textures stay full)
+	uint32_t initialResidentDimCap = 512; // initial upload: coarsest base with long side <= cap
+	uint32_t maxUpgradesPerFrame = 2;     // realloc pacing (each costs a decode+transcode+upload)
+	uint32_t maxDowngradesPerFrame = 8;
+	uint32_t evictCooldownFrames = 30;    // idle hysteresis before decaying to the floor
+	float mipBias = 0.0f;                 // added to wanted mip (negative = sharper)
+};
+
+struct TextureStreamingStats {
+	uint64_t fullBytes = 0;      // what full-residency would cost
+	uint64_t residentBytes = 0;  // what is actually backed by VRAM
+	uint32_t textureCount = 0;
+	uint32_t fullResidentCount = 0; // textures currently at base 0
+	uint32_t upgradesLastUpdate = 0;
+	uint32_t downgradesLastUpdate = 0;
+};
+
+struct TextureStreamEntryDebug {
+	uint32_t handleIndex = 0;
+	uint32_t handleGen = 0;
+	std::string name;
+	uint32_t fullMips = 0;
+	uint32_t residentBase = 0; // full-chain mip index backing image level 0
+	uint32_t desiredBase = 0;  // feedback demand (min == sharpest)
+	uint32_t residentWidth = 0;
+	uint32_t residentHeight = 0;
+	uint64_t residentBytes = 0;
+	uint64_t fullBytes = 0;
+	uint32_t lastRequestFrame = 0;
+};
+
+class TextureStreamer {
+public:
+	explicit TextureStreamer(ResourceManager& ctx, TextureStreamerConfig config = {});
+	~TextureStreamer();
+
+	TextureStreamer(const TextureStreamer&) = delete;
+	TextureStreamer& operator=(const TextureStreamer&) = delete;
+
+	// Decode + transcode + upload ONLY the initial tail of a KTX2 payload
+	// and register it for streaming. The payload bytes must outlive the
+	// registration (the glTF path keeps them in Cluster::textureSources;
+	// call ReleaseTextureSources() only after the streamer is done).
+	// Returns an empty holder on failure (error already logged).
+	Holder<TextureHandle> StreamTexture(const void* payload, size_t payloadSize,
+		const std::string& debugName, const ImageCreateInfo& imageCI = {});
+
+	// Drop a texture from the budget (call before destroying its holder).
+	void Unregister(TextureHandle handle);
+
+	// Feedback input: full-chain mip index the texture needs this frame
+	// (0 = full res). Takes the minimum across callers; consumed by
+	// Update(), which then decays it back toward the floor.
+	void RequestMip(TextureHandle handle, uint32_t wantedFullMip, uint32_t frameIndex);
+
+	// Batch demand from the scene pass: bindless slot -> closest camera
+	// distance (meters) among this frame's instances sampling it. Entries
+	// are matched by their CURRENT bindless slot (stable across retargets);
+	// slots absent from the map get no request and decay via Update().
+	// Textures with no reporting instance keep their floor residency.
+	void RequestMipsByDistance(const std::unordered_map<uint32_t, float>& minDistBySlot,
+		float viewportHeightPx, float fovYRad, uint32_t frameIndex,
+		float approxWorldSize = 2.0f);
+
+	// CPU heuristic: which full-chain mip satisfies `screenCoveragePx`
+	// pixels of coverage for a texture with baseLongSide texels.
+	// m = ceil(log2(base / coverage)) + bias, clamped to [0, fullMips).
+	uint32_t WantedMipForScreenCoverage(uint32_t fullMips, uint32_t baseLongSide,
+		float screenCoveragePx) const;
+	static uint32_t WantedMipForScreenCoverage(uint32_t fullMips, uint32_t baseLongSide,
+		float screenCoveragePx, float mipBias);
+
+	// Distance-flavoured wrapper: coverage ~= viewportH * worldSize /
+	// (2 * dist * tan(fovY/2)). worldSize is the approximate world-space
+	// diameter the texture spans (default 2 m); per-texture bounds are a
+	// future refinement, not a correctness issue (bias covers the error).
+	uint32_t WantedMipForDistance(uint32_t fullMips, uint32_t baseLongSide,
+		float distance, float viewportHeightPx, float fovYRad,
+		float approxWorldSize = 2.0f) const;
+	static uint32_t WantedMipForDistance(uint32_t fullMips, uint32_t baseLongSide,
+		float distance, float viewportHeightPx, float fovYRad,
+		float approxWorldSize, float mipBias);
+
+	// Enforce the budget: upgrades toward demand, downgrades on pressure /
+	// idle decay. Retarget failures are logged and skipped (never fatal).
+	// Caller must FlushUploads() afterwards.
+	void Update(uint32_t frameIndex);
+
+	void SetConfig(const TextureStreamerConfig& config) { config_ = config; }
+	const TextureStreamerConfig& GetConfig() const { return config_; }
+
+	TextureStreamingStats GetStats() const;
+	std::vector<TextureStreamEntryDebug> GetEntriesDebug() const;
+
+	// BC7 block estimate (all engine KTX2 transcodes to BC7): 16 bytes per
+	// 4x4 block per mip per layer, summed over [firstMip, firstMip+mipCount).
+	static uint64_t EstimateResidentBytes(uint32_t baseWidth, uint32_t baseHeight,
+		uint32_t firstMip, uint32_t mipCount, uint32_t arrayLayers = 1);
+
+private:
+	struct Entry {
+		TextureHandle handle{};
+		const void* payloadData = nullptr; // non-owning (see StreamTexture)
+		size_t payloadSize = 0;
+		std::string name;
+		uint32_t fullMips = 1;
+		uint32_t baseWidth = 1;
+		uint32_t baseHeight = 1;
+		uint32_t arrayLayers = 1;
+		uint32_t residentBase = 0;
+		uint32_t desiredBase = 0; // min demand since last Update
+		uint32_t lastRequestFrame = 0;
+		uint32_t lastChangeFrame = 0;
+		bool everRequested = false;
+	};
+
+	static uint64_t EntryKey(TextureHandle h) {
+		return (static_cast<uint64_t>(h.gen()) << 32) | h.index();
+	}
+
+	uint32_t initialBaseFor(uint32_t fullMips, uint32_t baseLongSide) const;
+	uint32_t maxBaseFor(uint32_t fullMips) const; // coarsest base allowed by minResidentMips
+	bool retarget(Entry& e, uint32_t newBase, uint32_t frameIndex);
+
+	ResourceManager& ctx_;
+	TextureStreamerConfig config_;
+	std::unordered_map<uint64_t, Entry> entries_;
+	// Guards entries_ across the parallel texture-load path (one shard per
+	// worker, same contract as LoadKtxTexturesParallelMemory). Update() and
+	// the frame loop never contend: loads join before frames start.
+	mutable std::mutex mutex_;
+	uint32_t statsUpgrades_ = 0;
+	uint32_t statsDowngrades_ = 0;
+};
+
+} // namespace smvk

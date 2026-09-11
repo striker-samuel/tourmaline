@@ -27,6 +27,25 @@ public:
     Holder<ImageHandle> CreateImage(const ImageCreateInfo& ci, const void* data = nullptr);
     Holder<TextureHandle> CreateTexture(const ImageCreateInfo& ci, const void* data = nullptr);
      Holder<TextureHandle> CreateTexture(ktxTexture2& texture, const char* debugName = "Texture", ImageCreateInfo imageCreateInfo = {});
+    // Texture-streaming path: uploads only the mip subrange
+    // [firstMip, firstMip + mipCount) of an already-transcoded KTX2 object.
+    // The VkImage is allocated at the subrange resolution (base extent >>
+    // firstMip) with mipCount levels and mip indices remapped so level 0 of
+    // the image is full-chain mip firstMip. Normalized-UV sampling is
+    // unaffected; the image simply carries less detail. firstMip +
+    // mipCount must be <= texture.numLevels after transcoding.
+    Holder<TextureHandle> CreateStreamingTexture(ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount,
+                                                 const char* debugName = "Texture", ImageCreateInfo imageCreateInfo = {});
+    // In-place residency change for a streamed texture: reallocates the
+    // backing VkImage for the new subrange and re-uploads from `texture`
+    // (same transcode requirement as CreateStreamingTexture). Handles stay
+    // stable – the same TextureHandle, ImageViewHandle and bindless
+    // descriptor slot keep working, so baked MaterialValues indices are
+    // untouched. Old backing memory retires through the deferred-destroy
+    // queue (safe while frames are in flight); the caller must still
+    // FlushUploads() afterwards to kick the re-upload.
+    void RetargetStreamingTexture(TextureHandle handle, ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount,
+                                  const char* debugName = "Texture");
     Holder<BindlessImageHandle> CreateBindlessImage(ImageViewHandle viewHandle, ImageLayout readLayout);
     Holder<ImageViewHandle> CreateImageView(ImageHandle image, const ImageViewCreateInfo& ci);
     // Recreate helpers (kept for swapchain)

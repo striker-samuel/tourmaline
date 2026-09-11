@@ -4,6 +4,8 @@
 
 #include <Engine/Utils/gltf.h>
 #include <Engine/Utils/texture_loader.h>
+#include <Engine/Renderer/texture_streamer.h>
+#include <Engine/Utils/thread_pool.h>
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/core.h>
@@ -11,8 +13,11 @@
 
 #include <array>
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <fstream>
+#include <future>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include <string>
@@ -268,11 +273,30 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 	else {
 		if (!cluster.ctx_)
 			return {};
-		auto holder = smvk::LoadKtxTextureMemory(*cluster.ctx_, bytes->data(), bytes->size(), identity);
-		if (!holder.valid())
-			return {};
-		h = holder;
-		cluster.textures.create(std::move(holder));
+		if (textureStreamer_ != nullptr && !identity.empty())
+		{
+			// Streaming path: stash the payload in the cluster FIRST – the
+			// streamer keeps a non-owning view of it for future upgrades –
+			// then upload only the initial tail.
+			cluster.SetTextureSource(identity, std::move(*bytes));
+			const std::vector<uint8_t>* stored = cluster.GetTextureSource(identity);
+			if (!stored || stored->empty())
+				return {};
+			auto holder = textureStreamer_->StreamTexture(
+				stored->data(), stored->size(), identity);
+			if (!holder.valid())
+				return {};
+			h = holder;
+			cluster.textures.create(std::move(holder));
+		}
+		else
+		{
+			auto holder = smvk::LoadKtxTextureMemory(*cluster.ctx_, bytes->data(), bytes->size(), identity);
+			if (!holder.valid())
+				return {};
+			h = holder;
+			cluster.textures.create(std::move(holder));
+		}
 	}
 	textureCache[imageIndex] = h;
 	if (!identity.empty()) {
@@ -291,7 +315,10 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 			}
 		}
 		cluster.RegisterTextureSampler(identity, samp);
-		cluster.SetTextureSource(identity, std::move(*bytes));
+		// The streaming path already stashed the payload above (moved-from
+		// `bytes` is empty there); the full-res path stashes it here.
+		if (bytes.has_value() && !bytes->empty())
+			cluster.SetTextureSource(identity, std::move(*bytes));
 	}
 	return h;
 }
@@ -706,6 +733,86 @@ void GltfToSceneImporter::preloadTextures()
 		}
 #ifndef NDEBUG
 		std::cout << "Cook-staged " << pendings.size() << " texture payloads" << std::endl;
+#endif
+		return;
+	}
+
+	// Streaming path: tail-resident uploads through the TextureStreamer.
+	// Payloads are stashed in the cluster first (the streamer views
+	// cluster-owned bytes for future upgrades); decode + tail upload runs
+	// on workers, registration back on this thread. The pool joins before
+	// return, so no frames can interleave (same contract as full-res).
+	if (textureStreamer_ != nullptr && cluster.ctx_ != nullptr) {
+		const auto t0 = std::chrono::steady_clock::now();
+		for (Pending& p : pendings) {
+			if (!p.identity.empty())
+				cluster.SetTextureSource(p.identity, std::move(p.bytes));
+		}
+		size_t threadCount = std::thread::hardware_concurrency();
+		if (threadCount == 0) threadCount = 4;
+		if (threadCount > pendings.size()) threadCount = pendings.size();
+		size_t succeeded = 0, failed = 0;
+		{
+			smvk::ThreadPool pool(threadCount);
+			std::vector<std::future<std::pair<int, smvk::Holder<smvk::TextureHandle>>>> futures;
+			futures.reserve(pendings.size());
+			for (size_t i = 0; i < pendings.size(); ++i) {
+				// Borrow the cluster-owned payload (stable after the stash
+				// loop above; registration below only runs after join).
+				const std::vector<uint8_t>* stored =
+					cluster.GetTextureSource(pendings[i].identity);
+				const std::string identity = pendings[i].identity;
+				futures.push_back(pool.enqueue([this, stored, identity] {
+					smvk::Holder<smvk::TextureHandle> holder;
+					if (stored && !stored->empty())
+						holder = textureStreamer_->StreamTexture(
+							stored->data(), stored->size(), identity);
+					return std::make_pair(0, std::move(holder));
+				}));
+			}
+			for (size_t i = 0; i < futures.size(); ++i) {
+				try {
+					auto [unused, holder] = futures[i].get();
+					(void)unused;
+					if (!holder.valid()) { ++failed; continue; }
+					++succeeded;
+					Pending& p = pendings[i];
+					smvk::TextureHandle h = holder;
+					cluster.textures.create(std::move(holder));
+					textureCache[p.imageIndex] = h;
+					if (!p.identity.empty()) {
+						cluster.RegisterTextureUri(p.identity, h);
+						smvk::TextureSamplerDesc samp;
+						if (p.textureIndex >= 0 && p.textureIndex < (int)model.textures.size()) {
+							const int s = model.textures[p.textureIndex].sampler;
+							if (s >= 0 && s < (int)model.samplers.size()) {
+								const auto& ts = model.samplers[s];
+								samp.magFilter = ts.magFilter;
+								samp.minFilter = ts.minFilter;
+								samp.wrapS = ts.wrapS;
+								samp.wrapT = ts.wrapT;
+							}
+						}
+						cluster.RegisterTextureSampler(p.identity, samp);
+						// Payload already stashed above; nothing to move here.
+					}
+				}
+				catch (const std::exception& e) {
+					std::cerr << "Texture streaming worker failed: " << e.what() << std::endl;
+					++failed;
+				}
+			}
+		}
+		const auto t1 = std::chrono::steady_clock::now();
+		const double seconds = std::chrono::duration<double>(t1 - t0).count();
+#ifndef NDEBUG
+		std::cout << "Stream-preloaded " << succeeded << "/" << pendings.size()
+			<< " textures in " << seconds << "s"
+			<< (failed ? " (" + std::to_string(failed) + " failed)" : "")
+			<< " (tail-resident)" << std::endl;
+#else
+		(void)seconds;
+		(void)failed;
 #endif
 		return;
 	}

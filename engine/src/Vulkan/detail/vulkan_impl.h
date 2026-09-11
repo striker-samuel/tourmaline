@@ -530,6 +530,9 @@ namespace smvk {
 		Holder<ImageHandle>          CreateImage(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<TextureHandle>        CreateTexture(ImageCreateInfo imageCreateInfo, const void* data = nullptr);
 		Holder<TextureHandle>        CreateTexture(ktxTexture2& texture, const char* debugName = "Texture", ImageCreateInfo imageCreateInfo = {});
+		// Streaming subrange variant + in-place retarget (see RHI/resource_manager.h).
+		Holder<TextureHandle>        CreateStreamingTexture(ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount, const char* debugName = "Texture", ImageCreateInfo imageCreateInfo = {});
+		void                          RetargetStreamingTexture(TextureHandle handle, ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount, const char* debugName = "Texture");
 		Holder<BindlessImageHandle>  CreateBindlessImage(ImageViewHandle viewHandle, VkImageLayout readLayout);
 		Holder<ImageViewHandle>      CreateImageView(ImageHandle image, const ImageViewCreateInfo& createInfo);
 		ImageViewHandle               RegisterImageView(VkImageView vkView, Format format, const char* name = nullptr);

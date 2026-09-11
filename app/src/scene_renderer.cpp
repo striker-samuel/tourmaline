@@ -718,6 +718,27 @@ bool SceneRenderer::Initialize() {
 
 		smvk::AllocateStaticVertexFmt(*m_context);
 
+		// Texture streaming: tail-resident glTF uploads with a CPU
+		// screen-coverage demand pass (see UpdateTextureStreaming). The
+		// streamer views cluster-owned KTX payloads, so clusters must
+		// outlive it (they do: world owns both). Conservative defaults:
+		// <=1K textures load full, 2K/4K load capped and upgrade on
+		// demand within a few frames.
+		if (m_textureStreamingEnabled && !m_textureStreamer) {
+			smvk::TextureStreamerConfig streamCfg;
+			streamCfg.budgetBytes = 256ull * 1024 * 1024;
+			streamCfg.minResidentMips = 2;
+			streamCfg.initialResidentDimCap = 1024;
+			streamCfg.maxUpgradesPerFrame = 4;
+			streamCfg.maxDowngradesPerFrame = 8;
+			streamCfg.evictCooldownFrames = 60;
+			streamCfg.mipBias = 0.0f;
+			m_textureStreamer =
+				std::make_unique<smvk::TextureStreamer>(*m_context, streamCfg);
+		}
+		smvk::TextureStreamer* sceneStreamer =
+			(m_textureStreamingEnabled && m_textureStreamer) ? m_textureStreamer.get() : nullptr;
+
 		// Scene import: prefer the cooked pak (fast path, meshopt'd meshes,
 		// embedded textures), fall back to glTF via the VFS when no pak is
 		// present (dev iteration). Either way the Cluster is registered
@@ -790,7 +811,7 @@ bool SceneRenderer::Initialize() {
 			}
 
 			auto& cluster = m_world->LoadCluster(*m_context);
-			GltfToCluster(*m_context, model, sceneGltf, cluster, smvk::MeshOptConfig{}, smvk::MeshletConfig{}, m_scene.coordFix, m_scene.preTransform);
+			GltfToCluster(*m_context, model, sceneGltf, cluster, smvk::MeshOptConfig{}, smvk::MeshletConfig{}, m_scene.coordFix, m_scene.preTransform, sceneStreamer);
 		}
 
 		// Freeze everything static (no recook needed): the exporters stamp
@@ -1398,6 +1419,55 @@ void SceneRenderer::Shutdown() {
 				frameOffset
 			);
 		}
+	}
+
+	// Texture-streaming tick (see Engine/Renderer/texture_streamer.h).
+	// Demand: every 4th frame, closest camera distance per bindless texture
+	// slot over all renderable instances (instance origin as the distance
+	// proxy; approxWorldSize absorbs the error). Budget: every frame, paced
+	// retargets; re-uploads join the next FlushUploads below. streamFrame
+	// is the monotonic m_frameCounter, never the swapchain slot.
+	void SceneRenderer::UpdateTextureStreaming(const FrameUniforms& frameData, smvk::Extent2D renderExtent) {
+		(void)frameData;
+		if (!m_textureStreamingEnabled || !m_textureStreamer)
+			return;
+		const uint32_t streamFrame = static_cast<uint32_t>(m_frameCounter);
+		if ((m_frameCounter & 3u) == 0u) {
+			std::unordered_map<uint32_t, float> minDist;
+			minDist.reserve(256);
+			const glm::vec3 eye = m_cameraPositioner.cameraPosition_;
+			auto note = [&](int slot, float dist) {
+				if (slot < 0)
+					return;
+				const uint32_t s = static_cast<uint32_t>(slot);
+				auto it = minDist.find(s);
+				if (it == minDist.end() || dist < it->second)
+					minDist[s] = dist;
+			};
+			m_world->forEachRenderItem(
+				smvk::IteratorFlagBit_Renderable,
+				[&](const smvk::World::RenderItem& item) {
+					if (item.material == smvk::World::kInvalidIndex)
+						return;
+					const smvk::Material* mat = m_world->GetMaterial(item.material);
+					if (!mat)
+						return;
+					const glm::mat4& model = m_world->scene.globalTransform[item.node];
+					const float dist = glm::distance(eye, glm::vec3(model[3]));
+					note(mat->values.textures.x, dist);
+					note(mat->values.textures.y, dist);
+					note(mat->values.textures.z, dist);
+					note(mat->values.textures.w, dist);
+					note(mat->values.textures2.x, dist);
+				});
+			const float fovY = glm::radians(kCameraFovYDegrees);
+			m_textureStreamer->RequestMipsByDistance(minDist,
+				static_cast<float>(renderExtent.height), fovY, streamFrame);
+		}
+		m_textureStreamer->Update(streamFrame);
+		const smvk::TextureStreamingStats stats = m_textureStreamer->GetStats();
+		if (stats.upgradesLastUpdate > 0 || stats.downgradesLastUpdate > 0)
+			m_context->FlushUploads();
 	}
 
 	// Histogram readback switch. ON: the engine download now uses a
@@ -2477,6 +2547,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent, swapExtent);
 		const smvk::GpuDirectionalLightDescription dirLight = UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
+		UpdateTextureStreaming(frameData, renderExtent);
 		const uint32_t fpLightCount = UpdateForwardPlusLights(fb.frameIndex, frameData);
 
 		// ---------------------------------------------------------------------
@@ -4459,6 +4530,22 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 				} else {
 					ImGui::TextDisabled("GPU memory: no heap data");
 				}
+				// Texture streaming: resident tail vs full-residency cost.
+				if (m_textureStreamer) {
+					const smvk::TextureStreamingStats tstats = m_textureStreamer->GetStats();
+					const double resMiB = (double)tstats.residentBytes / 1048576.0;
+					const double fullMiB = (double)tstats.fullBytes / 1048576.0;
+					const double savedPct = fullMiB > 0.0
+						? 100.0 * (1.0 - resMiB / fullMiB) : 0.0;
+					ImGui::Text("Streaming: %u tex (%u full)  %.0f/%.0f MiB resident (%.0f%% saved)  +%u -%u",
+						tstats.textureCount, tstats.fullResidentCount,
+						resMiB, fullMiB, savedPct,
+						tstats.upgradesLastUpdate, tstats.downgradesLastUpdate);
+				}
+				else {
+					ImGui::TextDisabled("Streaming: off (full-resident)");
+				}
+				ImGui::Checkbox("texture streaming (applies to next scene load)", &m_textureStreamingEnabled);
 			}
 			ImGui::Separator();
 			{

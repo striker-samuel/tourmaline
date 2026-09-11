@@ -15,6 +15,8 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Vfs/vfs.h>
 
+namespace smvk { class TextureStreamer; }
+
 struct GltfToSceneImporter
 {
 	GltfToSceneImporter(
@@ -22,7 +24,7 @@ struct GltfToSceneImporter
 		const tinygltf::Model& inModel,
 		std::filesystem::path inGltfModelPath
 	);
-	void import(int gltfNodeIndex) {
+	void setTextureStreamer(smvk::TextureStreamer* streamer) { textureStreamer_ = streamer; }	void import(int gltfNodeIndex) {
 		importNodeRecursive(gltfNodeIndex, 0, 1);
 	}
 	// Multicore texture read + upload: decodes/transcodes all KTX2 files
@@ -79,6 +81,10 @@ private:
 	std::vector<smvk::ClusterMaterialHandle> materialCache;
 	std::vector<std::vector<smvk::ClusterStaticMeshHandle>> meshCache;
 	std::unordered_map<int, smvk::TextureHandle> textureCache; // imageIndex -> handle
+	// Optional texture-streaming sink: when set (and not cooking), uploads
+	// go through TextureStreamer::StreamTexture (tail-resident) instead of
+	// the full-res LoadKtxTexture* path. Owned by the caller (app/world).
+	smvk::TextureStreamer* textureStreamer_ = nullptr;
 
 	smvk::TextureHandle loadTextureForImage(int imageIndex, int textureIndex);
 	smvk::ClusterMaterialHandle defaultMaterialHandle{};
@@ -138,7 +144,8 @@ inline void GltfToCluster(
 	const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
 	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
 	int coordFix = 0, // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale
-	const glm::mat4& preTransform = glm::mat4(1.0f)
+	const glm::mat4& preTransform = glm::mat4(1.0f),
+	smvk::TextureStreamer* streamer = nullptr // tail-resident uploads when set (see texture_streamer.h)
 ) {
 	GltfToSceneImporter importer{
 		out,
@@ -149,6 +156,7 @@ inline void GltfToCluster(
 	importer.setMeshletConfig(meshlets);
 	importer.setCoordFix(coordFix);
 	importer.setPreTransform(preTransform);
+	importer.setTextureStreamer(streamer);
 
 	assert(out.scene.hierarchy.empty());
 

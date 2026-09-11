@@ -27,6 +27,7 @@
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cookies.h>
 #include <Engine/Renderer/renderview.h>
+#include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/deferredshadow.h>
@@ -983,6 +984,15 @@ protected:
 		glm::vec3(0.0f, 1.0f, 0.0f) //up
 	);
 	Camera m_camera = Camera(m_cameraPositioner);
+	// ---- Texture streaming (mip-tail residency, see
+	// Engine/Renderer/texture_streamer.h). Owns residency for every
+	// glTF-loaded texture; pak-loaded textures stay full-resident until
+	// the pak backend learns to hand over payloads (follow-up).
+	bool m_textureStreamingEnabled = true;
+	std::unique_ptr<smvk::TextureStreamer> m_textureStreamer;
+	// CPU demand + budget tick. streamFrame must be monotonic (NOT the
+	// swapchain slot); call once per RenderFrame after UpdateMaterials.
+	void UpdateTextureStreaming(const FrameUniforms& frameData, smvk::Extent2D renderExtent);
 };
 
 } // namespace app

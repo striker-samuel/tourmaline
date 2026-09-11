@@ -4400,6 +4400,557 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 			)
 	};
 }
+
+namespace {
+// -------------------------------------------------------------------------
+// Texture-streaming helpers: KTX2 mip-subrange upload plan.
+//
+// A streamed texture keeps the full mip chain conceptually but only the
+// contiguous tail [firstMip, firstMip + residentMips) is backed by VRAM.
+// The VkImage is allocated at the subrange resolution (base extent >>
+// firstMip) with residentMips levels; copy regions address full-chain mips
+// but are remapped (mipLevel = globalMip - firstMip) so level 0 of the
+// image is full-chain mip firstMip. Normalized-UV sampling is unaffected.
+// -------------------------------------------------------------------------
+struct KtxStreamPlan {
+	VkFormat vkFormat = VK_FORMAT_UNDEFINED;
+	smvk::Format format = smvk::Format::Undefined;
+	smvk::ImageUsage usage =
+		smvk::ImageUsage::Sampled |
+		smvk::ImageUsage::TransferDst;
+	uint32_t width = 1;
+	uint32_t height = 1;
+	uint32_t depth = 1;
+	uint32_t firstMip = 0;
+	uint32_t residentMips = 1;
+	uint32_t fullMips = 1;
+	uint32_t arrayLayers = 1;
+	uint32_t ktxLayers = 1;
+	uint32_t faces = 1;
+	bool is1D = false;
+	bool is2D = true;
+	bool is3D = false;
+	bool isCubemap = false;
+	ktx_uint8_t* data = nullptr;
+	ktx_size_t dataSize = 0;
+	std::vector<VkBufferImageCopy> regions;
+};
+
+// Transcodes (Basis -> BC7 when needed) and builds the copy regions for
+// [firstMip, firstMip + mipCount). Throws std::runtime_error on bad input.
+// Mirrors the validation/transcode/format path of CreateTexture(ktx...).
+KtxStreamPlan PrepareKtxStreamPlan(ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount)
+{
+	KtxStreamPlan plan{};
+
+	const khr_df_transfer_e transferFunction =
+		ktxTexture2_GetTransferFunction_e(&texture);
+	const bool useSRGB =
+		transferFunction == KHR_DF_TRANSFER_SRGB;
+
+	if (texture.numDimensions < 1 ||
+		texture.numDimensions > 3)
+	{
+		throw std::runtime_error(
+			"KTX texture has invalid dimensionality."
+		);
+	}
+
+	plan.is1D = texture.numDimensions == 1;
+	plan.is2D = texture.numDimensions == 2;
+	plan.is3D = texture.numDimensions == 3;
+	plan.isCubemap = texture.isCubemap == KTX_TRUE;
+
+	if (plan.isCubemap && !plan.is2D)
+	{
+		throw std::runtime_error(
+			"KTX cubemap must be a 2D texture."
+		);
+	}
+
+	if (ktxTexture2_NeedsTranscoding(&texture))
+	{
+		const KTX_error_code result =
+			ktxTexture2_TranscodeBasis(
+				&texture,
+				KTX_TTF_BC7_RGBA,
+				0
+			);
+
+		if (result != KTX_SUCCESS)
+		{
+			throw std::runtime_error(
+				ktxErrorString(result)
+			);
+		}
+	}
+
+	texture.generateMipmaps = KTX_FALSE;
+
+	const VkFormat sourceVkFormat =
+		ktxTexture2_GetVkFormat(&texture);
+
+	if (sourceVkFormat == VK_FORMAT_UNDEFINED)
+	{
+		throw std::runtime_error(
+			"KTX texture has undefined VkFormat after transcoding."
+		);
+	}
+
+	VkFormat imageVkFormat = sourceVkFormat;
+
+	if (useSRGB)
+	{
+		imageVkFormat = toSRGBVkFormat(sourceVkFormat);
+
+		if (imageVkFormat == VK_FORMAT_UNDEFINED)
+		{
+			throw std::runtime_error(
+				"KTX texture requires sRGB sampling, "
+				"but its Vulkan format has no supported sRGB variant."
+			);
+		}
+	}
+
+	const smvk::Format format = fromVkFormat(imageVkFormat);
+
+	if (format == smvk::Format::Undefined)
+	{
+		throw std::runtime_error(
+			"KTX texture uses a format unsupported by smvk::Format."
+		);
+	}
+
+	const uint32_t fullMips =
+		std::max(1u, texture.numLevels);
+
+	if (firstMip >= fullMips)
+	{
+		throw std::runtime_error(
+			"Streaming firstMip is past the end of the KTX mip chain."
+		);
+	}
+
+	uint32_t residentMips = mipCount == 0
+		? 1u
+		: std::min(mipCount, fullMips - firstMip);
+
+	if (residentMips == 0)
+	{
+		throw std::runtime_error(
+			"Streaming mip subrange is empty."
+		);
+	}
+
+	const uint32_t baseWidth = std::max(1u, texture.baseWidth);
+	const uint32_t baseHeight = plan.is1D
+		? 1u
+		: std::max(1u, texture.baseHeight);
+	const uint32_t baseDepth = plan.is3D
+		? std::max(1u, texture.baseDepth)
+		: 1u;
+
+	plan.vkFormat = imageVkFormat;
+	plan.format = format;
+	plan.width = std::max(1u, baseWidth >> firstMip);
+	plan.height = plan.is1D ? 1u : std::max(1u, baseHeight >> firstMip);
+	plan.depth = plan.is3D ? std::max(1u, baseDepth >> firstMip) : 1u;
+	plan.firstMip = firstMip;
+	plan.residentMips = residentMips;
+	plan.fullMips = fullMips;
+
+	plan.ktxLayers = std::max(1u, texture.numLayers);
+	plan.faces = std::max(1u, texture.numFaces);
+	plan.arrayLayers = plan.is3D ? 1u : plan.ktxLayers * plan.faces;
+
+	auto* base = reinterpret_cast<ktxTexture*>(&texture);
+
+	plan.dataSize = ktxTexture_GetDataSizeUncompressed(base);
+	plan.data = ktxTexture_GetData(base);
+
+	if (!plan.data || plan.dataSize == 0)
+	{
+		throw std::runtime_error(
+			"KTX texture contains no image data."
+		);
+	}
+
+	plan.regions.reserve(
+		(size_t)residentMips *
+		plan.ktxLayers *
+		plan.faces
+	);
+
+	for (uint32_t r = 0; r < residentMips; ++r)
+	{
+		const uint32_t mip = firstMip + r;
+
+		const uint32_t mipWidth = std::max(1u, baseWidth >> mip);
+		const uint32_t mipHeight = plan.is1D
+			? 1u
+			: std::max(1u, baseHeight >> mip);
+		const uint32_t mipDepth = plan.is3D
+			? std::max(1u, baseDepth >> mip)
+			: 1u;
+
+		for (uint32_t layer = 0; layer < plan.ktxLayers; ++layer)
+		{
+			for (uint32_t face = 0; face < plan.faces; ++face)
+			{
+				ktx_size_t offset = 0;
+
+				const KTX_error_code result =
+					ktxTexture2_GetImageOffset(
+						&texture,
+						mip,
+						layer,
+						face,
+						&offset
+					);
+
+				if (result != KTX_SUCCESS)
+				{
+					throw std::runtime_error(
+						"ktxTexture2_GetImageOffset failed."
+					);
+				}
+
+				VkBufferImageCopy region{};
+				region.bufferOffset = static_cast<VkDeviceSize>(offset);
+				region.bufferRowLength = 0;
+				region.bufferImageHeight = 0;
+				region.imageSubresource.aspectMask =
+					VK_IMAGE_ASPECT_COLOR_BIT;
+				// Remap: image level 0 == full-chain mip firstMip.
+				region.imageSubresource.mipLevel = r;
+				region.imageSubresource.baseArrayLayer =
+					plan.is3D ? 0 : layer * plan.faces + face;
+				region.imageSubresource.layerCount = 1;
+				region.imageOffset = { 0, 0, 0 };
+				region.imageExtent = { mipWidth, mipHeight, mipDepth };
+
+				plan.regions.push_back(region);
+			}
+		}
+	}
+
+	return plan;
+}
+
+// VkImageCreateInfo shared by the streaming create + retarget paths.
+// Matches the fixed-function choices of CreateTexture(ktx...).
+VkImageCreateInfo KtxStreamVkImageCI(const KtxStreamPlan& plan, bool hostTransfer)
+{
+	VkImageCreateInfo imageCI{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+
+	imageCI.flags = plan.isCubemap
+		? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT
+		: 0;
+
+	// Note: cubemaps are 2D images (cube-compatible), like the
+	// non-streamed CreateTexture(ktx...) path above.
+	imageCI.imageType = plan.is1D
+		? VK_IMAGE_TYPE_1D
+		: (plan.is3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D);
+
+	imageCI.format = plan.vkFormat;
+	imageCI.extent = { plan.width, plan.height, plan.depth };
+	imageCI.mipLevels = plan.residentMips;
+	imageCI.arrayLayers = plan.arrayLayers;
+	imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
+	imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+	imageCI.usage = toVkImageUsageFlags(plan.usage);
+	if (hostTransfer)
+	{
+		imageCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
+	}
+	imageCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	imageCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+	return imageCI;
+}
+
+smvk::ImageType KtxStreamRhiType(const KtxStreamPlan& plan)
+{
+	if (plan.is1D) return smvk::ImageType::Image1D;
+	if (plan.is3D) return smvk::ImageType::Image3D;
+	return smvk::ImageType::Image2D;
+}
+
+} // namespace
+
+[[nodiscard]] smvk::Holder<smvk::TextureHandle> smvk::VulkanResourceManager::CreateStreamingTexture(ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount, const char* debugName, ImageCreateInfo imageCreateInfo)
+{
+	KtxStreamPlan plan = PrepareKtxStreamPlan(texture, firstMip, mipCount);
+
+	const bool hostTransfer = imageCreateInfo.hostTransfer;
+	if (hostTransfer)
+	{
+		assert(m_hostImageCopySupported);
+		assert(IsHostTransferSupported(plan.vkFormat));
+	}
+
+	VkImageCreateInfo imageCI = KtxStreamVkImageCI(plan, hostTransfer);
+
+	VmaAllocationCreateInfo allocCI{};
+	allocCI.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+	allocCI.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+	VkImage vkImage = VK_NULL_HANDLE;
+	VmaAllocation allocation = VK_NULL_HANDLE;
+
+	VK_CHECK(vmaCreateImage(
+		m_allocator, &imageCI, &allocCI,
+		&vkImage, &allocation, nullptr));
+
+	Image image{};
+	image.vkImage = vkImage;
+	image.allocation = allocation;
+	image.type = KtxStreamRhiType(plan);
+	image.extent = { plan.width, plan.height, plan.depth };
+	image.format = plan.format;
+	image.usage = plan.usage;
+	image.samples = SampleCount::Count1;
+	image.mipLevels = plan.residentMips;
+	image.arrayLayers = imageCI.arrayLayers;
+	image.liveViewCount = 0;
+	image.ownership = ResourceOwnership::Owned;
+
+	const ImageHandle imageHandle =
+		images_.create(std::move(image));
+
+	Holder<ImageHandle> imageHolder{ this, imageHandle };
+
+#if defined(_DEBUG)
+	if (debugName)
+	{
+		VkDebugUtilsObjectNameInfoEXT nameInfo{
+			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
+		};
+		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+		nameInfo.objectHandle = reinterpret_cast<uint64_t>(vkImage);
+		nameInfo.pObjectName = debugName;
+		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+	}
+#else
+	(void)debugName;
+#endif
+
+	ImageViewCreateInfo viewCI{};
+
+	if (plan.isCubemap)
+	{
+		viewCI.viewType = plan.ktxLayers > 1
+			? ImageViewType::ViewCubeArray
+			: ImageViewType::ViewCube;
+	}
+	else if (plan.is1D)
+	{
+		viewCI.viewType = plan.ktxLayers > 1
+			? ImageViewType::View1DArray
+			: ImageViewType::View1D;
+	}
+	else if (plan.is3D)
+	{
+		viewCI.viewType = ImageViewType::View3D;
+	}
+	else if (plan.ktxLayers > 1)
+	{
+		viewCI.viewType = ImageViewType::View2DArray;
+	}
+	else
+	{
+		viewCI.viewType = ImageViewType::View2D;
+	}
+
+	viewCI.format = Format::Undefined;
+	viewCI.subresourceRange = {
+		.aspect = ImageAspect::Color,
+		.baseMipLevel = 0,
+		.mipLevelCount = plan.residentMips,
+		.baseArrayLayer = 0,
+		.arrayLayerCount = imageCI.arrayLayers
+	};
+	viewCI.name = debugName;
+
+	auto viewHolder = CreateImageView(imageHandle, viewCI);
+	auto bindlessHolder = CreateBindlessImage(
+		viewHolder, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+	{
+		m_streamer->uploadImageKtx(
+			imageHandle, plan.data, plan.dataSize, plan.regions,
+			VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+			VK_ACCESS_2_SHADER_READ_BIT);
+	}
+
+	Texture textureResource{
+		.image = imageHolder.release(),
+		.view = viewHolder.release(),
+		.bindless = bindlessHolder.release()
+	};
+
+	return Holder<TextureHandle>{
+		this,
+			textures_.create(std::move(textureResource))
+	};
+}
+
+void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle, ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount, const char* debugName)
+{
+	Texture* rec = textures_.get(handle);
+	if (!rec)
+	{
+		throw std::runtime_error(
+			"RetargetStreamingTexture: invalid texture handle."
+		);
+	}
+
+	Image* img = images_.get(rec->image);
+	ImageView* view = imageViews_.get(rec->view);
+	if (!img || !view)
+	{
+		throw std::runtime_error(
+			"RetargetStreamingTexture: texture references are stale."
+		);
+	}
+
+	KtxStreamPlan plan = PrepareKtxStreamPlan(texture, firstMip, mipCount);
+
+	// Streaming textures always come through the KTX path with host
+	// transfer enabled (see texture_loader.cpp); keep the usage bit when
+	// the device/format supports it so the fast host-copy upload stays
+	// available after the retarget.
+	const bool hostTransfer =
+		m_hostImageCopySupported &&
+		IsHostTransferSupported(plan.vkFormat);
+
+	VkImageCreateInfo imageCI = KtxStreamVkImageCI(plan, hostTransfer);
+
+	VmaAllocationCreateInfo allocCI{};
+	allocCI.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+	allocCI.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+	VkImage newImage = VK_NULL_HANDLE;
+	VmaAllocation newAlloc = VK_NULL_HANDLE;
+
+	VK_CHECK(vmaCreateImage(
+		m_allocator, &imageCI, &allocCI,
+		&newImage, &newAlloc, nullptr));
+
+	// Retire the old backing lazily: in-flight frames may still sample
+	// it, so destruction waits for the latest graphics submit to retire.
+	// Must be called from the render thread between frames (same contract
+	// as DeferDestroy).
+	{
+		VkImage oldImage = img->vkImage;
+		VmaAllocation oldAlloc = img->allocation;
+		VmaAllocator allocator = m_allocator;
+		DeferDestroy(std::packaged_task<void()>([
+			allocator, oldImage, oldAlloc]
+		{
+			if (oldImage != VK_NULL_HANDLE)
+				vmaDestroyImage(allocator, oldImage, oldAlloc);
+		}));
+	}
+
+	img->vkImage = newImage;
+	img->allocation = newAlloc;
+	img->type = KtxStreamRhiType(plan);
+	img->extent = { plan.width, plan.height, plan.depth };
+	img->format = plan.format;
+	img->usage = plan.usage;
+	img->samples = SampleCount::Count1;
+	img->mipLevels = plan.residentMips;
+	img->arrayLayers = imageCI.arrayLayers;
+	SetImageSyncState(rec->image, ImageGlobalSyncState{});
+
+#if defined(_DEBUG)
+	if (debugName)
+	{
+		VkDebugUtilsObjectNameInfoEXT nameInfo{
+			VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
+		};
+		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+		nameInfo.objectHandle = reinterpret_cast<uint64_t>(newImage);
+		nameInfo.pObjectName = debugName;
+		vkSetDebugUtilsObjectNameEXT(device_, &nameInfo);
+	}
+#else
+	(void)debugName;
+#endif
+
+	// Rebuild the sampled view in place (same handle, same bindless slot):
+	// keep the original view type (cube/array/3D), span the new range. The
+	// previous VkImageView retires through the deferred queue – in-flight
+	// frames may still reference it through their descriptors (which pick
+	// up the new view on the next UpdateDescriptors, one frame later; that
+	// stale frame keeps sampling the OLD, still-valid image).
+	{
+		VkImageView oldView = view->vkView;
+
+		VkImageViewCreateInfo vkCI{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+		vkCI.image = newImage;
+		vkCI.viewType = toVkImageViewType(view->viewType);
+		vkCI.format = toVkFormat(img->format);
+		vkCI.components = {
+			VK_COMPONENT_SWIZZLE_IDENTITY,
+			VK_COMPONENT_SWIZZLE_IDENTITY,
+			VK_COMPONENT_SWIZZLE_IDENTITY,
+			VK_COMPONENT_SWIZZLE_IDENTITY
+		};
+		vkCI.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = plan.residentMips,
+			.baseArrayLayer = 0,
+			.layerCount = imageCI.arrayLayers
+		};
+
+		VkImageView newView = VK_NULL_HANDLE;
+		VK_CHECK(vkCreateImageView(device_, &vkCI, nullptr, &newView));
+
+		view->vkView = newView;
+		view->format = img->format;
+		view->subresourceRange = {
+			.aspect = ImageAspect::Color,
+			.baseMipLevel = 0,
+			.mipLevelCount = plan.residentMips,
+			.baseArrayLayer = 0,
+			.arrayLayerCount = imageCI.arrayLayers
+		};
+		// liveViewCount unchanged: the same image handle keeps one live view.
+
+#if defined(_DEBUG)
+		if (debugName)
+		{
+			VkDebugUtilsObjectNameInfoEXT viewNameInfo{
+				VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT
+			};
+			viewNameInfo.objectType = VK_OBJECT_TYPE_IMAGE_VIEW;
+			viewNameInfo.objectHandle = reinterpret_cast<uint64_t>(newView);
+			viewNameInfo.pObjectName = debugName;
+			vkSetDebugUtilsObjectNameEXT(device_, &viewNameInfo);
+		}
+#endif
+
+		VkDevice dev = device_;
+		DeferDestroy(std::packaged_task<void()>([dev, oldView]
+		{
+			if (oldView != VK_NULL_HANDLE)
+				vkDestroyImageView(dev, oldView, nullptr);
+		}));
+	}
+
+	m_streamer->uploadImageKtx(
+		rec->image, plan.data, plan.dataSize, plan.regions,
+		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+		VK_ACCESS_2_SHADER_READ_BIT);
+
+	// Bindless slot content changed (new VkImageView): refresh the
+	// descriptor arrays on the next UpdateDescriptors() before use.
+	m_needToUpdateTextures = true;
+}
 [[nodiscard]] smvk::Holder<smvk::ImageViewHandle> smvk::VulkanResourceManager::CreateImageView(ImageHandle imageHandle, const ImageViewCreateInfo& ci)
 {
 	Image* image = images_.get(imageHandle);

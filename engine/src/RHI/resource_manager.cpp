@@ -81,6 +81,16 @@ Holder<TextureHandle> ResourceManager::CreateTexture(ktxTexture2& texture, const
     TextureHandle raw = h.release();
     return Holder<TextureHandle>{this, raw};
 }
+Holder<TextureHandle> ResourceManager::CreateStreamingTexture(ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount,
+                                                              const char* debugName, ImageCreateInfo imageCreateInfo) {
+    auto h = impl_->vulkan.CreateStreamingTexture(texture, firstMip, mipCount, debugName, imageCreateInfo);
+    TextureHandle raw = h.release();
+    return Holder<TextureHandle>{this, raw};
+}
+void ResourceManager::RetargetStreamingTexture(TextureHandle handle, ktxTexture2& texture, uint32_t firstMip, uint32_t mipCount,
+                                               const char* debugName) {
+    impl_->vulkan.RetargetStreamingTexture(handle, texture, firstMip, mipCount, debugName);
+}
 Holder<BindlessImageHandle> ResourceManager::CreateBindlessImage(ImageViewHandle viewHandle, ImageLayout readLayout) {
     VkImageLayout vkLayout = toVkImageLayout(readLayout);
     auto h = impl_->vulkan.CreateBindlessImage(viewHandle, vkLayout);
