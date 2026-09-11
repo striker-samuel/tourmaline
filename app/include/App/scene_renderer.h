@@ -541,12 +541,13 @@ protected:
 		}
 		// Ambient source: N cycles GI -> sky IBL -> both off (the baked
 		// probes and the analytic sky ambient are mutually exclusive).
-		// F8 flips the flat probe-irradiance debug view.
+		// F8 cycles the GI debug views: 0 off, 1 flat irradiance,
+		// 2 interpolation diagnostics (sharpness/weights/contributors).
 		if (m_input.isKeyPressed(GLFW_KEY_N)) {
 			CycleAmbientMode();
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_F8)) {
-			m_giDebug = !m_giDebug;
+			m_giDebug = (m_giDebug + 1) % 3;
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_C)) {
 			m_fpDemo.cookiesEnabled = !m_fpDemo.cookiesEnabled;
@@ -762,7 +763,7 @@ protected:
 	// and the analytic sky IBL are mutually exclusive). F8 shows the
 	// flat irradiance debug view. ----
 	AmbientMode m_ambientMode = AmbientMode::Gi; // N cycles
-	bool m_giDebug = false;       // F8: flat probe-irradiance debug view
+	int m_giDebug = 0;             // F8 cycles: 0 off, 1 irradiance, 2 diagnostics
 	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
 	bool m_giShowProbes = false;  // probe-point overlay (ImGui foreground,
 	                              // like the forward+ light points)

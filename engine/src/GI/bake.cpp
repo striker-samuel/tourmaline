@@ -912,62 +912,78 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 			}
 		}
 
-		// ---- (2) Radiance diffusion: Laplacian smoothing over the
-		// same-level neighbor graph (heat equation on the probe field).
-		// Neighboring probes exchange amplitude mass; per-probe Monte
-		// Carlo noise equalizes instead of reading as colored dots.
+		// ---- (2) Radiance diffusion: Laplacian smoothing over the probe
+		// neighbor graph (heat equation on the probe field). Neighboring
+		// probes exchange amplitude mass; per-probe Monte Carlo noise
+		// equalizes instead of reading as colored dots. The gather spans
+		// ADJACENT LEVELS too (halved weight): where error-driven
+		// subdivision created mixed L(n)/L(n+1) regions, parent-scale
+		// and child-scale probes systematically disagree — at runtime the
+		// partition-of-unity blends across that seam and the disagreement
+		// shows as per-probe patches.
 		for (uint32_t pass = 0; pass < cfg.smoothingPasses; ++pass) {
+			// Neighbor gather over one level cloud, within that cloud's
+			// support radius; skips the probe itself.
+			auto gather = [&](const LevelCloud& cloud, const glm::vec3& pos,
+					uint32_t selfIdx, float weightScale,
+					glm::vec3 (&avg)[kSgLobeCount], float& wsum) {
+				const float r = cfg.probeSupportFactor * cloud.cell;
+				const float r2 = r * r;
+				uint32_t c0[3];
+				for (uint32_t a = 0; a < 3; ++a)
+					c0[a] = uint32_t(std::clamp(
+						int32_t(std::floor((pos[a] - cloud.gmin[a]) / cloud.cell)),
+						0, int32_t(cloud.dims[a]) - 1));
+				for (int dx = -1; dx <= 1; ++dx) {
+					for (int dy = -1; dy <= 1; ++dy) {
+						for (int dz = -1; dz <= 1; ++dz) {
+							const int cx = int(c0[0]) + dx;
+							const int cy = int(c0[1]) + dy;
+							const int cz = int(c0[2]) + dz;
+							if (cx < 0 || cy < 0 || cz < 0
+								|| cx >= int(cloud.dims[0]) || cy >= int(cloud.dims[1])
+								|| cz >= int(cloud.dims[2]))
+								continue;
+							const uint32_t ci = uint32_t(cx)
+								+ cloud.dims[0] * (uint32_t(cy)
+									+ cloud.dims[1] * uint32_t(cz));
+							for (uint32_t s = cloud.cellStart[ci];
+								s < cloud.cellStart[ci + 1]; ++s) {
+								const uint32_t j = cloud.probeBricks[s];
+								if (j == selfIdx)
+									continue;
+								const BakeBrick& nb = bricks[j];
+								const glm::vec3 d = pos - nb.probePos;
+								const float dist2 = glm::dot(d, d);
+								if (dist2 >= r2)
+									continue;
+								const float x2 = dist2 / r2;
+								const float x2m = 1.0f - x2;
+								const float w = x2m * x2m * x2m * weightScale;
+								wsum += w;
+								for (uint32_t i = 0; i < kSgLobeCount; ++i)
+									avg[i] += nb.amps[i] * w;
+							}
+						}
+					}
+				}
+			};
 			for (uint32_t lvl = 0; lvl < clouds.size(); ++lvl) {
 				LevelCloud& cloud = clouds[lvl];
 				if (cloud.probeBricks.empty())
 					continue;
-				const float size = cloud.cell;
-				const float r = cfg.probeSupportFactor * size;
-				const float r2 = r * r;
 				// Jacobi update: snapshot of deltas, applied after gather.
 				std::vector<glm::vec3> delta(cloud.probeBricks.size() * kSgLobeCount);
 				for (uint32_t k = 0; k < cloud.probeBricks.size(); ++k) {
-					const BakeBrick& b = bricks[cloud.probeBricks[k]];
-					uint32_t c0[3];
-					for (uint32_t a = 0; a < 3; ++a)
-						c0[a] = uint32_t(std::clamp(
-							int32_t(std::floor((b.probePos[a] - cloud.gmin[a]) / cloud.cell)),
-							0, int32_t(cloud.dims[a]) - 1));
+					const uint32_t selfIdx = cloud.probeBricks[k];
+					const BakeBrick& b = bricks[selfIdx];
 					glm::vec3 avg[kSgLobeCount] = {};
 					float wsum = 0.0f;
-					for (int dx = -1; dx <= 1; ++dx) {
-						for (int dy = -1; dy <= 1; ++dy) {
-							for (int dz = -1; dz <= 1; ++dz) {
-								const int cx = int(c0[0]) + dx;
-								const int cy = int(c0[1]) + dy;
-								const int cz = int(c0[2]) + dz;
-								if (cx < 0 || cy < 0 || cz < 0
-									|| cx >= int(cloud.dims[0]) || cy >= int(cloud.dims[1])
-									|| cz >= int(cloud.dims[2]))
-									continue;
-								const uint32_t ci = uint32_t(cx)
-									+ cloud.dims[0] * (uint32_t(cy)
-										+ cloud.dims[1] * uint32_t(cz));
-								for (uint32_t s = cloud.cellStart[ci];
-									s < cloud.cellStart[ci + 1]; ++s) {
-									const uint32_t j = cloud.probeBricks[s];
-									if (j == cloud.probeBricks[k])
-										continue;
-									const BakeBrick& nb = bricks[j];
-									const glm::vec3 d = b.probePos - nb.probePos;
-									const float dist2 = glm::dot(d, d);
-									if (dist2 >= r2)
-										continue;
-									const float x2 = dist2 / r2;
-									const float x2m = 1.0f - x2;
-									const float w = x2m * x2m * x2m;
-									wsum += w;
-									for (uint32_t i = 0; i < kSgLobeCount; ++i)
-										avg[i] += nb.amps[i] * w;
-								}
-							}
-						}
-					}
+					gather(cloud, b.probePos, selfIdx, 1.0f, avg, wsum);
+					if (lvl > 0 && !clouds[lvl - 1].probeBricks.empty())
+						gather(clouds[lvl - 1], b.probePos, selfIdx, 0.5f, avg, wsum);
+					if (lvl + 1 < clouds.size() && !clouds[lvl + 1].probeBricks.empty())
+						gather(clouds[lvl + 1], b.probePos, selfIdx, 0.5f, avg, wsum);
 					if (wsum <= 1e-4f)
 						continue;
 					for (uint32_t i = 0; i < kSgLobeCount; ++i)

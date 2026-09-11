@@ -96,14 +96,22 @@ float SgGiVisibilityFactor(float3 pos, SgProbeGpu p)
 // Gathers + blends probe amplitudes at a world position. Primary blend:
 // visibility-weighted partition of unity (anti-leak). Safety net: when
 // every covering probe is visibility-rejected (deep clutter), fall back
-// to the NEAREST covering probe — blending occluded far-side probes
-// leaks their dark radiance; the nearest probe is almost always the
-// same-side "own brick" one. Mirrors SgGiVolume::Sample.
-bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES])
+// to a kernel-weighted blend of the kNearest COVERING probes (blending
+// occluded far-side probes wholesale leaks their dark radiance; the
+// nearest few are almost always same-side "own brick" probes, and the
+// weighted blend keeps the patch smooth instead of one-probe dots).
+// The debug outs feed the F8 diagnostics view (weight sum, contributor
+// count, fallback flag). Mirrors SgGiVolume::Sample.
+bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
+    out float debugWeightSum, out uint debugContributors, out bool debugFellBack)
 {
     [unroll]
     for (uint i = 0; i < SG_GI_LOBES; ++i)
         amps[i] = float3(0, 0, 0);
+
+    debugWeightSum = 0.0;
+    debugContributors = 0;
+    debugFellBack = false;
 
     const SgGiGrid grid = frame.giGrid.Get();
     const uint levelCount = min(grid.misc.x, (uint)SG_GI_MAX_LEVELS);
@@ -116,9 +124,15 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES])
     for (uint i = 0; i < SG_GI_LOBES; ++i)
         ampsVis[i] = float3(0, 0, 0);
     float weightVis = 0.0;
-    uint nearestIdx = 0;
-    bool hasNearest = false;
-    float nearestDist2 = 1e30;
+    // k-nearest fallback bookkeeping (inverse-square weights).
+    const uint kNearest = 4;
+    uint nearIdx[kNearest];
+    float nearW[kNearest];
+    [unroll]
+    for (uint i = 0; i < kNearest; ++i) {
+        nearIdx[i] = 0;
+        nearW[i] = 0.0;
+    }
     [loop]
     for (uint lvl = 0; lvl < levelCount; ++lvl)
     {
@@ -143,22 +157,33 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES])
                 continue;
             const float3 d = pos - p.posRadius.xyz;
             const float dist2 = dot(d, d);
-            if (dist2 < nearestDist2)
-            {
-                nearestDist2 = dist2;
-                nearestIdx = probeIdx;
-                hasNearest = true;
+            // insert into the k-nearest list (inverse-square weight)
+            const float wn = 1.0 / max(dist2, 1e-4);
+            [unroll]
+            for (uint k = 0; k < kNearest; ++k) {
+                if (wn > nearW[k]) {
+                    [unroll]
+                    for (uint m = kNearest - 1; m > k; --m) {
+                        nearIdx[m] = nearIdx[m - 1];
+                        nearW[m] = nearW[m - 1];
+                    }
+                    nearIdx[k] = probeIdx;
+                    nearW[k] = wn;
+                    break;
+                }
             }
             const float wv = w * SgGiVisibilityFactor(pos, p);
             [branch]
             if (wv <= 0.0)
                 continue;
             weightVis += wv;
+            ++debugContributors;
             [unroll]
             for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
                 ampsVis[lobe] += wv * SgGiProbeAmp(p.amp, lobe);
         }
     }
+    debugWeightSum = weightVis;
     [branch]
     if (weightVis >= 1e-4)
     {
@@ -168,15 +193,35 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES])
             amps[i] = ampsVis[i] * inv;
         return true;
     }
+    // Fallback: kernel-weighted blend of the nearest covering probes.
     [branch]
-    if (hasNearest)
+    if (nearW[0] > 0.0)
     {
-        const SgProbeGpu p = frame.giProbes.Get().probes[nearestIdx];
+        debugFellBack = true;
+        float wsum = 0.0;
         [unroll]
-        for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
-            amps[lobe] = SgGiProbeAmp(p.amp, lobe);
-        return true;
+        for (uint k = 0; k < kNearest; ++k) {
+            [branch]
+            if (nearW[k] <= 0.0)
+                continue;
+            const SgProbeGpu p = frame.giProbes.Get().probes[nearIdx[k]];
+            wsum += nearW[k];
+            [unroll]
+            for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
+                amps[lobe] += nearW[k] * SgGiProbeAmp(p.amp, lobe);
+        }
+        [branch]
+        if (wsum > 0.0) {
+            const float inv = 1.0 / wsum;
+            [unroll]
+            for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
+                amps[lobe] *= inv;
+            return true;
+        }
     }
+    [unroll]
+    for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
+        amps[lobe] = float3(0, 0, 0);
     return false;
 }
 

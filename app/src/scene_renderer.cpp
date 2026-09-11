@@ -527,10 +527,14 @@ bool SceneRenderer::Initialize() {
 			}
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_GI value: " << gi << "\n";
 		}
-		// F8 irradiance debug view for headless runs (same as the F8 key).
+		// F8 debug view for headless runs: 0 off, 1 irradiance, 2
+		// interpolation diagnostics (same modes the F8 key cycles).
 		if (const char* giDbgEnv = std::getenv("VULKANTOY_GI_DEBUG")) {
-			if (std::atoi(giDbgEnv) != 0)
-				m_giDebug = true;
+			const int mode = std::atoi(giDbgEnv);
+			if (mode >= 0 && mode <= 2)
+				m_giDebug = mode;
+			else
+				std::cerr << "[SceneRenderer] VULKANTOY_GI_DEBUG wants 0..2\n";
 		}
 		// Probe-point overlay for headless runs (same as the panel
 		// checkbox; draws the probe lattice colored by octree level).
@@ -1251,7 +1255,7 @@ void SceneRenderer::Shutdown() {
 			data.giIndices = m_giIndicesAddress;
 			data.giEnabled = 1u;
 			data.giIntensity = m_giIntensity;
-			data.giDebug = m_giDebug ? 1u : 0u;
+			data.giDebug = uint32_t(std::clamp(m_giDebug, 0, 2));
 		} else {
 			data.giProbes = 0;
 			data.giGrid = 0;
@@ -4478,7 +4482,13 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			}
 			if (m_giLoaded) {
 				ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
-				ImGui::Checkbox("Irradiance debug view (F8)", &m_giDebug);
+				{
+					const char* dbgNames[3] = { "Off", "Irradiance", "Diagnostics" };
+					int dbgIdx = m_giDebug;
+					if (ImGui::Combo("Debug view (F8)", &dbgIdx, dbgNames, 3))
+						m_giDebug = std::clamp(dbgIdx, 0, 2);
+					ImGui::TextDisabled("diagnostics: R=sharpness (fixed) G=weight sum  B=contributors; violet=fallback");
+				}
 				ImGui::Checkbox("Probe points overlay", &m_giShowProbes);
 				if (m_giShowProbes) {
 					ImGui::SliderFloat("Overlay radius (m)", &m_giProbePointMaxDist,

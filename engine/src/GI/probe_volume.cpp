@@ -197,15 +197,17 @@ bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) c
 	for (uint32_t i = 0; i < kSgLobeCount; ++i)
 		outAmps[i] = glm::vec3(0.0f);
 	// Primary blend: visibility-weighted partition of unity (anti-leak).
-	// Safety net: when every covering probe is visibility-rejected
-	// (deep clutter), fall back to the NEAREST covering probe instead of
-	// blending all of them — blending occluded probes from the far side of
-	// walls leaks their dark radiance (regional dark artifacts); the
-	// nearest probe is almost always the same-side "own brick" one.
+	// Safety net: when every covering probe is visibility-rejected (deep
+	// clutter), fall back to a kernel-weighted blend of the k-nearest
+	// COVERING probes — blending all occluded probes leaks far-side dark
+	// radiance, a single nearest probe shows as a dot; the nearest few are
+	// almost always same-side and the weighted blend stays smooth.
+	// Must mirror SgGiSample in sggi.hlsli.
+	constexpr uint32_t kNearest = 4;
 	glm::vec3 ampsVis[kSgLobeCount] = {};
 	float weightVis = 0.0f;
-	uint32_t nearestIdx = 0;
-	float nearestDist2 = std::numeric_limits<float>::infinity();
+	uint32_t nearIdx[kNearest] = {};
+	float nearW[kNearest] = {};
 	for (uint32_t lvl = 0; lvl < levelCount && lvl < levelGrids_.size(); ++lvl) {
 		const LevelGrid& grid = levelGrids_[lvl];
 		const float cs = cellSize[lvl];
@@ -229,9 +231,17 @@ bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) c
 				continue;
 			const glm::vec3 d = pos - p.position;
 			const float dist2 = glm::dot(d, d);
-			if (dist2 < nearestDist2) {
-				nearestDist2 = dist2;
-				nearestIdx = probeIdx;
+			const float wn = 1.0f / std::max(dist2, 1e-4f);
+			for (uint32_t n = 0; n < kNearest; ++n) {
+				if (wn > nearW[n]) {
+					for (uint32_t m = kNearest - 1; m > n; --m) {
+						nearIdx[m] = nearIdx[m - 1];
+						nearW[m] = nearW[m - 1];
+					}
+					nearIdx[n] = probeIdx;
+					nearW[n] = wn;
+					break;
+				}
 			}
 			const float wv = w * VisibilityFactor(pos, p);
 			if (wv <= 0.0f)
@@ -247,10 +257,23 @@ bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) c
 			outAmps[i] = ampsVis[i] * inv;
 		return true;
 	}
-	if (nearestDist2 < std::numeric_limits<float>::infinity()) {
-		for (uint32_t i = 0; i < kSgLobeCount; ++i)
-			outAmps[i] = probes[nearestIdx].amps[i];
-		return true;
+	if (nearW[0] > 0.0f) {
+		float wsum = 0.0f;
+		glm::vec3 fb[kSgLobeCount] = {};
+		for (uint32_t n = 0; n < kNearest; ++n) {
+			if (nearW[n] <= 0.0f)
+				continue;
+			const SgProbe& p = probes[nearIdx[n]];
+			wsum += nearW[n];
+			for (uint32_t i = 0; i < kSgLobeCount; ++i)
+				fb[i] += p.amps[i] * nearW[n];
+		}
+		if (wsum > 0.0f) {
+			const float inv = 1.0f / wsum;
+			for (uint32_t i = 0; i < kSgLobeCount; ++i)
+				outAmps[i] = fb[i] * inv;
+			return true;
+		}
 	}
 	return false;
 }

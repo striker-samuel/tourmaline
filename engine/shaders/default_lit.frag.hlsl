@@ -509,12 +509,18 @@ PSOut mainPS(PSIn IN)
     if (frame.giEnabled != 0u)
     {
         float3 giAmps[SG_GI_LOBES];
-        const bool giCovered = SgGiSample(frame, IN.worldPos, giAmps);
-        // F8: flat irradiance debug view (probe diffuse, no albedo) scaled
-        // by the frame exposure so it survives the ACES chain at the same
-        // brightness the ambient actually contributes. When sampling FAILS
-        // the view shows a magenta diagnostic instead of the lit image
-        // (bisects enabled-flag vs coverage problems).
+        float giWeightSum = 0.0;
+        uint giContributors = 0u;
+        bool giFellBack = false;
+        const bool giCovered = SgGiSample(frame, IN.worldPos, giAmps,
+            giWeightSum, giContributors, giFellBack);
+        // F8 debug views (cycled): 1 = flat irradiance (probe diffuse, no
+        // albedo, exposure-scaled), 2 = interpolation diagnostics per
+        // the polka-dot bisect: R = SG sharpness / max (the basis is
+        // globally fixed, so 1.0 = constant), G = weight sum (scaled:
+        // saturated = healthy overlap), B = contributor count / 16.
+        // Magenta = nothing covered; the green channel dropping to zero
+        // with low blue in the dotted regions = starving blends.
         if (frame.giDebug != 0u)
         {
             if (!giCovered)
@@ -522,9 +528,22 @@ PSOut mainPS(PSIn IN)
                 OUT.outColor = float4(0.8f, 0.0f, 0.8f, 1.0f);
                 return OUT;
             }
-            const float3 giEDbg = SgGiDiffuseIrradiance(giAmps, N)
-                * max(frame.giIntensity, 0.0f) * max(frame.exposure, 1e-6f);
-            OUT.outColor = float4(giEDbg, 1.0f);
+            if (frame.giDebug == 1u)
+            {
+                const float3 giEDbg = SgGiDiffuseIrradiance(giAmps, N)
+                    * max(frame.giIntensity, 0.0f) * max(frame.exposure, 1e-6f);
+                OUT.outColor = float4(giEDbg, 1.0f);
+                return OUT;
+            }
+            const float giSharp = SG_GI_SHARPNESS / 4.0f; // fixed basis: 1.0
+            const float giW = saturate(giWeightSum / 4.0f);
+            const float giCount = saturate(float(giContributors) / 16.0f);
+            float3 diag = float3(giSharp, giW, giCount);
+            if (giFellBack)
+                diag += float3(0.4f, 0.0f, 0.4f); // fallback flag: violet tint
+            // Fixed 0..1 palette: pre-scale by 1/exposure so it survives
+            // the ACES chain (same convention as the DS visualizers).
+            OUT.outColor = float4(diag / max(frame.exposure, 1e-6f), 1.0f);
             return OUT;
         }
         if (giCovered)
