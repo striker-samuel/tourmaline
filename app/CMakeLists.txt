@@ -35,8 +35,8 @@ set_target_properties(App PROPERTIES
 
 
 # Runtime content layout next to App.exe is always:
-#   content/models, content/paks, content/fonts, content/textures, content/luts
-# Large binaries (models/, paks/) live OUTSIDE git in VULKANTOY_CONTENT_DIR
+#   content/models, content/paks, content/gi, content/fonts, content/textures, content/luts
+# Large binaries (models/, paks/, gi/) live OUTSIDE git in VULKANTOY_CONTENT_DIR
 # (default F:/content, overridable via -DVULKANTOY_CONTENT_DIR or the env var).
 # Small tracked dirs (fonts/, ...) fall back to the legacy app/content tree.
 if(DEFINED ENV{VULKANTOY_CONTENT_DIR})
@@ -68,7 +68,7 @@ add_custom_command(TARGET App POST_BUILD
 # Sync each content subdir from the external store (preferred) or the
 # legacy in-repo tree (fallback). copy_directory creates the destination,
 # so a missing source simply skips that subdir.
-foreach(_CONTENT_SUB IN ITEMS models paks fonts textures luts)
+foreach(_CONTENT_SUB IN ITEMS models paks gi fonts textures luts)
     _vulkantoy_resolve_content_dir(${_CONTENT_SUB} _CONTENT_SRC)
     if(_CONTENT_SRC)
         message(STATUS "Content '${_CONTENT_SUB}' <- ${_CONTENT_SRC}")

@@ -99,6 +99,12 @@ struct EnvironmentFrameData
 // (included after FrameUniforms / ForwardPlusLight are complete).
 #include "deferredshadow_types.hlsli"
 
+// SG-GI probe volume types (Engine/GI/sg.h + probe_volume.h mirrors).
+// Included here so FrameUniforms below can carry typed pointers; the
+// sampling/evaluation helpers live in sggi.hlsli (consumers include it
+// after common.hlsli).
+#include "sggi_types.hlsli"
+
 struct LightBuffer
 {
     Light lights[MAX_LIGHTS];
@@ -215,8 +221,9 @@ struct ForwardPlusTileIndexBuffer
 // Moved below the Forward+ light structs so it can carry typed pointers
 // into the deferred-shadow buffers (deferredshadow_types.hlsli above).
 // Offsets mirror the C++ FrameUniforms in App/scene_renderer.h (asserted
-// there): env at 512, deferred-shadow fields at 640; visualizer fields
-// (DS_DEBUG_VIZ only) follow at 672 — release keeps the 672 B prefix.
+// there): env at 512, deferred-shadow fields at 640, SG-GI fields at 672;
+// visualizer fields (DS_DEBUG_VIZ only) follow at 720 — release keeps the
+// 720 B prefix (GI included, visualizers compiled out).
 struct FrameUniforms
 {
     float4x4 view;
@@ -262,18 +269,32 @@ struct FrameUniforms
     vk::BufferPointer<DsVisibilityBuffer> dsVisibility; // 656 64B slots
     uint dsTileCountX;                                 // 664 8px tiles/row
     uint dsEnabled;                                    // 668 1 = consume lists
+    // ---- SG-GI baked probe volume (see sggi.hlsli + Engine/GI). Static
+    // buffers uploaded once at scene load; giEnabled flips every frame.
+    // giIntensity scales the ambient contribution, giDebug selects the
+    // F8 irradiance debug view (1 = flat probe diffuse, pre-exposure).
+    // The release layout keeps the 720 B prefix property: these fields
+    // precede the DS visualizer tail below.
+    vk::BufferPointer<SgGiProbesBuffer> giProbes;   // 672 probe array (96 B each)
+    vk::BufferPointer<SgGiGrid> giGrid;            // 680 level descriptors
+    vk::BufferPointer<SgGiCellsBuffer> giCells;    // 688 uint2 (start,count)/cell
+    vk::BufferPointer<SgGiIndexBuffer> giIndices;   // 696 u32 probe index list
+    uint giEnabled;                                 // 704 1 = sample probes for ambient
+    float giIntensity;                              // 708 ambient scale
+    uint giDebug;                                    // 712 0 off, 1 irradiance view
+    uint giPad;                                      // 716
     // ---- Deferred-shadow debug visualizers (paper 5.3/5.4). Debug-build
     // only (DS_DEBUG_VIZ): tail fields so the release layout (672 B) is a
     // strict prefix of the debug layout (704 B). The light-scoped modes
     // re-query the phase-1 (CPU) and phase-2 (GPU) TileGroup masks;
     // dsDebug* pick mode / light / flags / heat scale.
 #if defined(DS_DEBUG_VIZ)
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 672 phase-1 masks
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 680 phase-2 masks
-    uint dsDebugMode;      // 688 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
-    uint dsDebugLight;     // 692 selected light (sorted index)
-    uint dsDebugFlags;     // 696 bit0 = blend over lit
-    uint dsDebugCountCeil; // 700 count-heat ceiling (lights)
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 720 phase-1 masks
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 728 phase-2 masks
+    uint dsDebugMode;      // 736 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
+    uint dsDebugLight;     // 740 selected light (sorted index)
+    uint dsDebugFlags;     // 744 bit0 = blend over lit
+    uint dsDebugCountCeil; // 748 count-heat ceiling (lights)
 #endif
 };
 

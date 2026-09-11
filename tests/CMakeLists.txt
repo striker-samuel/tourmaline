@@ -90,3 +90,16 @@ set_target_properties(SmaaJitterTests PROPERTIES
 )
 
 add_test(NAME smaajitter_tests COMMAND SmaaJitterTests)
+
+add_executable(GiTests test_gi.cpp)
+
+target_link_libraries(GiTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(GiTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME gi_tests COMMAND GiTests)

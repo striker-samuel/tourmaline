@@ -1,6 +1,7 @@
 #include "light.hlsli"
 #include "common.hlsli"
 #include "environment.hlsli"
+#include "sggi.hlsli"
 
 struct PSIn
 {
@@ -470,10 +471,15 @@ PSOut mainPS(PSIn IN)
     }
 
     // Ambient / sky-IBL floor (hemispherical sky).
-    // Configurable analytic IBL from the environment block:
-    // diffuse irradiance from EvaluateIrradiance() plus a cheap specular
-    // env reflection. When IBL is disabled (iblEnabled=0) falls back to
-    // the legacy constant-ambient path (baseColor * mat.ambient).
+    // Two sources, in priority order:
+    //  1. Baked SG-GI probe volume (F8 debug view; N toggles; the probes
+    //     carry sky + indirect + emissive and REPLACE the analytic sky
+    //     ambient — with wall-aware, spatially varying results). Diffuse
+    //     follows the direct-lighting convention (albedo/PI * E).
+    //  2. Configurable analytic IBL from the environment block: diffuse
+    //     irradiance from EvaluateIrradiance() plus a cheap specular env
+    //     reflection. When IBL is disabled (iblEnabled=0) falls back to
+    //     the legacy constant-ambient path (baseColor * mat.ambient).
     float3 irradiance = EvaluateIrradiance(N, frame.env);
     float iblOn = saturate(frame.env.fogEndAndFlags.w);
     // SSAO: the SsaoCompose pass already upscaled the half-res AO to full
@@ -490,13 +496,53 @@ PSOut mainPS(PSIn IN)
         ao = aoTex.Load(int3(int2(IN.clipPos.xy), 0)).r;
         ao = lerp(1.0f, saturate(ao), saturate(frame.aoIntensity));
     }
-    float3 ambientDiffuse = kD * baseColor * irradiance * occlusion * ao;
     float3 legacyAmbient = baseColor * mat.ambient.rgb * occlusion * ao;
+    float3 ambientDiffuse = kD * baseColor * irradiance * occlusion * ao;
     float3 ambient = lerp(legacyAmbient, ambientDiffuse, iblOn);
     // Specular IBL: reflection-vector env sample weighted by Fresnel.
     float3 R = reflect(-V, N);
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, roughness);
     float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, roughness, frame.env) * occlusion * ao;
+
+    // Baked SG-GI: replace the analytic sky ambient with the probe field
+    // (it already contains the sky, occluded properly by the bake).
+    if (frame.giEnabled != 0u)
+    {
+        float3 giAmps[SG_GI_LOBES];
+        const bool giCovered = SgGiSample(frame, IN.worldPos, giAmps);
+        // F8: flat irradiance debug view (probe diffuse, no albedo) scaled
+        // by the frame exposure so it survives the ACES chain at the same
+        // brightness the ambient actually contributes. When sampling FAILS
+        // the view shows a magenta diagnostic instead of the lit image
+        // (bisects enabled-flag vs coverage problems).
+        if (frame.giDebug != 0u)
+        {
+            if (!giCovered)
+            {
+                OUT.outColor = float4(0.8f, 0.0f, 0.8f, 1.0f);
+                return OUT;
+            }
+            const float3 giEDbg = SgGiDiffuseIrradiance(giAmps, N)
+                * max(frame.giIntensity, 0.0f) * max(frame.exposure, 1e-6f);
+            OUT.outColor = float4(giEDbg, 1.0f);
+            return OUT;
+        }
+        if (giCovered)
+        {
+            const float giScale = max(frame.giIntensity, 0.0f);
+            const float3 giE = SgGiDiffuseIrradiance(giAmps, N) * giScale;
+            // Same convention as the direct sun term: albedo/PI * E.
+            const float3 giDiffuse = kD * baseColor * (giE / PI) * occlusion * ao;
+            // Rough glossy reflections from the probe field; very smooth
+            // surfaces keep the analytic sky env (9 broad lobes cannot
+            // represent mirrors).
+            const float3 giSpecular =
+                SgGiSpecular(giAmps, R, roughness) * giScale * Fenv * occlusion * ao;
+            const float roughW = saturate((roughness - 0.15f) / 0.25f);
+            ambient = giDiffuse;
+            ambientSpec = lerp(ambientSpec, giSpecular, roughW);
+        }
+    }
 
     float3 color = direct + ambient + ambientSpec;
     color = color * occlusion; // re-apply for direct as well per spec (optional)

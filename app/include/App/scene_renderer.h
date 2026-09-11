@@ -23,6 +23,7 @@
 #include <Engine/App/app.h>
 #include <Engine/App/world.h>
 #include <Engine/Camera/camera.h>
+#include <Engine/GI/probe_volume.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cookies.h>
 #include <Engine/Renderer/renderview.h>
@@ -274,32 +275,46 @@ struct FrameUniforms
 	uint64_t dsVisibility = 0;  // 656 64B visibility slots
 	uint32_t dsTileCountX = 0;  // 664 8px shadow tiles per row
 	uint32_t dsEnabled = 0;     // 668 1 = shade from the deferred lists
+	// ---- SG-GI baked probe volume (see smvk::gi + sggi.hlsli). Static
+	// buffers created + uploaded once at scene load; giEnabled flips the
+	// default_lit ambient between the probe field and the analytic sky
+	// IBL (A/B). giDebug = F8 flat irradiance view. ----
+	uint64_t giProbes = 0;      // 672 SgProbeGpu array (96 B each)
+	uint64_t giGrid = 0;        // 680 SgGiGrid level descriptors
+	uint64_t giCells = 0;       // 688 uint2 (start, count) per cell
+	uint64_t giIndices = 0;     // 696 u32 probe index list
+	uint32_t giEnabled = 0;     // 704 1 = probes replace sky ambient
+	float giIntensity = 1.0f;   // 708 ambient scale
+	uint32_t giDebug = 0;       // 712 F8 irradiance debug view
+	uint32_t giPad = 0;         // 716
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4, debug builds
 	// only — CMake defines DS_DEBUG_VIZ for the App target and for DXC in
 	// Debug trees; release compiles fields + UI + shader paths out, so
-	// the release layout is the 672 B prefix of this one). Tile-state
-	// counts + per-light culling/list diagnostics blended over the lit
-	// image in default_lit. dsTileMasks/dsTileGroupMasks are the phase-1
-	// (CPU) and phase-2 (GPU) TileGroup light masks the light-scoped
-	// modes re-query; dsDebug* select mode / light / flags / heat scale. ----
-	uint64_t dsTileMasks = 0;      // 672 phase-1 CPU TileGroup masks (viz)
-	uint64_t dsTileGroupMasks = 0; // 680 phase-2 GPU TileGroup masks (viz)
-	uint32_t dsDebugMode = 0;      // 688 app::DsDebugViz (0 = off)
-	uint32_t dsDebugLight = 0;     // 692 selected light (sorted index)
-	uint32_t dsDebugFlags = 0;     // 696 bit0 = blend over lit
-	uint32_t dsDebugCountCeil = 32; // 700 count-heat ceiling (lights)
+	// the release layout is the strict 720 B prefix of this one — the
+	// core + SG-GI fields are identical, the visualizer tail follows).
+	// Tile-state counts + per-light culling/list diagnostics blended over
+	// the lit image in default_lit. dsTileMasks/dsTileGroupMasks are the
+	// phase-1 (CPU) and phase-2 (GPU) TileGroup light masks the
+	// light-scoped modes re-query; dsDebug* select mode / light / flags /
+	// heat scale. ----
+	uint64_t dsTileMasks = 0;      // 720 phase-1 CPU TileGroup masks (viz)
+	uint64_t dsTileGroupMasks = 0; // 728 phase-2 GPU TileGroup masks (viz)
+	uint32_t dsDebugMode = 0;      // 736 app::DsDebugViz (0 = off)
+	uint32_t dsDebugLight = 0;     // 740 selected light (sorted index)
+	uint32_t dsDebugFlags = 0;     // 744 bit0 = blend over lit
+	uint32_t dsDebugCountCeil = 32; // 748 count-heat ceiling (lights)
 #endif
 };
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 // CPU/HLSL ABI: total-size alignment is not enough — each field offset must
 // match common.hlsli FrameUniforms (float4-packed, env = 8 x float4). The
-// visualizer tail (DS_DEBUG_VIZ, debug trees only) keeps the release
-// layout a strict 672 B prefix of the debug one.
+// SG-GI block sits between the DS core and the visualizer tail so the
+// release layout stays a strict prefix of the debug one.
 #if defined(DS_DEBUG_VIZ)
-static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32 + 32);
+static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32 + 48 + 32);
 #else
-static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32);
+static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32 + 48);
 #endif
 static_assert(offsetof(FrameUniforms, view) == 0);
 static_assert(offsetof(FrameUniforms, proj) == 64);
@@ -323,13 +338,21 @@ static_assert(offsetof(FrameUniforms, dsLightList) == 648);
 static_assert(offsetof(FrameUniforms, dsVisibility) == 656);
 static_assert(offsetof(FrameUniforms, dsTileCountX) == 664);
 static_assert(offsetof(FrameUniforms, dsEnabled) == 668);
+static_assert(offsetof(FrameUniforms, giProbes) == 672);
+static_assert(offsetof(FrameUniforms, giGrid) == 680);
+static_assert(offsetof(FrameUniforms, giCells) == 688);
+static_assert(offsetof(FrameUniforms, giIndices) == 696);
+static_assert(offsetof(FrameUniforms, giEnabled) == 704);
+static_assert(offsetof(FrameUniforms, giIntensity) == 708);
+static_assert(offsetof(FrameUniforms, giDebug) == 712);
+static_assert(offsetof(FrameUniforms, giPad) == 716);
 #if defined(DS_DEBUG_VIZ)
-static_assert(offsetof(FrameUniforms, dsTileMasks) == 672);
-static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 680);
-static_assert(offsetof(FrameUniforms, dsDebugMode) == 688);
-static_assert(offsetof(FrameUniforms, dsDebugLight) == 692);
-static_assert(offsetof(FrameUniforms, dsDebugFlags) == 696);
-static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 700);
+static_assert(offsetof(FrameUniforms, dsTileMasks) == 720);
+static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 728);
+static_assert(offsetof(FrameUniforms, dsDebugMode) == 736);
+static_assert(offsetof(FrameUniforms, dsDebugLight) == 740);
+static_assert(offsetof(FrameUniforms, dsDebugFlags) == 744);
+static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 748);
 #endif
 
 // Resources
@@ -494,6 +517,14 @@ protected:
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_G)) {
 			m_useGfxFilter = !m_useGfxFilter;
+		}
+		// SG-GI probe volume: N toggles the baked ambient (A/B against the
+		// analytic sky IBL), F8 flips the flat irradiance debug view.
+		if (m_input.isKeyPressed(GLFW_KEY_N)) {
+			m_giEnabled = !m_giEnabled;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_F8)) {
+			m_giDebug = !m_giDebug;
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_C)) {
 			m_fpDemo.cookiesEnabled = !m_fpDemo.cookiesEnabled;
@@ -702,6 +733,29 @@ protected:
 	app::ForwardPlusRenderer m_fpRenderer{};
 	// ---- Deferred shadows (tiled/zBin pipeline; H toggles) ----
 	bool m_dsEnabled = true;
+	// ---- SG-GI baked probe volume (tools/gi_baker output, see
+	// smvk::gi + Engine/GI). Loaded once at scene init from
+	// content/gi/<scene>.sggi (loose content or a pak); when present it
+	// replaces the analytic sky IBL ambient with path-traced probes.
+	// N toggles, F8 shows the flat irradiance debug view. ----
+	bool m_giEnabled = true;      // user toggle (A/B against the sky IBL)
+	bool m_giDebug = false;       // F8: flat probe-irradiance debug view
+	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
+	bool m_giShowProbes = false;  // probe-point overlay (ImGui foreground,
+	                              // like the forward+ light points)
+	float m_giProbePointMaxDist = 40.0f; // overlay: draw probes within N m
+	bool m_giLoaded = false;      // volume + GPU buffers live
+	smvk::gi::SgGiVolume m_giVolume; // CPU mirror (stats; grids stay built)
+	smvk::Holder<smvk::BufferHandle> m_giProbesBuffer;
+	smvk::Holder<smvk::BufferHandle> m_giGridBuffer;
+	smvk::Holder<smvk::BufferHandle> m_giCellsBuffer;
+	smvk::Holder<smvk::BufferHandle> m_giIndicesBuffer;
+	uint64_t m_giProbesAddress = 0;
+	uint64_t m_giGridAddress = 0;
+	uint64_t m_giCellsAddress = 0;
+	uint64_t m_giIndicesAddress = 0;
+	bool GiActive() const { return m_giLoaded && m_giEnabled; }
+	void LoadGiVolume(smvk::OverlayVfs& vfs);
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4; debug builds
 	// only). Mode/light/overlay ride FrameUniforms (dsDebug*); the

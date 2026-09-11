@@ -399,6 +399,17 @@ bool SceneRenderer::Initialize() {
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_AA value: " << aa << "\n";
 		}
 
+		// Internal render-resolution override for headless A/B runs (the
+		// ImGui "Resolution" slider stays live after; 1.0 = swapchain 1:1).
+		if (const char* rsEnv = std::getenv("VULKANTOY_RENDER_SCALE")) {
+			const float rs = std::strtof(rsEnv, nullptr);
+			if (rs >= 0.25f && rs <= 2.0f)
+				m_renderScale = rs;
+			else
+				std::cerr << "[SceneRenderer] VULKANTOY_RENDER_SCALE out of range "
+					<< "(0.25..2.0): " << rsEnv << "\n";
+		}
+
 		// Transparency technique override for A/B runs without UI
 		// interaction (dither | blend). Default is dithered; the ImGui
 		// combo stays live after.
@@ -463,6 +474,25 @@ bool SceneRenderer::Initialize() {
 		if (const char* iblEnv = std::getenv("VULKANTOY_IBL")) {
 			if (std::atoi(iblEnv) == 0)
 				m_env.iblEnabled = false;
+		}
+		// SG-GI probe volume override for A/B runs without UI interaction
+		// (1 | 0). Runtime N toggle + the ImGui checkbox stay live after.
+		if (const char* giEnv = std::getenv("VULKANTOY_GI")) {
+			const std::string_view gi{ giEnv };
+			if (gi == "1" || gi == "on") m_giEnabled = true;
+			else if (gi == "0" || gi == "off") m_giEnabled = false;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_GI value: " << gi << "\n";
+		}
+		// F8 irradiance debug view for headless runs (same as the F8 key).
+		if (const char* giDbgEnv = std::getenv("VULKANTOY_GI_DEBUG")) {
+			if (std::atoi(giDbgEnv) != 0)
+				m_giDebug = true;
+		}
+		// Probe-point overlay for headless runs (same as the panel
+		// checkbox; draws the probe lattice colored by octree level).
+		if (const char* giPtsEnv = std::getenv("VULKANTOY_GI_POINTS")) {
+			if (std::atoi(giPtsEnv) != 0)
+				m_giShowProbes = true;
 		}
 
 		// Default to no-VSync (mailbox); the overlay combo can change it
@@ -763,6 +793,10 @@ bool SceneRenderer::Initialize() {
 		// (overridable by app content / paks through the overlay; falls
 		// back to procedural generation when the files are missing).
 		m_cookies.Ensure(*m_context, contentVfs);
+		// SG-GI baked probe volume (tools/gi_baker output): replaces the
+		// analytic sky IBL ambient with path-traced probes when present.
+		// Missing file is the normal state (no bake yet) - non-fatal.
+		LoadGiVolume(contentVfs);
 		// SMAA precomputed LUTs (official area/search tables, embedded in
 		// the engine - see Engine/Rendergraph/smaa.h). Uploaded once here so
 		// the staged uploads join the cookie flush below.
@@ -909,6 +943,128 @@ void SceneRenderer::Shutdown() {
 		Super::Shutdown();
 	}
 
+	// ---------------------------------------------------------------------------
+	// SG-GI baked probe volume (tools/gi_baker output, see smvk::gi).
+	// Loads content/gi/<scene>.sggi through the app VFS, packs the GPU
+	// payload and uploads it once; per-frame state is only the BDAs + the
+	// user toggles (FrameUniforms.gi*). A missing file is the normal
+	// "not baked yet" state - the renderer keeps the analytic sky IBL.
+	// ---------------------------------------------------------------------------
+	void SceneRenderer::LoadGiVolume(smvk::OverlayVfs& vfs) {
+		m_giLoaded = false;
+		m_giVolume = smvk::gi::SgGiVolume{};
+		m_giProbesBuffer = {};
+		m_giGridBuffer = {};
+		m_giCellsBuffer = {};
+		m_giIndicesBuffer = {};
+		m_giProbesAddress = m_giGridAddress = m_giCellsAddress = m_giIndicesAddress = 0;
+
+		const std::string vfsPath = std::string("gi/") + m_scene.id + ".sggi";
+		std::vector<uint8_t> bytes;
+		try {
+			bytes = vfs.ReadBinary(vfsPath);
+		} catch (...) {
+			std::cerr << "[GI] no baked volume '" << vfsPath
+				<< "' - sky IBL ambient (bake with tools/gi_baker/GiBaker)\n";
+			return;
+		}
+		std::string err;
+		if (!m_giVolume.ReadFromMemory(bytes, err)) {
+			std::cerr << "[GI] volume rejected: " << err << "\n";
+			return;
+		}
+
+		std::vector<smvk::gi::SgProbeGpu> probeData;
+		smvk::gi::SgGiGridGpu gridData{};
+		std::vector<uint32_t> cellData;
+		std::vector<uint32_t> indexData;
+		m_giVolume.PackGpu(probeData, gridData, cellData, indexData);
+		if (probeData.empty()) {
+			std::cerr << "[GI] volume has no probes - ignored\n";
+			return;
+		}
+
+		constexpr smvk::PipelineStage kGiStages =
+			smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment);
+		m_giProbesBuffer = m_context->CreateBuffer(
+			probeData.size() * sizeof(smvk::gi::SgProbeGpu),
+			smvk::BufferType_Storage, "sggi probes");
+		m_giGridBuffer = m_context->CreateBuffer(
+			sizeof(smvk::gi::SgGiGridGpu), smvk::BufferType_Storage, "sggi grid");
+		m_giCellsBuffer = m_context->CreateBuffer(
+			std::max<size_t>(cellData.size(), 1) * sizeof(uint32_t),
+			smvk::BufferType_Storage, "sggi cells");
+		m_giIndicesBuffer = m_context->CreateBuffer(
+			std::max<size_t>(indexData.size(), 1) * sizeof(uint32_t),
+			smvk::BufferType_Storage, "sggi indices");
+
+		m_context->UploadDataToBuffer(m_giProbesBuffer, probeData.data(),
+			probeData.size() * sizeof(smvk::gi::SgProbeGpu), kGiStages,
+			smvk::AccessFlags::ShaderRead);
+		m_context->UploadDataToBuffer(m_giGridBuffer, &gridData,
+			sizeof(gridData), kGiStages, smvk::AccessFlags::ShaderRead);
+		if (!cellData.empty())
+			m_context->UploadDataToBuffer(m_giCellsBuffer, cellData.data(),
+				cellData.size() * sizeof(uint32_t), kGiStages,
+				smvk::AccessFlags::ShaderRead);
+		if (!indexData.empty())
+			m_context->UploadDataToBuffer(m_giIndicesBuffer, indexData.data(),
+				indexData.size() * sizeof(uint32_t), kGiStages,
+				smvk::AccessFlags::ShaderRead);
+
+		m_giProbesAddress = m_context->GetBufferDeviceAddress(m_giProbesBuffer);
+		m_giGridAddress = m_context->GetBufferDeviceAddress(m_giGridBuffer);
+		m_giCellsAddress = m_context->GetBufferDeviceAddress(m_giCellsBuffer);
+		m_giIndicesAddress = m_context->GetBufferDeviceAddress(m_giIndicesBuffer);
+		m_giLoaded = true;
+
+		// CPU-side sanity: the volume must cover the scene interior.
+		if (const char* giDbg = std::getenv("VULKANTOY_GI_DEBUG")) {
+			(void)giDbg;
+			// World mesh AABB from the RESOLVED runtime scene vs the volume
+			// bounds: any transform/axis mismatch between the bake source
+			// and the app world shows up here as diverging bounds.
+			glm::vec3 worldMin(1e30f), worldMax(-1e30f);
+			for (const auto& [node, meshIdx] : m_world->scene.meshForNode) {
+				const smvk::StaticMesh* mesh = m_world->GetMesh(meshIdx);
+				if (!mesh)
+					continue;
+				const glm::mat4& g = m_world->scene.globalTransform[node];
+				const glm::vec3 mn = glm::vec3(g * glm::vec4(mesh->geometry.aabbMin, 1.0f));
+				const glm::vec3 mx = glm::vec3(g * glm::vec4(mesh->geometry.aabbMax, 1.0f));
+				worldMin = glm::min(worldMin, mn);
+				worldMax = glm::max(worldMax, mx);
+			}
+			std::cerr << "[GI] dbg: volume bounds (" << m_giVolume.boundsMin.x
+				<< "," << m_giVolume.boundsMin.y << "," << m_giVolume.boundsMin.z
+				<< ")..(" << m_giVolume.boundsMax.x << "," << m_giVolume.boundsMax.y
+				<< "," << m_giVolume.boundsMax.z << ")\n";
+			std::cerr << "[GI] dbg: world   bounds (" << worldMin.x << "," << worldMin.y
+				<< "," << worldMin.z << ")..(" << worldMax.x << "," << worldMax.y
+				<< "," << worldMax.z << ")\n";
+			const glm::vec3 center = (m_giVolume.boundsMin + m_giVolume.boundsMax) * 0.5f;
+			glm::vec3 amps[smvk::gi::kSgLobeCount];
+			const bool covered = m_giVolume.Sample(center, amps);
+			const bool camCovered = m_giVolume.Sample(
+				m_cameraPositioner.cameraPosition_, amps);
+			std::cerr << "[GI] dbg: volume-center covered=" << (covered ? 1 : 0)
+				<< " amp0=(" << amps[0].r << "," << amps[0].g << "," << amps[0].b << ")"
+				<< "  camera covered=" << (camCovered ? 1 : 0) << "\n";
+			for (uint32_t lvl = 0; lvl < m_giVolume.levelCount; ++lvl) {
+				std::cerr << "[GI] dbg: level " << lvl
+					<< " cellSize=" << m_giVolume.cellSize[lvl];
+				if (lvl < m_giVolume.levelStats.size())
+					std::cerr << " probes=" << m_giVolume.levelStats[lvl].probeCount
+						<< " cells=" << m_giVolume.levelStats[lvl].cellCount;
+				std::cerr << "\n";
+			}
+		}
+
+		std::cerr << "[GI] loaded '" << vfsPath << "': probes="
+			<< m_giVolume.probes.size() << " levels=" << m_giVolume.levelCount
+			<< " gpu=" << (m_giVolume.GpuBytes() / 1024) << " KiB\n";
+	}
+
 	FrameUniforms SceneRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent) {
 
 		const int width_ = renderExtent.width;
@@ -1034,6 +1190,28 @@ void SceneRenderer::Shutdown() {
 			data.dsDebugCountCeil = 32;
 #endif
 		}
+
+		// SG-GI probe volume: static BDAs (uploaded once at scene load) +
+		// the user toggles. GiActive() is the single gate so the shader
+		// flag and the buffers can never disagree.
+		if (GiActive()) {
+			data.giProbes = m_giProbesAddress;
+			data.giGrid = m_giGridAddress;
+			data.giCells = m_giCellsAddress;
+			data.giIndices = m_giIndicesAddress;
+			data.giEnabled = 1u;
+			data.giIntensity = m_giIntensity;
+			data.giDebug = m_giDebug ? 1u : 0u;
+		} else {
+			data.giProbes = 0;
+			data.giGrid = 0;
+			data.giCells = 0;
+			data.giIndices = 0;
+			data.giEnabled = 0u;
+			data.giIntensity = 1.0f;
+			data.giDebug = 0u;
+		}
+		data.giPad = 0u;
 
 		// Destination scope covers every consumer: BDA reads in vertex,
 		// fragment (lighting/materials/env) and compute (Forward+ cull).
@@ -4097,6 +4275,34 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					TONEMAP_EXPOSURE, m_viewportResources.exposure.desc.percentile * 100.0f,
 					m_viewportResources.exposure.desc.keyValue);
 		}
+		if (ImGui::CollapsingHeader("GI â€” SG probe volume (baked)", ImGuiTreeNodeFlags_DefaultOpen)) {
+			if (m_giLoaded) {
+				ImGui::Checkbox("Baked GI ambient (N)", &m_giEnabled);
+				ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
+				ImGui::Checkbox("Irradiance debug view (F8)", &m_giDebug);
+				ImGui::Checkbox("Probe points overlay", &m_giShowProbes);
+				if (m_giShowProbes) {
+					ImGui::SliderFloat("Overlay radius (m)", &m_giProbePointMaxDist,
+						2.0f, 120.0f, "%.0f");
+					ImGui::TextDisabled("colors: L0 red -> L4 cyan -> L7 pink (coarse->fine)");
+				}
+				ImGui::Text("Probes: %u  levels: %u  GPU: %zu KiB",
+					(unsigned)m_giVolume.probes.size(), m_giVolume.levelCount,
+					m_giVolume.GpuBytes() / 1024);
+				for (uint32_t lvl = 0; lvl < m_giVolume.levelCount
+					&& lvl < m_giVolume.levelStats.size(); ++lvl) {
+					const auto& s = m_giVolume.levelStats[lvl];
+					ImGui::BulletText("lvl %u: %u probes  %u cells (max %u/cell)",
+						lvl, s.probeCount, s.cellCount, s.maxProbesPerCell);
+				}
+				ImGui::TextDisabled("9 SG lobes @ sharpness 4, 96 B/probe, 6-axis visibility");
+			} else {
+				ImGui::TextDisabled("No baked volume: content/gi/%s.sggi",
+					m_scene.id ? m_scene.id : "?");
+				ImGui::TextDisabled("Bake with tools/gi_baker/GiBaker --scene %s",
+					m_scene.id ? m_scene.id : "?");
+			}
+		}
 		{
 			// AA mode combo (Off / MSAA 2x / SMAA 1x / SMAA T2x). msaaEnabled
 			// is derived from the mode every frame (see the Ensure block), so
@@ -4594,6 +4800,68 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 						IM_COL32_WHITE, label);
 					++labels;
 				}
+			}
+		}
+
+		// SG-GI probe-point overlay (like the forward+ light points):
+		// draws the probe lattice colored by octree level through the
+		// UNJITTERED viewProj. Distance-filtered + count-capped so huge
+		// volumes stay ImGui-cheap. No depth test: occluded probes stay
+		// visible (debug).
+		if (m_giLoaded && m_giShowProbes && !m_giVolume.probes.empty()) {
+			ImDrawList* dl = ImGui::GetForegroundDrawList();
+			const ImVec2 disp = ImGui::GetIO().DisplaySize;
+			const glm::vec3 camPos = m_cameraPositioner.cameraPosition_;
+			const float maxDist = std::max(m_giProbePointMaxDist, 1.0f);
+			const float maxDist2 = maxDist * maxDist;
+			// Level colors: coarse red -> fine pink; point size shrinks
+			// with level so dense fine probes don't swamp the view.
+			static const ImU32 kLevelColors[8] = {
+				IM_COL32(255, 64, 64, 210), IM_COL32(255, 160, 32, 210),
+				IM_COL32(230, 230, 60, 210), IM_COL32(70, 230, 90, 210),
+				IM_COL32(60, 200, 255, 210), IM_COL32(110, 130, 255, 210),
+				IM_COL32(200, 100, 255, 210), IM_COL32(255, 110, 200, 210),
+			};
+			uint32_t drawn = 0;
+			constexpr uint32_t kMaxDrawn = 6000;
+			for (const smvk::gi::SgProbe& p : m_giVolume.probes) {
+				if (drawn >= kMaxDrawn)
+					break;
+				if (!p.valid)
+					continue;
+				const glm::vec3 d = p.position - camPos;
+				if (glm::dot(d, d) > maxDist2)
+					continue;
+				const glm::vec4 clip = m_unjitteredViewProj * glm::vec4(p.position, 1.0f);
+				if (clip.w <= 1e-4f)
+					continue;
+				const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+				if (std::abs(ndc.x) > 1.0f || std::abs(ndc.y) > 1.0f)
+					continue;
+				const ImVec2 pt(
+					(ndc.x * 0.5f + 0.5f) * disp.x,
+					(ndc.y * 0.5f + 0.5f) * disp.y);
+				const uint32_t lvl = std::min(p.level, 7u);
+				const float r = std::max(4.0f - 0.7f * float(lvl), 1.5f);
+				dl->AddCircleFilled(pt, r, kLevelColors[lvl]);
+				++drawn;
+			}
+			// Legend: level colors + drawn count, pinned top-left.
+			float lx = 8.0f;
+			const float ly = 8.0f;
+			char cap[96];
+			snprintf(cap, sizeof(cap), "GI probes: %u/%u drawn (<= %.0fm)",
+				drawn, (unsigned)m_giVolume.probes.size(), maxDist);
+			dl->AddText(ImVec2(lx + 1.0f, ly + 1.0f), IM_COL32(0, 0, 0, 200), cap);
+			dl->AddText(ImVec2(lx, ly), IM_COL32_WHITE, cap);
+			for (uint32_t lvl = 0; lvl < std::min(m_giVolume.levelCount, 8u); ++lvl) {
+				dl->AddCircleFilled(ImVec2(lx + 4.0f, ly + 22.0f), 3.5f, kLevelColors[lvl]);
+				char lab[8];
+				snprintf(lab, sizeof(lab), "L%u", lvl);
+				dl->AddText(ImVec2(lx + 10.0f + 1.0f, ly + 16.0f + 1.0f),
+					IM_COL32(0, 0, 0, 200), lab);
+				dl->AddText(ImVec2(lx + 10.0f, ly + 16.0f), IM_COL32_WHITE, lab);
+				lx += 34.0f;
 			}
 		}
 
