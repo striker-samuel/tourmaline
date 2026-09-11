@@ -113,6 +113,11 @@ void smvk::App::MainLoop() {
 			// then average delta_time_s (present throttle included).
 			if (benchWarmup_ < 10) {
 				++benchWarmup_;
+				if (benchWarmup_ == 10) {
+					// Start an Optick capture for the measured window so the
+					// CPU+GPU breakdown can be inspected in Optick Viewer.
+					OPTICK_START_CAPTURE();
+				}
 			} else {
 				benchAccum_ += delta_time_s;
 				if (++benchFrames_ >= frameBudget_) {
@@ -123,6 +128,10 @@ void smvk::App::MainLoop() {
 						benchPollMs / benchFrames_, benchGameMs / benchFrames_,
 						benchDrawMs / benchFrames_);
 					std::fflush(stdout);
+					OPTICK_STOP_CAPTURE();
+					const bool benchSaved = ::Optick::SaveCapture("bench.opt");
+					std::printf("[perf] optick capture %s to bench.opt\n",
+						benchSaved ? "saved" : "FAILED");
 					windowShouldClose_ = true;
 				}
 			}

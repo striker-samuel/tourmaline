@@ -265,6 +265,29 @@ inline void DsBuildTileMasks(const std::vector<ForwardPlusLight>& lights,
 
     const uint32_t n = std::min<uint32_t>(
         (uint32_t)lights.size(), kDsMaxLightGroups * 32u);
+    // Group origin planes are light-independent (same cross() order as
+    // forwardplus.cs.hlsl — verified there by hand): precompute 4 inward
+    // planes per group ONCE instead of per light per group. NDC y down
+    // in the framebuffer (y0 = top row on screen).
+    const size_t groupCount = size_t(outGroupCountX) * outGroupCountY;
+    std::vector<glm::vec3> groupPlanes(groupCount * 4);
+    for (uint32_t gy = 0; gy < outGroupCountY; ++gy) {
+        for (uint32_t gx = 0; gx < outGroupCountX; ++gx) {
+            const float x0 = (float(gx * kDsTileGroupPx) / wF) * 2.0f - 1.0f;
+            const float x1 = (float((gx + 1) * kDsTileGroupPx) / wF) * 2.0f - 1.0f;
+            const float y0 = (float(gy * kDsTileGroupPx) / hF) * 2.0f - 1.0f;
+            const float y1 = (float((gy + 1) * kDsTileGroupPx) / hF) * 2.0f - 1.0f;
+            const glm::vec3 c00 = unprojectNear(glm::vec2(x0, y0));
+            const glm::vec3 c10 = unprojectNear(glm::vec2(x1, y0));
+            const glm::vec3 c11 = unprojectNear(glm::vec2(x1, y1));
+            const glm::vec3 c01 = unprojectNear(glm::vec2(x0, y1));
+            glm::vec3* planes = &groupPlanes[(size_t(gy) * outGroupCountX + gx) * 4];
+            planes[0] = glm::normalize(glm::cross(c00, c10)); // top
+            planes[1] = glm::normalize(glm::cross(c11, c01)); // bottom
+            planes[2] = glm::normalize(glm::cross(c01, c00)); // left
+            planes[3] = glm::normalize(glm::cross(c10, c11)); // right
+        }
+    }
     for (uint32_t i = 0; i < n; ++i) {
         const ForwardPlusLight& L = lights[i];
         const float range = (L.range <= 0.0f) ? kDsInfiniteRange : L.range;
@@ -321,23 +344,8 @@ inline void DsBuildTileMasks(const std::vector<ForwardPlusLight>& lights,
         const uint32_t lightBit = 1u << (i % 32u);
         for (uint32_t gy = gy0; gy <= gy1; ++gy) {
             for (uint32_t gx = gx0; gx <= gx1; ++gx) {
-                // Group NDC corners (y down: y0 = top row on screen).
-                const float x0 = (float(gx * kDsTileGroupPx) / wF) * 2.0f - 1.0f;
-                const float x1 = (float((gx + 1) * kDsTileGroupPx) / wF) * 2.0f - 1.0f;
-                const float y0 = (float(gy * kDsTileGroupPx) / hF) * 2.0f - 1.0f;
-                const float y1 = (float((gy + 1) * kDsTileGroupPx) / hF) * 2.0f - 1.0f;
-                const glm::vec3 c00 = unprojectNear(glm::vec2(x0, y0));
-                const glm::vec3 c10 = unprojectNear(glm::vec2(x1, y0));
-                const glm::vec3 c11 = unprojectNear(glm::vec2(x1, y1));
-                const glm::vec3 c01 = unprojectNear(glm::vec2(x0, y1));
-                // Inward-facing origin planes (same cross() order as
-                // forwardplus.cs.hlsl — verified there by hand).
-                const glm::vec3 planes[4] = {
-                    glm::normalize(glm::cross(c00, c10)), // top
-                    glm::normalize(glm::cross(c11, c01)), // bottom
-                    glm::normalize(glm::cross(c01, c00)), // left
-                    glm::normalize(glm::cross(c10, c11)), // right
-                };
+                const glm::vec3* planes =
+                    &groupPlanes[(size_t(gy) * outGroupCountX + gx) * 4];
                 bool outside = false;
                 for (int p = 0; p < 4; ++p) {
                     if (dot(planes[p], cView) < -range) {

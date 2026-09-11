@@ -60,7 +60,9 @@ using app::PushConstants;
 // Bench phase accumulators (RenderFrame sub-timings, --bench only).
 static double s_benchUpdates = 0.0, s_benchPasses = 0.0, s_benchReadbacks = 0.0,
 	s_benchUi = 0.0, s_benchExecute = 0.0, s_benchUpdA = 0.0, s_benchUpdB = 0.0,
-	s_benchStream = 0.0, s_benchFp = 0.0;
+	s_benchStream = 0.0, s_benchFp = 0.0, s_benchFpGen = 0.0, s_benchFpUp = 0.0,
+	s_benchFpDs = 0.0, s_benchPreMain = 0.0, s_benchPostMain = 0.0,
+	s_benchPreA = 0.0, s_benchPreB = 0.0, s_benchPreC = 0.0;
 
 static std::vector<char> readContentFile(smvk::OverlayVfs& vfs, const std::string& vfsPath) {
 	std::vector<uint8_t> bytes = vfs.ReadBinary(vfsPath);
@@ -1705,6 +1707,9 @@ void SceneRenderer::Shutdown() {
 	// shadowMapIndex are patched before upload. Results land in
 	// m_spotShadowCount / m_spotShadowMapIndex for the frame's passes.
 	uint32_t SceneRenderer::UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame) {
+		using fp_clk = std::chrono::steady_clock;
+		const bool fpBench = frameBudget_ > 0 && benchWarmup_ >= 10;
+		const auto fpT0 = fp_clk::now();
 		std::vector<smvk::ForwardPlusLight> lights;
 		lights.reserve(FP_MAX_LIGHTS);
 		m_debugLights.clear();
@@ -1892,6 +1897,7 @@ void SceneRenderer::Shutdown() {
 #endif
 
 	constexpr size_t FP_FRAME_STRIDE = sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS;
+	const auto fpT1 = fp_clk::now();
 	if (!lights.empty()) {
 		m_context->UploadDataToBuffer(
 			m_resources.fpLightsBuffer,
@@ -1908,6 +1914,7 @@ void SceneRenderer::Shutdown() {
 	// phases below use). Uploads run even with zero lights so the buffers
 	// are always freshly zeroed — the phases then emit empty lists and
 	// the consumer iterates nothing (no stale-data path exists).
+	const auto fpT2 = fp_clk::now();
 	if (DsActive()) {
 		smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
 		// Stats readback of the RETIRED slice BEFORE the zero (exposure
@@ -1973,7 +1980,14 @@ void SceneRenderer::Shutdown() {
 			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead,
 			0, 0);
 	}
-		return (uint32_t)lights.size();
+	if (fpBench) {
+		using msd = std::chrono::duration<double, std::milli>;
+		const auto fpT3 = fp_clk::now();
+		s_benchFpGen += msd(fpT1 - fpT0).count();
+		s_benchFpUp += msd(fpT2 - fpT1).count();
+		s_benchFpDs += msd(fpT3 - fpT2).count();
+	}
+	return (uint32_t)lights.size();
 	}
 
 	// ---------------------------------------------------------------------
@@ -2600,8 +2614,11 @@ void SceneRenderer::Shutdown() {
 			std::printf("[perf] cpu %.3f ms wait %.3f ms gpu %s\n", m_cpuMsSmooth, m_waitMsSmooth,
 				m_gpuTimingValid ? (std::to_string(m_gpuMsSmooth) + " ms").c_str() : "(warming up)");
 			const double n = (double)(benchFrames_ + 1); // this DrawFrame already accumulated
-			std::printf("[perf] phases updates %.3f ms (u/l/m %.3f + stream %.3f + fp %.3f) passes %.3f ms readbacks %.3f ms ui %.3f ms execute %.3f ms\n",
-				s_benchUpdates / n, s_benchUpdA / n, s_benchStream / n, s_benchFp / n, s_benchPasses / n, s_benchReadbacks / n,
+			std::printf("[perf] phases updates %.3f ms (u/l/m %.3f + stream %.3f + fp %.3f [gen %.3f up %.3f ds %.3f]) passes %.3f ms (preA %.3f preB %.3f preC %.3f postMain %.3f) readbacks %.3f ms ui %.3f ms execute %.3f ms\n",
+				s_benchUpdates / n, s_benchUpdA / n, s_benchStream / n, s_benchFp / n,
+				s_benchFpGen / n, s_benchFpUp / n, s_benchFpDs / n, s_benchPasses / n,
+				s_benchPreA / n, s_benchPreB / n, s_benchPreC / n,
+				s_benchPostMain / n, s_benchReadbacks / n,
 				s_benchUi / n, s_benchExecute / n);
 			std::fflush(stdout);
 		}
@@ -2718,6 +2735,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		const bool benchPhase = frameBudget_ > 0 && benchWarmup_ >= 10;
 		const auto rfT0 = bench_clk::now();
 		bench_clk::time_point rfT2, rfT3; // assigned in the exposure block below
+		bench_clk::time_point rfPA, rfPB; // preMain split: fw+/filter | cull/late
 		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent, swapExtent);
 		const smvk::GpuDirectionalLightDescription dirLight = UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
@@ -3108,6 +3126,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 
 		// ---- Forward+ passes (depth prepass + tile cull) ----
 		// Owned by ForwardPlusRenderer (see App/forwardplus_renderer.h).
+		rfPA = bench_clk::now();
 		fc.pc = pc;
 		fc.depthView = m_viewportResources.renderDepth.logicalView;
 		fc.depthViewHandle = m_viewportResources.renderDepth.view;
@@ -3226,6 +3245,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 	// pipeline runs instead (still over the complete depth below).
 	// Deferred shadows OFF: legacy forward+ cull (A/B path).
 	const bool dsOn = DsActive();
+	rfPB = bench_clk::now();
 	if (m_passes.forwardPlusCull && !dsOn)
 		m_fpRenderer.AppendTileCull(fc);
 	if (dsOn)
@@ -3631,6 +3651,7 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 	// SetInputImages emits the read barrier + layout transition.
 	if (!aoView.empty())
 		mainInputs.push_back(aoView);
+	const auto rfTM = bench_clk::now();
 	auto& mainPass = m_rendergraph->AddPass("Main")
 			.SetOffset(0, 0)
 			.SetInputImages(mainInputs)
@@ -5539,6 +5560,11 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			s_benchFp += msd(rfT1 - rfT0c).count();
 			s_benchUpdates += msd(rfT1 - rfT0).count();
 			s_benchPasses += msd(rfT2 - rfT1).count();
+			s_benchPreMain += msd(rfTM - rfT1).count();
+			s_benchPostMain += msd(rfT2 - rfTM).count();
+			s_benchPreA += msd(rfPA - rfT1).count();
+			s_benchPreB += msd(rfPB - rfPA).count();
+			s_benchPreC += msd(rfTM - rfPB).count();
 			s_benchReadbacks += msd(rfT3 - rfT2).count();
 			s_benchUi += msd(rfT4 - rfT3).count();
 			s_benchExecute += msd(rfT5 - rfT4).count();
