@@ -2139,6 +2139,7 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f)
 		destroy(this, m_feedbackBuffers[f]);
 	destroy(this, m_readbackStaging);
+	destroy(this, m_asyncStaging);
 
 	// Flush, not Process: queued tasks may reference the swapchain timeline
 	// semaphore, which ~VulkanSwapchain already destroyed (member order).
@@ -3008,6 +3009,111 @@ bool smvk::VulkanResourceManager::DownloadDataFromBuffers(std::span<const smvk::
 		offset += static_cast<uint64_t>(d.size);
 	}
 	UnmapBuffer(m_readbackStaging);
+	return true;
+}
+
+uint64_t smvk::VulkanResourceManager::SubmitAsyncDownloadDataFromBuffers(
+	std::span<const smvk::BufferDownload> downloads) {
+	if (downloads.empty() || m_asyncReadbackTicket != 0)
+		return 0; // no work, or the single slot is still in flight
+	// Validate everything up front (all-or-nothing, like the sync path).
+	uint64_t total = 0;
+	for (const smvk::BufferDownload& d : downloads) {
+		if (d.size == 0 || d.out == nullptr || d.src.empty())
+			return 0;
+		auto srcBuf = buffers_.get(d.src);
+		if (!srcBuf || srcBuf->vkBuffer == VK_NULL_HANDLE)
+			return 0;
+		total += static_cast<uint64_t>(d.size);
+	}
+	if (!EnsureAsyncStaging(static_cast<VkDeviceSize>(total)))
+		return 0;
+	auto stagingBuf = buffers_.get(m_asyncStaging);
+	if (!stagingBuf || stagingBuf->vkBuffer == VK_NULL_HANDLE)
+		return 0;
+	auto han = m_submitter->acquire();
+	auto cmd = m_submitter->GetCommandBuffer(han);
+	uint64_t stagingOffset = 0;
+	for (const smvk::BufferDownload& d : downloads) {
+		auto srcBuf = buffers_.get(d.src);
+		// Prior writers -> transfer read (conservative ALL_COMMANDS src;
+		// the rendergraph tracked the real last writer for its own passes).
+		BufferBarrier(cmd, srcBuf->vkBuffer, d.srcOffset, d.size,
+			VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+			VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+			VK_ACCESS_2_TRANSFER_READ_BIT);
+		VkBufferCopy copyRegion{
+			static_cast<VkDeviceSize>(d.srcOffset),
+			static_cast<VkDeviceSize>(stagingOffset),
+			static_cast<VkDeviceSize>(d.size) };
+		vkCmdCopyBuffer(cmd, srcBuf->vkBuffer, stagingBuf->vkBuffer, 1, &copyRegion);
+		stagingOffset += static_cast<uint64_t>(d.size);
+	}
+	BufferBarrier(cmd, stagingBuf->vkBuffer, 0, static_cast<VkDeviceSize>(total),
+		VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+		VK_ACCESS_2_TRANSFER_WRITE_BIT,
+		VK_PIPELINE_STAGE_2_HOST_BIT,
+		VK_ACCESS_2_HOST_READ_BIT);
+	// No wait: the ticket is the timeline value the copy signals. The
+	// caller polls it non-blocking (PollAsyncDownloadDataFromBuffers).
+	TimelinePoint tp = m_submitter->submit(han);
+	if (!tp.valid()) {
+		return 0;
+	}
+	m_asyncReadbackTicket = tp.value;
+	m_asyncReadbackSemaphore = tp.semaphore;
+	m_asyncReadbackBytes = static_cast<VkDeviceSize>(total);
+	return tp.value;
+}
+
+bool smvk::VulkanResourceManager::PollAsyncDownloadDataFromBuffers(
+	uint64_t ticket, std::span<const smvk::BufferDownload> downloads) {
+	if (ticket == 0 || ticket != m_asyncReadbackTicket || m_asyncStaging.empty())
+		return false;
+	// NON-BLOCKING timeline check: the copy (and everything submitted
+	// before it) has completed once the counter reaches the ticket.
+	uint64_t completed = 0;
+	VkResult r = vkGetSemaphoreCounterValue(device_, m_asyncReadbackSemaphore, &completed);
+	if (r != VK_SUCCESS)
+		return false;
+	if (completed < ticket)
+		return false; // still in flight; try again next frame
+	void* mapped = MapBuffer(m_asyncStaging);
+	if (!mapped)
+		return false;
+	const uint8_t* base = static_cast<const uint8_t*>(mapped);
+	uint64_t offset = 0;
+	for (const smvk::BufferDownload& d : downloads) {
+		if (offset + d.size <= static_cast<uint64_t>(m_asyncReadbackBytes))
+			std::memcpy(d.out, base + offset, d.size);
+		offset += static_cast<uint64_t>(d.size);
+	}
+	UnmapBuffer(m_asyncStaging);
+	m_asyncReadbackTicket = 0; // slot free for the next submit
+	m_asyncReadbackSemaphore = VK_NULL_HANDLE;
+	return true;
+}
+
+bool smvk::VulkanResourceManager::EnsureAsyncStaging(VkDeviceSize size) {
+	static constexpr VkDeviceSize kMinBytes = 256ull * 1024;         // 256 KiB floor
+	static constexpr VkDeviceSize kMaxBytes = 64ull * 1024 * 1024;   // sanity cap (small periodic payloads)
+	if (!m_asyncStaging.empty() && m_asyncStagingSize >= size)
+		return true;
+	if (size > kMaxBytes)
+		return false;
+	VkDeviceSize want = kMinBytes;
+	while (want < size)
+		want *= 2;
+	// HOST_ACCESS_RANDOM: the CPU reads the copy results (cached memory).
+	Holder<BufferHandle> grown = CreateBuffer(want, smvk::BufferType_Staging,
+		"async readback staging", VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+	if (grown.empty())
+		return false;
+	if (!m_asyncStaging.empty())
+		destroy(this, m_asyncStaging); // old staging retires via DeferDestroy
+	m_asyncStaging = grown.release();
+	m_asyncStagingSize = want;
 	return true;
 }
 

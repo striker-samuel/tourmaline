@@ -83,6 +83,17 @@ public:
     // All-or-nothing: returns false without copying anything when any
     // entry is invalid or the staging cannot cover the total.
     bool DownloadDataFromBuffers(std::span<const BufferDownload> downloads);
+    // ASYNC batched readback (no CPU wait anywhere): submit records the
+    // copies and returns a ticket (timeline value); poll the ticket each
+    // frame — when the GPU signals it, `downloads` receive the bytes
+    // (same span layout as the submit). One ticket in flight; a submit
+    // while busy returns 0 (skip + retry next tick, no backlog). Built
+    // for the periodic exposure-histogram / texture-feedback consume,
+    // which previously locked the render thread on the graphics-queue
+    // backlog with a blocking wait.
+    uint64_t SubmitAsyncDownloadDataFromBuffers(std::span<const BufferDownload> downloads);
+    bool PollAsyncDownloadDataFromBuffers(uint64_t ticket, std::span<const BufferDownload> downloads);
+    bool HasAsyncDownloadInFlight() const;
     // Texture-streaming feedback ring (Skull & Bones style GPU readback):
     // per-flight-slice device buffer, one uint per bindless slot.
     BufferHandle GetTextureFeedbackBuffer(uint32_t flightSlot);

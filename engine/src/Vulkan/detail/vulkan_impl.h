@@ -567,6 +567,19 @@ namespace smvk {
 		// Batched variant (see RHI/resource_manager.h): one submit + wait
 		// for the whole list. The single-copy path delegates to it.
 		bool DownloadDataFromBuffers(std::span<const BufferDownload> downloads);
+		// ASYNC batched download — no CPU wait anywhere. Submit records the
+		// copies into the dedicated async staging and returns a ticket (the
+		// graphics-timeline value the copy signals); Poll checks the timeline
+		// counter NON-BLOCKING each frame and, once signaled, memcpys staging
+		// into the caller's buffers (same span layout as the submit) and
+		// frees the single in-flight slot. Designed for the periodic exposure
+		// histogram + texture-feedback tick: the render thread never stalls
+		// on the graphics-queue backlog the way the sync paths do. A submit
+		// while a ticket is still in flight returns 0 (caller skips/retries
+		// next tick, so no backlog builds). Render-thread only.
+		uint64_t SubmitAsyncDownloadDataFromBuffers(std::span<const BufferDownload> downloads);
+		bool PollAsyncDownloadDataFromBuffers(uint64_t ticket, std::span<const BufferDownload> downloads);
+		bool HasAsyncDownloadInFlight() const noexcept { return m_asyncReadbackTicket != 0; }
 		// GPU color image (layer 0, mip 0, tightly packed) -> CPU memory.
 		// currentLayout must be the image's ACTUAL layout (the rendergraph
 		// does not write sync states back; Undefined would discard the
@@ -693,6 +706,15 @@ namespace smvk {
 		// deferred-task queue from inside the drain loop.
 		BufferHandle m_readbackStaging{};
 		VkDeviceSize m_readbackStagingSize = 0;
+		// Dedicated staging for the async download path: while a ticket is
+		// in flight (up to a few frames), the sync readbacks (DS stats,
+		// screenshots) must not clobber these bytes.
+		BufferHandle m_asyncStaging{};
+		VkDeviceSize m_asyncStagingSize = 0;
+		uint64_t m_asyncReadbackTicket = 0; // 0 = slot free
+		VkSemaphore m_asyncReadbackSemaphore = VK_NULL_HANDLE;
+		VkDeviceSize m_asyncReadbackBytes = 0;
+		bool EnsureAsyncStaging(VkDeviceSize size);
 
 		// Global sync bookkeeping – use global types for UploadStreamer visibility
 		using ImageGlobalSyncState = ::smvk::ImageGlobalSyncState;
@@ -828,10 +850,10 @@ namespace smvk {
 		uint32_t currentFrame_ = 0;
 
 		// Presentation mode: requested (next Create/Recreate) vs active.
-		// Mailbox default: tear-free like FIFO but never halves to 30fps
-		// when a frame misses the 16.6ms budget (FIFO is spec-guaranteed
-		// and stays the fallback).
-		VkPresentModeKHR requestedPresentMode_ = VK_PRESENT_MODE_MAILBOX_KHR;
+		// Immediate default: uncapped, lowest latency. Fallback chain on
+		// unsupported: mailbox (tear-free, no FIFO halving) -> relaxed ->
+		// spec-guaranteed FIFO.
+		VkPresentModeKHR requestedPresentMode_ = VK_PRESENT_MODE_IMMEDIATE_KHR;
 		VkPresentModeKHR activePresentMode_ = VK_PRESENT_MODE_FIFO_KHR;
 
 		// Per-frame timestamp query pools (2 queries each: frame start/end)

@@ -496,9 +496,9 @@ protected:
 	float m_uiScale = 1.0f;
 	float m_uiDpiScale = 1.0f; // synced from ImGuiOverlay at init (auto = monitor DPI)
 	// VSync / presentation mode (overlay combo; applied via swapchain Recreate).
-	// Mailbox default: tear-free like FIFO but never stair-steps to 30fps
-	// when a frame misses 16.6ms (strict FIFO would).
-	smvk::PresentMode m_presentMode = smvk::PresentMode::Mailbox;
+	// Immediate default: uncapped, lowest latency (the overlay combo can pick
+	// the vsync modes; FIFO is strict — a missed 16.6ms locks to 30fps).
+	smvk::PresentMode m_presentMode = smvk::PresentMode::Immediate;
 	// Frame timing: CPU wall time vs GPU execution time (EMA-smoothed ms
 	// for the debug overlay). GPU lags 1-2 frames (retired-frame readback).
 	double m_cpuMsSmooth = 0.0;
@@ -1017,6 +1017,18 @@ protected:
 	// Engine/Renderer/texture_feedback.h). Lives alongside the streamer;
 	// null together with it when streaming is disabled.
 	std::unique_ptr<smvk::TextureFeedback> m_textureFeedback;
+	// ---- Async readback ticket (exposure histogram + texture feedback) ----
+	// Submit + non-blocking poll each tick: the render thread NEVER waits
+	// on the graphics-queue backlog (the old sync download locked for the
+	// whole in-flight frame). One ticket in flight; while pending, new
+	// ticks skip their submit (results land 1-2 frames later instead of
+	// the old 2-3 — adaptation is time-damped, streaming is laggy anyway).
+	uint64_t m_asyncReadbackTicket = 0;
+	uint32_t m_pendingReadbackSlot = 0;
+	bool m_pendingReadbackHasExposure = false;
+	bool m_pendingReadbackHasFeedback = false;
+	std::array<uint32_t, smvk::kExposureBinCount> m_pendingExposureBins{};
+	std::vector<uint32_t> m_pendingFeedback;
 	// CPU demand + budget tick. streamFrame must be monotonic (NOT the
 	// swapchain slot); call once per RenderFrame after UpdateMaterials.
 	void UpdateTextureStreaming(const FrameUniforms& frameData, smvk::Extent2D renderExtent);

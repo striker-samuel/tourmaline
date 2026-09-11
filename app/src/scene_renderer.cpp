@@ -1623,63 +1623,83 @@ void SceneRenderer::Shutdown() {
 			m_exposureMin, m_exposureMax, delta_time_s);
 	}
 
-	// Combined GPU->CPU readback tick (replaces the lone UpdateAutoExposure
-	// call). On GPU-feedback frames the histogram + feedback downloads
-	// share ONE submit + wait through the persistent staging (see
-	// ResourceManager::DownloadDataFromBuffers); otherwise each path runs
-	// alone as before. The feedback clear always runs AFTER the consume
-	// (download-before-clear, same order as the exposure zero-fill below).
+	// Async GPU->CPU readback tick (exposure histogram + texture feedback).
+	// SUBMIT + POLL on a timeline semaphore — the render thread NEVER waits:
+	// the old sync download locked for the whole in-flight graphics backlog
+	// (Optick showed it as a multi-ms CPU block). Every 4th frame a fresh
+	// copy of the retired slice is submitted with a ticket; each frame the
+	// previous ticket is POLLED non-blocking and, once the GPU signals it,
+	// exposure adapts + feedback forwards from the staging memcpy. One
+	// ticket in flight: a tick while the previous is pending skips its
+	// submit (results land 1-2 frames later; adaptation is time-damped and
+	// streaming is laggy anyway). The feedback clear still runs AFTER the
+	// copy is queued (download-before-clear, same order as the exposure
+	// zero-fill below).
 	void SceneRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
 		const bool feedbackActive = m_textureStreamingEnabled
 			&& m_textureStreamer && m_textureFeedback
 			&& m_textureFeedback->GetSlotCount() > 0;
-		const bool feedbackTick = feedbackActive
-			&& ((m_frameCounter & 3u) == 2u);
 		auto& meter = m_viewportResources.exposure;
 		const bool meterValid = meter.Valid()
 			&& frameSlot < static_cast<uint32_t>(::MAX_FRAMES_IN_FLIGHT);
-		// Histogram readback every 4th frame (aligned with feedbackTick so
-		// both share ONE submit+wait). Adaptation is time-damped, so a 4x
-		// slower refresh is visually identical and removes a per-frame
-		// synchronous GPU round-trip stall from the render thread.
-		const bool exposureTick = kHistogramReadbackEnabled
-			&& ExposureMeteringActive() && meterValid
-			&& ((m_frameCounter & 3u) == 2u);
+		// Layout helper: the SAME span shape must accompany the submit and
+		// its poll (destinations are stable members; handles/sizes are fixed).
+		std::array<smvk::BufferDownload, 2> dls{};
+		const auto buildPendingDownloads = [&]() -> std::span<const smvk::BufferDownload> {
+			uint32_t n = 0;
+			if (m_pendingReadbackHasExposure) {
+				dls[n] = { meter.HistogramBuffer(m_pendingReadbackSlot),
+					m_pendingExposureBins.data(),
+					m_pendingExposureBins.size() * sizeof(uint32_t), 0 };
+				++n;
+			}
+			if (m_pendingReadbackHasFeedback) {
+				dls[n] = { m_context->GetTextureFeedbackBuffer(m_pendingReadbackSlot),
+					m_pendingFeedback.data(),
+					m_pendingFeedback.size() * sizeof(uint32_t), 0 };
+				++n;
+			}
+			return { dls.data(), n };
+		};
 
-		if (feedbackTick && exposureTick) {
-			std::array<uint32_t, smvk::kExposureBinCount> bins{};
-			const uint32_t fbSlots = m_textureFeedback->GetSlotCount();
-			std::vector<uint32_t> fb(fbSlots, smvk::TextureFeedback::kNoReport);
-			const smvk::BufferDownload dls[2] = {
-				{ meter.HistogramBuffer(frameSlot), bins.data(),
-					bins.size() * sizeof(uint32_t), 0 },
-				{ m_context->GetTextureFeedbackBuffer(frameSlot), fb.data(),
-					fb.size() * sizeof(uint32_t), 0 },
-			};
-			if (m_context->DownloadDataFromBuffers(dls)) {
-				m_exposureFrame = frameSlot;
-				AdaptExposureFromBins(bins);
-				const uint32_t reported = m_textureFeedback->ForwardDownloaded(
-					*m_textureStreamer, fb.data(), fb.size(), streamFrame);
-				if ((m_frameCounter & 63u) == 2u) {
-					std::fprintf(stderr,
-						"[streamfb] tick=%llu slice=%u reported=%u\n",
-						(unsigned long long)m_frameCounter, frameSlot, reported);
+		// 1) Poll the in-flight download (non-blocking timeline check).
+		if (m_asyncReadbackTicket != 0) {
+			if (m_context->PollAsyncDownloadDataFromBuffers(
+					m_asyncReadbackTicket, buildPendingDownloads())) {
+				m_asyncReadbackTicket = 0;
+				if (m_pendingReadbackHasExposure && ExposureMeteringActive()) {
+					m_exposureFrame = m_pendingReadbackSlot;
+					AdaptExposureFromBins(m_pendingExposureBins);
+				}
+				if (m_pendingReadbackHasFeedback && feedbackActive) {
+					const uint32_t reported = m_textureFeedback->ForwardDownloaded(
+						*m_textureStreamer, m_pendingFeedback.data(),
+						m_pendingFeedback.size(), streamFrame);
+					if ((m_frameCounter & 63u) == 2u) {
+						std::fprintf(stderr,
+							"[streamfb] tick=%llu slice=%u reported=%u (async)\n",
+							(unsigned long long)m_frameCounter,
+							m_pendingReadbackSlot, reported);
+					}
 				}
 			}
 		}
-		else {
-			if (exposureTick)
-				UpdateAutoExposure(frameSlot);
-			if (feedbackTick) {
-				const uint32_t reported = m_textureFeedback->ConsumeAndForward(
-					*m_textureStreamer, frameSlot, streamFrame);
-				if ((m_frameCounter & 63u) == 2u) {
-					std::fprintf(stderr,
-						"[streamfb] tick=%llu slice=%u reported=%u (solo)\n",
-						(unsigned long long)m_frameCounter, frameSlot, reported);
-				}
-			}
+
+		// 2) Submit this tick's download of the retired slice: no wait, the
+		// ticket is polled on later frames. Skipped while a ticket is
+		// pending (single slot) or on submit failure (retry next tick).
+		const bool tick = (m_frameCounter & 3u) == 2u;
+		if (tick && m_asyncReadbackTicket == 0) {
+			m_pendingReadbackSlot = frameSlot;
+			m_pendingReadbackHasExposure = kHistogramReadbackEnabled && meterValid;
+			m_pendingReadbackHasFeedback = feedbackActive;
+			if (m_pendingReadbackHasFeedback)
+				m_pendingFeedback.assign(m_textureFeedback->GetSlotCount(),
+					smvk::TextureFeedback::kNoReport);
+			auto dlsSpan = buildPendingDownloads();
+			if (!dlsSpan.empty())
+				m_asyncReadbackTicket =
+					m_context->SubmitAsyncDownloadDataFromBuffers(dlsSpan);
 		}
 
 		if (feedbackActive)
@@ -5690,7 +5710,10 @@ void SceneRenderer::UpdateCamera(float dt)
 		const float w = static_cast<float>(std::max(1, m_swapchain->GetWindowWidth()));
 		const float h = static_cast<float>(std::max(1, m_swapchain->GetWindowHeight()));
 		m_virtualMouse.x += (m_input.getRelativeDeltaX() / w) * 2.0f;
-		m_virtualMouse.y += (m_input.getRelativeDeltaY() / h) * 2.0f;
+		// Y flip: the old absolute mapping was 1 - (y/h)*2 (screen-up = +NDC),
+		// so mouse-down must DECREASE virtual Y for the positioner's
+		// pitch = -rotSpeed * deltaY to look down. relY is +down in SDL.
+		m_virtualMouse.y -= (m_input.getRelativeDeltaY() / h) * 2.0f;
 	}
 	const glm::vec2 mousePos = m_virtualMouse;
 

@@ -162,6 +162,15 @@ bool ResourceManager::DownloadDataFromBuffer(BufferHandle src, void* out, size_t
 bool ResourceManager::DownloadDataFromBuffers(std::span<const BufferDownload> downloads) {
     return impl_->vulkan.DownloadDataFromBuffers(downloads);
 }
+uint64_t ResourceManager::SubmitAsyncDownloadDataFromBuffers(std::span<const BufferDownload> downloads) {
+    return impl_->vulkan.SubmitAsyncDownloadDataFromBuffers(downloads);
+}
+bool ResourceManager::PollAsyncDownloadDataFromBuffers(uint64_t ticket, std::span<const BufferDownload> downloads) {
+    return impl_->vulkan.PollAsyncDownloadDataFromBuffers(ticket, downloads);
+}
+bool ResourceManager::HasAsyncDownloadInFlight() const {
+    return impl_->vulkan.HasAsyncDownloadInFlight();
+}
 BufferHandle ResourceManager::GetTextureFeedbackBuffer(uint32_t flightSlot) {
     return impl_->vulkan.GetTextureFeedbackBuffer(flightSlot);
 }
