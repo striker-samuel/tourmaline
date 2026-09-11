@@ -850,6 +850,9 @@ protected:
 	DsStats m_dsStats{};
 	std::vector<uint32_t> m_dsZBinStaging;  // 4 * kDsZBinCount
 	std::vector<uint32_t> m_dsMaskStaging;  // per-TileGroup mask entries
+	// Light count captured at phase-1 upload time (telemetry reference
+	// for the async counter readback; see UpdateReadbacks).
+	uint32_t m_dsReadbackLightCount = 0;
 	// ---- Motion vector pass: previous-frame state + debug view ----
 	glm::mat4 m_prevViewProj{ 1.0f }; // last frame's viewProj (post Y-flip)
 	// This frame's viewProj WITHOUT the SMAA T2x subpixel jitter (post
@@ -1017,7 +1020,8 @@ protected:
 	// Engine/Renderer/texture_feedback.h). Lives alongside the streamer;
 	// null together with it when streaming is disabled.
 	std::unique_ptr<smvk::TextureFeedback> m_textureFeedback;
-	// ---- Async readback ticket (exposure histogram + texture feedback) ----
+	// ---- Async readback ticket (exposure histogram + texture feedback +
+	// deferred-shadow counters) ----
 	// Submit + non-blocking poll each tick: the render thread NEVER waits
 	// on the graphics-queue backlog (the old sync download locked for the
 	// whole in-flight frame). One ticket in flight; while pending, new
@@ -1027,8 +1031,10 @@ protected:
 	uint32_t m_pendingReadbackSlot = 0;
 	bool m_pendingReadbackHasExposure = false;
 	bool m_pendingReadbackHasFeedback = false;
+	bool m_pendingReadbackHasDs = false;
 	std::array<uint32_t, smvk::kExposureBinCount> m_pendingExposureBins{};
 	std::vector<uint32_t> m_pendingFeedback;
+	std::array<uint32_t, smvk::kDsCounterCount> m_pendingDsCounters{};
 	// CPU demand + budget tick. streamFrame must be monotonic (NOT the
 	// swapchain slot); call once per RenderFrame after UpdateMaterials.
 	void UpdateTextureStreaming(const FrameUniforms& frameData, smvk::Extent2D renderExtent);
@@ -1038,9 +1044,10 @@ protected:
 	// Bins -> percentile target + damped adapt (tail of UpdateAutoExposure).
 	void AdaptExposureFromBins(const std::array<uint32_t, smvk::kExposureBinCount>& bins);
 	// Combined GPU->CPU readback tick (replaces the lone UpdateAutoExposure
-	// call): on GPU-feedback frames the histogram + feedback downloads
-	// share ONE submit + wait; otherwise the existing single download runs.
-	// Always clears the feedback slice afterwards (download-before-clear).
+	// call): on GPU-feedback frames the histogram + feedback + DS-counter
+	// downloads share ONE submit + wait; otherwise the existing single
+	// download runs. Always clears the feedback slice afterwards
+	// (download-before-clear).
 	void UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame);
 };
 

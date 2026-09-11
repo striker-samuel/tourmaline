@@ -117,6 +117,19 @@ set_target_properties(StreamingTests PROPERTIES
 
 add_test(NAME streaming_tests COMMAND StreamingTests)
 
+add_executable(DeferredShadowTests test_deferredshadow.cpp)
+
+target_link_libraries(DeferredShadowTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(DeferredShadowTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME deferredshadow_tests COMMAND DeferredShadowTests)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 vulkantoy_stage_sdl3(AssetTests)
 vulkantoy_stage_sdl3(SpirvReflectionTests)
@@ -127,3 +140,4 @@ vulkantoy_stage_sdl3(CameraTests)
 vulkantoy_stage_sdl3(SmaaJitterTests)
 vulkantoy_stage_sdl3(GiTests)
 vulkantoy_stage_sdl3(StreamingTests)
+vulkantoy_stage_sdl3(DeferredShadowTests)

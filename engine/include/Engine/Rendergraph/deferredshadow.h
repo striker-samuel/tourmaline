@@ -66,8 +66,10 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace smvk {
@@ -154,10 +156,24 @@ inline float DsNearSortKey(const ForwardPlusLight& L, const glm::mat4& view)
 inline void DsSortLightsByNearDistance(std::vector<ForwardPlusLight>& lights,
     const glm::mat4& view)
 {
-    std::stable_sort(lights.begin(), lights.end(),
-        [&](const ForwardPlusLight& a, const ForwardPlusLight& b) {
-            return DsNearSortKey(a, view) < DsNearSortKey(b, view);
-        });
+    const uint32_t n = (uint32_t)lights.size();
+    if (n < 2)
+        return;
+    // Decorate-sort-undecorate: the key costs a mat4 multiply, and the
+    // old stable_sort comparator recomputed BOTH keys on every one of
+    // the ~n*log2(n) comparisons (~20k mat4 muls/frame at 1024 lights).
+    // Keys are computed once here; the index tiebreak reproduces
+    // stable_sort's order for equal keys. thread_local scratch keeps
+    // the steady state allocation-free.
+    static thread_local std::vector<std::pair<float, uint32_t>> keys;
+    keys.resize(n);
+    for (uint32_t i = 0; i < n; ++i)
+        keys[i] = { DsNearSortKey(lights[i], view), i };
+    std::sort(keys.begin(), keys.end());
+    static thread_local std::vector<ForwardPlusLight> sorted;
+    sorted.assign(lights.begin(), lights.end());
+    for (uint32_t i = 0; i < n; ++i)
+        lights[i] = sorted[keys[i].second];
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +196,11 @@ inline void DsBuildZBins(const std::vector<ForwardPlusLight>& sortedLights,
 {
     outBins.assign(4 * kDsZBinCount, 0);
     const uint32_t n = (uint32_t)sortedLights.size();
-    std::vector<uint32_t> nearBin(n, kDsZBinCount), farBin(n, 0);
+    // thread_local scratch: this runs every frame on the render thread;
+    // reuse the capacity instead of allocating ~20 KB per call.
+    static thread_local std::vector<uint32_t> nearBin, farBin;
+    nearBin.assign(n, kDsZBinCount);
+    farBin.assign(n, 0);
     const float span = std::max(farPlane - nearPlane, 1e-4f);
     const auto binOf = [&](float dist) -> uint32_t {
         const float t = std::clamp((dist - nearPlane) / span, 0.0f, 1.0f);
@@ -198,15 +218,26 @@ inline void DsBuildZBins(const std::vector<ForwardPlusLight>& sortedLights,
         farBin[i] = binOf(z + range);
     }
 
-    std::vector<uint32_t> minIdx(kDsZBinCount, n); // sentinel = n (empty)
+    // Watermark fill (O(n + bins)): each light covers the bin PREFIX
+    // [0..farBin[i]], so the filled set is always a contiguous prefix
+    // — every bin above the high-water mark is still at its sentinel
+    // and gets the current (minimal) index. The old per-light rescan
+    // of the whole prefix was O(n * kDsZBinCount) with up to ~1M
+    // branchy iterations at 1024 lights.
+    static thread_local std::vector<uint32_t> minIdx;
+    minIdx.assign(kDsZBinCount, n); // sentinel = n (empty)
+    uint32_t hi = 0; // bins [0..hi) already carry their min index
     for (uint32_t i = 0; i < n; ++i) {
         if (nearBin[i] == kDsZBinCount)
             continue; // dead light
-        for (uint32_t b = 0; b <= farBin[i]; ++b)
-            if (minIdx[b] == n)
+        if (farBin[i] >= hi) {
+            for (uint32_t b = hi; b <= farBin[i]; ++b)
                 minIdx[b] = i;
+            hi = farBin[i] + 1;
+        }
     }
-    std::vector<uint32_t> maxIdx(kDsZBinCount, 0);
+    static thread_local std::vector<uint32_t> maxIdx;
+    maxIdx.assign(kDsZBinCount, 0);
     {
         uint32_t j = 0;
         for (uint32_t b = 0; b < kDsZBinCount; ++b) {
@@ -267,27 +298,44 @@ inline void DsBuildTileMasks(const std::vector<ForwardPlusLight>& lights,
         (uint32_t)lights.size(), kDsMaxLightGroups * 32u);
     // Group origin planes are light-independent (same cross() order as
     // forwardplus.cs.hlsl — verified there by hand): precompute 4 inward
-    // planes per group ONCE instead of per light per group. NDC y down
-    // in the framebuffer (y0 = top row on screen).
+    // planes per group. They depend ONLY on (proj, extent), so they are
+    // cached across frames and rebuilt on drift (memcmp is conservative:
+    // a -0.0/0.0 bit difference just costs one rebuild). NDC y down in
+    // the framebuffer (y0 = top row on screen). Static-camera frames
+    // skip the ~2k (1080p) to ~8k (4K) unproject+normalize per frame.
+    struct GroupPlaneCache {
+        glm::mat4 proj{};
+        uint32_t w = 0, h = 0;
+        std::vector<glm::vec3> planes;
+    };
+    static thread_local GroupPlaneCache cache;
     const size_t groupCount = size_t(outGroupCountX) * outGroupCountY;
-    std::vector<glm::vec3> groupPlanes(groupCount * 4);
-    for (uint32_t gy = 0; gy < outGroupCountY; ++gy) {
-        for (uint32_t gx = 0; gx < outGroupCountX; ++gx) {
-            const float x0 = (float(gx * kDsTileGroupPx) / wF) * 2.0f - 1.0f;
-            const float x1 = (float((gx + 1) * kDsTileGroupPx) / wF) * 2.0f - 1.0f;
-            const float y0 = (float(gy * kDsTileGroupPx) / hF) * 2.0f - 1.0f;
-            const float y1 = (float((gy + 1) * kDsTileGroupPx) / hF) * 2.0f - 1.0f;
-            const glm::vec3 c00 = unprojectNear(glm::vec2(x0, y0));
-            const glm::vec3 c10 = unprojectNear(glm::vec2(x1, y0));
-            const glm::vec3 c11 = unprojectNear(glm::vec2(x1, y1));
-            const glm::vec3 c01 = unprojectNear(glm::vec2(x0, y1));
-            glm::vec3* planes = &groupPlanes[(size_t(gy) * outGroupCountX + gx) * 4];
-            planes[0] = glm::normalize(glm::cross(c00, c10)); // top
-            planes[1] = glm::normalize(glm::cross(c11, c01)); // bottom
-            planes[2] = glm::normalize(glm::cross(c01, c00)); // left
-            planes[3] = glm::normalize(glm::cross(c10, c11)); // right
+    if (cache.w != vpWidth || cache.h != vpHeight ||
+        std::memcmp(&cache.proj, &proj, sizeof(glm::mat4)) != 0 ||
+        cache.planes.size() != groupCount * 4) {
+        cache.planes.assign(groupCount * 4, glm::vec3(0.0f));
+        for (uint32_t gy = 0; gy < outGroupCountY; ++gy) {
+            for (uint32_t gx = 0; gx < outGroupCountX; ++gx) {
+                const float x0 = (float(gx * kDsTileGroupPx) / wF) * 2.0f - 1.0f;
+                const float x1 = (float((gx + 1) * kDsTileGroupPx) / wF) * 2.0f - 1.0f;
+                const float y0 = (float(gy * kDsTileGroupPx) / hF) * 2.0f - 1.0f;
+                const float y1 = (float((gy + 1) * kDsTileGroupPx) / hF) * 2.0f - 1.0f;
+                const glm::vec3 c00 = unprojectNear(glm::vec2(x0, y0));
+                const glm::vec3 c10 = unprojectNear(glm::vec2(x1, y0));
+                const glm::vec3 c11 = unprojectNear(glm::vec2(x1, y1));
+                const glm::vec3 c01 = unprojectNear(glm::vec2(x0, y1));
+                glm::vec3* planes = &cache.planes[(size_t(gy) * outGroupCountX + gx) * 4];
+                planes[0] = glm::normalize(glm::cross(c00, c10)); // top
+                planes[1] = glm::normalize(glm::cross(c11, c01)); // bottom
+                planes[2] = glm::normalize(glm::cross(c01, c00)); // left
+                planes[3] = glm::normalize(glm::cross(c10, c11)); // right
+            }
         }
+        cache.proj = proj;
+        cache.w = vpWidth;
+        cache.h = vpHeight;
     }
+    const std::vector<glm::vec3>& groupPlanes = cache.planes;
     for (uint32_t i = 0; i < n; ++i) {
         const ForwardPlusLight& L = lights[i];
         const float range = (L.range <= 0.0f) ? kDsInfiniteRange : L.range;

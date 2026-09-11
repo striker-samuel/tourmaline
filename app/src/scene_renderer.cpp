@@ -1623,18 +1623,20 @@ void SceneRenderer::Shutdown() {
 			m_exposureMin, m_exposureMax, delta_time_s);
 	}
 
-	// Async GPU->CPU readback tick (exposure histogram + texture feedback).
-	// SUBMIT + POLL on a timeline semaphore — the render thread NEVER waits:
-	// the old sync download locked for the whole in-flight graphics backlog
-	// (Optick showed it as a multi-ms CPU block). Every 4th frame a fresh
-	// copy of the retired slice is submitted with a ticket; each frame the
-	// previous ticket is POLLED non-blocking and, once the GPU signals it,
-	// exposure adapts + feedback forwards from the staging memcpy. One
-	// ticket in flight: a tick while the previous is pending skips its
-	// submit (results land 1-2 frames later; adaptation is time-damped and
-	// streaming is laggy anyway). The feedback clear still runs AFTER the
-	// copy is queued (download-before-clear, same order as the exposure
-	// zero-fill below).
+	// Async GPU->CPU readback tick (exposure histogram + texture feedback
+	// + deferred-shadow counters). SUBMIT + POLL on a timeline semaphore —
+	// the render thread NEVER waits: the old sync downloads locked for
+	// the whole in-flight graphics backlog (Optick showed it as a
+	// multi-ms CPU block; the DS counter readback had the same spike
+	// every 8th frame before it moved here). Every 4th frame a fresh
+	// copy of the retired slice is submitted with a ticket; each frame
+	// the previous ticket is POLLED non-blocking and, once the GPU
+	// signals it, exposure adapts + feedback forwards + the DS overlay
+	// stats refresh from the staging memcpy. One ticket in flight: a
+	// tick while the previous is pending skips its submit (results land
+	// 1-2 frames later; adaptation is time-damped and streaming is laggy
+	// anyway). The feedback clear still runs AFTER the copy is queued
+	// (download-before-clear, same order as the exposure zero-fill).
 	void SceneRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
 		const bool feedbackActive = m_textureStreamingEnabled
 			&& m_textureStreamer && m_textureFeedback
@@ -1642,65 +1644,105 @@ void SceneRenderer::Shutdown() {
 		auto& meter = m_viewportResources.exposure;
 		const bool meterValid = meter.Valid()
 			&& frameSlot < static_cast<uint32_t>(::MAX_FRAMES_IN_FLIGHT);
-		// Layout helper: the SAME span shape must accompany the submit and
-		// its poll (destinations are stable members; handles/sizes are fixed).
-		std::array<smvk::BufferDownload, 2> dls{};
-		const auto buildPendingDownloads = [&]() -> std::span<const smvk::BufferDownload> {
-			uint32_t n = 0;
-			if (m_pendingReadbackHasExposure) {
-				dls[n] = { meter.HistogramBuffer(m_pendingReadbackSlot),
-					m_pendingExposureBins.data(),
-					m_pendingExposureBins.size() * sizeof(uint32_t), 0 };
-				++n;
-			}
-			if (m_pendingReadbackHasFeedback) {
-				dls[n] = { m_context->GetTextureFeedbackBuffer(m_pendingReadbackSlot),
-					m_pendingFeedback.data(),
-					m_pendingFeedback.size() * sizeof(uint32_t), 0 };
-				++n;
-			}
-			return { dls.data(), n };
-		};
+	// Layout helper: the SAME span shape must accompany the submit and
+	// its poll (destinations are stable members; handles/sizes are fixed).
+	std::array<smvk::BufferDownload, 3> dls{};
+	const auto buildPendingDownloads = [&]() -> std::span<const smvk::BufferDownload> {
+		uint32_t n = 0;
+		if (m_pendingReadbackHasExposure) {
+			dls[n] = { meter.HistogramBuffer(m_pendingReadbackSlot),
+				m_pendingExposureBins.data(),
+				m_pendingExposureBins.size() * sizeof(uint32_t), 0 };
+			++n;
+		}
+		if (m_pendingReadbackHasFeedback) {
+			dls[n] = { m_context->GetTextureFeedbackBuffer(m_pendingReadbackSlot),
+				m_pendingFeedback.data(),
+				m_pendingFeedback.size() * sizeof(uint32_t), 0 };
+			++n;
+		}
+		if (m_pendingReadbackHasDs) {
+			dls[n] = { m_viewportResources.deferredShadows.CounterBuffer(
+					m_pendingReadbackSlot),
+				m_pendingDsCounters.data(), m_pendingDsCounters.size()
+					* sizeof(uint32_t), 0 };
+			++n;
+		}
+		return { dls.data(), n };
+	};
 
-		// 1) Poll the in-flight download (non-blocking timeline check).
-		if (m_asyncReadbackTicket != 0) {
-			if (m_context->PollAsyncDownloadDataFromBuffers(
-					m_asyncReadbackTicket, buildPendingDownloads())) {
-				m_asyncReadbackTicket = 0;
-				if (m_pendingReadbackHasExposure && ExposureMeteringActive()) {
-					m_exposureFrame = m_pendingReadbackSlot;
-					AdaptExposureFromBins(m_pendingExposureBins);
+	// 1) Poll the in-flight download (non-blocking timeline check).
+	if (m_asyncReadbackTicket != 0) {
+		if (m_context->PollAsyncDownloadDataFromBuffers(
+				m_asyncReadbackTicket, buildPendingDownloads())) {
+			m_asyncReadbackTicket = 0;
+			if (m_pendingReadbackHasExposure && ExposureMeteringActive()) {
+				m_exposureFrame = m_pendingReadbackSlot;
+				AdaptExposureFromBins(m_pendingExposureBins);
+			}
+			if (m_pendingReadbackHasFeedback && feedbackActive) {
+				const uint32_t reported = m_textureFeedback->ForwardDownloaded(
+					*m_textureStreamer, m_pendingFeedback.data(),
+					m_pendingFeedback.size(), streamFrame);
+				if ((m_frameCounter & 63u) == 2u) {
+					std::fprintf(stderr,
+						"[streamfb] tick=%llu slice=%u reported=%u (async)\n",
+						(unsigned long long)m_frameCounter,
+						m_pendingReadbackSlot, reported);
 				}
-				if (m_pendingReadbackHasFeedback && feedbackActive) {
-					const uint32_t reported = m_textureFeedback->ForwardDownloaded(
-						*m_textureStreamer, m_pendingFeedback.data(),
-						m_pendingFeedback.size(), streamFrame);
-					if ((m_frameCounter & 63u) == 2u) {
-						std::fprintf(stderr,
-							"[streamfb] tick=%llu slice=%u reported=%u (async)\n",
-							(unsigned long long)m_frameCounter,
-							m_pendingReadbackSlot, reported);
-					}
+			}
+			// Deferred-shadow counters (retired slice, ~a few frames old):
+			// overlay slots + throttled telemetry. Saturation of the
+			// flexible allocations means tiles/lights degrade (clamped
+			// stores, shadows read as fully lit).
+			if (m_pendingReadbackHasDs) {
+				m_dsStats.listSlots = m_pendingDsCounters[0];
+				m_dsStats.visSlots = m_pendingDsCounters[1];
+				m_dsStats.clsAllLit = m_pendingDsCounters[2];
+				m_dsStats.clsAllShadow = m_pendingDsCounters[3];
+				m_dsStats.clsPenumbra = m_pendingDsCounters[4];
+				m_dsStats.sumEarly = m_pendingDsCounters[5];
+				m_dsStats.sumFinal = m_pendingDsCounters[6];
+				m_dsStats.dbgSpotCone = m_pendingDsCounters[7];
+				m_dsStats.dbgSpotClip = m_pendingDsCounters[8];
+				static uint64_t s_dsTick = 0;
+				const uint64_t tick = s_dsTick++;
+				if (tick < 5 || tick % 600 == 0) {
+					std::fprintf(stderr,
+						"[ds] list=%u/%u vis=%u/%u early=%u final=%u lit=%u shadow=%u penumbra=%u spotCone=%u spotClip=%u lights=%u\n",
+						m_dsStats.listSlots, smvk::kDsMaxListUInts,
+						m_dsStats.visSlots, smvk::kDsMaxVisSlots,
+						m_dsStats.sumEarly, m_dsStats.sumFinal,
+						m_dsStats.clsAllLit, m_dsStats.clsAllShadow, m_dsStats.clsPenumbra,
+						m_dsStats.dbgSpotCone, m_dsStats.dbgSpotClip,
+						m_dsReadbackLightCount);
 				}
 			}
 		}
+	}
 
-		// 2) Submit this tick's download of the retired slice: no wait, the
-		// ticket is polled on later frames. Skipped while a ticket is
-		// pending (single slot) or on submit failure (retry next tick).
-		const bool tick = (m_frameCounter & 3u) == 2u;
-		if (tick && m_asyncReadbackTicket == 0) {
-			m_pendingReadbackSlot = frameSlot;
-			m_pendingReadbackHasExposure = kHistogramReadbackEnabled && meterValid;
-			m_pendingReadbackHasFeedback = feedbackActive;
-			if (m_pendingReadbackHasFeedback)
-				m_pendingFeedback.assign(m_textureFeedback->GetSlotCount(),
-					smvk::TextureFeedback::kNoReport);
-			auto dlsSpan = buildPendingDownloads();
-			if (!dlsSpan.empty())
-				m_asyncReadbackTicket =
-					m_context->SubmitAsyncDownloadDataFromBuffers(dlsSpan);
-		}
+	// 2) Submit this tick's download of the retired slice: no wait, the
+	// ticket is polled on later frames. Skipped while a ticket is
+	// pending (single slot) or on submit failure (retry next tick).
+	const bool tick = (m_frameCounter & 3u) == 2u;
+	if (tick && m_asyncReadbackTicket == 0) {
+		m_pendingReadbackSlot = frameSlot;
+		m_pendingReadbackHasExposure = kHistogramReadbackEnabled && meterValid;
+		m_pendingReadbackHasFeedback = feedbackActive;
+		// DS counters (40 B) ride the same batch (no extra submit): the
+		// slice's zero-fill was only STAGED in UpdateForwardPlusLights
+		// (ring flush happens at EndAndPresent), so the transfer-queue
+		// FIFO keeps this copy ahead of it and it reads the retired
+		// accumulation like the exposure histogram does.
+		m_pendingReadbackHasDs = DsActive();
+		if (m_pendingReadbackHasFeedback)
+			m_pendingFeedback.assign(m_textureFeedback->GetSlotCount(),
+				smvk::TextureFeedback::kNoReport);
+		auto dlsSpan = buildPendingDownloads();
+		if (!dlsSpan.empty())
+			m_asyncReadbackTicket =
+				m_context->SubmitAsyncDownloadDataFromBuffers(dlsSpan);
+	}
 
 		if (feedbackActive)
 			m_textureFeedback->ClearForFrame(frameSlot);
@@ -1937,42 +1979,19 @@ void SceneRenderer::Shutdown() {
 	const auto fpT2 = fp_clk::now();
 	if (DsActive()) {
 		smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
-		// Stats readback of the RETIRED slice BEFORE the zero (exposure
-		// pattern: this slot completed ~2 frames ago, no stall).
-		// Diagnostic counters only: refresh every 8th frame so the
-		// synchronous round-trip doesn't stall every frame.
-		if ((m_frameCounter & 7u) == 0u) {
-			uint32_t counters[smvk::kDsCounterCount] = {};
-			if (m_context->DownloadDataFromBuffer(ds.CounterBuffer(currentFrame),
-				counters, sizeof(counters))) {
-				m_dsStats.listSlots = counters[0];
-				m_dsStats.visSlots = counters[1];
-				m_dsStats.clsAllLit = counters[2];
-				m_dsStats.clsAllShadow = counters[3];
-				m_dsStats.clsPenumbra = counters[4];
-				m_dsStats.sumEarly = counters[5];
-				m_dsStats.sumFinal = counters[6];
-				m_dsStats.dbgSpotCone = counters[7];
-				m_dsStats.dbgSpotClip = counters[8];
-			}
-			// Throttled telemetry (exposure-style): flexible-allocation
-			// peaks vs the fixed caps; saturation means tiles/lights
-			// degrade (clamped stores, shadows read as fully lit).
-			static uint64_t s_dsTick = 0;
-			const uint64_t tick = s_dsTick++;
-			if (tick < 5 || tick % 600 == 0) {
-				std::fprintf(stderr,
-					"[ds] list=%u/%u vis=%u/%u early=%u final=%u lit=%u shadow=%u penumbra=%u spotCone=%u spotClip=%u lights=%u\n",
-					m_dsStats.listSlots, smvk::kDsMaxListUInts,
-					m_dsStats.visSlots, smvk::kDsMaxVisSlots,
-					m_dsStats.sumEarly, m_dsStats.sumFinal,
-					m_dsStats.clsAllLit, m_dsStats.clsAllShadow, m_dsStats.clsPenumbra,
-					m_dsStats.dbgSpotCone, m_dsStats.dbgSpotClip,
-					(uint32_t)lights.size());
-			}
-		}
+		// Stats readback of the RETIRED slice moved to UpdateReadbacks
+		// (async ticket, exposure pattern): the old synchronous
+		// DownloadDataFromBuffer here flushed uploads + waited on the
+		// graphics queue every 8th frame, blocking the render thread
+		// for the in-flight backlog (multi-ms spikes). The light count
+		// is captured here for the throttled [ds] telemetry line.
+		m_dsReadbackLightCount = (uint32_t)lights.size();
 		// Zero this frame's flexible-allocation counters (transfer write;
-		// the phase-2 pass hint promotes them to Compute R/W).
+		// the phase-2 pass hint promotes them to Compute R/W). Issued
+		// BEFORE UpdateReadbacks submits its ticket copy, and the ring
+		// only flushes at EndAndPresent, so the transfer-queue FIFO keeps
+		// the copy ahead of this zero (download-before-zero, same
+		// ordering the exposure histogram relies on).
 		static constexpr uint32_t kZeroCounters[smvk::kDsCounterCount] = {};
 		m_context->UploadDataToBuffer(ds.CounterBuffer(currentFrame),
 			kZeroCounters, sizeof(kZeroCounters),
