@@ -24,6 +24,11 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
 	smvk::ForwardPlus* fp = nullptr; // owned by ViewportResources
 	smvk::ForwardPlusDesc desc{};
 	smvk::ShaderProgram prepassMaskedProgram{}; // main-owned, init-stable
+	// Option A occluder prepass tuning (see AppendOccluderPrepass): items
+	// whose world bound-radius < occluderMinRadius OR whose projected
+	// bound diameter < occluderMinPixels are skipped (poor occluders).
+	float occluderMinPixels = 24.0f;
+	float occluderMinRadius = 0.5f;
 
 	void Configure(smvk::ForwardPlus* builder, const smvk::ForwardPlusDesc& d,
 		const smvk::ShaderProgram& maskedProg) {
@@ -41,6 +46,13 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
 	// sees complete depth. AppendPasses = Prepass + TileCull (legacy order).
 	void AppendPrepass(smvk::FrameContext& fc);
 	void AppendTileCull(smvk::FrameContext& fc);
+	// Option A occluder prepass: fills fc.hizDepthView (Clear, VS-only,
+	// solid opaque only) with big occluders at their crudest LOD for the
+	// HZB build. MASK cutout is skipped (holes = poor occluders + FS
+	// cost); small items are skipped via the occluderMin* thresholds.
+	// Missing occluders only cost culling efficiency (false visibles),
+	// never correctness: Main/SSAO/tile-cull read the full depth.
+	void AppendOccluderPrepass(smvk::FrameContext& fc);
 
 	// Resize-safe sizing outside pass building (frame-top, so tile counts
 	// are fresh for consumers that read them before AppendPasses).

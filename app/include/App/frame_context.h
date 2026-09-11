@@ -18,6 +18,11 @@ struct AppFrameContext : public smvk::FrameContext {
 	// Forward+:
 	smvk::LogicalImageViewHandle depthView{}; // 1x prepass depth target
 	smvk::ImageViewHandle depthViewHandle{};  // physical view (bindless)
+	// Option A occluder depth: HZB source (big solid occluders, crudest
+	// LOD). Empty handles = legacy path (HZB over depthView above).
+	smvk::LogicalImageViewHandle hizDepthView{};
+	smvk::ImageViewHandle hizDepthViewHandle{};
+	uint32_t hizDepthBindless = UINT32_MAX;
 	smvk::LogicalBufferHandle fpLights{};     // per-frame light buffer
 	uint32_t fpLightCount = 0;
 	// T3: the GfxRenderer seeded depth this frame (prepass must Load the

@@ -7,6 +7,7 @@
 #include <Engine/Profile/profile.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <cstdint>
 #include <memory>
@@ -245,8 +246,142 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 	}
 }
 
-void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base) {
+void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 	AppFrameContext& fc = static_cast<AppFrameContext&>(base);
+	if (!fp)
+		return;
+	smvk::ResourceManager& ctx = *fc.ctx;
+	smvk::RenderGraph& rg = *fc.rg;
+
+	SMVK_PROFILE_CATEGORY("OccluderDepth", Optick::Category::Rendering);
+
+	if (fc.hizDepthView.empty() || fc.hizDepthViewHandle.empty())
+		return; // legacy single-depth path: HZB reads the full depth
+	fp->Ensure(ctx, rg, { fc.extent.width, fc.extent.height }, desc, fc.depthViewHandle);
+	if (!fp->Valid())
+		return;
+
+	// Snapshots for the recording lambda (recorded now, executed later at
+	// Execute(); nothing here may reference the frame-local fc).
+	smvk::World* world = fc.world;
+	const PushConstants depthPC = fc.pc;
+	const float minPixels = occluderMinPixels;
+	const float minRadius = occluderMinRadius;
+	const glm::vec3 eye = fc.eye;
+	const smvk::LodFrameInputs lodInputs = fc.lodInputs;
+	const float viewportHeight = fc.lodInputs.viewportHeight > 0.0f
+		? fc.lodInputs.viewportHeight : (float)fc.extent.height;
+	const float tanHalfFov = std::tan(std::max(fc.lodInputs.fovY, 1e-3f) * 0.5f);
+
+	// CPU frustum culling mirrors the full prepass (conservative static
+	// mask + dynamic LOD-union sphere test): skipping a true occluder
+	// only loses culling, but the mask walk is shared work anyway.
+	smvk::RenderView mainView{};
+	bool hasMainView = false;
+	if (fc.views && fc.mainViewIndex != smvk::RenderViewSet::kInvalidIndex
+		&& fc.mainViewIndex < fc.views->Count()) {
+		mainView = fc.views->Get(fc.mainViewIndex);
+		hasMainView = true;
+	}
+	std::shared_ptr<std::vector<uint8_t>> staticMask;
+	if (hasMainView && world) {
+		auto mask = world->StaticVisibilityMask(mainView.m_viewPlanes, 6);
+		if (!mask.empty())
+			staticMask = std::make_shared<std::vector<uint8_t>>(std::move(mask));
+	}
+
+	using NodeId = ::NodeId;
+
+	// ---- Occluder depth: big solid occluders at crudest LOD ----
+	// Own target (Clear): independent of the seed/full-depth state.
+	// No masked phase: cutout foliage has holes (poor occluders) and
+	// needs the FS; the full prepass still depths it for Main/SSAO.
+	{
+		auto& occluder = fp->AddDepthPrepass(rg, fc.hizDepthView,
+			{ fc.extent.width, fc.extent.height }, "OccluderDepth",
+			smvk::AttachmentLoadOp::Clear);
+		occluder.SetRecordingFunc([this, depthPC, world, staticMask, mainView, hasMainView,
+			minPixels, minRadius, eye, viewportHeight, tanHalfFov](smvk::CommandBuffer& cmd)
+		{
+			auto drawOccluderNode = [&](const smvk::World::RenderItem& item) {
+				// Solid opaque only: skip MASK cutout (holes) entirely.
+				if ((item.flags & smvk::IteratorFlagBit_Masked) != 0)
+					return;
+				if (staticMask && item.node < staticMask->size()
+					&& (*staticMask)[item.node] == 0)
+					return;
+				if (!world || item.node >= world->scene.globalTransform.size())
+					return;
+				auto& model = world->scene.globalTransform[item.node];
+				smvk::StaticMesh* baseDesc = world->GetMesh(item.mesh);
+				if (!baseDesc)
+					return;
+				// World-space bounds (LOD0 = conservative union: LOD
+				// siblings only shrink it, so the size test never admits
+				// an item the full prepass would consider tiny).
+				glm::vec3 c{ 0.0f };
+				float r = 0.0f;
+				smvk::MeshBoundsToWorld(model, baseDesc->geometry.aabbMin,
+					baseDesc->geometry.aabbMax, c, r);
+				if (!(r >= minRadius))
+					return; // small geometry: not worth rasterizing
+				if (hasMainView) {
+					if (!smvk::RenderViewIntersectsSphere(mainView, c, r))
+						return;
+					// Projected bound-diameter heuristic: occluders below
+					// ~minPixels cover too few HZB texels to cull with.
+					const float dist = glm::length(c - eye);
+					if (dist > 1e-3f && tanHalfFov > 1e-6f) {
+						const float diamPx = (2.0f * r / dist)
+							* (viewportHeight / (2.0f * tanHalfFov));
+						if (!(diamPx >= minPixels))
+							return;
+					}
+				}
+				// Crudest LOD: cheapest raster for the silhouette. Safe
+				// direction for HZB (conservative): simplifier siblings
+				// shrink the surface, so occluder depth lands at or
+				// behind the true surface -> fewer culls, never holes.
+				// Missing siblings fall back to LOD0 via GetLodMesh.
+				smvk::StaticMesh* meshDesc = baseDesc;
+				const uint32_t chainLen = world->LodChainLength(item.mesh);
+				if (chainLen > 1)
+					meshDesc = world->GetLodMesh(item.mesh, chainLen - 1);
+				if (!meshDesc)
+					return;
+				PushConstants objectPC{};
+				std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+				cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+				for (auto& draw_set : meshDesc->geometry.surfaces) {
+					cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+				};
+			};
+			cmd.BindRenderPipeline(
+				fp->depthProgram,
+				smvk::VertexFormat::StaticVertexFormat,
+				smvk::DepthSettings{
+					.depthFunc = smvk::CompareOp::GreaterEqual,
+					.writeEnable = true,
+					.depthTestEnable = true,
+				},
+				smvk::StencilSettings{},
+				smvk::BlendSettings{},
+				smvk::MSAASettings{},
+				smvk::RasterSettings{
+					.cullMode = smvk::CullMode::Back
+				}
+			);
+			cmd.PushConstants(0, sizeof(PushConstants), &depthPC, smvk::ShaderStage::All);
+			world->forEachRenderItem(
+				smvk::IteratorFlagBit_Renderable
+				| smvk::IteratorFlagBit_Opaque
+				| smvk::IteratorFlagBit_StaticVertexFmt
+				, [&](const smvk::World::RenderItem& item) { drawOccluderNode(item); });
+		});
+	}
+}
+
+void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base) {	AppFrameContext& fc = static_cast<AppFrameContext&>(base);
 	if (!fp)
 		return;
 	smvk::ResourceManager& ctx = *fc.ctx;

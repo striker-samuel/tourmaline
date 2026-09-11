@@ -412,6 +412,11 @@ struct ViewportResources {
 	smvk::DeferredShadows deferredShadows; // fixed-size ring buffers + 3 phase programs
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
 	smvk::DepthTarget renderDepth; // scene depth at internal resolution + Ensure
+	// Occluder-only depth for the HZB pyramid (Option A split): filled by
+	// ForwardPlusRenderer::AppendOccluderPrepass with big solid occluders
+	// at their crudest LOD. HZB + the GPU filter read this; Main, SSAO,
+	// tile-cull and deferred shadows keep reading the full renderDepth.
+	smvk::DepthTarget hizDepth;
 	smvk::HdrTarget hdr; // HDR intermediate (image + view + bindless + logical) + Ensure
 	smvk::MsaaTarget msaa; // transient 2x color+depth for Main, resolves to hdr
 	smvk::MotionVectors motionVectors; // RG16F motion target + program + pass helper
@@ -721,6 +726,13 @@ protected:
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	app::GfxRenderer m_gfxRenderer{};
 	bool m_useGfxFilter = true; // false = legacy direct draws (A/B)
+	// ---- Option A: occluder-only HZB depth ----
+	// True = the HZB pyramid builds from hizDepth (big solid occluders at
+	// crudest LOD) while Main/SSAO/tile-cull stay on the full renderDepth.
+	// False = legacy single-depth path (HZB over the full prepass depth).
+	bool m_hizOccluderDepth = true;
+	float m_hizOccluderMinPixels = 24.0f; // projected bound-diameter threshold (px)
+	float m_hizOccluderMinRadius = 0.5f;  // world-space bound-radius threshold (m)
 	bool m_useFilteredMotion = true; // false = motion stays fully direct
 	// ---- Meshlet/cone debug views (see App/renderer.h debug programs) ----
 	// m_debugView selects the Main opaque program (F1..F5); anything but Lit

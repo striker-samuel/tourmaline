@@ -906,6 +906,17 @@ bool SceneRenderer::Initialize() {
 				std::cerr << "[SceneRenderer] Failed to create render depth target\n";
 				return false;
 			}
+			// Option A occluder depth (HZB source): same extent/format as
+			// the full depth, own image so the two prepasses don't alias.
+			smvk::DepthDesc hizDepthDesc{};
+			hizDepthDesc.format = m_swapchain->GetDepthFormat();
+			hizDepthDesc.name = "hizDepth";
+			hizDepthDesc.viewName = "hizDepthView";
+			hizDepthDesc.logicalName = "hizDepthLogical";
+			if (!m_viewportResources.hizDepth.Ensure(*m_context, *m_rendergraph, renderExtent, hizDepthDesc)) {
+				std::cerr << "[SceneRenderer] Failed to create HZB occluder depth target\n";
+				return false;
+			}
 			if (!m_viewportResources.forwardPlus.Ensure(*m_context, *m_rendergraph,
 				renderExtent, MakeForwardPlusDesc(), m_viewportResources.renderDepth.view)) {
 				std::cerr << "[SceneRenderer] Failed to create Forward+ tile buffers\n";
@@ -974,6 +985,7 @@ void SceneRenderer::Shutdown() {
 		m_viewportResources.motionBlur.Destroy(*m_rendergraph);
 		m_viewportResources.motionVectors.Destroy(*m_rendergraph);
 		m_viewportResources.renderDepth.Destroy(*m_rendergraph);
+		m_viewportResources.hizDepth.Destroy(*m_rendergraph);
 		m_viewportResources.ui.Destroy(*m_rendergraph);
 		m_viewportResources.uiComposite.DestroyShaders();
 		if (!m_captureLogical.empty()) {
@@ -2135,6 +2147,12 @@ void SceneRenderer::Shutdown() {
 		smvk::DepthDesc rebuildDepthDesc{};
 		rebuildDepthDesc.format = m_swapchain->GetDepthFormat();
 		m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildDepthDesc);
+		smvk::DepthDesc rebuildHizDepthDesc{};
+		rebuildHizDepthDesc.format = m_swapchain->GetDepthFormat();
+		rebuildHizDepthDesc.name = "hizDepth";
+		rebuildHizDepthDesc.viewName = "hizDepthView";
+		rebuildHizDepthDesc.logicalName = "hizDepthLogical";
+		m_viewportResources.hizDepth.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildHizDepthDesc);
 		m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent);
 		m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
 		m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
@@ -2383,6 +2401,12 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		smvk::DepthDesc frameDepthDesc{};
 		frameDepthDesc.format = m_swapchain->GetDepthFormat();
 		m_viewportResources.renderDepth.Ensure(*m_context, *m_rendergraph, renderExtent, frameDepthDesc);
+		smvk::DepthDesc frameHizDepthDesc{};
+		frameHizDepthDesc.format = m_swapchain->GetDepthFormat();
+		frameHizDepthDesc.name = "hizDepth";
+		frameHizDepthDesc.viewName = "hizDepthView";
+		frameHizDepthDesc.logicalName = "hizDepthLogical";
+		m_viewportResources.hizDepth.Ensure(*m_context, *m_rendergraph, renderExtent, frameHizDepthDesc);
 			// Tile counts must be fresh for consumers below; the renderer
 			// re-checks sizing at pass-build time (resize-safe).
 			m_fpRenderer.EnsureSized(*m_context, *m_rendergraph,
@@ -2839,6 +2863,19 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 		fc.pc = pc;
 		fc.depthView = m_viewportResources.renderDepth.logicalView;
 		fc.depthViewHandle = m_viewportResources.renderDepth.view;
+		// Option A: HZB source handles (empty when the occluder path is
+		// off; AppendOccluderPrepass then no-ops and HZB stays on depth).
+		fc.hizDepthView = m_hizOccluderDepth
+			? m_viewportResources.hizDepth.logicalView
+			: smvk::LogicalImageViewHandle{};
+		fc.hizDepthViewHandle = m_hizOccluderDepth
+			? m_viewportResources.hizDepth.view
+			: smvk::ImageViewHandle{};
+		fc.hizDepthBindless = m_hizOccluderDepth
+			? m_viewportResources.hizDepth.bindlessIndex
+			: UINT32_MAX;
+		m_fpRenderer.occluderMinPixels = m_hizOccluderMinPixels;
+		m_fpRenderer.occluderMinRadius = m_hizOccluderMinRadius;
 		fc.fpLights = m_resources.fpLightsLogical;
 		fc.fpLightCount = fpLightCount;
 
@@ -2896,28 +2933,42 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			gfxSlot = m_gfxRenderer.LastSlot();
 		}
 		fc.seedDepthPrimed = gfxFilterOn && m_gfxRenderer.SeededThisFrame();
+		// Option A split: the occluder prepass fills hizDepth (Clear,
+		// independent of the seed) for the HZB build below; the full
+		// prepass fills renderDepth (Load when seeded) for Main, SSAO,
+		// tile-cull and deferred shadows. Skipped while the culling view
+		// is frozen (the held pyramid must not be rebuilt).
+		const bool hizOccluderOn = gfxFilterOn && m_hizOccluderDepth
+			&& !cullingFrozen && !fc.hizDepthView.empty();
+		if (hizOccluderOn)
+			m_fpRenderer.AppendOccluderPrepass(fc);
 		// Depth prepass (Loads seeded depth when primed, Clears otherwise).
 		if (m_passes.forwardPlusPrepass)
 			m_fpRenderer.AppendPrepass(fc);
 
-		// HZB build over depth (seed or full prepass), filter compute
-		// dispatch (reads this frame's HZB), depth pass 2 over newly
-		// visible clusters + refresh, then tile cull over complete depth.
+		// HZB build over the occluder depth (Option A) or the full depth
+		// (legacy), filter compute dispatch (reads this frame's HZB),
+		// then depth pass 2 over newly visible clusters for the full
+		// depth. No HZB refresh after the remainder: the pyramid is
+		// occluder-only and already complete, so remainder/full-prepass
+		// writes must not invalidate it. Tile cull / deferred shadows
+		// below still run over the complete full depth.
 		// Held while the culling view is frozen (frozen footprints must test
 		// against the frozen pyramid, not live depth).
 		if (gfxFilterOn) {
-			if (!cullingFrozen)
-				m_gfxRenderer.AppendHizPasses(fc,
-					m_viewportResources.renderDepth.logicalView,
-					m_viewportResources.forwardPlus.depthBindlessIndex);
+			if (!cullingFrozen) {
+				if (hizOccluderOn)
+					m_gfxRenderer.AppendHizPasses(fc,
+						m_viewportResources.hizDepth.logicalView,
+						m_viewportResources.hizDepth.bindlessIndex);
+				else
+					m_gfxRenderer.AppendHizPasses(fc,
+						m_viewportResources.renderDepth.logicalView,
+						m_viewportResources.forwardPlus.depthBindlessIndex);
+			}
 			m_gfxRenderer.AppendFilterDispatch(fc);
 			if (m_gfxRenderer.RemainderPending()) {
 				m_gfxRenderer.AppendRemainderPass(fc);
-				if (!cullingFrozen)
-					m_gfxRenderer.AppendHizPasses(fc,
-						m_viewportResources.renderDepth.logicalView,
-						m_viewportResources.forwardPlus.depthBindlessIndex,
-						"GfxHizRefresh");
 			}
 		}
 	// ---- Light culling ----
@@ -4853,6 +4904,9 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					m_gfxRenderer.config.cullFlags = b
 					? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_HzbOcclusion
 					: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_HzbOcclusion;
+				ImGui::Checkbox("HZB occluder depth (big crudest-LOD)", &m_hizOccluderDepth);
+				ImGui::SliderFloat("Occluder min px", &m_hizOccluderMinPixels, 0.0f, 128.0f);
+				ImGui::SliderFloat("Occluder min radius m", &m_hizOccluderMinRadius, 0.0f, 5.0f);
 				b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Contribution) != 0;
 				if (ImGui::Checkbox("Contribution cull (T4)", &b))
 					m_gfxRenderer.config.cullFlags = b
@@ -4913,11 +4967,13 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 							smvk::gfx::Hiz(m_gfxRenderer.State(), gfxSlot);
 						hw = hz.width; hh = hz.height; hm = hz.mipCount;
 					}
-					const bool depthOk = m_viewportResources.forwardPlus.depthBindlessIndex
-						!= UINT32_MAX;
-					ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s",
+					const bool depthOk = m_hizOccluderDepth
+						? m_viewportResources.hizDepth.bindlessIndex != UINT32_MAX
+						: m_viewportResources.forwardPlus.depthBindlessIndex != UINT32_MAX;
+					ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s src=%s",
 						hw, hh, hm, depthOk ? "ok" : "INVALID", occOn ? "on" : "OFF",
-						cullingFrozen ? "FROZEN" : "live");
+						cullingFrozen ? "FROZEN" : "live",
+						m_hizOccluderDepth ? "occluder" : "full");
 					if (!occOn)
 						ImGui::TextDisabled("HZB flag OFF: no occlusion culls possible.");
 					else if (hm == 0)
