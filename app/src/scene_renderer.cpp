@@ -2332,6 +2332,143 @@ void SceneRenderer::Shutdown() {
 		return base;
 	}
 
+	void SceneRenderer::BuildShadowDrawCandidates() {
+		SMVK_PROFILE_RENDER("ShadowDrawCandidates");
+		m_shadowCandidates.clear();
+		if (!m_world)
+			return;
+		// One pass over the caster set on the render thread: LOD decisions
+		// mutate the World halfrate cache (not thread-safe), and every
+		// shadow view consumes the same per-node LOD anyway. Workers get a
+		// read-only candidate list; the per-view cull happens later in
+		// gfx::BuildShadowList (per cluster, against each view's planes).
+		m_world->forEachRenderItem(
+			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
+			| smvk::IteratorFlagBit_Opaque
+			, [&](const smvk::World::RenderItem& item) {
+				if (item.material == smvk::World::kInvalidIndex)
+					return;
+				const uint32_t lodIdx = LodIndexForNode(item.node, item.mesh);
+				const uint32_t gfxMesh = m_gfxRenderer.GfxMeshForLod(item.mesh, lodIdx);
+				if (gfxMesh == UINT32_MAX)
+					return; // unfilterable: the pass direct fallback draws it
+				smvk::gfx::DrawRequest d{};
+				d.mesh = gfxMesh;
+				d.material = item.material;
+				d.model = m_world->scene.globalTransform[item.node];
+				// Draw-set bucketing mirrors FilterMainView: MASK materials
+				// draw through the alpha-tested phase, double-sided ones
+				// keep both facings (cone culling is off for shadow views
+				// anyway, the flag is carried for parity/debugging).
+				if (const smvk::Material* mat = m_world->GetMaterial(item.material)) {
+					if (mat->isDoubleSided())
+						d.flags |= smvk::gfx::DrawFlagBit_TwoSided;
+					if (mat->shadingModel == smvk::ShadingModel::Masked)
+						d.drawSet = smvk::gfx::DrawSetBit_Masked;
+				}
+				m_shadowCandidates.push_back(d);
+			});
+		SMVK_PROFILE_TAG("candidates", m_shadowCandidates.size());
+	}
+
+	void SceneRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
+		smvk::ShaderProgram& opaqueProgram, const PushConstants& pc,
+		uint32_t casterViewIndex, bool skipFiltered) {
+		auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
+			if (item.material == smvk::World::kInvalidIndex)
+				return;
+			// Indirect path: registered casters are covered by the per-view
+			// command list — only unfilterable meshes rasterize here.
+			if (skipFiltered
+				&& m_gfxRenderer.GfxMeshForLod(item.mesh,
+					LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
+				return;
+			// Masked (cutout) flag replaces the per-node material fetch the
+			// phase split used to pay.
+			if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
+				return;
+			auto& model = m_world->scene.globalTransform[item.node];
+			smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
+			if (!meshDesc) return;
+			// RenderView plane cull: skip casters outside this view's frustum.
+			if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
+				glm::vec3 sphereCenter;
+				float sphereRadius = 0.0f;
+				smvk::MeshBoundsToWorld(
+					model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
+					sphereCenter, sphereRadius);
+				if (!smvk::RenderViewIntersectsSphere(
+					m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
+					return;
+			}
+			PushConstants objectPC{};
+			std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+			if (maskedPhase) {
+				objectPC.materialId = item.material;
+				cmd.PushConstants(offsetof(PushConstants, materialId),
+					sizeof(objectPC.materialId), &objectPC.materialId,
+					smvk::ShaderStage::All);
+			}
+			cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+			for (auto& draw_set : meshDesc->geometry.surfaces) {
+				cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+			};
+		};
+		// Phase 1: solid casters, depth-only program.
+		cmd.BindRenderPipeline(
+			opaqueProgram,
+			smvk::VertexFormat::StaticVertexFormat,
+			smvk::DepthSettings{
+				.depthFunc = smvk::CompareOp::LessEqual,
+				.writeEnable = true,
+				.depthTestEnable = true,
+				.depthBiasEnable = false,
+				.depthBiasConstantFactor = 0.0f,
+				.depthBiasClamp = 0.0f,
+				.depthBiasSlopeFactor = 0.0f
+			},
+			smvk::StencilSettings{},
+			smvk::BlendSettings{},
+			smvk::MSAASettings{},
+			smvk::RasterSettings{
+				.cullMode = smvk::CullMode::Back
+			}
+		);
+		cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
+		// Opaque only: BLEND transparent must not cast (full-quad depth).
+		m_world->forEachRenderItem(
+			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
+			| smvk::IteratorFlagBit_Opaque
+			, [&](const smvk::World::RenderItem& item) { drawCaster(item, false); });
+		// Phase 2: MASK cutout casters, alpha-tested program so foliage
+		// casts leaf-shaped shadows instead of full quads. Cull off: masked
+		// foliage is double-sided in the main view.
+		cmd.BindRenderPipeline(
+			m_resources.shadowMaskedProgram,
+			smvk::VertexFormat::StaticVertexFormat,
+			smvk::DepthSettings{
+				.depthFunc = smvk::CompareOp::LessEqual,
+				.writeEnable = true,
+				.depthTestEnable = true,
+				.depthBiasEnable = false,
+				.depthBiasConstantFactor = 0.0f,
+				.depthBiasClamp = 0.0f,
+				.depthBiasSlopeFactor = 0.0f
+			},
+			smvk::StencilSettings{},
+			smvk::BlendSettings{},
+			smvk::MSAASettings{},
+			smvk::RasterSettings{
+				.cullMode = smvk::CullMode::None
+			}
+		);
+		cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
+		m_world->forEachRenderItem(
+			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
+			| smvk::IteratorFlagBit_Opaque
+			, [&](const smvk::World::RenderItem& item) { drawCaster(item, true); });
+	}
+
 	void SceneRenderer::ResetLodStats() {
 		m_lodDraws = 0;
 		m_lodSwitched = 0;
@@ -2930,6 +3067,79 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 	// ---- Cascaded shadow map passes – one per cascade tile (builder owns offsets/extents/load ops) ----
 	// Pass-config gate: no shadow sampling without tiles (the main
 	// shader reads cascadeBuffer regardless; tiles just stay cleared).
+	//
+	// Indirect path (gfx filter on): caster candidates are prebuilt once
+	// per frame on the render thread (LOD decisions mutate the World's
+	// halfrate cache — not thread-safe), each tile's command list is
+	// built cooperatively on a worker while the main thread records the
+	// rest of the frame, and the tile pass records two indirect phases
+	// (opaque multi-draw + per-material masked ranges; see GfxRenderer::
+	// RecordShadowList). Unregistered casters keep the direct per-item
+	// recording inside the same pass as a fallback.
+	const bool spotPassesOn = m_passes.spotShadows && m_spotShadowCount > 0
+		&& m_viewportResources.spotShadows.Valid();
+	const uint32_t spotSlotCount = spotPassesOn
+		? std::min(m_spotShadowCount, m_viewportResources.spotShadows.slotCount)
+		: 0;
+	const bool shadowIndirect = (m_passes.directionalShadows || spotSlotCount > 0)
+		&& m_passes.gfxFilter && m_useGfxFilter
+		&& m_gfxRenderer.EnsureShadowSeeds(*m_context);
+	const bool cascadeViewsValid =
+		m_passes.directionalShadows
+		&& cascadeViewBase != smvk::RenderViewSet::kInvalidIndex;
+	const bool spotViewsValid = spotSlotCount > 0
+		&& spotViewBase != smvk::RenderViewSet::kInvalidIndex;
+	uint32_t cascadeShadowSlot[NUM_CASCADES];
+	uint32_t spotShadowSlot[smvk::kMaxSpotShadows];
+	std::fill_n(cascadeShadowSlot, NUM_CASCADES, UINT32_MAX);
+	std::fill_n(spotShadowSlot, smvk::kMaxSpotShadows, UINT32_MAX);
+	if (shadowIndirect && (cascadeViewsValid || spotViewsValid))
+	{
+		SMVK_PROFILE_CATEGORY("ShadowListDispatch", Optick::Category::Rendering);
+		BuildShadowDrawCandidates();
+		SMVK_PROFILE_TAG("candidates", m_shadowCandidates.size());
+		// Claim ALL shadow view slots before dispatching any build: the
+		// slot vector must not grow while workers hold element refs
+		// (gfx::ShadowView threading contract).
+		m_gfxRenderer.BeginShadowFrame();
+		if (cascadeViewsValid)
+			for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
+				cascadeShadowSlot[ci] = m_gfxRenderer.BeginShadowView(
+					*m_context, *m_rendergraph,
+					m_renderViews.Get(cascadeViewBase + ci),
+					smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
+					CASCADE_RES, CASCADE_RES);
+		if (spotViewsValid)
+			for (uint32_t si = 0; si < spotSlotCount; ++si)
+				spotShadowSlot[si] = m_gfxRenderer.BeginShadowView(
+					*m_context, *m_rendergraph,
+					m_renderViews.Get(spotViewBase + si),
+					smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
+					SPOT_SHADOW_RES, SPOT_SHADOW_RES);
+		// Cooperative per-view list builds: workers overlap the rest of
+		// the frame's pass recording; futures join before Execute.
+		if (!m_shadowWorkers) {
+			unsigned hw = std::thread::hardware_concurrency();
+			if (hw <= 1) hw = 2;
+			m_shadowWorkers =
+				std::make_unique<smvk::ThreadPool>(std::min(hw - 1, 8u));
+		}
+		auto enqueueBuild = [this](uint32_t slot) {
+			m_shadowFutures.push_back(m_shadowWorkers->enqueue([this, slot] {
+				SMVK_PROFILE_RENDER("GfxShadowListBuild");
+				for (const smvk::gfx::DrawRequest& cand : m_shadowCandidates)
+					m_gfxRenderer.PushShadowDraw(slot, cand.mesh, cand.model,
+						cand.material, cand.flags, cand.drawSet);
+				m_gfxRenderer.BuildShadowList(slot);
+			}));
+		};
+		for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
+			if (cascadeShadowSlot[ci] != UINT32_MAX)
+				enqueueBuild(cascadeShadowSlot[ci]);
+		for (uint32_t si = 0; si < spotSlotCount; ++si)
+			if (spotShadowSlot[si] != UINT32_MAX)
+				enqueueBuild(spotShadowSlot[si]);
+	}
 	if (m_passes.directionalShadows)
 	{
 		SMVK_PROFILE_CATEGORY("ShadowCascades", Optick::Category::Rendering);
@@ -2947,112 +3157,45 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 				? cascadeViewBase + ci
 				: smvk::RenderViewSet::kInvalidIndex;
 			cascadePC.renderViewIndex = casterViewIndex;
-auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rendergraph, ci, cascadeNames[ci])
-				.SetRecordingFunc([this, cascadePC, casterViewIndex](smvk::CommandBuffer& cmd)
-			{
-				// GPU context + pass scope come from RenderGraph::Execute
-				// (pass name "ShadowCascade<ci>" carries the cascade index).
-					cmd.BindRenderPipeline(
+			auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rendergraph, ci, cascadeNames[ci]);
+			if (shadowIndirect && cascadeShadowSlot[ci] != UINT32_MAX) {
+				const uint32_t slot = cascadeShadowSlot[ci];
+				m_gfxRenderer.AddShadowConsumeHints(shadowPass, slot);
+				shadowPass.SetRecordingFunc([this, slot, casterViewIndex, cascadePC, renderViewsAddress](smvk::CommandBuffer& cmd)
+				{
+					// GPU context + pass scope come from RenderGraph::Execute
+					// (pass name "ShadowCascade<ci>" carries the cascade index).
+					m_gfxRenderer.RecordShadowList(cmd, *m_context, slot,
+						renderViewsAddress, casterViewIndex, cascadePC);
+					// Fallback: unregistered casters only (registered ones
+					// are covered by the indirect command list).
+					RecordShadowCastersDirect(cmd,
 						m_viewportResources.directionalShadows.program,
-						smvk::VertexFormat::StaticVertexFormat,
-						smvk::DepthSettings{
-							.depthFunc = smvk::CompareOp::LessEqual,
-							.writeEnable = true,
-							.depthTestEnable = true,
-							.depthBiasEnable = false,
-							.depthBiasConstantFactor = 0.0f,
-							.depthBiasClamp = 0.0f,
-							.depthBiasSlopeFactor = 0.0f
-						},
-						smvk::StencilSettings{},
-						smvk::BlendSettings{},
-						smvk::MSAASettings{},
-						smvk::RasterSettings{
-							.cullMode = smvk::CullMode::Back
-						}
-					);
-					cmd.PushConstants(0, sizeof(PushConstants), &cascadePC, smvk::ShaderStage::All);
-					// Opaque only: BLEND transparent must not cast (full-quad depth).
-					auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
-					// Passes that fetch material state require one (the
-					// prepass deliberately draws material-less meshes).
-					if (item.material == smvk::World::kInvalidIndex)
-						return;
-					// Masked (cutout) flag replaces the per-node material
-					// fetch the phase split used to pay.
-					if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
-						return;
-					auto& model = m_world->scene.globalTransform[item.node];
-					smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
-					if (!meshDesc) return;
-					// RenderView plane cull: skip casters outside this cascade's frustum.
-					if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
-						glm::vec3 sphereCenter;
-						float sphereRadius = 0.0f;
-						smvk::MeshBoundsToWorld(
-							model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
-							sphereCenter, sphereRadius);
-						if (!smvk::RenderViewIntersectsSphere(
-							m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
-							return;
-					}
-					PushConstants objectPC{};
-					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-					if (maskedPhase) {
-						objectPC.materialId = item.material;
-						cmd.PushConstants(offsetof(PushConstants, materialId),
-							sizeof(objectPC.materialId), &objectPC.materialId,
-							smvk::ShaderStage::All);
-					}
-					cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
-					for (auto& draw_set : meshDesc->geometry.surfaces) {
-						cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-					};
-				};
-					// Phase 1: solid casters, depth-only program (unchanged).
-					m_world->forEachRenderItem(
-						smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
-						| smvk::IteratorFlagBit_Opaque
-						, [&](const smvk::World::RenderItem& item) { drawCaster(item, false); });
-					// Phase 2: MASK cutout casters, alpha-tested program so
-					// foliage casts leaf-shaped shadows instead of full quads.
-					// Cull off: masked foliage is double-sided in the main view.
-					cmd.BindRenderPipeline(
-						m_resources.shadowMaskedProgram,
-						smvk::VertexFormat::StaticVertexFormat,
-						smvk::DepthSettings{
-							.depthFunc = smvk::CompareOp::LessEqual,
-							.writeEnable = true,
-							.depthTestEnable = true,
-							.depthBiasEnable = false,
-							.depthBiasConstantFactor = 0.0f,
-							.depthBiasClamp = 0.0f,
-							.depthBiasSlopeFactor = 0.0f
-						},
-						smvk::StencilSettings{},
-						smvk::BlendSettings{},
-						smvk::MSAASettings{},
-						smvk::RasterSettings{
-							.cullMode = smvk::CullMode::None
-						}
-					);
-				cmd.PushConstants(0, sizeof(PushConstants), &cascadePC, smvk::ShaderStage::All);
-				m_world->forEachRenderItem(
-					smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
-					| smvk::IteratorFlagBit_Opaque
-					, [&](const smvk::World::RenderItem& item) { drawCaster(item, true); });
-			});
-				(void)shadowPass;
+						cascadePC, casterViewIndex, /*skipFiltered=*/true);
+				});
 			}
+			else {
+				shadowPass.SetRecordingFunc([this, cascadePC, casterViewIndex](smvk::CommandBuffer& cmd)
+				{
+					RecordShadowCastersDirect(cmd,
+						m_viewportResources.directionalShadows.program,
+						cascadePC, casterViewIndex, /*skipFiltered=*/false);
+				});
+			}
+			(void)shadowPass;
 		}
+	}
 
 		// ---- Spot shadow passes – one per selected caster tile ----
 		// Selection (upper limit + screenspace/distance heuristic) ran in
 		// UpdateForwardPlusLights; m_spotShadowCount tiles are valid. Each
-		// pass renders its tile with the spot perspective VP (shadow.vert
-		// spotIndex path). Opaque + MASK phases mirror the cascade passes.
-		if (m_passes.spotShadows && m_spotShadowCount > 0 && m_viewportResources.spotShadows.Valid()) {
-			const uint32_t spotCount = std::min(m_spotShadowCount, m_viewportResources.spotShadows.slotCount);
+		// pass renders its tile with the spot perspective VP (RenderView
+		// path; the legacy shadow.vert spotIndex path stays for the direct
+		// fallback). Opaque + MASK phases mirror the cascade passes. View
+		// slots were claimed together with the cascades above so the slot
+		// vector never grows while the cooperative builds are in flight.
+		if (spotPassesOn) {
+			const uint32_t spotCount = spotSlotCount;
 			const char* spotNames[8] = { "SpotShadow0", "SpotShadow1", "SpotShadow2", "SpotShadow3",
 				"SpotShadow4", "SpotShadow5", "SpotShadow6", "SpotShadow7" };
 			static_assert(sizeof(spotNames) / sizeof(spotNames[0]) >= smvk::kMaxSpotShadows);
@@ -3071,95 +3214,31 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 					? spotViewBase + si
 					: smvk::RenderViewSet::kInvalidIndex;
 				spotPC.renderViewIndex = casterViewIndex;
-				auto& spotPass = m_viewportResources.spotShadows.AddSpotPass(*m_rendergraph, si, spotNames[si])
-					.SetRecordingFunc([this, spotPC, casterViewIndex](smvk::CommandBuffer& cmd)
-				{
-					// GPU context + pass scope come from RenderGraph::Execute
-					// (pass name "SpotShadow<si>" carries the spot index).
-					cmd.BindRenderPipeline(
-						m_viewportResources.spotShadows.program,
-						smvk::VertexFormat::StaticVertexFormat,
-						smvk::DepthSettings{
-							.depthFunc = smvk::CompareOp::LessEqual,
-							.writeEnable = true,
-							.depthTestEnable = true,
-							.depthBiasEnable = false,
-							.depthBiasConstantFactor = 0.0f,
-							.depthBiasClamp = 0.0f,
-							.depthBiasSlopeFactor = 0.0f
-						},
-						smvk::StencilSettings{},
-						smvk::BlendSettings{},
-						smvk::MSAASettings{},
-						smvk::RasterSettings{
-							.cullMode = smvk::CullMode::Back
-						}
-					);
-					cmd.PushConstants(0, sizeof(PushConstants), &spotPC, smvk::ShaderStage::All);
-					// Opaque only: BLEND transparent must not cast (full-quad depth).
-					auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
-					if (item.material == smvk::World::kInvalidIndex)
-						return;
-					if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
-						return;
-					auto& model = m_world->scene.globalTransform[item.node];
-					smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
-					if (!meshDesc) return;
-					// RenderView plane cull: skip casters outside the spot cone frustum.
-					if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
-						glm::vec3 sphereCenter;
-						float sphereRadius = 0.0f;
-						smvk::MeshBoundsToWorld(
-							model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
-							sphereCenter, sphereRadius);
-						if (!smvk::RenderViewIntersectsSphere(
-							m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
-							return;
-					}
-					PushConstants objectPC{};
-					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-					if (maskedPhase) {
-						objectPC.materialId = item.material;
-						cmd.PushConstants(offsetof(PushConstants, materialId),
-							sizeof(objectPC.materialId), &objectPC.materialId,
-							smvk::ShaderStage::All);
-					}
-					cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
-					for (auto& draw_set : meshDesc->geometry.surfaces) {
-						cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-					};
-				};
-					// Phase 1: solid casters, depth-only program.
-					m_world->forEachRenderItem(
-						smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
-						| smvk::IteratorFlagBit_Opaque
-						, [&](const smvk::World::RenderItem& item) { drawCaster(item, false); });
-					// Phase 2: MASK cutout casters, alpha-tested program.
-					cmd.BindRenderPipeline(
-						m_resources.shadowMaskedProgram,
-						smvk::VertexFormat::StaticVertexFormat,
-						smvk::DepthSettings{
-							.depthFunc = smvk::CompareOp::LessEqual,
-							.writeEnable = true,
-							.depthTestEnable = true,
-							.depthBiasEnable = false,
-							.depthBiasConstantFactor = 0.0f,
-							.depthBiasClamp = 0.0f,
-							.depthBiasSlopeFactor = 0.0f
-						},
-						smvk::StencilSettings{},
-						smvk::BlendSettings{},
-						smvk::MSAASettings{},
-						smvk::RasterSettings{
-							.cullMode = smvk::CullMode::None
-						}
-					);
-				cmd.PushConstants(0, sizeof(PushConstants), &spotPC, smvk::ShaderStage::All);
-				m_world->forEachRenderItem(
-					smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
-					| smvk::IteratorFlagBit_Opaque
-					, [&](const smvk::World::RenderItem& item) { drawCaster(item, true); });
-				});
+				auto& spotPass = m_viewportResources.spotShadows.AddSpotPass(*m_rendergraph, si, spotNames[si]);
+				if (shadowIndirect && spotShadowSlot[si] != UINT32_MAX) {
+					const uint32_t slot = spotShadowSlot[si];
+					m_gfxRenderer.AddShadowConsumeHints(spotPass, slot);
+					spotPass.SetRecordingFunc([this, slot, casterViewIndex, spotPC, renderViewsAddress](smvk::CommandBuffer& cmd)
+					{
+						// GPU context + pass scope come from RenderGraph::Execute
+						// (pass name "SpotShadow<si>" carries the spot index).
+						m_gfxRenderer.RecordShadowList(cmd, *m_context, slot,
+							renderViewsAddress, casterViewIndex, spotPC);
+						// Fallback: unregistered casters only (registered ones
+						// are covered by the indirect command list).
+						RecordShadowCastersDirect(cmd,
+							m_viewportResources.spotShadows.program,
+							spotPC, casterViewIndex, /*skipFiltered=*/true);
+					});
+				}
+				else {
+					spotPass.SetRecordingFunc([this, spotPC, casterViewIndex](smvk::CommandBuffer& cmd)
+					{
+						RecordShadowCastersDirect(cmd,
+							m_viewportResources.spotShadows.program,
+							spotPC, casterViewIndex, /*skipFiltered=*/false);
+					});
+				}
 				(void)spotPass;
 			}
 		}
@@ -5591,6 +5670,27 @@ auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rend
 			//     .SetRecordingFunc([this](smvk::CommandBuffer& cmd){ m_imgui->Render(cmd); });
 		}
 
+		// Cooperative shadow list builds must land before Execute: the
+		// cascade/spot pass recording lambdas read the built ranges at
+		// record time. The ring uploads then run on the main thread (the
+		// engine's buffer sync-state tables are sharded by handle, not by
+		// calling thread) and flush with the EndAndPresent upload batch
+		// ahead of every consumer pass.
+		if (!m_shadowFutures.empty()) {
+			SMVK_PROFILE_SCOPE("ShadowListJoin");
+			for (auto& fut : m_shadowFutures)
+				fut.get();
+			m_shadowFutures.clear();
+			{
+				SMVK_PROFILE_SCOPE("ShadowListUpload");
+				for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
+					if (cascadeShadowSlot[ci] != UINT32_MAX)
+						m_gfxRenderer.UploadShadowList(*m_context, fb.frameIndex, cascadeShadowSlot[ci]);
+				for (uint32_t si = 0; si < spotSlotCount; ++si)
+					if (spotShadowSlot[si] != UINT32_MAX)
+						m_gfxRenderer.UploadShadowList(*m_context, fb.frameIndex, spotShadowSlot[si]);
+			}
+		}
 		const auto rfT4 = bench_clk::now();
 		m_rendergraph->Execute(fb);
 		const auto rfT5 = bench_clk::now();

@@ -509,6 +509,47 @@ struct TemporalView {
 	LogicalBufferHandle remainderIndirectLogicals[MAX_FRAMES_IN_FLIGHT]{};
 };
 
+// ---------------------------------------------------------------------------
+// CPU-built shadow draw lists (cascade + spot tiles)
+// ---------------------------------------------------------------------------
+
+// Per-view shadow list: one indirect command per surviving (draw x
+// cluster), bucket-major (opaque first, then per-material masked), same
+// recording shape as the seed/remainder lists — but built from THIS
+// frame's candidates with no temporal state and no GPU filter dispatch.
+// The VS (gfxshadowseed*.vert.hlsl) resolves model matrices from the
+// draws ring slice via BDA and the view-projection from the render-view
+// slab, so the pass recording is one multi-draw per range.
+//
+// Threading contract: PushShadowDraw/BuildShadowList are designed to run
+// one view per worker thread (each view owns its vectors; the mesh/
+// cluster tables are read-only during the build; uploads ride the calling
+// thread's staging shard). Claim ALL views for the frame (BeginShadow*)
+// BEFORE dispatching any build: the slot vector must not grow while
+// workers hold element references inside BuildShadowList.
+struct ShadowView {
+	const RenderView* renderView = nullptr; // frustum planes (RenderViewSet-owned)
+	CullFlags cullFlags = CullFlagBit_Frustum;
+	uint32_t width = 0, height = 0;
+	uint32_t frameIndex = 0; // set by BuildShadowList
+	// Per-frame CPU state (capacity retained across frames).
+	std::vector<DrawRequest> draws;
+	std::vector<Draw> drawConstants; // material-sorted GPU mirror
+	std::vector<uint32_t> drawOrderScratch; // material sort permutation
+	std::vector<SeedCommand> commands;
+	std::vector<SeedRange> ranges;
+	uint32_t opaqueCommands = 0;
+	Stats stats{};
+	// Build scratch (parallel to the emit walk; capacity retained).
+	std::vector<detail::EmitEntry> emitScratch;
+	// Ringed per-frame GPU mirrors (draws BDA + indirect commands).
+	Holder<BufferHandle> drawBuffers[MAX_FRAMES_IN_FLIGHT];
+	Holder<BufferHandle> indirectBuffers[MAX_FRAMES_IN_FLIGHT];
+	LogicalBufferHandle drawLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	LogicalBufferHandle indirectLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	bool buffersReady = false;
+};
+
 struct State {
 	// Static (load-time): cluster-ordered global vertex ids + cluster table.
 	// Frozen after UploadStaticData, safe to share across frames.
@@ -532,6 +573,8 @@ struct State {
 	std::vector<View> views;
 	std::vector<TemporalView> temporals; // parallel to views (same slot)
 	uint32_t viewCount = 0;
+	std::vector<ShadowView> shadowViews;
+	uint32_t shadowViewCount = 0;
 	uint64_t nextBatchesSerial = 1; // batchesSerial source (0 = hand-built)
 };
 
@@ -661,6 +704,47 @@ RenderPass& AddRemainderPass(State& s, RenderGraph& rg, uint32_t view,
 void AddSeedConsumeHints(RenderPass& pass,
 	LogicalBufferHandle indexLogical, LogicalBufferHandle visDrawLogical,
 	LogicalBufferHandle seedIndirectLogical);
+
+// ---- CPU-built shadow draw lists (cascade + spot tiles) --------------
+// Resets the per-frame shadow slot cursor (slots persist; buffers are
+// created lazily by BeginShadowView on first claim of each slot).
+void BeginShadowFrame(State& s);
+// Claims the next shadow slot bound to an allocated RenderView (frustum
+// planes). Main thread only: the slot vector grows here, so claim every
+// view of the frame before dispatching BuildShadowList tasks. Returns
+// the slot, UINT32_MAX on failure.
+uint32_t BeginShadowView(State& s, ResourceManager& ctx, RenderGraph& rg,
+	const RenderView& renderView, CullFlags cullFlags,
+	uint32_t width, uint32_t height);
+// Pushes one caster candidate (mesh = REGISTERED gfx mesh index from
+// RegisterMeshFrom*; UINT32_MAX casters stay on the caller's direct
+// fallback). Thread-safe per view: distinct slots only, no shared
+// mutable state besides the read-only mesh/cluster tables.
+void PushShadowDraw(State& s, uint32_t sview, uint32_t mesh,
+	const glm::mat4& model, uint32_t material, DrawFlags flags = 0,
+	DrawSetMask drawSet = DrawSetBit_Opaque);
+// Sorts the view's draws by material, expands draw x cluster with the
+// per-cluster sphere test against the RenderView planes (the normal-cone
+// test is deliberately skipped: directional cascade views have no valid
+// eye position), emits bucket-major commands (opaque VS-only phase
+// first, then per-material masked ranges). Pure CPU, no GPU access:
+// safe to run one view per worker thread.
+void BuildShadowList(State& s, uint32_t sview);
+// Uploads the built lists into the frameIndex ring slice (draws as VS
+// shader reads, commands as draw-indirect reads). Main thread only: the
+// global buffer sync-state tables are sharded by handle, not by thread,
+// so concurrent uploads on same-shard buffers would race.
+void UploadShadowList(State& s, ResourceManager& ctx,
+	uint32_t frameIndex, uint32_t sview);
+// Accessors (frame slice resolved from the view's frameIndex, stamped by
+// BuildShadowList).
+[[nodiscard]] const std::vector<SeedRange>& ShadowRanges(
+	const State& s, uint32_t sview);
+[[nodiscard]] uint32_t ShadowOpaqueCommands(const State& s, uint32_t sview);
+[[nodiscard]] BufferHandle ShadowDrawBuffer(const State& s, uint32_t sview);
+[[nodiscard]] BufferHandle ShadowIndirectBuffer(const State& s, uint32_t sview);
+[[nodiscard]] LogicalBufferHandle ShadowDrawLogical(const State& s, uint32_t sview);
+[[nodiscard]] LogicalBufferHandle ShadowIndirectLogical(const State& s, uint32_t sview);
 
 // ---- Hierarchical-Z (T2 build, T4 consumer) ----
 bool EnsureHizShaders(State& s, ResourceManager& ctx,

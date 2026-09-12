@@ -222,7 +222,18 @@ void Destroy(State& s, RenderGraph& rg) {
 			t.hiz[f].buffer = {};
 		}
 	}
+	for (auto& sv : s.shadowViews) {
+		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+			if (!sv.drawLogicals[f].empty()) rg.FreeBuffer(sv.drawLogicals[f]);
+			if (!sv.indirectLogicals[f].empty()) rg.FreeBuffer(sv.indirectLogicals[f]);
+			sv.drawLogicals[f] = {};
+			sv.indirectLogicals[f] = {};
+		}
+		sv.buffersReady = false;
+	}
 	s.temporals.clear();
+	s.shadowViews.clear();
+	s.shadowViewCount = 0;
 	if (!s.indexHeapLogical.empty()) rg.FreeBuffer(s.indexHeapLogical);
 	if (!s.clusterLogical.empty()) rg.FreeBuffer(s.clusterLogical);
 	s.indexHeapLogical = {};
@@ -1306,6 +1317,222 @@ bool CullCluster(const Cluster& c, const glm::mat4& model,
 	if (glm::dot(d / std::sqrt(len2), worldAxis) >= c.coneCutoff)
 		return true;
 	return false;
+}
+
+// ---------------------------------------------------------------------------
+// CPU-built shadow draw lists (cascade + spot tiles)
+// ---------------------------------------------------------------------------
+
+// Slot buffers for the CPU-built shadow lists: draws ring slice (VS BDA
+// model source) + indirect commands. Storage, NOT Indirect — same
+// cross-queue sharing argument as CreateSlotBuffers (uploads run on the
+// transfer queue, draws on graphics); INDIRECT usage is covered by the
+// buffer type's flags regardless.
+static bool EnsureShadowBuffers(ResourceManager& ctx, RenderGraph& rg, ShadowView& sv) {
+	if (sv.buffersReady)
+		return true;
+	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		sv.drawBuffers[f] = ctx.CreateBuffer(
+			kDrawBufferBytes, BufferType_Storage, "gfx shadow draws");
+		sv.indirectBuffers[f] = ctx.CreateBuffer(
+			kSeedIndirectBytes, BufferType_Storage, "gfx shadow indirect");
+		if (sv.drawBuffers[f].empty() || sv.indirectBuffers[f].empty())
+			return false;
+		sv.drawLogicals[f] = rg.AddExternalBuffer(sv.drawBuffers[f], "gfx shadow draws");
+		sv.indirectLogicals[f] = rg.AddExternalBuffer(sv.indirectBuffers[f], "gfx shadow indirect");
+		if (sv.drawLogicals[f].empty() || sv.indirectLogicals[f].empty())
+			return false;
+	}
+	sv.buffersReady = true;
+	return true;
+}
+
+void BeginShadowFrame(State& s) {
+	s.shadowViewCount = 0;
+}
+
+uint32_t BeginShadowView(State& s, ResourceManager& ctx, RenderGraph& rg,
+	const RenderView& renderView, CullFlags cullFlags,
+	uint32_t width, uint32_t height) {
+	const uint32_t slot = s.shadowViewCount;
+	if (slot >= kMaxViews)
+		return UINT32_MAX;
+	if (s.shadowViews.size() <= slot) {
+		ShadowView fresh{};
+		if (!EnsureShadowBuffers(ctx, rg, fresh))
+			return UINT32_MAX;
+		s.shadowViews.push_back(std::move(fresh));
+	}
+	ShadowView& sv = s.shadowViews[slot];
+	if (!sv.buffersReady && !EnsureShadowBuffers(ctx, rg, sv))
+		return UINT32_MAX;
+	sv.renderView = &renderView;
+	sv.cullFlags = cullFlags;
+	sv.width = width;
+	sv.height = height;
+	sv.draws.clear();
+	sv.drawConstants.clear();
+	sv.commands.clear();
+	sv.ranges.clear();
+	sv.opaqueCommands = 0;
+	sv.stats = Stats{};
+	++s.shadowViewCount;
+	return slot;
+}
+
+void PushShadowDraw(State& s, uint32_t sview, uint32_t mesh,
+	const glm::mat4& model, uint32_t material, DrawFlags flags,
+	DrawSetMask drawSet) {
+	assert(sview < s.shadowViewCount);
+	assert(mesh < s.meshes.size());
+	ShadowView& sv = s.shadowViews[sview];
+	if (sv.draws.size() >= kMaxDraws) {
+		static bool warnedShadowDrawCap = false;
+		if (!warnedShadowDrawCap) {
+			warnedShadowDrawCap = true;
+			std::fprintf(stderr,
+				"[GfxFilter] PushShadowDraw: draw cap %u hit, dropping draws "
+				"(increase kMaxDraws).\n", kMaxDraws);
+		}
+		return;
+	}
+	DrawRequest d{};
+	d.mesh = mesh;
+	d.material = material;
+	d.model = model;
+	d.flags = flags;
+	d.drawSet = drawSet;
+	sv.draws.push_back(d);
+}
+
+void BuildShadowList(State& s, uint32_t sview) {
+	assert(sview < s.shadowViewCount);
+	ShadowView& sv = s.shadowViews[sview];
+	assert(sv.renderView != nullptr);
+	sv.stats = Stats{};
+	sv.stats.draws = (uint32_t)sv.draws.size();
+
+	SMVK_PROFILE_RENDER("GfxBuildShadowList");
+	SMVK_PROFILE_TAG("draws", sv.draws.size());
+
+	// Material sort (stable): EmitBucketMajor walks the entries in emit
+	// order, so per-(bucket, material) ranges stay coalesced — same
+	// contract as BuildBatches.
+	std::vector<uint32_t>& order = sv.drawOrderScratch;
+	order.resize(sv.draws.size());
+	std::iota(order.begin(), order.end(), 0u);
+	std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+		return sv.draws[a].material < sv.draws[b].material;
+	});
+
+	sv.drawConstants.clear();
+	sv.drawConstants.reserve(sv.draws.size());
+	sv.emitScratch.clear();
+	bool batchCapped = false;
+	for (uint32_t sorted = 0; sorted < (uint32_t)order.size(); ++sorted) {
+		const DrawRequest& d = sv.draws[order[sorted]];
+		Draw dc{};
+		dc.model = d.model;
+		dc.mesh = d.mesh;
+		dc.flags = d.flags;
+		dc.drawSet = d.drawSet;
+		sv.drawConstants.push_back(dc);
+		const Mesh& mesh = s.meshes[d.mesh];
+		const float basisScale = MaxBasisScale(d.model);
+		for (uint32_t ci = 0; ci < mesh.clusterCount; ++ci) {
+			const Cluster& c = s.clusters[mesh.clusterStart + ci];
+			++sv.stats.clustersProcessed;
+			if (sv.emitScratch.size() >= kMaxBatches) {
+				static bool warnedShadowBatchCap = false;
+				if (!warnedShadowBatchCap) {
+					warnedShadowBatchCap = true;
+					SMVK_DEBUG_LOG(
+						"[GfxFilter] BuildShadowList: batch cap %u hit, dropping "
+						"clusters (increase kMaxBatches).\n", kMaxBatches);
+				}
+				batchCapped = true;
+				break;
+			}
+			// Sphere-only cull: the normal-cone stage needs a valid eye
+			// position, which directional cascade views do not have —
+			// the rasterizer's backface cull covers facings instead.
+			const glm::vec3 worldCenter = glm::vec3(d.model * glm::vec4(c.boundCenter, 1.0f));
+			const float worldRadius = c.boundRadius * basisScale;
+			if (!RenderViewIntersectsSphere(*sv.renderView, worldCenter, worldRadius)) {
+				++sv.stats.clustersCulled;
+				continue;
+			}
+			detail::EmitEntry e{};
+			e.cluster = mesh.clusterStart + ci;
+			e.draw = sorted; // firstInstance indexes the sorted draw constants
+			e.material = d.material;
+			e.drawSet = d.drawSet;
+			sv.emitScratch.push_back(e);
+			sv.stats.trianglesProcessed += c.triCount;
+		}
+		if (batchCapped)
+			break;
+	}
+	// Bucket-major emit: opaque commands first (one VS-only multi-draw),
+	// then masked per-material ranges (alpha-test FS push per range).
+	EmitBucketMajor(s, sv.emitScratch, sv.commands, sv.ranges, sv.opaqueCommands);
+	sv.stats.commands = (uint32_t)sv.commands.size();
+	SMVK_PROFILE_TAG("commands", sv.commands.size());
+	SMVK_PROFILE_TAG("clustersProcessed", sv.stats.clustersProcessed);
+	SMVK_PROFILE_TAG("clustersCulled", sv.stats.clustersCulled);
+}
+
+void UploadShadowList(State& s, ResourceManager& ctx,
+	uint32_t frameIndex, uint32_t sview) {
+	assert(sview < s.shadowViewCount);
+	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	ShadowView& sv = s.shadowViews[sview];
+	sv.frameIndex = frameIndex;
+	// GPU mirrors (main thread; the EndAndPresent flush orders the copies
+	// ahead of every consumer pass — same mechanism as the seed/remainder
+	// uploads).
+	if (!sv.drawConstants.empty()) {
+		SMVK_PROFILE_SCOPE("GfxUploadShadowDraws");
+		ctx.UploadDataToBuffer(sv.drawBuffers[frameIndex],
+			sv.drawConstants.data(), sv.drawConstants.size() * sizeof(Draw),
+			PipelineStage(PipelineStageBit_Vertex), AccessFlags::ShaderRead);
+	}
+	if (!sv.commands.empty()) {
+		SMVK_PROFILE_SCOPE("GfxUploadShadowCommands");
+		ctx.UploadDataToBuffer(sv.indirectBuffers[frameIndex],
+			sv.commands.data(), sv.commands.size() * sizeof(SeedCommand),
+			PipelineStage(PipelineStageBit_DrawIndirect), AccessFlags::IndirectCommandRead);
+	}
+}
+
+const std::vector<SeedRange>& ShadowRanges(const State& s, uint32_t sview) {
+	assert(sview < s.shadowViews.size());
+	return s.shadowViews[sview].ranges;
+}
+
+uint32_t ShadowOpaqueCommands(const State& s, uint32_t sview) {
+	assert(sview < s.shadowViews.size());
+	return s.shadowViews[sview].opaqueCommands;
+}
+
+BufferHandle ShadowDrawBuffer(const State& s, uint32_t sview) {
+	assert(sview < s.shadowViews.size());
+	return s.shadowViews[sview].drawBuffers[s.shadowViews[sview].frameIndex];
+}
+
+BufferHandle ShadowIndirectBuffer(const State& s, uint32_t sview) {
+	assert(sview < s.shadowViews.size());
+	return s.shadowViews[sview].indirectBuffers[s.shadowViews[sview].frameIndex];
+}
+
+LogicalBufferHandle ShadowDrawLogical(const State& s, uint32_t sview) {
+	assert(sview < s.shadowViews.size());
+	return s.shadowViews[sview].drawLogicals[s.shadowViews[sview].frameIndex];
+}
+
+LogicalBufferHandle ShadowIndirectLogical(const State& s, uint32_t sview) {
+	assert(sview < s.shadowViews.size());
+	return s.shadowViews[sview].indirectLogicals[s.shadowViews[sview].frameIndex];
 }
 
 Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {

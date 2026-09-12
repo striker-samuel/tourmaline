@@ -56,6 +56,17 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	smvk::Holder<smvk::ShaderModuleHandle> seedMaskedVsModule_;
 	smvk::ShaderProgram seedOpaqueProgram{}; // VS-only (gfxseed mainVS)
 	smvk::ShaderProgram seedMaskedProgram{}; // gfxseedmasked mainVS + shadow FS
+	// Shadow-atlas seed programs (gfxshadowseed*.vert.hlsl): cascade/spot
+	// tiles drawn from the CPU-built per-view shadow lists (gfx::ShadowView)
+	// instead of per-item direct recording. Opaque phase is VS-only; the
+	// masked phase pairs with the same shadow.frag alpha-test FS the
+	// temporal seed path uses (ConfigureSeedFrag). The VS clamps clip z
+	// like shadow.vert so casters behind the light near plane squash onto
+	// it (leak-free tiles, direct-path parity).
+	smvk::Holder<smvk::ShaderModuleHandle> shadowSeedVsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> shadowSeedMaskedVsModule;
+	smvk::ShaderProgram shadowSeedOpaqueProgram{};  // VS-only
+	smvk::ShaderProgram shadowSeedMaskedProgram{};   // masked VS + shadow FS
 	// Debug views (self-contained: own VS+FS, no Configure needed).
 	// Meshlet colors draw every registered cluster direct (bypasses the
 	// GPU filter, so HZB-culled meshlets stay visible); cone axes draw
@@ -244,6 +255,59 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// when RemainderPending; Load/Store over seeded depth).
 	void AppendRemainderPass(smvk::FrameContext& fc);
 	[[nodiscard]] bool RemainderPending() const { return remainderPending_; }
+
+	// ---- CPU-built shadow draw lists (cascade + spot tiles) ---------
+	// One cooperative BuildShadowList per shadow view replaces the
+	// per-item caster loops in the pass recording: the tile pass then
+	// records two indirect phases (opaque multi-draw + per-material
+	// masked ranges) against the cluster-ordered index heap.
+	// Idempotent program creation; masked pairing reuses the alpha-test
+	// FS from ConfigureSeedFrag. Returns true when both are ready.
+	bool EnsureShadowSeeds(smvk::ResourceManager& ctx);
+	[[nodiscard]] bool ShadowSeedsValid() const {
+		return shadowSeedOpaqueProgram.shaderCount == 1
+			&& shadowSeedMaskedProgram.shaderCount == 2
+			&& !shadowSeedVsModule.empty() && !shadowSeedMaskedVsModule.empty();
+	}
+	// Per-frame slot claim (main thread; claim all views of the frame
+	// before dispatching any BuildShadowList — see gfx::ShadowView).
+	void BeginShadowFrame() { smvk::gfx::BeginShadowFrame(gfx); }
+	uint32_t BeginShadowView(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
+		const smvk::RenderView& renderView, smvk::gfx::CullFlags cullFlags,
+		uint32_t width, uint32_t height) {
+		return smvk::gfx::BeginShadowView(gfx, ctx, rg, renderView,
+			cullFlags, width, height);
+	}
+	// Worker-thread side: per-view candidate push + list build (pure CPU;
+	// the engine's sync-state tables are not safe for concurrent uploads).
+	void PushShadowDraw(uint32_t sview, uint32_t mesh, const glm::mat4& model,
+		uint32_t material, smvk::gfx::DrawFlags flags,
+		smvk::gfx::DrawSetMask drawSet) {
+		smvk::gfx::PushShadowDraw(gfx, sview, mesh, model, material,
+			flags, drawSet);
+	}
+	void BuildShadowList(uint32_t sview) {
+		smvk::gfx::BuildShadowList(gfx, sview);
+	}
+	// Main thread, after joining the build futures: upload the frame ring
+	// slice (draws as VS reads, commands as draw-indirect reads).
+	void UploadShadowList(smvk::ResourceManager& ctx,
+		uint32_t frameIndex, uint32_t sview) {
+		smvk::gfx::UploadShadowList(gfx, ctx, frameIndex, sview);
+	}
+	// Consume side: opaque multi-draw + per-material masked ranges over
+	// the view's CPU-built command list. Shadow-atlas depth is normal-Z
+	// (LessEqual), unlike the reversed-Z seed path (GreaterEqual).
+	void RecordShadowList(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
+		uint32_t sview, uint64_t renderViewsAddr, uint32_t renderViewIndex,
+		const PushConstants& shadowPC);
+	// Consume-side barriers: cluster-ordered index heap + shadow draws +
+	// shadow indirect as vertex/draw-indirect reads.
+	void AddShadowConsumeHints(smvk::RenderPass& pass, uint32_t sview);
+	[[nodiscard]] const std::vector<smvk::gfx::SeedRange>& ShadowRanges(
+		uint32_t sview) const {
+		return smvk::gfx::ShadowRanges(gfx, sview);
+	}
 	// Debug audit: downloads this view's indirect commands + HZB pyramid
 	// and attributes every zero-indexCount batch (GPU kill) against the CPU
 	// mirror (HzbOccluded). CPU-agrees = HZB input/bounds fault;

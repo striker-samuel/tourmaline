@@ -46,6 +46,7 @@
 #include <Engine/Rendergraph/ssao.h>
 #include <Engine/Rendergraph/tonemap.h>
 #include <Engine/Rendergraph/ui.h>
+#include <Engine/Utils/thread_pool.h>
 
 #include <App/forwardplus_renderer.h>
 #include <App/frame_context.h>
@@ -745,6 +746,25 @@ protected:
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	app::GfxRenderer m_gfxRenderer{};
 	bool m_useGfxFilter = true; // false = legacy direct draws (A/B)
+	// ---- Cooperative shadow draw lists (cascade + spot tiles) ----
+	// Candidates are prebuilt once per frame on the render thread (LOD
+	// decisions mutate the World halfrate cache — not thread-safe), then
+	// each shadow view's command list is built on a worker while the main
+	// thread records the rest of the frame. Futures join before Execute
+	// (the tile-pass lambdas read the built ranges) and the ring uploads
+	// run on the main thread right after (see UploadShadowList).
+	void BuildShadowDrawCandidates();
+	// Direct caster recording, both phases (opaque VS-only + masked
+	// alpha-test): the full legacy loop when the filter is off, and the
+	// unfiltered-caster fallback inside the indirect tile passes
+	// (skipFiltered=true skips registered meshes — they are covered by
+	// the per-view command list).
+	void RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
+		smvk::ShaderProgram& opaqueProgram, const PushConstants& pc,
+		uint32_t casterViewIndex, bool skipFiltered);
+	std::unique_ptr<smvk::ThreadPool> m_shadowWorkers;
+	std::vector<std::future<void>> m_shadowFutures;
+	std::vector<smvk::gfx::DrawRequest> m_shadowCandidates;
 	// ---- Option A: occluder-only HZB depth ----
 	// True = the HZB pyramid builds from hizDepth (big solid occluders at
 	// crudest LOD) while Main/SSAO/tile-cull stay on the full renderDepth.

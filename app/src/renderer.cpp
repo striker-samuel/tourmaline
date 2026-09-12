@@ -16,6 +16,8 @@ namespace app {
 
 static constexpr const char* kGfxSeedVsPath = "content/shaders/gfxseed.vert.hlsl.spv";
 static constexpr const char* kGfxSeedMaskedVsPath = "content/shaders/gfxseedmasked.vert.hlsl.spv";
+static constexpr const char* kGfxShadowSeedVsPath = "content/shaders/gfxshadowseed.vert.hlsl.spv";
+static constexpr const char* kGfxShadowSeedMaskedVsPath = "content/shaders/gfxshadowseedmasked.vert.hlsl.spv";
 static constexpr const char* kFilteredMotionVsPath = "content/shaders/gfxfilteredmotion.vert.hlsl.spv";
 // Byte offset of the FrameUniforms BDA in the filtered-motion push (free
 // prevModel scratch at 192..256: 192..216 is the 24B filtered VS tail,
@@ -316,6 +318,126 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 	// scenes hide it (prev == curr, same order).
 	smvk::gfx::UploadVisible(gfx, *fc.ctx, fc.frameIndex, slot);
 	smvk::gfx::SnapshotVisible(gfx, slot);
+}
+
+bool GfxRenderer::EnsureShadowSeeds(smvk::ResourceManager& ctx) {
+	if (ShadowSeedsValid())
+		return true;
+	if (seedFrag_.empty())
+		return false;
+	try {
+		if (shadowSeedVsModule.empty())
+			shadowSeedVsModule = ctx.CreateShaderModule(
+				readFile(kGfxShadowSeedVsPath), "gfxShadowSeedVS");
+		if (shadowSeedMaskedVsModule.empty())
+			shadowSeedMaskedVsModule = ctx.CreateShaderModule(
+				readFile(kGfxShadowSeedMaskedVsPath), "gfxShadowSeedMaskedVS");
+	}
+	catch (...) {
+		return false;
+	}
+	if (shadowSeedVsModule.empty() || shadowSeedMaskedVsModule.empty())
+		return false;
+	if (shadowSeedOpaqueProgram.shaderCount == 0) {
+		smvk::Shader vs{ .module = shadowSeedVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+		shadowSeedOpaqueProgram = { .shaders = { vs }, .shaderCount = 1 };
+	}
+	if (shadowSeedMaskedProgram.shaderCount == 0) {
+		smvk::Shader vs{ .module = shadowSeedMaskedVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+		smvk::Shader fs{ .module = seedFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+		shadowSeedMaskedProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
+	}
+	return ShadowSeedsValid();
+}
+
+void GfxRenderer::RecordShadowList(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
+	uint32_t sview, uint64_t renderViewsAddr, uint32_t renderViewIndex,
+	const PushConstants& shadowPC) {
+	const std::vector<smvk::gfx::SeedRange>& ranges = smvk::gfx::ShadowRanges(gfx, sview);
+	const uint32_t opaqueCount = smvk::gfx::ShadowOpaqueCommands(gfx, sview);
+	const smvk::BufferHandle indirectBuf =
+		smvk::gfx::ShadowIndirectBuffer(gfx, sview);
+	const uint64_t drawsAddr =
+		ctx.GetBufferDeviceAddress(smvk::gfx::ShadowDrawBuffer(gfx, sview));
+	cmd.BindStaticVertexFmt();
+	// Shadow atlas is normal-Z (clear 1.0, LessEqual) — unlike the seed
+	// path's reversed-Z GreaterEqual. No index bind: commands address the
+	// static index monoblock absolutely (the offset-0 binding from
+	// BindStaticVertexFmt is correct for every draw below).
+	// Phase 1: opaque casters (VS-only, back-culled like the direct path).
+	if (opaqueCount > 0) {
+		cmd.BindRenderPipeline(
+			shadowSeedOpaqueProgram,
+			smvk::VertexFormat::StaticVertexFormat,
+			smvk::DepthSettings{
+				.depthFunc = smvk::CompareOp::LessEqual,
+				.writeEnable = true,
+				.depthTestEnable = true,
+				.depthBiasEnable = false,
+				.depthBiasConstantFactor = 0.0f,
+				.depthBiasClamp = 0.0f,
+				.depthBiasSlopeFactor = 0.0f
+			},
+			smvk::StencilSettings{},
+			smvk::BlendSettings{},
+			smvk::MSAASettings{},
+			smvk::RasterSettings{ .cullMode = smvk::CullMode::Back }
+		);
+		cmd.PushConstants(0, sizeof(PushConstants), &shadowPC, smvk::ShaderStage::All);
+		PushSeedConstants(cmd, ctx, sview, renderViewsAddr, renderViewIndex, drawsAddr);
+		cmd.DrawIndexedIndirect(indirectBuf, 0, opaqueCount, 20);
+	}
+	// Phase 2: MASK cutout casters (alpha-tested FS, cull off — masked
+	// foliage is double-sided in the direct path).
+	for (const smvk::gfx::SeedRange& r : ranges) {
+		if ((r.drawSet & smvk::gfx::DrawSetBit_Masked) == 0 || r.commandCount == 0)
+			continue;
+		if (r.material == UINT32_MAX)
+			continue; // unknown material: no valid materialId push
+		cmd.BindRenderPipeline(
+			shadowSeedMaskedProgram,
+			smvk::VertexFormat::StaticVertexFormat,
+			smvk::DepthSettings{
+				.depthFunc = smvk::CompareOp::LessEqual,
+				.writeEnable = true,
+				.depthTestEnable = true,
+				.depthBiasEnable = false,
+				.depthBiasConstantFactor = 0.0f,
+				.depthBiasClamp = 0.0f,
+				.depthBiasSlopeFactor = 0.0f
+			},
+			smvk::StencilSettings{},
+			smvk::BlendSettings{},
+			smvk::MSAASettings{},
+			smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+		);
+		PushConstants matPC{};
+		matPC.materialId = r.material;
+		cmd.PushConstants(
+			offsetof(PushConstants, materialId),
+			sizeof(matPC.materialId),
+			&matPC.materialId,
+			smvk::ShaderStage::All
+		);
+		// Frame addresses for the masked FS (same head-only re-push the
+		// seed path does; the VS tail rides bytes 192..216).
+		cmd.PushConstants(
+			0,
+			offsetof(PushConstants, frameUniforms),
+			&shadowPC,
+			smvk::ShaderStage::All
+		);
+		PushSeedConstants(cmd, ctx, sview, renderViewsAddr, renderViewIndex, drawsAddr);
+		cmd.DrawIndexedIndirect(indirectBuf, (uint64_t)r.firstCommand * 20,
+			r.commandCount, 20);
+	}
+}
+
+void GfxRenderer::AddShadowConsumeHints(smvk::RenderPass& pass, uint32_t sview) {
+	smvk::gfx::AddSeedConsumeHints(pass,
+		smvk::gfx::IndexHeapLogical(gfx),
+		smvk::gfx::ShadowDrawLogical(gfx, sview),
+		smvk::gfx::ShadowIndirectLogical(gfx, sview));
 }
 
 void GfxRenderer::AppendRemainderPass(smvk::FrameContext& base) {
