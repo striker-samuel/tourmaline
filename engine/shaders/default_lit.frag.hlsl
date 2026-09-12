@@ -151,10 +151,20 @@ void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
 
     // Shadow factor: inline spot-atlas sample (legacy path) or the
     // deferred-shadow pipeline's precomputed per-pixel visibility.
+    // EVSM (frame.evsmMode): pl.shadowMapIndex addresses the blurred
+    // moments instead of the depth atlas; linear sampler 0.
     float shadowFactor = vis;
     if (useInlineShadow && pl.type == 1 && pl.shadowTile >= 0)
-        shadowFactor = GetSpotShadowFactorFromPC(1, worldPos, geomN,
-            pl.direction, pl.shadowTile);
+    {
+        uint evsm = pc.frameUniforms.Get().evsmMode;
+        if (evsm != 0u && pl.shadowMapIndex >= 0)
+            shadowFactor = GetSpotShadowFactorEvsmFromPC(0, worldPos, geomN,
+                pl.direction, pl.shadowTile,
+                (uint)pl.shadowMapIndex, EVSM_EXPONENT);
+        else
+            shadowFactor = GetSpotShadowFactorFromPC(1, worldPos, geomN,
+                pl.direction, pl.shadowTile);
+    }
     if (shadowFactor <= 0.0f)
         return;
 
@@ -381,7 +391,16 @@ PSOut mainPS(PSIn IN)
     if (light.shadow_map_index >= 0)
     {
         if (pc.numCascades > 0)
-            shadow = GetShadowFactorCascadedFromPC(1, IN.worldPos, geomN, light);
+        {
+            // EVSM (frame.evsmMode): shadow_map_index addresses the blurred
+            // moments instead of the depth atlas; linear sampler 0.
+            uint evsm = pc.frameUniforms.Get().evsmMode;
+            if (evsm != 0u)
+                shadow = GetShadowFactorEvsmCascadedFromPC(0, IN.worldPos, geomN, light,
+                    (uint)light.shadow_map_index, EVSM_EXPONENT);
+            else
+                shadow = GetShadowFactorCascadedFromPC(1, IN.worldPos, geomN, light);
+        }
         // PARKED: legacy single-map path kept in shadows.hlsli but disabled.
         // else
         //     shadow = GetShadowFactor(1, IN.worldPos, light);

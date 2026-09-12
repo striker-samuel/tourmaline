@@ -713,3 +713,96 @@ float GetShadowFactorODB(
 
     return shadow;
 }
+
+// ---- EVSM (Exponential Variance Shadow Maps, prefiltered async) ----
+// Blurred RG32F moments replace the depth atlas; the tile math (lightVP,
+// uvScale/uvBias/uvClamp, oriented bias) is shared with the PCF path.
+// evsmAtlasIdx is the bindless index of the BLURRED output (one frame old
+// under OneFrameLag pipelining); exponent must match the moment pass
+// specialization constant (smvk::kEvsmExponent default 42).
+#include "evsm.hlsli"
+
+float GetShadowFactorEvsmCascaded(
+    uint samplerId,
+    float3 worldPos,
+    float3 faceNormal,
+    Light light,
+    FrameUniforms frame,
+    GpuDirectionalLightDescription dir,
+    uint evsmAtlasIdx,
+    float exponent)
+{
+    if (light.shadow_map_index < 0 || dir.numCascades <= 0)
+        return 1.0f;
+
+    float3 viewPos = mul(frame.view, float4(worldPos, 1.0f)).xyz;
+    float viewDepth = max(-viewPos.z, 0.0f);
+    int firstCascade = SelectCascadeGpu(viewDepth, dir.cascades, dir.numCascades);
+
+    for (int k = firstCascade; k < dir.numCascades; ++k)
+    {
+        bool valid = false;
+        float s = SampleEvsmTile(
+            dir.cascades[k], worldPos, faceNormal, light.direction,
+            samplerId, evsmAtlasIdx, exponent, valid);
+        if (valid)
+            return s;
+    }
+    return 1.0f;
+}
+
+float GetSpotShadowFactorEvsmTile(
+    uint samplerId,
+    float3 worldPos,
+    float3 faceNormal,
+    float3 spotDirection,
+    GpuCascadeDescription t,
+    uint evsmAtlasIdx,
+    float exponent)
+{
+    if (evsmAtlasIdx == 0xFFFFFFFFu)
+        return 1.0f;
+    bool valid = false;
+    // Spot light travel direction == spot axis (same convention as the PCF
+    // spot path); depth bias is applied in-depth-domain before the warp.
+    float s = SampleEvsmTile(
+        t, worldPos, faceNormal, spotDirection,
+        samplerId, evsmAtlasIdx, exponent, valid);
+    return valid ? s : 1.0f;
+}
+
+#ifdef ENGINE_HAS_PC
+float GetShadowFactorEvsmCascadedFromPC(
+    uint samplerId,
+    float3 worldPos,
+    float3 faceNormal,
+    Light light,
+    uint evsmAtlasIdx,
+    float exponent)
+{
+    FrameUniforms frame = pc.frameUniforms.Get();
+    GpuDirectionalLightDescription dir = pc.cascadeBuffer.Get().dir;
+    return GetShadowFactorEvsmCascaded(
+        samplerId, worldPos, faceNormal, light, frame, dir, evsmAtlasIdx, exponent);
+}
+
+float GetSpotShadowFactorEvsmFromPC(
+    uint samplerId,
+    float3 worldPos,
+    float3 faceNormal,
+    float3 spotDirection,
+    int tileIndex,
+    uint evsmAtlasIdx,
+    float exponent)
+{
+    if (tileIndex < 0 || evsmAtlasIdx == 0xFFFFFFFFu)
+        return 1.0f;
+    if (pc.spotShadowCount == 0u)
+        return 1.0f;
+    if ((uint)tileIndex >= pc.spotShadowCount)
+        return 1.0f;
+    GpuCascadeDescription t = pc.spotShadowBuffer.Get().tiles[tileIndex];
+    return GetSpotShadowFactorEvsmTile(
+        samplerId, worldPos, faceNormal, spotDirection, t, evsmAtlasIdx, exponent);
+}
+#endif // ENGINE_HAS_PC

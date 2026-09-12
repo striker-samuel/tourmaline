@@ -42,6 +42,9 @@ groupshared uint gsEarlyIdx[DS_MAX_LIGHTS_PER_TILE];
 // Per-light visibility: spots with an assigned shadow tile run PCSS
 // over the spot-shadow atlas (paper 2.4 — Percentage Closer Soft Shadows;
 // same guards as the inline path); everything else is fully lit.
+// EVSM (frame.evsmMode): the atlas holds prefiltered moments, so the
+// blocker-search PCSS has no depth to work on — sample the EVSM
+// visibility (fixed filter, already blurred) instead.
 float DsComputeLightVisibility(ForwardPlusLight L, float3 worldPos, float3 faceNormal)
 {
     if (L.type != 1)
@@ -55,6 +58,10 @@ float DsComputeLightVisibility(ForwardPlusLight L, float3 worldPos, float3 faceN
         return 1.0f;
     const uint atlasIdx = NonUniformResourceIndex(pcDS.spotShadowMapIndex);
     const GpuCascadeDescription t = pcDS.spotShadowBuffer.Get().tiles[L.shadowTile];
+    uint evsm = pcDS.frameUniforms.Get().evsmMode;
+    if (evsm != 0u)
+        return GetSpotShadowFactorEvsmTile(0u, worldPos, faceNormal,
+            L.direction, t, atlasIdx, EVSM_EXPONENT);
     return PcssSpotShadow(1u, worldPos, faceNormal, L.direction, t, atlasIdx,
         pcDS.pcssLightSize, pcDS.spotShadowNear, L.outerAngle);
 }

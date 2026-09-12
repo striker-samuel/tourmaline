@@ -61,6 +61,12 @@ namespace smvk {
 		uint32_t imageIndex = 0;
 		VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 		VulkanSwapchain& swapchain;
+		// Async-split second graphics part (G2): set by RenderGraph::Execute
+		// when the frame splits G1/C/G2 (null = single submit). EndAndPresent
+		// ends + submits it with the compute-done wait below, then presents.
+		VkCommandBuffer splitCommandBuffer = VK_NULL_HANDLE;
+		VkSemaphore splitWaitSemaphore = VK_NULL_HANDLE; // C -> G2 timeline
+		uint64_t splitWaitValue = 0;
 	};
 
 	struct VulkanPipeline {
@@ -407,6 +413,12 @@ namespace smvk {
 	struct ImageGlobalSyncState {
 		SyncBarrierMasks masks{ AccessFlags::None, PipelineStageBit_None };
 		ImageLayout layout = ImageLayout::Undefined;
+		// Queue family that performed the last recorded access
+		// (graphics or dedicated compute). Drives the async-compute split
+		// in RenderGraph::Execute: a pass on the other queue bridges with
+		// an event + layout barrier instead of a same-queue barrier.
+		// UINT32_MAX = unknown (treat as graphics; pre-async default).
+		uint32_t queueFamily = UINT32_MAX;
 	};
 	struct BufferGlobalSyncState {
 		SyncBarrierMasks masks{ AccessFlags::None, PipelineStageBit_None };
@@ -464,6 +476,14 @@ namespace smvk {
 		bool hasPending() const { return states_[CurrentPoolShard()].hasPending; }
 		bool hasAnyPending() const noexcept;
 	private:
+		// Ring bytes [start, end) read by one submitted transfer batch.
+		// handle waits exactly that batch's retirement (precise wrap sync:
+		// an alloc only waits batches overlapping the bytes it overwrites).
+		struct InFlightRingRange {
+			VkDeviceSize start;
+			VkDeviceSize end;
+			CommandSubmitHandle handle;
+		};
 		struct ThreadUploadState {
 			StagingRing ring{};
 			CommandSubmitHandle curHandle{};
@@ -473,12 +493,19 @@ namespace smvk {
 			std::vector<VkImageMemoryBarrier2> pendingImageAcquires;
 			std::vector<std::packaged_task<void()>> pendingCleanups;
 			VkDeviceSize stagedBytesSinceFlush = 0;
+			// Ring range covered by the batch currently recording into
+			// curCmd (VK_WHOLE_SIZE = none yet). Recorded into
+			// pendingRanges at submit; the precise wrap/alloc sync in
+			// allocFromRing consumes it.
+			VkDeviceSize batchRingStart = VK_WHOLE_SIZE;
+			std::vector<InFlightRingRange> pendingRanges;
 		};
 		ThreadUploadState states_[kNumPoolShards];
 		VkDeviceSize ringCapacityPerThread_ = 32ull * 1024 * 1024;
 		bool ensureShardRing(ThreadUploadState& st);
 		VkDeviceSize allocFromRing(ThreadUploadState& st, VkDeviceSize size, VkDeviceSize alignment);
 		void ensureCmd(ThreadUploadState& st);
+		void recordSubmittedRange(ThreadUploadState& st);
 		void submitState(ThreadUploadState& st, bool waitOldestIfFull = true);
 		// Submit a transfer-queue batch. When the upload queue is distinct
 		// from graphics, the submit waits on the latest swapchain
@@ -619,6 +646,10 @@ namespace smvk {
 		VmaAllocator m_allocator;
 		Submitter* m_submitter = nullptr;
 		Submitter* m_transferSubmitter = nullptr;
+		// Async-compute submitter for EVSM prefiltering. Aliased to the
+		// graphics submitter when the device has no dedicated compute
+		// queue (emulated async: same-queue compute, still pipelined H->V).
+		Submitter* m_computeSubmitter = nullptr;
 		std::unique_ptr<UploadStreamer> m_streamer;
 		bool m_hostImageCopySupported = false;
 		VkPhysicalDeviceHostImageCopyPropertiesEXT m_hostCopyProps{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_PROPERTIES_EXT };
@@ -667,6 +698,7 @@ namespace smvk {
 		uint32_t GetSamplerCount() const;
 		Submitter* GetTransferSubmitter() const noexcept { return m_transferSubmitter; }
 		Submitter* GetGraphicsSubmitter() const noexcept { return m_submitter; }
+		Submitter* GetComputeSubmitter() const noexcept { return m_computeSubmitter != nullptr ? m_computeSubmitter : m_submitter; }
 		UploadStreamer* GetStreamer() const noexcept { return m_streamer.get(); }
 		bool IsHostImageCopySupported() const noexcept { return m_hostImageCopySupported; }
 		bool IsHostCopySrcLayoutSupported(VkImageLayout layout) const noexcept {
@@ -751,6 +783,8 @@ namespace smvk {
 		void CommitBufferSyncStates(const std::unordered_map<uint64_t, BufferGlobalSyncState>& states);
 
 
+
+
 		friend struct UploadStreamer;
 	private:
 		ImageSubresourceRange ResolveImageSubresourceRange(const Image& image, ImageSubresourceRange range) const;
@@ -828,6 +862,23 @@ namespace smvk {
 #pragma region ===[ Frame Commands List ]===
 		VkCommandPool perFrameCommandPools[MAX_FRAMES_IN_FLIGHT]{};
 		VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT]{};
+		// True-async-compute split (EVSM SameFrame): G1 (graphics, through
+		// the moment passes) -> C (compute-queue blur) -> G2 (graphics,
+		// lighting onward). Chained with per-flight timeline semaphores
+		// (g2c, c2g); submission order G1->C->G2 makes every wait
+		// signal-before-wait legal. Created lazily on first split use
+		// (needs the compute family), reset in Acquire (slot retired),
+		// destroyed in dtor. Monotonic values per flight.
+		VkCommandPool splitPools[MAX_FRAMES_IN_FLIGHT]{};      // graphics family (G2)
+		VkCommandBuffer splitBuffers[MAX_FRAMES_IN_FLIGHT]{};  // G2
+		VkCommandPool asyncComputePools[MAX_FRAMES_IN_FLIGHT]{}; // compute family (C)
+		VkCommandBuffer asyncComputeBuffers[MAX_FRAMES_IN_FLIGHT]{};
+		VkSemaphore asyncG2C_[MAX_FRAMES_IN_FLIGHT]{}; // G1 -> C
+		VkSemaphore asyncC2G_[MAX_FRAMES_IN_FLIGHT]{}; // C -> G2
+		uint64_t asyncG2CValue_[MAX_FRAMES_IN_FLIGHT] = {};
+		uint64_t asyncC2GValue_[MAX_FRAMES_IN_FLIGHT] = {};
+		bool asyncSplitReady_[MAX_FRAMES_IN_FLIGHT] = {};
+		bool EnsureAsyncSplit(uint32_t flight); // false = no dedicated compute
 #pragma endregion
 
 		bool framebufferResized = false;
@@ -1121,8 +1172,11 @@ namespace smvk {
 	VkQueue          GetVkGraphicsQueue();
 	VkQueue          GetVkPresentQueue();
 	VkQueue          GetVkTransferQueue();
+	VkQueue          GetVkComputeQueue();
 	VkSurfaceKHR     GetVkSurface();
 	uint32_t         GetVkGraphicsQueueFamily();
+	uint32_t         GetVkComputeQueueFamily();
+	bool             HasDedicatedComputeQueue();
 	// True when the device was created with multiDrawIndirect enabled.
 	// CommandBuffer::DrawIndexedIndirect uses the single-call fast path
 	// then, and falls back to one-by-one emulation otherwise.

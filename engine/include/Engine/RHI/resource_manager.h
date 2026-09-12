@@ -126,6 +126,17 @@ public:
     // True when the physical device supports 2x MSAA for both color and
     // depth framebuffer attachments (used for the Main pass resolve path).
     bool SupportsMSAA2x();
+    // True when RG32F supports the full EVSM moment chain: 2x MSAA color
+    // attachment + resolve, sampled + storage (async blur). When false the
+    // app keeps the PCF depth path (EVSM silently unavailable).
+    bool SupportsEvsm();
+    // True when the device exposes a dedicated compute queue distinct from
+    // graphics (EVSM blur overlaps shadow rendering; otherwise emulated).
+    bool HasDedicatedComputeQueue();
+    // Queue-family indices (graphics always valid; compute falls back to
+    // graphics when no dedicated family exists).
+    uint32_t GetComputeQueueFamily();
+    uint32_t GetGraphicsQueueFamily();
     // GPU memory snapshot: one entry per Vk memory heap (VMA budgets +
     // heap sizes). Cheap (VMA throttles OS queries internally); safe to
     // call once per frame for the debug UI / console stats.

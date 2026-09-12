@@ -24,6 +24,7 @@
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/environment.h>
+#include <Engine/Rendergraph/evsm.h>
 #include <Engine/Rendergraph/exposure.h>
 #include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/spotshadow.h>
@@ -273,6 +274,39 @@ static smvk::SpotShadowMapDesc MakeSpotShadowDesc() {
 	d.nearPlane = SPOT_SHADOW_NEAR;
 	d.bias = SPOT_SHADOW_BIAS;
 	d.name = "spotShadowAtlas";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
+// EVSM moment atlases (RG32F 2xMSAA + async separable blur, 1-frame lag).
+// Tile counts/resolutions mirror the PCF atlases so the same lightVP math
+// (BuildDirectionalLight / BuildSpotTile) drives both representations.
+// -----------------------------------------------------------------------------
+static smvk::EvsmDesc MakeEvsmDirDesc(smvk::EvsmPipelineMode pipeline) {
+	smvk::EvsmDesc d{};
+	d.tileResolution = CASCADE_RES;
+	d.tileCount = NUM_CASCADES;
+	d.momentsFormat = smvk::Format::RG32_Float;
+	d.depthFormat = smvk::Format::D32_Float;
+	d.msaaSamples = 2;
+	d.exponent = smvk::kEvsmExponent;
+	d.blurRadius = smvk::kEvsmBlurRadius;
+	d.pipeline = pipeline;
+	d.name = "evsmDirAtlas";
+	return d;
+}
+
+static smvk::EvsmDesc MakeEvsmSpotDesc(smvk::EvsmPipelineMode pipeline) {
+	smvk::EvsmDesc d{};
+	d.tileResolution = SPOT_SHADOW_RES;
+	d.tileCount = smvk::kMaxSpotShadows;
+	d.momentsFormat = smvk::Format::RG32_Float;
+	d.depthFormat = smvk::Format::D32_Float;
+	d.msaaSamples = 2;
+	d.exponent = smvk::kEvsmExponent;
+	d.blurRadius = smvk::kEvsmBlurRadius;
+	d.pipeline = pipeline;
+	d.name = "evsmSpotAtlas";
 	return d;
 }
 
@@ -583,6 +617,13 @@ bool SceneRenderer::Initialize() {
 			if (std::atoi(expEnv) == 0)
 				m_autoExposureEnabled = false;
 		}
+		// EVSM kill switch for A/B (VULKANTOY_EVSM=0): PCF depth atlases,
+		// no moment/blur passes, single-submit frames (no async split).
+		if (const char* evsmEnv = std::getenv("VULKANTOY_EVSM")) {
+			if (std::atoi(evsmEnv) == 0)
+				m_evsmEnabled = false;
+		}
+
 		if (const char* iblEnv = std::getenv("VULKANTOY_IBL")) {
 			// Mute the analytic sky ambient (AmbientMode: sky -> off; the
 			// ambient sources are mutually exclusive, see AmbientMode).
@@ -1000,6 +1041,26 @@ bool SceneRenderer::Initialize() {
 		if (!m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc())) {
 			std::cerr << "[SceneRenderer] Spot shadow atlas unavailable – spots run unshadowed\n";
 		}
+		// EVSM moment atlases (RG32F 2xMSAA + async blur). Non-fatal: when
+		// the device lacks RG32F render/blur support (or shaders fail),
+		// EvsmActive() stays false and every consumer keeps the PCF path.
+		if (!m_context->SupportsEvsm()) {
+			std::cerr << "[SceneRenderer] EVSM unsupported (no RG32F 2xMSAA moments) – PCF shadows\n";
+		}
+		if (!m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline))) {
+			std::cerr << "[SceneRenderer] EVSM directional atlas unavailable – PCF fallback\n";
+		}
+		if (!m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline))) {
+			std::cerr << "[SceneRenderer] EVSM spot atlas unavailable – PCF fallback\n";
+		}
+		if (EvsmActive()) {
+			std::cerr << "[EVSM] moment atlases ready: RG32F 2xMSAA + async blur ("
+				<< (m_evsmPipeline == smvk::EvsmPipelineMode::SameFrame ? "SameFrame" : "OneFrameLag")
+				<< (m_context->HasDedicatedComputeQueue() ? ", true-async queue" : ", emulated (no dedicated queue)")
+				<< ")\n";
+		} else if (m_evsmEnabled) {
+			std::cerr << "[EVSM] inactive (unsupported or atlas failure) – PCF shadows\n";
+		}
 		if (!m_viewportResources.tonemap.Ensure(*m_context, MakeTonemapDesc())) {
 			std::cerr << "[SceneRenderer] Failed to create tonemap program\n";
 			return false;
@@ -1103,6 +1164,8 @@ void SceneRenderer::Shutdown() {
 		m_viewportResources.bloom.Destroy(*m_rendergraph);
 		m_viewportResources.spotShadows.Destroy(*m_rendergraph);
 		m_viewportResources.directionalShadows.Destroy(*m_rendergraph);
+		m_viewportResources.evsmDir.Destroy(*m_rendergraph);
+		m_viewportResources.evsmSpot.Destroy(*m_rendergraph);
 		m_viewportResources.msaa.Destroy(*m_rendergraph);
 		m_viewportResources.smaa.Destroy(*m_rendergraph);
 		m_viewportResources.hdr.Destroy(*m_rendergraph);
@@ -1410,7 +1473,7 @@ void SceneRenderer::Shutdown() {
 			data.giIntensity = 1.0f;
 			data.giDebug = 0u;
 		}
-		data.giPad = 0u;
+		data.evsmMode = EvsmActive() ? 1u : 0u;
 
 		// Destination scope covers every consumer: BDA reads in vertex,
 		// fragment (lighting/materials/env) and compute (Forward+ cull).
@@ -1449,10 +1512,17 @@ void SceneRenderer::Shutdown() {
 		light.direction[1] = lightDir.y;
 		light.direction[2] = lightDir.z;
 		light.intensity = m_env.sunIntensity;
-		light.shadow_map_index =
-			m_context->GetBindlessIndex(
-				m_viewportResources.directionalShadows.bindless
-			);
+		// EVSM: the index addresses the blurred moments (sampled with a
+		// 1-frame lag); FrameUniforms.evsmMode tells shaders which
+		// representation the index refers to. Otherwise the depth atlas.
+		if (EvsmActive() && m_passes.directionalShadows)
+			light.shadow_map_index =
+				m_viewportResources.evsmDir.BlurredBindlessIndex(*m_context, currentFrame);
+		else
+			light.shadow_map_index =
+				m_context->GetBindlessIndex(
+					m_viewportResources.directionalShadows.bindless
+				);
 
 		// ---- Cascade builder (engine) ----
 		auto invView = glm::inverse(cameraView);
@@ -1959,6 +2029,12 @@ void SceneRenderer::Shutdown() {
 					lights, frame.viewProj, frame.cameraPos,
 					m_fpDemo.spotShadowMaxDistance, budget, proj11);
 				const int32_t atlasIdx = m_viewportResources.spotShadows.BindlessIndex(*m_context);
+				// EVSM: lights address the blurred moments (1-frame lag);
+				// tile descriptors are layout-identical (same 8x1024 grid).
+				const int32_t evsmIdx = (EvsmActive())
+					? m_viewportResources.evsmSpot.BlurredBindlessIndex(*m_context, currentFrame)
+					: -1;
+				const int32_t sampleIdx = (evsmIdx >= 0) ? evsmIdx : atlasIdx;
 				if (atlasIdx >= 0 && !selected.empty()) {
 					std::vector<smvk::GpuCascadeDescription> tiles(selected.size());
 					for (size_t k = 0; k < selected.size(); ++k) {
@@ -1969,7 +2045,7 @@ void SceneRenderer::Shutdown() {
 							sl.outerAngle, sl.range, atlasIdx, (uint32_t)k,
 							SPOT_SHADOW_NEAR, SPOT_SHADOW_BIAS);
 						sl.shadowTile = (int32_t)k;
-						sl.shadowMapIndex = atlasIdx;
+						sl.shadowMapIndex = sampleIdx;
 						sl.shadowBias = SPOT_SHADOW_BIAS;
 					}
 					constexpr size_t SPOT_FRAME_STRIDE =
@@ -1984,7 +2060,7 @@ void SceneRenderer::Shutdown() {
 						currentFrame * SPOT_FRAME_STRIDE
 					);
 					m_spotShadowCount = (uint32_t)selected.size();
-					m_spotShadowMapIndex = atlasIdx;
+					m_spotShadowMapIndex = sampleIdx;
 					// Keep the tiles for the per-frame spot RenderViews.
 					m_spotShadowTiles = std::move(tiles);
 				}
@@ -2171,6 +2247,20 @@ void SceneRenderer::Shutdown() {
 				m_spotShadowCount > 0 ? m_viewportResources.spotShadows.logicalView
 					: smvk::LogicalImageViewHandle{},
 				frameIndex);
+			// EVSM SameFrame: phase 4 samples the blurred moments via
+			// bindless (not the PCF view hinted above) — the hint is the
+			// V-blur -> Phase4 edge for the async wait. Lag mode reads the
+			// other slot (no same-frame edge).
+			if (EvsmActive()) {
+				smvk::ImageSyncRequest evsmRead{};
+				evsmRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+				evsmRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+				evsmRead.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+				pass.AddImageHint(
+					m_viewportResources.evsmSpot.blurredLogical[
+						m_viewportResources.evsmSpot.SampleSlot(frameIndex)],
+					evsmRead);
+			}
 			auto program = ds.phasePrograms[2];
 			const uint32_t tx = ds.tileCountX;
 			const uint32_t ty = ds.tileCountY;
@@ -2532,6 +2622,103 @@ void SceneRenderer::Shutdown() {
 			, [&](const smvk::World::RenderItem& item) { drawCaster(item, true); });
 	}
 
+	void SceneRenderer::RecordEvsmMomentsDirect(smvk::CommandBuffer& cmd,
+		smvk::ShaderProgram& momentsProgram, const PushConstants& pc,
+		uint32_t casterViewIndex, bool skipFiltered) {
+		// EVSM direct path: same caster walk as RecordShadowCastersDirect,
+		// but both phases bind the moments program (VS+FS, RG32F 2xMSAA)
+		// so every sample writes warped moments. The FS alpha-tests
+		// cutout for MASK materials and passes opaque through, so phase 1
+		// (cull back) and phase 2 (cull none) share one program.
+		auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
+			if (item.material == smvk::World::kInvalidIndex)
+				return;
+			if (skipFiltered
+				&& m_gfxRenderer.GfxMeshForLod(item.mesh,
+					LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
+				return;
+			if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
+				return;
+			auto& model = m_world->scene.globalTransform[item.node];
+			smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
+			if (!meshDesc) return;
+			if (casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
+				glm::vec3 sphereCenter;
+				float sphereRadius = 0.0f;
+				smvk::MeshBoundsToWorld(
+					model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
+					sphereCenter, sphereRadius);
+				if (!smvk::RenderViewIntersectsSphere(
+					m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
+					return;
+			}
+			PushConstants objectPC{};
+			std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+			if (maskedPhase) {
+				objectPC.materialId = item.material;
+				cmd.PushConstants(offsetof(PushConstants, materialId),
+					sizeof(objectPC.materialId), &objectPC.materialId,
+					smvk::ShaderStage::All);
+			}
+			cmd.PushConstants(offsetof(PushConstants, model), sizeof(objectPC.model), objectPC.model, smvk::ShaderStage::All);
+			for (auto& draw_set : meshDesc->geometry.surfaces) {
+				cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+			};
+		};
+		const smvk::MSAASettings msaa2x = smvk::MSAASettings::Count2();
+		// Phase 1: solid casters (cull back).
+		cmd.BindRenderPipeline(
+			momentsProgram,
+			smvk::VertexFormat::StaticVertexFormat,
+			smvk::DepthSettings{
+				.depthFunc = smvk::CompareOp::LessEqual,
+				.writeEnable = true,
+				.depthTestEnable = true,
+				.depthBiasEnable = false,
+				.depthBiasConstantFactor = 0.0f,
+				.depthBiasClamp = 0.0f,
+				.depthBiasSlopeFactor = 0.0f
+			},
+			smvk::StencilSettings{},
+			smvk::BlendSettings{},
+			msaa2x,
+			smvk::RasterSettings{
+				.cullMode = smvk::CullMode::Back
+			}
+		);
+		cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
+		m_world->forEachRenderItem(
+			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
+			| smvk::IteratorFlagBit_Opaque
+			, [&](const smvk::World::RenderItem& item) { drawCaster(item, false); });
+		// Phase 2: MASK cutout casters (cull none, same moments program —
+		// the FS discards under the alpha cutoff like shadow.frag).
+		cmd.BindRenderPipeline(
+			momentsProgram,
+			smvk::VertexFormat::StaticVertexFormat,
+			smvk::DepthSettings{
+				.depthFunc = smvk::CompareOp::LessEqual,
+				.writeEnable = true,
+				.depthTestEnable = true,
+				.depthBiasEnable = false,
+				.depthBiasConstantFactor = 0.0f,
+				.depthBiasClamp = 0.0f,
+				.depthBiasSlopeFactor = 0.0f
+			},
+			smvk::StencilSettings{},
+			smvk::BlendSettings{},
+			msaa2x,
+			smvk::RasterSettings{
+				.cullMode = smvk::CullMode::None
+			}
+		);
+		cmd.PushConstants(0, sizeof(PushConstants), &pc, smvk::ShaderStage::All);
+		m_world->forEachRenderItem(
+			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
+			| smvk::IteratorFlagBit_Opaque
+			, [&](const smvk::World::RenderItem& item) { drawCaster(item, true); });
+	}
+
 	void SceneRenderer::ResetLodStats() {
 		m_lodDraws = 0;
 		m_lodSwitched = 0;
@@ -2877,7 +3064,7 @@ void SceneRenderer::Shutdown() {
 		}
 	}
 
-void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
+void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	SMVK_PROFILE_FUNCTION();
 	SMVK_PROFILE_TAG("frameIndex", fb.frameIndex);
 
@@ -2936,6 +3123,12 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 		// resolve; device support is still gated at the Main pass).
 		m_viewportResources.msaaEnabled = (m_aaMode == AaMode::Msaa2x);
 			m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc());
+			// EVSM atlases follow the pipeline-mode member so flipping
+			// m_evsmPipeline (OneFrameLag <-> SameFrame) takes effect on
+			// the next frame without a restart (Ensure is a no-op in
+			// steady state; shaders persist across the flip).
+			m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline));
+			m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline));
 			m_viewportResources.exposure.Ensure(*m_context, *m_rendergraph, MakeExposureDesc());
 		}
 		// Effective exposure for this frame (adapted last frame, 1-frame lag).
@@ -3144,7 +3337,14 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 	const uint32_t spotSlotCount = spotPassesOn
 		? std::min(m_spotShadowCount, m_viewportResources.spotShadows.slotCount)
 		: 0;
-	const bool shadowIndirect = (m_passes.directionalShadows || spotSlotCount > 0)
+	// EVSM gates: moment passes replace the depth passes tile-for-tile, and
+	// the indirect GPU path stays on the depth-only VS (its FS moments
+	// variant is a follow-up), so EVSM forces the direct recording path.
+	const bool evsmDirOn = EvsmActive() && m_passes.directionalShadows
+		&& m_viewportResources.directionalShadows.Valid();
+	const bool evsmSpotOn = EvsmActive() && spotPassesOn;
+	const bool shadowIndirect = !evsmDirOn && !evsmSpotOn
+		&& (m_passes.directionalShadows || spotSlotCount > 0)
 		&& m_passes.gfxFilter && m_useGfxFilter
 		&& m_gfxRenderer.EnsureShadowSeeds(*m_context);
 	const bool cascadeViewsValid =
@@ -3220,6 +3420,20 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 				? cascadeViewBase + ci
 				: smvk::RenderViewSet::kInvalidIndex;
 			cascadePC.renderViewIndex = casterViewIndex;
+			if (evsmDirOn) {
+				// EVSM moment pass (RG32F 2xMSAA + resolve, direct path).
+				const char* evsmNames[4] = { "EvsmCascade0", "EvsmCascade1", "EvsmCascade2", "EvsmCascade3" };
+				auto& momentPass = smvk::EvsmAsyncPrefilter::AddMomentPass(
+					*m_rendergraph, m_viewportResources.evsmDir, ci, fb.frameIndex, evsmNames[ci]);
+				momentPass.SetRecordingFunc([this, cascadePC, casterViewIndex](smvk::CommandBuffer& cmd)
+				{
+					RecordEvsmMomentsDirect(cmd,
+						m_viewportResources.evsmDir.momentsProgram,
+						cascadePC, casterViewIndex, /*skipFiltered=*/false);
+				});
+				(void)momentPass;
+				continue;
+			}
 			auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rendergraph, ci, cascadeNames[ci]);
 			if (shadowIndirect && cascadeShadowSlot[ci] != UINT32_MAX) {
 				const uint32_t slot = cascadeShadowSlot[ci];
@@ -3277,6 +3491,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 					? spotViewBase + si
 					: smvk::RenderViewSet::kInvalidIndex;
 				spotPC.renderViewIndex = casterViewIndex;
+				if (evsmSpotOn) {
+					// EVSM moment pass (RG32F 2xMSAA + resolve, direct path).
+					auto& momentPass = smvk::EvsmAsyncPrefilter::AddMomentPass(
+						*m_rendergraph, m_viewportResources.evsmSpot, si, fb.frameIndex, spotNames[si]);
+					momentPass.SetRecordingFunc([this, spotPC, casterViewIndex](smvk::CommandBuffer& cmd)
+					{
+						RecordEvsmMomentsDirect(cmd,
+							m_viewportResources.evsmSpot.momentsProgram,
+							spotPC, casterViewIndex, /*skipFiltered=*/false);
+					});
+					(void)momentPass;
+					continue;
+				}
 				auto& spotPass = m_viewportResources.spotShadows.AddSpotPass(*m_rendergraph, si, spotNames[si]);
 				if (shadowIndirect && spotShadowSlot[si] != UINT32_MAX) {
 					const uint32_t slot = spotShadowSlot[si];
@@ -3304,6 +3531,27 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 				}
 				(void)spotPass;
 			}
+		}
+
+		// ---- EVSM prefilter (all tiles, after all moment passes) ----
+		// Separable H+V blur per tile, AsyncCompute-marked. Recording ALL
+		// blurs after ALL moments keeps the async window free of graphics
+		// passes, which is what lets RenderGraph::Execute split the frame
+		// into G1/C/G2 on the true-async compute queue (an interleaved
+		// graphics write inside the window forces the emulated single-
+		// submit fallback). SameFrame consumes this frame's blur;
+		// OneFrameLag trails by one slot (see EvsmAtlas::SampleSlot).
+		if (evsmDirOn) {
+			for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
+				smvk::EvsmAsyncPrefilter::AddTileBlurPasses(
+					*m_rendergraph, m_viewportResources.evsmDir, *m_context,
+					fb.frameIndex, ci, /*samplerIndex=*/0);
+		}
+		if (evsmSpotOn) {
+			for (uint32_t si = 0; si < spotSlotCount; ++si)
+				smvk::EvsmAsyncPrefilter::AddTileBlurPasses(
+					*m_rendergraph, m_viewportResources.evsmSpot, *m_context,
+					fb.frameIndex, si, /*samplerIndex=*/0);
 		}
 
 		// ---- Forward+ passes (depth prepass + tile cull) ----
@@ -4501,6 +4749,22 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 			spotRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
 			mainPass.AddBufferHint(m_resources.spotShadowLogical, spotRead);
 		}
+		// EVSM: the main fragment shader samples the blurred moments —
+		// the hint is the topological edge V-blur -> Main (without it Main
+		// could be sorted — and executed — before this frame's blur, and
+		// the async wait would never be inserted). The slot follows the
+		// pipeline mode: SameFrame reads what this frame blurs (real
+		// edge); OneFrameLag reads the other slot (no same-frame edge,
+		// previous frame's compute retired by the slot wait in Execute).
+		if (EvsmActive()) {
+			smvk::ImageSyncRequest evsmRead{};
+			evsmRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			evsmRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+			evsmRead.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+			const uint32_t sampleSlot = m_viewportResources.evsmDir.SampleSlot(fb.frameIndex);
+			mainPass.AddImageHint(m_viewportResources.evsmDir.blurredLogical[sampleSlot], evsmRead);
+			mainPass.AddImageHint(m_viewportResources.evsmSpot.blurredLogical[sampleSlot], evsmRead);
+		}
 
 	// ---------------------------------------------------------------------
 	// Motion blur – velocity gather in HDR (see motionblur.h). Runs after
@@ -5002,6 +5266,21 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 						m_fpDemo.functionType = fn;
 					ImGui::SliderFloat("Fn speed", &m_fpDemo.functionSpeed, 0.05f, 5.0f);
 					ImGui::SliderFloat("Fn depth", &m_fpDemo.functionScale, 0.0f, 1.0f);
+				}
+				if (ImGui::CollapsingHeader("EVSM shadow maps", ImGuiTreeNodeFlags_DefaultOpen)) {
+					// EVSM (Exponential Variance Shadow Maps): RG32F 2xMSAA
+					// moments + async separable blur, 1-frame-lag pipelined.
+					// Off = PCF depth atlases. Needs RG32F 2xMSAA support.
+					ImGui::Checkbox("EVSM enabled", &m_evsmEnabled);
+					ImGui::SameLine();
+					ImGui::TextDisabled(EvsmActive() ? "(active)" : "(PCF fallback)");
+					int evsmPipe = (m_evsmPipeline == smvk::EvsmPipelineMode::SameFrame) ? 1 : 0;
+					if (ImGui::Combo("Pipeline", &evsmPipe, "One-frame lag\0Same-frame\0")) {
+						m_evsmPipeline = (evsmPipe == 1)
+							? smvk::EvsmPipelineMode::SameFrame
+							: smvk::EvsmPipelineMode::OneFrameLag;
+					}
+					ImGui::TextDisabled("RG32F 2xMSAA moments, 5-tap Gaussian H+V (async)");
 				}
 				if (ImGui::CollapsingHeader("Deferred shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
 					// Deferred shadows (Square-Enix-style tiled/zBin pipeline).

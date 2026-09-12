@@ -5,6 +5,8 @@
 #include <iostream>
 #include <iterator>
 #include <span>
+#include <optional>
+#include <unordered_set>
 
 //#define DEBUG_COMMAND_SUBMISSION
 
@@ -53,6 +55,7 @@ static VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 static VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 static VkQueue presentQueue_ = VK_NULL_HANDLE;
 static VkQueue transferQueue_ = VK_NULL_HANDLE;
+static VkQueue computeQueue_ = VK_NULL_HANDLE;
 // Set at device creation (see VulkanCore init): true when the device
 // supports VK multiDrawIndirect (drawCount > 1 in a single indirect call).
 static bool g_multiDrawIndirect = false;
@@ -60,10 +63,12 @@ struct QueueMutex { VkQueue queue = VK_NULL_HANDLE; std::mutex mutex; };
 static QueueMutex graphicsQueueMutex;
 static QueueMutex presentQueueMutex;
 static QueueMutex transferQueueMutex;
+static QueueMutex computeQueueMutex;
 static std::mutex& GetQueueMutex(VkQueue q) {
 	if (q == graphicsQueue_) return graphicsQueueMutex.mutex;
 	if (q == presentQueue_) return presentQueueMutex.mutex;
 	if (q == transferQueue_) return transferQueueMutex.mutex;
+	if (q != VK_NULL_HANDLE && q == computeQueue_) return computeQueueMutex.mutex;
 	static std::mutex fallback; return fallback;
 }
 namespace smvk {
@@ -312,6 +317,35 @@ namespace {
 
 		if (!indices.transferFamily) {
 			indices.transferFamily = indices.graphicsFamily;
+		}
+
+		// Dedicated async-compute queue for EVSM prefiltering (and future
+		// compute overlap). Prefer a compute-only family (no graphics);
+		// otherwise any non-graphics compute family; otherwise alias to
+		// graphics (emulated async: same-queue compute, still pipelined).
+		for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+			const auto flags = queueFamilies[i].queueFlags;
+			const bool compute = (flags & VK_QUEUE_COMPUTE_BIT) != 0;
+			const bool graphics = (flags & VK_QUEUE_GRAPHICS_BIT) != 0;
+			const bool transfer = (flags & VK_QUEUE_TRANSFER_BIT) != 0;
+			if (compute && !graphics && !transfer) {
+				indices.computeFamily = i;
+				break;
+			}
+		}
+		if (!indices.computeFamily) {
+			for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+				const auto flags = queueFamilies[i].queueFlags;
+				const bool compute = (flags & VK_QUEUE_COMPUTE_BIT) != 0;
+				const bool graphics = (flags & VK_QUEUE_GRAPHICS_BIT) != 0;
+				if (compute && !graphics) {
+					indices.computeFamily = i;
+					break;
+				}
+			}
+		}
+		if (!indices.computeFamily) {
+			indices.computeFamily = indices.graphicsFamily;
 		}
 
 		return indices;
@@ -1687,7 +1721,8 @@ bool smvk::VulkanCore::Init() {
 			std::set<uint32_t> uniqueQueueFamilies = {
 				indices.graphicsFamily.value(),
 				indices.presentFamily.value(),
-				indices.transferFamily.value()
+				indices.transferFamily.value(),
+				indices.computeFamily.value_or(indices.graphicsFamily.value())
 			};
 
 			float queuePriority = 1.0f;
@@ -1820,6 +1855,8 @@ bool smvk::VulkanCore::Init() {
 			QueueFamilyIndices q2 = findQueueFamilies(physicalDevice_, surface_);
 			if (q2.transferFamily) vkGetDeviceQueue(device_, q2.transferFamily.value(), 0, &transferQueue_);
 			else transferQueue_ = graphicsQueue_;
+			if (q2.computeFamily) vkGetDeviceQueue(device_, q2.computeFamily.value(), 0, &computeQueue_);
+			else computeQueue_ = graphicsQueue_;
 		}
 
 		// Optick GPU timelines need the device + graphics queue + volk dispatch.
@@ -1918,6 +1955,17 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		// cross-queue paths below degrade to same-queue FIFO (family
 		// indices match, ownership barriers collapse, waits are no-ops).
 		m_transferSubmitter = m_submitter;
+	}
+	{
+		const uint32_t computeFam = core_->indices.computeFamily.value_or(core_->indices.graphicsFamily.value());
+		if (computeFam != core_->indices.graphicsFamily.value()) {
+			m_computeSubmitter = new Submitter(*core_, computeFam);
+		}
+		else {
+			// No dedicated compute queue: blur still records as compute
+			// work, submitted on graphics (emulated async, still pipelined).
+			m_computeSubmitter = m_submitter;
+		}
 	}
 	{
 		VkPhysicalDeviceHostImageCopyFeaturesEXT hostFeat{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT, nullptr };
@@ -2175,6 +2223,8 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	FlushDeferredTasks();
 	if (m_transferSubmitter && m_transferSubmitter != m_submitter) { delete m_transferSubmitter; }
 	m_transferSubmitter = nullptr;
+	if (m_computeSubmitter && m_computeSubmitter != m_submitter) { delete m_computeSubmitter; }
+	m_computeSubmitter = nullptr;
 	delete m_submitter;
 	m_submitter = nullptr;
 
@@ -2349,15 +2399,38 @@ VkDeviceSize smvk::UploadStreamer::allocFromRing(ThreadUploadState& ust, VkDevic
 	if (!ensureShardRing(ust)) return VK_WHOLE_SIZE;
 	VkDeviceSize aligned = (ust.ring.offset + alignment - 1) & ~(alignment - 1);
 	if (aligned + size > ust.ring.capacity) {
-		// need to flush current batch and wrap – must wait before reusing memory
+		// need to flush current batch and wrap
 		if (ust.hasPending) submitState(ust, true);
 		if (size > ust.ring.capacity) return VK_WHOLE_SIZE; // signal fallback to temp staging
-		// Correctness: wait for transfer queue to finish reading old ring contents before wrap
-		m_transfer->waitAll();
 		ust.ring.offset = 0;
 		aligned = 0;
 		if (aligned + size > ust.ring.capacity) return VK_WHOLE_SIZE;
 	}
+	// Precise region sync (was: m_transfer->waitAll() at every wrap).
+	// The CPU memcpy below overwrites [aligned, aligned+size) of the
+	// host-mapped ring, so exactly the in-flight batches READING that
+	// range must have executed first. Retired batches (the common case —
+	// ranges cover recent ring bytes and retire ~one frame after submit)
+	// drop out via isReady; the batch just flushed at a wrap reads the
+	// ring TAIL, which only overlaps when the rewound region reaches it.
+	// The old waitAll() blocked the render thread for a full frame of
+	// graphics latency at every wrap, because the just-submitted batch
+	// GPU-waits on the previous frame's retirement.
+	if (!ust.pendingRanges.empty()) {
+		std::vector<InFlightRingRange> live;
+		live.reserve(ust.pendingRanges.size());
+		for (const InFlightRingRange& r : ust.pendingRanges) {
+			const bool overlaps = (r.start < aligned + size) && (r.end > aligned);
+			const bool ready = m_transfer->isReady(r.handle);
+			if (overlaps && !ready)
+				m_transfer->wait(r.handle);
+			if (!ready)
+				live.push_back(r);
+		}
+		ust.pendingRanges.swap(live);
+	}
+	if (ust.batchRingStart == VK_WHOLE_SIZE)
+		ust.batchRingStart = aligned;
 	ust.ring.offset = aligned + size;
 	return aligned;
 }
@@ -2370,6 +2443,18 @@ void smvk::UploadStreamer::ensureCmd(ThreadUploadState& ust) {
 	ust.curHandle = m_transfer->acquire();
 	ust.curCmd = m_transfer->GetCommandBuffer(ust.curHandle);
 	ust.hasPending = false;
+}
+void smvk::UploadStreamer::recordSubmittedRange(ThreadUploadState& ust) {
+	// Called right after ust.curHandle was submitted: remember which ring
+	// bytes the batch reads so allocFromRing can wait exactly this batch
+	// when a future alloc overlaps them (instead of a full waitAll()).
+	if (ust.batchRingStart == VK_WHOLE_SIZE || ust.ring.offset <= ust.batchRingStart)
+		ust.batchRingStart = VK_WHOLE_SIZE; // empty batch: nothing to track
+	else {
+		ust.pendingRanges.push_back(InFlightRingRange{
+			ust.batchRingStart, ust.ring.offset, ust.curHandle });
+		ust.batchRingStart = VK_WHOLE_SIZE;
+	}
 }
 smvk::TimelinePoint smvk::UploadStreamer::submitTransfer(CommandSubmitHandle h) {
 	if (m_transfer != m_graphics
@@ -2391,6 +2476,7 @@ void smvk::UploadStreamer::submitState(ThreadUploadState& ust, bool waitOldestIf
 	if (!ust.hasPending || ust.curCmd == VK_NULL_HANDLE) {
 		if (ust.curCmd != VK_NULL_HANDLE) {
 			auto tp = submitTransfer(ust.curHandle);
+			recordSubmittedRange(ust);
 			for (auto& task : ust.pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
 			ust.pendingCleanups.clear();
 		}
@@ -2403,6 +2489,7 @@ void smvk::UploadStreamer::submitState(ThreadUploadState& ust, bool waitOldestIf
 		return;
 	}
 	auto tp = submitTransfer(ust.curHandle);
+	recordSubmittedRange(ust);
 	for (auto& task : ust.pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
 	ust.pendingCleanups.clear();
 	// EXCLUSIVE ownership: submit acquire barriers on graphics queue waiting on transfer timeline
@@ -2902,6 +2989,7 @@ smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
 	for (auto& ust : states_) {
 		if (!ust.hasPending || ust.curCmd == VK_NULL_HANDLE) continue;
 		auto tp = submitTransfer(ust.curHandle);
+		recordSubmittedRange(ust);
 		for (auto& task : ust.pendingCleanups) m_rm->AddDeferredTask(std::move(task), tp);
 		ust.pendingCleanups.clear();
 		if (m_transfer != m_graphics && (!ust.pendingBufferAcquires.empty() || !ust.pendingImageAcquires.empty())) {
@@ -3685,6 +3773,18 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		vkCI.usage |= VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT;
 	}
 	vkCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	// EVSM-style async resources: CONCURRENT graphics+compute avoids the
+	// per-frame ownership ping-pong (events + barriers order the queues).
+	uint32_t concurrentFamilies[2] = {};
+	if (ci.concurrentCompute && core_ && core_->indices.computeFamily
+		&& core_->indices.graphicsFamily
+		&& *core_->indices.computeFamily != *core_->indices.graphicsFamily) {
+		concurrentFamilies[0] = *core_->indices.graphicsFamily;
+		concurrentFamilies[1] = *core_->indices.computeFamily;
+		vkCI.sharingMode = VK_SHARING_MODE_CONCURRENT;
+		vkCI.queueFamilyIndexCount = 2;
+		vkCI.pQueueFamilyIndices = concurrentFamilies;
+	}
 	vkCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 	VmaAllocationCreateInfo allocCI{};
@@ -5747,6 +5847,7 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 	{
 		uint32_t slot;
 		VkDescriptorImageInfo info;
+		bool storageCapable = false;
 	};
 
 	std::vector<PendingImageWrite> imageWrites;
@@ -5771,6 +5872,15 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 
 		pending.info.imageLayout =
 			bindless.imageLayout;
+
+		// STORAGE descriptors require STORAGE usage on the image
+		// (VUID-00339): only Storage-capable images get the binding-2
+		// mirror write below (EVSM blur targets et al.).
+		if (!view->image.empty()) {
+			if (const Image* img = images_.get(view->image))
+				pending.storageCapable =
+					(img->usage & ImageUsage::Storage) != ImageUsage::None;
+		}
 
 		imageWrites.push_back(pending);
 	}
@@ -5841,6 +5951,33 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 			write.pImageInfo =
 				&pending.info;
 
+			writes.push_back(write);
+		}
+		// Bindless storage images (EVSM async prefilter + future compute).
+		// Same slot as the sampled view so a compute shader can read
+		// textures[i] and write evsmStorage[i] without extra plumbing.
+		// Layout is GENERAL (storage); the sampled binding keeps its own
+		// read layout above. vkUpdateDescriptorSets copies synchronously,
+		// so the local vector outlives the call (same pattern as samplers).
+		std::vector<VkDescriptorImageInfo> storageInfos;
+		storageInfos.reserve(imageWrites.size());
+		for (const auto& pending : imageWrites) {
+			if (!pending.storageCapable)
+				continue;
+			VkDescriptorImageInfo si{};
+			si.sampler = VK_NULL_HANDLE;
+			si.imageView = pending.info.imageView;
+			si.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			storageInfos.push_back(si);
+			VkWriteDescriptorSet write{
+				VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET
+			};
+			write.dstSet = defaultDescriptorSets_[frame];
+			write.dstBinding = smvk::Bindings::kBinding_StorageImages;
+			write.dstArrayElement = pending.slot;
+			write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			write.descriptorCount = 1;
+			write.pImageInfo = &storageInfos.back();
 			writes.push_back(write);
 		}
 
@@ -6070,6 +6207,54 @@ void smvk::VulkanResourceManager::CommitImageSyncStates(const std::unordered_map
 		assert(shard < kNumPoolShards);
 		imageSyncShards_[shard][kv.first] = kv.second;
 	}
+}
+bool smvk::VulkanSwapchain::EnsureAsyncSplit(uint32_t flight) {
+	if (flight >= MAX_FRAMES_IN_FLIGHT)
+		return false;
+	if (asyncSplitReady_[flight])
+		return true;
+	QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
+	if (!indices.graphicsFamily || !indices.computeFamily
+		|| *indices.computeFamily == *indices.graphicsFamily)
+		return false; // single queue: emulated async (single submit)
+	VkCommandPoolCreateInfo poolCI{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+	poolCI.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+	poolCI.queueFamilyIndex = *indices.graphicsFamily;
+	if (vkCreateCommandPool(device_, &poolCI, nullptr, &splitPools[flight]) != VK_SUCCESS)
+		return false;
+	VkCommandBufferAllocateInfo allocCI{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+	allocCI.commandPool = splitPools[flight];
+	allocCI.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocCI.commandBufferCount = 1;
+	if (vkAllocateCommandBuffers(device_, &allocCI, &splitBuffers[flight]) != VK_SUCCESS)
+		return false;
+	poolCI.queueFamilyIndex = *indices.computeFamily;
+	if (vkCreateCommandPool(device_, &poolCI, nullptr, &asyncComputePools[flight]) != VK_SUCCESS)
+		return false;
+	allocCI.commandPool = asyncComputePools[flight];
+	if (vkAllocateCommandBuffers(device_, &allocCI, &asyncComputeBuffers[flight]) != VK_SUCCESS)
+		return false;
+	VkSemaphoreTypeCreateInfo typeCI{ VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO };
+	typeCI.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+	typeCI.initialValue = 0;
+	VkSemaphoreCreateInfo semCI{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &typeCI };
+	if (vkCreateSemaphore(device_, &semCI, nullptr, &asyncG2C_[flight]) != VK_SUCCESS)
+		return false;
+	if (vkCreateSemaphore(device_, &semCI, nullptr, &asyncC2G_[flight]) != VK_SUCCESS)
+		return false;
+	asyncSplitReady_[flight] = true;
+	{
+		static bool logged = false;
+		if (!logged) {
+			logged = true;
+			std::fprintf(stderr,
+				"[AsyncCompute] true-async split ready: graphics family %u, compute family %u "
+				"(G1/C/G2 timeline chain per flight)\n",
+				(unsigned)*indices.graphicsFamily, (unsigned)*indices.computeFamily);
+			fflush(stderr);
+		}
+	}
+	return true;
 }
 void smvk::VulkanResourceManager::CommitBufferSyncStates(const std::unordered_map<uint64_t, BufferGlobalSyncState>& states) {
 	for (auto& kv : states) {
@@ -6328,16 +6513,19 @@ inline void ImageBarrier(
 inline smvk::Submitter::Submitter(VulkanCore& core, uint32_t queueFamilyIndex)
 	: core_(core), m_queueFamilyIndex(queueFamilyIndex)
 {
-	if (queueFamilyIndex == core.indices.transferFamily.value_or(queueFamilyIndex)) {
-		m_queue = transferQueue_ != VK_NULL_HANDLE ? transferQueue_ : graphicsQueue_;
-		if (queueFamilyIndex == core.indices.graphicsFamily.value()) m_queue = graphicsQueue_;
-		QueueFamilyIndices q = findQueueFamilies(physicalDevice_, surface_);
-		if (q.transferFamily && *q.transferFamily == queueFamilyIndex) m_queue = transferQueue_;
-		else if (q.graphicsFamily && *q.graphicsFamily == queueFamilyIndex) m_queue = graphicsQueue_;
-		else if (q.presentFamily && *q.presentFamily == queueFamilyIndex) m_queue = presentQueue_;
-	}
+	// Resolve the VkQueue for this family: prefer the cached globals
+	// (transfer / compute / graphics / present), fall back to a fresh
+	// family query for exotic configurations.
+	QueueFamilyIndices q = findQueueFamilies(physicalDevice_, surface_);
+	if (q.computeFamily && *q.computeFamily == queueFamilyIndex && computeQueue_ != VK_NULL_HANDLE) m_queue = computeQueue_;
+	else if (q.transferFamily && *q.transferFamily == queueFamilyIndex && transferQueue_ != VK_NULL_HANDLE) m_queue = transferQueue_;
+	else if (q.graphicsFamily && *q.graphicsFamily == queueFamilyIndex) m_queue = graphicsQueue_;
+	else if (q.presentFamily && *q.presentFamily == queueFamilyIndex) m_queue = presentQueue_;
 	else {
-		m_queue = graphicsQueue_;
+		if (queueFamilyIndex == core.indices.transferFamily.value_or(queueFamilyIndex))
+			m_queue = transferQueue_ != VK_NULL_HANDLE ? transferQueue_ : graphicsQueue_;
+		else
+			m_queue = graphicsQueue_;
 	}
 	if (m_queue == VK_NULL_HANDLE) m_queue = graphicsQueue_;
 	// Command pool is now thread-local – no pool creation here
@@ -6852,6 +7040,13 @@ smvk::VulkanSwapchain::~VulkanSwapchain() {
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		vkDestroyCommandPool(device_, perFrameCommandPools[i], nullptr);
 		// this freeds all the commands too
+		if (splitPools[i] != VK_NULL_HANDLE) { vkDestroyCommandPool(device_, splitPools[i], nullptr); splitPools[i] = VK_NULL_HANDLE; }
+		if (asyncComputePools[i] != VK_NULL_HANDLE) { vkDestroyCommandPool(device_, asyncComputePools[i], nullptr); asyncComputePools[i] = VK_NULL_HANDLE; }
+		if (asyncG2C_[i] != VK_NULL_HANDLE) { vkDestroySemaphore(device_, asyncG2C_[i], nullptr); asyncG2C_[i] = VK_NULL_HANDLE; }
+		if (asyncC2G_[i] != VK_NULL_HANDLE) { vkDestroySemaphore(device_, asyncC2G_[i], nullptr); asyncC2G_[i] = VK_NULL_HANDLE; }
+		splitBuffers[i] = VK_NULL_HANDLE;
+		asyncComputeBuffers[i] = VK_NULL_HANDLE;
+		asyncSplitReady_[i] = false;
 	};
 
 	DestroySyncObjects();
@@ -7303,6 +7498,14 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	ctx_.FlushEngineGlobals(currentFrame_);
 
 	vkResetCommandPool(device_, perFrameCommandPools[currentFrame_], 0);
+	// Async-split pools retire with the slot (the frame timeline wait above
+	// covers G1+G2, and G2 waited on the compute timeline — so C is done).
+	if (asyncSplitReady_[currentFrame_]) {
+		if (splitPools[currentFrame_] != VK_NULL_HANDLE)
+			vkResetCommandPool(device_, splitPools[currentFrame_], 0);
+		if (asyncComputePools[currentFrame_] != VK_NULL_HANDLE)
+			vkResetCommandPool(device_, asyncComputePools[currentFrame_], 0);
+	}
 
 	VkCommandBufferBeginInfo beginInfo{};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -7347,8 +7550,12 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 {
 	SMVK_PROFILE_SCOPE_COLOR("Present", Optick::Color::SteelBlue);
 	SMVK_PROFILE_GPU_FLIP(fb.swapchain.vk_swapchain_); // GPU profiling for present
+	// Async-split frames (G1/C/G2): G1 was submitted by Execute; the tail
+	// (G2) records here. Single-submit frames use commandBuffer as before.
+	VkCommandBuffer tailCmd = (fb.splitCommandBuffer != VK_NULL_HANDLE)
+		? fb.splitCommandBuffer : fb.commandBuffer;
 	ImageBarrier(
-		fb.commandBuffer,
+		tailCmd,
 		GetCurrentImage(),
 		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -7367,13 +7574,13 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 		//ctx_.core_.indices.presentFamily.value()
 	);
 
-	// 
+	//
 	if (timestampPools_[fb.frameIndex] != VK_NULL_HANDLE) {
-		vkCmdWriteTimestamp(fb.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		vkCmdWriteTimestamp(tailCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			timestampPools_[fb.frameIndex], 1);
 		timestampWritten_[fb.frameIndex] = true;
 	}
-	if (vkEndCommandBuffer(fb.commandBuffer) != VK_SUCCESS) {
+	if (vkEndCommandBuffer(tailCmd) != VK_SUCCESS) {
 		throw std::runtime_error("failed to record command buffer!");
 	}
 
@@ -7385,9 +7592,26 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	// timeline + acquire-barrier submit on the graphics queue when the
 	// dedicated transfer queue exists) orders the copies ahead of every
 	// pass that consumes them.
+	// (Split frames flushed ahead of G1 inside Execute; this covers
+	// anything recorded after — e.g. the ImGui overlay — and is a no-op
+	// when nothing is pending.)
 	ctx_.FlushUploads();
 
-	VkSemaphoreSubmitInfo waitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, imageAvailableSemaphores_[currentFrame_], 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0 };
+	// Split G2 waits only for the compute blur (C -> G2 timeline): the
+	// binary swapchain-acquire wait already ran on the G1 submit (same
+	// queue, earlier submission — transitively ordered, and a binary
+	// semaphore can only be waited on once). Single-submit frames keep
+	// exactly today's wait set.
+	VkSemaphoreSubmitInfo waitInfos[2]{};
+	uint32_t waitCount = 0;
+	if (fb.splitCommandBuffer != VK_NULL_HANDLE && fb.splitWaitSemaphore != VK_NULL_HANDLE) {
+		waitInfos[0] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, fb.splitWaitSemaphore, fb.splitWaitValue, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
+		waitCount = 1;
+	}
+	else {
+		waitInfos[0] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, imageAvailableSemaphores_[currentFrame_], 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0 };
+		waitCount = 1;
+	}
 	VkSemaphoreSubmitInfo signalInfos[2]{};
 	signalInfos[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
 	signalInfos[0].semaphore = renderFinishedSemaphores_[currentImageIndex_];
@@ -7399,8 +7623,8 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	signalInfos[1].value = ++timelineValue_;
 	signalInfos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 	signalInfos[1].deviceIndex = 0;
-	VkCommandBufferSubmitInfo cmdInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, fb.commandBuffer, 0 };
-	VkSubmitInfo2 submitInfo2{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2, nullptr, 0, 1, &waitInfo, 1, &cmdInfo, 2, signalInfos };
+	VkCommandBufferSubmitInfo cmdInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, tailCmd, 0 };
+	VkSubmitInfo2 submitInfo2{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2, nullptr, 0, waitCount, waitInfos, 1, &cmdInfo, 2, signalInfos };
 	frameTimelineValues_[currentFrame_] = timelineValue_;
 	imageTimelineValues_[currentImageIndex_] = timelineValue_;
 	{
@@ -8938,20 +9162,173 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	// pairs into this context.
 	SMVK_PROFILE_GPU_CONTEXT(cmd);
 
-	for (size_t sIdx : sorted) {
+	// ---- True-async-compute split (EVSM prefilter, SameFrame) ----
+	// AsyncCompute-marked passes run on the dedicated compute queue while
+	// graphics continues: the frame submits G1 (graphics, through the
+	// moment passes) -> C (compute blur) -> G2 (graphics, lighting onward),
+	// chained with per-flight timeline semaphores (submission order makes
+	// every wait signal-before-wait legal). Shared images are CONCURRENT
+	// (see concurrentCompute), so no ownership transfers — plain barriers
+	// on each CB plus semaphore stages order the queues.
+	// Fallback (single queue, no async passes, or interleaved graphics
+	// writes — see the guard below) keeps today's exact behavior: one
+	// graphics submit with async passes inline (emulated).
+	const uint32_t graphicsFam = vctx.core_->indices.graphicsFamily.value_or(0);
+	const uint32_t computeFam = vctx.core_->indices.computeFamily.value_or(graphicsFam);
+	const bool hasDedicatedCompute = (computeFam != graphicsFam);
+	const uint32_t flight = fb.frameIndex % MAX_FRAMES_IN_FLIGHT;
+	size_t firstAsyncPos = SIZE_MAX, lastAsyncPos = 0;
+	bool anyAsync = false;
+	for (size_t pos = 0; pos < sorted.size(); ++pos) {
+		if (passes_[sorted[pos]].IsAsyncCompute()) {
+			anyAsync = true;
+			firstAsyncPos = std::min(firstAsyncPos, pos);
+			lastAsyncPos = std::max(lastAsyncPos, pos);
+		}
+	}
+	bool useAsyncCompute = false;
+	VulkanSwapchain* vkSwap = nullptr;
+	if (hasDedicatedCompute && anyAsync && fb.swapchain)
+		vkSwap = static_cast<VulkanSwapchain*>(fb.swapchain->GetVulkanOpaque());
+	if (vkSwap && !vkSwap->EnsureAsyncSplit(flight)) {
+		// No dedicated compute after all (or resource failure): emulate.
+		vkSwap = nullptr;
+	}
+	if (vkSwap) {
+		// Guard: a graphics pass strictly inside the async window must not
+		// WRITE an image the async passes touch (it would record into G2
+		// but execute... G2 executes after C, while the async reader may
+		// need the pre-write contents — unrepresentable in 3 submits).
+		// Reads are safe (topo sorts readers after all writers). EVSM
+		// satisfies this (blur window touches moments/temp/blurred only).
+		auto keyForGuard = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
+		std::unordered_set<uint64_t> asyncImages;
+		for (size_t pos = firstAsyncPos; pos <= lastAsyncPos; ++pos) {
+			if (!passes_[sorted[pos]].IsAsyncCompute())
+				continue;
+			for (auto& pr : usages[sorted[pos]].images)
+				asyncImages.insert(keyForGuard(pr.first));
+		}
+		bool overlap = false;
+		for (size_t pos = firstAsyncPos + 1; pos < lastAsyncPos && !overlap; ++pos) {
+			const RenderPass& p = passes_[sorted[pos]];
+			if (p.IsAsyncCompute() || p.IsCompute())
+				continue;
+			for (auto& pr : usages[sorted[pos]].images) {
+				if (asyncImages.count(keyForGuard(pr.first))
+					&& IsWriteAccess(pr.second.barrierMasks.accessMask)) {
+					overlap = true;
+					break;
+				}
+			}
+		}
+		useAsyncCompute = !overlap;
+		if (!useAsyncCompute)
+			vkSwap = nullptr;
+	}
+	VkCommandBuffer computeCB = VK_NULL_HANDLE;
+	VkCommandBuffer splitCB = VK_NULL_HANDLE; // G2
+	uint64_t g2cVal = 0, c2gVal = 0;
+	if (useAsyncCompute) {
+		assert(vkSwap);
+		computeCB = vkSwap->asyncComputeBuffers[flight];
+		splitCB = vkSwap->splitBuffers[flight];
+		assert(computeCB != VK_NULL_HANDLE && splitCB != VK_NULL_HANDLE);
+		VkCommandBufferBeginInfo beginCI{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+		beginCI.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		VK_CHECK(vkBeginCommandBuffer(computeCB, &beginCI));
+		VK_CHECK(vkBeginCommandBuffer(splitCB, &beginCI));
+		// NOTE: the Optick GPU context is rebound per pass inside the walk
+		// (SMVK_PROFILE_GPU_CONTEXT(dstCmd)) so pass scopes timestamp the
+		// CB they record into — without it, C/G2 scopes would WriteTimestamp
+		// into the already-submitted G1 CB.
+	}
+
+	for (size_t pos = 0; pos < sorted.size(); ++pos) {
+		const size_t sIdx = sorted[pos];
+		// Split routing (computed before the profiler scope: Optick GPU
+		// events emit WriteTimestamp into the thread-local context CB, so
+		// the context must follow the recording CB — after G1 is ended +
+		// submitted, scopes for C/G2 passes would otherwise timestamp the
+		// dead G1 CB).
+		const bool passIsAsync = useAsyncCompute && passes_[sIdx].IsAsyncCompute();
+		VkCommandBuffer dstCmd = cmd;
+		if (useAsyncCompute) {
+			if (pos < firstAsyncPos)
+				dstCmd = cmd;
+			else if (passIsAsync)
+				dstCmd = computeCB;
+			else
+				dstCmd = splitCB;
+		}
+		SMVK_PROFILE_GPU_CONTEXT(dstCmd);
 		// Per-pass CPU+GPU scope covering barriers + recording. RenderPass
 		// names may be null (default ctor); Optick hashes the name and a
 		// null pointer crashes the profiler, so substitute a stable literal.
+		// The Optick Vulkan backend timestamps GPU events with
+		// ALL_GRAPHICS stage, which is illegal on the compute queue —
+		// async passes get a CPU-only scope (record time still profiled).
+#if USE_OPTICK
+		const char* passScopeName =
+			passes_[sIdx].name_ ? passes_[sIdx].name_ : "UnnamedRenderPass";
+		std::optional<::smvk::profiler::GpuPassScope> passGpuScope;
+		std::optional<::Optick::Event> passCpuOnlyScope;
+		if (passIsAsync)
+			passCpuOnlyScope.emplace(
+				*::Optick::EventDescription::CreateShared(passScopeName, __FILE__, __LINE__));
+		else
+			passGpuScope.emplace(passScopeName, __FILE__, __LINE__);
+#else
 		::smvk::profiler::GpuPassScope passGpuScope(
 			passes_[sIdx].name_ ? passes_[sIdx].name_ : "UnnamedRenderPass",
 			__FILE__, __LINE__);
+#endif
+		const uint32_t passQFam = passIsAsync ? computeFam : graphicsFam;
+		// G1 -> C boundary: G1 is fully recorded here. Flush uploads first
+		// (transfer + graphics-acquire submits precede G1, exactly the
+		// order EndAndPresent establishes today), then end + submit G1
+		// signaling the G1->C timeline. C and G2 chain from it.
+		// G1 carries the swapchain-image acquire wait (its CB holds the
+		// Acquire layout barrier); G2 inherits it transitively through
+		// same-queue submission order, so EndAndPresent must NOT wait on
+		// the binary acquire semaphore again (single wait per signal).
+		if (useAsyncCompute && pos == firstAsyncPos) {
+			vctx.FlushUploads();
+			VK_CHECK(vkEndCommandBuffer(cmd));
+			assert(vkSwap);
+			g2cVal = ++vkSwap->asyncG2CValue_[flight];
+			VkSemaphoreSubmitInfo g1wait{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+			g1wait.semaphore = vkSwap->imageAvailableSemaphores_[flight];
+			g1wait.value = 0;
+			g1wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+			VkSemaphoreSubmitInfo g1sig{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+			g1sig.semaphore = vkSwap->asyncG2C_[flight];
+			g1sig.value = g2cVal;
+			g1sig.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+			VkCommandBufferSubmitInfo g1cb{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+			g1cb.commandBuffer = cmd;
+			VkSubmitInfo2 g1si{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+			g1si.waitSemaphoreInfoCount = 1;
+			g1si.pWaitSemaphoreInfos = &g1wait;
+			g1si.commandBufferInfoCount = 1;
+			g1si.pCommandBufferInfos = &g1cb;
+			g1si.signalSemaphoreInfoCount = 1;
+			g1si.pSignalSemaphoreInfos = &g1sig;
+			{
+				std::mutex& mg = GetQueueMutex(graphicsQueue_);
+				std::unique_lock<std::mutex> lockG(mg);
+				VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &g1si, VK_NULL_HANDLE));
+			}
+		}
 		// Per-pass barriers (fix #1) – update imageStates/bufferStates as we go
 		{
 			const auto& pu = usages[sIdx];
 			std::vector<VkImageMemoryBarrier2> imgBarriers;
 			std::vector<VkBufferMemoryBarrier2> bufBarriers;
+			std::vector<uint32_t> imgBarrierSrcQ;
 			imgBarriers.reserve(4);
 			bufBarriers.reserve(4);
+			imgBarrierSrcQ.reserve(4);
 			auto keyFor = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
 			for (auto& pr : pu.images) {
 				ImageHandle h = pr.first;
@@ -8994,10 +9371,16 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					else if (fmt == VK_FORMAT_S8_UINT) aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
 					b.subresourceRange = { aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
 					imgBarriers.push_back(b);
+					if (useAsyncCompute) {
+						const uint32_t srcQ = (src.queueFamily == UINT32_MAX)
+							? graphicsFam : src.queueFamily;
+						imgBarrierSrcQ.push_back(srcQ);
+					}
 				}
 				VulkanResourceManager::ImageGlobalSyncState dstState{};
 				dstState.masks = req.barrierMasks;
 				dstState.layout = req.layout;
+				dstState.queueFamily = passQFam;
 				imageStates[k] = dstState;
 			}
 			for (auto& pr : pu.buffers) {
@@ -9040,12 +9423,34 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				bufferStates[k] = dstState;
 			}
 			if (!imgBarriers.empty() || !bufBarriers.empty()) {
+				// Cross-CB ordering comes from the submit chain
+				// (G1 -> C -> G2 timeline semaphores); each CB needs only
+				// its plain same-stream barriers here, with src scopes
+				// matching the chained signal stages for visibility.
+				// Compute-queue legality: a barrier handed off from the
+				// graphics queue carries graphics-only src stages (fragment,
+				// attachment output, ...) that are invalid on a
+				// compute-family CB (VUID-09675/03911). The semaphore wait
+				// already orders execution and makes the writes available,
+				// so those barriers become availability-free acquires:
+				// srcStage=ALL_COMMANDS, srcAccess=NONE, dst = consumer
+				// scope. Same-queue barriers (and everything on graphics,
+				// whose family accepts all stages) keep precise scopes.
+				if (useAsyncCompute && passIsAsync) {
+					assert(imgBarrierSrcQ.size() == imgBarriers.size());
+					for (size_t bi = 0; bi < imgBarriers.size(); ++bi) {
+						if (imgBarrierSrcQ[bi] != computeFam) {
+							imgBarriers[bi].srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+							imgBarriers[bi].srcAccessMask = VK_ACCESS_2_NONE;
+						}
+					}
+				}
 				VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
 				dep.imageMemoryBarrierCount = static_cast<uint32_t>(imgBarriers.size());
 				dep.pImageMemoryBarriers = imgBarriers.empty() ? nullptr : imgBarriers.data();
 				dep.bufferMemoryBarrierCount = static_cast<uint32_t>(bufBarriers.size());
 				dep.pBufferMemoryBarriers = bufBarriers.empty() ? nullptr : bufBarriers.data();
-				vkCmdPipelineBarrier2(cmd, &dep);
+				vkCmdPipelineBarrier2(dstCmd, &dep);
 			}
 		}
 		auto& pass = passes_[sIdx];
@@ -9134,15 +9539,17 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		if (pass.IsCompute()) {
 			// Compute pass: no render targets, run recording directly.
 			// Barriers above already transitioned hinted images/buffers.
-			CommandBuffer cb{ reinterpret_cast<void*>(cmd), *this, pass };
+			// Async-marked passes land in the compute-queue CB (true
+			// async, split mode); the rest stay on the graphics CBs.
+			CommandBuffer cb{ reinterpret_cast<void*>(dstCmd), *this, pass };
 			if (pass.recordingFunction_) pass.recordingFunction_(cb);
 			continue;
 		}
 		VkViewport vp{}; vp.x = static_cast<float>(pass.offsetX_); vp.y = static_cast<float>(pass.offsetY_); vp.width = static_cast<float>(pass.extent_.width); vp.height = static_cast<float>(pass.extent_.height); vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
 		VkRect2D scissor{}; scissor.offset = { pass.offsetX_, pass.offsetY_ }; scissor.extent = { pass.extent_.width, pass.extent_.height };
-		vkCmdSetViewport(cmd, 0, 1, &vp);
-		vkCmdSetScissor(cmd, 0, 1, &scissor);
-		vkCmdBeginRendering(cmd, &renderInfo);
+		vkCmdSetViewport(dstCmd, 0, 1, &vp);
+		vkCmdSetScissor(dstCmd, 0, 1, &scissor);
+		vkCmdBeginRendering(dstCmd, &renderInfo);
 		if (depthTileClear)
 		{
 			VkClearAttachment clear{};
@@ -9157,9 +9564,45 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			rect.layerCount = 1;
 			vkCmdClearAttachments(cmd, 1, &clear, 1, &rect);
 		}
-		CommandBuffer cb{ reinterpret_cast<void*>(cmd), *this, pass };
+		CommandBuffer cb{ reinterpret_cast<void*>(dstCmd), *this, pass };
 		if (pass.recordingFunction_) pass.recordingFunction_(cb);
-		vkCmdEndRendering(cmd);
+		vkCmdEndRendering(dstCmd);
+	}
+
+	// Submit the compute stream (C): waits for G1's moments, signals the
+	// blur-done timeline G2 waits on in EndAndPresent. G2 (splitCB) stays
+	// open — EndAndPresent ends + submits it. Retirement is structural:
+	// same-queue submission order plus the semaphore chain retires every
+	// slot, so no host waits are needed here.
+	if (useAsyncCompute) {
+		assert(vkSwap && computeCB != VK_NULL_HANDLE && splitCB != VK_NULL_HANDLE);
+		VK_CHECK(vkEndCommandBuffer(computeCB));
+		c2gVal = ++vkSwap->asyncC2GValue_[flight];
+		VkSemaphoreSubmitInfo cWait{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+		cWait.semaphore = vkSwap->asyncG2C_[flight];
+		cWait.value = g2cVal;
+		cWait.stageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+		VkSemaphoreSubmitInfo cSig{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+		cSig.semaphore = vkSwap->asyncC2G_[flight];
+		cSig.value = c2gVal;
+		cSig.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+		VkCommandBufferSubmitInfo ccb{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+		ccb.commandBuffer = computeCB;
+		VkSubmitInfo2 csi{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+		csi.waitSemaphoreInfoCount = 1;
+		csi.pWaitSemaphoreInfos = &cWait;
+		csi.commandBufferInfoCount = 1;
+		csi.pCommandBufferInfos = &ccb;
+		csi.signalSemaphoreInfoCount = 1;
+		csi.pSignalSemaphoreInfos = &cSig;
+		{
+			std::mutex& mc = GetQueueMutex(computeQueue_);
+			std::unique_lock<std::mutex> lockC(mc);
+			VK_CHECK(vkQueueSubmit2(computeQueue_, 1, &csi, VK_NULL_HANDLE));
+		}
+		fb.splitCommandBufferOpaque = reinterpret_cast<void*>(splitCB);
+		fb.splitWaitSemaphoreOpaque = reinterpret_cast<void*>(vkSwap->asyncC2G_[flight]);
+		fb.splitWaitValue = c2gVal;
 	}
 
 	vctx.CommitImageSyncStates(imageStates);
@@ -9548,6 +9991,7 @@ VkPhysicalDevice smvk::GetVkPhysicalDevice() { return physicalDevice_; }
 VkQueue smvk::GetVkGraphicsQueue() { return graphicsQueue_; }
 VkQueue smvk::GetVkPresentQueue() { return presentQueue_; }
 VkQueue smvk::GetVkTransferQueue() { return transferQueue_; }
+VkQueue smvk::GetVkComputeQueue() { return computeQueue_ != VK_NULL_HANDLE ? computeQueue_ : graphicsQueue_; }
 VkSurfaceKHR smvk::GetVkSurface() { return surface_; }
 uint32_t smvk::GetVkGraphicsQueueFamily() {
 	if (physicalDevice_ != VK_NULL_HANDLE && surface_ != VK_NULL_HANDLE) {
@@ -9562,5 +10006,18 @@ uint32_t smvk::GetVkTransferQueueFamily() {
 		if (indices.transferFamily) return *indices.transferFamily;
 	}
 	return GetVkGraphicsQueueFamily();
+}
+uint32_t smvk::GetVkComputeQueueFamily() {
+	if (physicalDevice_ != VK_NULL_HANDLE && surface_ != VK_NULL_HANDLE) {
+		auto indices = findQueueFamilies(physicalDevice_, surface_);
+		if (indices.computeFamily) return *indices.computeFamily;
+	}
+	return GetVkGraphicsQueueFamily();
+}
+bool smvk::HasDedicatedComputeQueue() {
+	if (physicalDevice_ != VK_NULL_HANDLE && surface_ != VK_NULL_HANDLE) {
+		return findQueueFamilies(physicalDevice_, surface_).HasDedicatedCompute();
+	}
+	return false;
 }
 

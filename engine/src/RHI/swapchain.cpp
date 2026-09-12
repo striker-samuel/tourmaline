@@ -65,10 +65,15 @@ Framebuffer Swapchain::AcquireFramebuffer() {
     fb.imageIndex = vfb.imageIndex;
     fb.commandBufferOpaque = reinterpret_cast<void*>(vfb.commandBuffer);
     fb.swapchain = this;
+    fb.splitCommandBufferOpaque = nullptr;
+    fb.splitWaitSemaphoreOpaque = nullptr;
+    fb.splitWaitValue = 0;
     return fb;
 }
 void Swapchain::EndAndPresentFramebuffer(Framebuffer& fb) {
-    VulkanFrameBuffer vfb{fb.frameIndex, fb.imageIndex, reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque), *impl_->vulkan};
+    VulkanFrameBuffer vfb{fb.frameIndex, fb.imageIndex, reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque), *impl_->vulkan,
+        reinterpret_cast<VkCommandBuffer>(fb.splitCommandBufferOpaque),
+        reinterpret_cast<VkSemaphore>(fb.splitWaitSemaphoreOpaque), fb.splitWaitValue};
     impl_->vulkan->EndAndPresentFramebuffer(vfb);
 }
 void Swapchain::SetPresentMode(PresentMode mode) {
@@ -96,5 +101,7 @@ bool Swapchain::HasGpuTiming() const { return impl_->vulkan->HasGpuTiming(); }
 double Swapchain::GetPresentWaitMs() const { return impl_->vulkan->GetLastPresentWaitMs(); }
 Swapchain::Impl* Swapchain::GetImpl() { return impl_.get(); }
 const Swapchain::Impl* Swapchain::GetImpl() const { return impl_.get(); }
+void* Swapchain::GetVulkanOpaque() { return impl_->vulkan.get(); }
+const void* Swapchain::GetVulkanOpaque() const { return impl_->vulkan.get(); }
 
 } // namespace smvk

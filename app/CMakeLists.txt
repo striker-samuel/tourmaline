@@ -163,13 +163,19 @@ endif()
 # added shaders silently fail to load at runtime (readFile throws inside
 # EnsureShaders -> builder stays invalid -> feature dead with no crash).
 if(COMPILED_SHADER_OUTPUTS)
-    add_custom_target(AppSyncShaders ALL
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/content/shaders"
+    # Shader sync as an App POST_BUILD (per-config, like the content-dir
+    # copies above): a separate ALL target would only run for whichever
+    # config built it, so a fresh tree of a NEW configuration (e.g. the
+    # first Release build) compiled the SPVs but never copied them next
+    # to that config's App.exe — every shader-referencing builder then
+    # failed at runtime and the feature silently died (EVSM fell back to
+    # PCF in Release exactly this way). POST_BUILD with the generator
+    # expression resolves to each built config's output dir.
+    add_custom_command(TARGET App POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:App>/content/shaders"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_BINARY_DIR}/content/shaders"
                 "$<TARGET_FILE_DIR:App>/content/shaders"
         COMMENT "Syncing compiled shaders next to App.exe"
     )
-    add_dependencies(AppSyncShaders compile_shaders_target)
 endif() 

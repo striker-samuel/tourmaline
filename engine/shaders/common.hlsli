@@ -307,7 +307,7 @@ struct FrameUniforms
     uint giEnabled;                                 // 704 1 = sample probes for ambient
     float giIntensity;                              // 708 ambient scale
     uint giDebug;                                    // 712 0 off, 1 irradiance view
-    uint giPad;                                      // 716
+    uint evsmMode;                                   // 716 0 = PCF depth, 1 = EVSM moments (was padding)
     // ---- Deferred-shadow debug visualizers (paper 5.3/5.4). Debug-build
     // only (DS_DEBUG_VIZ): tail fields so the release layout (672 B) is a
     // strict prefix of the debug layout (704 B). The light-scoped modes
@@ -382,7 +382,7 @@ struct PushConstants
     float4x4 prevModel;
 };
 
-#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(SSAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS)
+#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(SSAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS) && !defined(EVSM_BLUR_PASS)
 // ENGINE_HAS_PC: this translation unit sees the scene-wide `pc` push
 // constants. Passes with their own push layout (FORWARDPLUS/HZB/DS/...)
 // leave it undefined so headers can guard pc-dependent helpers (see

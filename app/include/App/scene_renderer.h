@@ -35,6 +35,7 @@
 #include <Engine/Rendergraph/deferredshadow.h>
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/environment.h>
+#include <Engine/Rendergraph/evsm.h>
 #include <Engine/Rendergraph/exposure.h>
 #include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/hdr.h>
@@ -322,7 +323,12 @@ struct FrameUniforms
 	uint32_t giEnabled = 0;     // 704 1 = probes replace sky ambient
 	float giIntensity = 1.0f;   // 708 ambient scale
 	uint32_t giDebug = 0;       // 712 F8 irradiance debug view
-	uint32_t giPad = 0;         // 716
+	// EVSM shadow mode (offset 716, was padding): 0 = PCF depth atlases,
+	// 1 = prefiltered EVSM moments (blurred RG32F, 1-frame lag). The
+	// shadow_map_index / spotShadowMapIndex fields then address the
+	// blurred EVSM atlas instead of the depth atlas. Same offset/size as
+	// HLSL FrameUniforms::evsmMode — see the static_asserts below.
+	uint32_t evsmMode = 0;      // 716
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4, debug builds
 	// only — CMake defines DS_DEBUG_VIZ for the App target and for DXC in
@@ -381,7 +387,7 @@ static_assert(offsetof(FrameUniforms, giIndices) == 696);
 static_assert(offsetof(FrameUniforms, giEnabled) == 704);
 static_assert(offsetof(FrameUniforms, giIntensity) == 708);
 static_assert(offsetof(FrameUniforms, giDebug) == 712);
-static_assert(offsetof(FrameUniforms, giPad) == 716);
+static_assert(offsetof(FrameUniforms, evsmMode) == 716);
 #if defined(DS_DEBUG_VIZ)
 static_assert(offsetof(FrameUniforms, dsTileMasks) == 720);
 static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 728);
@@ -430,6 +436,8 @@ struct AppResources {
 struct ViewportResources {
 	smvk::CascadedShadowAtlas directionalShadows; // atlas + default shadow program + Ensure
 	smvk::SpotShadowAtlas spotShadows; // perspective atlas for shadowed spots + Ensure
+	smvk::EvsmAtlas evsmDir;  // EVSM moments + blurred output (directional CSM tiles)
+	smvk::EvsmAtlas evsmSpot; // EVSM moments + blurred output (spot tiles)
 	smvk::BloomChain bloom; // separated per-mip HDR chain + default down/up programs + Ensure
 	smvk::Tonemapper tonemap; // default tonemap program + pass helper
 	smvk::ForwardPlus forwardPlus; // tile buffers + cull/depth programs + Ensure
@@ -694,7 +702,11 @@ protected:
 
 	void RebuildSwapViews();
 	void DrawFrame() override;
-	void RenderFrame(smvk::Framebuffer fb);
+	// By reference: RenderGraph::Execute publishes the async-split second
+	// graphics part (G2 CB + compute wait) back through fb for
+	// EndAndPresent. By value would drop it and G1's CB would be ended +
+	// submitted twice (GPU hang on lights-off, when the split engages).
+	void RenderFrame(smvk::Framebuffer& fb);
 
 	// Error-driven LOD selection (see Engine/Asset/mesh_optimizer.h): the
 	// scene references LOD0; cooked "/lodN" siblings are picked per instance
@@ -743,6 +755,32 @@ protected:
 	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
 	std::vector<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
+	// ---- EVSM (Exponential Variance Shadow Maps, prefiltered async) ----
+	// When enabled (and the device supports RG32F 2xMSAA moments), the
+	// cascade/spot depth passes are replaced by EVSM moment passes
+	// (RG32F 2xMSAA + resolve) followed by separable Gaussian blur passes
+	// marked AsyncCompute. The blur runs on the dedicated compute queue
+	// (G1/C/G2 split submit, SameFrame default — no shadow lag); the
+	// OneFrameLag pipeline stays available in the UI. shadow_map_index
+	// fields then address the blurred atlas; FrameUniforms.evsmMode tells
+	// shaders. Falls back to PCF automatically when unsupported/invalid.
+	bool m_evsmEnabled = true; // user toggle (ImGui); effective only if supported
+	// SameFrame default: moments are blurred on the true-async compute
+	// queue and consumed by this frame's lighting (no shadow lag/wobble).
+	// OneFrameLag remains in the ImGui combo for overlap comparison.
+	smvk::EvsmPipelineMode m_evsmPipeline = smvk::EvsmPipelineMode::SameFrame;
+	bool EvsmActive() const {
+		return m_evsmEnabled
+			&& m_viewportResources.evsmDir.Valid()
+			&& m_viewportResources.evsmDir.ShadersValid()
+			&& m_viewportResources.evsmSpot.Valid()
+			&& m_viewportResources.evsmSpot.ShadersValid();
+	}
+	// Direct-path EVSM moment recording (opaque + masked phases share the
+	// moments program; the FS alpha-tests cutout like shadow.frag).
+	void RecordEvsmMomentsDirect(smvk::CommandBuffer& cmd,
+		smvk::ShaderProgram& momentsProgram, const PushConstants& pc,
+		uint32_t casterViewIndex, bool skipFiltered);
 	smvk::RenderViewSet m_renderViews{}; // per-frame virtual cameras: main view + shadow cascade/spot views
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	app::GfxRenderer m_gfxRenderer{};
@@ -814,7 +852,10 @@ protected:
 	// ambient source: Gi -> SkyIbl -> Off (see AmbientMode — the probes
 	// and the analytic sky IBL are mutually exclusive). F8 shows the
 	// flat irradiance debug view. ----
-	AmbientMode m_ambientMode = AmbientMode::Gi; // N cycles
+	// Default SkyIbl: the baked probes stay opt-in (N) — GI sampling is
+	// the expensive/fussy ambient path (probe bleeding, bake staleness),
+	// and the analytic sky IBL is the predictable reference look.
+	AmbientMode m_ambientMode = AmbientMode::SkyIbl; // N cycles
 	int m_giDebug = 0;             // F8 cycles: 0 off, 1 irradiance, 2 diagnostics
 	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
 	bool m_giShowProbes = false;  // probe-point overlay (ImGui foreground,

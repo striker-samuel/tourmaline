@@ -13,6 +13,13 @@ struct Framebuffer {
     uint32_t imageIndex = 0;
     void* commandBufferOpaque = nullptr; // opaque VkCommandBuffer
     class Swapchain* swapchain = nullptr;
+    // Async-split second graphics part (G2, true async compute): set by
+    // RenderGraph::Execute when the frame splits G1/C/G2 (null = single
+    // submit). EndAndPresent ends + submits it, waiting on the compute
+    // timeline below before presenting.
+    void* splitCommandBufferOpaque = nullptr;
+    void* splitWaitSemaphoreOpaque = nullptr; // timeline semaphore (C -> G2)
+    uint64_t splitWaitValue = 0;
 };
 
 class Swapchain {
@@ -69,6 +76,10 @@ public:
     struct Impl;
     Impl* GetImpl();
     const Impl* GetImpl() const;
+    // Opaque VulkanSwapchain for the rendergraph's async-compute split
+    // (RenderGraph::Execute submits G1/C and records G2 through it).
+    void* GetVulkanOpaque();
+    const void* GetVulkanOpaque() const;
 
 private:
     std::unique_ptr<Impl> impl_;

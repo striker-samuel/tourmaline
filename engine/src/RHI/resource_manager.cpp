@@ -204,6 +204,38 @@ bool ResourceManager::SupportsMSAA2x() {
     return (props.limits.framebufferColorSampleCounts & want) != 0 &&
         (props.limits.framebufferDepthSampleCounts & want) != 0;
 }
+bool ResourceManager::SupportsEvsm() {
+    if (!impl_ || !impl_->vulkan.core_)
+        return false;
+    VkPhysicalDevice phys = smvk::GetVkPhysicalDevice();
+    if (phys == VK_NULL_HANDLE)
+        return false;
+    // RG32F as 2x MSAA color attachment, sampled + storage (blur).
+    VkImageFormatProperties props{};
+    VkResult r = vkGetPhysicalDeviceImageFormatProperties(phys,
+        VK_FORMAT_R32G32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+        0, &props);
+    if (r != VK_SUCCESS)
+        return false;
+    if ((props.sampleCounts & VK_SAMPLE_COUNT_2_BIT) == 0)
+        return false;
+    // Single-sample RG32F must also serve as resolve dest + storage target.
+    r = vkGetPhysicalDeviceImageFormatProperties(phys,
+        VK_FORMAT_R32G32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        0, &props);
+    return r == VK_SUCCESS;
+}
+bool ResourceManager::HasDedicatedComputeQueue() {
+    return smvk::HasDedicatedComputeQueue();
+}
+uint32_t ResourceManager::GetComputeQueueFamily() {
+    return smvk::GetVkComputeQueueFamily();
+}
+uint32_t ResourceManager::GetGraphicsQueueFamily() {
+    return smvk::GetVkGraphicsQueueFamily();
+}
 void ResourceManager::FlushUploads() { impl_->vulkan.FlushUploads(); }
 uint64_t ResourceManager::GetBufferDeviceAddress(BufferHandle handle) const {
     auto* buf = impl_->vulkan.buffers_.get(handle);

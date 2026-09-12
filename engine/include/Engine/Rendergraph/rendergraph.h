@@ -487,6 +487,32 @@ namespace smvk
 
 		[[nodiscard]] bool IsCompute() const { return isCompute_; }
 
+		// Queue placement for compute passes (EVSM prefiltering).
+		// Graphics (default): recorded into the main graphics command
+		//   buffer, in-order with the rest of the graph.
+		// AsyncCompute: hint that this pass prefers the dedicated
+		//   compute queue. The current Execute() still records it on
+		//   graphics (emulated async) — EvsmAsyncPrefilter consumes
+		//   this hint to route the blur outside the graph onto the
+		//   real compute queue with cross-queue ownership transfers.
+		//   Keeping the hint on the pass (rather than only in EVSM
+		//   code) makes the future cutover — true async inside
+		//   Execute() — a local change to the executor.
+		enum class QueueHint : uint8_t { Graphics = 0, AsyncCompute = 1 };
+		RenderPass& SetQueueHint(QueueHint q)
+		{
+			queueHint_ = q;
+			return *this;
+		}
+		RenderPass& MarkAsAsyncCompute()
+		{
+			isCompute_ = true;
+			queueHint_ = QueueHint::AsyncCompute;
+			return *this;
+		}
+
+		[[nodiscard]] bool IsAsyncCompute() const { return isCompute_ && queueHint_ == QueueHint::AsyncCompute; }
+
 
 	private:
 		friend RenderGraph;
@@ -528,6 +554,7 @@ namespace smvk
 			recordingFunction_{};
 
 		bool isCompute_ = false;
+		QueueHint queueHint_ = QueueHint::Graphics;
 
 		const char* name_ = nullptr;
 	};

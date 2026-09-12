@@ -1180,9 +1180,20 @@ namespace smvk {
 		std::optional<uint32_t> graphicsFamily;
 		std::optional<uint32_t> presentFamily;
 		std::optional<uint32_t> transferFamily;
+		// Dedicated async-compute family. Empty/aliased to graphics when the
+		// device has no compute-only queue (single-queue fallback: EVSM blur
+		// still records as compute passes, just without overlap).
+		std::optional<uint32_t> computeFamily;
 
 		bool isComplete() const {
 			return graphicsFamily.has_value() && presentFamily.has_value();
+		}
+		[[nodiscard]] uint32_t ComputeOrGraphics() const {
+			return computeFamily.value_or(graphicsFamily.value_or(0));
+		}
+		[[nodiscard]] bool HasDedicatedCompute() const {
+			return computeFamily.has_value() && graphicsFamily.has_value()
+				&& *computeFamily != *graphicsFamily;
 		}
 	};
 
@@ -1295,6 +1306,12 @@ struct ImageCreateInfo
 		//ImageCreateFlags flags = ImageCreateFlags::None;
 		const char* name = nullptr;
 		bool hostTransfer = false;
+		// Share the image CONCURRENTLY between graphics + dedicated compute
+		// (no queue-family ownership transfers; cross-queue sync is events
+		// + layout barriers). For EVSM moment/blur images ping-ponged
+		// between the graphics moment passes and the async prefilter.
+		// Ignored on single-queue devices (falls back to EXCLUSIVE).
+		bool concurrentCompute = false;
 	};
 
 	enum class ResourceOwnership : uint8_t
