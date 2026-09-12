@@ -1,0 +1,11 @@
+# CMake generation dependency list for this directory.
+C:/Program Files/CMake/share/cmake-4.4/Modules/CMakePackageConfigHelpers.cmake
+C:/Program Files/CMake/share/cmake-4.4/Modules/ExternalProject.cmake
+C:/Program Files/CMake/share/cmake-4.4/Modules/ExternalProject/shared_internal_commands.cmake
+C:/Program Files/CMake/share/cmake-4.4/Modules/GNUInstallDirs.cmake
+C:/Program Files/CMake/share/cmake-4.4/Modules/WriteBasicConfigVersionFile.cmake
+F:/REPOS/vulkantoy/CMakeFiles/cmake.verify_globs
+F:/REPOS/vulkantoy/external/json/CMakeLists.txt
+F:/REPOS/vulkantoy/external/json/cmake/config.cmake.in
+F:/REPOS/vulkantoy/external/json/cmake/nlohmann_jsonConfigVersion.cmake.in
+F:/REPOS/vulkantoy/external/json/cmake/pkg-config.pc.in
