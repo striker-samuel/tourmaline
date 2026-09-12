@@ -2624,12 +2624,16 @@ void SceneRenderer::Shutdown() {
 
 	void SceneRenderer::RecordEvsmMomentsDirect(smvk::CommandBuffer& cmd,
 		smvk::ShaderProgram& momentsProgram, const PushConstants& pc,
-		uint32_t casterViewIndex, bool skipFiltered) {
-		// EVSM direct path: same caster walk as RecordShadowCastersDirect,
-		// but both phases bind the moments program (VS+FS, RG32F 2xMSAA)
-		// so every sample writes warped moments. The FS alpha-tests
-		// cutout for MASK materials and passes opaque through, so phase 1
-		// (cull back) and phase 2 (cull none) share one program.
+		uint32_t casterViewIndex, bool skipFiltered,
+		smvk::ShaderProgram* opaqueProgram) {
+		// EVSM direct path: same caster walk as RecordShadowCastersDirect.
+		// Phases split by cost — phase 1 (opaque) binds the CHEAP moments
+		// program when provided (no material read / texture fetch /
+		// feedback atomic; per-fragment work is two exp() + the RG32F
+		// store, ~the PCF depth-only cost), phase 2 (MASK cutout) binds
+		// the full alpha-tested program. Binding the full FS for opaque
+		// measured ~30x the PCF pass (base-color sample + TS_ReportUsage
+		// atomic at 2xMSAA rates over a 2048^2 tile).
 		auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
 			if (item.material == smvk::World::kInvalidIndex)
 				return;
@@ -2666,9 +2670,9 @@ void SceneRenderer::Shutdown() {
 			};
 		};
 		const smvk::MSAASettings msaa2x = smvk::MSAASettings::Count2();
-		// Phase 1: solid casters (cull back).
+		// Phase 1: solid casters (cull back) — cheap opaque program.
 		cmd.BindRenderPipeline(
-			momentsProgram,
+			opaqueProgram ? *opaqueProgram : momentsProgram,
 			smvk::VertexFormat::StaticVertexFormat,
 			smvk::DepthSettings{
 				.depthFunc = smvk::CompareOp::LessEqual,
@@ -2691,8 +2695,9 @@ void SceneRenderer::Shutdown() {
 			smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow
 			| smvk::IteratorFlagBit_Opaque
 			, [&](const smvk::World::RenderItem& item) { drawCaster(item, false); });
-		// Phase 2: MASK cutout casters (cull none, same moments program —
-		// the FS discards under the alpha cutoff like shadow.frag).
+		// Phase 2: MASK cutout casters (cull none, full alpha-tested
+		// moments program — the FS discards under the cutoff like
+		// shadow.frag so foliage casts leaf-shaped moments).
 		cmd.BindRenderPipeline(
 			momentsProgram,
 			smvk::VertexFormat::StaticVertexFormat,
@@ -3429,7 +3434,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				{
 					RecordEvsmMomentsDirect(cmd,
 						m_viewportResources.evsmDir.momentsProgram,
-						cascadePC, casterViewIndex, /*skipFiltered=*/false);
+						cascadePC, casterViewIndex, /*skipFiltered=*/false,
+						&m_viewportResources.evsmDir.momentsOpaqueProgram);
 				});
 				(void)momentPass;
 				continue;
@@ -3499,7 +3505,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					{
 						RecordEvsmMomentsDirect(cmd,
 							m_viewportResources.evsmSpot.momentsProgram,
-							spotPC, casterViewIndex, /*skipFiltered=*/false);
+							spotPC, casterViewIndex, /*skipFiltered=*/false,
+							&m_viewportResources.evsmSpot.momentsOpaqueProgram);
 					});
 					(void)momentPass;
 					continue;

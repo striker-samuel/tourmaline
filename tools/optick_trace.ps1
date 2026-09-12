@@ -31,7 +31,12 @@ param(
     [Parameter(Mandatory=$true)][string]$Path,
     [string]$Scope = "GfxUploadSeed",
     [int]$Top = 10,
-    [switch]$Neighbors
+    [switch]$Neighbors,
+    # Aggregate ALL events by (thread, name) and print the top by TOTAL
+    # time — answers "what dominates this capture" in one pass. Combine
+    # with -ScopeReportMinMs to skip sub-noise scopes.
+    [switch]$TopScopes,
+    [double]$MinTotalMs = 0.5
 )
 
 $ErrorActionPreference = "Stop"
@@ -192,6 +197,35 @@ foreach ($b in $boardList) {
 }
 
 # Scope stats
+if ($TopScopes) {
+    # Aggregate every event by (thread, name): count / total / avg / max.
+    $groups = @{}
+    foreach ($e in $events) {
+        $key = (Get-Thread $e.bn $e.tn) + "|" + (Get-Desc $e.bn $e.d)
+        if (-not $groups.ContainsKey($key)) { $groups[$key] = [pscustomobject]@{ Count = 0; Total = 0.0; Max = 0.0 } }
+        $g = $groups[$key]
+        $d = ([double]$e.f - [double]$e.s) * $msPerTick
+        $g.Count++
+        $g.Total += $d
+        if ($d -gt $g.Max) { $g.Max = $d }
+    }
+    Write-Host "--- top scopes by TOTAL ms (>= $MinTotalMs) ---"
+    $rows = foreach ($kv in $groups.GetEnumerator()) {
+        $parts = $kv.Key.Split('|', 2)
+        if ($kv.Value.Total -ge $MinTotalMs) {
+            [pscustomobject]@{
+                Thread = $parts[0]; Name = $parts[1]
+                Count = $kv.Value.Count
+                TotalMs = [math]::Round($kv.Value.Total, 3)
+                AvgMs = [math]::Round($kv.Value.Total / $kv.Value.Count, 4)
+                MaxMs = [math]::Round($kv.Value.Max, 4)
+            }
+        }
+    }
+    $rows | Sort-Object TotalMs -Descending | Select-Object -First 40 |
+        ForEach-Object { Write-Host ("  {0,10:N3} tot  {1,9:N4} avg  {2,9:N4} max  x{3,-6} [{4}] {5}" -f $_.TotalMs, $_.AvgMs, $_.MaxMs, $_.Count, $_.Thread, $_.Name) }
+    return
+}
 $hits = New-Object System.Collections.Generic.List[object]
 foreach ($e in $events) {
     $n = Get-Desc $e.bn $e.d

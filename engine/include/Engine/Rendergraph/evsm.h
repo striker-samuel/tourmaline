@@ -69,7 +69,8 @@ struct EvsmDesc {
 
 inline constexpr const char* kEvsmMomentsVsPath = "content/shaders/shadow.vert.hlsl.spv";
 inline constexpr const char* kEvsmMomentsFsPath = "content/shaders/shadow_evsm.frag.hlsl.spv";
-inline constexpr const char* kEvsmBlurCsPath = "content/shaders/evsm_blur.cs.hlsl.spv";
+inline constexpr const char* kEvsmMomentsOpaqueFsPath = "content/shaders/shadow_evsm_opaque.frag.hlsl.spv";
+inline constexpr const char* kEvsmBlurCsPath = "content/shaders/evsm_blur.cs.hlsl.spv";;
 
 // Push constants for evsm_blur.cs.hlsl. Must mirror the HLSL EvsmBlurPush.
 struct EvsmBlurPush {
@@ -119,8 +120,10 @@ struct EvsmAtlas {
 
 	Holder<ShaderModuleHandle> vsModule;
 	Holder<ShaderModuleHandle> fsModule;
+	Holder<ShaderModuleHandle> fsOpaqueModule;
 	Holder<ShaderModuleHandle> blurModule;
-	ShaderProgram momentsProgram{}; // VS+FS, RG32F + D32, 2xMSAA
+	ShaderProgram momentsProgram{};      // VS+FS full: alpha-tested (MASK casters)
+	ShaderProgram momentsOpaqueProgram{}; // VS+FS cheap: opaque casters (no material path)
 	ShaderProgram blurProgram{};    // CS
 
 	Extent2D atlasExtent{ 0, 0 };
@@ -137,7 +140,8 @@ struct EvsmAtlas {
 			&& !msaaMomentsLogical.empty() && !blurTempBindless[0].empty();
 	}
 	[[nodiscard]] bool ShadersValid() const {
-		return momentsProgram.shaderCount == 2 && blurProgram.shaderCount == 1;
+		return momentsProgram.shaderCount == 2 && blurProgram.shaderCount == 1
+			&& momentsOpaqueProgram.shaderCount == 2;
 	}
 
 	// Frame-lag helpers: write slot = current flight; sample slot trails by
@@ -183,7 +187,8 @@ struct EvsmAtlas {
 	bool EnsureShaders(ResourceManager& ctx,
 		const char* vsPath = kEvsmMomentsVsPath,
 		const char* fsPath = kEvsmMomentsFsPath,
-		const char* csPath = kEvsmBlurCsPath) {
+		const char* csPath = kEvsmBlurCsPath,
+		const char* fsOpaquePath = kEvsmMomentsOpaqueFsPath) {
 		if (ShadersValid())
 			return true;
 		try {
@@ -191,17 +196,21 @@ struct EvsmAtlas {
 				vsModule = ctx.CreateShaderModule(readFile(vsPath ? vsPath : kEvsmMomentsVsPath), "evsmMomentsVS");
 			if (fsModule.empty())
 				fsModule = ctx.CreateShaderModule(readFile(fsPath ? fsPath : kEvsmMomentsFsPath), "evsmMomentsFS");
+			if (fsOpaqueModule.empty())
+				fsOpaqueModule = ctx.CreateShaderModule(readFile(fsOpaquePath ? fsOpaquePath : kEvsmMomentsOpaqueFsPath), "evsmMomentsOpaqueFS");
 			if (blurModule.empty())
 				blurModule = ctx.CreateShaderModule(readFile(csPath ? csPath : kEvsmBlurCsPath), "evsmBlurCS");
 		} catch (...) {
 			return false;
 		}
-		if (vsModule.empty() || fsModule.empty() || blurModule.empty())
+		if (vsModule.empty() || fsModule.empty() || fsOpaqueModule.empty() || blurModule.empty())
 			return false;
 		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
 		Shader fs{ .module = fsModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+		Shader fsOpaque{ .module = fsOpaqueModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		Shader cs{ .module = blurModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
 		momentsProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
+		momentsOpaqueProgram = { .shaders = { vs, fsOpaque }, .shaderCount = 2 };
 		blurProgram = { .shaders = { cs }, .shaderCount = 1 };
 		return true;
 	}

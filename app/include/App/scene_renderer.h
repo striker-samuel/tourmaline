@@ -776,11 +776,14 @@ protected:
 			&& m_viewportResources.evsmSpot.Valid()
 			&& m_viewportResources.evsmSpot.ShadersValid();
 	}
-	// Direct-path EVSM moment recording (opaque + masked phases share the
-	// moments program; the FS alpha-tests cutout like shadow.frag).
+	// Direct-path EVSM moment recording. Phases split like PCF: opaque
+	// casters bind the cheap no-material moments program (opaqueProgram,
+	// null = fall back to the full one), MASK cutout bind the full
+	// alpha-tested moments program.
 	void RecordEvsmMomentsDirect(smvk::CommandBuffer& cmd,
 		smvk::ShaderProgram& momentsProgram, const PushConstants& pc,
-		uint32_t casterViewIndex, bool skipFiltered);
+		uint32_t casterViewIndex, bool skipFiltered,
+		smvk::ShaderProgram* opaqueProgram = nullptr);
 	smvk::RenderViewSet m_renderViews{}; // per-frame virtual cameras: main view + shadow cascade/spot views
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	app::GfxRenderer m_gfxRenderer{};
