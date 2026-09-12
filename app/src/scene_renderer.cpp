@@ -76,7 +76,7 @@ static std::vector<char> readContentFile(smvk::OverlayVfs& vfs, const std::strin
 static constexpr uint32_t NUM_CASCADES = 4;
 static constexpr uint32_t CASCADE_RES = 2048; // per cascade tile (2048 -> 4096 atlas for 4 cascades)
 static constexpr float CASCADE_LAMBDA = 0.8f; // 0 = linear, 1 = pure logarithmic (1.0 starves the far cascade)
-static constexpr float CASCADE_Z_PADDING = 1.0f;
+static constexpr float CASCADE_Z_PADDING = 10.0f;
 static constexpr smvk::Format SHADOW_FORMAT = smvk::Format::D32_Float; // no stencil on the directional atlas
 
 // -----------------------------------------------------------------------------
@@ -285,6 +285,10 @@ static smvk::SpotShadowMapDesc MakeSpotShadowDesc() {
 //             (stages models/Bistro + cooks content/paks/bistro.pak with
 //             --meshlets on --lods on; transitions use each LOD's cooked
 //             simplifier error projected to pixels, see LodMeshForNode).
+//   Scanlands: py tools/cook_scanlands.py [--glb F:/content/models/scanlands.glb]
+//             (extracts the embedded GLB to models/Scanlands + cooks
+//             content/paks/scanlands.pak with --meshlets on --lods on;
+//             no GI bake — sky-IBL ambient fallback, see LoadGiVolume).
 namespace app {
 
 const SceneDesc& SceneRegistry::Sponza() {
@@ -318,6 +322,33 @@ const SceneDesc& SceneRegistry::Bistro() {
 	return bistro;
 }
 
+const SceneDesc& SceneRegistry::Scanlands() {
+	// Scanlands GLB (staged + cooked by tools/cook_scanlands.py: embedded
+	// GLB images extracted to textures/*.ktx2, pak at content/paks with
+	// meshlets + LODs). No GI bake by design — the app falls back to the
+	// analytic sky IBL when content/gi/scanlands.sggi is absent.
+	// World layout (engine space, coordFix 0 flips glTF x/z): a ~18 km
+	// procedural scatter (186k tree instances of glTF mesh 0, planted
+	// from the origin outward in node order; base heights vary by tens
+	// of meters over meters) with a hero village (boats, city,
+	// buildings) at engine ≈ (-520, 105, 150). Engine limits (kMaxDraws
+	// 4096/view, MAX_MATERIALS 4096) saturate on this scene and the
+	// filter pushes in node order, so the default view overlooks the
+	// sparser ground east of the origin (fly with WASD; the village
+	// lies ~700 m southwest). The far clip covers village-scale views.
+	static const SceneDesc scanlands{
+		/*id=*/"scanlands",
+		/*label=*/"Scanlands",
+		/*gltfPath=*/"content/models/Scanlands/scanlands.gltf",
+		/*pakPath=*/"content/paks/scanlands.pak",
+		/*camPos=*/glm::vec3(50.0f, 48.0f, -50.0f),
+		/*camTarget=*/glm::vec3(-20.0f, 15.0f, 20.0f),
+		/*farClip=*/600.0f,
+		/*coordFix=*/0,
+	};
+	return scanlands;
+}
+
 const SceneDesc& SceneRegistry::BistroNiagara() {
 	// Known-good Niagara bistro.gltf (staged + root-shim neutralized by
 	// tools/stage_niagara_gltf.py). A/B against "bistro" (Lumberyard v5.2
@@ -342,8 +373,8 @@ const SceneDesc& SceneRegistry::BistroNiagara() {
 
 namespace app {
 
-std::vector<SceneDesc> SceneRegistry::All() {
-	return { Sponza(), Bistro(), BistroNiagara() };
+	std::vector<SceneDesc> SceneRegistry::All() {
+	return { Sponza(), Bistro(), BistroNiagara(), Scanlands() };
 }
 
 std::optional<SceneDesc> SceneRegistry::Find(const std::string& id) {
@@ -438,6 +469,28 @@ bool SceneRenderer::Initialize() {
 			return v;
 		};
 
+#if 0 // TMP-DIAG scanlands hunt (disabled): headless toggles. Remove later.
+		// Kill the occluder-depth path (VULKANTOY_HIZ=0).
+		if (const char* hizEnv = std::getenv("VULKANTOY_HIZ")) {
+			if (std::atoi(hizEnv) == 0)
+				m_hizOccluderDepth = false;
+		}
+		// Headless LOD kill (VULKANTOY_LOD=0 forces LOD0).
+		if (const char* lodEnv = std::getenv("VULKANTOY_LOD")) {
+			if (std::atoi(lodEnv) == 0)
+				m_lodEnabled = false;
+		}
+		// Headless debug-view select (lit|unlit|meshlets|cascades|lods).
+		if (const char* dvEnv = std::getenv("VULKANTOY_DEBUGVIEW")) {
+			const std::string_view dv = trimEnv(dvEnv);
+			if (dv == "lit") m_debugView = DebugView::Lit;
+			else if (dv == "unlit") m_debugView = DebugView::Unlit;
+			else if (dv == "meshlets") m_debugView = DebugView::Meshlets;
+			else if (dv == "cascades") m_debugView = DebugView::Cascades;
+			else if (dv == "lods") m_debugView = DebugView::Lods;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DEBUGVIEW value: " << dv << "\n";
+		}
+#endif
 		// AA mode override for A/B runs without UI interaction
 		// (off | msaa | smaa1x | t2x). The ImGui combo stays live after.
 		if (const char* aaEnv = std::getenv("VULKANTOY_AA")) {
@@ -1091,17 +1144,26 @@ void SceneRenderer::Shutdown() {
 		m_giProbesAddress = m_giGridAddress = m_giCellsAddress = m_giIndicesAddress = 0;
 
 		const std::string vfsPath = std::string("gi/") + m_scene.id + ".sggi";
+		// GI-less fallback: scenes without a bake (e.g. scanlands) run on
+		// the analytic sky IBL instead of direct-only black shadows. N
+		// still cycles afterwards.
+		auto fallbackSky = [&] {
+			if (m_ambientMode == AmbientMode::Gi)
+				m_ambientMode = AmbientMode::SkyIbl;
+		};
 		std::vector<uint8_t> bytes;
 		try {
 			bytes = vfs.ReadBinary(vfsPath);
 		} catch (...) {
 			std::cerr << "[GI] no baked volume '" << vfsPath
 				<< "' - sky IBL ambient (bake with tools/gi_baker/GiBaker)\n";
+			fallbackSky();
 			return;
 		}
 		std::string err;
 		if (!m_giVolume.ReadFromMemory(bytes, err)) {
 			std::cerr << "[GI] volume rejected: " << err << "\n";
+			fallbackSky();
 			return;
 		}
 
@@ -1112,6 +1174,7 @@ void SceneRenderer::Shutdown() {
 		m_giVolume.PackGpu(probeData, gridData, cellData, indexData);
 		if (probeData.empty()) {
 			std::cerr << "[GI] volume has no probes - ignored\n";
+			fallbackSky();
 			return;
 		}
 
@@ -4167,15 +4230,34 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer fb) {
 				,
 				[&](const smvk::World::RenderItem& item)
 			{
-				if (item.material == smvk::World::kInvalidIndex)
+			if (item.material == smvk::World::kInvalidIndex)
+				return;
+#if 0 // TMP-DIAG scanlands hunt (disabled): VULKANTOY_SHOWGROUP="n"
+			// shows ONLY LOD group n (mirrors the FilterMainView hack).
+			// Remove later.
+			{
+				static int kShow = INT_MAX;
+				static bool kInit = false;
+				if (!kInit) {
+					kInit = true;
+					if (const char* r = std::getenv("VULKANTOY_SHOWGROUP")) {
+						int n = INT_MAX;
+						if (std::sscanf(r, "%d", &n) == 1)
+							kShow = n;
+					}
+				}
+				if (kShow != INT_MAX && item.mesh < m_world->meshLodInfos.size()
+					&& (int)m_world->meshLodInfos[item.mesh].groupId != kShow)
 					return;
-				// Filtered instances already drew above via indirect
-				// ranges (FilterMainView pushes the selected LOD sibling).
-				// Only LODs whose registration failed fall through to the
-				// direct LOD draw, so each instance rasterizes once.
-				if (gfxActive && m_gfxRenderer.GfxMeshForLod(item.mesh,
-					LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
-					return;
+			}
+#endif
+			// Filtered instances already drew above via indirect
+			// ranges (FilterMainView pushes the selected LOD sibling).
+			// Only LODs whose registration failed fall through to the
+			// direct LOD draw, so each instance rasterizes once.
+			if (gfxActive && m_gfxRenderer.GfxMeshForLod(item.mesh,
+				LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
+				return;
 				const uint32_t materialId = item.material;
 				if (materialId != boundMaterial) {
 					bindForMaterial(materialId, m_resources.mainProgram, opaqueDepth);

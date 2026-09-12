@@ -80,6 +80,7 @@ struct SceneRegistry {
 	static const SceneDesc& Sponza();
 	static const SceneDesc& Bistro();
 	static const SceneDesc& BistroNiagara();
+	static const SceneDesc& Scanlands();
 	static std::vector<SceneDesc> All();
 	// Empty optional when the id is unknown (caller prints usage).
 	static std::optional<SceneDesc> Find(const std::string& id);

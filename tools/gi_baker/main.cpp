@@ -159,6 +159,7 @@ std::optional<std::string> SceneGltf(const std::string& id) {
 	if (id == "sponza") return std::string("models/Sponza/sponza.gltf");
 	if (id == "bistro") return std::string("models/Bistro/bistro.gltf");
 	if (id == "bistro-niagara") return std::string("models/BistroNiagara/bistro.gltf");
+	if (id == "scanlands") return std::string("models/Scanlands/scanlands.gltf");
 	return std::nullopt;
 }
 

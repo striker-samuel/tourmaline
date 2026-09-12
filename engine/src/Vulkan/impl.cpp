@@ -34,10 +34,14 @@ using smvk::VulkanResourceManager;
 using smvk::VulkanSwapchain;
 using smvk::VulkanFrameBuffer;
 
+#if 0 // TMP-DIAG: force validation on in Release (disabled, remove later)
+const bool enableValidationLayers = true;
+#else
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
 #else
 const bool enableValidationLayers = true;
+#endif
 #endif
 //
 static VkInstance instance_ = VK_NULL_HANDLE;
@@ -1598,8 +1602,12 @@ int smvk::VulkanCore::CreateInstance() {
 		/*VK_VALIDATION_FEATURE_DISABLE_UNIQUE_HANDLES_EXT*/ // with this on debugNames break
 	};
 
-	VkValidationFeatureEnableEXT enabledValidationFeatures[1] = {
+	VkValidationFeatureEnableEXT enabledValidationFeatures[] = {
 		VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
+#if 0 // TMP-DIAG: GPU-assisted validation (disabled, remove later;
+		// when re-enabling, bump enabledValidationFeatureCount to 2)
+		, VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT
+#endif
 	};
 
 	VkValidationFeaturesEXT validationFeatures{};

@@ -63,11 +63,64 @@ bool BuildMeshletsForUpload(
 	std::vector<unsigned char> rawTris(bound * maxTris * 3);
 
 	const float* positions = vcount > 0 ? &upload.vertices[0].pos.x : nullptr;
+#if 0 // TMP-DIAG scanlands hunt (disabled): Morton spatial pre-sort experiment.
+	// Motivation: flat-shaded Blender terrain soup (1.01 verts/tri, e.g.
+	// scanlands islands) defeats meshopt's topological clustering and the
+	// meshlets span the mesh (observed: 125 m mean radius on a 340 m
+	// island). Fullscreen HZB rects per cluster then TDR the GPU.
+	// Status: inconclusive — radii unchanged with the sort in place;
+	// suspect long thin slivers (15 m edges), not triangle order.
+	// Remove later (keep or drop based on re-test).
+	std::vector<uint32_t> spatialIndices(upload.indices);
+	if (vcount > 0 && icount >= 3 && positions) {
+		const size_t faces = icount / 3;
+		glm::vec3 mn(1e30f), mx(-1e30f);
+		for (size_t k = 0; k < vcount; ++k) {
+			const glm::vec3& p = upload.vertices[k].pos;
+			mn = glm::min(mn, p); mx = glm::max(mx, p);
+		}
+		glm::vec3 ext = mx - mn;
+		const float sc = 65535.0f / std::max({ ext.x, ext.y, ext.z, 1e-9f });
+		auto morton = [](uint32_t x, uint32_t y, uint32_t z) {
+			uint64_t m = 0;
+			for (int i = 0; i < 16; ++i)
+				m |= ((uint64_t)((x >> i) & 1) << (3 * i))
+					| ((uint64_t)((y >> i) & 1) << (3 * i + 1))
+					| ((uint64_t)((z >> i) & 1) << (3 * i + 2));
+			return m;
+		};
+		std::vector<uint64_t> keys(faces);
+		for (size_t f = 0; f < faces; ++f) {
+			const glm::vec3& a = upload.vertices[upload.indices[f * 3]].pos;
+			const glm::vec3& b = upload.vertices[upload.indices[f * 3 + 1]].pos;
+			const glm::vec3& c = upload.vertices[upload.indices[f * 3 + 2]].pos;
+			const uint32_t qx = (uint32_t)(((a.x + b.x + c.x) / 3.0f - mn.x) * sc);
+			const uint32_t qy = (uint32_t)(((a.y + b.y + c.y) / 3.0f - mn.y) * sc);
+			const uint32_t qz = (uint32_t)(((a.z + b.z + c.z) / 3.0f - mn.z) * sc);
+			keys[f] = morton(qx, qy, qz);
+		}
+		std::vector<uint32_t> order(faces);
+		for (size_t f = 0; f < faces; ++f) order[f] = (uint32_t)f;
+		std::stable_sort(order.begin(), order.end(),
+			[&](uint32_t a, uint32_t b) { return keys[a] < keys[b]; });
+		for (size_t f = 0; f < faces; ++f) {
+			spatialIndices[f * 3] = upload.indices[order[f] * 3];
+			spatialIndices[f * 3 + 1] = upload.indices[order[f] * 3 + 1];
+			spatialIndices[f * 3 + 2] = upload.indices[order[f] * 3 + 2];
+		}
+	}
+	const size_t count = meshopt_buildMeshlets(
+		raw.data(), rawVerts.data(), rawTris.data(),
+		spatialIndices.data(), icount,
+		positions, vcount, sizeof(StaticVertex),
+		maxVerts, maxTris, config.coneWeight);
+#else
 	const size_t count = meshopt_buildMeshlets(
 		raw.data(), rawVerts.data(), rawTris.data(),
 		upload.indices.data(), icount,
 		positions, vcount, sizeof(StaticVertex),
 		maxVerts, maxTris, config.coneWeight);
+#endif
 	if (count == 0)
 		return fail("meshopt_buildMeshlets returned 0");
 
@@ -157,6 +210,19 @@ bool BuildMeshletsForUpload(
 		stats.maxTrisUsed = std::max(stats.maxTrisUsed, m.triangle_count);
 	}
 
+#if 0 // TMP-DIAG scanlands hunt (disabled): per-mesh meshlet radius report. Remove later.
+	{
+		float mx = 0.0f; double sum = 0.0; size_t big = 0;
+		for (const Meshlet& m : cooked.meshlets) {
+			mx = (m.boundRadius > mx) ? m.boundRadius : mx;
+			sum += m.boundRadius;
+			if (m.boundRadius > 20.0f) ++big;
+		}
+		if (!cooked.meshlets.empty())
+			std::fprintf(stderr, "[TMP-DIAG] meshradii n=%zu maxR=%.1f meanR=%.1f big=%zu\n",
+				cooked.meshlets.size(), mx, sum / (double)cooked.meshlets.size(), big);
+	}
+#endif
 	*out = std::move(cooked);
 	if (outStats)
 		*outStats = stats;

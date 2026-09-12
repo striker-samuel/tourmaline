@@ -91,6 +91,9 @@ namespace smvk {
 		textureLocations.clear();
 		meshLodInfos.clear();
 		flags.clear();
+		// World material dedup (see the materialForNode remap below).
+		std::unordered_map<uint64_t, uint32_t> worldMatByClusterMat;
+		uint32_t clusterOrdinal = 0;
 
 		// World root node (parent = -1)
 		const int root = addNode(scene, -1, 0);
@@ -202,22 +205,38 @@ namespace smvk {
 			scene.meshForNode[worldNode] = worldMeshIdx;
 		}
 
-			// Remap materialForNode: cluster-local handle index -> world mat idx.
-			for (auto& [node, matIdx] : cs.materialForNode) {
-				const uint32_t worldNode = node + nodeOffset;
-				const uint32_t worldMatIdx =
-					static_cast<uint32_t>(materialLocations.size());
-
-				ClusterMaterialHandle handle =
-					cluster.materials.getHandle(matIdx);
-
-				materialLocations.push_back(
-					MaterialLocation{ .cluster = &cluster, .handle = handle }
-				);
-				scene.materialForNode[worldNode] = worldMatIdx;
+		// Remap materialForNode: cluster-local handle index -> world mat idx.
+		// Deduplicated by (cluster, cluster-local material): instanced
+		// scenes share a handful of materials across hundreds of thousands
+		// of nodes (scanlands: 96 materials over 374k instances). One slot
+		// per instance overflows the GPU materials buffer (MAX_MATERIALS)
+		// and shaders read OOB past it (GPU fault / device loss on heavy
+		// views). Mesh slots stay per-node (CPU-side only); material slots
+		// are GPU-indexed by materialId, so they must stay addressable.
+		for (auto& [node, matIdx] : cs.materialForNode) {
+			const uint32_t worldNode = node + nodeOffset;
+			const uint64_t matKey =
+				(static_cast<uint64_t>(clusterOrdinal) << 32) | matIdx;
+			auto matHit = worldMatByClusterMat.find(matKey);
+			if (matHit != worldMatByClusterMat.end()) {
+				scene.materialForNode[worldNode] = matHit->second;
+				continue;
 			}
+			const uint32_t worldMatIdx =
+				static_cast<uint32_t>(materialLocations.size());
+
+			ClusterMaterialHandle handle =
+				cluster.materials.getHandle(matIdx);
+
+			materialLocations.push_back(
+				MaterialLocation{ .cluster = &cluster, .handle = handle }
+			);
+			worldMatByClusterMat[matKey] = worldMatIdx;
+			scene.materialForNode[worldNode] = worldMatIdx;
+		}
 
 		markAsChanged(scene, clusterRootNode);
+		++clusterOrdinal;
 	}
 
 	RebuildStaticCache(scene);

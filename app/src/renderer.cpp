@@ -561,6 +561,58 @@ void GfxRenderer::RegisterWorldMeshes(smvk::World& world) {
 			return UINT32_MAX;
 		const uint32_t baseVertex =
 			(uint32_t)std::max<int32_t>(mesh->geometry.surfaces[0].baseVertex, 0);
+#if 0 // TMP-DIAG scanlands hunt (disabled): per-mesh registration + meshlet validation dumps. Remove later.
+		{
+			std::string uri;
+			if (loc.cluster)
+				uri = loc.cluster->GetMeshUri(loc.handle).Str();
+			std::fprintf(stderr, "[TMP-DIAG] reg pool=%u uri=%s baseVertex=%d indexCount=%u vertCount=%u hasMeshlets=%d\n",
+				loc.handle.index(), uri.c_str(), mesh->geometry.surfaces.empty() ? -999 : mesh->geometry.surfaces[0].baseVertex,
+				mesh->geometry.indexCount, mesh->geometry.vertexCount,
+				(mesh->meshlets && !mesh->meshlets->empty()) ? 1 : 0);
+		}
+		if (mesh->meshlets && !mesh->meshlets->empty()) {
+			const smvk::CookedMeshlets& cm = *mesh->meshlets;
+			const uint32_t vcount = mesh->geometry.vertexCount;
+			size_t bad = 0, badB = 0;
+			float mxr = 0.0f; double sumr = 0.0; size_t big = 0;
+			auto badf = [](float v) { return !(v == v) || v == std::numeric_limits<float>::infinity() || v == -std::numeric_limits<float>::infinity(); };
+			for (size_t mi = 0; mi < cm.meshlets.size(); ++mi) {
+				const smvk::Meshlet& ml = cm.meshlets[mi];
+				mxr = (ml.boundRadius > mxr) ? ml.boundRadius : mxr;
+				sumr += ml.boundRadius;
+				if (ml.boundRadius > 20.0f) ++big;
+				if (badf(ml.boundCenter.x) || badf(ml.boundCenter.y) || badf(ml.boundCenter.z)
+					|| badf(ml.boundRadius) || badf(ml.coneApex.x) || badf(ml.coneApex.y)
+					|| badf(ml.coneApex.z) || badf(ml.coneAxis.x) || badf(ml.coneAxis.y)
+					|| badf(ml.coneAxis.z) || badf(ml.coneCutoff))
+					++badB;
+				if (ml.vertexOffset + ml.vertexCount > cm.vertices.size()
+					|| ml.triangleOffset + ml.triangleCount * 3u > cm.triangles.size())
+					++bad;
+				else {
+					for (uint32_t vi = 0; vi < ml.vertexCount; ++vi)
+						if (cm.vertices[ml.vertexOffset + vi] >= vcount) { ++bad; break; }
+					for (uint32_t ti = 0; ti < ml.triangleCount * 3u; ++ti)
+						if (cm.triangles[ml.triangleOffset + ti] >= ml.vertexCount) { ++bad; break; }
+				}
+			}
+			if (bad > 0 || badB > 0) {
+				std::string uri;
+				if (loc.cluster)
+					uri = loc.cluster->GetMeshUri(loc.handle).Str();
+				std::fprintf(stderr, "[TMP-DIAG] meshlets CORRUPT/NAN uri=%s vcount=%u meshlets=%zu bad=%zu badB=%zu\n",
+					uri.c_str(), vcount, cm.meshlets.size(), bad, badB);
+			}
+			if (cm.meshlets.size() > 100) {
+				std::string uri3;
+				if (loc.cluster)
+					uri3 = loc.cluster->GetMeshUri(loc.handle).Str();
+				std::fprintf(stderr, "[TMP-DIAG] meshletr uri=%s n=%zu maxR=%.1f meanR=%.1f big=%zu\n",
+					uri3.c_str(), cm.meshlets.size(), mxr, sumr / (double)cm.meshlets.size(), big);
+			}
+		}
+#endif
 		uint32_t gfxMesh = UINT32_MAX;
 		if (mesh->meshlets && !mesh->meshlets->empty()) {
 			gfxMesh = smvk::gfx::RegisterMeshFromCooked(gfx, *mesh->meshlets, baseVertex);
@@ -625,6 +677,24 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 	SMVK_PROFILE_RENDER("GfxFilterMainView");
 	SMVK_PROFILE_TAG("extentWidth", extent.width);
 	SMVK_PROFILE_TAG("extentHeight", extent.height);
+#if 0 // TMP-DIAG scanlands hunt (disabled): dump worldMesh->group(pool)->URI map once. Remove later.
+	{
+		static bool kMapDone = false;
+		if (!kMapDone && std::getenv("VULKANTOY_DUMPMAP")) {
+			kMapDone = true;
+			for (size_t i = 0; i < world.meshLocations.size(); ++i) {
+				const auto& loc = world.meshLocations[i];
+				uint32_t g = (i < world.meshLodInfos.size())
+					? world.meshLodInfos[i].groupId : UINT32_MAX;
+				std::string u = (loc.cluster)
+					? loc.cluster->GetMeshUri(loc.handle).Str() : std::string{};
+				if (i >= world.meshLocations.size() - 30 || g <= 60)
+					std::fprintf(stderr, "[TMP-DIAG] map worldMesh=%zu group=%u uri=%s\n",
+						i, g, u.c_str());
+			}
+		}
+	}
+#endif
 
 	smvk::gfx::BeginFrame(gfx);
 	if (mainViewIdx == smvk::RenderViewSet::kInvalidIndex)
@@ -644,6 +714,54 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 			if (item.material == smvk::World::kInvalidIndex)
 				return;
 			const uint32_t worldMesh = item.mesh;
+#if 0 // TMP-DIAG scanlands hunt (disabled): mesh hide/show + model-matrix dump. Remove later.
+			// Hide glTF mesh groupIds in VULKANTOY_HIDEGROUP="lo-hi".
+			// VULKANTOY_SHOWGROUP="n" shows ONLY group n.
+			// VULKANTOY_DUMPMAT dumps the model matrix for group-53 pushes.
+			static int kHideLo = INT_MAX, kHideHi = INT_MIN;
+			static int kShowOnly = INT_MAX;
+			static bool kHideInit = false;
+			if (!kHideInit) {
+				kHideInit = true;
+				if (const char* r = std::getenv("VULKANTOY_HIDEGROUP")) {
+					int lo = INT_MAX, hi = INT_MIN;
+					if (std::sscanf(r, "%d-%d", &lo, &hi) == 2) {
+						kHideLo = lo; kHideHi = hi;
+					}
+				}
+				if (const char* r = std::getenv("VULKANTOY_SHOWGROUP")) {
+					int n = INT_MAX;
+					if (std::sscanf(r, "%d", &n) == 1) {
+						kHideLo = INT_MIN; kHideHi = INT_MAX;
+						kShowOnly = n;
+					}
+				}
+			}
+			if (kShowOnly != INT_MAX) {
+				if (worldMesh >= world.meshLodInfos.size()
+					|| (int)world.meshLodInfos[worldMesh].groupId != kShowOnly)
+					return;
+			}
+			else if (kHideLo <= kHideHi && worldMesh < world.meshLodInfos.size()
+				&& (int)world.meshLodInfos[worldMesh].groupId >= kHideLo
+				&& (int)world.meshLodInfos[worldMesh].groupId <= kHideHi)
+				return;
+			{
+				static bool kOnce = false;
+				if (!kOnce && std::getenv("VULKANTOY_DUMPMAT")
+					&& worldMesh < world.meshLodInfos.size()
+					&& (int)world.meshLodInfos[worldMesh].groupId == 53) {
+					kOnce = true;
+					const glm::mat4& model = world.scene.globalTransform[item.node];
+					std::fprintf(stderr, "[TMP-DIAG] mat53 node=%u mesh=%u m=[%.3g %.3g %.3g %.3g; %.3g %.3g %.3g %.3g; %.3g %.3g %.3g %.3g; %.3g %.3g %.3g %.3g]\n",
+						(unsigned)item.node, worldMesh,
+						model[0][0], model[1][0], model[2][0], model[3][0],
+						model[0][1], model[1][1], model[2][1], model[3][1],
+						model[0][2], model[1][2], model[2][2], model[3][2],
+						model[0][3], model[1][3], model[2][3], model[3][3]);
+				}
+			}
+#endif
 			if (worldMesh >= meshMap_.size())
 				return; // unknown mesh: legacy direct path still draws it
 			const glm::mat4& model = world.scene.globalTransform[item.node];

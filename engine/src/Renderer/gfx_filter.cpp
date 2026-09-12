@@ -1547,6 +1547,39 @@ Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t
 
 	BuildBatches(s, view);
 
+#if 0 // TMP-DIAG scanlands hunt (disabled): validate batch->cluster references. Remove later.
+	{
+		static bool kOnce = false;
+		if (!kOnce && std::getenv("VULKANTOY_DUMPBATCH")) {
+			kOnce = true;
+			size_t bad = 0;
+			for (size_t bi = 0; bi < v.batches.size(); ++bi) {
+				const Batch& b = v.batches[bi];
+				if (b.cluster >= (uint32_t)s.clusters.size()
+					|| b.draw >= (uint32_t)v.drawConstants.size()) {
+					std::fprintf(stderr, "[TMP-DIAG] batch OOB bi=%zu cluster=%u/%zu draw=%u/%zu\n",
+						bi, b.cluster, s.clusters.size(), b.draw, v.drawConstants.size());
+					if (++bad > 20) break;
+					continue;
+				}
+				const Cluster& c = s.clusters[b.cluster];
+				auto badf = [](float x) { return !(x == x); };
+				if (c.triCount == 0 || c.triCount > 128
+					|| c.indexOffset + c.triCount * 3u < c.indexOffset
+					|| badf(c.boundCenter.x) || badf(c.boundCenter.y) || badf(c.boundCenter.z)
+					|| badf(c.boundRadius)) {
+					std::fprintf(stderr, "[TMP-DIAG] cluster BAD bi=%zu cl=%u tri=%u off=%u c=(%.2f,%.2f,%.2f) r=%.2f\n",
+						bi, b.cluster, c.triCount, c.indexOffset,
+						c.boundCenter.x, c.boundCenter.y, c.boundCenter.z, c.boundRadius);
+					if (++bad > 20) break;
+				}
+			}
+			std::fprintf(stderr, "[TMP-DIAG] batch scan done batches=%zu clusters=%zu draws=%u\n",
+				v.batches.size(), s.clusters.size(), (uint32_t)v.drawConstants.size());
+		}
+	}
+#endif
+
 	if (v.batchCount > 0) {
 		SMVK_PROFILE_SCOPE("GfxUploadBatches");
 		ctx.UploadDataToBuffer(v.batchBuffers[frameIndex],
