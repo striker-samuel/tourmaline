@@ -39,13 +39,14 @@ groupshared uint gsSlotV;       // visibility slot for the current light
 groupshared uint gsVizBytes[64]; // per-pixel visibility, byte-quantized
 groupshared uint gsEarlyIdx[DS_MAX_LIGHTS_PER_TILE];
 
-// Per-light visibility: spots with an assigned shadow tile run PCSS
-// over the spot-shadow atlas (paper 2.4 — Percentage Closer Soft Shadows;
-// same guards as the inline path); everything else is fully lit.
-// EVSM (frame.evsmMode): the atlas holds prefiltered moments, so the
-// blocker-search PCSS has no depth to work on — sample the EVSM
-// visibility (fixed filter, already blurred) instead.
-float DsComputeLightVisibility(ForwardPlusLight L, float3 worldPos, float3 faceNormal)
+// Per-light visibility: spots with an assigned shadow tile run soft
+// shadows over the spot atlas (paper 2.4 — PCSS; same guards as the inline
+// path); everything else is fully lit.
+// EVSM (frame.evsmMode): the atlas holds prefiltered moments — PCSS's
+// blocker search is replaced by the moment blocker (ln(m+)/c) driving a
+// variable penumbra disk of Chebyshev taps (tile pads carry near /
+// lightSize / softness). PCF path keeps the classic blocker-search PCSS.
+float DsComputeLightVisibility(ForwardPlusLight L, float3 worldPos, float3 faceNormal, float2 pix)
 {
     if (L.type != 1)
         return 1.0f;
@@ -61,7 +62,7 @@ float DsComputeLightVisibility(ForwardPlusLight L, float3 worldPos, float3 faceN
     uint evsm = pcDS.frameUniforms.Get().evsmMode;
     if (evsm != 0u)
         return GetSpotShadowFactorEvsmTile(0u, worldPos, faceNormal,
-            L.direction, t, atlasIdx, EVSM_EXPONENT);
+            L.direction, L.outerAngle, t, atlasIdx, EVSM_EXPONENT, pix);
     return PcssSpotShadow(1u, worldPos, faceNormal, L.direction, t, atlasIdx,
         pcDS.pcssLightSize, pcDS.spotShadowNear, L.outerAngle);
 }
@@ -157,7 +158,7 @@ void mainCS(uint3 tid : SV_GroupThreadID, uint3 gid : SV_GroupID)
         const ForwardPlusLight L = pcDS.lights.Get().lights[lightIdx];
         float viz = 1.0f;
         if (validPixel)
-            viz = DsComputeLightVisibility(L, worldPos, faceNormal);
+            viz = DsComputeLightVisibility(L, worldPos, faceNormal, float2(px));
         // Invalid (sky/outside) pixels count as lit: they never shade.
 
         // Tile-wide votes (per wave, ANDed through groupshared). Light e

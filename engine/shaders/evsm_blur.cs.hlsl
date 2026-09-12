@@ -45,9 +45,12 @@ struct EvsmBlurPush
 [[vk::push_constant]]
 ConstantBuffer<EvsmBlurPush> pcBlur;
 
-// 5-tap Gaussian, sigma ~1.0 (radius 2). Larger radii reuse the same weights
-// by stepping 1 texel per tap (blurRadius only widens the clamp-safe range,
-// weights stay normalized).
+// 5-tap Gaussian (sigma ~1.0). The kernel is STRIDE-DILATED for wide
+// prefiltering: step = blurRadius/2 texels per tap, so push.blurRadius
+// is the effective half-width in texels (radius 2 = classic 5-tap;
+// radius 8 = the same weights spread over a 17-texel window — the EVSM
+// softness knob drives this; the moments stay a valid expectation
+// because the weights are normalized).
 static const float kBlurW[5] = { 0.0545f, 0.2442f, 0.4026f, 0.2442f, 0.0545f };
 
 [numthreads(8, 8, 1)]
@@ -65,20 +68,27 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
 
     float2 acc = float2(0.0f, 0.0f);
     float wSum = 0.0f;
-    int radius = (int)min(pcBlur.blurRadius, 2u);
-    for (int t = -radius; t <= radius; ++t)
+    // Stride dilation: taps at -2..+2 steps of (blurRadius/2) texels.
+    const int step = max(1, (int)min(pcBlur.blurRadius, 8u) / 2);
+    [unroll]
+    for (int t = -2; t <= 2; ++t)
     {
         float w = kBlurW[t + 2];
         float2 tapUV = baseUV;
         if (pcBlur.direction == 0u)
-            tapUV.x += float(t) * pcBlur.texelU;
+            tapUV.x += float(t * step) * pcBlur.texelU;
         else
-            tapUV.y += float(t) * pcBlur.texelV;
+            tapUV.y += float(t * step) * pcBlur.texelV;
         tapUV = clamp(tapUV, float2(pcBlur.uvMinU, pcBlur.uvMinV), float2(pcBlur.uvMaxU, pcBlur.uvMaxV));
         float2 m = textures[srcIdx].SampleLevel(samplers[pcBlur.samplerIndex], tapUV, 0).rg;
         // Sanitize once: a single inf/NaN moment (fp32 overflow under a
         // huge exponent, or uncleared tile) poisons the whole blur window.
-        m = clamp(m, float2(1e-6f, 1e-6f), float2(3.0e37f, 1.0f));
+        // Floor care: the NEGATIVE channel spans e^-c (d=1) .. 1 (d=0) —
+        // with c=42 that is 5.7e-19 — a 1e-6 floor here would clamp the
+        // channel up to e^-13.8, erasing all blocker-depth information
+        // below d ~ 0.33 and killing the soft-shadow penumbra estimator
+        // (EvsmBlockerDepth reads this channel). Keep the floor ~e^-c.
+        m = clamp(m, float2(1e-6f, 1e-20f), float2(3.0e37f, 1.0f));
         acc += m * w;
         wSum += w;
     }

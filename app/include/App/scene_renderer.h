@@ -769,6 +769,12 @@ protected:
 	// queue and consumed by this frame's lighting (no shadow lag/wobble).
 	// OneFrameLag remains in the ImGui combo for overlap comparison.
 	smvk::EvsmPipelineMode m_evsmPipeline = smvk::EvsmPipelineMode::SameFrame;
+	// Soft shadows: artistic scalar over the physical penumbrae —
+	// directional uses the sun disc angular radius (environment
+	// sunDiscSizeDeg) projected per cascade; spots use the emitting-sphere
+	// diameter (m_evsmSpotLightSize) with PCSS similar-triangles. 0 = hard.
+	float m_evsmSoftness = 1.0f;
+	float m_evsmSpotLightSize = 0.35f; // m, matches the demo PCSS light size
 	bool EvsmActive() const {
 		return m_evsmEnabled
 			&& m_viewportResources.evsmDir.Valid()
@@ -828,6 +834,12 @@ protected:
 	smvk::Holder<smvk::BufferHandle> m_debugLines; // pos-only cone line VB
 	uint32_t m_debugLinesCap = 0; // verts allocated
 	bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
+	// Opt-in EVSM atlas debug dump (VULKANTOY_EVSM_DUMP=<frame>): one-shot
+	// after Execute — per-stage stats (moments/temp/blurred) + a log-encoded
+	// PNG of the cascade-0 tile in exports/ (edge-band width = prefilter
+	// width). Same pattern as VULKANTOY_DS_DUMP (stalls; debug only).
+	int m_evsmDumpAtFrame = -1;
+	void EvsmDumpAtlas(uint32_t frameIndex);
 	bool m_debugDumpHzb = false;    // one-shot: dump HZB buffer contents (stderr)
 	bool m_dumpFirstFrameHzb = false;      // opt-in: dump HZB once on the next frame (stalls)
 	int m_dumpAtFrame = -1;                // opt-in (VULKANTOY_DS_DUMP=<frame>): one-shot deferred-shadow dump (stalls)

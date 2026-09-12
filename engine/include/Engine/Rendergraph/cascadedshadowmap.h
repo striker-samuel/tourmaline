@@ -253,6 +253,10 @@ struct CascadedShadowAtlas {
 	// invView/invProj must come from the Y-flipped camera proj (the same
 	// matrices used for rendering), splits from ComputeCascadeSplits.
 	// shadowMapIndex is the bindless index of this atlas.
+	// tanSunAngle: tan(sun disc angular radius) — with softness it drives
+	// the per-cascade solar-penumbra scale baked into pad2_[0]
+	// (depthRange/orthoW * tanSunAngle): receiver NDC delta * pad2_[0] is
+	// the physical penumbra in tile-UV (see SampleEvsmTileSoft).
 	GpuDirectionalLightDescription BuildDirectionalLight(
 		const glm::vec3& lightDir,
 		const glm::vec4& color,
@@ -261,7 +265,9 @@ struct CascadedShadowAtlas {
 		const glm::mat4& invView,
 		const glm::mat4& invProj,
 		const std::vector<float>& splits,
-		float zPadding = 1.0f) const {
+		float zPadding = 1.0f,
+		float tanSunAngle = 0.0f,
+		float softness = 1.0f) const {
 		assert(Valid());
 		assert(splits.size() == static_cast<size_t>(cascadeCount + 1));
 
@@ -341,8 +347,15 @@ struct CascadedShadowAtlas {
 			dir.cascades[i].uvClampMin = dir.cascades[i].uvBias + glm::vec2(texelU, texelV);
 			dir.cascades[i].uvClampMax =
 				dir.cascades[i].uvBias + dir.cascades[i].uvScale - glm::vec2(texelU, texelV);
-			dir.cascades[i].pad2_[0] = 0;
-			dir.cascades[i].pad2_[1] = 0;
+			// Soft shadows (SampleEvsmTileSoft): pad2_[0] converts the
+			// blocker->receiver NDC depth delta into a solar penumbra in
+			// tile-UV (worldDist = deltaNDC * depthRange; uv = worldDist *
+			// tanSun / orthoW), pad2_[1] is the artistic softness scalar.
+			dir.cascades[i].pad2_[0] =
+				(depthRange > 1e-6f && orthoW > 1e-6f)
+				? (depthRange / orthoW) * std::max(tanSunAngle, 0.0f)
+				: 0.0f;
+			dir.cascades[i].pad2_[1] = std::max(softness, 0.0f);
 		}
 		std::memcpy(dir.lightVP, dir.cascades[0].lightVP, sizeof(dir.lightVP));
 		return dir;

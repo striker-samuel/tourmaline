@@ -216,6 +216,10 @@ struct SpotShadowAtlas {
 
 	// Builds one tile descriptor for a spot light. shadowMapIndex is the
 	// bindless index of this atlas (stored by the caller into the light).
+	// lightSize/softness drive the EVSM soft-shadow penumbra (packed into
+	// the tile pads, see SampleEvsmSpotTileSoft): lightSize = world-space
+	// emitting-sphere diameter, softness = artistic scalar (0 = hard).
+	// nearPlane rides pad_ so the shader can invert the RH_ZO perspective.
 	GpuCascadeDescription BuildSpotTile(
 		const glm::vec3& position,
 		const glm::vec3& direction,
@@ -224,7 +228,9 @@ struct SpotShadowAtlas {
 		int32_t shadowMapIndex,
 		uint32_t tileIndex,
 		float nearPlane = 0.5f,
-		float bias = 0.0f) const {
+		float bias = 0.0f,
+		float lightSize = 0.35f,
+		float softness = 1.0f) const {
 		assert(Valid());
 		assert(tileIndex < slotCount);
 
@@ -252,8 +258,12 @@ struct SpotShadowAtlas {
 		const float texelV = 0.5f * invAtlasH;
 		tile.uvClampMin = tile.uvBias + glm::vec2(texelU, texelV);
 		tile.uvClampMax = tile.uvBias + tile.uvScale - glm::vec2(texelU, texelV);
-		tile.pad2_[0] = 0;
-		tile.pad2_[1] = 0;
+		// Soft shadows (SampleEvsmSpotTileSoft): near plane for the
+		// eye-depth inversion, emitting-sphere diameter + artistic scalar
+		// for the PCSS-style penumbra.
+		tile.pad_ = nearPlane;
+		tile.pad2_[0] = std::max(lightSize, 0.0f);
+		tile.pad2_[1] = std::max(softness, 0.0f);
 		(void)shadowMapIndex; // atlas index lives in the light / push constants
 		return tile;
 	}

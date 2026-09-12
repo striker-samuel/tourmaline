@@ -10,14 +10,14 @@
 // depth signal, then the async compute prefilter blurs the resolved image.
 //
 // Push constants: same scene-wide `pc` as shadow.frag (material lookup for
-// the alpha-tested cutout path). EVSM exponent comes from the C++ EvsmDesc
-// via a specialization-constant override below; default matches
-// smvk::kEvsmExponent so a missing spec still renders correctly.
+// the alpha-tested cutout path). EVSM exponent: the shared EVSM_EXPONENT
+// define in evsm.hlsli (== C++ smvk::kEvsmExponent) — ONE compile-time
+// constant across the moment pass and every consumer. Deliberately NOT a
+// specialization constant: specializing the warp here would silently
+// desync the sampling-side exponent (pipelines compile independently).
 //
 // Alpha-tested (MASK) casters discard under the cutoff like shadow.frag;
-// opaque casters write moments unconditionally.
-
-[[vk::constant_id(0)]] const float EVSM_C = 42.0f;
+// opaque casters use shadow_evsm_opaque.frag.hlsl (no material path).
 
 struct PSIn
 {
@@ -62,6 +62,6 @@ PSOut mainPS(PSIn IN)
     float d = saturate(IN.clipPos.z);
 
     PSOut OUT;
-    OUT.moments = EvsmWarp(d, EVSM_C);
+    OUT.moments = EvsmWarp(d, EVSM_EXPONENT);
     return OUT;
 }

@@ -11,9 +11,8 @@
 //
 // Vertex shader: shadow.vert.hlsl mainVS (same lightVP convention as the
 // depth-only path). Runs with a 2xMSAA RG32F color target + 2xMSAA D32
-// depth; the resolve averages the warped moments.
-
-[[vk::constant_id(0)]] const float EVSM_C = 42.0f;
+// depth; the resolve averages the warped moments. Exponent: the shared
+// EVSM_EXPONENT define (NOT a spec constant — see shadow_evsm.frag.hlsl).
 
 struct PSIn
 {
@@ -32,6 +31,6 @@ PSOut mainPS(PSIn IN)
     // SV_Position.z is window-space depth in [0,1] (Vulkan ZO) — the
     // light-space depth d the EVSM warp expects.
     PSOut OUT;
-    OUT.moments = EvsmWarp(saturate(IN.clipPos.z), EVSM_C);
+    OUT.moments = EvsmWarp(saturate(IN.clipPos.z), EVSM_EXPONENT);
     return OUT;
 }

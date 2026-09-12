@@ -623,6 +623,14 @@ bool SceneRenderer::Initialize() {
 			if (std::atoi(evsmEnv) == 0)
 				m_evsmEnabled = false;
 		}
+		// EVSM softness override for A/B captures (VULKANTOY_EVSM_SOFT=x).
+		if (const char* softEnv = std::getenv("VULKANTOY_EVSM_SOFT")) {
+			m_evsmSoftness = std::max(0.0f, (float)std::atof(softEnv));
+		}
+		// Opt-in EVSM atlas dump (VULKANTOY_EVSM_DUMP=<frame>): see header.
+		if (const char* dumpEnv = std::getenv("VULKANTOY_EVSM_DUMP")) {
+			m_evsmDumpAtFrame = std::atoi(dumpEnv);
+		}
 
 		if (const char* iblEnv = std::getenv("VULKANTOY_IBL")) {
 			// Mute the analytic sky ambient (AmbientMode: sky -> off; the
@@ -1538,7 +1546,11 @@ void SceneRenderer::Shutdown() {
 				invView,
 				invProj,
 				splits,
-				CASCADE_Z_PADDING);
+				CASCADE_Z_PADDING,
+				// Soft directional shadows: the environment's sun disc
+				// angular radius becomes the physical penumbra angle.
+				std::tan(glm::radians(m_env.sunDiscSizeDeg)),
+				m_evsmSoftness);
 		// Keep lights[0].lightVP in sync for legacy single-cascade path / debug
 		std::memcpy(light.lightVP, dir.lightVP, sizeof(light.lightVP));
 
@@ -2039,11 +2051,14 @@ void SceneRenderer::Shutdown() {
 					std::vector<smvk::GpuCascadeDescription> tiles(selected.size());
 					for (size_t k = 0; k < selected.size(); ++k) {
 						smvk::ForwardPlusLight& sl = lights[selected[k].lightIndex];
-						tiles[k] = m_viewportResources.spotShadows.BuildSpotTile(
-							glm::vec3(sl.position[0], sl.position[1], sl.position[2]),
-							glm::normalize(glm::vec3(sl.direction[0], sl.direction[1], sl.direction[2])),
-							sl.outerAngle, sl.range, atlasIdx, (uint32_t)k,
-							SPOT_SHADOW_NEAR, SPOT_SHADOW_BIAS);
+					tiles[k] = m_viewportResources.spotShadows.BuildSpotTile(
+						glm::vec3(sl.position[0], sl.position[1], sl.position[2]),
+						glm::normalize(glm::vec3(sl.direction[0], sl.direction[1], sl.direction[2])),
+						sl.outerAngle, sl.range, atlasIdx, (uint32_t)k,
+						SPOT_SHADOW_NEAR, SPOT_SHADOW_BIAS,
+						// Soft spot shadows: emitting-sphere diameter +
+						// artistic softness (tile pads, see evsm.hlsli).
+						m_evsmSpotLightSize, m_evsmSoftness);
 						sl.shadowTile = (int32_t)k;
 						sl.shadowMapIndex = sampleIdx;
 						sl.shadowBias = SPOT_SHADOW_BIAS;
@@ -3134,6 +3149,17 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			// steady state; shaders persist across the flip).
 			m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline));
 			m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline));
+			// Soft shadows: the softness knob drives the PREFILTER width —
+			// the dominant visible softness (stride-dilated Gaussian; the
+			// per-receiver solar/light-size disk in evsm.hlsli adds the
+			// variable-penumbra gradient on top). blurRadius is not part
+			// of the Ensure recreate key, so mutating it per frame is free.
+			{
+				const uint32_t blurR = static_cast<uint32_t>(
+					std::clamp(2 + int(m_evsmSoftness * 2.0f), 2, 8));
+				m_viewportResources.evsmDir.blurRadius = blurR;
+				m_viewportResources.evsmSpot.blurRadius = blurR;
+			}
 			m_viewportResources.exposure.Ensure(*m_context, *m_rendergraph, MakeExposureDesc());
 		}
 		// Effective exposure for this frame (adapted last frame, 1-frame lag).
@@ -5278,16 +5304,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					// EVSM (Exponential Variance Shadow Maps): RG32F 2xMSAA
 					// moments + async separable blur, 1-frame-lag pipelined.
 					// Off = PCF depth atlases. Needs RG32F 2xMSAA support.
-					ImGui::Checkbox("EVSM enabled", &m_evsmEnabled);
-					ImGui::SameLine();
-					ImGui::TextDisabled(EvsmActive() ? "(active)" : "(PCF fallback)");
-					int evsmPipe = (m_evsmPipeline == smvk::EvsmPipelineMode::SameFrame) ? 1 : 0;
-					if (ImGui::Combo("Pipeline", &evsmPipe, "One-frame lag\0Same-frame\0")) {
-						m_evsmPipeline = (evsmPipe == 1)
-							? smvk::EvsmPipelineMode::SameFrame
-							: smvk::EvsmPipelineMode::OneFrameLag;
-					}
-					ImGui::TextDisabled("RG32F 2xMSAA moments, 5-tap Gaussian H+V (async)");
+				ImGui::Checkbox("EVSM enabled", &m_evsmEnabled);
+				ImGui::SameLine();
+				ImGui::TextDisabled(EvsmActive() ? "(active)" : "(PCF fallback)");
+				int evsmPipe = (m_evsmPipeline == smvk::EvsmPipelineMode::SameFrame) ? 1 : 0;
+				if (ImGui::Combo("Pipeline", &evsmPipe, "One-frame lag\0Same-frame\0")) {
+					m_evsmPipeline = (evsmPipe == 1)
+						? smvk::EvsmPipelineMode::SameFrame
+						: smvk::EvsmPipelineMode::OneFrameLag;
+				}
+				ImGui::SliderFloat("Softness", &m_evsmSoftness, 0.0f, 3.0f);
+				ImGui::SliderFloat("Spot light size (m)", &m_evsmSpotLightSize, 0.0f, 2.0f);
+				ImGui::TextDisabled("RG32F 2xMSAA moments, 5-tap Gaussian H+V (async);"
+					" soft = moment-blocker PCSS (solar angle / light size)");
 				}
 				if (ImGui::CollapsingHeader("Deferred shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
 					// Deferred shadows (Square-Enix-style tiled/zBin pipeline).
@@ -6125,6 +6154,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				DumpDeferredShadows(fb.frameIndex);
 			}
 		}
+		// Opt-in EVSM atlas dump (VULKANTOY_EVSM_DUMP=<frame>): one-shot
+		// after Execute (the blur completed in this frame's submit — the
+		// dump waits for device idle first).
+		if (m_evsmDumpAtFrame >= 0 && m_frameCounter == (uint64_t)m_evsmDumpAtFrame) {
+			m_evsmDumpAtFrame = -1;
+			if (EvsmActive()) {
+				WaitForDeviceIdle();
+				EvsmDumpAtlas(fb.frameIndex);
+			}
+		}
 
 		// Snapshot this frame's camera + node transforms for the next
 		// frame's motion vector pass. Must run AFTER Execute: the motion
@@ -6141,6 +6180,85 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 }
 
 namespace app {
+
+void SceneRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
+	// Opt-in debug (VULKANTOY_EVSM_DUMP=<frame>): per-stage stats over the
+	// cascade-0 tile of the moments/temp/blurred images — R = E[exp(+c d)],
+	// G = E[exp(-c d)] — plus a log-encoded G-channel PNG per stage in
+	// exports/ (dark = far). The PNG edge-band width IS the prefilter
+	// width, which is how the softness knob's effect was verified.
+	const smvk::EvsmAtlas& atlas = m_viewportResources.evsmDir;
+	// (Holder is move-only: reference the originals instead of copies.)
+	const smvk::Holder<smvk::ImageHandle>* stagesArr[3] = {
+		&atlas.moments[0], &atlas.blurTemp[0], &atlas.blurred[0]
+	};
+	const char* stageNames[3] = { "moments", "temp", "blurred" };
+	const smvk::ImageLayout stageLayouts[3] = {
+		smvk::ImageLayout::ColorAttachmentOptimal,
+		smvk::ImageLayout::General,
+		smvk::ImageLayout::ShaderReadOnlyOptimal,
+	};
+	const uint32_t w = atlas.atlasExtent.width;
+	const uint32_t h = atlas.atlasExtent.height;
+	const size_t bytes = size_t(w) * h * 8;
+	std::vector<uint8_t> px(bytes);
+	const uint32_t tile = std::min(atlas.tileExtent.width, w);
+	for (int s = 0; s < 3; ++s) {
+		const smvk::Holder<smvk::ImageHandle>& img = *stagesArr[s];
+		const char* name = stageNames[s];
+		if (img.empty())
+			continue;
+		if (!m_context->DownloadDataFromImage(img, stageLayouts[s], px.data(), bytes)) {
+			std::fprintf(stderr, "[EVSM-dump] %s readback failed\n", name);
+			continue;
+		}
+		const float* f = reinterpret_cast<const float*>(px.data());
+		double sumR = 0, sumG = 0, minR = 1e300, maxR = 0, minG = 1e300, maxG = 0;
+		double gradR = 0, gradG = 0; // mean |delta| to the right neighbor
+		uint64_t n = 0, ng = 0;
+		for (uint32_t y = 0; y < tile; y += 4) {
+			for (uint32_t x = 0; x < tile; x += 4) {
+				const size_t i = (size_t(y) * w + x) * 2;
+				const float r = f[i], g = f[i + 1];
+				sumR += r; sumG += g;
+				minR = std::min(minR, (double)r); maxR = std::max(maxR, (double)r);
+				minG = std::min(minG, (double)g); maxG = std::max(maxG, (double)g);
+				if (x + 1 < tile) {
+					const size_t j = (size_t(y) * w + x + 1) * 2;
+					gradR += std::abs((double)f[j] - r);
+					gradG += std::abs((double)f[j + 1] - g);
+					++ng;
+				}
+				++n;
+			}
+		}
+		std::fprintf(stderr,
+			"[EVSM-dump] %-8s c0: gradR=%.4e gradG=%.4e | R mean=%.3e max=%.3e | G mean=%.3e min=%.3e (blurR=%u)\n",
+			name, gradR / (double)ng, gradG / (double)ng,
+			sumR / (double)n, maxR, sumG / (double)n, minG, atlas.blurRadius);
+		std::fflush(stderr);
+		// PNG of the cascade-0 tile (G channel log-encoded: dark = far).
+		// Visual edge-band width = the prefilter width — definitive.
+		{
+			std::vector<uint8_t> rgba(size_t(tile) * tile * 4);
+			for (uint32_t y = 0; y < tile; ++y) {
+				for (uint32_t x = 0; x < tile; ++x) {
+					const size_t i = (size_t(y) * w + x) * 2;
+					const size_t o = (size_t(y) * tile + x) * 4;
+					// G = e^(-42 d): log2 spread over [-42, 0] -> [0,255].
+					const double lg = std::max(0.0, -std::log2(std::max((double)f[i + 1], 1e-30)) / 42.0);
+					const uint8_t v = (uint8_t)std::min(255.0, lg * 255.0);
+					rgba[o] = v; rgba[o + 1] = v; rgba[o + 2] = v; rgba[o + 3] = 255;
+				}
+			}
+			char path[128];
+			std::snprintf(path, sizeof(path), "exports/evsm_%s_r%u.png", name,
+				(unsigned)atlas.blurRadius);
+			if (LutWritePng(path, (int)tile, (int)tile, rgba.data()))
+				std::fprintf(stderr, "[EVSM-dump] wrote %s\n", path);
+		}
+	}
+}
 
 void SceneRenderer::UpdateCamera(float dt)
 {

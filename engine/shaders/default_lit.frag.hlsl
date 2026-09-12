@@ -87,7 +87,7 @@ float3 LinearToSRGB(float3 c)
 void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
     float3 geomN, float3 N, float3 V, float3 F0, float roughness,
     float3 diffuse, float NdotV, bool useInlineShadow, float vis,
-    inout float3 direct)
+    float2 pix, inout float3 direct)
 {
     // Cheapest reject first: squared distance vs squared range.
     // No sqrt / division until the light survives this test.
@@ -152,15 +152,16 @@ void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
     // Shadow factor: inline spot-atlas sample (legacy path) or the
     // deferred-shadow pipeline's precomputed per-pixel visibility.
     // EVSM (frame.evsmMode): pl.shadowMapIndex addresses the blurred
-    // moments instead of the depth atlas; linear sampler 0.
+    // moments instead of the depth atlas; linear sampler 0. Soft variant:
+    // PCSS penumbra from the moment blocker (tile pads carry the knobs).
     float shadowFactor = vis;
     if (useInlineShadow && pl.type == 1 && pl.shadowTile >= 0)
     {
         uint evsm = pc.frameUniforms.Get().evsmMode;
         if (evsm != 0u && pl.shadowMapIndex >= 0)
             shadowFactor = GetSpotShadowFactorEvsmFromPC(0, worldPos, geomN,
-                pl.direction, pl.shadowTile,
-                (uint)pl.shadowMapIndex, EVSM_EXPONENT);
+                pl.direction, pl.outerAngle, pl.shadowTile,
+                (uint)pl.shadowMapIndex, EVSM_EXPONENT, pix);
         else
             shadowFactor = GetSpotShadowFactorFromPC(1, worldPos, geomN,
                 pl.direction, pl.shadowTile);
@@ -393,11 +394,13 @@ PSOut mainPS(PSIn IN)
         if (pc.numCascades > 0)
         {
             // EVSM (frame.evsmMode): shadow_map_index addresses the blurred
-            // moments instead of the depth atlas; linear sampler 0.
+            // moments instead of the depth atlas; linear sampler 0. Soft
+            // variant: solar penumbra from the moment blocker (per-cascade
+            // pad2.x scale, pad2.y softness UI).
             uint evsm = pc.frameUniforms.Get().evsmMode;
             if (evsm != 0u)
                 shadow = GetShadowFactorEvsmCascadedFromPC(0, IN.worldPos, geomN, light,
-                    (uint)light.shadow_map_index, EVSM_EXPONENT);
+                    (uint)light.shadow_map_index, EVSM_EXPONENT, IN.clipPos.xy);
             else
                 shadow = GetShadowFactorCascadedFromPC(1, IN.worldPos, geomN, light);
         }
@@ -475,7 +478,7 @@ PSOut mainPS(PSIn IN)
                     continue;
                 EvaluateForwardPlusLight(pc.fpLights.Get().lights[li],
                     IN.worldPos, geomN, N, V, F0, roughness, diffuse, NdotV,
-                    false, vis, direct);
+                    false, vis, IN.clipPos.xy, direct);
             }
         }
     }
@@ -503,7 +506,7 @@ PSOut mainPS(PSIn IN)
                     continue;
                 EvaluateForwardPlusLight(pc.fpLights.Get().lights[li],
                     IN.worldPos, geomN, N, V, F0, roughness, diffuse, NdotV,
-                    true, 1.0f, direct);
+                    true, 1.0f, IN.clipPos.xy, direct);
             }
         }
     }
