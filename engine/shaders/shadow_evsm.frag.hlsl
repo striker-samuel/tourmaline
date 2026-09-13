@@ -29,10 +29,18 @@ struct PSIn
 struct PSOut
 {
     float2 moments : SV_Target0;
+    // Conservative depth (normal-Z: never farther). Lets the driver run
+    // the depth test before the alpha-test body, so occluded masked
+    // casters skip the baseColor fetch. Passthrough value — the bound is
+    // trivially satisfied and writes still happen only for surviving
+    // fragments (this is not early_fragment_tests).
+    float outDepth : SV_DepthGreaterEqual;
 };
 
 PSOut mainPS(PSIn IN)
 {
+    PSOut OUT;
+    OUT.outDepth = IN.clipPos.z;
     MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
 
     float alphaCutoff = mat.params.x;
@@ -61,7 +69,6 @@ PSOut mainPS(PSIn IN)
     // light-space depth d the EVSM warp expects. No further transform.
     float d = saturate(IN.clipPos.z);
 
-    PSOut OUT;
     OUT.moments = EvsmWarp(d, EVSM_EXPONENT);
     return OUT;
 }

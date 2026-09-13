@@ -1038,8 +1038,9 @@ namespace smvk {
 				HashValue(seed, a.colorWriteMask);
 			}
 
-			HashEnum(seed, key.msaa.samples);
-			return seed;
+		HashEnum(seed, key.msaa.samples);
+		HashValue(seed, key.msaa.alphaToCoverage);
+		return seed;
 		}
 	};
 

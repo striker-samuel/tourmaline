@@ -365,9 +365,16 @@ namespace smvk {
 
 	struct MSAASettings {
 		SampleCount samples = SampleCount::Count1;
+		// Alpha-to-coverage: fragment alpha drives the sample coverage mask
+		// instead of a shader discard (masked cutout foliage in MSAA mode).
+		// Ignored when samples == Count1 (A2C degenerates to a hard 0.5
+		// threshold at one sample — keep the discard path there).
+		bool alphaToCoverage = false;
 
-		static MSAASettings Count1() { return { SampleCount::Count1 }; }
-		static MSAASettings Count2() { return { SampleCount::Count2 }; }
+		static MSAASettings Count1() { return { SampleCount::Count1, false }; }
+		static MSAASettings Count2() { return { SampleCount::Count2, false }; }
+		// 2x MSAA + alpha-to-coverage (Main masked cutout leg).
+		static MSAASettings Count2A2C() { return { SampleCount::Count2, true }; }
 		static MSAASettings Count4() { return { SampleCount::Count4 }; }
 		static MSAASettings Count8() { return { SampleCount::Count8 }; }
 		static MSAASettings Count16() { return { SampleCount::Count16 }; }
@@ -1288,7 +1295,8 @@ namespace smvk {
 				!(blend < rhs.blend) &&
 				!(rhs.blend < blend) &&
 
-				msaa.samples == rhs.msaa.samples;
+				msaa.samples == rhs.msaa.samples &&
+			msaa.alphaToCoverage == rhs.msaa.alphaToCoverage;
 		}
 	};
 

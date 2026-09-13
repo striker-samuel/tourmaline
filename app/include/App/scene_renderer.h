@@ -415,6 +415,12 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader; // default_lit (F1)
 	smvk::ShaderProgram mainProgram;
+	// Alpha-to-coverage lit FS (default_lit_a2c): same VS, coverage-from-
+	// alpha cutout without discard — bound for Masked materials in 2x MSAA
+	// Main. Missing module leaves shaderCount 0 and Main keeps the
+	// discard variant everywhere.
+	smvk::Holder<smvk::ShaderModuleHandle> fragA2CShader;
+	smvk::ShaderProgram mainProgramA2C;
 	// Debug-view fragment programs (F2/F4/F6): same default.vert VS, flat FS.
 	// Loaded alongside main; missing modules leave the program at
 	// shaderCount 0 and the view falls back to Lit.
@@ -433,14 +439,20 @@ struct AppResources {
 	smvk::ShaderProgram vertexLitProgram;
 	// Alpha-tested shadow-depth program for MASK cutout casters
 	// (shadow.vert mainVS + shadow.frag mainPS). Opaque casters keep
-	// the engine builder's depth-only program.
+	// the engine builder's depth-only program. shadow.frag declares
+	// conservative depth for the atlas's normal-Z convention.
 	smvk::Holder<smvk::ShaderModuleHandle> shadowMaskedVertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> shadowMaskedFragShader;
 	smvk::ShaderProgram shadowMaskedProgram;
+	// Reversed-Z conservative twin of shadow.frag (shadow_rev.frag):
+	// the Forward+ prepass / temporal seed / remainder masked phases run
+	// clear-0 GreaterEqual (reversed-Z), so their bound must promise
+	// "never nearer" instead of the atlas's "never farther".
+	smvk::Holder<smvk::ShaderModuleHandle> shadowMaskedFragRevShader;
 	// Alpha-tested depth-prepass program for MASK cutout
-	// (default.vert mainVS + shadow.frag mainPS): writes cutout-accurate
+	// (default.vert mainVS + shadow_rev.frag mainPS): writes cutout-accurate
 	// depth so background behind foliage holes survives the main pass.
-	// Reuses the main VS and masked-shadow FS modules (no new shaders).
+	// Reuses the main VS and the reversed-Z masked-shadow FS module.
 	smvk::ShaderProgram prepassMaskedProgram;
 	// NOTE: shadow/bloom/tonemap/forwardplus programs + modules are owned by
 	// their engine builders (CascadedShadowAtlas / BloomChain / Tonemapper /
@@ -1039,6 +1051,13 @@ protected:
 	// Off / Msaa2x / Smaa1x / SmaaT2x. T2x adds a quarter-pixel alternating
 	// camera jitter (UpdateFrameUniforms) and the temporal resolve.
 	AaMode m_aaMode = AaMode::SmaaT2x;
+	// Opt-in alpha-to-coverage for Masked cutout in MSAA 2x Main
+	// (VULKANTOY_A2C=1, default off). Bench data (bistro foliage view,
+	// RTX 5070 Ti): A2C moves the masked coverage/depth test after the FS
+	// (coverage needs the output alpha), so overlapping foliage layers
+	// can no longer early-reject — +6ms vs the demote-discard path. Keep
+	// it as a quality mode: foliage silhouettes resolve AA'd in MSAA.
+	bool m_msaaAlphaToCoverage = false;
 	// Global T2x toggle (see SmaaT2xState in smaa.h). The phase belongs to
 	// the recorded-frame sequence, not the swapchain image: every T2x
 	// record writes history[parity] and blends against history[parity^1]

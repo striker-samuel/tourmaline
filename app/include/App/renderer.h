@@ -44,6 +44,11 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	GfxConfig config{};
 	smvk::Holder<smvk::ShaderModuleHandle> filteredVsModule;
 	smvk::ShaderProgram filteredProgram{};
+	// A2C twin of filteredProgram (same VS + the alpha-to-coverage lit FS):
+	// Main binds it for Masked material ranges in 2x MSAA, paired with
+	// MSAASettings::Count2A2C(). Zero discard in the FS module so the
+	// driver keeps the early depth test.
+	smvk::ShaderProgram filteredProgramA2C{};
 	// Filtered motion-vector VS (gfxfilteredmotion.vert.hlsl, static
 	// geometry only: prevWorld == model). Pairs with the motion frag
 	// module owned by the viewport MotionVectors; configured lazily via
@@ -59,8 +64,10 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// Shadow-atlas seed programs (gfxshadowseed*.vert.hlsl): cascade/spot
 	// tiles drawn from the CPU-built per-view shadow lists (gfx::ShadowView)
 	// instead of per-item direct recording. Opaque phase is VS-only; the
-	// masked phase pairs with the same shadow.frag alpha-test FS the
-	// temporal seed path uses (ConfigureSeedFrag). The VS clamps clip z
+	// masked phase pairs with the normal-Z shadow.frag alpha-test FS
+	// (ConfigureShadowSeedFrag; the atlas is clear-1.0 LessEqual, so its
+	// conservative-depth mode differs from the reversed-Z main-view seed
+	// module of ConfigureSeedFrag). The VS clamps clip z
 	// like shadow.vert so casters behind the light near plane squash onto
 	// it (leak-free tiles, direct-path parity).
 	smvk::Holder<smvk::ShaderModuleHandle> shadowSeedVsModule;
@@ -133,6 +140,13 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 
 	void ConfigureFrag(smvk::ShaderModuleHandle mainFrag) { mainFrag_ = mainFrag; }
 	void ConfigureSeedFrag(smvk::ShaderModuleHandle seedFrag) { seedFrag_ = seedFrag; }
+	// Normal-Z shadow.frag module for the shadow-atlas seed masked phase
+	// (ConfigureSeedFrag carries the reversed-Z twin for the main-view
+	// seed/prepass programs).
+	void ConfigureShadowSeedFrag(smvk::ShaderModuleHandle shadowSeedFrag) { shadowSeedFrag_ = shadowSeedFrag; }
+	// A2C lit FS module (default_lit_a2c.frag): pairs with the filtered VS
+	// for Masked material ranges in 2x MSAA Main.
+	void ConfigureA2CFrag(smvk::ShaderModuleHandle a2cFrag) { mainA2CFrag_ = a2cFrag; }
 	// Idempotent filtered-motion program creation (VS + motion frag).
 	// Returns true when the program is ready to bind.
 	bool EnsureFilteredMotion(smvk::ResourceManager& ctx,
@@ -206,6 +220,12 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 		return worldMesh < meshMap_.size() && meshMap_[worldMesh] != UINT32_MAX;
 	}
 	[[nodiscard]] smvk::ShaderProgram& FilteredProgram() { return filteredProgram; }
+	// A2C twin for Masked material ranges in 2x MSAA Main (invalid when
+	// ConfigureA2CFrag was never called / module creation failed).
+	[[nodiscard]] smvk::ShaderProgram& FilteredProgramA2C() { return filteredProgramA2C; }
+	[[nodiscard]] bool FilteredA2CValid() const {
+		return filteredProgramA2C.shaderCount == 2;
+	}
 	[[nodiscard]] smvk::gfx::State& State() { return gfx; }
 	// Consume-side barriers for the Main pass (filtered ranges + meshlet
 	// debug view): filtered index list (IndexRead), GPU-written indirect
@@ -341,6 +361,8 @@ private:
 	bool remainderPending_ = false;
 	smvk::ShaderModuleHandle mainFrag_{};
 	smvk::ShaderModuleHandle seedFrag_{};
+	smvk::ShaderModuleHandle shadowSeedFrag_{};
+	smvk::ShaderModuleHandle mainA2CFrag_{};
 };
 
 } // namespace app

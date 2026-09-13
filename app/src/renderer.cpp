@@ -77,6 +77,15 @@ bool GfxRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
 		smvk::Shader fs{ .module = mainFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
 		filteredProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
 	}
+	// A2C twin (same filtered VS + the alpha-to-coverage lit FS): built
+	// only when the app configured the module; Main falls back to the
+	// discard variant otherwise.
+	if (filteredProgramA2C.shaderCount == 0
+		&& !filteredVsModule.empty() && !mainA2CFrag_.empty()) {
+		smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+		smvk::Shader fs{ .module = mainA2CFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+		filteredProgramA2C = { .shaders = { vs, fs }, .shaderCount = 2 };
+	}
 	// Seed-depth programs (T3). One SPIR-V per phase (the shader build
 	// emits a single entry point per file). Missing seed frag
 	// (ConfigureSeedFrag not called) disables seeding but leaves the
@@ -323,7 +332,9 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 bool GfxRenderer::EnsureShadowSeeds(smvk::ResourceManager& ctx) {
 	if (ShadowSeedsValid())
 		return true;
-	if (seedFrag_.empty())
+	// Normal-Z shadow.frag (conservative DepthGreater): the atlas clears
+	// to 1.0 and tests LessEqual, unlike the reversed-Z main-view seed.
+	if (shadowSeedFrag_.empty())
 		return false;
 	try {
 		if (shadowSeedVsModule.empty())
@@ -344,7 +355,7 @@ bool GfxRenderer::EnsureShadowSeeds(smvk::ResourceManager& ctx) {
 	}
 	if (shadowSeedMaskedProgram.shaderCount == 0) {
 		smvk::Shader vs{ .module = shadowSeedMaskedVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
-		smvk::Shader fs{ .module = seedFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+		smvk::Shader fs{ .module = shadowSeedFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
 		shadowSeedMaskedProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
 	}
 	return ShadowSeedsValid();

@@ -445,6 +445,26 @@ namespace app {
 void SceneRenderer::Configure(SceneDesc scene, ScenePassConfig passes) {
 	m_scene = scene;
 	m_passes = passes;
+	// Debug: force the AA mode for headless A/B benches (the UI combo
+	// keeps working after this; values: off | msaa2x | smaa1x | smaat2x).
+	if (const char* aaEnv = std::getenv("VULKANTOY_AA")) {
+		if (!_stricmp(aaEnv, "off"))
+			m_aaMode = AaMode::Off;
+		else if (!_stricmp(aaEnv, "msaa2x"))
+			m_aaMode = AaMode::Msaa2x;
+		else if (!_stricmp(aaEnv, "smaa1x"))
+			m_aaMode = AaMode::Smaa1x;
+		else if (!_stricmp(aaEnv, "smaat2x"))
+			m_aaMode = AaMode::SmaaT2x;
+		else
+			std::cerr << "[SceneRenderer] bad VULKANTOY_AA (want "
+				"off|msaa2x|smaa1x|smaat2x): " << aaEnv << "\n";
+	}
+	// Opt-in A2C for masked cutout in MSAA mode (quality trade-off, see
+	// m_msaaAlphaToCoverage).
+	if (const char* a2cEnv = std::getenv("VULKANTOY_A2C")) {
+		m_msaaAlphaToCoverage = std::atoi(a2cEnv) != 0;
+	}
 	// Point the FPS camera at the scene's default viewpoint (Camera keeps a
 	// stable pointer to m_cameraPositioner, so lookAt is assignment-safe).
 	m_cameraPositioner.lookAt(scene.camPos, scene.camTarget,
@@ -937,6 +957,34 @@ bool SceneRenderer::Initialize() {
 		.shaderCount = 2
 	};
 
+	// A2C lit twin (default_lit_a2c): masked cutout via coverage instead
+	// of discard for 2x MSAA Main. Non-fatal: missing module keeps every
+	// material on the discard variant.
+	try {
+		auto a2cCode = readContentFile(contentVfs, "shaders/default_lit_a2c.frag.hlsl.spv");
+		m_resources.fragA2CShader = m_context->CreateShaderModule(a2cCode, "fragLitA2C");
+	}
+	catch (...) {
+		std::cerr << "[SceneRenderer] default_lit_a2c unavailable - masked MSAA keeps the discard test\n";
+	}
+	if (!m_resources.fragA2CShader.empty()) {
+		m_resources.mainProgramA2C = {
+			.shaders = {
+				smvk::Shader{
+					.module = m_resources.vertShader,
+					.entryPoint = "mainVS",
+					.stage = smvk::ShaderStage::Vertex
+				},
+				smvk::Shader{
+					.module = m_resources.fragA2CShader,
+					.entryPoint = "mainPS",
+					.stage = smvk::ShaderStage::Fragment
+				}
+			},
+			.shaderCount = 2
+		};
+	}
+
 		// Debug-view fragments (F2 unlit, F4 cascade coverage, F6 vertex
 		// colors): same VS as main. Failure is non-fatal (program stays at
 		// shaderCount 0 and the view falls back to Lit at record time).
@@ -1064,9 +1112,24 @@ bool SceneRenderer::Initialize() {
 			},
 			.shaderCount = 2
 		};
+	// Reversed-Z conservative twin (shadow_rev.frag): the prepass / seed /
+	// remainder masked phases run clear-0 GreaterEqual, so the FS must
+	// promise "never nearer" (SV_DepthLessEqual), not the atlas's
+	// "never farther". Failure is non-fatal: the prepass falls back to the
+	// normal-Z module (conservative depth is a perf hint, not a
+	// correctness requirement — the passthrough write satisfies both
+	// bounds).
+	try {
+		auto shadowRevCode = readContentFile(contentVfs, "shaders/shadow_rev.frag.hlsl.spv");
+		m_resources.shadowMaskedFragRevShader = m_context->CreateShaderModule(shadowRevCode, "shadowMaskedFragRev");
+	}
+	catch (...) {
+		std::cerr << "[SceneRenderer] shadow_rev unavailable - prepass masked keeps the normal-Z FS\n";
+	}
 
-		// Masked prepass program: shadow.frag's inputs (pos/color/uv) are a
-		// subset of default.vert's outputs, so it links directly.
+		// Masked prepass program: shadow's inputs (pos/color/uv) are a
+		// subset of default.vert's outputs, so it links directly. Prefers
+		// the reversed-Z conservative FS when loaded.
 		m_resources.prepassMaskedProgram = {
 			.shaders = {
 				smvk::Shader{
@@ -1075,7 +1138,9 @@ bool SceneRenderer::Initialize() {
 					.stage = smvk::ShaderStage::Vertex
 				},
 				smvk::Shader{
-					.module = m_resources.shadowMaskedFragShader,
+					.module = !m_resources.shadowMaskedFragRevShader.empty()
+						? m_resources.shadowMaskedFragRevShader
+						: m_resources.shadowMaskedFragShader,
 					.entryPoint = "mainPS",
 					.stage = smvk::ShaderStage::Fragment
 				}
@@ -1257,7 +1322,18 @@ bool SceneRenderer::Initialize() {
 		// toggle stays as the runtime A/B switch.
 		if (m_passes.gfxFilter && m_useGfxFilter) {
 			m_gfxRenderer.ConfigureFrag(m_resources.fragShader);
-			m_gfxRenderer.ConfigureSeedFrag(m_resources.shadowMaskedFragShader);
+			// Main-view seed masked phase is reversed-Z: prefer the
+			// conservative shadow_rev module (falls back to the normal-Z
+			// shadow.frag module — perf hint, not correctness).
+			m_gfxRenderer.ConfigureSeedFrag(!m_resources.shadowMaskedFragRevShader.empty()
+				? m_resources.shadowMaskedFragRevShader
+				: m_resources.shadowMaskedFragShader);
+			// Shadow-atlas seed masked phase is normal-Z (clear 1.0,
+			// LessEqual): the plain shadow.frag module.
+			m_gfxRenderer.ConfigureShadowSeedFrag(m_resources.shadowMaskedFragShader);
+			// A2C filtered program for Masked ranges in 2x MSAA Main.
+			if (!m_resources.fragA2CShader.empty())
+				m_gfxRenderer.ConfigureA2CFrag(m_resources.fragA2CShader);
 			if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
 				std::cerr << "[SceneRenderer] GfxFilter unavailable - direct draws\n";
 				m_useGfxFilter = false;
@@ -4528,26 +4604,46 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			}
 		};
 
+		// A2C fallback for program families without an alpha-to-coverage
+		// twin (debug views, vertex-lit LODs, transparents): shaderCount 0
+		// keeps them on the caller's classic program.
+		smvk::ShaderProgram noA2CProgram{};
 		auto bindForMaterial = [&](uint32_t materialId, smvk::ShaderProgram& prog,
-				const smvk::DepthSettings& depth) {
+				smvk::ShaderProgram& progA2c,
+				const smvk::DepthSettings& depth) -> smvk::ShaderProgram& {
 			// Per-material raster (doubleSided -> Cull None) + blend
 			// (Opaque vs AlphaBlend). Depth writes follow the caller: opaque
 			// writes in 2x MSAA mode, transparent never writes.
 			smvk::BlendSettings blend = smvk::BlendSettings::Opaque();
 			smvk::RasterSettings raster{};
+			bool maskedCutout = false;
 			if (smvk::Material* mat = m_world->GetMaterial(materialId)) {
 				blend = mat->pipeline.blend;
 				raster = mat->pipeline.raster;
+				maskedCutout =
+					mat->shadingModel == smvk::ShadingModel::Masked;
 			}
+			// Masked cutout in 2x MSAA + A2C opt-in (VULKANTOY_A2C):
+			// alpha-to-coverage program (coverage remap in the FS, zero
+			// discard) + A2C multisample state — foliage silhouettes
+			// resolve AA'd. Opt-in because A2C moves the per-sample depth
+			// test after the FS: overlapping layers lose early-reject
+			// (+6ms bistro foliage bench), so the default stays the
+			// demote-discard variant.
+			const bool useA2c =
+				useMsaa && m_msaaAlphaToCoverage && maskedCutout
+				&& progA2c.shaderCount == 2;
+			smvk::ShaderProgram& bound = useA2c ? progA2c : prog;
 			cmd.BindRenderPipeline(
-				prog,
+				bound,
 				smvk::VertexFormat::StaticVertexFormat,
 				depth,
 				noStencil,
 				blend,
-				msaaSettings,
+				useA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings,
 				wireframeRaster(raster)
 			);
+			return bound;
 		};
 
 		// Initial bind BEFORE the first push: PushConstants needs a bound
@@ -4797,10 +4893,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				if (item.material == smvk::World::kInvalidIndex)
 					return;
 				const uint32_t materialId = item.material;
-				if (materialId != boundMaterial) {
-					bindForMaterial(materialId, dbgProg, opaqueDepth);
-					boundMaterial = materialId;
-				}
+			if (materialId != boundMaterial) {
+				bindForMaterial(materialId, dbgProg, noA2CProgram, opaqueDepth);
+				boundMaterial = materialId;
+			}
 				auto& model = m_world->scene.globalTransform[item.node];
 				smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
 				if (!meshDesc)
@@ -4824,7 +4920,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			const auto& gfxRanges = m_gfxRenderer.MaterialRanges(gfxSlot);
 			for (uint32_t ri = 0; ri < (uint32_t)gfxRanges.size(); ++ri) {
 				const uint32_t materialId = gfxRanges[ri].material;
-				bindForMaterial(materialId, m_gfxRenderer.FilteredProgram(), opaqueDepth);
+				bindForMaterial(materialId, m_gfxRenderer.FilteredProgram(),
+					m_gfxRenderer.FilteredProgramA2C(), opaqueDepth);
 				PushConstants matPC{};
 				matPC.materialId = materialId;
 				cmd.PushConstants(
@@ -4895,11 +4992,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				smvk::ShaderProgram& prog = vertexLitLevel
 					? m_resources.vertexLitProgram
 					: m_resources.mainProgram;
+				smvk::ShaderProgram& progA2c = vertexLitLevel
+					? noA2CProgram
+					: m_resources.mainProgramA2C;
 				const uint32_t materialId = item.material;
-				if (materialId != boundMaterial || &prog != boundProgram) {
-					bindForMaterial(materialId, prog, opaqueDepth);
+				if (materialId != boundMaterial
+					|| (&prog != boundProgram && &progA2c != boundProgram)) {
+					smvk::ShaderProgram& bound =
+						bindForMaterial(materialId, prog, progA2c, opaqueDepth);
 					boundMaterial = materialId;
-					boundProgram = &prog;
+					boundProgram = &bound;
 				}
 				if (vertexLitLevel)
 					++m_lodShaderDraws;
@@ -5054,10 +5156,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 								msaaSettings,
 								wireframeRaster(raster)
 							);
-						} else {
-							bindForMaterial(d.materialId, m_resources.vertexLitProgram,
-								transparentDepth);
-						}
+					} else {
+						bindForMaterial(d.materialId, m_resources.vertexLitProgram,
+							noA2CProgram, transparentDepth);
+					}
 						boundMaterial = d.materialId;
 						boundProgram = &m_resources.vertexLitProgram;
 					}
@@ -5100,7 +5202,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							wireframeRaster(raster)
 						);
 					} else {
-						bindForMaterial(d.materialId, *transProg, transparentDepth);
+						bindForMaterial(d.materialId, *transProg, noA2CProgram, transparentDepth);
 					}
 					boundMaterial = d.materialId;
 					boundProgram = transProg;

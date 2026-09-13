@@ -7993,6 +7993,13 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 
 		.sampleShadingEnable =
 			VK_FALSE,
+
+		// Alpha-to-coverage: coverage mask from FS alpha output instead
+		// of a shader discard (masked cutout, MSAA mode only).
+		.alphaToCoverageEnable =
+			key.msaa.alphaToCoverage
+				? VK_TRUE
+				: VK_FALSE,
 	};
 
 
@@ -9694,6 +9701,7 @@ void smvk::CommandBuffer::BindRenderPipeline(
 		&& vertexFormat == boundVertexFormat_
 		&& topology == boundTopology_
 		&& msaaSettings.samples == boundMsaa_.samples
+		&& msaaSettings.alphaToCoverage == boundMsaa_.alphaToCoverage
 		&& !(depthSettings < boundDepth_) && !(boundDepth_ < depthSettings)
 		&& !(stencilSettings < boundStencil_) && !(boundStencil_ < stencilSettings)
 		&& !(blendSettings < boundBlend_) && !(boundBlend_ < blendSettings)

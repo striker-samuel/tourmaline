@@ -15,6 +15,10 @@ struct PSIn
 struct PSOut
 {
     float2 motion : SV_Target0;
+    // NOTE: no SV_Depth output — the motion pass tests read-only against
+    // prepass depth (writeEnable=false), so a DepthReplacing flag would
+    // buy nothing and risks the post-shader depth path on some drivers.
+    // Drivers already early-test demote-discard.
 };
 
 PSOut mainPS(PSIn IN)
