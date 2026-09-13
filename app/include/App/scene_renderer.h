@@ -269,8 +269,8 @@ struct ForwardPlusDemo {
 	float functionScale = 0.65f;
 	// Debug overlay: project light positions into the ImGui pass and draw
 	// them as colored points with their light-buffer index.
-	bool showLightPoints = true;
-	bool showLightNumbers = true;
+	bool showLightPoints = false;
+	bool showLightNumbers = false;
 	float lightPointSize = 6.0f; // ImGui circle radius (px)
 	int maxLightLabels = 256;    // cap text draws (points are all drawn)
 };
@@ -846,7 +846,7 @@ protected:
 	// True = the HZB pyramid builds from hizDepth (big solid occluders at
 	// crudest LOD) while Main/SSAO/tile-cull stay on the full renderDepth.
 	// False = legacy single-depth path (HZB over the full prepass depth).
-	bool m_hizOccluderDepth = true;
+	bool m_hizOccluderDepth = false;
 	float m_hizOccluderMinPixels = 24.0f; // projected bound-diameter threshold (px)
 	float m_hizOccluderMinRadius = 0.5f;  // world-space bound-radius threshold (m)
 	bool m_useFilteredMotion = true; // false = motion stays fully direct
