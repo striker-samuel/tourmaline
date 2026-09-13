@@ -105,8 +105,8 @@ glm::vec3 GiTraceScene::SkyRadiance(const glm::vec3& dir) const {
 	return sky;
 }
 
-glm::vec3 GiTraceScene::SampleEmissive(const glm::vec3& pos, const glm::vec3* n,
-	const GiTraceMaterial* m, Pcg32& rng) const {
+glm::vec3 GiTraceScene::SampleEmissive(const glm::vec3& pos, const glm::vec3& n,
+	const GiTraceMaterial& m, Pcg32& rng) const {
 	if (emissiveTris_.empty() || emissiveTotal_ <= 0.0f)
 		return glm::vec3(0.0f);
 
@@ -133,7 +133,9 @@ glm::vec3 GiTraceScene::SampleEmissive(const glm::vec3& pos, const glm::vec3* n,
 		return glm::vec3(0.0f);
 	const glm::vec3 dirTo = w / dist;
 
-	if (n && glm::dot(dirTo, *n) <= 0.0f)
+	// Lambertian receiver: no light from below the hemisphere.
+	const float cosSurf = glm::dot(dirTo, n);
+	if (cosSurf <= 0.0f)
 		return glm::vec3(0.0f);
 
 	const glm::vec3 triN = bvh_.TriangleNormal(e.tri);
@@ -141,13 +143,14 @@ glm::vec3 GiTraceScene::SampleEmissive(const glm::vec3& pos, const glm::vec3* n,
 	if (cosTri < 1e-4f)
 		return glm::vec3(0.0f);
 
-	const glm::vec3 origin = n ? pos + (*n) * kSurfEps : pos + dirTo * kSurfEps;
+	const glm::vec3 origin = pos + n * kSurfEps;
 	if (bvh_.AnyHit(origin, dirTo, dist - 2.0f * kSurfEps))
 		return glm::vec3(0.0f);
 
-	const float pdfSa = dist2 / (pSelect * e.area * cosTri);
-	const float brdf = m ? glm::dot(dirTo, *n) * (1.0f / kPi) : 1.0f;
-	return e.radiance * (brdf / pdfSa);
+	// Joint area pdf = pSelect / A_e; solid-angle pdf = area pdf * d^2 / cosTri.
+	const float pdfSa = pSelect * dist2 / (e.area * cosTri);
+	const float brdf = cosSurf * (1.0f / kPi);
+	return e.radiance * m.albedo * (brdf / pdfSa);
 }
 
 glm::vec3 GiTraceScene::SampleSun(const glm::vec3& pos, const glm::vec3& n,
@@ -179,11 +182,16 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 		const glm::vec3 n = glm::dot(tn, d) < 0.0f ? tn : -tn;
 		const GiTraceMaterial& m = materials[triMaterial[h.tri]];
 
-		// NEE emissive at every vertex (primary vertex = raw radiance sample,
-		// bounce vertices = Lambertian BRDF term). On-hit emission is always
-		// skipped, so the two never double count.
-		L += throughput * SampleEmissive(pos, primary ? nullptr : &n,
-			primary ? nullptr : &m, rng);
+		// Direct emission: the probe ray hit an emissive surface. This is
+		// the only way directly-visible emissive enters the field (on-hit
+		// emission is skipped at bounce vertices, where the previous
+		// vertex's NEE already accounts for direct lights).
+		if (primary && Luminance(m.emissive) > 0.0f)
+			L += throughput * m.emissive;
+		// NEE emissive at every vertex (Lambertian reflected term, current
+		// albedo included; on-hit emission is skipped at bounces so the
+		// two never double count).
+		L += throughput * SampleEmissive(pos, n, m, rng);
 		// Direct sun only at bounce vertices: primary-vertex sun is the
 		// runtime's cascaded-shadow-map job.
 		if (!primary)
@@ -1018,8 +1026,8 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 	outVolume.levelCount = std::min(maxLevel + 1, kSgGiMaxLevels);
 	for (uint32_t lvl = 0; lvl < outVolume.levelCount; ++lvl) {
 		const float brickSize = cfg.rootBrickSize / float(1u << lvl);
-		// Cell = 2 bricks: a probe sphere (R = probeSupportFactor x brick)
-		// always intersects <= 2 cells per axis.
+		// Cell = 2 bricks: a probe sphere (R = probeSupportFactor x brick,
+		// diameter 2.5 bricks) overlaps up to 3 cells per axis (27 total).
 		outVolume.cellSize[lvl] = brickSize * 2.0f;
 	}
 	outVolume.probes.clear();

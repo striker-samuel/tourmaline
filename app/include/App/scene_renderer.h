@@ -775,16 +775,23 @@ protected:
 	// OneFrameLag pipeline stays available in the UI. shadow_map_index
 	// fields then address the blurred atlas; FrameUniforms.evsmMode tells
 	// shaders. Falls back to PCF automatically when unsupported/invalid.
-	// NOTE (2026-09-13): default OFF — the EVSM moment/receiver depths
-	// diverge (moments cluster near d~0.1 while receivers compute ~0.5,
-	// blacking out direct light) and the prefiltered representation needs
-	// more work. PCF is the proven-healthy default; opt back in with
-	// VULKANTOY_EVSM=1 or the ImGui checkbox for EVSM development.
-	bool m_evsmEnabled = false; // user toggle (ImGui); effective only if supported
+	// NOTE: default ON — EVSM is the shadow path (dual-ESM visibility with
+	// symmetric warp-space bias compensation, dense prefilter, 9-tap soft
+	// penumbra). Falls back to PCF automatically when unsupported/invalid.
+	// Opt out with VULKANTOY_EVSM=0 or the ImGui checkbox.
+	bool m_evsmEnabled = true; // user toggle (ImGui); effective only if supported
 	// SameFrame default: moments are blurred on the true-async compute
 	// queue and consumed by this frame's lighting (no shadow lag/wobble).
 	// OneFrameLag remains in the ImGui combo for overlap comparison.
 	smvk::EvsmPipelineMode m_evsmPipeline = smvk::EvsmPipelineMode::SameFrame;
+	// Directional sampling descriptors for OneFrameLag: the blurred atlas
+	// read by lighting trails one flight slot, so it was baked with LAST
+	// frame's cascade fit — the sampling copy of
+	// GpuDirectionalLightDescription must trail one frame too or the
+	// receiver projection disagrees with the stale map content (EVSM-only
+	// acne under camera motion). SameFrame uploads the current fit.
+	smvk::GpuDirectionalLightDescription m_dirSamplePrev{};
+	bool m_dirSamplePrevValid = false;
 	// Soft shadows: artistic scalar over the physical penumbrae —
 	// directional uses the sun disc angular radius (environment
 	// sunDiscSizeDeg) projected per cascade; spots use the emitting-sphere

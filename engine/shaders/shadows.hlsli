@@ -740,6 +740,11 @@ float GetShadowFactorEvsmCascaded(
     float viewDepth = max(-viewPos.z, 0.0f);
     int firstCascade = SelectCascadeGpu(viewDepth, dir.cascades, dir.numCascades);
 
+    // First valid cascade at/after the view-depth selection (same fallthrough
+    // as the PCF path: avoids a hard pop to unshadowed when the selected
+    // tile misses the receiver).
+    int usedK = -1;
+    float shadow = 1.0f;
     for (int k = firstCascade; k < dir.numCascades; ++k)
     {
         bool valid = false;
@@ -747,9 +752,35 @@ float GetShadowFactorEvsmCascaded(
             dir.cascades[k], worldPos, faceNormal, light.direction,
             samplerId, evsmAtlasIdx, exponent, pix, valid);
         if (valid)
-            return s;
+        {
+            usedK = k;
+            shadow = s;
+            break;
+        }
     }
-    return 1.0f;
+    if (usedK < 0)
+        return 1.0f;
+
+    // Border blend into the next cascade over the last 10% of this cascade's
+    // view-depth band (mirrors GetShadowFactorCascaded): hides the
+    // shadow-density step where texel size and baked bias change.
+    if (usedK + 1 < dir.numCascades)
+    {
+        GpuCascadeDescription c = dir.cascades[usedK];
+        float splitStart = (usedK == 0) ? 0.0f : dir.cascades[usedK - 1].splitEnd;
+        float bandW = (c.splitEnd - splitStart) * 0.1f;
+        if (bandW > 1e-4f && viewDepth > c.splitEnd - bandW)
+        {
+            float t = smoothstep(c.splitEnd - bandW, c.splitEnd, viewDepth);
+            bool nextValid = false;
+            float nextShadow = SampleEvsmTileSoft(
+                dir.cascades[usedK + 1], worldPos, faceNormal, light.direction,
+                samplerId, evsmAtlasIdx, exponent, pix, nextValid);
+            if (nextValid)
+                shadow = lerp(shadow, nextShadow, t);
+        }
+    }
+    return shadow;
 }
 
 float GetSpotShadowFactorEvsmTile(

@@ -67,6 +67,26 @@ float3 FresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
 }
 
 // -------------------------------------------------------------------------
+// Geometric specular AA (Filament-style, GGX-alpha^2 domain).
+// Widens the microfacet lobe from screen-space normal variance so a
+// sub-pixel normal-mapped lobe at rough~0.04 does not sparkle.
+// Input/output are perceptual roughness (shader convention: alpha=rough^2,
+// D uses alpha^2 == rough^4, hence the fourth root).
+// N must be the final normalized shading normal (after normal mapping).
+// -------------------------------------------------------------------------
+float SpecularAARoughness(float perceptualRoughness, float3 N)
+{
+    float3 dNdx = ddx(N);
+    float3 dNdy = ddy(N);
+    float variance = 0.15f * (dot(dNdx, dNdx) + dot(dNdy, dNdy));
+    float alpha = perceptualRoughness * perceptualRoughness;
+    // Clamp keeps silhouettes / UV seams from turning everything rough.
+    float kernel = min(2.0f * variance, 0.20f);
+    float alpha2AA = saturate(alpha * alpha + kernel);
+    return sqrt(sqrt(alpha2AA)); // pow(rough^4 + kernel, 0.25)
+}
+
+// -------------------------------------------------------------------------
 // Unlit / helpers
 // -------------------------------------------------------------------------
 
@@ -582,6 +602,11 @@ PSOut mainPS(PSIn IN)
     float3 F0 = float3(0.04f, 0.04f, 0.04f);
     F0 = lerp(F0, baseColor, metallic);
 
+    // Variance-based specular AA: filter the GGX lobe width from the final
+    // shading normal's screen-space variance. Material F0/albedo stay on the
+    // unfiltered values; every specular width below uses shadingRoughness.
+    float shadingRoughness = SpecularAARoughness(roughness, N);
+
     Light light = pc.bLights.Get().lights[0];
     float3 L = normalize(-light.direction);
     float3 H = normalize(V + L);
@@ -613,8 +638,8 @@ PSOut mainPS(PSIn IN)
     }
 
     // Cook-Torrance BRDF
-    float D = DistributionGGX(N, H, roughness);
-    float G = GeometrySmith(N, V, L, roughness);
+    float D = DistributionGGX(N, H, shadingRoughness);
+    float G = GeometrySmith(N, V, L, shadingRoughness);
     float3 F = FresnelSchlick(HdotV, F0);
 
     float3 kS = F;
@@ -680,7 +705,7 @@ PSOut mainPS(PSIn IN)
                 if (li >= nlights)
                     continue;
                 EvaluateForwardPlusLight(pc.fpLights.Get().lights[li],
-                    IN.worldPos, geomN, N, V, F0, roughness, diffuse, NdotV,
+                    IN.worldPos, geomN, N, V, F0, shadingRoughness, diffuse, NdotV,
                     false, vis, IN.clipPos.xy, direct);
             }
         }
@@ -708,7 +733,7 @@ PSOut mainPS(PSIn IN)
                 if (li >= nlights)
                     continue;
                 EvaluateForwardPlusLight(pc.fpLights.Get().lights[li],
-                    IN.worldPos, geomN, N, V, F0, roughness, diffuse, NdotV,
+                    IN.worldPos, geomN, N, V, F0, shadingRoughness, diffuse, NdotV,
                     true, 1.0f, IN.clipPos.xy, direct);
             }
         }
@@ -745,8 +770,8 @@ PSOut mainPS(PSIn IN)
     float3 ambient = lerp(legacyAmbient, ambientDiffuse, iblOn);
     // Specular IBL: reflection-vector env sample weighted by Fresnel.
     float3 R = reflect(-V, N);
-    float3 Fenv = FresnelSchlickRoughness(NdotV, F0, roughness);
-    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, roughness, frame.env) * occlusion * ao;
+    float3 Fenv = FresnelSchlickRoughness(NdotV, F0, shadingRoughness);
+    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env) * occlusion * ao;
 
     // Baked SG-GI: replace the analytic sky ambient with the probe field
     // (it already contains the sky, occluded properly by the bake).
@@ -800,8 +825,8 @@ PSOut mainPS(PSIn IN)
             // surfaces keep the analytic sky env (9 broad lobes cannot
             // represent mirrors).
             const float3 giSpecular =
-                SgGiSpecular(giAmps, R, roughness) * giScale * Fenv * occlusion * ao;
-            const float roughW = saturate((roughness - 0.15f) / 0.25f);
+                SgGiSpecular(giAmps, R, shadingRoughness) * giScale * Fenv * occlusion * ao;
+            const float roughW = saturate((shadingRoughness - 0.15f) / 0.25f);
             ambient = giDiffuse;
             ambientSpec = lerp(ambientSpec, giSpecular, roughW);
         }

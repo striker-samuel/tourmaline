@@ -44,7 +44,7 @@ groupshared uint gsEarlyIdx[DS_MAX_LIGHTS_PER_TILE];
 // path); everything else is fully lit.
 // EVSM (frame.evsmMode): the atlas holds prefiltered moments — PCSS's
 // blocker search is replaced by the moment blocker (ln(m+)/c) driving a
-// variable penumbra disk of Chebyshev taps (tile pads carry near /
+// variable penumbra disk of ESM taps (tile pads carry near /
 // lightSize / softness). PCF path keeps the classic blocker-search PCSS.
 float DsComputeLightVisibility(ForwardPlusLight L, float3 worldPos, float3 faceNormal, float2 pix)
 {

@@ -149,9 +149,9 @@ private:
 	float emissiveTotal_ = 0.0f;
 
 	// One NEE sample of the emissive-light set at a surface vertex
-	// (surface: BRDF term; primary vertex: raw radiance sample).
-	glm::vec3 SampleEmissive(const glm::vec3& pos, const glm::vec3* n,
-		const GiTraceMaterial* m, Pcg32& rng) const;
+	// (Lambertian reflected term, including the vertex albedo).
+	glm::vec3 SampleEmissive(const glm::vec3& pos, const glm::vec3& n,
+		const GiTraceMaterial& m, Pcg32& rng) const;
 	glm::vec3 SampleSun(const glm::vec3& pos, const glm::vec3& n,
 		const GiTraceMaterial& m) const;
 };

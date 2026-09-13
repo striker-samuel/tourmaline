@@ -13,7 +13,7 @@ constexpr float kPi = 3.14159265358979323846f;
 // Sphere integral of SG(a, l, mu): a * (2*pi/l) * (1 - e^(-2l)).
 inline float SgIntegral(float a, float l) {
 	if (l < 1e-6f)
-		return a * 2.0f * kPi;
+		return a * 4.0f * kPi;
 	return a * (2.0f * kPi / l) * (1.0f - std::exp(-2.0f * l));
 }
 

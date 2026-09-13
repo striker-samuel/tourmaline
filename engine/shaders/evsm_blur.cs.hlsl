@@ -45,14 +45,14 @@ struct EvsmBlurPush
 [[vk::push_constant]]
 ConstantBuffer<EvsmBlurPush> pcBlur;
 
-// 5-tap Gaussian (sigma ~1.0). The kernel is STRIDE-DILATED for wide
-// prefiltering: step = blurRadius/2 texels per tap, so push.blurRadius
-// is the effective half-width in texels (radius 2 = classic 5-tap;
-// radius 8 = the same weights spread over a 17-texel window — the EVSM
-// softness knob drives this; the moments stay a valid expectation
-// because the weights are normalized).
-static const float kBlurW[5] = { 0.0545f, 0.2442f, 0.4026f, 0.2442f, 0.0545f };
-
+// Dense 9-tap Gaussian (offsets -4..+4 texels, sigma from blurRadius).
+// The previous kernel was STRIDE-DILATED (5 taps spread over up to 17
+// texels with gaps): sparse sampling of the exponential moment field
+// aliases depth edges into bands/moire, and the gaps leak unfiltered
+// texels through. A dense kernel has no gaps: every texel in the support
+// contributes, so the filtered expectation is smooth. blurRadius sets the
+// Gaussian sigma (radius 2 ~= classic soft, 8 = wide); support stays +-4
+// (wider sigmas just flatten within the support — no aliasing gaps).
 [numthreads(8, 8, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID)
 {
@@ -66,19 +66,23 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
     // Destination texel center in atlas UV.
     float2 baseUV = (float2(dstPix) + 0.5f) * float2(pcBlur.texelU, pcBlur.texelV);
 
+    // Sigma ~ half the requested radius, clamped so the 9-tap support
+    // (+-4 texels) covers +-1.3..+-4 sigma: small radii stay tight and
+    // detailed, large radii go wide without sparse-tap gaps.
+    const float sigma = clamp(float(pcBlur.blurRadius) * 0.5f, 1.0f, 3.0f);
+    const float inv2s2 = 0.5f / max(sigma * sigma, 1e-4f);
+
     float2 acc = float2(0.0f, 0.0f);
     float wSum = 0.0f;
-    // Stride dilation: taps at -2..+2 steps of (blurRadius/2) texels.
-    const int step = max(1, (int)min(pcBlur.blurRadius, 8u) / 2);
     [unroll]
-    for (int t = -2; t <= 2; ++t)
+    for (int t = -4; t <= 4; ++t)
     {
-        float w = kBlurW[t + 2];
+        float w = exp(-float(t * t) * inv2s2);
         float2 tapUV = baseUV;
         if (pcBlur.direction == 0u)
-            tapUV.x += float(t * step) * pcBlur.texelU;
+            tapUV.x += float(t) * pcBlur.texelU;
         else
-            tapUV.y += float(t * step) * pcBlur.texelV;
+            tapUV.y += float(t) * pcBlur.texelV;
         tapUV = clamp(tapUV, float2(pcBlur.uvMinU, pcBlur.uvMinV), float2(pcBlur.uvMaxU, pcBlur.uvMaxV));
         float2 m = textures[srcIdx].SampleLevel(samplers[pcBlur.samplerIndex], tapUV, 0).rg;
         // Sanitize once: a single inf/NaN moment (fp32 overflow under a

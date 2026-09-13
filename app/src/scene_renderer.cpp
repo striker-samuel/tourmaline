@@ -790,9 +790,9 @@ bool SceneRenderer::Initialize() {
 			if (std::atoi(expEnv) == 0)
 				m_autoExposureEnabled = false;
 		}
-		// EVSM toggle for A/B (VULKANTOY_EVSM=0: PCF depth atlases,
-		// no moment/blur passes, single-submit frames (no async split);
-		// =1: force EVSM on for development).
+		// EVSM toggle for A/B (default ON; VULKANTOY_EVSM=0: PCF depth
+		// atlases, no moment/blur passes, single-submit frames (no async
+		// split); =1: force EVSM on).
 		if (const char* evsmEnv = std::getenv("VULKANTOY_EVSM")) {
 			if (std::atoi(evsmEnv) == 0)
 				m_evsmEnabled = false;
@@ -1794,10 +1794,27 @@ void SceneRenderer::Shutdown() {
 		);
 		constexpr size_t DIR_STRIDE = sizeof(smvk::GpuDirectionalLightDescription);
 		size_t dirOffset = currentFrame * DIR_STRIDE;
+		// The sampling descriptors must match the atlas CONTENT being read.
+		// SameFrame: lighting reads this frame's blurred moments (baked with
+		// this frame's fit) -> current dir is correct. OneFrameLag: lighting
+		// reads the PREVIOUS flight slot's blurred moments (BlurredBindlessIndex
+		// above trails one slot), baked with LAST frame's fit — uploading the
+		// current fit makes the receiver projection disagree with the stale
+		// map content by one frame of camera motion, and the ESM ratio
+		// e^{c*(d_map - d_recv)} turns that into acne on every surface.
+		// The moment-pass RenderViews always use the CURRENT fit
+		// (AllocateDirectionalLightViews(dirLight)) regardless of mode.
+		const bool laggedEvsm = EvsmActive()
+			&& m_evsmPipeline == smvk::EvsmPipelineMode::OneFrameLag;
+		smvk::GpuDirectionalLightDescription dirSample = dir;
+		if (laggedEvsm && m_dirSamplePrevValid)
+			dirSample = m_dirSamplePrev; // sample with the fit that BAKED the stale atlas
+		m_dirSamplePrev = dir; // trail one frame for the next lagged frame
+		m_dirSamplePrevValid = true;
 		m_context->UploadDataToBuffer(
 			m_resources.directionalCascadeBuffer,
-			&dir,
-			sizeof(dir),
+			&dirSample,
+			sizeof(dirSample),
 			smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute,
 			smvk::AccessFlags::ShaderRead,
 			0,
@@ -2270,6 +2287,12 @@ void SceneRenderer::Shutdown() {
 				const int32_t atlasIdx = m_viewportResources.spotShadows.BindlessIndex(*m_context);
 				// EVSM: lights address the blurred moments (1-frame lag);
 				// tile descriptors are layout-identical (same 8x1024 grid).
+				// NOTE: the tile lightVP below is built from the CURRENT
+				// light state while the blurred spot atlas trails one slot
+				// under OneFrameLag — fine for static spots (the demo
+				// lights), but ANIMATED spots would need prev-frame tile
+				// descriptors like m_dirSamplePrev does for the sun.
+				// SameFrame (default) has no lag by construction.
 				const int32_t evsmIdx = (EvsmActive())
 					? m_viewportResources.evsmSpot.BlurredBindlessIndex(*m_context, currentFrame)
 					: -1;

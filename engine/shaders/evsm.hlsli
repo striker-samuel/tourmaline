@@ -5,10 +5,12 @@
 //   R = E[exp(+c * d)], G = E[exp(-c * d)], d = light-space depth in [0,1].
 // The MSAA moment pass writes the warped depth per sample; the async
 // prefilter (evsm_blur.cs.hlsl, separable Gaussian H+V on the compute queue)
-// produces the filtered expectations. Lighting evaluates a dual one-sided
-// Chebyshev bound per channel and takes the minimum (Lauritzen & McCool
-// 2008, Sec. 3.3) — this is what kills the VSM light-bleeding tail while
-// keeping the filterable (blurrable) representation.
+// produces the filtered expectations. Visibility is the positive-channel
+// ESM ratio vp = E[exp(c*d_occ)] * exp(-c*d_recv) (smooth falloff of width
+// ~1/c — filterable, no Chebyshev step, soft penumbrae without moire),
+// plus a far-plane gate for the clear color (see EvsmVisibility). The
+// dual-channel min(vp, vn) of the negative first moment is NOT a
+// visibility (see the EVSM_DUAL_CHANNEL note below) and is opt-in.
 //
 // c = kEvsmExponent (42): exp(42) ~ 1.7e18 fits fp32 with headroom;
 // exp(-42) ~ 5.7e-19 stays normal. Larger c tightens bleeding but pushes
@@ -19,6 +21,34 @@
 #define EVSM_EXPONENT 42.0f
 #endif
 
+// Dual-channel visibility (min of the positive and negative ESM ratios).
+// DEFAULT OFF. vn = E[exp(-c*d_occ)] * exp(+c*d_recv) is an upper bound on
+// the SHADOW mass (how much of the blurred footprint sits in front of the
+// receiver), not a visibility: it reads < 1 whenever the footprint holds
+// mass DEEPER than the receiver. In a min() that darkened genuinely lit
+// receivers — every contact edge (footprint mixes receiver + deeper
+// geometry), every coverage boundary (footprint mixes receiver + the
+// far-occluder clear value), and everywhere under perspective spots (depth
+// is nonlinear in UV, so the blur footprint is depth-asymmetric). Combined
+// with vp the pair had zero tolerance in either depth direction, which is
+// the "heavy acne" signature. vp alone is the reference ESM: one-sided
+// tolerance (map deeper than receiver = lit), same direction as the depth
+// bias, with EVSM_BLEED_REDUCTION tightening the leak toe. Flip to 1 only
+// to A/B the penumbra-into-deep-background leak control it provides.
+#ifndef EVSM_DUAL_CHANNEL
+#define EVSM_DUAL_CHANNEL 0
+#endif
+
+// Far-plane gate: a blurred footprint still at >= this fraction of the
+// clear value's positive moment (exp(c), the "occluder at d=1" bake) holds
+// no in-range caster -> fully lit. 0.98 leaves headroom for fp32
+// resolve/blur rounding of identical taps while staying above anything a
+// near clip-plane caster can produce (the zPadding slack means no real
+// geometry lives in the gated slice of the depth range).
+#ifndef EVSM_CLEAR_GATE
+#define EVSM_CLEAR_GATE 0.98f
+#endif
+
 // Warp a [0,1] depth into the two positive exponential channels.
 float2 EvsmWarp(float depth, float exponent)
 {
@@ -26,79 +56,119 @@ float2 EvsmWarp(float depth, float exponent)
     return float2(exp(exponent * d), exp(-exponent * d));
 }
 
-// One-sided Chebyshev upper bound for a single exponential channel:
-// occluder moments occl = filtered E[w(z)], receiver warped wT.
-// Returns 1 (lit) when wT <= occl, else variance bound in (0,1).
-// minVariance floors the denominator ( proportion of light-bleeding control;
-// 1e-5 matches the paper's epsilon for fp32 moments).
-float EvsmChebyshev(float occl, float wT)
+// ESM visibility over the filtered warped moments:
+//   moments.x = E[exp(+c*d_occ)], moments.y = E[exp(-c*d_occ)].
+// Visibility is the positive ESM ratio with a smooth exponential falloff
+// of width ~1/c (filterable, no high-frequency step):
+//   vp = E[exp(+c*d_occ)] * exp(-c*d_recv) = moments.x / wT.x
+// (see EVSM_DUAL_CHANNEL above for why the negative ratio is opt-in).
+// NOTE: the previous code used a single-moment "Chebyshev" bound with a
+// faked variance (occl^2 * 1e-4). That bound is ~100x sharper than 1/c
+// (width ~1/(100*c)): any sub-texel filtering/precision jitter flips the
+// result binary, which reads as heavy moire, and the penumbra never forms
+// (no soft transition). The ESM ratio restores the designed soft falloff.
+#ifndef EVSM_BLEED_REDUCTION
+#define EVSM_BLEED_REDUCTION 0.15f
+#endif
+
+// Oriented bias in warp space (boost-only; do NOT also subtract it from
+// receiverDepth — the old code did both, netting e^{c*b*(S+1)} on vp and
+// e^{c*b*(S-1)} on vn instead of the intended symmetric e^{c*b*S}).
+// Multiplying both ratios by e^{+c*b*S} is equivalent to comparing the
+// positive channel against dr - b*S (and the negative, when dual is on,
+// against dr + b*S): a slope-scaled NDC push b amplified by S so the tiny
+// PCF-sized bake (b ~ 1e-4 NDC vs the ESM falloff width 1/c ~ 0.024 NDC)
+// still produces a visible lift. Clamped so a grazing receiver can't
+// wash into peter-panning.
+#ifndef EVSM_BIAS_SCALE
+#define EVSM_BIAS_SCALE 4.0f
+#endif
+#ifndef EVSM_BOOST_MAX
+#define EVSM_BOOST_MAX 4.0f
+#endif
+float EvsmWarpBoost(float exponent, float biasNDC)
 {
-    if (wT <= occl)
-        return 1.0f;
-    // Single-moment bound (no E[w^2] stored in the 2-channel variant):
-    // variance is estimated from the cross-channel consistency instead.
-    // Fall back to a tight exponential falloff — continuous, no hard cut.
-    float diff = wT - occl;
-    float variance = max(occl * occl * 1e-4f, 1e-8f);
-    return variance / (variance + diff * diff);
+    return clamp(exp(exponent * max(biasNDC, 0.0f) * EVSM_BIAS_SCALE), 1.0f, EVSM_BOOST_MAX);
 }
 
-// Mirrored bound for the NEGATIVE exponential channel (warp e^(-c*d) is
-// DECREASING in depth): a receiver in front of the occluders has the
-// LARGER warped value, so lit <=> wT >= occl (the positive-channel test
-// would return "lit" exactly when shadowed and ~0 when lit, blacking out
-// every EVSM-lit pixel through the min() below).
-float EvsmChebyshevNeg(float occl, float wT)
+float EvsmVisibility(float2 moments, float receiverDepth, float exponent, float warpBoost)
 {
-    if (wT >= occl)
+    // Sanitize blurred moments (see evsm_blur.cs.hlsl floors): the negative
+    // channel legitimately spans e^-c .. 1, so the floor must stay ~e^-c.
+    moments = clamp(moments, float2(1e-6f, 1e-20f), float2(3.0e37f, 1.0f));
+    // Far-plane gate: the moment clear value bakes "occluder at d=1"
+    // (EvsmClearColor). Any texel that never received a caster — open tile
+    // area, casters clipped by the ortho z-range, MSAA-split edge texels
+    // averaging clear + geometry — must read LIT (matching PCF's depth-1
+    // clear), not as a solid occluder at the far plane. Gate on the
+    // positive moment: only a ~fully-clear blurred footprint reaches
+    // e^{+c}; a real caster anywhere in the window drops it far below.
+    if (moments.x >= EVSM_CLEAR_GATE * exp(exponent))
         return 1.0f;
-    float diff = occl - wT;
-    float variance = max(occl * occl * 1e-4f, 1e-8f);
-    return variance / (variance + diff * diff);
-}
-
-// Full dual-channel EVSM visibility from filtered moments.
-// moments = RG32F texel (already blurred), receiverDepth = biased NDC depth.
-float EvsmVisibility(float2 moments, float receiverDepth, float exponent)
-{
-    float2 wT = EvsmWarp(receiverDepth, exponent);
-    // Guard against uninitialized / cleared texels (clear color is (1,1):
-    // exp(0)=1 => exactly lit at d=0, slightly shadowed deeper — the
-    // moment pass clears to EvsmClearColor below, matching d=1 far).
-    moments = max(moments, float2(1e-6f, 1e-6f));
-    float vp = EvsmChebyshev(moments.x, wT.x);
-    float vn = EvsmChebyshevNeg(moments.y, wT.y);
-    // Lauritzen Sec. 3.3: intersection of the two bounds.
+    float d = clamp(receiverDepth, 0.0f, 1.0f);
+    float2 wT = EvsmWarp(d, exponent);
+    // ESM ratio. Division form keeps the quotient O(1): both numerator and
+    // denominator can be ~1e18 (c=42) but their ratio is the visibility.
+    // warpBoost applies the oriented bias in warp space (see above).
+    float vp = moments.x / max(wT.x, 1e-30f) * warpBoost;
+#if EVSM_DUAL_CHANNEL
+    float vn = moments.y / max(wT.y, 1e-30f) * warpBoost;
     float v = min(vp, vn);
-    // Rescale the classic VSM bleed: values below ~0.15 are almost always
-    // bleed-through on thin occluders; keep them but compress so a single
-    // exponential tail cannot wash the whole cascade.
+#else
+    float v = vp;
+#endif
+    // Light-bleeding reduction: rescale so weak bleed-through (v < bleed)
+    // maps to 0 while fully-lit (>= 1) stays 1. Keeps the smooth falloff
+    // shape, just tightens the toe.
+    v = saturate((v - EVSM_BLEED_REDUCTION) / max(1.0f - EVSM_BLEED_REDUCTION, 1e-4f));
     return saturate(v);
 }
 
 // Clear color for the MSAA moment target, matching far-plane depth d=1:
-// (exp(c), exp(-c)). Resolved uncleared texels then read as "far occluder"
-// instead of lit, so missing geometry shadows rather than leaks.
+// (exp(c), exp(-c)). Resolved uncleared texels read as "far occluder" for
+// the blocker estimate (EvsmBlockerDepth) but are gated back to lit in
+// EvsmVisibility (see the far-plane gate there).
 float4 EvsmClearColor(float exponent)
 {
     float2 w = EvsmWarp(1.0f, exponent);
     return float4(w.x, w.y, 0.0f, 1.0f);
 }
 
-// Slope-scaled NDC bias in depth domain (same math as GetOrientedBias in
-// shadows.hlsli, duplicated here so this header stays self-contained for
-// standalone TUs like shadow_evsm.frag.hlsl that never include shadows).
-float EvsmOrientedBias(float3 faceNormal, float3 lightDirection, float baseBiasNDC)
+float EvsmOrientedBias(
+    float3 faceNormal,
+    float3 lightDirection,
+    float baseBiasNDC)
 {
-    float nDotL = saturate(dot(faceNormal, -lightDirection));
-    float slope = 1.0f - nDotL;
-    return -baseBiasNDC * (0.3f + 0.7f * slope);
+    float3 N = normalize(faceNormal);
+    float3 L = normalize(-lightDirection);
+
+    float cosTheta = saturate(dot(N, L));
+
+    // tan(theta) = sin(theta) / cos(theta)
+    float sinTheta = sqrt(saturate(1.0f - cosTheta * cosTheta));
+    float tanTheta = sinTheta / max(cosTheta, 0.1f);
+
+    // Clamp so near-perpendicular surfaces don't explode.
+    float slopeScale = min(tanTheta, 4.0f);
+
+    return -baseBiasNDC * (1.0f + slopeScale);
 }
+
+//// slope-scaled ndc bias in depth domain (same math as getorientedbias in
+//// shadows.hlsli, duplicated here so this header stays self-contained for
+//// standalone tus like shadow_evsm.frag.hlsl that never include shadows).
+//float evsmorientedbias(float3 facenormal, float3 lightdirection, float basebiasndc)
+//{
+//    float ndotl = saturate(dot(facenormal, -lightdirection));
+//    float slope = 1.0f - ndotl;
+//    return -basebiasndc * (0.3f + 0.7f * slope);
+//}
 
 // Sample one EVSM cascade/spot tile. Mirrors SampleCascadeTile (shadows.hlsli)
 // but reads the blurred RG32F moments with a linear sampler and applies the
-// oriented depth bias BEFORE the exponential warp (bias in depth domain,
-// otherwise the warp magnifies it by c*exp(c*d)).
+// oriented bias in WARP space (EvsmWarpBoost lifts the ESM ratio by
+// e^{c*b*S}, the warp-domain equivalent of a depth-domain push — applying
+// it in depth domain AND as a boost double-counted it).
 float SampleEvsmTile(
     GpuCascadeDescription c,
     float3 worldPos,
@@ -121,12 +191,18 @@ float SampleEvsmTile(
         return 1.0f;
     }
     float2 uvAtlas = uv * c.uvScale + c.uvBias;
-    float receiverDepth = ndc.z + EvsmOrientedBias(faceNormal, lightDirection, c.bias);
+    // Oriented bias acts purely in warp space via EvsmWarpBoost (see the
+    // EvsmWarpBoost note: subtracting it from receiverDepth as well used to
+    // double-apply it). receiverDepth stays the TRUE light-space depth so
+    // the soft-path blocker comparison (receiverDepth - blocker) is exact.
+    float biasAmt = -EvsmOrientedBias(faceNormal, lightDirection, c.bias);
+    float receiverDepth = ndc.z;
+    float warpBoost = EvsmWarpBoost(exponent, biasAmt);
     float2 clampedUV = clamp(uvAtlas, c.uvClampMin, c.uvClampMax);
     float2 moments = textures[NonUniformResourceIndex(idx)]
         .SampleLevel(samplers[samplerId], clampedUV, 0).rg;
     valid = true;
-    return EvsmVisibility(moments, receiverDepth, exponent);
+    return EvsmVisibility(moments, receiverDepth, exponent, warpBoost);
 }
 
 // ---------------------------------------------------------------------------
@@ -209,20 +285,47 @@ float SampleEvsmTileSoft(
         return 1.0f;
     }
     float2 uvAtlas = uv * c.uvScale + c.uvBias;
-    float receiverDepth = ndc.z + EvsmOrientedBias(faceNormal, lightDirection, c.bias);
+    // Oriented bias purely in warp space (see SampleEvsmTile); receiverDepth
+    // is the true depth so the blocker comparison below is exact.
+    float biasAmt = -EvsmOrientedBias(faceNormal, lightDirection, c.bias);
+    float receiverDepth = ndc.z;
+    float warpBoost = EvsmWarpBoost(exponent, biasAmt);
     const float2 clampedUV = clamp(uvAtlas, c.uvClampMin, c.uvClampMax);
     Texture2D evsmTex = textures[NonUniformResourceIndex(idx)];
     float2 moments = evsmTex.SampleLevel(samplers[samplerId], clampedUV, 0).rg;
     valid = true;
+    const float centerVis = EvsmVisibility(moments, receiverDepth, exponent, warpBoost);
+
+    // Fully-lit center: the disk can only manufacture self-shadow here.
+    // On a grazing floor the blocker estimate (-ln(m-)/c, biased toward the
+    // nearest texel of the receiver's OWN footprint) sits in front of the
+    // receiver, so delta > 0 passes the guard below and the disk taps then
+    // compare offset footprints against the unshifted receiverDepth — the
+    // downslope taps read shadowed and stipple the lit floor with the
+    // rotated-disk pattern. A receiver in a REAL penumbra always has a
+    // transitional (< 1) center; a lit one returns without the 8 taps.
+    if (centerVis >= 0.999f)
+        return centerVis;
 
     // Solar penumbra width from the moment blocker (tile-UV units).
     const float blocker = EvsmBlockerDepth(moments, exponent);
-    const float delta = max(receiverDepth - blocker, 0.0f);
+    const float delta = receiverDepth - blocker;
+    // Blocker at/behind the receiver: fully lit. Return the center tap
+    // (which is already ~1) instead of running the disk: forcing a minimum
+    // disk radius here samples neighbours on FLAT lit surfaces and injects
+    // the rotated-disk pattern as moire.
+    if (delta <= 1e-5f)
+        return centerVis;
     const float softness = c.pad2.y;
     float rUV = delta * c.pad2.x * softness;
-    // Clamp to [0.75, 12] texels: below ~0.75 the disk degenerates onto the
-    // prefilter (single tap is enough), above ~12 the 8 taps streak.
-    rUV = clamp(rUV, 0.75f * c.invShadowSize.x, 12.0f * c.invShadowSize.x);
+    const float texelU = max(c.invShadowSize.x, 1e-6f);
+    // Below ~0.5 texel the disk degenerates onto the prefilter footprint:
+    // a single (already blurred) tap is the correct, noise-free answer.
+    // Forcing a minimum radius was a moire source on flat surfaces.
+    if (rUV < 0.5f * texelU)
+        return centerVis;
+    // Clamp the outer penumbra so the 8 taps don't streak.
+    rUV = min(rUV, 12.0f * texelU);
 
     const float2x2 rot = EvsmRotate2x2(EvsmDiskRotation(pix));
     float sum = 0.0f;
@@ -231,18 +334,19 @@ float SampleEvsmTileSoft(
         const float2 off = mul(rot, kEvsmDisk8[t]) * rUV * c.uvScale;
         const float2 tapUV = clamp(uvAtlas + off, c.uvClampMin, c.uvClampMax);
         const float2 m = evsmTex.SampleLevel(samplers[samplerId], tapUV, 0).rg;
-        sum += EvsmVisibility(m, receiverDepth, exponent);
+        sum += EvsmVisibility(m, receiverDepth, exponent, warpBoost);
     }
-    // Center tap carries full weight (it is the hard EVSM answer); the 8
-    // disk taps average in the penumbra estimate.
-    return (EvsmVisibility(moments, receiverDepth, exponent) + sum / 8.0f) * 0.5f;
+    // True 9-tap average (center + disk): the penumbra gradient comes from
+    // the spatially-varying visibility field. The old 50%-center blend kept
+    // a hard core and halved the penumbra contrast (weak soft transitions).
+    return (centerVis + sum) / 9.0f;
 }
 
 // Soft spot tile: the old PcssSpotShadow math with the moment blocker.
 // Eye depth from the RH_ZO perspective inversion using the tile's near
 // (pad_) and far (splitEnd); penumbra = lightSize * (zRecv - zBlk) / zBlk
 // in eye space, projected to tile-UV through the cone half angle; then the
-// rotated 8-tap disk of moments (each an independent Chebyshev eval).
+// rotated 8-tap disk of moments (each an independent ESM eval).
 float SampleEvsmSpotTileSoft(
     GpuCascadeDescription t,
     float3 worldPos,
@@ -267,11 +371,22 @@ float SampleEvsmSpotTileSoft(
     if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
         return 1.0f;
     float2 uvAtlas = uv * t.uvScale + t.uvBias;
-    float receiverDepth = ndc.z + EvsmOrientedBias(faceNormal, spotDirection, t.bias);
+    // Oriented bias purely in warp space (see SampleEvsmTile); receiverDepth
+    // is the true depth so the eye-space blocker math below is exact.
+    float biasAmt = -EvsmOrientedBias(faceNormal, spotDirection, t.bias);
+    float receiverDepth = ndc.z;
+    float warpBoost = EvsmWarpBoost(exponent, biasAmt);
     const float2 clampedUV = clamp(uvAtlas, t.uvClampMin, t.uvClampMax);
     Texture2D evsmTex = textures[NonUniformResourceIndex(idx)];
     float2 moments = evsmTex.SampleLevel(samplers[samplerId], clampedUV, 0).rg;
     valid = true;
+    const float centerVis = EvsmVisibility(moments, receiverDepth, exponent, warpBoost);
+
+    // Fully-lit center: skip the disk (see SampleEvsmTileSoft — offset taps
+    // against the unshifted receiverDepth only manufacture self-shadow on
+    // lit surfaces; a real penumbra always has a transitional center).
+    if (centerVis >= 0.999f)
+        return centerVis;
 
     // Eye depths (RH_ZO perspective inversion; near = pad_, far = splitEnd).
     const float nearP = max(t.pad_, 1e-3f);
@@ -281,7 +396,7 @@ float SampleEvsmSpotTileSoft(
     const float ndcBlocker = clamp(blocker, 0.0f, 0.9999f);
     const float zBlocker = farP * nearP / max(farP - ndcBlocker * (farP - nearP), 1e-4f);
     if (zBlocker >= zRecv)
-        return 1.0f; // blocker behind/at receiver: fully lit
+        return centerVis; // blocker behind/at receiver: fully lit, no disk
 
     // Penumbra (eye-space similar triangles; lightSize = pad2.x emitting
     // diameter, softness = pad2.y), projected into tile UV through the
@@ -291,10 +406,13 @@ float SampleEvsmSpotTileSoft(
     const float tanOuter = max(tan(min(outerAngle, 1.45f)), 1e-3f);
     float rPenUV = lightSize * softness * (zRecv - zBlocker)
         / max(zBlocker * 2.0f * zRecv * tanOuter, 1e-4f);
-    // Clamp to [0.75, 14] texels (each tap is already soft from the blur,
-    // so the disk only shapes the variable outer penumbra).
+    // Below ~0.5 texel the prefiltered center tap is already the soft
+    // answer; forcing a minimum disk radius stipples flat lit surfaces
+    // (moire). Clamp only the outer extent to avoid streaking.
     const float tileRes = 1.0f / max(t.invShadowSize.x, 1e-6f);
-    rPenUV = clamp(rPenUV, 0.75f / tileRes, 14.0f / tileRes);
+    if (rPenUV < 0.5f / tileRes)
+        return centerVis;
+    rPenUV = min(rPenUV, 14.0f / tileRes);
 
     const float2x2 rot = EvsmRotate2x2(EvsmDiskRotation(pix));
     float sum = 0.0f;
@@ -303,7 +421,7 @@ float SampleEvsmSpotTileSoft(
         const float2 off = mul(rot, kEvsmDisk8[k]) * rPenUV * t.uvScale;
         const float2 tapUV = clamp(uvAtlas + off, t.uvClampMin, t.uvClampMax);
         const float2 m = evsmTex.SampleLevel(samplers[samplerId], tapUV, 0).rg;
-        sum += EvsmVisibility(m, receiverDepth, exponent);
+        sum += EvsmVisibility(m, receiverDepth, exponent, warpBoost);
     }
-    return (EvsmVisibility(moments, receiverDepth, exponent) + sum / 8.0f) * 0.5f;
+    return (centerVis + sum) / 9.0f;
 }

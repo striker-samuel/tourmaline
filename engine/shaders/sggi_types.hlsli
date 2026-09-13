@@ -51,9 +51,10 @@ struct SgProbeGpu
     uint4 vis;
 };
 
-// Per-level uniform lookup grid (see probe_volume.h): cellSize >= probe
-// support diameter, so a probe sphere intersects <= 8 cells and a cell's
-// list is a superset of everything that can shade a point inside it.
+// Per-level uniform lookup grid (see probe_volume.h): cellSize = 2x brick
+// size; a probe sphere (R = 1.25x brick, diameter 2.5x brick) overlaps up
+// to 3 cells per axis (27 total), and a cell's list is a superset of
+// everything that can shade a point inside it.
 struct SgGiLevel
 {
     float4 cellSize;   // x = cell size (m)
