@@ -806,6 +806,10 @@ namespace smvk {
 		~VulkanSwapchain();
 
 		void Create() {
+			// A minimized window reports a 0x0 client size; the swapchain
+			// and every derived target cannot exist at extent 0 (the very
+			// first depth image dies with VK_ERROR_INITIALIZATION_FAILED).
+			WaitForNonMinimizedExtent();
 			CreateSwapchain();
 			CreateImageViews();
 			CreateDepthResources();
@@ -931,6 +935,11 @@ namespace smvk {
 		void CreateSyncObjects();
 		void DestroySyncObjects();
 		void CleanupSwapchain(bool fullDestroy = false);
+		// Blocks while the window is minimized (0x0 client size): the OS
+		// queue is pumped via SDL_WaitEvent so restore/resize events can
+		// arrive while we wait. Used by Create() and Recreate() before any
+		// extent-dependent resource is (re)built.
+		void WaitForNonMinimizedExtent();
 
 		VulkanFrameBuffer AcquireFramebuffer();
 		void EndAndPresentFramebuffer(VulkanFrameBuffer& cb);

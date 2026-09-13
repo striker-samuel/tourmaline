@@ -555,9 +555,10 @@ namespace {
 	}
 	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, SDL_Window* window) {
 
+		VkExtent2D extent{};
 		if (capabilities.currentExtent.width !=
 			std::numeric_limits<uint32_t>::max()) {
-			return capabilities.currentExtent;
+			extent = capabilities.currentExtent;
 		}
 		else {
 			int width = 0, height = 0;
@@ -573,8 +574,17 @@ namespace {
 				std::clamp(actualExtent.height, capabilities.minImageExtent.height,
 					capabilities.maxImageExtent.height);
 
-			return actualExtent;
+			extent = actualExtent;
 		}
+		// Defense in depth against a 0x0 extent (minimized window whose
+		// surface caps zero out between the WaitForNonMinimizedExtent gate
+		// and this query, or platforms that report 0 without the sentinel):
+		// a 0-sized swapchain/depth image is illegal (the driver returns
+		// VK_ERROR_INITIALIZATION_FAILED) - 1x1 keeps it merely useless and
+		// the next resize/OUT_OF_DATE triggers Recreate to the real size.
+		if (extent.width == 0) extent.width = 1;
+		if (extent.height == 0) extent.height = 1;
+		return extent;
 	}
 	std::vector<const char*> getRequiredExtensionsForSDL(bool enableValidationLayers) {
 		uint32_t sdlExtensionCount = 0;
@@ -7110,21 +7120,28 @@ smvk::VulkanSwapchain::~VulkanSwapchain() {
 	DestroySyncObjects();
 	CleanupSwapchain(true);
 }
+void smvk::VulkanSwapchain::WaitForNonMinimizedExtent() {
+	int width = 0;
+	int height = 0;
+	SDL_GetWindowSizeInPixels(window_, &width, &height);
+	while (width == 0 || height == 0) {
+		// Block until the window is restored; SDL_WaitEvent pumps the OS
+		// queue so minimize/restore can proceed (events are inspected,
+		// not consumed - the app's own poll loop still sees them later).
+		SDL_WaitEvent(nullptr);
+		SDL_GetWindowSizeInPixels(window_, &width, &height);
+	}
+}
+
 void smvk::VulkanSwapchain::Recreate() {
 	// No new sync objects. Should investigate, can iamge# change? on OOD
 	static uint64_t recreateCount = 0;
 	fprintf(stderr, "[swapchain] Recreate #%llu\n", (unsigned long long)++recreateCount);
+	WaitForNonMinimizedExtent();
+
 	int width = 0;
 	int height = 0;
-
 	SDL_GetWindowSizeInPixels(window_, &width, &height);
-	while (width == 0 || height == 0) {
-		// Block until the window is restored; SDL_WaitEvent pumps the OS
-		// queue so minimize/restore can proceed.
-		SDL_WaitEvent(nullptr);
-		SDL_GetWindowSizeInPixels(window_, &width, &height);
-	}
-
 	SDL_GetWindowSize(window_, &windowWidth, &windowHeight);
 
 	extent_.width = width;
