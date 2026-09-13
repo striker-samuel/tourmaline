@@ -59,6 +59,10 @@ static VkQueue computeQueue_ = VK_NULL_HANDLE;
 // Set at device creation (see VulkanCore init): true when the device
 // supports VK multiDrawIndirect (drawCount > 1 in a single indirect call).
 static bool g_multiDrawIndirect = false;
+// True when the device was created with fillModeNonSolid enabled
+// (PolygonMode::Line/Point in graphics pipelines). BuildGraphicsPipeline
+// clamps non-solid modes back to Fill when this is false.
+static bool g_fillModeNonSolid = false;
 struct QueueMutex { VkQueue queue = VK_NULL_HANDLE; std::mutex mutex; };
 static QueueMutex graphicsQueueMutex;
 static QueueMutex presentQueueMutex;
@@ -1820,6 +1824,13 @@ bool smvk::VulkanCore::Init() {
 					"device lacks fragmentStoresAndAtomics (required for "
 					"texture-streaming GPU feedback)");
 			}
+			// Non-solid fill modes (PolygonMode::Line, the wireframe debug
+			// view). Core-optional since 1.0, universal on desktop; when
+			// absent BuildGraphicsPipeline clamps pipelines back to Fill so
+			// the app never rasterizes with an unsupported mode.
+			g_fillModeNonSolid = (supported.fillModeNonSolid == VK_TRUE);
+			feats2.features.fillModeNonSolid =
+				g_fillModeNonSolid ? VK_TRUE : VK_FALSE;
 		}
 
 			std::vector<const char*> enabledExtensions = config_.deviceExtensions;
@@ -1843,6 +1854,11 @@ bool smvk::VulkanCore::Init() {
 				"[Vulkan Warning] multiDrawIndirect not supported by this device; "
 				"vkCmdDrawIndexedIndirect with drawCount > 1 will be emulated "
 				"one draw at a time (slow path, expect lower throughput)\n");
+		}
+		if (!g_fillModeNonSolid) {
+			fprintf(stderr,
+				"[Vulkan Warning] fillModeNonSolid not supported by this device; "
+				"wireframe (PolygonMode::Line) pipelines clamp to Fill\n");
 		}
 		volkLoadDevice(device_);
 
@@ -7901,7 +7917,12 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 			key.raster.rasterizerDiscardEnable,
 
 		.polygonMode =
-			toVkPolygonMode(
+			// Line/Point need the fillModeNonSolid feature at device
+			// creation; clamp to Fill when it is unavailable instead of
+			// rasterizing with an unsupported mode.
+			(key.raster.polygonMode != PolygonMode::Fill && !g_fillModeNonSolid)
+			? VK_POLYGON_MODE_FILL
+			: toVkPolygonMode(
 				key.raster.polygonMode),
 
 		.cullMode =

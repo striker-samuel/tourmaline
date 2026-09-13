@@ -654,6 +654,12 @@ protected:
 		if (m_input.isKeyPressed(GLFW_KEY_F6)) {
 			m_debugView = DebugView::VertexColors;
 		}
+		// P toggles wireframe (PolygonMode::Line, Cull None) over the
+		// active debug view — a raster override, not a shading swap, so
+		// it stacks with F1..F6.
+		if (m_input.isKeyPressed(GLFW_KEY_P)) {
+			m_wireframe = !m_wireframe;
+		}
 #if defined(DS_DEBUG_VIZ)
 		// Deferred-shadow visualizer cycle (Y): Off -> counts -> diff ->
 		// light-scoped modes. Needs the pipeline on (H); see the panel's
@@ -850,6 +856,12 @@ protected:
 	DebugView m_debugView = DebugView::Lit;
 	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat
 	bool m_hideTransparent = false; // debug: skip all transparent draws (bisect blending/overdraw out)
+	// Wireframe (P): raster override on every scene-triangle bind in the
+	// Main pass — PolygonMode::Line + Cull None (see backfaces). Composes
+	// with any debug view (lit/unlit/meshlets/LODs) and the transparent
+	// leg; skydome, cone-line overlays and the depth prepass stay Fill so
+	// lines keep hidden-line removal against the prepass depth.
+	bool m_wireframe = false;
 	// Transparency technique for AlphaMode::Blend materials (default:
 	// dithered screen-door, opaque state; optional classic alpha blend).
 	smvk::TransparentMode m_transparentMode = smvk::TransparentMode::Dithered;

@@ -687,6 +687,12 @@ bool SceneRenderer::Initialize() {
 			if (std::atoi(lodEnv) == 0)
 				m_lodEnabled = false;
 		}
+		// Headless wireframe opt-in (VULKANTOY_WIREFRAME=1) for capture/A-B
+		// runs without UI interaction; the P toggle stays live after.
+		if (const char* wfEnv = std::getenv("VULKANTOY_WIREFRAME")) {
+			if (std::atoi(wfEnv) == 1)
+				m_wireframe = true;
+		}
 		// Headless debug-view select (lit|unlit|meshlets|cascades|lods|vertexcolors).
 		if (const char* dvEnv = std::getenv("VULKANTOY_DEBUGVIEW")) {
 			const std::string_view dv = trimEnv(dvEnv);
@@ -4422,6 +4428,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		const smvk::MSAASettings msaaSettings =
 			useMsaa ? smvk::MSAASettings::Count2() : smvk::MSAASettings::Count1();
 
+		// Wireframe (P): force Line polygon mode + no culling on every
+		// scene-triangle bind below (filtered ranges, direct draws, flat
+		// debug views, transparent leg) so back faces show too. The depth
+		// prepass stays Fill, so lines keep hidden-line removal against
+		// its depth; skydome (backdrop) and the line overlays stay as-is.
+		auto wireframeRaster = [&](smvk::RasterSettings r) {
+			if (m_wireframe) {
+				r.polygonMode = smvk::PolygonMode::Line;
+				r.cullMode = smvk::CullMode::None;
+			}
+			return r;
+		};
+
 		auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId) {
 			auto& model = m_world->scene.globalTransform[node];
 			smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
@@ -4471,7 +4490,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				noStencil,
 				blend,
 				msaaSettings,
-				raster
+				wireframeRaster(raster)
 			);
 		};
 
@@ -4509,7 +4528,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			noStencil,
 			smvk::BlendSettings::Opaque(),
 			msaaSettings,
-			smvk::RasterSettings{}
+			wireframeRaster(smvk::RasterSettings{})
 		);
 		cmd.PushConstants(
 			0,
@@ -4577,7 +4596,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				noStencil,
 				smvk::BlendSettings::Opaque(),
 				msaaSettings,
-				smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+				wireframeRaster(smvk::RasterSettings{ .cullMode = smvk::CullMode::None })
 			);
 		cmd.BindStaticVertexFmt();
 		// No index bind: mesh, cluster-ordered and debug draws all address
@@ -4656,7 +4675,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				noStencil,
 				smvk::BlendSettings::Opaque(),
 				msaaSettings,
-				smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+				wireframeRaster(smvk::RasterSettings{ .cullMode = smvk::CullMode::None })
 			);
 			cmd.BindStaticVertexFmt();
 			MeshDebugPush lp2{};
@@ -4897,7 +4916,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							noStencil,
 							smvk::BlendSettings::Opaque(),
 							msaaSettings,
-							smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+							wireframeRaster(smvk::RasterSettings{ .cullMode = smvk::CullMode::None })
 						);
 						cmd.BindStaticVertexFmt();
 						boundMaterial = d.materialId;
@@ -4933,7 +4952,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							noStencil,
 							opaqueBlend,
 							msaaSettings,
-							raster
+							wireframeRaster(raster)
 						);
 					} else {
 						bindForMaterial(d.materialId, *transProg, transparentDepth);
@@ -5686,6 +5705,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
 					ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
 					ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones);
+					ImGui::Checkbox("Wireframe (P, Line polygon mode)", &m_wireframe);
 					ImGui::Checkbox("Hide transparent (debug, bisect blending)", &m_hideTransparent);
 					if (!m_gfxRenderer.DebugProgramsValid())
 						ImGui::TextDisabled("Debug programs missing � views disabled");
@@ -6144,7 +6164,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				ImGui::TextDisabled("      Y DS visualizer (%s)",
 					m_dsDebugMode == DsDebugViz::Off ? "off" : "on");
 #endif
-				ImGui::TextDisabled("      T transparency  Z/1-4 AA  U dock (%s)", UiDockName());
+				ImGui::TextDisabled("      T transparency  Z/1-4 AA  U dock (%s)  P wireframe", UiDockName());
 				ImGui::EndTabItem();
 			}
 			ImGui::EndTabBar();
