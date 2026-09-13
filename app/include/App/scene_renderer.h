@@ -782,7 +782,7 @@ protected:
 	// program instead of full PBR (same coarsest geometry — see World::
 	// LodShaderAt). Toggle = pure fallback: off/A/B (UI checkbox or
 	// VULKANTOY_SHADERLOD=0) keeps every level full-lit.
-	bool m_lodShaderEnabled = true;
+	bool m_lodShaderEnabled = false;
 	uint64_t m_lodShaderDraws = 0; // Main draws shaded vertex-lit this frame
 	// Effective decision for an instance's selected level: full-lit when
 	// LODs/shader-LODs are disabled, uncooked, or the program is missing.
@@ -826,7 +826,7 @@ protected:
 	// symmetric warp-space bias compensation, dense prefilter, 9-tap soft
 	// penumbra). Falls back to PCF automatically when unsupported/invalid.
 	// Opt out with VULKANTOY_EVSM=0 or the ImGui checkbox.
-	bool m_evsmEnabled = true; // user toggle (ImGui); effective only if supported
+	bool m_evsmEnabled = false; // user toggle (ImGui); effective only if supported
 	// SameFrame default: moments are blurred on the true-async compute
 	// queue and consumed by this frame's lighting (no shadow lag/wobble).
 	// OneFrameLag remains in the ImGui combo for overlap comparison.
@@ -905,7 +905,7 @@ protected:
 	bool m_wireframe = false;
 	// Transparency technique for AlphaMode::Blend materials (default:
 	// dithered screen-door, opaque state; optional classic alpha blend).
-	smvk::TransparentMode m_transparentMode = smvk::TransparentMode::Dithered;
+	smvk::TransparentMode m_transparentMode = smvk::TransparentMode::Blended;
 	bool m_debugCones = false;    // cone-axis line overlay (CPU batches)
 	smvk::Holder<smvk::BufferHandle> m_debugLines; // pos-only cone line VB
 	uint32_t m_debugLinesCap = 0; // verts allocated
