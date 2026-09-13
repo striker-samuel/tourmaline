@@ -1957,6 +1957,11 @@ inline smvk::VulkanCore::~VulkanCore() {
 	graphicsQueue_ = VK_NULL_HANDLE;
 	presentQueue_ = VK_NULL_HANDLE;
 	transferQueue_ = VK_NULL_HANDLE;
+	// vkDestroyInstance above was the final Vulkan call of the process:
+	// volk's tables and VMA's imported functions still point into the
+	// Streamline interposer (DlssShutdown only ran slShutdown), so only
+	// now is it safe to unmap it. No-op when Streamline is absent.
+	DlssRelease();
 }
 std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanCore::CoreConfiguration config, SDL_Window* window) {
 	assert(window != nullptr && "window was nullptr!");
@@ -8585,6 +8590,10 @@ bool smvk::App::Initialize() {
 			std::cerr << "Streamline loader failed to bootstrap - "
 				"falling back to vulkan-1.dll\n";
 			DlssShutdown();
+			// No Vulkan objects exist yet, so unloading is safe here;
+			// volkInitialize() below re-points the (possibly interposer-
+			// resolved) global functions at the native loader.
+			DlssRelease();
 			slGpa = nullptr;
 		}
 	}
@@ -8669,7 +8678,9 @@ void smvk::App::Shutdown() {
 	// m_context if needed; actual destruction happens in ~VulkanApp via
 	// member order (TestApp members -> VulkanApp members -> IApp window).
 	// Streamline teardown: slShutdown must run before the VkInstance /
-	// VkDevice are destroyed (~App tears down m_context).
+	// VkDevice are destroyed (~App tears down m_context). The interposer
+	// DLL itself stays mapped until ~VulkanCore unloads it (DlssRelease)
+	// because volk/VMA still call through its proxies during teardown.
 	DlssShutdown();
 }
 

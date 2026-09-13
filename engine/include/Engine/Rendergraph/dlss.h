@@ -75,7 +75,16 @@ struct DlssOptimalSettings {
 [[nodiscard]] bool DlssStartup();
 
 // slShutdown before destroying the VkInstance/VkDevice (App::Shutdown).
+// Keeps sl.interposer.dll mapped: volk and VMA hold pointers into the
+// interposer that the Vulkan teardown (~Swapchain/~VulkanResourceManager/
+// ~VulkanCore) still calls through — unloading it here crashes at exit
+// (0xC0000005). Follow with DlssRelease() after the instance is gone.
 void DlssShutdown();
+
+// Unloads sl.interposer.dll. Must be the last Vulkan-related action of
+// the process (end of ~VulkanCore): every volk/VMA function pointer
+// resolves into the interposer until then. No-op without Streamline.
+void DlssRelease();
 
 // True between a successful DlssStartup and DlssShutdown.
 [[nodiscard]] bool DlssAvailable();

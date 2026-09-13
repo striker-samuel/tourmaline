@@ -230,11 +230,27 @@ void DlssShutdown() {
 			std::fprintf(stderr, "[DLSS] slShutdown failed (result=%u)\n", static_cast<uint32_t>(res));
 		g_ready = false;
 	}
-	FreeLibrary(g_module);
-	g_module = nullptr;
+	// Deliberately NOT FreeLibrary-ing sl.interposer.dll here: volk's
+	// dispatch tables and VMA's imported function table hold pointers
+	// into the interposer (App::Initialize routed volk through its
+	// vkGetInstanceProcAddr), and every remaining Vulkan teardown call
+	// (~Swapchain / ~VulkanResourceManager / ~VulkanCore) runs through
+	// them. Unloading now unmaps that code and the next vk* call jumps
+	// into freed memory (0xC0000005 at app exit). DlssRelease() unloads
+	// the module once the last Vulkan call has happened.
 	g_vkGetInstanceProcAddr = nullptr;
 	g_supported = false;
 	g_supportedChecked = false;
+}
+
+void DlssRelease() {
+	if (!g_module)
+		return;
+	// Only safe after the final Vulkan call of the process (end of
+	// ~VulkanCore): see the note in DlssShutdown. No-op when Streamline
+	// never loaded or was already released.
+	FreeLibrary(g_module);
+	g_module = nullptr;
 }
 
 bool DlssAvailable() {
