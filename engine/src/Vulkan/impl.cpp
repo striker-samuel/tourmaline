@@ -9632,8 +9632,14 @@ void smvk::CommandBuffer::BindRenderPipeline(
 	// Attachment formats are pass-invariants (CommandBuffer is
 	// per-pass), so they are not part of the comparison. Skips the
 	// pipeline-cache key build (vector allocs + ~100-way hash) and the
-	// redundant vkCmdBind* calls that even the cache's own
-	// current-pipeline dedup used to pay.
+	// redundant vkCmdBindPipeline call that even the cache's own
+	// current-pipeline dedup used to pay. The vertex buffer bind below
+	// is NOT skipped: with the async-compute split (G1/C/G2) the pass
+	// records into the split tail command buffer while this per-pass
+	// state was established against earlier binds, so a binding issued
+	// once cannot be assumed live at draw time (observed: vertex fetches
+	// past binding 0 read zero in split frames without the rebind).
+	// Re-issuing two buffer binds is negligible next to the lookup saved.
 	if (graphicsBound_
 		&& vertexFormat == boundVertexFormat_
 		&& topology == boundTopology_
@@ -9646,6 +9652,8 @@ void smvk::CommandBuffer::BindRenderPipeline(
 	{
 		currentPipeline_ = graphicsPipeline_;
 		currentLayout_ = graphicsLayout_;
+		if (vertexFormat == VertexFormat::StaticVertexFormat)
+			BindStaticVertexFmt();
 		return;
 	}
 

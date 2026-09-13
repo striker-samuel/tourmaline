@@ -44,6 +44,7 @@
 #include <App/push_constants.h>
 using app::PushConstants;
 #include <Engine/Vfs/vfs.h>
+#include <Engine/Utils/texture_loader.h>
 #include <App/scene_renderer.h>
 #include <Engine/Profile/profile.h>
 #include <imgui.h>
@@ -403,12 +404,31 @@ const SceneDesc& SceneRegistry::BistroNiagara() {
 	};
 	return bistroNiagara;
 }
+
+const SceneDesc& SceneRegistry::LayersCube() {
+	// Procedural layered-material test: a subdivided cube with smooth
+	// vertex-color layer weights (R/G along X, B/A along Y) blending four
+	// Sponza-sourced PBR materials. No glTF/pak involved (builtin tag).
+	static const SceneDesc layersCube{
+		/*id=*/"layers-cube",
+		/*label=*/"Layers Cube (vertex paint)",
+		/*gltfPath=*/"",
+		/*pakPath=*/"",
+		/*camPos=*/glm::vec3(3.4f, 2.6f, 3.4f),
+		/*camTarget=*/glm::vec3(0.0f, 0.1f, 0.0f),
+		/*farClip=*/50.0f,
+		/*coordFix=*/1,
+		/*preTransform=*/glm::mat4(1.0f),
+		/*builtin=*/"layers-cube",
+	};
+	return layersCube;
+}
 } // namespace app (scene registry methods; class methods open their own blocks below)
 
 namespace app {
 
-	std::vector<SceneDesc> SceneRegistry::All() {
-	return { Sponza(), Bistro(), BistroNiagara(), Scanlands() };
+ 	std::vector<SceneDesc> SceneRegistry::All() {
+ 	return { Sponza(), Bistro(), BistroNiagara(), Scanlands(), LayersCube() };
 }
 
 std::optional<SceneDesc> SceneRegistry::Find(const std::string& id) {
@@ -484,6 +504,159 @@ void SceneRenderer::Configure(SceneDesc scene, ScenePassConfig passes) {
 namespace app {
 using Super = smvk::AppImpl;
 
+namespace {
+
+// Layer sources for the layers-cube test: four visually distinct Sponza
+// baseColor KTX2s with spread PBR factors (the metallic layer 3 exercises
+// the specular blend path).
+struct LayerSource {
+	const char* ktx = nullptr;
+	float roughness = 1.0f;
+	float metallic = 0.0f;
+};
+constexpr LayerSource kCubeLayers[4] = {
+	{ "content/models/sponza_out/5792855332885324923.ktx2", 0.9f, 0.0f },
+	{ "content/models/sponza_out/7441062115984513793.ktx2", 0.6f, 0.0f },
+	{ "content/models/sponza_out/11490520546946913238.ktx2", 0.4f, 0.2f },
+	{ "content/models/sponza_out/15295713303328085182.ktx2", 0.3f, 0.6f },
+};
+
+// Subdivided cube (2x2x2, centered) with smooth vertex-color layer weights:
+// R = 1-u, G = u along X; B = 1-v, A = v along Y. Corners isolate single
+// layers, edges blend pairs, faces blend all four — the full blend space
+// on one mesh. Per-face grids (split vertices) keep normals crisp.
+smvk::StaticMeshUpload BuildLayerCubeUpload(int segments) {
+	smvk::StaticMeshUpload data;
+	data.aabbMin = glm::vec3(-1.0f);
+	data.aabbMax = glm::vec3(1.0f);
+	struct Face {
+		glm::vec3 n, u, v, origin;
+	};
+	// (outward N; u = screen-right, v = screen-up seen from outside;
+	// N == u x v; origin = bottom-left corner.)
+	const Face faces[6] = {
+		{ { 1, 0, 0 }, { 0, 0,-1 }, { 0, 1, 0 }, { 1,-1, 1 } }, // +X
+		{ {-1, 0, 0 }, { 0, 0, 1 }, { 0, 1, 0 }, {-1,-1,-1 } }, // -X
+		{ { 0, 1, 0 }, { 1, 0, 0 }, { 0, 0,-1 }, {-1, 1, 1 } }, // +Y
+		{ { 0,-1, 0 }, { 1, 0, 0 }, { 0, 0, 1 }, {-1,-1,-1 } }, // -Y
+		{ { 0, 0, 1 }, { 1, 0, 0 }, { 0, 1, 0 }, {-1,-1, 1 } }, // +Z
+		{ { 0, 0,-1 }, {-1, 0, 0 }, { 0, 1, 0 }, { 1,-1,-1 } }, // -Z
+	};
+	const int n = std::max(1, segments);
+	for (const Face& f : faces) {
+		const uint32_t base = static_cast<uint32_t>(data.vertices.size());
+		for (int j = 0; j <= n; ++j) {
+			for (int i = 0; i <= n; ++i) {
+				const float a = static_cast<float>(i) / static_cast<float>(n);
+				const float b = static_cast<float>(j) / static_cast<float>(n);
+				smvk::StaticVertex v{};
+				v.pos = f.origin + f.u * (2.0f * a) + f.v * (2.0f * b);
+				const float u = v.pos.x * 0.5f + 0.5f;
+				const float w = v.pos.y * 0.5f + 0.5f;
+				v.color = glm::vec4(1.0f - u, u, 1.0f - w, w);
+				v.texCoord = glm::vec2(a, b);
+				v.normal = f.n;
+				v.tangent = glm::vec4(f.u, 1.0f);
+				data.vertices.push_back(v);
+			}
+		}
+		for (int j = 0; j < n; ++j) {
+			for (int i = 0; i < n; ++i) {
+				const uint32_t a = base + (uint32_t)j * (n + 1) + i;
+				const uint32_t b = a + 1;
+				const uint32_t c = a + (n + 1) + 1;
+				const uint32_t d = a + (n + 1);
+				data.indices.push_back(a);
+				data.indices.push_back(b);
+				data.indices.push_back(c);
+				data.indices.push_back(a);
+				data.indices.push_back(c);
+				data.indices.push_back(d);
+			}
+		}
+	}
+	return data;
+}
+
+} // namespace
+
+bool SceneRenderer::BuildLayersCubeScene(smvk::Cluster& cluster) {
+	// Textures (full-resident; a 4-texture test doesn't need streaming).
+	smvk::TextureHandle layerTex[4]{};
+	for (int i = 0; i < 4; ++i) {
+		smvk::Holder<smvk::TextureHandle> holder =
+			smvk::LoadKtxTextureFile(*m_context, kCubeLayers[i].ktx, {});
+		if (holder.empty()) {
+			std::cerr << "[LayersCube] texture load failed: "
+				<< kCubeLayers[i].ktx << std::endl;
+			return false;
+		}
+		layerTex[i] = holder;
+		cluster.textures.create(std::move(holder));
+	}
+	// Materials (layer 0 = base; layers 1..3 referenced by pool index).
+	smvk::ClusterMaterialHandle layerHandle[4]{};
+	// Flat-factor mode (VULKANTOY_LAYERS_FLAT=1): saturated albedo factors
+	// instead of textures, for validating the blend weights by eye
+	// (corners isolate single layers, edges blend pairs).
+	const bool flatValidate = std::getenv("VULKANTOY_LAYERS_FLAT") != nullptr;
+	const glm::vec4 flatColors[4] = {
+		glm::vec4(1.0f, 0.15f, 0.15f, 1.0f),
+		glm::vec4(0.15f, 1.0f, 0.15f, 1.0f),
+		glm::vec4(0.15f, 0.15f, 1.0f, 1.0f),
+		glm::vec4(1.0f, 1.0f, 0.15f, 1.0f),
+	};
+	for (int i = 0; i < 4; ++i) {
+		smvk::MaterialCreateInfo ci{};
+		ci.baseColorTexture = flatValidate ? smvk::TextureHandle{} : layerTex[i];
+		ci.diffuse = flatValidate ? smvk::TextureHandle{} : layerTex[i];
+		ci.baseColorFactor = flatValidate ? flatColors[i] : glm::vec4(1.0f);
+		ci.metallicFactor = kCubeLayers[i].metallic;
+		ci.roughnessFactor = kCubeLayers[i].roughness;
+		ci.emissiveFactor = glm::vec3(0.0f);
+		ci.alphaMode = smvk::AlphaMode::Opaque;
+		ci.shadingModel = smvk::ShadingModel::DefaultLit;
+		layerHandle[i] = cluster.CreateMaterial(ci);
+		if (layerHandle[i].empty()) {
+			std::cerr << "[LayersCube] material create failed for layer "
+				<< i << std::endl;
+			return false;
+		}
+	}
+	// Wire the base material's layer table (cluster-local ids; the World
+	// remap turns them into world material ids at ResolveAndFixup).
+	if (smvk::Material* base = cluster.materials.get(layerHandle[0])) {
+		base->values.layerMaterials = glm::ivec4(
+			static_cast<int32_t>(layerHandle[1].index()),
+			static_cast<int32_t>(layerHandle[2].index()),
+			static_cast<int32_t>(layerHandle[3].index()),
+			4);
+	}
+	else {
+		return false;
+	}
+	// Mesh + nodes.
+	smvk::StaticMeshUpload upload = BuildLayerCubeUpload(8);
+	smvk::ClusterStaticMeshHandle meshHandle = cluster.UploadStaticMesh(upload);
+	if (meshHandle.empty()) {
+		std::cerr << "[LayersCube] mesh upload failed\n";
+		return false;
+	}
+	const int root = addNode(cluster.scene, -1, 0);
+	cluster.scene.localTransform[root] = glm::mat4(1.0f);
+	cluster.scene.globalTransform[root] = glm::mat4(1.0f);
+	const int cubeNode = addNode(cluster.scene, root, 1);
+	cluster.scene.localTransform[cubeNode] = glm::mat4(1.0f);
+	cluster.scene.globalTransform[cubeNode] = glm::mat4(1.0f);
+	cluster.scene.meshForNode[cubeNode] = meshHandle.index();
+	cluster.scene.materialForNode[cubeNode] = layerHandle[0].index();
+	markAsChanged(cluster.scene, cubeNode);
+	std::cerr << "[LayersCube] cube built: "
+		<< upload.vertices.size() << " verts, "
+		<< upload.indices.size() / 3 << " tris, 4 layered materials\n";
+	return true;
+}
+
 bool SceneRenderer::Initialize() {
 		if (!Super::Initialize())
 			return false;
@@ -503,7 +676,7 @@ bool SceneRenderer::Initialize() {
 			return v;
 		};
 
-#if 0 // TMP-DIAG scanlands hunt (disabled): headless toggles. Remove later.
+		// Headless toggles for A/B runs without UI interaction.
 		// Kill the occluder-depth path (VULKANTOY_HIZ=0).
 		if (const char* hizEnv = std::getenv("VULKANTOY_HIZ")) {
 			if (std::atoi(hizEnv) == 0)
@@ -524,7 +697,6 @@ bool SceneRenderer::Initialize() {
 			else if (dv == "lods") m_debugView = DebugView::Lods;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DEBUGVIEW value: " << dv << "\n";
 		}
-#endif
 		// AA mode override for A/B runs without UI interaction
 		// (off | msaa | smaa1x | t2x). The ImGui combo stays live after.
 		if (const char* aaEnv = std::getenv("VULKANTOY_AA")) {
@@ -617,11 +789,14 @@ bool SceneRenderer::Initialize() {
 			if (std::atoi(expEnv) == 0)
 				m_autoExposureEnabled = false;
 		}
-		// EVSM kill switch for A/B (VULKANTOY_EVSM=0): PCF depth atlases,
-		// no moment/blur passes, single-submit frames (no async split).
+		// EVSM toggle for A/B (VULKANTOY_EVSM=0: PCF depth atlases,
+		// no moment/blur passes, single-submit frames (no async split);
+		// =1: force EVSM on for development).
 		if (const char* evsmEnv = std::getenv("VULKANTOY_EVSM")) {
 			if (std::atoi(evsmEnv) == 0)
 				m_evsmEnabled = false;
+			else
+				m_evsmEnabled = true;
 		}
 		// EVSM softness override for A/B captures (VULKANTOY_EVSM_SOFT=x).
 		if (const char* softEnv = std::getenv("VULKANTOY_EVSM_SOFT")) {
@@ -893,6 +1068,17 @@ bool SceneRenderer::Initialize() {
 		std::cerr << "[Scene] loading '" << m_scene.id << "' (pak: " << scenePak << ")"
 			<< (m_forceGltf ? " FORCED GLTF" : "") << std::endl;
 		bool loadedFromPak = false;
+		// Procedural builtin scenes bypass pak/glTF entirely.
+		const bool isBuiltinLayersCube = m_scene.builtin
+			&& std::string(m_scene.builtin) == "layers-cube";
+		if (isBuiltinLayersCube) {
+			auto& cluster = m_world->LoadCluster(*m_context);
+			if (!BuildLayersCubeScene(cluster)) {
+				std::cerr << "[SceneRenderer] layers-cube build failed\n";
+				return false;
+			}
+			loadedFromPak = true; // skip the glTF fallback below
+		}
 		if (!m_forceGltf)
 		{
 			std::ifstream pakFile(scenePak, std::ios::binary | std::ios::ate);
@@ -932,6 +1118,22 @@ bool SceneRenderer::Initialize() {
 							catch (const std::exception& e) {
 								std::cerr << "[SceneRenderer] Pak load failed, falling back "
 									<< "to glTF: " << e.what() << std::endl;
+								// Drain staged uploads while their destination
+								// buffers are still alive, then reset the world
+								// so the glTF fallback starts clean, and wait
+								// for deferred destroys to complete. Without
+								// this, queued copies reference destroyed
+								// buffers and the fallback imports on top of
+								// unreclaimed GPU memory (GPU fault).
+								m_context->FlushUploads();
+								WaitForDeviceIdle();
+								m_world = std::make_unique<smvk::World>();
+								m_context->ProcessDeferredTasks();
+								WaitForDeviceIdle();
+								// Release the (possibly huge) pak image before
+								// the fallback import to keep peak memory down.
+								pakImage->clear();
+								pakImage->shrink_to_fit();
 							}
 						}
 						else {
@@ -6211,6 +6413,28 @@ void SceneRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
 		if (!m_context->DownloadDataFromImage(img, stageLayouts[s], px.data(), bytes)) {
 			std::fprintf(stderr, "[EVSM-dump] %s readback failed\n", name);
 			continue;
+		}
+		// Per-tile stats (all cascade tiles, not just tile 0): mean/max
+		// positive moment + implied depth range per tile.
+		for (uint32_t t = 0; t < 4; ++t) {
+			int32_t ox = 0, oy = 0;
+			atlas.TileOrigin(t, ox, oy);
+			double sumR = 0; uint64_t n = 0; float maxR = 0;
+			for (uint32_t y = 0; y < tile; y += 8) {
+				for (uint32_t x = 0; x < tile; x += 8) {
+					const size_t i = (size_t(oy + y) * w + (ox + x)) * 2;
+					const float r = reinterpret_cast<const float*>(px.data())[i];
+					if (!std::isfinite(r))
+						continue;
+					sumR += r; ++n;
+					if (r > maxR) maxR = r;
+				}
+			}
+			std::fprintf(stderr,
+				"[EVSM-dump] %s tile%u: R mean=%.3e max=%.3e (d: %.3f..%.3f)\n",
+				name, t, n ? sumR / (double)n : 0.0, maxR,
+				n ? std::log(sumR / (double)n) / 42.0 : 0.0,
+				std::log(std::max(maxR, 1e-6f)) / 42.0);
 		}
 		const float* f = reinterpret_cast<const float*>(px.data());
 		double sumR = 0, sumG = 0, minR = 1e300, maxR = 0, minG = 1e300, maxG = 0;

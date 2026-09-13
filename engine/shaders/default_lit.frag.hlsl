@@ -6,7 +6,7 @@
 struct PSIn
 {
     float4 clipPos : SV_Position;
-    float3 color : COLOR0;
+    float4 color : COLOR0;
     float2 uv : TEXCOORD0;
     float3 worldPos : TEXCOORD1;
     float3 normal : TEXCOORD2;
@@ -185,11 +185,44 @@ PSOut mainPS(PSIn IN)
     MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
 
     // ---------------------------------------------------------------
+    // Layered materials (vertex-color blending).
+    // mat.layerMaterials.w == 0: legacy path (vertex color tints albedo).
+    // Otherwise 2..4: blend that many layers with the vertex color RGBA
+    // channels as weights (normalized below). Layer 0 is this material;
+    // layers 1..3 are the materials addressed by layerMaterials.xyz
+    // (world material ids, remapped at load; -1 = reuse layer 0).
+    // Factors and sampled texture results blend per layer; enum-like
+    // state (shading model, alpha mode) always comes from layer 0.
+    // ---------------------------------------------------------------
+    int layerMode = mat.layerMaterials.w;
+    const bool layered = (layerMode > 1);
+    float4 layerW = layered
+        ? IN.color / max(IN.color.x + IN.color.y + IN.color.z + IN.color.w, 1e-6f)
+        : float4(1.0f, 0.0f, 0.0f, 0.0f);
+    MaterialValues ml0 = mat;
+    MaterialValues ml1 = mat;
+    MaterialValues ml2 = mat;
+    MaterialValues ml3 = mat;
+    if (layered)
+    {
+        int id1 = mat.layerMaterials.x;
+        int id2 = mat.layerMaterials.y;
+        int id3 = mat.layerMaterials.z;
+        if (layerMode > 1 && id1 >= 0 && id1 < MAX_MATERIALS)
+            ml1 = pc.bMats.Get().mats[id1];
+        if (layerMode > 2 && id2 >= 0 && id2 < MAX_MATERIALS)
+            ml2 = pc.bMats.Get().mats[id2];
+        if (layerMode > 3 && id3 >= 0 && id3 < MAX_MATERIALS)
+            ml3 = pc.bMats.Get().mats[id3];
+    }
+
+    // ---------------------------------------------------------------
     // Decode material indices and factors
     // tex: x=baseColor, y=metallicRoughness, z=normal, w=occlusion
     // tex2: x=emissive
     // params: x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
     // params2: x=occlusionStrength, y=normalScale, z=emissiveStrength
+    // (Layered: factors blend below; indices are per-layer.)
     // ---------------------------------------------------------------
     int baseColorIdx = mat.tex.x;
     int mrIdx        = mat.tex.y;
@@ -198,30 +231,78 @@ PSOut mainPS(PSIn IN)
     int emissiveIdx  = mat.tex2.x;
 
     float alphaCutoff      = mat.params.x;
-    float metallicFactor   = mat.params.y;
-    float roughnessFactor  = mat.params.z;
+    float metallicFactor   = layered
+        ? ml0.params.y * layerW.x + ml1.params.y * layerW.y
+        + ml2.params.y * layerW.z + ml3.params.y * layerW.w
+        : mat.params.y;
+    float roughnessFactor  = layered
+        ? ml0.params.z * layerW.x + ml1.params.z * layerW.y
+        + ml2.params.z * layerW.z + ml3.params.z * layerW.w
+        : mat.params.z;
     float shadingModelF    = mat.params.w;
-    float occlusionStrength= mat.params2.x;
-    float normalScale      = mat.params2.y;
-    float emissiveStrength = mat.params2.z;
+    float occlusionStrength= layered
+        ? ml0.params2.x * layerW.x + ml1.params2.x * layerW.y
+        + ml2.params2.x * layerW.z + ml3.params2.x * layerW.w
+        : mat.params2.x;
+    float normalScale      = layered
+        ? ml0.params2.y * layerW.x + ml1.params2.y * layerW.y
+        + ml2.params2.y * layerW.z + ml3.params2.y * layerW.w
+        : mat.params2.y;
+    float emissiveStrength = layered
+        ? ml0.params2.z * layerW.x + ml1.params2.z * layerW.y
+        + ml2.params2.z * layerW.z + ml3.params2.z * layerW.w
+        : mat.params2.z;
 
-    float3 baseColorFactor = mat.diffuse.rgb;
-    float  baseAlphaFactor = mat.diffuse.a;
-    float3 emissiveFactor  = mat.emissiveFactor.rgb;
+    float3 baseColorFactor = layered
+        ? ml0.diffuse.rgb * layerW.x + ml1.diffuse.rgb * layerW.y
+        + ml2.diffuse.rgb * layerW.z + ml3.diffuse.rgb * layerW.w
+        : mat.diffuse.rgb;
+    float  baseAlphaFactor = layered
+        ? ml0.diffuse.a * layerW.x + ml1.diffuse.a * layerW.y
+        + ml2.diffuse.a * layerW.z + ml3.diffuse.a * layerW.w
+        : mat.diffuse.a;
+    float3 emissiveFactor  = layered
+        ? ml0.emissiveFactor.rgb * layerW.x + ml1.emissiveFactor.rgb * layerW.y
+        + ml2.emissiveFactor.rgb * layerW.z + ml3.emissiveFactor.rgb * layerW.w
+        : mat.emissiveFactor.rgb;
 
     // ---------------------------------------------------------------
-    // Sample baseColor / alpha
+    // Sample baseColor / alpha (blended across layers when layered)
     // ---------------------------------------------------------------
     float4 baseSample = float4(1,1,1,1);
-    if (baseColorIdx >= 0)
+    if (!layered && baseColorIdx >= 0)
     {
         uint slot = (uint)baseColorIdx;
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         baseSample = baseTex.Sample(samplers[0], IN.uv);
         TS_ReportUsage(slot, baseTex, samplers[0], IN.uv, IN.clipPos.xy);
     }
+    if (layered)
+    {
+        baseSample = float4(0, 0, 0, 0);
+        int4 bcIdx = int4(ml0.tex.x, ml1.tex.x, ml2.tex.x, ml3.tex.x);
+        [unroll]
+        for (int li = 0; li < 4; ++li)
+        {
+            float w = (li == 0) ? layerW.x : (li == 1) ? layerW.y : (li == 2) ? layerW.z : layerW.w;
+            int idx = (li == 0) ? bcIdx.x : (li == 1) ? bcIdx.y : (li == 2) ? bcIdx.z : bcIdx.w;
+            if (w < 0.004f)
+                continue; // below RGBA8 quantization: saves a fetch
+            float4 s = float4(1, 1, 1, 1);
+            if (idx >= 0)
+            {
+                uint slot = (uint)idx;
+                Texture2D t = textures[NonUniformResourceIndex(slot)];
+                s = t.Sample(samplers[0], IN.uv);
+                TS_ReportUsage(slot, t, samplers[0], IN.uv, IN.clipPos.xy);
+            }
+            baseSample += s * w;
+        }
+    }
     // glTF: baseColor = baseColorFactor * vertexColor * texture
-    float3 baseColor = baseColorFactor * IN.color * baseSample.rgb;
+    // (layered: vertex color already consumed as weights, tint stays white).
+    float3 vcolTint = layered ? float3(1.0f, 1.0f, 1.0f) : IN.color.rgb;
+    float3 baseColor = baseColorFactor * vcolTint * baseSample.rgb;
     float  baseAlpha = baseAlphaFactor * baseSample.a;
 
     // Alpha test for Masked (ShadingModel::Masked == 2)
@@ -241,10 +322,11 @@ PSOut mainPS(PSIn IN)
     // ---------------------------------------------------------------
     // Metallic-roughness
     // glTF metallicRoughnessTexture: G=roughness, B=metallic
+    // (Layered: per-layer G/B multipliers blend by weight.)
     // ---------------------------------------------------------------
     float metallic = metallicFactor;
     float roughness = roughnessFactor;
-    if (mrIdx >= 0)
+    if (!layered && mrIdx >= 0)
     {
         uint slot = (uint)mrIdx;
         Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
@@ -253,6 +335,33 @@ PSOut mainPS(PSIn IN)
         // Spec says: roughness = G * factor, metallic = B * factor
         roughness *= mrSample.g;
         metallic  *= mrSample.b;
+    }
+    if (layered)
+    {
+        float roughMult = 0.0f;
+        float metalMult = 0.0f;
+        int4 mIdx = int4(ml0.tex.y, ml1.tex.y, ml2.tex.y, ml3.tex.y);
+        [unroll]
+        for (int li = 0; li < 4; ++li)
+        {
+            float w = (li == 0) ? layerW.x : (li == 1) ? layerW.y : (li == 2) ? layerW.z : layerW.w;
+            int idx = (li == 0) ? mIdx.x : (li == 1) ? mIdx.y : (li == 2) ? mIdx.z : mIdx.w;
+            if (w < 0.004f)
+                continue;
+            float2 gb = float2(1.0f, 1.0f);
+            if (idx >= 0)
+            {
+                uint slot = (uint)idx;
+                Texture2D mrTex = textures[NonUniformResourceIndex(slot)];
+                float4 mrSample = mrTex.Sample(samplers[0], IN.uv);
+                TS_ReportUsage(slot, mrTex, samplers[0], IN.uv, IN.clipPos.xy);
+                gb = mrSample.gb;
+            }
+            roughMult += gb.x * w;
+            metalMult += gb.y * w;
+        }
+        roughness *= roughMult;
+        metallic *= metalMult;
     }
     metallic = saturate(metallic);
     roughness = clamp(roughness, 0.04f, 1.0f); // avoid 0 roughness singularities
@@ -270,7 +379,7 @@ PSOut mainPS(PSIn IN)
     // bias would sprinkle acne/detachment noise over textured surfaces.
     float3 geomN = N;
 
-    if (normalIdx >= 0)
+    if (!layered && normalIdx >= 0)
     {
         // Build TBN from interpolated vertex data. Gram-Schmidt re-orthogonalize
         // the tangent against the normal so interpolation doesn't skew the frame.
@@ -316,11 +425,59 @@ PSOut mainPS(PSIn IN)
         float ncLen = length(Nc);
         N = ncLen > 1e-12f ? Nc / ncLen : N;
     }
+    if (layered)
+    {
+        // Layered normal blend: build the TBN frame once (shared by all
+        // layers — same vertex), blend each layer's tangent-space normal
+        // by weight (missing maps contribute flat +Z), then transform once.
+        float3 T = IN.tangent.xyz;
+        float3 Tg = T - N * dot(N, T);
+        float tgLen = length(Tg);
+        if (tgLen > 1e-6f) { T = Tg / tgLen; }
+        else {
+            float3 axis = abs(N.y) < 0.99f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+            T = normalize(cross(axis, N));
+        }
+        float tw = IN.tangent.w;
+        tw = (tw == 0.0f || isnan(tw)) ? 1.0f : sign(tw);
+        float3 B = cross(N, T) * tw;
+
+        float3 mapAcc = float3(0.0f, 0.0f, 0.0f);
+        int4 nIdx = int4(ml0.tex.z, ml1.tex.z, ml2.tex.z, ml3.tex.z);
+        [unroll]
+        for (int li = 0; li < 4; ++li)
+        {
+            float w = (li == 0) ? layerW.x : (li == 1) ? layerW.y : (li == 2) ? layerW.z : layerW.w;
+            int idx = (li == 0) ? nIdx.x : (li == 1) ? nIdx.y : (li == 2) ? nIdx.z : nIdx.w;
+            if (w < 0.004f)
+                continue;
+            float3 mapN = float3(0.0f, 0.0f, 1.0f);
+            if (idx >= 0)
+            {
+                uint slot = (uint)idx;
+                Texture2D nTex = textures[NonUniformResourceIndex(slot)];
+                float2 mapXY = nTex.Sample(samplers[0], IN.uv).xy * 2.0f - 1.0f;
+                TS_ReportUsage(slot, nTex, samplers[0], IN.uv, IN.clipPos.xy);
+                mapXY *= normalScale;
+                float mapZ = sqrt(saturate(1.0f - dot(mapXY, mapXY)));
+                mapN = float3(mapXY, mapZ);
+            }
+            mapAcc += mapN * w;
+        }
+        float accLen = length(mapAcc);
+        if (accLen > 1e-12f)
+        {
+            float3 mapN = mapAcc / accLen;
+            float3 Nc = T * mapN.x + B * mapN.y + N * mapN.z;
+            float ncLen = length(Nc);
+            N = ncLen > 1e-12f ? Nc / ncLen : N;
+        }
+    }
     // ---------------------------------------------------------------
-    // Occlusion
+    // Occlusion (layered: per-layer R samples blend by weight)
     // ---------------------------------------------------------------
     float occlusion = 1.0f;
-    if (occIdx >= 0)
+    if (!layered && occIdx >= 0)
     {
         uint slot = (uint)occIdx;
         Texture2D occTex = textures[NonUniformResourceIndex(slot)];
@@ -328,18 +485,64 @@ PSOut mainPS(PSIn IN)
         TS_ReportUsage(slot, occTex, samplers[0], IN.uv, IN.clipPos.xy);
         occlusion = lerp(1.0f, occSample, occlusionStrength);
     }
+    if (layered)
+    {
+        float occAcc = 0.0f;
+        int4 oIdx = int4(ml0.tex.w, ml1.tex.w, ml2.tex.w, ml3.tex.w);
+        [unroll]
+        for (int li = 0; li < 4; ++li)
+        {
+            float w = (li == 0) ? layerW.x : (li == 1) ? layerW.y : (li == 2) ? layerW.z : layerW.w;
+            int idx = (li == 0) ? oIdx.x : (li == 1) ? oIdx.y : (li == 2) ? oIdx.z : oIdx.w;
+            if (w < 0.004f)
+                continue;
+            float s = 1.0f;
+            if (idx >= 0)
+            {
+                uint slot = (uint)idx;
+                Texture2D occTex = textures[NonUniformResourceIndex(slot)];
+                s = occTex.Sample(samplers[0], IN.uv).r;
+                TS_ReportUsage(slot, occTex, samplers[0], IN.uv, IN.clipPos.xy);
+            }
+            occAcc += s * w;
+        }
+        occlusion = lerp(1.0f, occAcc, occlusionStrength);
+    }
 
     // ---------------------------------------------------------------
-    // Emissive
+    // Emissive (layered: per-layer RGB samples blend by weight)
     // ---------------------------------------------------------------
     float3 emissive = emissiveFactor * emissiveStrength;
-    if (emissiveIdx >= 0)
+    if (!layered && emissiveIdx >= 0)
     {
         uint slot = (uint)emissiveIdx;
         Texture2D eTex = textures[NonUniformResourceIndex(slot)];
         float3 eSample = eTex.Sample(samplers[0], IN.uv).rgb;
         TS_ReportUsage(slot, eTex, samplers[0], IN.uv, IN.clipPos.xy);
         emissive *= eSample;
+    }
+    if (layered)
+    {
+        float3 eAcc = float3(0.0f, 0.0f, 0.0f);
+        int4 eIdx = int4(ml0.tex2.x, ml1.tex2.x, ml2.tex2.x, ml3.tex2.x);
+        [unroll]
+        for (int li = 0; li < 4; ++li)
+        {
+            float w = (li == 0) ? layerW.x : (li == 1) ? layerW.y : (li == 2) ? layerW.z : layerW.w;
+            int idx = (li == 0) ? eIdx.x : (li == 1) ? eIdx.y : (li == 2) ? eIdx.z : eIdx.w;
+            if (w < 0.004f)
+                continue;
+            float3 s = float3(1.0f, 1.0f, 1.0f);
+            if (idx >= 0)
+            {
+                uint slot = (uint)idx;
+                Texture2D eTex = textures[NonUniformResourceIndex(slot)];
+                s = eTex.Sample(samplers[0], IN.uv).rgb;
+                TS_ReportUsage(slot, eTex, samplers[0], IN.uv, IN.clipPos.xy);
+            }
+            eAcc += s * w;
+        }
+        emissive *= eAcc;
     }
 
     // ---------------------------------------------------------------

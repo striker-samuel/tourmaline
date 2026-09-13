@@ -43,6 +43,20 @@ float EvsmChebyshev(float occl, float wT)
     return variance / (variance + diff * diff);
 }
 
+// Mirrored bound for the NEGATIVE exponential channel (warp e^(-c*d) is
+// DECREASING in depth): a receiver in front of the occluders has the
+// LARGER warped value, so lit <=> wT >= occl (the positive-channel test
+// would return "lit" exactly when shadowed and ~0 when lit, blacking out
+// every EVSM-lit pixel through the min() below).
+float EvsmChebyshevNeg(float occl, float wT)
+{
+    if (wT >= occl)
+        return 1.0f;
+    float diff = occl - wT;
+    float variance = max(occl * occl * 1e-4f, 1e-8f);
+    return variance / (variance + diff * diff);
+}
+
 // Full dual-channel EVSM visibility from filtered moments.
 // moments = RG32F texel (already blurred), receiverDepth = biased NDC depth.
 float EvsmVisibility(float2 moments, float receiverDepth, float exponent)
@@ -53,7 +67,7 @@ float EvsmVisibility(float2 moments, float receiverDepth, float exponent)
     // moment pass clears to EvsmClearColor below, matching d=1 far).
     moments = max(moments, float2(1e-6f, 1e-6f));
     float vp = EvsmChebyshev(moments.x, wT.x);
-    float vn = EvsmChebyshev(moments.y, wT.y);
+    float vn = EvsmChebyshevNeg(moments.y, wT.y);
     // Lauritzen Sec. 3.3: intersection of the two bounds.
     float v = min(vp, vn);
     // Rescale the classic VSM bleed: values below ~0.15 are almost always

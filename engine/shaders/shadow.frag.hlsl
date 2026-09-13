@@ -11,7 +11,7 @@
 struct PSIn
 {
     float4 clipPos : SV_Position;
-    float3 color : COLOR0;
+    float4 color : COLOR0;
     float2 uv : TEXCOORD0;
 };
 

@@ -131,6 +131,32 @@ namespace {
 		const float* p = reinterpret_cast<const float*>(gltfPtr(m, a, i));
 		return glm::vec2(p[0], p[1]);
 	}
+	// COLOR_0 as RGBA floats: handles FLOAT vec3/vec4 and normalized
+	// UNSIGNED_BYTE / UNSIGNED_SHORT vec3/vec4 (the common authored forms).
+	// Anything else falls back to white.
+	glm::vec4 readColorRGBA(const tinygltf::Model& m, const tinygltf::Accessor& a,
+		size_t i, int compCount) {
+		glm::vec4 c{ 1.0f, 1.0f, 1.0f, 1.0f };
+		if (compCount < 3)
+			return c;
+		const uint8_t* p = gltfPtr(m, a, i);
+		const int n = compCount >= 4 ? 4 : 3;
+		if (a.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+			const float* f = reinterpret_cast<const float*>(p);
+			for (int k = 0; k < n; ++k)
+				c[k] = f[k];
+		}
+		else if (a.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
+			for (int k = 0; k < n; ++k)
+				c[k] = static_cast<float>(p[k]) * (1.0f / 255.0f);
+		}
+		else if (a.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+			const uint16_t* s = reinterpret_cast<const uint16_t*>(p);
+			for (int k = 0; k < n; ++k)
+				c[k] = static_cast<float>(s[k]) * (1.0f / 65535.0f);
+		}
+		return c;
+	}
 	// -------------------------------------------------------------------------
 	// Tangent-frame synthesis lives in Engine/Asset/mesh_optimizer.h
 	// (ComputeSmoothNormals / GenerateTangents) so the LOD cooker can share it.
@@ -1088,17 +1114,29 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 	const bool hasUVs = primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end();
 	const bool hasAuthoredTangents = primitive.attributes.find("TANGENT") != primitive.attributes.end();
 	const bool hasAuthoredNormals = primitive.attributes.find("NORMAL") != primitive.attributes.end();
+	const bool hasColors = primitive.attributes.find("COLOR_0") != primitive.attributes.end();
 
 	auto& posAcc = model.accessors[primitive.attributes.at("POSITION")];
 	data.vertices.reserve(posAcc.count);
 	for (size_t i = 0; i < posAcc.count; ++i) {
 		smvk::StaticVertex v{};
 		v.pos = readVec3ForientationFix(model, posAcc, i, coordFix);
-		v.color = { 1.0f, 1.0f, 1.0f };
+		v.color = { 1.0f, 1.0f, 1.0f, 1.0f };
 		v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
 		v.normal = { 0.0f, 1.0f, 0.0f }; // replaced below if normals provided/generated
 		v.tangent = { 1.0f, 0.0f, 0.0f, 1.0f }; // replaced below if tangents provided/generated
 		data.vertices.push_back(v);
+	}
+
+	// Vertex colors (COLOR_0): vec3 or vec4 floats, or normalized ubyte/
+	// ushort. Carries layered-material blend weights (RGBA) or a plain
+	// albedo tint; defaults to white when absent.
+	if (hasColors) {
+		auto& colAcc = model.accessors[primitive.attributes.at("COLOR_0")];
+		const int compCount = tinygltf::GetNumComponentsInType(colAcc.type);
+		for (size_t i = 0; i < colAcc.count && i < data.vertices.size(); ++i) {
+			data.vertices[i].color = readColorRGBA(model, colAcc, i, compCount);
+		}
 	}
 
 

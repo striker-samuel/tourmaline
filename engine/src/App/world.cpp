@@ -239,6 +239,54 @@ namespace smvk {
 		++clusterOrdinal;
 	}
 
+	// Layered materials: remap cluster-local layer ids to world material
+	// slots. Layer ids in MaterialValues are cluster-local pool indices
+	// (cook/pak domain); the GPU buffer is indexed by world materialId, so
+	// each referenced layer material needs a world slot — appended here
+	// when no node references it directly (the dedup loop above only
+	// creates slots for node-referenced materials).
+	for (uint32_t clusterOrdinal = 0;
+		clusterOrdinal < (uint32_t)clusters.size(); ++clusterOrdinal) {
+		Cluster* cluster = clusters[clusterOrdinal].get();
+		if (!cluster)
+			continue;
+		cluster->materials.forEachHandle(
+			[&](ClusterMaterialHandle handle) {
+				Material* mat = cluster->materials.get(handle);
+				if (!mat || mat->values.layerMaterials.w == 0)
+					return;
+				for (int layer = 0; layer < 3; ++layer) {
+					const int32_t localIdx = mat->values.layerMaterials[layer];
+					if (localIdx < 0)
+						continue;
+					const uint64_t matKey =
+						(static_cast<uint64_t>(clusterOrdinal) << 32)
+						| static_cast<uint32_t>(localIdx);
+					auto hit = worldMatByClusterMat.find(matKey);
+					uint32_t worldMatIdx = 0;
+					if (hit != worldMatByClusterMat.end()) {
+						worldMatIdx = hit->second;
+					}
+					else {
+						ClusterMaterialHandle layerHandle =
+							cluster->materials.getHandle(
+								static_cast<uint32_t>(localIdx));
+						if (layerHandle.empty())
+							continue;
+						worldMatIdx = static_cast<uint32_t>(
+							materialLocations.size());
+						materialLocations.push_back(
+							MaterialLocation{
+								.cluster = cluster,
+								.handle = layerHandle });
+						worldMatByClusterMat[matKey] = worldMatIdx;
+					}
+					mat->values.layerMaterials[layer] =
+						static_cast<int32_t>(worldMatIdx);
+				}
+			});
+	}
+
 	RebuildStaticCache(scene);
 	recalculateGlobalTransforms(scene);
 

@@ -75,6 +75,9 @@ struct SceneDesc {
 	int coordFix = 0;
 	// Optional pre-transform applied to scene root after loading (post coordFix)
 	glm::mat4 preTransform{ 1.0f };
+	// Procedural builtin scene tag (nullptr = load gltf/pak). Currently
+	// supported: "layers-cube" (vertex-painted layered-material test cube).
+	const char* builtin = nullptr;
 };
 
 struct SceneRegistry {
@@ -82,6 +85,7 @@ struct SceneRegistry {
 	static const SceneDesc& Bistro();
 	static const SceneDesc& BistroNiagara();
 	static const SceneDesc& Scanlands();
+	static const SceneDesc& LayersCube();
 	static std::vector<SceneDesc> All();
 	// Empty optional when the id is unknown (caller prints usage).
 	static std::optional<SceneDesc> Find(const std::string& id);
@@ -764,7 +768,12 @@ protected:
 	// OneFrameLag pipeline stays available in the UI. shadow_map_index
 	// fields then address the blurred atlas; FrameUniforms.evsmMode tells
 	// shaders. Falls back to PCF automatically when unsupported/invalid.
-	bool m_evsmEnabled = true; // user toggle (ImGui); effective only if supported
+	// NOTE (2026-09-13): default OFF — the EVSM moment/receiver depths
+	// diverge (moments cluster near d~0.1 while receivers compute ~0.5,
+	// blacking out direct light) and the prefiltered representation needs
+	// more work. PCF is the proven-healthy default; opt back in with
+	// VULKANTOY_EVSM=1 or the ImGui checkbox for EVSM development.
+	bool m_evsmEnabled = false; // user toggle (ImGui); effective only if supported
 	// SameFrame default: moments are blurred on the true-async compute
 	// queue and consumed by this frame's lighting (no shadow lag/wobble).
 	// OneFrameLag remains in the ImGui combo for overlap comparison.
@@ -892,6 +901,10 @@ protected:
 			(static_cast<int>(m_ambientMode) + 1) % 3);
 	}
 	void LoadGiVolume(smvk::OverlayVfs& vfs);
+	// Procedural layered-material test scene ("layers-cube" builtin):
+	// subdivided cube with vertex-painted layer weights + four Sponza
+	// PBR materials. Builds directly into the cluster (no glTF/pak).
+	bool BuildLayersCubeScene(smvk::Cluster& cluster);
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4; debug builds
 	// only). Mode/light/overlay ride FrameUniforms (dsDebug*); the

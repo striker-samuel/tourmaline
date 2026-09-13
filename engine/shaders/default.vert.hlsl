@@ -14,7 +14,7 @@ struct VSOut
 {
     float4 pos : SV_Position;
 
-    [[vk::location(0)]] float3 color : COLOR0;
+    [[vk::location(0)]] float4 color : COLOR0;
     [[vk::location(1)]] float2 uv : TEXCOORD0;
     [[vk::location(2)]] float3 worldPos : TEXCOORD1;
     [[vk::location(3)]] float3 normal : TEXCOORD2;
@@ -42,7 +42,10 @@ VSOut mainVS(VSIn IN)
     float4 clip = mul(viewProj, world);
     OUT.pos = clip;
 
-    OUT.color = float3(1.0f, 1.0f, 1.0f);
+    // Vertex color (RGBA8): plain albedo tint in legacy materials, or
+    // per-layer blend weights (normalized in the fragment) when the
+    // material carries layerMaterials (see default_lit.frag.hlsl).
+    OUT.color = IN.color;
     OUT.uv = IN.uv;
 
     // Properly transform normal/tangent to world space.

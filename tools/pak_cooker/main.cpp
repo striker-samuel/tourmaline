@@ -255,8 +255,8 @@ void DumpManifestFromPak(const smvk::PakReader& reader) {
 			std::cout << "    [truncated mesh blob: " << e->path << "]\n";
 			continue;
 		}
-		// Vertex/index payloads (60 B per vert, 4 B per index).
-		c.off += (size_t)vc * 60 + (size_t)ic * 4;
+		// Vertex/index payloads (sizeof(StaticVertex) per vert, 4 B per index).
+		c.off += (size_t)vc * sizeof(smvk::StaticVertex) + (size_t)ic * 4;
 		uint32_t meshlets = 0;
 		if (c.off < c.img.size()) {
 			if (c.off + 4 <= c.img.size())

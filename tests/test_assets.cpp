@@ -336,7 +336,7 @@ smvk::StaticMeshUpload MakeQuad() {
 	for (int i = 0; i < 4; ++i) {
 		smvk::StaticVertex v{};
 		v.pos = { (i & 1) ? 1.0f : 0.0f, (i & 2) ? 1.0f : 0.0f, 0.0f };
-		v.color = { 1, 1, 1 };
+		v.color = { 1, 1, 1, 1 };
 		v.texCoord = { v.pos.x, v.pos.y };
 		v.normal = { 0, 0, 1 };
 		v.tangent = { 1, 0, 0, 1 };
@@ -390,7 +390,7 @@ smvk::StaticMeshUpload MakeGrid(int n) {
 		for (int ix = 0; ix <= n; ++ix) {
 			smvk::StaticVertex v{};
 			v.pos = { (float)ix, (float)iy, 0.1f * sinf((float)ix * 0.7f) * cosf((float)iy * 0.7f) };
-			v.color = { 1, 1, 1 };
+			v.color = { 1, 1, 1, 1 };
 			v.texCoord = { (float)ix / n, (float)iy / n };
 			v.normal = { 0, 0, 1 };
 			v.tangent = { 1, 0, 0, 1 };

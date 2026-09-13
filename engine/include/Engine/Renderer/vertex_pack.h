@@ -139,8 +139,8 @@ inline uint32_t PackUvHalf(const glm::vec2& uv) noexcept {
 	return glm::packHalf2x16(uv);
 }
 
-inline uint32_t PackColorUnorm8(const glm::vec3& color) noexcept {
-	return glm::packUnorm4x8(glm::vec4(color, 1.0f));
+inline uint32_t PackColorUnorm8(const glm::vec4& color) noexcept {
+	return glm::packUnorm4x8(color);
 }
 
 } // namespace vertexpack

@@ -24,9 +24,18 @@ namespace smvk {
 		glm::vec4 params{ 0.5f, 1.0f, 1.0f, 0.0f };       // 64 – x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
 		glm::vec4 params2{ 1.0f, 1.0f, 1.0f, 0.0f };      // 80 – x=occlusionStrength, y=normalScale, z=emissiveStrength, w=alphaMode (0=Opaque,1=Mask,2=Blend)
 		glm::vec4 emissiveFactor{ 0.0f, 0.0f, 0.0f, 0.0f }; // 96 – xyz=emissiveFactor, w=pad
+		// Layered materials (vertex-color blending): x/y/z hold the
+		// cluster-local material pool indices of layers 1..3 (the material
+		// itself is layer 0; -1 = no layer). w selects the mode: 0 = legacy
+		// (vertex color is a plain albedo tint), 1..4 = layered with that
+		// many active layers (weights from the vertex color RGBA channels,
+		// normalized in the shader). Cluster-local ids are remapped to
+		// world material ids by World::ResolveAndFixup_clusters, which also
+		// appends slots for layer materials no node references directly.
+		glm::ivec4 layerMaterials{ -1, -1, -1, 0 };      // 112
 	};
 	static_assert(sizeof(MaterialValues) % 16 == 0);
-	static_assert(sizeof(MaterialValues) == 112);
+	static_assert(sizeof(MaterialValues) == 128);
 
 	// -------------------------------------------------------------------------
 	// Shading / raster abstraction
@@ -135,7 +144,7 @@ namespace smvk {
 	// CPU-side import vertex
 	struct StaticVertex {
 		glm::vec3 pos;
-		glm::vec3 color;
+		glm::vec4 color;
 		glm::vec2 texCoord;
 		glm::vec3 normal;
 		glm::vec4 tangent;

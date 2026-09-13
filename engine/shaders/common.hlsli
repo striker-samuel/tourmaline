@@ -145,6 +145,7 @@ struct MaterialValues
     float4 params;           // 64 x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
     float4 params2;          // 80 x=occlusionStrength, y=normalScale, z=emissiveStrength, w=alphaMode (0=Opaque,1=Mask,2=Blend)
     float4 emissiveFactor;   // 96 xyz=emissiveFactor, w=pad
+    int4 layerMaterials;     // 112 x/y/z = layer 1..3 material ids (this material is layer 0; -1 = none), w = layer mode (0 = vertex-color tint, 1..4 = layered with N layers)
 };
 
 struct MaterialsBuffer

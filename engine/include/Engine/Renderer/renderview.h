@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // RenderView – a virtual camera + its associated render target.
 //
 // A RenderView is the single unit of "something that can render":
@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -295,6 +296,37 @@ public:
 		assert(Valid());
 		constexpr size_t frameStride = sizeof(RenderView) * kMaxRenderViews;
 		return ctx.GetBufferDeviceAddress(buffer_) + frameIndex * frameStride;
+	}
+
+	// Debug: GPU slab download + view-matrix dump (z-row) for the given
+	// frame slice. Useful to verify the uploaded views match the CPU side.
+	void DumpSlabViews(ResourceManager& ctx, uint32_t frameIndex,
+		uint32_t first, uint32_t count) const {
+		constexpr size_t frameStride = sizeof(RenderView) * kMaxRenderViews;
+		std::vector<uint8_t> bytes(sizeof(RenderView) * kMaxRenderViews, 0);
+		if (!ctx.DownloadDataFromBuffer(buffer_, bytes.data(), bytes.size(),
+				frameIndex * frameStride)) {
+			std::fprintf(stderr, "[slab-gpu] download failed\n");
+			return;
+		}
+		for (uint32_t i = first; i < first + count; ++i) {
+			const float* m = reinterpret_cast<const float*>(
+				bytes.data() + i * sizeof(RenderView));
+			std::fprintf(stderr,
+				"[slab-gpu %u] vp row2=[%.4g %.4g %.4g %.4g]\n",
+				i, m[2], m[6], m[10], m[14]);
+		}
+	}
+
+	// Debug: CPU-side view matrix dump.
+	void DumpViews(uint32_t first, uint32_t count) const {
+		for (uint32_t i = first; i < first + count && i < count_; ++i) {
+			const float* m = glm::value_ptr(views_[i].m_viewProjectionMatrix);
+			std::fprintf(stderr,
+				"[views cpu %u] vp=[%.4g %.4g %.4g %.4g / %.4g %.4g %.4g %.4g / %.4g %.4g %.4g %.4g / %.4g %.4g %.4g %.4g]\n",
+				i, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+				m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+		}
 	}
 
 private:
