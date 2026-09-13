@@ -1005,6 +1005,16 @@ float4 SMAABlendingWeightCalculationPS(float2 texcoord,
     return weights;
 }
 
+#ifndef SMAA_VELOCITY_JITTER_DELTA
+// (prevJitter - currJitter) in UV, spatially constant per frame. Engines
+// whose velocity buffer includes the temporal-AA jitter (required for
+// exact reprojection in SMAAResolvePS) define this from their frame
+// constants so the packed magnitude carries TRUE motion only - the
+// jitter otherwise leaks into the resolve's history attenuation and
+// collapses the blend weight under any camera motion.
+#define SMAA_VELOCITY_JITTER_DELTA float2(0.0, 0.0)
+#endif
+
 //-----------------------------------------------------------------------------
 // Neighborhood Blending Pixel Shader (Third Pass)
 
@@ -1030,8 +1040,10 @@ float4 SMAANeighborhoodBlendingPS(float2 texcoord,
         #if SMAA_REPROJECTION
         float2 velocity = SMAA_DECODE_VELOCITY(SMAASampleLevelZero(velocityTex, texcoord));
 
-        // Pack velocity into the alpha channel:
-        color.a = sqrt(5.0 * length(velocity));
+        // Pack TRUE motion into the alpha channel (the resolve compares
+        // magnitudes to attenuate stale history): strip the known
+        // temporal-jitter delta first - it is not motion.
+        color.a = sqrt(5.0 * length(velocity - SMAA_VELOCITY_JITTER_DELTA));
         #endif
 
         return color;
@@ -1058,8 +1070,10 @@ float4 SMAANeighborhoodBlendingPS(float2 texcoord,
         float2 velocity = blendingWeight.x * SMAA_DECODE_VELOCITY(SMAASampleLevelZero(velocityTex, blendingCoord.xy));
         velocity += blendingWeight.y * SMAA_DECODE_VELOCITY(SMAASampleLevelZero(velocityTex, blendingCoord.zw));
 
-        // Pack velocity into the alpha channel:
-        color.a = sqrt(5.0 * length(velocity));
+        // Pack TRUE motion into the alpha channel (attenuation input);
+        // the jitter delta is spatially constant, so stripping it after
+        // the weighted average stays exact.
+        color.a = sqrt(5.0 * length(velocity - SMAA_VELOCITY_JITTER_DELTA));
         #endif
 
         return color;

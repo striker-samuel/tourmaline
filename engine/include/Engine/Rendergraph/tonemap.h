@@ -32,7 +32,7 @@
 
 namespace smvk {
 
-// Must match tonemap.frag.hlsl TonemapPush (56 bytes).
+// Must match tonemap.frag.hlsl TonemapPush (64 bytes).
 struct TonemapPush {
 	uint32_t hdrTextureIndex = UINT32_MAX;
 	uint32_t samplerIndex = 0;
@@ -52,8 +52,14 @@ struct TonemapPush {
 	// linear post-tonemap, pre-encode. UINT32_MAX = disabled.
 	uint32_t lutTextureIndex = UINT32_MAX;
 	float lutIntensity = 0.0f;
+	// debugView 1 only: jitter component of the motion vectors
+	// ((prevJitter - currJitter) in UV), stripped so the view shows TRUE
+	// motion - with temporal jitter the raw vectors are non-zero on a
+	// still camera (they must carry the offset for SMAA T2x / DLSS).
+	float jitterDeltaX = 0.0f;
+	float jitterDeltaY = 0.0f;
 };
-static_assert(sizeof(TonemapPush) == 56);
+static_assert(sizeof(TonemapPush) == 64);
 
 inline constexpr uint32_t kTonemapReinhard = 0;
 inline constexpr uint32_t kTonemapACES = 1;
@@ -131,6 +137,9 @@ struct Tonemapper {
 	// sRGB view) applied in linear post-tonemap when lutIntensity > 0. The
 	// strip is immutable (like the SMAA area/search LUTs), so it needs no
 	// input-image barrier declaration.
+	// jitterDeltaX/Y: the jitter component of the motion vectors in UV,
+	// stripped by the debugView 1 motion visualizer so it shows TRUE
+	// motion (zero when no temporal jitter is active).
 	RenderPass& AddTonemapPass(RenderGraph& rg,
 		LogicalImageViewHandle hdrView,
 		uint32_t hdrBindlessIndex,
@@ -151,7 +160,9 @@ struct Tonemapper {
 		float aoIntensity = 0.0f,
 		bool gammaEncodeOutput = false,
 		uint32_t lutBindlessIndex = UINT32_MAX,
-		float lutIntensity = 0.0f) const {
+		float lutIntensity = 0.0f,
+		float jitterDeltaX = 0.0f,
+		float jitterDeltaY = 0.0f) const {
 		assert(ShadersValid());
 		assert(!hdrView.empty());
 		assert(!swapViews.empty());
@@ -176,6 +187,8 @@ struct Tonemapper {
 		const bool lutOn = lutBindlessIndex != UINT32_MAX && lutIntensity > 0.0f;
 		push.lutTextureIndex = lutOn ? lutBindlessIndex : UINT32_MAX;
 		push.lutIntensity = lutOn ? lutIntensity : 0.0f;
+		push.jitterDeltaX = jitterDeltaX;
+		push.jitterDeltaY = jitterDeltaY;
 
 		std::vector<LogicalImageViewHandle> inputs;
 		inputs.reserve((bloomOn ? 1 : 0) + (motionDebugOn ? 1 : 0) + (aoOn ? 1 : 0) + 1);
@@ -231,12 +244,14 @@ struct Tonemapper {
 		float aoIntensity = 0.0f,
 		bool gammaEncodeOutput = false,
 		uint32_t lutBindlessIndex = UINT32_MAX,
-		float lutIntensity = 0.0f) const {
+		float lutIntensity = 0.0f,
+		float jitterDeltaX = 0.0f,
+		float jitterDeltaY = 0.0f) const {
 		return AddTonemapPass(rg, hdrView, hdrBindlessIndex, bloomView, bloomBindlessIndex,
 			bloomIntensity, linearSamplerIndex, swapViews, swapExtent, desc, name,
 			motionView, motionBindlessIndex, debugView, motionDebugScale,
 			aoView, aoBindlessIndex, aoIntensity, gammaEncodeOutput,
-			lutBindlessIndex, lutIntensity);
+			lutBindlessIndex, lutIntensity, jitterDeltaX, jitterDeltaY);
 	}
 };
 

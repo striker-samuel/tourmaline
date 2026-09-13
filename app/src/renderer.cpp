@@ -86,6 +86,15 @@ bool GfxRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
 		smvk::Shader fs{ .module = mainA2CFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
 		filteredProgramA2C = { .shaders = { vs, fs }, .shaderCount = 2 };
 	}
+	// Wireframe twin (same filtered VS + the flat-line FS): built only when
+	// the app configured the module; Main falls back to the shaded filtered
+	// program otherwise.
+	if (filteredWireProgram.shaderCount == 0
+		&& !filteredVsModule.empty() && !wireFrag_.empty()) {
+		smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+		smvk::Shader fs{ .module = wireFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+		filteredWireProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
+	}
 	// Seed-depth programs (T3). One SPIR-V per phase (the shader build
 	// emits a single entry point per file). Missing seed frag
 	// (ConfigureSeedFrag not called) disables seeding but leaves the

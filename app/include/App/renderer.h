@@ -49,6 +49,12 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// MSAASettings::Count2A2C(). Zero discard in the FS module so the
 	// driver keeps the early depth test.
 	smvk::ShaderProgram filteredProgramA2C{};
+	// Wireframe (P) twin of filteredProgram (same VS + default_wire.frag):
+	// Main binds it instead of the lit A2C/filtered programs while the
+	// wireframe raster override is on, so line pixels skip the heavy lit
+	// FS. Missing module leaves shaderCount 0 and wireframe keeps the
+	// shaded filtered program.
+	smvk::ShaderProgram filteredWireProgram{};
 	// Filtered motion-vector VS (gfxfilteredmotion.vert.hlsl, static
 	// geometry only: prevWorld == model). Pairs with the motion frag
 	// module owned by the viewport MotionVectors; configured lazily via
@@ -147,6 +153,9 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// A2C lit FS module (default_lit_a2c.frag): pairs with the filtered VS
 	// for Masked material ranges in 2x MSAA Main.
 	void ConfigureA2CFrag(smvk::ShaderModuleHandle a2cFrag) { mainA2CFrag_ = a2cFrag; }
+	// Wireframe flat-line FS module (default_wire.frag): pairs with the
+	// filtered VS for the wireframe twin of FilteredProgram().
+	void ConfigureWireFrag(smvk::ShaderModuleHandle wireFrag) { wireFrag_ = wireFrag; }
 	// Idempotent filtered-motion program creation (VS + motion frag).
 	// Returns true when the program is ready to bind.
 	bool EnsureFilteredMotion(smvk::ResourceManager& ctx,
@@ -225,6 +234,12 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	[[nodiscard]] smvk::ShaderProgram& FilteredProgramA2C() { return filteredProgramA2C; }
 	[[nodiscard]] bool FilteredA2CValid() const {
 		return filteredProgramA2C.shaderCount == 2;
+	}
+	// Wireframe twin for the filtered ranges (invalid when
+	// ConfigureWireFrag was never called / module creation failed).
+	[[nodiscard]] smvk::ShaderProgram& FilteredWireProgram() { return filteredWireProgram; }
+	[[nodiscard]] bool FilteredWireValid() const {
+		return filteredWireProgram.shaderCount == 2;
 	}
 	[[nodiscard]] smvk::gfx::State& State() { return gfx; }
 	// Consume-side barriers for the Main pass (filtered ranges + meshlet
@@ -363,6 +378,7 @@ private:
 	smvk::ShaderModuleHandle seedFrag_{};
 	smvk::ShaderModuleHandle shadowSeedFrag_{};
 	smvk::ShaderModuleHandle mainA2CFrag_{};
+	smvk::ShaderModuleHandle wireFrag_{};
 };
 
 } // namespace app

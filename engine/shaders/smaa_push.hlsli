@@ -4,7 +4,7 @@
 // filling only the fields it reads; unused indices stay 0xffffffff).
 //
 // Must match SmaaPush in engine/include/Engine/Rendergraph/smaa.h byte for
-// byte (80 bytes). All scalars on purpose: the engine's DXC
+// byte (88 bytes). All scalars on purpose: the engine's DXC
 // -fvk-use-dx-layout packing gives them a plain 4-byte stride with no
 // implicit padding, so the CPU mirror stays exact (size checks are C++-side;
 // this toolchain's DXC rejects global-scope static_assert).
@@ -34,6 +34,9 @@ struct SmaaPush
     uint outputLinear;      // nb/resolve: 1 = decode to linear for the sRGB
                             //   swapchain store, 0 = keep encoded bytes
                             //   (UNORM history target)
+    float jitterDeltaX;     // nb only: (prevJitter - currJitter) in UV; the
+    float jitterDeltaY;     //   packed velocity magnitude strips it so the
+                            //   resolve attenuation sees true motion only
 };
 
 [[vk::push_constant]]

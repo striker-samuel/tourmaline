@@ -438,6 +438,14 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> vertexLitVertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> vertexLitFragShader;
 	smvk::ShaderProgram vertexLitProgram;
+	// Wireframe (P) flat-line twins: default_wire.frag pairs with the same
+	// VSs as the shaded legs, so wireframe line pixels skip the heavy lit
+	// FS (Forward+ loop, GI, texture feedback). Missing module leaves
+	// shaderCount 0 and wireframe keeps the shaded FS (raster override
+	// only, the pre-swap behavior).
+	smvk::Holder<smvk::ShaderModuleHandle> fragWireShader;
+	smvk::ShaderProgram mainWireProgram;       // default.vert + wire FS
+	smvk::ShaderProgram vertexLitWireProgram;  // default_vertexlit.vert + wire FS
 	// Alpha-tested shadow-depth program for MASK cutout casters
 	// (shadow.vert mainVS + shadow.frag mainPS). Opaque casters keep
 	// the engine builder's depth-only program. shadow.frag declares
@@ -1026,6 +1034,19 @@ protected:
 	// history without the per-frame jitter.
 	glm::mat4 m_prevUnjitteredViewProj{ 1.0f };
 	bool m_prevViewProjValid = false; // false until the first frame completes
+	// ---- Temporal jitter bookkeeping (SMAA T2x / DLSS) ----
+	// The motion vectors MUST carry the jitter (prevViewProj is jittered)
+	// so SMAA T2x / DLSS reproject exactly. Non-temporal consumers (motion
+	// blur, the MV debug view, and SMAA's history-attenuation metric) get
+	// the known jitter component of the vectors to subtract:
+	//   m_currJitterUV  - this record's sample-position offset (UV)
+	//   m_prevJitterUV  - the previous record's (snapshotted with prevViewProj)
+	//   m_jitterDeltaUV - (prev - curr): the jitter's contribution to the
+	//                     MV texture (prevUV - currUV); zero when still
+	//                     warming up (prevViewProj == viewProj) or no jitter.
+	glm::vec2 m_currJitterUV{ 0.0f };
+	glm::vec2 m_prevJitterUV{ 0.0f };
+	glm::vec2 m_jitterDeltaUV{ 0.0f };
 	std::vector<glm::mat4> m_prevGlobalTransforms; // last frame's node transforms
 	bool m_showMotionDebug = false; // tonemap debug view: motion vectors
 	float m_motionDebugScale = 16.0f; // debug view velocity amplification

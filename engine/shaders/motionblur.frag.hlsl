@@ -11,7 +11,7 @@ struct PSOut
     float4 outColor : SV_Target0;
 };
 
-// Must match Engine/Rendergraph/motionblur.h MotionBlurPush (32 bytes).
+// Must match Engine/Rendergraph/motionblur.h MotionBlurPush (40 bytes).
 struct MotionBlurPush
 {
     uint hdrTextureIndex;
@@ -21,6 +21,10 @@ struct MotionBlurPush
     float maxRadiusPx; // per-pixel blur clamp (px)
     float velocityScale; // shutter strength on motion vectors
     float2 texelSize;
+    float2 jitterDelta; // (prevJitter - currJitter) UV: strip it from the
+                        // sampled vectors so a jittered-but-still camera
+                        // produces NO blur (the raw vectors must keep the
+                        // jitter for SMAA T2x / DLSS reprojection)
 };
 
 [[vk::push_constant]]
@@ -33,8 +37,10 @@ PSOut mainPS(PSIn IN)
     Texture2D motionTex = textures[NonUniformResourceIndex(mp.motionTextureIndex)];
     SamplerState smp = samplers[NonUniformResourceIndex(mp.samplerIndex)];
 
-    // Velocity in UV (prevUV - currUV), scaled by the shutter strength.
-    float2 vUv = motionTex.Sample(smp, IN.uv).rg * mp.velocityScale;
+    // TRUE velocity in UV (prevUV - currUV minus the temporal-jitter
+    // component), scaled by the shutter strength.
+    float2 vUv = (motionTex.Sample(smp, IN.uv).rg - mp.jitterDelta)
+        * mp.velocityScale;
 
     // Guard: first frame / camera reset clamps huge reprojects in the
     // motion pass already; still ignore NaN-scale deltas defensively.

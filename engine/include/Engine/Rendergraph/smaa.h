@@ -68,7 +68,11 @@
 // Velocity buffer: MotionVectors' RG16F target (prevUV - currUV in UV
 // units - resolution independent, so the chain running at swap extent
 // while the scene renders at renderExtent is fine). SMAA_DECODE_VELOCITY
-// is the default .rg; the resolve negates it for reprojection.
+// is the default .rg; the resolve negates it for reprojection. The
+// vectors INCLUDE the T2x jitter (prevViewProj is jittered) - required
+// for exact reprojection; the neighborhood pass strips the known jitter
+// delta (sp.jitterDelta) from the magnitude it packs into alpha so the
+// resolve's history attenuation reacts to true motion only.
 //
 // History: two ping-pong targets written by the neighborhood pass on
 // alternating frames; the resolve combines the current and previous
@@ -151,7 +155,7 @@ inline void SmaaInvalidateHistory(SmaaT2xState& st) {
 	st.parity = 0;
 }
 
-// Must match SmaaPush in engine/shaders/smaa_push.hlsli (80 bytes,
+// Must match SmaaPush in engine/shaders/smaa_push.hlsli (88 bytes,
 // all scalars). One shared layout for every SMAA pass; each pass fills
 // only the fields it reads.
 struct SmaaPush {
@@ -175,8 +179,16 @@ struct SmaaPush {
 	float rtMetricsZ = 0.0f;
 	float rtMetricsW = 0.0f;
 	uint32_t outputLinear = 0;                 // nb/resolve: 1 = decode to linear for the sRGB swapchain store, 0 = keep encoded bytes (UNORM history)
+	// nb only: per-frame jitter delta between the previous and the current
+	// record's sample positions, in UV (prevUV - currUV contribution of
+	// the jitter alone). The pass packs the DEJITTERED velocity magnitude
+	// into alpha so the resolve's attenuation reacts to true motion only
+	// (the raw jittered velocity is still used for reprojection there).
+	// Zero when no jitter is active (SMAA 1x / MSAA / off).
+	float jitterDeltaX = 0.0f;
+	float jitterDeltaY = 0.0f;
 };
-static_assert(sizeof(SmaaPush) == 80);
+static_assert(sizeof(SmaaPush) == 88);
 
 struct SmaaDesc {
 	// UNORM sibling of the swapchain surface format: the chain works in
@@ -461,6 +473,10 @@ struct Smaa {
 	// history[historySlot^1] (historyValid gates the blend - see
 	// smaa_resolve.frag.hlsl). With t2x == false (SMAA 1x) the neighborhood
 	// pass writes the swapchain directly and no resolve is emitted.
+	// jitterDeltaX/Y: the jitter component of the motion vectors
+	// ((prevJitter - currJitter) in UV). The neighborhood pass strips it
+	// from the packed velocity magnitude so the resolve's history
+	// attenuation reacts to true motion only; zero for SMAA 1x.
 	// swapTargetsAreSrgb: set when the swapchain surface format is an _SRGB
 	// variant - the swapchain-writing passes then decode their gamma-space
 	// result to linear (outputLinear) so the hardware store encode restores
@@ -479,6 +495,8 @@ struct Smaa {
 		const std::vector<LogicalImageViewHandle>& swapViews,
 		Extent2D passExtent,
 		bool swapTargetsAreSrgb = false,
+		float jitterDeltaX = 0.0f,
+		float jitterDeltaY = 0.0f,
 		const char* name = nullptr) const {
 		assert(Valid());
 		assert(LutsValid());
@@ -562,6 +580,8 @@ struct Smaa {
 		nbPush.rtMetricsY = edgePush.rtMetricsY;
 		nbPush.rtMetricsZ = edgePush.rtMetricsZ;
 		nbPush.rtMetricsW = edgePush.rtMetricsW;
+		nbPush.jitterDeltaX = jitterDeltaX;
+		nbPush.jitterDeltaY = jitterDeltaY;
 		nbPush.outputLinear = (!t2x && swapTargetsAreSrgb) ? 1u : 0u;
 
 		{

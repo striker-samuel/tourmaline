@@ -1114,6 +1114,53 @@ bool SceneRenderer::Initialize() {
 			};
 		}
 
+		// Wireframe (P) flat-line twins: default_wire.frag pairs with the
+		// same VSs as the shaded legs (a FS consuming only SV_Position links
+		// with any of them). Failure is non-fatal — wireframe keeps the
+		// shaded FS (raster override only).
+		try {
+			auto wireCode = readContentFile(contentVfs, "shaders/default_wire.frag.hlsl.spv");
+			m_resources.fragWireShader = m_context->CreateShaderModule(wireCode, "fragWire");
+		}
+		catch (...) {
+			std::cerr << "[SceneRenderer] default_wire unavailable - wireframe keeps the shaded FS\n";
+		}
+		if (!m_resources.fragWireShader.empty()) {
+			m_resources.mainWireProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.fragWireShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+		if (!m_resources.fragWireShader.empty()
+			&& !m_resources.vertexLitVertShader.empty()) {
+			m_resources.vertexLitWireProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertexLitVertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.fragWireShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+
 	// Masked shadow-depth program (leaf-shaped shadows for cutout).
 	auto shadowVertCode = readContentFile(contentVfs, "shaders/shadow.vert.hlsl.spv");
 	auto shadowFragCode = readContentFile(contentVfs, "shaders/shadow.frag.hlsl.spv");
@@ -1356,6 +1403,9 @@ bool SceneRenderer::Initialize() {
 			// A2C filtered program for Masked ranges in 2x MSAA Main.
 			if (!m_resources.fragA2CShader.empty())
 				m_gfxRenderer.ConfigureA2CFrag(m_resources.fragA2CShader);
+			// Wireframe twin of the filtered program (flat lines in P).
+			if (!m_resources.fragWireShader.empty())
+				m_gfxRenderer.ConfigureWireFrag(m_resources.fragWireShader);
 			if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
 				std::cerr << "[SceneRenderer] GfxFilter unavailable - direct draws\n";
 				m_useGfxFilter = false;
@@ -1729,6 +1779,7 @@ void SceneRenderer::Shutdown() {
 		// after the Y-flip above, so both axes share one sign (the official
 		// table assumes bottom-to-top y; the physical corner pair is
 		// unchanged).
+		m_currJitterUV = glm::vec2(0.0f);
 		if (SmaaT2xActive()) {
 			// Phase is the global record toggle (snapshot in
 			// m_smaaFrameParams), never per-image - see SmaaT2xState.
@@ -1741,6 +1792,8 @@ void SceneRenderer::Shutdown() {
 				proj[c][0] += jx * proj[c][3];
 				proj[c][1] += jy * proj[c][3];
 			}
+			// UV shift of the sample position = NDC offset / 2.
+			m_currJitterUV = glm::vec2(jx, jy) * 0.5f;
 		} else if (m_dlssFrameActive) {
 			// DLSS Halton jitter (guide 3.7): offsets are quantized to
 			// RENDER-resolution pixels (unlike the T2x chain-pixel jitter
@@ -1755,7 +1808,16 @@ void SceneRenderer::Shutdown() {
 				proj[c][0] += jx * proj[c][3];
 				proj[c][1] += jy * proj[c][3];
 			}
+			m_currJitterUV = glm::vec2(jx, jy) * 0.5f;
 		}
+		// Jitter's contribution to this frame's motion vectors: the pass
+		// diffs against the previous record's JITTERED viewProj, so the
+		// vectors = trueMotion + (prevJitter - currJitter). Warming up
+		// (prev == curr) yields zero, matching the pass' zero-motion
+		// fallback. Non-temporal consumers subtract this (motion blur,
+		// the MV debug view, SMAA's attenuation magnitude).
+		m_jitterDeltaUV = (m_prevViewProjValid ? m_prevJitterUV : m_currJitterUV)
+			- m_currJitterUV;
 
 		auto viewProj = proj * view;
 		FrameUniforms data{};
@@ -4691,6 +4753,37 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			return r;
 		};
 
+		// Wireframe FS swap: line pixels are rare, so running the heavy lit
+		// FS (Forward+ loop, GI, texture feedback atomics) on them was the
+		// wireframe slowdown. While P is on, the lit/filtered/vertex-lit
+		// programs bind their flat-line twin (default_wire.frag + the SAME
+		// VS: a FS consuming only SV_Position links with any of them, no
+		// VS twins needed). The wire FS reads pc.frameUniforms, which every
+		// caller pushes (full push at pass start; filtered ranges push
+		// deltas on top). Debug-view FSs (unlit/cascade/vcolor/meshlet
+		// colors) have no twin: F2..F6 keep their own shading on the lines,
+		// so P keeps stacking. Missing twin (shader failed to load) returns
+		// the caller's program — the pre-swap shaded wireframe.
+		auto wireTwinOf = [&](smvk::ShaderProgram& prog) -> smvk::ShaderProgram& {
+			if (!m_wireframe)
+				return prog;
+			if (&prog == &m_resources.mainProgram
+				|| &prog == &m_resources.mainProgramA2C) {
+				return m_resources.mainWireProgram.shaderCount == 2
+					? m_resources.mainWireProgram : prog;
+			}
+			if (&prog == &m_gfxRenderer.FilteredProgram()
+				|| &prog == &m_gfxRenderer.FilteredProgramA2C()) {
+				return m_gfxRenderer.FilteredWireValid()
+					? m_gfxRenderer.FilteredWireProgram() : prog;
+			}
+			if (&prog == &m_resources.vertexLitProgram) {
+				return m_resources.vertexLitWireProgram.shaderCount == 2
+					? m_resources.vertexLitWireProgram : prog;
+			}
+			return prog;
+		};
+
 		auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId) {
 			auto& model = m_world->scene.globalTransform[node];
 			smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
@@ -4747,13 +4840,17 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			// resolve AA'd. Opt-in because A2C moves the per-sample depth
 			// test after the FS: overlapping layers lose early-reject
 			// (+6ms bistro foliage bench), so the default stays the
-			// demote-discard variant.
+			// demote-discard variant. Skipped while wireframed: the flat
+			// line FS writes alpha 1, so A2C coverage would be pointless.
 			const bool useA2c =
-				useMsaa && m_msaaAlphaToCoverage && maskedCutout
+				!m_wireframe
+				&& useMsaa && m_msaaAlphaToCoverage && maskedCutout
 				&& progA2c.shaderCount == 2;
 			smvk::ShaderProgram& bound = useA2c ? progA2c : prog;
+			// wireTwinOf swaps the lit/filtered/vertex-lit FS for the flat
+			// line FS while P is on (binds the twin, tracks the original).
 			cmd.BindRenderPipeline(
-				bound,
+				wireTwinOf(bound),
 				smvk::VertexFormat::StaticVertexFormat,
 				depth,
 				noStencil,
@@ -4792,7 +4889,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			cmd.Draw(3, 1, 0, 0);
 		}
 		cmd.BindRenderPipeline(
-			m_resources.mainProgram,
+			// Initial bind: the flat-line twin of main while P is on.
+			wireTwinOf(m_resources.mainProgram),
 			smvk::VertexFormat::StaticVertexFormat,
 			opaqueDepth,
 			noStencil,
@@ -5265,15 +5363,15 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							if (smvk::Material* mat = m_world->GetMaterial(d.materialId)) {
 								raster = mat->pipeline.raster;
 							}
-							cmd.BindRenderPipeline(
-								m_resources.vertexLitProgram,
-								smvk::VertexFormat::StaticVertexFormat,
-								opaqueDepth,
-								noStencil,
-								opaqueBlend,
-								msaaSettings,
-								wireframeRaster(raster)
-							);
+						cmd.BindRenderPipeline(
+							wireTwinOf(m_resources.vertexLitProgram),
+							smvk::VertexFormat::StaticVertexFormat,
+							opaqueDepth,
+							noStencil,
+							opaqueBlend,
+							msaaSettings,
+							wireframeRaster(raster)
+						);
 					} else {
 						bindForMaterial(d.materialId, m_resources.vertexLitProgram,
 							noA2CProgram, transparentDepth);
@@ -5310,15 +5408,15 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						if (smvk::Material* mat = m_world->GetMaterial(d.materialId)) {
 							raster = mat->pipeline.raster;
 						}
-						cmd.BindRenderPipeline(
-							*transProg,
-							smvk::VertexFormat::StaticVertexFormat,
-							opaqueDepth,
-							noStencil,
-							opaqueBlend,
-							msaaSettings,
-							wireframeRaster(raster)
-						);
+					cmd.BindRenderPipeline(
+						wireTwinOf(*transProg),
+						smvk::VertexFormat::StaticVertexFormat,
+						opaqueDepth,
+						noStencil,
+						opaqueBlend,
+						msaaSettings,
+						wireframeRaster(raster)
+					);
 					} else {
 						bindForMaterial(d.materialId, *transProg, noA2CProgram, transparentDepth);
 					}
@@ -5466,6 +5564,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					linearSampler,
 					renderExtent,
 					blurDesc,
+					m_jitterDeltaUV.x,
+					m_jitterDeltaUV.y,
 					"MotionBlur");
 				sceneHdrView = m_viewportResources.motionBlur.OutputView();
 				sceneHdrBindless = m_viewportResources.motionBlur.OutputBindless();
@@ -5740,7 +5840,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			0.0f,
 			smaaActive || !swapIsSrgb,
 			lutOn ? m_lutBindless : UINT32_MAX,
-			m_lutIntensity);
+			m_lutIntensity,
+			m_jitterDeltaUV.x,
+			m_jitterDeltaUV.y);
 		(void)tonemapPass;
 		if (captureThisFrame) {
 			m_viewportResources.tonemap.AddTonemapPass(
@@ -5764,7 +5866,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				0.0f,
 				false,
 				lutOn ? m_lutBindless : UINT32_MAX,
-				m_lutIntensity);
+				m_lutIntensity,
+				m_jitterDeltaUV.x,
+				m_jitterDeltaUV.y);
 		}
 		}
 
@@ -5798,7 +5902,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				m_smaaFrameParams.parity,
 				colors,
 				swapExtent,
-				swapIsSrgb);
+				swapIsSrgb,
+				m_jitterDeltaUV.x,
+				m_jitterDeltaUV.y);
 		}
 
 		// ---------------------------------------------------------------------
@@ -6993,6 +7099,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		m_prevViewProj = frameData.viewProj;
 		m_prevUnjitteredViewProj = m_unjitteredViewProj;
 		m_prevViewProjValid = true;
+		m_prevJitterUV = m_currJitterUV;
 		m_prevGlobalTransforms = m_world->scene.globalTransform;
 		// SMAA T2x global toggle: the neighborhood pass wrote
 		// history[parity] during Execute (when the T2x chain ran), so the

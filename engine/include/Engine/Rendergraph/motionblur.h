@@ -49,7 +49,7 @@ struct MotionBlurDesc {
 	const char* logicalName = "motionBlurLogical";
 };
 
-// Must match motionblur.frag.hlsl MotionBlurPush (32 bytes).
+// Must match motionblur.frag.hlsl MotionBlurPush (40 bytes).
 struct MotionBlurPush {
 	uint32_t hdrTextureIndex = UINT32_MAX;
 	uint32_t motionTextureIndex = UINT32_MAX;
@@ -59,8 +59,15 @@ struct MotionBlurPush {
 	float velocityScale = 1.0f;
 	float texelX = 0.0f;
 	float texelY = 0.0f;
+	// Jitter component of the motion vectors ((prevJitter - currJitter)
+	// in UV) - subtracted so the blur follows TRUE camera/object motion;
+	// with temporal jitter active the raw vectors are non-zero on a
+	// perfectly still camera (they must carry the offset for SMAA T2x /
+	// DLSS reprojection). Zero when no jitter is applied.
+	float jitterDeltaX = 0.0f;
+	float jitterDeltaY = 0.0f;
 };
-static_assert(sizeof(MotionBlurPush) == 32);
+static_assert(sizeof(MotionBlurPush) == 40);
 
 // Default SPVs (fullscreen-triangle VS shared with tonemap + blur PS).
 inline constexpr const char* kMotionBlurVsPath = "content/shaders/tonemap.vert.hlsl.spv";
@@ -203,7 +210,9 @@ struct MotionBlur {
 	}
 
 	// Emits the HDR -> blurred-HDR fullscreen gather. Captures only
-	// copyable handles/indices, so the pass is safe once this returns.
+	// copyable handles/indices, so the pass is safe once this call returns.
+	// jitterDeltaX/Y: the jitter component of the motion vectors in UV
+	// (see MotionBlurPush) - zero when no temporal jitter is active.
 	RenderPass& AddMotionBlurPass(RenderGraph& rg,
 		LogicalImageViewHandle hdrView,
 		uint32_t hdrBindlessIndex,
@@ -212,6 +221,8 @@ struct MotionBlur {
 		uint32_t linearSamplerIndex,
 		Extent2D passExtent,
 		const MotionBlurDesc& overrideDesc,
+		float jitterDeltaX = 0.0f,
+		float jitterDeltaY = 0.0f,
 		const char* name = nullptr) const {
 		assert(Valid());
 		assert(!hdrView.empty() && hdrBindlessIndex != UINT32_MAX);
@@ -227,6 +238,8 @@ struct MotionBlur {
 		push.velocityScale = overrideDesc.velocityScale;
 		push.texelX = 1.0f / static_cast<float>(passExtent.width);
 		push.texelY = 1.0f / static_cast<float>(passExtent.height);
+		push.jitterDeltaX = jitterDeltaX;
+		push.jitterDeltaY = jitterDeltaY;
 
 		RenderPass& pass = rg.AddPass(name ? name : "MotionBlur");
 		pass.SetOffset(0, 0)
@@ -259,10 +272,12 @@ struct MotionBlur {
 		uint32_t motionBindlessIndex,
 		uint32_t linearSamplerIndex,
 		Extent2D passExtent,
+		float jitterDeltaX = 0.0f,
+		float jitterDeltaY = 0.0f,
 		const char* name = nullptr) const {
 		return AddMotionBlurPass(rg, hdrView, hdrBindlessIndex,
 			motionView, motionBindlessIndex, linearSamplerIndex,
-			passExtent, desc, name);
+			passExtent, desc, jitterDeltaX, jitterDeltaY, name);
 	}
 };
 

@@ -27,6 +27,8 @@ struct TonemapPush
     float aoIntensity;
     uint lutTextureIndex; // 1024x32 LUT strip (32^3), 0xffffffff = disabled
     float lutIntensity;
+    float2 jitterDelta; // debugView 1: (prevJitter - currJitter) UV, stripped
+                        // so the motion visualizer shows TRUE motion
 };
 
 [[vk::push_constant]]
@@ -106,12 +108,15 @@ PSOut mainPS(PSIn IN)
     uint mode = tp.tonemapMode;
 
     // Motion vector debug view: direction -> hue, magnitude -> intensity.
-    // Replaces the scene composite entirely while enabled.
+    // Replaces the scene composite entirely while enabled. The raw vectors
+    // include the temporal-jitter delta (non-zero on a still camera with
+    // T2x/DLSS active - required for their reprojection); strip it so the
+    // view shows TRUE motion only.
     if (tp.debugView == 1 && tp.motionTextureIndex != 0xffffffff && tp.motionTextureIndex < 100000)
     {
         float2 v = textures[NonUniformResourceIndex(tp.motionTextureIndex)]
             .Sample(samplers[NonUniformResourceIndex(smpIdx)], IN.uv).rg;
-        v *= tp.motionDebugScale;
+        v = (v - tp.jitterDelta) * tp.motionDebugScale;
         float mag = saturate(length(v));
         float hue = atan2(v.y, v.x) * 0.15915494 + 0.5; // /2pi + 0.5
         float3 rgb = HsvToRgb(float3(hue, 1.0, mag));

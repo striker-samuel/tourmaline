@@ -7,6 +7,11 @@
 #define SMAA_VULKAN_BINDLESS
 #define SMAA_REPROJECTION 1
 #define SMAA_INCLUDE_VS 0
+// The motion vectors include the T2x/DLSS jitter (required for the
+// resolve's exact reprojection). Strip its known per-frame delta from the
+// velocity magnitude packed into alpha - the resolve's history attenuation
+// must react to TRUE motion only (see smaa.hlsli).
+#define SMAA_VELOCITY_JITTER_DELTA float2(sp.jitterDeltaX, sp.jitterDeltaY)
 #include "smaa.hlsli"
 
 struct PSIn
