@@ -6912,19 +6912,19 @@ void smvk::Submitter::purge()
 inline void smvk::Submitter::wait(CommandSubmitHandle handle, uint64_t timeout)
 {
 	std::lock_guard<std::recursive_mutex> lock(m_mutex);
-	//if (handle.index_ >= CommandBufferPool::kMax) { assert(false && "invalid handle"); return; }
-	//if (handle.pool == nullptr) { assert(false && "wait: null handle.pool"); return; }
-	//auto* pool = handle.pool;
-	//WrapperSlot& slot = pool->slots[handle.index_];
-
-	//// Already recycled.
-	//if (handle.gen_ < slot.gen_)
-	//	return;
-
-	//assert(validHandle(handle));
-
+	if (handle.pool == nullptr || handle.index_ >= CommandBufferPool::kMax)
+		return;
 	CommandBufferPool* pool = handle.pool;
 	WrapperSlot& slot = pool->slots[handle.index_];
+	// Already recycled: the batch this handle refers to has completed (a slot
+	// only recycles once its retire value has been reached), so there is
+	// nothing to wait for. This also closes the isReady()->wait() window —
+	// purge() recycles retired slots from ANY thread, so the slot can be
+	// recycled out from under this caller between its isReady() check and
+	// this lock; without the generation early-out that races into the
+	// assert below (observed under RenderDoc timing during upload storms).
+	if (handle.gen_ != slot.gen_)
+		return;
 	assert(slot.state_ == WrapperSlot::CommandState::Submitted && "Cannot wait on command buffer before submit");
 
 	VkResult result = waitTimeline(slot.retireValue_, timeout);
@@ -7469,8 +7469,24 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	if (waitVal != 0) {
 		VkSemaphoreWaitInfo waitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, nullptr, 0, 1, &timelineSemaphore_, &waitVal };
 		VkResult waitResult = vkWaitSemaphores(device_, &waitInfo, UINT64_MAX);
-		if (waitResult != VK_SUCCESS) {
-			throw std::runtime_error("Failed to wait for timeline semaphore.");
+
+		if (waitResult != VK_SUCCESS)
+		{
+			// Distinguish a failed wait (device lost) from the invariant
+			// violation the table guards against: a recorded value that no
+			// accepted submit will ever signal (requested > current forever).
+			// The failed wait did not move the counter; query the driver now.
+			uint64_t counterNow = 0;
+			vkGetSemaphoreCounterValue(device_, timelineSemaphore_, &counterNow);
+			printf(
+				"vkWaitSemaphores failed: VkResult=%d "
+				"frame=%u requested=%llu current=%llu\n",
+				(int)waitResult,
+				currentFrame_,
+				(unsigned long long)waitVal,
+				(unsigned long long)counterNow);
+
+			throw std::runtime_error("vkWaitSemaphores failed");
 		}
 	}
 
@@ -7636,13 +7652,19 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	signalInfos[0].deviceIndex = 0;
 	signalInfos[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
 	signalInfos[1].semaphore = timelineSemaphore_;
-	signalInfos[1].value = ++timelineValue_;
+	// Frame-retirement value: recorded into the per-slot wait table only
+	// AFTER the submit that signals it was accepted (both branches below).
+	// Publishing before the submit would leave a slot waiting forever on a
+	// value no submit ever signals if anything fails between the two points
+	// (queue-mutex throw, future early-return, non-fatal VK_CHECK). Skipped
+	// values are harmless: the next frame takes a fresh ++, and timeline
+	// waits are strictly increasing.
+	const uint64_t signalValue = ++timelineValue_;
+	signalInfos[1].value = signalValue;
 	signalInfos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 	signalInfos[1].deviceIndex = 0;
 	VkCommandBufferSubmitInfo cmdInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, tailCmd, 0 };
 	VkSubmitInfo2 submitInfo2{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2, nullptr, 0, waitCount, waitInfos, 1, &cmdInfo, 2, signalInfos };
-	frameTimelineValues_[currentFrame_] = timelineValue_;
-	imageTimelineValues_[currentImageIndex_] = timelineValue_;
 	{
 		// Single-threaded: all queue ops on render thread, but use per-queue mutex for correctness when transferQueue is distinct
 		std::mutex& mg = GetQueueMutex(graphicsQueue_);
@@ -7652,10 +7674,15 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 		if (&mg == &mp) {
 			lockG.lock();
 			VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
+			// Submit accepted: the value it signals is now reachable, so the
+			// slot's wait target can be published (AcquireFramebuffer waits
+			// on frameTimelineValues_ with an infinite timeout).
+			frameTimelineValues_[currentFrame_] = signalValue;
+			imageTimelineValues_[currentImageIndex_] = signalValue;
 			// Publish the retirement point for deferred destroys: any resource
 			// freed from here on retires once this submit (and all before it)
 			// has completed.
-			ctx_.NotifyGraphicsSubmit(timelineSemaphore_, timelineValue_);
+			ctx_.NotifyGraphicsSubmit(timelineSemaphore_, signalValue);
 			VkPresentInfoKHR presentInfo{};
 			presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 			presentInfo.waitSemaphoreCount = 1;
@@ -7685,8 +7712,10 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			{
 				std::lock_guard<std::mutex> lock(mg);
 				VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &submitInfo2, VK_NULL_HANDLE));
-				// Same retirement publish as the single-mutex path above.
-				ctx_.NotifyGraphicsSubmit(timelineSemaphore_, timelineValue_);
+				// Same publish-on-success as the single-mutex path above.
+				frameTimelineValues_[currentFrame_] = signalValue;
+				imageTimelineValues_[currentImageIndex_] = signalValue;
+				ctx_.NotifyGraphicsSubmit(timelineSemaphore_, signalValue);
 			}
 			{
 				std::lock_guard<std::mutex> lock(mp);
