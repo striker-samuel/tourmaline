@@ -19,6 +19,13 @@
 #define VK_NO_PROTOTYPES
 #endif
 
+// Win32 surface creation must go through the volk-resolved entry point so
+// the Streamline interposer's eVulkan_CreateWin32SurfaceKHR proxy sees the
+// surface its (proxied) swapchain calls are created against.
+#ifndef VK_USE_PLATFORM_WIN32_KHR
+#define VK_USE_PLATFORM_WIN32_KHR
+#endif
+
 #define VOLK_IMPLEMENTATION
 
 #include "volk.h"
@@ -29,6 +36,7 @@
 #include "../Vulkan/detail/vulkan_impl.h"
 #include <Engine/Vulkan/vulkanApp.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/dlss.h>
 #include <Engine/RHI/swapchain.h>
 #include <Engine/App/world.h>
 #include <Engine/Profile/profile.h>
@@ -1702,11 +1710,27 @@ bool smvk::VulkanCore::Init() {
 		std::vector<VkPhysicalDevice> devices(deviceCount);
 		vkEnumeratePhysicalDevices(instance_, &deviceCount, devices.data());
 
-		for (const auto& device : devices) {
-			if (isDeviceSuitable(device, surface_, config_.deviceExtensions)) {
-				physicalDevice_ = device;
-				break;
+		// Prefer DISCRETE GPUs over integrated ones (hybrid laptops put
+		// the desktop on the iGPU, and enumeration order often lists it
+		// first — "first suitable" would then render on the weak GPU and
+		// locks out vendor features like Streamline/NGX that need the
+		// dGPU). Ties keep the loader's order.
+		{
+			VkPhysicalDevice best = VK_NULL_HANDLE;
+			int bestScore = -1;
+			for (const auto& device : devices) {
+				if (!isDeviceSuitable(device, surface_, config_.deviceExtensions))
+					continue;
+				VkPhysicalDeviceProperties props{};
+				vkGetPhysicalDeviceProperties(device, &props);
+				const int score = (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+					? 2 : (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) ? 1 : 0;
+				if (score > bestScore) {
+					bestScore = score;
+					best = device;
+				}
 			}
+			physicalDevice_ = best;
 		}
 
 		if (physicalDevice_ == VK_NULL_HANDLE) {
@@ -1931,8 +1955,26 @@ std::unique_ptr<smvk::VulkanCore> smvk::CreateVulkanCoreWithWindow(smvk::VulkanC
 	auto core = unique.get();
 
 	core->CreateInstance();
-	if (!SDL_Vulkan_CreateSurface(window, instance_, nullptr, &surface_)) {
-		throw std::runtime_error(std::string("failed to create window surface: ") + SDL_GetError());
+	// Win32 surface created through the volk-resolved function pointer —
+	// the Streamline proxy when DLSS is active, SDL's equivalent native
+	// call otherwise (SDL_Vulkan_CreateSurface would resolve its own
+	// vkCreateWin32SurfaceKHR from vulkan-1.dll and bypass the hook).
+	{
+		SDL_PropertiesID windowProps = SDL_GetWindowProperties(window);
+		HWND hwnd = reinterpret_cast<HWND>(SDL_GetPointerProperty(
+			windowProps, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+		HINSTANCE hinstance = reinterpret_cast<HINSTANCE>(SDL_GetPointerProperty(
+			windowProps, SDL_PROP_WINDOW_WIN32_INSTANCE_POINTER, nullptr));
+		if (!hinstance)
+			hinstance = GetModuleHandleW(nullptr);
+		if (!hwnd || !hinstance)
+			throw std::runtime_error("failed to get Win32 window handles for surface creation");
+		VkWin32SurfaceCreateInfoKHR surfaceInfo{ VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
+		surfaceInfo.hinstance = hinstance;
+		surfaceInfo.hwnd = hwnd;
+		if (vkCreateWin32SurfaceKHR(instance_, &surfaceInfo, nullptr, &surface_) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create window surface");
+		}
 	}
 	core->Init();
 	return unique;
@@ -8508,10 +8550,31 @@ VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle log
 
 bool smvk::App::Initialize() {
 
-	if (volkInitialize() != VK_SUCCESS) {
+	// NVIDIA Streamline (DLSS) — regular (non-manual) integration: slInit
+	// runs before any Vulkan call and volk is pointed at the interposer's
+	// vkGetInstanceProcAddr, so instance/device/swapchain/acquire/present
+	// resolve to SL proxies (native passthrough for everything else). When
+	// sl.interposer.dll is absent (or non-NVIDIA systems) the plain
+	// vulkan-1.dll path is used unchanged.
+	const void* slGpa = nullptr;
+	if (DlssStartup())
+		slGpa = DlssVulkanGetInstanceProcAddr();
+	if (slGpa) {
+		// This vendored volk's volkInitializeCustom returns void: probe a
+		// global-level entry point afterwards to detect a dead SL loader.
+		volkInitializeCustom(
+			reinterpret_cast<PFN_vkGetInstanceProcAddr>(const_cast<void*>(slGpa)));
+		if (vkCreateInstance == nullptr) {
+			std::cerr << "Streamline loader failed to bootstrap - "
+				"falling back to vulkan-1.dll\n";
+			DlssShutdown();
+			slGpa = nullptr;
+		}
+	}
+	if (!slGpa && volkInitialize() != VK_SUCCESS) {
 		std::cerr << "Failed to initialize Volk\n";
 		return false;
-	};
+	}
 
 	// SDL3: video + gamepad + audio subsystems. Joystick events are needed
 	// for SDL_EVENT_GAMEPAD_* hotplug; audio init is lazy (AudioEngine inits
@@ -8588,6 +8651,9 @@ void smvk::App::Shutdown() {
 	// We do not reset m_* here to allow TestApp::Shutdown to still use
 	// m_context if needed; actual destruction happens in ~VulkanApp via
 	// member order (TestApp members -> VulkanApp members -> IApp window).
+	// Streamline teardown: slShutdown must run before the VkInstance /
+	// VkDevice are destroyed (~App tears down m_context).
+	DlssShutdown();
 }
 
 smvk::App::~App()

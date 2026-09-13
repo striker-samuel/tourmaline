@@ -34,6 +34,7 @@
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/deferredshadow.h>
 #include <Engine/Rendergraph/depth.h>
+#include <Engine/Rendergraph/dlss.h>
 #include <Engine/Rendergraph/environment.h>
 #include <Engine/Rendergraph/evsm.h>
 #include <Engine/Rendergraph/exposure.h>
@@ -484,6 +485,7 @@ struct ViewportResources {
 	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
 	smvk::UiComposite uiComposite; // UI -> swapchain alpha composite program + pass
 	smvk::Smaa smaa; // LDR target + edges/weights/history + LUTs + programs (see smaa.h)
+	smvk::Dlss dlss; // HDR output (swap extent) + 1x1 exposure scalar (see dlss.h)
 	bool msaaEnabled = true; // runtime toggle (effective only if device supports)
 };
 
@@ -1015,6 +1017,14 @@ protected:
 	// this: the UI layer is not jittered or temporally resolved, so the
 	// jittered matrix would make every marker buzz +/-0.25 px per frame.
 	glm::mat4 m_unjitteredViewProj{ 1.0f };
+	// This frame's projection WITHOUT jitter (post Y-flip): DLSS wants the
+	// clip transform unjittered (cameraViewToClip) — jitter travels as the
+	// separate pixel-space offset, never inside the matrices.
+	glm::mat4 m_unjitteredProj{ 1.0f };
+	// Last frame's m_unjitteredViewProj (same validity as m_prevViewProj):
+	// DLSS clipToPrevClip must reproduce the motion-vector pass' camera
+	// history without the per-frame jitter.
+	glm::mat4 m_prevUnjitteredViewProj{ 1.0f };
 	bool m_prevViewProjValid = false; // false until the first frame completes
 	std::vector<glm::mat4> m_prevGlobalTransforms; // last frame's node transforms
 	bool m_showMotionDebug = false; // tonemap debug view: motion vectors
@@ -1077,8 +1087,49 @@ protected:
 	// True when this record emitted the T2x chain (end-step input).
 	bool m_smaaFrameRanT2x = false;
 
+	// ---- DLSS Super Resolution (Streamline, see Engine/Rendergraph/dlss.h) ----
+	// Off by default; when active it OWNS the internal resolution (DLSS
+	// optimal render size) and the upscale (HDR render-res -> HDR swap-res
+	// before tonemap), and it bypasses the AA modes (its own AA replaces
+	// them; MSAA would fight the reduced-resolution input).
+	smvk::DlssMode m_dlssMode = smvk::DlssMode::Off;
+	// One-time capability check (slIsFeatureSupported on this adapter).
+	bool m_dlssSupported = false;
+	// This record's snapshot: filled after the target Ensure block so the
+	// jitter (UpdateFrameUniforms), the MSAA gate and the tonemap retarget
+	// all agree with the pass-emission gate below.
+	bool m_dlssFrameActive = false;
+	// History reset request: set on deactivation/mode/extent change, held
+	// until the next DLSS record consumes it (Constants::reset).
+	bool m_dlssReset = true;
+	// Halton jitter phase (record cadence like the T2x parity, not
+	// per-image) + this record's snapshot of the jitter in render pixels.
+	uint32_t m_dlssPhase = 0;
+	uint32_t m_dlssPhaseCount = 8;
+	smvk::DlssJitter m_dlssJitter{};
+	// slDLSSSetOptions drift tracking (re-applied on mode/output change;
+	// slFreeResources on deactivate — see RenderFrame's DLSS block).
+	bool m_dlssOptionsApplied = false;
+	smvk::DlssMode m_dlssOptionsMode = smvk::DlssMode::Off;
+	uint32_t m_dlssOptionsW = 0;
+	uint32_t m_dlssOptionsH = 0;
+	// Reset bookkeeping: extents/mode the last DLSS record saw.
+	smvk::DlssMode m_dlssLastMode = smvk::DlssMode::Off;
+	smvk::Extent2D m_dlssLastRenderExtent{ 0, 0 };
+	smvk::Extent2D m_dlssLastSwapExtent{ 0, 0 };
+
+	bool DlssRequested() const { return m_dlssMode != smvk::DlssMode::Off; }
+	// Hard requirements: Streamline alive + adapter support + motion
+	// vectors (camera-motion input) + valid upscaler targets.
+	bool DlssActive() const {
+		return DlssRequested() && smvk::DlssAvailable() && m_dlssSupported
+			&& m_passes.motionVectors
+			&& m_viewportResources.motionVectors.Valid()
+			&& m_viewportResources.dlss.Valid();
+	}
+
 	bool SmaaRequested() const {
-		return m_passes.smaa
+		return m_passes.smaa && !m_dlssFrameActive
 			&& (m_aaMode == AaMode::Smaa1x || m_aaMode == AaMode::SmaaT2x);
 	}
 	// Motion vectors are a hard requirement (the neighborhood pass packs

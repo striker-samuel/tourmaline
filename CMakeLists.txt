@@ -38,6 +38,36 @@ function(vulkantoy_stage_sdl3 TARGET)
     )
 endfunction()
 
+# Stage the NVIDIA Streamline runtime next to an executable (DLSS-SR).
+# sl.interposer.dll is loaded dynamically from the exe dir (dlss.cpp);
+# a missing set simply leaves DLSS unavailable - no hard dependency.
+# Source of the binaries: external/streamline (Streamline SDK 2.14.1).
+function(vulkantoy_stage_streamline TARGET)
+    set(_SL_BIN_DIR "${CMAKE_SOURCE_DIR}/external/streamline/bin/x64")
+    foreach(_SL_DLL IN ITEMS
+            sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll
+            NvLowLatencyVk.dll)
+        if(EXISTS "${_SL_BIN_DIR}/${_SL_DLL}")
+            add_custom_command(TARGET ${TARGET} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_SL_BIN_DIR}/${_SL_DLL}"
+                    "$<TARGET_FILE_DIR:${TARGET}>/${_SL_DLL}"
+                COMMENT "Staging ${_SL_DLL} next to ${TARGET}"
+            )
+        else()
+            message(WARNING "Streamline binary '${_SL_DLL}' not found in ${_SL_BIN_DIR} - DLSS will be unavailable at runtime")
+        endif()
+    endforeach()
+    if(EXISTS "${_SL_BIN_DIR}/nvngx_dlss.license.txt")
+        add_custom_command(TARGET ${TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_SL_BIN_DIR}/nvngx_dlss.license.txt"
+                "$<TARGET_FILE_DIR:${TARGET}>/nvngx_dlss.license.txt"
+            COMMENT "Staging nvngx_dlss.license.txt next to ${TARGET}"
+        )
+    endif()
+endfunction()
+
 # GLM (header-only)
 add_subdirectory(external/glm)
 

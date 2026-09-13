@@ -30,6 +30,9 @@ bld/
 [Bb]in/
 # Needed to add this to move ktx with the repo :)
 !external/ktx/bin/
+# Streamline runtime DLLs are vendored (no LFS - plain binary blobs).
+!external/streamline/bin/
+!external/streamline/bin/x64/
 [Oo]bj/
 [Oo]ut/
 [Ll]og/

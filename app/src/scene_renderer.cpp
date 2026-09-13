@@ -681,6 +681,11 @@ bool SceneRenderer::Initialize() {
 		if (!Super::Initialize())
 			return false;
 
+		// DLSS capability is fixed per run (adapter + driver + Streamline
+		// runtime): the device exists now, so ask once. Failure leaves the
+		// mode combo cosmetic — the status readout explains why.
+		m_dlssSupported = smvk::DlssFeatureSupported();
+
 		// Env values arrive with shell quoting artifacts (notably a
 		// trailing space from `set VAR=x && ...` in cmd, which broke
 		// string-compared toggles while atoi-based ones survived). Trim
@@ -739,6 +744,23 @@ bool SceneRenderer::Initialize() {
 			else if (aa == "smaa1x") m_aaMode = AaMode::Smaa1x;
 			else if (aa == "t2x") m_aaMode = AaMode::SmaaT2x;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_AA value: " << aa << "\n";
+		}
+
+		// DLSS quality-mode override for A/B runs (off | ultraperf | perf |
+		// balanced | quality | ultraquality | dlaa). DLSS takes over the
+		// internal resolution + upscaling and bypasses the AA modes.
+		if (const char* dlssEnv = std::getenv("VULKANTOY_DLSS")) {
+			const std::string_view dlss = trimEnv(dlssEnv);
+			if (dlss == "off") m_dlssMode = smvk::DlssMode::Off;
+			else if (dlss == "ultraperf" || dlss == "ultraperformance")
+				m_dlssMode = smvk::DlssMode::UltraPerformance;
+			else if (dlss == "perf" || dlss == "performance")
+				m_dlssMode = smvk::DlssMode::MaxPerformance;
+			else if (dlss == "balanced") m_dlssMode = smvk::DlssMode::Balanced;
+			else if (dlss == "quality") m_dlssMode = smvk::DlssMode::MaxQuality;
+			else if (dlss == "ultraquality") m_dlssMode = smvk::DlssMode::UltraQuality;
+			else if (dlss == "dlaa") m_dlssMode = smvk::DlssMode::DLAA;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DLSS value: " << dlss << "\n";
 		}
 
 		// Internal render-resolution override for headless A/B runs (the
@@ -1689,6 +1711,9 @@ void SceneRenderer::Shutdown() {
 		// the UI layer is neither jittered nor temporally resolved, so it
 		// must project with the stable matrix (see m_unjitteredViewProj).
 		m_unjitteredViewProj = proj * view;
+		// Unjittered clip transform for the DLSS constants (SL matrices
+		// must not contain the jitter — it travels as jitterOffset).
+		m_unjitteredProj = proj;
 
 		// SMAA T2x sub-pixel jitter: alternate the sample position between
 		// the two diagonal quarter-pixel offsets (official T2x pattern,
@@ -1712,6 +1737,20 @@ void SceneRenderer::Shutdown() {
 			const float jy = s * 2.0f / float(swapExtent.height);
 			// Clip-space translation x' = x + jx * w (glm column-major
 			// [col][row]: add jx * w-row to the x-row, jy to the y-row).
+			for (int c = 0; c < 4; ++c) {
+				proj[c][0] += jx * proj[c][3];
+				proj[c][1] += jy * proj[c][3];
+			}
+		} else if (m_dlssFrameActive) {
+			// DLSS Halton jitter (guide 3.7): offsets are quantized to
+			// RENDER-resolution pixels (unlike the T2x chain-pixel jitter
+			// above) and cycle through m_dlssPhaseCount phases. Same
+			// clip-space translation; NDC is y-down after the Y-flip so
+			// both axes share the jitter's sign. prevViewProj (below)
+			// keeps the previous jittered matrix, so the motion vectors
+			// include the jitter (motionVectorsJittered = true).
+			const float jx = m_dlssJitter.x * 2.0f / float(renderExtent.width);
+			const float jy = m_dlssJitter.y * 2.0f / float(renderExtent.height);
 			for (int c = 0; c < 4; ++c) {
 				proj[c][0] += jx * proj[c][3];
 				proj[c][1] += jy * proj[c][3];
@@ -3233,6 +3272,13 @@ void SceneRenderer::Shutdown() {
 		smvk::SmaaDesc rebuildSmaaDesc{};
 		rebuildSmaaDesc.ldrFormat = LdrUnormSibling();
 		m_viewportResources.smaa.Ensure(*m_context, *m_rendergraph, swapExtent, rebuildSmaaDesc);
+		// DLSS output follows the swap extent; the recreated target holds
+		// garbage until the next evaluate fills it (tonemap reads it only
+		// on frames where the DLSS pass ran). The extent change arms a
+		// history reset and the options-drift check re-applies
+		// slDLSSSetOptions (the plugin then recreates its NGX feature).
+		m_viewportResources.dlss.Ensure(*m_context, *m_rendergraph, swapExtent);
+		m_dlssReset = true;
 		// Recreated history targets hold garbage - the resolve must not
 		// blend against them until the T2x chain refills the ping-pong.
 		smvk::SmaaInvalidateHistory(m_smaaT2x);
@@ -3474,7 +3520,42 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	m_frameCounter += 1;
 	m_rendergraph->NewFrame();
 	const smvk::Extent2D swapExtent{ fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height };
-	const smvk::Extent2D renderExtent = ScaledExtent(swapExtent, m_renderScale);
+	// DLSS owns the internal resolution when requested and runnable: the
+	// driver-recommended optimal render size replaces the renderScale
+	// slider (the slider stays authoritative on the fallback path).
+	const bool dlssUsable = DlssRequested() && smvk::DlssAvailable() && m_dlssSupported
+		&& m_passes.motionVectors;
+	smvk::Extent2D renderExtent = ScaledExtent(swapExtent, m_renderScale);
+	if (dlssUsable) {
+		smvk::DlssOptimalSettings dlssOpt{};
+		if (smvk::DlssQueryOptimalSettings(m_dlssMode,
+				swapExtent.width, swapExtent.height, dlssOpt)) {
+			renderExtent = { dlssOpt.renderWidth, dlssOpt.renderHeight };
+		} else {
+			// Query failed (offline NGX etc.): conventional per-mode ratios
+			// (Performance 50% / Balanced 58% / Quality 67% / UltraPerf 33%
+			// / UltraQuality 78% / DLAA 100%) keep the feature testable.
+			float dlssScale = 1.0f;
+			switch (m_dlssMode) {
+			case smvk::DlssMode::MaxPerformance: dlssScale = 0.5f; break;
+			case smvk::DlssMode::Balanced: dlssScale = 0.578f; break;
+			case smvk::DlssMode::MaxQuality: dlssScale = 0.667f; break;
+			case smvk::DlssMode::UltraPerformance: dlssScale = 0.333f; break;
+			case smvk::DlssMode::UltraQuality: dlssScale = 0.778f; break;
+			default: break; // DLAA 1:1
+			}
+			renderExtent = ScaledExtent(swapExtent, dlssScale);
+		}
+	}
+	// Render-extent changes are worth a line: they resize every render
+	// target (DLSS mode/quality changes, renderScale edits, resizes).
+	if (renderExtent.width != m_dlssLastRenderExtent.width
+		|| renderExtent.height != m_dlssLastRenderExtent.height) {
+		std::fprintf(stderr, "[DLSS] render extent %ux%u -> swap %ux%u%s\n",
+			renderExtent.width, renderExtent.height,
+			swapExtent.width, swapExtent.height,
+			dlssUsable ? " (DLSS optimal)" : "");
+	}
 	const smvk::Extent2D uiExtent = ScaledExtent(swapExtent, m_uiScale);
 	UpdateCameraAspect(renderExtent);
 	{
@@ -3524,7 +3605,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// AA mode combo (Off / MSAA 2x / SMAA 1x / SMAA T2x): MSAA runs
 		// only in its own mode (SMAA after an MSAA resolve wastes the
 		// resolve; device support is still gated at the Main pass).
-		m_viewportResources.msaaEnabled = (m_aaMode == AaMode::Msaa2x);
+		// DLSS replaces all AA when active.
+		m_viewportResources.msaaEnabled = (m_aaMode == AaMode::Msaa2x) && !dlssUsable;
 			m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc());
 			// EVSM atlases follow the pipeline-mode member so flipping
 			// m_evsmPipeline (OneFrameLag <-> SameFrame) takes effect on
@@ -3544,6 +3626,42 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				m_viewportResources.evsmSpot.blurRadius = blurR;
 			}
 			m_viewportResources.exposure.Ensure(*m_context, *m_rendergraph, MakeExposureDesc());
+			// DLSS upscaler targets (HDR output at swap extent + 1x1
+			// exposure scalar): swap extent, NOT renderExtent.
+			m_viewportResources.dlss.Ensure(*m_context, *m_rendergraph, swapExtent);
+		}
+		// DLSS record snapshot (after Ensure so Valid() matches the
+		// pass-emission gate below): jitter phase + offset in render
+		// pixels, consumed by UpdateFrameUniforms + the DLSS pass.
+		m_dlssFrameActive = DlssActive();
+		m_dlssPhaseCount = m_dlssFrameActive
+			? smvk::DlssPhaseCount(renderExtent.width, renderExtent.height,
+				swapExtent.width, swapExtent.height)
+			: 8u;
+		m_dlssJitter = m_dlssFrameActive
+			? smvk::DlssComputeJitter(m_dlssPhase, m_dlssPhaseCount)
+			: smvk::DlssJitter{};
+		// slDLSSSetOptions drift tracking: (re)apply when the mode or the
+		// output size changed, release plugin resources when DLSS stops
+		// running (mode=eOff alone would keep the VRAM allocated).
+		if (m_dlssFrameActive) {
+			if (!m_dlssOptionsApplied || m_dlssOptionsMode != m_dlssMode
+				|| m_dlssOptionsW != swapExtent.width || m_dlssOptionsH != swapExtent.height) {
+				if (smvk::DlssApplyOptions(m_dlssMode, swapExtent.width, swapExtent.height)) {
+					m_dlssOptionsApplied = true;
+					m_dlssOptionsMode = m_dlssMode;
+					m_dlssOptionsW = swapExtent.width;
+					m_dlssOptionsH = swapExtent.height;
+				} else {
+					// Options failed this record: skip the pass so tonemap
+					// keeps the (bilinear) renderScale path this frame.
+					m_dlssFrameActive = false;
+				}
+			}
+		} else if (m_dlssOptionsApplied) {
+			smvk::DlssDeactivate();
+			m_dlssOptionsApplied = false;
+			m_dlssReset = true; // next activation warms up
 		}
 		// Exposure applied this frame (debug views: fixed reference — see
 		// FrameExposure; 1-frame adaptation lag in the Lit view).
@@ -5461,6 +5579,102 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		}
 
 		// ---------------------------------------------------------------------
+		// DLSS – Streamline super resolution (see Engine/Rendergraph/dlss.h).
+		// HDR render-res -> HDR swap-res, replacing the tonemapper's
+		// bilinear upscale: after this block sceneHdrView/Bindless point at
+		// the upscaled output the tonemapper samples at swapExtent.
+		// ---------------------------------------------------------------------
+		bool dlssEmitted = false;
+		if (m_dlssFrameActive) {
+			SMVK_PROFILE_CATEGORY("DLSS", Optick::Category::Rendering);
+			// History reset: first DLSS record, deactivation gap, mode or
+			// extent change, or a broken camera history (same gate the
+			// motion-vector pass falls back from).
+			const bool dlssReset = m_dlssReset || !m_prevViewProjValid
+				|| m_dlssMode != m_dlssLastMode
+				|| m_dlssLastRenderExtent.width != renderExtent.width
+				|| m_dlssLastRenderExtent.height != renderExtent.height
+				|| m_dlssLastSwapExtent.width != swapExtent.width
+				|| m_dlssLastSwapExtent.height != swapExtent.height;
+
+			// Color in = the (possibly motion-blurred) HDR the bloom chain
+			// just sampled: same target sceneHdrView tracks.
+			const bool blurOn = m_passes.motionBlur && m_motionBlurEnabled
+				&& m_viewportResources.motionBlur.Valid()
+				&& m_viewportResources.motionVectors.Valid();
+
+			smvk::DlssFrameInputs dlssIn{};
+			dlssIn.colorInImage = blurOn
+				? static_cast<smvk::ImageHandle>(m_viewportResources.motionBlur.image)
+				: static_cast<smvk::ImageHandle>(m_viewportResources.hdr.image);
+			dlssIn.colorInView = blurOn
+				? static_cast<smvk::ImageViewHandle>(m_viewportResources.motionBlur.view)
+				: static_cast<smvk::ImageViewHandle>(m_viewportResources.hdr.view);
+			dlssIn.colorInLogical = sceneHdrView;
+			dlssIn.colorOutImage = m_viewportResources.dlss.output.image;
+			dlssIn.colorOutView = m_viewportResources.dlss.output.view;
+			dlssIn.colorOutLogical = m_viewportResources.dlss.output.logicalView;
+			dlssIn.depthImage = m_viewportResources.renderDepth.image;
+			dlssIn.depthView = m_viewportResources.renderDepth.view;
+			dlssIn.depthLogical = m_viewportResources.renderDepth.logicalView;
+			dlssIn.mvecImage = m_viewportResources.motionVectors.target.image;
+			dlssIn.mvecView = m_viewportResources.motionVectors.target.view;
+			dlssIn.mvecLogical = m_viewportResources.motionVectors.target.logicalView;
+			dlssIn.exposureImage = m_viewportResources.dlss.exposure.image;
+			dlssIn.exposureView = m_viewportResources.dlss.exposure.view;
+			dlssIn.exposureLogical = m_viewportResources.dlss.exposure.logicalView;
+			dlssIn.renderExtent = renderExtent;
+			dlssIn.outputExtent = swapExtent;
+			dlssIn.colorFormat = m_viewportResources.hdr.format;
+			dlssIn.depthFormat = m_viewportResources.renderDepth.format;
+			dlssIn.mvecFormat = m_viewportResources.motionVectors.target.format;
+			dlssIn.exposureFormat = m_viewportResources.dlss.exposure.format;
+
+			// Constants: ROW-major, UNJITTERED matrices (SL convention).
+			// clipToPrevClip = prevUnjitteredVP * inverse(currUnjitteredVP)
+			// maps a current clip point to the previous frame's clip —
+			// the same camera history the motion-vector pass diffs, minus
+			// the per-frame jitter.
+			auto toRowMajor = [](const glm::mat4& m, float out[16]) {
+				const glm::mat4 t = glm::transpose(m);
+				std::memcpy(out, glm::value_ptr(t), sizeof(float) * 16);
+			};
+			const glm::mat4 currUnjitteredVP = m_unjitteredViewProj;
+			const glm::mat4 prevUnjitteredVP =
+				m_prevViewProjValid ? m_prevUnjitteredViewProj : currUnjitteredVP;
+			const glm::mat4 clipToPrevClip =
+				prevUnjitteredVP * glm::inverse(currUnjitteredVP);
+			toRowMajor(m_unjitteredProj, dlssIn.cameraViewToClip);
+			toRowMajor(glm::inverse(m_unjitteredProj), dlssIn.clipToCameraView);
+			toRowMajor(clipToPrevClip, dlssIn.clipToPrevClip);
+			toRowMajor(glm::inverse(clipToPrevClip), dlssIn.prevClipToClip);
+			dlssIn.jitterOffset[0] = m_dlssJitter.x;
+			dlssIn.jitterOffset[1] = m_dlssJitter.y;
+			const glm::vec3 camFwd = glm::normalize(m_cameraPositioner.getForward());
+			const glm::vec3 camUp = glm::normalize(m_cameraPositioner.up_);
+			const glm::vec3 camRight = glm::normalize(glm::cross(camFwd, camUp));
+			dlssIn.cameraPos[0] = m_cameraPositioner.cameraPosition_.x;
+			dlssIn.cameraPos[1] = m_cameraPositioner.cameraPosition_.y;
+			dlssIn.cameraPos[2] = m_cameraPositioner.cameraPosition_.z;
+			dlssIn.cameraUp[0] = camUp.x; dlssIn.cameraUp[1] = camUp.y; dlssIn.cameraUp[2] = camUp.z;
+			dlssIn.cameraRight[0] = camRight.x; dlssIn.cameraRight[1] = camRight.y; dlssIn.cameraRight[2] = camRight.z;
+			dlssIn.cameraFwd[0] = camFwd.x; dlssIn.cameraFwd[1] = camFwd.y; dlssIn.cameraFwd[2] = camFwd.z;
+			dlssIn.cameraNear = default_near_clip;
+			dlssIn.cameraFar = m_scene.farClip;
+			dlssIn.cameraFOV = glm::radians(kCameraFovYDegrees);
+			dlssIn.cameraAspectRatio =
+				float(renderExtent.width) / float(renderExtent.height);
+			dlssIn.reset = dlssReset;
+
+			dlssEmitted = smvk::AddDlssPasses(*m_rendergraph, *m_context,
+				m_viewportResources.dlss, dlssIn, frameExposure, fb.frameIndex, "DLSS");
+			if (dlssEmitted) {
+				sceneHdrView = m_viewportResources.dlss.output.logicalView;
+				sceneHdrBindless = m_viewportResources.dlss.output.bindlessIndex;
+			}
+		}
+
+		// ---------------------------------------------------------------------
 		// Tonemapper – HDR (RGBA16F) → LDR swapchain (see tonemap.h).
 		// With SMAA active the pass is retargeted onto the offscreen LDR
 		// target owned by the SMAA builder (the swapchain cannot be
@@ -5660,14 +5874,61 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					ImGui::TextDisabled("Render scale resizes HDR/MSAA/bloom/depth + tonemap upscales to swap.\n"
 						"UI renders into its own target and composites over the swapchain.");
 				}
+				if (ImGui::CollapsingHeader("DLSS upscaling (Streamline)", ImGuiTreeNodeFlags_DefaultOpen)) {
+					// Conventional order for the combo; indices remap to the
+					// sl-aligned DlssMode enum values.
+					const char* dlssNames[] = { "Off", "Ultra Performance", "Performance",
+						"Balanced", "Quality", "Ultra Quality", "DLAA" };
+					const int dlssEnumOf[] = {
+						static_cast<int>(smvk::DlssMode::Off),
+						static_cast<int>(smvk::DlssMode::UltraPerformance),
+						static_cast<int>(smvk::DlssMode::MaxPerformance),
+						static_cast<int>(smvk::DlssMode::Balanced),
+						static_cast<int>(smvk::DlssMode::MaxQuality),
+						static_cast<int>(smvk::DlssMode::UltraQuality),
+						static_cast<int>(smvk::DlssMode::DLAA),
+					};
+					int dlssSel = 0;
+					for (int i = 0; i < 7; ++i)
+						if (dlssEnumOf[i] == static_cast<int>(m_dlssMode))
+							dlssSel = i;
+					if (ImGui::Combo("DLSS mode", &dlssSel, dlssNames, 7))
+						m_dlssMode = static_cast<smvk::DlssMode>(dlssEnumOf[dlssSel]);
+					if (m_dlssFrameActive) {
+						ImGui::Text("Active: scene %ux%u -> DLSS -> swap %ux%u",
+							renderExtent.width, renderExtent.height,
+							swapExtent.width, swapExtent.height);
+						ImGui::Text("Halton jitter phase %u / %u", m_dlssPhase, m_dlssPhaseCount);
+						ImGui::TextDisabled("DLSS replaces the AA modes and the render-scale slider\n"
+							"(HDR upscaled before tonemap; UI composites after).");
+					} else if (DlssRequested()) {
+						// Why the requested mode is not running.
+						if (!smvk::DlssAvailable())
+							ImGui::TextDisabled("Streamline runtime (sl.interposer.dll) not loaded.");
+						else if (!m_dlssSupported)
+							ImGui::TextDisabled("DLSS not supported on this adapter (NVIDIA GPU + up-to-date driver).");
+						else if (!m_passes.motionVectors)
+							ImGui::TextDisabled("Requires the motion-vector pass (ScenePassConfig).");
+						else
+							ImGui::TextDisabled("Warming up / options pending this frame.");
+					} else {
+						ImGui::TextDisabled("Off: render scale slider drives the internal resolution\n"
+							"(tonemap upscales bilinearly).");
+					}
+				}
 				if (ImGui::CollapsingHeader("Antialiasing + transparency", ImGuiTreeNodeFlags_DefaultOpen)) {
 					// AA mode combo (Off / MSAA 2x / SMAA 1x / SMAA T2x). msaaEnabled
 					// is derived from the mode every frame (see the Ensure block), so
-					// the combo is the single source of truth.
+					// the combo is the single source of truth. DLSS replaces all
+					// AA when active.
 					const char* aaNames[] = { "Off", "MSAA 2x", "SMAA 1x", "SMAA T2x" };
 					int aaIdx = static_cast<int>(m_aaMode);
+					ImGui::BeginDisabled(m_dlssFrameActive);
 					if (ImGui::Combo("Antialiasing (Z / 1-4)", &aaIdx, aaNames, 4))
 						m_aaMode = static_cast<AaMode>(aaIdx);
+					ImGui::EndDisabled();
+					if (m_dlssFrameActive)
+						ImGui::TextDisabled("AA bypassed while DLSS is active.");
 					// Transparency technique for Blend materials (default:
 					// dithered screen-door, opaque state; optional blend).
 					const char* transpModes[] = { "Dithered (default)", "Alpha blend" };
@@ -6330,10 +6591,31 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 								fb.imageIndex, m_smaaFrameParams.parity);
 						else
 							ImGui::TextDisabled("SMAA 1x: edges -> weights -> neighborhood blend");
-					} else {
-						ImGui::TextDisabled("AA: off");
-					}
-					if (!m_viewportResources.motionBlur.Valid())
+				} else {
+					ImGui::TextDisabled("AA: off");
+				}
+				{
+					// DLSS line: availability, active state and the reset
+					// history flag (one-record visibility for warmup).
+					const char* dlssModeName[] = { "off", "performance", "balanced",
+						"quality", "ultra performance", "ultra quality", "DLAA" };
+					const int modeIdx = static_cast<int>(m_dlssMode);
+					if (m_dlssFrameActive)
+						ImGui::TextDisabled("DLSS %s: HDR %ux%u -> %ux%u%s",
+							dlssModeName[std::clamp(modeIdx, 0, 6)],
+							renderExtent.width, renderExtent.height,
+							swapExtent.width, swapExtent.height,
+							m_dlssReset ? " (history reset)" : "");
+					else if (DlssRequested())
+						ImGui::TextDisabled("DLSS %s: INACTIVE (%s%s)",
+							dlssModeName[std::clamp(modeIdx, 0, 6)],
+							smvk::DlssAvailable() ? "unsupported adapter" : "runtime missing",
+							m_passes.motionVectors ? "" : " / no motion vectors");
+					else
+						ImGui::TextDisabled("DLSS: off (Streamline %s)",
+							smvk::DlssAvailable() ? "loaded" : "not loaded");
+				}
+				if (!m_viewportResources.motionBlur.Valid())
 						ImGui::TextDisabled("Motion blur target/shaders missing � sharp HDR");
 					else
 						ImGui::TextDisabled("Motion blur: gather along motion vectors, pre-tonemap HDR");
@@ -6709,6 +6991,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// frame's motion vector pass. Must run AFTER Execute: the motion
 		// pass recording lambda reads these members during Execute.
 		m_prevViewProj = frameData.viewProj;
+		m_prevUnjitteredViewProj = m_unjitteredViewProj;
 		m_prevViewProjValid = true;
 		m_prevGlobalTransforms = m_world->scene.globalTransform;
 		// SMAA T2x global toggle: the neighborhood pass wrote
@@ -6716,6 +6999,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// next record blends against this one. A non-T2x record freezes
 		// the phase and invalidates (see SmaaEndFrame).
 		smvk::SmaaEndFrame(m_smaaT2x, m_smaaFrameRanT2x);
+		// DLSS end-of-record step: advance the Halton phase when the pass
+		// ran (record cadence like the T2x parity, never per-image), arm
+		// the history reset when it didn't (next activation warms up), and
+		// remember the extents/mode this record saw so drift resets.
+		if (dlssEmitted) {
+			m_dlssPhase = (m_dlssPhase + 1) % (m_dlssPhaseCount ? m_dlssPhaseCount : 1);
+			m_dlssReset = false;
+		} else {
+			m_dlssReset = true;
+		}
+		m_dlssLastMode = m_dlssMode;
+		m_dlssLastRenderExtent = renderExtent;
+		m_dlssLastSwapExtent = swapExtent;
 	}
 }
 

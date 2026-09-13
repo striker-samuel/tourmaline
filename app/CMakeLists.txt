@@ -135,6 +135,10 @@ add_custom_command(TARGET App POST_BUILD
 # SDL3 is SHARED (vendored prebuilt): stage its DLL next to App.exe
 vulkantoy_stage_sdl3(App)
 
+# NVIDIA Streamline runtime (DLSS-SR): staged from external/streamline.
+# Optional at runtime - missing DLLs just disable the DLSS feature.
+vulkantoy_stage_streamline(App)
+
 
 # Shader compile outputs will be collected in this list
 set(COMPILED_SHADER_OUTPUTS)

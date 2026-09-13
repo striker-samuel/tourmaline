@@ -24,6 +24,7 @@ target_include_directories(engine
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Vulkan/detail
         ${CMAKE_CURRENT_SOURCE_DIR}/src/RHI/detail
         ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator
+        ${CMAKE_SOURCE_DIR}/external/streamline/include
 )
 
 
