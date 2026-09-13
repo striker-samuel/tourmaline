@@ -35,6 +35,12 @@ struct AppFrameContext : public smvk::FrameContext {
 	// decisions within a frame.
 	bool lodEnabled = false;
 	smvk::LodFrameInputs lodInputs{};
+	// Shader LODs: the Main pass draws instances whose selected level is
+	// World::LodShader::VertexLit with the cheap vertex-lit program
+	// (direct leg); the gfx filter excludes them from the indirect
+	// ranges accordingly (see GfxRenderer::FilterMainView). Mirrors
+	// SceneRenderer::ShaderLodActive() — both sides must agree per frame.
+	bool lodShaderEnabled = false;
 	// Dithered transparency (default) vs classic alpha blend for
 	// AlphaMode::Blend materials. Mirrors SceneRenderer::m_transparentMode.
 	// The depth prepass intentionally ignores it: transparent is always

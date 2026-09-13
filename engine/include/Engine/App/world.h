@@ -38,6 +38,21 @@ namespace smvk {
 		float pixelBudget = 1.0f;
 	};
 
+	// ---- Shader LODs (per-level shading programs) -------------------
+	// A LOD level carries BOTH a geometry sibling and the shading
+	// program that draws it (the Main pass reads the shader, geometry
+	// consumers — shadows, prepass, motion, culling — ignore it). The
+	// farthest level of a cooked chain keeps the coarsest geometry but
+	// downgrades shading to the cheap vertex-lit program: lighting is
+	// computed per vertex (directional sun + sky ambient, no shadow-map
+	// sampling, no forward+ lights, no specular, no textures), so far
+	// instances trade shading quality for fragment cost. Every other
+	// level (and every uncooked chain) stays fully lit.
+	enum class LodShader : uint8_t {
+		Lit = 0,        // full PBR (default_lit)
+		VertexLit = 1,  // per-vertex sun + ambient (default_vertexlit)
+	};
+
 	typedef enum IteratorFlagBits {
 		IteratorFlagBit_None = 0,
 		IteratorFlagBit_Renderable = 1u << 0,
@@ -181,11 +196,21 @@ namespace smvk {
 		// lodChains (hot paths below are O(1): no URI strings, no cluster
 		// scans — the previous per-draw probing showed up as a major CPU
 		// regression once every Bistro mesh had a cooked chain).
+		//
+		// One LEVEL = one geometry sibling + its shading program (shader
+		// LODs): selection picks a level index ONCE (SelectLodIndex) and
+		// every consumer resolves geometry (GetLodMesh) or shading
+		// (LodShaderAt) off the same level — there is no separate shader
+		// LOD level. The farthest level of a cooked chain (length > 1)
+		// is LodShader::VertexLit; level 0 and uncooked chains are Lit.
 		struct LodChain {
-			// Resolved sibling locations, LOD0..N (lods[0] == meshLocations[i]).
-			std::vector<MeshLocation> lods;
-			// World-space simplifier error per entry (errors[0] == 0).
-			std::vector<float> errors;
+			// Resolved levels, LOD0..N (levels[0].mesh == meshLocations[i]).
+			struct Level {
+				MeshLocation mesh;  // geometry sibling for this level
+				float error;        // world-space simplifier error (0 for LOD0)
+				LodShader shader;   // shading program for this level
+			};
+			std::vector<Level> levels;
 		};
 		uint32_t LodChainLength(uint32_t meshIndex) const;
 		std::optional<MeshLocation> ResolveLodMesh(uint32_t meshIndex, uint32_t lodIndex) const;
@@ -194,6 +219,9 @@ namespace smvk {
 		// Simplifier error for a chain entry (0 for LOD0, world units).
 		// Falls back to 0 when the marker is missing.
 		float LodErrorAt(uint32_t meshIndex, uint32_t lodIndex) const;
+		// Shading program carried by a chain entry (shader LODs; see
+		// LodShader). Falls back to Lit when the index is out of range.
+		LodShader LodShaderAt(uint32_t meshIndex, uint32_t lodIndex) const;
 		// Error-driven selection: coarsest LOD whose projected screen error
 		// (LodProjectedPixelError over each entry's simplifyError) stays
 		// within maxPixelError at `distance`. Returns 0 (full mesh) when no

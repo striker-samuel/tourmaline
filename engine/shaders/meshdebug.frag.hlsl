@@ -23,8 +23,12 @@ struct PSOut
 PSOut mainPS(PSIn IN)
 {
      PSOut OUT;
-     // Gamma encode so debug colors survive the tonemap pass's
-     // gamma decode (pow(..., 1/2.2)) — otherwise they appear too dark.
-     OUT.outColor = pow(IN.color, 1.0f / 2.2f);
+     // Raw push color: the C++ side pre-scales it by 1/FrameExposure (see
+     // the dbgGain/flatGain pre-scales in scene_renderer.cpp) so the
+     // tonemapper's hdr * exposure reproduces the authored display color
+     // (ACES still shapes it, hues stay distinct). A pow(1/2.2) used to
+     // live here to survive an old tonemap with a gamma decode; today it
+     // would just double-crush the palette.
+     OUT.outColor = IN.color;
      return OUT;
 }

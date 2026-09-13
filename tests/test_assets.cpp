@@ -666,6 +666,15 @@ void TestLodSelection() {
 		Check(world.SelectLodIndex(0, 5000.0f, h, fov, 1.0f) == 1, "lod.world.far");
 		Check(world.GetLodMesh(0, 1) != nullptr, "lod.world.mesh");
 
+		// ---- Shader LODs (level = geometry + shading program) ----------
+		// The farthest level of a cooked chain carries the vertex-lit
+		// program while keeping the coarsest geometry; every other level
+		// and out-of-range probes stay full-lit.
+		Check(world.LodShaderAt(0, 0) == LodShader::Lit, "lod.shader.l0");
+		Check(world.LodShaderAt(0, 1) == LodShader::VertexLit, "lod.shader.farthest");
+		Check(world.LodShaderAt(0, 2) == LodShader::Lit, "lod.shader.oob");
+		Check(world.LodChainLength(0) == 2, "lod.shader.chainlen");
+
 		// ---- Halfrate LOD cache (staggered halves) ----------------------
 		// Node n1 sits at the origin scaled 3x; drive the eye instead of
 		// the node: far eye (5000m) -> LOD1 in budget, near eye (100m)
@@ -705,6 +714,42 @@ void TestLodSelection() {
 		in.frameId = 5;
 		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
 		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.halfrate.invalidate");
+
+		// Uncooked chains (LOD0 alone, no "/lodN" siblings) never downgrade
+		// shading: level 0 is the only level and stays full-lit. A fresh
+		// resolve must also re-stamp the cooked chain's farthest level.
+		// (World mesh indices follow unordered_map iteration order after
+		// the re-resolve, so look the two meshes up by URI.)
+		{
+			Cluster& c = *world.clusters.front();
+			const auto h2 = c.UploadStaticMesh(q);
+			const std::string uri2 = "models/q.gltf#mesh.5/prim.0";
+			c.RegisterMeshUri(uri2, h2);
+			const int n2 = addNode(c.scene, 0, 2);
+			c.scene.meshForNode[n2] = h2.index();
+			markAsChanged(c.scene, 0);
+			recalculateGlobalTransforms(c.scene);
+			world.ResolveAndFixup_clusters();
+			Check(world.meshLocations.size() == 2, "lod.shader.meshes2");
+			uint32_t cookedMesh = UINT32_MAX, uncookedMesh = UINT32_MAX;
+			for (uint32_t i = 0; i < (uint32_t)world.meshLocations.size(); ++i) {
+				const auto& loc = world.meshLocations[i];
+				const std::string u(loc.cluster->GetMeshUri(loc.handle).Str());
+				if (u == uri2)
+					uncookedMesh = i;
+				else if (u == uri)
+					cookedMesh = i;
+			}
+			Check(uncookedMesh != UINT32_MAX && cookedMesh != UINT32_MAX,
+				"lod.shader.uris");
+			Check(world.LodChainLength(uncookedMesh) == 1, "lod.shader.uncooked.len");
+			Check(world.LodShaderAt(uncookedMesh, 0) == LodShader::Lit,
+				"lod.shader.uncooked.lit");
+			Check(world.LodShaderAt(uncookedMesh, 3) == LodShader::Lit,
+				"lod.shader.uncooked.oob");
+			Check(world.LodShaderAt(cookedMesh, 1) == LodShader::VertexLit,
+				"lod.shader.restamp");
+		}
 	}
 }
 

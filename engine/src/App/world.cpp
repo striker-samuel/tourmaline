@@ -421,6 +421,9 @@ namespace smvk {
 	// end of ResolveAndFixup_clusters; hot paths below only index the
 	// cache). Sibling URIs are composed into the frame arena and consumed
 	// immediately; only resolved MeshLocations + errors are stored.
+	// Shader LODs: the farthest level of a cooked chain (length > 1) is
+	// stamped LodShader::VertexLit — same coarsest geometry, cheap
+	// per-vertex shading. Uncooked chains stay fully lit.
 	void World::RebuildLodChains() {
 		lodChains.clear();
 		lodChains.resize(meshLocations.size());
@@ -430,8 +433,7 @@ namespace smvk {
 			const MeshLocation& lod0 = meshLocations[i];
 			if (lod0.cluster == nullptr || !lod0.handle.valid())
 				continue;
-			chain.lods.push_back(lod0);
-			chain.errors.push_back(0.0f);
+			chain.levels.push_back(LodChain::Level{ lod0, 0.0f, LodShader::Lit });
 			const StringViewT base =
 				BaseMeshUriForLod(lod0.cluster->GetMeshUri(lod0.handle));
 			if (base.empty())
@@ -455,9 +457,11 @@ namespace smvk {
 				if (!meshHit || meshHit->cluster == nullptr ||
 					!meshHit->handle.valid())
 					break;
-				chain.lods.push_back(*meshHit);
-				chain.errors.push_back(err);
+				chain.levels.push_back(
+					LodChain::Level{ *meshHit, err, LodShader::Lit });
 			}
+			if (chain.levels.size() > 1)
+				chain.levels.back().shader = LodShader::VertexLit;
 		}
 	}
 
@@ -514,7 +518,7 @@ namespace smvk {
 		EnsureLodChainsCached(*this);
 		if (meshIndex >= lodChains.size())
 			return 1;
-		const size_t n = lodChains[meshIndex].lods.size();
+		const size_t n = lodChains[meshIndex].levels.size();
 		return n == 0 ? 1 : (uint32_t)n;
 	}
 
@@ -524,9 +528,9 @@ namespace smvk {
 		if (meshIndex >= lodChains.size())
 			return std::nullopt;
 		const LodChain& chain = lodChains[meshIndex];
-		if (lodIndex >= chain.lods.size())
+		if (lodIndex >= chain.levels.size())
 			return std::nullopt;
-		const MeshLocation& loc = chain.lods[lodIndex];
+		const MeshLocation& loc = chain.levels[lodIndex].mesh;
 		if (loc.cluster == nullptr || !loc.handle.valid())
 			return std::nullopt;
 		return loc;
@@ -546,9 +550,19 @@ namespace smvk {
 		if (meshIndex >= lodChains.size())
 			return 0.0f;
 		const LodChain& chain = lodChains[meshIndex];
-		if (lodIndex >= chain.errors.size())
+		if (lodIndex >= chain.levels.size())
 			return 0.0f;
-		return chain.errors[lodIndex];
+		return chain.levels[lodIndex].error;
+	}
+
+	LodShader World::LodShaderAt(uint32_t meshIndex, uint32_t lodIndex) const {
+		EnsureLodChainsCached(*this);
+		if (meshIndex >= lodChains.size())
+			return LodShader::Lit;
+		const LodChain& chain = lodChains[meshIndex];
+		if (lodIndex >= chain.levels.size())
+			return LodShader::Lit;
+		return chain.levels[lodIndex].shader;
 	}
 
 	uint32_t World::SelectLodIndex(uint32_t meshIndex, float distance,
@@ -559,10 +573,16 @@ namespace smvk {
 		if (meshIndex >= lodChains.size())
 			return 0;
 		const LodChain& chain = lodChains[meshIndex];
-		if (chain.errors.size() <= 1)
+		if (chain.levels.size() <= 1)
 			return 0;
-		return SelectLodIndexForDistance(chain.errors.data(),
-			(uint32_t)chain.errors.size(), distance,
+		// SelectLodIndexForDistance walks a plain error array; the levels
+		// are SoA-flavored (mesh/error/shader), so stage the errors on the
+		// stack (chains are capped at 16 levels by RebuildLodChains).
+		float errors[16];
+		const uint32_t n = (uint32_t)std::min<size_t>(chain.levels.size(), 16);
+		for (uint32_t i = 0; i < n; ++i)
+			errors[i] = chain.levels[i].error;
+		return SelectLodIndexForDistance(errors, n, distance,
 			viewportHeightPx, fovYRadians, maxPixelError);
 	}
 
@@ -663,8 +683,8 @@ std::optional<World::MaterialLocation> World::ResolveMaterialAcrossClusters(
 			// LOD-chain union: any LodIndexForNode selection stays inside.
 			if (worldMeshIdx < lodChains.size()) {
 				const LodChain& chain = lodChains[worldMeshIdx];
-				for (size_t li = 1; li < chain.lods.size(); ++li) {
-					const MeshLocation& loc = chain.lods[li];
+				for (size_t li = 1; li < chain.levels.size(); ++li) {
+					const MeshLocation& loc = chain.levels[li].mesh;
 					if (!loc.cluster || !loc.handle.valid())
 						continue;
 					if (const StaticMesh* m = loc.cluster->staticMeshes.get(loc.handle))

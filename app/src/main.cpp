@@ -5,6 +5,8 @@
 // Usage:
 //   App [--scene sponza|bistro] [--minimal] [--filter-only] [--with csv]
 // --minimal runs the reduced pass set (no shadows/filter/blur/AO/bloom).
+// --disable_control freezes the camera (no keyboard/gamepad/mouselook):
+// deterministic A/B benching at the scene's configured pose.
 
 #include <App/scene_renderer.h>
 #include <Engine/Profile/profile.h>
@@ -17,7 +19,9 @@ namespace {
 void PrintUsage(const char* prog) {
 	std::cout << "Usage: " << (prog ? prog : "App")
 		<< " [--scene <id>] [--minimal] [--filter-only] [--with <csv>] [--without <csv>] [--no-pak]\n"
-		<< "  [--bench <frames>] [--present <fifo|mailbox|immediate>] [--use_optick] [--use_optick_gpu]\n"
+		<< "  [--bench <frames>] [--present <fifo|mailbox|immediate>] [--disable_control]\n"
+		<< "  [--use_optick] [--use_optick_gpu]\n"
+		<< "  --disable_control freezes camera input for deterministic benching\n"
 		<< "  --use_optick enables the Optick CPU capture session (bench.opt)\n"
 		<< "  --use_optick_gpu also brings up Optick GPU timelines (implies --use_optick)\n";
 	std::cout << "Available scenes:\n";
@@ -38,6 +42,7 @@ void PrintUsage(const char* prog) {
 	bool noPak = false;
 	int benchFrames = 0;
 	const char* presentMode = nullptr;
+	bool disableControl = false;
 	bool useOptick = false;
 	bool useOptickGpu = false;
 	for (int i = 1; i < argc; ++i) {
@@ -80,6 +85,9 @@ void PrintUsage(const char* prog) {
 		}
 		else if (std::strncmp(a, "--present=", 10) == 0) {
 			presentMode = a + 10;
+		}
+		else if (std::strcmp(a, "--disable_control") == 0 || std::strcmp(a, "--disable-control") == 0) {
+			disableControl = true;
 		}
 		else if (std::strcmp(a, "--use_optick") == 0) {
 			useOptick = true;
@@ -145,6 +153,10 @@ void PrintUsage(const char* prog) {
 	applyCsv(withoutCsv, false);
 	renderer.Configure(*scene, passCfg);
 	renderer.SetForceGltf(noPak);
+	if (disableControl) {
+		renderer.SetDisableControl(true);
+		std::cerr << "[Scene] camera control disabled (--disable_control)\n";
+	}
 	if (presentMode) {
 		if (std::strcmp(presentMode, "fifo") == 0)
 			renderer.SetPresentMode(smvk::PresentMode::Fifo);

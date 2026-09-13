@@ -424,6 +424,13 @@ struct AppResources {
 	smvk::ShaderProgram cascadeProgram;
 	smvk::Holder<smvk::ShaderModuleHandle> fragVertexColorShader; // default_vertexcolor_debug (F6)
 	smvk::ShaderProgram vertexColorProgram;
+	// Shader-LOD farthest-level program (World::LodShader::VertexLit):
+	// its own VS computes the lighting per vertex (see
+	// default_vertexlit.vert.hlsl) and the FS is a fog pass-through.
+	// Missing modules leave shaderCount 0 and every level stays lit.
+	smvk::Holder<smvk::ShaderModuleHandle> vertexLitVertShader;
+	smvk::Holder<smvk::ShaderModuleHandle> vertexLitFragShader;
+	smvk::ShaderProgram vertexLitProgram;
 	// Alpha-tested shadow-depth program for MASK cutout casters
 	// (shadow.vert mainVS + shadow.frag mainPS). Opaque casters keep
 	// the engine builder's depth-only program.
@@ -480,6 +487,11 @@ public:
 	void SetForceGltf(bool v) { m_forceGltf = v; }
 	// CLI overrides (main.cpp): fixed present mode + benchmark frame budget.
 	void SetPresentMode(smvk::PresentMode m) { m_presentMode = m; }
+	// Bench freeze: skip every camera-control update (keyboard/gamepad/
+	// mouselook) so the camera stays at the scene's configured pose for
+	// the whole run and A/B comparisons are deterministic. The I-key UI
+	// mode and the feature shortcuts (L/G/H/...) keep working.
+	void SetDisableControl(bool v) { m_disableControl = v; }
 
 protected:
 	void UpdateCamera(float dt);
@@ -542,7 +554,7 @@ protected:
 	void Update() {
 		Super::Update();
 		HandleShortcuts();
-		if (!m_uiMode) {
+		if (!m_uiMode && !m_disableControl) {
 			UpdateCamera(delta_time_s);
 		}
 	}
@@ -736,6 +748,7 @@ protected:
 	// mesh fetch). Returns 0 when LODs are disabled or uncooked.
 	uint32_t LodIndexForNode(NodeId node, uint32_t worldMesh) const;
 	void ResetLodStats();
+	// ---- Shader LODs (per-level shading programs) -------------------
 	// Runtime LOD switch: pixel budget for the projected simplifier error
 	// (~1px = conservative, higher = more aggressive). Disabled = always LOD0.
 	// Per-node decisions are cached in the World and refreshed on a
@@ -751,6 +764,18 @@ protected:
 	uint64_t m_lodSwitched = 0;  // ... served by LOD1+
 	uint32_t m_lodChainMeshes = 0; // world meshes with a cooked chain (per frame)
 	uint32_t m_lodChainLods = 0;   // total cooked siblings (per frame)
+	// The farthest level of a cooked chain shades with the vertex-lit
+	// program instead of full PBR (same coarsest geometry — see World::
+	// LodShaderAt). Toggle = pure fallback: off/A/B (UI checkbox or
+	// VULKANTOY_SHADERLOD=0) keeps every level full-lit.
+	bool m_lodShaderEnabled = true;
+	uint64_t m_lodShaderDraws = 0; // Main draws shaded vertex-lit this frame
+	// Effective decision for an instance's selected level: full-lit when
+	// LODs/shader-LODs are disabled, uncooked, or the program is missing.
+	smvk::LodShader LodShaderForNode(NodeId node, uint32_t worldMesh) const;
+	bool ShaderLodActive() const {
+		return m_lodShaderEnabled && m_resources.vertexLitProgram.shaderCount == 2;
+	}
 
 	static constexpr float default_near_clip = 0.01f;
 	static constexpr float kCameraFovYDegrees = 45.0f;
@@ -763,6 +788,8 @@ protected:
 	SceneDesc m_scene{};
 	ScenePassConfig m_passes{};
 	bool m_forceGltf = false;
+	// Camera control frozen (see SetDisableControl; --disable_control).
+	bool m_disableControl = false;
 
 	std::unique_ptr<smvk::ImGuiOverlay> m_imgui{};
 	AppResources m_resources{};
@@ -1092,6 +1119,23 @@ protected:
 		const bool active = m_autoExposureEnabled && m_passes.exposure &&
 			m_viewportResources.exposure.Valid();
 		return active ? m_exposureAdapted : m_manualExposure;
+	}
+	// Fixed reference exposure for the debug views (F2..F6). Debug colors
+	// are authored in display space (the flat palette pre-scales below and
+	// the unlit/cascade/vertex-color FS divide by the same value), and
+	// metering is frozen for them anyway (ExposureMeteringActive holds
+	// the last scene exposure). Rendering at a FIXED exposure instead of
+	// the held one keeps debug frames deterministic and the authored
+	// colors independent of the scene's adaptation state. Mirrors
+	// TONEMAP_EXPOSURE (scene_renderer.cpp) — keep in sync.
+	static constexpr float kDebugViewExposure = 0.001f;
+	// Exposure actually applied this frame: the adapted/manual value in
+	// the Lit view, the fixed debug reference otherwise. Shading
+	// (FrameUniforms.exposure), the flat debug gains AND the tonemap pass
+	// all read this, so the 1/exposure pre-scale cancels end-to-end.
+	float FrameExposure() const {
+		return (m_debugView == DebugView::Lit)
+			? EffectiveExposure() : kDebugViewExposure;
 	}
 	void UpdateAutoExposure(uint32_t frameIndex); // download slice BEFORE zero + Adapt (call at record time)
 	// ---- Bloom chain (HDR down/up, see bloom.h) ----

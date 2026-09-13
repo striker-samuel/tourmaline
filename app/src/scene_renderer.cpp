@@ -687,6 +687,12 @@ bool SceneRenderer::Initialize() {
 			if (std::atoi(lodEnv) == 0)
 				m_lodEnabled = false;
 		}
+		// Headless shader-LOD kill (VULKANTOY_SHADERLOD=0 keeps the
+		// farthest level full-lit) for A/B shading-cost runs.
+		if (const char* lodShEnv = std::getenv("VULKANTOY_SHADERLOD")) {
+			if (std::atoi(lodShEnv) == 0)
+				m_lodShaderEnabled = false;
+		}
 		// Headless wireframe opt-in (VULKANTOY_WIREFRAME=1) for capture/A-B
 		// runs without UI interaction; the P toggle stays live after.
 		if (const char* wfEnv = std::getenv("VULKANTOY_WIREFRAME")) {
@@ -999,6 +1005,37 @@ bool SceneRenderer::Initialize() {
 					},
 					smvk::Shader{
 						.module = m_resources.fragVertexColorShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+
+		// Shader-LOD program (farthest level, see World::LodShaderAt):
+		// vertex-lit VS + pass-through FS. Failure is non-fatal — the
+		// subsystem falls back to full-lit everywhere (ShaderLodActive).
+		try {
+			auto vlVertCode = readContentFile(contentVfs, "shaders/default_vertexlit.vert.hlsl.spv");
+			auto vlFragCode = readContentFile(contentVfs, "shaders/default_vertexlit.frag.hlsl.spv");
+			m_resources.vertexLitVertShader = m_context->CreateShaderModule(vlVertCode, "vertLitLod");
+			m_resources.vertexLitFragShader = m_context->CreateShaderModule(vlFragCode, "fragLitLod");
+		}
+		catch (...) {
+			std::cerr << "[SceneRenderer] default_vertexlit unavailable - shader LODs stay full-lit\n";
+		}
+		if (!m_resources.vertexLitVertShader.empty()
+			&& !m_resources.vertexLitFragShader.empty()) {
+			m_resources.vertexLitProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertexLitVertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.vertexLitFragShader,
 						.entryPoint = "mainPS",
 						.stage = smvk::ShaderStage::Fragment
 					}
@@ -1632,7 +1669,7 @@ void SceneRenderer::Shutdown() {
 		// NOTE: FrameUniforms.exposure is currently unread by shaders; the
 		// tonemap push constant is the live knob. Kept in sync with the
 		// effective exposure (auto-adapted or manual) for future readers.
-		data.exposure = EffectiveExposure();
+		data.exposure = FrameExposure();
 		// SSAO consumption (lighting-pass ambient; see ao.hlsli +
 		// default_lit.frag.hlsl): the SsaoCompose pass already upscaled the AO
 		// to full res with depth authority, so the fragment only .Loads it.
@@ -2756,6 +2793,19 @@ void SceneRenderer::Shutdown() {
 		return base;
 	}
 
+	// Shader-LOD decision for an instance's selected level (see World::
+	// LodShaderAt): Lit unless the subsystem is on, the level index hits a
+	// cooked chain and the level is the farthest one. Shares the halfrate
+	// LOD cache with every geometry consumer, so shading and geometry
+	// always resolve off the SAME level within a frame.
+	smvk::LodShader SceneRenderer::LodShaderForNode(NodeId node,
+		uint32_t worldMesh) const {
+		if (!ShaderLodActive() || !m_world)
+			return smvk::LodShader::Lit;
+		const uint32_t lod = LodIndexForNode(node, worldMesh);
+		return m_world->LodShaderAt(worldMesh, lod);
+	}
+
 	void SceneRenderer::BuildShadowDrawCandidates() {
 		SMVK_PROFILE_RENDER("ShadowDrawCandidates");
 		m_shadowCandidates.clear();
@@ -2998,6 +3048,7 @@ void SceneRenderer::Shutdown() {
 	void SceneRenderer::ResetLodStats() {
 		m_lodDraws = 0;
 		m_lodSwitched = 0;
+		m_lodShaderDraws = 0;
 		m_lodChainMeshes = 0;
 		m_lodChainLods = 0;
 		if (m_world) {
@@ -3418,8 +3469,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			}
 			m_viewportResources.exposure.Ensure(*m_context, *m_rendergraph, MakeExposureDesc());
 		}
-		// Effective exposure for this frame (adapted last frame, 1-frame lag).
-		const float frameExposure = EffectiveExposure();
+		// Exposure applied this frame (debug views: fixed reference — see
+		// FrameExposure; 1-frame adaptation lag in the Lit view).
+		const float frameExposure = FrameExposure();
 		// Exposure-aware bloom: the threshold/knee are authored for the
 		// reference (manual) exposure; scale them so bloom strength stays
 		// constant as auto-exposure shifts. Applied after Ensure (which
@@ -3520,6 +3572,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		}
 		fc.lodEnabled = m_lodEnabled;
 		fc.lodInputs = m_lodFrameInputs;
+		// Shader LODs ride the same frame inputs; the gfx filter excludes
+		// vertex-lit instances so the Main direct leg shades them (see
+		// FilterMainView — both sides must observe the same decision).
+		fc.lodShaderEnabled = ShaderLodActive();
 		fc.ditheredTransparency =
 			(m_transparentMode == smvk::TransparentMode::Dithered);
 
@@ -4586,7 +4642,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// (hdr * exposure -> ACES); pre-scale by 1/exposure so the
 		// tonemapper reproduces them (ACES still shapes, hues stay
 		// distinct). The unlit/cascade shaders do this in-shader.
-		const float flatExposure = EffectiveExposure();
+		// FrameExposure: debug views run at the fixed reference exposure
+		// (see scene_renderer.h), so the gain is a constant 1/0.001 and
+		// the flat colors are deterministic across runs/scenes.
+		const float flatExposure = FrameExposure();
 		const float flatGain = (flatExposure > 1e-9f) ? 1.0f / flatExposure : 1.0f;
 		if (meshletDbg) {
 			cmd.BindRenderPipeline(
@@ -4610,7 +4669,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// flat color to black. Pre-scale by 1/exposure so hdr * exposure
 		// reproduces the authored color (ACES still shapes it, hues stay
 		// distinct); guards the divide for pathological exposures.
-		const float dbgExposure = EffectiveExposure();
+		const float dbgExposure = FrameExposure();
 		const float dbgGain = (dbgExposure > 1e-9f) ? 1.0f / dbgExposure : 1.0f;
 			m_world->forEachRenderItem(
 				smvk::IteratorFlagBit_Renderable
@@ -4695,7 +4754,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh, &lod);
 				if (!meshDesc)
 					return;
-				const float* pal = kLodPalette[lod < 8 ? lod : 4];
+				// Shader-LOD overlay: when the subsystem is on, instances
+				// shading vertex-lit (farthest level) report WHITE instead
+				// of their LOD palette color, so shading downgrades are
+				// visible next to geometry ones.
+				static const float kLodVertexLit[3] = { 1.0f, 1.0f, 1.0f };
+				const bool vlitLevel = ShaderLodActive()
+					&& m_world->LodShaderAt(item.mesh, lod)
+						== smvk::LodShader::VertexLit;
+				const float* pal = vlitLevel
+					? kLodVertexLit : kLodPalette[lod < 8 ? lod : 4];
 				lp2.color[0] = pal[0] * flatGain;
 				lp2.color[1] = pal[1] * flatGain;
 				lp2.color[2] = pal[2] * flatGain;
@@ -4776,7 +4844,12 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			// current-pipeline check, so this costs nothing.
 			// (Skipped in debug views: those drew everything direct above,
 			// filter bypassed so culled data stays visible.)
+			// Shader LODs: the vertex-lit program is tracked alongside the
+			// material because the same material can shade lit (near level)
+			// and vertex-lit (farthest level) in one material-sorted walk.
+			const bool shaderLodOn = ShaderLodActive();
 			uint32_t boundMaterial = UINT32_MAX;
+			smvk::ShaderProgram* boundProgram = nullptr;
 			m_world->forEachRenderItem(
 				smvk::IteratorFlagBit_Renderable
 				| smvk::IteratorFlagBit_Opaque
@@ -4806,18 +4879,30 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					return;
 			}
 #endif
+			// Shader LODs: instances whose selected level is the farthest
+			// one draw HERE with the vertex-lit program — FilterMainView
+			// skipped them at registration for the same reason (the
+			// filtered VS is lit-only), so this is the exactly-once draw.
+			const bool vertexLitLevel = shaderLodOn
+				&& LodShaderForNode(item.node, item.mesh) == smvk::LodShader::VertexLit;
 			// Filtered instances already drew above via indirect
 			// ranges (FilterMainView pushes the selected LOD sibling).
 			// Only LODs whose registration failed fall through to the
 			// direct LOD draw, so each instance rasterizes once.
-			if (gfxActive && m_gfxRenderer.GfxMeshForLod(item.mesh,
+			if (gfxActive && !vertexLitLevel && m_gfxRenderer.GfxMeshForLod(item.mesh,
 				LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
 				return;
+				smvk::ShaderProgram& prog = vertexLitLevel
+					? m_resources.vertexLitProgram
+					: m_resources.mainProgram;
 				const uint32_t materialId = item.material;
-				if (materialId != boundMaterial) {
-					bindForMaterial(materialId, m_resources.mainProgram, opaqueDepth);
+				if (materialId != boundMaterial || &prog != boundProgram) {
+					bindForMaterial(materialId, prog, opaqueDepth);
 					boundMaterial = materialId;
+					boundProgram = &prog;
 				}
+				if (vertexLitLevel)
+					++m_lodShaderDraws;
 				drawNode(item.node, item.mesh, materialId);
 			}
 			);
@@ -4896,11 +4981,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			smvk::ShaderProgram* transProg = &m_resources.mainProgram;
 			if (unlitDbg) transProg = &m_resources.unlitProgram;
 			else if (cascadeDbg) transProg = &m_resources.cascadeProgram;
+			// Shader LODs apply to transparent too, but only in the Lit view
+			// (debug views replace shading wholesale, see above).
+			const bool transShaderLodOn = ShaderLodActive()
+				&& effView == DebugView::Lit;
 			MeshDebugPush transLp{};
 			if (lodDbg)
 				std::copy_n(glm::value_ptr(frameViewProj), 16, transLp.viewProj);
 
 			uint32_t boundMaterial = UINT32_MAX;
+			smvk::ShaderProgram* boundProgram = nullptr;
 			for (const auto& d : draws) {
 				if (lodDbg) {
 					// Flat LOD color (self-contained push; ignores material).
@@ -4923,7 +5013,12 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					}
 					const glm::mat4& model = m_world->scene.globalTransform[d.node];
 					std::copy_n(glm::value_ptr(model), 16, transLp.model);
-					const float* pal = kLodPalette[lod < 8 ? lod : 4];
+					static const float kLodVertexLitTrans[3] = { 1.0f, 1.0f, 1.0f };
+					const bool vlitLevelTrans = ShaderLodActive()
+						&& m_world->LodShaderAt(d.meshId, lod)
+							== smvk::LodShader::VertexLit;
+					const float* pal = vlitLevelTrans
+						? kLodVertexLitTrans : kLodPalette[lod < 8 ? lod : 4];
 					transLp.color[0] = pal[0] * flatGain;
 					transLp.color[1] = pal[1] * flatGain;
 					transLp.color[2] = pal[2] * flatGain;
@@ -4935,7 +5030,57 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					}
 					continue;
 				}
-				if (d.materialId != boundMaterial) {
+				// Shader LODs: farthest-level transparents shade vertex-lit
+				// with a full push (the per-material delta push below feeds
+				// the lit program only). Same coarsest geometry.
+				const bool vlitTrans = transShaderLodOn
+					&& LodShaderForNode(d.node, d.meshId) == smvk::LodShader::VertexLit;
+				if (vlitTrans) {
+					if (d.materialId != boundMaterial
+						|| boundProgram != &m_resources.vertexLitProgram) {
+						if (ditheredTransp) {
+							// Opaque state: the FS discard does the work.
+							smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
+							smvk::RasterSettings raster{};
+							if (smvk::Material* mat = m_world->GetMaterial(d.materialId)) {
+								raster = mat->pipeline.raster;
+							}
+							cmd.BindRenderPipeline(
+								m_resources.vertexLitProgram,
+								smvk::VertexFormat::StaticVertexFormat,
+								opaqueDepth,
+								noStencil,
+								opaqueBlend,
+								msaaSettings,
+								wireframeRaster(raster)
+							);
+						} else {
+							bindForMaterial(d.materialId, m_resources.vertexLitProgram,
+								transparentDepth);
+						}
+						boundMaterial = d.materialId;
+						boundProgram = &m_resources.vertexLitProgram;
+					}
+					auto& model = m_world->scene.globalTransform[d.node];
+					smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
+					if (!meshDesc)
+						continue;
+					PushConstants objPC = pc;
+					objPC.materialId = d.materialId;
+					std::copy_n(glm::value_ptr(model), 16, objPC.model);
+					cmd.PushConstants(0, sizeof(PushConstants), &objPC, smvk::ShaderStage::All);
+					for (auto& draw_set : meshDesc->geometry.surfaces) {
+						cmd.DrawIndexed(
+							draw_set.indexCount,
+							1,
+							draw_set.firstIndex,
+							draw_set.baseVertex
+						);
+					}
+					++m_lodShaderDraws;
+					continue;
+				}
+				if (d.materialId != boundMaterial || boundProgram != transProg) {
 					if (ditheredTransp) {
 						// Opaque state: the shader discard did the work.
 						// Blend off (bindForMaterial would return AlphaBlend
@@ -4958,6 +5103,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						bindForMaterial(d.materialId, *transProg, transparentDepth);
 					}
 					boundMaterial = d.materialId;
+					boundProgram = transProg;
 				}
 				if (directDbg) {
 					// Full push: the flat debug pushes above clobbered the
@@ -5007,7 +5153,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			std::copy_n(glm::value_ptr(frameViewProj), 16, lp.viewProj);
 			// Same HDR/exposure path as the meshlet colors above: pre-scale
 			// so the tonemap reproduces yellow instead of black.
-			const float lineExposure = EffectiveExposure();
+			const float lineExposure = FrameExposure();
 			const float lineGain = (lineExposure > 1e-9f) ? 1.0f / lineExposure : 1.0f;
 			lp.color[0] = 1.0f * lineGain; lp.color[1] = 1.0f * lineGain;
 			lp.color[2] = 0.0f; lp.color[3] = 1.0f;
@@ -5650,10 +5796,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							m_gfxRenderer.SetMinContribution(mc);
 					}
 				}
-				if (ImGui::CollapsingHeader("LODs � error-driven switches", ImGuiTreeNodeFlags_DefaultOpen)) {
-					ImGui::Checkbox("Enable LODs (L)", &m_lodEnabled);
-					ImGui::SliderFloat("Pixel budget (px)", &m_lodPixelBudget, 0.25f, 8.0f, "%.2f");
-				}
+			if (ImGui::CollapsingHeader("LODs � error-driven switches", ImGuiTreeNodeFlags_DefaultOpen)) {
+				ImGui::Checkbox("Enable LODs (L)", &m_lodEnabled);
+				ImGui::SliderFloat("Pixel budget (px)", &m_lodPixelBudget, 0.25f, 8.0f, "%.2f");
+				ImGui::Checkbox("Vertex-lit farthest LOD (shader LODs)", &m_lodShaderEnabled);
+				ImGui::SameLine();
+				ImGui::TextDisabled("(?)");
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip(
+						"The farthest LOD level keeps its coarse geometry but shades\n"
+						"with the vertex-lit program: lighting is computed per vertex\n"
+						"(sun + ambient, no shadows/point lights/specular/textures).\n"
+						"Other levels stay full PBR. F5 shows the level in white.");
+			}
 				if (ImGui::CollapsingHeader("Texture streaming + color LUT", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("texture streaming (applies to next scene load)", &m_textureStreamingEnabled);
 					ImGui::Separator();
@@ -6021,7 +6176,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					} else {
 						ImGui::TextDisabled("Bloom: OFF");
 					}
-					const float effExposure = EffectiveExposure();
+					// Reports what this frame actually applies (debug views
+					// run at the fixed reference — see FrameExposure).
+					const float effExposure = FrameExposure();
 					ImGui::Text("Exposure: %.5f (target %.5f)  metered %u px",
 						effExposure, m_exposureTarget, m_exposureSamples);
 					float histPeak = 1.0f;
@@ -6139,17 +6296,21 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							ImGui::TextDisabled("Depth bindless INVALID: HZB reads garbage.");
 					}
 				}
-				if (ImGui::CollapsingHeader("LODs", ImGuiTreeNodeFlags_DefaultOpen)) {
-					ImGui::Text("Cooked: %u meshes / %u siblings | draws: %llu (%llu switched)",
-						m_lodChainMeshes, m_lodChainLods,
-						(unsigned long long)m_lodDraws, (unsigned long long)m_lodSwitched);
-					ImGui::TextDisabled("Transition = projected simplifier error (world err * H / "
-						"(2*tan(fov/2)*dist) <= budget). LOD0 stays in the GPU filter; LOD1+ draws direct.");
-					if (!m_lodEnabled)
-						ImGui::TextDisabled("LODs OFF � always LOD0.");
-					else if (m_lodChainMeshes == 0)
-						ImGui::TextDisabled("No cooked LOD chain in this scene � cook with --lods on.");
-				}
+			if (ImGui::CollapsingHeader("LODs", ImGuiTreeNodeFlags_DefaultOpen)) {
+				ImGui::Text("Cooked: %u meshes / %u siblings | draws: %llu (%llu switched, %llu vertex-lit)",
+					m_lodChainMeshes, m_lodChainLods,
+					(unsigned long long)m_lodDraws, (unsigned long long)m_lodSwitched,
+					(unsigned long long)m_lodShaderDraws);
+				ImGui::TextDisabled("Transition = projected simplifier error (world err * H / "
+					"(2*tan(fov/2)*dist) <= budget). LOD0 stays in the GPU filter; LOD1+ draws direct.");
+				ImGui::TextDisabled("Shader LODs: farthest level shades vertex-lit (F5: white).");
+				if (!m_lodEnabled)
+					ImGui::TextDisabled("LODs OFF � always LOD0.");
+				else if (m_lodChainMeshes == 0)
+					ImGui::TextDisabled("No cooked LOD chain in this scene � cook with --lods on.");
+				else if (!ShaderLodActive())
+					ImGui::TextDisabled("Shader LODs OFF (toggle or missing program) � every level full-lit.");
+			}
 				ImGui::Separator();
 				ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiMode ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
 				if (m_input.hasGamepad())

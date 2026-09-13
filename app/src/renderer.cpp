@@ -245,7 +245,7 @@ void GfxRenderer::AppendPasses(smvk::FrameContext& base) {
 	lastSlot_ = FilterMainView(*fc.ctx, *fc.rg, fc.frameIndex, *fc.world,
 		*fc.views, cullView, cullEye,
 		{ fc.extent.width, fc.extent.height }, config.cullFlags,
-		fc.lodEnabled ? &fc.lodInputs : nullptr);
+		fc.lodEnabled ? &fc.lodInputs : nullptr, fc.lodShaderEnabled);
 	if (lastSlot_ == UINT32_MAX)
 		return;
 	const uint32_t slot = lastSlot_;
@@ -672,7 +672,8 @@ void GfxRenderer::UploadStaticData(smvk::ResourceManager& ctx, smvk::RenderGraph
 uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 	uint32_t frameIndex, smvk::World& world, const smvk::RenderViewSet& views,
 	uint32_t mainViewIdx, const glm::vec3& eye, const smvk::Extent2D& extent,
-	smvk::gfx::CullFlags flags, const smvk::LodFrameInputs* lod) {
+	smvk::gfx::CullFlags flags, const smvk::LodFrameInputs* lod,
+	bool lodShaderVertexLit) {
 
 	SMVK_PROFILE_RENDER("GfxFilterMainView");
 	SMVK_PROFILE_TAG("extentWidth", extent.width);
@@ -774,6 +775,15 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 			uint32_t lodIdx = 0;
 			if (lod && world.LodChainLength(worldMesh) > 1)
 				lodIdx = world.LodIndexForNode(item.node, worldMesh, *lod);
+			// Shader LODs: levels shading vertex-lit (farthest level) skip
+			// the filtered indirect ranges — the filtered VS is lit-only,
+			// so the Main direct leg draws them with the cheap program.
+			// Same halfrate cache read as the Main leg: both sides agree
+			// per node per frame, so each instance rasterizes exactly once.
+			if (lodShaderVertexLit
+				&& world.LodShaderAt(worldMesh, lodIdx)
+					== smvk::LodShader::VertexLit)
+				return;
 			uint32_t gfxMesh = UINT32_MAX;
 			if (worldMesh < lodMeshMap_.size()
 				&& lodIdx < lodMeshMap_[worldMesh].size())
