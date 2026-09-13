@@ -276,6 +276,9 @@ bool SerializeCluster(
 		PutStr(blob, texUriForRhi(mat->values.textures[2])); // normal
 		PutStr(blob, texUriForRhi(mat->values.textures[3])); // occlusion
 		PutStr(blob, texUriForRhi(mat->values.textures2[0])); // emissive
+		// Trailing field (appended after the texture URIs so older
+		// readers stop cleanly before it; pre-flag paks read as casting).
+		PutU32(blob, mat->castsShadows ? 1u : 0u);
 
 		if (!writer.AddBlob(PakAssetKind::Material, uri, std::move(blob)))
 			return fail("invalid material uri: " + uri);
@@ -517,12 +520,24 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		values.textures[3] = texSlot(texUris[3]);
 		values.textures2[0] = texSlot(texUris[4]);
 
+		// castsShadows trailer (appended after the texture URIs): paks
+		// cooked before the field exist stop here — default to casting.
+		bool castsShadows = true;
+		{
+			const uint32_t cs = c.u32();
+			if (c.ok)
+				castsShadows = cs != 0;
+			else
+				c.ok = true;
+		}
+
 		const ClusterMaterialHandle h = cluster->CreateMaterialFromValues(
 			values,
 			shading <= 2 ? static_cast<ShadingModel>(shading) : ShadingModel::DefaultLit,
 			alpha <= 2 ? static_cast<AlphaMode>(alpha) : AlphaMode::Opaque,
 			cutoff,
-			ds != 0);
+			ds != 0,
+			castsShadows);
 		if (!h.valid())
 			return fail("CreateMaterial failed for: " + uri);
 		cluster->RegisterMaterialUri(uri, h);

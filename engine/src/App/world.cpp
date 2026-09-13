@@ -314,8 +314,13 @@ namespace smvk {
 							if (mat->isTransparent())
 								f |= static_cast<IteratorFlags>(IteratorFlagBit_Transparent);
 							else {
-								f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque)
-									| static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
+								f |= static_cast<IteratorFlags>(IteratorFlagBit_Opaque);
+							// Cook-classified non-casters (decal overlays,
+							// see SMVK_materials_shadows) drop out of the
+							// shadow passes only; Opaque keeps them in the
+							// depth prepass / main view.
+								if (mat->castsShadows)
+									f |= static_cast<IteratorFlags>(IteratorFlagBit_CastShadow);
 
 							// Masked (cutout) still casts shadow but via alpha-tested path.
 							// Transparent (BLEND) does not cast: full-quad depth would

@@ -9,7 +9,11 @@
 #      normal classification, same flags as tools/ktx_bulk_convert.py),
 #   3. Stages models/Bistro/<original tree> with .ktx2 textures + a rewritten
 #      bistro.gltf whose .png image URIs point at the .ktx2 files,
-#   4. Runs PakCooker --meshlets on --lods on to produce content/paks/bistro.pak.
+#   4. Stamps SMVK_materials_shadows {"castShadow": false} on decal overlay
+#      materials (diffuse texture name contains "decal") so their flat
+#      quads never darken the geometry they sit on (engine reads the
+#      extension at import; paks round-trip it into castsShadows),
+#   5. Runs PakCooker --meshlets on --lods on to produce content/paks/bistro.pak.
 #
 # Usage (PowerShell, from repo root F:/REPOS/vulkantoy):
 #   py tools/cook_bistro.py --niagara-dir F:/REPOS/niagara_bistro
@@ -81,6 +85,44 @@ def classify_images(gltf):
         if isinstance(sg.get("specularGlossinessTexture"), dict):
             mark(sg["specularGlossinessTexture"].get("index"), "linear")
     return kind
+
+
+def stamp_shadow_casting(gltf):
+    """SMVK_materials_shadows stamping pass: decal overlay materials
+    (diffuse texture name contains "decal", e.g. street_decals/
+    edge_decals/wall_decals) get {"castShadow": false}. Applies on top
+    of the authored alphaModes: BLEND decals already skip the caster
+    path; this also covers OPAQUE/MASK materials sharing decal atlases.
+    Returns the stamped count."""
+    def diffuse_uri(tex_index):
+        if not isinstance(tex_index, int):
+            return None
+        textures = gltf.get("textures", [])
+        if tex_index < 0 or tex_index >= len(textures):
+            return None
+        src = textures[tex_index].get("source", -1)
+        images = gltf.get("images", [])
+        if src is not None and 0 <= src < len(images):
+            return images[src].get("uri", "")
+        return None
+
+    stamped = 0
+    for mat in gltf.get("materials", []):
+        uri = None
+        pbr = mat.get("pbrMetallicRoughness")
+        if isinstance(pbr, dict) and isinstance(pbr.get("baseColorTexture"), dict):
+            uri = diffuse_uri(pbr["baseColorTexture"].get("index"))
+        if not uri:
+            sg = mat.get("extensions", {}).get(
+                "KHR_materials_pbrSpecularGlossiness")
+            if isinstance(sg, dict) and isinstance(sg.get("diffuseTexture"), dict):
+                uri = diffuse_uri(sg["diffuseTexture"].get("index"))
+        if uri and "decal" in uri.lower():
+            mat.setdefault("extensions", {})["SMVK_materials_shadows"] = {
+                "castShadow": False,
+            }
+            stamped += 1
+    return stamped
 
 
 def toktx_cmd(toktx, kind, src_png, dst_ktx, uastc_quality, zcmp):
@@ -209,6 +251,8 @@ def main():
     images = gltf.get("images", [])
     kinds = classify_images(gltf)
     print(f"[bistro] images={len(images)} classified={len(kinds)}")
+    n_nocast = stamp_shadow_casting(gltf)
+    print(f"[bistro] no-cast-shadow decals: {n_nocast}")
 
     # Collect .png-referenced images (the cookable set) + their DDS source.
     jobs = []

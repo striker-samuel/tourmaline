@@ -64,7 +64,8 @@ namespace smvk {
 			ShadingModel shadingModel,
 			AlphaMode alphaMode,
 			float alphaCutoff,
-			bool doubleSided);
+			bool doubleSided,
+			bool castsShadows = true);
 
 		// Cook support: when enabled, UploadStaticMesh keeps a CPU-side copy
 		// of every upload keyed by pool index so the pak cooker can embed

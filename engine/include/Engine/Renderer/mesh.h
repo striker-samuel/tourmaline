@@ -91,6 +91,10 @@ namespace smvk {
 		AlphaMode alphaMode = AlphaMode::Opaque;
 		float alphaCutoff = 0.5f;
 		bool doubleSided = false;
+		// Shadow participation (SMVK_materials_shadows.castShadow). Decal
+		// overlay materials opt out at cook/import time; the World flag
+		// build gates IteratorFlagBit_CastShadow on it.
+		bool castsShadows = true;
 	};
 
 	MaterialPipelineState MakePipelineStateForMaterial(
@@ -104,6 +108,7 @@ namespace smvk {
 		AlphaMode alphaMode = AlphaMode::Opaque;
 		float alphaCutoff = 0.5f;
 		bool doubleSided = false;
+		bool castsShadows = true;
 
 		// Derived / cached pipeline state. Authoritative for PSO selection
 		// and for World iterator flags. Mutated only via helpers so values

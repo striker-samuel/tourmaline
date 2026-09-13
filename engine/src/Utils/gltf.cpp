@@ -63,6 +63,10 @@ namespace {
 		double alphaCutoff = 0.5;
 		bool doubleSided = false;
 
+		// SMVK_materials_shadows.castShadow (stamped by content cooks,
+		// e.g. decal overlays must not darken the geometry under them).
+		bool castsShadows = true;
+
 	};
 	bool starts_with(const std::string& s, const char* prefix) { return s.rfind(prefix, 0) == 0; }
 	size_t gltfElementSize(const tinygltf::Accessor& a) {
@@ -545,6 +549,19 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
 			if (f != obj.end() && f->second.IsNumber()) {
 				mat.emissiveStrength = f->second.GetNumberAsDouble();
 			}
+		}
+	}
+
+	// SMVK_materials_shadows: cook-stamped shadow participation
+	// ({"castShadow": false} on decal overlay materials).
+	if (auto it = m.extensions.find("SMVK_materials_shadows");
+		it != m.extensions.end() && it->second.IsObject()) {
+		const auto& obj = it->second.Get<tinygltf::Value::Object>();
+		if (auto f = obj.find("castShadow");
+			f != obj.end() && (f->second.IsBool() || f->second.IsNumber())) {
+			mat.castsShadows = f->second.IsBool()
+				? f->second.Get<bool>()
+				: f->second.GetNumberAsDouble() != 0.0;
 		}
 	}
 
@@ -1047,6 +1064,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 	}
 	ci.alphaCutoff = static_cast<float>(mat.alphaCutoff);
 	ci.doubleSided = mat.doubleSided;
+	ci.castsShadows = mat.castsShadows;
 
 	slot = cluster.CreateMaterial(ci);
 	if (!modelUriBase.empty())

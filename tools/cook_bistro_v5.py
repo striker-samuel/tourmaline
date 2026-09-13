@@ -14,6 +14,11 @@
 #        doubleSided, and glass materials (KHR_materials_transmission or
 #        frosted/frozen/decal in the name) which become BLEND transparent
 #        + doubleSided with alpha derived from (1 - transmissionFactor).
+#      - Decal overlay materials (diffuse texture name contains "decal",
+#        e.g. street_decals/edge_decals) get SMVK_materials_shadows
+#        {"castShadow": false}: their flat quads must not darken the
+#        geometry they sit on. The engine importer reads the extension;
+#        the pak round-trips it into Material::castsShadows.
 #      - Drop KHR_materials_specular (engine ignores it; saves ~130 tiny
 #        placeholder textures from the cook). Transmission is kept as the
 #        glass marker.
@@ -108,9 +113,36 @@ def _set_glass_alpha(mat, pbr, exts, alpha):
         pbr["metallicFactor"] = 0.0
 
 
+def _diffuse_image_uri(gltf, mat):
+    """Image uri of a material's diffuse color (core baseColorTexture,
+    spec-gloss diffuseTexture fallback — mirrors the engine's baseColor
+    resolution in gltf.cpp)."""
+    def image_uri(tex_index):
+        if not isinstance(tex_index, int):
+            return None
+        textures = gltf.get("textures", [])
+        if tex_index < 0 or tex_index >= len(textures):
+            return None
+        src = textures[tex_index].get("source", -1)
+        images = gltf.get("images", [])
+        if src is not None and 0 <= src < len(images):
+            return images[src].get("uri", "")
+        return None
+
+    pbr = mat.get("pbrMetallicRoughness")
+    if isinstance(pbr, dict) and isinstance(pbr.get("baseColorTexture"), dict):
+        uri = image_uri(pbr["baseColorTexture"].get("index"))
+        if uri:
+            return uri
+    sg = mat.get("extensions", {}).get("KHR_materials_pbrSpecularGlossiness")
+    if isinstance(sg, dict) and isinstance(sg.get("diffuseTexture"), dict):
+        return image_uri(sg["diffuseTexture"].get("index"))
+    return None
+
+
 def fix_materials(gltf):
-    """Engine-targeted material fixups. Returns (n_metal_fixed, n_mask, n_blend, n_opaque)."""
-    n_metal = n_mask = n_blend = n_opaque = 0
+    """Engine-targeted material fixups. Returns (n_metal_fixed, n_mask, n_blend, n_opaque, n_nocast)."""
+    n_metal = n_mask = n_blend = n_opaque = n_nocast = 0
     for mat in gltf.get("materials", []):
         # Absent metallicFactor defaults to 1.0 (fully metallic) per spec;
         # force dielectric on materials that already carry a core block.
@@ -152,13 +184,25 @@ def fix_materials(gltf):
         else:
             mat["alphaMode"] = "OPAQUE"
             n_opaque += 1
+        # Decal overlays (poster/trim/grime quads whose diffuse texture is
+        # named ...decal...) never cast shadows: the flat quad's full-quad
+        # depth darkens whatever it sits on. Applies on top of the alpha
+        # classification above (BLEND decals already skip the caster path;
+        # this also covers the OPAQUE edge-decal trims and MASK materials
+        # sharing decal atlases).
+        diffuse_uri = _diffuse_image_uri(gltf, mat)
+        if diffuse_uri and "decal" in diffuse_uri.lower():
+            mat.setdefault("extensions", {})["SMVK_materials_shadows"] = {
+                "castShadow": False,
+            }
+            n_nocast += 1
     # Remove now-unreferenced top-level extension declaration if present.
     used = set()
     for mat in gltf.get("materials", []):
         used.update(mat.get("extensions", {}).keys())
     ext_used = gltf.get("extensionsUsed", [])
     gltf["extensionsUsed"] = [e for e in ext_used if e in used]
-    return n_metal, n_mask, n_blend, n_opaque
+    return n_metal, n_mask, n_blend, n_opaque, n_nocast
 
 
 def classify_images(gltf):
@@ -263,8 +307,9 @@ def main():
     with open(src_gltf_path, "r", encoding="utf-8") as f:
         gltf = json.load(f)
 
-    n_metal, n_mask, n_blend, n_opaque = fix_materials(gltf)
-    print(f"[bistro-v5] materials: metallic->0: {n_metal}, mask: {n_mask}, blend: {n_blend}, opaque: {n_opaque}")
+    n_metal, n_mask, n_blend, n_opaque, n_nocast = fix_materials(gltf)
+    print(f"[bistro-v5] materials: metallic->0: {n_metal}, mask: {n_mask}, "
+          f"blend: {n_blend}, opaque: {n_opaque}, no-cast-shadow: {n_nocast}")
 
     images = gltf.get("images", [])
     kinds = classify_images(gltf)

@@ -353,7 +353,8 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 	// sky-ambient floor is off by default; ambient comes from the env/IBL
 	// block instead. See comment in mesh.h.
 	return CreateMaterialFromValues(
-		values, info.shadingModel, info.alphaMode, info.alphaCutoff, info.doubleSided);
+		values, info.shadingModel, info.alphaMode, info.alphaCutoff,
+		info.doubleSided, info.castsShadows);
 }
 
 smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(
@@ -361,7 +362,8 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(
 	ShadingModel shadingModel,
 	AlphaMode alphaMode,
 	float alphaCutoff,
-	bool doubleSided)
+	bool doubleSided,
+	bool castsShadows)
 {
 	smvk::Material material{};
 	material.values = values;
@@ -375,6 +377,7 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(
 	material.alphaMode = alphaMode;
 	material.alphaCutoff = alphaCutoff;
 	material.doubleSided = doubleSided;
+	material.castsShadows = castsShadows;
 	material.pipeline = MakePipelineStateForMaterial(alphaMode, doubleSided, shadingModel);
 	return materials.create(std::move(material));
 }
