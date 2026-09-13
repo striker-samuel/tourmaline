@@ -84,6 +84,17 @@ void InitVulkanGPU();
 // Tear down Optick state (call after vkDeviceWaitIdle, before vkDestroyDevice).
 void Shutdown();
 
+// Runtime gates (App flags --use_optick / --use_optick_gpu). Default: both
+// off. The GPU profiler's fence-based flip interleaves its own command
+// buffer submits with the frame — RenderDoc captures break with them in the
+// mix, so Optick is opt-in now. --use_optick gates the CPU capture session
+// (bench.opt); --use_optick_gpu additionally brings up the GPU timelines
+// (query pools + per-flip submits) and implies --use_optick.
+void SetEnabled(bool enabled);
+bool Enabled();
+void SetGpuEnabled(bool enabled);
+bool GpuEnabled();
+
 #if USE_OPTICK
 // RAII CPU+GPU scope for run-time pass names (e.g. rendergraph passes).
 // Static OPTICK_GPU_EVENT can't be used in a loop (description is cached per

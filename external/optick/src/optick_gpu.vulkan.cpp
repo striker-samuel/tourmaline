@@ -294,18 +294,6 @@ namespace Optick
 			QueryTimestamp(commandBuffer, &AddFrameTag().timestamp);
 			nextFrame.frameEvent = &event;
 
-			OPTICK_VK_CHECK((VkResult)(*vulkanFunctions.vkEndCommandBuffer)(commandBuffer));
-			VkSubmitInfo submitInfo = {};
-			submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-			submitInfo.pNext = nullptr;
-			submitInfo.waitSemaphoreCount = 0;
-			submitInfo.pWaitSemaphores = nullptr;
-			submitInfo.commandBufferCount = 1;
-			submitInfo.pCommandBuffers = &commandBuffer;
-			submitInfo.signalSemaphoreCount = 0;
-			submitInfo.pSignalSemaphores = nullptr;
-			OPTICK_VK_CHECK((VkResult)(*vulkanFunctions.vkQueueSubmit)(queue, 1, &submitInfo, fence));
-
 			uint32_t queryBegin = currentFrame.queryIndexStart;
 			uint32_t queryEnd = node.queryIndex;
 
@@ -316,6 +304,12 @@ namespace Optick
 
 			// Preparing Next Frame
 			// Try resolve timestamps for the current frame
+			// NOTE: ResolveTimestamps records vkCmdResetQueryPool into the
+			// command buffer, so it MUST run while the command buffer is still
+			// recording — recording into an already submitted command buffer
+			// is invalid and trips validation layers / RenderDoc. The fence
+			// wait above plus queue FIFO order guarantee the queries in this
+			// range have completed, so reading their results early is safe.
 			if (nextFrame.queryIndexStart != (uint32_t)-1)
 			{
 				uint32_t startIndex = nextFrame.queryIndexStart % MAX_QUERIES_COUNT;
@@ -334,6 +328,18 @@ namespace Optick
 
 			nextFrame.queryIndexStart = queryEnd;
 			nextFrame.queryIndexCount = 0;
+
+			OPTICK_VK_CHECK((VkResult)(*vulkanFunctions.vkEndCommandBuffer)(commandBuffer));
+			VkSubmitInfo submitInfo = {};
+			submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+			submitInfo.pNext = nullptr;
+			submitInfo.waitSemaphoreCount = 0;
+			submitInfo.pWaitSemaphores = nullptr;
+			submitInfo.commandBufferCount = 1;
+			submitInfo.pCommandBuffers = &commandBuffer;
+			submitInfo.signalSemaphoreCount = 0;
+			submitInfo.pSignalSemaphores = nullptr;
+			OPTICK_VK_CHECK((VkResult)(*vulkanFunctions.vkQueueSubmit)(queue, 1, &submitInfo, fence));
 		}
 
 		++frameNumber;

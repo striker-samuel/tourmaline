@@ -116,7 +116,10 @@ void smvk::App::MainLoop() {
 				if (benchWarmup_ == 10) {
 					// Start an Optick capture for the measured window so the
 					// CPU+GPU breakdown can be inspected in Optick Viewer.
-					OPTICK_START_CAPTURE();
+					// Opt-in only (--use_optick): the capture session is
+					// RenderDoc-hostile.
+					if (smvk::profiler::Enabled())
+						OPTICK_START_CAPTURE();
 				}
 			} else {
 				benchAccum_ += delta_time_s;
@@ -128,10 +131,12 @@ void smvk::App::MainLoop() {
 						benchPollMs / benchFrames_, benchGameMs / benchFrames_,
 						benchDrawMs / benchFrames_);
 					std::fflush(stdout);
-					OPTICK_STOP_CAPTURE();
-					const bool benchSaved = ::Optick::SaveCapture("bench.opt");
-					std::printf("[perf] optick capture %s to bench.opt\n",
-						benchSaved ? "saved" : "FAILED");
+					if (smvk::profiler::Enabled()) {
+						OPTICK_STOP_CAPTURE();
+						const bool benchSaved = ::Optick::SaveCapture("bench.opt");
+						std::printf("[perf] optick capture %s to bench.opt\n",
+							benchSaved ? "saved" : "FAILED");
+					}
 					windowShouldClose_ = true;
 				}
 			}

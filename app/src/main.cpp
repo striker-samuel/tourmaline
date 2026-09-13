@@ -7,6 +7,7 @@
 // --minimal runs the reduced pass set (no shadows/filter/blur/AO/bloom).
 
 #include <App/scene_renderer.h>
+#include <Engine/Profile/profile.h>
 
 #include <cstring>
 #include <iostream>
@@ -15,7 +16,10 @@ namespace {
 
 void PrintUsage(const char* prog) {
 	std::cout << "Usage: " << (prog ? prog : "App")
-		<< " [--scene <id>] [--minimal] [--filter-only] [--with <csv>] [--without <csv>] [--no-pak]\n";
+		<< " [--scene <id>] [--minimal] [--filter-only] [--with <csv>] [--without <csv>] [--no-pak]\n"
+		<< "  [--bench <frames>] [--present <fifo|mailbox|immediate>] [--use_optick] [--use_optick_gpu]\n"
+		<< "  --use_optick enables the Optick CPU capture session (bench.opt)\n"
+		<< "  --use_optick_gpu also brings up Optick GPU timelines (implies --use_optick)\n";
 	std::cout << "Available scenes:\n";
 	for (const app::SceneDesc& s : app::SceneRegistry::All()) {
 		std::cout << "  " << s.id << " — " << s.label
@@ -34,6 +38,8 @@ void PrintUsage(const char* prog) {
 	bool noPak = false;
 	int benchFrames = 0;
 	const char* presentMode = nullptr;
+	bool useOptick = false;
+	bool useOptickGpu = false;
 	for (int i = 1; i < argc; ++i) {
 		const char* a = argv[i];
 		if ((std::strcmp(a, "--scene") == 0 || std::strcmp(a, "-s") == 0) && i + 1 < argc) {
@@ -74,6 +80,13 @@ void PrintUsage(const char* prog) {
 		}
 		else if (std::strncmp(a, "--present=", 10) == 0) {
 			presentMode = a + 10;
+		}
+		else if (std::strcmp(a, "--use_optick") == 0) {
+			useOptick = true;
+		}
+		else if (std::strcmp(a, "--use_optick_gpu") == 0) {
+			useOptick = true;
+			useOptickGpu = true;
 		}
 		else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
 			PrintUsage(argv[0]);
@@ -146,6 +159,12 @@ void PrintUsage(const char* prog) {
 	}
 	if (benchFrames > 0)
 		renderer.SetFrameBudget(benchFrames);
+	// Optick gates must be set before Run(): the engine initializes the GPU
+	// profiler during VulkanCore init, and the bench session starts after the
+	// warmup frames. --use_optick_gpu implies --use_optick.
+	smvk::profiler::SetEnabled(useOptick);
+	if (useOptickGpu)
+		smvk::profiler::SetGpuEnabled(true);
 	try {
 		renderer.Run();
 	}

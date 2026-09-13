@@ -11,8 +11,24 @@
 
 namespace smvk::profiler {
 
+namespace {
+bool g_enabled = false;     // --use_optick (CPU capture session)
+bool g_gpuEnabled = false;  // --use_optick_gpu (GPU timelines; implies enabled)
+}
+
+void SetEnabled(bool enabled) { g_enabled = enabled; }
+bool Enabled() { return g_enabled; }
+void SetGpuEnabled(bool enabled) {
+    g_gpuEnabled = enabled;
+    if (enabled)
+        g_enabled = true; // --use_optick_gpu implies --use_optick
+}
+bool GpuEnabled() { return g_gpuEnabled; }
+
 void InitVulkanGPU() {
 #if USE_OPTICK
+    if (!GpuEnabled())
+        return;
     static bool initialized = false;
     if (initialized)
         return;
