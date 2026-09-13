@@ -182,11 +182,11 @@ enum class AmbientMode : int {
 };
 
 // ---------------------------------------------------------------------------
-// Main-view debug visualization (F1..F5). Lit is the full PBR path; the rest
+// Main-view debug visualization (F1..F6). Lit is the full PBR path; the rest
 // replace the opaque leg with a flat debug program so lighting/culling/LOD
 // artifacts bisect out in one keypress. Meshlets/Lods reuse the flat
-// meshDebugProgram (per-cluster / per-LOD colors); Unlit/Cascades have their
-// own fragment shaders pairing with default.vert.hlsl.
+// meshDebugProgram (per-cluster / per-LOD colors); Unlit/Cascades/VertexColors
+// have their own fragment shaders pairing with default.vert.hlsl.
 // ---------------------------------------------------------------------------
 enum class DebugView : int {
 	Lit = 0,      // F1: full PBR (default_lit)
@@ -194,6 +194,7 @@ enum class DebugView : int {
 	Meshlets = 2, // F3: per-cluster colors, bypasses GPU cull (meshdebug)
 	Cascades = 3, // F4: shadow cascade coverage (default_cascade_debug)
 	Lods = 4,     // F5: LOD index by color (flat, direct draws)
+	VertexColors = 5, // F6: vertex-color layer weights as false color (default_vertexcolor_debug)
 };
 
 #if defined(DS_DEBUG_VIZ)
@@ -414,13 +415,15 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader; // default_lit (F1)
 	smvk::ShaderProgram mainProgram;
-	// Debug-view fragment programs (F2/F4): same default.vert VS, flat FS.
+	// Debug-view fragment programs (F2/F4/F6): same default.vert VS, flat FS.
 	// Loaded alongside main; missing modules leave the program at
 	// shaderCount 0 and the view falls back to Lit.
 	smvk::Holder<smvk::ShaderModuleHandle> fragUnlitShader;   // default_unlit (F2)
 	smvk::Holder<smvk::ShaderModuleHandle> fragCascadeShader; // default_cascade_debug (F4)
 	smvk::ShaderProgram unlitProgram;
 	smvk::ShaderProgram cascadeProgram;
+	smvk::Holder<smvk::ShaderModuleHandle> fragVertexColorShader; // default_vertexcolor_debug (F6)
+	smvk::ShaderProgram vertexColorProgram;
 	// Alpha-tested shadow-depth program for MASK cutout casters
 	// (shadow.vert mainVS + shadow.frag mainPS). Opaque casters keep
 	// the engine builder's depth-only program.
@@ -631,8 +634,8 @@ protected:
 			ExportNeutralLut();
 			m_captureQueued = true;
 		}
-		// Debug views (F1..F5): F1 lit, F2 unlit, F3 meshlets, F4 shadow
-		// cascades, F5 LODs by color.
+		// Debug views (F1..F6): F1 lit, F2 unlit, F3 meshlets, F4 shadow
+		// cascades, F5 LODs by color, F6 vertex-color layer weights.
 		if (m_input.isKeyPressed(GLFW_KEY_F1)) {
 			m_debugView = DebugView::Lit;
 		}
@@ -648,13 +651,17 @@ protected:
 		if (m_input.isKeyPressed(GLFW_KEY_F5)) {
 			m_debugView = DebugView::Lods;
 		}
+		if (m_input.isKeyPressed(GLFW_KEY_F6)) {
+			m_debugView = DebugView::VertexColors;
+		}
 #if defined(DS_DEBUG_VIZ)
-		// Deferred-shadow visualizer cycle (F6 or Y): Off -> counts -> diff ->
+		// Deferred-shadow visualizer cycle (Y): Off -> counts -> diff ->
 		// light-scoped modes. Needs the pipeline on (H); see the panel's
-		// "DS visualizers" block for the mode list. Y is the fallback key:
-		// some keyboards/overlays remap or swallow function keys, never
+		// "DS visualizers" block for the mode list. Y is the key (not F6):
+		// F6 selects the vertex-color debug view, and some
+		// keyboards/overlays remap or swallow function keys, never
 		// letters.
-		if (m_input.isKeyPressed(GLFW_KEY_F6) || m_input.isKeyPressed(GLFW_KEY_Y)) {
+		if (m_input.isKeyPressed(GLFW_KEY_Y)) {
 			m_dsDebugMode = static_cast<DsDebugViz>(
 				(static_cast<int>(m_dsDebugMode) + 1)
 				% (static_cast<int>(DsDebugViz::LightVis) + 1));
@@ -831,7 +838,7 @@ protected:
 	float m_hizOccluderMinRadius = 0.5f;  // world-space bound-radius threshold (m)
 	bool m_useFilteredMotion = true; // false = motion stays fully direct
 	// ---- Meshlet/cone debug views (see App/renderer.h debug programs) ----
-	// m_debugView selects the Main opaque program (F1..F5); anything but Lit
+	// m_debugView selects the Main opaque program (F1..F6); anything but Lit
 	// bypasses the GPU filter with direct draws so culled data stays visible.
 	DebugView m_debugView = DebugView::Lit;
 	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat

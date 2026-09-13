@@ -687,7 +687,7 @@ bool SceneRenderer::Initialize() {
 			if (std::atoi(lodEnv) == 0)
 				m_lodEnabled = false;
 		}
-		// Headless debug-view select (lit|unlit|meshlets|cascades|lods).
+		// Headless debug-view select (lit|unlit|meshlets|cascades|lods|vertexcolors).
 		if (const char* dvEnv = std::getenv("VULKANTOY_DEBUGVIEW")) {
 			const std::string_view dv = trimEnv(dvEnv);
 			if (dv == "lit") m_debugView = DebugView::Lit;
@@ -695,6 +695,7 @@ bool SceneRenderer::Initialize() {
 			else if (dv == "meshlets") m_debugView = DebugView::Meshlets;
 			else if (dv == "cascades") m_debugView = DebugView::Cascades;
 			else if (dv == "lods") m_debugView = DebugView::Lods;
+			else if (dv == "vertexcolors" || dv == "vcolors") m_debugView = DebugView::VertexColors;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DEBUGVIEW value: " << dv << "\n";
 		}
 		// AA mode override for A/B runs without UI interaction
@@ -924,9 +925,9 @@ bool SceneRenderer::Initialize() {
 		.shaderCount = 2
 	};
 
-		// Debug-view fragments (F2 unlit, F4 cascade coverage): same VS as
-		// main. Failure is non-fatal (program stays at shaderCount 0 and the
-		// view falls back to Lit at record time).
+		// Debug-view fragments (F2 unlit, F4 cascade coverage, F6 vertex
+		// colors): same VS as main. Failure is non-fatal (program stays at
+		// shaderCount 0 and the view falls back to Lit at record time).
 		try {
 			auto unlitCode = readContentFile(contentVfs, "shaders/default_unlit.frag.hlsl.spv");
 			m_resources.fragUnlitShader = m_context->CreateShaderModule(unlitCode, "fragUnlit");
@@ -940,6 +941,13 @@ bool SceneRenderer::Initialize() {
 		}
 		catch (...) {
 			std::cerr << "[SceneRenderer] default_cascade_debug unavailable - F4 falls back to Lit\n";
+		}
+		try {
+			auto vcolorCode = readContentFile(contentVfs, "shaders/default_vertexcolor_debug.frag.hlsl.spv");
+			m_resources.fragVertexColorShader = m_context->CreateShaderModule(vcolorCode, "fragVertexColor");
+		}
+		catch (...) {
+			std::cerr << "[SceneRenderer] default_vertexcolor_debug unavailable - F6 falls back to Lit\n";
 		}
 		if (!m_resources.fragUnlitShader.empty()) {
 			m_resources.unlitProgram = {
@@ -968,6 +976,23 @@ bool SceneRenderer::Initialize() {
 					},
 					smvk::Shader{
 						.module = m_resources.fragCascadeShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+		if (!m_resources.fragVertexColorShader.empty()) {
+			m_resources.vertexColorProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.fragVertexColorShader,
 						.entryPoint = "mainPS",
 						.stage = smvk::ShaderStage::Fragment
 					}
@@ -1917,7 +1942,7 @@ void SceneRenderer::Shutdown() {
 			return false;
 		// Debug views fill HDR with exposure-compensated flat colors (see
 		// the dbgGain pre-scale in Main and the /exposure in the unlit +
-		// cascade shaders): metering them would drive the adapted exposure
+		// cascade + vertex-color shaders): metering them would drive the
 		// to minimum and feed back into ever larger gains. Hold the last
 		// scene exposure while any debug view overwrites HDR (the held
 		// value also keeps the debug gain itself stable). The DS
@@ -4476,12 +4501,12 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// SV_InstanceID; materialId is pushed per range for the frag).
 		// Meshes the filter skipped (no clusters) still draw direct.
 		const bool gfxActive = m_useGfxFilter && gfxSlot != UINT32_MAX;
-		// Debug views (F1..F5) replace the shaded opaque leg. Meshlet mode
+		// Debug views (F1..F6) replace the shaded opaque leg. Meshlet mode
 		// draws EVERY registered cluster direct with a stable per-meshlet
 		// color, so HZB-culled meshlets stay visible here. Compare with
 		// the shaded view to see exactly what the GPU filter dropped.
-		// Unlit / cascade / LOD views likewise bypass the filter with
-		// direct draws (no filtered-VS variant exists for them).
+		// Unlit / cascade / LOD / vertex-color views likewise bypass the
+		// filter with direct draws (no filtered-VS variant exists for them).
 		// Missing programs fall back to Lit so a bad cook never blanks
 		// the frame.
 		DebugView effView = m_debugView;
@@ -4492,12 +4517,15 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			effView = DebugView::Lit;
 		if (effView == DebugView::Cascades && m_resources.cascadeProgram.shaderCount != 2)
 			effView = DebugView::Lit;
+		if (effView == DebugView::VertexColors && m_resources.vertexColorProgram.shaderCount != 2)
+			effView = DebugView::Lit;
 		const bool meshletDbg = (effView == DebugView::Meshlets);
 		const bool lodDbg = (effView == DebugView::Lods);
 		const bool flatDbg = meshletDbg || lodDbg; // meshDebugProgram path
 		const bool unlitDbg = (effView == DebugView::Unlit);
 		const bool cascadeDbg = (effView == DebugView::Cascades);
-		const bool directDbg = unlitDbg || cascadeDbg; // default.vert + debug FS
+		const bool vertexColorDbg = (effView == DebugView::VertexColors);
+		const bool directDbg = unlitDbg || cascadeDbg || vertexColorDbg; // default.vert + debug FS
 		const bool bypassFilter = (effView != DebugView::Lit);
 		// LOD palette (display colors; pre-scaled by dbgGain like meshlets
 		// so they survive the HDR -> tonemap path).
@@ -4638,14 +4666,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			}
 			);
 		}
-		// Unlit (F2) / cascade (F4) views: every opaque instance direct
-		// with the debug fragment program. Full push per draw (model +
-		// materialId over the captured frame addresses): the flat debug
-		// pushes above clobber the shared push range, so delta pushes
-		// alone would read garbage frame addresses here.
+		// Unlit (F2) / cascade (F4) / vertex-color (F6) views: every opaque
+		// instance direct with the debug fragment program. Full push per
+		// draw (model + materialId over the captured frame addresses): the
+		// flat debug pushes above clobber the shared push range, so delta
+		// pushes alone would read garbage frame addresses here.
 		if (directDbg) {
 			smvk::ShaderProgram& dbgProg =
-				unlitDbg ? m_resources.unlitProgram : m_resources.cascadeProgram;
+				unlitDbg ? m_resources.unlitProgram
+				: cascadeDbg ? m_resources.cascadeProgram
+				: m_resources.vertexColorProgram;
 			uint32_t boundMaterial = UINT32_MAX;
 			m_world->forEachRenderItem(
 				smvk::IteratorFlagBit_Renderable
@@ -5618,16 +5648,18 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			// changes the frame permanently; toggles are for bisection.
 			// ---------------------------------------------------------
 			if (ImGui::BeginTabItem("Debug")) {
-				if (ImGui::CollapsingHeader("Debug views (bypass GPU cull, F1..F5)", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::CollapsingHeader("Debug views (bypass GPU cull, F1..F6)", ImGuiTreeNodeFlags_DefaultOpen)) {
 					{
 						const char* viewNames[] = {
 							"F1 Lit", "F2 Unlit", "F3 Meshlets",
-							"F4 Cascades", "F5 LODs",
+							"F4 Cascades", "F5 LODs", "F6 Vertex Colors",
 						};
 						int view = static_cast<int>(m_debugView);
-						if (ImGui::Combo("Debug view", &view, viewNames, 5))
+						if (ImGui::Combo("Debug view", &view, viewNames, 6))
 							m_debugView = static_cast<DebugView>(view);
 					}
+					ImGui::TextDisabled("F6 vertex colors: layered materials show normalized weights as R/G/B/Y per layer 0..3;\n"
+						"legacy materials show the raw vertex tint.");
 					const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
 					ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
 					ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones);
@@ -5682,9 +5714,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				}
 #if defined(DS_DEBUG_VIZ)
 				// ---- Deferred-shadow debug visualizers (paper 5.3/5.4).
-				// Debug builds only (DS_DEBUG_VIZ): F6 cycles the combo. ----
-				if (ImGui::CollapsingHeader("DS visualizers (F6/Y cycles)", ImGuiTreeNodeFlags_DefaultOpen)) {
-					ImGui::Text("DS visualizers (F6/Y cycles)");
+				// Debug builds only (DS_DEBUG_VIZ): Y cycles the combo. ----
+				if (ImGui::CollapsingHeader("DS visualizers (Y cycles)", ImGuiTreeNodeFlags_DefaultOpen)) {
+					ImGui::Text("DS visualizers (Y cycles)");
 					{
 						const char* vizNames[] = {
 							"Off",
@@ -6084,9 +6116,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				ImGui::TextDisabled("Keys: M blur  O SSAO  B bloom  X exposure  V vectors");
 				ImGui::TextDisabled("      L LODs  F lights  G filter  C cookies  K sky");
 				ImGui::TextDisabled("      N ambient GI/sky/off  F8 GI irradiance view");
-				ImGui::TextDisabled("      F1 lit  F2 unlit  F3 meshlets  F4 cascades  F5 LOD colors");
+				ImGui::TextDisabled("      F1 lit  F2 unlit  F3 meshlets  F4 cascades  F5 LOD colors  F6 vertex colors");
 #if defined(DS_DEBUG_VIZ)
-				ImGui::TextDisabled("      F6/Y DS visualizer (%s)",
+				ImGui::TextDisabled("      Y DS visualizer (%s)",
 					m_dsDebugMode == DsDebugViz::Off ? "off" : "on");
 #endif
 				ImGui::TextDisabled("      T transparency  Z/1-4 AA  U dock (%s)", UiDockName());
