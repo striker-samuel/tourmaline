@@ -467,21 +467,16 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	for (const PakTocEntry* e : matEntries) {
 		Cursor c{ reader.Payload(*e), 0 };
 		const std::string uri = c.str();
+		// Material blob, strict: the CURRENT MaterialValues layout and
+		// ALL trailing fields (texture URIs, castsShadows). Paks are
+		// cooked artifacts of this build — older layouts fail loudly and
+		// get recooked; no runtime tolerance of stale shapes.
 		MaterialValues values{};
-		// Backward compat: paks cooked before layered materials carry the
-		// 112-byte MaterialValues (no layer fields); current paks carry 128.
-		static constexpr size_t kLegacyMaterialValuesSize = 112;
-		if (c.off + kLegacyMaterialValuesSize > c.img.size())
-			return fail("truncated material values: " + e->path);
-		if (c.off + sizeof(MaterialValues) <= c.img.size()) {
-			memcpy(&values, c.img.data() + c.off, sizeof(MaterialValues));
-			c.off += sizeof(MaterialValues);
-		}
-		else {
-			memcpy(&values, c.img.data() + c.off, kLegacyMaterialValuesSize);
-			c.off += kLegacyMaterialValuesSize;
-			values.layerMaterials = glm::ivec4(-1, -1, -1, 0);
-		}
+		if (c.off + sizeof(MaterialValues) > c.img.size())
+			return fail("truncated material values (pak cooked with an "
+				"older layout - recook the pak): " + e->path);
+		memcpy(&values, c.img.data() + c.off, sizeof(MaterialValues));
+		c.off += sizeof(MaterialValues);
 		const uint32_t shading = c.u32();
 		const uint32_t alpha = c.u32();
 		const float cutoff = c.f32();
@@ -489,20 +484,14 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		std::string texUris[5];
 		for (int k = 0; k < 5; ++k)
 			texUris[k] = c.str();
-		if (!c.ok) {
-			// Very old paks predate the trailing material fields: keep the
-			// values blob (factors + params) with untextured slots rather
-			// than failing the whole scene load.
-			static bool s_legacyMatLogged = false;
-			if (!s_legacyMatLogged) {
-				s_legacyMatLogged = true;
-				std::cerr << "DeserializeCluster: legacy material blobs "
-					"(pre-trailer fields): using factor-only materials\n";
-			}
-			c.ok = true;
-			for (int k = 0; k < 5; ++k)
-				texUris[k].clear();
-		}
+		if (!c.ok)
+			return fail("truncated material blob: " + e->path);
+		// castsShadows trailer (after the texture URIs).
+		const uint32_t cs = c.u32();
+		if (!c.ok)
+			return fail("truncated material blob (missing castsShadows; "
+				"stale pak - recook the pak): " + e->path);
+		const bool castsShadows = cs != 0;
 
 		// Exact MaterialValues round-trip: everything (factors, params,
 		// ambient) is preserved verbatim except the texture slots, which
@@ -519,17 +508,6 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		values.textures[2] = texSlot(texUris[2]);
 		values.textures[3] = texSlot(texUris[3]);
 		values.textures2[0] = texSlot(texUris[4]);
-
-		// castsShadows trailer (appended after the texture URIs): paks
-		// cooked before the field exist stop here — default to casting.
-		bool castsShadows = true;
-		{
-			const uint32_t cs = c.u32();
-			if (c.ok)
-				castsShadows = cs != 0;
-			else
-				c.ok = true;
-		}
 
 		const ClusterMaterialHandle h = cluster->CreateMaterialFromValues(
 			values,
@@ -583,165 +561,38 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		lod.acmr = c.f32();
 		if (!c.ok)
 			return fail("truncated mesh metadata: " + e->path);
-		// Vertex payload: current 72-byte StaticVertex (vec4 color +
-		// texCoord2 lightmap UV), the 64-byte legacy layout (vec4 color,
-		// no lightmap UV) or the 60-byte legacy layout (vec3 color,
-		// pre-layered-materials paks). Legacy entries upconvert with
-		// alpha = 1 and texCoord2 = 0. Disambiguated by validating the
-		// trailing meshlet section to the exact blob end (small meshes
-		// can fit multiple sizes when meshlet data follows).
-		static constexpr size_t kLegacyStaticVertexSizeV2 = 64;
-		static constexpr size_t kLegacyStaticVertexSize = 60;
-		const size_t newVertBytes = static_cast<size_t>(vertexCount) * sizeof(StaticVertex);
-		const size_t legacyVertBytesV2 = static_cast<size_t>(vertexCount) * kLegacyStaticVertexSizeV2;
-		const size_t legacyVertBytes = static_cast<size_t>(vertexCount) * kLegacyStaticVertexSize;
+		// Vertex payload: the CURRENT StaticVertex layout, strict. Paks are
+		// cooked artifacts of this engine build — a layout change means a
+		// recook, never a runtime probe (silent tolerance of older vertex
+		// layouts fed garbage into the downstream systems; a hard fail
+		// names the problem and the fix).
+		const size_t vertBytes = static_cast<size_t>(vertexCount) * sizeof(StaticVertex);
 		const size_t idxBytes = static_cast<size_t>(indexCount) * sizeof(uint32_t);
-		auto meshletsParseToEnd = [&](size_t payloadEnd) -> bool {
-			// v1 blobs end exactly here (no meshlets).
-			if (payloadEnd == c.img.size())
-				return true;
-			if (payloadEnd + 4 > c.img.size())
-				return false;
-			size_t o = payloadEnd;
-			auto rdU32 = [&](uint32_t& out) -> bool {
-				if (o + 4 > c.img.size())
-					return false;
-				memcpy(&out, c.img.data() + o, 4);
-				o += 4;
-				return true;
-			};
-			uint32_t meshletCount = 0;
-			if (!rdU32(meshletCount) || meshletCount > 1024 * 1024)
-				return false;
-			for (uint32_t m = 0; m < meshletCount; ++m) {
-				// Meshlet entry: 4xu32 (16) + vec3 (12) + f32 (4) + vec3 (12)
-				// + vec3 (12) + f32 (4) = 60 bytes (must match the
-				// SerializeCluster writer above).
-				if (o + 60 > c.img.size())
-					return false;
-				uint32_t vtxCount = 0, triCount = 0;
-				memcpy(&vtxCount, c.img.data() + o + 4, 4);
-				memcpy(&triCount, c.img.data() + o + 12, 4);
-				if (vtxCount > 255 || triCount > 512)
-					return false;
-				o += 60;
-			}
-			uint32_t vertCount = 0, triBytes = 0;
-			if (!rdU32(vertCount) || vertCount > 64 * 1024 * 1024)
-				return false;
-			o += (size_t)vertCount * 4;
-			if (!rdU32(triBytes) || triBytes > 256 * 1024 * 1024)
-				return false;
-			o += triBytes;
-			return o == c.img.size();
-		};
-		// Candidate vertex strides, newest first (preference order).
-		const size_t vertStrides[3] = { sizeof(StaticVertex),
-			kLegacyStaticVertexSizeV2, kLegacyStaticVertexSize };
-		const size_t vertBytes[3] = { newVertBytes, legacyVertBytesV2, legacyVertBytes };
-		const bool sizeFits[3] = {
-			c.off + newVertBytes + idxBytes <= c.img.size(),
-			c.off + legacyVertBytesV2 + idxBytes <= c.img.size(),
-			c.off + legacyVertBytes + idxBytes <= c.img.size(),
-		};
-		const bool parsesToEnd[3] = {
-			sizeFits[0] && meshletsParseToEnd(c.off + newVertBytes + idxBytes),
-			sizeFits[1] && meshletsParseToEnd(c.off + legacyVertBytesV2 + idxBytes),
-			sizeFits[2] && meshletsParseToEnd(c.off + legacyVertBytes + idxBytes),
-		};
-		if (!sizeFits[0] && !sizeFits[1] && !sizeFits[2])
-			return fail("mesh payload size mismatch: " + e->path);
-		// Prefer the newest layout that validates (recooks win). Tolerant
-		// fallback for stale paks whose meshlet trailer fails the strict
-		// check for every size: exact blob end disambiguates (v1 blobs end
-		// exactly at the payload end), then any size that fits, newest
-		// first. This path only serves old paks — current paks always take
-		// a parsing path above.
-		int pick = -1;
-		for (int k = 0; k < 3; ++k)
-			if (parsesToEnd[k]) { pick = k; break; }
-		if (pick < 0) {
-			for (int k = 0; k < 3; ++k)
-				if (sizeFits[k]
-					&& c.off + vertBytes[k] + idxBytes == c.img.size()) {
-					pick = k;
-					break;
-				}
-		}
-		if (pick < 0) {
-			for (int k = 0; k < 3; ++k)
-				if (sizeFits[k]) { pick = k; break; }
-		}
+		if (c.off + vertBytes + idxBytes > c.img.size())
+			return fail("mesh payload size mismatch (pak cooked with an "
+				"older vertex layout - recook the pak): " + e->path);
 		upload.vertices.resize(vertexCount);
-		if (pick == 2) {
-			struct LegacyVertex {
-				glm::vec3 pos;
-				glm::vec3 color;
-				glm::vec2 texCoord;
-				glm::vec3 normal;
-				glm::vec4 tangent;
-			};
-			static_assert(sizeof(LegacyVertex) == kLegacyStaticVertexSize);
-			const uint8_t* src = c.img.data() + c.off;
-			for (uint32_t i = 0; i < vertexCount; ++i) {
-				LegacyVertex lv{};
-				memcpy(&lv, src + i * kLegacyStaticVertexSize, kLegacyStaticVertexSize);
-				StaticVertex& v = upload.vertices[i];
-				v.pos = lv.pos;
-				v.color = glm::vec4(lv.color, 1.0f);
-				v.texCoord = lv.texCoord;
-				v.texCoord2 = glm::vec2(0.0f);
-				v.normal = lv.normal;
-				v.tangent = lv.tangent;
-			}
-			c.off += static_cast<size_t>(vertexCount) * kLegacyStaticVertexSize;
-		}
-		else if (pick == 1) {
-			struct LegacyVertexV2 {
-				glm::vec3 pos;
-				glm::vec4 color;
-				glm::vec2 texCoord;
-				glm::vec3 normal;
-				glm::vec4 tangent;
-			};
-			static_assert(sizeof(LegacyVertexV2) == kLegacyStaticVertexSizeV2);
-			const uint8_t* src = c.img.data() + c.off;
-			for (uint32_t i = 0; i < vertexCount; ++i) {
-				LegacyVertexV2 lv{};
-				memcpy(&lv, src + i * kLegacyStaticVertexSizeV2, kLegacyStaticVertexSizeV2);
-				StaticVertex& v = upload.vertices[i];
-				v.pos = lv.pos;
-				v.color = lv.color;
-				v.texCoord = lv.texCoord;
-				v.texCoord2 = glm::vec2(0.0f);
-				v.normal = lv.normal;
-				v.tangent = lv.tangent;
-			}
-			c.off += static_cast<size_t>(vertexCount) * kLegacyStaticVertexSizeV2;
-		}
-		else {
-			memcpy(upload.vertices.data(), c.img.data() + c.off, newVertBytes);
-			c.off += newVertBytes;
-		}
+		memcpy(upload.vertices.data(), c.img.data() + c.off, vertBytes);
+		c.off += vertBytes;
 		upload.indices.resize(indexCount);
 		memcpy(upload.indices.data(), c.img.data() + c.off,
 			static_cast<size_t>(indexCount) * sizeof(uint32_t));
 		c.off += static_cast<size_t>(indexCount) * sizeof(uint32_t);
-		// Trailing meshlet section (v2). v1 blobs end exactly here.
-		// Tolerant: old cookers wrote different meshlet layouts; a parse
-		// failure drops the meshlets (rebuilt from the upload below) rather
-		// than failing the scene, since the renderer doesn't consume them
-		// yet (indirect path foundation only).
+		// Trailing meshlet section. The cooker ALWAYS writes it (possibly
+		// count 0), so a missing or malformed trailer is a stale/corrupt
+		// pak: hard fail. Meshlets are a COOKED artifact — the runtime
+		// never rebuilds them; a mesh without cooked meshlets draws direct
+		// (unculled) until the pak is recooked.
 		CookedMeshlets cooked;
-		if (c.off < c.img.size()) {
-			const size_t meshletStart = c.off;
-			bool meshletsOk = true;
+		{
+			if (c.off >= c.img.size())
+				return fail("mesh blob has no meshlet trailer (stale pak - "
+					"recook the pak): " + e->path);
 			const uint32_t meshletCount = c.u32();
 			if (!c.ok || meshletCount > 1024 * 1024)
-				meshletsOk = false;
-			if (meshletsOk)
-				cooked.meshlets.reserve(meshletCount);
-			for (uint32_t m = 0; meshletsOk && m < meshletCount; ++m) {
+				return fail("corrupt meshlet trailer: " + e->path);
+			cooked.meshlets.reserve(meshletCount);
+			for (uint32_t m = 0; m < meshletCount; ++m) {
 				Meshlet ml;
 				ml.vertexOffset = c.u32();
 				ml.vertexCount = c.u32();
@@ -752,68 +603,31 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				ml.coneApex = c.vec3();
 				ml.coneAxis = c.vec3();
 				ml.coneCutoff = c.f32();
-				if (!c.ok)
-					meshletsOk = false;
-				else if (ml.vertexCount > 255 || ml.triangleCount > 512)
-					meshletsOk = false;
-				else
-					cooked.meshlets.push_back(ml);
+				if (!c.ok || ml.vertexCount > 255 || ml.triangleCount > 512)
+					return fail("corrupt meshlet trailer: " + e->path);
+				cooked.meshlets.push_back(ml);
 			}
-			uint32_t vertCount = 0, triBytes = 0;
-			if (meshletsOk) {
-				vertCount = c.u32();
-				if (!c.ok || vertCount > 64 * 1024 * 1024)
-					meshletsOk = false;
-			}
-			if (meshletsOk) {
-				cooked.vertices.reserve(vertCount);
-				for (uint32_t v = 0; v < vertCount; ++v)
-					cooked.vertices.push_back(c.u32());
-				triBytes = c.u32();
-				if (!c.ok || triBytes > 256 * 1024 * 1024 ||
-					c.off + triBytes != c.img.size())
-					meshletsOk = false;
-			}
-			if (meshletsOk) {
-				cooked.triangles.assign(
-					c.img.data() + c.off, c.img.data() + c.off + triBytes);
-				// Cross-check windows against the payload sizes.
-				for (const Meshlet& ml : cooked.meshlets) {
-					if ((size_t)ml.vertexOffset + ml.vertexCount > cooked.vertices.size() ||
-						(size_t)ml.triangleOffset + (size_t)ml.triangleCount * 3 > cooked.triangles.size()) {
-						meshletsOk = false;
-						break;
-					}
+			const uint32_t vertCount = c.u32();
+			if (!c.ok || vertCount > 64 * 1024 * 1024)
+				return fail("corrupt meshlet trailer: " + e->path);
+			cooked.vertices.reserve(vertCount);
+			for (uint32_t v = 0; v < vertCount; ++v)
+				cooked.vertices.push_back(c.u32());
+			const uint32_t triBytes = c.u32();
+			if (!c.ok || triBytes > 256 * 1024 * 1024
+				|| c.off + triBytes != c.img.size())
+				return fail("corrupt meshlet trailer: " + e->path);
+			cooked.triangles.assign(
+				c.img.data() + c.off, c.img.data() + c.off + triBytes);
+			// Cross-check windows against the payload sizes.
+			for (const Meshlet& ml : cooked.meshlets) {
+				if ((size_t)ml.vertexOffset + ml.vertexCount > cooked.vertices.size() ||
+					(size_t)ml.triangleOffset + (size_t)ml.triangleCount * 3 > cooked.triangles.size()) {
+					return fail("corrupt meshlet trailer: " + e->path);
 				}
-			}
-			if (!meshletsOk) {
-				static bool s_legacyMeshletLogged = false;
-				if (!s_legacyMeshletLogged) {
-					s_legacyMeshletLogged = true;
-					std::cerr << "DeserializeCluster: legacy meshlet blobs: "
-						"rebuilding from upload\n";
-				}
-				cooked = CookedMeshlets{};
-				c.off = meshletStart;
-				c.ok = true;
 			}
 		}
 
-		// Meshes cooked without meshlets (notably every "/lodN" sibling:
-		// the cooker only stamps LOD0) would stay off the GPU filter and
-		// draw direct, unculled by frustum/HZB. The blob carries the full
-		// vertex/index payloads, so build the missing meshlets here from
-		// the upload (same config as the cook path). Failure keeps the
-		// old direct fallback; success makes the mesh filterable.
-		if (cooked.empty() && !upload.vertices.empty() && !upload.indices.empty()
-			&& (upload.indices.size() % 3) == 0) {
-			MeshletConfig mcfg{};
-			mcfg.enabled = true;
-			CookedMeshlets built{};
-			if (BuildMeshletsForUpload(upload, mcfg, &built, nullptr, nullptr)
-				&& !built.empty())
-				cooked = std::move(built);
-		}
 		const ClusterStaticMeshHandle h = cluster->UploadStaticMesh(upload);
 		if (!h.valid())
 			return fail("UploadStaticMesh failed for: " + uri);
