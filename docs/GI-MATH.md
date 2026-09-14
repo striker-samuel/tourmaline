@@ -342,7 +342,7 @@ starves another under the probe budget):
   $\mathrm{leaves} + 7\cdot\mathrm{candidates} \le
   \max(64,\,0.6\cdot\mathrm{maxProbes})$; otherwise every region stays at
   this depth and only error waves may go deeper.
-- Stop at `minBrickSize` ($0.25$ m) or 8 levels.
+- Stop at `minBrickSize` ($0.5$ m) or 8 levels.
 
 ### 7.2 Probe relocation
 
@@ -384,12 +384,15 @@ wall spends none.
 
 ### 7.5 Support radius and lookup grids
 
-- Support radius: $R = 1.25 \times \mathrm{brickSize}$ (`probeSupportFactor`,
-  meters). Overlap $> 1$ keeps blends smooth under visibility rejects.
-- Per-level uniform grid with cell size $2\times\mathrm{brickSize}$ (meters),
-  so a probe sphere (diameter $2.5\times\mathrm{brickSize}$) overlaps up to
-  3 cells per axis (27 cells total) and each cell's probe list is a superset
-  of everything that can shade a point inside it.
+- Support radius: $R = 1.0 \times \mathrm{brickSize}$ (`probeSupportFactor`):
+  the probe covers its brick plus half of each neighbor — partition of
+  unity holds everywhere (every point is within $R$ of some center).
+- Per-level uniform grid with cell size $=\mathrm{brickSize}$ (meters).
+  List length is SCALE-FREE, $\bigl(\frac{c + 2R}{s}\bigr)^3$ probes per
+  cell of $c$ bricks at spacing $s$: unit support + unit cell gives ~27 —
+  the console-class geometry. (The old $2\times$ cells with $R=1.25$
+  packed ~91 probes per cell, saturated the 64 cap — silently dropped
+  probes — and cost ~9 ms/frame of gather.)
 - Level extent = probe positions padded by radii; per-cell caps
   (64 probes/cell) and global caps keep pathological inputs bounded.
 
@@ -518,14 +521,14 @@ violet-tinted on fallback, magenta when uncovered.
 | `maxBounces` | 3 | Diffuse vertices after the first hit |
 | `errorRaysPerProbe` | 32 | Reference irradiance rays per test point |
 | `rootBrickSize` | 8 m | Coarsest spacing |
-| `minBrickSize` | 0.25 m | Finest spacing |
+| `minBrickSize` | 0.5 m | Finest spacing (console-class; 0.25 starved budget + GPU) |
 | `nearSurfaceFactor` | 1.0 | Geometry-subdivision reach |
 | `errorTolerance` / `errorFloor` | 0.12 / 0.02 | Lighting-refinement threshold / luminance floor |
-| `maxProbes` | 1048576 | Hard probe budget (== GPU cap; Sponza uses ~500k) |
+| `maxProbes` | 262144 | Hard probe budget (console-class: PS4/PS5 baked GI ships ~100-250k) |
 | `maxRefineWaves` | 8 | Error-refinement iterations |
 | `probeClearanceFactor` / `probeMinClearance` | 0.2 / 0.03 m | Free-space requirement |
 | `visibilityMaxDistance` | 2.5 m | 6-axis distance cap |
-| `probeSupportFactor` | 1.25 | $R = 1.25\times$ brick |
+| `probeSupportFactor` | 1.0 | $R = 1.0\times$ brick (unit = ~27 probes/cell; fat supports cap-drop probes) |
 | `diffusionIterations` / `smoothingPasses` / `smoothingLambda` | 0 / 0 / 0.6 | Placement + radiance diffusion (OFF by default: post-bake moves invalidate baked radiance; visibility-free smoothing leaks across walls) |
 
 Validation (`tests/test_gi.cpp`, no GPU required): basis coverage/peak,

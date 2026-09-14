@@ -198,17 +198,18 @@ bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) c
 		outAmps[i] = glm::vec3(0.0f);
 	// Primary blend: visibility-weighted partition of unity (anti-leak).
 	// Safety net: when every covering probe is visibility-rejected (deep
-	// clutter), fall back to a kernel-weighted blend of the k-nearest
-	// COVERING probes — blending all occluded probes leaks far-side dark
-	// radiance, a single nearest probe shows as a dot; the nearest few are
-	// almost always same-side and the weighted blend stays smooth.
-	// Must mirror SgGiSample in sggi.hlsli.
-	constexpr uint32_t kNearest = 4;
+	// clutter), the single nearest covering probe's amps are the sample.
+	// Must mirror SgGiSample in sggi.hlsli: finest-first hierarchical
+	// walk with the early-out (fine probes supersede coarse once the
+	// accumulated weight is dense), primary blend, single-nearest
+	// fallback.
 	glm::vec3 ampsVis[kSgLobeCount] = {};
 	float weightVis = 0.0f;
-	uint32_t nearIdx[kNearest] = {};
-	float nearW[kNearest] = {};
-	for (uint32_t lvl = 0; lvl < levelCount && lvl < levelGrids_.size(); ++lvl) {
+	float bestNearW = 0.0f;
+	uint32_t bestNearIdx = 0;
+	for (int lvl = int(levelCount) - 1; lvl >= 0; --lvl) {
+		if (lvl >= int(levelGrids_.size()))
+			continue;
 		const LevelGrid& grid = levelGrids_[lvl];
 		const float cs = cellSize[lvl];
 		if (grid.indices.empty() || cs <= 0.0f)
@@ -232,16 +233,9 @@ bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) c
 			const glm::vec3 d = pos - p.position;
 			const float dist2 = glm::dot(d, d);
 			const float wn = 1.0f / std::max(dist2, 1e-4f);
-			for (uint32_t n = 0; n < kNearest; ++n) {
-				if (wn > nearW[n]) {
-					for (uint32_t m = kNearest - 1; m > n; --m) {
-						nearIdx[m] = nearIdx[m - 1];
-						nearW[m] = nearW[m - 1];
-					}
-					nearIdx[n] = probeIdx;
-					nearW[n] = wn;
-					break;
-				}
+			if (wn > bestNearW) {
+				bestNearW = wn;
+				bestNearIdx = probeIdx;
 			}
 			const float wv = w * VisibilityFactor(pos, p);
 			if (wv <= 0.0f)
@@ -250,6 +244,10 @@ bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) c
 			for (uint32_t i = 0; i < kSgLobeCount; ++i)
 				ampsVis[i] += p.amps[i] * wv;
 		}
+		// Early-out: fine coverage is dense enough (mirror of the
+		// shader's hierarchical stop; 0.5 matches R = spacing kernels).
+		if (weightVis >= 0.5f)
+			break;
 	}
 	if (weightVis >= 1e-4f) {
 		const float inv = 1.0f / weightVis;
@@ -257,23 +255,15 @@ bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) c
 			outAmps[i] = ampsVis[i] * inv;
 		return true;
 	}
-	if (nearW[0] > 0.0f) {
-		float wsum = 0.0f;
-		glm::vec3 fb[kSgLobeCount] = {};
-		for (uint32_t n = 0; n < kNearest; ++n) {
-			if (nearW[n] <= 0.0f)
-				continue;
-			const SgProbe& p = probes[nearIdx[n]];
-			wsum += nearW[n];
-			for (uint32_t i = 0; i < kSgLobeCount; ++i)
-				fb[i] += p.amps[i] * nearW[n];
-		}
-		if (wsum > 0.0f) {
-			const float inv = 1.0f / wsum;
-			for (uint32_t i = 0; i < kSgLobeCount; ++i)
-				outAmps[i] = fb[i] * inv;
-			return true;
-		}
+	// Fallback (deep clutter where every covering probe is
+	// visibility-rejected): the single nearest covering probe's amps.
+	// Mirrors sggi.hlsli (the old 4-nearest blend cost ~20 ALU per probe
+	// in the hot loop for a path that essentially never fires).
+	if (bestNearW > 0.0f) {
+		const SgProbe& p = probes[bestNearIdx];
+		for (uint32_t i = 0; i < kSgLobeCount; ++i)
+			outAmps[i] = p.amps[i];
+		return true;
 	}
 	return false;
 }

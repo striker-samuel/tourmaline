@@ -989,19 +989,36 @@ bool SceneRenderer::Initialize() {
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_GI value: " << gi << "\n";
 		}
 		// F8 debug view for headless runs: 0 off, 1 irradiance, 2
-		// interpolation diagnostics (same modes the F8 key cycles).
+		// interpolation diagnostics, 3 level-isolated, 4 dominant level
+		// (same modes the F8 key cycles).
 		if (const char* giDbgEnv = std::getenv("VULKANTOY_GI_DEBUG")) {
 			const int mode = std::atoi(giDbgEnv);
-			if (mode >= 0 && mode <= 2)
+			if (mode >= 0 && mode <= 4)
 				m_giDebug = mode;
 			else
-				std::cerr << "[SceneRenderer] VULKANTOY_GI_DEBUG wants 0..2\n";
+				std::cerr << "[SceneRenderer] VULKANTOY_GI_DEBUG wants 0..4\n";
+		}
+		// Level selector for the mode-3 isolation view (0..7; levels with
+		// no probes sample as uncovered/magenta).
+		if (const char* giLvlEnv = std::getenv("VULKANTOY_GI_DEBUG_LEVEL")) {
+			const int lvl = std::atoi(giLvlEnv);
+			if (lvl >= 0 && lvl <= 7)
+				m_giDebugLevel = lvl;
+			else
+				std::cerr << "[SceneRenderer] VULKANTOY_GI_DEBUG_LEVEL wants 0..7\n";
 		}
 		// Probe-point overlay for headless runs (same as the panel
 		// checkbox; draws the probe lattice colored by octree level).
 		if (const char* giPtsEnv = std::getenv("VULKANTOY_GI_POINTS")) {
 			if (std::atoi(giPtsEnv) != 0)
 				m_giShowProbes = true;
+		}
+		// Occlusion cull for the probe overlay (same as the panel
+		// checkbox; hides probes behind scene geometry via the CPU pick
+		// BVH so captures show only probes that can affect the view).
+		if (const char* giOccEnv = std::getenv("VULKANTOY_GI_OCCLUDE")) {
+			if (std::atoi(giOccEnv) != 0)
+				m_giProbeOcclusionCull = true;
 		}
 
 		// Tear-free VSync without the strict-FIFO 30fps lock (see PresentMode);
@@ -2063,7 +2080,10 @@ void SceneRenderer::Shutdown() {
 			data.giIndices = m_giIndicesAddress;
 			data.giEnabled = 1u;
 			data.giIntensity = m_giIntensity;
-			data.giDebug = uint32_t(std::clamp(m_giDebug, 0, 2));
+			// Packed debug word: low byte = mode, byte 1 = isolated level
+			// (mode 3). Zero layout cost vs a new FrameUniforms field.
+			data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 4)) & 0xffu)
+				| ((uint32_t(std::clamp(m_giDebugLevel, 0, 7)) & 0xffu) << 8);
 		} else {
 			data.giProbes = 0;
 			data.giGrid = 0;
@@ -2874,35 +2894,23 @@ void SceneRenderer::Shutdown() {
 		return m_decalFrameCount;
 	}
 
-	void SceneRenderer::SpawnDecalAtCrosshair() {
-		if (!DecalsActive()) {
-			std::cerr << "[Decals] disabled (UI checkbox or VULKANTOY_DECALS=1)\n";
-			return;
-		}
-
-		// Camera ray: crosshair = view center; the view matrix maps world
-		// -> view (looking down -z), so the world-space forward is the
-		// negated third column of the inverse view.
-		const glm::mat4 invView = glm::inverse(m_camera.getViewMatrix());
-		const glm::vec3 eye = m_cameraPositioner.cameraPosition_;
-		const glm::vec3 fwd = -glm::normalize(glm::vec3(invView[2]));
-
-		// Lazy pick BVH (first J): re-import the scene glTF as a GPU-free
-		// cook-mode cluster with retained CPU uploads — the same importer
-		// call the GiBaker uses — then extract + BVH the triangle soup.
-		// (The runtime pak cluster has no retained CPU geometry, and the
-		// pick wants the exact loaded transform: same coordFix +
-		// preTransform as the scene load. Sponza costs a one-time import
-		// + SAH build of a few seconds; the console notes the hitch.)
+	bool SceneRenderer::EnsurePickScene() {
+		// Re-import the scene glTF as a GPU-free cook-mode cluster with
+		// retained CPU uploads — the same importer call the GiBaker uses —
+		// then extract + BVH the triangle soup. (The runtime pak cluster
+		// has no retained CPU geometry, and the pick wants the exact
+		// loaded transform: same coordFix + preTransform as the scene
+		// load. Sponza costs a one-time import + SAH build of a few
+		// seconds; the console notes the hitch.)
 		if (m_decalDemo.pickBvhState == 0) {
 			const char* gltfPathC = m_scene.gltfPath ? m_scene.gltfPath : "";
 			const std::string vfsPath = (gltfPathC && std::strncmp(gltfPathC, "content/", 8) == 0)
 				? std::string(gltfPathC + 8) : std::string(gltfPathC ? gltfPathC : "");
 			if (vfsPath.empty()) {
-				std::cerr << "[Decals] no scene glTF - crosshair spawn off\n";
+				std::cerr << "[Pick] no scene glTF - pick BVH off\n";
 				m_decalDemo.pickBvhState = -1;
 			} else {
-				std::cerr << "[Decals] building crosshair-pick BVH (one-time glTF re-import)...\n";
+				std::cerr << "[Pick] building CPU pick BVH (one-time glTF re-import)...\n";
 				const auto t0 = std::chrono::steady_clock::now();
 				try {
 					smvk::OverlayVfs vfs;
@@ -2917,7 +2925,7 @@ void SceneRenderer::Shutdown() {
 					std::string err;
 					smvk::gi::BuildTraceSceneFromCluster(*cluster, opts, *scene, err);
 					if (!err.empty())
-						std::cerr << "[Decals] pick scene: " << err << "\n";
+						std::cerr << "[Pick] pick scene: " << err << "\n";
 					scene->Finalize();
 					const bool ready = err.empty() && !scene->Bvh().Empty();
 					m_decalDemo.pickBvhState = ready ? 1 : -1;
@@ -2925,21 +2933,68 @@ void SceneRenderer::Shutdown() {
 						const auto t1 = std::chrono::steady_clock::now();
 						const double ms =
 							std::chrono::duration<double, std::milli>(t1 - t0).count();
-						std::cerr << "[Decals] pick BVH ready: "
+						std::cerr << "[Pick] pick BVH ready: "
 							<< scene->Bvh().TriangleCount() << " tris ("
 							<< (int)ms << " ms)\n";
 					} else {
-						std::cerr << "[Decals] pick BVH unavailable for this scene\n";
+						std::cerr << "[Pick] pick BVH unavailable for this scene\n";
 					}
 					m_decalPickScene = std::move(scene);
 				} catch (const std::exception& e) {
-					std::cerr << "[Decals] pick BVH import failed: " << e.what() << "\n";
+					std::cerr << "[Pick] pick BVH import failed: " << e.what() << "\n";
 					m_decalDemo.pickBvhState = -1;
 				}
 			}
 		}
-		if (m_decalDemo.pickBvhState < 0 || !m_decalPickScene
-			|| m_decalPickScene->Bvh().Empty()) {
+		return m_decalDemo.pickBvhState > 0 && m_decalPickScene
+			&& !m_decalPickScene->Bvh().Empty();
+	}
+
+	bool SceneRenderer::GiProbeVisibleFromCamera(uint32_t probeIdx, const glm::vec3& camPos) {
+		// View-coherent cache: camera still => free; camera moved =>
+		// invalidate (recomputed lazily per drawn probe below).
+		const glm::mat4 view = m_camera.getViewMatrix();
+		if (m_giProbeCullCache.size() != m_giVolume.probes.size()
+			|| std::memcmp(&view, &m_giProbeCullView, sizeof(view)) != 0) {
+			m_giProbeCullView = view;
+			m_giProbeCullCache.assign(m_giVolume.probes.size(), 2);
+		}
+		char& slot = m_giProbeCullCache[probeIdx];
+		if (slot != 2)
+			return slot != 0;
+		bool visible = true; // fail-open: no pick geometry => draw unculled
+		if (EnsurePickScene()) {
+			const glm::vec3 p = m_giVolume.probes[probeIdx].position;
+			const glm::vec3 d = p - camPos;
+			const float dist = glm::length(d);
+			if (dist > 1e-4f) {
+				smvk::gi::TriangleBvh::Hit hit;
+				// Occluded when geometry blocks the ray well short of the
+				// probe (5 cm bias: probes float >= 3 cm off surfaces).
+				visible = !m_decalPickScene->Bvh().Raycast(
+					camPos, d / dist, dist - 0.05f, hit);
+			}
+		}
+		slot = visible ? 1 : 0;
+		return visible;
+	}
+
+	void SceneRenderer::SpawnDecalAtCrosshair() {
+		if (!DecalsActive()) {
+			std::cerr << "[Decals] disabled (UI checkbox or VULKANTOY_DECALS=1)\n";
+			return;
+		}
+
+		// Camera ray: crosshair = view center; the view matrix maps world
+		// -> view (looking down -z), so the world-space forward is the
+		// negated third column of the inverse view.
+		const glm::mat4 invView = glm::inverse(m_camera.getViewMatrix());
+		const glm::vec3 eye = m_cameraPositioner.cameraPosition_;
+		const glm::vec3 fwd = -glm::normalize(glm::vec3(invView[2]));
+
+		// Lazy pick BVH (first J): shared builder below (one-time glTF
+		// re-import hitch, noted on console).
+		if (!EnsurePickScene()) {
 			std::cerr << "[Decals] no pick geometry - crosshair spawn off\n";
 			return;
 		}
@@ -7119,13 +7174,24 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::SliderFloat("Overlay radius (m)", &m_giProbePointMaxDist,
 							2.0f, 120.0f, "%.0f");
 						ImGui::TextDisabled("colors: L0 red -> L4 cyan -> L7 pink (coarse->fine)");
+						ImGui::Checkbox("Occlusion cull (pick BVH)", &m_giProbeOcclusionCull);
+						if (m_giProbeOcclusionCull)
+							ImGui::TextDisabled("hides probes behind geometry (one-time import hitch)");
 					}
 					if (m_giLoaded) {
-						const char* dbgNames[3] = { "Off", "Irradiance", "Diagnostics" };
+						const char* dbgNames[5] = { "Off", "Irradiance",
+							"Diagnostics", "Level isolated", "Dominant level" };
 						int dbgIdx = m_giDebug;
-						if (ImGui::Combo("GI debug view (F8)", &dbgIdx, dbgNames, 3))
-							m_giDebug = std::clamp(dbgIdx, 0, 2);
-						ImGui::TextDisabled("diagnostics: R=sharpness (fixed) G=weight sum  B=contributors; violet=fallback");
+						if (ImGui::Combo("GI debug view (F8)", &dbgIdx, dbgNames, 5))
+							m_giDebug = std::clamp(dbgIdx, 0, 4);
+						if (m_giDebug == 3) {
+							ImGui::SliderInt("Isolated level", &m_giDebugLevel, 0, 7);
+							ImGui::TextDisabled("irradiance from L%d probes only (others skipped)", m_giDebugLevel);
+						} else if (m_giDebug == 4) {
+							ImGui::TextDisabled("dominant level (argmax per-level wv): R L0 Y L1 G L2 C L3 B L4 W L5+; magenta=no valid contributor");
+						} else {
+							ImGui::TextDisabled("diagnostics: R=sharpness (fixed) G=weight sum  B=contributors; violet=fallback");
+						}
 					}
 				}
 #if defined(DS_DEBUG_VIZ)
@@ -7665,8 +7731,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// SG-GI probe-point overlay (like the forward+ light points):
 		// draws the probe lattice colored by octree level through the
 		// UNJITTERED viewProj. Distance-filtered + count-capped so huge
-		// volumes stay ImGui-cheap. No depth test: occluded probes stay
-		// visible (debug).
+		// volumes stay ImGui-cheap. Without occlusion culling there is no
+		// depth test: occluded probes stay visible (debug).
 		if (m_giLoaded && m_giShowProbes && !m_giVolume.probes.empty()) {
 			ImDrawList* dl = ImGui::GetForegroundDrawList();
 			const ImVec2 disp = ImGui::GetIO().DisplaySize;
@@ -7682,8 +7748,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				IM_COL32(200, 100, 255, 210), IM_COL32(255, 110, 200, 210),
 			};
 			uint32_t drawn = 0;
+			uint32_t culled = 0;
 			constexpr uint32_t kMaxDrawn = 6000;
-			for (const smvk::gi::SgProbe& p : m_giVolume.probes) {
+			for (uint32_t pi = 0; pi < m_giVolume.probes.size(); ++pi) {
+				const smvk::gi::SgProbe& p = m_giVolume.probes[pi];
 				if (drawn >= kMaxDrawn)
 					break;
 				if (!p.valid)
@@ -7691,6 +7759,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				const glm::vec3 d = p.position - camPos;
 				if (glm::dot(d, d) > maxDist2)
 					continue;
+				if (m_giProbeOcclusionCull && !GiProbeVisibleFromCamera(pi, camPos)) {
+					++culled;
+					continue;
+				}
 				const glm::vec4 clip = m_unjitteredViewProj * glm::vec4(p.position, 1.0f);
 				if (clip.w <= 1e-4f)
 					continue;
@@ -7708,9 +7780,13 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			// Legend: level colors + drawn count, pinned top-left.
 			float lx = 8.0f;
 			const float ly = 8.0f;
-			char cap[96];
-			snprintf(cap, sizeof(cap), "GI probes: %u/%u drawn (<= %.0fm)",
-				drawn, (unsigned)m_giVolume.probes.size(), maxDist);
+			char cap[128];
+			if (m_giProbeOcclusionCull)
+				snprintf(cap, sizeof(cap), "GI probes: %u/%u drawn (<= %.0fm), %u occluded",
+					drawn, (unsigned)m_giVolume.probes.size(), maxDist, culled);
+			else
+				snprintf(cap, sizeof(cap), "GI probes: %u/%u drawn (<= %.0fm)",
+					drawn, (unsigned)m_giVolume.probes.size(), maxDist);
 			dl->AddText(ImVec2(lx + 1.0f, ly + 1.0f), IM_COL32(0, 0, 0, 200), cap);
 			dl->AddText(ImVec2(lx, ly), IM_COL32_WHITE, cap);
 			for (uint32_t lvl = 0; lvl < std::min(m_giVolume.levelCount, 8u); ++lvl) {
@@ -7721,6 +7797,14 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					IM_COL32(0, 0, 0, 200), lab);
 				dl->AddText(ImVec2(lx + 10.0f, ly + 16.0f), IM_COL32_WHITE, lab);
 				lx += 34.0f;
+			}
+			// Headless heartbeat: proves the overlay (and the occlusion
+			// cull, when on) actually executes; captures exclude UI.
+			if ((m_frameCounter % 300) == 0) {
+				std::cerr << "[GI] overlay: drawn=" << drawn
+					<< " culled=" << culled
+					<< " cull=" << (m_giProbeOcclusionCull ? "on" : "off")
+					<< " cache=" << m_giProbeCullCache.size() << "\n";
 			}
 		}
 

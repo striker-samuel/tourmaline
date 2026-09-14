@@ -209,20 +209,29 @@ struct SgGiBakeConfig {
 	uint32_t raysPerProbe = 256;        // uniform-sphere radiance samples
 	uint32_t maxBounces = 3;           // diffuse path depth (vertices after the first hit)
 	uint32_t errorRaysPerProbe = 32;    // reference irradiance rays per test point
+	uint32_t maxProbes = 262144;      // console-class budget: PS4/PS5 baked GI
+	                                     // ships ~100-250k probes; 1M measured
+	                                     // ~12 ms/frame of GPU gather and starved
+	                                     // the per-cell caps
 	float rootBrickSize = 8.0f;        // coarsest brick (m)
-	float minBrickSize = 0.25f;        // finest brick (m)
+	float minBrickSize = 0.5f;         // finest brick (m): console-class probe
+	                                     // spacing (~0.5-1 m in Enlighten/id-class
+	                                     // volumes; 0.25 starved budget + GPU)
 	float nearSurfaceFactor = 1.0f;    // geometry stage: subdivide while distToGeom < factor * brickSize
 	float errorTolerance = 0.12f;      // relative irradiance error that triggers subdivision
 	float errorFloor = 0.02f;          // luminance floor (x scene mean) in the error metric
-	uint32_t maxProbes = 1048576;      // == SG_GI_MAX_PROBES (GPU cap)
 	uint32_t maxRefineWaves = 8;
 	float probeClearanceFactor = 0.2f;  // keep probes >= factor * brickSize from surfaces
 	float probeMinClearance = 0.03f;   // absolute clearance floor (m)
 	float visibilityMaxDistance = 2.5f; // 6-axis obstacle distance cap (m)
-	float probeSupportFactor = 1.25f;  // support radius = factor * brickSize
-	                                     // (>1: neighboring probes overlap,
-	                                     // blends mix more probes and stay
-	                                     // smooth under visibility rejects)
+	float probeSupportFactor = 1.0f;  // support radius = factor * brickSize.
+	                                     // 1.0 = probe covers its own brick +
+	                                     // half of each neighbor: partition of
+	                                     // unity holds (every point within R of
+	                                     // a center) and per-cell lists stay
+	                                     // ~27 (scale-free: bigger supports
+	                                     // stuff cells to the 64 cap = dropped
+	                                     // probes + 9 ms/frame gather)
 	// Diffusion procedure (see bake.cpp): placement relaxation +
 	// radiance smoothing passes over the probe graph.
 	uint32_t diffusionIterations = 0;  // repulsion passes; MUST stay 0 for

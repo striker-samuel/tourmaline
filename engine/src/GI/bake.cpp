@@ -453,9 +453,14 @@ bool RelocateProbe(const TriangleBvh& bvh, const BakeBrick& brick,
 }
 
 // Traces + fits one probe (radiance fit + 6-axis visibility + reconstruction
-// error at off-center test points).
+// error at off-center test points). `dirs` is the SHARED deterministic
+// direction set (Fibonacci sphere): every probe samples the same
+// directions, so neighboring probes' estimation errors are correlated
+// (a smooth spatial bias) instead of independent per-probe noise that
+// the runtime blend shows as coverage-sized speckle.
 void BakeProbeBrick(const GiTraceScene& scene, const SgGiBakeConfig& cfg,
-	BakeBrick& brick, uint64_t seed, uint64_t& clampedSamples) {
+	BakeBrick& brick, uint64_t seed, const std::vector<glm::vec3>& dirs,
+	uint64_t& clampedSamples) {
 	const float clearance = std::max(cfg.probeMinClearance,
 		cfg.probeClearanceFactor * brick.size);
 	if (!RelocateProbe(scene.Bvh(), brick, clearance, brick.probePos))
@@ -471,18 +476,17 @@ void BakeProbeBrick(const GiTraceScene& scene, const SgGiBakeConfig& cfg,
 	struct RaySample { glm::vec3 dir; glm::vec3 L; };
 	Pcg32 rng(seed);
 	std::vector<RaySample> samples;
-	samples.reserve(cfg.raysPerProbe);
+	samples.reserve(dirs.size());
 	double meanLum = 0.0;
-	for (uint32_t i = 0; i < cfg.raysPerProbe; ++i) {
-		const glm::vec3 dir = UniformSphere(rng);
-		const glm::vec3 L = scene.TraceIncoming(brick.probePos, dir, rng, cfg.maxBounces);
-		samples.push_back({ dir, L });
+	for (uint32_t i = 0; i < dirs.size(); ++i) {
+		const glm::vec3 L = scene.TraceIncoming(brick.probePos, dirs[i], rng, cfg.maxBounces);
+		samples.push_back({ dirs[i], L });
 		meanLum += Luminance(L);
 	}
-	meanLum /= double(std::max(cfg.raysPerProbe, 1u));
+	meanLum /= double(std::max<uint32_t>(uint32_t(dirs.size()), 1u));
 	const float cap = std::max(float(meanLum) * 8.0f, 1e-6f);
 	SgFitAccumulator acc;
-	const float weight = 4.0f * kPi / float(cfg.raysPerProbe);
+	const float weight = 4.0f * kPi / float(dirs.size());
 	for (const RaySample& s : samples) {
 		glm::vec3 L = s.L;
 		const float l = Luminance(L);
@@ -694,6 +698,20 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 	const uint32_t threadCount = cfg.threadCount ? cfg.threadCount : std::thread::hardware_concurrency();
 	ThreadPool pool(threadCount ? threadCount : 1);
 
+	// Shared deterministic direction set (Fibonacci sphere): every probe
+	// samples the SAME directions, so estimation error is spatially
+	// correlated (smooth bias) instead of independent per-probe noise.
+	// Independent random spheres measured 24% median / 83% p90 neighbor
+	// disagreement — coverage-sized speckle at runtime.
+	std::vector<glm::vec3> fibDirs;
+	fibDirs.reserve(cfg.raysPerProbe);
+	for (uint32_t i = 0; i < cfg.raysPerProbe; ++i) {
+		const float y = 1.0f - 2.0f * (float(i) + 0.5f) / float(cfg.raysPerProbe);
+		const float r = SafeSqrt(std::max(0.0f, 1.0f - y * y));
+		const float phi = float(i) * 2.39996323f;
+		fibDirs.push_back(glm::vec3(std::cos(phi) * r, y, std::sin(phi) * r));
+	}
+
 	// Bakes a set of leaves in parallel (deterministic per-brick seeds keep
 	// results independent of task scheduling). Returns the live-probe count.
 	auto bakeLeaves = [&](std::vector<uint32_t>& leaves) -> uint64_t {
@@ -710,7 +728,7 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 					const uint64_t seed = (uint64_t(cfg.seed) << 32)
 						^ (uint64_t(idx) * 0x9e3779b97f4a7c15ull);
 					uint64_t localClamped = 0;
-					BakeProbeBrick(scene, cfg, bricks[idx], seed, localClamped);
+					BakeProbeBrick(scene, cfg, bricks[idx], seed, fibDirs, localClamped);
 					clamped += localClamped;
 					if (bricks[idx].hasProbe)
 						++baked;
@@ -1108,9 +1126,13 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 	outVolume.levelCount = std::min(maxLevel + 1, kSgGiMaxLevels);
 	for (uint32_t lvl = 0; lvl < outVolume.levelCount; ++lvl) {
 		const float brickSize = cfg.rootBrickSize / float(1u << lvl);
-		// Cell = 2 bricks: a probe sphere (R = probeSupportFactor x brick,
-		// diameter 2.5 bricks) overlaps up to 3 cells per axis (27 total).
-		outVolume.cellSize[lvl] = brickSize * 2.0f;
+		// Cell = 1 brick: per-pixel list length is scale-free —
+		// ((cellBricks + sphereDiameterBricks)/spacing)^3 — so a 2x cell
+		// with a 2.5-brick sphere stuffs every cell with ~91 probes (capped
+		// at 64, silently DROPPING probes: holes + a ~9 ms/frame gather
+		// walk). Cell = brick + support = spacing (sphere d = 2 bricks)
+		// gives ~27 probes/cell — console-class Enlighten-style geometry.
+		outVolume.cellSize[lvl] = brickSize;
 	}
 	outVolume.probes.clear();
 	outVolume.probes.reserve(probeCount);

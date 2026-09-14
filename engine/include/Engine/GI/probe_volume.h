@@ -9,12 +9,14 @@
 //    doorways, high-error regions) end up with small bricks/probes; open
 //    empty space keeps a handful of coarse probes.
 //  - Probes are grouped by octree LEVEL. Each level gets a uniform lookup
-//    grid with cellSize = 2x brick size. A probe sphere (R = 1.25x brick,
-//    diameter 2.5x brick) overlaps up to 3 cells per axis (27 total), and
-//    a cell's probe list is a superset of everything that can shade a
-//    point inside it. Runtime sampling gathers from every level's
-//    containing cell and blends with a partition-of-unity weight; the
-//    finest nearby probes naturally dominate.
+//    grid with cellSize = brick size. A probe sphere (R =
+//    probeSupportFactor x brick; default 1.0) overlaps up to 2-3 cells per
+//    axis, and a cell's probe list is a superset of everything that can
+//    shade a point inside it. List length is scale-free (~27 at unit
+//    support): fat supports stuff the 64/cell cap and silently drop
+//    probes. Runtime sampling walks levels finest-first with an early-out
+//    (fine probes supersede coarse) and blends with a partition-of-unity
+//    weight.
 //  - Wall awareness (baked, cheap): each probe stores 6 FP16 obstacle
 //    distances (+x,-x,+y,-y,+z,-z). A shading point beyond a probe's
 //    recorded obstacle is behind a wall from that probe's point of view

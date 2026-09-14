@@ -65,8 +65,8 @@ struct Args {
 	uint32_t bounces = 3;
 	uint32_t errorRays = 32;
 	float root = 8.0f;
-	float minBrick = 0.25f;
-	uint32_t maxProbes = 1048576;
+	float minBrick = 0.5f;
+	uint32_t maxProbes = 262144;
 	float tolerance = 0.12f;
 	float nearFactor = 1.0f;
 	uint32_t waves = 8;
@@ -75,6 +75,9 @@ struct Args {
 	                      // moves invalidate baked radiance)
 	uint32_t smoothingPasses = 0; // Laplacian radiance passes (keep 0: smoothing
 	                              // without visibility leaks across walls)
+	float support = 1.0f; // support radius = factor * brickSize (1.0 =
+	                       // partition of unity + ~27 probes/cell; higher
+	                       // stuffs cells to the cap and drops probes)
 	float sunAzimuth = 30.0f;
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
@@ -129,6 +132,7 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		else if (a == "--threads") { if (!needU(out.threads, i)) return false; }
 		else if (a == "--diffusion") { if (!needU(out.diffusion, i)) return false; }
 		else if (a == "--smoothing-passes") { if (!needU(out.smoothingPasses, i)) return false; }
+		else if (a == "--support") { if (!needF(out.support, i)) return false; }
 		else if (a == "--sun-azimuth") { if (!needF(out.sunAzimuth, i)) return false; }
 		else if (a == "--sun-elevation") { if (!needF(out.sunElevation, i)) return false; }
 		else if (a == "--sun-intensity") { if (!needF(out.sunIntensity, i)) return false; }
@@ -171,7 +175,7 @@ void Usage() {
 		<< "         [--rays 256] [--bounces 3] [--error-rays 32]\n"
 		<< "         [--root 8.0] [--min-brick 0.25] [--max-probes 1048576]\n"
 		<< "         [--tolerance 0.12] [--near-factor 1.0] [--waves 8] [--threads 0]\n"
-		<< "         [--diffusion 0] [--smoothing-passes 0]\n"
+		<< "         [--diffusion 0] [--smoothing-passes 0] [--support 1.25]\n"
 		<< "         [--sun-azimuth 30] [--sun-elevation 55] [--sun-intensity 10000]\n"
 		<< "         [--sky-intensity 600] [--textures on|off] [--emissive on|off]\n"
 		<< "         [--verify on|off] [--uniform-albedo 0.7|r,g,b|off]\n"
@@ -388,6 +392,184 @@ int AnalyzeVolume(const std::string& path) {
 	}
 	std::cout << "  transect steps=" << steps << " uncovered=" << uncovered
 		<< " maxAdjacentRelStep=" << maxStep << "\n";
+
+	// Per-level weight census at the transect points: for each point,
+	// the visibility-weighted (wv) share of each octree level in the
+	// blended result, brute-forced over all probes (independent
+	// reimplementation of ProbeWeight/VisibilityFactor from
+	// probe_volume.cpp — also a cross-check of the runtime blend).
+	// Reports where COARSE probes dominate a point that FINE probes also
+	// cover (the coarse-leak signature: big soft blobs amid dense fine
+	// probes).
+	{
+		auto wendland = [](const glm::vec3& pos, const SgProbe& p) {
+			const glm::vec3 d = pos - p.position;
+			const float dist2 = glm::dot(d, d);
+			const float r2 = p.radius * p.radius;
+			if (dist2 >= r2)
+				return 0.0f;
+			const float x2 = dist2 / r2;
+			const float x2m = 1.0f - x2;
+			return x2m * x2m * x2m;
+		};
+		static const glm::vec3 kAxes[6] = {
+			glm::vec3(1, 0, 0), glm::vec3(-1, 0, 0), glm::vec3(0, 1, 0),
+			glm::vec3(0, -1, 0), glm::vec3(0, 0, 1), glm::vec3(0, 0, -1),
+		};
+		auto visFactor = [&](const glm::vec3& pos, const SgProbe& p) {
+			const float slack = std::clamp(0.35f * p.radius, 0.05f, 0.3f);
+			const glm::vec3 d = pos - p.position;
+			float w = 1.0f;
+			for (uint32_t k = 0; k < 6; ++k) {
+				const float dist = p.visibility[k];
+				if (dist <= 0.0f)
+					continue;
+				const float along = glm::dot(d, kAxes[k]);
+				if (along > dist + slack) {
+					w *= std::max(0.0f, 1.0f
+						- (along - dist - slack) / (0.25f * dist + 0.02f));
+					if (w <= 0.0f)
+						return 0.0f;
+				}
+			}
+			return w;
+		};
+		std::cout << "  level census (point, then wv share % per level L1..L5, dominant):\n";
+		uint32_t coarseDominant = 0, fineDominant = 0, censusPts = 0, leakPts = 0;
+		// 3D sweep: heights through the arches + z rows through the
+		// recesses (the transect-only census can miss leak pockets).
+		const float ys[5] = { 0.5f, 1.5f, 3.5f, 6.0f, 9.0f };
+		const float span = hi.z - lo.z;
+		const float zs[3] = { z - span * 0.25f, z, z + span * 0.25f };
+		for (float yA : ys) {
+			if (yA < lo.y || yA > hi.y)
+				continue;
+			for (float zA : zs) {
+				for (float x = lo.x; x <= hi.x; x += 0.5f) {
+					const glm::vec3 pos(x, yA, zA);
+			float wByLevel[kSgGiMaxLevels] = {};
+			for (const SgProbe& p : vol.probes) {
+				if (!p.valid)
+					continue;
+				const float w = wendland(pos, p);
+				if (w <= 0.0f)
+					continue;
+				const float wv = w * visFactor(pos, p);
+				if (wv > 0.0f && p.level < kSgGiMaxLevels)
+					wByLevel[p.level] += wv;
+			}
+			float total = 0.0f;
+			for (uint32_t l = 0; l < vol.levelCount; ++l)
+				total += wByLevel[l];
+			if (total <= 1e-4f)
+				continue;
+			++censusPts;
+			uint32_t dom = 0;
+			float best = -1.0f;
+			for (uint32_t l = 0; l < vol.levelCount; ++l)
+				if (wByLevel[l] > best) { best = wByLevel[l]; dom = l; }
+			const float fineShare = (vol.levelCount > 4)
+				? (wByLevel[3] + wByLevel[4])
+					/ (total + 1e-6f) : 0.0f;
+			if (dom <= 2)
+				++coarseDominant;
+			else
+				++fineDominant;
+			// Flag the leak signature: coarse dominant while fine probes
+			// hold a real share too (they were spent on this region!).
+			if (dom <= 2 && fineShare > 0.15f) {
+				++leakPts;
+				std::cout << "    (" << x << "," << yA << "," << zA
+					<< ") LEAK? dom=L" << dom << " shares:";
+			} else if (dom <= 2) {
+				std::cout << "    (" << x << "," << yA << "," << zA
+					<< ") coarse-only dom=L" << dom << " shares:";
+			} else
+				continue;
+			for (uint32_t l = 1; l < std::min<uint32_t>(vol.levelCount, 6u); ++l)
+				std::cout << " L" << l << "="
+					<< int(100.0f * wByLevel[l] / (total + 1e-6f)) << "%";
+			std::cout << "\n";
+				}
+			}
+		}
+		std::cout << "  census: " << censusPts << " pts, coarse-dominant "
+			<< coarseDominant << ", fine-dominant " << fineDominant
+			<< ", leak-signature " << leakPts << "\n";
+	}
+
+	// Same-level neighbor disagreement (speckle census): for each probe of
+	// the finest levels, compare its mean amplitude luminance against the
+	// same-level neighbors inside 2x spacing. The relative deviation is
+	// exactly what runtime blends turn into per-probe patches when no
+	// smoothing runs: median ~5% reads smooth, median ~30%+ reads as
+	// white/grey dots the size of a probe support.
+	{
+		const float cell = 1.0f;
+		glm::vec3 gmin(1e30f);
+		for (const SgProbe& p : vol.probes)
+			gmin = glm::min(gmin, p.position);
+		auto key = [&](int x, int y, int z) {
+			return (uint64_t(uint32_t(x) + 512) << 42)
+				| (uint64_t(uint32_t(y) + 512) << 21)
+				| uint64_t(uint32_t(z) + 512);
+		};
+		std::unordered_map<uint64_t, std::vector<uint32_t>> grid;
+		for (uint32_t i = 0; i < vol.probes.size(); ++i) {
+			const glm::vec3 d = (vol.probes[i].position - gmin) / cell;
+			grid[key(int(d.x), int(d.y), int(d.z))].push_back(i);
+		}
+		auto meanLumOf = [&](const SgProbe& p) {
+			glm::vec3 m(0.0f);
+			for (uint32_t i = 0; i < kSgLobeCount; ++i)
+				m += p.amps[i];
+			m /= float(kSgLobeCount);
+			return 0.2126f * m.x + 0.7152f * m.y + 0.0722f * m.z;
+		};
+		std::vector<double> devs;
+		for (uint32_t i = 0; i < vol.probes.size(); ++i) {
+			const SgProbe& p = vol.probes[i];
+			if (p.level + 2 < vol.levelCount)
+				continue; // finest two levels only
+			const float r = 2.0f * p.radius;
+			const glm::vec3 lo = (p.position - glm::vec3(r) - gmin) / cell;
+			const glm::vec3 hi = (p.position + glm::vec3(r) - gmin) / cell;
+			double nbSum = 0.0;
+			uint32_t nb = 0;
+			for (int x = int(lo.x); x <= int(hi.x); ++x)
+				for (int y = int(lo.y); y <= int(hi.y); ++y)
+					for (int z = int(lo.z); z <= int(hi.z); ++z) {
+						auto it = grid.find(key(x, y, z));
+						if (it == grid.end())
+							continue;
+						for (uint32_t j : it->second) {
+							if (j == i || vol.probes[j].level != p.level)
+								continue;
+							const glm::vec3 dd = p.position - vol.probes[j].position;
+							if (glm::dot(dd, dd) < r * r) {
+								nbSum += meanLumOf(vol.probes[j]);
+								++nb;
+							}
+						}
+					}
+			if (nb < 3)
+				continue;
+			const double self = meanLumOf(p);
+			const double nbMean = nbSum / nb;
+			if (nbMean > 1e-4 && self > 1e-4)
+				devs.push_back(std::abs(self - nbMean) / nbMean);
+		}
+		if (!devs.empty()) {
+			std::sort(devs.begin(), devs.end());
+			const auto q = [&](double f) {
+				return devs[size_t(f * double(devs.size() - 1))];
+			};
+			std::cout << "  speckle census (|self-nbMean|/nbMean, finest levels): n="
+				<< devs.size() << " median=" << q(0.5)
+				<< " p75=" << q(0.75) << " p90=" << q(0.9)
+				<< " p99=" << q(0.99) << "\n";
+		}
+	}
 	return 0;
 }
 
@@ -593,6 +775,7 @@ int main(int argc, char** argv) {
 	cfg.threadCount = args.threads;
 	cfg.diffusionIterations = args.diffusion;
 	cfg.smoothingPasses = args.smoothingPasses;
+	cfg.probeSupportFactor = args.support;
 
 	smvk::gi::SgGiVolume volume;
 	smvk::gi::SgGiBakeStats stats;

@@ -101,17 +101,25 @@ float SgGiVisibilityFactor(float3 pos, SgProbeGpu p)
 // nearest few are almost always same-side "own brick" probes, and the
 // weighted blend keeps the patch smooth instead of one-probe dots).
 // The debug outs feed the F8 diagnostics view (weight sum, contributor
-// count, fallback flag). Mirrors SgGiVolume::Sample.
+// count, fallback flag; debugBestLevel = level of the strongest wv
+// contributor for the dominant-level view). Mirrors SgGiVolume::Sample.
+// Debug level isolation: frame.giDebug packs mode (low byte) + level
+// (byte 1); mode 3 gathers ONLY that level (level-leak bisect).
 bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
-    out float debugWeightSum, out uint debugContributors, out bool debugFellBack)
+    out float debugWeightSum, out uint debugContributors, out bool debugFellBack,
+    out uint debugBestLevel)
 {
     [unroll]
     for (uint i = 0; i < SG_GI_LOBES; ++i)
         amps[i] = float3(0, 0, 0);
 
     debugWeightSum = 0.0;
-    debugContributors = 0;
+    debugContributors = 0u;
     debugFellBack = false;
+    debugBestLevel = 0u;
+
+    const uint dbgMode = frame.giDebug & 0xffu;
+    const uint dbgLvl = (frame.giDebug >> 8) & 0xffu;
 
     const SgGiGrid grid = frame.giGrid.Get();
     const uint levelCount = min(grid.misc.x, (uint)SG_GI_MAX_LEVELS);
@@ -124,18 +132,38 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
     for (uint i = 0; i < SG_GI_LOBES; ++i)
         ampsVis[i] = float3(0, 0, 0);
     float weightVis = 0.0;
-    // k-nearest fallback bookkeeping (inverse-square weights).
-    const uint kNearest = 4;
-    uint nearIdx[kNearest];
-    float nearW[kNearest];
+    // Per-LEVEL weight accumulation (dominant level = argmax over these
+    // sums): robust vs "strongest single probe", which is noisy — the
+    // question answered is "which octree level carries most of this
+    // pixel's interpolation weight".
+    float dbgLevelW[SG_GI_MAX_LEVELS];
     [unroll]
-    for (uint i = 0; i < kNearest; ++i) {
-        nearIdx[i] = 0;
-        nearW[i] = 0.0;
-    }
+    for (uint l = 0; l < SG_GI_MAX_LEVELS; ++l)
+        dbgLevelW[l] = 0.0;
+    // Fallback bookkeeping: single NEAREST covering probe (idx + invsq
+    // weight). The old 4-slot sorted insert cost ~20 ALU per probe for a
+    // fallback that fires on ~0% of pixels; one compare is the same
+    // information for a blending fallback that has to be smooth anyway
+    // via the coverage kernel, and the fallback stays magenta-flagged in
+    // the debug views when it does fire.
+    float bestNearW = 0.0;
+    uint bestNearIdx = 0;
+    // HIERARCHICAL walk, finest level first, with an early-out: fine
+    // probes SUPERSEDE coarse ones. Once the accumulated partition-of-
+    // unity weight is dense enough (>= kGiCoverage), coarser levels are
+    // skipped entirely — 1-2 levels walked for the typical pixel instead
+    // of all of them (~4x less gather work; the per-level census showed
+    // 99% single-level dominance, so pixels that stop early were never
+    // meaningfully mixed anyway). Debug modes walk everything (mode 3
+    // isolates one level, mode 4 needs every level's weight for argmax).
     [loop]
-    for (uint lvl = 0; lvl < levelCount; ++lvl)
+    for (int lvl = int(levelCount) - 1; lvl >= 0; --lvl)
     {
+        // Debug level isolation (mode 3): gather ONLY the selected level
+        // so per-level captures show what each octave contributes alone.
+        [branch]
+        if (dbgMode == 3u && uint(lvl) != dbgLvl)
+            continue;
         const SgGiLevel lg = grid.levels[lvl];
         const float3 rel = pos - lg.volumeMin.xyz;
         const float3 cellF = floor(rel / lg.cellSize.x);
@@ -143,8 +171,12 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
         const uint cellIdx = uint(c.x)
             + lg.dims.x * (uint(c.y) + lg.dims.y * uint(c.z));
         const uint2 range = frame.giCells.Get().cells[lg.offsets.x + cellIdx];
+        // Defensive clamp: a corrupt/oversized cell list would read
+        // probe indices out of bounds (driver-fault class). The bake-side
+        // cap is 64 probes/cell (kSgGiMaxProbesPerCell).
+        const uint listCount = min(range.y, 64u);
         [loop]
-        for (uint i = 0; i < range.y; ++i)
+        for (uint i = 0; i < listCount; ++i)
         {
             const uint probeIdx = frame.giIndices.Get().index[lg.offsets.y + range.x + i];
             const SgProbeGpu p = frame.giProbes.Get().probes[probeIdx];
@@ -157,31 +189,49 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
                 continue;
             const float3 d = pos - p.posRadius.xyz;
             const float dist2 = dot(d, d);
-            // insert into the k-nearest list (inverse-square weight)
+            // nearest-covering-probe bookkeeping (fallback blend)
             const float wn = 1.0 / max(dist2, 1e-4);
-            [unroll]
-            for (uint k = 0; k < kNearest; ++k) {
-                if (wn > nearW[k]) {
-                    [unroll]
-                    for (uint m = kNearest - 1; m > k; --m) {
-                        nearIdx[m] = nearIdx[m - 1];
-                        nearW[m] = nearW[m - 1];
-                    }
-                    nearIdx[k] = probeIdx;
-                    nearW[k] = wn;
-                    break;
-                }
+            [branch]
+            if (wn > bestNearW)
+            {
+                bestNearW = wn;
+                bestNearIdx = probeIdx;
             }
             const float wv = w * SgGiVisibilityFactor(pos, p);
             [branch]
             if (wv <= 0.0)
                 continue;
+            // Dominant contributor (mode 4): per-LEVEL weight sums; the
+            // argmax after the walk picks the level carrying most of this
+            // pixel's interpolation weight (robust vs single-probe max).
+            dbgLevelW[lvl] += wv;
             weightVis += wv;
             ++debugContributors;
             [unroll]
             for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
                 ampsVis[lobe] += wv * SgGiProbeAmp(p.amp, lobe);
         }
+        // Early-out (production only): fine coverage is dense enough —
+        // coarser octaves cannot meaningfully change this pixel. 0.5 with
+        // R = spacing kernels (accumulated partition-of-unity sums run
+        // ~1-2.5 at covered points; thinner kernels sum lower than the
+        // old 1.25x supports, so the old 1.0 threshold rarely fired).
+        [branch]
+        if (dbgMode == 0u && weightVis >= 0.5)
+            break;
+    }
+    // Argmax over per-level weight sums (mode 4 bookkeeping).
+    {
+        float bestW = -1.0;
+        uint bestL = 0;
+        [unroll]
+        for (uint l = 0; l < SG_GI_MAX_LEVELS; ++l) {
+            if (dbgLevelW[l] > bestW) {
+                bestW = dbgLevelW[l];
+                bestL = l;
+            }
+        }
+        debugBestLevel = bestL;
     }
     debugWeightSum = weightVis;
     [branch]
@@ -193,31 +243,18 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
             amps[i] = ampsVis[i] * inv;
         return true;
     }
-    // Fallback: kernel-weighted blend of the nearest covering probes.
+    // Fallback: single nearest covering probe (rare: every covering
+    // probe was visibility-rejected). Its amps ARE the fallback blend —
+    // no list to normalize, and the debug views flag it magenta/violet.
     [branch]
-    if (nearW[0] > 0.0)
+    if (bestNearW > 0.0)
     {
         debugFellBack = true;
-        float wsum = 0.0;
+        const SgProbeGpu p = frame.giProbes.Get().probes[bestNearIdx];
         [unroll]
-        for (uint k = 0; k < kNearest; ++k) {
-            [branch]
-            if (nearW[k] <= 0.0)
-                continue;
-            const SgProbeGpu p = frame.giProbes.Get().probes[nearIdx[k]];
-            wsum += nearW[k];
-            [unroll]
-            for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
-                amps[lobe] += nearW[k] * SgGiProbeAmp(p.amp, lobe);
-        }
-        [branch]
-        if (wsum > 0.0) {
-            const float inv = 1.0 / wsum;
-            [unroll]
-            for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
-                amps[lobe] *= inv;
-            return true;
-        }
+        for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
+            amps[lobe] = SgGiProbeAmp(p.amp, lobe);
+        return true;
     }
     [unroll]
     for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)

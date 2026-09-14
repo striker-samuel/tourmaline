@@ -936,27 +936,59 @@ PSOut mainPS(PSIn IN)
         float giWeightSum = 0.0;
         uint giContributors = 0u;
         bool giFellBack = false;
+        uint giBestLevel = 0u;
+        const uint giMode = frame.giDebug & 0xffu;
         const bool giCovered = SgGiSample(frame, IN.worldPos, giAmps,
-            giWeightSum, giContributors, giFellBack);
+            giWeightSum, giContributors, giFellBack, giBestLevel);
         // F8 debug views (cycled): 1 = flat irradiance (probe diffuse, no
         // albedo, exposure-scaled), 2 = interpolation diagnostics per
         // the polka-dot bisect: R = SG sharpness / max (the basis is
         // globally fixed, so 1.0 = constant), G = weight sum (scaled:
         // saturated = healthy overlap), B = contributor count / 16.
+        // 3 = level-isolated irradiance (byte 1 of giDebug selects the
+        // level; the gather skips every other octave — coarse-leak
+        // bisect), 4 = dominant level palette (level of the strongest
+        // weighted contributor: red L0 -> yellow L1 -> green L2 ->
+        // cyan L3 -> blue L4 -> violet L5 -> pink L6 -> white L7).
         // Magenta = nothing covered; the green channel dropping to zero
         // with low blue in the dotted regions = starving blends.
-        if (frame.giDebug != 0u)
+        if (giMode != 0u)
         {
             if (!giCovered)
             {
                 OUT.outColor = float4(0.8f, 0.0f, 0.8f, 1.0f);
                 return OUT;
             }
-            if (frame.giDebug == 1u)
+            if (giMode == 1u || giMode == 3u)
             {
                 const float3 giEDbg = SgGiDiffuseIrradiance(giAmps, N)
                     * max(frame.giIntensity, 0.0f) * max(frame.exposure, 1e-6f);
                 OUT.outColor = float4(SanitizeHdr(giEDbg), 1.0f);
+                return OUT;
+            }
+            if (giMode == 4u)
+            {
+                // Magenta: exactly one meaning — no visibility-valid
+                // contributor (uncovered, or covered only via the
+                // visibility-ignoring fallback). Everything else is a
+                // dominant-level color: which octree level carries most
+                // of this pixel's interpolation weight (argmax over the
+                // per-level weight sums).
+                if (giWeightSum <= 1e-4)
+                {
+                    OUT.outColor = float4(SanitizeHdr(float3(0.8f, 0.0f, 0.8f)
+                        * (0.5f / max(frame.exposure, 1e-6f))), 1.0f);
+                    return OUT;
+                }
+                float3 pal;
+                if (giBestLevel == 0u)      pal = float3(1.0f, 0.0f, 0.0f);
+                else if (giBestLevel == 1u) pal = float3(1.0f, 1.0f, 0.0f);
+                else if (giBestLevel == 2u) pal = float3(0.0f, 1.0f, 0.0f);
+                else if (giBestLevel == 3u) pal = float3(0.0f, 1.0f, 1.0f);
+                else if (giBestLevel == 4u) pal = float3(0.15f, 0.25f, 1.0f);
+                else                        pal = float3(1.0f, 1.0f, 1.0f);
+                OUT.outColor = float4(SanitizeHdr(pal
+                    * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
                 return OUT;
             }
             // Fallback pixels read as solid magenta (binary flag): anywhere
@@ -989,12 +1021,17 @@ PSOut mainPS(PSIn IN)
             const float3 giDiffuse = kD * baseColor * (giE / PI) * occlusion * ao;
             // Rough glossy sun-bounce reflections; very smooth surfaces
             // keep the analytic sky env only (9 broad lobes cannot
-            // represent mirrors).
-            const float3 giSpecular =
-                SgGiSpecular(giAmps, R, shadingRoughness) * giScale * Fenv * occlusion * ao;
+            // represent mirrors). The probe specular is EXPENSIVE
+            // (9 SG x SG product integrals with exp()); roughW == 0
+            // surfaces must not pay it just to multiply by zero.
             const float roughW = saturate((shadingRoughness - 0.15f) / 0.25f);
+            if (roughW > 0.0f)
+            {
+                const float3 giSpecular =
+                    SgGiSpecular(giAmps, R, shadingRoughness) * giScale * Fenv * occlusion * ao;
+                ambientSpec = lerp(ambientSpec, giSpecular, roughW);
+            }
             ambient += giDiffuse;
-            ambientSpec += giSpecular * roughW;
         }
     }
 

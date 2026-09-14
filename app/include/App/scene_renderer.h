@@ -717,12 +717,14 @@ protected:
 		// Ambient source: N cycles GI -> sky IBL -> both off (the baked
 		// probes and the analytic sky ambient are mutually exclusive).
 		// F8 cycles the GI debug views: 0 off, 1 flat irradiance,
-		// 2 interpolation diagnostics (sharpness/weights/contributors).
+		// 2 interpolation diagnostics (sharpness/weights/contributors),
+		// 3 level-isolated irradiance (m_giDebugLevel picks the octave),
+		// 4 dominant level palette (strongest weighted contributor).
 		if (m_input.isKeyPressed(GLFW_KEY_N)) {
 			CycleAmbientMode();
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_F8)) {
-			m_giDebug = (m_giDebug + 1) % 3;
+			m_giDebug = (m_giDebug + 1) % 5;
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_C)) {
 			m_fpDemo.cookiesEnabled = !m_fpDemo.cookiesEnabled;
@@ -844,6 +846,11 @@ protected:
 	// smvk::gi::BuildTraceSceneFromCluster) and raycasts the camera
 	// center ray; on hit spawns a blood splat oriented to the surface.
 	void SpawnDecalAtCrosshair();
+	// Lazy CPU pick scene (same triangle soup the GI baker sees): shared
+	// by crosshair picking and the probe-overlay occlusion cull. Builds
+	// once (one-time glTF re-import hitch, noted on console); true when
+	// the BVH is ready for raycasts.
+	bool EnsurePickScene();
 	// Headless J (VULKANTOY_DECAL_AUTOSPLAT=<frame>): auto-runs the
 	// crosshair spawn at the given frame so capture/A-B runs verify the
 	// pick path without window focus. -1 = off.
@@ -1095,11 +1102,19 @@ protected:
 	// the expensive/fussy ambient path (probe bleeding, bake staleness),
 	// and the analytic sky IBL is the predictable reference look.
 	AmbientMode m_ambientMode = AmbientMode::SkyIbl; // N cycles
-	int m_giDebug = 0;             // F8 cycles: 0 off, 1 irradiance, 2 diagnostics
+	int m_giDebug = 0;             // F8 cycles: 0 off, 1 irradiance, 2 diagnostics,
+	                                // 3 level-isolated, 4 dominant level
+	int m_giDebugLevel = 0;        // mode 3: which octree level to isolate (0..7)
 	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
 	bool m_giShowProbes = false;  // probe-point overlay (ImGui foreground,
 	                              // like the forward+ light points)
 	float m_giProbePointMaxDist = 40.0f; // overlay: draw probes within N m
+	bool m_giProbeOcclusionCull = false; // overlay: hide probes occluded
+	                              // from the camera (CPU pick-BVH raycast;
+	                              // off = see through walls, debug intent)
+	glm::mat4 m_giProbeCullView = glm::mat4(0.0f); // view matrix the cache was built for
+	std::vector<char> m_giProbeCullCache; // per-probe: 0 occluded, 1 visible, 2 unknown
+	bool GiProbeVisibleFromCamera(uint32_t probeIdx, const glm::vec3& camPos);
 	bool m_giLoaded = false;      // volume + GPU buffers live
 	smvk::gi::SgGiVolume m_giVolume; // CPU mirror (stats; grids stay built)
 	smvk::Holder<smvk::BufferHandle> m_giProbesBuffer;
