@@ -36,6 +36,7 @@
 #include <Engine/Rendergraph/deferredshadow.h>
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/dlss.h>
+#include <Engine/Rendergraph/dof.h>
 #include <Engine/Rendergraph/environment.h>
 #include <Engine/Rendergraph/evsm.h>
 #include <Engine/Rendergraph/exposure.h>
@@ -47,6 +48,7 @@
 #include <Engine/Rendergraph/smaa.h>
 #include <Engine/Rendergraph/spotshadow.h>
 #include <Engine/Rendergraph/ssao.h>
+#include <Engine/Rendergraph/ssr.h>
 #include <Engine/Rendergraph/tonemap.h>
 #include <Engine/Rendergraph/ui.h>
 #include <Engine/Utils/thread_pool.h>
@@ -107,6 +109,8 @@ struct ScenePassConfig {
 	bool filteredMotion = true;     // filtered motion-vector path
 	bool motionVectors = true;      // motion-vector target pass
 	bool motionBlur = true;         // HDR velocity-gather blur
+	bool dof = true;                // depth-of-field (low single-pass / HQ bokeh)
+	bool ssr = true;                // screen-space reflections (depth-reconstructed)
 	bool ssao = true;               // half-res depth AO
 	bool bloom = true;              // HDR bloom chain
 	bool exposure = true;           // histogram meter + CPU eye adaptation
@@ -127,6 +131,8 @@ struct ScenePassConfig {
 		c.filteredMotion = false;
 		c.motionVectors = false;
 		c.motionBlur = false;
+		c.dof = false;
+		c.ssr = false;
 		c.ssao = false;
 		c.bloom = false;
 		c.exposure = false;
@@ -547,6 +553,8 @@ struct ViewportResources {
 	smvk::MsaaTarget msaa; // transient 2x color+depth for Main, resolves to hdr
 	smvk::MotionVectors motionVectors; // RG16F motion target + program + pass helper
 	smvk::MotionBlur motionBlur; // blurred HDR output + velocity-gather program + pass
+	smvk::DepthOfField dof; // DOF HDR output + CoC target + low/bokeh programs + passes
+	smvk::ScreenSpaceReflections ssr; // SSR HDR composite output + program + pass
 	smvk::ExposureMeter exposure; // histogram meter + compute program (auto-exposure)
 	smvk::Ssao ssao; // half-res raw + blurred AO targets + programs + passes
 	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
@@ -1179,6 +1187,26 @@ protected:
 	int m_motionBlurSamples = 12; // gather taps 1..32
 	float m_motionBlurMaxRadius = 24.0f; // blur clamp (px)
 	float m_motionBlurStrength = 1.0f; // shutter scale
+	// ---- Depth-of-field pass (HDR, post-motion-blur, pre-bloom) ----
+	bool m_dofEnabled = false; // opt-in: off keeps the reference sharp look
+	bool m_dofHqBokeh = false; // false = low single-pass Poisson, true = CoC + 48-tap hex bokeh
+	float m_dofFocusDistance = 8.0f; // in-focus plane (m, view distance)
+	float m_dofFocusRange = 2.0f; // sharp half-depth around focus (m)
+	float m_dofMaxRadius = 12.0f; // low-pass clamp (px)
+	float m_dofBokehMaxRadius = 24.0f; // HQ bokeh clamp (px)
+	float m_dofHighlightBoost = 1.5f; // HQ bright-tap weight multiplier
+	float m_dofHighlightThreshold = 1.0f; // HQ pre-exposure luminance knee
+	// ---- Screen-space reflections (HDR composite, post-DOF, pre-bloom) ----
+	// Opt-in plus pass: no GBuffer, so normals/Fresnel reconstruct from the
+	// 1x prepass depth. Bistro shopfront glass at street grazing angles is
+	// the calibration case (default Bistro view looks down the road at it).
+	bool m_ssrEnabled = false;
+	int m_ssrSteps = 32; // raymarch steps 1..128
+	int m_ssrRefineSteps = 4; // binary refine iterations 0..8
+	float m_ssrMaxDistance = 50.0f; // ray length (m)
+	float m_ssrThickness = 0.5f; // depth acceptance band (m)
+	float m_ssrIntensity = 1.0f; // reflection strength
+	float m_ssrF0 = 0.04f; // dielectric base reflectance (glass)
 	// ---- Artistic LUT grading (TPP-style 32^3 strip, see tonemap.h) ----
 	// content/luts/*.png: 1024x32 sRGB-encoded strips. F7 exports the
 	// neutral strip + a screenshot reference into exports/ for Photoshop.

@@ -4,7 +4,7 @@
 //
 // Usage:
 //   App [--scene sponza|bistro] [--minimal] [--filter-only] [--with csv]
-// --minimal runs the reduced pass set (no shadows/filter/blur/AO/bloom).
+// --minimal runs the reduced pass set (no shadows/filter/blur/AO/bloom/DOF/SSR).
 // --disable_control freezes the camera (no keyboard/gamepad/mouselook):
 // deterministic A/B benching at the scene's configured pose.
 
@@ -121,7 +121,7 @@ void PrintUsage(const char* prog) {
 	else if (minimal)
 		passCfg = app::ScenePassConfig::Minimal();
 	// Bisection: layer extra passes onto the base config
-	// (csv: deferred,shadows,ssao,smaa,motion,bloom,exposure,msaa,skydome,ui,cull).
+	// (csv: deferred,shadows,ssao,smaa,motion,dof,ssr,bloom,exposure,msaa,skydome,ui,cull).
 	auto applyCsv = [&](const char* csv, bool enable) {
 		if (!csv) return;
 		const std::string s = csv;
@@ -136,6 +136,8 @@ void PrintUsage(const char* prog) {
 			else if (tok == "ssao") flag = &passCfg.ssao;
 			else if (tok == "smaa") flag = &passCfg.smaa;
 			else if (tok == "motion") { passCfg.motionVectors = passCfg.motionBlur = enable; }
+			else if (tok == "dof") flag = &passCfg.dof;
+			else if (tok == "ssr") flag = &passCfg.ssr;
 			else if (tok == "bloom") flag = &passCfg.bloom;
 			else if (tok == "exposure") flag = &passCfg.exposure;
 			else if (tok == "msaa") flag = &passCfg.msaa;

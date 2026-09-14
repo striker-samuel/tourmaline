@@ -157,6 +157,59 @@ static smvk::MotionBlurDesc MakeMotionBlurDesc() {
 }
 
 // -----------------------------------------------------------------------------
+// Depth-of-field config (HDR post-process, see Engine/Rendergraph/dof.h).
+// Runs after motion blur, before exposure/bloom/tonemap; downstream passes
+// sample the DOF output when the pass runs, the sharp HDR otherwise.
+// -----------------------------------------------------------------------------
+static constexpr float DOF_FOCUS_DISTANCE = 8.0f; // in-focus plane (m)
+static constexpr float DOF_FOCUS_RANGE = 2.0f; // sharp half-depth (m)
+static constexpr float DOF_MAX_RADIUS_PX = 12.0f; // low-pass clamp (px)
+static constexpr float DOF_BOKEH_MAX_RADIUS_PX = 24.0f; // HQ bokeh clamp (px)
+static constexpr float DOF_HIGHLIGHT_BOOST = 1.5f;
+static constexpr float DOF_HIGHLIGHT_THRESHOLD = 1.0f; // pre-exposure luminance knee
+
+static smvk::DofDesc MakeDofDesc() {
+	smvk::DofDesc d{};
+	d.format = smvk::Format::RGBA16_Float; // must match the HDR target
+	d.cocFormat = smvk::Format::R8_UNorm;
+	d.hqBokeh = false;
+	d.focusDistance = DOF_FOCUS_DISTANCE;
+	d.focusRange = DOF_FOCUS_RANGE;
+	d.maxRadiusPx = DOF_MAX_RADIUS_PX;
+	d.bokehMaxRadiusPx = DOF_BOKEH_MAX_RADIUS_PX;
+	d.highlightBoost = DOF_HIGHLIGHT_BOOST;
+	d.highlightThreshold = DOF_HIGHLIGHT_THRESHOLD;
+	d.name = "dof";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
+// Screen-space reflections config (HDR composite, see
+// Engine/Rendergraph/ssr.h). Runs after DOF, before exposure/bloom/tonemap
+// so reflections meter/bloom/tonemap with the scene. Bistro shopfront glass
+// is the calibration case (default Bistro street view at grazing angles).
+// -----------------------------------------------------------------------------
+static constexpr uint32_t SSR_STEPS = 32;
+static constexpr uint32_t SSR_REFINE_STEPS = 4;
+static constexpr float SSR_MAX_DISTANCE = 50.0f;
+static constexpr float SSR_THICKNESS = 0.5f;
+static constexpr float SSR_INTENSITY = 1.0f;
+static constexpr float SSR_F0 = 0.04f; // dielectric glass
+
+static smvk::SsrDesc MakeSsrDesc() {
+	smvk::SsrDesc d{};
+	d.format = smvk::Format::RGBA16_Float; // must match the HDR target
+	d.steps = SSR_STEPS;
+	d.refineSteps = SSR_REFINE_STEPS;
+	d.maxDistance = SSR_MAX_DISTANCE;
+	d.thickness = SSR_THICKNESS;
+	d.intensity = SSR_INTENSITY;
+	d.f0 = SSR_F0;
+	d.name = "ssr";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
 // SSAO config (half-res depth-only AO, see Engine/Rendergraph/ssao.h).
 // Runs before Main; composites in the opaque ambient (default_lit.frag.hlsl
 // upsamples the half-res AO with full-res depth authority, see ao.hlsli).
@@ -1585,10 +1638,22 @@ bool SceneRenderer::Initialize() {
 					std::cerr << "[SceneRenderer] MSAA target unavailable – falling back to 1x\n";
 				}
 			}
-			if (!m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc())) {
+		if (!m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc())) {
 				std::cerr << "[SceneRenderer] Bloom chain unavailable (HDR "
+				<< renderExtent.width << "x" << renderExtent.height << ")\n";
+		}
+		{
+			smvk::DofDesc dofDesc = MakeDofDesc();
+			dofDesc.hqBokeh = m_dofHqBokeh;
+			if (!m_viewportResources.dof.Ensure(*m_context, *m_rendergraph, renderExtent, dofDesc)) {
+				std::cerr << "[SceneRenderer] DOF targets unavailable (HDR "
 					<< renderExtent.width << "x" << renderExtent.height << ")\n";
 			}
+		}
+		if (!m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc())) {
+			std::cerr << "[SceneRenderer] SSR target unavailable (HDR "
+				<< renderExtent.width << "x" << renderExtent.height << ")\n";
+		}
 		smvk::UiDesc uiDesc{};
 		uiDesc.format = LdrUnormSibling();
 		if (!m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, uiDesc)) {
@@ -1637,8 +1702,10 @@ void SceneRenderer::Shutdown() {
 		m_viewportResources.evsmSpot.Destroy(*m_rendergraph);
 		m_viewportResources.msaa.Destroy(*m_rendergraph);
 		m_viewportResources.smaa.Destroy(*m_rendergraph);
-		m_viewportResources.hdr.Destroy(*m_rendergraph);
-		m_viewportResources.motionBlur.Destroy(*m_rendergraph);
+	m_viewportResources.hdr.Destroy(*m_rendergraph);
+	m_viewportResources.motionBlur.Destroy(*m_rendergraph);
+	m_viewportResources.dof.Destroy(*m_rendergraph);
+	m_viewportResources.ssr.Destroy(*m_rendergraph);
 		m_viewportResources.motionVectors.Destroy(*m_rendergraph);
 		m_viewportResources.renderDepth.Destroy(*m_rendergraph);
 		m_viewportResources.hizDepth.Destroy(*m_rendergraph);
@@ -3750,6 +3817,12 @@ void SceneRenderer::Shutdown() {
 		rebuildMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildMsaaDesc);
 		m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc());
+		{
+			smvk::DofDesc rebuildDofDesc = MakeDofDesc();
+			rebuildDofDesc.hqBokeh = m_dofHqBokeh;
+			m_viewportResources.dof.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildDofDesc);
+		}
+		m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc());
 		smvk::UiDesc rebuildUiDesc{};
 		rebuildUiDesc.format = LdrUnormSibling();
 		m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, rebuildUiDesc);
@@ -4063,12 +4136,18 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				*m_rendergraph, renderExtent);
 			m_viewportResources.hdr.Ensure(*m_context, *m_rendergraph, renderExtent);
 			m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
-			m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
-			m_viewportResources.ssao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsaoDesc());
-			smvk::MsaaDesc frameMsaaDesc{};
-			frameMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
-			m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, frameMsaaDesc);
-			m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc());
+		m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
+		m_viewportResources.ssao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsaoDesc());
+		smvk::MsaaDesc frameMsaaDesc{};
+		frameMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
+		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, frameMsaaDesc);
+		m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc());
+		{
+			smvk::DofDesc frameDofDesc = MakeDofDesc();
+			frameDofDesc.hqBokeh = m_dofHqBokeh;
+			m_viewportResources.dof.Ensure(*m_context, *m_rendergraph, renderExtent, frameDofDesc);
+		}
+		m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc());
 		smvk::UiDesc frameUiDesc{};
 		frameUiDesc.format = LdrUnormSibling();
 		m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, frameUiDesc);
@@ -6019,6 +6098,85 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		}
 
 		// ---------------------------------------------------------------------
+		// Depth of field – HDR CoC blur (see dof.h). Runs after Main +
+		// motion blur, before exposure/bloom/tonemap so the blurred HDR is
+		// what they meter/sample. Low = single-pass 12-tap Poisson gather;
+		// HQ = full-res signed-CoC prepass + 48-tap hexagonal bokeh gather
+		// with depth-aware foreground weights + highlight boost.
+		// ---------------------------------------------------------------------
+		bool dofEmitted = false;
+		{
+			SMVK_PROFILE_CATEGORY("DOF", Optick::Category::Rendering);
+			smvk::DofDesc dofDesc = MakeDofDesc();
+			dofDesc.hqBokeh = m_dofHqBokeh;
+			dofDesc.focusDistance = m_dofFocusDistance;
+			dofDesc.focusRange = m_dofFocusRange;
+			dofDesc.maxRadiusPx = m_dofMaxRadius;
+			dofDesc.bokehMaxRadiusPx = m_dofBokehMaxRadius;
+			dofDesc.highlightBoost = m_dofHighlightBoost;
+			dofDesc.highlightThreshold = m_dofHighlightThreshold;
+			const bool dofOn = m_passes.dof && m_dofEnabled
+				&& m_viewportResources.dof.Valid()
+				&& !m_viewportResources.renderDepth.logicalView.empty()
+				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX;
+			if (dofOn) {
+				m_viewportResources.dof.AddDofPasses(
+					*m_rendergraph,
+					sceneHdrView,
+					sceneHdrBindless,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.renderDepth.bindlessIndex,
+					frameUniformsAddress,
+					linearSampler,
+					renderExtent,
+					dofDesc);
+				sceneHdrView = m_viewportResources.dof.OutputView();
+				sceneHdrBindless = m_viewportResources.dof.OutputBindless();
+				dofEmitted = true;
+			}
+		}
+
+		// ---------------------------------------------------------------------
+		// Screen-space reflections – HDR composite (see ssr.h). Runs after
+		// DOF, before exposure/bloom/tonemap so reflections meter/bloom/
+		// tonemap with the scene. Normals + Fresnel reconstruct from the
+		// 1x prepass depth (no GBuffer); Bistro shopfront glass at street
+		// grazing angles is the calibration case.
+		// ---------------------------------------------------------------------
+		bool ssrEmitted = false;
+		{
+			SMVK_PROFILE_CATEGORY("SSR", Optick::Category::Rendering);
+			smvk::SsrDesc ssrDesc = MakeSsrDesc();
+			ssrDesc.steps = (uint32_t)std::clamp(m_ssrSteps, 1, 128);
+			ssrDesc.refineSteps = (uint32_t)std::clamp(m_ssrRefineSteps, 0, 8);
+			ssrDesc.maxDistance = m_ssrMaxDistance;
+			ssrDesc.thickness = m_ssrThickness;
+			ssrDesc.intensity = m_ssrIntensity;
+			ssrDesc.f0 = m_ssrF0;
+			const bool ssrOn = m_passes.ssr && m_ssrEnabled
+				&& m_viewportResources.ssr.Valid()
+				&& !m_viewportResources.renderDepth.logicalView.empty()
+				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
+				&& m_ssrIntensity > 0.0f;
+			if (ssrOn) {
+				m_viewportResources.ssr.AddSsrPass(
+					*m_rendergraph,
+					sceneHdrView,
+					sceneHdrBindless,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.renderDepth.bindlessIndex,
+					frameUniformsAddress,
+					linearSampler,
+					renderExtent,
+					ssrDesc,
+					"SSR");
+				sceneHdrView = m_viewportResources.ssr.OutputView();
+				sceneHdrBindless = m_viewportResources.ssr.OutputBindless();
+				ssrEmitted = true;
+			}
+		}
+
+		// ---------------------------------------------------------------------
 		// Exposure histogram – log2-luminance meter of the scene HDR
 		// (see exposure.h). Runs before Bloom/Tonemap so it meters exactly
 		// what they consume. UpdateAutoExposure() downloads + adapts FIRST
@@ -6143,19 +6301,32 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				|| m_dlssLastSwapExtent.width != swapExtent.width
 				|| m_dlssLastSwapExtent.height != swapExtent.height;
 
-			// Color in = the (possibly motion-blurred) HDR the bloom chain
-			// just sampled: same target sceneHdrView tracks.
-			const bool blurOn = m_passes.motionBlur && m_motionBlurEnabled
-				&& m_viewportResources.motionBlur.Valid()
-				&& m_viewportResources.motionVectors.Valid();
+			// Color in = the (possibly motion-blurred, DOF'd, SSR'd) HDR
+			// the bloom chain just sampled: same target sceneHdrView tracks.
+			// Physical handles follow the same chain (SSR > DOF > blur > HDR).
+			smvk::ImageHandle dlssColorImage =
+				static_cast<smvk::ImageHandle>(m_viewportResources.hdr.image);
+			smvk::ImageViewHandle dlssColorView =
+				static_cast<smvk::ImageViewHandle>(m_viewportResources.hdr.view);
+			if (ssrEmitted) {
+				dlssColorImage = static_cast<smvk::ImageHandle>(m_viewportResources.ssr.image);
+				dlssColorView = static_cast<smvk::ImageViewHandle>(m_viewportResources.ssr.view);
+			} else if (dofEmitted) {
+				dlssColorImage = static_cast<smvk::ImageHandle>(m_viewportResources.dof.output.image);
+				dlssColorView = static_cast<smvk::ImageViewHandle>(m_viewportResources.dof.output.view);
+			} else {
+				const bool blurOn = m_passes.motionBlur && m_motionBlurEnabled
+					&& m_viewportResources.motionBlur.Valid()
+					&& m_viewportResources.motionVectors.Valid();
+				if (blurOn) {
+					dlssColorImage = static_cast<smvk::ImageHandle>(m_viewportResources.motionBlur.image);
+					dlssColorView = static_cast<smvk::ImageViewHandle>(m_viewportResources.motionBlur.view);
+				}
+			}
 
 			smvk::DlssFrameInputs dlssIn{};
-			dlssIn.colorInImage = blurOn
-				? static_cast<smvk::ImageHandle>(m_viewportResources.motionBlur.image)
-				: static_cast<smvk::ImageHandle>(m_viewportResources.hdr.image);
-			dlssIn.colorInView = blurOn
-				? static_cast<smvk::ImageViewHandle>(m_viewportResources.motionBlur.view)
-				: static_cast<smvk::ImageViewHandle>(m_viewportResources.hdr.view);
+			dlssIn.colorInImage = dlssColorImage;
+			dlssIn.colorInView = dlssColorView;
 			dlssIn.colorInLogical = sceneHdrView;
 			dlssIn.colorOutImage = m_viewportResources.dlss.output.image;
 			dlssIn.colorOutView = m_viewportResources.dlss.output.view;
@@ -6586,6 +6757,31 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::SliderInt("Blur samples", &m_motionBlurSamples, 1, 32);
 						ImGui::SliderFloat("Blur max radius (px)", &m_motionBlurMaxRadius, 0.0f, 64.0f);
 						ImGui::SliderFloat("Blur strength", &m_motionBlurStrength, 0.0f, 2.0f);
+					}
+				}
+				if (ImGui::CollapsingHeader("Depth of field + SSR", ImGuiTreeNodeFlags_DefaultOpen)) {
+					ImGui::Checkbox("Depth of field (HDR CoC blur)", &m_dofEnabled);
+					if (m_dofEnabled) {
+						ImGui::Checkbox("HQ bokeh (CoC + 48-tap hex gather)", &m_dofHqBokeh);
+						ImGui::SliderFloat("Focus distance (m)", &m_dofFocusDistance, 0.5f, 100.0f);
+						ImGui::SliderFloat("Focus range (m)", &m_dofFocusRange, 0.0f, 20.0f);
+						ImGui::SliderFloat("Low max radius (px)", &m_dofMaxRadius, 0.0f, 64.0f);
+						ImGui::SliderFloat("Bokeh max radius (px)", &m_dofBokehMaxRadius, 0.0f, 64.0f);
+						ImGui::SliderFloat("Highlight boost", &m_dofHighlightBoost, 1.0f, 4.0f);
+						ImGui::SliderFloat("Highlight threshold", &m_dofHighlightThreshold, 0.0f, 8.0f);
+						ImGui::TextDisabled(m_dofHqBokeh
+							? "HQ: CoC prepass + hex bokeh (foreground-weighted)."
+							: "Low: single-pass 12-tap Poisson (bleeds at silhouettes).");
+					}
+					ImGui::Checkbox("Screen-space reflections (HDR composite)", &m_ssrEnabled);
+					if (m_ssrEnabled) {
+						ImGui::SliderInt("Ray steps", &m_ssrSteps, 1, 128);
+						ImGui::SliderInt("Refine steps", &m_ssrRefineSteps, 0, 8);
+						ImGui::SliderFloat("Max distance (m)", &m_ssrMaxDistance, 1.0f, 200.0f);
+						ImGui::SliderFloat("Thickness (m)", &m_ssrThickness, 0.01f, 2.0f);
+						ImGui::SliderFloat("Intensity", &m_ssrIntensity, 0.0f, 4.0f);
+						ImGui::SliderFloat("F0 (glass 0.04)", &m_ssrF0, 0.0f, 1.0f);
+						ImGui::TextDisabled("Bistro shopfront glass at grazing angles is the test case.");
 					}
 				}
 				if (ImGui::CollapsingHeader("Forward+ lights", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -7204,6 +7400,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::Text("SSAO: half %ux%u (full %ux%u)",
 							ssao.halfExtent.width, ssao.halfExtent.height,
 							ssao.fullExtent.width, ssao.fullExtent.height);
+					if (!m_viewportResources.dof.Valid())
+						ImGui::TextDisabled("DOF targets/shaders missing - sharp HDR");
+					else
+						ImGui::TextDisabled("DOF: %s focus %.1fm range %.1fm (%s)",
+							m_dofEnabled ? "ON" : "off",
+							m_dofFocusDistance, m_dofFocusRange,
+							m_dofHqBokeh ? "HQ bokeh" : "low");
+					if (!m_viewportResources.ssr.Valid())
+						ImGui::TextDisabled("SSR target/shaders missing - no reflections");
+					else
+						ImGui::TextDisabled("SSR: %s %u steps intensity %.2f",
+							m_ssrEnabled ? "ON" : "off",
+							(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity);
 				}
 				if (ImGui::CollapsingHeader("Forward+ tiles + GfxFilter", ImGuiTreeNodeFlags_DefaultOpen)) {
 					const auto& fwd = m_viewportResources.forwardPlus;
