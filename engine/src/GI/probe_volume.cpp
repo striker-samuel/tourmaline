@@ -64,9 +64,9 @@ inline float ProbeWeight(const glm::vec3& pos, const SgProbe& p) {
 // live AT the obstacle; fp16 storage + normal offsets push them a few cm
 // past it) and the rejection ramps to zero over a 25%-of-dist margin, so
 // thin obstacles do not nuke open-air coverage. Combined per-axis as a
-// product; the sampler falls back to distance-only blending when every
-// probe of a point is visibility-rejected (coverage never collapses,
-// worst case a leak in pathological spots). Must match sggi.hlsli
+// product; points with no visibility-valid covering probe sample as
+// uncovered (coverage never silently leaks, worst case a hole the
+// coverage debug view flags). Must match sggi.hlsli
 // SgGiVisibilityFactor.
 inline float VisibilityFactor(const glm::vec3& pos, const SgProbe& p) {
 	static const float kAxes[6][3] = {
@@ -196,17 +196,15 @@ void SgGiVolume::BuildGrids() {
 bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) const {
 	for (uint32_t i = 0; i < kSgLobeCount; ++i)
 		outAmps[i] = glm::vec3(0.0f);
-	// Primary blend: visibility-weighted partition of unity (anti-leak).
-	// Safety net: when every covering probe is visibility-rejected (deep
-	// clutter), the single nearest covering probe's amps are the sample.
+	// Sole blend: visibility-weighted partition of unity (anti-leak).
+	// When every covering probe is visibility-rejected the sample
+	// returns false (uncovered) — there is deliberately NO nearest-probe
+	// fallback: it hides coverage holes behind leaked across-wall GI.
 	// Must mirror SgGiSample in sggi.hlsli: finest-first hierarchical
 	// walk with the early-out (fine probes supersede coarse once the
-	// accumulated weight is dense), primary blend, single-nearest
-	// fallback.
+	// accumulated weight is dense), primary blend, no fallback.
 	glm::vec3 ampsVis[kSgLobeCount] = {};
 	float weightVis = 0.0f;
-	float bestNearW = 0.0f;
-	uint32_t bestNearIdx = 0;
 	for (int lvl = int(levelCount) - 1; lvl >= 0; --lvl) {
 		if (lvl >= int(levelGrids_.size()))
 			continue;
@@ -230,13 +228,6 @@ bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) c
 			const float w = ProbeWeight(pos, p);
 			if (w <= 0.0f)
 				continue;
-			const glm::vec3 d = pos - p.position;
-			const float dist2 = glm::dot(d, d);
-			const float wn = 1.0f / std::max(dist2, 1e-4f);
-			if (wn > bestNearW) {
-				bestNearW = wn;
-				bestNearIdx = probeIdx;
-			}
 			const float wv = w * VisibilityFactor(pos, p);
 			if (wv <= 0.0f)
 				continue;
@@ -255,16 +246,8 @@ bool SgGiVolume::Sample(const glm::vec3& pos, glm::vec3 outAmps[kSgLobeCount]) c
 			outAmps[i] = ampsVis[i] * inv;
 		return true;
 	}
-	// Fallback (deep clutter where every covering probe is
-	// visibility-rejected): the single nearest covering probe's amps.
-	// Mirrors sggi.hlsli (the old 4-nearest blend cost ~20 ALU per probe
-	// in the hot loop for a path that essentially never fires).
-	if (bestNearW > 0.0f) {
-		const SgProbe& p = probes[bestNearIdx];
-		for (uint32_t i = 0; i < kSgLobeCount; ++i)
-			outAmps[i] = p.amps[i];
-		return true;
-	}
+	// No fallback (mirrors sggi.hlsli): uncovered stays uncovered so
+	// coverage holes read as holes (magenta/black) instead of leaks.
 	return false;
 }
 

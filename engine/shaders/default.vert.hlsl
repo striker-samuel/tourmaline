@@ -8,6 +8,10 @@ struct VSIn
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
+    // Location 5 = StaticVertexFormat's TexCoord1 (lightmap UV; appended
+    // last so 0..4 stay stable). Shaders that don't declare it just
+    // ignore the attribute.
+    [[vk::location(5)]] float2 lightmapUv : TEXCOORD1;
     uint instanceID : SV_InstanceID;
 };
 struct VSOut
@@ -19,6 +23,13 @@ struct VSOut
     [[vk::location(2)]] float3 worldPos : TEXCOORD1;
     [[vk::location(3)]] float3 normal : TEXCOORD2;
     [[vk::location(4)]] float4 tangent : TANGENT;
+    [[vk::location(5)]] float2 lightmapUv : TEXCOORD3;
+    // Lightmap chunk (flat). The direct-draw path has no draws ring to
+    // resolve a per-mesh chunk from, so direct draws are never
+    // lightmapped (0xFFFFFFFF = none); the filtered path (gfxfiltered.
+    // vert) carries the real per-draw chunk. Static/dynamic GI
+    // separation keys off this + FrameUniforms.lmEnabled.
+    [[vk::location(6)]] nointerpolation uint lmChunk : TEXCOORD4;
 };
 
 VSOut mainVS(VSIn IN)
@@ -47,6 +58,8 @@ VSOut mainVS(VSIn IN)
     // material carries layerMaterials (see default_lit.frag.hlsl).
     OUT.color = IN.color;
     OUT.uv = IN.uv;
+    OUT.lightmapUv = IN.lightmapUv;
+    OUT.lmChunk = 0xFFFFFFFFu;
 
     // Properly transform normal/tangent to world space.
     // - Normal uses inverse-transpose of upper 3x3 to survive non-uniform scale.

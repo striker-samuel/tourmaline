@@ -28,6 +28,10 @@ static constexpr uint32_t MAX_LIGHTS = 64;
 // slots in the bindless pools (see Memory/pool.h static_assert).
 static constexpr uint32_t MAX_TEXTURES = 8192;
 static constexpr uint32_t MAX_SAMPLERS = 8;
+// 3D volume mirror binding (kBinding_VolumeTextures) reuses the SAME slot
+// space as MAX_TEXTURES (one mirror write per 3D view), so it needs the
+// same array bound.
+static constexpr uint32_t MAX_VOLUME_TEXTURES = 8192;
 static constexpr uint32_t MAX_MATERIALS = 4096;
 static constexpr uint32_t MAX_SHADOW_SAMPLERS = 8;
 static constexpr uint32_t MAX_COLOR_ATTACHEMNTS = 4096;
@@ -1180,7 +1184,14 @@ namespace smvk {
 		kBinding_StorageImages = 2,
 		kBinding_EngineGlobals = 3, // read-only StructuredBuffer<EngineGlobals>, one slice per frame in flight
 		kBinding_TextureFeedback = 4, // RWStructuredBuffer<uint>: GPU texture-streaming feedback (one uint per bindless slot, rewritten per flight slice)
-		kBinding_NumBindings = 5 // this should be # of all other
+		// 3D volume textures (SG probe grids): sampled-image array whose
+		// descriptors mirror the SAME bindless slots as kBinding_Textures
+		// — a Texture3D view is reachable through either binding at its
+		// slot index. HLSL: Texture3D volumeTextures[] (common.hlsli).
+		// Kept a separate binding so Texture2D[]-typed code keeps
+		// compiling with 3D views in the pool.
+		kBinding_VolumeTextures = 5,
+		kBinding_NumBindings = 6 // this should be # of all other
 	};
 
 	struct QueueFamilyIndices {

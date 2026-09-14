@@ -59,9 +59,9 @@ float SgGiProbeWeight(float3 pos, SgProbeGpu p)
 // obstacle on an axis is behind a wall from the probe's viewpoint. The
 // recorded distance gets a SLACK (surface points live AT the obstacle)
 // and the rejection ramps to zero over a 25%-of-dist margin, so thin
-// obstacles do not nuke open-air coverage. Per-axis product; SgGiSample
-// falls back to distance-only blending when every covering probe is
-// visibility-rejected. Mirrors VisibilityFactor in probe_volume.cpp.
+// obstacles do not nuke open-air coverage. Per-axis product; points with
+// no visibility-valid covering probe sample as uncovered (no fallback).
+// Mirrors VisibilityFactor in probe_volume.cpp.
 float SgGiVisibilityFactor(float3 pos, SgProbeGpu p)
 {
     static const float3 kAxes[6] = {
@@ -93,16 +93,16 @@ float SgGiVisibilityFactor(float3 pos, SgProbeGpu p)
     return w;
 }
 
-// Gathers + blends probe amplitudes at a world position. Primary blend:
-// visibility-weighted partition of unity (anti-leak). Safety net: when
-// every covering probe is visibility-rejected (deep clutter), fall back
-// to a kernel-weighted blend of the kNearest COVERING probes (blending
-// occluded far-side probes wholesale leaks their dark radiance; the
-// nearest few are almost always same-side "own brick" probes, and the
-// weighted blend keeps the patch smooth instead of one-probe dots).
-// The debug outs feed the F8 diagnostics view (weight sum, contributor
-// count, fallback flag; debugBestLevel = level of the strongest wv
-// contributor for the dominant-level view). Mirrors SgGiVolume::Sample.
+// Gathers + blends probe amplitudes at a world position. Primary (and
+// only) blend: visibility-weighted partition of unity (anti-leak). When
+// no visibility-valid probe covers the point the sample returns false
+// (uncovered reads black / magenta in the debug views) — there is NO
+// nearest-probe fallback: it hides coverage holes behind leaked bright
+// GI from across walls, which is exactly the white-blob failure.
+// The debug outs feed the F8 diagnostics views (weight sum, contributor
+// count, fallback flag, always false; debugBestLevel = level of the
+// strongest wv contributor for the dominant-level view). Mirrors
+// SgGiVolume::Sample.
 // Debug level isolation: frame.giDebug packs mode (low byte) + level
 // (byte 1); mode 3 gathers ONLY that level (level-leak bisect).
 bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
@@ -140,14 +140,9 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
     [unroll]
     for (uint l = 0; l < SG_GI_MAX_LEVELS; ++l)
         dbgLevelW[l] = 0.0;
-    // Fallback bookkeeping: single NEAREST covering probe (idx + invsq
-    // weight). The old 4-slot sorted insert cost ~20 ALU per probe for a
-    // fallback that fires on ~0% of pixels; one compare is the same
-    // information for a blending fallback that has to be smooth anyway
-    // via the coverage kernel, and the fallback stays magenta-flagged in
-    // the debug views when it does fire.
-    float bestNearW = 0.0;
-    uint bestNearIdx = 0;
+    // Fallback bookkeeping removed (coverage-test mode): with the
+    // visibility-weighted blend finding nothing, returning false exposes
+    // the hole (magenta/black) instead of leaking a wall-ignoring probe.
     // HIERARCHICAL walk, finest level first, with an early-out: fine
     // probes SUPERSEDE coarse ones. Once the accumulated partition-of-
     // unity weight is dense enough (>= kGiCoverage), coarser levels are
@@ -187,18 +182,7 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
             [branch]
             if (w <= 0.0)
                 continue;
-            const float3 d = pos - p.posRadius.xyz;
-            const float dist2 = dot(d, d);
-            // nearest-covering-probe bookkeeping (fallback blend)
-            const float wn = 1.0 / max(dist2, 1e-4);
-            [branch]
-            if (wn > bestNearW)
-            {
-                bestNearW = wn;
-                bestNearIdx = probeIdx;
-            }
-            const float wv = w;/* * SgGiVisibilityFactor(pos, p);
-*/            //const float wv = w * SgGiVisibilityFactor(pos, p);
+            const float wv = w * SgGiVisibilityFactor(pos, p);
             [branch]
             if (wv <= 0.0)
                 continue;
@@ -244,19 +228,10 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
             amps[i] = ampsVis[i] * inv;
         return true;
     }
-    // Fallback: single nearest covering probe (rare: every covering
-    // probe was visibility-rejected). Its amps ARE the fallback blend —
-    // no list to normalize, and the debug views flag it magenta/violet.
-    [branch]
-    if (bestNearW > 0.0)
-    {
-        debugFellBack = true;
-        const SgProbeGpu p = frame.giProbes.Get().probes[bestNearIdx];
-        [unroll]
-        for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
-            amps[lobe] = SgGiProbeAmp(p.amp, lobe);
-        return true;
-    }
+    // No fallback: uncovered stays uncovered (returns false; the caller
+    // keeps sky-IBL ambient and the debug views flag it magenta).
+    // debugFellBack is kept as an output (always false) so existing
+    // callers and the violet-fallback debug branch keep compiling.
     [unroll]
     for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
         amps[lobe] = float3(0, 0, 0);
@@ -293,6 +268,73 @@ float3 SgGiDiffuseIrradiance(float3 amps[SG_GI_LOBES], float3 n)
     for (uint i = 0; i < SG_GI_LOBES; ++i)
         sum += amps[i] * SgGiCosKernel(dot(SG_GI_AXES[i], n));
     return sum;
+}
+
+// Weighted probe disagreement (bake-variance bisect): re-walks the volume
+// exactly like SgGiSample (same cells, same Wendland weight, same
+// visibility factor) but accumulates the visibility-weighted mean and
+// variance of the ACCEPTED probes' diffuse irradiances E(n), returning
+// the relative stddev sqrt(Var) / max(mean, eps). Flat/boring on smooth
+// regions => neighboring probes agree; lighting up in the same blobs as
+// the irradiance view => adjacent probes baked very different irradiance
+// (high-variance probe radiance, not a coverage/interpolation fault).
+// Debug-only: unpacks + evaluates every accepted probe, no early-out.
+// Returns 0 when uncovered (the caller flags that magenta via
+// SgGiSample's giCovered, same as the other views).
+float SgGiDisagreement(FrameUniforms frame, float3 pos, float3 n)
+{
+    float sumW = 0.0;
+    float sumL = 0.0;
+    float sumL2 = 0.0;
+    const SgGiGrid grid = frame.giGrid.Get();
+    const uint levelCount = min(grid.misc.x, (uint)SG_GI_MAX_LEVELS);
+    [branch]
+    if (levelCount == 0)
+        return 0.0;
+    [loop]
+    for (int lvl = int(levelCount) - 1; lvl >= 0; --lvl)
+    {
+        const SgGiLevel lg = grid.levels[lvl];
+        const float3 rel = pos - lg.volumeMin.xyz;
+        const float3 cellF = floor(rel / lg.cellSize.x);
+        const int3 c = clamp(int3(cellF), int3(0, 0, 0), int3(lg.dims.xyz) - 1);
+        const uint cellIdx = uint(c.x)
+            + lg.dims.x * (uint(c.y) + lg.dims.y * uint(c.z));
+        const uint2 range = frame.giCells.Get().cells[lg.offsets.x + cellIdx];
+        const uint listCount = min(range.y, 64u);
+        [loop]
+        for (uint i = 0; i < listCount; ++i)
+        {
+            const uint probeIdx = frame.giIndices.Get().index[lg.offsets.y + range.x + i];
+            const SgProbeGpu p = frame.giProbes.Get().probes[probeIdx];
+            [branch]
+            if ((p.vis.w & 1u) == 0u)
+                continue; // invalid
+            const float w = SgGiProbeWeight(pos, p);
+            [branch]
+            if (w <= 0.0)
+                continue;
+            const float wv = w * SgGiVisibilityFactor(pos, p);
+            [branch]
+            if (wv <= 0.0)
+                continue;
+            float3 probeAmp[SG_GI_LOBES];
+            [unroll]
+            for (uint lobe = 0; lobe < SG_GI_LOBES; ++lobe)
+                probeAmp[lobe] = SgGiProbeAmp(p.amp, lobe);
+            const float3 E = SgGiDiffuseIrradiance(probeAmp, n);
+            const float L = dot(E, float3(0.2126, 0.7152, 0.0722));
+            sumW += wv;
+            sumL += wv * L;
+            sumL2 += wv * L * L;
+        }
+    }
+    [branch]
+    if (sumW <= 1e-6)
+        return 0.0;
+    const float mean = sumL / sumW;
+    const float variance = max(sumL2 / sumW - mean * mean, 0.0);
+    return sqrt(variance) / max(mean, 1e-3);
 }
 
 // Rough GGX specular response: the GGX reflection kernel K(w) = D(h(w))/4

@@ -157,18 +157,23 @@ struct FilterPush {
 };
 static_assert(sizeof(FilterPush) == 200);
 
-// Filtered-path VS tail push (gfxfiltered.vert.hlsl, 24 bytes).
+// Filtered-path VS tail push (gfxfiltered.vert.hlsl, 40 bytes).
 // Pushed at kFilteredVsPushOffset (the main pass' unused prevModel scratch,
-// bytes 192..216) so the full 256B scene push stays intact for the fragment
+// bytes 192..232) so the full 256B scene push stays intact for the fragment
 // shader. The VS resolves viewProj through the render-view slab.
+// lmChunks: per-gfx-mesh lightmap chunk table BDA; lmChunksValid = 0
+// (gfxfiltered.vert then emits "no chunk" for every draw).
 static constexpr uint32_t kFilteredVsPushOffset = 192;
 struct FilteredVsPush {
-	uint64_t draws = 0;
-	uint64_t renderViews = 0;
-	uint32_t renderViewIndex = 0;
-	uint32_t pad = 0;
+	uint64_t draws = 0;          // 0
+	uint64_t renderViews = 0;    // 8
+	uint64_t lmChunks = 0;       // 16 per-gfx-mesh chunk table BDA
+	uint32_t renderViewIndex = 0; // 24
+	uint32_t lmChunksValid = 0;  // 28 0 = no table ("no chunk" everywhere)
+	uint32_t pad = 0;            // 32
+	uint32_t pad2 = 0;           // 36
 };
-static_assert(sizeof(FilteredVsPush) == 24);
+static_assert(sizeof(FilteredVsPush) == 40);
 
 // One indirect command range per material (commands sorted by material).
 struct MaterialRange {

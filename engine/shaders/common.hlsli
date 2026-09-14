@@ -18,6 +18,11 @@ SamplerState samplers[];
 [[vk::binding(1, 0)]] // aliases to samplers! CAREFUL
 SamplerComparisonState comparisonSamplers[];
 
+// 3D volume textures (SG probe grids, kBinding_VolumeTextures): slots
+// mirror the bindless texture indices; only 3D views are written here.
+[[vk::binding(5, 0)]]
+Texture3D volumeTextures[];
+
 // Texture-streaming GPU feedback (Skull & Bones style, see
 // texture_streaming.hlsli): one uint per bindless texture slot, published
 // by materials with InterlockedMin. Always bound (RHI-owned per-flight
@@ -129,6 +134,12 @@ struct EnvironmentFrameData
 // sampling/evaluation helpers live in sggi.hlsli (consumers include it
 // after common.hlsli).
 #include "sggi_types.hlsli"
+
+// SG lightmap + regular probe-volume types (Engine/GI/lightmap.h +
+// regular_volume.h mirrors): chunk descriptors, volume OBBs. Included so
+// FrameUniforms can carry typed pointers; helpers live in
+// sg_lightmap.hlsli / sg_regular.hlsli.
+#include "sg_lightmap_types.hlsli"
 
 struct LightBuffer
 {
@@ -291,8 +302,8 @@ struct ForwardPlusDecalTileIndexBuffer
 // into the deferred-shadow buffers (deferredshadow_types.hlsli above).
 // Offsets mirror the C++ FrameUniforms in App/scene_renderer.h (asserted
 // there): env at 512, deferred-shadow fields at 640, SG-GI fields at 672,
-// decal fields at 720 (release prefix = 752 B);
-// visualizer fields (DS_DEBUG_VIZ only) follow at 752.
+// decal fields at 720, lightmap/regular-volume fields at 752 (release
+// prefix = 1056 B); visualizer fields (DS_DEBUG_VIZ only) follow at 1056.
 struct FrameUniforms
 {
     float4x4 view;
@@ -366,18 +377,39 @@ struct FrameUniforms
     vk::BufferPointer<ForwardPlusDecalTileIndexBuffer> decalTileIndices; // 736
     uint decalCount;                                         // 744 0 = decals off
     uint decalMaxPerTile;                                    // 748 list stride
+    // ---- SG 2D lightmaps (STATIC geometry; Engine/GI/lightmap.h). One
+    // shared RGBA16F atlas across 9 bindless 2D textures; the chunk
+    // descriptor array carries per-mesh rect transforms + lobe counts.
+    // Static/dynamic separation: draws flagged lightmapped (materialId
+    // bit30, see default_lit_body) sample the atlas; everything else
+    // (dynamic objects) samples the regular 3D probe grids below or the
+    // fallback ambient. ----
+    vk::BufferPointer<SgLmChunkBuffer> lmChunks;             // 752 chunk descriptors
+    uint lmLayers[9];                                        // 760 atlas bindless slots
+    uint lmChunkCount;                                       // 796 chunks in the buffer
+    uint lmEnabled;                                          // 800 1 = lightmap branch active
+    uint lmPad;                                               // 804 (8-align for the pointer)
+    // ---- SG regular 3D probe volumes (DYNAMIC objects; Ready-at-Dawn
+    // grids, Engine/GI/regular_volume.h). Hand-placed artist OBBs with
+    // density params, baked per volume; 7 RGBA16F 3D textures each,
+    // hardware trilinear filtering between neighboring probes. ----
+    vk::BufferPointer<SgRegularObbBuffer> regObbs;           // 808 OBB array
+    uint regLayers[56];                                       // 816 8 volumes x 7 layer slots
+    uint regCount;                                             // 1040 active volumes
+    uint regEnabled;                                           // 1044 1 = grid branch active
+    uint2 regPad;                                              // 1048 (16-align tail)
     // ---- Deferred-shadow debug visualizers (paper 5.3/5.4). Debug-build
     // only (DS_DEBUG_VIZ): tail fields so the release layout (752 B) is a
     // strict prefix of the debug layout. The light-scoped modes
     // re-query the phase-1 (CPU) and phase-2 (GPU) TileGroup masks;
     // dsDebug* pick mode / light / flags / heat scale.
 #if defined(DS_DEBUG_VIZ)
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 752 phase-1 masks
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 760 phase-2 masks
-    uint dsDebugMode;      // 768 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
-    uint dsDebugLight;     // 772 selected light (sorted index)
-    uint dsDebugFlags;     // 776 bit0 = blend over lit
-    uint dsDebugCountCeil; // 780 count-heat ceiling (lights)
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 1056 phase-1 masks
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 1064 phase-2 masks
+    uint dsDebugMode;      // 1072 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
+    uint dsDebugLight;     // 1076 selected light (sorted index)
+    uint dsDebugFlags;     // 1080 bit0 = blend over lit
+    uint dsDebugCountCeil; // 1084 count-heat ceiling (lights)
 #endif
 };
 

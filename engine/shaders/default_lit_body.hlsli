@@ -15,6 +15,10 @@ struct PSIn
     float3 worldPos : TEXCOORD1;
     float3 normal : TEXCOORD2;
     float4 tangent : TANGENT;
+    float2 lightmapUv : TEXCOORD3; // location 5: lightmap UV (uv2 stream)
+    // Location 6: lightmap chunk (flat, per-draw; 0xFFFFFFFF = none —
+    // dynamic/unbaked draws sample the 3D probe grids instead).
+    nointerpolation uint lmChunk : TEXCOORD4;
     bool isFrontFace : SV_IsFrontFace;
 };
 // NOTE: deliberately NO SV_Depth output. Bench data (RTX 5070 Ti, bistro
@@ -927,10 +931,77 @@ PSOut mainPS(PSIn IN)
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, shadingRoughness);
     float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env) * occlusion * ao;
 
+    // ---------------------------------------------------------------
+    // Static/dynamic baked-GI separation (see sg_lightmap.hlsli +
+    // sg_regular.hlsli):
+    //   - STATIC draws (per-draw lmChunk from gfxfiltered.vert) sample the
+    //     2D SG lightmap atlas: hardware-bilinear amplitude filtering,
+    //     Hill-fitted diffuse + warped-NDF specular.
+    //   - DYNAMIC draws (no chunk) inside an artist OBB sample the regular
+    //     3D SG probe grids: hardware-trilinear between neighboring probes.
+    // Both carry the same SUN-BOUNCE field as the adaptive probe volume
+    // below and ADD on top of the analytic sky ambient (same convention;
+    // a lightmapped pixel skips the probe volume so nothing doubles).
+    // ---------------------------------------------------------------
+    bool lmSampled = false;
+    const uint lmDbgMode = frame.giDebug & 0xffu;
+    if (frame.lmEnabled != 0u && IN.lmChunk != 0xFFFFFFFFu)
+    {
+        float3 lmAmps[SG_LM_MAX_LOBES];
+        if (SgLmSampleChunk(frame, IN.lmChunk, IN.lightmapUv, lmAmps))
+        {
+            const uint lmLobes = uint(
+                frame.lmChunks.Get().chunks[IN.lmChunk].atlasInfo.z);
+            const float lmScale = max(frame.giIntensity, 0.0f);
+            const float3 lmE = SgLmDiffuseIrradiance(lmAmps, lmLobes, N) * lmScale;
+            // F8 debug view (shared with the probe path): flat irradiance.
+            if (lmDbgMode == 1u)
+            {
+                OUT.outColor = float4(SanitizeHdr(lmE
+                    * max(frame.exposure, 1e-6f)), 1.0f);
+                return OUT;
+            }
+            lmSampled = true;
+            ambient += kD * baseColor * (lmE / PI) * occlusion * ao;
+            const float lmRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
+            if (lmRoughW > 0.0f)
+            {
+                const float3 lmSpec = SgLmSpecular(lmAmps, lmLobes, N, V,
+                    shadingRoughness, Fenv) * lmScale * occlusion * ao;
+                ambientSpec = lerp(ambientSpec, lmSpec, lmRoughW);
+            }
+        }
+    }
+    if (!lmSampled && frame.regEnabled != 0u)
+    {
+        float3 regAmps[SG_GI_LOBES];
+        if (SgRegularSampleFrame(frame, IN.worldPos, regAmps))
+        {
+            const float regScale = max(frame.giIntensity, 0.0f);
+            const float3 regE = SgGiDiffuseIrradiance(regAmps, N) * regScale;
+            if (lmDbgMode == 1u)
+            {
+                OUT.outColor = float4(SanitizeHdr(regE
+                    * max(frame.exposure, 1e-6f)), 1.0f);
+                return OUT;
+            }
+            lmSampled = true; // dynamic-grid sample: also skips probes below
+            ambient += kD * baseColor * (regE / PI) * occlusion * ao;
+            const float regRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
+            if (regRoughW > 0.0f)
+            {
+                const float3 regSpec = SgGiSpecular(regAmps, R, shadingRoughness)
+                    * regScale * Fenv * occlusion * ao;
+                ambientSpec = lerp(ambientSpec, regSpec, regRoughW);
+            }
+        }
+    }
+
     // Baked SG-GI: sun-bounce only, added on top of the analytic sky
     // ambient (the probes carry no sky; uncovered pixels simply keep
-    // the sky IBL with no seam).
-    if (frame.giEnabled != 0u)
+    // the sky IBL with no seam). Lightmapped / grid-covered pixels skip
+    // this (their field is already applied above — no double counting).
+    if (frame.giEnabled != 0u && !lmSampled)
     {
         float3 giAmps[SG_GI_LOBES];
         float giWeightSum = 0.0;
@@ -950,6 +1021,18 @@ PSOut mainPS(PSIn IN)
         // bisect), 4 = dominant level palette (level of the strongest
         // weighted contributor: red L0 -> yellow L1 -> green L2 ->
         // cyan L3 -> blue L4 -> violet L5 -> pink L6 -> white L7).
+        // 5 = effective-coverage palette (visibility-valid contributor
+        // count: magenta 0 -> red 1 -> yellow 2 -> green 3-4 -> cyan 5+;
+        // target >= 3-4 per ordinary surface point).
+        // 6 = constant-amplitude binary test: every accepted probe
+        // returns the same reference radiance, so the normalized blend
+        // MUST be uniform wherever covered. Smooth floor => the
+        // interpolation is fine and the baked data is noisy; surviving
+        // blotches => weights/visibility selection still modulating.
+        // 7 = weighted probe disagreement: visibility-weighted relative
+        // stddev of the accepted probes' irradiances (black = agreement,
+        // green -> yellow -> red = probes disagree; same blobs as the
+        // irradiance view => high-variance bake, not coverage).
         // Magenta = nothing covered; the green channel dropping to zero
         // with low blue in the dotted regions = starving blends.
         if (giMode != 0u)
@@ -991,10 +1074,58 @@ PSOut mainPS(PSIn IN)
                     * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
                 return OUT;
             }
-            // Fallback pixels read as solid magenta (binary flag): anywhere
-            // the visibility-weighted blend found nothing and the shader
-            // fell back to inverse-square nearest probes (visibility
-            // ignored). Magenta region == fallback-placed GI.
+            if (giMode == 5u)
+            {
+                // Effective-coverage palette: visibility-valid contributor
+                // count at this pixel. Magenta = zero coverage (hole),
+                // red/yellow = fragile (1-2), green = minimum healthy
+                // (3-4), cyan = comfortable (5+).
+                float3 cov;
+                if (giContributors == 0u)
+                    cov = float3(1.0f, 0.0f, 1.0f);
+                else if (giContributors == 1u)
+                    cov = float3(1.0f, 0.0f, 0.0f);
+                else if (giContributors == 2u)
+                    cov = float3(1.0f, 1.0f, 0.0f);
+                else if (giContributors <= 4u)
+                    cov = float3(0.0f, 1.0f, 0.0f);
+                else
+                    cov = float3(0.0f, 1.0f, 1.0f);
+                OUT.outColor = float4(SanitizeHdr(cov
+                    * (0.5f / max(frame.exposure, 1e-6f))), 1.0f);
+                return OUT;
+            }
+            if (giMode == 6u)
+            {
+                // Binary interpolation test: one constant reference set
+                // for every accepted probe. Uncovered pixels still read
+                // magenta via the !giCovered path above.
+                float3 flatAmps[SG_GI_LOBES];
+                [unroll]
+                for (uint i = 0; i < SG_GI_LOBES; ++i)
+                    flatAmps[i] = float3(0.5f, 0.5f, 0.5f);
+                const float3 flatE = SgGiDiffuseIrradiance(flatAmps, N)
+                    * max(frame.giIntensity, 0.0f) * max(frame.exposure, 1e-6f);
+                OUT.outColor = float4(SanitizeHdr(flatE), 1.0f);
+                return OUT;
+            }
+            if (giMode == 7u)
+            {
+                // Bake-variance heat: black = probes agree, green ->
+                // yellow -> red = accepted probes disagree (0.5 relative
+                // stddev saturates; 50% disagreement is already terrible).
+                const float rsd = SgGiDisagreement(frame, IN.worldPos, N);
+                const float t = saturate(rsd / 0.5f);
+                const float3 heat = lerp(float3(0.0f, 0.35f, 0.0f),
+                    float3(1.0f, 0.0f, 0.0f), smoothstep(0.05f, 1.0f, t));
+                OUT.outColor = float4(SanitizeHdr(heat
+                    * (0.5f / max(frame.exposure, 1e-6f))), 1.0f);
+                return OUT;
+            }
+            // Fallback flag (legacy: the nearest-probe fallback is removed,
+            // so this never fires — kept so old captures still decode).
+            // Uncovered pixels are magenta via the !giCovered path above
+            // and mode 5's zero-contributor bucket.
             if (giFellBack)
             {
                 OUT.outColor = float4(SanitizeHdr(float3(1.0f, 0.0f, 1.0f)

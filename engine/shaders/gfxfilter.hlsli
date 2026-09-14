@@ -70,6 +70,13 @@ struct GfxDraw
 };
 struct GfxDraws { GfxDraw draws[GFX_MAX_DRAWS]; };
 
+// Per-gfx-mesh lightmap chunk index (UINT32_MAX = no lightmap). Built by
+// the app after RegisterWorldMeshes (meshMap_ gives world->gfx meshes) and
+// read by gfxfiltered.vert to pass a flat chunk id to the lit fragment
+// (static/dynamic GI separation: chunk draws sample the 2D SG atlas,
+// the rest sample the 3D probe grids / fallback ambient).
+struct GfxLmChunks { uint chunk[GFX_MAX_DRAWS]; };
+
 struct GfxFiltered { uint idx[GFX_MAX_FILTERED]; };
 
 struct GfxIndirectCmd

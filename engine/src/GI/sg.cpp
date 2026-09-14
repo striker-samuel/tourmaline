@@ -90,6 +90,26 @@ glm::vec3 SgSpecular(const glm::vec3* amps, const glm::vec3& r, float roughness)
 }
 
 void SgFitAccumulator::Solve(glm::vec3 outAmps[kSgLobeCount]) const {
+	// Production path: unconditional diagonal projection (Ready-at-Dawn
+	// style). rhs[i] / selfEnergy with a non-negativity clamp. L >= 0
+	// and G_i >= 0 keep this naturally non-negative; no Gram, no
+	// iteration, nothing that can explode on sun-pool contrast.
+	for (uint32_t i = 0; i < kSgLobeCount; ++i)
+		outAmps[i] = glm::vec3(0.0f);
+	if (sampleCount == 0)
+		return;
+	const float self = SgSelfEnergy();
+	constexpr float kFp16Max = 65504.0f;
+	for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+		glm::vec3 v = rhs[i] / self;
+		v = glm::clamp(v, glm::vec3(0.0f), glm::vec3(kFp16Max));
+		if (!std::isfinite(v.x + v.y + v.z))
+			v = glm::vec3(0.0f);
+		outAmps[i] = v;
+	}
+}
+
+void SgFitAccumulator::SolveNnls(glm::vec3 outAmps[kSgLobeCount]) const {
 	for (uint32_t i = 0; i < kSgLobeCount; ++i)
 		outAmps[i] = glm::vec3(0.0f);
 	if (sampleCount == 0)

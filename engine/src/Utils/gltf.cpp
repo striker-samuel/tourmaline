@@ -1130,6 +1130,7 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 	// below: a missing NORMAL/TANGENT must never keep a placeholder, or
 	// normal-mapped lighting breaks on that primitive.
 	const bool hasUVs = primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end();
+	const bool hasUV2s = primitive.attributes.find("TEXCOORD_1") != primitive.attributes.end();
 	const bool hasAuthoredTangents = primitive.attributes.find("TANGENT") != primitive.attributes.end();
 	const bool hasAuthoredNormals = primitive.attributes.find("NORMAL") != primitive.attributes.end();
 	const bool hasColors = primitive.attributes.find("COLOR_0") != primitive.attributes.end();
@@ -1141,6 +1142,7 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 		v.pos = readVec3ForientationFix(model, posAcc, i, coordFix);
 		v.color = { 1.0f, 1.0f, 1.0f, 1.0f };
 		v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
+		v.texCoord2 = { 0.0f, 0.0f }; // lightmap UV (TEXCOORD_1), if present
 		v.normal = { 0.0f, 1.0f, 0.0f }; // replaced below if normals provided/generated
 		v.tangent = { 1.0f, 0.0f, 0.0f, 1.0f }; // replaced below if tangents provided/generated
 		data.vertices.push_back(v);
@@ -1163,6 +1165,17 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 		for (size_t i = 0; i < uvAcc.count && i < data.vertices.size(); ++i) {
 			glm::vec2 uv = readVec2F(model, uvAcc, i);
 			data.vertices[i].texCoord = uv; // flip V if your shader expects it: uv.y = 1.0f - uv.y;
+		}
+	}
+
+	// Lightmap UV channel (TEXCOORD_1): authored lightmap UVs, or zeros
+	// when the scene carries none (GenerateLightmapCharts overwrites these
+	// with its expanded runs at bake time; the shader gates on the per-draw
+	// flag, never on the value).
+	if (hasUV2s) {
+		auto& uv2Acc = model.accessors[primitive.attributes.at("TEXCOORD_1")];
+		for (size_t i = 0; i < uv2Acc.count && i < data.vertices.size(); ++i) {
+			data.vertices[i].texCoord2 = readVec2F(model, uv2Acc, i);
 		}
 	}
 

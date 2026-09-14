@@ -10,4 +10,6 @@
 #include "common.hlsli"
 #include "environment.hlsli"
 #include "sggi.hlsli"
+#include "sg_lightmap.hlsli"
+#include "sg_regular.hlsli"
 #include "default_lit_body.hlsli"

@@ -380,3 +380,11 @@ FodyWeavers.xsd
 #Opencode
 # opencode likes to build here
 /build
+
+# --- Bakery compiled binaries (proprietary, never push) ---
+# Unity Bakery build outputs live here and must stay local-only.
+/external/bakery-compiled/
+/external/bakery_compiled/
+
+# Local agent/dev notes (documentation not for the repo).
+/notes/

@@ -187,7 +187,7 @@ bool SerializeCluster(
 		PutU32(blob, lod.triCount);
 		PutF32(blob, lod.acmr);
 		// Vertex/index payloads (AoS StaticVertex, u32 indices).
-		static_assert(sizeof(StaticVertex) == 64, "StaticVertex layout changed");
+		static_assert(sizeof(StaticVertex) == 72, "StaticVertex layout changed");
 		blob.insert(blob.end(),
 			reinterpret_cast<const uint8_t*>(upload->vertices.data()),
 			reinterpret_cast<const uint8_t*>(upload->vertices.data()) +
@@ -583,13 +583,17 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		lod.acmr = c.f32();
 		if (!c.ok)
 			return fail("truncated mesh metadata: " + e->path);
-		// Vertex payload: current 64-byte StaticVertex (vec4 color) or the
-		// legacy 60-byte layout (vec3 color, pre-layered-materials paks).
-		// Legacy entries upconvert with alpha = 1. Disambiguate by
-		// validating the trailing meshlet section to the exact blob end
-		// (small meshes can fit both sizes when meshlet data follows).
+		// Vertex payload: current 72-byte StaticVertex (vec4 color +
+		// texCoord2 lightmap UV), the 64-byte legacy layout (vec4 color,
+		// no lightmap UV) or the 60-byte legacy layout (vec3 color,
+		// pre-layered-materials paks). Legacy entries upconvert with
+		// alpha = 1 and texCoord2 = 0. Disambiguated by validating the
+		// trailing meshlet section to the exact blob end (small meshes
+		// can fit multiple sizes when meshlet data follows).
+		static constexpr size_t kLegacyStaticVertexSizeV2 = 64;
 		static constexpr size_t kLegacyStaticVertexSize = 60;
 		const size_t newVertBytes = static_cast<size_t>(vertexCount) * sizeof(StaticVertex);
+		const size_t legacyVertBytesV2 = static_cast<size_t>(vertexCount) * kLegacyStaticVertexSizeV2;
 		const size_t legacyVertBytes = static_cast<size_t>(vertexCount) * kLegacyStaticVertexSize;
 		const size_t idxBytes = static_cast<size_t>(indexCount) * sizeof(uint32_t);
 		auto meshletsParseToEnd = [&](size_t payloadEnd) -> bool {
@@ -631,44 +635,45 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			o += triBytes;
 			return o == c.img.size();
 		};
-		const bool newSizeFits = c.off + newVertBytes + idxBytes <= c.img.size();
-		const bool legacySizeFits = c.off + legacyVertBytes + idxBytes <= c.img.size();
-		if (!newSizeFits && !legacySizeFits)
+		// Candidate vertex strides, newest first (preference order).
+		const size_t vertStrides[3] = { sizeof(StaticVertex),
+			kLegacyStaticVertexSizeV2, kLegacyStaticVertexSize };
+		const size_t vertBytes[3] = { newVertBytes, legacyVertBytesV2, legacyVertBytes };
+		const bool sizeFits[3] = {
+			c.off + newVertBytes + idxBytes <= c.img.size(),
+			c.off + legacyVertBytesV2 + idxBytes <= c.img.size(),
+			c.off + legacyVertBytes + idxBytes <= c.img.size(),
+		};
+		const bool parsesToEnd[3] = {
+			sizeFits[0] && meshletsParseToEnd(c.off + newVertBytes + idxBytes),
+			sizeFits[1] && meshletsParseToEnd(c.off + legacyVertBytesV2 + idxBytes),
+			sizeFits[2] && meshletsParseToEnd(c.off + legacyVertBytes + idxBytes),
+		};
+		if (!sizeFits[0] && !sizeFits[1] && !sizeFits[2])
 			return fail("mesh payload size mismatch: " + e->path);
-		const bool newParses = newSizeFits
-			&& meshletsParseToEnd(c.off + newVertBytes + idxBytes);
-		const bool legacyParses = legacySizeFits
-			&& meshletsParseToEnd(c.off + legacyVertBytes + idxBytes);
-		// Prefer the current layout when both validate (recooks win).
-		// Tolerant fallback: old cookers wrote different meshlet layouts
-		// that fail the strict trailer check above for BOTH sizes. In
-		// that case accept on size alone and let the meshlet section
-		// below drop the trailer (it rebuilds meshlets from the upload).
-		bool legacyVerts = false;
-		if (newParses != legacyParses) {
-			legacyVerts = legacyParses;
+		// Prefer the newest layout that validates (recooks win). Tolerant
+		// fallback for stale paks whose meshlet trailer fails the strict
+		// check for every size: exact blob end disambiguates (v1 blobs end
+		// exactly at the payload end), then any size that fits, newest
+		// first. This path only serves old paks — current paks always take
+		// a parsing path above.
+		int pick = -1;
+		for (int k = 0; k < 3; ++k)
+			if (parsesToEnd[k]) { pick = k; break; }
+		if (pick < 0) {
+			for (int k = 0; k < 3; ++k)
+				if (sizeFits[k]
+					&& c.off + vertBytes[k] + idxBytes == c.img.size()) {
+					pick = k;
+					break;
+				}
 		}
-		else if (newParses) {
-			legacyVerts = false;
-		}
-		else if (newSizeFits != legacySizeFits) {
-			legacyVerts = legacySizeFits;
-		}
-		else {
-			// Both sizes fit but neither trailer validates (stale pak
-			// with a legacy meshlet layout). v1 blobs end exactly at
-			// the payload end — that disambiguates. Otherwise assume
-			// the legacy vertex layout: current paks always take the
-			// parsing path above, so this path only serves old paks.
-			const bool newExact = c.off + newVertBytes + idxBytes == c.img.size();
-			const bool legacyExact = c.off + legacyVertBytes + idxBytes == c.img.size();
-			if (newExact != legacyExact)
-				legacyVerts = legacyExact;
-			else
-				legacyVerts = true;
+		if (pick < 0) {
+			for (int k = 0; k < 3; ++k)
+				if (sizeFits[k]) { pick = k; break; }
 		}
 		upload.vertices.resize(vertexCount);
-		if (legacyVerts) {
+		if (pick == 2) {
 			struct LegacyVertex {
 				glm::vec3 pos;
 				glm::vec3 color;
@@ -685,10 +690,34 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				v.pos = lv.pos;
 				v.color = glm::vec4(lv.color, 1.0f);
 				v.texCoord = lv.texCoord;
+				v.texCoord2 = glm::vec2(0.0f);
 				v.normal = lv.normal;
 				v.tangent = lv.tangent;
 			}
 			c.off += static_cast<size_t>(vertexCount) * kLegacyStaticVertexSize;
+		}
+		else if (pick == 1) {
+			struct LegacyVertexV2 {
+				glm::vec3 pos;
+				glm::vec4 color;
+				glm::vec2 texCoord;
+				glm::vec3 normal;
+				glm::vec4 tangent;
+			};
+			static_assert(sizeof(LegacyVertexV2) == kLegacyStaticVertexSizeV2);
+			const uint8_t* src = c.img.data() + c.off;
+			for (uint32_t i = 0; i < vertexCount; ++i) {
+				LegacyVertexV2 lv{};
+				memcpy(&lv, src + i * kLegacyStaticVertexSizeV2, kLegacyStaticVertexSizeV2);
+				StaticVertex& v = upload.vertices[i];
+				v.pos = lv.pos;
+				v.color = lv.color;
+				v.texCoord = lv.texCoord;
+				v.texCoord2 = glm::vec2(0.0f);
+				v.normal = lv.normal;
+				v.tangent = lv.tangent;
+			}
+			c.off += static_cast<size_t>(vertexCount) * kLegacyStaticVertexSizeV2;
 		}
 		else {
 			memcpy(upload.vertices.data(), c.img.data() + c.off, newVertBytes);

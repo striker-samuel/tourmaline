@@ -167,7 +167,7 @@ bool OptimizeStaticMeshUpload(
 		return finish(false);
 
 	// StaticVertex must be bit-comparable for the weld (no padding bytes).
-	static_assert(sizeof(StaticVertex) == 64, "StaticVertex layout changed; update weld assumptions");
+	static_assert(sizeof(StaticVertex) == 72, "StaticVertex layout changed; update weld assumptions");
 	static_assert(alignof(StaticVertex) <= 4, "StaticVertex alignment changed");
 
 	stats.acmrBefore = ComputeAcmr(upload.indices.data(), icount, vcount);

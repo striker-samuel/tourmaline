@@ -2080,7 +2080,9 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	// SamplerCache – owns up to MAX_SAMPLERS deduplicated VkSamplers.
 	// Like VulkanPipelineCache, key (SamplerCreateInfo) → stable index.
 	samplerCache_ = std::make_unique<VulkanSamplerCache>(this);
-	// Populate default slots: 0 = regular, 1 = shadow comparison
+	// Populate default slots: 0 = regular, 1 = shadow comparison,
+	// 2 = linear clamp-to-edge (lightmap atlases + 3D probe volumes:
+	// both interpolate amplitudes that must never wrap across borders).
 	// Keep legacy handles in sync for existing code paths.
 	{
 		uint32_t idx0 = samplerCache_->GetOrCreate(SamplerCreateInfo{});
@@ -2090,7 +2092,14 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 			.compareEnable = true
 			});
 		m_defaultShadowSampler = samplerCache_->at(idx1);
+		SamplerCreateInfo clampCi{};
+		clampCi.addressU = smvk::AddressMode::ClampToEdge;
+		clampCi.addressV = smvk::AddressMode::ClampToEdge;
+		clampCi.addressW = smvk::AddressMode::ClampToEdge;
+		uint32_t idx2 = samplerCache_->GetOrCreate(clampCi);
 		assert(idx0 == 0 && idx1 == 1 && "sampler cache must allocate defaults at 0,1");
+		assert(idx2 < MAX_SAMPLERS && "clamp sampler must stay in the array");
+		assert(idx2 == 2 && "clamp sampler expected at index 2 (shaders hardcode samplers[2])");
 	}
 	const uint32_t pixel = 0xFF000000;
 	m_nilTexture = CreateTexture(
@@ -2160,6 +2169,9 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		// the exposure histogram; the descriptor is rewritten every frame
 		// to the current flight slice (see FlushTextureFeedback).
 		getDSLBinding(kBinding_TextureFeedback, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags),
+		// 3D volume textures (SG probe grids): same slot space as
+		// kBinding_Textures; UpdateDescriptors mirrors 3D views here.
+		getDSLBinding(kBinding_VolumeTextures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_VOLUME_TEXTURES, stageFlags),
 	};
 
 	const uint32_t flags =
@@ -2218,7 +2230,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 
 	std::vector<VkDescriptorPoolSize> poolSizes = {
 	  {
-		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    MAX_TEXTURES },
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    MAX_TEXTURES + MAX_VOLUME_TEXTURES },
 		{ VK_DESCRIPTOR_TYPE_SAMPLER,          MAX_SAMPLERS },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    MAX_TEXTURES },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   2 * MAX_FRAMES_IN_FLIGHT }, // engine globals + texture-feedback slices
@@ -2852,7 +2864,9 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 	ImageBarrier(ust.curCmd, img->vkImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, fullRange, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
 	// copy
 	if (img->mipLevels == 1 && img->arrayLayers == 1) {
-		VkBufferImageCopy2 r{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, srcOff, 0,0, {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, {0,0,0}, {img->extent.width, img->extent.height, 1} };
+		// extent.depth serves 3D uploads (SG probe volumes); 2D images
+		// carry depth == 1 so this is the same copy as before for them.
+		VkBufferImageCopy2 r{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2, nullptr, srcOff, 0,0, {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}, {0,0,0}, {img->extent.width, img->extent.height, img->extent.depth} };
 		VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr, srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r };
 		vkCmdCopyBufferToImage2(ust.curCmd, &copyInfo);
 	}
@@ -3462,6 +3476,35 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 {
 	assert(data != nullptr);
 	assert(image.vkImage != VK_NULL_HANDLE);
+	// 3D uploads (SG probe volumes): single-mip/single-layer, tightly
+	// packed w*h*depth slices. The streamer's single-mip region path
+	// carries extent.depth (see uploadImage); the 2D fallback below
+	// (mip chains + array layers) does not apply.
+	if (image.type == ImageType::Image3D) {
+		assert(image.mipLevels == 1 && image.arrayLayers == 1
+			&& "3D uploads support single-mip, single-layer images");
+		const FormatInfo fmt3 = getFormatInfo(toVkFormat(image.format));
+		const VkDeviceSize size3 = static_cast<VkDeviceSize>(image.extent.width)
+			* image.extent.height * image.extent.depth * fmt3.bytesPerBlock;
+		assert(m_streamer && "3D uploads require the upload streamer");
+		if (m_streamer) {
+			ImageHandle found{};
+			images_.forEachHandle([&](ImageHandle h) {
+				auto* im = images_.get(h);
+				if (im && im->vkImage == image.vkImage)
+					found = h;
+			});
+			assert(!found.empty() && "3D upload: image not in the pool");
+			if (!found.empty()) {
+				m_streamer->uploadImage(found,
+					static_cast<const std::byte*>(data) + srcOffset,
+					static_cast<size_t>(size3), dstStages, dstAccess);
+				m_streamer->flushLocal();
+				return;
+			}
+		}
+		return;
+	}
 	assert(image.type == ImageType::Image2D);
 	assert((image.usage & ImageUsage::TransferDst) != ImageUsage::None);
 
@@ -5944,6 +5987,7 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 		uint32_t slot;
 		VkDescriptorImageInfo info;
 		bool storageCapable = false;
+		bool isVolume = false; // 3D view: mirror write into binding 5
 	};
 
 	std::vector<PendingImageWrite> imageWrites;
@@ -5968,6 +6012,12 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 
 		pending.info.imageLayout =
 			bindless.imageLayout;
+
+		// 3D views get a second descriptor write at the same slot in
+		// kBinding_VolumeTextures so Texture3D-typed shaders can reach
+		// them (Texture2D[] code simply never gets that slot bound).
+		pending.isVolume =
+			view->viewType == ImageViewType::View3D;
 
 		// STORAGE descriptors require STORAGE usage on the image
 		// (VUID-00339): only Storage-capable images get the binding-2
@@ -6074,6 +6124,23 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 			write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 			write.descriptorCount = 1;
 			write.pImageInfo = &storageInfos.back();
+			writes.push_back(write);
+		}
+
+		// 3D volume textures (SG probe grids): same slot, binding 5. See
+		// kBinding_VolumeTextures — Texture3D-typed consumers read these.
+		for (const auto& pending : imageWrites) {
+			if (!pending.isVolume)
+				continue;
+			VkWriteDescriptorSet write{
+				VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET
+			};
+			write.dstSet = defaultDescriptorSets_[frame];
+			write.dstBinding = smvk::Bindings::kBinding_VolumeTextures;
+			write.dstArrayElement = pending.slot;
+			write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			write.descriptorCount = 1;
+			write.pImageInfo = &pending.info;
 			writes.push_back(write);
 		}
 

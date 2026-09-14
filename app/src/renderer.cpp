@@ -901,6 +901,8 @@ void GfxRenderer::PushViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceMana
 	tail.draws = ctx.GetBufferDeviceAddress(smvk::gfx::DrawBuffer(gfx, slot));
 	tail.renderViews = renderViewsAddr;
 	tail.renderViewIndex = renderViewIndex;
+	tail.lmChunks = lmChunkTableBda_;
+	tail.lmChunksValid = lmChunkTableBda_ != 0 ? 1u : 0u;
 	cmd.PushConstants(smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail,
 		smvk::ShaderStage::All);
 }
@@ -944,6 +946,8 @@ void GfxRenderer::PushSeedConstants(smvk::CommandBuffer& cmd, smvk::ResourceMana
 	tail.draws = drawsAddr;
 	tail.renderViews = renderViewsAddr;
 	tail.renderViewIndex = renderViewIndex;
+	tail.lmChunks = lmChunkTableBda_;
+	tail.lmChunksValid = lmChunkTableBda_ != 0 ? 1u : 0u;
 	cmd.PushConstants(smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail,
 		smvk::ShaderStage::All);
 }

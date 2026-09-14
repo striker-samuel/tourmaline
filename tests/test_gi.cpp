@@ -19,6 +19,7 @@
 
 #include <Engine/GI/bake.h>
 #include <Engine/GI/probe_volume.h>
+#include <Engine/GI/regular_volume.h>
 #include <Engine/GI/sg.h>
 #include <Engine/GI/triangle_bvh.h>
 
@@ -91,8 +92,8 @@ void TestSgBasis() {
 }
 
 void TestSgFitRoundtrip() {
-	// A field that is exactly in the basis span: the LSQ + non-negative
-	// refinement must recover the amplitudes.
+	// A field that is exactly in the basis span: the legacy NNLS path
+	// must recover the amplitudes (least-squares is exact on span).
 	std::mt19937 rng(11);
 	glm::vec3 truth[kSgLobeCount];
 	for (uint32_t i = 0; i < kSgLobeCount; ++i) {
@@ -105,17 +106,41 @@ void TestSgFitRoundtrip() {
 		dirs.push_back(d);
 		radiance.push_back(SgEvaluate(truth, d));
 	}
-	glm::vec3 fit[kSgLobeCount];
-	SgFitLobes(dirs, radiance, fit);
-	float maxErr = 0.0f;
-	float maxAmp = 0.0f;
-	for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-		maxErr = std::max(maxErr, std::abs(fit[i].r - truth[i].r));
-		maxErr = std::max(maxErr, std::abs(fit[i].g - truth[i].g));
-		maxErr = std::max(maxErr, std::abs(fit[i].b - truth[i].b));
-		maxAmp = std::max(maxAmp, truth[i].g);
+	{
+		SgFitAccumulator acc;
+		const float weight = 4.0f * kPi / float(dirs.size());
+		for (size_t s = 0; s < dirs.size(); ++s)
+			acc.AddSample(dirs[s], radiance[s], weight);
+		glm::vec3 fit[kSgLobeCount];
+		acc.SolveNnls(fit);
+		float maxErr = 0.0f;
+		float maxAmp = 0.0f;
+		for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+			maxErr = std::max(maxErr, std::abs(fit[i].r - truth[i].r));
+			maxErr = std::max(maxErr, std::abs(fit[i].g - truth[i].g));
+			maxErr = std::max(maxErr, std::abs(fit[i].b - truth[i].b));
+			maxAmp = std::max(maxAmp, truth[i].g);
+		}
+		Check(maxErr < 0.02f * maxAmp + 1e-3f, "sg nnls recovers span field");
 	}
-	Check(maxErr < 0.02f * maxAmp + 1e-3f, "sg fit recovers span field");
+
+	// Production diagonal projection on the same span field: blurrier
+	// (overlapping lobes double-count shared energy) but finite,
+	// non-negative, and bounded — stability over optimality.
+	{
+		glm::vec3 fit[kSgLobeCount];
+		SgFitLobes(dirs, radiance, fit); // diagonal path
+		bool finiteNonNeg = true;
+		float maxLum = 0.0f;
+		for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+			for (int c = 0; c < 3; ++c)
+				if (!std::isfinite(fit[i][c]) || fit[i][c] < 0.0f)
+					finiteNonNeg = false;
+			maxLum = std::max(maxLum, Luminance(fit[i]));
+		}
+		Check(finiteNonNeg, "sg diagonal span finite non-negative");
+		Check(maxLum < 10.0f, "sg diagonal span peak bounded");
+	}
 
 	// Non-negativity holds under adversarial (negative) input: fitting a
 	// field with a "negative" component still yields clamped amplitudes.
@@ -127,6 +152,23 @@ void TestSgFitRoundtrip() {
 	for (uint32_t i = 0; i < kSgLobeCount; ++i)
 		allNonNeg = allNonNeg && glm::all(glm::greaterThanEqual(neg[i], glm::vec3(0.0f)));
 	Check(allNonNeg, "sg fit clamps to non-negative");
+}
+
+void TestSgSelfEnergy() {
+	// Analytic self-overlap pi/lambda*(1-exp(-4 lambda)) ~= 0.785398.
+	const float self = SgSelfEnergy();
+	Check(std::abs(self - 0.785398f) < 1e-4f, "sg self energy analytic");
+	// Empirical Gram diagonal on uniform sampling converges to it.
+	std::mt19937 rng(5);
+	SgFitAccumulator acc;
+	const int N = 8192;
+	for (int s = 0; s < N; ++s)
+		acc.AddSample(UniformDir(rng), glm::vec3(1.0f), 4.0f * kPi / float(N));
+	bool near = true;
+	for (uint32_t i = 0; i < kSgLobeCount; ++i)
+		if (std::abs(acc.gram[i][i] - self) / self > 0.10f)
+			near = false;
+	Check(near, "sg gram diagonal matches self energy (<10%)");
 }
 
 void TestSgFitHighContrast() {
@@ -324,7 +366,11 @@ void TestSgDiffuseAgainstMonteCarlo() {
 	Check(allOk, "sg diffuse product integral vs MC (<12%)");
 	std::cout << "  worst relative diffuse error: " << worstRel << "\n";
 
-	// Constant radiance field: E(n) must be exactly pi * c.
+	// Constant radiance field via the legacy NNLS span fit: E(n) must
+	// be pi * c. (The production diagonal projection is deliberately
+	// NOT exact here — overlapping lobes double-count shared energy,
+	// so a diagonal constant fit overshoots. Exactness is the NNLS
+	// path's property; the diagonal path trades it for stability.)
 	glm::vec3 constAmps[kSgLobeCount];
 	for (uint32_t i = 0; i < kSgLobeCount; ++i)
 		constAmps[i] = glm::vec3(1.0f); // span fit of a constant
@@ -335,17 +381,47 @@ void TestSgDiffuseAgainstMonteCarlo() {
 			dirs.push_back(UniformDir(rng));
 			radiance.push_back(glm::vec3(1.0f));
 		}
-		SgFitLobes(dirs, radiance, fittedConst);
+		SgFitAccumulator acc;
+		const float weight = 4.0f * kPi / float(dirs.size());
+		for (size_t s = 0; s < dirs.size(); ++s)
+			acc.AddSample(dirs[s], radiance[s], weight);
+		acc.SolveNnls(fittedConst);
 	}
 	const glm::vec3 Econst = SgDiffuseIrradiance(fittedConst, glm::vec3(0, 1, 0));
 	const glm::vec3 expect(kPi);
 	const float relErr = std::abs(Luminance(Econst) - Luminance(expect)) / kPi;
 	Check(relErr < 0.10f, "sg constant-field irradiance == pi*c (<10%)");
+	// Diagonal on the same constant input: all-positive, bounded,
+	// mutually equal (isotropic input -> isotropic amplitudes).
+	{
+		std::mt19937 r2(23);
+		std::vector<glm::vec3> ddirs;
+		std::vector<glm::vec3> drad;
+		for (int s = 0; s < 256; ++s) {
+			ddirs.push_back(UniformDir(r2));
+			drad.push_back(glm::vec3(1.0f));
+		}
+		glm::vec3 diag[kSgLobeCount];
+		SgFitLobes(ddirs, drad, diag);
+		bool pos = true;
+		float mn = 1e30f, mx = -1e30f;
+		for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+			if (!std::isfinite(diag[i].x + diag[i].y + diag[i].z) || diag[i].x < 0.0f)
+				pos = false;
+			mn = std::min(mn, diag[i].x);
+			mx = std::max(mx, diag[i].x);
+		}
+		Check(pos, "sg diagonal constant positive finite");
+		Check(mx < 5.0f && mn > 0.1f && mx / std::max(mn, 1e-6f) < 1.5f,
+			"sg diagonal constant isotropic bounded");
+	}
 }
 
 void TestSgSpecular() {
-	// Constant field (fitted): the normalized GGX reflection kernel must
-	// return ~the constant regardless of roughness (K integrates to 1).
+	// Constant field via NNLS span fit: the normalized GGX reflection
+	// kernel must return ~the constant regardless of roughness
+	// (K integrates to 1). NNLS, not the production diagonal (which
+	// overshoots constants by design — see the diffuse test note).
 	glm::vec3 constAmps[kSgLobeCount];
 	{
 		std::mt19937 rng(41);
@@ -354,7 +430,11 @@ void TestSgSpecular() {
 			dirs.push_back(UniformDir(rng));
 			radiance.push_back(glm::vec3(0.7f));
 		}
-		SgFitLobes(dirs, radiance, constAmps);
+		SgFitAccumulator acc;
+		const float weight = 4.0f * kPi / float(dirs.size());
+		for (size_t s = 0; s < dirs.size(); ++s)
+			acc.AddSample(dirs[s], radiance[s], weight);
+		acc.SolveNnls(constAmps);
 	}
 	bool constOk = true;
 	for (float rough : { 0.3f, 0.5f, 0.8f }) {
@@ -606,6 +686,98 @@ void TestProbeVolumeRoundtrip() {
 		"gpu grid header");
 }
 
+void TestRegularVolume() {
+	// Single-voxel volume: Sample returns the voxel amps everywhere inside.
+	SgRegularVolume vol;
+	vol.obb.center = glm::vec3(0.0f);
+	vol.obb.halfExtents = glm::vec3(1.0f);
+	vol.obb.dims[0] = vol.obb.dims[1] = vol.obb.dims[2] = 1;
+	vol.Resize();
+	for (uint32_t i = 0; i < kSgLobeCount; ++i)
+		vol.coeffs[i] = glm::vec3(1.0f + float(i));
+	glm::vec3 amps[kSgLobeCount];
+	Check(vol.Sample(glm::vec3(0.0f), amps), "regular single voxel covered");
+	bool match = true;
+	for (uint32_t i = 0; i < kSgLobeCount; ++i)
+		if (glm::length(amps[i] - vol.coeffs[i]) > 1e-5f)
+			match = false;
+	Check(match, "regular single voxel returns amps");
+	Check(!vol.Sample(glm::vec3(5.0f, 0.0f, 0.0f), amps), "regular outside uncovered");
+
+	// 2x1x1 lerp: midpoint is the voxel average (hardware trilinear mirror).
+	SgRegularVolume strip;
+	strip.obb.center = glm::vec3(0.0f);
+	strip.obb.halfExtents = glm::vec3(1.0f, 0.5f, 0.5f);
+	strip.obb.dims[0] = 2; strip.obb.dims[1] = 1; strip.obb.dims[2] = 1;
+	strip.Resize();
+	for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+		strip.coeffs[0 * kSgLobeCount + i] = glm::vec3(0.0f);
+		strip.coeffs[1 * kSgLobeCount + i] = glm::vec3(2.0f);
+	}
+	Check(strip.Sample(glm::vec3(0.0f, 0.0f, 0.0f), amps), "regular strip covered");
+	bool mid = true;
+	for (uint32_t i = 0; i < kSgLobeCount; ++i)
+		if (std::abs(amps[i].x - 1.0f) > 1e-4f)
+			mid = false;
+	Check(mid, "regular trilinear midpoint averages");
+
+	// File round-trip through the production reader.
+	const auto tmp = std::filesystem::temp_directory_path()
+		/ "vulkantoy_gi_regular_test.sgrv";
+	std::string err;
+	Check(strip.WriteFile(tmp.string(), err), "sgrv write");
+	SgRegularVolume reloaded;
+	Check(SgRegularVolume::ReadFile(tmp.string(), reloaded, err), "sgrv read");
+	bool same = reloaded.VoxelCount() == strip.VoxelCount()
+		&& reloaded.obb.dims[0] == 2
+		&& glm::length(reloaded.obb.center - strip.obb.center) < 1e-5f;
+	if (same) {
+		for (size_t k = 0; k < strip.coeffs.size(); ++k)
+			if (glm::length(reloaded.coeffs[k] - strip.coeffs[k]) > 2e-3f)
+				same = false;
+	}
+	Check(same, "sgrv roundtrip equal");
+	std::filesystem::remove(tmp);
+
+	// GPU packing: 7 layers x voxels x RGBA halves.
+	std::vector<uint16_t> layers[7];
+	strip.PackGpuLayers(layers);
+	bool packOk = true;
+	for (int t = 0; t < 7; ++t)
+		if (layers[t].size() != size_t(2) * 4)
+			packOk = false;
+	Check(packOk, "regular gpu pack shape");
+	Check(strip.GpuBytes() == size_t(2) * 56, "regular gpu bytes");
+
+	// Empty-scene bake: open sky contributes nothing to the sun-only
+	// field, so every voxel must be exact zero (fixed lattice, no
+	// relocation to smuggle in coverage).
+	{
+		GiTraceScene scene;
+		scene.positions = {};
+		scene.indices = {};
+		scene.materials = { GiTraceMaterial{ glm::vec3(0.7f), glm::vec3(0.0f) } };
+		scene.triMaterial = {};
+		scene.Finalize();
+		SgRegularObb obb{};
+		obb.center = glm::vec3(0.0f);
+		obb.halfExtents = glm::vec3(1.0f);
+		obb.dims[0] = obb.dims[1] = obb.dims[2] = 2;
+		SgRegularVolume baked;
+		SgRegularBakeConfig rcfg{};
+		rcfg.raysPerProbe = 16;
+		rcfg.maxBounces = 0;
+		SgRegularBakeStats rstats;
+		Check(BakeSgRegularVolume(scene, obb, rcfg, baked, rstats, nullptr),
+			"regular bake empty scene runs");
+		bool allZero = true;
+		for (const glm::vec3& a : baked.coeffs)
+			if (glm::length(a) != 0.0f)
+				allZero = false;
+		Check(allZero, "regular bake empty scene exact zero");
+	}
+}
+
 void TestFp16Pack() {
 	// Amplitude packing through fp16 keeps HDR values representable.
 	SgProbeGpu g{};
@@ -631,6 +803,7 @@ void TestFp16Pack() {
 
 int main() {
 	smvk::gi::TestSgBasis();
+	smvk::gi::TestSgSelfEnergy();
 	smvk::gi::TestSgFitRoundtrip();
 	smvk::gi::TestSgFitHighContrast();
 	smvk::gi::TestGiEmptyScene();
@@ -640,6 +813,7 @@ int main() {
 	smvk::gi::TestSgSpecular();
 	smvk::gi::TestTriangleBvh();
 	smvk::gi::TestProbeVolumeRoundtrip();
+	smvk::gi::TestRegularVolume();
 	smvk::gi::TestFp16Pack();
 
 	std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks

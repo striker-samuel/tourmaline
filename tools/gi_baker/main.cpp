@@ -48,7 +48,9 @@
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/compression.h>
 #include <Engine/GI/bake.h>
+#include <Engine/GI/lightmap.h>
 #include <Engine/GI/probe_volume.h>
+#include <Engine/GI/regular_volume.h>
 #include <Engine/Utils/gltf.h>
 #include <Engine/Vfs/vfs.h>
 
@@ -91,6 +93,27 @@ struct Args {
 	// + KTX averages; known to print chromatic dots on contrasty scenes).
 	// "r,g,b" bakes a custom uniform tint instead of grey.
 	std::string uniformAlbedo = "0.7";
+	// Regular-lattice prototype (Ready-at-Dawn style, .sgrv alongside
+	// the adaptive .sggi): fixed OBB grid, diagonal projection, hardware
+	// trilinear at runtime. Empty regularOut = no regular bake.
+	std::string regularOut;
+	bool outExplicit = false;
+	std::string regMin, regMax;   // "x,y,z" world AABB (axis-aligned OBB)
+	std::string regDims = "32,16,32"; // "nx,ny,nz"
+	float regSpacing = 0.0f;      // voxel spacing override (m); 0 = use regDims
+	std::string regPreset;        // bistro-bar | bistro-street | scene
+	bool printBounds = false;     // print trace-scene AABB and exit
+	bool scanInterior = false;    // enclosure map + enclosed-component boxes
+	// 2D SG lightmap bake (static geometry): .sglm output. Chunks are
+	// per static node (cluster-local node id = runtime meshKey); runs
+	// are per-triangle-chart expanded draw runs the app swaps in before
+	// gfx registration. Lobe count per chunk: 5/6/9/12 (auto = 9).
+	std::string lightmapOut;     // empty = no lightmap bake
+	uint32_t lmDensity = 32;     // texels per meter
+	uint32_t lmLobes = 9;        // auto -> 9 for v1
+	uint32_t lmAtlasWidth = 2048;
+	uint32_t lmGutter = 1;       // inner chart margin (1..4); dense
+	                               // tessellation blows up at 4
 };
 
 bool ParseArgs(int argc, char** argv, Args& out) {
@@ -119,7 +142,7 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		if (a == "--content-dir") { if (!need(out.contentDir, i)) return false; }
 		else if (a == "--scene") { if (!need(out.scene, i)) return false; }
 		else if (a == "--in-vfs") { if (!need(out.inVfs, i)) return false; }
-		else if (a == "--out") { if (!need(out.out, i)) return false; }
+		else if (a == "--out") { if (!need(out.out, i)) return false; out.outExplicit = true; }
 		else if (a == "--rays") { if (!needU(out.rays, i)) return false; }
 		else if (a == "--bounces") { if (!needU(out.bounces, i)) return false; }
 		else if (a == "--error-rays") { if (!needU(out.errorRays, i)) return false; }
@@ -154,6 +177,32 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		}
 		else if (a == "--analyze") { if (!need(out.analyze, i)) return false; }
 		else if (a == "--uniform-albedo") { if (!need(out.uniformAlbedo, i)) return false; }
+		else if (a == "--regular-out") { if (!need(out.regularOut, i)) return false; }
+		else if (a == "--reg-min") { if (!need(out.regMin, i)) return false; }
+		else if (a == "--reg-max") { if (!need(out.regMax, i)) return false; }
+		else if (a == "--reg-dims") { if (!need(out.regDims, i)) return false; }
+		else if (a == "--reg-preset") { if (!need(out.regPreset, i)) return false; }
+		else if (a == "--lightmap-out") { if (!need(out.lightmapOut, i)) return false; }
+		else if (a == "--lm-density") { if (!needU(out.lmDensity, i)) return false; }
+		else if (a == "--lm-lobes") {
+			std::string v;
+			if (!need(v, i)) return false;
+			if (v == "auto" || v == "5" || v == "6" || v == "9" || v == "12")
+				out.lmLobes = (v == "auto") ? 9u : uint32_t(std::stoul(v));
+			else {
+				std::cerr << "Bad --lm-lobes (auto|5|6|9|12)\n";
+				return false;
+			}
+		}
+		else if (a == "--lm-atlas-width") { if (!needU(out.lmAtlasWidth, i)) return false; }
+		else if (a == "--lm-gutter") { if (!needU(out.lmGutter, i)) return false; }
+		else if (a == "--reg-spacing") {
+			std::string v;
+			if (!need(v, i)) return false;
+			out.regSpacing = std::stof(v);
+		}
+		else if (a == "--print-bounds") { out.printBounds = true; }
+		else if (a == "--scan-interior") { out.scanInterior = true; }
 		else if (a == "--help" || a == "-h") {
 			return false;
 		}
@@ -181,7 +230,95 @@ void Usage() {
 		<< "         [--verify on|off] [--uniform-albedo 0.7|r,g,b|off]\n"
 		<< "         (default uniform 0.7 white-world; off = textured bake)\n"
 		<< "GiBaker --analyze <file.sggi>: dump probe amplitude stats and a\n"
-		<< "         CPU-sampled irradiance transect (bake diagnostics).\n";
+		<< "         CPU-sampled irradiance transect (bake diagnostics).\n"
+		<< "GiBaker --scene bistro --regular-out content/gi/bistro_bar.sgrv\n"
+		<< "         --reg-preset bistro-bar|bistro-street|scene\n"
+		<< "         [--reg-min x,y,z --reg-max x,y,z] [--reg-dims nx,ny,nz]\n"
+		<< "         [--reg-spacing 0.25]: regular-lattice (.sgrv) prototype bake\n"
+		<< "         (fixed OBB grid, diagonal SG projection, no relocation).\n"
+		<< "GiBaker --scene bistro --lightmap-out content/gi/bistro.sglm\n"
+		<< "         [--lm-density 32] [--lm-lobes auto|5|6|9|12]\n"
+		<< "         [--lm-atlas-width 2048] [--lm-gutter 4]:\n"
+		<< "         2D SG lightmap bake (per-static-node chunks, 5-12 fixed\n"
+		<< "         lobes, expanded draw runs + shared RGBA16F atlas).\n"
+		<< "GiBaker --scene bistro --print-bounds | --scan-interior:\n"
+		<< "         scene AABB / enclosure map to place bar/street boxes.\n";
+}
+
+// Regular-volume inspector (.sgrv): coefficient stats + a trilinear
+// irradiance transect, mirroring AnalyzeVolume for the adaptive format.
+int AnalyzeRegularVolume(const std::string& path) {
+	using namespace smvk::gi;
+	SgRegularVolume vol;
+	std::string err;
+	if (!SgRegularVolume::ReadFile(path, vol, err)) {
+		std::cerr << "Analyze: load failed: " << err << std::endl;
+		return 1;
+	}
+	auto lum = [](const glm::vec3& c) {
+		return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
+	};
+	const uint64_t n = vol.VoxelCount();
+	std::cout << "analyze-regular: " << path << "\n  voxels=" << n
+		<< " dims=" << vol.obb.dims[0] << "x" << vol.obb.dims[1] << "x" << vol.obb.dims[2]
+		<< " center=(" << vol.obb.center.x << "," << vol.obb.center.y << "," << vol.obb.center.z << ")"
+		<< " half=(" << vol.obb.halfExtents.x << "," << vol.obb.halfExtents.y << "," << vol.obb.halfExtents.z << ")"
+		<< " spacing=(" << vol.obb.VoxelSpacing().x << "," << vol.obb.VoxelSpacing().y
+		<< "," << vol.obb.VoxelSpacing().z << ") gpuMiB="
+		<< (double(vol.GpuBytes()) / (1024.0 * 1024.0)) << "\n";
+	size_t nanVox = 0;
+	double sumLum = 0.0, maxLum = 0.0;
+	for (uint64_t v = 0; v < n; ++v) {
+		double vl = 0.0;
+		bool bad = false;
+		for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+			const glm::vec3& a = vol.coeffs[size_t(v) * kSgLobeCount + i];
+			for (int c = 0; c < 3; ++c)
+				if (!std::isfinite(a[c]))
+					bad = true;
+			vl += lum(a);
+		}
+		vl /= kSgLobeCount;
+		if (bad) { ++nanVox; continue; }
+		sumLum += vl;
+		maxLum = std::max(maxLum, vl);
+	}
+	std::cout << "  meanLum=" << (n ? sumLum / double(n) : 0.0)
+		<< " maxLum=" << maxLum << " nonfiniteVoxels=" << nanVox << "\n";
+	// Center transect along X at mid-Y/Z: adjacent samples share 7/8 of
+	// their voxels, so cliffs here are bake faults, not interpolation.
+	const glm::vec3 up(0, 1, 0);
+	const glm::vec3 lo = vol.obb.center - vol.obb.halfExtents;
+	const glm::vec3 hi = vol.obb.center + vol.obb.halfExtents;
+	const float y = (lo.y + hi.y) * 0.5f, z = (lo.z + hi.z) * 0.5f;
+	double prevLum = -1.0, maxStep = 0.0, prevX = lo.x, worstX = lo.x;
+	double worstA = 0.0, worstB = 0.0, minLum = 1e30, maxLumT = 0.0;
+	size_t steps = 0, uncovered = 0;
+	for (float x = lo.x; x <= hi.x; x += 0.25f) {
+		glm::vec3 amps[kSgLobeCount];
+		++steps;
+		if (!vol.Sample(glm::vec3(x, y, z), amps)) { ++uncovered; continue; }
+		const double l = lum(SgDiffuseIrradiance(amps, up));
+		minLum = std::min(minLum, l);
+		maxLumT = std::max(maxLumT, l);
+		if (prevLum >= 0.0) {
+			const double step = std::abs(l - prevLum) / std::max(prevLum, 1e-3);
+			if (step > maxStep) {
+				maxStep = step;
+				worstX = x;
+				worstA = prevLum;
+				worstB = l;
+			}
+		}
+		prevLum = l;
+		prevX = x;
+	}
+	(void)prevX;
+	std::cout << "  transect steps=" << steps << " uncovered=" << uncovered
+		<< " maxAdjacentRelStep=" << maxStep << " at x=" << worstX
+		<< " (" << worstA << " -> " << worstB << ")"
+		<< " minLum=" << minLum << " maxLum=" << maxLumT << "\n";
+	return 0;
 }
 
 // Offline volume inspector: amplitude distribution (NaN/Inf/extremes per
@@ -663,8 +800,12 @@ int main(int argc, char** argv) {
 		return 2;
 	}
 
-	if (!args.analyze.empty())
+	if (!args.analyze.empty()) {
+		if (args.analyze.size() >= 5
+			&& args.analyze.compare(args.analyze.size() - 5, 5, ".sgrv") == 0)
+			return AnalyzeRegularVolume(args.analyze);
 		return AnalyzeVolume(args.analyze);
+	}
 
 	const auto t0 = std::chrono::steady_clock::now();
 
@@ -761,6 +902,487 @@ int main(int argc, char** argv) {
 	}
 	std::cout << "  trace scene: " << traceScene.Bvh().TriangleCount()
 		<< " tris, " << traceScene.materials.size() << " materials\n";
+
+	// Trace-scene world AABB (bake source of truth for box placement).
+	glm::vec3 sceneMin(1e30f), sceneMax(-1e30f);
+	for (const glm::vec3& v : traceScene.positions) {
+		sceneMin = glm::min(sceneMin, v);
+		sceneMax = glm::max(sceneMax, v);
+	}
+	std::cout << "  scene bounds: (" << sceneMin.x << "," << sceneMin.y << "," << sceneMin.z
+		<< ")..(" << sceneMax.x << "," << sceneMax.y << "," << sceneMax.z << ")\n";
+	if (args.printBounds)
+		return 0;
+
+	if (args.scanInterior) {
+		// Enclosure scan at standing eye height: classifies each 1 m
+		// free-space cell as open / street-canyon / enclosed-interior
+		// from 6-axis obstacle distances, then reports connected
+		// enclosed components as --reg-min/--reg-max candidates.
+		const float yEye = 1.6f;
+		const float step = 1.0f;
+		const float maxDist = 60.0f;
+		const int nx = std::max(1, int(std::ceil((sceneMax.x - sceneMin.x) / step)));
+		const int nz = std::max(1, int(std::ceil((sceneMax.z - sceneMin.z) / step)));
+		std::vector<int> cls(size_t(nx) * size_t(nz), -1); // -1 solid, 0 open, 1 canyon, 2 enclosed
+		static const glm::vec3 kAxes[6] = {
+			{ 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 },
+		};
+		for (int iz = 0; iz < nz; ++iz) {
+			for (int ix = 0; ix < nx; ++ix) {
+				const glm::vec3 p(sceneMin.x + (ix + 0.5f) * step, yEye,
+					sceneMin.z + (iz + 0.5f) * step);
+				if (traceScene.Bvh().ClosestDistance(p) < 0.2f)
+					continue; // solid
+				float d[6] = {};
+				for (int k = 0; k < 6; ++k) {
+					smvk::gi::TriangleBvh::Hit h;
+					d[k] = traceScene.Bvh().Raycast(p, kAxes[k], maxDist, h) ? h.t : maxDist;
+				}
+				const float hMax = std::max(std::max(d[0], d[1]), std::max(d[4], d[5]));
+				const float hMin = std::min(std::min(d[0], d[1]), std::min(d[4], d[5]));
+				int c = 0;
+				if (hMax < 15.0f && d[2] < 10.0f)
+					c = 2; // enclosed interior (all walls + ceiling near)
+				else if (hMin < 8.0f && hMax > 20.0f)
+					c = 1; // street canyon (walls near across, open along)
+				cls[size_t(iz) * nx + ix] = c;
+			}
+		}
+		std::cout << "  interior scan y=" << yEye << " step=" << step
+			<< " ('#' solid, '.' open, 's' canyon, 'I' enclosed):\n";
+		for (int iz = nz - 1; iz >= 0; --iz) {
+			std::string row;
+			row.reserve(size_t(nx));
+			for (int ix = 0; ix < nx; ++ix) {
+				const int c = cls[size_t(iz) * nx + ix];
+				row.push_back(c < 0 ? '#' : (c == 0 ? '.' : (c == 1 ? 's' : 'I')));
+			}
+			std::cout << "    z=" << (sceneMin.z + (iz + 0.5f) * step) << " " << row << "\n";
+		}
+		// Connected enclosed components (4-neighbourhood).
+		std::vector<int> comp(size_t(nx) * size_t(nz), -1);
+		int nComp = 0;
+		for (int iz = 0; iz < nz; ++iz)
+			for (int ix = 0; ix < nx; ++ix) {
+				if (cls[size_t(iz) * nx + ix] != 2 || comp[size_t(iz) * nx + ix] >= 0)
+					continue;
+				std::vector<std::pair<int, int>> stack{ { ix, iz } };
+				comp[size_t(iz) * nx + ix] = nComp;
+				size_t head = 0;
+				while (head < stack.size()) {
+					const auto [cx, cz] = stack[head++];
+					static const int kDx[4] = { 1, -1, 0, 0 };
+					static const int kDz[4] = { 0, 0, 1, -1 };
+					for (int k = 0; k < 4; ++k) {
+						const int nx2 = cx + kDx[k], nz2 = cz + kDz[k];
+						if (nx2 < 0 || nz2 < 0 || nx2 >= nx || nz2 >= nz)
+							continue;
+						if (cls[size_t(nz2) * nx + nx2] != 2
+							|| comp[size_t(nz2) * nx + nx2] >= 0)
+							continue;
+						comp[size_t(nz2) * nx + nx2] = nComp;
+						stack.emplace_back(nx2, nz2);
+					}
+				}
+				++nComp;
+			}
+		std::cout << "  enclosed components: " << nComp << "\n";
+		for (int c = 0; c < nComp; ++c) {
+			int x0 = nx, x1 = -1, z0 = nz, z1 = -1, count = 0;
+			for (int iz = 0; iz < nz; ++iz)
+				for (int ix = 0; ix < nx; ++ix)
+					if (comp[size_t(iz) * nx + ix] == c) {
+						x0 = std::min(x0, ix); x1 = std::max(x1, ix);
+						z0 = std::min(z0, iz); z1 = std::max(z1, iz);
+						++count;
+					}
+			if (count < 4)
+				continue; // closet, skip
+			const float ax0 = sceneMin.x + x0 * step, ax1 = sceneMin.x + (x1 + 1) * step;
+			const float az0 = sceneMin.z + z0 * step, az1 = sceneMin.z + (z1 + 1) * step;
+			std::cout << "    comp " << c << " cells=" << count
+				<< " x=[" << ax0 << "," << ax1 << "] z=[" << az0 << "," << az1 << "]"
+				<< "  suggest: --reg-min " << ax0 << "," << sceneMin.y << "," << az0
+				<< " --reg-max " << ax1 << "," << (yEye + 3.0f) << "," << az1 << "\n";
+		}
+		return 0;
+	}
+
+	// ---------------------------------------------------------------------------
+	// 2D SG lightmap bake (.sglm). Chunks are per static node (cluster-local
+	// node id = runtime meshKey); runs are per-triangle-chart expanded draw
+	// runs (LOCAL space, texCoord2 = chunk-local lightmap UV) the runtime
+	// swaps in via Cluster::ReplaceStaticMesh. Bake texels carry WORLD-space
+	// positions (transformed per node here) for the path tracer.
+	// ---------------------------------------------------------------------------
+	if (!args.lightmapOut.empty()) {
+		using namespace smvk::gi;
+		const auto lmT0 = std::chrono::steady_clock::now();
+
+		// Chart pass with budget-driven density fallback: per-triangle
+		// charts pay a 3x3-texel minimum per triangle, so dense meshes
+		// (and the whole-atlas pack) can overflow. Per mesh: halve the
+		// density until the region fits (min 2 texels/m). Whole atlas:
+		// if the shelf pack fails, halve every mesh's density and redo.
+		struct LmChunkWork {
+			uint32_t node = 0;
+			uint32_t lobeCount = 9;
+			uint32_t density = 32; // effective (per mesh)
+			SgLightmapChartResult chart;
+			std::vector<SgLightmapTexel> texels; // world-space
+		};
+		std::vector<LmChunkWork> work;
+		SgLightmapChartOptions chartOpts{};
+		chartOpts.texelsPerMeter = std::max<uint32_t>(args.lmDensity, 2);
+		chartOpts.gutterTexels = std::min<uint32_t>(std::max<uint32_t>(args.lmGutter, 1), 4);
+
+		auto chartOne = [&](const smvk::StaticMeshUpload& upload,
+				uint32_t density, SgLightmapChartResult& chartOut,
+				std::string& cerr_) -> bool {
+			SgLightmapChartOptions opts = chartOpts;
+			opts.texelsPerMeter = density;
+			return GenerateLightmapCharts(upload, opts, chartOut, cerr_);
+		};
+
+		for (const auto& [node, meshIdx] : cluster->scene.meshForNode) {
+			// Material filters mirror BuildTraceSceneFromCluster: blended
+			// geometry never participates; masked cutout bakes as opaque.
+			auto matIt = cluster->scene.materialForNode.find(node);
+			if (matIt == cluster->scene.materialForNode.end())
+				continue;
+			const smvk::ClusterMaterialHandle matHandle =
+				cluster->materials.getHandle(matIt->second);
+			if (!matHandle.valid())
+				continue;
+			const smvk::Material* mat = cluster->materials.get(matHandle);
+			if (!mat || mat->alphaMode == smvk::AlphaMode::Blend)
+				continue;
+			const smvk::ClusterStaticMeshHandle meshHandle =
+				cluster->staticMeshes.getHandle(meshIdx);
+			const smvk::StaticMeshUpload* upload =
+				cluster->GetRetainedUpload(meshHandle);
+			if (!upload || upload->vertices.empty() || upload->indices.empty())
+				continue;
+
+			LmChunkWork w{};
+			w.node = node;
+			w.lobeCount = args.lmLobes;
+			std::string cerr_;
+			// Per-mesh density fallback: dense meshes pay the per-triangle
+			// chart minimum, so the region can overflow even at low
+			// density; halve until it fits (floor 1 texel/m).
+			uint32_t density = chartOpts.texelsPerMeter;
+			bool ok = false;
+			while (density >= 1) {
+				ok = chartOne(*upload, density, w.chart, cerr_);
+				if (ok)
+					break;
+				std::cerr << "[LM] node " << node << " density "
+					<< density << " overflow - retrying at "
+					<< (density / 2) << "\n";
+				if (density <= 1)
+					break;
+				density /= 2;
+			}
+			if (!ok) {
+				std::cerr << "[LM] node " << node << " charts failed: "
+					<< cerr_ << " (skipped)\n";
+				continue;
+			}
+			w.density = density;
+			std::cerr << "[LM] node " << node << " tris="
+				<< (upload->indices.size() / 3) << " density=" << density
+				<< " rect=" << w.chart.rectWidth << "x" << w.chart.rectHeight
+				<< " texels=" << w.chart.texels.size()
+				<< " runVerts=" << w.chart.vertices.size() << "\n";
+			// World-space texels for the tracer (rigid/uniform node
+			// transforms assumed; the engine VS does the same for
+			// rigid imports).
+			const glm::mat4& g = cluster->scene.globalTransform[node];
+			const glm::mat3 g3(g);
+			w.texels.reserve(w.chart.texels.size());
+			for (const SgLightmapTexel& t : w.chart.texels) {
+				SgLightmapTexel wt = t;
+				wt.position = glm::vec3(g * glm::vec4(t.position, 1.0f));
+				wt.normal = glm::normalize(g3 * t.normal);
+				w.texels.push_back(wt);
+			}
+			work.push_back(std::move(w));
+		}
+		if (work.empty()) {
+			std::cerr << "Lightmap bake: no eligible static meshes\n";
+			return 1;
+		}
+
+		// Atlas pack (shelf rows of --lm-atlas-width). Whole-atlas budget
+		// fallback: if the pack does not fit the cap, halve every mesh's
+		// density AND shrink the per-mesh rect budget, then re-chart (up
+		// to 4 rounds; the atlas target stays inside GPU-memory reason
+		// for 9 RGBA16F layers).
+		SgLightmapAtlas atlas;
+		{
+			constexpr uint32_t kMaxAtlasH = 8192;
+			// Total atlas texel budget: the payload stores 36 halves per
+			// texel (72 B) and the GPU uploads 9 RGBA16F layers (72 B), so
+			// ~4M texels keeps both sides near ~288 MB.
+			constexpr uint64_t kAtlasTexelBudget = 4ull * 1024 * 1024;
+			uint64_t rectBudget = chartOpts.maxRectTexels;
+			uint32_t round = 0;
+			while (true) {
+				std::vector<SgLightmapAtlas::RectRequest> reqs;
+				reqs.reserve(work.size());
+				for (const LmChunkWork& w : work)
+					reqs.push_back({ glm::uvec2(w.chart.rectWidth, w.chart.rectHeight),
+						w.lobeCount, w.node });
+				if (atlas.PackRects(reqs, std::max<uint32_t>(args.lmAtlasWidth, 256),
+						kMaxAtlasH)
+					&& uint64_t(atlas.width) * atlas.height <= kAtlasTexelBudget)
+					break;
+				if (++round > 6) {
+					std::cerr << "Lightmap atlas overflow (" << work.size()
+						<< " chunks; lower --lm-density or raise --lm-atlas-width)\n";
+					return 1;
+				}
+				rectBudget = rectBudget / 2;
+				std::cerr << "[LM] atlas overflow at round " << round
+					<< " - halving densities + rect budget ("
+					<< rectBudget << " texels/chunk)\n";
+				chartOpts.maxRectTexels = rectBudget;
+				// Re-chart every chunk under the new budget; chunks that
+				// cannot fit even at the density floor are DROPPED (their
+				// statics keep the probe/sky ambient - graceful fallback).
+				std::vector<LmChunkWork> kept;
+				kept.reserve(work.size());
+				for (LmChunkWork& w : work) {
+					std::string cerr_;
+					uint32_t density = w.density;
+					bool ok = false;
+					while (density >= 1) {
+						ok = chartOne(*cluster->GetRetainedUpload(
+								cluster->staticMeshes.getHandle(
+									cluster->scene.meshForNode.at(w.node))),
+								density, w.chart, cerr_);
+						if (ok)
+							break;
+						if (density <= 1)
+							break;
+						density /= 2;
+					}
+					if (!ok) {
+						std::cerr << "[LM] node " << w.node
+							<< " dropped (cannot fit the rect budget)\n";
+						continue;
+					}
+					w.density = density;
+					const glm::mat4& g =
+						cluster->scene.globalTransform[w.node];
+					const glm::mat3 g3(g);
+					w.texels.clear();
+					for (const SgLightmapTexel& t : w.chart.texels) {
+						SgLightmapTexel wt = t;
+						wt.position = glm::vec3(g * glm::vec4(t.position, 1.0f));
+						wt.normal = glm::normalize(g3 * t.normal);
+						w.texels.push_back(wt);
+					}
+					kept.push_back(std::move(w));
+				}
+				work = std::move(kept);
+				if (work.empty()) {
+					std::cerr << "Lightmap atlas overflow: no chunks left\n";
+					return 1;
+				}
+			}
+		}
+
+		// Per-chunk trace + fit.
+		SgLightmapBakeConfig lcfg{};
+		lcfg.raysPerTexel = args.rays;
+		lcfg.maxBounces = args.bounces;
+		lcfg.threadCount = args.threads;
+		SgLightmapBakeStats lstats{};
+		atlas.runs.resize(work.size());
+		for (size_t ci = 0; ci < work.size(); ++ci) {
+			LmChunkWork& w = work[ci];
+			SgLightmapBakeStats cs{};
+			if (!BakeSgLightmapChunk(traceScene, w.lobeCount, w.texels, lcfg,
+					atlas.payloads[ci], cs,
+					[](const char* line) { std::cout << line; })) {
+				std::cerr << "Lightmap bake failed for node " << w.node << "\n";
+				return 1;
+			}
+			lstats.texelsBaked += cs.texelsBaked;
+			lstats.pathsTraced += cs.pathsTraced;
+			lstats.samplesClamped += cs.samplesClamped;
+			// Expanded LOCAL-space draw run (texCoord2 = chunk UV).
+			smvk::StaticMeshUpload& run = atlas.runs[ci];
+			run.vertices = std::move(w.chart.vertices);
+			run.indices = std::move(w.chart.indices);
+			glm::vec3 mn(1e30f), mx(-1e30f);
+			for (const smvk::StaticVertex& v : run.vertices) {
+				mn = glm::min(mn, v.pos);
+				mx = glm::max(mx, v.pos);
+			}
+			run.aabbMin = mn;
+			run.aabbMax = mx;
+			smvk::Surface s{};
+			s.firstIndex = 0;
+			s.indexCount = uint32_t(run.indices.size());
+			s.baseVertex = 0;
+			run.surfaces.push_back(s);
+		}
+		lstats.seconds = std::chrono::duration<double>(
+			std::chrono::steady_clock::now() - lmT0).count();
+
+		{
+			std::filesystem::path out(args.lightmapOut);
+			std::error_code ec;
+			std::filesystem::create_directories(out.parent_path(), ec);
+		}
+		std::string lwerr;
+		if (!atlas.WriteFile(args.lightmapOut, lwerr)) {
+			std::cerr << "Lightmap write failed: " << lwerr << std::endl;
+			return 1;
+		}
+		std::cout << "Wrote " << args.lightmapOut << " ("
+			<< std::filesystem::file_size(args.lightmapOut) << " B on disk)\n";
+		std::cout << "  chunks=" << atlas.chunks.size()
+			<< " atlas=" << atlas.width << "x" << atlas.height
+			<< " texels=" << lstats.texelsBaked
+			<< " paths=" << lstats.pathsTraced
+			<< " clamped=" << lstats.samplesClamped
+			<< " seconds=" << lstats.seconds << "\n";
+
+		if (args.verify) {
+			smvk::gi::SgLightmapAtlas reloaded;
+			std::string verr;
+			if (!smvk::gi::SgLightmapAtlas::ReadFile(args.lightmapOut, reloaded, verr)) {
+				std::cerr << "Lightmap verify: reload failed: " << verr << std::endl;
+				return 1;
+			}
+			size_t runVerts = 0;
+			for (const auto& r : reloaded.runs)
+				runVerts += r.vertices.size();
+			std::cout << "  verify: " << reloaded.chunks.size()
+				<< " chunks reloaded, run vertices " << runVerts << " OK\n";
+			if (reloaded.chunks.size() != atlas.chunks.size())
+				return 1;
+		}
+		// Fall through to the regular/adaptive bake only when requested
+		// explicitly (--out and/or --regular-out given); a lightmap-only
+		// run stops here.
+		if (!args.outExplicit && args.regularOut.empty()) {
+			const auto t1 = std::chrono::steady_clock::now();
+			std::cout << "GiBaker total: "
+				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
+			return 0;
+		}
+	}
+
+	// Regular-lattice prototype bake (.sgrv). Runs INSTEAD of the
+	// adaptive bake when only --regular-out is given, or IN ADDITION
+	// when both --out and --regular-out are set (clean A/B). Writes one
+	// .sgrv; append its vfs path to content/gi/<scene>.regmanifest to
+	// activate the runtime dynamic-object grids (artist OBBs + density
+	// via --reg-min/--reg-max/--reg-spacing; see --scan-interior).
+	if (!args.regularOut.empty()) {
+		auto parseVec3 = [](const std::string& s, glm::vec3& v) {
+			return std::sscanf(s.c_str(), "%f,%f,%f", &v.x, &v.y, &v.z) == 3;
+		};
+		auto parseDims = [](const std::string& s, uint32_t (&d)[3]) {
+			return std::sscanf(s.c_str(), "%u,%u,%u", &d[0], &d[1], &d[2]) == 3;
+		};
+		smvk::gi::SgRegularObb obb{};
+		bool haveBox = false;
+		glm::vec3 regMin, regMax;
+		if (!args.regMin.empty() && !args.regMax.empty()
+			&& parseVec3(args.regMin, regMin) && parseVec3(args.regMax, regMax)) {
+			haveBox = true;
+		} else if (!args.regPreset.empty()) {
+			if (args.regPreset == "scene") {
+				regMin = sceneMin; regMax = sceneMax; haveBox = true;
+			} else if (args.regPreset == "bistro-street") {
+				// Outdoor street canyon around the canon view
+				// (27.61,2.26,-10.19): the 's' band from --scan-interior.
+				regMin = glm::vec3(-10.0f, -1.0f, -32.0f);
+				regMax = glm::vec3(40.0f, 10.0f, -2.0f);
+				haveBox = true;
+			} else if (args.regPreset == "bistro-bar") {
+				// Bar/restaurant interior: largest enclosed component
+				// from --scan-interior (comp 75, 146 cells).
+				regMin = glm::vec3(9.4f, -1.0f, 0.6f);
+				regMax = glm::vec3(28.4f, 5.5f, 18.6f);
+				haveBox = true;
+			} else {
+				std::cerr << "Unknown --reg-preset '" << args.regPreset
+					<< "' (bistro-bar | bistro-street | scene)\n";
+				return 2;
+			}
+		}
+		if (!haveBox) {
+			std::cerr << "Regular bake needs --reg-min/--reg-max or --reg-preset\n";
+			return 2;
+		}
+		obb.center = (regMin + regMax) * 0.5f;
+		obb.halfExtents = (regMax - regMin) * 0.5f;
+		if (!parseDims(args.regDims, obb.dims)) {
+			std::cerr << "Bad --reg-dims (want nx,ny,nz)\n";
+			return 2;
+		}
+		if (args.regSpacing > 0.0f) {
+			const glm::vec3 ext = regMax - regMin;
+			for (int a = 0; a < 3; ++a)
+				obb.dims[a] = std::max(1u, uint32_t(std::ceil(ext[a] / args.regSpacing)));
+		}
+		std::cout << "  regular OBB: center=(" << obb.center.x << "," << obb.center.y
+			<< "," << obb.center.z << ") half=(" << obb.halfExtents.x << ","
+			<< obb.halfExtents.y << "," << obb.halfExtents.z << ") dims="
+			<< obb.dims[0] << "x" << obb.dims[1] << "x" << obb.dims[2] << "\n";
+
+		smvk::gi::SgRegularBakeConfig rcfg{};
+		rcfg.raysPerProbe = args.rays;
+		rcfg.maxBounces = args.bounces;
+		rcfg.threadCount = args.threads;
+		smvk::gi::SgRegularVolume rvol;
+		smvk::gi::SgRegularBakeStats rstats;
+		if (!smvk::gi::BakeSgRegularVolume(traceScene, obb, rcfg, rvol, rstats,
+				[](const char* line) { std::cout << line; })) {
+			std::cerr << "Regular bake failed\n";
+			return 1;
+		}
+		{
+			std::filesystem::path out(args.regularOut);
+			std::error_code ec;
+			std::filesystem::create_directories(out.parent_path(), ec);
+		}
+		std::string rerr;
+		if (!rvol.WriteFile(args.regularOut, rerr)) {
+			std::cerr << "Regular write failed: " << rerr << std::endl;
+			return 1;
+		}
+		std::cout << "Wrote " << args.regularOut << " ("
+			<< std::filesystem::file_size(args.regularOut) << " B on disk)\n";
+		if (args.verify) {
+			smvk::gi::SgRegularVolume reloaded;
+			std::string verr;
+			if (!smvk::gi::SgRegularVolume::ReadFile(args.regularOut, reloaded, verr)) {
+				std::cerr << "Regular verify: reload failed: " << verr << std::endl;
+				return 1;
+			}
+			std::cout << "  verify: " << reloaded.VoxelCount() << " voxels reloaded OK\n";
+			if (reloaded.VoxelCount() != rvol.VoxelCount())
+				return 1;
+		}
+		// Fall through to the adaptive bake only when the user asked
+		// for it explicitly (both --out and --regular-out = A/B pair
+		// in one invocation). A regular-only run passes no --out.
+		if (!args.outExplicit) {
+			const auto t1 = std::chrono::steady_clock::now();
+			std::cout << "GiBaker total: "
+				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
+			return 0;
+		}
+	}
 
 	smvk::gi::SgGiBakeConfig cfg{};
 	cfg.raysPerProbe = args.rays;

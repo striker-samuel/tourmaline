@@ -112,13 +112,34 @@ glm::vec3 SgDiffuseIrradiance(const glm::vec3* amps, const glm::vec3& n);
 glm::vec3 SgSpecular(const glm::vec3* amps, const glm::vec3& r, float roughness);
 
 // ---------------------------------------------------------------------------
-// Fitting (fixed basis, non-negative least squares)
+// Fitting (fixed basis, diagonal SG projection — Ready-at-Dawn style)
 // ---------------------------------------------------------------------------
 
-// Online accumulation of the normal equations for the fixed-basis fit.
-// Radiance samples enter with their solid-angle weight (uniform sphere
-// sampling: weight = 4*pi / sampleCount); the Gram matrix is lobe-scalar,
-// so one accumulator serves all three channels.
+// Self-overlap of one unit-amplitude basis lobe:
+//   int G_i(w)^2 dw = pi / lambda * (1 - exp(-4 lambda)).
+// For lambda = 4 this is ~0.785398. Analytic, so the diagonal projection
+// needs no empirical Gram diagonal and no per-probe normalization.
+inline float SgSelfEnergy() {
+	constexpr float kPiLocal = 3.14159265358979323846f;
+	return kPiLocal / kSgSharpness
+		* (1.0f - std::exp(-4.0f * kSgSharpness));
+}
+
+// Online accumulation for the fixed-basis fit. Radiance samples enter
+// with their solid-angle weight (uniform sphere sampling:
+// weight = 4*pi / sampleCount).
+//
+// Production path is the DIAGONAL projection (Ready-at-Dawn style):
+//   rhs[i] += L * G_i(dir) * weight;  amp[i] = rhs[i] / selfEnergy.
+// Because physical radiance and basis lobes are both non-negative, the
+// projected amplitudes are naturally non-negative — no NNLS, no Gram,
+// no Cholesky, no repair needed. Blurrier than least-squares (SG lobes
+// overlap, so the projection double-counts shared energy), but stable:
+// the old coupled solver was the blow-up class (near-singular Gram +
+// high-contrast sun pools -> 1e4-scale spikes).
+//
+// The Gram matrix is still accumulated for the legacy NNLS path
+// (SolveNnls, tests/A-B only); the production bake never reads it.
 struct SgFitAccumulator {
 	float gram[kSgLobeCount][kSgLobeCount] = {};
 	glm::vec3 rhs[kSgLobeCount] = {};
@@ -127,7 +148,7 @@ struct SgFitAccumulator {
 	void AddSample(const glm::vec3& dir, const glm::vec3& radiance, float weight) {
 		// Quarantine: one non-finite radiance sample (NaN shading normal,
 		// Inf throughput, ...) would poison rhs -> the whole probe's
-		// amplitudes -> the error metric -> the smoothing passes. Drop it.
+		// amplitudes. Drop it.
 		if (!std::isfinite(radiance.x + radiance.y + radiance.z))
 			return;
 		float b[kSgLobeCount];
@@ -141,13 +162,14 @@ struct SgFitAccumulator {
 		++sampleCount;
 	}
 
-	// Solves the non-negative least squares problem
-	// (min 1/2 a'G a - rhs'a s.t. a >= 0) per channel with projected
-	// coordinate descent. No matrix inversion, no damping, no
-	// multiplicative updates: each step is a clipped ratio, so nothing
-	// can explode, and channels solve independently (hues cannot split).
-	// Output is clamped to [0, 65504] (fp16 ceiling) per channel.
+	// Production solve: unconditional diagonal projection, clamped to
+	// [0, 65504] (fp16 ceiling) per channel.
 	void Solve(glm::vec3 outAmps[kSgLobeCount]) const;
+
+	// Legacy path: non-negative least squares by projected coordinate
+	// descent (min 1/2 a'G a - rhs'a s.t. a >= 0, per channel).
+	// Kept for tests and A/B comparison only.
+	void SolveNnls(glm::vec3 outAmps[kSgLobeCount]) const;
 };
 
 // Offline convenience for tests: fit amplitudes to a batch of radiance

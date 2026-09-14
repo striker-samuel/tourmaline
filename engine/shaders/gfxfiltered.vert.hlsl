@@ -22,10 +22,17 @@ struct FilteredVsMainPush
     float4x4 _pad0;
     float4x4 _pad1;
     float4x4 _pad2;
+    // Offsets mirror C++ smvk::gfx::FilteredVsPush exactly (pointers at
+    // 0/8/16, no implicit padding).
     vk::BufferPointer<GfxDraws> draws;
     vk::BufferPointer<RenderViewBuffer> renderViews;
+    // Per-gfx-mesh lightmap chunk table (lmChunksValid = 0: no table,
+    // every draw yields "no chunk" via the early-out below).
+    vk::BufferPointer<GfxLmChunks> lmChunks;
     uint renderViewIndex;
+    uint lmChunksValid;
     uint pad;
+    uint pad2;
 };
 
 [[vk::push_constant]]
@@ -38,6 +45,8 @@ struct VSIn
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
+    // Location 5 = StaticVertexFormat's TexCoord1 (lightmap UV).
+    [[vk::location(5)]] float2 lightmapUv : TEXCOORD1;
     uint instanceID : SV_InstanceID;
 };
 struct VSOut
@@ -49,12 +58,17 @@ struct VSOut
     [[vk::location(2)]] float3 worldPos : TEXCOORD1;
     [[vk::location(3)]] float3 normal : TEXCOORD2;
     [[vk::location(4)]] float4 tangent : TANGENT;
+    [[vk::location(5)]] float2 lightmapUv : TEXCOORD3;
+    // Lightmap chunk for this draw (flat: constant over the triangle);
+    // 0xFFFFFFFF = no lightmap (dynamic / unbaked draws).
+    [[vk::location(6)]] nointerpolation uint lmChunk : TEXCOORD4;
 };
 
 VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
-    float4x4 model = pcFV.draws.Get().draws[IN.instanceID].model;
+    GfxDraw draw = pcFV.draws.Get().draws[IN.instanceID];
+    float4x4 model = draw.model;
 
     float4 world = mul(model, float4(IN.position, 1.0));
     OUT.worldPos = world.xyz;
@@ -64,6 +78,19 @@ VSOut mainVS(VSIn IN)
 
     OUT.color = float3(1.0f, 1.0f, 1.0f);
     OUT.uv = IN.uv;
+    OUT.lightmapUv = IN.lightmapUv;
+
+    // Lightmap chunk lookup: draws carry the gfx mesh index in misc.x.
+    // lmChunksValid = 0 (no lightmaps baked) -> "none" for every draw.
+    OUT.lmChunk = 0xFFFFFFFFu;
+    [branch]
+    if (pcFV.lmChunksValid != 0u)
+    {
+        const uint meshIdx = draw.misc.x;
+        [branch]
+        if (meshIdx < GFX_MAX_DRAWS)
+            OUT.lmChunk = pcFV.lmChunks.Get().chunk[meshIdx];
+    }
 
     // Packed shading stream: normal/tangent ride as R32_UInt oct words.
     float3 normal = OctDecodeNormal(IN.normalPacked);

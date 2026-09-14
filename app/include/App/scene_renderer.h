@@ -17,6 +17,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -25,7 +26,9 @@
 #include <Engine/App/world.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/GI/bake.h>
+#include <Engine/GI/lightmap.h>
 #include <Engine/GI/probe_volume.h>
+#include <Engine/GI/regular_volume.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cookies.h>
 #include <Engine/Renderer/renderview.h>
@@ -392,6 +395,24 @@ struct FrameUniforms
 	uint64_t decalTileIndices = 0;  // 736 builder decal list indices
 	uint32_t decalCount = 0;        // 744 live decals this frame
 	uint32_t decalMaxPerTile = 0;   // 748 list stride (matches allocation)
+	// ---- SG 2D lightmaps (STATIC geometry, Engine/GI/lightmap.h): one
+	// shared RGBA16F atlas across 9 bindless 2D textures + a chunk
+	// descriptor buffer (per-mesh rect + lobe count). Draws flagged
+	// lightmapped (materialId bit30) sample the atlas; dynamic objects
+	// sample the regular grids below. ----
+	uint64_t lmChunks = 0;          // 752 SgLmChunkGpu array (32 B each)
+	uint32_t lmLayers[9] = {};      // 760 atlas bindless slots (layers 0..8)
+	uint32_t lmChunkCount = 0;       // 796 chunks in the buffer
+	uint32_t lmEnabled = 0;         // 800 1 = lightmap branch active
+	uint32_t lmPad_ = 0;            // 804 8-align pad (mirrors HLSL lmPad)
+	// ---- SG regular 3D probe volumes (DYNAMIC objects, Engine/GI/
+	// regular_volume.h): artist OBBs + density, baked per volume, 7
+	// RGBA16F 3D textures each, hardware trilinear between probes. ----
+	uint64_t regObbs = 0;           // 808 SgRegularObbGpu array
+	uint32_t regLayers[56] = {};    // 816 8 volumes x 7 layer slots
+	uint32_t regCount = 0;          // 1040 active volumes
+	uint32_t regEnabled = 0;        // 1044 1 = grid branch active
+	uint32_t regPad_[2] = {};       // 1048 16-align tail (mirrors HLSL regPad)
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4, debug builds
 	// only — CMake defines DS_DEBUG_VIZ for the App target and for DXC in
@@ -403,24 +424,27 @@ struct FrameUniforms
 	// phase-1 (CPU) and phase-2 (GPU) TileGroup light masks the
 	// light-scoped modes re-query; dsDebug* select mode / light / flags /
 	// heat scale. ----
-	uint64_t dsTileMasks = 0;      // 752 phase-1 CPU TileGroup masks (viz)
-	uint64_t dsTileGroupMasks = 0; // 760 phase-2 GPU TileGroup masks (viz)
-	uint32_t dsDebugMode = 0;      // 768 app::DsDebugViz (0 = off)
-	uint32_t dsDebugLight = 0;     // 772 selected light (sorted index)
-	uint32_t dsDebugFlags = 0;     // 776 bit0 = blend over lit
-	uint32_t dsDebugCountCeil = 32; // 780 count-heat ceiling (lights)
+	uint64_t dsTileMasks = 0;      // 1056 phase-1 CPU TileGroup masks (viz)
+	uint64_t dsTileGroupMasks = 0; // 1064 phase-2 GPU TileGroup masks (viz)
+	uint32_t dsDebugMode = 0;      // 1072 app::DsDebugViz (0 = off)
+	uint32_t dsDebugLight = 0;     // 1076 selected light (sorted index)
+	uint32_t dsDebugFlags = 0;     // 1080 bit0 = blend over lit
+	uint32_t dsDebugCountCeil = 32; // 1084 count-heat ceiling (lights)
 #endif
 };
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 // CPU/HLSL ABI: total-size alignment is not enough — each field offset must
 // match common.hlsli FrameUniforms (float4-packed, env = 8 x float4). The
-// SG-GI block sits between the DS core and the decal block; the DS
-// visualizer tail follows so the release layout stays a strict prefix of
-// the debug one.
+// SG-GI block sits between the DS core and the decal block; the lightmap +
+// regular-volume block follows the decals; the DS visualizer tail is last
+// so the release layout stays a strict prefix of the debug one.
+// Release prefix: 1056 = 7*64 (matrices) + 16 (camPos/time) + 16 (viewport)
+//   + 32 (near/far/exposure/ao) + 128 (env) + 32 (DS) + 48 (GI) + 32
+//   (decals) + 304 (lightmap + regular volumes).
 #if defined(DS_DEBUG_VIZ)
-static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32 + 48 + 32 + 32);
+static_assert(sizeof(FrameUniforms) == 1056 + 32);
 #else
-static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32 + 48 + 32);
+static_assert(sizeof(FrameUniforms) == 1056);
 #endif
 static_assert(offsetof(FrameUniforms, view) == 0);
 static_assert(offsetof(FrameUniforms, proj) == 64);
@@ -457,13 +481,23 @@ static_assert(offsetof(FrameUniforms, decalTileCounts) == 728);
 static_assert(offsetof(FrameUniforms, decalTileIndices) == 736);
 static_assert(offsetof(FrameUniforms, decalCount) == 744);
 static_assert(offsetof(FrameUniforms, decalMaxPerTile) == 748);
+static_assert(offsetof(FrameUniforms, lmChunks) == 752);
+static_assert(offsetof(FrameUniforms, lmLayers) == 760);
+static_assert(offsetof(FrameUniforms, lmChunkCount) == 796);
+static_assert(offsetof(FrameUniforms, lmEnabled) == 800);
+static_assert(offsetof(FrameUniforms, lmPad_) == 804);
+static_assert(offsetof(FrameUniforms, regObbs) == 808);
+static_assert(offsetof(FrameUniforms, regLayers) == 816);
+static_assert(offsetof(FrameUniforms, regCount) == 1040);
+static_assert(offsetof(FrameUniforms, regEnabled) == 1044);
+static_assert(offsetof(FrameUniforms, regPad_) == 1048);
 #if defined(DS_DEBUG_VIZ)
-static_assert(offsetof(FrameUniforms, dsTileMasks) == 752);
-static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 760);
-static_assert(offsetof(FrameUniforms, dsDebugMode) == 768);
-static_assert(offsetof(FrameUniforms, dsDebugLight) == 772);
-static_assert(offsetof(FrameUniforms, dsDebugFlags) == 776);
-static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 780);
+static_assert(offsetof(FrameUniforms, dsTileMasks) == 1056);
+static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 1064);
+static_assert(offsetof(FrameUniforms, dsDebugMode) == 1072);
+static_assert(offsetof(FrameUniforms, dsDebugLight) == 1076);
+static_assert(offsetof(FrameUniforms, dsDebugFlags) == 1080);
+static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 1084);
 #endif
 
 // Resources
@@ -719,12 +753,16 @@ protected:
 		// F8 cycles the GI debug views: 0 off, 1 flat irradiance,
 		// 2 interpolation diagnostics (sharpness/weights/contributors),
 		// 3 level-isolated irradiance (m_giDebugLevel picks the octave),
-		// 4 dominant level palette (strongest weighted contributor).
+		// 4 dominant level palette (strongest weighted contributor),
+		// 5 coverage palette (contributor count: magenta 0 -> red 1 ->
+		// yellow 2 -> green 3-4 -> cyan 5+),
+		// 6 constant-amplitude binary test (uniform probe data),
+		// 7 weighted probe disagreement heat (bake variance).
 		if (m_input.isKeyPressed(GLFW_KEY_N)) {
 			CycleAmbientMode();
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_F8)) {
-			m_giDebug = (m_giDebug + 1) % 5;
+			m_giDebug = (m_giDebug + 1) % 8;
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_C)) {
 			m_fpDemo.cookiesEnabled = !m_fpDemo.cookiesEnabled;
@@ -1103,7 +1141,8 @@ protected:
 	// and the analytic sky IBL is the predictable reference look.
 	AmbientMode m_ambientMode = AmbientMode::SkyIbl; // N cycles
 	int m_giDebug = 0;             // F8 cycles: 0 off, 1 irradiance, 2 diagnostics,
-	                                // 3 level-isolated, 4 dominant level
+	                                // 3 level-isolated, 4 dominant level, 5 coverage,
+	                                // 6 const-amp test, 7 disagreement
 	int m_giDebugLevel = 0;        // mode 3: which octree level to isolate (0..7)
 	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
 	bool m_giShowProbes = false;  // probe-point overlay (ImGui foreground,
@@ -1131,6 +1170,47 @@ protected:
 			(static_cast<int>(m_ambientMode) + 1) % 3);
 	}
 	void LoadGiVolume(smvk::OverlayVfs& vfs);
+	// ---- SG 2D lightmaps (STATIC geometry, tools/gi_baker --lightmap-out
+	// output). Loaded once at scene init from content/gi/<scene>.sglm:
+	// expands into the chunk descriptor buffer + 9 RGBA16F atlas textures
+	// (bindless), and swaps the per-mesh expanded draw runs in via
+	// Cluster::ReplaceStaticMesh BEFORE gfx registration. Static/dynamic
+	// separation: lightmapped draws (materialId bit30) sample the atlas;
+	// dynamic objects sample the regular 3D probe grids (below) or the
+	// fallback ambient. Missing file = not baked yet (non-fatal). ----
+	bool m_lmLoaded = false;
+	bool m_lmSwapDone = false;          // expanded runs swapped into clusters
+	smvk::gi::SgLightmapAtlas m_lmAtlas; // CPU mirror (chunk table; runs dropped after swap)
+	smvk::Holder<smvk::BufferHandle> m_lmChunksBuffer;
+	uint64_t m_lmChunksAddress = 0;
+	smvk::Holder<smvk::TextureHandle> m_lmLayers[9]; // atlas RGBA16F 2D
+	uint32_t m_lmLayerSlots[9] = {};  // bindless slots (FrameUniforms.lmLayers)
+	// meshKey(node) -> chunk index (runtime lookup for the draw flag)
+	std::unordered_map<uint32_t, uint32_t> m_lmChunkByMeshKey;
+	// Per-gfx-mesh chunk table (uint per gfx mesh, 0xFFFFFFFF = none):
+	// built after RegisterWorldMeshes, read by gfxfiltered.vert.
+	smvk::Holder<smvk::BufferHandle> m_lmGfxChunksBuffer;
+	uint64_t m_lmGfxChunksAddress = 0;
+	bool LmActive() const { return m_lmLoaded; }
+	void LoadGiLightmaps(smvk::OverlayVfs& vfs);
+	void BuildLmGfxChunkTable();
+	// ---- SG regular 3D probe volumes (DYNAMIC objects, tools/gi_baker
+	// --regular-out output; artist OBBs + density, hardware trilinear).
+	// Loaded from content/gi/<scene>.regmanifest: up to 8 volumes, each 7
+	// RGBA16F 3D textures + one OBB descriptor. Inside a volume's OBB the
+	// grid REPLACES the sky-IBL ambient for unflagged (dynamic) draws. ----
+	bool m_regLoaded = false;
+	bool m_regEnabled = false;         // UI toggle (dynamic-object GI)
+	struct RegVolume {
+		smvk::gi::SgRegularVolume volume; // CPU mirror (OBB; coeffs freed)
+		smvk::Holder<smvk::TextureHandle> layers[7]; // RGBA16F 3D
+		uint32_t layerSlots[7] = {};    // bindless slots
+	};
+	std::vector<RegVolume> m_regVolumes;
+	smvk::Holder<smvk::BufferHandle> m_regObbsBuffer;
+	uint64_t m_regObbsAddress = 0;
+	bool RegActive() const { return m_regLoaded && m_regEnabled; }
+	void LoadGiRegularVolumes(smvk::OverlayVfs& vfs);
 	// Procedural layered-material test scene ("layers-cube" builtin):
 	// subdivided cube with vertex-painted layer weights + four Sponza
 	// PBR materials. Builds directly into the cluster (no glTF/pak).

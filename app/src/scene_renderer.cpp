@@ -989,14 +989,15 @@ bool SceneRenderer::Initialize() {
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_GI value: " << gi << "\n";
 		}
 		// F8 debug view for headless runs: 0 off, 1 irradiance, 2
-		// interpolation diagnostics, 3 level-isolated, 4 dominant level
+		// interpolation diagnostics, 3 level-isolated, 4 dominant level,
+		// 5 coverage, 6 const-amp test, 7 disagreement
 		// (same modes the F8 key cycles).
 		if (const char* giDbgEnv = std::getenv("VULKANTOY_GI_DEBUG")) {
 			const int mode = std::atoi(giDbgEnv);
-			if (mode >= 0 && mode <= 4)
+			if (mode >= 0 && mode <= 7)
 				m_giDebug = mode;
 			else
-				std::cerr << "[SceneRenderer] VULKANTOY_GI_DEBUG wants 0..4\n";
+				std::cerr << "[SceneRenderer] VULKANTOY_GI_DEBUG wants 0..7\n";
 		}
 		// Level selector for the mode-3 isolation view (0..7; levels with
 		// no probes sample as uncovered/magenta).
@@ -1506,6 +1507,17 @@ bool SceneRenderer::Initialize() {
 				MarkSubtreeStatic(clusterPtr->scene, 0);
 		}
 
+		// SG 2D lightmaps (STATIC geometry): MUST run before
+		// ResolveAndFixup_clusters (cluster scenes still carry
+		// cluster-local mesh/material ids here — resolve remaps them to
+		// world pool indices) AND before the gfx registration below (the
+		// .sglm expanded-run swap rewrites cluster mesh geometry via
+		// Cluster::ReplaceStaticMesh; the filter bakes cluster-ordered
+		// index/command state from whatever geometry exists at
+		// RegisterWorldMeshes time). Non-fatal: no .sglm = statics keep
+		// the probe/sky ambient.
+		LoadGiLightmaps(contentVfs);
+
 		m_world->ResolveAndFixup_clusters();
 		std::cerr << "[Scene] world resolved: nodes="
 			<< m_world->scene.hierarchy.size() << std::endl;
@@ -1553,16 +1565,20 @@ bool SceneRenderer::Initialize() {
 				std::cerr << "[SceneRenderer] GfxFilter unavailable - direct draws\n";
 				m_useGfxFilter = false;
 			}
-			else {
-				m_gfxRenderer.RegisterWorldMeshes(*m_world);
-				m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
-				std::cerr << "[Scene] gfx clusters="
-					<< smvk::gfx::ClusterCount(m_gfxRenderer.State()) << std::endl;
-				if (smvk::gfx::ClusterCount(m_gfxRenderer.State()) == 0) {
-					std::cerr << "[SceneRenderer] GfxFilter: no clusters - direct draws\n";
-					m_useGfxFilter = false;
-				}
+		else {
+			m_gfxRenderer.RegisterWorldMeshes(*m_world);
+			m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+			std::cerr << "[Scene] gfx clusters="
+				<< smvk::gfx::ClusterCount(m_gfxRenderer.State()) << std::endl;
+			if (smvk::gfx::ClusterCount(m_gfxRenderer.State()) == 0) {
+				std::cerr << "[SceneRenderer] GfxFilter: no clusters - direct draws\n";
+				m_useGfxFilter = false;
 			}
+			// Lightmap per-gfx-mesh chunk table (after registration: the
+			// mesh maps exist). gfxfiltered.vert resolves per-draw chunks
+			// through it; 0 BDA = no lightmaps.
+			BuildLmGfxChunkTable();
+		}
 		}
 		// Forward+ frame renderer (owns sizing config; references the
 		// viewport builder for storage so main-pass sampling is unchanged).
@@ -1577,6 +1593,10 @@ bool SceneRenderer::Initialize() {
 		// analytic sky IBL ambient with path-traced probes when present.
 		// Missing file is the normal state (no bake yet) - non-fatal.
 		LoadGiVolume(contentVfs);
+		// SG regular 3D probe volumes (DYNAMIC objects): artist OBB
+		// grids from tools/gi_baker --regular-out. Missing manifest is
+		// the normal state (no bake yet) - non-fatal.
+		LoadGiRegularVolumes(contentVfs);
 		// SMAA precomputed LUTs (official area/search tables, embedded in
 		// the engine - see Engine/Rendergraph/smaa.h). Uploaded once here so
 		// the staged uploads join the cookie flush below.
@@ -1905,6 +1925,402 @@ void SceneRenderer::Shutdown() {
 			<< " gpu=" << (m_giVolume.GpuBytes() / 1024) << " KiB\n";
 	}
 
+	// ---------------------------------------------------------------------------
+	// SG 2D lightmaps (STATIC geometry; tools/gi_baker --lightmap-out).
+	// Loads content/gi/<scene>.sglm: swaps the per-mesh expanded draw runs
+	// into the clusters (Cluster::ReplaceStaticMesh — MUST run before gfx
+	// registration, which bakes cluster-ordered index/command state),
+	// uploads the chunk descriptor buffer + the 9 RGBA16F atlas layers,
+	// and records cluster-mesh -> chunk lookups for the gfx chunk table
+	// (built after RegisterWorldMeshes, see BuildLmGfxChunkTable).
+	// Missing file = "not baked yet" - non-fatal.
+	// ---------------------------------------------------------------------------
+	// GPU mirrors of sg_lightmap_types.hlsli (layout-asserted).
+	struct LmChunkGpu {
+		float rectMinSize[4]; // xy atlas texel min, zw size in texels
+		float atlasInfo[4];   // xy 1/atlasSize, z lobeCount, w pad
+	};
+	static_assert(sizeof(LmChunkGpu) == 32);
+	struct RegObbGpu {
+		float center[4];
+		float axisX[4];
+		float axisY[4];
+		float axisZ[4];
+		float halfExtents[4];
+		uint32_t dims[4];
+	};
+	static_assert(sizeof(RegObbGpu) == 96);
+
+	void SceneRenderer::LoadGiLightmaps(smvk::OverlayVfs& vfs) {
+		m_lmLoaded = false;
+		m_lmSwapDone = false;
+		m_lmAtlas = smvk::gi::SgLightmapAtlas{};
+		m_lmChunksBuffer = {};
+		m_lmChunksAddress = 0;
+		for (auto& layer : m_lmLayers)
+			layer = {};
+		for (uint32_t& slot : m_lmLayerSlots)
+			slot = UINT32_MAX;
+		m_lmChunkByMeshKey.clear();
+
+		const std::string vfsPath = std::string("gi/") + m_scene.id + ".sglm";
+		std::vector<uint8_t> bytes;
+		try {
+			bytes = vfs.ReadBinary(vfsPath);
+		} catch (...) {
+			std::cerr << "[LM] no lightmap '" << vfsPath
+				<< "' (bake: GiBaker --lightmap-out)\n";
+			return;
+		}
+		std::string err;
+		if (!m_lmAtlas.ReadFromMemory(bytes, err)) {
+			std::cerr << "[LM] atlas rejected: " << err << "\n";
+			return;
+		}
+		if (m_lmAtlas.chunks.empty()) {
+			std::cerr << "[LM] atlas has no chunks - ignored\n";
+			return;
+		}
+		if (m_lmAtlas.width == 0 || m_lmAtlas.height == 0
+			|| m_lmAtlas.width > 8192 || m_lmAtlas.height > 8192) {
+			std::cerr << "[LM] atlas dims rejected: " << m_lmAtlas.width
+				<< "x" << m_lmAtlas.height << "\n";
+			return;
+		}
+		for (uint32_t ci = 0; ci < m_lmAtlas.chunks.size(); ++ci)
+			m_lmChunkByMeshKey[m_lmAtlas.chunks[ci].meshKey] = ci;
+
+		// ---- Expanded-run swap (before gfx registration) ----
+		// chunk.meshKey = cluster-local node id at bake time; the runs
+		// replace the cluster mesh's GPU geometry in place so every
+		// downstream system (materials, HZB culling, indirect commands,
+		// shadows) keeps working untouched. Only 1:1 node->mesh mappings
+		// are swapped: instanced meshes (several nodes sharing one mesh)
+		// need per-instance charts and stay on the probe/sky ambient.
+		uint32_t swapped = 0, skipped = 0;
+		for (auto& clusterPtr : m_world->clusters) {
+			if (!clusterPtr)
+				continue;
+			smvk::Cluster& cluster = *clusterPtr;
+			// mesh pool index -> reference count (instancing check).
+			std::unordered_map<uint32_t, uint32_t> refsByMesh;
+			for (const auto& [node, meshIdx] : cluster.scene.meshForNode)
+				++refsByMesh[meshIdx];
+			for (const auto& [node, meshIdx] : cluster.scene.meshForNode) {
+				const auto chunkIt = m_lmChunkByMeshKey.find(node);
+				if (chunkIt == m_lmChunkByMeshKey.end())
+					continue; // node has no chart (not static / not baked)
+				const uint32_t chunkIdx = chunkIt->second;
+				if (chunkIdx >= m_lmAtlas.runs.size()
+					|| m_lmAtlas.runs[chunkIdx].vertices.empty()) {
+					++skipped;
+					continue;
+				}
+				if (auto refIt = refsByMesh.find(meshIdx);
+					refIt == refsByMesh.end() || refIt->second != 1) {
+					++skipped; // instanced mesh: per-instance charts unsupported
+					continue;
+				}
+				const smvk::ClusterStaticMeshHandle handle =
+					cluster.staticMeshes.getHandle(meshIdx);
+				const smvk::StaticMesh* mesh = cluster.staticMeshes.get(handle);
+				const smvk::StaticMeshUpload& run = m_lmAtlas.runs[chunkIdx];
+				// Geometry guard: the run must expand the SAME triangle
+				// count as the cooked mesh (bake/runtime import mismatch
+				// would splat garbage across the heap).
+				if (!mesh || mesh->geometry.indexCount != run.indices.size()) {
+					++skipped;
+					continue;
+				}
+				if (!cluster.ReplaceStaticMesh(handle, run)) {
+					std::cerr << "[LM] swap failed for node " << node
+						<< " (static heap full?) - mesh keeps its geometry\n";
+					++skipped;
+					continue;
+				}
+				++swapped;
+			}
+		}
+		m_lmSwapDone = swapped > 0;
+
+		// ---- Chunk descriptor buffer ----
+		std::vector<LmChunkGpu> chunkData(m_lmAtlas.chunks.size());
+		const float invW = 1.0f / float(m_lmAtlas.width);
+		const float invH = 1.0f / float(m_lmAtlas.height);
+		for (size_t ci = 0; ci < m_lmAtlas.chunks.size(); ++ci) {
+			const smvk::gi::SgLightmapChunk& c = m_lmAtlas.chunks[ci];
+			LmChunkGpu& g = chunkData[ci];
+			g.rectMinSize[0] = c.rectMin[0];
+			g.rectMinSize[1] = c.rectMin[1];
+			g.rectMinSize[2] = c.rectMax[0] - c.rectMin[0];
+			g.rectMinSize[3] = c.rectMax[1] - c.rectMin[1];
+			g.atlasInfo[0] = invW;
+			g.atlasInfo[1] = invH;
+			g.atlasInfo[2] = float(c.lobeCount);
+			g.atlasInfo[3] = 0.0f;
+		}
+		constexpr smvk::PipelineStage kLmStages =
+			smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment);
+		m_lmChunksBuffer = m_context->CreateBuffer(
+			chunkData.size() * sizeof(LmChunkGpu), smvk::BufferType_Storage, "sglm chunks");
+		m_context->UploadDataToBuffer(m_lmChunksBuffer, chunkData.data(),
+			chunkData.size() * sizeof(LmChunkGpu), kLmStages,
+			smvk::AccessFlags::ShaderRead);
+		m_lmChunksAddress = m_context->GetBufferDeviceAddress(m_lmChunksBuffer);
+
+		// ---- Atlas layers (9 RGBA16F bindless textures) ----
+		std::vector<uint16_t> layers[smvk::gi::kLightmapLayerCount];
+		m_lmAtlas.PackGpuLayers(layers);
+		for (uint32_t t = 0; t < smvk::gi::kLightmapLayerCount; ++t) {
+			smvk::ImageCreateInfo ci{};
+			ci.extent = { m_lmAtlas.width, m_lmAtlas.height, 1 };
+			ci.format = smvk::Format::RGBA16_Float;
+			ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+			ci.mipLevels = 1;
+			ci.arrayLayers = 1;
+			ci.name = "sglm atlas layer";
+			auto tex = m_context->CreateTexture(ci, layers[t].data());
+			if (tex.empty()) {
+				std::cerr << "[LM] atlas layer " << t << " creation failed\n";
+				for (uint32_t& slot : m_lmLayerSlots)
+					slot = UINT32_MAX;
+				return;
+			}
+			m_lmLayers[t] = std::move(tex);
+			m_lmLayerSlots[t] = m_context->GetTextureBindlessIndex(m_lmLayers[t]);
+		}
+		m_lmLoaded = true;
+
+		// Runs were consumed by the swap; drop the CPU copies (the atlas
+		// keeps chunks + payloads for the debug views / CPU sampling).
+		for (auto& run : m_lmAtlas.runs)
+			run = smvk::StaticMeshUpload{};
+
+		std::cerr << "[LM] loaded '" << vfsPath << "': chunks="
+			<< m_lmAtlas.chunks.size() << " atlas=" << m_lmAtlas.width << "x"
+			<< m_lmAtlas.height << " swapped=" << swapped << " skipped=" << skipped
+			<< " gpu=" << (m_lmAtlas.GpuBytes() / 1024) << " KiB\n";
+	}
+
+	void SceneRenderer::BuildLmGfxChunkTable() {
+		// Per-gfx-mesh chunk table (uint per gfx mesh, 0xFFFFFFFF = none):
+		// cluster mesh handle -> chunk was recorded during the swap; the
+		// world meshLocations + GfxMeshForLod give the gfx mesh ids.
+		if (!m_lmLoaded || !m_lmSwapDone)
+			return;
+		struct Key {
+			const void* cluster = nullptr;
+			uint32_t index = 0;
+			bool operator==(const Key& o) const {
+				return cluster == o.cluster && index == o.index;
+			}
+		};
+		struct KeyHash {
+			size_t operator()(const Key& k) const noexcept {
+				return std::hash<const void*>{}(k.cluster) * 31u + k.index;
+			}
+		};
+		std::unordered_map<Key, uint32_t, KeyHash> chunkByClusterMesh;
+		for (auto& clusterPtr : m_world->clusters) {
+			if (!clusterPtr)
+				continue;
+			smvk::Cluster& cluster = *clusterPtr;
+			for (const auto& [node, meshIdx] : cluster.scene.meshForNode) {
+				auto it = m_lmChunkByMeshKey.find(node);
+				if (it == m_lmChunkByMeshKey.end())
+					continue;
+				const smvk::ClusterStaticMeshHandle handle =
+					cluster.staticMeshes.getHandle(meshIdx);
+				chunkByClusterMesh[{ &cluster, handle.index() }] = it->second;
+			}
+		}
+		const smvk::World& world = *m_world;
+		std::vector<uint32_t> table;
+		auto tableFor = [&](uint32_t gfxMesh, auto& sink) {
+			if (gfxMesh == UINT32_MAX)
+				return;
+			if (table.size() <= gfxMesh)
+				table.resize(size_t(gfxMesh) + 1, UINT32_MAX);
+			if (table[gfxMesh] == UINT32_MAX)
+				table[gfxMesh] = sink;
+		};
+		for (size_t i = 0; i < world.meshLocations.size(); ++i) {
+			const auto& loc = world.meshLocations[i];
+			if (!loc.cluster || !loc.handle.valid())
+				continue;
+			auto it = chunkByClusterMesh.find({ loc.cluster, loc.handle.index() });
+			if (it == chunkByClusterMesh.end())
+				continue;
+			const uint32_t chunk = it->second;
+			const uint32_t base = m_gfxRenderer.GfxMeshForWorldMesh(uint32_t(i));
+			tableFor(base, chunk);
+			// LOD siblings share the base mesh's charts only when the
+			// sibling was never swapped; run-less siblings keep "none"
+			// (their geometry is the simplified one, not the swapped run).
+			const uint32_t chain = world.LodChainLength(uint32_t(i));
+			for (uint32_t l = 0; l < chain; ++l) {
+				if (l == 0)
+					continue;
+				auto hit = world.ResolveLodMesh(uint32_t(i), l);
+				if (!hit || !hit->handle.valid())
+					continue;
+				if (chunkByClusterMesh.contains({ hit->cluster, hit->handle.index() }))
+					tableFor(m_gfxRenderer.GfxMeshForLod(uint32_t(i), l), chunk);
+			}
+		}
+		if (table.empty())
+			return;
+		constexpr size_t kGfxDrawCap = 4096; // GFX_MAX_DRAWS (gfxfilter.hlsli)
+		if (table.size() > kGfxDrawCap) {
+			std::cerr << "[LM] gfx mesh count " << table.size()
+				<< " exceeds the chunk-table cap " << kGfxDrawCap
+				<< " - lightmaps disabled\n";
+			return;
+		}
+		// Buffer sized to the gfx mesh count (the VS bounds-checks against
+		// GFX_MAX_DRAWS; sizes below that are safe).
+		m_lmGfxChunksBuffer = m_context->CreateBuffer(
+			table.size() * sizeof(uint32_t), smvk::BufferType_Storage, "sglm gfx chunks");
+		m_context->UploadDataToBuffer(m_lmGfxChunksBuffer, table.data(),
+			table.size() * sizeof(uint32_t),
+			smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
+			smvk::AccessFlags::ShaderRead);
+		m_lmGfxChunksAddress = m_context->GetBufferDeviceAddress(m_lmGfxChunksBuffer);
+		m_gfxRenderer.SetLmChunkTable(m_lmGfxChunksAddress);
+	}
+
+	// ---------------------------------------------------------------------------
+	// SG regular 3D probe volumes (DYNAMIC objects; tools/gi_baker
+	// --regular-out). Loads content/gi/<scene>.regmanifest: one .sgrv vfs
+	// path per line, up to SG_REG_MAX_VOLUMES (8). Each volume uploads 7
+	// RGBA16F 3D textures + one OBB descriptor; the shader hardware-
+	// trilinearly filters between neighboring probes. Missing manifest =
+	// "not baked yet" - non-fatal.
+	// ---------------------------------------------------------------------------
+	void SceneRenderer::LoadGiRegularVolumes(smvk::OverlayVfs& vfs) {
+		m_regLoaded = false;
+		m_regEnabled = false;
+		m_regVolumes.clear();
+		m_regObbsBuffer = {};
+		m_regObbsAddress = 0;
+
+		const std::string manifestPath = std::string("gi/") + m_scene.id + ".regmanifest";
+		std::vector<uint8_t> manifestBytes;
+		try {
+			manifestBytes = vfs.ReadBinary(manifestPath);
+		} catch (...) {
+			std::cerr << "[REG] no volume manifest '" << manifestPath
+				<< "' (bake: GiBaker --regular-out)\n";
+			return;
+		}
+		// Line-separated .sgrv vfs paths.
+		std::vector<std::string> lines;
+		{
+			std::string cur;
+			for (char c : manifestBytes) {
+				if (c == '\n' || c == '\r') {
+					if (!cur.empty()) {
+						lines.push_back(cur);
+						cur.clear();
+					}
+				} else {
+					cur.push_back(c);
+				}
+			}
+			if (!cur.empty())
+				lines.push_back(cur);
+		}
+		constexpr uint32_t kMaxVolumes = 8; // SG_REG_MAX_VOLUMES
+		for (const std::string& line : lines) {
+			if (m_regVolumes.size() >= kMaxVolumes) {
+				std::cerr << "[REG] manifest lists more than " << kMaxVolumes
+					<< " volumes - extra entries ignored\n";
+				break;
+			}
+			std::vector<uint8_t> volBytes;
+			try {
+				volBytes = vfs.ReadBinary(line);
+			} catch (...) {
+				std::cerr << "[REG] missing volume '" << line << "' - skipped\n";
+				continue;
+			}
+			RegVolume rv{};
+			std::string verr;
+			if (!rv.volume.ReadFromMemory(volBytes, verr)) {
+				std::cerr << "[REG] volume rejected: " << verr << "\n";
+				continue;
+			}
+			// 7 RGBA16F 3D textures (bindless; volumeTextures mirror).
+			std::vector<uint16_t> layers[7];
+			rv.volume.PackGpuLayers(layers);
+			bool ok = true;
+			for (uint32_t t = 0; t < 7; ++t) {
+				smvk::ImageCreateInfo ci{};
+				ci.type = smvk::ImageType::Image3D;
+				ci.extent = { rv.volume.obb.dims[0], rv.volume.obb.dims[1],
+					rv.volume.obb.dims[2] };
+				ci.format = smvk::Format::RGBA16_Float;
+				ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+				ci.mipLevels = 1;
+				ci.arrayLayers = 1;
+				ci.name = "sgrv layer";
+				auto tex = m_context->CreateTexture(ci, layers[t].data());
+				if (tex.empty()) {
+					std::cerr << "[REG] layer " << t << " creation failed\n";
+					ok = false;
+					break;
+				}
+				rv.layers[t] = std::move(tex);
+				rv.layerSlots[t] = m_context->GetTextureBindlessIndex(rv.layers[t]);
+			}
+			if (!ok)
+				continue;
+			// Coefficients are now resident on the GPU; drop the CPU copy.
+			rv.volume.coeffs.clear();
+			rv.volume.coeffs.shrink_to_fit();
+			m_regVolumes.push_back(std::move(rv));
+		}
+		if (m_regVolumes.empty()) {
+			std::cerr << "[REG] no volumes loaded\n";
+			return;
+		}
+
+		// OBB descriptor buffer (float4-padded layout, see RegObbGpu).
+		std::vector<RegObbGpu> obbs(m_regVolumes.size());
+		for (size_t v = 0; v < m_regVolumes.size(); ++v) {
+			const smvk::gi::SgRegularObb& o = m_regVolumes[v].volume.obb;
+			RegObbGpu& g = obbs[v];
+			g.center[0] = o.center.x; g.center[1] = o.center.y; g.center[2] = o.center.z;
+			g.axisX[0] = o.axisX.x; g.axisX[1] = o.axisX.y; g.axisX[2] = o.axisX.z;
+			g.axisY[0] = o.axisY.x; g.axisY[1] = o.axisY.y; g.axisY[2] = o.axisY.z;
+			g.axisZ[0] = o.axisZ.x; g.axisZ[1] = o.axisZ.y; g.axisZ[2] = o.axisZ.z;
+			g.halfExtents[0] = o.halfExtents.x;
+			g.halfExtents[1] = o.halfExtents.y;
+			g.halfExtents[2] = o.halfExtents.z;
+			g.dims[0] = o.dims[0]; g.dims[1] = o.dims[1]; g.dims[2] = o.dims[2];
+		}
+		constexpr smvk::PipelineStage kRegStages =
+			smvk::PipelineStage(smvk::PipelineStageBit_Fragment);
+		m_regObbsBuffer = m_context->CreateBuffer(
+			obbs.size() * sizeof(RegObbGpu), smvk::BufferType_Storage, "sgrv obbs");
+		m_context->UploadDataToBuffer(m_regObbsBuffer, obbs.data(),
+			obbs.size() * sizeof(RegObbGpu), kRegStages,
+			smvk::AccessFlags::ShaderRead);
+		m_regObbsAddress = m_context->GetBufferDeviceAddress(m_regObbsBuffer);
+
+		m_regLoaded = true;
+		m_regEnabled = true; // on by default when baked; UI can toggle
+		std::cerr << "[REG] loaded " << m_regVolumes.size()
+			<< " volume(s) from '" << manifestPath << "'\n";
+		for (const auto& rv : m_regVolumes) {
+			const auto& o = rv.volume.obb;
+			std::cerr << "  dims=" << o.dims[0] << "x" << o.dims[1] << "x" << o.dims[2]
+				<< " center=(" << o.center.x << "," << o.center.y << "," << o.center.z << ")"
+				<< " half=(" << o.halfExtents.x << "," << o.halfExtents.y
+				<< "," << o.halfExtents.z << ")\n";
+		}
+	}
+
 	FrameUniforms SceneRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent) {
 
 		const int width_ = renderExtent.width;
@@ -2082,7 +2498,7 @@ void SceneRenderer::Shutdown() {
 			data.giIntensity = m_giIntensity;
 			// Packed debug word: low byte = mode, byte 1 = isolated level
 			// (mode 3). Zero layout cost vs a new FrameUniforms field.
-			data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 4)) & 0xffu)
+			data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 7)) & 0xffu)
 				| ((uint32_t(std::clamp(m_giDebugLevel, 0, 7)) & 0xffu) << 8);
 		} else {
 			data.giProbes = 0;
@@ -2092,6 +2508,41 @@ void SceneRenderer::Shutdown() {
 			data.giEnabled = 0u;
 			data.giIntensity = 1.0f;
 			data.giDebug = 0u;
+		}
+		// SG 2D lightmaps (static draws; the per-draw chunk rides the
+		// vertex path, see gfxfiltered.vert). Static/dynamic separation:
+		// lm/reg ride the same giIntensity scale as the probe volume so
+		// the N ambient-mode UI stays meaningful.
+		if (LmActive()) {
+			data.lmChunks = m_lmChunksAddress;
+			for (uint32_t t = 0; t < 9; ++t)
+				data.lmLayers[t] = m_lmLayerSlots[t];
+			data.lmChunkCount = uint32_t(m_lmAtlas.chunks.size());
+			data.lmEnabled = (m_ambientMode != AmbientMode::Off) ? 1u : 0u;
+		} else {
+			data.lmChunks = 0;
+			for (uint32_t t = 0; t < 9; ++t)
+				data.lmLayers[t] = UINT32_MAX;
+			data.lmChunkCount = 0u;
+			data.lmEnabled = 0u;
+		}
+		data.lmPad_ = 0;
+		// SG regular 3D probe volumes (dynamic draws inside artist OBBs).
+		if (RegActive()) {
+			data.regObbs = m_regObbsAddress;
+			const uint32_t n = std::min<uint32_t>(
+				uint32_t(m_regVolumes.size()), 8u);
+			for (uint32_t v = 0; v < n; ++v)
+				for (uint32_t t = 0; t < 7; ++t)
+					data.regLayers[v * 7u + t] = m_regVolumes[v].layerSlots[t];
+			data.regCount = n;
+			data.regEnabled = 1u;
+		} else {
+			data.regObbs = 0;
+			for (uint32_t& slot : data.regLayers)
+				slot = UINT32_MAX;
+			data.regCount = 0u;
+			data.regEnabled = 0u;
 		}
 		data.evsmMode = EvsmActive() ? 1u : 0u;
 
@@ -7179,18 +7630,25 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							ImGui::TextDisabled("hides probes behind geometry (one-time import hitch)");
 					}
 					if (m_giLoaded) {
-						const char* dbgNames[5] = { "Off", "Irradiance",
-							"Diagnostics", "Level isolated", "Dominant level" };
+						const char* dbgNames[8] = { "Off", "Irradiance",
+							"Diagnostics", "Level isolated", "Dominant level", "Coverage",
+							"Const-amp test", "Disagreement" };
 						int dbgIdx = m_giDebug;
-						if (ImGui::Combo("GI debug view (F8)", &dbgIdx, dbgNames, 5))
-							m_giDebug = std::clamp(dbgIdx, 0, 4);
+						if (ImGui::Combo("GI debug view (F8)", &dbgIdx, dbgNames, 8))
+							m_giDebug = std::clamp(dbgIdx, 0, 7);
 						if (m_giDebug == 3) {
 							ImGui::SliderInt("Isolated level", &m_giDebugLevel, 0, 7);
 							ImGui::TextDisabled("irradiance from L%d probes only (others skipped)", m_giDebugLevel);
 						} else if (m_giDebug == 4) {
 							ImGui::TextDisabled("dominant level (argmax per-level wv): R L0 Y L1 G L2 C L3 B L4 W L5+; magenta=no valid contributor");
+						} else if (m_giDebug == 5) {
+							ImGui::TextDisabled("coverage (visibility-valid contributors): magenta 0, red 1, yellow 2, green 3-4, cyan 5+");
+						} else if (m_giDebug == 6) {
+							ImGui::TextDisabled("const-amp test: uniform probe data; smooth = interpolation OK, blotchy = weights modulate");
+						} else if (m_giDebug == 7) {
+							ImGui::TextDisabled("disagreement (bake variance): black = agree, green -> yellow -> red = probes disagree");
 						} else {
-							ImGui::TextDisabled("diagnostics: R=sharpness (fixed) G=weight sum  B=contributors; violet=fallback");
+							ImGui::TextDisabled("diagnostics: R=sharpness (fixed) G=weight sum  B=contributors");
 						}
 					}
 				}
