@@ -130,6 +130,19 @@ set_target_properties(DeferredShadowTests PROPERTIES
 
 add_test(NAME deferredshadow_tests COMMAND DeferredShadowTests)
 
+add_executable(CubemapTests test_cubemap.cpp)
+
+target_link_libraries(CubemapTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(CubemapTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME cubemap_tests COMMAND CubemapTests)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 vulkantoy_stage_sdl3(AssetTests)
 vulkantoy_stage_sdl3(SpirvReflectionTests)
@@ -141,3 +154,4 @@ vulkantoy_stage_sdl3(SmaaJitterTests)
 vulkantoy_stage_sdl3(GiTests)
 vulkantoy_stage_sdl3(StreamingTests)
 vulkantoy_stage_sdl3(DeferredShadowTests)
+vulkantoy_stage_sdl3(CubemapTests)

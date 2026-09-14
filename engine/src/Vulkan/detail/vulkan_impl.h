@@ -108,6 +108,9 @@ namespace smvk {
 		uint32_t liveViewCount = 0;
 		ResourceOwnership ownership = ResourceOwnership::Owned;
 		bool isConcurrent = false;
+		// Mirrors ImageCreateInfo::isCubemap (VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT).
+		// KTX cubemap uploads set it from texture.isCubemap.
+		bool isCubemap = false;
 		const char* name;
 	};
 
@@ -640,6 +643,15 @@ namespace smvk {
 
 		uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
 		uint32_t GetTextureBindlessIndex(TextureHandle handle) const;
+		// True when the texture's backing image is cube-compatible with a
+		// ViewCube / ViewCubeArray sampled view (manual isCubemap images
+		// and KTX2 cubemap uploads). False for invalid handles.
+		bool IsCubemapTexture(TextureHandle handle) const;
+		// Backing-image array layers (6 = single cubemap, 6*N = cube
+		// array) and base-extent edge length. 0 for invalid handles.
+		uint32_t GetTextureArrayLayers(TextureHandle handle) const;
+		uint32_t GetTextureCubemapSize(TextureHandle handle) const;
+		uint32_t GetTextureMipLevels(TextureHandle handle) const;
 		std::vector<GpuMemoryHeap> GetGpuMemoryInfo() const;
 
 		std::unique_ptr<VulkanCore> core_;

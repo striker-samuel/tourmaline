@@ -115,6 +115,12 @@ public:
     uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
     // Bindless descriptor-array slot of a TextureHandle (its sampled view).
     uint32_t GetTextureBindlessIndex(TextureHandle handle) const;
+    // Cubemap introspection (backing image + sampled view). Used by the
+    // cubemap renderer loader to validate KTX2 cubemap uploads.
+    bool IsCubemapTexture(TextureHandle handle) const;
+    uint32_t GetTextureArrayLayers(TextureHandle handle) const;
+    uint32_t GetTextureCubemapSize(TextureHandle handle) const;
+    uint32_t GetTextureMipLevels(TextureHandle handle) const;
     uint64_t GetBufferDeviceAddress(BufferHandle handle) const;
     // Flush batched uploads (256MB threshold, or manual at end of scene)
     void FlushUploads();

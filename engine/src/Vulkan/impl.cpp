@@ -3805,6 +3805,14 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	assert(ci.extent.depth > 0);
 	assert(ci.mipLevels > 0);
 	assert(ci.arrayLayers > 0);
+	if (ci.isCubemap) {
+		// Vulkan cube rules (VUID-VkImageCreateInfo-flags-00949 etc):
+		// 2D, square, 6 (or 6*N) layers, no multisampling.
+		assert(ci.type == ImageType::Image2D);
+		assert(ci.extent.width == ci.extent.height);
+		assert((ci.arrayLayers % 6u) == 0u);
+		assert(ci.samples == SampleCount::Count1);
+	}
 
 	Image image{};
 
@@ -3817,12 +3825,15 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 	image.arrayLayers = ci.arrayLayers;
 	//image.flags = ci.flags;
 	image.ownership = ResourceOwnership::Owned;
+	image.isCubemap = ci.isCubemap;
 
 	VkImageCreateInfo vkCI{
 		VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
 	};
 
 	//vkCI.flags = toVkImageCreateFlags(ci.flags);
+	if (ci.isCubemap)
+		vkCI.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
 	vkCI.imageType = toVkImageType(ci.type);
 
 	vkCI.extent = {
@@ -4058,7 +4069,15 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 
 	ImageViewCreateInfo viewCI{};
 
-	if (imageResource->type == ImageType::Image3D)
+	if (imageResource->isCubemap)
+	{
+		assert(imageResource->type == ImageType::Image2D);
+		assert((imageResource->arrayLayers % 6u) == 0u);
+		viewCI.viewType = imageResource->arrayLayers > 6u
+			? ImageViewType::ViewCubeArray
+			: ImageViewType::ViewCube;
+	}
+	else if (imageResource->type == ImageType::Image3D)
 	{
 		viewCI.viewType = ImageViewType::View3D;
 	}
@@ -4683,6 +4702,7 @@ static VkFormat toSRGBVkFormat(VkFormat format)
 		ResourceOwnership::Owned;
 
 	image.isConcurrent = concurrentSharing;
+	image.isCubemap = isCubemap;
 
 
 	const ImageHandle imageHandle =
@@ -5164,6 +5184,7 @@ smvk::ImageType KtxStreamRhiType(const KtxStreamPlan& plan)
 	image.arrayLayers = imageCI.arrayLayers;
 	image.liveViewCount = 0;
 	image.ownership = ResourceOwnership::Owned;
+	image.isCubemap = plan.isCubemap;
 
 	const ImageHandle imageHandle =
 		images_.create(std::move(image));
@@ -5312,6 +5333,7 @@ void smvk::VulkanResourceManager::RetargetStreamingTexture(TextureHandle handle,
 	img->samples = SampleCount::Count1;
 	img->mipLevels = plan.residentMips;
 	img->arrayLayers = imageCI.arrayLayers;
+	img->isCubemap = plan.isCubemap;
 	SetImageSyncState(rec->image, ImageGlobalSyncState{});
 
 #if defined(_DEBUG)
@@ -5606,6 +5628,7 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 	image->samples = fresh.samples;
 	image->mipLevels = fresh.mipLevels;
 	image->arrayLayers = fresh.arrayLayers;
+	image->isCubemap = fresh.isCubemap;
 	image->name = fresh.name;
 	SetImageSyncState(handle, ImageGlobalSyncState{});
 
@@ -6203,6 +6226,46 @@ smvk::BufferHandle smvk::VulkanResourceManager::GetTextureFeedbackBuffer(uint32_
 	const Texture* texture = textures_.get(handle);
 	assert(texture && !texture->bindless.empty());
 	return GetBindlessIndex(texture->bindless);
+}
+bool smvk::VulkanResourceManager::IsCubemapTexture(TextureHandle handle) const
+{
+	const Texture* texture = textures_.get(handle);
+	if (!texture)
+		return false;
+	const Image* image = images_.get(texture->image);
+	const ImageView* view = imageViews_.get(texture->view);
+	if (!image || !view)
+		return false;
+	if (!image->isCubemap)
+		return false;
+	return view->viewType == ImageViewType::ViewCube
+		|| view->viewType == ImageViewType::ViewCubeArray;
+}
+uint32_t smvk::VulkanResourceManager::GetTextureArrayLayers(TextureHandle handle) const
+{
+	const Texture* texture = textures_.get(handle);
+	if (!texture)
+		return 0;
+	const Image* image = images_.get(texture->image);
+	return image ? image->arrayLayers : 0;
+}
+uint32_t smvk::VulkanResourceManager::GetTextureCubemapSize(TextureHandle handle) const
+{
+	const Texture* texture = textures_.get(handle);
+	if (!texture)
+		return 0;
+	const Image* image = images_.get(texture->image);
+	if (!image || !image->isCubemap)
+		return 0;
+	return image->extent.width;
+}
+uint32_t smvk::VulkanResourceManager::GetTextureMipLevels(TextureHandle handle) const
+{
+	const Texture* texture = textures_.get(handle);
+	if (!texture)
+		return 0;
+	const Image* image = images_.get(texture->image);
+	return image ? image->mipLevels : 0;
 }
 uint32_t smvk::VulkanResourceManager::GetOrCreateSampler(const SamplerCreateInfo& ci) {
 	assert(samplerCache_ && "samplerCache not initialized");

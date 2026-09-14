@@ -1312,6 +1312,14 @@ struct ImageCreateInfo
 		uint32_t mipLevels = 1;
 		uint32_t arrayLayers = 1;
 		//ImageCreateFlags flags = ImageCreateFlags::None;
+		// Cube-compatible 2D image (VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT).
+		// Requires type == Image2D, samples == Count1, width == height,
+		// and arrayLayers == 6 (single cubemap) or a multiple of 6
+		// (cube array, sampled through ViewCubeArray). Pair with a
+		// ViewCube / ViewCubeArray view (CreateTexture picks it
+		// automatically). KTX2 cubemap uploads set the flag internally;
+		// this flag is the manual (procedural / render-target) path.
+		bool isCubemap = false;
 		const char* name = nullptr;
 		bool hostTransfer = false;
 		// Share the image CONCURRENTLY between graphics + dedicated compute
@@ -1335,6 +1343,35 @@ struct ImageCreateInfo
 		ImageSubresourceRange subresourceRange{};
 		const char* name = nullptr;
 	};
+
+	// One cubemap = 6 layers (one per face); N cubemaps = 6*N layers.
+	inline constexpr uint32_t kCubemapFaceCount = 6;
+
+	[[nodiscard]] constexpr bool IsCubemapLayerCount(uint32_t layers) noexcept {
+		return layers >= 6 && (layers % 6u) == 0u;
+	}
+
+	// Convenience builder for a manual (non-KTX) cube-compatible texture.
+	// extent.width must equal extent.height; layers = 6 (cube) or 6*N
+	// (cube array). mipLevels may exceed 1 for prefiltered / mip-mapped
+	// environment maps.
+	[[nodiscard]] inline ImageCreateInfo MakeCubemapCreateInfo(
+		uint32_t size, Format format, uint32_t mipLevels = 1,
+		uint32_t cubeCount = 1,
+		ImageUsage usage = ImageUsage::Sampled | ImageUsage::TransferDst,
+		const char* name = nullptr) {
+		ImageCreateInfo ci{};
+		ci.type = ImageType::Image2D;
+		ci.extent = { size, size, 1u };
+		ci.format = format;
+		ci.usage = usage;
+		ci.samples = SampleCount::Count1;
+		ci.mipLevels = mipLevels;
+		ci.arrayLayers = 6u * (cubeCount ? cubeCount : 1u);
+		ci.isCubemap = true;
+		ci.name = name;
+		return ci;
+	}
 
  	struct ImageTag;
 	struct ImageViewTag;

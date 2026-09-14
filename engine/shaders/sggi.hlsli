@@ -197,7 +197,8 @@ bool SgGiSample(FrameUniforms frame, float3 pos, out float3 amps[SG_GI_LOBES],
                 bestNearW = wn;
                 bestNearIdx = probeIdx;
             }
-            const float wv = w * SgGiVisibilityFactor(pos, p);
+            const float wv = w;/* * SgGiVisibilityFactor(pos, p);
+*/            //const float wv = w * SgGiVisibilityFactor(pos, p);
             [branch]
             if (wv <= 0.0)
                 continue;
