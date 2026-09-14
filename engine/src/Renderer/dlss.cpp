@@ -76,6 +76,15 @@ bool ResolveProc(const char* name, T*& out) {
 	case smvk::Format::RG16_Float: return VK_FORMAT_R16G16_SFLOAT;
 	case smvk::Format::R32_Float: return VK_FORMAT_R32_SFLOAT;
 	case smvk::Format::D32_Float: return VK_FORMAT_D32_SFLOAT;
+	// Scene depth is a stencil format (findDepthFormat prefers
+	// D32_SFLOAT_S8_UINT, falls back to D24_UNORM_S8_UINT). The DLSS
+	// plugin validates the tagged depth format — returning UNDEFINED
+	// here trips "Cannot have undefined format" in SL and, in release
+	// (assert compiled out), poisons the evaluate that later aborts
+	// in VK_CHECK on toggle-off. Map the real formats through.
+	case smvk::Format::D32_Float_S8_UInt: return VK_FORMAT_D32_SFLOAT_S8_UINT;
+	case smvk::Format::D24_UNorm_S8_UInt: return VK_FORMAT_D24_UNORM_S8_UINT;
+	case smvk::Format::D16_UNorm: return VK_FORMAT_D16_UNORM;
 	default: break;
 	}
 	assert(false && "ToVkFormat: format not handled by the DLSS module");
@@ -355,7 +364,7 @@ bool DlssApplyOptions(DlssMode mode, uint32_t outputWidth, uint32_t outputHeight
 	return true;
 }
 
-void DlssDeactivate() {
+void DlssDeactivate(uint32_t outputWidth, uint32_t outputHeight) {
 	if (!g_ready)
 		return;
 	PFun_slDLSSSetOptions* setFn = nullptr;
@@ -363,7 +372,22 @@ void DlssDeactivate() {
 			"slDLSSSetOptions", reinterpret_cast<void*&>(setFn)) == sl::Result::eOk && setFn) {
 		sl::DLSSOptions o{};
 		o.mode = sl::DLSSMode::eOff;
-		setFn(kDlssViewport, o);
+		// eOff still validates extents: forward the last applied output
+		// size instead of the INVALID_UINT defaults. Zero means unknown
+		// (never applied) — leave the defaults in that case.
+		if (outputWidth != 0 && outputHeight != 0) {
+			o.outputWidth = outputWidth;
+			o.outputHeight = outputHeight;
+		}
+		// Keep the HDR/auto-exposure/alpha fields consistent with the
+		// enabled path so the transition doesn't look like a format drift.
+		o.colorBuffersHDR = sl::Boolean::eTrue;
+		o.useAutoExposure = sl::Boolean::eFalse;
+		o.alphaUpscalingEnabled = sl::Boolean::eFalse;
+		sl::Result setRes = setFn(kDlssViewport, o);
+		if (setRes != sl::Result::eOk)
+			std::fprintf(stderr, "[DLSS] slDLSSSetOptions(eOff) failed (result=%u)\n",
+				static_cast<uint32_t>(setRes));
 	}
 	sl::Result res = g_slFreeResources(sl::kFeatureDLSS, kDlssViewport);
 	if (res != sl::Result::eOk)

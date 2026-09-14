@@ -4222,8 +4222,17 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				}
 			}
 		} else if (m_dlssOptionsApplied) {
-			smvk::DlssDeactivate();
+			// Toggle-off: prior frames' slEvaluateFeature dispatches may
+			// still be in flight (2 frames in flight). Freeing NGX state
+			// underneath them loses the device (VK_CHECK abort). Stall
+			// once here — toggle-off is rare — so slFreeResources runs
+			// GPU-idle. Preset changes never free, hence never crashed.
+			WaitForDeviceIdle();
+			smvk::DlssDeactivate(m_dlssOptionsW, m_dlssOptionsH);
 			m_dlssOptionsApplied = false;
+			m_dlssOptionsW = 0;
+			m_dlssOptionsH = 0;
+			m_dlssPhase = 0;
 			m_dlssReset = true; // next activation warms up
 		}
 		// Exposure applied this frame (debug views: fixed reference — see

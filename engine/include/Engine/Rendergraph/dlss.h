@@ -105,7 +105,14 @@ void DlssRelease();
 // Re-apply on mode/output drift; DlssDeactivate() when DLSS turns off
 // (mode=eOff does NOT free plugin resources, slFreeResources does).
 [[nodiscard]] bool DlssApplyOptions(DlssMode mode, uint32_t outputWidth, uint32_t outputHeight);
-void DlssDeactivate();
+// Tears down the NGX feature instance for the single main viewport.
+// outputWidth/Height must be the last applied output size (kept by the
+// caller): the eOff SetOptions still validates extents, and a
+// default-constructed options (INVALID_UINT extents) trips SL validation
+// errors. The caller must ensure no DLSS evaluate is still in flight
+// (e.g. WaitForDeviceIdle) before calling — freeing while prior frames
+// are on the GPU loses the device and aborts in VK_CHECK.
+void DlssDeactivate(uint32_t outputWidth, uint32_t outputHeight);
 
 // ---------------------------------------------------------------------
 // Jitter (pure CPU, headless-testable).
