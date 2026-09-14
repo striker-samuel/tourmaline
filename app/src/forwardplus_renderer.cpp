@@ -381,7 +381,9 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 	}
 }
 
-void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base) {	AppFrameContext& fc = static_cast<AppFrameContext&>(base);
+void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base,
+	uint32_t lightCountOverride) {
+	AppFrameContext& fc = static_cast<AppFrameContext&>(base);
 	if (!fp)
 		return;
 	smvk::ResourceManager& ctx = *fc.ctx;
@@ -408,10 +410,12 @@ void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base) {	AppFrameCon
 		cullPC.depthTextureIndex = fp->depthBindlessIndex;
 		cullPC.tileCountX = fp->tileCountX;
 		cullPC.tileCountY = fp->tileCountY;
-		cullPC.lightCount = fc.fpLightCount;
+		cullPC.lightCount = (lightCountOverride != UINT32_MAX)
+			? lightCountOverride : fc.fpLightCount;
 		cullPC.tileSize = desc.tileSize;
 		cullPC.maxLightsPerTile = desc.maxLightsPerTile;
-		auto& cullPass = fp->AddCullPass(rg, fc.depthView, fc.fpLights, "ForwardPlusCull");
+		auto& cullPass = fp->AddCullPass(rg, fc.depthView, fc.fpLights,
+			"ForwardPlusCull", fc.decals);
 		cullPass.SetRecordingFunc([this, cullPC, tileCountX = fp->tileCountX, tileCountY = fp->tileCountY](smvk::CommandBuffer& cmd) mutable
 		{
 			// GPU context + pass scope come from RenderGraph::Execute.

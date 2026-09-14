@@ -24,6 +24,7 @@
 #include <Engine/App/app.h>
 #include <Engine/App/world.h>
 #include <Engine/Camera/camera.h>
+#include <Engine/GI/bake.h>
 #include <Engine/GI/probe_volume.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cookies.h>
@@ -276,6 +277,41 @@ struct ForwardPlusDemo {
 	int maxLightLabels = 256;    // cap text draws (points are all drawn)
 };
 
+// ---------------------------------------------------------------------------
+// Forward+ decals demo (tiled projected splats, see smvk::ForwardPlusDecal
+// + forwardplus.cs.hlsl). Splats are kept as PLACEMENT descriptors and
+// re-derived into GPU decals every frame, so the sliders below retouch
+// every live decal immediately. Blood look: procedural splat albedo
+// (coverage in alpha) + derived normal map, roughness lerped to
+// roughnessTarget for the wet-glossy read, metallic 0.
+// ---------------------------------------------------------------------------
+struct DecalDemo {
+	bool enabled = true;
+	float opacity = 1.0f;          // global splat opacity
+	float normalStrength = 0.85f;  // decal normal-map strength
+	float roughnessTarget = 0.14f; // wet-blood roughness (metal stays 0)
+	float metalTarget = 0.0f;
+	float depthFadeStart = 0.6f;   // |local.z| fade start (box-face pop guard)
+	// Splat size range for spawned decals (half extents, meters).
+	float sizeMin = 0.28f;
+	float sizeMax = 0.55f;
+	// Live placement list (re-derived per frame; capped at FP_MAX_DECALS).
+	struct Splat {
+		glm::vec3 center;    // box center (world)
+		glm::vec3 axisZ;     // unit projection axis (decal -> surface)
+		glm::vec3 upHint;    // texture V direction hint
+		glm::vec3 half;      // half extents (x, y, depth)
+		uint32_t seed = 0;   // in-plane yaw RNG
+		float alphaScale = 1.0f; // per-splat opacity trim (smaller = fainter)
+	};
+	std::vector<Splat> splats;
+	uint32_t dropped = 0; // spawns that fell out of the cap (UI note)
+	// Crosshair-picking acceleration (smvk::gi::GiTraceScene BVH, built
+	// lazily on the first crosshair spawn — Sponza builds in a few
+	// seconds; see SceneRenderer::EnsureDecalPickBvh).
+	int pickBvhState = 0; // 0 = not built, 1 = ready, -1 = unavailable
+};
+
 struct FrameUniforms
 {
 	glm::mat4 view;
@@ -335,34 +371,48 @@ struct FrameUniforms
 	// blurred EVSM atlas instead of the depth atlas. Same offset/size as
 	// HLSL FrameUniforms::evsmMode — see the static_asserts below.
 	uint32_t evsmMode = 0;      // 716
+	// ---- Forward+ decals (tiled projected splats, see
+	// smvk::ForwardPlusDecal + forwardplus.cs.hlsl). decals points at
+	// this frame's flight slice of the decal ring; the tile lists are the
+	// ForwardPlus builder's decal buffers (same tiling as the light
+	// lists; the tile-cull dispatch refreshes them every frame it runs,
+	// storing 0 with no decals). decalCount > 0 only when the cull
+	// dispatch runs this frame, so the shader never reads stale lists —
+	// and the tile pointers stay valid whenever the cull can run. ----
+	uint64_t decals = 0;            // 720 per-frame decal ring slice
+	uint64_t decalTileCounts = 0;   // 728 builder decal list counts
+	uint64_t decalTileIndices = 0;  // 736 builder decal list indices
+	uint32_t decalCount = 0;        // 744 live decals this frame
+	uint32_t decalMaxPerTile = 0;   // 748 list stride (matches allocation)
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4, debug builds
 	// only — CMake defines DS_DEBUG_VIZ for the App target and for DXC in
 	// Debug trees; release compiles fields + UI + shader paths out, so
-	// the release layout is the strict 720 B prefix of this one — the
-	// core + SG-GI fields are identical, the visualizer tail follows).
+	// the release layout is the strict prefix of this one — the core +
+	// SG-GI + decal fields are identical, the visualizer tail follows).
 	// Tile-state counts + per-light culling/list diagnostics blended over
 	// the lit image in default_lit. dsTileMasks/dsTileGroupMasks are the
 	// phase-1 (CPU) and phase-2 (GPU) TileGroup light masks the
 	// light-scoped modes re-query; dsDebug* select mode / light / flags /
 	// heat scale. ----
-	uint64_t dsTileMasks = 0;      // 720 phase-1 CPU TileGroup masks (viz)
-	uint64_t dsTileGroupMasks = 0; // 728 phase-2 GPU TileGroup masks (viz)
-	uint32_t dsDebugMode = 0;      // 736 app::DsDebugViz (0 = off)
-	uint32_t dsDebugLight = 0;     // 740 selected light (sorted index)
-	uint32_t dsDebugFlags = 0;     // 744 bit0 = blend over lit
-	uint32_t dsDebugCountCeil = 32; // 748 count-heat ceiling (lights)
+	uint64_t dsTileMasks = 0;      // 752 phase-1 CPU TileGroup masks (viz)
+	uint64_t dsTileGroupMasks = 0; // 760 phase-2 GPU TileGroup masks (viz)
+	uint32_t dsDebugMode = 0;      // 768 app::DsDebugViz (0 = off)
+	uint32_t dsDebugLight = 0;     // 772 selected light (sorted index)
+	uint32_t dsDebugFlags = 0;     // 776 bit0 = blend over lit
+	uint32_t dsDebugCountCeil = 32; // 780 count-heat ceiling (lights)
 #endif
 };
 static_assert(sizeof(FrameUniforms) % 16 == 0);
 // CPU/HLSL ABI: total-size alignment is not enough — each field offset must
 // match common.hlsli FrameUniforms (float4-packed, env = 8 x float4). The
-// SG-GI block sits between the DS core and the visualizer tail so the
-// release layout stays a strict prefix of the debug one.
+// SG-GI block sits between the DS core and the decal block; the DS
+// visualizer tail follows so the release layout stays a strict prefix of
+// the debug one.
 #if defined(DS_DEBUG_VIZ)
-static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32 + 48 + 32);
+static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32 + 48 + 32 + 32);
 #else
-static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32 + 48);
+static_assert(sizeof(FrameUniforms) == 7 * 64 + 16 + 16 + 32 + 128 + 32 + 48 + 32);
 #endif
 static_assert(offsetof(FrameUniforms, view) == 0);
 static_assert(offsetof(FrameUniforms, proj) == 64);
@@ -394,13 +444,18 @@ static_assert(offsetof(FrameUniforms, giEnabled) == 704);
 static_assert(offsetof(FrameUniforms, giIntensity) == 708);
 static_assert(offsetof(FrameUniforms, giDebug) == 712);
 static_assert(offsetof(FrameUniforms, evsmMode) == 716);
+static_assert(offsetof(FrameUniforms, decals) == 720);
+static_assert(offsetof(FrameUniforms, decalTileCounts) == 728);
+static_assert(offsetof(FrameUniforms, decalTileIndices) == 736);
+static_assert(offsetof(FrameUniforms, decalCount) == 744);
+static_assert(offsetof(FrameUniforms, decalMaxPerTile) == 748);
 #if defined(DS_DEBUG_VIZ)
-static_assert(offsetof(FrameUniforms, dsTileMasks) == 720);
-static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 728);
-static_assert(offsetof(FrameUniforms, dsDebugMode) == 736);
-static_assert(offsetof(FrameUniforms, dsDebugLight) == 740);
-static_assert(offsetof(FrameUniforms, dsDebugFlags) == 744);
-static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 748);
+static_assert(offsetof(FrameUniforms, dsTileMasks) == 752);
+static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 760);
+static_assert(offsetof(FrameUniforms, dsDebugMode) == 768);
+static_assert(offsetof(FrameUniforms, dsDebugLight) == 772);
+static_assert(offsetof(FrameUniforms, dsDebugFlags) == 776);
+static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 780);
 #endif
 
 // Resources
@@ -411,6 +466,10 @@ struct AppResources {
 	smvk::Holder<smvk::BufferHandle> directionalCascadeBuffer; // GpuDirectionalLightDescription per frame
 	smvk::Holder<smvk::BufferHandle> fpLightsBuffer; // ForwardPlusLight * FP_MAX_LIGHTS per frame
 	smvk::LogicalBufferHandle fpLightsLogical{}; // rendergraph alias (stable: buffer never resized)
+	// Decal ring (ForwardPlusDecal * FP_MAX_DECALS per flight frame):
+	// rebuilt + uploaded every frame from DecalDemo splats (live sliders).
+	smvk::Holder<smvk::BufferHandle> decalsBuffer;
+	smvk::LogicalBufferHandle decalsLogical{}; // rendergraph alias (stable)
 	smvk::Holder<smvk::BufferHandle> spotShadowBuffer; // GpuCascadeDescription * kMaxSpotShadows per frame
 	smvk::LogicalBufferHandle spotShadowLogical{}; // rendergraph alias (stable: buffer never resized)
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
@@ -576,6 +635,13 @@ protected:
 	void Update() {
 		Super::Update();
 		HandleShortcuts();
+		// Headless crosshair splat (VULKANTOY_DECAL_AUTOSPLAT=<frame>):
+		// same path as the J key, fired once past the frame index so
+		// capture/A-B runs exercise the pick-BVH + raycast glue.
+		if (m_decalAutoSplatAtFrame >= 0 && (int64_t)m_frameCounter >= m_decalAutoSplatAtFrame) {
+			m_decalAutoSplatAtFrame = -1;
+			SpawnDecalAtCrosshair();
+		}
 		if (!m_uiMode && !m_disableControl) {
 			UpdateCamera(delta_time_s);
 		}
@@ -619,6 +685,12 @@ protected:
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_F)) {
 			m_fpDemo.enabled = !m_fpDemo.enabled;
+		}
+		// J spawns a blood splat on whatever the camera crosshair hits
+		// (CPU raycast over the scene triangle soup; the pick BVH builds
+		// lazily on first use — see SpawnDecalAtCrosshair).
+		if (m_input.isKeyPressed(GLFW_KEY_J)) {
+			SpawnDecalAtCrosshair();
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_H)) {
 			m_dsEnabled = !m_dsEnabled;
@@ -733,6 +805,46 @@ protected:
 	// Procedural Forward+ demo lights (no scene nodes; see UpdateForwardPlusLights).
 	uint32_t UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame);
 
+	// ---- Forward+ decals (tiled projected splats; see DecalDemo +
+	// smvk::ForwardPlusDecal) ----
+	// Single gate for every consumer (FrameUniforms decalCount/BDAs, the
+	// decal leg of the forward+ tile cull, Main read hints) so the shader
+	// flag and the GPU lists can never disagree. Requires the forward+
+	// tile buffers: the cull dispatch refreshes the decal lists (storing
+	// 0 per tile with no decals), so decals ride the same pass as lights —
+	// including when the deferred-shadow pipeline owns the LIGHT lists
+	// (lightCount=0 cull; decals keep working).
+	bool DecalsActive() const {
+		return m_decalDemo.enabled && m_passes.forwardPlusCull
+			&& m_viewportResources.forwardPlus.Valid()
+			&& !m_resources.decalsBuffer.empty()
+			&& m_decalAlbedoBindless != UINT32_MAX;
+	}
+	// Re-derives the GPU decal list from DecalDemo splats and uploads the
+	// flight-sliced ring; returns the live count. Runs before
+	// UpdateFrameUniforms (which reads the count via m_decalFrameCount).
+	uint32_t UpdateDecals(uint32_t currentFrame);
+	// J: lazily builds the CPU pick BVH (scene triangle soup, see
+	// smvk::gi::BuildTraceSceneFromCluster) and raycasts the camera
+	// center ray; on hit spawns a blood splat oriented to the surface.
+	void SpawnDecalAtCrosshair();
+	// Headless J (VULKANTOY_DECAL_AUTOSPLAT=<frame>): auto-runs the
+	// crosshair spawn at the given frame so capture/A-B runs verify the
+	// pick path without window focus. -1 = off.
+	int m_decalAutoSplatAtFrame = -1;
+	// Hero splats for the loaded scene (Sponza: floor pools + a wall smear
+	// visible from the default camera; no-op elsewhere — J covers the
+	// rest).
+	void SpawnDecalPresets();
+	// Procedural blood-splat textures: RGBA albedo (coverage in alpha,
+	// sRGB) + a tangent-space normal map derived from the splat height
+	// field. Bound bindless for the decal material slots.
+	bool InitDecalTextures();
+	void ClearDecals() {
+		m_decalDemo.splats.clear();
+		m_decalDemo.dropped = 0;
+	}
+
 	// ---- Deferred shadows (Square-Enix-style tiled/zBin pipeline, see
 	// smvk::DeferredShadows) ----
 	// Single gate for every consumer (FrameUniforms dsEnabled, phase-1
@@ -817,6 +929,18 @@ protected:
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
 	ForwardPlusDemo m_fpDemo{};
+	// ---- Forward+ decals (tiled projected splats; see DecalDemo) ----
+	DecalDemo m_decalDemo{};
+	uint32_t m_decalFrameCount = 0; // live decal count (set by UpdateDecals,
+	                                // read by UpdateFrameUniforms)
+	uint32_t m_decalSpawnSeed = 1;  // splat yaw RNG stream (Pcg32)
+	smvk::Holder<smvk::TextureHandle> m_decalBloodAlbedo;  // sRGB rgba splat
+	smvk::Holder<smvk::TextureHandle> m_decalBloodNormal;  // tangent-space map
+	uint32_t m_decalAlbedoBindless = UINT32_MAX;
+	uint32_t m_decalNormalBindless = UINT32_MAX;
+	// Lazy crosshair-pick acceleration (J): full scene triangle soup +
+	// CPU BVH, built on first use from the resolved world clusters.
+	std::unique_ptr<smvk::gi::GiTraceScene> m_decalPickScene;
 	smvk::CookieLibrary m_cookies{}; // baked/engine-resource gobos (see cookies.h)
 	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none

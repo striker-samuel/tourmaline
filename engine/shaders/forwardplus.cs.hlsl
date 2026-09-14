@@ -1,4 +1,5 @@
-// Forward+ tile light culling (point/spot; directional stays on CSM path).
+// Forward+ tile light culling (point/spot; directional stays on CSM path)
+// + decal culling (projected splats share the light tiling).
 //
 // One thread group per tile ([1,1,1], dispatched tileCountX x tileCountY).
 // Each tile:
@@ -10,7 +11,9 @@
 //      (unclamped) pass count; the shading pass iterates at most
 //      maxLightsPerTile entries, so overflow lights pop (accepted: spots
 //      are uploaded to the light buffer before the point grid so the few
-//      cone lights never lose their slots).
+//      cone lights never lose their slots),
+//   5. sphere-tests every decal (ForwardPlusDecal bounding sphere) the
+//      same way and writes parallel per-tile decal lists.
 //
 // Depth buffer conventions (must match app):
 //   - infinite reversed-Z projection, clear 0 (far), GreaterEqual.
@@ -166,4 +169,50 @@ void mainCS(uint3 groupId : SV_GroupID)
     // pass iterates min(count, maxPerTile) entries, so overflow lights
     // pop off — an accepted trade-off (no walk-every-light fallback).
     pcCull.tileCounts.Get().counts[tileIdx] = count;
+
+    // ---- Cull decals (same conservative bounding-sphere test as the
+    // lights: tile side planes + depth range). Decals share the light
+    // tiling; the counts store is UNCONDITIONAL (fresh 0 with no decals)
+    // so the shading pass never iterates stale entries. The app pushes
+    // lightCount = 0 when the deferred-shadow pipeline owns the light
+    // lists — the decal leg below still runs, so decals stay alive in
+    // both shading paths.
+    uint decalCount = min(frame.decalCount, (uint)MAX_FP_DECALS);
+    uint decalPerTile = min(frame.decalMaxPerTile, (uint)MAX_FP_DECALS_PER_TILE);
+    uint dcount = 0;
+    for (uint di = 0; di < decalCount; ++di)
+    {
+        ForwardPlusDecal D = frame.decals.Get().decals[di];
+        float radius = max(D.bounds.w, 0.0f);
+        if (radius <= 0.0f)
+            continue;
+
+        float3 cView = mul(view, float4(D.bounds.xyz, 1.0f)).xyz;
+        if (cView.z > radius)
+            continue;
+        if (-cView.z + radius < nearestDist)
+            continue;
+        if (-cView.z - radius > farthestDist)
+            continue;
+
+        bool dOutside = false;
+        [unroll]
+        for (int p = 0; p < 4; ++p)
+        {
+            if (dot(planes[p], cView) < -radius)
+            {
+                dOutside = true;
+                break;
+            }
+        }
+        if (dOutside)
+            continue;
+
+        // Stride is frame.decalMaxPerTile (matches the builder's
+        // tiles * maxDecalsPerTile allocation).
+        if (dcount < decalPerTile)
+            frame.decalTileIndices.Get().indices[tileIdx * decalPerTile + dcount] = di;
+        dcount++;
+    }
+    frame.decalTileCounts.Get().counts[tileIdx] = dcount;
 }

@@ -209,6 +209,116 @@ void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
     direct += (diffuse + specP) * plColor * (NdotLp * atten * angular * shadowFactor);
 }
 
+// -------------------------------------------------------------------------
+// Forward+ tiled decals (projected splats and glow/wear projections).
+// Iterates the pixel's tile decal list (see forwardplus.cs.hlsl) and blends
+// each decal over the composed material parameters:
+//   albedo  – lerp(baseColor, tex.rgb * tint, a)
+//   normal  – tangent-space map through the decal basis, lerped by a
+//   rough/metal – lerp toward the decal targets by a (wet blood reads
+//             glossy at roughnessTarget ~0.1, metal stays 0)
+//   emissive – additive color * strength * a (optional glow decals)
+// a = texture coverage * opacity * facing fade * depth fade. The facing
+// test uses the GEOMETRIC normal (geomN): a normal-mapped surface must
+// not lose its splat where the map happens to point away; the depth fade
+// (smoothstep from depthFadeStart to 1 over |local.z|) keeps offset boxes
+// from popping on curved surfaces. FrameUniforms carries the decal buffer
+// + tile list pointers; decalCount > 0 implies the cull dispatch ran and
+// the lists are fresh (see forwardplus.cs.hlsl).
+// -------------------------------------------------------------------------
+void ApplyForwardPlusDecals(FrameUniforms frame, float2 pix, float3 worldPos,
+    float3 geomN, inout float3 baseColor, inout float3 N,
+    inout float metallic, inout float roughness, inout float3 emissive)
+{
+    const uint decalCount = frame.decalCount;
+    if (decalCount == 0u)
+        return;
+
+    // Tile lookup (same 16px tiling as the forward+ light lists).
+    uint fpTileSizeD = max(pc.fpTileSize, 1u);
+    uint tx = (uint)(pix.x / (float)fpTileSizeD);
+    uint ty = (uint)(pix.y / (float)fpTileSizeD);
+    if (tx >= pc.fpTileCountX)
+        return;
+    uint tileIdx = ty * pc.fpTileCountX + tx;
+    if (tileIdx >= (uint)MAX_FP_TILES)
+        return;
+
+    const uint perTile = min(frame.decalMaxPerTile, (uint)MAX_FP_DECALS_PER_TILE);
+    const uint stride = max(frame.decalMaxPerTile, 1u);
+    const uint listCount = min(frame.decalTileCounts.Get().counts[tileIdx], perTile);
+
+    [loop]
+    for (uint s = 0u; s < listCount; ++s)
+    {
+        uint di = frame.decalTileIndices.Get().indices[tileIdx * stride + s];
+        if (di >= decalCount)
+            continue;
+        ForwardPlusDecal D = frame.decals.Get().decals[di];
+
+        // World position -> decal unit cube.
+        float3 lp;
+        lp.x = dot(D.xform0.xyz, worldPos) + D.xform0.w;
+        lp.y = dot(D.xform1.xyz, worldPos) + D.xform1.w;
+        lp.z = dot(D.xform2.xyz, worldPos) + D.xform2.w;
+        if (any(abs(lp) > 1.0f))
+            continue;
+
+        // Surface must face the projector (axisZ points at the surface).
+        float3 axisZ = normalize(D.xform2.xyz);
+        float facing = dot(geomN, axisZ);
+        if (facing > -0.05f)
+            continue; // backfacing / grazing to the projection
+        const float faceFade = saturate((-facing - 0.05f) * 4.0f);
+
+        // Depth fade toward the box faces (no hard pops on offsets).
+        const float fadeStart = clamp(D.params.w, 0.1f, 0.99f);
+        const float depthFade = 1.0f - smoothstep(fadeStart, 1.0f, abs(lp.z));
+
+        const float2 uv = lp.xy * 0.5f + 0.5f;
+
+        float4 albedoS = float4(1.0f, 1.0f, 1.0f, 1.0f);
+        if (D.material.x >= 0)
+        {
+            albedoS = textures[NonUniformResourceIndex((uint)D.material.x)]
+                .Sample(samplers[0], uv);
+        }
+        const float a = saturate(albedoS.a) * saturate(D.color.a) * faceFade * depthFade;
+        if (a <= 1.0f / 255.0f)
+            continue;
+
+        if ((D.material.z & FP_DECAL_ALBEDO) != 0)
+        {
+            baseColor = lerp(baseColor, albedoS.rgb * D.color.rgb, a);
+        }
+
+        if (D.emissive.a > 0.0f)
+        {
+            emissive += D.emissive.rgb * D.emissive.a * albedoS.rgb * a;
+        }
+
+        if ((D.material.z & FP_DECAL_NORMAL) != 0 && D.material.y >= 0)
+        {
+            // Tangent-space map through the decal's world basis (Z
+            // reconstructed on the unit sphere like engine normal maps).
+            float2 mapXY = textures[NonUniformResourceIndex((uint)D.material.y)]
+                .Sample(samplers[0], uv).xy * 2.0f - 1.0f;
+            mapXY *= D.params.x;
+            float mapZ = sqrt(saturate(1.0f - dot(mapXY, mapXY)));
+            float3 axisX = normalize(D.xform0.xyz);
+            float3 axisY = normalize(D.xform1.xyz);
+            float3 dn = normalize(axisX * mapXY.x + axisY * mapXY.y + axisZ * mapZ);
+            N = normalize(lerp(N, dn, a));
+        }
+
+        if ((D.material.z & FP_DECAL_MATERIAL) != 0)
+        {
+            roughness = clamp(lerp(roughness, D.params.y, a), 0.04f, 1.0f);
+            metallic = saturate(lerp(metallic, D.params.z, a));
+        }
+    }
+}
+
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
@@ -625,6 +735,20 @@ PSOut mainPS(PSIn IN)
     // PBR lighting – directional light + ambient
     // ---------------------------------------------------------------
     FrameUniforms frame = pc.frameUniforms.Get();
+
+    // ---------------------------------------------------------------
+    // Forward+ tiled decals (projected splats; per-tile lists written
+    // by the forward+ cull dispatch — see forwardplus.cs.hlsl). Applied
+    // to the composed material BEFORE the lighting terms are derived, so
+    // decal albedo / normal / roughness / metallic feed V, F0, specular
+    // AA and every light below. Gating: pixel inside the decal OBB unit
+    // cube + geometric normal facing the projector + depth fade near the
+    // box faces. geomN keys the facing test so normal-map perturbation
+    // cannot punch holes at texel granularity.
+    // ---------------------------------------------------------------
+    ApplyForwardPlusDecals(frame, IN.clipPos.xy, IN.worldPos, geomN,
+        baseColor, N, metallic, roughness, emissive);
+
     float3 V = normalize(frame.cameraPos - IN.worldPos);
     float NdotV = max(dot(N, V), 0.0f);
 

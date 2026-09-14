@@ -247,12 +247,19 @@ static constexpr uint32_t FP_MAX_LIGHTS = 1024;
 // written to the light buffer before the point grid so the few expensive
 // cone lights never lose their slots to the crowd.
 static constexpr uint32_t FP_MAX_PER_TILE = 8;
+// Decals share the tiling (parallel per-tile lists, see ForwardPlusDecal):
+// global decal cap (ring stride) + per-tile list cap. Must stay in sync
+// with the shader defines MAX_FP_DECALS / MAX_FP_DECALS_PER_TILE.
+static constexpr uint32_t FP_MAX_DECALS = 256;
+static constexpr uint32_t FP_MAX_DECALS_PER_TILE = 16;
 
 static smvk::ForwardPlusDesc MakeForwardPlusDesc() {
 	smvk::ForwardPlusDesc d{};
 	d.tileSize = FP_TILE_SIZE;
 	d.maxLights = FP_MAX_LIGHTS;
 	d.maxLightsPerTile = FP_MAX_PER_TILE;
+	d.maxDecals = FP_MAX_DECALS;
+	d.maxDecalsPerTile = FP_MAX_DECALS_PER_TILE;
 	d.name = "forwardplus";
 	return d;
 }
@@ -332,8 +339,11 @@ const SceneDesc& SceneRegistry::Sponza() {
 		/*label=*/"Sponza",
 		/*gltfPath=*/"content/models/Sponza/sponza.gltf",
 		/*pakPath=*/"content/paks/sponza.pak",
+		// Default view rotated 90 degrees (yaw +90 from the old +Z look):
+		// looks down the long +X corridor arm so the decal check splats
+		// (SpawnDecalPresets) are in frame at spawn.
 		/*camPos=*/glm::vec3(0.0f, 1.0f, 0.0f),
-		/*camTarget=*/glm::vec3(0.0f, 1.0f, 1.0f),
+		/*camTarget=*/glm::vec3(1.0f, 1.0f, 0.0f),
 		/*farClip=*/50.0f,
 	};
 	return sponza;
@@ -837,6 +847,20 @@ bool SceneRenderer::Initialize() {
 			else if (lights == "0" || lights == "off") m_fpDemo.enabled = false;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_LIGHTS value: " << lights << "\n";
 		}
+		// Forward+ decals (tiled projected splats) toggle (1 | 0):
+		// 0 also skips the Sponza preset splats at load; J + the ImGui
+		// checkbox stay live after.
+		if (const char* decEnv = std::getenv("VULKANTOY_DECALS")) {
+			const std::string_view dec = trimEnv(decEnv);
+			if (dec == "1" || dec == "on") m_decalDemo.enabled = true;
+			else if (dec == "0" || dec == "off") m_decalDemo.enabled = false;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DECALS value: " << dec << "\n";
+		}
+		// Headless crosshair splat at a fixed frame (see m_decalAutoSplatAtFrame):
+		// fires the J path once so capture runs verify the pick BVH.
+		if (const char* autoEnv = std::getenv("VULKANTOY_DECAL_AUTOSPLAT")) {
+			m_decalAutoSplatAtFrame = std::atoi(autoEnv);
+		}
 		// Deterministic A/B helpers: manual exposure + IBL off remove the
 		// two global feedback paths (eye adaptation, sky IBL ambient) so
 		// pixel diffs isolate the per-light shading change.
@@ -932,6 +956,15 @@ bool SceneRenderer::Initialize() {
 		);
 		m_resources.fpLightsLogical = m_rendergraph->AddExternalBuffer(
 			m_resources.fpLightsBuffer, "forwardplus lights");
+		// Decal ring (one ForwardPlusDecal[FP_MAX_DECALS] slice per flight
+		// frame; rebuilt from DecalDemo splats every frame, see UpdateDecals).
+		m_resources.decalsBuffer = m_context->CreateBuffer(
+			sizeof(smvk::ForwardPlusDecal) * FP_MAX_DECALS * m_swapchain->framesInFlight(),
+			smvk::BufferType_Storage,
+			"forwardplus decals buffer"
+		);
+		m_resources.decalsLogical = m_rendergraph->AddExternalBuffer(
+			m_resources.decalsBuffer, "forwardplus decals");
 		m_resources.spotShadowBuffer = m_context->CreateBuffer(
 			sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows * m_swapchain->framesInFlight(),
 			smvk::BufferType_Storage,
@@ -943,6 +976,12 @@ bool SceneRenderer::Initialize() {
 		if (!m_renderViews.Ensure(*m_context, m_swapchain->framesInFlight())) {
 			std::cerr << "[SceneRenderer] Failed to create render views buffer\n";
 			return false;
+		}
+		// Procedural blood-splat textures for the decal system (bindless;
+		// failure is non-fatal — DecalsActive() stays false and the
+		// decal legs simply never run).
+		if (!InitDecalTextures()) {
+			std::cerr << "[SceneRenderer] decal textures unavailable - decals off\n";
 		}
 
 		// VFS overlay: loose content/ for iteration, cooked paks mounted
@@ -1382,6 +1421,10 @@ bool SceneRenderer::Initialize() {
 					<< ") max=(" << bounds.mx.x << "," << bounds.mx.y << "," << bounds.mx.z << ")\n";
 			}
 		}
+
+		// Hero decal splats for the check scene (floor pools + a wall
+		// smear in the default camera view; see SpawnDecalPresets).
+		SpawnDecalPresets();
 
 		// GeometryFX-style per-view filter (clustered): register static
 		// meshes from cooked meshlets (pak path) or retained uploads
@@ -1929,6 +1972,33 @@ void SceneRenderer::Shutdown() {
 			data.giDebug = 0u;
 		}
 		data.evsmMode = EvsmActive() ? 1u : 0u;
+
+		// ---- Forward+ decals (tiled projected splats) ----
+		// Contract with the cull + shading shaders (see forwardplus.cs.hlsl
+		// + default_lit_body.hlsli): decalCount > 0 only when the tile-cull
+		// dispatch runs this frame (DecalsActive gates both), so the decal
+		// tile lists are always fresh; the tile-list BDAs are filled
+		// whenever the builder is valid regardless of the toggle — the
+		// cull stores per-tile 0 counts when decals are off.
+		if (m_viewportResources.forwardPlus.Valid()) {
+			data.decalTileCounts =
+				m_viewportResources.forwardPlus.DecalTileCountsAddress(*m_context);
+			data.decalTileIndices =
+				m_viewportResources.forwardPlus.DecalTileIndicesAddress(*m_context);
+			data.decalMaxPerTile =
+				m_viewportResources.forwardPlus.desc.maxDecalsPerTile;
+		}
+		if (DecalsActive() && m_decalFrameCount > 0
+			&& !m_resources.decalsBuffer.empty()) {
+			constexpr size_t DECAL_FRAME_STRIDE =
+				sizeof(smvk::ForwardPlusDecal) * FP_MAX_DECALS;
+			data.decals = m_context->GetBufferDeviceAddress(m_resources.decalsBuffer)
+				+ currentFrame * DECAL_FRAME_STRIDE;
+			data.decalCount = std::min(m_decalFrameCount, FP_MAX_DECALS);
+		} else {
+			data.decals = 0;
+			data.decalCount = 0;
+		}
 
 		// Destination scope covers every consumer: BDA reads in vertex,
 		// fragment (lighting/materials/env) and compute (Forward+ cull).
@@ -2651,6 +2721,358 @@ void SceneRenderer::Shutdown() {
 		s_benchFpDs += msd(fpT3 - fpT2).count();
 	}
 	return (uint32_t)lights.size();
+	}
+
+	// ---------------------------------------------------------------------
+	// Forward+ decals (tiled projected splats, see smvk::ForwardPlusDecal +
+	// forwardplus.cs.hlsl / default_lit_body.hlsli). CPU side keeps cheap
+	// placement descriptors (DecalDemo::Splat); the GPU list is re-derived
+	// every frame so the demo sliders retouch every live decal.
+	// ---------------------------------------------------------------------
+
+	uint32_t SceneRenderer::UpdateDecals(uint32_t currentFrame) {
+		m_decalFrameCount = 0;
+		if (!DecalsActive())
+			return 0;
+
+		std::vector<smvk::ForwardPlusDecal> gpu;
+		gpu.reserve(std::min<size_t>(m_decalDemo.splats.size(), FP_MAX_DECALS));
+		const int32_t flags = smvk::kDecalFlag_Albedo | smvk::kDecalFlag_Normal
+			| smvk::kDecalFlag_Material;
+		for (const DecalDemo::Splat& s : m_decalDemo.splats) {
+			if (gpu.size() >= FP_MAX_DECALS)
+				break;
+			smvk::gi::Pcg32 yawRng(s.seed ? s.seed : 1u);
+			const float yaw = float(yawRng.Next()) * (6.2831853f / 4294967296.0f);
+			gpu.push_back(smvk::MakeDecal(s.center, s.axisZ, s.upHint, s.half,
+				(int32_t)m_decalAlbedoBindless, (int32_t)m_decalNormalBindless,
+				flags,
+				glm::clamp(m_decalDemo.opacity * s.alphaScale, 0.0f, 1.0f),
+				glm::vec3(1.0f), 0.0f, glm::vec3(0.0f),
+				m_decalDemo.normalStrength, m_decalDemo.roughnessTarget,
+				m_decalDemo.metalTarget, m_decalDemo.depthFadeStart, yaw));
+		}
+
+		if (!gpu.empty()) {
+			constexpr size_t DECAL_FRAME_STRIDE =
+				sizeof(smvk::ForwardPlusDecal) * FP_MAX_DECALS;
+			// Cull reads the decal buffer in compute; Main samples it in
+			// fragment (same upload pattern as the fpLights ring).
+			m_context->UploadDataToBuffer(
+				m_resources.decalsBuffer,
+				gpu.data(),
+				sizeof(smvk::ForwardPlusDecal) * gpu.size(),
+				smvk::PipelineStage(smvk::PipelineStageBit_Compute | smvk::PipelineStageBit_Fragment),
+				smvk::AccessFlags::ShaderRead,
+				0,
+				currentFrame * DECAL_FRAME_STRIDE
+			);
+		}
+		m_decalFrameCount = (uint32_t)gpu.size();
+		return m_decalFrameCount;
+	}
+
+	void SceneRenderer::SpawnDecalAtCrosshair() {
+		if (!DecalsActive()) {
+			std::cerr << "[Decals] disabled (UI checkbox or VULKANTOY_DECALS=1)\n";
+			return;
+		}
+
+		// Camera ray: crosshair = view center; the view matrix maps world
+		// -> view (looking down -z), so the world-space forward is the
+		// negated third column of the inverse view.
+		const glm::mat4 invView = glm::inverse(m_camera.getViewMatrix());
+		const glm::vec3 eye = m_cameraPositioner.cameraPosition_;
+		const glm::vec3 fwd = -glm::normalize(glm::vec3(invView[2]));
+
+		// Lazy pick BVH (first J): re-import the scene glTF as a GPU-free
+		// cook-mode cluster with retained CPU uploads — the same importer
+		// call the GiBaker uses — then extract + BVH the triangle soup.
+		// (The runtime pak cluster has no retained CPU geometry, and the
+		// pick wants the exact loaded transform: same coordFix +
+		// preTransform as the scene load. Sponza costs a one-time import
+		// + SAH build of a few seconds; the console notes the hitch.)
+		if (m_decalDemo.pickBvhState == 0) {
+			const char* gltfPathC = m_scene.gltfPath ? m_scene.gltfPath : "";
+			const std::string vfsPath = (gltfPathC && std::strncmp(gltfPathC, "content/", 8) == 0)
+				? std::string(gltfPathC + 8) : std::string(gltfPathC ? gltfPathC : "");
+			if (vfsPath.empty()) {
+				std::cerr << "[Decals] no scene glTF - crosshair spawn off\n";
+				m_decalDemo.pickBvhState = -1;
+			} else {
+				std::cerr << "[Decals] building crosshair-pick BVH (one-time glTF re-import)...\n";
+				const auto t0 = std::chrono::steady_clock::now();
+				try {
+					smvk::OverlayVfs vfs;
+					vfs.Mount(std::make_shared<smvk::LooseBackend>("content"), 0, "content");
+					auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+					cluster->SetCookMode(true);
+					GltfToClusterFromVfs(nullptr, vfs, vfsPath, *cluster,
+						smvk::MeshOptConfig{}, smvk::MeshletConfig{},
+						m_scene.coordFix, m_scene.preTransform);
+					auto scene = std::make_unique<smvk::gi::GiTraceScene>();
+					smvk::gi::GiSceneBuildOptions opts{};
+					std::string err;
+					smvk::gi::BuildTraceSceneFromCluster(*cluster, opts, *scene, err);
+					if (!err.empty())
+						std::cerr << "[Decals] pick scene: " << err << "\n";
+					scene->Finalize();
+					const bool ready = err.empty() && !scene->Bvh().Empty();
+					m_decalDemo.pickBvhState = ready ? 1 : -1;
+					if (ready) {
+						const auto t1 = std::chrono::steady_clock::now();
+						const double ms =
+							std::chrono::duration<double, std::milli>(t1 - t0).count();
+						std::cerr << "[Decals] pick BVH ready: "
+							<< scene->Bvh().TriangleCount() << " tris ("
+							<< (int)ms << " ms)\n";
+					} else {
+						std::cerr << "[Decals] pick BVH unavailable for this scene\n";
+					}
+					m_decalPickScene = std::move(scene);
+				} catch (const std::exception& e) {
+					std::cerr << "[Decals] pick BVH import failed: " << e.what() << "\n";
+					m_decalDemo.pickBvhState = -1;
+				}
+			}
+		}
+		if (m_decalDemo.pickBvhState < 0 || !m_decalPickScene
+			|| m_decalPickScene->Bvh().Empty()) {
+			std::cerr << "[Decals] no pick geometry - crosshair spawn off\n";
+			return;
+		}
+
+		smvk::gi::TriangleBvh::Hit hit;
+		constexpr float kDecalPickRange = 500.0f;
+		if (!m_decalPickScene->Bvh().Raycast(eye, fwd, kDecalPickRange, hit)) {
+			std::cerr << "[Decals] crosshair miss (aim at a surface)\n";
+			return;
+		}
+		glm::vec3 n = m_decalPickScene->Bvh().TriangleNormal(hit.tri);
+		if (glm::length(n) < 1e-5f) {
+			std::cerr << "[Decals] degenerate hit triangle\n";
+			return;
+		}
+		n = glm::normalize(n);
+		if (glm::dot(n, fwd) > 0.0f)
+			n = -n; // two-sided BVH: face the incoming ray
+		const glm::vec3 hitPos = eye + fwd * hit.t;
+
+		// Texture V hint: camera up projected into the surface plane (so
+		// wall smears read upright); camera right as the near-floor
+		// fallback (world up degenerates against a floor's normal).
+		glm::vec3 camUp = glm::normalize(glm::vec3(invView[1]));
+		glm::vec3 camRight = glm::normalize(glm::vec3(invView[0]));
+		glm::vec3 up = camUp - n * glm::dot(camUp, n);
+		if (glm::length(up) < 0.1f)
+			up = camRight - n * glm::dot(camRight, n);
+
+		smvk::gi::Pcg32 rng(++m_decalSpawnSeed * 0x9E3779B97F4A7C15ull);
+		const float t = rng.Float();
+		const float half = m_decalDemo.sizeMin
+			+ (m_decalDemo.sizeMax - m_decalDemo.sizeMin) * t;
+
+		DecalDemo::Splat s{};
+		s.center = hitPos + n * 0.30f;   // hover the projector off the wall
+		s.axisZ = -n;                    // project INTO the surface
+		s.upHint = up;
+		s.half = glm::vec3(half, half, 0.85f); // depth reach straddles the wall
+		s.seed = m_decalSpawnSeed++;
+		s.alphaScale = 0.75f + 0.25f * rng.Float();
+		if (m_decalDemo.splats.size() >= FP_MAX_DECALS) {
+			m_decalDemo.splats.erase(m_decalDemo.splats.begin());
+			m_decalDemo.dropped++;
+		}
+		m_decalDemo.splats.push_back(s);
+	}
+
+	void SceneRenderer::SpawnDecalPresets() {
+		if (std::string_view(m_scene.id) != "sponza")
+			return;
+		if (!m_decalDemo.enabled || m_decalAlbedoBindless == UINT32_MAX)
+			return;
+		if (!m_decalDemo.splats.empty())
+			return;
+
+		const auto addSplat = [this](glm::vec3 center, glm::vec3 axisZ,
+			glm::vec3 upHint, glm::vec3 half, float alphaScale, uint32_t seed) {
+			DecalDemo::Splat s{};
+			s.center = center;
+			s.axisZ = axisZ;
+			s.upHint = upHint;
+			s.half = half;
+			s.alphaScale = alphaScale;
+			s.seed = seed;
+			if (m_decalDemo.splats.size() >= FP_MAX_DECALS)
+				m_decalDemo.splats.erase(m_decalDemo.splats.begin());
+			m_decalDemo.splats.push_back(s);
+		};
+		// Floor pools down the +X corridor arm (default camera looks +X
+		// from (0,1,0) after the 90-degree rotation — see SceneRegistry::
+		// Sponza; horizon-level view, so the pools sit in the lower band
+		// of the frame). Floor plane is y = 0; the box hovers 0.5 m above
+		// it, half depth 0.75 m -> |local.z| ~0.67 at the floor, inside
+		// the depth fade, and the shallower box limits catches on
+		// mid-air clutter (banners, lamp chains) inside the volume.
+		addSplat(glm::vec3(4.3f, 0.5f, -0.2f), glm::vec3(0, -1, 0),
+			glm::vec3(0, 1, 0), glm::vec3(0.6f, 0.6f, 0.75f), 1.0f, 11u);
+		addSplat(glm::vec3(3.5f, 0.5f, -1.35f), glm::vec3(0, -1, 0),
+			glm::vec3(0, 1, 0), glm::vec3(0.42f, 0.42f, 0.75f), 0.85f, 23u);
+		addSplat(glm::vec3(5.4f, 0.5f, 1.30f), glm::vec3(0, -1, 0),
+			glm::vec3(0, 1, 0), glm::vec3(0.55f, 0.55f, 0.75f), 0.90f, 37u);
+		// Wall smear on the corridor's far end wall (screen-center at
+		// horizon level: the same surface the crosshair spawner hits —
+		// deep box so the end-arch band lands inside it; the depth fade
+		// keeps any double projection on deeper returns faint).
+		addSplat(glm::vec3(10.9f, 1.6f, 0.2f), glm::vec3(1, 0, 0),
+			glm::vec3(0, 1, 0), glm::vec3(1.0f, 1.0f, 1.6f), 1.0f, 53u);
+		// Side-wall spray on the +z arcade (screen-right): the box reaches
+		// the arcade/wall band; curved + occluded geometry means this one
+		// reads as a fainter secondary spray.
+		addSplat(glm::vec3(7.6f, 1.7f, 4.95f), glm::vec3(0, 0, 1),
+			glm::vec3(0, 1, 0), glm::vec3(0.8f, 0.8f, 0.85f), 0.95f, 71u);
+		std::cerr << "[Decals] sponza preset splats: "
+			<< m_decalDemo.splats.size() << "\n";
+	}
+
+	bool SceneRenderer::InitDecalTextures() {
+		if (m_decalAlbedoBindless != UINT32_MAX && m_decalNormalBindless != UINT32_MAX)
+			return true; // idempotent (recreate path)
+		if (!m_context)
+			return false;
+
+		// Procedural blood splat: metaball blob field + radial droplet
+		// comet tails -> coverage alpha; color darkens with thickness
+		// (pooled core) and the normal map derives from the blurred field
+		// (coagulated surface bump). Deterministic Pcg32 seed so the
+		// check scene renders identically every run.
+		constexpr int S = 512;
+		smvk::gi::Pcg32 rng(0xB100D5EEDull);
+		struct Blob { float x, y, r, amp; };
+		std::vector<Blob> blobs;
+		const int blobCount = 9;
+		blobs.reserve(blobCount + 28);
+		for (int i = 0; i < blobCount; ++i) {
+			Blob b{};
+			b.x = (rng.Float() * 2.0f - 1.0f) * 0.16f;
+			b.y = (rng.Float() * 2.0f - 1.0f) * 0.16f;
+			b.r = 0.10f + rng.Float() * 0.13f;
+			b.amp = 0.7f + rng.Float() * 0.6f;
+			blobs.push_back(b);
+		}
+		// Droplets: heads at a radial distance, tails stretched outward.
+		for (int i = 0; i < 26; ++i) {
+			const float ang = rng.Float() * 6.2831853f;
+			const float dist = 0.22f + rng.Float() * 0.55f;
+			const float rad = 0.012f + rng.Float() * 0.035f;
+			const float ca = std::cos(ang), sa = std::sin(ang);
+			// Head + tail pair along the radial direction (comet).
+			for (int k = 0; k < 2; ++k) {
+				Blob b{};
+				const float d = dist - k * rad * 1.6f;
+				b.x = ca * d;
+				b.y = sa * d;
+				b.r = rad * (k == 0 ? 1.0f : 0.62f);
+				b.amp = k == 0 ? 0.85f : 0.55f;
+				blobs.push_back(b);
+			}
+		}
+
+		std::vector<float> field(size_t(S) * S, 0.0f);
+		for (int y = 0; y < S; ++y) {
+			for (int x = 0; x < S; ++x) {
+				const float u = (float(x) / float(S - 1)) * 2.0f - 1.0f;
+				const float v = (float(y) / float(S - 1)) * 2.0f - 1.0f;
+				float f = 0.0f;
+				for (const Blob& b : blobs) {
+					const float dx = u - b.x, dy = v - b.y;
+					const float d2 = dx * dx + dy * dy;
+					f += b.amp * std::exp(-d2 / (2.0f * b.r * b.r));
+				}
+				field[size_t(y) * S + x] = f;
+			}
+		}
+
+		const auto srgb8 = [](float c) {
+			c = std::min(std::max(c, 0.0f), 1.0f);
+			const float lo = c * 12.92f;
+			const float hi = 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
+			const float val = c <= 0.0031308f ? lo : hi;
+			return static_cast<uint8_t>(std::lround(val * 255.0f));
+		};
+		const auto smooth01 = [](float e0, float e1, float x) {
+			const float t = std::min(std::max((x - e0) / (e1 - e0), 0.0f), 1.0f);
+			return t * t * (3.0f - 2.0f * t);
+		};
+
+		std::vector<uint8_t> albedo(size_t(S) * S * 4);
+		std::vector<uint8_t> normal(size_t(S) * S * 4);
+		for (int y = 0; y < S; ++y) {
+			for (int x = 0; x < S; ++x) {
+				const size_t i = size_t(y) * S + x;
+				const float f = field[i];
+				const float alpha = smooth01(0.5f, 0.62f, f);
+				// Linear blood color: darker where thick (pooled core),
+				// brighter at the thin rim. The low roughness target
+				// (DecalDemo) supplies the wet specular read.
+				const float thin = 1.0f - alpha;
+				glm::vec3 c(
+					0.055f + 0.105f * thin,
+					0.0025f + 0.0055f * thin,
+					0.002f + 0.003f * thin);
+				uint8_t* o = &albedo[i * 4];
+				o[0] = srgb8(c.r);
+				o[1] = srgb8(c.g);
+				o[2] = srgb8(c.b);
+				o[3] = static_cast<uint8_t>(std::lround(alpha * 255.0f));
+
+				// Normal from the field height (Sobel, 2-texel reach so
+				// the bump survives 0.5-scale splats). Edge-clamped.
+				const auto hAt = [&](int xx, int yy) {
+					return field[size_t(std::clamp(yy, 0, S - 1)) * S
+						+ std::clamp(xx, 0, S - 1)];
+				};
+				const float bump = 0.55f;
+				float nx = (hAt(x - 2, y) - hAt(x + 2, y)) * bump;
+				float ny = (hAt(x, y - 2) - hAt(x, y + 2)) * bump;
+				const float len = std::sqrt(nx * nx + ny * ny + 1.0f);
+				nx /= len;
+				ny /= len;
+				const float nz = 1.0f / len;
+				uint8_t* nOut = &normal[i * 4];
+				nOut[0] = static_cast<uint8_t>(std::lround((nx * 0.5f + 0.5f) * 255.0f));
+				nOut[1] = static_cast<uint8_t>(std::lround((ny * 0.5f + 0.5f) * 255.0f));
+				nOut[2] = static_cast<uint8_t>(std::lround((nz * 0.5f + 0.5f) * 255.0f));
+				nOut[3] = 255;
+			}
+		}
+
+		smvk::ImageCreateInfo ci{};
+		ci.extent = { (uint32_t)S, (uint32_t)S, 1 };
+		ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+		ci.mipLevels = 1;
+		ci.arrayLayers = 1;
+
+		ci.format = smvk::Format::RGBA8_SRGB; // sampling lands in linear
+		ci.name = "decalBloodAlbedo";
+		auto albedoTex = m_context->CreateTexture(ci, albedo.data());
+		ci.format = smvk::Format::RGBA8_UNorm; // normals stay raw
+		ci.name = "decalBloodNormal";
+		auto normalTex = m_context->CreateTexture(ci, normal.data());
+		if (albedoTex.empty() || normalTex.empty()) {
+			std::cerr << "[Decals] splat texture creation failed\n";
+			return false;
+		}
+		m_decalBloodAlbedo = std::move(albedoTex);
+		m_decalBloodNormal = std::move(normalTex);
+		m_decalAlbedoBindless = m_context->GetTextureBindlessIndex(m_decalBloodAlbedo);
+		m_decalNormalBindless = m_context->GetTextureBindlessIndex(m_decalBloodNormal);
+		m_context->FlushUploads();
+		std::cerr << "[Decals] blood splat textures ready (albedo bindless "
+			<< m_decalAlbedoBindless << ", normal bindless "
+			<< m_decalNormalBindless << ")\n";
+		return m_decalAlbedoBindless != UINT32_MAX
+			&& m_decalNormalBindless != UINT32_MAX;
 	}
 
 	// ---------------------------------------------------------------------
@@ -3764,6 +4186,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		const auto rfT0 = bench_clk::now();
 		bench_clk::time_point rfT2, rfT3; // assigned in the exposure block below
 		bench_clk::time_point rfPA, rfPB; // preMain split: fw+/filter | cull/late
+		// Decal ring upload BEFORE UpdateFrameUniforms: it reads the live
+		// count (m_decalFrameCount) into FrameUniforms.
+		(void)UpdateDecals(fb.frameIndex);
 		const FrameUniforms frameData = UpdateFrameUniforms(fb.frameIndex, renderExtent, swapExtent);
 		const smvk::GpuDirectionalLightDescription dirLight = UpdateLights(fb.frameIndex);
 		UpdateMaterials(fb.frameIndex);
@@ -4176,6 +4601,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		m_fpRenderer.occluderMinRadius = m_hizOccluderMinRadius;
 		fc.fpLights = m_resources.fpLightsLogical;
 		fc.fpLightCount = fpLightCount;
+		fc.decals = m_resources.decalsLogical;
+		fc.decalCount = m_decalFrameCount;
 
 		// ---- GPU-driven filter + temporal seed (before depth prepass) ----
 		// Runs after fc.pc/depthView are built (the seed pass captures
@@ -4275,10 +4702,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	// forward+ tile cull is skipped (dead work) and the 3-phase GPU
 	// pipeline runs instead (still over the complete depth below).
 	// Deferred shadows OFF: legacy forward+ cull (A/B path).
+	// Decals: their tile lists are refreshed by the SAME forward+ cull
+	// dispatch, so when live decals exist the dispatch runs even under
+	// deferred shadows — with lightCount 0 (the DS lists own the lights,
+	// the light leg of the cull is dead work; the decal leg still fills
+	// the per-tile decal lists, so splats work in BOTH shading paths).
 	const bool dsOn = DsActive();
+	const bool decalListsNeeded = DecalsActive() && m_decalFrameCount > 0;
 	rfPB = bench_clk::now();
-	if (m_passes.forwardPlusCull && !dsOn)
-		m_fpRenderer.AppendTileCull(fc);
+	if (m_passes.forwardPlusCull && (!dsOn || decalListsNeeded))
+		m_fpRenderer.AppendTileCull(fc, dsOn ? 0u : UINT32_MAX);
 	if (dsOn)
 		AppendDeferredShadowPhases(fb.frameIndex,
 			frameUniformsAddress, fpLightsAddress, spotShadowBufferAddress,
@@ -5506,6 +5939,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			m_viewportResources.forwardPlus.tileCountsLogical,
 			m_viewportResources.forwardPlus.tileIndicesLogical);
 	}
+	// Decal tile lists are read by Main in BOTH shading paths (forward+
+	// light lists or deferred-shadow lists): the decal leg of the tile
+	// cull wrote them this frame (DecalsActive gates the dispatch and
+	// the FrameUniforms count together).
+	if (decalListsNeeded) {
+		smvk::ForwardPlus::AddDecalTileReadHints(mainPass,
+			m_viewportResources.forwardPlus.decalTileCountsLogical,
+			m_viewportResources.forwardPlus.decalTileIndicesLogical);
+		smvk::BufferSyncRequest decalRead{};
+		decalRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+		decalRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+		mainPass.AddBufferHint(m_resources.decalsLogical, decalRead);
+	}
 		{
 			smvk::BufferSyncRequest fpLightRead{};
 			fpLightRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
@@ -6186,8 +6632,34 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					int fn = m_fpDemo.functionType;
 					if (ImGui::Combo("Function", &fn, functionNames, 4))
 						m_fpDemo.functionType = fn;
-					ImGui::SliderFloat("Fn speed", &m_fpDemo.functionSpeed, 0.05f, 5.0f);
-					ImGui::SliderFloat("Fn depth", &m_fpDemo.functionScale, 0.0f, 1.0f);
+				ImGui::SliderFloat("Fn speed", &m_fpDemo.functionSpeed, 0.05f, 5.0f);
+				ImGui::SliderFloat("Fn depth", &m_fpDemo.functionScale, 0.0f, 1.0f);
+			}
+				if (ImGui::CollapsingHeader("Decals (splats)", ImGuiTreeNodeFlags_DefaultOpen)) {
+					// Forward+ tiled decals: per-tile lists refreshed by the
+					// same cull dispatch as the lights; splats re-derive
+					// every frame so these sliders retouch live decals.
+					ImGui::Checkbox("Enable decals", &m_decalDemo.enabled);
+					ImGui::SameLine();
+					ImGui::TextDisabled(DecalsActive() ? "(active)" : "(off)");
+					ImGui::SliderFloat("Opacity", &m_decalDemo.opacity, 0.0f, 1.0f);
+					ImGui::SliderFloat("Normal strength", &m_decalDemo.normalStrength, 0.0f, 2.0f);
+					ImGui::SliderFloat("Roughness target", &m_decalDemo.roughnessTarget, 0.04f, 1.0f);
+					ImGui::SliderFloat("Depth fade", &m_decalDemo.depthFadeStart, 0.1f, 0.95f);
+					ImGui::SliderFloat("Spawn size min", &m_decalDemo.sizeMin, 0.1f, 1.0f);
+					ImGui::SliderFloat("Spawn size max", &m_decalDemo.sizeMax, 0.1f, 2.0f);
+					ImGui::Text("Splats: %u / %u%s", m_decalFrameCount, FP_MAX_DECALS,
+						m_decalDemo.dropped ? "  (oldest dropped)" : "");
+					if (ImGui::Button("Splat at crosshair (J)"))
+						SpawnDecalAtCrosshair();
+					ImGui::SameLine();
+					if (ImGui::Button("Clear")) {
+						ClearDecals();
+					}
+					ImGui::TextDisabled("J raycasts the crosshair (pick BVH builds once,"
+						" %s)", m_decalDemo.pickBvhState == 1 ? "ready"
+						: m_decalDemo.pickBvhState == 0 ? "first press builds it"
+						: "unavailable for this scene");
 				}
 				if (ImGui::CollapsingHeader("EVSM shadow maps", ImGuiTreeNodeFlags_DefaultOpen)) {
 					// EVSM (Exponential Variance Shadow Maps): RG32F 2xMSAA
@@ -6740,10 +7212,14 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						FP_TILE_SIZE, FP_MAX_PER_TILE);
 					const int wantLights = m_fpDemo.enabled
 						? (m_fpDemo.gridX * m_fpDemo.gridY * m_fpDemo.gridZ + m_fpDemo.spotCount) : 0;
-					ImGui::Text("Lights: %d / %u%s", wantLights, FP_MAX_LIGHTS,
-						wantLights > (int)FP_MAX_LIGHTS ? "  (CLAMPED!)" : "");
-					ImGui::TextDisabled("Tiles cap at %u lights: overflow pops (spots win slots, written first)",
-						FP_MAX_PER_TILE);
+				ImGui::Text("Lights: %d / %u%s", wantLights, FP_MAX_LIGHTS,
+					wantLights > (int)FP_MAX_LIGHTS ? "  (CLAMPED!)" : "");
+				ImGui::TextDisabled("Tiles cap at %u lights: overflow pops (spots win slots, written first)",
+					FP_MAX_PER_TILE);
+				ImGui::Text("Decals: %u / %u (cap %u/tile)%s", m_decalFrameCount,
+					FP_MAX_DECALS, FP_MAX_DECALS_PER_TILE,
+					DecalsActive() ? "" : "  (off)");
+				ImGui::TextDisabled("Decal lists refresh in the same cull dispatch as lights (also under deferred shadows)");
 					if (fwd.depthBindlessIndex == UINT32_MAX)
 						ImGui::TextDisabled("Depth bindless: MISSING (cull falls back to empty)");
 					ImGui::TextDisabled("Cookies: soft disc / blinds / starburst per spot; patterns modulate light color");
@@ -6809,6 +7285,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					ImGui::TextDisabled("[Gamepad] none connected");
 				ImGui::TextDisabled("Keys: M blur  O SSAO  B bloom  X exposure  V vectors");
 				ImGui::TextDisabled("      L LODs  F lights  G filter  C cookies  K sky");
+				ImGui::TextDisabled("      J blood splat at crosshair  VULKANTOY_DECALS=0/1");
 				ImGui::TextDisabled("      N ambient GI/sky/off  F8 GI irradiance view");
 				ImGui::TextDisabled("      F1 lit  F2 unlit  F3 meshlets  F4 cascades  F5 LOD colors  F6 vertex colors");
 #if defined(DS_DEBUG_VIZ)

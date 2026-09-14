@@ -45,7 +45,12 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
 	// seed primed depth, and the tile cull runs after depth pass 2 so it
 	// sees complete depth. AppendPasses = Prepass + TileCull (legacy order).
 	void AppendPrepass(smvk::FrameContext& fc);
-	void AppendTileCull(smvk::FrameContext& fc);
+	// lightCountOverride: UINT32_MAX (default) = cull fc.fpLightCount
+	// lights; any other value limits the light leg (the deferred-shadow
+	// pipeline passes 0 — its shading consumes the DS lists, but the decal
+	// leg of the cull still refreshes the decal tile lists).
+	void AppendTileCull(smvk::FrameContext& fc,
+		uint32_t lightCountOverride = UINT32_MAX);
 	// Option A occluder prepass: fills fc.hizDepthView (Clear, VS-only,
 	// solid opaque only) with big occluders at their crudest LOD for the
 	// HZB build. MASK cutout is skipped (holes = poor occluders + FS

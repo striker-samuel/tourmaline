@@ -25,6 +25,10 @@ struct AppFrameContext : public smvk::FrameContext {
 	uint32_t hizDepthBindless = UINT32_MAX;
 	smvk::LogicalBufferHandle fpLights{};     // per-frame light buffer
 	uint32_t fpLightCount = 0;
+	// Decal ring (per-frame ForwardPlusDecal upload; hints ride the tile
+	// cull + Main passes like fpLights).
+	smvk::LogicalBufferHandle decals{};
+	uint32_t decalCount = 0;
 	// T3: the GfxRenderer seeded depth this frame (prepass must Load the
 	// seed instead of Clearing). Set by main after gfx AppendPasses.
 	bool seedDepthPrimed = false;

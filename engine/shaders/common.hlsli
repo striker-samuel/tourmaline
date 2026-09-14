@@ -244,12 +244,55 @@ struct ForwardPlusTileIndexBuffer
     uint indices[MAX_FP_TILES * MAX_FP_PER_TILE];
 };
 
+// ---- Forward+ tiled decals (projected splats; see forwardplus.h) ----
+// Must match C++ smvk::ForwardPlusDecal (128 bytes). An oriented box
+// projected along local +Z (xform2 xyz = axisZ/halfZ): a pixel receives the
+// decal when its world position maps into the unit cube via the 3 rows AND
+// the geometric normal faces the projector (dot(geomN, axisZ) < 0).
+// UV = local.xy * 0.5 + 0.5. material: x = albedo tex (rgba, a = coverage),
+// y = normal map (tangent xy, Z reconstructed), z = flags (1=albedo,
+// 2=normal, 4=rough/metal), w reserved. color: rgb tint, a opacity.
+// params: x normalStrength, y roughnessTarget, z metalTarget,
+// w depthFadeStart (|local.z| fade toward 1). emissive: rgb add, a strength.
+struct ForwardPlusDecal
+{
+    float4 bounds;   // 0   xyz world center, w bounding-sphere radius
+    float4 xform0;   // 16  world->unit-cube row 0 (axisX/halfX, -c*axisX/halfX)
+    float4 xform1;   // 32  row 1
+    float4 xform2;   // 48  row 2 (projection axis in xyz)
+    int4 material;   // 64  albedoTex, normalTex, flags, -1
+    float4 color;    // 80  rgb tint, a opacity
+    float4 params;   // 96  normalStrength, roughTarget, metalTarget, depthFadeStart
+    float4 emissive; // 112 rgb emissive add, a strength
+};
+
+#define MAX_FP_DECALS 256
+#define MAX_FP_DECALS_PER_TILE 16
+#define FP_DECAL_ALBEDO 1
+#define FP_DECAL_NORMAL 2
+#define FP_DECAL_MATERIAL 4
+
+struct ForwardPlusDecalBuffer
+{
+    ForwardPlusDecal decals[MAX_FP_DECALS];
+};
+
+struct ForwardPlusDecalTileCountBuffer
+{
+    uint counts[MAX_FP_TILES];
+};
+
+struct ForwardPlusDecalTileIndexBuffer
+{
+    uint indices[MAX_FP_TILES * MAX_FP_DECALS_PER_TILE];
+};
+
 // Moved below the Forward+ light structs so it can carry typed pointers
 // into the deferred-shadow buffers (deferredshadow_types.hlsli above).
 // Offsets mirror the C++ FrameUniforms in App/scene_renderer.h (asserted
-// there): env at 512, deferred-shadow fields at 640, SG-GI fields at 672;
-// visualizer fields (DS_DEBUG_VIZ only) follow at 720 — release keeps the
-// 720 B prefix (GI included, visualizers compiled out).
+// there): env at 512, deferred-shadow fields at 640, SG-GI fields at 672,
+// decal fields at 720 (release prefix = 752 B);
+// visualizer fields (DS_DEBUG_VIZ only) follow at 752.
 struct FrameUniforms
 {
     float4x4 view;
@@ -309,18 +352,32 @@ struct FrameUniforms
     float giIntensity;                              // 708 ambient scale
     uint giDebug;                                    // 712 0 off, 1 irradiance view
     uint evsmMode;                                   // 716 0 = PCF depth, 1 = EVSM moments (was padding)
+    // ---- Forward+ decals (tiled projected splats, see ForwardPlusDecal).
+    // decals points at this frame's flight slice of the app decal ring;
+    // the tile lists are the ForwardPlus builder's decal buffers, refreshed
+    // by the tile-cull dispatch every frame it runs (the app guarantees
+    // decalCount > 0 only when the cull ran, and the tile pointers are
+    // valid whenever the cull can run — the cull stores a count of 0 for
+    // every tile even with no decals, so the shading pass never sees
+    // stale lists). decalMaxPerTile is the list stride (matches the
+    // builder allocation).
+    vk::BufferPointer<ForwardPlusDecalBuffer> decals;        // 720
+    vk::BufferPointer<ForwardPlusDecalTileCountBuffer> decalTileCounts; // 728
+    vk::BufferPointer<ForwardPlusDecalTileIndexBuffer> decalTileIndices; // 736
+    uint decalCount;                                         // 744 0 = decals off
+    uint decalMaxPerTile;                                    // 748 list stride
     // ---- Deferred-shadow debug visualizers (paper 5.3/5.4). Debug-build
-    // only (DS_DEBUG_VIZ): tail fields so the release layout (672 B) is a
-    // strict prefix of the debug layout (704 B). The light-scoped modes
+    // only (DS_DEBUG_VIZ): tail fields so the release layout (752 B) is a
+    // strict prefix of the debug layout. The light-scoped modes
     // re-query the phase-1 (CPU) and phase-2 (GPU) TileGroup masks;
     // dsDebug* pick mode / light / flags / heat scale.
 #if defined(DS_DEBUG_VIZ)
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 720 phase-1 masks
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 728 phase-2 masks
-    uint dsDebugMode;      // 736 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
-    uint dsDebugLight;     // 740 selected light (sorted index)
-    uint dsDebugFlags;     // 744 bit0 = blend over lit
-    uint dsDebugCountCeil; // 748 count-heat ceiling (lights)
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 752 phase-1 masks
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 760 phase-2 masks
+    uint dsDebugMode;      // 768 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
+    uint dsDebugLight;     // 772 selected light (sorted index)
+    uint dsDebugFlags;     // 776 bit0 = blend over lit
+    uint dsDebugCountCeil; // 780 count-heat ceiling (lights)
 #endif
 };
 
