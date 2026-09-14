@@ -16,23 +16,31 @@
 // bistro | bistro-niagara maps to the same glTF the App imports (the bake
 // must see the exact runtime geometry), or pass --in-vfs <model.gltf> for
 // arbitrary scenes. Light setup defaults match the runtime environment
-// defaults; the bake captures sky + sun bounce + emissive geometry, and
-// EXCLUDES direct sun (the runtime's cascaded shadow maps own it) and the
-// dynamic forward+ point/spot lights.
+// defaults; the bake captures SUN BOUNCE ONLY (added on top of the
+// analytic sky IBL at runtime), and EXCLUDES direct sun (the runtime's
+// cascaded shadow maps own it), sky, emissive geometry, and the dynamic
+// forward+ point/spot lights. --sky-intensity/--emissive are accepted
+// but ignored (deprecated no-ops kept for old scripts). Materials bake
+// white-world (uniform albedo 0.7) unless --uniform-albedo off requests
+// the textured path: per-material albedo on contrasty scenes prints
+// chromatic dots the 9-lobe fit cannot represent (verified on Sponza).
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -53,16 +61,20 @@ struct Args {
 	std::string scene;    // sponza | bistro | bistro-niagara
 	std::string inVfs;    // arbitrary model (overrides --scene input)
 	std::string out;      // output host path (default <content>/gi/<scene>.sggi)
-	uint32_t rays = 128;
+	uint32_t rays = 256;
 	uint32_t bounces = 3;
 	uint32_t errorRays = 32;
 	float root = 8.0f;
 	float minBrick = 0.25f;
-	uint32_t maxProbes = 262144;
+	uint32_t maxProbes = 1048576;
 	float tolerance = 0.12f;
 	float nearFactor = 1.0f;
 	uint32_t waves = 8;
 	uint32_t threads = 0; // 0 = hardware concurrency
+	uint32_t diffusion = 0; // placement jitter+repulsion (keep 0: post-bake
+	                      // moves invalidate baked radiance)
+	uint32_t smoothingPasses = 0; // Laplacian radiance passes (keep 0: smoothing
+	                              // without visibility leaks across walls)
 	float sunAzimuth = 30.0f;
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
@@ -70,6 +82,12 @@ struct Args {
 	bool textures = true;
 	bool emissive = true;
 	bool verify = true;
+	std::string analyze; // .sggi host path: inspect instead of baking
+	// White-world albedo: default "0.7" (single known albedo everywhere).
+	// "off" restores the textured bake (per-material albedo from factors
+	// + KTX averages; known to print chromatic dots on contrasty scenes).
+	// "r,g,b" bakes a custom uniform tint instead of grey.
+	std::string uniformAlbedo = "0.7";
 };
 
 bool ParseArgs(int argc, char** argv, Args& out) {
@@ -109,6 +127,8 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		else if (a == "--near-factor") { if (!needF(out.nearFactor, i)) return false; }
 		else if (a == "--waves") { if (!needU(out.waves, i)) return false; }
 		else if (a == "--threads") { if (!needU(out.threads, i)) return false; }
+		else if (a == "--diffusion") { if (!needU(out.diffusion, i)) return false; }
+		else if (a == "--smoothing-passes") { if (!needU(out.smoothingPasses, i)) return false; }
 		else if (a == "--sun-azimuth") { if (!needF(out.sunAzimuth, i)) return false; }
 		else if (a == "--sun-elevation") { if (!needF(out.sunElevation, i)) return false; }
 		else if (a == "--sun-intensity") { if (!needF(out.sunIntensity, i)) return false; }
@@ -128,6 +148,8 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v, i)) return false;
 			out.verify = (v == "on" || v == "1" || v == "true");
 		}
+		else if (a == "--analyze") { if (!need(out.analyze, i)) return false; }
+		else if (a == "--uniform-albedo") { if (!need(out.uniformAlbedo, i)) return false; }
 		else if (a == "--help" || a == "-h") {
 			return false;
 		}
@@ -136,8 +158,8 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			return false;
 		}
 	}
-	if (out.inVfs.empty() && out.scene.empty()) {
-		std::cerr << "Required: --scene <id> or --in-vfs <model.gltf>" << std::endl;
+	if (out.analyze.empty() && out.inVfs.empty() && out.scene.empty()) {
+		std::cerr << "Required: --scene <id>, --in-vfs <model.gltf>, or --analyze <file.sggi>" << std::endl;
 		return false;
 	}
 	return true;
@@ -146,12 +168,227 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 void Usage() {
 	std::cout << "GiBaker --content-dir content --scene sponza\n"
 		<< "         [--out content/gi/sponza.sggi] [--in-vfs models/X/x.gltf]\n"
-		<< "         [--rays 128] [--bounces 3] [--error-rays 32]\n"
-		<< "         [--root 8.0] [--min-brick 0.25] [--max-probes 262144]\n"
+		<< "         [--rays 256] [--bounces 3] [--error-rays 32]\n"
+		<< "         [--root 8.0] [--min-brick 0.25] [--max-probes 1048576]\n"
 		<< "         [--tolerance 0.12] [--near-factor 1.0] [--waves 8] [--threads 0]\n"
+		<< "         [--diffusion 0] [--smoothing-passes 0]\n"
 		<< "         [--sun-azimuth 30] [--sun-elevation 55] [--sun-intensity 10000]\n"
 		<< "         [--sky-intensity 600] [--textures on|off] [--emissive on|off]\n"
-		<< "         [--verify on|off]\n";
+		<< "         [--verify on|off] [--uniform-albedo 0.7|r,g,b|off]\n"
+		<< "         (default uniform 0.7 white-world; off = textured bake)\n"
+		<< "GiBaker --analyze <file.sggi>: dump probe amplitude stats and a\n"
+		<< "         CPU-sampled irradiance transect (bake diagnostics).\n";
+}
+
+// Offline volume inspector: amplitude distribution (NaN/Inf/extremes per
+// level) plus a CPU Sample() irradiance transect across the volume so
+// blotchy runtime output can be bisected into bake-side (extreme or
+// disagreeing probes) vs GPU-side (transfer/sampling) faults.
+int AnalyzeVolume(const std::string& path) {
+	using namespace smvk::gi;
+	SgGiVolume vol;
+	std::string err;
+	if (!SgGiVolume::ReadFile(path, vol, err)) {
+		std::cerr << "Analyze: load failed: " << err << std::endl;
+		return 1;
+	}
+	auto lum = [](const glm::vec3& c) {
+		return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
+	};
+	std::cout << "analyze: " << path << "\n  probes=" << vol.probes.size()
+		<< " levels=" << vol.levelCount
+		<< " boundsMin=(" << vol.boundsMin.x << "," << vol.boundsMin.y << "," << vol.boundsMin.z << ")"
+		<< " boundsMax=(" << vol.boundsMax.x << "," << vol.boundsMax.y << "," << vol.boundsMax.z << ")\n";
+
+	size_t nanProbes = 0, infProbes = 0;
+	double sumLum = 0.0, maxLum = 0.0;
+	float minLum = std::numeric_limits<float>::max();
+	std::vector<double> levelSum(kSgGiMaxLevels, 0.0);
+	std::vector<double> levelMax(kSgGiMaxLevels, 0.0);
+	std::vector<uint32_t> levelCount(kSgGiMaxLevels, 0);
+	struct Extreme { double l; uint32_t level; glm::vec3 pos; };
+	std::vector<Extreme> extremes;
+	for (const SgProbe& p : vol.probes) {
+		double pl = 0.0;
+		bool nan = false, inf = false;
+		for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+			for (int c = 0; c < 3; ++c) {
+				const float v = p.amps[i][c];
+				if (std::isnan(v)) nan = true;
+				if (std::isinf(v)) inf = true;
+			}
+			pl += lum(p.amps[i]);
+		}
+		pl /= kSgLobeCount;
+		if (nan) ++nanProbes;
+		if (inf) ++infProbes;
+		if (!nan && !inf) {
+			sumLum += pl;
+			maxLum = std::max(maxLum, pl);
+			minLum = std::min(minLum, float(pl));
+			if (p.level < kSgGiMaxLevels) {
+				levelSum[p.level] += pl;
+				levelMax[p.level] = std::max(levelMax[p.level], pl);
+				++levelCount[p.level];
+			}
+			extremes.push_back({ pl, p.level, p.position });
+		}
+	}
+	std::cout << "  meanLum=" << (vol.probes.empty() ? 0.0 : sumLum / vol.probes.size())
+		<< " minLum=" << (minLum == std::numeric_limits<float>::max() ? -1.0 : minLum)
+		<< " maxLum=" << maxLum
+		<< " nanProbes=" << nanProbes << " infProbes=" << infProbes << "\n";
+	for (uint32_t l = 0; l < vol.levelCount; ++l)
+		std::cout << "  level " << l << ": n=" << levelCount[l]
+			<< " mean=" << (levelCount[l] ? levelSum[l] / levelCount[l] : 0.0)
+			<< " max=" << levelMax[l] << "\n";
+	std::sort(extremes.begin(), extremes.end(),
+		[](const Extreme& a, const Extreme& b) { return a.l > b.l; });
+	std::cout << "  top extremes (lum, level, pos):\n";
+	for (size_t i = 0; i < std::min<size_t>(extremes.size(), 10); ++i)
+		std::cout << "    " << extremes[i].l << " L" << extremes[i].level
+			<< " (" << extremes[i].pos.x << "," << extremes[i].pos.y << "," << extremes[i].pos.z << ")\n";
+	// Isolation census: for each probe, same-level neighbors within
+	// 1.5x its support radius. Fine probes with ~0 fine neighbors are
+	// speckle-subdivision orphans: their footprint shows as a lone dot
+	// against a coarser neighborhood (and vice versa). Healthy dense
+	// regions have 5+ same-level neighbors.
+	{
+		const float cell = 1.0f;
+		glm::vec3 gmin(1e30f);
+		for (const SgProbe& p : vol.probes)
+			gmin = glm::min(gmin, p.position);
+		std::unordered_map<uint64_t, std::vector<uint32_t>> grid;
+		auto key = [&](int x, int y, int z) {
+			return (uint64_t(uint32_t(x) + 512) << 42)
+				| (uint64_t(uint32_t(y) + 512) << 21)
+				| uint64_t(uint32_t(z) + 512);
+		};
+		for (uint32_t i = 0; i < vol.probes.size(); ++i) {
+			const glm::vec3 d = (vol.probes[i].position - gmin) / cell;
+			grid[key(int(d.x), int(d.y), int(d.z))].push_back(i);
+		}
+		std::vector<uint32_t> isoHist(8, 0);
+		uint32_t fineIso = 0, fineTotal = 0;
+		for (uint32_t i = 0; i < vol.probes.size(); ++i) {
+			const SgProbe& p = vol.probes[i];
+			const float r = 1.5f * p.radius;
+			const glm::vec3 lo = (p.position - glm::vec3(r) - gmin) / cell;
+			const glm::vec3 hi = (p.position + glm::vec3(r) - gmin) / cell;
+			uint32_t same = 0;
+			for (int x = int(lo.x); x <= int(hi.x); ++x)
+				for (int y = int(lo.y); y <= int(hi.y); ++y)
+					for (int z = int(lo.z); z <= int(hi.z); ++z) {
+						auto it = grid.find(key(x, y, z));
+						if (it == grid.end())
+							continue;
+						for (uint32_t j : it->second) {
+							if (j == i || vol.probes[j].level != p.level)
+								continue;
+							const glm::vec3 dd = p.position - vol.probes[j].position;
+							if (glm::dot(dd, dd) < r * r)
+								++same;
+						}
+					}
+			isoHist[std::min(same, 7u)]++;
+			if (p.level + 2 >= vol.levelCount) { // finest two levels
+				++fineTotal;
+				if (same == 0)
+					++fineIso;
+			}
+		}
+		std::cout << "  isolation histogram (same-level neighbors within 1.5R):\n";
+		for (int n = 0; n < 8; ++n)
+			std::cout << "    n=" << n << ": " << isoHist[n] << "\n";
+		std::cout << "  fine-level isolated (0 same-level neighbors): "
+			<< fineIso << "/" << fineTotal << "\n";
+	}
+	// Zero census: probes whose mean amplitude is exactly (or near) zero
+	// cannot be honest in sunlit open air (a downward ray always finds a
+	// bounce). They are NaN-sanitized casualties or fit failures, and
+	// their wide supports dilute (darken) large neighborhoods — suspects
+	// for dark patches. Dump positions to see where they live.
+	{
+		uint32_t zeroCount = 0;
+		std::cout << "  zero probes (meanLum < 1e-6), first 25 with level+pos:\n";
+		for (const SgProbe& p : vol.probes) {
+			glm::vec3 m(0.0f);
+			for (uint32_t i = 0; i < kSgLobeCount; ++i)
+				m += p.amps[i];
+			const double pl = (0.2126 * m.x + 0.7152 * m.y + 0.0722 * m.z) / kSgLobeCount;
+			if (pl < 1e-6) {
+				++zeroCount;
+				if (zeroCount <= 25)
+					std::cout << "    L" << p.level << " (" << p.position.x << ","
+						<< p.position.y << "," << p.position.z << ") r=" << p.radius << "\n";
+			}
+		}
+		std::cout << "  zero probes total: " << zeroCount << "/" << vol.probes.size() << "\n";
+	}
+	// Hue census: per-probe mean-amplitude RGB, max/min channel ratio.
+	// A white-world bake must be ~sun-tinted everywhere (ratio ~= 1.1);
+	// ratios >> 2 mean chromatic probes that read as colored dots in the
+	// albedo-free debug view (which has no local albedo to blame).
+	{
+		size_t over2 = 0, over5 = 0;
+		double worstRatio = 0.0;
+		glm::vec3 worstMean(0.0f);
+		glm::vec3 worstPos(0.0f);
+		uint32_t worstLevel = 0;
+		for (const SgProbe& p : vol.probes) {
+			glm::vec3 m(0.0f);
+			for (uint32_t i = 0; i < kSgLobeCount; ++i)
+				m += p.amps[i];
+			m /= float(kSgLobeCount);
+			const float mx = std::max(m.x, std::max(m.y, m.z));
+			const float mn = std::min(m.x, std::min(m.y, m.z));
+			if (!(mx > 1e-6f))
+				continue; // dark probe: no hue to speak of
+			const double ratio = double(mx) / double(std::max(mn, 1e-6f));
+			if (ratio > 2.0) ++over2;
+			if (ratio > 5.0) ++over5;
+			if (ratio > worstRatio) {
+				worstRatio = ratio;
+				worstMean = m;
+				worstPos = p.position;
+				worstLevel = p.level;
+			}
+		}
+		std::cout << "  hue: ratio>2: " << over2 << " ratio>5: " << over5
+			<< " worst=" << worstRatio << " mean=(" << worstMean.x << ","
+			<< worstMean.y << "," << worstMean.z << ") L" << worstLevel
+			<< " (" << worstPos.x << "," << worstPos.y << "," << worstPos.z << ")\n";
+	}
+
+	// Transect: CPU Sample() + up-normal irradiance across the volume at
+	// standing eye height. Adjacent steps share almost all contributors,
+	// so cliffs here mean the baked probes genuinely disagree (bake fault),
+	// while a smooth transect with a blotchy GPU image means the fault is
+	// downstream (pack/grid/shader).
+	const glm::vec3 lo = vol.boundsMin, hi = vol.boundsMax;
+	// Standing eye height (volume bounds are padded ~rootBrick/4 below
+	// the actual floor, so lo.y + 1.5 can end up under the scene).
+	const float y = std::clamp(1.0f, lo.y, hi.y);
+	const float z = (lo.z + hi.z) * 0.5f;
+	const glm::vec3 up(0, 1, 0);
+	size_t uncovered = 0, steps = 0;
+	double prevLum = -1.0, maxStep = 0.0;
+	std::cout << "  transect y=" << y << " z=" << z << " (x, r, g, b, covered):\n";
+	for (float x = lo.x; x <= hi.x; x += 0.25f) {
+		glm::vec3 amps[kSgLobeCount];
+		const bool ok = vol.Sample(glm::vec3(x, y, z), amps);
+		++steps;
+		if (!ok) { ++uncovered; continue; }
+		const glm::vec3 e = SgDiffuseIrradiance(amps, up);
+		const double l = lum(e);
+		if (prevLum >= 0.0)
+			maxStep = std::max(maxStep, std::abs(l - prevLum) / std::max(prevLum, 1e-3));
+		prevLum = l;
+		std::cout << "    " << x << " " << e.r << " " << e.g << " " << e.b << " 1\n";
+	}
+	std::cout << "  transect steps=" << steps << " uncovered=" << uncovered
+		<< " maxAdjacentRelStep=" << maxStep << "\n";
+	return 0;
 }
 
 // Scene-id -> glTF vfs path (mirrors app::SceneRegistry).
@@ -244,6 +481,9 @@ int main(int argc, char** argv) {
 		return 2;
 	}
 
+	if (!args.analyze.empty())
+		return AnalyzeVolume(args.analyze);
+
 	const auto t0 = std::chrono::steady_clock::now();
 
 	// Input scene (glTF via the VFS; same lookup rules as the runtime).
@@ -305,11 +545,30 @@ int main(int argc, char** argv) {
 
 	// Environment defaults mirror the runtime EnvironmentSettings so the
 	// bake matches what the app shows when the GI volume is loaded.
+	// Sun-only field: sun params matter; sky/emissive flags are no-ops.
+	if (args.skyIntensity != 600.0f)
+		std::cout << "  note: --sky-intensity ignored (sun-only GI)\n";
+	if (!args.emissive)
+		std::cout << "  note: --emissive off (sun-only GI ignores it either way)\n";
 	buildOpts.env.sunAzimuthDeg = args.sunAzimuth;
 	buildOpts.env.sunElevationDeg = args.sunElevation;
 	buildOpts.env.sunIntensity = args.sunIntensity;
 	buildOpts.env.skyIntensity = args.skyIntensity;
 	buildOpts.includeEmissive = args.emissive;
+	// White-world mode: single known albedo everywhere (textures ignored),
+	// so the transport is analytically checkable and texture cooking
+	// cannot print through as dots.
+	if (!args.uniformAlbedo.empty() && args.uniformAlbedo != "off") {
+		glm::vec3 uv(0.7f);
+		if (std::sscanf(args.uniformAlbedo.c_str(), "%f,%f,%f",
+				&uv.x, &uv.y, &uv.z) != 3)
+			uv = glm::vec3(std::stof(args.uniformAlbedo));
+		buildOpts.uniformAlbedo = true;
+		buildOpts.uniformAlbedoValue = uv;
+		std::cout << "  uniform albedo: (" << uv.x << "," << uv.y << "," << uv.z << ")\n";
+	} else if (args.uniformAlbedo == "off") {
+		std::cout << "  textured albedo (experimental: chromatic dots on contrasty scenes)\n";
+	}
 
 	smvk::gi::GiTraceScene traceScene;
 	std::string err;
@@ -332,6 +591,8 @@ int main(int argc, char** argv) {
 	cfg.nearSurfaceFactor = args.nearFactor;
 	cfg.maxRefineWaves = args.waves;
 	cfg.threadCount = args.threads;
+	cfg.diffusionIterations = args.diffusion;
+	cfg.smoothingPasses = args.smoothingPasses;
 
 	smvk::gi::SgGiVolume volume;
 	smvk::gi::SgGiBakeStats stats;

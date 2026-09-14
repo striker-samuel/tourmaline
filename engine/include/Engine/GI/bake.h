@@ -13,10 +13,10 @@
 //      empty space keeps a handful of large probes.
 //   4. Spawn one probe per leaf brick, relocated into valid free space
 //      (pushed away from walls / out of solid geometry).
-//   5. Path trace incoming radiance at every probe (uniform sphere
-//      sampling of directions, next-event estimation for the sun and
-//      emissive geometry, analytic sky on misses) and fit the fixed SG
-//      basis amplitudes (non-negative least squares).
+//   5. Path trace incoming SUN-BOUNCE radiance at every probe (uniform
+//      sphere sampling of directions, next-event estimation for the sun
+//      at bounce vertices only; sky/emissive contribute nothing) and fit
+//      the fixed SG basis amplitudes (non-negative least squares).
 //   6. Error-driven refinement: measure the probe's reconstruction error
 //      at off-center test points against fresh path-traced reference
 //      irradiance; subdivide high-error bricks and bake the children.
@@ -28,13 +28,19 @@
 //      for the runtime interpolation) and assemble/serialize the volume.
 //
 // Light transport conventions (matching the runtime renderer):
-//   - Direct SUN light is EXCLUDED from the probe field at the primary
-//     vertex (the runtime gets sun through the cascaded shadow maps;
-//     storing it would double-count). Sun bounce (vertex >= 1) IS included.
-//   - The analytic SKY (gradient, no sun disc) is included at every
-//     depth: probes replace the env-IBL ambient entirely when present.
-//   - Emissive static geometry is included via NEE at every vertex
-//     (the runtime has no other way to light from emissive surfaces).
+//   - The probe field is SUN-ONLY: bounced sun IS included at every
+//     vertex, INCLUDING the primary hit (the light a sunlit surface
+//     reflects toward the probe is one-bounce indirect at the probe).
+//     At runtime the sun-bounce irradiance is ADDED on top of the
+//     analytic sky IBL (see default_lit_body.hlsli). This does not
+//     double-count the cascaded shadow maps: those evaluate direct sun
+//     at the shaded surface itself, while probes only ever transport
+//     light arriving from OTHER surfaces.
+//   - The analytic SKY is NOT baked (runtime EvaluateIrradiance owns sky
+//     ambient; baking the dome gradient caused a ~30x brightness-scale
+//     mismatch vs the IBL it replaced).
+//   - Emissive static geometry is NOT baked (its NEE 1/pdfSa blowups were
+//     the bright-dot firefly source; Sponza has no meaningful emissives).
 //   - Dynamic forward+ point/spot lights are runtime-only by design and
 //     never baked.
 
@@ -119,17 +125,20 @@ public:
 
 	// Analytic sky gradient (CPU mirror of environment.hlsli
 	// EvaluateSkyGradient). NO sun disc: the sun is handled by NEE and at
-	// runtime by the cascaded shadow maps.
+	// runtime by the cascaded shadow maps. RETAINED for tooling/debug
+	// only: the sun-only probe field does NOT sample it.
 	glm::vec3 SkyRadiance(const glm::vec3& dir) const;
 
-	// Incoming radiance arriving at `origin` along `dir` (probe primary
-	// ray). `maxDepth` = number of diffuse bounce vertices after the
-	// first hit. Direct sun is excluded at the primary vertex.
+	// Incoming SUN-BOUNCE radiance arriving at `origin` along `dir`
+	// (probe primary ray). `maxDepth` = number of diffuse bounce vertices
+	// after the first hit. Sun NEE runs at every vertex including the
+	// primary hit; sky and emissive contribute nothing (sun-only field).
 	glm::vec3 TraceIncoming(const glm::vec3& origin, const glm::vec3& dir,
 		Pcg32& rng, uint32_t maxDepth) const;
 
 	// Monte-Carlo cosine-hemisphere irradiance estimate at a point
-	// (reference for the error-driven refinement).
+	// (reference for the error-driven refinement; sun-only, matching
+	// TraceIncoming).
 	glm::vec3 TraceIrradiance(const glm::vec3& origin, const glm::vec3& n,
 		Pcg32& rng, uint32_t sampleCount, uint32_t maxDepth) const;
 
@@ -150,6 +159,8 @@ private:
 
 	// One NEE sample of the emissive-light set at a surface vertex
 	// (Lambertian reflected term, including the vertex albedo).
+	// RETAINED but UNSAMPLED: the sun-only field never calls it (it was
+	// the firefly source via 1/pdfSa blowups).
 	glm::vec3 SampleEmissive(const glm::vec3& pos, const glm::vec3& n,
 		const GiTraceMaterial& m, Pcg32& rng) const;
 	glm::vec3 SampleSun(const glm::vec3& pos, const glm::vec3& n,
@@ -169,12 +180,23 @@ struct GiSceneBuildOptions {
 	std::unordered_map<uint32_t, glm::vec3> texelAvg;
 	bool includeMaskedCutout = true;  // alpha-tested foliage/walls as opaque
 	bool skipBlended = true;          // glass/translucent never bounces
-	bool includeEmissive = true;       // emissive geometry as area lights
+	bool includeEmissive = true;      // DEPRECATED (no-op): emissive is not
+	                                  // baked in the sun-only field; kept so
+	                                  // existing callers still compile.
+	// White-world mode: override EVERY triangle's albedo with a single
+	// known value (textures/factors/metallic ignored, emissive zeroed).
+	// Removes the whole material/texture axis from the bake, so the
+	// transport becomes analytically checkable (each bounce attenuates by
+	// exactly uniformAlbedo) and texture-cooking bugs can't print through
+	// as dots. Runtime still multiplies its local albedo on top.
+	bool uniformAlbedo = false;
+	glm::vec3 uniformAlbedoValue{ 0.7f };
 };
 
 // Extracts world-space opaque triangles + materials from a cook-mode
-// Cluster (retained uploads; see Cluster::SetCookMode). Emissive geometry
-// (emissiveFactor/strength != 0) is kept and sampled as an area light.
+// Cluster (retained uploads; see Cluster::SetCookMode). Emissive material
+// values are still extracted (albedo path needs them) but never sampled
+// as lights: the field is sun-only.
 // Non-const: global transforms are recalculated before the walk.
 void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opts,
 	GiTraceScene& out, std::string& err);
@@ -184,7 +206,7 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 // ---------------------------------------------------------------------------
 
 struct SgGiBakeConfig {
-	uint32_t raysPerProbe = 128;        // uniform-sphere radiance samples
+	uint32_t raysPerProbe = 256;        // uniform-sphere radiance samples
 	uint32_t maxBounces = 3;           // diffuse path depth (vertices after the first hit)
 	uint32_t errorRaysPerProbe = 32;    // reference irradiance rays per test point
 	float rootBrickSize = 8.0f;        // coarsest brick (m)
@@ -192,7 +214,7 @@ struct SgGiBakeConfig {
 	float nearSurfaceFactor = 1.0f;    // geometry stage: subdivide while distToGeom < factor * brickSize
 	float errorTolerance = 0.12f;      // relative irradiance error that triggers subdivision
 	float errorFloor = 0.02f;          // luminance floor (x scene mean) in the error metric
-	uint32_t maxProbes = 262144;
+	uint32_t maxProbes = 1048576;      // == SG_GI_MAX_PROBES (GPU cap)
 	uint32_t maxRefineWaves = 8;
 	float probeClearanceFactor = 0.2f;  // keep probes >= factor * brickSize from surfaces
 	float probeMinClearance = 0.03f;   // absolute clearance floor (m)
@@ -203,8 +225,12 @@ struct SgGiBakeConfig {
 	                                     // smooth under visibility rejects)
 	// Diffusion procedure (see bake.cpp): placement relaxation +
 	// radiance smoothing passes over the probe graph.
-	uint32_t diffusionIterations = 8;  // repulsion relaxation passes (0 = off)
-	uint32_t smoothingPasses = 3;      // Laplacian radiance passes (0 = off)
+	uint32_t diffusionIterations = 0;  // repulsion passes; MUST stay 0 for
+	                                     // correctness (post-bake moves invalidate
+	                                     // baked radiance). Opt-in only.
+	uint32_t smoothingPasses = 0;      // Laplacian passes; 0 = ship raw amps
+	                                     // (smoothing without a visibility term
+	                                     // leaks bright across walls). Opt-in only.
 	float smoothingLambda = 0.6f;      // Laplacian step size per pass
 	uint32_t threadCount = 0;          // 0 = hardware concurrency
 	uint32_t seed = 1;
@@ -217,6 +243,7 @@ struct SgGiBakeStats {
 	uint32_t refineWaves = 0;
 	uint32_t probeBudgetHits = 0; // leaves not subdivided because of the budget
 	uint64_t pathsTraced = 0;
+	uint64_t samplesClamped = 0; // firefly-filter hits (sun-pool outliers tamed)
 	double seconds = 0.0;
 };
 

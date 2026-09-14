@@ -46,7 +46,10 @@ struct SgProbe {
 	glm::vec3 position{};
 	float radius = 1.0f;            // support radius (Wendland falloff)
 	glm::vec3 amps[kSgLobeCount]{}; // RGB amplitudes of the fixed basis
-	float visibility[6] = {};       // +x,-x,+y,-y,+z,-z obstacle distances
+	float visibility[6] = {};       // +x,-x,+y,-y,+z,-z obstacle distances;
+	                                // 0 = no known obstacle (unobstructed).
+	                                // Never the trace cutoff: storing the
+	                                // cutoff reads as a phantom wall.
 	uint32_t level = 0;             // octree level (drives the lookup grid)
 	bool valid = true;
 };

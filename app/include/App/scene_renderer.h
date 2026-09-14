@@ -179,14 +179,15 @@ enum class AaMode : int {
 };
 
 // ---------------------------------------------------------------------------
-// Ambient source selection (N cycles): the baked GI probe volume and the
-// analytic sky IBL are MUTUALLY EXCLUSIVE — one, the other, or both off.
-// The ambient is the only thing this drives; the visible sky dome (K) and
-// the direct sun / cascaded shadows are unaffected.
+// Ambient source selection (N cycles): the analytic sky IBL is the ambient
+// floor (SkyIbl and Gi modes); the baked sun-bounce GI probe volume ADDS
+// on top of it in Gi mode only. The ambient is the only thing this drives;
+// the visible sky dome (K) and the direct sun / cascaded shadows are
+// unaffected.
 // ---------------------------------------------------------------------------
 enum class AmbientMode : int {
-	Gi = 0,    // baked SG-GI probes replace the analytic ambient
-	SkyIbl = 1, // analytic sky IBL (EvaluateIrradiance/SpecularEnv)
+	Gi = 0,    // sun-bounce probes + analytic sky IBL (additive)
+	SkyIbl = 1, // analytic sky IBL only (EvaluateIrradiance/SpecularEnv)
 	Off = 2,   // neither: direct light only (pure sun frame)
 };
 
@@ -583,6 +584,10 @@ public:
 	// the whole run and A/B comparisons are deterministic. The I-key UI
 	// mode and the feature shortcuts (L/G/H/...) keep working.
 	void SetDisableControl(bool v) { m_disableControl = v; }
+	// Bench determinism: fixed manual exposure (no eye adaptation), so
+	// captures from different runs are directly comparable. main.cpp
+	// forces this off for --bench; X toggles it back live.
+	void SetAutoExposureEnabled(bool v) { m_autoExposureEnabled = v; }
 
 protected:
 	void UpdateCamera(float dt);

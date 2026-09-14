@@ -17,45 +17,6 @@ inline float SgIntegral(float a, float l) {
 	return a * (2.0f * kPi / l) * (1.0f - std::exp(-2.0f * l));
 }
 
-// Cholesky factorization + solve for the SPD Gram matrix (9x9, in-place).
-// Returns false when the matrix is not positive definite (caller falls
-// back to zero amplitudes).
-bool CholeskyFactor(float a[kSgLobeCount][kSgLobeCount]) {
-	for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-		for (uint32_t j = 0; j <= i; ++j) {
-			float sum = a[i][j];
-			for (uint32_t k = 0; k < j; ++k)
-				sum -= a[i][k] * a[j][k];
-			if (i == j) {
-				if (sum <= 1e-12f)
-					return false;
-				a[i][i] = std::sqrt(sum);
-			} else {
-				a[i][j] = sum / a[j][j];
-				a[j][i] = a[i][j]; // keep full symmetric copy for back-subst
-			}
-		}
-	}
-	return true;
-}
-
-void CholeskySolve(const float fac[kSgLobeCount][kSgLobeCount],
-	const glm::vec3 rhs[kSgLobeCount], glm::vec3 out[kSgLobeCount]) {
-	glm::vec3 y[kSgLobeCount];
-	for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-		glm::vec3 sum = rhs[i];
-		for (uint32_t k = 0; k < i; ++k)
-			sum -= fac[i][k] * y[k];
-		y[i] = sum / fac[i][i];
-	}
-	for (int i = kSgLobeCount - 1; i >= 0; --i) {
-		glm::vec3 sum = y[i];
-		for (uint32_t k = i + 1; k < kSgLobeCount; ++k)
-			sum -= fac[k][i] * out[k];
-		out[i] = sum / fac[i][i];
-	}
-}
-
 } // namespace
 
 glm::vec3 SgEvaluate(const glm::vec3* amps, const glm::vec3& dir) {
@@ -134,64 +95,59 @@ void SgFitAccumulator::Solve(glm::vec3 outAmps[kSgLobeCount]) const {
 	if (sampleCount == 0)
 		return;
 
-	// Damped normal equations. The lobe kernels overlap heavily, so the
-	// Gram matrix can be near-singular for sparse/biased sample sets; a
-	// damping LADDER keeps the solve stable while staying unbiased for
-	// well-sampled fields (the first level that factorizes wins).
+	// Non-negative least squares by projected coordinate descent on the
+	// objective  min 1/2 a'G a - rhs'a  s.t. a >= 0  (per channel; the
+	// objective separates, so channels solve independently and hues can
+	// never split by construction). This replaces the old damped-Cholesky
+	// + clamp + multiplicative-NMF chain, which had a fatal data-flow
+	// bug: CholeskyFactor() rewrote the normal matrix in place, and the
+	// NMF refinement then multiplied by the FACTOR instead of Gram. With
+	// negative factor off-diagonals, Ca could hit <= 0, the ratio blew up
+	// through the 1e-12 floor, and amplitudes exploded to the fp16 clamp
+	// (65504) — manufactured white dots. Coordinate descent never forms
+	// an inverse, needs no damping, and each update is a clipped ratio:
+	// nothing can explode. 48 sweeps over 9 lobes x 3 channels is ~12k
+	// flops per probe — negligible next to tracing one ray.
+	float normal[kSgLobeCount][kSgLobeCount];
+	for (uint32_t i = 0; i < kSgLobeCount; ++i)
+		for (uint32_t k = 0; k < kSgLobeCount; ++k)
+			normal[i][k] = (k >= i) ? gram[i][k] : gram[k][i];
 	glm::vec3 a[kSgLobeCount];
-	float C[kSgLobeCount][kSgLobeCount];
-	bool solved = false;
-	for (int level = 0; level < 5 && !solved; ++level) {
-		float trace = 0.0f;
+	for (int channel = 0; channel < 3; ++channel) {
+		float x[kSgLobeCount] = {};
+		// Stable positive initial guess: independent per-lobe means.
 		for (uint32_t i = 0; i < kSgLobeCount; ++i)
-			trace += gram[i][i];
-		const float damping = std::max(trace, 1e-6f)
-			* (std::pow(10.0f, float(level) - 6.0f) / float(kSgLobeCount));
-		for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-			for (uint32_t k = 0; k < kSgLobeCount; ++k) {
-				float v = (k >= i) ? gram[i][k] : gram[k][i];
-				C[i][k] = v;
-			}
-			C[i][i] += damping;
-		}
-		if (!CholeskyFactor(C))
-			continue;
-		CholeskySolve(C, rhs, a);
-		solved = true;
-	}
-	if (!solved)
-		return;
-
-	// Non-negativity: clamp, then multiplicative NMF-style updates
-	// a <- a * d / (C a) which recover fit energy that clamping lost
-	// while keeping every amplitude >= 0.
-	bool clamped = false;
-	for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-		if (glm::any(glm::lessThan(a[i], glm::vec3(0.0f))))
-			clamped = true;
-		a[i] = glm::max(a[i], glm::vec3(0.0f));
-	}
-	if (clamped) {
-		for (uint32_t iter = 0; iter < 32; ++iter) {
-			glm::vec3 Ca[kSgLobeCount];
+			x[i] = std::max(rhs[i][channel] / std::max(normal[i][i], 1e-12f), 0.0f);
+		for (uint32_t sweep = 0; sweep < 48; ++sweep) {
+			float maxChange = 0.0f;
+			float maxAbs = 0.0f;
 			for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-				glm::vec3 sum(0.0f);
-				for (uint32_t k = 0; k < kSgLobeCount; ++k)
-					sum += C[i][k] * a[k];
-				Ca[i] = sum;
+				float r = rhs[i][channel];
+				for (uint32_t j = 0; j < kSgLobeCount; ++j)
+					if (j != i)
+						r -= normal[i][j] * x[j];
+				const float next = std::max(r / std::max(normal[i][i], 1e-12f), 0.0f);
+				maxChange = std::max(maxChange, std::abs(next - x[i]));
+				maxAbs = std::max(maxAbs, std::abs(next));
+				x[i] = next;
 			}
-			for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-				const glm::vec3 ratio = rhs[i] / glm::max(Ca[i], glm::vec3(1e-12f));
-				// Damped multiplicative step avoids oscillation on noisy fits.
-				const glm::vec3 step = glm::pow(glm::max(ratio, glm::vec3(1e-4f)), glm::vec3(0.5f));
-				a[i] *= step;
-			}
+			if (maxChange < 1e-6f * std::max(maxAbs, 1.0f))
+				break;
 		}
+		for (uint32_t i = 0; i < kSgLobeCount; ++i)
+			a[i][channel] = x[i];
 	}
 
 	constexpr float kFp16Max = 65504.0f;
-	for (uint32_t i = 0; i < kSgLobeCount; ++i)
-		outAmps[i] = glm::clamp(a[i], glm::vec3(0.0f), glm::vec3(kFp16Max));
+	for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+		// Belt-and-suspenders: any non-finite amplitude (should be
+		// impossible after AddSample quarantine) becomes zero, never NaN
+		// on disk — NaN probes render as black blobs and subdivide forever.
+		glm::vec3 v = glm::clamp(a[i], glm::vec3(0.0f), glm::vec3(kFp16Max));
+		if (!std::isfinite(v.x + v.y + v.z))
+			v = glm::vec3(0.0f);
+		outAmps[i] = v;
+	}
 }
 
 void SgFitLobes(std::span<const glm::vec3> dirs, std::span<const glm::vec3> radiance,

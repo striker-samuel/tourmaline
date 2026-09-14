@@ -125,6 +125,11 @@ struct SgFitAccumulator {
 	uint32_t sampleCount = 0;
 
 	void AddSample(const glm::vec3& dir, const glm::vec3& radiance, float weight) {
+		// Quarantine: one non-finite radiance sample (NaN shading normal,
+		// Inf throughput, ...) would poison rhs -> the whole probe's
+		// amplitudes -> the error metric -> the smoothing passes. Drop it.
+		if (!std::isfinite(radiance.x + radiance.y + radiance.z))
+			return;
 		float b[kSgLobeCount];
 		for (uint32_t i = 0; i < kSgLobeCount; ++i)
 			b[i] = SgBasisValue(i, dir);
@@ -136,10 +141,12 @@ struct SgFitAccumulator {
 		++sampleCount;
 	}
 
-	// Solves gram * a = rhs per channel with Tikhonov damping, clamps
-	// negatives, then refines with multiplicative non-negative updates
-	// (NMF-style) so clamped solutions regain fit energy. Output is clamped
-	// to [0, 65504] (fp16 ceiling) per channel.
+	// Solves the non-negative least squares problem
+	// (min 1/2 a'G a - rhs'a s.t. a >= 0) per channel with projected
+	// coordinate descent. No matrix inversion, no damping, no
+	// multiplicative updates: each step is a clipped ratio, so nothing
+	// can explode, and channels solve independently (hues cannot split).
+	// Output is clamped to [0, 65504] (fp16 ceiling) per channel.
 	void Solve(glm::vec3 outAmps[kSgLobeCount]) const;
 };
 

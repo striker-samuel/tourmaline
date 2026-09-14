@@ -205,10 +205,9 @@ Monte-Carlo cross-check at roughness $0.55$ must agree within 20%.
 
 | Source | Baked? | Why |
 | --- | --- | --- |
-| Analytic sky gradient | Yes, every vertex | Probes replace env-IBL ambient entirely |
-| Sun bounce (depth $\ge 1$) | Yes (NEE) | Indirect sun is true GI |
-| Emissive static geometry | Yes (direct at primary + NEE every vertex) | Runtime has no other emissive lighting path |
-| Direct sun at primary vertex | **No** | Owned by runtime cascaded shadow maps; storing it would double-count |
+| Sun NEE (every vertex, incl. primary) | Yes | Indirect sun is true GI; the ONLY baked source. The primary hit's reflected sun is one-bounce indirect at the probe — no double-count (shadow maps evaluate direct sun at the shaded surface itself; probes only transport light from other surfaces) |
+| Analytic sky gradient | **No** | Runtime `EvaluateIrradiance` owns sky ambient; probes ADD on top |
+| Emissive static geometry | **No** | NEE 1/pdfSa blowups were the bright-dot firefly source |
 | Dynamic point/spot lights | **No** | Runtime forward+ only, by design |
 
 ### 5.2 Scene and materials
@@ -235,32 +234,26 @@ and for $d_y < 0$:
 $$\mathrm{sky} = \mathrm{mix}(\mathrm{horizon}, \mathrm{ground},
 \mathrm{clamp}(-3d_y, 0, 1))\,I_{sky}.$$
 
-CPU (`SkyRadiance`) and GPU (`EvaluateSkyGradient`) agree.
+CPU (`SkyRadiance`, retained for tooling) and GPU (`EvaluateSkyGradient`)
+agree; the sun-only bake does not sample it.
 
 ### 5.4 Path estimator (`TraceIncoming`)
 
 State: radiance $L = 0$, throughput $T = 1$, primary flag. For depths
 $0 \ldots$ `maxBounces` (default 3):
 
-1. Miss → $L \mathrel{+}= T \cdot \mathrm{Sky}(d)$, stop.
+1. Miss → contributes nothing (open sky is not part of the sun-only field), stop.
 2. Hit at $p$ with shading normal $n$ (geometric normal flipped to face the
    ray). Let $m$ be the surface material.
-3. **Direct emission (primary vertex only):** if the hit triangle is
-   emissive, $L \mathrel{+}= T \cdot L_e$. This is the only path for
-   directly-visible emissive into the field; bounce-vertex on-hit emission
-   is skipped because the previous vertex's NEE already accounts for direct
-   lights.
-4. **Emissive NEE (every vertex):** $L \mathrel{+}= T \cdot S_{\mathrm{emis}}$,
-   the Lambertian reflected term (albedo included, see below).
-5. **Sun NEE** (bounce vertices only):
+3. **Sun NEE** (every vertex including the primary hit):
    $$S_{\mathrm{sun}} =
    \begin{cases}
    0 & n\cdot l \le 0\ \text{or occluded},\\
    \mathrm{sunColor}\cdot I_{\mathrm{sun}}\,(n\cdot l)\,
    \mathrm{albedo}/\pi & \text{otherwise}.
    \end{cases}$$
-6. $T \mathrel{*}= \mathrm{albedo}$; stop if $\mathrm{lum}(T) < 10^{-4}$.
-7. Scatter $d \sim$ cosine hemisphere about $n$;
+4. $T \mathrel{*}= \mathrm{albedo}$; stop if $\mathrm{lum}(T) < 10^{-4}$.
+5. Scatter $d \sim$ cosine hemisphere about $n$;
    $p \leftarrow p + n\cdot 10^{-3}\,\mathrm{m}$; primary $\leftarrow$ false.
 
 ### 5.5 Next-event estimators
@@ -365,10 +358,12 @@ $\max(0.03\,\mathrm{m},\,0.2\cdot s)$:
 
 ### 7.3 Per-probe bake
 
-At the relocated position: trace `raysPerProbe` (128) uniform-sphere samples
+At the relocated position: trace `raysPerProbe` (256) uniform-sphere samples
 with `TraceIncoming`, fit Section 6, then record **6-axis visibility**:
-raycast $\pm x, \pm y, \pm z$, obstacle distance capped at
-`visibilityMaxDistance` ($2.5$ m).
+raycast $\pm x, \pm y, \pm z$ up to `visibilityMaxDistance` ($2.5$ m).
+A direction with no hit stores $0$ (unobstructed — both consumers skip
+$0$ axes); the trace cutoff is never stored as a distance, otherwise it
+reads as a phantom wall and blinds coarse probes past $2.5$ m.
 
 ### 7.4 Error-driven refinement (lighting complexity, not geometry)
 
@@ -398,19 +393,20 @@ wall spends none.
 - Level extent = probe positions padded by radii; per-cell caps
   (64 probes/cell) and global caps keep pathological inputs bounded.
 
-### 7.6 Diffusion (anti-polka-dot passes)
+### 7.6 Diffusion (opt-in only, OFF by default)
 
-1. **Placement diffusion:** deterministic jitter ($\pm 0.2\,s$, clamped to
-   the brick) breaks lattice symmetry; then up to 8 repulsion-relaxation
-   passes spread same-level probes toward $0.85\,s$ spacing (steps of
-   $0.2\,s$), always respecting the free-space guard.
-2. **Visibility re-trace** from final positions.
-3. **Radiance diffusion:** 3 Laplacian (heat-equation) passes over the probe
-   neighbor graph with step $\lambda = 0.6$ (Jacobi):
-   $$a \leftarrow a + 0.6\,(\bar a - a),$$
-   where $\bar a$ is the Wendland-weighted neighbor mean — same level at
-   full weight plus adjacent levels at half weight (this kills parent/child
-   seam disagreement where error refinement created mixed-density regions).
+Both stages below default to 0 and are kept only for experiments:
+
+1. **Placement diffusion** (jitter + repulsion) moves probes AFTER their
+   radiance was baked, so serialized positions no longer match the measured
+   field — fatal near arches/openings (bright probes drift into dark
+   regions and read as splats). Probes instead keep exactly the
+   free-space-relocated positions they were baked at.
+2. **Radiance diffusion** (Laplacian passes over the probe graph, cross-level
+   included) has no visibility criterion: it leaks bright across thin
+   walls/arches and blurs real discontinuities. Per-probe noise is
+   controlled at the source instead (256+ rays, firefly clamp, stable
+   NNLS fit), so the bake ships raw amplitudes.
 
 ---
 
@@ -489,8 +485,9 @@ Per pixel with normal $N$, view $V$, reflection $R = \mathrm{reflect}(-V, N)$:
   \mathrm{spec} = \mathrm{mix}(\mathrm{spec}_{\mathrm{analytic}},
   \mathrm{spec}_{GI},\,t).$$
 
-When covered, the probe field **replaces** the analytic sky ambient (it
-already contains the occluded sky). Debug views: (1) flat
+When covered, the sun-bounce probe field is **added** on top of the
+analytic sky ambient (it carries no sky of its own; uncovered pixels keep
+the sky with no seam). Debug views: (1) flat
 $E_{GI}\cdot I_{GI}\cdot\mathrm{exposure}$ without albedo; (2) diagnostics
 $(1,\ \mathrm{sat}(W/4),\ \mathrm{sat}(\mathrm{count}/16))$,
 violet-tinted on fallback, magenta when uncovered.
@@ -517,19 +514,19 @@ violet-tinted on fallback, magenta when uncovered.
 
 | Parameter | Default | Role |
 | --- | --- | --- |
-| `raysPerProbe` | 128 | Uniform-sphere radiance samples per probe |
+| `raysPerProbe` | 256 | Uniform-sphere radiance samples per probe |
 | `maxBounces` | 3 | Diffuse vertices after the first hit |
 | `errorRaysPerProbe` | 32 | Reference irradiance rays per test point |
 | `rootBrickSize` | 8 m | Coarsest spacing |
 | `minBrickSize` | 0.25 m | Finest spacing |
 | `nearSurfaceFactor` | 1.0 | Geometry-subdivision reach |
 | `errorTolerance` / `errorFloor` | 0.12 / 0.02 | Lighting-refinement threshold / luminance floor |
-| `maxProbes` | 262144 | Hard probe budget |
+| `maxProbes` | 1048576 | Hard probe budget (== GPU cap; Sponza uses ~500k) |
 | `maxRefineWaves` | 8 | Error-refinement iterations |
 | `probeClearanceFactor` / `probeMinClearance` | 0.2 / 0.03 m | Free-space requirement |
 | `visibilityMaxDistance` | 2.5 m | 6-axis distance cap |
 | `probeSupportFactor` | 1.25 | $R = 1.25\times$ brick |
-| `diffusionIterations` / `smoothingPasses` / `smoothingLambda` | 8 / 3 / 0.6 | Placement + radiance diffusion |
+| `diffusionIterations` / `smoothingPasses` / `smoothingLambda` | 0 / 0 / 0.6 | Placement + radiance diffusion (OFF by default: post-bake moves invalidate baked radiance; visibility-free smoothing leaks across walls) |
 
 Validation (`tests/test_gi.cpp`, no GPU required): basis coverage/peak,
 fit round-trip + non-negativity, diffuse vs Monte Carlo ($<12\%$) and

@@ -948,6 +948,8 @@ bool SceneRenderer::Initialize() {
 		if (const char* expEnv = std::getenv("VULKANTOY_AUTO_EXPOSURE")) {
 			if (std::atoi(expEnv) == 0)
 				m_autoExposureEnabled = false;
+			else
+				m_autoExposureEnabled = true;
 		}
 		// EVSM toggle for A/B (default ON; VULKANTOY_EVSM=0: PCF depth
 		// atlases, no moment/blur passes, single-submit frames (no async
@@ -968,15 +970,15 @@ bool SceneRenderer::Initialize() {
 		}
 
 		if (const char* iblEnv = std::getenv("VULKANTOY_IBL")) {
-			// Mute the analytic sky ambient (AmbientMode: sky -> off; the
-			// ambient sources are mutually exclusive, see AmbientMode).
-			if (std::atoi(iblEnv) == 0 && m_ambientMode == AmbientMode::SkyIbl)
+			// Mute the analytic sky ambient (any ambient mode -> off;
+			// Gi mode carries sky + probes, so muting kills both).
+			if (std::atoi(iblEnv) == 0 && m_ambientMode != AmbientMode::Off)
 				m_ambientMode = AmbientMode::Off;
 		}
 		// SG-GI ambient override for A/B runs without UI interaction:
-		// VULKANTOY_GI selects the ambient source � 1/on -> baked probes,
-		// 0/off -> analytic sky IBL (falling back out of GI mode). The
-		// runtime N cycle stays live after.
+		// VULKANTOY_GI selects the ambient source — 1/on -> sun-bounce
+		// probes on top of sky IBL, 0/off -> analytic sky IBL (falling
+		// back out of GI mode). The runtime N cycle stays live after.
 		if (const char* giEnv = std::getenv("VULKANTOY_GI")) {
 			const std::string_view gi = trimEnv(giEnv);
 			if (gi == "1" || gi == "on") m_ambientMode = AmbientMode::Gi;
@@ -2003,12 +2005,12 @@ void SceneRenderer::Shutdown() {
 		data.aoIntensity = aoOn ? m_ssaoIntensity : 0.0f;
 		// Configurable skydome IBL + fog (single source for sky/sun/fog).
 		data.env = m_env.ToFrameData();
-		// Ambient source mutual exclusion (N cycles Gi -> SkyIbl -> Off):
-		// the analytic sky IBL flag is forced off unless the ambient mode
-		// selects it; the GI block below only enables probes in Gi mode.
-		// One ambient source or none � never both.
+		// Ambient sources (N cycles Gi -> SkyIbl -> Off): the analytic sky
+		// IBL flag stays on in Gi mode too — sun-bounce probes ADD on top
+		// of the sky ambient (sun-only field). The GI block below only
+		// enables probes in Gi mode.
 		data.env.fogEndAndFlags.w =
-			(m_ambientMode == AmbientMode::SkyIbl) ? 1.0f : 0.0f;
+			(m_ambientMode != AmbientMode::Off) ? 1.0f : 0.0f;
 
 		// Deferred shadows: consumer-side BDAs + the frame's on/off flag.
 		// DsActive() is the single gate shared with the phase-1 upload and
@@ -6746,11 +6748,11 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				}
 				if (ImGui::CollapsingHeader("Environment � Skydome IBL + Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Sky dome (K)", &m_env.skyEnabled);
-					// Ambient source gate: drives the N-cycled AmbientMode (the
-					// analytic sky IBL and the baked GI probes are mutually
-					// exclusive � see the GI tab section).
+					// Ambient source gate: drives the N-cycled AmbientMode (sky
+					// IBL is the floor in Gi + SkyIbl modes; sun-bounce
+					// probes add on top in Gi mode only — see the GI section).
 					{
-						bool iblOn = (m_ambientMode == AmbientMode::SkyIbl);
+						bool iblOn = (m_ambientMode != AmbientMode::Off);
 						if (ImGui::Checkbox("IBL ambient/spec (N)", &iblOn))
 							m_ambientMode = iblOn
 								? AmbientMode::SkyIbl : AmbientMode::Off;
@@ -6785,16 +6787,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::TextDisabled("Sky program missing � dome skipped");
 				}
 				if (ImGui::CollapsingHeader("GI � ambient source + intensity", ImGuiTreeNodeFlags_DefaultOpen)) {
-					// Ambient mode line (N cycles; probes and sky IBL are mutually
-					// exclusive � see AmbientMode). Debug view + probe overlay
-					// live in the Debug tab.
+					// Ambient mode line (N cycles; sun-bounce probes add on top
+					// of the sky IBL in Gi mode — see AmbientMode). Debug view
+					// + probe overlay live in the Debug tab.
 					{
 						static const char* const kModeNames[3] =
-							{ "Baked GI probes", "Sky IBL", "Off" };
+							{ "Sun-bounce GI + sky IBL", "Sky IBL", "Off" };
 						int modeIdx = static_cast<int>(m_ambientMode);
 						if (ImGui::Combo("Ambient source (N)", &modeIdx, kModeNames, 3))
 							m_ambientMode = static_cast<AmbientMode>(std::clamp(modeIdx, 0, 2));
-						ImGui::TextDisabled("N cycles ambient: %s (GI and sky IBL mutually exclusive)",
+						ImGui::TextDisabled("N cycles ambient: %s (GI adds sun bounce on top of sky)",
 							kModeNames[static_cast<int>(m_ambientMode)]);
 					}
 					if (m_giLoaded) {

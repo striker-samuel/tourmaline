@@ -165,16 +165,22 @@ glm::vec3 GiTraceScene::SampleSun(const glm::vec3& pos, const glm::vec3& n,
 
 glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& dir,
 	Pcg32& rng, uint32_t maxDepth) const {
+	// Sun-only GI: the probe field stores bounced sun and nothing else.
+	// Sky (analytic gradient) and emissive geometry are deliberately NOT
+	// sampled here — sky ambient stays analytic at runtime (EvaluateIrradiance)
+	// and emissive has no runtime path that needs a baked copy. Sampling
+	// them here was the firefly source (emissive NEE 1/pdfSa blowups) and
+	// the brightness-scale mismatch (baked sky at dome intensity ~600 vs
+	// the IBL intensity ~20 it replaced).
 	glm::vec3 L(0.0f);
 	glm::vec3 throughput(1.0f);
 	glm::vec3 p = origin;
 	glm::vec3 d = glm::normalize(dir);
 
-	bool primary = true;
 	for (uint32_t depth = 0; depth <= maxDepth; ++depth) {
 		TriangleBvh::Hit h;
 		if (!bvh_.Raycast(p, d, kMaxRayDist, h)) {
-			L += throughput * SkyRadiance(d);
+			// Open sky contributes nothing to the sun-only field.
 			break;
 		}
 		const glm::vec3 pos = p + d * h.t;
@@ -182,27 +188,22 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 		const glm::vec3 n = glm::dot(tn, d) < 0.0f ? tn : -tn;
 		const GiTraceMaterial& m = materials[triMaterial[h.tri]];
 
-		// Direct emission: the probe ray hit an emissive surface. This is
-		// the only way directly-visible emissive enters the field (on-hit
-		// emission is skipped at bounce vertices, where the previous
-		// vertex's NEE already accounts for direct lights).
-		if (primary && Luminance(m.emissive) > 0.0f)
-			L += throughput * m.emissive;
-		// NEE emissive at every vertex (Lambertian reflected term, current
-		// albedo included; on-hit emission is skipped at bounces so the
-		// two never double count).
-		L += throughput * SampleEmissive(pos, n, m, rng);
-		// Direct sun only at bounce vertices: primary-vertex sun is the
-		// runtime's cascaded-shadow-map job.
-		if (!primary)
-			L += throughput * SampleSun(pos, n, m);
+		// Sun NEE at EVERY vertex, including the primary hit: the light
+		// reflected by the first-hit surface toward the probe IS indirect
+		// illumination at the probe (one-bounce sun GI). This does not
+		// double-count the runtime cascaded shadow maps: those evaluate
+		// direct sun at the shaded surface itself, while the probe field
+		// only ever transports light arriving from OTHER surfaces.
+		// Omitting the primary vertex throws away the dominant one-bounce
+		// term and leaves only sparse multi-bounce paths (high variance,
+		// hostile fits).
+		L += throughput * SampleSun(pos, n, m);
 
 		throughput *= m.albedo;
 		if (Luminance(throughput) < 1e-4f)
 			break;
 		d = CosineHemisphere(rng, n);
 		p = pos + n * kSurfEps;
-		primary = false;
 	}
 	return L;
 }
@@ -234,30 +235,39 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 	// Node-material pairs first so materials vector indices are stable.
 	auto internMaterial = [&](const Material& mat) -> uint32_t {
 		GiTraceMaterial gm{};
-		// metallic = factor * MR-texture B (the runtime shader convention:
-		// glTF metallicFactor defaults to 1 with the real value in the
-		// metallicRoughness texture's blue channel).
-		float metallic = std::clamp(mat.values.params.y, 0.0f, 1.0f);
-		if (mat.values.textures.y >= 0) {
-			if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures.y));
-				it != opts.texelAvg.end())
-				metallic *= it->second.b;
-		}
-		metallic = std::clamp(metallic, 0.0f, 1.0f);
-		glm::vec3 base = glm::vec3(mat.values.diffuse);
-		if (mat.values.textures.x >= 0) {
-			if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures.x));
-				it != opts.texelAvg.end())
-				base *= it->second;
-		}
-		gm.albedo = base * (1.0f - metallic);
-		gm.emissive = opts.includeEmissive
-			? glm::vec3(mat.values.emissiveFactor) * mat.values.params2.z
-			: glm::vec3(0.0f);
-		if (opts.includeEmissive && mat.values.textures2.x >= 0) {
-			if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures2.x));
-				it != opts.texelAvg.end())
-				gm.emissive *= it->second;
+		if (opts.uniformAlbedo) {
+			// White-world mode: one known albedo everywhere, no emissive.
+			// Every bounce attenuates by exactly uniformAlbedoValue, so the
+			// transport is analytically checkable and texture cooking
+			// cannot print through as dots.
+			gm.albedo = opts.uniformAlbedoValue;
+			gm.emissive = glm::vec3(0.0f);
+		} else {
+			// metallic = factor * MR-texture B (the runtime shader
+			// convention: glTF metallicFactor defaults to 1 with the real
+			// value in the metallicRoughness texture's blue channel).
+			float metallic = std::clamp(mat.values.params.y, 0.0f, 1.0f);
+			if (mat.values.textures.y >= 0) {
+				if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures.y));
+					it != opts.texelAvg.end())
+					metallic *= it->second.b;
+			}
+			metallic = std::clamp(metallic, 0.0f, 1.0f);
+			glm::vec3 base = glm::vec3(mat.values.diffuse);
+			if (mat.values.textures.x >= 0) {
+				if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures.x));
+					it != opts.texelAvg.end())
+					base *= it->second;
+			}
+			gm.albedo = base * (1.0f - metallic);
+			gm.emissive = opts.includeEmissive
+				? glm::vec3(mat.values.emissiveFactor) * mat.values.params2.z
+				: glm::vec3(0.0f);
+			if (opts.includeEmissive && mat.values.textures2.x >= 0) {
+				if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures2.x));
+					it != opts.texelAvg.end())
+					gm.emissive *= it->second;
+			}
 		}
 		// Deduplicate identical materials (cheap win: scenes reuse them).
 		for (uint32_t i = 0; i < out.materials.size(); ++i) {
@@ -445,22 +455,47 @@ bool RelocateProbe(const TriangleBvh& bvh, const BakeBrick& brick,
 // Traces + fits one probe (radiance fit + 6-axis visibility + reconstruction
 // error at off-center test points).
 void BakeProbeBrick(const GiTraceScene& scene, const SgGiBakeConfig& cfg,
-	BakeBrick& brick, uint64_t seed) {
+	BakeBrick& brick, uint64_t seed, uint64_t& clampedSamples) {
 	const float clearance = std::max(cfg.probeMinClearance,
 		cfg.probeClearanceFactor * brick.size);
 	if (!RelocateProbe(scene.Bvh(), brick, clearance, brick.probePos))
 		return; // fully embedded: drop the leaf, neighbors cover
 	brick.hasProbe = true;
 
+	// Two-pass firefly filter (standard path-tracer GI practice): sun pools
+	// make the incident field brutally contrasty (0 vs ~10^4 in one probe's
+	// sample set) and the 9-fat-lobe fit turns that contrast into spiky
+	// 10^4-scale lobe peaks that read as hard-edged colored dots. Clamp
+	// each sample to 8x the probe's own mean (hue-preserving): smooth
+	// bounce passes through untouched, only true outliers are tamed.
+	struct RaySample { glm::vec3 dir; glm::vec3 L; };
 	Pcg32 rng(seed);
-	SgFitAccumulator acc;
-	const float weight = 4.0f * kPi / float(cfg.raysPerProbe);
+	std::vector<RaySample> samples;
+	samples.reserve(cfg.raysPerProbe);
+	double meanLum = 0.0;
 	for (uint32_t i = 0; i < cfg.raysPerProbe; ++i) {
 		const glm::vec3 dir = UniformSphere(rng);
 		const glm::vec3 L = scene.TraceIncoming(brick.probePos, dir, rng, cfg.maxBounces);
-		acc.AddSample(dir, L, weight);
+		samples.push_back({ dir, L });
+		meanLum += Luminance(L);
+	}
+	meanLum /= double(std::max(cfg.raysPerProbe, 1u));
+	const float cap = std::max(float(meanLum) * 8.0f, 1e-6f);
+	SgFitAccumulator acc;
+	const float weight = 4.0f * kPi / float(cfg.raysPerProbe);
+	for (const RaySample& s : samples) {
+		glm::vec3 L = s.L;
+		const float l = Luminance(L);
+		if (l > cap && l > 0.0f) {
+			L *= cap / l;
+			++clampedSamples;
+		}
+		acc.AddSample(s.dir, L, weight);
 	}
 	acc.Solve(brick.amps);
+	// NOTE: ringing on sun-pool edges is handled inside Solve (diagonal
+	// fallback); no post-hoc peak squashing here — it would bias honest
+	// directional probes toward uniform grey.
 
 	// 6-axis visibility (obstacle distances, capped).
 	static const glm::vec3 kAxes[6] = {
@@ -468,10 +503,15 @@ void BakeProbeBrick(const GiTraceScene& scene, const SgGiBakeConfig& cfg,
 	};
 	for (uint32_t k = 0; k < 6; ++k) {
 		TriangleBvh::Hit h;
-		float d = cfg.visibilityMaxDistance;
+		// 0 = no known obstacle (unobstructed): both consumers skip
+		// vis == 0 axes. NEVER store the trace cutoff as a distance —
+		// that reads as a phantom wall at maxDistance and rejects
+		// everything beyond it (coarse probes with R >> maxDistance
+		// go blind past 2.5 m and force fallback blends).
+		float d = 0.0f;
 		if (scene.Bvh().Raycast(brick.probePos, kAxes[k], cfg.visibilityMaxDistance, h))
-			d = std::min(h.t, cfg.visibilityMaxDistance);
-		brick.vis[k] = std::max(d, 0.0f);
+			d = std::max(h.t, 1e-3f);
+		brick.vis[k] = d;
 	}
 
 	// Error-driven refinement metric: reference irradiance at off-center
@@ -506,12 +546,20 @@ void BakeProbeBrick(const GiTraceScene& scene, const SgGiBakeConfig& cfg,
 		}
 	}
 	const float floor = cfg.errorFloor * std::max(refLumSum / float(std::max(refCount, 1)), 1e-5f);
+	int validPoints = 0;
 	for (int i = 0; i < 6; ++i) {
 		const glm::vec3& ref = refs[i];
+		// Non-finite references carry no information; counting them as
+		// error subdivides garbage forever (NaN <= tolerance is false).
+		if (!std::isfinite(ref.x + ref.y + ref.z))
+			continue;
 		const glm::vec3 rec = SgDiffuseIrradiance(brick.amps, kTestNormals[i % 3]);
+		if (!std::isfinite(rec.x + rec.y + rec.z))
+			continue;
 		errSum += Luminance(glm::abs(ref - rec)) / std::max(Luminance(ref), floor);
+		++validPoints;
 	}
-	brick.error = errSum / 6.0f;
+	brick.error = validPoints > 0 ? errSum / float(validPoints) : 0.0f;
 }
 
 } // namespace
@@ -650,6 +698,7 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 	// results independent of task scheduling). Returns the live-probe count.
 	auto bakeLeaves = [&](std::vector<uint32_t>& leaves) -> uint64_t {
 		std::atomic<uint64_t> baked{ 0 };
+		std::atomic<uint64_t> clamped{ 0 };
 		constexpr size_t kBatch = 512;
 		for (size_t base = 0; base < leaves.size(); base += kBatch) {
 			const size_t end = std::min(base + kBatch, leaves.size());
@@ -660,7 +709,9 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 				futures.push_back(pool.enqueue([&, idx] {
 					const uint64_t seed = (uint64_t(cfg.seed) << 32)
 						^ (uint64_t(idx) * 0x9e3779b97f4a7c15ull);
-					BakeProbeBrick(scene, cfg, bricks[idx], seed);
+					uint64_t localClamped = 0;
+					BakeProbeBrick(scene, cfg, bricks[idx], seed, localClamped);
+					clamped += localClamped;
 					if (bricks[idx].hasProbe)
 						++baked;
 				}));
@@ -670,6 +721,7 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 		}
 		stats.pathsTraced += uint64_t(leaves.size())
 			* (cfg.raysPerProbe + uint64_t(6) * cfg.errorRaysPerProbe);
+		stats.samplesClamped += clamped.load();
 		return baked.load();
 	};
 
@@ -765,8 +817,14 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 	//     amplitude mass until the field is spatially smooth, wiping the
 	//     independent per-probe sampling noise the interpolation would
 	//     otherwise show as dots.
+	//
+	//     NOTE: both stages are OFF by default now (diffusionIterations =
+	//     smoothingPasses = 0). Moving probes after baking invalidates the
+	//     baked radiance (fatal near arches/openings), and smoothing
+	//     without a visibility criterion leaks bright across walls. Both
+	//     stay available as explicit opt-in bake flags for experiments.
 	// ------------------------------------------------------------------
-	{
+	if (cfg.diffusionIterations > 0 || cfg.smoothingPasses > 0) {
 		// Collect live probes per level with a uniform neighbor grid
 		// (cell = brick size of that level).
 		struct LevelCloud {
@@ -830,8 +888,14 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 		}
 
 		// ---- (1) Placement diffusion: jitter + repulsion relaxation ----
+		// NOTE: everything here moves probes AFTER their radiance was
+		// baked, so baked amps no longer belong to the serialized
+		// positions (fatal near arches/openings where indirect changes
+		// fast). iterations == 0 disables the whole stage: probes keep
+		// exactly the relocated positions they were baked at. The jitter
+		// is gated too (it used to run even with 0 iterations).
 		const uint32_t iterations = std::min(cfg.diffusionIterations, 32u);
-		for (uint32_t lvl = 0; lvl < clouds.size(); ++lvl) {
+		for (uint32_t lvl = 0; lvl < clouds.size() && iterations > 0; ++lvl) {
 			LevelCloud& cloud = clouds[lvl];
 			if (cloud.probeBricks.empty())
 				continue;
@@ -911,11 +975,13 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 					continue;
 				for (uint32_t k = 0; k < 6; ++k) {
 					TriangleBvh::Hit h;
-					float d = cfg.visibilityMaxDistance;
+					// Same sentinel convention as BakeProbeBrick: 0 means
+					// unobstructed, never the trace cutoff.
+					float d = 0.0f;
 					if (scene.Bvh().Raycast(b.probePos, kAxes[k],
 							cfg.visibilityMaxDistance, h))
-						d = std::min(h.t, cfg.visibilityMaxDistance);
-					b.vis[k] = std::max(d, 0.0f);
+						d = std::max(h.t, 1e-3f);
+					b.vis[k] = d;
 				}
 			}
 		}
@@ -961,6 +1027,15 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 								if (j == selfIdx)
 									continue;
 								const BakeBrick& nb = bricks[j];
+								// Skip non-finite neighbors: their mass must
+								// not leak into healthy probes (with the fit
+								// quarantine above this never triggers, but
+								// the check is nearly free).
+								bool nbOk = true;
+								for (uint32_t i = 0; i < kSgLobeCount && nbOk; ++i)
+									nbOk = std::isfinite(nb.amps[i].x + nb.amps[i].y + nb.amps[i].z);
+								if (!nbOk)
+									continue;
 								const glm::vec3 d = pos - nb.probePos;
 								const float dist2 = glm::dot(d, d);
 								if (dist2 >= r2)
@@ -1000,12 +1075,19 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 				}
 				for (uint32_t k = 0; k < cloud.probeBricks.size(); ++k) {
 					BakeBrick& b = bricks[cloud.probeBricks[k]];
-					for (uint32_t i = 0; i < kSgLobeCount; ++i)
-						b.amps[i] += delta[k * kSgLobeCount + i];
+					for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+						const glm::vec3 v = b.amps[i] + delta[k * kSgLobeCount + i];
+						// Never let a non-finite smoothing step poison a
+						// healthy probe (or spread further next pass).
+						if (std::isfinite(v.x + v.y + v.z))
+							b.amps[i] = v;
+					}
 				}
 			}
 		}
-	}
+	} // end diffusion opt-in (skipped entirely when both stages are 0:
+	  // BakeProbeBrick already relocated + traced visibility in place,
+	  // so there is nothing to redo)
 
 	// ------------------------------------------------------------------
 	// Assemble the volume
@@ -1054,11 +1136,12 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 	const auto t1 = std::chrono::steady_clock::now();
 	stats.seconds = std::chrono::duration<double>(t1 - t0).count();
 	{
-		char line[160];
+		char line[192];
 		std::snprintf(line, sizeof(line),
-			"bake: done: %u probes in %.1fs (%.1f MiB GPU)\n",
+			"bake: done: %u probes in %.1fs (%.1f MiB GPU, %llu clamped)\n",
 			stats.probeCount, stats.seconds,
-			double(outVolume.GpuBytes()) / (1024.0 * 1024.0));
+			double(outVolume.GpuBytes()) / (1024.0 * 1024.0),
+			(unsigned long long)stats.samplesClamped);
 		say(line);
 	}
 	return true;

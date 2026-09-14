@@ -893,16 +893,16 @@ PSOut mainPS(PSIn IN)
         }
     }
 
-    // Ambient / sky-IBL floor (hemispherical sky).
-    // Two sources, in priority order:
-    //  1. Baked SG-GI probe volume (F8 debug view; N toggles; the probes
-    //     carry sky + indirect + emissive and REPLACE the analytic sky
-    //     ambient — with wall-aware, spatially varying results). Diffuse
-    //     follows the direct-lighting convention (albedo/PI * E).
-    //  2. Configurable analytic IBL from the environment block: diffuse
+    // Ambient / sky-IBL floor (hemispherical sky) plus sun-bounce GI.
+    // Two additive sources:
+    //  1. Configurable analytic IBL from the environment block: diffuse
     //     irradiance from EvaluateIrradiance() plus a cheap specular env
     //     reflection. When IBL is disabled (iblEnabled=0) falls back to
     //     the legacy constant-ambient path (baseColor * mat.ambient).
+    //  2. Baked SG-GI probe volume (F8 debug view; N toggles): SUN-BOUNCE
+    //     ONLY, ADDED on top of the analytic sky ambient (wall-aware,
+    //     spatially varying). Diffuse follows the direct-lighting
+    //     convention (albedo/PI * E).
     float3 irradiance = EvaluateIrradiance(N, frame.env);
     float iblOn = saturate(frame.env.fogEndAndFlags.w);
     // SSAO: the SsaoCompose pass already upscaled the half-res AO to full
@@ -927,8 +927,9 @@ PSOut mainPS(PSIn IN)
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, shadingRoughness);
     float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env) * occlusion * ao;
 
-    // Baked SG-GI: replace the analytic sky ambient with the probe field
-    // (it already contains the sky, occluded properly by the bake).
+    // Baked SG-GI: sun-bounce only, added on top of the analytic sky
+    // ambient (the probes carry no sky; uncovered pixels simply keep
+    // the sky IBL with no seam).
     if (frame.giEnabled != 0u)
     {
         float3 giAmps[SG_GI_LOBES];
@@ -958,15 +959,24 @@ PSOut mainPS(PSIn IN)
                 OUT.outColor = float4(SanitizeHdr(giEDbg), 1.0f);
                 return OUT;
             }
+            // Fallback pixels read as solid magenta (binary flag): anywhere
+            // the visibility-weighted blend found nothing and the shader
+            // fell back to inverse-square nearest probes (visibility
+            // ignored). Magenta region == fallback-placed GI.
+            if (giFellBack)
+            {
+                OUT.outColor = float4(SanitizeHdr(float3(1.0f, 0.0f, 1.0f)
+                    * (0.5f / max(frame.exposure, 1e-6f))), 1.0f);
+                return OUT;
+            }
             const float giSharp = SG_GI_SHARPNESS / 4.0f; // fixed basis: 1.0
             const float giW = saturate(giWeightSum / 4.0f);
             const float giCount = saturate(float(giContributors) / 16.0f);
             float3 diag = float3(giSharp, giW, giCount);
-            if (giFellBack)
-                diag += float3(0.4f, 0.0f, 0.4f); // fallback flag: violet tint
-            // Fixed 0..1 palette: pre-scale by 1/exposure so it survives
-            // the ACES chain (same convention as the DS visualizers).
-            OUT.outColor = float4(SanitizeHdr(diag / max(frame.exposure, 1e-6f)), 1.0f);
+            // Fixed 0..1.4 palette: map it into the tonemapper's visible
+            // window (18% grey = 1.0) instead of 1/exposure, which pegs
+            // everything to white under physical-units exposure (~0.001).
+            OUT.outColor = float4(SanitizeHdr(diag * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
             return OUT;
         }
         if (giCovered)
@@ -974,15 +984,17 @@ PSOut mainPS(PSIn IN)
             const float giScale = max(frame.giIntensity, 0.0f);
             const float3 giE = SgGiDiffuseIrradiance(giAmps, N) * giScale;
             // Same convention as the direct sun term: albedo/PI * E.
+            // Sun-bounce ADDS to the sky ambient above (no replace, so
+            // uncovered pixels blend seamlessly).
             const float3 giDiffuse = kD * baseColor * (giE / PI) * occlusion * ao;
-            // Rough glossy reflections from the probe field; very smooth
-            // surfaces keep the analytic sky env (9 broad lobes cannot
+            // Rough glossy sun-bounce reflections; very smooth surfaces
+            // keep the analytic sky env only (9 broad lobes cannot
             // represent mirrors).
             const float3 giSpecular =
                 SgGiSpecular(giAmps, R, shadingRoughness) * giScale * Fenv * occlusion * ao;
             const float roughW = saturate((shadingRoughness - 0.15f) / 0.25f);
-            ambient = giDiffuse;
-            ambientSpec = lerp(ambientSpec, giSpecular, roughW);
+            ambient += giDiffuse;
+            ambientSpec += giSpecular * roughW;
         }
     }
 

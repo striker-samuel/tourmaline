@@ -22,6 +22,7 @@ void PrintUsage(const char* prog) {
 		<< "  [--bench <frames>] [--present <fifo|mailbox|immediate>] [--disable_control]\n"
 		<< "  [--use_optick] [--use_optick_gpu]\n"
 		<< "  --disable_control freezes camera input for deterministic benching\n"
+		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
 		<< "  --use_optick enables the Optick CPU capture session (bench.opt)\n"
 		<< "  --use_optick_gpu also brings up Optick GPU timelines (implies --use_optick)\n";
 	std::cout << "Available scenes:\n";
@@ -171,8 +172,13 @@ void PrintUsage(const char* prog) {
 			return EXIT_FAILURE;
 		}
 	}
-	if (benchFrames > 0)
+	if (benchFrames > 0) {
 		renderer.SetFrameBudget(benchFrames);
+		// Bench captures must be pixel-comparable across runs: drop eye
+		// adaptation and pin the fixed manual exposure (X re-enables live).
+		renderer.SetAutoExposureEnabled(false);
+		std::cout << "bench: auto-exposure off (fixed manual exposure)\n";
+	}
 	// Optick gates must be set before Run(): the engine initializes the GPU
 	// profiler during VulkanCore init, and the bench session starts after the
 	// warmup frames. --use_optick_gpu implies --use_optick.

@@ -17,6 +17,7 @@
 
 #include <glm/glm.hpp>
 
+#include <Engine/GI/bake.h>
 #include <Engine/GI/probe_volume.h>
 #include <Engine/GI/sg.h>
 #include <Engine/GI/triangle_bvh.h>
@@ -126,6 +127,167 @@ void TestSgFitRoundtrip() {
 	for (uint32_t i = 0; i < kSgLobeCount; ++i)
 		allNonNeg = allNonNeg && glm::all(glm::greaterThanEqual(neg[i], glm::vec3(0.0f)));
 	Check(allNonNeg, "sg fit clamps to non-negative");
+}
+
+void TestSgFitHighContrast() {
+	// Sun-pool edge analogue: bimodal field (0 vs ~5000 across a sharp
+	// horizon). The unconstrained least-squares fit rings with huge +/-
+	// pairs on this input (near-singular Gram + inconsistent rhs); the
+	// ringing guard must keep peaks bounded instead of emitting 10^4x
+	// spikes that read as hard-edged dots at runtime.
+	std::mt19937 rng(97);
+	std::vector<glm::vec3> dirs, radiance;
+	for (int s = 0; s < 512; ++s) {
+		const glm::vec3 d = UniformDir(rng);
+		dirs.push_back(d);
+		radiance.push_back(d.y < 0.0f ? glm::vec3(5000.0f, 4500.0f, 4000.0f) : glm::vec3(0.0f));
+	}
+	glm::vec3 fit[kSgLobeCount];
+	SgFitLobes(dirs, radiance, fit);
+	bool finiteNonNeg = true;
+	float maxLum = 0.0f;
+	for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+		for (int c = 0; c < 3; ++c) {
+			if (!std::isfinite(fit[i][c]) || fit[i][c] < 0.0f)
+				finiteNonNeg = false;
+		}
+		maxLum = std::max(maxLum, Luminance(fit[i]));
+	}
+	Check(finiteNonNeg, "sg fit high-contrast finite non-negative");
+	Check(maxLum < 3.0f * 5000.0f, "sg fit high-contrast peak bounded");
+	// Hue coherence: the input is warm-tinted (5000/4500/4000, ratio
+	// 1.25); per-channel solver dynamics must not manufacture saturated
+	// hues (white-world bakes measured 1500x splits from the old
+	// per-channel NMF + per-channel fallback paths).
+	{
+		glm::vec3 mean(0.0f);
+		for (uint32_t i = 0; i < kSgLobeCount; ++i)
+			mean += fit[i];
+		mean /= float(kSgLobeCount);
+		const float mx = std::max(mean.x, std::max(mean.y, mean.z));
+		const float mn = std::min(mean.x, std::min(mean.y, mean.z));
+		Check(mx / std::max(mn, 1e-6f) < 5.0f, "sg fit high-contrast hue coherent");
+	}
+	// Downward reconstruction recovers substantial (not exact) energy.
+	const glm::vec3 rec = SgEvaluate(fit, glm::vec3(0, -1, 0));
+	Check(Luminance(rec) > 500.0f && Luminance(rec) < 15000.0f,
+		"sg fit high-contrast recovers down energy");
+}
+
+// Analytical locks on the sun-only transport (GiTraceScene): with a
+// KNOWN uniform albedo these become exact statements, not statistics.
+// Any violation is a real transport bug (gain, leak, or NaN source).
+
+namespace {
+
+GiTraceScene MakeUniformScene(float albedo, const glm::vec3& sunDir,
+	float sunIntensity, const std::vector<glm::vec3>& positions,
+	const std::vector<uint32_t>& indices) {
+	GiTraceScene scene;
+	scene.positions = positions;
+	scene.indices = indices;
+	scene.materials = { GiTraceMaterial{ glm::vec3(albedo), glm::vec3(0.0f) } };
+	scene.triMaterial = std::vector<uint32_t>(indices.size() / 3, 0);
+	scene.sunDirection = glm::normalize(sunDir);
+	scene.sunColor = glm::vec3(1.0f, 0.95f, 0.90f);
+	scene.sunIntensity = sunIntensity;
+	scene.Finalize();
+	return scene;
+}
+
+} // namespace
+
+void TestGiEmptyScene() {
+	// No geometry: every ray misses, and misses contribute nothing in the
+	// sun-only field (no sky). Exact zero, any direction, any depth.
+	GiTraceScene scene = MakeUniformScene(0.7f, glm::vec3(0, 1, 0), 10000.0f, {}, {});
+	Check(scene.Bvh().TriangleCount() == 0, "gi empty scene no tris");
+	Pcg32 rng(3);
+	bool allZero = true;
+	for (int i = 0; i < 64; ++i) {
+		std::mt19937 srng(uint32_t(i + 1));
+		const glm::vec3 L = scene.TraceIncoming(
+			glm::vec3(0, 0, 0), UniformDir(srng), rng, 3);
+		if (glm::length(L) != 0.0f)
+			allZero = false;
+	}
+	Check(allZero, "gi empty scene traces exact zero");
+}
+
+void TestGiPrimarySunIncluded() {
+	// One big triangle; a ray that hits it as the PRIMARY vertex with no
+	// bounces allowed returns EXACTLY the sunlit-surface term: the light
+	// a sunlit surface reflects toward the probe is one-bounce indirect
+	// at the probe (the runtime shadow maps evaluate direct sun at the
+	// shaded surface itself, so nothing double-counts).
+	// Expected: sunColor * (I * ndl) * albedo / pi, ndl = 1 here.
+	std::vector<glm::vec3> pos = {
+		{ -10, -10, 0 }, { 10, -10, 0 }, { 0, 10, 0 },
+	};
+	GiTraceScene scene = MakeUniformScene(0.7f, glm::vec3(0, 0, 1), 10000.0f,
+		pos, { 0, 1, 2 });
+	Pcg32 rng(5);
+	const glm::vec3 L = scene.TraceIncoming(
+		glm::vec3(0, 0, 1), glm::vec3(0, 0, -1), rng, 0);
+	const glm::vec3 expect = glm::vec3(1.0f, 0.95f, 0.90f)
+		* (10000.0f * 0.7f / kPi);
+	Check(glm::length(L - expect) / glm::length(expect) < 1e-5f,
+		"gi primary vertex includes one-bounce sun exactly");
+}
+
+void TestGiEnergyBound() {
+	// Open box (floor + 4 walls, no roof), uniform albedo A = 0.7, sun
+	// overhead at intensity 10000. Per-ray bound (geometric series: the
+	// primary vertex contributes <= Imax * A / pi, bounce vertex j >= 1
+	// contributes <= Imax * A^(j+1) / pi):
+	//   L <= Imax * A / (pi * (1 - A)) ~= 7427.
+	// Asserts with margin at 8000. A gain bug (albedo > 1 creeping in,
+	// throughput mishandled) blows straight through this ceiling, and any
+	// NaN source trips the finiteness check (regression: 49k NaN probes).
+	std::vector<glm::vec3> pos;
+	std::vector<uint32_t> idx;
+	auto quad = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d) {
+		const uint32_t b0 = uint32_t(pos.size());
+		pos.push_back(a); pos.push_back(b); pos.push_back(c); pos.push_back(d);
+		idx.push_back(b0 + 0); idx.push_back(b0 + 1); idx.push_back(b0 + 2);
+		idx.push_back(b0 + 0); idx.push_back(b0 + 2); idx.push_back(b0 + 3);
+	};
+	quad({ -5, 0, -5 }, { 5, 0, -5 }, { 5, 0, 5 }, { -5, 0, 5 }); // floor
+	quad({ -5, 0, -5 }, { -5, 3, -5 }, { -5, 3, 5 }, { -5, 0, 5 }); // walls
+	quad({ 5, 0, -5 }, { 5, 0, 5 }, { 5, 3, 5 }, { 5, 3, -5 });
+	quad({ -5, 0, -5 }, { 5, 0, -5 }, { 5, 3, -5 }, { -5, 3, -5 });
+	quad({ -5, 0, 5 }, { -5, 3, 5 }, { 5, 3, 5 }, { 5, 0, 5 });
+	GiTraceScene scene = MakeUniformScene(0.7f, glm::vec3(0, 1, 0), 10000.0f, pos, idx);
+	Check(scene.Bvh().TriangleCount() == 10, "gi bound scene tri count");
+
+	Pcg32 rng(11);
+	std::mt19937 srng(13);
+	bool bounded = true;
+	bool finite = true;
+	float worst = 0.0f;
+	double mean = 0.0;
+	const int N = 200;
+	for (int i = 0; i < N; ++i) {
+		const glm::vec3 L = scene.TraceIncoming(
+			glm::vec3(0, 1, 0), UniformDir(srng), rng, 3);
+		for (int c = 0; c < 3; ++c) {
+			if (!std::isfinite(L[c]))
+				finite = false;
+		}
+		const float l = Luminance(L);
+		worst = std::max(worst, l);
+		mean += l;
+		if (l > 8000.0f)
+			bounded = false;
+	}
+	mean /= N;
+	std::cout << "  box-room: worst ray " << worst << ", mean " << mean << "\n";
+	Check(finite, "gi bound scene all samples finite");
+	Check(bounded, "gi per-ray energy bound (Imax*A/(pi*(1-A)))");
+	// The sun DOES reach in through the open roof: floor primary rays
+	// return ~A * I / pi ~= 2228 each, so the mean over all directions
+	// must be well above zero (a zero mean here means the sun is broken).
+	Check(mean > 200.0f && mean < 8000.0f, "gi box-room mean in sane range");
 }
 
 void TestSgDiffuseAgainstMonteCarlo() {
@@ -281,6 +443,60 @@ void TestTriangleBvh() {
 	// Far query: distance to the wall plane corner region.
 	Check(bvh.ClosestDistance(glm::vec3(-10, -10, -10)) > 10.0f,
 		"bvh far distance sane");
+
+	// Reorder regression (> leaf size forces a split + tri reorder):
+	// 12 isolated quads (2 tris each = 24 tris) spread along X. Every
+	// triangle must resolve to its OWN vertices after the build —
+	// TriangleVertices(k) takes the original index, the BVH reorder is
+	// resolved by the caller. The old double-indirection returned a
+	// shuffled triangle here (wrong hits, normals, emissive picks).
+	{
+		std::vector<glm::vec3> pos2;
+		std::vector<uint32_t> idx2;
+		for (int q = 0; q < 12; ++q) {
+			const float x = float(q) * 10.0f;
+			const uint32_t b = uint32_t(pos2.size());
+			pos2.push_back({ x, 0, 0 });
+			pos2.push_back({ x + 1, 0, 0 });
+			pos2.push_back({ x, 1, 0 });
+			pos2.push_back({ x + 1, 1, 0 });
+			idx2.push_back(b + 0); idx2.push_back(b + 1); idx2.push_back(b + 2);
+			idx2.push_back(b + 1); idx2.push_back(b + 3); idx2.push_back(b + 2);
+		}
+		TriangleBvh bvh2;
+		bvh2.Build(pos2, idx2);
+		bool vertsOk = true;
+		for (uint32_t k = 0; k < bvh2.TriangleCount(); ++k) {
+			glm::vec3 v0, v1, v2;
+			bvh2.TriangleVertices(k, v0, v1, v2);
+			const uint32_t e0 = idx2[k * 3 + 0], e1 = idx2[k * 3 + 1], e2 = idx2[k * 3 + 2];
+			if (glm::length(v0 - pos2[e0]) > 1e-5f
+				|| glm::length(v1 - pos2[e1]) > 1e-5f
+				|| glm::length(v2 - pos2[e2]) > 1e-5f)
+				vertsOk = false;
+		}
+		Check(vertsOk, "bvh triangle vertices survive reorder");
+		bool hitsOk = true;
+		for (int q = 0; q < 12; ++q) {
+			const float x = float(q) * 10.0f;
+			TriangleBvh::Hit h2;
+			// Aim at the quad center from +z: must hit one of its 2 tris.
+			if (!bvh2.Raycast(glm::vec3(x + 0.5f, 0.5f, 1.0f),
+					glm::vec3(0, 0, -1), 10.0f, h2)
+				|| std::abs(h2.t - 1.0f) > 1e-4f
+				|| h2.tri / 2 != uint32_t(q)) {
+				hitsOk = false;
+				break;
+			}
+			// Normal of the hit tri must be +z (not a shuffled neighbor).
+			const glm::vec3 n = bvh2.TriangleNormal(h2.tri);
+			if (glm::length(n - glm::vec3(0, 0, 1)) > 1e-4f) {
+				hitsOk = false;
+				break;
+			}
+		}
+		Check(hitsOk, "bvh raycast tri ids survive reorder");
+	}
 }
 
 void TestProbeVolumeRoundtrip() {
@@ -416,6 +632,10 @@ void TestFp16Pack() {
 int main() {
 	smvk::gi::TestSgBasis();
 	smvk::gi::TestSgFitRoundtrip();
+	smvk::gi::TestSgFitHighContrast();
+	smvk::gi::TestGiEmptyScene();
+	smvk::gi::TestGiPrimarySunIncluded();
+	smvk::gi::TestGiEnergyBound();
 	smvk::gi::TestSgDiffuseAgainstMonteCarlo();
 	smvk::gi::TestSgSpecular();
 	smvk::gi::TestTriangleBvh();

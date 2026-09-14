@@ -13,6 +13,7 @@
 //    any triangle (0 when inside solid geometry; a signed test is the
 //    caller's job, e.g. via ray-crossing parity).
 
+#include <cmath>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -36,9 +37,13 @@ public:
 	bool Empty() const { return triCount_ == 0; }
 	uint32_t TriangleCount() const { return triCount_; }
 
-	// Vertex positions of triangle k (post-reorder indirection resolved).
+	// Vertex positions of triangle k (k = original triangle index into
+	// the build soup; the BVH reorder table triIndices_ is resolved by
+	// the CALLER — traversal passes triIndices_[slot], direct users pass
+	// k itself. Never index triIndices_ here: doing so applies the
+	// reorder twice and shades/traces the wrong triangle).
 	void TriangleVertices(uint32_t k, glm::vec3& v0, glm::vec3& v1, glm::vec3& v2) const {
-		const uint32_t i = triIndices_[k] * 3;
+		const uint32_t i = k * 3;
 		v0 = positions_[indices_[i + 0]];
 		v1 = positions_[indices_[i + 1]];
 		v2 = positions_[indices_[i + 2]];
@@ -47,7 +52,15 @@ public:
 	glm::vec3 TriangleNormal(uint32_t k) const {
 		glm::vec3 v0, v1, v2;
 		TriangleVertices(k, v0, v1, v2);
-		return glm::normalize(glm::cross(v1 - v0, v2 - v0));
+		// Degenerate (zero-area) triangles normalize to NaN; one NaN
+		// shading normal poisons the whole probe fit (rhs -> NaN amps),
+		// the error metric (NaN error subdivides forever) and the
+		// smoothing passes (NaN spreads to neighbors). Fall back to +Y.
+		const glm::vec3 c = glm::cross(v1 - v0, v2 - v0);
+		const float l2 = glm::dot(c, c);
+		if (!(l2 > 1e-20f))
+			return glm::vec3(0.0f, 1.0f, 0.0f);
+		return c * (1.0f / std::sqrt(l2));
 	}
 
 	// Closest hit along the ray (origin + t * dir). Returns false on miss.
