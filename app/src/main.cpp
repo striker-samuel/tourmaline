@@ -121,7 +121,7 @@ void PrintUsage(const char* prog) {
 	else if (minimal)
 		passCfg = app::ScenePassConfig::Minimal();
 	// Bisection: layer extra passes onto the base config
-	// (csv: deferred,shadows,ssao,smaa,motion,dof,ssr,bloom,exposure,msaa,skydome,ui,cull).
+	// (csv: deferred,shadows,ssao/gtao/ao,smaa,motion,dof,ssr,bloom,exposure,msaa,skydome,ui,cull).
 	auto applyCsv = [&](const char* csv, bool enable) {
 		if (!csv) return;
 		const std::string s = csv;
@@ -133,7 +133,7 @@ void PrintUsage(const char* prog) {
 			bool* flag = nullptr;
 			if (tok == "deferred") flag = &passCfg.deferredShadows;
 			else if (tok == "shadows") { passCfg.directionalShadows = passCfg.spotShadows = enable; }
-			else if (tok == "ssao") flag = &passCfg.ssao;
+			else if (tok == "ssao" || tok == "gtao" || tok == "ao") flag = &passCfg.ssao;
 			else if (tok == "smaa") flag = &passCfg.smaa;
 			else if (tok == "motion") { passCfg.motionVectors = passCfg.motionBlur = enable; }
 			else if (tok == "dof") flag = &passCfg.dof;

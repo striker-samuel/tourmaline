@@ -237,6 +237,34 @@ static smvk::SsaoDesc MakeSsaoDesc() {
 }
 
 // -----------------------------------------------------------------------------
+// GTAO config (half-res horizon-search AO, see Engine/Rendergraph/gtao.h).
+// Same consumer path as SSAO (blur + depth-guided compose + opaque ambient),
+// only the raw pass differs. Shares radius/bias/intensity/maxDistance/blur
+// with SSAO; slices/steps/thickness are GTAO-specific.
+// -----------------------------------------------------------------------------
+static constexpr uint32_t GTAO_SLICES = 3; // slice directions 1..8
+static constexpr uint32_t GTAO_STEPS = 4; // taps per slice side 1..8
+static constexpr float GTAO_THICKNESS = 1.0f; // thin-occluder falloff (m)
+
+static smvk::GtaoDesc MakeGtaoDesc() {
+	smvk::GtaoDesc d{};
+	d.format = smvk::Format::R8_UNorm;
+	d.radius = SSAO_RADIUS;
+	d.bias = SSAO_BIAS;
+	d.thickness = GTAO_THICKNESS;
+	d.intensity = SSAO_INTENSITY;
+	d.maxDistance = SSAO_MAX_DISTANCE;
+	d.sliceCount = GTAO_SLICES;
+	d.stepsPerSlice = GTAO_STEPS;
+	d.blurSharpness = SSAO_BLUR_SHARPNESS;
+	d.name = "gtao";
+	d.rawName = "gtaoRaw";
+	d.blurName = "gtaoBlur";
+	d.composeName = "gtaoComposed";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
 // Resolution config.
 //
 // Internal resolution (render scale): the scene (HDR/MSAA/bloom/Forward+
@@ -1957,17 +1985,22 @@ void SceneRenderer::Shutdown() {
 		// tonemap push constant is the live knob. Kept in sync with the
 		// effective exposure (auto-adapted or manual) for future readers.
 		data.exposure = FrameExposure();
-		// SSAO consumption (lighting-pass ambient; see ao.hlsli +
-		// default_lit.frag.hlsl): the SsaoCompose pass already upscaled the AO
-		// to full res with depth authority, so the fragment only .Loads it.
-		// Mirrors the AddSsaoPasses gate below so the shader flag and the
-		// emitted passes always agree.
-		const bool ssaoOn = m_passes.ssao && m_ssaoEnabled
-			&& m_viewportResources.ssao.Valid()
+		// AO consumption (lighting-pass ambient; see ao.hlsli +
+		// default_lit.frag.hlsl): the SsaoCompose/GtaoCompose pass already
+		// upscaled the AO to full res with depth authority, so the fragment
+		// only .Loads it. Mirrors the AO pass gate below so the shader flag
+		// and the emitted passes always agree.
+		const bool useGtao = m_aoMode == AoMode::Gtao;
+		const bool aoWanted = m_passes.ssao && m_aoMode != AoMode::None
 			&& m_ssaoIntensity > 0.0f;
-		data.aoTextureIndex = ssaoOn
-			? m_viewportResources.ssao.OutputBindless() : UINT32_MAX;
-		data.aoIntensity = ssaoOn ? m_ssaoIntensity : 0.0f;
+		const bool ssaoReady = m_viewportResources.ssao.Valid();
+		const bool gtaoReady = m_viewportResources.gtao.Valid();
+		const bool aoOn = aoWanted && (useGtao ? gtaoReady : ssaoReady);
+		data.aoTextureIndex = aoOn
+			? (useGtao ? m_viewportResources.gtao.OutputBindless()
+			           : m_viewportResources.ssao.OutputBindless())
+			: UINT32_MAX;
+		data.aoIntensity = aoOn ? m_ssaoIntensity : 0.0f;
 		// Configurable skydome IBL + fog (single source for sky/sun/fog).
 		data.env = m_env.ToFrameData();
 		// Ambient source mutual exclusion (N cycles Gi -> SkyIbl -> Off):
@@ -3813,6 +3846,7 @@ void SceneRenderer::Shutdown() {
 		m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
 		m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
 		m_viewportResources.ssao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsaoDesc());
+		m_viewportResources.gtao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeGtaoDesc());
 		smvk::MsaaDesc rebuildMsaaDesc{};
 		rebuildMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildMsaaDesc);
@@ -4138,6 +4172,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			m_viewportResources.motionVectors.Ensure(*m_context, *m_rendergraph, renderExtent);
 		m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
 		m_viewportResources.ssao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsaoDesc());
+		m_viewportResources.gtao.Ensure(*m_context, *m_rendergraph, renderExtent, MakeGtaoDesc());
 		smvk::MsaaDesc frameMsaaDesc{};
 		frameMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
 		m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, frameMsaaDesc);
@@ -5156,30 +5191,30 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		.maxAnisotropy = 1.0f
 	});
 	// ---------------------------------------------------------------------
-	// SSAO – half-res depth-only AO (see ssao.h). Runs BEFORE Main: every
-	// depth-writing pass (Forward+ prepass, gfx remainder, motion vectors)
-	// is done, so the 1x prepass depth is final. Depth is opaque-only
-	// (transparent excluded by design) so glass reveals the AO behind it
-	// instead of occluding like a wall. The raw + blur passes
-	// denoise at half res; the compose pass upscales to full res with
+	// AO – half-res depth-only AO (SSAO, see ssao.h; GTAO, see gtao.h).
+	// Runs BEFORE Main: every depth-writing pass (Forward+ prepass, gfx
+	// remainder, motion vectors) is done, so the 1x prepass depth is final.
+	// Depth is opaque-only (transparent excluded by design) so glass reveals
+	// the AO behind it instead of occluding like a wall. The raw + blur
+	// passes denoise at half res; the compose pass upscales to full res with
 	// depth authority (ao.hlsli); Main's opaque ambient only .Loads the
 	// composed AO (it must never sample depth — Main attaches it).
 	// ---------------------------------------------------------------------
 	smvk::LogicalImageViewHandle aoView{};
 	{
-		SMVK_PROFILE_CATEGORY("SSAO", Optick::Category::Rendering);
-		smvk::SsaoDesc ssaoDesc = MakeSsaoDesc();
-		ssaoDesc.radius = m_ssaoRadius;
-		ssaoDesc.bias = m_ssaoBias;
-		ssaoDesc.intensity = m_ssaoIntensity;
-		ssaoDesc.maxDistance = m_ssaoMaxDistance;
-		ssaoDesc.sampleCount = (uint32_t)m_ssaoSamples;
-		ssaoDesc.blurSharpness = m_ssaoBlurSharpness;
-		ssaoDesc.nearPlane = frameData.nearPlane;
-		const bool ssaoOn = m_passes.ssao && m_ssaoEnabled
-			&& m_viewportResources.ssao.Valid()
+		const bool useGtao = m_aoMode == AoMode::Gtao;
+		SMVK_PROFILE_CATEGORY("AO", Optick::Category::Rendering);
+		const bool aoWanted = m_passes.ssao && m_aoMode != AoMode::None
 			&& m_ssaoIntensity > 0.0f;
-		if (ssaoOn) {
+		if (aoWanted && !useGtao && m_viewportResources.ssao.Valid()) {
+			smvk::SsaoDesc ssaoDesc = MakeSsaoDesc();
+			ssaoDesc.radius = m_ssaoRadius;
+			ssaoDesc.bias = m_ssaoBias;
+			ssaoDesc.intensity = m_ssaoIntensity;
+			ssaoDesc.maxDistance = m_ssaoMaxDistance;
+			ssaoDesc.sampleCount = (uint32_t)m_ssaoSamples;
+			ssaoDesc.blurSharpness = m_ssaoBlurSharpness;
+			ssaoDesc.nearPlane = frameData.nearPlane;
 			m_viewportResources.ssao.AddSsaoPasses(
 				*m_rendergraph,
 				m_viewportResources.renderDepth.logicalView,
@@ -5190,6 +5225,27 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				"Ssao",
 				"SsaoBlur");
 			aoView = m_viewportResources.ssao.OutputView();
+		} else if (aoWanted && useGtao && m_viewportResources.gtao.Valid()) {
+			smvk::GtaoDesc gtaoDesc = MakeGtaoDesc();
+			gtaoDesc.radius = m_ssaoRadius;
+			gtaoDesc.bias = m_ssaoBias;
+			gtaoDesc.thickness = m_gtaoThickness;
+			gtaoDesc.intensity = m_ssaoIntensity;
+			gtaoDesc.maxDistance = m_ssaoMaxDistance;
+			gtaoDesc.sliceCount = (uint32_t)m_gtaoSlices;
+			gtaoDesc.stepsPerSlice = (uint32_t)m_gtaoSteps;
+			gtaoDesc.blurSharpness = m_ssaoBlurSharpness;
+			gtaoDesc.nearPlane = frameData.nearPlane;
+			m_viewportResources.gtao.AddGtaoPasses(
+				*m_rendergraph,
+				m_viewportResources.renderDepth.logicalView,
+				m_viewportResources.renderDepth.bindlessIndex,
+				frameUniformsAddress,
+				linearSampler,
+				gtaoDesc,
+				"Gtao",
+				"GtaoBlur");
+			aoView = m_viewportResources.gtao.OutputView();
 		}
 	}
 
@@ -6750,16 +6806,30 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							m_scene.id ? m_scene.id : "?");
 					}
 				}
-				if (ImGui::CollapsingHeader("Bloom + SSAO + motion blur", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::CollapsingHeader("Bloom + AO + motion blur", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Bloom (B)", &m_bloomEnabled);
-					ImGui::Checkbox("SSAO (O) (half-res, depth only)", &m_ssaoEnabled);
-					if (m_ssaoEnabled) {
+					{
+						static const char* const kAoNames[3] =
+							{ "No AO", "SSAO", "GTAO" };
+						int aoIdx = static_cast<int>(m_aoMode);
+						if (ImGui::Combo("AO mode (O)", &aoIdx, kAoNames, 3))
+							m_aoMode = static_cast<AoMode>(std::clamp(aoIdx, 0, 2));
+						ImGui::TextDisabled("O cycles AO: %s (half-res, depth only)",
+							kAoNames[static_cast<int>(m_aoMode)]);
+					}
+					if (m_aoMode != AoMode::None) {
 						ImGui::SliderFloat("AO radius (m)", &m_ssaoRadius, 0.05f, 2.0f);
 						ImGui::SliderFloat("AO bias", &m_ssaoBias, 0.0f, 0.1f);
 						ImGui::SliderFloat("AO intensity", &m_ssaoIntensity, 0.0f, 2.0f);
 						ImGui::SliderFloat("AO max distance (m)", &m_ssaoMaxDistance, 2.0f, 100.0f);
-						ImGui::SliderInt("AO samples", &m_ssaoSamples, 1, 32);
 						ImGui::SliderFloat("AO blur sharpness", &m_ssaoBlurSharpness, 0.0f, 32.0f);
+						if (m_aoMode == AoMode::Ssao) {
+							ImGui::SliderInt("SSAO samples", &m_ssaoSamples, 1, 32);
+						} else {
+							ImGui::SliderInt("GTAO slices", &m_gtaoSlices, 1, 8);
+							ImGui::SliderInt("GTAO steps / slice", &m_gtaoSteps, 1, 8);
+							ImGui::SliderFloat("GTAO thickness (m)", &m_gtaoThickness, 0.0f, 5.0f);
+						}
 					}
 					ImGui::Checkbox("Motion blur (M) (HDR velocity gather)", &m_motionBlurEnabled);
 					if (m_motionBlurEnabled) {
@@ -7356,7 +7426,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							m_scene.id ? m_scene.id : "?");
 					}
 				}
-				if (ImGui::CollapsingHeader("AA + motion + SSAO state", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::CollapsingHeader("AA + motion + AO state", ImGuiTreeNodeFlags_DefaultOpen)) {
 					if (m_aaMode == AaMode::Msaa2x) {
 						if (!m_context->SupportsMSAA2x())
 							ImGui::TextDisabled("MSAA 2x unsupported - running 1x");
@@ -7403,12 +7473,30 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					else
 						ImGui::TextDisabled("Motion blur: gather along motion vectors, pre-tonemap HDR");
 					const auto& ssao = m_viewportResources.ssao;
-					if (!ssao.Valid())
-						ImGui::TextDisabled("SSAO target/shaders missing � no AO");
-					else
-						ImGui::Text("SSAO: half %ux%u (full %ux%u)",
-							ssao.halfExtent.width, ssao.halfExtent.height,
-							ssao.fullExtent.width, ssao.fullExtent.height);
+					const auto& gtao = m_viewportResources.gtao;
+					{
+						static const char* const kAoNames[3] =
+							{ "No AO", "SSAO", "GTAO" };
+						ImGui::TextDisabled("AO mode: %s",
+							kAoNames[static_cast<int>(m_aoMode)]);
+					}
+					if (m_aoMode == AoMode::Ssao) {
+						if (!ssao.Valid())
+							ImGui::TextDisabled("SSAO target/shaders missing — no AO");
+						else
+							ImGui::Text("SSAO: half %ux%u (full %ux%u)",
+								ssao.halfExtent.width, ssao.halfExtent.height,
+								ssao.fullExtent.width, ssao.fullExtent.height);
+					} else if (m_aoMode == AoMode::Gtao) {
+						if (!gtao.Valid())
+							ImGui::TextDisabled("GTAO target/shaders missing — no AO");
+						else
+							ImGui::Text("GTAO: half %ux%u (full %ux%u) %ux%u",
+								gtao.halfExtent.width, gtao.halfExtent.height,
+								gtao.fullExtent.width, gtao.fullExtent.height,
+								(uint32_t)std::clamp(m_gtaoSlices, 1, 8),
+								(uint32_t)std::clamp(m_gtaoSteps, 1, 8));
+					}
 					if (!m_viewportResources.dof.Valid())
 						ImGui::TextDisabled("DOF targets/shaders missing - sharp HDR");
 					else
@@ -7501,7 +7589,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					ImGui::TextDisabled("[Gamepad] %s connected (Start = UI)", m_input.gamepadName(0).c_str());
 				else
 					ImGui::TextDisabled("[Gamepad] none connected");
-				ImGui::TextDisabled("Keys: M blur  O SSAO  B bloom  X exposure  V vectors");
+				ImGui::TextDisabled("Keys: M blur  O AO (No/SSAO/GTAO)  B bloom  X exposure  V vectors");
 				ImGui::TextDisabled("      L LODs  F lights  G filter  C cookies  K sky");
 				ImGui::TextDisabled("      J blood splat at crosshair  VULKANTOY_DECALS=0/1");
 				ImGui::TextDisabled("      N ambient GI/sky/off  F8 GI irradiance view");
