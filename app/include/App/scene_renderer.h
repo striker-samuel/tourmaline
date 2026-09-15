@@ -320,7 +320,7 @@ struct ForwardPlusDemo {
 // roughnessTarget for the wet-glossy read, metallic 0.
 // ---------------------------------------------------------------------------
 struct DecalDemo {
-	bool enabled = true;
+	bool enabled = false;
 	float opacity = 1.0f;          // global splat opacity
 	float normalStrength = 0.85f;  // decal normal-map strength
 	float roughnessTarget = 0.14f; // wet-blood roughness (metal stays 0)
@@ -1057,7 +1057,7 @@ protected:
 	// symmetric warp-space bias compensation, dense prefilter, 9-tap soft
 	// penumbra). Falls back to PCF automatically when unsupported/invalid.
 	// Opt out with VULKANTOY_EVSM=0 or the ImGui checkbox.
-	bool m_evsmEnabled = false; // user toggle (ImGui); effective only if supported
+	bool m_evsmEnabled = true; // user toggle (ImGui); effective only if supported
 	// SameFrame default: moments are blurred on the true-async compute
 	// queue and consumed by this frame's lighting (no shadow lag/wobble).
 	// OneFrameLag remains in the ImGui combo for overlap comparison.
