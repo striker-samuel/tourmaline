@@ -13,14 +13,19 @@
 //              --lm-lod-lock attr|hard --lm-lod-audit on|off
 //              --lm-lod-audit-tx 2.0 --lm-lod-audit-gate on|off
 //              --lm-denoise on|off --lm-denoise-quality high|balanced
+//              --lm-curve-target 7.0 --lm-curve-max 2.5
 //              --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]
 //
 // --lightmap on bakes 2D SG lightmaps DURING the cook (sun + static spot
-// NEE, real materials, transmissive pass-through — see Engine/GI/bake.h),
-// fills each mesh's texCoord2 with per-vertex lightmap UVs, stamps the
-// mesh's atlas chunk id into the pak blob, and writes the atlas alongside
-// the pak as <contentDir>/gi/<scene>.sglm. No bake-side work is left to
-// the runtime: the pak + .sglm are the complete lightmap payload.
+// NEE + analytic sky on open-sky rays, real materials, transmissive
+// pass-through — see Engine/GI/bake.h), fills each mesh's texCoord2 with
+// per-vertex lightmap UVs, stamps the mesh's atlas chunk id into the pak
+// blob, and writes the atlas alongside the pak as
+// <contentDir>/gi/<scene>.sglm. No bake-side work is left to the
+// runtime: the pak + .sglm are the complete lightmap payload. Baked
+// pixels take the lightmap ALONE at runtime (the analytic sky IBL is
+// the fallback for uncovered pixels only — the ambient sum starts
+// empty, no blind ambient added on covered pixels).
 //
 // LOD + lightmap interaction: with --lods on, siblings are cooked AFTER
 // the bake (CookLodSiblings), so lightmapped meshes simplify from their
@@ -39,6 +44,15 @@
 // payloads are written into the .sglm; the runtime path is unchanged.
 // --lm-rays stays independent: denoising recovers low-sample bakes, so
 // try e.g. --lm-rays 128 for a ~8x faster trace.
+//
+// Curvature-weighted density (default on): --lm-density is the BASE
+// request; smoothly-bending meshes chart at up to --lm-curve-max times
+// the base so their normal-turn per texel stays under --lm-curve-target
+// degrees (creases over 45 deg do not count — density cannot fix an
+// authored edge). The atlas convergence takes the budget back from flat
+// meshes, so the total stays inside --lm-budget: same texels, spent
+// where normals turn fast. Uniform density reads as faceted/hard-normal
+// shading on curved geometry (columns/arches at ~18 deg per texel).
 //
 // Reads the model JSON, .bin buffers and all .ktx2 textures through an
 // OverlayVfs with a LooseBackend over --content-dir (the same lookup rules
@@ -142,9 +156,24 @@ struct Args {
 	// with --lightmap. Independent of --lm-rays (see the cook-time hint).
 	bool lmDenoise = true;
 	std::string lmDenoiseQuality = "high"; // high | balanced
+	// ---- Curvature-weighted density (banding fix on curved shapes) ----
+	// Target normal-turn per texel on smoothly bending surfaces: meshes
+	// bending faster than the target chart at up to --lm-curve-max times
+	// the base density; the atlas convergence takes the budget back from
+	// flat meshes, so the total texel count stays inside --lm-budget.
+	// Uniform density reads as faceted/hard-normal shading on curved
+	// geometry (a column at ~20 texels/m turns ~18 deg per texel).
+	// 0 disables.
+	float lmCurveTarget = 7.0f;  // degrees of normal turn per texel
+	float lmCurveMax = 2.5f;     // max per-mesh density multiplier
 	float sunAzimuth = 30.0f;    // mirrors the runtime environment defaults
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
+	// Analytic sky IBL baked into the lightmap on open-sky rays
+	// (gradient only, no sun disc). Default mirrors the runtime
+	// EnvironmentSettings so covered pixels match the sky fallback
+	// pixels see. 0 = sky-less field (old behavior).
+	float skyIntensity = 600.0f;
 	// Static spots for the bake: "px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela"
 	std::vector<std::string> spots;
 	// Read-only inspection: open an existing pak and print its manifest
@@ -338,6 +367,16 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.lmDenoiseQuality = (v == "balanced") ? "balanced" : "high";
 		}
+		else if (a == "--lm-curve-target") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmCurveTarget = std::stof(v);
+		}
+		else if (a == "--lm-curve-max") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmCurveMax = std::max(std::stof(v), 1.0f);
+		}
 		else if (a == "--sun-azimuth") {
 			std::string v;
 			if (!need(v)) return false;
@@ -352,6 +391,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			std::string v;
 			if (!need(v)) return false;
 			out.sunIntensity = std::stof(v);
+		}
+		else if (a == "--sky-intensity") {
+			std::string v;
+			if (!need(v)) return false;
+			out.skyIntensity = std::stof(v);
 		}
 		else if (a == "--spot") {
 			std::string v;
@@ -390,10 +434,11 @@ void Usage() {
 		<< "           --lm-atlas-width 2048 --lm-gutter 1 --lm-rays 1024\n"
 		<< "           --lm-budget 4194304 --lm-bounces 3\n"
 		<< "           --sun-azimuth 30 --sun-elevation 55\n"
-		<< "           --sun-intensity 10000\n"
+		<< "           --sun-intensity 10000 --sky-intensity 600\n"
 		<< "           --lm-lod-lock attr|hard --lm-lod-audit on|off\n"
 		<< "           --lm-lod-audit-tx 2.0 --lm-lod-audit-gate on|off\n"
 		<< "           --lm-denoise on|off --lm-denoise-quality high|balanced\n"
+		<< "           --lm-curve-target 7.0 --lm-curve-max 2.5\n"
 		<< "           --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
 		<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
 		<< "lightmap UVs + per-mesh chunk id; atlas written to\n"
@@ -756,6 +801,7 @@ int main(int argc, char** argv) {
 		buildOpts.env.sunAzimuthDeg = args.sunAzimuth;
 		buildOpts.env.sunElevationDeg = args.sunElevation;
 		buildOpts.env.sunIntensity = args.sunIntensity;
+		buildOpts.env.skyIntensity = args.skyIntensity;
 
 		// Static spot list ("px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela").
 		std::vector<GiTraceSpot> spots;
@@ -801,6 +847,7 @@ int main(int argc, char** argv) {
 			smvk::ClusterStaticMeshHandle handle{};
 			float density = 0.0f;   // chart-space density actually used
 			float worldScale = 1.0f; // node world scale (chart/world unit ratio)
+			float curveScale = 1.0f; // curvature density boost (>= 1)
 			SgLightmapChartResult chart;
 			// chunk index base of this mesh's charts in the atlas
 			// (chunk == chart rect; the mesh stamps its lobe count).
@@ -873,7 +920,17 @@ int main(int argc, char** argv) {
 			// the density until the mesh fits (floor 1 texel/m WORLD,
 			// i.e. worldScale in chart space).
 			const float floorD = std::max(w.worldScale, 1e-3f);
-			float density = std::max(chartOpts.texelsPerMeter * w.worldScale, floorD);
+			const float localBase = std::max(
+				chartOpts.texelsPerMeter * w.worldScale, floorD);
+			// Curvature boost: smoothly-bending meshes chart denser so
+			// the normal-turn per texel stays under the target; the
+			// atlas convergence below takes the budget back from flat
+			// meshes (same total texels, spent where normals turn fast).
+			w.curveScale = args.lmCurveTarget > 0.0f
+				? smvk::gi::LightmapCurvatureScale(*upload, localBase,
+					args.lmCurveTarget, std::max(args.lmCurveMax, 1.0f))
+				: 1.0f;
+			float density = std::max(localBase * w.curveScale, floorD);
 			bool charted = false;
 			while (density >= floorD) {
 				SgLightmapChartOptions o = chartOpts;
@@ -899,8 +956,10 @@ int main(int argc, char** argv) {
 			}
 			w.density = density;
 			std::cerr << "  [LM] charted node " << node << " charts="
-				<< w.chart.charts.size() << " density=" << density
-				<< "\n" << std::flush;
+				<< w.chart.charts.size() << " density=" << density;
+			if (w.curveScale > 1.01f)
+				std::cerr << " (curve x" << w.curveScale << ")";
+			std::cerr << "\n" << std::flush;
 			work.push_back(std::move(w));
 		}
 
@@ -933,14 +992,17 @@ int main(int argc, char** argv) {
 			auto rechartAll = [&](float targetWorldDensity) {
 				// Re-chart every mesh at targetWorldDensity (WORLD
 				// texels/m — RAISES or lowers: the binary search probes
-				// both sides). Per-mesh retry + drop on budget overflow
-				// at the floor. Each mesh converts through its own world
-				// scale, so mixed-scale scenes converge uniformly.
+				// both sides) times its own curvature scale. Per-mesh
+				// retry + drop on budget overflow at the floor. Each
+				// mesh converts through its own world scale, so
+				// mixed-scale scenes converge uniformly (relative
+				// curvature allocation preserved across the search).
 				std::vector<LmWork> kept;
 				kept.reserve(work.size());
 				for (LmWork& w : work) {
 					const float floorD = std::max(w.worldScale, 1e-3f);
-					float density = std::max(targetWorldDensity * w.worldScale, floorD);
+					float density = std::max(
+						targetWorldDensity * w.worldScale * w.curveScale, floorD);
 					if (std::abs(density - w.density)
 						< 1e-4f * std::max(1.0f, w.density)) {
 						kept.push_back(std::move(w));
@@ -1049,10 +1111,25 @@ int main(int argc, char** argv) {
 				}
 			}
 			std::cerr << "  [LM] density converged at " << fitDensity
-				<< " texels/m world (" << fitDensity * fitDensity
+				<< " texels/m world base (" << fitDensity * fitDensity
 				<< " texels/m^2); atlas=" << atlas.width << "x" << atlas.height
 				<< " (" << (uint64_t(atlas.width) * atlas.height * 72 / (1024 * 1024))
 				<< " MiB gpu)\n" << std::flush;
+			{
+				uint32_t boosted = 0;
+				float maxScale = 1.0f;
+				for (const LmWork& w : work) {
+					if (w.curveScale > 1.01f)
+						++boosted;
+					maxScale = std::max(maxScale, w.curveScale);
+				}
+				if (boosted != 0)
+					std::cerr << "  [LM] curvature boost: " << boosted
+						<< "/" << work.size() << " meshes denser, max x"
+						<< maxScale << " (effective up to "
+						<< fitDensity * maxScale << " texels/m)\n"
+						<< std::flush;
+			}
 			// Chunk bases: atlas chunks are in request order (mesh-major,
 			// chart-minor within each mesh).
 			uint32_t next = 0;

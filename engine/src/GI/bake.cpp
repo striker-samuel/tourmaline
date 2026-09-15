@@ -211,9 +211,15 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 	Pcg32& rng, uint32_t maxDepth) const {
 	// Baked field: sun + static spot NEE at every diffuse vertex
 	// (including the primary hit — the light a lit surface reflects toward
-	// the probe IS indirect at the probe). Transmissive surfaces pass
-	// rays through, tinting the throughput (no bounce, no NEE at the
-	// pass-through vertex). Sky stays analytic at runtime; emissive is
+	// the probe IS indirect at the probe), plus the analytic sky on miss
+	// (SkyRadiance, gradient only, NO sun disc). Baking the sky makes
+	// every baked source the COMPLETE ambient for its covered pixels —
+	// the runtime gate (default_lit_body.hlsli) never adds the analytic
+	// sky diffuse on top of a covered pixel (it is the fallback for
+	// uncovered pixels only). This does not double-count the direct sun:
+	// the cascaded shadow maps evaluate it at the shaded surface itself.
+	// Transmissive surfaces pass rays through, tinting the throughput (no
+	// bounce, no NEE at the pass-through vertex); emissive stays
 	// runtime-only.
 	glm::vec3 L(0.0f);
 	glm::vec3 throughput(1.0f);
@@ -223,7 +229,9 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 	for (uint32_t depth = 0; depth <= maxDepth; ++depth) {
 		TriangleBvh::Hit h;
 		if (!bvh_.Raycast(p, d, kMaxRayDist, h)) {
-			// Open sky contributes nothing to the baked field.
+			// Open sky: analytic sky IBL radiance along the ray
+			// (throughput-tinted after transmissive pass-throughs).
+			L += throughput * SkyRadiance(d);
 			break;
 		}
 		const glm::vec3 pos = p + d * h.t;

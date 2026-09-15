@@ -23,6 +23,7 @@
 #include <Engine/GI/regular_volume.h>
 #include <Engine/GI/sg.h>
 #include <Engine/GI/triangle_bvh.h>
+#include <Engine/Renderer/mesh.h> // StaticMeshUpload (curvature test)
 
 namespace {
 
@@ -241,11 +242,32 @@ GiTraceScene MakeUniformScene(float albedo, const glm::vec3& sunDir,
 } // namespace
 
 void TestGiEmptyScene() {
-	// No geometry: every ray misses, and misses contribute nothing in the
-	// sun-only field (no sky). Exact zero, any direction, any depth.
+	// No geometry: every ray misses, and a miss returns the analytic sky
+	// radiance (the sky IBL is baked into the field; gradient only, no
+	// sun disc). Exact SkyRadiance(dir), any direction, any depth.
+	// Zeroing skyIntensity recovers the old sky-less field: exact zero.
 	GiTraceScene scene = MakeUniformScene(0.7f, glm::vec3(0, 1, 0), 10000.0f, {}, {});
 	Check(scene.Bvh().TriangleCount() == 0, "gi empty scene no tris");
 	Pcg32 rng(3);
+	bool allSky = true;
+	for (int i = 0; i < 64; ++i) {
+		std::mt19937 srng(uint32_t(i + 1));
+		const glm::vec3 dir = UniformDir(srng);
+		const glm::vec3 L = scene.TraceIncoming(
+			glm::vec3(0, 0, 0), dir, rng, 3);
+		const glm::vec3 sky = scene.SkyRadiance(dir);
+		// TraceIncoming re-normalizes the direction; allow last-ulp.
+		if (glm::length(L - sky) > 1e-4f * std::max(1.0f, glm::length(sky)))
+			allSky = false;
+	}
+	Check(allSky, "gi empty scene traces exact sky radiance");
+	// Sky above the horizon is brighter than the same-direction ground
+	// gradient (sanity for the baked-in IBL actually being nonzero).
+	Pcg32 upRng(7);
+	Check(Luminance(scene.TraceIncoming(
+		glm::vec3(0, 0, 0), glm::vec3(0, 1, 0), upRng, 1)) > 0.0f,
+		"gi empty scene sky nonzero");
+	scene.skyIntensity = 0.0f;
 	bool allZero = true;
 	for (int i = 0; i < 64; ++i) {
 		std::mt19937 srng(uint32_t(i + 1));
@@ -254,7 +276,7 @@ void TestGiEmptyScene() {
 		if (glm::length(L) != 0.0f)
 			allZero = false;
 	}
-	Check(allZero, "gi empty scene traces exact zero");
+	Check(allZero, "gi empty scene zero-sky exact zero");
 }
 
 void TestGiPrimarySunIncluded() {
@@ -815,9 +837,10 @@ void TestRegularVolume() {
 	Check(packOk, "regular gpu pack shape");
 	Check(strip.GpuBytes() == size_t(2) * 56, "regular gpu bytes");
 
-	// Empty-scene bake: open sky contributes nothing to the sun-only
-	// field, so every voxel must be exact zero (fixed lattice, no
-	// relocation to smuggle in coverage).
+	// Empty-scene bake: every ray hits open sky, so every voxel fits the
+	// sky radiance (nonzero — the sky IBL is baked into the field now).
+	// With skyIntensity zeroed the field is the old sky-less one: exact
+	// zero (fixed lattice, no relocation to smuggle in coverage).
 	{
 		GiTraceScene scene;
 		scene.positions = {};
@@ -836,11 +859,21 @@ void TestRegularVolume() {
 		SgRegularBakeStats rstats;
 		Check(BakeSgRegularVolume(scene, obb, rcfg, baked, rstats, nullptr),
 			"regular bake empty scene runs");
-		bool allZero = true;
+		bool anySky = false;
 		for (const glm::vec3& a : baked.coeffs)
+			if (glm::length(a) > 0.0f)
+				anySky = true;
+		Check(anySky, "regular bake empty scene carries sky");
+		scene.skyIntensity = 0.0f;
+		SgRegularVolume skyless;
+		SgRegularBakeStats rstats2;
+		Check(BakeSgRegularVolume(scene, obb, rcfg, skyless, rstats2, nullptr),
+			"regular bake skyless scene runs");
+		bool allZero = true;
+		for (const glm::vec3& a : skyless.coeffs)
 			if (glm::length(a) != 0.0f)
 				allZero = false;
-		Check(allZero, "regular bake empty scene exact zero");
+		Check(allZero, "regular bake zero-sky exact zero");
 	}
 }
 
@@ -865,6 +898,117 @@ void TestFp16Pack() {
 	Check(visOk, "fp16 visibility pack roundtrip");
 }
 
+void TestLightmapCurvatureScale() {
+	// Curvature-driven density scale: dihedral/edge-length is the discrete
+	// curvature, so the scale must respond to the bend RATE (1/radius),
+	// not the tessellation, ignore authored creases, and clamp to [1,max].
+	using namespace smvk;
+	// Bent-wall helper: M segments of `degPerSeg` around radius r (a
+	// cylinder wall strip, height 1). Shared vertical edges carry the
+	// smooth dihedral; quad-internal edges are flat.
+	auto bentWall = [&](float r, float degPerSeg, uint32_t segs) {
+		StaticMeshUpload u;
+		const float step = glm::radians(degPerSeg);
+		for (uint32_t j = 0; j <= segs; ++j) {
+			const float a = float(j) * step;
+			for (int y = 0; y <= 1; ++y) {
+				StaticVertex v{};
+				v.pos = { r * std::cos(a), float(y), r * std::sin(a) };
+				v.color = { 1, 1, 1, 1 };
+				v.normal = { -std::cos(a), 0.0f, -std::sin(a) };
+				u.vertices.push_back(v);
+			}
+		}
+		for (uint32_t j = 0; j < segs; ++j) {
+			const uint32_t a0 = j * 2, a1 = a0 + 1;
+			const uint32_t b0 = (j + 1) * 2, b1 = b0 + 1;
+			u.indices.insert(u.indices.end(), { a0, b0, a1, b0, b1, a1 });
+		}
+		u.aabbMin = { -r, 0.0f, -r };
+		u.aabbMax = { r, 1.0f, r };
+		return u;
+	};
+
+	// r=1 at 4 texels/unit: 1 rad/m / 4 = ~14.4 deg per texel; target 7
+	// deg -> scale ~2.05 (P90 of the equal-length smooth edges is the
+	// shared bend curvature ~1.003/r).
+	{
+		auto wall = bentWall(1.0f, 15.0f, 12);
+		const float s = gi::LightmapCurvatureScale(wall, 4.0f, 7.0f, 2.5f);
+		CheckNear(s, 2.05f, 0.12f, "lm.curve.scale");
+	}
+	// Same wall, tighter cap -> exactly the cap.
+	{
+		auto wall = bentWall(1.0f, 15.0f, 12);
+		const float s = gi::LightmapCurvatureScale(wall, 4.0f, 7.0f, 1.5f);
+		CheckNear(s, 1.5f, 1e-4f, "lm.curve.clamp");
+	}
+	// Sharper radius (r=0.25) overshoots the cap by 8x -> cap.
+	{
+		auto wall = bentWall(0.25f, 15.0f, 12);
+		const float s = gi::LightmapCurvatureScale(wall, 4.0f, 7.0f, 2.5f);
+		CheckNear(s, 2.5f, 1e-4f, "lm.curve.sharp.clamp");
+	}
+	// Very gentle bend (r=100): under the target -> no boost.
+	{
+		auto wall = bentWall(100.0f, 2.0f, 12);
+		const float s = gi::LightmapCurvatureScale(wall, 4.0f, 7.0f, 2.5f);
+		CheckNear(s, 1.0f, 1e-4f, "lm.curve.gentle.noop");
+	}
+	// Flat sheet: all dihedrals 0 -> no boost.
+	{
+		StaticMeshUpload flat;
+		for (int y = 0; y <= 2; ++y)
+			for (int x = 0; x <= 2; ++x) {
+				StaticVertex v{};
+				v.pos = { float(x), float(y), 0.0f };
+				v.color = { 1, 1, 1, 1 };
+				v.normal = { 0, 0, 1 };
+				flat.vertices.push_back(v);
+			}
+		for (uint32_t y = 0; y < 2; ++y)
+			for (uint32_t x = 0; x < 2; ++x) {
+				const uint32_t a = y * 3 + x, b = a + 1, c = a + 3, d = a + 4;
+				flat.indices.insert(flat.indices.end(), { a, b, c, b, d, c });
+			}
+		CheckNear(gi::LightmapCurvatureScale(flat, 4.0f, 7.0f, 2.5f),
+			1.0f, 1e-4f, "lm.curve.flat.noop");
+	}
+	// Crease-only mesh (90 deg folds): authored edges do not count.
+	{
+		StaticMeshUpload box;
+		const glm::vec3 p[8] = {
+			{ 0, 0, 0 }, { 1, 0, 0 }, { 1, 0, 1 }, { 0, 0, 1 },
+			{ 0, 1, 0 }, { 1, 1, 0 }, { 1, 1, 1 }, { 0, 1, 1 },
+		};
+		for (const glm::vec3& v : p) {
+			StaticVertex sv{};
+			sv.pos = v;
+			sv.color = { 1, 1, 1, 1 };
+			box.vertices.push_back(sv);
+		}
+		box.indices = {
+			0, 1, 2, 0, 2, 3,  // bottom
+			4, 7, 6, 4, 6, 5,  // top
+			0, 4, 5, 0, 5, 1,  // front
+			1, 5, 6, 1, 6, 2,  // right
+			2, 6, 7, 2, 7, 3,  // back
+			3, 7, 4, 3, 4, 0,  // left
+		};
+		CheckNear(gi::LightmapCurvatureScale(box, 4.0f, 7.0f, 2.5f),
+			1.0f, 1e-4f, "lm.curve.crease.excluded");
+	}
+	// Degenerate / disabled inputs.
+	{
+		StaticMeshUpload empty;
+		CheckNear(gi::LightmapCurvatureScale(empty, 4.0f, 7.0f, 2.5f),
+			1.0f, 1e-4f, "lm.curve.empty");
+		auto wall = bentWall(1.0f, 15.0f, 12);
+		CheckNear(gi::LightmapCurvatureScale(wall, 4.0f, 0.0f, 2.5f),
+			1.0f, 1e-4f, "lm.curve.disabled");
+	}
+}
+
 } // namespace smvk::gi
 
 int main() {
@@ -882,6 +1026,7 @@ int main() {
 	smvk::gi::TestProbeVolumeRoundtrip();
 	smvk::gi::TestRegularVolume();
 	smvk::gi::TestFp16Pack();
+	smvk::gi::TestLightmapCurvatureScale();
 
 	std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks
 		<< " checks passed\n";

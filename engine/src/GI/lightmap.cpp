@@ -387,6 +387,129 @@ void SgLightmapFitAccumulator::SolveGram(glm::vec3* outAmps) const {
 }
 
 // ---------------------------------------------------------------------------
+// Curvature-driven density scale (see lightmap.h)
+// ---------------------------------------------------------------------------
+float LightmapCurvatureScale(const StaticMeshUpload& upload,
+	float localTexelsPerUnit, float targetDegreesPerTexel,
+	float maxScale) {
+	const size_t triCount = upload.indices.size() / 3;
+	if (triCount < 4 || upload.vertices.empty()
+		|| !(localTexelsPerUnit > 0.0f)
+		|| !(targetDegreesPerTexel > 0.0f) || !(maxScale >= 1.0f))
+		return 1.0f;
+
+	// Face normals (unnormalized cross products carry area for free).
+	std::vector<glm::vec3> fn(triCount);
+	for (size_t t = 0; t < triCount; ++t) {
+		const glm::vec3& a = upload.vertices[upload.indices[t * 3 + 0]].pos;
+		const glm::vec3& b = upload.vertices[upload.indices[t * 3 + 1]].pos;
+		const glm::vec3& c = upload.vertices[upload.indices[t * 3 + 2]].pos;
+		fn[t] = glm::cross(b - a, c - a);
+	}
+
+	// Shared-edge dihedral angles -> curvature samples. The bend rate is
+	// dihedral / BEND STEP, where the step is the mean height of the two
+	// triangles over the edge (distance of the opposite vertices to the
+	// edge line) — the edge's OWN length is irrelevant: a cylinder's seam
+	// edges run ALONG the bend axis, where dihedral/edge-length measures
+	// wall height, not curvature. Only the SMOOTH band counts: under
+	// 1 deg is flat, over 45 deg is an authored crease (a hard edge is
+	// infinitely curved — density cannot fix it, chart seams own those
+	// edges). Samples are weighted by edge length x step (the surface
+	// area whose bend the edge describes).
+	std::unordered_map<uint64_t, uint32_t> firstTri;
+	firstTri.reserve(upload.indices.size());
+	std::vector<std::pair<float, float>> smooth; // (area weight, curvature)
+	auto heightOver = [&](uint32_t pIdx, const glm::vec3& a, const glm::vec3& b) {
+		const glm::vec3 ab = b - a;
+		const float l = glm::length(ab);
+		if (!(l > 1e-6f))
+			return 0.0f;
+		return glm::length(glm::cross(upload.vertices[pIdx].pos - a, ab)) / l;
+	};
+	for (size_t t = 0; t < triCount; ++t) {
+		for (uint32_t k = 0; k < 3; ++k) {
+			const uint32_t v0 = upload.indices[t * 3 + k];
+			const uint32_t v1 = upload.indices[t * 3 + (k + 1) % 3];
+			const uint64_t key = uint64_t(std::min(v0, v1)) << 32
+				| std::max(v0, v1);
+			auto it = firstTri.find(key);
+			if (it == firstTri.end()) {
+				firstTri.emplace(key, uint32_t(t));
+				continue;
+			}
+			const uint32_t t0 = it->second;
+			if (t0 == t)
+				continue; // degenerate repeat
+			glm::vec3 n0 = fn[t0];
+			glm::vec3 n1 = fn[t];
+			const float l0 = glm::length(n0);
+			const float l1 = glm::length(n1);
+			if (!(l0 > 1e-20f) || !(l1 > 1e-20f))
+				continue;
+			n0 /= l0;
+			n1 /= l1;
+			const float cosA = glm::clamp(glm::dot(n0, n1), -1.0f, 1.0f);
+			const float deg = glm::degrees(std::acos(cosA));
+			if (deg <= 1.0f || deg >= 45.0f)
+				continue;
+			// Opposite vertices of the two triangles (the bend step is
+			// the mean of their heights over the edge line).
+			uint32_t opp0 = 0xFFFFFFFFu;
+			for (uint32_t j = 0; j < 3; ++j) {
+				const uint32_t v = upload.indices[t0 * 3 + j];
+				if (v != v0 && v != v1) {
+					opp0 = v;
+					break;
+				}
+			}
+			const uint32_t opp1 = upload.indices[t * 3 + (k + 2) % 3];
+			if (opp0 == 0xFFFFFFFFu)
+				continue;
+			const glm::vec3& e0 = upload.vertices[v0].pos;
+			const glm::vec3& e1 = upload.vertices[v1].pos;
+			const float step = 0.5f
+				* (heightOver(opp0, e0, e1) + heightOver(opp1, e0, e1));
+			const float edgeLen = glm::length(e1 - e0);
+			if (!(step > 1e-6f) || !(edgeLen > 1e-6f))
+				continue;
+			const float curv = glm::radians(deg) / step;
+			if (!(curv > 0.0f) || !std::isfinite(curv) || curv > 1000.0f)
+				continue;
+			smooth.push_back({ edgeLen * step, curv });
+		}
+	}
+	if (smooth.empty())
+		return 1.0f;
+
+	// Area-weighted 90th percentile: walk from the sharpest curvature
+	// down, accumulating the edge-governed area, until 10% is covered —
+	// the curvature at that point is the bend rate of the sharpest
+	// smoothly-bending tenth of the mesh (robust against stray slivers,
+	// responsive to real ornament).
+	double totalArea = 0.0;
+	for (const auto& s : smooth)
+		totalArea += double(s.first);
+	std::sort(smooth.begin(), smooth.end(),
+		[](const std::pair<float, float>& a, const std::pair<float, float>& b) {
+			return a.second > b.second; // sharpest first
+		});
+	double acc = 0.0;
+	float curv = smooth.back().second;
+	for (const auto& s : smooth) {
+		acc += double(s.first);
+		curv = s.second;
+		if (acc >= totalArea * 0.10)
+			break;
+	}
+
+	// Scale = current normal-turn per texel / target.
+	const float anglePerTexel = curv / localTexelsPerUnit; // radians
+	const float target = glm::radians(targetDegreesPerTexel);
+	return std::clamp(anglePerTexel / target, 1.0f, maxScale);
+}
+
+// ---------------------------------------------------------------------------
 // Charts: greedy planar unwrap, per-vertex UV2 (no geometry replacement)
 // ---------------------------------------------------------------------------
 

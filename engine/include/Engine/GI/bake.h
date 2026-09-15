@@ -13,10 +13,11 @@
 //      empty space keeps a handful of large probes.
 //   4. Spawn one probe per leaf brick, relocated into valid free space
 //      (pushed away from walls / out of solid geometry).
-//   5. Path trace incoming SUN-BOUNCE radiance at every probe (uniform
+//   5. Path trace incoming radiance at every probe (uniform
 //      sphere sampling of directions, next-event estimation for the sun
-//      at bounce vertices only; sky/emissive contribute nothing) and fit
-//      the fixed SG basis amplitudes (non-negative least squares).
+//      at bounce vertices, analytic sky on miss; emissive contributes
+//      nothing) and fit the fixed SG basis amplitudes (non-negative
+//      least squares).
 //   6. Error-driven refinement: measure the probe's reconstruction error
 //      at off-center test points against fresh path-traced reference
 //      irradiance; subdivide high-error bricks and bake the children.
@@ -28,17 +29,17 @@
 //      for the runtime interpolation) and assemble/serialize the volume.
 //
 // Light transport conventions (matching the runtime renderer):
-//   - The probe field is SUN-ONLY: bounced sun IS included at every
-//     vertex, INCLUDING the primary hit (the light a sunlit surface
-//     reflects toward the probe is one-bounce indirect at the probe).
-//     At runtime the sun-bounce irradiance is ADDED on top of the
-//     analytic sky IBL (see default_lit_body.hlsli). This does not
-//     double-count the cascaded shadow maps: those evaluate direct sun
-//     at the shaded surface itself, while probes only ever transport
-//     light arriving from OTHER surfaces.
-//   - The analytic SKY is NOT baked (runtime EvaluateIrradiance owns sky
-//     ambient; baking the dome gradient caused a ~30x brightness-scale
-//     mismatch vs the IBL it replaced).
+//   - The baked field carries the COMPLETE ambient: bounced sun IS
+//     included at every vertex, INCLUDING the primary hit (the light a
+//     sunlit surface reflects toward the probe is one-bounce indirect
+//     at the probe), and open-sky rays return the analytic sky
+//     gradient (SkyRadiance, NO sun disc). At runtime a covered pixel
+//     takes its baked source ALONE (default_lit_body.hlsli never adds
+//     the analytic sky diffuse on top of a covered pixel — it is the
+//     fallback for uncovered pixels only). This does not double-count
+//     the cascaded shadow maps: those evaluate direct sun at the
+//     shaded surface itself, while the baked field only ever
+//     transports light arriving from OTHER surfaces (plus sky).
 //   - Emissive static geometry is NOT baked (its NEE 1/pdfSa blowups were
 //     the bright-dot firefly source; Sponza has no meaningful emissives).
 //   - Dynamic forward+ point/spot lights are runtime-only by design and
@@ -143,15 +144,16 @@ public:
 
 	// Analytic sky gradient (CPU mirror of environment.hlsli
 	// EvaluateSkyGradient). NO sun disc: the sun is handled by NEE and at
-	// runtime by the cascaded shadow maps. RETAINED for tooling/debug
-	// only: the sun-only probe field does NOT sample it.
+	// runtime by the cascaded shadow maps. Sampled by TraceIncoming on
+	// every miss (open-sky rays bake the sky IBL into the field; the
+	// cubemap baker also uses it for primary misses directly).
 	glm::vec3 SkyRadiance(const glm::vec3& dir) const;
 
 	// Incoming BAKED radiance arriving at `origin` along `dir` (probe
 	// primary ray): sun + static spot NEE at every diffuse vertex
-	// (including the primary hit), transmissive surfaces passed through
-	// with per-surface tinting. `maxDepth` = diffuse bounce vertices
-	// after the first hit. Sky stays analytic at runtime; emissive stays
+	// (including the primary hit), analytic sky on miss, transmissive
+	// surfaces passed through with per-surface tinting. `maxDepth` =
+	// diffuse bounce vertices after the first hit. Emissive stays
 	// runtime-only.
 	glm::vec3 TraceIncoming(const glm::vec3& origin, const glm::vec3& dir,
 		Pcg32& rng, uint32_t maxDepth) const;

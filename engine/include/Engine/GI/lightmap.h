@@ -334,4 +334,27 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 	const SgLightmapChartOptions& opts, SgLightmapChartResult& out,
 	std::string& err);
 
+// Curvature-driven density scale for lightmap charting (cook side):
+// estimates the mesh's SMOOTH bending rate from shared-edge dihedral
+// angles — curvature = dihedral / BEND STEP, the step being the mean
+// height of the two triangles over the edge (tessellation-independent;
+// the edge's own length is irrelevant: cylinder seam edges run along
+// the bend axis, where dihedral/length would measure wall height).
+// The scale brings the worst smooth bending under
+// targetDegreesPerTexel at localTexelsPerUnit. Dihedrals under 1 deg
+// (flat) and over 45 deg (authored creases — density cannot fix an
+// edge, chart seams own those) are excluded; the statistic is the
+// area-weighted 90th percentile of the remaining edge curvatures (the
+// sharpest smoothly-bending tenth of the mesh by edge-governed area).
+// Returns a value in [1, maxScale]; flat or crease-only meshes return
+// exactly 1.
+// Rationale: uniform density starves curved surfaces (a column at ~20
+// texels/m turns ~18 deg per texel — per-texel SG fits + bilinear then
+// read as faceted/hard-normal shading on smooth geometry); spending the
+// same atlas budget where normals turn fast fixes the banding without
+// raising the total texel count.
+float LightmapCurvatureScale(const StaticMeshUpload& upload,
+	float localTexelsPerUnit, float targetDegreesPerTexel,
+	float maxScale);
+
 } // namespace smvk::gi

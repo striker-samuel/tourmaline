@@ -901,16 +901,14 @@ PSOut mainPS(PSIn IN)
         }
     }
 
-    // Ambient / sky-IBL floor (hemispherical sky) plus sun-bounce GI.
-    // Two additive sources:
-    //  1. Configurable analytic IBL from the environment block: diffuse
-    //     irradiance from EvaluateIrradiance() plus a cheap specular env
-    //     reflection. When IBL is disabled (iblEnabled=0) falls back to
-    //     the legacy constant-ambient path (baseColor * mat.ambient).
-    //  2. Baked SG-GI probe volume (F8 debug view; N toggles): SUN-BOUNCE
-    //     ONLY, ADDED on top of the analytic sky ambient (wall-aware,
-    //     spatially varying). Diffuse follows the direct-lighting
-    //     convention (albedo/PI * E).
+    // Ambient / sky-IBL floor (hemispherical sky) plus baked GI.
+    // The baked sources (below) carry the COMPLETE ambient — sky +
+    // sun/spot bounce, real materials — so a covered pixel takes its
+    // source ALONE: the analytic sky IBL (and the legacy material
+    // ambient) is the FALLBACK for pixels no baked source covers,
+    // never an additive base. No blind ambient value rides on top of
+    // a covered pixel (that was the historical ~30x sky double-count:
+    // sky baked into the source AND added again here).
     float3 irradiance = EvaluateIrradiance(N, frame.env);
     float iblOn = saturate(frame.env.fogEndAndFlags.w);
     // SSAO: the SsaoCompose pass already upscaled the half-res AO to full
@@ -932,8 +930,10 @@ PSOut mainPS(PSIn IN)
     // Sky IBL diffuse is the ambient FALLBACK, not an additive base: it
     // applies only where no baked source covered the pixel (composed
     // after the source branches below). Baked-covered pixels take the
-    // baked field alone.
-    float3 ambient = legacyAmbient;
+    // baked field alone — the sum starts EMPTY so no blind ambient
+    // value rides on top of a covered pixel (mat.ambient joins only
+    // through the uncovered lerp below).
+    float3 ambient = float3(0.0f, 0.0f, 0.0f);
     // Specular IBL: reflection-vector env sample weighted by Fresnel.
     float3 R = reflect(-V, N);
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, shadingRoughness);
@@ -948,12 +948,12 @@ PSOut mainPS(PSIn IN)
     //   2. DYNAMIC draws inside an artist OBB sample the regular 3D SG
     //      probe grids (HW-trilinear between neighboring probes).
     //   3. Anything else falls to the adaptive octree probe volume.
-    // All three carry the same baked field (sun + static spots, real
-    // materials). The analytic sky IBL is the FALLBACK for pixels no
-    // baked source covers (below) — never an additive base on covered
-    // pixels. No source double-counts: lower-priority sources are
-    // skipped once one hits; the SkyIbl ambient mode simply disables
-    // every baked source so every pixel falls back.
+    // All three carry the same baked field (sky + sun + static spots,
+    // real materials). The analytic sky IBL is the FALLBACK for pixels
+    // no baked source covers (below) — never an additive base on
+    // covered pixels. No source double-counts: lower-priority sources
+    // are skipped once one hits; the SkyIbl ambient mode simply
+    // disables every baked source so every pixel falls back.
     // ---------------------------------------------------------------
     uint giSource = 0u;            // 0 = none, 1 = lightmap, 2 = grid, 3 = probes
     float3 bakedE = float3(0.0f, 0.0f, 0.0f); // diffuse irradiance (scaled)

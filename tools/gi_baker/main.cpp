@@ -16,14 +16,17 @@
 // bistro | bistro-niagara maps to the same glTF the App imports (the bake
 // must see the exact runtime geometry), or pass --in-vfs <model.gltf> for
 // arbitrary scenes. Light setup defaults match the runtime environment
-// defaults; the bake captures SUN BOUNCE ONLY (added on top of the
-// analytic sky IBL at runtime), and EXCLUDES direct sun (the runtime's
-// cascaded shadow maps own it), sky, emissive geometry, and the dynamic
-// forward+ point/spot lights. --sky-intensity/--emissive are accepted
-// but ignored (deprecated no-ops kept for old scripts). Materials bake
-// white-world (uniform albedo 0.7) unless --uniform-albedo off requests
-// the textured path: per-material albedo on contrasty scenes prints
-// chromatic dots the 9-lobe fit cannot represent (verified on Sponza).
+// defaults; the bake captures the COMPLETE ambient: bounced sun (NEE at
+// every vertex, incl. the primary hit) + the analytic sky on open-sky
+// rays (--sky-intensity), and EXCLUDES direct sun (the runtime's
+// cascaded shadow maps own it), emissive geometry, and the dynamic
+// forward+ point/spot lights. Covered pixels take the baked source
+// ALONE at runtime (the sky IBL is the uncovered-pixel fallback).
+// --emissive is accepted but ignored (emissive stays runtime-only).
+// Materials bake white-world (uniform albedo 0.7) unless
+// --uniform-albedo off requests the textured path: per-material albedo
+// on contrasty scenes prints chromatic dots the 9-lobe fit cannot
+// represent (verified on Sponza).
 
 #include <algorithm>
 #include <chrono>
@@ -773,9 +776,9 @@ int main(int argc, char** argv) {
 	}
 
 	// Environment defaults mirror the runtime EnvironmentSettings so the
-	// bake matches what the app shows when the GI volume is loaded.
-	if (args.skyIntensity != 600.0f)
-		std::cout << "  note: --sky-intensity ignored (sky stays analytic)\n";
+	// bake matches what the app shows when the GI volume is loaded. The
+	// analytic sky is baked on open-sky rays (TraceIncoming), so
+	// --sky-intensity is meaningful again; emissive stays runtime-only.
 	if (!args.emissive)
 		std::cout << "  note: --emissive off (emissive is runtime-only)\n";
 	buildOpts.env.sunAzimuthDeg = args.sunAzimuth;
