@@ -238,7 +238,8 @@ std::optional<glm::vec3> GiAverageKtxTexel(std::span<const uint8_t> ktxBytes);
 // ---------------------------------------------------------------------------
 
 struct SgGiBakeConfig {
-	uint32_t raysPerProbe = 256;        // uniform-sphere radiance samples
+	uint32_t raysPerProbe = 4096;        // uniform-sphere radiance samples
+	//uint32_t raysPerProbe = 256;        // uniform-sphere radiance samples
 	uint32_t maxBounces = 3;           // diffuse path depth (vertices after the first hit)
 	uint32_t errorRaysPerProbe = 32;    // reference irradiance rays per test point
 	uint32_t maxProbes = 262144;      // console-class budget: PS4/PS5 baked GI

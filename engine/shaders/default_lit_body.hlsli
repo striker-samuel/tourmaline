@@ -929,27 +929,18 @@ PSOut mainPS(PSIn IN)
     }
     float3 legacyAmbient = baseColor * mat.ambient.rgb * occlusion * ao;
     float3 ambientDiffuse = kD * baseColor * irradiance * occlusion * ao;
-    float3 ambient = lerp(legacyAmbient, ambientDiffuse, iblOn);
+    // Sky IBL diffuse is the ambient FALLBACK, not an additive base: it
+    // applies only where no baked source covered the pixel (composed
+    // after the source branches below). Baked-covered pixels take the
+    // baked field alone.
+    float3 ambient = legacyAmbient;
     // Specular IBL: reflection-vector env sample weighted by Fresnel.
     float3 R = reflect(-V, N);
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, shadingRoughness);
     float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env) * occlusion * ao;
 
     // ---------------------------------------------------------------
-    // Static/dynamic baked-GI separation (see sg_lightmap.hlsli +
-    // sg_regular.hlsli):
-    //   - STATIC draws (per-draw lmChunk from gfxfiltered.vert) sample the
-    //     2D SG lightmap atlas: hardware-bilinear amplitude filtering,
-    //     Hill-fitted diffuse + warped-NDF specular.
-    //   - DYNAMIC draws (no chunk) inside an artist OBB sample the regular
-    //     3D SG probe grids: hardware-trilinear between neighboring probes.
-    // Both carry the same SUN-BOUNCE field as the adaptive probe volume
-    // below and ADD on top of the analytic sky ambient (same convention;
-    // a lightmapped pixel skips the probe volume so nothing doubles).
-    // ---------------------------------------------------------------
-    // Static/dynamic baked-GI separation (see sg_lightmap.hlsli +
-    // sg_regular.hlsli): exactly ONE baked ambient source per pixel,
-    // by priority:
+    // Baked ambient: exactly ONE source per pixel, by priority:
     //   1. STATIC draws (per-draw lobe count from the gfx draw ring;
     //      the atlas-space uv is the cooked texCoord2) sample the 2D SG
     //      lightmap atlas (HW-bilinear amplitudes, Hill-fitted diffuse +
@@ -958,8 +949,11 @@ PSOut mainPS(PSIn IN)
     //      probe grids (HW-trilinear between neighboring probes).
     //   3. Anything else falls to the adaptive octree probe volume.
     // All three carry the same baked field (sun + static spots, real
-    // materials) and ADD on top of the analytic sky ambient. No source
-    // double-counts: lower-priority sources are skipped once one hits.
+    // materials). The analytic sky IBL is the FALLBACK for pixels no
+    // baked source covers (below) — never an additive base on covered
+    // pixels. No source double-counts: lower-priority sources are
+    // skipped once one hits; the SkyIbl ambient mode simply disables
+    // every baked source so every pixel falls back.
     // ---------------------------------------------------------------
     uint giSource = 0u;            // 0 = none, 1 = lightmap, 2 = grid, 3 = probes
     float3 bakedE = float3(0.0f, 0.0f, 0.0f); // diffuse irradiance (scaled)
@@ -1031,12 +1025,23 @@ PSOut mainPS(PSIn IN)
     }
 
     // ---------------------------------------------------------------
-    // F8 baked-GI debug views (cycled in the app UI):
+    // Sky IBL fallback: pixels no baked source covered take the
+    // analytic sky diffuse (or the legacy constant ambient when the IBL
+    // flag is off). Covered pixels keep the baked field alone — the
+    // sky never adds on top of a baked source.
+    // ---------------------------------------------------------------
+    if (giSource == 0u)
+    {
+        ambient = lerp(legacyAmbient, ambientDiffuse, iblOn);
+    }
+
+    // ---------------------------------------------------------------
+    // GI baked debug views (R / F8 cycle in the app UI):
     //   1 = flat irradiance of whichever source lit this pixel (no
     //       albedo, exposure-scaled) — coverage + brightness at a glance.
     //   2 = source palette (the static/dynamic separation): red =
     //       lightmap, green = regular grid, blue = probe volume.
-    //   Magenta = no baked source at this pixel (sky/ambient only).
+    //   Magenta = no baked source at this pixel (sky fallback only).
     // The old probe-bisect modes (level isolation, coverage palettes,
     // disagreement heat, ...) are gone — bake-side analysis belongs to
     // GiBaker --analyze.

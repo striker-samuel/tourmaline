@@ -2326,10 +2326,11 @@ void SceneRenderer::Shutdown() {
 		// Configurable skydome IBL + fog (single source for sky/sun/fog).
 		data.env = m_env.ToFrameData();
 		// Ambient sources (N cycles All -> Lightmaps -> Probes -> SkyIbl
-		// -> Off): per-source isolation — the sky IBL flag is on in All +
-		// SkyIbl only, and each baked source's enable flag is on only in
-		// its owning modes. Direct light / sky dome / shadows are
-		// unaffected.
+		// -> Off): per-source isolation — the sky IBL flag enables the
+		// analytic sky as the ambient FALLBACK (pixels no baked source
+		// covers; the shader composes it after the source branches, so
+		// covered pixels take the baked field alone). Direct light /
+		// sky dome / shadows are unaffected.
 		data.env.fogEndAndFlags.w = IblWanted() ? 1.0f : 0.0f;
 
 		// Deferred shadows: consumer-side BDAs + the frame's on/off flag.
@@ -7185,11 +7186,11 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				if (ImGui::CollapsingHeader("GI ï¿½ ambient source + intensity", ImGuiTreeNodeFlags_DefaultOpen)) {
 					// Ambient source (N cycles): All -> Lightmaps -> Probes
 					// -> SkyIbl -> Off — single-source isolation for
-					// bisection. I / F8 cycle the GI debug views (Debug
+					// bisection. R / F8 cycle the GI debug views (Debug
 					// tab): flat irradiance + source palette.
 					{
 						static const char* const kModeNames[5] = {
-							"All (IBL + lightmaps + probes)",
+							"All (baked GI; sky fallback)",
 							"Lightmaps only",
 							"Probes only (grids + volume)",
 							"Sky IBL only",
@@ -7199,8 +7200,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						if (ImGui::Combo("Ambient source (N)", &modeIdx, kModeNames, 5))
 							m_ambientMode = static_cast<AmbientMode>(std::clamp(modeIdx, 0, 4));
 						ImGui::TextDisabled("N cycles: %s\n"
+							"sky IBL is the FALLBACK for uncovered pixels (never added on baked)\n"
 							"sources loaded: lightmaps %s, probe volume %s, grids %s\n"
-							"I / F8: GI debug views (1 flat irradiance, 2 palette)",
+							"R / F8: GI debug views (1 flat irradiance, 2 palette)",
 							kModeNames[static_cast<int>(m_ambientMode)],
 							m_lmLoaded ? "yes" : "no",
 							m_giLoaded ? "yes" : "no",
@@ -7483,7 +7485,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						"screen-derivative (lightmap seam corners sweeping across atlas rects).\n"
 						"UV1 stripes magenta when uv2 leaves [0,1] (atlas-space bug).");
 					ImGui::TextDisabled("GI bisection: N isolates the ambient source (All -> Lightmaps -> Probes ->\n"
-						"SkyIbl -> Off); I / F8 cycle the GI debug views (flat irradiance, source palette).\n"
+						"SkyIbl -> Off); R / F8 cycle the GI debug views (flat irradiance, source palette).\n"
 						"Both work in every ambient mode.");
 					const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
 					ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
@@ -7537,7 +7539,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					const char* dbgNames[3] = { "Off", "Baked irradiance",
 						"GI source" };
 					int dbgIdx = m_giDebug;
-					if (ImGui::Combo("GI debug view (I / F8)", &dbgIdx, dbgNames, 3))
+					if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 3))
 						m_giDebug = std::clamp(dbgIdx, 0, 2);
 					if (m_giDebug == 1) {
 						ImGui::TextDisabled("flat irradiance of the active source "

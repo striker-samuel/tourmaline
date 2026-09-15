@@ -187,16 +187,17 @@ enum class AaMode : int {
 // single GI contribution for bisection. The ambient is the only thing
 // this drives; the visible sky dome (K) and the direct sun / cascaded
 // shadows are unaffected (Off = direct light only).
-//   All:        analytic sky IBL + every baked source (per-pixel priority:
-//               lightmap > regular grid > probe volume)
+//   All:        every baked source (per-pixel priority: lightmap >
+//               regular grid > probe volume); the sky IBL is the
+//               FALLBACK for uncovered pixels only, never additive
 //   Lightmaps:  baked 2D SG lightmaps ONLY (static draws)
 //   Probes:     baked 3D probes ONLY (regular grids + octree volume —
-//               the F8=2 palette splits grid vs volume per pixel)
-//   SkyIbl:     analytic sky IBL ONLY (EvaluateIrradiance/SpecularEnv)
+//               the palette view splits grid vs volume per pixel)
+//   SkyIbl:     analytic sky IBL only (all baked sources disabled)
 //   Off:        no GI/ambient contribution at all (pure direct sun frame)
 // ---------------------------------------------------------------------------
 enum class AmbientMode : int {
-	All = 0,        // IBL + lightmaps + probes (production default)
+	All = 0,        // baked GI; sky IBL fallback for uncovered pixels
 	Lightmaps = 1,  // baked lightmaps only
 	Probes = 2,     // baked probe systems only (grids + volume)
 	SkyIbl = 3,     // analytic sky IBL only
@@ -204,7 +205,7 @@ enum class AmbientMode : int {
 };
 inline const char* AmbientModeName(AmbientMode m) {
 	switch (m) {
-	case AmbientMode::All: return "All (IBL + lightmaps + probes)";
+	case AmbientMode::All: return "All (baked GI; sky fallback)";
 	case AmbientMode::Lightmaps: return "Lightmaps only";
 	case AmbientMode::Probes: return "Probes only (grids + volume)";
 	case AmbientMode::SkyIbl: return "Sky IBL only";
@@ -778,14 +779,15 @@ protected:
 		// Ambient / GI source: N cycles All -> Lightmaps -> Probes ->
 		// SkyIbl -> Off (see AmbientMode — single-source isolation for
 		// bisection, All is the production state).
-		// I cycles the baked-GI debug views: 0 off, 1 flat irradiance of
+		// R cycles the baked-GI debug views: 0 off, 1 flat irradiance of
 		// the active source, 2 source palette (red lm, green grid, blue
-		// probes; magenta = none). F8 is an alias for I. Both work in
-		// every ambient mode.
+		// probes; magenta = none). F8 is an alias for R. Both work in
+		// every ambient mode. (R because I is taken — I toggles the
+		// UI/FPS mode.)
 		if (m_input.isKeyPressed(GLFW_KEY_N)) {
 			CycleAmbientMode();
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_I)
+		if (m_input.isKeyPressed(GLFW_KEY_R)
 			|| m_input.isKeyPressed(GLFW_KEY_F8)) {
 			m_giDebug = (m_giDebug + 1) % 3;
 		}
@@ -1170,9 +1172,9 @@ protected:
 	// smvk::gi + Engine/GI). Loaded once at scene init from
 	// content/gi/<scene>.sggi (loose content or a pak). N cycles the
 	// ambient source (All -> Lightmaps -> Probes -> SkyIbl -> Off — see
-	// AmbientMode); I / F8 cycle the baked-GI debug views. ----
+	// AmbientMode); R / F8 cycle the baked-GI debug views. ----
 	AmbientMode m_ambientMode = AmbientMode::All; // N cycles (production default)
-	int m_giDebug = 0;             // I / F8 cycle: 0 off, 1 baked irradiance,
+	int m_giDebug = 0;             // R / F8 cycle: 0 off, 1 baked irradiance,
 	                                // 2 GI source palette
 	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
 	bool m_giShowProbes = false;  // probe-point overlay (ImGui foreground,
