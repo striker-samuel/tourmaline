@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -13,6 +14,34 @@
 namespace smvk {
 
 struct Cluster;
+struct MeshletConfig;
+
+// ---------------------------------------------------------------------------
+// Lightmap chart-seam protection during sibling simplification (see
+// CookLodSiblings / BuildLodChainForUpload). Chart seams are POSITION-
+// IDENTICAL vertex duplicates (the bake's per-corner stamping) differing
+// only in texCoord2/chart, so a collapse across the seam has ZERO
+// position error — protection has to come from elsewhere.
+//
+//   Attribute (default): the chart id + atlas uv2 ride
+//   meshopt_simplifyWithAttributes as error terms; the chart term is the
+//   only rejector for the twin collapse (weight 1.0 puts a one-chart
+//   delta far over the squared error budget). Seam vertices still
+//   collapse ALONG the seam (meshopt Kind_Seam rules forbid drifting
+//   into manifold vertices, so no cracks).
+//
+//   Hard: every vertex with a position twin under a DIFFERENT chart is
+//   passed via vertex_lock — cross-seam collapses become impossible, at
+//   the cost of locked vertices (less reduction).
+//
+// NOTE: meshopt_SimplifyLockBorder is useless here: chart seams classify
+// as Kind_Seam (collapsible), not Kind_Border (locked).
+// ---------------------------------------------------------------------------
+enum class LodSeamLock {
+	Attribute,
+	Hard,
+};
+
 
 // ---------------------------------------------------------------------------
 // Cook-time mesh optimization (meshoptimizer). Runs offline in the pak
@@ -48,6 +77,10 @@ struct MeshOptConfig {
 	// triangle count vs the last kept LOD by >= lodMinReduction.
 	uint32_t lodMinTriangles = 8;
 	float lodMinReduction = 0.10f;
+	// Chart-seam protection for lightmapped sibling simplify (see
+	// LodSeamLock above; only consulted when a lightmap chart table is
+	// passed to BuildLodChainForUpload).
+	LodSeamLock lodSeamLock = LodSeamLock::Attribute;
 };
 
 struct MeshOptStats {
@@ -141,11 +174,21 @@ bool OptimizeStaticMeshUpload(
 // Positions-only simplify destroys cutout silhouettes: borders shrink and
 // stretched UVs flip the alpha test, flashing background/sky through the
 // leaves on every LOD switch.
+//
+// lmVertexChart (optional, parallel to lod0.vertices; 0xFFFFFFFF =
+// uncharted) enables the lightmap-aware path for STAMPED meshes (the
+// bake ran before sibling generation): texCoord2 rides the vertex remap
+// for free — surviving vertices keep exact LOD0 atlas UVs — and the
+// chart id + uv2 enter the error metric so collapses stay inside one
+// lightmap chart (see LodSeamLock). Mutually exclusive with
+// preserveCoverage in practice (Blend/MASK meshes are never lightmapped;
+// coverage wins if both are set).
 bool BuildLodChainForUpload(
 	const StaticMeshUpload& lod0,
 	const MeshOptConfig& config,
 	std::vector<CookedLod>& out,
-	bool preserveCoverage = false);
+	bool preserveCoverage = false,
+	const uint32_t* lmVertexChart = nullptr);
 
 // Max world scale of a node matrix: max length of the three basis columns.
 // Matches gltfpack's getScale() (max abs scale axis); conservative for
@@ -243,5 +286,91 @@ inline uint32_t SelectLodIndexForDistance(const float* errorsByLod, uint32_t cou
 // LOD0 entries keep simplifyError == 0. Also stamps candidateCount on the
 // whole chain (kept size incl. LOD0). No-op when no LODs were cooked.
 void FinalizeLodWorldErrors(Cluster& cluster);
+
+// ---------------------------------------------------------------------------
+// Post-bake LOD sibling cooking (PakCooker path; never on the runtime
+// load path). The importer's in-pass chain generation runs BEFORE the
+// lightmap bake, so siblings would simplify from UNSTAMPED uploads
+// (garbage texCoord2, no chart knowledge). CookLodSiblings runs AFTER
+// the bake instead: lightmapped meshes simplify from their stamped
+// uploads, siblings share LOD0's atlas chunks, and a per-level safety
+// audit quantifies how far the simplified parameterization drifts from
+// the LOD0 surface (see AuditLodLightmap).
+// ---------------------------------------------------------------------------
+
+struct CookLodSiblingsOptions {
+	// Lightmap provenance from a completed bake: mesh pool index ->
+	// per-vertex chart id over the STAMPED retained upload (0xFFFFFFFF =
+	// uncharted). Meshes without an entry (or without a valid lmChunk)
+	// take the positions-only path. Null/empty = no lightmaps at all.
+	const std::unordered_map<uint32_t, std::vector<uint32_t>>* vertexCharts
+		= nullptr;
+	// Per-level lightmap-safety audit for lightmapped meshes (log-only
+	// unless auditGate). Requires non-zero atlas dims.
+	bool audit = false;
+	uint32_t atlasWidth = 0;
+	uint32_t atlasHeight = 0;
+	// Texel-error threshold for the over-threshold counter (and the gate).
+	float auditThresholdTexels = 2.0f;
+	// false (default) = audit failures only log; true = the chain is
+	// truncated at the first failing level (coarser levels only
+	// interpolate more, so they cannot recover).
+	bool auditGate = false;
+	// Per-level triangle subsample cap for the projection audit.
+	uint32_t auditMaxTris = 1024;
+};
+
+// Generates + registers the cooked LOD siblings ("<base>/lodN") for every
+// node-referenced base mesh with a retained upload (mirrors the
+// importer's sibling registration so World::RebuildLodChains resolves
+// them identically), then FinalizeLodWorldErrors. Idempotent: meshes that
+// already carry siblings are skipped. Returns false only on invalid
+// input arguments (individual mesh failures are skipped with a log).
+// Prints per-mesh chain lines + per-level audit lines to stdout.
+bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
+	const MeshletConfig& meshletConfig,
+	const CookLodSiblingsOptions& options = {});
+
+// ---------------------------------------------------------------------------
+// Lightmap-safety audit: would this simplification visibly damage the
+// baked lighting? For sampled interior points of the sibling's
+// triangles, compares the barycentrically interpolated (candidate) uv2
+// against the TRUE LOD0-surface uv obtained by projecting the point onto
+// a world-space BVH of LOD0 (normal rays both directions, scored by
+// distance + normal similarity; closest-point fallback via the BVH).
+// Reports the error in atlas TEXELS, plus a full-mesh cross-chart sweep
+// count (triangles whose uv2 corners span more than one chart rect —
+// the catastrophic atlas-smear case no texel number can describe).
+// ---------------------------------------------------------------------------
+
+// Cross-chart uv2 span threshold (max |du|+|dv| over corner pairs).
+// Within one 256-texel chart of a ~2k atlas a triangle spans at most
+// ~0.42; 0.45 flags only genuine cross-rect sweeps (same math as the
+// pak dump's uv2span detector).
+inline constexpr float kLodCrossChartUvSpan = 0.45f;
+
+struct LodLightmapAuditReport {
+	uint32_t trisTotal = 0;     // sibling triangles
+	uint32_t trisAudited = 0;   // sampled by the projection audit
+	uint32_t samples = 0;       // resolved interior samples
+	uint32_t unresolved = 0;    // projection failed (counted, not scored)
+	float maxTexels = 0.0f;
+	float meanTexels = 0.0f;
+	float p95Texels = 0.0f;
+	uint32_t overThreshold = 0; // resolved samples over thresholdTexels
+	uint32_t crossChartTris = 0; // uv2 span > kLodCrossChartUvSpan (all tris)
+};
+
+// `world` places both uploads in the same space (siblings share LOD0's
+// node transform). `searchDist` is the normal-ray reach (caller: ~4x the
+// level's world error with an extent floor; the closest-point fallback
+// is exact regardless). `maxTris` caps the audited triangles via a
+// deterministic stride (cross-chart counting always covers all tris).
+// Returns false on degenerate input (report zeroed).
+bool AuditLodLightmap(const StaticMeshUpload& lod0,
+	const StaticMeshUpload& sibling, const glm::mat4& world,
+	uint32_t atlasWidth, uint32_t atlasHeight,
+	float thresholdTexels, float searchDist, uint32_t maxTris,
+	LodLightmapAuditReport& out);
 
 } // namespace smvk

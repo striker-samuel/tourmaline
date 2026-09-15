@@ -8,8 +8,10 @@
 //             [--compress on|off] [--lz4-accel 1]
 //             [--lightmap on|off --lm-density 32 --lm-lobes 12
 //              --lm-atlas-width 2048 --lm-gutter 1 --lm-budget 4194304
-//              --lm-rays 128
+//              --lm-rays 1024
 //              --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000
+//              --lm-lod-lock attr|hard --lm-lod-audit on|off
+//              --lm-lod-audit-tx 2.0 --lm-lod-audit-gate on|off
 //              --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]
 //
 // --lightmap on bakes 2D SG lightmaps DURING the cook (sun + static spot
@@ -18,6 +20,16 @@
 // mesh's atlas chunk id into the pak blob, and writes the atlas alongside
 // the pak as <contentDir>/gi/<scene>.sglm. No bake-side work is left to
 // the runtime: the pak + .sglm are the complete lightmap payload.
+//
+// LOD + lightmap interaction: with --lods on, siblings are cooked AFTER
+// the bake (CookLodSiblings), so lightmapped meshes simplify from their
+// STAMPED uploads — surviving vertices keep exact LOD0 atlas UVs, chart
+// ids ride the simplifier's error metric so collapses stay inside one
+// lightmap chart, and every sibling shares LOD0's lobe count. The
+// per-level audit (--lm-lod-audit, default on with --lightmap) projects
+// sampled interior points of each sibling's triangles onto the LOD0
+// surface and reports the uv drift in atlas texels (log-only; flip
+// --lm-lod-audit-gate on to drop failing levels).
 //
 // Reads the model JSON, .bin buffers and all .ktx2 textures through an
 // OverlayVfs with a LooseBackend over --content-dir (the same lookup rules
@@ -39,6 +51,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <Engine/App/cluster.h>
@@ -95,13 +108,23 @@ struct Args {
 	// (9 RGBA16F layers). 4M -> ~288 MB. The density convergence
 	// binary-searches the largest density that fits this budget.
 	uint64_t lmBudget = 4ull * 1024 * 1024;
-	uint32_t lmRays = 128;       // radiance samples per texel
+	uint32_t lmRays = 1024;      // radiance samples per texel
 	uint32_t lmBounces = 3;
 	// Per-mesh lobe selection budget: relative RMS degradation from the
 	// preferred-count reconstruction the mesh may cost by dropping
 	// lobes. 0.15 keeps contrast-heavy meshes at 9-12 and lets smooth
 	// ones drop lower; 0 pins everything at --lm-lobes.
 	float lmLobeRelErr = 0.15f;
+	// ---- Lightmapped LOD cooking (siblings simplify after the bake) --
+	// Chart-seam protection during sibling simplify: "attr" = chart id +
+	// atlas uv as simplifier error terms (default), "hard" = vertex-lock
+	// every seam pair (less reduction).
+	std::string lmLodLock = "attr";
+	// Per-level lightmap-safety audit (texel drift of the simplified
+	// parameterization vs the LOD0 surface). Log-only unless the gate.
+	bool lmLodAudit = true;
+	float lmLodAuditTx = 2.0f;  // texel threshold for over-count/gate
+	bool lmLodAuditGate = false;
 	float sunAzimuth = 30.0f;    // mirrors the runtime environment defaults
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
@@ -268,6 +291,26 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.lmLobeRelErr = std::stof(v);
 		}
+		else if (a == "--lm-lod-lock") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmLodLock = (v == "hard" || v == "border") ? "hard" : "attr";
+		}
+		else if (a == "--lm-lod-audit") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmLodAudit = (v == "on" || v == "1" || v == "true");
+		}
+		else if (a == "--lm-lod-audit-tx") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmLodAuditTx = std::stof(v);
+		}
+		else if (a == "--lm-lod-audit-gate") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmLodAuditGate = (v == "on" || v == "1" || v == "true");
+		}
 		else if (a == "--sun-azimuth") {
 			std::string v;
 			if (!need(v)) return false;
@@ -317,10 +360,12 @@ void Usage() {
 		<< "          [--cone-weight 0] [--collapse-static on|off]\n"
 		<< "          [--compress on|off] [--lz4-accel 1]\n"
 		<< "          [--lightmap on|off --lm-density 32 --lm-lobes 12\n"
-		<< "           --lm-atlas-width 2048 --lm-gutter 1 --lm-rays 128\n"
+		<< "           --lm-atlas-width 2048 --lm-gutter 1 --lm-rays 1024\n"
 		<< "           --lm-budget 4194304 --lm-bounces 3\n"
 		<< "           --sun-azimuth 30 --sun-elevation 55\n"
 		<< "           --sun-intensity 10000\n"
+		<< "           --lm-lod-lock attr|hard --lm-lod-audit on|off\n"
+		<< "           --lm-lod-audit-tx 2.0 --lm-lod-audit-gate on|off\n"
 		<< "           --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
 		<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
 		<< "lightmap UVs + per-mesh chunk id; atlas written to\n"
@@ -575,9 +620,15 @@ int main(int argc, char** argv) {
 	smvk::MeshOptConfig opt;
 	opt.enabled = args.meshopt;
 	opt.overdrawThreshold = args.overdraw;
-	opt.generateLods = args.lods;
+	// Siblings are cooked AFTER the lightmap bake (CookLodSiblings below)
+	// so lightmapped meshes simplify from their STAMPED uploads; the
+	// importer's in-pass chain generation stays off here. With --lightmap
+	// off the outcome is identical to the old import-time chain.
+	opt.generateLods = false;
 	opt.lodRatios = ParseLodRatios(args.lodRatios);
 	opt.lodTargetError = std::clamp(args.lodError, 0.0f, 1.0f);
+	opt.lodSeamLock = (args.lmLodLock == "hard")
+		? smvk::LodSeamLock::Hard : smvk::LodSeamLock::Attribute;
 
 	smvk::MeshletConfig meshletCfg;
 	meshletCfg.enabled = args.meshlets;
@@ -645,7 +696,13 @@ int main(int argc, char** argv) {
 	// materials (texture-averaged); transmissive (Blend) meshes pass rays
 	// through, tinted (no charts for them). Only 1:1 node->mesh mappings
 	// get chunks: instanced meshes need per-instance coefficients.
+	//
+	// lmVertexCharts (filled by the stamping below) carries each stamped
+	// mesh's per-vertex chart ids out of the block for CookLodSiblings;
+	// atlas stays alive for the audit's texel scale.
 	// ---------------------------------------------------------------------------
+	smvk::gi::SgLightmapAtlas atlas;
+	std::unordered_map<uint32_t, std::vector<uint32_t>> lmVertexCharts;
 	if (args.lightmap) {
 		using namespace smvk::gi;
 		const auto lmT0 = std::chrono::steady_clock::now();
@@ -819,7 +876,6 @@ int main(int argc, char** argv) {
 			work.push_back(std::move(w));
 		}
 
-		SgLightmapAtlas atlas;
 		if (!work.empty()) {
 			// Atlas pack: ALL charts of all meshes as individual rects.
 			// Convergence (densities are WORLD texels/m; each mesh
@@ -1054,6 +1110,8 @@ int main(int argc, char** argv) {
 			const std::vector<glm::vec2>& cornerUv = w.chart.cornerChartUv;
 			const uint32_t origVerts = uint32_t(upload->vertices.size());
 			std::vector<uint32_t> ownerChart(origVerts, 0xFFFFFFFFu);
+			// Chart of each appended seam duplicate (creation order).
+			std::vector<uint32_t> dupChart;
 			// (original vertex, chart) -> stamped index (orig or duplicate)
 			std::unordered_map<uint64_t, uint32_t> cornerSlot;
 			cornerSlot.reserve(size_t(origVerts) * 2);
@@ -1095,6 +1153,7 @@ int main(int argc, char** argv) {
 						dup.texCoord2 = atlasUv;
 						upload->vertices.push_back(dup);
 						slot = uint32_t(upload->vertices.size() - 1);
+						dupChart.push_back(chartIdx);
 						++seamDups;
 					}
 					upload->vertices[slot].texCoord2 = atlasUv;
@@ -1103,6 +1162,20 @@ int main(int argc, char** argv) {
 				}
 			}
 			upload->indices = std::move(newIndices);
+			// Chart provenance for the LOD cook (CookLodSiblings): one
+			// chart id per vertex over the STAMPED layout — originals
+			// from ownerChart, seam duplicates from their creating chart.
+			// This is what lets the simplifier keep collapses inside one
+			// lightmap chart (chart id rides the error metric).
+			{
+				std::vector<uint32_t> chartOf(upload->vertices.size(), 0xFFFFFFFFu);
+				for (uint32_t v = 0; v < origVerts && v < chartOf.size(); ++v)
+					chartOf[v] = ownerChart[v];
+				for (size_t d = 0; d < dupChart.size()
+					&& origVerts + d < chartOf.size(); ++d)
+					chartOf[origVerts + d] = dupChart[d];
+				lmVertexCharts.emplace(w.handle.index(), std::move(chartOf));
+			}
 			// The draw ring carries the LOBE COUNT (5/6/9/12) chosen by
 			// the bake for this MESH (read from any of its chunks —
 			// the per-mesh selection wrote them all); 0xFFFFFFFF = no
@@ -1198,6 +1271,29 @@ int main(int argc, char** argv) {
 			<< " (skipped: blend=" << skipBlend
 			<< " instanced=" << skipInstanced
 			<< " nomat=" << skipNoMat << ")\n" << std::flush;
+	}
+
+	// ---------------------------------------------------------------------------
+	// LOD siblings (post-bake): lightmapped meshes simplify from their
+	// STAMPED uploads — texCoord2 rides the vertex remap, chart ids ride
+	// the simplifier's error metric so collapses stay inside one lightmap
+	// chart, siblings share LOD0's lobe count, and the per-level audit
+	// measures the parameterization drift in atlas texels (log-only; the
+	// gate flag drops failing levels). With --lightmap off this is exactly
+	// the old import-time chain, just later in the pipeline.
+	// ---------------------------------------------------------------------------
+	{
+		smvk::MeshOptConfig lodOpt = opt;
+		lodOpt.generateLods = args.lods;
+		smvk::CookLodSiblingsOptions sibOpts;
+		sibOpts.vertexCharts = &lmVertexCharts;
+		sibOpts.audit = args.lightmap && args.lmLodAudit
+			&& !lmVertexCharts.empty();
+		sibOpts.atlasWidth = atlas.width;
+		sibOpts.atlasHeight = atlas.height;
+		sibOpts.auditThresholdTexels = args.lmLodAuditTx;
+		sibOpts.auditGate = args.lmLodAuditGate;
+		smvk::CookLodSiblings(*cluster, lodOpt, meshletCfg, sibOpts);
 	}
 
 	smvk::PakWriter writer;

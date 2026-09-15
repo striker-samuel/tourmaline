@@ -1531,6 +1531,46 @@ bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
 			maxRect = std::max(maxRect, size_t(b.payload->width)
 				* b.payload->height);
 	std::vector<uint32_t> texelOf(maxRect);
+	// Progress: start line + ~2s-cadence updates with texel count,
+	// elapsed and eta (the old fixed every-256-chunks cadence went
+	// silent for minutes on low-chunk/high-texel scenes).
+	uint64_t totalTexels = 0;
+	for (const SgLightmapChunkBatch& b : batches)
+		if (b.payload)
+			totalTexels += uint64_t(b.payload->width) * b.payload->height;
+	std::chrono::steady_clock::time_point lastReport =
+		std::chrono::steady_clock::now();
+	if (progress) {
+		char line[192];
+		std::snprintf(line, sizeof(line),
+			"lightmap bake: %llu chunks, %llu texels, %u rays/texel, %u threads\n",
+			(unsigned long long)batches.size(),
+			(unsigned long long)totalTexels,
+			cfg.raysPerTexel, threadCount ? threadCount : 1);
+		progress(line);
+	}
+	auto reportProgress = [&](size_t chunksDone) {
+		if (!progress)
+			return;
+		const auto now = std::chrono::steady_clock::now();
+		if (now - lastReport < std::chrono::seconds(2))
+			return;
+		lastReport = now;
+		const double elapsed =
+			std::chrono::duration<double>(now - t0).count();
+		const double frac = batches.size()
+			? double(chunksDone) / double(batches.size()) : 1.0;
+		char line[192];
+		std::snprintf(line, sizeof(line),
+			"lightmap bake: %llu/%llu chunks (%.0f%%), %llu texels, %.1fs, eta %.0fs\n",
+			(unsigned long long)chunksDone,
+			(unsigned long long)batches.size(),
+			frac * 100.0,
+			(unsigned long long)baked.load(),
+			elapsed,
+			frac > 0.005 ? elapsed / frac * (1.0 - frac) : 0.0);
+		progress(line);
+	};
 	size_t chunksDone = 0;
 	size_t bi = 0;
 	while (bi < batches.size()) {
@@ -1553,14 +1593,7 @@ bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
 				std::span<const SgLightmapChunkBatch>(batches).subspan(bi, bj - bi),
 				uint64_t(bi), pool, baked, clamped, &stats);
 			chunksDone += bj - bi;
-			if (progress && ((chunksDone & 255u) == 0u)) {
-				char line[160];
-				std::snprintf(line, sizeof(line),
-					"lightmap bake: chunk %llu/%llu\n",
-					(unsigned long long)chunksDone,
-					(unsigned long long)batches.size());
-				progress(line);
-			}
+			reportProgress(chunksDone);
 			bi = bj;
 			continue;
 		}
@@ -1574,14 +1607,7 @@ bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
 		BakeChunkCore(scene, lobeCount, *b.texels, cfg, fibDirs, weight,
 			*b.payload, texelOf, pool, baked, clamped, uint64_t(bi) + 1);
 		++chunksDone;
-		if (progress && ((chunksDone & 255u) == 0u)) {
-			char line[160];
-			std::snprintf(line, sizeof(line),
-				"lightmap bake: chunk %llu/%llu\n",
-				(unsigned long long)chunksDone,
-				(unsigned long long)batches.size());
-			progress(line);
-		}
+		reportProgress(chunksDone);
 		++bi;
 	}
 	stats.texelsBaked = baked.load();

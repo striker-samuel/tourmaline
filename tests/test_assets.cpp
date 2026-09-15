@@ -348,6 +348,60 @@ smvk::StaticMeshUpload MakeQuad() {
 	return u;
 }
 
+// 3x3 vertex grid on z=0 (4 quads, 8 triangles): left quads chart 0,
+// right quads chart 1, seam column x=1 duplicated per chart with
+// DIFFERENT atlas uv2 (position-identical, like the bake's per-corner
+// stamping). uv2 is affine in position per chart — the exact case where
+// simplified triangles reuse LOD0's parameterization without error.
+// chartOf receives one chart id per vertex (parallel to the vertices).
+smvk::StaticMeshUpload MakeTwoChartGrid(std::vector<uint32_t>& chartOf) {
+	chartOf.clear();
+	smvk::StaticMeshUpload u;
+	auto vert = [&](float x, float y, uint32_t chart, float cu, float cv) {
+		smvk::StaticVertex v{};
+		v.pos = { x, y, 0.0f };
+		v.color = { 1, 1, 1, 1 };
+		v.texCoord = { x * 0.5f, y * 0.5f };
+		v.texCoord2 = { cu, cv };
+		v.normal = { 0, 0, 1 };
+		v.tangent = { 1, 0, 0, 1 };
+		chartOf.push_back(chart);
+		u.vertices.push_back(v);
+	};
+	// Chart uv extents stay well under kLodCrossChartUvSpan (0.45):
+	// within-chart triangles span at most |du|+|dv| = 0.075+0.30 = 0.375,
+	// while any cross-chart corner pair spans >= 0.625.
+	for (int y = 0; y <= 2; ++y)
+		vert(0.0f, float(y), 0, 0.10f, 0.10f + 0.15f * float(y));
+	for (int y = 0; y <= 2; ++y)
+		vert(1.0f, float(y), 0, 0.175f, 0.10f + 0.15f * float(y));
+	for (int y = 0; y <= 2; ++y)
+		vert(1.0f, float(y), 1, 0.80f, 0.10f + 0.15f * float(y));
+	for (int y = 0; y <= 2; ++y)
+		vert(2.0f, float(y), 1, 0.875f, 0.10f + 0.15f * float(y));
+	// chart 0: verts 0..5 (x=0: 0,1,2 | x=1: 3,4,5)
+	// chart 1: verts 6..11 (x=1: 6,7,8 | x=2: 9,10,11)
+	auto id = [](int x, int y, int chart) -> uint32_t {
+		return chart == 0
+			? (x == 0 ? uint32_t(y) : 3u + uint32_t(y))
+			: (x == 1 ? 6u + uint32_t(y) : 9u + uint32_t(y));
+	};
+	for (int y = 0; y < 2; ++y) {
+		// Left quad (chart 0).
+		const uint32_t a = id(0, y, 0), b = id(1, y, 0),
+			c = id(0, y + 1, 0), d = id(1, y + 1, 0);
+		u.indices.insert(u.indices.end(), { a, b, c, b, d, c });
+		// Right quad (chart 1).
+		const uint32_t a2 = id(1, y, 1), b2 = id(2, y, 1),
+			c2 = id(1, y + 1, 1), d2 = id(2, y + 1, 1);
+		u.indices.insert(u.indices.end(), { a2, b2, c2, b2, d2, c2 });
+	}
+	u.aabbMin = { 0.0f, 0.0f, 0.0f };
+	u.aabbMax = { 2.0f, 2.0f, 0.0f };
+	u.surfaces.push_back({ 0, uint32_t(u.indices.size()), 0 });
+	return u;
+}
+
 void TestMeshOpt() {
 	smvk::MeshOptConfig cfg; // all passes on
 	auto quad = MakeQuad();
@@ -753,6 +807,178 @@ void TestLodSelection() {
 	}
 }
 
+void TestLodLightmapAudit() {
+	using namespace smvk;
+	std::vector<uint32_t> chartOf;
+	auto grid = MakeTwoChartGrid(chartOf);
+
+	// Chart-aware chain: one level from the two-chart grid.
+	MeshOptConfig cfg;
+	cfg.generateLods = true;
+	cfg.lodRatios = { 0.5f };
+	cfg.lodTargetError = 0.1f;
+	cfg.lodMinTriangles = 2;
+	cfg.lodMinReduction = 0.1f;
+	std::vector<CookedLod> chain;
+	Check(BuildLodChainForUpload(grid, cfg, chain, false, chartOf.data()),
+		"lmlod.chain.ok");
+	Check(chain.size() == 1, "lmlod.chain.kept");
+	if (!chain.empty()) {
+		// Affine-in-position uv2 within one chart: the simplified
+		// triangles reuse LOD0's parameterization exactly, so the
+		// projection audit reports ~0 texel drift and no cross-chart
+		// triangle can exist (chart attributes blocked the seam twins).
+		Check(chain[0].triCount < 8, "lmlod.chain.reduced");
+		LodLightmapAuditReport rep;
+		Check(AuditLodLightmap(grid, chain[0].upload, glm::mat4(1.0f),
+			512, 512, 8.0f, 0.5f, 1024, rep), "lmlod.audit.ran");
+		Check(rep.samples > 0, "lmlod.audit.samples");
+		Check(rep.unresolved == 0, "lmlod.audit.resolved");
+		Check(rep.crossChartTris == 0, "lmlod.audit.nocross");
+		Check(rep.maxTexels < 1.0f, "lmlod.audit.affine");
+	}
+
+	// Wrong parameterization: same geometry, v-flipped uv2 — the audit
+	// must see large texel drift (this is the regression detector for
+	// "siblings with garbage uv2").
+	{
+		auto bad = grid;
+		for (auto& v : bad.vertices)
+			v.texCoord2.y = 0.95f - v.texCoord2.y;
+		LodLightmapAuditReport rep;
+		Check(AuditLodLightmap(grid, bad, glm::mat4(1.0f),
+			512, 512, 8.0f, 0.5f, 1024, rep), "lmlod.audit.bad.ran");
+		Check(rep.samples > 0 && rep.maxTexels > 100.0f,
+			"lmlod.audit.detects.drift");
+	}
+
+	// Cross-chart triangle: one quad mixing both charts (the
+	// catastrophic atlas-smear shape) — counted on every triangle, no
+	// projection needed.
+	{
+		smvk::StaticMeshUpload mix;
+		mix.vertices = { grid.vertices[0], grid.vertices[9],
+			grid.vertices[11], grid.vertices[2] }; // c0,c1,c1,c0 corners
+		mix.indices = { 0, 1, 2, 0, 2, 3 };
+		mix.aabbMin = { 0.0f, 0.0f, 0.0f };
+		mix.aabbMax = { 2.0f, 2.0f, 0.0f };
+		mix.surfaces.push_back({ 0, 6, 0 });
+		LodLightmapAuditReport rep;
+		Check(AuditLodLightmap(grid, mix, glm::mat4(1.0f),
+			512, 512, 8.0f, 0.5f, 1024, rep), "lmlod.audit.mix.ran");
+		Check(rep.crossChartTris == 2, "lmlod.audit.crosschart");
+	}
+}
+
+void TestCookLodSiblingsLightmap() {
+	using namespace smvk;
+	auto cluster = std::make_unique<Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	std::vector<uint32_t> chartOf;
+	auto grid = MakeTwoChartGrid(chartOf);
+	const auto mh = cluster->UploadStaticMesh(grid);
+	const std::string uri = "models/lm.gltf#mesh.0/prim.0";
+	cluster->RegisterMeshUri(uri, mh);
+	{
+		LodInfo lod0;
+		lod0.groupId = 5;
+		lod0.triCount = 8;
+		cluster->RegisterMeshLod(uri, lod0);
+	}
+	// Fake a stamped bake: lobe count on the mesh.
+	cluster->staticMeshes.get(mh)->lmChunk = 9;
+	// Node + opaque material (Blend/MASK would divert to the coverage
+	// path, which is never lightmapped).
+	MaterialCreateInfo ci{};
+	const auto matH = cluster->CreateMaterial(ci);
+	const int root = addNode(cluster->scene, -1, 0);
+	const int n1 = addNode(cluster->scene, root, 1);
+	cluster->scene.meshForNode[n1] = mh.index();
+	cluster->scene.materialForNode[n1] = matH.index();
+	markAsChanged(cluster->scene, root);
+	recalculateGlobalTransforms(cluster->scene);
+
+	std::unordered_map<uint32_t, std::vector<uint32_t>> charts;
+	charts.emplace(mh.index(), chartOf);
+	MeshOptConfig cfg;
+	cfg.generateLods = true;
+	cfg.lodRatios = { 0.5f };
+	cfg.lodTargetError = 0.1f;
+	cfg.lodMinTriangles = 2;
+	cfg.lodMinReduction = 0.1f;
+	MeshletConfig mcfg; // off
+	CookLodSiblingsOptions so;
+	so.vertexCharts = &charts;
+	so.audit = true;
+	so.atlasWidth = 512;
+	so.atlasHeight = 512;
+	so.auditThresholdTexels = 8.0f;
+	Check(CookLodSiblings(*cluster, cfg, mcfg, so), "lmlod.cook.ok");
+
+	const std::string uri1 = uri + "/lod1";
+	auto sibInfo = cluster->GetMeshLod(uri1);
+	Check(sibInfo && sibInfo->lodIndex == 1, "lmlod.sib.lodinfo");
+	Check(sibInfo && sibInfo->candidateCount == 2, "lmlod.sib.candidates");
+	auto sibH = cluster->FindMeshByUri(uri1);
+	Check(sibH && sibH->valid(), "lmlod.sib.handle");
+	if (sibH) {
+		const StaticMesh* sib = cluster->staticMeshes.get(*sibH);
+		Check(sib && sib->lmChunk == 9, "lmlod.sib.lmchunk");
+		const StaticMeshUpload* up = cluster->GetRetainedUpload(*sibH);
+		Check(up && !up->indices.empty(), "lmlod.sib.retained");
+		bool spansOk = true;
+		bool anyUv = false;
+		if (up) {
+			for (size_t t = 0; t + 2 < up->indices.size() / 3; ++t) {
+				const glm::vec2& a = up->vertices[up->indices[t * 3 + 0]].texCoord2;
+				const glm::vec2& b = up->vertices[up->indices[t * 3 + 1]].texCoord2;
+				const glm::vec2& c = up->vertices[up->indices[t * 3 + 2]].texCoord2;
+				const float span = std::max({
+					std::abs(a.x - b.x) + std::abs(a.y - b.y),
+					std::abs(a.x - c.x) + std::abs(a.y - c.y),
+					std::abs(b.x - c.x) + std::abs(b.y - c.y) });
+				if (span > kLodCrossChartUvSpan) {
+					spansOk = false;
+					break;
+				}
+			}
+			for (const auto& v : up->vertices) {
+				if (v.texCoord2.x != 0.0f || v.texCoord2.y != 0.0f) {
+					anyUv = true;
+					break;
+				}
+			}
+		}
+		// The core invariant: no sibling triangle mixes charts.
+		Check(spansOk, "lmlod.sib.nocrosschart");
+		Check(anyUv, "lmlod.sib.uv2carried");
+	}
+	auto baseInfo = cluster->GetMeshLod(uri);
+	Check(baseInfo && baseInfo->candidateCount == 2, "lmlod.base.candidates");
+	Check(baseInfo && baseInfo->simplifyError == 0.0f, "lmlod.base.zeroerr");
+	Check(sibInfo && sibInfo->simplifyError > 0.0f, "lmlod.sib.error");
+
+	// Unlightmapped mesh (no charts entry, no lmChunk): siblings still
+	// cook (positions-only path) and carry no lightmap chunk.
+	std::vector<uint32_t> chartOf2;
+	auto grid2 = MakeTwoChartGrid(chartOf2);
+	const auto mh2 = cluster->UploadStaticMesh(grid2);
+	const std::string uri2 = "models/lm.gltf#mesh.1/prim.0";
+	cluster->RegisterMeshUri(uri2, mh2);
+	const int n2 = addNode(cluster->scene, root, 1);
+	cluster->scene.meshForNode[n2] = mh2.index();
+	cluster->scene.materialForNode[n2] = matH.index();
+	markAsChanged(cluster->scene, root);
+	recalculateGlobalTransforms(cluster->scene);
+	Check(CookLodSiblings(*cluster, cfg, mcfg, so), "lmlod.cook2.ok");
+	auto sib2H = cluster->FindMeshByUri(uri2 + "/lod1");
+	Check(sib2H && sib2H->valid(), "lmlod.unlit.sib");
+	if (sib2H) {
+		const StaticMesh* sib2 = cluster->staticMeshes.get(*sib2H);
+		Check(sib2 && sib2->lmChunk == 0xFFFFFFFFu, "lmlod.unlit.nolmchunk");
+	}
+}
+
 void TestClusterSerializeCook() {
 	using namespace smvk;
 	// GPU-free cook cluster: CPU geometry + minted texture ids only.
@@ -1107,6 +1333,8 @@ int main() {
 	TestMeshOpt();
 	TestLodChain();
 	TestLodSelection();
+	TestLodLightmapAudit();
+	TestCookLodSiblingsLightmap();
 	TestVertexPack();
 	TestClusterSerializeCook();
 	TestStaticSubtrees();

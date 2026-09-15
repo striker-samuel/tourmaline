@@ -862,10 +862,12 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 			if (mat->shadingModel == smvk::ShadingModel::Masked)
 				drawSet = smvk::gfx::DrawSetBit_Masked;
 		}
-		// Lightmap chunk rides the draw (cooked per mesh; statics only —
-		// dynamic/unbaked meshes carry 0xFFFFFFFF and sample the probe
-		// grids / fallback ambient instead).
-		if (const smvk::StaticMesh* mesh = world.GetMesh(worldMesh))
+		// Lightmap chunk rides the draw: resolved from the SELECTED LOD
+		// sibling (cooked siblings of a lightmapped LOD0 carry the same
+		// lobe count — they sample LOD0's atlas chunks; GetLodMesh falls
+		// back to LOD0 for missing siblings). Unlightmapped meshes carry
+		// 0xFFFFFFFF and the FS falls back to probe/grid ambient instead.
+		if (const smvk::StaticMesh* mesh = world.GetLodMesh(worldMesh, lodIdx))
 			lmChunk = mesh->lmChunk;
 		smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
 			item.material, drawFlags, drawSet, lmChunk);

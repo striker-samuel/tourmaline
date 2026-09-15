@@ -6,7 +6,7 @@
 //
 //   GiBaker --content-dir F:/content --scene sponza
 //           [--out F:/content/gi/sponza.sggi]
-//           [--rays 128] [--bounces 3] [--error-rays 32]
+//           [--rays 1024] [--bounces 3] [--error-rays 32]
 //           [--root 8.0] [--min-brick 0.25] [--max-probes 262144]
 //           [--tolerance 0.12] [--waves 8] [--threads 0]
 //           [--sun-azimuth 30] [--sun-elevation 55] [--sun-intensity 10000]
@@ -61,7 +61,7 @@ struct Args {
 	std::string scene;    // sponza | bistro | bistro-niagara
 	std::string inVfs;    // arbitrary model (overrides --scene input)
 	std::string out;      // output host path (default <content>/gi/<scene>.sggi)
-	uint32_t rays = 256;
+	uint32_t rays = 1024;
 	uint32_t bounces = 3;
 	uint32_t errorRays = 32;
 	float root = 8.0f;
@@ -198,7 +198,7 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 void Usage() {
 	std::cout << "GiBaker --content-dir content --scene sponza\n"
 		<< "         [--out content/gi/sponza.sggi] [--in-vfs models/X/x.gltf]\n"
-		<< "         [--rays 256] [--bounces 3] [--error-rays 32]\n"
+		<< "         [--rays 1024] [--bounces 3] [--error-rays 32]\n"
 		<< "         [--root 8.0] [--min-brick 0.25] [--max-probes 1048576]\n"
 		<< "         [--tolerance 0.12] [--near-factor 1.0] [--waves 8] [--threads 0]\n"
 		<< "         [--diffusion 0] [--smoothing-passes 0] [--support 1.25]\n"

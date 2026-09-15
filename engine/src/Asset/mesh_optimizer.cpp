@@ -4,11 +4,17 @@
 #include <cmath>
 #include <cfloat>
 #include <cstddef>
+#include <cstring>
+#include <iostream>
+#include <span>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <meshoptimizer.h>
 
 #include <Engine/App/cluster.h>
+#include <Engine/Asset/meshlet.h>
+#include <Engine/GI/triangle_bvh.h>
 #include <Engine/Scene/scene.h>
 
 namespace smvk {
@@ -254,7 +260,8 @@ bool BuildLodChainForUpload(
 	const StaticMeshUpload& lod0,
 	const MeshOptConfig& config,
 	std::vector<CookedLod>& out,
-	bool preserveCoverage) {
+	bool preserveCoverage,
+	const uint32_t* lmVertexChart) {
 	out.clear();
 	const size_t vcount = lod0.vertices.size();
 	const size_t icount = lod0.indices.size();
@@ -289,6 +296,74 @@ bool BuildLodChainForUpload(
 		cutoutAttrPtr = cutoutAttrs.data();
 	}
 
+	// Lightmap-aware attributes (stamped mesh + chart table): chart id
+	// (+1 so 0 = uncharted) + atlas uv2. The chart term is the ONLY
+	// rejector for the seam-twin collapse — seam corners are position-
+	// identical duplicates, so that collapse has zero position error —
+	// and weight 1.0 puts a one-chart delta far over the squared budget
+	// (default 0.02^2). The uv2 terms (0.1, atlas-uv units) mildly
+	// penalize parameterization distortion inside a chart: a whole-chart
+	// sweep (~0.25 atlas units) lands right at the default budget, while
+	// ordinary collapses stay well under. See LodSeamLock for the Hard
+	// alternative (vertex_lock on seam pairs).
+	std::vector<float> lmAttrs;
+	std::vector<unsigned char> lmLock;
+	const unsigned char* lmLockPtr = nullptr;
+	if (lmVertexChart && !preserveCoverage) {
+		lmAttrs.resize(vcount * 3);
+		for (size_t i = 0; i < vcount; ++i) {
+			const uint32_t chart = lmVertexChart[i];
+			lmAttrs[i * 3 + 0] = chart == 0xFFFFFFFFu
+				? 0.0f : float(chart) + 1.0f;
+			lmAttrs[i * 3 + 1] = lod0.vertices[i].texCoord2.x;
+			lmAttrs[i * 3 + 2] = lod0.vertices[i].texCoord2.y;
+		}
+		if (config.lodSeamLock == LodSeamLock::Hard) {
+			// Lock every member of a position run whose charts disagree
+			// (seam duplicates are bit-identical position copies, so raw
+			// memcmp grouping is exact). Collapses across the seam then
+			// become impossible; the cost is locked vertices.
+			lmLock.assign(vcount, 0);
+			std::vector<uint32_t> byPos(vcount);
+			for (uint32_t i = 0; i < vcount; ++i)
+				byPos[i] = i;
+			const StaticVertex* verts = lod0.vertices.data();
+			std::sort(byPos.begin(), byPos.end(),
+				[verts](uint32_t a, uint32_t b) {
+					return std::memcmp(&verts[a].pos, &verts[b].pos, 12) < 0;
+				});
+			size_t runStart = 0;
+			while (runStart < vcount) {
+				size_t runEnd = runStart + 1;
+				while (runEnd < vcount
+					&& std::memcmp(&verts[byPos[runEnd]].pos,
+						&verts[byPos[runStart]].pos, 12) == 0)
+					++runEnd;
+				if (runEnd - runStart > 1) {
+					bool chartsDiffer = false;
+					for (size_t r = runStart + 1; r < runEnd; ++r) {
+						if (lmVertexChart[byPos[r]]
+							!= lmVertexChart[byPos[runStart]]) {
+							chartsDiffer = true;
+							break;
+						}
+					}
+					if (chartsDiffer) {
+						for (size_t r = runStart; r < runEnd; ++r)
+							lmLock[byPos[r]] = meshopt_SimplifyVertex_Lock;
+					}
+				}
+				runStart = runEnd;
+			}
+			for (const unsigned char l : lmLock) {
+				if (l) {
+					lmLockPtr = lmLock.data();
+					break;
+				}
+			}
+		}
+	}
+
 	std::vector<unsigned int> dest(icount);
 	for (float ratio : config.lodRatios) {
 		if (!(ratio > 0.0f) || !(ratio < 1.0f))
@@ -311,6 +386,19 @@ bool BuildLodChainForUpload(
 				cutoutAttrPtr, sizeof(float) * 2,
 				cutoutWeights, 2, nullptr,
 				targetIndices, targetError, options,
+				&relativeError);
+		}
+		else if (!lmAttrs.empty()) {
+			// Chart-aware: chart id + uv2 as error terms (Hard mode
+			// additionally vertex-locks seam pairs; see block above).
+			static const float kLmAttrWeights[3] = { 1.0f, 0.1f, 0.1f };
+			resultCount = meshopt_simplifyWithAttributes(
+				dest.data(),
+				lod0.indices.data(), icount,
+				positions, vcount, sizeof(StaticVertex),
+				lmAttrs.data(), sizeof(float) * 3,
+				kLmAttrWeights, 3, lmLockPtr,
+				targetIndices, targetError, config.lodSimplifyOptions,
 				&relativeError);
 		}
 		else {
@@ -485,6 +573,324 @@ void FinalizeLodWorldErrors(Cluster& cluster) {
 		scaled.simplifyError = lod.simplifyError * nodeScale;
 		cluster.RegisterMeshLod(uri, scaled);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Lightmap-safety audit (see mesh_optimizer.h).
+// ---------------------------------------------------------------------------
+bool AuditLodLightmap(const StaticMeshUpload& lod0,
+	const StaticMeshUpload& sibling, const glm::mat4& world,
+	uint32_t atlasWidth, uint32_t atlasHeight,
+	float thresholdTexels, float searchDist, uint32_t maxTris,
+	LodLightmapAuditReport& out) {
+	out = LodLightmapAuditReport{};
+	const size_t lod0Tris = lod0.indices.size() / 3;
+	const size_t sibTris = sibling.indices.size() / 3;
+	if (lod0Tris == 0 || sibTris == 0 || !atlasWidth || !atlasHeight)
+		return false;
+	if (lod0.vertices.empty() || sibling.vertices.empty())
+		return false;
+
+	// LOD0 projection target in world space (siblings share LOD0's node
+	// transform, so both uploads land in the same space through `world`).
+	std::vector<glm::vec3> worldPos(lod0.vertices.size());
+	for (size_t i = 0; i < lod0.vertices.size(); ++i)
+		worldPos[i] = glm::vec3(world * glm::vec4(lod0.vertices[i].pos, 1.0f));
+	gi::TriangleBvh bvh;
+	bvh.Build(std::span<const glm::vec3>(worldPos),
+		std::span<const uint32_t>(lod0.indices));
+	if (bvh.Empty())
+		return false;
+
+	// Cross-chart sweep over EVERY triangle (cheap, no projection): a
+	// triangle whose uv2 corners sweep more than one chart rect smears
+	// the whole atlas between them — no texel number can describe that.
+	auto uv2Span = [&sibling](size_t t) {
+		const glm::vec2& a = sibling.vertices[sibling.indices[t * 3 + 0]].texCoord2;
+		const glm::vec2& b = sibling.vertices[sibling.indices[t * 3 + 1]].texCoord2;
+		const glm::vec2& c = sibling.vertices[sibling.indices[t * 3 + 2]].texCoord2;
+		const float ab = std::abs(a.x - b.x) + std::abs(a.y - b.y);
+		const float ac = std::abs(a.x - c.x) + std::abs(a.y - c.y);
+		const float bc = std::abs(b.x - c.x) + std::abs(b.y - c.y);
+		return std::max({ ab, ac, bc });
+	};
+	out.trisTotal = uint32_t(sibTris);
+	for (size_t t = 0; t < sibTris; ++t)
+		if (uv2Span(t) > kLodCrossChartUvSpan)
+			++out.crossChartTris;
+
+	// Projection audit over a deterministic triangle subsample.
+	const size_t stride = std::max<size_t>(1, (sibTris + maxTris - 1) / maxTris);
+	static const glm::vec3 kBary[3] = {
+		glm::vec3(1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f),
+		glm::vec3(0.7f, 0.15f, 0.15f),
+		glm::vec3(0.15f, 0.7f, 0.15f),
+	};
+	const glm::vec2 texelScale{ float(atlasWidth), float(atlasHeight) };
+	const float eps = std::max(1e-5f, searchDist * 1e-3f);
+	std::vector<float> errs;
+	double errSum = 0.0;
+	for (size_t t = 0; t < sibTris; t += stride) {
+		++out.trisAudited;
+		glm::vec3 wp[3];
+		glm::vec2 uv[3];
+		for (int k = 0; k < 3; ++k) {
+			const StaticVertex& v = sibling.vertices[sibling.indices[t * 3 + k]];
+			wp[k] = glm::vec3(world * glm::vec4(v.pos, 1.0f));
+			uv[k] = v.texCoord2;
+		}
+		const glm::vec3 fn = glm::cross(wp[1] - wp[0], wp[2] - wp[0]);
+		const float fnLen = glm::length(fn);
+		if (!(fnLen > 1e-20f))
+			continue; // degenerate triangle
+		const glm::vec3 N = fn / fnLen;
+		for (const glm::vec3& b : kBary) {
+			const glm::vec3 P = b.x * wp[0] + b.y * wp[1] + b.z * wp[2];
+			const glm::vec2 cand = b.x * uv[0] + b.y * uv[1] + b.z * uv[2];
+			// Projection: normal rays both directions (scored by
+			// distance + normal alignment, wrong-side folds rejected),
+			// then the exact closest-point fallback (the first hit
+			// along P -> closestPoint is the closest triangle: anything
+			// nearer would contradict the closest distance).
+			bool have = false;
+			gi::TriangleBvh::Hit hit{};
+			float bestScore = 0.0f;
+			for (int s = 0; s < 2; ++s) {
+				const glm::vec3 dir = s ? N : -N;
+				gi::TriangleBvh::Hit h{};
+				if (!bvh.Raycast(P - dir * eps, dir, searchDist, h))
+					continue;
+				const glm::vec3 hn = bvh.TriangleNormal(h.tri);
+				const float align = std::abs(glm::dot(N, hn));
+				if (align < 0.25f)
+					continue;
+				const float score = h.t * h.t + 0.05f * (1.0f - align);
+				if (!have || score < bestScore) {
+					have = true;
+					bestScore = score;
+					hit = h;
+				}
+			}
+			if (!have) {
+				glm::vec3 cp(0.0f);
+				const float d = bvh.ClosestDistance(P, &cp);
+				if (d < 1e30f && d > 1e-6f) {
+					const glm::vec3 dir = (cp - P) / d;
+					if (bvh.Raycast(P + dir * eps, dir, d * 1.001f + eps, hit))
+						have = true;
+				}
+			}
+			if (!have) {
+				++out.unresolved;
+				continue;
+			}
+			// True uv from the hit's barycentrics: baryUV.x weights V1,
+			// baryUV.y weights V2, (1-x-y) weights V0 (IntersectTriangle
+			// convention; Hit.tri is an original-soup triangle id).
+			const uint32_t j0 = lod0.indices[hit.tri * 3 + 0];
+			const uint32_t j1 = lod0.indices[hit.tri * 3 + 1];
+			const uint32_t j2 = lod0.indices[hit.tri * 3 + 2];
+			const float w0 = 1.0f - hit.baryUV.x - hit.baryUV.y;
+			const glm::vec2 trueUv =
+				w0 * lod0.vertices[j0].texCoord2
+				+ hit.baryUV.x * lod0.vertices[j1].texCoord2
+				+ hit.baryUV.y * lod0.vertices[j2].texCoord2;
+			const glm::vec2 dTex = (cand - trueUv) * texelScale;
+			const float e = std::sqrt(glm::dot(dTex, dTex));
+			++out.samples;
+			errSum += e;
+			errs.push_back(e);
+			if (e > thresholdTexels)
+				++out.overThreshold;
+			out.maxTexels = std::max(out.maxTexels, e);
+		}
+	}
+	if (out.samples) {
+		out.meanTexels = float(errSum / double(out.samples));
+		std::sort(errs.begin(), errs.end());
+		out.p95Texels = errs[std::min<size_t>(errs.size() - 1,
+			size_t(float(errs.size()) * 0.95f))];
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Post-bake LOD sibling cooking (see mesh_optimizer.h).
+// ---------------------------------------------------------------------------
+bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
+	const MeshletConfig& meshletConfig,
+	const CookLodSiblingsOptions& options) {
+	if (!config.generateLods)
+		return true;
+	Scene& scene = cluster.scene;
+
+	// Mesh pool indices in node usage (instanced meshes share one pool
+	// entry; the chain is per MESH — node transforms only matter for the
+	// audit). Sorted for deterministic registration/pool order.
+	std::unordered_map<uint32_t, uint32_t> nodeOfMesh;
+	for (const auto& [node, meshIdx] : scene.meshForNode) {
+		if (!nodeOfMesh.count(meshIdx))
+			nodeOfMesh[meshIdx] = node;
+	}
+	std::vector<uint32_t> meshOrder;
+	meshOrder.reserve(nodeOfMesh.size());
+	for (const auto& [meshIdx, node] : nodeOfMesh)
+		meshOrder.push_back(meshIdx);
+	std::sort(meshOrder.begin(), meshOrder.end());
+
+	for (const uint32_t meshIdx : meshOrder) {
+		const uint32_t node = nodeOfMesh[meshIdx];
+		const ClusterStaticMeshHandle handle =
+			cluster.staticMeshes.getHandle(meshIdx);
+		if (!handle.valid())
+			continue;
+		const StringViewT uri = cluster.GetMeshUri(handle);
+		if (uri.empty())
+			continue;
+		if (BaseMeshUriForLod(uri) != uri)
+			continue; // a sibling itself: chains grow from base meshes only
+		const StaticMeshUpload* upload = cluster.GetRetainedUpload(handle);
+		if (!upload || upload->vertices.empty() || upload->indices.empty())
+			continue;
+		// Idempotence: already-cooked chains stay untouched.
+		if (auto hit = cluster.GetMeshLod(LodSiblingUri(uri, 1));
+			hit && hit->lodIndex == 1)
+			continue;
+		// LOD0 marker (serializer fallback semantics when unregistered).
+		LodInfo lod0;
+		if (auto hit = cluster.GetMeshLod(uri))
+			lod0 = *hit;
+		else {
+			lod0.groupId = handle.index();
+			lod0.triCount = uint32_t(upload->indices.size() / 3);
+		}
+		// Lightmap provenance: stamped uv2 + per-vertex chart ids + the
+		// lobe count the sibling shares (it samples LOD0's atlas chunks).
+		const std::vector<uint32_t>* charts = nullptr;
+		uint32_t lod0LmChunk = 0xFFFFFFFFu;
+		if (const StaticMesh* m0 = cluster.staticMeshes.get(handle))
+			lod0LmChunk = m0->lmChunk;
+		if (options.vertexCharts && lod0LmChunk != 0xFFFFFFFFu) {
+			const auto it = options.vertexCharts->find(meshIdx);
+			if (it != options.vertexCharts->end()
+				&& it->second.size() == upload->vertices.size())
+				charts = &it->second;
+		}
+		// Coverage-preserving simplify for alpha cutout (mirror the
+		// importer's material gate; Blend/MASK meshes are never
+		// lightmapped, so the two paths never mix).
+		bool preserveCoverage = false;
+		{
+			const auto matIt = scene.materialForNode.find(node);
+			if (matIt != scene.materialForNode.end()) {
+				const ClusterMaterialHandle mh =
+					cluster.materials.getHandle(matIt->second);
+				if (mh.valid()) {
+					if (const Material* mat = cluster.materials.get(mh))
+						preserveCoverage = (mat->alphaMode == AlphaMode::Mask
+							|| mat->alphaMode == AlphaMode::Blend);
+				}
+			}
+		}
+		std::vector<CookedLod> chain;
+		if (!BuildLodChainForUpload(*upload, config, chain, preserveCoverage,
+				charts ? charts->data() : nullptr))
+			continue;
+
+		// Lightmap-safety audit per level (log-only unless gate on). A
+		// failing level fails the chain: coarser levels only interpolate
+		// more, so the gate truncates from the first failure.
+		size_t keptLevels = chain.size();
+		if (charts && options.audit && options.atlasWidth && options.atlasHeight) {
+			const glm::mat4 world = node < scene.globalTransform.size()
+				? scene.globalTransform[node] : glm::mat4(1.0f);
+			const float worldScale = MaxScaleOfMatrix(world);
+			const float diag = worldScale
+				* glm::length(upload->aabbMax - upload->aabbMin);
+			for (size_t li = 0; li < chain.size(); ++li) {
+				// Ray reach: 4x the level's world error, with extent and
+				// absolute floors (the closest-point fallback is exact
+				// regardless, so this only widens the cheap path).
+				const float worldErr = chain[li].localError * worldScale;
+				const float searchDist = std::max(
+					{ worldErr * 4.0f, diag * 0.01f, 1e-4f });
+				LodLightmapAuditReport rep;
+				const bool ran = AuditLodLightmap(*upload, chain[li].upload,
+					world, options.atlasWidth, options.atlasHeight,
+					options.auditThresholdTexels, searchDist,
+					options.auditMaxTris, rep);
+				const bool fail = ran && (rep.crossChartTris > 0
+					|| (rep.samples > 0
+						&& rep.overThreshold * 20u > rep.samples)); // >5%
+				std::cout << "  [LM-LOD] " << uri.Str() << "/lod" << (li + 1)
+					<< ": audit tris " << rep.trisAudited << "/" << rep.trisTotal
+					<< " samples " << rep.samples
+					<< " unresolved " << rep.unresolved
+					<< " texels max " << rep.maxTexels
+					<< " mean " << rep.meanTexels
+					<< " p95 " << rep.p95Texels
+					<< " over " << options.auditThresholdTexels << "tx "
+					<< rep.overThreshold
+					<< " cross-chart " << rep.crossChartTris
+					<< (fail ? " FAIL" : "") << "\n" << std::flush;
+				if (fail && options.auditGate) {
+					keptLevels = li;
+					break;
+				}
+			}
+			if (keptLevels < chain.size())
+				std::cout << "  [LM-LOD] " << uri.Str()
+					<< ": gate dropped lod" << (keptLevels + 1) << "+\n"
+					<< std::flush;
+			chain.resize(keptLevels);
+		}
+
+		// Upload + register siblings (mirrors the importer's sibling
+		// registration so World::RebuildLodChains resolves them the same
+		// way); each sibling gets its own meshlets so the GPU filter can
+		// register every level.
+		uint32_t registered = 0;
+		for (size_t li = 0; li < chain.size(); ++li) {
+			const CookedLod& kept = chain[li];
+			const auto lh = cluster.UploadStaticMesh(kept.upload);
+			if (!lh.valid())
+				continue;
+			const StringViewT lodUri = LodSiblingUri(uri, uint32_t(li + 1));
+			if (meshletConfig.enabled && !kept.upload.vertices.empty()
+				&& !kept.upload.indices.empty()) {
+				CookedMeshlets lodCooked;
+				MeshletStats lodStats;
+				std::string lodErr;
+				if (BuildMeshletsForUpload(kept.upload, meshletConfig,
+						&lodCooked, &lodStats, &lodErr)
+					&& !lodCooked.empty())
+					cluster.RegisterMeshMeshlets(lodUri, lodCooked);
+			}
+			cluster.RegisterMeshUri(lodUri, lh);
+			LodInfo llod;
+			llod.groupId = lod0.groupId;
+			llod.lodIndex = uint32_t(li + 1);
+			llod.candidateCount = uint32_t(1 + chain.size());
+			llod.simplifyError = kept.localError; // scaled to world below
+			llod.screenThreshold = -1.0f;
+			llod.triCount = kept.triCount;
+			llod.acmr = 0.0f;
+			cluster.RegisterMeshLod(lodUri, llod);
+			// Lightmap chunk (lobe count): the sibling shares LOD0's
+			// atlas chunks, so it carries the same count on its draws.
+			if (charts) {
+				if (StaticMesh* m = cluster.staticMeshes.get(lh))
+					m->lmChunk = lod0LmChunk;
+			}
+			++registered;
+		}
+		lod0.candidateCount = uint32_t(1 + registered);
+		cluster.RegisterMeshLod(uri, lod0);
+		std::cout << "LOD " << uri.Str() << ": " << registered
+			<< " sibling(es)" << (charts ? " (lightmapped)" : "") << "\n";
+	}
+	FinalizeLodWorldErrors(cluster);
+	return true;
 }
 
 } // namespace smvk
