@@ -18,6 +18,7 @@
 #include <glm/glm.hpp>
 
 #include <Engine/GI/bake.h>
+#include <Engine/GI/lightmap.h>
 #include <Engine/GI/probe_volume.h>
 #include <Engine/GI/regular_volume.h>
 #include <Engine/GI/sg.h>
@@ -417,6 +418,71 @@ void TestSgDiffuseAgainstMonteCarlo() {
 	}
 }
 
+void TestLmSelectorDomain() {
+	// Domain + bias check for the per-mesh lobe-count selection: the
+	// selector scores SgLightmapDiffuse(amps, count, n) against
+	// sum w*L*max(dot(d,n),0) over the traced samples. Both must be the
+	// SAME quantity — raw irradiance E = int L cos domega (the runtime
+	// applies the Lambert 1/pi when multiplying albedo). A pi-domain
+	// mismatch would scale every rel error by ~3.14 and pin all meshes
+	// at the max lobe count; a diagonal-projection constant-field bias
+	// would inflate errors at EVERY count on flat lighting — same
+	// visible failure, different cause. This measures both, with
+	// numbers, on the exact production functions.
+	std::mt19937 rng(91);
+	static constexpr uint32_t kCounts[4] = { 5, 6, 9, 12 };
+	const uint32_t kRays = 128;
+	glm::vec3 dirs[kRays];
+	for (uint32_t i = 0; i < kRays; ++i)
+		dirs[i] = UniformDir(rng);
+	const float weight = 4.0f * kPi / float(kRays);
+	const glm::vec3 normals[4] = {
+		glm::vec3(0, 1, 0), glm::vec3(0.8f, 0.6f, 0),
+		glm::vec3(0, -0.4f, 0.9f), glm::vec3(0.577f, 0.577f, 0.577f),
+	};
+
+	std::cout << "  lm selector domain (constant-white field, raw irradiance):\n";
+	bool domainOk = true;
+	float worstRel = 0.0f;
+	for (uint32_t ci = 0; ci < 4; ++ci) {
+		smvk::gi::SgLightmapFitAccumulator acc(kCounts[ci]);
+		for (uint32_t i = 0; i < kRays; ++i)
+			acc.AddSample(dirs[i], glm::vec3(1.0f), weight);
+		glm::vec3 amps[smvk::gi::kLightmapMaxLobes];
+		acc.SolveGram(amps);
+		float worstThis = 0.0f;
+		glm::vec3 printFit(0.0f), printTrue(0.0f);
+		for (const glm::vec3& n : normals) {
+			// Ground truth EXACTLY as the selector accumulates it.
+			glm::vec3 eTrue(0.0f);
+			for (uint32_t i = 0; i < kRays; ++i)
+				eTrue += glm::vec3(1.0f)
+					* (std::max(glm::dot(dirs[i], n), 0.0f) * weight);
+			const glm::vec3 eFit =
+				smvk::gi::SgLightmapDiffuse(amps, kCounts[ci], n);
+			const float rel = std::abs(Luminance(eFit) - Luminance(eTrue))
+				/ std::max(Luminance(eTrue), 1e-6f);
+			worstThis = std::max(worstThis, rel);
+			printFit = eFit;
+			printTrue = eTrue;
+		}
+		std::cout << "    lobes=" << kCounts[ci]
+			<< " relErr=" << (worstThis * 100.0f) << "%"
+			<< " eFit(" << printFit.x << " " << printFit.y << " " << printFit.z << ")"
+			<< " eTrue(" << printTrue.x << " " << printTrue.y << " " << printTrue.z << ")"
+			<< "\n";
+		worstRel = std::max(worstRel, worstThis);
+		// pi-domain consistency: eFit within 35% of eTrue on a constant
+		// field (the diagonal projection overshoots constants somewhat —
+		// the exact overshoot is measured here — but a missing 1/pi would
+		// read as ~68% low, a doubled pi as ~214% high).
+		if (worstThis > 0.35f)
+			domainOk = false;
+	}
+	Check(domainOk, "lm selector domain: eFit within 35% of eTrue (no pi mismatch)");
+	Check(worstRel < 1.0f, "lm selector domain: constant fit bounded (<100%)");
+}
+
 void TestSgSpecular() {
 	// Constant field via NNLS span fit: the normalized GGX reflection
 	// kernel must return ~the constant regardless of roughness
@@ -810,6 +876,7 @@ int main() {
 	smvk::gi::TestGiPrimarySunIncluded();
 	smvk::gi::TestGiEnergyBound();
 	smvk::gi::TestSgDiffuseAgainstMonteCarlo();
+	smvk::gi::TestLmSelectorDomain();
 	smvk::gi::TestSgSpecular();
 	smvk::gi::TestTriangleBvh();
 	smvk::gi::TestProbeVolumeRoundtrip();

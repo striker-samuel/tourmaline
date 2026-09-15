@@ -973,25 +973,40 @@ bool SceneRenderer::Initialize() {
 
 		if (const char* iblEnv = std::getenv("VULKANTOY_IBL")) {
 			// Mute the analytic sky ambient (any ambient mode -> off;
-			// Gi mode carries sky + probes, so muting kills both).
+			// All carries sky + baked, so muting kills all ambient).
 			if (std::atoi(iblEnv) == 0 && m_ambientMode != AmbientMode::Off)
 				m_ambientMode = AmbientMode::Off;
 		}
-		// SG-GI ambient override for A/B runs without UI interaction:
-		// VULKANTOY_GI selects the ambient source â€” 1/on -> sun-bounce
-		// probes on top of sky IBL, 0/off -> analytic sky IBL (falling
-		// back out of GI mode). The runtime N cycle stays live after.
+		// Ambient / GI source override for headless runs (same states the
+		// N key cycles; the runtime cycle stays live after):
+		//   VULKANTOY_AMBIENT=all|lightmaps|probes|skyibl|off
+		if (const char* amb = std::getenv("VULKANTOY_AMBIENT")) {
+			const std::string_view a = trimEnv(amb);
+			if (a == "all") m_ambientMode = AmbientMode::All;
+			else if (a == "lightmaps" || a == "lm") m_ambientMode = AmbientMode::Lightmaps;
+			else if (a == "probes") m_ambientMode = AmbientMode::Probes;
+			else if (a == "skyibl" || a == "ibl") m_ambientMode = AmbientMode::SkyIbl;
+			else if (a == "off" || a == "none") m_ambientMode = AmbientMode::Off;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_AMBIENT value: "
+				<< a << " (all|lightmaps|probes|skyibl|off)\n";
+			std::cerr << "[SceneRenderer] ambient source: "
+				<< AmbientModeName(m_ambientMode) << "\n";
+		}
+		// Legacy GI override (pre-ambient-modes runs): 1/on -> All,
+		// 0/off -> out of the baked modes into SkyIbl.
 		if (const char* giEnv = std::getenv("VULKANTOY_GI")) {
 			const std::string_view gi = trimEnv(giEnv);
-			if (gi == "1" || gi == "on") m_ambientMode = AmbientMode::Gi;
+			if (gi == "1" || gi == "on") m_ambientMode = AmbientMode::All;
 			else if (gi == "0" || gi == "off") {
-				if (m_ambientMode == AmbientMode::Gi)
+				if (m_ambientMode == AmbientMode::All
+					|| m_ambientMode == AmbientMode::Probes)
 					m_ambientMode = AmbientMode::SkyIbl;
 			}
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_GI value: " << gi << "\n";
 		}
-		// F8 debug view for headless runs: 0 off, 1 baked irradiance,
-		// 2 source palette (same modes the F8 key cycles).
+		// GI debug view for headless runs (same modes the I key cycles;
+		// F8 is the legacy alias): 0 off, 1 baked irradiance,
+		// 2 source palette.
 		if (const char* giDbgEnv = std::getenv("VULKANTOY_GI_DEBUG")) {
 			const int mode = std::atoi(giDbgEnv);
 			if (mode >= 0 && mode <= 2)
@@ -1629,6 +1644,10 @@ bool SceneRenderer::Initialize() {
 		// grids from tools/gi_baker --regular-out. Missing manifest is
 		// the normal state (no bake yet) - non-fatal.
 		LoadGiRegularVolumes(contentVfs);
+		// Single-source isolation modes degrade when their source did not
+		// load (All/SkyIbl need nothing): keeps them from being silently
+		// empty — the UI/env selector keeps working after.
+		DegradeAmbientForMissingSources();
 		// SMAA precomputed LUTs (official area/search tables, embedded in
 		// the engine - see Engine/Rendergraph/smaa.h). Uploaded once here so
 		// the staged uploads join the cookie flush below.
@@ -1842,12 +1861,12 @@ void SceneRenderer::Shutdown() {
 		m_giProbesAddress = m_giGridAddress = m_giCellsAddress = m_giIndicesAddress = 0;
 
 		const std::string vfsPath = std::string("gi/") + m_scene.id + ".sggi";
-		// GI-less fallback: scenes without a bake (e.g. scanlands) run on
-		// the analytic sky IBL instead of direct-only black shadows. N
-		// still cycles afterwards.
+		// GI-less scenes (e.g. scanlands): the flag gates keep the ambient
+		// honest (probes simply never enable); DegradeAmbientForMissing
+		// Sources() after the loaders fixes single-source modes. This
+		// lambda only logs.
 		auto fallbackSky = [&] {
-			if (m_ambientMode == AmbientMode::Gi)
-				m_ambientMode = AmbientMode::SkyIbl;
+			std::cerr << "[GI] ambient keeps its mode; per-source flags gate\n";
 		};
 		std::vector<uint8_t> bytes;
 		try {
@@ -2171,6 +2190,24 @@ void SceneRenderer::Shutdown() {
 		}
 	}
 
+	void SceneRenderer::DegradeAmbientForMissingSources() {
+		// Single-source isolation modes whose source did not load fall
+		// back to another baked source (or the sky IBL) instead of being
+		// silently empty. All/SkyIbl/Off never need this.
+		if (m_ambientMode == AmbientMode::Lightmaps && !m_lmLoaded) {
+			m_ambientMode = (m_giLoaded || m_regLoaded)
+				? AmbientMode::Probes : AmbientMode::SkyIbl;
+			std::cerr << "[Scene] no lightmaps - ambient degraded to "
+				<< AmbientModeName(m_ambientMode) << "\n";
+		} else if (m_ambientMode == AmbientMode::Probes
+			&& !m_giLoaded && !m_regLoaded) {
+			m_ambientMode = m_lmLoaded
+				? AmbientMode::Lightmaps : AmbientMode::SkyIbl;
+			std::cerr << "[Scene] no probes - ambient degraded to "
+				<< AmbientModeName(m_ambientMode) << "\n";
+		}
+	}
+
 	FrameUniforms SceneRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent) {
 
 		const int width_ = renderExtent.width;
@@ -2288,12 +2325,12 @@ void SceneRenderer::Shutdown() {
 		data.aoIntensity = aoOn ? m_ssaoIntensity : 0.0f;
 		// Configurable skydome IBL + fog (single source for sky/sun/fog).
 		data.env = m_env.ToFrameData();
-		// Ambient sources (N cycles Gi -> SkyIbl -> Off): the analytic sky
-		// IBL flag stays on in Gi mode too â€” sun-bounce probes ADD on top
-		// of the sky ambient (sun-only field). The GI block below only
-		// enables probes in Gi mode.
-		data.env.fogEndAndFlags.w =
-			(m_ambientMode != AmbientMode::Off) ? 1.0f : 0.0f;
+		// Ambient sources (N cycles All -> Lightmaps -> Probes -> SkyIbl
+		// -> Off): per-source isolation — the sky IBL flag is on in All +
+		// SkyIbl only, and each baked source's enable flag is on only in
+		// its owning modes. Direct light / sky dome / shadows are
+		// unaffected.
+		data.env.fogEndAndFlags.w = IblWanted() ? 1.0f : 0.0f;
 
 		// Deferred shadows: consumer-side BDAs + the frame's on/off flag.
 		// DsActive() is the single gate shared with the phase-1 upload and
@@ -2336,27 +2373,28 @@ void SceneRenderer::Shutdown() {
 #endif
 		}
 
-		// SG-GI probe volume: static BDAs (uploaded once at scene load) +
-		// the user toggles. GiActive() is the single gate so the shader
-		// flag and the buffers can never disagree.
+		// GI debug view + shared intensity ride EVERY frame regardless of
+		// which source is active: the lit shader's F8/I debug block colors
+		// lightmap / grid / probe pixels alike (mode 1 flat irradiance,
+		// 2 source palette), so the views must survive source isolation
+		// (e.g. Lightmaps mode with no probe volume loaded).
+		data.giIntensity = m_giIntensity;
+		data.giDebug = uint32_t(std::clamp(m_giDebug, 0, 2)) & 0xffu;
+		// SG-GI probe volume (static BDAs + the per-mode flag). GiActive()
+		// is the single gate so the shader flag and the buffers can never
+		// disagree.
 		if (GiActive()) {
 			data.giProbes = m_giProbesAddress;
 			data.giGrid = m_giGridAddress;
 			data.giCells = m_giCellsAddress;
 			data.giIndices = m_giIndicesAddress;
 			data.giEnabled = 1u;
-			data.giIntensity = m_giIntensity;
-			// Packed debug word: low byte = mode (1 = baked irradiance,
-			// 2 = source palette).
-			data.giDebug = uint32_t(std::clamp(m_giDebug, 0, 2)) & 0xffu;
 		} else {
 			data.giProbes = 0;
 			data.giGrid = 0;
 			data.giCells = 0;
 			data.giIndices = 0;
 			data.giEnabled = 0u;
-			data.giIntensity = 1.0f;
-			data.giDebug = 0u;
 		}
 		// SG 2D lightmaps (static draws; the atlas-space uv + per-draw lobe
 		// count ride the pak's vertex data / draw ring). Static/dynamic
@@ -2365,7 +2403,7 @@ void SceneRenderer::Shutdown() {
 		if (LmActive()) {
 			for (uint32_t t = 0; t < 9; ++t)
 				data.lmLayers[t] = m_lmLayerSlots[t];
-			data.lmEnabled = (m_ambientMode != AmbientMode::Off) ? 1u : 0u;
+			data.lmEnabled = 1u;
 		} else {
 			for (uint32_t t = 0; t < 9; ++t)
 				data.lmLayers[t] = UINT32_MAX;
@@ -2374,6 +2412,8 @@ void SceneRenderer::Shutdown() {
 		data.lmPad_[0] = 0;
 		data.lmPad_[1] = 0;
 		// SG regular 3D probe volumes (dynamic draws inside artist OBBs).
+		// RegActive() gates the upload (loaded + UI toggle); the ambient
+		// mode additionally gates the enable flag (All/Probes only).
 		if (RegActive()) {
 			data.regObbs = m_regObbsAddress;
 			const uint32_t n = std::min<uint32_t>(
@@ -2382,7 +2422,7 @@ void SceneRenderer::Shutdown() {
 				for (uint32_t t = 0; t < 7; ++t)
 					data.regLayers[v * 7u + t] = m_regVolumes[v].layerSlots[t];
 			data.regCount = n;
-			data.regEnabled = 1u;
+			data.regEnabled = RegWanted() ? 1u : 0u;
 		} else {
 			data.regObbs = 0;
 			for (uint32_t& slot : data.regLayers)
@@ -7108,15 +7148,11 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				}
 				if (ImGui::CollapsingHeader("Environment ï¿½ Skydome IBL + Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Sky dome (K)", &m_env.skyEnabled);
-					// Ambient source gate: drives the N-cycled AmbientMode (sky
-					// IBL is the floor in Gi + SkyIbl modes; sun-bounce
-					// probes add on top in Gi mode only â€” see the GI section).
-					{
-						bool iblOn = (m_ambientMode != AmbientMode::Off);
-						if (ImGui::Checkbox("IBL ambient/spec (N)", &iblOn))
-							m_ambientMode = iblOn
-								? AmbientMode::SkyIbl : AmbientMode::Off;
-					}
+					// Ambient-source selection moved to the GI section (the
+					// sky IBL is one AMBIENT source among the isolatable
+					// set — N cycles, see AmbientMode).
+					ImGui::TextDisabled("Ambient source: %s (N cycles; GI section)",
+						AmbientModeName(m_ambientMode));
 					ImGui::ColorEdit3("Zenith", &m_env.skyZenithColor.x);
 					ImGui::ColorEdit3("Horizon", &m_env.skyHorizonColor.x);
 					ImGui::ColorEdit3("Ground", &m_env.groundColor.x);
@@ -7147,26 +7183,33 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::TextDisabled("Sky program missing ï¿½ dome skipped");
 				}
 				if (ImGui::CollapsingHeader("GI ï¿½ ambient source + intensity", ImGuiTreeNodeFlags_DefaultOpen)) {
-					// Ambient mode line (N cycles; sun-bounce probes add on top
-					// of the sky IBL in Gi mode â€” see AmbientMode). Debug view
-					// + probe overlay live in the Debug tab.
+					// Ambient source (N cycles): All -> Lightmaps -> Probes
+					// -> SkyIbl -> Off — single-source isolation for
+					// bisection. I / F8 cycle the GI debug views (Debug
+					// tab): flat irradiance + source palette.
 					{
-						static const char* const kModeNames[3] =
-							{ "Sun-bounce GI + sky IBL", "Sky IBL", "Off" };
+						static const char* const kModeNames[5] = {
+							"All (IBL + lightmaps + probes)",
+							"Lightmaps only",
+							"Probes only (grids + volume)",
+							"Sky IBL only",
+							"Off (no GI at all)",
+						};
 						int modeIdx = static_cast<int>(m_ambientMode);
-						if (ImGui::Combo("Ambient source (N)", &modeIdx, kModeNames, 3))
-							m_ambientMode = static_cast<AmbientMode>(std::clamp(modeIdx, 0, 2));
-						ImGui::TextDisabled("N cycles ambient: %s (GI adds sun bounce on top of sky)",
-							kModeNames[static_cast<int>(m_ambientMode)]);
+						if (ImGui::Combo("Ambient source (N)", &modeIdx, kModeNames, 5))
+							m_ambientMode = static_cast<AmbientMode>(std::clamp(modeIdx, 0, 4));
+						ImGui::TextDisabled("N cycles: %s\n"
+							"sources loaded: lightmaps %s, probe volume %s, grids %s\n"
+							"I / F8: GI debug views (1 flat irradiance, 2 palette)",
+							kModeNames[static_cast<int>(m_ambientMode)],
+							m_lmLoaded ? "yes" : "no",
+							m_giLoaded ? "yes" : "no",
+							m_regLoaded ? "yes" : "no");
 					}
-					if (m_giLoaded) {
-						ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
-					} else {
-						ImGui::TextDisabled("No baked volume: content/gi/%s.sggi",
+					ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
+					if (!m_giLoaded && !m_lmLoaded && !m_regLoaded)
+						ImGui::TextDisabled("No baked GI: content/gi/%s.* missing",
 							m_scene.id ? m_scene.id : "?");
-						ImGui::TextDisabled("Bake with tools/gi_baker/GiBaker --scene %s",
-							m_scene.id ? m_scene.id : "?");
-					}
 				}
 				if (ImGui::CollapsingHeader("Bloom + AO + motion blur", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Bloom (B)", &m_bloomEnabled);
@@ -7439,6 +7482,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					ImGui::TextDisabled("F9/F10 UV checkers: base TEXCOORD0 vs lightmap uv2. Magenta glow = huge uv\n"
 						"screen-derivative (lightmap seam corners sweeping across atlas rects).\n"
 						"UV1 stripes magenta when uv2 leaves [0,1] (atlas-space bug).");
+					ImGui::TextDisabled("GI bisection: N isolates the ambient source (All -> Lightmaps -> Probes ->\n"
+						"SkyIbl -> Off); I / F8 cycle the GI debug views (flat irradiance, source palette).\n"
+						"Both work in every ambient mode.");
 					const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
 					ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
 					ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones);
@@ -7491,11 +7537,13 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					const char* dbgNames[3] = { "Off", "Baked irradiance",
 						"GI source" };
 					int dbgIdx = m_giDebug;
-					if (ImGui::Combo("GI debug view (F8)", &dbgIdx, dbgNames, 3))
+					if (ImGui::Combo("GI debug view (I / F8)", &dbgIdx, dbgNames, 3))
 						m_giDebug = std::clamp(dbgIdx, 0, 2);
 					if (m_giDebug == 1) {
 						ImGui::TextDisabled("flat irradiance of the active source "
-							"(lightmap/grid/probes); magenta = none");
+							"(lightmap/grid/probes); magenta = none\n"
+							"works in EVERY ambient mode (N): isolate the source "
+							"with N, then read it here");
 					} else if (m_giDebug == 2) {
 						ImGui::TextDisabled("source palette: red = lightmap, "
 							"green = regular grid, blue = probe volume, "

@@ -182,17 +182,36 @@ enum class AaMode : int {
 };
 
 // ---------------------------------------------------------------------------
-// Ambient source selection (N cycles): the analytic sky IBL is the ambient
-// floor (SkyIbl and Gi modes); the baked sun-bounce GI probe volume ADDS
-// on top of it in Gi mode only. The ambient is the only thing this drives;
-// the visible sky dome (K) and the direct sun / cascaded shadows are
-// unaffected.
+// Ambient / GI source selection (N cycles): exactly one active source set
+// for clean isolation — All is the production state, the rest isolate a
+// single GI contribution for bisection. The ambient is the only thing
+// this drives; the visible sky dome (K) and the direct sun / cascaded
+// shadows are unaffected (Off = direct light only).
+//   All:        analytic sky IBL + every baked source (per-pixel priority:
+//               lightmap > regular grid > probe volume)
+//   Lightmaps:  baked 2D SG lightmaps ONLY (static draws)
+//   Probes:     baked 3D probes ONLY (regular grids + octree volume —
+//               the F8=2 palette splits grid vs volume per pixel)
+//   SkyIbl:     analytic sky IBL ONLY (EvaluateIrradiance/SpecularEnv)
+//   Off:        no GI/ambient contribution at all (pure direct sun frame)
 // ---------------------------------------------------------------------------
 enum class AmbientMode : int {
-	Gi = 0,    // sun-bounce probes + analytic sky IBL (additive)
-	SkyIbl = 1, // analytic sky IBL only (EvaluateIrradiance/SpecularEnv)
-	Off = 2,   // neither: direct light only (pure sun frame)
+	All = 0,        // IBL + lightmaps + probes (production default)
+	Lightmaps = 1,  // baked lightmaps only
+	Probes = 2,     // baked probe systems only (grids + volume)
+	SkyIbl = 3,     // analytic sky IBL only
+	Off = 4,        // direct light only
 };
+inline const char* AmbientModeName(AmbientMode m) {
+	switch (m) {
+	case AmbientMode::All: return "All (IBL + lightmaps + probes)";
+	case AmbientMode::Lightmaps: return "Lightmaps only";
+	case AmbientMode::Probes: return "Probes only (grids + volume)";
+	case AmbientMode::SkyIbl: return "Sky IBL only";
+	case AmbientMode::Off: return "Off (direct only)";
+	}
+	return "?";
+}
 
 // ---------------------------------------------------------------------------
 // Main-view debug visualization (F1..F6, F9/F10). Lit is the full PBR path;
@@ -756,15 +775,18 @@ protected:
 		if (m_input.isKeyPressed(GLFW_KEY_G)) {
 			m_useGfxFilter = !m_useGfxFilter;
 		}
-		// Ambient source: N cycles GI -> sky IBL -> both off (the baked
-		// probes and the analytic sky ambient are mutually exclusive).
-		// F8 cycles the baked-GI debug views: 0 off, 1 flat irradiance of
-		// the active source (lightmap/grid/probes), 2 source palette (the
-		// static/dynamic separation: red lm, green grid, blue probes).
+		// Ambient / GI source: N cycles All -> Lightmaps -> Probes ->
+		// SkyIbl -> Off (see AmbientMode — single-source isolation for
+		// bisection, All is the production state).
+		// I cycles the baked-GI debug views: 0 off, 1 flat irradiance of
+		// the active source, 2 source palette (red lm, green grid, blue
+		// probes; magenta = none). F8 is an alias for I. Both work in
+		// every ambient mode.
 		if (m_input.isKeyPressed(GLFW_KEY_N)) {
 			CycleAmbientMode();
 		}
-		if (m_input.isKeyPressed(GLFW_KEY_F8)) {
+		if (m_input.isKeyPressed(GLFW_KEY_I)
+			|| m_input.isKeyPressed(GLFW_KEY_F8)) {
 			m_giDebug = (m_giDebug + 1) % 3;
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_C)) {
@@ -1147,14 +1169,10 @@ protected:
 	// ---- SG-GI baked probe volume (tools/gi_baker output, see
 	// smvk::gi + Engine/GI). Loaded once at scene init from
 	// content/gi/<scene>.sggi (loose content or a pak). N cycles the
-	// ambient source: Gi -> SkyIbl -> Off (see AmbientMode — the probes
-	// and the analytic sky IBL are mutually exclusive). F8 shows the
-	// flat irradiance debug view. ----
-	// Default SkyIbl: the baked probes stay opt-in (N) — GI sampling is
-	// the expensive/fussy ambient path (probe bleeding, bake staleness),
-	// and the analytic sky IBL is the predictable reference look.
-	AmbientMode m_ambientMode = AmbientMode::SkyIbl; // N cycles
-	int m_giDebug = 0;             // F8 cycles: 0 off, 1 baked irradiance,
+	// ambient source (All -> Lightmaps -> Probes -> SkyIbl -> Off — see
+	// AmbientMode); I / F8 cycle the baked-GI debug views. ----
+	AmbientMode m_ambientMode = AmbientMode::All; // N cycles (production default)
+	int m_giDebug = 0;             // I / F8 cycle: 0 off, 1 baked irradiance,
 	                                // 2 GI source palette
 	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
 	bool m_giShowProbes = false;  // probe-point overlay (ImGui foreground,
@@ -1176,10 +1194,30 @@ protected:
 	uint64_t m_giGridAddress = 0;
 	uint64_t m_giCellsAddress = 0;
 	uint64_t m_giIndicesAddress = 0;
-	bool GiActive() const { return m_giLoaded && m_ambientMode == AmbientMode::Gi; }
+	// Ambient-source gating (see AmbientMode): the per-source "wanted"
+	// helpers drive the FrameUniforms enable flags; the *Active() gates
+	// additionally require the content to be loaded. Sky IBL rides the
+	// env flag (All + SkyIbl).
+	bool IblWanted() const {
+		return m_ambientMode == AmbientMode::All
+			|| m_ambientMode == AmbientMode::SkyIbl;
+	}
+	bool ProbesWanted() const {
+		return m_ambientMode == AmbientMode::All
+			|| m_ambientMode == AmbientMode::Probes;
+	}
+	bool LmWanted() const {
+		return m_ambientMode == AmbientMode::All
+			|| m_ambientMode == AmbientMode::Lightmaps;
+	}
+	bool RegWanted() const {
+		return m_ambientMode == AmbientMode::All
+			|| m_ambientMode == AmbientMode::Probes;
+	}
+	bool GiActive() const { return m_giLoaded && ProbesWanted(); }
 	void CycleAmbientMode() {
 		m_ambientMode = static_cast<AmbientMode>(
-			(static_cast<int>(m_ambientMode) + 1) % 3);
+			(static_cast<int>(m_ambientMode) + 1) % 5);
 	}
 	void LoadGiVolume(smvk::OverlayVfs& vfs);
 	// ---- SG 2D lightmaps (STATIC geometry, tools/gi_baker --lightmap-out
@@ -1195,7 +1233,7 @@ protected:
 	smvk::gi::SgLightmapAtlas m_lmAtlas; // CPU mirror (chunk table + debug views)
 	smvk::Holder<smvk::TextureHandle> m_lmLayers[9]; // atlas RGBA16F 2D
 	uint32_t m_lmLayerSlots[9] = {};  // bindless slots (FrameUniforms.lmLayers)
-	bool LmActive() const { return m_lmLoaded; }
+	bool LmActive() const { return m_lmLoaded && LmWanted(); }
 	void LoadGiLightmaps(smvk::OverlayVfs& vfs);
 	// ---- SG regular 3D probe volumes (DYNAMIC objects, tools/gi_baker
 	// --regular-out output; artist OBBs + density, hardware trilinear).
@@ -1214,6 +1252,10 @@ protected:
 	uint64_t m_regObbsAddress = 0;
 	bool RegActive() const { return m_regLoaded && m_regEnabled; }
 	void LoadGiRegularVolumes(smvk::OverlayVfs& vfs);
+	// Degrades single-source ambient modes whose source did not load
+	// (called once after all three GI loaders at scene init): keeps the
+	// isolation states meaningful instead of silently empty.
+	void DegradeAmbientForMissingSources();
 	// Procedural layered-material test scene ("layers-cube" builtin):
 	// subdivided cube with vertex-painted layer weights + four Sponza
 	// PBR materials. Builds directly into the cluster (no glTF/pak).

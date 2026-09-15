@@ -16,7 +16,10 @@ rem per-vertex lightmap UVs + per-mesh lobe counts INTO the pak and writes
 rem the atlas to F:\content\gi\sponza.sglm alongside. A pak cooked without
 rem it carries lmChunk=-1 everywhere (F8 palette goes all-green) while a
 rem stale sponza.sglm lingers next to it.
-build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.gltf --out-pak F:\content\paks\sponza.pak --meshlets on --verify on --lightmap on
+rem --lm-budget 8M texels (~576 MB of RGBA16F atlas layers) lets the
+rem density search converge far above the 4M default (sponza's ornament
+rem needs it; the convergence log prints the achieved texels/m^2).
+build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.gltf --out-pak F:\content\paks\sponza.pak --meshlets on --verify on --lightmap on --lm-budget 8388608
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak build\Debug\content\paks\sponza.pak
 if errorlevel 1 goto fail

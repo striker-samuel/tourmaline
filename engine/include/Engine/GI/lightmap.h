@@ -96,7 +96,17 @@ public:
 	explicit SgLightmapFitAccumulator(uint32_t lobeCount);
 
 	void AddSample(const glm::vec3& dir, const glm::vec3& radiance, float weight);
+	// Diagonal projection (stable, but double-counts shared lobe energy:
+	// flat/ambient fields overshoot by 1.6-2.4x depending on the count —
+	// measured, see tests/TestLmSelectorDomain).
 	void Solve(glm::vec3* outAmps) const; // outAmps[lobeCount]
+	// Production lightmap solve: projected coordinate descent (NNLS) on
+	// the basis's ANALYTIC Gram matrix, warm-started from the diagonal
+	// projection. Monotone in the least-squares objective with bounded
+	// updates (no unconstrained-solver blow-up class), and exact on
+	// constant fields at every lobe count — the property the per-mesh
+	// lobe-count selection relies on.
+	void SolveGram(glm::vec3* outAmps) const;
 
 	uint32_t lobeCount() const { return lobeCount_; }
 
@@ -188,6 +198,17 @@ struct SgLightmapBakeConfig {
 	uint32_t maxBounces = 3;
 	uint32_t threadCount = 0;    // 0 = hardware concurrency
 	uint32_t seed = 1;
+	// Per-mesh lobe-count selection (Order:1886-style): each MESH keeps
+	// the smallest candidate count (5/6/9/12, up to the caller's
+	// preferred count) whose fitted diffuse irradiance response degrades
+	// less than lobeRelError (relative RMS) from the PREFERRED-count
+	// reconstruction — both are smooth fits of the same samples, so the
+	// Monte-Carlo noise of the traced ground truth cancels and the number
+	// measures pure representation loss. 15% keeps hard-bounce/contrast
+	// content at 9-12 (sponza: sunlit walls measure 20-35% at 9 lobes,
+	// interiors 8-14%) and lets smooth fields drop to 5-6.
+	bool chooseLobeCount = true;
+	float lobeRelError = 0.15f;   // relative RMS degradation budget
 };
 
 struct SgLightmapBakeStats {
@@ -195,6 +216,21 @@ struct SgLightmapBakeStats {
 	uint64_t pathsTraced = 0;
 	uint64_t samplesClamped = 0;
 	double seconds = 0.0;
+	// Per-mesh lobe-selection diagnostics (batch path with selection on):
+	// the candidate counts, each one's relative irradiance error against
+	// the traced probes (Monte-Carlo noise dominated — diagnostics only)
+	// and against the preferred-count reconstruction (degradation — the
+	// selection criterion), plus the count the mesh kept. Empty when the
+	// selection did not run.
+	struct LobePick {
+		uint32_t meshKey = 0;
+		uint32_t chosen = 0;
+		uint32_t candCount = 0;
+		uint32_t candCounts[4] = {};
+		double relErr[4] = {}; // vs traced probes (noisy, diagnostics)
+		double degErr[4] = {}; // vs preferred-count fit (the criterion)
+	};
+	std::vector<LobePick> lobePicks;
 };
 
 class GiTraceScene;
@@ -211,9 +247,15 @@ bool BakeSgLightmapChunk(const GiTraceScene& scene, uint32_t lobeCount,
 
 // Batch variant: bakes many chunks with ONE shared thread pool (the cook
 // bakes thousands of chart chunks; per-call pool churn would dominate).
+// meshKey groups chunks by owning mesh for the per-mesh lobe selection;
+// chunkMeta receives the chosen lobe count (it must outlive the call —
+// for the cook it points into the atlas chunk table). Either absent
+// falls back to the caller's fixed lobe count.
 struct SgLightmapChunkBatch {
 	SgLightmapAtlas::ChunkPayload* payload = nullptr;
 	const std::vector<SgLightmapTexel>* texels = nullptr;
+	uint32_t meshKey = 0;
+	SgLightmapChunk* chunkMeta = nullptr;
 };
 bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
 	std::span<const SgLightmapChunkBatch> batches,

@@ -253,10 +253,14 @@ void SgLightmapFitAccumulator::AddSample(const glm::vec3& dir,
 	++sampleCount_;
 }
 
-void SgLightmapFitAccumulator::Solve(glm::vec3* outAmps) const {
-	const SgBasisTable* t = BasisFor(lobeCount_);
+// Diagonal projection solve from raw rhs (stable, but double-counts
+// shared lobe energy — flat/ambient fields overshoot; kept as the warm
+// start of the production solve below and for non-lightmap callers).
+static void SolveRhs(const glm::vec3* rhs, uint32_t lobeCount,
+	glm::vec3* outAmps) {
+	const SgBasisTable* t = BasisFor(lobeCount);
 	if (!t) {
-		for (uint32_t i = 0; i < lobeCount_; ++i)
+		for (uint32_t i = 0; i < lobeCount; ++i)
 			outAmps[i] = glm::vec3(0.0f);
 		return;
 	}
@@ -266,14 +270,120 @@ void SgLightmapFitAccumulator::Solve(glm::vec3* outAmps) const {
 	const float selfEnergy = kPi / t->sharpness
 		* (1.0f - std::exp(-4.0f * t->sharpness));
 	const float inv = 1.0f / std::max(selfEnergy, 1e-8f);
-	for (uint32_t i = 0; i < lobeCount_; ++i) {
-		glm::vec3 a = rhs_[i] * inv;
+	for (uint32_t i = 0; i < lobeCount; ++i) {
+		glm::vec3 a = rhs[i] * inv;
 		// fp16 ceiling per channel (payload stores halves).
 		a = glm::clamp(a, glm::vec3(0.0f), glm::vec3(65504.0f));
 		if (!std::isfinite(a.x + a.y + a.z))
 			a = glm::vec3(0.0f);
 		outAmps[i] = a;
 	}
+}
+
+void SgLightmapFitAccumulator::Solve(glm::vec3* outAmps) const {
+	SolveRhs(rhs_, lobeCount_, outAmps);
+}
+
+// ---------------------------------------------------------------------------
+// Gram solve: projected coordinate descent (NNLS) on the basis's ANALYTIC
+// Gram. The diagonal projection double-counts shared lobe energy, so flat
+// fields overshoot 1.6-2.4x depending on the count (measured — the 9-lobe
+// constant-white fit lands at 4.95 vs the true pi*1); the historical
+// unconstrained coupled solver fixed that but was abandoned for blowing
+// up (near-singular Gram + sun pools). Coordinate descent is the middle
+// path: warm-started at the bounded diagonal solution, every update is
+// the exact bounded coordinate minimizer of the non-negative
+// least-squares objective, so the objective decreases MONOTONICALLY and
+// no amplitude can spike. Constant fields come out exact at every count
+// — the property the per-mesh lobe-count selection measures against.
+// ---------------------------------------------------------------------------
+
+// Candidate lobe counts for the per-mesh selection (and the Gram cache
+// slots — 5/6/9/12 up to the caller's preferred count).
+static constexpr uint32_t kLobeCandidates[4] = { 5u, 6u, 9u, 12u };
+static constexpr uint32_t kLobeCandidateSlots = 4;
+
+struct LmGram {
+	float g[kLightmapMaxLobes][kLightmapMaxLobes] = {};
+	uint32_t n = 0;
+};
+
+static const LmGram& GramForCount(uint32_t lobeCount) {
+	static LmGram cache[kLobeCandidateSlots];
+	static std::once_flag once[kLobeCandidateSlots];
+	uint32_t slot = 0;
+	switch (lobeCount) {
+		case 5: slot = 0; break;
+		case 6: slot = 1; break;
+		case 9: slot = 2; break;
+		default: slot = 3; break;
+	}
+	std::call_once(once[slot], [&] {
+		const SgBasisTable* t = BasisFor(lobeCount);
+		LmGram& G = cache[slot];
+		G.n = t ? t->lobeCount : 0;
+		if (!t)
+			return;
+		const float lambda = t->sharpness;
+		for (uint32_t i = 0; i < G.n; ++i) {
+			for (uint32_t j = i; j < G.n; ++j) {
+				// Closed-form int K_i K_j domega for two SGs:
+				//   exp(-(li+lj) + |li ai + lj aj|) * (2pi/|..|)(1-exp(-2|..|))
+				const glm::vec3 c = lambda * t->axes[i]
+					+ lambda * t->axes[j];
+				const float len = glm::length(c);
+				float v;
+				if (len < 1e-6f) {
+					// Parallel-antiparallel degenerate: int of a constant
+					// exp(-2 lambda) over the sphere.
+					v = std::exp(-2.0f * lambda) * 4.0f * kPi;
+				} else {
+					v = std::exp(-2.0f * lambda + len)
+						* (2.0f * kPi / len) * (1.0f - std::exp(-2.0f * len));
+				}
+				G.g[i][j] = v;
+				G.g[j][i] = v;
+			}
+		}
+	});
+	return cache[slot];
+}
+
+// Shared production lightmap solve (rhs -> amplitudes).
+static void SolveRhsGram(const glm::vec3* rhs, uint32_t lobeCount,
+	glm::vec3* outAmps) {
+	const LmGram& G = GramForCount(lobeCount);
+	if (G.n == 0 || G.n != lobeCount) {
+		for (uint32_t i = 0; i < lobeCount; ++i)
+			outAmps[i] = glm::vec3(0.0f);
+		return;
+	}
+	// Warm start: diagonal projection (bounded, stable).
+	SolveRhs(rhs, lobeCount, outAmps);
+	// Projected coordinate descent, per channel. Each update is the exact
+	// minimizer of the NNLS objective along coordinate j (clamped at 0),
+	// so the objective decreases monotonically — no spike class. Sweeps
+	// are fixed: partial convergence still strictly improves the warm
+	// start, and the cost stays deterministic.
+	constexpr uint32_t kSweeps = 24;
+	for (uint32_t sweep = 0; sweep < kSweeps; ++sweep) {
+		for (uint32_t j = 0; j < G.n; ++j) {
+			const float gjj = std::max(G.g[j][j], 1e-8f);
+			glm::vec3 sum(0.0f);
+			for (uint32_t i = 0; i < G.n; ++i)
+				sum += G.g[j][i] * outAmps[i];
+			const glm::vec3 num = rhs[j] - (sum - G.g[j][j] * outAmps[j]);
+			glm::vec3 a = num / gjj;
+			a = glm::clamp(a, glm::vec3(0.0f), glm::vec3(65504.0f));
+			if (!std::isfinite(a.x + a.y + a.z))
+				a = outAmps[j];
+			outAmps[j] = a;
+		}
+	}
+}
+
+void SgLightmapFitAccumulator::SolveGram(glm::vec3* outAmps) const {
+	SolveRhsGram(rhs_, lobeCount_, outAmps);
 }
 
 // ---------------------------------------------------------------------------
@@ -640,15 +750,25 @@ bool SgLightmapAtlas::PackRects(const std::vector<RectRequest>& requests,
 			return requests[a].size.y > requests[b].size.y;
 		return requests[a].size.x > requests[b].size.x;
 	});
+	// Inter-rect separation (texels): charts carry their own inner gutter
+	// (gutterTexels per side, see SgLightmapChartOptions), so a fixed gap
+	// here is what keeps bilinear at one chart's content edge from ever
+	// touching the NEXT chart's content. gutter + sep + gutter = the
+	// island-to-island padding (1 + 2 + 1 = 4 texels at gutter 1).
+	// Packing flush (sep 0) relied on both gutters alone, which is fine
+	// for large charts but wastes half the atlas on the tiny ornament
+	// charts (12k+ on sponza): per-chart gutter scales with chart COUNT,
+	// the pack gap is paid once between rects.
+	constexpr uint32_t kPackSep = 2;
 	uint32_t rowX = 0, rowY = 0, rowH = 0;
 	for (uint32_t idx : order) {
 		const uint32_t w = requests[idx].size.x;
 		const uint32_t h = requests[idx].size.y;
 		if (w > atlasWidth)
 			return false;
-		if (rowX + w > atlasWidth) {
+		if (rowX > 0 && rowX + kPackSep + w > atlasWidth) {
 			rowX = 0;
-			rowY += rowH;
+			rowY += rowH + kPackSep;
 			rowH = 0;
 		}
 		if (rowY + h > maxHeight)
@@ -660,9 +780,9 @@ bool SgLightmapAtlas::PackRects(const std::vector<RectRequest>& requests,
 		c.rectMax[1] = float(rowY + h);
 		c.lobeCount = requests[idx].lobeCount;
 		c.meshKey = requests[idx].meshKey;
-		rowX += w;
+		rowX += w + kPackSep;
 		rowH = std::max(rowH, h);
-		width = std::max(width, rowX);
+		width = std::max(width, rowX > kPackSep ? rowX - kPackSep : rowX);
 		height = std::max(height, rowY + rowH);
 	}
 	// One texel of padding at the pack edges keeps bilinear clamps from
@@ -921,18 +1041,10 @@ bool SgLightmapAtlas::ReadFile(const std::string& path, SgLightmapAtlas& out,
 
 namespace {
 
-// Core: trace + fit every covered texel of ONE chunk payload, using the
-// caller's pool (shared across the batch). Covered texels come from
-// `texels` (uv in rect-local texel coords); dilation fills the rest.
-void BakeChunkCore(const GiTraceScene& scene, uint32_t lobeCount,
-	const std::vector<SgLightmapTexel>& texels,
-	const SgLightmapBakeConfig& cfg, const std::vector<glm::vec3>& fibDirs,
-	const float weight, SgLightmapAtlas::ChunkPayload& out,
-	std::vector<uint32_t>& texelOf, ThreadPool& pool,
-	std::atomic<uint64_t>& baked, std::atomic<uint64_t>& clamped,
-	uint64_t chunkSeed) {
-	const uint32_t w = out.width;
-	const uint32_t h = out.height;
+// Rect-local texel ownership from the bake texel list (uv in rect-local
+// texel coords): first writer wins, matching the chart rasterizer.
+static void BuildTexelOf(const std::vector<SgLightmapTexel>& texels,
+	uint32_t w, uint32_t h, std::vector<uint32_t>& texelOf) {
 	std::fill(texelOf.begin(), texelOf.end(), 0xFFFFFFFFu);
 	for (uint32_t i = 0; i < texels.size(); ++i) {
 		const int x = int(std::floor(texels[i].uv.x));
@@ -941,59 +1053,65 @@ void BakeChunkCore(const GiTraceScene& scene, uint32_t lobeCount,
 			continue;
 		texelOf[size_t(y) * w + size_t(x)] = i;
 	}
-	constexpr float kSurfEps = 1e-3f; // matches the probe bakers
+}
+
+// Shared payload tail: amplitude denoise (over baked texels only) +
+// gutter/hole dilation. Runs after the coeffs hold the fit at the
+// chunk's lobeCount stride.
+static void FinishChunkPayload(SgLightmapAtlas::ChunkPayload& out,
+	const std::vector<uint32_t>& texelOf, uint32_t lobeCount) {
+	const uint32_t w = out.width;
+	const uint32_t h = out.height;
 	const size_t total = size_t(w) * h;
-	std::vector<std::future<void>> futures;
-	for (size_t idx = 0; idx < total; ++idx) {
-		const uint32_t texelIdx = texelOf[idx];
-		if (texelIdx == 0xFFFFFFFFu)
-			continue;
-		futures.push_back(pool.enqueue([&, idx, texelIdx] {
-			const SgLightmapTexel& tx = texels[texelIdx];
-			const uint64_t seed = (uint64_t(cfg.seed) << 32)
-				^ (chunkSeed * 0x9e3779b97f4a7c15ull)
-				^ (uint64_t(texelIdx) * 0xbf58476d1ce4e5b9ull);
-			Pcg32 rng(seed);
-			struct RaySample { glm::vec3 dir; glm::vec3 L; };
-			std::vector<RaySample> samples;
-			samples.reserve(fibDirs.size());
-			double meanLum = 0.0;
-			const glm::vec3 origin = tx.position + tx.normal * kSurfEps;
-			for (const glm::vec3& d : fibDirs) {
-				const glm::vec3 L = scene.TraceIncoming(origin, d, rng,
-					cfg.maxBounces);
-				samples.push_back({ d, L });
-				meanLum += Luminance(L);
-			}
-			meanLum /= double(std::max<size_t>(fibDirs.size(), 1));
-			const float cap = std::max(float(meanLum) * 8.0f, 1e-6f);
-			SgLightmapFitAccumulator acc(lobeCount);
-			uint64_t localClamped = 0;
-			for (const RaySample& s : samples) {
-				glm::vec3 L = s.L;
-				const float l = Luminance(L);
-				if (l > cap && l > 0.0f) {
-					L *= cap / l;
-					++localClamped;
-				}
-				acc.AddSample(s.dir, L, weight);
-			}
-			clamped += localClamped;
-			glm::vec3 amps[kLightmapMaxLobes];
-			acc.Solve(amps);
-			for (uint32_t l = 0; l < lobeCount; ++l)
-				out.coeffs[idx * lobeCount + l] = amps[l];
-			++baked;
-		}));
-	}
-	for (auto& f : futures)
-		f.get();
 
 	// Gutter + hole dilation: every texel that did not bake takes the
 	// average of its valid 4-neighbours (Jacobi passes until stable).
 	std::vector<char> valid(total, 0);
 	for (size_t i = 0; i < total; ++i)
 		valid[i] = texelOf[i] != 0xFFFFFFFFu ? 1 : 0;
+
+	// One amplitude smoothing pass over BAKED texels (SG coefficient
+	// denoise, BakingLab-style): per-texel fits are independent Monte
+	// Carlo estimates, and at low densities the per-texel noise reads
+	// as speckle/faceting on smooth surfaces. Center-weighted (4x) 3x3
+	// average over valid neighbours only — the SG basis keeps the
+	// directional detail, the texel-to-texel estimate noise goes away.
+	// Runs BEFORE dilation so gutters continue the smoothed content.
+	{
+		std::vector<glm::vec3> smooth(total * lobeCount);
+		static const int kSx[8] = { 1, -1, 0, 0, 1, 1, -1, -1 };
+		static const int kSy[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+		static const float kSw[8] = { 1, 1, 1, 1, 0.5f, 0.5f, 0.5f, 0.5f };
+		for (uint32_t y = 0; y < h; ++y)
+			for (uint32_t x = 0; x < w; ++x) {
+				const size_t v = size_t(y) * w + x;
+				if (!valid[v])
+					continue;
+				glm::vec3 acc[kLightmapMaxLobes] = {};
+				float wsum = 4.0f;
+				for (uint32_t l = 0; l < lobeCount; ++l)
+					acc[l] = 4.0f * out.coeffs[v * lobeCount + l];
+				for (int k = 0; k < 8; ++k) {
+					const int nx = int(x) + kSx[k];
+					const int ny = int(y) + kSy[k];
+					if (nx < 0 || ny < 0 || nx >= int(w) || ny >= int(h))
+						continue;
+					const size_t u = size_t(ny) * w + size_t(nx);
+					if (!valid[u])
+						continue;
+					for (uint32_t l = 0; l < lobeCount; ++l)
+						acc[l] += kSw[k] * out.coeffs[u * lobeCount + l];
+					wsum += kSw[k];
+				}
+				for (uint32_t l = 0; l < lobeCount; ++l)
+					smooth[v * lobeCount + l] = acc[l] / wsum;
+			}
+		for (size_t i = 0; i < total; ++i)
+			if (valid[i])
+				for (uint32_t l = 0; l < lobeCount; ++l)
+					out.coeffs[i * lobeCount + l] = smooth[i * lobeCount + l];
+	}
+
 	for (int pass = 0; pass < 16; ++pass) {
 		bool anyFill = false;
 		std::vector<glm::vec3> fill(total * lobeCount);
@@ -1034,6 +1152,340 @@ void BakeChunkCore(const GiTraceScene& scene, uint32_t lobeCount,
 			}
 		if (!anyFill)
 			break;
+	}
+}
+
+// Core: trace + fit every covered texel of ONE chunk payload, using the
+// caller's pool (shared across the batch). Covered texels come from
+// `texels` (uv in rect-local texel coords); dilation fills the rest.
+void BakeChunkCore(const GiTraceScene& scene, uint32_t lobeCount,
+	const std::vector<SgLightmapTexel>& texels,
+	const SgLightmapBakeConfig& cfg, const std::vector<glm::vec3>& fibDirs,
+	const float weight, SgLightmapAtlas::ChunkPayload& out,
+	std::vector<uint32_t>& texelOf, ThreadPool& pool,
+	std::atomic<uint64_t>& baked, std::atomic<uint64_t>& clamped,
+	uint64_t chunkSeed) {
+	const uint32_t w = out.width;
+	const uint32_t h = out.height;
+	BuildTexelOf(texels, w, h, texelOf);
+	constexpr float kSurfEps = 1e-3f; // matches the probe bakers
+	const size_t total = size_t(w) * h;
+	std::vector<std::future<void>> futures;
+	for (size_t idx = 0; idx < total; ++idx) {
+		const uint32_t texelIdx = texelOf[idx];
+		if (texelIdx == 0xFFFFFFFFu)
+			continue;
+		futures.push_back(pool.enqueue([&, idx, texelIdx] {
+			const SgLightmapTexel& tx = texels[texelIdx];
+			const uint64_t seed = (uint64_t(cfg.seed) << 32)
+				^ (chunkSeed * 0x9e3779b97f4a7c15ull)
+				^ (uint64_t(texelIdx) * 0xbf58476d1ce4e5b9ull);
+			Pcg32 rng(seed);
+			struct RaySample { glm::vec3 dir; glm::vec3 L; };
+			std::vector<RaySample> samples;
+			samples.reserve(fibDirs.size());
+			double meanLum = 0.0;
+			const glm::vec3 origin = tx.position + tx.normal * kSurfEps;
+			for (const glm::vec3& d : fibDirs) {
+				const glm::vec3 L = scene.TraceIncoming(origin, d, rng,
+					cfg.maxBounces);
+				samples.push_back({ d, L });
+				meanLum += Luminance(L);
+			}
+			meanLum /= double(std::max<size_t>(fibDirs.size(), 1));
+			const float cap = std::max(float(meanLum) * 8.0f, 1e-6f);
+			SgLightmapFitAccumulator acc(lobeCount);
+			uint64_t localClamped = 0;
+			for (const RaySample& s : samples) {
+				glm::vec3 L = s.L;
+				const float l = Luminance(L);
+				if (l > cap && l > 0.0f) {
+					L *= cap / l;
+					++localClamped;
+				}
+				acc.AddSample(s.dir, L, weight);
+			}
+			clamped += localClamped;
+			glm::vec3 amps[kLightmapMaxLobes];
+			acc.SolveGram(amps);
+			for (uint32_t l = 0; l < lobeCount; ++l)
+				out.coeffs[idx * lobeCount + l] = amps[l];
+			++baked;
+		}));
+	}
+	for (auto& f : futures)
+		f.get();
+	FinishChunkPayload(out, texelOf, lobeCount);
+}
+
+// ---------------------------------------------------------------------------
+// Per-mesh lobe-count selection (Order:1886-style): fit ALL candidate
+// bases per texel (5/6/9/12 up to the preferred count) with the Gram
+// solve, score each candidate's irradiance response against the traced
+// probes, keep the smallest count under the relative-error budget, then
+// solve + finish every chunk of the mesh at that count. One count per
+// MESH: the runtime draw ring carries a single lobe count per draw
+// (GfxDraw.misc.w), so all chart chunks of the mesh share it.
+// ---------------------------------------------------------------------------
+
+// Probe-normal count for the lobe-count selection: the fitted irradiance
+// E(n) is scored against the traced irradiance over a small hemisphere of
+// directions around the texel normal (the shading directions that
+// matter — the runtime convolves the SG field with exactly these
+// responses, so a count that reconstructs the probes reconstructs the
+// view).
+static constexpr uint32_t kLmProbeCount = 6;
+
+// Deterministic probe hemisphere around a texel normal: the normal plus
+// five ~54.7-degree tilts (0.577 = 1/sqrt(3)) spanning the tangent plane.
+// Identical normals in the accumulation (ground truth) and the scoring —
+// the selection would be inconsistent otherwise.
+static void LmProbeNormals(const glm::vec3& n, glm::vec3 out[kLmProbeCount]) {
+	out[0] = n;
+	const glm::vec3 helper = std::abs(n.y) < 0.9f
+		? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+	glm::vec3 t1 = glm::cross(n, helper);
+	t1 = glm::length(t1) > 1e-6f ? t1 / glm::length(t1) : glm::vec3(1.0f, 0.0f, 0.0f);
+	const glm::vec3 t2 = glm::cross(n, t1);
+	constexpr float k = 0.577f;
+	out[1] = glm::normalize(n + t1 * k);
+	out[2] = glm::normalize(n - t1 * k);
+	out[3] = glm::normalize(n + t2 * k);
+	out[4] = glm::normalize(n - t2 * k);
+	out[5] = glm::normalize(n + (t1 + t2) * k);
+}
+
+struct LmFitTexel {
+	// rhs of each candidate count's basis (only the count's prefix is
+	// touched; kLightmapMaxLobes slots keep indexing trivial).
+	glm::vec3 rhs[kLobeCandidateSlots][kLightmapMaxLobes] = {};
+	// Ground-truth diffuse irradiance at the probe hemisphere
+	// (sum w * L * max(dot(d, n_k), 0) — what the runtime's Hill-fitted
+	// cosine convolution must reproduce).
+	glm::vec3 eTrue[kLmProbeCount] = {};
+	// Diagnostics + selection score, computed in the parallel pass:
+	//  - err2/ref2: candidate response vs the TRACED probes. Dominated by
+	//    the ground truth's own Monte-Carlo noise at practical ray
+	//    counts (measured: ~20-80% at 128 rays, nearly count-INdependent),
+	//    so it is reported but never thresholded.
+	//  - deg2/refBest2: candidate response vs the PREFERRED-count
+	//    reconstruction — both smooth fits of the SAME samples, so the
+	//    MC noise cancels and the number measures pure representation
+	//    loss. This drives the selection.
+	double err2[kLobeCandidateSlots] = {};
+	double ref2 = 0.0;
+	double deg2[kLobeCandidateSlots] = {};
+	double refBest2 = 0.0;
+};
+
+void BakeMeshGroupLobeSelect(const GiTraceScene& scene,
+	const SgLightmapBakeConfig& cfg, uint32_t preferredLobeCount,
+	const std::vector<glm::vec3>& fibDirs, const float weight,
+	std::span<const SgLightmapChunkBatch> group, uint64_t groupSeedBase,
+	ThreadPool& pool, std::atomic<uint64_t>& baked,
+	std::atomic<uint64_t>& clamped, SgLightmapBakeStats* stats) {
+	// Candidates: 5/6/9/12 up to the preferred count.
+	uint32_t cand[kLobeCandidateSlots];
+	uint32_t candCount = 0;
+	for (uint32_t c : kLobeCandidates)
+		if (c <= preferredLobeCount)
+			cand[candCount++] = c;
+	if (candCount == 0)
+		return;
+
+	// Flatten the group's bake texels (chunk-major, original order).
+	struct ChunkRef {
+		const SgLightmapChunkBatch* batch = nullptr;
+		size_t texelBase = 0;
+		uint64_t chunkSeed = 0;
+		uint32_t covered = 0;
+	};
+	std::vector<ChunkRef> refs;
+	std::vector<uint32_t> texelChunk;
+	size_t totalTexels = 0;
+	refs.reserve(group.size());
+	for (size_t ci = 0; ci < group.size(); ++ci) {
+		const SgLightmapChunkBatch& b = group[ci];
+		if (!b.payload || !b.texels || b.payload->width == 0
+			|| b.payload->height == 0)
+			continue;
+		ChunkRef r;
+		r.batch = &b;
+		r.texelBase = totalTexels;
+		r.chunkSeed = groupSeedBase + uint64_t(ci) + 1;
+		r.covered = uint32_t(b.texels->size());
+		totalTexels += b.texels->size();
+		texelChunk.insert(texelChunk.end(), b.texels->size(), uint32_t(refs.size()));
+		refs.push_back(r);
+	}
+	if (refs.empty() || totalTexels == 0)
+		return;
+	std::vector<LmFitTexel> fit(totalTexels);
+
+	// Pass 1 (parallel): trace + accumulate every candidate basis, then
+	// Gram-solve each candidate IN-TASK and score its irradiance response
+	// against the traced probes (the solve is the expensive part — folding
+	// it into the trace tasks keeps the pool saturated instead of paying a
+	// serial 4x-Gram pass over every texel).
+	constexpr float kSurfEps = 1e-3f;
+	std::vector<std::future<void>> futures;
+	futures.reserve(totalTexels);
+	for (size_t t = 0; t < totalTexels; ++t) {
+		futures.push_back(pool.enqueue([&, t] {
+			const ChunkRef& r = refs[texelChunk[t]];
+			const SgLightmapTexel& tx = (*r.batch->texels)[t - r.texelBase];
+			const uint64_t seed = (uint64_t(cfg.seed) << 32)
+				^ (r.chunkSeed * 0x9e3779b97f4a7c15ull)
+				^ (uint64_t(t - r.texelBase) * 0xbf58476d1ce4e5b9ull);
+			Pcg32 rng(seed);
+			const glm::vec3 origin = tx.position + tx.normal * kSurfEps;
+			double meanLum = 0.0;
+			std::vector<glm::vec3> Ls;
+			Ls.reserve(fibDirs.size());
+			for (const glm::vec3& d : fibDirs) {
+				const glm::vec3 L = scene.TraceIncoming(origin, d, rng,
+					cfg.maxBounces);
+				Ls.push_back(L);
+				meanLum += Luminance(L);
+			}
+			meanLum /= double(std::max<size_t>(fibDirs.size(), 1));
+			const float cap = std::max(float(meanLum) * 8.0f, 1e-6f);
+			LmFitTexel& f = fit[t];
+			glm::vec3 probes[kLmProbeCount];
+			LmProbeNormals(tx.normal, probes);
+			uint64_t localClamped = 0;
+			for (size_t ri = 0; ri < Ls.size(); ++ri) {
+				glm::vec3 L = Ls[ri];
+				const float l = Luminance(L);
+				if (l > cap && l > 0.0f) {
+					L *= cap / l;
+					++localClamped;
+				}
+				const glm::vec3& d = fibDirs[ri];
+				for (uint32_t s = 0; s < candCount; ++s) {
+					const SgBasisTable* bt = BasisFor(cand[s]);
+					for (uint32_t i = 0; i < cand[s]; ++i) {
+						const float b = std::exp(bt->sharpness
+							* (glm::dot(bt->axes[i], d) - 1.0f));
+						f.rhs[s][i] += L * (b * weight);
+					}
+				}
+				for (uint32_t k = 0; k < kLmProbeCount; ++k) {
+					const float c = std::max(glm::dot(d, probes[k]), 0.0f);
+					if (c > 0.0f)
+						f.eTrue[k] += L * (c * weight);
+				}
+			}
+			clamped += localClamped;
+			// Score every candidate. Preferred first: its response at the
+			// probes is the degradation reference (best available
+			// reconstruction of these samples).
+			glm::vec3 amps[kLightmapMaxLobes];
+			glm::vec3 eBest[kLmProbeCount] = {};
+			SolveRhsGram(f.rhs[candCount - 1], cand[candCount - 1], amps);
+			for (uint32_t k = 0; k < kLmProbeCount; ++k) {
+				eBest[k] = SgLightmapDiffuse(amps, cand[candCount - 1], probes[k]);
+				f.refBest2 += double(glm::dot(eBest[k], eBest[k]));
+			}
+			for (uint32_t s = 0; s < candCount; ++s) {
+				SolveRhsGram(f.rhs[s], cand[s], amps);
+				for (uint32_t k = 0; k < kLmProbeCount; ++k) {
+					const glm::vec3 eFit =
+						SgLightmapDiffuse(amps, cand[s], probes[k]);
+					const glm::vec3 diff = eFit - f.eTrue[k];
+					f.err2[s] += double(glm::dot(diff, diff));
+					const glm::vec3 deg = eFit - eBest[k];
+					f.deg2[s] += double(glm::dot(deg, deg));
+				}
+			}
+			for (uint32_t k = 0; k < kLmProbeCount; ++k)
+				f.ref2 += double(glm::dot(f.eTrue[k], f.eTrue[k]));
+		}));
+	}
+	for (auto& f : futures)
+		f.get();
+
+	// Pass 2 (serial reduce): choose the smallest count whose response
+	// degrades less than the budget relative to the PREFERRED-count
+	// reconstruction. Degradation, not against-truth: the traced probe
+	// ground truth carries Monte-Carlo noise that dominates any practical
+	// ray count (measured ~20-80% at 128 rays, nearly count-independent),
+	// while candidate-vs-preferred compares two smooth fits of the SAME
+	// samples — pure representation loss, noise-free. The chosen slot
+	// doubles as the failure default (preferred count); the per-pick
+	// diagnostics make "preferred genuinely won" vs "nothing passed"
+	// distinguishable.
+	double sumRef2 = 0.0, sumRefBest2 = 0.0;
+	double sumErr2[kLobeCandidateSlots] = {};
+	double sumDeg2[kLobeCandidateSlots] = {};
+	for (size_t t = 0; t < totalTexels; ++t) {
+		sumRef2 += fit[t].ref2;
+		sumRefBest2 += fit[t].refBest2;
+		for (uint32_t s = 0; s < candCount; ++s) {
+			sumErr2[s] += fit[t].err2[s];
+			sumDeg2[s] += fit[t].deg2[s];
+		}
+	}
+	uint32_t chosenSlot = candCount - 1; // preferred count (last candidate)
+	if (sumRefBest2 > 1e-12) {
+		const double relBudget = double(cfg.lobeRelError) * double(cfg.lobeRelError);
+		for (uint32_t s = 0; s < candCount; ++s) {
+			if (sumDeg2[s] <= relBudget * sumRefBest2) {
+				chosenSlot = s;
+				break;
+			}
+		}
+	} else {
+		chosenSlot = 0; // unlit mesh: nothing to represent, 5 lobes suffice
+	}
+	const uint32_t chosen = cand[chosenSlot];
+	if (stats) {
+		SgLightmapBakeStats::LobePick pick{};
+		pick.meshKey = group.front().meshKey;
+		pick.chosen = chosen;
+		pick.candCount = candCount;
+		for (uint32_t s = 0; s < candCount; ++s) {
+			pick.candCounts[s] = cand[s];
+			pick.relErr[s] = sumRef2 > 1e-12
+				? std::sqrt(sumErr2[s] / sumRef2) : 0.0;
+			pick.degErr[s] = sumRefBest2 > 1e-12
+				? std::sqrt(sumDeg2[s] / sumRefBest2) : 0.0;
+		}
+		stats->lobePicks.push_back(pick);
+	}
+
+	// Pass 3 (parallel per chunk, then serial finish): solve the chosen
+	// count and write every chunk's payload.
+	std::vector<uint32_t> texelOf;
+	for (const ChunkRef& r : refs) {
+		SgLightmapAtlas::ChunkPayload& p = *r.batch->payload;
+		const uint32_t w = p.width;
+		const uint32_t h = p.height;
+		p.coeffs.assign(size_t(w) * h * chosen, glm::vec3(0.0f));
+		texelOf.assign(size_t(w) * h, 0xFFFFFFFFu);
+		BuildTexelOf(*r.batch->texels, w, h, texelOf);
+		const size_t total = size_t(w) * h;
+		std::vector<std::future<void>> wf;
+		for (size_t idx = 0; idx < total; ++idx) {
+			const uint32_t texelIdx = texelOf[idx];
+			if (texelIdx == 0xFFFFFFFFu)
+				continue;
+			wf.push_back(pool.enqueue([&, idx, texelIdx] {
+				const size_t t = r.texelBase + texelIdx;
+				glm::vec3 amps[kLightmapMaxLobes];
+				SolveRhsGram(fit[t].rhs[chosenSlot], chosen, amps);
+				for (uint32_t l = 0; l < chosen; ++l)
+					p.coeffs[idx * chosen + l] = amps[l];
+			}));
+		}
+		for (auto& f : wf)
+			f.get();
+		baked += uint64_t(texelOf.size() > 0
+			? size_t(std::count_if(texelOf.begin(), texelOf.end(),
+				[](uint32_t v) { return v != 0xFFFFFFFFu; })) : 0);
+		FinishChunkPayload(p, texelOf, chosen);
+		if (r.batch->chunkMeta)
+			r.batch->chunkMeta->lobeCount = chosen;
 	}
 }
 
@@ -1079,11 +1531,41 @@ bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
 			maxRect = std::max(maxRect, size_t(b.payload->width)
 				* b.payload->height);
 	std::vector<uint32_t> texelOf(maxRect);
-	for (size_t bi = 0; bi < batches.size(); ++bi) {
-		SgLightmapChunkBatch b = batches[bi];
-		if (!b.payload || !b.texels || b.payload->width == 0
-			|| b.payload->height == 0)
+	size_t chunksDone = 0;
+	size_t bi = 0;
+	while (bi < batches.size()) {
+		const SgLightmapChunkBatch& head = batches[bi];
+		if (!head.payload || !head.texels || head.payload->width == 0
+			|| head.payload->height == 0) {
+			++bi;
 			continue;
+		}
+		// Group contiguous batches sharing a meshKey (mesh-major cook
+		// order gives one group per mesh; 0/missing meta degrades to
+		// the fixed-count path).
+		size_t bj = bi + 1;
+		if (cfg.chooseLobeCount && head.chunkMeta && head.meshKey != 0) {
+			while (bj < batches.size() && batches[bj].meshKey == head.meshKey
+				&& batches[bj].chunkMeta && batches[bj].payload
+				&& batches[bj].texels && batches[bj].payload->width != 0)
+				++bj;
+			BakeMeshGroupLobeSelect(scene, cfg, lobeCount, fibDirs, weight,
+				std::span<const SgLightmapChunkBatch>(batches).subspan(bi, bj - bi),
+				uint64_t(bi), pool, baked, clamped, &stats);
+			chunksDone += bj - bi;
+			if (progress && ((chunksDone & 255u) == 0u)) {
+				char line[160];
+				std::snprintf(line, sizeof(line),
+					"lightmap bake: chunk %llu/%llu\n",
+					(unsigned long long)chunksDone,
+					(unsigned long long)batches.size());
+				progress(line);
+			}
+			bi = bj;
+			continue;
+		}
+		// Fixed-count fallback (no selection data or selection off).
+		SgLightmapChunkBatch b = head;
 		if (b.payload->coeffs.size() != size_t(b.payload->width)
 			* b.payload->height * lobeCount)
 			b.payload->coeffs.assign(size_t(b.payload->width)
@@ -1091,14 +1573,16 @@ bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
 		texelOf.resize(size_t(b.payload->width) * b.payload->height);
 		BakeChunkCore(scene, lobeCount, *b.texels, cfg, fibDirs, weight,
 			*b.payload, texelOf, pool, baked, clamped, uint64_t(bi) + 1);
-		if (progress && ((bi & 255u) == 0u)) {
+		++chunksDone;
+		if (progress && ((chunksDone & 255u) == 0u)) {
 			char line[160];
 			std::snprintf(line, sizeof(line),
 				"lightmap bake: chunk %llu/%llu\n",
-				(unsigned long long)(bi + 1),
+				(unsigned long long)chunksDone,
 				(unsigned long long)batches.size());
 			progress(line);
 		}
+		++bi;
 	}
 	stats.texelsBaked = baked.load();
 	stats.pathsTraced = uint64_t(baked.load()) * cfg.raysPerTexel;

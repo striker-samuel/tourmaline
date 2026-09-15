@@ -6,8 +6,9 @@
 //             [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]
 //             [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]
 //             [--compress on|off] [--lz4-accel 1]
-//             [--lightmap on|off --lm-density 32 --lm-lobes 9
-//              --lm-atlas-width 2048 --lm-gutter 1 --lm-rays 128
+//             [--lightmap on|off --lm-density 32 --lm-lobes 12
+//              --lm-atlas-width 2048 --lm-gutter 1 --lm-budget 4194304
+//              --lm-rays 128
 //              --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000
 //              --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]
 //
@@ -79,14 +80,28 @@ struct Args {
 	// ---- Lightmap cook (--lightmap on) ----
 	bool lightmap = false;
 	uint32_t lmDensity = 32;     // texels per meter
-	uint32_t lmLobes = 9;        // 5|6|9|12
+	uint32_t lmLobes = 12;       // 5|6|9|12 — PREFERRED max; the bake
+	                             // selects the smallest count per mesh
+	                             // whose fit residual fits the budget
+	                             // (SgLightmapBakeConfig::lobeRelError)
 	uint32_t lmAtlasWidth = 2048;
-	uint32_t lmGutter = 2;       // per-chart inner margin texels: adjacent
-	                             // charts sit flush in the atlas, so two
-	                             // gutters = the padding between islands
-	                             // (2+2 = 4 texels, the bilinear minimum).
+	// Per-chart inner margin texels. Island-to-island padding is this +
+	// the 2-texel pack gap + the neighbor's margin (4 total at 1); see
+	// SgLightmapAtlas::PackRects. Large gutters are paid per CHART, and
+	// ornamented scenes carry tens of thousands of tiny charts, so keep
+	// this at 1 and let the packer provide the separation.
+	uint32_t lmGutter = 1;
+	// Atlas texel budget (width*height): the GPU cost is budget * 72 B
+	// (9 RGBA16F layers). 4M -> ~288 MB. The density convergence
+	// binary-searches the largest density that fits this budget.
+	uint64_t lmBudget = 4ull * 1024 * 1024;
 	uint32_t lmRays = 128;       // radiance samples per texel
 	uint32_t lmBounces = 3;
+	// Per-mesh lobe selection budget: relative RMS degradation from the
+	// preferred-count reconstruction the mesh may cost by dropping
+	// lobes. 0.15 keeps contrast-heavy meshes at 9-12 and lets smooth
+	// ones drop lower; 0 pins everything at --lm-lobes.
+	float lmLobeRelErr = 0.15f;
 	float sunAzimuth = 30.0f;    // mirrors the runtime environment defaults
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
@@ -233,6 +248,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.lmGutter = static_cast<uint32_t>(std::stoul(v));
 		}
+		else if (a == "--lm-budget") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmBudget = std::stoull(v);
+		}
 		else if (a == "--lm-rays") {
 			std::string v;
 			if (!need(v)) return false;
@@ -242,6 +262,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			std::string v;
 			if (!need(v)) return false;
 			out.lmBounces = static_cast<uint32_t>(std::stoul(v));
+		}
+		else if (a == "--lm-lobe-relerr") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmLobeRelErr = std::stof(v);
 		}
 		else if (a == "--sun-azimuth") {
 			std::string v;
@@ -291,15 +316,27 @@ void Usage() {
 		<< "          [--meshlets on|off] [--max-verts 64] [--max-tris 124]\n"
 		<< "          [--cone-weight 0] [--collapse-static on|off]\n"
 		<< "          [--compress on|off] [--lz4-accel 1]\n"
-		<< "          [--lightmap on|off --lm-density 32 --lm-lobes 9\n"
+		<< "          [--lightmap on|off --lm-density 32 --lm-lobes 12\n"
 		<< "           --lm-atlas-width 2048 --lm-gutter 1 --lm-rays 128\n"
-		<< "           --lm-bounces 3 --sun-azimuth 30 --sun-elevation 55\n"
+		<< "           --lm-budget 4194304 --lm-bounces 3\n"
+		<< "           --sun-azimuth 30 --sun-elevation 55\n"
 		<< "           --sun-intensity 10000\n"
 		<< "           --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
 		<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
 		<< "lightmap UVs + per-mesh chunk id; atlas written to\n"
 		<< "<contentDir>/gi/<scene>.sglm). Sources: sun + static spots + real\n"
 		<< "materials; transmissive (Blend) meshes pass light through.\n"
+		<< "--lm-density is a WORLD-space request (texels/m; scaled nodes like\n"
+		<< "sponza's 0.008 root convert through their world scale). The cook\n"
+		<< "binary-searches the largest density whose atlas fits --lm-budget\n"
+		<< "texels (GPU cost = budget * 72 B for the 9 RGBA16F layers) and\n"
+		<< "logs the converged texels/m + texels/m^2.\n"
+		<< "--lm-lobes is the PREFERRED (max) SG lobe count: the bake fits\n"
+		<< "5/6/9/12 bases per texel and keeps the smallest count per MESH\n"
+		<< "whose fitted irradiance degrades less than --lm-lobe-relerr\n"
+		<< "(default 0.15) from the preferred-count reconstruction\n"
+		<< "(contrast-heavy meshes keep 9-12, smooth ones drop lower; the\n"
+		<< "runtime fetches only the layers the count needs).\n"
 		<< "--dump-pak <pak path>: read-only inspection of an existing pak\n"
 		<< "(no cooking): prints meshes + lmChunk, materials + texture URIs,\n"
 		<< "and embedded textures.\n";
@@ -785,15 +822,16 @@ int main(int argc, char** argv) {
 		SgLightmapAtlas atlas;
 		if (!work.empty()) {
 			// Atlas pack: ALL charts of all meshes as individual rects.
-			// Convergence, in order (densities are WORLD texels/m; each
-			// mesh converts through its own world scale):
-			//   1. halve every mesh's OWN density (per-mesh retry with the
-			//      texel budget; meshes that cannot fit at the floor are
-			//      dropped — they keep the grid/probe ambient);
-			//   2. once every mesh is at 1 texel/m, drop the most
-			//      texel-hungry mesh per round until the pack fits.
+			// Convergence (densities are WORLD texels/m; each mesh
+			// converts through its own world scale):
+			//   1. geometric binary search for the largest density whose
+			//      pack fits --lm-budget (halving finds the feasible low
+			//      bound, then ~6 probes between it and the failing high
+			//      bound; the old halving-only rounds regularly skipped
+			//      2x of usable budget);
+			//   2. at the 1 texel/m floor, drop the most texel-hungry
+			//      mesh per round until the pack fits.
 			constexpr uint32_t kMaxAtlasH = 8192;
-			constexpr uint64_t kAtlasTexelBudget = 4ull * 1024 * 1024;
 			auto tryPack = [&]() {
 				uint32_t chartTotal = 0;
 				for (const LmWork& w : work)
@@ -806,23 +844,24 @@ int main(int argc, char** argv) {
 							args.lmLobes, w.node });
 				return atlas.PackRects(reqs,
 					std::max<uint32_t>(args.lmAtlasWidth, 256), kMaxAtlasH)
-					&& uint64_t(atlas.width) * atlas.height <= kAtlasTexelBudget;
+					&& uint64_t(atlas.width) * atlas.height <= args.lmBudget;
 			};
 			auto rechartAll = [&](float targetWorldDensity) {
-				// Lower every mesh to at most targetWorldDensity (WORLD
-				// texels/m; per-mesh retry + drop on budget overflow at
-				// the floor). Each mesh converts through its own world
+				// Re-chart every mesh at targetWorldDensity (WORLD
+				// texels/m — RAISES or lowers: the binary search probes
+				// both sides). Per-mesh retry + drop on budget overflow
+				// at the floor. Each mesh converts through its own world
 				// scale, so mixed-scale scenes converge uniformly.
 				std::vector<LmWork> kept;
 				kept.reserve(work.size());
 				for (LmWork& w : work) {
 					const float floorD = std::max(w.worldScale, 1e-3f);
-					float density = std::min(w.density, targetWorldDensity * w.worldScale);
-					if (density >= w.density) {
+					float density = std::max(targetWorldDensity * w.worldScale, floorD);
+					if (std::abs(density - w.density)
+						< 1e-4f * std::max(1.0f, w.density)) {
 						kept.push_back(std::move(w));
 						continue;
 					}
-					density = std::max(density, floorD);
 					const smvk::StaticMeshUpload* up =
 						cluster->GetRetainedUpload(w.handle);
 					bool ok = false;
@@ -848,39 +887,88 @@ int main(int argc, char** argv) {
 				work = std::move(kept);
 			};
 			uint32_t round = 0;
-			float targetDensity = chartOpts.texelsPerMeter;
-			while (!tryPack()) {
-				if (++round > 32 || work.empty()) {
-					std::cerr << "[LM] atlas overflow (" << work.size()
-						<< " meshes remain; lower --lm-density)\n";
-					return 1;
+			float fitDensity = 0.0f;   // best (highest) fitting so far
+			float failDensity = chartOpts.texelsPerMeter; // lowest failure
+			// Initial probe at the requested density.
+			if (tryPack()) {
+				fitDensity = chartOpts.texelsPerMeter;
+			} else {
+				// Phase 1: halve until a pack fits (feasible lower bound).
+				float probe = chartOpts.texelsPerMeter;
+				while (probe > 1.0f) {
+					if (++round > 32) {
+						std::cerr << "[LM] atlas overflow\n";
+						return 1;
+					}
+					probe = std::max(probe * 0.5f, 1.0f);
+					rechartAll(probe);
+					if (tryPack()) {
+						fitDensity = probe;
+						break;
+					}
+					failDensity = probe;
 				}
-				if (targetDensity > 1.0f) {
-					// Phase 1: density rounds (world texels/m).
-					targetDensity = std::max(targetDensity * 0.5f, 1.0f);
-					std::cerr << "  [LM] atlas round " << round
-						<< ": density " << targetDensity << "\n" << std::flush;
-					rechartAll(targetDensity);
+				if (fitDensity <= 0.0f) {
+					// Nothing fit even at 1 texel/m: drop the most
+					// texel-hungry mesh per round until the pack fits.
+					rechartAll(1.0f);
+					while (!tryPack()) {
+						if (++round > 32 || work.empty()) {
+							std::cerr << "[LM] atlas overflow (" << work.size()
+								<< " meshes remain; lower --lm-density or raise --lm-budget)\n";
+							return 1;
+						}
+						size_t worst = 0;
+						uint64_t worstTexels = 0;
+						for (size_t i = 0; i < work.size(); ++i) {
+							uint64_t texels = 0;
+							for (const auto& ch : work[i].chart.charts)
+								texels += uint64_t(ch.width) * ch.height;
+							if (texels > worstTexels) {
+								worstTexels = texels;
+								worst = i;
+							}
+						}
+						std::cerr << "  [LM] atlas round " << round
+							<< ": drop node " << work[worst].node
+							<< " (" << worstTexels << " texels)\n" << std::flush;
+						work.erase(work.begin() + ptrdiff_t(worst));
+					}
+					fitDensity = 1.0f;
 				} else {
-					// Phase 2: everything is at the floor — drop the most
-					// texel-hungry mesh and retry.
-					size_t worst = 0;
-					uint64_t worstTexels = 0;
-					for (size_t i = 0; i < work.size(); ++i) {
-						uint64_t texels = 0;
-						for (const auto& ch : work[i].chart.charts)
-							texels += uint64_t(ch.width) * ch.height;
-						if (texels > worstTexels) {
-							worstTexels = texels;
-							worst = i;
+					// Phase 2: geometric binary search in (fit, fail).
+					// ~6 probes narrow the bracket to ~10%, then the
+					// final rechartAll+tryPack leaves the atlas at the
+					// fitting side (identical charts -> identical pack).
+					while (failDensity / fitDensity > 1.10f) {
+						if (++round > 32)
+							break;
+						const float mid = std::sqrt(fitDensity * failDensity);
+						rechartAll(mid);
+						if (tryPack()) {
+							fitDensity = mid;
+						} else {
+							failDensity = mid;
 						}
 					}
-					std::cerr << "  [LM] atlas round " << round
-						<< ": drop node " << work[worst].node
-						<< " (" << worstTexels << " texels)\n" << std::flush;
-					work.erase(work.begin() + ptrdiff_t(worst));
+					rechartAll(fitDensity);
+					if (!tryPack()) {
+						std::cerr << "[LM] atlas convergence regressed (round "
+							<< round << ") - retrying at half density\n" << std::flush;
+						fitDensity = std::max(fitDensity * 0.5f, 1.0f);
+						rechartAll(fitDensity);
+						if (!tryPack()) {
+							std::cerr << "[LM] atlas overflow\n";
+							return 1;
+						}
+					}
 				}
 			}
+			std::cerr << "  [LM] density converged at " << fitDensity
+				<< " texels/m world (" << fitDensity * fitDensity
+				<< " texels/m^2); atlas=" << atlas.width << "x" << atlas.height
+				<< " (" << (uint64_t(atlas.width) * atlas.height * 72 / (1024 * 1024))
+				<< " MiB gpu)\n" << std::flush;
 			// Chunk bases: atlas chunks are in request order (mesh-major,
 			// chart-minor within each mesh).
 			uint32_t next = 0;
@@ -897,6 +985,7 @@ int main(int argc, char** argv) {
 		SgLightmapBakeConfig lcfg{};
 		lcfg.raysPerTexel = std::max<uint32_t>(args.lmRays, 16);
 		lcfg.maxBounces = std::min<uint32_t>(std::max<uint32_t>(args.lmBounces, 1), 8);
+		lcfg.lobeRelError = std::max(args.lmLobeRelErr, 0.0f);
 		SgLightmapBakeStats lstats{};
 		uint32_t lmMeshes = 0;
 		uint64_t seamDups = 0;
@@ -920,10 +1009,16 @@ int main(int argc, char** argv) {
 						wt.normal = glm::normalize(g3 * t.normal);
 						tx.push_back(wt);
 					}
-					SgLightmapChunkBatch b{};
-					b.payload = &atlas.payloads[w.chunkBase + ci];
-					b.texels = &tx;
-					batches.push_back(b);
+				SgLightmapChunkBatch b{};
+				b.payload = &atlas.payloads[w.chunkBase + ci];
+				b.texels = &tx;
+				// Per-mesh lobe selection: chunks group by meshKey and
+				// the bake writes the chosen count into the chunk
+				// (all of a mesh's chunks share it; the draw ring
+				// carries one count per draw).
+				b.meshKey = w.node;
+				b.chunkMeta = &atlas.chunks[w.chunkBase + ci];
+				batches.push_back(b);
 				}
 			}
 			if (!BakeSgLightmapChunks(traceScene, args.lmLobes,
@@ -1008,10 +1103,16 @@ int main(int argc, char** argv) {
 				}
 			}
 			upload->indices = std::move(newIndices);
-			// The draw ring carries the LOBE COUNT (5/6/9/12);
-			// 0xFFFFFFFF = no lightmap stays the pak default.
-			if (smvk::StaticMesh* m = cluster->staticMeshes.get(w.handle))
-				m->lmChunk = args.lmLobes;
+			// The draw ring carries the LOBE COUNT (5/6/9/12) chosen by
+			// the bake for this MESH (read from any of its chunks —
+			// the per-mesh selection wrote them all); 0xFFFFFFFF = no
+			// lightmap stays the pak default.
+			if (smvk::StaticMesh* m = cluster->staticMeshes.get(w.handle)) {
+				m->lmChunk = (!w.chart.charts.empty()
+					&& w.chunkBase < atlas.chunks.size())
+					? atlas.chunks[w.chunkBase].lobeCount
+					: args.lmLobes;
+			}
 			// Rebuild the cooked meshlets: seam duplication appended
 			// vertices + remapped indices, so the import-time meshlets
 			// (which index the OLD layout) no longer match. Rebuild from
@@ -1053,6 +1154,38 @@ int main(int argc, char** argv) {
 			}
 			std::cerr << "  [LM] atlas " << sglmPath.generic_string()
 				<< " (" << std::filesystem::file_size(sglmPath) << " B)\n" << std::flush;
+		}
+		// Lobe selection diagnostics: per mesh, the candidate counts'
+		// relative irradiance errors and the kept count. "Nothing passed"
+		// (all errors over budget, chosen = preferred) is distinguishable
+		// from "the preferred count genuinely won" here — the chunk
+		// histogram alone cannot tell them apart. rel = vs the traced
+		// probes (Monte-Carlo noise floor, diagnostics); deg = vs the
+		// preferred-count reconstruction (the selection criterion).
+		for (const auto& pick : lstats.lobePicks) {
+			std::cerr << "  [LM] lobe pick mesh " << pick.meshKey
+				<< " chosen=" << pick.chosen;
+			for (uint32_t s = 0; s < pick.candCount; ++s)
+				std::cerr << " " << pick.candCounts[s]
+					<< "(rel " << (pick.relErr[s] * 100.0) << "%"
+					<< ", deg " << (pick.degErr[s] * 100.0) << "%)";
+			std::cerr << "\n" << std::flush;
+		}
+		// Lobe histogram: how many chunks the per-mesh selection kept at
+		// each count (flat-lit geometry drops to 5-6, contrast-heavy
+		// areas keep 9-12).
+		{
+			uint32_t lobes5 = 0, lobes6 = 0, lobes9 = 0, lobes12 = 0;
+			for (const SgLightmapChunk& c : atlas.chunks) {
+				if (c.lobeCount == 5) ++lobes5;
+				else if (c.lobeCount == 6) ++lobes6;
+				else if (c.lobeCount == 9) ++lobes9;
+				else ++lobes12;
+			}
+			std::cerr << "  [LM] lobe chunks: 5=" << lobes5
+				<< " 6=" << lobes6
+				<< " 9=" << lobes9
+				<< " 12=" << lobes12 << "\n" << std::flush;
 		}
 		std::cerr << "  [LM] lightmaps: meshes=" << lmMeshes
 			<< " chunks=" << atlas.chunks.size()

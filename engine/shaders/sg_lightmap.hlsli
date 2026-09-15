@@ -191,6 +191,10 @@ void SgLmUnpack(float4 layers[SG_LM_LAYERS], uint lobeCount,
 // atlas layers ride the bindless Texture2D array at frame.lmLayers[0..8];
 // samplers[2] is the linear clamp-to-edge default (atlas amplitudes must
 // never wrap across chart borders).
+// Fetch early-out: the half stream is lobe-major (h = lobe*3 + channel),
+// so a count of L lobes occupies ceil(L*3/4) layers — a 5-lobe draw
+// samples 4 of the 9, a 9-lobe draw 7. Zero-init keeps the unpack's
+// unrolled reads defined for the slots the count never touches.
 bool SgLmSampleAtlas(FrameUniforms frame, uint lobeCount, float2 atlasUv,
     out float3 amps[SG_LM_MAX_LOBES])
 {
@@ -202,6 +206,10 @@ bool SgLmSampleAtlas(FrameUniforms frame, uint lobeCount, float2 atlasUv,
     float4 layers[SG_LM_LAYERS];
     [unroll]
     for (uint t = 0; t < SG_LM_LAYERS; ++t)
+        layers[t] = float4(0.0, 0.0, 0.0, 0.0);
+    const uint needLayers = (lobeCount * 3u + 3u) / 4u;
+    [loop]
+    for (uint t = 0; t < needLayers; ++t)
     {
         layers[t] = textures[
             NonUniformResourceIndex(frame.lmLayers[t])]
