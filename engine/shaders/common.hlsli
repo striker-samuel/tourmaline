@@ -377,29 +377,27 @@ struct FrameUniforms
     vk::BufferPointer<ForwardPlusDecalTileIndexBuffer> decalTileIndices; // 736
     uint decalCount;                                         // 744 0 = decals off
     uint decalMaxPerTile;                                    // 748 list stride
-    // ---- SG 2D lightmaps (STATIC geometry; Engine/GI/lightmap.h). One
-    // shared RGBA16F atlas across 9 bindless 2D textures; the chunk
-    // descriptor array carries per-mesh rect transforms + lobe counts.
-    // Static/dynamic separation: draws flagged lightmapped (materialId
-    // bit30, see default_lit_body) sample the atlas; everything else
-    // (dynamic objects) samples the regular 3D probe grids below or the
-    // fallback ambient. ----
-    vk::BufferPointer<SgLmChunkBuffer> lmChunks;             // 752 chunk descriptors
-    uint lmLayers[9];                                        // 760 atlas bindless slots
-    uint lmChunkCount;                                       // 796 chunks in the buffer
-    uint lmEnabled;                                          // 800 1 = lightmap branch active
-    uint lmPad;                                               // 804 (8-align for the pointer)
+    // ---- SG 2D lightmaps (STATIC geometry; Engine/GI/lightmap.h). The
+    // 9 RGBA16F atlas layers ride the bindless Texture2D array; the
+    // atlas-space UVs are COOKED into the mesh's texCoord2 and the lobe
+    // count rides the draw ring — no chunk buffer exists. Static/dynamic
+    // separation: draws flagged with a lobe count sample the atlas;
+    // everything else (dynamic objects) samples the regular 3D probe
+    // grids below or the fallback ambient. ----
+    uint lmLayers[9];                                        // 752 atlas bindless slots
+    uint lmEnabled;                                          // 788 1 = lightmap branch active
+    uint2 lmPad;                                              // 792 (align regObbs to 8)
     // ---- SG regular 3D probe volumes (DYNAMIC objects; Ready-at-Dawn
     // grids, Engine/GI/regular_volume.h). Hand-placed artist OBBs with
     // density params, baked per volume; 7 RGBA16F 3D textures each,
     // hardware trilinear filtering between neighboring probes. ----
-    vk::BufferPointer<SgRegularObbBuffer> regObbs;           // 808 OBB array
-    uint regLayers[56];                                       // 816 8 volumes x 7 layer slots
-    uint regCount;                                             // 1040 active volumes
-    uint regEnabled;                                           // 1044 1 = grid branch active
-    uint2 regPad;                                              // 1048 (16-align tail)
+    vk::BufferPointer<SgRegularObbBuffer> regObbs;           // 800 OBB array
+    uint regLayers[56];                                       // 808 8 volumes x 7 layer slots
+    uint regCount;                                             // 1032 active volumes
+    uint regEnabled;                                           // 1036 1 = grid branch active
+    uint4 regPad;                                              // 1040 (16-align tail)
     // ---- Deferred-shadow debug visualizers (paper 5.3/5.4). Debug-build
-    // only (DS_DEBUG_VIZ): tail fields so the release layout (752 B) is a
+    // only (DS_DEBUG_VIZ): tail fields so the release layout (1056 B) is a
     // strict prefix of the debug layout. The light-scoped modes
     // re-query the phase-1 (CPU) and phase-2 (GPU) TileGroup masks;
     // dsDebug* pick mode / light / flags / heat scale.
@@ -410,6 +408,7 @@ struct FrameUniforms
     uint dsDebugLight;     // 1076 selected light (sorted index)
     uint dsDebugFlags;     // 1080 bit0 = blend over lit
     uint dsDebugCountCeil; // 1084 count-heat ceiling (lights)
+    uint4 dsDebugPad;      // 1088 (16-align tail)
 #endif
 };
 

@@ -135,7 +135,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 
 		shading[i].color = vertexpack::PackColorUnorm8(src.color);
 		shading[i].uv = vertexpack::PackUvHalf(src.texCoord);
-		shading[i].uv2 = vertexpack::PackUvHalf(src.texCoord2);
+		shading[i].uv2 = vertexpack::PackUv2Unorm(src.texCoord2);
 		shading[i].normal = vertexpack::PackNormalOct(src.normal);
 		shading[i].tangent = vertexpack::PackTangentOct(
 			glm::vec3(src.tangent), src.tangent.w);

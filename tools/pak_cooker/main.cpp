@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -496,8 +497,8 @@ int main(int argc, char** argv) {
 				buildOpts.texelAvg[handle.index()] = *avg;
 				++averaged;
 			}
-			std::cout << "  [LM] textures averaged: " << averaged
-				<< " / " << cluster->ListTextureUris().size() << "\n";
+			std::cerr << "  [LM] textures averaged: " << averaged
+				<< " / " << cluster->ListTextureUris().size() << "\n" << std::flush;
 		}
 		buildOpts.env.sunAzimuthDeg = args.sunAzimuth;
 		buildOpts.env.sunElevationDeg = args.sunElevation;
@@ -533,101 +534,143 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 		traceScene.spots = std::move(spots);
+		std::cerr << "  [LM] trace scene: " << traceScene.Bvh().TriangleCount()
+			<< " tris, " << traceScene.materials.size() << " materials, "
+			<< traceScene.spots.size() << " spots\n" << std::flush;
 
-		// Charts per eligible mesh (1:1 node->mesh, non-Blend material),
-		// with budget-driven density fallback (see lightmap.h).
+		// Charts per eligible mesh (1:1 node->mesh, non-Blend material).
+		// Charts are the ATLAS packing unit (one mesh owns many chart
+		// rects, every rect small), so charting has no failure modes —
+		// the ATLAS round below lowers the density globally until all
+		// charts of ALL meshes fit the budget.
 		struct LmWork {
 			uint32_t node = 0;
 			smvk::ClusterStaticMeshHandle handle{};
 			uint32_t density = 0;
 			SgLightmapChartResult chart;
+			// chunk index base of this mesh's charts in the atlas
+			// (chunk == chart rect; the mesh stamps its lobe count).
+			uint32_t chunkBase = 0;
 		};
 		SgLightmapChartOptions chartOpts{};
 		chartOpts.texelsPerMeter = std::max<uint32_t>(args.lmDensity, 2);
 		chartOpts.gutterTexels = std::clamp<uint32_t>(args.lmGutter, 1, 4);
 		std::vector<LmWork> work;
+		uint32_t skipBlend = 0, skipInstanced = 0, skipNoMat = 0;
 		for (const auto& [node, meshIdx] : cluster->scene.meshForNode) {
 			auto matIt = cluster->scene.materialForNode.find(node);
-			if (matIt == cluster->scene.materialForNode.end())
+			if (matIt == cluster->scene.materialForNode.end()) {
+				++skipNoMat;
 				continue;
+			}
 			const smvk::ClusterMaterialHandle matHandle =
 				cluster->materials.getHandle(matIt->second);
 			if (!matHandle.valid())
 				continue;
 			const smvk::Material* mat = cluster->materials.get(matHandle);
-			if (!mat || mat->alphaMode == smvk::AlphaMode::Blend)
+			if (!mat || mat->alphaMode == smvk::AlphaMode::Blend) {
+				++skipBlend;
 				continue; // transmissive: no charts (pass-through only)
+			}
 			// Instancing check: a mesh shared by several nodes has one
 			// lightmap position per instance — unsupported in v1.
 			uint32_t refs = 0;
 			for (const auto& [n2, m2] : cluster->scene.meshForNode)
 				if (m2 == meshIdx)
 					++refs;
-			if (refs != 1)
+			if (refs != 1) {
+				++skipInstanced;
 				continue;
+			}
 			const smvk::ClusterStaticMeshHandle handle =
 				cluster->staticMeshes.getHandle(meshIdx);
 			const smvk::StaticMeshUpload* upload = cluster->GetRetainedUpload(handle);
-			if (!upload || upload->vertices.empty() || upload->indices.empty())
+			if (!upload || upload->vertices.empty() || upload->indices.empty()) {
+				++skipNoMat;
 				continue;
+			}
 			LmWork w{};
 			w.node = node;
 			w.handle = handle;
+			std::string cerr_;
+			// Per-mesh density fallback: the mesh-total texel budget
+			// (maxChartTexelsTotal) bounds the bake-point count; halve
+			// the density until the mesh fits (floor 1 texel/m).
 			uint32_t density = chartOpts.texelsPerMeter;
-			bool ok = false;
+			bool charted = false;
 			while (density >= 1) {
 				SgLightmapChartOptions o = chartOpts;
 				o.texelsPerMeter = density;
-				std::string cerr_;
-				ok = GenerateLightmapCharts(*upload, o, w.chart, cerr_);
-				if (ok)
+				try {
+					charted = GenerateLightmapCharts(*upload, o, w.chart, cerr_);
+				} catch (const std::exception& e) {
+					std::cerr << "  [LM] chart THREW node " << node << ": "
+						<< e.what() << "\n";
+					return 1;
+				}
+				if (charted)
 					break;
 				if (density <= 1)
 					break;
 				density /= 2;
 			}
-			if (!ok)
-				continue; // over-budget even at floor: probe/sky ambient
+			if (!charted) {
+				std::cerr << "  [LM] chart fail node " << node << " (over "
+					<< "budget even at density " << density << "): "
+					<< cerr_ << "\n";
+				continue;
+			}
 			w.density = density;
+			std::cerr << "  [LM] charted node " << node << " charts="
+				<< w.chart.charts.size() << " density=" << density
+				<< "\n" << std::flush;
 			work.push_back(std::move(w));
 		}
 
 		SgLightmapAtlas atlas;
 		if (!work.empty()) {
-			// Atlas pack with whole-atlas budget fallback (drop chunks that
-			// cannot fit the shrinking budget; the app tolerates gaps).
+			// Atlas pack: ALL charts of all meshes as individual rects.
+			// Convergence, in order:
+			//   1. halve every mesh's OWN density (per-mesh retry with the
+			//      texel budget; meshes that cannot fit at the floor are
+			//      dropped — they keep the grid/probe ambient);
+			//   2. once every mesh is at density 1, drop the most
+			//      texel-hungry mesh per round until the pack fits.
 			constexpr uint32_t kMaxAtlasH = 8192;
 			constexpr uint64_t kAtlasTexelBudget = 4ull * 1024 * 1024;
-			uint64_t rectBudget = chartOpts.maxRectTexels;
-			uint32_t round = 0;
-			while (true) {
-				std::vector<SgLightmapAtlas::RectRequest> reqs;
-				reqs.reserve(work.size());
+			auto tryPack = [&]() {
+				uint32_t chartTotal = 0;
 				for (const LmWork& w : work)
-					reqs.push_back({ glm::uvec2(w.chart.rectWidth, w.chart.rectHeight),
-						args.lmLobes, w.node });
-				if (atlas.PackRects(reqs, std::max<uint32_t>(args.lmAtlasWidth, 256),
-						kMaxAtlasH)
-					&& uint64_t(atlas.width) * atlas.height <= kAtlasTexelBudget)
-					break;
-				if (++round > 6 || work.empty()) {
-					std::cerr << "[LM] atlas overflow (" << work.size()
-						<< " chunks; lower --lm-density)\n";
-					return 1;
-				}
-				rectBudget /= 2;
+					chartTotal += uint32_t(w.chart.charts.size());
+				std::vector<SgLightmapAtlas::RectRequest> reqs;
+				reqs.reserve(chartTotal);
+				for (const LmWork& w : work)
+					for (const auto& ch : w.chart.charts)
+						reqs.push_back({ glm::uvec2(ch.width, ch.height),
+							args.lmLobes, w.node });
+				return atlas.PackRects(reqs,
+					std::max<uint32_t>(args.lmAtlasWidth, 256), kMaxAtlasH)
+					&& uint64_t(atlas.width) * atlas.height <= kAtlasTexelBudget;
+			};
+			auto rechartAll = [&](uint32_t targetDensity) {
+				// Halve every mesh to at most targetDensity (per-mesh
+				// retry + drop on budget overflow at the floor).
 				std::vector<LmWork> kept;
 				kept.reserve(work.size());
 				for (LmWork& w : work) {
-					std::string cerr_;
-					uint32_t density = w.density;
+					uint32_t density = std::min(w.density, targetDensity);
+					if (density == w.density) {
+						kept.push_back(std::move(w));
+						continue;
+					}
+					const smvk::StaticMeshUpload* up =
+						cluster->GetRetainedUpload(w.handle);
 					bool ok = false;
-					while (density >= 1) {
+					while (density >= 1 && up) {
 						SgLightmapChartOptions o = chartOpts;
 						o.texelsPerMeter = density;
-						o.maxRectTexels = rectBudget;
-						ok = GenerateLightmapCharts(*cluster->GetRetainedUpload(w.handle),
-							o, w.chart, cerr_);
+						std::string cerr_;
+						ok = GenerateLightmapCharts(*up, o, w.chart, cerr_);
 						if (ok)
 							break;
 						if (density <= 1)
@@ -637,65 +680,124 @@ int main(int argc, char** argv) {
 					if (ok) {
 						w.density = density;
 						kept.push_back(std::move(w));
+					} else {
+						std::cerr << "  [LM] dropped node " << w.node
+							<< " (cannot fit the texel budget)\n" << std::flush;
 					}
 				}
 				work = std::move(kept);
+			};
+			uint32_t round = 0;
+			uint32_t targetDensity = chartOpts.texelsPerMeter;
+			while (!tryPack()) {
+				if (++round > 32 || work.empty()) {
+					std::cerr << "[LM] atlas overflow (" << work.size()
+						<< " meshes remain; lower --lm-density)\n";
+					return 1;
+				}
+				if (targetDensity > 1) {
+					// Phase 1: density rounds.
+					targetDensity = std::max<uint32_t>(targetDensity / 2, 1u);
+					std::cerr << "  [LM] atlas round " << round
+						<< ": density " << targetDensity << "\n" << std::flush;
+					rechartAll(targetDensity);
+				} else {
+					// Phase 2: everything is at the floor — drop the most
+					// texel-hungry mesh and retry.
+					size_t worst = 0;
+					uint64_t worstTexels = 0;
+					for (size_t i = 0; i < work.size(); ++i) {
+						uint64_t texels = 0;
+						for (const auto& ch : work[i].chart.charts)
+							texels += uint64_t(ch.width) * ch.height;
+						if (texels > worstTexels) {
+							worstTexels = texels;
+							worst = i;
+						}
+					}
+					std::cerr << "  [LM] atlas round " << round
+						<< ": drop node " << work[worst].node
+						<< " (" << worstTexels << " texels)\n" << std::flush;
+					work.erase(work.begin() + ptrdiff_t(worst));
+				}
+			}
+			// Chunk bases: atlas chunks are in request order (mesh-major,
+			// chart-minor within each mesh).
+			uint32_t next = 0;
+			for (LmWork& w : work) {
+				w.chunkBase = next;
+				next += uint32_t(w.chart.charts.size());
 			}
 		}
 
-		// Bake every chunk (sun + spots + materials + pass-through glass).
+		// Bake every chart (sun + spots + materials + pass-through glass)
+		// in ONE shared-pool batch, then stamp the results into the
+		// retained uploads: per-vertex atlas-space texCoord2 + the mesh's
+		// lobe count (lmChunk).
 		SgLightmapBakeConfig lcfg{};
 		lcfg.raysPerTexel = std::max<uint32_t>(args.lmRays, 16);
 		lcfg.maxBounces = std::min<uint32_t>(std::max<uint32_t>(args.lmBounces, 1), 8);
 		SgLightmapBakeStats lstats{};
 		uint32_t lmMeshes = 0;
-		for (size_t ci = 0; ci < work.size(); ++ci) {
-			LmWork& w = work[ci];
-			// World-space texels: chart positions are node-local; the trace
-			// scene is world-space.
-			std::vector<SgLightmapTexel> texels;
-			texels.reserve(w.chart.texels.size());
-			const glm::mat4& g = cluster->scene.globalTransform[w.node];
-			const glm::mat3 g3(g);
-			for (const SgLightmapTexel& t : w.chart.texels) {
-				SgLightmapTexel wt = t;
-				wt.position = glm::vec3(g * glm::vec4(t.position, 1.0f));
-				wt.normal = glm::normalize(g3 * t.normal);
-				texels.push_back(wt);
+		{
+			// World-space texels per chart (chart positions are
+			// node-local; the trace scene is world-space).
+			std::vector<std::vector<SgLightmapTexel>> chartTexels;
+			std::vector<SgLightmapChunkBatch> batches;
+			chartTexels.reserve(atlas.chunks.size());
+			batches.reserve(atlas.chunks.size());
+			for (const LmWork& w : work) {
+				const glm::mat4& g = cluster->scene.globalTransform[w.node];
+				const glm::mat3 g3(g);
+				for (uint32_t ci = 0; ci < w.chart.charts.size(); ++ci) {
+					const auto& ch = w.chart.charts[ci];
+					std::vector<SgLightmapTexel>& tx = chartTexels.emplace_back();
+					tx.reserve(ch.texels.size());
+					for (const SgLightmapTexel& t : ch.texels) {
+						SgLightmapTexel wt = t;
+						wt.position = glm::vec3(g * glm::vec4(t.position, 1.0f));
+						wt.normal = glm::normalize(g3 * t.normal);
+						tx.push_back(wt);
+					}
+					SgLightmapChunkBatch b{};
+					b.payload = &atlas.payloads[w.chunkBase + ci];
+					b.texels = &tx;
+					batches.push_back(b);
+				}
 			}
-			SgLightmapBakeStats cs{};
-			if (!BakeSgLightmapChunk(traceScene, args.lmLobes, texels, lcfg,
-					atlas.payloads[ci], cs,
-					[](const char* line) { std::cout << line; })) {
-				std::cerr << "[LM] bake failed for node " << w.node << "\n";
+			if (!BakeSgLightmapChunks(traceScene, args.lmLobes,
+					std::span<const SgLightmapChunkBatch>(batches), lcfg,
+					lstats, [](const char* line) { std::cout << line; })) {
+				std::cerr << "[LM] bake failed\n";
 				return 1;
 			}
-			lstats.texelsBaked += cs.texelsBaked;
-			lstats.pathsTraced += cs.pathsTraced;
-			lstats.samplesClamped += cs.samplesClamped;
-			// Stamp the cook result: per-vertex texCoord2 + mesh chunk id.
-			smvk::StaticMeshUpload* upload = nullptr;
-			{
-				// Retained uploads back the serialized blobs; write the
-				// lightmap UVs into them (the only mutation the cook makes).
-				if (smvk::StaticMeshUpload* up = const_cast<smvk::StaticMeshUpload*>(
-						cluster->GetRetainedUpload(w.handle)))
-					upload = up;
-			}
-			if (!upload || w.chart.uv2.size() != upload->vertices.size()) {
+		}
+		for (LmWork& w : work) {
+			smvk::StaticMeshUpload* upload = const_cast<smvk::StaticMeshUpload*>(
+				cluster->GetRetainedUpload(w.handle));
+			if (!upload || w.chart.vertexChart.size() != upload->vertices.size()) {
 				std::cerr << "[LM] vertex count mismatch for node " << w.node
-					<< " - chunk dropped\n";
+					<< " - mesh skipped\n";
 				continue;
 			}
-			for (size_t v = 0; v < upload->vertices.size(); ++v)
-				upload->vertices[v].texCoord2 = w.chart.uv2[v];
+			// Atlas-space uv2: owning chart's rect transform baked into the
+			// vertex UV (the shader samples the atlas directly).
+			for (size_t v = 0; v < upload->vertices.size(); ++v) {
+				const uint32_t chartIdx = w.chart.vertexChart[v];
+				if (chartIdx == 0xFFFFFFFFu)
+					continue; // unclaimed: keeps (0,0), never lightmapped
+				upload->vertices[v].texCoord2 = atlas.AtlasUv(
+					w.chunkBase + chartIdx, chartOpts.gutterTexels,
+					w.chart.chartLocalUv[v]);
+			}
+			// The draw ring carries the LOBE COUNT (5/6/9/12);
+			// 0xFFFFFFFF = no lightmap stays the pak default.
 			if (smvk::StaticMesh* m = cluster->staticMeshes.get(w.handle))
-				m->lmChunk = uint32_t(ci);
+				m->lmChunk = args.lmLobes;
 			++lmMeshes;
 		}
 		lstats.seconds = std::chrono::duration<double>(
 			std::chrono::steady_clock::now() - lmT0).count();
-
 		// Write the atlas next to the pak: <contentDir>/gi/<scene>.sglm.
 		if (!work.empty()) {
 			std::filesystem::path pakPath(args.outPak);
@@ -710,16 +812,19 @@ int main(int argc, char** argv) {
 				std::cerr << "[LM] atlas write failed: " << werr << std::endl;
 				return 1;
 			}
-			std::cout << "  [LM] atlas " << sglmPath.generic_string()
-				<< " (" << std::filesystem::file_size(sglmPath) << " B)\n";
+			std::cerr << "  [LM] atlas " << sglmPath.generic_string()
+				<< " (" << std::filesystem::file_size(sglmPath) << " B)\n" << std::flush;
 		}
-		std::cout << "  [LM] lightmaps: meshes=" << lmMeshes
+		std::cerr << "  [LM] lightmaps: meshes=" << lmMeshes
 			<< " chunks=" << atlas.chunks.size()
 			<< " atlas=" << atlas.width << "x" << atlas.height
 			<< " texels=" << lstats.texelsBaked
 			<< " paths=" << lstats.pathsTraced
 			<< " clamped=" << lstats.samplesClamped
-			<< " seconds=" << lstats.seconds << "\n";
+			<< " seconds=" << lstats.seconds
+			<< " (skipped: blend=" << skipBlend
+			<< " instanced=" << skipInstanced
+			<< " nomat=" << skipNoMat << ")\n" << std::flush;
 	}
 
 	smvk::PakWriter writer;

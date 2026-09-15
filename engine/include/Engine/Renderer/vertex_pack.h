@@ -139,6 +139,12 @@ inline uint32_t PackUvHalf(const glm::vec2& uv) noexcept {
 	return glm::packHalf2x16(uv);
 }
 
+// Lightmap-atlas UV: normalized [0,1], UNORM16 for texel precision at
+// 8192-wide atlases (half-float quantizes to whole texels there).
+inline uint32_t PackUv2Unorm(const glm::vec2& uv) noexcept {
+	return glm::packUnorm2x16(glm::clamp(uv, glm::vec2(0.0f), glm::vec2(1.0f)));
+}
+
 inline uint32_t PackColorUnorm8(const glm::vec4& color) noexcept {
 	return glm::packUnorm4x8(color);
 }

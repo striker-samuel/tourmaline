@@ -111,14 +111,17 @@ private:
 // Atlas types
 // ---------------------------------------------------------------------------
 
-// One chunk = one static mesh's lightmap rect. GPU mirror:
-// SgLightmapChunkGpu in sg_lightmap.hlsli (16 B).
+// One chunk = one CHART rect (charts are the atlas packing unit — mesh
+// regions are not; a mesh owns many chunks). Chunks carry no runtime GPU
+// mirror: the cook bakes each rect's atlas-space transform into the
+// mesh's texCoord2, and the lobe count rides the gfx draw ring, so the
+// shader only needs the 9 atlas layers.
 struct SgLightmapChunk {
 	uint32_t lobeCount = 9;   // 5/6/9/12
 	uint32_t baseLayer = 0;   // first of the 9 RGBA16F atlas textures (shared atlas: 0)
-	float rectMin[2] = {};    // atlas UV rect (texel-exact, includes gutter)
-	float rectMax[2] = {};
-	uint32_t meshKey = 0;     // bake-side mesh index (node id at bake time)
+	float rectMin[2] = {};    // atlas texel rect origin (includes margin)
+	float rectMax[2] = {};    // atlas texel rect end
+	uint32_t meshKey = 0;     // owning node id (tool/debug)
 };
 
 class SgLightmapAtlas {
@@ -126,10 +129,8 @@ public:
 	uint32_t width = 0;   // texels (shared across the 9 layers)
 	uint32_t height = 0;
 	std::vector<SgLightmapChunk> chunks;
-	// Voxel-major texels: coeffs[(y * width + x)][lobe], lobeCount varies
-	// per chunk; bake fills only inside chunk rects (gutters dilated).
-	// Stored per chunk-run to allow mixed counts: flat array of
-	// per-chunk payloads in chunk order.
+	// Per-chunk payload: coeffs[(y * width + x)][lobe] in chunk-rect
+	// coords; bake fills covered texels, the dilation fills margins.
 	struct ChunkPayload {
 		uint32_t width = 0, height = 0; // rect size in texels
 		std::vector<glm::vec3> coeffs;  // width*height*lobeCount
@@ -145,7 +146,7 @@ public:
 	// height up to maxHeight; width/height land on the packed extent
 	// (+1 padding texel, clamped). chunks/payloads are rebuilt: rects from
 	// the pack, lobeCount/meshKey from the requests, payloads zeroed to
-	// each rect. Returns false when the rects do not fit.
+	// each rect. Returns false when the rects do not fit maxHeight.
 	struct RectRequest {
 		glm::uvec2 size{ 0, 0 };
 		uint32_t lobeCount = 9;
@@ -153,6 +154,11 @@ public:
 	};
 	bool PackRects(const std::vector<RectRequest>& requests,
 		uint32_t atlasWidth, uint32_t maxHeight);
+
+	// Atlas-space uv for a chart-local uv: rect origin + inner mapping,
+	// normalized over the atlas (what the cook bakes into texCoord2).
+	glm::vec2 AtlasUv(uint32_t chunk, uint32_t margin,
+		const glm::vec2& chartLocalUv) const;
 
 	// 9 RGBA16F layer payloads for GPU upload (uint16 halves, row-major).
 	// Layer t texel (x,y) carries stream halves [t*4, t*4+3] of the
@@ -196,34 +202,52 @@ using GiBakeProgress = void (*)(const char* line);
 
 // Bakes one chunk: traces every texel at its surface point (offset along
 // the normal), fits the chunk's fixed basis with the diagonal projection,
-// 8x-mean firefly clamp (same as the probe bakers).
+// 8x-mean firefly clamp (same as the probe bakers). Creates its own
+// thread pool — fine for single-chunk callers/tests.
 bool BakeSgLightmapChunk(const GiTraceScene& scene, uint32_t lobeCount,
 	const std::vector<SgLightmapTexel>& texels, const SgLightmapBakeConfig& config,
 	SgLightmapAtlas::ChunkPayload& out, SgLightmapBakeStats& stats,
 	GiBakeProgress progress = nullptr);
 
+// Batch variant: bakes many chunks with ONE shared thread pool (the cook
+// bakes thousands of chart chunks; per-call pool churn would dominate).
+struct SgLightmapChunkBatch {
+	SgLightmapAtlas::ChunkPayload* payload = nullptr;
+	const std::vector<SgLightmapTexel>* texels = nullptr;
+};
+bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
+	std::span<const SgLightmapChunkBatch> batches,
+	const SgLightmapBakeConfig& config, SgLightmapBakeStats& stats,
+	GiBakeProgress progress = nullptr);
+
 // UV2 chart generation (no external unwrapper): greedy planar-chart
 // unwrap (face-normal planes, region-grow within ~37deg agreement),
-// uniform texel density, shelf-packed chart rects with shared inner
-// margins. The result is ONE lightmap UV per ORIGINAL mesh vertex
-// (no vertex duplication, no geometry replacement): each vertex is
-// claimed by the first chart to touch it and maps through that
-// chart's projection. Vertices shared across chart SEAMS approximate
+// uniform texel density, per-chart rects with inner margins. The result
+// is per-CHART data: rect sizes, per-vertex chart ownership, chart-local
+// UVs, and per-chart bake texels. The ATLAS packs charts (not mesh
+// regions — a mesh owns many chart rects), so no mesh can fail packing:
+// every chart is small (capped). Each vertex is claimed by the first
+// chart to touch it; vertices shared across chart SEAMS approximate
 // (the seam-side triangle samples the neighbor chart's margin — a
 // mild, dilated artifact confined to seams).
 //
-// The COOK fills StaticVertex::texCoord2 with these UVs and stamps the
-// mesh's atlas chunk; the runtime never touches geometry. Transmissive
-// (Blend) meshes get no charts (they stay runtime-lit).
+// The COOK converts chart-local UVs to atlas-space (SgLightmapAtlas::
+// AtlasUv) and writes them into StaticVertex::texCoord2; the lobe count
+// rides the draw ring. Transmissive (Blend) meshes get no charts (they
+// stay runtime-lit).
 struct SgLightmapChartOptions {
 	uint32_t texelsPerMeter = 32; // lightmap density
 	uint32_t gutterTexels = 1;    // inner margin per chart (1..4)
-	uint32_t maxRectWidth = 1024;  // shelf row width for the mesh region
-	uint32_t maxRectHeight = 8192; // mesh region height cap
-	// Mesh-region texel budget (chart bbox waste included): big surfaces
-	// at high density blow past any sane atlas, so the cook lowers the
-	// density until the region fits this budget. 0 = no budget.
-	uint64_t maxRectTexels = 1536ull * 1024;
+	// Chart size cap (texels): region growth stops here, so every chart
+	// rect is small and atlas-packable regardless of mesh size.
+	uint32_t maxChartTexels = 256u * 256;
+	// Per-mesh TOTAL budget (sum of chart rect areas, checked before
+	// rasterization): a mesh with thousands of chart rects produces an
+	// unbounded texel count otherwise (the sponza arches hit ~20M texels
+	// = GBs of bake points). Exceeding it fails the call so the cook can
+	// halve the density and retry; the atlas rounds bound the scene
+	// total. 0 = no budget.
+	uint64_t maxChartTexelsTotal = 1536ull * 1024;
 };
 
 // StaticMeshUpload is forward-declared at smvk:: scope above (the gi
@@ -231,15 +255,19 @@ struct SgLightmapChartOptions {
 // shadow smvk::StaticMeshUpload inside this namespace).
 
 struct SgLightmapChartResult {
-	// One lightmap UV per ORIGINAL mesh vertex (parallel to
-	// upload.vertices; the cook writes these into texCoord2).
-	std::vector<glm::vec2> uv2;
-	float rectMin[2] = {};    // atlas UV rect (includes margin)
-	float rectMax[2] = {};
-	uint32_t rectWidth = 0;   // rect size in texels (incl. margin)
-	uint32_t rectHeight = 0;
-	// Bake points: world position/normal at each covered texel center.
-	std::vector<SgLightmapTexel> texels;
+	// Per chart: rect size in texels (incl. margins) and the bake points
+	// (world position/normal + chart-rect-local uv per covered texel).
+	struct Chart {
+		uint32_t width = 0;
+		uint32_t height = 0;
+		std::vector<SgLightmapTexel> texels;
+	};
+	std::vector<Chart> charts;
+	// Per ORIGINAL mesh vertex (parallel to upload.vertices): owning
+	// chart index (0xFFFFFFFF = unclaimed/degenerate) and the
+	// chart-local uv in the chart's inner rect, [0,1].
+	std::vector<uint32_t> vertexChart;
+	std::vector<glm::vec2> chartLocalUv;
 };
 
 bool GenerateLightmapCharts(const StaticMeshUpload& upload,

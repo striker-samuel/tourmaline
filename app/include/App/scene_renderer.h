@@ -395,24 +395,23 @@ struct FrameUniforms
 	uint64_t decalTileIndices = 0;  // 736 builder decal list indices
 	uint32_t decalCount = 0;        // 744 live decals this frame
 	uint32_t decalMaxPerTile = 0;   // 748 list stride (matches allocation)
-	// ---- SG 2D lightmaps (STATIC geometry, Engine/GI/lightmap.h): one
-	// shared RGBA16F atlas across 9 bindless 2D textures + a chunk
-	// descriptor buffer (per-mesh rect + lobe count). Draws flagged
-	// lightmapped (materialId bit30) sample the atlas; dynamic objects
-	// sample the regular grids below. ----
-	uint64_t lmChunks = 0;          // 752 SgLmChunkGpu array (32 B each)
-	uint32_t lmLayers[9] = {};      // 760 atlas bindless slots (layers 0..8)
-	uint32_t lmChunkCount = 0;       // 796 chunks in the buffer
-	uint32_t lmEnabled = 0;         // 800 1 = lightmap branch active
-	uint32_t lmPad_ = 0;            // 804 8-align pad (mirrors HLSL lmPad)
+	// ---- SG 2D lightmaps (STATIC geometry, Engine/GI/lightmap.h): 9
+	// RGBA16F bindless atlas layers. The atlas-space UVs are COOKED into
+	// the pak's vertex payloads (texCoord2) and the lobe count rides the
+	// draw ring — NO chunk buffer exists at runtime. Static/dynamic
+	// separation: draws carrying a lobe count sample the atlas; dynamic
+	// objects sample the regular grids below. ----
+	uint32_t lmLayers[9] = {};      // 752 atlas bindless slots (layers 0..8)
+	uint32_t lmEnabled = 0;         // 788 1 = lightmap branch active
+	uint32_t lmPad_[2] = {};        // 792 8-align pad (mirrors HLSL lmPad)
 	// ---- SG regular 3D probe volumes (DYNAMIC objects, Engine/GI/
 	// regular_volume.h): artist OBBs + density, baked per volume, 7
 	// RGBA16F 3D textures each, hardware trilinear between probes. ----
-	uint64_t regObbs = 0;           // 808 SgRegularObbGpu array
-	uint32_t regLayers[56] = {};    // 816 8 volumes x 7 layer slots
-	uint32_t regCount = 0;          // 1040 active volumes
-	uint32_t regEnabled = 0;        // 1044 1 = grid branch active
-	uint32_t regPad_[2] = {};       // 1048 16-align tail (mirrors HLSL regPad)
+	uint64_t regObbs = 0;           // 800 SgRegularObbGpu array
+	uint32_t regLayers[56] = {};    // 808 8 volumes x 7 layer slots
+	uint32_t regCount = 0;          // 1032 active volumes
+	uint32_t regEnabled = 0;        // 1036 1 = grid branch active
+	uint32_t regPad_[4] = {};       // 1040 16-align tail (mirrors HLSL regPad)
 #if defined(DS_DEBUG_VIZ)
 	// ---- Deferred-shadow debug visualizers (paper 5.3/5.4, debug builds
 	// only — CMake defines DS_DEBUG_VIZ for the App target and for DXC in
@@ -430,6 +429,7 @@ struct FrameUniforms
 	uint32_t dsDebugLight = 0;     // 1076 selected light (sorted index)
 	uint32_t dsDebugFlags = 0;     // 1080 bit0 = blend over lit
 	uint32_t dsDebugCountCeil = 32; // 1084 count-heat ceiling (lights)
+	uint32_t dsDebugPad_[4] = {};  // 1088 16-align tail (mirrors HLSL)
 #endif
 };
 static_assert(sizeof(FrameUniforms) % 16 == 0);
@@ -440,9 +440,10 @@ static_assert(sizeof(FrameUniforms) % 16 == 0);
 // so the release layout stays a strict prefix of the debug one.
 // Release prefix: 1056 = 7*64 (matrices) + 16 (camPos/time) + 16 (viewport)
 //   + 32 (near/far/exposure/ao) + 128 (env) + 32 (DS) + 48 (GI) + 32
-//   (decals) + 304 (lightmap + regular volumes).
+//   (decals) + 40 (lmLayers/lmEnabled/pads) + 256 (regLayers) + 24
+//   (regObbs/regCount/regEnabled/regPad). Debug tail: +48.
 #if defined(DS_DEBUG_VIZ)
-static_assert(sizeof(FrameUniforms) == 1056 + 32);
+static_assert(sizeof(FrameUniforms) == 1104);
 #else
 static_assert(sizeof(FrameUniforms) == 1056);
 #endif
@@ -481,16 +482,14 @@ static_assert(offsetof(FrameUniforms, decalTileCounts) == 728);
 static_assert(offsetof(FrameUniforms, decalTileIndices) == 736);
 static_assert(offsetof(FrameUniforms, decalCount) == 744);
 static_assert(offsetof(FrameUniforms, decalMaxPerTile) == 748);
-static_assert(offsetof(FrameUniforms, lmChunks) == 752);
-static_assert(offsetof(FrameUniforms, lmLayers) == 760);
-static_assert(offsetof(FrameUniforms, lmChunkCount) == 796);
-static_assert(offsetof(FrameUniforms, lmEnabled) == 800);
-static_assert(offsetof(FrameUniforms, lmPad_) == 804);
-static_assert(offsetof(FrameUniforms, regObbs) == 808);
-static_assert(offsetof(FrameUniforms, regLayers) == 816);
-static_assert(offsetof(FrameUniforms, regCount) == 1040);
-static_assert(offsetof(FrameUniforms, regEnabled) == 1044);
-static_assert(offsetof(FrameUniforms, regPad_) == 1048);
+static_assert(offsetof(FrameUniforms, lmLayers) == 752);
+static_assert(offsetof(FrameUniforms, lmEnabled) == 788);
+static_assert(offsetof(FrameUniforms, lmPad_) == 792);
+static_assert(offsetof(FrameUniforms, regObbs) == 800);
+static_assert(offsetof(FrameUniforms, regLayers) == 808);
+static_assert(offsetof(FrameUniforms, regCount) == 1032);
+static_assert(offsetof(FrameUniforms, regEnabled) == 1036);
+static_assert(offsetof(FrameUniforms, regPad_) == 1040);
 #if defined(DS_DEBUG_VIZ)
 static_assert(offsetof(FrameUniforms, dsTileMasks) == 1056);
 static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 1064);
@@ -1165,16 +1164,15 @@ protected:
 	void LoadGiVolume(smvk::OverlayVfs& vfs);
 	// ---- SG 2D lightmaps (STATIC geometry, tools/gi_baker --lightmap-out
 	// output). Loaded once at scene init from content/gi/<scene>.sglm:
-	// uploads the chunk descriptor buffer + 9 RGBA16F atlas textures
-	// (bindless) — nothing else. The lightmap UVs and per-mesh chunk ids
-	// are COOKED into the pak (texCoord2 / StaticMesh::lmChunk riding the
-	// draw ring). Static/dynamic separation: chunk draws sample the
-	// atlas; dynamic objects sample the regular 3D probe grids (below)
-	// or the fallback ambient. Missing file = not baked yet (non-fatal).
+	// uploads ONLY the 9 RGBA16F atlas textures (bindless). The
+	// atlas-space UVs + per-mesh lobe counts are COOKED into the pak
+	// (texCoord2 / StaticMesh::lmChunk riding the draw ring) — no chunk
+	// buffer exists at runtime. Static/dynamic separation: lobe-flagged
+	// draws sample the atlas; dynamic objects sample the regular 3D probe
+	// grids (below) or the fallback ambient. Missing file = not baked yet
+	// (non-fatal).
 	bool m_lmLoaded = false;
 	smvk::gi::SgLightmapAtlas m_lmAtlas; // CPU mirror (chunk table + debug views)
-	smvk::Holder<smvk::BufferHandle> m_lmChunksBuffer;
-	uint64_t m_lmChunksAddress = 0;
 	smvk::Holder<smvk::TextureHandle> m_lmLayers[9]; // atlas RGBA16F 2D
 	uint32_t m_lmLayerSlots[9] = {};  // bindless slots (FrameUniforms.lmLayers)
 	bool LmActive() const { return m_lmLoaded; }

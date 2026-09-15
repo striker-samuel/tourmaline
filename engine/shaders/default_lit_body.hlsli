@@ -947,13 +947,13 @@ PSOut mainPS(PSIn IN)
     // below and ADD on top of the analytic sky ambient (same convention;
     // a lightmapped pixel skips the probe volume so nothing doubles).
     // ---------------------------------------------------------------
-    // ---------------------------------------------------------------
     // Static/dynamic baked-GI separation (see sg_lightmap.hlsli +
     // sg_regular.hlsli): exactly ONE baked ambient source per pixel,
     // by priority:
-    //   1. STATIC draws (per-draw lmChunk from the gfx draw ring) sample
-    //      the 2D SG lightmap atlas (HW-bilinear amplitudes, Hill-fitted
-    //      diffuse + warped-NDF specular).
+    //   1. STATIC draws (per-draw lobe count from the gfx draw ring;
+    //      the atlas-space uv is the cooked texCoord2) sample the 2D SG
+    //      lightmap atlas (HW-bilinear amplitudes, Hill-fitted diffuse +
+    //      warped-NDF specular).
     //   2. DYNAMIC draws inside an artist OBB sample the regular 3D SG
     //      probe grids (HW-trilinear between neighboring probes).
     //   3. Anything else falls to the adaptive octree probe volume.
@@ -965,13 +965,13 @@ PSOut mainPS(PSIn IN)
     float3 bakedE = float3(0.0f, 0.0f, 0.0f); // diffuse irradiance (scaled)
     const uint giDbgMode = frame.giDebug & 0xffu;
 
-    if (frame.lmEnabled != 0u && IN.lmChunk != 0xFFFFFFFFu)
+    // IN.lmChunk = cooked lobe count (5/6/9/12; 0xFFFFFFFF = none).
+    if (frame.lmEnabled != 0u && IN.lmChunk >= 5u && IN.lmChunk <= 12u)
     {
         float3 lmAmps[SG_LM_MAX_LOBES];
-        if (SgLmSampleChunk(frame, IN.lmChunk, IN.lightmapUv, lmAmps))
+        if (SgLmSampleAtlas(frame, IN.lmChunk, IN.lightmapUv, lmAmps))
         {
-            const uint lmLobes = uint(
-                frame.lmChunks.Get().chunks[IN.lmChunk].atlasInfo.z);
+            const uint lmLobes = IN.lmChunk;
             const float lmScale = max(frame.giIntensity, 0.0f);
             const float3 lmE = SgLmDiffuseIrradiance(lmAmps, lmLobes, N) * lmScale;
             giSource = 1u;

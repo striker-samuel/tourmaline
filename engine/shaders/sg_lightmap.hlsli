@@ -184,26 +184,21 @@ void SgLmUnpack(float4 layers[SG_LM_LAYERS], uint lobeCount,
     }
 }
 
-// Samples the frame's lightmap atlas for chunk `chunkIdx` at chunk-local
-// uv [0,1] (the vertex's texCoord2-driven coordinate) and unpacks the
-// lobes. The 9 atlas layers ride the bindless Texture2D array at
-// frame.lmLayers[0..8]; samplers[2] is the linear clamp-to-edge default
-// (atlas amplitudes must never wrap across chunk borders).
-bool SgLmSampleChunk(FrameUniforms frame, uint chunkIdx, float2 uv,
+// Samples the frame's lightmap atlas at ATLAS-SPACE uv (the vertex's
+// texCoord2 already carries the chart's rect transform — the cook bakes
+// it; there is no chunk descriptor). lobeCount comes from the draw ring
+// (GfxDraw.misc.w: 5/6/9/12; the caller gates on 0xFFFFFFFF). The 9
+// atlas layers ride the bindless Texture2D array at frame.lmLayers[0..8];
+// samplers[2] is the linear clamp-to-edge default (atlas amplitudes must
+// never wrap across chart borders).
+bool SgLmSampleAtlas(FrameUniforms frame, uint lobeCount, float2 atlasUv,
     out float3 amps[SG_LM_MAX_LOBES])
 {
     [unroll]
     for (uint lobe = 0; lobe < SG_LM_MAX_LOBES; ++lobe)
         amps[lobe] = float3(0, 0, 0);
-    if (chunkIdx == 0xFFFFFFFFu || chunkIdx >= frame.lmChunkCount)
+    if (lobeCount == 0u || lobeCount > 12u)
         return false;
-    const SgLmChunkGpu chunk = frame.lmChunks.Get().chunks[chunkIdx];
-    const uint lobeCount = uint(chunk.atlasInfo.z);
-    if (lobeCount == 0u)
-        return false;
-    // Chunk-local -> atlas UV: (rectMin + uv * rectSize) / atlasSize.
-    const float2 atlasUv = (chunk.rectMinSize.xy
-        + uv * chunk.rectMinSize.zw) * chunk.atlasInfo.xy;
     float4 layers[SG_LM_LAYERS];
     [unroll]
     for (uint t = 0; t < SG_LM_LAYERS; ++t)

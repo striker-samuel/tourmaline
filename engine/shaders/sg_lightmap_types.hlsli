@@ -1,19 +1,14 @@
 #pragma once
 // SG lightmap GPU types (included from common.hlsli before FrameUniforms).
-// Mirrors smvk::gi (Engine/GI/lightmap.h): the chunk descriptor the
-// shader consumes lives here; the sampling/evaluation helpers live in
-// sg_lightmap.hlsli (consumers include it after common.hlsli).
+// The 2D SG lightmap atlas: 9 RGBA16F 2D textures shared by all chunks.
+// There is NO chunk descriptor buffer: the cook bakes each chart's
+// atlas-space transform into the mesh's texCoord2 (RG16_UNORM vertex
+// attribute), and the lobe count rides the gfx draw ring (GfxDraw.misc.w
+// = 5/6/9/12, 0xFFFFFFFF = none). The fragment shader samples the atlas
+// directly at IN.lightmapUv.
 
-// Chunk descriptor (32 B): rect transform for chunk-local uv -> atlas uv.
-struct SgLmChunkGpu
-{
-    float4 rectMinSize; // xy atlas texel min of the rect, zw size in texels
-    float4 atlasInfo;   // xy 1/atlasSize, z lobeCount, w pad
-};
-
-// Buffer view (DXC needs sized members).
-#define SG_LM_MAX_CHUNKS 4096
-struct SgLmChunkBuffer { SgLmChunkGpu chunks[SG_LM_MAX_CHUNKS]; };
+#define SG_LM_MAX_LOBES 12
+#define SG_LM_LAYERS 9
 
 // Regular probe-volume (dynamic-object grids) GPU types. The OBB struct
 // mirrors smvk::gi::SgRegularObb (Engine/GI/regular_volume.h) with

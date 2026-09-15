@@ -461,96 +461,66 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 			// exact-area; acceptable for a v1 unwrapper).
 		}
 	}
-	// Chart rect sizes from projected bboxes (+ inner margins).
+	// Chart rect sizes from projected bboxes (+ inner margins). No shelf
+	// pack here and NO failure modes: the ATLAS packs chart rects (a mesh
+	// owns many small rects), and the chart-size cap keeps every rect
+	// small, so no mesh can bust a region budget.
+	uint64_t meshTexelTotal = 0;
 	for (Chart& ch : charts) {
 		const glm::vec2 ext = glm::max(ch.pMax - ch.pMin, glm::vec2(1e-4f));
 		ch.w = std::max<uint32_t>(uint32_t(std::ceil(ext.x * float(opts.texelsPerMeter))) + 2u * margin, 2u * margin + 1u);
 		ch.h = std::max<uint32_t>(uint32_t(std::ceil(ext.y * float(opts.texelsPerMeter))) + 2u * margin, 2u * margin + 1u);
+		meshTexelTotal += uint64_t(ch.w) * ch.h;
 	}
-
-	// Shelf pack: sort by height desc, rows of maxRectWidth. Chart rects
-	// TOUCH (no gutter boxes): the shared inner margins prevent bleed.
-	// The texel budget (opts.maxRectTexels) caps the region area so the
-	// baker can lower the density for huge surfaces.
-	const uint32_t chartCount = uint32_t(charts.size());
-	std::vector<uint32_t> order(chartCount);
-	for (uint32_t i = 0; i < chartCount; ++i)
-		order[i] = i;
-	std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
-		if (charts[a].h != charts[b].h)
-			return charts[a].h > charts[b].h;
-		return charts[a].w > charts[b].w;
-	});
-	uint32_t rowX = 0, rowY = 0, rowH = 0;
-	uint32_t packW = 0, packH = 0;
-	for (uint32_t idx : order) {
-		Chart& c = charts[idx];
-		if (rowX + c.w > opts.maxRectWidth) {
-			rowX = 0;
-			rowY += rowH;
-			rowH = 0;
-		}
-		if (rowY + c.h > opts.maxRectHeight) {
-			err = "GenerateLightmapCharts: charts exceed max rect (lower --lm-density)";
-			return false;
-		}
-		c.x0 = rowX;
-		c.y0 = rowY;
-		rowX += c.w;
-		rowH = std::max(rowH, c.h);
-		packW = std::max(packW, rowX);
-		packH = std::max(packH, rowY + rowH);
-	}
-	if (opts.maxRectTexels > 0
-		&& uint64_t(packW) * packH > opts.maxRectTexels) {
-		err = "GenerateLightmapCharts: region exceeds texel budget (lower --lm-density)";
+	// Per-mesh TOTAL budget: a mesh with thousands of chart rects
+	// produces an unbounded bake-point count otherwise (GBs before the
+	// atlas rounds ever run). Checked BEFORE rasterization so the
+	// failing call costs only the (cheap) topology pass; the cook halves
+	// the density and retries.
+	if (opts.maxChartTexelsTotal > 0
+		&& meshTexelTotal > opts.maxChartTexelsTotal) {
+		err = "GenerateLightmapCharts: mesh chart texels exceed budget "
+			"(lower --lm-density)";
 		return false;
 	}
-	out.rectWidth = packW;
-	out.rectHeight = packH;
-	out.rectMin[0] = 0.0f;
-	out.rectMin[1] = 0.0f;
-	out.rectMax[0] = float(packW);
-	out.rectMax[1] = float(packH);
 
 	// Chart-UV for a triangle corner (continuous projection over the
-	// chart bbox; clamped to the chart's inner region).
+	// chart bbox; clamped to [0,1] over the chart's inner rect).
 	auto chartUv = [&](const Chart& c, const glm::vec3& p) -> glm::vec2 {
 		const glm::vec2 q(p[c.plane.ax], p[c.plane.ay]);
 		const glm::vec2 ext = glm::max(c.pMax - c.pMin, glm::vec2(1e-6f));
 		return glm::clamp((q - c.pMin) / ext, glm::vec2(0.0f), glm::vec2(1.0f));
 	};
 
-	// Per-ORIGINAL-vertex lightmap UVs (the cook writes these into
-	// StaticVertex::texCoord2). Vertex -> owning chart (first claim) ->
-	// continuous projection over that chart's FINAL bbox, mapped into
-	// the chart's inner rect and normalized over the mesh region.
-	out.uv2.assign(upload.vertices.size(), glm::vec2(0.0f));
+	// Per-ORIGINAL-vertex output: owning chart + chart-local uv (the cook
+	// maps these to atlas space AFTER the atlas pack, via AtlasUv).
+	out.charts.resize(charts.size());
+	out.vertexChart.assign(upload.vertices.size(), 0xFFFFFFFFu);
+	out.chartLocalUv.assign(upload.vertices.size(), glm::vec2(0.0f));
 	for (size_t v = 0; v < upload.vertices.size(); ++v) {
 		const uint32_t chartIdx = vertexChartOf[canonical[v]];
 		if (chartIdx == 0xFFFFFFFFu)
-			continue; // unclaimed (degenerate tri corner): (0,0)
+			continue; // unclaimed (degenerate tri corner): (0,0), no chart
 		const Chart& c = charts[chartIdx];
-		const glm::vec2 uv = chartUv(c, upload.vertices[v].pos);
-		const float innerW = float(std::max<uint32_t>(c.w - 2u * margin, 1u));
-		const float innerH = float(std::max<uint32_t>(c.h - 2u * margin, 1u));
-		const glm::vec2 inner0{ float(margin), float(margin) };
-		out.uv2[v] = (inner0 + uv * glm::vec2(innerW, innerH))
-			/ glm::vec2(float(packW), float(packH));
+		out.vertexChart[v] = chartIdx;
+		out.chartLocalUv[v] = chartUv(c, upload.vertices[v].pos);
 	}
 
-	// Bake texels: rasterize every chart triangle over the chart's inner
-	// region (bounded by the triangle's own uv bbox for speed). Texel
-	// ownership: first writer wins; shared-edge texels between adjacent
-	// triangles carry the first triangle's interpolation (sub-texel
-	// difference, invisible after the dilation pass).
-	std::unordered_map<uint64_t, uint32_t> texelIndex;
-	texelIndex.reserve(size_t(packW) * packH / 2 + 16);
-	for (const Chart& c : charts) {
-		const uint32_t ix0 = c.x0 + margin;
-		const uint32_t iy0 = c.y0 + margin;
+	// Bake texels per chart: rasterize every chart triangle over the
+	// chart's inner region. Texel ownership: first writer wins (a flat
+	// w*h claim map — overlapping triangles of the same chart must NOT
+	// push duplicate texels, or big-chart meshes explode quadratically);
+	// shared-edge texels carry the first triangle's interpolation
+	// (sub-texel difference, invisible after the dilation pass). uv is
+	// in the chart's rect coords ([margin, size-margin) texels).
+	for (uint32_t ci = 0; ci < charts.size(); ++ci) {
+		const Chart& c = charts[ci];
+		SgLightmapChartResult::Chart& oc = out.charts[ci];
+		oc.width = c.w;
+		oc.height = c.h;
 		const uint32_t iw = std::max<uint32_t>(c.w - 2u * margin, 1u);
 		const uint32_t ih = std::max<uint32_t>(c.h - 2u * margin, 1u);
+		std::vector<uint32_t> claim(size_t(iw) * ih, 0xFFFFFFFFu);
 		for (uint32_t t : c.tris) {
 			const uint32_t i0 = upload.indices[t * 3 + 0];
 			const uint32_t i1 = upload.indices[t * 3 + 1];
@@ -578,6 +548,9 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 			uint32_t ty1 = std::min(uint32_t(std::min(float(ih), tMax.y * float(ih) + 0.5f)), ih - 1u);
 			for (uint32_t y = ty0; y <= ty1; ++y) {
 				for (uint32_t x = tx0; x <= tx1; ++x) {
+					const size_t idx = size_t(y) * iw + x;
+					if (claim[idx] != 0xFFFFFFFFu)
+						continue; // first writer owns this texel
 					const float u = (float(x) + 0.5f) / float(iw);
 					const float v = (float(y) + 0.5f) / float(ih);
 					const glm::vec2 d(u - u0.x, v - u0.y);
@@ -586,17 +559,14 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 					const float b0 = 1.0f - b1 - b2;
 					if (b0 < -1e-4f || b1 < -1e-4f || b2 < -1e-4f)
 						continue;
-					const uint32_t gx = ix0 + x;
-					const uint32_t gy = iy0 + y;
-					const uint64_t key = uint64_t(gx) | (uint64_t(gy) << 32);
-					if (texelIndex.contains(key))
-						continue;
+					claim[idx] = 1u;
 					SgLightmapTexel tx{};
 					tx.position = p0 * b0 + p1 * b1 + p2 * b2;
 					tx.normal = glm::normalize(n0 * b0 + n1 * b1 + n2 * b2);
-					tx.uv = glm::vec2(float(gx) + 0.5f, float(gy) + 0.5f);
-					texelIndex[key] = uint32_t(out.texels.size());
-					out.texels.push_back(tx);
+					// Rect-local texel coords + margin offset.
+					tx.uv = glm::vec2(float(margin + x) + 0.5f,
+						float(margin + y) + 0.5f);
+					oc.texels.push_back(tx);
 				}
 			}
 		}
@@ -607,6 +577,25 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 // ---------------------------------------------------------------------------
 // Atlas: pack, sample, layers, IO
 // ---------------------------------------------------------------------------
+
+glm::vec2 SgLightmapAtlas::AtlasUv(uint32_t chunk, uint32_t margin,
+	const glm::vec2& chartLocalUv) const {
+	// Chart-local [0,1] -> inner rect (margin .. size-margin) -> atlas
+	// texel -> normalized atlas uv (what the cook writes into texCoord2;
+	// the runtime shader samples the atlas directly at it).
+	if (chunk >= chunks.size())
+		return glm::vec2(0.0f);
+	const SgLightmapChunk& c = chunks[chunk];
+	const float w = std::max(c.rectMax[0] - c.rectMin[0], 1.0f);
+	const float h = std::max(c.rectMax[1] - c.rectMin[1], 1.0f);
+	const float innerW = std::max(w - 2.0f * float(margin), 1.0f);
+	const float innerH = std::max(h - 2.0f * float(margin), 1.0f);
+	const glm::vec2 texel(c.rectMin[0] + float(margin)
+		+ glm::clamp(chartLocalUv.x, 0.0f, 1.0f) * innerW,
+		c.rectMin[1] + float(margin)
+		+ glm::clamp(chartLocalUv.y, 0.0f, 1.0f) * innerH);
+	return texel / glm::vec2(float(std::max(width, 1u)), float(std::max(height, 1u)));
+}
 
 bool SgLightmapAtlas::PackRects(const std::vector<RectRequest>& requests,
 	uint32_t atlasWidth, uint32_t maxHeight) {
@@ -907,6 +896,204 @@ bool SgLightmapAtlas::ReadFile(const std::string& path, SgLightmapAtlas& out,
 // Bake
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// Core: trace + fit every covered texel of ONE chunk payload, using the
+// caller's pool (shared across the batch). Covered texels come from
+// `texels` (uv in rect-local texel coords); dilation fills the rest.
+void BakeChunkCore(const GiTraceScene& scene, uint32_t lobeCount,
+	const std::vector<SgLightmapTexel>& texels,
+	const SgLightmapBakeConfig& cfg, const std::vector<glm::vec3>& fibDirs,
+	const float weight, SgLightmapAtlas::ChunkPayload& out,
+	std::vector<uint32_t>& texelOf, ThreadPool& pool,
+	std::atomic<uint64_t>& baked, std::atomic<uint64_t>& clamped,
+	uint64_t chunkSeed) {
+	const uint32_t w = out.width;
+	const uint32_t h = out.height;
+	std::fill(texelOf.begin(), texelOf.end(), 0xFFFFFFFFu);
+	for (uint32_t i = 0; i < texels.size(); ++i) {
+		const int x = int(std::floor(texels[i].uv.x));
+		const int y = int(std::floor(texels[i].uv.y));
+		if (x < 0 || y < 0 || x >= int(w) || y >= int(h))
+			continue;
+		texelOf[size_t(y) * w + size_t(x)] = i;
+	}
+	constexpr float kSurfEps = 1e-3f; // matches the probe bakers
+	const size_t total = size_t(w) * h;
+	std::vector<std::future<void>> futures;
+	for (size_t idx = 0; idx < total; ++idx) {
+		const uint32_t texelIdx = texelOf[idx];
+		if (texelIdx == 0xFFFFFFFFu)
+			continue;
+		futures.push_back(pool.enqueue([&, idx, texelIdx] {
+			const SgLightmapTexel& tx = texels[texelIdx];
+			const uint64_t seed = (uint64_t(cfg.seed) << 32)
+				^ (chunkSeed * 0x9e3779b97f4a7c15ull)
+				^ (uint64_t(texelIdx) * 0xbf58476d1ce4e5b9ull);
+			Pcg32 rng(seed);
+			struct RaySample { glm::vec3 dir; glm::vec3 L; };
+			std::vector<RaySample> samples;
+			samples.reserve(fibDirs.size());
+			double meanLum = 0.0;
+			const glm::vec3 origin = tx.position + tx.normal * kSurfEps;
+			for (const glm::vec3& d : fibDirs) {
+				const glm::vec3 L = scene.TraceIncoming(origin, d, rng,
+					cfg.maxBounces);
+				samples.push_back({ d, L });
+				meanLum += Luminance(L);
+			}
+			meanLum /= double(std::max<size_t>(fibDirs.size(), 1));
+			const float cap = std::max(float(meanLum) * 8.0f, 1e-6f);
+			SgLightmapFitAccumulator acc(lobeCount);
+			uint64_t localClamped = 0;
+			for (const RaySample& s : samples) {
+				glm::vec3 L = s.L;
+				const float l = Luminance(L);
+				if (l > cap && l > 0.0f) {
+					L *= cap / l;
+					++localClamped;
+				}
+				acc.AddSample(s.dir, L, weight);
+			}
+			clamped += localClamped;
+			glm::vec3 amps[kLightmapMaxLobes];
+			acc.Solve(amps);
+			for (uint32_t l = 0; l < lobeCount; ++l)
+				out.coeffs[idx * lobeCount + l] = amps[l];
+			++baked;
+		}));
+	}
+	for (auto& f : futures)
+		f.get();
+
+	// Gutter + hole dilation: every texel that did not bake takes the
+	// average of its valid 4-neighbours (Jacobi passes until stable).
+	std::vector<char> valid(total, 0);
+	for (size_t i = 0; i < total; ++i)
+		valid[i] = texelOf[i] != 0xFFFFFFFFu ? 1 : 0;
+	for (int pass = 0; pass < 16; ++pass) {
+		bool anyFill = false;
+		std::vector<glm::vec3> fill(total * lobeCount);
+		std::vector<char> fillMask(total, 0);
+		for (uint32_t y = 0; y < h; ++y)
+			for (uint32_t x = 0; x < w; ++x) {
+				const size_t v = size_t(y) * w + x;
+				if (valid[v])
+					continue;
+				glm::vec3 acc[kLightmapMaxLobes] = {};
+				int cnt = 0;
+				static const int kDx[4] = { 1, -1, 0, 0 };
+				static const int kDy[4] = { 0, 0, 1, -1 };
+				for (int k = 0; k < 4; ++k) {
+					const int nx = int(x) + kDx[k];
+					const int ny = int(y) + kDy[k];
+					if (nx < 0 || ny < 0 || nx >= int(w) || ny >= int(h))
+						continue;
+					const size_t u = size_t(ny) * w + size_t(nx);
+					if (!valid[u])
+						continue;
+					for (uint32_t l = 0; l < lobeCount; ++l)
+						acc[l] += out.coeffs[u * lobeCount + l];
+					++cnt;
+				}
+				if (cnt > 0) {
+					for (uint32_t l = 0; l < lobeCount; ++l)
+						fill[v * lobeCount + l] = acc[l] / float(cnt);
+					fillMask[v] = 1;
+					anyFill = true;
+				}
+			}
+		for (size_t i = 0; i < total; ++i)
+			if (fillMask[i]) {
+				for (uint32_t l = 0; l < lobeCount; ++l)
+					out.coeffs[i * lobeCount + l] = fill[i * lobeCount + l];
+				valid[i] = 1;
+			}
+		if (!anyFill)
+			break;
+	}
+}
+
+} // namespace
+
+bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
+	std::span<const SgLightmapChunkBatch> batches,
+	const SgLightmapBakeConfig& configIn, SgLightmapBakeStats& stats,
+	GiBakeProgress progress) {
+	const auto t0 = std::chrono::steady_clock::now();
+	if (!LightmapLobeCountValid(lobeCount)) {
+		if (progress)
+			progress("lightmap bake: bad lobe count\n");
+		return false;
+	}
+	if (batches.empty()) {
+		if (progress)
+			progress("lightmap bake: no chunks\n");
+		return false;
+	}
+	SgLightmapBakeConfig cfg = configIn;
+	cfg.raysPerTexel = std::max(cfg.raysPerTexel, 16u);
+	cfg.maxBounces = std::min(cfg.maxBounces, 8u);
+	// Shared deterministic Fibonacci sphere (correlated error reads as
+	// smooth bias, not per-texel speckle).
+	std::vector<glm::vec3> fibDirs;
+	fibDirs.reserve(cfg.raysPerTexel);
+	for (uint32_t i = 0; i < cfg.raysPerTexel; ++i) {
+		const float y = 1.0f - 2.0f * (float(i) + 0.5f) / float(cfg.raysPerTexel);
+		const float r = SafeSqrt(std::max(0.0f, 1.0f - y * y));
+		const float phi = float(i) * 2.39996323f;
+		fibDirs.push_back(glm::vec3(std::cos(phi) * r, y, std::sin(phi) * r));
+	}
+	const float weight = 4.0f * kPi / float(cfg.raysPerTexel);
+	const uint32_t threadCount = cfg.threadCount
+		? cfg.threadCount : std::thread::hardware_concurrency();
+	ThreadPool pool(threadCount ? threadCount : 1);
+	std::atomic<uint64_t> baked{ 0 };
+	std::atomic<uint64_t> clamped{ 0 };
+	size_t maxRect = 0;
+	for (const SgLightmapChunkBatch& b : batches)
+		if (b.payload)
+			maxRect = std::max(maxRect, size_t(b.payload->width)
+				* b.payload->height);
+	std::vector<uint32_t> texelOf(maxRect);
+	for (size_t bi = 0; bi < batches.size(); ++bi) {
+		SgLightmapChunkBatch b = batches[bi];
+		if (!b.payload || !b.texels || b.payload->width == 0
+			|| b.payload->height == 0)
+			continue;
+		if (b.payload->coeffs.size() != size_t(b.payload->width)
+			* b.payload->height * lobeCount)
+			b.payload->coeffs.assign(size_t(b.payload->width)
+				* b.payload->height * lobeCount, glm::vec3(0.0f));
+		texelOf.resize(size_t(b.payload->width) * b.payload->height);
+		BakeChunkCore(scene, lobeCount, *b.texels, cfg, fibDirs, weight,
+			*b.payload, texelOf, pool, baked, clamped, uint64_t(bi) + 1);
+		if (progress && ((bi & 255u) == 0u)) {
+			char line[160];
+			std::snprintf(line, sizeof(line),
+				"lightmap bake: chunk %llu/%llu\n",
+				(unsigned long long)(bi + 1),
+				(unsigned long long)batches.size());
+			progress(line);
+		}
+	}
+	stats.texelsBaked = baked.load();
+	stats.pathsTraced = uint64_t(baked.load()) * cfg.raysPerTexel;
+	stats.samplesClamped = clamped.load();
+	const auto t1 = std::chrono::steady_clock::now();
+	stats.seconds = std::chrono::duration<double>(t1 - t0).count();
+	if (progress) {
+		char line[192];
+		std::snprintf(line, sizeof(line),
+			"lightmap bake: done: %llu chunks, %llu texels in %.1fs (%llu clamped)\n",
+			(unsigned long long)batches.size(),
+			(unsigned long long)stats.texelsBaked,
+			stats.seconds, (unsigned long long)stats.samplesClamped);
+		progress(line);
+	}
+	return true;
+}
+
 bool BakeSgLightmapChunk(const GiTraceScene& scene, uint32_t lobeCount,
 	const std::vector<SgLightmapTexel>& texels, const SgLightmapBakeConfig& configIn,
 	SgLightmapAtlas::ChunkPayload& out, SgLightmapBakeStats& stats,
@@ -934,9 +1121,8 @@ bool BakeSgLightmapChunk(const GiTraceScene& scene, uint32_t lobeCount,
 			progress(line);
 	};
 
-	// Shared deterministic Fibonacci sphere (correlated error reads as
-	// smooth bias, not per-texel speckle — same rationale as the probe
-	// bakers).
+// Shared deterministic Fibonacci sphere (correlated error reads as
+// smooth bias, not speckle).
 	std::vector<glm::vec3> fibDirs;
 	fibDirs.reserve(cfg.raysPerTexel);
 	for (uint32_t i = 0; i < cfg.raysPerTexel; ++i) {
@@ -945,145 +1131,29 @@ bool BakeSgLightmapChunk(const GiTraceScene& scene, uint32_t lobeCount,
 		const float phi = float(i) * 2.39996323f;
 		fibDirs.push_back(glm::vec3(std::cos(phi) * r, y, std::sin(phi) * r));
 	}
-
-	// Texel -> payload index map. Chart texels carry RECT-LOCAL coords
-	// (x+0.5, y+0.5 with the rect origin at 0), matching the payload
-	// indexing below; the atlas-level PackRects offset applies only to
-	// GPU layer placement, never to these coords.
-	const uint32_t w = out.width;
-	const uint32_t h = out.height;
-	std::vector<uint32_t> texelOf(size_t(w) * h, 0xFFFFFFFFu);
-	for (uint32_t i = 0; i < texels.size(); ++i) {
-		const int x = int(std::floor(texels[i].uv.x));
-		const int y = int(std::floor(texels[i].uv.y));
-		if (x < 0 || y < 0 || x >= int(w) || y >= int(h))
-			continue;
-		texelOf[size_t(y) * w + size_t(x)] = i;
-	}
-
+	const float weight = 4.0f * kPi / float(cfg.raysPerTexel);
 	const uint32_t threadCount = cfg.threadCount
 		? cfg.threadCount : std::thread::hardware_concurrency();
 	ThreadPool pool(threadCount ? threadCount : 1);
 	std::atomic<uint64_t> baked{ 0 };
 	std::atomic<uint64_t> clamped{ 0 };
-	const float weight = 4.0f * kPi / float(cfg.raysPerTexel);
-	constexpr float kSurfEps = 1e-3f; // matches the probe bakers
-
-	constexpr size_t kBatch = 512;
-	const size_t total = size_t(w) * h;
-	for (size_t base = 0; base < total; base += kBatch) {
-		const size_t end = std::min(base + kBatch, total);
-		std::vector<std::future<void>> futures;
-		futures.reserve(end - base);
-		for (size_t idx = base; idx < end; ++idx) {
-			const uint32_t texelIdx = texelOf[idx];
-			if (texelIdx == 0xFFFFFFFFu)
-				continue;
-			futures.push_back(pool.enqueue([&, idx, texelIdx] {
-				const SgLightmapTexel& tx = texels[texelIdx];
-				const uint64_t seed = (uint64_t(cfg.seed) << 32)
-					^ (uint64_t(texelIdx) * 0x9e3779b97f4a7c15ull);
-				Pcg32 rng(seed);
-				struct RaySample { glm::vec3 dir; glm::vec3 L; };
-				std::vector<RaySample> samples;
-				samples.reserve(fibDirs.size());
-				double meanLum = 0.0;
-				const glm::vec3 origin = tx.position + tx.normal * kSurfEps;
-				for (const glm::vec3& d : fibDirs) {
-					const glm::vec3 L = scene.TraceIncoming(origin, d, rng,
-						cfg.maxBounces);
-					samples.push_back({ d, L });
-					meanLum += Luminance(L);
-				}
-				meanLum /= double(std::max<size_t>(fibDirs.size(), 1));
-				const float cap = std::max(float(meanLum) * 8.0f, 1e-6f);
-				SgLightmapFitAccumulator acc(lobeCount);
-				uint64_t localClamped = 0;
-				for (const RaySample& s : samples) {
-					glm::vec3 L = s.L;
-					const float l = Luminance(L);
-					if (l > cap && l > 0.0f) {
-						L *= cap / l;
-						++localClamped;
-					}
-					acc.AddSample(s.dir, L, weight);
-				}
-				clamped += localClamped;
-				glm::vec3 amps[kLightmapMaxLobes];
-				acc.Solve(amps);
-				for (uint32_t l = 0; l < lobeCount; ++l)
-					out.coeffs[idx * lobeCount + l] = amps[l];
-				++baked;
-			}));
-		}
-		for (auto& f : futures)
-			f.get();
-	}
-
-	// Gutter + hole dilation: every texel that did not bake takes the
-	// average of its valid 4-neighbours (Jacobi passes until stable; the
-	// per-triangle charts leave 1-2 texel gaps plus the authored gutters).
-	{
-		std::vector<char> valid(total, 0);
-		for (size_t i = 0; i < total; ++i)
-			valid[i] = texelOf[i] != 0xFFFFFFFFu ? 1 : 0;
-		for (int pass = 0; pass < 16; ++pass) {
-			bool anyFill = false;
-			std::vector<glm::vec3> fill(total * lobeCount);
-			std::vector<char> fillMask(total, 0);
-			for (uint32_t y = 0; y < h; ++y)
-				for (uint32_t x = 0; x < w; ++x) {
-					const size_t v = size_t(y) * w + x;
-					if (valid[v])
-						continue;
-					glm::vec3 acc[kLightmapMaxLobes] = {};
-					int cnt = 0;
-					static const int kDx[4] = { 1, -1, 0, 0 };
-					static const int kDy[4] = { 0, 0, 1, -1 };
-					for (int k = 0; k < 4; ++k) {
-						const int nx = int(x) + kDx[k];
-						const int ny = int(y) + kDy[k];
-						if (nx < 0 || ny < 0 || nx >= int(w) || ny >= int(h))
-							continue;
-						const size_t u = size_t(ny) * w + size_t(nx);
-						if (!valid[u])
-							continue;
-						for (uint32_t l = 0; l < lobeCount; ++l)
-							acc[l] += out.coeffs[u * lobeCount + l];
-						++cnt;
-					}
-					if (cnt > 0) {
-						for (uint32_t l = 0; l < lobeCount; ++l)
-							fill[v * lobeCount + l] = acc[l] / float(cnt);
-						fillMask[v] = 1;
-						anyFill = true;
-					}
-				}
-			for (size_t i = 0; i < total; ++i)
-				if (fillMask[i]) {
-					for (uint32_t l = 0; l < lobeCount; ++l)
-						out.coeffs[i * lobeCount + l] = fill[i * lobeCount + l];
-					valid[i] = 1;
-				}
-			if (!anyFill)
-				break;
-		}
-	}
+	std::vector<uint32_t> texelOf(size_t(out.width) * out.height);
+	BakeChunkCore(scene, lobeCount, texels, cfg, fibDirs, weight,
+		out, texelOf, pool, baked, clamped, 1);
 
 	stats.texelsBaked = baked.load();
 	stats.pathsTraced = uint64_t(baked.load()) * cfg.raysPerTexel;
 	stats.samplesClamped = clamped.load();
 	const auto t1 = std::chrono::steady_clock::now();
 	stats.seconds = std::chrono::duration<double>(t1 - t0).count();
-	{
+	if (progress) {
 		char line[192];
 		std::snprintf(line, sizeof(line),
-			"lightmap bake: done: %llu/%llu texels in %.1fs (%llu clamped)\n",
-			(unsigned long long)stats.texelsBaked, (unsigned long long)total,
-			stats.seconds, (unsigned long long)stats.samplesClamped);
-		say(line);
+			"lightmap bake: done: %llu texels in %.1fs (%llu clamped)%s",
+			(unsigned long long)stats.texelsBaked,
+			stats.seconds, (unsigned long long)stats.samplesClamped, "\n");
+		progress(line);
 	}
 	return true;
 }
-
 } // namespace smvk::gi

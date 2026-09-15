@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>
@@ -1905,18 +1905,12 @@ void SceneRenderer::Shutdown() {
 
 	// ---------------------------------------------------------------------------
 	// SG 2D lightmaps (STATIC geometry; cooked with PakCooker --lightmap).
-	// Loads content/gi/<scene>.sglm and uploads ONLY the atlas (9 RGBA16F
-	// layers) + the chunk descriptor buffer. The lightmap UVs and per-mesh
-	// chunk ids are COOKED into the pak (texCoord2 / StaticMesh::lmChunk,
-	// riding the gfx draw ring) — this loader touches no geometry.
-	// Missing file = "not baked yet" - non-fatal.
+	// Loads content/gi/<scene>.sglm and uploads ONLY the 9 RGBA16F atlas
+	// layers. The atlas-space UVs + per-mesh lobe counts are COOKED into
+	// the pak (texCoord2 / StaticMesh::lmChunk riding the draw ring) —
+	// no chunk buffer exists at runtime. Missing file = "not baked yet"
+	// - non-fatal.
 	// ---------------------------------------------------------------------------
-	// GPU mirrors of sg_lightmap_types.hlsli (layout-asserted).
-	struct LmChunkGpu {
-		float rectMinSize[4]; // xy atlas texel min, zw size in texels
-		float atlasInfo[4];   // xy 1/atlasSize, z lobeCount, w pad
-	};
-	static_assert(sizeof(LmChunkGpu) == 32);
 	struct RegObbGpu {
 		float center[4];
 		float axisX[4];
@@ -1928,14 +1922,12 @@ void SceneRenderer::Shutdown() {
 	static_assert(sizeof(RegObbGpu) == 96);
 
 	void SceneRenderer::LoadGiLightmaps(smvk::OverlayVfs& vfs) {
-		// Cook-owned lightmaps: the pak carries the per-vertex lightmap UVs
-		// (texCoord2) + each mesh's atlas chunk id (riding the draw ring);
-		// this loader only uploads the atlas (9 RGBA16F layers) + the chunk
-		// descriptor buffer. NO geometry work happens here.
+		// Cook-owned lightmaps: the pak carries the per-vertex atlas-space
+		// UVs (texCoord2) + each mesh's lobe count (riding the draw ring);
+		// this loader only uploads the atlas (9 RGBA16F layers). NO
+		// geometry work, NO buffers beyond the textures happen here.
 		m_lmLoaded = false;
 		m_lmAtlas = smvk::gi::SgLightmapAtlas{};
-		m_lmChunksBuffer = {};
-		m_lmChunksAddress = 0;
 		for (auto& layer : m_lmLayers)
 			layer = {};
 		for (uint32_t& slot : m_lmLayerSlots)
@@ -1965,31 +1957,6 @@ void SceneRenderer::Shutdown() {
 				<< "x" << m_lmAtlas.height << "\n";
 			return;
 		}
-
-		// ---- Chunk descriptor buffer ----
-		std::vector<LmChunkGpu> chunkData(m_lmAtlas.chunks.size());
-		const float invW = 1.0f / float(m_lmAtlas.width);
-		const float invH = 1.0f / float(m_lmAtlas.height);
-		for (size_t ci = 0; ci < m_lmAtlas.chunks.size(); ++ci) {
-			const smvk::gi::SgLightmapChunk& c = m_lmAtlas.chunks[ci];
-			LmChunkGpu& g = chunkData[ci];
-			g.rectMinSize[0] = c.rectMin[0];
-			g.rectMinSize[1] = c.rectMin[1];
-			g.rectMinSize[2] = c.rectMax[0] - c.rectMin[0];
-			g.rectMinSize[3] = c.rectMax[1] - c.rectMin[1];
-			g.atlasInfo[0] = invW;
-			g.atlasInfo[1] = invH;
-			g.atlasInfo[2] = float(c.lobeCount);
-			g.atlasInfo[3] = 0.0f;
-		}
-		constexpr smvk::PipelineStage kLmStages =
-			smvk::PipelineStage(smvk::PipelineStageBit_Fragment);
-		m_lmChunksBuffer = m_context->CreateBuffer(
-			chunkData.size() * sizeof(LmChunkGpu), smvk::BufferType_Storage, "sglm chunks");
-		m_context->UploadDataToBuffer(m_lmChunksBuffer, chunkData.data(),
-			chunkData.size() * sizeof(LmChunkGpu), kLmStages,
-			smvk::AccessFlags::ShaderRead);
-		m_lmChunksAddress = m_context->GetBufferDeviceAddress(m_lmChunksBuffer);
 
 		// ---- Atlas layers (9 RGBA16F bindless textures) ----
 		std::vector<uint16_t> layers[smvk::gi::kLightmapLayerCount];
@@ -2337,24 +2304,21 @@ void SceneRenderer::Shutdown() {
 			data.giIntensity = 1.0f;
 			data.giDebug = 0u;
 		}
-		// SG 2D lightmaps (static draws; the per-draw chunk rides the
-		// vertex path, see gfxfiltered.vert). Static/dynamic separation:
-		// lm/reg ride the same giIntensity scale as the probe volume so
-		// the N ambient-mode UI stays meaningful.
+		// SG 2D lightmaps (static draws; the atlas-space uv + per-draw lobe
+		// count ride the pak's vertex data / draw ring). Static/dynamic
+		// separation: lm/reg ride the same giIntensity scale as the probe
+		// volume so the N ambient-mode UI stays meaningful.
 		if (LmActive()) {
-			data.lmChunks = m_lmChunksAddress;
 			for (uint32_t t = 0; t < 9; ++t)
 				data.lmLayers[t] = m_lmLayerSlots[t];
-			data.lmChunkCount = uint32_t(m_lmAtlas.chunks.size());
 			data.lmEnabled = (m_ambientMode != AmbientMode::Off) ? 1u : 0u;
 		} else {
-			data.lmChunks = 0;
 			for (uint32_t t = 0; t < 9; ++t)
 				data.lmLayers[t] = UINT32_MAX;
-			data.lmChunkCount = 0u;
 			data.lmEnabled = 0u;
 		}
-		data.lmPad_ = 0;
+		data.lmPad_[0] = 0;
+		data.lmPad_[1] = 0;
 		// SG regular 3D probe volumes (dynamic draws inside artist OBBs).
 		if (RegActive()) {
 			data.regObbs = m_regObbsAddress;

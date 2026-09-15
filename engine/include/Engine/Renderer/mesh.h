@@ -132,16 +132,19 @@ namespace smvk {
 	};
 
 	// GPU shading stream (20 bytes): color is packed via
-	// vertexpack::PackColorUnorm8 and fetched as Format::RGBA8_UNorm, uv/uv2
-	// via vertexpack::PackUvHalf fetched as Format::RG16_Float, normal/tangent
-	// via PackNormalOct/PackTangentOct fetched as Format::R32_UInt and
+	// vertexpack::PackColorUnorm8 and fetched as Format::RGBA8_UNorm, uv
+	// via vertexpack::PackUvHalf fetched as Format::RG16_Float, uv2 (the
+	// lightmap-atlas UV, cook-filled, normalized [0,1]) via
+	// vertexpack::PackUv2Unorm fetched as Format::RG16_UNorm — UNORM
+	// because atlas-space UVs need 65536-step precision (half-float is
+	// 1-texel-at-2048, 4-texel-at-8192), normal/tangent via
+	// PackNormalOct/PackTangentOct fetched as Format::R32_UInt and
 	// unpacked by hand in the vertex shader (see vertex_pack.hlsli).
 	// The bitangent is never stored (B = cross(N, T) * w in the fragment).
-	// uv2 is the lightmap channel (TEXCOORD_1); zero when unused.
 	struct VertexShading {
 		uint32_t color;      // RGBA8_UNORM
 		uint32_t uv;         // RG16_FLOAT (packHalf2x16)
-		uint32_t uv2;        // RG16_FLOAT (packHalf2x16) — lightmap UV
+		uint32_t uv2;        // RG16_UNORM (packUnorm2x16) — lightmap UV
 		uint32_t normal;     // custom oct encoding (16+16)
 		uint32_t tangent;    // custom oct encoding (16+15) + handedness bit
 	};
@@ -226,9 +229,9 @@ namespace smvk {
 						.offset = offsetof(VertexShading, color)
 					},
 					{
-						.semantic = VertexSemantic::TexCoord0,
-						.format = Format::RG16_Float,
-						.offset = offsetof(VertexShading, uv)
+						.semantic = VertexSemantic::TexCoord1,
+						.format = Format::RG16_UNorm,
+						.offset = offsetof(VertexShading, uv2)
 					},
 					{
 						.semantic = VertexSemantic::Normal,
