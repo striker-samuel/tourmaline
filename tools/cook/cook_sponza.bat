@@ -11,11 +11,20 @@ if not exist build\Release\PakCooker.exe (
   popd
   exit /b 1
 )
-build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.gltf --out-pak F:\content\paks\sponza.pak --meshlets on --verify on
+rem NOTE: --lightmap on is load-bearing here, not optional. It bakes the
+rem per-vertex lightmap UVs + per-mesh lobe counts INTO the pak and writes
+rem the atlas to F:\content\gi\sponza.sglm alongside. A pak cooked without
+rem it carries lmChunk=-1 everywhere (F8 palette goes all-green) while a
+rem stale sponza.sglm lingers next to it.
+build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.gltf --out-pak F:\content\paks\sponza.pak --meshlets on --verify on --lightmap on
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak build\Debug\content\paks\sponza.pak
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak build\Release\content\paks\sponza.pak
+if errorlevel 1 goto fail
+copy /y F:\content\gi\sponza.sglm build\Debug\content\gi\sponza.sglm
+if errorlevel 1 goto fail
+copy /y F:\content\gi\sponza.sglm build\Release\content\gi\sponza.sglm
 if errorlevel 1 goto fail
 echo sponza.pak recooked and synced.
 popd

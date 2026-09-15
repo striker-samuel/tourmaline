@@ -42,6 +42,7 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/static_merge.h>
+#include <Engine/Scene/scene.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
@@ -88,6 +89,9 @@ struct Args {
 	float sunIntensity = 10000.0f;
 	// Static spots for the bake: "px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela"
 	std::vector<std::string> spots;
+	// Read-only inspection: open an existing pak and print its manifest
+	// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
+	std::string dumpPak;
 };
 
 std::vector<float> ParseLodRatios(const std::string& s) {
@@ -256,6 +260,9 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.spots.push_back(v);
 		}
+		else if (a == "--dump-pak") {
+			if (!need(out.dumpPak)) return false;
+		}
 		else if (a == "--help" || a == "-h") {
 			return false;
 		}
@@ -264,6 +271,8 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			return false;
 		}
 	}
+	if (!out.dumpPak.empty())
+		return true; // inspection mode needs no cook inputs
 	if (out.inVfs.empty() || out.outPak.empty()) {
 		std::cerr << "Required: --in-vfs <model vfs path> --out-pak <host path>" << std::endl;
 		return false;
@@ -287,7 +296,10 @@ void Usage() {
 		<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
 		<< "lightmap UVs + per-mesh chunk id; atlas written to\n"
 		<< "<contentDir>/gi/<scene>.sglm). Sources: sun + static spots + real\n"
-		<< "materials; transmissive (Blend) meshes pass light through.\n";
+		<< "materials; transmissive (Blend) meshes pass light through.\n"
+		<< "--dump-pak <pak path>: read-only inspection of an existing pak\n"
+		<< "(no cooking): prints meshes + lmChunk, materials + texture URIs,\n"
+		<< "and embedded textures.\n";
 }
 
 // Little-endian cursor over a MeshBlob payload for manifest printing. Mesh
@@ -370,11 +382,54 @@ void DumpManifestFromPak(const smvk::PakReader& reader) {
 			<< " lmChunk=" << (lmChunk == 0xFFFFFFFFu ? -1 : int(lmChunk)) << "\n";
 	}
 
-	// Materials.
+	// Materials (blob: str uri | 128B MaterialValues | u32 shading |
+	// u32 alpha | f32 cutoff | u32 doubleSided | 5x str texUris
+	// (baseColor, metallicRoughness, normal, occlusion, emissive) |
+	// u32 castsShadows).
 	for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Material)) {
 		DumpCursor c{ reader.Payload(*e), 0 };
 		const std::string uri = c.str();
-		std::cout << "    mat  " << uri << "\n";
+		if (c.off + 128 > c.img.size()) {
+			std::cout << "    mat  " << uri << " [truncated values]\n";
+			continue;
+		}
+		// Decode the texture-slot indices baked into MaterialValues
+		// (textures ivec4 at byte 32, textures2 ivec4 at byte 48;
+		// see Engine/Renderer/mesh.h) alongside the URI strings the
+		// runtime remaps them through.
+		int32_t slots[5] = { -9,-9,-9,-9,-9 };
+		for (int k = 0; k < 4; ++k) {
+			int32_t v = 0;
+			memcpy(&v, c.img.data() + c.off + 32 + k * 4, 4);
+			slots[k] = v;
+		}
+		{
+			int32_t v = 0;
+			memcpy(&v, c.img.data() + c.off + 48, 4);
+			slots[4] = v;
+		}
+		c.off += 128;
+		const uint32_t shading = c.u32();
+		const uint32_t alpha = c.u32();
+		const float cutoff = c.f32();
+		const uint32_t ds = c.u32();
+		std::string texUris[5];
+		for (int k = 0; k < 5; ++k)
+			texUris[k] = c.str();
+		const uint32_t cs = c.u32();
+		if (!c.ok) {
+			std::cout << "    mat  " << uri << " [truncated blob]\n";
+			continue;
+		}
+		std::cout << "    mat  " << uri
+			<< " shading=" << shading << " alpha=" << alpha
+			<< " cutoff=" << cutoff << " ds=" << ds
+			<< " cast=" << cs << "\n";
+		static const char* kNames[5] = { "bc", "mr", "n", "occ", "e" };
+		for (int k = 0; k < 5; ++k) {
+			std::cout << "      " << kNames[k] << " slot=" << slots[k]
+				<< " uri=" << (texUris[k].empty() ? "<none>" : texUris[k]) << "\n";
+		}
 	}
 
 	// Textures (embedded .ktx2 byte size).
@@ -396,6 +451,37 @@ int main(int argc, char** argv) {
 	if (!ParseArgs(argc, argv, args)) {
 		Usage();
 		return 2;
+	}
+
+	// Read-only inspection path: no VFS, no cooking, no writes.
+	if (!args.dumpPak.empty()) {
+		std::ifstream rf(args.dumpPak, std::ios::binary | std::ios::ate);
+		if (!rf) {
+			std::cerr << "Cannot open pak: " << args.dumpPak << std::endl;
+			return 1;
+		}
+		const auto size = rf.tellg();
+		rf.seekg(0);
+		std::vector<uint8_t> image(static_cast<size_t>(size));
+		if (!rf.read(reinterpret_cast<char*>(image.data()), size)) {
+			std::cerr << "Read failed: " << args.dumpPak << std::endl;
+			return 1;
+		}
+		std::string verr;
+		auto reader = smvk::PakReader::Open(
+			std::span<const uint8_t>(image), verr);
+		if (!reader) {
+			std::cerr << "PakReader rejected: " << verr << std::endl;
+			return 1;
+		}
+		std::cout << "Pak " << args.dumpPak << ": entries=" << reader->EntryCount()
+			<< " meshes=" << reader->BlobsOfKind(smvk::PakAssetKind::Mesh).size()
+			<< " materials=" << reader->BlobsOfKind(smvk::PakAssetKind::Material).size()
+			<< " textures=" << reader->BlobsOfKind(smvk::PakAssetKind::Texture).size()
+			<< " scene=" << reader->BlobsOfKind(smvk::PakAssetKind::Scene).size()
+			<< "\n";
+		DumpManifestFromPak(*reader);
+		return 0;
 	}
 
 	const auto t0 = std::chrono::steady_clock::now();
@@ -546,14 +632,35 @@ int main(int argc, char** argv) {
 		struct LmWork {
 			uint32_t node = 0;
 			smvk::ClusterStaticMeshHandle handle{};
-			uint32_t density = 0;
+			float density = 0.0f;   // chart-space density actually used
+			float worldScale = 1.0f; // node world scale (chart/world unit ratio)
 			SgLightmapChartResult chart;
 			// chunk index base of this mesh's charts in the atlas
 			// (chunk == chart rect; the mesh stamps its lobe count).
 			uint32_t chunkBase = 0;
 		};
+		// Chart density lives in the UPLOAD's position space, but
+		// --lm-density is world-space texels/meter: nodes with a world
+		// scale != 1 (Sponza's 0.008 root) must scale it, or charts come
+		// out 1/scale too dense and the budgets drop the biggest meshes
+		// (walls/floor fell through to the grids). Per-node scaling
+		// happens below; chartOpts carries the world-space request.
+		auto lmWorldScale = [&](uint32_t node) {
+			float s = 1.0f;
+			if (node < cluster->scene.globalTransform.size()) {
+				const glm::mat4& g = cluster->scene.globalTransform[node];
+				s = std::max({ glm::length(glm::vec3(g[0])),
+					glm::length(glm::vec3(g[1])),
+					glm::length(glm::vec3(g[2])) });
+			}
+			return (s > 1e-6f) ? s : 1.0f;
+		};
+		// Charts read node-local positions while the trace scene is
+		// world-space: make sure the global transforms are current
+		// before either use.
+		::recalculateGlobalTransforms(cluster->scene);
 		SgLightmapChartOptions chartOpts{};
-		chartOpts.texelsPerMeter = std::max<uint32_t>(args.lmDensity, 2);
+		chartOpts.texelsPerMeter = std::max<float>(float(args.lmDensity), 2.0f);
 		chartOpts.gutterTexels = std::clamp<uint32_t>(args.lmGutter, 1, 4);
 		std::vector<LmWork> work;
 		uint32_t skipBlend = 0, skipInstanced = 0, skipNoMat = 0;
@@ -592,13 +699,16 @@ int main(int argc, char** argv) {
 			LmWork w{};
 			w.node = node;
 			w.handle = handle;
+			w.worldScale = lmWorldScale(node);
 			std::string cerr_;
 			// Per-mesh density fallback: the mesh-total texel budget
 			// (maxChartTexelsTotal) bounds the bake-point count; halve
-			// the density until the mesh fits (floor 1 texel/m).
-			uint32_t density = chartOpts.texelsPerMeter;
+			// the density until the mesh fits (floor 1 texel/m WORLD,
+			// i.e. worldScale in chart space).
+			const float floorD = std::max(w.worldScale, 1e-3f);
+			float density = std::max(chartOpts.texelsPerMeter * w.worldScale, floorD);
 			bool charted = false;
-			while (density >= 1) {
+			while (density >= floorD) {
 				SgLightmapChartOptions o = chartOpts;
 				o.texelsPerMeter = density;
 				try {
@@ -610,9 +720,9 @@ int main(int argc, char** argv) {
 				}
 				if (charted)
 					break;
-				if (density <= 1)
+				if (density <= floorD)
 					break;
-				density /= 2;
+				density = std::max(density * 0.5f, floorD);
 			}
 			if (!charted) {
 				std::cerr << "  [LM] chart fail node " << node << " (over "
@@ -630,11 +740,12 @@ int main(int argc, char** argv) {
 		SgLightmapAtlas atlas;
 		if (!work.empty()) {
 			// Atlas pack: ALL charts of all meshes as individual rects.
-			// Convergence, in order:
+			// Convergence, in order (densities are WORLD texels/m; each
+			// mesh converts through its own world scale):
 			//   1. halve every mesh's OWN density (per-mesh retry with the
 			//      texel budget; meshes that cannot fit at the floor are
 			//      dropped — they keep the grid/probe ambient);
-			//   2. once every mesh is at density 1, drop the most
+			//   2. once every mesh is at 1 texel/m, drop the most
 			//      texel-hungry mesh per round until the pack fits.
 			constexpr uint32_t kMaxAtlasH = 8192;
 			constexpr uint64_t kAtlasTexelBudget = 4ull * 1024 * 1024;
@@ -652,30 +763,34 @@ int main(int argc, char** argv) {
 					std::max<uint32_t>(args.lmAtlasWidth, 256), kMaxAtlasH)
 					&& uint64_t(atlas.width) * atlas.height <= kAtlasTexelBudget;
 			};
-			auto rechartAll = [&](uint32_t targetDensity) {
-				// Halve every mesh to at most targetDensity (per-mesh
-				// retry + drop on budget overflow at the floor).
+			auto rechartAll = [&](float targetWorldDensity) {
+				// Lower every mesh to at most targetWorldDensity (WORLD
+				// texels/m; per-mesh retry + drop on budget overflow at
+				// the floor). Each mesh converts through its own world
+				// scale, so mixed-scale scenes converge uniformly.
 				std::vector<LmWork> kept;
 				kept.reserve(work.size());
 				for (LmWork& w : work) {
-					uint32_t density = std::min(w.density, targetDensity);
-					if (density == w.density) {
+					const float floorD = std::max(w.worldScale, 1e-3f);
+					float density = std::min(w.density, targetWorldDensity * w.worldScale);
+					if (density >= w.density) {
 						kept.push_back(std::move(w));
 						continue;
 					}
+					density = std::max(density, floorD);
 					const smvk::StaticMeshUpload* up =
 						cluster->GetRetainedUpload(w.handle);
 					bool ok = false;
-					while (density >= 1 && up) {
+					while (density >= floorD && up) {
 						SgLightmapChartOptions o = chartOpts;
 						o.texelsPerMeter = density;
 						std::string cerr_;
 						ok = GenerateLightmapCharts(*up, o, w.chart, cerr_);
 						if (ok)
 							break;
-						if (density <= 1)
+						if (density <= floorD)
 							break;
-						density /= 2;
+						density = std::max(density * 0.5f, floorD);
 					}
 					if (ok) {
 						w.density = density;
@@ -688,16 +803,16 @@ int main(int argc, char** argv) {
 				work = std::move(kept);
 			};
 			uint32_t round = 0;
-			uint32_t targetDensity = chartOpts.texelsPerMeter;
+			float targetDensity = chartOpts.texelsPerMeter;
 			while (!tryPack()) {
 				if (++round > 32 || work.empty()) {
 					std::cerr << "[LM] atlas overflow (" << work.size()
 						<< " meshes remain; lower --lm-density)\n";
 					return 1;
 				}
-				if (targetDensity > 1) {
-					// Phase 1: density rounds.
-					targetDensity = std::max<uint32_t>(targetDensity / 2, 1u);
+				if (targetDensity > 1.0f) {
+					// Phase 1: density rounds (world texels/m).
+					targetDensity = std::max(targetDensity * 0.5f, 1.0f);
 					std::cerr << "  [LM] atlas round " << round
 						<< ": density " << targetDensity << "\n" << std::flush;
 					rechartAll(targetDensity);

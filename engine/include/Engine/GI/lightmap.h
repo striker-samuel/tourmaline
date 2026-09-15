@@ -236,7 +236,12 @@ bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
 // rides the draw ring. Transmissive (Blend) meshes get no charts (they
 // stay runtime-lit).
 struct SgLightmapChartOptions {
-	uint32_t texelsPerMeter = 32; // lightmap density
+	// Chart density in texels per unit of the UPLOAD's position space.
+	// Callers with scaled nodes (node scale != 1, e.g. Sponza's 0.008)
+	// must pre-scale a world-space density by the node's world scale
+	// (see PakCooker), otherwise charts come out 1/scale too dense and
+	// the per-mesh/atlas budgets drop the biggest meshes.
+	float texelsPerMeter = 32.0f; // lightmap density
 	uint32_t gutterTexels = 1;    // inner margin per chart (1..4)
 	// Chart size cap (texels): region growth stops here, so every chart
 	// rect is small and atlas-packable regardless of mesh size.

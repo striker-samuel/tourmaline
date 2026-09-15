@@ -289,7 +289,7 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 		err = "GenerateLightmapCharts: mesh has no triangles";
 		return false;
 	}
-	if (opts.texelsPerMeter == 0 || opts.gutterTexels == 0 || opts.gutterTexels > 4) {
+	if (!(opts.texelsPerMeter > 0.0f) || opts.gutterTexels == 0 || opts.gutterTexels > 4) {
 		err = "GenerateLightmapCharts: bad options";
 		return false;
 	}

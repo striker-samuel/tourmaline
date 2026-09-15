@@ -229,9 +229,9 @@ namespace smvk {
 						.offset = offsetof(VertexShading, color)
 					},
 					{
-						.semantic = VertexSemantic::TexCoord1,
-						.format = Format::RG16_UNorm,
-						.offset = offsetof(VertexShading, uv2)
+						.semantic = VertexSemantic::TexCoord0,
+						.format = Format::RG16_Float,
+						.offset = offsetof(VertexShading, uv)
 					},
 					{
 						.semantic = VertexSemantic::Normal,
@@ -245,7 +245,7 @@ namespace smvk {
 					},
 					{
 						.semantic = VertexSemantic::TexCoord1,
-						.format = Format::RG16_Float,
+						.format = Format::RG16_UNorm,
 						.offset = offsetof(VertexShading, uv2)
 					}
 				}

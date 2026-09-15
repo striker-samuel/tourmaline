@@ -850,8 +850,9 @@ void TestClusterSerializeCook() {
 	Check(!meshes.empty() &&
 		reader->Payload(*meshes[0]).size() ==
 			4 * sizeof(StaticVertex) + 6 * sizeof(uint32_t) + (0u /*header*/) +
-			// header: uri len+bytes, counts, surfaces(0), aabb, sphere, topo, lod
-			4 + meshUri.size() + 4 + 4 + 4 + 0 + 24 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 +
+			// header: uri len+bytes, counts, surfaces(0), aabb, sphere,
+			// topo, lod (7 fields), lmChunk
+			4 + meshUri.size() + 4 + 4 + 4 + 0 + 24 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 +
 			// trailing meshlet section (v2, empty here): count + verts + tris
 			4 + 4 + 4,
 		"cook.pak.mesh.payload");
@@ -979,13 +980,15 @@ void TestVertexPack() {
 	using namespace smvk;
 	using namespace smvk::vertexpack;
 
-	// Packed shading stream: 16 bytes, fixed member offsets (the Vulkan
-	// attribute table in mesh.h mirrors these).
-	Check(sizeof(VertexShading) == 16, "vpack.sizeof");
+	// Packed shading stream: 20 bytes, fixed member offsets (the Vulkan
+	// attribute table in mesh.h mirrors these: location 2 fetches uv as
+	// RG16_Float, location 5 fetches uv2 as RG16_UNorm).
+	Check(sizeof(VertexShading) == 20, "vpack.sizeof");
 	Check(offsetof(VertexShading, color) == 0 &&
 		offsetof(VertexShading, uv) == 4 &&
-		offsetof(VertexShading, normal) == 8 &&
-		offsetof(VertexShading, tangent) == 12, "vpack.offsets");
+		offsetof(VertexShading, uv2) == 8 &&
+		offsetof(VertexShading, normal) == 12 &&
+		offsetof(VertexShading, tangent) == 16, "vpack.offsets");
 
 	// Normal oct round-trip: axes, diagonals, skewed, degenerate zero.
 	const glm::vec3 normalCases[] = {

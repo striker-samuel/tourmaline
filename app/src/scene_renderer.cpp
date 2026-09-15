@@ -1441,10 +1441,12 @@ bool SceneRenderer::Initialize() {
 								// Serve pak-embedded textures through the VFS
 								// (below loose content/ so dev overrides win).
 								contentVfs.Mount(pakBackend, 10, scenePak);
-								loadedFromPak = true;
-								std::cerr << "[Scene] pak cluster loaded: meshes="
-									<< m_world->meshLocations.size() << " materials="
-									<< m_world->materialLocations.size() << std::endl;
+							loadedFromPak = true;
+							// NOTE: world mesh/material slots only exist
+							// after ResolveAndFixup_clusters below, so no
+							// counts are printed here (they would read 0).
+							std::cerr << "[Scene] pak cluster loaded"
+								<< std::endl;
 							}
 							catch (const std::exception& e) {
 								std::cerr << "[SceneRenderer] Pak load failed, falling back "
@@ -1498,7 +1500,9 @@ bool SceneRenderer::Initialize() {
 
 		m_world->ResolveAndFixup_clusters();
 		std::cerr << "[Scene] world resolved: nodes="
-			<< m_world->scene.hierarchy.size() << std::endl;
+			<< m_world->scene.hierarchy.size() << " meshes="
+			<< m_world->meshLocations.size() << " materials="
+			<< m_world->materialLocations.size() << std::endl;
 
 		// Fit the procedural Forward+ light grid to the loaded scene's
 		// world bounds so the crowd fills Bistro/Sponza instead of

@@ -2,8 +2,9 @@
 
 // Packed GPU vertex streams (see VertexShading in mesh.h).
 //
-// The shading stream is 16 bytes: color (RGBA8_UNORM), uv (RG16_FLOAT =
-// packHalf2x16), normal (oct32), tangent (oct32 + handedness bit). Normal
+// The shading stream is 20 bytes: color (RGBA8_UNORM), uv (RG16_FLOAT =
+// packHalf2x16), uv2 lightmap UV (RG16_UNORM = packUnorm2x16),
+// normal (oct32), tangent (oct32 + handedness bit). Normal
 // and tangent ride as Format::R32_UInt and are unpacked by hand in the
 // vertex shader (engine/shaders/vertex_pack.hlsli mirrors this file — keep
 // the two in sync; the HLSL side uses the same sign(0)=+1 convention and
