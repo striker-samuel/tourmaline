@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <future>
 #include <limits>
 #include <map>
@@ -12,6 +13,8 @@
 #include <Engine/App/cluster.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Utils/thread_pool.h>
+
+#include "ktx.h"
 
 namespace smvk::gi {
 
@@ -163,15 +166,55 @@ glm::vec3 GiTraceScene::SampleSun(const glm::vec3& pos, const glm::vec3& n,
 	return sunColor * (sunIntensity * ndl) * m.albedo * (1.0f / kPi);
 }
 
+glm::vec3 GiTraceScene::SampleSpots(const glm::vec3& pos, const glm::vec3& n,
+	const GiTraceMaterial& m) const {
+	// Mirrors EvaluateForwardPlusLight (default_lit_body.hlsli): Frostbite
+	// windowed inverse-square falloff, candela convention, cone
+	// smoothstep — so baked spots match the runtime direct path. Returns
+	// the Lambertian reflected term (same convention as SampleSun).
+	if (spots.empty())
+		return glm::vec3(0.0f);
+	glm::vec3 sum(0.0f);
+	for (const GiTraceSpot& s : spots) {
+		glm::vec3 toLight = s.position - pos;
+		const float dist2 = glm::dot(toLight, toLight);
+		if (s.range > 0.0f && dist2 > s.range * s.range)
+			continue;
+		const float dist = std::sqrt(dist2);
+		const glm::vec3 dirTo = toLight / std::max(dist, 1e-6f);
+		const float ndl = glm::dot(n, dirTo);
+		if (ndl <= 0.0f)
+			continue;
+		// Cone falloff (axis points at the aim point).
+		const float cosA = glm::dot(-dirTo, glm::normalize(s.direction));
+		if (cosA < s.cosOuter)
+			continue;
+		const float t = std::clamp(
+			(cosA - s.cosOuter) / std::max(s.cosInner - s.cosOuter, 1e-6f),
+			0.0f, 1.0f);
+		const float ang = t * t * (3.0f - 2.0f * t);
+		// Windowed inverse square (candela convention).
+		float window_ = 1.0f;
+		if (s.range > 0.0f) {
+			const float x = dist / s.range;
+			window_ = std::pow(std::clamp(1.0f - x * x * x * x, 0.0f, 1.0f), 2.0f);
+		}
+		const float atten = window_ / std::max(4.0f * kPi * dist2, 1e-2f);
+		if (bvh_.AnyHit(pos + n * kSurfEps, dirTo, dist - 2.0f * kSurfEps))
+			continue;
+		sum += s.color * (ndl * atten * ang);
+	}
+	return sum * m.albedo * (1.0f / kPi);
+}
+
 glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& dir,
 	Pcg32& rng, uint32_t maxDepth) const {
-	// Sun-only GI: the probe field stores bounced sun and nothing else.
-	// Sky (analytic gradient) and emissive geometry are deliberately NOT
-	// sampled here — sky ambient stays analytic at runtime (EvaluateIrradiance)
-	// and emissive has no runtime path that needs a baked copy. Sampling
-	// them here was the firefly source (emissive NEE 1/pdfSa blowups) and
-	// the brightness-scale mismatch (baked sky at dome intensity ~600 vs
-	// the IBL intensity ~20 it replaced).
+	// Baked field: sun + static spot NEE at every diffuse vertex
+	// (including the primary hit — the light a lit surface reflects toward
+	// the probe IS indirect at the probe). Transmissive surfaces pass
+	// rays through, tinting the throughput (no bounce, no NEE at the
+	// pass-through vertex). Sky stays analytic at runtime; emissive is
+	// runtime-only.
 	glm::vec3 L(0.0f);
 	glm::vec3 throughput(1.0f);
 	glm::vec3 p = origin;
@@ -180,7 +223,7 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 	for (uint32_t depth = 0; depth <= maxDepth; ++depth) {
 		TriangleBvh::Hit h;
 		if (!bvh_.Raycast(p, d, kMaxRayDist, h)) {
-			// Open sky contributes nothing to the sun-only field.
+			// Open sky contributes nothing to the baked field.
 			break;
 		}
 		const glm::vec3 pos = p + d * h.t;
@@ -188,16 +231,21 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 		const glm::vec3 n = glm::dot(tn, d) < 0.0f ? tn : -tn;
 		const GiTraceMaterial& m = materials[triMaterial[h.tri]];
 
-		// Sun NEE at EVERY vertex, including the primary hit: the light
-		// reflected by the first-hit surface toward the probe IS indirect
-		// illumination at the probe (one-bounce sun GI). This does not
-		// double-count the runtime cascaded shadow maps: those evaluate
-		// direct sun at the shaded surface itself, while the probe field
-		// only ever transports light arriving from OTHER surfaces.
-		// Omitting the primary vertex throws away the dominant one-bounce
-		// term and leaves only sparse multi-bounce paths (high variance,
-		// hostile fits).
-		L += throughput * SampleSun(pos, n, m);
+		// Transmissive (glass): pass through, tinted. No diffuse bounce at
+		// this vertex; the throughput picks up the transmission color.
+		// Rays never refract (straight-through) — bake-side approximation.
+		if (m.transmission.x + m.transmission.y + m.transmission.z > 1e-4f) {
+			throughput *= m.transmission;
+			if (Luminance(throughput) < 1e-4f)
+				break;
+			p = pos + d * kSurfEps;
+			continue;
+		}
+
+		// Diffuse vertex: sun + spot NEE (both carry the vertex albedo
+		// and the Lambertian 1/pi; the runtime shader re-applies its local
+		// albedo for the lightmap diffuse, matching the probe path).
+		L += throughput * (SampleSun(pos, n, m) + SampleSpots(pos, n, m));
 
 		throughput *= m.albedo;
 		if (Luminance(throughput) < 1e-4f)
@@ -222,6 +270,65 @@ glm::vec3 GiTraceScene::TraceIrradiance(const glm::vec3& origin, const glm::vec3
 // Cluster extraction
 // ---------------------------------------------------------------------------
 
+std::optional<glm::vec3> GiAverageKtxTexel(std::span<const uint8_t> ktxBytes) {
+	// Decode on the CPU (libktx), average a small mip in linear space:
+	// baked albedo/emissive/metallic should include texture content.
+	if (ktxBytes.empty())
+		return std::nullopt;
+	ktxTexture2* raw = nullptr;
+	if (ktxTexture2_CreateFromMemory(
+			reinterpret_cast<const ktx_uint8_t*>(ktxBytes.data()),
+			static_cast<ktx_size_t>(ktxBytes.size()),
+			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &raw) != KTX_SUCCESS)
+		return std::nullopt;
+	struct Guard {
+		ktxTexture2* t;
+		~Guard() { if (t) ktxTexture2_Destroy(t); }
+	} guard{ raw };
+	if (ktxTexture2_NeedsTranscoding(raw)) {
+		if (ktxTexture2_TranscodeBasis(raw, KTX_TTF_RGBA32, 0) != KTX_SUCCESS)
+			return std::nullopt;
+	}
+	const ktx_uint32_t baseWidth = raw->baseWidth;
+	const ktx_uint32_t baseHeight = std::max<ktx_uint32_t>(raw->baseHeight, 1);
+	const ktx_uint32_t levels = std::max<ktx_uint32_t>(raw->numLevels, 1);
+	ktx_uint32_t level = 0;
+	while (level + 1 < levels && (baseWidth >> (level + 1)) > 64)
+		++level; // pick a small mip so averaging is cheap
+	const ktx_uint32_t w = std::max<ktx_uint32_t>(baseWidth >> level, 1);
+	const ktx_uint32_t h = std::max<ktx_uint32_t>(baseHeight >> level, 1);
+	ktx_size_t offset = 0;
+	if (ktxTexture2_GetImageOffset(raw, level, 0, 0, &offset) != KTX_SUCCESS)
+		return std::nullopt;
+	const ktx_size_t rowPitch = ktxTexture_GetRowPitch(
+		reinterpret_cast<ktxTexture*>(raw), level);
+	const ktx_uint32_t components = ktxTexture2_GetNumComponents(raw);
+	if (components < 3 || rowPitch < ktx_size_t(w) * components)
+		return std::nullopt;
+	const bool srgb = ktxTexture2_GetTransferFunction_e(raw) == KHR_DF_TRANSFER_SRGB;
+	const uint8_t* base = reinterpret_cast<const uint8_t*>(raw->pData) + offset;
+	glm::dvec3 sum(0.0);
+	uint64_t count = 0;
+	for (ktx_uint32_t y = 0; y < h; ++y) {
+		const uint8_t* row = base + y * rowPitch;
+		for (ktx_uint32_t x = 0; x < w; ++x) {
+			const uint8_t* px = row + x * components;
+			auto chan = [&](uint32_t c) {
+				const float v = float(px[c]) / 255.0f;
+				return srgb
+					? ((v <= 0.04045f) ? v / 12.92f
+						: std::pow((v + 0.055f) / 1.055f, 2.4f))
+					: v;
+			};
+			sum += glm::dvec3(chan(0), chan(1), chan(2));
+			++count;
+		}
+	}
+	if (count == 0)
+		return std::nullopt;
+	return glm::vec3(sum / double(count));
+}
+
 void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opts,
 	GiTraceScene& out, std::string& err) {
 	::Scene& scene = cluster.scene;
@@ -236,10 +343,8 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 	auto internMaterial = [&](const Material& mat) -> uint32_t {
 		GiTraceMaterial gm{};
 		if (opts.uniformAlbedo) {
-			// White-world mode: one known albedo everywhere, no emissive.
-			// Every bounce attenuates by exactly uniformAlbedoValue, so the
-			// transport is analytically checkable and texture cooking
-			// cannot print through as dots.
+			// White-world mode: one known albedo everywhere, no emissive,
+			// no transmission. Analytically checkable transport (debug).
 			gm.albedo = opts.uniformAlbedoValue;
 			gm.emissive = glm::vec3(0.0f);
 		} else {
@@ -259,21 +364,32 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 					it != opts.texelAvg.end())
 					base *= it->second;
 			}
-			gm.albedo = base * (1.0f - metallic);
-			gm.emissive = opts.includeEmissive
-				? glm::vec3(mat.values.emissiveFactor) * mat.values.params2.z
-				: glm::vec3(0.0f);
-			if (opts.includeEmissive && mat.values.textures2.x >= 0) {
-				if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures2.x));
-					it != opts.texelAvg.end())
-					gm.emissive *= it->second;
+			if (mat.alphaMode == AlphaMode::Blend) {
+				// Transmissive (glass): the trace scene carries it as a
+				// pass-through attenuator — rays continue through the
+				// surface, tinted by baseColor (bake-side only; runtime
+				// cost unchanged). No diffuse bounce for these.
+				gm.transmission = base;
+				gm.albedo = glm::vec3(0.0f);
+				gm.emissive = glm::vec3(0.0f);
+			} else {
+				gm.albedo = base * (1.0f - metallic);
+				gm.emissive = opts.includeEmissive
+					? glm::vec3(mat.values.emissiveFactor) * mat.values.params2.z
+					: glm::vec3(0.0f);
+				if (opts.includeEmissive && mat.values.textures2.x >= 0) {
+					if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures2.x));
+						it != opts.texelAvg.end())
+						gm.emissive *= it->second;
+				}
 			}
 		}
 		// Deduplicate identical materials (cheap win: scenes reuse them).
 		for (uint32_t i = 0; i < out.materials.size(); ++i) {
 			const GiTraceMaterial& o = out.materials[i];
 			if (glm::all(glm::equal(o.albedo, gm.albedo))
-				&& glm::all(glm::equal(o.emissive, gm.emissive)))
+				&& glm::all(glm::equal(o.emissive, gm.emissive))
+				&& glm::all(glm::equal(o.transmission, gm.transmission)))
 				return i;
 		}
 		out.materials.push_back(gm);
@@ -307,10 +423,11 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 		const Material* mat = cluster.materials.get(matHandle);
 		if (!mat)
 			continue;
-		if (opts.skipBlended && mat->alphaMode == AlphaMode::Blend)
-			continue; // glass: not GI-relevant, would only darken bounces
 		if (!opts.includeMaskedCutout && mat->alphaMode == AlphaMode::Mask)
 			continue;
+		// Blend (transmissive) geometry is NOT skipped: the trace scene
+		// carries it as a pass-through attenuator (see internMaterial).
+		// Lightmap charting still excludes it (glass gets no charts).
 
 		NodeGeo g{};
 		g.node = node;

@@ -63,7 +63,9 @@ float DsComputeLightVisibility(ForwardPlusLight L, float3 worldPos, float3 faceN
     if (evsm != 0u)
         return GetSpotShadowFactorEvsmTile(0u, worldPos, faceNormal,
             L.direction, L.outerAngle, t, atlasIdx, EVSM_EXPONENT, pix);
-    return PcssSpotShadow(1u, worldPos, faceNormal, L.direction, t, atlasIdx,
+    // PCF depth atlas: manual SampleLevel(samplers[]) compare, so a regular
+    // sampler (0) — never the comparison sampler (1).
+    return PcssSpotShadow(0u, worldPos, faceNormal, L.direction, t, atlasIdx,
         pcDS.pcssLightSize, pcDS.spotShadowNear, L.outerAngle);
 }
 

@@ -186,6 +186,9 @@ bool SerializeCluster(
 		PutF32(blob, lod.screenThreshold);
 		PutU32(blob, lod.triCount);
 		PutF32(blob, lod.acmr);
+		// Lightmap chunk (cooked --lightmap; texCoord2 in the vertex
+		// payload below carries the per-vertex lightmap UVs).
+		PutU32(blob, mesh->lmChunk);
 		// Vertex/index payloads (AoS StaticVertex, u32 indices).
 		static_assert(sizeof(StaticVertex) == 72, "StaticVertex layout changed");
 		blob.insert(blob.end(),
@@ -559,6 +562,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		lod.screenThreshold = c.f32();
 		lod.triCount = c.u32();
 		lod.acmr = c.f32();
+		const uint32_t lmChunk = c.u32();
 		if (!c.ok)
 			return fail("truncated mesh metadata: " + e->path);
 		// Vertex payload: the CURRENT StaticVertex layout, strict. Paks are
@@ -631,9 +635,11 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		const ClusterStaticMeshHandle h = cluster->UploadStaticMesh(upload);
 		if (!h.valid())
 			return fail("UploadStaticMesh failed for: " + uri);
-		// UploadStaticMesh fills AABB only; restore the cooked sphere.
+		// UploadStaticMesh fills AABB only; restore the cooked sphere and
+		// the lightmap chunk (rides the draw ring to the lit fragment).
 		if (StaticMesh* m = cluster->staticMeshes.get(h)) {
 			m->geometry.sphereRadius = sphere;
+			m->lmChunk = lmChunk;
 			if (!cooked.empty())
 				m->meshlets = std::move(cooked);
 		}

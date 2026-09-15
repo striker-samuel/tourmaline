@@ -285,6 +285,10 @@ namespace smvk {
 		// Empty when the mesh was cooked without meshlets. Never consulted
 		// by the current direct-draw renderer.
 		std::optional<CookedMeshlets> meshlets;
+		// Lightmap: atlas chunk index (cooked with --lightmap; the lightmap
+		// UVs ride the mesh's own texCoord2 stream). 0xFFFFFFFF = none.
+		// Rides the gfx draw ring (GfxDraw.misc.w) to the lit fragment.
+		uint32_t lmChunk = 0xFFFFFFFFu;
 	};
 
 	// -----------------------------------------------------------------------------

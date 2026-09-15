@@ -172,7 +172,10 @@ float PCFShadow(
     return sum / samples;
 }
 float PCFShadowAtlas(
-    uint samplerId,
+    uint samplerId, // regular sampler (0): SampleLevel + manual compare.
+        // Never the comparison sampler (1) — that is compareEnable=true
+        // and sampling depth with it outside SampleCmp* is undefined
+        // (reads lit on most drivers, i.e. "no shadows" in PCF mode).
     float2 uv,
     float currentDepth,
     uint shadowIdx,
@@ -491,9 +494,12 @@ float GetShadowFactorCascaded(
 // Legacy wrapper that pulls cascade buffer from push constants – main frag will call this.
 // Guarded: deferred-shadow compute passes include this header with their
 // own push layout (no scene-wide `pc`; see common.hlsli ENGINE_HAS_PC).
+// NOTE: samplerId must be a REGULAR sampler (0): the atlas path does a
+// manual SampleLevel(samplers[]) + compare. The comparison sampler (1) is
+// only for hardware SampleCmp paths (PCFShadow/GetShadowFactorODB).
 #ifdef ENGINE_HAS_PC
 float GetShadowFactorCascadedFromPC(
-    uint comparisonSamplerId,
+    uint samplerId,
     float3 worldPos,
     float3 faceNormal,
     Light light
@@ -501,7 +507,7 @@ float GetShadowFactorCascadedFromPC(
 {
     FrameUniforms frame = pc.frameUniforms.Get();
     GpuDirectionalLightDescription dir = pc.cascadeBuffer.Get().dir;
-    return GetShadowFactorCascaded(comparisonSamplerId, worldPos, faceNormal, light, frame, dir);
+    return GetShadowFactorCascaded(samplerId, worldPos, faceNormal, light, frame, dir);
 }
 #endif // ENGINE_HAS_PC
 

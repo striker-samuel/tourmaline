@@ -65,17 +65,11 @@ struct GfxDraw
 {
     float4x4 model;
     // x = mesh index, y = flags (GFX_DRAW_*), z = draw-set bucket
-    // (GFX_DRAWSET_*); uint4 keeps 16B alignment under block rules.
+    // (GFX_DRAWSET_*), w = lightmap chunk (0xFFFFFFFF = none; passed flat
+    // to the lit fragment for the static/dynamic GI separation).
     uint4 misc;
 };
 struct GfxDraws { GfxDraw draws[GFX_MAX_DRAWS]; };
-
-// Per-gfx-mesh lightmap chunk index (UINT32_MAX = no lightmap). Built by
-// the app after RegisterWorldMeshes (meshMap_ gives world->gfx meshes) and
-// read by gfxfiltered.vert to pass a flat chunk id to the lit fragment
-// (static/dynamic GI separation: chunk draws sample the 2D SG atlas,
-// the rest sample the 3D probe grids / fallback ambient).
-struct GfxLmChunks { uint chunk[GFX_MAX_DRAWS]; };
 
 struct GfxFiltered { uint idx[GFX_MAX_FILTERED]; };
 

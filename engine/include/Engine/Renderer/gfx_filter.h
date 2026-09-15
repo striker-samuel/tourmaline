@@ -111,7 +111,10 @@ struct alignas(16) Draw {
 	uint32_t mesh = 0;
 	uint32_t flags = 0; // DrawFlags (bit 0 = two-sided: skip backface/cone cull)
 	uint32_t drawSet = DrawSetBit_Opaque; // DrawSetBits bucket (seed PSO select)
-	uint32_t pad = 0;
+	// Lightmap chunk (HLSL GfxDraw.misc.w; 0xFFFFFFFF = none). Cooked per
+	// mesh with --lightmap; the filtered VS passes it flat to the lit
+	// fragment (static/dynamic GI separation).
+	uint32_t lmChunk = 0xFFFFFFFFu;
 };
 static_assert(sizeof(Draw) == 80);
 
@@ -157,23 +160,19 @@ struct FilterPush {
 };
 static_assert(sizeof(FilterPush) == 200);
 
-// Filtered-path VS tail push (gfxfiltered.vert.hlsl, 40 bytes).
+// Filtered-path VS tail push (gfxfiltered.vert.hlsl, 24 bytes).
 // Pushed at kFilteredVsPushOffset (the main pass' unused prevModel scratch,
-// bytes 192..232) so the full 256B scene push stays intact for the fragment
-// shader. The VS resolves viewProj through the render-view slab.
-// lmChunks: per-gfx-mesh lightmap chunk table BDA; lmChunksValid = 0
-// (gfxfiltered.vert then emits "no chunk" for every draw).
+// bytes 192..216) so the full 256B scene push stays intact for the fragment
+// shader. The VS resolves viewProj through the render-view slab; the
+// per-draw lightmap chunk rides GfxDraw.misc.w (no table needed).
 static constexpr uint32_t kFilteredVsPushOffset = 192;
 struct FilteredVsPush {
-	uint64_t draws = 0;          // 0
-	uint64_t renderViews = 0;    // 8
-	uint64_t lmChunks = 0;       // 16 per-gfx-mesh chunk table BDA
-	uint32_t renderViewIndex = 0; // 24
-	uint32_t lmChunksValid = 0;  // 28 0 = no table ("no chunk" everywhere)
-	uint32_t pad = 0;            // 32
-	uint32_t pad2 = 0;           // 36
+	uint64_t draws = 0;
+	uint64_t renderViews = 0;
+	uint32_t renderViewIndex = 0;
+	uint32_t pad = 0;
 };
-static_assert(sizeof(FilteredVsPush) == 40);
+static_assert(sizeof(FilteredVsPush) == 24);
 
 // One indirect command range per material (commands sorted by material).
 struct MaterialRange {
@@ -200,6 +199,7 @@ struct DrawRequest {
 	glm::mat4 model{ 1.0f };
 	DrawFlags flags = 0;
 	DrawSetMask drawSet = DrawSetBit_Opaque;
+	uint32_t lmChunk = 0xFFFFFFFFu; // rides the draw ring (misc.w)
 };
 
 struct Cluster {
@@ -630,7 +630,8 @@ uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 	CullFlags cullFlags, uint32_t width, uint32_t height);
 void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	const glm::mat4& model, uint32_t material, DrawFlags flags = 0,
-	DrawSetMask drawSet = DrawSetBit_Opaque);
+	DrawSetMask drawSet = DrawSetBit_Opaque,
+	uint32_t lmChunk = 0xFFFFFFFFu);
 // Pure-CPU cluster test (meshoptimizer perspective cone + sphere vs planes).
 // Exported for unit tests; eye must be the camera world position.
 // twoSided skips the normal-cone (backface) part; the sphere-vs-frustum

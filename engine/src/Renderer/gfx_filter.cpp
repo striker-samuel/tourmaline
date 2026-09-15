@@ -1257,7 +1257,8 @@ uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 }
 
 void PushDraw(State& s, uint32_t view, uint32_t mesh,
-	const glm::mat4& model, uint32_t material, DrawFlags flags, DrawSetMask drawSet) {
+	const glm::mat4& model, uint32_t material, DrawFlags flags,
+	DrawSetMask drawSet, uint32_t lmChunk) {
 	assert(view < s.viewCount);
 	assert(mesh < s.meshes.size());
 	View& v = s.views[view];
@@ -1277,6 +1278,7 @@ void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	d.model = model;
 	d.flags = flags;
 	d.drawSet = drawSet;
+	d.lmChunk = lmChunk;
 	v.draws.push_back(d);
 }
 
@@ -1632,6 +1634,7 @@ void BuildBatches(State& s, uint32_t view) {
 		dc.mesh = d.mesh;
 		dc.flags = d.flags;
 		dc.drawSet = d.drawSet;
+		dc.lmChunk = d.lmChunk;
 		v.drawConstants.push_back(dc);
 	}
 

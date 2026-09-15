@@ -849,21 +849,27 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 					}
 				}
 			}
-			// Double-sided materials bind with Cull None (see
-			// bindForMaterial): the filter must not backface/cone-cull
-			// them or foliage/cutout backs vanish. The draw-set bucket
-			// (opaque vs. alpha-tested) selects the seed depth PSO in T3.
-			smvk::gfx::DrawFlags drawFlags = 0;
-			smvk::gfx::DrawSetMask drawSet = smvk::gfx::DrawSetBit_Opaque;
-			if (const smvk::Material* mat = world.GetMaterial(item.material)) {
-				if (mat->isDoubleSided())
-					drawFlags |= smvk::gfx::DrawFlagBit_TwoSided;
-				if (mat->shadingModel == smvk::ShadingModel::Masked)
-					drawSet = smvk::gfx::DrawSetBit_Masked;
-			}
-			smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
-				item.material, drawFlags, drawSet);
-		});
+		// Double-sided materials bind with Cull None (see
+		// bindForMaterial): the filter must not backface/cone-cull
+		// them or foliage/cutout backs vanish. The draw-set bucket
+		// (opaque vs. alpha-tested) selects the seed depth PSO in T3.
+		smvk::gfx::DrawFlags drawFlags = 0;
+		smvk::gfx::DrawSetMask drawSet = smvk::gfx::DrawSetBit_Opaque;
+		uint32_t lmChunk = 0xFFFFFFFFu;
+		if (const smvk::Material* mat = world.GetMaterial(item.material)) {
+			if (mat->isDoubleSided())
+				drawFlags |= smvk::gfx::DrawFlagBit_TwoSided;
+			if (mat->shadingModel == smvk::ShadingModel::Masked)
+				drawSet = smvk::gfx::DrawSetBit_Masked;
+		}
+		// Lightmap chunk rides the draw (cooked per mesh; statics only —
+		// dynamic/unbaked meshes carry 0xFFFFFFFF and sample the probe
+		// grids / fallback ambient instead).
+		if (const smvk::StaticMesh* mesh = world.GetMesh(worldMesh))
+			lmChunk = mesh->lmChunk;
+		smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
+			item.material, drawFlags, drawSet, lmChunk);
+	});
 	const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, frameIndex, slot);
 	// NOTE: unconditional (not SMVK_DEBUG_LOG): this is the only per-run
 	// visibility into filter load (draws/batches vs kMaxDraws/kMaxBatches).
@@ -901,8 +907,6 @@ void GfxRenderer::PushViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceMana
 	tail.draws = ctx.GetBufferDeviceAddress(smvk::gfx::DrawBuffer(gfx, slot));
 	tail.renderViews = renderViewsAddr;
 	tail.renderViewIndex = renderViewIndex;
-	tail.lmChunks = lmChunkTableBda_;
-	tail.lmChunksValid = lmChunkTableBda_ != 0 ? 1u : 0u;
 	cmd.PushConstants(smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail,
 		smvk::ShaderStage::All);
 }
@@ -946,8 +950,6 @@ void GfxRenderer::PushSeedConstants(smvk::CommandBuffer& cmd, smvk::ResourceMana
 	tail.draws = drawsAddr;
 	tail.renderViews = renderViewsAddr;
 	tail.renderViewIndex = renderViewIndex;
-	tail.lmChunks = lmChunkTableBda_;
-	tail.lmChunksValid = lmChunkTableBda_ != 0 ? 1u : 0u;
 	cmd.PushConstants(smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail,
 		smvk::ShaderStage::All);
 }

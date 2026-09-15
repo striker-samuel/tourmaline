@@ -90,19 +90,6 @@ namespace smvk {
 		void DestroyMesh(ClusterStaticMeshHandle handle);
 		void DestroyMaterial(ClusterMaterialHandle handle);
 
-		// Lightmap expanded runs: swaps a live mesh's GPU geometry in
-		// place (free old virtual ranges -> allocate + upload new ones ->
-		// rebuild the pool entry's geometry). The handle stays valid, so
-		// node/material references keep resolving. The new upload must be
-		// self-consistent (same surfaces layout: one surface, triangle
-		// list). Returns false when the handle is stale, the cluster is in
-		// cook mode, or the static heaps are out of room. Call BEFORE the
-		// gfx filter registers world meshes (RegisterWorldMeshes) — the
-		// filter bakes cluster-ordered index/command state from the
-		// geometry that exists at registration time.
-		bool ReplaceStaticMesh(ClusterStaticMeshHandle handle,
-			const StaticMeshUpload& data);
-
 		// ------------------------------------------------------------------
 		// URI-mapped resource lookup (AssetRef backing store).
 		//

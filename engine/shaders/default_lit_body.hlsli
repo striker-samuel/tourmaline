@@ -198,7 +198,9 @@ void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
                 pl.direction, pl.outerAngle, pl.shadowTile,
                 (uint)pl.shadowMapIndex, EVSM_EXPONENT, pix);
         else
-            shadowFactor = GetSpotShadowFactorFromPC(1, worldPos, geomN,
+            // PCF depth atlas: manual SampleLevel(samplers[]) compare, so a
+            // regular sampler (0) — never the comparison sampler (1).
+            shadowFactor = GetSpotShadowFactorFromPC(0, worldPos, geomN,
                 pl.direction, pl.shadowTile);
     }
     if (shadowFactor <= 0.0f)
@@ -788,7 +790,9 @@ PSOut mainPS(PSIn IN)
                 shadow = GetShadowFactorEvsmCascadedFromPC(0, IN.worldPos, geomN, light,
                     (uint)light.shadow_map_index, EVSM_EXPONENT, IN.clipPos.xy);
             else
-                shadow = GetShadowFactorCascadedFromPC(1, IN.worldPos, geomN, light);
+                // PCF depth atlas: manual SampleLevel(samplers[]) compare, so
+                // a regular sampler (0) — never the comparison sampler (1).
+                shadow = GetShadowFactorCascadedFromPC(0, IN.worldPos, geomN, light);
         }
         // PARKED: legacy single-map path kept in shadows.hlsli but disabled.
         // else
@@ -943,8 +947,24 @@ PSOut mainPS(PSIn IN)
     // below and ADD on top of the analytic sky ambient (same convention;
     // a lightmapped pixel skips the probe volume so nothing doubles).
     // ---------------------------------------------------------------
-    bool lmSampled = false;
-    const uint lmDbgMode = frame.giDebug & 0xffu;
+    // ---------------------------------------------------------------
+    // Static/dynamic baked-GI separation (see sg_lightmap.hlsli +
+    // sg_regular.hlsli): exactly ONE baked ambient source per pixel,
+    // by priority:
+    //   1. STATIC draws (per-draw lmChunk from the gfx draw ring) sample
+    //      the 2D SG lightmap atlas (HW-bilinear amplitudes, Hill-fitted
+    //      diffuse + warped-NDF specular).
+    //   2. DYNAMIC draws inside an artist OBB sample the regular 3D SG
+    //      probe grids (HW-trilinear between neighboring probes).
+    //   3. Anything else falls to the adaptive octree probe volume.
+    // All three carry the same baked field (sun + static spots, real
+    // materials) and ADD on top of the analytic sky ambient. No source
+    // double-counts: lower-priority sources are skipped once one hits.
+    // ---------------------------------------------------------------
+    uint giSource = 0u;            // 0 = none, 1 = lightmap, 2 = grid, 3 = probes
+    float3 bakedE = float3(0.0f, 0.0f, 0.0f); // diffuse irradiance (scaled)
+    const uint giDbgMode = frame.giDebug & 0xffu;
+
     if (frame.lmEnabled != 0u && IN.lmChunk != 0xFFFFFFFFu)
     {
         float3 lmAmps[SG_LM_MAX_LOBES];
@@ -954,14 +974,8 @@ PSOut mainPS(PSIn IN)
                 frame.lmChunks.Get().chunks[IN.lmChunk].atlasInfo.z);
             const float lmScale = max(frame.giIntensity, 0.0f);
             const float3 lmE = SgLmDiffuseIrradiance(lmAmps, lmLobes, N) * lmScale;
-            // F8 debug view (shared with the probe path): flat irradiance.
-            if (lmDbgMode == 1u)
-            {
-                OUT.outColor = float4(SanitizeHdr(lmE
-                    * max(frame.exposure, 1e-6f)), 1.0f);
-                return OUT;
-            }
-            lmSampled = true;
+            giSource = 1u;
+            bakedE = lmE;
             ambient += kD * baseColor * (lmE / PI) * occlusion * ao;
             const float lmRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
             if (lmRoughW > 0.0f)
@@ -972,20 +986,15 @@ PSOut mainPS(PSIn IN)
             }
         }
     }
-    if (!lmSampled && frame.regEnabled != 0u)
+    if (giSource == 0u && frame.regEnabled != 0u)
     {
         float3 regAmps[SG_GI_LOBES];
         if (SgRegularSampleFrame(frame, IN.worldPos, regAmps))
         {
             const float regScale = max(frame.giIntensity, 0.0f);
             const float3 regE = SgGiDiffuseIrradiance(regAmps, N) * regScale;
-            if (lmDbgMode == 1u)
-            {
-                OUT.outColor = float4(SanitizeHdr(regE
-                    * max(frame.exposure, 1e-6f)), 1.0f);
-                return OUT;
-            }
-            lmSampled = true; // dynamic-grid sample: also skips probes below
+            giSource = 2u;
+            bakedE = regE;
             ambient += kD * baseColor * (regE / PI) * occlusion * ao;
             const float regRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
             if (regRoughW > 0.0f)
@@ -996,174 +1005,61 @@ PSOut mainPS(PSIn IN)
             }
         }
     }
-
-    // Baked SG-GI: sun-bounce only, added on top of the analytic sky
-    // ambient (the probes carry no sky; uncovered pixels simply keep
-    // the sky IBL with no seam). Lightmapped / grid-covered pixels skip
-    // this (their field is already applied above — no double counting).
-    if (frame.giEnabled != 0u && !lmSampled)
+    if (giSource == 0u && frame.giEnabled != 0u)
     {
         float3 giAmps[SG_GI_LOBES];
-        float giWeightSum = 0.0;
-        uint giContributors = 0u;
-        bool giFellBack = false;
-        uint giBestLevel = 0u;
-        const uint giMode = frame.giDebug & 0xffu;
-        const bool giCovered = SgGiSample(frame, IN.worldPos, giAmps,
-            giWeightSum, giContributors, giFellBack, giBestLevel);
-        // F8 debug views (cycled): 1 = flat irradiance (probe diffuse, no
-        // albedo, exposure-scaled), 2 = interpolation diagnostics per
-        // the polka-dot bisect: R = SG sharpness / max (the basis is
-        // globally fixed, so 1.0 = constant), G = weight sum (scaled:
-        // saturated = healthy overlap), B = contributor count / 16.
-        // 3 = level-isolated irradiance (byte 1 of giDebug selects the
-        // level; the gather skips every other octave — coarse-leak
-        // bisect), 4 = dominant level palette (level of the strongest
-        // weighted contributor: red L0 -> yellow L1 -> green L2 ->
-        // cyan L3 -> blue L4 -> violet L5 -> pink L6 -> white L7).
-        // 5 = effective-coverage palette (visibility-valid contributor
-        // count: magenta 0 -> red 1 -> yellow 2 -> green 3-4 -> cyan 5+;
-        // target >= 3-4 per ordinary surface point).
-        // 6 = constant-amplitude binary test: every accepted probe
-        // returns the same reference radiance, so the normalized blend
-        // MUST be uniform wherever covered. Smooth floor => the
-        // interpolation is fine and the baked data is noisy; surviving
-        // blotches => weights/visibility selection still modulating.
-        // 7 = weighted probe disagreement: visibility-weighted relative
-        // stddev of the accepted probes' irradiances (black = agreement,
-        // green -> yellow -> red = probes disagree; same blobs as the
-        // irradiance view => high-variance bake, not coverage).
-        // Magenta = nothing covered; the green channel dropping to zero
-        // with low blue in the dotted regions = starving blends.
-        if (giMode != 0u)
-        {
-            if (!giCovered)
-            {
-                OUT.outColor = float4(0.8f, 0.0f, 0.8f, 1.0f);
-                return OUT;
-            }
-            if (giMode == 1u || giMode == 3u)
-            {
-                const float3 giEDbg = SgGiDiffuseIrradiance(giAmps, N)
-                    * max(frame.giIntensity, 0.0f) * max(frame.exposure, 1e-6f);
-                OUT.outColor = float4(SanitizeHdr(giEDbg), 1.0f);
-                return OUT;
-            }
-            if (giMode == 4u)
-            {
-                // Magenta: exactly one meaning — no visibility-valid
-                // contributor (uncovered, or covered only via the
-                // visibility-ignoring fallback). Everything else is a
-                // dominant-level color: which octree level carries most
-                // of this pixel's interpolation weight (argmax over the
-                // per-level weight sums).
-                if (giWeightSum <= 1e-4)
-                {
-                    OUT.outColor = float4(SanitizeHdr(float3(0.8f, 0.0f, 0.8f)
-                        * (0.5f / max(frame.exposure, 1e-6f))), 1.0f);
-                    return OUT;
-                }
-                float3 pal;
-                if (giBestLevel == 0u)      pal = float3(1.0f, 0.0f, 0.0f);
-                else if (giBestLevel == 1u) pal = float3(1.0f, 1.0f, 0.0f);
-                else if (giBestLevel == 2u) pal = float3(0.0f, 1.0f, 0.0f);
-                else if (giBestLevel == 3u) pal = float3(0.0f, 1.0f, 1.0f);
-                else if (giBestLevel == 4u) pal = float3(0.15f, 0.25f, 1.0f);
-                else                        pal = float3(1.0f, 1.0f, 1.0f);
-                OUT.outColor = float4(SanitizeHdr(pal
-                    * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
-                return OUT;
-            }
-            if (giMode == 5u)
-            {
-                // Effective-coverage palette: visibility-valid contributor
-                // count at this pixel. Magenta = zero coverage (hole),
-                // red/yellow = fragile (1-2), green = minimum healthy
-                // (3-4), cyan = comfortable (5+).
-                float3 cov;
-                if (giContributors == 0u)
-                    cov = float3(1.0f, 0.0f, 1.0f);
-                else if (giContributors == 1u)
-                    cov = float3(1.0f, 0.0f, 0.0f);
-                else if (giContributors == 2u)
-                    cov = float3(1.0f, 1.0f, 0.0f);
-                else if (giContributors <= 4u)
-                    cov = float3(0.0f, 1.0f, 0.0f);
-                else
-                    cov = float3(0.0f, 1.0f, 1.0f);
-                OUT.outColor = float4(SanitizeHdr(cov
-                    * (0.5f / max(frame.exposure, 1e-6f))), 1.0f);
-                return OUT;
-            }
-            if (giMode == 6u)
-            {
-                // Binary interpolation test: one constant reference set
-                // for every accepted probe. Uncovered pixels still read
-                // magenta via the !giCovered path above.
-                float3 flatAmps[SG_GI_LOBES];
-                [unroll]
-                for (uint i = 0; i < SG_GI_LOBES; ++i)
-                    flatAmps[i] = float3(0.5f, 0.5f, 0.5f);
-                const float3 flatE = SgGiDiffuseIrradiance(flatAmps, N)
-                    * max(frame.giIntensity, 0.0f) * max(frame.exposure, 1e-6f);
-                OUT.outColor = float4(SanitizeHdr(flatE), 1.0f);
-                return OUT;
-            }
-            if (giMode == 7u)
-            {
-                // Bake-variance heat: black = probes agree, green ->
-                // yellow -> red = accepted probes disagree (0.5 relative
-                // stddev saturates; 50% disagreement is already terrible).
-                const float rsd = SgGiDisagreement(frame, IN.worldPos, N);
-                const float t = saturate(rsd / 0.5f);
-                const float3 heat = lerp(float3(0.0f, 0.35f, 0.0f),
-                    float3(1.0f, 0.0f, 0.0f), smoothstep(0.05f, 1.0f, t));
-                OUT.outColor = float4(SanitizeHdr(heat
-                    * (0.5f / max(frame.exposure, 1e-6f))), 1.0f);
-                return OUT;
-            }
-            // Fallback flag (legacy: the nearest-probe fallback is removed,
-            // so this never fires — kept so old captures still decode).
-            // Uncovered pixels are magenta via the !giCovered path above
-            // and mode 5's zero-contributor bucket.
-            if (giFellBack)
-            {
-                OUT.outColor = float4(SanitizeHdr(float3(1.0f, 0.0f, 1.0f)
-                    * (0.5f / max(frame.exposure, 1e-6f))), 1.0f);
-                return OUT;
-            }
-            const float giSharp = SG_GI_SHARPNESS / 4.0f; // fixed basis: 1.0
-            const float giW = saturate(giWeightSum / 4.0f);
-            const float giCount = saturate(float(giContributors) / 16.0f);
-            float3 diag = float3(giSharp, giW, giCount);
-            // Fixed 0..1.4 palette: map it into the tonemapper's visible
-            // window (18% grey = 1.0) instead of 1/exposure, which pegs
-            // everything to white under physical-units exposure (~0.001).
-            OUT.outColor = float4(SanitizeHdr(diag * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
-            return OUT;
-        }
-        if (giCovered)
+        float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
+        if (SgGiSample(frame, IN.worldPos, giAmps, dbgW, dbgC, dbgF, dbgL))
         {
             const float giScale = max(frame.giIntensity, 0.0f);
             const float3 giE = SgGiDiffuseIrradiance(giAmps, N) * giScale;
+            giSource = 3u;
+            bakedE = giE;
             // Same convention as the direct sun term: albedo/PI * E.
-            // Sun-bounce ADDS to the sky ambient above (no replace, so
-            // uncovered pixels blend seamlessly).
-            const float3 giDiffuse = kD * baseColor * (giE / PI) * occlusion * ao;
-            // Rough glossy sun-bounce reflections; very smooth surfaces
-            // keep the analytic sky env only (9 broad lobes cannot
-            // represent mirrors). The probe specular is EXPENSIVE
-            // (9 SG x SG product integrals with exp()); roughW == 0
-            // surfaces must not pay it just to multiply by zero.
+            ambient += kD * baseColor * (giE / PI) * occlusion * ao;
+            // Rough glossy reflections; very smooth surfaces keep the
+            // analytic sky env only (broad lobes cannot do mirrors).
             const float roughW = saturate((shadingRoughness - 0.15f) / 0.25f);
             if (roughW > 0.0f)
             {
                 const float3 giSpecular =
-                    SgGiSpecular(giAmps, R, shadingRoughness) * giScale * Fenv * occlusion * ao;
+                    SgGiSpecular(giAmps, R, shadingRoughness) * giScale
+                    * Fenv * occlusion * ao;
                 ambientSpec = lerp(ambientSpec, giSpecular, roughW);
             }
-            ambient += giDiffuse;
         }
+    }
+
+    // ---------------------------------------------------------------
+    // F8 baked-GI debug views (cycled in the app UI):
+    //   1 = flat irradiance of whichever source lit this pixel (no
+    //       albedo, exposure-scaled) — coverage + brightness at a glance.
+    //   2 = source palette (the static/dynamic separation): red =
+    //       lightmap, green = regular grid, blue = probe volume.
+    //   Magenta = no baked source at this pixel (sky/ambient only).
+    // The old probe-bisect modes (level isolation, coverage palettes,
+    // disagreement heat, ...) are gone — bake-side analysis belongs to
+    // GiBaker --analyze.
+    // ---------------------------------------------------------------
+    if (giDbgMode != 0u)
+    {
+        if (giSource == 0u)
+        {
+            OUT.outColor = float4(0.8f, 0.0f, 0.8f, 1.0f);
+            return OUT;
+        }
+        if (giDbgMode == 1u)
+        {
+            OUT.outColor = float4(SanitizeHdr(bakedE
+                * max(frame.exposure, 1e-6f)), 1.0f);
+            return OUT;
+        }
+        float3 pal = (giSource == 1u) ? float3(1.0f, 0.0f, 0.0f)
+            : (giSource == 2u) ? float3(0.0f, 1.0f, 0.0f)
+            : float3(0.0f, 0.25f, 1.0f);
+        OUT.outColor = float4(SanitizeHdr(pal
+            * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
+        return OUT;
     }
 
     float3 color = direct + ambient + ambientSpec;

@@ -46,6 +46,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -74,6 +75,21 @@ namespace smvk::gi {
 struct GiTraceMaterial {
 	glm::vec3 albedo{ 0.8f };   // baseColor * (1 - metallic): Lambertian bounce color
 	glm::vec3 emissive{ 0.0f }; // HDR radiance (emissiveFactor * strength * texture)
+	glm::vec3 transmission{ 0.0f }; // > 0: transmissive (glass): rays pass
+	                                // THROUGH the surface, tinted per pass
+};
+
+// Static spot light for the bake (NEE at every bounce vertex). Angles in
+// radians, color premultiplied by intensity (radiance scale), range in
+// meters — semantics match the runtime ForwardPlusLight shader so baked
+// spots agree with what the direct path renders.
+struct GiTraceSpot {
+	glm::vec3 position{ 0.0f };
+	glm::vec3 direction{ 0.0f, -1.0f, 0.0f }; // TO the light's aim point
+	float cosInner = 0.0f;   // smoothstep(cosOuter, cosInner, cosA)
+	float cosOuter = 0.0f;
+	float range = 0.0f;       // 0 = infinite
+	glm::vec3 color{ 0.0f };  // color * intensity
 };
 
 // Deterministic, fast RNG (PCG32) so bakes are reproducible per probe id.
@@ -118,6 +134,8 @@ public:
 	glm::vec3 skyGround{ 0.20f, 0.18f, 0.15f };
 	float skyIntensity = 600.0f;
 	float skyExponent = 2.0f;
+	// Static spot lights (NEE at every bounce vertex; see GiTraceSpot).
+	std::vector<GiTraceSpot> spots;
 
 	void Finalize(); // build BVH + emissive light distribution
 
@@ -129,15 +147,17 @@ public:
 	// only: the sun-only probe field does NOT sample it.
 	glm::vec3 SkyRadiance(const glm::vec3& dir) const;
 
-	// Incoming SUN-BOUNCE radiance arriving at `origin` along `dir`
-	// (probe primary ray). `maxDepth` = number of diffuse bounce vertices
-	// after the first hit. Sun NEE runs at every vertex including the
-	// primary hit; sky and emissive contribute nothing (sun-only field).
+	// Incoming BAKED radiance arriving at `origin` along `dir` (probe
+	// primary ray): sun + static spot NEE at every diffuse vertex
+	// (including the primary hit), transmissive surfaces passed through
+	// with per-surface tinting. `maxDepth` = diffuse bounce vertices
+	// after the first hit. Sky stays analytic at runtime; emissive stays
+	// runtime-only.
 	glm::vec3 TraceIncoming(const glm::vec3& origin, const glm::vec3& dir,
 		Pcg32& rng, uint32_t maxDepth) const;
 
 	// Monte-Carlo cosine-hemisphere irradiance estimate at a point
-	// (reference for the error-driven refinement; sun-only, matching
+	// (reference for the error-driven refinement; same sources as
 	// TraceIncoming).
 	glm::vec3 TraceIrradiance(const glm::vec3& origin, const glm::vec3& n,
 		Pcg32& rng, uint32_t sampleCount, uint32_t maxDepth) const;
@@ -159,11 +179,17 @@ private:
 
 	// One NEE sample of the emissive-light set at a surface vertex
 	// (Lambertian reflected term, including the vertex albedo).
-	// RETAINED but UNSAMPLED: the sun-only field never calls it (it was
+	// RETAINED but UNSAMPLED: the baked field never calls it (it was
 	// the firefly source via 1/pdfSa blowups).
 	glm::vec3 SampleEmissive(const glm::vec3& pos, const glm::vec3& n,
 		const GiTraceMaterial& m, Pcg32& rng) const;
 	glm::vec3 SampleSun(const glm::vec3& pos, const glm::vec3& n,
+		const GiTraceMaterial& m) const;
+	// One NEE sample of every static spot at a diffuse vertex
+	// (Frostbite windowed inverse-square + cone falloff, occlusion
+	// tested — mirrors EvaluateForwardPlusLight so bakes match the
+	// runtime direct lighting).
+	glm::vec3 SampleSpots(const glm::vec3& pos, const glm::vec3& n,
 		const GiTraceMaterial& m) const;
 };
 
@@ -171,35 +197,41 @@ struct GiSceneBuildOptions {
 	EnvironmentSettings env{}; // sun + sky parameters
 
 	// Optional average-texel colors keyed by the cluster's cook texture id
-	// (MaterialValues texture slots): the GI baker tool decodes KTX2 files
-	// and fills this so baked albedo/emissive/metallic include texture
+	// (MaterialValues texture slots): the cook decodes KTX2 files and
+	// fills this so baked albedo/emissive/metallic include texture
 	// content. Role-agnostic per-texture averages: baseColor slots tint
 	// the albedo, emissive slots tint the emission, metallicRoughness
 	// slots supply the effective metallic (B channel) the way the
 	// runtime shader combines factor * texture.
 	std::unordered_map<uint32_t, glm::vec3> texelAvg;
 	bool includeMaskedCutout = true;  // alpha-tested foliage/walls as opaque
-	bool skipBlended = true;          // glass/translucent never bounces
+	// Transmissive (AlphaMode::Blend) geometry rides the trace scene as a
+	// PASS-THROUGH attenuator (rays continue through it, tinted by the
+	// material color); it never bounces and never gets lightmap charts.
+	// Bake-side only — the runtime pays nothing.
+	bool transmissivePassthrough = true;
 	bool includeEmissive = true;      // DEPRECATED (no-op): emissive is not
-	                                  // baked in the sun-only field; kept so
-	                                  // existing callers still compile.
-	// White-world mode: override EVERY triangle's albedo with a single
-	// known value (textures/factors/metallic ignored, emissive zeroed).
-	// Removes the whole material/texture axis from the bake, so the
-	// transport becomes analytically checkable (each bounce attenuates by
-	// exactly uniformAlbedo) and texture-cooking bugs can't print through
-	// as dots. Runtime still multiplies its local albedo on top.
+	                                  // baked; kept so existing callers
+	                                  // still compile.
+	// White-world override (single known albedo everywhere): debug/
+	// analytic-transport mode; the production bake uses REAL materials.
 	bool uniformAlbedo = false;
 	glm::vec3 uniformAlbedoValue{ 0.7f };
 };
 
 // Extracts world-space opaque triangles + materials from a cook-mode
-// Cluster (retained uploads; see Cluster::SetCookMode). Emissive material
-// values are still extracted (albedo path needs them) but never sampled
-// as lights: the field is sun-only.
+// Cluster (retained uploads; see Cluster::SetCookMode). Sun + static
+// spots + real materials + transmissive pass-through: see
+// GiTraceScene::TraceIncoming and GiSceneBuildOptions.
 // Non-const: global transforms are recalculated before the walk.
 void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opts,
 	GiTraceScene& out, std::string& err);
+
+// Average linear texel color of a KTX2 payload (decoded on the CPU,
+// small-mip average). Fills GiSceneBuildOptions::texelAvg so baked
+// albedo/emissive/metallic include texture content. nullopt on decode
+// failure (the caller keeps the material factor alone).
+std::optional<glm::vec3> GiAverageKtxTexel(std::span<const uint8_t> ktxBytes);
 
 // ---------------------------------------------------------------------------
 // Bake

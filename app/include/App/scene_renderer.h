@@ -750,19 +750,14 @@ protected:
 		}
 		// Ambient source: N cycles GI -> sky IBL -> both off (the baked
 		// probes and the analytic sky ambient are mutually exclusive).
-		// F8 cycles the GI debug views: 0 off, 1 flat irradiance,
-		// 2 interpolation diagnostics (sharpness/weights/contributors),
-		// 3 level-isolated irradiance (m_giDebugLevel picks the octave),
-		// 4 dominant level palette (strongest weighted contributor),
-		// 5 coverage palette (contributor count: magenta 0 -> red 1 ->
-		// yellow 2 -> green 3-4 -> cyan 5+),
-		// 6 constant-amplitude binary test (uniform probe data),
-		// 7 weighted probe disagreement heat (bake variance).
+		// F8 cycles the baked-GI debug views: 0 off, 1 flat irradiance of
+		// the active source (lightmap/grid/probes), 2 source palette (the
+		// static/dynamic separation: red lm, green grid, blue probes).
 		if (m_input.isKeyPressed(GLFW_KEY_N)) {
 			CycleAmbientMode();
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_F8)) {
-			m_giDebug = (m_giDebug + 1) % 8;
+			m_giDebug = (m_giDebug + 1) % 3;
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_C)) {
 			m_fpDemo.cookiesEnabled = !m_fpDemo.cookiesEnabled;
@@ -1140,10 +1135,8 @@ protected:
 	// the expensive/fussy ambient path (probe bleeding, bake staleness),
 	// and the analytic sky IBL is the predictable reference look.
 	AmbientMode m_ambientMode = AmbientMode::SkyIbl; // N cycles
-	int m_giDebug = 0;             // F8 cycles: 0 off, 1 irradiance, 2 diagnostics,
-	                                // 3 level-isolated, 4 dominant level, 5 coverage,
-	                                // 6 const-amp test, 7 disagreement
-	int m_giDebugLevel = 0;        // mode 3: which octree level to isolate (0..7)
+	int m_giDebug = 0;             // F8 cycles: 0 off, 1 baked irradiance,
+	                                // 2 GI source palette
 	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
 	bool m_giShowProbes = false;  // probe-point overlay (ImGui foreground,
 	                              // like the forward+ light points)
@@ -1172,28 +1165,20 @@ protected:
 	void LoadGiVolume(smvk::OverlayVfs& vfs);
 	// ---- SG 2D lightmaps (STATIC geometry, tools/gi_baker --lightmap-out
 	// output). Loaded once at scene init from content/gi/<scene>.sglm:
-	// expands into the chunk descriptor buffer + 9 RGBA16F atlas textures
-	// (bindless), and swaps the per-mesh expanded draw runs in via
-	// Cluster::ReplaceStaticMesh BEFORE gfx registration. Static/dynamic
-	// separation: lightmapped draws (materialId bit30) sample the atlas;
-	// dynamic objects sample the regular 3D probe grids (below) or the
-	// fallback ambient. Missing file = not baked yet (non-fatal). ----
+	// uploads the chunk descriptor buffer + 9 RGBA16F atlas textures
+	// (bindless) — nothing else. The lightmap UVs and per-mesh chunk ids
+	// are COOKED into the pak (texCoord2 / StaticMesh::lmChunk riding the
+	// draw ring). Static/dynamic separation: chunk draws sample the
+	// atlas; dynamic objects sample the regular 3D probe grids (below)
+	// or the fallback ambient. Missing file = not baked yet (non-fatal).
 	bool m_lmLoaded = false;
-	bool m_lmSwapDone = false;          // expanded runs swapped into clusters
-	smvk::gi::SgLightmapAtlas m_lmAtlas; // CPU mirror (chunk table; runs dropped after swap)
+	smvk::gi::SgLightmapAtlas m_lmAtlas; // CPU mirror (chunk table + debug views)
 	smvk::Holder<smvk::BufferHandle> m_lmChunksBuffer;
 	uint64_t m_lmChunksAddress = 0;
 	smvk::Holder<smvk::TextureHandle> m_lmLayers[9]; // atlas RGBA16F 2D
 	uint32_t m_lmLayerSlots[9] = {};  // bindless slots (FrameUniforms.lmLayers)
-	// meshKey(node) -> chunk index (runtime lookup for the draw flag)
-	std::unordered_map<uint32_t, uint32_t> m_lmChunkByMeshKey;
-	// Per-gfx-mesh chunk table (uint per gfx mesh, 0xFFFFFFFF = none):
-	// built after RegisterWorldMeshes, read by gfxfiltered.vert.
-	smvk::Holder<smvk::BufferHandle> m_lmGfxChunksBuffer;
-	uint64_t m_lmGfxChunksAddress = 0;
 	bool LmActive() const { return m_lmLoaded; }
 	void LoadGiLightmaps(smvk::OverlayVfs& vfs);
-	void BuildLmGfxChunkTable();
 	// ---- SG regular 3D probe volumes (DYNAMIC objects, tools/gi_baker
 	// --regular-out output; artist OBBs + density, hardware trilinear).
 	// Loaded from content/gi/<scene>.regmanifest: up to 8 volumes, each 7

@@ -229,12 +229,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 		return worldMesh < meshMap_.size() && meshMap_[worldMesh] != UINT32_MAX;
 	}
 		[[nodiscard]] smvk::ShaderProgram& FilteredProgram() { return filteredProgram; }
-	// Lightmap chunk table (per-gfx-mesh uint, 0xFFFFFFFF = none): the
-	// SceneRenderer uploads it after RegisterWorldMeshes and hands the
-	// BDA here; gfxfiltered.vert reads it to pass a flat per-draw chunk
-	// to the lit fragment (static/dynamic GI separation). 0 = off.
-	void SetLmChunkTable(uint64_t bda) { lmChunkTableBda_ = bda; }
-	[[nodiscard]] uint64_t LmChunkTable() const { return lmChunkTableBda_; }
 	// A2C twin for Masked material ranges in 2x MSAA Main (invalid when
 	// ConfigureA2CFrag was never called / module creation failed).
 	[[nodiscard]] smvk::ShaderProgram& FilteredProgramA2C() { return filteredProgramA2C; }
@@ -371,8 +365,6 @@ private:
 	// world mesh idx -> per-LOD gfx mesh idx (lodMeshMap_[w][l], UINT32_MAX
 	// = that LOD draws direct; [w][0] always mirrors meshMap_[w]).
 	std::vector<std::vector<uint32_t>> lodMeshMap_;
-	// Per-gfx-mesh lightmap chunk table BDA (SetLmChunkTable).
-	uint64_t lmChunkTableBda_ = 0;
 	// Debug culling-freeze override (see SetCullOverride). Read once per
 	// AppendPasses for the FilterMainView call only.
 	bool cullOverride_ = false;

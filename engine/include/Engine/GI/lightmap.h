@@ -18,13 +18,19 @@
 //    MIT-licensed; CPU mirrors here, GPU mirrors in sg_lightmap.hlsli).
 //  - Dynamic meshes NEVER sample lightmaps: they sample the uniform 3D SG
 //    probe grids (SgRegularVolume, 9 fixed lobes in 3D textures, artist OBB
-//    + density). Static/dynamic separation is per-draw via materialId bits
-//    (see push_constants.h / common.hlsli).
+//    + density). Static/dynamic separation is per-draw via the chunk id
+//    riding the gfx draw ring (GfxDraw.misc.w; 0xFFFFFFFF = none).
+//
+// Ownership: the COOK bakes charts, fills StaticVertex::texCoord2 with
+// the per-vertex lightmap UVs, stamps each mesh's atlas chunk id, and
+// writes the .sglm. The runtime only uploads the atlas layers + chunk
+// descriptors — it never mutates geometry (no swaps, no rebuilds).
 //
 // File format: .sglm (SGLM v1, LZ4-compressed half payload, see .cpp).
 // GPU layout: 9 RGBA16F 2D textures (36 half slots = 12 lobes x RGB);
 // chunks with fewer lobes use the prefix subset. Chunk rects address one
-// shared UV space; lightmap UVs ride in StaticVertex::texCoord2.
+// shared UV space; lightmap UVs ride in StaticVertex::texCoord2 (filled
+// at cook time).
 
 #include <cstdint>
 #include <span>
@@ -33,7 +39,9 @@
 
 #include <glm/glm.hpp>
 
-#include <Engine/Renderer/mesh.h> // StaticVertex / StaticMeshUpload (runs)
+namespace smvk {
+struct StaticMeshUpload; // Engine/Renderer/mesh.h
+}
 
 namespace smvk::gi {
 
@@ -146,13 +154,6 @@ public:
 	bool PackRects(const std::vector<RectRequest>& requests,
 		uint32_t atlasWidth, uint32_t maxHeight);
 
-	// Expanded per-mesh draw runs, parallel to `chunks`. vertices carry
-	// texCoord2 = chunk-local lightmap UV; indices are trivial (3 per
-	// triangle). The runtime swaps these in via
-	// Cluster::ReplaceStaticMesh when the lightmap is active, BEFORE gfx
-	// registration. Empty runs = bake without geometry swap (analyze).
-	std::vector<StaticMeshUpload> runs;
-
 	// 9 RGBA16F layer payloads for GPU upload (uint16 halves, row-major).
 	// Layer t texel (x,y) carries stream halves [t*4, t*4+3] of the
 	// 36-half lobe-major RGB stream (h = lobe*3 + channel); chunks with
@@ -201,44 +202,43 @@ bool BakeSgLightmapChunk(const GiTraceScene& scene, uint32_t lobeCount,
 	SgLightmapAtlas::ChunkPayload& out, SgLightmapBakeStats& stats,
 	GiBakeProgress progress = nullptr);
 
-// UV2 chart generation (no external unwrapper): per-triangle dominant-plane
-// projection, uniform-texel-density scaling, shelf-packed triangle rects
-// into the mesh's atlas region. Chart rects TOUCH their neighbors: each
-// rect carries its own 1..4-texel inner margin (opts.gutterTexels) that
-// bilinear taps never cross, and the bake dilates values into margins, so
-// there are no wasted gutter boxes between charts (dense meshes stay
-// affordable). Per-triangle charts duplicate every vertex 1:1 with its
-// triangle (a shared corner needs different lightmap UVs per face), so the
-// output is an EXPANDED vertex/index run: vertices' texCoord2 carries the
-// lightmap UV and texCoord keeps the material UV. The renderer draws
-// lightmapped meshes with the expanded runs when lightmaps are active.
-// Seams at every triangle (no chart merging) — correct, just less dense
-// than Bakery/xatlas output; Bakery remains the high-quality alternative
-// for hero assets.
+// UV2 chart generation (no external unwrapper): greedy planar-chart
+// unwrap (face-normal planes, region-grow within ~37deg agreement),
+// uniform texel density, shelf-packed chart rects with shared inner
+// margins. The result is ONE lightmap UV per ORIGINAL mesh vertex
+// (no vertex duplication, no geometry replacement): each vertex is
+// claimed by the first chart to touch it and maps through that
+// chart's projection. Vertices shared across chart SEAMS approximate
+// (the seam-side triangle samples the neighbor chart's margin — a
+// mild, dilated artifact confined to seams).
+//
+// The COOK fills StaticVertex::texCoord2 with these UVs and stamps the
+// mesh's atlas chunk; the runtime never touches geometry. Transmissive
+// (Blend) meshes get no charts (they stay runtime-lit).
 struct SgLightmapChartOptions {
 	uint32_t texelsPerMeter = 32; // lightmap density
 	uint32_t gutterTexels = 1;    // inner margin per chart (1..4)
 	uint32_t maxRectWidth = 1024;  // shelf row width for the mesh region
 	uint32_t maxRectHeight = 8192; // mesh region height cap
 	// Mesh-region texel budget (chart bbox waste included): big surfaces
-	// at high density blow past any sane atlas, so the baker lowers the
+	// at high density blow past any sane atlas, so the cook lowers the
 	// density until the region fits this budget. 0 = no budget.
 	uint64_t maxRectTexels = 1536ull * 1024;
 };
 
+// StaticMeshUpload is forward-declared at smvk:: scope above (the gi
+// namespace deliberately does NOT redeclare it — a local forward would
+// shadow smvk::StaticMeshUpload inside this namespace).
+
 struct SgLightmapChartResult {
-	// Expanded run: 3 vertices per triangle (per-triangle charts), trivial
-	// indices 0..3n. texCoord2 = lightmap UV in the mesh's atlas rect
-	// (chunk-local [0,1] mapped over rectMin/rectMax), texCoord/normal/
-	// tangent/color copied from the source vertex of that corner.
-	std::vector<StaticVertex> vertices;
-	std::vector<uint32_t> indices;
-	float rectMin[2] = {};    // atlas UV rect (includes gutter)
+	// One lightmap UV per ORIGINAL mesh vertex (parallel to
+	// upload.vertices; the cook writes these into texCoord2).
+	std::vector<glm::vec2> uv2;
+	float rectMin[2] = {};    // atlas UV rect (includes margin)
 	float rectMax[2] = {};
-	uint32_t rectWidth = 0;   // rect size in texels (incl. gutter)
+	uint32_t rectWidth = 0;   // rect size in texels (incl. margin)
 	uint32_t rectHeight = 0;
-	// Bake points parallel to expanded triangles: world position/normal at
-	// each texel center of the rect (deduplicated by texel hash).
+	// Bake points: world position/normal at each covered texel center.
 	std::vector<SgLightmapTexel> texels;
 };
 

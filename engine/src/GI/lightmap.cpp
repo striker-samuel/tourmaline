@@ -3,6 +3,7 @@
 // NOTE: pool.h must precede Rendergraph/environment.h (bake.h pulls it).
 #include <Engine/Memory/pool.h>
 #include <Engine/GI/bake.h>
+#include <Engine/Renderer/mesh.h> // StaticMeshUpload (charts API)
 
 #include <algorithm>
 #include <atomic>
@@ -276,7 +277,7 @@ void SgLightmapFitAccumulator::Solve(glm::vec3* outAmps) const {
 }
 
 // ---------------------------------------------------------------------------
-// Charts: per-triangle dominant-plane projection, shelf pack, expanded runs
+// Charts: greedy planar unwrap, per-vertex UV2 (no geometry replacement)
 // ---------------------------------------------------------------------------
 
 bool GenerateLightmapCharts(const StaticMeshUpload& upload,
@@ -302,7 +303,8 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 	//      agree (near-planar charts project coherently).
 	//   3. Chart UV = continuous projection over the chart's bbox
 	//      (shared edges inside a chart map to the same UV).
-	//   4. Shelf-pack chart rects; expanded runs carry per-corner UVs.
+	//   4. Shelf-pack chart rects; per-ORIGINAL-vertex UVs out (the
+	//      cook fills texCoord2; mesh geometry is untouched).
 	// ------------------------------------------------------------------
 	struct Plane {
 		int ax, ay; // chart axis indices
@@ -396,6 +398,13 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 	};
 	std::vector<Chart> charts;
 	std::vector<uint32_t> chartOf(triCount, 0xFFFFFFFFu);
+	// Vertex -> owning chart (canonical ids; first claim wins). Chart
+	// seams approximate: a vertex shared by two charts maps through its
+	// first chart, so the other chart's seam triangle samples this
+	// chart's margin — a diluted, mild artifact the bake dilation keeps
+	// plausible. NO vertex duplication: the mesh's vertex count and
+	// index buffer are untouched.
+	std::vector<uint32_t> vertexChartOf(upload.vertices.size(), 0xFFFFFFFFu);
 	std::vector<uint32_t> frontier;
 	std::vector<uint32_t> nbBuf;
 	for (uint32_t seed = 0; seed < triCount; ++seed) {
@@ -419,6 +428,13 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 				continue;
 			chartOf[t] = chartIdx;
 			ch.tris.push_back(t);
+			// Claim the triangle's vertices for this chart (first chart
+			// to touch a vertex owns its lightmap UV).
+			for (int k = 0; k < 3; ++k) {
+				const uint32_t c = canonical[upload.indices[t * 3 + k]];
+				if (vertexChartOf[c] == 0xFFFFFFFFu)
+					vertexChartOf[c] = chartIdx;
+			}
 			// Extend the projected bbox with this triangle.
 			for (int k = 0; k < 3; ++k) {
 				const glm::vec3& p =
@@ -505,23 +521,22 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 		return glm::clamp((q - c.pMin) / ext, glm::vec2(0.0f), glm::vec2(1.0f));
 	};
 
-	// Expanded runs: 3 vertices per triangle (chart-boundary corners need
-	// per-face UVs; interior duplication is the accepted v1 cost).
-	out.vertices.reserve(size_t(triCount) * 3);
-	out.indices.reserve(size_t(triCount) * 3);
-	for (uint32_t t = 0; t < triCount; ++t) {
-		const Chart& c = charts[chartOf[t]];
+	// Per-ORIGINAL-vertex lightmap UVs (the cook writes these into
+	// StaticVertex::texCoord2). Vertex -> owning chart (first claim) ->
+	// continuous projection over that chart's FINAL bbox, mapped into
+	// the chart's inner rect and normalized over the mesh region.
+	out.uv2.assign(upload.vertices.size(), glm::vec2(0.0f));
+	for (size_t v = 0; v < upload.vertices.size(); ++v) {
+		const uint32_t chartIdx = vertexChartOf[canonical[v]];
+		if (chartIdx == 0xFFFFFFFFu)
+			continue; // unclaimed (degenerate tri corner): (0,0)
+		const Chart& c = charts[chartIdx];
+		const glm::vec2 uv = chartUv(c, upload.vertices[v].pos);
 		const float innerW = float(std::max<uint32_t>(c.w - 2u * margin, 1u));
 		const float innerH = float(std::max<uint32_t>(c.h - 2u * margin, 1u));
-		for (int k = 0; k < 3; ++k) {
-			StaticVertex v = upload.vertices[upload.indices[t * 3 + k]];
-			const glm::vec2 uv = chartUv(c, v.pos);
-			const glm::vec2 inner0{ float(margin), float(margin) };
-			v.texCoord2 = (inner0 + uv * glm::vec2(innerW, innerH))
-				/ glm::vec2(float(packW), float(packH));
-			out.vertices.push_back(v);
-			out.indices.push_back(uint32_t(out.vertices.size()) - 1);
-		}
+		const glm::vec2 inner0{ float(margin), float(margin) };
+		out.uv2[v] = (inner0 + uv * glm::vec2(innerW, innerH))
+			/ glm::vec2(float(packW), float(packH));
 	}
 
 	// Bake texels: rasterize every chart triangle over the chart's inner
@@ -767,24 +782,8 @@ bool SgLightmapAtlas::WriteFile(const std::string& path, std::string& err) const
 		}
 	}
 
-	// Expanded draw runs (geometry swap payloads; StaticVertex is POD and
-	// memcpy-stable, same convention as the mesh blobs in the paks).
-	static const StaticMeshUpload kEmptyRun{};
-	for (size_t ci = 0; ci < chunks.size(); ++ci) {
-		const StaticMeshUpload& run = ci < runs.size() ? runs[ci] : kEmptyRun;
-		putU32(uint32_t(run.vertices.size()));
-		putU32(uint32_t(run.indices.size()));
-		putF32(run.aabbMin.x); putF32(run.aabbMin.y); putF32(run.aabbMin.z);
-		putF32(run.aabbMax.x); putF32(run.aabbMax.y); putF32(run.aabbMax.z);
-		section.insert(section.end(),
-			reinterpret_cast<const uint8_t*>(run.vertices.data()),
-			reinterpret_cast<const uint8_t*>(run.vertices.data())
-				+ run.vertices.size() * sizeof(StaticVertex));
-		section.insert(section.end(),
-			reinterpret_cast<const uint8_t*>(run.indices.data()),
-			reinterpret_cast<const uint8_t*>(run.indices.data())
-				+ run.indices.size() * sizeof(uint32_t));
-	}
+	// Section complete (chunk table + payloads; lightmap UVs live in the
+	// COOKED pak mesh vertices — the .sglm carries no geometry).
 	hdr.payloadBytes = uint32_t(section.size());
 	hdr.compressed = 1;
 	std::vector<uint8_t> compressed;
@@ -888,34 +887,6 @@ bool SgLightmapAtlas::ReadFromMemory(std::span<const uint8_t> bytes, std::string
 					UnpackHalf(raw[(i * kLightmapMaxLobes + l) * 3 + 0]),
 					UnpackHalf(raw[(i * kLightmapMaxLobes + l) * 3 + 1]),
 					UnpackHalf(raw[(i * kLightmapMaxLobes + l) * 3 + 2]));
-	}
-	// Expanded draw runs.
-	runs.assign(chunks.size(), StaticMeshUpload{});
-	for (size_t ci = 0; ci < chunks.size(); ++ci) {
-		uint32_t counts[2]{};
-		float aabb[6]{};
-		if (!take(counts, sizeof(counts)) || !take(aabb, sizeof(aabb)))
-			return err = "sglm: truncated run", false;
-		StaticMeshUpload& run = runs[ci];
-		if (uint64_t(counts[0]) * sizeof(StaticVertex) > 512ull * 1024 * 1024
-			|| uint64_t(counts[1]) * sizeof(uint32_t) > 512ull * 1024 * 1024)
-			return err = "sglm: bad run size", false;
-		run.vertices.resize(counts[0]);
-		run.indices.resize(counts[1]);
-		if (!take(run.vertices.data(),
-				run.vertices.size() * sizeof(StaticVertex)))
-			return err = "sglm: truncated run vertices", false;
-		if (!take(run.indices.data(),
-				run.indices.size() * sizeof(uint32_t)))
-			return err = "sglm: truncated run indices", false;
-		run.aabbMin = glm::vec3(aabb[0], aabb[1], aabb[2]);
-		run.aabbMax = glm::vec3(aabb[3], aabb[4], aabb[5]);
-		run.surfaces.clear();
-		Surface s{};
-		s.firstIndex = 0;
-		s.indexCount = uint32_t(run.indices.size());
-		s.baseVertex = 0;
-		run.surfaces.push_back(s);
 	}
 	return true;
 }

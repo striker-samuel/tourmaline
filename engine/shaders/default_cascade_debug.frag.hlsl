@@ -85,7 +85,9 @@ PSOut mainPS(PSIn IN)
         float3 faceN = normalize(IN.normal);
         if (!IN.isFrontFace)
             faceN = -faceN;
-        float shadow = GetShadowFactorCascadedFromPC(1, IN.worldPos, faceN, light);
+        // PCF depth atlas uses SampleLevel(samplers[]) + manual compare:
+        // regular sampler 0, never the comparison sampler 1.
+        float shadow = GetShadowFactorCascadedFromPC(0, IN.worldPos, faceN, light);
 
         color = CascadeDebugColor(cascade) * (0.3f + 0.7f * shadow);
     }

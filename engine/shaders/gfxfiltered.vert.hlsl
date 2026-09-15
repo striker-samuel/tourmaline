@@ -22,17 +22,11 @@ struct FilteredVsMainPush
     float4x4 _pad0;
     float4x4 _pad1;
     float4x4 _pad2;
-    // Offsets mirror C++ smvk::gfx::FilteredVsPush exactly (pointers at
-    // 0/8/16, no implicit padding).
+    // Offsets mirror C++ smvk::gfx::FilteredVsPush exactly (24B tail).
     vk::BufferPointer<GfxDraws> draws;
     vk::BufferPointer<RenderViewBuffer> renderViews;
-    // Per-gfx-mesh lightmap chunk table (lmChunksValid = 0: no table,
-    // every draw yields "no chunk" via the early-out below).
-    vk::BufferPointer<GfxLmChunks> lmChunks;
     uint renderViewIndex;
-    uint lmChunksValid;
     uint pad;
-    uint pad2;
 };
 
 [[vk::push_constant]]
@@ -80,17 +74,8 @@ VSOut mainVS(VSIn IN)
     OUT.uv = IN.uv;
     OUT.lightmapUv = IN.lightmapUv;
 
-    // Lightmap chunk lookup: draws carry the gfx mesh index in misc.x.
-    // lmChunksValid = 0 (no lightmaps baked) -> "none" for every draw.
-    OUT.lmChunk = 0xFFFFFFFFu;
-    [branch]
-    if (pcFV.lmChunksValid != 0u)
-    {
-        const uint meshIdx = draw.misc.x;
-        [branch]
-        if (meshIdx < GFX_MAX_DRAWS)
-            OUT.lmChunk = pcFV.lmChunks.Get().chunk[meshIdx];
-    }
+    // Lightmap chunk rides the draw record (misc.w; 0xFFFFFFFF = none).
+    OUT.lmChunk = draw.misc.w;
 
     // Packed shading stream: normal/tangent ride as R32_UInt oct words.
     float3 normal = OctDecodeNormal(IN.normalPacked);
