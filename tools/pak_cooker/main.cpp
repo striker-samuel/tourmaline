@@ -12,6 +12,7 @@
 //              --sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000
 //              --lm-lod-lock attr|hard --lm-lod-audit on|off
 //              --lm-lod-audit-tx 2.0 --lm-lod-audit-gate on|off
+//              --lm-denoise on|off --lm-denoise-quality high|balanced
 //              --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]
 //
 // --lightmap on bakes 2D SG lightmaps DURING the cook (sun + static spot
@@ -30,6 +31,14 @@
 // sampled interior points of each sibling's triangles onto the LOD0
 // surface and reports the uv drift in atlas texels (log-only; flip
 // --lm-lod-audit-gate on to drop failing levels).
+//
+// Denoising: with --lightmap on (and --lm-denoise on, the default), the
+// fitted per-lobe amplitude layers are denoised with Intel Open Image
+// Denoise's RTLightmap filter (prebuilt release in external/oidn, linked
+// into PakCooker only — engine and App never see OIDN). Denoised
+// payloads are written into the .sglm; the runtime path is unchanged.
+// --lm-rays stays independent: denoising recovers low-sample bakes, so
+// try e.g. --lm-rays 128 for a ~8x faster trace.
 //
 // Reads the model JSON, .bin buffers and all .ktx2 textures through an
 // OverlayVfs with a LooseBackend over --content-dir (the same lookup rules
@@ -65,6 +74,8 @@
 #include <Engine/GI/lightmap.h>
 #include <Engine/Utils/gltf.h>
 #include <Engine/Vfs/vfs.h>
+
+#include "lm_denoise.h"
 
 namespace {
 
@@ -125,6 +136,12 @@ struct Args {
 	bool lmLodAudit = true;
 	float lmLodAuditTx = 2.0f;  // texel threshold for over-count/gate
 	bool lmLodAuditGate = false;
+	// ---- OIDN denoising (fitted atlas amplitudes, cook-time only) ------
+	// Denoise the baked per-lobe amplitude layers with Intel Open Image
+	// Denoise's RTLightmap filter (see lm_denoise.cpp). On by default
+	// with --lightmap. Independent of --lm-rays (see the cook-time hint).
+	bool lmDenoise = true;
+	std::string lmDenoiseQuality = "high"; // high | balanced
 	float sunAzimuth = 30.0f;    // mirrors the runtime environment defaults
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
@@ -311,6 +328,16 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.lmLodAuditGate = (v == "on" || v == "1" || v == "true");
 		}
+		else if (a == "--lm-denoise") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmDenoise = (v == "on" || v == "1" || v == "true");
+		}
+		else if (a == "--lm-denoise-quality") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmDenoiseQuality = (v == "balanced") ? "balanced" : "high";
+		}
 		else if (a == "--sun-azimuth") {
 			std::string v;
 			if (!need(v)) return false;
@@ -366,6 +393,7 @@ void Usage() {
 		<< "           --sun-intensity 10000\n"
 		<< "           --lm-lod-lock attr|hard --lm-lod-audit on|off\n"
 		<< "           --lm-lod-audit-tx 2.0 --lm-lod-audit-gate on|off\n"
+		<< "           --lm-denoise on|off --lm-denoise-quality high|balanced\n"
 		<< "           --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
 		<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
 		<< "lightmap UVs + per-mesh chunk id; atlas written to\n"
@@ -1082,6 +1110,42 @@ int main(int argc, char** argv) {
 					lstats, [](const char* line) { std::cout << line; })) {
 				std::cerr << "[LM] bake failed\n";
 				return 1;
+			}
+		}
+
+		// OIDN denoise pass: RTLightmap over the fitted per-lobe
+		// amplitude layers, in place (see lm_denoise.cpp). Runs after the
+		// lobe selection (payloads final) and before the atlas write, so
+		// the pak + .sglm carry denoised data. Failure is non-fatal: the
+		// cook continues on the (possibly partially denoised) amplitudes.
+		if (args.lmDenoise && !work.empty()) {
+			if (!pakcook::DenoiseAvailable()) {
+				std::cerr << "[LM-DN] --lm-denoise on but this PakCooker "
+					"was built without OIDN (extract the prebuilt release "
+					"into external/oidn, reconfigure with VULKANTOY_OIDN) "
+					"- denoise skipped\n" << std::flush;
+			}
+			else {
+				const auto dnT0 = std::chrono::steady_clock::now();
+				const pakcook::DenoiseQuality dq =
+					args.lmDenoiseQuality == "balanced"
+					? pakcook::DenoiseQuality::Balanced
+					: pakcook::DenoiseQuality::High;
+				if (pakcook::DenoiseLightmapAtlas(atlas, dq)) {
+					std::cerr << "  [LM-DN] atlas denoised in "
+						<< std::chrono::duration<double>(
+							std::chrono::steady_clock::now() - dnT0).count()
+						<< "s\n" << std::flush;
+				}
+				else {
+					std::cerr << "[LM-DN] denoise FAILED - continuing with "
+						"the current amplitudes\n" << std::flush;
+				}
+				if (args.lmRays >= 512)
+					std::cerr << "  [LM-DN] hint: --lm-rays " << args.lmRays
+						<< " is wasted with denoising on - try --lm-rays 128 "
+						"for a ~" << (args.lmRays / 128) << "x faster trace\n"
+						<< std::flush;
 			}
 		}
 		for (LmWork& w : work) {
