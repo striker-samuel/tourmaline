@@ -824,6 +824,8 @@ bool SceneRenderer::Initialize() {
 			else if (dv == "cascades") m_debugView = DebugView::Cascades;
 			else if (dv == "lods") m_debugView = DebugView::Lods;
 			else if (dv == "vertexcolors" || dv == "vcolors") m_debugView = DebugView::VertexColors;
+			else if (dv == "uv0" || dv == "uv1_base") m_debugView = DebugView::Uv0;
+			else if (dv == "uv1" || dv == "uv2" || dv == "uv1_lightmap") m_debugView = DebugView::Uv1;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DEBUGVIEW value: " << dv << "\n";
 		}
 		// AA mode override for A/B runs without UI interaction
@@ -1204,6 +1206,54 @@ bool SceneRenderer::Initialize() {
 					},
 					smvk::Shader{
 						.module = m_resources.fragVertexColorShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+		try {
+			auto uv0Code = readContentFile(contentVfs, "shaders/default_uv0_debug.frag.hlsl.spv");
+			m_resources.fragUv0DebugShader = m_context->CreateShaderModule(uv0Code, "fragUv0Debug");
+		}
+		catch (...) {
+			std::cerr << "[SceneRenderer] default_uv0_debug unavailable - F9 falls back to Lit\n";
+		}
+		try {
+			auto uv1Code = readContentFile(contentVfs, "shaders/default_uv1_debug.frag.hlsl.spv");
+			m_resources.fragUv1DebugShader = m_context->CreateShaderModule(uv1Code, "fragUv1Debug");
+		}
+		catch (...) {
+			std::cerr << "[SceneRenderer] default_uv1_debug unavailable - F10 falls back to Lit\n";
+		}
+		if (!m_resources.fragUv0DebugShader.empty()) {
+			m_resources.uv0DebugProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.fragUv0DebugShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+		if (!m_resources.fragUv1DebugShader.empty()) {
+			m_resources.uv1DebugProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.fragUv1DebugShader,
 						.entryPoint = "mainPS",
 						.stage = smvk::ShaderStage::Fragment
 					}
@@ -5810,13 +5860,18 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			effView = DebugView::Lit;
 		if (effView == DebugView::VertexColors && m_resources.vertexColorProgram.shaderCount != 2)
 			effView = DebugView::Lit;
+		if (effView == DebugView::Uv0 && m_resources.uv0DebugProgram.shaderCount != 2)
+			effView = DebugView::Lit;
+		if (effView == DebugView::Uv1 && m_resources.uv1DebugProgram.shaderCount != 2)
+			effView = DebugView::Lit;
 		const bool meshletDbg = (effView == DebugView::Meshlets);
 		const bool lodDbg = (effView == DebugView::Lods);
 		const bool flatDbg = meshletDbg || lodDbg; // meshDebugProgram path
 		const bool unlitDbg = (effView == DebugView::Unlit);
 		const bool cascadeDbg = (effView == DebugView::Cascades);
 		const bool vertexColorDbg = (effView == DebugView::VertexColors);
-		const bool directDbg = unlitDbg || cascadeDbg || vertexColorDbg; // default.vert + debug FS
+		const bool uvDbg = (effView == DebugView::Uv0 || effView == DebugView::Uv1);
+		const bool directDbg = unlitDbg || cascadeDbg || vertexColorDbg || uvDbg; // default.vert + debug FS
 		const bool bypassFilter = (effView != DebugView::Lit);
 		// LOD palette (display colors; pre-scaled by dbgGain like meshlets
 		// so they survive the HDR -> tonemap path).
@@ -5969,16 +6024,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			}
 			);
 		}
-		// Unlit (F2) / cascade (F4) / vertex-color (F6) views: every opaque
-		// instance direct with the debug fragment program. Full push per
-		// draw (model + materialId over the captured frame addresses): the
-		// flat debug pushes above clobber the shared push range, so delta
-		// pushes alone would read garbage frame addresses here.
+		// Unlit (F2) / cascade (F4) / vertex-color (F6) / UV (F9/F10)
+		// views: every opaque instance direct with the debug fragment
+		// program. Full push per draw (model + materialId over the
+		// captured frame addresses): the flat debug pushes above clobber
+		// the shared push range, so delta pushes alone would read garbage
+		// frame addresses here.
 		if (directDbg) {
 			smvk::ShaderProgram& dbgProg =
 				unlitDbg ? m_resources.unlitProgram
 				: cascadeDbg ? m_resources.cascadeProgram
-				: m_resources.vertexColorProgram;
+				: vertexColorDbg ? m_resources.vertexColorProgram
+				: effView == DebugView::Uv1 ? m_resources.uv1DebugProgram
+				: m_resources.uv0DebugProgram;
 			uint32_t boundMaterial = UINT32_MAX;
 			m_world->forEachRenderItem(
 				smvk::IteratorFlagBit_Renderable
@@ -7365,18 +7423,22 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			// changes the frame permanently; toggles are for bisection.
 			// ---------------------------------------------------------
 			if (ImGui::BeginTabItem("Debug")) {
-				if (ImGui::CollapsingHeader("Debug views (bypass GPU cull, F1..F6)", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::CollapsingHeader("Debug views (bypass GPU cull, F1..F6, F9/F10)", ImGuiTreeNodeFlags_DefaultOpen)) {
 					{
 						const char* viewNames[] = {
 							"F1 Lit", "F2 Unlit", "F3 Meshlets",
 							"F4 Cascades", "F5 LODs", "F6 Vertex Colors",
+							"F9 UV0 (base)", "F10 UV1 (lightmap)",
 						};
 						int view = static_cast<int>(m_debugView);
-						if (ImGui::Combo("Debug view", &view, viewNames, 6))
+						if (ImGui::Combo("Debug view", &view, viewNames, 8))
 							m_debugView = static_cast<DebugView>(view);
 					}
 					ImGui::TextDisabled("F6 vertex colors: layered materials show normalized weights as R/G/B/Y per layer 0..3;\n"
 						"legacy materials show the raw vertex tint.");
+					ImGui::TextDisabled("F9/F10 UV checkers: base TEXCOORD0 vs lightmap uv2. Magenta glow = huge uv\n"
+						"screen-derivative (lightmap seam corners sweeping across atlas rects).\n"
+						"UV1 stripes magenta when uv2 leaves [0,1] (atlas-space bug).");
 					const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
 					ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
 					ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones);

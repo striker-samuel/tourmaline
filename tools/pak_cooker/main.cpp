@@ -81,7 +81,10 @@ struct Args {
 	uint32_t lmDensity = 32;     // texels per meter
 	uint32_t lmLobes = 9;        // 5|6|9|12
 	uint32_t lmAtlasWidth = 2048;
-	uint32_t lmGutter = 1;
+	uint32_t lmGutter = 2;       // per-chart inner margin texels: adjacent
+	                             // charts sit flush in the atlas, so two
+	                             // gutters = the padding between islands
+	                             // (2+2 = 4 texels, the bilinear minimum).
 	uint32_t lmRays = 128;       // radiance samples per texel
 	uint32_t lmBounces = 3;
 	float sunAzimuth = 30.0f;    // mirrors the runtime environment defaults
@@ -360,6 +363,44 @@ void DumpManifestFromPak(const smvk::PakReader& reader) {
 			std::cout << "    [truncated mesh blob: " << e->path << "]\n";
 			continue;
 		}
+		// ---- uv2 sweep audit (lightmap seam detector) ----
+		// StaticVertex (AoS, 72 B): pos 12 | color 16 | texCoord 8 |
+		// texCoord2 (the atlas uv) at byte 36 | normal 12 | tangent 16.
+		// A chart-seam triangle whose corners map into DIFFERENT atlas
+		// rects sweeps the whole atlas between them — the cross-island
+		// streak artifact. Within one chart rect a triangle spans at most
+		// 256/atlasW + 256/atlasH (charts are capped at 256x256 texels;
+		// tall/short atlases make that aspect-dependent, e.g. 2047x871
+		// -> 0.42), so 0.45 flags only genuine cross-rect sweeps.
+		float maxUv2Span = 0.0f;
+		uint32_t bigUv2Tris = 0;
+		const size_t vertBase = c.off;
+		const size_t idxBase = vertBase + (size_t)vc * sizeof(smvk::StaticVertex);
+		if (lmChunk != 0xFFFFFFFFu && idxBase + (size_t)ic * 4 <= c.img.size()) {
+			auto uv2At = [&](size_t v) -> std::pair<float, float> {
+				const uint8_t* p = c.img.data() + vertBase
+					+ v * sizeof(smvk::StaticVertex) + 36;
+				float u, v2;
+				memcpy(&u, p, 4);
+				memcpy(&v2, p + 4, 4);
+				return { u, v2 };
+			};
+			for (uint32_t t = 0; t + 2 < ic / 3; ++t) {
+				uint32_t ix[3] = {};
+				memcpy(ix, c.img.data() + idxBase + (size_t)t * 12, 12);
+				const auto a = uv2At(ix[0]);
+				const auto b = uv2At(ix[1]);
+				const auto d = uv2At(ix[2]);
+				const float duv0 = std::abs(a.first - b.first) + std::abs(a.second - b.second);
+				const float duv1 = std::abs(a.first - d.first) + std::abs(a.second - d.second);
+				const float duv2 = std::abs(b.first - d.first) + std::abs(b.second - d.second);
+				const float span = std::max({ duv0, duv1, duv2 });
+				if (span > maxUv2Span)
+					maxUv2Span = span;
+				if (span > 0.45f)
+					++bigUv2Tris;
+			}
+		}
 		// Vertex/index payloads (sizeof(StaticVertex) per vert, 4 B per index).
 		c.off += (size_t)vc * sizeof(smvk::StaticVertex) + (size_t)ic * 4;
 		uint32_t meshlets = 0;
@@ -379,7 +420,11 @@ void DumpManifestFromPak(const smvk::PakReader& reader) {
 			<< " tris=" << tris << " err=" << simplifyError
 			<< " acmr=" << acmr << "}"
 			<< " meshlets=" << meshlets
-			<< " lmChunk=" << (lmChunk == 0xFFFFFFFFu ? -1 : int(lmChunk)) << "\n";
+			<< " lmChunk=" << (lmChunk == 0xFFFFFFFFu ? -1 : int(lmChunk));
+		if (lmChunk != 0xFFFFFFFFu)
+			std::cout << " uv2span=" << maxUv2Span
+				<< " bigtris=" << bigUv2Tris;
+		std::cout << "\n";
 	}
 
 	// Materials (blob: str uri | 128B MaterialValues | u32 shading |
@@ -847,13 +892,14 @@ int main(int argc, char** argv) {
 
 		// Bake every chart (sun + spots + materials + pass-through glass)
 		// in ONE shared-pool batch, then stamp the results into the
-		// retained uploads: per-vertex atlas-space texCoord2 + the mesh's
+		// retained uploads: per-corner atlas-space texCoord2 + the mesh's
 		// lobe count (lmChunk).
 		SgLightmapBakeConfig lcfg{};
 		lcfg.raysPerTexel = std::max<uint32_t>(args.lmRays, 16);
 		lcfg.maxBounces = std::min<uint32_t>(std::max<uint32_t>(args.lmBounces, 1), 8);
 		SgLightmapBakeStats lstats{};
 		uint32_t lmMeshes = 0;
+		uint64_t seamDups = 0;
 		{
 			// World-space texels per chart (chart positions are
 			// node-local; the trace scene is world-space).
@@ -890,26 +936,104 @@ int main(int argc, char** argv) {
 		for (LmWork& w : work) {
 			smvk::StaticMeshUpload* upload = const_cast<smvk::StaticMeshUpload*>(
 				cluster->GetRetainedUpload(w.handle));
-			if (!upload || w.chart.vertexChart.size() != upload->vertices.size()) {
-				std::cerr << "[LM] vertex count mismatch for node " << w.node
+			const size_t triCount = upload ? upload->indices.size() / 3 : 0;
+			if (!upload || w.chart.triChart.size() != triCount) {
+				std::cerr << "[LM] triangle count mismatch for node " << w.node
 					<< " - mesh skipped\n";
 				continue;
 			}
-			// Atlas-space uv2: owning chart's rect transform baked into the
-			// vertex UV (the shader samples the atlas directly).
-			for (size_t v = 0; v < upload->vertices.size(); ++v) {
-				const uint32_t chartIdx = w.chart.vertexChart[v];
-				if (chartIdx == 0xFFFFFFFFu)
-					continue; // unclaimed: keeps (0,0), never lightmapped
-				upload->vertices[v].texCoord2 = atlas.AtlasUv(
-					w.chunkBase + chartIdx, chartOpts.gutterTexels,
-					w.chart.chartLocalUv[v]);
+			// ---- Per-CORNER atlas uv2 stamping (seam-correct) ----
+			// A vertex shared by two charts (a seam corner) has no single
+			// valid atlas uv: stamping one would make the seam triangle
+			// interpolate across unrelated atlas rects — the classic
+			// cross-island streak. Instead every triangle corner is
+			// stamped through the TRIANGLE's chart:
+			//   - original vertices keep their slots 1:1 (first chart to
+			//     use a vertex owns its uv2);
+			//   - a corner needed by a DIFFERENT chart gets a positional
+			//     duplicate appended at the end;
+			//   - the index buffer is rebuilt in the SAME triangle order
+			//     (surface ranges stay valid), remapping only seam
+			//     corners to their duplicates.
+			const std::vector<uint32_t>& triChart = w.chart.triChart;
+			const std::vector<glm::vec2>& cornerUv = w.chart.cornerChartUv;
+			const uint32_t origVerts = uint32_t(upload->vertices.size());
+			std::vector<uint32_t> ownerChart(origVerts, 0xFFFFFFFFu);
+			// (original vertex, chart) -> stamped index (orig or duplicate)
+			std::unordered_map<uint64_t, uint32_t> cornerSlot;
+			cornerSlot.reserve(size_t(origVerts) * 2);
+			std::vector<uint32_t> newIndices;
+			newIndices.reserve(upload->indices.size());
+			for (size_t t = 0; t < triCount; ++t) {
+				const uint32_t chartIdx = triChart[t];
+				for (int k = 0; k < 3; ++k) {
+					const uint32_t orig = upload->indices[t * 3 + k];
+					if (chartIdx == 0xFFFFFFFFu) {
+						// Degenerate/uncharted triangle: keep the original
+						// corner (uv2 stays whatever the vertex carries).
+						newIndices.push_back(orig);
+						continue;
+					}
+					const uint64_t key = uint64_t(orig) << 32 | chartIdx;
+					auto it = cornerSlot.find(key);
+					if (it != cornerSlot.end()) {
+						newIndices.push_back(it->second);
+						continue;
+					}
+					const glm::vec2 atlasUv = atlas.AtlasUv(
+						w.chunkBase + chartIdx, chartOpts.gutterTexels,
+						cornerUv[t * 3 + k]);
+					uint32_t slot;
+					if (ownerChart[orig] == 0xFFFFFFFFu) {
+						// First chart to stamp this vertex: in-place.
+						ownerChart[orig] = chartIdx;
+						slot = orig;
+					}
+					else if (ownerChart[orig] == chartIdx) {
+						// Same chart re-uses the original (uv identical:
+						// chart uv is a pure position projection).
+						slot = orig;
+					}
+					else {
+						// Seam corner: duplicate for THIS chart.
+						smvk::StaticVertex dup = upload->vertices[orig];
+						dup.texCoord2 = atlasUv;
+						upload->vertices.push_back(dup);
+						slot = uint32_t(upload->vertices.size() - 1);
+						++seamDups;
+					}
+					upload->vertices[slot].texCoord2 = atlasUv;
+					cornerSlot.emplace(key, slot);
+					newIndices.push_back(slot);
+				}
 			}
+			upload->indices = std::move(newIndices);
 			// The draw ring carries the LOBE COUNT (5/6/9/12);
 			// 0xFFFFFFFF = no lightmap stays the pak default.
 			if (smvk::StaticMesh* m = cluster->staticMeshes.get(w.handle))
 				m->lmChunk = args.lmLobes;
-			++lmMeshes;
+			// Rebuild the cooked meshlets: seam duplication appended
+			// vertices + remapped indices, so the import-time meshlets
+			// (which index the OLD layout) no longer match. Rebuild from
+			// the stamped upload and re-register (UriMap Insert replaces).
+			if (meshletCfg.enabled) {
+				smvk::CookedMeshlets cooked;
+				smvk::MeshletStats mst;
+				std::string merr;
+				if (BuildMeshletsForUpload(*upload, meshletCfg, &cooked, &mst, &merr)) {
+					const auto uri = cluster->GetMeshUri(w.handle);
+					if (!uri.empty())
+						cluster->RegisterMeshMeshlets(uri, cooked);
+					++lmMeshes;
+				}
+				else if (!merr.empty()) {
+					std::cerr << "  [LM] meshlet rebuild failed node " << w.node
+						<< ": " << merr << " (stale meshlets kept)\n";
+				}
+			}
+			else {
+				++lmMeshes;
+			}
 		}
 		lstats.seconds = std::chrono::duration<double>(
 			std::chrono::steady_clock::now() - lmT0).count();
@@ -936,6 +1060,7 @@ int main(int argc, char** argv) {
 			<< " texels=" << lstats.texelsBaked
 			<< " paths=" << lstats.pathsTraced
 			<< " clamped=" << lstats.samplesClamped
+			<< " seamVerts=" << seamDups
 			<< " seconds=" << lstats.seconds
 			<< " (skipped: blend=" << skipBlend
 			<< " instanced=" << skipInstanced

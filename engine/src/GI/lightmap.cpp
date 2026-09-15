@@ -494,6 +494,8 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 
 	// Per-ORIGINAL-vertex output: owning chart + chart-local uv (the cook
 	// maps these to atlas space AFTER the atlas pack, via AtlasUv).
+	// NOTE: first-chart-wins — seam corners shared by two charts get ONE
+	// uv here, which is why the per-triangle view below exists.
 	out.charts.resize(charts.size());
 	out.vertexChart.assign(upload.vertices.size(), 0xFFFFFFFFu);
 	out.chartLocalUv.assign(upload.vertices.size(), glm::vec2(0.0f));
@@ -504,6 +506,27 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 		const Chart& c = charts[chartIdx];
 		out.vertexChart[v] = chartIdx;
 		out.chartLocalUv[v] = chartUv(c, upload.vertices[v].pos);
+	}
+
+	// Per-triangle output (seam-correct): every triangle's corners in the
+	// triangle's OWN chart projection, original triangle order. A seam
+	// triangle (corners shared with a neighboring chart) still gets all
+	// three corners inside its own chart rect — the cook stamps these
+	// per-corner and duplicates seam vertices, so no triangle ever
+	// interpolates across two atlas rects.
+	out.triChart.assign(triCount, 0xFFFFFFFFu);
+	out.cornerChartUv.assign(size_t(triCount) * 3, glm::vec2(0.0f));
+	for (uint32_t t = 0; t < triCount; ++t) {
+		const uint32_t chartIdx = chartOf[t];
+		if (chartIdx == 0xFFFFFFFFu)
+			continue; // degenerate (zero-area): keeps (0,0)
+		const Chart& c = charts[chartIdx];
+		out.triChart[t] = chartIdx;
+		for (int k = 0; k < 3; ++k) {
+			const glm::vec3& p =
+				upload.vertices[upload.indices[t * 3 + k]].pos;
+			out.cornerChartUv[size_t(t) * 3 + k] = chartUv(c, p);
+		}
 	}
 
 	// Bake texels per chart: rasterize every chart triangle over the

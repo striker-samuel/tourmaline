@@ -195,11 +195,12 @@ enum class AmbientMode : int {
 };
 
 // ---------------------------------------------------------------------------
-// Main-view debug visualization (F1..F6). Lit is the full PBR path; the rest
-// replace the opaque leg with a flat debug program so lighting/culling/LOD
-// artifacts bisect out in one keypress. Meshlets/Lods reuse the flat
-// meshDebugProgram (per-cluster / per-LOD colors); Unlit/Cascades/VertexColors
-// have their own fragment shaders pairing with default.vert.hlsl.
+// Main-view debug visualization (F1..F6, F9/F10). Lit is the full PBR path;
+// the rest replace the opaque leg with a flat debug program so
+// lighting/culling/LOD artifacts bisect out in one keypress. Meshlets/Lods
+// reuse the flat meshDebugProgram (per-cluster / per-LOD colors);
+// Unlit/Cascades/VertexColors/UV have their own fragment shaders pairing
+// with default.vert.hlsl.
 // ---------------------------------------------------------------------------
 enum class DebugView : int {
 	Lit = 0,      // F1: full PBR (default_lit)
@@ -208,6 +209,8 @@ enum class DebugView : int {
 	Cascades = 3, // F4: shadow cascade coverage (default_cascade_debug)
 	Lods = 4,     // F5: LOD index by color (flat, direct draws)
 	VertexColors = 5, // F6: vertex-color layer weights as false color (default_vertexcolor_debug)
+	Uv0 = 6,      // F9: base UV (TEXCOORD0) checker + gradient (default_uv0_debug)
+	Uv1 = 7,      // F10: lightmap atlas UV (uv2) checker + seam glow (default_uv1_debug)
 };
 
 #if defined(DS_DEBUG_VIZ)
@@ -531,6 +534,12 @@ struct AppResources {
 	smvk::ShaderProgram cascadeProgram;
 	smvk::Holder<smvk::ShaderModuleHandle> fragVertexColorShader; // default_vertexcolor_debug (F6)
 	smvk::ShaderProgram vertexColorProgram;
+	// UV debug views (F9 base UV / F10 lightmap uv2): checker + gradient
+	// FS pairs, channel selected per compiled module.
+	smvk::Holder<smvk::ShaderModuleHandle> fragUv0DebugShader; // default_uv0_debug (F9)
+	smvk::Holder<smvk::ShaderModuleHandle> fragUv1DebugShader; // default_uv1_debug (F10)
+	smvk::ShaderProgram uv0DebugProgram;
+	smvk::ShaderProgram uv1DebugProgram;
 	// Shader-LOD farthest-level program (World::LodShader::VertexLit):
 	// its own VS computes the lighting per vertex (see
 	// default_vertexlit.vert.hlsl) and the FS is a fog pass-through.
@@ -790,8 +799,9 @@ protected:
 			ExportNeutralLut();
 			m_captureQueued = true;
 		}
-		// Debug views (F1..F6): F1 lit, F2 unlit, F3 meshlets, F4 shadow
-		// cascades, F5 LODs by color, F6 vertex-color layer weights.
+		// Debug views (F1..F6, F9/F10): F1 lit, F2 unlit, F3 meshlets, F4
+		// shadow cascades, F5 LODs by color, F6 vertex-color layer
+		// weights, F9 base-UV checker, F10 lightmap-uv2 checker.
 		if (m_input.isKeyPressed(GLFW_KEY_F1)) {
 			m_debugView = DebugView::Lit;
 		}
@@ -809,6 +819,16 @@ protected:
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_F6)) {
 			m_debugView = DebugView::VertexColors;
+		}
+		// UV debug views: F9 = base UV (TEXCOORD0), F10 = lightmap
+		// atlas UV (uv2). Checker + gradient + seam glow (see
+		// default_uv_debug.hlsli) — lightmap chart layout and
+		// cross-island streaks read at a glance.
+		if (m_input.isKeyPressed(GLFW_KEY_F9)) {
+			m_debugView = DebugView::Uv0;
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_F10)) {
+			m_debugView = DebugView::Uv1;
 		}
 		// P toggles wireframe (PolygonMode::Line, Cull None) over the
 		// active debug view — a raster override, not a shading swap, so

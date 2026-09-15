@@ -271,8 +271,21 @@ struct SgLightmapChartResult {
 	// Per ORIGINAL mesh vertex (parallel to upload.vertices): owning
 	// chart index (0xFFFFFFFF = unclaimed/degenerate) and the
 	// chart-local uv in the chart's inner rect, [0,1].
+	// WARNING: this is the FIRST chart to touch the vertex. Where two
+	// charts share a vertex (a seam corner), a per-vertex uv alone
+	// makes the seam triangle interpolate between two unrelated atlas
+	// rects — long streaks across the atlas. Use triChart/cornerChartUv
+	// (the per-triangle view below) when stamping; it gives every
+	// triangle corners inside its OWN chart.
 	std::vector<uint32_t> vertexChart;
 	std::vector<glm::vec2> chartLocalUv;
+	// Per-triangle chart data (the seam-correct view): chart of each
+	// triangle (0xFFFFFFFF = degenerate/uncharted) and per-corner
+	// chart-local uv, triCount*3 in original triangle order. The cook
+	// stamps uv2 per (triangle corner, chart), duplicating seam corners
+	// so no triangle ever spans two atlas rects.
+	std::vector<uint32_t> triChart;
+	std::vector<glm::vec2> cornerChartUv; // triCount * 3, chart-local [0,1]
 };
 
 bool GenerateLightmapCharts(const StaticMeshUpload& upload,
