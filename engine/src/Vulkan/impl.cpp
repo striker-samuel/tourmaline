@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <iterator>
@@ -67,6 +69,13 @@ static VkQueue computeQueue_ = VK_NULL_HANDLE;
 // Set at device creation (see VulkanCore init): true when the device
 // supports VK multiDrawIndirect (drawCount > 1 in a single indirect call).
 static bool g_multiDrawIndirect = false;
+// True when the device supports non-zero firstInstance in indirect draws
+// (the gfx filter packs cluster ids there). Without it the filter's
+// commands are invalid — see the feature gate in VulkanCore init.
+static bool g_multiDrawIndirectFirstInstance = false;
+// True when the device supports shaderDemoteToHelperInvocation (the MASK
+// alpha-test shaders compile clip/discard to OpDemoteToHelperInvocation).
+static bool g_shaderDemoteToHelperInvocation = false;
 // True when the device was created with fillModeNonSolid enabled
 // (PolygonMode::Line/Point in graphics pipelines). BuildGraphicsPipeline
 // clamps non-solid modes back to Fill when this is false.
@@ -1503,6 +1512,114 @@ static VkPipelineStageFlags2 ToVkStage(smvk::PipelineStage stage) {
 }
 static VkAccessFlags2 ToVkAccessLocal(smvk::AccessFlags access) { return static_cast<VkAccessFlags2>(static_cast<uint32_t>(access)); }
 
+// VULKANTOY_HOST_COPY=0: kill switch for VK_EXT_host_image_copy — the
+// extension is never enabled on the device AND the upload streamer is kept
+// off the host-copy path. RenderDoc's support for the extension is
+// incomplete and can crash captures; set this in RenderDoc launch configs.
+static bool HostCopyKilledByEnv()
+{
+	static const bool killed = [] {
+		const char* e = std::getenv("VULKANTOY_HOST_COPY");
+		return e && *e && std::string_view{ e } == "0";
+	}();
+	return killed;
+}
+
+// ---------------------------------------------------------------------------
+// RenderGraph barrier debug tracing (VULKANTOY_BARRIER_TRACE)
+// ---------------------------------------------------------------------------
+// Env knob, evaluated once per process:
+//   VULKANTOY_BARRIER_TRACE=0      off (also the default when unset)
+//   VULKANTOY_BARRIER_TRACE=on     trace every frame (any non-numeric value)
+//   VULKANTOY_BARRIER_TRACE=N      trace only the frame with frameIndex == N
+// When enabled, RenderGraph::Execute prints, per pass in SORTED order:
+//   - the pass name, its sorted position vs insertion index (exposes
+//     topological reordering: "MOVED" marks a pass the sort displaced),
+//   - the command-buffer stream it records into (G1/C/G2 when the
+//     async-compute split is active, MAIN otherwise),
+//   - per hinted image/buffer: the tracked src sync state -> the pass's
+//     request and the needBarrier verdict (need=0 lines included — a
+//     read whose src layout is still COLOR_ATTACHMENT / DEPTH_ATTACHMENT
+//     means no barrier covered the producer's write),
+//   - the emitted VkImageMemoryBarrier2 / VkBufferMemoryBarrier2
+//     contents, plus the cross-queue rewrite markers on async passes.
+// The two loudest bug signatures to grep for:
+//   "SKIPPED-BARRIER"  — a hint that resolved to no backing image, so a
+//                        needed barrier was silently dropped,
+//   "need=0" on a line whose src layout differs from dst — impossible by
+//                        construction, so seeing one means state corruption.
+static const char* RgTraceImageLayoutName(smvk::ImageLayout l)
+{
+	switch (l) {
+	case smvk::ImageLayout::Undefined: return "UNDEFINED";
+	case smvk::ImageLayout::General: return "GENERAL";
+	case smvk::ImageLayout::ColorAttachmentOptimal: return "COLOR_ATTACHMENT";
+	case smvk::ImageLayout::DepthStencilAttachmentOptimal: return "DEPTH_ATTACHMENT";
+	case smvk::ImageLayout::DepthStencilReadOnlyOptimal: return "DEPTH_READ_ONLY";
+	case smvk::ImageLayout::DepthReadOnlyOptimal: return "DEPTH_READ_ONLY_STRICT";
+	case smvk::ImageLayout::ShaderReadOnlyOptimal: return "SHADER_READ";
+	case smvk::ImageLayout::TransferSrcOptimal: return "TRANSFER_SRC";
+	case smvk::ImageLayout::TransferDstOptimal: return "TRANSFER_DST";
+	case smvk::ImageLayout::PresentSrc: return "PRESENT";
+	}
+	return "OTHER";
+}
+static const char* RgTraceVkImageLayoutName(VkImageLayout l)
+{
+	switch (l) {
+	case VK_IMAGE_LAYOUT_UNDEFINED: return "UNDEFINED";
+	case VK_IMAGE_LAYOUT_GENERAL: return "GENERAL";
+	case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: return "COLOR_ATTACHMENT";
+	case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL: return "DEPTH_ATTACHMENT";
+	case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL: return "DEPTH_READ_ONLY";
+	case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL: return "DEPTH_READ_ONLY_STRICT";
+	case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: return "SHADER_READ";
+	case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: return "TRANSFER_SRC";
+	case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: return "TRANSFER_DST";
+	case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: return "PRESENT";
+	}
+	return "OTHER";
+}
+static const char* RgTracePassName(const char* n)
+{
+	return n ? n : "UnnamedRenderPass";
+}
+// -1 = off, 0 = every frame, N > 0 = only frameIndex N.
+static bool RgTraceEnabled(uint32_t frameIndex)
+{
+	static const int64_t filter = []() -> int64_t {
+		const char* e = std::getenv("VULKANTOY_BARRIER_TRACE");
+		if (!e || !*e || (*e == '0' && !e[1]))
+			return -1;
+		bool digits = true;
+		for (const char* p = e; *p; ++p)
+			if (*p < '0' || *p > '9') { digits = false; break; }
+		if (!digits)
+			return 0;
+		const unsigned long long v = std::strtoull(e, nullptr, 10);
+		return v == 0 ? -1 : static_cast<int64_t>(v);
+	}();
+	return filter >= 0 &&
+		(filter == 0 || static_cast<uint64_t>(filter) == frameIndex);
+}
+// VULKANTOY_ASYNC_COMPUTE=0 (or "off"): process-wide kill switch for the
+// true-async G1/C/G2 split. EVSM itself stays on — the blur passes simply
+// record inline on the main graphics command buffer (emulated async, one
+// submission per frame, same-queue in-order execution). A/B tool for
+// isolating split-only breakage without changing the shadow algorithm
+// (unlike VULKANTOY_EVSM=0, which falls back to PCF).
+static bool RgAsyncSplitKilled()
+{
+	static const bool killed = [] {
+		const char* e = std::getenv("VULKANTOY_ASYNC_COMPUTE");
+		if (!e || !*e)
+			return false;
+		const std::string_view v{ e };
+		return v == "0" || v == "off";
+	}();
+	return killed;
+}
+
 // Synchronization
 inline void BufferBarrier(
 	VkCommandBuffer cmd,
@@ -1660,7 +1777,7 @@ int smvk::VulkanCore::CreateInstance() {
 
 	VkValidationFeatureEnableEXT enabledValidationFeatures[] = {
 		VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
-#if 0 // TMP-DIAG: GPU-assisted validation (disabled, remove later;
+#if 1 // TMP-DIAG: GPU-assisted validation (disabled, remove later;
 		// when re-enabling, bump enabledValidationFeatureCount to 2)
 		, VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT
 #endif
@@ -1669,7 +1786,7 @@ int smvk::VulkanCore::CreateInstance() {
 	VkValidationFeaturesEXT validationFeatures{};
 	validationFeatures.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
 	validationFeatures.pNext = &debugCreateInfo;
-	validationFeatures.enabledValidationFeatureCount = 1;
+	validationFeatures.enabledValidationFeatureCount = 2;
 	validationFeatures.pEnabledValidationFeatures = enabledValidationFeatures;
 	validationFeatures.disabledValidationFeatureCount = 0;
 	validationFeatures.pDisabledValidationFeatures = nullptr;
@@ -1782,13 +1899,23 @@ bool smvk::VulkanCore::Init() {
 				vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data());
 				for (auto& e : exts) if (strcmp(e.extensionName, VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME) == 0) { hostImageCopyAvailable = true; break; }
 			}
+			// VULKANTOY_HOST_COPY=0: keep the extension off the device
+			// entirely (uploads fall back to the transfer ring). RenderDoc's
+			// support for VK_EXT_host_image_copy is incomplete and can
+			// crash captures — set this in RenderDoc launch configs.
+			// Mirrored by the VulkanResourceManager feature check (see
+			// HostCopyKilledByEnv) so the streamer never calls into an
+			// extension that is not enabled on the device.
+			const bool hostCopyKilled = HostCopyKilledByEnv();
 			bool enableHostCopy = false;
-			if (hostImageCopyAvailable) {
+			if (hostImageCopyAvailable && !hostCopyKilled) {
 				VkPhysicalDeviceHostImageCopyFeaturesEXT queryHostCopy{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT, nullptr };
 				VkPhysicalDeviceFeatures2 queryFeats2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &queryHostCopy };
 				vkGetPhysicalDeviceFeatures2(physicalDevice_, &queryFeats2);
 				if (queryHostCopy.hostImageCopy == VK_TRUE) enableHostCopy = true;
 			}
+			if (hostImageCopyAvailable && hostCopyKilled)
+				printf("[UploadStreamer] VK_EXT_host_image_copy disabled (VULKANTOY_HOST_COPY=0)\n");
 
 			VkPhysicalDeviceHostImageCopyFeaturesEXT deviceHostCopyFeatures{
 				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT,
@@ -1865,6 +1992,29 @@ bool smvk::VulkanCore::Init() {
 			g_fillModeNonSolid = (supported.fillModeNonSolid == VK_TRUE);
 			feats2.features.fillModeNonSolid =
 				g_fillModeNonSolid ? VK_TRUE : VK_FALSE;
+			// The gfx filter packs a cluster id into firstInstance of every
+			// indirect draw — that needs the core-optional
+			// drawIndirectFirstInstance, or validation (and possibly the
+			// driver) rejects the non-zero values the filter emits.
+			g_multiDrawIndirectFirstInstance =
+				(supported.drawIndirectFirstInstance == VK_TRUE);
+			feats2.features.drawIndirectFirstInstance =
+				g_multiDrawIndirectFirstInstance ? VK_TRUE : VK_FALSE;
+			// shaderDemoteToHelperInvocation (clip/discard in the MASK
+			// alpha-test shaders compiles to OpDemoteToHelperInvocation):
+			// without the feature, the modules fail validation and pipeline
+			// execution is undefined. Core since 1.3, universal on desktop.
+			{
+				VkPhysicalDeviceVulkan13Features supported13{
+					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, nullptr };
+				VkPhysicalDeviceFeatures2 supported2{
+					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &supported13 };
+				vkGetPhysicalDeviceFeatures2(physicalDevice_, &supported2);
+				g_shaderDemoteToHelperInvocation =
+					(supported13.shaderDemoteToHelperInvocation == VK_TRUE);
+				deviceFeatures13.shaderDemoteToHelperInvocation =
+					g_shaderDemoteToHelperInvocation ? VK_TRUE : VK_FALSE;
+			}
 		}
 
 			std::vector<const char*> enabledExtensions = config_.deviceExtensions;
@@ -2044,7 +2194,11 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		VkPhysicalDeviceHostImageCopyFeaturesEXT hostFeat{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT, nullptr };
 		VkPhysicalDeviceFeatures2 feats2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &hostFeat };
 		vkGetPhysicalDeviceFeatures2(physicalDevice_, &feats2);
-		m_hostImageCopySupported = hostFeat.hostImageCopy == VK_TRUE;
+		// Reflect the device's ACTUAL enabled state, not the physical
+		// device's capability: with VULKANTOY_HOST_COPY=0 the extension is
+		// absent from the device, and the streamer must not call it.
+		m_hostImageCopySupported =
+			hostFeat.hostImageCopy == VK_TRUE && !HostCopyKilledByEnv();
 		if (m_hostImageCopySupported) {
 			// Two-stage query: first obtain counts, then allocate and retrieve layouts.
 			// pCopySrcLayouts / pCopyDstLayouts are not universally containing
@@ -2542,16 +2696,48 @@ void smvk::UploadStreamer::recordSubmittedRange(ThreadUploadState& ust) {
 	}
 }
 smvk::TimelinePoint smvk::UploadStreamer::submitTransfer(CommandSubmitHandle h) {
+	// Serial chain: wait every earlier submission on this Submitter's
+	// timeline (upload batches + chained external points such as the
+	// async readback copy). Same-queue submissions only respect
+	// submission (begin) order per spec and may overlap — without this,
+	// a zero-fill batch can overwrite a histogram/ds-counter/feedback
+	// slice while an earlier-submitted readback copy is still reading it
+	// (the WRITE_AFTER_READ / WRITE_AFTER_WRITE hazards sync validation
+	// reports on those buffers). Values on one timeline are monotonic,
+	// so waiting the newest point orders the whole chain.
+	const TimelinePoint chainPrev = lastTransferPoint();
+	TimelinePoint tp{};
 	if (m_transfer != m_graphics
 		&& m_rm->m_lastGraphicsSemaphore != VK_NULL_HANDLE
 		&& m_rm->m_lastGraphicsValue != 0) {
-		const TimelineWait waits[1]{
+		const TimelineWait waits[2]{
 			{ TimelinePoint{ m_rm->m_lastGraphicsSemaphore, m_rm->m_lastGraphicsValue },
-			  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT }
+			  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT },
+			{ chainPrev, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT }
 		};
-		return m_transfer->submit(h, std::span<const TimelineWait>(waits, 1));
+		const uint32_t waitCount = chainPrev.valid() ? 2 : 1;
+		tp = m_transfer->submit(h, std::span<const TimelineWait>(waits, waitCount));
 	}
-	return m_transfer->submit(h);
+	else if (chainPrev.valid()) {
+		const TimelineWait waits[1]{
+			{ chainPrev, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT }
+		};
+		tp = m_transfer->submit(h, std::span<const TimelineWait>(waits, 1));
+	}
+	else {
+		tp = m_transfer->submit(h);
+	}
+	// Publish the newest transfer point for lastTransferPoint() — the
+	// swapchain's G1/G2/main submits wait it so uploaded data is a
+	// semaphore-ordered dependency (same-queue submissions may overlap).
+	if (tp.valid()) {
+		m_lastTransferSemaphore = tp.semaphore;
+		uint64_t observed = m_lastTransferValue.load(std::memory_order_relaxed);
+		while (tp.value > observed
+			&& !m_lastTransferValue.compare_exchange_weak(
+				observed, tp.value, std::memory_order_release)) {}
+	}
+	return tp;
 }
 void smvk::UploadStreamer::submitState(ThreadUploadState& ust, bool waitOldestIfFull) {
 	// st is owned by the calling thread – no streamer lock. The Submitter
@@ -3303,22 +3489,44 @@ uint64_t smvk::VulkanResourceManager::SubmitAsyncDownloadDataFromBuffers(
 	// caller polls it non-blocking (PollAsyncDownloadDataFromBuffers).
 	// Cross-queue case: wait the latest graphics retirement point so the
 	// copy happens-after all submitted frames that wrote the sources.
+	// AND join the transfer-queue serial chain: the copy must be ordered
+	// after every earlier upload batch (they may still be executing) and
+	// — via chainExternalPoint — every LATER batch (the per-frame
+	// zero-fill of the same slices) is ordered after the copy. The old
+	// "shares FIFO with the streamer's upload batches" reasoning was a
+	// same-queue-ordering assumption the spec does not make (submissions
+	// may overlap) and sync validation flagged the resulting
+	// WRITE_AFTER_READ / WRITE_AFTER_WRITE hazards.
+	const TimelinePoint chainPrev =
+		m_streamer ? m_streamer->lastTransferPoint() : TimelinePoint{};
 	TimelinePoint tp{};
-	if (queue != m_submitter
-		&& m_lastGraphicsSemaphore != VK_NULL_HANDLE
-		&& m_lastGraphicsValue != 0) {
-		const TimelineWait waits[1]{
-			{ TimelinePoint{ m_lastGraphicsSemaphore, m_lastGraphicsValue },
-			  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT }
-		};
-		tp = queue->submit(han, std::span<const TimelineWait>(waits, 1));
-	}
-	else {
-		tp = queue->submit(han);
+	{
+		const bool waitGraphics = queue != m_submitter
+			&& m_lastGraphicsSemaphore != VK_NULL_HANDLE
+			&& m_lastGraphicsValue != 0;
+		TimelineWait waits[2]{};
+		uint32_t waitCount = 0;
+		if (waitGraphics) {
+			waits[waitCount++] = TimelineWait{
+				TimelinePoint{ m_lastGraphicsSemaphore, m_lastGraphicsValue },
+				VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT };
+		}
+		if (chainPrev.valid()) {
+			waits[waitCount++] = TimelineWait{
+				chainPrev, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT };
+		}
+		tp = waitCount
+			? queue->submit(han, std::span<const TimelineWait>(waits, waitCount))
+			: queue->submit(han);
 	}
 	if (!tp.valid()) {
 		return 0;
 	}
+	// Same timeline as the upload chain (queue IS the streamer's
+	// Submitter — dedicated transfer or the shared graphics fallback), so
+	// merge: the next zero-fill batch waits this copy.
+	if (m_streamer)
+		m_streamer->chainExternalPoint(tp);
 	m_asyncReadbackTicket = tp.value;
 	m_asyncReadbackSemaphore = tp.semaphore;
 	m_asyncReadbackBytes = static_cast<VkDeviceSize>(total);
@@ -7814,30 +8022,60 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 	// (seed/visible/indirect slices, exposure + DS zero-fills, engine
 	// globals, ...) BEFORE the main command buffer. UploadDataToBuffer no
 	// longer flushes per call, so this is the one submit per frame that
-	// kicks the batch. FIFO on single-queue devices (or the transfer
-	// timeline + acquire-barrier submit on the graphics queue when the
-	// dedicated transfer queue exists) orders the copies ahead of every
-	// pass that consumes them.
+	// kicks the batch.
 	// (Split frames flushed ahead of G1 inside Execute; this covers
 	// anything recorded after — e.g. the ImGui overlay — and is a no-op
 	// when nothing is pending.)
 	ctx_.FlushUploads();
+	// Uploaded data -> this submit must be a semaphore-ordered memory
+	// dependency: per spec, submissions to one queue only respect
+	// submission (begin) order and may overlap, so queue FIFO alone does
+	// not order the copies ahead of the passes that consume them. The
+	// newest transfer-batch timeline point covers every earlier batch on
+	// that timeline (values on one Submitter timeline are monotonic).
+	const TimelinePoint uploadTp =
+		ctx_.GetStreamer() ? ctx_.GetStreamer()->lastTransferPoint()
+			: TimelinePoint{};
 
-	// Split G2 waits only for the compute blur (C -> G2 timeline): the
-	// binary swapchain-acquire wait already ran on the G1 submit (same
-	// queue, earlier submission — transitively ordered, and a binary
-	// semaphore can only be waited on once). Single-submit frames keep
-	// exactly today's wait set.
-	VkSemaphoreSubmitInfo waitInfos[2]{};
+	// Split frames: G2 waits the compute blur (C -> G2 timeline), G1's own
+	// signal (G1 -> G2: the acquire wait + swapchain layout barrier live
+	// in G1's CB, and G2 must be ordered after them explicitly — same
+	// queue submissions may overlap, so "transitively through submission
+	// order" is not a spec guarantee), and the upload batch. G1 already
+	// waited the previous frame's timeline (cross-frame image reuse),
+	// which G2 inherits through the G1 -> G2 wait. The binary
+	// swapchain-acquire wait already ran on the G1 submit (a binary
+	// semaphore can only be waited once).
+	// Single-submit frames: acquire wait + upload batch + previous frame
+	// (same cross-frame hazard: Main writes hdr/depth while the previous
+	// frame's Tonemap/bloom may still be reading them).
+	VkSemaphoreSubmitInfo waitInfos[4]{};
 	uint32_t waitCount = 0;
 	if (fb.splitCommandBuffer != VK_NULL_HANDLE && fb.splitWaitSemaphore != VK_NULL_HANDLE) {
-		waitInfos[0] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, fb.splitWaitSemaphore, fb.splitWaitValue, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
-		waitCount = 1;
+		waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, fb.splitWaitSemaphore, fb.splitWaitValue, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
+		++waitCount;
+		if (fb.splitWaitSemaphore2 != VK_NULL_HANDLE && fb.splitWaitValue2 != 0) {
+			waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, fb.splitWaitSemaphore2, fb.splitWaitValue2, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
+			++waitCount;
+		}
 	}
 	else {
-		waitInfos[0] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, imageAvailableSemaphores_[currentFrame_], 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0 };
-		waitCount = 1;
+		waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, imageAvailableSemaphores_[currentFrame_], 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0 };
+		++waitCount;
+		if (timelineValue_ != 0) {
+			waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, timelineSemaphore_, timelineValue_, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
+			++waitCount;
+		}
 	}
+	if (uploadTp.valid()) {
+		waitInfos[waitCount] = VkSemaphoreSubmitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, uploadTp.semaphore, uploadTp.value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
+		++waitCount;
+	}
+	if (RgTraceEnabled(fb.frameIndex) && waitCount)
+		std::fprintf(stderr, "[RG] G2/main submitted (waits=%u%s, upload value=%llu)\n",
+			waitCount,
+			(fb.splitCommandBuffer == VK_NULL_HANDLE && timelineValue_ != 0) ? " incl.prevFrame" : "",
+			static_cast<unsigned long long>(uploadTp.value));
 	VkSemaphoreSubmitInfo signalInfos[2]{};
 	signalInfos[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
 	signalInfos[0].semaphore = renderFinishedSemaphores_[currentImageIndex_];
@@ -9423,6 +9661,9 @@ void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>&
 	vctx.CommitImageSyncStates(localImage);
 	vctx.CommitBufferSyncStates(localBuffer);
 }
+// ---------------------------------------------------------------------------
+// RenderGraph barrier debug tracing — see the helpers next to ToVkStage.
+// ---------------------------------------------------------------------------
 void smvk::RenderGraph::Execute(Framebuffer& fb)
 {
 	ResolveImages();
@@ -9469,7 +9710,16 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	}
 	bool useAsyncCompute = false;
 	VulkanSwapchain* vkSwap = nullptr;
-	if (hasDedicatedCompute && anyAsync && fb.swapchain)
+	if (RgAsyncSplitKilled()) {
+		// One-time notice: the split stays off for the whole process, but
+		// the trace header below still reports emulatedAsync per frame.
+		static bool s_killNoticed = false;
+		if (!s_killNoticed) {
+			s_killNoticed = true;
+			std::fprintf(stderr, "[AsyncCompute] split disabled (VULKANTOY_ASYNC_COMPUTE=0): async passes record inline on the graphics queue\n");
+		}
+	}
+	else if (hasDedicatedCompute && anyAsync && fb.swapchain)
 		vkSwap = static_cast<VulkanSwapchain*>(fb.swapchain->GetVulkanOpaque());
 	if (vkSwap && !vkSwap->EnsureAsyncSplit(flight)) {
 		// No dedicated compute after all (or resource failure): emulate.
@@ -9477,18 +9727,25 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	}
 	if (vkSwap) {
 		// Guard: a graphics pass strictly inside the async window must not
-		// WRITE an image the async passes touch (it would record into G2
+		// WRITE a resource the async passes touch (it would record into G2
 		// but execute... G2 executes after C, while the async reader may
 		// need the pre-write contents — unrepresentable in 3 submits).
-		// Reads are safe (topo sorts readers after all writers). EVSM
-		// satisfies this (blur window touches moments/temp/blurred only).
+		// Reads are safe (topo sorts readers after all writers). Images AND
+		// buffers: the async pass set may read either kind, and a same-frame
+		// graphics writer inside the window would be ordered after C by
+		// submission but before it by the sort — a contradiction, so the
+		// split is refused. EVSM satisfies this (blur window touches
+		// moments/temp/blurred images and no buffers).
 		auto keyForGuard = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
 		std::unordered_set<uint64_t> asyncImages;
+		std::unordered_set<uint64_t> asyncBuffers;
 		for (size_t pos = firstAsyncPos; pos <= lastAsyncPos; ++pos) {
 			if (!passes_[sorted[pos]].IsAsyncCompute())
 				continue;
 			for (auto& pr : usages[sorted[pos]].images)
 				asyncImages.insert(keyForGuard(pr.first));
+			for (auto& pr : usages[sorted[pos]].buffers)
+				asyncBuffers.insert(keyForGuard(pr.first));
 		}
 		bool overlap = false;
 		for (size_t pos = firstAsyncPos + 1; pos < lastAsyncPos && !overlap; ++pos) {
@@ -9502,10 +9759,38 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					break;
 				}
 			}
+			if (overlap)
+				break;
+			for (auto& pr : usages[sorted[pos]].buffers) {
+				if (asyncBuffers.count(keyForGuard(pr.first))
+					&& IsWriteAccess(pr.second.barrierMasks.accessMask)) {
+					overlap = true;
+					break;
+				}
+			}
 		}
 		useAsyncCompute = !overlap;
 		if (!useAsyncCompute)
 			vkSwap = nullptr;
+	}
+	// ---- Barrier debug tracing (VULKANTOY_BARRIER_TRACE, see helpers) ----
+	const bool traceRg = RgTraceEnabled(fb.frameIndex);
+	if (traceRg) {
+		std::fprintf(stderr, "[RG] Execute frame=%u flight=%u passes=%zu asyncSplit=%s",
+			fb.frameIndex, flight, sorted.size(), useAsyncCompute ? "on" : "off");
+		if (useAsyncCompute)
+			std::fprintf(stderr, " window=[%zu..%zu]", firstAsyncPos, lastAsyncPos);
+		if (anyAsync && !useAsyncCompute)
+			std::fprintf(stderr, " emulatedAsync=1");
+		bool reordered = false;
+		for (size_t i = 0; i < sorted.size(); ++i)
+			if (sorted[i] != i) { reordered = true; break; }
+		if (reordered) {
+			std::fprintf(stderr, " SORTED!=INSERTION\n[RG] sorted order:");
+			for (size_t i = 0; i < sorted.size(); ++i)
+				std::fprintf(stderr, " %zu->%zu", i, sorted[i]);
+		}
+		std::fprintf(stderr, "\n");
 	}
 	VkCommandBuffer computeCB = VK_NULL_HANDLE;
 	VkCommandBuffer splitCB = VK_NULL_HANDLE; // G2
@@ -9565,23 +9850,57 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			__FILE__, __LINE__);
 #endif
 		const uint32_t passQFam = passIsAsync ? computeFam : graphicsFam;
-		// G1 -> C boundary: G1 is fully recorded here. Flush uploads first
-		// (transfer + graphics-acquire submits precede G1, exactly the
-		// order EndAndPresent establishes today), then end + submit G1
-		// signaling the G1->C timeline. C and G2 chain from it.
-		// G1 carries the swapchain-image acquire wait (its CB holds the
-		// Acquire layout barrier); G2 inherits it transitively through
-		// same-queue submission order, so EndAndPresent must NOT wait on
-		// the binary acquire semaphore again (single wait per signal).
+		// G1 -> C boundary: G1 is fully recorded here. Flush uploads first,
+		// then end + submit G1 signaling the G1->C timeline. C and G2 chain
+		// from it. G1 carries the swapchain-image acquire wait (its CB holds
+		// the Acquire layout barrier) and the upload-batch timeline wait:
+		// per spec, submissions to one queue only respect submission (begin)
+		// order and may overlap, so both dependencies must be explicit
+		// semaphore waits — G1's passes must not read upload targets or the
+		// swapchain image while an earlier submission is still in flight.
+		// G2 waits G1's G2C signal explicitly (splitWaitSemaphore2, set
+		// below) for the same reason; EndAndPresent must NOT wait on the
+		// binary acquire semaphore again (single wait per signal).
 		if (useAsyncCompute && pos == firstAsyncPos) {
 			vctx.FlushUploads();
 			VK_CHECK(vkEndCommandBuffer(cmd));
 			assert(vkSwap);
 			g2cVal = ++vkSwap->asyncG2CValue_[flight];
-			VkSemaphoreSubmitInfo g1wait{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
-			g1wait.semaphore = vkSwap->imageAvailableSemaphores_[flight];
-			g1wait.value = 0;
-			g1wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+			VkSemaphoreSubmitInfo g1wait[3]{};
+			uint32_t g1WaitCount = 0;
+			g1wait[g1WaitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+			g1wait[g1WaitCount].semaphore = vkSwap->imageAvailableSemaphores_[flight];
+			g1wait[g1WaitCount].value = 0;
+			g1wait[g1WaitCount].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+			++g1WaitCount;
+			// Upload batches (frame uniforms, zero fills, seeds) -> G1.
+			const TimelinePoint g1Uploads =
+				vctx.GetStreamer() ? vctx.GetStreamer()->lastTransferPoint()
+					: TimelinePoint{};
+			if (g1Uploads.valid()) {
+				g1wait[g1WaitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+				g1wait[g1WaitCount].semaphore = g1Uploads.semaphore;
+				g1wait[g1WaitCount].value = g1Uploads.value;
+				g1wait[g1WaitCount].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+				++g1WaitCount;
+			}
+			// Previous frame -> this frame. Consecutive frames share every
+			// transient image (hdr, depth, SSR/volumetric targets): without
+			// this wait, frame N's Main writing hdr overlaps frame N-1's
+			// Tonemap reading it (per spec, same-queue submissions only
+			// respect submission BEGIN order). The per-slot host wait in
+			// Acquire covers N vs N-2 only; this closes N vs N-1 by
+			// construction. GPU frames serialize; CPU-side recording and
+			// submission still pipeline (MAX_FRAMES_IN_FLIGHT keeps its CPU
+			// overlap value). timelineValue_ here still holds the previous
+			// EndAndPresent's signal — this frame has not incremented it.
+			if (vkSwap->timelineValue_ != 0) {
+				g1wait[g1WaitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+				g1wait[g1WaitCount].semaphore = vkSwap->timelineSemaphore_;
+				g1wait[g1WaitCount].value = vkSwap->timelineValue_;
+				g1wait[g1WaitCount].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+				++g1WaitCount;
+			}
 			VkSemaphoreSubmitInfo g1sig{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
 			g1sig.semaphore = vkSwap->asyncG2C_[flight];
 			g1sig.value = g2cVal;
@@ -9589,8 +9908,8 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			VkCommandBufferSubmitInfo g1cb{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
 			g1cb.commandBuffer = cmd;
 			VkSubmitInfo2 g1si{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
-			g1si.waitSemaphoreInfoCount = 1;
-			g1si.pWaitSemaphoreInfos = &g1wait;
+			g1si.waitSemaphoreInfoCount = g1WaitCount;
+			g1si.pWaitSemaphoreInfos = g1wait;
 			g1si.commandBufferInfoCount = 1;
 			g1si.pCommandBufferInfos = &g1cb;
 			g1si.signalSemaphoreInfoCount = 1;
@@ -9600,16 +9919,31 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				std::unique_lock<std::mutex> lockG(mg);
 				VK_CHECK(vkQueueSubmit2(graphicsQueue_, 1, &g1si, VK_NULL_HANDLE));
 			}
+			if (traceRg)
+				std::fprintf(stderr, "[RG] G1 submitted (waits acquire%s%s, signals G2C val=%llu)\n",
+					g1Uploads.valid() ? " +uploadTimeline" : "",
+					vkSwap->timelineValue_ != 0 ? " +prevFrame" : "",
+					(unsigned long long)g2cVal);
 		}
 		// Per-pass barriers (fix #1) – update imageStates/bufferStates as we go
 		{
+			if (traceRg) {
+				const char* streamName = !useAsyncCompute ? "MAIN"
+					: (dstCmd == cmd ? "G1" : (dstCmd == computeCB ? "C" : "G2"));
+				std::fprintf(stderr, "[RG] pass pos=%zu idx=%zu '%s' stream=%s%s%s\n",
+					pos, sIdx, RgTracePassName(passes_[sIdx].name_), streamName,
+					passes_[sIdx].IsCompute() ? " compute" : "",
+					pos != sIdx ? " MOVED" : "");
+			}
 			const auto& pu = usages[sIdx];
 			std::vector<VkImageMemoryBarrier2> imgBarriers;
 			std::vector<VkBufferMemoryBarrier2> bufBarriers;
 			std::vector<uint32_t> imgBarrierSrcQ;
+			std::vector<uint32_t> bufBarrierSrcQ;
 			imgBarriers.reserve(4);
 			bufBarriers.reserve(4);
 			imgBarrierSrcQ.reserve(4);
+			bufBarrierSrcQ.reserve(4);
 			auto keyFor = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
 			for (auto& pr : pu.images) {
 				ImageHandle h = pr.first;
@@ -9628,9 +9962,28 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				}
 				else if (srcIsWrite && dstIsWrite) needBarrier = true;
 				if (src.layout == ImageLayout::Undefined && req.layout != ImageLayout::Undefined) needBarrier = true;
+				if (traceRg) {
+					auto* dbgImg = vctx.images_.get(h);
+					std::fprintf(stderr,
+						"[RG]   img '%s' need=%d src[%s acc=%06x stage=%06x qfam=%u] dst[%s acc=%06x stage=%06x]\n",
+						(dbgImg && dbgImg->name) ? dbgImg->name : "<anon>",
+						needBarrier ? 1 : 0,
+						RgTraceImageLayoutName(src.layout),
+						static_cast<uint32_t>(src.masks.accessMask),
+						static_cast<uint32_t>(src.masks.stageMask),
+						src.queueFamily,
+						RgTraceImageLayoutName(req.layout),
+						static_cast<uint32_t>(req.barrierMasks.accessMask),
+						static_cast<uint32_t>(req.barrierMasks.stageMask));
+				}
 				if (needBarrier) {
 					auto* img = vctx.images_.get(h);
-					if (!img || img->vkImage == VK_NULL_HANDLE) continue;
+					if (!img || img->vkImage == VK_NULL_HANDLE) {
+						if (traceRg)
+							std::fprintf(stderr, "[RG]   img '%s' SKIPPED-BARRIER (no VkImage backing)\n",
+								(img && img->name) ? img->name : "<anon>");
+						continue;
+					}
 					VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
 					b.srcStageMask = ToVkStage(src.masks.stageMask);
 					if (src.layout == ImageLayout::Undefined) b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
@@ -9656,6 +10009,21 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 						const uint32_t srcQ = (src.queueFamily == UINT32_MAX)
 							? graphicsFam : src.queueFamily;
 						imgBarrierSrcQ.push_back(srcQ);
+					}
+					if (traceRg) {
+						const uint32_t traceSrcQ = (src.queueFamily == UINT32_MAX)
+							? graphicsFam : src.queueFamily;
+						const bool crossQ = useAsyncCompute && traceSrcQ != passQFam;
+						std::fprintf(stderr,
+							"[RG]     barrier img '%s' old=%s new=%s srcStage=%llx srcAcc=%llx dstStage=%llx dstAcc=%llx%s\n",
+							img->name ? img->name : "<anon>",
+							RgTraceVkImageLayoutName(b.oldLayout),
+							RgTraceVkImageLayoutName(b.newLayout),
+							(unsigned long long)b.srcStageMask,
+							(unsigned long long)b.srcAccessMask,
+							(unsigned long long)b.dstStageMask,
+							(unsigned long long)b.dstAccessMask,
+							crossQ ? " (crossQ: srcStage rewritten to ALL_COMMANDS at emit)" : "");
 					}
 				}
 				VulkanResourceManager::ImageGlobalSyncState dstState{};
@@ -9684,9 +10052,22 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					needBarrier = true;
 				}
 				if (src.masks.accessMask == AccessFlags::None && req.barrierMasks.accessMask != AccessFlags::None) needBarrier = true;
+				if (traceRg)
+					std::fprintf(stderr,
+						"[RG]   buf h=%u:%u need=%d src[acc=%06x stage=%06x] dst[acc=%06x stage=%06x]\n",
+						h.index(), h.gen(), needBarrier ? 1 : 0,
+						static_cast<uint32_t>(src.masks.accessMask),
+						static_cast<uint32_t>(src.masks.stageMask),
+						static_cast<uint32_t>(req.barrierMasks.accessMask),
+						static_cast<uint32_t>(req.barrierMasks.stageMask));
 				if (needBarrier) {
 					auto* buf = vctx.buffers_.get(h);
-					if (!buf || buf->vkBuffer == VK_NULL_HANDLE) continue;
+					if (!buf || buf->vkBuffer == VK_NULL_HANDLE) {
+						if (traceRg)
+							std::fprintf(stderr, "[RG]   buf h=%u:%u SKIPPED-BARRIER (no VkBuffer backing)\n",
+								h.index(), h.gen());
+						continue;
+					}
 					VkBufferMemoryBarrier2 b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
 					b.srcStageMask = ToVkStage(src.masks.stageMask);
 					b.srcAccessMask = ToVkAccessLocal(src.masks.accessMask);
@@ -9698,9 +10079,23 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					b.offset = 0;
 					b.size = VK_WHOLE_SIZE;
 					bufBarriers.push_back(b);
+					if (useAsyncCompute) {
+						const uint32_t srcQ = (src.queueFamily == UINT32_MAX)
+							? graphicsFam : src.queueFamily;
+						bufBarrierSrcQ.push_back(srcQ);
+					}
+					if (traceRg)
+						std::fprintf(stderr,
+							"[RG]     barrier buf h=%u:%u srcStage=%llx srcAcc=%llx dstStage=%llx dstAcc=%llx\n",
+							h.index(), h.gen(),
+							(unsigned long long)b.srcStageMask,
+							(unsigned long long)b.srcAccessMask,
+							(unsigned long long)b.dstStageMask,
+							(unsigned long long)b.dstAccessMask);
 				}
 				VulkanResourceManager::BufferGlobalSyncState dstState{};
 				dstState.masks = req.barrierMasks;
+				dstState.queueFamily = passQFam;
 				bufferStates[k] = dstState;
 			}
 			if (!imgBarriers.empty() || !bufBarriers.empty()) {
@@ -9708,21 +10103,40 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				// (G1 -> C -> G2 timeline semaphores); each CB needs only
 				// its plain same-stream barriers here, with src scopes
 				// matching the chained signal stages for visibility.
-				// Compute-queue legality: a barrier handed off from the
-				// graphics queue carries graphics-only src stages (fragment,
-				// attachment output, ...) that are invalid on a
-				// compute-family CB (VUID-09675/03911). The semaphore wait
-				// already orders execution and makes the writes available,
-				// so those barriers become availability-free acquires:
-				// srcStage=ALL_COMMANDS, srcAccess=NONE, dst = consumer
-				// scope. Same-queue barriers (and everything on graphics,
-				// whose family accepts all stages) keep precise scopes.
-				if (useAsyncCompute && passIsAsync) {
+				// Cross-queue legality, BOTH directions: a barrier handed
+				// off between queues carries the writer's src stages
+				// (fragment/attachment output from graphics; compute shader
+				// from the async family) in the reader's command buffer.
+				// Those stage bits may be unsupported by the reading queue's
+				// family, and the writer's commands are not in this CB
+				// anyway — the cross-queue semaphore wait already ordered
+				// execution and made the writes available, so such barriers
+				// degrade to availability-free acquires: srcStage=
+				// ALL_COMMANDS, srcAccess=NONE, dst = consumer scope.
+				// Same-stream barriers (G2 compute->G2 fragment chains like
+				// the HZB mips, or async-pass internal chains) keep their
+				// precise scopes.
+				if (useAsyncCompute) {
 					assert(imgBarrierSrcQ.size() == imgBarriers.size());
 					for (size_t bi = 0; bi < imgBarriers.size(); ++bi) {
-						if (imgBarrierSrcQ[bi] != computeFam) {
+						if (imgBarrierSrcQ[bi] != passQFam) {
 							imgBarriers[bi].srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 							imgBarriers[bi].srcAccessMask = VK_ACCESS_2_NONE;
+							if (traceRg)
+								std::fprintf(stderr,
+									"[RG]     rewrite img barrier[%zu]: srcStage->ALL_COMMANDS srcAcc->NONE (qfam %u -> %u handoff)\n",
+									bi, imgBarrierSrcQ[bi], passQFam);
+						}
+					}
+					assert(bufBarrierSrcQ.size() == bufBarriers.size());
+					for (size_t bi = 0; bi < bufBarriers.size(); ++bi) {
+						if (bufBarrierSrcQ[bi] != passQFam) {
+							bufBarriers[bi].srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+							bufBarriers[bi].srcAccessMask = VK_ACCESS_2_NONE;
+							if (traceRg)
+								std::fprintf(stderr,
+									"[RG]     rewrite buf barrier[%zu]: srcStage->ALL_COMMANDS srcAcc->NONE (qfam %u -> %u handoff)\n",
+									bi, bufBarrierSrcQ[bi], passQFam);
 						}
 					}
 				}
@@ -9843,7 +10257,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			rect.rect.extent = { pass.extent_.width, pass.extent_.height };
 			rect.baseArrayLayer = 0;
 			rect.layerCount = 1;
-			vkCmdClearAttachments(cmd, 1, &clear, 1, &rect);
+			vkCmdClearAttachments(dstCmd, 1, &clear, 1, &rect);
 		}
 		CommandBuffer cb{ reinterpret_cast<void*>(dstCmd), *this, pass };
 		if (pass.recordingFunction_) pass.recordingFunction_(cb);
@@ -9852,9 +10266,11 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 
 	// Submit the compute stream (C): waits for G1's moments, signals the
 	// blur-done timeline G2 waits on in EndAndPresent. G2 (splitCB) stays
-	// open — EndAndPresent ends + submits it. Retirement is structural:
-	// same-queue submission order plus the semaphore chain retires every
-	// slot, so no host waits are needed here.
+	// open — EndAndPresent ends + submits it (waiting both C2G and G1's
+	// G2C). Retirement is structural: G2's submit signals the slot's
+	// frame-retirement timeline only after C (waited) and G1 (waited)
+	// complete, so the Acquire-side timeline wait retires G1, C and G2
+	// together and no host waits are needed here.
 	if (useAsyncCompute) {
 		assert(vkSwap && computeCB != VK_NULL_HANDLE && splitCB != VK_NULL_HANDLE);
 		VK_CHECK(vkEndCommandBuffer(computeCB));
@@ -9881,9 +10297,19 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			std::unique_lock<std::mutex> lockC(mc);
 			VK_CHECK(vkQueueSubmit2(computeQueue_, 1, &csi, VK_NULL_HANDLE));
 		}
+		if (traceRg)
+			std::fprintf(stderr, "[RG] C submitted (waits G2C=%llu, signals C2G=%llu on compute queue)\n",
+				(unsigned long long)g2cVal, (unsigned long long)c2gVal);
 		fb.splitCommandBufferOpaque = reinterpret_cast<void*>(splitCB);
 		fb.splitWaitSemaphoreOpaque = reinterpret_cast<void*>(vkSwap->asyncC2G_[flight]);
 		fb.splitWaitValue = c2gVal;
+		// G2 also waits G1's own signal: submissions to one queue may
+		// overlap per spec, so G2 (Tonemap writing the swapchain image)
+		// must be ordered after G1's acquire wait + layout barrier
+		// explicitly. Timeline waits don't consume — C waits the same
+		// semaphore at its own value, which is legal.
+		fb.splitWaitSemaphore2Opaque = reinterpret_cast<void*>(vkSwap->asyncG2C_[flight]);
+		fb.splitWaitValue2 = g2cVal;
 	}
 
 	vctx.CommitImageSyncStates(imageStates);

@@ -19,10 +19,12 @@ namespace {
 void PrintUsage(const char* prog) {
 	std::cout << "Usage: " << (prog ? prog : "App")
 		<< " [--scene <id>] [--minimal] [--filter-only] [--with <csv>] [--without <csv>] [--no-pak]\n"
-		<< "  [--bench <frames>] [--present <fifo|mailbox|immediate>] [--disable_control]\n"
+		<< "  [--bench <frames>] [--present <fifo|mailbox|immediate>] [--disable_control] [--no-dlss]\n"
 		<< "  [--use_optick] [--use_optick_gpu]\n"
 		<< "  --disable_control freezes camera input for deterministic benching\n"
 		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
+		<< "  --no-dlss keeps the Streamline interposer out of the Vulkan chain\n"
+		<< "  (RenderDoc captures crash through the SL layer + NGX cubins)\n"
 		<< "  --use_optick enables the Optick CPU capture session (bench.opt)\n"
 		<< "  --use_optick_gpu also brings up Optick GPU timelines (implies --use_optick)\n";
 	std::cout << "Available scenes:\n";
@@ -46,6 +48,7 @@ void PrintUsage(const char* prog) {
 	bool disableControl = false;
 	bool useOptick = false;
 	bool useOptickGpu = false;
+	bool noDlss = false;
 	for (int i = 1; i < argc; ++i) {
 		const char* a = argv[i];
 		if ((std::strcmp(a, "--scene") == 0 || std::strcmp(a, "-s") == 0) && i + 1 < argc) {
@@ -96,6 +99,9 @@ void PrintUsage(const char* prog) {
 		else if (std::strcmp(a, "--use_optick_gpu") == 0) {
 			useOptick = true;
 			useOptickGpu = true;
+		}
+		else if (std::strcmp(a, "--no-dlss") == 0 || std::strcmp(a, "--no_dlss") == 0) {
+			noDlss = true;
 		}
 		else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
 			PrintUsage(argv[0]);
@@ -155,6 +161,16 @@ void PrintUsage(const char* prog) {
 	applyCsv(withCsv, true);
 	applyCsv(withoutCsv, false);
 	renderer.Configure(*scene, passCfg);
+	// --no-dlss: suppress the Streamline load BEFORE the renderer runs
+	// (smvk::App::Initialize consults the flag before DlssStartup /
+	// pointing volk at the interposer — after that the decision is locked
+	// in) and force the mode off so no feature evaluation happens either.
+	// This is the RenderDoc-safe configuration.
+	if (noDlss) {
+		smvk::DlssSetStartupEnabled(false);
+		renderer.SetDlssMode(smvk::DlssMode::Off);
+		std::cerr << "[DLSS] disabled (--no-dlss): Streamline interposer not loaded\n";
+	}
 	renderer.SetForceGltf(noPak);
 	if (disableControl) {
 		renderer.SetDisableControl(true);

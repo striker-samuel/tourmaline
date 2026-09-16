@@ -13,14 +13,20 @@
 //              receiver (reverse-Z: max depth = nearest; never fabricate
 //              a center across a silhouette) -> depth-derived normal
 //              from full-res neighbors one half-step over (same-depth
-//              fallback is sign-safe by construction) -> view-space
-//              march with thickness acceptance + binary refine.
-//              Output RGBA16F: rgb = reflected HDR x Fresnel x intensity
-//              (unfaded), a = edge x distance confidence (1 on the sky
-//              fallback). Rays that hit nothing sample the analytic sky
-//              specular IBL along the world-space R instead of black, so
-//              isolated mirrors (chrome probe balls, open atriums) read
-//              as chrome; honors the IBL toggle.
+//              fallback is sign-safe by construction) -> screen-stride
+//              adaptive view-space march (~6 px strides: dense where
+//              footprints are small so strides can't straddle occluders,
+//              long where the ray drills in depth) with slab acceptance
+//              PLUS front-to-behind segment-crossing bisect + binary
+//              refine + hit backface rejection (wrong-side hits show
+//              occluded geometry through surfaces, so the march rejects
+//              and continues instead of sampling them).
+//              Output RGBA16F: rgb = reflected HDR x Fresnel x intensity,
+//              a = edge x distance confidence (0 on a miss). Rays that
+//              hit nothing contribute nothing: the base HDR already
+//              carries the analytic sky specular IBL, so isolated mirrors
+//              (chrome probe balls, open atriums) keep their chrome read
+//              without double-counting the sky.
 //   blur:      5x5 bilateral blur of (rgb, a) at half res, depth-weighted
 //              with exact view distances (flip / finite-far agnostic via
 //              invProj, same discipline as dof.hlsli) so edges don't bleed.

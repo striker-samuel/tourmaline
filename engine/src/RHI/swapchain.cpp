@@ -68,12 +68,15 @@ Framebuffer Swapchain::AcquireFramebuffer() {
     fb.splitCommandBufferOpaque = nullptr;
     fb.splitWaitSemaphoreOpaque = nullptr;
     fb.splitWaitValue = 0;
+    fb.splitWaitSemaphore2Opaque = nullptr;
+    fb.splitWaitValue2 = 0;
     return fb;
 }
 void Swapchain::EndAndPresentFramebuffer(Framebuffer& fb) {
     VulkanFrameBuffer vfb{fb.frameIndex, fb.imageIndex, reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque), *impl_->vulkan,
         reinterpret_cast<VkCommandBuffer>(fb.splitCommandBufferOpaque),
-        reinterpret_cast<VkSemaphore>(fb.splitWaitSemaphoreOpaque), fb.splitWaitValue};
+        reinterpret_cast<VkSemaphore>(fb.splitWaitSemaphoreOpaque), fb.splitWaitValue,
+        reinterpret_cast<VkSemaphore>(fb.splitWaitSemaphore2Opaque), fb.splitWaitValue2};
     impl_->vulkan->EndAndPresentFramebuffer(vfb);
 }
 void Swapchain::SetPresentMode(PresentMode mode) {

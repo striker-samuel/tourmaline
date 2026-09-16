@@ -934,6 +934,20 @@ bool SceneRenderer::Initialize() {
 			else if (dlss == "dlaa") m_dlssMode = smvk::DlssMode::DLAA;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DLSS value: " << dlss << "\n";
 		}
+		// SSR / volumetric fog opt-in toggles for headless A/B + capture
+		// runs (both default off; the ImGui checkboxes stay live after).
+		if (const char* ssrEnv = std::getenv("VULKANTOY_SSR")) {
+			const std::string_view ssr = trimEnv(ssrEnv);
+			if (ssr == "1" || ssr == "on") m_ssrEnabled = true;
+			else if (ssr == "0" || ssr == "off") m_ssrEnabled = false;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_SSR value: " << ssr << "\n";
+		}
+		if (const char* volEnv = std::getenv("VULKANTOY_VOLUMETRIC")) {
+			const std::string_view vol = trimEnv(volEnv);
+			if (vol == "1" || vol == "on") m_volumetricEnabled = true;
+			else if (vol == "0" || vol == "off") m_volumetricEnabled = false;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_VOLUMETRIC value: " << vol << "\n";
+		}
 
 		// Internal render-resolution override for headless A/B runs (the
 		// ImGui "Resolution" slider stays live after; 1.0 = swapchain 1:1).
@@ -4813,7 +4827,6 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			m_viewportResources.bloom.desc.threshold = BLOOM_THRESHOLD * bloomScale;
 			m_viewportResources.bloom.desc.knee = BLOOM_KNEE * bloomScale;
 		}
-		m_context->UpdateDescriptors();
 		// Texture-streaming feedback slice for this record. Unconditional:
 		// materials always declare the binding, and update-after-bind keeps
 		// the rewrite visible to this frame's commands. Without a streamer
@@ -8471,6 +8484,17 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			}
 		}
 		const auto rfT4 = bench_clk::now();
+		// Flush bindless descriptor writes HERE — after every
+		// GetOrCreateSampler / Ensure / CreateBindlessImage of this frame
+		// (the per-frame sampler cache block and post passes sit ABOVE this
+		// point), and BEFORE Execute records a single command. The old call
+		// site (top of RenderFrame) ran before the sampler block, so a
+		// sampler created that frame (e.g. the SMAA point sampler on first
+		// use) stayed an unwritten descriptor slot for the whole frame —
+		// GPU-AV: "Descriptor index 3 is uninitialized" — with the draw
+		// sampling through garbage. Update-after-bind keeps these writes
+		// visible to everything recorded below.
+		m_context->UpdateDescriptors();
 		m_rendergraph->Execute(fb);
 		const auto rfT5 = bench_clk::now();
 		if (benchPhase) {

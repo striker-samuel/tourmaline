@@ -19,8 +19,12 @@
 
 // Bindless storage image array (set 0, binding 2). Declared here — the only
 // TU that writes storage images — so no other pass pays the declaration.
+// float2 MUST match the RG32F moment atlas: an OpTypeImage Format operand
+// of Rgba32f against an R32G32_SFLOAT view is undefined for the whole
+// image (GPU-assisted validation flags it; "undefined values" poison the
+// loads/stores driver-dependently).
 [[vk::binding(2, 0)]]
-RWTexture2D<float4> evsmStorage[];
+RWTexture2D<float2> evsmStorage[];
 
 struct EvsmBlurPush
 {
@@ -98,5 +102,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
     }
     acc /= max(wSum, 1e-6f);
 
-    evsmStorage[dstIdx][dstPix] = float4(acc, 0.0f, 1.0f);
+    // float2 store: the atlas is RG32F — .zw lanes do not exist. The old
+    // float4(acc, 0, 1) store was the Rgba32f/RG32F format mismatch.
+    evsmStorage[dstIdx][dstPix] = acc;
 }

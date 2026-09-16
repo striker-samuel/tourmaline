@@ -74,6 +74,17 @@ struct DlssOptimalSettings {
 // missing, unsigned-load fails or slInit errors (no NVIDIA GPU etc.).
 [[nodiscard]] bool DlssStartup();
 
+// Process-wide kill switch for the Streamline load itself (App::Initialize
+// consults it before DlssStartup / pointing volk at the interposer). Must
+// be called before the renderer runs (before smvk::App::Initialize); after
+// that, volk may already resolve through the interposer and the decision
+// is locked in. With startup disabled the app talks straight to
+// vulkan-1.dll — no SL layer in the call chain — which is what
+// RenderDoc captures need (RenderDoc cannot replay through the SL
+// interposer + NGX cubins and crashes on capture). Pair with
+// DlssMode::Off so no feature evaluation happens either.
+void DlssSetStartupEnabled(bool enabled);
+
 // slShutdown before destroying the VkInstance/VkDevice (App::Shutdown).
 // Keeps sl.interposer.dll mapped: volk and VMA hold pointers into the
 // interposer that the Vulkan teardown (~Swapchain/~VulkanResourceManager/

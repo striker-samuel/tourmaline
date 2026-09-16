@@ -654,6 +654,11 @@ public:
 	// captures from different runs are directly comparable. main.cpp
 	// forces this off for --bench; X toggles it back live.
 	void SetAutoExposureEnabled(bool v) { m_autoExposureEnabled = v; }
+	// CLI override (main.cpp --no-dlss): force the DLSS mode (Off skips
+	// the feature passes entirely). Pairs with
+	// smvk::DlssSetStartupEnabled(false), which keeps the Streamline
+	// interposer out of the Vulkan call chain for RenderDoc captures.
+	void SetDlssMode(smvk::DlssMode mode) { m_dlssMode = mode; }
 
 protected:
 	void UpdateCamera(float dt);

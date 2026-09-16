@@ -65,8 +65,18 @@ namespace smvk {
 		// when the frame splits G1/C/G2 (null = single submit). EndAndPresent
 		// ends + submits it with the compute-done wait below, then presents.
 		VkCommandBuffer splitCommandBuffer = VK_NULL_HANDLE;
-		VkSemaphore splitWaitSemaphore = VK_NULL_HANDLE; // C -> G2 timeline
+		VkSemaphore splitWaitSemaphore = VK_NULL_HANDLE; // timeline: C -> G2
 		uint64_t splitWaitValue = 0;
+		// G1 -> G2 ordering (async split): G2 additionally waits G1's own
+		// timeline signal. Per spec, submissions to one queue only respect
+		// submission (begin) order and may overlap — G2 must not be able to
+		// start (and write the swapchain image in Tonemap) while G1 is still
+		// blocked on the acquire semaphore, so the acquire wait G1 performs
+		// is inherited explicitly, not "transitively through same-queue
+		// submission order". Timeline waits don't consume, so waiting the
+		// same G2C semaphore from both C and G2 is legal.
+		VkSemaphore splitWaitSemaphore2 = VK_NULL_HANDLE; // timeline: G1 -> G2
+		uint64_t splitWaitValue2 = 0;
 	};
 
 	struct VulkanPipeline {
@@ -425,6 +435,15 @@ namespace smvk {
 	};
 	struct BufferGlobalSyncState {
 		SyncBarrierMasks masks{ AccessFlags::None, PipelineStageBit_None };
+		// Queue family that performed the last recorded access, mirroring
+		// ImageGlobalSyncState. Drives the async-compute split: a barrier
+		// handed off between queues (compute-written buffer read by a
+		// graphics pass or vice versa) cannot carry the writer's stage in
+		// the reader's command buffer — the cross-queue semaphore chain
+		// provides availability, so the barrier degrades to a pure
+		// acquire (srcStage=ALL_COMMANDS, srcAccess=NONE).
+		// UINT32_MAX = unknown (treat as graphics; pre-async default).
+		uint32_t queueFamily = UINT32_MAX;
 	};
 
 	// ---------------------------------------------------------------------
@@ -478,6 +497,35 @@ namespace smvk {
 		void waitAll();
 		bool hasPending() const { return states_[CurrentPoolShard()].hasPending; }
 		bool hasAnyPending() const noexcept;
+		// Newest transfer-batch timeline point across all shards. The
+		// swapchain waits it before submitting G1/G2/main command buffers:
+		// per spec, same-queue submissions only respect submission (begin)
+		// order and may overlap, so uploads -> frame commands must be a
+		// semaphore-ordered memory dependency, not queue FIFO. Values on one
+		// Submitter timeline are monotonic, so waiting the newest covers
+		// every earlier batch on that timeline.
+		TimelinePoint lastTransferPoint() const noexcept {
+			return TimelinePoint{ m_lastTransferSemaphore,
+				m_lastTransferValue.load(std::memory_order_acquire) };
+		}
+		// Merge an externally-submitted point on the SAME timeline (the
+		// transfer Submitter's) into the chain — e.g. the async readback
+		// ticket copy. The next submitTransfer waits it, so every
+		// transfer-queue submission (upload batches AND downloads) is
+		// strictly ordered: per spec, same-queue submissions only respect
+		// submission (begin) order and may overlap, which is exactly the
+		// WAR/WAW hazard sync validation reports between the per-frame
+		// zero-fills (histogram / ds counters / feedback) and the readback
+		// copies reading the retired slices.
+		void chainExternalPoint(const TimelinePoint& tp) noexcept {
+			if (!tp.valid())
+				return;
+			m_lastTransferSemaphore = tp.semaphore;
+			uint64_t observed = m_lastTransferValue.load(std::memory_order_relaxed);
+			while (tp.value > observed
+				&& !m_lastTransferValue.compare_exchange_weak(
+					observed, tp.value, std::memory_order_release)) {}
+		}
 	private:
 		// Ring bytes [start, end) read by one submitted transfer batch.
 		// handle waits exactly that batch's retirement (precise wrap sync:
@@ -520,6 +568,13 @@ namespace smvk {
 		Submitter* m_transfer = nullptr;
 		Submitter* m_graphics = nullptr;
 		bool m_hostCopySupported = false;
+		// Newest transfer-batch timeline point (see lastTransferPoint).
+		// The semaphore is set once (first submit) and is then immutable;
+		// only the value races between shards, and losing a concurrent
+		// SMALLER max is harmless (frame consumers only depend on batches
+		// the render thread itself flushed — those are serialized).
+		VkSemaphore m_lastTransferSemaphore = VK_NULL_HANDLE;
+		std::atomic<uint64_t> m_lastTransferValue{ 0 };
 
 		static constexpr VkDeviceSize kFlushThreshold = 256ull * 1024 * 1024;
 	};

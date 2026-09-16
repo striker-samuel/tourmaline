@@ -20,6 +20,11 @@ struct Framebuffer {
     void* splitCommandBufferOpaque = nullptr;
     void* splitWaitSemaphoreOpaque = nullptr; // timeline semaphore (C -> G2)
     uint64_t splitWaitValue = 0;
+    // G1 -> G2 explicit ordering (async split): G2 waits G1's timeline too,
+    // so G1's acquire wait + swapchain layout barrier are inherited by
+    // construction (same-queue submissions may overlap per spec).
+    void* splitWaitSemaphore2Opaque = nullptr;
+    uint64_t splitWaitValue2 = 0;
 };
 
 class Swapchain {

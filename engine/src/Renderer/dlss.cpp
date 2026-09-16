@@ -33,9 +33,12 @@ HMODULE g_module = nullptr;
 bool g_ready = false;         // slInit succeeded
 bool g_supportedChecked = false;
 bool g_supported = false;
+// Startup suppression (DlssSetStartupEnabled): consulted by
+// DlssStartup before any Streamline machinery is touched.
+bool g_startupEnabled = true;
 
-PFun_slInit* g_slInit = nullptr;
-PFun_slShutdown* g_slShutdown = nullptr;
+	PFun_slInit* g_slInit = nullptr;
+	PFun_slShutdown* g_slShutdown = nullptr;
 PFun_slIsFeatureSupported* g_slIsFeatureSupported = nullptr;
 PFun_slIsFeatureLoaded* g_slIsFeatureLoaded = nullptr;
 PFun_slEvaluateFeature* g_slEvaluateFeature = nullptr;
@@ -156,6 +159,17 @@ namespace smvk {
 bool DlssStartup() {
 	if (g_module)
 		return g_ready;
+	// Process-wide suppression (App CLI --no-dlss): skip the load + slInit
+	// entirely so no SL proxy sits in the Vulkan call chain (RenderDoc
+	// captures; also the "no Streamline at all" A/B).
+	if (!g_startupEnabled) {
+		static bool s_noticed = false;
+		if (!s_noticed) {
+			s_noticed = true;
+			std::fprintf(stderr, "[DLSS] Streamline startup disabled: native vulkan-1.dll path only\n");
+		}
+		return false;
+	}
 
 	// Load from the executable directory (CMake stages the DLLs there).
 	char exePath[MAX_PATH] = {};
@@ -228,6 +242,10 @@ bool DlssStartup() {
 	std::fprintf(stderr, "[DLSS] Streamline initialized (DLSS feature requested)\n");
 	g_ready = true;
 	return true;
+}
+
+void DlssSetStartupEnabled(bool enabled) {
+	g_startupEnabled = enabled;
 }
 
 void DlssShutdown() {

@@ -18,7 +18,7 @@
 
 static constexpr uint32_t DEFAULT_WIDTH = 1920;
 static constexpr uint32_t DEFAULT_HEIGHT = 1080;
-static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 1;
 static constexpr uint32_t DESIRED_SWAPCHAIN_IMAGE_COUNT = 2;
 static constexpr uint32_t MAX_BUFFERS = 1024;
 static constexpr uint32_t MAX_LIGHTS = 64;

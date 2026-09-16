@@ -20,6 +20,11 @@ struct PSOut
 };
 
 // Must match Engine/Rendergraph/ssr.h SsrBlurPush (48 bytes).
+// All-scalar layout on purpose: float2 members would land at offsets 28
+// and 36, which are not 8-byte aligned — spirv-val rejects the module
+// ("improperly straddling vector") and the driver is free to load the
+// whole push block at shifted offsets, corrupting every member after
+// pad0. The C++ mirror already uses separate floats; this matches it.
 struct SsrBlurPush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms;
@@ -27,9 +32,11 @@ struct SsrBlurPush
     uint depthTextureIndex; // full-res depth (edge stops)
     uint samplerIndex;      // linear clamp (reflection taps only)
     uint pad0;
-    float sharpness;  // depth edge weight (higher = tighter)
-    float2 texelSize; // 1 / half-res extent
-    float2 invDepthSize; // 1 / full-res depth extent
+    float sharpness; // depth edge weight (higher = tighter)
+    float texelX;    // 1 / half-res width
+    float texelY;    // 1 / half-res height
+    float invDepthW; // 1 / full-res depth width
+    float invDepthH; // 1 / full-res depth height
     uint pad1;
 };
 
@@ -73,8 +80,9 @@ PSOut mainPS(PSIn IN)
         OUT.outColor = float4(0.0f, 0.0f, 0.0f, 0.0f);
         return OUT;
     }
-    float2 ndcC = float2((float(fullPxC.x) + 0.5f) * bp.invDepthSize.x * 2.0f - 1.0f,
-                         (float(fullPxC.y) + 0.5f) * bp.invDepthSize.y * 2.0f - 1.0f);
+    float2 invDepthSize = float2(bp.invDepthW, bp.invDepthH);
+    float2 ndcC = float2((float(fullPxC.x) + 0.5f) * invDepthSize.x * 2.0f - 1.0f,
+                         (float(fullPxC.y) + 0.5f) * invDepthSize.y * 2.0f - 1.0f);
     float centerDist = DofViewDist(dCenter, ndcC, frame.invProj);
 
     // 5x5 gaussian-ish blur, depth-rejected across discontinuities.
@@ -86,8 +94,8 @@ PSOut mainPS(PSIn IN)
     {
         for (int x = -2; x <= 2; ++x)
         {
-            float2 tapUv = IN.uv + float2(float(x) * bp.texelSize.x,
-                                          float(y) * bp.texelSize.y);
+            float2 tapUv = IN.uv + float2(float(x) * bp.texelX,
+                                          float(y) * bp.texelY);
             float4 tap = reflTex.Sample(smp, tapUv);
 
             int2 tapFull = fullBase + int2(x * 2, y * 2);
@@ -99,8 +107,8 @@ PSOut mainPS(PSIn IN)
             }
             else
             {
-                float2 tapNdc = float2((float(tapFull.x) + 0.5f) * bp.invDepthSize.x * 2.0f - 1.0f,
-                                       (float(tapFull.y) + 0.5f) * bp.invDepthSize.y * 2.0f - 1.0f);
+                float2 tapNdc = float2((float(tapFull.x) + 0.5f) * invDepthSize.x * 2.0f - 1.0f,
+                                       (float(tapFull.y) + 0.5f) * invDepthSize.y * 2.0f - 1.0f);
                 tapDist = DofViewDist(tapD, tapNdc, frame.invProj);
             }
 
