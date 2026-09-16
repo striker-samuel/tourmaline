@@ -207,6 +207,16 @@ struct GiSceneBuildOptions {
 	// runtime shader combines factor * texture.
 	std::unordered_map<uint32_t, glm::vec3> texelAvg;
 	bool includeMaskedCutout = true;  // alpha-tested foliage/walls as opaque
+	// Decal overlay quads (cook-stamped Material.castsShadows == false on
+	// non-MASK materials: SMVK_materials_shadows, see tools/cook_bistro_v5.py)
+	// are left OUT of the trace soup entirely: a coplanar quad over a wall
+	// would shadow/tint the wall behind it (as an occluder) or attenuate
+	// every ray through it (as a BLEND pass-through tint), and steal
+	// charts for texels that belong to the wall. MASK no-cast materials
+	// (cutout sharing a decal atlas, e.g. foliage/ornament) stay: their
+	// occlusion approximates real volume. Applies to PakCooker lightmaps
+	// and GiBaker probe volumes alike (only stamped scenes are affected).
+	bool excludeDecalOverlays = true;
 	// Transmissive (AlphaMode::Blend) geometry rides the trace scene as a
 	// PASS-THROUGH attenuator (rays continue through it, tinted by the
 	// material color); it never bounces and never gets lightmap charts.

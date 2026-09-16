@@ -646,6 +646,78 @@ void DumpManifestFromPak(const smvk::PakReader& reader) {
 
 } // namespace
 
+// Cook-time de-instancing for the lightmap bake: meshes referenced by
+// several nodes share one upload, but baked coefficients are per
+// instance (each node's world transform feeds the trace), so shared
+// meshes used to be skipped wholesale (bistro: ~2300 skipped pairs).
+// With --lightmap on, every extra instance gets its own mesh: the
+// retained upload is cloned through UploadStaticMesh (cook mode builds
+// the same single-surface shape the importer made), the node's mapping
+// is repointed, and a unique URI (original + "/inst<node>") plus copied
+// LOD/meshlet markers are registered. The lowest node keeps the
+// original; materials stay shared (the per-node material mapping is
+// untouched). Deterministic: nodes processed in ascending order.
+// Downstream stages (charts, bake, LOD siblings, meshlets, serializer)
+// treat clones as ordinary meshes. Pool overflow degrades gracefully:
+// a failed clone keeps the shared mapping (bake skips it as before).
+uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
+	std::map<uint32_t, std::vector<uint32_t>> refs;
+	for (const auto& [node, meshIdx] : cluster.scene.meshForNode)
+		refs[meshIdx].push_back(node);
+	uint32_t clones = 0;
+	for (auto& [meshIdx, nodes] : refs) {
+		if (nodes.size() < 2)
+			continue;
+		std::sort(nodes.begin(), nodes.end());
+		const smvk::ClusterStaticMeshHandle origH =
+			cluster.staticMeshes.getHandle(meshIdx);
+		const smvk::StaticMeshUpload* origUp =
+			cluster.GetRetainedUpload(origH);
+		if (!origH.valid() || !origUp || origUp->vertices.empty()
+			|| origUp->indices.empty())
+			continue; // degenerate: keep shared (bake skips it anyway)
+		const std::string origUri = cluster.GetMeshUri(origH).Str();
+		const std::optional<smvk::LodInfo> origLod =
+			origUri.empty() ? std::nullopt
+			                : cluster.GetMeshLod(smvk::StringViewT(origUri));
+		const std::optional<smvk::CookedMeshlets> origMeshlets =
+			origUri.empty() ? std::nullopt
+			                : cluster.GetMeshMeshlets(smvk::StringViewT(origUri));
+		for (size_t i = 1; i < nodes.size(); ++i) {
+			const uint32_t node = nodes[i];
+			const smvk::ClusterStaticMeshHandle ch =
+				cluster.UploadStaticMesh(*origUp);
+			if (!ch.valid())
+				continue;
+			cluster.scene.meshForNode[node] = ch.index();
+			if (!origUri.empty()) {
+				const std::string cloneUri =
+					origUri + "/inst" + std::to_string(node);
+				cluster.RegisterMeshUri(smvk::StringViewT(cloneUri), ch);
+				smvk::LodInfo lod;
+				if (origLod)
+					lod = *origLod;
+				else
+					lod.triCount = static_cast<uint32_t>(
+						origUp->indices.size() / 3);
+				// Pool indices are unique per cluster and the first clone
+				// lands past every gltfMeshIndex-based group, so the
+				// pool index is a collision-free LOD grouping key.
+				lod.groupId = ch.index();
+				lod.lodIndex = 0;
+				lod.candidateCount = 1;
+				lod.simplifyError = 0.0f;
+				cluster.RegisterMeshLod(smvk::StringViewT(cloneUri), lod);
+				if (origMeshlets)
+					cluster.RegisterMeshMeshlets(
+						smvk::StringViewT(cloneUri), *origMeshlets);
+			}
+			++clones;
+		}
+	}
+	return clones;
+}
+
 int main(int argc, char** argv) {
 	Args args;
 	if (!ParseArgs(argc, argv, args)) {
@@ -767,8 +839,10 @@ int main(int argc, char** argv) {
 	// (<contentDir>/gi/<scene>.sglm) next to the pak. No bake-side work is
 	// left to the runtime. Sources: sun + static spots (NEE) + real
 	// materials (texture-averaged); transmissive (Blend) meshes pass rays
-	// through, tinted (no charts for them). Only 1:1 node->mesh mappings
-	// get chunks: instanced meshes need per-instance coefficients.
+	// through, tinted (no charts for them). Shared (instanced) meshes are
+	// de-instanced above so every instance bakes its own coefficients.
+	// Decal overlays (cook-stamped no-cast on non-MASK materials) are out
+	// of both charts and trace (see GiSceneBuildOptions::excludeDecalOverlays).
 	//
 	// lmVertexCharts (filled by the stamping below) carries each stamped
 	// mesh's per-vertex chart ids out of the block for CookLodSiblings;
@@ -779,6 +853,15 @@ int main(int argc, char** argv) {
 	if (args.lightmap) {
 		using namespace smvk::gi;
 		const auto lmT0 = std::chrono::steady_clock::now();
+
+		// Shared meshes carry one upload for many nodes, but baked
+		// coefficients are per instance: clone the extras so every
+		// instance charts and bakes independently (see DeinstanceSharedMeshes).
+		{
+			const uint32_t n = DeinstanceSharedMeshes(*cluster);
+			std::cerr << "  [LM] de-instanced " << n << " shared meshes\n"
+				<< std::flush;
+		}
 
 		// Texture averages so baked materials include texture content.
 		GiSceneBuildOptions buildOpts{};
@@ -877,7 +960,7 @@ int main(int argc, char** argv) {
 		chartOpts.texelsPerMeter = std::max<float>(float(args.lmDensity), 2.0f);
 		chartOpts.gutterTexels = std::clamp<uint32_t>(args.lmGutter, 1, 4);
 		std::vector<LmWork> work;
-		uint32_t skipBlend = 0, skipInstanced = 0, skipNoMat = 0;
+		uint32_t skipBlend = 0, skipInstanced = 0, skipNoMat = 0, skipDecal = 0;
 		for (const auto& [node, meshIdx] : cluster->scene.meshForNode) {
 			auto matIt = cluster->scene.materialForNode.find(node);
 			if (matIt == cluster->scene.materialForNode.end()) {
@@ -893,8 +976,16 @@ int main(int argc, char** argv) {
 				++skipBlend;
 				continue; // transmissive: no charts (pass-through only)
 			}
-			// Instancing check: a mesh shared by several nodes has one
-			// lightmap position per instance — unsupported in v1.
+			if (!mat->castsShadows && mat->alphaMode == smvk::AlphaMode::Opaque) {
+				++skipDecal;
+				continue; // decal overlay quad (cook-stamped no-cast):
+				          // out of the atlas entirely (probes at runtime),
+				          // so it steals no texels and shadows nothing.
+				          // MASK no-cast (cutout on a decal atlas) still charts.
+			}
+			// Instancing safety net: de-instancing above leaves every mesh
+			// 1:1, but degenerate clones keep the shared mapping — one
+			// lightmap position per instance is still unsupported, skip.
 			uint32_t refs = 0;
 			for (const auto& [n2, m2] : cluster->scene.meshForNode)
 				if (m2 == meshIdx)
@@ -1411,7 +1502,8 @@ int main(int argc, char** argv) {
 			<< " seconds=" << lstats.seconds
 			<< " (skipped: blend=" << skipBlend
 			<< " instanced=" << skipInstanced
-			<< " nomat=" << skipNoMat << ")\n" << std::flush;
+			<< " nomat=" << skipNoMat
+			<< " decal=" << skipDecal << ")\n" << std::flush;
 	}
 
 	// ---------------------------------------------------------------------------

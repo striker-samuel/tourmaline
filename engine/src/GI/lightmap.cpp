@@ -1080,7 +1080,7 @@ bool SgLightmapAtlas::ReadFromMemory(std::span<const uint8_t> bytes, std::string
 		return false;
 	}
 	if (hdr.atlasWidth == 0 || hdr.atlasHeight == 0
-		|| hdr.chunkCount == 0 || hdr.chunkCount > 65536) {
+		|| hdr.chunkCount == 0 || hdr.chunkCount > 1048576) {
 		err = "sglm: bad header";
 		return false;
 	}

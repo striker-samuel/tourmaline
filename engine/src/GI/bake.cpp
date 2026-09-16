@@ -433,6 +433,12 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 			continue;
 		if (!opts.includeMaskedCutout && mat->alphaMode == AlphaMode::Mask)
 			continue;
+		// Decal overlays (cook-stamped no-cast on non-MASK materials):
+		// coplanar quads that would shadow/tint the surface behind them.
+		// MASK no-cast (cutout on a decal atlas) stays — volume approximation.
+		if (opts.excludeDecalOverlays && !mat->castsShadows
+			&& mat->alphaMode != AlphaMode::Mask)
+			continue;
 		// Blend (transmissive) geometry is NOT skipped: the trace scene
 		// carries it as a pass-through attenuator (see internMaterial).
 		// Lightmap charting still excludes it (glass gets no charts).
