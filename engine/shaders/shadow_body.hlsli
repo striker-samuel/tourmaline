@@ -44,7 +44,22 @@ struct ShadowPSOut
 ShadowPSOut mainPS(ShadowPSIn IN)
 {
     ShadowPSOut OUT;
-    OUT.outDepth = IN.clipPos.z;
+    // Window-depth guard: SV_Position.z can leave [0,1] (or go NaN) when
+    // the VS z-squash clamp (shadow.vert: clip.z = max(z, 0) so casters
+    // behind the light's near plane rasterize) meets w-crossing triangles —
+    // z/w interpolates outside the range or hits 0/0. The conservative
+    // SV_Depth write bypasses hardware depth clamping, so a raw garbage
+    // value lands in the depth buffer and every depth consumer downstream
+    // (SSR trace, volumetric march) samples it. Clamp into range,
+    // NaN-safe: the fallback sits on the FAR side of the convention so
+    // the conservative bound stays satisfied (never nearer in reverse-Z,
+    // never farther in normal-Z).
+    float d = IN.clipPos.z;
+#if defined(SHADOW_NORMAL_Z)
+    OUT.outDepth = (d >= 0.0f && d <= 1.0f) ? d : 1.0f;
+#else
+    OUT.outDepth = (d >= 0.0f && d <= 1.0f) ? d : 0.0f;
+#endif
 
     MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
 

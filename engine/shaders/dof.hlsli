@@ -17,6 +17,18 @@ bool DofIsBackground(float ndcDepth)
     return ndcDepth <= kDofBackgroundEps;
 }
 
+// NaN-safe background test for depth CONSUMERS (SSR trace/blur/compose,
+// volumetric fog): true for sky (reverse-Z ~0) AND for garbage depth
+// texels — NaN (degenerate vertex z written by the rasterizer) or
+// out-of-range values — that would poison marches and unprojections.
+// Valid reversed-Z depth is (eps, 1]: near = 1, far/sky = 0. NaN fails
+// both range comparisons, so garbage texels classify as background
+// instead of marching as phantom geometry.
+bool DofIsBackgroundOrGarbage(float ndcDepth)
+{
+    return !(ndcDepth > kDofBackgroundEps && ndcDepth <= 1.0);
+}
+
 // NDC -> view space (exact, flip/reversed-Z agnostic; mirrors ssao.frag).
 float3 DofUnprojectView(float2 ndcXY, float ndcZ, float4x4 invProj)
 {
@@ -24,10 +36,12 @@ float3 DofUnprojectView(float2 ndcXY, float ndcZ, float4x4 invProj)
     return v.xyz / max(v.w, 1e-9f);
 }
 
-// View distance (-z) of a full-res depth tap. Background -> sky sentinel.
+// View distance (-z) of a full-res depth tap. Background OR garbage
+// depth -> sky sentinel (garbage must never reach the unprojection:
+// NaN depths would produce NaN distances and corrupt every consumer).
 float DofViewDist(float ndcDepth, float2 ndcXY, float4x4 invProj)
 {
-    if (DofIsBackground(ndcDepth))
+    if (DofIsBackgroundOrGarbage(ndcDepth))
         return kDofSkyDist;
     return max(-DofUnprojectView(ndcXY, ndcDepth, invProj).z, 1e-3f);
 }

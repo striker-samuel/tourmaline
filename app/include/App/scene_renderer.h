@@ -1156,6 +1156,18 @@ protected:
 	// width). Same pattern as VULKANTOY_DS_DUMP (stalls; debug only).
 	int m_evsmDumpAtFrame = -1;
 	void EvsmDumpAtlas(uint32_t frameIndex);
+	// Opt-in SSR/volumetric stage dump (VULKANTOY_SSR_DUMP=<frame>): the
+	// HDR chain inputs + every SSR/volumetric intermediate at frame N and
+	// N+1, with NaN/Inf/garbage stats on stderr and tone-mapped PNGs
+	// (NaN/Inf hot-pink) in exports/. Pinpoints WHICH stage turns wrong.
+	int m_ssrDumpAtFrame = -1;
+	void DumpSsrStages(uint32_t frameIndex);
+	// Ground-truth depth-view pass (runs when VULKANTOY_SSR_DUMP is armed):
+	// samples the depth through the SSR trace's exact bindless path and
+	// writes it to the (post-blur dead) raw target for the dump.
+	smvk::Holder<smvk::ShaderModuleHandle> m_ssrDepthViewVs;
+	smvk::Holder<smvk::ShaderModuleHandle> m_ssrDepthViewPs;
+	smvk::ShaderProgram m_ssrDepthViewProgram{};
 	bool m_debugDumpHzb = false;    // one-shot: dump HZB buffer contents (stderr)
 	bool m_dumpFirstFrameHzb = false;      // opt-in: dump HZB once on the next frame (stalls)
 	int m_dumpAtFrame = -1;                // opt-in (VULKANTOY_DS_DUMP=<frame>): one-shot deferred-shadow dump (stalls)

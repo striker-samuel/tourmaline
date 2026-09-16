@@ -40,7 +40,12 @@ struct PSOut
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
-    OUT.outDepth = IN.clipPos.z;
+    // Same window-depth guard as shadow_body: the z-squash clamp can push
+    // SV_Position.z outside [0,1] (or NaN) on w-crossing triangles; the
+    // conservative write bypasses hardware clamping, so clamp with the
+    // normal-Z far plane (1.0) as the bound-safe fallback.
+    float dDepth = IN.clipPos.z;
+    OUT.outDepth = (dDepth >= 0.0f && dDepth <= 1.0f) ? dDepth : 1.0f;
     MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
 
     float alphaCutoff = mat.params.x;

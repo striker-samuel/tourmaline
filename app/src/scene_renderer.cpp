@@ -1059,10 +1059,15 @@ bool SceneRenderer::Initialize() {
 		if (const char* softEnv = std::getenv("VULKANTOY_EVSM_SOFT")) {
 			m_evsmSoftness = std::max(0.0f, (float)std::atof(softEnv));
 		}
-		// Opt-in EVSM atlas dump (VULKANTOY_EVSM_DUMP=<frame>): see header.
-		if (const char* dumpEnv = std::getenv("VULKANTOY_EVSM_DUMP")) {
-			m_evsmDumpAtFrame = std::atoi(dumpEnv);
-		}
+	// Opt-in EVSM atlas dump (VULKANTOY_EVSM_DUMP=<frame>): see header.
+	if (const char* dumpEnv = std::getenv("VULKANTOY_EVSM_DUMP")) {
+		m_evsmDumpAtFrame = std::atoi(dumpEnv);
+	}
+	// Opt-in SSR/volumetric stage dump (VULKANTOY_SSR_DUMP=<frame>): see
+	// header — fires at N and N+1 (one-frame-lag discrimination).
+	if (const char* ssrDumpEnv = std::getenv("VULKANTOY_SSR_DUMP")) {
+		m_ssrDumpAtFrame = std::atoi(ssrDumpEnv);
+	}
 
 		if (const char* iblEnv = std::getenv("VULKANTOY_IBL")) {
 			// Mute the analytic sky ambient (any ambient mode -> off;
@@ -5833,9 +5838,17 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			)
 			// Depth was filled by the Forward+ prepass: load it, test
 			// read-only (GreaterEqual = reversed-Z near-wins).
+			// StoreOp MUST be Store, never DontCare: SSR/volumetric/DS
+			// sample this depth AFTER Main, and a DontCare store makes
+			// the contents undefined past the pass — the driver may
+			// decompress-with-discard any tile it likes, leaving raw-
+			// memory garbage (huge/NaN) in ~5% of texels that every
+			// depth march then hits. This was the "only works in Nsight"
+			// bug: Nsight's frame debugger hooks store ops to PRESERVE
+			// attachment contents, hiding it under the profiler.
 			.SetDepth(m_viewportResources.renderDepth.logicalView,
 				smvk::AttachmentLoadOp::Load,
-				smvk::AttachmentStoreOp::DontCare,
+				smvk::AttachmentStoreOp::Store,
 				smvk::ClearDepthStencil(0, 0)
 			);
 		}
@@ -6790,10 +6803,75 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					"SSR",
 					"SSRBlur",
 					"SSRComposite");
-				sceneHdrView = m_viewportResources.ssr.OutputView();
-				sceneHdrBindless = m_viewportResources.ssr.OutputBindless();
-				ssrEmitted = true;
+			sceneHdrView = m_viewportResources.ssr.OutputView();
+			sceneHdrBindless = m_viewportResources.ssr.OutputBindless();
+			ssrEmitted = true;
+
+			// Ground-truth depth view (VULKANTOY_SSR_DUMP armed): sample the
+			// depth through the trace's exact bindless path and write it to
+			// the raw target. Raw is dead after SSRBlur (its only reader),
+			// so this pass owns raw's final content for the dump frames —
+			// the ssr_raw dump slot then shows DEPTH-AS-SSR-SEES-IT, not
+			// the (copy-based, layout-fragile) staging readback.
+			if (m_ssrDumpAtFrame >= 0
+				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX) {
+				if (m_ssrDepthViewProgram.shaderCount == 0) {
+					try {
+						auto vs = m_context->CreateShaderModule(
+							readFile("content/shaders/tonemap.vert.hlsl.spv"),
+							"ssrDepthViewVert");
+						auto ps = m_context->CreateShaderModule(
+							readFile("content/shaders/ssr_depthview.frag.hlsl.spv"),
+							"ssrDepthViewFrag");
+						if (!vs.empty() && !ps.empty()) {
+							smvk::Shader vsS{ .module = vs, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+							smvk::Shader psS{ .module = ps, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+							m_ssrDepthViewProgram = { .shaders = { vsS, psS }, .shaderCount = 2 };
+							m_ssrDepthViewVs = std::move(vs);
+							m_ssrDepthViewPs = std::move(ps);
+						}
+					} catch (...) {
+					}
+				}
+				if (m_ssrDepthViewProgram.shaderCount != 0) {
+					struct SsrDepthViewPush {
+						uint32_t depthTextureIndex;
+						uint32_t pad0;
+						uint32_t pad1;
+						uint32_t pad2;
+					};
+					static_assert(sizeof(SsrDepthViewPush) == 16);
+					SsrDepthViewPush push{};
+					push.depthTextureIndex =
+						m_viewportResources.renderDepth.bindlessIndex;
+					smvk::ShaderProgram progCopy = m_ssrDepthViewProgram;
+					smvk::RenderPass& depthViewPass =
+						m_rendergraph->AddPass("SsrDepthView");
+					depthViewPass.SetOffset(0, 0)
+						.SetExtent(m_viewportResources.ssr.halfExtent)
+						.SetInputImages({ m_viewportResources.renderDepth.logicalView })
+						.SetColor({ m_viewportResources.ssr.raw.logical },
+							smvk::AttachmentLoadOp::DontCare,
+							smvk::AttachmentStoreOp::Store);
+					depthViewPass.SetRecordingFunc(
+						[progCopy, push](smvk::CommandBuffer& cmd) mutable {
+							cmd.BindRenderPipeline(
+								progCopy,
+								smvk::VertexFormat::Empty,
+								smvk::DepthSettings::Disabled(),
+								smvk::StencilSettings::DefaultDisabled(),
+								smvk::BlendSettings::Opaque(),
+								smvk::MSAASettings::Count1(),
+								smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
+							cmd.PushConstants(0, sizeof(SsrDepthViewPush), &push,
+								smvk::ShaderStage::All);
+							cmd.Draw(3, 1, 0, 0);
+						});
+					std::fprintf(stderr,
+						"[SSR-dump] depth-view pass armed: ssr_raw will hold the sampled depth\n");
+				}
 			}
+		}
 		}
 
 		bool volumetricEmitted = false;
@@ -8570,6 +8648,17 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				EvsmDumpAtlas(fb.frameIndex);
 			}
 		}
+		// Opt-in SSR/volumetric stage dump (VULKANTOY_SSR_DUMP=<frame>):
+		// fires at N AND N+1 (the counter is not cleared on the first hit),
+		// stalls once per shot via device-idle.
+		if (m_ssrDumpAtFrame >= 0
+			&& (m_frameCounter == (uint64_t)m_ssrDumpAtFrame
+				|| m_frameCounter == (uint64_t)m_ssrDumpAtFrame + 1)) {
+			if (m_frameCounter == (uint64_t)m_ssrDumpAtFrame + 1)
+				m_ssrDumpAtFrame = -1;
+			WaitForDeviceIdle();
+			DumpSsrStages(fb.frameIndex);
+		}
 
 		// Snapshot this frame's camera + node transforms for the next
 		// frame's motion vector pass. Must run AFTER Execute: the motion
@@ -8700,6 +8789,236 @@ void SceneRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
 			if (LutWritePng(path, (int)tile, (int)tile, rgba.data()))
 				std::fprintf(stderr, "[EVSM-dump] wrote %s\n", path);
 		}
+	}
+}
+
+// Opt-in SSR/volumetric stage dump (VULKANTOY_SSR_DUMP=<frame>): stats on
+// stderr (non-finite count is the garbage detector) + tone-mapped PNGs in
+// exports/ — NaN/Inf paint HOT PINK so a broken stage is unmistakable.
+// Stage order is the frame's HDR chain: Main's hdr -> ssrRaw (half) ->
+// ssrBlur (half) -> ssrComposite -> volumetric -> depth (grayscale).
+// The color stages are RGBA16F (8 B/px, half-floats decoded below); the
+// depth stage is D32F (4 B/px). Reading them as raw float32 with a wrong
+// stride produces the impossible ~1e14 stats that masked the first run.
+namespace {
+float SsrDumpHalfToFloat(uint16_t h)
+{
+	const uint32_t sign = uint32_t(h & 0x8000u) << 16;
+	uint32_t exp = (h >> 10) & 0x1fu;
+	uint32_t mant = h & 0x3ffu;
+	uint32_t bits = 0;
+	if (exp == 0) {
+		if (mant == 0) {
+			bits = sign; // +/-0
+		}
+		else {
+			// Subnormal half: value = mant * 2^-24. Normalize by shifting
+			// until the implicit bit lands: exp32 = 113 - d, fraction from
+			// the remaining 10 bits.
+			uint32_t d = 0, m = mant;
+			while (!(m & 0x0400u)) { m <<= 1; ++d; }
+			m &= 0x03ffu;
+			bits = sign | ((113u - d) << 23) | (m << 13);
+		}
+	}
+	else if (exp == 31) {
+		bits = sign | 0x7f800000u | (mant << 13); // inf / nan
+	}
+	else {
+		bits = sign | ((exp - 15u + 127u) << 23) | (mant << 13);
+	}
+	float out;
+	std::memcpy(&out, &bits, sizeof(out));
+	return out;
+}
+}
+void SceneRenderer::DumpSsrStages(uint32_t frameIndex) {
+	const auto& ssr = m_viewportResources.ssr;
+	const auto& vol = m_viewportResources.volumetric;
+	const auto& hdrRes = m_viewportResources.hdr;
+	const auto& depthRes = m_viewportResources.renderDepth;
+	struct Stage {
+		const char* name;
+		const smvk::Holder<smvk::ImageHandle>* image;
+		uint32_t w, h;
+		bool depth; // D32F grayscale vs RGBA16F tone-map
+	};
+	const uint32_t fw = ssr.extent.width ? ssr.extent.width : 1;
+	const uint32_t fh = ssr.extent.height ? ssr.extent.height : 1;
+	const uint32_t hw = ssr.halfExtent.width ? ssr.halfExtent.width : 1;
+	const uint32_t hh = ssr.halfExtent.height ? ssr.halfExtent.height : 1;
+	const Stage stages[] = {
+		{ "hdr_main",   &hdrRes.image,        fw, fh, false },
+		{ "ssr_raw",    &ssr.raw.image,       hw, hh, false },
+		{ "ssr_blur",   &ssr.blurred.image,   hw, hh, false },
+		{ "ssr_comp",   &ssr.image,           fw, fh, false },
+		{ "volumetric", &vol.image,           fw, fh, false },
+		{ "depth",      &depthRes.image,      fw, fh, true  },
+	};
+	for (const Stage& st : stages) {
+		if (st.image->empty()) {
+			std::fprintf(stderr, "[SSR-dump] %s: target invalid (skipped)\n", st.name);
+			continue;
+		}
+		const size_t bpp = st.depth
+			? (depthRes.format == smvk::Format::D32_Float_S8_UInt ? 8 : 4)
+			: 8; // D32F+S8 vs RGBA16F
+		const size_t bytes = size_t(st.w) * st.h * bpp;
+		std::vector<uint8_t> px(bytes);
+		const smvk::ImageLayout layout = st.depth
+			? smvk::ImageLayout::DepthStencilReadOnlyOptimal
+			: smvk::ImageLayout::ShaderReadOnlyOptimal;
+		if (!m_context->DownloadDataFromImage(*st.image, layout, px.data(), bytes)) {
+			std::fprintf(stderr, "[SSR-dump] %s: readback failed\n", st.name);
+			continue;
+		}
+		// Decode into float32 per channel.
+		const size_t chans = st.depth ? 1 : 4;
+		std::vector<float> f(size_t(st.w) * st.h * chans);
+		if (!st.depth) {
+			const uint16_t* h16 = reinterpret_cast<const uint16_t*>(px.data());
+			for (size_t i = 0; i < f.size(); ++i)
+				f[i] = SsrDumpHalfToFloat(h16[i]);
+		}
+		else if (depthRes.format == smvk::Format::D32_Float_S8_UInt) {
+			// 64-bit layout: float32 depth + stencil byte + undefined.
+			const uint32_t* u32 = reinterpret_cast<const uint32_t*>(px.data());
+			for (size_t i = 0; i < f.size(); ++i)
+				std::memcpy(&f[i], &u32[i * 2], sizeof(float));
+		}
+		else if (depthRes.format == smvk::Format::D24_UNorm_S8_UInt) {
+			// 32-bit packed: D24 in [31:8], stencil in [7:0].
+			const uint32_t* u32 = reinterpret_cast<const uint32_t*>(px.data());
+			for (size_t i = 0; i < f.size(); ++i)
+				f[i] = (u32[i] >> 8) / float(0xFFFFFFu);
+		}
+		else {
+			std::memcpy(f.data(), px.data(), bytes);
+		}
+		uint64_t nonfinite = 0;
+		double mn = 1e300, mx = -1e300, sum = 0;
+		uint64_t cnt = 0;
+		for (float v : f) {
+			if (!std::isfinite(v)) { ++nonfinite; continue; }
+			mn = std::min(mn, (double)v);
+			mx = std::max(mx, (double)v);
+			sum += v;
+			++cnt;
+		}
+		std::fprintf(stderr,
+			"[SSR-dump] f%u %-10s %ux%u: nonfinite=%llu (%.4f%%) min=%.4f mean=%.4f max=%.4f\n",
+			frameIndex, st.name, st.w, st.h,
+			(unsigned long long)nonfinite,
+			100.0 * nonfinite / (double)f.size(),
+			cnt ? mn : 0.0, cnt ? sum / (double)cnt : 0.0,
+			cnt ? mx : 0.0);
+		// Depth readback diagnostic: raw first-pixel words to pin the
+		// D32S8 / D24S8 layout (or expose a broken copy) at a glance, plus
+		// the outliers' locations — clustered/strided = readback layout
+		// bug, scattered = content.
+		if (st.depth) {
+			const uint32_t* raw = reinterpret_cast<const uint32_t*>(px.data());
+			std::fprintf(stderr, "[SSR-dump]   depth raw[0..7]:");
+			for (int i = 0; i < 8; ++i)
+				std::fprintf(stderr, " %08x", raw[i]);
+			const uint32_t* mid = raw + (size_t(st.h / 2) * st.w) * (bpp / 4);
+			std::fprintf(stderr, "  mid[0..3]:");
+			for (int i = 0; i < 4; ++i)
+				std::fprintf(stderr, " %08x", mid[i]);
+			std::fprintf(stderr, "\n");
+			uint64_t outliers = 0;
+			size_t firstOut = SIZE_MAX;
+			for (size_t i = 0; i < f.size(); ++i) {
+				const double a = std::abs((double)f[i]);
+				if (a > 1e30) {
+					++outliers;
+					if (firstOut == SIZE_MAX) firstOut = i;
+				}
+			}
+			std::fprintf(stderr,
+				"[SSR-dump]   depth outliers(>1e30)=%llu, first at pixel %zu (x=%zu y=%zu), neighborhood:",
+				(unsigned long long)outliers,
+				firstOut, firstOut % st.w, firstOut / st.w);
+			if (firstOut != SIZE_MAX) {
+				for (size_t j = firstOut; j < std::min(f.size(), firstOut + 6); ++j)
+					std::fprintf(stderr, " [%08x]", raw[j * (bpp / 4)]);
+			}
+			std::fprintf(stderr, "\n");
+		}
+		// Depth-view (SsrDepthView pass): the ssr_raw slot holds the
+		// SAMPLED depth — anything outside [0,1] there is garbage the SSR
+		// trace would march against. Bounding box + edge counts separate
+		// a viewport/scissor artifact (banded edges) from scattered
+		// memory corruption.
+		if (!st.depth && std::strcmp(st.name, "ssr_raw") == 0) {
+			uint64_t outCount = 0;
+			uint32_t minX = UINT32_MAX, minY = UINT32_MAX, maxX = 0, maxY = 0;
+			uint64_t topRows = 0, bottomRows = 0, leftCols = 0, rightCols = 0;
+			const uint32_t edge = 4;
+			for (uint32_t y = 0; y < st.h; ++y) {
+				for (uint32_t x = 0; x < st.w; ++x) {
+					const size_t fi = (size_t(y) * st.w + x) * 4;
+					const float d = f[fi];
+					if (!(d >= 0.0f) || !(d <= 1.0f)) { // NaN-safe range test
+						++outCount;
+						minX = std::min(minX, x); maxX = std::max(maxX, x);
+						minY = std::min(minY, y); maxY = std::max(maxY, y);
+						if (y < edge) ++topRows;
+						if (y >= st.h - edge) ++bottomRows;
+						if (x < edge) ++leftCols;
+						if (x >= st.w - edge) ++rightCols;
+					}
+				}
+			}
+			if (outCount) {
+				std::fprintf(stderr,
+					"[SSR-dump]   depth-view outliers=%llu bbox=[%u..%u x %u..%u] edges: top=%llu bottom=%llu left=%llu right=%llu\n",
+					(unsigned long long)outCount, minX, maxX, minY, maxY,
+					(unsigned long long)topRows, (unsigned long long)bottomRows,
+					(unsigned long long)leftCols, (unsigned long long)rightCols);
+			}
+			else {
+				std::fprintf(stderr, "[SSR-dump]   depth-view CLEAN (all in [0,1])\n");
+			}
+			std::fflush(stderr);
+		}
+		std::fflush(stderr);
+		// PNG: tone-map x/(1+x) for HDR, reverse-Z grayscale for depth,
+		// hot pink for non-finite.
+		std::vector<uint8_t> rgba(size_t(st.w) * st.h * 4);
+		for (uint32_t y = 0; y < st.h; ++y) {
+			for (uint32_t x = 0; x < st.w; ++x) {
+				const size_t fi = (size_t(y) * st.w + x) * chans;
+				const size_t o = (size_t(y) * st.w + x) * 4;
+				bool bad = false;
+				float c[3] = { 0, 0, 0 };
+				if (st.depth) {
+					const float d = f[fi];
+					if (!std::isfinite(d)) bad = true;
+					c[0] = c[1] = c[2] = d;
+				}
+				else {
+					for (int k = 0; k < 3; ++k) {
+						c[k] = f[fi + k];
+						if (!std::isfinite(c[k])) bad = true;
+					}
+				}
+				if (bad) {
+					rgba[o] = 255; rgba[o + 1] = 0; rgba[o + 2] = 255; rgba[o + 3] = 255;
+				}
+				else {
+					for (int k = 0; k < 3; ++k) {
+						const double t = std::min(1.0, std::max(0.0, (double)c[k] / (1.0 + std::abs((double)c[k]))));
+						rgba[o + k] = (uint8_t)(t * 255.0);
+					}
+					rgba[o + 3] = 255;
+				}
+			}
+		}
+		char path[128];
+		std::snprintf(path, sizeof(path), "exports/ssrdump_%s_f%u.png", st.name, frameIndex);
+		if (LutWritePng(path, (int)st.w, (int)st.h, rgba.data()))
+			std::fprintf(stderr, "[SSR-dump] wrote %s\n", path);
 	}
 }
 

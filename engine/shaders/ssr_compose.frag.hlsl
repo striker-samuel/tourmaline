@@ -55,7 +55,7 @@ PSOut mainPS(PSIn IN)
 
     int2 fullPx = int2(IN.pos.xy);
     float d = depthTex.Load(int3(fullPx, 0)).r;
-    if (DofIsBackground(d))
+    if (DofIsBackgroundOrGarbage(d))
     {
         // Sky: nothing to reflect off — keep the base color.
         OUT.outColor = float4(base, 1.0f);
@@ -94,12 +94,12 @@ PSOut mainPS(PSIn IN)
             float b11 = depthTex.Load(int3(tapFull + int2(1, 1), 0)).r;
             float bd = 0.0f;
             int2 bPx = tapFull;
-            if (!DofIsBackground(b00) && b00 > bd) { bd = b00; bPx = tapFull; }
-            if (!DofIsBackground(b10) && b10 > bd) { bd = b10; bPx = tapFull + int2(1, 0); }
-            if (!DofIsBackground(b01) && b01 > bd) { bd = b01; bPx = tapFull + int2(0, 1); }
-            if (!DofIsBackground(b11) && b11 > bd) { bd = b11; bPx = tapFull + int2(1, 1); }
+            if (!DofIsBackgroundOrGarbage(b00) && b00 > bd) { bd = b00; bPx = tapFull; }
+            if (!DofIsBackgroundOrGarbage(b10) && b10 > bd) { bd = b10; bPx = tapFull + int2(1, 0); }
+            if (!DofIsBackgroundOrGarbage(b01) && b01 > bd) { bd = b01; bPx = tapFull + int2(0, 1); }
+            if (!DofIsBackgroundOrGarbage(b11) && b11 > bd) { bd = b11; bPx = tapFull + int2(1, 1); }
             float bDist;
-            if (DofIsBackground(bd))
+            if (DofIsBackgroundOrGarbage(bd))
             {
                 bDist = 1e5;
             }

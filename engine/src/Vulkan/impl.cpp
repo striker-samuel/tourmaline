@@ -1526,6 +1526,73 @@ static bool HostCopyKilledByEnv()
 }
 
 // ---------------------------------------------------------------------------
+// VULKANTOY_SERIALIZE — submission-level serialization bisect knob
+// ---------------------------------------------------------------------------
+// Nsight Graphics' "serialize context" forces every GPU workload to
+// complete before the next begins; bugs that only reproduce WITHOUT it
+// live in submission-level ordering that validation layers cannot model.
+// This knob reproduces the same serialization in-process so it can be
+// bisected per submission class (vkQueueWaitIdle after each gated submit):
+//   VULKANTOY_SERIALIZE=all      every submission class below (Nsight-like)
+//   VULKANTOY_SERIALIZE=split    after the G1 and C submits (async split)
+//   VULKANTOY_SERIALIZE=main     after the G2/main frame submit
+//   VULKANTOY_SERIALIZE=frame    alias for main
+//   VULKANTOY_SERIALIZE=uploads  after every Submitter submit (upload
+//                                batches, acquire barriers, readback
+//                                copies, misc engine submits)
+//   unset / 0 / off              no serialization (default)
+// Comma lists combine classes ("split,uploads"). If 'all' fixes the image
+// but narrower classes do not, the race spans multiple classes; if a
+// single class fixes it, the missing sync is in that class's chain.
+struct SerializeMode {
+	bool all = false, split = false, main = false, uploads = false;
+};
+static const SerializeMode& RgSerializeMode()
+{
+	static const SerializeMode m = [] {
+		SerializeMode s;
+		const char* e = std::getenv("VULKANTOY_SERIALIZE");
+		if (!e || !*e)
+			return s;
+		const std::string_view v{ e };
+		if (v == "0" || v == "off")
+			return s;
+		auto has = [&](std::string_view tok) {
+			for (size_t pos = 0; pos <= v.size();) {
+				size_t end = v.find(',', pos);
+				if (end == std::string_view::npos)
+					end = v.size();
+				std::string_view t = v.substr(pos, end - pos);
+				while (!t.empty() && t.front() == ' ')
+					t.remove_prefix(1);
+				while (!t.empty() && t.back() == ' ')
+					t.remove_suffix(1);
+				if (t == tok)
+					return true;
+				pos = end + 1;
+			}
+			return false;
+		};
+		s.all = has("all");
+		s.split = s.all || has("split");
+		s.main = s.all || has("main") || has("frame");
+		s.uploads = s.all || has("uploads");
+		return s;
+	}();
+	return m;
+}
+static void RgSerializeGate(bool on, VkQueue queue)
+{
+	if (!on || queue == VK_NULL_HANDLE)
+		return;
+	static std::atomic<bool> s_noticed{ false };
+	if (!s_noticed.exchange(true))
+		std::fprintf(stderr,
+			"[Serialize] VULKANTOY_SERIALIZE active: queue idle after gated submits\n");
+	vkQueueWaitIdle(queue);
+}
+
+// ---------------------------------------------------------------------------
 // RenderGraph barrier debug tracing (VULKANTOY_BARRIER_TRACE)
 // ---------------------------------------------------------------------------
 // Env knob, evaluated once per process:
@@ -3596,6 +3663,15 @@ bool smvk::VulkanResourceManager::DownloadDataFromImage(ImageHandle src, ImageLa
 	auto srcImg = images_.get(src);
 	if (!srcImg || srcImg->vkImage == VK_NULL_HANDLE)
 		return false;
+	// vkCmdCopyImageToBuffer needs TRANSFER_SRC usage on the image: without
+	// it the copy is invalid (UB — the staging keeps garbage) and there is
+	// no fallback here, so fail loudly instead of returning junk.
+	if ((srcImg->usage & ImageUsage::TransferSrc) == ImageUsage::None) {
+		std::fprintf(stderr,
+			"[DownloadDataFromImage] image '%s' lacks TransferSrc usage — cannot copy\n",
+			srcImg->name ? srcImg->name : "<anon>");
+		return false;
+	}
 	if (!EnsureReadbackStaging(static_cast<VkDeviceSize>(outSize)))
 		return false;
 	auto stagingBuf = buffers_.get(m_readbackStaging);
@@ -3609,7 +3685,17 @@ bool smvk::VulkanResourceManager::DownloadDataFromImage(ImageHandle src, ImageLa
 	// transition out of the caller-declared ACTUAL layout for the copy and
 	// back afterwards. Never pass Undefined here - that discards contents.
 	const VkImageLayout tracked = ToVkImageLayout(currentLayout);
-	const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+	// Depth/stencil images copy through their own aspect — a COLOR-aspect
+	// copy from a D32F image is invalid and yields garbage.
+	const VkFormat srcFmt = toVkFormat(srcImg->format);
+	VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+	if (srcFmt == VK_FORMAT_D16_UNORM || srcFmt == VK_FORMAT_D32_SFLOAT)
+		aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+	else if (srcFmt == VK_FORMAT_D24_UNORM_S8_UINT || srcFmt == VK_FORMAT_D32_SFLOAT_S8_UINT)
+		aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+	else if (srcFmt == VK_FORMAT_S8_UINT)
+		aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
+	const VkImageSubresourceRange range{ aspect, 0, 1, 0, 1 };
 	const bool needTransition =
 		tracked != VK_IMAGE_LAYOUT_GENERAL && tracked != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
@@ -3624,7 +3710,7 @@ bool smvk::VulkanResourceManager::DownloadDataFromImage(ImageHandle src, ImageLa
 			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
 	}
 	VkBufferImageCopy region{};
-	region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+	region.imageSubresource = { aspect, 0, 0, 1 };
 	region.imageExtent = { srcImg->extent.width, srcImg->extent.height, srcImg->extent.depth };
 	vkCmdCopyImageToBuffer(cmd, srcImg->vkImage,
 		needTransition ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : tracked,
@@ -7149,6 +7235,11 @@ smvk::TimelinePoint smvk::Submitter::submit(
 	m_lastTimelineValue = signalValue;
 	m_lastSubmit = handle;
 
+	// VULKANTOY_SERIALIZE=uploads (see RgSerializeGate): every engine-side
+	// submit funnels through here — upload batches, acquire barriers,
+	// readback copies, one-off dumps.
+	RgSerializeGate(RgSerializeMode().uploads, m_queue);
+
 	return {
 		.semaphore = m_timelineSemaphore,
 		.value = signalValue
@@ -8115,6 +8206,9 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			// freed from here on retires once this submit (and all before it)
 			// has completed.
 			ctx_.NotifyGraphicsSubmit(timelineSemaphore_, signalValue);
+			// VULKANTOY_SERIALIZE=main (see RgSerializeGate): the whole
+			// frame's tail waits queue idle before present.
+			RgSerializeGate(RgSerializeMode().main, graphicsQueue_);
 			VkPresentInfoKHR presentInfo{};
 			presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 			presentInfo.waitSemaphoreCount = 1;
@@ -8149,6 +8243,9 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 				imageTimelineValues_[currentImageIndex_] = signalValue;
 				ctx_.NotifyGraphicsSubmit(timelineSemaphore_, signalValue);
 			}
+			// VULKANTOY_SERIALIZE=main (see RgSerializeGate): the whole
+			// frame's tail waits queue idle before present.
+			RgSerializeGate(RgSerializeMode().main, graphicsQueue_);
 			{
 				std::lock_guard<std::mutex> lock(mp);
 				VkPresentInfoKHR presentInfo{};
@@ -9924,6 +10021,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 					g1Uploads.valid() ? " +uploadTimeline" : "",
 					vkSwap->timelineValue_ != 0 ? " +prevFrame" : "",
 					(unsigned long long)g2cVal);
+			RgSerializeGate(RgSerializeMode().split, graphicsQueue_);
 		}
 		// Per-pass barriers (fix #1) – update imageStates/bufferStates as we go
 		{
@@ -10300,6 +10398,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		if (traceRg)
 			std::fprintf(stderr, "[RG] C submitted (waits G2C=%llu, signals C2G=%llu on compute queue)\n",
 				(unsigned long long)g2cVal, (unsigned long long)c2gVal);
+		RgSerializeGate(RgSerializeMode().split, computeQueue_);
 		fb.splitCommandBufferOpaque = reinterpret_cast<void*>(splitCB);
 		fb.splitWaitSemaphoreOpaque = reinterpret_cast<void*>(vkSwap->asyncC2G_[flight]);
 		fb.splitWaitValue = c2gVal;

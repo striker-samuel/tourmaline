@@ -44,7 +44,9 @@ struct HdrTarget {
 		ImageCreateInfo ci{};
 		ci.extent = { swapExtent.width, swapExtent.height, 1 };
 		ci.format = d.format;
-		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+		// TransferSrc: debug stage dumps (VULKANTOY_SSR_DUMP).
+		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled
+			| ImageUsage::TransferSrc;
 		ci.mipLevels = 1;
 		ci.arrayLayers = 1;
 		ci.name = d.name;

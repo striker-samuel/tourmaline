@@ -250,7 +250,10 @@ struct ScreenSpaceReflections {
 		ImageCreateInfo ci{};
 		ci.extent = { ext.width, ext.height, 1 };
 		ci.format = format;
-		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+		// TransferSrc: debug stage dumps (VULKANTOY_SSR_DUMP) copy the
+		// targets back through DownloadDataFromImage.
+		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled
+			| ImageUsage::TransferSrc;
 		ci.mipLevels = 1;
 		ci.arrayLayers = 1;
 		ci.name = name;
@@ -305,7 +308,9 @@ struct ScreenSpaceReflections {
 		ImageCreateInfo ci{};
 		ci.extent = { targetExtent.width, targetExtent.height, 1 };
 		ci.format = d.format;
-		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+		// TransferSrc: debug stage dumps (VULKANTOY_SSR_DUMP).
+		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled
+			| ImageUsage::TransferSrc;
 		ci.mipLevels = 1;
 		ci.arrayLayers = 1;
 		ci.name = d.name;

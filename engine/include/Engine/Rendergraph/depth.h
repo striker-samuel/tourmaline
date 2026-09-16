@@ -46,7 +46,9 @@ struct DepthTarget {
 		ImageCreateInfo ci{};
 		ci.extent = { targetExtent.width, targetExtent.height, 1 };
 		ci.format = d.format;
-		ci.usage = ImageUsage::DepthStencilAttachment | ImageUsage::Sampled;
+		// TransferSrc: debug stage dumps (VULKANTOY_SSR_DUMP).
+		ci.usage = ImageUsage::DepthStencilAttachment | ImageUsage::Sampled
+			| ImageUsage::TransferSrc;
 		ci.mipLevels = 1;
 		ci.arrayLayers = 1;
 		ci.name = d.name;

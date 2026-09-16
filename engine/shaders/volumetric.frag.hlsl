@@ -108,7 +108,7 @@ PSOut mainPS(PSIn IN)
     rayDir = (farLen > 1e-6) ? rayDir / farLen : float3(0.0, 0.0, 1.0);
 
     float rayLen;
-    if (DofIsBackground(ndcDepth))
+    if (DofIsBackgroundOrGarbage(ndcDepth))
     {
         rayLen = max(vp.maxDistance, 1.0);
     }

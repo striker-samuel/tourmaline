@@ -71,11 +71,11 @@ PSOut mainPS(PSIn IN)
     float d11 = depthTex.Load(int3(fullBase + int2(1, 1), 0)).r;
     float dCenter = 0.0f;
     int2 fullPxC = fullBase;
-    if (!DofIsBackground(d00) && d00 > dCenter) { dCenter = d00; fullPxC = fullBase; }
-    if (!DofIsBackground(d10) && d10 > dCenter) { dCenter = d10; fullPxC = fullBase + int2(1, 0); }
-    if (!DofIsBackground(d01) && d01 > dCenter) { dCenter = d01; fullPxC = fullBase + int2(0, 1); }
-    if (!DofIsBackground(d11) && d11 > dCenter) { dCenter = d11; fullPxC = fullBase + int2(1, 1); }
-    if (DofIsBackground(dCenter))
+    if (!DofIsBackgroundOrGarbage(d00) && d00 > dCenter) { dCenter = d00; fullPxC = fullBase; }
+    if (!DofIsBackgroundOrGarbage(d10) && d10 > dCenter) { dCenter = d10; fullPxC = fullBase + int2(1, 0); }
+    if (!DofIsBackgroundOrGarbage(d01) && d01 > dCenter) { dCenter = d01; fullPxC = fullBase + int2(0, 1); }
+    if (!DofIsBackgroundOrGarbage(d11) && d11 > dCenter) { dCenter = d11; fullPxC = fullBase + int2(1, 1); }
+    if (DofIsBackgroundOrGarbage(dCenter))
     {
         OUT.outColor = float4(0.0f, 0.0f, 0.0f, 0.0f);
         return OUT;
@@ -101,7 +101,7 @@ PSOut mainPS(PSIn IN)
             int2 tapFull = fullBase + int2(x * 2, y * 2);
             float tapD = depthTex.Load(int3(tapFull, 0)).r;
             float tapDist;
-            if (DofIsBackground(tapD))
+            if (DofIsBackgroundOrGarbage(tapD))
             {
                 tapDist = 1e5; // sky sentinel (matches dof.hlsli scale)
             }

@@ -78,7 +78,7 @@ bool SsrHitFacing(Texture2D depthTex, float2 uv, float2 fullExtent,
     float dc = depthTex.Load(int3(hp, 0)).r;
     float dx = depthTex.Load(int3(hx, 0)).r;
     float dy = depthTex.Load(int3(hy, 0)).r;
-    if (DofIsBackground(dc) || DofIsBackground(dx) || DofIsBackground(dy))
+    if (DofIsBackgroundOrGarbage(dc) || DofIsBackgroundOrGarbage(dx) || DofIsBackgroundOrGarbage(dy))
         return false;
     float3 pc = DofUnprojectView(SsrFullNdc(hp, invDepth), dc, invProj);
     float3 px = DofUnprojectView(SsrFullNdc(hx, invDepth), dx, invProj);
@@ -118,11 +118,11 @@ PSOut mainPS(PSIn IN)
     float dCenter = 0.0f;
     int2 fullPxC = fullBase;
     float dBest = 0.0f;
-    if (!DofIsBackground(d00) && d00 > dBest) { dBest = d00; dCenter = d00; fullPxC = fullBase; }
-    if (!DofIsBackground(d10) && d10 > dBest) { dBest = d10; dCenter = d10; fullPxC = fullBase + int2(1, 0); }
-    if (!DofIsBackground(d01) && d01 > dBest) { dBest = d01; dCenter = d01; fullPxC = fullBase + int2(0, 1); }
-    if (!DofIsBackground(d11) && d11 > dBest) { dBest = d11; dCenter = d11; fullPxC = fullBase + int2(1, 1); }
-    if (DofIsBackground(dCenter))
+    if (!DofIsBackgroundOrGarbage(d00) && d00 > dBest) { dBest = d00; dCenter = d00; fullPxC = fullBase; }
+    if (!DofIsBackgroundOrGarbage(d10) && d10 > dBest) { dBest = d10; dCenter = d10; fullPxC = fullBase + int2(1, 0); }
+    if (!DofIsBackgroundOrGarbage(d01) && d01 > dBest) { dBest = d01; dCenter = d01; fullPxC = fullBase + int2(0, 1); }
+    if (!DofIsBackgroundOrGarbage(d11) && d11 > dBest) { dBest = d11; dCenter = d11; fullPxC = fullBase + int2(1, 1); }
+    if (DofIsBackgroundOrGarbage(dCenter))
     {
         OUT.outColor = float4(0.0f, 0.0f, 0.0f, 0.0f);
         return OUT;
@@ -142,10 +142,10 @@ PSOut mainPS(PSIn IN)
     int2 fullPxY = fullBase + int2(0, 2);
     float dX = depthTex.Load(int3(fullPxX, 0)).r;
     float dY = depthTex.Load(int3(fullPxY, 0)).r;
-    float3 posX = DofIsBackground(dX)
+    float3 posX = DofIsBackgroundOrGarbage(dX)
         ? DofUnprojectView(SsrFullNdc(fullPxX, invDepth), dCenter, frame.invProj)
         : DofUnprojectView(SsrFullNdc(fullPxX, invDepth), dX, frame.invProj);
-    float3 posY = DofIsBackground(dY)
+    float3 posY = DofIsBackgroundOrGarbage(dY)
         ? DofUnprojectView(SsrFullNdc(fullPxY, invDepth), dCenter, frame.invProj)
         : DofUnprojectView(SsrFullNdc(fullPxY, invDepth), dY, frame.invProj);
     float3 N = normalize(cross(posX - viewPos, posY - viewPos) + 1e-9f);
@@ -200,7 +200,7 @@ PSOut mainPS(PSIn IN)
         prevUv = ouv;
         int2 opx = int2(min(ouv, float2(0.9999f, 0.9999f)) * fullExtent);
         float od = depthTex.Load(int3(opx, 0)).r;
-        if (DofIsBackground(od))
+        if (DofIsBackgroundOrGarbage(od))
             prevDelta = -1e30f; // open space: infinitely in front
         else
         {
@@ -247,7 +247,7 @@ PSOut mainPS(PSIn IN)
 
         int2 samplePx = int2(marchUv * fullExtent);
         float sampD = depthTex.Load(int3(samplePx, 0)).r;
-        if (DofIsBackground(sampD))
+        if (DofIsBackgroundOrGarbage(sampD))
         {
             // Sky behind the ray: infinitely in front. Keep marching; a
             // later behind-sample bisects back to the silhouette edge.
@@ -276,7 +276,7 @@ PSOut mainPS(PSIn IN)
                 float2 rn = (rc.xy / max(rc.w, 1e-9f)) * 0.5f + 0.5f;
                 int2 rp = int2(clamp(rn, float2(0.0f, 0.0f), float2(1.0f, 1.0f)) * fullExtent);
                 float rd = depthTex.Load(int3(rp, 0)).r;
-                if (!DofIsBackground(rd))
+                if (!DofIsBackgroundOrGarbage(rd))
                 {
                     float sd = DofViewDist(rd, SsrFullNdc(rp, invDepth), frame.invProj);
                     if (-refinePos.z > sd)
@@ -331,7 +331,7 @@ PSOut mainPS(PSIn IN)
                 {
                     int2 mp = int2(min(mn, float2(0.9999f, 0.9999f)) * fullExtent);
                     float mD = depthTex.Load(int3(mp, 0)).r;
-                    if (!DofIsBackground(mD))
+                    if (!DofIsBackgroundOrGarbage(mD))
                         mDelta = -mid.z - DofViewDist(mD, SsrFullNdc(mp, invDepth), frame.invProj);
                 }
                 if (mDelta > 0.0f)
