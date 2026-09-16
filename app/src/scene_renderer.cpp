@@ -192,9 +192,10 @@ static smvk::DofDesc MakeDofDesc() {
 static constexpr uint32_t SSR_STEPS = 32;
 static constexpr uint32_t SSR_REFINE_STEPS = 4;
 static constexpr float SSR_MAX_DISTANCE = 50.0f;
-static constexpr float SSR_THICKNESS = 0.5f;
+static constexpr float SSR_THICKNESS = 0.3f;
 static constexpr float SSR_INTENSITY = 1.0f;
 static constexpr float SSR_F0 = 0.04f; // dielectric glass
+static constexpr float SSR_BLUR_SHARPNESS = 10.0f; // bilateral depth edge weight
 
 static smvk::SsrDesc MakeSsrDesc() {
 	smvk::SsrDesc d{};
@@ -205,7 +206,33 @@ static smvk::SsrDesc MakeSsrDesc() {
 	d.thickness = SSR_THICKNESS;
 	d.intensity = SSR_INTENSITY;
 	d.f0 = SSR_F0;
+	d.blurSharpness = SSR_BLUR_SHARPNESS;
 	d.name = "ssr";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
+// Raymarched volumetric fog config (GI-probe lit, see
+// Engine/Rendergraph/volumetric.h). Runs after SSR, before
+// exposure/bloom/tonemap so fog meters/blooms/tonemaps with the scene.
+// Medium default (16 steps, full-res); quality scales with steps.
+// -----------------------------------------------------------------------------
+static smvk::VolumetricDesc MakeVolumetricDesc() {
+	smvk::VolumetricDesc d{};
+	d.format = smvk::Format::RGBA16_Float; // must match the HDR target
+	smvk::ApplyVolumetricQuality(d, smvk::VolumetricQuality::Medium);
+	d.maxDistance = 80.0f;
+	d.density = 0.015f;
+	d.intensity = 1.0f;
+	d.anisotropy = 0.4f;
+	d.sunScale = 1.0f;
+	d.giScale = 1.0f;
+	d.useGi = 1;
+	d.useSun = 1;
+	d.jitterStrength = 1.0f;
+	d.heightFalloff = 0.0f;
+	d.heightBase = 0.0f;
+	d.name = "volumetric";
 	return d;
 }
 
@@ -684,6 +711,58 @@ smvk::StaticMeshUpload BuildLayerCubeUpload(int segments) {
 				data.indices.push_back(c);
 				data.indices.push_back(d);
 			}
+		}
+	}
+	return data;
+}
+
+// UV sphere (lat-long) centered on the origin. Triangles follow the same
+// (a,b,c),(a,c,d) pattern as the cube above with b one step in +theta
+// (longitude) and d one step in +phi (pole to pole): dTheta x dPhi points
+// outward, so the winding matches the engine's CCW front faces.
+smvk::StaticMeshUpload BuildChromeBallUpload(float radius, int slices, int stacks) {
+	smvk::StaticMeshUpload data;
+	data.aabbMin = glm::vec3(-radius);
+	data.aabbMax = glm::vec3(radius);
+	const float pi = glm::pi<float>();
+	const int nSlices = std::max(8, slices);
+	const int nStacks = std::max(4, stacks);
+	for (int j = 0; j <= nStacks; ++j) {
+		const float phi = pi * static_cast<float>(j) / static_cast<float>(nStacks);
+		const float sinPhi = std::sin(phi);
+		const float cosPhi = std::cos(phi);
+		for (int i = 0; i <= nSlices; ++i) {
+			const float theta = 2.0f * pi * static_cast<float>(i) / static_cast<float>(nSlices);
+			const float sinT = std::sin(theta);
+			const float cosT = std::cos(theta);
+			const glm::vec3 n(sinPhi * cosT, cosPhi, sinPhi * sinT);
+			smvk::StaticVertex v{};
+			v.pos = n * radius;
+			v.color = glm::vec4(1.0f);
+			v.texCoord = glm::vec2(
+				static_cast<float>(i) / static_cast<float>(nSlices),
+				static_cast<float>(j) / static_cast<float>(nStacks));
+			v.normal = n;
+			glm::vec3 t(-sinT, 0.0f, cosT);
+			if (glm::dot(t, t) < 1e-12f)
+				t = glm::vec3(1.0f, 0.0f, 0.0f); // poles: theta tangent degenerates
+			v.tangent = glm::vec4(glm::normalize(t), 1.0f);
+			data.vertices.push_back(v);
+		}
+	}
+	const uint32_t row = static_cast<uint32_t>(nSlices) + 1u;
+	for (int j = 0; j < nStacks; ++j) {
+		for (int i = 0; i < nSlices; ++i) {
+			const uint32_t a = static_cast<uint32_t>(j) * row + static_cast<uint32_t>(i);
+			const uint32_t b = a + 1u;
+			const uint32_t c = a + row + 1u;
+			const uint32_t d = a + row;
+			data.indices.push_back(a);
+			data.indices.push_back(b);
+			data.indices.push_back(c);
+			data.indices.push_back(a);
+			data.indices.push_back(c);
+			data.indices.push_back(d);
 		}
 	}
 	return data;
@@ -1552,6 +1631,48 @@ bool SceneRenderer::Initialize() {
 			GltfToCluster(*m_context, model, sceneGltf, cluster, smvk::MeshOptConfig{}, smvk::MeshletConfig{}, m_scene.coordFix, m_scene.preTransform, sceneStreamer);
 		}
 
+		// Chrome probe ball (sponza only): procedural UV sphere, 0.5 m in
+		// diameter, at the atrium center resting on the floor (y=0). White
+		// metal (metallic 1, roughness 0; the lit shader clamps roughness
+		// to 0.04 so there are no GGX singularities). Injected into the
+		// loaded cluster before Resolve so it joins culling, shadows, AO
+		// and reflections like any imported node. Independent root (own
+		// identity-parent transform), so scene root transforms can't move
+		// it and the static-freeze loop below simply leaves it dynamic.
+		if (std::string_view(m_scene.id) == "sponza" && !m_world->clusters.empty()) {
+			smvk::Cluster& sponzaCluster = *m_world->clusters.back();
+			const float ballRadius = 0.25f;
+			const glm::vec3 ballCenter(0.0f, ballRadius, 0.0f);
+			smvk::StaticMeshUpload ballUpload = BuildChromeBallUpload(ballRadius, 48, 32);
+			smvk::ClusterStaticMeshHandle ballMesh = sponzaCluster.UploadStaticMesh(ballUpload);
+			smvk::MaterialCreateInfo chromeCi{};
+			chromeCi.baseColorFactor = glm::vec4(1.0f);
+			chromeCi.metallicFactor = 1.0f;
+			chromeCi.roughnessFactor = 0.0f;
+			chromeCi.emissiveFactor = glm::vec3(0.0f);
+			chromeCi.alphaMode = smvk::AlphaMode::Opaque;
+			chromeCi.shadingModel = smvk::ShadingModel::DefaultLit;
+			smvk::ClusterMaterialHandle chromeMat = sponzaCluster.CreateMaterial(chromeCi);
+			if (ballMesh.empty() || chromeMat.empty()) {
+				std::cerr << "[Scene] chrome ball inject failed (mesh/material)\n";
+			}
+			else {
+				const int ballNode = addNode(sponzaCluster.scene, -1, 0);
+				sponzaCluster.scene.localTransform[ballNode] =
+					glm::translate(glm::mat4(1.0f), ballCenter);
+				sponzaCluster.scene.globalTransform[ballNode] =
+					glm::translate(glm::mat4(1.0f), ballCenter);
+				sponzaCluster.scene.meshForNode[ballNode] = ballMesh.index();
+				sponzaCluster.scene.materialForNode[ballNode] = chromeMat.index();
+				setNodeName(sponzaCluster.scene, ballNode, "chrome_ball");
+				markAsChanged(sponzaCluster.scene, ballNode);
+				std::cerr << "[Scene] chrome ball: r=" << ballRadius
+					<< "m at (" << ballCenter.x << "," << ballCenter.y << "," << ballCenter.z << "), "
+					<< ballUpload.vertices.size() << " verts, "
+					<< ballUpload.indices.size() / 3 << " tris\n";
+			}
+		}
+
 		// Freeze everything static (no recook needed): the exporters stamp
 		// no STATIC_ marks, so cooked paks carry staticRoots=0 and the
 		// World's static BVH would stay empty. These scenes never animate,
@@ -1772,6 +1893,10 @@ bool SceneRenderer::Initialize() {
 			std::cerr << "[SceneRenderer] SSR target unavailable (HDR "
 				<< renderExtent.width << "x" << renderExtent.height << ")\n";
 		}
+		if (!m_viewportResources.volumetric.Ensure(*m_context, *m_rendergraph, renderExtent, MakeVolumetricDesc())) {
+			std::cerr << "[SceneRenderer] Volumetric target unavailable (HDR "
+				<< renderExtent.width << "x" << renderExtent.height << ")\n";
+		}
 		smvk::UiDesc uiDesc{};
 		uiDesc.format = LdrUnormSibling();
 		if (!m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, uiDesc)) {
@@ -1824,6 +1949,7 @@ void SceneRenderer::Shutdown() {
 	m_viewportResources.motionBlur.Destroy(*m_rendergraph);
 	m_viewportResources.dof.Destroy(*m_rendergraph);
 	m_viewportResources.ssr.Destroy(*m_rendergraph);
+	m_viewportResources.volumetric.Destroy(*m_rendergraph);
 		m_viewportResources.motionVectors.Destroy(*m_rendergraph);
 		m_viewportResources.renderDepth.Destroy(*m_rendergraph);
 		m_viewportResources.hizDepth.Destroy(*m_rendergraph);
@@ -4252,6 +4378,11 @@ void SceneRenderer::Shutdown() {
 			m_viewportResources.dof.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildDofDesc);
 		}
 		m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc());
+		{
+			smvk::VolumetricDesc rebuildVolDesc = MakeVolumetricDesc();
+			rebuildVolDesc.steps = (uint32_t)std::clamp(m_volumetricSteps, 4, 128);
+			m_viewportResources.volumetric.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildVolDesc);
+		}
 		smvk::UiDesc rebuildUiDesc{};
 		rebuildUiDesc.format = LdrUnormSibling();
 		m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, rebuildUiDesc);
@@ -4578,6 +4709,11 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			m_viewportResources.dof.Ensure(*m_context, *m_rendergraph, renderExtent, frameDofDesc);
 		}
 		m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc());
+		{
+			smvk::VolumetricDesc rebuildVolDesc = MakeVolumetricDesc();
+			rebuildVolDesc.steps = (uint32_t)std::clamp(m_volumetricSteps, 4, 128);
+			m_viewportResources.volumetric.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildVolDesc);
+		}
 		smvk::UiDesc frameUiDesc{};
 		frameUiDesc.format = LdrUnormSibling();
 		m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, frameUiDesc);
@@ -6605,11 +6741,12 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		}
 
 		// ---------------------------------------------------------------------
-		// Screen-space reflections â€“ HDR composite (see ssr.h). Runs after
-		// DOF, before exposure/bloom/tonemap so reflections meter/bloom/
-		// tonemap with the scene. Normals + Fresnel reconstruct from the
-		// 1x prepass depth (no GBuffer); Bistro shopfront glass at street
-		// grazing angles is the calibration case.
+		// Screen-space reflections – half-res trace + bilateral blur +
+		// full-res composite (see ssr.h). Runs after DOF, before
+		// exposure/bloom/tonemap so reflections meter/bloom/tonemap with
+		// the scene. Normals + Fresnel reconstruct from the 1x prepass
+		// depth (no GBuffer); Bistro shopfront glass at street grazing
+		// angles is the calibration case.
 		// ---------------------------------------------------------------------
 		bool ssrEmitted = false;
 		{
@@ -6621,13 +6758,55 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			ssrDesc.thickness = m_ssrThickness;
 			ssrDesc.intensity = m_ssrIntensity;
 			ssrDesc.f0 = m_ssrF0;
+			ssrDesc.blurSharpness = m_ssrBlurSharpness;
 			const bool ssrOn = m_passes.ssr && m_ssrEnabled
 				&& m_viewportResources.ssr.Valid()
 				&& !m_viewportResources.renderDepth.logicalView.empty()
 				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
 				&& m_ssrIntensity > 0.0f;
 			if (ssrOn) {
-				m_viewportResources.ssr.AddSsrPass(
+				m_viewportResources.ssr.AddSsrPasses(
+					*m_rendergraph,
+					sceneHdrView,
+					sceneHdrBindless,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.renderDepth.bindlessIndex,
+					frameUniformsAddress,
+					linearSampler,
+					ssrDesc,
+					"SSR",
+					"SSRBlur",
+					"SSRComposite");
+				sceneHdrView = m_viewportResources.ssr.OutputView();
+				sceneHdrBindless = m_viewportResources.ssr.OutputBindless();
+				ssrEmitted = true;
+			}
+		}
+
+		bool volumetricEmitted = false;
+		{
+			SMVK_PROFILE_CATEGORY("Volumetric", Optick::Category::Rendering);
+			smvk::VolumetricDesc volDesc = MakeVolumetricDesc();
+			volDesc.steps = (uint32_t)std::clamp(m_volumetricSteps, 4, 128);
+			volDesc.maxDistance = m_volumetricMaxDistance;
+			volDesc.density = m_volumetricDensity;
+			volDesc.intensity = m_volumetricIntensity;
+			volDesc.anisotropy = m_volumetricAnisotropy;
+			volDesc.sunScale = m_volumetricSun;
+			volDesc.giScale = m_volumetricGi;
+			volDesc.useGi = m_volumetricUseGi ? 1u : 0u;
+			volDesc.useSun = m_volumetricUseSun ? 1u : 0u;
+			volDesc.jitterStrength = m_volumetricJitter;
+			volDesc.heightFalloff = m_volumetricHeightFalloff;
+			volDesc.heightBase = m_volumetricHeightBase;
+			m_viewportResources.volumetric.Ensure(*m_context, *m_rendergraph, renderExtent, volDesc);
+			const bool volOn = m_passes.volumetric && m_volumetricEnabled
+				&& m_viewportResources.volumetric.Valid()
+				&& !m_viewportResources.renderDepth.logicalView.empty()
+				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
+				&& m_volumetricDensity > 0.0f && m_volumetricIntensity > 0.0f;
+			if (volOn) {
+				m_viewportResources.volumetric.AddVolumetricPass(
 					*m_rendergraph,
 					sceneHdrView,
 					sceneHdrBindless,
@@ -6636,11 +6815,12 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					frameUniformsAddress,
 					linearSampler,
 					renderExtent,
-					ssrDesc,
-					"SSR");
-				sceneHdrView = m_viewportResources.ssr.OutputView();
-				sceneHdrBindless = m_viewportResources.ssr.OutputBindless();
-				ssrEmitted = true;
+					frameData.time,
+					volDesc,
+					"Volumetric");
+				sceneHdrView = m_viewportResources.volumetric.OutputView();
+				sceneHdrBindless = m_viewportResources.volumetric.OutputBindless();
+				volumetricEmitted = true;
 			}
 		}
 
@@ -6769,14 +6949,18 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				|| m_dlssLastSwapExtent.width != swapExtent.width
 				|| m_dlssLastSwapExtent.height != swapExtent.height;
 
-			// Color in = the (possibly motion-blurred, DOF'd, SSR'd) HDR
+			// Color in = the (possibly motion-blurred, DOF'd, SSR'd,
+			// volumetric-fogged) HDR
 			// the bloom chain just sampled: same target sceneHdrView tracks.
-			// Physical handles follow the same chain (SSR > DOF > blur > HDR).
+			// Physical handles follow the same chain (Volumetric > SSR > DOF > blur > HDR).
 			smvk::ImageHandle dlssColorImage =
 				static_cast<smvk::ImageHandle>(m_viewportResources.hdr.image);
 			smvk::ImageViewHandle dlssColorView =
 				static_cast<smvk::ImageViewHandle>(m_viewportResources.hdr.view);
-			if (ssrEmitted) {
+			if (volumetricEmitted) {
+				dlssColorImage = static_cast<smvk::ImageHandle>(m_viewportResources.volumetric.image);
+				dlssColorView = static_cast<smvk::ImageViewHandle>(m_viewportResources.volumetric.view);
+			} else if (ssrEmitted) {
 				dlssColorImage = static_cast<smvk::ImageHandle>(m_viewportResources.ssr.image);
 				dlssColorView = static_cast<smvk::ImageViewHandle>(m_viewportResources.ssr.view);
 			} else if (dofEmitted) {
@@ -7267,7 +7451,41 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::SliderFloat("Thickness (m)", &m_ssrThickness, 0.01f, 2.0f);
 						ImGui::SliderFloat("Intensity", &m_ssrIntensity, 0.0f, 4.0f);
 						ImGui::SliderFloat("F0 (glass 0.04)", &m_ssrF0, 0.0f, 1.0f);
-						ImGui::TextDisabled("Bistro shopfront glass at grazing angles is the test case.");
+						ImGui::SliderFloat("Bilateral sharpness", &m_ssrBlurSharpness, 0.0f, 32.0f);
+						ImGui::TextDisabled("Half-res trace + bilateral blur + depth-aware upscale. Bistro shopfront glass at grazing angles is the test case.");
+					}
+				}
+				if (ImGui::CollapsingHeader("Volumetric fog (GI probes)", ImGuiTreeNodeFlags_DefaultOpen)) {
+					ImGui::Checkbox("Volumetric fog (HDR raymarch)", &m_volumetricEnabled);
+					if (m_volumetricEnabled) {
+						static const char* const kVolNames[5] =
+							{ "Low (8 steps)", "Medium (16 steps)", "High (32 steps)", "Ultra (64 steps)", "Custom" };
+						int volQ = static_cast<int>(m_volumetricQuality);
+						if (ImGui::Combo("Quality preset", &volQ, kVolNames, 5)) {
+							m_volumetricQuality = static_cast<smvk::VolumetricQuality>(std::clamp(volQ, 0, 4));
+							if (m_volumetricQuality != smvk::VolumetricQuality::Custom) {
+								smvk::VolumetricDesc qd = MakeVolumetricDesc();
+								smvk::ApplyVolumetricQuality(qd, m_volumetricQuality);
+								m_volumetricSteps = (int)qd.steps;
+							}
+						}
+						if (ImGui::SliderInt("March steps", &m_volumetricSteps, 4, 128))
+							m_volumetricQuality = smvk::VolumetricQuality::Custom;
+						ImGui::SliderFloat("Max distance (m)", &m_volumetricMaxDistance, 5.0f, 200.0f);
+						ImGui::SliderFloat("Density (1/m)", &m_volumetricDensity, 0.0f, 0.1f, "%.4f");
+						ImGui::SliderFloat("Scattering intensity", &m_volumetricIntensity, 0.0f, 4.0f);
+						ImGui::SliderFloat("Anisotropy g", &m_volumetricAnisotropy, -0.9f, 0.9f);
+						ImGui::SliderFloat("Sun strength", &m_volumetricSun, 0.0f, 4.0f);
+						ImGui::SliderFloat("GI strength", &m_volumetricGi, 0.0f, 4.0f);
+						ImGui::Checkbox("GI probes ambient", &m_volumetricUseGi);
+						ImGui::Checkbox("Sun single-scatter", &m_volumetricUseSun);
+						ImGui::SliderFloat("Dither (banding guard)", &m_volumetricJitter, 0.0f, 1.0f);
+						ImGui::SliderFloat("Height falloff (1/m)", &m_volumetricHeightFalloff, 0.0f, 1.0f, "%.3f");
+						if (m_volumetricHeightFalloff > 0.0f)
+							ImGui::SliderFloat("Height base (m)", &m_volumetricHeightBase, -10.0f, 30.0f);
+						if (!m_giLoaded)
+							ImGui::TextDisabled("No probe volume: ambient falls back to sky IBL.");
+						ImGui::TextDisabled("Probes carry sky+sun bounce; sun adds HG forward scatter.");
 					}
 				}
 				if (ImGui::CollapsingHeader("Forward+ lights", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -7937,6 +8155,14 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::TextDisabled("SSR: %s %u steps intensity %.2f",
 							m_ssrEnabled ? "ON" : "off",
 							(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity);
+					if (!m_viewportResources.volumetric.Valid())
+						ImGui::TextDisabled("Volumetric target/shaders missing - no fog");
+					else
+						ImGui::TextDisabled("Volumetric: %s %s %u steps dens %.4f int %.2f",
+							m_volumetricEnabled ? "ON" : "off",
+							smvk::VolumetricQualityName(m_volumetricQuality),
+							(uint32_t)std::clamp(m_volumetricSteps, 4, 128),
+							m_volumetricDensity, m_volumetricIntensity);
 				}
 				if (ImGui::CollapsingHeader("Forward+ tiles + GfxFilter", ImGuiTreeNodeFlags_DefaultOpen)) {
 					const auto& fwd = m_viewportResources.forwardPlus;

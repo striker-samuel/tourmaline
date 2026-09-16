@@ -4,7 +4,7 @@
 //
 // Usage:
 //   App [--scene sponza|bistro] [--minimal] [--filter-only] [--with csv]
-// --minimal runs the reduced pass set (no shadows/filter/blur/AO/bloom/DOF/SSR).
+// --minimal runs the reduced pass set (no shadows/filter/blur/AO/bloom/DOF/SSR/volumetric).
 // --disable_control freezes the camera (no keyboard/gamepad/mouselook):
 // deterministic A/B benching at the scene's configured pose.
 

@@ -960,6 +960,12 @@ PSOut mainPS(PSIn IN)
     const uint giDbgMode = frame.giDebug & 0xffu;
 
     // IN.lmChunk = cooked lobe count (5/6/9/12; 0xFFFFFFFF = none).
+    // Transmissive (AlphaMode::Blend) materials sample no baked DIFFUSE:
+    // glass has no diffuse lobe, and shading one as if opaque (albedo/PI
+    // * E, then alpha-blended) makes every probe-lit pane glow. The
+    // sources are still resolved (giSource/bakedE drive the debug views)
+    // and their SPECULAR below still applies; only the diffuse add is
+    // skipped so Blend pixels keep transmitted background + reflections.
     if (frame.lmEnabled != 0u && IN.lmChunk >= 5u && IN.lmChunk <= 12u)
     {
         float3 lmAmps[SG_LM_MAX_LOBES];
@@ -970,7 +976,8 @@ PSOut mainPS(PSIn IN)
             const float3 lmE = SgLmDiffuseIrradiance(lmAmps, lmLobes, N) * lmScale;
             giSource = 1u;
             bakedE = lmE;
-            ambient += kD * baseColor * (lmE / PI) * occlusion * ao;
+            if (!isBlendMat)
+                ambient += kD * baseColor * (lmE / PI) * occlusion * ao;
             const float lmRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
             if (lmRoughW > 0.0f)
             {
@@ -989,7 +996,8 @@ PSOut mainPS(PSIn IN)
             const float3 regE = SgGiDiffuseIrradiance(regAmps, N) * regScale;
             giSource = 2u;
             bakedE = regE;
-            ambient += kD * baseColor * (regE / PI) * occlusion * ao;
+            if (!isBlendMat)
+                ambient += kD * baseColor * (regE / PI) * occlusion * ao;
             const float regRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
             if (regRoughW > 0.0f)
             {
@@ -1010,7 +1018,10 @@ PSOut mainPS(PSIn IN)
             giSource = 3u;
             bakedE = giE;
             // Same convention as the direct sun term: albedo/PI * E.
-            ambient += kD * baseColor * (giE / PI) * occlusion * ao;
+            // Skipped for Blend (see above): probe diffuse on glass reads
+            // as emissive glow once alpha-blended over the background.
+            if (!isBlendMat)
+                ambient += kD * baseColor * (giE / PI) * occlusion * ao;
             // Rough glossy reflections; very smooth surfaces keep the
             // analytic sky env only (broad lobes cannot do mirrors).
             const float roughW = saturate((shadingRoughness - 0.15f) / 0.25f);
@@ -1028,9 +1039,11 @@ PSOut mainPS(PSIn IN)
     // Sky IBL fallback: pixels no baked source covered take the
     // analytic sky diffuse (or the legacy constant ambient when the IBL
     // flag is off). Covered pixels keep the baked field alone — the
-    // sky never adds on top of a baked source.
+    // sky never adds on top of a baked source. Blend pixels take no
+    // diffuse fallback either (same glow reason as above): transmitted
+    // background plus specular IBL only.
     // ---------------------------------------------------------------
-    if (giSource == 0u)
+    if (giSource == 0u && !isBlendMat)
     {
         ambient = lerp(legacyAmbient, ambientDiffuse, iblOn);
     }

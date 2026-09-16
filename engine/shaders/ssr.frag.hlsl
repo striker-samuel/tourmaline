@@ -1,27 +1,38 @@
 #define SSR_PASS
 #include "common.hlsli"
 #include "dof.hlsli"
+#include "environment.hlsli"
+
+// SSR trace (half res): full-res depth -> half-res reflection layer.
+// Output: rgb = reflected HDR x Fresnel x intensity (unfaded),
+//         a   = edge x distance confidence (1 on sky fallback).
+// Rays that hit nothing (sky behind the ray, off-screen exit) fall back
+// to the analytic sky specular IBL instead of black — standard SSR+IBL
+// pairing, and what makes isolated mirrors (probe balls, open atriums)
+// read as chrome instead of going dark. The bilateral blur + composite
+// passes consume (rgb, a); the FULL-res base HDR is only re-added in
+// the composite, so it stays sharp.
 
 struct PSIn
 {
-    float4 pos : SV_Position; // full-res pixel coords (depth .Load)
+    float4 pos : SV_Position; // half-res pixel coords (depth .Load is full-res)
     float2 uv : TEXCOORD0;
 };
 
 struct PSOut
 {
-    float4 outColor : SV_Target0;
+    float4 outColor : SV_Target0; // RGBA16F reflection layer
 };
 
-// Must match Engine/Rendergraph/ssr.h SsrPush (56 bytes).
-struct SsrPush
+// Must match Engine/Rendergraph/ssr.h SsrTracePush (56 bytes).
+struct SsrTracePush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms;
     uint hdrTextureIndex;
     uint depthTextureIndex;
     uint samplerIndex;
     uint steps;
-    float2 texelSize;
+    float2 invDepthSize; // 1 / full-res depth extent (NOT the pass extent)
     float maxDistance;
     float thickness;
     float intensity;
@@ -31,12 +42,22 @@ struct SsrPush
 };
 
 [[vk::push_constant]]
-ConstantBuffer<SsrPush> sp;
+ConstantBuffer<SsrTracePush> sp;
 
 // Interleaved gradient noise: ray-origin dither against banding.
 float SsrIGN(float2 px)
 {
     return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715))));
+}
+
+// Full-res pixel-center NDC (framebuffer y-down: top = -1, matching
+// ssao.frag.hlsl and forwardplus.cs.hlsl). Correct for the main view
+// because proj carries the [1][1] *= -1 Vulkan flip; invProj unprojects
+// it exactly, so this stays flip-agnostic like the SSAO raw pass.
+float2 SsrFullNdc(int2 fullPx, float2 invDepthSize)
+{
+    return float2((float(fullPx.x) + 0.5f) * invDepthSize.x * 2.0f - 1.0f,
+                  (float(fullPx.y) + 0.5f) * invDepthSize.y * 2.0f - 1.0f);
 }
 
 PSOut mainPS(PSIn IN)
@@ -47,42 +68,61 @@ PSOut mainPS(PSIn IN)
     Texture2D depthTex = textures[NonUniformResourceIndex(sp.depthTextureIndex)];
     SamplerState smp = samplers[NonUniformResourceIndex(sp.samplerIndex)];
 
-    float3 base = SanitizeHdr(hdrTex.Sample(smp, IN.uv).rgb);
+    float2 invDepth = sp.invDepthSize;
 
-    int2 px = int2(IN.pos.xy);
-    float dCenter = depthTex.Load(int3(px, 0)).r;
+    // Half-res pixel -> full-res 2x2 block (same discipline as ssao.frag).
+    // Depth .Load needs no sampler (D32 has no linear filtering).
+    int2 halfPx = int2(IN.pos.xy);
+    int2 fullBase = halfPx * 2;
+    float d00 = depthTex.Load(int3(fullBase, 0)).r;
+    float d10 = depthTex.Load(int3(fullBase + int2(1, 0), 0)).r;
+    float d01 = depthTex.Load(int3(fullBase + int2(0, 1), 0)).r;
+    float d11 = depthTex.Load(int3(fullBase + int2(1, 1), 0)).r;
+
+    // Receiver = nearest valid tap (reverse-Z: max depth = nearest).
+    // Never average across a foreground/background discontinuity: that
+    // fabricates a center floating in mid-air and smears reflections
+    // across silhouettes. All-background (sky/clear/OOB at odd extents)
+    // blocks carry no reflector -> miss.
+    float dCenter = 0.0f;
+    int2 fullPxC = fullBase;
+    float dBest = 0.0f;
+    if (!DofIsBackground(d00) && d00 > dBest) { dBest = d00; dCenter = d00; fullPxC = fullBase; }
+    if (!DofIsBackground(d10) && d10 > dBest) { dBest = d10; dCenter = d10; fullPxC = fullBase + int2(1, 0); }
+    if (!DofIsBackground(d01) && d01 > dBest) { dBest = d01; dCenter = d01; fullPxC = fullBase + int2(0, 1); }
+    if (!DofIsBackground(d11) && d11 > dBest) { dBest = d11; dCenter = d11; fullPxC = fullBase + int2(1, 1); }
     if (DofIsBackground(dCenter))
     {
-        // Sky: nothing to reflect off — keep the base color.
-        OUT.outColor = float4(base, 1.0f);
+        OUT.outColor = float4(0.0f, 0.0f, 0.0f, 0.0f);
         return OUT;
     }
 
-    float2 invExtent = sp.texelSize;
-    float2 ndcXY = float2((float(px.x) + 0.5f) * invExtent.x * 2.0f - 1.0f,
-                          (float(px.y) + 0.5f) * invExtent.y * 2.0f - 1.0f);
-    float3 viewPos = DofUnprojectView(ndcXY, dCenter, frame.invProj);
+    float2 ndcC = SsrFullNdc(fullPxC, invDepth);
+    float3 viewPos = DofUnprojectView(ndcC, dCenter, frame.invProj);
 
-    // Depth-derived normal from view-position neighbors (one pixel over).
-    // A background neighbor means a silhouette: fall back to the face
-    // normal of the valid side instead of fabricating a planar normal
-    // across the edge (same discipline as ssao.frag.hlsl).
-    int2 pxX = px + int2(1, 0);
-    int2 pxY = px + int2(0, 1);
-    float dX = depthTex.Load(int3(pxX, 0)).r;
-    float dY = depthTex.Load(int3(pxY, 0)).r;
-    float2 ndcX = ndcXY + float2(2.0f * invExtent.x * 2.0f, 0.0f);
-    float2 ndcY = ndcXY + float2(0.0f, 2.0f * invExtent.y * 2.0f);
+    // Depth-derived normal from full-res neighbors one half-step over
+    // (same taps as ssao.frag.hlsl). A background neighbor means this
+    // block sits on a silhouette: reuse the CENTER depth at the exact
+    // neighbor NDC (fronto-parallel assumption). Unprojecting through
+    // invProj makes the fallback sign-safe by construction — no
+    // hand-rolled view-space offsets that can mirror an axis when the
+    // Y-flip changes.
+    int2 fullPxX = fullBase + int2(2, 0);
+    int2 fullPxY = fullBase + int2(0, 2);
+    float dX = depthTex.Load(int3(fullPxX, 0)).r;
+    float dY = depthTex.Load(int3(fullPxY, 0)).r;
     float3 posX = DofIsBackground(dX)
-        ? viewPos + float3(2.0f * invExtent.x * max(-viewPos.z, 0.1f), 0.0f, 0.0f)
-        : DofUnprojectView(ndcX, dX, frame.invProj);
+        ? DofUnprojectView(SsrFullNdc(fullPxX, invDepth), dCenter, frame.invProj)
+        : DofUnprojectView(SsrFullNdc(fullPxX, invDepth), dX, frame.invProj);
     float3 posY = DofIsBackground(dY)
-        ? viewPos + float3(0.0f, 2.0f * invExtent.y * max(-viewPos.z, 0.1f), 0.0f)
-        : DofUnprojectView(ndcY, dY, frame.invProj);
+        ? DofUnprojectView(SsrFullNdc(fullPxY, invDepth), dCenter, frame.invProj)
+        : DofUnprojectView(SsrFullNdc(fullPxY, invDepth), dY, frame.invProj);
     float3 N = normalize(cross(posX - viewPos, posY - viewPos) + 1e-9f);
     float3 V = -viewPos / max(length(viewPos), 1e-6f);
     if (dot(N, V) < 0.0f)
         N = -N;
+    // Safe for double-sided glass: reflect() is invariant under N -> -N,
+    // so the viewer-facing flip above never mirrors the reflection.
 
     // Fresnel (Schlick, dielectric F0): grazing angles — the bistro
     // shopfront seen from the street — reflect the most.
@@ -90,21 +130,24 @@ PSOut mainPS(PSIn IN)
     float fres = sp.f0 + (1.0f - sp.f0) * pow(1.0f - ndv, 5.0f);
 
     float3 R = reflect(-V, N);
-    if (dot(R, V) < 0.0f)
-    {
-        // Reflection goes behind the surface (grazing numeric): no march.
-        OUT.outColor = float4(base, 1.0f);
-        return OUT;
-    }
+    // No dot(R, V) early-out: R is mirrored across the viewer-facing N,
+    // so dot(R, N) = dot(V, N) > 0 by construction (always above the
+    // surface). dot(R, V) < 0 is the COMMON valid case (floor, bistro
+    // side glass at grazing: the reflection points away from the camera
+    // into the scene). Behind-camera rays are handled in the march
+    // (rayDist <= 0 break).
 
     uint nSteps = clamp(sp.steps, 1, 128);
     float stepLen = max(sp.maxDistance, 0.1f) / float(nSteps);
-    // Dither the ray origin along R to break up step banding.
-    float jitter = SsrIGN(float2(px));
-    float3 marchPos = viewPos + R * (stepLen * jitter) + N * 1e-3f;
+    // Dither the ray origin along R to break up step banding; bias 2 mm
+    // toward the viewer so thin double-sided panes don't self-hit.
+    float jitter = SsrIGN(float2(halfPx));
+    float3 marchPos = viewPos + R * (stepLen * jitter) + N * 2e-3f;
 
     float2 hitUv = float2(-1.0f, -1.0f);
     float hitFade = 0.0f;
+    float2 fullExtent = float2(1.0f / max(invDepth.x, 1e-9f),
+                               1.0f / max(invDepth.y, 1e-9f));
     for (uint i = 0; i < 128; ++i)
     {
         if (i >= nSteps)
@@ -117,17 +160,17 @@ PSOut mainPS(PSIn IN)
         float4 clip = mul(frame.proj, float4(marchPos, 1.0f));
         float invW = 1.0f / max(clip.w, 1e-9f);
         float2 marchNdc = clip.xy * invW;
+        // Project to full-res depth UV (NDC y-down -> uv = ndc * 0.5 + 0.5,
+        // same as ssao.frag.hlsl line ~148).
         float2 marchUv = marchNdc * 0.5f + 0.5f;
         if (marchUv.x < 0.0f || marchUv.x > 1.0f || marchUv.y < 0.0f || marchUv.y > 1.0f)
             break; // off-screen: miss (no history to stretch)
 
-        int2 samplePx = int2(marchUv * float2(1.0f / max(invExtent.x, 1e-9f),
-                                              1.0f / max(invExtent.y, 1e-9f)));
+        int2 samplePx = int2(marchUv * fullExtent);
         float sampD = depthTex.Load(int3(samplePx, 0)).r;
         if (DofIsBackground(sampD))
             continue; // sky behind the ray: keep marching
-        float2 sampNdc = float2((float(samplePx.x) + 0.5f) * invExtent.x * 2.0f - 1.0f,
-                                (float(samplePx.y) + 0.5f) * invExtent.y * 2.0f - 1.0f);
+        float2 sampNdc = SsrFullNdc(samplePx, invDepth);
         float sceneDist = DofViewDist(sampD, sampNdc, frame.invProj);
 
         // Hit when the ray has crossed into the surface slab:
@@ -145,15 +188,11 @@ PSOut mainPS(PSIn IN)
                 refinePos -= R * refineStep;
                 float4 rc = mul(frame.proj, float4(refinePos, 1.0f));
                 float2 rn = (rc.xy / max(rc.w, 1e-9f)) * 0.5f + 0.5f;
-                int2 rp = int2(clamp(rn, float2(0.0f, 0.0f), float2(1.0f, 1.0f))
-                    * float2(1.0f / max(invExtent.x, 1e-9f),
-                             1.0f / max(invExtent.y, 1e-9f)));
+                int2 rp = int2(clamp(rn, float2(0.0f, 0.0f), float2(1.0f, 1.0f)) * fullExtent);
                 float rd = depthTex.Load(int3(rp, 0)).r;
                 if (!DofIsBackground(rd))
                 {
-                    float2 rndc = float2((float(rp.x) + 0.5f) * invExtent.x * 2.0f - 1.0f,
-                                         (float(rp.y) + 0.5f) * invExtent.y * 2.0f - 1.0f);
-                    float sd = DofViewDist(rd, rndc, frame.invProj);
+                    float sd = DofViewDist(rd, SsrFullNdc(rp, invDepth), frame.invProj);
                     if (-refinePos.z > sd)
                         refinePos += R * refineStep; // still inside: go forward
                 }
@@ -176,12 +215,20 @@ PSOut mainPS(PSIn IN)
         }
     }
 
-    float3 outColor = base;
-    if (hitUv.x >= 0.0f)
+    if (hitUv.x < 0.0f || hitFade <= 0.0f)
     {
-        float3 reflected = SanitizeHdr(hdrTex.Sample(smp, hitUv).rgb);
-        outColor += reflected * (fres * sp.intensity * hitFade);
+        // Miss: no scene geometry along the ray (sky behind the march,
+        // off-screen exit, behind-camera). Fall back to the analytic sky
+        // specular IBL along the WORLD-space reflection vector so mirrors
+        // reflect the sky instead of going black. Respects the IBL toggle
+        // (EvaluateSpecularEnv returns 0 when IBL is off).
+        float3 Rw = mul(frame.invView, float4(R, 0.0f)).xyz;
+        float3 sky = EvaluateSpecularEnv(normalize(Rw + 1e-9f),
+            float3(fres, fres, fres), 0.05f, frame.env);
+        OUT.outColor = float4(SanitizeHdr(sky) * sp.intensity, 1.0f);
+        return OUT;
     }
-    OUT.outColor = float4(outColor, 1.0f);
+    float3 reflected = SanitizeHdr(hdrTex.Sample(smp, hitUv).rgb);
+    OUT.outColor = float4(reflected * (fres * sp.intensity), hitFade);
     return OUT;
 }

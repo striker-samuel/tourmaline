@@ -53,6 +53,7 @@
 #include <Engine/Rendergraph/ssao.h>
 #include <Engine/Rendergraph/gtao.h>
 #include <Engine/Rendergraph/ssr.h>
+#include <Engine/Rendergraph/volumetric.h>
 #include <Engine/Rendergraph/tonemap.h>
 #include <Engine/Rendergraph/ui.h>
 #include <Engine/Utils/thread_pool.h>
@@ -115,6 +116,7 @@ struct ScenePassConfig {
 	bool motionBlur = true;         // HDR velocity-gather blur
 	bool dof = true;                // depth-of-field (low single-pass / HQ bokeh)
 	bool ssr = true;                // screen-space reflections (depth-reconstructed)
+	bool volumetric = true;         // raymarched GI-probe volumetric fog (HDR composite)
 	bool ssao = true;               // AO master switch (SSAO or GTAO per AoMode)
 	bool bloom = true;              // HDR bloom chain
 	bool exposure = true;           // histogram meter + CPU eye adaptation
@@ -137,6 +139,7 @@ struct ScenePassConfig {
 		c.motionBlur = false;
 		c.dof = false;
 		c.ssr = false;
+		c.volumetric = false;
 		c.ssao = false;
 		c.bloom = false;
 		c.exposure = false;
@@ -619,6 +622,7 @@ struct ViewportResources {
 	smvk::MotionBlur motionBlur; // blurred HDR output + velocity-gather program + pass
 	smvk::DepthOfField dof; // DOF HDR output + CoC target + low/bokeh programs + passes
 	smvk::ScreenSpaceReflections ssr; // SSR HDR composite output + program + pass
+	smvk::VolumetricFog volumetric; // GI-probe raymarched fog HDR output + program + pass
 	smvk::ExposureMeter exposure; // histogram meter + compute program (auto-exposure)
 	smvk::Ssao ssao; // half-res raw + blurred AO targets + programs + passes
 	smvk::Gtao gtao; // half-res GTAO horizon-search targets + programs + passes
@@ -1351,12 +1355,32 @@ protected:
 	// 1x prepass depth. Bistro shopfront glass at street grazing angles is
 	// the calibration case (default Bistro view looks down the road at it).
 	bool m_ssrEnabled = false;
-	int m_ssrSteps = 32; // raymarch steps 1..128
+	int m_ssrSteps = 32; // raymarch steps 1..128 (half-res trace)
 	int m_ssrRefineSteps = 4; // binary refine iterations 0..8
 	float m_ssrMaxDistance = 50.0f; // ray length (m)
-	float m_ssrThickness = 0.5f; // depth acceptance band (m)
+	float m_ssrThickness = 0.3f; // depth acceptance band (m)
 	float m_ssrIntensity = 1.0f; // reflection strength
 	float m_ssrF0 = 0.04f; // dielectric base reflectance (glass)
+	float m_ssrBlurSharpness = 10.0f; // bilateral depth edge weight (higher = tighter)
+	// ---- Raymarched volumetric fog lit by the SG-GI probes (see
+	// volumetric.h). Single-scatter HDR composite after SSR: extinction +
+	// probe-ambient in-scatter + HG sun scatter. Off by default (opt-in;
+	// zero density/intensity is a copy-through). Quality preset drives
+	// march steps (full-res composite; hand edits flip to Custom). ----
+	bool m_volumetricEnabled = false;
+	smvk::VolumetricQuality m_volumetricQuality = smvk::VolumetricQuality::Medium;
+	int m_volumetricSteps = 16; // march steps 4..128
+	float m_volumetricMaxDistance = 80.0f; // ray clamp (m)
+	float m_volumetricDensity = 0.015f; // extinction (1/m)
+	float m_volumetricIntensity = 1.0f; // scattering multiplier
+	float m_volumetricAnisotropy = 0.4f; // HG g -0.9..0.9
+	float m_volumetricSun = 1.0f; // sun scatter strength
+	float m_volumetricGi = 1.0f; // probe ambient strength
+	bool m_volumetricUseGi = true; // sample SG-GI probes (else sky-IBL fallback)
+	bool m_volumetricUseSun = true; // analytic sun single-scatter
+	float m_volumetricJitter = 1.0f; // IGN dither 0..1 (banding guard)
+	float m_volumetricHeightFalloff = 0.0f; // extra height falloff (1/m, 0=off)
+	float m_volumetricHeightBase = 0.0f; // reference height (m)
 	// ---- Artistic LUT grading (TPP-style 32^3 strip, see tonemap.h) ----
 	// content/luts/*.png: 1024x32 sRGB-encoded strips. F7 exports the
 	// neutral strip + a screenshot reference into exports/ for Photoshop.
