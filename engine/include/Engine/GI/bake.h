@@ -43,7 +43,14 @@
 //   - Emissive static geometry is NOT baked (its NEE 1/pdfSa blowups were
 //     the bright-dot firefly source; Sponza has no meaningful emissives).
 //   - Dynamic forward+ point/spot lights are runtime-only by design and
-//     never baked.
+//     never baked. Lights AUTHORED static (SceneLight flag
+//     kSceneLightFlag_Static, set via glTF "smvk.staticLight" extras or a
+//     STATIC_ light name) are the exception: they are bake sources —
+//     harvested into the bake spot list and the bake sun by
+//     CollectStaticBakeLights (called from BuildTraceSceneFromCluster
+//     when GiSceneBuildOptions::staticLights is on) — and the runtime
+//     forward+ set skips them so covered pixels never double their
+//     direct term.
 
 #include <chrono>
 #include <cstdint>
@@ -168,6 +175,15 @@ public:
 		return bvh_.AnyHit(from, dir, dist);
 	}
 
+	// One NEE sample of every static spot at a diffuse vertex
+	// (Frostbite windowed inverse-square + cone falloff, occlusion
+	// tested — mirrors EvaluateForwardPlusLight so bakes match the
+	// runtime direct lighting). Public for the unit tests: the
+	// static-light harvest (CollectStaticBakeLights) is validated
+	// against the analytic point/spot terms through it.
+	glm::vec3 SampleSpots(const glm::vec3& pos, const glm::vec3& n,
+		const GiTraceMaterial& m) const;
+
 private:
 	TriangleBvh bvh_;
 	struct EmissiveTri {
@@ -186,12 +202,6 @@ private:
 	glm::vec3 SampleEmissive(const glm::vec3& pos, const glm::vec3& n,
 		const GiTraceMaterial& m, Pcg32& rng) const;
 	glm::vec3 SampleSun(const glm::vec3& pos, const glm::vec3& n,
-		const GiTraceMaterial& m) const;
-	// One NEE sample of every static spot at a diffuse vertex
-	// (Frostbite windowed inverse-square + cone falloff, occlusion
-	// tested — mirrors EvaluateForwardPlusLight so bakes match the
-	// runtime direct lighting).
-	glm::vec3 SampleSpots(const glm::vec3& pos, const glm::vec3& n,
 		const GiTraceMaterial& m) const;
 };
 
@@ -229,7 +239,39 @@ struct GiSceneBuildOptions {
 	// analytic-transport mode; the production bake uses REAL materials.
 	bool uniformAlbedo = false;
 	glm::vec3 uniformAlbedoValue{ 0.7f };
+	// Harvest scene-authored STATIC lights (SceneLight flag
+	// kSceneLightFlag_Static) into the bake light set: spots/points
+	// become GiTraceSpot NEE sources, the first static directional
+	// overrides the bake sun (see CollectStaticBakeLights). On by
+	// default: flagged lights exist to be baked. Callers that only want
+	// the geometry/BVH (pick raycasts) can turn it off.
+	bool staticLights = true;
 };
+
+// Harvest result: how many authored lights joined the bake light set.
+struct GiStaticLightCounts {
+	uint32_t spots = 0;     // static spots appended to GiTraceScene::spots
+	uint32_t points = 0;    // static points appended (as full-cone spots)
+	uint32_t suns = 0;      // 1 when a static directional seeded the sun
+};
+
+// Collects the scene's STATIC-marked punctual lights (KHR_lights_punctual
+// imports carrying kSceneLightFlag_Static) into the bake light set:
+//   - spots/points append to out.spots (GiTraceSpot is cone-only, so a
+//     point becomes a 180-degree spot — with cosInner == cosOuter == -1
+//     the cone falloff in SampleSpots evaluates to 1 everywhere and the
+//     Frostbite windowed inverse-square term is exactly the runtime
+//     point-light path);
+//   - the FIRST static directional overrides out.sunDirection/sunColor/
+//     sunIntensity (world direction from the node's global transform,
+//     exactly how the runtime seeds its environment from the authored
+//     sun) — non-static directionals never touch the bake;
+//   - non-flagged lights are ignored (they stay runtime forward+ lights
+//     and must never be baked).
+// World position/aim resolve from scene.globalTransform[node] (call after
+// the scene's globals are up to date — BuildTraceSceneFromCluster does
+// this internally). Node order is sorted for deterministic bakes.
+GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene& out);
 
 // Extracts world-space opaque triangles + materials from a cook-mode
 // Cluster (retained uploads; see Cluster::SetCookMode). Sun + static

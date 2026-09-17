@@ -48,6 +48,7 @@
 #include <Engine/Rendergraph/motionblur.h>
 #include <Engine/Rendergraph/motionvector.h>
 #include <Engine/Rendergraph/msaa.h>
+#include <Engine/Rendergraph/particles.h>
 #include <Engine/Rendergraph/smaa.h>
 #include <Engine/Rendergraph/spotshadow.h>
 #include <Engine/Rendergraph/ssao.h>
@@ -126,6 +127,7 @@ struct ScenePassConfig {
 	bool skydome = true;            // fullscreen-triangle sky in Main
 	bool smaa = true;               // SMAA post-process chain (mode via UI AA combo)
 	bool deferredShadows = true;    // tiled/zBin deferred-shadow pipeline (H toggles at runtime)
+	bool particles = true;          // GPU particle system (compute emitters + tiled-lit billboards)
 
 	static ScenePassConfig All() { return ScenePassConfig{}; }
 	static ScenePassConfig Minimal() {		ScenePassConfig c{};
@@ -148,6 +150,7 @@ struct ScenePassConfig {
 		c.skydome = false;
 		c.smaa = false;
 		c.deferredShadows = false;
+		c.particles = false;
 		return c;
 	}
 	// Bisection config: filtered Main + HZB + tonemap only (depth prepass
@@ -366,6 +369,30 @@ struct DecalDemo {
 	// lazily on the first crosshair spawn — Sponza builds in a few
 	// seconds; see SceneRenderer::EnsureDecalPickBvh).
 	int pickBvhState = 0; // 0 = not built, 1 = ready, -1 = unavailable
+};
+
+// ---------------------------------------------------------------------------
+// GPU particle demo (see smvk::Particles + particles_emit/sim/draw shaders).
+// The CPU only owns the emitter PARAMETER rows below: spawn scheduling
+// (rate carry), simulation and drawing all run on the GPU. Rows re-upload
+// every frame (ring slice like the decal splats), so these sliders retouch
+// live emitters immediately; the GPU keeps its own fractional-rate carry
+// in a separate buffer the uploads never touch.
+// ---------------------------------------------------------------------------
+struct ParticleDemo {
+	bool enabled = true;
+	// Global sim gravity (m/s^2; per-emitter gravityScale multiplies it).
+	float gravityY = -9.81f;
+	// Live emitter parameters (capped at PARTICLE_MAX_EMITTERS on upload).
+	std::vector<smvk::ParticleEmitterGpu> emitters;
+	int selected = 0; // UI combo index into `emitters`
+	// Steady-state alive estimate for the UI readout: sum(rate * avg life).
+	float SteadyStateCount() const {
+		double n = 0.0;
+		for (const auto& e : emitters)
+			n += (double)e.life.z * (double)(e.life.x + e.life.y) * 0.5;
+		return (float)n;
+	}
 };
 
 struct FrameUniforms
@@ -597,6 +624,13 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> fragWireShader;
 	smvk::ShaderProgram mainWireProgram;       // default.vert + wire FS
 	smvk::ShaderProgram vertexLitWireProgram;  // default_vertexlit.vert + wire FS
+	// Glass-layer writer (SSR pane reflections, option B): default.vert +
+	// glassmask.frag redraw of the transparent list into ssr.glass
+	// (R = pane presence, G = pane reverse-Z depth). Missing module
+	// leaves shaderCount 0, the GlassMask pass is not emitted, and SSR
+	// keeps the opaque-depth receiver (pre-layer behavior).
+	smvk::Holder<smvk::ShaderModuleHandle> fragGlassMaskShader;
+	smvk::ShaderProgram glassMaskProgram;
 	// Alpha-tested shadow-depth program for MASK cutout casters
 	// (shadow.vert mainVS + shadow.frag mainPS). Opaque casters keep
 	// the engine builder's depth-only program. shadow.frag declares
@@ -628,6 +662,7 @@ struct ViewportResources {
 	smvk::Tonemapper tonemap; // default tonemap program + pass helper
 	smvk::ForwardPlus forwardPlus; // tile buffers + cull/depth programs + Ensure
 	smvk::DeferredShadows deferredShadows; // fixed-size ring buffers + 3 phase programs
+	smvk::Particles particles; // GPU pool/free-list/emitter-ring buffers + emit/sim/draw programs
 	std::vector<smvk::LogicalImageViewHandle> swapImages;
 	smvk::DepthTarget renderDepth; // scene depth at internal resolution + Ensure
 	// Occluder-only depth for the HZB pyramid (Option A split): filled by
@@ -1008,6 +1043,23 @@ protected:
 	// Cheap LOD index for filter/direct split decisions (cached chains, no
 	// mesh fetch). Returns 0 when LODs are disabled or uncooked.
 	uint32_t LodIndexForNode(NodeId node, uint32_t worldMesh) const;
+
+	// ---- Transparent list (AlphaMode::Blend + dithered) ---------------
+	// Shared by Main's transparent leg and the SSR GlassMask redraw so
+	// both draw the same geometry against the same cull view: items are
+	// Renderable|Transparent|StaticVertexFmt, frustum-tested against the
+	// frozen transparent cull view (conservative LOD union, matching
+	// FilterMainView). sortBackToFront orders by distance-to-camera for
+	// the classic AlphaBlend leg; the mask pass passes false (its Max
+	// blend is order-independent).
+	struct TransparentDrawItem {
+		NodeId node;
+		uint32_t meshId;
+		uint32_t materialId;
+		float dist2;
+	};
+	std::vector<TransparentDrawItem> CollectTransparentDraws(
+		const smvk::RenderView& cullView, bool sortBackToFront);
 	void ResetLodStats();
 	// ---- Shader LODs (per-level shading programs) -------------------
 	// Runtime LOD switch: pixel budget for the projected simplifier error
@@ -1076,6 +1128,24 @@ protected:
 	// Lazy crosshair-pick acceleration (J): full scene triangle soup +
 	// CPU BVH, built on first use from the resolved world clusters.
 	std::unique_ptr<smvk::gi::GiTraceScene> m_decalPickScene;
+	// ---- GPU particles (compute emitters, see ParticleDemo + smvk::Particles) ----
+	// Single gate for every consumer (Ensure, emitter ring upload, emit/sim
+	// dispatches, draw pass) so the flag and the GPU state can never
+	// disagree. Requires the Forward+ light pipeline only for the TILED
+	// lighting path — the draw shader falls back to a brute-force light
+	// loop when the tile lists are not fresh (deferred shadows own them).
+	bool m_particlesEnabled = true;
+	ParticleDemo m_particleDemo{};
+	bool ParticlesActive() const {
+		return m_passes.particles && m_particlesEnabled
+			&& m_viewportResources.particles.Valid()
+			&& m_viewportResources.particles.ShadersValid();
+	}
+	// Re-uploads the emitter parameter ring slice (every frame; carry lives
+	// GPU-side) and returns the live emitter count.
+	uint32_t UpdateParticles(uint32_t currentFrame);
+	// Demo default emitters (embers + drifting motes at the scene origin).
+	void SeedParticleEmitters();
 	smvk::CookieLibrary m_cookies{}; // baked/engine-resource gobos (see cookies.h)
 	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
@@ -1396,9 +1466,15 @@ protected:
 	float m_dofHighlightThreshold = 1.0f; // HQ pre-exposure luminance knee
 	// ---- Screen-space reflections (HDR composite, post-DOF, pre-bloom) ----
 	// Opt-in plus pass: no GBuffer, so normals/Fresnel reconstruct from the
-	// 1x prepass depth. Bistro shopfront glass at street grazing angles is
-	// the calibration case (default Bistro view looks down the road at it).
+	// 1x prepass depth PLUS the glass layer (GlassMask redraw of the
+	// transparent list: pane presence + pane depth — see ssr.glass).
+	// Bistro shopfront glass at street grazing angles is the calibration
+	// case (default Bistro view looks down the road at it).
 	bool m_ssrEnabled = false;
+	// Glass layer (pane receivers) on/off — VULKANTOY_SSR_GLASS A/B knob.
+	// Off = no GlassMask pass, SSR reflects off the opaque depth only
+	// (the pre-layer behavior).
+	bool m_ssrGlassEnabled = true;
 	int m_ssrSteps = 32; // raymarch steps 1..128 (half-res trace)
 	int m_ssrRefineSteps = 4; // binary refine iterations 0..8
 	float m_ssrMaxDistance = 50.0f; // ray length (m)

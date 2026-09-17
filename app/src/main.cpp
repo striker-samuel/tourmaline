@@ -127,19 +127,19 @@ void PrintUsage(const char* prog) {
 		passCfg = app::ScenePassConfig::FilterOnly();
 	else if (minimal)
 		passCfg = app::ScenePassConfig::Minimal();
-	// Bisection: layer extra passes onto the base config
-	// (csv: deferred,shadows,ssao/gtao/ao,smaa,motion,dof,ssr,bloom,exposure,msaa,skydome,ui,cull).
-	auto applyCsv = [&](const char* csv, bool enable) {
-		if (!csv) return;
-		const std::string s = csv;
-		size_t pos = 0;
-		while (pos <= s.size()) {
-			size_t end = s.find(',', pos);
-			if (end == std::string::npos) end = s.size();
-			const std::string tok = s.substr(pos, end - pos);
-			bool* flag = nullptr;
-			if (tok == "deferred") flag = &passCfg.deferredShadows;
-			else if (tok == "shadows") { passCfg.directionalShadows = passCfg.spotShadows = enable; }
+		// Bisection: layer extra passes onto the base config
+		// (csv: deferred,shadows,ssao/gtao/ao,smaa,motion,dof,ssr,bloom,exposure,msaa,skydome,ui,cull,particles).
+		auto applyCsv = [&](const char* csv, bool enable) {
+			if (!csv) return;
+			const std::string s = csv;
+			size_t pos = 0;
+			while (pos <= s.size()) {
+				size_t end = s.find(',', pos);
+				if (end == std::string::npos) end = s.size();
+				const std::string tok = s.substr(pos, end - pos);
+				bool* flag = nullptr;
+				if (tok == "deferred") flag = &passCfg.deferredShadows;
+				else if (tok == "shadows") { passCfg.directionalShadows = passCfg.spotShadows = enable; }
 			else if (tok == "ssao" || tok == "gtao" || tok == "ao") flag = &passCfg.ssao;
 			else if (tok == "smaa") flag = &passCfg.smaa;
 			else if (tok == "motion") { passCfg.motionVectors = passCfg.motionBlur = enable; }
@@ -153,6 +153,7 @@ void PrintUsage(const char* prog) {
 			else if (tok == "cull") flag = &passCfg.forwardPlusCull;
 			else if (tok == "prepass") flag = &passCfg.forwardPlusPrepass;
 			else if (tok == "filter") flag = &passCfg.gfxFilter;
+			else if (tok == "particles") flag = &passCfg.particles;
 			else if (!tok.empty()) std::cerr << "Unknown pass token: '" << tok << "'\n";
 			if (flag) *flag = enable;
 			pos = end + 1;

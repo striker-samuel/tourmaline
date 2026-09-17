@@ -3,7 +3,8 @@
 #include "dof.hlsli"
 #include "environment.hlsli"
 
-// SSR trace (half res): full-res depth -> half-res reflection layer.
+// SSR trace (half res): full-res depth + glass layer -> half-res
+// reflection layer.
 // Output: rgb = reflected HDR x Fresnel x intensity, clamped to
 //         kSsrMaxReflected (firefly guard — sun-disc strikes and
 //         half-overflow garbage would otherwise spike 10-50x over
@@ -14,6 +15,10 @@
 // miss without double-counting the sky. The bilateral blur + composite
 // passes consume (rgb, a); the FULL-res base HDR is only re-added in
 // the composite, so it stays sharp.
+// Receiver: a glass pane where the glass layer masks one (panes never
+// write the opaque depth — without the layer every pane pixel traced
+// off the seen-through background instead of the pane), else the
+// nearest valid opaque depth tap.
 
 struct PSIn
 {
@@ -26,7 +31,9 @@ struct PSOut
     float4 outColor : SV_Target0; // RGBA16F reflection layer
 };
 
-// Must match Engine/Rendergraph/ssr.h SsrTracePush (56 bytes).
+// Must match Engine/Rendergraph/ssr.h SsrTracePush (64 bytes — the
+// C++ struct's uint64 BDA aligns it to 8, so this block carries the same
+// explicit trailing pad; every member offset is identical).
 struct SsrTracePush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms;
@@ -44,6 +51,8 @@ struct SsrTracePush
                      // else the record counter (temporal path animates the
                      // ray-origin dither so the TAA pass converges speckle
                      // to its mean instead of parking a static pattern)
+    uint maskTextureIndex; // glass layer bindless, 0xffffffff = none
+    uint pad0; // sizeof alignment (mirrors the C++ pad)
 };
 
 [[vk::push_constant]]
@@ -78,6 +87,18 @@ float2 SsrFullNdc(int2 fullPx, float2 invDepthSize)
 {
     return float2((float(fullPx.x) + 0.5f) * invDepthSize.x * 2.0f - 1.0f,
                   (float(fullPx.y) + 0.5f) * invDepthSize.y * 2.0f - 1.0f);
+}
+
+// Glass-layer tap (full-res): R = pane presence, G = the pane
+// fragment's reverse-Z depth (see glassmask.frag.hlsl). Returns 0 when
+// the layer is not bound this frame — a uniform branch, so the
+// sentinel never indexes the bindless array out of range.
+float4 SsrGlassTap(int2 fullPx)
+{
+    if (sp.maskTextureIndex == 0xffffffffu)
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    Texture2D glassTex = textures[NonUniformResourceIndex(sp.maskTextureIndex)];
+    return glassTex.Load(int3(fullPx, 0));
 }
 
 // Facing of a candidate hit: depth-derived normal around the hit UV,
@@ -131,18 +152,46 @@ PSOut mainPS(PSIn IN)
     float d01 = depthTex.Load(int3(fullBase + int2(0, 1), 0)).r;
     float d11 = depthTex.Load(int3(fullBase + int2(1, 1), 0)).r;
 
-    // Receiver = nearest valid tap (reverse-Z: max depth = nearest).
-    // Never average across a foreground/background discontinuity: that
-    // fabricates a center floating in mid-air and smears reflections
-    // across silhouettes. All-background (sky/clear/OOB at odd extents)
-    // blocks carry no reflector -> miss.
+    // Receiver = a glass pane first, else the nearest valid opaque tap
+    // (reverse-Z: max depth = nearest; never average or fabricate a
+    // center across a silhouette — a foreground/background mix would
+    // smear reflections across silhouettes). Panes never write the
+    // opaque depth (the transparent pass is depth-write-free), so
+    // without the glass layer every pane pixel traced off whatever sits
+    // BEHIND the pane — the Bistro shopfront "reflected" its interior
+    // shelves instead of the street. ANY glass tap in the 2x2 block
+    // makes the block a pane receiver (the pane plane sits in front of
+    // every tap's through-content), picking the NEAREST pane tap
+    // (reverse-Z max G) so the receiver stays on the pane surface.
+    // All-background blocks (sky/clear/OOB at odd extents) still carry
+    // no reflector -> miss — unless a pane covers them, in which case
+    // the pane depth IS the receiver and glass over sky finally
+    // traces.
     float dCenter = 0.0f;
     int2 fullPxC = fullBase;
-    float dBest = 0.0f;
-    if (!DofIsBackgroundOrGarbage(d00) && d00 > dBest) { dBest = d00; dCenter = d00; fullPxC = fullBase; }
-    if (!DofIsBackgroundOrGarbage(d10) && d10 > dBest) { dBest = d10; dCenter = d10; fullPxC = fullBase + int2(1, 0); }
-    if (!DofIsBackgroundOrGarbage(d01) && d01 > dBest) { dBest = d01; dCenter = d01; fullPxC = fullBase + int2(0, 1); }
-    if (!DofIsBackgroundOrGarbage(d11) && d11 > dBest) { dBest = d11; dCenter = d11; fullPxC = fullBase + int2(1, 1); }
+    bool paneReceiver = false;
+    {
+        const float4 gl00 = SsrGlassTap(fullBase);
+        const float4 gl10 = SsrGlassTap(fullBase + int2(1, 0));
+        const float4 gl01 = SsrGlassTap(fullBase + int2(0, 1));
+        const float4 gl11 = SsrGlassTap(fullBase + int2(1, 1));
+        float gBest = 0.0f;
+        if (gl00.r > 0.5f && !DofIsBackgroundOrGarbage(gl00.g) && gl00.g > gBest)
+            { gBest = gl00.g; dCenter = gl00.g; fullPxC = fullBase; paneReceiver = true; }
+        if (gl10.r > 0.5f && !DofIsBackgroundOrGarbage(gl10.g) && gl10.g > gBest)
+            { gBest = gl10.g; dCenter = gl10.g; fullPxC = fullBase + int2(1, 0); paneReceiver = true; }
+        if (gl01.r > 0.5f && !DofIsBackgroundOrGarbage(gl01.g) && gl01.g > gBest)
+            { gBest = gl01.g; dCenter = gl01.g; fullPxC = fullBase + int2(0, 1); paneReceiver = true; }
+        if (gl11.r > 0.5f && !DofIsBackgroundOrGarbage(gl11.g) && gl11.g > gBest)
+            { gBest = gl11.g; dCenter = gl11.g; fullPxC = fullBase + int2(1, 1); paneReceiver = true; }
+    }
+    if (!paneReceiver) {
+        float dBest = 0.0f;
+        if (!DofIsBackgroundOrGarbage(d00) && d00 > dBest) { dBest = d00; dCenter = d00; fullPxC = fullBase; }
+        if (!DofIsBackgroundOrGarbage(d10) && d10 > dBest) { dBest = d10; dCenter = d10; fullPxC = fullBase + int2(1, 0); }
+        if (!DofIsBackgroundOrGarbage(d01) && d01 > dBest) { dBest = d01; dCenter = d01; fullPxC = fullBase + int2(0, 1); }
+        if (!DofIsBackgroundOrGarbage(d11) && d11 > dBest) { dBest = d11; dCenter = d11; fullPxC = fullBase + int2(1, 1); }
+    }
     if (DofIsBackgroundOrGarbage(dCenter))
     {
         OUT.outColor = float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -153,22 +202,33 @@ PSOut mainPS(PSIn IN)
     float3 viewPos = DofUnprojectView(ndcC, dCenter, frame.invProj);
 
     // Depth-derived normal from full-res neighbors one half-step over
-    // (same taps as ssao.frag.hlsl). A background neighbor means this
-    // block sits on a silhouette: reuse the CENTER depth at the exact
-    // neighbor NDC (fronto-parallel assumption). Unprojecting through
-    // invProj makes the fallback sign-safe by construction — no
-    // hand-rolled view-space offsets that can mirror an axis when the
-    // Y-flip changes.
+    // (same taps as ssao.frag.hlsl), glass-aware:
+    //   - Pane receiver: a glass neighbor contributes ITS pane depth
+    //     (the pane surface continues). A non-glass neighbor crossed the
+    //     pane silhouette — its opaque depth is another surface — so it
+    //     falls back to the receiver pane depth at the neighbor NDC
+    //     (fronto-parallel pane assumption).
+    //   - Opaque receiver: a glass neighbor's OPAQUE depth is the
+    //     seen-through background, not a surface at this silhouette, so
+    //     it also falls back to the receiver depth; a background
+    //     neighbor keeps the existing same-depth fallback.
+    // Unprojecting through invProj makes every fallback sign-safe by
+    // construction — no hand-rolled view-space offsets that can mirror
+    // an axis when the Y-flip changes.
     int2 fullPxX = fullBase + int2(2, 0);
     int2 fullPxY = fullBase + int2(0, 2);
     float dX = depthTex.Load(int3(fullPxX, 0)).r;
     float dY = depthTex.Load(int3(fullPxY, 0)).r;
-    float3 posX = DofIsBackgroundOrGarbage(dX)
-        ? DofUnprojectView(SsrFullNdc(fullPxX, invDepth), dCenter, frame.invProj)
-        : DofUnprojectView(SsrFullNdc(fullPxX, invDepth), dX, frame.invProj);
-    float3 posY = DofIsBackgroundOrGarbage(dY)
-        ? DofUnprojectView(SsrFullNdc(fullPxY, invDepth), dCenter, frame.invProj)
-        : DofUnprojectView(SsrFullNdc(fullPxY, invDepth), dY, frame.invProj);
+    const float4 glX = SsrGlassTap(fullPxX);
+    const float4 glY = SsrGlassTap(fullPxY);
+    float dXe = paneReceiver
+        ? ((glX.r > 0.5f && !DofIsBackgroundOrGarbage(glX.g)) ? glX.g : dCenter)
+        : ((glX.r > 0.5f || DofIsBackgroundOrGarbage(dX)) ? dCenter : dX);
+    float dYe = paneReceiver
+        ? ((glY.r > 0.5f && !DofIsBackgroundOrGarbage(glY.g)) ? glY.g : dCenter)
+        : ((glY.r > 0.5f || DofIsBackgroundOrGarbage(dY)) ? dCenter : dY);
+    float3 posX = DofUnprojectView(SsrFullNdc(fullPxX, invDepth), dXe, frame.invProj);
+    float3 posY = DofUnprojectView(SsrFullNdc(fullPxY, invDepth), dYe, frame.invProj);
     float3 N = normalize(cross(posX - viewPos, posY - viewPos) + 1e-9f);
     float3 V = -viewPos / max(length(viewPos), 1e-6f);
     if (dot(N, V) < 0.0f)
@@ -177,7 +237,10 @@ PSOut mainPS(PSIn IN)
     // so the viewer-facing flip above never mirrors the reflection.
 
     // Fresnel (Schlick, dielectric F0): grazing angles — the bistro
-    // shopfront seen from the street — reflect the most.
+    // shopfront seen from the street — reflect the most. On a pane
+    // receiver N IS the pane normal (glass layer derivatives), so this
+    // is the pane's real grazing response: near-clear glass keeps its
+    // 4% face-on sheen and swings to a near-mirror at street-grazing.
     float ndv = saturate(dot(N, V));
     float fres = sp.f0 + (1.0f - sp.f0) * pow(1.0f - ndv, 5.0f);
 

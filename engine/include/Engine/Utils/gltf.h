@@ -66,7 +66,7 @@ private:
 		);
 
 	smvk::ClusterLightHandle
-		getOrCreateLight(int gltfLightIndex);
+		getOrCreateLight(int gltfLightIndex, bool staticLight);
 	void importNodeRecursive(
 		int gltfNodeIndex,
 		int parentSceneNode,

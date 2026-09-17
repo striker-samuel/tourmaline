@@ -1301,15 +1301,22 @@ int main(int argc, char** argv) {
 
 		GiTraceScene traceScene;
 		std::string terr;
+		// buildOpts.staticLights (default on) harvests the scene's
+		// STATIC-flagged cooked lights into traceScene.spots/sun here.
 		BuildTraceSceneFromCluster(*cluster, buildOpts, traceScene, terr);
 		if (!terr.empty()) {
 			std::cerr << "[LM] trace scene failed: " << terr << std::endl;
 			return 1;
 		}
-		traceScene.spots = std::move(spots);
+		// CLI --spot specs APPEND to the harvested static scene lights
+		// (assignment would wipe them — both sets bake together).
+		traceScene.spots.insert(
+			traceScene.spots.end(), spots.begin(), spots.end());
 		std::cerr << "  [LM] trace scene: " << traceScene.Bvh().TriangleCount()
 			<< " tris, " << traceScene.materials.size() << " materials, "
-			<< traceScene.spots.size() << " spots\n" << std::flush;
+			<< traceScene.spots.size() << " spots ("
+			<< traceScene.spots.size() - spots.size() << " static scene lights)\n"
+			<< std::flush;
 
 		// Charts per eligible mesh (1:1 node->mesh, non-Blend material).
 		// Charts are the ATLAS packing unit (one mesh owns many chart

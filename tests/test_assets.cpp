@@ -1038,6 +1038,26 @@ void TestClusterSerializeCook() {
 	cluster->scene.materialForNode[child] = math.index();
 	setNodeName(cluster->scene, child, "QuadNode");
 
+	// Cooked punctual light carrying the static flag (bake source —
+	// lightmap/probe harvest + runtime forward+ exclusion; see
+	// SceneLight::kSceneLightFlag_Static). Links from its own node like
+	// the glTF importer's group nodes.
+	SceneLight lightDef;
+	lightDef.type = SceneLight::Type::Spot;
+	lightDef.color = glm::vec3(1.0f, 0.5f, 0.25f);
+	lightDef.intensity = 64.0f;
+	lightDef.range = 12.0f;
+	lightDef.innerConeAngle = glm::radians(15.0f);
+	lightDef.outerConeAngle = glm::radians(30.0f);
+	lightDef.flags = SceneLight::kSceneLightFlag_Static;
+	lightDef.name = "STATIC_LampA";
+	const ClusterLightHandle lh = cluster->CreateLight(lightDef);
+	Check(lh.valid(), "cook.light.handle");
+	Check(cluster->RegisterLightUri("models/q.gltf#light.0", lh), "cook.light.uri");
+	const int lightNode = addNode(cluster->scene, root, 1);
+	cluster->scene.lightForNode[(uint32_t)lightNode] = lh.index();
+	setNodeName(cluster->scene, lightNode, "LampNode");
+
 	PakWriter writer;
 	ClusterSerializeStats stats;
 	std::string err;
@@ -1045,7 +1065,8 @@ void TestClusterSerializeCook() {
 	if (!err.empty())
 		std::cout << "  serialize err: " << err << "\n";
 	Check(stats.meshes == 1 && stats.materials == 1 && stats.textures == 1 &&
-		stats.nodes == 2, "cook.serialize.stats");
+		stats.nodes == 3, "cook.serialize.stats");
+	Check(stats.lights == 1, "cook.serialize.stats.lights");
 
 	std::vector<uint8_t> img = writer.Finalize();
 	std::string openErr;
@@ -1057,6 +1078,70 @@ void TestClusterSerializeCook() {
 	Check(reader->BlobsOfKind(PakAssetKind::Material).size() == 1, "cook.pak.mat1");
 	Check(reader->BlobsOfKind(PakAssetKind::Texture).size() == 1, "cook.pak.tex1");
 	Check(reader->BlobsOfKind(PakAssetKind::Scene).size() == 1, "cook.pak.scene1");
+
+	// Light blob round-trip: definition fields + the trailing flags
+	// section (kSceneLightFlag_Static) the bake harvest reads back.
+	{
+		const auto lightBlobs = reader->BlobsOfKind(PakAssetKind::Light);
+		Check(lightBlobs.size() == 1, "cook.pak.light1");
+		if (lightBlobs.size() == 1) {
+			const std::span<const uint8_t> p = reader->Payload(*lightBlobs[0]);
+			size_t off = 0;
+			bool ok = p.size() >= 4;
+			auto u32 = [&]() {
+				uint32_t v = 0;
+				if (off + 4 <= p.size())
+					memcpy(&v, p.data() + off, 4);
+				else
+					ok = false;
+				off += 4;
+				return v;
+			};
+			auto f32 = [&]() {
+				float v = 0.0f;
+				if (off + 4 <= p.size())
+					memcpy(&v, p.data() + off, 4);
+				else
+					ok = false;
+				off += 4;
+				return v;
+			};
+			auto str = [&]() {
+				const uint32_t n = u32();
+				std::string s;
+				if (ok && off + n <= p.size()) {
+					s.assign(reinterpret_cast<const char*>(p.data() + off), n);
+					off += n;
+				} else {
+					ok = false;
+				}
+				return s;
+			};
+			const std::string uri = str();
+			const uint32_t type = u32();
+			const float cr = f32(), cg = f32(), cb = f32();
+			const float intensity = f32();
+			const float range = f32();
+			const float inner = f32();
+			const float outer = f32();
+			const std::string name = str();
+			const uint32_t flags = u32();
+			Check(ok, "cook.pak.light.parse");
+			Check(uri == "models/q.gltf#light.0", "cook.pak.light.uri");
+			Check(type == 2 /* Spot */, "cook.pak.light.type");
+			Check(std::abs(cr - 1.0f) < 1e-6f && std::abs(cg - 0.5f) < 1e-6f &&
+				std::abs(cb - 0.25f) < 1e-6f, "cook.pak.light.color");
+			Check(std::abs(intensity - 64.0f) < 1e-6f &&
+				std::abs(range - 12.0f) < 1e-6f, "cook.pak.light.ir");
+			Check(std::abs(inner - glm::radians(15.0f)) < 1e-6f &&
+				std::abs(outer - glm::radians(30.0f)) < 1e-6f,
+				"cook.pak.light.cones");
+			Check(name == "STATIC_LampA", "cook.pak.light.name");
+			Check(flags == SceneLight::kSceneLightFlag_Static,
+				"cook.pak.light.flags.static");
+			Check(off == p.size(), "cook.pak.light.exactend");
+		}
+	}
 
 	// Texture payload round-trip (bytes + sampler).
 	const PakTocEntry* tex = reader->Find(PakAssetKind::Texture, texUri);

@@ -156,6 +156,19 @@ set_target_properties(CubemapTests PROPERTIES
 
 add_test(NAME cubemap_tests COMMAND CubemapTests)
 
+add_executable(ParticlesTests test_particles.cpp)
+
+target_link_libraries(ParticlesTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(ParticlesTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME particles_tests COMMAND ParticlesTests)
+
 project(TourTests)
 
 add_executable(TourTests test_tour.cpp)
@@ -184,4 +197,5 @@ vulkantoy_stage_sdl3(GiTests)
 vulkantoy_stage_sdl3(StreamingTests)
 vulkantoy_stage_sdl3(DeferredShadowTests)
 vulkantoy_stage_sdl3(CubemapTests)
+vulkantoy_stage_sdl3(ParticlesTests)
 vulkantoy_stage_sdl3(TourTests)

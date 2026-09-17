@@ -37,6 +37,16 @@ using NodeId = uint32_t;
 // parent transforms apply exactly like meshes.
 struct SceneLight {
 	enum class Type : uint32_t { Directional = 0, Point = 1, Spot = 2 };
+	// Static-light flag (authored via glTF extras "smvk.staticLight" on
+	// the light node, or a "STATIC_" light-name prefix; see gltf.cpp).
+	// A static light is a BAKE source: PakCooker/GiBaker harvest it into
+	// the lightmap/probe light set (CollectStaticBakeLights) and the
+	// runtime forward+ set EXCLUDES it — its direct + bounced
+	// contribution is carried by the baked sources for covered pixels
+	// (same contract as the CLI bake spots; rendering it at runtime too
+	// would double the direct term). Directionals: the first static one
+	// also seeds the bake sun.
+	static constexpr uint32_t kSceneLightFlag_Static = 1 << 0;
 	Type type = Type::Point;
 	glm::vec3 color{ 1.0f, 1.0f, 1.0f };
 	// Units match the runtime shaders (see Renderer/light.h):
@@ -45,6 +55,7 @@ struct SceneLight {
 	float range = 0.0f; // cutoff distance in meters; 0 = infinite
 	float innerConeAngle = 0.0f; // radians, spot only
 	float outerConeAngle = 0.0f; // radians, spot only
+	uint32_t flags = 0; // kSceneLightFlag_*
 	std::string name;
 };
 

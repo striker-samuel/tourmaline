@@ -373,6 +373,24 @@ static smvk::ForwardPlusDesc MakeForwardPlusDesc() {
 }
 
 // -----------------------------------------------------------------------------
+// GPU particle config (resources + passes live in
+// Engine/Rendergraph/particles.h). Caps must stay in sync with the shader
+// defines MAX_PARTICLES / MAX_PARTICLE_EMITTERS and the sim numthreads.
+// -----------------------------------------------------------------------------
+static constexpr uint32_t PARTICLE_MAX = 65536;
+static constexpr uint32_t PARTICLE_MAX_EMITTERS = 16;
+static constexpr uint32_t PARTICLE_SIM_THREADS = 64;
+
+static smvk::ParticlesDesc MakeParticlesDesc() {
+	smvk::ParticlesDesc d{};
+	d.maxParticles = PARTICLE_MAX;
+	d.maxEmitters = PARTICLE_MAX_EMITTERS;
+	d.simThreads = PARTICLE_SIM_THREADS;
+	d.name = "particles";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
 // Spot-shadow atlas config (tile descriptors live in spotshadow.h).
 // The atlas is fixed at kMaxSpotShadows slots; the per-frame selection picks
 // at most m_fpDemo.spotShadowMax casters (upper limit + distance/screenspace
@@ -948,6 +966,15 @@ bool SceneRenderer::Initialize() {
 			else if (vol == "0" || vol == "off") m_volumetricEnabled = false;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_VOLUMETRIC value: " << vol << "\n";
 		}
+		// Glass-layer (SSR pane receivers) A/B knob: 0 keeps the pre-layer
+		// behavior — no GlassMask pass, trace reflects off the opaque
+		// depth only (the seen-through background at pane pixels).
+		if (const char* glassEnv = std::getenv("VULKANTOY_SSR_GLASS")) {
+			const std::string_view gl = trimEnv(glassEnv);
+			if (gl == "0" || gl == "off") m_ssrGlassEnabled = false;
+			else if (gl == "1" || gl == "on") m_ssrGlassEnabled = true;
+			else std::cerr << "[SceneRenderer] unknown VULKANTOY_SSR_GLASS value: " << gl << "\n";
+		}
 
 		// Internal render-resolution override for headless A/B runs (the
 		// ImGui "Resolution" slider stays live after; 1.0 = swapchain 1:1).
@@ -1183,11 +1210,14 @@ bool SceneRenderer::Initialize() {
 			return false;
 		}
 		// Procedural blood-splat textures for the decal system (bindless;
-		// failure is non-fatal â€” DecalsActive() stays false and the
+		// failure is non-fatal — DecalsActive() stays false and the
 		// decal legs simply never run).
 		if (!InitDecalTextures()) {
 			std::cerr << "[SceneRenderer] decal textures unavailable - decals off\n";
 		}
+		// GPU particle demo emitters (world-space defaults near the scene
+		// origin; the panel below retouches them live).
+		SeedParticleEmitters();
 
 		// VFS overlay: loose content/ for iteration, cooked paks mounted
 		// underneath (loose files win on collisions). Shader reads below
@@ -1452,6 +1482,36 @@ bool SceneRenderer::Initialize() {
 				.shaderCount = 2
 			};
 		}
+
+	// Glass-layer writer (SSR pane reflections, option B): same
+	// default.vert VS + a FS that outputs (presence, pane depth) — a FS
+	// consuming only SV_Position links with it, same trick as the wire
+	// twin. Non-fatal: missing module leaves the program empty, the
+	// GlassMask pass is skipped, and SSR keeps the opaque-depth receiver.
+	try {
+		auto glassMaskCode = readContentFile(contentVfs, "shaders/glassmask.frag.hlsl.spv");
+		m_resources.fragGlassMaskShader = m_context->CreateShaderModule(glassMaskCode, "fragGlassMask");
+	}
+	catch (...) {
+		std::cerr << "[SceneRenderer] glassmask unavailable - SSR keeps the opaque receiver\n";
+	}
+	if (!m_resources.fragGlassMaskShader.empty()) {
+		m_resources.glassMaskProgram = {
+			.shaders = {
+				smvk::Shader{
+					.module = m_resources.vertShader,
+					.entryPoint = "mainVS",
+					.stage = smvk::ShaderStage::Vertex
+				},
+				smvk::Shader{
+					.module = m_resources.fragGlassMaskShader,
+					.entryPoint = "mainPS",
+					.stage = smvk::ShaderStage::Fragment
+				}
+			},
+			.shaderCount = 2
+		};
+	}
 
 	// Masked shadow-depth program (leaf-shaped shadows for cutout).
 	auto shadowVertCode = readContentFile(contentVfs, "shaders/shadow.vert.hlsl.spv");
@@ -3071,6 +3131,7 @@ void SceneRenderer::Shutdown() {
 		std::sort(nodes.begin(), nodes.end());
 		std::vector<smvk::ForwardPlusLight> spots, points;
 		bool sunTaken = false;
+		uint32_t staticBakeOnly = 0;
 		for (uint32_t node : nodes) {
 			auto lit = scene.lightForNode.find(node);
 			if (lit == scene.lightForNode.end())
@@ -3085,6 +3146,17 @@ void SceneRenderer::Shutdown() {
 				continue;
 			const ::SceneLight& L = *Lp;
 			const glm::mat4& G = scene.globalTransform[node];
+			// Static-flagged punctual lights are bake-only: their direct +
+			// bounced term is carried by the lightmap/probe sources for
+			// covered pixels (see CollectStaticBakeLights), so rendering
+			// them as forward+ lights too would double the direct
+			// contribution. Directionals are exempt: the sun stays a
+			// runtime CSM light (the bake transports only its bounce).
+			if (L.type != ::SceneLight::Type::Directional &&
+				(L.flags & ::SceneLight::kSceneLightFlag_Static) != 0) {
+				++staticBakeOnly;
+				continue;
+			}
 			if (L.type == ::SceneLight::Type::Directional) {
 				if (sunTaken)
 					continue; // single-sun renderer: first directional wins
@@ -3159,7 +3231,10 @@ void SceneRenderer::Shutdown() {
 		}
 		std::cerr << "[Scene] cooked lights: spots=" << spots.size()
 			<< " points=" << points.size()
-			<< (m_cookedLights.hasSun ? " + sun" : " (no sun)") << "\n";
+			<< (m_cookedLights.hasSun ? " + sun" : " (no sun)");
+		if (staticBakeOnly > 0)
+			std::cerr << " | static(bake-only)=" << staticBakeOnly;
+		std::cerr << "\n";
 	}
 
 	// ---------------------------------------------------------------------
@@ -3518,6 +3593,55 @@ void SceneRenderer::Shutdown() {
 		}
 		m_decalFrameCount = (uint32_t)gpu.size();
 		return m_decalFrameCount;
+	}
+
+	void SceneRenderer::SeedParticleEmitters() {
+		if (!m_particleDemo.emitters.empty())
+			return;
+		m_particleDemo.emitters.reserve(4);
+
+		// Rising embers: additive orange sparks drifting up from a small
+		// cone at the origin (negative gravityScale = buoyant).
+		{
+			smvk::ParticleEmitterGpu embers{};
+			embers.position = glm::vec4(0.0f, 0.35f, 0.0f, 0.22f);
+			embers.direction = glm::vec4(0.0f, 1.0f, 0.0f, 0.35f);
+			embers.color = glm::vec4(1.0f, 0.42f, 0.10f, 6.0f);
+			embers.velocity = glm::vec4(0.7f, 1.6f, 0.45f, -0.35f);
+			embers.size = glm::vec4(0.012f, 0.045f, 2.0f, 11u);
+			embers.life = glm::vec4(1.6f, 3.6f, 90.0f,
+				(float)smvk::kParticleShape_Cone);
+			embers.fade = glm::vec4(0.05f, 0.40f, 0.30f, 0.0f);
+			m_particleDemo.emitters.push_back(embers);
+		}
+		// Dust motes: slow, faint, wide sphere drift — reads best inside
+		// the tiled light crowd (almost pure lit response, tiny emissive).
+		{
+			smvk::ParticleEmitterGpu motes{};
+			motes.position = glm::vec4(0.0f, 2.0f, 0.0f, 3.5f);
+			motes.direction = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f);
+			motes.color = glm::vec4(0.70f, 0.78f, 1.0f, 0.12f);
+			motes.velocity = glm::vec4(0.04f, 0.12f, 0.15f, 0.0f);
+			motes.size = glm::vec4(0.008f, 0.022f, 0.6f, 77u);
+			motes.life = glm::vec4(4.0f, 9.0f, 45.0f,
+				(float)smvk::kParticleShape_Sphere);
+			motes.fade = glm::vec4(0.15f, 0.30f, 0.20f, 0.0f);
+			m_particleDemo.emitters.push_back(motes);
+		}
+		m_particleDemo.selected = 0;
+	}
+
+	uint32_t SceneRenderer::UpdateParticles(uint32_t currentFrame) {
+		smvk::Particles& ps = m_viewportResources.particles;
+		if (!ParticlesActive() || m_particleDemo.emitters.empty())
+			return 0;
+		// Every frame, like the decal ring: sliders retouch live emitters
+		// immediately and every flight slice stays fresh. The GPU's own
+		// fractional-rate carry lives in the separate emitterState buffer,
+		// so this upload can never clobber spawn scheduling.
+		return ps.UpdateEmitters(*m_context, currentFrame,
+			m_particleDemo.emitters.data(),
+			(uint32_t)m_particleDemo.emitters.size());
 	}
 
 	bool SceneRenderer::EnsurePickScene() {
@@ -4794,6 +4918,71 @@ void SceneRenderer::Shutdown() {
 		}
 	}
 
+// Shared transparent draw list (see header). Mirrors Main's transparent
+// leg item-for-item: Renderable|Transparent|StaticVertexFmt items,
+// frustum-tested against the FROZEN transparent cull view (conservative
+// LOD union, matching FilterMainView) so the shaded leg and the SSR
+// GlassMask redraw always draw the same geometry. Distance-sorted only
+// when the caller blends back-to-front; the mask pass passes false
+// (its Max blend is order-independent).
+std::vector<SceneRenderer::TransparentDrawItem>
+SceneRenderer::CollectTransparentDraws(const smvk::RenderView& cullView,
+	bool sortBackToFront)
+{
+	std::vector<TransparentDrawItem> draws;
+	if (m_hideTransparent)
+		return draws;
+	const glm::vec3 camPos = m_cameraPositioner.cameraPosition_;
+	m_world->forEachRenderItem(
+		smvk::IteratorFlagBit_Renderable
+		| smvk::IteratorFlagBit_Transparent
+		| smvk::IteratorFlagBit_StaticVertexFmt
+		,
+		[&](const smvk::World::RenderItem& item)
+	{
+		if (item.material == smvk::World::kInvalidIndex)
+			return;
+		const glm::mat4& model = m_world->scene.globalTransform[item.node];
+		// Frustum cull: transparent never enters the gfx filter, so
+		// test the conservative LOD union here (keep when either
+		// the base or the selected sibling intersects, matching
+		// FilterMainView) instead of drawing off-screen instances.
+		{
+			const uint32_t lodIdx = LodIndexForNode(item.node, item.mesh);
+			smvk::StaticMesh* baseDesc = m_world->GetMesh(item.mesh);
+			smvk::StaticMesh* selDesc = m_world->GetLodMesh(item.mesh, lodIdx);
+			if (baseDesc) {
+				glm::vec3 c{ 0.0f }; float r = 0.0f;
+				smvk::MeshBoundsToWorld(model, baseDesc->geometry.aabbMin,
+					baseDesc->geometry.aabbMax, c, r);
+				bool visible = smvk::RenderViewIntersectsSphere(cullView, c, r);
+				if (!visible && selDesc && selDesc != baseDesc) {
+					smvk::MeshBoundsToWorld(model, selDesc->geometry.aabbMin,
+						selDesc->geometry.aabbMax, c, r);
+					visible = smvk::RenderViewIntersectsSphere(cullView, c, r);
+				}
+				if (!visible)
+					return;
+			}
+		}
+		const glm::vec3 center{ model[3][0], model[3][1], model[3][2] };
+		const glm::vec3 d = center - camPos;
+		draws.push_back(TransparentDrawItem{
+			.node = item.node,
+			.meshId = item.mesh,
+			.materialId = item.material,
+			.dist2 = glm::dot(d, d),
+		});
+	}
+	);
+	if (sortBackToFront) {
+		std::sort(draws.begin(), draws.end(),
+			[](const TransparentDrawItem& a, const TransparentDrawItem& b)
+			{ return a.dist2 > b.dist2; });
+	}
+	return draws;
+}
+
 void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	SMVK_PROFILE_FUNCTION();
 	SMVK_PROFILE_TAG("frameIndex", fb.frameIndex);
@@ -5028,6 +5217,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		const auto rfT0c = bench_clk::now();
 		const uint32_t fpLightCount = UpdateForwardPlusLights(fb.frameIndex, frameData);
 		const auto rfT1 = bench_clk::now();
+
+		// ------------------------------------------------------------------
+		// GPU particles (see smvk::Particles + particles.h): extent-
+		// independent builder Ensure (pool/free-list/emitter ring + the
+		// three programs) + the per-frame emitter parameter upload. The
+		// GPU owns spawn scheduling (fractional carry) and simulation —
+		// the CPU never touches particle state.
+		// ------------------------------------------------------------------
+		m_viewportResources.particles.Ensure(*m_context, *m_rendergraph,
+			m_swapchain->framesInFlight(), MakeParticlesDesc());
+		const bool particlesOn = ParticlesActive();
+		const uint32_t particleEmitterCount =
+			particlesOn ? UpdateParticles(fb.frameIndex) : 0u;
 
 		// ---------------------------------------------------------------------
 		// RenderView allocation (see smvk::RenderViewSet):
@@ -5547,6 +5749,54 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		AppendDeferredShadowPhases(fb.frameIndex,
 			frameUniformsAddress, fpLightsAddress, spotShadowBufferAddress,
 			fpLightCount, fc.depthView, fc.fpLights);
+
+	// ---- GPU particles: emit + simulate (compute). Runs after the light
+	// cull spot (independent of it — the draw pass below consumes the tile
+	// lists; emit -> sim ordering matters and comes from the pass hints:
+	// emit pops free slots the PREVIOUS frame's sim recycled, so a slot
+	// can never be handed out twice within a frame).
+	const bool particlesRun = particlesOn && particleEmitterCount > 0;
+	if (particlesRun) {
+		smvk::Particles& ps = m_viewportResources.particles;
+		// Clamp dt: a tab-out/hibernate spike would otherwise fling every
+		// particle across the scene (spawn quotas too — rate*dt is the
+		// quota, so a 5 s dt would try to spawn 5 s worth at once).
+		const float particleDt = std::min((float)delta_time_s, 1.0f / 30.0f);
+
+		smvk::ParticlesEmitPush emitPush{};
+		emitPush.emitters = ps.EmittersAddress(*m_context, fb.frameIndex);
+		emitPush.emitterState = ps.EmitterStateAddress(*m_context);
+		emitPush.particles = ps.ParticlesAddress(*m_context);
+		emitPush.freeList = ps.FreeListAddress(*m_context);
+		emitPush.emitterCount = particleEmitterCount;
+		emitPush.maxParticles = PARTICLE_MAX;
+		emitPush.dt = particleDt;
+		emitPush.frameSeed = 1664525u * (uint32_t)m_frameCounter + 1013904223u;
+		auto& emitPass = ps.AddEmitPass(*m_rendergraph);
+		emitPass.SetRecordingFunc([this, emitPush](smvk::CommandBuffer& cmd) {
+			cmd.BindComputePipeline(m_viewportResources.particles.emitProgram);
+			cmd.PushConstants(0, sizeof(emitPush), &emitPush, smvk::ShaderStage::All);
+			cmd.Dispatch(PARTICLE_MAX_EMITTERS, 1, 1);
+		});
+
+		smvk::ParticlesSimPush simPush{};
+		simPush.particles = ps.ParticlesAddress(*m_context);
+		simPush.freeList = ps.FreeListAddress(*m_context);
+		simPush.emitters = ps.EmittersAddress(*m_context, fb.frameIndex);
+		simPush.gravityX = 0.0f;
+		simPush.gravityY = m_particleDemo.gravityY;
+		simPush.gravityZ = 0.0f;
+		simPush.dt = particleDt;
+		simPush.maxParticles = PARTICLE_MAX;
+		auto& simPass = ps.AddSimPass(*m_rendergraph);
+		simPass.SetRecordingFunc([this, simPush](smvk::CommandBuffer& cmd) {
+			cmd.BindComputePipeline(m_viewportResources.particles.simProgram);
+			cmd.PushConstants(0, sizeof(simPush), &simPush, smvk::ShaderStage::All);
+			cmd.Dispatch(
+				smvk::Particles::SimGroupsFor(PARTICLE_MAX, PARTICLE_SIM_THREADS),
+				1, 1);
+		});
+	}
 
 		// Transparent frustum-cull views (snapshots: recording lambdas run
 		// at Execute, after this function may have returned for the next
@@ -6537,61 +6787,13 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// Blended: classic back-to-front AlphaBlend, depth test on, no
 		// depth writes, sorted by distance-to-camera.
 		// m_hideTransparent (debug) skips the whole leg to bisect blending
-		// artifacts out of hole reports.
+		// artifacts out of hole reports. The list itself is shared with
+		// the SSR GlassMask redraw (CollectTransparentDraws).
 		{
 			const bool ditheredTransp =
 				(m_transparentMode == smvk::TransparentMode::Dithered);
-			struct TransparentDraw { NodeId node; uint32_t meshId; uint32_t materialId; float dist2; };
-			std::vector<TransparentDraw> draws;
-			const glm::vec3 camPos = m_cameraPositioner.cameraPosition_;
-			if (!m_hideTransparent) {
-			m_world->forEachRenderItem(
-				smvk::IteratorFlagBit_Renderable
-				| smvk::IteratorFlagBit_Transparent
-				| smvk::IteratorFlagBit_StaticVertexFmt
-				,
-				[&](const smvk::World::RenderItem& item)
-			{
-				if (item.material == smvk::World::kInvalidIndex)
-					return;
-				const glm::mat4& model = m_world->scene.globalTransform[item.node];
-				// Frustum cull: transparent never enters the gfx filter, so
-				// test the conservative LOD union here (keep when either
-				// the base or the selected sibling intersects, matching
-				// FilterMainView) instead of drawing off-screen instances.
-				{
-					const uint32_t lodIdx = LodIndexForNode(item.node, item.mesh);
-					smvk::StaticMesh* baseDesc = m_world->GetMesh(item.mesh);
-					smvk::StaticMesh* selDesc = m_world->GetLodMesh(item.mesh, lodIdx);
-					if (baseDesc) {
-						glm::vec3 c{ 0.0f }; float r = 0.0f;
-						smvk::MeshBoundsToWorld(model, baseDesc->geometry.aabbMin,
-							baseDesc->geometry.aabbMax, c, r);
-						bool visible = smvk::RenderViewIntersectsSphere(transparentCullView, c, r);
-						if (!visible && selDesc && selDesc != baseDesc) {
-							smvk::MeshBoundsToWorld(model, selDesc->geometry.aabbMin,
-								selDesc->geometry.aabbMax, c, r);
-							visible = smvk::RenderViewIntersectsSphere(transparentCullView, c, r);
-						}
-						if (!visible)
-							return;
-					}
-				}
-				const glm::vec3 center{ model[3][0], model[3][1], model[3][2] };
-				const glm::vec3 d = center - camPos;
-				draws.push_back(TransparentDraw{
-					.node = item.node,
-					.meshId = item.mesh,
-					.materialId = item.material,
-					.dist2 = glm::dot(d, d),
-				});
-			}
-			);
-			}
-			if (!ditheredTransp) {
-				std::sort(draws.begin(), draws.end(),
-					[](const TransparentDraw& a, const TransparentDraw& b) { return a.dist2 > b.dist2; });
-			}
+			const std::vector<TransparentDrawItem> draws =
+				CollectTransparentDraws(transparentCullView, !ditheredTransp);
 
 			// Transparent follows the opaque debug view (Unlit/Cascades shade
 			// it with the same debug FS via full pushes; LODs draws it flat
@@ -6852,6 +7054,73 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		}
 
 	// ---------------------------------------------------------------------
+	// GPU particles – additive HDR billboards over the resolved Main color
+	// (see particles.h). Runs after Main (HDR + prepass depth complete),
+	// before the post chain: motion blur / bloom / exposure all pick the
+	// particles up like any other HDR content. Depth-tested read-only
+	// against the prepass depth (1x in both MSAA modes: MSAA Main writes
+	// the transient target, the prepass wrote renderDepth — same opaque
+	// scene, which is exactly what particles must occlude against).
+	// ---------------------------------------------------------------------
+	if (particlesRun) {
+		smvk::Particles& ps = m_viewportResources.particles;
+		auto& particlePass = ps.AddDrawPass(*m_rendergraph,
+			m_viewportResources.hdr.logicalView,
+			m_viewportResources.renderDepth.logicalView,
+			renderExtent);
+		// Tiled lighting inputs: only when the forward+ cull ran with the
+		// real light count this frame. Under deferred shadows the tile
+		// lists are stale/empty for lights — the shader then walks a
+		// capped brute-force light loop (fpTileCountX 0), and only the
+		// light-buffer read hint remains (upload -> read ordering).
+		const bool particleTilesUsable = m_passes.forwardPlusCull && !dsOn
+			&& m_viewportResources.forwardPlus.Valid();
+		if (particleTilesUsable) {
+			smvk::Particles::AddDrawLightHints(particlePass,
+				m_resources.fpLightsLogical,
+				m_viewportResources.forwardPlus.tileCountsLogical,
+				m_viewportResources.forwardPlus.tileIndicesLogical);
+		} else {
+			smvk::BufferSyncRequest fpLightRead{};
+			fpLightRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			fpLightRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+			particlePass.AddBufferHint(m_resources.fpLightsLogical, fpLightRead);
+		}
+		smvk::ParticlesDrawPush drawPush{};
+		drawPush.frameUniforms = frameUniformsAddress;
+		drawPush.particles = ps.ParticlesAddress(*m_context);
+		drawPush.emitters = ps.EmittersAddress(*m_context, fb.frameIndex);
+		drawPush.fpLights = fpLightsAddress;
+		drawPush.fpTileCounts = fpTileCountsAddress;
+		drawPush.fpTileIndices = fpTileIndicesAddress;
+		drawPush.fpTileCountX = particleTilesUsable ? fpTileCountX : 0u;
+		drawPush.fpLightCount = fpLightCount;
+		drawPush.fpTileSize = FP_TILE_SIZE;
+		drawPush.fpMaxPerTile = FP_MAX_PER_TILE;
+		drawPush.maxParticles = PARTICLE_MAX;
+		particlePass.SetRecordingFunc([this, drawPush](smvk::CommandBuffer& cmd) {
+			cmd.BindRenderPipeline(
+				m_viewportResources.particles.drawProgram,
+				smvk::VertexFormat::Empty,
+				smvk::DepthSettings{
+					.depthFunc = smvk::CompareOp::GreaterEqual,
+					.writeEnable = false,
+					.depthTestEnable = true,
+				},
+				smvk::StencilSettings{},
+				smvk::BlendSettings::Add(),
+				smvk::MSAASettings::Count1(),
+				smvk::RasterSettings{ .cullMode = smvk::CullMode::None }
+			);
+			cmd.PushConstants(0, sizeof(drawPush), &drawPush, smvk::ShaderStage::All);
+			// Fixed instance count: dead slots collapse to off-screen
+			// degenerate quads in the VS (no CPU alive list — the pool is
+			// fully GPU-resident; the dead-slot VS cost is the trade).
+			cmd.Draw(6, PARTICLE_MAX, 0, 0);
+		});
+	}
+
+	// ---------------------------------------------------------------------
 	// Motion blur â€“ velocity gather in HDR (see motionblur.h). Runs after
 	// Main, before Bloom/Tonemap so both consume the blurred HDR.
 	// ---------------------------------------------------------------------
@@ -6926,12 +7195,139 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		}
 
 		// ---------------------------------------------------------------------
+		// Glass layer (SSR pane reflections, option B): redraw the
+		// transparent list into ssr.glass — R = pane presence, G = the
+		// pane fragment's reverse-Z depth (see glassmask.frag.hlsl).
+		// The opaque-only prepass depth never carries Blend/dithered
+		// panes, so without this layer the SSR trace can only trace off
+		// the seen-through background at pane pixels. Depth-tests against
+		// the prepass depth (occluded panes must not mask), never writes
+		// it; Max blend keeps the NEAREST pane where panes stack
+		// (reverse-Z max) so the redraw needs no sorting. Emitted only
+		// when SSR will run — the layer has no other consumer — and the
+		// emitted flag feeds the SSR passes, so a skipped layer can never
+		// leave the trace reading stale pane coverage.
+		// ---------------------------------------------------------------------
+		bool glassLayerEmitted = false;
+		{
+			SMVK_PROFILE_CATEGORY("GlassMask", Optick::Category::Rendering);
+			const bool glassWanted = m_passes.ssr && m_ssrEnabled
+				&& m_ssrIntensity > 0.0f
+				&& m_ssrGlassEnabled
+				&& m_resources.glassMaskProgram.shaderCount == 2
+				&& m_viewportResources.ssr.Valid()
+				&& !m_viewportResources.renderDepth.logicalView.empty()
+				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX;
+			if (glassWanted) {
+				smvk::RenderPass& glassPass = m_rendergraph->AddPass("GlassMask")
+					.SetOffset(0, 0)
+					.SetExtent(renderExtent)
+					.SetColor({ m_viewportResources.ssr.glass.logical },
+						smvk::AttachmentLoadOp::Clear,
+						smvk::AttachmentStoreOp::Store,
+						smvk::ClearColor(0.0f, 0.0f, 0.0f, 0.0f))
+					// Load/Store against the opaque prepass depth: the
+					// mask tests read-only and the stored depth feeds every
+					// later march (DontCare would discard it out from under
+					// SSR/DOF/volumetric — the Nsight store-op bug).
+					.SetDepth(m_viewportResources.renderDepth.logicalView,
+						smvk::AttachmentLoadOp::Load,
+						smvk::AttachmentStoreOp::Store,
+						smvk::ClearDepthStencil(0, 0));
+				glassPass.SetRecordingFunc(
+					[this, pc, transparentCullView](smvk::CommandBuffer& cmd)
+				{
+					// Max blend: presence ORs, pane depth keeps the nearest
+					// (reverse-Z max) — order-independent panes. Write mask
+					// stays the BlendAttachmentState default (full RGBA).
+					smvk::BlendSettings glassBlend{};
+					glassBlend.blendState.blendEnable = true;
+					{
+						smvk::BlendAttachmentState& att =
+							glassBlend.blendState.attachment[0];
+						att.srcColorBlendFactor =
+							smvk::BlendAttachmentState::SrcColorBlendFactor::One;
+						att.dstColorBlendFactor =
+							smvk::BlendAttachmentState::DstColorBlendFactor::One;
+						att.colorBlendOp =
+							smvk::BlendAttachmentState::ColorBlendOp::Max;
+						att.alphaBlendOp =
+							smvk::BlendAttachmentState::AlphaBlendOp::Max;
+					}
+					const smvk::DepthSettings glassDepth{
+						.depthFunc = smvk::CompareOp::GreaterEqual,
+						.writeEnable = false,
+						.depthTestEnable = true,
+					};
+					const std::vector<TransparentDrawItem> draws =
+						CollectTransparentDraws(transparentCullView, false);
+					uint32_t boundMaterial = UINT32_MAX;
+					bool firstBind = true;
+					for (const TransparentDrawItem& d : draws) {
+						smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
+						if (!meshDesc)
+							continue;
+						if (firstBind || d.materialId != boundMaterial) {
+							smvk::RasterSettings raster{};
+							if (smvk::Material* mat = m_world->GetMaterial(d.materialId))
+								raster = mat->pipeline.raster; // doubleSided panes -> Cull None
+							cmd.BindRenderPipeline(
+								m_resources.glassMaskProgram,
+								smvk::VertexFormat::StaticVertexFormat,
+								glassDepth,
+								smvk::StencilSettings{},
+								glassBlend,
+								smvk::MSAASettings::Count1(),
+								raster);
+							cmd.BindStaticVertexFmt();
+							if (firstBind) {
+								// Full push once: the VS reads frameUniforms +
+								// renderViews; per-draw deltas below overwrite
+								// model + materialId, same discipline as Main.
+								cmd.PushConstants(0, sizeof(PushConstants), &pc,
+									smvk::ShaderStage::All);
+								firstBind = false;
+							}
+							boundMaterial = d.materialId;
+						}
+						PushConstants objPC{};
+						objPC.materialId = d.materialId;
+						const glm::mat4& model = m_world->scene.globalTransform[d.node];
+						std::copy_n(glm::value_ptr(model), 16, objPC.model);
+						cmd.PushConstants(
+							offsetof(PushConstants, materialId),
+							sizeof(objPC.materialId),
+							&objPC.materialId,
+							smvk::ShaderStage::All
+						);
+						cmd.PushConstants(
+							0,
+							offsetof(PushConstants, frameUniforms),
+							&objPC,
+							smvk::ShaderStage::All
+						);
+						for (auto& draw_set : meshDesc->geometry.surfaces) {
+							cmd.DrawIndexed(
+								draw_set.indexCount,
+								1,
+								draw_set.firstIndex,
+								draw_set.baseVertex
+							);
+						}
+					}
+				});
+				glassLayerEmitted = true;
+			}
+		}
+
+		// ---------------------------------------------------------------------
 		// Screen-space reflections – half-res trace + bilateral blur +
 		// full-res composite (see ssr.h). Runs after DOF, before
 		// exposure/bloom/tonemap so reflections meter/bloom/tonemap with
 		// the scene. Normals + Fresnel reconstruct from the 1x prepass
-		// depth (no GBuffer); Bistro shopfront glass at street grazing
-		// angles is the calibration case.
+		// depth (no GBuffer) PLUS the glass layer above (pane receivers);
+		// Bistro shopfront glass at street grazing angles is the
+		// calibration case.
 		// ---------------------------------------------------------------------
 		bool ssrEmitted = false;
 		{
@@ -6970,6 +7366,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					sceneHdrBindless,
 					m_viewportResources.renderDepth.logicalView,
 					m_viewportResources.renderDepth.bindlessIndex,
+					glassLayerEmitted ? m_viewportResources.ssr.glass.logical
+						: smvk::LogicalImageViewHandle{},
+					glassLayerEmitted ? m_viewportResources.ssr.glass.bindlessIndex
+						: UINT32_MAX,
 					m_viewportResources.motionVectors.target.logicalView,
 					m_viewportResources.motionVectors.target.bindlessIndex,
 					frameUniformsAddress,
@@ -6993,6 +7393,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					sceneHdrBindless,
 					m_viewportResources.renderDepth.logicalView,
 					m_viewportResources.renderDepth.bindlessIndex,
+					glassLayerEmitted ? m_viewportResources.ssr.glass.logical
+						: smvk::LogicalImageViewHandle{},
+					glassLayerEmitted ? m_viewportResources.ssr.glass.bindlessIndex
+						: UINT32_MAX,
 					frameUniformsAddress,
 					linearSampler,
 					ssrDesc,
@@ -7821,12 +8225,80 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					if (bounds.mx.x >= bounds.mn.x && bounds.mx.y >= bounds.mn.y && bounds.mx.z >= bounds.mn.z)
 						m_fpDemo.FitToBounds(bounds.mn, bounds.mx);
 				}
-					ImGui::SliderFloat("Range", &m_fpDemo.range, 1.0f, 30.0f);
-					ImGui::SliderFloat("Intensity (cd)", &m_fpDemo.intensity, 0.0f, 2000.0f);
-					int spots = m_fpDemo.spotCount;
-					if (ImGui::SliderInt("Spots", &spots, 0, 16)) m_fpDemo.spotCount = spots;
-					ImGui::SliderFloat("Spot intensity (cd)", &m_fpDemo.spotIntensity, 0.0f, 4000.0f);
+				ImGui::SliderFloat("Range", &m_fpDemo.range, 1.0f, 30.0f);
+				ImGui::SliderFloat("Intensity (cd)", &m_fpDemo.intensity, 0.0f, 2000.0f);
+				int spots = m_fpDemo.spotCount;
+				if (ImGui::SliderInt("Spots", &spots, 0, 16)) m_fpDemo.spotCount = spots;
+				ImGui::SliderFloat("Spot intensity (cd)", &m_fpDemo.spotIntensity, 0.0f, 4000.0f);
+			}
+			if (ImGui::CollapsingHeader("Particles (GPU emitters)", ImGuiTreeNodeFlags_DefaultOpen)) {
+				ImGui::Checkbox("Enable particles", &m_particlesEnabled);
+				ImGui::SameLine();
+				ImGui::TextDisabled(ParticlesActive() ? "(active)" : "(off)");
+				if (m_passes.deferredShadows)
+					ImGui::TextDisabled("(deferred shadows own the lights: "
+						"tile lists bypassed, capped light loop)");
+				ImGui::SliderFloat("Gravity Y (m/s^2)", &m_particleDemo.gravityY, -20.0f, 5.0f);
+				ImGui::Text("Emitters: %u / %u   steady-state ~%.0f particles",
+					(unsigned)m_particleDemo.emitters.size(), PARTICLE_MAX_EMITTERS,
+					m_particleDemo.SteadyStateCount());
+				const int emitterCount = (int)m_particleDemo.emitters.size();
+				if (emitterCount > 0) {
+					m_particleDemo.selected = std::min(
+						std::max(m_particleDemo.selected, 0), emitterCount - 1);
+					if (ImGui::BeginCombo("Edit emitter", std::to_string(
+							m_particleDemo.selected).c_str())) {
+						for (int i = 0; i < emitterCount; ++i) {
+							const bool sel = (i == m_particleDemo.selected);
+							if (ImGui::Selectable(std::to_string(i).c_str(), sel))
+								m_particleDemo.selected = i;
+							if (sel)
+								ImGui::SetItemDefaultFocus();
+						}
+						ImGui::EndCombo();
+					}
+					auto& e = m_particleDemo.emitters[m_particleDemo.selected];
+					ImGui::SliderFloat3("Position", &e.position.x, -25.0f, 25.0f);
+					ImGui::SliderFloat("Spawn radius (m)", &e.position.w, 0.0f, 8.0f);
+					ImGui::SliderFloat3("Axis", &e.direction.x, -1.0f, 1.0f);
+					ImGui::SliderFloat("Spread (rad)", &e.direction.w, 0.0f, 3.14f);
+					ImGui::ColorEdit3("Color", &e.color.x);
+					ImGui::SliderFloat("Emissive intensity", &e.color.w, 0.0f, 20.0f);
+					ImGui::SliderFloat("Speed min", &e.velocity.x, 0.0f, 10.0f);
+					ImGui::SliderFloat("Speed max", &e.velocity.y, 0.0f, 10.0f);
+					ImGui::SliderFloat("Drag (1/s)", &e.velocity.z, 0.0f, 4.0f);
+					ImGui::SliderFloat("Gravity scale", &e.velocity.w, -2.0f, 2.0f);
+					ImGui::SliderFloat("Size start (m)", &e.size.x, 0.001f, 0.3f, "%.3f");
+					ImGui::SliderFloat("Size end (m)", &e.size.y, 0.001f, 0.5f, "%.3f");
+					ImGui::SliderFloat("Spin (rad/s)", &e.size.z, 0.0f, 8.0f);
+					ImGui::SliderFloat("Rate (/s)", &e.life.z, 0.0f, 500.0f);
+					ImGui::SliderFloat("Life min (s)", &e.life.x, 0.1f, 10.0f);
+					ImGui::SliderFloat("Life max (s)", &e.life.y, 0.1f, 10.0f);
+					ImGui::SliderFloat("Fade in", &e.fade.x, 0.0f, 0.5f);
+					ImGui::SliderFloat("Fade out", &e.fade.y, 0.0f, 0.9f);
+					ImGui::SliderFloat("Color jitter", &e.fade.z, 0.0f, 1.0f);
+					const char* shapes[] = { "Cone", "Sphere", "Point" };
+					int shape = (int)e.life.w;
+					if (ImGui::Combo("Shape", &shape, shapes, 3))
+						e.life.w = (float)shape;
+					ImGui::TextDisabled("CPU owns only these parameters: spawn carry, "
+						"simulation and drawing are all GPU-side.");
 				}
+				if (ImGui::Button("Add emitter") &&
+						m_particleDemo.emitters.size() < PARTICLE_MAX_EMITTERS) {
+					m_particleDemo.emitters.push_back(smvk::ParticleEmitterGpu{});
+					m_particleDemo.selected = (int)m_particleDemo.emitters.size() - 1;
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Remove") && !m_particleDemo.emitters.empty()) {
+					m_particleDemo.emitters.erase(
+						m_particleDemo.emitters.begin() + m_particleDemo.selected);
+					m_particleDemo.selected = std::max(0, m_particleDemo.selected - 1);
+				}
+				ImGui::TextDisabled("Pool %u particles, emit+sim+draw all compute/GPU "
+					"resident (dead slots collapse in the VS).",
+					(unsigned)PARTICLE_MAX);
+			}
 				if (ImGui::CollapsingHeader("Spot shadows + cookies", ImGuiTreeNodeFlags_DefaultOpen)) {
 					ImGui::Checkbox("Spot shadows (per-light flag)", &m_fpDemo.spotShadowsEnabled);
 					int spotMax = m_fpDemo.spotShadowMax;
@@ -9082,6 +9554,7 @@ void SceneRenderer::DumpSsrStages(uint32_t frameIndex) {
 		{ "hdr_main",   &hdrRes.image,        fw, fh, false },
 		{ "ssr_raw",    &ssr.raw.image,       hw, hh, false },
 		{ "ssr_blur",   &ssr.blurred.image,   hw, hh, false },
+		{ "ssr_glass",  &ssr.glass.image,     fw, fh, false },
 		{ "ssr_hist0",  &ssr.history[0].image, hw, hh, false },
 		{ "ssr_hist1",  &ssr.history[1].image, hw, hh, false },
 		{ "ssr_comp",   &ssr.image,           fw, fh, false },

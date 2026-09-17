@@ -272,7 +272,9 @@ struct EvsmAtlas {
 		msaaCI.format = desc.momentsFormat;
 		msaaCI.extent = { atlas.width, atlas.height, 1u };
 		msaaCI.samples = samples;
-		msaaCI.usage = ImageUsage::ColorAttachment | ImageUsage::TransferSrc;
+		msaaCI.usage = ImageUsage::ColorAttachment;
+		if (DebugImageDumpArmed()) // atlas dump readback (VULKANTOY_EVSM_DUMP)
+			msaaCI.usage |= ImageUsage::TransferSrc;
 		msaaCI.name = desc.name;
 		Holder<ImageHandle> newMsaa = ctx.CreateImage(msaaCI, nullptr);
 		if (newMsaa.empty())
@@ -304,15 +306,17 @@ struct EvsmAtlas {
 		// so the async compute prefilter can write them (General), sampled
 		// so lighting + the next blur tap can read them, TransferSrc so the
 		// opt-in atlas dump (VULKANTOY_EVSM_DUMP, EvsmDumpAtlas) can copy
-		// them back. CONCURRENT graphics+compute: the moment resolve
-		// (graphics) and the blur (compute queue) ping-pong these images
-		// every frame, so no ownership transfers — events + layout
-		// barriers order the queues.
+		// them back — armed dumps only. CONCURRENT graphics+compute: the
+		// moment resolve (graphics) and the blur (compute queue) ping-pong
+		// these images every frame, so no ownership transfers — events +
+		// layout barriers order the queues.
 		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
 			ImageCreateInfo singleCI{};
 			singleCI.format = desc.momentsFormat;
 			singleCI.extent = { atlas.width, atlas.height, 1u };
-			singleCI.usage = ImageUsage::Sampled | ImageUsage::Storage | ImageUsage::TransferSrc | ImageUsage::TransferDst | ImageUsage::ColorAttachment;
+			singleCI.usage = ImageUsage::Sampled | ImageUsage::Storage | ImageUsage::TransferDst | ImageUsage::ColorAttachment;
+			if (DebugImageDumpArmed())
+				singleCI.usage |= ImageUsage::TransferSrc;
 			singleCI.concurrentCompute = true;
 			singleCI.name = desc.name;
 			moments[f] = ctx.CreateImage(singleCI, nullptr);

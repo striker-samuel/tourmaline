@@ -261,8 +261,12 @@ bool GltfExtrasStatic(const tinygltf::Value& extras) {
 // time, so coordFix + parents apply like meshes). Units are passed
 // through verbatim: directional = lux, point/spot = candela (both the
 // glTF and the engine shader convention, see Renderer/light.h).
+// staticLight stamps kSceneLightFlag_Static (bake source; see
+// scene.h). Definitions are deduplicated per glTF light index, so the
+// FIRST instance's flag wins when several nodes reference the same
+// light definition with different extras.
 // Returns false for unknown types (caller skips the node link).
-bool GltfLightToSceneLight(const tinygltf::Light& src, SceneLight& dst) {
+bool GltfLightToSceneLight(const tinygltf::Light& src, bool staticLight, SceneLight& dst) {
 	dst.name = src.name;
 	dst.color = glm::vec3(1.0f);
 	if (src.color.size() >= 3) {
@@ -275,6 +279,10 @@ bool GltfLightToSceneLight(const tinygltf::Light& src, SceneLight& dst) {
 	dst.range = static_cast<float>(src.range); // 0 = infinite
 	dst.innerConeAngle = 0.0f;
 	dst.outerConeAngle = 0.0f;
+	dst.flags = 0;
+	if (staticLight ||
+		(!src.name.empty() && src.name.rfind("STATIC_", 0) == 0))
+		dst.flags |= SceneLight::kSceneLightFlag_Static;
 	if (src.type == "directional") {
 		dst.type = SceneLight::Type::Directional;
 	}
@@ -290,6 +298,44 @@ bool GltfLightToSceneLight(const tinygltf::Light& src, SceneLight& dst) {
 		return false;
 	}
 	return true;
+}
+
+// A glTF light node opts its light INTO the static bake set via
+// authoring extras (checked in importNodeRecursive; the light NAME
+// prefix "STATIC_" is handled in GltfLightToSceneLight):
+//   extras: { "smvk.staticLight": true }
+//     (also "smvk.static_light", "smvk.static-light",
+//      { "smvk": { "staticLight": true } }, plain "staticLight")
+// Static lights feed the lightmap/probe bakes and are excluded from
+// the runtime forward+ set (see SceneLight::kSceneLightFlag_Static).
+bool GltfExtrasStaticLight(const tinygltf::Value& extras) {
+	if (!extras.IsObject())
+		return false;
+	auto truthy = [](const tinygltf::Value& v) {
+		if (v.IsBool())
+			return v.Get<bool>();
+		if (v.IsNumber())
+			return v.GetNumberAsDouble() != 0.0;
+		return false;
+	};
+	if (extras.Has("smvk.staticLight") && truthy(extras.Get("smvk.staticLight")))
+		return true;
+	if (extras.Has("smvk.static_light") && truthy(extras.Get("smvk.static_light")))
+		return true;
+	if (extras.Has("smvk.static-light") && truthy(extras.Get("smvk.static-light")))
+		return true;
+	if (extras.Has("staticLight") && truthy(extras.Get("staticLight")))
+		return true;
+	if (extras.Has("smvk")) {
+		const tinygltf::Value& sub = extras.Get("smvk");
+		if (sub.IsObject()) {
+			if (sub.Has("staticLight") && truthy(sub.Get("staticLight")))
+				return true;
+			if (sub.Has("static_light") && truthy(sub.Get("static_light")))
+				return true;
+		}
+	}
+	return false;
 }
 
 // A glTF node opts OUT of lightmap charting/baking via authoring extras or
@@ -1151,7 +1197,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 	return slot;
 }
 
-smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightIndex) {
+smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightIndex, bool staticLight) {
 	assert(gltfLightIndex >= 0);
 	assert(
 		static_cast<size_t>(gltfLightIndex) <
@@ -1164,7 +1210,7 @@ smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightInde
 	}
 
 	SceneLight dst;
-	if (!GltfLightToSceneLight(model.lights[gltfLightIndex], dst))
+	if (!GltfLightToSceneLight(model.lights[gltfLightIndex], staticLight, dst))
 		return {}; // unknown type: skip the node link
 
 	slot = cluster.CreateLight(std::move(dst));
@@ -1569,9 +1615,12 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentScene
 	// index>" URIs (same registry as meshes); the group node stores the
 	// pool index in lightForNode, and world position/direction resolve
 	// from globalTransform at cook/runtime so parents + coordFix apply
-	// exactly like meshes.
+	// exactly like meshes. Node extras "smvk.staticLight" (or a STATIC_
+	// light name) flags the light as a bake source — first instance
+	// wins when the definition is shared.
 	if (gltfNode.light >= 0 && gltfNode.light < (int)model.lights.size()) {
-		const smvk::ClusterLightHandle h = getOrCreateLight(gltfNode.light);
+		const smvk::ClusterLightHandle h =
+			getOrCreateLight(gltfNode.light, GltfExtrasStaticLight(gltfNode.extras));
 		if (h.valid())
 			cluster.scene.lightForNode[(uint32_t)groupNode] = h.index();
 	}

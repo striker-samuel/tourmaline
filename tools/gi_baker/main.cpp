@@ -806,7 +806,9 @@ int main(int argc, char** argv) {
 		std::cerr << "Scene build failed: " << err << std::endl;
 		return 1;
 	}
-	// Static spots for the bake (same spec as PakCooker).
+	// CLI --spot specs APPEND to the scene's STATIC-flagged lights already
+	// harvested into traceScene by BuildTraceSceneFromCluster above
+	// (GiSceneBuildOptions::staticLights, default on — both sets bake).
 	for (const std::string& spec : args.spots) {
 		smvk::gi::GiTraceSpot spot{};
 		float innerDeg = 0.0f, outerDeg = 0.0f, candela = 0.0f;

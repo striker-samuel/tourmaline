@@ -8,8 +8,20 @@
 #include <SDL3/SDL_video.h>
 #include "../Vulkan/detail/vulkan_impl.h"
 #include <ktx.h>
+#include <cstdlib>
 
 namespace smvk {
+
+// See header. Static-cached: the env is read once, matching the one-shot
+// dump arm checks in the app (getenv present + atoi >= 0 = armed).
+bool DebugImageDumpArmed() {
+    static const bool armed = [] {
+        const char* ssr = std::getenv("VULKANTOY_SSR_DUMP");
+        const char* evsm = std::getenv("VULKANTOY_EVSM_DUMP");
+        return (ssr && std::atoi(ssr) >= 0) || (evsm && std::atoi(evsm) >= 0);
+    }();
+    return armed;
+}
 
 struct ResourceManager::Impl {
     VulkanResourceManager vulkan;

@@ -14,6 +14,14 @@ struct ktxTexture2;
 
 namespace smvk {
 
+// True when an opt-in debug image dump is armed via env: VULKANTOY_SSR_DUMP
+// or VULKANTOY_EVSM_DUMP present with a frame number >= 0 (the same arm
+// condition the SceneRenderer one-shot dumps use). Dump readback goes
+// through ResourceManager::DownloadDataFromImage, which needs TransferSrc
+// on the source image; render targets add that usage flag only when this
+// returns true, so the normal path keeps the leanest usage set.
+bool DebugImageDumpArmed();
+
 class ResourceManager {
 public:
     // Creates Vulkan core + allocator. window may be nullptr for headless.

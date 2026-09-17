@@ -337,6 +337,81 @@ std::optional<glm::vec3> GiAverageKtxTexel(std::span<const uint8_t> ktxBytes) {
 	return glm::vec3(sum / double(count));
 }
 
+GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene& out) {
+	const ::Scene& scene = cluster.scene;
+	GiStaticLightCounts counts{};
+
+	// Deterministic node order (hash-map iteration is not).
+	std::vector<uint32_t> nodes;
+	nodes.reserve(scene.lightForNode.size());
+	for (const auto& [node, lightIdx] : scene.lightForNode)
+		nodes.push_back(node);
+	std::sort(nodes.begin(), nodes.end());
+
+	for (uint32_t node : nodes) {
+		const auto lit = scene.lightForNode.find(node);
+		if (lit == scene.lightForNode.end())
+			continue;
+		if (node >= scene.globalTransform.size())
+			continue;
+		const ClusterLightHandle handle = cluster.lights.getHandle(lit->second);
+		if (!handle.valid())
+			continue;
+		const SceneLight* lp = cluster.lights.get(handle);
+		if (!lp || (lp->flags & SceneLight::kSceneLightFlag_Static) == 0)
+			continue; // runtime-only light: never baked
+		const SceneLight& L = *lp;
+		const glm::mat4& G = scene.globalTransform[node];
+		// Aim direction: node -Z in world space, same convention the
+		// runtime cooked-light path uses (BuildCookedLightsFromWorld).
+		glm::vec3 emis = glm::vec3(G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+		const glm::vec3 pos = glm::vec3(G[3]);
+
+		if (L.type == SceneLight::Type::Directional) {
+			// First static directional seeds the bake sun (lux units,
+			// direction TO the sun — mirrors the runtime env seeding).
+			if (counts.suns > 0)
+				continue;
+			if (glm::dot(emis, emis) < 1e-6f)
+				continue;
+			out.sunDirection = -glm::normalize(emis);
+			out.sunColor = L.color;
+			out.sunIntensity = L.intensity;
+			++counts.suns;
+		}
+		else if (L.type == SceneLight::Type::Spot) {
+			if (glm::dot(emis, emis) < 1e-6f)
+				continue;
+			GiTraceSpot s{};
+			s.position = pos;
+			s.direction = glm::normalize(emis); // TO the aim point
+			s.range = L.range;                  // 0 = infinite
+			s.color = L.color * L.intensity;    // candela -> radiance scale
+			s.cosInner = std::cos(std::min(L.innerConeAngle, L.outerConeAngle));
+			s.cosOuter = std::cos(std::max(L.innerConeAngle, L.outerConeAngle));
+			out.spots.push_back(s);
+			++counts.spots;
+		}
+		else if (L.type == SceneLight::Type::Point) {
+			// GiTraceSpot is cone-only: a point light is a 180-degree
+			// spot. cosInner == cosOuter == -1 makes the cone falloff
+			// evaluate to 1 in SampleSpots (except the measure-zero
+			// exact back axis), leaving the Frostbite windowed
+			// inverse-square term — exactly the runtime point path.
+			GiTraceSpot s{};
+			s.position = pos;
+			s.direction = { 0.0f, -1.0f, 0.0f }; // unused (full sphere)
+			s.range = L.range;
+			s.color = L.color * L.intensity;
+			s.cosInner = -1.0f;
+			s.cosOuter = -1.0f;
+			out.spots.push_back(s);
+			++counts.points;
+		}
+	}
+	return counts;
+}
+
 void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opts,
 	GiTraceScene& out, std::string& err) {
 	::Scene& scene = cluster.scene;
@@ -485,6 +560,13 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 	out.skyGround = env.groundColor;
 	out.skyIntensity = env.skyIntensity;
 	out.skyExponent = env.skyExponent;
+
+	// Scene-authored static lights (kSceneLightFlag_Static): bake-only
+	// sources — spots/points join the NEE list, the first static
+	// directional overrides the env-seeded sun. Callers (PakCooker /
+	// GiBaker) append their CLI spots AFTER this, so both sets bake.
+	if (opts.staticLights)
+		CollectStaticBakeLights(cluster, out);
 
 	out.Finalize();
 }

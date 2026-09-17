@@ -336,6 +336,9 @@ bool SerializeCluster(
 		PutF32(blob, l->innerConeAngle);
 		PutF32(blob, l->outerConeAngle);
 		PutStr(blob, l->name);
+		// Trailing flags section (v5 light blobs; v4 blobs end after the
+		// name and readers default to 0 — see the read side).
+		PutU32(blob, l->flags);
 
 		if (!writer.AddBlob(PakAssetKind::Light, uri, std::move(blob)))
 			return fail("invalid light uri: " + uri);
@@ -738,6 +741,13 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			return fail("truncated light blob: " + e->path);
 		if (type > 2)
 			return fail("bad light type in: " + e->path);
+		// Trailing flags section (v5): kSceneLightFlag_* (static = bake
+		// source). v4 blobs end after the name — default to 0.
+		uint32_t lightFlags = 0;
+		if (c.off + 4 <= c.img.size())
+			lightFlags = c.u32();
+		if (!c.ok)
+			return fail("truncated light flags: " + e->path);
 		SceneLight l;
 		l.type = static_cast<SceneLight::Type>(type);
 		l.color = color;
@@ -746,6 +756,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		l.innerConeAngle = inner;
 		l.outerConeAngle = outer;
 		l.name = name;
+		l.flags = lightFlags;
 		const ClusterLightHandle h = cluster->CreateLight(std::move(l));
 		if (!h.valid())
 			return fail("CreateLight failed for: " + uri);

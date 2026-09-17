@@ -11,7 +11,10 @@
 // Pipeline (trace + blur at half res, i.e. full extent / 2):
 //   trace:     full-res depth 2x2 block -> nearest valid tap is the
 //              receiver (reverse-Z: max depth = nearest; never fabricate
-//              a center across a silhouette) -> depth-derived normal
+//              a center across a silhouette) UNLESS the glass layer
+//              marks the block as a pane (Blend/dithered transparents
+//              never write the opaque depth — see `glass` below) ->
+//              pane depth is the receiver -> depth-derived normal
 //              from full-res neighbors one half-step over (same-depth
 //              fallback is sign-safe by construction) -> screen-stride
 //              adaptive view-space march (~6 px strides: dense where
@@ -35,16 +38,35 @@
 //              base HDR is never filtered. History lives in two ping-pong
 //              targets; rejection (off-screen reproject, disocclusion,
 //              invalid history) falls back to the current blurred tap.
+//              NOTE: the temporal pass knows nothing about the glass
+//              layer — its depth authority is the through-content, which
+//              is continuous under a pane, so pane layers accumulate
+//              like any other surface.
 //   composite: FULL-res base HDR + depth-guided 2x2 upsample of the
 //              blurred (rgb, a) with full-res depth authority. Background
-//              pixels keep the base color unconditionally.
+//              pixels keep the base color unconditionally — except pane
+//              pixels (glass layer R > 0.5): the pane, not the sky
+//              behind it, is the reflector, so its traced reflection
+//              must survive the sky early-out.
 // Placement: after Main + MotionBlur + DOF, before Exposure/Bloom/Tonemap.
 // Input is the scene HDR (post-DOF), output is the same-extent HDR with
 // reflections composited additively. Downstream passes sample the SSR
 // output when the pass ran, else the input directly (no copy disabled).
 //
+// Glass layer (option B — pane reflections): `glass` is a full-res
+// RGBA16F target the APP fills with a GlassMask pass (transparent-list
+// redraw, glassmask.frag.hlsl): R = pane presence, G = the pane
+// fragment's reverse-Z depth. The trace consumes it as the receiver
+// where it masks (pane position/normal/Fresnel — real pane geometry,
+// not the seen-through background), and the composite uses it to keep
+// pane pixels off the sky early-out. Pass an empty view (or an invalid
+// bindless index) to AddSsr*Passes to disable: the trace falls back to
+// the opaque-depth receiver and the composite to the unconditional sky
+// early-out — the pre-layer behavior.
+//
 // No GBuffer exists (forward+ path writes color + depth only), so the
-// trace reconstructs everything it needs from the 1x prepass depth:
+// trace reconstructs everything it needs from the 1x prepass depth
+// plus the glass layer:
 //   - view positions via FrameUniforms.invProj (exact, flip/finite-far
 //     agnostic — same discipline as ssao.h / dof.h),
 //   - normals from depth-derived view-position derivatives,
@@ -91,7 +113,9 @@ struct SsrDesc {
 	const char* logicalName = "ssrLogical";
 };
 
-// Must match ssr.frag.hlsl SsrTracePush (56 bytes).
+// Must match ssr.frag.hlsl SsrTracePush (64 bytes — the uint64 frame
+// BDA aligns the C++ struct to 8, so the HLSL block carries an explicit
+// trailing pad and both sides see identical member offsets).
 struct SsrTracePush {
 	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice
 	uint32_t hdrTextureIndex = UINT32_MAX;
@@ -106,8 +130,10 @@ struct SsrTracePush {
 	float f0 = 0.04f;
 	uint32_t refineSteps = 4;
 	uint32_t frameIndex = 0; // dither epoch (0 = static legacy; temporal path passes the record counter)
+	uint32_t maskTextureIndex = UINT32_MAX; // glass layer bindless; UINT32_MAX = no pane receivers
+	uint32_t pad0 = 0; // sizeof alignment (uint64 member); mirrors the HLSL pad
 };
-static_assert(sizeof(SsrTracePush) == 56);
+static_assert(sizeof(SsrTracePush) == 64);
 
 // Must match ssr_blur.frag.hlsl SsrBlurPush (48 bytes).
 struct SsrBlurPush {
@@ -136,7 +162,7 @@ struct SsrComposePush {
 	float invDepthH = 0.0f; // 1 / full-res depth height
 	float sharpness = 10.0f; // upsample edge weight
 	float pad0 = 0.0f;
-	uint32_t pad1 = 0;
+	uint32_t maskTextureIndex = UINT32_MAX; // glass layer bindless; UINT32_MAX = sky early-out unconditional
 	uint32_t pad2 = 0;
 };
 static_assert(sizeof(SsrComposePush) == 48);
@@ -230,6 +256,13 @@ struct ScreenSpaceReflections {
 
 	Target raw; // half-res trace output (rgb = refl x fresnel x intensity, a = confidence)
 	Target blurred; // half-res bilateral blur of raw
+	// Glass layer (option B — pane reflections): full-res RGBA16F,
+	// R = pane presence, G = pane reverse-Z depth. Filled by the APP's
+	// GlassMask pass (transparent-list redraw, glassmask.frag.hlsl);
+	// consumed by the trace (pane receivers) + composite (sky early-out
+	// gate). Same extent as the composite, so Ensure's extent check
+	// covers it.
+	Target glass;
 	// Half-res temporal history ping-pong (TAA of the reflection layer).
 	// history[parity] is written by the temporal pass each temporal
 	// record; the composite samples the just-written slot. historyValid
@@ -260,7 +293,8 @@ struct ScreenSpaceReflections {
 	SsrDesc desc{};
 
 	[[nodiscard]] bool TargetsValid() const {
-		return raw.Valid() && blurred.Valid() && history[0].Valid() && history[1].Valid() &&
+		return raw.Valid() && blurred.Valid() && glass.Valid() &&
+			history[0].Valid() && history[1].Valid() &&
 			!image.empty() && !logicalView.empty();
 	}
 	[[nodiscard]] bool ShadersValid() const {
@@ -343,9 +377,10 @@ struct ScreenSpaceReflections {
 		ci.extent = { ext.width, ext.height, 1 };
 		ci.format = format;
 		// TransferSrc: debug stage dumps (VULKANTOY_SSR_DUMP) copy the
-		// targets back through DownloadDataFromImage.
-		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled
-			| ImageUsage::TransferSrc;
+		// targets back through DownloadDataFromImage — armed dumps only.
+		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+		if (DebugImageDumpArmed())
+			ci.usage |= ImageUsage::TransferSrc;
 		ci.mipLevels = 1;
 		ci.arrayLayers = 1;
 		ci.name = name;
@@ -400,9 +435,11 @@ struct ScreenSpaceReflections {
 		ImageCreateInfo ci{};
 		ci.extent = { targetExtent.width, targetExtent.height, 1 };
 		ci.format = d.format;
-		// TransferSrc: debug stage dumps (VULKANTOY_SSR_DUMP).
-		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled
-			| ImageUsage::TransferSrc;
+		// TransferSrc: debug stage dumps (VULKANTOY_SSR_DUMP) — armed dumps
+		// only (DownloadDataFromImage needs it on the source image).
+		ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+		if (DebugImageDumpArmed())
+			ci.usage |= ImageUsage::TransferSrc;
 		ci.mipLevels = 1;
 		ci.arrayLayers = 1;
 		ci.name = d.name;
@@ -464,7 +501,7 @@ struct ScreenSpaceReflections {
 			return false;
 		DestroyTargets(rg);
 		const Extent2D half = HalfExtentFor(full);
-		Target newRaw, newBlur, newHist0, newHist1;
+		Target newRaw, newBlur, newHist0, newHist1, newGlass;
 		if (!CreateTarget(ctx, rg, half, d.format, "ssrRaw", newRaw))
 			return false;
 		if (!CreateTarget(ctx, rg, half, d.format, "ssrBlur", newBlur)) {
@@ -482,15 +519,24 @@ struct ScreenSpaceReflections {
 			DestroyTarget(rg, newHist0);
 			return false;
 		}
-		if (!CreateTarget(ctx, rg, full, d)) {
+		if (!CreateTarget(ctx, rg, full, d.format, "ssrGlass", newGlass)) {
 			DestroyTarget(rg, newRaw);
 			DestroyTarget(rg, newBlur);
 			DestroyTarget(rg, newHist0);
 			DestroyTarget(rg, newHist1);
 			return false;
 		}
+		if (!CreateTarget(ctx, rg, full, d)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newHist0);
+			DestroyTarget(rg, newHist1);
+			DestroyTarget(rg, newGlass);
+			return false;
+		}
 		raw = std::move(newRaw);
 		blurred = std::move(newBlur);
+		glass = std::move(newGlass);
 		history[0] = std::move(newHist0);
 		history[1] = std::move(newHist1);
 		halfExtent = half;
@@ -502,6 +548,7 @@ struct ScreenSpaceReflections {
 	void DestroyTargets(RenderGraph& rg) {
 		DestroyTarget(rg, raw);
 		DestroyTarget(rg, blurred);
+		DestroyTarget(rg, glass);
 		DestroyTarget(rg, history[0]);
 		DestroyTarget(rg, history[1]);
 		DestroyTarget(rg);
@@ -531,9 +578,14 @@ struct ScreenSpaceReflections {
 		DestroyShaders();
 	}
 
-	// Emits trace (HDR + full-res depth -> half-res reflection) + blur
-	// (half-res reflection + full-res depth -> half-res) + composite
-	// (half-res reflection + full-res depth + full-res HDR -> full-res HDR).
+	// Emits trace (HDR + full-res depth [+ glass layer] -> half-res
+	// reflection) + blur (half-res reflection + full-res depth -> half-res)
+	// + composite (half-res reflection + full-res depth + full-res HDR
+	// [+ glass layer] -> full-res HDR).
+	// glassView/glassBindlessIndex: the GlassMask pass output (pane
+	// presence + pane depth). Empty view or invalid index disables pane
+	// receivers — the trace keeps the opaque-depth receiver and the
+	// composite keeps the unconditional sky early-out.
 	// Captures only copyable handles/indices, so the passes are safe once
 	// this call returns.
 	void AddSsrPasses(RenderGraph& rg,
@@ -541,9 +593,11 @@ struct ScreenSpaceReflections {
 		uint32_t hdrBindlessIndex,
 		LogicalImageViewHandle depthView,
 		uint32_t depthBindlessIndex,
-		uint64_t frameUniformsAddr,
-		uint32_t linearSamplerIndex,
-		const SsrDesc& overrideDesc,
+		LogicalImageViewHandle glassView = LogicalImageViewHandle{},
+		uint32_t glassBindlessIndex = UINT32_MAX,
+		uint64_t frameUniformsAddr = 0,
+		uint32_t linearSamplerIndex = 0,
+		const SsrDesc& overrideDesc = SsrDesc{},
 		const char* traceName = "SSR",
 		const char* blurName = "SSRBlur",
 		const char* composeName = "SSRComposite",
@@ -555,12 +609,13 @@ struct ScreenSpaceReflections {
 		assert(extent.width != 0 && extent.height != 0);
 		assert(halfExtent.width != 0 && halfExtent.height != 0);
 
+		const bool glassOn = !glassView.empty() && glassBindlessIndex != UINT32_MAX;
 		const float fullW = static_cast<float>(std::max(1u, extent.width));
 		const float fullH = static_cast<float>(std::max(1u, extent.height));
 		const float halfW = static_cast<float>(std::max(1u, halfExtent.width));
 		const float halfH = static_cast<float>(std::max(1u, halfExtent.height));
 
-		// ---- Trace: HDR + full-res depth -> half-res reflection ----
+		// ---- Trace: HDR + full-res depth [+ glass] -> half-res reflection ----
 		{
 			SsrTracePush push{};
 			push.frameUniforms = frameUniformsAddr;
@@ -576,11 +631,15 @@ struct ScreenSpaceReflections {
 			push.f0 = std::clamp(overrideDesc.f0, 0.0f, 1.0f);
 		push.refineSteps = std::min(overrideDesc.refineSteps, 8u);
 		push.frameIndex = frameIndex;
+		push.maskTextureIndex = glassOn ? glassBindlessIndex : UINT32_MAX;
 
+			std::vector<LogicalImageViewHandle> traceInputs = { hdrView, depthView };
+			if (glassOn)
+				traceInputs.push_back(glassView);
 			RenderPass& pass = rg.AddPass(traceName ? traceName : "SSR");
 			pass.SetOffset(0, 0)
 				.SetExtent(halfExtent)
-				.SetInputImages({ hdrView, depthView })
+				.SetInputImages(traceInputs)
 				.SetColor({ raw.logical },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
@@ -636,10 +695,10 @@ struct ScreenSpaceReflections {
 			});
 		}
 
-		// ---- Composite: blurred half-res + full-res depth + HDR -> HDR ----
-		// The depth-guided upsample runs HERE, in a pass that never
-		// attaches depth, so every depth read is a properly barriered
-		// sampled input.
+		// ---- Composite: blurred half-res + full-res depth + HDR ----
+		// [+ glass] -> HDR. The depth-guided upsample runs HERE, in a
+		// pass that never attaches depth, so every depth read is a
+		// properly barriered sampled input.
 		{
 			SsrComposePush push{};
 			push.frameUniforms = frameUniformsAddr;
@@ -651,13 +710,16 @@ struct ScreenSpaceReflections {
 			push.invDepthH = 1.0f / fullH;
 			push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
 			push.pad0 = 0.0f;
-			push.pad1 = 0;
+			push.maskTextureIndex = glassOn ? glassBindlessIndex : UINT32_MAX;
 			push.pad2 = 0;
 
+			std::vector<LogicalImageViewHandle> composeInputs = { blurred.logical, depthView, hdrView };
+			if (glassOn)
+				composeInputs.push_back(glassView);
 			RenderPass& pass = rg.AddPass(composeName ? composeName : "SSRComposite");
 			pass.SetOffset(0, 0)
 				.SetExtent(extent)
-				.SetInputImages({ blurred.logical, depthView, hdrView })
+				.SetInputImages(composeInputs)
 				.SetColor({ logicalView },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
@@ -678,10 +740,10 @@ struct ScreenSpaceReflections {
 	}
 
 	// Temporal (TAA) variant: trace + blur (identical pushes to the
-	// spatial path above), then the temporal pass (blurred +
-	// history[parity^1] + motion + depth -> history[parity]), then the
-	// composite sampling the just-written history slot instead of the
-	// blurred target. The base HDR path is untouched — only the
+	// spatial path above, glass layer included), then the temporal pass
+	// (blurred + history[parity^1] + motion + depth -> history[parity]),
+	// then the composite sampling the just-written history slot instead
+	// of the blurred target. The base HDR path is untouched — only the
 	// reflection layer is temporally filtered. historyValid == false
 	// warms up: the temporal pass copies curr into the slot so the next
 	// record has something to blend against.
@@ -692,6 +754,8 @@ struct ScreenSpaceReflections {
 		uint32_t hdrBindlessIndex,
 		LogicalImageViewHandle depthView,
 		uint32_t depthBindlessIndex,
+		LogicalImageViewHandle glassView,
+		uint32_t glassBindlessIndex,
 		LogicalImageViewHandle motionView,
 		uint32_t motionBindlessIndex,
 		uint64_t frameUniformsAddr,
@@ -716,12 +780,13 @@ struct ScreenSpaceReflections {
 		assert(halfExtent.width != 0 && halfExtent.height != 0);
 		assert(parity < 2);
 
+		const bool glassOn = !glassView.empty() && glassBindlessIndex != UINT32_MAX;
 		const float fullW = static_cast<float>(std::max(1u, extent.width));
 		const float fullH = static_cast<float>(std::max(1u, extent.height));
 		const float halfW = static_cast<float>(std::max(1u, halfExtent.width));
 		const float halfH = static_cast<float>(std::max(1u, halfExtent.height));
 
-		// ---- Trace: HDR + full-res depth -> half-res reflection ----
+		// ---- Trace: HDR + full-res depth [+ glass] -> half-res reflection ----
 		{
 			SsrTracePush push{};
 			push.frameUniforms = frameUniformsAddr;
@@ -737,11 +802,15 @@ struct ScreenSpaceReflections {
 			push.f0 = std::clamp(overrideDesc.f0, 0.0f, 1.0f);
 		push.refineSteps = std::min(overrideDesc.refineSteps, 8u);
 		push.frameIndex = frameIndex;
+		push.maskTextureIndex = glassOn ? glassBindlessIndex : UINT32_MAX;
 
+			std::vector<LogicalImageViewHandle> traceInputs = { hdrView, depthView };
+			if (glassOn)
+				traceInputs.push_back(glassView);
 			RenderPass& pass = rg.AddPass(traceName ? traceName : "SSR");
 			pass.SetOffset(0, 0)
 				.SetExtent(halfExtent)
-				.SetInputImages({ hdrView, depthView })
+				.SetInputImages(traceInputs)
 				.SetColor({ raw.logical },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
@@ -843,8 +912,9 @@ struct ScreenSpaceReflections {
 		}
 
 		// ---- Composite: temporal half-res + full-res depth + HDR ----
-		// -> HDR. Same depth-guided upsample as the spatial path, but the
-		// reflection source is the just-written history slot.
+		// [+ glass] -> HDR. Same depth-guided upsample as the spatial
+		// path, but the reflection source is the just-written history
+		// slot.
 		{
 			SsrComposePush push{};
 			push.frameUniforms = frameUniformsAddr;
@@ -856,13 +926,16 @@ struct ScreenSpaceReflections {
 			push.invDepthH = 1.0f / fullH;
 			push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
 			push.pad0 = 0.0f;
-			push.pad1 = 0;
+			push.maskTextureIndex = glassOn ? glassBindlessIndex : UINT32_MAX;
 			push.pad2 = 0;
 
+			std::vector<LogicalImageViewHandle> composeInputs = { histCurr.logical, depthView, hdrView };
+			if (glassOn)
+				composeInputs.push_back(glassView);
 			RenderPass& pass = rg.AddPass(composeName ? composeName : "SSRComposite");
 			pass.SetOffset(0, 0)
 				.SetExtent(extent)
-				.SetInputImages({ histCurr.logical, depthView, hdrView })
+				.SetInputImages(composeInputs)
 				.SetColor({ logicalView },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
@@ -888,6 +961,8 @@ struct ScreenSpaceReflections {
 		uint32_t hdrBindlessIndex,
 		LogicalImageViewHandle depthView,
 		uint32_t depthBindlessIndex,
+		LogicalImageViewHandle glassView,
+		uint32_t glassBindlessIndex,
 		LogicalImageViewHandle motionView,
 		uint32_t motionBindlessIndex,
 		uint64_t frameUniformsAddr,
@@ -903,7 +978,8 @@ struct ScreenSpaceReflections {
 		const char* composeName = "SSRComposite",
 		uint32_t frameIndex = 0) const {
 		AddSsrTemporalPasses(rg, hdrView, hdrBindlessIndex, depthView, depthBindlessIndex,
-			motionView, motionBindlessIndex, frameUniformsAddr, linearSamplerIndex, desc,
+			glassView, glassBindlessIndex, motionView, motionBindlessIndex,
+			frameUniformsAddr, linearSamplerIndex, desc,
 			jitterDeltaX, jitterDeltaY, taaBlend, historyValid, parity,
 			traceName, blurName, temporalName, composeName, frameIndex);
 	}
@@ -914,13 +990,16 @@ struct ScreenSpaceReflections {
 		uint32_t hdrBindlessIndex,
 		LogicalImageViewHandle depthView,
 		uint32_t depthBindlessIndex,
-		uint64_t frameUniformsAddr,
-		uint32_t linearSamplerIndex,
+		LogicalImageViewHandle glassView = LogicalImageViewHandle{},
+		uint32_t glassBindlessIndex = UINT32_MAX,
+		uint64_t frameUniformsAddr = 0,
+		uint32_t linearSamplerIndex = 0,
 		const char* traceName = "SSR",
 		const char* blurName = "SSRBlur",
 		const char* composeName = "SSRComposite") const {
 		AddSsrPasses(rg, hdrView, hdrBindlessIndex, depthView, depthBindlessIndex,
-			frameUniformsAddr, linearSamplerIndex, desc, traceName, blurName, composeName);
+			glassView, glassBindlessIndex, frameUniformsAddr, linearSamplerIndex, desc,
+			traceName, blurName, composeName);
 	}
 };
 

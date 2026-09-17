@@ -11,12 +11,14 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
 
+#include <Engine/App/cluster.h> // Cluster (static-bake-light harvest test)
 #include <Engine/GI/bake.h>
 #include <Engine/GI/lightmap.h>
 #include <Engine/GI/probe_volume.h>
@@ -1124,6 +1126,128 @@ void TestLmAuthoredCharts() {
 	opts.authoredUv2 = false;
 }
 
+// Scene-authored static lights (SceneLight::kSceneLightFlag_Static) are
+// bake sources: CollectStaticBakeLights converts spots/points to
+// GiTraceSpot NEE lights and seeds the bake sun from the first static
+// directional; unflagged lights are never baked.
+void TestStaticBakeLights() {
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	::Scene& scene = cluster->scene;
+	addNode(scene, -1, 0); // root
+
+	auto addLightNode = [&](glm::vec3 pos, const SceneLight& def) {
+		const int n = addNode(scene, 0, 1);
+		glm::mat4 g(1.0f);
+		g[3] = glm::vec4(pos, 1.0f);
+		scene.localTransform[n] = g;
+		scene.globalTransform[n] = g;
+		const smvk::ClusterLightHandle h = cluster->CreateLight(def);
+		scene.lightForNode[(uint32_t)n] = h.index();
+		return n;
+	};
+
+	// Static spot at (0,2,0), identity rotation -> node -Z aims at
+	// (0,0,-1) (same aim convention the runtime cooked path uses).
+	SceneLight spotDef;
+	spotDef.type = SceneLight::Type::Spot;
+	spotDef.color = glm::vec3(1.0f, 0.5f, 0.25f);
+	spotDef.intensity = 64.0f; // candela
+	spotDef.range = 12.0f;
+	spotDef.innerConeAngle = glm::radians(15.0f);
+	spotDef.outerConeAngle = glm::radians(30.0f);
+	spotDef.flags = SceneLight::kSceneLightFlag_Static;
+	addLightNode(glm::vec3(0.0f, 2.0f, 0.0f), spotDef);
+
+	// Static point at (0,5,0).
+	SceneLight pointDef;
+	pointDef.type = SceneLight::Type::Point;
+	pointDef.color = glm::vec3(0.25f, 0.5f, 1.0f);
+	pointDef.intensity = 100.0f;
+	pointDef.range = 6.0f;
+	pointDef.flags = SceneLight::kSceneLightFlag_Static;
+	addLightNode(glm::vec3(0.0f, 5.0f, 0.0f), pointDef);
+
+	// UNFLAGGED spot: runtime-only, must never reach the bake.
+	SceneLight dynDef;
+	dynDef.type = SceneLight::Type::Spot;
+	dynDef.intensity = 500.0f;
+	addLightNode(glm::vec3(1.0f, 1.0f, 1.0f), dynDef);
+
+	// Static directional: identity rotation -> emis (0,0,-1) -> sun
+	// direction (0,0,1). A second static directional must NOT override.
+	SceneLight sunDef;
+	sunDef.type = SceneLight::Type::Directional;
+	sunDef.color = glm::vec3(1.0f, 0.95f, 0.9f);
+	sunDef.intensity = 20000.0f; // lux
+	sunDef.flags = SceneLight::kSceneLightFlag_Static;
+	addLightNode(glm::vec3(0.0f, 10.0f, 0.0f), sunDef);
+	SceneLight sunDef2 = sunDef;
+	sunDef2.intensity = 1.0f;
+	sunDef2.color = glm::vec3(0.0f);
+	addLightNode(glm::vec3(2.0f, 10.0f, 0.0f), sunDef2);
+
+	gi::GiTraceScene ts;
+	const gi::GiStaticLightCounts counts = gi::CollectStaticBakeLights(*cluster, ts);
+	Check(counts.spots == 1 && counts.points == 1 && counts.suns == 1,
+		"static.collect.counts");
+	Check(ts.spots.size() == 2, "static.collect.two");
+
+	// Spot conversion: world position, aim direction, candela->radiance
+	// scale, cone cosines (inner clamps to the smaller angle).
+	bool spotOk = ts.spots.size() >= 1;
+	if (spotOk) {
+		const gi::GiTraceSpot& s = ts.spots[0];
+		spotOk = glm::all(glm::equal(s.position, glm::vec3(0.0f, 2.0f, 0.0f)))
+			&& glm::all(glm::equal(s.direction, glm::vec3(0.0f, 0.0f, -1.0f)))
+			&& s.range == 12.0f
+			&& glm::all(glm::equal(
+				s.color, glm::vec3(1.0f, 0.5f, 0.25f) * 64.0f))
+			&& std::abs(s.cosInner - std::cos(glm::radians(15.0f))) < 1e-6f
+			&& std::abs(s.cosOuter - std::cos(glm::radians(30.0f))) < 1e-6f;
+	}
+	Check(spotOk, "static.collect.spot.fields");
+
+	// Point conversion: full-cone spot (cosInner == cosOuter == -1).
+	bool pointOk = ts.spots.size() >= 2;
+	if (pointOk) {
+		const gi::GiTraceSpot& s = ts.spots[1];
+		pointOk = glm::all(glm::equal(s.position, glm::vec3(0.0f, 5.0f, 0.0f)))
+			&& s.cosInner == -1.0f && s.cosOuter == -1.0f
+			&& s.range == 6.0f
+			&& glm::all(glm::equal(
+				s.color, glm::vec3(0.25f, 0.5f, 1.0f) * 100.0f));
+	}
+	Check(pointOk, "static.collect.point.fullcone");
+
+	// Sun seeding: first static directional wins.
+	bool sunOk = glm::all(glm::equal(ts.sunDirection, glm::vec3(0.0f, 0.0f, 1.0f)))
+		&& glm::all(glm::equal(ts.sunColor, glm::vec3(1.0f, 0.95f, 0.9f)))
+		&& ts.sunIntensity == 20000.0f;
+	Check(sunOk, "static.collect.sun.firstwins");
+
+	// Numeric: the converted point behaves EXACTLY like a point light —
+	// receiver 1 m below the point, outside the static spot's cone
+	// (cosA = 0 < cosOuter(30 deg) there), so only the point term shows.
+	// Frostbite windowed inverse-square (mirror of SampleSpots):
+	//   window = (1 - (d/range)^4)^2, atten = window / (4 pi d^2)
+	ts.Finalize(); // empty geometry: BVH hit test stays clear
+	gi::GiTraceMaterial mat;
+	mat.albedo = glm::vec3(1.0f);
+	const glm::vec3 pos(0.0f, 1.0f, 0.0f);
+	const glm::vec3 n(0.0f, 1.0f, 0.0f);
+	const glm::vec3 got = ts.SampleSpots(pos, n, mat);
+	const float dist = 4.0f;
+	const float x = dist / 6.0f;
+	const float window_ = (1.0f - x * x * x * x) * (1.0f - x * x * x * x);
+	const float atten = window_ / (4.0f * kPi * dist * dist);
+	const glm::vec3 expect =
+		glm::vec3(0.25f, 0.5f, 1.0f) * 100.0f * atten / kPi;
+	Check(glm::all(glm::lessThan(
+			glm::abs(got - expect), glm::vec3(1e-5f))),
+		"static.collect.point.falloff");
+}
+
 } // namespace smvk::gi
 
 int main() {
@@ -1143,6 +1267,7 @@ int main() {
 	smvk::gi::TestFp16Pack();
 	smvk::gi::TestLightmapCurvatureScale();
 	smvk::gi::TestLmAuthoredCharts();
+	smvk::gi::TestStaticBakeLights();
 
 	std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks
 		<< " checks passed\n";

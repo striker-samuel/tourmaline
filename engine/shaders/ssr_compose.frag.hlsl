@@ -29,7 +29,7 @@ struct SsrComposePush
     float2 invDepthSize; // 1 / full-res depth extent
     float sharpness; // upsample edge weight
     float pad0;
-    uint pad1;
+    uint maskTextureIndex; // glass layer bindless, 0xffffffff = none
     uint pad2;
 };
 
@@ -55,7 +55,24 @@ PSOut mainPS(PSIn IN)
 
     int2 fullPx = int2(IN.pos.xy);
     float d = depthTex.Load(int3(fullPx, 0)).r;
-    if (DofIsBackgroundOrGarbage(d))
+    // Glass layer (see glassmask.frag.hlsl): R = pane presence. A pane
+    // pixel over sky/empty background is still a REFLECTOR — the trace
+    // traced off the pane, not the background — so the sky early-out
+    // must not drop its reflection. Depth authority below is the
+    // through-content: sky taps all carry the 1e5 view-distance
+    // sentinel, so they agree with a sky-through center and the
+    // depth-guided upsample still splits at real silhouettes.
+    // Sentinel guard mirrors the AO optional-texture discipline
+    // (default_lit_body.hlsli): the bindless index only happens inside
+    // the if — a raw && would let SPIR-V's non-short-circuit logical
+    // and touch textures[0xffffffff].
+    bool panePx = false;
+    if (cp.maskTextureIndex != 0xffffffffu)
+    {
+        Texture2D glassTex = textures[NonUniformResourceIndex(cp.maskTextureIndex)];
+        panePx = glassTex.Load(int3(fullPx, 0)).r > 0.5f;
+    }
+    if (DofIsBackgroundOrGarbage(d) && !panePx)
     {
         // Sky: nothing to reflect off — keep the base color.
         OUT.outColor = float4(base, 1.0f);
