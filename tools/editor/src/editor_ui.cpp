@@ -119,6 +119,7 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	ImGui::End();
 
 	DrawViewportOverlay(targetExtent);
+	DrawFlintbasePanel();
 }
 
 void EditorApp::DrawMenuBar() {
@@ -177,6 +178,9 @@ void EditorApp::DrawMenuBar() {
 			FrameSelection();
 		if (ImGui::MenuItem("Frame all", "Shift+F"))
 			FrameAll();
+		ImGui::Separator();
+		if (ImGui::MenuItem("Flintbase browser", nullptr, m_showFlintbasePanel))
+			m_showFlintbasePanel = !m_showFlintbasePanel;
 		ImGui::Separator();
 		ImGui::MenuItem("Selection wire overlay", nullptr, &m_wireOverlay);
 		if (ImGui::MenuItem("Panels visible", nullptr, m_uiMode))

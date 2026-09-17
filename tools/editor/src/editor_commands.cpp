@@ -12,6 +12,8 @@
 #include <glm/gtx/matrix_decompose.hpp>
 
 #include <Engine/Asset/tour.h>
+#include <Engine/Flintbase/flintbase_backend.h>
+#include <Engine/Vfs/vfs.h>
 
 namespace editor {
 
@@ -384,6 +386,14 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 std::string EditorApp::TourPath() const {
 	if (m_gltfPath.empty())
 		return {};
+	// Flintbase scheme scenes keep their identity in the tour; the tour
+	// file itself is local working state, so it never lands inside the
+	// (immutable) product version folder on storage.
+	if (smvk::vfs::HasFlintbasePrefix(m_gltfPath)) {
+		std::filesystem::path p(m_gltfHostPath);
+		std::filesystem::create_directories("content/tours");
+		return ("content/tours/" + p.filename().replace_extension(".tour").string());
+	}
 	std::filesystem::path p(m_gltfPath);
 	p.replace_extension(".tour");
 	return p.string();
@@ -395,7 +405,7 @@ bool EditorApp::SaveTour() {
 		return false;
 	smvk::tour::Doc doc;
 	doc.source = m_gltfPath;
-	doc.fingerprint = smvk::tour::Fingerprint(m_gltfPath);
+	doc.fingerprint = smvk::tour::Fingerprint(m_gltfHostPath);
 	for (size_t i = 0; i < m_historyCursor; ++i) {
 		smvk::tour::Command tc{};
 		if (!CmdToTour(*this, m_history[i], tc)) {

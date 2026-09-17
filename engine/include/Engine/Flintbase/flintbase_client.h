@@ -44,11 +44,40 @@ struct FlintbaseError {
 	std::string message;
 };
 
+struct FlintbaseItemInfo {
+	int id = 0;
+	std::string name;
+	std::string type;      // item class attr (character, prop, ...) when set
+	std::string project;
+	std::string folder;
+};
+
+struct FlintbaseProductInfo {
+	int id = 0;
+	std::string itemName;
+	std::string project;
+	std::string task;
+	std::string step;
+	std::string name;
+	std::string description;
+	int latestVersion = 0;     // 0 = none published yet
+	std::string latestStatus;
+
+	// "//flintbase/{project}/{item}/{task}[/{step}]/{name}" (product-level;
+	// append "/latest" or "/vNNN" to address a version).
+	[[nodiscard]] std::string Path() const;
+};
+
 class IFlintbaseApi {
 public:
 	virtual ~IFlintbaseApi() = default;
 	[[nodiscard]] virtual bool Resolve(const std::string& remainder,
 		FlintbaseResolved& out, FlintbaseError& error) = 0;
+	[[nodiscard]] virtual bool ListItems(const std::string& project,
+		std::vector<FlintbaseItemInfo>& out, FlintbaseError& error) = 0;
+	[[nodiscard]] virtual bool ListProducts(const std::string& project,
+		const std::string& itemName,
+		std::vector<FlintbaseProductInfo>& out, FlintbaseError& error) = 0;
 };
 
 class FlintbaseClient final : public IFlintbaseApi {
@@ -60,6 +89,11 @@ public:
 
 	[[nodiscard]] bool Resolve(const std::string& remainder,
 		FlintbaseResolved& out, FlintbaseError& error) override;
+	[[nodiscard]] bool ListItems(const std::string& project,
+		std::vector<FlintbaseItemInfo>& out, FlintbaseError& error) override;
+	[[nodiscard]] bool ListProducts(const std::string& project,
+		const std::string& itemName,
+		std::vector<FlintbaseProductInfo>& out, FlintbaseError& error) override;
 
 	[[nodiscard]] static std::string DefaultApiUrl();
 

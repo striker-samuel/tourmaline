@@ -218,4 +218,66 @@ bool FlintbaseClient::Resolve(const std::string& remainder,
 	return true;
 }
 
+std::string FlintbaseProductInfo::Path() const {
+	std::string p = "//flintbase/" + project + "/" + itemName + "/" + task;
+	if (!step.empty())
+		p += "/" + step;
+	p += "/" + name;
+	return p;
+}
+
+bool FlintbaseClient::ListItems(const std::string& project,
+	std::vector<FlintbaseItemInfo>& out, FlintbaseError& error) {
+	out.clear();
+	std::string body;
+	const std::string request = "/items?project=" + UrlEncode(project);
+	if (!Get(request, body, error))
+		return false;
+	const auto j = nlohmann::json::parse(body, nullptr, false);
+	if (j.is_discarded() || !j.is_array()) {
+		error = {0, "Flintbase: invalid JSON from /items"};
+		return false;
+	}
+	for (const auto& it : j) {
+		FlintbaseItemInfo info;
+		info.id = it.value("id", 0);
+		info.name = it.value("name", std::string());
+		info.type = it.value("type", std::string());
+		info.project = it.value("project", std::string());
+		info.folder = it.value("folder", std::string());
+		out.push_back(std::move(info));
+	}
+	return true;
+}
+
+bool FlintbaseClient::ListProducts(const std::string& project,
+	const std::string& itemName,
+	std::vector<FlintbaseProductInfo>& out, FlintbaseError& error) {
+	out.clear();
+	std::string body;
+	const std::string request = "/products?project=" + UrlEncode(project)
+		+ "&item_name=" + UrlEncode(itemName);
+	if (!Get(request, body, error))
+		return false;
+	const auto j = nlohmann::json::parse(body, nullptr, false);
+	if (j.is_discarded() || !j.is_array()) {
+		error = {0, "Flintbase: invalid JSON from /products"};
+		return false;
+	}
+	for (const auto& p : j) {
+		FlintbaseProductInfo info;
+		info.id = p.value("id", 0);
+		info.itemName = p.value("item_name", std::string());
+		info.project = p.value("project", std::string());
+		info.task = p.value("task", std::string());
+		info.step = p.value("step", std::string());
+		info.name = p.value("name", std::string());
+		info.description = p.value("description", std::string());
+		info.latestVersion = p.value("latest_version", 0);
+		info.latestStatus = p.value("latest_status", std::string());
+		out.push_back(std::move(info));
+	}
+	return true;
+}
+
 } // namespace smvk

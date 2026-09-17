@@ -16,6 +16,7 @@
 
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Utils/gltf.h>
 #include <Engine/core.h>
@@ -71,7 +72,8 @@ bool EditorApp::Initialize() {
 void EditorApp::Shutdown() {
 	WaitForDeviceIdle();
 	m_textureStreamer.reset();
-	PollCookProcess(); // reap a finished cook child if any
+	PollCookProcess();
+	PollPublishProcess();
 	m_imgui.reset();
 	m_shadowAtlas.Destroy(*m_rendergraph);
 	m_depth = smvk::DepthTarget{};
@@ -95,9 +97,19 @@ void EditorApp::Shutdown() {
 }
 
 bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
+	// Scheme paths keep their //flintbase/ identity in m_gltfPath but
+	// load (and fingerprint) from the resolved storage file.
+	std::string loadPath = path;
+	if (smvk::vfs::HasFlintbasePrefix(path)) {
+		loadPath = smvk::FlintbaseHostPath(path);
+		if (loadPath.empty()) {
+			Log("Failed to resolve " + std::string(smvk::vfs::Normalize(path)));
+			return false;
+		}
+	}
 	tinygltf::Model model;
-	if (!LoadModelFromAsciiFile(model, path.c_str())) {
-		Log("Failed to load glTF: " + path);
+	if (!LoadModelFromAsciiFile(model, loadPath.c_str())) {
+		Log("Failed to load glTF: " + loadPath);
 		return false;
 	}
 	WaitForDeviceIdle();
@@ -121,7 +133,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	smvk::Cluster& cluster = m_world->LoadCluster(*m_context);
 	Log("Importing geometry/materials...");
 	try {
-		GltfToCluster(*m_context, model, path, cluster,
+		GltfToCluster(*m_context, model, loadPath, cluster,
 			smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, glm::mat4(1.0f),
 			m_textureStreamer.get());
 	}
@@ -134,6 +146,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	m_world->ResolveAndFixup_clusters();
 
 	m_gltfPath = path;
+	m_gltfHostPath = loadPath;
 	m_gltfModel = std::move(model);
 	m_hasGltfModel = true;
 	m_selected = UINT32_MAX;
@@ -452,6 +465,7 @@ void EditorApp::DrawFrame() {
 		RenderFrame(fb);
 	m_swapchain->EndAndPresentFramebuffer(fb);
 	PollCookProcess();
+	PollPublishProcess();
 }
 
 void EditorApp::Log(const std::string& s) {

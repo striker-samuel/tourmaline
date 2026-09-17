@@ -122,6 +122,36 @@ public:
 		return false;
 	}
 
+	bool ListItems(const std::string& project,
+		std::vector<smvk::FlintbaseItemInfo>& out,
+		smvk::FlintbaseError& error) override {
+		if (project != "proj") {
+			error = {404, "fake: unknown project"};
+			return false;
+		}
+		out.push_back({1, "item", "thing", "proj", "/proj/item"});
+		return true;
+	}
+
+	bool ListProducts(const std::string& project, const std::string& itemName,
+		std::vector<smvk::FlintbaseProductInfo>& out,
+		smvk::FlintbaseError& error) override {
+		if (project != "proj" || itemName != "item") {
+			error = {404, "fake: no products"};
+			return false;
+		}
+		smvk::FlintbaseProductInfo info;
+		info.id = 1;
+		info.itemName = itemName;
+		info.project = project;
+		info.task = "task";
+		info.name = "pak";
+		info.latestVersion = 1;
+		info.latestStatus = "finished";
+		out.push_back(std::move(info));
+		return true;
+	}
+
 	int calls = 0;
 	static constexpr const char* kPayloadSha =
 		"60b0b808546ee0cc39e16a452d499936939fcf6086cf1f653e44e2391d1f82dc";
@@ -171,6 +201,13 @@ void TestBackendAgainstFake() {
 
 	// Unknown version resolves once and is cached as a negative too.
 	Check(!backend.TryRead("//flintbase/proj/item/task/v099/pak"), "fb.backend.miss");
+
+	// Product info path composition (used by the editor browser).
+	std::vector<smvk::FlintbaseProductInfo> infos;
+	smvk::FlintbaseError listErr;
+	Check(fake->ListProducts("proj", "item", infos, listErr)
+		&& infos.size() == 1
+		&& infos[0].Path() == "//flintbase/proj/item/task/pak", "fb.client.product.path");
 }
 
 void TestOverlayRouting() {

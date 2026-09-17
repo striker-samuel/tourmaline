@@ -19,6 +19,7 @@
 #endif
 
 #include <Engine/Asset/tour.h>
+#include <Engine/Vfs/vfs.h>
 
 namespace editor {
 
@@ -42,15 +43,23 @@ void EditorApp::CookToPak() {
 		for (char& c : posix)
 			if (c == '\\')
 				c = '/';
-		const std::string marker = "content/models/";
-		const size_t at = posix.find(marker);
-		if (at != std::string::npos) {
-			contentDir = posix.substr(0, at + 8); // keep "content/"
-			inVfs = posix.substr(at + 8); // "models/..."
+		if (smvk::vfs::HasFlintbasePrefix(posix)) {
+			// Scheme sources route through the cooker's Flintbase VFS
+			// mount; --content-dir is irrelevant for them.
+			contentDir = "content";
+			inVfs = posix;
 		}
 		else {
-			contentDir = std::filesystem::path(m_gltfPath).parent_path().string();
-			inVfs = std::filesystem::path(m_gltfPath).filename().string();
+			const std::string marker = "content/models/";
+			const size_t at = posix.find(marker);
+			if (at != std::string::npos) {
+				contentDir = posix.substr(0, at + 8); // keep "content/"
+				inVfs = posix.substr(at + 8); // "models/..."
+			}
+			else {
+				contentDir = std::filesystem::path(m_gltfHostPath).parent_path().string();
+				inVfs = std::filesystem::path(m_gltfHostPath).filename().string();
+			}
 		}
 	}
 	CookSettings cook = m_cook;

@@ -33,6 +33,7 @@
 #include <Engine/App/world.h>
 #include <Engine/Asset/tour.h>
 #include <Engine/Camera/camera.h>
+#include <Engine/Flintbase/flintbase_client.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/depth.h>
@@ -241,6 +242,11 @@ private:
 	void CookToPak(); // save tour + PakCooker --tour on a worker
 	void PollCookProcess();
 
+	// ---- flintbase (editor_flintbase.cpp) ----
+	void DrawFlintbasePanel();   // product browser (toggle: View menu)
+	void PublishToFlintbase();   // spawn `python -m flintbase.publish`
+	void PollPublishProcess();
+
 	// ---- camera ----
 	CameraPositioner_FirstPerson m_camPos{};
 	Camera m_camera{ m_camPos };
@@ -255,7 +261,11 @@ private:
 	void FrameAll();
 
 	// ---- source scene ----
+	// m_gltfPath is the scene identity (a //flintbase/ scheme path when
+	// opened from a product); m_gltfHostPath is the resolved file used
+	// for loading and fingerprinting (equal to m_gltfPath for local files).
 	std::string m_gltfPath;
+	std::string m_gltfHostPath;
 	std::string m_pendingGltf; // --gltf path queued before Initialize
 	tinygltf::Model m_gltfModel; // kept for picking
 	bool m_hasGltfModel = false;
@@ -356,6 +366,21 @@ private:
 	char m_filterBuf[128] = "";
 	std::string m_browseDir; // file browser cwd (reset each open)
 	std::string m_browseSel; // file browser selection (full path)
+
+	// ---- flintbase panel state ----
+	bool m_showFlintbasePanel = false;
+	char m_fbProject[64] = "";
+	char m_fbItem[128] = "";
+	char m_fbTarget[512] = "";
+	char m_fbPublishSource[512] = "";
+	struct FbItemRow { std::string name; std::string type; };
+	std::vector<FbItemRow> m_fbItems;
+	int m_fbItemSel = -1;
+	std::vector<smvk::FlintbaseProductInfo> m_fbProducts;
+	int m_fbProductSel = -1;
+	bool m_publishRunning = false;
+	struct PublishResult { bool ok = false; std::string log; };
+	std::future<PublishResult> m_publishFuture{};
 };
 
 } // namespace editor
