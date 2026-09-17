@@ -30,15 +30,12 @@ bool ReadHostFile(const std::filesystem::path& p, std::vector<uint8_t>& out) {
 // Path utilities
 // ---------------------------------------------------------------------------
 
-VfsPath vfs::Normalize(const std::string& path) {
-	if (path.empty())
-		return {};
-	// Drive-letter absolute (C:/..., C:\...) or posix absolute.
-	if (path.size() >= 2 && path[1] == ':')
-		return {};
-	if (!path.empty() && (path[0] == '/' || path[0] == '\\'))
-		return {};
+namespace {
 
+// Core posix-relative normalization shared by regular and scheme paths.
+// Collapses separators, skips '.', resolves '..'; returns false when the
+// input escapes its root via '..' (out stays empty).
+bool NormalizeRelative(const std::string& path, VfsPath& out) {
 	std::vector<std::string> parts;
 	std::string cur;
 	auto flush = [&]() {
@@ -68,18 +65,78 @@ VfsPath vfs::Normalize(const std::string& path) {
 		}
 	}
 	flush();
-	if (parts.empty())
-		return {};
-	for (const auto& p : parts) {
-		if (p == "..")
-			return {}; // escaped the virtual root
+	if (parts.empty()) {
+		out.clear();
+		return true; // empty is valid: "no remainder"
 	}
-	std::string out;
+	for (const auto& p : parts) {
+		if (p == "..") {
+			out.clear();
+			return false; // escaped the root
+		}
+	}
+	out.clear();
 	for (size_t i = 0; i < parts.size(); ++i) {
 		if (i)
 			out.push_back('/');
 		out += parts[i];
 	}
+	return true;
+}
+
+bool IsSeparator(char c) {
+	return c == '/' || c == '\\';
+}
+
+// Scheme routing predicate: backends serve either the //flintbase/
+// scheme exclusively, or regular paths exclusively - never both.
+bool ServesFor(const IVfsBackend& backend, bool schemePath) {
+	return backend.ServesSchemePaths() == schemePath;
+}
+
+} // namespace
+
+bool vfs::HasFlintbasePrefix(std::string_view path) {
+	static constexpr std::string_view kAuthority = "flintbase";
+	if (path.size() < 2 + kAuthority.size())
+		return false;
+	if (!IsSeparator(path[0]) || !IsSeparator(path[1]))
+		return false;
+	for (size_t i = 0; i < kAuthority.size(); ++i) {
+		const char c = path[2 + i];
+		if (IsSeparator(c))
+			return false; // authority is shorter than "flintbase"
+		const char lower = (c >= 'A' && c <= 'Z') ? char(c - 'A' + 'a') : c;
+		if (lower != kAuthority[i])
+			return false;
+	}
+	// The authority must be followed by a separator or end of input.
+	if (path.size() > 2 + kAuthority.size() && !IsSeparator(path[2 + kAuthority.size()]))
+		return false;
+	return true;
+}
+
+VfsPath vfs::Normalize(const std::string& path) {
+	if (path.empty())
+		return {};
+	if (HasFlintbasePrefix(path)) {
+		const size_t kPrefixLen = kFlintbaseScheme.size(); // "//flintbase/" (13)
+		const size_t cut = path.size() < kPrefixLen ? path.size() : kPrefixLen;
+		VfsPath rest;
+		if (!NormalizeRelative(path.substr(cut), rest))
+			return {}; // escaped the scheme root
+		return rest.empty()
+			? std::string(kFlintbaseScheme)
+			: std::string(kFlintbaseScheme) + rest;
+	}
+	// Drive-letter absolute (C:/..., C:\...) or posix absolute.
+	if (path.size() >= 2 && path[1] == ':')
+		return {};
+	if (!path.empty() && (path[0] == '/' || path[0] == '\\'))
+		return {};
+	VfsPath out;
+	if (!NormalizeRelative(path, out))
+		return {}; // escaped the virtual root
 	return out;
 }
 
@@ -279,9 +336,12 @@ bool OverlayVfs::Exists(const VfsPath& path) const {
 	const VfsPath n = vfs::Normalize(path);
 	if (n.empty())
 		return false;
+	const bool scheme = vfs::IsFlintbasePath(n);
 	std::lock_guard<std::mutex> lock(mutex_);
 	for (const auto& m : mounts_) {
-		if (m.backend && m.backend->Exists(n))
+		if (!m.backend || !ServesFor(*m.backend, scheme))
+			continue;
+		if (m.backend->Exists(n))
 			return true;
 	}
 	return false;
@@ -291,9 +351,10 @@ std::optional<std::vector<uint8_t>> OverlayVfs::TryRead(const VfsPath& path) con
 	const VfsPath n = vfs::Normalize(path);
 	if (n.empty())
 		return std::nullopt;
+	const bool scheme = vfs::IsFlintbasePath(n);
 	std::lock_guard<std::mutex> lock(mutex_);
 	for (const auto& m : mounts_) {
-		if (!m.backend)
+		if (!m.backend || !ServesFor(*m.backend, scheme))
 			continue;
 		if (auto bytes = m.backend->TryRead(n))
 			return bytes;
@@ -316,10 +377,11 @@ std::vector<uint8_t> OverlayVfs::ReadBinary(const VfsPath& path) const {
 
 std::vector<VfsPath> OverlayVfs::ListDir(const VfsPath& dir) const {
 	const VfsPath n = vfs::Normalize(dir);
+	const bool scheme = vfs::IsFlintbasePath(n);
 	std::lock_guard<std::mutex> lock(mutex_);
 	std::vector<VfsPath> out;
 	for (const auto& m : mounts_) {
-		if (!m.backend)
+		if (!m.backend || !ServesFor(*m.backend, scheme))
 			continue;
 		for (auto& e : m.backend->ListDir(n))
 			out.push_back(std::move(e));
@@ -333,9 +395,10 @@ std::optional<VfsStat> OverlayVfs::Stat(const VfsPath& path) const {
 	const VfsPath n = vfs::Normalize(path);
 	if (n.empty())
 		return std::nullopt;
+	const bool scheme = vfs::IsFlintbasePath(n);
 	std::lock_guard<std::mutex> lock(mutex_);
 	for (const auto& m : mounts_) {
-		if (!m.backend)
+		if (!m.backend || !ServesFor(*m.backend, scheme))
 			continue;
 		if (auto s = m.backend->Stat(n))
 			return s;
@@ -348,9 +411,10 @@ std::vector<std::string> OverlayVfs::FindProviders(const VfsPath& path) const {
 	std::vector<std::string> out;
 	if (n.empty())
 		return out;
+	const bool scheme = vfs::IsFlintbasePath(n);
 	std::lock_guard<std::mutex> lock(mutex_);
 	for (const auto& m : mounts_) {
-		if (m.backend && m.backend->Exists(n))
+		if (m.backend && ServesFor(*m.backend, scheme) && m.backend->Exists(n))
 			out.push_back(m.name);
 	}
 	return out;

@@ -184,6 +184,21 @@ set_target_properties(TourTests PROPERTIES
 
 add_test(NAME tour_tests COMMAND TourTests)
 
+project(FlintbaseTests)
+
+add_executable(FlintbaseTests test_flintbase.cpp)
+
+target_link_libraries(FlintbaseTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(FlintbaseTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME flintbase_tests COMMAND FlintbaseTests)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 vulkantoy_stage_sdl3(AssetTests)
 vulkantoy_stage_sdl3(SpirvReflectionTests)
@@ -199,3 +214,4 @@ vulkantoy_stage_sdl3(DeferredShadowTests)
 vulkantoy_stage_sdl3(CubemapTests)
 vulkantoy_stage_sdl3(ParticlesTests)
 vulkantoy_stage_sdl3(TourTests)
+vulkantoy_stage_sdl3(FlintbaseTests)

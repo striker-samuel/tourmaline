@@ -16,6 +16,7 @@ target_include_directories(engine
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/external/tiny_obj_loader
         ${CMAKE_SOURCE_DIR}/external/tinygltf
+        ${nlohmann_json_SOURCE_DIR}/single_include
         ${nlohmann_json_SOURCE_DIR}/single_include/nlohmann
         ${CMAKE_SOURCE_DIR}/external/SPIRV-Reflect
         ${CMAKE_SOURCE_DIR}/external/SPIRV-Reflect/include
@@ -59,6 +60,8 @@ target_link_libraries(engine
         imgui_backend_sdl3
         imgui_backend_vulkan
         lz4
+        winhttp
+        bcrypt
 )
 
 # DXC -- shader compiling HLSL->SPIRV

@@ -25,17 +25,30 @@ StringViewT NormalizeAssetUri(StringViewT uri, Arena& scratch) {
 	const auto [file, frag] = SplitAssetUri(uri);
 	if (file.empty())
 		return {}; // "#frag" has no file part
-	if (file.size() >= 2 && file[1] == ':')
-		return {}; // drive-letter absolute
-	if (file[0] == '/' || file[0] == '\\')
-		return {}; // posix absolute
+
+	// Reserved //flintbase/ scheme: keep the (lowercased, canonical)
+	// prefix verbatim and normalize the remainder. Regular paths reject
+	// drive-letter/leading-slash inputs.
+	const bool scheme =
+		vfs::HasFlintbasePrefix(std::string_view(file.data(), file.size()));
+	StringViewT body = file;
+	if (scheme) {
+		const size_t kPrefixLen = vfs::kFlintbaseScheme.size();
+		body = file.size() <= kPrefixLen ? StringViewT{} : file.substr(kPrefixLen);
+	}
+	else {
+		if (file.size() >= 2 && file[1] == ':')
+			return {}; // drive-letter absolute
+		if (file[0] == '/' || file[0] == '\\')
+			return {}; // posix absolute
+	}
 
 	// Segment pass: collapse separators, skip '.', reject "..".
 	std::vector<StringViewT> parts;
 	size_t start = 0;
-	for (size_t i = 0; i <= file.size(); ++i) {
-		if (i == file.size() || file[i] == '/' || file[i] == '\\') {
-			const StringViewT seg = file.substr(start, i - start);
+	for (size_t i = 0; i <= body.size(); ++i) {
+		if (i == body.size() || body[i] == '/' || body[i] == '\\') {
+			const StringViewT seg = body.substr(start, i - start);
 			start = i + 1;
 			if (seg.empty() || (seg.size() == 1 && seg[0] == '.'))
 				continue;
@@ -47,7 +60,10 @@ StringViewT NormalizeAssetUri(StringViewT uri, Arena& scratch) {
 	if (parts.empty())
 		return {};
 
+	constexpr std::string_view kPrefix = "//flintbase/";
 	size_t total = 1; // NUL
+	if (scheme)
+		total += kPrefix.size();
 	for (size_t i = 0; i < parts.size(); ++i) {
 		if (i)
 			total += 1;
@@ -58,6 +74,10 @@ StringViewT NormalizeAssetUri(StringViewT uri, Arena& scratch) {
 
 	char* buf = static_cast<char*>(scratch.Allocate(total));
 	size_t off = 0;
+	if (scheme) {
+		std::memcpy(buf, kPrefix.data(), kPrefix.size());
+		off += kPrefix.size();
+	}
 	for (size_t i = 0; i < parts.size(); ++i) {
 		if (i)
 			buf[off++] = '/';

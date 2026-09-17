@@ -90,6 +90,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/GI/bake.h>
 #include <Engine/GI/lightmap.h>
+#include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/Utils/gltf.h>
 #include <Engine/Vfs/vfs.h>
 
@@ -1046,9 +1047,11 @@ int main(int argc, char** argv) {
 
 	const auto t0 = std::chrono::steady_clock::now();
 
-	// VFS: cooker reads inputs through the same overlay rules as runtime.
+	// VFS: cooker reads inputs through the same overlay rules as runtime
+	// (plus the Flintbase scheme for //flintbase/ inputs).
 	smvk::OverlayVfs vfs;
 	vfs.Mount(std::make_shared<smvk::LooseBackend>(args.contentDir), 0, "content");
+	vfs.Mount(std::make_shared<smvk::FlintbaseBackend>(), 50, "flintbase");
 
 	smvk::MeshOptConfig opt;
 	opt.enabled = args.meshopt;
