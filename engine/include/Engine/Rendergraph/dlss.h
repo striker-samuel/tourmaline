@@ -34,7 +34,8 @@
 //   ...
 //   m_viewportResources.dlss.Ensure(ctx, rg, swapExtent, desc);
 //   smvk::DlssApplyOptions(mode, swapW, swapH);        // on drift
-//   smvk::AddDlssPasses(rg, ctx, dlss, frameInputs, frameExposure, "DLSS");
+//   smvk::AddDlssPasses(rg, ctx, dlss, frameInputs, frameExposure, frameId, "DLSS");
+//     where frameId is a monotonic render-frame counter (NOT fb.frameIndex).
 //   ... tonemap consumes dlss.output.logicalView / .bindlessIndex
 
 #include <Engine/Memory/pool.h>
@@ -331,8 +332,13 @@ struct DlssFrameInputs {
 // Emits:
 //   "DlssExposure"  1x1 graphics pass clearing the exposure scalar.
 //   "DLSS"          compute-style pass recording slEvaluateFeature.
-// frameIndex is the swapchain frame index (fb.frameIndex): used for the
-// SL frame token so slSetConstants/slEvaluateFeature share one token.
+// frameIndex is a MONOTONIC per-rendered-frame id (e.g. the app's render
+// frame counter): used for the SL frame token so slSetConstants/
+// slEvaluateFeature share one token. It must NOT wrap with the swapchain
+// image slot (fb.frameIndex cycles 0..N-1): reusing a slot while its prior
+// frame is still in flight makes SL report eErrorDuplicatedConstants
+// ("Setting different 'common' constants multiple times within the same
+// frame") and fail slSetConstants every frame.
 // Returns false when the backend is unavailable (caller skips the pass
 // and keeps its fallback upscale path).
 [[nodiscard]] bool AddDlssPasses(RenderGraph& rg, ResourceManager& ctx,

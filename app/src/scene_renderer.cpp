@@ -7181,8 +7181,15 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				float(renderExtent.width) / float(renderExtent.height);
 			dlssIn.reset = dlssReset;
 
+			// SL frame token must be unique per rendered frame: use the
+			// monotonic render-frame counter, never the wrapping swapchain
+			// slot (fb.frameIndex cycles 0..N-1, so reusing it makes SL see
+			// different constants under the same token -> result 27
+			// eErrorDuplicatedConstants "Setting different 'common'
+			// constants multiple times within the same frame").
+			const uint32_t dlssFrameId = static_cast<uint32_t>(m_frameCounter & 0xffffffffu);
 			dlssEmitted = smvk::AddDlssPasses(*m_rendergraph, *m_context,
-				m_viewportResources.dlss, dlssIn, frameExposure, fb.frameIndex, "DLSS");
+				m_viewportResources.dlss, dlssIn, frameExposure, dlssFrameId, "DLSS");
 			if (dlssEmitted) {
 				sceneHdrView = m_viewportResources.dlss.output.logicalView;
 				sceneHdrBindless = m_viewportResources.dlss.output.bindlessIndex;
@@ -7593,7 +7600,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					if (m_ssrEnabled) {
 						ImGui::SliderInt("Ray steps", &m_ssrSteps, 1, 128);
 						ImGui::SliderInt("Refine steps", &m_ssrRefineSteps, 0, 8);
-						ImGui::SliderFloat("Max distance (m)", &m_ssrMaxDistance, 1.0f, 200.0f);
+						ImGui::SliderFloat("SSR max distance (m)", &m_ssrMaxDistance, 1.0f, 200.0f);
 						ImGui::SliderFloat("Thickness (m)", &m_ssrThickness, 0.01f, 2.0f);
 						ImGui::SliderFloat("Intensity", &m_ssrIntensity, 0.0f, 4.0f);
 						ImGui::SliderFloat("F0 (glass 0.04)", &m_ssrF0, 0.0f, 1.0f);
@@ -7622,7 +7629,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						}
 						if (ImGui::SliderInt("March steps", &m_volumetricSteps, 4, 128))
 							m_volumetricQuality = smvk::VolumetricQuality::Custom;
-						ImGui::SliderFloat("Max distance (m)", &m_volumetricMaxDistance, 5.0f, 200.0f);
+						ImGui::SliderFloat("Fog max distance (m)", &m_volumetricMaxDistance, 5.0f, 200.0f);
 						ImGui::SliderFloat("Density (1/m)", &m_volumetricDensity, 0.0f, 0.1f, "%.4f");
 						ImGui::SliderFloat("Scattering intensity", &m_volumetricIntensity, 0.0f, 4.0f);
 						ImGui::SliderFloat("Anisotropy g", &m_volumetricAnisotropy, -0.9f, 0.9f);
