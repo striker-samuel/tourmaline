@@ -89,6 +89,7 @@ namespace smvk {
 		meshLocations.clear();
 		materialLocations.clear();
 		textureLocations.clear();
+		lightLocations.clear();
 		meshLodInfos.clear();
 		flags.clear();
 		// World material dedup (see the materialForNode remap below).
@@ -246,6 +247,23 @@ namespace smvk {
 			);
 			worldMatByClusterMat[matKey] = worldMatIdx;
 			scene.materialForNode[worldNode] = worldMatIdx;
+		}
+
+		// Remap lightForNode: cluster-local light pool index -> world
+		// light index. lightLocations resolves back to Cluster + handle
+		// exactly like meshLocations (cooked lights are pool assets).
+		for (auto& [node, lightIdx] : cs.lightForNode) {
+			const uint32_t worldNode = node + nodeOffset;
+			const uint32_t worldLightIdx =
+				static_cast<uint32_t>(lightLocations.size());
+
+			ClusterLightHandle handle =
+				cluster.lights.getHandle(lightIdx);
+
+			lightLocations.push_back(
+				LightLocation{ .cluster = &cluster, .handle = handle }
+			);
+			scene.lightForNode[worldNode] = worldLightIdx;
 		}
 
 		markAsChanged(scene, clusterRootNode);

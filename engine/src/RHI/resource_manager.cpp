@@ -214,22 +214,35 @@ bool ResourceManager::SupportsEvsm() {
     VkPhysicalDevice phys = smvk::GetVkPhysicalDevice();
     if (phys == VK_NULL_HANDLE)
         return false;
-    // RG32F as 2x MSAA color attachment, sampled + storage (blur).
+    // RGBA32F as 2x MSAA color attachment, sampled + storage (blur).
+    const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+        | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
     VkImageFormatProperties props{};
     VkResult r = vkGetPhysicalDeviceImageFormatProperties(phys,
-        VK_FORMAT_R32G32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-        0, &props);
+        VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+        usage, 0, &props);
     if (r != VK_SUCCESS)
         return false;
     if ((props.sampleCounts & VK_SAMPLE_COUNT_2_BIT) == 0)
         return false;
-    // Single-sample RG32F must also serve as resolve dest + storage target.
+    // Single-sample RGBA32F must also serve as resolve dest + storage +
+    // transfer-src target (dump readback).
     r = vkGetPhysicalDeviceImageFormatProperties(phys,
-        VK_FORMAT_R32G32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+        usage | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         0, &props);
-    return r == VK_SUCCESS;
+    if (r != VK_SUCCESS)
+        return false;
+    // The prefilter and every receiver sample the (blurred) moments with a
+    // LINEAR sampler: RGBA32F filterability is not guaranteed (uncommon on
+    // iGPUs) — without it the blur taps and the visibility reads are
+    // invalid, so fall back to PCF instead.
+    VkFormatProperties fp{};
+    vkGetPhysicalDeviceFormatProperties(phys,
+        VK_FORMAT_R32G32B32A32_SFLOAT, &fp);
+    if ((fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) == 0)
+        return false;
+    return true;
 }
 bool ResourceManager::HasDedicatedComputeQueue() {
     return smvk::HasDedicatedComputeQueue();

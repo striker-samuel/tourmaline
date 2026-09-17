@@ -311,6 +311,38 @@ bool SerializeCluster(
 			return fail("invalid texture path: " + filePart);
 	}
 
+	// --- Lights (one blob per cooked light, URI-keyed like meshes) --------
+	std::vector<ClusterLightHandle> lightHandles;
+	const_cast<Cluster&>(cluster).lights.forEachHandle(
+		[&](ClusterLightHandle h) { lightHandles.push_back(h); });
+	std::unordered_map<uint32_t, uint32_t> lightPakId; // pool index -> pak id
+	for (uint32_t i = 0; i < lightHandles.size(); ++i) {
+		const auto h = lightHandles[i];
+		lightPakId[h.index()] = i;
+		std::string uri = cluster.GetLightUri(h).Str();
+		if (uri.empty())
+			uri = "<cluster-local>#light." + std::to_string(h.index());
+
+		const SceneLight* l = const_cast<Cluster&>(cluster).lights.get(h);
+		if (!l)
+			return fail("stale light handle in pool");
+
+		std::vector<uint8_t> blob;
+		PutStr(blob, uri);
+		PutU32(blob, static_cast<uint32_t>(l->type));
+		PutVec3(blob, l->color);
+		PutF32(blob, l->intensity);
+		PutF32(blob, l->range);
+		PutF32(blob, l->innerConeAngle);
+		PutF32(blob, l->outerConeAngle);
+		PutStr(blob, l->name);
+
+		if (!writer.AddBlob(PakAssetKind::Light, uri, std::move(blob)))
+			return fail("invalid light uri: " + uri);
+	}
+	if (stats)
+		stats->lights = static_cast<uint32_t>(lightHandles.size());
+
 	// --- Scene ---------------------------------------------------------------
 	{
 		const Scene& scene = cluster.scene;
@@ -394,6 +426,26 @@ bool SerializeCluster(
 			}
 			else {
 				blob.insert(blob.end(), nodeCount, 0);
+			}
+		}
+		// Trailing cooked-lights section (v4; v3 blobs end above).
+		// Definitions are PakAssetKind::Light blobs; this section carries
+		// only the node links as (node, lightPakId) pairs in node order —
+		// the same pak-id indirection meshPairs/matPairs use. Always
+		// written (possibly empty) so the layout is uniform; v3 paks end
+		// after the lightmap section (no lights).
+		{
+			std::vector<std::pair<uint32_t, uint32_t>> lightPairs(
+				scene.lightForNode.begin(), scene.lightForNode.end());
+			std::sort(lightPairs.begin(), lightPairs.end());
+			PutU32(blob, static_cast<uint32_t>(lightPairs.size()));
+			for (const auto& [node, localIdx] : lightPairs) {
+				const auto it = lightPakId.find(localIdx);
+				if (it == lightPakId.end())
+					return fail("scene references unknown light pool index " +
+						std::to_string(localIdx));
+				PutU32(blob, node);
+				PutU32(blob, it->second);
 			}
 		}
 
@@ -665,6 +717,42 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		meshByPakId.push_back(h);
 	}
 
+	// --- Lights (definitions; the Scene blob links nodes to pak ids) -------
+	// Loaded exactly like meshes: one pool entry per blob, URI
+	// re-registered, and the scene's (node, pakId) pairs below remap to
+	// fresh pool handle indices.
+	const auto lightEntries = reader.BlobsOfKind(PakAssetKind::Light);
+	std::vector<ClusterLightHandle> lightByPakId;
+	lightByPakId.reserve(lightEntries.size());
+	for (const PakTocEntry* e : lightEntries) {
+		Cursor c{ reader.Payload(*e), 0 };
+		const std::string uri = c.str();
+		const uint32_t type = c.u32();
+		const glm::vec3 color = c.vec3();
+		const float intensity = c.f32();
+		const float range = c.f32();
+		const float inner = c.f32();
+		const float outer = c.f32();
+		const std::string name = c.str();
+		if (!c.ok)
+			return fail("truncated light blob: " + e->path);
+		if (type > 2)
+			return fail("bad light type in: " + e->path);
+		SceneLight l;
+		l.type = static_cast<SceneLight::Type>(type);
+		l.color = color;
+		l.intensity = intensity;
+		l.range = range;
+		l.innerConeAngle = inner;
+		l.outerConeAngle = outer;
+		l.name = name;
+		const ClusterLightHandle h = cluster->CreateLight(std::move(l));
+		if (!h.valid())
+			return fail("CreateLight failed for: " + uri);
+		cluster->RegisterLightUri(uri, h);
+		lightByPakId.push_back(h);
+	}
+
 	// --- Scene ------------------------------------------------------------------
 	const auto sceneEntries = reader.BlobsOfKind(PakAssetKind::Scene);
 	if (sceneEntries.size() != 1)
@@ -759,12 +847,13 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		}
 		// Trailing lightmap-exclusion section (v3): u32 count + count
 		// bytes. v2 blobs end after the static section — default to no
-		// exclusions in that case.
+		// exclusions in that case. v4 blobs carry a lights section after
+		// this one, so only require that the bytes FIT (not exact end).
 		if (c.off < c.img.size()) {
 			const uint32_t lmCount = c.u32();
 			if (!c.ok || lmCount != nodeCount)
 				return fail("bad scene lightmap section");
-			if (c.off + lmCount != c.img.size())
+			if (c.off + lmCount > c.img.size())
 				return fail("scene blob trailing bytes mismatch");
 			scene.noLightmap.assign(
 				c.img.data() + c.off, c.img.data() + c.off + lmCount);
@@ -772,6 +861,29 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		}
 		else {
 			scene.noLightmap.assign(nodeCount, 0);
+		}
+		// Trailing cooked-lights section (v4): u32 pairCount + (node,
+		// lightPakId) pairs, remapped to fresh pool indices exactly like
+		// the mesh/material mappings above. v3 blobs end after the
+		// lightmap section (no lights).
+		if (c.off < c.img.size()) {
+			const uint32_t lightPairCount = c.u32();
+			if (!c.ok || lightPairCount > 1024 * 1024)
+				return fail("bad scene light mapping");
+			for (uint32_t i = 0; i < lightPairCount; ++i) {
+				const uint32_t node = c.u32();
+				const uint32_t pakId = c.u32();
+				if (!c.ok || node >= nodeCount || pakId >= lightByPakId.size())
+					return fail("bad scene light mapping");
+				const ClusterLightHandle h = lightByPakId[pakId];
+				if (!h.valid())
+					return fail("scene references invalid light pak id");
+				scene.lightForNode[node] = h.index();
+			}
+			if (!c.ok)
+				return fail("truncated scene lights section");
+			if (c.off != c.img.size())
+				return fail("scene blob trailing bytes mismatch");
 		}
 		RebuildStaticCache(scene);
 

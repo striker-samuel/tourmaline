@@ -156,16 +156,24 @@ namespace smvk {
 			Cluster* cluster;
 			ClusterMaterialHandle handle;
 		};
-		struct TextureLocation {
-			Cluster* cluster;
-			ClusterTextureHandle handle;
-		};
+	struct TextureLocation {
+		Cluster* cluster;
+		ClusterTextureHandle handle;
+	};
+	// Cooked punctual lights (KHR_lights_punctual): pool assets like
+	// meshes — scene.lightForNode stores world indices into this table,
+	// each entry resolving back to the owning Cluster + handle.
+	struct LightLocation {
+		Cluster* cluster;
+		ClusterLightHandle handle;
+	};
 		// Indexed by the mesh/material index stored in scene.meshForNode /
 		// scene.materialForNode. Each entry points back to the owning
 		// Cluster so resources stay owned by clusters.
-		std::vector<MeshLocation> meshLocations;
-		std::vector<MaterialLocation> materialLocations;
-		std::vector<TextureLocation> textureLocations;
+	std::vector<MeshLocation> meshLocations;
+	std::vector<MaterialLocation> materialLocations;
+	std::vector<TextureLocation> textureLocations;
+	std::vector<LightLocation> lightLocations;
 		// Per-mesh LOD markers parallel to meshLocations (cook-time chain:
 		// LOD0 + "/lodN" siblings with world-scaled simplifier error used
 		// for runtime LOD selection — see SelectLodIndex).

@@ -22,7 +22,7 @@ namespace smvk {
 //                   u64 tocCount
 //   Blobs   : [payload bytes ...] (opaque to this layer; see
 //             Engine/Asset/cluster_serializer.h for Scene/Mesh/Material/
-//             Texture blob encodings)
+//             Texture/Light blob encodings)
 //   TOC     : tocCount × { u64 pathHash, u32 kind, u32 flags,
 //                          u64 offset, u64 size, u32 pathLen, path bytes }
 //   Footer  (24 B): u64 tocOffset, u64 tocCount, u32 crc32, u32 magic "KPM S"?
@@ -58,6 +58,10 @@ enum class PakAssetKind : uint32_t {
 	Mesh = 2,
 	Material = 3,
 	Texture = 4,
+	// Cooked punctual light (KHR_lights_punctual). One blob per light,
+	// keyed by its asset URI — loaded back into the Cluster lights pool
+	// exactly like Mesh blobs (see cluster_serializer.cpp).
+	Light = 5,
 };
 
 enum PakEntryFlags : uint32_t {

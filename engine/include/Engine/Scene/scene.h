@@ -30,6 +30,24 @@ struct Hierarchy {
 };
 
 using NodeId = uint32_t;
+// Cooked punctual light (KHR_lights_punctual import). Definitions live in
+// the owning Cluster's lights pool (like meshes); the definition itself is
+// node-local (color/intensity/range/cones) and world position/direction
+// resolve from the node's global transform at use time so coordFix and
+// parent transforms apply exactly like meshes.
+struct SceneLight {
+	enum class Type : uint32_t { Directional = 0, Point = 1, Spot = 2 };
+	Type type = Type::Point;
+	glm::vec3 color{ 1.0f, 1.0f, 1.0f };
+	// Units match the runtime shaders (see Renderer/light.h):
+	// directional = lux, point/spot = candela.
+	float intensity = 0.0f;
+	float range = 0.0f; // cutoff distance in meters; 0 = infinite
+	float innerConeAngle = 0.0f; // radians, spot only
+	float outerConeAngle = 0.0f; // radians, spot only
+	std::string name;
+};
+
 struct Scene {
 
 	std::vector<mat4> localTransform;  // indexed by node
@@ -41,6 +59,10 @@ struct Scene {
 	std::unordered_map<NodeId, uint32_t> meshForNode;
 	std::unordered_map<NodeId, uint32_t> materialForNode;
 	std::unordered_map<NodeId, uint32_t> nameForNode;
+	// Node -> Cluster light pool index (cooked KHR_lights_punctual). The
+	// definition lives in the owning Cluster's lights pool — the same
+	// indirection meshForNode uses — and the world transform resolves
+	// from globalTransform[node] at use time.
 	std::unordered_map<NodeId, uint32_t> lightForNode;
 
 	std::vector<std::string> nodeNames;

@@ -196,12 +196,21 @@ def fix_materials(gltf):
                 "castShadow": False,
             }
             n_nocast += 1
-    # Remove now-unreferenced top-level extension declaration if present.
+    # Remove now-unreferenced top-level MATERIAL extension declarations.
+    # Non-material extensions (e.g. KHR_lights_punctual, used by the top-level
+    # "extensions" block + node extensions for the cooked sun/point lights)
+    # must be preserved verbatim.
     used = set()
     for mat in gltf.get("materials", []):
         used.update(mat.get("extensions", {}).keys())
+    if gltf.get("extensions", {}).get("KHR_lights_punctual") is not None:
+        used.add("KHR_lights_punctual")
+    for node in gltf.get("nodes", []):
+        used.update(node.get("extensions", {}).keys())
     ext_used = gltf.get("extensionsUsed", [])
     gltf["extensionsUsed"] = [e for e in ext_used if e in used]
+    if "KHR_lights_punctual" in used and "KHR_lights_punctual" not in gltf["extensionsUsed"]:
+        gltf["extensionsUsed"].append("KHR_lights_punctual")
     return n_metal, n_mask, n_blend, n_opaque, n_nocast
 
 

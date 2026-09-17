@@ -95,6 +95,14 @@ bool Cluster::RegisterMaterialUri(StringViewT uri, ClusterMaterialHandle handle)
 	return true;
 }
 
+bool Cluster::RegisterLightUri(StringViewT uri, ClusterLightHandle handle) {
+	const StringViewT n = NormalizeAssetUri(uri, uriArena_);
+	if (n.empty() || !handle.valid())
+		return false;
+	lightByUri_.Insert(uriArena_.AllocateString(n), handle);
+	return true;
+}
+
 bool Cluster::RegisterTextureUri(StringViewT uri, TextureHandle handle) {
 	const StringViewT n = NormalizeAssetUri(uri, uriArena_);
 	if (n.empty() || !handle.valid())
@@ -109,6 +117,7 @@ void Cluster::UnregisterUri(StringViewT uri) {
 		return;
 	meshByUri_.Erase(n);
 	materialByUri_.Erase(n);
+	lightByUri_.Erase(n);
 	textureByUri_.Erase(n);
 	textureSamplers_.Erase(n);
 	textureSources_.Erase(n);
@@ -131,6 +140,16 @@ std::optional<ClusterMaterialHandle> Cluster::FindMaterialByUri(StringViewT uri)
 	if (n.empty())
 		return std::nullopt;
 	const ClusterMaterialHandle* hit = materialByUri_.Find(n);
+	if (!hit)
+		return std::nullopt;
+	return *hit;
+}
+
+std::optional<ClusterLightHandle> Cluster::FindLightByUri(StringViewT uri) const {
+	const StringViewT n = NormalizeAssetUri(uri);
+	if (n.empty())
+		return std::nullopt;
+	const ClusterLightHandle* hit = lightByUri_.Find(n);
 	if (!hit)
 		return std::nullopt;
 	return *hit;
@@ -166,6 +185,21 @@ StringViewT Cluster::GetMaterialUri(ClusterMaterialHandle handle) const {
 			found = uri;
 	});
 	return found;
+}
+
+StringViewT Cluster::GetLightUri(ClusterLightHandle handle) const {
+	if (!handle.valid())
+		return {};
+	StringViewT found;
+	lightByUri_.ForEach([&](StringViewT uri, const ClusterLightHandle& h) {
+		if (h == handle)
+			found = uri;
+	});
+	return found;
+}
+
+ClusterLightHandle Cluster::CreateLight(SceneLight def) {
+	return lights.create(std::move(def));
 }
 
 void Cluster::RegisterTextureSampler(StringViewT uri, const TextureSamplerDesc& desc) {

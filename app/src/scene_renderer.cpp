@@ -394,7 +394,7 @@ static smvk::SpotShadowMapDesc MakeSpotShadowDesc() {
 }
 
 // -----------------------------------------------------------------------------
-// EVSM moment atlases (RG32F 2xMSAA + async separable blur, 1-frame lag).
+// EVSM moment atlases (RGBA32F 2xMSAA + async separable blur, 1-frame lag).
 // Tile counts/resolutions mirror the PCF atlases so the same lightVP math
 // (BuildDirectionalLight / BuildSpotTile) drives both representations.
 // -----------------------------------------------------------------------------
@@ -402,7 +402,7 @@ static smvk::EvsmDesc MakeEvsmDirDesc(smvk::EvsmPipelineMode pipeline) {
 	smvk::EvsmDesc d{};
 	d.tileResolution = CASCADE_RES;
 	d.tileCount = NUM_CASCADES;
-	d.momentsFormat = smvk::Format::RG32_Float;
+	d.momentsFormat = smvk::Format::RGBA32_Float;
 	d.depthFormat = smvk::Format::D32_Float;
 	d.msaaSamples = 2;
 	d.exponent = smvk::kEvsmExponent;
@@ -416,7 +416,7 @@ static smvk::EvsmDesc MakeEvsmSpotDesc(smvk::EvsmPipelineMode pipeline) {
 	smvk::EvsmDesc d{};
 	d.tileResolution = SPOT_SHADOW_RES;
 	d.tileCount = smvk::kMaxSpotShadows;
-	d.momentsFormat = smvk::Format::RG32_Float;
+	d.momentsFormat = smvk::Format::RGBA32_Float;
 	d.depthFormat = smvk::Format::D32_Float;
 	d.msaaSamples = 2;
 	d.exponent = smvk::kEvsmExponent;
@@ -1721,6 +1721,12 @@ bool SceneRenderer::Initialize() {
 			}
 		}
 
+		// Authored punctual lights (KHR_lights_punctual -> pak): when the
+		// scene carries them they replace the procedural demo set (sun
+		// drives the environment, points/spots upload as the Forward+
+		// set — see BuildCookedLightsFromWorld / UpdateForwardPlusLights).
+		BuildCookedLightsFromWorld();
+
 		// Hero decal splats for the check scene (floor pools + a wall
 		// smear in the default camera view; see SpawnDecalPresets).
 		SpawnDecalPresets();
@@ -1821,20 +1827,20 @@ bool SceneRenderer::Initialize() {
 		if (!m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc())) {
 			std::cerr << "[SceneRenderer] Spot shadow atlas unavailable â€“ spots run unshadowed\n";
 		}
-		// EVSM moment atlases (RG32F 2xMSAA + async blur). Non-fatal: when
-		// the device lacks RG32F render/blur support (or shaders fail),
-		// EvsmActive() stays false and every consumer keeps the PCF path.
-		if (!m_context->SupportsEvsm()) {
-			std::cerr << "[SceneRenderer] EVSM unsupported (no RG32F 2xMSAA moments) â€“ PCF shadows\n";
-		}
-		if (!m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline))) {
-			std::cerr << "[SceneRenderer] EVSM directional atlas unavailable â€“ PCF fallback\n";
-		}
-		if (!m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline))) {
-			std::cerr << "[SceneRenderer] EVSM spot atlas unavailable â€“ PCF fallback\n";
-		}
-		if (EvsmActive()) {
-			std::cerr << "[EVSM] moment atlases ready: RG32F 2xMSAA + async blur ("
+	// EVSM moment atlases (RGBA32F 2xMSAA + async blur). Non-fatal: when
+	// the device lacks RGBA32F render/blur/filter support (or shaders
+	// fail), EvsmActive() stays false and every consumer keeps the PCF path.
+	if (!m_context->SupportsEvsm()) {
+		std::cerr << "[SceneRenderer] EVSM unsupported (no RGBA32F 2xMSAA moments) – PCF shadows\n";
+	}
+	if (!m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline))) {
+		std::cerr << "[SceneRenderer] EVSM directional atlas unavailable – PCF fallback\n";
+	}
+	if (!m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline))) {
+		std::cerr << "[SceneRenderer] EVSM spot atlas unavailable – PCF fallback\n";
+	}
+	if (EvsmActive()) {
+		std::cerr << "[EVSM] moment atlases ready: RGBA32F 2xMSAA + async blur ("
 				<< (m_evsmPipeline == smvk::EvsmPipelineMode::SameFrame ? "SameFrame" : "OneFrameLag")
 				<< (m_context->HasDedicatedComputeQueue() ? ", true-async queue" : ", emulated (no dedicated queue)")
 				<< ")\n";
@@ -3033,6 +3039,130 @@ void SceneRenderer::Shutdown() {
 	}
 
 	// ---------------------------------------------------------------------
+	// Cooked scene lights (KHR_lights_punctual).
+	//
+	// Built once per scene load from the resolved world: the definitions
+	// come back as Cluster pool assets (Light blobs in the pak, loaded
+	// exactly like meshes — m_world->lightLocations resolves the world
+	// light index to Cluster + handle) and the node links ride the scene
+	// graph, so global transforms apply coordFix + parent chains exactly
+	// like meshes. The directional sun seeds the environment
+	// (azimuth/elevation/color/intensity, so the sky disc, IBL tint and
+	// shadow light stay in sync) and the points/spots become the static
+	// Forward+ set. Emission direction is the node's -Z axis (glTF
+	// punctual convention).
+	// ---------------------------------------------------------------------
+	void SceneRenderer::BuildCookedLightsFromWorld() {
+		m_cookedLights.clear();
+		if (!m_world)
+			return;
+		const ::Scene& scene = m_world->scene;
+		const auto& lightLocs = m_world->lightLocations;
+		if (lightLocs.empty() || scene.lightForNode.empty()) {
+			std::cerr << "[Scene] no cooked lights (procedural Forward+ active)\n";
+			return;
+		}
+		// Deterministic node order (pak order is already sorted, but the
+		// world map is a hash — sort the node ids).
+		std::vector<uint32_t> nodes;
+		nodes.reserve(scene.lightForNode.size());
+		for (const auto& [node, li] : scene.lightForNode)
+			nodes.push_back(node);
+		std::sort(nodes.begin(), nodes.end());
+		std::vector<smvk::ForwardPlusLight> spots, points;
+		bool sunTaken = false;
+		for (uint32_t node : nodes) {
+			auto lit = scene.lightForNode.find(node);
+			if (lit == scene.lightForNode.end())
+				continue;
+			if (lit->second >= lightLocs.size() || node >= scene.globalTransform.size())
+				continue;
+			const auto& loc = lightLocs[lit->second];
+			if (!loc.cluster || !loc.handle.valid())
+				continue;
+			const ::SceneLight* Lp = loc.cluster->lights.get(loc.handle);
+			if (!Lp)
+				continue;
+			const ::SceneLight& L = *Lp;
+			const glm::mat4& G = scene.globalTransform[node];
+			if (L.type == ::SceneLight::Type::Directional) {
+				if (sunTaken)
+					continue; // single-sun renderer: first directional wins
+				glm::vec3 emis = glm::vec3(G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+				if (glm::length(emis) < 1e-6f)
+					continue;
+				emis = glm::normalize(emis);
+				m_cookedLights.sunDirToSun = -emis;
+				m_cookedLights.sunColor = L.color;
+				m_cookedLights.sunIntensity = L.intensity;
+				m_cookedLights.hasSun = true;
+				sunTaken = true;
+			}
+			else if (L.type == ::SceneLight::Type::Point) {
+				smvk::ForwardPlusLight pl{};
+				pl.color = glm::vec4(L.color, 1.0f);
+				pl.position = glm::vec3(G[3]);
+				pl.range = L.range; // 0 = infinite (shaders handle <= 0)
+				pl.intensity = L.intensity;
+				pl.type = (int32_t)smvk::kForwardPlusPoint;
+				pl.shadowTile = -1;
+				pl.shadowMapIndex = -1;
+				pl.cookieIndex = -1;
+				pl.functionType = smvk::kForwardPlusFunction_None;
+				points.push_back(pl);
+			}
+			else if (L.type == ::SceneLight::Type::Spot) {
+				glm::vec3 emis = glm::vec3(G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+				if (glm::length(emis) < 1e-6f)
+					continue;
+				emis = glm::normalize(emis);
+				smvk::ForwardPlusLight sl{};
+				sl.color = glm::vec4(L.color, 1.0f);
+				sl.position = glm::vec3(G[3]);
+				sl.direction = emis;
+				sl.range = L.range;
+				sl.intensity = L.intensity;
+				sl.innerAngle = L.innerConeAngle;
+				sl.outerAngle = L.outerConeAngle;
+				sl.type = (int32_t)smvk::kForwardPlusSpot;
+				sl.shadowTile = -1;
+				sl.shadowMapIndex = -1;
+				sl.cookieIndex = -1;
+				sl.functionType = smvk::kForwardPlusFunction_None;
+				spots.push_back(sl);
+			}
+		}
+		// Spots first (per-tile slot priority, same invariant as procedural).
+		m_cookedLights.pointSpots.reserve(spots.size() + points.size());
+		m_cookedLights.pointSpots.insert(
+			m_cookedLights.pointSpots.end(), spots.begin(), spots.end());
+		m_cookedLights.pointSpots.insert(
+			m_cookedLights.pointSpots.end(), points.begin(), points.end());
+		if (m_cookedLights.pointSpots.size() > FP_MAX_LIGHTS) {
+			std::cerr << "[Scene] cooked lights clamped: "
+				<< m_cookedLights.pointSpots.size() << " -> " << FP_MAX_LIGHTS << "\n";
+			m_cookedLights.pointSpots.resize(FP_MAX_LIGHTS);
+		}
+		// Seed the environment from the authored sun so the sky disc, IBL
+		// tint and shadow-casting light stay in sync. The user can still
+		// retouch the sliders afterwards (this runs once at load).
+		if (m_cookedLights.hasSun) {
+			const glm::vec3 t = glm::normalize(m_cookedLights.sunDirToSun);
+			m_env.sunElevationDeg = glm::degrees(std::asin(
+				std::clamp(t.y, -1.0f, 1.0f)));
+			m_env.sunAzimuthDeg = glm::degrees(std::atan2(t.x, t.z));
+			m_env.sunColor = m_cookedLights.sunColor;
+			m_env.sunIntensity = m_cookedLights.sunIntensity;
+			std::cerr << "[Scene] cooked sun: az=" << m_env.sunAzimuthDeg
+				<< " el=" << m_env.sunElevationDeg
+				<< " I=" << m_env.sunIntensity << "\n";
+		}
+		std::cerr << "[Scene] cooked lights: spots=" << spots.size()
+			<< " points=" << points.size()
+			<< (m_cookedLights.hasSun ? " + sun" : " (no sun)") << "\n";
+	}
+
+	// ---------------------------------------------------------------------
 	// Procedural Forward+ demo lights.
 	//
 	// The demo light set is pure data (no scene nodes, no emissive ball
@@ -3040,6 +3170,9 @@ void SceneRenderer::Shutdown() {
 	// bob animation) and the orbiting spots on the CPU and uploads the
 	// Forward+ light buffer directly. The ImGui overlay draws the lights
 	// as colored points + indices (see the UI block in RenderFrame).
+	// When the scene carries cooked KHR_lights_punctual lights (and the
+	// cooked toggle is on) those are uploaded INSTEAD — static authored
+	// placement, no orbit/bob, no cookies/functions.
 	// ---------------------------------------------------------------------
 	// Builds the procedural Forward+ demo light set into the per-frame upload
 	// buffer. Returns the number of lights written (clamped to FP_MAX_LIGHTS).
@@ -3059,7 +3192,17 @@ void SceneRenderer::Shutdown() {
 		std::vector<smvk::ForwardPlusLight> lights;
 		lights.reserve(FP_MAX_LIGHTS);
 		m_debugLights.clear();
-		if (m_fpDemo.enabled) {
+		// Cooked authored lights win over the procedural grid when present.
+		if (CookedLightsActive()) {
+			for (const auto& cl : m_cookedLights.pointSpots) {
+				if (lights.size() >= FP_MAX_LIGHTS)
+					break;
+				lights.push_back(cl);
+				m_debugLights.push_back({ glm::vec3(cl.position),
+					glm::vec3(cl.color), (int)cl.type });
+			}
+		}
+		else if (m_fpDemo.enabled) {
 			const int gx = std::max(1, m_fpDemo.gridX);
 			const int gy = std::max(1, m_fpDemo.gridY);
 			const int gz = std::max(1, m_fpDemo.gridZ);
@@ -4187,13 +4330,13 @@ void SceneRenderer::Shutdown() {
 		uint32_t casterViewIndex, bool skipFiltered,
 		smvk::ShaderProgram* opaqueProgram) {
 		// EVSM direct path: same caster walk as RecordShadowCastersDirect.
-		// Phases split by cost â€” phase 1 (opaque) binds the CHEAP moments
+		// Phases split by cost — phase 1 (opaque) binds the CHEAP moments
 		// program when provided (no material read / texture fetch /
-		// feedback atomic; per-fragment work is two exp() + the RG32F
-		// store, ~the PCF depth-only cost), phase 2 (MASK cutout) binds
-		// the full alpha-tested program. Binding the full FS for opaque
-		// measured ~30x the PCF pass (base-color sample + TS_ReportUsage
-		// atomic at 2xMSAA rates over a 2048^2 tile).
+		// feedback atomic; per-fragment work is two exp() + two squares + the
+		// RGBA32F store, ~the PCF depth-only cost), phase 2 (MASK cutout)
+		// binds the full alpha-tested program. Binding the full FS for
+		// opaque measured ~30x the PCF pass (base-color sample +
+		// TS_ReportUsage atomic at 2xMSAA rates over a 2048^2 tile).
 		auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
 			if (item.material == smvk::World::kInvalidIndex)
 				return;
@@ -5133,7 +5276,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				: smvk::RenderViewSet::kInvalidIndex;
 			cascadePC.renderViewIndex = casterViewIndex;
 			if (evsmDirOn) {
-				// EVSM moment pass (RG32F 2xMSAA + resolve, direct path).
+				// EVSM moment pass (RGBA32F 2xMSAA + resolve, direct path).
 				const char* evsmNames[4] = { "EvsmCascade0", "EvsmCascade1", "EvsmCascade2", "EvsmCascade3" };
 				auto& momentPass = smvk::EvsmAsyncPrefilter::AddMomentPass(
 					*m_rendergraph, m_viewportResources.evsmDir, ci, fb.frameIndex, evsmNames[ci]);
@@ -5205,7 +5348,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					: smvk::RenderViewSet::kInvalidIndex;
 				spotPC.renderViewIndex = casterViewIndex;
 				if (evsmSpotOn) {
-					// EVSM moment pass (RG32F 2xMSAA + resolve, direct path).
+					// EVSM moment pass (RGBA32F 2xMSAA + resolve, direct path).
 					auto& momentPass = smvk::EvsmAsyncPrefilter::AddMomentPass(
 						*m_rendergraph, m_viewportResources.evsmSpot, si, fb.frameIndex, spotNames[si]);
 					momentPass.SetRecordingFunc([this, spotPC, casterViewIndex](smvk::CommandBuffer& cmd)
@@ -7647,6 +7790,14 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					}
 				}
 				if (ImGui::CollapsingHeader("Forward+ lights", ImGuiTreeNodeFlags_DefaultOpen)) {
+					if (!m_cookedLights.pointSpots.empty() || m_cookedLights.hasSun) {
+						ImGui::Checkbox("Use cooked scene lights", &m_useCookedLights);
+						ImGui::TextDisabled("Cooked: %u point/spot%s%s",
+							(unsigned)m_cookedLights.pointSpots.size(),
+							m_cookedLights.hasSun ? " + sun" : "",
+							CookedLightsActive() ? " (active — procedural off)"
+								: " (off — procedural fallback)");
+					}
 					ImGui::Checkbox("Tiled point/spot lights (F)", &m_fpDemo.enabled);
 					ImGui::Checkbox("Animate", &m_fpDemo.animate);
 					ImGui::SliderFloat("Speed", &m_fpDemo.speed, 0.0f, 3.0f);
@@ -7719,11 +7870,12 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						: m_decalDemo.pickBvhState == 0 ? "first press builds it"
 						: "unavailable for this scene");
 				}
-				if (ImGui::CollapsingHeader("EVSM shadow maps", ImGuiTreeNodeFlags_DefaultOpen)) {
-					// EVSM (Exponential Variance Shadow Maps): RG32F 2xMSAA
-					// moments + async separable blur, 1-frame-lag pipelined.
-					// Off = PCF depth atlases. Needs RG32F 2xMSAA support.
-				ImGui::Checkbox("EVSM enabled", &m_evsmEnabled);
+			if (ImGui::CollapsingHeader("EVSM shadow maps", ImGuiTreeNodeFlags_DefaultOpen)) {
+				// EVSM (Exponential Variance Shadow Maps): RGBA32F 2xMSAA
+				// moments (M1/M2 of both exponential warps) + async separable
+				// blur, 1-frame-lag pipelined. Off = PCF depth atlases.
+				// Needs RGBA32F 2xMSAA + linear-filter support.
+			ImGui::Checkbox("EVSM enabled", &m_evsmEnabled);
 				ImGui::SameLine();
 				ImGui::TextDisabled(EvsmActive() ? "(active)" : "(PCF fallback)");
 				int evsmPipe = (m_evsmPipeline == smvk::EvsmPipelineMode::SameFrame) ? 1 : 0;
@@ -7734,7 +7886,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				}
 				ImGui::SliderFloat("Softness", &m_evsmSoftness, 0.0f, 3.0f);
 				ImGui::SliderFloat("Spot light size (m)", &m_evsmSpotLightSize, 0.0f, 2.0f);
-				ImGui::TextDisabled("RG32F 2xMSAA moments, 5-tap Gaussian H+V (async);"
+				ImGui::TextDisabled("RGBA32F 2xMSAA moments (dual Cantelli), 9-tap Gaussian H+V (async);"
 					" soft = moment-blocker PCSS (solar angle / light size)");
 				}
 				if (ImGui::CollapsingHeader("Deferred shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -8328,10 +8480,13 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					ImGui::Text("Forward+: %ux%u tiles (%u)  tile %u  max/tile %u",
 						fwd.tileCountX, fwd.tileCountY, fwd.tileCount,
 						FP_TILE_SIZE, FP_MAX_PER_TILE);
-					const int wantLights = m_fpDemo.enabled
-						? (m_fpDemo.gridX * m_fpDemo.gridY * m_fpDemo.gridZ + m_fpDemo.spotCount) : 0;
-				ImGui::Text("Lights: %d / %u%s", wantLights, FP_MAX_LIGHTS,
-					wantLights > (int)FP_MAX_LIGHTS ? "  (CLAMPED!)" : "");
+					const int wantLights = CookedLightsActive()
+						? (int)m_cookedLights.pointSpots.size()
+						: (m_fpDemo.enabled
+							? (m_fpDemo.gridX * m_fpDemo.gridY * m_fpDemo.gridZ + m_fpDemo.spotCount) : 0);
+				ImGui::Text("Lights: %d / %u%s%s", wantLights, FP_MAX_LIGHTS,
+					wantLights > (int)FP_MAX_LIGHTS ? "  (CLAMPED!)" : "",
+					CookedLightsActive() ? "  (cooked)" : "");
 				ImGui::TextDisabled("Tiles cap at %u lights: overflow pops (spots win slots, written first)",
 					FP_MAX_PER_TILE);
 				ImGui::Text("Decals: %u / %u (cap %u/tile)%s", m_decalFrameCount,
@@ -8765,8 +8920,9 @@ namespace app {
 
 void SceneRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
 	// Opt-in debug (VULKANTOY_EVSM_DUMP=<frame>): per-stage stats over the
-	// cascade-0 tile of the moments/temp/blurred images â€” R = E[exp(+c d)],
-	// G = E[exp(-c d)] â€” plus a log-encoded G-channel PNG per stage in
+	// cascade-0 tile of the moments/temp/blurred images â€” channels are
+	// (M1+ = E[exp(+c d)], M2+ = E[exp(+2c d)], M1- = E[exp(-c d)],
+	// M2- = E[exp(-2c d)]) â€” plus a log-encoded M1- PNG per stage in
 	// exports/ (dark = far). The PNG edge-band width IS the prefilter
 	// width, which is how the softness knob's effect was verified.
 	const smvk::EvsmAtlas& atlas = m_viewportResources.evsmDir;
@@ -8782,7 +8938,7 @@ void SceneRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
 	};
 	const uint32_t w = atlas.atlasExtent.width;
 	const uint32_t h = atlas.atlasExtent.height;
-	const size_t bytes = size_t(w) * h * 8;
+	const size_t bytes = size_t(w) * h * 16; // RGBA32F moments
 	std::vector<uint8_t> px(bytes);
 	const uint32_t tile = std::min(atlas.tileExtent.width, w);
 	for (int s = 0; s < 3; ++s) {
@@ -8802,7 +8958,7 @@ void SceneRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
 			double sumR = 0; uint64_t n = 0; float maxR = 0;
 			for (uint32_t y = 0; y < tile; y += 8) {
 				for (uint32_t x = 0; x < tile; x += 8) {
-					const size_t i = (size_t(oy + y) * w + (ox + x)) * 2;
+					const size_t i = (size_t(oy + y) * w + (ox + x)) * 4;
 					const float r = reinterpret_cast<const float*>(px.data())[i];
 					if (!std::isfinite(r))
 						continue;
@@ -8822,15 +8978,17 @@ void SceneRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
 		uint64_t n = 0, ng = 0;
 		for (uint32_t y = 0; y < tile; y += 4) {
 			for (uint32_t x = 0; x < tile; x += 4) {
-				const size_t i = (size_t(y) * w + x) * 2;
-				const float r = f[i], g = f[i + 1];
+				const size_t i = (size_t(y) * w + x) * 4;
+				// R = M1+ (positive first moment), G = M1- (negative first
+				// moment: the soft-path blocker channel).
+				const float r = f[i], g = f[i + 2];
 				sumR += r; sumG += g;
 				minR = std::min(minR, (double)r); maxR = std::max(maxR, (double)r);
 				minG = std::min(minG, (double)g); maxG = std::max(maxG, (double)g);
 				if (x + 1 < tile) {
-					const size_t j = (size_t(y) * w + x + 1) * 2;
+					const size_t j = (size_t(y) * w + x + 1) * 4;
 					gradR += std::abs((double)f[j] - r);
-					gradG += std::abs((double)f[j + 1] - g);
+					gradG += std::abs((double)f[j + 2] - g);
 					++ng;
 				}
 				++n;
@@ -8841,16 +8999,16 @@ void SceneRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
 			name, gradR / (double)ng, gradG / (double)ng,
 			sumR / (double)n, maxR, sumG / (double)n, minG, atlas.blurRadius);
 		std::fflush(stderr);
-		// PNG of the cascade-0 tile (G channel log-encoded: dark = far).
+		// PNG of the cascade-0 tile (M1- log-encoded: dark = far).
 		// Visual edge-band width = the prefilter width â€” definitive.
 		{
 			std::vector<uint8_t> rgba(size_t(tile) * tile * 4);
 			for (uint32_t y = 0; y < tile; ++y) {
 				for (uint32_t x = 0; x < tile; ++x) {
-					const size_t i = (size_t(y) * w + x) * 2;
+					const size_t i = (size_t(y) * w + x) * 4;
 					const size_t o = (size_t(y) * tile + x) * 4;
-					// G = e^(-42 d): log2 spread over [-42, 0] -> [0,255].
-					const double lg = std::max(0.0, -std::log2(std::max((double)f[i + 1], 1e-30)) / 42.0);
+					// M1- = e^(-42 d): log2 spread over [-42, 0] -> [0,255].
+					const double lg = std::max(0.0, -std::log2(std::max((double)f[i + 2], 1e-30)) / 42.0);
 					const uint8_t v = (uint8_t)std::min(255.0, lg * 255.0);
 					rgba[o] = v; rgba[o + 1] = v; rgba[o + 2] = v; rgba[o + 3] = 255;
 				}

@@ -23,6 +23,10 @@ struct ClusterSerializeStats {
 	uint32_t meshletCount = 0;
 	// Static-subtree roots persisted in the Scene blob.
 	uint32_t staticRoots = 0;
+	// Cooked punctual lights (KHR_lights_punctual) persisted as
+	// PakAssetKind::Light blobs (one per light, URI-keyed); the Scene
+	// blob carries the node links as (node, pakId) pairs.
+	uint32_t lights = 0;
 };
 
 // Serializes one Cluster (scene + meshes + materials + embedded textures)

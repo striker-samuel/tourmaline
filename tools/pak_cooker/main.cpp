@@ -63,7 +63,9 @@
 // it cannot drift from the written bytes.
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <limits>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -75,10 +77,12 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/static_merge.h>
+#include <Engine/Asset/tour.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
@@ -97,6 +101,11 @@ struct Args {
 	std::string contentDir = "content";
 	std::string inVfs;
 	std::string outPak;
+	// .tour replay (editor scene overlay): applied to the cook cluster
+	// right after import, before collapse/LOD/bake/serialize. CLI flags
+	// win over tour cook defaults (tracked via explicitSet).
+	std::string tour;
+	std::unordered_set<std::string> explicitSet;
 	bool meshopt = true;
 	float overdraw = 1.05f;
 	bool dumpManifest = false; // print pak contents to stdout (pak-sourced)
@@ -166,6 +175,26 @@ struct Args {
 	// 0 disables.
 	float lmCurveTarget = 7.0f;  // degrees of normal turn per texel
 	float lmCurveMax = 2.5f;     // max per-mesh density multiplier
+	// ---- Chart source -------------------------------------------------
+	// "auto" = built-in greedy planar unwrap; "authored" = UV2 islands of
+	// the imported texCoord2 (external unwrapper, e.g. tools/rizom_uv2.py
+	// packing TEXCOORD_1), per-mesh planar fallback when a mesh carries no
+	// authored layout.
+	std::string lmCharts = "auto";
+	// Comma-separated node-name keywords whose SUBTREES are excluded from
+	// charts/bake entirely (word-boundary match, case-insensitive: "tree"
+	// hits Linden_Tree, not StreetSign; "glass" hits Wine_Glass). Excluded
+	// geometry stays in the trace scene (occludes/casts) and renders
+	// probe/sky-lit at runtime (the FS falls back to probe/grid ambient
+	// for draws with no lightmap chunk). Empty = no exclusion.
+	std::string lmExclude;
+	std::vector<std::string> lmExcludeKeywords;
+	// World-space size gate (meters, bbox diagonal): meshes smaller than
+	// this skip charts/bake entirely (probe/sky-lit at runtime). Bistro
+	// glassware/cutlery bake to a handful of texels at scene density
+	// anyway — probes serve them better, and the atlas keeps its texels
+	// for walls and facades. 0 = no gating.
+	float lmExcludeSmall = 0.0f;
 	float sunAzimuth = 30.0f;    // mirrors the runtime environment defaults
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
@@ -179,6 +208,9 @@ struct Args {
 	// Read-only inspection: open an existing pak and print its manifest
 	// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
 	std::string dumpPak;
+	// Scene pinpoint: with --dump-pak, restrict the scene print to these
+	// node ids (repeatable) and include their local translation.
+	std::vector<uint32_t> dumpNodes;
 };
 
 std::vector<float> ParseLodRatios(const std::string& s) {
@@ -224,10 +256,14 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		else if (a == "--out-pak") {
 			if (!need(out.outPak)) return false;
 		}
+		else if (a == "--tour") {
+			if (!need(out.tour)) return false;
+		}
 		else if (a == "--meshopt") {
 			std::string v;
 			if (!need(v)) return false;
 			out.meshopt = (v == "on" || v == "1" || v == "true");
+			out.explicitSet.insert("meshopt");
 		}
 		else if (a == "--overdraw") {
 			std::string v;
@@ -248,6 +284,7 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			std::string v;
 			if (!need(v)) return false;
 			out.lods = (v == "on" || v == "1" || v == "true");
+			out.explicitSet.insert("lods");
 		}
 		else if (a == "--lod-ratios") {
 			if (!need(out.lodRatios)) return false;
@@ -296,21 +333,25 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			std::string v;
 			if (!need(v)) return false;
 			out.lightmap = (v == "on" || v == "1" || v == "true");
+			out.explicitSet.insert("lightmap");
 		}
 		else if (a == "--lm-density") {
 			std::string v;
 			if (!need(v)) return false;
 			out.lmDensity = static_cast<uint32_t>(std::stoul(v));
+			out.explicitSet.insert("lmDensity");
 		}
 		else if (a == "--lm-lobes") {
 			std::string v;
 			if (!need(v)) return false;
 			out.lmLobes = static_cast<uint32_t>(std::stoul(v));
+			out.explicitSet.insert("lmLobes");
 		}
 		else if (a == "--lm-atlas-width") {
 			std::string v;
 			if (!need(v)) return false;
 			out.lmAtlasWidth = static_cast<uint32_t>(std::stoul(v));
+			out.explicitSet.insert("lmAtlasWidth");
 		}
 		else if (a == "--lm-gutter") {
 			std::string v;
@@ -321,11 +362,13 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			std::string v;
 			if (!need(v)) return false;
 			out.lmBudget = std::stoull(v);
+			out.explicitSet.insert("lmBudget");
 		}
 		else if (a == "--lm-rays") {
 			std::string v;
 			if (!need(v)) return false;
 			out.lmRays = static_cast<uint32_t>(std::stoul(v));
+			out.explicitSet.insert("lmRays");
 		}
 		else if (a == "--lm-bounces") {
 			std::string v;
@@ -377,25 +420,63 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.lmCurveMax = std::max(std::stof(v), 1.0f);
 		}
+		else if (a == "--lm-charts") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmCharts = (v == "authored") ? "authored" : "auto";
+		}
+		else if (a == "--lm-exclude" || a == "--lm-exclude-veg") {
+			std::string v;
+			if (!need(v)) return false;
+			out.explicitSet.insert("lmExclude");
+			if (!out.lmExclude.empty() && !v.empty())
+				out.lmExclude += ",";
+			out.lmExclude += v;
+			out.lmExcludeKeywords.clear();
+			std::string low;
+			for (char ch : out.lmExclude)
+				low.push_back(char(std::tolower(uint8_t(ch))));
+			size_t pos = 0;
+			while (pos < low.size()) {
+				const size_t end = low.find(',', pos);
+				const std::string kw =
+					low.substr(pos, end == std::string::npos
+						? std::string::npos : end - pos);
+				if (!kw.empty())
+					out.lmExcludeKeywords.push_back(kw);
+				pos = (end == std::string::npos)
+					? low.size() : end + 1;
+			}
+		}
+		else if (a == "--lm-exclude-small") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmExcludeSmall = std::max(std::stof(v), 0.0f);
+			out.explicitSet.insert("lmExcludeSmall");
+		}
 		else if (a == "--sun-azimuth") {
 			std::string v;
 			if (!need(v)) return false;
 			out.sunAzimuth = std::stof(v);
+			out.explicitSet.insert("sunAzimuth");
 		}
 		else if (a == "--sun-elevation") {
 			std::string v;
 			if (!need(v)) return false;
 			out.sunElevation = std::stof(v);
+			out.explicitSet.insert("sunElevation");
 		}
 		else if (a == "--sun-intensity") {
 			std::string v;
 			if (!need(v)) return false;
 			out.sunIntensity = std::stof(v);
+			out.explicitSet.insert("sunIntensity");
 		}
 		else if (a == "--sky-intensity") {
 			std::string v;
 			if (!need(v)) return false;
 			out.skyIntensity = std::stof(v);
+			out.explicitSet.insert("skyIntensity");
 		}
 		else if (a == "--spot") {
 			std::string v;
@@ -404,6 +485,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		}
 		else if (a == "--dump-pak") {
 			if (!need(out.dumpPak)) return false;
+		}
+		else if (a == "--dump-node") {
+			std::string v;
+			if (!need(v)) return false;
+			out.dumpNodes.push_back(static_cast<uint32_t>(std::stoul(v)));
 		}
 		else if (a == "--help" || a == "-h") {
 			return false;
@@ -425,7 +511,8 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 void Usage() {
 	std::cout << "PakCooker --content-dir content --in-vfs models/Sponza/sponza.gltf\n"
 		<< "          --out-pak content/paks/sponza.pak [--meshopt on|off]\n"
-		<< "          [--overdraw 1.05] [--verify on|off] [--dump-manifest on|off]\n"
+		<< "          [--tour <scene.tour>] [--overdraw 1.05] [--verify on|off]"
+		<< " [--dump-manifest on|off]\n"
 		<< "          [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]\n"
 		<< "          [--meshlets on|off] [--max-verts 64] [--max-tris 124]\n"
 		<< "          [--cone-weight 0] [--collapse-static on|off]\n"
@@ -439,6 +526,8 @@ void Usage() {
 		<< "           --lm-lod-audit-tx 2.0 --lm-lod-audit-gate on|off\n"
 		<< "           --lm-denoise on|off --lm-denoise-quality high|balanced\n"
 		<< "           --lm-curve-target 7.0 --lm-curve-max 2.5\n"
+		<< "           --lm-charts auto|authored\n"
+		<< "           --lm-exclude tree,linden,ivy,glass --lm-exclude-small 0.5\n"
 		<< "           --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
 		<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
 		<< "lightmap UVs + per-mesh chunk id; atlas written to\n"
@@ -457,7 +546,12 @@ void Usage() {
 		<< "runtime fetches only the layers the count needs).\n"
 		<< "--dump-pak <pak path>: read-only inspection of an existing pak\n"
 		<< "(no cooking): prints meshes + lmChunk, materials + texture URIs,\n"
-		<< "and embedded textures.\n";
+		<< "and embedded textures.\n"
+		<< "--tour <scene.tour>: replay the editor's ASCII command overlay\n"
+		<< "(renames, transforms, materials, no-lightmap flags, reparents)\n"
+		<< "onto the imported cluster before cooking. Tour cook settings\n"
+		<< "fill flags the CLI did not set (CLI wins). Deterministic:\n"
+		<< "source glTF + tour in, identical pak out.\n";
 }
 
 // Little-endian cursor over a MeshBlob payload for manifest printing. Mesh
@@ -492,7 +586,8 @@ struct DumpCursor {
 
 // Prints meshes/materials/textures read back from the written pak (never
 // from the in-memory Cluster, so the dump reflects the actual bytes).
-void DumpManifestFromPak(const smvk::PakReader& reader) {
+void DumpManifestFromPak(const smvk::PakReader& reader,
+	const std::vector<uint32_t>& onlyNodes = {}) {
 	std::cout << "  manifest (pak-sourced):\n";
 
 	// Meshes.
@@ -642,9 +737,201 @@ void DumpManifestFromPak(const smvk::PakReader& reader) {
 			std::cout << "    [malformed texture blob: " << e->path << "]\n";
 		}
 	}
+
+	// Lights (blob: str uri | u32 type | vec3 color | f32 intensity |
+	// f32 range | f32 inner | f32 outer | str name).
+	for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Light)) {
+		DumpCursor c{ reader.Payload(*e), 0 };
+		const std::string uri = c.str();
+		const uint32_t type = c.u32();
+		const float r = c.f32(), g = c.f32(), b = c.f32();
+		const float intensity = c.f32(), range = c.f32();
+		const float inner = c.f32(), outer = c.f32();
+		const std::string name = c.str();
+		if (!c.ok) {
+			std::cout << "    [truncated light blob: " << e->path << "]\n";
+			continue;
+		}
+		const char* tname = type == 0 ? "dir" : (type == 2 ? "spot" : "point");
+		std::cout << "    light " << uri << " '" << name << "' " << tname
+			<< " rgb=(" << r << "," << g << "," << b << ")"
+			<< " I=" << intensity << " range=" << range;
+		if (type == 2)
+			std::cout << " inner=" << inner << " outer=" << outer;
+		std::cout << "\n";
+	}
+
+	// Scene graph (names + parent links + mesh/material/light pak ids + noLM).
+	// Layout mirrors cluster_serializer.cpp: u32 nodes | hierarchy (5xi32)
+	// | localTransforms (16xf32) | meshPairs | matPairs | namePairs |
+	// nodeNames | matNames | static section | noLM section (v3) |
+	// light pairs (v4; definitions are Light blobs).
+	for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Scene)) {
+		DumpCursor c{ reader.Payload(*e), 0 };
+		const uint32_t nodeCount = c.u32();
+		if (!c.ok || nodeCount == 0 || nodeCount > 1024 * 1024) {
+			std::cout << "    [bad scene blob]\n";
+			continue;
+		}
+		std::vector<int32_t> parent(nodeCount, -1);
+		for (uint32_t i = 0; i < nodeCount; ++i) {
+			parent[i] = c.i32();
+			(void)c.i32();
+			(void)c.i32();
+			(void)c.i32();
+			(void)c.i32();
+		}
+		// Local translations (pinpoint checks print them).
+		std::vector<float> localT(nodeCount * 3, 0.0f);
+		for (uint32_t i = 0; i < nodeCount; ++i) {
+			float m[16];
+			for (int k = 0; k < 16; ++k)
+				m[k] = c.f32();
+			localT[i * 3 + 0] = m[12];
+			localT[i * 3 + 1] = m[13];
+			localT[i * 3 + 2] = m[14];
+		}
+		std::unordered_map<uint32_t, uint32_t> meshMap, matMap, nameMap;
+		const uint32_t meshPairs = c.u32();
+		for (uint32_t i = 0; i < meshPairs; ++i) {
+			const uint32_t n = c.u32(), id = c.u32();
+			meshMap[n] = id;
+		}
+		const uint32_t matPairs = c.u32();
+		for (uint32_t i = 0; i < matPairs; ++i) {
+			const uint32_t n = c.u32(), id = c.u32();
+			matMap[n] = id;
+		}
+		const uint32_t namePairs = c.u32();
+		for (uint32_t i = 0; i < namePairs; ++i) {
+			const uint32_t n = c.u32(), id = c.u32();
+			nameMap[n] = id;
+		}
+		const uint32_t nameCount = c.u32();
+		std::vector<std::string> names;
+		for (uint32_t i = 0; i < nameCount; ++i)
+			names.push_back(c.str());
+		const uint32_t matNameCount = c.u32();
+		for (uint32_t i = 0; i < matNameCount; ++i)
+			(void)c.str();
+		std::vector<uint8_t> noLm;
+		std::unordered_map<uint32_t, uint32_t> lightMap; // node -> light pak id
+		if (c.off < c.img.size()) {
+			const uint32_t sc = c.u32();
+			if (c.ok && sc == nodeCount) {
+				// static section bytes (skip) ...
+				if (c.off + sc > c.img.size())
+					c.ok = false;
+				else
+					c.off += sc;
+				// ... then the v3 noLM section.
+				if (c.ok && c.off < c.img.size()) {
+					const uint32_t lc = c.u32();
+					if (c.ok && lc == nodeCount && c.off + lc <= c.img.size()) {
+						noLm.assign(c.img.data() + c.off,
+							c.img.data() + c.off + lc);
+						c.off += lc;
+					}
+				}
+				// ... then the v4 light pairs (node, lightPakId); the
+				// definitions are the Light blobs printed above.
+				if (c.ok && c.off < c.img.size()) {
+					const uint32_t lightPairs = c.u32();
+					if (!c.ok || lightPairs > 1024 * 1024)
+						c.ok = false;
+					else {
+						for (uint32_t li = 0; li < lightPairs && c.ok; ++li) {
+							const uint32_t n = c.u32(), id = c.u32();
+							lightMap[n] = id;
+						}
+					}
+				}
+			}
+		}
+		if (!c.ok) {
+			std::cout << "    [truncated scene blob]\n";
+			continue;
+		}
+		std::cout << "    scene nodes=" << nodeCount
+			<< " lightLinks=" << lightMap.size() << ":\n";
+		// Print mesh-bearing nodes + renamed/noLM/interesting ones. Full
+		// 9k-node dumps drown the signal; the tour verify path greps this.
+		// --dump-node <id> (repeatable) restricts to pinpoint ids and adds
+		// the local translation.
+		const bool pinpoint = !onlyNodes.empty();
+		uint32_t shown = 0;
+		for (uint32_t i = 0; i < nodeCount; ++i) {
+			if (pinpoint &&
+				std::find(onlyNodes.begin(), onlyNodes.end(), i) ==
+				onlyNodes.end())
+				continue;
+			std::string nm;
+			auto nit = nameMap.find(i);
+			if (nit != nameMap.end() && nit->second < names.size())
+				nm = names[nit->second];
+			const bool hasMesh = meshMap.contains(i);
+			const bool noLmFlag = i < noLm.size() && noLm[i] != 0;
+			auto lit = lightMap.find(i);
+			const bool hasLight = lit != lightMap.end();
+			if (!pinpoint && !hasMesh && !noLmFlag && !hasLight)
+				continue;
+			std::cout << "      node " << i << " '" << nm << "' parent=" << parent[i];
+			if (pinpoint)
+				std::cout << " t=(" << localT[i * 3 + 0] << ","
+					<< localT[i * 3 + 1] << "," << localT[i * 3 + 2] << ")";
+			if (hasMesh)
+				std::cout << " mesh=" << meshMap[i];
+			auto mit = matMap.find(i);
+			if (mit != matMap.end())
+				std::cout << " mat=" << mit->second;
+			if (hasLight)
+				std::cout << " light=" << lit->second;
+			if (noLmFlag)
+				std::cout << " noLM=1";
+			std::cout << "\n";
+			if (!pinpoint && ++shown > 200) {
+				std::cout << "      ... (truncated)\n";
+				break;
+			}
+		}
+	}
 }
 
 } // namespace
+
+// Lightmap exclusion by node ancestry: true when any name on the node's
+// parent chain matches one of the --lm-exclude keywords with word
+// boundaries (case-insensitive; "tree" hits Linden_Tree_Mesh, not
+// StreetSign_mesh). Excluded subtrees still trace/cast — they only skip
+// charting and baked coefficients.
+bool NodeChainMatchesKeywords(const Scene& scene, uint32_t node,
+	const std::vector<std::string>& kws)
+{
+	for (int n = int(node); n >= 0 && n < int(scene.hierarchy.size()); ) {
+		const std::string name = getNodeName(scene, n);
+		if (!name.empty() && !kws.empty()) {
+			std::string low;
+			low.reserve(name.size());
+			for (char ch : name)
+				low.push_back(char(std::tolower(uint8_t(ch))));
+			for (const std::string& kw : kws) {
+				size_t pos = 0;
+				while ((pos = low.find(kw, pos)) != std::string::npos) {
+					const size_t end = pos + kw.size();
+					const bool leftOk =
+						pos == 0 || !std::isalpha(uint8_t(low[pos - 1]));
+					const bool rightOk =
+						end == low.size() || !std::isalpha(uint8_t(low[end]));
+					if (leftOk && rightOk)
+						return true;
+					++pos;
+				}
+			}
+		}
+		n = scene.hierarchy[size_t(n)].parent;
+	}
+	return false;
+}
 
 // Cook-time de-instancing for the lightmap bake: meshes referenced by
 // several nodes share one upload, but baked coefficients are per
@@ -750,9 +1037,10 @@ int main(int argc, char** argv) {
 			<< " meshes=" << reader->BlobsOfKind(smvk::PakAssetKind::Mesh).size()
 			<< " materials=" << reader->BlobsOfKind(smvk::PakAssetKind::Material).size()
 			<< " textures=" << reader->BlobsOfKind(smvk::PakAssetKind::Texture).size()
+			<< " lights=" << reader->BlobsOfKind(smvk::PakAssetKind::Light).size()
 			<< " scene=" << reader->BlobsOfKind(smvk::PakAssetKind::Scene).size()
 			<< "\n";
-		DumpManifestFromPak(*reader);
+		DumpManifestFromPak(*reader, args.dumpNodes);
 		return 0;
 	}
 
@@ -794,6 +1082,109 @@ int main(int argc, char** argv) {
 	catch (const std::exception& e) {
 		std::cerr << "Import failed: " << e.what() << std::endl;
 		return 1;
+	}
+	{
+		size_t nDir = 0, nPoint = 0, nSpot = 0;
+		cluster->lights.forEachHandle([&](smvk::ClusterLightHandle h) {
+			const SceneLight* l = cluster->lights.get(h);
+			if (!l)
+				return;
+			if (l->type == SceneLight::Type::Directional) ++nDir;
+			else if (l->type == SceneLight::Type::Spot) ++nSpot;
+			else ++nPoint;
+		});
+		std::cout << "Imported lights: " << cluster->lights.numObjects()
+			<< " (dir=" << nDir << " point=" << nPoint << " spot=" << nSpot
+			<< ", links=" << cluster->scene.lightForNode.size() << ")\n";
+	}
+
+	// .tour replay (editor overlay): deterministic CRUD commands applied to
+	// the freshly imported cook cluster — same ids, same importer — before
+	// collapse/LOD/bake/serialize. Tour cook settings fill any flag the CLI
+	// did not set explicitly (CLI wins). This is the mediaMolecule-style
+	// bake: source asset + edit log in, deterministic pak out.
+	if (!args.tour.empty()) {
+		smvk::tour::Doc tour;
+		std::string terr;
+		std::vector<std::string> twarn;
+		if (!smvk::tour::LoadTour(args.tour, tour, terr, &twarn)) {
+			std::cerr << "Tour load failed: " << terr << std::endl;
+			return 1;
+		}
+		for (auto& w : twarn)
+			std::cerr << "Tour warning: " << w << std::endl;
+		// Source sanity: the tour names the glTF it was authored against.
+		if (!tour.source.empty()) {
+			const auto base = [](const std::string& p) {
+				const size_t s = p.find_last_of("/\\");
+				return (s == std::string::npos) ? p : p.substr(s + 1);
+			};
+			if (base(tour.source) != base(args.inVfs))
+				std::cerr << "Tour warning: authored for '" << tour.source
+					<< "' but cooking '" << args.inVfs << "'\n";
+			const std::string fpNow =
+				smvk::tour::Fingerprint(args.contentDir + "/" + tour.source);
+			if (!tour.fingerprint.empty() && !fpNow.empty() &&
+				fpNow != tour.fingerprint)
+				std::cerr << "Tour warning: source file changed since the tour "
+					"was saved (ids may have shifted)\n";
+		}
+		if (tour.hasCook) {
+			const auto& k = tour.cook;
+			auto use = [&](const char* key, auto& dst, auto val) {
+				if (!args.explicitSet.contains(key)) {
+					dst = val;
+					std::cout << "Tour cook default: " << key << "\n";
+				}
+			};
+			use("meshopt", args.meshopt, k.meshopt);
+			use("lods", args.lods, k.lods);
+			use("lightmap", args.lightmap, k.lightmap);
+			use("lmDensity", args.lmDensity, k.lmDensity);
+			use("lmLobes", args.lmLobes, k.lmLobes);
+			use("lmAtlasWidth", args.lmAtlasWidth, k.lmAtlasWidth);
+			use("lmBudget", args.lmBudget, k.lmBudget);
+			use("lmRays", args.lmRays, k.lmRays);
+			use("lmExcludeSmall", args.lmExcludeSmall, k.lmExcludeSmall);
+			use("sunAzimuth", args.sunAzimuth, k.sunAzimuth);
+			use("sunElevation", args.sunElevation, k.sunElevation);
+			use("sunIntensity", args.sunIntensity, k.sunIntensity);
+			use("skyIntensity", args.skyIntensity, k.skyIntensity);
+			if (!k.lmExcludeKw.empty() &&
+				!args.explicitSet.contains("lmExclude")) {
+				if (!args.lmExclude.empty())
+					args.lmExclude += ",";
+				args.lmExclude += k.lmExcludeKw;
+				std::cout << "Tour cook default: lmExclude\n";
+			}
+			// Re-derive keyword list after the merge above.
+			args.lmExcludeKeywords.clear();
+			{
+				std::string low;
+				for (char ch : args.lmExclude)
+					low.push_back(char(std::tolower(uint8_t(ch))));
+				size_t pos = 0;
+				while (pos < low.size()) {
+					const size_t end = low.find(',', pos);
+					const std::string kw = low.substr(pos, end == std::string::npos
+						? std::string::npos : end - pos);
+					if (!kw.empty())
+						args.lmExcludeKeywords.push_back(kw);
+					pos = (end == std::string::npos) ? low.size() : end + 1;
+				}
+			}
+			opt.enabled = args.meshopt;
+		}
+		std::vector<std::string> rwarn;
+		std::string rerr;
+		if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn, &rerr)) {
+			std::cerr << "Tour replay failed: " << rerr << std::endl;
+			return 1;
+		}
+		for (auto& w : rwarn)
+			std::cerr << "Tour replay warning: " << w << std::endl;
+		std::cout << "Tour replayed: " << tour.commands.size()
+			<< " commands from " << args.tour << "\n";
 	}
 
 	// Static collapse: bake frozen subtrees into per-material mega-mesh
@@ -959,8 +1350,17 @@ int main(int argc, char** argv) {
 		SgLightmapChartOptions chartOpts{};
 		chartOpts.texelsPerMeter = std::max<float>(float(args.lmDensity), 2.0f);
 		chartOpts.gutterTexels = std::clamp<uint32_t>(args.lmGutter, 1, 4);
+		chartOpts.authoredUv2 = (args.lmCharts == "authored");
+		if (!args.lmExcludeKeywords.empty() || args.lmExcludeSmall > 0.0f)
+			std::cerr << "  [LM] chart source: " << args.lmCharts
+				<< " | name exclusion: "
+				<< (args.lmExclude.empty() ? "-" : args.lmExclude)
+				<< " | small exclusion: "
+				<< (args.lmExcludeSmall > 0.0f
+					? std::to_string(args.lmExcludeSmall) + " m" : "-")
+				<< "\n" << std::flush;
 		std::vector<LmWork> work;
-		uint32_t skipBlend = 0, skipInstanced = 0, skipNoMat = 0, skipDecal = 0;
+		uint32_t skipBlend = 0, skipInstanced = 0, skipNoMat = 0, skipDecal = 0, skipExcluded = 0, skipSmall = 0, skipNoLm = 0;
 		for (const auto& [node, meshIdx] : cluster->scene.meshForNode) {
 			auto matIt = cluster->scene.materialForNode.find(node);
 			if (matIt == cluster->scene.materialForNode.end()) {
@@ -994,6 +1394,24 @@ int main(int argc, char** argv) {
 				++skipInstanced;
 				continue;
 			}
+			// Name exclusion (--lm-exclude): vegetation leaf cards, glass
+			// props, ... — the worst lightmap targets in the scene. They
+			// keep their analytic/probe lighting and stay in the trace
+			// scene (still occlude/cast).
+			if (!args.lmExcludeKeywords.empty()
+				&& NodeChainMatchesKeywords(cluster->scene, node,
+					args.lmExcludeKeywords)) {
+				++skipExcluded;
+				continue;
+			}
+			// Authored exclusion (Scene::noLightmap, subtree-scoped): the
+			// editor's per-object "bake lightmap" toggle, stamped from
+			// glTF "smvk.noLightmap" node extras (or the NOLM_ prefix).
+			// Same treatment as name exclusion: trace/cast, probe-lit.
+			if (IsNoLightmapNode(cluster->scene, int(node))) {
+				++skipNoLm;
+				continue;
+			}
 			const smvk::ClusterStaticMeshHandle handle =
 				cluster->staticMeshes.getHandle(meshIdx);
 			const smvk::StaticMeshUpload* upload = cluster->GetRetainedUpload(handle);
@@ -1005,6 +1423,22 @@ int main(int argc, char** argv) {
 			w.node = node;
 			w.handle = handle;
 			w.worldScale = lmWorldScale(node);
+			// Small-prop exclusion (--lm-exclude-small): meshes whose
+			// world-space bbox diagonal is under the gate skip charts
+			// (probe/sky-lit at runtime). Cheap scan over the upload.
+			if (args.lmExcludeSmall > 0.0f) {
+				glm::vec3 bbMin(std::numeric_limits<float>::max());
+				glm::vec3 bbMax(std::numeric_limits<float>::lowest());
+				for (const smvk::StaticVertex& v : upload->vertices) {
+					bbMin = glm::min(bbMin, v.pos);
+					bbMax = glm::max(bbMax, v.pos);
+				}
+				if (glm::length(bbMax - bbMin) * w.worldScale
+					< args.lmExcludeSmall) {
+					++skipSmall;
+					continue;
+				}
+			}
 			std::string cerr_;
 			// Per-mesh density fallback: the mesh-total texel budget
 			// (maxChartTexelsTotal) bounds the bake-point count; halve
@@ -1047,7 +1481,8 @@ int main(int argc, char** argv) {
 			}
 			w.density = density;
 			std::cerr << "  [LM] charted node " << node << " charts="
-				<< w.chart.charts.size() << " density=" << density;
+				<< w.chart.charts.size() << " density=" << density
+				<< (w.chart.usedAuthoredUv2 ? " [authored]" : " [planar]");
 			if (w.curveScale > 1.01f)
 				std::cerr << " (curve x" << w.curveScale << ")";
 			std::cerr << "\n" << std::flush;
@@ -1503,7 +1938,10 @@ int main(int argc, char** argv) {
 			<< " (skipped: blend=" << skipBlend
 			<< " instanced=" << skipInstanced
 			<< " nomat=" << skipNoMat
-			<< " decal=" << skipDecal << ")\n" << std::flush;
+			<< " decal=" << skipDecal
+			<< " excluded=" << skipExcluded
+			<< " nolm=" << skipNoLm
+			<< " small=" << skipSmall << ")\n" << std::flush;
 	}
 
 	// ---------------------------------------------------------------------------
@@ -1560,7 +1998,8 @@ int main(int argc, char** argv) {
 	std::cout << "Cooked " << args.inVfs << " -> " << args.outPak << "\n"
 		<< "  meshes=" << stats.meshes << " materials=" << stats.materials
 		<< " textures=" << stats.textures << " (" << stats.textureBytes << " B)"
-		<< " nodes=" << stats.nodes << " pak=" << pak.size() << " B"
+		<< " nodes=" << stats.nodes << " lights=" << stats.lights
+		<< " pak=" << pak.size() << " B"
 		<< " staticRoots=" << stats.staticRoots
 		<< " meshleted=" << stats.meshesWithMeshlets << "/" << stats.meshletCount
 		<< " compressed=" << writer.CompressedEntryCount() << "/" << writer.EntryCount()

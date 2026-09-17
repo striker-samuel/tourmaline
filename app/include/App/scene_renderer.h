@@ -256,6 +256,25 @@ enum class DsDebugViz : int {
 };
 #endif
 
+// Cooked scene lights (KHR_lights_punctual via the pak/glTF import).
+// When non-empty and enabled, these REPLACE the procedural demo grid:
+// the sun drives the environment/directional light and the points/spots
+// upload directly as the Forward+ set (static, no orbit/bob). Empty on
+// scenes without authored lights (e.g. Sponza) — the procedural path is
+// then the fallback.
+struct CookedSceneLights {
+	bool hasSun = false;
+	glm::vec3 sunDirToSun{ 0.0f, 1.0f, 0.0f };
+	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
+	float sunIntensity = 10000.0f;
+	// World-space static lights, spots FIRST (per-tile lists keep only
+	// the first FP_MAX_PER_TILE passing lights — cone lights must not
+	// compete with the point crowd for those slots).
+	std::vector<smvk::ForwardPlusLight> pointSpots;
+	void clear() { hasSun = false; pointSpots.clear(); }
+	bool hasLights() const { return !pointSpots.empty(); }
+};
+
 // Procedural demo lights (grid of points + a few orbiting spots).
 // Point lights are pure GPU lights (no scene nodes / emissive balls);
 // the ImGui overlay draws them as colored points + indices.
@@ -1037,6 +1056,14 @@ protected:
 	AppResources m_resources{};
 	ViewportResources m_viewportResources{};
 	ForwardPlusDemo m_fpDemo{};
+	// Cooked KHR_lights_punctual set for the loaded scene (built once in
+	// BuildCookedLightsFromWorld after Resolve; see scene_renderer.cpp).
+	CookedSceneLights m_cookedLights{};
+	bool m_useCookedLights = true;
+	void BuildCookedLightsFromWorld();
+	bool CookedLightsActive() const {
+		return m_useCookedLights && m_cookedLights.hasLights();
+	}
 	// ---- Forward+ decals (tiled projected splats; see DecalDemo) ----
 	DecalDemo m_decalDemo{};
 	uint32_t m_decalFrameCount = 0; // live decal count (set by UpdateDecals,

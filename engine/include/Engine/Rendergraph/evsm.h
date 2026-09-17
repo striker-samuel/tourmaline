@@ -2,11 +2,16 @@
 // EVSM (Exponential Variance Shadow Maps) atlas with async-compute prefilter.
 //
 // Design (matches the request: 32-bit depth, 2x MSAA, async prefilter, pipelined):
-//  - Moments are rendered as RG32F color (2x 32-bit float: exp(+c*d), exp(-c*d))
-//    with 2x MSAA + resolve. Depth testing still uses a 2x MSAA D32 depth
-//    buffer; the pixel shader writes the warped moments. This gives real MSAA
-//    on the depth signal (unlike a post-resolve depth read) and keeps the
-//    single-sample resolved moments filterable.
+//  - Moments are rendered as RGBA32F color (4x 32-bit float: first AND second
+//    moments of both exponential warps — E[exp(+c*d)], E[exp(+2c*d)],
+//    E[exp(-c*d)], E[exp(-2c*d)]; the seconds are squares at bake time, see
+//    evsm.hlsli) with 2x MSAA + resolve. Depth testing still uses a 2x MSAA
+//    D32 depth buffer; the pixel shader writes the warped moments. This gives
+//    real MSAA on the depth signal (unlike a post-resolve depth read) and
+//    keeps the single-sample resolved moments filterable. Four moments are
+//    what the dual Cantelli visibility needs: a single first moment per warp
+//    cannot separate "mass in front of the receiver" from "mass at/behind
+//    it", which is exactly the leak/acne failure of the old 2-channel form.
 //  - Prefilter is a separable Gaussian (H then V) in compute, marked
 //    RenderPass::QueueHint::AsyncCompute. EvsmAsyncPrefilter routes those
 //    dispatches onto the dedicated compute queue (RHI compute submitter) with
@@ -38,11 +43,14 @@
 namespace smvk {
 
 // EVSM warp coefficient (Lauritzen & McCool 2008, Sec. 3): depth is warped as
-// +exp(c*d) / -exp(-c*d) with c ~ 40-80 for [0,1] NDC depth. Larger c tightens
-// light bleeding but risks fp32 overflow in the blur; 42 is the paper default.
+// exp(+-c*d) with c ~ 40-80 for [0,1] NDC depth. Larger c tightens light
+// bleeding but risks fp32 overflow in the blur; with second moments the
+// ceiling is the positive M2: exp(2c) must fit fp32 (exp(84) ~ 3.3e36 at
+// c=42, comfortable headroom under FLT_MAX 3.4e38).
 inline constexpr float kEvsmExponent = 42.0f;
-// Separable Gaussian taps for the prefilter (5-tap, sigma ~ 1.2). Blur runs in
-// tile-local UV with clamp-to-tile so cascades/tiles never bleed into siblings.
+// Separable Gaussian taps for the prefilter (9-tap dense, sigma ~ radius/2).
+// Blur runs in tile-local UV with clamp-to-tile so cascades/tiles never
+// bleed into siblings.
 inline constexpr uint32_t kEvsmBlurRadius = 2u;
 
 enum class EvsmPipelineMode : uint8_t {
@@ -58,7 +66,7 @@ enum class EvsmPipelineMode : uint8_t {
 struct EvsmDesc {
 	uint32_t tileResolution = 1024; // per-tile res (square)
 	uint32_t tileCount = 4;         // cascades or spot slots in this atlas
-	Format momentsFormat = Format::RG32_Float; // 2x32-bit moments
+	Format momentsFormat = Format::RGBA32_Float; // 4x32-bit moments
 	Format depthFormat = Format::D32_Float;    // MSAA depth for the moment pass
 	uint32_t msaaSamples = 2;       // 2x MSAA for depth (+moments)
 	float exponent = kEvsmExponent; // warp coefficient c
@@ -294,15 +302,17 @@ struct EvsmAtlas {
 
 		// Per-flight single-sample moments + blur ping-pong. Storage-capable
 		// so the async compute prefilter can write them (General), sampled
-		// so lighting + the next blur tap can read them. CONCURRENT
-		// graphics+compute: the moment resolve (graphics) and the blur
-		// (compute queue) ping-pong these images every frame, so no
-		// ownership transfers — events + layout barriers order the queues.
+		// so lighting + the next blur tap can read them, TransferSrc so the
+		// opt-in atlas dump (VULKANTOY_EVSM_DUMP, EvsmDumpAtlas) can copy
+		// them back. CONCURRENT graphics+compute: the moment resolve
+		// (graphics) and the blur (compute queue) ping-pong these images
+		// every frame, so no ownership transfers — events + layout
+		// barriers order the queues.
 		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
 			ImageCreateInfo singleCI{};
 			singleCI.format = desc.momentsFormat;
 			singleCI.extent = { atlas.width, atlas.height, 1u };
-			singleCI.usage = ImageUsage::Sampled | ImageUsage::Storage | ImageUsage::TransferDst | ImageUsage::ColorAttachment;
+			singleCI.usage = ImageUsage::Sampled | ImageUsage::Storage | ImageUsage::TransferSrc | ImageUsage::TransferDst | ImageUsage::ColorAttachment;
 			singleCI.concurrentCompute = true;
 			singleCI.name = desc.name;
 			moments[f] = ctx.CreateImage(singleCI, nullptr);
@@ -411,13 +421,16 @@ struct EvsmAsyncPrefilter {
 		atlas.TileOrigin(tileIndex, offX, offY);
 		const uint32_t slot = flight % MAX_FRAMES_IN_FLIGHT;
 		// Uncleared texels must read as "far occluder" (moments of d=1),
-		// not lit — matches EvsmClearColor() in evsm.hlsli.
+		// not lit — matches EvsmClearColor() in evsm.hlsli. All four
+		// moments of the far-plane warp: (e^{+c}, e^{+2c}, e^{-c}, e^{-2c}).
 		const float c = atlas.exponent;
+		const float wp = std::exp(c);
+		const float wn = std::exp(-c);
 		ClearColor momentsClear{};
-		momentsClear.r = std::exp(c);
-		momentsClear.g = std::exp(-c);
-		momentsClear.b = 0.0f;
-		momentsClear.a = 1.0f;
+		momentsClear.r = wp;
+		momentsClear.g = wp * wp;
+		momentsClear.b = wn;
+		momentsClear.a = wn * wn;
 		RenderPass& pass = rg.AddPass(name);
 		pass.SetOffset(offX, offY)
 			.SetExtent(atlas.tileExtent)

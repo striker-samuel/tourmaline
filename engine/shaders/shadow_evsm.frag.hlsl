@@ -4,10 +4,11 @@
 // EVSM moment pass (directional CSM + spot tiles share it).
 //
 // Vertex shader: shadow.vert.hlsl mainVS (same lightVP convention as the
-// depth-only path). This FS runs with a 2xMSAA RG32F color target + 2xMSAA
-// D32 depth (depth test on, depth write on). Each sample writes the warped
-// moments; the MSAA resolve averages them — real 2x supersampling of the
-// depth signal, then the async compute prefilter blurs the resolved image.
+// depth-only path). This FS runs with a 2xMSAA RGBA32F color target + 2xMSAA
+// D32 depth (depth test on, depth write on). Each sample writes the four
+// warped moments (M1/M2 of both exponential warps); the MSAA resolve
+// averages them — real 2x supersampling of the depth signal, then the
+// async compute prefilter blurs the resolved image.
 //
 // Push constants: same scene-wide `pc` as shadow.frag (material lookup for
 // the alpha-tested cutout path). EVSM exponent: the shared EVSM_EXPONENT
@@ -28,7 +29,7 @@ struct PSIn
 
 struct PSOut
 {
-    float2 moments : SV_Target0;
+    float4 moments : SV_Target0;
     // Conservative depth (normal-Z: never farther). Lets the driver run
     // the depth test before the alpha-test body, so occluded masked
     // casters skip the baseColor fetch. Passthrough value — the bound is
@@ -74,6 +75,7 @@ PSOut mainPS(PSIn IN)
     // light-space depth d the EVSM warp expects. No further transform.
     float d = saturate(IN.clipPos.z);
 
+    // Four moments (M1/M2 of both exponential warps, see evsm.hlsli).
     OUT.moments = EvsmWarp(d, EVSM_EXPONENT);
     return OUT;
 }

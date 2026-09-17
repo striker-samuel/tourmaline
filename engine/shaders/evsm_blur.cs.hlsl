@@ -3,7 +3,7 @@
 // One dispatch per tile per direction (caller loops tiles; rendergraph
 // barriers come from one AsyncCompute pass per direction — H then V).
 // H: moments(resolved MSAA) -> temp. V: temp -> blurred (sampled by light).
-// Reads use the linear clamp sampler through textures[] (filterable RG32F);
+// Reads use the linear clamp sampler through textures[] (filterable RGBA32F);
 // writes go through the bindless storage array at the SAME slot index
 // (see VulkanResourceManager::UpdateDescriptors: binding 2 mirrors binding
 // 0 with GENERAL layout, so src/dst indices are interchangeable).
@@ -19,12 +19,12 @@
 
 // Bindless storage image array (set 0, binding 2). Declared here — the only
 // TU that writes storage images — so no other pass pays the declaration.
-// float2 MUST match the RG32F moment atlas: an OpTypeImage Format operand
-// of Rgba32f against an R32G32_SFLOAT view is undefined for the whole
-// image (GPU-assisted validation flags it; "undefined values" poison the
+// float4 MUST match the RGBA32F moment atlas: an OpTypeImage Format operand
+// mismatched against the view's VkFormat is undefined for the whole image
+// (GPU-assisted validation flags it; "undefined values" poison the
 // loads/stores driver-dependently).
 [[vk::binding(2, 0)]]
-RWTexture2D<float2> evsmStorage[];
+RWTexture2D<float4> evsmStorage[];
 
 struct EvsmBlurPush
 {
@@ -76,7 +76,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
     const float sigma = clamp(float(pcBlur.blurRadius) * 0.5f, 1.0f, 3.0f);
     const float inv2s2 = 0.5f / max(sigma * sigma, 1e-4f);
 
-    float2 acc = float2(0.0f, 0.0f);
+    float4 acc = float4(0.0f, 0.0f, 0.0f, 0.0f);
     float wSum = 0.0f;
     [unroll]
     for (int t = -4; t <= 4; ++t)
@@ -88,21 +88,28 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
         else
             tapUV.y += float(t) * pcBlur.texelV;
         tapUV = clamp(tapUV, float2(pcBlur.uvMinU, pcBlur.uvMinV), float2(pcBlur.uvMaxU, pcBlur.uvMaxV));
-        float2 m = textures[srcIdx].SampleLevel(samplers[pcBlur.samplerIndex], tapUV, 0).rg;
-        // Sanitize once: a single inf/NaN moment (fp32 overflow under a
-        // huge exponent, or uncleared tile) poisons the whole blur window.
-        // Floor care: the NEGATIVE channel spans e^-c (d=1) .. 1 (d=0) —
-        // with c=42 that is 5.7e-19 — a 1e-6 floor here would clamp the
-        // channel up to e^-13.8, erasing all blocker-depth information
-        // below d ~ 0.33 and killing the soft-shadow penumbra estimator
-        // (EvsmBlockerDepth reads this channel). Keep the floor ~e^-c.
-        m = clamp(m, float2(1e-6f, 1e-20f), float2(3.0e37f, 1.0f));
+        float4 m = textures[srcIdx].SampleLevel(samplers[pcBlur.samplerIndex], tapUV, 0).rgba;
+        // Sanitize once per channel: a single inf/NaN moment (fp32 overflow
+        // under a huge exponent, or an uncleared tile) poisons the whole
+        // blur window. Channel layout is (M1+, M2+, M1-, M2-) of the two
+        // exponential warps (see evsm.hlsli). Floor care: the NEGATIVE
+        // first moment spans e^-c (d=1) .. 1 (d=0) — with c=42 that is
+        // 5.7e-19 — and the negative second moment spans e^-2c .. 1
+        // (3.3e-37 at c=42, still a normal fp32). Floors must stay BELOW
+        // those leges: clamping M1- up to e.g. 1e-6 would erase all
+        // blocker-depth information below d ~ 0.33 and kill the
+        // soft-shadow penumbra estimator (EvsmBlockerDepth reads M1-);
+        // clamping M2- above e^-2c poisons the negative Cantelli variance.
+        m = clamp(m,
+            float4(1e-6f, 1e-6f, 1e-20f, 1e-38f),
+            float4(3.0e37f, 3.0e37f, 1.0f, 1.0f));
         acc += m * w;
         wSum += w;
     }
     acc /= max(wSum, 1e-6f);
 
-    // float2 store: the atlas is RG32F — .zw lanes do not exist. The old
-    // float4(acc, 0, 1) store was the Rgba32f/RG32F format mismatch.
+    // float4 store: the atlas is RGBA32F — all four moments are real.
+    // (The old float2 store against an RG32F view was the format-mismatch
+    // hazard; the same rule applies now with one more channel.)
     evsmStorage[dstIdx][dstPix] = acc;
 }

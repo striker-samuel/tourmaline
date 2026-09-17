@@ -32,6 +32,7 @@ namespace smvk {
 	using ClusterStaticMeshHandle = Handle<StaticMesh>;
 	using ClusterMaterialHandle = Handle<Material>;
 	using ClusterTextureHandle = Handle<struct Texture>;
+	using ClusterLightHandle = Handle<SceneLight>;
 
 	struct Cluster {
 		// ctx may be nullptr for GPU-less cook clusters (see SetCookMode);
@@ -51,6 +52,11 @@ namespace smvk {
 		//Pool<SkinnedMesh, SkinnedMesh> skinnedMesh;
 		Pool<Material, Material> materials;
 		Pool<Texture, Holder<TextureHandle>> textures;
+		// Cooked punctual lights (KHR_lights_punctual): value-only pool
+		// assets like meshes. scene.lightForNode stores pool indices; the
+		// pak round-trip is one Light blob per entry (see
+		// cluster_serializer.cpp), loaded back through this pool.
+		Pool<SceneLight, SceneLight> lights;
 
 		ClusterStaticMeshHandle UploadStaticMesh(const StaticMeshUpload& data);
 		ClusterMaterialHandle CreateMaterial(TextureHandle diffuse);
@@ -66,6 +72,11 @@ namespace smvk {
 			float alphaCutoff,
 			bool doubleSided,
 			bool castsShadows = true);
+
+		// Cooked punctual light (KHR_lights_punctual): pure value asset,
+		// no GPU side. World position/direction resolve from the light
+		// node's global transform at use time (see Scene::lightForNode).
+		ClusterLightHandle CreateLight(SceneLight def);
 
 		// Cook support: when enabled, UploadStaticMesh keeps a CPU-side copy
 		// of every upload keyed by pool index so the pak cooker can embed
@@ -107,6 +118,7 @@ namespace smvk {
 		// ------------------------------------------------------------------
 		bool RegisterMeshUri(StringViewT uri, ClusterStaticMeshHandle handle);
 		bool RegisterMaterialUri(StringViewT uri, ClusterMaterialHandle handle);
+		bool RegisterLightUri(StringViewT uri, ClusterLightHandle handle);
 		// Textures live in the global RHI pool for binding (materials store
 		// RHI TextureHandles); the Cluster pool only owns lifetime Holders.
 		// The uri map therefore stores the RHI handle used at bind time.
@@ -115,6 +127,7 @@ namespace smvk {
 
 		std::optional<ClusterStaticMeshHandle> FindMeshByUri(StringViewT uri) const;
 		std::optional<ClusterMaterialHandle> FindMaterialByUri(StringViewT uri) const;
+		std::optional<ClusterLightHandle> FindLightByUri(StringViewT uri) const;
 		std::optional<TextureHandle> FindTextureByUri(StringViewT uri) const;
 
 		// Resolves an AssetRef in place: keeps ref.uri, fills cluster/handle
@@ -130,6 +143,7 @@ namespace smvk {
 		// lifetime.
 		StringViewT GetMeshUri(ClusterStaticMeshHandle handle) const;
 		StringViewT GetMaterialUri(ClusterMaterialHandle handle) const;
+		StringViewT GetLightUri(ClusterLightHandle handle) const;
 
 		// Per-mesh LOD marker (see Asset/mesh_optimizer.h). Stored into
 		// MeshBlobs; the renderer does not branch on it.
@@ -169,6 +183,7 @@ namespace smvk {
 		Arena uriArena_;
 		UriMap<ClusterStaticMeshHandle> meshByUri_;
 		UriMap<ClusterMaterialHandle> materialByUri_;
+		UriMap<ClusterLightHandle> lightByUri_;
 		UriMap<TextureHandle> textureByUri_;
 		UriMap<TextureSamplerDesc> textureSamplers_;
 		UriMap<std::vector<uint8_t>> textureSources_;

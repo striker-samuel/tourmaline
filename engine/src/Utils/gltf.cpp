@@ -207,6 +207,7 @@ GltfToSceneImporter::GltfToSceneImporter(smvk::Cluster& inCluster, const tinyglt
 			inModel.meshes[i].primitives.size()
 		);
 	}
+	lightCache.resize(inModel.lights.size());
 }
 
 void GltfToSceneImporter::setTextureSource(std::shared_ptr<TextureSource> source) {
@@ -253,6 +254,42 @@ bool GltfExtrasStatic(const tinygltf::Value& extras) {
 			return true;
 	}
 	return false;
+}
+
+// KHR_lights_punctual -> SceneLight (node-local definition; world
+// position/direction resolve from the node's global transform at use
+// time, so coordFix + parents apply like meshes). Units are passed
+// through verbatim: directional = lux, point/spot = candela (both the
+// glTF and the engine shader convention, see Renderer/light.h).
+// Returns false for unknown types (caller skips the node link).
+bool GltfLightToSceneLight(const tinygltf::Light& src, SceneLight& dst) {
+	dst.name = src.name;
+	dst.color = glm::vec3(1.0f);
+	if (src.color.size() >= 3) {
+		dst.color = glm::vec3(
+			static_cast<float>(src.color[0]),
+			static_cast<float>(src.color[1]),
+			static_cast<float>(src.color[2]));
+	}
+	dst.intensity = static_cast<float>(src.intensity);
+	dst.range = static_cast<float>(src.range); // 0 = infinite
+	dst.innerConeAngle = 0.0f;
+	dst.outerConeAngle = 0.0f;
+	if (src.type == "directional") {
+		dst.type = SceneLight::Type::Directional;
+	}
+	else if (src.type == "point") {
+		dst.type = SceneLight::Type::Point;
+	}
+	else if (src.type == "spot") {
+		dst.type = SceneLight::Type::Spot;
+		dst.innerConeAngle = static_cast<float>(src.spot.innerConeAngle);
+		dst.outerConeAngle = static_cast<float>(src.spot.outerConeAngle);
+	}
+	else {
+		return false;
+	}
+	return true;
 }
 
 // A glTF node opts OUT of lightmap charting/baking via authoring extras or
@@ -1113,6 +1150,34 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 
 	return slot;
 }
+
+smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightIndex) {
+	assert(gltfLightIndex >= 0);
+	assert(
+		static_cast<size_t>(gltfLightIndex) <
+		model.lights.size()
+	);
+
+	auto& slot = lightCache[gltfLightIndex];
+	if (!slot.empty()) {
+		return slot;
+	}
+
+	SceneLight dst;
+	if (!GltfLightToSceneLight(model.lights[gltfLightIndex], dst))
+		return {}; // unknown type: skip the node link
+
+	slot = cluster.CreateLight(std::move(dst));
+	if (!slot.valid())
+		return {};
+	if (!modelUriBase.empty())
+		cluster.RegisterLightUri(
+			smvk::MakeSubUri(modelUriBase,
+				"light." + std::to_string(gltfLightIndex)),
+			slot);
+	return slot;
+}
+
 static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model, const tinygltf::Primitive& primitive, int coordFix) {
 	smvk::StaticMeshUpload data;
 	// AABB. for culling	
@@ -1496,6 +1561,19 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentScene
 			if ((size_t)groupNode < cluster.scene.noLightmap.size())
 				cluster.scene.noLightmap[(size_t)groupNode] = 1;
 		}
+	}
+
+	// KHR_lights_punctual: node.light indexes the top-level lights array
+	// (tinygltf parses it into model.lights + Node::light). Definitions
+	// are deduplicated into the Cluster light pool under "light.<gltf
+	// index>" URIs (same registry as meshes); the group node stores the
+	// pool index in lightForNode, and world position/direction resolve
+	// from globalTransform at cook/runtime so parents + coordFix apply
+	// exactly like meshes.
+	if (gltfNode.light >= 0 && gltfNode.light < (int)model.lights.size()) {
+		const smvk::ClusterLightHandle h = getOrCreateLight(gltfNode.light);
+		if (h.valid())
+			cluster.scene.lightForNode[(uint32_t)groupNode] = h.index();
 	}
 
 	// Unroll primitives into separate meshes (your current approach).

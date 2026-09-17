@@ -64,6 +64,9 @@ private:
 			int gltfMeshIndex,
 			int primitiveIndex
 		);
+
+	smvk::ClusterLightHandle
+		getOrCreateLight(int gltfLightIndex);
 	void importNodeRecursive(
 		int gltfNodeIndex,
 		int parentSceneNode,
@@ -80,6 +83,7 @@ private:
 	glm::mat4 preTransform_{ 1.0f };
 	std::vector<smvk::ClusterMaterialHandle> materialCache;
 	std::vector<std::vector<smvk::ClusterStaticMeshHandle>> meshCache;
+	std::vector<smvk::ClusterLightHandle> lightCache; // gltf light index -> handle
 	std::unordered_map<int, smvk::TextureHandle> textureCache; // imageIndex -> handle
 	// Optional texture-streaming sink: when set (and not cooking), uploads
 	// go through TextureStreamer::StreamTexture (tail-resident) instead of

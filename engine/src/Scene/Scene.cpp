@@ -225,6 +225,7 @@ void loadScene(const char* fileName, Scene& scene)
   scene.staticRoot.assign(sz, 0);
   scene.staticNode.assign(sz, 0);
   scene.noLightmap.assign(sz, 0);
+  scene.lightForNode.clear();
   // TODO: check > -1
   // TODO: recalculate changedAtThisLevel() - find max depth of a node [or save scene.maxLevel]
   fread(scene.localTransform.data(), sizeof(glm::mat4), sz, f);
@@ -267,6 +268,9 @@ void loadScene(const char* fileName, Scene& scene)
       }
     }
   }
+  // Cooked punctual lights are NOT carried in this legacy format: they
+  // are Cluster pool assets (see Scene::lightForNode) and round-trip
+  // through paks only.
 
   fclose(f);
 
@@ -465,6 +469,10 @@ void mergeScenes(
   scene.staticRoot.push_back(0);
   scene.staticNode.push_back(0);
   scene.noLightmap.push_back(0);
+  // Cooked punctual lights are Cluster pool assets: their node links
+  // (pool indices) cannot shift across scenes here — lights merge via
+  // World::ResolveAndFixup_clusters instead.
+  scene.lightForNode.clear();
 
   if (scenes.empty())
     return;
@@ -473,7 +481,6 @@ void mergeScenes(
   int meshOffs    = 0;
   int nameOffs    = (int)scene.nodeNames.size();
   int materialOfs = 0;
-  int lightOffs = 0;
   auto meshCount  = meshCounts.begin();
 
   if (!mergeMaterials)
@@ -499,9 +506,6 @@ void mergeScenes(
     mergeVectors(scene.nodeNames, s->nodeNames);
     if (mergeMaterials)
       mergeVectors(scene.materialNames, s->materialNames);
-    //if (mergeLights)
-    //    mergeVectors(scene.lights, s->lights);
-        
 
     const int nodeCount = (int)s->hierarchy.size();
 
@@ -510,13 +514,11 @@ void mergeScenes(
     mergeMaps(scene.meshForNode, s->meshForNode, offs, mergeMeshes ? meshOffs : 0);
     mergeMaps(scene.materialForNode, s->materialForNode, offs, mergeMaterials ? materialOfs : 0);
     mergeMaps(scene.nameForNode, s->nameForNode, offs, nameOffs);
-    //mergeMaps(scene.lightForNode, s->lightForNode, offs, mergeLights ? lightOffs : 0);
 
     offs += nodeCount;
 
     materialOfs += (int)s->materialNames.size();
     nameOffs += (int)s->nodeNames.size();
-    lightOffs += (int)s->lightForNode.size();
 
     if (mergeMeshes) {
       meshOffs += *meshCount;
@@ -684,6 +686,10 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
   shiftMapIndices(scene.meshForNode, newIndices);
   shiftMapIndices(scene.materialForNode, newIndices);
   shiftMapIndices(scene.nameForNode, newIndices);
+  shiftMapIndices(scene.lightForNode, newIndices);
+  // Orphaned light definitions (no node left referencing them) are kept:
+  // they are small and dropping them would require remapping the surviving
+  // lightForNode values.
 
   // 5) scene node names list is not modified, but in principle it can be (remove all non-used items and adjust the nameForNode_ map)
   // 6) Material names list is not modified also, but if some materials fell out of use
