@@ -91,6 +91,19 @@ set_target_properties(SmaaJitterTests PROPERTIES
 
 add_test(NAME smaajitter_tests COMMAND SmaaJitterTests)
 
+add_executable(SsrTaaTests test_ssrtaa.cpp)
+
+target_link_libraries(SsrTaaTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(SsrTaaTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME ssrtaa_tests COMMAND SsrTaaTests)
+
 add_executable(GiTests test_gi.cpp)
 
 target_link_libraries(GiTests
@@ -143,6 +156,21 @@ set_target_properties(CubemapTests PROPERTIES
 
 add_test(NAME cubemap_tests COMMAND CubemapTests)
 
+project(TourTests)
+
+add_executable(TourTests test_tour.cpp)
+
+target_link_libraries(TourTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(TourTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME tour_tests COMMAND TourTests)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 vulkantoy_stage_sdl3(AssetTests)
 vulkantoy_stage_sdl3(SpirvReflectionTests)
@@ -151,7 +179,9 @@ vulkantoy_stage_sdl3(ExposureTests)
 vulkantoy_stage_sdl3(LightTests)
 vulkantoy_stage_sdl3(CameraTests)
 vulkantoy_stage_sdl3(SmaaJitterTests)
+vulkantoy_stage_sdl3(SsrTaaTests)
 vulkantoy_stage_sdl3(GiTests)
 vulkantoy_stage_sdl3(StreamingTests)
 vulkantoy_stage_sdl3(DeferredShadowTests)
 vulkantoy_stage_sdl3(CubemapTests)
+vulkantoy_stage_sdl3(TourTests)

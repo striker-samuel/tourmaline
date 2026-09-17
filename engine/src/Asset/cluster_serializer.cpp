@@ -383,6 +383,19 @@ bool SerializeCluster(
 				blob.insert(blob.end(), nodeCount, 0);
 			}
 		}
+		// Trailing lightmap-exclusion section (v3; v2 blobs end above).
+		// All-zero when nothing is excluded; v2 readers reject v3 blobs
+		// (trailing-bytes check) — App/Editor ship together, so paks and
+		// readers always move in lockstep.
+		{
+			PutU32(blob, nodeCount);
+			if (scene.noLightmap.size() == scene.hierarchy.size()) {
+				blob.insert(blob.end(), scene.noLightmap.begin(), scene.noLightmap.end());
+			}
+			else {
+				blob.insert(blob.end(), nodeCount, 0);
+			}
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene, "<cluster-local>#scene", std::move(blob)))
 			return fail("scene blob rejected");
@@ -735,7 +748,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			const uint32_t staticCount = c.u32();
 			if (!c.ok || staticCount != nodeCount)
 				return fail("bad scene static section");
-			if (c.off + staticCount != c.img.size())
+			if (c.off + staticCount > c.img.size())
 				return fail("scene blob trailing bytes mismatch");
 			scene.staticRoot.assign(
 				c.img.data() + c.off, c.img.data() + c.off + staticCount);
@@ -743,6 +756,22 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		}
 		else {
 			scene.staticRoot.assign(nodeCount, 0);
+		}
+		// Trailing lightmap-exclusion section (v3): u32 count + count
+		// bytes. v2 blobs end after the static section — default to no
+		// exclusions in that case.
+		if (c.off < c.img.size()) {
+			const uint32_t lmCount = c.u32();
+			if (!c.ok || lmCount != nodeCount)
+				return fail("bad scene lightmap section");
+			if (c.off + lmCount != c.img.size())
+				return fail("scene blob trailing bytes mismatch");
+			scene.noLightmap.assign(
+				c.img.data() + c.off, c.img.data() + c.off + lmCount);
+			c.off += lmCount;
+		}
+		else {
+			scene.noLightmap.assign(nodeCount, 0);
 		}
 		RebuildStaticCache(scene);
 

@@ -1,0 +1,764 @@
+// .tour ASCII scene overlay: writer/parser + cook-cluster replay.
+// See Engine/Asset/tour.h for the format contract.
+
+#include <Engine/Asset/tour.h>
+
+#include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <unordered_map>
+
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
+
+#include <Engine/App/cluster.h>
+#include <Engine/Scene/scene.h>
+
+namespace smvk::tour {
+namespace {
+
+std::string Quote(const std::string& s) {
+	std::string o = "\"";
+	for (char c : s) {
+		if (c == '"' || c == '\\')
+			o.push_back('\\');
+		o.push_back(c);
+	}
+	o.push_back('"');
+	return o;
+}
+
+// Tokenize one line: whitespace split, double-quote grouping with
+// backslash escapes, '//' comment starts outside quotes.
+std::vector<std::string> Tokenize(const std::string& line) {
+	std::vector<std::string> toks;
+	std::string cur;
+	bool inQ = false;
+	bool esc = false;
+	for (size_t i = 0; i < line.size(); ++i) {
+		const char c = line[i];
+		if (esc) {
+			cur.push_back(c);
+			esc = false;
+			continue;
+		}
+		if (c == '\\' && inQ) {
+			esc = true;
+			continue;
+		}
+		if (c == '"') {
+			inQ = !inQ;
+			continue;
+		}
+		if (!inQ && c == '/' && i + 1 < line.size() && line[i + 1] == '/')
+			break;
+		if (!inQ && std::isspace((unsigned char)c)) {
+			if (!cur.empty()) {
+				toks.push_back(cur);
+				cur.clear();
+			}
+			continue;
+		}
+		cur.push_back(c);
+	}
+	if (!cur.empty())
+		toks.push_back(cur);
+	return toks;
+}
+
+bool ParseU32(const std::string& s, uint32_t& out) {
+	unsigned long long v = 0;
+	auto [p, ec] = std::from_chars(s.data(), s.data() + s.size(), v);
+	if (ec != std::errc() || p != s.data() + s.size())
+		return false;
+	out = uint32_t(v);
+	return true;
+}
+
+bool ParseDouble(const std::string& s, double& out) {
+	try {
+		size_t n = 0;
+		out = std::stod(s, &n);
+		return n == s.size();
+	}
+	catch (...) {
+		return false;
+	}
+}
+
+const char* FlagVal(bool b) { return b ? "1" : "0"; }
+
+} // namespace
+
+std::string Fingerprint(const std::string& path) {
+	std::error_code ec;
+	const auto sz = std::filesystem::file_size(path, ec);
+	if (ec)
+		return {};
+	const auto mt = std::filesystem::last_write_time(path, ec);
+	if (ec)
+		return {};
+	char buf[64];
+	std::snprintf(buf, sizeof(buf), "%llx:%llx",
+		(unsigned long long)sz,
+		(unsigned long long)mt.time_since_epoch().count());
+	return buf;
+}
+
+bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
+	std::ofstream f(path, std::ios::binary | std::ios::trunc);
+	if (!f) {
+		err = "cannot write: " + path;
+		return false;
+	}
+	f << "// .tour " << doc.version << " - VulkanToy editor scene (ASCII, Maya-style)\n";
+	f << "// source asset: " << doc.source << "\n";
+	f << "// node/material ids are cluster-space (import-deterministic)\n";
+	f << "source -p " << Quote(doc.source)
+		<< " -fingerprint " << Quote(doc.fingerprint) << ";\n";
+	for (const Command& c : doc.commands) {
+		switch (c.verb) {
+		case Verb::Rename:
+			f << "rename -n " << c.node << " " << Quote(c.text);
+			break;
+		case Verb::SetTranslate:
+			f << "setAttr -n " << c.node << " -at translate -t "
+				<< c.vec.x << " " << c.vec.y << " " << c.vec.z;
+			break;
+		case Verb::SetRotate:
+			f << "setAttr -n " << c.node << " -at rotate -t "
+				<< c.vec.x << " " << c.vec.y << " " << c.vec.z;
+			break;
+		case Verb::SetScale:
+			f << "setAttr -n " << c.node << " -at scale -t "
+				<< c.vec.x << " " << c.vec.y << " " << c.vec.z;
+			break;
+		case Verb::AssignMaterial:
+			f << "assignMaterial -n " << c.node << " -m " << c.material;
+			break;
+		case Verb::SetMatAttr:
+			f << "setMatAttr -m " << c.material << " -at " << c.text;
+			if (c.text == "baseColor" || c.text == "emissive")
+				f << " -t " << c.vec4.x << " " << c.vec4.y << " "
+					<< c.vec4.z << " " << c.vec4.w;
+			else if (c.text == "alphaMode")
+				f << " -t " << (c.number < 0.5 ? "opaque"
+					: c.number < 1.5 ? "mask" : "blend");
+			else
+				f << " -v " << c.number;
+			break;
+		case Verb::SetNoLightmap:
+			f << "setNoLightmap -n " << c.node << " -v " << FlagVal(c.flag);
+			break;
+		case Verb::Parent:
+			f << "parent -n " << c.node << " -p " << c.node2;
+			break;
+		}
+		if (!c.name.empty())
+			f << " // " << c.name;
+		f << ";\n";
+	}
+	if (doc.hasCook) {
+		const TourCook& k = doc.cook;
+		f << "cook -outPak " << Quote(k.outPak)
+			<< " -meshopt " << (k.meshopt ? "on" : "off")
+			<< " -lods " << (k.lods ? "on" : "off")
+			<< " -lightmap " << (k.lightmap ? "on" : "off")
+			<< " -lmDensity " << k.lmDensity
+			<< " -lmLobes " << k.lmLobes
+			<< " -lmAtlasWidth " << k.lmAtlasWidth
+			<< " -lmBudget " << k.lmBudget
+			<< " -lmRays " << k.lmRays
+			<< " -lmExcludeSmall " << k.lmExcludeSmall
+			<< " -lmExcludeKw " << Quote(k.lmExcludeKw)
+			<< " -sunAzimuth " << k.sunAzimuth
+			<< " -sunElevation " << k.sunElevation
+			<< " -sunIntensity " << k.sunIntensity
+			<< " -skyIntensity " << k.skyIntensity
+			<< ";\n";
+	}
+	if (!f.good()) {
+		err = "write failed: " + path;
+		return false;
+	}
+	return true;
+}
+
+// -n <id> / -m <id> / -p <id> / -at <name> / -t <nums...> / -v <num|word>
+struct Flags {
+	bool hasN = false, hasM = false, hasP = false, hasAt = false;
+	uint32_t n = 0, m = 0, p = 0;
+	std::string at;
+	std::vector<std::string> t; // -t values
+	std::string v;              // -v value (raw)
+	bool hasV = false;
+};
+
+static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
+	Flags& f, std::string& err, int lineNo) {
+	for (size_t i = from; i < toks.size();) {
+		const std::string& k = toks[i];
+		if ((k == "-n" || k == "-m" || k == "-p") && i + 1 < toks.size()) {
+			std::string idTok = toks[i + 1];
+			if (!idTok.empty() && idTok.back() == ';')
+				idTok.pop_back();
+			uint32_t v = 0;
+			if (!ParseU32(idTok, v)) {
+				err = "line " + std::to_string(lineNo) + ": bad id '" + toks[i + 1] + "'";
+				return false;
+			}
+			if (k == "-n") {
+				f.hasN = true;
+				f.n = v;
+			}
+			else if (k == "-m") {
+				f.hasM = true;
+				f.m = v;
+			}
+			else {
+				f.hasP = true;
+				f.p = v;
+			}
+			i += 2;
+		}
+		else if (k == "-at" && i + 1 < toks.size()) {
+			f.hasAt = true;
+			f.at = toks[i + 1];
+			i += 2;
+		}
+		else if (k == "-t") {
+			++i;
+			auto isFlag = [](const std::string& w) {
+				return w == "-n" || w == "-m" || w == "-p" ||
+					w == "-at" || w == "-t" || w == "-v" ||
+					w == "-fingerprint";
+			};
+			while (i < toks.size() && !isFlag(toks[i])) {
+				std::string v = toks[i];
+				bool term = false;
+				if (!v.empty() && v.back() == ';') {
+					v.pop_back();
+					term = true;
+				}
+				f.t.push_back(v);
+				++i;
+				if (term)
+					break;
+			}
+		}
+		else if (k == "-v" && i + 1 < toks.size()) {
+			f.hasV = true;
+			f.v = toks[i + 1];
+			if (!f.v.empty() && f.v.back() == ';')
+				f.v.pop_back();
+			i += 2;
+		}
+		else if (k == "-fingerprint" && i + 1 < toks.size()) {
+			i += 2; // handled by the source parser below
+		}
+		else {
+			// positional (rename target name, source path, cook values...).
+			// A bare ";" (space before the terminator) carries nothing.
+			std::string pos = k;
+			if (!pos.empty() && pos.back() == ';')
+				pos.pop_back();
+			if (!pos.empty())
+				f.t.push_back(pos);
+			++i;
+		}
+	}
+	return true;
+}
+
+bool LoadTour(const std::string& path, Doc& doc, std::string& err,
+	std::vector<std::string>* warnings) {
+	std::ifstream f(path, std::ios::binary);
+	if (!f) {
+		err = "cannot open: " + path;
+		return false;
+	}
+	doc = Doc{};
+	auto warn = [&](const std::string& w) {
+		if (warnings)
+			warnings->push_back(w);
+	};
+	int lineNo = 0;
+	std::string line;
+	while (std::getline(f, line)) {
+		++lineNo;
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		auto toks = Tokenize(line);
+		if (toks.empty())
+			continue;
+		// strip trailing ';' token
+		if (!toks.empty() && toks.back() == ";")
+			toks.pop_back();
+		if (toks.empty())
+			continue;
+		const std::string& verb = toks[0];
+		if (verb == "source") {
+			// source -p "<path>" [-fingerprint "<hex>"]; (-p is a PATH
+			// here, not a parent id, so parse manually, not via ParseFlags)
+			for (size_t i = 1; i < toks.size(); ++i) {
+				std::string tok = toks[i];
+				if (!tok.empty() && tok.back() == ';')
+					tok.pop_back();
+				if (tok == "-p" && i + 1 < toks.size()) {
+					doc.source = toks[i + 1];
+					if (!doc.source.empty() && doc.source.back() == ';')
+						doc.source.pop_back();
+					++i;
+				}
+				else if (tok == "-fingerprint" && i + 1 < toks.size()) {
+					doc.fingerprint = toks[i + 1];
+					if (!doc.fingerprint.empty() && doc.fingerprint.back() == ';')
+						doc.fingerprint.pop_back();
+					++i;
+				}
+			}
+			continue;
+		}
+		if (verb == "cook") {
+			doc.hasCook = true;
+			TourCook& k = doc.cook;
+			for (size_t i = 1; i < toks.size(); ++i) {
+				auto get = [&](const char* key, std::string& out) {
+					if (toks[i] == key && i + 1 < toks.size()) {
+						out = toks[i + 1];
+						if (!out.empty() && out.back() == ';')
+							out.pop_back();
+						++i;
+						return true;
+					}
+					return false;
+				};
+				std::string v;
+				if (get("-outPak", v))
+					k.outPak = v;
+				else if (get("-meshopt", v))
+					k.meshopt = (v == "on" || v == "1");
+				else if (get("-lods", v))
+					k.lods = (v == "on" || v == "1");
+				else if (get("-lightmap", v))
+					k.lightmap = (v == "on" || v == "1");
+				else if (get("-lmDensity", v))
+					k.lmDensity = uint32_t(std::stoul(v));
+				else if (get("-lmLobes", v))
+					k.lmLobes = uint32_t(std::stoul(v));
+				else if (get("-lmAtlasWidth", v))
+					k.lmAtlasWidth = uint32_t(std::stoul(v));
+				else if (get("-lmBudget", v))
+					k.lmBudget = std::stoull(v);
+				else if (get("-lmRays", v))
+					k.lmRays = uint32_t(std::stoul(v));
+				else if (get("-lmExcludeSmall", v))
+					k.lmExcludeSmall = std::stof(v);
+				else if (get("-lmExcludeKw", v))
+					k.lmExcludeKw = v;
+				else if (get("-sunAzimuth", v))
+					k.sunAzimuth = std::stof(v);
+				else if (get("-sunElevation", v))
+					k.sunElevation = std::stof(v);
+				else if (get("-sunIntensity", v))
+					k.sunIntensity = std::stof(v);
+				else if (get("-skyIntensity", v))
+					k.skyIntensity = std::stof(v);
+			}
+			continue;
+		}
+		Command c{};
+		Flags fl{};
+		if (!ParseFlags(toks, 1, fl, err, lineNo))
+			return false;
+		if (verb == "rename" && fl.hasN && !fl.t.empty()) {
+			c.verb = Verb::Rename;
+			c.node = fl.n;
+			c.text = fl.t[0];
+		}
+		else if (verb == "setAttr" && fl.hasN && fl.hasAt && fl.t.size() >= 3) {
+			double x = 0, y = 0, z = 0;
+			if (!ParseDouble(fl.t[0], x) || !ParseDouble(fl.t[1], y) ||
+				!ParseDouble(fl.t[2], z)) {
+				err = "line " + std::to_string(lineNo) + ": bad triple";
+				return false;
+			}
+			c.node = fl.n;
+			c.vec = glm::vec3(float(x), float(y), float(z));
+			if (fl.at == "translate")
+				c.verb = Verb::SetTranslate;
+			else if (fl.at == "rotate")
+				c.verb = Verb::SetRotate;
+			else if (fl.at == "scale")
+				c.verb = Verb::SetScale;
+			else {
+				warn(path + ":" + std::to_string(lineNo) +
+					": unknown setAttr '" + fl.at + "' (skipped)");
+				continue;
+			}
+		}
+		else if (verb == "assignMaterial" && fl.hasN && fl.hasM) {
+			c.verb = Verb::AssignMaterial;
+			c.node = fl.n;
+			c.material = fl.m;
+		}
+		else if (verb == "setMatAttr" && fl.hasM && fl.hasAt) {
+			c.verb = Verb::SetMatAttr;
+			c.material = fl.m;
+			c.text = fl.at;
+			if (fl.at == "baseColor" || fl.at == "emissive") {
+				if (fl.t.size() < 4) {
+					err = "line " + std::to_string(lineNo) + ": want 4 values";
+					return false;
+				}
+				double v[4] = {};
+				for (int k = 0; k < 4; ++k)
+					if (!ParseDouble(fl.t[k], v[k])) {
+						err = "line " + std::to_string(lineNo) + ": bad value";
+						return false;
+					}
+				c.vec4 = glm::vec4(float(v[0]), float(v[1]), float(v[2]), float(v[3]));
+			}
+			else if (fl.at == "alphaMode") {
+				const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+				c.number = (w == "mask") ? 1.0 : (w == "blend") ? 2.0 : 0.0;
+			}
+			else {
+				const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+				if (!ParseDouble(w, c.number)) {
+					err = "line " + std::to_string(lineNo) + ": bad value '" + w + "'";
+					return false;
+				}
+			}
+		}
+		else if (verb == "setNoLightmap" && fl.hasN && fl.hasV) {
+			c.verb = Verb::SetNoLightmap;
+			c.node = fl.n;
+			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
+		}
+		else if (verb == "parent" && fl.hasN && fl.hasP) {
+			c.verb = Verb::Parent;
+			c.node = fl.n;
+			c.node2 = fl.p;
+		}
+		else {
+			warn(path + ":" + std::to_string(lineNo) + ": unknown verb '" +
+				verb + "' (skipped)");
+			continue;
+		}
+		doc.commands.push_back(std::move(c));
+	}
+	return true;
+}
+
+void TourReparent(Scene& scene, uint32_t node, uint32_t newParent) {
+	if (node >= scene.hierarchy.size() || newParent >= scene.hierarchy.size() ||
+		node == newParent || node == 0)
+		return;
+	// Cycle guard.
+	for (int n = int(newParent); n >= 0 && n < int(scene.hierarchy.size());) {
+		if (uint32_t(n) == node)
+			return;
+		n = scene.hierarchy[size_t(n)].parent;
+	}
+	const int oldParent = scene.hierarchy[node].parent;
+	if (oldParent == int(newParent))
+		return;
+	// Depth guard (changedAtThisFrame has MAX_NODE_LEVEL levels).
+	const int newLevel = scene.hierarchy[newParent].level + 1;
+	{
+		int maxDepth = 0;
+		std::vector<std::pair<uint32_t, int>> stack{ { node, 0 } };
+		while (!stack.empty()) {
+			auto [n, d] = stack.back();
+			stack.pop_back();
+			maxDepth = std::max(maxDepth, d);
+			for (int c = scene.hierarchy[n].firstChild; c != -1;
+				c = scene.hierarchy[c].nextSibling)
+				stack.emplace_back(uint32_t(c), d + 1);
+		}
+		if (newLevel + maxDepth >= MAX_NODE_LEVEL)
+			return;
+	}
+	// Unlink.
+	if (oldParent >= 0) {
+		Hierarchy& op = scene.hierarchy[size_t(oldParent)];
+		int prev = -1;
+		for (int c = op.firstChild; c != -1; c = scene.hierarchy[c].nextSibling) {
+			if (c == int(node)) {
+				if (prev < 0)
+					op.firstChild = scene.hierarchy[c].nextSibling;
+				else
+					scene.hierarchy[size_t(prev)].nextSibling =
+					scene.hierarchy[c].nextSibling;
+				break;
+			}
+			prev = c;
+		}
+		int last = -1;
+		for (int c = op.firstChild; c != -1; c = scene.hierarchy[c].nextSibling)
+			last = c;
+		op.lastSibling = last;
+	}
+	// Link (append).
+	Hierarchy& np = scene.hierarchy[newParent];
+	scene.hierarchy[node].parent = int(newParent);
+	scene.hierarchy[node].nextSibling = -1;
+	if (np.firstChild < 0) {
+		np.firstChild = int(node);
+		np.lastSibling = int(node);
+	}
+	else {
+		int last = (np.lastSibling >= 0) ? np.lastSibling : np.firstChild;
+		for (; scene.hierarchy[size_t(last)].nextSibling >= 0;
+			last = scene.hierarchy[size_t(last)].nextSibling) {
+		}
+		scene.hierarchy[size_t(last)].nextSibling = int(node);
+		np.lastSibling = int(node);
+	}
+	scene.hierarchy[node].lastSibling = int(node);
+	// Levels.
+	{
+		std::vector<uint32_t> stack{ node };
+		scene.hierarchy[node].level = newLevel;
+		while (!stack.empty()) {
+			const uint32_t n = stack.back();
+			stack.pop_back();
+			for (int c = scene.hierarchy[n].firstChild; c != -1;
+				c = scene.hierarchy[c].nextSibling) {
+				scene.hierarchy[size_t(c)].level = scene.hierarchy[n].level + 1;
+				stack.push_back(uint32_t(c));
+			}
+		}
+	}
+}
+
+static Material* CookMaterial(Cluster& cluster, uint32_t poolIdx) {
+	const ClusterMaterialHandle h = cluster.materials.getHandle(poolIdx);
+	if (!h.valid())
+		return nullptr;
+	return cluster.materials.get(h);
+}
+
+static void ApplyMatAttr(Material& mat, const Command& c) {
+	const std::string& at = c.text;
+	if (at == "baseColor")
+		mat.values.diffuse = c.vec4;
+	else if (at == "emissive") {
+		mat.values.emissiveFactor = glm::vec4(c.vec4.x, c.vec4.y, c.vec4.z, 0.0f);
+		if (c.vec4.w >= 0.0f)
+			mat.values.params2.z = c.vec4.w; // emissiveStrength rides w
+	}
+	else if (at == "metallic")
+		mat.values.params.y = float(c.number);
+	else if (at == "roughness")
+		mat.values.params.z = float(c.number);
+	else if (at == "alphaCutoff")
+		mat.values.params.x = float(c.number);
+	else if (at == "emissiveStrength")
+		mat.values.params2.z = float(c.number);
+	else if (at == "normalScale")
+		mat.values.params2.y = float(c.number);
+	else if (at == "occlusionStrength")
+		mat.values.params2.x = float(c.number);
+	else if (at == "doubleSided")
+		mat.doubleSided = (c.number != 0.0);
+	else if (at == "castsShadows")
+		mat.castsShadows = (c.number != 0.0);
+	else if (at == "alphaMode") {
+		mat.alphaMode = (c.number < 0.5) ? AlphaMode::Opaque
+			: (c.number < 1.5) ? AlphaMode::Mask : AlphaMode::Blend;
+		mat.shadingModel = (mat.alphaMode == AlphaMode::Mask)
+			? ShadingModel::Masked : ShadingModel::DefaultLit;
+		mat.values.params.w =
+			(mat.alphaMode == AlphaMode::Mask) ? 2.0f : 0.0f;
+		mat.values.params2.w = float(int(mat.alphaMode));
+	}
+	mat.rebuildPipeline();
+}
+
+bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
+	std::vector<std::string>* warnings, std::string* err) {
+	auto warn = [&](const std::string& w) {
+		if (warnings)
+			warnings->push_back(w);
+	};
+	Scene& scene = cluster.scene;
+	auto checkNode = [&](uint32_t n, const Command& c) {
+		if (n >= scene.hierarchy.size()) {
+			if (err)
+				*err = "tour: node id out of range: " + std::to_string(n);
+			return false;
+		}
+		if (!c.name.empty() && getNodeName(scene, int(n)) != c.name)
+			warn("tour: node " + std::to_string(n) + " name is '" +
+				getNodeName(scene, int(n)) + "', tour recorded '" + c.name + "'");
+		return true;
+	};
+	for (const Command& c : doc.commands) {
+		switch (c.verb) {
+		case Verb::Rename: {
+			if (!checkNode(c.node, c))
+				return false;
+			const uint32_t id = uint32_t(scene.nodeNames.size());
+			scene.nodeNames.push_back(c.text);
+			scene.nameForNode[c.node] = id;
+			break;
+		}
+		case Verb::SetTranslate:
+		case Verb::SetRotate:
+		case Verb::SetScale: {
+			// Transforms compose through the editor's TRS convention; the
+			// tour carries the full triple per node, so rebuild from the
+			// CURRENT local matrix with only this channel replaced. To stay
+			// order-independent, stash per-node triples here.
+			break; // handled in the second pass below
+		}
+		case Verb::AssignMaterial: {
+			if (!checkNode(c.node, c))
+				return false;
+			if (!CookMaterial(cluster, c.material)) {
+				if (err)
+					*err = "tour: material out of range: " +
+						std::to_string(c.material);
+				return false;
+			}
+			scene.materialForNode[c.node] = c.material;
+			break;
+		}
+		case Verb::SetMatAttr: {
+			Material* mat = CookMaterial(cluster, c.material);
+			if (!mat) {
+				if (err)
+					*err = "tour: material out of range: " +
+						std::to_string(c.material);
+				return false;
+			}
+			ApplyMatAttr(*mat, c);
+			break;
+		}
+		case Verb::SetNoLightmap: {
+			if (!checkNode(c.node, c))
+				return false;
+			if (scene.noLightmap.size() != scene.hierarchy.size())
+				scene.noLightmap.assign(scene.hierarchy.size(), 0);
+			scene.noLightmap[c.node] = c.flag ? 1 : 0;
+			break;
+		}
+		case Verb::Parent: {
+			if (!checkNode(c.node, c))
+				return false;
+			if (c.node2 >= scene.hierarchy.size()) {
+				if (err)
+					*err = "tour: parent id out of range: " +
+						std::to_string(c.node2);
+				return false;
+			}
+			TourReparent(scene, c.node, c.node2);
+			break;
+		}
+		}
+	}
+	// Transform pass: collect per-node TRS triples (tour order = last wins
+	// per channel), then rebuild each touched node's local matrix.
+	{
+		struct Triple {
+			bool hasT = false, hasR = false, hasS = false;
+			glm::vec3 t{ 0 }, r{ 0 }, s{ 1 };
+		};
+		std::unordered_map<uint32_t, Triple> triples;
+		for (const Command& c : doc.commands) {
+			if (c.verb != Verb::SetTranslate && c.verb != Verb::SetRotate &&
+				c.verb != Verb::SetScale)
+				continue;
+			if (c.node >= scene.hierarchy.size()) {
+				if (err)
+					*err = "tour: node id out of range: " + std::to_string(c.node);
+				return false;
+			}
+			Triple& t = triples[c.node];
+			if (c.verb == Verb::SetTranslate) {
+				t.hasT = true;
+				t.t = c.vec;
+			}
+			else if (c.verb == Verb::SetRotate) {
+				t.hasR = true;
+				t.r = c.vec;
+			}
+			else {
+				t.hasS = true;
+				t.s = c.vec;
+			}
+			if (!c.name.empty() && getNodeName(scene, int(c.node)) != c.name)
+				warn("tour: node " + std::to_string(c.node) + " name mismatch");
+		}
+		for (auto& [node, t] : triples) {
+			// Decompose current local, replace touched channels, rebuild.
+			glm::vec3 skew;
+			glm::vec4 persp;
+			glm::vec3 curT, curS;
+			glm::quat curQ;
+			glm::decompose(scene.localTransform[node], curS, curQ, curT, skew, persp);
+			if (t.hasT)
+				curT = t.t;
+			if (t.hasS)
+				curS = t.s;
+			glm::mat4 m(1.0f);
+			m = glm::translate(m, curT);
+			if (t.hasR) {
+				m = glm::rotate(m, glm::radians(t.r.z), glm::vec3(0, 0, 1));
+				m = glm::rotate(m, glm::radians(t.r.y), glm::vec3(0, 1, 0));
+				m = glm::rotate(m, glm::radians(t.r.x), glm::vec3(1, 0, 0));
+			}
+			else {
+				m *= glm::mat4_cast(curQ);
+			}
+			m = glm::scale(m, curS);
+			scene.localTransform[node] = m;
+			markAsChanged(scene, int(node));
+		}
+	}
+	markAsChanged(scene, 0);
+	recalculateGlobalTransforms(scene);
+	return true;
+}
+
+std::string Describe(const Command& c) {
+	char buf[256];
+	switch (c.verb) {
+	case Verb::Rename:
+		std::snprintf(buf, sizeof(buf), "rename #%u -> '%s'", c.node, c.text.c_str());
+		break;
+	case Verb::SetTranslate:
+		std::snprintf(buf, sizeof(buf), "translate #%u (%.2f %.2f %.2f)",
+			c.node, c.vec.x, c.vec.y, c.vec.z);
+		break;
+	case Verb::SetRotate:
+		std::snprintf(buf, sizeof(buf), "rotate #%u (%.1f %.1f %.1f)",
+			c.node, c.vec.x, c.vec.y, c.vec.z);
+		break;
+	case Verb::SetScale:
+		std::snprintf(buf, sizeof(buf), "scale #%u (%.2f %.2f %.2f)",
+			c.node, c.vec.x, c.vec.y, c.vec.z);
+		break;
+	case Verb::AssignMaterial:
+		std::snprintf(buf, sizeof(buf), "material #%u -> mat.%u", c.node, c.material);
+		break;
+	case Verb::SetMatAttr:
+		std::snprintf(buf, sizeof(buf), "mat.%u.%s", c.material, c.text.c_str());
+		break;
+	case Verb::SetNoLightmap:
+		std::snprintf(buf, sizeof(buf), "noLightmap #%u = %d", c.node, c.flag ? 1 : 0);
+		break;
+	case Verb::Parent:
+		std::snprintf(buf, sizeof(buf), "parent #%u under #%u", c.node, c.node2);
+		break;
+	}
+	return buf;
+}
+
+} // namespace smvk::tour

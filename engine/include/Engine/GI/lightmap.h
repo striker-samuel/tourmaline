@@ -295,6 +295,17 @@ struct SgLightmapChartOptions {
 	// halve the density and retry; the atlas rounds bound the scene
 	// total. 0 = no budget.
 	uint64_t maxChartTexelsTotal = 1536ull * 1024;
+	// Authored-UV2 charts (external unwrapper output, e.g. RizomUV-packed
+	// glTF TEXCOORD_1): when true and the mesh carries non-degenerate
+	// StaticVertex::texCoord2, charts are the UV2 ISLANDS (uv-continuous
+	// triangle groups) instead of the greedy planar unwrap: chart rect =
+	// the island's uv2 bbox; chart-local uv = the authored uv2 rescaled
+	// into its island box (resolution-independent, so the atlas budget
+	// search re-sizes rects by density WITHOUT re-unwrapping). The
+	// layout's own uv-to-world scale (sqrt(Auv/A3d)) maps texelsPerMeter
+	// to texels across the [0,1] uv range. Meshes without authored uv2
+	// (texCoord2 without spread) fall back to the planar path.
+	bool authoredUv2 = false;
 };
 
 // StaticMeshUpload is forward-declared at smvk:: scope above (the gi
@@ -328,6 +339,10 @@ struct SgLightmapChartResult {
 	// so no triangle ever spans two atlas rects.
 	std::vector<uint32_t> triChart;
 	std::vector<glm::vec2> cornerChartUv; // triCount * 3, chart-local [0,1]
+	// True when the charts came from authored texCoord2 islands (see
+	// SgLightmapChartOptions::authoredUv2) — lets the cook log which
+	// meshes used the external unwrapper vs the planar fallback.
+	bool usedAuthoredUv2 = false;
 };
 
 bool GenerateLightmapCharts(const StaticMeshUpload& upload,

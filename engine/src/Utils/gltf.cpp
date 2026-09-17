@@ -254,6 +254,44 @@ bool GltfExtrasStatic(const tinygltf::Value& extras) {
 	}
 	return false;
 }
+
+// A glTF node opts OUT of lightmap charting/baking via authoring extras or
+// naming convention (checked in importNodeRecursive):
+//   extras: { "smvk.noLightmap": true }
+//     (also "smvk.no_lightmap", "smvk.no-lightmap", { "smvk": { "noLightmap": true } })
+//   -or- name starts with "NOLM_".
+// The flag stamps Scene::noLightmap on the group node; exclusion is subtree
+// scoped (see IsNoLightmapNode). The editor writes these extras into its
+// cook-time patched glTF; PakCooker skips flagged subtrees in the chart loop.
+bool GltfExtrasNoLightmap(const tinygltf::Value& extras) {
+	if (!extras.IsObject())
+		return false;
+	auto truthy = [](const tinygltf::Value& v) {
+		if (v.IsBool())
+			return v.Get<bool>();
+		if (v.IsNumber())
+			return v.GetNumberAsDouble() != 0.0;
+		return false;
+	};
+	if (extras.Has("smvk.noLightmap") && truthy(extras.Get("smvk.noLightmap")))
+		return true;
+	if (extras.Has("smvk.no_lightmap") && truthy(extras.Get("smvk.no_lightmap")))
+		return true;
+	if (extras.Has("smvk.no-lightmap") && truthy(extras.Get("smvk.no-lightmap")))
+		return true;
+	if (extras.Has("noLightmap") && truthy(extras.Get("noLightmap")))
+		return true;
+	if (extras.Has("smvk")) {
+		const tinygltf::Value& sub = extras.Get("smvk");
+		if (sub.IsObject()) {
+			if (sub.Has("noLightmap") && truthy(sub.Get("noLightmap")))
+				return true;
+			if (sub.Has("no_lightmap") && truthy(sub.Get("no_lightmap")))
+				return true;
+		}
+	}
+	return false;
+}
 } // namespace
 
 // KTX2 file identifier (first 12 bytes) for cook-time payload validation.
@@ -1444,6 +1482,20 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentScene
 			(!gltfNode.name.empty() && gltfNode.name.rfind("STATIC_", 0) == 0);
 		if (wantStatic && (size_t)groupNode < cluster.scene.staticRoot.size())
 			cluster.scene.staticRoot[(size_t)groupNode] = 1;
+	}
+
+	// Lightmap opt-out: authoring extras or NOLM_ name prefix. Stored on
+	// the group node; IsNoLightmapNode() resolves subtree membership.
+	{
+		const bool wantNoLm =
+			GltfExtrasNoLightmap(gltfNode.extras) ||
+			(!gltfNode.name.empty() && gltfNode.name.rfind("NOLM_", 0) == 0);
+		if (wantNoLm) {
+			if (cluster.scene.noLightmap.size() != cluster.scene.hierarchy.size())
+				cluster.scene.noLightmap.assign(cluster.scene.hierarchy.size(), 0);
+			if ((size_t)groupNode < cluster.scene.noLightmap.size())
+				cluster.scene.noLightmap[(size_t)groupNode] = 1;
+		}
 	}
 
 	// Unroll primitives into separate meshes (your current approach).

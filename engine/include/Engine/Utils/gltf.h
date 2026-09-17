@@ -157,6 +157,18 @@ inline void GltfToCluster(
 	importer.setCoordFix(coordFix);
 	importer.setPreTransform(preTransform);
 	importer.setTextureStreamer(streamer);
+	// Stamp VFS-style asset URIs ("<path>#mat.N", "<path>#mesh.N/prim.M")
+	// when the host path normalizes (relative paths; absolute Windows
+	// paths stay URI-less, the previous behavior). URI-backed materials
+	// let tools (e.g. the glTF editor) map runtime materials back to
+	// glTF material indices exactly.
+	{
+		const std::string asPosix = inGltfModelPath.generic_string();
+		const smvk::StringViewT n =
+			smvk::NormalizeAssetUri(smvk::StringViewT(asPosix));
+		if (!n.empty())
+			importer.setModelUriBase(n.Str());
+	}
 
 	assert(out.scene.hierarchy.empty());
 

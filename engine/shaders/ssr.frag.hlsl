@@ -4,7 +4,10 @@
 #include "environment.hlsli"
 
 // SSR trace (half res): full-res depth -> half-res reflection layer.
-// Output: rgb = reflected HDR x Fresnel x intensity,
+// Output: rgb = reflected HDR x Fresnel x intensity, clamped to
+//         kSsrMaxReflected (firefly guard — sun-disc strikes and
+//         half-overflow garbage would otherwise spike 10-50x over
+//         their neighbors and bloom/meter downstream),
 //         a   = edge x distance confidence (0 on a miss).
 // Rays that hit nothing contribute nothing: the base HDR already carries
 // the analytic sky specular IBL, so mirrors keep their chrome read on a
@@ -37,16 +40,34 @@ struct SsrTracePush
     float intensity;
     float f0;
     uint refineSteps;
-    uint pad0;
+    uint frameIndex; // dither epoch: 0 = static legacy pattern (spatial path),
+                     // else the record counter (temporal path animates the
+                     // ray-origin dither so the TAA pass converges speckle
+                     // to its mean instead of parking a static pattern)
 };
 
 [[vk::push_constant]]
 ConstantBuffer<SsrTracePush> sp;
 
-// Interleaved gradient noise: ray-origin dither against banding.
-float SsrIGN(float2 px)
+// Firefly cap: upper bound on the reflected HDR the trace may emit.
+// Struck radiance is unbounded in practice (sun disc = full sun lux,
+// up to 30000 in the UI, times the intensity knob), while legit
+// reflections at defaults top out around the sun disc (~5000). Past the
+// cap lives only aliasing spikes (a noisy normal + dithered origin
+// striking the disc for a single pixel) and half-overflow garbage —
+// exactly what blooms (threshold 1000) and the exposure top bin would
+// otherwise amplify. The intensity knob stays the artistic gate below it.
+static const float kSsrMaxReflected = 8192.0f;
+
+// Interleaved gradient noise: ray-origin dither against banding. The
+// per-frame epoch jumps far across the IGN field (offsets >> 1 px, so
+// consecutive frames decorrelate) and wraps every 256 records (bounded
+// float precision, ~4 s period at 60 Hz — far past TAA convergence).
+float SsrIGN(float2 px, uint frameIndex)
 {
-    return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715))));
+    uint f = frameIndex & 255u;
+    float2 q = px + float2(float(f) * 17.23f, float(f) * 9.71f);
+    return frac(52.9829189 * frac(dot(q, float2(0.06711056, 0.00583715))));
 }
 
 // Full-res pixel-center NDC (framebuffer y-down: top = -1, matching
@@ -173,7 +194,9 @@ PSOut mainPS(PSIn IN)
     float minStep = 0.03f; // 3 cm: strides never crawl below this
     // Dither the ray origin along R to break up step banding; bias 2 mm
     // toward the viewer so thin double-sided panes don't self-hit.
-    float jitter = SsrIGN(float2(halfPx));
+    // Animated per record on the temporal path (sp.frameIndex), static
+    // on the spatial path — see SsrTracePush.frameIndex.
+    float jitter = SsrIGN(float2(halfPx), sp.frameIndex);
     float3 marchPos = viewPos + R * (maxStep * jitter) + N * 2e-3f;
 
     float2 hitUv = float2(-1.0f, -1.0f);
@@ -377,6 +400,12 @@ PSOut mainPS(PSIn IN)
         return OUT;
     }
     float3 reflected = SanitizeHdr(hdrTex.Sample(smp, hitUv).rgb);
-    OUT.outColor = float4(reflected * (fres * sp.intensity), hitFade);
+    // Firefly clamp BEFORE the intensity scale leaves the pass: a noisy
+    // normal + dithered origin striking the sun disc would otherwise
+    // inject up to 4x sun lux next to ~100s neighbors — the spike bloom
+    // (threshold 1000) and the exposure top bin then amplify.
+    float3 capped = min(reflected * (fres * sp.intensity),
+                        float3(kSsrMaxReflected, kSsrMaxReflected, kSsrMaxReflected));
+    OUT.outColor = float4(capped, hitFade);
     return OUT;
 }

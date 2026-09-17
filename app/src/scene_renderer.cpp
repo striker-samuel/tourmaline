@@ -4418,6 +4418,8 @@ void SceneRenderer::Shutdown() {
 		// Recreated history targets hold garbage - the resolve must not
 		// blend against them until the T2x chain refills the ping-pong.
 		smvk::SmaaInvalidateHistory(m_smaaT2x);
+		// Same for the SSR temporal history (targets recreated above).
+		smvk::SsrTaaInvalidateHistory(m_ssrTaa);
 		UpdateCameraAspect(renderExtent);
 	}
 
@@ -4727,6 +4729,15 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			frameDofDesc.hqBokeh = m_dofHqBokeh;
 			m_viewportResources.dof.Ensure(*m_context, *m_rendergraph, renderExtent, frameDofDesc);
 		}
+		// Silent SSR target recreation (extent/format drift outside
+		// RebuildSwapViews) loses the temporal history content: invalidate
+		// first so the next temporal record warms up instead of blending
+		// against garbage. RebuildSwapViews invalidates unconditionally;
+		// this guard covers any other drift path (including first creation).
+		if (!m_viewportResources.ssr.TargetsValid()
+			|| m_viewportResources.ssr.extent.width != renderExtent.width
+			|| m_viewportResources.ssr.extent.height != renderExtent.height)
+			smvk::SsrTaaInvalidateHistory(m_ssrTaa);
 		m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc());
 		{
 			smvk::VolumetricDesc rebuildVolDesc = MakeVolumetricDesc();
@@ -4844,6 +4855,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		if (m_aaMode != m_smaaLastMode) {
 			smvk::SmaaInvalidateHistory(m_smaaT2x);
 			m_smaaLastMode = m_aaMode;
+			// The T2x jitter pattern moved with the mode: the SSR trace
+			// ran under a different proj jitter, so its history no longer
+			// reprojects exactly — warm the temporal chain up again.
+			smvk::SsrTaaInvalidateHistory(m_ssrTaa);
 		}
 		// Global T2x snapshot for this record: the jitter below, the
 		// history slot + subsample indices of the SMAA chain and the overlay
@@ -4852,6 +4867,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// first record after (re)creation degrades to a warmup record).
 		m_smaaFrameParams = smvk::SmaaBeginFrame(m_smaaT2x, SmaaT2xActive());
 		m_smaaFrameRanT2x = false; // set where the T2x chain is emitted
+		m_ssrFrameRanTemporal = false; // set where the SSR temporal pass is emitted
 		// Bench phase timers (active only with --bench past warmup).
 		using bench_clk = std::chrono::steady_clock;
 		const bool benchPhase = frameBudget_ > 0 && benchWarmup_ >= 10;
@@ -6785,12 +6801,49 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			ssrDesc.intensity = m_ssrIntensity;
 			ssrDesc.f0 = m_ssrF0;
 			ssrDesc.blurSharpness = m_ssrBlurSharpness;
-			const bool ssrOn = m_passes.ssr && m_ssrEnabled
-				&& m_viewportResources.ssr.Valid()
-				&& !m_viewportResources.renderDepth.logicalView.empty()
-				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
-				&& m_ssrIntensity > 0.0f;
-			if (ssrOn) {
+		const bool ssrOn = m_passes.ssr && m_ssrEnabled
+			&& m_viewportResources.ssr.Valid()
+			&& !m_viewportResources.renderDepth.logicalView.empty()
+			&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
+			&& m_ssrIntensity > 0.0f;
+		if (ssrOn) {
+			// Temporal path needs the motion-vector target (reprojection
+			// source); without it the record takes the spatial-only path
+			// and the TAA history invalidates at the end of the frame.
+			const bool taaUsable = SsrTaaRequested()
+				&& m_passes.motionVectors && m_viewportResources.motionVectors.Valid()
+				&& !m_viewportResources.motionVectors.target.logicalView.empty()
+				&& m_viewportResources.motionVectors.target.bindlessIndex != UINT32_MAX;
+			if (taaUsable) {
+				const smvk::SsrTaaFrameParams taaParams =
+					smvk::SsrTaaBeginFrame(m_ssrTaa, true);
+				// Animated ray-origin dither: the record counter decorrelates
+				// consecutive traces so the temporal pass converges speckle
+				// to its mean (static dither would just park the pattern).
+				const uint32_t ssrDitherEpoch = static_cast<uint32_t>(m_frameCounter & 0xffffffffu);
+				m_viewportResources.ssr.AddSsrTemporalPasses(
+					*m_rendergraph,
+					sceneHdrView,
+					sceneHdrBindless,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.renderDepth.bindlessIndex,
+					m_viewportResources.motionVectors.target.logicalView,
+					m_viewportResources.motionVectors.target.bindlessIndex,
+					frameUniformsAddress,
+					linearSampler,
+					ssrDesc,
+					m_jitterDeltaUV.x,
+					m_jitterDeltaUV.y,
+					m_ssrTaaBlend,
+					taaParams.historyValid,
+					taaParams.parity,
+					"SSR",
+					"SSRBlur",
+					"SSRTemporal",
+					"SSRComposite",
+					ssrDitherEpoch);
+				m_ssrFrameRanTemporal = true;
+			} else {
 				m_viewportResources.ssr.AddSsrPasses(
 					*m_rendergraph,
 					sceneHdrView,
@@ -6803,6 +6856,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					"SSR",
 					"SSRBlur",
 					"SSRComposite");
+				m_ssrFrameRanTemporal = false;
+			}
 			sceneHdrView = m_viewportResources.ssr.OutputView();
 			sceneHdrBindless = m_viewportResources.ssr.OutputBindless();
 			ssrEmitted = true;
@@ -7543,6 +7598,11 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::SliderFloat("Intensity", &m_ssrIntensity, 0.0f, 4.0f);
 						ImGui::SliderFloat("F0 (glass 0.04)", &m_ssrF0, 0.0f, 1.0f);
 						ImGui::SliderFloat("Bilateral sharpness", &m_ssrBlurSharpness, 0.0f, 32.0f);
+						ImGui::Checkbox("Temporal filter (TAA, reflection layer only)", &m_ssrTaaEnabled);
+						if (m_ssrTaaEnabled) {
+							ImGui::SliderFloat("TAA history blend", &m_ssrTaaBlend, 0.0f, 0.98f);
+							ImGui::TextDisabled("Motion-vector reprojection + color-AABB anti-ghost. Needs motion vectors; falls back to spatial only.");
+						}
 						ImGui::TextDisabled("Half-res trace + bilateral blur + depth-aware upscale. Bistro shopfront glass at grazing angles is the test case.");
 					}
 				}
@@ -8243,9 +8303,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					if (!m_viewportResources.ssr.Valid())
 						ImGui::TextDisabled("SSR target/shaders missing - no reflections");
 					else
-						ImGui::TextDisabled("SSR: %s %u steps intensity %.2f",
+						ImGui::TextDisabled("SSR: %s %u steps intensity %.2f TAA:%s",
 							m_ssrEnabled ? "ON" : "off",
-							(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity);
+							(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity,
+							m_ssrTaaEnabled ? "on" : "off");
 					if (!m_viewportResources.volumetric.Valid())
 						ImGui::TextDisabled("Volumetric target/shaders missing - no fog");
 					else
@@ -8673,6 +8734,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// next record blends against this one. A non-T2x record freezes
 		// the phase and invalidates (see SmaaEndFrame).
 		smvk::SmaaEndFrame(m_smaaT2x, m_smaaFrameRanT2x);
+		// SSR temporal toggle: the temporal pass wrote history[parity]
+		// during Execute (when the temporal chain ran). A spatial-only
+		// record freezes the phase and invalidates (see SsrTaaEndFrame).
+		smvk::SsrTaaEndFrame(m_ssrTaa, m_ssrFrameRanTemporal);
 		// DLSS end-of-record step: advance the Halton phase when the pass
 		// ran (record cadence like the T2x parity, never per-image), arm
 		// the history reset when it didn't (next activation warms up), and
@@ -8796,7 +8861,8 @@ void SceneRenderer::EvsmDumpAtlas(uint32_t frameIndex) {
 // stderr (non-finite count is the garbage detector) + tone-mapped PNGs in
 // exports/ — NaN/Inf paint HOT PINK so a broken stage is unmistakable.
 // Stage order is the frame's HDR chain: Main's hdr -> ssrRaw (half) ->
-// ssrBlur (half) -> ssrComposite -> volumetric -> depth (grayscale).
+// ssrBlur (half) -> ssrHist0/1 (half, temporal ping-pong) ->
+// ssrComposite -> volumetric -> depth (grayscale).
 // The color stages are RGBA16F (8 B/px, half-floats decoded below); the
 // depth stage is D32F (4 B/px). Reading them as raw float32 with a wrong
 // stride produces the impossible ~1e14 stats that masked the first run.
@@ -8851,6 +8917,8 @@ void SceneRenderer::DumpSsrStages(uint32_t frameIndex) {
 		{ "hdr_main",   &hdrRes.image,        fw, fh, false },
 		{ "ssr_raw",    &ssr.raw.image,       hw, hh, false },
 		{ "ssr_blur",   &ssr.blurred.image,   hw, hh, false },
+		{ "ssr_hist0",  &ssr.history[0].image, hw, hh, false },
+		{ "ssr_hist1",  &ssr.history[1].image, hw, hh, false },
 		{ "ssr_comp",   &ssr.image,           fw, fh, false },
 		{ "volumetric", &vol.image,           fw, fh, false },
 		{ "depth",      &depthRes.image,      fw, fh, true  },

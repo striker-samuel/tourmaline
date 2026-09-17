@@ -8206,6 +8206,12 @@ void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 			// freed from here on retires once this submit (and all before it)
 			// has completed.
 			ctx_.NotifyGraphicsSubmit(timelineSemaphore_, signalValue);
+			// Drop the queue lock before present/Recreate: present is
+			// ordered by the renderFinished semaphore, and Recreate starts
+			// with vkDeviceWaitIdle plus preservation submits that re-lock
+			// this same mutex (swapchain depth copy) — holding it across
+			// the call deadlocks with EDEADLK on present-driven recreates.
+			lockG.unlock();
 			// VULKANTOY_SERIALIZE=main (see RgSerializeGate): the whole
 			// frame's tail waits queue idle before present.
 			RgSerializeGate(RgSerializeMode().main, graphicsQueue_);

@@ -513,6 +513,276 @@ float LightmapCurvatureScale(const StaticMeshUpload& upload,
 // Charts: greedy planar unwrap, per-vertex UV2 (no geometry replacement)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Authored-UV2 charts (external unwrapper layout in texCoord2)
+// ---------------------------------------------------------------------------
+
+// Islands are UV-connected triangle groups of the authored lightmap
+// layout (RizomUV-packed glTF TEXCOORD_1): two triangles join across a
+// shared canonical-position edge only when BOTH shared endpoints' uv2
+// agree — a baked-in UV seam breaks the chain exactly where the layout
+// was cut, so the islands reproduce the unwrapper's packing 1:1 (welded
+// corners return equal uv2 and merge; packed-apart corners stay apart).
+// Rects are island uv2 bboxes; the layout's own uv-to-world scale
+// (sqrt(Auv/A3d) over the mesh) maps opts.texelsPerMeter to texels
+// across the [0,1] uv range, so rect sizes rescale with the atlas
+// budget search without re-unwrapping. No island splitting (no cap): an
+// oversized rect simply fails PackRects' atlas width and the search
+// lowers the density, unlike the planar path whose growth is capped.
+static bool GenerateLightmapChartsAuthored(
+	const StaticMeshUpload& upload,
+	const SgLightmapChartOptions& opts,
+	SgLightmapChartResult& out, std::string& err)
+{
+	const uint32_t triCount = uint32_t(upload.indices.size() / 3);
+	const uint32_t margin = opts.gutterTexels;
+
+	// 3D canonical dedup (same quantization as the planar path: unwelded
+	// corner duplicates connect through coincident positions).
+	std::unordered_map<uint64_t, uint32_t> posCanonical;
+	posCanonical.reserve(upload.vertices.size() * 2);
+	std::vector<uint32_t> canonical(upload.vertices.size(), 0);
+	for (size_t v = 0; v < upload.vertices.size(); ++v) {
+		const glm::vec3& p = upload.vertices[v].pos;
+		const int32_t qx = int32_t(std::clamp(p.x * 8192.0f, -1048576.0f, 1048575.0f));
+		const int32_t qy = int32_t(std::clamp(p.y * 8192.0f, -1048576.0f, 1048575.0f));
+		const int32_t qz = int32_t(std::clamp(p.z * 8192.0f, -1048576.0f, 1048575.0f));
+		const uint64_t key2 = uint64_t(uint32_t(qx))
+			| (uint64_t(uint32_t(qy)) << 21)
+			| (uint64_t(uint32_t(qz)) << 42);
+		auto [it, inserted] = posCanonical.insert({ key2, uint32_t(v) });
+		canonical[v] = it->second;
+	}
+	// Per-triangle canonical corners (tri*3 layout, reused by the BFS).
+	std::vector<uint32_t> triCanon(size_t(triCount) * 3, 0);
+	// Edge -> triangles (canonical ids; degenerate triangles excluded).
+	std::unordered_map<uint64_t, std::vector<uint32_t>> edges;
+	edges.reserve(size_t(triCount) * 3);
+	double area3d = 0.0, areaUv = 0.0;
+	for (uint32_t t = 0; t < triCount; ++t) {
+		const uint32_t i0 = upload.indices[t * 3 + 0];
+		const uint32_t i1 = upload.indices[t * 3 + 1];
+		const uint32_t i2 = upload.indices[t * 3 + 2];
+		if (i0 == i1 || i1 == i2 || i0 == i2)
+			continue; // degenerate: no edges, stays uncharted
+		const uint32_t c0 = canonical[i0];
+		const uint32_t c1 = canonical[i1];
+		const uint32_t c2 = canonical[i2];
+		triCanon[t * 3 + 0] = c0;
+		triCanon[t * 3 + 1] = c1;
+		triCanon[t * 3 + 2] = c2;
+		const uint64_t e0 = uint64_t(std::min(c0, c1)) | (uint64_t(std::max(c0, c1)) << 32);
+		const uint64_t e1 = uint64_t(std::min(c1, c2)) | (uint64_t(std::max(c1, c2)) << 32);
+		const uint64_t e2 = uint64_t(std::min(c2, c0)) | (uint64_t(std::max(c2, c0)) << 32);
+		edges[e0].push_back(t);
+		edges[e1].push_back(t);
+		edges[e2].push_back(t);
+		const glm::vec3& p0 = upload.vertices[i0].pos;
+		const glm::vec3& p1 = upload.vertices[i1].pos;
+		const glm::vec3& p2 = upload.vertices[i2].pos;
+		area3d += double(glm::length(glm::cross(p1 - p0, p2 - p0)));
+		const glm::vec2& u0 = upload.vertices[i0].texCoord2;
+		const glm::vec2& u1 = upload.vertices[i1].texCoord2;
+		const glm::vec2& u2 = upload.vertices[i2].texCoord2;
+		areaUv += double(std::abs((u1.x - u0.x) * (u2.y - u0.y)
+			- (u2.x - u0.x) * (u1.y - u0.y)));
+	}
+	if (areaUv <= 1e-12) {
+		err = "GenerateLightmapCharts: authored uv2 layout has no area";
+		return false;
+	}
+	// Layout scale: uv units per local meter. texelsPerMeter (local
+	// texels/m) -> texels across the full [0,1] uv range.
+	const double texelsAcrossLayout = std::max(
+		double(opts.texelsPerMeter) * std::sqrt(area3d / areaUv), 1.0);
+
+	// Island BFS: uv2 agreement at both shared endpoints (eps: uv units;
+	// pack padding separates islands by orders of magnitude more).
+	constexpr float kUvSeamEps = 1e-5f;
+	auto cornerUv2 = [&](uint32_t t, uint32_t c) -> const glm::vec2& {
+		for (int k = 0; k < 3; ++k)
+			if (triCanon[t * 3 + k] == c)
+				return upload.vertices[upload.indices[t * 3 + k]].texCoord2;
+		return upload.vertices[0].texCoord2; // unreachable
+	};
+	struct Island {
+		glm::vec2 pMin{ 0.0f }, pMax{ 0.0f };
+		std::vector<uint32_t> tris;
+		uint32_t w = 0, h = 0;
+	};
+	std::vector<Island> islands;
+	std::vector<uint32_t> chartOf(triCount, 0xFFFFFFFFu);
+	std::vector<uint32_t> frontier;
+	for (uint32_t seed = 0; seed < triCount; ++seed) {
+		if (chartOf[seed] != 0xFFFFFFFFu)
+			continue;
+		const uint32_t idx = uint32_t(islands.size());
+		Island& isl = islands.emplace_back();
+		isl.pMin = glm::vec2(std::numeric_limits<float>::max());
+		isl.pMax = glm::vec2(std::numeric_limits<float>::lowest());
+		frontier.clear();
+		frontier.push_back(seed);
+		while (!frontier.empty()) {
+			const uint32_t t = frontier.back();
+			frontier.pop_back();
+			if (chartOf[t] != 0xFFFFFFFFu)
+				continue;
+			chartOf[t] = idx;
+			isl.tris.push_back(t);
+			for (int k = 0; k < 3; ++k) {
+				const glm::vec2& u =
+					upload.vertices[upload.indices[t * 3 + k]].texCoord2;
+				isl.pMin = glm::min(isl.pMin, u);
+				isl.pMax = glm::max(isl.pMax, u);
+			}
+			const uint32_t ca = triCanon[t * 3 + 0];
+			const uint32_t cb = triCanon[t * 3 + 1];
+			const uint32_t cc = triCanon[t * 3 + 2];
+			const uint64_t eKeys[3] = {
+				uint64_t(std::min(ca, cb)) | (uint64_t(std::max(ca, cb)) << 32),
+				uint64_t(std::min(cb, cc)) | (uint64_t(std::max(cb, cc)) << 32),
+				uint64_t(std::min(cc, ca)) | (uint64_t(std::max(cc, ca)) << 32),
+			};
+			for (uint64_t e : eKeys)
+				for (uint32_t nb : edges[e]) {
+					if (nb == t || chartOf[nb] != 0xFFFFFFFFu)
+						continue;
+					// Shared canonical endpoints of this edge.
+					const uint32_t lo = uint32_t(e & 0xFFFFFFFFull);
+					const uint32_t hi = uint32_t(e >> 32);
+					const glm::vec2& ta = cornerUv2(t, lo);
+					const glm::vec2& tb = cornerUv2(t, hi);
+					const glm::vec2& na = cornerUv2(nb, lo);
+					const glm::vec2& nbv = cornerUv2(nb, hi);
+					if (std::abs(ta.x - na.x) + std::abs(ta.y - na.y) > kUvSeamEps)
+						continue;
+					if (std::abs(tb.x - nbv.x) + std::abs(tb.y - nbv.y) > kUvSeamEps)
+						continue;
+					frontier.push_back(nb);
+				}
+		}
+	}
+
+	// Island rects: uv bbox at the layout density (+ inner margins).
+	uint64_t meshTexelTotal = 0;
+	for (Island& isl : islands) {
+		const glm::vec2 ext = glm::max(isl.pMax - isl.pMin, glm::vec2(1e-6f));
+		isl.w = std::max<uint32_t>(uint32_t(std::ceil(ext.x * float(texelsAcrossLayout))), 1u) + 2u * margin;
+		isl.h = std::max<uint32_t>(uint32_t(std::ceil(ext.y * float(texelsAcrossLayout))), 1u) + 2u * margin;
+		meshTexelTotal += uint64_t(isl.w) * isl.h;
+	}
+	if (opts.maxChartTexelsTotal > 0
+		&& meshTexelTotal > opts.maxChartTexelsTotal) {
+		err = "GenerateLightmapCharts: mesh chart texels exceed budget "
+			"(lower --lm-density)";
+		return false;
+	}
+
+	// Island-local uv: (uv2 - pMin)/ext clamped to [0,1] over the inner
+	// rect. Resolution-independent: the rect resizes around the same
+	// [0,1] parameterization as the density search scales.
+	auto islandUv = [&](const Island& isl, const glm::vec2& u) -> glm::vec2 {
+		const glm::vec2 ext = glm::max(isl.pMax - isl.pMin, glm::vec2(1e-6f));
+		return glm::clamp((u - isl.pMin) / ext, glm::vec2(0.0f), glm::vec2(1.0f));
+	};
+
+	// Per-ORIGINAL-vertex output (first island to touch a vertex claims
+	// it — the authored layout makes every duplicated corner carry its
+	// own island's uv, so this is exact for all referenced vertices).
+	out.charts.resize(islands.size());
+	out.vertexChart.assign(upload.vertices.size(), 0xFFFFFFFFu);
+	out.chartLocalUv.assign(upload.vertices.size(), glm::vec2(0.0f));
+	for (uint32_t ci = 0; ci < uint32_t(islands.size()); ++ci) {
+		for (uint32_t t : islands[ci].tris) {
+			for (int k = 0; k < 3; ++k) {
+				const uint32_t v = upload.indices[t * 3 + k];
+				if (out.vertexChart[v] == 0xFFFFFFFFu) {
+					out.vertexChart[v] = ci;
+					out.chartLocalUv[v] =
+						islandUv(islands[ci], upload.vertices[v].texCoord2);
+				}
+			}
+		}
+	}
+	// Per-triangle output (seam-correct): every corner through its OWN
+	// island, original triangle order.
+	out.triChart.assign(triCount, 0xFFFFFFFFu);
+	out.cornerChartUv.assign(size_t(triCount) * 3, glm::vec2(0.0f));
+	for (uint32_t ci = 0; ci < uint32_t(islands.size()); ++ci) {
+		for (uint32_t t : islands[ci].tris) {
+			out.triChart[t] = ci;
+			for (int k = 0; k < 3; ++k) {
+				const uint32_t v = upload.indices[t * 3 + k];
+				out.cornerChartUv[size_t(t) * 3 + k] =
+					islandUv(islands[ci], upload.vertices[v].texCoord2);
+			}
+		}
+	}
+
+	// Bake texels per island: rasterize every island triangle over the
+	// inner region, first-writer-owns (mirrors the planar path's claim
+	// map so overlapping uv never duplicates texels). uv is rect-local
+	// ([margin, size - margin) texels).
+	for (uint32_t ci = 0; ci < uint32_t(islands.size()); ++ci) {
+		const Island& isl = islands[ci];
+		SgLightmapChartResult::Chart& oc = out.charts[ci];
+		oc.width = isl.w;
+		oc.height = isl.h;
+		const uint32_t iw = std::max<uint32_t>(isl.w - 2u * margin, 1u);
+		const uint32_t ih = std::max<uint32_t>(isl.h - 2u * margin, 1u);
+		std::vector<uint32_t> claim(size_t(iw) * ih, 0xFFFFFFFFu);
+		for (uint32_t t : isl.tris) {
+			const uint32_t i0 = upload.indices[t * 3 + 0];
+			const uint32_t i1 = upload.indices[t * 3 + 1];
+			const uint32_t i2 = upload.indices[t * 3 + 2];
+			const glm::vec3& p0 = upload.vertices[i0].pos;
+			const glm::vec3& p1 = upload.vertices[i1].pos;
+			const glm::vec3& p2 = upload.vertices[i2].pos;
+			const glm::vec3& n0 = upload.vertices[i0].normal;
+			const glm::vec3& n1 = upload.vertices[i1].normal;
+			const glm::vec3& n2 = upload.vertices[i2].normal;
+			const glm::vec2 u0 = islandUv(isl, upload.vertices[i0].texCoord2);
+			const glm::vec2 u1 = islandUv(isl, upload.vertices[i1].texCoord2);
+			const glm::vec2 u2 = islandUv(isl, upload.vertices[i2].texCoord2);
+			const glm::vec2 e0 = u1 - u0;
+			const glm::vec2 e1 = u2 - u0;
+			const float det = e0.x * e1.y - e0.y * e1.x;
+			if (std::abs(det) < 1e-12f)
+				continue; // zero-uv-area sliver: no texels (dilation covers)
+			const glm::vec2 tMin = glm::min(u0, glm::min(u1, u2));
+			const glm::vec2 tMax = glm::max(u0, glm::max(u1, u2));
+			uint32_t tx0 = std::min(uint32_t(std::max(0.0f, tMin.x * float(iw) - 0.5f)), iw - 1u);
+			uint32_t tx1 = std::min(uint32_t(std::min(float(iw), tMax.x * float(iw) + 0.5f)), iw - 1u);
+			uint32_t ty0 = std::min(uint32_t(std::max(0.0f, tMin.y * float(ih) - 0.5f)), ih - 1u);
+			uint32_t ty1 = std::min(uint32_t(std::min(float(ih), tMax.y * float(ih) + 0.5f)), ih - 1u);
+			for (uint32_t y = ty0; y <= ty1; ++y) {
+				for (uint32_t x = tx0; x <= tx1; ++x) {
+					const size_t idx = size_t(y) * iw + x;
+					if (claim[idx] != 0xFFFFFFFFu)
+						continue;
+					const float u = (float(x) + 0.5f) / float(iw);
+					const float v = (float(y) + 0.5f) / float(ih);
+					const glm::vec2 d(u - u0.x, v - u0.y);
+					const float b1 = (d.x * e1.y - d.y * e1.x) / det;
+					const float b2 = (e0.x * d.y - e0.y * d.x) / det;
+					const float b0 = 1.0f - b1 - b2;
+					if (b0 < -1e-4f || b1 < -1e-4f || b2 < -1e-4f)
+						continue;
+					claim[idx] = 1u;
+					SgLightmapTexel tx{};
+					tx.position = p0 * b0 + p1 * b1 + p2 * b2;
+					tx.normal = glm::normalize(n0 * b0 + n1 * b1 + n2 * b2);
+					tx.uv = glm::vec2(float(margin + x) + 0.5f,
+						float(margin + y) + 0.5f);
+					oc.texels.push_back(tx);
+				}
+			}
+		}
+	}
+	out.usedAuthoredUv2 = true;
+	return true;
+}
+
 bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 	const SgLightmapChartOptions& opts, SgLightmapChartResult& out,
 	std::string& err) {
@@ -527,6 +797,29 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 		return false;
 	}
 	const uint32_t margin = opts.gutterTexels; // inner margin per chart
+
+	// Authored-UV2 mode: use the external unwrapper's islands when the
+	// mesh carries a non-degenerate texCoord2 layout (any spread at all
+	// around the mean); fall through to the planar unwrapper otherwise
+	// (all-equal texCoord2 = engine zeros, nothing authored).
+	if (opts.authoredUv2) {
+		glm::vec2 mean(0.0f);
+		for (const StaticVertex& v : upload.vertices)
+			mean += v.texCoord2;
+		if (!upload.vertices.empty())
+			mean /= float(upload.vertices.size());
+		bool hasSpread = false;
+		for (const StaticVertex& v : upload.vertices) {
+			if (std::abs(v.texCoord2.x - mean.x) > 1e-6f
+				|| std::abs(v.texCoord2.y - mean.y) > 1e-6f) {
+				hasSpread = true;
+				break;
+			}
+		}
+		if (hasSpread)
+			return GenerateLightmapChartsAuthored(upload, opts, out, err);
+	}
+	out.usedAuthoredUv2 = false;
 
 	// ------------------------------------------------------------------
 	// Greedy planar-chart unwrap (per-triangle bbox charts waste ~2-4x on

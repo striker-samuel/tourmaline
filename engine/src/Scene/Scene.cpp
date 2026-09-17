@@ -22,6 +22,7 @@ int addNode(Scene& scene, int parent, int level)
     scene.globalTransform.push_back(glm::mat4(1.0f));
     scene.staticRoot.push_back(0);
     scene.staticNode.push_back(0);
+    scene.noLightmap.push_back(0);
   }
   scene.hierarchy.push_back({ .parent = parent, .lastSibling = -1 });
   if (parent > -1) {
@@ -223,6 +224,7 @@ void loadScene(const char* fileName, Scene& scene)
   scene.localTransform.resize(sz);
   scene.staticRoot.assign(sz, 0);
   scene.staticNode.assign(sz, 0);
+  scene.noLightmap.assign(sz, 0);
   // TODO: check > -1
   // TODO: recalculate changedAtThisLevel() - find max depth of a node [or save scene.maxLevel]
   fread(scene.localTransform.data(), sizeof(glm::mat4), sz, f);
@@ -249,6 +251,19 @@ void loadScene(const char* fileName, Scene& scene)
       if (fread(roots.data(), 1, staticCount, f) == staticCount && staticCount == sz) {
         scene.staticRoot = std::move(roots);
         RebuildStaticCache(scene);
+      }
+    }
+  }
+
+  // Lightmap-exclusion section (v3): u32 count + count bytes. Absent on
+  // older files (EOF) — the all-zero default stands.
+  {
+    uint32_t lmCount = 0;
+    if (fread(&lmCount, sizeof(lmCount), 1, f) == 1 &&
+        lmCount > 0 && lmCount <= 1024 * 1024) {
+      std::vector<uint8_t> flags(lmCount, 0);
+      if (fread(flags.data(), 1, lmCount, f) == lmCount && lmCount == sz) {
+        scene.noLightmap = std::move(flags);
       }
     }
   }
@@ -303,6 +318,21 @@ void saveScene(const char* fileName, const Scene& scene)
       } else {
         std::vector<uint8_t> zeros(staticCount, 0);
         fwrite(zeros.data(), 1, staticCount, f);
+      }
+    }
+  }
+  // Lightmap-exclusion section (v3): u32 count + count bytes, all-zero when
+  // no exclusions. Old loaders stop after the static section; new loaders
+  // treat a missing tail as "no exclusions".
+  {
+    const uint32_t lmCount = (uint32_t)scene.hierarchy.size();
+    fwrite(&lmCount, sizeof(lmCount), 1, f);
+    if (lmCount > 0) {
+      if (scene.noLightmap.size() == scene.hierarchy.size()) {
+        fwrite(scene.noLightmap.data(), 1, lmCount, f);
+      } else {
+        std::vector<uint8_t> zeros(lmCount, 0);
+        fwrite(zeros.data(), 1, lmCount, f);
       }
     }
   }
@@ -434,6 +464,7 @@ void mergeScenes(
   scene.globalTransform.push_back(glm::mat4(1.f));
   scene.staticRoot.push_back(0);
   scene.staticNode.push_back(0);
+  scene.noLightmap.push_back(0);
 
   if (scenes.empty())
     return;
@@ -459,6 +490,11 @@ void mergeScenes(
       mergeVectors(scene.staticRoot, s->staticRoot);
     else
       scene.staticRoot.insert(scene.staticRoot.end(), s->hierarchy.size(), 0);
+
+    if (s->noLightmap.size() == s->hierarchy.size())
+      mergeVectors(scene.noLightmap, s->noLightmap);
+    else
+      scene.noLightmap.insert(scene.noLightmap.end(), s->hierarchy.size(), 0);
 
     mergeVectors(scene.nodeNames, s->nodeNames);
     if (mergeMaterials)
@@ -638,6 +674,10 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
     eraseSelected(scene.staticNode, indicesToDelete);
   else
     scene.staticNode.assign(scene.hierarchy.size(), 0);
+  if (scene.noLightmap.size() == oldSize)
+    eraseSelected(scene.noLightmap, indicesToDelete);
+  else
+    scene.noLightmap.assign(scene.hierarchy.size(), 0);
   RebuildStaticCache(scene);
 
   // 4b) All the perFrame should change the key values with the newIndices[] array

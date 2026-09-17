@@ -1009,6 +1009,121 @@ void TestLightmapCurvatureScale() {
 	}
 }
 
+void TestLmAuthoredCharts() {
+	// Authored-UV2 charts (SgLightmapChartOptions::authoredUv2): a two-
+	// quad strip with a UV seam in texCoord2 (duplicated 3D corners, the
+	// unwrapper's island structure) must chart as TWO islands whose rects
+	// come from the uv2 bboxes scaled by the layout density, with
+	// per-corner chart uvs inside [0,1]; an all-flat texCoord2 must fall
+	// back to the planar unwrapper; a spread-but-area-less layout must
+	// fail cleanly.
+	using namespace smvk;
+	auto makeStrip = [](bool withSeam) {
+		// Quad A [0,1]x[0,1] in 3D, uv2 island [0,0.5]x[0,1]; quad B
+		// shares the 3D edge at x=1 through DUPLICATED corners (a real
+		// authored seam), island [0.55,1]x[0,1] when withSeam (else the
+		// shared edge carries identical uv2 on both sides: one island).
+		StaticMeshUpload u;
+		auto vert = [](float x, float y, float uu, float vv) {
+			StaticVertex v{};
+			v.pos = { x, y, 0.0f };
+			v.color = { 1, 1, 1, 1 };
+			v.normal = { 0, 0, 1 };
+			v.texCoord2 = { uu, vv };
+			return v;
+		};
+		// A: corners 0..3, B: corners 4..7 (4,7 duplicate 1,2's positions)
+		u.vertices = {
+			vert(0, 0, 0.0f, 0.0f), vert(1, 0, 0.5f, 0.0f),
+			vert(1, 1, 0.5f, 1.0f), vert(0, 1, 0.0f, 1.0f),
+			vert(1, 0, withSeam ? 0.55f : 0.5f, 0.0f),
+			vert(2, 0, 1.0f, 0.0f),
+			vert(2, 1, 1.0f, 1.0f),
+			vert(1, 1, withSeam ? 0.55f : 0.5f, 1.0f),
+		};
+		u.indices = { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+		return u;
+	};
+	gi::SgLightmapChartOptions opts{};
+	opts.texelsPerMeter = 20.0f;
+	opts.gutterTexels = 1;
+	std::string err;
+
+	// Seamed strip: two islands from the authored layout.
+	{
+		auto strip = makeStrip(true);
+		opts.authoredUv2 = true;
+		gi::SgLightmapChartResult r;
+		err.clear();
+		Check(gi::GenerateLightmapCharts(strip, opts, r, err),
+			"lm.authored.seamed.ok");
+		Check(r.usedAuthoredUv2, "lm.authored.seamed.used");
+		Check(r.charts.size() == 2, "lm.authored.seamed.twoislands");
+		// Rect sizes: uv ext scaled by the layout density (+2 margin).
+		// A3d = 2.0, Auv = 0.5 + 0.45 -> texelsAcross = 20*sqrt(2/0.95).
+		const double across = 20.0 * std::sqrt(2.0 / 0.95);
+		const uint32_t wa = uint32_t(std::ceil(0.5 * float(across))) + 2;
+		const uint32_t wb = uint32_t(std::ceil(0.45 * float(across))) + 2;
+		const uint32_t ha = uint32_t(std::ceil(1.0 * float(across))) + 2;
+		Check(r.charts[0].width == wa && r.charts[1].width == wb
+			&& r.charts[0].height == ha && r.charts[1].height == ha,
+			"lm.authored.seamed.rects");
+		Check(!r.charts[0].texels.empty() && !r.charts[1].texels.empty(),
+			"lm.authored.seamed.texels");
+		// Per-triangle charts: quad A's tris together, apart from B's.
+		Check(r.triChart[0] == r.triChart[1] && r.triChart[2] == r.triChart[3]
+			&& r.triChart[0] != r.triChart[2],
+			"lm.authored.seamed.trichart");
+		// Seam corners: duplicated 3D positions in DIFFERENT charts.
+		Check(r.vertexChart[1] != r.vertexChart[4]
+			&& r.vertexChart[2] != r.vertexChart[7],
+			"lm.authored.seamed.seamverts");
+		// Corner uvs inside [0,1]; A's far corner lands at (1,1).
+		bool inRange = true;
+		for (const glm::vec2& c : r.cornerChartUv)
+			inRange = inRange && c.x >= 0.0f && c.x <= 1.0f
+				&& c.y >= 0.0f && c.y <= 1.0f;
+		Check(inRange, "lm.authored.seamed.uvrange");
+	}
+	// Seam-less layout: one island across the shared edge.
+	{
+		auto strip = makeStrip(false);
+		opts.authoredUv2 = true;
+		gi::SgLightmapChartResult r;
+		err.clear();
+		Check(gi::GenerateLightmapCharts(strip, opts, r, err),
+			"lm.authored.seamless.ok");
+		Check(r.charts.size() == 1, "lm.authored.seamless.oneisland");
+	}
+	// Flat texCoord2: planar fallback (never authored).
+	{
+		auto strip = makeStrip(true);
+		for (StaticVertex& v : strip.vertices)
+			v.texCoord2 = { 0.0f, 0.0f };
+		opts.authoredUv2 = true;
+		gi::SgLightmapChartResult r;
+		err.clear();
+		Check(gi::GenerateLightmapCharts(strip, opts, r, err),
+			"lm.authored.flat.ok");
+		Check(!r.usedAuthoredUv2 && !r.charts.empty(),
+			"lm.authored.flat.planar");
+	}
+	// Spread but zero-area layout: explicit failure.
+	{
+		auto strip = makeStrip(true);
+		// All uv2 on one vertical line: has spread, no area.
+		for (uint32_t i = 0; i < strip.vertices.size(); ++i)
+			strip.vertices[i].texCoord2 = { float(i), 0.0f };
+		opts.authoredUv2 = true;
+		gi::SgLightmapChartResult r;
+		err.clear();
+		Check(!gi::GenerateLightmapCharts(strip, opts, r, err)
+			&& err.find("no area") != std::string::npos,
+			"lm.authored.noarea.fail");
+	}
+	opts.authoredUv2 = false;
+}
+
 } // namespace smvk::gi
 
 int main() {
@@ -1027,6 +1142,7 @@ int main() {
 	smvk::gi::TestRegularVolume();
 	smvk::gi::TestFp16Pack();
 	smvk::gi::TestLightmapCurvatureScale();
+	smvk::gi::TestLmAuthoredCharts();
 
 	std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks
 		<< " checks passed\n";

@@ -54,6 +54,14 @@ struct Scene {
 	// any static subtree); rebuilt via RebuildStaticCache().
 	std::vector<uint8_t> staticRoot;
 	std::vector<uint8_t> staticNode;
+
+	// Lightmap opt-out (editor + cook): noLightmap[node] == 1 excludes the
+	// node's subtree from lightmap charting/baking (see PakCooker --lightmap
+	// and the glTF "smvk.noLightmap" node extras). Excluded geometry still
+	// renders (probe/sky-lit fallback) and still occludes/casts in the bake
+	// trace scene. Empty or size-mismatched == no exclusions. Carried through
+	// merge/serialize paths alongside staticRoot.
+	std::vector<uint8_t> noLightmap;
 };
 
 int addNode(Scene& scene, int parent, int level);
@@ -67,6 +75,35 @@ void markAsChangedDynamic(Scene& scene, int node);
 inline bool IsStaticNode(const Scene& scene, int node)
 {
 	return node >= 0 && (size_t)node < scene.staticNode.size() && scene.staticNode[(size_t)node] != 0;
+}
+
+// Lightmap opt-out for a node or any ancestor (subtree exclusion).
+inline bool IsNoLightmapNode(const Scene& scene, int node)
+{
+	for (int n = node; n >= 0 && n < int(scene.hierarchy.size()); ) {
+		if ((size_t)n < scene.noLightmap.size() && scene.noLightmap[(size_t)n] != 0)
+			return true;
+		n = scene.hierarchy[size_t(n)].parent;
+	}
+	return false;
+}
+
+// Marks node as lightmap-excluded (subtree). Grows the array if needed.
+inline void MarkNoLightmap(Scene& scene, int node)
+{
+	if (node < 0 || (size_t)node >= scene.hierarchy.size())
+		return;
+	if (scene.noLightmap.size() != scene.hierarchy.size())
+		scene.noLightmap.assign(scene.hierarchy.size(), 0);
+	scene.noLightmap[(size_t)node] = 1;
+}
+inline void ClearNoLightmap(Scene& scene, int node)
+{
+	if (node < 0 || (size_t)node >= scene.hierarchy.size())
+		return;
+	if (scene.noLightmap.size() != scene.hierarchy.size())
+		scene.noLightmap.assign(scene.hierarchy.size(), 0);
+	scene.noLightmap[(size_t)node] = 0;
 }
 
 inline bool IsStaticSubtreeRoot(const Scene& scene, int node)

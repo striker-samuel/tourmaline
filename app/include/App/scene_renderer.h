@@ -1379,6 +1379,22 @@ protected:
 	float m_ssrIntensity = 1.0f; // reflection strength
 	float m_ssrF0 = 0.04f; // dielectric base reflectance (glass)
 	float m_ssrBlurSharpness = 10.0f; // bilateral depth edge weight (higher = tighter)
+	// ---- SSR temporal filter (TAA of the reflection layer only) ----
+	// Motion-vector-reprojected accumulation of the half-res reflection
+	// layer (see SsrTaaState in ssr.h). The base HDR is never filtered.
+	// Needs the motion-vector target; without it (or on invalid history)
+	// the record falls back to the spatial-only path.
+	bool m_ssrTaaEnabled = true; // temporal accumulation of the SSR layer
+	float m_ssrTaaBlend = 0.9f; // history weight 0..0.98 (attenuated by motion)
+	// Record-sequence state (same discipline as m_smaaT2x): parity picks
+	// the history slot the next temporal record writes; invalidated on
+	// target rebuild, SSR/motion loss and AA-mode changes (jitter shift).
+	smvk::SsrTaaState m_ssrTaa;
+	// True when this record emitted the temporal chain (end-step input).
+	bool m_ssrFrameRanTemporal = false;
+	// Requested = UI toggle only; the emission gate additionally needs
+	// valid motion vectors (checked at the SSR site, like SmaaActive).
+	bool SsrTaaRequested() const { return m_ssrTaaEnabled; }
 	// ---- Raymarched volumetric fog lit by the SG-GI probes (see
 	// volumetric.h). Single-scatter HDR composite after SSR: extinction +
 	// probe-ambient in-scatter + HG sun scatter. Off by default (opt-in;

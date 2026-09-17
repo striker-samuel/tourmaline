@@ -101,6 +101,7 @@ namespace smvk {
 		scene.globalTransform[root] = glm::mat4(1.0f);
 		scene.staticRoot.assign(scene.hierarchy.size(), 0);
 		scene.staticNode.assign(scene.hierarchy.size(), 0);
+		scene.noLightmap.assign(scene.hierarchy.size(), 0);
 
 		for (auto& clusterPtr : clusters) {
 			Cluster& cluster = *clusterPtr.get();
@@ -143,6 +144,18 @@ namespace smvk {
 		else {
 			scene.staticRoot.insert(
 				scene.staticRoot.end(), nodeCount, 0);
+		}
+		// Carry the lightmap-exclusion flags (missing == bake everything).
+		if (cs.noLightmap.size() == cs.hierarchy.size()) {
+			scene.noLightmap.insert(
+				scene.noLightmap.end(),
+				cs.noLightmap.begin(),
+				cs.noLightmap.end()
+			);
+		}
+		else {
+			scene.noLightmap.insert(
+				scene.noLightmap.end(), nodeCount, 0);
 		}
 		scene.staticNode.insert(scene.staticNode.end(), nodeCount, 0);
 
