@@ -123,6 +123,11 @@ bool Cluster::RegisterLightUri(StringViewT uri, ClusterLightHandle handle) {
 	return true;
 }
 
+void Cluster::RegisterGiBinding(GiBinding::Kind kind, const std::string& name) {
+	if (!name.empty())
+		giBindings.push_back(GiBinding{ kind, name });
+}
+
 bool Cluster::RegisterTextureUri(StringViewT uri, TextureHandle handle) {
 	const StringViewT n = NormalizeAssetUri(uri, uriArena_);
 	if (n.empty() || !handle.valid())

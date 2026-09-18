@@ -10,7 +10,7 @@
 #include <cstdio>
 
 #include <Engine/Asset/tour.h>
-#include <Engine/Utils/gltf.h>
+#include <gltf_import/gltf.h>
 
 namespace editor {
 

@@ -68,6 +68,7 @@ enum class Verb : uint8_t {
 	AssignMaterial, // material = cluster material POOL index
 	SetMatAttr,     // text = attr name; vec/vec4/number by attr
 	SetNoLightmap,  // flag
+	SetDitherCloseup, // flag (subtree dither on camera closeup)
 	Parent,         // node2 = new parent (cluster node id)
 };
 
@@ -80,7 +81,7 @@ struct Command {
 	glm::vec3 vec{ 0.0f }; // translate / rotate-deg / scale
 	glm::vec4 vec4{ 1.0f }; // mat vec attr value (baseColor/emissive)
 	double number = 0.0;   // mat scalar attr value
-	bool flag = false;     // SetNoLightmap value
+	bool flag = false;     // SetNoLightmap / SetDitherCloseup value
 	std::string name;      // recorded node name (verify-only)
 };
 

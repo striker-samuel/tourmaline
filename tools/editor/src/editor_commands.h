@@ -25,6 +25,7 @@ enum class EditVerb : uint8_t {
 	AssignMaterial, // world material index
 	SetMatAttr,     // shared material value
 	SetNoLightmap,
+	SetDitherCloseup, // subtree dither on camera closeup
 	Parent, // world parent id
 };
 

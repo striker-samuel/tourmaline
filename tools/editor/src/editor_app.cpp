@@ -18,7 +18,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/Renderer/mesh.h>
-#include <Engine/Utils/gltf.h>
+#include <gltf_import/gltf.h>
 #include <Engine/core.h>
 
 #include <imgui.h>
@@ -401,17 +401,35 @@ bool EditorApp::TryLoadSiblingSglm(const std::string& pakPath) {
 	m_hasSglm = false;
 	m_sglm = smvk::gi::SgLightmapAtlas{};
 	m_sglmPath.clear();
+	// Candidate stems: the pak registry's lightmap binding first, then
+	// the pak file stem (registry-less paks / sidecar convention).
+	std::vector<std::string> stems;
+	if (m_world) {
+		for (const auto& clusterPtr : m_world->clusters) {
+			if (!clusterPtr)
+				continue;
+			for (const smvk::GiBinding& b : clusterPtr->giBindings) {
+				if (b.kind == smvk::GiBinding::Kind::Lightmap &&
+					!b.name.empty() &&
+					std::find(stems.begin(), stems.end(), b.name) == stems.end())
+					stems.push_back(b.name);
+			}
+		}
+	}
 	namespace fs = std::filesystem;
 	const fs::path pak(pakPath);
 	const std::string stem = pak.stem().string();
+	if (!stem.empty() &&
+		std::find(stems.begin(), stems.end(), stem) == stems.end())
+		stems.push_back(stem);
 	std::vector<std::string> candidates;
-	if (!stem.empty()) {
+	for (const std::string& s : stems) {
 		candidates.push_back(
-			(pak.parent_path() / ".." / "gi" / (stem + ".sglm")).lexically_normal().string());
+			(pak.parent_path() / ".." / "gi" / (s + ".sglm")).lexically_normal().string());
 		candidates.push_back(
-			(fs::path("content") / "gi" / (stem + ".sglm")).string());
+			(fs::path("content") / "gi" / (s + ".sglm")).string());
 		candidates.push_back(
-			(pak.parent_path() / (stem + ".sglm")).string());
+			(pak.parent_path() / (s + ".sglm")).string());
 	}
 	for (const std::string& c : candidates) {
 		std::error_code ec;
@@ -420,7 +438,7 @@ bool EditorApp::TryLoadSiblingSglm(const std::string& pakPath) {
 		if (LoadSglm(c))
 			return true;
 	}
-	m_sglmStatus = "no sibling atlas found for '" + stem +
+	m_sglmStatus = "no sibling atlas found for '" + pak.stem().string() +
 		"' (tried " + std::to_string(candidates.size()) + " paths)";
 	return false;
 }

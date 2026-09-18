@@ -871,9 +871,10 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 			nodeLight->type == ::SceneLight::Type::Spot ? "spot" : "point");
 	}
 	char label[256];
-	std::snprintf(label, sizeof(label), "%s%s%s%s", name.empty() ? "(node)" : name.c_str(),
+	std::snprintf(label, sizeof(label), "%s%s%s%s%s", name.empty() ? "(node)" : name.c_str(),
 		hasMesh ? " [mesh]" : "", lightTag,
-		IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "");
+		IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "",
+		IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "");
 	const bool open = ImGui::TreeNodeEx(label, flags);
 	// Drag source (reparent by drop).
 	if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
@@ -1448,6 +1449,22 @@ void EditorApp::DrawInspector() {
 			inherited ? "excluded" : "baked");
 	}
 
+	// Dither on camera closeup (subtree flag; GPU fade is TODO).
+	{
+		ImGui::Separator();
+		const bool inherited = IsDitherCloseupNode(scene, int(node));
+		bool self = node < scene.ditherCloseup.size() && scene.ditherCloseup[node] != 0;
+		if (ImGui::Checkbox("Dither on camera closeup (subtree)", &self)) {
+			EditCmd c{};
+			c.verb = EditVerb::SetDitherCloseup;
+			c.node = node;
+			c.afterFlag = self;
+			c.beforeFlag = !self;
+			Do(c);
+		}
+		ImGui::TextDisabled("effective: %s", inherited ? "dithered" : "off");
+	}
+
 	// Sun quick controls.
 	{
 		ImGui::Separator();
@@ -1520,6 +1537,18 @@ void EditorApp::DrawCookPanel() {
 
 void EditorApp::DrawLightmapPanel() {
 	ImGui::Text("Lightmap bake (.pak + .sglm)");
+	// Registry slots from the loaded world (first per kind wins, like App).
+	if (m_world && !m_world->clusters.empty()) {
+		for (const auto& clusterPtr : m_world->clusters) {
+			if (!clusterPtr || clusterPtr->giBindings.empty())
+				continue;
+			for (const smvk::GiBinding& b : clusterPtr->giBindings)
+				ImGui::TextDisabled("registry: %s '%s'",
+					b.kind == smvk::GiBinding::Kind::Lightmap
+					? "lightmap" : "probe", b.name.c_str());
+			break; // first cluster carrying bindings (matches runtime)
+		}
+	}
 	if (!m_pakPath.empty()) {
 		ImGui::TextWrapped("pak: %s", m_pakPath.c_str());
 	}
@@ -1579,6 +1608,17 @@ void EditorApp::DumpPakManifest() {
 	for (size_t i = 0; i < m_pakScenes.size(); ++i)
 		Log("  scene[" + std::to_string(i) + "] '" + m_pakScenes[i].name +
 			"' nodes=" + std::to_string(m_pakScenes[i].nodes));
+	if (m_world) {
+		for (const auto& clusterPtr : m_world->clusters) {
+			if (!clusterPtr || clusterPtr->giBindings.empty())
+				continue;
+			for (const smvk::GiBinding& b : clusterPtr->giBindings)
+				Log(std::string("  gi ") +
+					(b.kind == smvk::GiBinding::Kind::Lightmap
+						? "lightmap '" : "probe '") + b.name + "'");
+			break; // first cluster carrying bindings (matches runtime)
+		}
+	}
 	const auto meshes = reader.BlobsOfKind(smvk::PakAssetKind::Mesh);
 	const auto mats = reader.BlobsOfKind(smvk::PakAssetKind::Material);
 	const auto texs = reader.BlobsOfKind(smvk::PakAssetKind::Texture);

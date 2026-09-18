@@ -65,7 +65,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/GI/bake.h>
 #include <Engine/Renderer/cubemap.h>
-#include <Engine/Utils/gltf.h>
+#include <gltf_import/gltf.h>
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/Vfs/vfs.h>
 

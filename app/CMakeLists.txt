@@ -115,6 +115,7 @@ target_link_libraries(App
     PRIVATE
         engine
         engine
+        gltf_import
         KTX::ktx
         OptickCore
         #meshoptimizer

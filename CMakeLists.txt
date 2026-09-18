@@ -179,6 +179,7 @@ set_target_properties(spirv_reflect PROPERTIES C_STANDARD 11 LINKER_LANGUAGE C)
 
 add_subdirectory(external/imgui)
 add_subdirectory(engine)
+add_subdirectory(tools/gltf_import)
 add_subdirectory(app)
 add_subdirectory(tools/pak_cooker)
 add_subdirectory(tools/editor)

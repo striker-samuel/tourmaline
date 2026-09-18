@@ -91,7 +91,7 @@
 #include <Engine/GI/bake.h>
 #include <Engine/GI/lightmap.h>
 #include <Engine/Flintbase/flintbase_backend.h>
-#include <Engine/Utils/gltf.h>
+#include <gltf_import/gltf.h>
 #include <Engine/Vfs/vfs.h>
 
 #include "lm_denoise.h"
@@ -215,6 +215,10 @@ struct Args {
 	float skyIntensity = 600.0f;
 	// Static spots for the bake: "px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela"
 	std::vector<std::string> spots;
+	// Probe-volume sidecars this pak's scenes sample (repeatable):
+	// registers gi/<name>.sggi names into the clusters (bake the matching
+	// volumes with GiBaker --out). Runtime resolves by name.
+	std::vector<std::string> giProbes;
 	// Read-only inspection: open an existing pak and print its manifest
 	// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
 	std::string dumpPak;
@@ -503,6 +507,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.spots.push_back(v);
 		}
+		else if (a == "--gi-probe") {
+			std::string v;
+			if (!need(v)) return false;
+			out.giProbes.push_back(v);
+		}
 		else if (a == "--dump-pak") {
 			if (!need(out.dumpPak)) return false;
 		}
@@ -553,6 +562,10 @@ void Usage() {
 		<< "           --lm-charts auto|authored|authored-pack|planar\n"
 		<< "           --lm-exclude tree,linden,ivy,glass --lm-exclude-small 0.5\n"
 		<< "           --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
+		<< "          [--gi-probe <name> ...]: registers probe sidecar names\n"
+		<< "          (gi/<name>.sggi, baked separately) into the pak; the\n"
+		<< "          lightmap atlas registers itself on --lightmap. Runtime\n"
+		<< "          resolves GI by these names (one per kind for now).\n"
 		<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
 		<< "lightmap UVs + per-mesh chunk id; atlas written to\n"
 		<< "<contentDir>/gi/<scene>.sglm). Sources: sun + static spots + real\n"
@@ -751,6 +764,21 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 		}
 	}
 
+	// GI registry (named sidecars: kind + stem).
+	for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Gi)) {
+		std::vector<smvk::GiBinding> bindings;
+		std::string gerr;
+		if (!smvk::ParseGiRegistryBlob(reader.Payload(*e), bindings, gerr)) {
+			std::cout << "    [malformed gi registry blob: " << e->path << "]\n";
+			continue;
+		}
+		for (const auto& b : bindings) {
+			std::cout << "    gi   "
+				<< (b.kind == smvk::GiBinding::Kind::Lightmap ? "lightmap" : "probe")
+				<< " '" << b.name << "'\n";
+		}
+	}
+
 	// Textures (embedded .ktx2 byte size).
 	for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Texture)) {
 		smvk::PakTexturePayload p;
@@ -856,7 +884,7 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 		const uint32_t matNameCount = c.u32();
 		for (uint32_t i = 0; i < matNameCount; ++i)
 			(void)c.str();
-		std::vector<uint8_t> noLm;
+		std::vector<uint8_t> noLm, dither;
 		std::unordered_map<uint32_t, uint32_t> lightMap; // node -> light pak id
 		if (c.off < c.img.size()) {
 			const uint32_t sc = c.u32();
@@ -888,6 +916,19 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 						}
 					}
 				}
+				// ... then the v5 name (skip) and the v6 dither section.
+				if (c.ok && c.off < c.img.size()) {
+					(void)c.str();
+					if (c.ok && c.off < c.img.size()) {
+						const uint32_t dc = c.u32();
+						if (c.ok && dc == nodeCount &&
+							c.off + dc <= c.img.size()) {
+							dither.assign(c.img.data() + c.off,
+								c.img.data() + c.off + dc);
+							c.off += dc;
+						}
+					}
+				}
 			}
 		}
 		if (!c.ok) {
@@ -913,9 +954,10 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 				nm = names[nit->second];
 			const bool hasMesh = meshMap.contains(i);
 			const bool noLmFlag = i < noLm.size() && noLm[i] != 0;
+			const bool ditherFlag = i < dither.size() && dither[i] != 0;
 			auto lit = lightMap.find(i);
 			const bool hasLight = lit != lightMap.end();
-			if (!pinpoint && !hasMesh && !noLmFlag && !hasLight)
+			if (!pinpoint && !hasMesh && !noLmFlag && !hasLight && !ditherFlag)
 				continue;
 			std::cout << "      node " << i << " '" << nm << "' parent=" << parent[i];
 			if (pinpoint)
@@ -930,6 +972,8 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 				std::cout << " light=" << lit->second;
 			if (noLmFlag)
 				std::cout << " noLM=1";
+			if (ditherFlag)
+				std::cout << " dither=1";
 			std::cout << "\n";
 			if (!pinpoint && ++shown > 200) {
 				std::cout << "      ... (truncated)\n";
@@ -1081,6 +1125,7 @@ int main(int argc, char** argv) {
 			<< " textures=" << reader->BlobsOfKind(smvk::PakAssetKind::Texture).size()
 			<< " lights=" << reader->BlobsOfKind(smvk::PakAssetKind::Light).size()
 			<< " scenes=" << reader->BlobsOfKind(smvk::PakAssetKind::Scene).size()
+			<< " gi=" << reader->BlobsOfKind(smvk::PakAssetKind::Gi).size()
 			<< "\n";
 		{
 			std::string lerr;
@@ -2019,6 +2064,10 @@ int main(int argc, char** argv) {
 			}
 			std::cerr << "  [LM] atlas " << sglmPath.generic_string()
 				<< " (" << std::filesystem::file_size(sglmPath) << " B)\n" << std::flush;
+			// Name the atlas inside the (single) cooked cluster so the
+			// runtime resolves gi/<name>.sglm from the pak, not the id.
+			cluster->RegisterGiBinding(smvk::GiBinding::Kind::Lightmap,
+				sceneId);
 		}
 		// Lobe selection diagnostics: per mesh, the candidate counts'
 		// relative irradiance errors and the kept count. "Nothing passed"
@@ -2095,6 +2144,14 @@ int main(int argc, char** argv) {
 			smvk::CookLodSiblings(*sc, lodOpt, meshletCfg, sibOpts);
 	}
 
+	// Probe sidecar names, registered on every cooked cluster (the
+	// serializer unions them into one pak-level Gi registry).
+	for (const std::string& probe : args.giProbes) {
+		for (auto& sc : sceneClusters)
+			sc->RegisterGiBinding(smvk::GiBinding::Kind::Probe, probe);
+		std::cout << "Registered probe GI '" << probe << "'\n";
+	}
+
 	smvk::PakWriter writer;
 	writer.SetCompression(
 		args.compress ? smvk::PakCompression::Lz4 : smvk::PakCompression::None,
@@ -2131,6 +2188,7 @@ int main(int argc, char** argv) {
 		<< " meshes=" << stats.meshes << " materials=" << stats.materials
 		<< " textures=" << stats.textures << " (" << stats.textureBytes << " B)"
 		<< " nodes=" << stats.nodes << " lights=" << stats.lights
+		<< " gi=" << stats.giBindings
 		<< " pak=" << pak.size() << " B"
 		<< " staticRoots=" << stats.staticRoots
 		<< " meshleted=" << stats.meshesWithMeshlets << "/" << stats.meshletCount

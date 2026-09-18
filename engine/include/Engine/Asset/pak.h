@@ -62,6 +62,12 @@ enum class PakAssetKind : uint32_t {
 	// keyed by its asset URI — loaded back into the Cluster lights pool
 	// exactly like Mesh blobs (see cluster_serializer.cpp).
 	Light = 5,
+	// Cooked GI registry: one blob per pak naming the sidecar GI payloads
+	// (probe volumes / lightmap atlases under content/gi/) the packed
+	// scenes were cooked against. Invisible to the VFS backends (they only
+	// serve Texture blobs); read via ParseGiRegistryBlob / ListPakScenes
+	// style discovery, never via file reads.
+	Gi = 6,
 };
 
 enum PakEntryFlags : uint32_t {

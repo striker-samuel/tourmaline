@@ -22,6 +22,7 @@
 #include <Engine/core.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
+#include <gltf_import/gltf.h>
 #include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
@@ -1859,6 +1860,9 @@ bool SceneRenderer::Initialize() {
 		// set — see BuildCookedLightsFromWorld / UpdateForwardPlusLights).
 		BuildCookedLightsFromWorld();
 
+		// Named GI sidecars (pak Gi registry; one per kind for now).
+		ResolveGiSidecars();
+
 		// Hero decal splats for the check scene (floor pools + a wall
 		// smear in the default camera view; see SpawnDecalPresets).
 		SpawnDecalPresets();
@@ -2143,7 +2147,9 @@ void SceneRenderer::Shutdown() {
 		m_giIndicesBuffer = {};
 		m_giProbesAddress = m_giGridAddress = m_giCellsAddress = m_giIndicesAddress = 0;
 
-		const std::string vfsPath = std::string("gi/") + m_scene.id + ".sggi";
+		const std::string stem = m_giProbeName.empty()
+			? std::string(m_scene.id ? m_scene.id : "") : m_giProbeName;
+		const std::string vfsPath = std::string("gi/") + stem + ".sggi";
 		// GI-less scenes (e.g. scanlands): the flag gates keep the ambient
 		// honest (probes simply never enable); DegradeAmbientForMissing
 		// Sources() after the loaders fixes single-source modes. This
@@ -2261,7 +2267,8 @@ void SceneRenderer::Shutdown() {
 
 	// ---------------------------------------------------------------------------
 	// SG 2D lightmaps (STATIC geometry; cooked with PakCooker --lightmap).
-	// Loads content/gi/<scene>.sglm and uploads ONLY the 9 RGBA16F atlas
+	// Loads the registry lightmap (gi/<name>.sglm, else gi/<scene>.sglm)
+	// and uploads ONLY the 9 RGBA16F atlas
 	// layers. The atlas-space UVs + per-mesh lobe counts are COOKED into
 	// the pak (texCoord2 / StaticMesh::lmChunk riding the draw ring) —
 	// no chunk buffer exists at runtime. Missing file = "not baked yet"
@@ -2289,7 +2296,9 @@ void SceneRenderer::Shutdown() {
 		for (uint32_t& slot : m_lmLayerSlots)
 			slot = UINT32_MAX;
 
-		const std::string vfsPath = std::string("gi/") + m_scene.id + ".sglm";
+		const std::string stem = m_giLightmapName.empty()
+			? std::string(m_scene.id ? m_scene.id : "") : m_giLightmapName;
+		const std::string vfsPath = std::string("gi/") + stem + ".sglm";
 		std::vector<uint8_t> bytes;
 		try {
 			bytes = vfs.ReadBinary(vfsPath);
@@ -3168,6 +3177,45 @@ void SceneRenderer::Shutdown() {
 
 		if (feedbackActive)
 			m_textureFeedback->ClearForFrame(frameSlot);
+	}
+
+	// ---------------------------------------------------------------------
+	// Named GI sidecars (Cluster::giBindings across the loaded clusters).
+	// Model supports N bindings; exactly one per kind is honored for now
+	// (first wins + warn). Empty outcome = registry-less pak: callers
+	// fall back to the scene id.
+	// ---------------------------------------------------------------------
+	void SceneRenderer::ResolveGiSidecars() {
+		m_giProbeName.clear();
+		m_giLightmapName.clear();
+		if (!m_world)
+			return;
+		for (const auto& clusterPtr : m_world->clusters) {
+			if (!clusterPtr)
+				continue;
+			for (const smvk::GiBinding& b : clusterPtr->giBindings) {
+				if (b.name.empty())
+					continue;
+				if (b.kind == smvk::GiBinding::Kind::Probe) {
+					if (m_giProbeName.empty())
+						m_giProbeName = b.name;
+					else if (m_giProbeName != b.name)
+						std::cerr << "[GI] extra probe binding '" << b.name
+							<< "' ignored (one per kind for now)\n";
+				}
+				else {
+					if (m_giLightmapName.empty())
+						m_giLightmapName = b.name;
+					else if (m_giLightmapName != b.name)
+						std::cerr << "[GI] extra lightmap binding '" << b.name
+							<< "' ignored (one per kind for now)\n";
+				}
+			}
+		}
+		if (!m_giProbeName.empty() || !m_giLightmapName.empty())
+			std::cerr << "[GI] sidecars from pak registry: probe='"
+				<< m_giProbeName << "' lightmap='" << m_giLightmapName
+				<< "'\n";
 	}
 
 	// ---------------------------------------------------------------------

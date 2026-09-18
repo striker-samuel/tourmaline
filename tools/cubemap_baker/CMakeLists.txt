@@ -7,6 +7,7 @@ target_compile_definitions(CubemapBaker PRIVATE ENGINE_VULKAN)
 target_link_libraries(CubemapBaker
     PRIVATE
         engine
+        gltf_import
         volk
         KTX::ktx
 )

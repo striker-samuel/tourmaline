@@ -1358,13 +1358,20 @@ protected:
 			|| m_ambientMode == AmbientMode::Probes;
 	}
 	bool GiActive() const { return m_giLoaded && ProbesWanted(); }
+	// GI sidecar stems resolved from the loaded clusters' registry
+	// (first binding per kind wins + warn; empty = fall back to the
+	// scene id, which is what registry-less paks use). Resolved once
+	// per scene load, before the GI loaders run.
+	std::string m_giProbeName, m_giLightmapName;
+	void ResolveGiSidecars();
 	void CycleAmbientMode() {
 		m_ambientMode = static_cast<AmbientMode>(
 			(static_cast<int>(m_ambientMode) + 1) % 5);
 	}
 	void LoadGiVolume(smvk::OverlayVfs& vfs);
 	// ---- SG 2D lightmaps (STATIC geometry, tools/gi_baker --lightmap-out
-	// output). Loaded once at scene init from content/gi/<scene>.sglm:
+	// output). Loaded once at scene init from the registry lightmap
+	// (gi/<name>.sglm, else content/gi/<scene>.sglm):
 	// uploads ONLY the 9 RGBA16F atlas textures (bindless). The
 	// atlas-space UVs + per-mesh lobe counts are COOKED into the pak
 	// (texCoord2 / StaticMesh::lmChunk riding the draw ring) — no chunk

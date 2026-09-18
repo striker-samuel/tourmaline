@@ -527,6 +527,18 @@ bool SerializeClusters(
 		// written (possibly empty) so the layout is uniform; discovery
 		// (ListPakScenes) reads it without building a cluster.
 		PutStr(blob, ci < sceneNames.size() ? sceneNames[ci] : std::string{});
+		// Per-node dither-on-closeup section (v6; v5 blobs end after the
+		// name). All-zero when unused; missing == off on read.
+		{
+			PutU32(blob, nodeCount);
+			if (scene.ditherCloseup.size() == scene.hierarchy.size()) {
+				blob.insert(blob.end(), scene.ditherCloseup.begin(),
+					scene.ditherCloseup.end());
+			}
+			else {
+				blob.insert(blob.end(), nodeCount, 0);
+			}
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
@@ -535,6 +547,41 @@ bool SerializeClusters(
 			stats->nodes += nodeCount;
 	}
 	} // per-cluster loop
+
+	// Cooked GI registry (pak-level, one blob): union of the clusters'
+	// named sidecar bindings, first-seen order. Loaders enforce one
+	// binding per kind for now (first wins + warn); the blob simply
+	// lists what the cook registered.
+	{
+		std::vector<GiBinding> unionBindings;
+		for (const Cluster* cp : clusters) {
+			for (const GiBinding& b : cp->giBindings) {
+				if (b.name.empty())
+					continue;
+				bool seen = false;
+				for (const GiBinding& u : unionBindings)
+					if (u.kind == b.kind && u.name == b.name) {
+						seen = true;
+						break;
+					}
+				if (!seen)
+					unionBindings.push_back(b);
+			}
+		}
+		if (!unionBindings.empty()) {
+			std::vector<uint8_t> blob;
+			PutU32(blob, static_cast<uint32_t>(unionBindings.size()));
+			for (const GiBinding& b : unionBindings) {
+				PutU32(blob, static_cast<uint32_t>(b.kind));
+				PutStr(blob, b.name);
+			}
+			if (!writer.AddBlob(PakAssetKind::Gi, "<cluster-local>#gi",
+					std::move(blob)))
+				return fail("gi registry blob rejected");
+			if (stats)
+				stats->giBindings = static_cast<uint32_t>(unionBindings.size());
+		}
+	}
 
 	if (stats) {
 		stats->meshes = static_cast<uint32_t>(meshIdByUri.size());
@@ -719,9 +766,29 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			if (!c.ok)
 				return fail("truncated scene name");
 		}
+		// Per-node dither-on-closeup section (v6): u32 count + count
+		// bytes. v5 blobs end after the name — default to off in that
+		// case (and for the discovery listing path, which shares this
+		// parse with null link maps).
+		if (c.off < c.img.size()) {
+			const uint32_t ditherCount = c.u32();
+			if (!c.ok || ditherCount != nodeCount)
+				return fail("bad scene dither section");
+			if (c.off + ditherCount > c.img.size())
+				return fail("scene blob trailing bytes mismatch");
+			scene.ditherCloseup.assign(
+				c.img.data() + c.off, c.img.data() + c.off + ditherCount);
+			c.off += ditherCount;
+		}
+		else {
+			scene.ditherCloseup.assign(nodeCount, 0);
+		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");
 	}
+	// Pre-v4 blobs skip the tail wholesale: normalize the v6 default.
+	if (scene.ditherCloseup.empty())
+		scene.ditherCloseup.assign(nodeCount, 0);
 	RebuildStaticCache(scene);
 	markAsChanged(scene, 0);
 	recalculateGlobalTransforms(scene);
@@ -743,6 +810,38 @@ std::vector<const PakTocEntry*> OrderedSceneEntries(const PakReader& reader) {
 }
 
 } // namespace
+
+// Cooked GI registry blob (u32 count | u32 kind | str name). smvk scope
+// to match the header: shared by DeserializeCluster (registers into the
+// loaded cluster) and inspection tools (no cluster needed).
+bool ParseGiRegistryBlob(
+	std::span<const uint8_t> payload,
+	std::vector<GiBinding>& out,
+	std::string& err) {
+	Cursor c{ payload, 0 };
+	const uint32_t count = c.u32();
+	if (!c.ok || count > 1024) {
+		err = "bad gi registry count";
+		return false;
+	}
+	out.clear();
+	for (uint32_t i = 0; i < count; ++i) {
+		const uint32_t kind = c.u32();
+		const std::string name = c.str();
+		if (!c.ok || (kind != 0 && kind != 1) || name.empty() ||
+			name.size() > 512) {
+			err = "bad gi registry entry";
+			return false;
+		}
+		out.push_back(GiBinding{
+			static_cast<GiBinding::Kind>(kind), name });
+	}
+	if (!c.ok || c.off != payload.size()) {
+		err = "gi registry trailing bytes mismatch";
+		return false;
+	}
+	return true;
+}
 
 std::vector<PakSceneInfo> ListPakScenes(
 	const PakReader& reader,
@@ -1054,6 +1153,17 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			return fail("CreateLight failed for: " + uri);
 		cluster->RegisterLightUri(uri, h);
 		lightByPakId.push_back(h);
+	}
+
+	// --- Cooked GI registry (named sidecars; 0..1 blobs, first wins) -----
+	for (const PakTocEntry* e : reader.BlobsOfKind(PakAssetKind::Gi)) {
+		std::vector<GiBinding> bindings;
+		std::string gerr;
+		if (!ParseGiRegistryBlob(reader.Payload(*e), bindings, gerr))
+			return fail("gi registry rejected: " + gerr);
+		for (const GiBinding& b : bindings)
+			cluster->RegisterGiBinding(b.kind, b.name);
+		break; // first registry wins; the writer emits one
 	}
 
 	// --- Scene (indexed; 0 = default) --------------------------------------

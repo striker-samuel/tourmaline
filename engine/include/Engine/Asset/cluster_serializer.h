@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -9,6 +11,7 @@
 namespace smvk {
 
 struct Cluster;
+struct GiBinding;
 class ResourceManager;
 
 struct ClusterSerializeStats {
@@ -17,6 +20,9 @@ struct ClusterSerializeStats {
 	uint32_t textures = 0;
 	uint32_t textureBytes = 0;
 	uint32_t nodes = 0;
+	// Named GI sidecars registered on the cooked clusters (see
+	// Cluster::giBindings), written as one PakAssetKind::Gi blob.
+	uint32_t giBindings = 0;
 	// Meshlet cook output (indirect-path foundation): meshes carrying a
 	// meshlet section, and the total meshlet count across them.
 	uint32_t meshesWithMeshlets = 0;
@@ -63,6 +69,14 @@ bool SerializeCluster(
 	PakWriter& writer,
 	ClusterSerializeStats* stats = nullptr,
 	std::string* err = nullptr);
+
+// Parses a PakAssetKind::Gi registry blob (u32 count | u32 kind |
+// str name) into bindings. Used by DeserializeCluster and by tools
+// that only inspect (see PakCooker --dump-pak).
+bool ParseGiRegistryBlob(
+	std::span<const uint8_t> payload,
+	std::vector<GiBinding>& out,
+	std::string& err);
 
 // Lists the scenes of a parsed pak in index order (names may be empty;
 // old single-scene paks report one unnamed entry). No cluster is built.

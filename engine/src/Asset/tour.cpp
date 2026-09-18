@@ -154,6 +154,9 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 		case Verb::SetNoLightmap:
 			f << "setNoLightmap -n " << c.node << " -v " << FlagVal(c.flag);
 			break;
+		case Verb::SetDitherCloseup:
+			f << "setDitherCloseup -n " << c.node << " -v " << FlagVal(c.flag);
+			break;
 		case Verb::Parent:
 			f << "parent -n " << c.node << " -p " << c.node2;
 			break;
@@ -440,6 +443,11 @@ bool LoadTour(const std::string& path, Doc& doc, std::string& err,
 			c.node = fl.n;
 			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
 		}
+		else if (verb == "setDitherCloseup" && fl.hasN && fl.hasV) {
+			c.verb = Verb::SetDitherCloseup;
+			c.node = fl.n;
+			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
+		}
 		else if (verb == "parent" && fl.hasN && fl.hasP) {
 			c.verb = Verb::Parent;
 			c.node = fl.n;
@@ -649,6 +657,14 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.noLightmap[c.node] = c.flag ? 1 : 0;
 			break;
 		}
+		case Verb::SetDitherCloseup: {
+			if (!checkNode(c.node, c))
+				return false;
+			if (scene.ditherCloseup.size() != scene.hierarchy.size())
+				scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
+			scene.ditherCloseup[c.node] = c.flag ? 1 : 0;
+			break;
+		}
 		case Verb::Parent: {
 			if (!checkNode(c.node, c))
 				return false;
@@ -753,6 +769,9 @@ std::string Describe(const Command& c) {
 		break;
 	case Verb::SetNoLightmap:
 		std::snprintf(buf, sizeof(buf), "noLightmap #%u = %d", c.node, c.flag ? 1 : 0);
+		break;
+	case Verb::SetDitherCloseup:
+		std::snprintf(buf, sizeof(buf), "ditherCloseup #%u = %d", c.node, c.flag ? 1 : 0);
 		break;
 	case Verb::Parent:
 		std::snprintf(buf, sizeof(buf), "parent #%u under #%u", c.node, c.node2);

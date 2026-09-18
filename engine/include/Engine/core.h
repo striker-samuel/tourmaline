@@ -23,7 +23,8 @@
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/App/app.h>
 #include <Engine/App/world.h>
-#include <Engine/Utils/gltf.h> 
+// NOTE: no glTF here on purpose — the runtime works on cooked clusters
+// and paks; import lives in tools/gltf_import (cooker/editor/bakers).
 #include <Engine/platform.h>
 #include <Engine/Camera/camera.h> 
 #include <Engine/Renderer/light.h>

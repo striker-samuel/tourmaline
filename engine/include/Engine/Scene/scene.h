@@ -95,6 +95,15 @@ struct Scene {
 	// trace scene. Empty or size-mismatched == no exclusions. Carried through
 	// merge/serialize paths alongside staticRoot.
 	std::vector<uint8_t> noLightmap;
+	// Dither on camera closeup (editor + cook): ditherCloseup[node] == 1
+	// marks the node's subtree for a dithered fade when the camera gets
+	// close (LOD-pop hiding for impostors/foliage). Subtree-inherited like
+	// noLightmap. Stored, cooked and replayed end to end; the GPU dither
+	// itself is TODO (no per-node channel in the draw ring yet — the
+	// distance term will ride the per-draw data when that lands).
+	// Empty or size-mismatched == off. Carried through merge/serialize
+	// paths alongside staticRoot.
+	std::vector<uint8_t> ditherCloseup;
 };
 
 int addNode(Scene& scene, int parent, int level);
@@ -119,6 +128,35 @@ inline bool IsNoLightmapNode(const Scene& scene, int node)
 		n = scene.hierarchy[size_t(n)].parent;
 	}
 	return false;
+}
+
+// Dither-on-closeup for a node or any ancestor (subtree flag).
+inline bool IsDitherCloseupNode(const Scene& scene, int node)
+{
+	for (int n = node; n >= 0 && n < int(scene.hierarchy.size()); ) {
+		if ((size_t)n < scene.ditherCloseup.size() && scene.ditherCloseup[(size_t)n] != 0)
+			return true;
+		n = scene.hierarchy[size_t(n)].parent;
+	}
+	return false;
+}
+
+// Marks node for dither-on-closeup (subtree). Grows the array if needed.
+inline void MarkDitherCloseup(Scene& scene, int node)
+{
+	if (node < 0 || (size_t)node >= scene.hierarchy.size())
+		return;
+	if (scene.ditherCloseup.size() != scene.hierarchy.size())
+		scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
+	scene.ditherCloseup[(size_t)node] = 1;
+}
+inline void ClearDitherCloseup(Scene& scene, int node)
+{
+	if (node < 0 || (size_t)node >= scene.hierarchy.size())
+		return;
+	if (scene.ditherCloseup.size() != scene.hierarchy.size())
+		scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
+	scene.ditherCloseup[(size_t)node] = 0;
 }
 
 // Marks node as lightmap-excluded (subtree). Grows the array if needed.

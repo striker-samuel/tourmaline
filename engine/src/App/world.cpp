@@ -104,6 +104,7 @@ namespace smvk {
 		scene.staticRoot.assign(scene.hierarchy.size(), 0);
 		scene.staticNode.assign(scene.hierarchy.size(), 0);
 		scene.noLightmap.assign(scene.hierarchy.size(), 0);
+		scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
 
 		for (auto& clusterPtr : clusters) {
 			Cluster& cluster = *clusterPtr.get();
@@ -158,6 +159,18 @@ namespace smvk {
 		else {
 			scene.noLightmap.insert(
 				scene.noLightmap.end(), nodeCount, 0);
+		}
+		// Carry the dither-on-closeup flags (missing == off).
+		if (cs.ditherCloseup.size() == cs.hierarchy.size()) {
+			scene.ditherCloseup.insert(
+				scene.ditherCloseup.end(),
+				cs.ditherCloseup.begin(),
+				cs.ditherCloseup.end()
+			);
+		}
+		else {
+			scene.ditherCloseup.insert(
+				scene.ditherCloseup.end(), nodeCount, 0);
 		}
 		scene.staticNode.insert(scene.staticNode.end(), nodeCount, 0);
 

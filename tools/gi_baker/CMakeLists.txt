@@ -7,6 +7,7 @@ target_compile_definitions(GiBaker PRIVATE ENGINE_VULKAN)
 target_link_libraries(GiBaker
     PRIVATE
         engine
+        gltf_import
         volk
         KTX::ktx
 )

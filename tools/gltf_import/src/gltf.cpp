@@ -1,8 +1,6 @@
 #define TINYGLTF_IMPLEMENTATION
 
-#include "ktx.h"
-
-#include <Engine/Utils/gltf.h>
+#include <gltf_import/gltf.h>
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Utils/thread_pool.h>
@@ -370,6 +368,40 @@ bool GltfExtrasNoLightmap(const tinygltf::Value& extras) {
 			if (sub.Has("noLightmap") && truthy(sub.Get("noLightmap")))
 				return true;
 			if (sub.Has("no_lightmap") && truthy(sub.Get("no_lightmap")))
+				return true;
+		}
+	}
+	return false;
+}
+
+// A glTF node opts into dither-on-camera-closeup via authoring extras or
+// naming convention (checked in importNodeRecursive):
+//   extras: { "smvk.ditherCloseup": true }
+//     (also "smvk.dither_closeup", { "smvk": { "ditherCloseup": true } })
+//   -or- name starts with "DITHER_".
+// Stamps Scene::ditherCloseup on the group node (subtree scoped).
+bool GltfExtrasDitherCloseup(const tinygltf::Value& extras) {
+	if (!extras.IsObject())
+		return false;
+	auto truthy = [](const tinygltf::Value& v) {
+		if (v.IsBool())
+			return v.Get<bool>();
+		if (v.IsNumber())
+			return v.GetNumberAsDouble() != 0.0;
+		return false;
+	};
+	if (extras.Has("smvk.ditherCloseup") && truthy(extras.Get("smvk.ditherCloseup")))
+		return true;
+	if (extras.Has("smvk.dither_closeup") && truthy(extras.Get("smvk.dither_closeup")))
+		return true;
+	if (extras.Has("ditherCloseup") && truthy(extras.Get("ditherCloseup")))
+		return true;
+	if (extras.Has("smvk")) {
+		const tinygltf::Value& sub = extras.Get("smvk");
+		if (sub.IsObject()) {
+			if (sub.Has("ditherCloseup") && truthy(sub.Get("ditherCloseup")))
+				return true;
+			if (sub.Has("dither_closeup") && truthy(sub.Get("dither_closeup")))
 				return true;
 		}
 	}
@@ -1617,9 +1649,24 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex, int parentScene
 			(!gltfNode.name.empty() && gltfNode.name.rfind("NOLM_", 0) == 0);
 		if (wantNoLm) {
 			if (cluster.scene.noLightmap.size() != cluster.scene.hierarchy.size())
-				cluster.scene.noLightmap.assign(cluster.scene.hierarchy.size(), 0);
+				cluster.scene.noLightmap.resize(cluster.scene.hierarchy.size(), 0);
 			if ((size_t)groupNode < cluster.scene.noLightmap.size())
 				cluster.scene.noLightmap[(size_t)groupNode] = 1;
+		}
+	}
+
+	// Dither on camera closeup: authoring extras or DITHER_ name prefix.
+	// Stored on the group node; IsDitherCloseupNode() resolves subtree
+	// membership. Cooked into the pak scene blob (v6 section).
+	{
+		const bool wantDither =
+			GltfExtrasDitherCloseup(gltfNode.extras) ||
+			(!gltfNode.name.empty() && gltfNode.name.rfind("DITHER_", 0) == 0);
+		if (wantDither) {
+			if (cluster.scene.ditherCloseup.size() != cluster.scene.hierarchy.size())
+				cluster.scene.ditherCloseup.resize(cluster.scene.hierarchy.size(), 0);
+			if ((size_t)groupNode < cluster.scene.ditherCloseup.size())
+				cluster.scene.ditherCloseup[(size_t)groupNode] = 1;
 		}
 	}
 
@@ -1830,7 +1877,7 @@ void GltfToClusterFromVfs(
 	importer.setCoordFix(coordFix);
 	importer.setPreTransform(preTransform);
 
-	// Same tail as GltfToCluster (Engine/Utils/gltf.h): cluster root,
+	// Same tail as GltfToCluster (gltf_import/gltf.h): cluster root,
 	// top-level glTF nodes, preload, import, fixup, flush.
 	assert(out.scene.hierarchy.empty());
 	const int root = addNode(out.scene, -1, 0);

@@ -20,6 +20,7 @@ target_include_directories(Editor
 target_link_libraries(Editor
     PRIVATE
         engine
+        gltf_import
         KTX::ktx
         OptickCore
 )

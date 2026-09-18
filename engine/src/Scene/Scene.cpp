@@ -23,6 +23,7 @@ int addNode(Scene& scene, int parent, int level)
     scene.staticRoot.push_back(0);
     scene.staticNode.push_back(0);
     scene.noLightmap.push_back(0);
+    scene.ditherCloseup.push_back(0);
   }
   scene.hierarchy.push_back({ .parent = parent, .lastSibling = -1 });
   if (parent > -1) {

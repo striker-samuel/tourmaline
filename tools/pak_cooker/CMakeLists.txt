@@ -7,6 +7,7 @@ target_compile_definitions(PakCooker PRIVATE ENGINE_VULKAN)
 target_link_libraries(PakCooker
     PRIVATE
         engine
+        gltf_import
 )
 
 set_target_properties(PakCooker PROPERTIES

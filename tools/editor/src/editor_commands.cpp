@@ -212,6 +212,14 @@ void EditorApp::ExecCmd(const EditCmd& c, bool forward) {
 			ClearNoLightmap(scene, int(c.node));
 		break;
 	}
+	case EditVerb::SetDitherCloseup: {
+		const bool v = forward ? c.afterFlag : c.beforeFlag;
+		if (v)
+			MarkDitherCloseup(scene, int(c.node));
+		else
+			ClearDitherCloseup(scene, int(c.node));
+		break;
+	}
 	case EditVerb::Parent: {
 		ReparentNode(c.node, forward ? c.node2 : c.beforeParent);
 		break;
@@ -283,6 +291,7 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::AssignMaterial: return "assign material";
 	case editor::EditVerb::SetMatAttr: return "material edit";
 	case editor::EditVerb::SetNoLightmap: return "lightmap flag";
+	case editor::EditVerb::SetDitherCloseup: return "dither flag";
 	case editor::EditVerb::Parent: return "reparent";
 	}
 	return "?";
@@ -368,6 +377,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (!needNode())
 			return false;
 		out.verb = smvk::tour::Verb::SetNoLightmap;
+		out.flag = c.afterFlag;
+		return true;
+	case EditVerb::SetDitherCloseup:
+		if (!needNode())
+			return false;
+		out.verb = smvk::tour::Verb::SetDitherCloseup;
 		out.flag = c.afterFlag;
 		return true;
 	case EditVerb::Parent: {
@@ -586,6 +601,14 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.afterFlag = tc.flag;
 		out.beforeFlag = wn < app.m_world->scene.noLightmap.size() &&
 			app.m_world->scene.noLightmap[wn] != 0;
+		return true;
+	case smvk::tour::Verb::SetDitherCloseup:
+		if (!needNode())
+			return false;
+		out.verb = EditVerb::SetDitherCloseup;
+		out.afterFlag = tc.flag;
+		out.beforeFlag = wn < app.m_world->scene.ditherCloseup.size() &&
+			app.m_world->scene.ditherCloseup[wn] != 0;
 		return true;
 	case smvk::tour::Verb::Parent: {
 		if (!needNode())

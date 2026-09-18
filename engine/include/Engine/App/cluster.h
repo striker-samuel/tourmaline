@@ -34,6 +34,16 @@ namespace smvk {
 	using ClusterTextureHandle = Handle<struct Texture>;
 	using ClusterLightHandle = Handle<SceneLight>;
 
+	// Cooked GI binding (named sidecar payload): the GI payloads themselves
+	// (probe volumes, lightmap atlases) live outside the pak; this names
+	// the sidecar stem (gi/<name>.sggi / .sglm) a cluster's scenes were
+	// cooked against. See Cluster::giBindings.
+	struct GiBinding {
+		enum class Kind : uint32_t { Probe = 0, Lightmap = 1 };
+		Kind kind = Kind::Probe;
+		std::string name;
+	};
+
 	struct Cluster {
 		// ctx may be nullptr for GPU-less cook clusters (see SetCookMode);
 		// any GPU upload with a null context is a programming error.
@@ -77,6 +87,14 @@ namespace smvk {
 		// no GPU side. World position/direction resolve from the light
 		// node's global transform at use time (see Scene::lightForNode).
 		ClusterLightHandle CreateLight(SceneLight def);
+
+		// Cooked GI bindings (named sidecar payloads): probe volumes
+		// (.sggi) and lightmap atlases (.sglm) live OUTSIDE the pak under
+		// content/gi/, and the cluster names the ones its scenes were
+		// cooked against. The model is a list (future multi-GI); loaders
+		// enforce one binding per kind for now (first wins + warn).
+		std::vector<GiBinding> giBindings;
+		void RegisterGiBinding(GiBinding::Kind kind, const std::string& name);
 
 		// Cook support: when enabled, UploadStaticMesh keeps a CPU-side copy
 		// of every upload keyed by pool index so the pak cooker can embed

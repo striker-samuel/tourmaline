@@ -55,7 +55,7 @@
 #include <Engine/GI/probe_volume.h>
 #include <Engine/GI/regular_volume.h>
 #include <Engine/Flintbase/flintbase_backend.h>
-#include <Engine/Utils/gltf.h>
+#include <gltf_import/gltf.h>
 #include <Engine/Vfs/vfs.h>
 
 

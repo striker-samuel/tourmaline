@@ -1460,6 +1460,35 @@ void TestMultiSceneSerialize() {
 		Check(scenes[1].tocPath == "<cluster-local>#scene.1",
 			"multiscene.list.toc1");
 	}
+	// Named GI sidecars round-trip through one Gi blob (union across
+	// scenes; parse needs no cluster). The dither flag rides along so
+	// the v6 section walk is covered by the listing below.
+	a->RegisterGiBinding(GiBinding::Kind::Lightmap, "town");
+	b->RegisterGiBinding(GiBinding::Kind::Probe, "town_probe");
+	MarkDitherCloseup(a->scene, 1);
+	PakWriter writerGi;
+	Check(SerializeClusters(clusters, { "Alpha", "Beta" }, writerGi,
+		nullptr, &err), "multiscene.gi.serialize.ok");
+	std::vector<uint8_t> imgGi = writerGi.Finalize();
+	auto readerGi = PakReader::Open(std::span<const uint8_t>(imgGi), openErr);
+	Check(readerGi.has_value(), "multiscene.gi.open");
+	if (readerGi) {
+		const auto giBlobs = readerGi->BlobsOfKind(PakAssetKind::Gi);
+		Check(giBlobs.size() == 1, "multiscene.gi.oneblob");
+		if (!giBlobs.empty()) {
+			std::vector<GiBinding> bindings;
+			std::string gerr;
+			Check(ParseGiRegistryBlob(readerGi->Payload(*giBlobs[0]),
+				bindings, gerr), "multiscene.gi.parse");
+			Check(bindings.size() == 2, "multiscene.gi.count");
+			if (bindings.size() == 2) {
+				Check(bindings[0].kind == GiBinding::Kind::Lightmap &&
+					bindings[0].name == "town", "multiscene.gi.lm");
+				Check(bindings[1].kind == GiBinding::Kind::Probe &&
+					bindings[1].name == "town_probe", "multiscene.gi.probe");
+			}
+		}
+	}
 	// Legacy single-scene layout still lists exactly one scene.
 	PakWriter w2;
 	Check(SerializeCluster(*a, w2, nullptr, &err), "multiscene.legacy.ok");
