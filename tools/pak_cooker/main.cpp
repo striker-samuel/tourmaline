@@ -1335,9 +1335,21 @@ int main(int argc, char** argv) {
 			}
 			opt.enabled = args.meshopt;
 		}
-		std::vector<std::string> rwarn;
-		std::string rerr;
-		if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn, &rerr)) {
+	std::vector<std::string> rwarn;
+	std::string rerr;
+	// Clarisse-style nested scene references: inline the tour's
+	// `reference` lines (placeholder + referenced source subtrees,
+	// recursing through each source's own tour) BEFORE the command
+	// replay so its cluster-space ids address the assembled scene.
+	if (!tour.references.empty()) {
+		// Sources resolve as-is or relative to the master scene's VFS dir.
+		const size_t applied = ApplySceneReferences(*cluster, tour,
+			smvk::vfs::BaseDir(args.inVfs),
+			nullptr, nullptr, &vfs, opt, meshletCfg, 0, nullptr);
+		std::cout << "References inlined: " << applied << " subtree(s) ("
+			<< tour.references.size() << " top-level)\n";
+	}
+	if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn, &rerr)) {
 			std::cerr << "Tour replay failed: " << rerr << std::endl;
 			return 1;
 		}

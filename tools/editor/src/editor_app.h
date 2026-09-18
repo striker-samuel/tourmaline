@@ -120,6 +120,8 @@ enum class ViewMode : int {
 	VertexColors = 5, // default_vertexcolor_debug: vertex colors
 	Baked = 6,      // default_baked_debug: baked atlas irradiance (F8)
 	Meshlets = 7,   // meshdebug: flat per-meshlet colors (F4)
+	FlatUv0 = 8,    // uvflat0: unwrapped TEXCOORD0 + diffuse content
+	FlatUv1 = 9,    // uvflat1: unwrapped atlas uv2 + lightmap content
 };
 inline const char* ViewModeName(ViewMode m) {
 	switch (m) {
@@ -131,8 +133,14 @@ inline const char* ViewModeName(ViewMode m) {
 	case ViewMode::VertexColors: return "Vertex colors";
 	case ViewMode::Baked: return "Baked irradiance";
 	case ViewMode::Meshlets: return "Meshlets";
+	case ViewMode::FlatUv0: return "Flat UV (diffuse)";
+	case ViewMode::FlatUv1: return "Flat UV (lightmap)";
 	}
 	return "?";
+}
+// Modes that need the lightmap atlas GPU layers (Baked F8, FlatUv1).
+inline bool ViewModeNeedsAtlas(ViewMode m) {
+	return m == ViewMode::Baked || m == ViewMode::FlatUv1;
 }
 
 // Second viewport (side-strip inset showing a UV debug view next to the
@@ -227,6 +235,17 @@ private:
 	// ---- render passes (editor_render.cpp) ----
 	bool EnsureShaders();
 	smvk::ShaderProgram& MainProgram(ViewMode m); // per-viewport (Lit fallback)
+	smvk::ShaderProgram& FlatUvProgram(ViewMode m); // uvflat0/uvflat1 (null-ish on miss)
+	// Flat UV draw path: the PRIMARY SELECTION's subtree meshes drawn
+	// through the uvflat projection (unwrapped + texture content).
+	void DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
+		const app::PushConstants& pc);
+	// Flat UV wires (glTF model accessors) as line batches in NDC space
+	// (built in RecordGizmoPass when any visible viewport is flat).
+	// subtreeRoot: world node whose subtree to wire (UINT32_MAX = the
+	// whole scene — the PNG export path).
+	void BuildFlatUvWires(std::vector<smvk::DebugLineVertex>& outLines,
+		ViewMode mode, uint32_t subtreeRoot = UINT32_MAX) const;
 	smvk::ShaderProgram& InsetProgram(); // program for m_secondView (Lit fallback)
 	bool EnsureBuffers(uint32_t flightCount);
 	bool EnsureDepth(smvk::Extent2D extent);
@@ -517,10 +536,47 @@ private:
 	void PollRunProcess();
 	bool m_runRunning = false;
 
+	// ---- lightmap flat-view PNG export (Bake panel) ----
+	// Renders the whole scene unwrapped by its atlas uv2 over the baked
+	// lightmap content into an offscreen target (atlas resolution), then
+	// reads it back and writes a PNG — optional UV wireframe overlay.
+	// Mirrors the App screenshot path (Capture + DownloadDataFromImage).
+	bool m_lmExportQueued = false;  // button sets; RenderFrame renders + saves
+	bool m_lmExportWires = true;    // wireframe overlay toggle
+	smvk::Holder<smvk::ImageHandle> m_lmExportImage;
+	smvk::Holder<smvk::ImageViewHandle> m_lmExportView;
+	smvk::Holder<smvk::ImageHandle> m_lmExportDepth;
+	smvk::Holder<smvk::ImageViewHandle> m_lmExportDepthView;
+	smvk::LogicalImageViewHandle m_lmExportLogical{};
+	smvk::LogicalImageViewHandle m_lmExportDepthLogical{};
+	smvk::Extent2D m_lmExportExtent{ 0, 0 };
+	smvk::Holder<smvk::BufferHandle> m_lmExportLines;
+	uint32_t m_lmExportLinesCap = 0;
+	void EnsureLightmapExportTarget(smvk::Extent2D extent);
+	void RecordLightmapExportPass(uint32_t flight);
+	void ExportLightmapPng(); // readback + stb write (after Execute)
+
 	// ---- flintbase (editor_flintbase.cpp) ----
 	void DrawFlintbasePanel();   // product browser (toggle: View menu)
 	void PublishToFlintbase();   // spawn `python -m flintbase.publish`
 	void PollPublishProcess();
+
+	// ---- Clarisse-style nested scene references -------------------------
+	// References are scene DEFINITION (bound at import like the source
+	// itself — not undoable commands): each is a placeholder group node
+	// in the owning cluster whose subtree is another scene, inlined by
+	// gltf_import's ApplySceneReferences (recursing through each
+	// source's own .tour, cycle-guarded). Referenced nodes are ordinary
+	// nodes once inlined, so overrides (local + wide regex) apply per
+	// occurrence without touching the referenced asset.
+	std::vector<smvk::tour::ReferenceCmd> m_references; // master tour list
+	std::vector<uint32_t> m_refPlaceholders; // world ids, parallel
+	std::vector<int> m_refPhCluster; // cluster ids until the base maps
+	bool AddSceneReference(const std::string& source, const std::string& name);
+	bool RemoveSceneReference(uint32_t refWorldNode);
+	bool IsRefPlaceholder(uint32_t node) const;
+	void DrawReferenceSection(uint32_t node); // Inspector block
+	void DrawAddReferenceDialog();
 
 	// ---- Tourmaline branding (editor_branding.cpp) ----
 	// Window title + SDL window icon (tourmaline_logo.png, generated on
@@ -692,6 +748,10 @@ private:
 	smvk::Holder<smvk::ShaderModuleHandle> m_bakedFsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_meshDebugVsModule; // F4 view
 	smvk::Holder<smvk::ShaderModuleHandle> m_meshDebugFsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> m_flatUv0VsModule; // Flat UV views
+	smvk::Holder<smvk::ShaderModuleHandle> m_flatUv0FsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> m_flatUv1VsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> m_flatUv1FsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_lineVsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_lineFsModule;
 	smvk::ShaderProgram m_unlitProgram{};
@@ -701,6 +761,8 @@ private:
 	smvk::ShaderProgram m_vcolorProgram{}; // vertex-color debug (falls back to Lit)
 	smvk::ShaderProgram m_bakedProgram{}; // baked-irradiance debug (falls back to Lit)
 	smvk::ShaderProgram m_meshDebugProgram{}; // F4 meshlet view (meshdebug vert+frag)
+	smvk::ShaderProgram m_flatUv0Program{}; // Flat UV: uvflat0.vert + uvflat0.frag
+	smvk::ShaderProgram m_flatUv1Program{}; // Flat UV: uvflat1.vert + uvflat1.frag
 	smvk::ShaderProgram m_wireProgram{}; // selected highlight overlay
 	smvk::ShaderProgram m_shadowProgram{}; // depth-only (atlas-owned default)
 	smvk::ShaderProgram m_lineProgram{}; // gizmo/AABB lines
@@ -814,6 +876,11 @@ private:
 	bool m_publishRunning = false;
 	struct PublishResult { bool ok = false; std::string log; };
 	std::future<PublishResult> m_publishFuture{};
+
+	// ---- add-reference dialog state ----
+	bool m_showRefDialog = false;
+	char m_refSourceBuf[512] = "";
+	char m_refNameBuf[128] = "";
 };
 
 } // namespace editor

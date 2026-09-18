@@ -147,14 +147,14 @@ void EditorApp::DrawViewportChrome() {
 			ImGui::SameLine();
 			// View type combo (this panel's shading/debug view).
 			if (ImGui::BeginCombo("##view", ViewModeName(vp.viewMode))) {
-				for (int m = 0; m <= int(ViewMode::Meshlets); ++m) {
-					const bool enabled =
-						ViewMode(m) != ViewMode::Baked || m_lmGpu;
-					if (!enabled)
+				for (int m = 0; m <= int(ViewMode::FlatUv1); ++m) {
+					const ViewMode vm = ViewMode(m);
+					// Atlas views need the loaded lightmap GPU layers.
+					if (ViewModeNeedsAtlas(vm) && !m_lmGpu)
 						continue;
-					if (ImGui::Selectable(ViewModeName(ViewMode(m)),
+					if (ImGui::Selectable(ViewModeName(vm),
 							int(vp.viewMode) == m)) {
-						vp.viewMode = ViewMode(m);
+						vp.viewMode = vm;
 						if (vp.viewMode == ViewMode::Meshlets &&
 							!m_meshletDebugHasData && !EnsureMeshletDebug())
 							Log("Meshlet view: no cooked meshlets in this "

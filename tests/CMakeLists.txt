@@ -176,6 +176,7 @@ add_executable(TourTests test_tour.cpp)
 target_link_libraries(TourTests
     PRIVATE
         engine
+        gltf_import
 )
 
 set_target_properties(TourTests PROPERTIES

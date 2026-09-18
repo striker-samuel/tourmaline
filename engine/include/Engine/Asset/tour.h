@@ -96,9 +96,25 @@ enum class OverrideAttr : uint8_t {
 struct OverrideRule {
 	OverrideAttr attr = OverrideAttr::Visibility;
 	std::string pattern; // ECMAScript regex over node names
-	bool flag = false;   // Visibility/NoLightmap/DitherCloseup value
-	uint32_t material = 0; // Material: cluster pool index
+	bool flag = false;   // Visibility/NoLightmap/Dither value
+	uint32_t material = 0; // Material: cluster material pool index
 	bool enabled = true;
+};
+
+// Clarisse-style SCENE REFERENCE: a placeholder node in the OWNING scene
+// whose subtree is another scene, kept as a reference (structure + link
+// to the source, never a flattened duplicate). References nest: a
+// referenced source can itself carry `reference` lines in its own .tour,
+// resolved recursively at load/cook (cycle-guarded). Overrides apply per
+// occurrence through the existing machinery (referenced nodes are normal
+// nodes once inlined), so a wheel override in the shot never touches the
+// wheel asset.
+struct ReferenceCmd {
+	uint32_t parent = 0;      // placeholder's parent (cluster node id)
+	std::string source;       // referenced .gltf (owner-relative or as-is)
+	std::string name;         // placeholder node name ("REF <name>")
+	glm::vec3 translate{ 0.0f }; // optional placement offset
+	bool hasTranslate = false;
 };
 
 struct Command {
@@ -120,6 +136,9 @@ struct Doc {
 	std::string fingerprint; // size+mtime of source at save (warn on mismatch)
 	std::vector<Command> commands;
 	std::vector<OverrideRule> overrides; // wide regex rules (ordered, later wins)
+	// Scene references (ordered; the OWNING scene's level-1 list —
+	// deeper nesting comes from each referenced source's own tour).
+	std::vector<ReferenceCmd> references;
 	// Editor-only settings (editorSet lines): viewport/env authoring state
 	// the EDITOR persists for itself. NEVER applied by ApplyTourToCluster
 	// — the cook silently ignores this whole section (editor IBL and
@@ -135,6 +154,10 @@ std::string Fingerprint(const std::string& path);
 
 bool SaveTour(const std::string& path, const Doc& doc, std::string& err);
 bool LoadTour(const std::string& path, Doc& doc, std::string& err,
+	std::vector<std::string>* warnings = nullptr);
+// Parse from an in-memory text (the file loader reads then calls this;
+// also lets VFS-based consumers cook referenced-scene tours).
+bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 	std::vector<std::string>* warnings = nullptr);
 
 // Replay node/material commands onto a freshly imported cook Cluster

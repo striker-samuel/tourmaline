@@ -16,6 +16,8 @@
 #include <Engine/Asset/tour.h>
 #include <Engine/Scene/scene.h>
 
+#include <gltf_import/gltf.h>
+
 namespace {
 
 int g_failures = 0;
@@ -324,6 +326,89 @@ void TestReplay() {
 		"replay rejects bad node");
 }
 
+// Clarisse-style nested scene references: round-trip in the .tour,
+// recursive inlining (wheel -> gear chain) and the cycle guard.
+void TestReferences() {
+	namespace fs = std::filesystem;
+	const fs::path dir = fs::temp_directory_path() / "vulkantoy_refs";
+	std::error_code ec;
+	fs::create_directories(dir, ec);
+	auto writeGltf = [&](const char* file, const char* nodeName) {
+		const fs::path p = dir / file;
+		std::ofstream f(p, std::ios::binary | std::ios::trunc);
+		f << "{\"asset\":{\"version\":\"2.0\"},"
+			"\"scenes\":[{\"nodes\":[0]}],"
+			"\"nodes\":[{\"name\":\"" << nodeName << "\"}]}";
+		return p;
+	};
+	writeGltf("gear.gltf", "Gear");
+	writeGltf("wheel.gltf", "Wheel");
+	// wheel's OWN tour references gear -> shot(wheel) -> wheel(gear).
+	{
+		std::ofstream f(dir / "wheel.tour", std::ios::binary | std::ios::trunc);
+		f << "source -p \"wheel.gltf\";\n"
+			"reference -n 0 -source \"gear.gltf\" -name \"gear\";\n";
+	}
+	// Round-trip in the master tour file.
+	smvk::tour::Doc doc;
+	smvk::tour::ReferenceCmd r{};
+	r.parent = 0;
+	r.source = "wheel.gltf";
+	r.name = "wheel";
+	r.translate = glm::vec3(1.0f, 2.0f, 3.0f);
+	r.hasTranslate = true;
+	doc.references.push_back(r);
+	std::string err;
+	const std::string masterTour = (dir / "master.tour").string();
+	Check(smvk::tour::SaveTour(masterTour, doc, err), "ref save");
+	smvk::tour::Doc back;
+	std::vector<std::string> warns;
+	Check(smvk::tour::LoadTour(masterTour, back, err, &warns), "ref load");
+	Check(back.references.size() == 1, "ref count");
+	if (back.references.size() == 1) {
+		Check(back.references[0].source == "wheel.gltf" &&
+			back.references[0].name == "wheel" &&
+			back.references[0].parent == 0 &&
+			back.references[0].hasTranslate &&
+			back.references[0].translate.y == 2.0f, "ref fields");
+	}
+	// Apply to a cook cluster: wheel inlined + nested gear (BFS).
+	// NOTE: heap-allocated (Cluster embeds multi-MB pools).
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	addNode(cluster->scene, -1, 0); // cluster root (importer parity)
+	std::vector<int> ph;
+	const size_t applied = ApplySceneReferences(*cluster, back,
+		dir.generic_string(), nullptr, nullptr, nullptr,
+		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, &ph);
+	Check(applied == 2, "ref nested applied (wheel + gear)");
+	Check(ph.size() == 1, "ref placeholder list");
+	Check(findNodeByName(cluster->scene, "REF wheel") >= 0, "ref placeholder node");
+	Check(findNodeByName(cluster->scene, "Wheel") >= 0, "ref subtree imported");
+	Check(findNodeByName(cluster->scene, "REF gear") >= 0, "ref nested placeholder");
+	Check(findNodeByName(cluster->scene, "Gear") >= 0, "ref nested subtree");
+	// Cycle guard: a scene whose tour references itself inlines once.
+	writeGltf("self.gltf", "Self");
+	{
+		std::ofstream f(dir / "self.tour", std::ios::binary | std::ios::trunc);
+		f << "reference -n 0 -source \"self.gltf\";\n";
+	}
+	smvk::tour::Doc selfDoc;
+	smvk::tour::ReferenceCmd sr{};
+	sr.parent = 0;
+	sr.source = "self.gltf";
+	selfDoc.references.push_back(sr);
+	auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
+	cluster2->SetCookMode(true);
+	addNode(cluster2->scene, -1, 0);
+	const size_t selfApplied = ApplySceneReferences(*cluster2, selfDoc,
+		dir.generic_string(), nullptr, nullptr, nullptr,
+		smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0, nullptr);
+	Check(selfApplied == 1, "ref cycle guard (inlined once)");
+	// Cleanup.
+	fs::remove_all(dir, ec);
+}
+
 } // namespace
 
 int main() {
@@ -331,6 +416,7 @@ int main() {
 	TestUnknownVerbSkipped();
 	TestReparent();
 	TestReplay();
+	TestReferences();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;
 }

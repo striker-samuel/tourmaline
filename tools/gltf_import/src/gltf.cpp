@@ -15,6 +15,7 @@
 #include <cstring>
 #include <fstream>
 #include <future>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -1938,3 +1939,222 @@ void GltfToClusterFromVfs(
 	(void)ctx;
 }
 
+
+
+// ---------------------------------------------------------------------------
+// Nested scene references (see ApplySceneReferences in gltf.h).
+// ---------------------------------------------------------------------------
+namespace {
+
+// <stem>.tour next to a scene source (editor convention).
+std::string ReferenceTourPathFor(const std::filesystem::path& src) {
+	auto t = src;
+	t.replace_extension(".tour");
+	return t.generic_string();
+}
+
+// glTF root nodes of a model (default scene, else unreferenced roots).
+std::vector<int> GltfRootNodesOf(const tinygltf::Model& model) {
+	if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size())
+		return model.scenes[size_t(model.defaultScene)].nodes;
+	if (!model.scenes.empty())
+		return model.scenes.front().nodes;
+	std::vector<bool> referenced(model.nodes.size());
+	for (const auto& n : model.nodes)
+		for (int c : n.children)
+			if (c >= 0 && c < (int)model.nodes.size())
+				referenced[size_t(c)] = true;
+	std::vector<int> roots;
+	for (int i = 0; i < (int)model.nodes.size(); ++i)
+		if (!referenced[size_t(i)])
+			roots.push_back(i);
+	return roots;
+}
+
+} // namespace
+
+size_t ApplySceneReferences(
+	smvk::Cluster& cluster,
+	const smvk::tour::Doc& doc,
+	const std::string& ownerBaseDir,
+	smvk::ResourceManager* ctx,
+	smvk::TextureStreamer* streamer,
+	const smvk::OverlayVfs* vfs,
+	const smvk::MeshOptConfig& meshOpt,
+	const smvk::MeshletConfig& meshlets,
+	int coordFix,
+	std::vector<int>* outPlaceholderNodes) {
+	(void)ctx;
+	if (doc.references.empty())
+		return 0;
+	struct Level {
+		smvk::tour::Doc doc;        // owning copy (nested docs parsed fresh)
+		std::string baseDir;        // resolve relative sources against this
+		std::vector<std::string> chain; // normalized sources up the chain
+		int depth = 0;
+	};
+	constexpr int kMaxRefDepth = 8;
+	std::vector<Level> queue;
+	{
+		Level l{};
+		l.doc = doc; // copy (cheap enough; references + commands vectors)
+		l.baseDir = ownerBaseDir;
+		l.depth = 0;
+		queue.push_back(std::move(l));
+	}
+	size_t applied = 0;
+	size_t warnings = 0;
+	while (!queue.empty()) {
+		Level cur = std::move(queue.front());
+		queue.erase(queue.begin());
+		for (const auto& r : cur.doc.references) {
+			if (cur.depth >= kMaxRefDepth) {
+				std::cerr << "[References] depth cap reached at '" <<
+					r.source << "' (skipped)\n";
+				++warnings;
+				continue;
+			}
+			// Resolve the source (as-is, then owner-relative).
+			std::string resolved;   // canonical path (host or vfs)
+			std::string baseDir;   // source dir for ITS references
+			tinygltf::Model model;
+			bool ok = false;
+			if (vfs) {
+				std::string p = smvk::NormalizeAssetUri(
+					smvk::StringViewT(r.source)).Str();
+				if (!vfs->Exists(p) && !cur.baseDir.empty())
+					p = smvk::vfs::Join(cur.baseDir, r.source);
+				if (vfs->Exists(p)) {
+					try {
+						model = LoadGltfModelFromVfs(*vfs, p);
+						resolved = p;
+						baseDir = smvk::vfs::BaseDir(p);
+						ok = true;
+					}
+					catch (const std::exception& e) {
+						std::cerr << "[References] '" << p << "': " <<
+							e.what() << "\n";
+					}
+				}
+			}
+			else {
+				std::filesystem::path hp(r.source);
+				std::error_code ec;
+				if (!std::filesystem::exists(hp, ec) && !cur.baseDir.empty())
+					hp = std::filesystem::path(cur.baseDir) / r.source;
+				if (std::filesystem::exists(hp, ec)) {
+					if (LoadModelFromAsciiFile(model, hp.string().c_str())) {
+						resolved = hp.generic_string();
+						baseDir = hp.parent_path().generic_string();
+						ok = true;
+					}
+				}
+			}
+			if (!ok) {
+				std::cerr << "[References] cannot resolve '" << r.source <<
+					"' (skipped)\n";
+				++warnings;
+				continue;
+			}
+			// Cycle guard: never re-enter a source already on this chain.
+			// (NormalizeAssetUri is empty for absolute host paths — fall
+			// back to the resolved path so the chain key stays unique.)
+			const std::string norm = [&]() {
+				const smvk::StringViewT n = smvk::NormalizeAssetUri(
+					smvk::StringViewT(resolved));
+				return (!n.empty()) ? n.Str() : resolved;
+			}();
+			if (std::find(cur.chain.begin(), cur.chain.end(), norm) !=
+				cur.chain.end()) {
+				std::cerr << "[References] cycle '" << resolved <<
+					"' (skipped)\n";
+				++warnings;
+				continue;
+			}
+			// Placeholder group node under the recorded parent.
+			const int parentNode = (r.parent <
+				uint32_t(cluster.scene.hierarchy.size())) ? int(r.parent) : 0;
+			const int level = cluster.scene.hierarchy[size_t(parentNode)].level + 1;
+			const int ph = addNode(cluster.scene, parentNode, level);
+			std::string name = r.name.empty()
+				? std::filesystem::path(resolved).stem().string()
+				: r.name;
+			setNodeName(cluster.scene, ph, "REF " + name);
+			if (r.hasTranslate) {
+				glm::mat4 m(1.0f);
+				m[3] = glm::vec4(r.translate, 1.0f);
+				cluster.scene.localTransform[size_t(ph)] = m;
+			}
+			if (cur.depth == 0 && outPlaceholderNodes)
+				outPlaceholderNodes->push_back(ph);
+			// Import the referenced scene beneath the placeholder.
+			{
+				GltfToSceneImporter importer{ cluster, model,
+					std::filesystem::path(resolved) };
+				if (vfs)
+					importer.setTextureSource(std::make_shared<VfsTextureSource>(
+						vfs, baseDir));
+				else
+					importer.setTextureSource(std::make_shared<HostTextureSource>(
+						std::filesystem::path(baseDir)));
+				importer.setMeshOptConfig(meshOpt);
+				importer.setMeshletConfig(meshlets);
+				importer.setCoordFix(coordFix);
+				if (streamer)
+					importer.setTextureStreamer(streamer);
+				const std::string asPosix =
+					std::filesystem::path(resolved).generic_string();
+				const smvk::StringViewT n =
+					smvk::NormalizeAssetUri(smvk::StringViewT(asPosix));
+				if (!n.empty())
+					importer.setModelUriBase(n.Str());
+				importer.preloadTextures();
+				const std::vector<int> roots = GltfRootNodesOf(model);
+				for (int gltfNode : roots)
+					importer.importUnder(gltfNode, ph, level + 1);
+			}
+			++applied;
+			std::cout << "[References] inlined '" << resolved << "' under " <<
+				"node " << parentNode << " (placeholder " << ph << ")\n";
+			// Nesting: the referenced source's OWN tour may reference more.
+			const std::string tourPath = ReferenceTourPathFor(
+				std::filesystem::path(resolved));
+			std::string tourText;
+			if (vfs) {
+				if (auto b = vfs->TryRead(tourPath))
+					tourText.assign(reinterpret_cast<const char*>(b->data()),
+						b->size());
+			}
+			else {
+				std::ifstream tf(tourPath, std::ios::binary);
+				if (tf) {
+					std::stringstream ss;
+					ss << tf.rdbuf();
+					tourText = ss.str();
+				}
+			}
+			if (!tourText.empty()) {
+				smvk::tour::Doc nested;
+				std::string err;
+				if (smvk::tour::LoadTourFromString(tourText, nested, err) &&
+					!nested.references.empty()) {
+					Level next{};
+					next.doc = std::move(nested);
+					next.baseDir = baseDir;
+					next.chain = cur.chain;
+					next.chain.push_back(norm);
+					next.depth = cur.depth + 1;
+					queue.push_back(std::move(next));
+				}
+			}
+		}
+	}
+	if (applied != 0) {
+		RebuildStaticCache(cluster.scene);
+		markAsChanged(cluster.scene, 0);
+		recalculateGlobalTransforms(cluster.scene);
+		if (cluster.ctx_)
+			cluster.ctx_->FlushUploads();
+	}
+	return applied;
+}

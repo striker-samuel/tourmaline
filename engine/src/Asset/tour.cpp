@@ -241,6 +241,20 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 	// applied at cook (ApplyTourToCluster ignores doc.editorSettings).
 	for (const auto& [k, v] : doc.editorSettings)
 		f << "editorSet -k " << Quote(k) << " -v " << Quote(v) << ";\n";
+	// Scene references (Clarisse-style): placeholder + linked source; the
+	// loader (gltf_import) inlines the subtree at import time, so the
+	// cooked geometry and every tour command addressing it stay
+	// deterministic (cluster-space ids).
+	for (const ReferenceCmd& r : doc.references) {
+		f << "reference -n " << r.parent
+			<< " -source " << Quote(r.source);
+		if (!r.name.empty())
+			f << " -name " << Quote(r.name);
+		if (r.hasTranslate)
+			f << " -t " << r.translate.x << " " << r.translate.y
+				<< " " << r.translate.z;
+		f << ";\n";
+	}
 	if (doc.hasCook) {
 		const TourCook& k = doc.cook;
 		f << "cook -outPak " << Quote(k.outPak)
@@ -269,6 +283,7 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 
 // -n <id> / -m <id> / -p <id> / -at <name> / -t <nums...> / -v <num|word>
 // -pattern <regex> / -enabled <on|off> (override rules only)
+// -source <path> / -name <word> (reference lines only)
 struct Flags {
 	bool hasN = false, hasM = false, hasP = false, hasAt = false;
 	uint32_t n = 0, m = 0, p = 0;
@@ -280,6 +295,10 @@ struct Flags {
 	bool hasPattern = false;
 	bool enabled = true;
 	bool hasEnabled = false;
+	std::string source;
+	bool hasSource = false;
+	std::string name;
+	bool hasName = false;
 };
 
 static bool ParseFlagWord(const std::string& w, bool& out) {
@@ -372,6 +391,20 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 			}
 			i += 2;
 		}
+		else if (k == "-source" && i + 1 < toks.size()) {
+			f.hasSource = true;
+			f.source = toks[i + 1];
+			if (!f.source.empty() && f.source.back() == ';')
+				f.source.pop_back();
+			i += 2;
+		}
+		else if (k == "-name" && i + 1 < toks.size()) {
+			f.hasName = true;
+			f.name = toks[i + 1];
+			if (!f.name.empty() && f.name.back() == ';')
+				f.name.pop_back();
+			i += 2;
+		}
 		else if (k == "-fingerprint" && i + 1 < toks.size()) {
 			i += 2; // handled by the source parser below
 		}
@@ -396,11 +429,19 @@ bool LoadTour(const std::string& path, Doc& doc, std::string& err,
 		err = "cannot open: " + path;
 		return false;
 	}
+	std::stringstream ss;
+	ss << f.rdbuf();
+	return LoadTourFromString(ss.str(), doc, err, warnings);
+}
+
+bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
+	std::vector<std::string>* warnings) {
 	doc = Doc{};
 	auto warn = [&](const std::string& w) {
 		if (warnings)
 			warnings->push_back(w);
 	};
+	std::istringstream f(text);
 	int lineNo = 0;
 	std::string line;
 	while (std::getline(f, line)) {
@@ -527,7 +568,7 @@ bool LoadTour(const std::string& path, Doc& doc, std::string& err,
 			else if (fl.at == "scale")
 				c.verb = Verb::SetScale;
 			else {
-				warn(path + ":" + std::to_string(lineNo) +
+				warn("tour:" + std::to_string(lineNo) +
 					": unknown setAttr '" + fl.at + "' (skipped)");
 				continue;
 			}
@@ -601,7 +642,7 @@ bool LoadTour(const std::string& path, Doc& doc, std::string& err,
 		else if (verb == "override" && fl.hasPattern && fl.hasAt) {
 			OverrideRule r{};
 			if (!OverrideAttrFromString(fl.at, r.attr)) {
-				warn(path + ":" + std::to_string(lineNo) +
+				warn("tour:" + std::to_string(lineNo) +
 					": unknown override attr '" + fl.at + "' (skipped)");
 				continue;
 			}
@@ -632,11 +673,33 @@ bool LoadTour(const std::string& path, Doc& doc, std::string& err,
 				(void)rx;
 			}
 			catch (const std::exception& e) {
-				warn(path + ":" + std::to_string(lineNo) +
+				warn("tour:" + std::to_string(lineNo) +
 					": bad override regex '" + r.pattern + "' (" + e.what() + ", skipped)");
 				continue;
 			}
 			doc.overrides.push_back(std::move(r));
+			continue;
+		}
+		else if (verb == "reference" && fl.hasSource) {
+			// Clarisse-style scene reference: placeholder under -n with a
+			// linked source; the gltf_import loader inlines the subtree
+			// (recursively, via each source's own tour) at scene build.
+			ReferenceCmd r{};
+			r.source = fl.source;
+			r.parent = fl.hasN ? fl.n : 0;
+			if (fl.hasName)
+				r.name = fl.name;
+			if (fl.t.size() >= 3) {
+				double x = 0, y = 0, z = 0;
+				if (!ParseDouble(fl.t[0], x) || !ParseDouble(fl.t[1], y) ||
+					!ParseDouble(fl.t[2], z)) {
+					err = "tour:" + std::to_string(lineNo) + ": bad translate";
+					return false;
+				}
+				r.translate = glm::vec3(float(x), float(y), float(z));
+				r.hasTranslate = true;
+			}
+			doc.references.push_back(std::move(r));
 			continue;
 		}
 		else if (verb == "parent" && fl.hasN && fl.hasP) {
@@ -645,7 +708,7 @@ bool LoadTour(const std::string& path, Doc& doc, std::string& err,
 			c.node2 = fl.p;
 		}
 		else {
-			warn(path + ":" + std::to_string(lineNo) + ": unknown verb '" +
+			warn("tour:" + std::to_string(lineNo) + ": unknown verb '" +
 				verb + "' (skipped)");
 			continue;
 		}

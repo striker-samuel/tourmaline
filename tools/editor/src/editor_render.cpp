@@ -133,6 +133,43 @@ bool EditorApp::EnsureShaders() {
 					.stage = smvk::ShaderStage::Fragment } },
 				.shaderCount = 2 };
 	}
+	// Flat UV views (per-panel type): mesh projected into UV space with
+	// its texture content. Failure is non-fatal: the panel falls back to
+	// the 3D UV debug view.
+	auto tryFlatUv = [&](const char* vsFile, const char* fsFile,
+		const char* vsName, const char* fsName,
+		smvk::Holder<smvk::ShaderModuleHandle>& vsMod,
+		smvk::Holder<smvk::ShaderModuleHandle>& fsMod,
+		smvk::ShaderProgram& prog) {
+		if (prog.shaderCount == 2)
+			return;
+		try {
+			if (vsMod.empty())
+				vsMod = m_context->CreateShaderModule(LoadSpv(vsFile), vsName);
+			if (fsMod.empty())
+				fsMod = m_context->CreateShaderModule(LoadSpv(fsFile), fsName);
+		}
+		catch (const std::exception& e) {
+			std::cerr << "[Editor] flat-uv shader unavailable (" << vsFile
+				<< "): " << e.what() << "\n";
+			return;
+		}
+		if (!vsMod.empty() && !fsMod.empty())
+			prog = { .shaders = {
+				{ .module = vsMod, .entryPoint = "mainVS",
+					.stage = smvk::ShaderStage::Vertex },
+				{ .module = fsMod, .entryPoint = "mainPS",
+					.stage = smvk::ShaderStage::Fragment } },
+				.shaderCount = 2 };
+	};
+	tryFlatUv("content/shaders/uvflat0.vert.hlsl.spv",
+		"content/shaders/uvflat0.frag.hlsl.spv",
+		"editorFlatUv0VS", "editorFlatUv0FS",
+		m_flatUv0VsModule, m_flatUv0FsModule, m_flatUv0Program);
+	tryFlatUv("content/shaders/uvflat1.vert.hlsl.spv",
+		"content/shaders/uvflat1.frag.hlsl.spv",
+		"editorFlatUv1VS", "editorFlatUv1FS",
+		m_flatUv1VsModule, m_flatUv1FsModule, m_flatUv1Program);
 	// Samplers: mirror App order (0 = linear clamp, 1 = point). The lit
 	// shader's comparisonSamplerId = 1 addresses the second slot.
 	m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
@@ -653,6 +690,166 @@ smvk::ShaderProgram& EditorApp::MainProgram(ViewMode m) {
 	}
 }
 
+smvk::ShaderProgram& EditorApp::FlatUvProgram(ViewMode m) {
+	return (m == ViewMode::FlatUv1) ? m_flatUv1Program : m_flatUv0Program;
+}
+
+void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
+	const app::PushConstants& pc) {
+	// Flat UV view: the PRIMARY SELECTION's subtree meshes, unwrapped by
+	// the chosen UV channel with the texture content behind them. No
+	// selection = empty panel (classic UV editor: one asset at a time).
+	if (!m_world || m_selected == UINT32_MAX ||
+		m_selected >= m_world->scene.hierarchy.size())
+		return;
+	smvk::ShaderProgram& prog = FlatUvProgram(mode);
+	if (prog.shaderCount != 2)
+		return;
+	// Subtree node set of the primary selection.
+	std::vector<uint32_t> stack{ m_selected };
+	std::unordered_set<uint32_t> subtree;
+	while (!stack.empty()) {
+		const uint32_t n = stack.back();
+		stack.pop_back();
+		if (n >= m_world->scene.hierarchy.size() ||
+			!subtree.insert(n).second)
+			continue;
+		for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
+			c = m_world->scene.hierarchy[c].nextSibling)
+			stack.push_back(uint32_t(c));
+	}
+	const smvk::VertexFormat fmt =
+		HasDrawItems() ? smvk::VertexFormat::StaticVertexFormat
+		: smvk::VertexFormat::Empty;
+	if (fmt == smvk::VertexFormat::StaticVertexFormat)
+		cmd.BindStaticVertexFmt();
+	cmd.BindRenderPipeline(prog, fmt,
+		smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
+			.writeEnable = true, .depthTestEnable = true },
+		smvk::StencilSettings{}, smvk::BlendSettings{},
+		smvk::MSAASettings{},
+		smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
+	cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+	const smvk::IteratorFlags req = smvk::IteratorFlags(
+		smvk::IteratorFlagBit_Renderable |
+		smvk::IteratorFlagBit_StaticVertexFmt);
+	m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
+		if (item.material == smvk::World::kInvalidIndex)
+			return;
+		if (!subtree.contains(item.node))
+			return;
+		if (!IsVisibleNode(m_world->scene, int(item.node)))
+			return;
+		const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
+		if (!mesh)
+			return;
+		// Lightmap layout: baked meshes only (like the F8 view).
+		if (mode == ViewMode::FlatUv1 && mesh->lmChunk == 0xFFFFFFFFu)
+			return;
+		uint32_t matId = item.material;
+		cmd.PushConstants(offsetof(app::PushConstants, materialId),
+			sizeof(matId), &matId, smvk::ShaderStage::All);
+		for (const auto& s : mesh->geometry.surfaces)
+			cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
+	});
+}
+
+void EditorApp::BuildFlatUvWires(
+	std::vector<smvk::DebugLineVertex>& outLines, ViewMode mode,
+	uint32_t subtreeRoot) const {
+	// UV wires from the kept glTF model (pak scenes have no CPU copies:
+	// the flat panel still shows the texture fill, wires are skipped).
+	outLines.clear();
+	if (!m_hasGltfModel || !m_world)
+		return;
+	const bool wholeScene = (subtreeRoot == UINT32_MAX);
+	if (!wholeScene && subtreeRoot >= m_world->scene.hierarchy.size())
+		return;
+	std::unordered_set<uint32_t> subtree;
+	if (!wholeScene) {
+		std::vector<uint32_t> stack{ subtreeRoot };
+		while (!stack.empty()) {
+			const uint32_t n = stack.back();
+			stack.pop_back();
+			if (n >= m_world->scene.hierarchy.size() ||
+				!subtree.insert(n).second)
+				continue;
+			for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
+				c = m_world->scene.hierarchy[c].nextSibling)
+				stack.push_back(uint32_t(c));
+		}
+	}
+	const tinygltf::Model& model = m_gltfModel;
+	// UV accessor read (float vec2 only; skip exotic encodings).
+	auto readUv = [&](int accessorIdx, size_t i, glm::vec2& out) -> bool {
+		if (accessorIdx < 0 || accessorIdx >= int(model.accessors.size()))
+			return false;
+		const tinygltf::Accessor& acc = model.accessors[size_t(accessorIdx)];
+		if (i >= size_t(acc.count) || acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT)
+			return false;
+		const tinygltf::BufferView& bv = model.bufferViews[size_t(acc.bufferView)];
+		const tinygltf::Buffer& buf = model.buffers[size_t(bv.buffer)];
+		const size_t stride = acc.ByteStride(bv);
+		const size_t off = bv.byteOffset + acc.byteOffset + i * stride;
+		if (off + 8 > buf.data.size())
+			return false;
+		const float* f = reinterpret_cast<const float*>(buf.data.data() + off);
+		out = glm::vec2(f[0], f[1]);
+		return true;
+	};
+	const bool lightmap = (mode == ViewMode::FlatUv1);
+	// Interactive panels keep wires readable; exports wire everything.
+	const size_t wireTriCap = wholeScene ? 400000 : 60000;
+	size_t tris = 0;
+	for (const auto& [node, ref] : m_primRef) {
+		if (!wholeScene && !subtree.contains(node))
+			continue;
+		if (ref.mesh < 0 || ref.prim < 0)
+			continue;
+		const tinygltf::Mesh& gm = model.meshes[size_t(ref.mesh)];
+		if (ref.prim >= int(gm.primitives.size()))
+			continue;
+		const tinygltf::Primitive& prim =
+			gm.primitives[size_t(ref.prim)];
+		const std::string attr = lightmap ? "TEXCOORD_1" : "TEXCOORD_0";
+		auto pa = prim.attributes.find(attr);
+		if (pa == prim.attributes.end())
+			continue; // prim without this UV channel: no wires
+		const int uvAcc = pa->second;
+		const size_t vcount = size_t(model.accessors[size_t(uvAcc)].count);
+		glm::vec2 uv[3];
+		auto emit = [&](size_t t) {
+			for (int k = 0; k < 3; ++k)
+				if (!readUv(uvAcc, t * 3 + size_t(k), uv[k]))
+					return;
+			for (int k = 0; k < 3; ++k) {
+				const glm::vec2& a = uv[k];
+				const glm::vec2& b = uv[(k + 1) % 3];
+				outLines.push_back({ glm::vec3(a.x * 2.0f - 1.0f,
+					a.y * 2.0f - 1.0f, 1.0f) });
+				outLines.push_back({ glm::vec3(b.x * 2.0f - 1.0f,
+					b.y * 2.0f - 1.0f, 1.0f) });
+			}
+		};
+		if (prim.indices >= 0) {
+			const size_t tcount =
+				size_t(model.accessors[size_t(prim.indices)].count) / 3;
+			for (size_t t = 0; t < tcount; ++t) {
+				emit(t);
+				if (++tris > wireTriCap)
+					return; // wire cap: huge shells stay readable
+			}
+		}
+		else {
+			for (size_t t = 0; t + 2 < vcount; t += 3) {
+				emit(t);
+				if (++tris > wireTriCap)
+					return;
+			}
+		}
+	}
+}
+
 smvk::ShaderProgram& EditorApp::InsetProgram() {
 	switch (m_secondView) {
 	case SecondView::Uv0:
@@ -678,7 +875,11 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 	// Meshlet view has its own program + draw path (no material legs).
 	const bool meshletDbg =
 		(mode == ViewMode::Meshlets) && m_meshDebugProgram.shaderCount == 2;
-	if (!meshletDbg && prog.shaderCount != 2)
+	// Flat UV panels: unwrapped shell + texture content, own draw path.
+	const bool flatUv =
+		(mode == ViewMode::FlatUv0 || mode == ViewMode::FlatUv1) &&
+		FlatUvProgram(mode).shaderCount == 2;
+	if (!meshletDbg && !flatUv && prog.shaderCount != 2)
 		return;
 	// Baked view draws baked meshes only (see DrawWorldNodes).
 	const bool bakedOnly = (mode == ViewMode::Baked);
@@ -726,7 +927,14 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		.SetDepth(m_depth.logicalView,
 			smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
 			smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
-	pass.SetRecordingFunc([this, pc, selectedWireOverlay, bakedOnly, meshletDbg, uvDbg, mode](smvk::CommandBuffer& cmd) {
+	pass.SetRecordingFunc([this, pc, selectedWireOverlay, bakedOnly, meshletDbg, flatUv, uvDbg, mode](smvk::CommandBuffer& cmd) {
+		// Flat UV panel: the selection's unwrapped shell over its texture
+		// content; the UV wires come from the line pass. Nothing else
+		// draws in this panel.
+		if (flatUv) {
+			DrawFlatUvNodes(cmd, mode, pc);
+			return;
+		}
 		// Meshlet debug leg (F4): flat per-meshlet colors, own program +
 		// expanded index buffer; skips the shaded legs entirely.
 		if (meshletDbg) {
@@ -1366,6 +1574,19 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 		RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
 	RecordInsetPass(m_swapViews[fb.imageIndex], flight);
 	RecordGizmoPass(m_swapViews[fb.imageIndex]);
+	// One-shot lightmap PNG export: renders the offscreen target this
+	// frame, then reads it back after the submit (button in Bake panel).
+	const bool lmExportThisFrame = m_lmExportQueued && m_hasSglm &&
+		m_lmGpu && m_sglm.width > 0 && m_sglm.height > 0;
+	if (lmExportThisFrame) {
+		EnsureLightmapExportTarget(
+			smvk::Extent2D{ m_sglm.width, m_sglm.height });
+		if (!m_lmExportLogical.empty())
+			RecordLightmapExportPass(flight);
+		else
+			Log("Lightmap export: offscreen target creation failed.");
+		m_lmExportQueued = false;
+	}
 
 	if (m_imgui && m_imgui->IsInitialized()) {
 		m_imgui->NewFrame(extent);
@@ -1380,6 +1601,11 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	m_context->UpdateDescriptors();
 	m_rendergraph->Execute(fb);
 	m_context->ProcessDeferredTasks();
+	if (lmExportThisFrame) {
+		// The export pass ran in this submit: read it back + write PNG.
+		WaitForDeviceIdle();
+		ExportLightmapPng();
+	}
 	++m_frameCounter;
 }
 

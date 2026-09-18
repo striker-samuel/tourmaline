@@ -20,8 +20,13 @@ namespace {
 
 struct LineBatch {
 	glm::vec4 color{ 1, 1, 1, 1 };
-	bool depthTest = false; // grid: occluded by geometry; helpers: on top
+	bool depthTest = false; // grid/flat wires: occluded by geometry
 	std::vector<smvk::DebugLineVertex> verts;
+	// Flat UV wire batches: drawn ONLY in viewports whose view mode is
+	// flatMode, pushed through an IDENTITY viewProj (verts are already
+	// in NDC space — see BuildFlatUvWires). 3D batches skip flat panels.
+	bool flat = false;
+	ViewMode flatMode = ViewMode::Lit;
 };
 
 glm::vec2 ToScreen(const glm::vec3& w, const glm::mat4& vp,
@@ -169,6 +174,32 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	// Light markers: one small distance-scaled diamond per light node
 	// (sun = yellow + emission arrow, point = orange, spot = cyan +
 	// cone), always visible — light nodes carry no mesh to click.
+	// Flat-UV viewports filter these ranges out at record time.
+	// Flat UV wires (per needed mode): unwrapped shell edges in NDC
+	// space (identity viewProj; see BuildFlatUvWires).
+	bool flatNeeded[2] = { false, false }; // [0]=FlatUv0, [1]=FlatUv1
+	for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
+		const ViewMode vm = m_viewports[vpIdx].viewMode;
+		if (vm == ViewMode::FlatUv0)
+			flatNeeded[0] = true;
+		else if (vm == ViewMode::FlatUv1)
+			flatNeeded[1] = true;
+	}
+	for (int fm = 0; fm < 2; ++fm) {
+		if (!flatNeeded[fm])
+			continue;
+		LineBatch wires;
+		wires.flat = true;
+		wires.flatMode = fm == 0 ? ViewMode::FlatUv0 : ViewMode::FlatUv1;
+		wires.color = fm == 0 ? glm::vec4(0.15f, 0.95f, 0.55f, 1.0f)
+			: glm::vec4(0.35f, 0.7f, 1.0f, 1.0f);
+		wires.depthTest = true; // over the flat fill (z=1 vs 0.9999)
+		// Panel wires = the SELECTION's subtree (UV editor style; the
+		// PNG export wires the whole scene instead).
+		BuildFlatUvWires(wires.verts, wires.flatMode, m_selected);
+		if (!wires.verts.empty())
+			batches.push_back(std::move(wires));
+	}
 	if (m_showLightGizmos && !m_world->scene.lightForNode.empty()) {
 		const glm::vec3 eye = EditorCamEye(ActiveCam());
 		for (const auto& [node, li] : m_world->scene.lightForNode) {
@@ -326,18 +357,21 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		}
 	}
 
-	// Flatten into one upload with per-batch draw ranges. Grid ranges
-	// are DEPTH-TESTED against the viewport's depth (the grid must hide
-	// behind geometry); every helper (gizmo axes, AABB, light markers)
-	// draws on top like a DCC overlay.
-	struct Range { uint32_t first, count; glm::vec4 color; bool depthTest; };
+	// Flatten into one upload with per-batch draw ranges. Grid + flat-UV
+	// wire ranges are DEPTH-TESTED against the viewport's depth (the
+	// grid hides behind geometry; flat wires land over the UV fill);
+	// every helper (gizmo axes, AABB, light markers) draws on top like
+	// a DCC overlay. Flat ranges render through an identity viewProj
+	// and only in panels whose view mode matches.
+	struct Range { uint32_t first, count; glm::vec4 color;
+		bool depthTest; bool flat; ViewMode flatMode; };
 	std::vector<Range> ranges;
 	std::vector<smvk::DebugLineVertex> all;
 	for (auto& b : batches) {
 		if (b.verts.empty())
 			continue;
 		ranges.push_back({ uint32_t(all.size()), uint32_t(b.verts.size()),
-			b.color, b.depthTest });
+			b.color, b.depthTest, b.flat, b.flatMode });
 		all.insert(all.end(), b.verts.begin(), b.verts.end());
 	}
 	if (all.empty())
@@ -354,13 +388,16 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		smvk::PipelineStageBit_Vertex, smvk::AccessFlags::VertexAttributeRead);
 
 	// One line pass PER VISIBLE VIEWPORT: same uploaded batches, each
-	// viewport's own viewProj + rect. The pass attaches the viewport's
-	// DEPTH (written by the main pass): the grid binds a depth-tested
-	// pipeline so it hides behind geometry, while the helpers (gizmo
-	// axes, AABB, light markers) bind an always-on-top pipeline.
+	// viewport's own viewProj + rect. Flat-UV panels draw ONLY their
+	// matching flat wire ranges through an IDENTITY viewProj; 3D panels
+	// draw only the non-flat ranges with the viewport's viewProj.
 	for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
 	const ViewportRect& vp = m_viewports[vpIdx].rect;
 	const glm::mat4 vpViewProj = m_viewports[vpIdx].viewProj;
+	const ViewMode vpMode = m_viewports[vpIdx].viewMode;
+	const bool vpIsFlat =
+		(vpMode == ViewMode::FlatUv0 || vpMode == ViewMode::FlatUv1);
+	const glm::mat4 flatIdentity(1.0f);
 	auto& pass = m_rendergraph->AddPass("EditorGizmo")
 		.SetOffset(uint32_t(vp.x), uint32_t(vp.y))
 		.SetExtent(smvk::Extent2D{ uint32_t(vp.w), uint32_t(vp.h) })
@@ -370,23 +407,30 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		.SetDepth(m_depth.logicalView,
 			smvk::AttachmentLoadOp::Load, smvk::AttachmentStoreOp::Store,
 			smvk::ClearDepthStencil(0.0f, 0));
-	pass.SetRecordingFunc([this, ranges, vpViewProj](smvk::CommandBuffer& cmd) {
+	pass.SetRecordingFunc([this, ranges, vpViewProj, vpMode, vpIsFlat,
+			flatIdentity](smvk::CommandBuffer& cmd) {
 		if (m_gizmoLines.empty() || m_lineProgram.shaderCount != 2)
 			return;
 		const smvk::RasterSettings raster{
 			.cullMode = smvk::CullMode::None };
 		cmd.BindVertexBuffer(m_gizmoLines, 0, 0);
 		bool depthPipeline = false;
+		bool drewAny = false;
 		for (const auto& r : ranges) {
+			// Mode filter: flat ranges belong to their flat panel,
+			// 3D ranges to the 3D panels.
+			if (r.flat != vpIsFlat)
+				continue;
+			if (r.flat && r.flatMode != vpMode)
+				continue;
 			// Rebind the pipeline only when the depth mode changes
-			// (grid = depth-tested, helpers = always on top).
-			if (r.depthTest != depthPipeline) {
+			// (grid/flat wires = depth-tested, helpers = on top).
+			if (r.depthTest != depthPipeline || drewAny == false) {
 				depthPipeline = r.depthTest;
 				if (depthPipeline)
 					cmd.BindRenderPipeline(m_lineProgram,
 						smvk::VertexFormat::DebugLine,
-						// Reversed-Z: GreaterEqual = closer-or-equal passes
-						// (grid behind geometry fails the test).
+						// Reversed-Z: GreaterEqual = closer-or-equal passes.
 						smvk::DepthSettings{
 							.depthFunc = smvk::CompareOp::GreaterEqual,
 							.writeEnable = false, .depthTestEnable = true },
@@ -403,8 +447,9 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 						smvk::MSAASettings{}, raster,
 						smvk::PrimitiveTopology::LineList);
 			}
+			const glm::mat4& vpForPush = r.flat ? flatIdentity : vpViewProj;
 			app::LineDebugPush lp{};
-			std::memcpy(lp.viewProj, glm::value_ptr(vpViewProj),
+			std::memcpy(lp.viewProj, glm::value_ptr(vpForPush),
 				sizeof(lp.viewProj));
 			lp.color[0] = r.color.x;
 			lp.color[1] = r.color.y;
@@ -412,6 +457,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 			lp.color[3] = r.color.w;
 			cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
 			cmd.Draw(r.count, 1, r.first, 0);
+			drewAny = true;
 		}
 		});
 	} // per-viewport loop

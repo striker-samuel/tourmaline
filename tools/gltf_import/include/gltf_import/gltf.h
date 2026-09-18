@@ -12,6 +12,7 @@
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
+#include <Engine/Asset/tour.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Vfs/vfs.h>
 
@@ -26,6 +27,12 @@ struct GltfToSceneImporter
 	);
 	void setTextureStreamer(smvk::TextureStreamer* streamer) { textureStreamer_ = streamer; }	void import(int gltfNodeIndex) {
 		importNodeRecursive(gltfNodeIndex, 0, 1);
+	}
+	// Attach this glTF node's subtree UNDER an existing cluster scene
+	// node (nested scene references: the placeholder group node created
+	// by ApplySceneReferences). Same recursion as import().
+	void importUnder(int gltfNodeIndex, int parentSceneNode, int level) {
+		importNodeRecursive(gltfNodeIndex, parentSceneNode, level);
 	}
 	// Multicore texture read + upload: decodes/transcodes all KTX2 files
 	// referenced by the scene's materials on worker threads and uploads
@@ -158,6 +165,39 @@ void GltfToClusterFromVfs(
 	int coordFix = 0,
 	const glm::mat4& preTransform = glm::mat4(1.0f),
 	int gltfSceneIndex = -1);
+
+// ---------------------------------------------------------------------------
+// Clarisse-style nested SCENE REFERENCES.
+//
+// `reference` lines in a .tour describe placeholder nodes whose subtree is
+// ANOTHER scene, kept as a reference (structure + link to the source, never
+// a flattened duplicate). This loader inlines them into the cluster scene:
+//   - one placeholder group node per reference, under the recorded parent
+//     (cluster node id), named "REF <name>" (deterministic ids: the import
+//     stays reproducible, so tour commands and overrides addressing the
+//     referenced nodes keep working);
+//   - the referenced source's glTF imported beneath the placeholder;
+//   - NESTING: each referenced source's own .tour (<stem>.tour next to it)
+//     can carry its own `reference` lines — resolved recursively, so
+//     shot -> car -> wheel chains assemble in one pass. Cycle-guarded
+//     (a source never references itself up its own chain) + depth-capped.
+//
+// Host filesystem when vfs == nullptr (editor); VFS-resolved when set
+// (cooker). outPlaceholderNodes receives the created placeholder CLUSTER
+// node ids in doc.references order (level-1 refs only). Returns the
+// number of references applied (level-1 + nested).
+// ---------------------------------------------------------------------------
+size_t ApplySceneReferences(
+	smvk::Cluster& cluster,
+	const smvk::tour::Doc& doc,
+	const std::string& ownerBaseDir,
+	smvk::ResourceManager* ctx,
+	smvk::TextureStreamer* streamer,
+	const smvk::OverlayVfs* vfs,
+	const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
+	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
+	int coordFix = 0,
+	std::vector<int>* outPlaceholderNodes = nullptr);
 
 inline void GltfToCluster(
 	smvk::ResourceManager&,

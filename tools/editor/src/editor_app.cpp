@@ -139,6 +139,19 @@ void EditorApp::Shutdown() {
 	m_lineFsModule = {};
 	m_gizmoLines = {};
 	m_meshletIndices = {};
+	m_lmExportLines = {};
+	if (!m_lmExportLogical.empty()) {
+		m_rendergraph->FreeImageView(m_lmExportLogical);
+		m_lmExportLogical = {};
+	}
+	if (!m_lmExportDepthLogical.empty()) {
+		m_rendergraph->FreeImageView(m_lmExportDepthLogical);
+		m_lmExportDepthLogical = {};
+	}
+	m_lmExportView = {};
+	m_lmExportImage = {};
+	m_lmExportDepthView = {};
+	m_lmExportDepth = {};
 	m_unlitProgram = {};
 	m_litProgram = {};
 	m_bakedProgram = {};
@@ -199,6 +212,43 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 		Log(std::string("Import failed: ") + e.what());
 		return false;
 	}
+	// Clarisse-style nested scene references: the master tour's
+	// `reference` lines bind HERE (placeholder nodes + inlined subtrees,
+	// recursion through each source's own tour) — before the world
+	// resolve, so the hierarchy nests (shot -> car -> wheel) and every
+	// later tour command / override addresses deterministic cluster ids.
+	m_references.clear();
+	m_refPlaceholders.clear();
+	m_refPhCluster.clear();
+	{
+		smvk::tour::Doc refDoc;
+		std::string refErr;
+		std::vector<std::string> refWarns;
+		std::filesystem::path masterTour =
+			std::filesystem::path(path);
+		masterTour.replace_extension(".tour");
+		if (std::filesystem::exists(masterTour) &&
+			smvk::tour::LoadTour(masterTour.string(), refDoc, refErr,
+				&refWarns)) {
+			for (auto& w : refWarns)
+				Log(w);
+			if (!refDoc.references.empty()) {
+				const size_t applied = ApplySceneReferences(cluster, refDoc,
+					std::filesystem::path(loadPath).parent_path()
+						.generic_string(),
+					m_context.get(), m_textureStreamer.get(),
+					nullptr /* host files */,
+					smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
+					&m_refPhCluster);
+				Log("References: bound " + std::to_string(applied) +
+					" reference subtree(s) (" +
+					std::to_string(refDoc.references.size()) +
+					" top-level).");
+				// Editor-side mirror of the master list (save round-trip).
+				m_references = refDoc.references;
+			}
+		}
+	}
 	m_context->FlushUploads();
 	Log("Resolving world...");
 	m_world->ResolveAndFixup_clusters();
@@ -249,6 +299,14 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 		m_world->scene.hierarchy.size() ==
 		1 + m_world->clusters[0]->scene.hierarchy.size())
 		m_clusterBase = 1;
+	// Map the reference placeholder CLUSTER ids -> world ids (cluster
+	// base just became valid).
+	if (!m_refPhCluster.empty()) {
+		m_refPlaceholders.clear();
+		for (int cn : m_refPhCluster)
+			m_refPlaceholders.push_back(ClusterToWorld(uint32_t(cn)));
+		m_refPhCluster.clear();
+	}
 	Log("Indexing nodes for picking...");
 	RebuildNodeIndex();
 	Log("Loading tour...");
@@ -730,8 +788,33 @@ void EditorApp::RebuildNodeIndex() {
 		walk(r);
 
 	// World group nodes in preorder (skip world root 0 + cluster root).
+	// Reference-subtree nodes are SKIPPED: they come from other sources
+	// (no master-gltf counterpart), so the preorder pairing stays exact.
+	std::vector<uint32_t> refSubtree;
+	for (uint32_t ph : m_refPlaceholders) {
+		std::vector<uint32_t> stack{ ph };
+		while (!stack.empty()) {
+			const uint32_t n = stack.back();
+			stack.pop_back();
+			if (n >= m_world->scene.hierarchy.size())
+				continue;
+			if (std::find(refSubtree.begin(), refSubtree.end(), n) !=
+				refSubtree.end())
+				continue;
+			refSubtree.push_back(n);
+			for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
+				c = m_world->scene.hierarchy[c].nextSibling)
+				stack.push_back(uint32_t(c));
+		}
+	}
+	auto inRefSubtree = [&](uint32_t n) {
+		return std::find(refSubtree.begin(), refSubtree.end(), n) !=
+			refSubtree.end();
+	};
 	std::vector<uint32_t> worldGroups;
 	std::function<void(uint32_t)> wwalk = [&](uint32_t n) {
+		if (inRefSubtree(n))
+			return; // referenced scene: keep the pairing master-only
 		worldGroups.push_back(n);
 		for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
 			c = m_world->scene.hierarchy[c].nextSibling)

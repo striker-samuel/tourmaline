@@ -196,6 +196,12 @@ void EditorApp::DrawMenuBar() {
 			m_showOpenDialog = true;
 		if (ImGui::MenuItem("Open .pak (cooked)..."))
 			m_showOpenDialog = true;
+		if (ImGui::MenuItem("Add scene reference...", nullptr, false,
+				!m_gltfPath.empty() && !HasPakExtension(m_gltfPath))) {
+			std::snprintf(m_refSourceBuf, sizeof(m_refSourceBuf), "%s", "");
+			std::snprintf(m_refNameBuf, sizeof(m_refNameBuf), "%s", "");
+			m_showRefDialog = true;
+		}
 		if (ImGui::MenuItem("Save tour...")) {
 			std::snprintf(m_savePathBuf, sizeof(m_savePathBuf),
 				"%s", TourTarget().c_str());
@@ -328,6 +334,11 @@ void EditorApp::DrawMenuBar() {
 		m_showOpenDialog = false;
 	}
 	DrawOpenDialog();
+	if (m_showRefDialog) {
+		ImGui::OpenPopup("Add scene reference");
+		m_showRefDialog = false;
+	}
+	DrawAddReferenceDialog();
 	if (m_showSaveDialog) {
 		ImGui::OpenPopup("Save tour as");
 		m_showSaveDialog = false;
@@ -647,11 +658,12 @@ void EditorApp::DrawSceneOutliner() {
 			ImGui::PushID(int(n));
 			const bool sel = IsSelected(n);
 			char label[256];
-			std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s", n,
+			std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s%s", n,
 				name.empty() ? "(unnamed)" : name.c_str(),
 				m_world->scene.meshForNode.contains(n) ? " [mesh]" : "",
 				FindNodeLight(n) ? " [light]" : "",
 				IsEnvNode(n) ? " [env]" : "",
+				IsRefPlaceholder(n) ? " [ref]" : "",
 				!IsVisibleNode(m_world->scene, int(n)) ? " [hidden]" : "");
 			if (ImGui::Selectable(label, sel)) {
 				// Click = replace selection; Ctrl/Shift-click = add.
@@ -960,11 +972,12 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 			nodeLight->type == ::SceneLight::Type::Spot ? "spot" : "point");
 	}
 	char label[256];
-	std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s", name.empty() ? "(node)" : name.c_str(),
+	std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s", name.empty() ? "(node)" : name.c_str(),
 		hasMesh ? " [mesh]" : "", lightTag,
 		IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "",
 		IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "",
 		IsEnvNode(node) ? " [env]" : "",
+		IsRefPlaceholder(node) ? " [ref]" : "",
 		!IsVisibleNode(scene, int(node))
 		? (IsHiddenNode(scene, int(node)) ? " [hidden]" : " [hidden*]") : "");
 	const bool open = ImGui::TreeNodeEx(label, flags);
@@ -1855,6 +1868,9 @@ void EditorApp::DrawInspector() {
 			"(convex volume later; never cooked)");
 	}
 
+	// Scene reference block (placeholder nodes).
+	DrawReferenceSection(node);
+
 	// Editor camera (active viewport) + environment (IBL) settings.
 	DrawCameraSection();
 	DrawEnvPanel();
@@ -1992,6 +2008,27 @@ void EditorApp::DrawLightmapPanel() {
 		ImGui::TextDisabled("F10 = UV1 view (baked texCoord2)");
 		if (m_lmGpu && ImGui::Button("Baked irradiance view (F8)"))
 			ActiveViewMode() = ViewMode::Baked;
+		// Flat lightmap PNG export (whole scene, atlas resolution).
+		ImGui::Separator();
+		ImGui::Checkbox("Export with UV wireframe", &m_lmExportWires);
+		ImGui::SetItemTooltip("Chart shell edges drawn over the baked "
+			"content (whole scene, atlas uv2 layout).");
+		if (!m_lmGpu)
+			ImGui::BeginDisabled();
+		if (ImGui::Button("Export lightmap PNG")) {
+			m_lmExportQueued = true;
+			Log("Lightmap export queued: whole scene unwrapped by atlas "
+				"uv2" + std::string(m_lmExportWires ? " + wireframe" : "") +
+				" -> exports/<stem>.png");
+		}
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+			ImGui::SetItemTooltip("Whole scene unwrapped by its atlas uv2 "
+				"over the baked content, saved at atlas resolution.");
+		if (!m_lmGpu) {
+			ImGui::EndDisabled();
+			ImGui::TextDisabled("export needs the atlas GPU layers "
+				"(open the baked pak)");
+		}
 	}
 	if (ImGui::InputText("sglm path", m_sglmBuf, sizeof(m_sglmBuf),
 		ImGuiInputTextFlags_EnterReturnsTrue)) {
