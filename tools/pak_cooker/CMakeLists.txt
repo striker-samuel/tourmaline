@@ -1,8 +1,12 @@
 project(PakCooker)
 
-add_executable(PakCooker main.cpp lm_denoise.cpp)
+add_executable(PakCooker main.cpp lm_denoise.cpp lm_png.cpp)
 
 target_compile_definitions(PakCooker PRIVATE ENGINE_VULKAN)
+
+# stb_image_write (cook-time atlas debug PNG, see lm_png.cpp; the same
+# vendored header the editor uses for its PNG export).
+target_include_directories(PakCooker PRIVATE ${CMAKE_SOURCE_DIR}/app/vendor)
 
 target_link_libraries(PakCooker
     PRIVATE

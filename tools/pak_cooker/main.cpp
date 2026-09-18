@@ -21,7 +21,9 @@
 // pass-through — see Engine/GI/bake.h), fills each mesh's texCoord2 with
 // per-vertex lightmap UVs, stamps the mesh's atlas chunk id into the pak
 // blob, and writes the atlas alongside the pak as
-// <contentDir>/gi/<scene>.sglm. No bake-side work is left to the
+// <contentDir>/gi/<scene>.sglm (plus a raw-payload debug PNG
+// <contentDir>/gi/<scene>_atlas.png — lobe 0 at the editor flat view's
+// display mapping, see lm_png.h). No bake-side work is left to the
 // runtime: the pak + .sglm are the complete lightmap payload. Baked
 // pixels take the lightmap ALONE at runtime (the analytic sky IBL is
 // the fallback for uncovered pixels only — the ambient sum starts
@@ -95,6 +97,7 @@
 #include <Engine/Vfs/vfs.h>
 
 #include "lm_denoise.h"
+#include "lm_png.h"
 
 namespace {
 
@@ -1171,6 +1174,23 @@ int main(int argc, char** argv) {
 	meshletCfg.maxVertices = std::clamp(args.maxVerts, 3u, 255u);
 	meshletCfg.maxTriangles = std::clamp(args.maxTris, 1u, 512u);
 	meshletCfg.coneWeight = args.coneWeight;
+	// Meshlet DECOUPLING (--lightmap on): the lightmap stage below
+	// re-parameterizes meshes (atlas uv2 stamping + seam vertex
+	// duplication + index remap), so meshlets must NOT be built before
+	// it — an import-time meshlet set references the PRE-stamp vertex
+	// layout and draws the wrong texCoord2 per corner at runtime
+	// (stale-window GI corruption). With lightmaps on the importer and
+	// merged-block paths get a DISABLED config, and the cooker builds
+	// meshlets ONCE after the bake from the FINAL stamped topology
+	// (see the "Meshlet restore" stage below the lightmap block). The
+	// rule that keeps GI whole: meshlet generation may partition
+	// triangles, but it must never take part in — or see — the
+	// parameterization. With --lightmap off nothing mutates uploads
+	// after import, so import-time meshlets stay valid and the pipeline
+	// is unchanged.
+	smvk::MeshletConfig importMeshletCfg = meshletCfg;
+	if (args.lightmap)
+		importMeshletCfg.enabled = false;
 
 	// Scene selection (multi-scene paks: one Scene blob per glTF scene,
 	// shared asset pool; the runtime loads index 0 unless told otherwise).
@@ -1228,7 +1248,7 @@ int main(int argc, char** argv) {
 
 		try {
 			GltfToClusterFromVfs(nullptr, vfs, args.inVfs, *cluster,
-				opt, meshletCfg, 0, glm::mat4(1.0f), sc.gltfIndex);
+				opt, importMeshletCfg, 0, glm::mat4(1.0f), sc.gltfIndex);
 		}
 		catch (const std::exception& e) {
 			std::cerr << "Import failed (scene '" << sc.name
@@ -1345,7 +1365,7 @@ int main(int argc, char** argv) {
 		// Sources resolve as-is or relative to the master scene's VFS dir.
 		const size_t applied = ApplySceneReferences(*cluster, tour,
 			smvk::vfs::BaseDir(args.inVfs),
-			nullptr, nullptr, &vfs, opt, meshletCfg, 0, nullptr);
+			nullptr, nullptr, &vfs, opt, importMeshletCfg, 0, nullptr);
 		std::cout << "References inlined: " << applied << " subtree(s) ("
 			<< tour.references.size() << " top-level)\n";
 	}
@@ -1373,8 +1393,12 @@ int main(int argc, char** argv) {
 		std::cout << "Collapsed " << mr.srcNodesConsumed << " static nodes into "
 			<< mr.blocks.size() << " block(s)\n";
 		// Merged blocks skip the importer meshlet path; cook them here so
-		// the single-block layout also feeds the indirect future.
-		if (meshletCfg.enabled) {
+		// the single-block layout also feeds the indirect future. With
+		// --lightmap on this is deferred too (importMeshletCfg disabled):
+		// the lightmap stage re-stamps the block uploads, so their
+		// meshlets are built by the post-bake restore stage below from
+		// the final stamped topology.
+		if (importMeshletCfg.enabled) {
 			for (const auto& b : mr.blocks) {
 				const auto h = cluster->staticMeshes.getHandle(b.meshPoolIndex);
 				const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(h);
@@ -2047,28 +2071,11 @@ int main(int argc, char** argv) {
 					? atlas.chunks[w.chunkBase].lobeCount
 					: args.lmLobes;
 			}
-			// Rebuild the cooked meshlets: seam duplication appended
-			// vertices + remapped indices, so the import-time meshlets
-			// (which index the OLD layout) no longer match. Rebuild from
-			// the stamped upload and re-register (UriMap Insert replaces).
-			if (meshletCfg.enabled) {
-				smvk::CookedMeshlets cooked;
-				smvk::MeshletStats mst;
-				std::string merr;
-				if (BuildMeshletsForUpload(*upload, meshletCfg, &cooked, &mst, &merr)) {
-					const auto uri = cluster->GetMeshUri(w.handle);
-					if (!uri.empty())
-						cluster->RegisterMeshMeshlets(uri, cooked);
-					++lmMeshes;
-				}
-				else if (!merr.empty()) {
-					std::cerr << "  [LM] meshlet rebuild failed node " << w.node
-						<< ": " << merr << " (stale meshlets kept)\n";
-				}
-			}
-			else {
-				++lmMeshes;
-			}
+			// No meshlet work in the bake stage (decoupled by design):
+			// meshlets are built once, after ALL lightmap stamping
+			// finishes, by the "Meshlet restore" stage below — from
+			// this final stamped topology, never a pre-stamp layout.
+			++lmMeshes;
 		}
 		lstats.seconds = std::chrono::duration<double>(
 			std::chrono::steady_clock::now() - lmT0).count();
@@ -2088,6 +2095,26 @@ int main(int argc, char** argv) {
 			}
 			std::cerr << "  [LM] atlas " << sglmPath.generic_string()
 				<< " (" << std::filesystem::file_size(sglmPath) << " B)\n" << std::flush;
+			// Raw-atlas debug PNG next to the atlas (<scene>_atlas.png):
+			// the baked payload itself (lobe 0, editor flat-view display
+			// mapping), NOT the uv2-unwrapped geometry draw the editor
+			// exports — comparing the two localizes corruption to the
+			// bake/payload vs the stamping/draw path. Non-fatal.
+			{
+				std::filesystem::path pngPath =
+					std::filesystem::path(args.contentDir) / "gi"
+					/ (sceneId + "_atlas.png");
+				std::string perr;
+				if (pakcook::WriteLightmapAtlasPng(atlas,
+						pngPath.generic_string(), perr)) {
+					std::cerr << "  [LM] atlas png " << pngPath.generic_string()
+						<< " (" << std::filesystem::file_size(pngPath)
+						<< " B)\n" << std::flush;
+				} else {
+					std::cerr << "[LM] atlas png write failed: " << perr
+						<< "\n" << std::flush;
+				}
+			}
 			// Name the atlas inside the (single) cooked cluster so the
 			// runtime resolves gi/<name>.sglm from the pak, not the id.
 			cluster->RegisterGiBinding(smvk::GiBinding::Kind::Lightmap,
@@ -2141,6 +2168,64 @@ int main(int argc, char** argv) {
 			<< " nolm=" << skipNoLm
 			<< " hidden=" << skipHidden
 			<< " small=" << skipSmall << ")\n" << std::flush;
+	}
+
+	// ---------------------------------------------------------------------------
+	// Meshlet restore (post-lightmap): with --lightmap on, meshlets were
+	// deliberately NOT built anywhere earlier in this cook
+	// (importMeshletCfg disabled the importer and merged-block paths);
+	// they are built HERE, once, from the FINAL topology — after the
+	// atlas uv2 stamping and seam vertex duplication finished. Every
+	// meshlet vertex window references already-final texCoord2: the
+	// parameterization is complete before meshletization begins, so
+	// meshlet generation can partition triangles but never changes
+	// the lightmap parameterization. A failed build leaves the mesh
+	// WITHOUT meshlets (the runtime draws the classic indexed path) —
+	// never stale ones referencing a pre-stamp vertex layout. Covers
+	// every scene cluster and every drawable mesh (de-instanced clones
+	// and merged blocks rebind their nodes in meshForNode); meshes
+	// still shared by several nodes are deduped by pool index (one
+	// meshlet set per upload). With --lightmap off this stage is
+	// skipped and the import-time meshlets stay in force.
+	// ---------------------------------------------------------------------------
+	if (args.lightmap && meshletCfg.enabled) {
+		uint32_t restoredMeshes = 0;
+		uint32_t restoredMeshlets = 0;
+		for (auto& sc : sceneClusters) {
+			smvk::Cluster& c = *sc;
+			std::unordered_set<uint32_t> seen;
+			seen.reserve(c.scene.meshForNode.size() * 2);
+			for (const auto& nodeMesh : c.scene.meshForNode) {
+				const uint32_t meshIdx = nodeMesh.second;
+				if (!seen.insert(meshIdx).second)
+					continue; // still-shared mesh: one meshlet set per upload
+				const smvk::ClusterStaticMeshHandle h =
+					c.staticMeshes.getHandle(meshIdx);
+				const smvk::StaticMeshUpload* up = c.GetRetainedUpload(h);
+				if (!h.valid() || !up || up->vertices.empty()
+					|| up->indices.empty())
+					continue;
+				smvk::CookedMeshlets cooked;
+				smvk::MeshletStats mst;
+				std::string merr;
+				if (!smvk::BuildMeshletsForUpload(*up, meshletCfg,
+						&cooked, &mst, &merr)) {
+					if (!merr.empty() && merr != "meshlets disabled")
+						std::cerr << "  [LM] meshlet build failed mesh "
+							<< meshIdx << ": " << merr
+							<< " (mesh ships without meshlets)\n" << std::flush;
+					continue;
+				}
+				const auto uri = c.GetMeshUri(h);
+				if (!uri.empty())
+					c.RegisterMeshMeshlets(uri, cooked);
+				++restoredMeshes;
+				restoredMeshlets += mst.meshletCount;
+			}
+		}
+		std::cerr << "  [LM] meshlets restored: meshes=" << restoredMeshes
+			<< " meshlets=" << restoredMeshlets
+			<< " (post-bake, final stamped topology)\n" << std::flush;
 	}
 
 	// ---------------------------------------------------------------------------
