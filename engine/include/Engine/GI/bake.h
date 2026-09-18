@@ -350,6 +350,8 @@ struct SgGiBakeStats {
 	uint32_t probeBudgetHits = 0; // leaves not subdivided because of the budget
 	uint64_t pathsTraced = 0;
 	uint64_t samplesClamped = 0; // firefly-filter hits (sun-pool outliers tamed)
+	uint64_t samplesNonFinite = 0; // non-finite radiance samples (excluded from
+	                               // the firefly-cap mean; the SG fit quarantines)
 	double seconds = 0.0;
 };
 

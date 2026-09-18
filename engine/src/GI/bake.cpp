@@ -60,16 +60,67 @@ glm::vec3 CosineHemisphere(Pcg32& rng, const glm::vec3& n) {
 // ---------------------------------------------------------------------------
 
 void GiTraceScene::Finalize() {
+	// Validate the hand-populatable soup before the BVH build: a bad
+	// vertex index OOB-reads in TriangleVertices, a bad material index
+	// OOB-reads at every shading vertex (garbage albedo -> NaN
+	// throughput -> non-finite radiance). Malformed entries are
+	// repaired/dropped with a loud stderr report (GiTests'
+	// TestGiMalformedScene pins this behavior); consistent scenes built
+	// by BuildTraceSceneFromCluster never print.
+	if (indices.size() % 3 != 0) {
+		std::fprintf(stderr,
+			"GI FINALIZE: %zu indices not a multiple of 3; truncating\n",
+			indices.size());
+		indices.resize(indices.size() / 3 * 3);
+	}
+	const size_t triCount = indices.size() / 3;
+	if (triCount > 0 && materials.empty()) {
+		std::fprintf(stderr,
+			"GI FINALIZE: geometry with no materials; injecting a default\n");
+		materials.push_back(GiTraceMaterial{});
+	}
+	if (triMaterial.size() != triCount) {
+		std::fprintf(stderr,
+			"GI FINALIZE: material map mismatch: %zu triangles, %zu entries\n",
+			triCount, triMaterial.size());
+		triMaterial.resize(triCount, 0u);
+	}
+	{
+		size_t dropped = 0;
+		std::vector<uint32_t> keptIndices;
+		std::vector<uint32_t> keptTriMaterial;
+		keptIndices.reserve(indices.size());
+		keptTriMaterial.reserve(triCount);
+		for (size_t t = 0; t < triCount; ++t) {
+			const bool validMat = triMaterial[t] < materials.size();
+			const bool validIdx = indices[t * 3 + 0] < positions.size()
+				&& indices[t * 3 + 1] < positions.size()
+				&& indices[t * 3 + 2] < positions.size();
+			if (!validMat || !validIdx) {
+				++dropped;
+				continue;
+			}
+			keptIndices.push_back(indices[t * 3 + 0]);
+			keptIndices.push_back(indices[t * 3 + 1]);
+			keptIndices.push_back(indices[t * 3 + 2]);
+			keptTriMaterial.push_back(triMaterial[t]);
+		}
+		if (dropped > 0) {
+			std::fprintf(stderr,
+				"GI FINALIZE: dropped %zu of %zu triangles (bad vertex/material index)\n",
+				dropped, triCount);
+			indices.swap(keptIndices);
+			triMaterial.swap(keptTriMaterial);
+		}
+	}
+
 	bvh_.Build(positions, indices);
-	const uint32_t triCount = uint32_t(indices.size() / 3);
-	triMaterial.resize(std::min(size_t(triCount), triMaterial.size()));
+	const uint32_t triCountFinal = uint32_t(indices.size() / 3);
 
 	emissiveTris_.clear();
 	emissiveCdf_.clear();
 	emissiveTotal_ = 0.0f;
-	for (uint32_t k = 0; k < triCount; ++k) {
-		if (k >= triMaterial.size())
-			break;
+	for (uint32_t k = 0; k < triCountFinal; ++k) {
 		const GiTraceMaterial& m = materials[triMaterial[k]];
 		const float lum = Luminance(m.emissive);
 		if (lum <= 1e-6f)
@@ -677,7 +728,7 @@ bool RelocateProbe(const TriangleBvh& bvh, const BakeBrick& brick,
 // the runtime blend shows as coverage-sized speckle.
 void BakeProbeBrick(const GiTraceScene& scene, const SgGiBakeConfig& cfg,
 	BakeBrick& brick, uint64_t seed, const std::vector<glm::vec3>& dirs,
-	uint64_t& clampedSamples) {
+	uint64_t& clampedSamples, uint64_t& nonFiniteSamples) {
 	const float clearance = std::max(cfg.probeMinClearance,
 		cfg.probeClearanceFactor * brick.size);
 	if (!RelocateProbe(scene.Bvh(), brick, clearance, brick.probePos))
@@ -695,12 +746,23 @@ void BakeProbeBrick(const GiTraceScene& scene, const SgGiBakeConfig& cfg,
 	std::vector<RaySample> samples;
 	samples.reserve(dirs.size());
 	double meanLum = 0.0;
+	uint32_t finiteSamples = 0;
 	for (uint32_t i = 0; i < dirs.size(); ++i) {
 		const glm::vec3 L = scene.TraceIncoming(brick.probePos, dirs[i], rng, cfg.maxBounces);
 		samples.push_back({ dirs[i], L });
+		// A non-finite sample must never enter the firefly-cap mean: a
+		// NaN mean makes cap NaN and silently DISARMS the clamp for the
+		// whole probe (every l > cap comparison is false). The sample
+		// itself still reaches acc.AddSample, which quarantines it (the
+		// fit is safe either way — SgFitAccumulator::AddSample).
+		if (!std::isfinite(L.x + L.y + L.z)) {
+			++nonFiniteSamples;
+			continue;
+		}
 		meanLum += Luminance(L);
+		++finiteSamples;
 	}
-	meanLum /= double(std::max<uint32_t>(uint32_t(dirs.size()), 1u));
+	meanLum /= double(std::max(finiteSamples, 1u));
 	const float cap = std::max(float(meanLum) * 8.0f, 1e-6f);
 	SgFitAccumulator acc;
 	const float weight = 4.0f * kPi / float(dirs.size());
@@ -934,6 +996,7 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 	auto bakeLeaves = [&](std::vector<uint32_t>& leaves) -> uint64_t {
 		std::atomic<uint64_t> baked{ 0 };
 		std::atomic<uint64_t> clamped{ 0 };
+		std::atomic<uint64_t> nonfinite{ 0 };
 		constexpr size_t kBatch = 512;
 		for (size_t base = 0; base < leaves.size(); base += kBatch) {
 			const size_t end = std::min(base + kBatch, leaves.size());
@@ -945,8 +1008,11 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 					const uint64_t seed = (uint64_t(cfg.seed) << 32)
 						^ (uint64_t(idx) * 0x9e3779b97f4a7c15ull);
 					uint64_t localClamped = 0;
-					BakeProbeBrick(scene, cfg, bricks[idx], seed, fibDirs, localClamped);
+					uint64_t localNonFinite = 0;
+					BakeProbeBrick(scene, cfg, bricks[idx], seed, fibDirs,
+						localClamped, localNonFinite);
 					clamped += localClamped;
+					nonfinite += localNonFinite;
 					if (bricks[idx].hasProbe)
 						++baked;
 				}));
@@ -957,6 +1023,7 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 		stats.pathsTraced += uint64_t(leaves.size())
 			* (cfg.raysPerProbe + uint64_t(6) * cfg.errorRaysPerProbe);
 		stats.samplesClamped += clamped.load();
+		stats.samplesNonFinite += nonfinite.load();
 		return baked.load();
 	};
 
@@ -1377,10 +1444,11 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 	{
 		char line[192];
 		std::snprintf(line, sizeof(line),
-			"bake: done: %u probes in %.1fs (%.1f MiB GPU, %llu clamped)\n",
+			"bake: done: %u probes in %.1fs (%.1f MiB GPU, %llu clamped, %llu nonfinite)\n",
 			stats.probeCount, stats.seconds,
 			double(outVolume.GpuBytes()) / (1024.0 * 1024.0),
-			(unsigned long long)stats.samplesClamped);
+			(unsigned long long)stats.samplesClamped,
+			(unsigned long long)stats.samplesNonFinite);
 		say(line);
 	}
 	return true;

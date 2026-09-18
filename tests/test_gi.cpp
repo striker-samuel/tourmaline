@@ -1342,6 +1342,63 @@ void TestStaticBakeLights() {
 		"static.collect.point.falloff");
 }
 
+// Finalize() scene validation: a malformed trace soup (short material
+// map, out-of-range material/vertex indices, geometry with no
+// materials) must become consistent data — repaired/dropped with a
+// stderr report, never traced as garbage (OOB reads surface as NaN
+// radiance downstream).
+void TestGiMalformedScene() {
+	{
+		// Material map one entry short: padded with material 0; both
+		// triangles survive with a valid shading material.
+		GiTraceScene scene;
+		scene.positions = {
+			{ -1, 0, -1 }, { 1, 0, -1 }, { 1, 0, 1 }, { -1, 0, 1 } };
+		scene.indices = { 0, 1, 2, 0, 2, 3 };
+		scene.materials = { GiTraceMaterial{ glm::vec3(0.7f), glm::vec3(0.0f) } };
+		scene.triMaterial = { 0 };
+		scene.Finalize();
+		Check(scene.triMaterial.size() == 2, "gi.malformed.matmap.padded");
+		Check(scene.Bvh().TriangleCount() == 2, "gi.malformed.matmap.tris");
+	}
+	{
+		// Out-of-range vertex index (tri 0) and out-of-range material
+		// index (tri 1): both triangles drop; the healthy one survives.
+		GiTraceScene scene;
+		scene.positions = {
+			{ -1, 0, -1 }, { 1, 0, -1 }, { 1, 0, 1 }, { -1, 0, 1 } };
+		scene.indices = { 0, 1, 99, 0, 1, 2, 0, 2, 3 };
+		scene.materials = { GiTraceMaterial{ glm::vec3(0.7f), glm::vec3(0.0f) } };
+		scene.triMaterial = { 0, 7, 0 };
+		scene.Finalize();
+		Check(scene.triMaterial.size() == 1, "gi.malformed.badidx.matmap");
+		Check(scene.Bvh().TriangleCount() == 1, "gi.malformed.badidx.dropped");
+	}
+	{
+		// Geometry with an empty material list: a default material is
+		// injected, the (empty) map pads to one entry, and tracing
+		// through the repaired scene stays finite end to end.
+		GiTraceScene scene;
+		scene.positions = { { -1, 0, -1 }, { 1, 0, -1 }, { 1, 0, 1 } };
+		scene.indices = { 0, 1, 2 };
+		scene.triMaterial = {};
+		scene.sunIntensity = 1000.0f;
+		scene.Finalize();
+		Check(scene.materials.size() == 1, "gi.malformed.defaultmat.injected");
+		Check(scene.Bvh().TriangleCount() == 1, "gi.malformed.defaultmat.tris");
+		std::mt19937 srng(5);
+		Pcg32 rng(11);
+		bool allFinite = true;
+		for (int i = 0; i < 16; ++i) {
+			const glm::vec3 L = scene.TraceIncoming(
+				glm::vec3(0.0f, 1.0f, 0.0f), UniformDir(srng), rng, 2);
+			if (!std::isfinite(L.x + L.y + L.z))
+				allFinite = false;
+		}
+		Check(allFinite, "gi.malformed.trace.finite");
+	}
+}
+
 // .sglm roundtrip: v2 writes the section as segmented LZ4 (a 16M-texel
 // atlas packs ~1.2 GB, over the single-block codec's kMaxBlobBytes cap
 // — the failure that killed the first night bistro cook), and the
@@ -1494,6 +1551,7 @@ int main() {
 	smvk::gi::TestLightmapCurvatureScale();
 	smvk::gi::TestLmAuthoredCharts();
 	smvk::gi::TestStaticBakeLights();
+	smvk::gi::TestGiMalformedScene();
 	smvk::gi::TestLightmapAtlasRoundtrip();
 
 	std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks
