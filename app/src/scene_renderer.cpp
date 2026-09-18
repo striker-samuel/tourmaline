@@ -20,7 +20,9 @@
 #include <vector>
 
 #include <Engine/core.h>
+#include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/environment.h>
@@ -923,6 +925,7 @@ bool SceneRenderer::Initialize() {
 			else if (dv == "vertexcolors" || dv == "vcolors") m_debugView = DebugView::VertexColors;
 			else if (dv == "uv0" || dv == "uv1_base") m_debugView = DebugView::Uv0;
 			else if (dv == "uv1" || dv == "uv2" || dv == "uv1_lightmap") m_debugView = DebugView::Uv1;
+			else if (dv == "pom" || dv == "parallax" || dv == "parallaxocclusion") m_debugView = DebugView::Pom;
 			else std::cerr << "[SceneRenderer] unknown VULKANTOY_DEBUGVIEW value: " << dv << "\n";
 		}
 		// AA mode override for A/B runs without UI interaction
@@ -1228,6 +1231,7 @@ bool SceneRenderer::Initialize() {
 		// through this overlay.
 		smvk::OverlayVfs contentVfs;
 		contentVfs.Mount(std::make_shared<smvk::LooseBackend>("content"), 0, "content");
+		contentVfs.Mount(std::make_shared<smvk::FlintbaseBackend>(), 50, "flintbase");
 		contentVfs.Mount(
 			std::make_shared<smvk::LooseBackend>("engine_resources"), 100, "engine_resources");
 
@@ -1370,6 +1374,13 @@ bool SceneRenderer::Initialize() {
 		catch (...) {
 			std::cerr << "[SceneRenderer] default_uv1_debug unavailable - F10 falls back to Lit\n";
 		}
+		try {
+			auto pomCode = readContentFile(contentVfs, "shaders/default_pom.frag.hlsl.spv");
+			m_resources.fragPomShader = m_context->CreateShaderModule(pomCode, "fragPom");
+		}
+		catch (...) {
+			std::cerr << "[SceneRenderer] default_pom unavailable - F11 falls back to Lit\n";
+		}
 		if (!m_resources.fragUv0DebugShader.empty()) {
 			m_resources.uv0DebugProgram = {
 				.shaders = {
@@ -1397,6 +1408,23 @@ bool SceneRenderer::Initialize() {
 					},
 					smvk::Shader{
 						.module = m_resources.fragUv1DebugShader,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		}
+		if (!m_resources.fragPomShader.empty()) {
+			m_resources.pomProgram = {
+				.shaders = {
+					smvk::Shader{
+						.module = m_resources.vertShader,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = m_resources.fragPomShader,
 						.entryPoint = "mainPS",
 						.stage = smvk::ShaderStage::Fragment
 					}
@@ -1615,8 +1643,8 @@ bool SceneRenderer::Initialize() {
 		// loads the scene exactly once.
 		// Scene paths come from the configured SceneDesc (see SceneRegistry):
 		// adding a sample never copies this block.
-		const std::string sceneGltf = m_scene.gltfPath ? m_scene.gltfPath : "";
-		const std::string scenePak = m_scene.pakPath ? m_scene.pakPath : "";
+		const std::string sceneGltf = smvk::FlintbaseHostPath(m_scene.gltfPath ? m_scene.gltfPath : "");
+		const std::string scenePak = smvk::FlintbaseHostPath(m_scene.pakPath ? m_scene.pakPath : "");
 		// Unconditional phase log: Release is otherwise silent, so an init
 		// throw (e.g. bad_alloc) would name no phase. Keep these cerr lines.
 		std::cerr << "[Scene] loading '" << m_scene.id << "' (pak: " << scenePak << ")"
@@ -1658,9 +1686,33 @@ bool SceneRenderer::Initialize() {
 						else if (auto pakBackend = smvk::PakBackend::Open(
 								pakImage, scenePak, pakErr)) {
 							try {
-								std::cerr << "[Scene] pak parsed, loading cluster ("
+								std::cerr << "[Scene] pak parsed ("
 									<< reader->EntryCount() << " entries)..." << std::endl;
-								m_world->LoadClusterFromPak(*m_context, *reader);
+								// Scene discovery: list, default to index 0.
+								std::string lerr;
+								auto scenes = smvk::ListPakScenes(*reader, &lerr);
+								if (scenes.empty()) {
+									throw std::runtime_error(
+										std::string("no loadable scenes: ") + lerr);
+								}
+								for (size_t i = 0; i < scenes.size(); ++i)
+									std::cerr << "[Scene]   scene[" << i << "] '"
+										<< scenes[i].name << "' nodes="
+										<< scenes[i].nodes << "\n";
+								const int want = m_sceneOverride
+									? m_sceneIndex : 0;
+								if (want < 0 || size_t(want) >= scenes.size()) {
+									throw std::runtime_error(
+										"scene index " + std::to_string(want) +
+										" out of range (" +
+										std::to_string(scenes.size()) +
+										" scenes)");
+								}
+								std::cerr << "[Scene] loading scene[" << want
+									<< "] '" << scenes[size_t(want)].name
+									<< "'..." << std::endl;
+								m_world->LoadClusterFromPak(*m_context, *reader,
+									uint32_t(want));
 								// Serve pak-embedded textures through the VFS
 								// (below loose content/ so dev overrides win).
 								contentVfs.Mount(pakBackend, 10, scenePak);
@@ -1778,6 +1830,26 @@ bool SceneRenderer::Initialize() {
 				m_fpDemo.FitToBounds(bounds.mn, bounds.mx);
 				std::cerr << "[Scene] bounds min=(" << bounds.mn.x << "," << bounds.mn.y << "," << bounds.mn.z
 					<< ") max=(" << bounds.mx.x << "," << bounds.mx.y << "," << bounds.mx.z << ")\n";
+				// External scenes have no authored viewpoint: frame the
+				// bounds (orbit-style default). Explicit VULKANTOY_CAM_POS/
+				// FWD pins win (bench determinism).
+				if (m_sceneOverride && !std::getenv("VULKANTOY_CAM_POS") &&
+					!std::getenv("VULKANTOY_CAM_FWD")) {
+					const glm::vec3 center = (bounds.mn + bounds.mx) * 0.5f;
+					const float radius =
+						glm::length(bounds.mx - bounds.mn) * 0.5f;
+					const float dist = std::max(radius * 2.2f, 1.0f);
+					const float yaw = glm::radians(35.0f);
+					const float pitch = glm::radians(-18.0f);
+					const glm::vec3 eye = center + dist * glm::vec3(
+						std::cos(pitch) * std::sin(yaw),
+						-std::sin(pitch),
+						std::cos(pitch) * std::cos(yaw));
+					m_cameraPositioner.lookAt(eye, center,
+						glm::vec3(0.0f, 1.0f, 0.0f));
+					std::cerr << "[Scene] pak camera framed: dist=" << dist
+						<< "\n";
+				}
 			}
 		}
 
@@ -3132,6 +3204,10 @@ void SceneRenderer::Shutdown() {
 		std::vector<smvk::ForwardPlusLight> spots, points;
 		bool sunTaken = false;
 		uint32_t staticBakeOnly = 0;
+		// glTF aim axis after the coordFix basis change (coordFix 0
+		// flips Z; a plain -Z read off the conjugated transform aims
+		// 180 degrees off — the Bistro sun seeded the env underground).
+		const glm::vec3 aimAxis = GltfPunctualAimAxis(m_scene.coordFix);
 		for (uint32_t node : nodes) {
 			auto lit = scene.lightForNode.find(node);
 			if (lit == scene.lightForNode.end())
@@ -3160,7 +3236,7 @@ void SceneRenderer::Shutdown() {
 			if (L.type == ::SceneLight::Type::Directional) {
 				if (sunTaken)
 					continue; // single-sun renderer: first directional wins
-				glm::vec3 emis = glm::vec3(G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+				glm::vec3 emis = glm::vec3(G * glm::vec4(aimAxis, 0.0f));
 				if (glm::length(emis) < 1e-6f)
 					continue;
 				emis = glm::normalize(emis);
@@ -3183,8 +3259,8 @@ void SceneRenderer::Shutdown() {
 				pl.functionType = smvk::kForwardPlusFunction_None;
 				points.push_back(pl);
 			}
-			else if (L.type == ::SceneLight::Type::Spot) {
-				glm::vec3 emis = glm::vec3(G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+		else if (L.type == ::SceneLight::Type::Spot) {
+			glm::vec3 emis = glm::vec3(G * glm::vec4(aimAxis, 0.0f));
 				if (glm::length(emis) < 1e-6f)
 					continue;
 				emis = glm::normalize(emis);
@@ -3663,8 +3739,9 @@ void SceneRenderer::Shutdown() {
 				std::cerr << "[Pick] building CPU pick BVH (one-time glTF re-import)...\n";
 				const auto t0 = std::chrono::steady_clock::now();
 				try {
-					smvk::OverlayVfs vfs;
-					vfs.Mount(std::make_shared<smvk::LooseBackend>("content"), 0, "content");
+				smvk::OverlayVfs vfs;
+				vfs.Mount(std::make_shared<smvk::LooseBackend>("content"), 0, "content");
+				vfs.Mount(std::make_shared<smvk::FlintbaseBackend>(), 50, "flintbase");
 					auto cluster = std::make_unique<smvk::Cluster>(nullptr);
 					cluster->SetCookMode(true);
 					GltfToClusterFromVfs(nullptr, vfs, vfsPath, *cluster,
@@ -6476,6 +6553,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			effView = DebugView::Lit;
 		if (effView == DebugView::Uv1 && m_resources.uv1DebugProgram.shaderCount != 2)
 			effView = DebugView::Lit;
+		if (effView == DebugView::Pom && m_resources.pomProgram.shaderCount != 2)
+			effView = DebugView::Lit;
 		const bool meshletDbg = (effView == DebugView::Meshlets);
 		const bool lodDbg = (effView == DebugView::Lods);
 		const bool flatDbg = meshletDbg || lodDbg; // meshDebugProgram path
@@ -6483,7 +6562,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		const bool cascadeDbg = (effView == DebugView::Cascades);
 		const bool vertexColorDbg = (effView == DebugView::VertexColors);
 		const bool uvDbg = (effView == DebugView::Uv0 || effView == DebugView::Uv1);
-		const bool directDbg = unlitDbg || cascadeDbg || vertexColorDbg || uvDbg; // default.vert + debug FS
+		const bool pomDbg = (effView == DebugView::Pom);
+		const bool directDbg = unlitDbg || cascadeDbg || vertexColorDbg || uvDbg || pomDbg; // default.vert + debug FS
 		const bool bypassFilter = (effView != DebugView::Lit);
 		// LOD palette (display colors; pre-scaled by dbgGain like meshlets
 		// so they survive the HDR -> tonemap path).
@@ -6636,9 +6716,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			}
 			);
 		}
-		// Unlit (F2) / cascade (F4) / vertex-color (F6) / UV (F9/F10)
-		// views: every opaque instance direct with the debug fragment
-		// program. Full push per draw (model + materialId over the
+		// Unlit (F2) / cascade (F4) / vertex-color (F6) / UV (F9/F10) /
+		// POM (F11) views: every opaque instance direct with the debug
+		// fragment program. Full push per draw (model + materialId over the
 		// captured frame addresses): the flat debug pushes above clobber
 		// the shared push range, so delta pushes alone would read garbage
 		// frame addresses here.
@@ -6647,6 +6727,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				unlitDbg ? m_resources.unlitProgram
 				: cascadeDbg ? m_resources.cascadeProgram
 				: vertexColorDbg ? m_resources.vertexColorProgram
+				: pomDbg ? m_resources.pomProgram
 				: effView == DebugView::Uv1 ? m_resources.uv1DebugProgram
 				: m_resources.uv0DebugProgram;
 			uint32_t boundMaterial = UINT32_MAX;
@@ -8468,22 +8549,27 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			// changes the frame permanently; toggles are for bisection.
 			// ---------------------------------------------------------
 			if (ImGui::BeginTabItem("Debug")) {
-				if (ImGui::CollapsingHeader("Debug views (bypass GPU cull, F1..F6, F9/F10)", ImGuiTreeNodeFlags_DefaultOpen)) {
-					{
-						const char* viewNames[] = {
-							"F1 Lit", "F2 Unlit", "F3 Meshlets",
-							"F4 Cascades", "F5 LODs", "F6 Vertex Colors",
-							"F9 UV0 (base)", "F10 UV1 (lightmap)",
-						};
-						int view = static_cast<int>(m_debugView);
-						if (ImGui::Combo("Debug view", &view, viewNames, 8))
-							m_debugView = static_cast<DebugView>(view);
-					}
+			if (ImGui::CollapsingHeader("Debug views (bypass GPU cull, F1..F6, F9..F11)", ImGuiTreeNodeFlags_DefaultOpen)) {
+				{
+					const char* viewNames[] = {
+						"F1 Lit", "F2 Unlit", "F3 Meshlets",
+						"F4 Cascades", "F5 LODs", "F6 Vertex Colors",
+						"F9 UV0 (base)", "F10 UV1 (lightmap)",
+						"F11 POM (parallax occlusion)",
+					};
+					int view = static_cast<int>(m_debugView);
+					if (ImGui::Combo("Debug view", &view, viewNames, 9))
+						m_debugView = static_cast<DebugView>(view);
+				}
 					ImGui::TextDisabled("F6 vertex colors: layered materials show normalized weights as R/G/B/Y per layer 0..3;\n"
 						"legacy materials show the raw vertex tint.");
-					ImGui::TextDisabled("F9/F10 UV checkers: base TEXCOORD0 vs lightmap uv2. Magenta glow = huge uv\n"
-						"screen-derivative (lightmap seam corners sweeping across atlas rects).\n"
-						"UV1 stripes magenta when uv2 leaves [0,1] (atlas-space bug).");
+				ImGui::TextDisabled("F9/F10 UV checkers: base TEXCOORD0 vs lightmap uv2. Magenta glow = huge uv\n"
+					"screen-derivative (lightmap seam corners sweeping across atlas rects).\n"
+					"UV1 stripes magenta when uv2 leaves [0,1] (atlas-space bug).");
+				ImGui::TextDisabled("F11 POM: ray-marched parallax uv through the occlusion-map heightfield\n"
+					"(AO 1 = surface, 0 = cavity) + sun self-shadowing. Sun/sky shading at the displaced\n"
+					"uv; baked GI / decals / forward+ off so the only delta vs F1 is the technique itself.\n"
+					"Materials without an occlusion map degenerate to plain sampling.");
 					ImGui::TextDisabled("GI bisection: N isolates the ambient source (All -> Lightmaps -> Probes ->\n"
 						"SkyIbl -> Off); R / F8 cycle the GI debug views (flat irradiance, source palette).\n"
 						"Both work in every ambient mode.");

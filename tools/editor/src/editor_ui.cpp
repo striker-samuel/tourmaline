@@ -13,7 +13,14 @@
 
 #include <glm/gtc/type_ptr.hpp>
 
+#include <Engine/Asset/pak.h>
+
 #include <imgui.h>
+
+#include <ktx.h>
+
+#include <cmath>
+#include <cstdint>
 
 namespace editor {
 namespace {
@@ -101,11 +108,36 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 		ImGuiCond_Always);
 	ImGui::SetNextWindowSize(ImVec2(kRightW, vh - menuH - 170),
 		ImGuiCond_Always);
-	if (ImGui::Begin("Inspector + Cook", nullptr,
+	if (ImGui::Begin("Inspector", nullptr,
 		ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse)) {
-		DrawInspector();
-		ImGui::Separator();
-		DrawCookPanel();
+		if (ImGui::BeginTabBar("##rightTabs")) {
+			if (ImGui::BeginTabItem("Inspector")) {
+				m_rightTab = 0;
+				DrawInspector();
+				ImGui::EndTabItem();
+			}
+			if (ImGui::BeginTabItem("UV")) {
+				m_rightTab = 1;
+				DrawUvPanel();
+				ImGui::EndTabItem();
+			}
+			if (ImGui::BeginTabItem("Cook")) {
+				m_rightTab = 2;
+				DrawCookPanel();
+				ImGui::EndTabItem();
+			}
+			if (ImGui::BeginTabItem("Bake")) {
+				m_rightTab = 3;
+				DrawLightmapPanel();
+				ImGui::EndTabItem();
+			}
+			if (ImGui::BeginTabItem("Textures")) {
+				m_rightTab = 4;
+				DrawTexturePanel();
+				ImGui::EndTabItem();
+			}
+			ImGui::EndTabBar();
+		}
 	}
 	ImGui::End();
 
@@ -119,17 +151,30 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	ImGui::End();
 
 	DrawViewportOverlay(targetExtent);
+	DrawPlayBar();
 	DrawFlintbasePanel();
 }
 
 void EditorApp::DrawMenuBar() {
 	if (ImGui::BeginMenu("File")) {
+		if (ImGui::MenuItem("Open scene... (.gltf/.pak)"))
+			m_showOpenDialog = true;
 		if (ImGui::MenuItem("Open glTF..."))
 			m_showOpenDialog = true;
-		if (ImGui::MenuItem("Save tour"))
-			SaveTour();
+		if (ImGui::MenuItem("Open .pak (cooked)..."))
+			m_showOpenDialog = true;
+		if (ImGui::MenuItem("Save tour...")) {
+			std::snprintf(m_savePathBuf, sizeof(m_savePathBuf),
+				"%s", TourTarget().c_str());
+			m_showSaveDialog = true;
+		}
+		if (ImGui::MenuItem("Save tour incremental", "Ctrl+Alt+S"))
+			SaveTourIncremental();
 		if (ImGui::MenuItem("Cook to .pak"))
 			CookToPak();
+		if (ImGui::MenuItem("Run in App", nullptr, false,
+			!m_runRunning && !RunArgs().empty()))
+			RunInApp();
 		ImGui::Separator();
 		if (ImGui::MenuItem("Quit"))
 			RequestClose();
@@ -147,22 +192,30 @@ void EditorApp::DrawMenuBar() {
 		ImGui::EndMenu();
 	}
 	if (ImGui::BeginMenu("View")) {
-		if (ImGui::MenuItem("Unlit (diffuse)", nullptr,
+		if (ImGui::MenuItem("Unlit (diffuse)", "F2",
 			m_viewMode == ViewMode::Unlit))
 			m_viewMode = ViewMode::Unlit;
-		if (ImGui::MenuItem("Lit", nullptr, m_viewMode == ViewMode::Lit))
+		if (ImGui::MenuItem("Lit", "F1", m_viewMode == ViewMode::Lit))
 			m_viewMode = ViewMode::Lit;
-		if (ImGui::MenuItem("Lit + shadows", nullptr,
+		if (ImGui::MenuItem("Lit + shadows", "F3",
 			m_viewMode == ViewMode::LitShadows))
 			m_viewMode = ViewMode::LitShadows;
+		if (ImGui::MenuItem("Baked irradiance", "F8",
+			m_viewMode == ViewMode::Baked, m_lmGpu))
+			m_viewMode = ViewMode::Baked;
 		ImGui::Separator();
-		if (ImGui::MenuItem("UV0", "F4", m_viewMode == ViewMode::Uv0))
+		if (ImGui::MenuItem("UV0", "F9", m_viewMode == ViewMode::Uv0))
 			m_viewMode = ViewMode::Uv0;
-		if (ImGui::MenuItem("UV1 (lightmap)", "F5", m_viewMode == ViewMode::Uv1))
+		if (ImGui::MenuItem("UV1 (lightmap)", "F10", m_viewMode == ViewMode::Uv1))
 			m_viewMode = ViewMode::Uv1;
 		if (ImGui::MenuItem("Vertex colors", "F6",
 			m_viewMode == ViewMode::VertexColors))
 			m_viewMode = ViewMode::VertexColors;
+		ImGui::Separator();
+		if (ImGui::MenuItem(
+				("UV inset: " + std::string(SecondViewName(m_secondView))).c_str(),
+				"F5"))
+			m_secondView = SecondView((int(m_secondView) + 1) % 3);
 		ImGui::Separator();
 		if (ImGui::MenuItem("Translate gizmo", "1",
 			m_gizmoMode == GizmoMode::Translate))
@@ -183,22 +236,29 @@ void EditorApp::DrawMenuBar() {
 			m_showFlintbasePanel = !m_showFlintbasePanel;
 		ImGui::Separator();
 		ImGui::MenuItem("Selection wire overlay", nullptr, &m_wireOverlay);
+		if (ImGui::MenuItem("Light gizmos", "L", m_showLightGizmos))
+			m_showLightGizmos = !m_showLightGizmos;
 		if (ImGui::MenuItem("Panels visible", nullptr, m_uiMode))
 			m_uiMode = !m_uiMode;
 		ImGui::EndMenu();
 	}
 
 	if (m_showOpenDialog) {
-		ImGui::OpenPopup("Open glTF");
+		ImGui::OpenPopup("Open scene");
 		m_showOpenDialog = false;
 	}
 	DrawOpenDialog();
+	if (m_showSaveDialog) {
+		ImGui::OpenPopup("Save tour as");
+		m_showSaveDialog = false;
+	}
+	DrawSaveDialog();
 }
 
 void EditorApp::DrawOpenDialog() {
 	namespace fs = std::filesystem;
 	ImGui::SetNextWindowSize(ImVec2(620, 420), ImGuiCond_FirstUseEver);
-	if (!ImGui::BeginPopupModal("Open glTF", nullptr,
+	if (!ImGui::BeginPopupModal("Open scene", nullptr,
 		ImGuiWindowFlags_NoCollapse))
 		return;
 	auto closeDlg = [&]() {
@@ -238,9 +298,13 @@ void EditorApp::DrawOpenDialog() {
 			const fs::directory_entry& e = *it;
 			if (e.is_directory(ec))
 				dirs.push_back(e);
-			else if (e.is_regular_file(ec) &&
-				e.path().extension() == ".gltf")
-				files.push_back(e);
+			else if (e.is_regular_file(ec)) {
+				const std::string ext =
+					e.path().extension().string();
+				if (ext == ".gltf" || ext == ".GLTF" ||
+					ext == ".pak" || ext == ".PAK")
+					files.push_back(e);
+			}
 		}
 		auto byName = [](const fs::directory_entry& a,
 			const fs::directory_entry& b) {
@@ -288,7 +352,7 @@ void EditorApp::DrawOpenDialog() {
 				ImGui::SetItemDefaultFocus();
 			if (ImGui::IsItemHovered() &&
 				ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-				LoadGltfIntoWorld(full);
+				OpenScene(full);
 				closeDlg();
 				ImGui::EndChild();
 				ImGui::EndPopup();
@@ -303,7 +367,7 @@ void EditorApp::DrawOpenDialog() {
 		if (!m_browseSel.empty())
 			std::snprintf(m_openPathBuf, sizeof(m_openPathBuf),
 				"%s", m_browseSel.c_str());
-		LoadGltfIntoWorld(m_openPathBuf);
+		OpenScene(m_openPathBuf);
 		closeDlg();
 	}
 	ImGui::SameLine();
@@ -312,9 +376,177 @@ void EditorApp::DrawOpenDialog() {
 	ImGui::EndPopup();
 }
 
+void EditorApp::DrawSaveDialog() {
+	namespace fs = std::filesystem;
+	ImGui::SetNextWindowSize(ImVec2(620, 420), ImGuiCond_FirstUseEver);
+	if (!ImGui::BeginPopupModal("Save tour as", nullptr,
+		ImGuiWindowFlags_NoCollapse))
+		return;
+	auto closeDlg = [&]() {
+		m_saveBrowseDir.clear();
+		m_saveBrowseSel.clear();
+		ImGui::CloseCurrentPopup();
+	};
+	if (m_saveBrowseDir.empty()) {
+		// First frame: start from the target field's parent dir.
+		std::error_code ec;
+		fs::path d = fs::path(m_savePathBuf).parent_path();
+		if (d.empty())
+			d = fs::current_path(ec);
+		if (!fs::is_directory(d, ec))
+			d = ".";
+		m_saveBrowseDir = d.string();
+	}
+	ImGui::InputText("##savepath", m_savePathBuf, sizeof(m_savePathBuf));
+	ImGui::SameLine();
+	if (ImGui::Button("Up")) {
+		std::error_code ec;
+		fs::path p(m_saveBrowseDir);
+		if (p.has_parent_path()) {
+			fs::path up = p.parent_path();
+			if (fs::is_directory(up, ec))
+				m_saveBrowseDir = up.string();
+		}
+		m_saveBrowseSel.clear();
+	}
+	ImGui::TextDisabled("%s", m_saveBrowseDir.c_str());
+	ImGui::BeginChild("##savebrowse", ImVec2(0, -60), true);
+	{
+		std::error_code ec;
+		std::vector<fs::directory_entry> dirs, files;
+		for (fs::directory_iterator it(m_saveBrowseDir, ec), end;
+			!ec && it != end; it.increment(ec)) {
+			const fs::directory_entry& e = *it;
+			if (e.is_directory(ec))
+				dirs.push_back(e);
+			else if (e.is_regular_file(ec) &&
+				e.path().extension() == ".tour")
+				files.push_back(e);
+		}
+		auto byName = [](const fs::directory_entry& a,
+			const fs::directory_entry& b) {
+			return a.path().filename().string() <
+				b.path().filename().string();
+		};
+		std::sort(dirs.begin(), dirs.end(), byName);
+		std::sort(files.begin(), files.end(), byName);
+		if (ImGui::Selectable("[..]", false,
+			ImGuiSelectableFlags_AllowDoubleClick)) {
+			if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+				fs::path p(m_saveBrowseDir);
+				if (p.has_parent_path()) {
+					fs::path up = p.parent_path();
+					if (fs::is_directory(up, ec))
+						m_saveBrowseDir = up.string();
+				}
+				m_saveBrowseSel.clear();
+			}
+		}
+		char label[512];
+		for (auto& d : dirs) {
+			const std::string name = d.path().filename().string();
+			std::snprintf(label, sizeof(label), "[%s]", name.c_str());
+			if (ImGui::Selectable(label, false,
+				ImGuiSelectableFlags_AllowDoubleClick)) {
+				if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+					m_saveBrowseDir = d.path().string();
+					m_saveBrowseSel.clear();
+				}
+			}
+		}
+		for (auto& f : files) {
+			const std::string full = f.path().string();
+			const std::string name = f.path().filename().string();
+			const bool sel = (m_saveBrowseSel == full);
+			if (ImGui::Selectable(name.c_str(), sel,
+				ImGuiSelectableFlags_AllowDoubleClick)) {
+				m_saveBrowseSel = full;
+				std::snprintf(m_savePathBuf, sizeof(m_savePathBuf),
+					"%s", full.c_str());
+			}
+			if (sel)
+				ImGui::SetItemDefaultFocus();
+			if (ImGui::IsItemHovered() &&
+				ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+				if (SaveTourTo(full))
+					Log("Tour saved: " + full);
+				closeDlg();
+				ImGui::EndChild();
+				ImGui::EndPopup();
+				return;
+			}
+		}
+	}
+	ImGui::EndChild();
+	ImGui::TextDisabled("%s",
+		m_saveBrowseSel.empty() ? "type a name or pick a file" : m_saveBrowseSel.c_str());
+	if (ImGui::Button("Save")) {
+		std::string target = m_saveBrowseSel.empty()
+			? std::string(m_savePathBuf) : m_saveBrowseSel;
+		if (!target.empty()) {
+			if (fs::path(target).extension() != ".tour")
+				target += ".tour";
+			if (SaveTourTo(target))
+				Log("Tour saved: " + target);
+		}
+		closeDlg();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Cancel"))
+		closeDlg();
+	ImGui::EndPopup();
+}
+
+std::string EditorApp::ResolveVfsRoot() {
+	// Prefer the content dir the current scene came from, else ./content.
+	std::string posix = m_gltfPath;
+	for (char& c : posix)
+		if (c == '\\')
+			c = '/';
+	if (const size_t at = posix.find("content/");
+		at != std::string::npos && !m_gltfPath.empty())
+		return posix.substr(0, at + 7); // keep trailing "content/"
+	std::error_code ec;
+	if (std::filesystem::is_directory("content", ec))
+		return "content";
+	return ".";
+}
+
+bool EditorApp::PakSelected() const {
+	// Pak options appear only for pak-related outliner selections: the
+	// loaded-pak root / its TOC entries, or a .pak file on disk.
+	if (m_outlinerTab != 1 || m_vfsSel.empty())
+		return false;
+	if (m_vfsSel == "pak:" || m_vfsSel.rfind("pak:", 0) == 0)
+		return !m_pakPath.empty();
+	if (m_vfsSel.rfind("disk:", 0) == 0) {
+		const std::string p = m_vfsSel.substr(5);
+		return p.size() >= 4 &&
+			(p.compare(p.size() - 4, 4, ".pak") == 0 ||
+				p.compare(p.size() - 4, 4, ".PAK") == 0);
+	}
+	return false;
+}
+
 void EditorApp::DrawOutliner() {
+	if (ImGui::BeginTabBar("##outlinerTabs")) {
+		if (ImGui::BeginTabItem("Scene")) {
+			m_outlinerTab = 0;
+			DrawSceneOutliner();
+			ImGui::EndTabItem();
+		}
+		if (ImGui::BeginTabItem("VFS")) {
+			m_outlinerTab = 1;
+			DrawVfsOutliner();
+			ImGui::EndTabItem();
+		}
+		ImGui::EndTabBar();
+	}
+}
+
+void EditorApp::DrawSceneOutliner() {
 	if (!m_world || m_world->scene.hierarchy.empty()) {
-		ImGui::TextDisabled("No scene. File > Open glTF...");
+		ImGui::TextDisabled("No scene. File > Open scene... (.gltf/.pak)");
 		return;
 	}
 	ImGui::InputTextWithHint("##filter", "filter nodes...",
@@ -334,9 +566,10 @@ void EditorApp::DrawOutliner() {
 			ImGui::PushID(int(n));
 			const bool sel = (n == m_selected);
 			char label[256];
-			std::snprintf(label, sizeof(label), "%u: %s%s", n,
+			std::snprintf(label, sizeof(label), "%u: %s%s%s", n,
 				name.empty() ? "(unnamed)" : name.c_str(),
-				m_world->scene.meshForNode.contains(n) ? " [mesh]" : "");
+				m_world->scene.meshForNode.contains(n) ? " [mesh]" : "",
+				FindNodeLight(n) ? " [light]" : "");
 			if (ImGui::Selectable(label, sel))
 				m_selected = n;
 			if (sel && n == m_revealNode)
@@ -366,6 +599,255 @@ void EditorApp::DrawOutliner() {
 	m_revealNode = UINT32_MAX;
 }
 
+namespace {
+ImVec4 VfsFileColor(const std::string& ext) {
+	if (ext == ".gltf" || ext == ".GLTF")
+		return ImVec4(0.45f, 0.9f, 1.0f, 1.0f);
+	if (ext == ".pak" || ext == ".PAK")
+		return ImVec4(1.0f, 0.65f, 0.25f, 1.0f);
+	if (ext == ".sglm" || ext == ".sggi" || ext == ".sgrv")
+		return ImVec4(0.8f, 0.55f, 1.0f, 1.0f);
+	if (ext == ".tour")
+		return ImVec4(0.6f, 1.0f, 0.6f, 1.0f);
+	return ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
+}
+constexpr ImVec4 kVfsDirColor{ 1.0f, 0.85f, 0.4f, 1.0f };
+constexpr ImVec4 kVfsInPakColor{ 1.0f, 0.65f, 0.25f, 1.0f };
+} // namespace
+
+void EditorApp::DrawVfsDir(const std::string& dir, int depth) {
+	namespace fs = std::filesystem;
+	if (depth > 6)
+		return;
+	std::error_code ec;
+	std::vector<fs::directory_entry> dirs, files;
+	for (fs::directory_iterator it(dir, ec), end;
+		!ec && it != end; it.increment(ec)) {
+		const fs::directory_entry& e = *it;
+		if (e.is_directory(ec))
+			dirs.push_back(e);
+		else if (e.is_regular_file(ec))
+			files.push_back(e);
+	}
+	auto byName = [](const fs::directory_entry& a,
+		const fs::directory_entry& b) {
+		return a.path().filename().string() <
+			b.path().filename().string();
+	};
+	std::sort(dirs.begin(), dirs.end(), byName);
+	std::sort(files.begin(), files.end(), byName);
+	for (auto& d : dirs) {
+		const std::string full = d.path().string();
+		const std::string name = d.path().filename().string();
+		ImGui::PushID(full.c_str());
+		ImGui::PushStyleColor(ImGuiCol_Text, kVfsDirColor);
+		const bool open = ImGui::TreeNodeEx(name.c_str(),
+			ImGuiTreeNodeFlags_OpenOnArrow |
+			ImGuiTreeNodeFlags_OpenOnDoubleClick);
+		ImGui::PopStyleColor();
+		if (open) {
+			DrawVfsDir(full, depth + 1);
+			ImGui::TreePop();
+		}
+		ImGui::PopID();
+	}
+	size_t shown = 0;
+	for (auto& f : files) {
+		if (++shown > 500) {
+			ImGui::TextDisabled("... (%zu more)", files.size() - 500);
+			break;
+		}
+		const std::string full = f.path().string();
+		const std::string name = f.path().filename().string();
+		const std::string ext = f.path().extension().string();
+		const bool openable = ext == ".gltf" || ext == ".GLTF" ||
+			ext == ".pak" || ext == ".PAK";
+		const bool sel = (m_vfsSel == "disk:" + full);
+		ImGui::PushID(full.c_str());
+		ImGui::PushStyleColor(ImGuiCol_Text, VfsFileColor(ext));
+		if (ImGui::Selectable(name.c_str(), sel,
+			ImGuiSelectableFlags_AllowDoubleClick))
+			m_vfsSel = "disk:" + full;
+		ImGui::PopStyleColor();
+		if (sel)
+			ImGui::SetItemDefaultFocus();
+		if (openable && ImGui::IsItemHovered() &&
+			ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+			OpenScene(full);
+		ImGui::PopID();
+	}
+}
+
+void EditorApp::DrawVfsOutliner() {
+	namespace fs = std::filesystem;
+	if (m_vfsRoot.empty())
+		m_vfsRoot = ResolveVfsRoot();
+	ImGui::TextDisabled("legend:");
+	ImGui::SameLine();
+	ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.75f, 1.0f), "loose");
+	ImGui::SameLine();
+	ImGui::TextDisabled("/");
+	ImGui::SameLine();
+	ImGui::TextColored(kVfsInPakColor, "in pak");
+	ImGui::TextDisabled("root: %s", m_vfsRoot.c_str());
+	ImGui::BeginChild("##vfsTree", ImVec2(0, -110), true);
+	// Loaded pak: virtual subtree from the cached reader (orange = inside;
+	// never re-parsed per frame).
+	if (!m_pakPath.empty() && m_pakReader) {
+		const smvk::PakReader& reader = *m_pakReader;
+		const std::string pakName =
+			fs::path(m_pakPath).filename().string();
+		ImGui::PushID("##loadedpak");
+		ImGui::PushStyleColor(ImGuiCol_Text, kVfsInPakColor);
+		const bool open = ImGui::TreeNodeEx(
+			(" [pak] " + pakName).c_str(),
+			ImGuiTreeNodeFlags_OpenOnArrow |
+			ImGuiTreeNodeFlags_OpenOnDoubleClick);
+		ImGui::PopStyleColor();
+		if (ImGui::IsItemClicked(ImGuiMouseButton_Left) &&
+			!ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+			m_vfsSel = "pak:";
+		if (open) {
+			// Scenes first: named, double-click loads that index.
+			ImGui::PushID("##scenes");
+			const bool sopen = ImGui::TreeNodeEx("Scenes",
+				ImGuiTreeNodeFlags_OpenOnArrow);
+			ImGui::SameLine();
+			ImGui::TextDisabled("(%zu)", m_pakScenes.size());
+			if (sopen) {
+				for (size_t i = 0; i < m_pakScenes.size(); ++i) {
+					const auto& si = m_pakScenes[i];
+					char label[320];
+					std::snprintf(label, sizeof(label), "[%zu] %s (%u nodes)%s",
+						i, si.name.empty() ? "<unnamed>" : si.name.c_str(),
+						si.nodes,
+						i == m_pakSceneIndex ? "  [loaded]" : "");
+					const bool sel = (m_vfsSel == "pak:" + si.tocPath);
+					ImGui::PushID(si.tocPath.c_str());
+					ImGui::PushStyleColor(ImGuiCol_Text, kVfsInPakColor);
+					if (ImGui::Selectable(label, sel,
+						ImGuiSelectableFlags_AllowDoubleClick))
+						m_vfsSel = "pak:" + si.tocPath;
+					ImGui::PopStyleColor();
+					if (ImGui::IsItemHovered() &&
+						ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
+						uint32_t(i) != m_pakSceneIndex)
+						LoadPakIntoWorld(m_pakPath, uint32_t(i));
+					ImGui::PopID();
+				}
+				ImGui::TreePop();
+			}
+			ImGui::PopID();
+			struct KindGroup {
+				const char* label;
+				smvk::PakAssetKind kind;
+			};
+			static const KindGroup kGroups[] = {
+				{ "Meshes", smvk::PakAssetKind::Mesh },
+				{ "Materials", smvk::PakAssetKind::Material },
+				{ "Textures", smvk::PakAssetKind::Texture },
+				{ "Lights", smvk::PakAssetKind::Light },
+			};
+			for (const auto& g : kGroups) {
+				const auto blobs = reader.BlobsOfKind(g.kind);
+				ImGui::PushID(g.label);
+				const bool gopen = ImGui::TreeNodeEx(g.label,
+					ImGuiTreeNodeFlags_OpenOnArrow);
+				ImGui::SameLine();
+				ImGui::TextDisabled("(%zu)", blobs.size());
+				if (gopen) {
+					size_t shown = 0;
+					for (const smvk::PakTocEntry* e : blobs) {
+						if (++shown > 200) {
+							ImGui::TextDisabled("... (%zu more)",
+								blobs.size() - 200);
+							break;
+						}
+						const bool sel =
+							(m_vfsSel == "pak:" + e->path);
+						ImGui::PushID(e->path.c_str());
+						ImGui::PushStyleColor(ImGuiCol_Text,
+							kVfsInPakColor);
+						if (ImGui::Selectable(
+								fs::path(e->path).filename().string().c_str(),
+								sel))
+							m_vfsSel = "pak:" + e->path;
+						ImGui::PopStyleColor();
+						if (ImGui::IsItemHovered())
+							ImGui::SetTooltip("%s", e->path.c_str());
+						ImGui::PopID();
+					}
+					ImGui::TreePop();
+				}
+				ImGui::PopID();
+			}
+			ImGui::TreePop();
+		}
+		ImGui::PopID();
+		ImGui::Separator();
+	}
+	DrawVfsDir(m_vfsRoot, 0);
+	ImGui::EndChild();
+	DrawPakBox();
+}
+
+void EditorApp::DrawPakBox() {
+	namespace fs = std::filesystem;
+	if (!PakSelected())
+		return; // pak options appear only on pak selection
+	ImGui::Separator();
+	ImGui::Text("Pak");
+	if (m_vfsSel == "pak:") {
+		ImGui::TextWrapped("%s", m_pakPath.c_str());
+		if (ImGui::Button("Dump manifest"))
+			DumpPakManifest();
+		ImGui::SameLine();
+		if (ImGui::Button("Reload sibling atlas"))
+			TryLoadSiblingSglm(m_pakPath);
+	}
+	else if (m_vfsSel.rfind("pak:", 0) == 0) {
+		ImGui::TextWrapped("in %s",
+			fs::path(m_pakPath).filename().string().c_str());
+		const std::string toc = m_vfsSel.substr(4);
+		int sceneIdx = -1;
+		for (size_t i = 0; i < m_pakScenes.size(); ++i)
+			if (m_pakScenes[i].tocPath == toc)
+				sceneIdx = int(i);
+		if (sceneIdx >= 0) {
+			ImGui::Text("scene[%d] '%s' (%u nodes)", sceneIdx,
+				m_pakScenes[size_t(sceneIdx)].name.c_str(),
+				m_pakScenes[size_t(sceneIdx)].nodes);
+			if (uint32_t(sceneIdx) != m_pakSceneIndex &&
+				ImGui::Button("Load scene"))
+				LoadPakIntoWorld(m_pakPath, uint32_t(sceneIdx));
+			else if (uint32_t(sceneIdx) == m_pakSceneIndex)
+				ImGui::TextDisabled("currently loaded.");
+		}
+		else {
+			ImGui::TextWrapped("%s", toc.c_str());
+			ImGui::TextDisabled("entries inside a pak are read-only;");
+			ImGui::TextDisabled("Dump manifest lists the full table.");
+		}
+		if (ImGui::Button("Dump manifest"))
+			DumpPakManifest();
+	}
+	else if (m_vfsSel.rfind("disk:", 0) == 0) {
+		const std::string full = m_vfsSel.substr(5);
+		ImGui::TextWrapped("%s", full.c_str());
+		std::error_code ec;
+		const uint64_t bytes = fs::is_regular_file(full, ec)
+			? uint64_t(fs::file_size(full, ec)) : 0;
+		if (bytes != 0)
+			ImGui::TextDisabled("%.1f MiB on disk",
+				double(bytes) / (1024.0 * 1024.0));
+		if (!m_pakPath.empty() &&
+			fs::equivalent(full, m_pakPath, ec))
+			ImGui::TextDisabled("already loaded.");
+		else if (ImGui::Button("Load in editor"))
+			OpenScene(full);
+	}
+}
+
 void EditorApp::DrawOutlinerNode(uint32_t node,
 	const std::unordered_set<uint32_t>* expandSet) {
 	const Scene& scene = m_world->scene;
@@ -381,9 +863,16 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 		flags |= ImGuiTreeNodeFlags_Leaf;
 	if (expandSet && expandSet->contains(node))
 		ImGui::SetNextItemOpen(true);
+	const ::SceneLight* nodeLight = FindNodeLight(node);
+	char lightTag[16] = "";
+	if (nodeLight) {
+		std::snprintf(lightTag, sizeof(lightTag), " [%s]",
+			nodeLight->type == ::SceneLight::Type::Directional ? "sun" :
+			nodeLight->type == ::SceneLight::Type::Spot ? "spot" : "point");
+	}
 	char label[256];
-	std::snprintf(label, sizeof(label), "%s%s%s", name.empty() ? "(node)" : name.c_str(),
-		hasMesh ? " [mesh]" : "",
+	std::snprintf(label, sizeof(label), "%s%s%s%s", name.empty() ? "(node)" : name.c_str(),
+		hasMesh ? " [mesh]" : "", lightTag,
 		IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "");
 	const bool open = ImGui::TreeNodeEx(label, flags);
 	// Drag source (reparent by drop).
@@ -418,6 +907,206 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 		ImGui::TreePop();
 	}
 	ImGui::PopID();
+}
+
+// ---- Diffuse texture preview ------------------------------------------
+// Resolves the material's baseColor slot (values.textures.x, an RHI pool
+// index) back to its asset URI via the owning cluster's texture registry,
+// then CPU-decodes the stashed .ktx2 source (same libktx path as the GI
+// bakers) into a small sRGB thumbnail. Single-entry cache: selections
+// change rarely, decodes cost a few ms once.
+const EditorApp::TexPreview& EditorApp::ResolveDiffusePreview(uint32_t matWorld) {
+	TexPreview& pv = m_texPreview;
+	smvk::Material* mat = m_world ? m_world->GetMaterial(matWorld) : nullptr;
+	smvk::Cluster* cluster = nullptr;
+	int slot = -1;
+	if (mat && matWorld < m_world->materialLocations.size()) {
+		cluster = m_world->materialLocations[matWorld].cluster;
+		slot = mat->values.textures.x;
+	}
+	std::string uri;
+	const std::vector<uint8_t>* src = nullptr;
+	if (cluster && slot >= 0) {
+		for (const auto& [u, h] : cluster->ListTextureUris()) {
+			if (int(h.index()) == slot) {
+				uri = u.Str();
+				break;
+			}
+		}
+		if (!uri.empty())
+			src = cluster->GetTextureSource(smvk::StringViewT(uri));
+	}
+	const size_t srcBytes = src ? src->size() : 0;
+	if (pv.cluster == cluster && pv.slot == slot && pv.srcBytes == srcBytes &&
+		(!pv.status.empty() || pv.ok))
+		return pv; // cache hit (status is always set after a resolve)
+	pv = TexPreview{};
+	pv.cluster = cluster;
+	pv.slot = slot;
+	pv.srcBytes = srcBytes;
+	if (!mat) {
+		pv.status = "no material";
+		return pv;
+	}
+	if (slot < 0) {
+		pv.status = "no diffuse texture (factor only)";
+		return pv;
+	}
+	if (!cluster) {
+		pv.status = "no owning cluster";
+		return pv;
+	}
+	if (uri.empty()) {
+		pv.status = "slot has no registered texture";
+		return pv;
+	}
+	pv.uri = uri;
+	if (!src || src->empty()) {
+		pv.status = "no stashed source bytes for '" + uri + "'";
+		return pv;
+	}
+	ktxTexture2* raw = nullptr;
+	if (ktxTexture2_CreateFromMemory(src->data(),
+			static_cast<ktx_size_t>(src->size()),
+			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &raw) != KTX_SUCCESS) {
+		pv.status = "KTX parse failed";
+		return pv;
+	}
+	struct Guard {
+		ktxTexture2* t;
+		~Guard() { if (t) ktxTexture2_Destroy(t); }
+	} guard{ raw };
+	if (ktxTexture2_NeedsTranscoding(raw)) {
+		if (ktxTexture2_TranscodeBasis(raw, KTX_TTF_RGBA32, 0) != KTX_SUCCESS) {
+			pv.status = "basis transcode failed";
+			return pv;
+		}
+	}
+	// 8-bit 1-4 channel data (transcoded RGBA32 lands here too: 4
+	// comps, 4-byte texels). NOTE: GetElementSize is bytes per TEXEL,
+	// not per component — RGBA8 reports 4.
+	const ktx_uint32_t comps = ktxTexture2_GetNumComponents(raw);
+	const ktx_size_t elemSize =
+		ktxTexture_GetElementSize(reinterpret_cast<ktxTexture*>(raw));
+	if (comps < 1 || comps > 4 || elemSize != ktx_size_t(comps)) {
+		char fbuf[128];
+		std::snprintf(fbuf, sizeof(fbuf),
+			"unsupported pixel format (comps=%u elem=%u B)",
+			comps, unsigned(elemSize));
+		pv.status = fbuf;
+		return pv;
+	}
+	// Smallest mip that still covers the thumbnail: less to downsample.
+	ktx_uint32_t level = 0;
+	while (level + 1 < raw->numLevels) {
+		const ktx_uint32_t nw =
+			std::max<ktx_uint32_t>(raw->baseWidth >> (level + 1), 1u);
+		const ktx_uint32_t nh =
+			std::max<ktx_uint32_t>(raw->baseHeight >> (level + 1), 1u);
+		if (std::max(nw, nh) < 48)
+			break;
+		++level;
+	}
+	const ktx_uint32_t w =
+		std::max<ktx_uint32_t>(raw->baseWidth >> level, 1u);
+	const ktx_uint32_t h =
+		std::max<ktx_uint32_t>(raw->baseHeight >> level, 1u);
+	ktx_size_t offset = 0;
+	if (ktxTexture2_GetImageOffset(raw, level, 0, 0, &offset) != KTX_SUCCESS) {
+		pv.status = "mip offset failed";
+		return pv;
+	}
+	const ktx_size_t rowPitch =
+		ktxTexture_GetRowPitch(reinterpret_cast<ktxTexture*>(raw), level);
+	if (rowPitch < ktx_size_t(w) * comps) {
+		pv.status = "bad mip stride";
+		return pv;
+	}
+	const uint8_t* base = raw->pData + offset;
+	// Thumbnail grid: fit the long side into 44 texels, box-filtered.
+	const float scale = std::min(1.0f, 44.0f / float(std::max(w, h)));
+	pv.gridW = std::max<uint32_t>(uint32_t(std::round(float(w) * scale)), 1u);
+	pv.gridH = std::max<uint32_t>(uint32_t(std::round(float(h) * scale)), 1u);
+	pv.rgba.assign(size_t(pv.gridW) * pv.gridH, 0xFF000000u);
+	for (uint32_t gy = 0; gy < pv.gridH; ++gy) {
+		const uint32_t y0 = gy * h / pv.gridH, y1 = (gy + 1) * h / pv.gridH;
+		for (uint32_t gx = 0; gx < pv.gridW; ++gx) {
+			const uint32_t x0 = gx * w / pv.gridW, x1 = (gx + 1) * w / pv.gridW;
+			uint64_t r = 0, g = 0, b = 0, a = 0, n = 0;
+			for (uint32_t y = y0; y < y1; ++y) {
+				const uint8_t* row = base + size_t(y) * size_t(rowPitch);
+				for (uint32_t x = x0; x < x1; ++x) {
+					const uint8_t* px = row + size_t(x) * comps;
+					// Missing channels replicate sensibly (R/RG data shows
+					// as grayscale-ish rather than black).
+					r += px[0];
+					g += (comps >= 2) ? px[1] : px[0];
+					b += (comps >= 3) ? px[2] : px[0];
+					a += (comps >= 4) ? px[3] : 255;
+					++n;
+				}
+			}
+			if (n == 0)
+				n = 1;
+			pv.rgba[size_t(gy) * pv.gridW + gx] =
+				(uint32_t(r / n)) | (uint32_t(g / n) << 8) |
+				(uint32_t(b / n) << 16) | (uint32_t(a / n) << 24);
+		}
+	}
+	pv.imgW = w;
+	pv.imgH = h;
+	pv.ok = true;
+	char buf[256];
+	std::snprintf(buf, sizeof(buf), "%s (%ux%u mip %u)", uri.c_str(),
+		raw->baseWidth, std::max<ktx_uint32_t>(raw->baseHeight, 1u),
+		level);
+	pv.status = buf;
+	return pv;
+}
+
+void EditorApp::DrawDiffusePreview(uint32_t matWorld, const glm::vec4& tint) {
+	const TexPreview& pv = ResolveDiffusePreview(matWorld);
+	if (!pv.ok) {
+		ImGui::ColorButton("##matPreview",
+			ImVec4(tint.x, tint.y, tint.z, tint.w),
+			ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoTooltip,
+			ImVec2(64, 64));
+		return;
+	}
+	// Aspect-kept thumbnail (long side 120 px) over a checkerboard so
+	// alpha reads honestly; pixels are sRGB bytes, tinted by the
+	// baseColor factor exactly like the lit shader multiplies map * factor.
+	const float maxPx = 120.0f;
+	const float dw = (pv.gridW >= pv.gridH)
+		? maxPx : maxPx * float(pv.gridW) / float(pv.gridH);
+	const float dh = (pv.gridH >= pv.gridW)
+		? maxPx : maxPx * float(pv.gridH) / float(pv.gridW);
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+	const ImVec2 p0 = ImGui::GetCursorScreenPos();
+	const float cw = dw / float(pv.gridW), ch = dh / float(pv.gridH);
+	for (uint32_t y = 0; y < pv.gridH; ++y) {
+		for (uint32_t x = 0; x < pv.gridW; ++x) {
+			const uint32_t px = pv.rgba[size_t(y) * pv.gridW + x];
+			const float a = float((px >> 24) & 255) / 255.0f;
+			const float sr = float(px & 255) / 255.0f * tint.x;
+			const float sg = float((px >> 8) & 255) / 255.0f * tint.y;
+			const float sb = float((px >> 16) & 255) / 255.0f * tint.z;
+			const bool light =
+				((int(float(x) * cw / 12.0f) + int(float(y) * ch / 12.0f)) & 1) == 0;
+			const float cb = light ? 0.65f : 0.3f;
+			dl->AddRectFilled(
+				ImVec2(p0.x + float(x) * cw, p0.y + float(y) * ch),
+				ImVec2(p0.x + float(x + 1) * cw + 0.5f,
+					p0.y + float(y + 1) * ch + 0.5f),
+				IM_COL32(
+					int((sr * a + cb * (1.0f - a)) * 255.0f),
+					int((sg * a + cb * (1.0f - a)) * 255.0f),
+					int((sb * a + cb * (1.0f - a)) * 255.0f), 255));
+		}
+	}
+	ImGui::Dummy(ImVec2(dw, dh));
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("%s", pv.status.c_str());
 }
 
 static const char* AlphaModeName(smvk::AlphaMode m) {
@@ -524,8 +1213,20 @@ void EditorApp::DrawInspector() {
 			for (auto& s : mesh->geometry.surfaces)
 				tris += s.indexCount / 3;
 			ImGui::Text("Mesh: %u verts, %u tris", mesh->geometry.vertexCount, tris);
-			ImGui::Text("LM chunk: %s",
-				mesh->lmChunk == 0xFFFFFFFFu ? "none" : "baked");
+			if (mesh->lmChunk == 0xFFFFFFFFu) {
+				ImGui::Text("Lightmap: none (probe/sky lit)");
+			}
+			else {
+				ImGui::Text("Lightmap: baked, %u lobes", mesh->lmChunk);
+				if (m_hasSglm)
+					ImGui::TextDisabled("atlas: %s (%ux%u)",
+						m_sglmPath.c_str(), m_sglm.width, m_sglm.height);
+				else
+					ImGui::TextDisabled("atlas: not loaded (see panel below)");
+			}
+			ImGui::TextDisabled("UV1 view (F10) shows baked texCoord2");
+			if (m_lmGpu)
+				ImGui::TextDisabled("F8 shows baked irradiance in place");
 		}
 	}
 
@@ -560,17 +1261,23 @@ void EditorApp::DrawInspector() {
 			}
 			ImGui::EndCombo();
 		}
-		// 2D material preview: unlit albedo swatch + slot summary.
+		// 2D material preview: diffuse-map thumbnail (CPU KTX2 decode,
+		// tinted by the baseColor factor) with an unlit swatch fallback
+		// when the material carries no diffuse texture.
 		if (smvk::Material* prevMat = m_world->GetMaterial(curMat)) {
 			ImGui::Separator();
-			ImGui::Text("Preview (unlit swatch)");
+			ImGui::Text("Preview (diffuse)");
 			const glm::vec4& bc = prevMat->values.diffuse;
-			ImGui::ColorButton("##matPreview",
-				ImVec4(bc.x, bc.y, bc.z, bc.w),
-				ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoTooltip,
-				ImVec2(64, 64));
+			DrawDiffusePreview(curMat, bc);
 			ImGui::SameLine();
 			ImGui::BeginGroup();
+			{
+				const TexPreview& pv = ResolveDiffusePreview(curMat);
+				if (pv.ok)
+					ImGui::TextWrapped("map: %s", pv.uri.c_str());
+				else
+					ImGui::TextDisabled("map: %s", pv.status.c_str());
+			}
 			ImGui::Text("base %.2f %.2f %.2f a %.2f", bc.x, bc.y, bc.z, bc.w);
 			ImGui::Text("metal %.2f  rough %.2f",
 				prevMat->values.params.y, prevMat->values.params.z);
@@ -692,6 +1399,38 @@ void EditorApp::DrawInspector() {
 		}
 	}
 
+	// Cooked light on this node (KHR punctual, import or pak).
+	if (glm::vec3 aimWs(0.0f);
+		const ::SceneLight* li = FindNodeLight(node, &aimWs)) {
+		ImGui::Separator();
+		const char* tname = li->type == ::SceneLight::Type::Directional
+			? "Directional (sun)"
+			: li->type == ::SceneLight::Type::Spot ? "Spot" : "Point";
+		ImGui::Text("Light: %s '%s'", tname, li->name.c_str());
+		ImGui::Text("color %.2f %.2f %.2f  I %.1f%s", li->color.x,
+			li->color.y, li->color.z, li->intensity,
+			li->type == ::SceneLight::Type::Directional ? " lux" : " cd");
+		if (li->type == ::SceneLight::Type::Directional)
+			ImGui::TextDisabled("toSun=(%.2f,%.2f,%.2f)%s", -aimWs.x,
+				-aimWs.y, -aimWs.z,
+				m_hasCookedSun && m_cookedSunName == li->name
+				? " — drives the viewport" : "");
+		else {
+			const glm::vec3 p = node < scene.globalTransform.size()
+				? glm::vec3(scene.globalTransform[node][3]) : glm::vec3(0.0f);
+			ImGui::TextDisabled("pos=(%.2f,%.2f,%.2f) range=%.1f%s", p.x,
+				p.y, p.z, li->range,
+				li->range <= 0.0f ? " (infinite)" : "");
+			if (li->type == ::SceneLight::Type::Spot)
+				ImGui::TextDisabled("axis=(%.2f,%.2f,%.2f) inner=%.0fdeg outer=%.0fdeg",
+					aimWs.x, aimWs.y, aimWs.z,
+					glm::degrees(li->innerConeAngle),
+					glm::degrees(li->outerConeAngle));
+		}
+		if ((li->flags & ::SceneLight::kSceneLightFlag_Static) != 0)
+			ImGui::TextDisabled("STATIC: bake-only (excluded from runtime)");
+	}
+
 	// Lightmap participation.
 	{
 		ImGui::Separator();
@@ -712,7 +1451,11 @@ void EditorApp::DrawInspector() {
 	// Sun quick controls.
 	{
 		ImGui::Separator();
-		ImGui::Text("Viewport sun");
+		if (m_hasCookedSun)
+			ImGui::Text("Viewport sun (seeded from cooked '%s')",
+				m_cookedSunName.c_str());
+		else
+			ImGui::Text("Viewport sun");
 		ImGui::SliderFloat("Azimuth", &m_sunAzimuth, 0.0f, 360.0f);
 		ImGui::SliderFloat("Elevation", &m_sunElevation, 0.0f, 90.0f);
 		ImGui::SliderFloat("Intensity", &m_sunIntensity, 0.0f, 10.0f);
@@ -763,7 +1506,7 @@ void EditorApp::DrawCookPanel() {
 	if (cookTouched)
 		SaveTour(); // persist the cook block (not undoable)
 	ImGui::TextDisabled("tour: %s (%zu commands)",
-		TourPath().empty() ? "-" : std::filesystem::path(TourPath())
+		TourTarget().empty() ? "-" : std::filesystem::path(TourTarget())
 		.filename().string().c_str(),
 		m_historyCursor);
 	if (m_cookRunning) {
@@ -773,6 +1516,331 @@ void EditorApp::DrawCookPanel() {
 		m_cook.outPak = pakBuf;
 		CookToPak();
 	}
+}
+
+void EditorApp::DrawLightmapPanel() {
+	ImGui::Text("Lightmap bake (.pak + .sglm)");
+	if (!m_pakPath.empty()) {
+		ImGui::TextWrapped("pak: %s", m_pakPath.c_str());
+	}
+	else {
+		ImGui::TextDisabled("No pak loaded (source is glTF: cook first).");
+		ImGui::TextDisabled("Open a cooked .pak to inspect its bake.");
+	}
+	ImGui::TextWrapped("atlas: %s", m_sglmStatus.c_str());
+	if (m_hasSglm) {
+		uint32_t l5 = 0, l6 = 0, l9 = 0, l12 = 0;
+		uint64_t texels = 0;
+		for (size_t i = 0; i < m_sglm.chunks.size() && i < m_sglm.payloads.size(); ++i) {
+			const uint32_t l = m_sglm.chunks[i].lobeCount;
+			if (l == 5) ++l5;
+			else if (l == 6) ++l6;
+			else if (l == 9) ++l9;
+			else ++l12;
+			texels += uint64_t(m_sglm.payloads[i].width) * m_sglm.payloads[i].height;
+		}
+		ImGui::Text("chunks=%zu texels=%llu gpu=%.1f MiB",
+			m_sglm.chunks.size(), (unsigned long long)texels,
+			double(m_sglm.GpuBytes()) / (1024.0 * 1024.0));
+		ImGui::Text("lobes: 5:%u 6:%u 9:%u 12:%u", l5, l6, l9, l12);
+		// Per-selected-mesh atlas rects (meshKey == cook node id).
+		if (m_selected != UINT32_MAX && m_world) {
+			uint32_t rects = 0;
+			for (const auto& c : m_sglm.chunks)
+				if (c.meshKey == m_selected)
+					++rects;
+			ImGui::TextDisabled("selected node %u: %u atlas rects",
+				m_selected, rects);
+		}
+		ImGui::TextDisabled("F10 = UV1 view (baked texCoord2)");
+		if (m_lmGpu && ImGui::Button("Baked irradiance view (F8)"))
+			m_viewMode = ViewMode::Baked;
+	}
+	if (ImGui::InputText("sglm path", m_sglmBuf, sizeof(m_sglmBuf),
+		ImGuiInputTextFlags_EnterReturnsTrue)) {
+		if (m_sglmBuf[0] != '\0')
+			LoadSglm(m_sglmBuf);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Load sglm") && m_sglmBuf[0] != '\0')
+		LoadSglm(m_sglmBuf);
+	if (!m_pakPath.empty())
+		ImGui::TextDisabled(
+			"Pak actions live on the pak selection (Outliner > VFS).");
+}
+
+void EditorApp::DumpPakManifest() {
+	// Cached reader (parsed once at load; Open decompresses — never redo).
+	if (!m_pakReader) {
+		Log("Dump: no pak loaded.");
+		return;
+	}
+	const smvk::PakReader& reader = *m_pakReader;
+	for (size_t i = 0; i < m_pakScenes.size(); ++i)
+		Log("  scene[" + std::to_string(i) + "] '" + m_pakScenes[i].name +
+			"' nodes=" + std::to_string(m_pakScenes[i].nodes));
+	const auto meshes = reader.BlobsOfKind(smvk::PakAssetKind::Mesh);
+	const auto mats = reader.BlobsOfKind(smvk::PakAssetKind::Material);
+	const auto texs = reader.BlobsOfKind(smvk::PakAssetKind::Texture);
+	const auto lights = reader.BlobsOfKind(smvk::PakAssetKind::Light);
+	char buf[256];
+	std::snprintf(buf, sizeof(buf),
+		"Pak manifest '%s': entries=%zu meshes=%zu materials=%zu textures=%zu lights=%zu",
+		m_pakPath.c_str(), reader.EntryCount(),
+		meshes.size(), mats.size(), texs.size(), lights.size());
+	Log(buf);
+	// Light blobs, pak-sourced (same layout as the serializer writes:
+	// str uri | u32 type | vec3 color | f32 I/range/inner/outer | str name
+	// | u32 flags?). Verifies the sun decode the viewport uses.
+	for (const smvk::PakTocEntry* e : lights) {
+		const std::span<const uint8_t> img = reader.Payload(*e);
+		size_t off = 0;
+		auto u32 = [&]() -> uint32_t {
+			uint32_t v = 0;
+			if (off + 4 <= img.size()) {
+				std::memcpy(&v, img.data() + off, 4);
+				off += 4;
+			}
+			return v;
+		};
+		auto f32 = [&]() -> float {
+			float v = 0.0f;
+			if (off + 4 <= img.size()) {
+				std::memcpy(&v, img.data() + off, 4);
+				off += 4;
+			}
+			return v;
+		};
+		auto str = [&]() -> std::string {
+			const uint32_t n = u32();
+			if (off + n > img.size())
+				return {};
+			std::string s(reinterpret_cast<const char*>(img.data() + off), n);
+			off += n;
+			return s;
+		};
+		const std::string uri = str();
+		const uint32_t type = u32();
+		const float r = f32(), g = f32(), b = f32();
+		const float inten = f32(), range = f32(), inner = f32(), outer = f32();
+		const std::string name = str();
+		const bool hasFlags = (off + 4 <= img.size());
+		const uint32_t flags = hasFlags ? u32() : 0;
+		char lbuf[384];
+		std::snprintf(lbuf, sizeof(lbuf),
+			"  light '%s' %s rgb=(%.2f,%.2f,%.2f) I=%.1f range=%.1f%s%s",
+			name.empty() ? uri.c_str() : name.c_str(),
+			type == 0 ? "dir" : type == 2 ? "spot" : "point",
+			r, g, b, inten, range,
+			type == 2 ? (" inner=" + std::to_string(glm::degrees(inner)) +
+				"deg outer=" + std::to_string(glm::degrees(outer)) + "deg").c_str() : "",
+			(flags & 1u) ? " STATIC" : "");
+		Log(lbuf);
+	}
+	// lmChunk histogram straight from the mesh blobs (pak-sourced, same
+	// cursor as PakCooker --dump-manifest).
+	uint32_t lmNone = 0, lm5 = 0, lm6 = 0, lm9 = 0, lm12 = 0, lmOther = 0;
+	for (const smvk::PakTocEntry* e : meshes) {
+		const std::span<const uint8_t> img = reader.Payload(*e);
+		size_t off = 0;
+		auto u32 = [&]() -> uint32_t {
+			uint32_t v = 0;
+			if (off + 4 <= img.size()) {
+				std::memcpy(&v, img.data() + off, 4);
+				off += 4;
+			}
+			return v;
+		};
+		auto f32 = [&]() -> float {
+			float v = 0.0f;
+			if (off + 4 <= img.size()) {
+				std::memcpy(&v, img.data() + off, 4);
+				off += 4;
+			}
+			return v;
+		};
+		const uint32_t n = u32();
+		if (off + n > img.size())
+			continue;
+		off += n; // uri
+		const uint32_t vc = u32(), ic = u32(), sc = u32();
+		(void)vc;
+		(void)ic;
+		off += size_t(sc) * 12; // surfaces
+		for (int k = 0; k < 6; ++k)
+			(void)f32(); // aabb
+		(void)f32(); // sphere
+		(void)u32(); // topology
+		(void)u32(); // groupId
+		(void)u32(); // lodIndex
+		(void)u32(); // candidates
+		(void)f32(); // simplifyError
+		(void)f32(); // screenThreshold
+		(void)u32(); // tris
+		(void)f32(); // acmr
+		if (off + 4 > img.size())
+			continue;
+		const uint32_t lm = u32();
+		if (lm == 0xFFFFFFFFu) ++lmNone;
+		else if (lm == 5) ++lm5;
+		else if (lm == 6) ++lm6;
+		else if (lm == 9) ++lm9;
+		else if (lm == 12) ++lm12;
+		else ++lmOther;
+	}
+	std::snprintf(buf, sizeof(buf),
+		"  lmChunk: none=%u 5=%u 6=%u 9=%u 12=%u other=%u",
+		lmNone, lm5, lm6, lm9, lm12, lmOther);
+	Log(buf);
+	Log("For per-mesh lmChunk + texture URIs use: PakCooker --dump-pak <pak>");
+}
+
+void EditorApp::DrawTexturePanel() {
+	ImGui::Text("Textures");
+	if (!m_world || m_world->scene.hierarchy.empty()) {
+		ImGui::TextDisabled("No scene loaded.");
+		return;
+	}
+	if (!m_pakPath.empty()) {
+		ImGui::TextDisabled("pak scene: full-resident (no streaming).");
+		return;
+	}
+	int mode = int(m_texMode);
+	if (ImGui::Combo("Mode", &mode,
+			"Streaming (distance demand)\0Coarsest mip only\0Full (reimport)\0")) {
+		m_texMode = TexMode(mode);
+		ApplyTexMode(); // reimports the glTF scene in the new mode
+	}
+	if (!m_textureStreamer) {
+		ImGui::TextDisabled("full-resident (no streaming).");
+		return;
+	}
+	if (m_texMode == TexMode::Coarse)
+		ImGui::TextDisabled("floor: single coarsest mip (flat colors).");
+	const smvk::TextureStreamingStats stats = m_textureStreamer->GetStats();
+	ImGui::Text("%u tex  %.1f/%.1f MiB  full-res %u",
+		stats.textureCount,
+		double(stats.residentBytes) / (1024.0 * 1024.0),
+		double(stats.fullBytes) / (1024.0 * 1024.0),
+		stats.fullResidentCount);
+	if (ImGui::Button("Dump residency"))
+		DumpStreamerStats();
+}
+
+void EditorApp::DrawUvPanel() {
+	ImGui::Text("UV (selection)");
+	if (!m_world || m_selected == UINT32_MAX ||
+		m_selected >= m_world->scene.hierarchy.size()) {
+		ImGui::TextDisabled("Nothing selected.");
+		ImGui::TextWrapped("Click a mesh in the viewport or pick a node "
+			"(Scene tab). Baked views need a cooked pak + atlas.");
+		return;
+	}
+	Scene& scene = m_world->scene;
+	const uint32_t node = m_selected;
+	ImGui::Text("Node %u %s", node,
+		getNodeName(scene, int(node)).c_str());
+	// Mesh lightmap state.
+	if (auto mit = scene.meshForNode.find(node);
+		mit != scene.meshForNode.end()) {
+		if (smvk::StaticMesh* mesh = m_world->GetMesh(mit->second)) {
+			uint32_t tris = 0;
+			for (auto& s : mesh->geometry.surfaces)
+				tris += s.indexCount / 3;
+			ImGui::Text("Mesh: %u verts, %u tris",
+				mesh->geometry.vertexCount, tris);
+			if (mesh->lmChunk == 0xFFFFFFFFu)
+				ImGui::Text("Lightmap: none (probe/sky lit)");
+			else
+				ImGui::Text("Lightmap: baked, %u lobes", mesh->lmChunk);
+		}
+	}
+	else {
+		ImGui::TextDisabled("No mesh on this node.");
+	}
+	// Atlas rects owned by this node (meshKey == cook node id).
+	if (m_hasSglm) {
+		uint32_t rects = 0;
+		for (const auto& c : m_sglm.chunks)
+			if (c.meshKey == node)
+				++rects;
+		ImGui::Text("Atlas rects: %u", rects);
+		uint32_t shown = 0;
+		for (size_t i = 0; i < m_sglm.chunks.size() && shown < 12; ++i) {
+			const auto& c = m_sglm.chunks[i];
+			if (c.meshKey != node)
+				continue;
+			ImGui::TextDisabled("  chunk %zu: (%.0f,%.0f)-(%.0f,%.0f) %u lobes",
+				i, c.rectMin[0], c.rectMin[1], c.rectMax[0], c.rectMax[1],
+				c.lobeCount);
+			++shown;
+		}
+		if (rects > shown)
+			ImGui::TextDisabled("  ... (%u more)", rects - shown);
+	}
+	else {
+		ImGui::TextDisabled("No atlas loaded.");
+	}
+	// Material texture slots on this node.
+	if (auto matIt = scene.materialForNode.find(node);
+		matIt != scene.materialForNode.end()) {
+		if (smvk::Material* mat = m_world->GetMaterial(matIt->second)) {
+			const glm::ivec4& t0 = mat->values.textures;
+			ImGui::TextDisabled("maps: base:%d mr:%d normal:%d occ:%d emis:%d",
+				t0.x, t0.y, t0.z, t0.w, mat->values.textures2.x);
+		}
+	}
+	ImGui::Separator();
+	ImGui::Text("Views");
+	if (ImGui::Button("UV0 fullscreen (F9)"))
+		m_viewMode = ViewMode::Uv0;
+	ImGui::SameLine();
+	if (ImGui::Button("UV1 fullscreen (F10)"))
+		m_viewMode = ViewMode::Uv1;
+	if (ImGui::Button(
+			("UV inset: " + std::string(SecondViewName(m_secondView)) +
+				" (F5)").c_str()))
+		m_secondView = SecondView((int(m_secondView) + 1) % 3);
+	if (m_lmGpu && ImGui::Button("Baked irradiance (F8)"))
+		m_viewMode = ViewMode::Baked;
+	ImGui::TextDisabled("UV0 = authored uvs; UV1 = atlas-space texCoord2.");
+}
+
+// Unity-style Play bar: centered under the menu, launches the current
+// scene in the runtime App (registry scenes only). While App runs the
+// button is disabled — close App to finish (its log streams to Console).
+void EditorApp::DrawPlayBar() {
+	const float menuH = ImGui::GetFrameHeight();
+	const float cx = float(ImGui::GetIO().DisplaySize.x) * 0.5f;
+	ImGui::SetNextWindowPos(ImVec2(cx, menuH + 6), ImGuiCond_Always,
+		ImVec2(0.5f, 0.0f));
+	ImGui::SetNextWindowBgAlpha(0.65f);
+	if (ImGui::Begin("##playbar", nullptr,
+		ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+		ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+		ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove)) {
+		if (m_runRunning) {
+			ImGui::TextDisabled("Running in App... (close it)");
+		}
+		else {
+			const std::string runArgs = RunArgs();
+			if (runArgs.empty()) {
+				ImGui::BeginDisabled();
+				if (ImGui::Button("Run in App"))
+					RunInApp();
+				ImGui::EndDisabled();
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+					ImGui::SetTooltip("Open a .pak or .gltf first.");
+			}
+			else {
+				if (ImGui::Button("Run in App"))
+					RunInApp();
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("App %s", runArgs.c_str());
+			}
+		}
+	}
+	ImGui::End();
 }
 
 void EditorApp::DrawConsolePanel() {
@@ -805,13 +1873,30 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 		if (m_selected != UINT32_MAX && m_world)
 			ImGui::Text("sel: %u %s", m_selected,
 				getNodeName(m_world->scene, int(m_selected)).c_str());
-		ImGui::TextDisabled("F1/F2/F3 view  F4/F5/F6 debug  1/2/3 gizmo  I ui");
+		ImGui::TextDisabled("F1/F2/F3/F8 view  F5 inset  F6/F9/F10 debug  1/2/3 gizmo  I ui  L lights");
 		ImGui::TextDisabled("F frame sel  Shift+F frame all");
 		ImGui::TextDisabled("click=select  Alt+LMB orbit  Alt+MMB pan  Alt+RMB dolly");
 		ImGui::TextDisabled("Ctrl+Z / Ctrl+Shift+Z: undo %zu / redo %zu",
 			UndoDepth(), RedoDepth());
 	}
 	ImGui::End();
+
+	// UV inset tag (top-left of the side strip).
+	if (SecondViewActive()) {
+		uint32_t stripX = 0;
+		InsetStrip(extent, stripX);
+		ImGui::SetNextWindowPos(ImVec2(float(stripX) + 8, menuH + 8),
+			ImGuiCond_Always);
+		ImGui::SetNextWindowBgAlpha(0.55f);
+		if (ImGui::Begin("##insetlabel", nullptr,
+			ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+			ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
+			ImGuiWindowFlags_NoInputs)) {
+			ImGui::Text("%s (F5)", SecondViewName(m_secondView));
+		}
+		ImGui::End();
+	}
 }
 
 } // namespace editor

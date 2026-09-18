@@ -306,6 +306,16 @@ struct SgLightmapChartOptions {
 	// to texels across the [0,1] uv range. Meshes without authored uv2
 	// (texCoord2 without spread) fall back to the planar path.
 	bool authoredUv2 = false;
+	// Authored layouts that are PRE-PACKED per mesh (RizomUV Pack +
+	// normalize: the mesh's whole [0,1]^2 uv2 IS the island packing)
+	// chart as ONE rect per layout instead of one per island: re-packing
+	// islands individually pays ~4 gutter texels per side on every
+	// island, and unwrapper-dense scenes carry millions of islands
+	// (bistro: >1M islands = 37M gutter texels — over any atlas budget
+	// before content). The whole-layout rect amortizes the gutter into
+	// the layout's own inter-island padding; chart-local uv is the
+	// authored uv2 verbatim. Requires authoredUv2.
+	bool authoredOneChartPerLayout = false;
 };
 
 // StaticMeshUpload is forward-declared at smvk:: scope above (the gi

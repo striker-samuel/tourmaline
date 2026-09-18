@@ -150,6 +150,24 @@ namespace smvk {
 	};
 	static_assert(sizeof(VertexShading) == 20);
 
+	// GPU skin stream (8 bytes, binding 2): joint ids RGBA8_UInt + blend
+	// weights RGBA8_UNorm, 4 influences per vertex. Joint ids index the
+	// mesh's skin palette (the Skeleton joint table, glTF JOINTS_0 order),
+	// which caps skeletons at 256 joints; weights are 255-based and
+	// renormalized in the vertex shader (w /= w0+w1+w2+w3, see
+	// touranim.h for the palette contract). Skinned pipelines fetch
+	// bindings 0 (position) + 2 (skin) for depth/shadow passes and
+	// 0+1+2 for shading, so every static pipeline stays untouched;
+	// JointIndices/JointWeights append as VSIn locations 6/7 (after the
+	// TexCoord1 location-5 append). VS math: skinMat = sum(w_i * pal[j_i])
+	// / sum(w_i); pos = skinMat * pos; normal/tangent = mat3(skinMat) * n,
+	// renormalized.
+	struct VertexSkin {
+		uint32_t joints;   // RGBA8_UINT — palette indices x4
+		uint32_t weights;  // RGBA8_UNORM — blend weights x4 (renormalize in VS)
+	};
+	static_assert(sizeof(VertexSkin) == 8);
+
 
 	// CPU-side import vertex. texCoord2 is the LIGHTMAP UV channel
 	// (glTF TEXCOORD_1): filled by the importer when the attribute exists
@@ -171,6 +189,32 @@ namespace smvk {
 				texCoord2 == other.texCoord2 &&
 				normal == other.normal &&
 				tangent == other.tangent;
+		}
+	};
+
+	// CPU-side import vertex (skinned): StaticVertex plus the glTF
+	// JOINTS_0/WEIGHTS_0 pair. The importer keeps the top 4 influences,
+	// renormalizes the weights, and packs at upload (joints ->
+	// RGBA8_UInt, weights -> RGBA8_UNorm) into the binding-2 skin stream.
+	struct SkinnedVertex {
+		glm::vec3 pos;
+		glm::vec4 color;
+		glm::vec2 texCoord;
+		glm::vec2 texCoord2;
+		glm::vec3 normal;
+		glm::vec4 tangent;
+		glm::u8vec4 joints;  // palette indices x4 (Skeleton joint table)
+		glm::vec4 weights;   // normalized, sums to 1
+
+		bool operator==(const SkinnedVertex& other) const {
+			return pos == other.pos &&
+				color == other.color &&
+				texCoord == other.texCoord &&
+				texCoord2 == other.texCoord2 &&
+				normal == other.normal &&
+				tangent == other.tangent &&
+				joints == other.joints &&
+				weights == other.weights;
 		}
 	};
 
@@ -243,10 +287,82 @@ namespace smvk {
 						.format = Format::R32_UInt,
 						.offset = offsetof(VertexShading, tangent)
 					},
+				{
+					.semantic = VertexSemantic::TexCoord1,
+					.format = Format::RG16_UNorm,
+					.offset = offsetof(VertexShading, uv2)
+				}
+			}
+		}
+	}
+};
+
+	// Skinned vertex format: the static two-stream layout VERBATIM (same
+	// bindings 0/1, same locations, same shaders) plus the binding-2 skin
+	// stream. JointIndices/JointWeights append LAST as locations 6/7 so
+	// static vertex shaders keep their locations; skinned shaders declare
+	// the same VSIn plus two attributes. Depth/shadow passes bind only
+	// bindings 0+2 (position + skin) — skinning must move the position.
+	inline const VertexFormatDescription SkinnedVertexFormat{
+		.bindings = {
+			{
+				.binding = 0,
+				.stride = sizeof(VertexPos),
+				.inputRate = VertexInputRate::Vertex,
+				.attributes = {
+					{
+						.semantic = VertexSemantic::Position,
+						.format = Format::RGB32_Float,
+						.offset = offsetof(VertexPos, pos)
+					}
+				}
+			},
+			{
+				.binding = 1,
+				.stride = sizeof(VertexShading),
+				.inputRate = VertexInputRate::Vertex,
+				.attributes = {
+					{
+						.semantic = VertexSemantic::Color,
+						.format = Format::RGBA8_UNorm,
+						.offset = offsetof(VertexShading, color)
+					},
+					{
+						.semantic = VertexSemantic::TexCoord0,
+						.format = Format::RG16_Float,
+						.offset = offsetof(VertexShading, uv)
+					},
+					{
+						.semantic = VertexSemantic::Normal,
+						.format = Format::R32_UInt,
+						.offset = offsetof(VertexShading, normal)
+					},
+					{
+						.semantic = VertexSemantic::Tangent,
+						.format = Format::R32_UInt,
+						.offset = offsetof(VertexShading, tangent)
+					},
 					{
 						.semantic = VertexSemantic::TexCoord1,
 						.format = Format::RG16_UNorm,
 						.offset = offsetof(VertexShading, uv2)
+					}
+				}
+			},
+			{
+				.binding = 2,
+				.stride = sizeof(VertexSkin),
+				.inputRate = VertexInputRate::Vertex,
+				.attributes = {
+					{
+						.semantic = VertexSemantic::JointIndices,
+						.format = Format::RGBA8_UInt,
+						.offset = offsetof(VertexSkin, joints)
+					},
+					{
+						.semantic = VertexSemantic::JointWeights,
+						.format = Format::RGBA8_UNorm,
+						.offset = offsetof(VertexSkin, weights)
 					}
 				}
 			}
@@ -311,6 +427,7 @@ namespace smvk {
 	enum struct VertexFormat {
 		Empty
 		, StaticVertexFormat
+		, SkinnedVertexFormat
 		, DebugLine
 	};
 

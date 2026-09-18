@@ -6,7 +6,9 @@
 
 #include "editor_app.h"
 
+#include <cstdio>
 #include <filesystem>
+#include <string>
 
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -399,10 +401,83 @@ std::string EditorApp::TourPath() const {
 	return p.string();
 }
 
+std::string EditorApp::TourTarget() const {
+	return m_tourPath.empty() ? TourPath() : m_tourPath;
+}
+
 bool EditorApp::SaveTour() {
-	const std::string tp = TourPath();
+	return SaveTourTo(TourTarget());
+}
+
+bool EditorApp::SaveTourIncremental() {
+	// Maya-style versioning: <stem>.0001.tour, <stem>.0002.tour, ...
+	// next to the current target (an existing .NNNN suffix is replaced,
+	// so re-incrementing from sponza.0003.tour yields sponza.0004.tour).
+	namespace fs = std::filesystem;
+	const std::string cur = TourTarget();
+	if (cur.empty() || !m_world) {
+		Log("Incremental save: no scene.");
+		return false;
+	}
+	const fs::path p(cur);
+	const fs::path dir = p.parent_path();
+	std::string stem = p.stem().string(); // strips ".tour"
+	std::string base = stem;
+	if (const size_t dot = stem.find_last_of('.');
+		dot != std::string::npos && dot > 0 && dot + 1 < stem.size()) {
+		bool allDigits = true;
+		for (size_t i = dot + 1; i < stem.size() && allDigits; ++i)
+			allDigits = stem[i] >= '0' && stem[i] <= '9';
+		if (allDigits)
+			base = stem.substr(0, dot);
+	}
+	uint32_t maxN = 0;
+	{
+		std::error_code ec;
+		const fs::path scanDir = dir.empty() ? fs::path(".") : dir;
+		for (fs::directory_iterator it(scanDir, ec), end;
+			!ec && it != end; it.increment(ec)) {
+			if (!it->is_regular_file(ec))
+				continue;
+			const fs::path e = it->path();
+			if (e.extension() != ".tour")
+				continue;
+			const std::string s = e.stem().string();
+			if (s.size() <= base.size() + 1 ||
+				s.compare(0, base.size(), base) != 0 ||
+				s[base.size()] != '.')
+				continue;
+			bool allDigits = true;
+			for (size_t i = base.size() + 1; i < s.size() && allDigits; ++i)
+				allDigits = s[i] >= '0' && s[i] <= '9';
+			if (allDigits)
+				maxN = std::max(maxN,
+					static_cast<uint32_t>(std::stoul(s.substr(base.size() + 1))));
+		}
+	}
+	char num[16];
+	std::snprintf(num, sizeof(num), "%04u", maxN + 1);
+	const std::string next =
+		(dir.empty() ? fs::path(base + "." + num + ".tour")
+			: dir / (base + "." + num + ".tour")).string();
+	if (!SaveTourTo(next))
+		return false;
+	Log("Tour incrementally saved: " + next +
+		" (" + std::to_string(m_historyCursor) + " commands).");
+	return true;
+}
+
+bool EditorApp::SaveTourTo(const std::string& tp) {
 	if (tp.empty() || !m_world)
 		return false;
+	{
+		// Save-as may point at a directory that does not exist yet.
+		std::error_code ec;
+		const std::filesystem::path parent =
+			std::filesystem::path(tp).parent_path();
+		if (!parent.empty())
+			std::filesystem::create_directories(parent, ec);
+	}
 	smvk::tour::Doc doc;
 	doc.source = m_gltfPath;
 	doc.fingerprint = smvk::tour::Fingerprint(m_gltfHostPath);
@@ -435,6 +510,7 @@ bool EditorApp::SaveTour() {
 		Log("tour save failed: " + err);
 		return false;
 	}
+	m_tourPath = tp;
 	return true;
 }
 

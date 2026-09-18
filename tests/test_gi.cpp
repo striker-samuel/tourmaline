@@ -19,6 +19,7 @@
 #include <glm/glm.hpp>
 
 #include <Engine/App/cluster.h> // Cluster (static-bake-light harvest test)
+#include <Engine/Asset/compression.h> // Lz4Compress (sglm v1 fixture)
 #include <Engine/GI/bake.h>
 #include <Engine/GI/lightmap.h>
 #include <Engine/GI/probe_volume.h>
@@ -1097,6 +1098,49 @@ void TestLmAuthoredCharts() {
 			"lm.authored.seamless.ok");
 		Check(r.charts.size() == 1, "lm.authored.seamless.oneisland");
 	}
+	// Pre-packed layout (authoredOneChartPerLayout): the whole [0,1]^2
+	// layout is ONE chart regardless of the uv seam — RizomUV-style
+	// packed layouts must not re-pack per island (bistro's rizom set is
+	// >1M islands; per-island gutters alone exceed any atlas budget).
+	{
+		auto strip = makeStrip(true);
+		opts.authoredUv2 = true;
+		opts.authoredOneChartPerLayout = true;
+		gi::SgLightmapChartResult r;
+		err.clear();
+		Check(gi::GenerateLightmapCharts(strip, opts, r, err),
+			"lm.authored.pack.ok");
+		Check(r.usedAuthoredUv2 && r.charts.size() == 1,
+			"lm.authored.pack.onechart");
+		const double across = 20.0 * std::sqrt(2.0 / 0.95);
+		const uint32_t w = uint32_t(std::ceil(float(across))) + 2;
+		Check(r.charts[0].width == w && r.charts[0].height == w,
+			"lm.authored.pack.rect");
+		// Both islands' triangles live in the single chart, and the
+		// chart-local uv is the authored uv2 VERBATIM (pMin=(0,0),
+		// ext=(1,1): clamp is identity for in-range layouts).
+		bool allOne = true;
+		bool uvVerbatim = true;
+		for (uint32_t t = 0; t < 4; ++t) {
+			allOne = allOne && r.triChart[t] == 0;
+			for (int k = 0; k < 3; ++k) {
+				const uint32_t v = strip.indices[t * 3 + k];
+				uvVerbatim = uvVerbatim
+					&& glm::length(r.cornerChartUv[size_t(t) * 3 + k]
+						- strip.vertices[v].texCoord2) < 1e-6f;
+			}
+		}
+		Check(allOne, "lm.authored.pack.trichart");
+		Check(uvVerbatim, "lm.authored.pack.uvverbatim");
+		// Covered texels from BOTH islands are in the one chart.
+		bool sawA = false, sawB = false;
+		for (const auto& tx : r.charts[0].texels) {
+			sawA = sawA || tx.position.x < 1.5f;
+			sawB = sawB || tx.position.x > 1.0f;
+		}
+		Check(sawA && sawB, "lm.authored.pack.texels");
+		opts.authoredOneChartPerLayout = false;
+	}
 	// Flat texCoord2: planar fallback (never authored).
 	{
 		auto strip = makeStrip(true);
@@ -1226,6 +1270,56 @@ void TestStaticBakeLights() {
 		&& ts.sunIntensity == 20000.0f;
 	Check(sunOk, "static.collect.sun.firstwins");
 
+	// coordFix-0 aim axis (GltfPunctualAimAxis): the import conjugates
+	// node transforms AND vertices, so the glTF -Z aim reads (0,0,+1)
+	// in engine-local space. A 90-degree Y rotation aims the default
+	// (0,0,-1) axis at -X and the conjugated (0,0,1) axis at +X; the
+	// seeded sun flips with it. Runtime + bake share the convention.
+	{
+		auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
+		cluster2->SetCookMode(true);
+		::Scene& scene2 = cluster2->scene;
+		addNode(scene2, -1, 0); // root
+		glm::mat4 g = glm::mat4_cast(
+			glm::quat(0.70710678118f, 0.0f, 0.70710678118f, 0.0f)); // rotY(90)
+		{
+			const int n = addNode(scene2, 0, 1);
+			scene2.localTransform[n] = g;
+			scene2.globalTransform[n] = g;
+			const smvk::ClusterLightHandle h = cluster2->CreateLight(spotDef);
+			scene2.lightForNode[(uint32_t)n] = h.index();
+		}
+		{
+			const int n = addNode(scene2, 0, 1);
+			scene2.localTransform[n] = g;
+			scene2.globalTransform[n] = g;
+			const smvk::ClusterLightHandle h = cluster2->CreateLight(sunDef);
+			scene2.lightForNode[(uint32_t)n] = h.index();
+		}
+		gi::GiTraceScene tsA, tsB;
+		CollectStaticBakeLights(*cluster2, tsA); // engine-space default axis
+		CollectStaticBakeLights(*cluster2, tsB, glm::vec3(0.0f, 0.0f, 1.0f));
+		Check(tsA.spots.size() == 1 && tsB.spots.size() == 1
+			&& tsA.spots.size() == tsB.spots.size(),
+			"static.aimaxis.spot.count");
+		if (tsA.spots.size() == 1 && tsB.spots.size() == 1) {
+			Check(glm::all(glm::lessThan(glm::abs(
+					tsA.spots[0].direction - glm::vec3(-1.0f, 0.0f, 0.0f)),
+					glm::vec3(1e-6f)))
+				&& glm::all(glm::lessThan(glm::abs(
+					tsB.spots[0].direction - glm::vec3(1.0f, 0.0f, 0.0f)),
+					glm::vec3(1e-6f))),
+				"static.aimaxis.spot.aim");
+		}
+		Check(glm::all(glm::lessThan(glm::abs(
+				tsA.sunDirection - glm::vec3(1.0f, 0.0f, 0.0f)),
+				glm::vec3(1e-6f)))
+			&& glm::all(glm::lessThan(glm::abs(
+				tsB.sunDirection - glm::vec3(-1.0f, 0.0f, 0.0f)),
+				glm::vec3(1e-6f))),
+			"static.aimaxis.sun.direction");
+	}
+
 	// Numeric: the converted point behaves EXACTLY like a point light —
 	// receiver 1 m below the point, outside the static spot's cone
 	// (cosA = 0 < cosOuter(30 deg) there), so only the point term shows.
@@ -1248,6 +1342,138 @@ void TestStaticBakeLights() {
 		"static.collect.point.falloff");
 }
 
+// .sglm roundtrip: v2 writes the section as segmented LZ4 (a 16M-texel
+// atlas packs ~1.2 GB, over the single-block codec's kMaxBlobBytes cap
+// — the failure that killed the first night bistro cook), and the
+// reader keeps v1 single-block files alive.
+void TestLightmapAtlasRoundtrip() {
+	SgLightmapAtlas a{};
+	a.width = 64;
+	a.height = 32;
+	const uint32_t lobeCounts[2] = { 5, 12 };
+	for (uint32_t ci = 0; ci < 2; ++ci) {
+		SgLightmapChunk c{};
+		c.lobeCount = lobeCounts[ci];
+		c.meshKey = 100 + ci;
+		c.rectMin[0] = float(ci * 16);
+		c.rectMin[1] = 0.0f;
+		c.rectMax[0] = float(ci * 16 + 16);
+		c.rectMax[1] = 8.0f;
+		a.chunks.push_back(c);
+		SgLightmapAtlas::ChunkPayload p{};
+		p.width = 16;
+		p.height = 8;
+		const uint32_t n = c.lobeCount;
+		p.coeffs.assign(size_t(p.width) * p.height * n, glm::vec3(0.0f));
+		for (size_t i = 0; i < p.coeffs.size(); ++i) {
+			const float f = float(i % 97) * 0.031f + float(ci);
+			p.coeffs[i] = glm::vec3(f, f * 0.5f + 1.0f, f * 0.25f);
+		}
+		a.payloads.push_back(std::move(p));
+	}
+
+	auto payloadClose = [](const SgLightmapAtlas& x,
+			const SgLightmapAtlas& y) {
+		if (x.chunks.size() != y.chunks.size()
+			|| x.payloads.size() != y.payloads.size()
+			|| x.width != y.width || x.height != y.height)
+			return false;
+		for (size_t ci = 0; ci < x.chunks.size(); ++ci) {
+			const SgLightmapChunk& cx = x.chunks[ci];
+			const SgLightmapChunk& cy = y.chunks[ci];
+			if (cx.lobeCount != cy.lobeCount || cx.meshKey != cy.meshKey)
+				return false;
+			for (int k = 0; k < 2; ++k)
+				if (std::abs(cx.rectMin[k] - cy.rectMin[k]) > 1e-6f
+					|| std::abs(cx.rectMax[k] - cy.rectMax[k]) > 1e-6f)
+					return false;
+			const auto& px = x.payloads[ci];
+			const auto& py = y.payloads[ci];
+			if (px.width != py.width || px.height != py.height
+				|| px.coeffs.size() != py.coeffs.size())
+				return false;
+			for (size_t i = 0; i < px.coeffs.size(); ++i)
+				// fp16 storage: half-precision relative slack.
+				if (glm::length(px.coeffs[i] - py.coeffs[i]) > 1e-2f)
+					return false;
+		}
+		return true;
+	};
+
+	const auto tmp = std::filesystem::temp_directory_path()
+		/ "vulkantoy_gi_test.sglm";
+	std::string err;
+	Check(a.WriteFile(tmp.string(), err), "sglm write");
+	SgLightmapAtlas b;
+	Check(SgLightmapAtlas::ReadFile(tmp.string(), b, err), "sglm read");
+	Check(payloadClose(a, b), "sglm v2 roundtrip equal");
+
+	// v1 back-compat: hand-build the legacy single-block layout
+	// (version 1, compressed 1) from the same section bytes.
+	{
+		std::vector<uint8_t> section;
+		auto putU32 = [&](uint32_t v) {
+			uint8_t b4[4];
+			std::memcpy(b4, &v, 4);
+			section.insert(section.end(), b4, b4 + 4);
+		};
+		auto putF32 = [&](float v) {
+			uint8_t b4[4];
+			std::memcpy(b4, &v, 4);
+			section.insert(section.end(), b4, b4 + 4);
+		};
+		for (uint32_t ci = 0; ci < 2; ++ci) {
+			const SgLightmapChunk& c = a.chunks[ci];
+			putU32(c.lobeCount);
+			putU32(c.meshKey);
+			putF32(c.rectMin[0]);
+			putF32(c.rectMin[1]);
+			putF32(c.rectMax[0]);
+			putF32(c.rectMax[1]);
+		}
+		for (uint32_t ci = 0; ci < 2; ++ci) {
+			const SgLightmapChunk& c = a.chunks[ci];
+			const auto& p = a.payloads[ci];
+			putU32(p.width);
+			putU32(p.height);
+			const size_t texels = size_t(p.width) * p.height;
+			section.resize(section.size() + texels * kLightmapMaxLobes * 6, 0);
+			uint16_t* dst = reinterpret_cast<uint16_t*>(
+				section.data() + section.size() - texels * kLightmapMaxLobes * 6);
+			for (size_t i = 0; i < texels; ++i)
+				for (uint32_t l = 0; l < c.lobeCount; ++l) {
+					const glm::vec3& v = p.coeffs[i * c.lobeCount + l];
+					dst[(i * kLightmapMaxLobes + l) * 3 + 0] = PackHalf(v.r);
+					dst[(i * kLightmapMaxLobes + l) * 3 + 1] = PackHalf(v.g);
+					dst[(i * kLightmapMaxLobes + l) * 3 + 2] = PackHalf(v.b);
+				}
+		}
+		std::vector<uint8_t> comp;
+		Check(smvk::Lz4Compress(std::span<const uint8_t>(section), comp, 1),
+			"sglm v1 fixture compress");
+		struct Hdr {
+			char magic[4];
+			uint32_t version, w, h, chunks, payload, comp;
+		};
+		static_assert(sizeof(Hdr) == 28);
+		Hdr h{};
+		std::memcpy(h.magic, "SGLM", 4);
+		h.version = 1;
+		h.w = a.width;
+		h.h = a.height;
+		h.chunks = uint32_t(a.chunks.size());
+		h.payload = uint32_t(section.size());
+		h.comp = 1;
+		std::vector<uint8_t> file(sizeof(h) + comp.size());
+		std::memcpy(file.data(), &h, sizeof(h));
+		std::memcpy(file.data() + sizeof(h), comp.data(), comp.size());
+		SgLightmapAtlas c1;
+		Check(c1.ReadFromMemory(std::span<const uint8_t>(
+				file.data(), file.size()), err), "sglm v1 read");
+		Check(payloadClose(a, c1), "sglm v1 back-compat equal");
+	}
+}
+
 } // namespace smvk::gi
 
 int main() {
@@ -1268,6 +1494,7 @@ int main() {
 	smvk::gi::TestLightmapCurvatureScale();
 	smvk::gi::TestLmAuthoredCharts();
 	smvk::gi::TestStaticBakeLights();
+	smvk::gi::TestLightmapAtlasRoundtrip();
 
 	std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks
 		<< " checks passed\n";

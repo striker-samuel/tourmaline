@@ -1056,6 +1056,20 @@ inline glm::mat4 ConvertNodeLocalTransform(const glm::mat4& m, int coordFix) {
 	return c * m * c;
 }
 
+glm::vec3 GltfPunctualAimAxis(int coordFix) {
+	// glTF punctual lights aim along their node's -Z axis. coordFix 0
+	// conjugates every node transform (M' = C*M*C) AND bakes vertices
+	// (v' = C*v), so the node-local frame flips with the basis change:
+	// the aim axis in engine-local space is C*(0,0,-1) = (0,0,+1).
+	// Reading the aim as globalTransform*(0,0,-1) off the conjugated
+	// transform resolves the axis 180 degrees off — the Bistro "Sun"
+	// directional landed at elevation -68 (underground) and spots
+	// aimed backwards. The other fix modes leave Z untouched.
+	if (coordFix == 0)
+		return glm::vec3(0.0f, 0.0f, 1.0f);
+	return glm::vec3(0.0f, 0.0f, -1.0f);
+}
+
 glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n, int coordFix)
 {
 	glm::mat4 m(1.0f);
@@ -1692,18 +1706,15 @@ std::string VfsTextureSource::ResolveIdentity(const std::string& imageUri) const
 	return n.empty() ? imageUri : n.Str();
 }
 
-void GltfToClusterFromVfs(
-	smvk::ResourceManager* ctx,
+namespace {
+// Shared VFS glTF JSON parse (buffers via the overlay callbacks): the full
+// import and the lightweight scene listing both start here.
+tinygltf::Model LoadGltfModelFromVfs(
 	const smvk::OverlayVfs& vfs,
-	const std::string& modelVfsPath,
-	smvk::Cluster& out,
-	const smvk::MeshOptConfig& meshOpt,
-	const smvk::MeshletConfig& meshlets,
-	int coordFix,
-	const glm::mat4& preTransform) {
+	const std::string& modelVfsPath) {
 	const std::string modelPath = smvk::NormalizeAssetUri(modelVfsPath).Str();
 	if (modelPath.empty())
-		throw std::runtime_error("GltfToClusterFromVfs: invalid VFS path: " + modelVfsPath);
+		throw std::runtime_error("GltfVfs: invalid VFS path: " + modelVfsPath);
 	auto bytes = vfs.TryRead(modelPath);
 	if (!bytes)
 		throw std::runtime_error("GltfToClusterFromVfs: not in VFS: " + modelPath);
@@ -1772,6 +1783,43 @@ void GltfToClusterFromVfs(
 			(void)warn;
 #endif
 	}
+	return model;
+}
+
+} // namespace
+
+bool ListGltfScenesFromVfs(
+	const smvk::OverlayVfs& vfs,
+	const std::string& modelVfsPath,
+	std::vector<std::string>& outNames,
+	std::string* err) {
+	try {
+		tinygltf::Model model = LoadGltfModelFromVfs(vfs, modelVfsPath);
+		outNames.clear();
+		for (const auto& s : model.scenes)
+			outNames.push_back(s.name);
+		return true;
+	}
+	catch (const std::exception& e) {
+		if (err)
+			*err = e.what();
+		return false;
+	}
+}
+
+void GltfToClusterFromVfs(
+	smvk::ResourceManager* ctx,
+	const smvk::OverlayVfs& vfs,
+	const std::string& modelVfsPath,
+	smvk::Cluster& out,
+	const smvk::MeshOptConfig& meshOpt,
+	const smvk::MeshletConfig& meshlets,
+	int coordFix,
+	const glm::mat4& preTransform,
+	int gltfSceneIndex) {
+	const std::string modelPath = smvk::NormalizeAssetUri(modelVfsPath).Str();
+	tinygltf::Model model = LoadGltfModelFromVfs(vfs, modelVfsPath);
+	const std::string baseDir = smvk::vfs::BaseDir(modelPath);
 
 	GltfToSceneImporter importer{ out, model, std::filesystem::path(modelPath) };
 	importer.setTextureSource(
@@ -1790,7 +1838,15 @@ void GltfToClusterFromVfs(
 	out.scene.globalTransform[root] = glm::mat4(1.0f);
 
 	std::vector<int> gltfRoots;
-	if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size()) {
+	if (gltfSceneIndex >= 0) {
+		// Explicit scene cook (multi-scene paks): no silent fallback.
+		if (gltfSceneIndex >= (int)model.scenes.size())
+			throw std::runtime_error("GltfToClusterFromVfs: scene index " +
+				std::to_string(gltfSceneIndex) + " out of range (" +
+				std::to_string(model.scenes.size()) + " scenes): " + modelPath);
+		gltfRoots = model.scenes[gltfSceneIndex].nodes;
+	}
+	else if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size()) {
 		gltfRoots = model.scenes[model.defaultScene].nodes;
 	}
 	else if (!model.scenes.empty()) {

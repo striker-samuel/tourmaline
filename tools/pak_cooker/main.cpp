@@ -102,6 +102,10 @@ struct Args {
 	std::string contentDir = "content";
 	std::string inVfs;
 	std::string outPak;
+	// glTF scene selection: -1 = all scenes (one Scene blob each, shared
+	// asset pool); N = only that scene. --lightmap/--tour need exactly
+	// one cooked scene (fail otherwise).
+	int sceneIndex = -1;
 	// .tour replay (editor scene overlay): applied to the cook cluster
 	// right after import, before collapse/LOD/bake/serialize. CLI flags
 	// win over tour cook defaults (tracked via explicitSet).
@@ -177,10 +181,15 @@ struct Args {
 	float lmCurveTarget = 7.0f;  // degrees of normal turn per texel
 	float lmCurveMax = 2.5f;     // max per-mesh density multiplier
 	// ---- Chart source -------------------------------------------------
-	// "auto" = built-in greedy planar unwrap; "authored" = UV2 islands of
-	// the imported texCoord2 (external unwrapper, e.g. tools/rizom_uv2.py
-	// packing TEXCOORD_1), per-mesh planar fallback when a mesh carries no
-	// authored layout.
+	// "auto"/"authored" chart from the imported texCoord2 (external
+	// unwrapper, e.g. tools/rizom_uv2.py packing TEXCOORD_1) with a
+	// per-mesh planar fallback when a mesh carries no authored layout
+	// (GenerateLightmapCharts checks the spread and falls through);
+	// "authored-pack" additionally treats each mesh's whole [0,1]^2
+	// layout as ONE chart (pre-packed unwrapper layouts: RizomUV Pack —
+	// per-island rects pay ~4 gutter texels per side per island, and
+	// rizom-dense scenes carry millions of islands);
+	// "planar" forces the built-in unwrapper for every mesh.
 	std::string lmCharts = "auto";
 	// Comma-separated node-name keywords whose SUBTREES are excluded from
 	// charts/bake entirely (word-boundary match, case-insensitive: "tree"
@@ -256,6 +265,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		}
 		else if (a == "--out-pak") {
 			if (!need(out.outPak)) return false;
+		}
+		else if (a == "--scene-index") {
+			std::string v;
+			if (!need(v)) return false;
+			out.sceneIndex = std::stoi(v);
 		}
 		else if (a == "--tour") {
 			if (!need(out.tour)) return false;
@@ -424,7 +438,12 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		else if (a == "--lm-charts") {
 			std::string v;
 			if (!need(v)) return false;
-			out.lmCharts = (v == "authored") ? "authored" : "auto";
+			// "planar" forces the built-in unwrapper; "authored-pack"
+			// = authored UV2 with one chart per pre-packed layout;
+			// anything else ("auto", "authored") = authored UV2 with
+			// per-island charts.
+			out.lmCharts = (v == "planar") ? "planar"
+				: (v == "authored-pack" ? "authored-pack" : "auto");
 		}
 		else if (a == "--lm-exclude" || a == "--lm-exclude-veg") {
 			std::string v;
@@ -511,7 +530,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 
 void Usage() {
 	std::cout << "PakCooker --content-dir content --in-vfs models/Sponza/sponza.gltf\n"
-		<< "          --out-pak content/paks/sponza.pak [--meshopt on|off]\n"
+		<< "          --out-pak content/paks/sponza.pak [--scene-index N] [--meshopt on|off]\n"
+		<< "          (default cooks ALL glTF scenes: one Scene blob each\n"
+		<< "          (#scene, #scene.1, ...) sharing one asset pool; the\n"
+		<< "          runtime loads index 0 unless told otherwise.\n"
+		<< "          --lightmap/--tour need exactly one cooked scene.)\n"
 		<< "          [--tour <scene.tour>] [--overdraw 1.05] [--verify on|off]"
 		<< " [--dump-manifest on|off]\n"
 		<< "          [--lods on|off] [--lod-ratios 0.6,0.3,0.12] [--lod-error 0.02]\n"
@@ -527,7 +550,7 @@ void Usage() {
 		<< "           --lm-lod-audit-tx 2.0 --lm-lod-audit-gate on|off\n"
 		<< "           --lm-denoise on|off --lm-denoise-quality high|balanced\n"
 		<< "           --lm-curve-target 7.0 --lm-curve-max 2.5\n"
-		<< "           --lm-charts auto|authored\n"
+		<< "           --lm-charts auto|authored|authored-pack|planar\n"
 		<< "           --lm-exclude tree,linden,ivy,glass --lm-exclude-small 0.5\n"
 		<< "           --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
 		<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
@@ -766,7 +789,17 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 	// Layout mirrors cluster_serializer.cpp: u32 nodes | hierarchy (5xi32)
 	// | localTransforms (16xf32) | meshPairs | matPairs | namePairs |
 	// nodeNames | matNames | static section | noLM section (v3) |
-	// light pairs (v4; definitions are Light blobs).
+	// light pairs (v4; definitions are Light blobs) | name (v5).
+	// Scene blobs iterate in TOC order; the index + name come from the
+	// discovery table so multi-scene paks read per scene.
+	std::unordered_map<std::string, std::pair<size_t, std::string>> sceneInfo;
+	{
+		std::string lerr;
+		auto infos = smvk::ListPakScenes(reader, &lerr);
+		for (size_t i = 0; i < infos.size(); ++i)
+			sceneInfo[infos[i].tocPath] = { i, infos[i].name };
+	}
+	size_t sceneIdx = 0;
 	for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Scene)) {
 		DumpCursor c{ reader.Payload(*e), 0 };
 		const uint32_t nodeCount = c.u32();
@@ -774,6 +807,14 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 			std::cout << "    [bad scene blob]\n";
 			continue;
 		}
+		const auto infoIt = sceneInfo.find(e->path);
+		const size_t dispIdx = infoIt != sceneInfo.end()
+			? infoIt->second.first : sceneIdx;
+		const std::string dispName = infoIt != sceneInfo.end()
+			? infoIt->second.second : std::string{};
+		++sceneIdx;
+		std::cout << "    scene[" << dispIdx << "] '" << dispName
+			<< "' (" << e->path << "):\n";
 		std::vector<int32_t> parent(nodeCount, -1);
 		for (uint32_t i = 0; i < nodeCount; ++i) {
 			parent[i] = c.i32();
@@ -1039,8 +1080,17 @@ int main(int argc, char** argv) {
 			<< " materials=" << reader->BlobsOfKind(smvk::PakAssetKind::Material).size()
 			<< " textures=" << reader->BlobsOfKind(smvk::PakAssetKind::Texture).size()
 			<< " lights=" << reader->BlobsOfKind(smvk::PakAssetKind::Light).size()
-			<< " scene=" << reader->BlobsOfKind(smvk::PakAssetKind::Scene).size()
+			<< " scenes=" << reader->BlobsOfKind(smvk::PakAssetKind::Scene).size()
 			<< "\n";
+		{
+			std::string lerr;
+			auto scenes = smvk::ListPakScenes(*reader, &lerr);
+			if (scenes.empty() && !lerr.empty())
+				std::cerr << "Scene list failed: " << lerr << std::endl;
+			for (size_t i = 0; i < scenes.size(); ++i)
+				std::cout << "  scene[" << i << "] '" << scenes[i].name
+					<< "' nodes=" << scenes[i].nodes << "\n";
+		}
 		DumpManifestFromPak(*reader, args.dumpNodes);
 		return 0;
 	}
@@ -1072,34 +1122,91 @@ int main(int argc, char** argv) {
 	meshletCfg.maxTriangles = std::clamp(args.maxTris, 1u, 512u);
 	meshletCfg.coneWeight = args.coneWeight;
 
+	// Scene selection (multi-scene paks: one Scene blob per glTF scene,
+	// shared asset pool; the runtime loads index 0 unless told otherwise).
+	struct SceneCook { int gltfIndex; std::string name; };
+	std::vector<SceneCook> toCook;
+	{
+		std::vector<std::string> gltfScenes;
+		std::string lerr;
+		if (!ListGltfScenesFromVfs(vfs, args.inVfs, gltfScenes, &lerr)) {
+			std::cerr << "Scene list failed: " << lerr << std::endl;
+			return 1;
+		}
+		if (gltfScenes.empty()) {
+			toCook.push_back({ -1, "" }); // sceneless: legacy roots fallback
+		}
+		else if (args.sceneIndex >= 0) {
+			if (args.sceneIndex >= int(gltfScenes.size())) {
+				std::cerr << "--scene-index " << args.sceneIndex
+					<< " out of range (" << gltfScenes.size()
+					<< " scenes)" << std::endl;
+				return 2;
+			}
+			toCook.push_back(
+				{ args.sceneIndex, gltfScenes[size_t(args.sceneIndex)] });
+		}
+		else {
+			for (int i = 0; i < int(gltfScenes.size()); ++i)
+				toCook.push_back({ i, gltfScenes[size_t(i)] });
+		}
+		std::cout << "Cooking " << toCook.size() << " scene(s):";
+		for (size_t i = 0; i < toCook.size(); ++i)
+			std::cout << " [" << i << "]'" << toCook[i].name << "'";
+		std::cout << "\n";
+		if (toCook.size() > 1 && args.lightmap) {
+			std::cerr << "--lightmap needs exactly one cooked scene "
+				"(bake is per-scene): pass --scene-index N" << std::endl;
+			return 2;
+		}
+		if (toCook.size() > 1 && !args.tour.empty()) {
+			std::cerr << "--tour needs exactly one cooked scene "
+				"(tour ids are scene-local): pass --scene-index N" << std::endl;
+			return 2;
+		}
+	}
+
 	// NOTE: heap-allocated — Cluster embeds multi-MB pool arrays and must
 	// never live on the (1MB) thread stack. Cook mode = GPU-free: CPU
 	// geometry + retained uploads only, textures are validated .ktx2
 	// payloads with minted slot ids.
-	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-	cluster->SetCookMode(true);
+	std::vector<std::unique_ptr<smvk::Cluster>> sceneClusters;
+	std::vector<std::string> sceneNames;
+	for (const SceneCook& sc : toCook) {
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetCookMode(true);
 
-	try {
-		GltfToClusterFromVfs(nullptr, vfs, args.inVfs, *cluster, opt, meshletCfg);
+		try {
+			GltfToClusterFromVfs(nullptr, vfs, args.inVfs, *cluster,
+				opt, meshletCfg, 0, glm::mat4(1.0f), sc.gltfIndex);
+		}
+		catch (const std::exception& e) {
+			std::cerr << "Import failed (scene '" << sc.name
+				<< "'): " << e.what() << std::endl;
+			return 1;
+		}
+		{
+			size_t nDir = 0, nPoint = 0, nSpot = 0;
+			cluster->lights.forEachHandle([&](smvk::ClusterLightHandle h) {
+				const SceneLight* l = cluster->lights.get(h);
+				if (!l)
+					return;
+				if (l->type == SceneLight::Type::Directional) ++nDir;
+				else if (l->type == SceneLight::Type::Spot) ++nSpot;
+				else ++nPoint;
+			});
+			std::cout << "Imported lights '" << sc.name << "': "
+				<< cluster->lights.numObjects()
+				<< " (dir=" << nDir << " point=" << nPoint << " spot=" << nSpot
+				<< ", links=" << cluster->scene.lightForNode.size() << ")\n";
+		}
+		sceneNames.push_back(sc.name);
+		sceneClusters.push_back(std::move(cluster));
 	}
-	catch (const std::exception& e) {
-		std::cerr << "Import failed: " << e.what() << std::endl;
-		return 1;
-	}
-	{
-		size_t nDir = 0, nPoint = 0, nSpot = 0;
-		cluster->lights.forEachHandle([&](smvk::ClusterLightHandle h) {
-			const SceneLight* l = cluster->lights.get(h);
-			if (!l)
-				return;
-			if (l->type == SceneLight::Type::Directional) ++nDir;
-			else if (l->type == SceneLight::Type::Spot) ++nSpot;
-			else ++nPoint;
-		});
-		std::cout << "Imported lights: " << cluster->lights.numObjects()
-			<< " (dir=" << nDir << " point=" << nPoint << " spot=" << nSpot
-			<< ", links=" << cluster->scene.lightForNode.size() << ")\n";
-	}
+	// Single-scene alias for the tour/collapse/bake stages below (written
+	// against one cluster; multi-scene loops reuse them per scene). Both
+	// cluster-> and *cluster forms keep working through the pointer.
+	smvk::Cluster* cluster = sceneClusters.front().get();
 
 	// .tour replay (editor overlay): deterministic CRUD commands applied to
 	// the freshly imported cook cluster — same ids, same importer — before
@@ -1192,8 +1299,9 @@ int main(int argc, char** argv) {
 
 	// Static collapse: bake frozen subtrees into per-material mega-mesh
 	// blocks (world-baked verts, identity nodes). Runs before Serialize so
-	// the pak holds the collapsed scene.
-	if (args.collapseStatic) {
+	// the pak holds the collapsed scene. Per scene (shared nothing).
+	if (args.collapseStatic) for (auto& sc : sceneClusters) {
+		smvk::Cluster* cluster = sc.get();
 		smvk::StaticMergeOptions mopts;
 		smvk::StaticMergeResult mr = smvk::CollapseStaticSubtrees(*cluster, mopts);
 		if (!mr.ok) {
@@ -1360,7 +1468,14 @@ int main(int argc, char** argv) {
 		SgLightmapChartOptions chartOpts{};
 		chartOpts.texelsPerMeter = std::max<float>(float(args.lmDensity), 2.0f);
 		chartOpts.gutterTexels = std::clamp<uint32_t>(args.lmGutter, 1, 4);
-		chartOpts.authoredUv2 = (args.lmCharts == "authored");
+		// "auto" IS authored-with-fallback (GenerateLightmapCharts
+		// checks texCoord2 spread per mesh and falls through to the
+		// planar unwrapper); "planar" forces the built-in unwrap;
+		// "authored-pack" = authored, one chart per pre-packed layout
+		// (RizomUV: per-island rects would pay millions of gutters).
+		chartOpts.authoredUv2 = (args.lmCharts != "planar");
+		chartOpts.authoredOneChartPerLayout =
+			(args.lmCharts == "authored-pack");
 		if (!args.lmExcludeKeywords.empty() || args.lmExcludeSmall > 0.0f)
 			std::cerr << "  [LM] chart source: " << args.lmCharts
 				<< " | name exclusion: "
@@ -1974,7 +2089,10 @@ int main(int argc, char** argv) {
 		sibOpts.atlasHeight = atlas.height;
 		sibOpts.auditThresholdTexels = args.lmLodAuditTx;
 		sibOpts.auditGate = args.lmLodAuditGate;
-		smvk::CookLodSiblings(*cluster, lodOpt, meshletCfg, sibOpts);
+		// Per scene (the audit/charts only exist for the baked scene;
+		// the gate above already requires them non-empty).
+		for (auto& sc : sceneClusters)
+			smvk::CookLodSiblings(*sc, lodOpt, meshletCfg, sibOpts);
 	}
 
 	smvk::PakWriter writer;
@@ -1983,7 +2101,10 @@ int main(int argc, char** argv) {
 		args.lz4Accel);
 	smvk::ClusterSerializeStats stats;
 	std::string err;
-	if (!SerializeCluster(*cluster, writer, &stats, &err)) {
+	std::vector<const smvk::Cluster*> cookPtrs;
+	for (auto& sc : sceneClusters)
+		cookPtrs.push_back(sc.get());
+	if (!SerializeClusters(cookPtrs, sceneNames, writer, &stats, &err)) {
 		std::cerr << "Serialize failed: " << err << std::endl;
 		return 1;
 	}
@@ -2006,7 +2127,8 @@ int main(int argc, char** argv) {
 	const double secs = std::chrono::duration<double>(t1 - t0).count();
 
 	std::cout << "Cooked " << args.inVfs << " -> " << args.outPak << "\n"
-		<< "  meshes=" << stats.meshes << " materials=" << stats.materials
+		<< "  scenes=" << sceneNames.size()
+		<< " meshes=" << stats.meshes << " materials=" << stats.materials
 		<< " textures=" << stats.textures << " (" << stats.textureBytes << " B)"
 		<< " nodes=" << stats.nodes << " lights=" << stats.lights
 		<< " pak=" << pak.size() << " B"

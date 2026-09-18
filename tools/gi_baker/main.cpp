@@ -51,6 +51,7 @@
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/compression.h>
 #include <Engine/GI/bake.h>
+#include <Engine/GI/lightmap.h> // lightmap-chain diagnostic (--lm-probe)
 #include <Engine/GI/probe_volume.h>
 #include <Engine/GI/regular_volume.h>
 #include <Engine/Flintbase/flintbase_backend.h>
@@ -89,6 +90,7 @@ struct Args {
 	bool textures = true;
 	bool emissive = true;
 	bool verify = true;
+	uint32_t lmProbe = 0; // >0: lightmap-chain diagnostic on N meshes
 	std::string analyze; // .sggi host path: inspect instead of baking
 	// White-world albedo: default "0.7" (single known albedo everywhere).
 	// "off" restores the textured bake (per-material albedo from factors
@@ -184,6 +186,7 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		}
 		else if (a == "--print-bounds") { out.printBounds = true; }
 		else if (a == "--scan-interior") { out.scanInterior = true; }
+		else if (a == "--lm-probe") { if (!needU(out.lmProbe, i)) return false; }
 		else if (a == "--help" || a == "-h") {
 			return false;
 		}
@@ -223,7 +226,12 @@ void Usage() {
 		<< "         2D SG lightmaps are cooked with the pak: use\n"
 		<< "         PakCooker --lightmap on (writes gi/<scene>.sglm itself).\n"
 		<< "GiBaker --scene bistro --print-bounds | --scan-interior:\n"
-		<< "         scene AABB / enclosure map to place bar/street boxes.\n";
+		<< "         scene AABB / enclosure map to place bar/street boxes.\n"
+		<< "GiBaker --scene bistro --lm-probe N --uniform-albedo off\n"
+		<< "         [--sun-... --sky-intensity ...]: lightmap-chain diagnostic\n"
+		<< "         (authored-pack charts -> rasterize -> bake) on N meshes;\n"
+		<< "         prints chunk stats + first-texel trace (cook faults without\n"
+		<< "         a pak cook).\n";
 }
 
 // Regular-volume inspector (.sgrv): coefficient stats + a trilinear
@@ -1043,6 +1051,167 @@ int main(int argc, char** argv) {
 				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
 			return 0;
 		}
+	}
+
+	// Lightmap-chain diagnostic: run the PakCooker --lightmap charting +
+	// bake chain (authored-pack UV2 charts -> one chunk per layout ->
+	// BakeSgLightmapChunks) on the first N chartable meshes and print
+	// per-mesh stats (texel counts, world positions, incoming radiance).
+	// Reproduces cook-side lightmap faults without a pak cook.
+	if (args.lmProbe > 0) {
+		using namespace smvk::gi;
+		::recalculateGlobalTransforms(cluster->scene);
+		SgLightmapChartOptions chartOpts{};
+		chartOpts.texelsPerMeter = 5.66f;   // converged night cook density (world)
+		chartOpts.gutterTexels = 1;
+		chartOpts.authoredUv2 = true;
+		chartOpts.authoredOneChartPerLayout = true;
+		SgLightmapAtlas atlas{};
+		struct LmWork { std::string name; SgLightmapChartResult chart; float density; glm::mat4 g; const smvk::StaticMeshUpload* up; };
+		std::vector<LmWork> works;
+		uint32_t count = 0;
+		for (const auto& [node, meshIdx] : cluster->scene.meshForNode) {
+			if (count >= args.lmProbe)
+				break;
+			auto matIt = cluster->scene.materialForNode.find(node);
+			if (matIt == cluster->scene.materialForNode.end())
+				continue;
+			const smvk::ClusterMaterialHandle mh = cluster->materials.getHandle(matIt->second);
+			if (!mh.valid())
+				continue;
+			const smvk::Material* mat = cluster->materials.get(mh);
+			if (!mat || mat->alphaMode == smvk::AlphaMode::Blend)
+				continue;
+			if (!mat->castsShadows && mat->alphaMode != smvk::AlphaMode::Mask)
+				continue;
+			const smvk::ClusterStaticMeshHandle handle = cluster->staticMeshes.getHandle(meshIdx);
+			const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(handle);
+			if (!up || up->vertices.empty())
+				continue;
+			// has authored uv2?
+			bool spread = false;
+			glm::vec2 mean(0.0f);
+			for (const smvk::StaticVertex& v : up->vertices)
+				mean += v.texCoord2;
+			mean /= float(up->vertices.size());
+			for (const smvk::StaticVertex& v : up->vertices)
+				if (std::abs(v.texCoord2.x - mean.x) > 1e-6f
+					|| std::abs(v.texCoord2.y - mean.y) > 1e-6f) {
+					spread = true;
+					break;
+				}
+			if (!spread)
+				continue;
+			const glm::mat4 g = cluster->scene.globalTransform[node];
+			const float ws = std::max({ glm::length(glm::vec3(g[0])),
+				glm::length(glm::vec3(g[1])), glm::length(glm::vec3(g[2])) });
+			LmWork w{};
+			w.name = getNodeName(cluster->scene, int(node));
+			w.up = up;
+			w.g = g;
+			w.density = chartOpts.texelsPerMeter * ws;
+			SgLightmapChartOptions o = chartOpts;
+			o.texelsPerMeter = w.density;
+			std::string cerr_;
+			if (!GenerateLightmapCharts(*up, o, w.chart, cerr_)) {
+				std::cout << "  [lm-probe] node " << node << " '" << w.name
+					<< "': chart failed: " << cerr_ << "\n";
+				continue;
+			}
+			works.push_back(std::move(w));
+			++count;
+		}
+		std::cout << "  [lm-probe] charted " << works.size() << " meshes\n";
+		// Pack + bake each as its own chunk; print stats.
+		for (size_t wi = 0; wi < works.size(); ++wi) {
+			LmWork& w = works[wi];
+			atlas.chunks.clear();
+			atlas.payloads.clear();
+			atlas.width = atlas.height = 0;
+			std::vector<SgLightmapAtlas::RectRequest> reqs;
+			for (const auto& ch : w.chart.charts)
+				reqs.push_back({ glm::uvec2(ch.width, ch.height), 12u, uint32_t(wi) });
+			if (!atlas.PackRects(reqs, 4096, 4096)) {
+				std::cout << "  [lm-probe] '" << w.name << "': pack failed\n";
+				continue;
+			}
+			std::vector<std::vector<SgLightmapTexel>> texels(1);
+			{
+				const glm::mat3 g3(w.g);
+				for (const auto& t : w.chart.charts[0].texels) {
+					SgLightmapTexel wt = t;
+					wt.position = glm::vec3(w.g * glm::vec4(t.position, 1.0f));
+					wt.normal = glm::normalize(g3 * t.normal);
+					texels[0].push_back(wt);
+				}
+			}
+			SgLightmapChunkBatch b{};
+			b.payload = &atlas.payloads[0];
+			b.texels = &texels[0];
+			b.meshKey = uint32_t(wi) + 1;
+			b.chunkMeta = &atlas.chunks[0];
+			SgLightmapBakeConfig lcfg{};
+			lcfg.raysPerTexel = 128;
+			lcfg.maxBounces = 3;
+			SgLightmapBakeStats ls{};
+			if (!BakeSgLightmapChunks(traceScene, 12u,
+					std::span<const SgLightmapChunkBatch>(&b, 1), lcfg, ls, nullptr)) {
+				std::cout << "  [lm-probe] '" << w.name << "': bake failed\n";
+				continue;
+			}
+			const auto& p = atlas.payloads[0];
+			const uint32_t lobes = std::min<uint32_t>(
+				atlas.chunks[0].lobeCount, 12u);
+			double meanL0 = 0.0, maxL0 = 0.0;
+			uint64_t nz = 0;
+			for (size_t i = 0; i < size_t(p.width) * p.height; ++i) {
+				const double l = 0.2126 * p.coeffs[i * lobes + 0].x
+					+ 0.7152 * p.coeffs[i * lobes + 0].y
+					+ 0.0722 * p.coeffs[i * lobes + 0].z;
+				meanL0 += l;
+				maxL0 = std::max(maxL0, l);
+				if (l > 1e-6)
+					++nz;
+			}
+			const size_t total = size_t(p.width) * p.height;
+			const glm::vec3 firstPos = w.chart.charts[0].texels.empty()
+				? glm::vec3(0.0f)
+				: w.chart.charts[0].texels.front().position;
+			const glm::vec3 wpos = glm::vec3(w.g * glm::vec4(firstPos, 1.0f));
+			std::cout << "  [lm-probe] '" << w.name << "' chunk "
+				<< p.width << "x" << p.height
+				<< " baked=" << w.chart.charts[0].texels.size()
+				<< " nz=" << nz
+				<< " meanL0=" << (meanL0 / double(std::max(total, size_t(1))))
+				<< " maxL0=" << maxL0
+				<< " firstTexelWorld=(" << wpos.x << "," << wpos.y << "," << wpos.z << ")"
+				<< "\n";
+			// Trace a few of the first texel's fib directions and report
+			// what comes back (sky / geometry / zero).
+			if (!w.chart.charts[0].texels.empty()) {
+				const SgLightmapTexel& t0 = w.chart.charts[0].texels.front();
+				const glm::vec3 nrm = glm::normalize(glm::vec3(w.g * glm::vec4(t0.normal, 0.0f)));
+				const glm::vec3 origin = glm::vec3(w.g * glm::vec4(t0.position, 1.0f))
+					+ nrm * 1e-3f;
+				int misses = 0;
+				glm::vec3 acc(0.0f);
+				for (uint32_t i = 0; i < 64; ++i) {
+					const float y = 1.0f - 2.0f * (float(i) + 0.5f) / 64.0f;
+					const float r = std::sqrt(std::max(0.0f, 1.0f - y * y));
+					const float phi = float(i) * 2.39996323f;
+					const glm::vec3 d(std::cos(phi) * r, y, std::sin(phi) * r);
+					smvk::gi::Pcg32 rng(1234u + i);
+					acc += traceScene.TraceIncoming(origin, d, rng, 3);
+					smvk::gi::TriangleBvh::Hit h;
+					if (!traceScene.Bvh().Raycast(origin, d, 1e9f, h))
+						++misses;
+				}
+				std::cout << "    first texel: 64-ray mean lum="
+					<< ((0.2126 * acc.x + 0.7152 * acc.y + 0.0722 * acc.z) / 64.0)
+					<< " open-sky rays=" << misses << "/64\n";
+			}
+		}
+		return 0;
 	}
 
 	smvk::gi::SgGiBakeConfig cfg{};

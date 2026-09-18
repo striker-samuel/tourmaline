@@ -63,6 +63,20 @@ void AddBox(LineBatch& b, const glm::vec3& mn, const glm::vec3& mx) {
 	}
 }
 
+// Wire diamond (octahedron edges): symbolic marker core for lights.
+void AddDiamond(LineBatch& b, const glm::vec3& p, float s) {
+	const glm::vec3 t = p + glm::vec3(0, s, 0);
+	const glm::vec3 bo = p - glm::vec3(0, s, 0);
+	const glm::vec3 e[4] = { p + glm::vec3(s, 0, 0), p + glm::vec3(0, 0, s),
+		p - glm::vec3(s, 0, 0), p - glm::vec3(0, 0, s) };
+	for (int i = 0; i < 4; ++i) {
+		b.verts.push_back({ t });
+		b.verts.push_back({ e[i] });
+		b.verts.push_back({ bo });
+		b.verts.push_back({ e[i] });
+	}
+}
+
 // Wire arrowhead: 4-sided pyramid with apex at `tip`, axis `ax`
 // (unit), base `len` behind the tip, base half-width `r`.
 void AddArrowHead(LineBatch& b, const glm::vec3& tip, const glm::vec3& ax,
@@ -93,15 +107,83 @@ glm::vec3 GizmoOrigin(const Scene& scene, uint32_t node) {
 
 void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
 	smvk::Extent2D extent) {
-	if (swapView.empty())
-		return;
-	if (m_selected == UINT32_MAX || !m_world ||
-		m_selected >= m_world->scene.hierarchy.size())
+	if (swapView.empty() || !m_world)
 		return;
 	if (m_lineProgram.shaderCount != 2)
 		return;
-	// Build batches: selection AABB (yellow) + gizmo axes.
 	std::vector<LineBatch> batches;
+	// Light markers: one small distance-scaled diamond per light node
+	// (sun = yellow + emission arrow, point = orange, spot = cyan +
+	// cone), always visible — light nodes carry no mesh to click.
+	if (m_showLightGizmos && !m_world->scene.lightForNode.empty()) {
+		const glm::vec3 eye = m_camera.getPosition();
+		for (const auto& [node, li] : m_world->scene.lightForNode) {
+			if (node >= m_world->scene.hierarchy.size() ||
+				node >= m_world->scene.globalTransform.size())
+				continue;
+			glm::vec3 aimWs(0.0f);
+			const ::SceneLight* l = FindNodeLight(node, &aimWs);
+			if (!l)
+				continue;
+			const glm::vec3 p =
+				glm::vec3(m_world->scene.globalTransform[node][3]);
+			float s = glm::distance(eye, p) * 0.045f;
+			if (!(s > 1e-5f))
+				continue;
+			if (node == m_selected)
+				s *= 1.6f; // selected marker reads bigger
+			LineBatch b;
+			if (l->type == ::SceneLight::Type::Directional) {
+				b.color = glm::vec4(1.0f, 0.85f, 0.3f, 1.0f);
+				AddDiamond(b, p, s);
+				if (glm::length(aimWs) > 1e-6f) {
+					const glm::vec3 tip = p + aimWs * s * 3.0f;
+					b.verts.push_back({ p });
+					b.verts.push_back({ tip - aimWs * s * 0.66f });
+					AddArrowHead(b, tip, aimWs, s * 0.66f, s * 0.18f);
+				}
+			}
+			else if (l->type == ::SceneLight::Type::Spot) {
+				b.color = glm::vec4(0.3f, 0.85f, 1.0f, 1.0f);
+				AddDiamond(b, p, s);
+				glm::vec3 ax = glm::length(aimWs) > 1e-6f
+					? aimWs : glm::vec3(0, -1, 0);
+				const float outer = std::clamp(l->outerConeAngle,
+					0.05f, 1.4f);
+				glm::vec3 u = std::fabs(ax.y) < 0.9f
+					? glm::cross(ax, glm::vec3(0, 1, 0))
+					: glm::cross(ax, glm::vec3(1, 0, 0));
+				u = glm::normalize(u);
+				const glm::vec3 v = glm::cross(ax, u);
+				const float len = s * 2.5f;
+				for (int i = 0; i < 4; ++i) {
+					const float a = float(i) / 4 * 6.2831853f;
+					const glm::vec3 dir = glm::normalize(
+						ax * std::cos(outer) +
+						(u * std::cos(a) + v * std::sin(a)) * std::sin(outer));
+					b.verts.push_back({ p });
+					b.verts.push_back({ p + dir * len });
+				}
+				AddCircle(b, p + ax * len, u, v, len * std::sin(outer), 24);
+			}
+			else {
+				b.color = glm::vec4(1.0f, 0.55f, 0.2f, 1.0f);
+				AddDiamond(b, p, s);
+			}
+			if (node == m_selected && l->range > 0.0f &&
+				l->type != ::SceneLight::Type::Directional)
+				AddCircle(b, p, glm::vec3(1, 0, 0),
+					glm::vec3(0, 0, 1), l->range, 48);
+			if (!b.verts.empty())
+				batches.push_back(std::move(b));
+		}
+	}
+	// Build batches: selection AABB (yellow) + gizmo axes.
+	if (m_selected == UINT32_MAX ||
+		m_selected >= m_world->scene.hierarchy.size()) {
+		// No selection: markers (if any) still draw below.
+	}
+	else {
 	{
 		LineBatch box;
 		box.color = glm::vec4(1.0f, 0.9f, 0.2f, 1.0f);
@@ -185,6 +267,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
 			AddBox(b, tip - h, tip + h);
 		}
 		batches.push_back(std::move(b));
+		}
 	}
 
 	// Flatten into one upload with per-batch draw ranges.

@@ -237,6 +237,7 @@ enum class DebugView : int {
 	VertexColors = 5, // F6: vertex-color layer weights as false color (default_vertexcolor_debug)
 	Uv0 = 6,      // F9: base UV (TEXCOORD0) checker + gradient (default_uv0_debug)
 	Uv1 = 7,      // F10: lightmap atlas UV (uv2) checker + seam glow (default_uv1_debug)
+	Pom = 8,      // F11: parallax occlusion mapping (default_pom)
 };
 
 #if defined(DS_DEBUG_VIZ)
@@ -609,6 +610,12 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> fragUv1DebugShader; // default_uv1_debug (F10)
 	smvk::ShaderProgram uv0DebugProgram;
 	smvk::ShaderProgram uv1DebugProgram;
+	// Parallax occlusion mapping view (F11): occlusion-map heightfield
+	// march + sun self-shadow, sun/sky shading sampled at the displaced
+	// uv (see default_pom.frag.hlsl). Missing module leaves shaderCount 0
+	// and the view falls back to Lit.
+	smvk::Holder<smvk::ShaderModuleHandle> fragPomShader; // default_pom (F11)
+	smvk::ShaderProgram pomProgram;
 	// Shader-LOD farthest-level program (World::LodShader::VertexLit):
 	// its own VS computes the lighting per vertex (see
 	// default_vertexlit.vert.hlsl) and the FS is a fog pass-through.
@@ -697,6 +704,13 @@ public:
 	// SceneDesc glTF path (loose content). A/B against the pak to tell
 	// pak/meshlet bugs apart from import/draw-path bugs.
 	void SetForceGltf(bool v) { m_forceGltf = v; }
+	// CLI override (main.cpp --pak / --gltf): external scene instead of
+	// a registry sample. Registry camera pose is meaningless for it, so
+	// the camera frames the loaded bounds after resolve (unless
+	// VULKANTOY_CAM_POS/FWD pin it for benches).
+	void SetSceneOverride(bool v) { m_sceneOverride = v; }
+	// Which Scene blob of the pak to load (see ListPakScenes; 0 = default).
+	void SetSceneIndex(int v) { m_sceneIndex = v < 0 ? 0 : v; }
 	// CLI overrides (main.cpp): fixed present mode + benchmark frame budget.
 	void SetPresentMode(smvk::PresentMode m) { m_presentMode = m; }
 	// Bench freeze: skip every camera-control update (keyboard/gamepad/
@@ -886,9 +900,10 @@ protected:
 			ExportNeutralLut();
 			m_captureQueued = true;
 		}
-		// Debug views (F1..F6, F9/F10): F1 lit, F2 unlit, F3 meshlets, F4
+		// Debug views (F1..F6, F9..F11): F1 lit, F2 unlit, F3 meshlets, F4
 		// shadow cascades, F5 LODs by color, F6 vertex-color layer
-		// weights, F9 base-UV checker, F10 lightmap-uv2 checker.
+		// weights, F9 base-UV checker, F10 lightmap-uv2 checker,
+		// F11 parallax occlusion mapping.
 		if (m_input.isKeyPressed(GLFW_KEY_F1)) {
 			m_debugView = DebugView::Lit;
 		}
@@ -916,6 +931,12 @@ protected:
 		}
 		if (m_input.isKeyPressed(GLFW_KEY_F10)) {
 			m_debugView = DebugView::Uv1;
+		}
+		// Parallax occlusion mapping (F11): every material texture
+		// sampled at a ray-marched parallax uv through the occlusion-
+		// map heightfield, with sun self-shadowing (default_pom).
+		if (m_input.isKeyPressed(GLFW_KEY_F11)) {
+			m_debugView = DebugView::Pom;
 		}
 		// P toggles wireframe (PolygonMode::Line, Cull None) over the
 		// active debug view — a raster override, not a shading swap, so
@@ -1101,6 +1122,8 @@ protected:
 	SceneDesc m_scene{};
 	ScenePassConfig m_passes{};
 	bool m_forceGltf = false;
+	bool m_sceneOverride = false;
+	int m_sceneIndex = 0;
 	// Camera control frozen (see SetDisableControl; --disable_control).
 	bool m_disableControl = false;
 

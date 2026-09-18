@@ -5,6 +5,7 @@
 #include <iostream>
 #include <span>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <glm/gtc/type_ptr.hpp>
 
@@ -101,14 +102,45 @@ float SphereRadiusForAabb(const glm::vec3& mn, const glm::vec3& mx) {
 	return glm::length(mx - mn) * 0.5f;
 }
 
+// Scene blob TOC path: index 0 keeps the historic path so single-scene
+// paks are byte-stable; further scenes append their index.
+std::string SceneTocPath(size_t index, bool multi) {
+	if (!multi || index == 0)
+		return "<cluster-local>#scene";
+	return "<cluster-local>#scene." + std::to_string(index);
+}
+
+// Index encoded in a scene TOC path ("#scene" -> 0, "#scene.N" -> N;
+// anything else sorts last and fails loudly on load, never silently).
+uint32_t SceneBlobIndex(const std::string& tocPath) {
+	const size_t hash = tocPath.find_last_of('#');
+	const std::string leaf = (hash == std::string::npos)
+		? tocPath : tocPath.substr(hash + 1);
+	if (leaf == "scene")
+		return 0;
+	if (leaf.rfind("scene.", 0) == 0) {
+		uint32_t n = 0;
+		bool digits = false;
+		for (size_t i = 6; i < leaf.size(); ++i) {
+			if (leaf[i] < '0' || leaf[i] > '9')
+				return 0xFFFFFFFFu;
+			digits = true;
+			n = n * 10 + uint32_t(leaf[i] - '0');
+		}
+		return digits ? n : 0xFFFFFFFFu;
+	}
+	return 0xFFFFFFFFu;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
 // Serialize
 // ---------------------------------------------------------------------------
 
-bool SerializeCluster(
-	const Cluster& cluster,
+bool SerializeClusters(
+	const std::vector<const Cluster*>& clusters,
+	const std::vector<std::string>& sceneNames,
 	PakWriter& writer,
 	ClusterSerializeStats* stats,
 	std::string* err) {
@@ -118,6 +150,28 @@ bool SerializeCluster(
 		std::cerr << "SerializeCluster: " << msg << std::endl;
 		return false;
 	};
+	if (clusters.empty())
+		return fail("no clusters to serialize");
+	for (size_t ci = 0; ci < clusters.size(); ++ci)
+		if (!clusters[ci])
+			return fail("null cluster #" + std::to_string(ci));
+	const bool multi = clusters.size() > 1;
+
+	// Shared blob pool: asset URIs are stable across per-scene clusters
+	// of one model, so each unique blob is written once and every scene
+	// references the shared pak ids.
+	std::unordered_map<std::string, uint32_t> meshIdByUri, matIdByUri,
+		lightIdByUri;
+	std::unordered_set<std::string> texturesDone;
+	uint64_t textureBytes = 0;
+	struct LocalMaps {
+		std::unordered_map<uint32_t, uint32_t> mesh, mat, light;
+	};
+	std::vector<LocalMaps> locals(clusters.size());
+
+	for (size_t ci = 0; ci < clusters.size(); ++ci) {
+	const Cluster& cluster = *clusters[ci];
+	LocalMaps& local = locals[ci];
 
 	// --- Meshes (pool index order via forEachHandle) ---------------------
 	std::vector<ClusterStaticMeshHandle> meshHandles;
@@ -127,16 +181,22 @@ bool SerializeCluster(
 		const_cast<Cluster&>(cluster).staticMeshes.forEachHandle(
 			[&](ClusterStaticMeshHandle h) { meshHandles.push_back(h); });
 	}
-	std::unordered_map<uint32_t, uint32_t> meshPakId; // pool index -> pak id
 	std::vector<std::string> meshUris;
 	meshUris.reserve(meshHandles.size());
-	for (uint32_t i = 0; i < meshHandles.size(); ++i) {
-		const auto h = meshHandles[i];
-		meshPakId[h.index()] = i;
+	for (uint32_t k = 0; k < meshHandles.size(); ++k) {
+		const auto h = meshHandles[k];
 		std::string uri = cluster.GetMeshUri(h).Str();
 		if (uri.empty())
 			uri = "<cluster-local>#mesh." + std::to_string(h.index());
 		meshUris.push_back(uri);
+		auto idIt = meshIdByUri.find(uri);
+		if (idIt != meshIdByUri.end()) {
+			local.mesh[h.index()] = idIt->second; // shared with a sibling scene
+			continue;
+		}
+		const uint32_t pakId = static_cast<uint32_t>(meshIdByUri.size());
+		meshIdByUri[uri] = pakId;
+		local.mesh[h.index()] = pakId;
 
 		const StaticMesh* mesh = const_cast<Cluster&>(cluster).staticMeshes.get(h);
 		if (!mesh)
@@ -236,7 +296,6 @@ bool SerializeCluster(
 	std::vector<ClusterMaterialHandle> matHandles;
 	const_cast<Cluster&>(cluster).materials.forEachHandle(
 		[&](ClusterMaterialHandle h) { matHandles.push_back(h); });
-	std::unordered_map<uint32_t, uint32_t> matPakId;
 	std::vector<std::string> matUris;
 	matUris.reserve(matHandles.size());
 
@@ -253,13 +312,20 @@ bool SerializeCluster(
 		return it != rhiIndexToUri.end() ? it->second : std::string{};
 	};
 
-	for (uint32_t i = 0; i < matHandles.size(); ++i) {
-		const auto h = matHandles[i];
-		matPakId[h.index()] = i;
+	for (uint32_t k = 0; k < matHandles.size(); ++k) {
+		const auto h = matHandles[k];
 		std::string uri = cluster.GetMaterialUri(h).Str();
 		if (uri.empty())
 			uri = "<cluster-local>#mat." + std::to_string(h.index());
 		matUris.push_back(uri);
+		auto idIt = matIdByUri.find(uri);
+		if (idIt != matIdByUri.end()) {
+			local.mat[h.index()] = idIt->second;
+			continue;
+		}
+		const uint32_t pakId = static_cast<uint32_t>(matIdByUri.size());
+		matIdByUri[uri] = pakId;
+		local.mat[h.index()] = pakId;
 
 		const Material* mat = const_cast<Cluster&>(cluster).materials.get(h);
 		if (!mat)
@@ -288,9 +354,10 @@ bool SerializeCluster(
 	}
 
 	// --- Textures (embedded .ktx2) ------------------------------------------
-	uint64_t textureBytes = 0;
 	for (const auto& [uri, rhi] : cluster.ListTextureUris()) {
 		(void)rhi;
+		if (!texturesDone.insert(uri.Str()).second)
+			continue; // shared with a sibling scene
 		const std::vector<uint8_t>* src = cluster.GetTextureSource(uri);
 		if (!src || src->empty())
 			return fail("missing embedded .ktx2 source for texture: " + uri.Str() +
@@ -315,13 +382,19 @@ bool SerializeCluster(
 	std::vector<ClusterLightHandle> lightHandles;
 	const_cast<Cluster&>(cluster).lights.forEachHandle(
 		[&](ClusterLightHandle h) { lightHandles.push_back(h); });
-	std::unordered_map<uint32_t, uint32_t> lightPakId; // pool index -> pak id
-	for (uint32_t i = 0; i < lightHandles.size(); ++i) {
-		const auto h = lightHandles[i];
-		lightPakId[h.index()] = i;
+	for (uint32_t k = 0; k < lightHandles.size(); ++k) {
+		const auto h = lightHandles[k];
 		std::string uri = cluster.GetLightUri(h).Str();
 		if (uri.empty())
 			uri = "<cluster-local>#light." + std::to_string(h.index());
+		auto idIt = lightIdByUri.find(uri);
+		if (idIt != lightIdByUri.end()) {
+			local.light[h.index()] = idIt->second;
+			continue;
+		}
+		const uint32_t pakId = static_cast<uint32_t>(lightIdByUri.size());
+		lightIdByUri[uri] = pakId;
+		local.light[h.index()] = pakId;
 
 		const SceneLight* l = const_cast<Cluster&>(cluster).lights.get(h);
 		if (!l)
@@ -343,8 +416,6 @@ bool SerializeCluster(
 		if (!writer.AddBlob(PakAssetKind::Light, uri, std::move(blob)))
 			return fail("invalid light uri: " + uri);
 	}
-	if (stats)
-		stats->lights = static_cast<uint32_t>(lightHandles.size());
 
 	// --- Scene ---------------------------------------------------------------
 	{
@@ -372,8 +443,8 @@ bool SerializeCluster(
 			scene.meshForNode.begin(), scene.meshForNode.end());
 		std::sort(meshPairs.begin(), meshPairs.end());
 		for (const auto& [node, localIdx] : meshPairs) {
-			const auto it = meshPakId.find(localIdx);
-			if (it == meshPakId.end())
+			const auto it = local.mesh.find(localIdx);
+			if (it == local.mesh.end())
 				return fail("scene references unknown mesh pool index " + std::to_string(localIdx));
 			PutU32(blob, node);
 			PutU32(blob, it->second);
@@ -383,8 +454,8 @@ bool SerializeCluster(
 			scene.materialForNode.begin(), scene.materialForNode.end());
 		std::sort(matPairs.begin(), matPairs.end());
 		for (const auto& [node, localIdx] : matPairs) {
-			const auto it = matPakId.find(localIdx);
-			if (it == matPakId.end())
+			const auto it = local.mat.find(localIdx);
+			if (it == local.mat.end())
 				return fail("scene references unknown material pool index " + std::to_string(localIdx));
 			PutU32(blob, node);
 			PutU32(blob, it->second);
@@ -443,38 +514,259 @@ bool SerializeCluster(
 			std::sort(lightPairs.begin(), lightPairs.end());
 			PutU32(blob, static_cast<uint32_t>(lightPairs.size()));
 			for (const auto& [node, localIdx] : lightPairs) {
-				const auto it = lightPakId.find(localIdx);
-				if (it == lightPakId.end())
+				const auto it = local.light.find(localIdx);
+				if (it == local.light.end())
 					return fail("scene references unknown light pool index " +
 						std::to_string(localIdx));
 				PutU32(blob, node);
 				PutU32(blob, it->second);
 			}
 		}
+		// Trailing scene-name section (v5; v4 blobs end after the lights
+		// section with an exact-end check — see the read side). Always
+		// written (possibly empty) so the layout is uniform; discovery
+		// (ListPakScenes) reads it without building a cluster.
+		PutStr(blob, ci < sceneNames.size() ? sceneNames[ci] : std::string{});
 
-		if (!writer.AddBlob(PakAssetKind::Scene, "<cluster-local>#scene", std::move(blob)))
+		if (!writer.AddBlob(PakAssetKind::Scene,
+				SceneTocPath(ci, multi), std::move(blob)))
 			return fail("scene blob rejected");
 		if (stats)
-			stats->nodes = nodeCount;
+			stats->nodes += nodeCount;
 	}
+	} // per-cluster loop
 
 	if (stats) {
-		stats->meshes = static_cast<uint32_t>(meshHandles.size());
-		stats->materials = static_cast<uint32_t>(matHandles.size());
-		stats->textures = static_cast<uint32_t>(cluster.ListTextureUris().size());
+		stats->meshes = static_cast<uint32_t>(meshIdByUri.size());
+		stats->materials = static_cast<uint32_t>(matIdByUri.size());
+		stats->textures = static_cast<uint32_t>(texturesDone.size());
 		stats->textureBytes = static_cast<uint32_t>(textureBytes);
+		stats->lights = static_cast<uint32_t>(lightIdByUri.size());
 	}
 	return true;
+}
+
+bool SerializeCluster(
+	const Cluster& cluster,
+	PakWriter& writer,
+	ClusterSerializeStats* stats,
+	std::string* err) {
+	return SerializeClusters({ &cluster }, {}, writer, stats, err);
 }
 
 // ---------------------------------------------------------------------------
 // Deserialize
 // ---------------------------------------------------------------------------
 
+namespace {
+// Pak-id remap tables for one scene parse (null = discovery listing:
+// links are skipped but the cursor still walks + validates structure).
+struct SceneLinkMaps {
+	const std::vector<ClusterStaticMeshHandle>* meshes = nullptr;
+	const std::vector<ClusterMaterialHandle>* materials = nullptr;
+	const std::vector<ClusterLightHandle>* lights = nullptr;
+};
+
+// Shared Scene-blob parse (see the v2/v3/v4/v5 trailing sections in the
+// writer): hierarchy + transforms + node links + names + static/noLM/
+// lights sections + v5 name. With maps, links resolve to fresh pool
+// handles; without (ListPakScenes), only structure + names come out.
+bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
+	std::string& nameOut, const SceneLinkMaps* maps, std::string& err) {
+	auto fail = [&](const std::string& msg) {
+		err = msg;
+		return false;
+	};
+	Cursor c{ payload, 0 };
+	const uint32_t nodeCount = c.u32();
+	if (!c.ok || nodeCount == 0 || nodeCount > 1024 * 1024)
+		return fail("bad scene node count");
+	// Stash the recorded linkage first (single parse), then grow the
+	// scene in index order with addNode (sibling order preserved), then
+	// restore the recorded linkage verbatim as authoritative.
+	std::vector<Hierarchy> recorded;
+	recorded.reserve(nodeCount);
+	for (uint32_t i = 0; i < nodeCount; ++i) {
+		Hierarchy hh;
+		hh.parent = c.i32();
+		hh.firstChild = c.i32();
+		hh.nextSibling = c.i32();
+		hh.lastSibling = c.i32();
+		hh.level = c.i32();
+		if (!c.ok)
+			return fail("truncated scene hierarchy");
+		recorded.push_back(hh);
+	}
+	for (uint32_t i = 0; i < nodeCount; ++i)
+		addNode(scene, recorded[i].parent, recorded[i].level);
+	for (uint32_t i = 0; i < nodeCount; ++i)
+		scene.hierarchy[i] = recorded[i];
+	// Transforms.
+	for (uint32_t i = 0; i < nodeCount; ++i) {
+		glm::mat4 m(1.0f);
+		float* p = glm::value_ptr(m);
+		for (int k = 0; k < 16; ++k)
+			p[k] = c.f32();
+		if (!c.ok)
+			return fail("truncated scene transforms");
+		scene.localTransform[i] = m;
+		scene.globalTransform[i] = glm::mat4(1.0f);
+	}
+	const uint32_t meshPairCount = c.u32();
+	for (uint32_t i = 0; i < meshPairCount; ++i) {
+		const uint32_t node = c.u32();
+		const uint32_t pakId = c.u32();
+		if (!c.ok || node >= nodeCount)
+			return fail("bad scene mesh mapping");
+		if (maps && maps->meshes) {
+			if (pakId >= maps->meshes->size())
+				return fail("bad scene mesh mapping");
+			const auto h = (*maps->meshes)[pakId];
+			if (!h.valid())
+				return fail("scene references invalid mesh pak id");
+			scene.meshForNode[node] = h.index();
+		}
+	}
+	const uint32_t matPairCount = c.u32();
+	for (uint32_t i = 0; i < matPairCount; ++i) {
+		const uint32_t node = c.u32();
+		const uint32_t pakId = c.u32();
+		if (!c.ok || node >= nodeCount)
+			return fail("bad scene material mapping");
+		if (maps && maps->materials) {
+			if (pakId >= maps->materials->size())
+				return fail("bad scene material mapping");
+			scene.materialForNode[node] = (*maps->materials)[pakId].index();
+		}
+	}
+	const uint32_t namePairCount = c.u32();
+	for (uint32_t i = 0; i < namePairCount; ++i) {
+		const uint32_t node = c.u32();
+		const uint32_t nameIdx = c.u32();
+		if (!c.ok)
+			return fail("bad scene name mapping");
+		scene.nameForNode[node] = nameIdx;
+	}
+	const uint32_t nodeNameCount = c.u32();
+	for (uint32_t i = 0; i < nodeNameCount; ++i)
+		scene.nodeNames.push_back(c.str());
+	const uint32_t matNameCount = c.u32();
+	for (uint32_t i = 0; i < matNameCount; ++i)
+		scene.materialNames.push_back(c.str());
+	if (!c.ok)
+		return fail("truncated scene blob");
+	// Trailing static-subtree section (v2): u32 count + count bytes.
+	// v1 blobs end exactly here (no static nodes).
+	if (c.off < c.img.size()) {
+		const uint32_t staticCount = c.u32();
+		if (!c.ok || staticCount != nodeCount)
+			return fail("bad scene static section");
+		if (c.off + staticCount > c.img.size())
+			return fail("scene blob trailing bytes mismatch");
+		scene.staticRoot.assign(
+			c.img.data() + c.off, c.img.data() + c.off + staticCount);
+		c.off += staticCount;
+	}
+	else {
+		scene.staticRoot.assign(nodeCount, 0);
+	}
+	// Trailing lightmap-exclusion section (v3): u32 count + count
+	// bytes. v2 blobs end after the static section — default to no
+	// exclusions in that case. v4 blobs carry a lights section after
+	// this one, so only require that the bytes FIT (not exact end).
+	if (c.off < c.img.size()) {
+		const uint32_t lmCount = c.u32();
+		if (!c.ok || lmCount != nodeCount)
+			return fail("bad scene lightmap section");
+		if (c.off + lmCount > c.img.size())
+			return fail("scene blob trailing bytes mismatch");
+		scene.noLightmap.assign(
+			c.img.data() + c.off, c.img.data() + c.off + lmCount);
+		c.off += lmCount;
+	}
+	else {
+		scene.noLightmap.assign(nodeCount, 0);
+	}
+	// Trailing cooked-lights section (v4): u32 pairCount + (node,
+	// lightPakId) pairs, remapped to fresh pool indices exactly like
+	// the mesh/material mappings above. v3 blobs end after the
+	// lightmap section (no lights).
+	if (c.off < c.img.size()) {
+		const uint32_t lightPairCount = c.u32();
+		if (!c.ok || lightPairCount > 1024 * 1024)
+			return fail("bad scene light mapping");
+		for (uint32_t i = 0; i < lightPairCount; ++i) {
+			const uint32_t node = c.u32();
+			const uint32_t pakId = c.u32();
+			if (!c.ok || node >= nodeCount)
+				return fail("bad scene light mapping");
+			if (maps && maps->lights) {
+				if (pakId >= maps->lights->size())
+					return fail("bad scene light mapping");
+				const ClusterLightHandle h = (*maps->lights)[pakId];
+				if (!h.valid())
+					return fail("scene references invalid light pak id");
+				scene.lightForNode[node] = h.index();
+			}
+		}
+		if (!c.ok)
+			return fail("truncated scene lights section");
+		// Trailing scene-name section (v5; v4 blobs end after the
+		// lights section — see the writer). Discovery reads it without
+		// building a cluster.
+		if (c.off < c.img.size()) {
+			nameOut = c.str();
+			if (!c.ok)
+				return fail("truncated scene name");
+		}
+		if (c.off != c.img.size())
+			return fail("scene blob trailing bytes mismatch");
+	}
+	RebuildStaticCache(scene);
+	markAsChanged(scene, 0);
+	recalculateGlobalTransforms(scene);
+	return true;
+}
+
+// Scene blobs in index order ("#scene" first, then "#scene.N").
+std::vector<const PakTocEntry*> OrderedSceneEntries(const PakReader& reader) {
+	auto sceneEntries = reader.BlobsOfKind(PakAssetKind::Scene);
+	std::sort(sceneEntries.begin(), sceneEntries.end(),
+		[](const PakTocEntry* a, const PakTocEntry* b) {
+			const uint32_t ia = SceneBlobIndex(a->path);
+			const uint32_t ib = SceneBlobIndex(b->path);
+			if (ia != ib)
+				return ia < ib;
+			return a->path < b->path;
+		});
+	return sceneEntries;
+}
+
+} // namespace
+
+std::vector<PakSceneInfo> ListPakScenes(
+	const PakReader& reader,
+	std::string* err) {
+	std::vector<PakSceneInfo> out;
+	for (const PakTocEntry* e : OrderedSceneEntries(reader)) {
+		Scene tmp;
+		std::string name, perr;
+		if (!ParseSceneBlob(reader.Payload(*e), tmp, name, nullptr, perr)) {
+			if (err)
+				*err = e->path + ": " + perr;
+			return {};
+		}
+		out.push_back(PakSceneInfo{ name, e->path,
+			static_cast<uint32_t>(tmp.hierarchy.size()) });
+	}
+	return out;
+}
+
 std::unique_ptr<Cluster> DeserializeCluster(
 	ResourceManager& ctx,
 	const PakReader& reader,
-	std::string* err) {
+	std::string* err,
+	uint32_t sceneIndex) {
 	auto fail = [&](const std::string& msg) -> std::unique_ptr<Cluster> {
 		if (err)
 			*err = msg;
@@ -764,144 +1056,24 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		lightByPakId.push_back(h);
 	}
 
-	// --- Scene ------------------------------------------------------------------
-	const auto sceneEntries = reader.BlobsOfKind(PakAssetKind::Scene);
-	if (sceneEntries.size() != 1)
-		return fail("pak must contain exactly one Scene blob (found " +
-			std::to_string(sceneEntries.size()) + ")");
+	// --- Scene (indexed; 0 = default) --------------------------------------
+	const auto sceneEntries = OrderedSceneEntries(reader);
+	if (sceneEntries.empty())
+		return fail("pak contains no Scene blob");
+	if (sceneIndex >= sceneEntries.size())
+		return fail("scene index " + std::to_string(sceneIndex) +
+			" out of range (" + std::to_string(sceneEntries.size()) +
+			" scene(s) in pak)");
 	{
-		Cursor c{ reader.Payload(*sceneEntries[0]), 0 };
-		const uint32_t nodeCount = c.u32();
-		if (!c.ok || nodeCount == 0 || nodeCount > 1024 * 1024)
-			return fail("bad scene node count");
-		Scene& scene = cluster->scene;
-		// Stash the recorded linkage first (single parse), then grow the
-		// scene in index order with addNode (sibling order preserved), then
-		// restore the recorded linkage verbatim as authoritative.
-		std::vector<Hierarchy> recorded;
-		recorded.reserve(nodeCount);
-		for (uint32_t i = 0; i < nodeCount; ++i) {
-			Hierarchy hh;
-			hh.parent = c.i32();
-			hh.firstChild = c.i32();
-			hh.nextSibling = c.i32();
-			hh.lastSibling = c.i32();
-			hh.level = c.i32();
-			if (!c.ok)
-				return fail("truncated scene hierarchy");
-			recorded.push_back(hh);
-		}
-		for (uint32_t i = 0; i < nodeCount; ++i)
-			addNode(scene, recorded[i].parent, recorded[i].level);
-		for (uint32_t i = 0; i < nodeCount; ++i)
-			scene.hierarchy[i] = recorded[i];
-		// Transforms.
-		for (uint32_t i = 0; i < nodeCount; ++i) {
-			glm::mat4 m(1.0f);
-			float* p = glm::value_ptr(m);
-			for (int k = 0; k < 16; ++k)
-				p[k] = c.f32();
-			if (!c.ok)
-				return fail("truncated scene transforms");
-			scene.localTransform[i] = m;
-			scene.globalTransform[i] = glm::mat4(1.0f);
-		}
-		const uint32_t meshPairCount = c.u32();
-		for (uint32_t i = 0; i < meshPairCount; ++i) {
-			const uint32_t node = c.u32();
-			const uint32_t pakId = c.u32();
-			if (!c.ok || pakId >= meshByPakId.size())
-				return fail("bad scene mesh mapping");
-			const auto h = meshByPakId[pakId];
-			if (!h.valid())
-				return fail("scene references invalid mesh pak id");
-			scene.meshForNode[node] = h.index();
-		}
-		const uint32_t matPairCount = c.u32();
-		for (uint32_t i = 0; i < matPairCount; ++i) {
-			const uint32_t node = c.u32();
-			const uint32_t pakId = c.u32();
-			if (!c.ok || pakId >= matByPakId.size())
-				return fail("bad scene material mapping");
-			scene.materialForNode[node] = matByPakId[pakId].index();
-		}
-		const uint32_t namePairCount = c.u32();
-		for (uint32_t i = 0; i < namePairCount; ++i) {
-			const uint32_t node = c.u32();
-			const uint32_t nameIdx = c.u32();
-			if (!c.ok)
-				return fail("bad scene name mapping");
-			scene.nameForNode[node] = nameIdx;
-		}
-		const uint32_t nodeNameCount = c.u32();
-		for (uint32_t i = 0; i < nodeNameCount; ++i)
-			scene.nodeNames.push_back(c.str());
-		const uint32_t matNameCount = c.u32();
-		for (uint32_t i = 0; i < matNameCount; ++i)
-			scene.materialNames.push_back(c.str());
-		if (!c.ok)
-			return fail("truncated scene blob");
-		// Trailing static-subtree section (v2): u32 count + count bytes.
-		// v1 blobs end exactly here (no static nodes).
-		if (c.off < c.img.size()) {
-			const uint32_t staticCount = c.u32();
-			if (!c.ok || staticCount != nodeCount)
-				return fail("bad scene static section");
-			if (c.off + staticCount > c.img.size())
-				return fail("scene blob trailing bytes mismatch");
-			scene.staticRoot.assign(
-				c.img.data() + c.off, c.img.data() + c.off + staticCount);
-			c.off += staticCount;
-		}
-		else {
-			scene.staticRoot.assign(nodeCount, 0);
-		}
-		// Trailing lightmap-exclusion section (v3): u32 count + count
-		// bytes. v2 blobs end after the static section — default to no
-		// exclusions in that case. v4 blobs carry a lights section after
-		// this one, so only require that the bytes FIT (not exact end).
-		if (c.off < c.img.size()) {
-			const uint32_t lmCount = c.u32();
-			if (!c.ok || lmCount != nodeCount)
-				return fail("bad scene lightmap section");
-			if (c.off + lmCount > c.img.size())
-				return fail("scene blob trailing bytes mismatch");
-			scene.noLightmap.assign(
-				c.img.data() + c.off, c.img.data() + c.off + lmCount);
-			c.off += lmCount;
-		}
-		else {
-			scene.noLightmap.assign(nodeCount, 0);
-		}
-		// Trailing cooked-lights section (v4): u32 pairCount + (node,
-		// lightPakId) pairs, remapped to fresh pool indices exactly like
-		// the mesh/material mappings above. v3 blobs end after the
-		// lightmap section (no lights).
-		if (c.off < c.img.size()) {
-			const uint32_t lightPairCount = c.u32();
-			if (!c.ok || lightPairCount > 1024 * 1024)
-				return fail("bad scene light mapping");
-			for (uint32_t i = 0; i < lightPairCount; ++i) {
-				const uint32_t node = c.u32();
-				const uint32_t pakId = c.u32();
-				if (!c.ok || node >= nodeCount || pakId >= lightByPakId.size())
-					return fail("bad scene light mapping");
-				const ClusterLightHandle h = lightByPakId[pakId];
-				if (!h.valid())
-					return fail("scene references invalid light pak id");
-				scene.lightForNode[node] = h.index();
-			}
-			if (!c.ok)
-				return fail("truncated scene lights section");
-			if (c.off != c.img.size())
-				return fail("scene blob trailing bytes mismatch");
-		}
-		RebuildStaticCache(scene);
-
-		markAsChanged(scene, 0);
-		recalculateGlobalTransforms(scene);
+		SceneLinkMaps maps{ &meshByPakId, &matByPakId, &lightByPakId };
+		std::string sceneName, perr;
+		if (!ParseSceneBlob(reader.Payload(*sceneEntries[sceneIndex]),
+				cluster->scene, sceneName, &maps, perr))
+			return fail(perr);
+		if (!sceneName.empty())
+			std::cerr << "DeserializeCluster: scene[" << sceneIndex
+				<< "] '" << sceneName << "'\n";
 	}
-
 	return cluster;
 }
 

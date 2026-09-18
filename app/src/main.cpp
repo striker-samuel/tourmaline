@@ -18,31 +18,31 @@ namespace {
 
 void PrintUsage(const char* prog) {
 	std::cout << "Usage: " << (prog ? prog : "App")
-		<< " [--scene <id>] [--minimal] [--filter-only] [--with <csv>] [--without <csv>] [--no-pak]\n"
+		<< " [--pak <path.pak>] [--scene-index N] [--gltf <path.gltf>]\n"
+		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
 		<< "  [--bench <frames>] [--present <fifo|mailbox|immediate>] [--disable_control] [--no-dlss]\n"
 		<< "  [--use_optick] [--use_optick_gpu]\n"
+		<< "  --pak runs a cooked pak (default content/paks/bistro.pak);\n"
+		<< "  scenes inside are discovered at startup, index 0 loads unless\n"
+		<< "  --scene-index picks another. --gltf imports a glTF directly.\n"
 		<< "  --disable_control freezes camera input for deterministic benching\n"
 		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
 		<< "  --no-dlss keeps the Streamline interposer out of the Vulkan chain\n"
 		<< "  (RenderDoc captures crash through the SL layer + NGX cubins)\n"
 		<< "  --use_optick enables the Optick CPU capture session (bench.opt)\n"
 		<< "  --use_optick_gpu also brings up Optick GPU timelines (implies --use_optick)\n";
-	std::cout << "Available scenes:\n";
-	for (const app::SceneDesc& s : app::SceneRegistry::All()) {
-		std::cout << "  " << s.id << " — " << s.label
-			<< " (" << s.gltfPath << ")\n";
-	}
 }
 
 } // namespace
 
 	int main(int argc, const char* argv[]) {
-	const char* sceneId = "bistro";
+	const char* pakPath = "content/paks/bistro.pak";
+	const char* gltfPath = nullptr;
+	int sceneIndex = 0;
 	bool minimal = false;
 	bool filterOnly = false;
 	const char* withCsv = nullptr;
 	const char* withoutCsv = nullptr;
-	bool noPak = false;
 	int benchFrames = 0;
 	const char* presentMode = nullptr;
 	bool disableControl = false;
@@ -51,11 +51,23 @@ void PrintUsage(const char* prog) {
 	bool noDlss = false;
 	for (int i = 1; i < argc; ++i) {
 		const char* a = argv[i];
-		if ((std::strcmp(a, "--scene") == 0 || std::strcmp(a, "-s") == 0) && i + 1 < argc) {
-			sceneId = argv[++i];
+		if ((std::strcmp(a, "--pak") == 0) && i + 1 < argc) {
+			pakPath = argv[++i];
 		}
-		else if (std::strncmp(a, "--scene=", 8) == 0) {
-			sceneId = a + 8;
+		else if (std::strncmp(a, "--pak=", 6) == 0) {
+			pakPath = a + 6;
+		}
+		else if ((std::strcmp(a, "--gltf") == 0) && i + 1 < argc) {
+			gltfPath = argv[++i];
+		}
+		else if (std::strncmp(a, "--gltf=", 7) == 0) {
+			gltfPath = a + 7;
+		}
+		else if ((std::strcmp(a, "--scene-index") == 0) && i + 1 < argc) {
+			sceneIndex = std::atoi(argv[++i]);
+		}
+		else if (std::strncmp(a, "--scene-index=", 14) == 0) {
+			sceneIndex = std::atoi(a + 14);
 		}
 		else if (std::strcmp(a, "--minimal") == 0) {
 			minimal = true;
@@ -75,8 +87,10 @@ void PrintUsage(const char* prog) {
 		else if (std::strncmp(a, "--without=", 10) == 0) {
 			withoutCsv = a + 10;
 		}
-		else if (std::strcmp(a, "--no-pak") == 0 || std::strcmp(a, "--gltf") == 0) {
-			noPak = true;
+		else if (std::strcmp(a, "--no-pak") == 0) {
+			std::cerr << "--no-pak was removed with the scene registry; "
+				"run the glTF directly via --gltf <path>\n";
+			return EXIT_FAILURE;
 		}
 		else if ((std::strcmp(a, "--bench") == 0) && i + 1 < argc) {
 			benchFrames = std::atoi(argv[++i]);
@@ -114,15 +128,57 @@ void PrintUsage(const char* prog) {
 		}
 	}
 
-	auto scene = app::SceneRegistry::Find(sceneId ? sceneId : "");
-	if (!scene) {
-		std::cerr << "Unknown scene: '" << (sceneId ? sceneId : "") << "'\n";
-		PrintUsage(argv[0]);
-		return EXIT_FAILURE;
+	// Entrypoint is a file, not a registry id: --gltf imports a glTF
+	// directly, otherwise --pak runs a cooked pak (id = file stem, so
+	// content/gi/<stem>.sglm resolves). Either way the camera frames the
+	// loaded bounds after resolve (see SetSceneOverride).
+	auto stemOf = [](const std::string& p) {
+		const size_t slash = p.find_last_of("/\\");
+		const std::string file = (slash == std::string::npos)
+			? p : p.substr(slash + 1);
+		const size_t dot = file.find_last_of('.');
+		return (dot == std::string::npos || dot == 0)
+			? file : file.substr(0, dot);
+	};
+	std::string extPathStr, extIdStr;
+	app::SceneDesc extDesc{};
+	extDesc.label = "External scene";
+	extDesc.camPos = glm::vec3(4.0f, 3.0f, 6.0f);
+	extDesc.camTarget = glm::vec3(0.0f, 1.0f, 0.0f);
+	extDesc.farClip = 2000.0f;
+	extDesc.coordFix = 0;
+	if (gltfPath && gltfPath[0] != '\0') {
+		extPathStr = gltfPath;
+		extIdStr = stemOf(extPathStr);
+		if (extIdStr.empty())
+			extIdStr = "gltf";
+		extDesc.id = extIdStr.c_str();
+		extDesc.gltfPath = extPathStr.c_str();
+		extDesc.pakPath = "";
+		std::cerr << "Scene: glTF '" << extPathStr
+			<< "' (id '" << extIdStr << "')\n";
+	}
+	else {
+		if (!pakPath || pakPath[0] == '\0') {
+			std::cerr << "No scene: pass --pak <path.pak> or --gltf <path.gltf>\n";
+			PrintUsage(argv[0]);
+			return EXIT_FAILURE;
+		}
+		extPathStr = pakPath;
+		extIdStr = stemOf(extPathStr);
+		if (extIdStr.empty())
+			extIdStr = "pak";
+		extDesc.id = extIdStr.c_str();
+		extDesc.gltfPath = "";
+		extDesc.pakPath = extPathStr.c_str();
+		std::cerr << "Scene: pak '" << extPathStr
+			<< "' (id '" << extIdStr << "')\n";
 	}
 
 	app::SceneRenderer renderer;
 	app::ScenePassConfig passCfg = app::ScenePassConfig::All();
+	renderer.SetSceneOverride(true);
+	renderer.SetSceneIndex(sceneIndex);
 	if (filterOnly)
 		passCfg = app::ScenePassConfig::FilterOnly();
 	else if (minimal)
@@ -161,7 +217,7 @@ void PrintUsage(const char* prog) {
 	};
 	applyCsv(withCsv, true);
 	applyCsv(withoutCsv, false);
-	renderer.Configure(*scene, passCfg);
+	renderer.Configure(extDesc, passCfg);
 	// --no-dlss: suppress the Streamline load BEFORE the renderer runs
 	// (smvk::App::Initialize consults the flag before DlssStartup /
 	// pointing volk at the interposer — after that the decision is locked
@@ -172,7 +228,6 @@ void PrintUsage(const char* prog) {
 		renderer.SetDlssMode(smvk::DlssMode::Off);
 		std::cerr << "[DLSS] disabled (--no-dlss): Streamline interposer not loaded\n";
 	}
-	renderer.SetForceGltf(noPak);
 	if (disableControl) {
 		renderer.SetDisableControl(true);
 		std::cerr << "[Scene] camera control disabled (--disable_control)\n";

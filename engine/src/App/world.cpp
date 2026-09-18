@@ -37,10 +37,11 @@ namespace smvk {
 		return ref;
 	}
 
-	Cluster& World::LoadClusterFromPak(ResourceManager& ctx, const PakReader& reader)
+	Cluster& World::LoadClusterFromPak(ResourceManager& ctx, const PakReader& reader,
+		uint32_t sceneIndex)
 	{
 		std::string err;
-		auto cluster = DeserializeCluster(ctx, reader, &err);
+		auto cluster = DeserializeCluster(ctx, reader, &err, sceneIndex);
 		if (!cluster)
 			throw std::runtime_error("LoadClusterFromPak failed: " + err);
 		Cluster& ref = *cluster;

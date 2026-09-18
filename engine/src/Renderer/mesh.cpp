@@ -71,6 +71,8 @@ namespace smvk {
 		}
 		case VertexFormat::StaticVertexFormat:
 			return StaticVertexFormat;
+		case VertexFormat::SkinnedVertexFormat:
+			return SkinnedVertexFormat;
 		case VertexFormat::DebugLine:
 			return DebugLineFormat;
 		}

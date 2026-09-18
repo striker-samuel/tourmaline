@@ -246,6 +246,12 @@ struct GiSceneBuildOptions {
 	// default: flagged lights exist to be baked. Callers that only want
 	// the geometry/BVH (pick raycasts) can turn it off.
 	bool staticLights = true;
+	// glTF punctual aim axis in engine node-local space (see
+	// GltfPunctualAimAxis): the harvest resolves world aims as
+	// globalTransform * axis. Default (0,0,-1) = engine-space scenes
+	// (no coordFix); cook imports at coordFix 0 pass (0,0,+1) or the
+	// Bistro sun bakes underground / spots aim backwards.
+	glm::vec3 punctualAimAxis{ 0.0f, 0.0f, -1.0f };
 };
 
 // Harvest result: how many authored lights joined the bake light set.
@@ -270,8 +276,11 @@ struct GiStaticLightCounts {
 //     and must never be baked).
 // World position/aim resolve from scene.globalTransform[node] (call after
 // the scene's globals are up to date — BuildTraceSceneFromCluster does
-// this internally). Node order is sorted for deterministic bakes.
-GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene& out);
+// this internally). aimAxis is the punctual aim axis in engine
+// node-local space (GltfPunctualAimAxis; (0,0,-1) = no coordFix).
+// Node order is sorted for deterministic bakes.
+GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene& out,
+	const glm::vec3& aimAxis = glm::vec3(0.0f, 0.0f, -1.0f));
 
 // Extracts world-space opaque triangles + materials from a cook-mode
 // Cluster (retained uploads; see Cluster::SetCookMode). Sun + static

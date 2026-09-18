@@ -11,9 +11,18 @@
 #      bistro.gltf whose .png image URIs point at the .ktx2 files,
 #   4. Stamps SMVK_materials_shadows {"castShadow": false} on decal overlay
 #      materials (diffuse texture name contains "decal") so their flat
-#      quads never darken the geometry they sit on (engine reads the
-#      extension at import; paks round-trip it into castsShadows),
-#   5. Runs PakCooker --meshlets on --lods on to produce content/paks/bistro.pak.
+#      quads never darken the geometry they sit on, and on lamp envelope
+#      materials (bulb/glass/small fixtures) so a lamp mesh never
+#      occludes its own light source (the bake drops no-cast materials
+#      from the trace scene; runtime shadow passes skip them) — the
+#      engine reads the extension at import; paks round-trip it into
+#      castsShadows,
+#   5. Stamps extras {"smvk.staticLight": true} on the glTF point-light
+#      nodes (the lamp set: 96 KHR_lights_punctual points) so the GI
+#      bakes harvest them as NEE sources (CollectStaticBakeLights); the
+#      authored Sun directional stays runtime-only (it seeds the env,
+#      see GltfPunctualAimAxis/BuildCookedLightsFromWorld),
+#   6. Runs PakCooker --meshlets on --lods on to produce content/paks/bistro.pak.
 #
 # Usage (PowerShell, from repo root F:/REPOS/vulkantoy):
 #   py tools/cook_bistro.py --niagara-dir F:/REPOS/niagara_bistro
@@ -88,40 +97,120 @@ def classify_images(gltf):
 
 
 def stamp_shadow_casting(gltf):
-    """SMVK_materials_shadows stamping pass: decal overlay materials
-    (diffuse texture name contains "decal", e.g. street_decals/
-    edge_decals/wall_decals) get {"castShadow": false}. Applies on top
-    of the authored alphaModes: BLEND decals already skip the caster
-    path; this also covers OPAQUE/MASK materials sharing decal atlases.
-    Returns the stamped count."""
-    def diffuse_uri(tex_index):
-        if not isinstance(tex_index, int):
-            return None
-        textures = gltf.get("textures", [])
-        if tex_index < 0 or tex_index >= len(textures):
-            return None
-        src = textures[tex_index].get("source", -1)
-        images = gltf.get("images", [])
-        if src is not None and 0 <= src < len(images):
-            return images[src].get("uri", "")
-        return None
+    """SMVK_materials_shadows stamping pass.
 
-    stamped = 0
+    Two families get {"castShadow": false}:
+      - decal overlay materials (diffuse texture name contains
+        "decal", e.g. street_decals/edge_decals/wall_decals): flat
+        quads must not darken the geometry they sit on.
+      - lamp envelope materials (bulb/glass/small fixtures): a lamp
+        mesh must never occlude its own light source. In the bake the
+        no-cast material leaves the trace scene entirely; runtime
+        shadow passes skip it. Poles/housings keep casting.
+
+    Applies on top of the authored alphaModes: BLEND decals already
+    skip the caster path; this also covers OPAQUE/MASK materials
+    sharing decal atlases. Returns (decal, lamp) stamped counts."""
+    def all_uris(mat):
+        uris = []
+        def push(tex_index):
+            if not isinstance(tex_index, int):
+                return
+            textures = gltf.get("textures", [])
+            if tex_index < 0 or tex_index >= len(textures):
+                return
+            src = textures[tex_index].get("source", -1)
+            images = gltf.get("images", [])
+            if src is not None and 0 <= src < len(images):
+                uris.append(images[src].get("uri", ""))
+            ext = textures[tex_index].get("extensions", {}).get(
+                "MSFT_texture_dds", {})
+            dsrc = ext.get("source", -1)
+            if dsrc is not None and 0 <= dsrc < len(images):
+                uris.append(images[dsrc].get("uri", ""))
+        pbr = mat.get("pbrMetallicRoughness", {})
+        if isinstance(pbr, dict):
+            if isinstance(pbr.get("baseColorTexture"), dict):
+                push(pbr["baseColorTexture"].get("index"))
+            if isinstance(pbr.get("emissiveTexture"), dict):
+                push(pbr["emissiveTexture"].get("index"))
+        for slot in ("normalTexture", "emissiveTexture",
+                     "occlusionTexture"):
+            if isinstance(mat.get(slot), dict):
+                push(mat[slot].get("index"))
+        sg = mat.get("extensions", {}).get(
+            "KHR_materials_pbrSpecularGlossiness", {})
+        if isinstance(sg, dict):
+            if isinstance(sg.get("diffuseTexture"), dict):
+                push(sg["diffuseTexture"].get("index"))
+            if isinstance(sg.get("specularGlossinessTexture"), dict):
+                push(sg["specularGlossinessTexture"].get("index"))
+        return uris
+
+    def stamp(mat):
+        mat.setdefault("extensions", {})["SMVK_materials_shadows"] = {
+            "castShadow": False,
+        }
+
+    decals = lamps = 0
     for mat in gltf.get("materials", []):
-        uri = None
-        pbr = mat.get("pbrMetallicRoughness")
-        if isinstance(pbr, dict) and isinstance(pbr.get("baseColorTexture"), dict):
-            uri = diffuse_uri(pbr["baseColorTexture"].get("index"))
-        if not uri:
-            sg = mat.get("extensions", {}).get(
-                "KHR_materials_pbrSpecularGlossiness")
-            if isinstance(sg, dict) and isinstance(sg.get("diffuseTexture"), dict):
-                uri = diffuse_uri(sg["diffuseTexture"].get("index"))
-        if uri and "decal" in uri.lower():
-            mat.setdefault("extensions", {})["SMVK_materials_shadows"] = {
-                "castShadow": False,
-            }
-            stamped += 1
+        uris = all_uris(mat)
+        uri_blob = " ".join(uris).lower()
+        name = (mat.get("name") or "").lower()
+        if any("decal" in u for u in uris):
+            stamp(mat)
+            decals += 1
+            continue
+        # Lamp envelopes: streetlight glass/bulb/support, bistro exterior
+        # spotlight glass/bulb/lens, lanterns, wall lights, ceiling
+        # lamps, string-light fixtures. Poles and housings (streetlight
+        # "metal", spotlight "main") keep casting.
+        lamp = False
+        if "streetlight" in uri_blob and (
+                "glass" in uri_blob or "bulb" in uri_blob):
+            lamp = True  # paris_streetlight_01 glass/bulb/support_bulb
+        elif "bistroexteriorspotlight" in uri_blob and any(
+                k in name for k in ("glass", "bulb", "emissive", "focus")):
+            lamp = True  # spotlight glass_focus/glass/bulb_light/emissive/focus
+        elif ("lantern" in uri_blob or "wall_light" in uri_blob
+                or "ceiling_lamp" in uri_blob):
+            lamp = True  # whole small fixtures (emissive lamp meshes)
+        elif "stringlights" in uri_blob and "fixtures" in name:
+            lamp = True  # string-light bulbs on wires
+        if lamp:
+            stamp(mat)
+            lamps += 1
+    return decals, lamps
+
+
+def stamp_static_lights(gltf):
+    """Stamp extras {"smvk.staticLight": true} on KHR_lights_punctual
+    POINT-light nodes (the bistro lamp set). The engine harvests
+    static-flagged lights into GI/lightmap bakes (NEE sources) and the
+    runtime forward+ set skips them, so a lamp's direct + bounced term
+    is carried by the baked sources. The Sun directional stays
+    runtime-only: it seeds the env (sky disc + CSM), and the bake sun
+    comes from the baker's --sun-* arguments instead. Returns the
+    stamped node count."""
+    stamped = 0
+    for node in gltf.get("nodes", []):
+        ext = node.get("extensions", {}).get("KHR_lights_punctual", {})
+        light_idx = ext.get("light")
+        if not isinstance(light_idx, int):
+            continue
+        lights = gltf.get("extensions", {}).get(
+            "KHR_lights_punctual", {}).get("lights", [])
+        if light_idx < 0 or light_idx >= len(lights):
+            continue
+        if lights[light_idx].get("type") != "point":
+            continue
+        extras = node.setdefault("extras", {})
+        if not isinstance(extras, dict):
+            continue
+        if extras.get("smvk.staticLight") is True:
+            continue  # already authored static
+        extras["smvk.staticLight"] = True
+        stamped += 1
     return stamped
 
 
@@ -251,8 +340,10 @@ def main():
     images = gltf.get("images", [])
     kinds = classify_images(gltf)
     print(f"[bistro] images={len(images)} classified={len(kinds)}")
-    n_nocast = stamp_shadow_casting(gltf)
-    print(f"[bistro] no-cast-shadow decals: {n_nocast}")
+    n_decal, n_lamp = stamp_shadow_casting(gltf)
+    print(f"[bistro] no-cast-shadow: decals={n_decal} lamp envelopes={n_lamp}")
+    n_static = stamp_static_lights(gltf)
+    print(f"[bistro] static bake lights stamped: {n_static} point-light nodes")
 
     # Collect .png-referenced images (the cookable set) + their DDS source.
     jobs = []

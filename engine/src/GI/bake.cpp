@@ -337,7 +337,8 @@ std::optional<glm::vec3> GiAverageKtxTexel(std::span<const uint8_t> ktxBytes) {
 	return glm::vec3(sum / double(count));
 }
 
-GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene& out) {
+GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene& out,
+	const glm::vec3& aimAxis) {
 	const ::Scene& scene = cluster.scene;
 	GiStaticLightCounts counts{};
 
@@ -362,9 +363,12 @@ GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene
 			continue; // runtime-only light: never baked
 		const SceneLight& L = *lp;
 		const glm::mat4& G = scene.globalTransform[node];
-		// Aim direction: node -Z in world space, same convention the
-		// runtime cooked-light path uses (BuildCookedLightsFromWorld).
-		glm::vec3 emis = glm::vec3(G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+		// Aim: the glTF -Z axis conjugated into engine-local space
+		// (aimAxis; a plain -Z read aims 180 degrees off under
+		// coordFix 0), mapped to world by the node's global transform —
+		// the same convention as the runtime cooked-light path
+		// (BuildCookedLightsFromWorld).
+		glm::vec3 emis = glm::vec3(G * glm::vec4(aimAxis, 0.0f));
 		const glm::vec3 pos = glm::vec3(G[3]);
 
 		if (L.type == SceneLight::Type::Directional) {
@@ -566,7 +570,7 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 	// directional overrides the env-seeded sun. Callers (PakCooker /
 	// GiBaker) append their CLI spots AFTER this, so both sets bake.
 	if (opts.staticLights)
-		CollectStaticBakeLights(cluster, out);
+		CollectStaticBakeLights(cluster, out, opts.punctualAimAxis);
 
 	out.Finalize();
 }

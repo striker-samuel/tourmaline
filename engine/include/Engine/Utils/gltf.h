@@ -100,6 +100,13 @@ bool LoadModelFromAsciiFile(
 	const char* filename
 );
 
+// glTF punctual aim axis (KHR_lights_punctual: the light node's -Z
+// direction) in the ENGINE node-local space the import bakes. coordFix
+// modes conjugate node transforms AND vertices, so the local -Z axis
+// flips with the basis change; resolve world aims as
+// globalTransform * GltfPunctualAimAxis(coordFix) (see gltf.cpp).
+glm::vec3 GltfPunctualAimAxis(int coordFix);
+
 // Host-file texture source (default importer behavior): reads
 // baseDir/imageUri from the host filesystem; identity is the normalized
 // host-relative path so asset URIs match the VFS layout 1:1.
@@ -122,6 +129,15 @@ private:
 	std::string vfsBaseDir_;
 };
 
+// Lists the scenes of a VFS glTF model (index order, names may be empty).
+// Lightweight: parses the JSON only, no buffers/textures. Used by the
+// cooker to fan out per-scene cooks. Returns false on error (err filled).
+bool ListGltfScenesFromVfs(
+	const smvk::OverlayVfs& vfs,
+	const std::string& modelVfsPath,
+	std::vector<std::string>& outNames,
+	std::string* err = nullptr);
+
 // VFS-first import: reads the .gltf JSON, external .bin buffers and all
 // textures through vfs (the cooker mounts its content tree), stamps asset
 // URIs from modelVfsPath, and optionally runs the meshopt cook pass.
@@ -130,6 +146,8 @@ private:
 //   auto cluster = std::make_unique<Cluster>(nullptr);
 //   cluster->SetCookMode(true);
 //   GltfToClusterFromVfs(nullptr, vfs, "models/Sponza/sponza.gltf", *cluster, opt);
+// gltfSceneIndex selects which glTF scene to import (<0 = default scene,
+// matching the historic behavior); out of range fails loudly.
 void GltfToClusterFromVfs(
 	smvk::ResourceManager* ctx,
 	const smvk::OverlayVfs& vfs,
@@ -138,7 +156,8 @@ void GltfToClusterFromVfs(
 	const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
 	const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
 	int coordFix = 0,
-	const glm::mat4& preTransform = glm::mat4(1.0f));
+	const glm::mat4& preTransform = glm::mat4(1.0f),
+	int gltfSceneIndex = -1);
 
 inline void GltfToCluster(
 	smvk::ResourceManager&,

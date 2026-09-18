@@ -106,6 +106,8 @@ bool EditorApp::EnsureShaders() {
 		"editorUv1FS", m_uv1FsModule, m_uv1Program);
 	tryDebugView("content/shaders/default_vertexcolor_debug.frag.hlsl.spv",
 		"editorVColorFS", m_vcolorFsModule, m_vcolorProgram);
+	tryDebugView("content/shaders/default_baked_debug.frag.hlsl.spv",
+		"editorBakedFS", m_bakedFsModule, m_bakedProgram);
 	// Samplers: mirror App order (0 = linear clamp, 1 = point). The lit
 	// shader's comparisonSamplerId = 1 addresses the second slot.
 	m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
@@ -129,6 +131,9 @@ bool EditorApp::EnsureBuffers(uint32_t flightCount) {
 	m_flightCount = flightCount;
 	m_frameUniforms = m_context->CreateBuffer(
 		sizeof(app::FrameUniforms) * flightCount, smvk::BufferType_Uniform, "editor frame");
+	m_insetFrameUniforms = m_context->CreateBuffer(
+		sizeof(app::FrameUniforms) * flightCount, smvk::BufferType_Uniform,
+		"editor inset frame");
 	m_materialsBuf = m_context->CreateBuffer(
 		sizeof(smvk::MaterialValues) * kMaxMaterials * flightCount,
 		smvk::BufferType_Storage, "editor materials");
@@ -138,8 +143,8 @@ bool EditorApp::EnsureBuffers(uint32_t flightCount) {
 	m_cascadeBuf = m_context->CreateBuffer(
 		sizeof(smvk::GpuDirectionalLightDescription) * flightCount,
 		smvk::BufferType_Storage, "editor cascades");
-	return !m_frameUniforms.empty() && !m_materialsBuf.empty() &&
-		!m_lightsBuf.empty() && !m_cascadeBuf.empty();
+	return !m_frameUniforms.empty() && !m_insetFrameUniforms.empty() &&
+		!m_materialsBuf.empty() && !m_lightsBuf.empty() && !m_cascadeBuf.empty();
 }
 
 bool EditorApp::EnsureDepth(smvk::Extent2D extent) {
@@ -206,6 +211,14 @@ void EditorApp::UpdateFrameData(uint32_t flight, smvk::Extent2D extent) {
 	frame.evsmMode = 0;
 	frame.decalCount = 0;
 	frame.lmEnabled = 0;
+	// Baked-irradiance atlas (F8 view): bindless layer slots ride the
+	// frame; the direct-draw VS never resolves per-draw chunks, so the
+	// lit path ignores this while the baked debug FS samples layer 0.
+	if (m_lmGpu) {
+		for (uint32_t t = 0; t < smvk::gi::kLightmapLayerCount; ++t)
+			frame.lmLayers[t] = m_lmLayerSlots[t];
+		frame.lmEnabled = 1;
+	}
 	frame.regEnabled = 0;
 	frame.regCount = 0;
 	frame.dsEnabled = 0;
@@ -280,12 +293,28 @@ void EditorApp::UpdateFrameData(uint32_t flight, smvk::Extent2D extent) {
 void EditorApp::UploadMaterials(uint32_t flight) {
 	if (!m_world)
 		return;
+	// Pool index -> bindless slot for the shader's textures[] array
+	// (materials store pool indices; sampling needs descriptor slots).
+	auto remap = [&](int poolIdx) -> int {
+		if (poolIdx < 0)
+			return -1;
+		auto hit = m_bindlessBySlot.find(static_cast<uint32_t>(poolIdx));
+		return hit != m_bindlessBySlot.end()
+			? static_cast<int>(hit->second) : poolIdx;
+	};
 	const uint32_t slotCount =
 		std::min<uint32_t>(uint32_t(m_world->materialLocations.size()), kMaxMaterials);
 	std::vector<smvk::MaterialValues> mats(slotCount);
-	for (uint32_t i = 0; i < slotCount; ++i)
-		if (auto* mat = m_world->GetMaterial(i))
+	for (uint32_t i = 0; i < slotCount; ++i) {
+		if (auto* mat = m_world->GetMaterial(i)) {
 			mats[i] = mat->values;
+			mats[i].textures.x = remap(mat->values.textures.x);
+			mats[i].textures.y = remap(mat->values.textures.y);
+			mats[i].textures.z = remap(mat->values.textures.z);
+			mats[i].textures.w = remap(mat->values.textures.w);
+			mats[i].textures2.x = remap(mat->values.textures2.x);
+		}
+	}
 	if (!mats.empty())
 		m_context->UploadDataToBuffer(m_materialsBuf, mats.data(),
 			sizeof(smvk::MaterialValues) * mats.size(),
@@ -294,9 +323,59 @@ void EditorApp::UploadMaterials(uint32_t flight) {
 			size_t(flight) * sizeof(smvk::MaterialValues) * kMaxMaterials);
 }
 
+bool EditorApp::SecondViewActive() const {
+	if (m_secondView == SecondView::Off)
+		return false;
+	// Fullscreen already shows UVs: no inset needed.
+	if (m_viewMode == ViewMode::Uv0 || m_viewMode == ViewMode::Uv1)
+		return false;
+	return true;
+}
+
+smvk::Extent2D EditorApp::InsetStrip(smvk::Extent2D extent, uint32_t& outX) {
+	uint32_t w = std::min<uint32_t>(400u, extent.width / 3u);
+	w = std::max(w, 160u);
+	if (w >= extent.width || extent.height == 0) {
+		outX = extent.width;
+		return smvk::Extent2D{ 0, 0 };
+	}
+	outX = extent.width - w;
+	return smvk::Extent2D{ w, extent.height };
+}
+
+void EditorApp::UpdateInsetFrameData(uint32_t flight, smvk::Extent2D stripExtent) {
+	// Same camera, strip aspect: re-project m_lastFrame (built for the
+	// full extent) so the inset is undistorted.
+	app::FrameUniforms frame = m_lastFrame;
+	const glm::mat4 view = m_camera.getViewMatrix();
+	glm::mat4 proj = glm::perspective(glm::radians(kEditorFovYDeg),
+		float(stripExtent.width) / float(stripExtent.height),
+		kEditorNearClip, kEditorFarClip);
+	proj[1][1] *= -1.0f; // Vulkan Y-flip
+	const glm::mat4 viewProj = proj * view;
+	frame.view = view;
+	frame.proj = proj;
+	frame.viewProj = viewProj;
+	frame.invView = glm::inverse(view);
+	frame.invProj = glm::inverse(proj);
+	frame.invViewProj = glm::inverse(viewProj);
+	frame.prevViewProj = viewProj;
+	frame.viewportSize = glm::vec2(float(stripExtent.width),
+		float(stripExtent.height));
+	frame.invViewportSize = glm::vec2(
+		stripExtent.width ? 1.0f / float(stripExtent.width) : 0.0f,
+		stripExtent.height ? 1.0f / float(stripExtent.height) : 0.0f);
+	m_context->UploadDataToBuffer(m_insetFrameUniforms, &frame, sizeof(frame),
+		smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+		smvk::AccessFlags::ShaderRead, 0, size_t(flight) * sizeof(frame));
+	m_lastInsetFrameAddr =
+		m_context->GetBufferDeviceAddress(m_insetFrameUniforms) +
+		flight * sizeof(app::FrameUniforms);
+}
+
 void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
 	const app::PushConstants& basePc, bool maskedPhase, bool selectedOnly,
-	bool shadowPass) {
+	bool shadowPass, bool bakedOnly) {
 	(void)basePc;
 	if (!m_world)
 		return;
@@ -323,6 +402,11 @@ void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
 		}
 		smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
 		if (!mesh)
+			return;
+		// Baked-irradiance view: only baked draws (the direct path has no
+		// per-draw chunk id, so unbaked surfaces would sample a foreign
+		// texel instead of reading black).
+		if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
 			return;
 		const glm::mat4& model = m_world->scene.globalTransform[item.node];
 		app::PushConstants objPc{};
@@ -387,6 +471,19 @@ smvk::ShaderProgram& EditorApp::MainProgram() {
 		return m_uv1Program.shaderCount == 2 ? m_uv1Program : m_litProgram;
 	case ViewMode::VertexColors:
 		return m_vcolorProgram.shaderCount == 2 ? m_vcolorProgram : m_litProgram;
+	case ViewMode::Baked:
+		return m_bakedProgram.shaderCount == 2 ? m_bakedProgram : m_litProgram;
+	default:
+		return m_litProgram;
+	}
+}
+
+smvk::ShaderProgram& EditorApp::InsetProgram() {
+	switch (m_secondView) {
+	case SecondView::Uv0:
+		return m_uv0Program.shaderCount == 2 ? m_uv0Program : m_litProgram;
+	case SecondView::Uv1:
+		return m_uv1Program.shaderCount == 2 ? m_uv1Program : m_litProgram;
 	default:
 		return m_litProgram;
 	}
@@ -399,6 +496,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView,
 	smvk::ShaderProgram& prog = MainProgram();
 	if (prog.shaderCount != 2)
 		return;
+	// Baked view draws baked meshes only (see DrawWorldNodes).
+	const bool bakedOnly = (m_viewMode == ViewMode::Baked);
 
 	const uint64_t frameAddr =
 		m_context->GetBufferDeviceAddress(m_frameUniforms) + flight * sizeof(app::FrameUniforms);
@@ -439,7 +538,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView,
 		.SetDepth(m_depth.logicalView,
 			smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
 			smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
-	pass.SetRecordingFunc([this, pc, selectedWireOverlay](smvk::CommandBuffer& cmd) {
+	pass.SetRecordingFunc([this, pc, selectedWireOverlay, bakedOnly](smvk::CommandBuffer& cmd) {
 		smvk::ShaderProgram& prog = MainProgram();
 		// BindRenderPipeline re-binds the static monoblock internally for
 		// StaticVertexFormat (which does not exist on an empty world), so
@@ -461,7 +560,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView,
 				smvk::RasterSettings{ .cullMode = maskedPhase
 					? smvk::CullMode::None : smvk::CullMode::Back });
 			cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-			DrawWorldNodes(cmd, pc, maskedPhase, false, false);
+			DrawWorldNodes(cmd, pc, maskedPhase, false, false, bakedOnly);
 		}
 		// Transparent leg (alpha blend, no depth write).
 		{
@@ -484,6 +583,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView,
 						return;
 					smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
 					if (!mesh)
+						return;
+					if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
 						return;
 					const glm::mat4& model = m_world->scene.globalTransform[item.node];
 					uint32_t matId = item.material;
@@ -514,6 +615,113 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView,
 		});
 }
 
+void EditorApp::RecordInsetPass(smvk::LogicalImageViewHandle swapView,
+	smvk::Extent2D extent, uint32_t flight) {
+	// Second viewport: UV debug side-strip over the main image (same
+	// camera, strip aspect via the inset frame slice). Color loads (empty
+	// areas keep the main view = PiP); depth clears in the strip because
+	// the aspect differs from the main pass.
+	if (!SecondViewActive())
+		return;
+	smvk::ShaderProgram& prog = InsetProgram();
+	if (prog.shaderCount != 2)
+		return;
+	uint32_t stripX = extent.width;
+	const smvk::Extent2D strip = InsetStrip(extent, stripX);
+	if (strip.width == 0 || strip.height == 0)
+		return;
+
+	const uint64_t lightsAddr =
+		m_context->GetBufferDeviceAddress(m_lightsBuf) + flight * sizeof(smvk::Light) * kMaxLights;
+	const uint64_t matsAddr =
+		m_context->GetBufferDeviceAddress(m_materialsBuf) +
+		flight * sizeof(smvk::MaterialValues) * kMaxMaterials;
+	const uint64_t cascadeAddr =
+		m_context->GetBufferDeviceAddress(m_cascadeBuf) +
+		flight * sizeof(smvk::GpuDirectionalLightDescription);
+
+	app::PushConstants pc{};
+	pc.frameUniforms = m_lastInsetFrameAddr;
+	pc.lightsBuffer = lightsAddr;
+	pc.materialsBuffer = matsAddr;
+	pc.cascadeBuffer = cascadeAddr;
+	pc.materialId = 0;
+	pc.comparisonSamplerId = 1;
+	pc.numCascades = 0;
+	pc.cascadeIndex = 0;
+	pc.fpLightCount = 0;
+	pc.spotShadowMapIndex = UINT32_MAX;
+	pc.spotShadowCount = 0;
+	pc.spotIndex = UINT32_MAX;
+	pc.pad_pc = 0;
+	pc.renderViews = 0;
+	pc.mainRenderView = UINT32_MAX;
+	pc.renderViewIndex = UINT32_MAX;
+
+	auto& pass = m_rendergraph->AddPass("EditorInset")
+		.SetOffset(stripX, 0)
+		.SetExtent(strip)
+		.SetColor({ swapView },
+			smvk::AttachmentLoadOp::Load, smvk::AttachmentStoreOp::Store,
+			smvk::ClearColor(0, 0, 0, 1))
+		.SetDepth(m_depth.logicalView,
+			smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
+			smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
+	pass.SetRecordingFunc([this, pc](smvk::CommandBuffer& cmd) {
+		smvk::ShaderProgram& prog = InsetProgram();
+		const smvk::VertexFormat fmt =
+			HasDrawItems() ? smvk::VertexFormat::StaticVertexFormat
+			: smvk::VertexFormat::Empty;
+		if (fmt == smvk::VertexFormat::StaticVertexFormat)
+			cmd.BindStaticVertexFmt();
+		const smvk::DepthSettings depth{
+			.depthFunc = smvk::CompareOp::GreaterEqual,
+			.writeEnable = true, .depthTestEnable = true };
+		for (int masked = 0; masked <= 1; ++masked) {
+			const bool maskedPhase = (masked == 1);
+			cmd.BindRenderPipeline(prog, fmt,
+				depth, smvk::StencilSettings{}, smvk::BlendSettings{},
+				smvk::MSAASettings{},
+				smvk::RasterSettings{ .cullMode = maskedPhase
+					? smvk::CullMode::None : smvk::CullMode::Back });
+			cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+			DrawWorldNodes(cmd, pc, maskedPhase, false, false);
+		}
+		{
+			cmd.BindRenderPipeline(prog, fmt,
+				smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
+					.writeEnable = false, .depthTestEnable = true },
+				smvk::StencilSettings{},
+				smvk::BlendSettings::AlphaBlend(),
+				smvk::MSAASettings{}, smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
+			app::PushConstants tpc = pc;
+			tpc.pad_pc = 1;
+			cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
+			if (m_world) {
+				const smvk::IteratorFlags req = smvk::IteratorFlags(
+					smvk::IteratorFlagBit_Renderable |
+					smvk::IteratorFlagBit_Transparent |
+					smvk::IteratorFlagBit_StaticVertexFmt);
+				m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
+					if (item.material == smvk::World::kInvalidIndex)
+						return;
+					smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
+					if (!mesh)
+						return;
+					const glm::mat4& model = m_world->scene.globalTransform[item.node];
+					uint32_t matId = item.material;
+					cmd.PushConstants(offsetof(app::PushConstants, materialId),
+						sizeof(matId), &matId, smvk::ShaderStage::All);
+					cmd.PushConstants(offsetof(app::PushConstants, model),
+						sizeof(model), glm::value_ptr(model), smvk::ShaderStage::All);
+					for (const auto& s : mesh->geometry.surfaces)
+						cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
+					});
+			}
+		}
+		});
+}
+
 void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	const auto vkExt = m_swapchain->GetExtent();
 	const smvk::Extent2D extent{ vkExt.width, vkExt.height };
@@ -540,20 +748,34 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 
 	UpdateCamera(delta_time_s);
 	if (!m_uiMode || !(m_imgui && m_imgui->WantsCaptureKeyboard())) {
+		// Function keys match App's debug views (see SceneRenderer):
+		// F1 lit, F2 unlit, F6 vertex colors, F8 baked irradiance (App's
+		// GI key), F9 base-UV, F10 lightmap-UV. F3 is editor-only (lit +
+		// shadows) and F5 cycles the UV side-strip (no App equivalent).
 		if (m_input.isKeyPressed(GLFW_KEY_F1))
-			m_viewMode = ViewMode::Unlit;
-		if (m_input.isKeyPressed(GLFW_KEY_F2))
 			m_viewMode = ViewMode::Lit;
+		if (m_input.isKeyPressed(GLFW_KEY_F2))
+			m_viewMode = ViewMode::Unlit;
 		if (m_input.isKeyPressed(GLFW_KEY_F3))
 			m_viewMode = ViewMode::LitShadows;
-		if (m_input.isKeyPressed(GLFW_KEY_F4))
+		if (m_input.isKeyPressed(GLFW_KEY_F9))
 			m_viewMode = ViewMode::Uv0;
-		if (m_input.isKeyPressed(GLFW_KEY_F5))
+		if (m_input.isKeyPressed(GLFW_KEY_F10))
 			m_viewMode = ViewMode::Uv1;
 		if (m_input.isKeyPressed(GLFW_KEY_F6))
 			m_viewMode = ViewMode::VertexColors;
+		if (m_input.isKeyPressed(GLFW_KEY_F8)) {
+			if (m_lmGpu)
+				m_viewMode = ViewMode::Baked;
+			else
+				Log("Baked view needs a lightmap atlas (open a baked pak).");
+		}
+		if (m_input.isKeyPressed(GLFW_KEY_F5))
+			m_secondView = SecondView((int(m_secondView) + 1) % 3);
 		if (m_input.isKeyPressed(GLFW_KEY_I))
 			m_uiMode = !m_uiMode;
+		if (m_input.isKeyPressed(GLFW_KEY_L))
+			m_showLightGizmos = !m_showLightGizmos;
 		if (m_input.isKeyPressed(GLFW_KEY_G))
 			m_gizmoMode = GizmoMode((int(m_gizmoMode) + 1) % 3);
 		if (m_input.isKeyPressed(GLFW_KEY_1))
@@ -574,22 +796,39 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 			m_input.isKeyHeld(GLFW_KEY_RIGHT_CONTROL);
 		const bool shift = m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
 			m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
+		const bool alt = m_input.isKeyHeld(GLFW_KEY_LEFT_ALT) ||
+			m_input.isKeyHeld(GLFW_KEY_RIGHT_ALT);
 		if (ctrl && m_input.isKeyPressed(GLFW_KEY_Z) && !shift)
 			Undo();
 		if (ctrl && ((m_input.isKeyPressed(GLFW_KEY_Z) && shift) ||
 			m_input.isKeyPressed(GLFW_KEY_Y)))
 			Redo();
+		// Maya-style incremental tour save: <stem>.0001.tour, ...
+		if (ctrl && alt && m_input.isKeyPressed(GLFW_KEY_S))
+			SaveTourIncremental();
 	}
 
 	const uint32_t flight = uint32_t(fb.imageIndex) % m_flightCount;
 	UpdateTextureStreaming(extent);
 	UpdateFrameData(flight, extent);
+	// Second-viewport frame slice (strip aspect) for the inset pass.
+	uint32_t insetX = extent.width;
+	smvk::Extent2D insetStrip{ 0, 0 };
+	if (SecondViewActive()) {
+		insetStrip = InsetStrip(extent, insetX);
+		if (insetStrip.width != 0)
+			UpdateInsetFrameData(flight, insetStrip);
+	}
 
 	// Viewport click-select (left button, UI not capturing, gizmo idle,
 	// Alt not held: Alt+LMB is the Maya orbit gesture, not a pick).
+	// Clicks inside the UV inset strip are ignored (different projection).
 	const bool altNav = m_input.isKeyHeld(GLFW_KEY_LEFT_ALT) ||
 		m_input.isKeyHeld(GLFW_KEY_RIGHT_ALT);
-	if (m_world && !m_gizmoDragging && !altNav && m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) &&
+	const bool inInset = SecondViewActive() && insetStrip.width != 0 &&
+		float(m_input.getMouseX()) >= float(insetX);
+	if (m_world && !m_gizmoDragging && !altNav && !inInset &&
+		m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) &&
 		!(m_imgui && m_imgui->WantsCaptureMouse())) {
 		if (!GizmoHandleInput(extent)) {
 			if (auto hit = PickNode(float(m_input.getMouseX()),
@@ -610,6 +849,7 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	if (m_viewMode == ViewMode::LitShadows)
 		RecordShadowPass(0);
 	RecordMainPass(m_swapViews[fb.imageIndex], extent, flight, m_wireOverlay);
+	RecordInsetPass(m_swapViews[fb.imageIndex], extent, flight);
 	RecordGizmoPass(m_swapViews[fb.imageIndex], extent);
 
 	if (m_imgui && m_imgui->IsInitialized()) {
@@ -618,6 +858,11 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 		m_imgui->AddPass(*m_rendergraph, m_swapViews[fb.imageIndex], extent,
 			smvk::AttachmentLoadOp::Load, smvk::ClearColor(0, 0, 0, 1));
 	}
+	// Flush bindless descriptor writes (scene texture views, samplers)
+	// BEFORE Execute records — App does the same (see SceneRenderer).
+	// Without this the textures[] array stays uninitialized and the
+	// viewport samples garbage (gray) no matter the residency or slots.
+	m_context->UpdateDescriptors();
 	m_rendergraph->Execute(fb);
 	m_context->ProcessDeferredTasks();
 	++m_frameCounter;

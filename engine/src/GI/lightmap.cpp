@@ -27,7 +27,12 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
-constexpr uint32_t kSglmVersion = 1;
+constexpr uint32_t kSglmVersion = 2;
+
+// v2 payload segment slice: each slice compresses/decompresses through
+// the blob codec independently (kMaxBlobBytes cap). 16M-texel atlases
+// pack a ~1.2 GB section — over the cap for a single LZ4 block.
+constexpr uint32_t kSglmSegmentBytes = 256u * 1024u * 1024u;
 
 struct SglmFileHeader {
 	char magic[4] = { 'S', 'G', 'L', 'M' };
@@ -36,7 +41,10 @@ struct SglmFileHeader {
 	uint32_t atlasHeight = 0;
 	uint32_t chunkCount = 0;
 	uint32_t payloadBytes = 0; // uncompressed post-header section
-	uint32_t compressed = 0;   // 1 = LZ4 block
+	// 0 = section stored raw, 1 = single LZ4 block (v1 files),
+	// 2 = segmented LZ4 (v2: u32 segCount + (u64 raw, u64 comp) table +
+	// segCount blocks, slices of kSglmSegmentBytes raw bytes).
+	uint32_t compressed = 0;
 };
 
 inline float Luminance(const glm::vec3& c) {
@@ -598,13 +606,6 @@ static bool GenerateLightmapChartsAuthored(
 
 	// Island BFS: uv2 agreement at both shared endpoints (eps: uv units;
 	// pack padding separates islands by orders of magnitude more).
-	constexpr float kUvSeamEps = 1e-5f;
-	auto cornerUv2 = [&](uint32_t t, uint32_t c) -> const glm::vec2& {
-		for (int k = 0; k < 3; ++k)
-			if (triCanon[t * 3 + k] == c)
-				return upload.vertices[upload.indices[t * 3 + k]].texCoord2;
-		return upload.vertices[0].texCoord2; // unreachable
-	};
 	struct Island {
 		glm::vec2 pMin{ 0.0f }, pMax{ 0.0f };
 		std::vector<uint32_t> tris;
@@ -613,53 +614,81 @@ static bool GenerateLightmapChartsAuthored(
 	std::vector<Island> islands;
 	std::vector<uint32_t> chartOf(triCount, 0xFFFFFFFFu);
 	std::vector<uint32_t> frontier;
-	for (uint32_t seed = 0; seed < triCount; ++seed) {
-		if (chartOf[seed] != 0xFFFFFFFFu)
-			continue;
-		const uint32_t idx = uint32_t(islands.size());
+	if (opts.authoredOneChartPerLayout) {
+		// PRE-PACKED layout (RizomUV Pack + normalize): the mesh's whole
+		// [0,1]^2 uv2 IS the island packing. One chart per layout — per
+		// island rects would re-pack an already-packed layout and pay
+		// ~4 gutter texels per side on every island (bistro's rizom set
+		// is >1M islands: 37M+ gutter texels, over any atlas budget
+		// before content). The synthetic island spans the full range so
+		// every downstream step (rect sizing, chart-local uv, texel
+		// rasterization) runs unchanged; chart-local uv is the authored
+		// uv2 verbatim.
 		Island& isl = islands.emplace_back();
-		isl.pMin = glm::vec2(std::numeric_limits<float>::max());
-		isl.pMax = glm::vec2(std::numeric_limits<float>::lowest());
-		frontier.clear();
-		frontier.push_back(seed);
-		while (!frontier.empty()) {
-			const uint32_t t = frontier.back();
-			frontier.pop_back();
-			if (chartOf[t] != 0xFFFFFFFFu)
-				continue;
-			chartOf[t] = idx;
+		isl.pMin = glm::vec2(0.0f);
+		isl.pMax = glm::vec2(1.0f);
+		isl.tris.reserve(triCount);
+		for (uint32_t t = 0; t < triCount; ++t)
 			isl.tris.push_back(t);
-			for (int k = 0; k < 3; ++k) {
-				const glm::vec2& u =
-					upload.vertices[upload.indices[t * 3 + k]].texCoord2;
-				isl.pMin = glm::min(isl.pMin, u);
-				isl.pMax = glm::max(isl.pMax, u);
-			}
-			const uint32_t ca = triCanon[t * 3 + 0];
-			const uint32_t cb = triCanon[t * 3 + 1];
-			const uint32_t cc = triCanon[t * 3 + 2];
-			const uint64_t eKeys[3] = {
-				uint64_t(std::min(ca, cb)) | (uint64_t(std::max(ca, cb)) << 32),
-				uint64_t(std::min(cb, cc)) | (uint64_t(std::max(cb, cc)) << 32),
-				uint64_t(std::min(cc, ca)) | (uint64_t(std::max(cc, ca)) << 32),
-			};
-			for (uint64_t e : eKeys)
-				for (uint32_t nb : edges[e]) {
-					if (nb == t || chartOf[nb] != 0xFFFFFFFFu)
-						continue;
-					// Shared canonical endpoints of this edge.
-					const uint32_t lo = uint32_t(e & 0xFFFFFFFFull);
-					const uint32_t hi = uint32_t(e >> 32);
-					const glm::vec2& ta = cornerUv2(t, lo);
-					const glm::vec2& tb = cornerUv2(t, hi);
-					const glm::vec2& na = cornerUv2(nb, lo);
-					const glm::vec2& nbv = cornerUv2(nb, hi);
-					if (std::abs(ta.x - na.x) + std::abs(ta.y - na.y) > kUvSeamEps)
-						continue;
-					if (std::abs(tb.x - nbv.x) + std::abs(tb.y - nbv.y) > kUvSeamEps)
-						continue;
-					frontier.push_back(nb);
+	} else {
+		// Island BFS: uv2 agreement at both shared endpoints (eps: uv
+		// units; pack padding separates islands by orders of magnitude
+		// more).
+		constexpr float kUvSeamEps = 1e-5f;
+		auto cornerUv2 = [&](uint32_t t, uint32_t c) -> const glm::vec2& {
+			for (int k = 0; k < 3; ++k)
+				if (triCanon[t * 3 + k] == c)
+					return upload.vertices[upload.indices[t * 3 + k]].texCoord2;
+			return upload.vertices[0].texCoord2; // unreachable
+		};
+		for (uint32_t seed = 0; seed < triCount; ++seed) {
+			if (chartOf[seed] != 0xFFFFFFFFu)
+				continue;
+			const uint32_t idx = uint32_t(islands.size());
+			Island& isl = islands.emplace_back();
+			isl.pMin = glm::vec2(std::numeric_limits<float>::max());
+			isl.pMax = glm::vec2(std::numeric_limits<float>::lowest());
+			frontier.clear();
+			frontier.push_back(seed);
+			while (!frontier.empty()) {
+				const uint32_t t = frontier.back();
+				frontier.pop_back();
+				if (chartOf[t] != 0xFFFFFFFFu)
+					continue;
+				chartOf[t] = idx;
+				isl.tris.push_back(t);
+				for (int k = 0; k < 3; ++k) {
+					const glm::vec2& u =
+						upload.vertices[upload.indices[t * 3 + k]].texCoord2;
+					isl.pMin = glm::min(isl.pMin, u);
+					isl.pMax = glm::max(isl.pMax, u);
 				}
+				const uint32_t ca = triCanon[t * 3 + 0];
+				const uint32_t cb = triCanon[t * 3 + 1];
+				const uint32_t cc = triCanon[t * 3 + 2];
+				const uint64_t eKeys[3] = {
+					uint64_t(std::min(ca, cb)) | (uint64_t(std::max(ca, cb)) << 32),
+					uint64_t(std::min(cb, cc)) | (uint64_t(std::max(cb, cc)) << 32),
+					uint64_t(std::min(cc, ca)) | (uint64_t(std::max(cc, ca)) << 32),
+				};
+				for (uint64_t e : eKeys)
+					for (uint32_t nb : edges[e]) {
+						if (nb == t || chartOf[nb] != 0xFFFFFFFFu)
+							continue;
+						// Shared canonical endpoints of this edge.
+						const uint32_t lo = uint32_t(e & 0xFFFFFFFFull);
+						const uint32_t hi = uint32_t(e >> 32);
+						const glm::vec2& ta = cornerUv2(t, lo);
+						const glm::vec2& tb = cornerUv2(t, hi);
+						const glm::vec2& na = cornerUv2(nb, lo);
+						const glm::vec2& nbv = cornerUv2(nb, hi);
+						if (std::abs(ta.x - na.x) + std::abs(ta.y - na.y) > kUvSeamEps)
+							continue;
+						if (std::abs(tb.x - nbv.x) + std::abs(tb.y - nbv.y) > kUvSeamEps)
+							continue;
+						frontier.push_back(nb);
+					}
+			}
 		}
 	}
 
@@ -1332,16 +1361,53 @@ bool SgLightmapAtlas::WriteFile(const std::string& path, std::string& err) const
 
 	// Section complete (chunk table + payloads; lightmap UVs live in the
 	// COOKED pak mesh vertices — the .sglm carries no geometry).
-	hdr.payloadBytes = uint32_t(section.size());
-	hdr.compressed = 1;
-	std::vector<uint8_t> compressed;
-	if (!Lz4Compress(section, compressed, 1)) {
-		err = "SgLightmapAtlas: LZ4 compression failed";
+	if (section.size() > 0xFFFFFFFFull) {
+		err = "SgLightmapAtlas: section overflows u32 payloadBytes";
 		return false;
 	}
-	std::vector<uint8_t> file(sizeof(hdr) + compressed.size());
-	std::memcpy(file.data(), &hdr, sizeof(hdr));
-	std::memcpy(file.data() + sizeof(hdr), compressed.data(), compressed.size());
+	hdr.payloadBytes = uint32_t(section.size());
+	// Segmented LZ4 (v2): the full section of a 16M-texel atlas (~1.2 GB)
+	// cannot pass the single-block codec (kMaxBlobBytes), so it is
+	// compressed in kSglmSegmentBytes slices with a size table.
+	hdr.compressed = 2;
+	const size_t segCount = (section.size() + kSglmSegmentBytes - 1)
+		/ kSglmSegmentBytes;
+	std::vector<std::vector<uint8_t>> segs(segCount);
+	for (size_t s = 0; s < segCount; ++s) {
+		const size_t off = s * kSglmSegmentBytes;
+		const size_t len = std::min<size_t>(kSglmSegmentBytes,
+			section.size() - off);
+		if (!Lz4Compress(std::span<const uint8_t>(section.data() + off, len),
+				segs[s], 1)) {
+			err = "SgLightmapAtlas: LZ4 compression failed (segment "
+				+ std::to_string(s) + ")";
+			return false;
+		}
+	}
+	std::vector<uint8_t> file;
+	size_t segBytes = 0;
+	for (const auto& s : segs)
+		segBytes += s.size();
+	file.reserve(sizeof(hdr) + 4 + segCount * 16 + segBytes);
+	file.insert(file.end(), reinterpret_cast<const uint8_t*>(&hdr),
+		reinterpret_cast<const uint8_t*>(&hdr) + sizeof(hdr));
+	auto putU32v = [&](uint32_t v) {
+		const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
+		file.insert(file.end(), p, p + 4);
+	};
+	auto putU64v = [&](uint64_t v) {
+		const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
+		file.insert(file.end(), p, p + 8);
+	};
+	putU32v(uint32_t(segCount));
+	for (size_t s = 0; s < segCount; ++s) {
+		const size_t rawLen = std::min<size_t>(kSglmSegmentBytes,
+			section.size() - s * kSglmSegmentBytes);
+		putU64v(uint64_t(rawLen));
+		putU64v(uint64_t(segs[s].size()));
+	}
+	for (const auto& s : segs)
+		file.insert(file.end(), s.begin(), s.end());
 
 	FILE* f = std::fopen(path.c_str(), "wb");
 	if (!f) {
@@ -1368,27 +1434,66 @@ bool SgLightmapAtlas::ReadFromMemory(std::span<const uint8_t> bytes, std::string
 		err = "sglm: bad magic";
 		return false;
 	}
-	if (hdr.version != kSglmVersion) {
+	if (hdr.version != 1 && hdr.version != kSglmVersion) {
 		err = "sglm: unsupported version " + std::to_string(hdr.version);
 		return false;
 	}
 	if (hdr.atlasWidth == 0 || hdr.atlasHeight == 0
-		|| hdr.chunkCount == 0 || hdr.chunkCount > 1048576) {
+		|| hdr.chunkCount == 0 || hdr.chunkCount > 1048576
+		|| hdr.payloadBytes == 0) {
 		err = "sglm: bad header";
 		return false;
 	}
 	std::vector<uint8_t> section;
 	const std::span<const uint8_t> stored(bytes.data() + sizeof(hdr),
 		bytes.size() - sizeof(hdr));
-	if (hdr.compressed) {
+	if (hdr.compressed == 2) {
+		// Segmented LZ4 (v2): u32 segCount + (u64 raw, u64 comp) table +
+		// segCount blocks. Raw sizes must tile payloadBytes exactly.
+		if (stored.size() < 4)
+			return err = "sglm: truncated segment table", false;
+		uint32_t segCount = 0;
+		std::memcpy(&segCount, stored.data(), 4);
+		const size_t tableEnd = 4 + size_t(segCount) * 16;
+		if (segCount == 0 || segCount > 64 || stored.size() < tableEnd)
+			return err = "sglm: bad segment table", false;
+		section.resize(hdr.payloadBytes);
+		size_t fileOff = tableEnd;
+		size_t rawOff = 0;
+		for (uint32_t s = 0; s < segCount; ++s) {
+			uint64_t rawLen = 0, compLen = 0;
+			std::memcpy(&rawLen, stored.data() + 4 + size_t(s) * 16, 8);
+			std::memcpy(&compLen, stored.data() + 4 + size_t(s) * 16 + 8, 8);
+			if (rawLen == 0 || rawLen > kSglmSegmentBytes
+				|| rawOff + rawLen > section.size()
+				|| compLen == 0 || fileOff + compLen > stored.size())
+				return err = "sglm: bad segment table entry", false;
+			std::vector<uint8_t> rawSeg;
+			if (!Lz4Decompress(
+					std::span<const uint8_t>(stored.data() + fileOff,
+						size_t(compLen)),
+					size_t(rawLen), rawSeg))
+				return err = "sglm: segment LZ4 decompression failed", false;
+			std::memcpy(section.data() + rawOff, rawSeg.data(), size_t(rawLen));
+			rawOff += size_t(rawLen);
+			fileOff += size_t(compLen);
+		}
+		if (rawOff != section.size())
+			return err = "sglm: segment sizes do not tile the payload", false;
+	}
+	else if (hdr.compressed == 1) {
+		// v1 single LZ4 block (files written before the segment format;
+		// sections over kMaxBlobBytes cannot exist in this layout).
 		if (!Lz4Decompress(stored, hdr.payloadBytes, section)) {
 			err = "sglm: LZ4 decompression failed";
 			return false;
 		}
-	} else {
+	}
+	else {
+		if (stored.size() != hdr.payloadBytes)
+			return err = "sglm: raw payload size mismatch", false;
 		section.assign(stored.begin(), stored.end());
 	}
-
 	size_t off = 0;
 	auto take = [&](void* dst, size_t n) -> bool {
 		if (off + n > section.size())

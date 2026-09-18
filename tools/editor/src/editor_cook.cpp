@@ -22,20 +22,39 @@
 #include <Engine/Vfs/vfs.h>
 
 namespace editor {
+namespace {
+// cmd.exe (behind _popen) mangles commands that start with a quote:
+// a quoted exe path plus quoted args gets its quotes stripped and the
+// whole line is then read as the program name ("...' is not recognized").
+// Quote only args that actually contain whitespace/quotes.
+std::string QuoteArg(const std::string& s) {
+	if (s.find_first_of(" \t\"") == std::string::npos)
+		return s;
+	std::string o = "\"";
+	for (char c : s)
+		o += (c == '"') ? "\\\"" : std::string(1, c);
+	return o + "\"";
+}
+} // namespace
 
 void EditorApp::CookToPak() {
 	if (m_cookRunning || !m_hasGltfModel) {
 		if (!m_hasGltfModel)
-			Log("Cook: no glTF loaded.");
+			Log(!m_pakPath.empty()
+				? "Cook: pak scenes are read-only (open the source glTF to cook)."
+				: "Cook: no glTF loaded.");
 		return;
 	}
 	// Persist the command log (+ cook block) first; the cooker consumes it.
+	// SaveTour targets the live path (save-as aware); the cooker replays
+	// that same file, so a versioned .000N.tour cooks exactly it.
 	if (!SaveTour()) {
 		Log("Cook: tour save failed, aborting.");
 		return;
 	}
-	const std::string tourPath = TourPath();
-	Log("Cook: tour saved (" + std::to_string(m_historyCursor) + " commands).");
+	const std::string tourPath = TourTarget();
+	Log("Cook: tour saved '" + tourPath + "' (" +
+		std::to_string(m_historyCursor) + " commands).");
 	// Split the source path into --content-dir + --in-vfs for the cooker.
 	std::string contentDir, inVfs;
 	{
@@ -81,12 +100,13 @@ void EditorApp::CookToPak() {
 				cooker = "PakCooker.exe"; // PATH fallback
 			// Required paths + tour on the CLI; everything else rides the
 			// tour's cook block (CLI wins when both are given).
+			// Args go through QuoteArg (blanket quoting breaks cmd.exe).
 			std::ostringstream cmd;
-			cmd << "\"" << cooker.string() << "\""
-				<< " --content-dir \"" << contentDir << "\""
-				<< " --in-vfs \"" << inVfs << "\""
-				<< " --out-pak \"" << cook.outPak << "\""
-				<< " --tour \"" << tourPath << "\""
+			cmd << QuoteArg(cooker.string())
+				<< " --content-dir " << QuoteArg(contentDir)
+				<< " --in-vfs " << QuoteArg(inVfs)
+				<< " --out-pak " << QuoteArg(cook.outPak)
+				<< " --tour " << QuoteArg(tourPath)
 				<< " 2>&1";
 			log << "cook: " << cmd.str() << "\n";
 #ifdef _WIN32
@@ -111,6 +131,87 @@ void EditorApp::CookToPak() {
 			r.log = log.str();
 			return r;
 		});
+}
+
+std::string EditorApp::RunArgs() const {
+	// App entrypoints are files: the loaded pak verbatim, else the glTF
+	// source imported directly. Empty = nothing runnable loaded.
+	if (!m_pakPath.empty())
+		return "--pak " + QuoteArg(m_pakPath);
+	if (m_hasGltfModel && !m_gltfHostPath.empty())
+		return "--gltf " + QuoteArg(m_gltfHostPath);
+	return {};
+}
+
+void EditorApp::RunInApp() {
+	if (m_runRunning)
+		return;
+	const std::string runArgs = RunArgs();
+	if (runArgs.empty()) {
+		Log("Run: nothing runnable loaded (open a .pak or .gltf first).");
+		return;
+	}
+	// Persist the tour first so no edit is lost (App itself runs the
+	// cooked/source scene, not the tour — Cook first to play edits).
+	if (m_hasGltfModel)
+		SaveTour();
+	char exePath[1024] = {};
+#ifdef _WIN32
+	DWORD n = GetModuleFileNameA(nullptr, exePath, (DWORD)sizeof(exePath));
+	(void)n;
+#endif
+	std::filesystem::path app = std::filesystem::path(exePath).parent_path() /
+		"App.exe";
+	if (!std::filesystem::exists(app))
+		app = "App.exe"; // PATH fallback
+	m_runRunning = true;
+	Log("Run started: App " + runArgs +
+		" (edits need Cook first; close App to finish).");
+	m_runFuture = std::async(std::launch::async,
+		[app = app.string(), runArgs]() -> CookResult {
+			CookResult r{};
+			std::ostringstream log;
+			std::ostringstream cmd;
+			cmd << QuoteArg(app) << " " << runArgs << " 2>&1";
+			log << "run: " << cmd.str() << "\n";
+#ifdef _WIN32
+			FILE* pipe = _popen(cmd.str().c_str(), "r");
+#else
+			FILE* pipe = popen(cmd.str().c_str(), "r");
+#endif
+			if (!pipe) {
+				r.log = log.str() + "run: failed to spawn App\n";
+				return r;
+			}
+			std::array<char, 512> buf{};
+			while (std::fgets(buf.data(), int(buf.size()), pipe))
+				log << buf.data();
+#ifdef _WIN32
+			const int rc = _pclose(pipe);
+#else
+			const int rc = pclose(pipe);
+#endif
+			log << "run: App exit=" << rc << "\n";
+			r.ok = (rc == 0);
+			r.log = log.str();
+			return r;
+		});
+}
+
+void EditorApp::PollRunProcess() {
+	if (!m_runRunning)
+		return;
+	if (!m_runFuture.valid())
+		return;
+	if (m_runFuture.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+		return;
+	CookResult r = m_runFuture.get();
+	m_runRunning = false;
+	std::istringstream ss(r.log);
+	std::string line;
+	while (std::getline(ss, line))
+		Log(line);
+	Log(r.ok ? "Run finished." : "Run exited with errors (see log above).");
 }
 
 void EditorApp::PollCookProcess() {

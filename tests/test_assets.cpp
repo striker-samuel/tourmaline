@@ -1405,6 +1405,73 @@ void TestStaticCollapse() {
 	}
 }
 
+void TestMultiSceneSerialize() {
+	using namespace smvk;
+	// Two cook clusters sharing one mesh URI: the shared blob must land
+	// once, both scenes reference it, discovery lists both in order.
+	auto makeScene = [](const char* meshUri, const char* matUri,
+			const char* nodeName) {
+		auto cluster = std::make_unique<Cluster>(nullptr);
+		cluster->SetCookMode(true);
+		auto quad = MakeQuad();
+		const ClusterStaticMeshHandle mh = cluster->UploadStaticMesh(quad);
+		cluster->RegisterMeshUri(meshUri, mh);
+		MaterialCreateInfo ci{};
+		const ClusterMaterialHandle math = cluster->CreateMaterial(ci);
+		cluster->RegisterMaterialUri(matUri, math);
+		const int root = addNode(cluster->scene, -1, 0);
+		const int n = addNode(cluster->scene, root, 1);
+		cluster->scene.meshForNode[n] = mh.index();
+		cluster->scene.materialForNode[n] = math.index();
+		setNodeName(cluster->scene, n, nodeName);
+		return cluster;
+	};
+	auto a = makeScene("m#shared", "m#matA", "NodeA");
+	auto b = makeScene("m#shared", "m#matB", "NodeB");
+	PakWriter writer;
+	ClusterSerializeStats stats;
+	std::string err;
+	const std::vector<const Cluster*> clusters{ a.get(), b.get() };
+	Check(SerializeClusters(clusters, { "Alpha", "Beta" },
+		writer, &stats, &err), "multiscene.serialize.ok");
+	Check(stats.meshes == 1 && stats.materials == 2,
+		"multiscene.stats.shared");
+	Check(stats.nodes == 4, "multiscene.stats.nodes");
+	std::vector<uint8_t> img = writer.Finalize();
+	std::string openErr;
+	auto reader = PakReader::Open(std::span<const uint8_t>(img), openErr);
+	Check(reader.has_value(), "multiscene.pak.open");
+	if (!reader)
+		return;
+	Check(reader->BlobsOfKind(PakAssetKind::Mesh).size() == 1,
+		"multiscene.mesh.dedup");
+	Check(reader->BlobsOfKind(PakAssetKind::Scene).size() == 2,
+		"multiscene.scene2");
+	std::string lerr;
+	auto scenes = ListPakScenes(*reader, &lerr);
+	Check(scenes.size() == 2, "multiscene.list.count");
+	if (scenes.size() == 2) {
+		Check(scenes[0].name == "Alpha" && scenes[1].name == "Beta",
+			"multiscene.list.names");
+		Check(scenes[0].nodes == 2 && scenes[1].nodes == 2,
+			"multiscene.list.nodes");
+		Check(scenes[0].tocPath == "<cluster-local>#scene",
+			"multiscene.list.toc0");
+		Check(scenes[1].tocPath == "<cluster-local>#scene.1",
+			"multiscene.list.toc1");
+	}
+	// Legacy single-scene layout still lists exactly one scene.
+	PakWriter w2;
+	Check(SerializeCluster(*a, w2, nullptr, &err), "multiscene.legacy.ok");
+	std::vector<uint8_t> img2 = w2.Finalize();
+	auto r2 = PakReader::Open(std::span<const uint8_t>(img2), openErr);
+	Check(r2.has_value(), "multiscene.legacy.open");
+	if (r2) {
+		auto s2 = ListPakScenes(*r2, &lerr);
+		Check(s2.size() == 1 && s2[0].nodes == 2, "multiscene.legacy.list");
+	}
+}
+
 } // namespace
 
 int main() {
@@ -1422,6 +1489,7 @@ int main() {
 	TestCookLodSiblingsLightmap();
 	TestVertexPack();
 	TestClusterSerializeCook();
+	TestMultiSceneSerialize();
 	TestStaticSubtrees();
 	TestMeshlets();
 	TestStaticCollapse();

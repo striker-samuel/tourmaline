@@ -6,8 +6,11 @@
 #include "editor_app.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 
 #include <Engine/Asset/tour.h>
+#include <Engine/Utils/gltf.h>
 
 namespace editor {
 
@@ -94,6 +97,115 @@ void EditorApp::RefreshMaterialNodes(uint32_t mat) {
 	for (const auto& item : m_world->drawItems)
 		if (item.material == mat)
 			RefreshNodeDrawState(item.node);
+}
+
+// Definition + world aim for a light node (null when the node has none).
+// Aim resolves through the node's global transform with the coordFix-0
+// engine-local axis (see GltfPunctualAimAxis): all editor content is
+// coordFix-0 baked (PakCooker cooks at 0, the editor imports at 0), so a
+// plain -Z read would aim 180 degrees off (see gltf.cpp).
+const ::SceneLight* EditorApp::FindNodeLight(uint32_t node,
+	glm::vec3* outAimWs) const {
+	if (outAimWs)
+		*outAimWs = glm::vec3(0.0f);
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return nullptr;
+	const Scene& scene = m_world->scene;
+	auto lit = scene.lightForNode.find(node);
+	if (lit == scene.lightForNode.end() ||
+		lit->second >= m_world->lightLocations.size())
+		return nullptr;
+	const auto& loc = m_world->lightLocations[lit->second];
+	if (!loc.cluster || !loc.handle.valid())
+		return nullptr;
+	const ::SceneLight* l = loc.cluster->lights.get(loc.handle);
+	if (!l)
+		return nullptr;
+	if (outAimWs &&
+		(l->type == ::SceneLight::Type::Directional ||
+			l->type == ::SceneLight::Type::Spot) &&
+		node < scene.globalTransform.size()) {
+		const glm::vec3 aimAxis = GltfPunctualAimAxis(0);
+		const glm::vec3 emis = glm::vec3(
+			scene.globalTransform[node] * glm::vec4(aimAxis, 0.0f));
+		if (glm::length(emis) > 1e-9f)
+			*outAimWs = glm::normalize(emis);
+	}
+	return l;
+}
+
+// Cooked-light census + viewport-sun seeding. First directional wins as
+// the sun (App parity); its sliders are seeded from the decoded aim so a
+// pak sun lights the viewport exactly as baked. Intensity is lux-scale in
+// the asset but the editor viewport is LDR, so the slider takes the
+// clamped value while the log keeps the physical one.
+void EditorApp::RebuildCookedLights() {
+	m_hasCookedSun = false;
+	m_cookedSunName.clear();
+	m_cookedDirs = m_cookedPoints = m_cookedSpots = 0;
+	m_cookedStaticSkipped = 0;
+	if (!m_world)
+		return;
+	const Scene& scene = m_world->scene;
+	if (scene.lightForNode.empty()) {
+		Log("Cooked lights: none (viewport sun default).");
+		return;
+	}
+	std::vector<uint32_t> nodes;
+	nodes.reserve(scene.lightForNode.size());
+	for (const auto& [n, li] : scene.lightForNode)
+		nodes.push_back(n);
+	std::sort(nodes.begin(), nodes.end());
+	bool sunTaken = false;
+	for (uint32_t node : nodes) {
+		glm::vec3 aimWs(0.0f);
+		const ::SceneLight* l = FindNodeLight(node, &aimWs);
+		if (!l)
+			continue;
+		if (l->type == ::SceneLight::Type::Directional) {
+			++m_cookedDirs;
+			if (sunTaken || glm::length(aimWs) < 1e-9f)
+				continue;
+			const glm::vec3 toSun = -aimWs;
+			m_cookedSunName = l->name.empty()
+				? ("node " + std::to_string(node)) : l->name;
+			m_sunAzimuth = glm::degrees(std::atan2(toSun.x, toSun.z));
+			if (m_sunAzimuth < 0.0f)
+				m_sunAzimuth += 360.0f;
+			m_sunElevation = glm::degrees(
+				std::asin(glm::clamp(toSun.y, -1.0f, 1.0f)));
+			m_sunColor = l->color;
+			m_sunIntensity = glm::clamp(l->intensity, 0.0f, 10.0f);
+			m_hasCookedSun = true;
+			sunTaken = true;
+			char buf[384];
+			std::snprintf(buf, sizeof(buf),
+				"Cooked sun '%s' (node %u): toSun=(%.3f,%.3f,%.3f) az=%.1f el=%.1f "
+				"color=(%.2f,%.2f,%.2f) I=%.1f lux -> viewport I=%.2f (LDR)",
+				m_cookedSunName.c_str(), node,
+				toSun.x, toSun.y, toSun.z, m_sunAzimuth, m_sunElevation,
+				l->color.x, l->color.y, l->color.z, l->intensity, m_sunIntensity);
+			Log(buf);
+		}
+		else if (l->type == ::SceneLight::Type::Point) {
+			++m_cookedPoints;
+			if ((l->flags & ::SceneLight::kSceneLightFlag_Static) != 0)
+				++m_cookedStaticSkipped;
+		}
+		else {
+			++m_cookedSpots;
+			if ((l->flags & ::SceneLight::kSceneLightFlag_Static) != 0)
+				++m_cookedStaticSkipped;
+		}
+	}
+	char buf[256];
+	std::snprintf(buf, sizeof(buf),
+		"Cooked lights: %u dir, %u point, %u spot (%u static/bake-only)%s",
+		m_cookedDirs, m_cookedPoints, m_cookedSpots, m_cookedStaticSkipped,
+		sunTaken ? "" : " — no sun, viewport default stands in");
+	Log(buf);
+	if ((m_cookedPoints + m_cookedSpots) != 0)
+		Log("Note: points/spots are logged only — the viewport renders the sun (no forward+ path).");
 }
 
 } // namespace editor

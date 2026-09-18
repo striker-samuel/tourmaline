@@ -183,7 +183,8 @@ namespace smvk {
 		// Deserializes a cooked pak (PakReader over caller-owned bytes) into
 		// a new registered Cluster. Throws std::runtime_error on failure.
 		// The caller issues ctx.FlushUploads() after ResolveAndFixup.
-		Cluster& LoadClusterFromPak(ResourceManager& ctx, const class PakReader& reader);
+		Cluster& LoadClusterFromPak(ResourceManager& ctx, const class PakReader& reader,
+			uint32_t sceneIndex = 0);
 		void UnloadCluster(smvk::Cluster&);
 
 		void RegisterCluster(std::unique_ptr<Cluster> cluster);
