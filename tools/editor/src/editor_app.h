@@ -48,14 +48,64 @@
 
 #include <tiny_gltf.h>
 
+#include <imgui.h> // menu-bar gem mark + inspector pages
+
 #include "editor_commands.h"
 
 namespace editor {
+
+// Menu-bar gem mark (editor_branding.cpp): vector twin of
+// tourmaline_logo.png, drawn straight into the given draw list.
+void DrawTourmalineGem(ImDrawList* dl, const ImVec2& p, float h);
 
 // Viewport camera clip + FOV shared by editor_app.cpp / editor_render.cpp.
 inline constexpr float kEditorFovYDeg = 45.0f;
 inline constexpr float kEditorNearClip = 0.05f;
 inline constexpr float kEditorFarClip = 2000.0f;
+
+// Panel layout constants shared by editor_ui.cpp / editor_render.cpp /
+// editor_gizmo.cpp: the 3D viewport is the CENTRAL rect between the
+// panels (panels are siblings in one layout — they never overlap the
+// rendered view). kEditorBottomH is the Overrides/Console dock height.
+inline constexpr float kEditorLeftW = 330.0f;
+inline constexpr float kEditorRightW = 370.0f;
+inline constexpr float kEditorBottomH = 230.0f;
+
+// Central viewport rect in window pixels (x/y = top-left offset).
+struct ViewportRect {
+	float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+};
+
+// ---------------------------------------------------------------------------
+// Editor cameras: orbit-frame cameras owned by the EDITOR (never cooked,
+// never part of the scene). Perspective (finite reversed-Z) or orthographic
+// (Top/Side); per-camera FOV + near/far + ortho half-height.
+// ---------------------------------------------------------------------------
+struct EditorCam {
+	enum class Type : int { Perspective = 0, Orthographic = 1 };
+	Type type = Type::Perspective;
+	std::string name = "Perspective";
+	// Maya-style orbit frame (target + yaw/pitch/distance, Y up).
+	glm::vec3 target{ 0.0f, 1.0f, 0.0f };
+	float yaw = 0.6109f;    // ~35 deg
+	float pitch = -0.3142f; // ~-18 deg
+	float dist = 6.0f;
+	// Perspective clip + FOV.
+	float fovYDeg = kEditorFovYDeg;
+	float nearClip = kEditorNearClip;
+	float farClip = kEditorFarClip;
+	// Orthographic half-height (meters); zoom maps the wheel onto this.
+	float orthoHalfH = 10.0f;
+};
+
+// Eye position (orbit). For ortho the distance only positions the eye;
+// depth is translation-invariant along the view axis.
+glm::vec3 EditorCamEye(const EditorCam& c);
+glm::mat4 EditorCamView(const EditorCam& c);
+// Vulkan reversed-Z projection for the given aspect ([1][1] Y-flipped).
+glm::mat4 EditorCamProj(const EditorCam& c, float aspect);
+
+inline constexpr int kMaxViewports = 4; // single layout uses [0]; quad uses all
 
 // ---------------------------------------------------------------------------
 // Viewport shading mode: default diffuse unlit, default lit, and lit with
@@ -69,6 +119,7 @@ enum class ViewMode : int {
 	Uv1 = 4,        // default_uv1_debug: lightmap UVs
 	VertexColors = 5, // default_vertexcolor_debug: vertex colors
 	Baked = 6,      // default_baked_debug: baked atlas irradiance (F8)
+	Meshlets = 7,   // meshdebug: flat per-meshlet colors (F4)
 };
 inline const char* ViewModeName(ViewMode m) {
 	switch (m) {
@@ -79,6 +130,7 @@ inline const char* ViewModeName(ViewMode m) {
 	case ViewMode::Uv1: return "UV1 (lightmap)";
 	case ViewMode::VertexColors: return "Vertex colors";
 	case ViewMode::Baked: return "Baked irradiance";
+	case ViewMode::Meshlets: return "Meshlets";
 	}
 	return "?";
 }
@@ -154,8 +206,6 @@ protected:
 private:
 	// ---- frame ----
 	void RenderFrame(smvk::Framebuffer& fb);
-	void UpdateCamera(float dt);
-	void UpdateFrameData(uint32_t flight, smvk::Extent2D extent);
 	void UploadMaterials(uint32_t flight);
 
 	// ---- scene ----
@@ -176,38 +226,119 @@ private:
 
 	// ---- render passes (editor_render.cpp) ----
 	bool EnsureShaders();
-	smvk::ShaderProgram& MainProgram(); // program for m_viewMode (Lit fallback)
+	smvk::ShaderProgram& MainProgram(ViewMode m); // per-viewport (Lit fallback)
 	smvk::ShaderProgram& InsetProgram(); // program for m_secondView (Lit fallback)
 	bool EnsureBuffers(uint32_t flightCount);
 	bool EnsureDepth(smvk::Extent2D extent);
 	bool EnsureShadowAtlas();
-	void RecordShadowPass(uint32_t cascadeIndex);
-	void RecordMainPass(smvk::LogicalImageViewHandle swapView, smvk::Extent2D extent,
+	void RecordShadowPass(uint32_t cascadeIndex); // active viewport's frame
+	// Per-viewport scene pass: offset/extent from m_viewports[vpIdx].rect,
+	// frame slice + push constants from that viewport's camera.
+	void RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		uint32_t flight, bool selectedWireOverlay);
 	void RecordInsetPass(smvk::LogicalImageViewHandle swapView,
-		smvk::Extent2D extent, uint32_t flight); // UV side-strip
-	void RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
-		smvk::Extent2D extent);
+		uint32_t flight); // UV side-strip (single layout, viewport 0)
+	// Line overlay (grid + gizmos + light markers): ONE upload, ONE pass
+	// PER VISIBLE VIEWPORT (that viewport's viewProj + rect).
+	void RecordGizmoPass(smvk::LogicalImageViewHandle swapView);
 	void UpdateInsetFrameData(uint32_t flight, smvk::Extent2D stripExtent);
+	// Viewport rects for the current frame (single: one central rect;
+	// quad: 2x2 grid inside the central area) + hovered/active tracking.
+	void ComputeViewportRects(smvk::Extent2D extent);
+	// Per-viewport frame uniform build + upload (all visible viewports,
+	// one slice per (flight, viewport); the ACTIVE viewport drives the
+	// shadow cascade + light buffer).
+	void UpdateFrameData(uint32_t flight);
+	void UpdateCamera(float dt); // orbit/pan/zoom on the ACTIVE camera
 	// Second-viewport state: active unless off or the main view already
-	// shows UVs; strip rect (right side) for the inset pass + label.
+	// shows UVs; strip rect (right side of the CENTRAL viewport) for the
+	// inset pass + label. outX is window-absolute.
 	bool SecondViewActive() const;
-	static smvk::Extent2D InsetStrip(smvk::Extent2D extent, uint32_t& outX);
+	static smvk::Extent2D InsetStrip(const ViewportRect& vp, uint32_t& outX);
 	void DrawWorldNodes(smvk::CommandBuffer& cmd, const app::PushConstants& basePc,
 		bool maskedPhase, bool selectedOnly, bool shadowPass,
 		bool bakedOnly = false); // bakedOnly: skip unbaked meshes (F8 view)
 	// True when the world holds anything to draw (guards vertex bindings).
 	bool HasDrawItems() const;
 
+	// ---- meshlet debug view (F4, editor_render.cpp) ----
+	// Expansion of every cooked meshlet into global-vertex-id triangles
+	// in ONE shared index buffer (per-meshlet draw ranges, flat colors
+	// via the meshdebug program). Meshes without cooked meshlets fall
+	// back to their normal surfaces in a dim color (nothing vanishes).
+	struct MeshletRange {
+		uint32_t firstIndex = 0; // absolute into m_meshletIndices
+		uint32_t indexCount = 0;
+		uint32_t meshlet = 0;    // meshlet index (stable color hash)
+		float coneCutoff = 1.0f; // heat-mode color
+	};
+	std::vector<MeshletRange> m_meshletRanges;
+	std::unordered_map<uint32_t, std::vector<uint32_t>> m_meshletRangesByMesh;
+	smvk::Holder<smvk::BufferHandle> m_meshletIndices;
+	uint32_t m_meshletIndexCap = 0;
+	bool m_meshletDebugBuilt = false;
+	bool m_meshletDebugHasData = false; // any mesh actually carries meshlets
+	void ResetMeshletDebug();    // scene change / shutdown
+	bool EnsureMeshletDebug();   // lazy build (first F4 frame)
+	void DrawMeshletNodes(smvk::CommandBuffer& cmd);
+
 	// ---- picking (editor_pick.cpp) ----
+	// mouseX/mouseY are VIEWPORT-LOCAL pixels of the given viewport;
+	// viewProj is that viewport's frame (per-viewport cameras).
 	struct PickHit { uint32_t node = UINT32_MAX; float t = 0.0f; };
-	std::optional<PickHit> PickNode(float mouseX, float mouseY,
+	std::optional<PickHit> PickNode(int vpIdx, float mouseX, float mouseY,
 		smvk::Extent2D extent) const;
 	glm::vec3 MouseRay(float mouseX, float mouseY, smvk::Extent2D extent,
-		glm::vec3& outOrigin) const;
+		const glm::mat4& viewProj, glm::vec3& outOrigin) const;
 
 	// ---- gizmo (editor_gizmo.cpp) ----
-	bool GizmoHandleInput(smvk::Extent2D extent); // returns true while dragging
+	// Uses the ACTIVE viewport: mouse converted to viewport-local, hit
+	// tests in that viewport's dims/viewProj. Shift = snapping (translate
+	// snaps to the grid cell, rotate to m_snapRotateDeg, scale to
+	// m_snapScaleStep).
+	bool GizmoHandleInput(); // returns true while dragging
+
+	// ---- viewports + editor cameras (editor_render.cpp) ----
+	// Layout: Single (viewport 0) or Quad (2x2, four cameras). Each
+	// viewport binds one editor camera (combo in the viewport label)
+	// AND its own VIEW MODE (Lit/Unlit/UV0/UV1/... — UV views are panel
+	// types, not a global mode); the hovered viewport is ACTIVE (input,
+	// gizmo, shadows, framing, F-key view switches).
+	struct EditorViewport {
+		int camIdx = 0;        // index into m_editorCams
+		ViewMode viewMode = ViewMode::LitShadows; // this panel's view
+		ViewportRect rect;     // computed every frame
+		bool hovered = false;  // mouse inside this viewport
+		app::FrameUniforms frame{}; // CPU copy (picking/gizmo math)
+		glm::mat4 viewProj{ 1.0f };
+		uint64_t frameAddr = 0; // this flight's frame-uniform slice
+	};
+	std::vector<EditorCam> m_editorCams;   // Persp + Top + Side defaults
+	EditorViewport m_viewports[kMaxViewports];
+	int m_vpLayout = 0;  // 0 = single, 1 = quad (four panels)
+	int m_activeVp = 0;  // hovered/last-active viewport index
+	int ViewportCount() const { return m_vpLayout == 1 ? kMaxViewports : 1; }
+	EditorCam& ActiveCam() { return m_editorCams[m_viewports[m_activeVp].camIdx]; }
+	ViewMode& ActiveViewMode() { return m_viewports[m_activeVp].viewMode; }
+	ViewMode ActiveViewMode() const { return m_viewports[m_activeVp].viewMode; }
+	void SetupDefaultCameras();
+	bool GridVisible() const { return m_showGrid; }
+
+	// ---- selection (multi) ----
+	// m_selection holds every selected node (m_selected = primary: the
+	// gizmo/inspector act on it). Box-drag in the viewport adds/replaces.
+	std::vector<uint32_t> m_selection;
+	bool IsSelected(uint32_t node) const;
+	void SetSelection(uint32_t node);        // single
+	void AddToSelection(uint32_t node);
+	void ClearSelection();
+	// Rubber-band state (window pixels, viewport-local rect in m_vpBox*).
+	bool m_vpBoxDragging = false;
+	bool m_vpBoxAdditive = false;   // Shift = add to current selection
+	float m_vpBoxX0 = 0, m_vpBoxY0 = 0, m_vpBoxX1 = 0, m_vpBoxY1 = 0;
+	int m_vpBoxVp = 0;              // viewport the box started in
+	void FinishBoxSelect();        // apply on release
+	void DrawViewportChrome();     // borders + labels + box rect (ImGui)
 
 	// ---- UI (editor_ui.cpp) ----
 	void DrawUI(smvk::Extent2D targetExtent);
@@ -217,6 +348,9 @@ private:
 	void DrawOutlinerNode(uint32_t node,
 		const std::unordered_set<uint32_t>* expandSet = nullptr);
 	void DrawInspector();
+	// Material editor page (m_materialFocus travel) + camera section.
+	void DrawMaterialFocusPage();
+	void DrawCameraSection(); // active viewport's editor camera settings
 	void DrawPlayBar(); // Unity-style Run-in-App bar (top center)
 	void DrawCookPanel();
 	void DrawLightmapPanel(); // pak manifest + .sglm atlas inspection
@@ -293,6 +427,73 @@ private:
 	bool SaveTourTo(const std::string& path); // becomes the target
 	bool SaveTourIncremental(); // Maya-style <stem>.NNNN.tour, becomes target
 	bool LoadTour(); // replay file into the stack (undoable)
+	// ---- Clarisse-style overrides (editor_overrides.cpp) ----
+	// Wide regex rules layered over the source asset. Precedence:
+	//   source < wide rules (in order, later wins) < per-node local edits.
+	// Rules skip nodes that carry a local override for the same attr, so
+	// locals always win in the editor and at cook replay. Rule writes are
+	// NOT history entries; deleting/disabling a rule restores captured
+	// before-values only where the scene still holds the rule's value
+	// (later locals are never clobbered).
+	struct OverrideApplied {
+		uint32_t node = UINT32_MAX;
+		bool beforeFlag = false;
+		uint32_t beforeMaterial = UINT32_MAX;
+	};
+	struct OverrideRule {
+		uint32_t id = 0;
+		bool enabled = true;
+		smvk::tour::OverrideAttr attr = smvk::tour::OverrideAttr::Visibility;
+		std::string pattern;
+		bool flag = true; // Visibility/NoLightmap/Dither value
+		uint32_t materialWorld = UINT32_MAX; // Material: world mat idx (UI)
+		std::vector<OverrideApplied> applied; // nodes written by this rule
+		std::string lastError; // regex compile error, else empty
+		int lastMatches = 0; // nodes matched on last apply (pre local-skip)
+	};
+	bool HasLocalOverride(uint32_t node,
+		smvk::tour::OverrideAttr attr) const; // history scan (cursor range)
+	// Regex over node names (ECMAScript, search). Returns matched world
+	// nodes; errOut set when the pattern fails to compile.
+	std::vector<uint32_t> MatchOverrideNodes(const std::string& pattern,
+		std::string& errOut) const;
+	int CountOverrideMatches(const std::string& pattern) const; // -1 = bad regex
+	bool AddOverrideRule(smvk::tour::OverrideAttr attr,
+		const std::string& pattern, bool flag, uint32_t materialWorld);
+	bool DeleteOverrideRule(uint32_t id);
+	bool SetOverrideEnabled(uint32_t id, bool enabled);
+	// Flip a bool rule's value (visibility/noLM/dither) in place.
+	bool SetOverrideFlag(uint32_t id, bool flag);
+	bool MoveOverrideRule(uint32_t id, int dir); // -1 up, +1 down
+	bool RetargetOverrideRule(uint32_t id, const std::string& pattern);
+	void ClearOverrideRules(); // unapply all, drop definitions
+	void ApplyOverrideRule(OverrideRule& r); // expand + write + record
+	void UnapplyOverrideRule(OverrideRule& r); // guarded restore
+	void ReapplyAllOverrides(); // unapply (reverse) + apply (order)
+	// Local-write bookkeeping (precedence: locals win, rules resume when
+	// a local is undone). Called from Do/Undo/Redo/PushDone.
+	void NoteLocalOverrideWritten(uint32_t node,
+		smvk::tour::OverrideAttr attr); // rule drops ownership of node
+	void ReassertWideOverrides(uint32_t node); // reapply matching rules
+	// True revert: undoes + erases every local entry for node+attr, then
+	// lets matching wide rules resume. The badge flips back to inherited
+	// (or wide) because HasLocalOverride goes false.
+	bool ClearLocalOverrides(uint32_t node, smvk::tour::OverrideAttr attr);
+	// Last enabled rule of an attr matching the node name (later wins);
+	// null when nothing wide applies (inspector evaluated-state badges).
+	const OverrideRule* LastWideRuleFor(smvk::tour::OverrideAttr attr,
+		const std::string& nodeName) const;
+	void SaveOverridesToDoc(smvk::tour::Doc& doc) const;
+	void LoadOverridesFromDoc(const smvk::tour::Doc& doc);
+	void DrawOverridesPanel(); // wide-rule editor tab
+	void DrawInspectorOverrides(uint32_t node); // per-node override section
+	// New-rule form state (Overrides tab).
+	char m_overridePatternBuf[256] = "";
+	int m_overrideAttrSel = 0; // 0 vis, 1 material, 2 noLM, 3 dither
+	bool m_overrideFlagVal = true;
+	int m_overrideMatSel = 0;
+	std::vector<OverrideRule> m_overrideRules;
+	uint32_t m_nextOverrideId = 1;
 	// Save-as dialog state.
 	bool m_showSaveDialog = false;
 	char m_savePathBuf[512] = "";
@@ -321,18 +522,57 @@ private:
 	void PublishToFlintbase();   // spawn `python -m flintbase.publish`
 	void PollPublishProcess();
 
+	// ---- Tourmaline branding (editor_branding.cpp) ----
+	// Window title + SDL window icon (tourmaline_logo.png, generated on
+	// first run if absent) + the menu-bar gem mark. The logo lives next
+	// to the exe / in content and is editor chrome only.
+	void ApplyTourmalineBranding();
+
 	// ---- camera ----
-	CameraPositioner_FirstPerson m_camPos{};
-	Camera m_camera{ m_camPos };
-	float m_camYaw = 0.0f, m_camPitch = 0.0f;
-	glm::vec3 m_camTarget{ 0.0f, 1.0f, 0.0f };
-	float m_camDist = 6.0f;
-	// Maya-style framing: F moves the orbit pivot (m_camTarget) to the
-	// selection center and fits the distance; Shift+F fits the whole
-	// scene. SelectionBounds unions the selected subtree's mesh AABBs.
+	// Editor cameras live in m_editorCams (EditorCam, see above); the
+	// orbit state (target/yaw/pitch/dist) is per-camera, so F framing
+	// and Alt-navigation act on the ACTIVE viewport's camera.
+	// Maya-style framing: F moves the orbit pivot to the selection
+	// center and fits the distance; Shift+F fits the whole scene.
 	bool SelectionBounds(glm::vec3& outCenter, float& outRadius);
-	void FrameSelection();
+	void FrameSelection(); // frames the ACTIVE viewport's camera
 	void FrameAll();
+
+	// ---- environment (editor IBL, NEVER cooked) ----
+	// Editor viewport lighting lives in EditorEnv blocks. The default
+	// block is the editor fallback; any scene node can be flagged as an
+	// ENVIRONMENT NODE (skybox + EV/volumetrics authoring — position =
+	// node translate, size = node scale; convex-volume support later)
+	// and picked as the CURRENT source. Everything here is editor-only:
+	// saved as editorSet lines in the .tour, skipped by ApplyTourToCluster.
+	struct EditorEnv {
+		glm::vec3 skyColor{ 0.35f, 0.5f, 0.7f };
+		float skyIntensity = 0.6f;
+		glm::vec3 sunColor{ 1.0f, 0.96f, 0.92f };
+		float sunAzimuth = 30.0f;
+		float sunElevation = 55.0f;
+		float sunIntensity = 3.0f;
+		float exposure = 1.0f;
+		// Authored but not yet rendered by the editor viewport:
+		float fogDensity = 0.0f;
+		glm::vec3 fogColor{ 0.6f, 0.7f, 0.8f };
+		float volumetrics = 0.0f; // 0 = off (future: editor volume pass)
+		std::string skyboxUri;     // stored (skybox sampling is TODO)
+	};
+	EditorEnv m_envDefault;
+	std::unordered_map<uint32_t, EditorEnv> m_envByNode; // per env node
+	uint32_t m_envCurrent = UINT32_MAX; // UINT32_MAX = editor default
+	EditorEnv& CurrentEnv();   // the source the viewport renders with
+	const EditorEnv& CurrentEnv() const;
+	bool IsEnvNode(uint32_t node) const { return m_envByNode.contains(node); }
+	void MarkEnvNode(uint32_t node);     // flag node + copy current settings
+	void UnmarkEnvNode(uint32_t node);
+	void ApplyEnvToFrame(app::FrameUniforms& frame,
+		smvk::EnvironmentSettings& env) const;
+	void DrawEnvPanel();       // Inspector "Environment (IBL)" section
+	// editorSet persistence (tour editorSettings; cluster-space node ids).
+	void SaveEnvToDoc(smvk::tour::Doc& doc) const;
+	void LoadEnvFromDoc(const smvk::tour::Doc& doc);
 
 	// ---- source scene ----
 	// m_gltfPath is the scene identity (a //flintbase/ scheme path when
@@ -372,23 +612,52 @@ private:
 	uint32_t m_clusterRootWorld = UINT32_MAX; // world id of the cluster root
 
 	// ---- editor state ----
-	ViewMode m_viewMode = ViewMode::LitShadows;
+	// View modes are PER VIEWPORT (m_viewports[].viewMode; the F-keys
+	// and View menu act on the ACTIVE one — UV views are panel types).
 	SecondView m_secondView = SecondView::Off;
 	GizmoMode m_gizmoMode = GizmoMode::Translate;
-	uint32_t m_selected = UINT32_MAX; // world node id
+	uint32_t m_selected = UINT32_MAX; // world node id (primary selection)
 	uint32_t m_revealNode = UINT32_MAX; // outliner reveal request (viewport pick)
 	bool m_wireOverlay = true;
 	bool m_uiMode = true; // false = fullscreen viewport (camera control)
 	bool m_showLightGizmos = true; // viewport markers for light nodes
+	bool m_wireframeAll = false; // Z: whole-scene wireframe (wire program)
+	int m_debugMeshletMode = 0; // F4 color mode: 0 random, 1 cone heat
+	bool m_showOverlay = true;  // legend on the ACTIVE panel (toggle:
+	                            // View menu or the panel chip button)
+	// ---- panel sizes (drag the splitters to resize; constants above
+	// are the defaults) ----
+	float m_leftW = kEditorLeftW;
+	float m_rightW = kEditorRightW;
+	float m_bottomH = kEditorBottomH;
+	void DrawPanelSplitters(); // left/right/bottom resize handles
+	// ---- ground grid + snapping (gizmo) ----
+	bool m_showGrid = true;
+	float m_gridSize = 1.0f;   // cell size in meters (snap step too)
+	uint32_t m_gridExtent = 40; // half-extent in cells (both axes)
+	// Gizmo screen-size factor (fraction of the camera distance).
+	float m_gizmoScale = 0.07f; // default: half the original 0.14
+	// Shift-drag snapping: translate steps to m_gridSize, rotate to
+	// m_snapRotateDeg, scale to m_snapScaleStep.
+	float m_snapRotateDeg = 15.0f;
+	float m_snapScaleStep = 0.1f;
+	// ---- material focus (Inspector navigation) ----
+	// When set, the Inspector shows a MATERIAL EDITOR page for this
+	// world material (layers included) instead of the node page;
+	// m_materialTrail is the back-stack ("travel between inspectors").
+	uint32_t m_materialFocus = UINT32_MAX;
+	std::vector<uint32_t> m_materialTrail;
+	// Central viewport rect this frame (single layout; the quad layout
+	// fills m_viewports[].rect — m_vp stays == m_viewports[active].rect).
+	ViewportRect m_vp{};
+	// Menu-bar height, cached from the last ImGui frame (ComputeViewportRect
+	// runs BEFORE ImGui::NewFrame, where querying ImGui is illegal).
+	float m_menuH = 19.0f;
 
 	// ---- sun/ambient (viewport lighting) ----
-	// m_sun* are the live viewport values (sliders). On scene load they
-	// are seeded from the cooked directional sun when the scene has one
-	// (see RebuildCookedLights); otherwise the defaults below stand in.
-	glm::vec3 m_sunColor{ 1.0f, 0.96f, 0.92f };
-	float m_sunIntensity = 3.0f;
-	float m_sunAzimuth = 30.0f;
-	float m_sunElevation = 55.0f;
+	// ---- viewport lighting (see EditorEnv above: the live values live in
+	// CurrentEnv(); RebuildCookedLights seeds m_envDefault from the cooked
+	// directional sun when the scene has one, else the defaults stand in).
 	// ---- cooked scene lights (KHR punctual, glTF import or pak) ----
 	// First directional wins as the viewport sun (App parity). Aim is the
 	// node's G*(0,0,1): editor content is always coordFix-0 baked
@@ -399,15 +668,15 @@ private:
 	std::string m_cookedSunName;
 	uint32_t m_cookedDirs = 0, m_cookedPoints = 0, m_cookedSpots = 0;
 	uint32_t m_cookedStaticSkipped = 0;
-	void RebuildCookedLights(); // + seeds the m_sun* sliders from the sun
+	void RebuildCookedLights(); // + seeds m_envDefault's sun from the sun
 	const ::SceneLight* FindNodeLight(uint32_t node,
 		glm::vec3* outAimWs = nullptr) const; // + world aim for dir/spot
-	glm::vec3 m_skyColor{ 0.35f, 0.5f, 0.7f };
-	float m_skyIntensity = 0.6f;
-	float m_exposure = 1.0f;
 
 	// ---- shading resources ----
-	smvk::Holder<smvk::BufferHandle> m_frameUniforms; // ring: frames * sizeof(Frame)
+	// Frame ring holds one slice PER (flight, viewport): frameUniforms is
+	// sized frames * kMaxViewports * sizeof(Frame); each viewport's addr
+	// is stored in m_viewports[i].frameAddr.
+	smvk::Holder<smvk::BufferHandle> m_frameUniforms; // ring: frames * kMaxViewports * sizeof(Frame)
 	smvk::Holder<smvk::BufferHandle> m_insetFrameUniforms; // second viewport (strip aspect)
 	uint64_t m_lastInsetFrameAddr = 0; // current flight's inset slice
 	smvk::Holder<smvk::BufferHandle> m_materialsBuf;  // ring: frames * MAX_MATERIALS
@@ -421,6 +690,8 @@ private:
 	smvk::Holder<smvk::ShaderModuleHandle> m_uv1FsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_vcolorFsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_bakedFsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> m_meshDebugVsModule; // F4 view
+	smvk::Holder<smvk::ShaderModuleHandle> m_meshDebugFsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_lineVsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_lineFsModule;
 	smvk::ShaderProgram m_unlitProgram{};
@@ -429,6 +700,7 @@ private:
 	smvk::ShaderProgram m_uv1Program{}; // lightmap-UV debug (falls back to Lit)
 	smvk::ShaderProgram m_vcolorProgram{}; // vertex-color debug (falls back to Lit)
 	smvk::ShaderProgram m_bakedProgram{}; // baked-irradiance debug (falls back to Lit)
+	smvk::ShaderProgram m_meshDebugProgram{}; // F4 meshlet view (meshdebug vert+frag)
 	smvk::ShaderProgram m_wireProgram{}; // selected highlight overlay
 	smvk::ShaderProgram m_shadowProgram{}; // depth-only (atlas-owned default)
 	smvk::ShaderProgram m_lineProgram{}; // gizmo/AABB lines
@@ -517,6 +789,7 @@ private:
 	std::string m_vfsSel;
 	std::string m_vfsRoot; // content dir, resolved on scene load
 	int m_rightTab = 0; // Inspector | UV | Cook | Bake | Textures
+	int m_bottomTab = 0; // bottom dock: Overrides | Console
 	void DrawSceneOutliner();
 	void DrawVfsOutliner();
 	void DrawVfsDir(const std::string& dir, int depth);

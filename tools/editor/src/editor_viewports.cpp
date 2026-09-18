@@ -1,0 +1,227 @@
+// Editor viewports: multisection state + rubber-band box select +
+// viewport chrome (borders, camera combos, box rectangle) drawn with
+// ImGui over the rendered viewports.
+
+#include "editor_app.h"
+
+#include <algorithm>
+#include <cfloat>
+#include <cstdio>
+
+#include <glm/gtc/type_ptr.hpp>
+
+#include <imgui.h>
+
+namespace editor {
+
+bool EditorApp::IsSelected(uint32_t node) const {
+	return std::find(m_selection.begin(), m_selection.end(), node) !=
+		m_selection.end();
+}
+
+void EditorApp::SetSelection(uint32_t node) {
+	m_selection.clear();
+	if (node != UINT32_MAX) {
+		m_selection.push_back(node);
+		m_selected = node;
+	}
+	else {
+		m_selected = UINT32_MAX;
+	}
+}
+
+void EditorApp::AddToSelection(uint32_t node) {
+	if (node == UINT32_MAX || IsSelected(node))
+		return;
+	m_selection.push_back(node);
+	m_selected = node; // newest = primary
+}
+
+void EditorApp::ClearSelection() {
+	m_selection.clear();
+	m_selected = UINT32_MAX;
+}
+
+void EditorApp::FinishBoxSelect() {
+	if (!m_world)
+		return;
+	const EditorViewport& vp = m_viewports[std::clamp(m_vpBoxVp, 0,
+		kMaxViewports - 1)];
+	const float x0 = std::min(m_vpBoxX0, m_vpBoxX1);
+	const float x1 = std::max(m_vpBoxX0, m_vpBoxX1);
+	const float y0 = std::min(m_vpBoxY0, m_vpBoxY1);
+	const float y1 = std::max(m_vpBoxY0, m_vpBoxY1);
+	const smvk::Extent2D ext{ uint32_t(vp.rect.w), uint32_t(vp.rect.h) };
+	// A mesh node matches when its projected AABB intersects the box.
+	std::vector<uint32_t> hits;
+	const smvk::IteratorFlags req = smvk::IteratorFlags(
+		smvk::IteratorFlagBit_Renderable |
+		smvk::IteratorFlagBit_StaticVertexFmt);
+	m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
+		if (!IsVisibleNode(m_world->scene, int(item.node)))
+			return;
+		const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
+		if (!mesh)
+			return;
+		const glm::mat4& model = m_world->scene.globalTransform[item.node];
+		float sx0 = FLT_MAX, sy0 = FLT_MAX, sx1 = -FLT_MAX, sy1 = -FLT_MAX;
+		for (int k = 0; k < 8; ++k) {
+			const glm::vec3 corner(
+				(k & 1) ? mesh->geometry.aabbMax.x : mesh->geometry.aabbMin.x,
+				(k & 2) ? mesh->geometry.aabbMax.y : mesh->geometry.aabbMin.y,
+				(k & 4) ? mesh->geometry.aabbMax.z : mesh->geometry.aabbMin.z);
+			const glm::vec4 c = vp.viewProj * model * glm::vec4(corner, 1.0f);
+			if (c.w <= 1e-6f)
+				return; // behind the camera: skip
+			const float px = (c.x / c.w * 0.5f + 0.5f) * float(ext.width);
+			const float py = (c.y / c.w * 0.5f + 0.5f) * float(ext.height);
+			sx0 = std::min(sx0, px); sx1 = std::max(sx1, px);
+			sy0 = std::min(sy0, py); sy1 = std::max(sy1, py);
+		}
+		if (sx1 < x0 || sx0 > x1 || sy1 < y0 || sy0 > y1)
+			return;
+		hits.push_back(item.node);
+	});
+	if (!m_vpBoxAdditive)
+		m_selection.clear();
+	for (uint32_t n : hits)
+		if (!IsSelected(n))
+			m_selection.push_back(n);
+	// Primary: keep the previous primary when still selected, else first.
+	if (!IsSelected(m_selected))
+		m_selected = m_selection.empty() ? UINT32_MAX : m_selection.back();
+	if (!m_selection.empty())
+		Log("Box select: " + std::to_string(m_selection.size()) +
+			" node(s) selected.");
+}
+
+void EditorApp::DrawViewportChrome() {
+	// Borders + per-viewport label (camera combo) + the rubber-band box.
+	ImDrawList* dl = ImGui::GetForegroundDrawList();
+	const int count = ViewportCount();
+	for (int i = 0; i < count; ++i) {
+		const EditorViewport& vp = m_viewports[i];
+		const bool active = (i == m_activeVp);
+		dl->AddRect(ImVec2(vp.rect.x, vp.rect.y),
+			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h),
+			active ? IM_COL32(120, 200, 255, 220) : IM_COL32(70, 70, 76, 180),
+			0.0f, 0, active ? 2.0f : 1.0f);
+	}
+	// Rubber-band box (window pixels).
+	if (m_vpBoxDragging && m_vpBoxVp >= 0 && m_vpBoxVp < kMaxViewports) {
+		const ViewportRect& vp = m_viewports[m_vpBoxVp].rect;
+		const float bx0 = vp.x + std::min(m_vpBoxX0, m_vpBoxX1);
+		const float by0 = vp.y + std::min(m_vpBoxY0, m_vpBoxY1);
+		const float bx1 = vp.x + std::max(m_vpBoxX0, m_vpBoxX1);
+		const float by1 = vp.y + std::max(m_vpBoxY0, m_vpBoxY1);
+		dl->AddRectFilled(ImVec2(bx0, by0), ImVec2(bx1, by1),
+			IM_COL32(120, 200, 255, 28));
+		dl->AddRect(ImVec2(bx0, by0), ImVec2(bx1, by1),
+			IM_COL32(120, 200, 255, 200), 0.0f, 0, 1.5f);
+	}
+	// Per-viewport camera picker + VIEW TYPE chip (UV views are panel
+	// types: any panel can show UV0/UV1/lightmap debug like a camera
+	// view). Top-left inside each rect.
+	for (int i = 0; i < count; ++i) {
+		EditorViewport& vp = m_viewports[i];
+		ImGui::SetNextWindowPos(
+			ImVec2(vp.rect.x + 8.0f, vp.rect.y + 8.0f), ImGuiCond_Always);
+		ImGui::SetNextWindowBgAlpha(1.0f);
+		ImGui::PushID(i);
+		char label[32];
+		std::snprintf(label, sizeof(label), "##vpchip%d", i);
+		if (ImGui::Begin(label, nullptr,
+			ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+			ImGuiWindowFlags_NoSavedSettings |
+			ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoMove |
+			ImGuiWindowFlags_NoNav)) {
+			// Camera combo: pick which editor camera this viewport uses.
+			if (ImGui::BeginCombo("##cam",
+					m_editorCams[vp.camIdx].name.c_str())) {
+				for (size_t c = 0; c < m_editorCams.size(); ++c)
+					if (ImGui::Selectable(m_editorCams[c].name.c_str(),
+							int(c) == vp.camIdx))
+						vp.camIdx = int(c);
+				ImGui::EndCombo();
+			}
+			ImGui::SameLine();
+			// View type combo (this panel's shading/debug view).
+			if (ImGui::BeginCombo("##view", ViewModeName(vp.viewMode))) {
+				for (int m = 0; m <= int(ViewMode::Meshlets); ++m) {
+					const bool enabled =
+						ViewMode(m) != ViewMode::Baked || m_lmGpu;
+					if (!enabled)
+						continue;
+					if (ImGui::Selectable(ViewModeName(ViewMode(m)),
+							int(vp.viewMode) == m)) {
+						vp.viewMode = ViewMode(m);
+						if (vp.viewMode == ViewMode::Meshlets &&
+							!m_meshletDebugHasData && !EnsureMeshletDebug())
+							Log("Meshlet view: no cooked meshlets in this "
+								"scene; meshes show as flat fallbacks.");
+					}
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::SameLine();
+			// Legend toggle: the overlay/legend only ever draws on the
+			// ACTIVE panel, so its switch lives in the active chip.
+			if (i == m_activeVp) {
+				if (ImGui::SmallButton(m_showOverlay ? "legend on"
+						: "legend off"))
+					m_showOverlay = !m_showOverlay;
+			}
+			else {
+				ImGui::TextDisabled("%s", i == m_activeVp ? "active" : "");
+			}
+		}
+		ImGui::End();
+		ImGui::PopID();
+	}
+}
+
+// ---- panel resize splitters ---------------------------------------------
+namespace {
+
+// One splitter handle: a 6px grab strip. `flip` inverts the drag (the
+// right/bottom panels grow toward the screen edge).
+bool SplitterHandle(const char* id, ImVec2 pos, ImVec2 sz, bool horizontal,
+	float* value, float minV, float maxV, bool flip) {
+	ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
+	ImGui::SetNextWindowSize(sz, ImGuiCond_Always);
+	ImGui::Begin(id, nullptr,
+		ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+		ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
+		ImGuiWindowFlags_NoBackground);
+	ImGui::InvisibleButton("##grab", sz);
+	if (ImGui::IsItemHovered())
+		ImGui::SetMouseCursor(horizontal ? ImGuiMouseCursor_ResizeNS
+			: ImGuiMouseCursor_ResizeEW);
+	if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+		const ImVec2 d = ImGui::GetIO().MouseDelta;
+		const float delta = horizontal ? d.y : d.x;
+		*value = std::clamp(*value + (flip ? -delta : delta), minV, maxV);
+	}
+	ImGui::End();
+	return ImGui::IsItemHovered();
+}
+
+} // namespace
+
+void EditorApp::DrawPanelSplitters() {
+	// Thin grab strips between the panels and the viewport (drag to
+	// resize; the constants in editor_app.h are the defaults).
+	const ImVec2 ds = ImGui::GetIO().DisplaySize;
+	const float menuH = ImGui::GetFrameHeight();
+	// Column splitters stop at the bottom dock (drag there resizes the
+	// side panel without fighting the dock's own handle).
+	const float colH = ds.y - menuH - m_bottomH;
+	SplitterHandle("##splitL", ImVec2(m_leftW - 3.0f, menuH),
+		ImVec2(6.0f, colH), false, &m_leftW, 200.0f, 720.0f, false);
+	SplitterHandle("##splitR", ImVec2(ds.x - m_rightW - 3.0f, menuH),
+		ImVec2(6.0f, colH), false, &m_rightW, 200.0f, 720.0f, true);
+	SplitterHandle("##splitB", ImVec2(0.0f, ds.y - m_bottomH - 3.0f),
+		ImVec2(ds.x, 6.0f), true, &m_bottomH, 120.0f, 600.0f, true);
+}
+
+} // namespace editor

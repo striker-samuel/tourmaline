@@ -820,6 +820,18 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
 		mat.doubleSided = true;
 	}
 
+	// Untouched core PBR block (no metallicRoughness texture, spec-default
+	// metallic=1/roughness=1): tinygltf cannot tell "omitted" from
+	// "authored 1.0", and the spec default prints every such mesh as metal
+	// (F0 = albedo kills diffuse; SSR/specular fire everywhere). Forced
+	// dielectric 0 like every other default path here (spec-gloss
+	// fallback, transmission, default material). Materials WITH an MR
+	// texture keep factor 1.0 (it multiplies the texel, per spec), and an
+	// authored roughness < 1.0 keeps its metallic as written.
+	if (!mat.metallicRoughnessTex &&
+		mat.metallicFactor == 1.0 && mat.roughnessFactor == 1.0)
+		mat.metallicFactor = 0.0;
+
 	return mat;
 }
 void GltfToSceneImporter::preloadTextures()

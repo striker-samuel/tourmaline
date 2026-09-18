@@ -539,6 +539,19 @@ bool SerializeClusters(
 				blob.insert(blob.end(), nodeCount, 0);
 			}
 		}
+		// Per-node visibility section (v7; v6 blobs end after dither).
+		// hidden flags (1 = hidden subtree root); all-zero == visible.
+		// Missing == visible on read.
+		{
+			PutU32(blob, nodeCount);
+			if (scene.hidden.size() == scene.hierarchy.size()) {
+				blob.insert(blob.end(), scene.hidden.begin(),
+					scene.hidden.end());
+			}
+			else {
+				blob.insert(blob.end(), nodeCount, 0);
+			}
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
@@ -783,12 +796,29 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		else {
 			scene.ditherCloseup.assign(nodeCount, 0);
 		}
+		// Per-node visibility section (v7): u32 count + hidden bytes.
+		// v6 blobs end after dither — default to visible in that case.
+		if (c.off < c.img.size()) {
+			const uint32_t hidCount = c.u32();
+			if (!c.ok || hidCount != nodeCount)
+				return fail("bad scene visibility section");
+			if (c.off + hidCount > c.img.size())
+				return fail("scene blob trailing bytes mismatch");
+			scene.hidden.assign(
+				c.img.data() + c.off, c.img.data() + c.off + hidCount);
+			c.off += hidCount;
+		}
+		else {
+			scene.hidden.assign(nodeCount, 0);
+		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");
 	}
-	// Pre-v4 blobs skip the tail wholesale: normalize the v6 default.
+	// Pre-v4 blobs skip the tail wholesale: normalize the v6/v7 defaults.
 	if (scene.ditherCloseup.empty())
 		scene.ditherCloseup.assign(nodeCount, 0);
+	if (scene.hidden.empty())
+		scene.hidden.assign(nodeCount, 0);
 	RebuildStaticCache(scene);
 	markAsChanged(scene, 0);
 	recalculateGlobalTransforms(scene);

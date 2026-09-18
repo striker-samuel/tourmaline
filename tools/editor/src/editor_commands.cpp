@@ -69,6 +69,17 @@ void EditorApp::ReadSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		num = mat->castsShadows ? 1.0 : 0.0;
 	else if (attr == "alphaMode")
 		num = double(int(mat->alphaMode));
+	else if (attr == "layers") {
+		// Vertex-color layered materials (see mesh.h): x/y/z = WORLD
+		// material ids of layers 1..3 (-1 none, live-world domain),
+		// w = active layer count (0 = legacy tint). The tour boundary
+		// translates world ids <-> cluster pool ids.
+		v4 = glm::vec4(float(mat->values.layerMaterials[0]),
+			float(mat->values.layerMaterials[1]),
+			float(mat->values.layerMaterials[2]),
+			float(mat->values.layerMaterials.w));
+		num = double(mat->values.layerMaterials.w);
+	}
 }
 
 void EditorApp::WriteSharedMatAttr(uint32_t matWorld, const std::string& attr,
@@ -106,6 +117,11 @@ void EditorApp::WriteSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		mat->values.params.w =
 			(mat->alphaMode == smvk::AlphaMode::Mask) ? 2.0f : 0.0f;
 		mat->values.params2.w = float(int(mat->alphaMode));
+	}
+	else if (attr == "layers") {
+		// v4 in the LIVE-WORLD domain (see ReadSharedMatAttr).
+		mat->values.layerMaterials = glm::ivec4(
+			int(v4.x), int(v4.y), int(v4.z), int(v4.w));
 	}
 	mat->rebuildPipeline();
 	RefreshMaterialNodes(matWorld);
@@ -220,6 +236,14 @@ void EditorApp::ExecCmd(const EditCmd& c, bool forward) {
 			ClearDitherCloseup(scene, int(c.node));
 		break;
 	}
+	case EditVerb::SetVisibility: {
+		const bool hidden = forward ? c.afterFlag : c.beforeFlag;
+		if (hidden)
+			MarkHidden(scene, int(c.node));
+		else
+			ClearHidden(scene, int(c.node));
+		break;
+	}
 	case EditVerb::Parent: {
 		ReparentNode(c.node, forward ? c.node2 : c.beforeParent);
 		break;
@@ -229,6 +253,15 @@ void EditorApp::ExecCmd(const EditCmd& c, bool forward) {
 
 void EditorApp::Do(const EditCmd& c) {
 	ExecCmd(c, true);
+	if (c.verb == EditVerb::SetVisibility)
+		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Visibility);
+	else if (c.verb == EditVerb::AssignMaterial)
+		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Material);
+	else if (c.verb == EditVerb::SetNoLightmap)
+		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::NoLightmap);
+	else if (c.verb == EditVerb::SetDitherCloseup)
+		NoteLocalOverrideWritten(c.node,
+			smvk::tour::OverrideAttr::DitherCloseup);
 	m_history.erase(m_history.begin() + m_historyCursor, m_history.end());
 	m_history.push_back(c);
 	m_historyCursor = m_history.size();
@@ -241,6 +274,15 @@ void EditorApp::Do(const EditCmd& c) {
 
 void EditorApp::PushDone(const EditCmd& c) {
 	// Already executed live (drag path): just record + save.
+	if (c.verb == EditVerb::SetVisibility)
+		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Visibility);
+	else if (c.verb == EditVerb::AssignMaterial)
+		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Material);
+	else if (c.verb == EditVerb::SetNoLightmap)
+		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::NoLightmap);
+	else if (c.verb == EditVerb::SetDitherCloseup)
+		NoteLocalOverrideWritten(c.node,
+			smvk::tour::OverrideAttr::DitherCloseup);
 	m_history.erase(m_history.begin() + m_historyCursor, m_history.end());
 	m_history.push_back(c);
 	m_historyCursor = m_history.size();
@@ -256,6 +298,7 @@ bool EditorApp::Undo() {
 		return false;
 	--m_historyCursor;
 	ExecCmd(m_history[m_historyCursor], false);
+	ReassertWideOverrides(m_history[m_historyCursor].node);
 	SaveTour();
 	return true;
 }
@@ -264,6 +307,16 @@ bool EditorApp::Redo() {
 	if (m_historyCursor >= m_history.size())
 		return false;
 	ExecCmd(m_history[m_historyCursor], true);
+	const EditCmd& c = m_history[m_historyCursor];
+	if (c.verb == EditVerb::SetVisibility)
+		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Visibility);
+	else if (c.verb == EditVerb::AssignMaterial)
+		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Material);
+	else if (c.verb == EditVerb::SetNoLightmap)
+		NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::NoLightmap);
+	else if (c.verb == EditVerb::SetDitherCloseup)
+		NoteLocalOverrideWritten(c.node,
+			smvk::tour::OverrideAttr::DitherCloseup);
 	++m_historyCursor;
 	SaveTour();
 	return true;
@@ -292,6 +345,7 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::SetMatAttr: return "material edit";
 	case editor::EditVerb::SetNoLightmap: return "lightmap flag";
 	case editor::EditVerb::SetDitherCloseup: return "dither flag";
+	case editor::EditVerb::SetVisibility: return "visibility";
 	case editor::EditVerb::Parent: return "reparent";
 	}
 	return "?";
@@ -371,6 +425,19 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.text = c.attr;
 		out.vec4 = c.vec4;
 		out.number = c.number;
+		// "layers" rides vec4 as WORLD material ids in the editor; the
+		// tour file speaks cluster pool ids (the cook domain).
+		if (c.attr == "layers" && app.m_world) {
+			auto toCluster = [&](int worldId) -> float {
+				if (worldId < 0)
+					return -1.0f;
+				const int p = app.WorldMatToCluster(uint32_t(worldId));
+				return (p >= 0) ? float(p) : -1.0f;
+			};
+			out.vec4.x = toCluster(int(c.vec4.x));
+			out.vec4.y = toCluster(int(c.vec4.y));
+			out.vec4.z = toCluster(int(c.vec4.z));
+		}
 		return true;
 	}
 	case EditVerb::SetNoLightmap:
@@ -383,6 +450,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (!needNode())
 			return false;
 		out.verb = smvk::tour::Verb::SetDitherCloseup;
+		out.flag = c.afterFlag;
+		return true;
+	case EditVerb::SetVisibility:
+		if (!needNode())
+			return false;
+		out.verb = smvk::tour::Verb::SetVisibility;
 		out.flag = c.afterFlag;
 		return true;
 	case EditVerb::Parent: {
@@ -504,6 +577,8 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 		}
 		doc.commands.push_back(std::move(tc));
 	}
+	SaveOverridesToDoc(doc);
+	SaveEnvToDoc(doc); // editor IBL / env nodes — never applied at cook
 	doc.hasCook = true;
 	doc.cook.outPak = m_cook.outPak;
 	doc.cook.meshopt = m_cook.meshopt;
@@ -591,6 +666,18 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.attr = tc.text;
 		out.vec4 = tc.vec4;
 		out.number = tc.number;
+		// "layers": cluster pool ids (file) -> world material ids.
+		if (tc.text == "layers") {
+			auto toWorld = [&](float poolId) -> float {
+				if (poolId < 0.0f)
+					return -1.0f;
+				const int w = app.ClusterMatToWorld(uint32_t(poolId));
+				return (w >= 0) ? float(w) : -1.0f;
+			};
+			out.vec4.x = toWorld(tc.vec4.x);
+			out.vec4.y = toWorld(tc.vec4.y);
+			out.vec4.z = toWorld(tc.vec4.z);
+		}
 		app.ReadSharedMatAttr(uint32_t(wm), tc.text, out.beforeVec4, out.beforeNum);
 		return true;
 	}
@@ -609,6 +696,14 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.afterFlag = tc.flag;
 		out.beforeFlag = wn < app.m_world->scene.ditherCloseup.size() &&
 			app.m_world->scene.ditherCloseup[wn] != 0;
+		return true;
+	case smvk::tour::Verb::SetVisibility:
+		if (!needNode())
+			return false;
+		out.verb = EditVerb::SetVisibility;
+		out.afterFlag = tc.flag;
+		out.beforeFlag = wn < app.m_world->scene.hidden.size() &&
+			app.m_world->scene.hidden[wn] != 0;
 		return true;
 	case smvk::tour::Verb::Parent: {
 		if (!needNode())
@@ -665,8 +760,12 @@ bool EditorApp::LoadTour() {
 		m_cook.skyIntensity = doc.cook.skyIntensity;
 	}
 	// Replay into the stack (fresh import underneath, so before-states are
-	// exact and the whole tour stays undoable).
+	// exact and the whole tour stays undoable). Wide rules load AFTER the
+	// direct commands so locals win over matching regex (more specific
+	// wins); rules skip locally-overridden nodes when they apply.
 	ClearHistory();
+	m_overrideRules.clear();
+	m_nextOverrideId = 1;
 	size_t applied = 0;
 	for (auto& tc : doc.commands) {
 		EditCmd c{};
@@ -682,6 +781,8 @@ bool EditorApp::LoadTour() {
 	m_historyCursor = m_history.size();
 	Log("tour: applied " + std::to_string(applied) + "/" +
 		std::to_string(doc.commands.size()) + " commands.");
+	LoadOverridesFromDoc(doc);
+	LoadEnvFromDoc(doc); // editor IBL + env nodes (editorSet section)
 	return true;
 }
 

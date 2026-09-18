@@ -90,10 +90,28 @@ void TestRoundTrip() {
 	c.flag = true;
 	doc.commands.push_back(c);
 	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::SetVisibility;
+	c.node = 46;
+	c.flag = true;
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
 	c.verb = smvk::tour::Verb::Parent;
 	c.node = 45;
 	c.node2 = 12;
 	doc.commands.push_back(c);
+	// Wide Clarisse-style overrides (ordered, later wins, locals win over all).
+	smvk::tour::OverrideRule r{};
+	r.attr = smvk::tour::OverrideAttr::Visibility;
+	r.pattern = "Building_.*";
+	r.flag = true;
+	r.enabled = true;
+	doc.overrides.push_back(r);
+	r = smvk::tour::OverrideRule{};
+	r.attr = smvk::tour::OverrideAttr::NoLightmap;
+	r.pattern = "Tree.*";
+	r.flag = true;
+	r.enabled = false;
+	doc.overrides.push_back(r);
 	doc.hasCook = true;
 	doc.cook.outPak = "content/paks/x.pak";
 	doc.cook.lightmap = true;
@@ -124,7 +142,26 @@ void TestRoundTrip() {
 		Check(back.commands[6].number == 0.9, "tour metallic");
 		Check(back.commands[7].number == 1.0, "tour alphaMode mask");
 		Check(back.commands[8].flag == true, "tour noLightmap");
-		Check(back.commands[9].node2 == 12, "tour parent");
+		Check(back.commands[9].verb == smvk::tour::Verb::SetVisibility &&
+			back.commands[9].flag == true, "tour visibility");
+		Check(back.commands[10].node2 == 12, "tour parent");
+	}
+	Check(back.overrides.size() == 2, "tour override count");
+	if (back.overrides.size() == 2) {
+		Check(back.overrides[0].attr ==
+			smvk::tour::OverrideAttr::Visibility &&
+			back.overrides[0].pattern == "Building_.*" &&
+			back.overrides[0].flag == true &&
+			back.overrides[0].enabled, "tour override visibility");
+		Check(back.overrides[1].attr ==
+			smvk::tour::OverrideAttr::NoLightmap &&
+			!back.overrides[1].enabled, "tour override disabled");
+		Check(smvk::tour::OverridePatternMatches("Building_.*",
+			"Building_A"), "tour override match");
+		Check(!smvk::tour::OverridePatternMatches("Building_.*",
+			"Tree_01"), "tour override non-match");
+		Check(!smvk::tour::OverridePatternMatches("([bad",
+			"anything"), "tour override bad regex");
 	}
 	std::error_code ec;
 	std::filesystem::remove(TempTour(), ec);
@@ -219,10 +256,33 @@ void TestReplay() {
 	c.vec = glm::vec3(1.0f, 2.0f, 3.0f);
 	doc.commands.push_back(c);
 	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::SetVisibility;
+	c.node = uint32_t(g0);
+	c.flag = true;
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
 	c.verb = smvk::tour::Verb::Parent;
 	c.node = uint32_t(g0);
 	c.node2 = uint32_t(g1);
 	doc.commands.push_back(c);
+	// Wide overrides: hide everything (g0 has a LOCAL visibility command,
+	// so the rule must skip it; g1 hides via the rule). A second rule
+	// later in the list shows Floor again (later wins).
+	smvk::tour::OverrideRule r{};
+	r.attr = smvk::tour::OverrideAttr::Visibility;
+	r.pattern = ".*";
+	r.flag = true;
+	doc.overrides.push_back(r);
+	r = smvk::tour::OverrideRule{};
+	r.attr = smvk::tour::OverrideAttr::Visibility;
+	r.pattern = "Flo.*";
+	r.flag = false;
+	doc.overrides.push_back(r);
+	r = smvk::tour::OverrideRule{};
+	r.attr = smvk::tour::OverrideAttr::Material;
+	r.pattern = ".*"; // matches both: local wins on g0, rule applies to g1
+	r.material = m0.index();
+	doc.overrides.push_back(r);
 
 	std::vector<std::string> warns;
 	std::string err;
@@ -237,6 +297,21 @@ void TestReplay() {
 		cluster->scene.noLightmap[size_t(g1)] == 1, "replay noLM");
 	Check(cluster->scene.localTransform[size_t(g1)][3].x == 1.0f, "replay TRS");
 	Check(cluster->scene.hierarchy[size_t(g0)].parent == g1, "replay parent");
+	// Visibility: local hides g0; the wide ".*" rule skipped it (local
+	// wins) and hit g1 instead; the later "Flo.*" rule re-showed g1.
+	Check(cluster->scene.hidden.size() == cluster->scene.hierarchy.size() &&
+		cluster->scene.hidden[size_t(g0)] == 1, "replay visibility local");
+	Check(cluster->scene.hidden[size_t(g1)] == 0, "replay visibility later-wins");
+	Check(!IsVisibleNode(cluster->scene, g0), "replay hidden effective");
+	// Material override ".*": g0 carries a LOCAL AssignMaterial (m1) — the
+	// wide rule must not clobber it (local wins); g1 has no local, so the
+	// rule assigns m0 there.
+	Check(cluster->scene.materialForNode[uint32_t(g0)] == m1.index(),
+		"replay override local-wins");
+	Check(cluster->scene.materialForNode[uint32_t(g1)] == m0.index(),
+		"replay override applies");
+	Check(smvk::tour::OverrideAttrFromString("visibility", r.attr) &&
+		r.attr == smvk::tour::OverrideAttr::Visibility, "override attr parse");
 
 	// Out-of-range ids fail loudly.
 	smvk::tour::Doc bad;

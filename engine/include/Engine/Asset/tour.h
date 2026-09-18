@@ -14,8 +14,17 @@
 //   assignMaterial -n 46 -m 12;                     # update (material link)
 //   setMatAttr -m 12 -at baseColor -t 1 0.5 0.2 1;   # update (mat value)
 //   setNoLightmap -n 45 -v 1;                       # update (bake flag)
+//   setVisibility -n 45 -v 1;                       # update (hidden flag)
 //   parent -n 45 -p 12;                             # update (topology)
+//   override -pattern "Building_.*" -at visibility -v 1 -enabled on;   # wide
+//   override -pattern "Tree.*" -at material -m 3 -enabled on;          # wide
 //   cook -outPak "content/paks/bistro.pak" ...;     # cook settings (not undo)
+//
+// Wide overrides (Clarisse-style) match node NAMES by ECMAScript regex and
+// apply after every direct command at replay; per-node local commands win
+// over any rule touching the same node+attr (more specific wins), and
+// later rules win over earlier ones. Rule order in the file is the
+// precedence order.
 //
 // Node/material ids are CLUSTER-space: the importer builds clusters
 // deterministically from the source file, so the same source always yields
@@ -69,7 +78,27 @@ enum class Verb : uint8_t {
 	SetMatAttr,     // text = attr name; vec/vec4/number by attr
 	SetNoLightmap,  // flag
 	SetDitherCloseup, // flag (subtree dither on camera closeup)
+	SetVisibility,  // flag: hidden self state (hierarchical, see Scene::hidden)
 	Parent,         // node2 = new parent (cluster node id)
+};
+
+// Clarisse-style wide override attribute (regex selector over node
+// names). Stored in Doc::overrides, evaluated AFTER direct commands at
+// cook/replay time; per-node local commands win over matching wide
+// rules (more specific wins), later rules win over earlier ones.
+enum class OverrideAttr : uint8_t {
+	Visibility,   // flag = hidden (1 hides the subtree root)
+	Material,     // material = cluster material pool index
+	NoLightmap,   // flag
+	DitherCloseup, // flag
+};
+
+struct OverrideRule {
+	OverrideAttr attr = OverrideAttr::Visibility;
+	std::string pattern; // ECMAScript regex over node names
+	bool flag = false;   // Visibility/NoLightmap/DitherCloseup value
+	uint32_t material = 0; // Material: cluster pool index
+	bool enabled = true;
 };
 
 struct Command {
@@ -90,6 +119,12 @@ struct Doc {
 	std::string source;      // source glTF path (as written by the editor)
 	std::string fingerprint; // size+mtime of source at save (warn on mismatch)
 	std::vector<Command> commands;
+	std::vector<OverrideRule> overrides; // wide regex rules (ordered, later wins)
+	// Editor-only settings (editorSet lines): viewport/env authoring state
+	// the EDITOR persists for itself. NEVER applied by ApplyTourToCluster
+	// — the cook silently ignores this whole section (editor IBL and
+	// friends must not leak into paks).
+	std::vector<std::pair<std::string, std::string>> editorSettings;
 	TourCook cook;
 	bool hasCook = false;
 };
@@ -117,5 +152,13 @@ void TourReparent(Scene& scene, uint32_t node, uint32_t newParent);
 
 // Human-readable one-liner per command (console/log use).
 std::string Describe(const Command& c);
+std::string DescribeOverride(const OverrideRule& r);
+
+// Override helpers: attr name mapping + ECMAScript regex match over node
+// names (false on empty/bad patterns, never throws).
+bool OverrideAttrFromString(const std::string& s, OverrideAttr& out);
+const char* OverrideAttrName(OverrideAttr a);
+bool OverridePatternMatches(const std::string& pattern,
+	const std::string& nodeName);
 
 } // namespace smvk::tour

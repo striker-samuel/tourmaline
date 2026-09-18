@@ -728,7 +728,8 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 		// Decode the texture-slot indices baked into MaterialValues
 		// (textures ivec4 at byte 32, textures2 ivec4 at byte 48;
 		// see Engine/Renderer/mesh.h) alongside the URI strings the
-		// runtime remaps them through.
+		// runtime remaps them through. Metallic/roughness ride params
+		// (byte 64: x=cutoff, y=metallic, z=roughness).
 		int32_t slots[5] = { -9,-9,-9,-9,-9 };
 		for (int k = 0; k < 4; ++k) {
 			int32_t v = 0;
@@ -740,6 +741,9 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 			memcpy(&v, c.img.data() + c.off + 48, 4);
 			slots[4] = v;
 		}
+		float metal = 0.0f, rough = 0.0f;
+		memcpy(&metal, c.img.data() + c.off + 68, 4);
+		memcpy(&rough, c.img.data() + c.off + 72, 4);
 		c.off += 128;
 		const uint32_t shading = c.u32();
 		const uint32_t alpha = c.u32();
@@ -756,7 +760,8 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 		std::cout << "    mat  " << uri
 			<< " shading=" << shading << " alpha=" << alpha
 			<< " cutoff=" << cutoff << " ds=" << ds
-			<< " cast=" << cs << "\n";
+			<< " cast=" << cs
+			<< " metal=" << metal << " rough=" << rough << "\n";
 		static const char* kNames[5] = { "bc", "mr", "n", "occ", "e" };
 		for (int k = 0; k < 5; ++k) {
 			std::cout << "      " << kNames[k] << " slot=" << slots[k]
@@ -1530,8 +1535,15 @@ int main(int argc, char** argv) {
 					? std::to_string(args.lmExcludeSmall) + " m" : "-")
 				<< "\n" << std::flush;
 		std::vector<LmWork> work;
-		uint32_t skipBlend = 0, skipInstanced = 0, skipNoMat = 0, skipDecal = 0, skipExcluded = 0, skipSmall = 0, skipNoLm = 0;
+		uint32_t skipBlend = 0, skipInstanced = 0, skipNoMat = 0, skipDecal = 0, skipExcluded = 0, skipSmall = 0, skipNoLm = 0, skipHidden = 0;
 		for (const auto& [node, meshIdx] : cluster->scene.meshForNode) {
+			// Visibility overrides: hidden subtrees are not rendered, so
+			// they take no lightmap charts (they still occlude/cast in
+			// the trace scene like noLM exclusions).
+			if (!IsVisibleNode(cluster->scene, int(node))) {
+				++skipHidden;
+				continue;
+			}
 			auto matIt = cluster->scene.materialForNode.find(node);
 			if (matIt == cluster->scene.materialForNode.end()) {
 				++skipNoMat;
@@ -2115,6 +2127,7 @@ int main(int argc, char** argv) {
 			<< " decal=" << skipDecal
 			<< " excluded=" << skipExcluded
 			<< " nolm=" << skipNoLm
+			<< " hidden=" << skipHidden
 			<< " small=" << skipSmall << ")\n" << std::flush;
 	}
 

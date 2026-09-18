@@ -24,6 +24,7 @@ int addNode(Scene& scene, int parent, int level)
     scene.staticNode.push_back(0);
     scene.noLightmap.push_back(0);
     scene.ditherCloseup.push_back(0);
+    scene.hidden.push_back(0);
   }
   scene.hierarchy.push_back({ .parent = parent, .lastSibling = -1 });
   if (parent > -1) {
@@ -226,6 +227,8 @@ void loadScene(const char* fileName, Scene& scene)
   scene.staticRoot.assign(sz, 0);
   scene.staticNode.assign(sz, 0);
   scene.noLightmap.assign(sz, 0);
+  scene.hidden.assign(sz, 0);
+  scene.ditherCloseup.assign(sz, 0);
   scene.lightForNode.clear();
   // TODO: check > -1
   // TODO: recalculate changedAtThisLevel() - find max depth of a node [or save scene.maxLevel]
@@ -266,6 +269,36 @@ void loadScene(const char* fileName, Scene& scene)
       std::vector<uint8_t> flags(lmCount, 0);
       if (fread(flags.data(), 1, lmCount, f) == lmCount && lmCount == sz) {
         scene.noLightmap = std::move(flags);
+      }
+    }
+  }
+  // Visibility section (v4): u32 count + count bytes (hidden flags).
+  // Absent on older files (EOF) — the all-visible default stands.
+  {
+    uint32_t hidCount = 0;
+    const long pos = ftell(f);
+    if (fread(&hidCount, sizeof(hidCount), 1, f) == 1 &&
+        hidCount > 0 && hidCount <= 1024 * 1024) {
+      std::vector<uint8_t> flags(hidCount, 0);
+      if (fread(flags.data(), 1, hidCount, f) == hidCount && hidCount == sz) {
+        scene.hidden = std::move(flags);
+      }
+      else {
+        // Not a hidden section (or truncated): rewind so a dither-only
+        // tail still parses below; hidden stays all-visible.
+        fseek(f, pos, SEEK_SET);
+      }
+    }
+  }
+  // Dither-on-closeup section (v5): u32 count + count bytes. Absent on
+  // older files (EOF) — the all-off default stands.
+  {
+    uint32_t dCount = 0;
+    if (fread(&dCount, sizeof(dCount), 1, f) == 1 &&
+        dCount > 0 && dCount <= 1024 * 1024) {
+      std::vector<uint8_t> flags(dCount, 0);
+      if (fread(flags.data(), 1, dCount, f) == dCount && dCount == sz) {
+        scene.ditherCloseup = std::move(flags);
       }
     }
   }
@@ -338,6 +371,32 @@ void saveScene(const char* fileName, const Scene& scene)
       } else {
         std::vector<uint8_t> zeros(lmCount, 0);
         fwrite(zeros.data(), 1, lmCount, f);
+      }
+    }
+  }
+  // Visibility section (v4): hidden flags, all-zero (visible) when unset.
+  {
+    const uint32_t hidCount = (uint32_t)scene.hierarchy.size();
+    fwrite(&hidCount, sizeof(hidCount), 1, f);
+    if (hidCount > 0) {
+      if (scene.hidden.size() == scene.hierarchy.size()) {
+        fwrite(scene.hidden.data(), 1, hidCount, f);
+      } else {
+        std::vector<uint8_t> zeros(hidCount, 0);
+        fwrite(zeros.data(), 1, hidCount, f);
+      }
+    }
+  }
+  // Dither-on-closeup section (v5): all-zero when unused.
+  {
+    const uint32_t dCount = (uint32_t)scene.hierarchy.size();
+    fwrite(&dCount, sizeof(dCount), 1, f);
+    if (dCount > 0) {
+      if (scene.ditherCloseup.size() == scene.hierarchy.size()) {
+        fwrite(scene.ditherCloseup.data(), 1, dCount, f);
+      } else {
+        std::vector<uint8_t> zeros(dCount, 0);
+        fwrite(zeros.data(), 1, dCount, f);
       }
     }
   }
@@ -470,6 +529,8 @@ void mergeScenes(
   scene.staticRoot.push_back(0);
   scene.staticNode.push_back(0);
   scene.noLightmap.push_back(0);
+  scene.ditherCloseup.push_back(0);
+  scene.hidden.push_back(0);
   // Cooked punctual lights are Cluster pool assets: their node links
   // (pool indices) cannot shift across scenes here — lights merge via
   // World::ResolveAndFixup_clusters instead.
@@ -503,6 +564,16 @@ void mergeScenes(
       mergeVectors(scene.noLightmap, s->noLightmap);
     else
       scene.noLightmap.insert(scene.noLightmap.end(), s->hierarchy.size(), 0);
+
+    if (s->hidden.size() == s->hierarchy.size())
+      mergeVectors(scene.hidden, s->hidden);
+    else
+      scene.hidden.insert(scene.hidden.end(), s->hierarchy.size(), 0);
+
+    if (s->ditherCloseup.size() == s->hierarchy.size())
+      mergeVectors(scene.ditherCloseup, s->ditherCloseup);
+    else
+      scene.ditherCloseup.insert(scene.ditherCloseup.end(), s->hierarchy.size(), 0);
 
     mergeVectors(scene.nodeNames, s->nodeNames);
     if (mergeMaterials)
@@ -681,6 +752,14 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
     eraseSelected(scene.noLightmap, indicesToDelete);
   else
     scene.noLightmap.assign(scene.hierarchy.size(), 0);
+  if (scene.hidden.size() == oldSize)
+    eraseSelected(scene.hidden, indicesToDelete);
+  else
+    scene.hidden.assign(scene.hierarchy.size(), 0);
+  if (scene.ditherCloseup.size() == oldSize)
+    eraseSelected(scene.ditherCloseup, indicesToDelete);
+  else
+    scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
   RebuildStaticCache(scene);
 
   // 4b) All the perFrame should change the key values with the newIndices[] array

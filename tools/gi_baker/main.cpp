@@ -1073,6 +1073,8 @@ int main(int argc, char** argv) {
 		for (const auto& [node, meshIdx] : cluster->scene.meshForNode) {
 			if (count >= args.lmProbe)
 				break;
+			if (!IsVisibleNode(cluster->scene, int(node)))
+				continue; // hidden override: not charted
 			auto matIt = cluster->scene.materialForNode.find(node);
 			if (matIt == cluster->scene.materialForNode.end())
 				continue;

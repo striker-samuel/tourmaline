@@ -15,6 +15,8 @@ target_include_directories(Editor
         # Reuses App's ABI-checked FrameUniforms + PushConstants
         # (common.hlsli layout, static_asserted in scene_renderer.h).
         ${CMAKE_SOURCE_DIR}/app/include
+        # stb_image/stb_image_write (tourmaline logo generation + load).
+        ${CMAKE_SOURCE_DIR}/app/vendor
 )
 
 target_link_libraries(Editor

@@ -104,6 +104,14 @@ struct Scene {
 	// Empty or size-mismatched == off. Carried through merge/serialize
 	// paths alongside staticRoot.
 	std::vector<uint8_t> ditherCloseup;
+	// Visibility override (Clarisse-style, editor + cook): hidden[node] == 1
+	// hides the node's subtree. The flag is SELF state; the EFFECTIVE
+	// state is hierarchical — a node is effectively visible only when
+	// neither it nor any ancestor is marked hidden (see IsVisibleNode).
+	// Source default is visible (all-zero); shot overrides set hidden.
+	// Empty or size-mismatched == all visible. Carried through
+	// merge/serialize/world-resolve paths alongside noLightmap.
+	std::vector<uint8_t> hidden;
 };
 
 int addNode(Scene& scene, int parent, int level);
@@ -139,6 +147,46 @@ inline bool IsDitherCloseupNode(const Scene& scene, int node)
 		n = scene.hierarchy[size_t(n)].parent;
 	}
 	return false;
+}
+
+// Visibility (Clarisse-style hierarchical override): true when the node
+// itself is marked hidden. Effective visibility walks ancestors — a
+// hidden parent hides the whole subtree (see IsVisibleNode).
+inline bool IsHiddenNode(const Scene& scene, int node)
+{
+	return node >= 0 && (size_t)node < scene.hidden.size() &&
+		scene.hidden[(size_t)node] != 0;
+}
+
+// Effective visibility: visible only when neither the node nor any
+// ancestor carries the hidden flag. Size-mismatched/empty == visible.
+inline bool IsVisibleNode(const Scene& scene, int node)
+{
+	for (int n = node; n >= 0 && n < int(scene.hierarchy.size()); ) {
+		if ((size_t)n < scene.hidden.size() && scene.hidden[(size_t)n] != 0)
+			return false;
+		n = scene.hierarchy[size_t(n)].parent;
+	}
+	return true;
+}
+
+// Marks node hidden (self flag; subtree effect via IsVisibleNode).
+// Grows the array if needed.
+inline void MarkHidden(Scene& scene, int node)
+{
+	if (node < 0 || (size_t)node >= scene.hierarchy.size())
+		return;
+	if (scene.hidden.size() != scene.hierarchy.size())
+		scene.hidden.assign(scene.hierarchy.size(), 0);
+	scene.hidden[(size_t)node] = 1;
+}
+inline void ClearHidden(Scene& scene, int node)
+{
+	if (node < 0 || (size_t)node >= scene.hierarchy.size())
+		return;
+	if (scene.hidden.size() != scene.hierarchy.size())
+		scene.hidden.assign(scene.hierarchy.size(), 0);
+	scene.hidden[(size_t)node] = 0;
 }
 
 // Marks node for dither-on-closeup (subtree). Grows the array if needed.

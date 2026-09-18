@@ -20,6 +20,7 @@ namespace {
 
 struct LineBatch {
 	glm::vec4 color{ 1, 1, 1, 1 };
+	bool depthTest = false; // grid: occluded by geometry; helpers: on top
 	std::vector<smvk::DebugLineVertex> verts;
 };
 
@@ -99,24 +100,77 @@ void AddArrowHead(LineBatch& b, const glm::vec3& tip, const glm::vec3& ax,
 	}
 }
 
+namespace {
+// Small plain-data bundle so the grid builder stays file-local (the
+// editor app owns the actual settings).
+struct EditorAppViewGizmo {
+	float cellSize = 1.0f;
+	int extentCells = 40;
+};
+} // namespace
+
+// Ground grid (XZ plane at y = 0): minor lines every m_gridSize, a
+// stronger major line every 5 cells, axis-colored X/Z through the
+// origin. Vertices are cheap enough to rebuild per frame alongside the
+// other gizmo batches.
+static void AddGrid(LineBatch& minor, LineBatch& major,
+	const EditorAppViewGizmo& cfg) {
+	const float cell = cfg.cellSize;
+	const int n = int(cfg.extentCells);
+	// Minor grid (both directions), skipping the axis lines.
+	for (int i = -n; i <= n; ++i) {
+		const float v = float(i) * cell;
+		if (i % 5 == 0)
+			continue; // major lines below
+		minor.verts.push_back({ glm::vec3(-float(n) * cell, 0.0f, v) });
+		minor.verts.push_back({ glm::vec3(float(n) * cell, 0.0f, v) });
+		minor.verts.push_back({ glm::vec3(v, 0.0f, -float(n) * cell) });
+		minor.verts.push_back({ glm::vec3(v, 0.0f, float(n) * cell) });
+	}
+	for (int i = -n; i <= n; i += 5) {
+		const float v = float(i) * cell;
+		major.verts.push_back({ glm::vec3(-float(n) * cell, 0.0f, v) });
+		major.verts.push_back({ glm::vec3(float(n) * cell, 0.0f, v) });
+		major.verts.push_back({ glm::vec3(v, 0.0f, -float(n) * cell) });
+		major.verts.push_back({ glm::vec3(v, 0.0f, float(n) * cell) });
+	}
+}
+
 glm::vec3 GizmoOrigin(const Scene& scene, uint32_t node) {
 	return glm::vec3(scene.globalTransform[node][3]);
 }
 
 } // namespace
 
-void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
-	smvk::Extent2D extent) {
+void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	if (swapView.empty() || !m_world)
 		return;
 	if (m_lineProgram.shaderCount != 2)
 		return;
+	SetupDefaultCameras();
 	std::vector<LineBatch> batches;
+	// Ground grid (XZ at y = 0): minor + major cells; the translate snap
+	// step equals the cell size (Shift-drag).
+	if (m_showGrid) {
+		EditorAppViewGizmo cfg{};
+		cfg.cellSize = std::max(m_gridSize, 0.01f);
+		cfg.extentCells = int(std::clamp<uint32_t>(m_gridExtent, 2, 512));
+		LineBatch minor, major;
+		minor.color = glm::vec4(0.32f, 0.34f, 0.38f, 1.0f);
+		minor.depthTest = true; // grid: hidden behind geometry
+		major.color = glm::vec4(0.45f, 0.47f, 0.52f, 1.0f);
+		major.depthTest = true;
+		AddGrid(minor, major, cfg);
+		if (!minor.verts.empty())
+			batches.push_back(std::move(minor));
+		if (!major.verts.empty())
+			batches.push_back(std::move(major));
+	}
 	// Light markers: one small distance-scaled diamond per light node
 	// (sun = yellow + emission arrow, point = orange, spot = cyan +
 	// cone), always visible — light nodes carry no mesh to click.
 	if (m_showLightGizmos && !m_world->scene.lightForNode.empty()) {
-		const glm::vec3 eye = m_camera.getPosition();
+		const glm::vec3 eye = EditorCamEye(ActiveCam());
 		for (const auto& [node, li] : m_world->scene.lightForNode) {
 			if (node >= m_world->scene.hierarchy.size() ||
 				node >= m_world->scene.globalTransform.size())
@@ -226,8 +280,10 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
 	}
 
 	const glm::vec3 O = GizmoOrigin(m_world->scene, m_selected);
-	const float dist = glm::distance(m_camera.getPosition(), O);
-	const float s = std::max(dist * 0.14f, 1e-4f);
+	const float dist = glm::distance(EditorCamEye(ActiveCam()), O);
+	// Configurable gizmo size (m_gizmoScale, default half the original
+	// 0.14 factor); tiny floors keep the handles clickable.
+	const float s = std::max(dist * m_gizmoScale, 1e-4f);
 	const glm::mat4& global = m_world->scene.globalTransform[m_selected];
 	const glm::vec3 axesW[3] = { {1,0,0}, {0,1,0}, {0,0,1} };
 	glm::vec3 axesL[3];
@@ -270,14 +326,18 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
 		}
 	}
 
-	// Flatten into one upload with per-batch draw ranges.
-	struct Range { uint32_t first, count; glm::vec4 color; };
+	// Flatten into one upload with per-batch draw ranges. Grid ranges
+	// are DEPTH-TESTED against the viewport's depth (the grid must hide
+	// behind geometry); every helper (gizmo axes, AABB, light markers)
+	// draws on top like a DCC overlay.
+	struct Range { uint32_t first, count; glm::vec4 color; bool depthTest; };
 	std::vector<Range> ranges;
 	std::vector<smvk::DebugLineVertex> all;
 	for (auto& b : batches) {
 		if (b.verts.empty())
 			continue;
-		ranges.push_back({ uint32_t(all.size()), uint32_t(b.verts.size()), b.color });
+		ranges.push_back({ uint32_t(all.size()), uint32_t(b.verts.size()),
+			b.color, b.depthTest });
 		all.insert(all.end(), b.verts.begin(), b.verts.end());
 	}
 	if (all.empty())
@@ -293,26 +353,59 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
 	m_context->UploadDataToBuffer(m_gizmoLines, all.data(), bytes,
 		smvk::PipelineStageBit_Vertex, smvk::AccessFlags::VertexAttributeRead);
 
+	// One line pass PER VISIBLE VIEWPORT: same uploaded batches, each
+	// viewport's own viewProj + rect. The pass attaches the viewport's
+	// DEPTH (written by the main pass): the grid binds a depth-tested
+	// pipeline so it hides behind geometry, while the helpers (gizmo
+	// axes, AABB, light markers) bind an always-on-top pipeline.
+	for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
+	const ViewportRect& vp = m_viewports[vpIdx].rect;
+	const glm::mat4 vpViewProj = m_viewports[vpIdx].viewProj;
 	auto& pass = m_rendergraph->AddPass("EditorGizmo")
-		.SetOffset(0, 0)
-		.SetExtent(extent)
+		.SetOffset(uint32_t(vp.x), uint32_t(vp.y))
+		.SetExtent(smvk::Extent2D{ uint32_t(vp.w), uint32_t(vp.h) })
 		.SetColor({ swapView },
 			smvk::AttachmentLoadOp::Load, smvk::AttachmentStoreOp::Store,
-			smvk::ClearColor(0, 0, 0, 1));
-	pass.SetRecordingFunc([this, ranges = std::move(ranges)](smvk::CommandBuffer& cmd) {
+			smvk::ClearColor(0, 0, 0, 1))
+		.SetDepth(m_depth.logicalView,
+			smvk::AttachmentLoadOp::Load, smvk::AttachmentStoreOp::Store,
+			smvk::ClearDepthStencil(0.0f, 0));
+	pass.SetRecordingFunc([this, ranges, vpViewProj](smvk::CommandBuffer& cmd) {
 		if (m_gizmoLines.empty() || m_lineProgram.shaderCount != 2)
 			return;
-		cmd.BindRenderPipeline(m_lineProgram,
-			smvk::VertexFormat::DebugLine,
-			smvk::DepthSettings{ .depthFunc = smvk::CompareOp::Always,
-				.writeEnable = false, .depthTestEnable = false },
-			smvk::StencilSettings{}, smvk::BlendSettings{},
-			smvk::MSAASettings{}, smvk::RasterSettings{ .cullMode = smvk::CullMode::None },
-			smvk::PrimitiveTopology::LineList);
+		const smvk::RasterSettings raster{
+			.cullMode = smvk::CullMode::None };
 		cmd.BindVertexBuffer(m_gizmoLines, 0, 0);
+		bool depthPipeline = false;
 		for (const auto& r : ranges) {
+			// Rebind the pipeline only when the depth mode changes
+			// (grid = depth-tested, helpers = always on top).
+			if (r.depthTest != depthPipeline) {
+				depthPipeline = r.depthTest;
+				if (depthPipeline)
+					cmd.BindRenderPipeline(m_lineProgram,
+						smvk::VertexFormat::DebugLine,
+						// Reversed-Z: GreaterEqual = closer-or-equal passes
+						// (grid behind geometry fails the test).
+						smvk::DepthSettings{
+							.depthFunc = smvk::CompareOp::GreaterEqual,
+							.writeEnable = false, .depthTestEnable = true },
+						smvk::StencilSettings{}, smvk::BlendSettings{},
+						smvk::MSAASettings{}, raster,
+						smvk::PrimitiveTopology::LineList);
+				else
+					cmd.BindRenderPipeline(m_lineProgram,
+						smvk::VertexFormat::DebugLine,
+						smvk::DepthSettings{
+							.depthFunc = smvk::CompareOp::Always,
+							.writeEnable = false, .depthTestEnable = false },
+						smvk::StencilSettings{}, smvk::BlendSettings{},
+						smvk::MSAASettings{}, raster,
+						smvk::PrimitiveTopology::LineList);
+			}
 			app::LineDebugPush lp{};
-			std::memcpy(lp.viewProj, glm::value_ptr(m_lastViewProj), sizeof(lp.viewProj));
+			std::memcpy(lp.viewProj, glm::value_ptr(vpViewProj),
+				sizeof(lp.viewProj));
 			lp.color[0] = r.color.x;
 			lp.color[1] = r.color.y;
 			lp.color[2] = r.color.z;
@@ -321,21 +414,27 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
 			cmd.Draw(r.count, 1, r.first, 0);
 		}
 		});
+	} // per-viewport loop
 }
 
-bool EditorApp::GizmoHandleInput(smvk::Extent2D extent) {
+bool EditorApp::GizmoHandleInput() {
 	if (m_selected == UINT32_MAX || !m_world ||
 		m_selected >= m_world->scene.hierarchy.size())
 		return false;
+	// ACTIVE viewport-local mouse + dims + viewProj for the hit tests.
+	const ViewportRect& vp = m_viewports[m_activeVp].rect;
+	const smvk::Extent2D extent{ uint32_t(vp.w), uint32_t(vp.h) };
+	const glm::mat4 viewProj = m_viewports[m_activeVp].viewProj;
+	const float mx = float(m_input.getMouseX()) - vp.x;
+	const float my = float(m_input.getMouseY()) - vp.y;
+	const bool shiftHeld = m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
+		m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
 	const glm::vec3 O = GizmoOrigin(m_world->scene, m_selected);
-	const float dist = glm::distance(m_camera.getPosition(), O);
-	const float s = std::max(dist * 0.14f, 1e-4f);
+	const float dist = glm::distance(EditorCamEye(ActiveCam()), O);
+	const float s = std::max(dist * m_gizmoScale, 1e-4f);
 	const bool useLocal = (m_gizmoMode != GizmoMode::Translate);
 	const glm::mat4& global = m_world->scene.globalTransform[m_selected];
 	const glm::vec3 axesW[3] = { {1,0,0}, {0,1,0}, {0,0,1} };
-
-	const float mx = float(m_input.getMouseX());
-	const float my = float(m_input.getMouseY());
 
 	if (!m_gizmoDragging) {
 		// Hit test: nearest axis segment in screen pixels.
@@ -360,9 +459,9 @@ bool EditorApp::GizmoHandleInput(smvk::Extent2D extent) {
 					const float a0 = float(k) / 24 * 6.2831853f;
 					const float a1 = float(k + 1) / 24 * 6.2831853f;
 					const glm::vec2 p0 = ToScreen(O + (u * std::cos(a0) + v * std::sin(a0)) * s,
-						m_lastViewProj, extent);
+						viewProj, extent);
 					const glm::vec2 p1 = ToScreen(O + (u * std::cos(a1) + v * std::sin(a1)) * s,
-						m_lastViewProj, extent);
+						viewProj, extent);
 					const float d = DistPointSeg({ mx, my }, p0, p1);
 					if (d < bestD) {
 						bestD = d;
@@ -371,9 +470,9 @@ bool EditorApp::GizmoHandleInput(smvk::Extent2D extent) {
 				}
 				continue;
 			}
-		const glm::vec2 tipPx = ToScreen(end, m_lastViewProj, extent);
+		const glm::vec2 tipPx = ToScreen(end, viewProj, extent);
 		float d = DistPointSeg({ mx, my },
-			ToScreen(O, m_lastViewProj, extent), tipPx);
+			ToScreen(O, viewProj, extent), tipPx);
 		// Generous grab on the head (arrow tip / scale cube).
 		if (glm::length(glm::vec2(mx, my) - tipPx) < 16.0f)
 			d = 0.0f;
@@ -400,10 +499,10 @@ bool EditorApp::GizmoHandleInput(smvk::Extent2D extent) {
 		// Ray-plane for translate/scale: plane through O facing the camera
 		// around the axis (axis-plane drag).
 		glm::vec3 origin;
-		const glm::vec3 ray = MouseRay(mx, my, extent, origin);
+		const glm::vec3 ray = MouseRay(mx, my, extent, viewProj, origin);
 		glm::vec3 ax = useLocal
 			? glm::normalize(glm::vec3(global * glm::vec4(axesW[best], 0.0f))) : axesW[best];
-		const glm::vec3 camDir = glm::normalize(O - m_camera.getPosition());
+		const glm::vec3 camDir = glm::normalize(O - EditorCamEye(ActiveCam()));
 		m_dragPlaneN = glm::normalize(glm::cross(ax, glm::cross(camDir, ax)));
 		const float denom = glm::dot(ray, m_dragPlaneN);
 		if (std::fabs(denom) > 1e-9f) {
@@ -453,7 +552,7 @@ bool EditorApp::GizmoHandleInput(smvk::Extent2D extent) {
 
 	if (m_gizmoMode == GizmoMode::Translate) {
 		glm::vec3 origin;
-		const glm::vec3 ray = MouseRay(mx, my, extent, origin);
+		const glm::vec3 ray = MouseRay(mx, my, extent, viewProj, origin);
 		const float denom = glm::dot(ray, m_dragPlaneN);
 		if (std::fabs(denom) > 1e-9f) {
 			const float t = glm::dot(O - origin, m_dragPlaneN) / denom;
@@ -470,6 +569,12 @@ bool EditorApp::GizmoHandleInput(smvk::Extent2D extent) {
 						dLocal = glm::inverse(pw) * (ax * d);
 				}
 				m_dragCurT = m_dragBaseT + dLocal;
+				// Shift = grid snap: translate steps to the grid cell.
+				if (shiftHeld && m_gridSize > 0.0f) {
+					const float inv = 1.0f / m_gridSize;
+					for (int k = 0; k < 3; ++k)
+						m_dragCurT[k] = std::round(m_dragCurT[k] * inv) / inv;
+				}
 				WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
 			}
 		}
@@ -478,13 +583,17 @@ bool EditorApp::GizmoHandleInput(smvk::Extent2D extent) {
 		const float dx = mx - m_dragLastX;
 		m_dragLastX = mx;
 		m_dragBaseAngle += dx * 0.008f; // radians per pixel
+		float angleDeg = glm::degrees(m_dragBaseAngle);
+		// Shift = angle snap (e.g. 15-degree steps).
+		if (shiftHeld && m_snapRotateDeg > 0.0f)
+			angleDeg = std::round(angleDeg / m_snapRotateDeg) * m_snapRotateDeg;
 		m_dragCurR = m_dragBaseR;
-		m_dragCurR[axIdx] += glm::degrees(m_dragBaseAngle);
+		m_dragCurR[axIdx] += angleDeg;
 		WriteLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
 	}
 	else { // Scale
 		glm::vec3 origin;
-		const glm::vec3 ray = MouseRay(mx, my, extent, origin);
+		const glm::vec3 ray = MouseRay(mx, my, extent, viewProj, origin);
 		const float denom = glm::dot(ray, m_dragPlaneN);
 		float ratio = 1.0f;
 		if (std::fabs(denom) > 1e-9f) {
@@ -497,6 +606,10 @@ bool EditorApp::GizmoHandleInput(smvk::Extent2D extent) {
 					ratio = std::clamp(d1 / d0, 0.05f, 50.0f);
 				else
 					ratio = std::clamp(1.0f + (d1 / m_dragStartDist), 0.05f, 50.0f);
+				// Shift = scale snap (e.g. 0.1 steps).
+				if (shiftHeld && m_snapScaleStep > 0.0f)
+					ratio = std::round(ratio / m_snapScaleStep) * m_snapScaleStep;
+				ratio = std::clamp(ratio, 0.05f, 50.0f);
 			}
 		}
 		m_dragCurS = m_dragBaseS;

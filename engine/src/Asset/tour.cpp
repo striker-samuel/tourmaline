@@ -9,8 +9,10 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <regex>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -94,6 +96,62 @@ const char* FlagVal(bool b) { return b ? "1" : "0"; }
 
 } // namespace
 
+bool OverrideAttrFromString(const std::string& s, OverrideAttr& out) {
+	if (s == "visibility" || s == "hidden" || s == "hide") {
+		out = OverrideAttr::Visibility;
+		return true;
+	}
+	if (s == "material") {
+		out = OverrideAttr::Material;
+		return true;
+	}
+	if (s == "noLightmap" || s == "no_light_map") {
+		out = OverrideAttr::NoLightmap;
+		return true;
+	}
+	if (s == "ditherCloseup" || s == "dither" || s == "dither_closeup") {
+		out = OverrideAttr::DitherCloseup;
+		return true;
+	}
+	return false;
+}
+
+const char* OverrideAttrName(OverrideAttr a) {
+	switch (a) {
+	case OverrideAttr::Visibility: return "visibility";
+	case OverrideAttr::Material: return "material";
+	case OverrideAttr::NoLightmap: return "noLightmap";
+	case OverrideAttr::DitherCloseup: return "ditherCloseup";
+	}
+	return "?";
+}
+
+bool OverridePatternMatches(const std::string& pattern,
+	const std::string& nodeName) {
+	if (pattern.empty())
+		return false;
+	try {
+		std::regex rx(pattern, std::regex::ECMAScript | std::regex::optimize);
+		return std::regex_search(nodeName, rx);
+	}
+	catch (...) {
+		return false;
+	}
+}
+
+std::string DescribeOverride(const OverrideRule& r) {
+	char buf[512];
+	if (r.attr == OverrideAttr::Material)
+		std::snprintf(buf, sizeof(buf), "override /%s/ .%s -> mat.%u%s",
+			r.pattern.c_str(), OverrideAttrName(r.attr), r.material,
+			r.enabled ? "" : " [off]");
+	else
+		std::snprintf(buf, sizeof(buf), "override /%s/ .%s = %d%s",
+			r.pattern.c_str(), OverrideAttrName(r.attr), r.flag ? 1 : 0,
+			r.enabled ? "" : " [off]");
+	return buf;
+}
+
 std::string Fingerprint(const std::string& path) {
 	std::error_code ec;
 	const auto sz = std::filesystem::file_size(path, ec);
@@ -142,7 +200,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			break;
 		case Verb::SetMatAttr:
 			f << "setMatAttr -m " << c.material << " -at " << c.text;
-			if (c.text == "baseColor" || c.text == "emissive")
+			if (c.text == "baseColor" || c.text == "emissive" ||
+				c.text == "layers")
 				f << " -t " << c.vec4.x << " " << c.vec4.y << " "
 					<< c.vec4.z << " " << c.vec4.w;
 			else if (c.text == "alphaMode")
@@ -157,6 +216,9 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 		case Verb::SetDitherCloseup:
 			f << "setDitherCloseup -n " << c.node << " -v " << FlagVal(c.flag);
 			break;
+		case Verb::SetVisibility:
+			f << "setVisibility -n " << c.node << " -v " << FlagVal(c.flag);
+			break;
 		case Verb::Parent:
 			f << "parent -n " << c.node << " -p " << c.node2;
 			break;
@@ -165,6 +227,20 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			f << " // " << c.name;
 		f << ";\n";
 	}
+	// Wide Clarisse-style overrides (ordered; later wins at replay).
+	for (const OverrideRule& r : doc.overrides) {
+		f << "override -pattern " << Quote(r.pattern)
+			<< " -at " << OverrideAttrName(r.attr);
+		if (r.attr == OverrideAttr::Material)
+			f << " -m " << r.material;
+		else
+			f << " -v " << FlagVal(r.flag);
+		f << " -enabled " << (r.enabled ? "on" : "off") << ";\n";
+	}
+	// Editor-only settings (editorSet): persisted for the editor, never
+	// applied at cook (ApplyTourToCluster ignores doc.editorSettings).
+	for (const auto& [k, v] : doc.editorSettings)
+		f << "editorSet -k " << Quote(k) << " -v " << Quote(v) << ";\n";
 	if (doc.hasCook) {
 		const TourCook& k = doc.cook;
 		f << "cook -outPak " << Quote(k.outPak)
@@ -192,6 +268,7 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 }
 
 // -n <id> / -m <id> / -p <id> / -at <name> / -t <nums...> / -v <num|word>
+// -pattern <regex> / -enabled <on|off> (override rules only)
 struct Flags {
 	bool hasN = false, hasM = false, hasP = false, hasAt = false;
 	uint32_t n = 0, m = 0, p = 0;
@@ -199,7 +276,23 @@ struct Flags {
 	std::vector<std::string> t; // -t values
 	std::string v;              // -v value (raw)
 	bool hasV = false;
+	std::string pattern;
+	bool hasPattern = false;
+	bool enabled = true;
+	bool hasEnabled = false;
 };
+
+static bool ParseFlagWord(const std::string& w, bool& out) {
+	if (w == "1" || w == "on" || w == "true" || w == "yes") {
+		out = true;
+		return true;
+	}
+	if (w == "0" || w == "off" || w == "false" || w == "no") {
+		out = false;
+		return true;
+	}
+	return false;
+}
 
 static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 	Flags& f, std::string& err, int lineNo) {
@@ -238,6 +331,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 			auto isFlag = [](const std::string& w) {
 				return w == "-n" || w == "-m" || w == "-p" ||
 					w == "-at" || w == "-t" || w == "-v" ||
+					w == "-pattern" || w == "-enabled" ||
 					w == "-fingerprint";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
@@ -258,6 +352,24 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 			f.v = toks[i + 1];
 			if (!f.v.empty() && f.v.back() == ';')
 				f.v.pop_back();
+			i += 2;
+		}
+		else if (k == "-pattern" && i + 1 < toks.size()) {
+			f.hasPattern = true;
+			f.pattern = toks[i + 1];
+			if (!f.pattern.empty() && f.pattern.back() == ';')
+				f.pattern.pop_back();
+			i += 2;
+		}
+		else if (k == "-enabled" && i + 1 < toks.size()) {
+			std::string w = toks[i + 1];
+			if (!w.empty() && w.back() == ';')
+				w.pop_back();
+			bool b = true;
+			if (ParseFlagWord(w, b)) {
+				f.hasEnabled = true;
+				f.enabled = b;
+			}
 			i += 2;
 		}
 		else if (k == "-fingerprint" && i + 1 < toks.size()) {
@@ -326,9 +438,25 @@ bool LoadTour(const std::string& path, Doc& doc, std::string& err,
 			}
 			continue;
 		}
+		if (verb == "editorSet") {
+			// editorSet -k "<key>" -v "<value>"; editor-only (never cooked).
+			std::string key, val;
+			for (size_t i = 1; i < toks.size(); ++i) {
+				if (toks[i] == "-k" && i + 1 < toks.size()) {
+					key = toks[i + 1];
+					++i;
+				}
+				else if (toks[i] == "-v" && i + 1 < toks.size()) {
+					val = toks[i + 1];
+					++i;
+				}
+			}
+			if (!key.empty())
+				doc.editorSettings.emplace_back(key, val);
+			continue;
+		}
 		if (verb == "cook") {
-			doc.hasCook = true;
-			TourCook& k = doc.cook;
+			doc.hasCook = true;			TourCook& k = doc.cook;
 			for (size_t i = 1; i < toks.size(); ++i) {
 				auto get = [&](const char* key, std::string& out) {
 					if (toks[i] == key && i + 1 < toks.size()) {
@@ -413,7 +541,8 @@ bool LoadTour(const std::string& path, Doc& doc, std::string& err,
 			c.verb = Verb::SetMatAttr;
 			c.material = fl.m;
 			c.text = fl.at;
-			if (fl.at == "baseColor" || fl.at == "emissive") {
+			if (fl.at == "baseColor" || fl.at == "emissive" ||
+				fl.at == "layers") {
 				if (fl.t.size() < 4) {
 					err = "line " + std::to_string(lineNo) + ": want 4 values";
 					return false;
@@ -447,6 +576,68 @@ bool LoadTour(const std::string& path, Doc& doc, std::string& err,
 			c.verb = Verb::SetDitherCloseup;
 			c.node = fl.n;
 			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
+		}
+		else if (verb == "setVisibility" && fl.hasN && fl.hasV) {
+			bool b = false;
+			if (!ParseFlagWord(fl.v, b)) {
+				err = "line " + std::to_string(lineNo) + ": bad flag '" + fl.v + "'";
+				return false;
+			}
+			c.verb = Verb::SetVisibility;
+			c.node = fl.n;
+			c.flag = b;
+		}
+		// setHidden is the legacy alias for setVisibility (hidden flag).
+		else if (verb == "setHidden" && fl.hasN && fl.hasV) {
+			bool b = false;
+			if (!ParseFlagWord(fl.v, b)) {
+				err = "line " + std::to_string(lineNo) + ": bad flag '" + fl.v + "'";
+				return false;
+			}
+			c.verb = Verb::SetVisibility;
+			c.node = fl.n;
+			c.flag = b;
+		}
+		else if (verb == "override" && fl.hasPattern && fl.hasAt) {
+			OverrideRule r{};
+			if (!OverrideAttrFromString(fl.at, r.attr)) {
+				warn(path + ":" + std::to_string(lineNo) +
+					": unknown override attr '" + fl.at + "' (skipped)");
+				continue;
+			}
+			r.pattern = fl.pattern;
+			r.enabled = fl.hasEnabled ? fl.enabled : true;
+			if (r.attr == OverrideAttr::Material) {
+				if (!fl.hasM) {
+					err = "line " + std::to_string(lineNo) + ": override material needs -m";
+					return false;
+				}
+				r.material = fl.m;
+			}
+			else {
+				if (!fl.hasV) {
+					err = "line " + std::to_string(lineNo) + ": override needs -v";
+					return false;
+				}
+				bool b = false;
+				if (!ParseFlagWord(fl.v, b)) {
+					err = "line " + std::to_string(lineNo) + ": bad flag '" + fl.v + "'";
+					return false;
+				}
+				r.flag = b;
+			}
+			// Validate the regex now (warn-and-skip on bad patterns).
+			try {
+				std::regex rx(r.pattern, std::regex::ECMAScript);
+				(void)rx;
+			}
+			catch (const std::exception& e) {
+				warn(path + ":" + std::to_string(lineNo) +
+					": bad override regex '" + r.pattern + "' (" + e.what() + ", skipped)");
+				continue;
+			}
+			doc.overrides.push_back(std::move(r));
+			continue;
 		}
 		else if (verb == "parent" && fl.hasN && fl.hasP) {
 			c.verb = Verb::Parent;
@@ -577,6 +768,12 @@ static void ApplyMatAttr(Material& mat, const Command& c) {
 		mat.doubleSided = (c.number != 0.0);
 	else if (at == "castsShadows")
 		mat.castsShadows = (c.number != 0.0);
+	else if (at == "layers") {
+		// Cluster-local pool ids (the cook domain, pre-merge): x/y/z =
+		// layers 1..3 (-1 none), w = active layer count (0 = legacy).
+		mat.values.layerMaterials = glm::ivec4(
+			int(c.vec4.x), int(c.vec4.y), int(c.vec4.z), int(c.vec4.w));
+	}
 	else if (at == "alphaMode") {
 		mat.alphaMode = (c.number < 0.5) ? AlphaMode::Opaque
 			: (c.number < 1.5) ? AlphaMode::Mask : AlphaMode::Blend;
@@ -665,6 +862,14 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.ditherCloseup[c.node] = c.flag ? 1 : 0;
 			break;
 		}
+		case Verb::SetVisibility: {
+			if (!checkNode(c.node, c))
+				return false;
+			if (scene.hidden.size() != scene.hierarchy.size())
+				scene.hidden.assign(scene.hierarchy.size(), 0);
+			scene.hidden[c.node] = c.flag ? 1 : 0;
+			break;
+		}
 		case Verb::Parent: {
 			if (!checkNode(c.node, c))
 				return false;
@@ -740,6 +945,79 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	}
 	markAsChanged(scene, 0);
 	recalculateGlobalTransforms(scene);
+	// Wide override pass (Clarisse-style): regex rules in order, later
+	// wins. Per-node local commands are MORE specific and win over any
+	// wide rule touching the same node+attr (local wins).
+	if (!doc.overrides.empty()) {
+		std::unordered_set<uint32_t> localVis, localMat, localNoLM, localDither;
+		for (const Command& c : doc.commands) {
+			switch (c.verb) {
+			case Verb::SetVisibility: localVis.insert(c.node); break;
+			case Verb::AssignMaterial: localMat.insert(c.node); break;
+			case Verb::SetNoLightmap: localNoLM.insert(c.node); break;
+			case Verb::SetDitherCloseup: localDither.insert(c.node); break;
+			default: break;
+			}
+		}
+		for (const OverrideRule& r : doc.overrides) {
+			if (!r.enabled || r.pattern.empty())
+				continue;
+			std::regex rx;
+			try {
+				rx.assign(r.pattern, std::regex::ECMAScript | std::regex::optimize);
+			}
+			catch (...) {
+				warn(std::string("tour: bad override regex '") + r.pattern + "' (skipped)");
+				continue;
+			}
+			if (r.attr == OverrideAttr::Material && !CookMaterial(cluster, r.material)) {
+				warn("tour: override material out of range: " + std::to_string(r.material));
+				continue;
+			}
+			for (uint32_t n = 0; n < uint32_t(scene.hierarchy.size()); ++n) {
+				const std::string nm = getNodeName(scene, int(n));
+				if (nm.empty())
+					continue;
+				bool hit = false;
+				try {
+					hit = std::regex_search(nm, rx);
+				}
+				catch (...) {
+					continue;
+				}
+				if (!hit)
+					continue;
+				switch (r.attr) {
+				case OverrideAttr::Visibility:
+					if (localVis.contains(n))
+						continue; // local wins
+					if (scene.hidden.size() != scene.hierarchy.size())
+						scene.hidden.assign(scene.hierarchy.size(), 0);
+					scene.hidden[n] = r.flag ? 1 : 0;
+					break;
+				case OverrideAttr::Material:
+					if (localMat.contains(n))
+						continue;
+					scene.materialForNode[n] = r.material;
+					break;
+				case OverrideAttr::NoLightmap:
+					if (localNoLM.contains(n))
+						continue;
+					if (scene.noLightmap.size() != scene.hierarchy.size())
+						scene.noLightmap.assign(scene.hierarchy.size(), 0);
+					scene.noLightmap[n] = r.flag ? 1 : 0;
+					break;
+				case OverrideAttr::DitherCloseup:
+					if (localDither.contains(n))
+						continue;
+					if (scene.ditherCloseup.size() != scene.hierarchy.size())
+						scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
+					scene.ditherCloseup[n] = r.flag ? 1 : 0;
+					break;
+				}
+			}
+		}
+	}
 	return true;
 }
 
@@ -772,6 +1050,10 @@ std::string Describe(const Command& c) {
 		break;
 	case Verb::SetDitherCloseup:
 		std::snprintf(buf, sizeof(buf), "ditherCloseup #%u = %d", c.node, c.flag ? 1 : 0);
+		break;
+	case Verb::SetVisibility:
+		std::snprintf(buf, sizeof(buf), "visibility #%u = %s", c.node,
+			c.flag ? "hidden" : "visible");
 		break;
 	case Verb::Parent:
 		std::snprintf(buf, sizeof(buf), "parent #%u under #%u", c.node, c.node2);

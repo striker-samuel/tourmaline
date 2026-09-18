@@ -169,22 +169,24 @@ void EditorApp::RebuildCookedLights() {
 			const glm::vec3 toSun = -aimWs;
 			m_cookedSunName = l->name.empty()
 				? ("node " + std::to_string(node)) : l->name;
-			m_sunAzimuth = glm::degrees(std::atan2(toSun.x, toSun.z));
-			if (m_sunAzimuth < 0.0f)
-				m_sunAzimuth += 360.0f;
-			m_sunElevation = glm::degrees(
+			EditorEnv& env = m_envDefault; // seed the EDITOR IBL default
+			env.sunAzimuth = glm::degrees(std::atan2(toSun.x, toSun.z));
+			if (env.sunAzimuth < 0.0f)
+				env.sunAzimuth += 360.0f;
+			env.sunElevation = glm::degrees(
 				std::asin(glm::clamp(toSun.y, -1.0f, 1.0f)));
-			m_sunColor = l->color;
-			m_sunIntensity = glm::clamp(l->intensity, 0.0f, 10.0f);
+			env.sunColor = l->color;
+			env.sunIntensity = glm::clamp(l->intensity, 0.0f, 10.0f);
 			m_hasCookedSun = true;
 			sunTaken = true;
 			char buf[384];
 			std::snprintf(buf, sizeof(buf),
 				"Cooked sun '%s' (node %u): toSun=(%.3f,%.3f,%.3f) az=%.1f el=%.1f "
-				"color=(%.2f,%.2f,%.2f) I=%.1f lux -> viewport I=%.2f (LDR)",
+				"color=(%.2f,%.2f,%.2f) I=%.1f lux -> editor IBL I=%.2f (LDR)",
 				m_cookedSunName.c_str(), node,
-				toSun.x, toSun.y, toSun.z, m_sunAzimuth, m_sunElevation,
-				l->color.x, l->color.y, l->color.z, l->intensity, m_sunIntensity);
+				toSun.x, toSun.y, toSun.z, env.sunAzimuth, env.sunElevation,
+				l->color.x, l->color.y, l->color.z, l->intensity,
+				env.sunIntensity);
 			Log(buf);
 		}
 		else if (l->type == ::SceneLight::Type::Point) {

@@ -105,6 +105,7 @@ namespace smvk {
 		scene.staticNode.assign(scene.hierarchy.size(), 0);
 		scene.noLightmap.assign(scene.hierarchy.size(), 0);
 		scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
+		scene.hidden.assign(scene.hierarchy.size(), 0);
 
 		for (auto& clusterPtr : clusters) {
 			Cluster& cluster = *clusterPtr.get();
@@ -171,6 +172,18 @@ namespace smvk {
 		else {
 			scene.ditherCloseup.insert(
 				scene.ditherCloseup.end(), nodeCount, 0);
+		}
+		// Carry visibility (hidden) flags (missing == all visible).
+		if (cs.hidden.size() == cs.hierarchy.size()) {
+			scene.hidden.insert(
+				scene.hidden.end(),
+				cs.hidden.begin(),
+				cs.hidden.end()
+			);
+		}
+		else {
+			scene.hidden.insert(
+				scene.hidden.end(), nodeCount, 0);
 		}
 		scene.staticNode.insert(scene.staticNode.end(), nodeCount, 0);
 
@@ -337,10 +350,14 @@ namespace smvk {
 
 	// Build the per-node iterator flags from the resolved scene: renderable
 	// nodes are those carrying a mesh; material drives Opaque vs Transparent.
-		flags.assign(scene.hierarchy.size(), IteratorFlagBit_None);
-		for (auto& [node, meshIdx] : scene.meshForNode) {
-			if (node >= flags.size())
-				continue;
+	// Hidden subtrees (Clarisse-style visibility overrides) are excluded:
+	// they keep None so no pass iterates them (see drawItems below).
+	flags.assign(scene.hierarchy.size(), IteratorFlagBit_None);
+	for (auto& [node, meshIdx] : scene.meshForNode) {
+		if (node >= flags.size())
+			continue;
+		if (!IsVisibleNode(scene, int(node)))
+			continue;
 
 		IteratorFlags f = static_cast<IteratorFlags>(IteratorFlagBit_Renderable)
 			| static_cast<IteratorFlags>(IteratorFlagBit_StaticVertexFmt);
@@ -399,13 +416,15 @@ namespace smvk {
 		// precomputed, material-sorted so per-material pipeline binds and
 		// phase splits happen once per material per pass instead of per
 		// node. stable_sort keeps hierarchy order within a material.
-		drawItems.clear();
-		drawItems.reserve(scene.meshForNode.size());
-		flagLists.clear();
-		for (auto& [node, meshIdx] : scene.meshForNode) {
-			if (node >= flags.size())
-				continue;
-			const auto matIt = scene.materialForNode.find(node);
+	drawItems.clear();
+	drawItems.reserve(scene.meshForNode.size());
+	flagLists.clear();
+	for (auto& [node, meshIdx] : scene.meshForNode) {
+		if (node >= flags.size())
+			continue;
+		if (!IsVisibleNode(scene, int(node)))
+			continue; // hidden override: not drawn, not picked, not baked-listed
+		const auto matIt = scene.materialForNode.find(node);
 			drawItems.push_back(RenderItem{
 				.node = node,
 				.mesh = meshIdx,

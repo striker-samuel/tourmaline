@@ -1,11 +1,14 @@
 // CPU ray picking: mouse -> world ray -> closest mesh node.
 //
-// Exact triangle tests use the kept tinygltf model (import is lossless for
-// positions: importer only applies the coord-fix rigid transform, mirrored
-// here). Scenes loaded from pak (no glTF kept) fall back to AABB picking.
+// Mouse/extent are VIEWPORT-LOCAL (the central rect between the panels;
+// the projection is built for that aspect). Exact triangle tests use the
+// kept tinygltf model (import is lossless for positions: importer only
+// applies the coord-fix rigid transform, mirrored here). Scenes loaded
+// from pak (no glTF kept) fall back to AABB picking.
 
 #include "editor_app.h"
 
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 
@@ -117,8 +120,8 @@ bool RayAabb(const glm::vec3& o, const glm::vec3& inv, const glm::vec3& mn,
 
 } // namespace
 
-glm::vec3 EditorApp::MouseRay(float mouseX, float mouseY,
-	smvk::Extent2D extent, glm::vec3& outOrigin) const {
+glm::vec3 EditorApp::MouseRay(float mouseX, float mouseY, smvk::Extent2D extent,
+	const glm::mat4& viewProj, glm::vec3& outOrigin) const {
 	// Mouse pixels (top-left origin) -> NDC (Y-down after the Vulkan flip)
 	// -> world ray via the inverse view-projection. Depth is REVERSED-Z:
 	// NDC z=1 is the near plane, z=0 the far plane (see
@@ -127,20 +130,21 @@ glm::vec3 EditorApp::MouseRay(float mouseX, float mouseY,
 	// what's under the cursor.
 	const float nx = (extent.width > 0) ? (mouseX / float(extent.width)) * 2.0f - 1.0f : 0.0f;
 	const float ny = (extent.height > 0) ? (mouseY / float(extent.height)) * 2.0f - 1.0f : 0.0f;
-	const glm::vec4 near = glm::inverse(m_lastViewProj) * glm::vec4(nx, ny, 1.0f, 1.0f);
-	const glm::vec4 far = glm::inverse(m_lastViewProj) * glm::vec4(nx, ny, 0.0f, 1.0f);
+	const glm::vec4 near = glm::inverse(viewProj) * glm::vec4(nx, ny, 1.0f, 1.0f);
+	const glm::vec4 far = glm::inverse(viewProj) * glm::vec4(nx, ny, 0.0f, 1.0f);
 	const glm::vec3 n = glm::vec3(near) / near.w;
 	const glm::vec3 f = glm::vec3(far) / far.w;
 	outOrigin = n;
 	return glm::normalize(f - n);
 }
 
-std::optional<EditorApp::PickHit> EditorApp::PickNode(float mouseX,
+std::optional<EditorApp::PickHit> EditorApp::PickNode(int vpIdx, float mouseX,
 	float mouseY, smvk::Extent2D extent) const {
 	if (!m_world || m_world->scene.hierarchy.empty())
 		return std::nullopt;
 	glm::vec3 origin;
-	const glm::vec3 dir = MouseRay(mouseX, mouseY, extent, origin);
+	const glm::mat4 viewProj = m_viewports[std::clamp(vpIdx, 0, kMaxViewports - 1)].viewProj;
+	const glm::vec3 dir = MouseRay(mouseX, mouseY, extent, viewProj, origin);
 	const glm::vec3 inv(1.0f / dir.x, 1.0f / dir.y, 1.0f / dir.z);
 
 	PickHit best{};
@@ -149,6 +153,8 @@ std::optional<EditorApp::PickHit> EditorApp::PickNode(float mouseX,
 	const smvk::IteratorFlags req = smvk::IteratorFlags(
 		smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_StaticVertexFmt);
 	m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
+		if (!IsVisibleNode(m_world->scene, int(item.node)))
+			return; // hidden subtrees are not pickable
 		smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
 		if (!mesh)
 			return;

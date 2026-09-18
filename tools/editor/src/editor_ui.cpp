@@ -23,10 +23,8 @@
 #include <cstdint>
 
 namespace editor {
-namespace {
-constexpr float kLeftW = 330.0f;
-constexpr float kRightW = 370.0f;
-} // namespace
+// Panel widths/heights live in editor_app.h (kEditorLeftW/RightW/BottomH):
+// the central viewport rect is computed from them in RenderFrame.
 
 // Coalesced drag helpers (member functions for world access).
 void EditorApp::FinalizePending() {
@@ -89,14 +87,30 @@ void EditorApp::FinishDrag() {
 void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	(void)targetExtent;
 	if (ImGui::BeginMainMenuBar()) {
+		// Tourmaline gem + name (branding; PNG lives as the window icon).
+		{
+			const float h = ImGui::GetTextLineHeight() + 2.0f;
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			const ImVec2 p = ImGui::GetCursorScreenPos();
+			DrawTourmalineGem(dl, p, h);
+			ImGui::Dummy(ImVec2(h * 0.62f + 6.0f, h));
+			ImGui::TextUnformatted("Tourmaline Editor");
+			ImGui::Separator();
+		}
 		DrawMenuBar();
 		ImGui::EndMainMenuBar();
 	}
 	const float menuH = ImGui::GetFrameHeight();
+	m_menuH = menuH; // cached for ComputeViewportRect (pre-NewFrame use)
 	const float vh = float(ImGui::GetIO().DisplaySize.y);
 
+	// Panels are siblings of the central viewport (never on top of it):
+	// RenderFrame renders only the rect between them. I hides every
+	// panel for a fullscreen viewport (the menu bar + overlay remain).
+	if (m_uiMode) {
 	ImGui::SetNextWindowPos(ImVec2(0, menuH), ImGuiCond_Always);
-	ImGui::SetNextWindowSize(ImVec2(kLeftW, vh - menuH - 170), ImGuiCond_Always);
+	ImGui::SetNextWindowSize(ImVec2(m_leftW, vh - menuH - m_bottomH),
+		ImGuiCond_Always);
 	if (ImGui::Begin("Outliner", nullptr,
 		ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse)) {
 		DrawOutliner();
@@ -104,9 +118,9 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	ImGui::End();
 
 	ImGui::SetNextWindowPos(
-		ImVec2(float(ImGui::GetIO().DisplaySize.x) - kRightW, menuH),
+		ImVec2(float(ImGui::GetIO().DisplaySize.x) - m_rightW, menuH),
 		ImGuiCond_Always);
-	ImGui::SetNextWindowSize(ImVec2(kRightW, vh - menuH - 170),
+	ImGui::SetNextWindowSize(ImVec2(m_rightW, vh - menuH - m_bottomH),
 		ImGuiCond_Always);
 	if (ImGui::Begin("Inspector", nullptr,
 		ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse)) {
@@ -141,16 +155,35 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	}
 	ImGui::End();
 
-	ImGui::SetNextWindowPos(ImVec2(0, vh - 170), ImGuiCond_Always);
+	// Bottom dock (title-less, tabbed): the wide-override rule table
+	// lives next to the Console so both stay full-width.
+	ImGui::SetNextWindowPos(ImVec2(0, vh - m_bottomH), ImGuiCond_Always);
 	ImGui::SetNextWindowSize(
-		ImVec2(float(ImGui::GetIO().DisplaySize.x), 170), ImGuiCond_Always);
-	if (ImGui::Begin("Console", nullptr,
-		ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse)) {
-		DrawConsolePanel();
+		ImVec2(float(ImGui::GetIO().DisplaySize.x), m_bottomH),
+		ImGuiCond_Always);
+	if (ImGui::Begin("BottomDock", nullptr,
+		ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+		ImGuiWindowFlags_NoTitleBar)) {
+		if (ImGui::BeginTabBar("##bottomTabs")) {
+			if (ImGui::BeginTabItem("Overrides")) {
+				m_bottomTab = 0;
+				DrawOverridesPanel();
+				ImGui::EndTabItem();
+			}
+			if (ImGui::BeginTabItem("Console")) {
+				m_bottomTab = 1;
+				DrawConsolePanel();
+				ImGui::EndTabItem();
+			}
+			ImGui::EndTabBar();
+		}
 	}
 	ImGui::End();
+	} // m_uiMode
 
+	DrawPanelSplitters(); // resize handles between panels and viewport
 	DrawViewportOverlay(targetExtent);
+	DrawViewportChrome(); // borders, camera chips, box-select rect
 	DrawPlayBar();
 	DrawFlintbasePanel();
 }
@@ -193,37 +226,83 @@ void EditorApp::DrawMenuBar() {
 	}
 	if (ImGui::BeginMenu("View")) {
 		if (ImGui::MenuItem("Unlit (diffuse)", "F2",
-			m_viewMode == ViewMode::Unlit))
-			m_viewMode = ViewMode::Unlit;
-		if (ImGui::MenuItem("Lit", "F1", m_viewMode == ViewMode::Lit))
-			m_viewMode = ViewMode::Lit;
+			ActiveViewMode() == ViewMode::Unlit))
+			ActiveViewMode() = ViewMode::Unlit;
+		if (ImGui::MenuItem("Lit", "F1", ActiveViewMode() == ViewMode::Lit))
+			ActiveViewMode() = ViewMode::Lit;
 		if (ImGui::MenuItem("Lit + shadows", "F3",
-			m_viewMode == ViewMode::LitShadows))
-			m_viewMode = ViewMode::LitShadows;
+			ActiveViewMode() == ViewMode::LitShadows))
+			ActiveViewMode() = ViewMode::LitShadows;
 		if (ImGui::MenuItem("Baked irradiance", "F8",
-			m_viewMode == ViewMode::Baked, m_lmGpu))
-			m_viewMode = ViewMode::Baked;
+			ActiveViewMode() == ViewMode::Baked, m_lmGpu))
+			ActiveViewMode() = ViewMode::Baked;
+		if (ImGui::MenuItem("Meshlets", "F4",
+			ActiveViewMode() == ViewMode::Meshlets)) {
+			ActiveViewMode() = ViewMode::Meshlets;
+			if (!m_meshletDebugHasData && !EnsureMeshletDebug())
+				Log("Meshlet view: no cooked meshlets in this scene "
+					"(cook with --meshlets); meshes show as flat fallbacks.");
+		}
+		if (ActiveViewMode() == ViewMode::Meshlets) {
+			const char* meshletModes[] = { "Random per meshlet",
+				"Cone-cutoff heat" };
+			ImGui::Combo("Meshlet color mode", &m_debugMeshletMode,
+				meshletModes, 2);
+		}
 		ImGui::Separator();
-		if (ImGui::MenuItem("UV0", "F9", m_viewMode == ViewMode::Uv0))
-			m_viewMode = ViewMode::Uv0;
-		if (ImGui::MenuItem("UV1 (lightmap)", "F10", m_viewMode == ViewMode::Uv1))
-			m_viewMode = ViewMode::Uv1;
+		ImGui::MenuItem("Wireframe (all)", "Z", &m_wireframeAll);
+		ImGui::Separator();
+		if (ImGui::MenuItem("Single viewport", "V", m_vpLayout == 0))
+			m_vpLayout = 0;
+		if (ImGui::MenuItem("Quad viewports (4 panels)", "V",
+				m_vpLayout == 1))
+			m_vpLayout = 1;
+		ImGui::Separator();
+		ImGui::MenuItem("Ground grid", nullptr, &m_showGrid);
+		{
+			float cell = m_gridSize;
+			if (ImGui::DragFloat("Grid cell (m)", &cell, 0.05f, 0.05f, 50.0f))
+				m_gridSize = std::max(cell, 0.05f);
+			ImGui::SetItemTooltip("Also the Shift-drag translate snap step.");
+			int ext = int(m_gridExtent);
+			if (ImGui::DragInt("Grid half-extent (cells)", &ext, 1, 2, 512))
+				m_gridExtent = uint32_t(std::clamp(ext, 2, 512));
+		}
+		ImGui::Separator();
+		{
+			float gs = m_gizmoScale;
+			if (ImGui::SliderFloat("Gizmo size", &gs, 0.02f, 0.3f, "%.3f"))
+				m_gizmoScale = std::clamp(gs, 0.02f, 0.3f);
+			ImGui::SetItemTooltip(
+				"Screen-size factor of the camera distance (default 0.07, "
+				"half the original 0.14).");
+			ImGui::DragFloat("Rotate snap (deg)", &m_snapRotateDeg,
+				1.0f, 1.0f, 90.0f);
+			ImGui::DragFloat("Scale snap", &m_snapScaleStep, 0.01f, 0.01f, 1.0f);
+			ImGui::TextDisabled("Shift while dragging = snap "
+				"(translate: grid cell)");
+		}
+		ImGui::Separator();
+		if (ImGui::MenuItem("UV0", "F9", ActiveViewMode() == ViewMode::Uv0))
+			ActiveViewMode() = ViewMode::Uv0;
+		if (ImGui::MenuItem("UV1 (lightmap)", "F10", ActiveViewMode() == ViewMode::Uv1))
+			ActiveViewMode() = ViewMode::Uv1;
 		if (ImGui::MenuItem("Vertex colors", "F6",
-			m_viewMode == ViewMode::VertexColors))
-			m_viewMode = ViewMode::VertexColors;
+			ActiveViewMode() == ViewMode::VertexColors))
+			ActiveViewMode() = ViewMode::VertexColors;
 		ImGui::Separator();
 		if (ImGui::MenuItem(
 				("UV inset: " + std::string(SecondViewName(m_secondView))).c_str(),
 				"F5"))
 			m_secondView = SecondView((int(m_secondView) + 1) % 3);
 		ImGui::Separator();
-		if (ImGui::MenuItem("Translate gizmo", "1",
+		if (ImGui::MenuItem("Translate gizmo", "W",
 			m_gizmoMode == GizmoMode::Translate))
 			m_gizmoMode = GizmoMode::Translate;
-		if (ImGui::MenuItem("Rotate gizmo", "2",
+		if (ImGui::MenuItem("Rotate gizmo", "E",
 			m_gizmoMode == GizmoMode::Rotate))
 			m_gizmoMode = GizmoMode::Rotate;
-		if (ImGui::MenuItem("Scale gizmo", "3",
+		if (ImGui::MenuItem("Scale gizmo", "R",
 			m_gizmoMode == GizmoMode::Scale))
 			m_gizmoMode = GizmoMode::Scale;
 		ImGui::Separator();
@@ -235,6 +314,7 @@ void EditorApp::DrawMenuBar() {
 		if (ImGui::MenuItem("Flintbase browser", nullptr, m_showFlintbasePanel))
 			m_showFlintbasePanel = !m_showFlintbasePanel;
 		ImGui::Separator();
+		ImGui::MenuItem("Viewport legend", nullptr, &m_showOverlay);
 		ImGui::MenuItem("Selection wire overlay", nullptr, &m_wireOverlay);
 		if (ImGui::MenuItem("Light gizmos", "L", m_showLightGizmos))
 			m_showLightGizmos = !m_showLightGizmos;
@@ -557,6 +637,7 @@ void EditorApp::DrawSceneOutliner() {
 		m_selected == UINT32_MAX ? "-" : getNodeName(m_world->scene,
 			int(m_selected)).c_str());
 	ImGui::Separator();
+	ImGui::Separator();
 	ImGui::BeginChild("##tree");
 	if (filtering) {
 		for (uint32_t n = 0; n < uint32_t(m_world->scene.hierarchy.size()); ++n) {
@@ -564,14 +645,22 @@ void EditorApp::DrawSceneOutliner() {
 			if (name.find(m_filterBuf) == std::string::npos)
 				continue;
 			ImGui::PushID(int(n));
-			const bool sel = (n == m_selected);
+			const bool sel = IsSelected(n);
 			char label[256];
-			std::snprintf(label, sizeof(label), "%u: %s%s%s", n,
+			std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s", n,
 				name.empty() ? "(unnamed)" : name.c_str(),
 				m_world->scene.meshForNode.contains(n) ? " [mesh]" : "",
-				FindNodeLight(n) ? " [light]" : "");
-			if (ImGui::Selectable(label, sel))
-				m_selected = n;
+				FindNodeLight(n) ? " [light]" : "",
+				IsEnvNode(n) ? " [env]" : "",
+				!IsVisibleNode(m_world->scene, int(n)) ? " [hidden]" : "");
+			if (ImGui::Selectable(label, sel)) {
+				// Click = replace selection; Ctrl/Shift-click = add.
+				if (ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift)
+					AddToSelection(n);
+				else
+					SetSelection(n);
+				m_revealNode = n;
+			}
 			if (sel && n == m_revealNode)
 				ImGui::SetScrollHereY(0.5f);
 			ImGui::PopID();
@@ -853,7 +942,7 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 	const Scene& scene = m_world->scene;
 	const std::string name = getNodeName(scene, int(node));
 	const bool hasMesh = scene.meshForNode.contains(node);
-	const bool sel = (node == m_selected);
+	const bool sel = IsSelected(node);
 	ImGui::PushID(int(node));
 	ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
 		ImGuiTreeNodeFlags_OpenOnDoubleClick;
@@ -871,10 +960,13 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 			nodeLight->type == ::SceneLight::Type::Spot ? "spot" : "point");
 	}
 	char label[256];
-	std::snprintf(label, sizeof(label), "%s%s%s%s%s", name.empty() ? "(node)" : name.c_str(),
+	std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s", name.empty() ? "(node)" : name.c_str(),
 		hasMesh ? " [mesh]" : "", lightTag,
 		IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "",
-		IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "");
+		IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "",
+		IsEnvNode(node) ? " [env]" : "",
+		!IsVisibleNode(scene, int(node))
+		? (IsHiddenNode(scene, int(node)) ? " [hidden]" : " [hidden*]") : "");
 	const bool open = ImGui::TreeNodeEx(label, flags);
 	// Drag source (reparent by drop).
 	if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
@@ -897,8 +989,12 @@ void EditorApp::DrawOutlinerNode(uint32_t node,
 		}
 		ImGui::EndDragDropTarget();
 	}
-	if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
-		m_selected = node;
+	if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+		if (ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift)
+			AddToSelection(node);
+		else
+			SetSelection(node);
+	}
 	if (sel && node == m_revealNode)
 		ImGui::SetScrollHereY(0.5f);
 	if (open) {
@@ -1119,16 +1215,279 @@ static const char* AlphaModeName(smvk::AlphaMode m) {
 	return "?";
 }
 
+// ---- material editor page (inspector travel) -------------------------
+// m_materialFocus switches the Inspector to a material editor: full
+// attribute set + layer slots + preview, with a back-trail to the node
+// page ("travel between inspectors": layer slots jump focus too).
+void EditorApp::DrawMaterialFocusPage() {
+	if (!m_world || m_materialFocus >= m_world->materialLocations.size()) {
+		m_materialFocus = UINT32_MAX;
+		return;
+	}
+	const uint32_t mat = m_materialFocus;
+	smvk::Material* m = m_world->GetMaterial(mat);
+	if (!m) {
+		m_materialFocus = UINT32_MAX;
+		return;
+	}
+	// Breadcrumb: Back to node | trail of visited materials.
+	if (ImGui::Button("< Back to node")) {
+		m_materialFocus = UINT32_MAX;
+		if (!m_materialTrail.empty()) {
+			m_materialFocus = m_materialTrail.back();
+			m_materialTrail.pop_back();
+		}
+	}
+	ImGui::SameLine();
+	ImGui::Text("Material mat.%u", mat);
+	if (!m_materialTrail.empty()) {
+		ImGui::TextDisabled("trail:");
+		ImGui::SameLine();
+		for (size_t i = 0; i < m_materialTrail.size() && i < 6; ++i) {
+			ImGui::Text("mat.%u%s", m_materialTrail[i],
+				i + 1 < m_materialTrail.size() ? " >" : "");
+			ImGui::SameLine();
+		}
+		ImGui::Text("");
+	}
+	// Preview.
+	ImGui::Separator();
+	ImGui::Text("Preview (diffuse)");
+	DrawDiffusePreview(mat, m->values.diffuse);
+	// Attributes (shared: affects every node using this material).
+	ImGui::Separator();
+	ImGui::TextDisabled("Shared material: affects all users of mat.%u", mat);
+	{
+		glm::vec4 bc = m->values.diffuse;
+		if (ImGui::ColorEdit4("Base color", glm::value_ptr(bc))) {
+			if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
+				m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "baseColor"))
+				FinalizePending();
+			if (!m_pending.active) {
+				m_pending.active = true;
+				m_pending.cmd = EditCmd{};
+				m_pending.cmd.verb = EditVerb::SetMatAttr;
+				m_pending.cmd.matWorld = mat;
+				m_pending.cmd.attr = "baseColor";
+				ReadSharedMatAttr(mat, "baseColor",
+					m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
+			}
+			WriteSharedMatAttr(mat, "baseColor", bc, 0.0);
+			m_pending.cmd.vec4 = bc;
+		}
+		if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+			m_pending.cmd.attr == "baseColor") {
+			FinishDrag();
+		}
+		float metallic = m->values.params.y;
+		if (ImGui::SliderFloat("Metallic", &metallic, 0.0f, 1.0f)) {
+			if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
+				m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "metallic"))
+				FinalizePending();
+			if (!m_pending.active) {
+				m_pending.active = true;
+				m_pending.cmd = EditCmd{};
+				m_pending.cmd.verb = EditVerb::SetMatAttr;
+				m_pending.cmd.matWorld = mat;
+				m_pending.cmd.attr = "metallic";
+				ReadSharedMatAttr(mat, "metallic",
+					m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
+			}
+			WriteSharedMatAttr(mat, "metallic", glm::vec4(0), metallic);
+			m_pending.cmd.number = metallic;
+		}
+		if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+			m_pending.cmd.attr == "metallic") {
+			FinishDrag();
+		}
+		float rough = m->values.params.z;
+		if (ImGui::SliderFloat("Roughness", &rough, 0.04f, 1.0f)) {
+			if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
+				m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "roughness"))
+				FinalizePending();
+			if (!m_pending.active) {
+				m_pending.active = true;
+				m_pending.cmd = EditCmd{};
+				m_pending.cmd.verb = EditVerb::SetMatAttr;
+				m_pending.cmd.matWorld = mat;
+				m_pending.cmd.attr = "roughness";
+				ReadSharedMatAttr(mat, "roughness",
+					m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
+			}
+			WriteSharedMatAttr(mat, "roughness", glm::vec4(0), rough);
+			m_pending.cmd.number = rough;
+		}
+		if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+			m_pending.cmd.attr == "roughness") {
+			FinishDrag();
+		}
+		glm::vec4 em(m->values.emissiveFactor.x, m->values.emissiveFactor.y,
+			m->values.emissiveFactor.z, m->values.params2.z);
+		if (ImGui::ColorEdit4("Emissive (w=strength)", glm::value_ptr(em))) {
+			if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
+				m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "emissive"))
+				FinalizePending();
+			if (!m_pending.active) {
+				m_pending.active = true;
+				m_pending.cmd = EditCmd{};
+				m_pending.cmd.verb = EditVerb::SetMatAttr;
+				m_pending.cmd.matWorld = mat;
+				m_pending.cmd.attr = "emissive";
+				ReadSharedMatAttr(mat, "emissive",
+					m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
+			}
+			WriteSharedMatAttr(mat, "emissive", em, 0.0);
+			m_pending.cmd.vec4 = em;
+		}
+		if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
+			m_pending.cmd.attr == "emissive") {
+			FinishDrag();
+		}
+	}
+	// Layers (vertex-color blended): slots 1..3 + active count.
+	ImGui::Separator();
+	ImGui::Text("Layers (vertex-color blending)");
+	ImGui::TextDisabled(
+		"Layer 0 is this material; RGBA vertex weights blend 1..3. "
+		"Count 0 = legacy tint.");
+	{
+		glm::ivec4 lm = m->values.layerMaterials;
+		const uint32_t count = uint32_t(m_world->materialLocations.size());
+		for (int slot = 0; slot < 3; ++slot) {
+			ImGui::PushID(slot);
+			int cur = lm[slot];
+			std::string preview = (cur >= 0 && uint32_t(cur) < count)
+				? ("mat." + std::to_string(cur)) : std::string("(none)");
+			char comboLabel[32];
+			std::snprintf(comboLabel, sizeof(comboLabel), "Layer %d", slot + 1);
+			if (ImGui::BeginCombo(comboLabel, preview.c_str())) {
+				if (ImGui::Selectable("(none)", cur < 0))
+					cur = -1;
+				for (uint32_t i = 0; i < count; ++i) {
+					if (i == mat)
+						continue; // this material is layer 0
+					const auto& loc = m_world->materialLocations[i];
+					std::string uri = loc.cluster
+						? std::string(loc.cluster->GetMaterialUri(loc.handle).Str())
+						: "";
+					char item[320];
+					std::snprintf(item, sizeof(item), "%u: %s", i,
+						uri.empty() ? "(unnamed)" : uri.c_str());
+					if (ImGui::Selectable(item, cur == int(i)))
+						cur = int(i);
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::PopID();
+			if (cur != lm[slot]) {
+				glm::ivec4 nl = lm;
+				nl[slot] = cur;
+				EditCmd c{};
+				c.verb = EditVerb::SetMatAttr;
+				c.matWorld = mat;
+				c.attr = "layers";
+				glm::vec4 v4;
+				double num = 0.0;
+				ReadSharedMatAttr(mat, "layers", v4, num);
+				c.beforeVec4 = v4;
+				c.beforeNum = num;
+				c.vec4 = glm::vec4(float(nl.x), float(nl.y), float(nl.z),
+					float(nl.w));
+				c.number = double(nl.w);
+				Do(c);
+			}
+		}
+		int layerCount = lm.w;
+		if (ImGui::SliderInt("Active layers", &layerCount, 0, 4)) {
+			glm::ivec4 nl = lm;
+			nl.w = layerCount;
+			EditCmd c{};
+			c.verb = EditVerb::SetMatAttr;
+			c.matWorld = mat;
+			c.attr = "layers";
+			glm::vec4 v4;
+			double num = 0.0;
+			ReadSharedMatAttr(mat, "layers", v4, num);
+			c.beforeVec4 = v4;
+			c.beforeNum = num;
+			c.vec4 = glm::vec4(float(nl.x), float(nl.y), float(nl.z),
+				float(nl.w));
+			c.number = double(nl.w);
+			Do(c);
+		}
+		// Travel: jump to a layer material (trail keeps the way back).
+		for (int slot = 0; slot < 3; ++slot) {
+			const int target = m->values.layerMaterials[slot];
+			if (target < 0 || uint32_t(target) >=
+				m_world->materialLocations.size())
+				continue;
+			ImGui::PushID(100 + slot);
+			if (ImGui::SmallButton("Go to layer material >>")) {
+				m_materialTrail.push_back(m_materialFocus);
+				m_materialFocus = uint32_t(target);
+			}
+			ImGui::PopID();
+		}
+	}
+	// Alpha / flags (same shared-edit path as the node page).
+	ImGui::Separator();
+	{
+		bool ds = m->doubleSided;
+		if (ImGui::Checkbox("Double sided", &ds)) {
+			EditCmd c{};
+			c.verb = EditVerb::SetMatAttr;
+			c.matWorld = mat;
+			c.attr = "doubleSided";
+			c.number = ds ? 1.0 : 0.0;
+			ReadSharedMatAttr(mat, "doubleSided", c.beforeVec4, c.beforeNum);
+			Do(c);
+		}
+		bool cs = m->castsShadows;
+		if (ImGui::Checkbox("Casts shadows", &cs)) {
+			EditCmd c{};
+			c.verb = EditVerb::SetMatAttr;
+			c.matWorld = mat;
+			c.attr = "castsShadows";
+			c.number = cs ? 1.0 : 0.0;
+			ReadSharedMatAttr(mat, "castsShadows", c.beforeVec4, c.beforeNum);
+			Do(c);
+		}
+		int alpha = int(m->alphaMode);
+		if (ImGui::Combo("Alpha", &alpha, "Opaque\0Mask (cutout)\0Blend\0")) {
+			EditCmd c{};
+			c.verb = EditVerb::SetMatAttr;
+			c.matWorld = mat;
+			c.attr = "alphaMode";
+			c.number = double(alpha);
+			ReadSharedMatAttr(mat, "alphaMode", c.beforeVec4, c.beforeNum);
+			Do(c);
+		}
+		ImGui::TextDisabled("alpha: %s", AlphaModeName(m->alphaMode));
+	}
+}
+
 void EditorApp::DrawInspector() {
+	SetupDefaultCameras();
+	// Material focus page: the Inspector is "traveling" in a material.
+	if (m_world && m_materialFocus != UINT32_MAX) {
+		DrawMaterialFocusPage();
+		DrawEnvPanel();
+		return;
+	}
 	if (!m_world || m_selected == UINT32_MAX ||
 		m_selected >= m_world->scene.hierarchy.size()) {
 		ImGui::TextDisabled("Nothing selected.");
 		ImGui::TextWrapped("Click a mesh in the viewport or pick a node in the outliner. "
 			"Drag nodes onto each other to reparent. All edits are undoable (Ctrl+Z).");
+		DrawCameraSection();
+		DrawEnvPanel();
 		return;
 	}
 	Scene& scene = m_world->scene;
 	const uint32_t node = m_selected;
+	if (m_selection.size() > 1)
+		ImGui::TextDisabled("multi-select: %zu nodes (primary #%u)",
+			m_selection.size(), node);
 	ImGui::Text("Node %u", node);
 
 	// Name.
@@ -1261,6 +1620,12 @@ void EditorApp::DrawInspector() {
 					ImGui::SetItemDefaultFocus();
 			}
 			ImGui::EndCombo();
+		}
+		// Travel: open this material in the material editor page.
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Edit material >>")) {
+			m_materialTrail.clear();
+			m_materialFocus = curMat;
 		}
 		// 2D material preview: diffuse-map thumbnail (CPU KTX2 decode,
 		// tinted by the baseColor factor) with an unlit swatch fallback
@@ -1415,7 +1780,7 @@ void EditorApp::DrawInspector() {
 			ImGui::TextDisabled("toSun=(%.2f,%.2f,%.2f)%s", -aimWs.x,
 				-aimWs.y, -aimWs.z,
 				m_hasCookedSun && m_cookedSunName == li->name
-				? " — drives the viewport" : "");
+				? " — seeds the editor IBL default" : "");
 		else {
 			const glm::vec3 p = node < scene.globalTransform.size()
 				? glm::vec3(scene.globalTransform[node][3]) : glm::vec3(0.0f);
@@ -1465,19 +1830,62 @@ void EditorApp::DrawInspector() {
 		ImGui::TextDisabled("effective: %s", inherited ? "dithered" : "off");
 	}
 
-	// Sun quick controls.
+	// Clarisse-style override summary for this node (visibility control +
+	// per-attr inherited/local/wide badges + wide-rule matches).
+	DrawInspectorOverrides(node);
+
+	// Environment node: mark/use this node as an IBL source (editor-only).
 	{
 		ImGui::Separator();
-		if (m_hasCookedSun)
-			ImGui::Text("Viewport sun (seeded from cooked '%s')",
-				m_cookedSunName.c_str());
-		else
-			ImGui::Text("Viewport sun");
-		ImGui::SliderFloat("Azimuth", &m_sunAzimuth, 0.0f, 360.0f);
-		ImGui::SliderFloat("Elevation", &m_sunElevation, 0.0f, 90.0f);
-		ImGui::SliderFloat("Intensity", &m_sunIntensity, 0.0f, 10.0f);
-		ImGui::SliderFloat("Sky", &m_skyIntensity, 0.0f, 2.0f);
+		ImGui::Text("Environment node");
+		if (IsEnvNode(node)) {
+			ImGui::TextDisabled("marked as Environment");
+			if (ImGui::Button("Use as current IBL source"))
+				m_envCurrent = node;
+			ImGui::SameLine();
+			if (ImGui::Button("Unmark##envnode"))
+				UnmarkEnvNode(node);
+		}
+		else if (ImGui::Button("Mark as Environment node")) {
+			MarkEnvNode(node);
+			m_envCurrent = node;
+		}
+		ImGui::TextDisabled(
+			"position = node translate, size = node scale "
+			"(convex volume later; never cooked)");
 	}
+
+	// Editor camera (active viewport) + environment (IBL) settings.
+	DrawCameraSection();
+	DrawEnvPanel();
+}
+
+void EditorApp::DrawCameraSection() {
+	ImGui::Separator();
+	ImGui::Text("Editor camera (viewport %d)", m_activeVp);
+	if (m_viewports[m_activeVp].camIdx >= int(m_editorCams.size()))
+		return;
+	EditorCam& cam = m_editorCams[m_viewports[m_activeVp].camIdx];
+	int type = int(cam.type);
+	if (ImGui::Combo("Projection", &type,
+			"Perspective\0Orthographic\0")) {
+		cam.type = EditorCam::Type(type);
+		// Switching projection modes: give the ortho a sensible extent
+		// from the current framing distance.
+		if (cam.type == EditorCam::Type::Orthographic && cam.orthoHalfH < 0.1f)
+			cam.orthoHalfH = std::max(cam.dist * 0.25f, 1.0f);
+	}
+	if (cam.type == EditorCam::Type::Perspective) {
+		ImGui::SliderFloat("FOV (deg)", &cam.fovYDeg, 10.0f, 120.0f, "%.0f");
+	}
+	else {
+		ImGui::DragFloat("Ortho half-height (m)", &cam.orthoHalfH,
+			0.25f, 0.1f, 5000.0f);
+	}
+	ImGui::DragFloat("Near clip", &cam.nearClip, 0.005f, 0.001f, 50.0f, "%.3f");
+	ImGui::DragFloat("Far clip", &cam.farClip, 5.0f, 10.0f, 100000.0f, "%.0f");
+	if (cam.farClip <= cam.nearClip * 1.1f)
+		cam.farClip = cam.nearClip * 1.1f + 10.0f;
 }
 
 void EditorApp::DrawCookPanel() {
@@ -1583,7 +1991,7 @@ void EditorApp::DrawLightmapPanel() {
 		}
 		ImGui::TextDisabled("F10 = UV1 view (baked texCoord2)");
 		if (m_lmGpu && ImGui::Button("Baked irradiance view (F8)"))
-			m_viewMode = ViewMode::Baked;
+			ActiveViewMode() = ViewMode::Baked;
 	}
 	if (ImGui::InputText("sglm path", m_sglmBuf, sizeof(m_sglmBuf),
 		ImGuiInputTextFlags_EnterReturnsTrue)) {
@@ -1833,16 +2241,16 @@ void EditorApp::DrawUvPanel() {
 	ImGui::Separator();
 	ImGui::Text("Views");
 	if (ImGui::Button("UV0 fullscreen (F9)"))
-		m_viewMode = ViewMode::Uv0;
+		ActiveViewMode() = ViewMode::Uv0;
 	ImGui::SameLine();
 	if (ImGui::Button("UV1 fullscreen (F10)"))
-		m_viewMode = ViewMode::Uv1;
+		ActiveViewMode() = ViewMode::Uv1;
 	if (ImGui::Button(
 			("UV inset: " + std::string(SecondViewName(m_secondView)) +
 				" (F5)").c_str()))
 		m_secondView = SecondView((int(m_secondView) + 1) % 3);
 	if (m_lmGpu && ImGui::Button("Baked irradiance (F8)"))
-		m_viewMode = ViewMode::Baked;
+		ActiveViewMode() = ViewMode::Baked;
 	ImGui::TextDisabled("UV0 = authored uvs; UV1 = atlas-space texCoord2.");
 }
 
@@ -1851,10 +2259,11 @@ void EditorApp::DrawUvPanel() {
 // button is disabled — close App to finish (its log streams to Console).
 void EditorApp::DrawPlayBar() {
 	const float menuH = ImGui::GetFrameHeight();
-	const float cx = float(ImGui::GetIO().DisplaySize.x) * 0.5f;
+	// Centered over the central viewport rect (m_vp is set by RenderFrame).
+	const float cx = m_vp.x + m_vp.w * 0.5f;
 	ImGui::SetNextWindowPos(ImVec2(cx, menuH + 6), ImGuiCond_Always,
 		ImVec2(0.5f, 0.0f));
-	ImGui::SetNextWindowBgAlpha(0.65f);
+	ImGui::SetNextWindowBgAlpha(1.0f); // fully opaque UI
 	if (ImGui::Begin("##playbar", nullptr,
 		ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
 		ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
@@ -1895,16 +2304,24 @@ void EditorApp::DrawConsolePanel() {
 
 void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 	(void)extent;
+	// Legend (view mode, hints, undo counts) on the ACTIVE panel only;
+	// hideable via the View menu or the active panel's chip button.
+	if (!m_showOverlay)
+		return;
 	const float menuH = ImGui::GetFrameHeight();
-	ImGui::SetNextWindowPos(ImVec2(kLeftW + 12, menuH + 8), ImGuiCond_Always);
-	ImGui::SetNextWindowBgAlpha(0.55f);
+	// Top-left of the CENTRAL viewport rect (m_vp is set by RenderFrame).
+	// Quad layout: sit BELOW the per-viewport camera chips.
+	ImGui::SetNextWindowPos(ImVec2(m_vp.x + 12,
+		menuH + 8 + (m_vpLayout == 1 ? 34.0f : 0.0f)), ImGuiCond_Always);
+	ImGui::SetNextWindowBgAlpha(1.0f); // fully opaque UI
 	if (ImGui::Begin("##overlay", nullptr,
 		ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
 		ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
 		ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
 		ImGuiWindowFlags_NoInputs)) {
-		ImGui::Text("%s  |  %s gizmo%s  |  %s",
-			ViewModeName(m_viewMode),
+		ImGui::Text("%s%s  |  %s gizmo%s  |  %s",
+			ViewModeName(ActiveViewMode()),
+			m_wireframeAll ? " (wire)" : "",
 			m_gizmoMode == GizmoMode::Translate ? "Translate" :
 			m_gizmoMode == GizmoMode::Rotate ? "Rotate" : "Scale",
 			m_gizmoMode == GizmoMode::Translate ? " (world)" : " (local)",
@@ -1913,7 +2330,12 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 		if (m_selected != UINT32_MAX && m_world)
 			ImGui::Text("sel: %u %s", m_selected,
 				getNodeName(m_world->scene, int(m_selected)).c_str());
-		ImGui::TextDisabled("F1/F2/F3/F8 view  F5 inset  F6/F9/F10 debug  1/2/3 gizmo  I ui  L lights");
+		if (ActiveViewMode() == ViewMode::Meshlets)
+			ImGui::TextDisabled("meshlet color: %s",
+				m_debugMeshletMode == 0 ? "random per meshlet"
+				: "cone-cutoff heat");
+		ImGui::TextDisabled("F1/F2/F3/F4/F8 view  F5 inset  F6/F9/F10 debug");
+		ImGui::TextDisabled("W/E/R move-rotate-scale  Z wireframe  I ui  L lights");
 		ImGui::TextDisabled("F frame sel  Shift+F frame all");
 		ImGui::TextDisabled("click=select  Alt+LMB orbit  Alt+MMB pan  Alt+RMB dolly");
 		ImGui::TextDisabled("Ctrl+Z / Ctrl+Shift+Z: undo %zu / redo %zu",
@@ -1921,13 +2343,13 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 	}
 	ImGui::End();
 
-	// UV inset tag (top-left of the side strip).
-	if (SecondViewActive()) {
+	// UV inset tag (top-left of the side strip, inside the viewport).
+	if (SecondViewActive() && m_vpLayout == 0) {
 		uint32_t stripX = 0;
-		InsetStrip(extent, stripX);
+		InsetStrip(m_vp, stripX);
 		ImGui::SetNextWindowPos(ImVec2(float(stripX) + 8, menuH + 8),
 			ImGuiCond_Always);
-		ImGui::SetNextWindowBgAlpha(0.55f);
+		ImGui::SetNextWindowBgAlpha(1.0f); // fully opaque UI
 		if (ImGui::Begin("##insetlabel", nullptr,
 			ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
 			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |

@@ -96,10 +96,11 @@ bool EditorApp::Initialize() {
 		imguiEventHook_ = &smvk::ImGuiOverlay::ProcessEvent;
 	}
 
-	// Default orbit pose (overwritten by scene-fit on load).
-	m_camPos.setPosition(glm::vec3(4.0f, 3.0f, 6.0f));
-	m_camPos.lookAt(glm::vec3(4.0f, 3.0f, 6.0f),
-		glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+	// Default editor cameras (Perspective / Top ortho / Side ortho).
+	SetupDefaultCameras();
+
+	// Tourmaline Editor branding: window title + generated logo icon.
+	ApplyTourmalineBranding();
 
 	if (!m_pendingGltf.empty()) {
 		const std::string p = m_pendingGltf;
@@ -108,7 +109,7 @@ bool EditorApp::Initialize() {
 			std::cerr << "[Editor] failed to load '" << p << "'\n";
 	}
 
-	Log("GltfEditor ready. File > Open glTF... to load a scene.");
+	Log("Tourmaline Editor ready. File > Open scene... to load a scene.");
 	return true;
 }
 
@@ -132,9 +133,12 @@ void EditorApp::Shutdown() {
 	m_litFsModule = {};
 	m_wireFsModule = {};
 	m_bakedFsModule = {};
+	m_meshDebugVsModule = {};
+	m_meshDebugFsModule = {};
 	m_lineVsModule = {};
 	m_lineFsModule = {};
 	m_gizmoLines = {};
+	m_meshletIndices = {};
 	m_unlitProgram = {};
 	m_litProgram = {};
 	m_bakedProgram = {};
@@ -231,6 +235,14 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	ClearTexPreview();
 	m_selected = UINT32_MAX;
 	ClearHistory();
+	m_overrideRules.clear();
+	m_nextOverrideId = 1;
+	m_envByNode.clear(); // env nodes restored by LoadTour (editorSet)
+	m_envCurrent = UINT32_MAX;
+	m_materialFocus = UINT32_MAX; // inspector navigation state
+	m_materialTrail.clear();
+	ClearSelection();
+	ResetMeshletDebug(); // cooked meshlets are per-scene
 	// Cluster base for tour id translation (single-cluster scenes only).
 	m_clusterBase = UINT32_MAX;
 	if (m_world->clusters.size() == 1 &&
@@ -243,15 +255,15 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& path) {
 	LoadTour(); // replays <stem>.tour into the undo stack when present
 	RebuildCookedLights(); // census + seeds the viewport sun from the scene
 
-	// Fit the orbit camera to the scene bounds.
+	// Fit the default perspective camera to the scene bounds.
 	const ::Aabb bounds = m_world->ComputeSceneBounds();
 	if (bounds.mx.x >= bounds.mn.x) {
 		const glm::vec3 center = (bounds.mn + bounds.mx) * 0.5f;
 		const float radius = glm::length(bounds.mx - bounds.mn) * 0.5f;
-		m_camTarget = center;
-		m_camDist = std::max(radius * 2.2f, 1.0f);
-		m_camYaw = glm::radians(35.0f);
-		m_camPitch = glm::radians(-18.0f);
+		SetupDefaultCameras();
+		EditorCam& fitCam = m_editorCams[m_viewports[0].camIdx];
+		fitCam.target = center;
+		fitCam.dist = std::max(radius * 2.2f, 1.0f);
 	}
 	char buf[512];
 	std::snprintf(buf, sizeof(buf), "Loaded '%s' (nodes=%zu meshes=%zu materials=%zu)",
@@ -364,6 +376,14 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	ClearTexPreview();
 	m_selected = UINT32_MAX;
 	ClearHistory();
+	m_overrideRules.clear(); // pak scenes are read-only: no wide rules
+	m_nextOverrideId = 1;
+	m_envByNode.clear(); // pak loads replay no tour: default IBL stands
+	m_envCurrent = UINT32_MAX;
+	m_materialFocus = UINT32_MAX;
+	m_materialTrail.clear();
+	ClearSelection();
+	ResetMeshletDebug();
 	m_clusterBase = UINT32_MAX;
 	if (m_world->clusters.size() == 1 &&
 		m_world->scene.hierarchy.size() ==
@@ -380,10 +400,10 @@ bool EditorApp::LoadPakIntoWorld(const std::string& path,
 	if (bounds.mx.x >= bounds.mn.x) {
 		const glm::vec3 center = (bounds.mn + bounds.mx) * 0.5f;
 		const float radius = glm::length(bounds.mx - bounds.mn) * 0.5f;
-		m_camTarget = center;
-		m_camDist = std::max(radius * 2.2f, 1.0f);
-		m_camYaw = glm::radians(35.0f);
-		m_camPitch = glm::radians(-18.0f);
+		SetupDefaultCameras();
+		EditorCam& fitCam = m_editorCams[m_viewports[0].camIdx];
+		fitCam.target = center;
+		fitCam.dist = std::max(radius * 2.2f, 1.0f);
 	}
 	char buf[512];
 	std::snprintf(buf, sizeof(buf),
@@ -531,7 +551,7 @@ void EditorApp::UpdateTextureStreaming(smvk::Extent2D renderExtent) {
 		!m_texHandleBySlot.empty()) {
 		std::unordered_map<uint32_t, float> minDist;
 		minDist.reserve(256);
-		const glm::vec3 eye = m_camera.getPosition();
+		const glm::vec3 eye = EditorCamEye(ActiveCam());
 		auto note = [&](int slot, float dist) {
 			if (slot < 0)
 				return;
@@ -756,61 +776,77 @@ void EditorApp::RebuildNodeIndex() {
 
 void EditorApp::UpdateCamera(float dt) {
 	(void)dt;
-	// Orbit-only camera (no WASD/QE fly: held movement keys leaked into
+	// Orbit-only cameras (no WASD/QE fly: held movement keys leaked into
 	// text fields and fought the editor). Navigate with Alt+LMB/MMB/RMB,
-	// the wheel, and F / Shift+F framing.
-	const glm::vec3 up(0, 1, 0);
-	// Orbit drag: Maya-style (Alt+LMB tumble, Alt+MMB track,
-	// Alt+RMB dolly) plus the legacy RMB-drag orbit when Alt is up.
+	// the wheel, and F / Shift+F framing. Everything acts on the ACTIVE
+	// viewport's camera. ORTHOGRAPHIC cameras (Top/Side) keep their axis
+	// lock: tumble is disabled so controls can never coerce them into
+	// angled perspective-like views — only the Projection combo changes
+	// the type. Ortho zoom scales the half-height.
+	SetupDefaultCameras();
+	EditorCam& cam = ActiveCam();
+	const bool isOrtho = cam.type == EditorCam::Type::Orthographic;
+	const glm::vec3 fwd = glm::normalize(
+		EditorCamEye(cam) - cam.target);
 	const bool imguiEats = m_imgui && m_imgui->WantsCaptureMouse();
 	const bool alt = m_input.isKeyHeld(GLFW_KEY_LEFT_ALT) ||
 		m_input.isKeyHeld(GLFW_KEY_RIGHT_ALT);
 	if (!imguiEats && !m_gizmoDragging) {
 		if (alt) {
-			if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT)) {
-				m_camYaw -= float(m_input.getMouseDeltaX()) * 0.005f;
-				m_camPitch -= float(m_input.getMouseDeltaY()) * 0.005f;
-				m_camPitch = std::clamp(m_camPitch, -1.55f, 1.55f);
+			if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT) &&
+				!isOrtho) {
+				cam.yaw -= float(m_input.getMouseDeltaX()) * 0.005f;
+				cam.pitch -= float(m_input.getMouseDeltaY()) * 0.005f;
+				cam.pitch = std::clamp(cam.pitch, -1.55f, 1.55f);
 			}
 			if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_MIDDLE)) {
-				const glm::vec3 fwd = m_camPos.getForward();
 				glm::vec3 right = glm::cross(fwd, glm::vec3(0, 1, 0));
 				if (glm::length(right) < 1e-6f)
 					right = glm::vec3(1, 0, 0);
 				right = glm::normalize(right);
 				const glm::vec3 camUp = glm::normalize(glm::cross(right, fwd));
-				const float k = m_camDist * 0.0016f;
-				m_camTarget -= right * float(m_input.getMouseDeltaX()) * k;
-				m_camTarget += camUp * float(m_input.getMouseDeltaY()) * k;
+				const float k = isOrtho
+					? cam.orthoHalfH * 0.0018f
+					: cam.dist * 0.0016f;
+				// Track: horizontal follows the pivot-follows-cursor
+				// convention; vertical is screen-space grab (the scene
+				// slides WITH the cursor). SDL deltas are Y-down
+				// (mouse down = +dy).
+				cam.target += right * float(m_input.getMouseDeltaX()) * k;
+				cam.target += camUp * float(m_input.getMouseDeltaY()) * k;
 			}
 			if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT)) {
 				const float dy = float(m_input.getMouseDeltaY());
-				m_camDist = std::clamp(m_camDist * (1.0f + dy * 0.005f),
-					0.2f, 500.0f);
+				if (isOrtho)
+					cam.orthoHalfH = std::clamp(
+						cam.orthoHalfH * (1.0f + dy * 0.005f), 0.05f, 5000.0f);
+				else
+					cam.dist = std::clamp(cam.dist * (1.0f + dy * 0.005f),
+						0.2f, 500.0f);
 			}
 		}
 		else {
-			const bool orbitBtn = m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT) ||
-				(m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT) && m_selected == UINT32_MAX);
-			if (orbitBtn) {
-				m_camYaw -= float(m_input.getMouseDeltaX()) * 0.005f;
-				m_camPitch -= float(m_input.getMouseDeltaY()) * 0.005f;
-				m_camPitch = std::clamp(m_camPitch, -1.55f, 1.55f);
+			const bool orbitBtn =
+				m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_RIGHT) ||
+				(m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT) &&
+					m_selected == UINT32_MAX && !m_vpBoxDragging);
+			if (orbitBtn && !isOrtho) {
+				cam.yaw -= float(m_input.getMouseDeltaX()) * 0.005f;
+				cam.pitch -= float(m_input.getMouseDeltaY()) * 0.005f;
+				cam.pitch = std::clamp(cam.pitch, -1.55f, 1.55f);
 			}
 		}
 	}
-	// Wheel zoom.
+	// Wheel zoom (perspective: distance; ortho: half-height).
 	const float wheel = float(m_input.getScrollDeltaY());
-	if (wheel != 0.0f && !(m_imgui && m_imgui->WantsCaptureMouse()))
-		m_camDist = std::clamp(m_camDist * (wheel > 0 ? 0.9f : 1.1f), 0.2f, 500.0f);
-
-	const glm::vec3 eye =
-		m_camTarget + m_camDist * glm::vec3(
-			std::cos(m_camPitch) * std::sin(m_camYaw),
-			-std::sin(m_camPitch),
-			std::cos(m_camPitch) * std::cos(m_camYaw));
-	m_camPos.setPosition(eye);
-	m_camPos.lookAt(eye, m_camTarget, up);
+	if (wheel != 0.0f && !(m_imgui && m_imgui->WantsCaptureMouse())) {
+		if (cam.type == EditorCam::Type::Orthographic)
+			cam.orthoHalfH = std::clamp(
+				cam.orthoHalfH * (wheel > 0 ? 0.9f : 1.1f), 0.05f, 5000.0f);
+		else
+			cam.dist = std::clamp(cam.dist * (wheel > 0 ? 0.9f : 1.1f),
+				0.2f, 500.0f);
+	}
 }
 
 bool EditorApp::SelectionBounds(glm::vec3& outCenter, float& outRadius) {
@@ -862,9 +898,14 @@ bool EditorApp::SelectionBounds(glm::vec3& outCenter, float& outRadius) {
 void EditorApp::FrameSelection() {
 	glm::vec3 center{ 0.0f };
 	float radius = 0.0f;
+	SetupDefaultCameras();
+	EditorCam& cam = ActiveCam();
 	if (SelectionBounds(center, radius)) {
-		m_camTarget = center;
-		m_camDist = std::max(radius * 2.2f, 1.0f);
+		cam.target = center;
+		if (cam.type == EditorCam::Type::Orthographic)
+			cam.orthoHalfH = std::max(radius * 1.2f, 0.5f);
+		else
+			cam.dist = std::max(radius * 2.2f, 1.0f);
 	}
 	else {
 		FrameAll();
@@ -877,8 +918,15 @@ void EditorApp::FrameAll() {
 	const ::Aabb bounds = m_world->ComputeSceneBounds();
 	if (bounds.mx.x < bounds.mn.x)
 		return;
-	m_camTarget = (bounds.mn + bounds.mx) * 0.5f;
-	m_camDist = std::max(glm::length(bounds.mx - bounds.mn) * 0.5f * 2.2f, 1.0f);
+	SetupDefaultCameras();
+	EditorCam& cam = ActiveCam();
+	cam.target = (bounds.mn + bounds.mx) * 0.5f;
+	if (cam.type == EditorCam::Type::Orthographic)
+		cam.orthoHalfH = std::max(
+			glm::length(bounds.mx - bounds.mn) * 0.5f * 1.2f, 0.5f);
+	else
+		cam.dist = std::max(
+			glm::length(bounds.mx - bounds.mn) * 0.5f * 2.2f, 1.0f);
 }
 
 void EditorApp::DrawFrame() {

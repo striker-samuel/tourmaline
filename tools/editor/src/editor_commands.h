@@ -26,6 +26,7 @@ enum class EditVerb : uint8_t {
 	SetMatAttr,     // shared material value
 	SetNoLightmap,
 	SetDitherCloseup, // subtree dither on camera closeup
+	SetVisibility,  // Clarisse-style self hidden flag (hierarchical effect)
 	Parent, // world parent id
 };
 
