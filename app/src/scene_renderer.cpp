@@ -1542,6 +1542,37 @@ bool SceneRenderer::Initialize() {
 		};
 	}
 
+	// Opaque receiver-material writer (the GlassMask pass's second leg):
+	// ssrmat.frag evaluates the lit FS's effective metallic/roughness
+	// (layered blend + metallicRoughness texture) so the SSR trace can
+	// gate reflections per receiver material. Non-fatal twin of the
+	// glassmask loader: a missing module leaves the leg skipped and SSR
+	// without the material gate (uniform-F0 legacy behavior).
+	try {
+		auto ssrMatCode = readContentFile(contentVfs, "shaders/ssrmat.frag.hlsl.spv");
+		m_resources.fragSsrMatShader = m_context->CreateShaderModule(ssrMatCode, "fragSsrMat");
+	}
+	catch (...) {
+		std::cerr << "[SceneRenderer] ssrmat unavailable - SSR keeps the uniform-F0 behavior\n";
+	}
+	if (!m_resources.fragSsrMatShader.empty()) {
+		m_resources.ssrMatProgram = {
+			.shaders = {
+				smvk::Shader{
+					.module = m_resources.vertShader,
+					.entryPoint = "mainVS",
+					.stage = smvk::ShaderStage::Vertex
+				},
+				smvk::Shader{
+					.module = m_resources.fragSsrMatShader,
+					.entryPoint = "mainPS",
+					.stage = smvk::ShaderStage::Fragment
+				}
+			},
+			.shaderCount = 2
+		};
+	}
+
 	// Masked shadow-depth program (leaf-shaped shadows for cutout).
 	auto shadowVertCode = readContentFile(contentVfs, "shaders/shadow.vert.hlsl.spv");
 	auto shadowFragCode = readContentFile(contentVfs, "shaders/shadow.frag.hlsl.spv");
@@ -3016,6 +3047,28 @@ void SceneRenderer::Shutdown() {
 			return false;
 #endif
 		return true;
+	}
+
+	// Debug-view gate for the scene post-fx emissions (GlassMask + SSR +
+	// volumetric): true when a visualization replaces the scene pixels,
+	// so effects that composite over them must stay off (see the header
+	// comment). Skipping the SSR record also freezes + invalidates the
+	// temporal history for free (m_ssrFrameRanTemporal stays false, so
+	// SsrTaaEndFrame invalidates — the first lit record after the view
+	// warms up instead of blending against pre-view history).
+	bool SceneRenderer::DebugVisualizationActive() const {
+		// F2..F11 replace the Main opaque/transparent legs with flat
+		// programs; the GI debug views (R/F8) and the DS visualizers (Y)
+		// early-out of the lit fragment shader the same way.
+		if (m_debugView != DebugView::Lit)
+			return true;
+		if (m_giDebug != 0)
+			return true;
+#if defined(DS_DEBUG_VIZ)
+		if (m_dsDebugMode != DsDebugViz::Off)
+			return true;
+#endif
+		return false;
 	}
 
 	// Bins -> percentile target + damped adapt (tail of UpdateAutoExposure,
@@ -7324,30 +7377,43 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		}
 
 		// ---------------------------------------------------------------------
-		// Glass layer (SSR pane reflections, option B): redraw the
-		// transparent list into ssr.glass — R = pane presence, G = the
-		// pane fragment's reverse-Z depth (see glassmask.frag.hlsl).
-		// The opaque-only prepass depth never carries Blend/dithered
-		// panes, so without this layer the SSR trace can only trace off
-		// the seen-through background at pane pixels. Depth-tests against
-		// the prepass depth (occluded panes must not mask), never writes
-		// it; Max blend keeps the NEAREST pane where panes stack
-		// (reverse-Z max) so the redraw needs no sorting. Emitted only
-		// when SSR will run — the layer has no other consumer — and the
-		// emitted flag feeds the SSR passes, so a skipped layer can never
-		// leave the trace reading stale pane coverage.
+		// SSR receiver-material mask (the old GlassMask layer grown a
+		// second leg): two redraws into ssr.glass —
+		//   pane leg:   the transparent list, R = pane presence, G = the
+		//               pane fragment's reverse-Z depth (glassmask.frag).
+		//               The opaque-only prepass depth never carries
+		//               Blend/dithered panes, so without this leg the SSR
+		//               trace can only trace off the seen-through
+		//               background at pane pixels.
+		//   opaque leg: the opaque list, B = effective metallic, A = gloss
+		//               (ssrmat.frag evaluates the lit FS's layered blend
+		//               + metallicRoughness texture). The trace gates
+		//               reflections per receiver material off B/A — metal
+		//               F0 rises to ~1, rough dielectrics fade out — so
+		//               without this leg every surface mirrors at uniform
+		//               dielectric F0 (stone reads as chrome).
+		// Both legs depth-test against the prepass depth (occluded
+		// fragments must not mask), never write it; Max blend keeps the
+		// NEAREST pane depth where panes stack and the shiniest writer
+		// on coplanar opaque overlaps (reverse-Z max) so the redraws need
+		// no sorting. Emitted only when SSR will run — the mask has no
+		// other consumer — and the emitted flag feeds the SSR passes, so
+		// a skipped mask can never leave the trace reading stale coverage.
 		// ---------------------------------------------------------------------
-		bool glassLayerEmitted = false;
+		bool maskLayerEmitted = false;
 		{
 			SMVK_PROFILE_CATEGORY("GlassMask", Optick::Category::Rendering);
-			const bool glassWanted = m_passes.ssr && m_ssrEnabled
+			const bool paneWanted = m_ssrGlassEnabled
+				&& m_resources.glassMaskProgram.shaderCount == 2;
+			const bool matWanted = m_resources.ssrMatProgram.shaderCount == 2;
+			const bool maskWanted = m_passes.ssr && m_ssrEnabled
 				&& m_ssrIntensity > 0.0f
-				&& m_ssrGlassEnabled
-				&& m_resources.glassMaskProgram.shaderCount == 2
+				&& (paneWanted || matWanted)
+				&& !DebugVisualizationActive() // dies with the trace below (its only consumer)
 				&& m_viewportResources.ssr.Valid()
 				&& !m_viewportResources.renderDepth.logicalView.empty()
 				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX;
-			if (glassWanted) {
+			if (maskWanted) {
 				smvk::RenderPass& glassPass = m_rendergraph->AddPass("GlassMask")
 					.SetOffset(0, 0)
 					.SetExtent(renderExtent)
@@ -7364,11 +7430,12 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						smvk::AttachmentStoreOp::Store,
 						smvk::ClearDepthStencil(0, 0));
 				glassPass.SetRecordingFunc(
-					[this, pc, transparentCullView](smvk::CommandBuffer& cmd)
+					[this, pc, transparentCullView, paneWanted](smvk::CommandBuffer& cmd)
 				{
 					// Max blend: presence ORs, pane depth keeps the nearest
-					// (reverse-Z max) — order-independent panes. Write mask
-					// stays the BlendAttachmentState default (full RGBA).
+					// (reverse-Z max), opaque gloss the shiniest coplanar
+					// writer — order-independent legs. Write mask stays the
+					// BlendAttachmentState default (full RGBA).
 					smvk::BlendSettings glassBlend{};
 					glassBlend.blendState.blendEnable = true;
 					{
@@ -7388,20 +7455,90 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						.writeEnable = false,
 						.depthTestEnable = true,
 					};
-					const std::vector<TransparentDrawItem> draws =
-						CollectTransparentDraws(transparentCullView, false);
-					uint32_t boundMaterial = UINT32_MAX;
-					bool firstBind = true;
-					for (const TransparentDrawItem& d : draws) {
-						smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
+					// ---- Pane leg: transparent list -> (presence, depth) ----
+					if (paneWanted) {
+						const std::vector<TransparentDrawItem> draws =
+							CollectTransparentDraws(transparentCullView, false);
+						uint32_t boundMaterial = UINT32_MAX;
+						bool firstBind = true;
+						for (const TransparentDrawItem& d : draws) {
+							smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
+							if (!meshDesc)
+								continue;
+							if (firstBind || d.materialId != boundMaterial) {
+								smvk::RasterSettings raster{};
+								if (smvk::Material* mat = m_world->GetMaterial(d.materialId))
+									raster = mat->pipeline.raster; // doubleSided panes -> Cull None
+								cmd.BindRenderPipeline(
+									m_resources.glassMaskProgram,
+									smvk::VertexFormat::StaticVertexFormat,
+									glassDepth,
+									smvk::StencilSettings{},
+									glassBlend,
+									smvk::MSAASettings::Count1(),
+									raster);
+								cmd.BindStaticVertexFmt();
+								if (firstBind) {
+									// Full push once: the VS reads frameUniforms +
+									// renderViews; per-draw deltas below overwrite
+									// model + materialId, same discipline as Main.
+									cmd.PushConstants(0, sizeof(PushConstants), &pc,
+										smvk::ShaderStage::All);
+									firstBind = false;
+								}
+								boundMaterial = d.materialId;
+							}
+							PushConstants objPC{};
+							objPC.materialId = d.materialId;
+							const glm::mat4& model = m_world->scene.globalTransform[d.node];
+							std::copy_n(glm::value_ptr(model), 16, objPC.model);
+							cmd.PushConstants(
+								offsetof(PushConstants, materialId),
+								sizeof(objPC.materialId),
+								&objPC.materialId,
+								smvk::ShaderStage::All
+							);
+							cmd.PushConstants(
+								0,
+								offsetof(PushConstants, frameUniforms),
+								&objPC,
+								smvk::ShaderStage::All
+							);
+							for (auto& draw_set : meshDesc->geometry.surfaces) {
+								cmd.DrawIndexed(
+									draw_set.indexCount,
+									1,
+									draw_set.firstIndex,
+									draw_set.baseVertex
+								);
+							}
+						}
+					}
+					// ---- Opaque leg: opaque list -> (metallic, gloss) ----
+					// GreaterEqual against the prepass depth lands the
+					// redraw exactly on its own surface; Masked (cutout)
+					// materials discard whole-draw in ssrmat.frag so their
+					// holes never stencil gloss onto the background.
+					uint32_t boundMat2 = UINT32_MAX;
+					bool firstBind2 = true;
+					m_world->forEachRenderItem(
+						smvk::IteratorFlagBit_Renderable
+						| smvk::IteratorFlagBit_Opaque
+						| smvk::IteratorFlagBit_StaticVertexFmt
+						,
+						[&](const smvk::World::RenderItem& item)
+					{
+						if (item.material == smvk::World::kInvalidIndex)
+							return;
+						smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
 						if (!meshDesc)
-							continue;
-						if (firstBind || d.materialId != boundMaterial) {
+							return;
+						if (firstBind2 || item.material != boundMat2) {
 							smvk::RasterSettings raster{};
-							if (smvk::Material* mat = m_world->GetMaterial(d.materialId))
-								raster = mat->pipeline.raster; // doubleSided panes -> Cull None
+							if (smvk::Material* mat = m_world->GetMaterial(item.material))
+								raster = mat->pipeline.raster; // cull mode per material
 							cmd.BindRenderPipeline(
-								m_resources.glassMaskProgram,
+								m_resources.ssrMatProgram,
 								smvk::VertexFormat::StaticVertexFormat,
 								glassDepth,
 								smvk::StencilSettings{},
@@ -7409,19 +7546,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 								smvk::MSAASettings::Count1(),
 								raster);
 							cmd.BindStaticVertexFmt();
-							if (firstBind) {
-								// Full push once: the VS reads frameUniforms +
-								// renderViews; per-draw deltas below overwrite
-								// model + materialId, same discipline as Main.
+							if (firstBind2) {
 								cmd.PushConstants(0, sizeof(PushConstants), &pc,
 									smvk::ShaderStage::All);
-								firstBind = false;
+								firstBind2 = false;
 							}
-							boundMaterial = d.materialId;
+							boundMat2 = item.material;
 						}
 						PushConstants objPC{};
-						objPC.materialId = d.materialId;
-						const glm::mat4& model = m_world->scene.globalTransform[d.node];
+						objPC.materialId = item.material;
+						const glm::mat4& model = m_world->scene.globalTransform[item.node];
 						std::copy_n(glm::value_ptr(model), 16, objPC.model);
 						cmd.PushConstants(
 							offsetof(PushConstants, materialId),
@@ -7443,9 +7577,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 								draw_set.baseVertex
 							);
 						}
-					}
+					});
 				});
-				glassLayerEmitted = true;
+				maskLayerEmitted = true;
 			}
 		}
 
@@ -7456,7 +7590,11 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		// the scene. Normals + Fresnel reconstruct from the 1x prepass
 		// depth (no GBuffer) PLUS the glass layer above (pane receivers);
 		// Bistro shopfront glass at street grazing angles is the
-		// calibration case.
+		// calibration case. Suppressed while a debug view replaces the
+		// scene (DebugVisualizationActive) — reflections would composite
+		// additively over the flat readout; the skipped record
+		// invalidates the temporal history, so the first lit record
+		// after the view warms up instead of blending stale.
 		// ---------------------------------------------------------------------
 		bool ssrEmitted = false;
 		{
@@ -7473,7 +7611,8 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			&& m_viewportResources.ssr.Valid()
 			&& !m_viewportResources.renderDepth.logicalView.empty()
 			&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
-			&& m_ssrIntensity > 0.0f;
+			&& m_ssrIntensity > 0.0f
+			&& !DebugVisualizationActive();
 		if (ssrOn) {
 			// Temporal path needs the motion-vector target (reprojection
 			// source); without it the record takes the spatial-only path
@@ -7495,9 +7634,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					sceneHdrBindless,
 					m_viewportResources.renderDepth.logicalView,
 					m_viewportResources.renderDepth.bindlessIndex,
-					glassLayerEmitted ? m_viewportResources.ssr.glass.logical
+					maskLayerEmitted ? m_viewportResources.ssr.glass.logical
 						: smvk::LogicalImageViewHandle{},
-					glassLayerEmitted ? m_viewportResources.ssr.glass.bindlessIndex
+					maskLayerEmitted ? m_viewportResources.ssr.glass.bindlessIndex
 						: UINT32_MAX,
 					m_viewportResources.motionVectors.target.logicalView,
 					m_viewportResources.motionVectors.target.bindlessIndex,
@@ -7522,9 +7661,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					sceneHdrBindless,
 					m_viewportResources.renderDepth.logicalView,
 					m_viewportResources.renderDepth.bindlessIndex,
-					glassLayerEmitted ? m_viewportResources.ssr.glass.logical
+					maskLayerEmitted ? m_viewportResources.ssr.glass.logical
 						: smvk::LogicalImageViewHandle{},
-					glassLayerEmitted ? m_viewportResources.ssr.glass.bindlessIndex
+					maskLayerEmitted ? m_viewportResources.ssr.glass.bindlessIndex
 						: UINT32_MAX,
 					frameUniformsAddress,
 					linearSampler,
@@ -7626,7 +7765,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				&& m_viewportResources.volumetric.Valid()
 				&& !m_viewportResources.renderDepth.logicalView.empty()
 				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
-				&& m_volumetricDensity > 0.0f && m_volumetricIntensity > 0.0f;
+				&& m_volumetricDensity > 0.0f && m_volumetricIntensity > 0.0f
+				// Debug views: fog would Beer-Lambert the flat readout
+				// and add scatter on top (DebugVisualizationActive).
+				&& !DebugVisualizationActive();
 			if (volOn) {
 				m_viewportResources.volumetric.AddVolumetricPass(
 					*m_rendergraph,

@@ -3,10 +3,10 @@
 #include "dof.hlsli"
 #include "environment.hlsli"
 
-// SSR trace (half res): full-res depth + glass layer -> half-res
-// reflection layer.
-// Output: rgb = reflected HDR x Fresnel x intensity, clamped to
-//         kSsrMaxReflected (firefly guard — sun-disc strikes and
+// SSR trace (half res): full-res depth + receiver-material mask ->
+// half-res reflection layer.
+// Output: rgb = reflected HDR x Fresnel x glossFade x intensity, clamped
+//         to kSsrMaxReflected (firefly guard — sun-disc strikes and
 //         half-overflow garbage would otherwise spike 10-50x over
 //         their neighbors and bloom/meter downstream),
 //         a   = edge x distance confidence (0 on a miss).
@@ -15,10 +15,13 @@
 // miss without double-counting the sky. The bilateral blur + composite
 // passes consume (rgb, a); the FULL-res base HDR is only re-added in
 // the composite, so it stays sharp.
-// Receiver: a glass pane where the glass layer masks one (panes never
-// write the opaque depth — without the layer every pane pixel traced
-// off the seen-through background instead of the pane), else the
-// nearest valid opaque depth tap.
+// Receiver: a glass pane where the mask marks one (panes never write
+// the opaque depth — without the mask every pane pixel traced off the
+// seen-through background instead of the pane), else the nearest valid
+// opaque depth tap. Receiver MATERIAL comes from the mask's opaque
+// redraw (B = metallic, A = gloss): metal F0 rises to ~1 and rough
+// dielectrics fade their reflections out (stone stops reading as
+// chrome); an unbound mask keeps the uniform-F0 legacy behavior.
 
 struct PSIn
 {
@@ -51,7 +54,7 @@ struct SsrTracePush
                      // else the record counter (temporal path animates the
                      // ray-origin dither so the TAA pass converges speckle
                      // to its mean instead of parking a static pattern)
-    uint maskTextureIndex; // glass layer bindless, 0xffffffff = none
+    uint maskTextureIndex; // receiver-material mask bindless (pane R/G + opaque B/A), 0xffffffff = none
     uint pad0; // sizeof alignment (mirrors the C++ pad)
 };
 
@@ -89,11 +92,14 @@ float2 SsrFullNdc(int2 fullPx, float2 invDepthSize)
                   (float(fullPx.y) + 0.5f) * invDepthSize.y * 2.0f - 1.0f);
 }
 
-// Glass-layer tap (full-res): R = pane presence, G = the pane
-// fragment's reverse-Z depth (see glassmask.frag.hlsl). Returns 0 when
-// the layer is not bound this frame — a uniform branch, so the
-// sentinel never indexes the bindless array out of range.
-float4 SsrGlassTap(int2 fullPx)
+// Receiver-material mask tap (full-res): R/G = pane presence + the
+// pane fragment's reverse-Z depth (glassmask.frag.hlsl redraw of the
+// transparent list), B/A = effective metallic + gloss of the OPAQUE
+// receiver (ssrmat.frag.hlsl redraw of the opaque list — the layer is
+// the pane mask grown into a general SSR receiver-material mask).
+// Returns 0 when the layer is not bound this frame — a uniform branch,
+// so the sentinel never indexes the bindless array out of range.
+float4 SsrMaskTap(int2 fullPx)
 {
     if (sp.maskTextureIndex == 0xffffffffu)
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -171,10 +177,10 @@ PSOut mainPS(PSIn IN)
     int2 fullPxC = fullBase;
     bool paneReceiver = false;
     {
-        const float4 gl00 = SsrGlassTap(fullBase);
-        const float4 gl10 = SsrGlassTap(fullBase + int2(1, 0));
-        const float4 gl01 = SsrGlassTap(fullBase + int2(0, 1));
-        const float4 gl11 = SsrGlassTap(fullBase + int2(1, 1));
+        const float4 gl00 = SsrMaskTap(fullBase);
+        const float4 gl10 = SsrMaskTap(fullBase + int2(1, 0));
+        const float4 gl01 = SsrMaskTap(fullBase + int2(0, 1));
+        const float4 gl11 = SsrMaskTap(fullBase + int2(1, 1));
         float gBest = 0.0f;
         if (gl00.r > 0.5f && !DofIsBackgroundOrGarbage(gl00.g) && gl00.g > gBest)
             { gBest = gl00.g; dCenter = gl00.g; fullPxC = fullBase; paneReceiver = true; }
@@ -219,8 +225,8 @@ PSOut mainPS(PSIn IN)
     int2 fullPxY = fullBase + int2(0, 2);
     float dX = depthTex.Load(int3(fullPxX, 0)).r;
     float dY = depthTex.Load(int3(fullPxY, 0)).r;
-    const float4 glX = SsrGlassTap(fullPxX);
-    const float4 glY = SsrGlassTap(fullPxY);
+    const float4 glX = SsrMaskTap(fullPxX);
+    const float4 glY = SsrMaskTap(fullPxY);
     float dXe = paneReceiver
         ? ((glX.r > 0.5f && !DofIsBackgroundOrGarbage(glX.g)) ? glX.g : dCenter)
         : ((glX.r > 0.5f || DofIsBackgroundOrGarbage(dX)) ? dCenter : dX);
@@ -236,13 +242,33 @@ PSOut mainPS(PSIn IN)
     // Safe for double-sided glass: reflect() is invariant under N -> -N,
     // so the viewer-facing flip above never mirrors the reflection.
 
-    // Fresnel (Schlick, dielectric F0): grazing angles — the bistro
-    // shopfront seen from the street — reflect the most. On a pane
-    // receiver N IS the pane normal (glass layer derivatives), so this
-    // is the pane's real grazing response: near-clear glass keeps its
-    // 4% face-on sheen and swings to a near-mirror at street-grazing.
+    // Receiver material (mask B/A, written by the opaque ssrmat
+    // redraw): B = effective metallic (factor x metallicRoughness.b),
+    // A = gloss (1 - roughness, factor x metallicRoughness.g). Panes
+    // keep the glassmask values (B=0, A=1): the pane's reflection
+    // strength stays a pure dielectric-F0 Fresnel read — its own
+    // semantics, immune to the seen-through background's material
+    // bleeding through the Max blend. Unbound mask (missing programs /
+    // layer skipped) leaves matMetal 0 / matGloss 1: the uniform-F0
+    // legacy behavior, an un-gated mirror everywhere.
+    float matMetal = 0.0f;
+    float matGloss = 1.0f;
+    if (!paneReceiver)
+    {
+        const float4 mm = SsrMaskTap(fullPxC);
+        matMetal = saturate(mm.b);
+        matGloss = saturate(mm.a);
+    }
+
+    // Fresnel (Schlick): F0 rises to ~1 for metals (their colored F0
+    // approximated flat — the mask carries scalars only); dielectrics
+    // keep the uniform sp.f0. On a pane receiver N IS the pane normal
+    // (glass layer derivatives), so this is the pane's real grazing
+    // response: near-clear glass keeps its 4% face-on sheen and swings
+    // to a near-mirror at street-grazing.
+    float f0 = lerp(sp.f0, 1.0f, matMetal);
     float ndv = saturate(dot(N, V));
-    float fres = sp.f0 + (1.0f - sp.f0) * pow(1.0f - ndv, 5.0f);
+    float fres = f0 + (1.0f - f0) * pow(1.0f - ndv, 5.0f);
 
     float3 R = reflect(-V, N);
     // No dot(R, V) early-out: R is mirrored across the viewer-facing N,
@@ -463,11 +489,18 @@ PSOut mainPS(PSIn IN)
         return OUT;
     }
     float3 reflected = SanitizeHdr(hdrTex.Sample(smp, hitUv).rgb);
+    // Roughness fade (mask A = gloss): sharp screen-space reflections
+    // only read on glossy receivers — gloss^2 keeps polished metals /
+    // glass near 1 and pulls rough dielectrics (stone, plaster) to ~0,
+    // where a mirror-sharp additive lobe would read as chrome. The
+    // fixed 5x5 blur cannot spread the lobe per material, so fading it
+    // out is the honest gate. Unbound mask keeps gloss 1 (legacy).
+    float glossFade = matGloss * matGloss;
     // Firefly clamp BEFORE the intensity scale leaves the pass: a noisy
     // normal + dithered origin striking the sun disc would otherwise
     // inject up to 4x sun lux next to ~100s neighbors — the spike bloom
     // (threshold 1000) and the exposure top bin then amplify.
-    float3 capped = min(reflected * (fres * sp.intensity),
+    float3 capped = min(reflected * (fres * glossFade * sp.intensity),
                         float3(kSsrMaxReflected, kSsrMaxReflected, kSsrMaxReflected));
     OUT.outColor = float4(capped, hitFade);
     return OUT;

@@ -631,13 +631,19 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> fragWireShader;
 	smvk::ShaderProgram mainWireProgram;       // default.vert + wire FS
 	smvk::ShaderProgram vertexLitWireProgram;  // default_vertexlit.vert + wire FS
-	// Glass-layer writer (SSR pane reflections, option B): default.vert +
+	// SSR receiver-material mask writers (see ssr.h): default.vert +
 	// glassmask.frag redraw of the transparent list into ssr.glass
-	// (R = pane presence, G = pane reverse-Z depth). Missing module
-	// leaves shaderCount 0, the GlassMask pass is not emitted, and SSR
-	// keeps the opaque-depth receiver (pre-layer behavior).
+	// (R = pane presence, G = pane reverse-Z depth) and default.vert +
+	// ssrmat.frag redraw of the opaque list (B = effective metallic,
+	// A = gloss). Missing modules leave shaderCount 0 and the GlassMask
+	// pass skips that leg; when both are missing the pass is not emitted
+	// and SSR keeps the opaque-depth receiver with the uniform-F0
+	// legacy behavior (pre-mask look: reflections fire on every
+	// surface, rough stone included).
 	smvk::Holder<smvk::ShaderModuleHandle> fragGlassMaskShader;
 	smvk::ShaderProgram glassMaskProgram;
+	smvk::Holder<smvk::ShaderModuleHandle> fragSsrMatShader;
+	smvk::ShaderProgram ssrMatProgram;
 	// Alpha-tested shadow-depth program for MASK cutout casters
 	// (shadow.vert mainVS + shadow.frag mainPS). Opaque casters keep
 	// the engine builder's depth-only program. shadow.frag declares
@@ -1502,8 +1508,10 @@ protected:
 	// case (default Bistro view looks down the road at it).
 	bool m_ssrEnabled = false;
 	// Glass layer (pane receivers) on/off — VULKANTOY_SSR_GLASS A/B knob.
-	// Off = no GlassMask pass, SSR reflects off the opaque depth only
-	// (the pre-layer behavior).
+	// Off = the GlassMask pass skips its pane leg, SSR reflects off the
+	// opaque depth only (the pre-layer pane behavior); the opaque
+	// material leg still runs, so the per-receiver metallic/gloss gate
+	// stays active.
 	bool m_ssrGlassEnabled = true;
 	int m_ssrSteps = 32; // raymarch steps 1..128 (half-res trace)
 	int m_ssrRefineSteps = 4; // binary refine iterations 0..8
@@ -1720,6 +1728,17 @@ protected:
 		return (m_debugView == DebugView::Lit)
 			? EffectiveExposure() : kDebugViewExposure;
 	}
+	// True when a debug visualization REPLACES the scene pixels this
+	// record: any non-Lit DebugView (F2..F11 flat programs), the GI
+	// baked debug views (R/F8) or a DS visualizer (Y, DS_DEBUG_VIZ).
+	// Scene post-fx that composites ON TOP of those pixels — SSR
+	// reflections (additive), volumetric fog (Beer-Lambert throughput +
+	// scatter) and the SSR-only GlassMask layer — stays off while true,
+	// same discipline as the metering freeze in ExposureMeteringActive:
+	// compositing over a flat readout pollutes it (reflections of the
+	// palette itself, fog-faded heat colors) the way metering it would
+	// poison the exposure.
+	bool DebugVisualizationActive() const;
 	void UpdateAutoExposure(uint32_t frameIndex); // download slice BEFORE zero + Adapt (call at record time)
 	// ---- Bloom chain (HDR down/up, see bloom.h) ----
 	bool m_bloomEnabled = true; // runs before Tonemap; gated with m_passes.bloom (B)

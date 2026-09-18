@@ -53,32 +53,41 @@
 // reflections composited additively. Downstream passes sample the SSR
 // output when the pass ran, else the input directly (no copy disabled).
 //
-// Glass layer (option B — pane reflections): `glass` is a full-res
-// RGBA16F target the APP fills with a GlassMask pass (transparent-list
-// redraw, glassmask.frag.hlsl): R = pane presence, G = the pane
-// fragment's reverse-Z depth. The trace consumes it as the receiver
-// where it masks (pane position/normal/Fresnel — real pane geometry,
-// not the seen-through background), and the composite uses it to keep
-// pane pixels off the sky early-out. Pass an empty view (or an invalid
-// bindless index) to AddSsr*Passes to disable: the trace falls back to
-// the opaque-depth receiver and the composite to the unconditional sky
-// early-out — the pre-layer behavior.
+// Glass layer (option B — pane reflections) grown into the SSR
+// receiver-material mask: `glass` is a full-res RGBA16F target the APP
+// fills with two redraws into one pass ("GlassMask"):
+//   - transparent list (glassmask.frag.hlsl): R = pane presence,
+//     G = the pane fragment's reverse-Z depth. The trace consumes it as
+//     the receiver where it masks (pane position/normal/Fresnel — real
+//     pane geometry, not the seen-through background), and the
+//     composite uses it to keep pane pixels off the sky early-out.
+//   - opaque list (ssrmat.frag.hlsl): B = effective metallic,
+//     A = gloss (1 - roughness), evaluated exactly like the lit FS
+//     (layered blend + metallicRoughness texture). The trace reads B/A
+//     on opaque receivers: metal F0 rises to ~1 and rough dielectrics
+//     fade their reflections out (gloss^2), so stone/plaster stop
+//     reading as chrome while glass, polished floors and metals keep
+//     their read. Pass an empty view (or an invalid bindless index) to
+//     AddSsr*Passes to disable: the trace falls back to the
+//     opaque-depth receiver with the uniform-F0 legacy behavior (an
+//     un-gated mirror everywhere — the pre-material-mask look).
 //
 // No GBuffer exists (forward+ path writes color + depth only), so the
 // trace reconstructs everything it needs from the 1x prepass depth
-// plus the glass layer:
+// plus the receiver-material mask above:
 //   - view positions via FrameUniforms.invProj (exact, flip/finite-far
 //     agnostic — same discipline as ssao.h / dof.h),
 //   - normals from depth-derived view-position derivatives,
-//   - Fresnel from a uniform dielectric F0 (glass default 0.04).
-// Every dielectric surface reflects with the same F0; there is no
-// per-material roughness/metalness mask, so the intensity knob is the
-// artistic gate. Bistro windows (large vertical glass planes at grazing
-// street-view angles, double-sided) are the calibration case: aim the
-// default Bistro camera down the road at the shopfront glass and raise
-// intensity until the opposite facades read in the panes. reflect() is
-// invariant under N -> -N, so the viewer-facing normal flip is safe for
-// double-sided glass by construction.
+//   - Fresnel from F0 = lerp(uniform dielectric F0, 1, mask metallic)
+//     (glass default 0.04), scaled by the mask's gloss on the emission
+//     (roughness fade). Every dielectric surface reflects with the same
+//     base F0; the per-receiver metallic/gloss mask is the material
+//     gate. Bistro windows (large vertical glass planes at grazing
+//     street-view angles, double-sided) are the calibration case: aim
+//     the default Bistro camera down the road at the shopfront glass
+//     and raise intensity until the opposite facades read in the panes.
+//     reflect() is invariant under N -> -N, so the viewer-facing
+//     normal flip is safe for double-sided glass by construction.
 //
 // Coordinate discipline (matches ssao.frag.hlsl exactly, so a Y-flip /
 // reverse-Z audit only has to happen once):
@@ -256,12 +265,14 @@ struct ScreenSpaceReflections {
 
 	Target raw; // half-res trace output (rgb = refl x fresnel x intensity, a = confidence)
 	Target blurred; // half-res bilateral blur of raw
-	// Glass layer (option B — pane reflections): full-res RGBA16F,
-	// R = pane presence, G = pane reverse-Z depth. Filled by the APP's
-	// GlassMask pass (transparent-list redraw, glassmask.frag.hlsl);
-	// consumed by the trace (pane receivers) + composite (sky early-out
-	// gate). Same extent as the composite, so Ensure's extent check
-	// covers it.
+	// Receiver-material mask (option B — pane reflections + opaque
+	// material gate): full-res RGBA16F, R/G = pane presence + pane depth
+	// (glassmask.frag.hlsl), B/A = effective metallic + gloss
+	// (ssrmat.frag.hlsl). Filled by the APP's GlassMask pass
+	// (transparent-list + opaque-list redraw); consumed by the trace
+	// (pane receivers + per-receiver material gating) + composite (sky
+	// early-out gate). Same extent as the composite, so Ensure's extent
+	// check covers it.
 	Target glass;
 	// Half-res temporal history ping-pong (TAA of the reflection layer).
 	// history[parity] is written by the temporal pass each temporal
@@ -582,10 +593,11 @@ struct ScreenSpaceReflections {
 	// reflection) + blur (half-res reflection + full-res depth -> half-res)
 	// + composite (half-res reflection + full-res depth + full-res HDR
 	// [+ glass layer] -> full-res HDR).
-	// glassView/glassBindlessIndex: the GlassMask pass output (pane
-	// presence + pane depth). Empty view or invalid index disables pane
-	// receivers — the trace keeps the opaque-depth receiver and the
-	// composite keeps the unconditional sky early-out.
+	// glassView/glassBindlessIndex: the receiver-material mask output
+	// (pane presence/depth + opaque metallic/gloss). Empty view or
+	// invalid index disables both pane receivers and the material gate —
+	// the trace keeps the opaque-depth receiver with the uniform-F0
+	// legacy behavior.
 	// Captures only copyable handles/indices, so the passes are safe once
 	// this call returns.
 	void AddSsrPasses(RenderGraph& rg,

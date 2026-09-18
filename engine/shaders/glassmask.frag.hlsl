@@ -7,12 +7,16 @@
 //
 // The app's GlassMask pass redraws the transparent list (AlphaMode::
 // Blend + dithered screen-door panes — the materials the opaque-only
-// prepass depth never carries) into the SSR glass target:
+// prepass depth never carries) into the SSR mask target:
 //   R = pane presence (1 wherever a transparent fragment lands),
 //   G = the pane fragment's reverse-Z depth — SV_Position.z, the exact
 //       value the pane would have written to the depth buffer, so the
 //       SSR trace unprojects / view-distances it with the same
 //       DofUnprojectView / DofViewDist helpers it uses on depth taps.
+//   B/A stay 0/1: under the mask's receiver-material semantics (see
+//       ssrmat.frag.hlsl, the OPAQUE redraw of the same pass) panes are
+//       non-metal full-gloss receivers — their reflection strength is
+//       the trace's dielectric-F0 Fresnel alone.
 // The pass blends Max: presence ORs together and depth keeps the
 // NEAREST pane where panes stack (reverse-Z max), so draw order never
 // matters. Depth test is GreaterEqual against the opaque prepass depth
