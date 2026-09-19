@@ -1112,6 +1112,13 @@ uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
 	return clones;
 }
 
+// Sweep-repair threshold (atlas-normalized max |du|+|dv| over a
+// triangle's corner pairs). Genuine chart rects cap at 256x256 texels,
+// so no legitimate triangle spans more than ~0.17 here; anything wider
+// is a dropped-face/inherited-UV streak across unrelated rects (same
+// cutoff as the pak dump's uv2span detector).
+constexpr float kUvSweepRepairSpan = 0.45f;
+
 // Per-corner atlas uv2 stamping (seam-correct), shared by the LOD0 bake
 // and every per-LOD atlas level (xatlas path): a vertex shared by two
 // charts has no single valid atlas uv, so every triangle corner is
@@ -1121,13 +1128,17 @@ uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
 // buffer is rebuilt in the same triangle order (surface ranges stay
 // valid). Fills outChartOf (per-vertex chart over the STAMPED layout —
 // the simplifier's error-metric provenance) and counts seam duplicates.
-// Returns the mesh's lobe count (first chunk, written by the bake's
-// per-mesh selection; fallbackLobes when the mesh has no chunks).
+// A final sweep collapses cross-rect triangles (span over
+// kUvSweepRepairSpan — dropped/degenerate faces inheriting drifted UVs)
+// to their centroid UV: one wrong texel instead of an atlas streak;
+// repairedTris/unchartedTris report what it found. Returns the mesh's
+// lobe count (first chunk, written by the bake's per-mesh selection;
+// fallbackLobes when the mesh has no chunks).
 uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 	const smvk::gi::SgLightmapChartResult& chartRes, uint32_t chunkBase,
 	const smvk::gi::SgLightmapAtlas& atlas, uint32_t gutter,
 	uint32_t fallbackLobes, std::vector<uint32_t>& outChartOf,
-	uint64_t& seamDups) {
+	uint64_t& seamDups, uint32_t& repairedTris, uint32_t& unchartedTris) {
 	const size_t triCount = upload.indices.size() / 3;
 	const std::vector<uint32_t>& triChart = chartRes.triChart;
 	const std::vector<glm::vec2>& cornerUv = chartRes.cornerChartUv;
@@ -1140,9 +1151,12 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 	cornerSlot.reserve(size_t(origVerts) * 2);
 	std::vector<uint32_t> newIndices;
 	newIndices.reserve(upload.indices.size());
+	unchartedTris = 0;
 	for (size_t t = 0; t < triCount; ++t) {
 		const uint32_t chartIdx = t < triChart.size()
 			? triChart[t] : 0xFFFFFFFFu;
+		if (chartIdx == 0xFFFFFFFFu)
+			++unchartedTris;
 		for (int k = 0; k < 3; ++k) {
 			const uint32_t orig = upload.indices[t * 3 + k];
 			if (chartIdx == 0xFFFFFFFFu) {
@@ -1186,6 +1200,37 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 		}
 	}
 	upload.indices = std::move(newIndices);
+	// Sweep repair: collapse cross-rect triangles to their centroid UV.
+	// Duplicates carry the repair (never touch shared vertices, so no
+	// neighbor triangle can regress).
+	repairedTris = 0;
+	for (size_t t = 0; t < triCount; ++t) {
+		const glm::vec2 auv[3] = {
+			upload.vertices[upload.indices[t * 3 + 0]].texCoord2,
+			upload.vertices[upload.indices[t * 3 + 1]].texCoord2,
+			upload.vertices[upload.indices[t * 3 + 2]].texCoord2,
+		};
+		float span = 0.0f;
+		for (int a = 0; a < 3; ++a) {
+			for (int b = a + 1; b < 3; ++b) {
+				span = std::max(span,
+					std::abs(auv[a].x - auv[b].x)
+					+ std::abs(auv[a].y - auv[b].y));
+			}
+		}
+		if (span <= kUvSweepRepairSpan)
+			continue;
+		const glm::vec2 centroid = (auv[0] + auv[1] + auv[2]) / 3.0f;
+		for (int k = 0; k < 3; ++k) {
+			smvk::StaticVertex dup =
+				upload.vertices[upload.indices[t * 3 + k]];
+			dup.texCoord2 = centroid;
+			upload.vertices.push_back(dup);
+			upload.indices[t * 3 + k] =
+				uint32_t(upload.vertices.size() - 1);
+		}
+		++repairedTris;
+	}
 	outChartOf.assign(upload.vertices.size(), 0xFFFFFFFFu);
 	for (uint32_t v = 0; v < origVerts && v < outChartOf.size(); ++v)
 		outChartOf[v] = ownerChart[v];
@@ -2286,9 +2331,14 @@ int main(int argc, char** argv) {
 			// triangle's own chart, seam duplicates appended, index
 			// buffer rebuilt in the same triangle order.
 			std::vector<uint32_t> chartOf;
+			uint32_t repaired = 0, uncharted = 0;
 			const uint32_t lobes = StampLightmapUvs(*upload, w.chart,
 				w.chunkBase, atlas, chartOpts.gutterTexels, args.lmLobes,
-				chartOf, seamDups);
+				chartOf, seamDups, repaired, uncharted);
+			if (repaired != 0 || uncharted != 0)
+				std::cerr << "  [LM] stamp node " << w.node
+					<< ": uncharted=" << uncharted
+					<< " sweep-repaired=" << repaired << "\n" << std::flush;
 			// Chart provenance for the LOD cook (CookLodSiblings): one
 			// chart id per vertex over the STAMPED layout. This is what
 			// lets the simplifier keep collapses inside one lightmap
@@ -2542,9 +2592,16 @@ int main(int argc, char** argv) {
 						continue;
 					}
 					std::vector<uint32_t> dummy;
+					uint32_t repaired = 0, uncharted = 0;
 					const uint32_t lobes = StampLightmapUvs(*up, j.chart,
 						j.chunkBase, atlas, chartOpts.gutterTexels,
-						j.baseLobes, dummy, seamDups);
+						j.baseLobes, dummy, seamDups, repaired, uncharted);
+					if (repaired != 0 || uncharted != 0)
+						std::cerr << "  [LM] xatlas lod" << level
+							<< " stamp node " << j.node
+							<< ": uncharted=" << uncharted
+							<< " sweep-repaired=" << repaired << "\n"
+							<< std::flush;
 					if (smvk::StaticMesh* m =
 							cluster->staticMeshes.get(j.sib))
 						m->lmChunk = lobes;

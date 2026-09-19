@@ -1364,12 +1364,14 @@ bool GenerateLightmapChartsXatlas(
 			if (t == 0xFFFFFFFFu)
 				continue; // exact-duplicate face already placed
 			assigned[t] = 1;
-			// Bind output corners to input corners by weld-stable
-			// position (rotation/winding independent). Chart ownership
-			// comes from the chart face arrays below, NOT from
-			// Vertex::chartIndex (that counter is GLOBAL across all
-			// atlas meshes — using it as a per-mesh id silently drops
-			// every mesh but the first).
+			// Bind output corners to input corners: EXACT index match
+			// first (rotation/winding independent and correct for
+			// needle/degenerate triangles whose corners share a
+			// quantized position), weld-stable position second (xatlas
+			// welds colocal vertices, so xref may name a canonical
+			// duplicate instead of the face's own index), arbitrary
+			// leftover last (should not happen; keeps the triangle
+			// inside its chart rather than dropping it).
 			const uint64_t want[3] = { qpos[xr[0]], qpos[xr[1]],
 				qpos[xr[2]] };
 			bool used[3] = { false, false, false };
@@ -1377,10 +1379,19 @@ bool GenerateLightmapChartsXatlas(
 				int pick = -1;
 				for (int p = 0; p < 3; ++p) {
 					if (!used[p]
-						&& qpos[upload.indices[size_t(t) * 3 + p]]
-							== want[k]) {
+						&& upload.indices[size_t(t) * 3 + p] == xr[k]) {
 						pick = p;
 						break;
+					}
+				}
+				if (pick < 0) {
+					for (int p = 0; p < 3; ++p) {
+						if (!used[p]
+							&& qpos[upload.indices[size_t(t) * 3 + p]]
+								== want[k]) {
+							pick = p;
+							break;
+						}
 					}
 				}
 				if (pick < 0) {

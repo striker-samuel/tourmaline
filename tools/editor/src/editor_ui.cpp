@@ -13,6 +13,7 @@
 
 #include <glm/gtc/type_ptr.hpp>
 
+#include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/pak.h>
 
 #include <imgui.h>
@@ -2123,8 +2124,12 @@ void EditorApp::DumpPakManifest() {
 		Log(lbuf);
 	}
 	// lmChunk histogram straight from the mesh blobs (pak-sourced, same
-	// cursor as PakCooker --dump-manifest).
+	// cursor as PakCooker --dump-manifest). The editor never draws LODs,
+	// so LOD0 only: "<base>/lodN" sibling blobs are runtime alternates
+	// with their own per-LOD atlas rects — counting them would skew the
+	// histogram away from what every editor lightmap view samples.
 	uint32_t lmNone = 0, lm5 = 0, lm6 = 0, lm9 = 0, lm12 = 0, lmOther = 0;
+	uint32_t lmLodSkipped = 0;
 	for (const smvk::PakTocEntry* e : meshes) {
 		const std::span<const uint8_t> img = reader.Payload(*e);
 		size_t off = 0;
@@ -2147,7 +2152,14 @@ void EditorApp::DumpPakManifest() {
 		const uint32_t n = u32();
 		if (off + n > img.size())
 			continue;
+		const std::string uri(reinterpret_cast<const char*>(img.data() + off), n);
 		off += n; // uri
+		// LOD sibling blob ("<base>/lodN"): not drawn by the editor,
+		// not part of its lightmap sampling — skip (counted below).
+		if (smvk::BaseMeshUriForLod(smvk::StringViewT(uri)) != smvk::StringViewT(uri)) {
+			++lmLodSkipped;
+			continue;
+		}
 		const uint32_t vc = u32(), ic = u32(), sc = u32();
 		(void)vc;
 		(void)ic;
@@ -2174,8 +2186,8 @@ void EditorApp::DumpPakManifest() {
 		else ++lmOther;
 	}
 	std::snprintf(buf, sizeof(buf),
-		"  lmChunk: none=%u 5=%u 6=%u 9=%u 12=%u other=%u",
-		lmNone, lm5, lm6, lm9, lm12, lmOther);
+		"  lmChunk: none=%u 5=%u 6=%u 9=%u 12=%u other=%u (LOD0 only, %u siblings skipped)",
+		lmNone, lm5, lm6, lm9, lm12, lmOther, lmLodSkipped);
 	Log(buf);
 	Log("For per-mesh lmChunk + texture URIs use: PakCooker --dump-pak <pak>");
 }
