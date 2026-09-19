@@ -1165,7 +1165,7 @@ namespace {
 constexpr uint32_t kXatlasStackSep = 2;
 
 struct XatlasTriKey {
-	uint32_t a = 0, b = 0, c = 0;
+	uint64_t a = 0, b = 0, c = 0;
 	bool operator==(const XatlasTriKey& o) const {
 		return a == o.a && b == o.b && c == o.c;
 	}
@@ -1183,6 +1183,22 @@ struct XatlasTriKeyHash {
 		return h;
 	}
 };
+
+// Position quantization for face matching (same 21-bit grid as the
+// planar path: ~1/8192 m cells, +/-256 m range). xatlas welds colocal
+// input vertices internally (output xref need not equal the face's own
+// indices on unwelded soup), so faces match by POSITION triple —
+// well inside one quantization cell of each other — never by index.
+inline uint64_t XatlasQuantPos(const glm::vec3& p) {
+	const int32_t qx =
+		int32_t(std::clamp(p.x * 8192.0f, -1048576.0f, 1048575.0f));
+	const int32_t qy =
+		int32_t(std::clamp(p.y * 8192.0f, -1048576.0f, 1048575.0f));
+	const int32_t qz =
+		int32_t(std::clamp(p.z * 8192.0f, -1048576.0f, 1048575.0f));
+	return uint64_t(uint32_t(qx)) | (uint64_t(uint32_t(qy)) << 21)
+		| (uint64_t(uint32_t(qz)) << 42);
+}
 
 } // namespace
 
@@ -1283,29 +1299,37 @@ bool GenerateLightmapChartsXatlas(
 		return false;
 	}
 
-	// Per job: map output triangles back to input triangles through the
-	// xref triple (output order is chart-major, NOT input order; winding
-	// may be fixed and corners rotated, so match as a multiset and bind
-	// corners positionally).
+	// Per job: map output triangles back to input triangles through
+	// QUANTIZED POSITION triples (output order is chart-major, NOT input
+	// order; winding may be fixed and corners rotated; xatlas welds
+	// colocal vertices so xref need not equal the face's own indices —
+	// position matching is immune to all three). Faces xatlas dropped
+	// (degenerates) simply stay uncharted (0xFFFFFFFF), like the planar
+	// path's zero-area handling — never a whole-mesh failure.
 	for (size_t ji = 0; ji < jobs.size(); ++ji) {
 		const Job& job = jobs[ji];
 		const StaticMeshUpload& upload = *job.up;
 		SgLightmapXatlasMeshOutput& mo = out.meshes[job.inputIdx];
 		const xatlas::Mesh& xm = xa->meshes[ji];
 		const uint32_t triCount = uint32_t(upload.indices.size() / 3);
-		if (xm.chartCount == 0 || xm.indexCount != triCount * 3
+		if (xm.chartCount == 0 || xm.indexCount % 3 != 0
 			|| xm.vertexCount == 0) {
 			mo.ok = false;
 			continue;
 		}
+		// Quantized positions per input vertex (weld-stable keys).
+		std::vector<uint64_t> qpos(upload.vertices.size(), 0);
+		for (size_t v = 0; v < upload.vertices.size(); ++v)
+			qpos[v] = XatlasQuantPos(upload.vertices[v].pos);
 		// Sorted-triple -> input triangles (first wins; exact-duplicate
 		// faces share UVs anyway).
 		std::unordered_map<XatlasTriKey, std::vector<uint32_t>,
 			XatlasTriKeyHash> faceMap;
 		faceMap.reserve(size_t(triCount) * 2);
 		for (uint32_t t = 0; t < triCount; ++t) {
-			uint32_t ix[3] = { upload.indices[t * 3 + 0],
-				upload.indices[t * 3 + 1], upload.indices[t * 3 + 2] };
+			uint64_t ix[3] = { qpos[upload.indices[t * 3 + 0]],
+				qpos[upload.indices[t * 3 + 1]],
+				qpos[upload.indices[t * 3 + 2]] };
 			std::sort(ix, ix + 3);
 			faceMap[{ ix[0], ix[1], ix[2] }].push_back(t);
 		}
@@ -1320,9 +1344,12 @@ bool GenerateLightmapChartsXatlas(
 			if (ov[0] >= xm.vertexCount || ov[1] >= xm.vertexCount
 				|| ov[2] >= xm.vertexCount)
 				continue;
-			uint32_t xr[3] = { xm.vertexArray[ov[0]].xref,
+			const uint32_t xr[3] = { xm.vertexArray[ov[0]].xref,
 				xm.vertexArray[ov[1]].xref, xm.vertexArray[ov[2]].xref };
-			uint32_t key[3] = { xr[0], xr[1], xr[2] };
+			if (xr[0] >= qpos.size() || xr[1] >= qpos.size()
+				|| xr[2] >= qpos.size())
+				continue;
+			uint64_t key[3] = { qpos[xr[0]], qpos[xr[1]], qpos[xr[2]] };
 			std::sort(key, key + 3);
 			auto it = faceMap.find({ key[0], key[1], key[2] });
 			if (it == faceMap.end())
@@ -1337,14 +1364,21 @@ bool GenerateLightmapChartsXatlas(
 			if (t == 0xFFFFFFFFu)
 				continue; // exact-duplicate face already placed
 			assigned[t] = 1;
-			// Bind output corners to input corners positionally.
+			// Bind output corners to input corners by weld-stable
+			// position (rotation/winding independent). Chart ownership
+			// comes from the chart face arrays below, NOT from
+			// Vertex::chartIndex (that counter is GLOBAL across all
+			// atlas meshes — using it as a per-mesh id silently drops
+			// every mesh but the first).
+			const uint64_t want[3] = { qpos[xr[0]], qpos[xr[1]],
+				qpos[xr[2]] };
 			bool used[3] = { false, false, false };
-			int32_t chart = -1;
 			for (int k = 0; k < 3; ++k) {
 				int pick = -1;
 				for (int p = 0; p < 3; ++p) {
 					if (!used[p]
-						&& upload.indices[size_t(t) * 3 + p] == xr[k]) {
+						&& qpos[upload.indices[size_t(t) * 3 + p]]
+							== want[k]) {
 						pick = p;
 						break;
 					}
@@ -1363,16 +1397,26 @@ bool GenerateLightmapChartsXatlas(
 				cornerAtlasUv[size_t(t) * 3 + pick] =
 					glm::vec2(xm.vertexArray[ov[k]].uv[0],
 						xm.vertexArray[ov[k]].uv[1]);
-				if (chart < 0)
-					chart = xm.vertexArray[ov[k]].chartIndex;
 			}
-			if (chart >= 0)
-				triChart[t] = uint32_t(chart);
 		}
-		// Chart id compaction: xatlas chartIndex values are dense
-		// 0..chartCount-1 already; keep them (unassigned triangles stay
-		// 0xFFFFFFFF = degenerate/uncharted, same convention as planar).
+		// Chart ownership from the chart face arrays (per-mesh chart
+		// ids; faceArray holds ORIGINAL face numbers — invalid faces
+		// appear in no chart and stay uncharted, like the planar
+		// path's zero-area handling).
 		const uint32_t chartCount = xm.chartCount;
+		for (uint32_t c = 0; c < chartCount; ++c) {
+			const xatlas::Chart& ch = xm.chartArray[c];
+			if (!ch.faceArray)
+				continue;
+			for (uint32_t f = 0; f < ch.faceCount; ++f) {
+				const uint32_t face = ch.faceArray[f];
+				if (face < triCount && triChart[face] == 0xFFFFFFFFu)
+					triChart[face] = c;
+			}
+		}
+		// Chart ids from the face arrays are dense 0..chartCount-1
+		// already; unassigned triangles stay 0xFFFFFFFF
+		// (degenerate/uncharted, same convention as planar).
 		std::vector<glm::vec2> cMin(chartCount,
 			glm::vec2(std::numeric_limits<float>::max()));
 		std::vector<glm::vec2> cMax(chartCount,

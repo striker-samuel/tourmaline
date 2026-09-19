@@ -2197,7 +2197,8 @@ int main(int argc, char** argv) {
 			lmFitDensityWorld = fitDensity;
 			std::cerr << "  [LM] xatlas density converged at " << fitDensity
 				<< " texels/m world base (" << fitDensity * fitDensity
-				<< " texels/m^2); atlas=" << atlas.width << "x" << atlas.height
+				<< " texels/m^2); meshes=" << work.size()
+				<< " atlas=" << atlas.width << "x" << atlas.height
 				<< " (" << (uint64_t(atlas.width) * atlas.height * 72 / (1024 * 1024))
 				<< " MiB gpu, bruteForce)\n" << std::flush;
 			{
@@ -2391,6 +2392,9 @@ int main(int argc, char** argv) {
 				}
 				if (jobs.empty())
 					continue;
+				std::cerr << "  [LM] xatlas lod" << level << ": charting "
+					<< jobs.size() << " siblings at " << lmFitDensityWorld
+					<< " texels/m\n" << std::flush;
 				std::vector<SgLightmapXatlasMeshInput> ins;
 				ins.reserve(jobs.size());
 				for (const SibJob& j : jobs) {
@@ -2447,10 +2451,20 @@ int main(int argc, char** argv) {
 				// node's global transform — siblings render in place of
 				// the base under the same node).
 				{
+					// Exact batch count up front: batches hold POINTERS
+					// into texelBuf, so texelBuf must never reallocate
+					// after the first batch is taken (reserve guesses
+					// caused use-after-realloc crashes in the bake pool).
+					size_t lodBatches = 0;
+					for (const SibJob& j : jobs) {
+						if (!j.chart.charts.empty()
+							&& j.chunkBase != 0xFFFFFFFFu)
+							lodBatches += j.chart.charts.size();
+					}
 					std::vector<std::vector<SgLightmapTexel>> texelBuf;
 					std::vector<SgLightmapChunkBatch> batches;
-					texelBuf.reserve(jobs.size() * 4);
-					batches.reserve(jobs.size() * 4);
+					texelBuf.reserve(lodBatches);
+					batches.reserve(lodBatches);
 					for (SibJob& j : jobs) {
 						if (j.chart.charts.empty()
 							|| j.chunkBase == 0xFFFFFFFFu)
