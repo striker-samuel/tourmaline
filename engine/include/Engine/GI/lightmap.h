@@ -169,6 +169,12 @@ public:
 	// normalized over the atlas (what the cook bakes into texCoord2).
 	glm::vec2 AtlasUv(uint32_t chunk, uint32_t margin,
 		const glm::vec2& chartLocalUv) const;
+	// Same mapping in TEXEL space (no normalization): the cook stamps
+	// these while per-LOD appends can still grow the atlas, then divides
+	// every stamped mesh once by the final dimensions (a stamp
+	// normalized mid-cook would be invalidated by later appends).
+	glm::vec2 AtlasTexel(uint32_t chunk, uint32_t margin,
+		const glm::vec2& chartLocalUv) const;
 
 	// 9 RGBA16F layer payloads for GPU upload (uint16 halves, row-major).
 	// Layer t texel (x,y) carries stream halves [t*4, t*4+3] of the

@@ -863,10 +863,14 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 				drawSet = smvk::gfx::DrawSetBit_Masked;
 		}
 		// Lightmap chunk rides the draw: resolved from the SELECTED LOD
-		// sibling (cooked siblings of a lightmapped LOD0 carry the same
-		// lobe count — they sample LOD0's atlas chunks; GetLodMesh falls
-		// back to LOD0 for missing siblings). Unlightmapped meshes carry
-		// 0xFFFFFFFF and the FS falls back to probe/grid ambient instead.
+		// sibling, whose own texCoord2 addresses its own atlas rects.
+		// Shared-UV cooks stamp every sibling with LOD0's parameterization
+		// (same count everywhere); per-LOD atlas cooks (--lm-charts
+		// xatlas) bake each level's own rects and the bake may keep a
+		// lower count per sibling — both ride here per mesh, so the draw
+		// always pairs a level's geometry with its own count. GetLodMesh
+		// falls back to LOD0 for missing siblings. Unlightmapped meshes
+		// carry 0xFFFFFFFF and the FS falls back to probe/grid ambient.
 		if (const smvk::StaticMesh* mesh = world.GetLodMesh(worldMesh, lodIdx))
 			lmChunk = mesh->lmChunk;
 		smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,

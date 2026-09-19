@@ -1697,6 +1697,24 @@ glm::vec2 SgLightmapAtlas::AtlasUv(uint32_t chunk, uint32_t margin,
 	return texel / glm::vec2(float(std::max(width, 1u)), float(std::max(height, 1u)));
 }
 
+glm::vec2 SgLightmapAtlas::AtlasTexel(uint32_t chunk, uint32_t margin,
+	const glm::vec2& chartLocalUv) const {
+	// AtlasUv numerator (see above): identical mapping, unnormalized.
+	// Callers stamping mid-cook (per-LOD appends still pending) store
+	// these and divide once by the final atlas dimensions.
+	if (chunk >= chunks.size())
+		return glm::vec2(0.0f);
+	const SgLightmapChunk& c = chunks[chunk];
+	const float w = std::max(c.rectMax[0] - c.rectMin[0], 1.0f);
+	const float h = std::max(c.rectMax[1] - c.rectMin[1], 1.0f);
+	const float innerW = std::max(w - 2.0f * float(margin), 1.0f);
+	const float innerH = std::max(h - 2.0f * float(margin), 1.0f);
+	return glm::vec2(c.rectMin[0] + float(margin)
+		+ glm::clamp(chartLocalUv.x, 0.0f, 1.0f) * innerW,
+		c.rectMin[1] + float(margin)
+		+ glm::clamp(chartLocalUv.y, 0.0f, 1.0f) * innerH);
+}
+
 bool SgLightmapAtlas::PackRects(const std::vector<RectRequest>& requests,
 	uint32_t atlasWidth, uint32_t maxHeight) {
 	chunks.clear();

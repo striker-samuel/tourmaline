@@ -1127,18 +1127,20 @@ constexpr float kUvSweepRepairSpan = 0.45f;
 // by a different chart get positional duplicates appended, and the index
 // buffer is rebuilt in the same triangle order (surface ranges stay
 // valid). Fills outChartOf (per-vertex chart over the STAMPED layout —
-// the simplifier's error-metric provenance) and counts seam duplicates.
-// A final sweep collapses cross-rect triangles (span over
-// kUvSweepRepairSpan — dropped/degenerate faces inheriting drifted UVs)
-// to their centroid UV: one wrong texel instead of an atlas streak;
-// repairedTris/unchartedTris report what it found. Returns the mesh's
-// lobe count (first chunk, written by the bake's per-mesh selection;
+// the simplifier's error-metric provenance) and counts seam duplicates
+// and uncharted (dropped/degenerate, inherited-UV) triangles.
+// texelSpace=true stores ATLAS-TEXEL coords (AtlasTexel): required
+// whenever later appends can still grow the atlas (per-LOD levels) —
+// the caller divides those meshes once by the final dimensions (see the
+// normalize pass below). false stores normalized UVs directly (planar
+// path: no appends happen after stamping). Returns the mesh's lobe
+// count (first chunk, written by the bake's per-mesh selection;
 // fallbackLobes when the mesh has no chunks).
 uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 	const smvk::gi::SgLightmapChartResult& chartRes, uint32_t chunkBase,
 	const smvk::gi::SgLightmapAtlas& atlas, uint32_t gutter,
 	uint32_t fallbackLobes, std::vector<uint32_t>& outChartOf,
-	uint64_t& seamDups, uint32_t& repairedTris, uint32_t& unchartedTris) {
+	uint64_t& seamDups, uint32_t& unchartedTris, bool texelSpace) {
 	const size_t triCount = upload.indices.size() / 3;
 	const std::vector<uint32_t>& triChart = chartRes.triChart;
 	const std::vector<glm::vec2>& cornerUv = chartRes.cornerChartUv;
@@ -1171,9 +1173,11 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 				newIndices.push_back(it->second);
 				continue;
 			}
-			const glm::vec2 atlasUv = atlas.AtlasUv(
-				chunkBase + chartIdx, gutter,
-				cornerUv[t * 3 + k]);
+			const glm::vec2 atlasUv = texelSpace
+				? atlas.AtlasTexel(chunkBase + chartIdx, gutter,
+					cornerUv[t * 3 + k])
+				: atlas.AtlasUv(chunkBase + chartIdx, gutter,
+					cornerUv[t * 3 + k]);
 			uint32_t slot;
 			if (ownerChart[orig] == 0xFFFFFFFFu) {
 				// First chart to stamp this vertex: in-place.
@@ -1200,10 +1204,28 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 		}
 	}
 	upload.indices = std::move(newIndices);
-	// Sweep repair: collapse cross-rect triangles to their centroid UV.
-	// Duplicates carry the repair (never touch shared vertices, so no
-	// neighbor triangle can regress).
-	repairedTris = 0;
+	outChartOf.assign(upload.vertices.size(), 0xFFFFFFFFu);
+	for (uint32_t v = 0; v < origVerts && v < outChartOf.size(); ++v)
+		outChartOf[v] = ownerChart[v];
+	for (size_t d = 0; d < dupChart.size()
+		&& origVerts + d < outChartOf.size(); ++d)
+		outChartOf[origVerts + d] = dupChart[d];
+	if (!chartRes.charts.empty() && chunkBase < atlas.chunks.size())
+		return atlas.chunks[chunkBase].lobeCount;
+	return fallbackLobes;
+}
+
+// Sweep repair over FINAL normalized atlas UVs: collapse cross-rect
+// triangles (span over kUvSweepRepairSpan) to their centroid UV.
+// Genuine chart rects cap at 256x256 texels (~0.17 max legit span), so
+// anything wider is a dropped-face/inherited-UV streak across unrelated
+// rects — one wrong texel instead of an atlas smear. Duplicates carry
+// the repair (shared vertices are never touched, so no neighbor can
+// regress). Runs after the normalize pass (threshold semantics are
+// normalized-space, like the pak dump's uv2span detector).
+uint32_t SweepRepairAtlasUvs(smvk::StaticMeshUpload& upload) {
+	const size_t triCount = upload.indices.size() / 3;
+	uint32_t repaired = 0;
 	for (size_t t = 0; t < triCount; ++t) {
 		const glm::vec2 auv[3] = {
 			upload.vertices[upload.indices[t * 3 + 0]].texCoord2,
@@ -1229,17 +1251,9 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 			upload.indices[t * 3 + k] =
 				uint32_t(upload.vertices.size() - 1);
 		}
-		++repairedTris;
+		++repaired;
 	}
-	outChartOf.assign(upload.vertices.size(), 0xFFFFFFFFu);
-	for (uint32_t v = 0; v < origVerts && v < outChartOf.size(); ++v)
-		outChartOf[v] = ownerChart[v];
-	for (size_t d = 0; d < dupChart.size()
-		&& origVerts + d < outChartOf.size(); ++d)
-		outChartOf[origVerts + d] = dupChart[d];
-	if (!chartRes.charts.empty() && chunkBase < atlas.chunks.size())
-		return atlas.chunks[chunkBase].lobeCount;
-	return fallbackLobes;
+	return repaired;
 }
 
 int main(int argc, char** argv) {
@@ -1581,6 +1595,11 @@ int main(int argc, char** argv) {
 	// ---------------------------------------------------------------------------
 	smvk::gi::SgLightmapAtlas atlas;
 	std::unordered_map<uint32_t, std::vector<uint32_t>> lmVertexCharts;
+	// Pool indices stamped in ATLAS-TEXEL space (xatlas path: per-LOD
+	// appends can still grow the atlas afterwards). The normalize pass
+	// below divides exactly these meshes once by the final dimensions —
+	// never anything else (unstamped uploads carry imported [0,1] UVs).
+	std::unordered_set<uint32_t> lmTexelStamped;
 	// Xatlas brute-force path (--lm-charts xatlas): full-scene xatlas
 	// charts + brute-force pack for LOD0, per-LOD atlas levels stacked
 	// into the shared atlas afterwards (meshlets stay deferred throughout
@@ -2329,16 +2348,19 @@ int main(int argc, char** argv) {
 			// Per-corner atlas uv2 stamping (seam-correct; see
 			// StampLightmapUvs): every triangle corner through the
 			// triangle's own chart, seam duplicates appended, index
-			// buffer rebuilt in the same triangle order.
+			// buffer rebuilt in the same triangle order. Xatlas path
+			// stamps texel-space (later appends still grow the atlas;
+			// the normalize pass below finishes the job).
 			std::vector<uint32_t> chartOf;
-			uint32_t repaired = 0, uncharted = 0;
+			uint32_t uncharted = 0;
 			const uint32_t lobes = StampLightmapUvs(*upload, w.chart,
 				w.chunkBase, atlas, chartOpts.gutterTexels, args.lmLobes,
-				chartOf, seamDups, repaired, uncharted);
-			if (repaired != 0 || uncharted != 0)
+				chartOf, seamDups, uncharted, lmXatlas);
+			if (lmXatlas)
+				lmTexelStamped.insert(w.handle.index());
+			if (uncharted != 0)
 				std::cerr << "  [LM] stamp node " << w.node
-					<< ": uncharted=" << uncharted
-					<< " sweep-repaired=" << repaired << "\n" << std::flush;
+					<< ": uncharted=" << uncharted << "\n" << std::flush;
 			// Chart provenance for the LOD cook (CookLodSiblings): one
 			// chart id per vertex over the STAMPED layout. This is what
 			// lets the simplifier keep collapses inside one lightmap
@@ -2407,6 +2429,7 @@ int main(int argc, char** argv) {
 					smvk::ClusterStaticMeshHandle sib{};
 					float densityScale = 1.0f;
 					uint32_t baseLobes = 9;
+					uint32_t basePool = 0xFFFFFFFFu; // LOD0 pool index
 					SgLightmapChartResult chart;
 					uint32_t chunkBase = 0xFFFFFFFFu;
 				};
@@ -2438,6 +2461,7 @@ int main(int argc, char** argv) {
 					j.sib = *h;
 					j.densityScale = w.worldScale * w.curveScale;
 					j.baseLobes = baseLobes;
+					j.basePool = w.handle.index();
 					jobs.push_back(std::move(j));
 				}
 				if (jobs.empty())
@@ -2481,10 +2505,15 @@ int main(int argc, char** argv) {
 				if (!okGen || !okAppend) {
 					// Shared-UV fallback: keep the inherited LOD0 UVs,
 					// share LOD0's lobe count (probe the same chunks).
+					// Inherited UVs live in whatever space LOD0 stamped
+					// (texel-space on the xatlas path), so these siblings
+					// join the normalize pass exactly when their base did.
 					for (const SibJob& j : jobs) {
 						if (smvk::StaticMesh* m =
 								cluster->staticMeshes.get(j.sib))
 							m->lmChunk = j.baseLobes;
+						if (lmTexelStamped.contains(j.basePool))
+							lmTexelStamped.insert(j.sib.index());
 					}
 					continue;
 				}
@@ -2560,6 +2589,8 @@ int main(int argc, char** argv) {
 								if (smvk::StaticMesh* m =
 										cluster->staticMeshes.get(j.sib))
 									m->lmChunk = j.baseLobes;
+								if (lmTexelStamped.contains(j.basePool))
+									lmTexelStamped.insert(j.sib.index());
 							}
 							continue;
 						}
@@ -2570,7 +2601,8 @@ int main(int argc, char** argv) {
 							ls.lobePicks.begin(), ls.lobePicks.end());
 					}
 				}
-				// Stamp the siblings (seam-correct, same helper).
+				// Stamp the siblings (seam-correct, same helper, texel-space:
+				// the normalize pass below finishes them with the rest).
 				uint32_t bakedSibs = 0;
 				for (SibJob& j : jobs) {
 					if (j.chart.charts.empty()
@@ -2578,6 +2610,8 @@ int main(int argc, char** argv) {
 						if (smvk::StaticMesh* m =
 								cluster->staticMeshes.get(j.sib))
 							m->lmChunk = j.baseLobes;
+						if (lmTexelStamped.contains(j.basePool))
+							lmTexelStamped.insert(j.sib.index());
 						continue;
 					}
 					smvk::StaticMeshUpload* up =
@@ -2589,18 +2623,20 @@ int main(int argc, char** argv) {
 						if (smvk::StaticMesh* m =
 								cluster->staticMeshes.get(j.sib))
 							m->lmChunk = j.baseLobes;
+						if (lmTexelStamped.contains(j.basePool))
+							lmTexelStamped.insert(j.sib.index());
 						continue;
 					}
 					std::vector<uint32_t> dummy;
-					uint32_t repaired = 0, uncharted = 0;
+					uint32_t uncharted = 0;
 					const uint32_t lobes = StampLightmapUvs(*up, j.chart,
 						j.chunkBase, atlas, chartOpts.gutterTexels,
-						j.baseLobes, dummy, seamDups, repaired, uncharted);
-					if (repaired != 0 || uncharted != 0)
+						j.baseLobes, dummy, seamDups, uncharted, true);
+					lmTexelStamped.insert(j.sib.index());
+					if (uncharted != 0)
 						std::cerr << "  [LM] xatlas lod" << level
 							<< " stamp node " << j.node
-							<< ": uncharted=" << uncharted
-							<< " sweep-repaired=" << repaired << "\n"
+							<< ": uncharted=" << uncharted << "\n"
 							<< std::flush;
 					if (smvk::StaticMesh* m =
 							cluster->staticMeshes.get(j.sib))
@@ -2613,6 +2649,47 @@ int main(int argc, char** argv) {
 					<< " siblings (atlas now " << atlas.width << "x"
 					<< atlas.height << ")\n" << std::flush;
 			}
+		}
+
+		// ---- Texel-space normalize pass (xatlas path) ----
+		// Stamps above stored ATLAS-TEXEL coords because per-LOD appends
+		// kept growing the atlas afterwards (a mid-cook normalization is
+		// invalidated by later appends: LOD0 stamped at 2917 rows would
+		// sample ~37% of a final 7808-row atlas). With dimensions final,
+		// divide exactly the stamped meshes once — then sweep-repair the
+		// normalized UVs (the span threshold is normalized-space, like
+		// the pak dump's uv2span detector). Unstamped uploads (imported
+		// [0,1] UVs) are never touched. Empty on the planar path (its
+		// stamps are already normalized; nothing appends after them).
+		if (!lmTexelStamped.empty() && atlas.width > 0 && atlas.height > 0) {
+			const glm::vec2 dims(float(atlas.width), float(atlas.height));
+			// Deterministic pool-index order (stable vertex layout).
+			std::vector<uint32_t> order(lmTexelStamped.begin(),
+				lmTexelStamped.end());
+			std::sort(order.begin(), order.end());
+			uint32_t repairedTotal = 0;
+			for (uint32_t meshIdx : order) {
+				const smvk::ClusterStaticMeshHandle h =
+					cluster->staticMeshes.getHandle(meshIdx);
+				smvk::StaticMeshUpload* up =
+					const_cast<smvk::StaticMeshUpload*>(
+						cluster->GetRetainedUpload(h));
+				if (!h.valid() || !up)
+					continue;
+				for (smvk::StaticVertex& v : up->vertices)
+					v.texCoord2 = glm::clamp(v.texCoord2 / dims,
+						glm::vec2(0.0f), glm::vec2(1.0f));
+				const uint32_t repaired = SweepRepairAtlasUvs(*up);
+				if (repaired != 0) {
+					std::cerr << "  [LM] sweep-repaired " << repaired
+						<< " tris (mesh " << meshIdx << ")\n" << std::flush;
+					seamDups += uint64_t(repaired) * 3;
+				}
+				repairedTotal += repaired;
+			}
+			std::cerr << "  [LM] texel-space normalized: " << order.size()
+				<< " meshes over " << atlas.width << "x" << atlas.height
+				<< ", sweep-repaired=" << repairedTotal << "\n" << std::flush;
 		}
 
 		// OIDN denoise pass: RTLightmap over the fitted per-lobe
