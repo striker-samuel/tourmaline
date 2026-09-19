@@ -28,6 +28,126 @@ void EditorApp::SetSelection(uint32_t node) {
 	else {
 		m_selected = UINT32_MAX;
 	}
+	// Node change invalidates sub-object highlights that pointed elsewhere.
+	if (m_selFaceNode != node && m_selFaceNode != UINT32_MAX &&
+		m_selMode == SelMode::Face) {
+		m_selFaceNode = UINT32_MAX;
+		m_selFaceTri = UINT32_MAX;
+	}
+	if (m_selVertNode != node && m_selVertNode != UINT32_MAX &&
+		m_selMode == SelMode::Vertex) {
+		m_selVertNode = UINT32_MAX;
+		m_selVertIdx = UINT32_MAX;
+	}
+	if (node == UINT32_MAX)
+		ClearSubSelection();
+}
+
+void EditorApp::ClearSubSelection() {
+	m_selFaceNode = UINT32_MAX;
+	m_selFaceTri = UINT32_MAX;
+	m_selVertNode = UINT32_MAX;
+	m_selVertIdx = UINT32_MAX;
+}
+
+void EditorApp::SelectPrevNode() {
+	if (!m_world || m_world->scene.hierarchy.empty())
+		return;
+	const uint32_t n = uint32_t(m_world->scene.hierarchy.size());
+	uint32_t cur = (m_selected == UINT32_MAX || m_selected >= n)
+		? 0 : m_selected;
+	cur = (cur == 0) ? n - 1 : cur - 1;
+	SetSelection(cur);
+	m_revealNode = cur;
+}
+
+void EditorApp::SelectNextNode() {
+	if (!m_world || m_world->scene.hierarchy.empty())
+		return;
+	const uint32_t n = uint32_t(m_world->scene.hierarchy.size());
+	uint32_t cur = (m_selected == UINT32_MAX || m_selected >= n)
+		? 0 : m_selected;
+	cur = (cur + 1 >= n) ? 0 : cur + 1;
+	SetSelection(cur);
+	m_revealNode = cur;
+}
+
+void EditorApp::UpdateUvPaneInput() {
+	// Flat-UV pane navigation (pan/zoom in UV units, centered):
+	// MMB-drag pans, wheel zooms at the cursor, F resets (handled with
+	// the 3D framing keys in RenderFrame). 3D cameras are untouched.
+	SetupDefaultCameras();
+	const bool uiEats = m_imgui && m_imgui->WantsCaptureMouse();
+	if (uiEats)
+		return;
+	const float wheel = float(m_input.getScrollDeltaY());
+	for (int i = 0; i < ViewportCount(); ++i) {
+		if (!IsFlatUvViewMode(m_viewports[i].viewMode))
+			continue;
+		const ViewportRect& vp = m_viewports[i].rect;
+		const float mx = float(m_input.getMouseX());
+		const float my = float(m_input.getMouseY());
+		const bool hover = mx >= vp.x && my >= vp.y && mx < vp.x + vp.w &&
+			my < vp.y + vp.h;
+		if (!hover)
+			continue;
+		if (wheel != 0.0f) {
+			float& z = m_uvZoom[i];
+			z = std::clamp(z * (wheel > 0 ? 1.15f : 1.0f / 1.15f),
+				0.2f, 32.0f);
+		}
+		if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_MIDDLE)) {
+			glm::vec2& p = m_uvPan[i];
+			const float z = (m_uvZoom[i] > 1e-6f) ? m_uvZoom[i] : 1.0f;
+			p.x -= float(m_input.getMouseDeltaX()) / (vp.w > 0 ? vp.w : 1.0f) * z;
+			p.y -= float(m_input.getMouseDeltaY()) / (vp.h > 0 ? vp.h : 1.0f) * z;
+			p.x = std::clamp(p.x, -4.0f, 4.0f);
+			p.y = std::clamp(p.y, -4.0f, 4.0f);
+		}
+	}
+}
+
+void EditorApp::DrawSelectionRadial() {
+	// Q radial: Mesh / Face / Vertex highlight modes (selection only).
+	if (m_showSelRadial) {
+		ImGui::OpenPopup("##selRadial");
+		m_selRadialPos = ImGui::GetIO().MousePos;
+		ImGui::SetNextWindowPos(m_selRadialPos, ImGuiCond_Always);
+		m_showSelRadial = false;
+	}
+	if (!ImGui::BeginPopup("##selRadial"))
+		return;
+	ImGui::TextDisabled("Select mode (Q)");
+	ImGui::Separator();
+	const SelMode modes[3] = { SelMode::Mesh, SelMode::Face, SelMode::Vertex };
+	const char* hints[3] = { "object nodes", "one triangle", "one vertex" };
+	for (int i = 0; i < 3; ++i) {
+		char label[64];
+		std::snprintf(label, sizeof(label), "%s  (%d)%s", SelModeName(modes[i]),
+			i + 1, m_selMode == modes[i] ? "  *" : "");
+		if (ImGui::Selectable(label, m_selMode == modes[i])) {
+			m_selMode = modes[i];
+			ClearSubSelection();
+			Log(std::string("Selection mode: ") + SelModeName(m_selMode) +
+				" (" + hints[i] + ", highlight only).");
+			ImGui::CloseCurrentPopup();
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s highlight; gizmo stays on the node.", hints[i]);
+	}
+	ImGui::Separator();
+	ImGui::TextDisabled("Q reopens  |  1/2/3 picks while open");
+	// Number shortcuts while the popup is open.
+	for (int i = 0; i < 3; ++i) {
+		if (ImGui::IsKeyPressed(ImGuiKey(ImGuiKey_1 + i))) {
+			m_selMode = modes[i];
+			ClearSubSelection();
+			Log(std::string("Selection mode: ") + SelModeName(m_selMode));
+			ImGui::CloseCurrentPopup();
+			break;
+		}
+	}
+	ImGui::EndPopup();
 }
 
 void EditorApp::AddToSelection(uint32_t node) {
@@ -40,6 +160,7 @@ void EditorApp::AddToSelection(uint32_t node) {
 void EditorApp::ClearSelection() {
 	m_selection.clear();
 	m_selected = UINT32_MAX;
+	ClearSubSelection();
 }
 
 void EditorApp::FinishBoxSelect() {
@@ -90,6 +211,7 @@ void EditorApp::FinishBoxSelect() {
 	// Primary: keep the previous primary when still selected, else first.
 	if (!IsSelected(m_selected))
 		m_selected = m_selection.empty() ? UINT32_MAX : m_selection.back();
+	ClearSubSelection(); // box select is node-level (mesh mode)
 	if (!m_selection.empty())
 		Log("Box select: " + std::to_string(m_selection.size()) +
 			" node(s) selected.");
@@ -162,6 +284,36 @@ void EditorApp::DrawViewportChrome() {
 					}
 				}
 				ImGui::EndCombo();
+			}
+			ImGui::SameLine();
+			// Selection-mode combo (Mesh/Face/Vertex highlight, Q radial).
+			if (ImGui::BeginCombo("##selmode", SelModeName(m_selMode))) {
+				for (int m = 0; m <= int(SelMode::Vertex); ++m) {
+					if (ImGui::Selectable(SelModeName(SelMode(m)),
+							int(m_selMode) == m)) {
+						m_selMode = SelMode(m);
+						ClearSubSelection();
+						Log(std::string("Selection mode: ") +
+							SelModeName(m_selMode) + " (highlight only).");
+					}
+				}
+				ImGui::EndCombo();
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Q opens the selection radial.");
+			// Flat-pane nav readout (area mode): zoom/pan + reset.
+			if (IsFlatUvViewMode(vp.viewMode)) {
+				ImGui::SameLine();
+				char uvLabel[64];
+				std::snprintf(uvLabel, sizeof(uvLabel), "uv %.2fx",
+					m_uvZoom[i]);
+				if (ImGui::SmallButton(uvLabel)) {
+					m_uvZoom[i] = 1.0f;
+					m_uvPan[i] = glm::vec2(0.0f);
+				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip(
+						"Pane zoom (click resets). MMB drag = pan, wheel = zoom.");
 			}
 			ImGui::SameLine();
 			// Legend toggle: the overlay/legend only ever draws on the

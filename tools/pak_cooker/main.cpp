@@ -147,6 +147,11 @@ struct Args {
 	                             // whose fit residual fits the budget
 	                             // (SgLightmapBakeConfig::lobeRelError)
 	uint32_t lmAtlasWidth = 2048;
+	// Atlas height cap (texels): pack convergence and per-LOD appends
+	// fail past this (lower the density or raise the cap). 8192 keeps
+	// the 9 RGBA16F layers inside typical 2D texture limits; test cooks
+	// can raise it (GPU cost is width*height*72 B regardless).
+	uint32_t lmMaxHeight = 8192;
 	// Per-chart inner margin texels. Island-to-island padding is this +
 	// the 2-texel pack gap + the neighbor's margin (4 total at 1); see
 	// SgLightmapAtlas::PackRects. Large gutters are paid per CHART, and
@@ -386,6 +391,13 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			out.lmAtlasWidth = static_cast<uint32_t>(std::stoul(v));
 			out.explicitSet.insert("lmAtlasWidth");
 		}
+		else if (a == "--lm-max-height") {
+			std::string v;
+			if (!need(v)) return false;
+			out.lmMaxHeight = std::max<uint32_t>(
+				static_cast<uint32_t>(std::stoul(v)), 256);
+			out.explicitSet.insert("lmMaxHeight");
+		}
 		else if (a == "--lm-gutter") {
 			std::string v;
 			if (!need(v)) return false;
@@ -567,7 +579,8 @@ void Usage() {
 		<< "          [--cone-weight 0] [--collapse-static on|off]\n"
 		<< "          [--compress on|off] [--lz4-accel 1]\n"
 		<< "          [--lightmap on|off --lm-density 32 --lm-lobes 12\n"
-		<< "           --lm-atlas-width 2048 --lm-gutter 1 --lm-rays 1024\n"
+		<< "           --lm-atlas-width 2048 --lm-max-height 8192\n"
+		<< "           --lm-gutter 1 --lm-rays 1024\n"
 		<< "           --lm-budget 4194304 --lm-bounces 3\n"
 		<< "           --sun-azimuth 30 --sun-elevation 55\n"
 		<< "           --sun-intensity 10000 --sky-intensity 600\n"
@@ -1900,7 +1913,7 @@ int main(int argc, char** argv) {
 			//      2x of usable budget);
 			//   2. at the 1 texel/m floor, drop the most texel-hungry
 			//      mesh per round until the pack fits.
-			constexpr uint32_t kMaxAtlasH = 8192;
+			const uint32_t kMaxAtlasH = args.lmMaxHeight;
 			auto tryPack = [&]() {
 				uint32_t chartTotal = 0;
 				for (const LmWork& w : work)
@@ -2076,7 +2089,7 @@ int main(int argc, char** argv) {
 			// xatlas threading makes regeneration non-identical, so the
 			// winner is never re-probed. fitDensity feeds the per-LOD
 			// levels after the bake.
-			constexpr uint32_t kMaxAtlasH = 8192;
+			const uint32_t kMaxAtlasH = args.lmMaxHeight;
 			const uint32_t atlasW =
 				std::max<uint32_t>(args.lmAtlasWidth, 256);
 			SgLightmapXatlasOptions xopts;
@@ -2422,7 +2435,7 @@ int main(int argc, char** argv) {
 			xlodOpts.gutterTexels = chartOpts.gutterTexels;
 			const uint32_t lodAtlasW =
 				std::max<uint32_t>(args.lmAtlasWidth, 256);
-			constexpr uint32_t kLodMaxAtlasH = 8192;
+			const uint32_t kLodMaxAtlasH = args.lmMaxHeight;
 			for (uint32_t level = 1; level <= maxLod; ++level) {
 				struct SibJob {
 					uint32_t node = 0;

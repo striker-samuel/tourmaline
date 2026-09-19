@@ -169,6 +169,29 @@ enum class GizmoMode : int {
 };
 
 // ---------------------------------------------------------------------------
+// Viewport selection mode: Mesh (object/node, legacy), Face (single
+// triangle highlight), Vertex (single vertex highlight). Highlight-only:
+// the gizmo/inspector keep acting on the node; face/vertex never edits
+// geometry (no acceleration structures, brute-force CPU picking only).
+// ---------------------------------------------------------------------------
+enum class SelMode : int {
+	Mesh = 0,
+	Face = 1,
+	Vertex = 2,
+};
+inline const char* SelModeName(SelMode m) {
+	switch (m) {
+	case SelMode::Mesh: return "Mesh";
+	case SelMode::Face: return "Face";
+	case SelMode::Vertex: return "Vertex";
+	}
+	return "?";
+}
+inline bool IsFlatUvViewMode(ViewMode m) {
+	return m == ViewMode::FlatUv0 || m == ViewMode::FlatUv1;
+}
+
+// ---------------------------------------------------------------------------
 // Cook settings (mirrors the PakCooker flags the editor drives).
 // ---------------------------------------------------------------------------
 struct CookSettings {
@@ -245,7 +268,8 @@ private:
 	// subtreeRoot: world node whose subtree to wire (UINT32_MAX = the
 	// whole scene — the PNG export path).
 	void BuildFlatUvWires(std::vector<smvk::DebugLineVertex>& outLines,
-		ViewMode mode, uint32_t subtreeRoot = UINT32_MAX) const;
+		ViewMode mode, uint32_t subtreeRoot = UINT32_MAX,
+		int vpIdx = 0) const;
 	smvk::ShaderProgram& InsetProgram(); // program for m_secondView (Lit fallback)
 	bool EnsureBuffers(uint32_t flightCount);
 	bool EnsureDepth(smvk::Extent2D extent);
@@ -346,11 +370,57 @@ private:
 	// ---- selection (multi) ----
 	// m_selection holds every selected node (m_selected = primary: the
 	// gizmo/inspector act on it). Box-drag in the viewport adds/replaces.
+	// m_selMode switches Mesh/Face/Vertex HIGHLIGHT (selection only, never
+	// edits): Face stores (node, triangle), Vertex stores (node, vert).
 	std::vector<uint32_t> m_selection;
+	SelMode m_selMode = SelMode::Mesh;
+	uint32_t m_selFaceNode = UINT32_MAX;
+	uint32_t m_selFaceTri = UINT32_MAX; // triangle index within the primitive
+	uint32_t m_selVertNode = UINT32_MAX;
+	uint32_t m_selVertIdx = UINT32_MAX; // vertex index within the primitive
+	glm::vec3 m_selFacePos{ 0.0f }; // world hit point (face mode)
+	glm::vec3 m_selVertPos{ 0.0f }; // world position (vertex mode)
+	bool m_showSelRadial = false; // Q radial popup request (mouse pos cached)
+	ImVec2 m_selRadialPos{ 0.0f, 0.0f };
+	bool m_inspectorCycle = true; // Up/Down arrows cycle the node selection
+	// Per-viewport flat-UV navigation (FlatUv0/FlatUv1 panels only):
+	// centered zoom + pan in UV units (uvT = (uv-0.5)*zoom + 0.5 + pan).
+	float m_uvZoom[kMaxViewports] = { 1.0f, 1.0f, 1.0f, 1.0f };
+	glm::vec2 m_uvPan[kMaxViewports] = {};
 	bool IsSelected(uint32_t node) const;
 	void SetSelection(uint32_t node);        // single
 	void AddToSelection(uint32_t node);
 	void ClearSelection();
+	void ClearSubSelection(); // clears face/vertex highlight only
+	void SelectPrevNode(); // inspector Up/Prev (hierarchy order)
+	void SelectNextNode(); // inspector Down/Next
+	// Sub-object pick (brute force, no accel structures): closest triangle
+	// under the cursor + nearest of its 3 verts + world hit position.
+	struct SubHit {
+		uint32_t node = UINT32_MAX;
+		uint32_t tri = UINT32_MAX;
+		uint32_t vert = UINT32_MAX;
+		glm::vec3 pos{ 0.0f };
+	};
+	std::optional<SubHit> PickSubObject(int vpIdx, float mouseX,
+		float mouseY, smvk::Extent2D extent) const;
+	// Flat-UV pane pick: mouse (viewport-local) -> UV point (inverse zoom/
+	// pan) -> brute-force point-in-triangle over the selection subtree
+	// (or whole scene when nothing selected). No accel structures.
+	std::optional<SubHit> PickFlatUv(int vpIdx, float mouseX,
+		float mouseY) const;
+	void ApplySubSelection(const SubHit& h); // node + face/vert per m_selMode
+	// Flat-UV NDC helpers (must match uvflat.vert.hlsli transform).
+	glm::vec2 UvToFlatNdc(glm::vec2 uv, int vpIdx) const;
+	glm::vec2 FlatNdcToUv(glm::vec2 ndc, int vpIdx) const;
+	// Resolve the selected face/vertex UVs for highlight batches.
+	bool SelectedFaceUvs(glm::vec2 outUv[3], ViewMode mode) const;
+	bool SelectedVertUv(glm::vec2& outUv, ViewMode mode) const;
+	// World-space positions for the 3D face/vertex highlight.
+	bool SelectedFaceWorld(glm::vec3 outW[3]) const;
+	bool SelectedVertWorld(glm::vec3& outW) const;
+	void UpdateUvPaneInput(); // MMB pan + wheel zoom on flat viewports
+	void DrawSelectionRadial(); // Q radial: Mesh/Face/Vertex popup
 	// Rubber-band state (window pixels, viewport-local rect in m_vpBox*).
 	bool m_vpBoxDragging = false;
 	bool m_vpBoxAdditive = false;   // Shift = add to current selection

@@ -756,7 +756,7 @@ void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
 
 void EditorApp::BuildFlatUvWires(
 	std::vector<smvk::DebugLineVertex>& outLines, ViewMode mode,
-	uint32_t subtreeRoot) const {
+	uint32_t subtreeRoot, int vpIdx) const {
 	// UV wires from the kept glTF model (pak scenes have no CPU copies:
 	// the flat panel still shows the texture fill, wires are skipped).
 	outLines.clear();
@@ -818,17 +818,19 @@ void EditorApp::BuildFlatUvWires(
 		const int uvAcc = pa->second;
 		const size_t vcount = size_t(model.accessors[size_t(uvAcc)].count);
 		glm::vec2 uv[3];
+		// Whole-scene export uses identity (pane nav never affects PNGs).
+		const bool applyNav = !wholeScene;
 		auto emit = [&](size_t t) {
 			for (int k = 0; k < 3; ++k)
 				if (!readUv(uvAcc, t * 3 + size_t(k), uv[k]))
 					return;
 			for (int k = 0; k < 3; ++k) {
-				const glm::vec2& a = uv[k];
-				const glm::vec2& b = uv[(k + 1) % 3];
-				outLines.push_back({ glm::vec3(a.x * 2.0f - 1.0f,
-					a.y * 2.0f - 1.0f, 1.0f) });
-				outLines.push_back({ glm::vec3(b.x * 2.0f - 1.0f,
-					b.y * 2.0f - 1.0f, 1.0f) });
+				glm::vec2 na = applyNav ? UvToFlatNdc(uv[k], vpIdx)
+					: (uv[k] * 2.0f - glm::vec2(1.0f));
+				glm::vec2 nb = applyNav ? UvToFlatNdc(uv[(k + 1) % 3], vpIdx)
+					: (uv[(k + 1) % 3] * 2.0f - glm::vec2(1.0f));
+				outLines.push_back({ glm::vec3(na.x, na.y, 1.0f) });
+				outLines.push_back({ glm::vec3(nb.x, nb.y, 1.0f) });
 			}
 		};
 		if (prim.indices >= 0) {
@@ -914,6 +916,19 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 	pc.renderViews = 0;
 	pc.mainRenderView = UINT32_MAX;
 	pc.renderViewIndex = UINT32_MAX;
+	if (flatUv) {
+		// Flat-UV pane transform (must match uvflat.vert.hlsli +
+		// UvToFlatNdc): model[0][0] = zoom, model[3].xy = pan.
+		const int vi = std::clamp(vpIdx, 0, kMaxViewports - 1);
+		const float z = (m_uvZoom[vi] > 1e-6f) ? m_uvZoom[vi] : 1.0f;
+		std::memset(pc.model, 0, sizeof(pc.model));
+		pc.model[0] = z;
+		pc.model[5] = z;
+		pc.model[10] = 1.0f;
+		pc.model[15] = 1.0f;
+		pc.model[12] = m_uvPan[vi].x;
+		pc.model[13] = m_uvPan[vi].y;
+	}
 
 	// Viewport rect only (the EditorBg pass clears the rest of the
 	// window behind the panels). Color loads the bg clear; depth
@@ -1384,6 +1399,7 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	// the hovered viewport is ACTIVE (input, gizmo, shadows, framing).
 	ComputeViewportRects(extent);
 
+	UpdateUvPaneInput(); // flat-UV panes: MMB pan + wheel zoom (own transform)
 	UpdateCamera(delta_time_s);
 	if (!m_uiMode || !(m_imgui && m_imgui->WantsCaptureKeyboard())) {
 		// Function keys match App's debug views (see SceneRenderer):
@@ -1450,10 +1466,26 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 		if (m_input.isKeyPressed(GLFW_KEY_F)) {
 			const bool shift = m_input.isKeyHeld(GLFW_KEY_LEFT_SHIFT) ||
 				m_input.isKeyHeld(GLFW_KEY_RIGHT_SHIFT);
-			if (shift)
+			if (IsFlatUvViewMode(ActiveViewMode()) && !shift) {
+				// Flat pane: reset navigation (zoom 1, pan 0).
+				m_uvZoom[m_activeVp] = 1.0f;
+				m_uvPan[m_activeVp] = glm::vec2(0.0f);
+				Log("UV pane reset (zoom 1, pan 0).");
+			}
+			else if (shift)
 				FrameAll();
 			else
 				FrameSelection();
+		}
+		// Q: selection-mode radial (Mesh/Face/Vertex, highlight only).
+		if (m_input.isKeyPressed(GLFW_KEY_Q))
+			m_showSelRadial = true;
+		// Inspector Up/Down cycling (optional toggle, off while typing).
+		if (m_inspectorCycle) {
+			if (m_input.isKeyPressed(GLFW_KEY_UP))
+				SelectPrevNode();
+			if (m_input.isKeyPressed(GLFW_KEY_DOWN))
+				SelectNextNode();
 		}
 		const bool ctrl = m_input.isKeyHeld(GLFW_KEY_LEFT_CONTROL) ||
 			m_input.isKeyHeld(GLFW_KEY_RIGHT_CONTROL);
@@ -1500,20 +1532,50 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 	const bool inInset = insetActive && m_activeVp == 0 &&
 		lmx >= float(insetXAbs) - vp.x;
 
+	// Flat-UV panes pick in UV space (click = face/vertex highlight);
+	// 3D viewports keep the mesh/face/vertex click + rubber-band box.
+	const bool activeFlat = IsFlatUvViewMode(
+		m_viewports[m_activeVp].viewMode);
+	if (activeFlat && m_world && inVp && !uiEats &&
+		m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) && !altNav) {
+		// MMB is pane pan (see UpdateUvPaneInput); LMB clicks pick.
+		if (auto sub = PickFlatUv(m_activeVp, lmx, lmy)) {
+			ApplySubSelection(*sub);
+		}
+		else if (!shiftHeld) {
+			ClearSelection();
+		}
+	}
 	// Rubber-band multiselect: press on empty space (no gizmo grab),
 	// drag past a few pixels -> box; release selects all nodes whose
 	// projected AABB intersects. Shift adds to the current selection.
-	if (m_world && !m_gizmoDragging && !altNav && !inInset && inVp &&
+	// Box select stays Mesh-mode (face/vertex use click picking).
+	else if (!activeFlat && m_world && !m_gizmoDragging && !altNav &&
+		!inInset && inVp &&
 		m_input.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) && !uiEats) {
-		if (!GizmoHandleInput()) {
-			m_vpBoxDragging = true;
-			m_vpBoxAdditive = shiftHeld;
-			m_vpBoxVp = m_activeVp;
-			m_vpBoxX0 = m_vpBoxX1 = lmx;
-			m_vpBoxY0 = m_vpBoxY1 = lmy;
+		if (m_selMode == SelMode::Mesh) {
+			if (!GizmoHandleInput()) {
+				m_vpBoxDragging = true;
+				m_vpBoxAdditive = shiftHeld;
+				m_vpBoxVp = m_activeVp;
+				m_vpBoxX0 = m_vpBoxX1 = lmx;
+				m_vpBoxY0 = m_vpBoxY1 = lmy;
+			}
+		}
+		else {
+			// Face/Vertex click-pick (no box, no gizmo grab).
+			const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
+			if (auto sub = PickSubObject(m_activeVp, lmx, lmy, vpExt)) {
+				ApplySubSelection(*sub);
+			}
+			else if (!shiftHeld) {
+				ClearSelection();
+			}
+			// Swallow the press so the box path below never starts.
+			m_vpBoxDragging = false;
 		}
 	}
-	if (m_vpBoxDragging) {
+	if (m_vpBoxDragging && !activeFlat) {
 		if (m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT)) {
 			m_vpBoxX1 = std::clamp(float(m_input.getMouseX()) - vp.x,
 				0.0f, vp.w);
@@ -1534,21 +1596,30 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
 			}
 			else if (m_world && m_vpBoxVp == m_activeVp) {
 				const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
-				if (auto hit = PickNode(m_activeVp, lmx, lmy, vpExt)) {
-					if (shiftHeld)
-						AddToSelection(hit->node);
-					else
-						SetSelection(hit->node);
-					m_revealNode = hit->node;
+				if (m_selMode == SelMode::Mesh) {
+					if (auto hit = PickNode(m_activeVp, lmx, lmy, vpExt)) {
+						if (shiftHeld)
+							AddToSelection(hit->node);
+						else
+							SetSelection(hit->node);
+						m_revealNode = hit->node;
+					}
+					else if (!shiftHeld)
+						ClearSelection();
 				}
-				else if (!shiftHeld)
-					ClearSelection();
+				else {
+					if (auto sub = PickSubObject(m_activeVp, lmx, lmy, vpExt)) {
+						ApplySubSelection(*sub);
+					}
+					else if (!shiftHeld)
+						ClearSelection();
+				}
 			}
 			m_vpBoxDragging = false;
 		}
 	}
-	else if (m_gizmoDragging || (inVp && !altNav &&
-		m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT) && !uiEats)) {
+	else if (!activeFlat && (m_gizmoDragging || (inVp && !altNav &&
+		m_input.isMouseButtonHeld(GLFW_MOUSE_BUTTON_LEFT) && !uiEats))) {
 		GizmoHandleInput();
 	}
 

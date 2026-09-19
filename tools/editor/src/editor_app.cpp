@@ -867,6 +867,10 @@ void EditorApp::UpdateCamera(float dt) {
 	// angled perspective-like views — only the Projection combo changes
 	// the type. Ortho zoom scales the half-height.
 	SetupDefaultCameras();
+	// Flat-UV panes own the wheel + MMB (pane zoom/pan in UpdateUvPaneInput):
+	// the 3D orbit camera never moves while a flat pane is active.
+	if (IsFlatUvViewMode(ActiveViewMode()))
+		return;
 	EditorCam& cam = ActiveCam();
 	const bool isOrtho = cam.type == EditorCam::Type::Orthographic;
 	const glm::vec3 fwd = glm::normalize(

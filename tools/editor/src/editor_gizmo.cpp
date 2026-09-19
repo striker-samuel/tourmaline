@@ -22,11 +22,13 @@ struct LineBatch {
 	glm::vec4 color{ 1, 1, 1, 1 };
 	bool depthTest = false; // grid/flat wires: occluded by geometry
 	std::vector<smvk::DebugLineVertex> verts;
-	// Flat UV wire batches: drawn ONLY in viewports whose view mode is
-	// flatMode, pushed through an IDENTITY viewProj (verts are already
-	// in NDC space — see BuildFlatUvWires). 3D batches skip flat panels.
+	// Flat UV wire batches: drawn ONLY in viewport flatVp (whose view
+	// mode is flatMode), pushed through an IDENTITY viewProj (verts are
+	// already in NDC space — see BuildFlatUvWires + pane nav). 3D
+	// batches skip flat panels.
 	bool flat = false;
 	ViewMode flatMode = ViewMode::Lit;
+	int flatVp = -1; // viewport index for flat batches (per-pane nav)
 };
 
 glm::vec2 ToScreen(const glm::vec3& w, const glm::mat4& vp,
@@ -175,30 +177,65 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	// (sun = yellow + emission arrow, point = orange, spot = cyan +
 	// cone), always visible — light nodes carry no mesh to click.
 	// Flat-UV viewports filter these ranges out at record time.
-	// Flat UV wires (per needed mode): unwrapped shell edges in NDC
-	// space (identity viewProj; see BuildFlatUvWires).
-	bool flatNeeded[2] = { false, false }; // [0]=FlatUv0, [1]=FlatUv1
+	// Flat UV wires PER VIEWPORT (each flat pane has its own zoom/pan):
+	// unwrapped shell edges in NDC space (identity viewProj; the pane
+	// nav transform is baked in via UvToFlatNdc). Panel wires cover the
+	// SELECTION's subtree (UV editor style); the PNG export wires the
+	// whole scene instead. Selection highlights (area mode) draw on top
+	// in yellow/cyan.
 	for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
 		const ViewMode vm = m_viewports[vpIdx].viewMode;
-		if (vm == ViewMode::FlatUv0)
-			flatNeeded[0] = true;
-		else if (vm == ViewMode::FlatUv1)
-			flatNeeded[1] = true;
-	}
-	for (int fm = 0; fm < 2; ++fm) {
-		if (!flatNeeded[fm])
+		if (vm != ViewMode::FlatUv0 && vm != ViewMode::FlatUv1)
 			continue;
 		LineBatch wires;
 		wires.flat = true;
-		wires.flatMode = fm == 0 ? ViewMode::FlatUv0 : ViewMode::FlatUv1;
-		wires.color = fm == 0 ? glm::vec4(0.15f, 0.95f, 0.55f, 1.0f)
+		wires.flatMode = vm;
+		wires.flatVp = vpIdx;
+		wires.color = (vm == ViewMode::FlatUv0)
+			? glm::vec4(0.15f, 0.95f, 0.55f, 1.0f)
 			: glm::vec4(0.35f, 0.7f, 1.0f, 1.0f);
 		wires.depthTest = true; // over the flat fill (z=1 vs 0.9999)
-		// Panel wires = the SELECTION's subtree (UV editor style; the
-		// PNG export wires the whole scene instead).
-		BuildFlatUvWires(wires.verts, wires.flatMode, m_selected);
+		BuildFlatUvWires(wires.verts, vm, m_selected, vpIdx);
 		if (!wires.verts.empty())
 			batches.push_back(std::move(wires));
+		// Area-mode selection highlight: selected face (yellow loop) or
+		// vertex (cyan cross) in this pane's UV space.
+		if (m_selMode == SelMode::Face && m_selFaceNode != UINT32_MAX) {
+			glm::vec2 fuv[3];
+			if (SelectedFaceUvs(fuv, vm)) {
+				LineBatch hl;
+				hl.flat = true;
+				hl.flatMode = vm;
+				hl.flatVp = vpIdx;
+				hl.color = glm::vec4(1.0f, 0.9f, 0.2f, 1.0f);
+				hl.depthTest = false; // on top of the shell wires
+				for (int k = 0; k < 3; ++k) {
+					const glm::vec2 na = UvToFlatNdc(fuv[k], vpIdx);
+					const glm::vec2 nb = UvToFlatNdc(fuv[(k + 1) % 3], vpIdx);
+					hl.verts.push_back({ glm::vec3(na.x, na.y, 1.0f) });
+					hl.verts.push_back({ glm::vec3(nb.x, nb.y, 1.0f) });
+				}
+				batches.push_back(std::move(hl));
+			}
+		}
+		else if (m_selMode == SelMode::Vertex && m_selVertNode != UINT32_MAX) {
+			glm::vec2 vuv;
+			if (SelectedVertUv(vuv, vm)) {
+				LineBatch hl;
+				hl.flat = true;
+				hl.flatMode = vm;
+				hl.flatVp = vpIdx;
+				hl.color = glm::vec4(0.3f, 1.0f, 1.0f, 1.0f);
+				hl.depthTest = false;
+				const glm::vec2 nc = UvToFlatNdc(vuv, vpIdx);
+				const float s = 0.03f;
+				hl.verts.push_back({ glm::vec3(nc.x - s, nc.y, 1.0f) });
+				hl.verts.push_back({ glm::vec3(nc.x + s, nc.y, 1.0f) });
+				hl.verts.push_back({ glm::vec3(nc.x, nc.y - s, 1.0f) });
+				hl.verts.push_back({ glm::vec3(nc.x, nc.y + s, 1.0f) });
+				batches.push_back(std::move(hl));
+			}
+		}
 	}
 	if (m_showLightGizmos && !m_world->scene.lightForNode.empty()) {
 		const glm::vec3 eye = EditorCamEye(ActiveCam());
@@ -355,23 +392,58 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		}
 		batches.push_back(std::move(b));
 		}
+		// Sub-object highlight (3D viewports, wire mode included): the
+		// selected triangle (yellow loop, on top) or vertex (cyan diamond
+		// + cross, on top). Selection only — never edits geometry.
+		if (m_selMode == SelMode::Face && m_selFaceNode != UINT32_MAX) {
+			glm::vec3 w[3];
+			if (SelectedFaceWorld(w)) {
+				LineBatch hl;
+				hl.color = glm::vec4(1.0f, 0.9f, 0.2f, 1.0f);
+				hl.depthTest = false;
+				for (int k = 0; k < 3; ++k) {
+					hl.verts.push_back({ w[k] });
+					hl.verts.push_back({ w[(k + 1) % 3] });
+				}
+				batches.push_back(std::move(hl));
+			}
+		}
+		else if (m_selMode == SelMode::Vertex && m_selVertNode != UINT32_MAX) {
+			glm::vec3 p;
+			if (SelectedVertWorld(p)) {
+				LineBatch hl;
+				hl.color = glm::vec4(0.3f, 1.0f, 1.0f, 1.0f);
+				hl.depthTest = false;
+				const float s = glm::distance(EditorCamEye(ActiveCam()), p) *
+					0.02f + 0.02f;
+				AddDiamond(hl, p, s * 0.5f);
+				hl.verts.push_back({ p + glm::vec3(-s, 0, 0) });
+				hl.verts.push_back({ p + glm::vec3(s, 0, 0) });
+				hl.verts.push_back({ p + glm::vec3(0, -s, 0) });
+				hl.verts.push_back({ p + glm::vec3(0, s, 0) });
+				hl.verts.push_back({ p + glm::vec3(0, 0, -s) });
+				hl.verts.push_back({ p + glm::vec3(0, 0, s) });
+				batches.push_back(std::move(hl));
+			}
+		}
 	}
 
 	// Flatten into one upload with per-batch draw ranges. Grid + flat-UV
 	// wire ranges are DEPTH-TESTED against the viewport's depth (the
 	// grid hides behind geometry; flat wires land over the UV fill);
-	// every helper (gizmo axes, AABB, light markers) draws on top like
-	// a DCC overlay. Flat ranges render through an identity viewProj
-	// and only in panels whose view mode matches.
+	// every helper (gizmo axes, AABB, light markers, face/vertex
+	// highlights) draws on top like a DCC overlay. Flat ranges render
+	// through an identity viewProj and only in their OWN viewport (each
+	// flat pane has its own zoom/pan).
 	struct Range { uint32_t first, count; glm::vec4 color;
-		bool depthTest; bool flat; ViewMode flatMode; };
+		bool depthTest; bool flat; ViewMode flatMode; int flatVp; };
 	std::vector<Range> ranges;
 	std::vector<smvk::DebugLineVertex> all;
 	for (auto& b : batches) {
 		if (b.verts.empty())
 			continue;
 		ranges.push_back({ uint32_t(all.size()), uint32_t(b.verts.size()),
-			b.color, b.depthTest, b.flat, b.flatMode });
+			b.color, b.depthTest, b.flat, b.flatMode, b.flatVp });
 		all.insert(all.end(), b.verts.begin(), b.verts.end());
 	}
 	if (all.empty())
@@ -407,7 +479,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		.SetDepth(m_depth.logicalView,
 			smvk::AttachmentLoadOp::Load, smvk::AttachmentStoreOp::Store,
 			smvk::ClearDepthStencil(0.0f, 0));
-	pass.SetRecordingFunc([this, ranges, vpViewProj, vpMode, vpIsFlat,
+	pass.SetRecordingFunc([this, ranges, vpViewProj, vpMode, vpIsFlat, vpIdx,
 			flatIdentity](smvk::CommandBuffer& cmd) {
 		if (m_gizmoLines.empty() || m_lineProgram.shaderCount != 2)
 			return;
@@ -417,11 +489,11 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		bool depthPipeline = false;
 		bool drewAny = false;
 		for (const auto& r : ranges) {
-			// Mode filter: flat ranges belong to their flat panel,
-			// 3D ranges to the 3D panels.
+			// Mode filter: flat ranges belong to their OWN flat panel
+			// (per-pane zoom/pan), 3D ranges to the 3D panels.
 			if (r.flat != vpIsFlat)
 				continue;
-			if (r.flat && r.flatMode != vpMode)
+			if (r.flat && (r.flatMode != vpMode || r.flatVp != vpIdx))
 				continue;
 			// Rebind the pipeline only when the depth mode changes
 			// (grid/flat wires = depth-tested, helpers = on top).

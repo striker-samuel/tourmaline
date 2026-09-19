@@ -185,6 +185,7 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 	DrawPanelSplitters(); // resize handles between panels and viewport
 	DrawViewportOverlay(targetExtent);
 	DrawViewportChrome(); // borders, camera chips, box-select rect
+	DrawSelectionRadial(); // Q radial: Mesh/Face/Vertex highlight modes
 	DrawPlayBar();
 	DrawFlintbasePanel();
 }
@@ -313,10 +314,33 @@ void EditorApp::DrawMenuBar() {
 			m_gizmoMode == GizmoMode::Scale))
 			m_gizmoMode = GizmoMode::Scale;
 		ImGui::Separator();
+		if (ImGui::MenuItem("Selection radial...", "Q"))
+			m_showSelRadial = true;
+		if (ImGui::MenuItem("Select: Mesh", "Q,1",
+			m_selMode == SelMode::Mesh)) {
+			m_selMode = SelMode::Mesh;
+			ClearSubSelection();
+		}
+		if (ImGui::MenuItem("Select: Face", "Q,2",
+			m_selMode == SelMode::Face)) {
+			m_selMode = SelMode::Face;
+			ClearSubSelection();
+		}
+		if (ImGui::MenuItem("Select: Vertex", "Q,3",
+			m_selMode == SelMode::Vertex)) {
+			m_selMode = SelMode::Vertex;
+			ClearSubSelection();
+		}
+		ImGui::TextDisabled("mode: %s (highlight only)", SelModeName(m_selMode));
+		ImGui::Separator();
 		if (ImGui::MenuItem("Frame selection", "F"))
 			FrameSelection();
 		if (ImGui::MenuItem("Frame all", "Shift+F"))
 			FrameAll();
+		if (IsFlatUvViewMode(ActiveViewMode()) &&
+			ImGui::MenuItem("Reset UV pane (zoom 1)"))
+			m_uvZoom[m_activeVp] = 1.0f,
+			m_uvPan[m_activeVp] = glm::vec2(0.0f);
 		ImGui::Separator();
 		if (ImGui::MenuItem("Flintbase browser", nullptr, m_showFlintbasePanel))
 			m_showFlintbasePanel = !m_showFlintbasePanel;
@@ -1502,7 +1526,42 @@ void EditorApp::DrawInspector() {
 	if (m_selection.size() > 1)
 		ImGui::TextDisabled("multi-select: %zu nodes (primary #%u)",
 			m_selection.size(), node);
+	// Selection cycling (Up/Down arrows + Prev/Next option).
+	{
+		if (ImGui::Button("< Prev")) {
+			SelectPrevNode();
+			return;
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Next >")) {
+			SelectNextNode();
+			return;
+		}
+		ImGui::SameLine();
+		ImGui::Checkbox("Up/Down", &m_inspectorCycle);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip(
+				"When on, the Up/Down arrow keys cycle the node selection.");
+	}
 	ImGui::Text("Node %u", node);
+	// Sub-object highlight state (selection only, never edited).
+	ImGui::TextDisabled("select mode: %s (Q radial)", SelModeName(m_selMode));
+	if (m_selMode == SelMode::Face) {
+		if (m_selFaceNode != UINT32_MAX && m_selFaceTri != UINT32_MAX)
+			ImGui::Text("face: node %u tri %u (%.2f,%.2f,%.2f)",
+				m_selFaceNode, m_selFaceTri,
+				m_selFacePos.x, m_selFacePos.y, m_selFacePos.z);
+		else
+			ImGui::TextDisabled("face: none (click a triangle, Q for mesh)");
+	}
+	else if (m_selMode == SelMode::Vertex) {
+		if (m_selVertNode != UINT32_MAX && m_selVertIdx != UINT32_MAX)
+			ImGui::Text("vertex: node %u vert %u (%.2f,%.2f,%.2f)",
+				m_selVertNode, m_selVertIdx,
+				m_selVertPos.x, m_selVertPos.y, m_selVertPos.z);
+		else
+			ImGui::TextDisabled("vertex: none (click near a vertex)");
+	}
 
 	// Name.
 	{
@@ -2288,12 +2347,35 @@ void EditorApp::DrawUvPanel() {
 		}
 	}
 	ImGui::Separator();
+	ImGui::Text("Flat pane navigation (area mode)");
+	{
+		const int vi = std::clamp(m_activeVp, 0, kMaxViewports - 1);
+		float z = m_uvZoom[vi];
+		if (ImGui::SliderFloat("Zoom", &z, 0.2f, 32.0f, "%.2f"))
+			m_uvZoom[vi] = std::clamp(z, 0.2f, 32.0f);
+		glm::vec2 p = m_uvPan[vi];
+		float pp[2] = { p.x, p.y };
+		if (ImGui::DragFloat2("Pan (UV)", pp, 0.01f, -4.0f, 4.0f))
+			m_uvPan[vi] = glm::vec2(pp[0], pp[1]);
+		if (ImGui::Button("Reset pane (F)")) {
+			m_uvZoom[vi] = 1.0f;
+			m_uvPan[vi] = glm::vec2(0.0f);
+		}
+		ImGui::TextDisabled("MMB drag = pan, wheel = zoom, click = pick.");
+		ImGui::TextDisabled("Yellow = face, cyan = vertex highlight.");
+	}
+	ImGui::Separator();
 	ImGui::Text("Views");
 	if (ImGui::Button("UV0 fullscreen (F9)"))
 		ActiveViewMode() = ViewMode::Uv0;
 	ImGui::SameLine();
 	if (ImGui::Button("UV1 fullscreen (F10)"))
 		ActiveViewMode() = ViewMode::Uv1;
+	if (ImGui::Button("Flat UV diffuse"))
+		ActiveViewMode() = ViewMode::FlatUv0;
+	ImGui::SameLine();
+	if (ImGui::Button("Flat UV lightmap") && m_lmGpu)
+		ActiveViewMode() = ViewMode::FlatUv1;
 	if (ImGui::Button(
 			("UV inset: " + std::string(SecondViewName(m_secondView)) +
 				" (F5)").c_str()))
@@ -2342,11 +2424,49 @@ void EditorApp::DrawPlayBar() {
 }
 
 void EditorApp::DrawConsolePanel() {
-	ImGui::BeginChild("##log", ImVec2(0, 0), false,
+	// Selectable log: readonly multiline text (mouse-drag selection +
+	// Ctrl+C) with Clear/Copy buttons and stick-to-bottom autoscroll.
+	if (ImGui::SmallButton("Clear"))
+		m_consoleLines.clear();
+	ImGui::SameLine();
+	if (ImGui::SmallButton("Copy all")) {
+		std::string all;
+		size_t total = 0;
+		for (auto& l : m_consoleLines)
+			total += l.size() + 1;
+		all.reserve(total);
+		for (auto& l : m_consoleLines) {
+			all += l;
+			all += '\n';
+		}
+		ImGui::SetClipboardText(all.c_str());
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("%zu lines (drag to select, Ctrl+C to copy)",
+		m_consoleLines.size());
+	std::string all;
+	{
+		size_t total = 0;
+		for (auto& l : m_consoleLines)
+			total += l.size() + 1;
+		all.reserve(total + 1);
+		for (auto& l : m_consoleLines) {
+			all += l;
+			all += '\n';
+		}
+	}
+	// ImGui needs a mutable char buffer for InputTextMultiline; the
+	// console caps at 400 lines so rebuilding each frame is cheap.
+	static std::vector<char> buf;
+	buf.assign(all.begin(), all.end());
+	buf.push_back('\0');
+	ImGui::BeginChild("##logscroll", ImVec2(0, 0), false,
 		ImGuiWindowFlags_HorizontalScrollbar);
-	for (auto& l : m_consoleLines)
-		ImGui::TextUnformatted(l.c_str());
-	if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4.0f)
+	ImGui::InputTextMultiline("##consoletext", buf.data(), buf.size(),
+		ImVec2(-1, -1),
+		ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_NoUndoRedo);
+	// Stick to bottom while new lines arrive (unless the user scrolled up).
+	if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 8.0f)
 		ImGui::SetScrollHereY(1.0f);
 	ImGui::EndChild();
 }
@@ -2368,25 +2488,36 @@ void EditorApp::DrawViewportOverlay(smvk::Extent2D extent) {
 		ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
 		ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
 		ImGuiWindowFlags_NoInputs)) {
-		ImGui::Text("%s%s  |  %s gizmo%s  |  %s",
+		ImGui::Text("%s%s  |  %s gizmo%s  |  %s  |  %s select",
 			ViewModeName(ActiveViewMode()),
 			m_wireframeAll ? " (wire)" : "",
 			m_gizmoMode == GizmoMode::Translate ? "Translate" :
 			m_gizmoMode == GizmoMode::Rotate ? "Rotate" : "Scale",
 			m_gizmoMode == GizmoMode::Translate ? " (world)" : " (local)",
 			m_gltfPath.empty() ? "no scene" : std::filesystem::path(
-				m_gltfPath).filename().string().c_str());
+				m_gltfPath).filename().string().c_str(),
+			SelModeName(m_selMode));
 		if (m_selected != UINT32_MAX && m_world)
 			ImGui::Text("sel: %u %s", m_selected,
 				getNodeName(m_world->scene, int(m_selected)).c_str());
+		if (m_selMode == SelMode::Face && m_selFaceNode != UINT32_MAX)
+			ImGui::Text("face: node %u tri %u", m_selFaceNode, m_selFaceTri);
+		else if (m_selMode == SelMode::Vertex && m_selVertNode != UINT32_MAX)
+			ImGui::Text("vertex: node %u vert %u", m_selVertNode, m_selVertIdx);
+		if (IsFlatUvViewMode(ActiveViewMode()))
+			ImGui::Text("uv pane: zoom %.2f pan (%.2f,%.2f)",
+				m_uvZoom[m_activeVp], m_uvPan[m_activeVp].x,
+				m_uvPan[m_activeVp].y);
 		if (ActiveViewMode() == ViewMode::Meshlets)
 			ImGui::TextDisabled("meshlet color: %s",
 				m_debugMeshletMode == 0 ? "random per meshlet"
 				: "cone-cutoff heat");
 		ImGui::TextDisabled("F1/F2/F3/F4/F8 view  F5 inset  F6/F9/F10 debug");
 		ImGui::TextDisabled("W/E/R move-rotate-scale  Z wireframe  I ui  L lights");
-		ImGui::TextDisabled("F frame sel  Shift+F frame all");
+		ImGui::TextDisabled("Q select radial  Up/Down cycle node");
+		ImGui::TextDisabled("F frame sel  Shift+F frame all  (flat pane: F resets)");
 		ImGui::TextDisabled("click=select  Alt+LMB orbit  Alt+MMB pan  Alt+RMB dolly");
+		ImGui::TextDisabled("flat pane: MMB pan  wheel zoom  click=face/vert");
 		ImGui::TextDisabled("Ctrl+Z / Ctrl+Shift+Z: undo %zu / redo %zu",
 			UndoDepth(), RedoDepth());
 	}

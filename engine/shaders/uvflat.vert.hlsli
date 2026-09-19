@@ -45,7 +45,22 @@ VSOut mainVS(VSIn IN)
 #endif
     // glTF image space: (0,0) top-left; Vulkan NDC: -y is up, so uv.y=0
     // maps to -1 (screen top) — the texture reads with image orientation.
-    OUT.pos = float4(uvFlat.x * 2.0 - 1.0, uvFlat.y * 2.0 - 1.0, 0.9999, 1.0);
+    // Editor pane navigation (no recompile needed per view): pc.model
+    // carries the 2D UV transform (model[0][0] = zoom, model[3].xy = pan
+    // in UV units, centered: uvT = (uv-0.5)*zoom + 0.5 + pan). Identity
+    // (zoom 1, pan 0) reproduces the legacy mapping; passes that never
+    // set a transform (lightmap PNG export) push a zeroed model, which
+    // is detected below and treated as identity.
+    float uvZoom = pc.model[0][0];
+    float2 uvPan = float2(pc.model[3][0], pc.model[3][1]);
+    if (uvZoom < 1e-6f || uvZoom > 64.0f)
+    {
+        uvZoom = 1.0f;
+        uvPan = float2(0.0f, 0.0f);
+    }
+    const float2 uvT = (uvFlat - float2(0.5f, 0.5f)) * uvZoom +
+        float2(0.5f, 0.5f) + uvPan;
+    OUT.pos = float4(uvT.x * 2.0 - 1.0, uvT.y * 2.0 - 1.0, 0.9999, 1.0);
     OUT.color = IN.color;
     OUT.uv = IN.uv;
     OUT.worldPos = float3(uvFlat, 0.0);
