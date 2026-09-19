@@ -15,6 +15,9 @@ include(FetchContent)
 # MeshOptimizer
 add_subdirectory(external/meshoptimizer)
 
+# xatlas (vendored chart + pack core for lightmap UV2 atlases)
+add_subdirectory(external/xatlas)
+
 # LZ4 (vendored block codec for cooked pak blobs)
 add_subdirectory(external/lz4)
 

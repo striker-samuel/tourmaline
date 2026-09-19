@@ -51,6 +51,7 @@ target_link_libraries(engine
         glm
         imgui_core
         meshoptimizer
+        xatlas
         OptickCore
         spirv_reflect
     PRIVATE

@@ -38,6 +38,13 @@
 // sampled interior points of each sibling's triangles onto the LOD0
 // surface and reports the uv drift in atlas texels (log-only; flip
 // --lm-lod-audit-gate on to drop failing levels).
+//   With --lm-charts xatlas the model is per-LOD atlases instead: LOD0
+// bakes from the full-scene xatlas brute-force pack, then each sibling
+// level charts + bakes its OWN rects (exact UVs for its simplified
+// topology) stacked into the shared atlas — the audit is skipped
+// (nothing to audit) and levels that overflow fall back to shared LOD0
+// UVs. Either way meshlets are built once, after ALL stamping, from the
+// final topology.
 //
 // Denoising: with --lightmap on (and --lm-denoise on, the default), the
 // fitted per-lobe amplitude layers are denoised with Intel Open Image
@@ -193,6 +200,10 @@ struct Args {
 	// per-island rects pay ~4 gutter texels per side per island, and
 	// rizom-dense scenes carry millions of islands);
 	// "planar" forces the built-in unwrapper for every mesh.
+	// "xatlas" runs the full external-xatlas chart + brute-force pack
+	// path (one xatlas atlas over all meshes, ComputeCharts + PackCharts
+	// with bruteForce=true always) with per-LOD atlas levels stacked
+	// into the shared atlas (see the lightmap block below).
 	std::string lmCharts = "auto";
 	// Comma-separated node-name keywords whose SUBTREES are excluded from
 	// charts/bake entirely (word-boundary match, case-insensitive: "tree"
@@ -447,10 +458,12 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			// "planar" forces the built-in unwrapper; "authored-pack"
 			// = authored UV2 with one chart per pre-packed layout;
-			// anything else ("auto", "authored") = authored UV2 with
-			// per-island charts.
+			// "xatlas" = external-xatlas charts + brute-force pack
+			// (per-LOD atlas levels); anything else ("auto", "authored")
+			// = authored UV2 with per-island charts.
 			out.lmCharts = (v == "planar") ? "planar"
-				: (v == "authored-pack" ? "authored-pack" : "auto");
+				: (v == "authored-pack" ? "authored-pack"
+				: (v == "xatlas" ? "xatlas" : "auto"));
 		}
 		else if (a == "--lm-exclude" || a == "--lm-exclude-veg") {
 			std::string v;
@@ -562,7 +575,7 @@ void Usage() {
 		<< "           --lm-lod-audit-tx 2.0 --lm-lod-audit-gate on|off\n"
 		<< "           --lm-denoise on|off --lm-denoise-quality high|balanced\n"
 		<< "           --lm-curve-target 7.0 --lm-curve-max 2.5\n"
-		<< "           --lm-charts auto|authored|authored-pack|planar\n"
+		<< "           --lm-charts auto|authored|authored-pack|planar|xatlas\n"
 		<< "           --lm-exclude tree,linden,ivy,glass --lm-exclude-small 0.5\n"
 		<< "           --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
 		<< "          [--gi-probe <name> ...]: registers probe sidecar names\n"
@@ -1099,6 +1112,91 @@ uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
 	return clones;
 }
 
+// Per-corner atlas uv2 stamping (seam-correct), shared by the LOD0 bake
+// and every per-LOD atlas level (xatlas path): a vertex shared by two
+// charts has no single valid atlas uv, so every triangle corner is
+// stamped through the TRIANGLE's chart — original vertices keep their
+// slots 1:1 (first chart to use a vertex owns its uv2), corners needed
+// by a different chart get positional duplicates appended, and the index
+// buffer is rebuilt in the same triangle order (surface ranges stay
+// valid). Fills outChartOf (per-vertex chart over the STAMPED layout —
+// the simplifier's error-metric provenance) and counts seam duplicates.
+// Returns the mesh's lobe count (first chunk, written by the bake's
+// per-mesh selection; fallbackLobes when the mesh has no chunks).
+uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
+	const smvk::gi::SgLightmapChartResult& chartRes, uint32_t chunkBase,
+	const smvk::gi::SgLightmapAtlas& atlas, uint32_t gutter,
+	uint32_t fallbackLobes, std::vector<uint32_t>& outChartOf,
+	uint64_t& seamDups) {
+	const size_t triCount = upload.indices.size() / 3;
+	const std::vector<uint32_t>& triChart = chartRes.triChart;
+	const std::vector<glm::vec2>& cornerUv = chartRes.cornerChartUv;
+	const uint32_t origVerts = uint32_t(upload.vertices.size());
+	std::vector<uint32_t> ownerChart(origVerts, 0xFFFFFFFFu);
+	// Chart of each appended seam duplicate (creation order).
+	std::vector<uint32_t> dupChart;
+	// (original vertex, chart) -> stamped index (orig or duplicate)
+	std::unordered_map<uint64_t, uint32_t> cornerSlot;
+	cornerSlot.reserve(size_t(origVerts) * 2);
+	std::vector<uint32_t> newIndices;
+	newIndices.reserve(upload.indices.size());
+	for (size_t t = 0; t < triCount; ++t) {
+		const uint32_t chartIdx = t < triChart.size()
+			? triChart[t] : 0xFFFFFFFFu;
+		for (int k = 0; k < 3; ++k) {
+			const uint32_t orig = upload.indices[t * 3 + k];
+			if (chartIdx == 0xFFFFFFFFu) {
+				// Degenerate/uncharted triangle: keep the original
+				// corner (uv2 stays whatever the vertex carries).
+				newIndices.push_back(orig);
+				continue;
+			}
+			const uint64_t key = uint64_t(orig) << 32 | chartIdx;
+			auto it = cornerSlot.find(key);
+			if (it != cornerSlot.end()) {
+				newIndices.push_back(it->second);
+				continue;
+			}
+			const glm::vec2 atlasUv = atlas.AtlasUv(
+				chunkBase + chartIdx, gutter,
+				cornerUv[t * 3 + k]);
+			uint32_t slot;
+			if (ownerChart[orig] == 0xFFFFFFFFu) {
+				// First chart to stamp this vertex: in-place.
+				ownerChart[orig] = chartIdx;
+				slot = orig;
+			}
+			else if (ownerChart[orig] == chartIdx) {
+				// Same chart re-uses the original (uv identical:
+				// chart uv is a pure position projection).
+				slot = orig;
+			}
+			else {
+				// Seam corner: duplicate for THIS chart.
+				smvk::StaticVertex dup = upload.vertices[orig];
+				dup.texCoord2 = atlasUv;
+				upload.vertices.push_back(dup);
+				slot = uint32_t(upload.vertices.size() - 1);
+				dupChart.push_back(chartIdx);
+				++seamDups;
+			}
+			upload.vertices[slot].texCoord2 = atlasUv;
+			cornerSlot.emplace(key, slot);
+			newIndices.push_back(slot);
+		}
+	}
+	upload.indices = std::move(newIndices);
+	outChartOf.assign(upload.vertices.size(), 0xFFFFFFFFu);
+	for (uint32_t v = 0; v < origVerts && v < outChartOf.size(); ++v)
+		outChartOf[v] = ownerChart[v];
+	for (size_t d = 0; d < dupChart.size()
+		&& origVerts + d < outChartOf.size(); ++d)
+		outChartOf[origVerts + d] = dupChart[d];
+	if (!chartRes.charts.empty() && chunkBase < atlas.chunks.size())
+		return atlas.chunks[chunkBase].lobeCount;
+	return fallbackLobes;
+}
+
 int main(int argc, char** argv) {
 	Args args;
 	if (!ParseArgs(argc, argv, args)) {
@@ -1438,6 +1536,14 @@ int main(int argc, char** argv) {
 	// ---------------------------------------------------------------------------
 	smvk::gi::SgLightmapAtlas atlas;
 	std::unordered_map<uint32_t, std::vector<uint32_t>> lmVertexCharts;
+	// Xatlas brute-force path (--lm-charts xatlas): full-scene xatlas
+	// charts + brute-force pack for LOD0, per-LOD atlas levels stacked
+	// into the shared atlas afterwards (meshlets stay deferred throughout
+	// and are rebuilt once from the final stamped topology).
+	const bool lmXatlas = (args.lmCharts == "xatlas");
+	// Converged LOD0 world density, reused by the per-LOD levels.
+	float lmFitDensityWorld = 0.0f;
+	uint32_t lmLodLevelsBaked = 0;
 	if (args.lightmap) {
 		using namespace smvk::gi;
 		const auto lmT0 = std::chrono::steady_clock::now();
@@ -1673,6 +1779,17 @@ int main(int argc, char** argv) {
 				? smvk::gi::LightmapCurvatureScale(*upload, localBase,
 					args.lmCurveTarget, std::max(args.lmCurveMax, 1.0f))
 				: 1.0f;
+			if (lmXatlas) {
+				// Xatlas path charts the whole scene in ONE batch during
+				// the pack convergence below (world-prescaled positions
+				// under a single world texelsPerUnit); nothing per mesh
+				// here beyond the eligibility filters above.
+				w.density = std::max(localBase * w.curveScale, floorD);
+				std::cerr << "  [LM] xatlas node " << node
+					<< " (curve x" << w.curveScale << ")\n" << std::flush;
+				work.push_back(std::move(w));
+				continue;
+			}
 			float density = std::max(localBase * w.curveScale, floorD);
 			bool charted = false;
 			while (density >= floorD) {
@@ -1707,8 +1824,9 @@ int main(int argc, char** argv) {
 			work.push_back(std::move(w));
 		}
 
-		if (!work.empty()) {
-			// Atlas pack: ALL charts of all meshes as individual rects.
+		if (!work.empty() && !lmXatlas) {
+			// Atlas pack (planar/authored charts): ALL charts of all
+			// meshes as individual rects.
 			// Convergence (densities are WORLD texels/m; each mesh
 			// converts through its own world scale):
 			//   1. geometric binary search for the largest density whose
@@ -1883,6 +2001,222 @@ int main(int argc, char** argv) {
 			}
 		}
 
+		if (!work.empty() && lmXatlas) {
+			// Xatlas brute-force pack convergence: one xatlas chart+pack
+			// over ALL meshes per probe (world-prescaled positions under
+			// a single world texelsPerUnit, bruteForce always on),
+			// stacked into a fresh atlas. Same policy as the planar
+			// search (halve to feasible, geometric binary search to
+			// ~10%, drop hungriest meshes at the 1 texel/m floor), but
+			// the WINNING probe's level+atlas are kept verbatim —
+			// xatlas threading makes regeneration non-identical, so the
+			// winner is never re-probed. fitDensity feeds the per-LOD
+			// levels after the bake.
+			constexpr uint32_t kMaxAtlasH = 8192;
+			const uint32_t atlasW =
+				std::max<uint32_t>(args.lmAtlasWidth, 256);
+			SgLightmapXatlasOptions xopts;
+			xopts.gutterTexels = chartOpts.gutterTexels;
+			auto buildXinputs = [&]() {
+				std::vector<SgLightmapXatlasMeshInput> ins;
+				ins.reserve(work.size());
+				for (const LmWork& w : work) {
+					SgLightmapXatlasMeshInput in;
+					in.upload = cluster->GetRetainedUpload(w.handle);
+					in.meshKey = w.node;
+					in.densityScale = w.worldScale * w.curveScale;
+					ins.push_back(in);
+				}
+				return ins;
+			};
+			auto xatlasTexelsOf = [](const SgLightmapXatlasLevel& lv,
+				size_t mi) {
+				uint64_t t = 0;
+				if (mi < lv.meshes.size())
+					for (const auto& ch : lv.meshes[mi].chart.charts)
+						t += uint64_t(ch.width) * ch.height;
+				return t;
+			};
+			auto xatlasDropUnchartable = [&](SgLightmapXatlasLevel& lv) {
+				for (size_t i = 0; i < lv.meshes.size();) {
+					if (!lv.meshes[i].ok) {
+						std::cerr << "  [LM] xatlas dropped node "
+							<< work[i].node << " (unchartable)\n"
+							<< std::flush;
+						work.erase(work.begin() + ptrdiff_t(i));
+						lv.meshes.erase(lv.meshes.begin() + ptrdiff_t(i));
+					}
+					else {
+						++i;
+					}
+				}
+			};
+			auto xatlasProbeFits = [&](SgLightmapXatlasLevel& lv) {
+				// Stacks the probe level into a scratch atlas: width cap
+				// + texel budget decide fit (Append reports height
+				// overflow itself).
+				SgLightmapAtlas probe;
+				std::vector<uint32_t> keys;
+				keys.reserve(work.size());
+				for (const LmWork& w : work)
+					keys.push_back(w.node);
+				std::vector<uint32_t> dummy;
+				std::string aerr;
+				if (!AppendXatlasLevelToAtlas(probe, lv, keys,
+						args.lmLobes, atlasW, kMaxAtlasH, dummy, aerr))
+					return false;
+				return uint64_t(probe.width) * probe.height
+					<= args.lmBudget;
+			};
+			uint32_t round = 0;
+			float fitDensity = 0.0f;   // best (highest) fitting so far
+			float failDensity = chartOpts.texelsPerMeter; // lowest failure
+			SgLightmapXatlasLevel bestLevel;
+			auto tryXatlasPack = [&](float worldDensity) {
+				xopts.texelsPerMeter = std::max(worldDensity, 1e-3f);
+				SgLightmapXatlasLevel lv;
+				std::string xerr;
+				if (!GenerateLightmapChartsXatlas(buildXinputs(), xopts,
+						lv, xerr)) {
+					std::cerr << "  [LM] xatlas probe " << worldDensity
+						<< " texels/m failed: " << xerr << "\n" << std::flush;
+					return false;
+				}
+				// Membership changes (drops) are only allowed before the
+				// first fit: afterwards lv must stay parallel to the
+				// stored winner, so an unchartable mesh just fails the
+				// probe (halving/the floor path resolve it).
+				if (fitDensity <= 0.0f) {
+					xatlasDropUnchartable(lv);
+				} else {
+					for (const auto& m : lv.meshes) {
+						if (!m.ok)
+							return false;
+					}
+				}
+				if (work.empty() || !xatlasProbeFits(lv))
+					return false;
+				bestLevel = std::move(lv);
+				return true;
+			};
+			// Initial probe at the requested density.
+			if (tryXatlasPack(chartOpts.texelsPerMeter)) {
+				fitDensity = chartOpts.texelsPerMeter;
+			} else {
+				// Phase 1: halve until a pack fits (feasible lower bound).
+				float probeD = chartOpts.texelsPerMeter;
+				while (probeD > 1.0f) {
+					if (++round > 32) {
+						std::cerr << "[LM] atlas overflow\n";
+						return 1;
+					}
+					probeD = std::max(probeD * 0.5f, 1.0f);
+					if (tryXatlasPack(probeD)) {
+						fitDensity = probeD;
+						break;
+					}
+					failDensity = probeD;
+				}
+				if (fitDensity <= 0.0f) {
+					// Nothing fit even at 1 texel/m: drop the most
+					// texel-hungry mesh per round until the pack fits.
+					xopts.texelsPerMeter = 1.0f;
+					std::string xerr;
+					if (!GenerateLightmapChartsXatlas(buildXinputs(),
+							xopts, bestLevel, xerr)) {
+						std::cerr << "[LM] atlas overflow (" << xerr
+							<< "; lower --lm-density or raise --lm-budget)\n";
+						return 1;
+					}
+					xatlasDropUnchartable(bestLevel);
+					while (!xatlasProbeFits(bestLevel)) {
+						if (++round > 32 || work.empty()) {
+							std::cerr << "[LM] atlas overflow ("
+								<< work.size()
+								<< " meshes remain; lower --lm-density or raise --lm-budget)\n";
+							return 1;
+						}
+						size_t worst = 0;
+						uint64_t worstTexels = 0;
+						for (size_t i = 0; i < work.size(); ++i) {
+							const uint64_t texels =
+								xatlasTexelsOf(bestLevel, i);
+							if (texels > worstTexels) {
+								worstTexels = texels;
+								worst = i;
+							}
+						}
+						std::cerr << "  [LM] atlas round " << round
+							<< ": drop node " << work[worst].node
+							<< " (" << worstTexels << " texels)\n" << std::flush;
+						work.erase(work.begin() + ptrdiff_t(worst));
+						bestLevel.meshes.erase(
+							bestLevel.meshes.begin() + ptrdiff_t(worst));
+					}
+					fitDensity = 1.0f;
+				} else {
+					// Phase 2: geometric binary search in (fit, fail).
+					// Winners are kept verbatim (no regen — see above).
+					while (failDensity / fitDensity > 1.10f) {
+						if (++round > 32)
+							break;
+						const float mid =
+							std::sqrt(fitDensity * failDensity);
+						if (tryXatlasPack(mid)) {
+							fitDensity = mid;
+						} else {
+							failDensity = mid;
+						}
+					}
+				}
+			}
+			// Land the winning level in the real atlas (deterministic
+			// re-stack of the kept rects) and hand charts to the bake.
+			{
+				atlas = SgLightmapAtlas{};
+				std::vector<uint32_t> keys;
+				keys.reserve(work.size());
+				for (const LmWork& w : work)
+					keys.push_back(w.node);
+				std::vector<uint32_t> bases;
+				std::string aerr;
+				if (!AppendXatlasLevelToAtlas(atlas, bestLevel, keys,
+						args.lmLobes, atlasW, kMaxAtlasH, bases, aerr)) {
+					std::cerr << "[LM] atlas convergence regressed: "
+						<< aerr << "\n";
+					return 1;
+				}
+				for (size_t i = 0; i < work.size(); ++i) {
+					work[i].chart =
+						std::move(bestLevel.meshes[i].chart);
+					work[i].chunkBase = bases[i];
+					work[i].density = fitDensity * work[i].worldScale
+						* work[i].curveScale;
+				}
+			}
+			lmFitDensityWorld = fitDensity;
+			std::cerr << "  [LM] xatlas density converged at " << fitDensity
+				<< " texels/m world base (" << fitDensity * fitDensity
+				<< " texels/m^2); atlas=" << atlas.width << "x" << atlas.height
+				<< " (" << (uint64_t(atlas.width) * atlas.height * 72 / (1024 * 1024))
+				<< " MiB gpu, bruteForce)\n" << std::flush;
+			{
+				uint32_t boosted = 0;
+				float maxScale = 1.0f;
+				for (const LmWork& w : work) {
+					if (w.curveScale > 1.01f)
+						++boosted;
+					maxScale = std::max(maxScale, w.curveScale);
+				}
+				if (boosted != 0)
+					std::cerr << "  [LM] curvature boost: " << boosted
+						<< "/" << work.size() << " meshes denser, max x"
+						<< maxScale << " (effective up to "
+						<< fitDensity * maxScale << " texels/m)\n"
+						<< std::flush;
+			}
+		}
+
 		// Bake every chart (sun + spots + materials + pass-through glass)
 		// in ONE shared-pool batch, then stamp the results into the
 		// retained uploads: per-corner atlas-space texCoord2 + the mesh's
@@ -1934,11 +2268,288 @@ int main(int argc, char** argv) {
 			}
 		}
 
+		// NOTE: the OIDN denoise pass lives AFTER the stamp loop and the
+		// per-LOD atlas levels (xatlas path), so it covers every baked
+		// level's payloads exactly once (see below).
+		for (LmWork& w : work) {
+			smvk::StaticMeshUpload* upload = const_cast<smvk::StaticMeshUpload*>(
+				cluster->GetRetainedUpload(w.handle));
+			const size_t triCount = upload ? upload->indices.size() / 3 : 0;
+			if (!upload || w.chart.triChart.size() != triCount) {
+				std::cerr << "[LM] triangle count mismatch for node " << w.node
+					<< " - mesh skipped\n";
+				continue;
+			}
+			// Per-corner atlas uv2 stamping (seam-correct; see
+			// StampLightmapUvs): every triangle corner through the
+			// triangle's own chart, seam duplicates appended, index
+			// buffer rebuilt in the same triangle order.
+			std::vector<uint32_t> chartOf;
+			const uint32_t lobes = StampLightmapUvs(*upload, w.chart,
+				w.chunkBase, atlas, chartOpts.gutterTexels, args.lmLobes,
+				chartOf, seamDups);
+			// Chart provenance for the LOD cook (CookLodSiblings): one
+			// chart id per vertex over the STAMPED layout. This is what
+			// lets the simplifier keep collapses inside one lightmap
+			// chart (chart id rides the error metric).
+			lmVertexCharts.emplace(w.handle.index(), std::move(chartOf));
+			// The draw ring carries the LOBE COUNT (5/6/9/12) chosen by
+			// the bake for this MESH (read from any of its chunks —
+			// the per-mesh selection wrote them all); 0xFFFFFFFF = no
+			// lightmap stays the pak default.
+			if (smvk::StaticMesh* m = cluster->staticMeshes.get(w.handle))
+				m->lmChunk = lobes;
+			// No meshlet work in the bake stage (decoupled by design):
+			// meshlets are built once, after ALL lightmap stamping
+			// finishes, by the "Meshlet restore" stage below — from
+			// this final stamped topology, never a pre-stamp layout.
+			++lmMeshes;
+		}
+
+		// ---- Per-LOD atlas levels (xatlas path with --lods on) ----
+		// Siblings are cooked here (no meshlets, no audit — every kept
+		// level gets exact UVs below, so there is nothing to audit),
+		// then each sibling level charts + bakes its OWN rects (exact
+		// UVs for its simplified topology) stacked into the shared
+		// atlas. Levels that fail (chart/pack/bake) keep the simplified
+		// LOD0 UVs they inherited and share LOD0's lobe count (the
+		// shared-UV behavior the audit used to measure). The generic
+		// LOD block below stays authoritative for --lightmap off; with
+		// xatlas on it no-ops on these meshes (idempotent skip).
+		if (lmXatlas && args.lods && !work.empty()
+			&& lmFitDensityWorld > 0.0f) {
+			{
+				smvk::MeshOptConfig lodOpt = opt;
+				lodOpt.generateLods = true;
+				smvk::CookLodSiblingsOptions sibOpts;
+				sibOpts.vertexCharts = &lmVertexCharts;
+				sibOpts.audit = false;
+				smvk::MeshletConfig noMeshlets = meshletCfg;
+				noMeshlets.enabled = false;
+				for (auto& sc : sceneClusters)
+					smvk::CookLodSiblings(*sc, lodOpt, noMeshlets,
+						sibOpts);
+				std::cerr << "  [LM] xatlas: siblings cooked "
+					"(per-LOD bake follows; audit skipped)\n" << std::flush;
+			}
+			// Sibling lookup: base uri -> lodIndex -> sibling uri
+			// (from the markers CookLodSiblings just registered).
+			std::map<std::string, std::map<uint32_t, std::string>> lodUris;
+			uint32_t maxLod = 0;
+			for (const auto& [uri, lod] : cluster->ListMeshLods()) {
+				if (lod.lodIndex == 0)
+					continue;
+				maxLod = std::max(maxLod, lod.lodIndex);
+				lodUris[std::string(
+					smvk::BaseMeshUriForLod(uri).Str())][lod.lodIndex] =
+					std::string(uri.Str());
+			}
+			SgLightmapXatlasOptions xlodOpts;
+			xlodOpts.texelsPerMeter = lmFitDensityWorld;
+			xlodOpts.gutterTexels = chartOpts.gutterTexels;
+			const uint32_t lodAtlasW =
+				std::max<uint32_t>(args.lmAtlasWidth, 256);
+			constexpr uint32_t kLodMaxAtlasH = 8192;
+			for (uint32_t level = 1; level <= maxLod; ++level) {
+				struct SibJob {
+					uint32_t node = 0;
+					smvk::ClusterStaticMeshHandle sib{};
+					float densityScale = 1.0f;
+					uint32_t baseLobes = 9;
+					SgLightmapChartResult chart;
+					uint32_t chunkBase = 0xFFFFFFFFu;
+				};
+				std::vector<SibJob> jobs;
+				for (const LmWork& w : work) {
+					const std::string baseUri =
+						cluster->GetMeshUri(w.handle).Str();
+					if (baseUri.empty())
+						continue;
+					const auto bit = lodUris.find(baseUri);
+					if (bit == lodUris.end())
+						continue;
+					const auto lit = bit->second.find(level);
+					if (lit == bit->second.end())
+						continue;
+					const auto h = cluster->FindMeshByUri(
+						smvk::StringViewT(lit->second));
+					if (!h.has_value() || !h->valid())
+						continue;
+					const smvk::StaticMeshUpload* up =
+						cluster->GetRetainedUpload(*h);
+					if (!up || up->vertices.empty() || up->indices.empty())
+						continue;
+					uint32_t baseLobes = args.lmLobes;
+					if (w.chunkBase < atlas.chunks.size())
+						baseLobes = atlas.chunks[w.chunkBase].lobeCount;
+					SibJob j;
+					j.node = w.node;
+					j.sib = *h;
+					j.densityScale = w.worldScale * w.curveScale;
+					j.baseLobes = baseLobes;
+					jobs.push_back(std::move(j));
+				}
+				if (jobs.empty())
+					continue;
+				std::vector<SgLightmapXatlasMeshInput> ins;
+				ins.reserve(jobs.size());
+				for (const SibJob& j : jobs) {
+					SgLightmapXatlasMeshInput in;
+					in.upload = cluster->GetRetainedUpload(j.sib);
+					in.meshKey = j.node;
+					in.densityScale = j.densityScale;
+					ins.push_back(in);
+				}
+				SgLightmapXatlasLevel xlevel;
+				std::string xerr;
+				bool okGen = GenerateLightmapChartsXatlas(ins, xlodOpts,
+					xlevel, xerr);
+				std::vector<uint32_t> keys, bases;
+				keys.reserve(jobs.size());
+				for (const SibJob& j : jobs)
+					keys.push_back(j.node);
+				bool okAppend = false;
+				if (okGen) {
+					std::string aerr;
+					okAppend = AppendXatlasLevelToAtlas(atlas, xlevel,
+						keys, args.lmLobes, lodAtlasW, kLodMaxAtlasH,
+						bases, aerr);
+					if (!okAppend)
+						std::cerr << "  [LM] xatlas lod" << level
+							<< " pack overflow: " << aerr
+							<< " (shared-UV fallback)\n" << std::flush;
+				}
+				else {
+					std::cerr << "  [LM] xatlas lod" << level
+						<< " chart failed: " << xerr
+						<< " (shared-UV fallback)\n" << std::flush;
+				}
+				if (!okGen || !okAppend) {
+					// Shared-UV fallback: keep the inherited LOD0 UVs,
+					// share LOD0's lobe count (probe the same chunks).
+					for (const SibJob& j : jobs) {
+						if (smvk::StaticMesh* m =
+								cluster->staticMeshes.get(j.sib))
+							m->lmChunk = j.baseLobes;
+					}
+					continue;
+				}
+				for (size_t ji = 0; ji < jobs.size(); ++ji) {
+					if (ji < xlevel.meshes.size()
+						&& xlevel.meshes[ji].ok) {
+						jobs[ji].chart =
+							std::move(xlevel.meshes[ji].chart);
+						jobs[ji].chunkBase = ji < bases.size()
+							? bases[ji] : 0xFFFFFFFFu;
+					}
+				}
+				// Bake the level (world-space texels through the base
+				// node's global transform — siblings render in place of
+				// the base under the same node).
+				{
+					std::vector<std::vector<SgLightmapTexel>> texelBuf;
+					std::vector<SgLightmapChunkBatch> batches;
+					texelBuf.reserve(jobs.size() * 4);
+					batches.reserve(jobs.size() * 4);
+					for (SibJob& j : jobs) {
+						if (j.chart.charts.empty()
+							|| j.chunkBase == 0xFFFFFFFFu)
+							continue;
+						const glm::mat4& g =
+							cluster->scene.globalTransform[j.node];
+						const glm::mat3 g3(g);
+						for (uint32_t ci = 0;
+							ci < j.chart.charts.size(); ++ci) {
+							const auto& ch = j.chart.charts[ci];
+							std::vector<SgLightmapTexel>& tx =
+								texelBuf.emplace_back();
+							tx.reserve(ch.texels.size());
+							for (const SgLightmapTexel& t : ch.texels) {
+								SgLightmapTexel wt = t;
+								wt.position = glm::vec3(
+									g * glm::vec4(t.position, 1.0f));
+								wt.normal = glm::normalize(g3 * t.normal);
+								tx.push_back(wt);
+							}
+							SgLightmapChunkBatch b{};
+							b.payload =
+								&atlas.payloads[j.chunkBase + ci];
+							b.texels = &tx;
+							b.meshKey = j.node;
+							b.chunkMeta =
+								&atlas.chunks[j.chunkBase + ci];
+							batches.push_back(b);
+						}
+					}
+					if (!batches.empty()) {
+						SgLightmapBakeStats ls{};
+						if (!BakeSgLightmapChunks(traceScene, args.lmLobes,
+								std::span<const SgLightmapChunkBatch>(
+									batches), lcfg, ls,
+								[](const char* line) {
+									std::cout << line;
+								})) {
+							std::cerr << "  [LM] xatlas lod" << level
+								<< " bake failed (shared-UV fallback)\n"
+								<< std::flush;
+							for (const SibJob& j : jobs) {
+								if (smvk::StaticMesh* m =
+										cluster->staticMeshes.get(j.sib))
+									m->lmChunk = j.baseLobes;
+							}
+							continue;
+						}
+						lstats.texelsBaked += ls.texelsBaked;
+						lstats.pathsTraced += ls.pathsTraced;
+						lstats.samplesClamped += ls.samplesClamped;
+						lstats.lobePicks.insert(lstats.lobePicks.end(),
+							ls.lobePicks.begin(), ls.lobePicks.end());
+					}
+				}
+				// Stamp the siblings (seam-correct, same helper).
+				uint32_t bakedSibs = 0;
+				for (SibJob& j : jobs) {
+					if (j.chart.charts.empty()
+						|| j.chunkBase == 0xFFFFFFFFu) {
+						if (smvk::StaticMesh* m =
+								cluster->staticMeshes.get(j.sib))
+							m->lmChunk = j.baseLobes;
+						continue;
+					}
+					smvk::StaticMeshUpload* up =
+						const_cast<smvk::StaticMeshUpload*>(
+							cluster->GetRetainedUpload(j.sib));
+					if (!up
+						|| up->indices.size() / 3
+							!= j.chart.triChart.size()) {
+						if (smvk::StaticMesh* m =
+								cluster->staticMeshes.get(j.sib))
+							m->lmChunk = j.baseLobes;
+						continue;
+					}
+					std::vector<uint32_t> dummy;
+					const uint32_t lobes = StampLightmapUvs(*up, j.chart,
+						j.chunkBase, atlas, chartOpts.gutterTexels,
+						j.baseLobes, dummy, seamDups);
+					if (smvk::StaticMesh* m =
+							cluster->staticMeshes.get(j.sib))
+						m->lmChunk = lobes;
+					++bakedSibs;
+				}
+				++lmLodLevelsBaked;
+				std::cerr << "  [LM] xatlas lod" << level << ": baked "
+					<< bakedSibs << "/" << jobs.size()
+					<< " siblings (atlas now " << atlas.width << "x"
+					<< atlas.height << ")\n" << std::flush;
+			}
+		}
+
 		// OIDN denoise pass: RTLightmap over the fitted per-lobe
-		// amplitude layers, in place (see lm_denoise.cpp). Runs after the
-		// lobe selection (payloads final) and before the atlas write, so
-		// the pak + .sglm carry denoised data. Failure is non-fatal: the
-		// cook continues on the (possibly partially denoised) amplitudes.
+		// amplitude layers, in place (see lm_denoise.cpp). Runs after ALL
+		// bakes (LOD0 + every per-LOD level) and before the atlas write,
+		// so the pak + .sglm carry denoised data. Failure is non-fatal:
+		// the cook continues on the (possibly partially denoised)
+		// amplitudes.
 		if (args.lmDenoise && !work.empty()) {
 			if (!pakcook::DenoiseAvailable()) {
 				std::cerr << "[LM-DN] --lm-denoise on but this PakCooker "
@@ -1968,114 +2579,6 @@ int main(int argc, char** argv) {
 						"for a ~" << (args.lmRays / 128) << "x faster trace\n"
 						<< std::flush;
 			}
-		}
-		for (LmWork& w : work) {
-			smvk::StaticMeshUpload* upload = const_cast<smvk::StaticMeshUpload*>(
-				cluster->GetRetainedUpload(w.handle));
-			const size_t triCount = upload ? upload->indices.size() / 3 : 0;
-			if (!upload || w.chart.triChart.size() != triCount) {
-				std::cerr << "[LM] triangle count mismatch for node " << w.node
-					<< " - mesh skipped\n";
-				continue;
-			}
-			// ---- Per-CORNER atlas uv2 stamping (seam-correct) ----
-			// A vertex shared by two charts (a seam corner) has no single
-			// valid atlas uv: stamping one would make the seam triangle
-			// interpolate across unrelated atlas rects — the classic
-			// cross-island streak. Instead every triangle corner is
-			// stamped through the TRIANGLE's chart:
-			//   - original vertices keep their slots 1:1 (first chart to
-			//     use a vertex owns its uv2);
-			//   - a corner needed by a DIFFERENT chart gets a positional
-			//     duplicate appended at the end;
-			//   - the index buffer is rebuilt in the SAME triangle order
-			//     (surface ranges stay valid), remapping only seam
-			//     corners to their duplicates.
-			const std::vector<uint32_t>& triChart = w.chart.triChart;
-			const std::vector<glm::vec2>& cornerUv = w.chart.cornerChartUv;
-			const uint32_t origVerts = uint32_t(upload->vertices.size());
-			std::vector<uint32_t> ownerChart(origVerts, 0xFFFFFFFFu);
-			// Chart of each appended seam duplicate (creation order).
-			std::vector<uint32_t> dupChart;
-			// (original vertex, chart) -> stamped index (orig or duplicate)
-			std::unordered_map<uint64_t, uint32_t> cornerSlot;
-			cornerSlot.reserve(size_t(origVerts) * 2);
-			std::vector<uint32_t> newIndices;
-			newIndices.reserve(upload->indices.size());
-			for (size_t t = 0; t < triCount; ++t) {
-				const uint32_t chartIdx = triChart[t];
-				for (int k = 0; k < 3; ++k) {
-					const uint32_t orig = upload->indices[t * 3 + k];
-					if (chartIdx == 0xFFFFFFFFu) {
-						// Degenerate/uncharted triangle: keep the original
-						// corner (uv2 stays whatever the vertex carries).
-						newIndices.push_back(orig);
-						continue;
-					}
-					const uint64_t key = uint64_t(orig) << 32 | chartIdx;
-					auto it = cornerSlot.find(key);
-					if (it != cornerSlot.end()) {
-						newIndices.push_back(it->second);
-						continue;
-					}
-					const glm::vec2 atlasUv = atlas.AtlasUv(
-						w.chunkBase + chartIdx, chartOpts.gutterTexels,
-						cornerUv[t * 3 + k]);
-					uint32_t slot;
-					if (ownerChart[orig] == 0xFFFFFFFFu) {
-						// First chart to stamp this vertex: in-place.
-						ownerChart[orig] = chartIdx;
-						slot = orig;
-					}
-					else if (ownerChart[orig] == chartIdx) {
-						// Same chart re-uses the original (uv identical:
-						// chart uv is a pure position projection).
-						slot = orig;
-					}
-					else {
-						// Seam corner: duplicate for THIS chart.
-						smvk::StaticVertex dup = upload->vertices[orig];
-						dup.texCoord2 = atlasUv;
-						upload->vertices.push_back(dup);
-						slot = uint32_t(upload->vertices.size() - 1);
-						dupChart.push_back(chartIdx);
-						++seamDups;
-					}
-					upload->vertices[slot].texCoord2 = atlasUv;
-					cornerSlot.emplace(key, slot);
-					newIndices.push_back(slot);
-				}
-			}
-			upload->indices = std::move(newIndices);
-			// Chart provenance for the LOD cook (CookLodSiblings): one
-			// chart id per vertex over the STAMPED layout — originals
-			// from ownerChart, seam duplicates from their creating chart.
-			// This is what lets the simplifier keep collapses inside one
-			// lightmap chart (chart id rides the error metric).
-			{
-				std::vector<uint32_t> chartOf(upload->vertices.size(), 0xFFFFFFFFu);
-				for (uint32_t v = 0; v < origVerts && v < chartOf.size(); ++v)
-					chartOf[v] = ownerChart[v];
-				for (size_t d = 0; d < dupChart.size()
-					&& origVerts + d < chartOf.size(); ++d)
-					chartOf[origVerts + d] = dupChart[d];
-				lmVertexCharts.emplace(w.handle.index(), std::move(chartOf));
-			}
-			// The draw ring carries the LOBE COUNT (5/6/9/12) chosen by
-			// the bake for this MESH (read from any of its chunks —
-			// the per-mesh selection wrote them all); 0xFFFFFFFF = no
-			// lightmap stays the pak default.
-			if (smvk::StaticMesh* m = cluster->staticMeshes.get(w.handle)) {
-				m->lmChunk = (!w.chart.charts.empty()
-					&& w.chunkBase < atlas.chunks.size())
-					? atlas.chunks[w.chunkBase].lobeCount
-					: args.lmLobes;
-			}
-			// No meshlet work in the bake stage (decoupled by design):
-			// meshlets are built once, after ALL lightmap stamping
-			// finishes, by the "Meshlet restore" stage below — from
-			// this final stamped topology, never a pre-stamp layout.
-			++lmMeshes;
 		}
 		lstats.seconds = std::chrono::duration<double>(
 			std::chrono::steady_clock::now() - lmT0).count();
@@ -2160,6 +2663,9 @@ int main(int argc, char** argv) {
 			<< " clamped=" << lstats.samplesClamped
 			<< " seamVerts=" << seamDups
 			<< " seconds=" << lstats.seconds
+			<< (lmXatlas ? " charts=xatlas-bruteforce" : " charts=built-in")
+			<< (lmLodLevelsBaked ? " lodLevels=" + std::to_string(
+				lmLodLevelsBaked) : "")
 			<< " (skipped: blend=" << skipBlend
 			<< " instanced=" << skipInstanced
 			<< " nomat=" << skipNoMat
@@ -2185,7 +2691,11 @@ int main(int argc, char** argv) {
 	// every scene cluster and every drawable mesh (de-instanced clones
 	// and merged blocks rebind their nodes in meshForNode); meshes
 	// still shared by several nodes are deduped by pool index (one
-	// meshlet set per upload). With --lightmap off this stage is
+	// meshlet set per upload). Sibling meshes ("<base>/lodN") are NOT
+	// node-referenced, so the sibling pass below covers them from the
+	// LOD markers (in xatlas mode siblings stamp AFTER the sibling cook
+	// and need meshlets here; otherwise they already carry the inline
+	// build and the pass skips them). With --lightmap off this stage is
 	// skipped and the import-time meshlets stay in force.
 	// ---------------------------------------------------------------------------
 	if (args.lightmap && meshletCfg.enabled) {
@@ -2222,6 +2732,34 @@ int main(int argc, char** argv) {
 				++restoredMeshes;
 				restoredMeshlets += mst.meshletCount;
 			}
+			// Sibling pass (LOD markers, lodIndex >= 1): meshes without a
+			// set get one from their FINAL stamped upload. Skips siblings
+			// the sibling cook already built inline (non-xatlas path).
+			for (const auto& [uri, lod] : c.ListMeshLods()) {
+				if (lod.lodIndex == 0)
+					continue;
+				if (c.GetMeshMeshlets(uri).has_value())
+					continue; // inline build already covers it
+				const auto h = c.FindMeshByUri(uri);
+				if (!h.has_value() || !h->valid())
+					continue;
+				const smvk::StaticMeshUpload* up = c.GetRetainedUpload(*h);
+				if (!up || up->vertices.empty() || up->indices.empty())
+					continue;
+				smvk::CookedMeshlets cooked;
+				smvk::MeshletStats mst;
+				std::string merr;
+				if (!smvk::BuildMeshletsForUpload(*up, meshletCfg,
+						&cooked, &mst, &merr)) {
+					if (!merr.empty() && merr != "meshlets disabled")
+						std::cerr << "  [LM] meshlet build failed sibling "
+							<< uri.Str() << ": " << merr << "\n" << std::flush;
+					continue;
+				}
+				c.RegisterMeshMeshlets(uri, cooked);
+				++restoredMeshes;
+				restoredMeshlets += mst.meshletCount;
+			}
 		}
 		std::cerr << "  [LM] meshlets restored: meshes=" << restoredMeshes
 			<< " meshlets=" << restoredMeshlets
@@ -2235,7 +2773,11 @@ int main(int argc, char** argv) {
 	// chart, siblings share LOD0's lobe count, and the per-level audit
 	// measures the parameterization drift in atlas texels (log-only; the
 	// gate flag drops failing levels). With --lightmap off this is exactly
-	// the old import-time chain, just later in the pipeline.
+	// the old import-time chain, just later in the pipeline. With
+	// --lm-charts xatlas the sibling cook already ran inside the lightmap
+	// block (per-LOD atlas levels need the siblings first); this call then
+	// no-ops on those meshes (idempotent skip) and the audit stays off
+	// (every kept level carries exact UVs — nothing to audit).
 	// ---------------------------------------------------------------------------
 	{
 		smvk::MeshOptConfig lodOpt = opt;
@@ -2243,7 +2785,7 @@ int main(int argc, char** argv) {
 		smvk::CookLodSiblingsOptions sibOpts;
 		sibOpts.vertexCharts = &lmVertexCharts;
 		sibOpts.audit = args.lightmap && args.lmLodAudit
-			&& !lmVertexCharts.empty();
+			&& !lmVertexCharts.empty() && !lmXatlas;
 		sibOpts.atlasWidth = atlas.width;
 		sibOpts.atlasHeight = atlas.height;
 		sibOpts.auditThresholdTexels = args.lmLodAuditTx;

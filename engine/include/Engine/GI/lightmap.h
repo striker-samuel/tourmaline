@@ -359,6 +359,79 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 	const SgLightmapChartOptions& opts, SgLightmapChartResult& out,
 	std::string& err);
 
+// ---------------------------------------------------------------------------
+// Xatlas brute-force chart + pack path (external/xatlas, MIT).
+//
+// Full-scene alternative to the planar/authored chart loop + PackRects
+// shelf pack: every input mesh is fed to ONE xatlas atlas (positions
+// pre-scaled by densityScale so a single texelsPerUnit means world-uniform
+// density), ComputeCharts + PackCharts run with bruteForce=true ALWAYS
+// (best packing, slower cook — the cook-time/quality trade this path
+// exists for), and each xatlas chart becomes one SgLightmapChartResult
+// chart with chart-local UVs + an already-packed atlas rect.
+//
+// The outputs reuse the standard bake + stamp flow unchanged: chart texels
+// rasterize from the ORIGINAL (unscaled) positions/normals, AtlasUv maps
+// chart-local UVs through the placed rects, and seam-corner duplication
+// applies as usual. No second pack is needed (rects are final).
+//
+// Per-LOD atlases: call once per LOD level (LOD0 meshes, then each
+// sibling level's uploads) and stack the levels into one shared
+// SgLightmapAtlas via AppendXatlasLevelToAtlas — every level keeps exact
+// UVs for its own topology, the runtime is untouched (texCoord2 addresses
+// the shared atlas, lmChunk still carries the lobe count). Meshlets stay
+// decoupled: they are (re)built once from the final stamped topology
+// after ALL levels stamp, never before.
+// ---------------------------------------------------------------------------
+
+struct SgLightmapXatlasOptions {
+	float texelsPerMeter = 32.0f; // world-space density (upload units after densityScale)
+	uint32_t gutterTexels = 1;    // inner margin per chart rect (1..4)
+};
+
+struct SgLightmapXatlasMeshInput {
+	const StaticMeshUpload* upload = nullptr;
+	uint32_t meshKey = 0;      // owning node id (tool/debug, feeds chunk meshKey)
+	float densityScale = 1.0f; // worldScale * curveScale: positions are
+	                           // pre-scaled by this before AddMesh so one
+	                           // texelsPerUnit is world-uniform
+};
+
+struct SgLightmapXatlasMeshOutput {
+	bool ok = false;
+	SgLightmapChartResult chart; // charts[j] parallel to rects[j]
+	struct Rect {
+		float minX = 0.0f, minY = 0.0f, maxX = 0.0f, maxY = 0.0f;
+	};
+	std::vector<Rect> rects; // packed atlas-texel rects (include margins)
+};
+
+struct SgLightmapXatlasLevel {
+	// Parallel to the inputs (ok=false entries hold empty charts).
+	std::vector<SgLightmapXatlasMeshOutput> meshes;
+	uint32_t atlasWidth = 0;  // packed extent (+1 sampling pad, like PackRects)
+	uint32_t atlasHeight = 0;
+};
+
+bool GenerateLightmapChartsXatlas(
+	const std::vector<SgLightmapXatlasMeshInput>& meshes,
+	const SgLightmapXatlasOptions& opts, SgLightmapXatlasLevel& out,
+	std::string& err);
+
+// Stacks one xatlas level into a shared atlas at the next free row
+// (2-texel inter-rect gap, same separator as PackRects). Fresh atlases
+// and per-LOD appends share this helper: for a fresh build call it once
+// on an empty atlas; for per-LOD levels call it per level with the same
+// atlasWidthCap/maxHeight. Creates zeroed chunk/payload shells at the
+// preferred lobeCount (the bake resizes to the chosen count).
+// outChunkBase[i] = atlas chunk index of meshes[i]'s first chart.
+// Returns false with err set on overflow (caller lowers the density or
+// drops the level).
+bool AppendXatlasLevelToAtlas(SgLightmapAtlas& atlas,
+	const SgLightmapXatlasLevel& level, const std::vector<uint32_t>& meshKeys,
+	uint32_t preferredLobes, uint32_t atlasWidthCap, uint32_t maxHeight,
+	std::vector<uint32_t>& outChunkBase, std::string& err);
+
 // Curvature-driven density scale for lightmap charting (cook side):
 // estimates the mesh's SMOOTH bending rate from shared-edge dihedral
 // angles — curvature = dihedral / BEND STEP, the step being the mean

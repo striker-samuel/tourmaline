@@ -21,6 +21,8 @@
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/platform.h>
 
+#include <xatlas/xatlas.h>
+
 namespace smvk::gi {
 
 namespace {
@@ -1147,6 +1149,471 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 					oc.texels.push_back(tx);
 				}
 			}
+		}
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Xatlas brute-force chart + pack (see lightmap.h)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Inter-rect separation when stacking xatlas levels into a shared atlas
+// (matches PackRects' kPackSep: gutter + sep + gutter island padding).
+constexpr uint32_t kXatlasStackSep = 2;
+
+struct XatlasTriKey {
+	uint32_t a = 0, b = 0, c = 0;
+	bool operator==(const XatlasTriKey& o) const {
+		return a == o.a && b == o.b && c == o.c;
+	}
+};
+struct XatlasTriKeyHash {
+	size_t operator()(const XatlasTriKey& k) const noexcept {
+		// 64-bit FNV-1a over the sorted triple.
+		size_t h = 1469598103934665603ull;
+		h ^= k.a;
+		h *= 1099511628211ull;
+		h ^= k.b;
+		h *= 1099511628211ull;
+		h ^= k.c;
+		h *= 1099511628211ull;
+		return h;
+	}
+};
+
+} // namespace
+
+bool GenerateLightmapChartsXatlas(
+	const std::vector<SgLightmapXatlasMeshInput>& meshes,
+	const SgLightmapXatlasOptions& opts, SgLightmapXatlasLevel& out,
+	std::string& err) {
+	out = SgLightmapXatlasLevel{};
+	if (meshes.empty()) {
+		err = "GenerateLightmapChartsXatlas: no meshes";
+		return false;
+	}
+	if (!(opts.texelsPerMeter > 0.0f) || opts.gutterTexels == 0
+		|| opts.gutterTexels > 4) {
+		err = "GenerateLightmapChartsXatlas: bad options";
+		return false;
+	}
+	const uint32_t margin = opts.gutterTexels;
+
+	// Valid jobs (meshes with triangles); out.meshes stays parallel to the
+	// inputs so the caller can index by mesh position (ok=false when empty).
+	struct Job {
+		size_t inputIdx = 0;
+		const StaticMeshUpload* up = nullptr;
+		std::vector<glm::vec3> posScaled;
+		std::vector<glm::vec3> nrm;
+	};
+	std::vector<Job> jobs;
+	out.meshes.resize(meshes.size());
+	for (size_t i = 0; i < meshes.size(); ++i) {
+		const SgLightmapXatlasMeshInput& in = meshes[i];
+		if (!in.upload || in.upload->indices.size() < 3
+			|| in.upload->vertices.empty())
+			continue;
+		Job j;
+		j.inputIdx = i;
+		j.up = in.upload;
+		const float s = (in.densityScale > 1e-6f) ? in.densityScale : 1.0f;
+		j.posScaled.reserve(in.upload->vertices.size());
+		j.nrm.reserve(in.upload->vertices.size());
+		for (const StaticVertex& v : in.upload->vertices) {
+			j.posScaled.push_back(v.pos * s);
+			const float l = glm::length(v.normal);
+			j.nrm.push_back(l > 1e-6f ? v.normal / l
+			                          : glm::vec3(0.0f, 1.0f, 0.0f));
+		}
+		jobs.push_back(std::move(j));
+	}
+	if (jobs.empty()) {
+		err = "GenerateLightmapChartsXatlas: all meshes empty";
+		return false;
+	}
+
+	xatlas::Atlas* xa = xatlas::Create();
+	for (const Job& j : jobs) {
+		xatlas::MeshDecl decl;
+		decl.vertexCount = uint32_t(j.posScaled.size());
+		decl.vertexPositionData = j.posScaled.data();
+		decl.vertexPositionStride = sizeof(glm::vec3);
+		decl.vertexNormalData = j.nrm.data();
+		decl.vertexNormalStride = sizeof(glm::vec3);
+		decl.indexData = j.up->indices.data();
+		decl.indexCount = uint32_t(j.up->indices.size());
+		decl.indexFormat = xatlas::IndexFormat::UInt32;
+		const xatlas::AddMeshError ae =
+			xatlas::AddMesh(xa, decl, 1);
+		if (ae != xatlas::AddMeshError::Success) {
+			xatlas::Destroy(xa);
+			err = std::string("GenerateLightmapChartsXatlas: AddMesh failed: ")
+				+ xatlas::StringForEnum(ae);
+			return false;
+		}
+	}
+	xatlas::ChartOptions co;
+	co.fixWinding = true;
+	xatlas::PackOptions po;
+	po.texelsPerUnit = std::max(opts.texelsPerMeter, 1e-3f);
+	// Pack gap: our per-chart margin ring must land in EMPTY pack space on
+	// both sides (margin + sep + margin island-to-island, same budget as
+	// the shelf packer's gutter + kPackSep + gutter).
+	po.padding = margin + kXatlasStackSep;
+	po.bilinear = true;
+	po.bruteForce = true; // ALWAYS: this path exists for best packing.
+	po.blockAlign = false;
+	po.rotateCharts = true;
+	po.rotateChartsToAxis = true;
+	po.resolution = 0; // single atlas sized to content (caller budgets it)
+	po.createImage = false;
+	xatlas::Generate(xa, co, po);
+	if (xa->width == 0 || xa->height == 0 || xa->meshCount == 0) {
+		xatlas::Destroy(xa);
+		err = "GenerateLightmapChartsXatlas: xatlas produced an empty atlas";
+		return false;
+	}
+	if (xa->meshCount != uint32_t(jobs.size())) {
+		xatlas::Destroy(xa);
+		err = "GenerateLightmapChartsXatlas: xatlas mesh count mismatch";
+		return false;
+	}
+
+	// Per job: map output triangles back to input triangles through the
+	// xref triple (output order is chart-major, NOT input order; winding
+	// may be fixed and corners rotated, so match as a multiset and bind
+	// corners positionally).
+	for (size_t ji = 0; ji < jobs.size(); ++ji) {
+		const Job& job = jobs[ji];
+		const StaticMeshUpload& upload = *job.up;
+		SgLightmapXatlasMeshOutput& mo = out.meshes[job.inputIdx];
+		const xatlas::Mesh& xm = xa->meshes[ji];
+		const uint32_t triCount = uint32_t(upload.indices.size() / 3);
+		if (xm.chartCount == 0 || xm.indexCount != triCount * 3
+			|| xm.vertexCount == 0) {
+			mo.ok = false;
+			continue;
+		}
+		// Sorted-triple -> input triangles (first wins; exact-duplicate
+		// faces share UVs anyway).
+		std::unordered_map<XatlasTriKey, std::vector<uint32_t>,
+			XatlasTriKeyHash> faceMap;
+		faceMap.reserve(size_t(triCount) * 2);
+		for (uint32_t t = 0; t < triCount; ++t) {
+			uint32_t ix[3] = { upload.indices[t * 3 + 0],
+				upload.indices[t * 3 + 1], upload.indices[t * 3 + 2] };
+			std::sort(ix, ix + 3);
+			faceMap[{ ix[0], ix[1], ix[2] }].push_back(t);
+		}
+		std::vector<char> assigned(triCount, 0);
+		std::vector<uint32_t> triChart(triCount, 0xFFFFFFFFu);
+		std::vector<glm::vec2> cornerAtlasUv(size_t(triCount) * 3,
+			glm::vec2(0.0f));
+		const uint32_t outTris = xm.indexCount / 3;
+		for (uint32_t ot = 0; ot < outTris; ++ot) {
+			const uint32_t ov[3] = { xm.indexArray[ot * 3 + 0],
+				xm.indexArray[ot * 3 + 1], xm.indexArray[ot * 3 + 2] };
+			if (ov[0] >= xm.vertexCount || ov[1] >= xm.vertexCount
+				|| ov[2] >= xm.vertexCount)
+				continue;
+			uint32_t xr[3] = { xm.vertexArray[ov[0]].xref,
+				xm.vertexArray[ov[1]].xref, xm.vertexArray[ov[2]].xref };
+			uint32_t key[3] = { xr[0], xr[1], xr[2] };
+			std::sort(key, key + 3);
+			auto it = faceMap.find({ key[0], key[1], key[2] });
+			if (it == faceMap.end())
+				continue;
+			uint32_t t = 0xFFFFFFFFu;
+			for (uint32_t cand : it->second) {
+				if (!assigned[cand]) {
+					t = cand;
+					break;
+				}
+			}
+			if (t == 0xFFFFFFFFu)
+				continue; // exact-duplicate face already placed
+			assigned[t] = 1;
+			// Bind output corners to input corners positionally.
+			bool used[3] = { false, false, false };
+			int32_t chart = -1;
+			for (int k = 0; k < 3; ++k) {
+				int pick = -1;
+				for (int p = 0; p < 3; ++p) {
+					if (!used[p]
+						&& upload.indices[size_t(t) * 3 + p] == xr[k]) {
+						pick = p;
+						break;
+					}
+				}
+				if (pick < 0) {
+					for (int p = 0; p < 3; ++p) {
+						if (!used[p]) {
+							pick = p;
+							break;
+						}
+					}
+				}
+				if (pick < 0)
+					continue;
+				used[pick] = true;
+				cornerAtlasUv[size_t(t) * 3 + pick] =
+					glm::vec2(xm.vertexArray[ov[k]].uv[0],
+						xm.vertexArray[ov[k]].uv[1]);
+				if (chart < 0)
+					chart = xm.vertexArray[ov[k]].chartIndex;
+			}
+			if (chart >= 0)
+				triChart[t] = uint32_t(chart);
+		}
+		// Chart id compaction: xatlas chartIndex values are dense
+		// 0..chartCount-1 already; keep them (unassigned triangles stay
+		// 0xFFFFFFFF = degenerate/uncharted, same convention as planar).
+		const uint32_t chartCount = xm.chartCount;
+		std::vector<glm::vec2> cMin(chartCount,
+			glm::vec2(std::numeric_limits<float>::max()));
+		std::vector<glm::vec2> cMax(chartCount,
+			glm::vec2(std::numeric_limits<float>::lowest()));
+		std::vector<char> cUsed(chartCount, 0);
+		for (uint32_t t = 0; t < triCount; ++t) {
+			if (triChart[t] == 0xFFFFFFFFu || triChart[t] >= chartCount)
+				continue;
+			cUsed[triChart[t]] = 1;
+			for (int k = 0; k < 3; ++k) {
+				const glm::vec2& u = cornerAtlasUv[size_t(t) * 3 + k];
+				cMin[triChart[t]] = glm::min(cMin[triChart[t]], u);
+				cMax[triChart[t]] = glm::max(cMax[triChart[t]], u);
+			}
+		}
+		// Rects: snapped content bbox + margin ring (the ring lands in
+		// xatlas pack padding, see po.padding above).
+		mo.rects.clear();
+		mo.chart.charts.clear();
+		mo.chart.charts.reserve(chartCount);
+		std::vector<uint32_t> chartRemap(chartCount, 0xFFFFFFFFu);
+		uint32_t dense = 0;
+		for (uint32_t c = 0; c < chartCount; ++c) {
+			if (!cUsed[c])
+				continue;
+			chartRemap[c] = dense++;
+			const int32_t x0 = std::max<int32_t>(
+				int32_t(std::floor(cMin[c].x)) - int32_t(margin), 0);
+			const int32_t y0 = std::max<int32_t>(
+				int32_t(std::floor(cMin[c].y)) - int32_t(margin), 0);
+			const int32_t x1 = int32_t(std::ceil(cMax[c].x))
+				+ int32_t(margin);
+			const int32_t y1 = int32_t(std::ceil(cMax[c].y))
+				+ int32_t(margin);
+			SgLightmapXatlasMeshOutput::Rect r;
+			r.minX = float(x0);
+			r.minY = float(y0);
+			r.maxX = float(std::max(x1, x0 + int32_t(2 * margin + 1)));
+			r.maxY = float(std::max(y1, y0 + int32_t(2 * margin + 1)));
+			mo.rects.push_back(r);
+			mo.chart.charts.push_back({});
+		}
+		if (dense == 0) {
+			mo.ok = false;
+			continue;
+		}
+		for (uint32_t t = 0; t < triCount; ++t) {
+			if (triChart[t] != 0xFFFFFFFFu && triChart[t] < chartCount)
+				triChart[t] = chartRemap[triChart[t]];
+			else
+				triChart[t] = 0xFFFFFFFFu;
+		}
+		// Chart-local corner UVs: (atlasUv - innerMin) / innerSize.
+		std::vector<glm::vec2> cornerLocal(size_t(triCount) * 3,
+			glm::vec2(0.0f));
+		for (uint32_t t = 0; t < triCount; ++t) {
+			if (triChart[t] == 0xFFFFFFFFu)
+				continue;
+			const auto& r = mo.rects[triChart[t]];
+			const glm::vec2 innerMin(r.minX + float(margin),
+				r.minY + float(margin));
+			const glm::vec2 innerSize = glm::max(
+				glm::vec2(r.maxX - r.minX - 2.0f * float(margin),
+					r.maxY - r.minY - 2.0f * float(margin)),
+				glm::vec2(1e-6f));
+			for (int k = 0; k < 3; ++k) {
+				cornerLocal[size_t(t) * 3 + k] = glm::clamp(
+					(cornerAtlasUv[size_t(t) * 3 + k] - innerMin) / innerSize,
+					glm::vec2(0.0f), glm::vec2(1.0f));
+			}
+		}
+		// Per-vertex outputs (first chart to touch a vertex wins) +
+		// per-triangle seam-correct view (same contract as planar).
+		mo.chart.vertexChart.assign(upload.vertices.size(), 0xFFFFFFFFu);
+		mo.chart.chartLocalUv.assign(upload.vertices.size(),
+			glm::vec2(0.0f));
+		for (uint32_t t = 0; t < triCount; ++t) {
+			if (triChart[t] == 0xFFFFFFFFu)
+				continue;
+			for (int k = 0; k < 3; ++k) {
+				const uint32_t v = upload.indices[t * 3 + k];
+				if (v < mo.chart.vertexChart.size()
+					&& mo.chart.vertexChart[v] == 0xFFFFFFFFu) {
+					mo.chart.vertexChart[v] = triChart[t];
+					mo.chart.chartLocalUv[v] =
+						cornerLocal[size_t(t) * 3 + k];
+				}
+			}
+		}
+		mo.chart.triChart = triChart;
+		mo.chart.cornerChartUv = std::move(cornerLocal);
+		mo.chart.usedAuthoredUv2 = false;
+		// Bake texels per chart (same rasterizer contract as the planar
+		// path: first-writer-owns claim map, rect-local uv + margin).
+		for (uint32_t ci = 0; ci < mo.chart.charts.size(); ++ci) {
+			const auto& r = mo.rects[ci];
+			SgLightmapChartResult::Chart& oc = mo.chart.charts[ci];
+			oc.width = std::max<uint32_t>(
+				uint32_t(r.maxX - r.minX), 2u * margin + 1u);
+			oc.height = std::max<uint32_t>(
+				uint32_t(r.maxY - r.minY), 2u * margin + 1u);
+			const uint32_t iw = std::max<uint32_t>(oc.width - 2u * margin, 1u);
+			const uint32_t ih =
+				std::max<uint32_t>(oc.height - 2u * margin, 1u);
+			std::vector<uint32_t> claim(size_t(iw) * ih, 0xFFFFFFFFu);
+			for (uint32_t t = 0; t < triCount; ++t) {
+				if (triChart[t] != ci)
+					continue;
+				const uint32_t i0 = upload.indices[t * 3 + 0];
+				const uint32_t i1 = upload.indices[t * 3 + 1];
+				const uint32_t i2 = upload.indices[t * 3 + 2];
+				const glm::vec3& p0 = upload.vertices[i0].pos;
+				const glm::vec3& p1 = upload.vertices[i1].pos;
+				const glm::vec3& p2 = upload.vertices[i2].pos;
+				const glm::vec3& n0 = upload.vertices[i0].normal;
+				const glm::vec3& n1 = upload.vertices[i1].normal;
+				const glm::vec3& n2 = upload.vertices[i2].normal;
+				const glm::vec2 u0 = mo.chart.cornerChartUv[size_t(t) * 3 + 0];
+				const glm::vec2 u1 = mo.chart.cornerChartUv[size_t(t) * 3 + 1];
+				const glm::vec2 u2 = mo.chart.cornerChartUv[size_t(t) * 3 + 2];
+				const glm::vec2 e0 = u1 - u0;
+				const glm::vec2 e1 = u2 - u0;
+				const float det = e0.x * e1.y - e0.y * e1.x;
+				if (std::abs(det) < 1e-12f)
+					continue;
+				const glm::vec2 tMin = glm::min(u0, glm::min(u1, u2));
+				const glm::vec2 tMax = glm::max(u0, glm::max(u1, u2));
+				uint32_t tx0 = std::min(uint32_t(std::max(0.0f,
+					tMin.x * float(iw) - 0.5f)), iw - 1u);
+				uint32_t tx1 = std::min(uint32_t(std::min(float(iw),
+					tMax.x * float(iw) + 0.5f)), iw - 1u);
+				uint32_t ty0 = std::min(uint32_t(std::max(0.0f,
+					tMin.y * float(ih) - 0.5f)), ih - 1u);
+				uint32_t ty1 = std::min(uint32_t(std::min(float(ih),
+					tMax.y * float(ih) + 0.5f)), ih - 1u);
+				for (uint32_t y = ty0; y <= ty1; ++y) {
+					for (uint32_t x = tx0; x <= tx1; ++x) {
+						const size_t idx = size_t(y) * iw + x;
+						if (claim[idx] != 0xFFFFFFFFu)
+							continue;
+						const float u = (float(x) + 0.5f) / float(iw);
+						const float v = (float(y) + 0.5f) / float(ih);
+						const glm::vec2 d(u - u0.x, v - u0.y);
+						const float b1 = (d.x * e1.y - d.y * e1.x) / det;
+						const float b2 = (e0.x * d.y - e0.y * d.x) / det;
+						const float b0 = 1.0f - b1 - b2;
+						if (b0 < -1e-4f || b1 < -1e-4f || b2 < -1e-4f)
+							continue;
+						claim[idx] = 1u;
+						SgLightmapTexel tx{};
+						tx.position = p0 * b0 + p1 * b1 + p2 * b2;
+						tx.normal = glm::normalize(n0 * b0 + n1 * b1 + n2 * b2);
+						tx.uv = glm::vec2(float(margin + x) + 0.5f,
+							float(margin + y) + 0.5f);
+						oc.texels.push_back(tx);
+					}
+				}
+			}
+		}
+		mo.ok = true;
+	}
+	out.atlasWidth = xa->width + 1u; // +1 sampling pad (PackRects parity)
+	out.atlasHeight = xa->height + 1u;
+	xatlas::Destroy(xa);
+	return true;
+}
+
+bool AppendXatlasLevelToAtlas(SgLightmapAtlas& atlas,
+	const SgLightmapXatlasLevel& level, const std::vector<uint32_t>& meshKeys,
+	uint32_t preferredLobes, uint32_t atlasWidthCap, uint32_t maxHeight,
+	std::vector<uint32_t>& outChunkBase, std::string& err) {
+	outChunkBase.assign(level.meshes.size(), 0xFFFFFFFFu);
+	if (!LightmapLobeCountValid(preferredLobes)) {
+		err = "AppendXatlasLevelToAtlas: bad lobe count";
+		return false;
+	}
+	if (atlasWidthCap == 0 || maxHeight == 0) {
+		err = "AppendXatlasLevelToAtlas: bad atlas caps";
+		return false;
+	}
+	// Vertical stacking origin: fresh atlas starts at 0, appends continue
+	// past the +1 sampling pad with the pack separator (content of the
+	// previous level ends at height-1, so the gap is sep+1 >= 3).
+	const float offY = atlas.chunks.empty()
+		? 0.0f : float(atlas.height) + float(kXatlasStackSep);
+	float needH = offY;
+	uint32_t newW = atlas.width;
+	for (size_t i = 0; i < level.meshes.size(); ++i) {
+		const SgLightmapXatlasMeshOutput& mo = level.meshes[i];
+		if (!mo.ok)
+			continue;
+		for (const auto& r : mo.rects) {
+			const float w = r.maxX - r.minX;
+			const float h = r.maxY - r.minY;
+			if (r.minX + w > float(atlasWidthCap) + 1e-3f) {
+				err = "AppendXatlasLevelToAtlas: chart wider than the atlas "
+					"(lower --lm-density)";
+				return false;
+			}
+			needH = std::max(needH, offY + (r.maxY - 0.0f));
+			newW = std::max(newW, uint32_t(std::ceil(r.maxX)));
+		}
+	}
+	// +1 sampling pad, like PackRects.
+	uint32_t finalH = std::min(uint32_t(std::ceil(needH)) + 1u, maxHeight + 1u);
+	if (float(finalH - 1u) < needH - 1e-3f) {
+		err = "AppendXatlasLevelToAtlas: atlas height overflow "
+			"(lower --lm-density or raise the budget)";
+		return false;
+	}
+	newW = std::min(newW + 1u, atlasWidthCap);
+	atlas.width = std::max(atlas.width, newW);
+	atlas.height = finalH;
+	// Emit chunk/payload shells (zeroed, preferred-count stride; the bake
+	// resizes to the per-mesh chosen count).
+	for (size_t i = 0; i < level.meshes.size(); ++i) {
+		const SgLightmapXatlasMeshOutput& mo = level.meshes[i];
+		if (!mo.ok || mo.rects.empty())
+			continue;
+		outChunkBase[i] = uint32_t(atlas.chunks.size());
+		const uint32_t meshKey = i < meshKeys.size() ? meshKeys[i] : 0u;
+		for (size_t c = 0; c < mo.rects.size(); ++c) {
+			const auto& r = mo.rects[c];
+			const uint32_t w = std::max<uint32_t>(
+				uint32_t(r.maxX - r.minX), 1u);
+			const uint32_t h = std::max<uint32_t>(
+				uint32_t(r.maxY - r.minY), 1u);
+			SgLightmapChunk chunk;
+			chunk.lobeCount = preferredLobes;
+			chunk.meshKey = meshKey;
+			chunk.rectMin[0] = r.minX;
+			chunk.rectMin[1] = offY + r.minY;
+			chunk.rectMax[0] = r.minX + float(w);
+			chunk.rectMax[1] = offY + r.minY + float(h);
+			atlas.chunks.push_back(chunk);
+			SgLightmapAtlas::ChunkPayload p;
+			p.width = w;
+			p.height = h;
+			p.coeffs.assign(size_t(w) * h * preferredLobes,
+				glm::vec3(0.0f));
+			atlas.payloads.push_back(std::move(p));
 		}
 	}
 	return true;
