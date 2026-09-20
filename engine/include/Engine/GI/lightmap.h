@@ -439,6 +439,16 @@ bool CheckXatlasLevelRectsForOverlap(const SgLightmapXatlasLevel& level,
 bool CheckAtlasChunksForOverlap(const SgLightmapAtlas& atlas,
 	std::string* err = nullptr);
 
+// Repack outcome: Ok fits; Infeasible means the job genuinely does
+// not fit (chart wider than the cap, or no placement with the packed
+// height inside maxHeight) — callers lower the density / drop meshes
+// and retry. InternalError means the whole sep-inflated job is under
+// HALF the atlas area yet no placement was found: beyond reasonable
+// doubt a packer deficiency, not a hard instance — callers must abort
+// the cook loudly instead of converging density into the ground to
+// route around it.
+enum class RepackStatus { Ok, Infeasible, InternalError };
+
 // Repacks a level's post-shrink footprint-tight rects into disjoint
 // placements within atlasWidthCap (tallest charts first, widest first
 // within a height; circular first-fit placement with a resume marker
@@ -452,8 +462,8 @@ bool CheckAtlasChunksForOverlap(const SgLightmapAtlas& atlas,
 // placement-agnostic: texel uvs are rect-local, xforms derive from the
 // final rects). Returns false with err set when a chart is wider than
 // the cap or the packed height exceeds maxHeight.
-bool RepackXatlasLevel(SgLightmapXatlasLevel& level, uint32_t atlasWidthCap,
-	uint32_t maxHeight, std::string& err);
+RepackStatus RepackXatlasLevel(SgLightmapXatlasLevel& level,
+	uint32_t atlasWidthCap, uint32_t maxHeight, std::string& err);
 
 // Stacks one xatlas level into a shared atlas at the next free row
 // (2-texel inter-rect gap, same separator as PackRects). Fresh atlases

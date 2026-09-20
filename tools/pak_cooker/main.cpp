@@ -191,6 +191,11 @@ struct Args {
 	// xatlas atlases anyway).
 	bool lmDenoise = false;
 	std::string lmDenoiseQuality = "high"; // high | balanced
+	// Bright-pink fault map (<scene>_pink.png): chart-id layout with
+	// empty/corrupt/overlapping chunk rects painted solid (255,0,255).
+	// Off by default (extra full-atlas PNG write + O(n^2) overlap
+	// pass on tens of thousands of chunks).
+	bool lmDebugPink = false;
 	// ---- Curvature-weighted density (banding fix on curved shapes) ----
 	// Target normal-turn per texel on smoothly bending surfaces: meshes
 	// bending faster than the target chart at up to --lm-curve-max times
@@ -449,6 +454,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			"(see --lm-denoise)\n";
 		out.lmDenoiseQuality = (v == "balanced") ? "balanced" : "high";
 	}
+	else if (a == "--lm-debug-pink") {
+		std::string v;
+		if (!need(v)) return false;
+		out.lmDebugPink = (v == "on" || v == "1" || v == "true");
+	}
 		else if (a == "--lm-curve-target") {
 			std::string v;
 			if (!need(v)) return false;
@@ -570,6 +580,7 @@ void Usage() {
 		<< "           --lm-lod-lock attr|hard\n"
 			<< "           --lm-denoise on|off (DEPRECATED)"
 			<< " --lm-denoise-quality high|balanced (DEPRECATED)\n"
+		<< "           --lm-debug-pink on|off\n"
 		<< "           --lm-curve-target 7.0 --lm-curve-max 2.5\n"
 		<< "           --lm-exclude tree,linden,ivy,glass --lm-exclude-small 0.5\n"
 		<< "           --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
@@ -1993,6 +2004,32 @@ int main(int argc, char** argv) {
 			float fitDensity = 0.0f;   // best (highest) fitting so far
 			float failDensity = baseDensity; // lowest failure
 			SgLightmapXatlasLevel bestLevel;
+			// Repack failures split by class: Infeasible (near-capacity
+			// job) converges the density down; InternalError (the whole
+			// sep-inflated job under HALF the atlas area with no
+			// placement) is a packer deficiency — abort the cook loudly
+			// instead of converging into the ground to route around it.
+			bool repackBug = false;
+			auto repackOrAbort = [&](SgLightmapXatlasLevel& lv,
+					const char* where) {
+				std::string xerr;
+				const RepackStatus rs =
+					RepackXatlasLevel(lv, atlasW, kMaxAtlasH, xerr);
+				if (rs == RepackStatus::Ok)
+					return true;
+				if (rs == RepackStatus::InternalError) {
+					std::cerr << "[LM] repack internal error at " << where
+						<< ": " << xerr
+						<< "\n[LM] this is a packer bug - please report;"
+						" aborting instead of converging around it\n"
+						<< std::flush;
+					repackBug = true;
+					return false;
+				}
+				std::cerr << "  [LM] " << where << ": " << xerr << "\n"
+					<< std::flush;
+				return false;
+			};
 			auto tryXatlasPack = [&](float worldDensity) {
 				// The convergence search speaks world texels/m; the
 				// engine option is meters-per-texel (converted inside).
@@ -2020,11 +2057,13 @@ int main(int argc, char** argv) {
 				// Post-shrink AABBs of concave charts are expected to
 				// overlap (xatlas only promises dilated-coverage
 				// disjointness): repack big->small into disjoint
-				// placements before measuring fit.
-				if (!RepackXatlasLevel(lv, atlasW, kMaxAtlasH, xerr)) {
-					std::cerr << "  [LM] xatlas probe " << worldDensity
-						<< " texels/m repack failed: " << xerr << "\n"
-						<< std::flush;
+				// placements before measuring fit. A repack bug aborts
+				// the cook (repackOrAbort); Infeasible just fails the
+				// probe so convergence lowers the density.
+				if (!repackOrAbort(lv, "xatlas probe")) {
+					if (repackBug)
+						std::cerr << "  [LM] xatlas probe " << worldDensity
+							<< " texels/m\n" << std::flush;
 					return false;
 				}
 				if (work.empty() || !xatlasProbeFits(lv))
@@ -2063,8 +2102,9 @@ int main(int argc, char** argv) {
 					return 1;
 				}
 				xatlasDropUnchartable(bestLevel);
-				if (!RepackXatlasLevel(bestLevel, atlasW, kMaxAtlasH,
-						xerr)) {
+				if (!repackOrAbort(bestLevel, "floor pack")) {
+					if (repackBug)
+						return 1;
 					std::cerr << "[LM] atlas overflow (" << xerr
 						<< "; raise --lm-meters-per-texel, --lm-atlas-width"
 						<< " or --lm-max-height)\n";
@@ -2091,17 +2131,18 @@ int main(int argc, char** argv) {
 						std::cerr << "  [LM] atlas round " << round
 							<< ": drop node " << work[worst].node
 							<< " (" << worstTexels << " texels)\n" << std::flush;
-						work.erase(work.begin() + ptrdiff_t(worst));
-						bestLevel.meshes.erase(
-							bestLevel.meshes.begin() + ptrdiff_t(worst));
-						std::string rerr;
-						if (!RepackXatlasLevel(bestLevel, atlasW, kMaxAtlasH,
-								rerr)) {
-							std::cerr << "[LM] atlas overflow (" << rerr
-								<< "; raise --lm-meters-per-texel,"
-								" --lm-atlas-width or --lm-max-height)\n";
+					work.erase(work.begin() + ptrdiff_t(worst));
+					bestLevel.meshes.erase(
+						bestLevel.meshes.begin() + ptrdiff_t(worst));
+					if (!repackOrAbort(bestLevel, "drop round repack")) {
+						if (repackBug)
 							return 1;
-						}
+						std::cerr << "[LM] atlas overflow ("
+							<< work.size()
+							<< " meshes remain; raise --lm-meters-per-texel,"
+							" --lm-atlas-width or --lm-max-height)\n";
+						return 1;
+					}
 					}
 					fitDensity = 1.0f;
 				} else {
@@ -2488,6 +2529,24 @@ int main(int argc, char** argv) {
 					<< " B)\n" << std::flush;
 			} else {
 				std::cerr << "[LM] charts png write failed: " << perr
+					<< "\n" << std::flush;
+			}
+		}
+		// Bright-pink fault map (<scene>_pink.png, --lm-debug-pink on):
+		// empty/corrupt/overlapping chunk rects in solid (255,0,255)
+		// over the chart-id layout. Non-fatal.
+		if (args.lmDebugPink) {
+			std::filesystem::path pinkPath =
+				std::filesystem::path(args.contentDir) / "gi"
+				/ (sceneId + "_pink.png");
+			std::string perr;
+			if (pakcook::WriteLightmapPinkPng(atlas,
+					pinkPath.generic_string(), perr)) {
+				std::cerr << "  [LM] pink png " << pinkPath.generic_string()
+					<< " (" << std::filesystem::file_size(pinkPath)
+					<< " B)\n" << std::flush;
+			} else {
+				std::cerr << "[LM] pink png write failed: " << perr
 					<< "\n" << std::flush;
 			}
 		}

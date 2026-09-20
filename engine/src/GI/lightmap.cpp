@@ -1143,11 +1143,11 @@ bool CheckAtlasChunksForOverlap(const SgLightmapAtlas& atlas,
 	return true;
 }
 
-bool RepackXatlasLevel(SgLightmapXatlasLevel& level, uint32_t atlasWidthCap,
-	uint32_t maxHeight, std::string& err) {
+RepackStatus RepackXatlasLevel(SgLightmapXatlasLevel& level,
+	uint32_t atlasWidthCap, uint32_t maxHeight, std::string& err) {
 	if (atlasWidthCap == 0 || maxHeight == 0) {
 		err = "RepackXatlasLevel: bad atlas caps";
-		return false;
+		return RepackStatus::Infeasible;
 	}
 	// Collect every chart rect (size = footprint + 2*margin, integral).
 	struct Item {
@@ -1170,7 +1170,7 @@ bool RepackXatlasLevel(SgLightmapXatlasLevel& level, uint32_t atlasWidthCap,
 			if (w > atlasWidthCap) {
 				err = "RepackXatlasLevel: chart wider than the atlas "
 					"(raise --lm-meters-per-texel or --lm-atlas-width)";
-				return false;
+				return RepackStatus::Infeasible;
 			}
 			items.push_back({ mi, c, w, h });
 		}
@@ -1235,19 +1235,32 @@ bool RepackXatlasLevel(SgLightmapXatlasLevel& level, uint32_t atlasWidthCap,
 			}
 		}
 		if (best == SIZE_MAX) {
-			uint64_t area = 0;
-			for (const Item& a : items)
+			uint64_t area = 0, inflated = 0;
+			for (const Item& a : items) {
 				area += uint64_t(a.w) * a.h;
-			char buf[256];
+				inflated += (uint64_t(a.w) + uint64_t(kXatlasStackSep))
+					* (uint64_t(a.h) + uint64_t(kXatlasStackSep));
+			}
+			const uint64_t capArea =
+				uint64_t(atlasWidthCap) * maxHeight;
+			char buf[512];
 			std::snprintf(buf, sizeof(buf),
 				"RepackXatlasLevel: atlas height overflow "
 				"(no fit for %ux%u item %llu/%llu, totalArea %llu, "
-				"freeRects %llu, cap %ux%u)",
+				"inflatedNeed %llu, freeRects %llu, cap %ux%u)",
 				it.w, it.h, (unsigned long long)(&it - items.data()),
-				(unsigned long long)items.size(), area,
+				(unsigned long long)items.size(), area, inflated,
 				(unsigned long long)free.size(), atlasWidthCap, maxHeight);
 			err = buf;
-			return false;
+			// The whole sep-inflated job under HALF the atlas area with
+			// no placement found is beyond reasonable doubt a packer
+			// deficiency, not a hard instance: crash loudly instead of
+			// letting convergence grind the density into the ground to
+			// route around it. Near-capacity failures stay Infeasible
+			// (bin packing is never perfectly tight) and converge.
+			if (!items.empty() && inflated * 2 < capArea)
+				return RepackStatus::InternalError;
+			return RepackStatus::Infeasible;
 		}
 		const Free chosen = free[best];
 		placed.push_back({ it.mesh, it.chart, chosen.x, chosen.y });
@@ -1305,7 +1318,7 @@ bool RepackXatlasLevel(SgLightmapXatlasLevel& level, uint32_t atlasWidthCap,
 	if (uint32_t(std::ceil(totalH)) + 1u > maxHeight) {
 		err = "RepackXatlasLevel: atlas height overflow "
 			"(raise --lm-meters-per-texel or --lm-max-height)";
-		return false;
+		return RepackStatus::Infeasible;
 	}
 	for (const Placement& p : placed) {
 		auto& r = level.meshes[p.mesh].rects[p.chart];
@@ -1323,7 +1336,7 @@ bool RepackXatlasLevel(SgLightmapXatlasLevel& level, uint32_t atlasWidthCap,
 	level.atlasWidth = items.empty()
 		? 0u : std::min(uint32_t(std::ceil(maxX)) + 1u, atlasWidthCap);
 	level.atlasHeight = items.empty() ? 0u : uint32_t(std::ceil(totalH)) + 1u;
-	return true;
+	return RepackStatus::Ok;
 }
 
 bool AppendXatlasLevelToAtlas(SgLightmapAtlas& atlas,

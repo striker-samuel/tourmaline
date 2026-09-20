@@ -39,4 +39,25 @@ bool WriteLightmapAtlasPng(const smvk::gi::SgLightmapAtlas& atlas,
 bool WriteLightmapChartsPng(const smvk::gi::SgLightmapAtlas& atlas,
 	uint32_t margin, const std::string& path, std::string& err);
 
+// Bright-pink fault map (<scene>_pink.png, --lm-debug-pink on): the
+// TRUE lightmap the runtime loads — lobe-0 amplitude decoded exactly
+// as uploaded (BC6H blocks decoded via the cook codec when the atlas
+// is compressed, the RGBA16F layer content when not), the same
+// display mapping as the atlas dump — with fault classes stamped
+// solid bright pink (255, 0, 255) at a glance:
+//   * empty rects (raw payload all-zero = zero baked texels: sub-texel
+//     slivers that rasterized nothing, pure atlas overhead),
+//   * corrupt texels (non-finite amplitude in the AS-LOADED image,
+//     painted per texel),
+//   * rect-overlap intersections (pairwise chunk-rect intersections;
+//     the GPU copy has no ownership check, so these are the texels a
+//     later chunk destructively overwrites).
+// Compressed atlases show the real BC6H artifacts (block quantization,
+// the bc6hopt separator prefill halo) — this is the data the GPU
+// samples, not the pre-compression payload. Cook-time only. Same
+// skip-not-fatal policy as the other dumps. Returns false + err on IO
+// failure.
+bool WriteLightmapPinkPng(const smvk::gi::SgLightmapAtlas& atlas,
+	const std::string& path, std::string& err);
+
 } // namespace pakcook

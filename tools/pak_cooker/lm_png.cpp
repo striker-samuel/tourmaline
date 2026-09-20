@@ -7,6 +7,8 @@
 #include <iostream>
 #include <vector>
 
+#include <Engine/GI/bc6h.h>
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
@@ -168,6 +170,192 @@ bool WriteLightmapChartsPng(const smvk::gi::SgLightmapAtlas& atlas,
 		std::cerr << "[LM-PNG] note: " << skipped << "/"
 			<< atlas.chunks.size() << " chunks skipped (empty/OOB rect)\n"
 			<< std::flush;
+	return true;
+}
+
+// IEEE 754 half -> float (BC6H decode path: the blocks hold half
+// patterns; UnpackHalf lives in the engine's anonymous namespace, so
+// this is a local mirror).
+inline float HalfToFloat(uint16_t h) {
+	const uint32_t sign = uint32_t(h >> 15) << 31;
+	const uint32_t exp = (h >> 10) & 0x1Fu;
+	const uint32_t man = h & 0x3FFu;
+	uint32_t bits;
+	if (exp == 0) {
+		if (man == 0)
+			bits = sign; // zero
+		else {
+			// Subnormal: normalize into the float exponent.
+			uint32_t e = 0, m = man;
+			while ((m & 0x400u) == 0) {
+				m <<= 1;
+				++e;
+			}
+			bits = sign | ((113u - e) << 23) | ((m & 0x3FFu) << 13);
+		}
+	} else if (exp == 31) {
+		bits = sign | 0x7F800000u | (man << 13); // inf / nan
+	} else {
+		bits = sign | ((exp - 15u + 127u) << 23) | (man << 13);
+	}
+	float f;
+	std::memcpy(&f, &bits, 4);
+	return f;
+}
+
+bool WriteLightmapPinkPng(const smvk::gi::SgLightmapAtlas& atlas,
+	const std::string& path, std::string& err) {
+	using namespace smvk::gi;
+	if (atlas.width == 0 || atlas.height == 0 || atlas.chunks.empty()) {
+		err = "empty atlas";
+		return false;
+	}
+	const uint32_t w = atlas.width;
+	const uint32_t h = atlas.height;
+
+	// As-loaded lobe-0 image (the texture the runtime uploads):
+	// compressed -> decode lobe image 0 from the BC6H blocks (what the
+	// GPU samples, artifacts and all); uncompressed -> the RGBA16F
+	// layer content (rect texels from the payloads, zeros elsewhere).
+	std::vector<float> lm(size_t(w) * h * 3, 0.0f);
+	if (atlas.compression != SgLightmapCompression::Uncompressed) {
+		const size_t blockBytes = size_t(w / 4) * (h / 4) * 16;
+		if (atlas.bc6hLobes < 1 || atlas.bc6hBlocks.size() < blockBytes) {
+			err = "compressed atlas has no lobe-0 blocks";
+			return false;
+		}
+		std::vector<uint16_t> halves;
+		Bc6hDecodeImage(atlas.bc6hBlocks.data(), w, h, halves);
+		for (size_t i = 0; i < size_t(w) * h; ++i)
+			for (int ch = 0; ch < 3; ++ch)
+				lm[i * 3 + ch] = HalfToFloat(halves[i * 3 + ch]);
+	} else {
+		for (size_t ci = 0; ci < atlas.chunks.size(); ++ci) {
+			const SgLightmapChunk& c = atlas.chunks[ci];
+			const SgLightmapAtlas::ChunkPayload& p = atlas.payloads[ci];
+			const int ox = int(c.rectMin[0]);
+			const int oy = int(c.rectMin[1]);
+			if (c.lobeCount == 0 || p.width == 0 || p.height == 0
+				|| ox < 0 || oy < 0
+				|| ox + int(p.width) > int(w)
+				|| oy + int(p.height) > int(h)
+				|| p.coeffs.size()
+					!= size_t(p.width) * p.height * c.lobeCount)
+				continue;
+			for (uint32_t y = 0; y < p.height; ++y)
+				for (uint32_t x = 0; x < p.width; ++x) {
+					const glm::vec3& a =
+						p.coeffs[(size_t(y) * p.width + size_t(x))
+							* c.lobeCount];
+					float* dst = &lm[(size_t(oy + int(y)) * w
+						+ size_t(ox + int(x))) * 3];
+					dst[0] = a.r;
+					dst[1] = a.g;
+					dst[2] = a.b;
+				}
+		}
+	}
+
+	// Paint the true loaded lightmap; corrupt (non-finite) texels in
+	// the AS-LOADED image turn pink per texel.
+	std::vector<uint8_t> px(size_t(w) * h * 4);
+	static const uint8_t kPink[4] = { 255, 0, 255, 255 };
+	uint32_t corruptTexels = 0;
+	for (size_t i = 0; i < size_t(w) * h; ++i) {
+		const float r = lm[i * 3 + 0], g = lm[i * 3 + 1],
+			b = lm[i * 3 + 2];
+		if (!std::isfinite(r) || !std::isfinite(g)
+			|| !std::isfinite(b)) {
+			std::memcpy(&px[i * 4], kPink, 4);
+			++corruptTexels;
+			continue;
+		}
+		px[i * 4 + 0] = DisplayByte(r);
+		px[i * 4 + 1] = DisplayByte(g);
+		px[i * 4 + 2] = DisplayByte(b);
+		px[i * 4 + 3] = 255;
+	}
+
+	// Empty rects (RAW payload all-zero — the bake produced nothing,
+	// sub-texel sliver overhead; measured pre-compression because
+	// BC6H blocks shared with a lit neighbor can decode a zero rect to
+	// non-zero) paint solid pink over the loaded content.
+	size_t skipped = 0, emptyChunks = 0;
+	std::vector<char> inBounds(atlas.chunks.size(), 0);
+	for (size_t ci = 0; ci < atlas.chunks.size(); ++ci) {
+		const SgLightmapChunk& c = atlas.chunks[ci];
+		const SgLightmapAtlas::ChunkPayload& p = atlas.payloads[ci];
+		const int ox = int(c.rectMin[0]);
+		const int oy = int(c.rectMin[1]);
+		if (c.lobeCount == 0 || p.width == 0 || p.height == 0
+			|| ox < 0 || oy < 0
+			|| ox + int(p.width) > int(w)
+			|| oy + int(p.height) > int(h)
+			|| p.coeffs.size()
+				!= size_t(p.width) * p.height * c.lobeCount) {
+			++skipped;
+			continue;
+		}
+		inBounds[ci] = 1;
+		bool anyNonZero = false;
+		for (const glm::vec3& a : p.coeffs)
+			if (a.x != 0.0f || a.y != 0.0f || a.z != 0.0f) {
+				anyNonZero = true;
+				break;
+			}
+		if (anyNonZero)
+			continue;
+		++emptyChunks;
+		for (uint32_t y = 0; y < p.height; ++y) {
+			uint8_t* row = &px[(size_t(oy + int(y)) * w
+				+ size_t(ox)) * 4];
+			for (uint32_t x = 0; x < p.width; ++x) {
+				std::memcpy(row, kPink, 4);
+				row += 4;
+			}
+		}
+	}
+
+	// Pairwise rect-overlap intersections paint pink: these are the
+	// exact texels the sequential GPU copy overwrites. Strict
+	// intersection (edge-touching rects share no pixels and stay
+	// clean), same predicate as the cook gates.
+	size_t overlapPairs = 0;
+	for (size_t i = 0; i < atlas.chunks.size(); ++i) {
+		if (!inBounds[i])
+			continue;
+		const SgLightmapChunk& a = atlas.chunks[i];
+		for (size_t j = i + 1; j < atlas.chunks.size(); ++j) {
+			if (!inBounds[j])
+				continue;
+			const SgLightmapChunk& b = atlas.chunks[j];
+			if (!(a.rectMin[0] < b.rectMax[0]
+					&& b.rectMin[0] < a.rectMax[0]
+					&& a.rectMin[1] < b.rectMax[1]
+					&& b.rectMin[1] < a.rectMax[1]))
+				continue;
+			++overlapPairs;
+			const int ix0 = int(std::max(a.rectMin[0], b.rectMin[0]));
+			const int iy0 = int(std::max(a.rectMin[1], b.rectMin[1]));
+			const int ix1 = int(std::min(a.rectMax[0], b.rectMax[0]));
+			const int iy1 = int(std::min(a.rectMax[1], b.rectMax[1]));
+			for (int y = iy0; y < iy1; ++y) {
+				uint8_t* row = &px[(size_t(y) * w + size_t(ix0)) * 4];
+				for (int x = ix0; x < ix1; ++x) {
+					std::memcpy(row, kPink, 4);
+					row += 4;
+				}
+			}
+		}
+	}
+	if (!stbi_write_png(path.c_str(), int(w), int(h), 4, px.data(),
+			int(w) * 4)) {
+		err = "stbi_write_png failed for " + path;
+		return false;
+	}
+	std::cerr << "[LM-PNG] pink: " << emptyChunks << " empty, "
+		<< corruptTexels << " corrupt texels, " << overlapPairs
+		<< " overlapping pairs, " << skipped << " skipped\n" << std::flush;
 	return true;
 }
 

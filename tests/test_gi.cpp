@@ -1288,7 +1288,8 @@ void TestLmRepackDisjoint() {
 	Check(!gi::CheckXatlasLevelRectsForOverlap(lvl, &oerr),
 		"lm.repack.pre.overlap");
 	std::string err;
-	Check(gi::RepackXatlasLevel(lvl, 64, 64, err), "lm.repack.ok");
+	Check(gi::RepackXatlasLevel(lvl, 64, 64, err)
+		== gi::RepackStatus::Ok, "lm.repack.ok");
 	Check(gi::CheckXatlasLevelRectsForOverlap(lvl, &oerr),
 		"lm.repack.nooverlap");
 	// Sizes preserved exactly (only placement moves).
@@ -1346,8 +1347,55 @@ void TestLmRepackDisjoint() {
 	wc.width = 100;
 	wc.height = 4;
 	tooWide.meshes[0].chart.charts.push_back(std::move(wc));
-	Check(!gi::RepackXatlasLevel(tooWide, 64, 64, err),
-		"lm.repack.toowide.fail");
+	Check(gi::RepackXatlasLevel(tooWide, 64, 64, err)
+		== gi::RepackStatus::Infeasible,
+		"lm.repack.toowide.infeasible");
+	// Genuinely tight fit (total area just under the cap): Infeasible,
+	// NOT an internal error — callers converge the density.
+	{
+		gi::SgLightmapXatlasLevel tight;
+		tight.meshes.resize(1);
+		tight.meshes[0].ok = true;
+		// 64x64 cap = 4096; 25 charts of 12x12 = 3600 raw, ~4900
+		// sep-inflated — near-capacity, a legit no-fit.
+		for (int i = 0; i < 25; ++i) {
+			gi::SgLightmapXatlasMeshOutput::Rect r{ 0, 0, 12, 12 };
+			tight.meshes[0].rects.push_back(r);
+			gi::SgLightmapChartResult::Chart c;
+			c.width = 12;
+			c.height = 12;
+			tight.meshes[0].chart.charts.push_back(std::move(c));
+		}
+		const gi::RepackStatus rs =
+			gi::RepackXatlasLevel(tight, 64, 64, err);
+		Check(rs == gi::RepackStatus::Infeasible,
+			"lm.repack.tight.infeasible");
+	}
+	// Packer-bug class: the whole sep-inflated job fits under HALF the
+	// atlas area, yet no placement — InternalError, callers must abort.
+	{
+		gi::SgLightmapXatlasLevel buggy;
+		buggy.meshes.resize(1);
+		buggy.meshes[0].ok = true;
+		// 10 charts of 8x8 = 640 raw, ~1600 inflated, cap 4096: 39% of
+		// the atlas. A healthy placer fits this trivially; failing it
+		// would be a stranded-space bug like the old guillotine one.
+		for (int i = 0; i < 10; ++i) {
+			gi::SgLightmapXatlasMeshOutput::Rect r{ 0, 0, 8, 8 };
+			buggy.meshes[0].rects.push_back(r);
+			gi::SgLightmapChartResult::Chart c;
+			c.width = 8;
+			c.height = 8;
+			buggy.meshes[0].chart.charts.push_back(std::move(c));
+		}
+		const gi::RepackStatus rs =
+			gi::RepackXatlasLevel(buggy, 64, 64, err);
+		// These must FIT (the placer is correct today); the InternalError
+		// branch is exercised only by real placement bugs. Assert Ok so
+		// a future placer regression downgrades to a visible test fail
+		// instead of a silent InternalError in cooks.
+		Check(rs == gi::RepackStatus::Ok, "lm.repack.smallfit.ok");
+	}
 }
 
 // Frostbite-style chart transfer (TransferLightmapCharts): a charted

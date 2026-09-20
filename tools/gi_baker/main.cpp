@@ -1114,8 +1114,19 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 		// Post-shrink AABBs can overlap (concave charts); repack
-		// big->small into disjoint placements before Append.
-		if (!RepackXatlasLevel(lvl, 4096, 4096, xerr)) {
+		// big->small into disjoint placements before Append. An
+		// InternalError here is a packer bug: report it as such
+		// instead of a generic overflow.
+		if (RepackXatlasLevel(lvl, 4096, 4096, xerr)
+			== RepackStatus::InternalError) {
+			std::cout << "  [lm-probe] repack INTERNAL ERROR (packer "
+				"bug, please report): " << xerr << "\n";
+			return 1;
+		}
+		if (xerr.empty() == false && lvl.meshes.empty() == false
+			&& lvl.atlasWidth == 0) {
+			// Infeasible at these caps: report and stop (no density
+			// convergence in the probe tool).
 			std::cout << "  [lm-probe] repack failed: " << xerr << "\n";
 			return 1;
 		}
