@@ -1377,9 +1377,9 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 	}
 
 	// Lightmap UV channel (TEXCOORD_1): authored lightmap UVs, or zeros
-	// when the scene carries none (GenerateLightmapCharts overwrites these
-	// with its expanded runs at bake time; the shader gates on the per-draw
-	// flag, never on the value).
+	// when the scene carries none (the lightmap cook overwrites these
+	// with chart-local UVs + chart ids at bake time; the shader gates on
+	// the per-draw flag, never on the value).
 	if (hasUV2s) {
 		auto& uv2Acc = model.accessors[primitive.attributes.at("TEXCOORD_1")];
 		for (size_t i = 0; i < uv2Acc.count && i < data.vertices.size(); ++i) {

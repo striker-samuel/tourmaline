@@ -22,11 +22,14 @@ struct FilteredVsMainPush
     float4x4 _pad0;
     float4x4 _pad1;
     float4x4 _pad2;
-    // Offsets mirror C++ smvk::gfx::FilteredVsPush exactly (24B tail).
+    // Offsets mirror C++ smvk::gfx::FilteredVsPush exactly (32B tail;
+    // the trailing lmXforms keeps the 24B prefix identical to the motion
+    // VS tail, whose own FrameUniforms BDA lands at 216).
     vk::BufferPointer<GfxDraws> draws;
     vk::BufferPointer<RenderViewBuffer> renderViews;
     uint renderViewIndex;
     uint pad;
+    vk::BufferPointer<GfxChartXforms> lmXforms;
 };
 
 [[vk::push_constant]]
@@ -39,8 +42,11 @@ struct VSIn
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
-    // Location 5 = StaticVertexFormat's TexCoord1 (lightmap UV).
-    [[vk::location(5)]] float2 lightmapUv : TEXCOORD1;
+    // Location 5 = StaticVertexFormat's TexCoord1 (chart-local lightmap
+    // UV); location 6 = ChartId. The atlas UV is unpacked below via the
+    // draw's chart offset + the scene transform buffer.
+    [[vk::location(5)]] float2 chartUv : TEXCOORD1;
+    [[vk::location(6)]] uint chartId : TEXCOORD5;
     uint instanceID : SV_InstanceID;
 };
 struct VSOut
@@ -72,7 +78,13 @@ VSOut mainVS(VSIn IN)
 
     OUT.color = float3(1.0f, 1.0f, 1.0f);
     OUT.uv = IN.uv;
-    OUT.lightmapUv = IN.lightmapUv;
+    // Chart unpack: chart-local UV -> atlas UV via the per-draw chart
+    // offset + the scene-wide transform buffer (no measurable VS cost).
+    // Gated on the draw's lobe count (the per-draw flag, never the UV
+    // value): unlightmapped draws output 0 without touching the buffer.
+    OUT.lightmapUv = (draw.misc.w == 0xFFFFFFFFu)
+        ? float2(0.0f, 0.0f)
+        : GfxLightmapUv(IN.chartUv, IN.chartId, draw.misc2.x, pcFV.lmXforms);
 
     // Lightmap chunk rides the draw record (misc.w; 0xFFFFFFFF = none).
     OUT.lmChunk = draw.misc.w;

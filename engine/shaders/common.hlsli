@@ -377,38 +377,42 @@ struct FrameUniforms
     vk::BufferPointer<ForwardPlusDecalTileIndexBuffer> decalTileIndices; // 736
     uint decalCount;                                         // 744 0 = decals off
     uint decalMaxPerTile;                                    // 748 list stride
-    // ---- SG 2D lightmaps (STATIC geometry; Engine/GI/lightmap.h). The
-    // 9 RGBA16F atlas layers ride the bindless Texture2D array; the
-    // atlas-space UVs are COOKED into the mesh's texCoord2 and the lobe
-    // count rides the draw ring — no chunk buffer exists. Static/dynamic
-    // separation: draws flagged with a lobe count sample the atlas;
-    // everything else (dynamic objects) samples the regular 3D probe
-    // grids below or the fallback ambient. ----
-    uint lmLayers[9];                                        // 752 atlas bindless slots
-    uint lmEnabled;                                          // 788 1 = lightmap branch active
-    uint2 lmPad;                                              // 792 (align regObbs to 8)
+    // ---- SG 2D lightmaps (STATIC geometry; Engine/GI/lightmap.h).
+    // The atlas layers ride the bindless Texture2D array; the atlas-space
+    // UVs are COOKED into the mesh's texCoord2 and the lobe count rides
+    // the draw ring — no chunk buffer exists. Static/dynamic separation:
+    // draws flagged with a lobe count sample the atlas; everything else
+    // (dynamic objects) samples the regular 3D probe grids below or the
+    // fallback ambient. lmLayerKind selects the GPU layout: 0 = the
+    // classic 9 RGBA16F stream layers (half h = lobe*3 + channel ->
+    // layer h/4), 1 = BC6H one-texture-per-lobe (12 slots, texture l =
+    // lobe l, .rgb = the amplitude). ----
+    uint lmLayers[12];                                       // 752 atlas bindless slots
+    uint lmEnabled;                                          // 800 1 = lightmap branch active
+    uint lmLayerKind;                                        // 804 0 = RGBA16F stream, 1 = BC6H per-lobe
+    uint2 lmPad;                                              // 808 (align regObbs to 8)
     // ---- SG regular 3D probe volumes (DYNAMIC objects; Ready-at-Dawn
     // grids, Engine/GI/regular_volume.h). Hand-placed artist OBBs with
     // density params, baked per volume; 7 RGBA16F 3D textures each,
     // hardware trilinear filtering between neighboring probes. ----
-    vk::BufferPointer<SgRegularObbBuffer> regObbs;           // 800 OBB array
-    uint regLayers[56];                                       // 808 8 volumes x 7 layer slots
-    uint regCount;                                             // 1032 active volumes
-    uint regEnabled;                                           // 1036 1 = grid branch active
-    uint4 regPad;                                              // 1040 (16-align tail)
+    vk::BufferPointer<SgRegularObbBuffer> regObbs;           // 816 OBB array
+    uint regLayers[56];                                       // 824 8 volumes x 7 layer slots
+    uint regCount;                                             // 1048 active volumes
+    uint regEnabled;                                           // 1052 1 = grid branch active
+    uint4 regPad;                                              // 1056 (16-align tail)
     // ---- Deferred-shadow debug visualizers (paper 5.3/5.4). Debug-build
-    // only (DS_DEBUG_VIZ): tail fields so the release layout (1056 B) is a
+    // only (DS_DEBUG_VIZ): tail fields so the release layout (1072 B) is a
     // strict prefix of the debug layout. The light-scoped modes
     // re-query the phase-1 (CPU) and phase-2 (GPU) TileGroup masks;
     // dsDebug* pick mode / light / flags / heat scale.
 #if defined(DS_DEBUG_VIZ)
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 1056 phase-1 masks
-    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 1064 phase-2 masks
-    uint dsDebugMode;      // 1072 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
-    uint dsDebugLight;     // 1076 selected light (sorted index)
-    uint dsDebugFlags;     // 1080 bit0 = blend over lit
-    uint dsDebugCountCeil; // 1084 count-heat ceiling (lights)
-    uint4 dsDebugPad;      // 1088 (16-align tail)
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileMasks;     // 1072 phase-1 masks
+    vk::BufferPointer<DsTileLightMaskBuffer> dsTileGroupMasks; // 1080 phase-2 masks
+    uint dsDebugMode;      // 1088 0=off, 1-4 counts, 5 cull step, 6 list, 7 vis
+    uint dsDebugLight;     // 1092 selected light (sorted index)
+    uint dsDebugFlags;     // 1096 bit0 = blend over lit
+    uint dsDebugCountCeil; // 1100 count-heat ceiling (lights)
+    uint4 dsDebugPad;      // 1104 (16-align tail)
 #endif
 };
 
@@ -471,7 +475,7 @@ struct PushConstants
     float4x4 prevModel;
 };
 
-#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(SSAO_PASS) && !defined(GTAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS) && !defined(EVSM_BLUR_PASS) && !defined(DOF_PASS) && !defined(SSR_PASS) && !defined(VOLUMETRIC_PASS) && !defined(PARTICLES_PASS)
+#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(SSAO_PASS) && !defined(GTAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS) && !defined(EVSM_BLUR_PASS) && !defined(DOF_PASS) && !defined(SSR_PASS) && !defined(VOLUMETRIC_PASS) && !defined(PARTICLES_PASS) && !defined(UVFLAT1_PASS) && !defined(DEFAULT_DIRECT_PASS)
 // ENGINE_HAS_PC: this translation unit sees the scene-wide `pc` push
 // constants. Passes with their own push layout (FORWARDPLUS/HZB/DS/...)
 // leave it undefined so headers can guard pc-dependent helpers (see

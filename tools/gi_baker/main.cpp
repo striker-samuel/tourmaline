@@ -1053,22 +1053,22 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	// Lightmap-chain diagnostic: run the PakCooker --lightmap charting +
-	// bake chain (authored-pack UV2 charts -> one chunk per layout ->
+	// Lightmap-chain diagnostic: run the xatlas chart + bake chain
+	// (GenerateLightmapChartsXatlas -> AppendXatlasLevelToAtlas ->
 	// BakeSgLightmapChunks) on the first N chartable meshes and print
 	// per-mesh stats (texel counts, world positions, incoming radiance).
 	// Reproduces cook-side lightmap faults without a pak cook.
 	if (args.lmProbe > 0) {
 		using namespace smvk::gi;
 		::recalculateGlobalTransforms(cluster->scene);
-		SgLightmapChartOptions chartOpts{};
-		chartOpts.texelsPerMeter = 5.66f;   // converged night cook density (world)
-		chartOpts.gutterTexels = 1;
-		chartOpts.authoredUv2 = true;
-		chartOpts.authoredOneChartPerLayout = true;
+		SgLightmapXatlasOptions xopts{};
+		xopts.metersPerTexel = 1.0f / 5.66f; // converged night cook density (world)
+		xopts.gutterTexels = 1;
 		SgLightmapAtlas atlas{};
-		struct LmWork { std::string name; SgLightmapChartResult chart; float density; glm::mat4 g; const smvk::StaticMeshUpload* up; };
+		struct LmWork { std::string name; glm::mat4 g; const smvk::StaticMeshUpload* up; };
 		std::vector<LmWork> works;
+		std::vector<SgLightmapXatlasMeshInput> xins;
+		std::vector<uint32_t> keys;
 		uint32_t count = 0;
 		for (const auto& [node, meshIdx] : cluster->scene.meshForNode) {
 			if (count >= args.lmProbe)
@@ -1090,20 +1090,6 @@ int main(int argc, char** argv) {
 			const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(handle);
 			if (!up || up->vertices.empty())
 				continue;
-			// has authored uv2?
-			bool spread = false;
-			glm::vec2 mean(0.0f);
-			for (const smvk::StaticVertex& v : up->vertices)
-				mean += v.texCoord2;
-			mean /= float(up->vertices.size());
-			for (const smvk::StaticVertex& v : up->vertices)
-				if (std::abs(v.texCoord2.x - mean.x) > 1e-6f
-					|| std::abs(v.texCoord2.y - mean.y) > 1e-6f) {
-					spread = true;
-					break;
-				}
-			if (!spread)
-				continue;
 			const glm::mat4 g = cluster->scene.globalTransform[node];
 			const float ws = std::max({ glm::length(glm::vec3(g[0])),
 				glm::length(glm::vec3(g[1])), glm::length(glm::vec3(g[2])) });
@@ -1111,59 +1097,76 @@ int main(int argc, char** argv) {
 			w.name = getNodeName(cluster->scene, int(node));
 			w.up = up;
 			w.g = g;
-			w.density = chartOpts.texelsPerMeter * ws;
-			SgLightmapChartOptions o = chartOpts;
-			o.texelsPerMeter = w.density;
-			std::string cerr_;
-			if (!GenerateLightmapCharts(*up, o, w.chart, cerr_)) {
-				std::cout << "  [lm-probe] node " << node << " '" << w.name
-					<< "': chart failed: " << cerr_ << "\n";
-				continue;
-			}
 			works.push_back(std::move(w));
+			SgLightmapXatlasMeshInput in{};
+			in.upload = up;
+			in.meshKey = node;
+			in.densityScale = (ws > 1e-6f) ? ws : 1.0f;
+			xins.push_back(in);
+			keys.push_back(node);
 			++count;
 		}
-		std::cout << "  [lm-probe] charted " << works.size() << " meshes\n";
-		// Pack + bake each as its own chunk; print stats.
+		std::cout << "  [lm-probe] charting " << works.size() << " meshes\n";
+		SgLightmapXatlasLevel lvl;
+		std::string xerr;
+		if (!GenerateLightmapChartsXatlas(xins, xopts, lvl, xerr)) {
+			std::cout << "  [lm-probe] xatlas chart failed: " << xerr << "\n";
+			return 1;
+		}
+		std::vector<uint32_t> bases;
+		if (!AppendXatlasLevelToAtlas(atlas, lvl, keys, 12u,
+				4096, 4096, bases, xerr)) {
+			std::cout << "  [lm-probe] atlas append failed: " << xerr << "\n";
+			return 1;
+		}
+		std::cout << "  [lm-probe] charted " << works.size() << " meshes (atlas "
+			<< atlas.width << "x" << atlas.height << ")\n";
+		// Bake every mesh's FIRST chunk; print stats.
+		std::vector<std::vector<SgLightmapTexel>> texels(works.size());
+		std::vector<SgLightmapChunkBatch> batches(works.size());
+		bool anyBatch = false;
 		for (size_t wi = 0; wi < works.size(); ++wi) {
-			LmWork& w = works[wi];
-			atlas.chunks.clear();
-			atlas.payloads.clear();
-			atlas.width = atlas.height = 0;
-			std::vector<SgLightmapAtlas::RectRequest> reqs;
-			for (const auto& ch : w.chart.charts)
-				reqs.push_back({ glm::uvec2(ch.width, ch.height), 12u, uint32_t(wi) });
-			if (!atlas.PackRects(reqs, 4096, 4096)) {
-				std::cout << "  [lm-probe] '" << w.name << "': pack failed\n";
+			if (!lvl.meshes[wi].ok || lvl.meshes[wi].chart.charts.empty()) {
+				std::cout << "  [lm-probe] '" << works[wi].name
+					<< "': unchartable\n";
 				continue;
 			}
-			std::vector<std::vector<SgLightmapTexel>> texels(1);
-			{
-				const glm::mat3 g3(w.g);
-				for (const auto& t : w.chart.charts[0].texels) {
-					SgLightmapTexel wt = t;
-					wt.position = glm::vec3(w.g * glm::vec4(t.position, 1.0f));
-					wt.normal = glm::normalize(g3 * t.normal);
-					texels[0].push_back(wt);
-				}
+			const glm::mat3 g3(works[wi].g);
+			for (const auto& t : lvl.meshes[wi].chart.charts[0].texels) {
+				SgLightmapTexel wt = t;
+				wt.position = glm::vec3(works[wi].g * glm::vec4(t.position, 1.0f));
+				wt.normal = glm::normalize(g3 * t.normal);
+				texels[wi].push_back(wt);
 			}
 			SgLightmapChunkBatch b{};
-			b.payload = &atlas.payloads[0];
-			b.texels = &texels[0];
+			b.payload = &atlas.payloads[bases[wi]];
+			b.texels = &texels[wi];
 			b.meshKey = uint32_t(wi) + 1;
-			b.chunkMeta = &atlas.chunks[0];
-			SgLightmapBakeConfig lcfg{};
-			lcfg.raysPerTexel = 128;
-			lcfg.maxBounces = 3;
-			SgLightmapBakeStats ls{};
+			b.chunkMeta = &atlas.chunks[bases[wi]];
+			batches[wi] = b;
+			anyBatch = true;
+		}
+		SgLightmapBakeConfig lcfg{};
+		lcfg.raysPerTexel = 128;
+		lcfg.maxBounces = 3;
+		SgLightmapBakeStats ls{};
+		if (anyBatch) {
+			std::vector<SgLightmapChunkBatch> live;
+			for (const auto& b : batches)
+				if (b.payload)
+					live.push_back(b);
 			if (!BakeSgLightmapChunks(traceScene, 12u,
-					std::span<const SgLightmapChunkBatch>(&b, 1), lcfg, ls, nullptr)) {
-				std::cout << "  [lm-probe] '" << w.name << "': bake failed\n";
-				continue;
+					std::span<const SgLightmapChunkBatch>(live), lcfg, ls, nullptr)) {
+				std::cout << "  [lm-probe] bake failed\n";
+				return 1;
 			}
-			const auto& p = atlas.payloads[0];
+		}
+		for (size_t wi = 0; wi < works.size(); ++wi) {
+			if (!lvl.meshes[wi].ok || lvl.meshes[wi].chart.charts.empty())
+				continue;
+			const auto& p = atlas.payloads[bases[wi]];
 			const uint32_t lobes = std::min<uint32_t>(
-				atlas.chunks[0].lobeCount, 12u);
+				atlas.chunks[bases[wi]].lobeCount, 12u);
 			double meanL0 = 0.0, maxL0 = 0.0;
 			uint64_t nz = 0;
 			for (size_t i = 0; i < size_t(p.width) * p.height; ++i) {
@@ -1176,13 +1179,15 @@ int main(int argc, char** argv) {
 					++nz;
 			}
 			const size_t total = size_t(p.width) * p.height;
-			const glm::vec3 firstPos = w.chart.charts[0].texels.empty()
+			const LmWork& w = works[wi];
+			const auto& ch0 = lvl.meshes[wi].chart.charts[0];
+			const glm::vec3 firstPos = ch0.texels.empty()
 				? glm::vec3(0.0f)
-				: w.chart.charts[0].texels.front().position;
+				: ch0.texels.front().position;
 			const glm::vec3 wpos = glm::vec3(w.g * glm::vec4(firstPos, 1.0f));
 			std::cout << "  [lm-probe] '" << w.name << "' chunk "
 				<< p.width << "x" << p.height
-				<< " baked=" << w.chart.charts[0].texels.size()
+				<< " baked=" << ch0.texels.size()
 				<< " nz=" << nz
 				<< " meanL0=" << (meanL0 / double(std::max(total, size_t(1))))
 				<< " maxL0=" << maxL0
@@ -1190,8 +1195,8 @@ int main(int argc, char** argv) {
 				<< "\n";
 			// Trace a few of the first texel's fib directions and report
 			// what comes back (sky / geometry / zero).
-			if (!w.chart.charts[0].texels.empty()) {
-				const SgLightmapTexel& t0 = w.chart.charts[0].texels.front();
+			if (!ch0.texels.empty()) {
+				const SgLightmapTexel& t0 = ch0.texels.front();
 				const glm::vec3 nrm = glm::normalize(glm::vec3(w.g * glm::vec4(t0.normal, 0.0f)));
 				const glm::vec3 origin = glm::vec3(w.g * glm::vec4(t0.position, 1.0f))
 					+ nrm * 1e-3f;

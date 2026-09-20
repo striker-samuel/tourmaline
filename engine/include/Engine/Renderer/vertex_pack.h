@@ -2,9 +2,10 @@
 
 // Packed GPU vertex streams (see VertexShading in mesh.h).
 //
-// The shading stream is 20 bytes: color (RGBA8_UNORM), uv (RG16_FLOAT =
-// packHalf2x16), uv2 lightmap UV (RG16_UNORM = packUnorm2x16),
-// normal (oct32), tangent (oct32 + handedness bit). Normal
+// The shading stream is 24 bytes: color (RGBA8_UNORM), uv (RG16_FLOAT =
+// packHalf2x16), chartUv chart-local lightmap UV (RG16_UNORM =
+// packUnorm2x16), normal (oct32), tangent (oct32 + handedness bit),
+// chart (R32_UInt chart index). Normal
 // and tangent ride as Format::R32_UInt and are unpacked by hand in the
 // vertex shader (engine/shaders/vertex_pack.hlsli mirrors this file — keep
 // the two in sync; the HLSL side uses the same sign(0)=+1 convention and
@@ -140,10 +141,17 @@ inline uint32_t PackUvHalf(const glm::vec2& uv) noexcept {
 	return glm::packHalf2x16(uv);
 }
 
-// Lightmap-atlas UV: normalized [0,1], UNORM16 for texel precision at
-// 8192-wide atlases (half-float quantizes to whole texels there).
-inline uint32_t PackUv2Unorm(const glm::vec2& uv) noexcept {
+// Chart-local lightmap UV: normalized [0,1] in the chart's inner rect,
+// UNORM16 for texel precision at 8192-wide atlases (half-float quantizes
+// to whole texels there). The atlas-space transform lives per chart in
+// the GPU transform buffer and is applied in the vertex shader, so the
+// vertex stream no longer carries atlas-space uv2.
+inline uint32_t PackChartUv(const glm::vec2& uv) noexcept {
 	return glm::packUnorm2x16(glm::clamp(uv, glm::vec2(0.0f), glm::vec2(1.0f)));
+}
+// Legacy alias (atlas-space uv2 encoding was identical).
+inline uint32_t PackUv2Unorm(const glm::vec2& uv) noexcept {
+	return PackChartUv(uv);
 }
 
 inline uint32_t PackColorUnorm8(const glm::vec4& color) noexcept {

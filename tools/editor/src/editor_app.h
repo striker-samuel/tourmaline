@@ -199,10 +199,9 @@ struct CookSettings {
 	bool meshopt = true;
 	bool lods = false;
 	bool lightmap = false;
-	uint32_t lmDensity = 32;
+	float lmMetersPerTexel = 0.25f; // chart density (m/texel)
 	uint32_t lmLobes = 12;
-	uint32_t lmAtlasWidth = 2048;
-	uint64_t lmBudget = 4ull * 1024 * 1024;
+	uint32_t lmAtlasWidth = 2048;   // FIXED atlas width; height grows
 	uint32_t lmRays = 256;
 	float lmExcludeSmall = 0.0f;
 	std::string lmExcludeKw; // extra --lm-exclude keywords (comma separated)
@@ -259,6 +258,10 @@ private:
 	bool EnsureShaders();
 	smvk::ShaderProgram& MainProgram(ViewMode m); // per-viewport (Lit fallback)
 	smvk::ShaderProgram& FlatUvProgram(ViewMode m); // uvflat0/uvflat1 (null-ish on miss)
+	// UV-coordinate export program: same flat VS as uvflat1, fragment
+	// outputs the atlas uv itself (uvflat1uv.frag — the QA view of the
+	// parameterization, no atlas content read).
+	smvk::ShaderProgram& FlatUvCoordProgram();
 	// Flat UV draw path: the PRIMARY SELECTION's subtree meshes drawn
 	// through the uvflat projection (unwrapped + texture content).
 	void DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
@@ -300,7 +303,9 @@ private:
 	static smvk::Extent2D InsetStrip(const ViewportRect& vp, uint32_t& outX);
 	void DrawWorldNodes(smvk::CommandBuffer& cmd, const app::PushConstants& basePc,
 		bool maskedPhase, bool selectedOnly, bool shadowPass,
-		bool bakedOnly = false); // bakedOnly: skip unbaked meshes (F8 view)
+		bool bakedOnly = false, // bakedOnly: skip unbaked meshes (F8 view)
+		bool chartTail = false); // chartTail: push the per-mesh chart tail
+		// (direct-path atlas unpack for views that sample lightmaps: F8, F10)
 	// True when the world holds anything to draw (guards vertex bindings).
 	bool HasDrawItems() const;
 
@@ -607,12 +612,15 @@ private:
 	bool m_runRunning = false;
 
 	// ---- lightmap flat-view PNG export (Bake panel) ----
-	// Renders the whole scene unwrapped by its atlas uv2 over the baked
-	// lightmap content into an offscreen target (atlas resolution), then
-	// reads it back and writes a PNG — optional UV wireframe overlay.
-	// Mirrors the App screenshot path (Capture + DownloadDataFromImage).
+	// Renders the whole scene unwrapped by its atlas uv2 into an
+	// offscreen target (atlas resolution), then reads it back and writes
+	// a PNG — either the baked lightmap content or the UV coordinates
+	// themselves (QA view of the parameterization), with an optional UV
+	// wireframe overlay. Mirrors the App screenshot path (Capture +
+	// DownloadDataFromImage).
 	bool m_lmExportQueued = false;  // button sets; RenderFrame renders + saves
 	bool m_lmExportWires = true;    // wireframe overlay toggle
+	bool m_lmExportUv = false;      // UV coords instead of baked content
 	smvk::Holder<smvk::ImageHandle> m_lmExportImage;
 	smvk::Holder<smvk::ImageViewHandle> m_lmExportView;
 	smvk::Holder<smvk::ImageHandle> m_lmExportDepth;
@@ -622,6 +630,7 @@ private:
 	smvk::Extent2D m_lmExportExtent{ 0, 0 };
 	smvk::Holder<smvk::BufferHandle> m_lmExportLines;
 	uint32_t m_lmExportLinesCap = 0;
+	uint32_t m_lmExportLinesCount = 0; // vertices drawn this export (< cap)
 	void EnsureLightmapExportTarget(smvk::Extent2D extent);
 	void RecordLightmapExportPass(uint32_t flight);
 	void ExportLightmapPng(); // readback + stb write (after Execute)
@@ -720,11 +729,13 @@ private:
 	bool m_hasSglm = false;
 	std::string m_sglmStatus = "no atlas loaded";
 	char m_sglmBuf[512] = "";
-	// ---- baked-irradiance GPU upload (9 RGBA16F atlas layers, App parity)
-	// Feeds FrameUniforms.lmLayers/lmEnabled for the F8 view; released
-	// with the atlas (scene change / manual clear).
-	smvk::Holder<smvk::TextureHandle> m_lmLayers[smvk::gi::kLightmapLayerCount];
-	uint32_t m_lmLayerSlots[smvk::gi::kLightmapLayerCount] = {};
+	// ---- baked-irradiance GPU upload (App parity: 9 RGBA16F stream
+	// layers, or the sglm v3 BC6H one-per-lobe textures)
+	// Feeds FrameUniforms.lmLayers/lmLayerKind/lmEnabled for the F8 view;
+	// released with the atlas (scene change / manual clear).
+	smvk::Holder<smvk::TextureHandle> m_lmLayers[12];
+	uint32_t m_lmLayerSlots[12] = {};
+	uint32_t m_lmLayerKind = 0;
 	bool m_lmGpu = false;
 	void UploadSglmLayers();
 	void ClearSglmLayers();
@@ -808,6 +819,14 @@ private:
 	smvk::Holder<smvk::BufferHandle> m_materialsBuf;  // ring: frames * MAX_MATERIALS
 	smvk::Holder<smvk::BufferHandle> m_lightsBuf;     // ring: frames * MAX_LIGHTS
 	smvk::Holder<smvk::BufferHandle> m_cascadeBuf;    // ring: frames * GpuDirDesc
+	// Scene-wide lightmap chart transforms (see World::lmChartTable):
+	// uploaded on scene version change; the flat lightmap view + PNG
+	// export index it per mesh via the uvflat VS tail push.
+	smvk::Holder<smvk::BufferHandle> m_lmXformsBuf;
+	uint64_t m_lmXformsAddr = 0;
+	uint64_t m_lmXformsVersion = ~uint64_t(0);
+	size_t m_lmXformsCap = 0;
+	uint64_t EnsureChartXforms();
 	smvk::Holder<smvk::ShaderModuleHandle> m_vsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_unlitFsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_litFsModule;
@@ -822,6 +841,7 @@ private:
 	smvk::Holder<smvk::ShaderModuleHandle> m_flatUv0FsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_flatUv1VsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_flatUv1FsModule;
+	smvk::Holder<smvk::ShaderModuleHandle> m_flatUvCoordFsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_lineVsModule;
 	smvk::Holder<smvk::ShaderModuleHandle> m_lineFsModule;
 	smvk::ShaderProgram m_unlitProgram{};
@@ -833,6 +853,7 @@ private:
 	smvk::ShaderProgram m_meshDebugProgram{}; // F4 meshlet view (meshdebug vert+frag)
 	smvk::ShaderProgram m_flatUv0Program{}; // Flat UV: uvflat0.vert + uvflat0.frag
 	smvk::ShaderProgram m_flatUv1Program{}; // Flat UV: uvflat1.vert + uvflat1.frag
+	smvk::ShaderProgram m_flatUvCoordProgram{}; // export only: uvflat1.vert + uvflat1uv.frag
 	smvk::ShaderProgram m_wireProgram{}; // selected highlight overlay
 	smvk::ShaderProgram m_shadowProgram{}; // depth-only (atlas-owned default)
 	smvk::ShaderProgram m_lineProgram{}; // gizmo/AABB lines

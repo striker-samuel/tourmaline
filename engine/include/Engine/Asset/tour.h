@@ -56,10 +56,12 @@ struct TourCook {
 	bool meshopt = true;
 	bool lods = false;
 	bool lightmap = false;
-	uint32_t lmDensity = 32;
+	// Chart density request, METERS PER TEXEL (0.25 = one texel per
+	// 25 cm). Legacy -lmDensity lines (texels/m) convert on load.
+	float lmMetersPerTexel = 0.25f;
 	uint32_t lmLobes = 12;
+	// FIXED atlas width; the atlas height grows with the content.
 	uint32_t lmAtlasWidth = 2048;
-	uint64_t lmBudget = 4ull * 1024 * 1024;
 	uint32_t lmRays = 256;
 	float lmExcludeSmall = 0.0f;
 	std::string lmExcludeKw;

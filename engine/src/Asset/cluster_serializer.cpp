@@ -13,6 +13,7 @@
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
+#include <Engine/RHI/resource_manager.h>
 #include <Engine/Utils/texture_loader.h>
 
 namespace smvk {
@@ -247,10 +248,19 @@ bool SerializeClusters(
 		PutU32(blob, lod.triCount);
 		PutF32(blob, lod.acmr);
 		// Lightmap chunk (cooked --lightmap; texCoord2 in the vertex
-		// payload below carries the per-vertex lightmap UVs).
+		// payload below carries the per-vertex CHART-LOCAL uvs + chartId,
+		// and the per-chart atlas transforms follow here for the shader
+		// unpack: atlasUv = chartUv * xform.xy + xform.zw).
 		PutU32(blob, mesh->lmChunk);
+		PutU32(blob, static_cast<uint32_t>(mesh->lmChartXforms.size()));
+		for (const glm::vec4& xf : mesh->lmChartXforms) {
+			PutF32(blob, xf.x);
+			PutF32(blob, xf.y);
+			PutF32(blob, xf.z);
+			PutF32(blob, xf.w);
+		}
 		// Vertex/index payloads (AoS StaticVertex, u32 indices).
-		static_assert(sizeof(StaticVertex) == 72, "StaticVertex layout changed");
+		static_assert(sizeof(StaticVertex) == 76, "StaticVertex layout changed");
 		blob.insert(blob.end(),
 			reinterpret_cast<const uint8_t*>(upload->vertices.data()),
 			reinterpret_cast<const uint8_t*>(upload->vertices.data()) +
@@ -896,10 +906,23 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	const PakReader& reader,
 	std::string* err,
 	uint32_t sceneIndex) {
+	// Failure after textures/meshes were queued in the upload streamer
+	// leaves transfer command buffers + graphics acquire barriers
+	// referencing the partial cluster's VkImages/VkBuffers. The cluster
+	// is destroyed on return, so drain the streamer first: flush submits
+	// the batches while the images are still alive, wait retires them,
+	// and only then may the holders be torn down. Without this the
+	// deferred destroy runs immediately (no graphics submit yet at load
+	// time) while the upload is still in flight -> VUID-vkDestroyImage-
+	// 01000 + a driver AV in the next submitState's vkCmdPipelineBarrier2
+	// on the dead VkImage (see Bistro pak fallback crash).
 	auto fail = [&](const std::string& msg) -> std::unique_ptr<Cluster> {
 		if (err)
 			*err = msg;
 		std::cerr << "DeserializeCluster: " << msg << std::endl;
+		// Workers are joined inside LoadKtxTexturesParallelMemory, so no
+		// concurrent streamer submits are in flight here; safe to drain.
+		ctx.WaitForUploads();
 		return nullptr;
 	};
 
@@ -1052,6 +1075,21 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		lod.triCount = c.u32();
 		lod.acmr = c.f32();
 		const uint32_t lmChunk = c.u32();
+		const uint32_t lmXformCount = c.u32();
+		std::vector<glm::vec4> lmXforms;
+		if (!c.ok || lmXformCount > 1024 * 1024)
+			return fail("truncated/corrupt mesh lightmap transforms: " + e->path);
+		lmXforms.reserve(lmXformCount);
+		for (uint32_t i = 0; i < lmXformCount; ++i) {
+			glm::vec4 xf;
+			xf.x = c.f32();
+			xf.y = c.f32();
+			xf.z = c.f32();
+			xf.w = c.f32();
+			if (!c.ok)
+				return fail("truncated mesh lightmap transforms: " + e->path);
+			lmXforms.push_back(xf);
+		}
 		if (!c.ok)
 			return fail("truncated mesh metadata: " + e->path);
 		// Vertex payload: the CURRENT StaticVertex layout, strict. Paks are
@@ -1129,6 +1167,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		if (StaticMesh* m = cluster->staticMeshes.get(h)) {
 			m->geometry.sphereRadius = sphere;
 			m->lmChunk = lmChunk;
+			m->lmChartXforms = std::move(lmXforms);
 			if (!cooked.empty())
 				m->meshlets = std::move(cooked);
 		}

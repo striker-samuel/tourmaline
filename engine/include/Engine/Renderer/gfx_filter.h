@@ -105,7 +105,15 @@ struct ClusterConstants {
 };
 static_assert(sizeof(ClusterConstants) == 32);
 
-// Per-draw frame entry. Must match HLSL GfxDraw (80 bytes).
+// Chart atlas transform: xy = scale, zw = offset, so atlasUv =
+// chartUv * xy + zw. One entry per (mesh chart), concatenated scene-wide
+// sorted by mesh then chart; each draw's lmChartOffset is its mesh's base.
+struct LmChartXform {
+	glm::vec4 scaleOffset{ 0.0f }; // xy scale, zw offset
+};
+static_assert(sizeof(LmChartXform) == 16);
+
+// Per-draw frame entry. Must match HLSL GfxDraw (96 bytes).
 struct alignas(16) Draw {
 	glm::mat4 model{};
 	uint32_t mesh = 0;
@@ -115,8 +123,14 @@ struct alignas(16) Draw {
 	// mesh with --lightmap; the filtered VS passes it flat to the lit
 	// fragment (static/dynamic GI separation).
 	uint32_t lmChunk = 0xFFFFFFFFu;
+	// Base offset into the scene-wide chart transform buffer for this
+	// draw's mesh (HLSL GfxDraw.misc2.x). The filtered VS resolves the
+	// atlas UV as chartUv * xform[lmChartOffset + chartId].xy/zw.
+	// 0 when the mesh carries no lightmap.
+	uint32_t lmChartOffset = 0;
+	uint32_t pad[2] = {};
 };
-static_assert(sizeof(Draw) == 80);
+static_assert(sizeof(Draw) == 96);
 
 // GPU batch entry (1x uvec4): cluster + draw + reserved output slot.
 struct Batch {
@@ -160,19 +174,41 @@ struct FilterPush {
 };
 static_assert(sizeof(FilterPush) == 200);
 
-// Filtered-path VS tail push (gfxfiltered.vert.hlsl, 24 bytes).
+// Filtered-path VS tail push (gfxfiltered.vert.hlsl, 32 bytes).
 // Pushed at kFilteredVsPushOffset (the main pass' unused prevModel scratch,
-// bytes 192..216) so the full 256B scene push stays intact for the fragment
+// bytes 192..224) so the full 256B scene push stays intact for the fragment
 // shader. The VS resolves viewProj through the render-view slab; the
-// per-draw lightmap chunk rides GfxDraw.misc.w (no table needed).
+// per-draw lightmap chunk rides GfxDraw.misc.w, and the chart atlas
+// transforms ride the lmXforms buffer (indexed by GfxDraw.misc2.x +
+// the vertex chart id).
 static constexpr uint32_t kFilteredVsPushOffset = 192;
 struct FilteredVsPush {
 	uint64_t draws = 0;
 	uint64_t renderViews = 0;
 	uint32_t renderViewIndex = 0;
 	uint32_t pad = 0;
+	// BDA of the chart transform buffer (0 = none). Trailing so the
+	// 24B prefix stays byte-identical to the motion VS tail
+	// (FilteredMotionPush reads draws/renderViews/renderViewIndex from
+	// 192..216 and its own FrameUniforms BDA at 216, which simply
+	// overwrites this field the motion VS never declares).
+	uint64_t lmXforms = 0;
 };
-static_assert(sizeof(FilteredVsPush) == 24);
+static_assert(sizeof(FilteredVsPush) == 32);
+
+// Per-mesh chart tail for direct-path vertex shaders (uvflat1.vert.hlsl,
+// default.vert.hlsl — 16 bytes). Pushed at kUvFlatVsPushOffset (the scene
+// push's unused prevModel scratch, bytes 192..208) per mesh. Zeroed
+// scratch reads hasXforms == 0 and selects the raw chart-uv passthrough,
+// so passes that never push a tail need no handling; chartOffset is the
+// mesh's base into the lmXforms table. Must match the HLSL tail structs.
+static constexpr uint32_t kUvFlatVsPushOffset = 192;
+struct UvFlatVsPushTail {
+	uint32_t hasXforms = 0;
+	uint32_t chartOffset = 0;
+	uint64_t lmXforms = 0;
+};
+static_assert(sizeof(UvFlatVsPushTail) == 16);
 
 // One indirect command range per material (commands sorted by material).
 struct MaterialRange {
@@ -200,6 +236,7 @@ struct DrawRequest {
 	DrawFlags flags = 0;
 	DrawSetMask drawSet = DrawSetBit_Opaque;
 	uint32_t lmChunk = 0xFFFFFFFFu; // rides the draw ring (misc.w)
+	uint32_t lmChartOffset = 0; // base into the chart transform buffer (misc2.x)
 };
 
 struct Cluster {
@@ -631,7 +668,7 @@ uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	const glm::mat4& model, uint32_t material, DrawFlags flags = 0,
 	DrawSetMask drawSet = DrawSetBit_Opaque,
-	uint32_t lmChunk = 0xFFFFFFFFu);
+	uint32_t lmChunk = 0xFFFFFFFFu, uint32_t lmChartOffset = 0);
 // Pure-CPU cluster test (meshoptimizer perspective cone + sphere vs planes).
 // Exported for unit tests; eye must be the camera world position.
 // twoSided skips the normal-cone (backface) part; the sphere-vs-frustum

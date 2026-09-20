@@ -90,13 +90,15 @@ void EditorApp::EnsureLightmapExportTarget(smvk::Extent2D extent) {
 }
 
 void EditorApp::RecordLightmapExportPass(uint32_t flight) {
-	// The export draws through the flat lightmap program; its FS samples
-	// frame.lmLayers[0], so any viewport frame slice works (they all
-	// carry the atlas layers). Wireframe rides the line program through
-	// an identity viewProj (wires are in NDC space).
+	// The export draws through the flat lightmap program — baked content,
+	// or the UV-coordinate QA program (same VS, uv-as-color FS). The
+	// content FS samples frame.lmLayers[0], so any viewport frame slice
+	// works (they all carry the atlas layers). Wireframe rides the line
+	// program through an identity viewProj (wires are in NDC space).
 	if (m_lmExportLogical.empty() || !m_lmGpu || !m_world)
 		return;
-	smvk::ShaderProgram& prog = FlatUvProgram(ViewMode::FlatUv1);
+	smvk::ShaderProgram& prog = m_lmExportUv
+		? FlatUvCoordProgram() : FlatUvProgram(ViewMode::FlatUv1);
 	if (prog.shaderCount != 2)
 		return;
 	const smvk::Extent2D extent = m_lmExportExtent;
@@ -145,10 +147,17 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
 				smvk::BufferType_Vertex, "editor lm export wires");
 			m_lmExportLinesCap = uint32_t(wires.size());
 		}
+		// Draw count is the CURRENT export's vertex count, not the
+		// high-water cap: a smaller later export must not replay the
+		// previous buffer's stale tail.
+		m_lmExportLinesCount = uint32_t(wires.size());
 		if (!m_lmExportLines.empty())
 			m_context->UploadDataToBuffer(m_lmExportLines, wires.data(),
 				bytes, smvk::PipelineStageBit_Vertex,
 				smvk::AccessFlags::VertexAttributeRead);
+	}
+	else {
+		m_lmExportLinesCount = 0;
 	}
 
 	auto& pass = m_rendergraph->AddPass("LmExport")
@@ -163,8 +172,10 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
 	pass.SetRecordingFunc([this, pc, drawWires](smvk::CommandBuffer& cmd) {
 		// Fill: every BAKED mesh unwrapped by its atlas uv2 over the
 		// lightmap content (no selection filter — the export is the full
-		// atlas artifact).
-		smvk::ShaderProgram& prog = FlatUvProgram(ViewMode::FlatUv1);
+		// atlas artifact), or the same layout with the atlas uv itself
+		// as content (UV-coordinate QA mode).
+		smvk::ShaderProgram& prog = m_lmExportUv
+			? FlatUvCoordProgram() : FlatUvProgram(ViewMode::FlatUv1);
 		const smvk::VertexFormat fmt =
 			HasDrawItems() ? smvk::VertexFormat::StaticVertexFormat
 			: smvk::VertexFormat::Empty;
@@ -190,13 +201,21 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
 				uint32_t matId = item.material;
 				cmd.PushConstants(offsetof(app::PushConstants, materialId),
 					sizeof(matId), &matId, smvk::ShaderStage::All);
+				// Per-mesh chart tail (same unpack as the flat panel).
+				smvk::gfx::UvFlatVsPushTail tail{};
+				tail.hasXforms = 1;
+				tail.chartOffset = m_world->ChartOffsetFor(item.mesh, 0);
+				tail.lmXforms = EnsureChartXforms();
+				cmd.PushConstants(smvk::gfx::kUvFlatVsPushOffset,
+					sizeof(tail), &tail, smvk::ShaderStage::All);
 				for (const auto& s : mesh->geometry.surfaces)
 					cmd.DrawIndexed(s.indexCount, 1, s.firstIndex,
 						s.baseVertex);
 			});
 		// Wireframe overlay: shell edges in NDC space through the
 		// identity projection, depth-tested over the fill.
-		if (!drawWires || m_lmExportLines.empty())
+		if (!drawWires || m_lmExportLines.empty()
+			|| m_lmExportLinesCount == 0)
 			return;
 		cmd.BindRenderPipeline(m_lineProgram,
 			smvk::VertexFormat::DebugLine,
@@ -216,7 +235,7 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
 		lp.color[2] = 0.6f;
 		lp.color[3] = 1.0f;
 		cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
-		cmd.Draw(uint32_t(m_lmExportLinesCap), 1, 0, 0);
+		cmd.Draw(m_lmExportLinesCount, 1, 0, 0);
 	});
 }
 
@@ -241,8 +260,9 @@ void EditorApp::ExportLightmapPng() {
 		stem = std::filesystem::path(m_sglmPath).stem().string();
 	else if (!m_pakPath.empty())
 		stem = std::filesystem::path(m_pakPath).stem().string();
-	const std::string path = "exports/" + stem +
-		(m_lmExportWires ? "_wire" : "") + ".png";
+	const std::string path = "exports/" + stem
+		+ (m_lmExportUv ? "_uv" : "")
+		+ (m_lmExportWires ? "_wire" : "") + ".png";
 	// stb_image_write is compiled in editor_branding.cpp.
 	if (!stbi_write_png(path.c_str(), int(m_lmExportExtent.width),
 			int(m_lmExportExtent.height), 4, px.data(),
@@ -253,6 +273,7 @@ void EditorApp::ExportLightmapPng() {
 	Log("Lightmap exported: " + path + " (" +
 		std::to_string(m_lmExportExtent.width) + "x" +
 		std::to_string(m_lmExportExtent.height) +
+		(m_lmExportUv ? ", uv coords" : ", baked content") +
 		(m_lmExportWires ? ", wireframe" : ", no wireframe") + ")");
 }
 

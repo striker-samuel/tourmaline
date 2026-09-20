@@ -1,18 +1,19 @@
 // UV debug view body, shared by default_uv0_debug.frag.hlsl (base UV,
-// TEXCOORD0) and default_uv1_debug.frag.hlsl (lightmap atlas UV, uv2).
-// UVDBG_CHANNEL must be defined by the including entry file.
+// TEXCOORD0) and default_uv1_debug.frag.hlsl (lightmap atlas UV: chart
+// uv + chart id, unpacked in the VS). UVDBG_CHANNEL must be defined by
+// the including entry file.
 //
 // Displays the selected UV stream as a 16x16 checker + gradient tint so
-// continuity, orientation, tiling and (for uv2) chart-island layout read
-// at a glance:
+// continuity, orientation, tiling and (channel 1) chart-island layout
+// read at a glance:
 //   - checker + red/green uv gradient: base pattern;
 //   - thin grid lines: cell borders (fwidth AA);
 //   - magenta glow: |duv| screen-derivative — a triangle sweeping a huge
-//     uv extent (e.g. a lightmap seam corner interpolated across two
-//     atlas rects) lights up as a neon streak even where the checker
-//     aliases into a plausible pattern;
-//   - channel 1 only: uv outside [0,1] stripes magenta/black (atlas-space
-//     uv2 is UNORM-packed and must stay in range).
+//     uv extent (e.g. a chart corner landing in the wrong atlas rect)
+//     lights up as a neon streak even where the checker aliases into a
+//     plausible pattern;
+//   - channel 1 only: uv outside [0,1] stripes magenta/black (atlas uvs
+//     must stay in range; chart uvs are UNORM-packed).
 // Pairs with default.vert.hlsl (same PSIn as default_lit). Alpha cutout +
 // dithered Blend discard match the lit path so silhouettes agree.
 //

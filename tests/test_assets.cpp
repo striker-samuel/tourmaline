@@ -350,10 +350,12 @@ smvk::StaticMeshUpload MakeQuad() {
 
 // 3x3 vertex grid on z=0 (4 quads, 8 triangles): left quads chart 0,
 // right quads chart 1, seam column x=1 duplicated per chart with
-// DIFFERENT atlas uv2 (position-identical, like the bake's per-corner
-// stamping). uv2 is affine in position per chart — the exact case where
-// simplified triangles reuse LOD0's parameterization without error.
-// chartOf receives one chart id per vertex (parallel to the vertices).
+// DIFFERENT chart-local uvs (position-identical, like the bake's
+// per-corner stamping). Chart uvs are affine in position per chart —
+// the exact case where simplified triangles reuse LOD0's
+// parameterization without error. chartOf receives one chart id per
+// vertex (parallel to the vertices); each vertex also carries its id
+// in chartId, like a stamped cook upload.
 smvk::StaticMeshUpload MakeTwoChartGrid(std::vector<uint32_t>& chartOf) {
 	chartOf.clear();
 	smvk::StaticMeshUpload u;
@@ -365,6 +367,7 @@ smvk::StaticMeshUpload MakeTwoChartGrid(std::vector<uint32_t>& chartOf) {
 		v.texCoord2 = { cu, cv };
 		v.normal = { 0, 0, 1 };
 		v.tangent = { 1, 0, 0, 1 };
+		v.chartId = chart;
 		chartOf.push_back(chart);
 		u.vertices.push_back(v);
 	};
@@ -823,38 +826,42 @@ void TestLodLightmapAudit() {
 	Check(BuildLodChainForUpload(grid, cfg, chain, false, chartOf.data()),
 		"lmlod.chain.ok");
 	Check(chain.size() == 1, "lmlod.chain.kept");
+	// Identity chart transforms (chart-local == atlas) for the audit:
+	// one entry per chart of the grid.
+	const std::vector<glm::vec4> gridXforms = {
+		{ 1.0f, 1.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 0.0f, 0.0f } };
 	if (!chain.empty()) {
-		// Affine-in-position uv2 within one chart: the simplified
+		// Affine-in-position chart uvs within one chart: the simplified
 		// triangles reuse LOD0's parameterization exactly, so the
 		// projection audit reports ~0 texel drift and no cross-chart
 		// triangle can exist (chart attributes blocked the seam twins).
 		Check(chain[0].triCount < 8, "lmlod.chain.reduced");
 		LodLightmapAuditReport rep;
 		Check(AuditLodLightmap(grid, chain[0].upload, glm::mat4(1.0f),
-			512, 512, 8.0f, 0.5f, 1024, rep), "lmlod.audit.ran");
+			gridXforms, 512, 512, 8.0f, 0.5f, 1024, rep), "lmlod.audit.ran");
 		Check(rep.samples > 0, "lmlod.audit.samples");
 		Check(rep.unresolved == 0, "lmlod.audit.resolved");
 		Check(rep.crossChartTris == 0, "lmlod.audit.nocross");
 		Check(rep.maxTexels < 1.0f, "lmlod.audit.affine");
 	}
 
-	// Wrong parameterization: same geometry, v-flipped uv2 — the audit
-	// must see large texel drift (this is the regression detector for
-	// "siblings with garbage uv2").
+	// Wrong parameterization: same geometry, v-flipped chart uvs — the
+	// audit must see large texel drift (this is the regression detector
+	// for "siblings with garbage chart uvs").
 	{
 		auto bad = grid;
 		for (auto& v : bad.vertices)
 			v.texCoord2.y = 0.95f - v.texCoord2.y;
 		LodLightmapAuditReport rep;
 		Check(AuditLodLightmap(grid, bad, glm::mat4(1.0f),
-			512, 512, 8.0f, 0.5f, 1024, rep), "lmlod.audit.bad.ran");
+			gridXforms, 512, 512, 8.0f, 0.5f, 1024, rep), "lmlod.audit.bad.ran");
 		Check(rep.samples > 0 && rep.maxTexels > 100.0f,
 			"lmlod.audit.detects.drift");
 	}
 
 	// Cross-chart triangle: one quad mixing both charts (the
 	// catastrophic atlas-smear shape) — counted on every triangle, no
-	// projection needed.
+	// projection needed (chart-id mismatch flags it).
 	{
 		smvk::StaticMeshUpload mix;
 		mix.vertices = { grid.vertices[0], grid.vertices[9],
@@ -865,7 +872,7 @@ void TestLodLightmapAudit() {
 		mix.surfaces.push_back({ 0, 6, 0 });
 		LodLightmapAuditReport rep;
 		Check(AuditLodLightmap(grid, mix, glm::mat4(1.0f),
-			512, 512, 8.0f, 0.5f, 1024, rep), "lmlod.audit.mix.ran");
+			gridXforms, 512, 512, 8.0f, 0.5f, 1024, rep), "lmlod.audit.mix.ran");
 		Check(rep.crossChartTris == 2, "lmlod.audit.crosschart");
 	}
 }
@@ -885,8 +892,10 @@ void TestCookLodSiblingsLightmap() {
 		lod0.triCount = 8;
 		cluster->RegisterMeshLod(uri, lod0);
 	}
-	// Fake a stamped bake: lobe count on the mesh.
+	// Fake a stamped bake: lobe count + chart transforms on the mesh.
 	cluster->staticMeshes.get(mh)->lmChunk = 9;
+	cluster->staticMeshes.get(mh)->lmChartXforms = {
+		{ 1.0f, 1.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 0.0f, 0.0f } };
 	// Node + opaque material (Blend/MASK would divert to the coverage
 	// path, which is never lightmapped).
 	MaterialCreateInfo ci{};
@@ -924,15 +933,25 @@ void TestCookLodSiblingsLightmap() {
 	if (sibH) {
 		const StaticMesh* sib = cluster->staticMeshes.get(*sibH);
 		Check(sib && sib->lmChunk == 9, "lmlod.sib.lmchunk");
+		Check(sib && sib->lmChartXforms.size() == 2, "lmlod.sib.xforms");
 		const StaticMeshUpload* up = cluster->GetRetainedUpload(*sibH);
 		Check(up && !up->indices.empty(), "lmlod.sib.retained");
 		bool spansOk = true;
+		bool chartsOk = true;
 		bool anyUv = false;
 		if (up) {
 			for (size_t t = 0; t + 2 < up->indices.size() / 3; ++t) {
-				const glm::vec2& a = up->vertices[up->indices[t * 3 + 0]].texCoord2;
-				const glm::vec2& b = up->vertices[up->indices[t * 3 + 1]].texCoord2;
-				const glm::vec2& c = up->vertices[up->indices[t * 3 + 2]].texCoord2;
+				const StaticVertex& va = up->vertices[up->indices[t * 3 + 0]];
+				const StaticVertex& vb = up->vertices[up->indices[t * 3 + 1]];
+				const StaticVertex& vc = up->vertices[up->indices[t * 3 + 2]];
+				// Core invariant: no sibling triangle mixes charts.
+				if (va.chartId != vb.chartId || va.chartId != vc.chartId) {
+					chartsOk = false;
+					break;
+				}
+				const glm::vec2& a = va.texCoord2;
+				const glm::vec2& b = vb.texCoord2;
+				const glm::vec2& c = vc.texCoord2;
 				const float span = std::max({
 					std::abs(a.x - b.x) + std::abs(a.y - b.y),
 					std::abs(a.x - c.x) + std::abs(a.y - c.y),
@@ -949,7 +968,7 @@ void TestCookLodSiblingsLightmap() {
 				}
 			}
 		}
-		// The core invariant: no sibling triangle mixes charts.
+		Check(chartsOk, "lmlod.sib.nochartmix");
 		Check(spansOk, "lmlod.sib.nocrosschart");
 		Check(anyUv, "lmlod.sib.uv2carried");
 	}
@@ -977,6 +996,100 @@ void TestCookLodSiblingsLightmap() {
 		const StaticMesh* sib2 = cluster->staticMeshes.get(*sib2H);
 		Check(sib2 && sib2->lmChunk == 0xFFFFFFFFu, "lmlod.unlit.nolmchunk");
 	}
+}
+
+void TestLightmapChartTable() {
+	using namespace smvk;
+	// Scene-wide chart transform table (headless: cook cluster
+	// registered with a World, no GPU involved). Mesh A carries 2
+	// charts, mesh B 1 chart, mesh C is unbaked (contributes nothing).
+	auto cluster = std::make_unique<Cluster>(nullptr);
+	cluster->SetCookMode(true);
+	std::vector<uint32_t> chartOf;
+	auto gridA = MakeTwoChartGrid(chartOf);
+	const auto mhA = cluster->UploadStaticMesh(gridA);
+	cluster->RegisterMeshUri("models/lm.gltf#mesh.0/prim.0", mhA);
+	cluster->staticMeshes.get(mhA)->lmChunk = 9;
+	const std::vector<glm::vec4> xformsA = {
+		{ 0.5f, 0.5f, 0.0f, 0.0f }, { 0.5f, 0.5f, 0.5f, 0.0f } };
+	cluster->staticMeshes.get(mhA)->lmChartXforms = xformsA;
+	auto gridB = MakeQuad();
+	const auto mhB = cluster->UploadStaticMesh(gridB);
+	cluster->RegisterMeshUri("models/lm.gltf#mesh.1/prim.0", mhB);
+	cluster->staticMeshes.get(mhB)->lmChunk = 5;
+	const std::vector<glm::vec4> xformsB = {
+		{ 0.25f, 0.25f, 0.25f, 0.5f } };
+	cluster->staticMeshes.get(mhB)->lmChartXforms = xformsB;
+	auto gridC = MakeQuad();
+	const auto mhC = cluster->UploadStaticMesh(gridC);
+	cluster->RegisterMeshUri("models/lm.gltf#mesh.2/prim.0", mhC);
+	MaterialCreateInfo ci{};
+	const auto matH = cluster->CreateMaterial(ci);
+	const int root = addNode(cluster->scene, -1, 0);
+	const int nA = addNode(cluster->scene, root, 1);
+	const int nB = addNode(cluster->scene, root, 1);
+	const int nC = addNode(cluster->scene, root, 1);
+	cluster->scene.meshForNode[nA] = mhA.index();
+	cluster->scene.meshForNode[nB] = mhB.index();
+	cluster->scene.meshForNode[nC] = mhC.index();
+	cluster->scene.materialForNode[nA] = matH.index();
+	cluster->scene.materialForNode[nB] = matH.index();
+	cluster->scene.materialForNode[nC] = matH.index();
+	markAsChanged(cluster->scene, root);
+	recalculateGlobalTransforms(cluster->scene);
+
+	World world;
+	world.RegisterCluster(std::move(cluster));
+	world.ResolveAndFixup_clusters();
+	Check(world.meshLocations.size() == 3, "lmchart.meshes");
+	// World mesh indices follow unordered_map iteration order — look
+	// them up by pool handle.
+	auto worldIndexOf = [&](uint32_t poolIdx) -> uint32_t {
+		for (uint32_t i = 0; i < (uint32_t)world.meshLocations.size(); ++i)
+			if (world.meshLocations[i].handle.index() == poolIdx)
+				return i;
+		return 0xFFFFFFFFu;
+	};
+	const uint32_t wiA = worldIndexOf(mhA.index());
+	const uint32_t wiB = worldIndexOf(mhB.index());
+	const uint32_t wiC = worldIndexOf(mhC.index());
+	Check(wiA != 0xFFFFFFFFu && wiB != 0xFFFFFFFFu
+		&& wiC != 0xFFFFFFFFu, "lmchart.lookup");
+	if (wiA == 0xFFFFFFFFu || wiB == 0xFFFFFFFFu || wiC == 0xFFFFFFFFu)
+		return;
+	// Table holds exactly the baked charts (2 + 1), each mesh's entries
+	// in chart order at its own base.
+	Check(world.lmChartTable.size() == 3, "lmchart.count");
+	const uint32_t baseA = world.ChartOffsetFor(wiA, 0);
+	const uint32_t baseB = world.ChartOffsetFor(wiB, 0);
+	const uint32_t baseC = world.ChartOffsetFor(wiC, 0);
+	Check(baseC == 0, "lmchart.unlit.zero");
+	Check(baseA + 2 <= 3 && baseB + 1 <= 3, "lmchart.bounds");
+	Check(baseA != baseB, "lmchart.distinct");
+	bool tableOk = world.lmChartTable.size() == 3;
+	for (size_t i = 0; tableOk && i < xformsA.size(); ++i)
+		tableOk = tableOk && world.lmChartTable[baseA + i] == xformsA[i];
+	for (size_t i = 0; tableOk && i < xformsB.size(); ++i)
+		tableOk = tableOk && world.lmChartTable[baseB + i] == xformsB[i];
+	Check(tableOk, "lmchart.layout");
+	// CPU mirror of the VS unpack (atlasUv = chartUv * xy + zw) lands
+	// inside the owning chart's rect for a stamped vertex.
+	{
+		const StaticVertex& v = gridA.vertices[6]; // chart 1 corner
+		const glm::vec4& xf = world.lmChartTable[baseA + v.chartId];
+		const glm::vec2 atlas = v.texCoord2 * glm::vec2(xf.x, xf.y)
+			+ glm::vec2(xf.z, xf.w);
+		Check(v.chartId == 1, "lmchart.vert.chart");
+		Check(atlas.x >= 0.5f && atlas.x <= 1.0f
+			&& atlas.y >= 0.0f && atlas.y <= 0.5f, "lmchart.vert.rect");
+	}
+	// Out-of-range probes resolve 0; a re-resolve bumps the version.
+	Check(world.ChartOffsetFor(wiA, 7) == baseA, "lmchart.lod.oob");
+	Check(world.ChartOffsetFor(9999, 0) == 0, "lmchart.mesh.oob");
+	const uint64_t v0 = world.lmChartVersion;
+	world.ResolveAndFixup_clusters();
+	Check(world.lmChartVersion != v0, "lmchart.version");
+	Check(world.ChartOffsetFor(wiA, 0) == baseA, "lmchart.stable");
 }
 
 void TestClusterSerializeCook() {
@@ -1162,8 +1275,8 @@ void TestClusterSerializeCook() {
 		reader->Payload(*meshes[0]).size() ==
 			4 * sizeof(StaticVertex) + 6 * sizeof(uint32_t) + (0u /*header*/) +
 			// header: uri len+bytes, counts, surfaces(0), aabb, sphere,
-			// topo, lod (7 fields), lmChunk
-			4 + meshUri.size() + 4 + 4 + 4 + 0 + 24 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 +
+			// topo, lod (7 fields), lmChunk, chartXformCount (0 here)
+			4 + meshUri.size() + 4 + 4 + 4 + 0 + 24 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 +
 			// trailing meshlet section (v2, empty here): count + verts + tris
 			4 + 4 + 4,
 		"cook.pak.mesh.payload");
@@ -1291,15 +1404,17 @@ void TestVertexPack() {
 	using namespace smvk;
 	using namespace smvk::vertexpack;
 
-	// Packed shading stream: 20 bytes, fixed member offsets (the Vulkan
+	// Packed shading stream: 24 bytes, fixed member offsets (the Vulkan
 	// attribute table in mesh.h mirrors these: location 2 fetches uv as
-	// RG16_Float, location 5 fetches uv2 as RG16_UNorm).
-	Check(sizeof(VertexShading) == 20, "vpack.sizeof");
+	// RG16_Float, location 5 fetches chartUv as RG16_UNorm, location 6
+	// fetches chart as R32_UInt).
+	Check(sizeof(VertexShading) == 24, "vpack.sizeof");
 	Check(offsetof(VertexShading, color) == 0 &&
 		offsetof(VertexShading, uv) == 4 &&
-		offsetof(VertexShading, uv2) == 8 &&
+		offsetof(VertexShading, chartUv) == 8 &&
 		offsetof(VertexShading, normal) == 12 &&
-		offsetof(VertexShading, tangent) == 16, "vpack.offsets");
+		offsetof(VertexShading, tangent) == 16 &&
+		offsetof(VertexShading, chart) == 20, "vpack.offsets");
 
 	// Normal oct round-trip: axes, diagonals, skewed, degenerate zero.
 	const glm::vec3 normalCases[] = {
@@ -1516,6 +1631,7 @@ int main() {
 	TestLodSelection();
 	TestLodLightmapAudit();
 	TestCookLodSiblingsLightmap();
+	TestLightmapChartTable();
 	TestVertexPack();
 	TestClusterSerializeCook();
 	TestMultiSceneSerialize();

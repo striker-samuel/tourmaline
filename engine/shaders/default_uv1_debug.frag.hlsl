@@ -1,6 +1,7 @@
-// UV debug view, channel 1 (F10): the lightmap-atlas UV stream (uv2 /
-// TEXCOORD1, cooked by PakCooker --lightmap) as a checker + gradient +
-// derivative glow. Chart-island layout, gutter bleed and seam-corner
-// streaks (triangles interpolating across two atlas rects) read directly.
+// UV debug view, channel 1 (F10): the lightmap UV (chart-local TEXCOORD1
+// + chart id, unpacked to atlas space by the filtered VS via the
+// per-draw chart offset) as a checker + gradient + derivative glow.
+// Chart-island layout, gutter bleed and seam-corner streaks read
+// directly on the filtered path; the direct path shows chart space.
 #define UVDBG_CHANNEL 1
 #include "default_uv_debug.hlsli"

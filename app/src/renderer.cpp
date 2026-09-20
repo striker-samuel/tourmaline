@@ -725,6 +725,9 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 		flags, extent.width, extent.height);
 	if (slot == UINT32_MAX)
 		return UINT32_MAX;
+	// Chart transform table for the filtered VS unpack (uploaded once per
+	// scene version; PushViewConstants reads the cached BDA below).
+	EnsureChartXforms(world, ctx);
 
 	SMVK_PROFILE_SCOPE("GfxFilterPushDraws");
 	world.forEachRenderItem(
@@ -864,17 +867,19 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 		}
 		// Lightmap chunk rides the draw: resolved from the SELECTED LOD
 		// sibling, whose own texCoord2 addresses its own atlas rects.
-		// Shared-UV cooks stamp every sibling with LOD0's parameterization
-		// (same count everywhere); per-LOD atlas cooks (--lm-charts
-		// xatlas) bake each level's own rects and the bake may keep a
-		// lower count per sibling — both ride here per mesh, so the draw
-		// always pairs a level's geometry with its own count. GetLodMesh
+		// The frostbite cook transfers LOD0's parameterization to every
+		// sibling (same count everywhere), so each level pairs its own
+		// geometry with its own count here. GetLodMesh
 		// falls back to LOD0 for missing siblings. Unlightmapped meshes
 		// carry 0xFFFFFFFF and the FS falls back to probe/grid ambient.
 		if (const smvk::StaticMesh* mesh = world.GetLodMesh(worldMesh, lodIdx))
 			lmChunk = mesh->lmChunk;
+		// Per-draw chart offset: base into the scene-wide transform
+		// table for the SELECTED LOD sibling (each level owns its chart
+		// list; unlightmapped meshes resolve 0 and gate on lmChunk).
+		const uint32_t chartOffset = world.ChartOffsetFor(worldMesh, lodIdx);
 		smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
-			item.material, drawFlags, drawSet, lmChunk);
+			item.material, drawFlags, drawSet, lmChunk, chartOffset);
 	});
 	const smvk::gfx::Stats stats = smvk::gfx::FinalizeView(gfx, ctx, frameIndex, slot);
 	// NOTE: unconditional (not SMVK_DEBUG_LOG): this is the only per-run
@@ -907,12 +912,38 @@ smvk::RenderPass& GfxRenderer::AddFilterPass(smvk::RenderGraph& rg, uint32_t slo
 	return smvk::gfx::AddFilterPass(gfx, rg, slot);
 }
 
+uint64_t GfxRenderer::EnsureChartXforms(smvk::World& world,
+	smvk::ResourceManager& ctx) {
+	if (world.lmChartVersion == lmXformsVersion_ && !lmXformsBuf_.empty())
+		return lmXformsAddr_;
+	lmXformsVersion_ = world.lmChartVersion;
+	const size_t count = std::max<size_t>(world.lmChartTable.size(), 1);
+	const size_t bytes = count * sizeof(glm::vec4);
+	if (lmXformsBuf_.empty() || lmXformsCap_ < bytes) {
+		lmXformsBuf_ = ctx.CreateBuffer(bytes,
+			smvk::BufferType_Storage, "lm chart xforms");
+		lmXformsCap_ = bytes;
+	}
+	if (lmXformsBuf_.empty()) {
+		lmXformsAddr_ = 0;
+		return 0;
+	}
+	if (!world.lmChartTable.empty()) {
+		ctx.UploadDataToBuffer(lmXformsBuf_, world.lmChartTable.data(), bytes,
+			smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
+			smvk::AccessFlags::ShaderRead);
+	}
+	lmXformsAddr_ = ctx.GetBufferDeviceAddress(lmXformsBuf_);
+	return lmXformsAddr_;
+}
+
 void GfxRenderer::PushViewConstants(smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 	uint32_t slot, uint64_t renderViewsAddr, uint32_t renderViewIndex) {
 	smvk::gfx::FilteredVsPush tail{};
 	tail.draws = ctx.GetBufferDeviceAddress(smvk::gfx::DrawBuffer(gfx, slot));
 	tail.renderViews = renderViewsAddr;
 	tail.renderViewIndex = renderViewIndex;
+	tail.lmXforms = lmXformsAddr_;
 	cmd.PushConstants(smvk::gfx::kFilteredVsPushOffset, sizeof(tail), &tail,
 		smvk::ShaderStage::All);
 }

@@ -446,6 +446,7 @@ namespace smvk {
 			itemFlags.push_back(item.flags);
 
 		RebuildLodChains();
+		RebuildLightmapChartTable();
 		RebuildStaticBvh();
 		dirtyCull = true;
 	}
@@ -648,6 +649,56 @@ namespace smvk {
 			errors[i] = chain.levels[i].error;
 		return SelectLodIndexForDistance(errors, n, distance,
 			viewportHeightPx, fovYRadians, maxPixelError);
+	}
+
+	// Scene-wide lightmap chart transform table: every StaticMesh's
+	// lmChartXforms concatenated in first-seen order over meshLocations
+	// (LOD0) then LOD siblings, so the layout is sorted by world mesh
+	// index, then LOD level, then chart index. Meshes without a lightmap
+	// contribute nothing (their draws gate on lmChunk anyway).
+	void World::RebuildLightmapChartTable() {
+		lmChartTable.clear();
+		lmChartBase_.clear();
+		auto appendMesh = [&](const MeshLocation& loc) {
+			if (loc.cluster == nullptr || !loc.handle.valid())
+				return;
+			const LmChartKey key{ loc.cluster, loc.handle.index() };
+			if (lmChartBase_.contains(key))
+				return; // already appended (LOD0 == chain level 0)
+			const StaticMesh* m = loc.cluster->staticMeshes.get(loc.handle);
+			if (!m || m->lmChartXforms.empty()
+				|| m->lmChunk == 0xFFFFFFFFu)
+				return;
+			lmChartBase_.emplace(key,
+				static_cast<uint32_t>(lmChartTable.size()));
+			lmChartTable.insert(lmChartTable.end(),
+				m->lmChartXforms.begin(), m->lmChartXforms.end());
+		};
+		for (uint32_t i = 0; i < (uint32_t)meshLocations.size(); ++i)
+			appendMesh(meshLocations[i]);
+		for (uint32_t i = 0; i < (uint32_t)lodChains.size(); ++i) {
+			for (const LodChain::Level& lv : lodChains[i].levels)
+				appendMesh(lv.mesh);
+		}
+		++lmChartVersion;
+	}
+
+	uint32_t World::ChartOffsetFor(MeshLocation loc) const {
+		if (loc.cluster == nullptr || !loc.handle.valid())
+			return 0;
+		const auto it = lmChartBase_.find(
+			LmChartKey{ loc.cluster, loc.handle.index() });
+		return it != lmChartBase_.end() ? it->second : 0;
+	}
+
+	uint32_t World::ChartOffsetFor(uint32_t meshIndex, uint32_t lodIndex) const {
+		EnsureLodChainsCached(*this);
+		if (meshIndex < lodChains.size()
+			&& lodIndex < lodChains[meshIndex].levels.size())
+			return ChartOffsetFor(lodChains[meshIndex].levels[lodIndex].mesh);
+		if (meshIndex < meshLocations.size())
+			return ChartOffsetFor(meshLocations[meshIndex]);
+		return 0;
 	}
 
 std::optional<World::MeshLocation> World::ResolveMeshAcrossClusters(

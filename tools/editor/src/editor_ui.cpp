@@ -1982,11 +1982,11 @@ void EditorApp::DrawCookPanel() {
 	if (ImGui::Checkbox("Lightmaps (bake)", &m_cook.lightmap))
 		cookTouched = true;
 	if (m_cook.lightmap) {
-		int dens = int(m_cook.lmDensity);
-		if (ImGui::SliderInt("Density (tex/m)", &dens, 2, 128)) {
-			m_cook.lmDensity = uint32_t(dens);
+		if (ImGui::SliderFloat("Texel size (m/texel)",
+				&m_cook.lmMetersPerTexel, 0.02f, 0.5f, "%.3f"))
 			cookTouched = true;
-		}
+		ImGui::SameLine();
+		ImGui::TextDisabled("(%.1f tex/m)", 1.0f / m_cook.lmMetersPerTexel);
 		int lobes = int(m_cook.lmLobes);
 		if (ImGui::SliderInt("Lobes", &lobes, 5, 12)) {
 			m_cook.lmLobes = uint32_t(lobes);
@@ -2065,24 +2065,34 @@ void EditorApp::DrawLightmapPanel() {
 			ImGui::TextDisabled("selected node %u: %u atlas rects",
 				m_selected, rects);
 		}
-		ImGui::TextDisabled("F10 = UV1 view (baked texCoord2)");
+		ImGui::TextDisabled("F10 = UV1 view (baked atlas uv: chart uv + id, unpacked in VS)");
 		if (m_lmGpu && ImGui::Button("Baked irradiance view (F8)"))
 			ActiveViewMode() = ViewMode::Baked;
 		// Flat lightmap PNG export (whole scene, atlas resolution).
 		ImGui::Separator();
 		ImGui::Checkbox("Export with UV wireframe", &m_lmExportWires);
-		ImGui::SetItemTooltip("Chart shell edges drawn over the baked "
-			"content (whole scene, atlas uv2 layout).");
+		ImGui::SetItemTooltip("Chart shell edges drawn over the export "
+			"(whole scene, atlas uv2 layout).");
+		ImGui::Checkbox("Export UV coordinates", &m_lmExportUv);
+		ImGui::SetItemTooltip("Render the atlas uv itself (checker + "
+			"gradient + stretch glow) instead of the baked content — "
+			"the QA view of the parameterization.");
 		if (!m_lmGpu)
 			ImGui::BeginDisabled();
-		if (ImGui::Button("Export lightmap PNG")) {
+		if (ImGui::Button(m_lmExportUv ? "Export UV coords PNG"
+			: "Export lightmap PNG")) {
 			m_lmExportQueued = true;
 			Log("Lightmap export queued: whole scene unwrapped by atlas "
-				"uv2" + std::string(m_lmExportWires ? " + wireframe" : "") +
-				" -> exports/<stem>.png");
+				"uv2 (" + std::string(m_lmExportUv ? "uv coords"
+					: "baked content")
+				+ std::string(m_lmExportWires ? " + wireframe" : "") +
+				") -> exports/<stem>.png");
 		}
 		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-			ImGui::SetItemTooltip("Whole scene unwrapped by its atlas uv2 "
+			ImGui::SetItemTooltip(m_lmExportUv
+				? "Whole scene unwrapped by its atlas uv2, uv rendered "
+				"as color, saved at atlas resolution."
+				: "Whole scene unwrapped by its atlas uv2 "
 				"over the baked content, saved at atlas resolution.");
 		if (!m_lmGpu) {
 			ImGui::EndDisabled();

@@ -266,6 +266,7 @@ uint32_t ResourceManager::GetGraphicsQueueFamily() {
     return smvk::GetVkGraphicsQueueFamily();
 }
 void ResourceManager::FlushUploads() { impl_->vulkan.FlushUploads(); }
+void ResourceManager::WaitForUploads() { impl_->vulkan.WaitForUploads(); }
 uint64_t ResourceManager::GetBufferDeviceAddress(BufferHandle handle) const {
     auto* buf = impl_->vulkan.buffers_.get(handle);
     if (!buf) return 0;

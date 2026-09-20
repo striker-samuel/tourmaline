@@ -140,6 +140,8 @@ void EditorApp::Shutdown() {
 	m_gizmoLines = {};
 	m_meshletIndices = {};
 	m_lmExportLines = {};
+	m_lmExportLinesCap = 0;
+	m_lmExportLinesCount = 0;
 	if (!m_lmExportLogical.empty()) {
 		m_rendergraph->FreeImageView(m_lmExportLogical);
 		m_lmExportLogical = {};
@@ -557,40 +559,70 @@ void EditorApp::ClearSglmLayers() {
 		l = {};
 	for (auto& s : m_lmLayerSlots)
 		s = UINT32_MAX;
+	m_lmLayerKind = 0;
 	m_lmGpu = false;
 }
 
 void EditorApp::UploadSglmLayers() {
-	// GPU mirror of the CPU atlas for the F8 baked-irradiance view:
-	// 9 RGBA16F layers via SgLightmapAtlas::PackGpuLayers (App parity).
-	// Without a device (pre-Initialize) the CPU atlas still serves the
-	// stats panel; the layers upload on the next LoadSglm instead.
+	// GPU mirror of the CPU atlas for the F8 baked-irradiance view (App
+	// parity): the sglm v3 BC6H payload uploads verbatim as one
+	// BC6H_UFloat texture per lobe (kind 1); v1/v2 files go through
+	// SgLightmapAtlas::PackGpuLayers into 9 RGBA16F stream layers
+	// (kind 0). Without a device (pre-Initialize) the CPU atlas still
+	// serves the stats panel; the layers upload on the next LoadSglm.
 	ClearSglmLayers();
 	if (!m_context || !m_hasSglm || m_sglm.chunks.empty() ||
 		m_sglm.width == 0 || m_sglm.height == 0)
 		return;
-	std::vector<uint16_t> layers[smvk::gi::kLightmapLayerCount];
-	m_sglm.PackGpuLayers(layers);
-	for (uint32_t t = 0; t < smvk::gi::kLightmapLayerCount; ++t) {
-		smvk::ImageCreateInfo ci{};
-		ci.extent = { m_sglm.width, m_sglm.height, 1 };
-		ci.format = smvk::Format::RGBA16_Float;
-		ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
-		ci.mipLevels = 1;
-		ci.arrayLayers = 1;
-		ci.name = "editor sglm atlas layer";
-		m_lmLayers[t] = m_context->CreateTexture(ci, layers[t].data());
-		if (m_lmLayers[t].empty()) {
-			Log("Lightmap GPU upload failed at layer " + std::to_string(t));
-			ClearSglmLayers();
-			return;
+	const bool bc6h = m_sglm.compression
+		!= smvk::gi::SgLightmapCompression::Uncompressed;
+	if (bc6h) {
+		const size_t blockBytes = size_t(m_sglm.width / 4)
+			* (m_sglm.height / 4) * 16;
+		for (uint32_t l = 0; l < m_sglm.bc6hLobes; ++l) {
+			smvk::ImageCreateInfo ci{};
+			ci.extent = { m_sglm.width, m_sglm.height, 1 };
+			ci.format = smvk::Format::BC6H_UFloat;
+			ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+			ci.mipLevels = 1;
+			ci.arrayLayers = 1;
+			ci.name = "editor sglm bc6h lobe";
+			m_lmLayers[l] = m_context->CreateTexture(ci,
+				m_sglm.bc6hBlocks.data() + size_t(l) * blockBytes);
+			if (m_lmLayers[l].empty()) {
+				Log("Lightmap BC6H upload failed at lobe " + std::to_string(l));
+				ClearSglmLayers();
+				return;
+			}
+			m_lmLayerSlots[l] = m_context->GetTextureBindlessIndex(m_lmLayers[l]);
 		}
-		m_lmLayerSlots[t] = m_context->GetTextureBindlessIndex(m_lmLayers[t]);
+		m_lmLayerKind = 1;
+	} else {
+		std::vector<uint16_t> layers[smvk::gi::kLightmapLayerCount];
+		m_sglm.PackGpuLayers(layers);
+		for (uint32_t t = 0; t < smvk::gi::kLightmapLayerCount; ++t) {
+			smvk::ImageCreateInfo ci{};
+			ci.extent = { m_sglm.width, m_sglm.height, 1 };
+			ci.format = smvk::Format::RGBA16_Float;
+			ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+			ci.mipLevels = 1;
+			ci.arrayLayers = 1;
+			ci.name = "editor sglm atlas layer";
+			m_lmLayers[t] = m_context->CreateTexture(ci, layers[t].data());
+			if (m_lmLayers[t].empty()) {
+				Log("Lightmap GPU upload failed at layer " + std::to_string(t));
+				ClearSglmLayers();
+				return;
+			}
+			m_lmLayerSlots[t] = m_context->GetTextureBindlessIndex(m_lmLayers[t]);
+		}
+		m_lmLayerKind = 0;
 	}
 	m_lmGpu = true;
 	char buf[256];
 	std::snprintf(buf, sizeof(buf),
-		"Lightmap GPU layers: 9x %ux%u RGBA16F (%.1f MiB, F8 = baked view)",
+		"Lightmap GPU: %s %ux%u (%.1f MiB, F8 = baked view)",
+		bc6h ? "BC6H, per-lobe" : "9x RGBA16F",
 		m_sglm.width, m_sglm.height,
 		double(m_sglm.GpuBytes()) / (1024.0 * 1024.0));
 	Log(buf);

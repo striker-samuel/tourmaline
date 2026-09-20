@@ -6,12 +6,41 @@
 // wires drawn by the editor line pass at z = 1.
 // UVFLAT_CHANNEL is defined by the including entry file
 // (uvflat0.vert.hlsl = base TEXCOORD0, uvflat1.vert.hlsl = lightmap
-// uv2/TEXCOORD1).
+// atlas UV, unpacked from chart TEXCOORD1 + chart id via the per-mesh
+// chart tail).
+#if UVFLAT_CHANNEL == 1
+// Channel-1 (lightmap) flat view: the VS unpacks the atlas UV itself,
+// so this entry declares its own push block (UVFLAT1_PASS excludes the
+// scene pc from this stage — see common.hlsli). Layout mirrors the
+// scene push for bytes 0..192 (model = 2D pan/zoom) with a per-mesh
+// chart tail at 192 (the scene push's unused prevModel scratch — same
+// overlay precedent as FilteredVsPush). The app pushes the full scene
+// pc at 0, then the 16B tail at 192 per mesh. The fragment stage keeps
+// the scene pc (materials, frame) — same split as the filtered pipe.
+#define UVFLAT1_PASS
+#endif
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
+#include "gfxfilter.hlsli"
 
 #ifndef UVFLAT_CHANNEL
 #define UVFLAT_CHANNEL 0
+#endif
+
+#if UVFLAT_CHANNEL == 1
+struct UvFlatVsPush
+{
+    float4x4 model; // 0..64: 2D pan/zoom (mirrors scene pc.model)
+    float4x4 _pad0; // 64..128
+    float4x4 _pad1; // 128..192
+    // Per-mesh chart tail (pushed at byte 192 per mesh; zeroed scratch
+    // reads hasXforms == 0 and falls back to raw chart uvs).
+    uint hasXforms;
+    uint chartOffset;
+    vk::BufferPointer<GfxChartXforms> lmXforms;
+};
+[[vk::push_constant]]
+ConstantBuffer<UvFlatVsPush> pcUV;
 #endif
 
 struct VSIn
@@ -21,7 +50,9 @@ struct VSIn
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
-    [[vk::location(5)]] float2 lightmapUv : TEXCOORD1;
+    // Location 5 = chart-local lightmap UV, location 6 = ChartId.
+    [[vk::location(5)]] float2 chartUv : TEXCOORD1;
+    [[vk::location(6)]] uint chartId : TEXCOORD5;
     uint instanceID : SV_InstanceID;
 };
 struct VSOut
@@ -39,20 +70,28 @@ VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
 #if UVFLAT_CHANNEL == 1
-    const float2 uvFlat = IN.lightmapUv;
+    // Atlas unpack per mesh (chart tail pushed at byte 192 per draw;
+    // missing tail falls back to raw chart uvs).
+    const float2 atlasUv = (pcUV.hasXforms == 0u)
+        ? IN.chartUv
+        : GfxLightmapUv(IN.chartUv, IN.chartId,
+            pcUV.chartOffset, pcUV.lmXforms);
+    const float2 uvFlat = atlasUv;
+    float uvZoom = pcUV.model[0][0];
+    float2 uvPan = float2(pcUV.model[3][0], pcUV.model[3][1]);
 #else
     const float2 uvFlat = IN.uv;
+    float uvZoom = pc.model[0][0];
+    float2 uvPan = float2(pc.model[3][0], pc.model[3][1]);
 #endif
     // glTF image space: (0,0) top-left; Vulkan NDC: -y is up, so uv.y=0
     // maps to -1 (screen top) — the texture reads with image orientation.
-    // Editor pane navigation (no recompile needed per view): pc.model
+    // Editor pane navigation (no recompile needed per view): model
     // carries the 2D UV transform (model[0][0] = zoom, model[3].xy = pan
     // in UV units, centered: uvT = (uv-0.5)*zoom + 0.5 + pan). Identity
     // (zoom 1, pan 0) reproduces the legacy mapping; passes that never
     // set a transform (lightmap PNG export) push a zeroed model, which
     // is detected below and treated as identity.
-    float uvZoom = pc.model[0][0];
-    float2 uvPan = float2(pc.model[3][0], pc.model[3][1]);
     if (uvZoom < 1e-6f || uvZoom > 64.0f)
     {
         uvZoom = 1.0f;
@@ -66,6 +105,10 @@ VSOut mainVS(VSIn IN)
     OUT.worldPos = float3(uvFlat, 0.0);
     OUT.normal = float3(0.0, 0.0, 1.0);
     OUT.tangent = float4(1.0, 0.0, 0.0, 1.0);
-    OUT.lightmapUv = IN.lightmapUv;
+#if UVFLAT_CHANNEL == 1
+    OUT.lightmapUv = atlasUv;
+#else
+    OUT.lightmapUv = IN.chartUv;
+#endif
     return OUT;
 }

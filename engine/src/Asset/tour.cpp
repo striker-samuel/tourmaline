@@ -261,10 +261,9 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -meshopt " << (k.meshopt ? "on" : "off")
 			<< " -lods " << (k.lods ? "on" : "off")
 			<< " -lightmap " << (k.lightmap ? "on" : "off")
-			<< " -lmDensity " << k.lmDensity
+			<< " -lmMetersPerTexel " << k.lmMetersPerTexel
 			<< " -lmLobes " << k.lmLobes
 			<< " -lmAtlasWidth " << k.lmAtlasWidth
-			<< " -lmBudget " << k.lmBudget
 			<< " -lmRays " << k.lmRays
 			<< " -lmExcludeSmall " << k.lmExcludeSmall
 			<< " -lmExcludeKw " << Quote(k.lmExcludeKw)
@@ -516,17 +515,24 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 					k.meshopt = (v == "on" || v == "1");
 				else if (get("-lods", v))
 					k.lods = (v == "on" || v == "1");
-				else if (get("-lightmap", v))
-					k.lightmap = (v == "on" || v == "1");
-				else if (get("-lmDensity", v))
-					k.lmDensity = uint32_t(std::stoul(v));
-				else if (get("-lmLobes", v))
-					k.lmLobes = uint32_t(std::stoul(v));
-				else if (get("-lmAtlasWidth", v))
-					k.lmAtlasWidth = uint32_t(std::stoul(v));
-				else if (get("-lmBudget", v))
-					k.lmBudget = std::stoull(v);
-				else if (get("-lmRays", v))
+			else if (get("-lightmap", v))
+				k.lightmap = (v == "on" || v == "1");
+			else if (get("-lmMetersPerTexel", v))
+				k.lmMetersPerTexel = std::max(std::stof(v), 1e-4f);
+			else if (get("-lmDensity", v)) {
+				// Legacy: texels/meter -> meters/texel.
+				const float tpm = std::max(std::stof(v), 2.0f);
+				k.lmMetersPerTexel = 1.0f / tpm;
+			}
+			else if (get("-lmLobes", v))
+				k.lmLobes = uint32_t(std::stoul(v));
+			else if (get("-lmAtlasWidth", v))
+				k.lmAtlasWidth = uint32_t(std::stoul(v));
+			else if (get("-lmBudget", v)) {
+				// Legacy (removed with --lm-budget): ignored — the atlas
+				// width is fixed and the height grows with content now.
+			}
+			else if (get("-lmRays", v))
 					k.lmRays = uint32_t(std::stoul(v));
 				else if (get("-lmExcludeSmall", v))
 					k.lmExcludeSmall = std::stof(v);

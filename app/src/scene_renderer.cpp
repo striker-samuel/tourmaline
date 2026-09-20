@@ -1764,8 +1764,14 @@ bool SceneRenderer::Initialize() {
 								// for deferred destroys to complete. Without
 								// this, queued copies reference destroyed
 								// buffers and the fallback imports on top of
-								// unreclaimed GPU memory (GPU fault).
-								m_context->FlushUploads();
+								// unreclaimed GPU memory (GPU fault). Must
+								// WAIT, not just flush: the transfer/graphics
+								// batches reference the images being torn down
+								// (VUID-vkDestroyImage-01000 + AV in the next
+								// submitState barrier on the dead VkImage).
+								// DeserializeCluster already drains on failure;
+								// this covers anything queued since.
+								m_context->WaitForUploads();
 								WaitForDeviceIdle();
 								m_world = std::make_unique<smvk::World>();
 								m_context->ProcessDeferredTasks();
@@ -2300,10 +2306,11 @@ void SceneRenderer::Shutdown() {
 	// SG 2D lightmaps (STATIC geometry; cooked with PakCooker --lightmap).
 	// Loads the registry lightmap (gi/<name>.sglm, else gi/<scene>.sglm)
 	// and uploads ONLY the 9 RGBA16F atlas
-	// layers. The atlas-space UVs + per-mesh lobe counts are COOKED into
-	// the pak (texCoord2 / StaticMesh::lmChunk riding the draw ring) —
-	// no chunk buffer exists at runtime. Missing file = "not baked yet"
-	// - non-fatal.
+	// layers. The chart uvs + per-chart atlas transforms + per-mesh lobe
+	// counts are COOKED into the pak (texCoord2/chartId +
+	// StaticMesh::lmChartXforms, StaticMesh::lmChunk riding the draw
+	// ring) — no chunk buffer exists at runtime. Missing file =
+	// "not baked yet" - non-fatal.
 	// ---------------------------------------------------------------------------
 	struct RegObbGpu {
 		float center[4];
@@ -2316,11 +2323,13 @@ void SceneRenderer::Shutdown() {
 	static_assert(sizeof(RegObbGpu) == 96);
 
 	void SceneRenderer::LoadGiLightmaps(smvk::OverlayVfs& vfs) {
-		// Cook-owned lightmaps: the pak carries the per-vertex atlas-space
-		// UVs (texCoord2) + each mesh's lobe count (riding the draw ring);
-		// this loader only uploads the atlas (9 RGBA16F layers). NO
+		// Cook-owned lightmaps: the pak carries the per-vertex chart uvs
+		// + chart ids (texCoord2/chartId), each mesh's chart transforms
+		// (scene table, unpacked in the VS) + lobe count (riding the
+		// draw ring); this loader only uploads the atlas textures. NO
 		// geometry work, NO buffers beyond the textures happen here.
 		m_lmLoaded = false;
+		m_lmLayerKind = 0;
 		m_lmAtlas = smvk::gi::SgLightmapAtlas{};
 		for (auto& layer : m_lmLayers)
 			layer = {};
@@ -2354,32 +2363,69 @@ void SceneRenderer::Shutdown() {
 			return;
 		}
 
-		// ---- Atlas layers (9 RGBA16F bindless textures) ----
-		std::vector<uint16_t> layers[smvk::gi::kLightmapLayerCount];
-		m_lmAtlas.PackGpuLayers(layers);
-		for (uint32_t t = 0; t < smvk::gi::kLightmapLayerCount; ++t) {
-			smvk::ImageCreateInfo ci{};
-			ci.extent = { m_lmAtlas.width, m_lmAtlas.height, 1 };
-			ci.format = smvk::Format::RGBA16_Float;
-			ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
-			ci.mipLevels = 1;
-			ci.arrayLayers = 1;
-			ci.name = "sglm atlas layer";
-			auto tex = m_context->CreateTexture(ci, layers[t].data());
-			if (tex.empty()) {
-				std::cerr << "[LM] atlas layer " << t << " creation failed\n";
-				for (uint32_t& slot : m_lmLayerSlots)
-					slot = UINT32_MAX;
-				return;
+		// ---- Atlas textures ----
+		// Uncompressed (sglm v1/v2): 9 RGBA16F stream layers, kind 0.
+		// BC6H (v3): the cooked blocks upload verbatim as one BC6H_UFloat
+		// texture per lobe (kind 1; slots past the scene's lobe count
+		// stay invalid). Hardware filtering is identical in both.
+		const bool bc6h = m_lmAtlas.compression
+			!= smvk::gi::SgLightmapCompression::Uncompressed;
+		uint32_t lmLayerKind = 0;
+		if (bc6h) {
+			const size_t blockBytes = size_t(m_lmAtlas.width / 4)
+				* (m_lmAtlas.height / 4) * 16;
+			for (uint32_t l = 0; l < m_lmAtlas.bc6hLobes; ++l) {
+				smvk::ImageCreateInfo ci{};
+				ci.extent = { m_lmAtlas.width, m_lmAtlas.height, 1 };
+				ci.format = smvk::Format::BC6H_UFloat;
+				ci.usage = smvk::ImageUsage::Sampled
+					| smvk::ImageUsage::TransferDst;
+				ci.mipLevels = 1;
+				ci.arrayLayers = 1;
+				ci.name = "sglm atlas bc6h lobe";
+				auto tex = m_context->CreateTexture(ci,
+					m_lmAtlas.bc6hBlocks.data() + size_t(l) * blockBytes);
+				if (tex.empty()) {
+					std::cerr << "[LM] bc6h lobe texture " << l
+						<< " creation failed\n";
+					for (uint32_t& slot : m_lmLayerSlots)
+						slot = UINT32_MAX;
+					return;
+				}
+				m_lmLayers[l] = std::move(tex);
+				m_lmLayerSlots[l] =
+					m_context->GetTextureBindlessIndex(m_lmLayers[l]);
 			}
-			m_lmLayers[t] = std::move(tex);
-			m_lmLayerSlots[t] = m_context->GetTextureBindlessIndex(m_lmLayers[t]);
+			lmLayerKind = 1;
+		} else {
+			std::vector<uint16_t> layers[smvk::gi::kLightmapLayerCount];
+			m_lmAtlas.PackGpuLayers(layers);
+			for (uint32_t t = 0; t < smvk::gi::kLightmapLayerCount; ++t) {
+				smvk::ImageCreateInfo ci{};
+				ci.extent = { m_lmAtlas.width, m_lmAtlas.height, 1 };
+				ci.format = smvk::Format::RGBA16_Float;
+				ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+				ci.mipLevels = 1;
+				ci.arrayLayers = 1;
+				ci.name = "sglm atlas layer";
+				auto tex = m_context->CreateTexture(ci, layers[t].data());
+				if (tex.empty()) {
+					std::cerr << "[LM] atlas layer " << t << " creation failed\n";
+					for (uint32_t& slot : m_lmLayerSlots)
+						slot = UINT32_MAX;
+					return;
+				}
+				m_lmLayers[t] = std::move(tex);
+				m_lmLayerSlots[t] = m_context->GetTextureBindlessIndex(m_lmLayers[t]);
+			}
 		}
+		m_lmLayerKind = lmLayerKind;
 		m_lmLoaded = true;
 		std::cerr << "[LM] loaded '" << vfsPath << "': chunks="
 			<< m_lmAtlas.chunks.size() << " atlas=" << m_lmAtlas.width << "x"
 			<< m_lmAtlas.height
-			<< " gpu=" << (m_lmAtlas.GpuBytes() / 1024) << " KiB\n";
+			<< " gpu=" << (m_lmAtlas.GpuBytes() / 1024) << " KiB ("
+			<< (bc6h ? "bc6h" : "rgba16f") << ")\n";
 	}
 	// ---------------------------------------------------------------------------
 	// SG regular 3D probe volumes (DYNAMIC objects; tools/gi_baker
@@ -2725,12 +2771,14 @@ void SceneRenderer::Shutdown() {
 		// separation: lm/reg ride the same giIntensity scale as the probe
 		// volume so the N ambient-mode UI stays meaningful.
 		if (LmActive()) {
-			for (uint32_t t = 0; t < 9; ++t)
+			for (uint32_t t = 0; t < 12; ++t)
 				data.lmLayers[t] = m_lmLayerSlots[t];
+			data.lmLayerKind = m_lmLayerKind;
 			data.lmEnabled = 1u;
 		} else {
-			for (uint32_t t = 0; t < 9; ++t)
+			for (uint32_t t = 0; t < 12; ++t)
 				data.lmLayers[t] = UINT32_MAX;
+			data.lmLayerKind = 0u;
 			data.lmEnabled = 0u;
 		}
 		data.lmPad_[0] = 0;
@@ -8753,9 +8801,10 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 				}
 					ImGui::TextDisabled("F6 vertex colors: layered materials show normalized weights as R/G/B/Y per layer 0..3;\n"
 						"legacy materials show the raw vertex tint.");
-				ImGui::TextDisabled("F9/F10 UV checkers: base TEXCOORD0 vs lightmap uv2. Magenta glow = huge uv\n"
-					"screen-derivative (lightmap seam corners sweeping across atlas rects).\n"
-					"UV1 stripes magenta when uv2 leaves [0,1] (atlas-space bug).");
+			ImGui::TextDisabled("F9/F10 UV checkers: base TEXCOORD0 vs lightmap atlas uv (chart uv + chart id,\n"
+				"unpacked in the VS via the draw's chart offset). Magenta glow = huge uv\n"
+				"screen-derivative (a chart corner landing in the wrong atlas rect).\n"
+				"UV1 stripes magenta when the atlas uv leaves [0,1] (transform bug).");
 				ImGui::TextDisabled("F11 POM: ray-marched parallax uv through the occlusion-map heightfield\n"
 					"(AO 1 = surface, 0 = cavity) + sun self-shadowing. Sun/sky shading at the displaced\n"
 					"uv; baked GI / decals / forward+ off so the only delta vs F1 is the technique itself.\n"

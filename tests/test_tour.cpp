@@ -117,7 +117,7 @@ void TestRoundTrip() {
 	doc.hasCook = true;
 	doc.cook.outPak = "content/paks/x.pak";
 	doc.cook.lightmap = true;
-	doc.cook.lmDensity = 24;
+	doc.cook.lmMetersPerTexel = 0.125f;
 	doc.cook.lmExcludeKw = "tree,glass";
 
 	std::string err;
@@ -132,7 +132,8 @@ void TestRoundTrip() {
 	Check(back.fingerprint == doc.fingerprint, "tour fingerprint");
 	Check(back.commands.size() == doc.commands.size(), "tour command count");
 	Check(back.hasCook && back.cook.outPak == doc.cook.outPak, "tour cook outPak");
-	Check(back.cook.lightmap && back.cook.lmDensity == 24, "tour cook bake");
+	Check(back.cook.lightmap && back.cook.lmMetersPerTexel == 0.125f,
+		"tour cook bake");
 	Check(back.cook.lmExcludeKw == "tree,glass", "tour cook exclude");
 	if (!back.commands.empty()) {
 		Check(back.commands[0].verb == smvk::tour::Verb::Rename &&

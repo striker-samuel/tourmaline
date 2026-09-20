@@ -255,6 +255,12 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	[[nodiscard]] bool DebugProgramsValid() const {
 		return meshDebugProgram.shaderCount == 2 && lineProgram.shaderCount == 2;
 	}
+	// Scene-wide lightmap chart transform table (see World::lmChartTable):
+	// uploaded once per scene version; the filtered VS indexes it via
+	// each draw's chart offset. Returns the buffer BDA (0 when the scene
+	// carries no lightmaps — draws gate on lmChunk, so it is never read).
+	uint64_t EnsureChartXforms(smvk::World& world, smvk::ResourceManager& ctx);
+	[[nodiscard]] uint64_t ChartXformsAddress() const { return lmXformsAddr_; }
 	// world mesh idx -> gfx mesh idx (UINT32_MAX = not filterable).
 	// LOD0 entry (kept for the meshlet debug view fallback + audits).
 	[[nodiscard]] uint32_t GfxMeshForWorldMesh(uint32_t worldMesh) const {
@@ -379,6 +385,11 @@ private:
 	smvk::ShaderModuleHandle shadowSeedFrag_{};
 	smvk::ShaderModuleHandle mainA2CFrag_{};
 	smvk::ShaderModuleHandle wireFrag_{};
+	// Lightmap chart transform GPU mirror (see EnsureChartXforms).
+	smvk::Holder<smvk::BufferHandle> lmXformsBuf_;
+	uint64_t lmXformsAddr_ = 0;
+	uint64_t lmXformsVersion_ = ~uint64_t(0);
+	size_t lmXformsCap_ = 0;
 };
 
 } // namespace app

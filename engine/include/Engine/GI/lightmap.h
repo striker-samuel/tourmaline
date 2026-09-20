@@ -22,15 +22,19 @@
 //    riding the gfx draw ring (GfxDraw.misc.w; 0xFFFFFFFF = none).
 //
 // Ownership: the COOK bakes charts, fills StaticVertex::texCoord2 with
-// the per-vertex lightmap UVs, stamps each mesh's atlas chunk id, and
-// writes the .sglm. The runtime only uploads the atlas layers + chunk
-// descriptors — it never mutates geometry (no swaps, no rebuilds).
+// the per-vertex CHART-LOCAL uvs (+ chartId), records each mesh's
+// per-chart atlas transforms (StaticMesh::lmChartXforms), stamps each
+// mesh's atlas chunk id, and writes the .sglm. The runtime uploads the
+// atlas layers + the scene-wide transform table — it never mutates
+// geometry (no swaps, no rebuilds). The vertex shader unpacks the final
+// atlas uv as chartUv * xform.scale + xform.offset via the draw's chart
+// offset (see gfxfilter.hlsli GfxLightmapUv).
 //
 // File format: .sglm (SGLM v1, LZ4-compressed half payload, see .cpp).
 // GPU layout: 9 RGBA16F 2D textures (36 half slots = 12 lobes x RGB);
 // chunks with fewer lobes use the prefix subset. Chunk rects address one
-// shared UV space; lightmap UVs ride in StaticVertex::texCoord2 (filled
-// at cook time).
+// shared UV space; chart-local UVs ride in StaticVertex::texCoord2
+// (filled at cook time).
 
 #include <cstdint>
 #include <span>
@@ -51,6 +55,23 @@ namespace smvk::gi {
 
 inline constexpr uint32_t kLightmapMaxLobes = 12;
 inline constexpr uint32_t kLightmapLayerCount = 9; // 12 lobes * RGB / 4
+
+// BC6H texture layout: one texture per lobe (RGB = the lobe's amplitude)
+// — BC6H has no alpha, so the 36-half RGBA16F stream cannot carry over
+// as-is. Uncompressed stays 9 RGBA16F layers.
+inline constexpr uint32_t kLightmapBc6hTextureCount = 12;
+
+// Payload compression of the atlas (cook option; the GPU layout switches
+// with it). Bc6H vs Bc6HOpt differ only in the cook-time PREFILL: opt
+// replaces invalid (uncovered) texels with the per-4x4-block average of
+// the valid ones before encoding, so the zeros never expand a block's
+// endpoint box (Frostbite lightmap trick — the separator/gutter texels
+// would otherwise cost endpoint precision on the content).
+enum class SgLightmapCompression : uint8_t {
+	Uncompressed = 0,
+	Bc6H = 1,
+	Bc6HOpt = 2,
+};
 
 // Supported per-chunk lobe counts (BakingLab BakeModes SG5/SG6/SG9/SG12).
 inline bool LightmapLobeCountValid(uint32_t n) {
@@ -152,19 +173,6 @@ public:
 	bool Sample(uint32_t chunk, const glm::vec2& uv,
 		glm::vec3* outAmps) const;
 
-	// Shelf-packs per-chunk requests into rows of atlasWidth, growing
-	// height up to maxHeight; width/height land on the packed extent
-	// (+1 padding texel, clamped). chunks/payloads are rebuilt: rects from
-	// the pack, lobeCount/meshKey from the requests, payloads zeroed to
-	// each rect. Returns false when the rects do not fit maxHeight.
-	struct RectRequest {
-		glm::uvec2 size{ 0, 0 };
-		uint32_t lobeCount = 9;
-		uint32_t meshKey = 0;
-	};
-	bool PackRects(const std::vector<RectRequest>& requests,
-		uint32_t atlasWidth, uint32_t maxHeight);
-
 	// Atlas-space uv for a chart-local uv: rect origin + inner mapping,
 	// normalized over the atlas (what the cook bakes into texCoord2).
 	glm::vec2 AtlasUv(uint32_t chunk, uint32_t margin,
@@ -183,6 +191,19 @@ public:
 	void PackGpuLayers(std::vector<uint16_t> out[kLightmapLayerCount]) const;
 
 	size_t GpuBytes() const;
+
+	// ---- BC6H compression (cook time; see SgLightmapCompression) ----
+	// Compresses the payloads into kLightmapBc6hTextureCount one-per-lobe
+	// BC6H images (blocks in bc6hBlocks, lobe-major). optFill switches
+	// the invalid-texel prefill on. Atlas dims must be multiples of 4
+	// (BC6H 4x4 blocks; the packers round the height, the width cap is a
+	// power of two). Uncompressed writers/readers are unaffected until
+	// this runs; WriteFile serializes the blocks (sglm v3) when
+	// compression != Uncompressed.
+	bool CompressToBc6h(bool optFill, std::string& err);
+	SgLightmapCompression compression = SgLightmapCompression::Uncompressed;
+	uint32_t bc6hLobes = 0;          // lobe images stored (<= 12)
+	std::vector<uint8_t> bc6hBlocks; // lobe-major, (w/4)*(h/4)*16 B each
 
 	bool WriteFile(const std::string& path, std::string& err) const;
 	bool ReadFromMemory(std::span<const uint8_t> bytes, std::string& err);
@@ -268,61 +289,18 @@ bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
 	const SgLightmapBakeConfig& config, SgLightmapBakeStats& stats,
 	GiBakeProgress progress = nullptr);
 
-// UV2 chart generation (no external unwrapper): greedy planar-chart
-// unwrap (face-normal planes, region-grow within ~37deg agreement),
-// uniform texel density, per-chart rects with inner margins. The result
-// is per-CHART data: rect sizes, per-vertex chart ownership, chart-local
-// UVs, and per-chart bake texels. The ATLAS packs charts (not mesh
-// regions — a mesh owns many chart rects), so no mesh can fail packing:
-// every chart is small (capped). Each vertex is claimed by the first
-// chart to touch it; vertices shared across chart SEAMS approximate
-// (the seam-side triangle samples the neighbor chart's margin — a
-// mild, dilated artifact confined to seams).
+// Chart result of the xatlas chart + pack path (GenerateLightmapChartsXatlas)
+// and the Frostbite-style LOD transfer (TransferLightmapCharts). The ATLAS
+// packs charts (not mesh regions — a mesh owns many chart rects). Each
+// vertex is claimed by the first chart to touch it; vertices shared across
+// chart SEAMS approximate (the seam-side triangle samples the neighbor
+// chart's margin — a mild, dilated artifact confined to seams).
 //
-// The COOK converts chart-local UVs to atlas-space (SgLightmapAtlas::
-// AtlasUv) and writes them into StaticVertex::texCoord2; the lobe count
-// rides the draw ring. Transmissive (Blend) meshes get no charts (they
-// stay runtime-lit).
-struct SgLightmapChartOptions {
-	// Chart density in texels per unit of the UPLOAD's position space.
-	// Callers with scaled nodes (node scale != 1, e.g. Sponza's 0.008)
-	// must pre-scale a world-space density by the node's world scale
-	// (see PakCooker), otherwise charts come out 1/scale too dense and
-	// the per-mesh/atlas budgets drop the biggest meshes.
-	float texelsPerMeter = 32.0f; // lightmap density
-	uint32_t gutterTexels = 1;    // inner margin per chart (1..4)
-	// Chart size cap (texels): region growth stops here, so every chart
-	// rect is small and atlas-packable regardless of mesh size.
-	uint32_t maxChartTexels = 256u * 256;
-	// Per-mesh TOTAL budget (sum of chart rect areas, checked before
-	// rasterization): a mesh with thousands of chart rects produces an
-	// unbounded texel count otherwise (the sponza arches hit ~20M texels
-	// = GBs of bake points). Exceeding it fails the call so the cook can
-	// halve the density and retry; the atlas rounds bound the scene
-	// total. 0 = no budget.
-	uint64_t maxChartTexelsTotal = 1536ull * 1024;
-	// Authored-UV2 charts (external unwrapper output, e.g. RizomUV-packed
-	// glTF TEXCOORD_1): when true and the mesh carries non-degenerate
-	// StaticVertex::texCoord2, charts are the UV2 ISLANDS (uv-continuous
-	// triangle groups) instead of the greedy planar unwrap: chart rect =
-	// the island's uv2 bbox; chart-local uv = the authored uv2 rescaled
-	// into its island box (resolution-independent, so the atlas budget
-	// search re-sizes rects by density WITHOUT re-unwrapping). The
-	// layout's own uv-to-world scale (sqrt(Auv/A3d)) maps texelsPerMeter
-	// to texels across the [0,1] uv range. Meshes without authored uv2
-	// (texCoord2 without spread) fall back to the planar path.
-	bool authoredUv2 = false;
-	// Authored layouts that are PRE-PACKED per mesh (RizomUV Pack +
-	// normalize: the mesh's whole [0,1]^2 uv2 IS the island packing)
-	// chart as ONE rect per layout instead of one per island: re-packing
-	// islands individually pays ~4 gutter texels per side on every
-	// island, and unwrapper-dense scenes carry millions of islands
-	// (bistro: >1M islands = 37M gutter texels — over any atlas budget
-	// before content). The whole-layout rect amortizes the gutter into
-	// the layout's own inter-island padding; chart-local uv is the
-	// authored uv2 verbatim. Requires authoredUv2.
-	bool authoredOneChartPerLayout = false;
-};
+// The COOK stamps chart-local UVs into StaticVertex::texCoord2 (+ chart
+// ids) and records the per-chart atlas-space transforms
+// (SgLightmapAtlas::AtlasTexel decomposed as scale + offset) on the mesh
+// for the shader unpack; the lobe count rides the draw ring.
+// Transmissive (Blend) meshes get no charts (they stay runtime-lit).
 
 // StaticMeshUpload is forward-declared at smvk:: scope above (the gi
 // namespace deliberately does NOT redeclare it — a local forward would
@@ -355,29 +333,20 @@ struct SgLightmapChartResult {
 	// so no triangle ever spans two atlas rects.
 	std::vector<uint32_t> triChart;
 	std::vector<glm::vec2> cornerChartUv; // triCount * 3, chart-local [0,1]
-	// True when the charts came from authored texCoord2 islands (see
-	// SgLightmapChartOptions::authoredUv2) — lets the cook log which
-	// meshes used the external unwrapper vs the planar fallback.
-	bool usedAuthoredUv2 = false;
 };
 
-bool GenerateLightmapCharts(const StaticMeshUpload& upload,
-	const SgLightmapChartOptions& opts, SgLightmapChartResult& out,
-	std::string& err);
-
 // ---------------------------------------------------------------------------
-// Xatlas brute-force chart + pack path (external/xatlas, MIT).
+// Xatlas chart + pack path (external/xatlas, MIT) — the ONLY chart source.
 //
-// Full-scene alternative to the planar/authored chart loop + PackRects
-// shelf pack: every input mesh is fed to ONE xatlas atlas (positions
-// pre-scaled by densityScale so a single texelsPerUnit means world-uniform
-// density), ComputeCharts + PackCharts run with bruteForce=true ALWAYS
-// (best packing, slower cook — the cook-time/quality trade this path
-// exists for), and each xatlas chart becomes one SgLightmapChartResult
-// chart with chart-local UVs + an already-packed atlas rect.
+// Every input mesh is fed to ONE xatlas atlas (positions pre-scaled by
+// densityScale so a single texelsPerUnit means world-uniform density),
+// ComputeCharts + PackCharts run with bruteForce=true ALWAYS (best
+// packing, slower cook), and each xatlas chart becomes one
+// SgLightmapChartResult chart with chart-local UVs + an already-packed
+// atlas rect.
 //
-// The outputs reuse the standard bake + stamp flow unchanged: chart texels
-// rasterize from the ORIGINAL (unscaled) positions/normals, AtlasUv maps
+// The outputs feed the standard bake + stamp flow: chart texels rasterize
+// from the ORIGINAL (unscaled) positions/normals, AtlasTexel maps
 // chart-local UVs through the placed rects, and seam-corner duplication
 // applies as usual. No second pack is needed (rects are final).
 //
@@ -391,7 +360,10 @@ bool GenerateLightmapCharts(const StaticMeshUpload& upload,
 // ---------------------------------------------------------------------------
 
 struct SgLightmapXatlasOptions {
-	float texelsPerMeter = 32.0f; // world-space density (upload units after densityScale)
+	// Chart density request, METERS PER TEXEL (world space, after
+	// densityScale): 0.25 = one texel per 25 cm (4 texels/m). Converted
+	// to xatlas's texelsPerUnit internally (floored at 2 texels/m).
+	float metersPerTexel = 0.25f;
 	uint32_t gutterTexels = 1;    // inner margin per chart rect (1..4)
 };
 
@@ -437,6 +409,27 @@ bool AppendXatlasLevelToAtlas(SgLightmapAtlas& atlas,
 	const SgLightmapXatlasLevel& level, const std::vector<uint32_t>& meshKeys,
 	uint32_t preferredLobes, uint32_t atlasWidthCap, uint32_t maxHeight,
 	std::vector<uint32_t>& outChunkBase, std::string& err);
+
+// Frostbite-style LOD chart sharing: the chart+bake happened ONCE on a
+// REFERENCE parameterization of the surface (LOD1) and every other
+// level of the same mesh (LOD0, LOD2, ...) inherits its atlas layout
+// through closest-point projection: each target vertex snaps onto the
+// charted reference surface, picking the projected triangle's chart
+// and the barycentric interpolation of its corner uvs. Target triangles
+// keep a SINGLE chart (majority of the corners, closest projection
+// when all three differ) with off-chart corners re-projected RESTRICTED
+// to that chart, so no triangle ever spans two atlas rects — the same
+// seam-splitting the chart unwrapper itself does, and the exact
+// contract StampLightmapUvs stamps per corner. Target triangles that
+// only reach uncharted reference geometry (dropped/degenerate faces)
+// stay 0xFFFFFFFF like every other path. out.charts copies the
+// reference's (rects parallel); triChart/cornerChartUv are target-
+// sized. All positions are in the SAME space (both uploads are
+// node-local: siblings and base render under one node transform).
+bool TransferLightmapCharts(const StaticMeshUpload& reference,
+	const SgLightmapChartResult& refCharts,
+	const StaticMeshUpload& target, SgLightmapChartResult& out,
+	std::string& err);
 
 // Curvature-driven density scale for lightmap charting (cook side):
 // estimates the mesh's SMOOTH bending rate from shared-edge dihedral

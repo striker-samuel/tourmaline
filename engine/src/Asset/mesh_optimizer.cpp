@@ -173,7 +173,9 @@ bool OptimizeStaticMeshUpload(
 		return finish(false);
 
 	// StaticVertex must be bit-comparable for the weld (no padding bytes).
-	static_assert(sizeof(StaticVertex) == 72, "StaticVertex layout changed; update weld assumptions");
+	// chartId rides the weld key: seam twins (identical but for chart)
+	// never merge — the split the stamp created survives optimization.
+	static_assert(sizeof(StaticVertex) == 76, "StaticVertex layout changed; update weld assumptions");
 	static_assert(alignof(StaticVertex) <= 4, "StaticVertex alignment changed");
 
 	stats.acmrBefore = ComputeAcmr(upload.indices.data(), icount, vcount);
@@ -297,13 +299,13 @@ bool BuildLodChainForUpload(
 	}
 
 	// Lightmap-aware attributes (stamped mesh + chart table): chart id
-	// (+1 so 0 = uncharted) + atlas uv2. The chart term is the ONLY
+	// (+1 so 0 = uncharted) + chart-local uv. The chart term is the ONLY
 	// rejector for the seam-twin collapse — seam corners are position-
 	// identical duplicates, so that collapse has zero position error —
 	// and weight 1.0 puts a one-chart delta far over the squared budget
-	// (default 0.02^2). The uv2 terms (0.1, atlas-uv units) mildly
+	// (default 0.02^2). The uv terms (0.1, chart-local units) mildly
 	// penalize parameterization distortion inside a chart: a whole-chart
-	// sweep (~0.25 atlas units) lands right at the default budget, while
+	// sweep (~0.25 chart units) lands right at the default budget, while
 	// ordinary collapses stay well under. See LodSeamLock for the Hard
 	// alternative (vertex_lock on seam pairs).
 	std::vector<float> lmAttrs;
@@ -580,6 +582,7 @@ void FinalizeLodWorldErrors(Cluster& cluster) {
 // ---------------------------------------------------------------------------
 bool AuditLodLightmap(const StaticMeshUpload& lod0,
 	const StaticMeshUpload& sibling, const glm::mat4& world,
+	const std::vector<glm::vec4>& chartXforms,
 	uint32_t atlasWidth, uint32_t atlasHeight,
 	float thresholdTexels, float searchDist, uint32_t maxTris,
 	LodLightmapAuditReport& out) {
@@ -602,13 +605,28 @@ bool AuditLodLightmap(const StaticMeshUpload& lod0,
 	if (bvh.Empty())
 		return false;
 
+	// Chart-local -> atlas-space (same math as the VS unpack).
+	auto resolveAtlas = [&chartXforms](const StaticVertex& v) {
+		if (v.chartId != 0xFFFFFFFFu && v.chartId < chartXforms.size()) {
+			const glm::vec4& xf = chartXforms[v.chartId];
+			return v.texCoord2 * glm::vec2(xf.x, xf.y)
+				+ glm::vec2(xf.z, xf.w);
+		}
+		return v.texCoord2;
+	};
 	// Cross-chart sweep over EVERY triangle (cheap, no projection): a
-	// triangle whose uv2 corners sweep more than one chart rect smears
-	// the whole atlas between them — no texel number can describe that.
-	auto uv2Span = [&sibling](size_t t) {
-		const glm::vec2& a = sibling.vertices[sibling.indices[t * 3 + 0]].texCoord2;
-		const glm::vec2& b = sibling.vertices[sibling.indices[t * 3 + 1]].texCoord2;
-		const glm::vec2& c = sibling.vertices[sibling.indices[t * 3 + 2]].texCoord2;
+	// triangle whose corners disagree on chart id — or whose resolved
+	// atlas corners sweep more than one chart rect — smears the whole
+	// atlas between them. No texel number can describe that.
+	auto uv2Span = [&sibling, &resolveAtlas](size_t t) {
+		const StaticVertex& va = sibling.vertices[sibling.indices[t * 3 + 0]];
+		const StaticVertex& vb = sibling.vertices[sibling.indices[t * 3 + 1]];
+		const StaticVertex& vc = sibling.vertices[sibling.indices[t * 3 + 2]];
+		if (va.chartId != vb.chartId || va.chartId != vc.chartId)
+			return 1e30f; // chart-id mismatch: cross-chart by construction
+		const glm::vec2 a = resolveAtlas(va);
+		const glm::vec2 b = resolveAtlas(vb);
+		const glm::vec2 c = resolveAtlas(vc);
 		const float ab = std::abs(a.x - b.x) + std::abs(a.y - b.y);
 		const float ac = std::abs(a.x - c.x) + std::abs(a.y - c.y);
 		const float bc = std::abs(b.x - c.x) + std::abs(b.y - c.y);
@@ -637,7 +655,7 @@ bool AuditLodLightmap(const StaticMeshUpload& lod0,
 		for (int k = 0; k < 3; ++k) {
 			const StaticVertex& v = sibling.vertices[sibling.indices[t * 3 + k]];
 			wp[k] = glm::vec3(world * glm::vec4(v.pos, 1.0f));
-			uv[k] = v.texCoord2;
+			uv[k] = resolveAtlas(v);
 		}
 		const glm::vec3 fn = glm::cross(wp[1] - wp[0], wp[2] - wp[0]);
 		const float fnLen = glm::length(fn);
@@ -690,11 +708,11 @@ bool AuditLodLightmap(const StaticMeshUpload& lod0,
 			const uint32_t j0 = lod0.indices[hit.tri * 3 + 0];
 			const uint32_t j1 = lod0.indices[hit.tri * 3 + 1];
 			const uint32_t j2 = lod0.indices[hit.tri * 3 + 2];
-			const float w0 = 1.0f - hit.baryUV.x - hit.baryUV.y;
-			const glm::vec2 trueUv =
-				w0 * lod0.vertices[j0].texCoord2
-				+ hit.baryUV.x * lod0.vertices[j1].texCoord2
-				+ hit.baryUV.y * lod0.vertices[j2].texCoord2;
+		const float w0 = 1.0f - hit.baryUV.x - hit.baryUV.y;
+		const glm::vec2 trueUv =
+			w0 * resolveAtlas(lod0.vertices[j0])
+			+ hit.baryUV.x * resolveAtlas(lod0.vertices[j1])
+			+ hit.baryUV.y * resolveAtlas(lod0.vertices[j2]);
 			const glm::vec2 dTex = (cand - trueUv) * texelScale;
 			const float e = std::sqrt(glm::dot(dTex, dTex));
 			++out.samples;
@@ -764,12 +782,16 @@ bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
 			lod0.groupId = handle.index();
 			lod0.triCount = uint32_t(upload->indices.size() / 3);
 		}
-		// Lightmap provenance: stamped uv2 + per-vertex chart ids + the
-		// lobe count the sibling shares (it samples LOD0's atlas chunks).
+		// Lightmap provenance: stamped chart uvs + per-vertex chart ids +
+		// the lobe count and chart transforms the sibling shares (it
+		// samples LOD0's atlas rects through the same chart list).
 		const std::vector<uint32_t>* charts = nullptr;
 		uint32_t lod0LmChunk = 0xFFFFFFFFu;
-		if (const StaticMesh* m0 = cluster.staticMeshes.get(handle))
+		std::vector<glm::vec4> lod0Xforms;
+		if (const StaticMesh* m0 = cluster.staticMeshes.get(handle)) {
 			lod0LmChunk = m0->lmChunk;
+			lod0Xforms = m0->lmChartXforms;
+		}
 		if (options.vertexCharts && lod0LmChunk != 0xFFFFFFFFu) {
 			const auto it = options.vertexCharts->find(meshIdx);
 			if (it != options.vertexCharts->end()
@@ -814,11 +836,11 @@ bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
 				const float worldErr = chain[li].localError * worldScale;
 				const float searchDist = std::max(
 					{ worldErr * 4.0f, diag * 0.01f, 1e-4f });
-				LodLightmapAuditReport rep;
-				const bool ran = AuditLodLightmap(*upload, chain[li].upload,
-					world, options.atlasWidth, options.atlasHeight,
-					options.auditThresholdTexels, searchDist,
-					options.auditMaxTris, rep);
+			LodLightmapAuditReport rep;
+			const bool ran = AuditLodLightmap(*upload, chain[li].upload,
+				world, lod0Xforms, options.atlasWidth, options.atlasHeight,
+				options.auditThresholdTexels, searchDist,
+				options.auditMaxTris, rep);
 				const bool fail = ran && (rep.crossChartTris > 0
 					|| (rep.samples > 0
 						&& rep.overThreshold * 20u > rep.samples)); // >5%
@@ -876,13 +898,20 @@ bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
 			llod.triCount = kept.triCount;
 			llod.acmr = 0.0f;
 			cluster.RegisterMeshLod(lodUri, llod);
-			// Lightmap chunk (lobe count): the sibling shares LOD0's
-			// atlas chunks, so it carries the same count on its draws.
-			if (charts) {
-				if (StaticMesh* m = cluster.staticMeshes.get(lh))
-					m->lmChunk = lod0LmChunk;
-			}
-			++registered;
+		// Lightmap chunk (lobe count) + chart transforms: the sibling
+		// shares LOD0's atlas rects, so it carries the same count on
+		// its draws and the same transform list for the shader unpack
+		// (simplified vertices are a remapped subset — chart ids stay
+		// valid indices into LOD0's chart list).
+		if (charts) {
+			if (StaticMesh* m = cluster.staticMeshes.get(lh))
+				m->lmChunk = lod0LmChunk;
+		}
+		if (!lod0Xforms.empty()) {
+			if (StaticMesh* m = cluster.staticMeshes.get(lh))
+				m->lmChartXforms = lod0Xforms;
+		}
+		++registered;
 		}
 		lod0.candidateCount = uint32_t(1 + registered);
 		cluster.RegisterMeshLod(uri, lod0);

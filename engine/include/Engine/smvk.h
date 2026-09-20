@@ -320,6 +320,12 @@ namespace smvk {
 		TexCoord0,
 		TexCoord1,
 
+		// Lightmap chart index (R32_UInt per vertex; 0xFFFFFFFF = uncharted).
+		// Pairs with TexCoord1, which carries the CHART-LOCAL uv: the vertex
+		// shader resolves the atlas uv as chartUv * xform.scale + xform.offset
+		// via the per-draw chart offset (see GfxDraw).
+		ChartId,
+
 		JointIndices,
 		JointWeights,
 	};

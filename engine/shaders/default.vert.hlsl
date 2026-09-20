@@ -1,5 +1,54 @@
+// Direct-path VS: declares its own push block (DEFAULT_DIRECT_PASS
+// excludes the scene pc from this stage — see common.hlsli). Bytes
+// 0..192 mirror the scene PushConstants exactly (same field order as
+// common.hlsli::PushConstants); bytes 192..208 carry the per-mesh chart
+// tail (the scene push's unused prevModel scratch — same overlay
+// precedent as FilteredVsPush). Passes that draw lightmapped content
+// direct (editor Baked/Uv1 views) push the tail per mesh; every other
+// pass pushes the zeroed scratch, which reads as BDA 0 and selects the
+// raw chart-uv passthrough below (their fragments gate on lmChunk none
+// and never sample lightmaps). The fragment stage keeps the scene pc —
+// same split as the filtered pipe.
+#define DEFAULT_DIRECT_PASS
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
+#include "gfxfilter.hlsli"
+
+struct DefaultVsPush
+{
+    float4x4 model;
+    vk::BufferPointer<FrameUniforms> frameUniforms;
+    vk::BufferPointer<LightBuffer> bLights;
+    vk::BufferPointer<MaterialsBuffer> bMats;
+    vk::BufferPointer<DirectionalCascadeBuffer> cascadeBuffer;
+    uint materialId;
+    uint comparisonSamplerId;
+    uint numCascades;
+    uint cascadeIndex;
+    vk::BufferPointer<ForwardPlusLightBuffer> fpLights;
+    vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts;
+    vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices;
+    uint fpTileCountX;
+    uint fpLightCount;
+    uint fpTileSize;
+    uint fpMaxPerTile;
+    vk::BufferPointer<SpotShadowBuffer> spotShadowBuffer;
+    uint spotShadowMapIndex;
+    uint spotShadowCount;
+    uint spotIndex;
+    uint pad_pc;
+    vk::BufferPointer<RenderViewBuffer> renderViews;
+    uint mainRenderView;
+    uint renderViewIndex;
+    // Per-mesh chart tail (pushed at byte 192 per mesh; hasXforms == 0,
+    // the zeroed-scratch default, selects the passthrough below).
+    uint hasXforms;
+    uint chartOffset;
+    vk::BufferPointer<GfxChartXforms> lmXforms;
+};
+
+[[vk::push_constant]]
+ConstantBuffer<DefaultVsPush> pcDB;
 
 struct VSIn
 {
@@ -8,10 +57,14 @@ struct VSIn
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
-    // Location 5 = StaticVertexFormat's TexCoord1 (lightmap UV; appended
-    // last so 0..4 stay stable). Shaders that don't declare it just
-    // ignore the attribute.
-    [[vk::location(5)]] float2 lightmapUv : TEXCOORD1;
+    // Location 5 = StaticVertexFormat's TexCoord1 (chart-local lightmap
+    // UV), location 6 = ChartId (appended last so 0..4 stay stable).
+    // Shaders that don't declare them just ignore the attributes. The
+    // direct path has no draw ring / transform buffer, so it forwards
+    // the chart UV raw (debug views show chart space); direct draws are
+    // never lightmapped (lmChunk none below).
+    [[vk::location(5)]] float2 chartUv : TEXCOORD1;
+    [[vk::location(6)]] uint chartId : TEXCOORD5;
     uint instanceID : SV_InstanceID;
 };
 struct VSOut
@@ -35,19 +88,19 @@ struct VSOut
 VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
-    FrameUniforms frame = pc.frameUniforms.Get();
+    FrameUniforms frame = pcDB.frameUniforms.Get();
 
     // World position
-    float4 world = mul(pc.model, float4(IN.position, 1.0));
+    float4 world = mul(pcDB.model, float4(IN.position, 1.0));
     OUT.worldPos = world.xyz;
 
     // View / projection: the main camera's RenderView is the authoritative
     // VP for scene passes (allocated per frame, see renderview.hlsli).
     // FrameUniforms stays as the fallback for pipelines without the system.
     float4x4 viewProj = frame.viewProj;
-    if (pc.mainRenderView < MAX_RENDER_VIEWS)
+    if (pcDB.mainRenderView < MAX_RENDER_VIEWS)
     {
-        viewProj = pc.renderViews.Get().views[pc.mainRenderView].m_viewProjectionMatrix;
+        viewProj = pcDB.renderViews.Get().views[pcDB.mainRenderView].m_viewProjectionMatrix;
     }
     //float4 viewPos = mul(frame_res.view, world);
     float4 clip = mul(viewProj, world);
@@ -58,7 +111,14 @@ VSOut mainVS(VSIn IN)
     // material carries layerMaterials (see default_lit.frag.hlsl).
     OUT.color = IN.color;
     OUT.uv = IN.uv;
-    OUT.lightmapUv = IN.lightmapUv;
+    // Chart unpack for direct draws that pushed a chart tail (editor
+    // Baked/Uv1 views); zeroed scratch (hasXforms == 0) selects the raw
+    // chart-uv passthrough — direct draws are never lightmapped (lmChunk
+    // none). Gated per-vertex on chartId inside GfxLightmapUv
+    // (uncharted = 0).
+    OUT.lightmapUv = (pcDB.hasXforms == 0u)
+        ? IN.chartUv
+        : GfxLightmapUv(IN.chartUv, IN.chartId, pcDB.chartOffset, pcDB.lmXforms);
     OUT.lmChunk = 0xFFFFFFFFu;
 
     // Properly transform normal/tangent to world space.
@@ -70,7 +130,7 @@ VSOut mainVS(VSIn IN)
     float3 normal = OctDecodeNormal(IN.normalPacked);
     float4 tangent = OctDecodeTangent(IN.tangentPacked);
 
-    float3x3 M3 = (float3x3) pc.model;
+    float3x3 M3 = (float3x3) pcDB.model;
 
     // determinant of M3
     float det = M3[0][0] * (M3[1][1] * M3[2][2] - M3[1][2] * M3[2][1])

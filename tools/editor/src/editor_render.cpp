@@ -170,6 +170,12 @@ bool EditorApp::EnsureShaders() {
 		"content/shaders/uvflat1.frag.hlsl.spv",
 		"editorFlatUv1VS", "editorFlatUv1FS",
 		m_flatUv1VsModule, m_flatUv1FsModule, m_flatUv1Program);
+	// UV-coordinate PNG export: same unwrapped VS, fragment outputs the
+	// atlas uv itself (uvflat1uv.frag) — no atlas content read.
+	tryFlatUv("content/shaders/uvflat1.vert.hlsl.spv",
+		"content/shaders/uvflat1uv.frag.hlsl.spv",
+		"editorFlatUv1VS", "editorFlatUvCoordFS",
+		m_flatUv1VsModule, m_flatUvCoordFsModule, m_flatUvCoordProgram);
 	// Samplers: mirror App order (0 = linear clamp, 1 = point). The lit
 	// shader's comparisonSamplerId = 1 addresses the second slot.
 	m_context->GetOrCreateSampler(smvk::SamplerCreateInfo{
@@ -279,10 +285,12 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
 		frame.lmEnabled = 0;
 		// Baked-irradiance atlas (F8 view): bindless layer slots ride the
 		// frame; the direct-draw VS never resolves per-draw chunks, so the
-		// lit path ignores this while the baked debug FS samples layer 0.
+		// lit path ignores this while the baked debug FS samples layer 0
+		// (texture 0 = lobe 0 in both GPU layouts).
 		if (m_lmGpu) {
-			for (uint32_t t = 0; t < smvk::gi::kLightmapLayerCount; ++t)
+			for (uint32_t t = 0; t < 12; ++t)
 				frame.lmLayers[t] = m_lmLayerSlots[t];
+			frame.lmLayerKind = m_lmLayerKind;
 			frame.lmEnabled = 1;
 		}
 		frame.regEnabled = 0;
@@ -583,7 +591,7 @@ void EditorApp::UpdateInsetFrameData(uint32_t flight, smvk::Extent2D stripExtent
 
 void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
 	const app::PushConstants& basePc, bool maskedPhase, bool selectedOnly,
-	bool shadowPass, bool bakedOnly) {
+	bool shadowPass, bool bakedOnly, bool chartTail) {
 	(void)basePc;
 	if (!m_world)
 		return;
@@ -628,6 +636,16 @@ void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
 			sizeof(objPc.materialId), &objPc.materialId, smvk::ShaderStage::All);
 		cmd.PushConstants(offsetof(app::PushConstants, model),
 			sizeof(objPc.model), objPc.model, smvk::ShaderStage::All);
+		if (chartTail) {
+			// Per-mesh chart tail: the direct VS unpacks chart uvs to
+			// atlas space for views that sample lightmaps (F8/Uv1).
+			smvk::gfx::UvFlatVsPushTail tail{};
+			tail.hasXforms = 1;
+			tail.chartOffset = m_world->ChartOffsetFor(item.mesh, 0);
+			tail.lmXforms = EnsureChartXforms();
+			cmd.PushConstants(smvk::gfx::kUvFlatVsPushOffset,
+				sizeof(tail), &tail, smvk::ShaderStage::All);
+		}
 		for (const auto& s : mesh->geometry.surfaces)
 			cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
 		});
@@ -694,6 +712,37 @@ smvk::ShaderProgram& EditorApp::FlatUvProgram(ViewMode m) {
 	return (m == ViewMode::FlatUv1) ? m_flatUv1Program : m_flatUv0Program;
 }
 
+smvk::ShaderProgram& EditorApp::FlatUvCoordProgram() {
+	return m_flatUvCoordProgram;
+}
+
+uint64_t EditorApp::EnsureChartXforms() {
+	if (!m_world || !m_context)
+		return 0;
+	if (m_world->lmChartVersion == m_lmXformsVersion && !m_lmXformsBuf.empty())
+		return m_lmXformsAddr;
+	m_lmXformsVersion = m_world->lmChartVersion;
+	const size_t count = std::max<size_t>(m_world->lmChartTable.size(), 1);
+	const size_t bytes = count * sizeof(glm::vec4);
+	if (m_lmXformsBuf.empty() || m_lmXformsCap < bytes) {
+		m_lmXformsBuf = m_context->CreateBuffer(bytes,
+			smvk::BufferType_Storage, "lm chart xforms");
+		m_lmXformsCap = bytes;
+	}
+	if (m_lmXformsBuf.empty()) {
+		m_lmXformsAddr = 0;
+		return 0;
+	}
+	if (!m_world->lmChartTable.empty()) {
+		m_context->UploadDataToBuffer(m_lmXformsBuf,
+			m_world->lmChartTable.data(), bytes,
+			smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
+			smvk::AccessFlags::ShaderRead);
+	}
+	m_lmXformsAddr = m_context->GetBufferDeviceAddress(m_lmXformsBuf);
+	return m_lmXformsAddr;
+}
+
 void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
 	const app::PushConstants& pc) {
 	// Flat UV view: the PRIMARY SELECTION's subtree meshes, unwrapped by
@@ -749,6 +798,16 @@ void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd, ViewMode mode,
 		uint32_t matId = item.material;
 		cmd.PushConstants(offsetof(app::PushConstants, materialId),
 			sizeof(matId), &matId, smvk::ShaderStage::All);
+		if (mode == ViewMode::FlatUv1) {
+			// Per-mesh chart tail: the flat VS unpacks chart uvs to
+			// atlas space itself (no draw ring on the direct path).
+			smvk::gfx::UvFlatVsPushTail tail{};
+			tail.hasXforms = 1;
+			tail.chartOffset = m_world->ChartOffsetFor(item.mesh, 0);
+			tail.lmXforms = EnsureChartXforms();
+			cmd.PushConstants(smvk::gfx::kUvFlatVsPushOffset,
+				sizeof(tail), &tail, smvk::ShaderStage::All);
+		}
 		for (const auto& s : mesh->geometry.surfaces)
 			cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
 	});
@@ -820,10 +879,10 @@ void EditorApp::BuildFlatUvWires(
 		glm::vec2 uv[3];
 		// Whole-scene export uses identity (pane nav never affects PNGs).
 		const bool applyNav = !wholeScene;
-		auto emit = [&](size_t t) {
-			for (int k = 0; k < 3; ++k)
-				if (!readUv(uvAcc, t * 3 + size_t(k), uv[k]))
-					return;
+		auto emit = [&](size_t a, size_t b, size_t c) {
+			if (!readUv(uvAcc, a, uv[0]) || !readUv(uvAcc, b, uv[1])
+				|| !readUv(uvAcc, c, uv[2]))
+				return;
 			for (int k = 0; k < 3; ++k) {
 				glm::vec2 na = applyNav ? UvToFlatNdc(uv[k], vpIdx)
 					: (uv[k] * 2.0f - glm::vec2(1.0f));
@@ -833,18 +892,66 @@ void EditorApp::BuildFlatUvWires(
 				outLines.push_back({ glm::vec3(nb.x, nb.y, 1.0f) });
 			}
 		};
-		if (prim.indices >= 0) {
-			const size_t tcount =
-				size_t(model.accessors[size_t(prim.indices)].count) / 3;
+		if (prim.indices >= 0
+			&& prim.indices < int(model.accessors.size())) {
+			// Indexed: faces address vertices through the index buffer
+			// (u8/u16/u32); reading t*3+k raw names unrelated vertices.
+			const tinygltf::Accessor& iacc =
+				model.accessors[size_t(prim.indices)];
+			if (iacc.bufferView < 0
+				|| iacc.bufferView >= int(model.bufferViews.size()))
+				continue;
+			const tinygltf::BufferView& ibv =
+				model.bufferViews[size_t(iacc.bufferView)];
+			if (ibv.buffer < 0 || ibv.buffer >= int(model.buffers.size()))
+				continue;
+			const tinygltf::Buffer& ibuf = model.buffers[size_t(ibv.buffer)];
+			const size_t istride = iacc.ByteStride(ibv);
+			auto readIdx = [&](size_t i, uint32_t& out) -> bool {
+				const size_t off = ibv.byteOffset + iacc.byteOffset
+					+ i * istride;
+				switch (iacc.componentType) {
+				case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+					if (off + 1 > ibuf.data.size())
+						return false;
+					out = ibuf.data[off];
+					return true;
+				case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
+					if (off + 2 > ibuf.data.size())
+						return false;
+					uint16_t v;
+					std::memcpy(&v, ibuf.data.data() + off, 2);
+					out = v;
+					return true;
+				}
+				case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
+					if (off + 4 > ibuf.data.size())
+						return false;
+					uint32_t v;
+					std::memcpy(&v, ibuf.data.data() + off, 4);
+					out = v;
+					return true;
+				}
+				default:
+					return false; // exotic index encoding: no wires
+				}
+			};
+			const size_t tcount = size_t(iacc.count) / 3;
 			for (size_t t = 0; t < tcount; ++t) {
-				emit(t);
+				uint32_t i0, i1, i2;
+				if (!readIdx(t * 3, i0) || !readIdx(t * 3 + 1, i1)
+					|| !readIdx(t * 3 + 2, i2))
+					break; // truncated index stream: stop this prim
+				if (i0 >= vcount || i1 >= vcount || i2 >= vcount)
+					continue; // corrupt face: skip, keep the rest
+				emit(i0, i1, i2);
 				if (++tris > wireTriCap)
-					return; // wire cap: huge shells stay readable
+					return;
 			}
 		}
 		else {
-			for (size_t t = 0; t + 2 < vcount; t += 3) {
-				emit(t);
+			for (size_t v = 0; v + 2 < vcount; v += 3) {
+				emit(v, v + 1, v + 2);
 				if (++tris > wireTriCap)
 					return;
 			}
@@ -1000,9 +1107,10 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 					? smvk::PolygonMode::Line : smvk::PolygonMode::Fill,
 					.cullMode = (maskedPhase || uvDbg || wireAll)
 					? smvk::CullMode::None : smvk::CullMode::Back });
-			cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-			DrawWorldNodes(cmd, pc, maskedPhase, false, false, bakedOnly);
-		}
+		cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+		DrawWorldNodes(cmd, pc, maskedPhase, false, false, bakedOnly,
+			bakedOnly || mode == ViewMode::Uv1);
+	}
 		// Transparent leg (alpha blend, no depth write).
 		{
 			cmd.BindRenderPipeline(scene, fmt,

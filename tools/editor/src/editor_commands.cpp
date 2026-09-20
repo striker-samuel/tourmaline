@@ -585,10 +585,9 @@ bool EditorApp::SaveTourTo(const std::string& tp) {
 	doc.cook.meshopt = m_cook.meshopt;
 	doc.cook.lods = m_cook.lods;
 	doc.cook.lightmap = m_cook.lightmap;
-	doc.cook.lmDensity = m_cook.lmDensity;
+	doc.cook.lmMetersPerTexel = m_cook.lmMetersPerTexel;
 	doc.cook.lmLobes = m_cook.lmLobes;
 	doc.cook.lmAtlasWidth = m_cook.lmAtlasWidth;
-	doc.cook.lmBudget = m_cook.lmBudget;
 	doc.cook.lmRays = m_cook.lmRays;
 	doc.cook.lmExcludeSmall = m_cook.lmExcludeSmall;
 	doc.cook.lmExcludeKw = m_cook.lmExcludeKw;
@@ -748,10 +747,9 @@ bool EditorApp::LoadTour() {
 		m_cook.meshopt = doc.cook.meshopt;
 		m_cook.lods = doc.cook.lods;
 		m_cook.lightmap = doc.cook.lightmap;
-		m_cook.lmDensity = doc.cook.lmDensity;
+		m_cook.lmMetersPerTexel = doc.cook.lmMetersPerTexel;
 		m_cook.lmLobes = doc.cook.lmLobes;
 		m_cook.lmAtlasWidth = doc.cook.lmAtlasWidth;
-		m_cook.lmBudget = doc.cook.lmBudget;
 		m_cook.lmRays = doc.cook.lmRays;
 		m_cook.lmExcludeSmall = doc.cook.lmExcludeSmall;
 		m_cook.lmExcludeKw = doc.cook.lmExcludeKw;

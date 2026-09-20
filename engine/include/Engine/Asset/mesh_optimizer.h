@@ -291,11 +291,11 @@ void FinalizeLodWorldErrors(Cluster& cluster);
 // Post-bake LOD sibling cooking (PakCooker path; never on the runtime
 // load path). The importer's in-pass chain generation runs BEFORE the
 // lightmap bake, so siblings would simplify from UNSTAMPED uploads
-// (garbage texCoord2, no chart knowledge). CookLodSiblings runs AFTER
+// (garbage chart uvs, no chart knowledge). CookLodSiblings runs AFTER
 // the bake instead: lightmapped meshes simplify from their stamped
-// uploads, siblings share LOD0's atlas chunks, and a per-level safety
-// audit quantifies how far the simplified parameterization drifts from
-// the LOD0 surface (see AuditLodLightmap).
+// uploads, siblings share LOD0's chart list + atlas transforms, and a
+// per-level safety audit quantifies how far the simplified
+// parameterization drifts from the LOD0 surface (see AuditLodLightmap).
 // ---------------------------------------------------------------------------
 
 struct CookLodSiblingsOptions {
@@ -334,13 +334,15 @@ bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
 // ---------------------------------------------------------------------------
 // Lightmap-safety audit: would this simplification visibly damage the
 // baked lighting? For sampled interior points of the sibling's
-// triangles, compares the barycentrically interpolated (candidate) uv2
-// against the TRUE LOD0-surface uv obtained by projecting the point onto
-// a world-space BVH of LOD0 (normal rays both directions, scored by
-// distance + normal similarity; closest-point fallback via the BVH).
+// triangles, compares the barycentrically interpolated (candidate)
+// atlas uv against the TRUE LOD0-surface atlas uv obtained by projecting
+// the point onto a world-space BVH of LOD0 (normal rays both directions,
+// scored by distance + normal similarity; closest-point fallback via the
+// BVH). Both uploads carry chart-local uvs + chart ids (resolved here).
 // Reports the error in atlas TEXELS, plus a full-mesh cross-chart sweep
-// count (triangles whose uv2 corners span more than one chart rect —
-// the catastrophic atlas-smear case no texel number can describe).
+// count (triangles whose corners disagree on chart id or whose atlas
+// corners span more than one chart rect — the catastrophic atlas-smear
+// case no texel number can describe).
 // ---------------------------------------------------------------------------
 
 // Cross-chart uv2 span threshold (max |du|+|dv| over corner pairs).
@@ -358,17 +360,21 @@ struct LodLightmapAuditReport {
 	float meanTexels = 0.0f;
 	float p95Texels = 0.0f;
 	uint32_t overThreshold = 0; // resolved samples over thresholdTexels
-	uint32_t crossChartTris = 0; // uv2 span > kLodCrossChartUvSpan (all tris)
+	uint32_t crossChartTris = 0; // chart-id mismatch or atlas span > kLodCrossChartUvSpan (all tris)
 };
 
 // `world` places both uploads in the same space (siblings share LOD0's
-// node transform). `searchDist` is the normal-ray reach (caller: ~4x the
-// level's world error with an extent floor; the closest-point fallback
-// is exact regardless). `maxTris` caps the audited triangles via a
-// deterministic stride (cross-chart counting always covers all tris).
+// node transform). `chartXforms` is LOD0's per-chart atlas transforms
+// (parallel to chart ids); both uploads carry CHART-LOCAL uvs + chart
+// ids, resolved to atlas space here with the same math as the VS
+// unpack. `searchDist` is the normal-ray reach (caller: ~4x the level's
+// world error with an extent floor; the closest-point fallback is exact
+// regardless). `maxTris` caps the audited triangles via a deterministic
+// stride (cross-chart counting always covers all tris).
 // Returns false on degenerate input (report zeroed).
 bool AuditLodLightmap(const StaticMeshUpload& lod0,
 	const StaticMeshUpload& sibling, const glm::mat4& world,
+	const std::vector<glm::vec4>& chartXforms,
 	uint32_t atlasWidth, uint32_t atlasHeight,
 	float thresholdTexels, float searchDist, uint32_t maxTris,
 	LodLightmapAuditReport& out);

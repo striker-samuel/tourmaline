@@ -18,6 +18,22 @@ add_subdirectory(external/meshoptimizer)
 # xatlas (vendored chart + pack core for lightmap UV2 atlases)
 add_subdirectory(external/xatlas)
 
+# DirectXTex BC codecs (vendored external/DirectXTex; only the block
+# codec translation units compile — the sglm BC6H payload uses
+# D3DXEncodeBC6HU/D3DXDecodeBC6HU, cook + load-side only)
+add_library(directxtex_bc STATIC
+	external/DirectXTex/DirectXTex/BC.cpp
+	external/DirectXTex/DirectXTex/BC6HBC7.cpp
+)
+target_include_directories(directxtex_bc PUBLIC external/DirectXTex)
+target_compile_features(directxtex_bc PRIVATE cxx_std_20)
+# Third-party TU: silence everything (the vendored source is upstream).
+if(MSVC)
+	target_compile_options(directxtex_bc PRIVATE /W0)
+else()
+	target_compile_options(directxtex_bc PRIVATE -w)
+endif()
+
 # LZ4 (vendored block codec for cooked pak blobs)
 add_subdirectory(external/lz4)
 

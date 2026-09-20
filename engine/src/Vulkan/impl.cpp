@@ -187,6 +187,8 @@ namespace {
 		case VK_FORMAT_BC3_SRGB_BLOCK:
 		case VK_FORMAT_BC5_UNORM_BLOCK:
 		case VK_FORMAT_BC5_SNORM_BLOCK:
+		case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+		case VK_FORMAT_BC6H_SFLOAT_BLOCK:
 		case VK_FORMAT_BC7_UNORM_BLOCK:
 		case VK_FORMAT_BC7_SRGB_BLOCK:
 			return { 4, 4, 16 };
@@ -6259,7 +6261,17 @@ void smvk::VulkanResourceManager::NotifyGraphicsSubmit(VkSemaphore semaphore, ui
 }
 void smvk::VulkanResourceManager::DeferDestroy(std::packaged_task<void()>&& task)
 {
-	// No graphics submit ever recorded -> nothing can be in flight.
+	// Unflushed streamer batches still RECORD (transfer cmd) or hold
+	// pending acquire barriers referencing the resource being destroyed.
+	// They have no timeline point yet, so no retire point could cover
+	// them. Drain synchronously first; this only triggers when destroying
+	// with pending uploads (load / failure paths), never in steady state
+	// where uploads are flushed every frame.
+	if (m_streamer && m_streamer->hasAnyPending()) {
+		m_streamer->waitAll();
+	}
+	// No graphics submit ever recorded -> after the streamer drain above
+	// nothing can be in flight.
 	if (m_lastGraphicsSemaphore == VK_NULL_HANDLE || m_lastGraphicsValue == 0) {
 		task();
 		return;

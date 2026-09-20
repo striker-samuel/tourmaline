@@ -244,6 +244,37 @@ namespace smvk {
 		// ResolveAndFixup_clusters().
 		mutable std::vector<LodChain> lodChains;
 
+		// ---- Lightmap chart transform table -----------------------
+		// Scene-wide concatenation of every StaticMesh::lmChartXforms,
+		// sorted by world mesh index, then LOD level, then chart index
+		// (one float4 per chart: xy = scale, zw = offset, so atlasUv =
+		// chartUv * xy + zw). The runtime uploads this once per scene
+		// into a GPU buffer; each draw's chart offset (see
+		// gfx::Draw::lmChartOffset, GfxDraw.misc2.x) is its mesh's base
+		// into the table, and the vertex shader fetches
+		// xforms[base + chartId]. Rebuilt by RebuildLightmapChartTable()
+		// at the end of ResolveAndFixup_clusters(); lmChartVersion bumps
+		// on every rebuild so renderers re-upload only on change.
+		std::vector<glm::vec4> lmChartTable;
+		uint64_t lmChartVersion = 0;
+		struct LmChartKey {
+			const Cluster* cluster = nullptr;
+			uint32_t poolIndex = 0;
+			bool operator==(const LmChartKey&) const = default;
+		};
+		struct LmChartKeyHash {
+			size_t operator()(const LmChartKey& k) const noexcept {
+				return std::hash<const void*>{}(k.cluster) * 31u + k.poolIndex;
+			}
+		};
+		std::unordered_map<LmChartKey, uint32_t, LmChartKeyHash> lmChartBase_;
+		void RebuildLightmapChartTable();
+		// Base offset for a mesh location (0 when the mesh carries no
+		// lightmap — the shader gates on the draw's lobe count anyway).
+		uint32_t ChartOffsetFor(MeshLocation loc) const;
+		// Convenience over meshLocations[i] / lodChains (LOD sibling).
+		uint32_t ChartOffsetFor(uint32_t meshIndex, uint32_t lodIndex) const;
+
 		// ---- Halfrate LOD updates (staggered halves) ------------------
 		// Per-node LOD decisions are cached and refreshed on a parity
 		// split: on tick T, only nodes with (node & 1) == (tick & 1)

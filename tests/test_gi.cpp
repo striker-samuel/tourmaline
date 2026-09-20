@@ -21,6 +21,7 @@
 #include <Engine/App/cluster.h> // Cluster (static-bake-light harvest test)
 #include <Engine/Asset/compression.h> // Lz4Compress (sglm v1 fixture)
 #include <Engine/GI/bake.h>
+#include <Engine/GI/bc6h.h>
 #include <Engine/GI/lightmap.h>
 #include <Engine/GI/probe_volume.h>
 #include <Engine/GI/regular_volume.h>
@@ -1012,162 +1013,336 @@ void TestLightmapCurvatureScale() {
 	}
 }
 
-void TestLmAuthoredCharts() {
-	// Authored-UV2 charts (SgLightmapChartOptions::authoredUv2): a two-
-	// quad strip with a UV seam in texCoord2 (duplicated 3D corners, the
-	// unwrapper's island structure) must chart as TWO islands whose rects
-	// come from the uv2 bboxes scaled by the layout density, with
-	// per-corner chart uvs inside [0,1]; an all-flat texCoord2 must fall
-	// back to the planar unwrapper; a spread-but-area-less layout must
-	// fail cleanly.
+// Xatlas charts (GenerateLightmapChartsXatlas — the only chart source).
+// The stacked-plate pair reproduces the old unmasked packing's collision
+// geometry: every corner at x<0, plates 0.1 m apart in Y. The xatlas
+// output is SOURCE-FACE indexed (indexArray[t*3+k] = input triangle t,
+// corner k): every triangle keeps exactly its own chart's UVs, never a
+// zero/permuted parameterization from a remap.
+void TestLmXatlasCharts() {
 	using namespace smvk;
-	auto makeStrip = [](bool withSeam) {
-		// Quad A [0,1]x[0,1] in 3D, uv2 island [0,0.5]x[0,1]; quad B
-		// shares the 3D edge at x=1 through DUPLICATED corners (a real
-		// authored seam), island [0.55,1]x[0,1] when withSeam (else the
-		// shared edge carries identical uv2 on both sides: one island).
+	auto plate = [](float y) {
+		// 1x1 quad in the XZ plane at height y, entirely at x<0 (the
+		// old packing only collided for negative coordinates), CCW
+		// seen from +Y.
 		StaticMeshUpload u;
-		auto vert = [](float x, float y, float uu, float vv) {
+		auto vert = [y](float x, float z) {
 			StaticVertex v{};
-			v.pos = { x, y, 0.0f };
+			v.pos = { x, y, z };
 			v.color = { 1, 1, 1, 1 };
-			v.normal = { 0, 0, 1 };
-			v.texCoord2 = { uu, vv };
+			v.normal = { 0.0f, 1.0f, 0.0f };
 			return v;
 		};
-		// A: corners 0..3, B: corners 4..7 (4,7 duplicate 1,2's positions)
 		u.vertices = {
-			vert(0, 0, 0.0f, 0.0f), vert(1, 0, 0.5f, 0.0f),
-			vert(1, 1, 0.5f, 1.0f), vert(0, 1, 0.0f, 1.0f),
-			vert(1, 0, withSeam ? 0.55f : 0.5f, 0.0f),
-			vert(2, 0, 1.0f, 0.0f),
-			vert(2, 1, 1.0f, 1.0f),
-			vert(1, 1, withSeam ? 0.55f : 0.5f, 1.0f),
+			vert(-2.0f, -1.0f), vert(-1.0f, -1.0f),
+			vert(-1.0f, 0.0f), vert(-2.0f, 0.0f),
 		};
-		u.indices = { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+		u.indices = { 0, 2, 1, 0, 3, 2 };
 		return u;
 	};
-	gi::SgLightmapChartOptions opts{};
-	opts.texelsPerMeter = 20.0f;
-	opts.gutterTexels = 1;
+	auto stackPlates = [&](StaticMeshUpload& dst, float y0, float y1) {
+		for (float y : { y0, y1 }) {
+			auto p = plate(y);
+			const uint32_t base = uint32_t(dst.vertices.size());
+			dst.vertices.insert(dst.vertices.end(),
+				p.vertices.begin(), p.vertices.end());
+			for (uint32_t ix : p.indices)
+				dst.indices.push_back(base + ix);
+		}
+	};
 	std::string err;
 
-	// Seamed strip: two islands from the authored layout.
+	gi::SgLightmapXatlasOptions xopts{};
+	xopts.metersPerTexel = 1.0f / 32.0f;
+	xopts.gutterTexels = 2;
+
+	// Xatlas on the same stacked plates (the old collision geometry):
+	// every triangle charted, the plates in DIFFERENT charts (they
+	// share no 3D edge), each triangle a non-degenerate [0,1]
+	// parameterization.
 	{
-		auto strip = makeStrip(true);
-		opts.authoredUv2 = true;
-		gi::SgLightmapChartResult r;
+		StaticMeshUpload stacked;
+		stackPlates(stacked, -1.0f, -0.9f);
+		gi::SgLightmapXatlasMeshInput in{};
+		in.upload = &stacked;
+		in.meshKey = 1;
+		std::vector<gi::SgLightmapXatlasMeshInput> ins = { in };
+		gi::SgLightmapXatlasLevel lvl;
 		err.clear();
-		Check(gi::GenerateLightmapCharts(strip, opts, r, err),
-			"lm.authored.seamed.ok");
-		Check(r.usedAuthoredUv2, "lm.authored.seamed.used");
-		Check(r.charts.size() == 2, "lm.authored.seamed.twoislands");
-		// Rect sizes: uv ext scaled by the layout density (+2 margin).
-		// A3d = 2.0, Auv = 0.5 + 0.45 -> texelsAcross = 20*sqrt(2/0.95).
-		const double across = 20.0 * std::sqrt(2.0 / 0.95);
-		const uint32_t wa = uint32_t(std::ceil(0.5 * float(across))) + 2;
-		const uint32_t wb = uint32_t(std::ceil(0.45 * float(across))) + 2;
-		const uint32_t ha = uint32_t(std::ceil(1.0 * float(across))) + 2;
-		Check(r.charts[0].width == wa && r.charts[1].width == wb
-			&& r.charts[0].height == ha && r.charts[1].height == ha,
-			"lm.authored.seamed.rects");
-		Check(!r.charts[0].texels.empty() && !r.charts[1].texels.empty(),
-			"lm.authored.seamed.texels");
-		// Per-triangle charts: quad A's tris together, apart from B's.
-		Check(r.triChart[0] == r.triChart[1] && r.triChart[2] == r.triChart[3]
-			&& r.triChart[0] != r.triChart[2],
-			"lm.authored.seamed.trichart");
-		// Seam corners: duplicated 3D positions in DIFFERENT charts.
-		Check(r.vertexChart[1] != r.vertexChart[4]
-			&& r.vertexChart[2] != r.vertexChart[7],
-			"lm.authored.seamed.seamverts");
-		// Corner uvs inside [0,1]; A's far corner lands at (1,1).
-		bool inRange = true;
-		for (const glm::vec2& c : r.cornerChartUv)
-			inRange = inRange && c.x >= 0.0f && c.x <= 1.0f
-				&& c.y >= 0.0f && c.y <= 1.0f;
-		Check(inRange, "lm.authored.seamed.uvrange");
-	}
-	// Seam-less layout: one island across the shared edge.
-	{
-		auto strip = makeStrip(false);
-		opts.authoredUv2 = true;
-		gi::SgLightmapChartResult r;
-		err.clear();
-		Check(gi::GenerateLightmapCharts(strip, opts, r, err),
-			"lm.authored.seamless.ok");
-		Check(r.charts.size() == 1, "lm.authored.seamless.oneisland");
-	}
-	// Pre-packed layout (authoredOneChartPerLayout): the whole [0,1]^2
-	// layout is ONE chart regardless of the uv seam — RizomUV-style
-	// packed layouts must not re-pack per island (bistro's rizom set is
-	// >1M islands; per-island gutters alone exceed any atlas budget).
-	{
-		auto strip = makeStrip(true);
-		opts.authoredUv2 = true;
-		opts.authoredOneChartPerLayout = true;
-		gi::SgLightmapChartResult r;
-		err.clear();
-		Check(gi::GenerateLightmapCharts(strip, opts, r, err),
-			"lm.authored.pack.ok");
-		Check(r.usedAuthoredUv2 && r.charts.size() == 1,
-			"lm.authored.pack.onechart");
-		const double across = 20.0 * std::sqrt(2.0 / 0.95);
-		const uint32_t w = uint32_t(std::ceil(float(across))) + 2;
-		Check(r.charts[0].width == w && r.charts[0].height == w,
-			"lm.authored.pack.rect");
-		// Both islands' triangles live in the single chart, and the
-		// chart-local uv is the authored uv2 VERBATIM (pMin=(0,0),
-		// ext=(1,1): clamp is identity for in-range layouts).
-		bool allOne = true;
-		bool uvVerbatim = true;
-		for (uint32_t t = 0; t < 4; ++t) {
-			allOne = allOne && r.triChart[t] == 0;
-			for (int k = 0; k < 3; ++k) {
-				const uint32_t v = strip.indices[t * 3 + k];
-				uvVerbatim = uvVerbatim
-					&& glm::length(r.cornerChartUv[size_t(t) * 3 + k]
-						- strip.vertices[v].texCoord2) < 1e-6f;
+		Check(gi::GenerateLightmapChartsXatlas(ins, xopts, lvl, err),
+			"lm.xatlas.stacked.ok");
+		Check(lvl.meshes.size() == 1 && lvl.meshes[0].ok,
+			"lm.xatlas.stacked.meshok");
+		if (lvl.meshes.size() == 1 && lvl.meshes[0].ok) {
+			const gi::SgLightmapChartResult& r = lvl.meshes[0].chart;
+			Check(r.triChart.size() == 4, "lm.xatlas.stacked.tricount");
+			bool allCharted = true;
+			for (uint32_t t = 0; t < 4; ++t)
+				allCharted = allCharted && r.triChart[t] != 0xFFFFFFFFu;
+			Check(allCharted, "lm.xatlas.stacked.allcharted");
+			Check(r.triChart[0] == r.triChart[1]
+				&& r.triChart[2] == r.triChart[3]
+				&& r.triChart[0] != r.triChart[2],
+				"lm.xatlas.stacked.twocharts");
+			bool uvOk = true;
+			for (uint32_t t = 0; t < 4; ++t) {
+				const glm::vec2& a = r.cornerChartUv[t * 3 + 0];
+				const glm::vec2& b = r.cornerChartUv[t * 3 + 1];
+				const glm::vec2& c = r.cornerChartUv[t * 3 + 2];
+				uvOk = uvOk && a.x >= 0.0f && a.x <= 1.0f
+					&& a.y >= 0.0f && a.y <= 1.0f
+					&& b.x >= 0.0f && b.x <= 1.0f
+					&& b.y >= 0.0f && b.y <= 1.0f
+					&& c.x >= 0.0f && c.x <= 1.0f
+					&& c.y >= 0.0f && c.y <= 1.0f;
+				const glm::vec2 e0 = b - a, e1 = c - a;
+				uvOk = uvOk
+					&& std::abs(e0.x * e1.y - e0.y * e1.x) > 1e-6f;
 			}
+			Check(uvOk, "lm.xatlas.stacked.uvs");
+			Check(!r.charts.empty()
+				&& !r.charts[size_t(r.triChart[0])].texels.empty()
+				&& !r.charts[size_t(r.triChart[2])].texels.empty(),
+				"lm.xatlas.stacked.texels");
 		}
-		Check(allOne, "lm.authored.pack.trichart");
-		Check(uvVerbatim, "lm.authored.pack.uvverbatim");
-		// Covered texels from BOTH islands are in the one chart.
-		bool sawA = false, sawB = false;
-		for (const auto& tx : r.charts[0].texels) {
-			sawA = sawA || tx.position.x < 1.5f;
-			sawB = sawB || tx.position.x > 1.0f;
+	}
+
+	// Xatlas on a cube in the negative octant: all 12 faces charted,
+	// corner uvs in [0,1], every rect inside the packed atlas.
+	{
+		StaticMeshUpload cube;
+		const glm::vec3 p[8] = {
+			{ -1, -1, -1 }, { 0, -1, -1 }, { 0, -1, 0 }, { -1, -1, 0 },
+			{ -1, 0, -1 }, { 0, 0, -1 }, { 0, 0, 0 }, { -1, 0, 0 },
+		};
+		for (const glm::vec3& v : p) {
+			StaticVertex sv{};
+			sv.pos = v;
+			sv.color = { 1, 1, 1, 1 };
+			cube.vertices.push_back(sv);
 		}
-		Check(sawA && sawB, "lm.authored.pack.texels");
-		opts.authoredOneChartPerLayout = false;
-	}
-	// Flat texCoord2: planar fallback (never authored).
-	{
-		auto strip = makeStrip(true);
-		for (StaticVertex& v : strip.vertices)
-			v.texCoord2 = { 0.0f, 0.0f };
-		opts.authoredUv2 = true;
-		gi::SgLightmapChartResult r;
+		cube.indices = {
+			0, 1, 2, 0, 2, 3,  // bottom
+			4, 7, 6, 4, 6, 5,  // top
+			0, 4, 5, 0, 5, 1,  // front
+			1, 5, 6, 1, 6, 2,  // right
+			2, 6, 7, 2, 7, 3,  // back
+			3, 7, 4, 3, 4, 0,  // left
+		};
+		gi::SgLightmapXatlasMeshInput in{};
+		in.upload = &cube;
+		in.meshKey = 2;
+		std::vector<gi::SgLightmapXatlasMeshInput> ins = { in };
+		gi::SgLightmapXatlasLevel lvl;
 		err.clear();
-		Check(gi::GenerateLightmapCharts(strip, opts, r, err),
-			"lm.authored.flat.ok");
-		Check(!r.usedAuthoredUv2 && !r.charts.empty(),
-			"lm.authored.flat.planar");
+		Check(gi::GenerateLightmapChartsXatlas(ins, xopts, lvl, err),
+			"lm.xatlas.cube.ok");
+		Check(lvl.meshes.size() == 1 && lvl.meshes[0].ok,
+			"lm.xatlas.cube.meshok");
+		Check(lvl.atlasWidth > 0 && lvl.atlasHeight > 0,
+			"lm.xatlas.cube.atlas");
+		if (lvl.meshes.size() == 1 && lvl.meshes[0].ok) {
+			const gi::SgLightmapXatlasMeshOutput& mo = lvl.meshes[0];
+			const gi::SgLightmapChartResult& r = mo.chart;
+			Check(r.triChart.size() == 12, "lm.xatlas.cube.tricount");
+			bool allCharted = true;
+			for (uint32_t t = 0; t < 12; ++t)
+				allCharted = allCharted && r.triChart[t] != 0xFFFFFFFFu;
+			Check(allCharted, "lm.xatlas.cube.allcharted");
+			bool uvOk = true;
+			for (uint32_t t = 0; t < 12; ++t) {
+				for (int k = 0; k < 3; ++k) {
+					const glm::vec2& u =
+						r.cornerChartUv[size_t(t) * 3 + k];
+					uvOk = uvOk && u.x >= 0.0f && u.x <= 1.0f
+						&& u.y >= 0.0f && u.y <= 1.0f;
+				}
+			}
+			Check(uvOk, "lm.xatlas.cube.uvrange");
+			// Rects may poke their margin RING past the atlas border
+			// (charts packed against the edge; the ring is gutter,
+			// never sampled) — the INNER region must stay inside.
+			bool rectsInside = !mo.rects.empty();
+			for (const auto& rc : mo.rects)
+				rectsInside = rectsInside
+					&& rc.minX >= 0.0f && rc.minY >= 0.0f
+					&& rc.maxX - float(xopts.gutterTexels)
+						<= float(lvl.atlasWidth)
+					&& rc.maxY - float(xopts.gutterTexels)
+						<= float(lvl.atlasHeight);
+			Check(rectsInside, "lm.xatlas.cube.rects");
+			bool texels = true;
+			for (const auto& c : r.charts)
+				texels = texels && !c.texels.empty();
+			Check(texels, "lm.xatlas.cube.texels");
+		}
 	}
-	// Spread but zero-area layout: explicit failure.
+}
+
+// Frostbite-style chart transfer (TransferLightmapCharts): a charted
+// reference (the LOD1 stand-in) projects onto tessellated targets of
+// the same surface — every triangle lands in ONE chart with a
+// non-degenerate [0,1] parameterization; a target triangle SPANNING
+// two reference charts picks the majority chart and re-projects its
+// off-chart corner into it (never a two-rect span); transferring the
+// reference onto itself round-trips the layout; a corrupted reference
+// fails cleanly.
+void TestLmChartTransfer() {
+	using namespace smvk;
+	auto buildQuad = [](float x0, float z0, float x1, float z1, float y,
+		uint32_t segs, StaticMeshUpload& u) {
+		// XZ-plane quad [x0,x1]x[z0,z1] at height y, segs x segs grid,
+		// CCW seen from +Y.
+		for (uint32_t j = 0; j <= segs; ++j)
+			for (uint32_t i = 0; i <= segs; ++i) {
+				StaticVertex v{};
+				v.pos = { x0 + (x1 - x0) * float(i) / float(segs), y,
+					z0 + (z1 - z0) * float(j) / float(segs) };
+				v.color = { 1, 1, 1, 1 };
+				v.normal = { 0.0f, 1.0f, 0.0f };
+				u.vertices.push_back(v);
+			}
+		auto ix = [&](uint32_t i, uint32_t j) {
+			return j * (segs + 1) + i;
+		};
+		for (uint32_t j = 0; j < segs; ++j)
+			for (uint32_t i = 0; i < segs; ++i) {
+				const uint32_t a = ix(i, j), b = ix(i + 1, j),
+					c = ix(i + 1, j + 1), d = ix(i, j + 1);
+				u.indices.insert(u.indices.end(),
+					{ a, c, b, a, d, c });
+			}
+	};
+	auto chartSingle = [&](const StaticMeshUpload& up,
+		gi::SgLightmapChartResult& out, const char* okName,
+		const char* meshName) {
+		gi::SgLightmapXatlasMeshInput in{};
+		in.upload = &up;
+		std::vector<gi::SgLightmapXatlasMeshInput> ins = { in };
+		gi::SgLightmapXatlasOptions xopts{};
+		xopts.metersPerTexel = 1.0f / 32.0f;
+		xopts.gutterTexels = 2;
+		gi::SgLightmapXatlasLevel lvl;
+		std::string xerr;
+		const bool ok = gi::GenerateLightmapChartsXatlas(ins, xopts,
+			lvl, xerr);
+		Check(ok, okName);
+		if (ok && lvl.meshes.size() == 1 && lvl.meshes[0].ok) {
+			out = lvl.meshes[0].chart;
+			return true;
+		}
+		Check(false, meshName);
+		return false;
+	};
+	std::string err;
+
+	// Reference: a single 2x2 quad at y=-1 (one chart).
+	StaticMeshUpload refUp;
+	buildQuad(-2.0f, -1.0f, 0.0f, 1.0f, -1.0f, 2, refUp);
+	gi::SgLightmapChartResult ref;
+	if (chartSingle(refUp, ref, "lm.xfer.ref.ok",
+			"lm.xfer.ref.meshok")) {
+		Check(ref.charts.size() == 1, "lm.xfer.ref.onechart");
+		// Round-trip: the reference onto itself reproduces its own
+		// layout (every corner projects exactly onto itself).
+		{
+			gi::SgLightmapChartResult rt;
+			err.clear();
+			Check(gi::TransferLightmapCharts(refUp, ref, refUp, rt, err),
+				"lm.xfer.self.ok");
+			bool same = rt.triChart.size() == ref.triChart.size();
+			const uint32_t tris = uint32_t(ref.triChart.size());
+			for (uint32_t t = 0; same && t < tris; ++t) {
+				same = rt.triChart[t] == ref.triChart[t];
+				for (int k = 0; same && k < 3; ++k)
+					same = glm::length(rt.cornerChartUv[t * 3 + k]
+						- ref.cornerChartUv[t * 3 + k]) < 1e-4f;
+			}
+			Check(same, "lm.xfer.self.roundtrip");
+		}
+		// Finer target (7x7): all triangles in the single reference
+		// chart, uvs in [0,1], non-degenerate parameterization.
+		{
+			StaticMeshUpload t;
+			buildQuad(-2.0f, -1.0f, 0.0f, 1.0f, -1.0f, 7, t);
+			gi::SgLightmapChartResult xfer;
+			err.clear();
+			Check(gi::TransferLightmapCharts(refUp, ref, t, xfer, err),
+				"lm.xfer.fine.ok");
+			const uint32_t tris = uint32_t(t.indices.size() / 3);
+			Check(xfer.triChart.size() == tris
+				&& xfer.cornerChartUv.size() == size_t(tris) * 3,
+				"lm.xfer.fine.sizes");
+			bool allCharted = true, uvOk = true;
+			for (uint32_t tr = 0; tr < tris; ++tr) {
+				allCharted = allCharted
+					&& xfer.triChart[tr] != 0xFFFFFFFFu;
+				const glm::vec2& a = xfer.cornerChartUv[tr * 3 + 0];
+				const glm::vec2& b = xfer.cornerChartUv[tr * 3 + 1];
+				const glm::vec2& c = xfer.cornerChartUv[tr * 3 + 2];
+				const glm::vec2 e0 = b - a, e1 = c - a;
+				uvOk = uvOk
+					&& a.x >= 0.0f && a.x <= 1.0f && a.y >= 0.0f && a.y <= 1.0f
+					&& b.x >= 0.0f && b.x <= 1.0f && b.y >= 0.0f && b.y <= 1.0f
+					&& c.x >= 0.0f && c.x <= 1.0f && c.y >= 0.0f && c.y <= 1.0f
+					&& std::abs(e0.x * e1.y - e0.y * e1.x) > 1e-6f;
+			}
+			Check(allCharted, "lm.xfer.fine.allcharted");
+			Check(uvOk, "lm.xfer.fine.uvs");
+		}
+		// Corrupted reference sizes fail cleanly.
+		{
+			StaticMeshUpload t;
+			buildQuad(-2.0f, -1.0f, 0.0f, 1.0f, -1.0f, 2, t);
+			gi::SgLightmapChartResult bad = ref;
+			bad.triChart.pop_back();
+			gi::SgLightmapChartResult xfer;
+			err.clear();
+			Check(!gi::TransferLightmapCharts(refUp, bad, t, xfer, err)
+				&& !err.empty(), "lm.xfer.badref.fail");
+		}
+	}
+
+	// Seam-spanning target: reference = TWO disconnected quads (two
+	// charts); target = one quad covering both plus the gap between
+	// them. Every target triangle must land in a SINGLE chart
+	// (majority + restricted re-projection for off-chart corners).
 	{
-		auto strip = makeStrip(true);
-		// All uv2 on one vertical line: has spread, no area.
-		for (uint32_t i = 0; i < strip.vertices.size(); ++i)
-			strip.vertices[i].texCoord2 = { float(i), 0.0f };
-		opts.authoredUv2 = true;
-		gi::SgLightmapChartResult r;
-		err.clear();
-		Check(!gi::GenerateLightmapCharts(strip, opts, r, err)
-			&& err.find("no area") != std::string::npos,
-			"lm.authored.noarea.fail");
+		StaticMeshUpload spanRef;
+		buildQuad(-2.0f, -1.0f, 0.0f, 1.0f, -1.0f, 1, spanRef);
+		buildQuad(1.0f, -1.0f, 3.0f, 1.0f, -1.0f, 1, spanRef);
+		gi::SgLightmapChartResult rc;
+		if (chartSingle(spanRef, rc, "lm.xfer.span.ref.ok",
+				"lm.xfer.span.ref.meshok")) {
+			Check(rc.charts.size() == 2, "lm.xfer.span.ref.twocharts");
+			StaticMeshUpload t;
+			buildQuad(-2.0f, -1.0f, 3.0f, 1.0f, -1.0f, 5, t);
+			gi::SgLightmapChartResult xfer;
+			err.clear();
+			Check(gi::TransferLightmapCharts(spanRef, rc, t, xfer, err),
+				"lm.xfer.span.ok");
+			// All triangles single-chart + in-range. NOTE: target
+			// triangles hovering in the synthetic GAP between the two
+			// charts legitimately collapse to a degenerate uv (all
+			// corners re-project onto the nearest chart edge — that
+			// geometry does not exist on the reference); real LOD
+			// chains have no gaps, so the span test checks the
+			// re-projection path stays in-range, not the uv area.
+			const uint32_t tris = uint32_t(t.indices.size() / 3);
+			bool allCharted = true, uvOk = true;
+			for (uint32_t tr = 0; tr < tris; ++tr) {
+				allCharted = allCharted
+					&& xfer.triChart[tr] != 0xFFFFFFFFu;
+				for (int k = 0; k < 3; ++k) {
+					const glm::vec2& u = xfer.cornerChartUv[tr * 3 + k];
+					uvOk = uvOk && u.x >= 0.0f && u.x <= 1.0f
+						&& u.y >= 0.0f && u.y <= 1.0f;
+				}
+			}
+			Check(allCharted, "lm.xfer.span.allcharted");
+			Check(uvOk, "lm.xfer.span.uvs");
+		}
 	}
-	opts.authoredUv2 = false;
 }
 
 // Scene-authored static lights (SceneLight::kSceneLightFlag_Static) are
@@ -1527,7 +1702,154 @@ void TestLightmapAtlasRoundtrip() {
 		SgLightmapAtlas c1;
 		Check(c1.ReadFromMemory(std::span<const uint8_t>(
 				file.data(), file.size()), err), "sglm v1 read");
+		if (!err.empty())
+			std::cout << "  sglm v1 err: " << err << "\n";
 		Check(payloadClose(a, c1), "sglm v1 back-compat equal");
+	}
+
+	// v3 BC6H (bc6hopt): compress -> write -> read keeps the block
+	// payload verbatim, reconstructs the chunk payloads from the blocks
+	// EXACTLY as a direct decode would (the read path must not re-derive
+	// anything), and the decoded content tracks the fixture coarsely
+	// (block compression is lossy; the fixture's i%97 pattern is
+	// high-frequency noise on purpose).
+	{
+		Check(a.CompressToBc6h(true, err), "sglm bc6h compress");
+		Check(a.compression == SgLightmapCompression::Bc6HOpt
+			&& a.bc6hLobes == 12
+			&& a.bc6hBlocks.size()
+				== size_t(a.width / 4) * (a.height / 4) * 16 * 12,
+			"sglm bc6h layout");
+		Check(a.WriteFile(tmp.string(), err), "sglm v3 write");
+		SgLightmapAtlas d;
+		Check(SgLightmapAtlas::ReadFile(tmp.string(), d, err),
+			"sglm v3 read");
+		Check(d.compression == SgLightmapCompression::Bc6HOpt
+			&& d.bc6hLobes == 12
+			&& d.bc6hBlocks == a.bc6hBlocks
+			&& d.width == a.width && d.height == a.height,
+			"sglm v3 blocks equal");
+		// Reference decode: the read-side payloads must equal a direct
+		// block decode (no re-fitting, no re-encoding).
+		const size_t blockBytes = size_t(a.width / 4) * (a.height / 4) * 16;
+		bool reconExact = true;
+		for (uint32_t lobe = 0; lobe < 12 && reconExact; ++lobe) {
+			std::vector<uint16_t> dec;
+			Bc6hDecodeImage(a.bc6hBlocks.data() + size_t(lobe) * blockBytes,
+				a.width, a.height, dec);
+			for (size_t ci = 0; ci < a.chunks.size() && reconExact; ++ci) {
+				const auto& c = a.chunks[ci];
+				if (lobe >= c.lobeCount)
+					continue;
+				const auto& pref = a.payloads[ci];
+				const auto& pdec = d.payloads[ci];
+				const int ox = int(c.rectMin[0]);
+				const int oy = int(c.rectMin[1]);
+				for (uint32_t y = 0; y < pref.height && reconExact; ++y)
+					for (uint32_t x = 0; x < pref.width; ++x) {
+						const glm::vec3 ref(
+							UnpackHalf(dec[(size_t(oy + int(y)) * a.width
+								+ size_t(ox + x)) * 3 + 0]),
+							UnpackHalf(dec[(size_t(oy + int(y)) * a.width
+								+ size_t(ox + x)) * 3 + 1]),
+							UnpackHalf(dec[(size_t(oy + int(y)) * a.width
+								+ size_t(ox + x)) * 3 + 2]));
+						reconExact =
+							pdec.coeffs[(size_t(y) * pref.width + size_t(x))
+								* c.lobeCount + lobe] == ref;
+					}
+			}
+		}
+		Check(reconExact, "sglm v3 payload recon");
+		// Coarse content check: the decode tracks the fixture (mean
+		// relative error well under 50% despite the noisy data).
+		double errSum = 0.0;
+		size_t errN = 0;
+		for (size_t ci = 0; ci < a.chunks.size(); ++ci) {
+			const auto& pa = a.payloads[ci];
+			const auto& pd = d.payloads[ci];
+			for (size_t i = 0; i < pa.coeffs.size(); ++i) {
+				const float scale = std::max(
+					glm::length(pa.coeffs[i]), 0.05f);
+				errSum += double(glm::length(pd.coeffs[i] - pa.coeffs[i])
+					/ scale);
+				++errN;
+			}
+		}
+		Check(errN > 0 && errSum / double(errN) < 0.5,
+			"sglm v3 payload close");
+	}
+}
+
+// BC6H codec: encode/decode round trip through the vendored DirectXTex
+// block codec. Constant blocks decode EXACTLY (zero included); smooth
+// gradients (comparable channel scales, like real SG lobe amplitudes)
+// stay within a small relative band; the full half range round-trips
+// without inf/nan garbage.
+void TestBc6hCodec() {
+	using namespace smvk::gi;
+	// 8x8: left half = smooth gradient, right half = constant zero
+	// (the uncovered-separator case: min == max == 0 is lossless).
+	std::vector<uint16_t> halves(8 * 8 * 3);
+	for (uint32_t y = 0; y < 8; ++y)
+		for (uint32_t x = 0; x < 8; ++x) {
+			uint16_t* dst = &halves[(size_t(y) * 8 + x) * 3];
+			if (x >= 4) {
+				dst[0] = dst[1] = dst[2] = 0;
+				continue;
+			}
+			const float t = float(x) / 4.0f + float(y) * 0.05f;
+			dst[0] = PackHalf(1.0f * t + 0.5f);
+			dst[1] = PackHalf(0.9f * t + 0.6f);
+			dst[2] = PackHalf(0.8f * t + 0.4f);
+		}
+	std::vector<uint8_t> blocks;
+	Bc6hEncodeImage(halves.data(), 8, 8, blocks);
+	Check(blocks.size() == 2 * 2 * 16, "bc6h.size");
+	std::vector<uint16_t> back;
+	Bc6hDecodeImage(blocks.data(), 8, 8, back);
+	bool zeroExact = true;
+	bool gradClose = true;
+	double errSum = 0.0;
+	size_t errN = 0;
+	for (uint32_t y = 0; y < 8; ++y)
+		for (uint32_t x = 0; x < 8; ++x) {
+			const uint16_t* src = &halves[(size_t(y) * 8 + x) * 3];
+			const uint16_t* dec = &back[(size_t(y) * 8 + x) * 3];
+			for (uint32_t c = 0; c < 3; ++c) {
+				const float s = UnpackHalf(src[c]);
+				const float v = UnpackHalf(dec[c]);
+				if (x >= 4) {
+					zeroExact = zeroExact && v == 0.0f;
+				} else {
+					const float scale = std::max(s, 0.1f);
+					errSum += std::abs(v - s) / scale;
+					++errN;
+					gradClose = gradClose
+						&& std::abs(v - s) < 0.12f * scale;
+				}
+			}
+		}
+	Check(zeroExact, "bc6h.zero.exact");
+	Check(gradClose || errSum / double(std::max<size_t>(errN, 1)) < 0.04,
+		"bc6h.gradient.close");
+
+	// Range probe: dark corner + 65504 max in one image — every decode
+	// must stay finite and non-negative (unsigned BC6H domain).
+	{
+		std::vector<uint16_t> ext(8 * 8 * 3, PackHalf(65504.0f));
+		for (uint32_t i = 0; i < 8; ++i)
+			ext[size_t(i) * 3 + 0] = PackHalf(0.0f);
+		std::vector<uint8_t> eb;
+		Bc6hEncodeImage(ext.data(), 8, 8, eb);
+		std::vector<uint16_t> ed;
+		Bc6hDecodeImage(eb.data(), 8, 8, ed);
+		bool finite = true;
+		for (uint16_t h : ed) {
+			const float v = UnpackHalf(h);
+			finite = finite && std::isfinite(v) && v >= 0.0f;
+		}
+		Check(finite, "bc6h.range.finite");
 	}
 }
 
@@ -1549,10 +1871,12 @@ int main() {
 	smvk::gi::TestRegularVolume();
 	smvk::gi::TestFp16Pack();
 	smvk::gi::TestLightmapCurvatureScale();
-	smvk::gi::TestLmAuthoredCharts();
+	smvk::gi::TestLmXatlasCharts();
+	smvk::gi::TestLmChartTransfer();
 	smvk::gi::TestStaticBakeLights();
 	smvk::gi::TestGiMalformedScene();
 	smvk::gi::TestLightmapAtlasRoundtrip();
+	smvk::gi::TestBc6hCodec();
 
 	std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks
 		<< " checks passed\n";

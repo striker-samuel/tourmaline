@@ -55,6 +55,7 @@ target_link_libraries(engine
         OptickCore
         spirv_reflect
     PRIVATE
+        directxtex_bc
         volk
         KTX::ktx
         imgui_backend_glfw

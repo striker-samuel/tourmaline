@@ -131,24 +131,42 @@ namespace smvk {
 		glm::vec3 pos;
 	};
 
-	// GPU shading stream (20 bytes): color is packed via
+	// GPU shading stream (24 bytes): color is packed via
 	// vertexpack::PackColorUnorm8 and fetched as Format::RGBA8_UNorm, uv
-	// via vertexpack::PackUvHalf fetched as Format::RG16_Float, uv2 (the
-	// lightmap-atlas UV, cook-filled, normalized [0,1]) via
-	// vertexpack::PackUv2Unorm fetched as Format::RG16_UNorm — UNORM
-	// because atlas-space UVs need 65536-step precision (half-float is
+	// via vertexpack::PackUvHalf fetched as Format::RG16_Float, chartUv
+	// (the CHART-LOCAL lightmap UV in the chart's inner rect, [0,1]) via
+	// vertexpack::PackChartUv fetched as Format::RG16_UNorm — UNORM
+	// because chart-space UVs need 65536-step precision (half-float is
 	// 1-texel-at-2048, 4-texel-at-8192), normal/tangent via
 	// PackNormalOct/PackTangentOct fetched as Format::R32_UInt and
 	// unpacked by hand in the vertex shader (see vertex_pack.hlsli).
 	// The bitangent is never stored (B = cross(N, T) * w in the fragment).
+	// chart (R32_UInt) is the owning lightmap chart index (0xFFFFFFFF =
+	// uncharted); the vertex shader resolves the final atlas UV as
+	// chartUv * xform.scale + xform.offset with the per-draw chart offset
+	// (see GfxDraw::lmChartOffset). The ATLAS-space uv2 no longer rides
+	// the vertex stream — it is unpacked in the shader.
 	struct VertexShading {
 		uint32_t color;      // RGBA8_UNORM
 		uint32_t uv;         // RG16_FLOAT (packHalf2x16)
-		uint32_t uv2;        // RG16_UNORM (packUnorm2x16) — lightmap UV
+		uint32_t chartUv;    // RG16_UNORM (packUnorm2x16) — chart-local UV
+		uint32_t normal;     // custom oct encoding (16+16)
+		uint32_t tangent;    // custom oct encoding (16+15) + handedness bit
+		uint32_t chart;      // R32_UINT — lightmap chart index
+	};
+	static_assert(sizeof(VertexShading) == 24);
+
+	// GPU shading stream for SKINNED meshes (16 bytes, no lightmaps):
+	// color, uv, normal, tangent only. Skinned meshes are dynamic and
+	// never carry lightmap charts, so chartUv/chartId are omitted
+	// entirely (no TexCoord1/ChartId attributes, tighter stride).
+	struct VertexSkinnedShading {
+		uint32_t color;      // RGBA8_UNORM
+		uint32_t uv;         // RG16_FLOAT (packHalf2x16)
 		uint32_t normal;     // custom oct encoding (16+16)
 		uint32_t tangent;    // custom oct encoding (16+15) + handedness bit
 	};
-	static_assert(sizeof(VertexShading) == 20);
+	static_assert(sizeof(VertexSkinnedShading) == 16);
 
 	// GPU skin stream (8 bytes, binding 2): joint ids RGBA8_UInt + blend
 	// weights RGBA8_UNorm, 4 influences per vertex. Joint ids index the
@@ -158,8 +176,8 @@ namespace smvk {
 	// touranim.h for the palette contract). Skinned pipelines fetch
 	// bindings 0 (position) + 2 (skin) for depth/shadow passes and
 	// 0+1+2 for shading, so every static pipeline stays untouched;
-	// JointIndices/JointWeights append as VSIn locations 6/7 (after the
-	// TexCoord1 location-5 append). VS math: skinMat = sum(w_i * pal[j_i])
+	// JointIndices/JointWeights append as VSIn locations 5/6 (binding 1
+	// carries no TexCoord1/ChartId). VS math: skinMat = sum(w_i * pal[j_i])
 	// / sum(w_i); pos = skinMat * pos; normal/tangent = mat3(skinMat) * n,
 	// renormalized.
 	struct VertexSkin {
@@ -169,11 +187,15 @@ namespace smvk {
 	static_assert(sizeof(VertexSkin) == 8);
 
 
-	// CPU-side import vertex. texCoord2 is the LIGHTMAP UV channel
+	// CPU-side import vertex. texCoord2 is the LIGHTMAP chart-UV channel
 	// (glTF TEXCOORD_1): filled by the importer when the attribute exists
-	// and overwritten by GenerateLightmapCharts' expanded runs at bake
-	// time. Zero when a scene carries no lightmaps (shader gates on the
-	// per-draw flag, never on the value).
+	// and overwritten with the CHART-LOCAL uv by the lightmap cook at bake
+	// time (the atlas-space transform lives per chart in
+	// StaticMesh::lmChartXforms and is applied in the vertex shader).
+	// Zero when a scene carries no lightmaps (shader gates on the
+	// per-draw flag, never on the value). chartId is the owning lightmap
+	// chart index (0xFFFFFFFF = uncharted), stamped by the cook alongside
+	// texCoord2 (seam corners are duplicated per chart).
 	struct StaticVertex {
 		glm::vec3 pos;
 		glm::vec4 color;
@@ -181,6 +203,7 @@ namespace smvk {
 		glm::vec2 texCoord2;
 		glm::vec3 normal;
 		glm::vec4 tangent;
+		uint32_t chartId = 0xFFFFFFFFu;
 
 		bool operator==(const StaticVertex& other) const {
 			return pos == other.pos &&
@@ -188,19 +211,21 @@ namespace smvk {
 				texCoord == other.texCoord &&
 				texCoord2 == other.texCoord2 &&
 				normal == other.normal &&
-				tangent == other.tangent;
+				tangent == other.tangent &&
+				chartId == other.chartId;
 		}
 	};
 
-	// CPU-side import vertex (skinned): StaticVertex plus the glTF
-	// JOINTS_0/WEIGHTS_0 pair. The importer keeps the top 4 influences,
-	// renormalizes the weights, and packs at upload (joints ->
+	// CPU-side import vertex (skinned): position/color/uv/normal/tangent
+	// plus the glTF JOINTS_0/WEIGHTS_0 pair. The importer keeps the top 4
+	// influences, renormalizes the weights, and packs at upload (joints ->
 	// RGBA8_UInt, weights -> RGBA8_UNorm) into the binding-2 skin stream.
+	// No texCoord2/charts, no chartId: skinned meshes are dynamic and
+	// never lightmapped.
 	struct SkinnedVertex {
 		glm::vec3 pos;
 		glm::vec4 color;
 		glm::vec2 texCoord;
-		glm::vec2 texCoord2;
 		glm::vec3 normal;
 		glm::vec4 tangent;
 		glm::u8vec4 joints;  // palette indices x4 (Skeleton joint table)
@@ -210,7 +235,6 @@ namespace smvk {
 			return pos == other.pos &&
 				color == other.color &&
 				texCoord == other.texCoord &&
-				texCoord2 == other.texCoord2 &&
 				normal == other.normal &&
 				tangent == other.tangent &&
 				joints == other.joints &&
@@ -262,11 +286,12 @@ namespace smvk {
 				.stride = sizeof(VertexShading),
 				.inputRate = VertexInputRate::Vertex,
 			.attributes = {
-					// Location order is load-bearing: shader VSIn locations
-					// 0..4 are Position, Color, TexCoord0, Normal, Tangent.
-					// TexCoord1 (lightmap UV) appends LAST as location 5 so
-					// existing vertex shaders keep their locations; shaders
-					// that don't declare it simply ignore the attribute.
+				// Location order is load-bearing: shader VSIn locations
+				// 0..4 are Position, Color, TexCoord0, Normal, Tangent.
+				// TexCoord1 (chart-local lightmap UV) appends as location
+				// 5 and ChartId as location 6 so existing vertex shaders
+				// keep their locations; shaders that don't declare them
+				// simply ignore the attributes.
 					{
 						.semantic = VertexSemantic::Color,
 						.format = Format::RGBA8_UNorm,
@@ -290,19 +315,24 @@ namespace smvk {
 				{
 					.semantic = VertexSemantic::TexCoord1,
 					.format = Format::RG16_UNorm,
-					.offset = offsetof(VertexShading, uv2)
+					.offset = offsetof(VertexShading, chartUv)
+				},
+				{
+					.semantic = VertexSemantic::ChartId,
+					.format = Format::R32_UInt,
+					.offset = offsetof(VertexShading, chart)
 				}
 			}
 		}
 	}
 };
 
-	// Skinned vertex format: the static two-stream layout VERBATIM (same
-	// bindings 0/1, same locations, same shaders) plus the binding-2 skin
-	// stream. JointIndices/JointWeights append LAST as locations 6/7 so
-	// static vertex shaders keep their locations; skinned shaders declare
-	// the same VSIn plus two attributes. Depth/shadow passes bind only
-	// bindings 0+2 (position + skin) — skinning must move the position.
+	// Skinned vertex format: bindings 0 (position) + 1 (chart-free
+	// VertexSkinnedShading: color/uv/normal/tangent only) plus the
+	// binding-2 skin stream. No TexCoord1/ChartId — dynamic meshes never
+	// sample lightmaps — so JointIndices/JointWeights follow as locations
+	// 5/6. Depth/shadow passes bind only bindings 0+2 (position + skin) —
+	// skinning must move the position.
 	inline const VertexFormatDescription SkinnedVertexFormat{
 		.bindings = {
 			{
@@ -319,33 +349,28 @@ namespace smvk {
 			},
 			{
 				.binding = 1,
-				.stride = sizeof(VertexShading),
+				.stride = sizeof(VertexSkinnedShading),
 				.inputRate = VertexInputRate::Vertex,
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Color,
 						.format = Format::RGBA8_UNorm,
-						.offset = offsetof(VertexShading, color)
+						.offset = offsetof(VertexSkinnedShading, color)
 					},
 					{
 						.semantic = VertexSemantic::TexCoord0,
 						.format = Format::RG16_Float,
-						.offset = offsetof(VertexShading, uv)
+						.offset = offsetof(VertexSkinnedShading, uv)
 					},
 					{
 						.semantic = VertexSemantic::Normal,
 						.format = Format::R32_UInt,
-						.offset = offsetof(VertexShading, normal)
+						.offset = offsetof(VertexSkinnedShading, normal)
 					},
 					{
 						.semantic = VertexSemantic::Tangent,
 						.format = Format::R32_UInt,
-						.offset = offsetof(VertexShading, tangent)
-					},
-					{
-						.semantic = VertexSemantic::TexCoord1,
-						.format = Format::RG16_UNorm,
-						.offset = offsetof(VertexShading, uv2)
+						.offset = offsetof(VertexSkinnedShading, tangent)
 					}
 				}
 			},
@@ -404,10 +429,18 @@ namespace smvk {
 		// Empty when the mesh was cooked without meshlets. Never consulted
 		// by the current direct-draw renderer.
 		std::optional<CookedMeshlets> meshlets;
-		// Lightmap: atlas chunk index (cooked with --lightmap; the lightmap
-		// UVs ride the mesh's own texCoord2 stream). 0xFFFFFFFF = none.
-		// Rides the gfx draw ring (GfxDraw.misc.w) to the lit fragment.
+		// Lightmap: atlas chunk index (cooked with --lightmap; the lobe
+		// count rides the gfx draw ring (GfxDraw.misc.w) to the lit
+		// fragment). 0xFFFFFFFF = none.
 		uint32_t lmChunk = 0xFFFFFFFFu;
+		// Lightmap chart atlas transforms, parallel to the cook's chart
+		// indices (one float4 per chart: xy = scale, zw = offset, so
+		// atlasUv = chartUv * xy + zw). Empty when the mesh carries no
+		// lightmap. The runtime concatenates every mesh's transforms into
+		// one GPU buffer (sorted by mesh, then chart) and writes each
+		// draw's base offset into the draw ring (GfxDraw chart offset);
+		// the vertex shader fetches xform[chartOffset + chartId].
+		std::vector<glm::vec4> lmChartXforms;
 	};
 
 	// -----------------------------------------------------------------------------

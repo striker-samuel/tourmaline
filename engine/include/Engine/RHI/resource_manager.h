@@ -132,6 +132,11 @@ public:
     uint64_t GetBufferDeviceAddress(BufferHandle handle) const;
     // Flush batched uploads (256MB threshold, or manual at end of scene)
     void FlushUploads();
+    // Flush + block until every upload batch (transfer + graphics acquire)
+    // has retired. Required before destroying resources that may still be
+    // referenced by unflushed streamer batches (e.g. a failed pak import
+    // that drops its partial cluster).
+    void WaitForUploads();
     // Sampler cache – deduplicates by description, returns stable
     // index into the global sampler descriptor array (0 .. MAX_SAMPLERS-1).
     // Mirrors VulkanPipelineCache: same SamplerCreateInfo → same index.

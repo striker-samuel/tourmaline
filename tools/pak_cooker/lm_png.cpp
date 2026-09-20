@@ -34,6 +34,30 @@ inline uint8_t DisplayByte(float v) {
 	return uint8_t(std::lround(SrgbEncode(g) * 255.0f));
 }
 
+// Stable chart-id color: golden-ratio hue step keeps adjacent chart ids
+// maximally separated (sequential ids never share a hue), fixed S/V.
+inline void ChartColor(uint32_t chartId, uint8_t out[3]) {
+	const float h = std::fmod(float(chartId) * 0.61803398875f, 1.0f);
+	const float s = 0.85f, v = 1.0f;
+	const int sector = int(h * 6.0f);
+	const float frac = h * 6.0f - float(sector);
+	const float p = v * (1.0f - s);
+	const float q = v * (1.0f - s * frac);
+	const float t = v * (1.0f - s * (1.0f - frac));
+	float r, g, b;
+	switch (sector % 6) {
+	case 0: r = v; g = t; b = p; break;
+	case 1: r = q; g = v; b = p; break;
+	case 2: r = p; g = v; b = t; break;
+	case 3: r = p; g = q; b = v; break;
+	case 4: r = t; g = p; b = v; break;
+	default: r = v; g = p; b = q; break;
+	}
+	out[0] = uint8_t(std::lround(r * 255.0f));
+	out[1] = uint8_t(std::lround(g * 255.0f));
+	out[2] = uint8_t(std::lround(b * 255.0f));
+}
+
 } // namespace
 
 bool WriteLightmapAtlasPng(const smvk::gi::SgLightmapAtlas& atlas,
@@ -87,6 +111,63 @@ bool WriteLightmapAtlasPng(const smvk::gi::SgLightmapAtlas& atlas,
 		std::cerr << "[LM-PNG] note: " << skipped << "/"
 			<< atlas.chunks.size() << " chunks skipped (empty/OOB rect or "
 			"payload stride mismatch)\n" << std::flush;
+	return true;
+}
+
+bool WriteLightmapChartsPng(const smvk::gi::SgLightmapAtlas& atlas,
+	uint32_t margin, const std::string& path, std::string& err) {
+	using namespace smvk::gi;
+	if (atlas.width == 0 || atlas.height == 0 || atlas.chunks.empty()) {
+		err = "empty atlas";
+		return false;
+	}
+	const uint32_t w = atlas.width;
+	const uint32_t h = atlas.height;
+	std::vector<uint8_t> px(size_t(w) * h * 4, 0); // separator = black
+	size_t skipped = 0;
+	for (size_t ci = 0; ci < atlas.chunks.size(); ++ci) {
+		const SgLightmapChunk& c = atlas.chunks[ci];
+		const SgLightmapAtlas::ChunkPayload& p = atlas.payloads[ci];
+		const int ox = int(c.rectMin[0]);
+		const int oy = int(c.rectMin[1]);
+		if (p.width == 0 || p.height == 0 || ox < 0 || oy < 0
+			|| ox + int(p.width) > int(w) || oy + int(p.height) > int(h)) {
+			++skipped;
+			continue;
+		}
+		uint8_t col[3];
+		ChartColor(uint32_t(ci), col);
+		const auto fill = [&](uint32_t x0, uint32_t y0, uint32_t x1,
+			uint32_t y1, float shade) {
+			for (uint32_t y = y0; y < y1; ++y) {
+				uint8_t* row = &px[(size_t(oy + int(y)) * w
+					+ size_t(ox + int(x0))) * 4];
+				for (uint32_t x = x0; x < x1; ++x) {
+					row[0] = uint8_t(std::lround(col[0] * shade));
+					row[1] = uint8_t(std::lround(col[1] * shade));
+					row[2] = uint8_t(std::lround(col[2] * shade));
+					row[3] = 255;
+					row += 4;
+				}
+			}
+		};
+		// Full rect dimmed (the dilation padding ring), inner content at
+		// full brightness. margin rings larger than half the rect leave
+		// no content — the whole rect stays dimmed.
+		fill(0, 0, p.width, p.height, 0.45f);
+		const uint32_t mx = std::min(margin, p.width / 2);
+		const uint32_t my = std::min(margin, p.height / 2);
+		fill(mx, my, p.width - mx, p.height - my, 1.0f);
+	}
+	if (!stbi_write_png(path.c_str(), int(w), int(h), 4, px.data(),
+			int(w) * 4)) {
+		err = "stbi_write_png failed for " + path;
+		return false;
+	}
+	if (skipped)
+		std::cerr << "[LM-PNG] note: " << skipped << "/"
+			<< atlas.chunks.size() << " chunks skipped (empty/OOB rect)\n"
+			<< std::flush;
 	return true;
 }
 

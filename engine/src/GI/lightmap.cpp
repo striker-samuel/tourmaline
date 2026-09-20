@@ -14,9 +14,11 @@
 #include <future>
 #include <limits>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 
 #include <Engine/Asset/compression.h>
+#include <Engine/GI/bc6h.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/platform.h>
@@ -29,7 +31,7 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
-constexpr uint32_t kSglmVersion = 2;
+constexpr uint32_t kSglmVersion = 3;
 
 // v2 payload segment slice: each slice compresses/decompresses through
 // the blob codec independently (kMaxBlobBytes cap). 16M-texel atlases
@@ -47,7 +49,16 @@ struct SglmFileHeader {
 	// 2 = segmented LZ4 (v2: u32 segCount + (u64 raw, u64 comp) table +
 	// segCount blocks, slices of kSglmSegmentBytes raw bytes).
 	uint32_t compressed = 0;
+	// v3 tail (BC6H payload; absent in v1/v2 files):
+	// 0 = section = chunk table + per-chunk half payloads (v1/v2 body),
+	// 1 = section = chunk table + BC6H blocks (bc6h), 2 = same with the
+	// cook's opt prefill (bc6hopt — same GPU layout, different cook
+	// quality path; kept for round-trip fidelity + logging).
+	uint32_t payloadKind = 0;
+	uint32_t bc6hLobes = 0;   // lobe images stored
+	uint32_t bc6hBlockBytes = 0; // bc6hBlocks size in bytes
 };
+constexpr uint32_t kSglmHeaderBytesV1V2 = 28; // header without the v3 tail
 
 inline float Luminance(const glm::vec3& c) {
 	return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
@@ -520,685 +531,14 @@ float LightmapCurvatureScale(const StaticMeshUpload& upload,
 }
 
 // ---------------------------------------------------------------------------
-// Charts: greedy planar unwrap, per-vertex UV2 (no geometry replacement)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Authored-UV2 charts (external unwrapper layout in texCoord2)
-// ---------------------------------------------------------------------------
-
-// Islands are UV-connected triangle groups of the authored lightmap
-// layout (RizomUV-packed glTF TEXCOORD_1): two triangles join across a
-// shared canonical-position edge only when BOTH shared endpoints' uv2
-// agree — a baked-in UV seam breaks the chain exactly where the layout
-// was cut, so the islands reproduce the unwrapper's packing 1:1 (welded
-// corners return equal uv2 and merge; packed-apart corners stay apart).
-// Rects are island uv2 bboxes; the layout's own uv-to-world scale
-// (sqrt(Auv/A3d) over the mesh) maps opts.texelsPerMeter to texels
-// across the [0,1] uv range, so rect sizes rescale with the atlas
-// budget search without re-unwrapping. No island splitting (no cap): an
-// oversized rect simply fails PackRects' atlas width and the search
-// lowers the density, unlike the planar path whose growth is capped.
-static bool GenerateLightmapChartsAuthored(
-	const StaticMeshUpload& upload,
-	const SgLightmapChartOptions& opts,
-	SgLightmapChartResult& out, std::string& err)
-{
-	const uint32_t triCount = uint32_t(upload.indices.size() / 3);
-	const uint32_t margin = opts.gutterTexels;
-
-	// 3D canonical dedup (same quantization as the planar path: unwelded
-	// corner duplicates connect through coincident positions).
-	std::unordered_map<uint64_t, uint32_t> posCanonical;
-	posCanonical.reserve(upload.vertices.size() * 2);
-	std::vector<uint32_t> canonical(upload.vertices.size(), 0);
-	for (size_t v = 0; v < upload.vertices.size(); ++v) {
-		const glm::vec3& p = upload.vertices[v].pos;
-		const int32_t qx = int32_t(std::clamp(p.x * 8192.0f, -1048576.0f, 1048575.0f));
-		const int32_t qy = int32_t(std::clamp(p.y * 8192.0f, -1048576.0f, 1048575.0f));
-		const int32_t qz = int32_t(std::clamp(p.z * 8192.0f, -1048576.0f, 1048575.0f));
-		const uint64_t key2 = uint64_t(uint32_t(qx))
-			| (uint64_t(uint32_t(qy)) << 21)
-			| (uint64_t(uint32_t(qz)) << 42);
-		auto [it, inserted] = posCanonical.insert({ key2, uint32_t(v) });
-		canonical[v] = it->second;
-	}
-	// Per-triangle canonical corners (tri*3 layout, reused by the BFS).
-	std::vector<uint32_t> triCanon(size_t(triCount) * 3, 0);
-	// Edge -> triangles (canonical ids; degenerate triangles excluded).
-	std::unordered_map<uint64_t, std::vector<uint32_t>> edges;
-	edges.reserve(size_t(triCount) * 3);
-	double area3d = 0.0, areaUv = 0.0;
-	for (uint32_t t = 0; t < triCount; ++t) {
-		const uint32_t i0 = upload.indices[t * 3 + 0];
-		const uint32_t i1 = upload.indices[t * 3 + 1];
-		const uint32_t i2 = upload.indices[t * 3 + 2];
-		if (i0 == i1 || i1 == i2 || i0 == i2)
-			continue; // degenerate: no edges, stays uncharted
-		const uint32_t c0 = canonical[i0];
-		const uint32_t c1 = canonical[i1];
-		const uint32_t c2 = canonical[i2];
-		triCanon[t * 3 + 0] = c0;
-		triCanon[t * 3 + 1] = c1;
-		triCanon[t * 3 + 2] = c2;
-		const uint64_t e0 = uint64_t(std::min(c0, c1)) | (uint64_t(std::max(c0, c1)) << 32);
-		const uint64_t e1 = uint64_t(std::min(c1, c2)) | (uint64_t(std::max(c1, c2)) << 32);
-		const uint64_t e2 = uint64_t(std::min(c2, c0)) | (uint64_t(std::max(c2, c0)) << 32);
-		edges[e0].push_back(t);
-		edges[e1].push_back(t);
-		edges[e2].push_back(t);
-		const glm::vec3& p0 = upload.vertices[i0].pos;
-		const glm::vec3& p1 = upload.vertices[i1].pos;
-		const glm::vec3& p2 = upload.vertices[i2].pos;
-		area3d += double(glm::length(glm::cross(p1 - p0, p2 - p0)));
-		const glm::vec2& u0 = upload.vertices[i0].texCoord2;
-		const glm::vec2& u1 = upload.vertices[i1].texCoord2;
-		const glm::vec2& u2 = upload.vertices[i2].texCoord2;
-		areaUv += double(std::abs((u1.x - u0.x) * (u2.y - u0.y)
-			- (u2.x - u0.x) * (u1.y - u0.y)));
-	}
-	if (areaUv <= 1e-12) {
-		err = "GenerateLightmapCharts: authored uv2 layout has no area";
-		return false;
-	}
-	// Layout scale: uv units per local meter. texelsPerMeter (local
-	// texels/m) -> texels across the full [0,1] uv range.
-	const double texelsAcrossLayout = std::max(
-		double(opts.texelsPerMeter) * std::sqrt(area3d / areaUv), 1.0);
-
-	// Island BFS: uv2 agreement at both shared endpoints (eps: uv units;
-	// pack padding separates islands by orders of magnitude more).
-	struct Island {
-		glm::vec2 pMin{ 0.0f }, pMax{ 0.0f };
-		std::vector<uint32_t> tris;
-		uint32_t w = 0, h = 0;
-	};
-	std::vector<Island> islands;
-	std::vector<uint32_t> chartOf(triCount, 0xFFFFFFFFu);
-	std::vector<uint32_t> frontier;
-	if (opts.authoredOneChartPerLayout) {
-		// PRE-PACKED layout (RizomUV Pack + normalize): the mesh's whole
-		// [0,1]^2 uv2 IS the island packing. One chart per layout — per
-		// island rects would re-pack an already-packed layout and pay
-		// ~4 gutter texels per side on every island (bistro's rizom set
-		// is >1M islands: 37M+ gutter texels, over any atlas budget
-		// before content). The synthetic island spans the full range so
-		// every downstream step (rect sizing, chart-local uv, texel
-		// rasterization) runs unchanged; chart-local uv is the authored
-		// uv2 verbatim.
-		Island& isl = islands.emplace_back();
-		isl.pMin = glm::vec2(0.0f);
-		isl.pMax = glm::vec2(1.0f);
-		isl.tris.reserve(triCount);
-		for (uint32_t t = 0; t < triCount; ++t)
-			isl.tris.push_back(t);
-	} else {
-		// Island BFS: uv2 agreement at both shared endpoints (eps: uv
-		// units; pack padding separates islands by orders of magnitude
-		// more).
-		constexpr float kUvSeamEps = 1e-5f;
-		auto cornerUv2 = [&](uint32_t t, uint32_t c) -> const glm::vec2& {
-			for (int k = 0; k < 3; ++k)
-				if (triCanon[t * 3 + k] == c)
-					return upload.vertices[upload.indices[t * 3 + k]].texCoord2;
-			return upload.vertices[0].texCoord2; // unreachable
-		};
-		for (uint32_t seed = 0; seed < triCount; ++seed) {
-			if (chartOf[seed] != 0xFFFFFFFFu)
-				continue;
-			const uint32_t idx = uint32_t(islands.size());
-			Island& isl = islands.emplace_back();
-			isl.pMin = glm::vec2(std::numeric_limits<float>::max());
-			isl.pMax = glm::vec2(std::numeric_limits<float>::lowest());
-			frontier.clear();
-			frontier.push_back(seed);
-			while (!frontier.empty()) {
-				const uint32_t t = frontier.back();
-				frontier.pop_back();
-				if (chartOf[t] != 0xFFFFFFFFu)
-					continue;
-				chartOf[t] = idx;
-				isl.tris.push_back(t);
-				for (int k = 0; k < 3; ++k) {
-					const glm::vec2& u =
-						upload.vertices[upload.indices[t * 3 + k]].texCoord2;
-					isl.pMin = glm::min(isl.pMin, u);
-					isl.pMax = glm::max(isl.pMax, u);
-				}
-				const uint32_t ca = triCanon[t * 3 + 0];
-				const uint32_t cb = triCanon[t * 3 + 1];
-				const uint32_t cc = triCanon[t * 3 + 2];
-				const uint64_t eKeys[3] = {
-					uint64_t(std::min(ca, cb)) | (uint64_t(std::max(ca, cb)) << 32),
-					uint64_t(std::min(cb, cc)) | (uint64_t(std::max(cb, cc)) << 32),
-					uint64_t(std::min(cc, ca)) | (uint64_t(std::max(cc, ca)) << 32),
-				};
-				for (uint64_t e : eKeys)
-					for (uint32_t nb : edges[e]) {
-						if (nb == t || chartOf[nb] != 0xFFFFFFFFu)
-							continue;
-						// Shared canonical endpoints of this edge.
-						const uint32_t lo = uint32_t(e & 0xFFFFFFFFull);
-						const uint32_t hi = uint32_t(e >> 32);
-						const glm::vec2& ta = cornerUv2(t, lo);
-						const glm::vec2& tb = cornerUv2(t, hi);
-						const glm::vec2& na = cornerUv2(nb, lo);
-						const glm::vec2& nbv = cornerUv2(nb, hi);
-						if (std::abs(ta.x - na.x) + std::abs(ta.y - na.y) > kUvSeamEps)
-							continue;
-						if (std::abs(tb.x - nbv.x) + std::abs(tb.y - nbv.y) > kUvSeamEps)
-							continue;
-						frontier.push_back(nb);
-					}
-			}
-		}
-	}
-
-	// Island rects: uv bbox at the layout density (+ inner margins).
-	uint64_t meshTexelTotal = 0;
-	for (Island& isl : islands) {
-		const glm::vec2 ext = glm::max(isl.pMax - isl.pMin, glm::vec2(1e-6f));
-		isl.w = std::max<uint32_t>(uint32_t(std::ceil(ext.x * float(texelsAcrossLayout))), 1u) + 2u * margin;
-		isl.h = std::max<uint32_t>(uint32_t(std::ceil(ext.y * float(texelsAcrossLayout))), 1u) + 2u * margin;
-		meshTexelTotal += uint64_t(isl.w) * isl.h;
-	}
-	if (opts.maxChartTexelsTotal > 0
-		&& meshTexelTotal > opts.maxChartTexelsTotal) {
-		err = "GenerateLightmapCharts: mesh chart texels exceed budget "
-			"(lower --lm-density)";
-		return false;
-	}
-
-	// Island-local uv: (uv2 - pMin)/ext clamped to [0,1] over the inner
-	// rect. Resolution-independent: the rect resizes around the same
-	// [0,1] parameterization as the density search scales.
-	auto islandUv = [&](const Island& isl, const glm::vec2& u) -> glm::vec2 {
-		const glm::vec2 ext = glm::max(isl.pMax - isl.pMin, glm::vec2(1e-6f));
-		return glm::clamp((u - isl.pMin) / ext, glm::vec2(0.0f), glm::vec2(1.0f));
-	};
-
-	// Per-ORIGINAL-vertex output (first island to touch a vertex claims
-	// it — the authored layout makes every duplicated corner carry its
-	// own island's uv, so this is exact for all referenced vertices).
-	out.charts.resize(islands.size());
-	out.vertexChart.assign(upload.vertices.size(), 0xFFFFFFFFu);
-	out.chartLocalUv.assign(upload.vertices.size(), glm::vec2(0.0f));
-	for (uint32_t ci = 0; ci < uint32_t(islands.size()); ++ci) {
-		for (uint32_t t : islands[ci].tris) {
-			for (int k = 0; k < 3; ++k) {
-				const uint32_t v = upload.indices[t * 3 + k];
-				if (out.vertexChart[v] == 0xFFFFFFFFu) {
-					out.vertexChart[v] = ci;
-					out.chartLocalUv[v] =
-						islandUv(islands[ci], upload.vertices[v].texCoord2);
-				}
-			}
-		}
-	}
-	// Per-triangle output (seam-correct): every corner through its OWN
-	// island, original triangle order.
-	out.triChart.assign(triCount, 0xFFFFFFFFu);
-	out.cornerChartUv.assign(size_t(triCount) * 3, glm::vec2(0.0f));
-	for (uint32_t ci = 0; ci < uint32_t(islands.size()); ++ci) {
-		for (uint32_t t : islands[ci].tris) {
-			out.triChart[t] = ci;
-			for (int k = 0; k < 3; ++k) {
-				const uint32_t v = upload.indices[t * 3 + k];
-				out.cornerChartUv[size_t(t) * 3 + k] =
-					islandUv(islands[ci], upload.vertices[v].texCoord2);
-			}
-		}
-	}
-
-	// Bake texels per island: rasterize every island triangle over the
-	// inner region, first-writer-owns (mirrors the planar path's claim
-	// map so overlapping uv never duplicates texels). uv is rect-local
-	// ([margin, size - margin) texels).
-	for (uint32_t ci = 0; ci < uint32_t(islands.size()); ++ci) {
-		const Island& isl = islands[ci];
-		SgLightmapChartResult::Chart& oc = out.charts[ci];
-		oc.width = isl.w;
-		oc.height = isl.h;
-		const uint32_t iw = std::max<uint32_t>(isl.w - 2u * margin, 1u);
-		const uint32_t ih = std::max<uint32_t>(isl.h - 2u * margin, 1u);
-		std::vector<uint32_t> claim(size_t(iw) * ih, 0xFFFFFFFFu);
-		for (uint32_t t : isl.tris) {
-			const uint32_t i0 = upload.indices[t * 3 + 0];
-			const uint32_t i1 = upload.indices[t * 3 + 1];
-			const uint32_t i2 = upload.indices[t * 3 + 2];
-			const glm::vec3& p0 = upload.vertices[i0].pos;
-			const glm::vec3& p1 = upload.vertices[i1].pos;
-			const glm::vec3& p2 = upload.vertices[i2].pos;
-			const glm::vec3& n0 = upload.vertices[i0].normal;
-			const glm::vec3& n1 = upload.vertices[i1].normal;
-			const glm::vec3& n2 = upload.vertices[i2].normal;
-			const glm::vec2 u0 = islandUv(isl, upload.vertices[i0].texCoord2);
-			const glm::vec2 u1 = islandUv(isl, upload.vertices[i1].texCoord2);
-			const glm::vec2 u2 = islandUv(isl, upload.vertices[i2].texCoord2);
-			const glm::vec2 e0 = u1 - u0;
-			const glm::vec2 e1 = u2 - u0;
-			const float det = e0.x * e1.y - e0.y * e1.x;
-			if (std::abs(det) < 1e-12f)
-				continue; // zero-uv-area sliver: no texels (dilation covers)
-			const glm::vec2 tMin = glm::min(u0, glm::min(u1, u2));
-			const glm::vec2 tMax = glm::max(u0, glm::max(u1, u2));
-			uint32_t tx0 = std::min(uint32_t(std::max(0.0f, tMin.x * float(iw) - 0.5f)), iw - 1u);
-			uint32_t tx1 = std::min(uint32_t(std::min(float(iw), tMax.x * float(iw) + 0.5f)), iw - 1u);
-			uint32_t ty0 = std::min(uint32_t(std::max(0.0f, tMin.y * float(ih) - 0.5f)), ih - 1u);
-			uint32_t ty1 = std::min(uint32_t(std::min(float(ih), tMax.y * float(ih) + 0.5f)), ih - 1u);
-			for (uint32_t y = ty0; y <= ty1; ++y) {
-				for (uint32_t x = tx0; x <= tx1; ++x) {
-					const size_t idx = size_t(y) * iw + x;
-					if (claim[idx] != 0xFFFFFFFFu)
-						continue;
-					const float u = (float(x) + 0.5f) / float(iw);
-					const float v = (float(y) + 0.5f) / float(ih);
-					const glm::vec2 d(u - u0.x, v - u0.y);
-					const float b1 = (d.x * e1.y - d.y * e1.x) / det;
-					const float b2 = (e0.x * d.y - e0.y * d.x) / det;
-					const float b0 = 1.0f - b1 - b2;
-					if (b0 < -1e-4f || b1 < -1e-4f || b2 < -1e-4f)
-						continue;
-					claim[idx] = 1u;
-					SgLightmapTexel tx{};
-					tx.position = p0 * b0 + p1 * b1 + p2 * b2;
-					tx.normal = glm::normalize(n0 * b0 + n1 * b1 + n2 * b2);
-					tx.uv = glm::vec2(float(margin + x) + 0.5f,
-						float(margin + y) + 0.5f);
-					oc.texels.push_back(tx);
-				}
-			}
-		}
-	}
-	out.usedAuthoredUv2 = true;
-	return true;
-}
-
-bool GenerateLightmapCharts(const StaticMeshUpload& upload,
-	const SgLightmapChartOptions& opts, SgLightmapChartResult& out,
-	std::string& err) {
-	out = SgLightmapChartResult{};
-	const uint32_t triCount = uint32_t(upload.indices.size() / 3);
-	if (triCount == 0) {
-		err = "GenerateLightmapCharts: mesh has no triangles";
-		return false;
-	}
-	if (!(opts.texelsPerMeter > 0.0f) || opts.gutterTexels == 0 || opts.gutterTexels > 4) {
-		err = "GenerateLightmapCharts: bad options";
-		return false;
-	}
-	const uint32_t margin = opts.gutterTexels; // inner margin per chart
-
-	// Authored-UV2 mode: use the external unwrapper's islands when the
-	// mesh carries a non-degenerate texCoord2 layout (any spread at all
-	// around the mean); fall through to the planar unwrapper otherwise
-	// (all-equal texCoord2 = engine zeros, nothing authored).
-	if (opts.authoredUv2) {
-		glm::vec2 mean(0.0f);
-		for (const StaticVertex& v : upload.vertices)
-			mean += v.texCoord2;
-		if (!upload.vertices.empty())
-			mean /= float(upload.vertices.size());
-		bool hasSpread = false;
-		for (const StaticVertex& v : upload.vertices) {
-			if (std::abs(v.texCoord2.x - mean.x) > 1e-6f
-				|| std::abs(v.texCoord2.y - mean.y) > 1e-6f) {
-				hasSpread = true;
-				break;
-			}
-		}
-		if (hasSpread)
-			return GenerateLightmapChartsAuthored(upload, opts, out, err);
-	}
-	out.usedAuthoredUv2 = false;
-
-	// ------------------------------------------------------------------
-	// Greedy planar-chart unwrap (per-triangle bbox charts waste ~2-4x on
-	// large/dense meshes; grouped charts waste ~1.2x):
-	//   1. Face normal -> dominant axis plane per triangle.
-	//   2. BFS region-grow triangles into charts while plane + normal
-	//      agree (near-planar charts project coherently).
-	//   3. Chart UV = continuous projection over the chart's bbox
-	//      (shared edges inside a chart map to the same UV).
-	//   4. Shelf-pack chart rects; per-ORIGINAL-vertex UVs out (the
-	//      cook fills texCoord2; mesh geometry is untouched).
-	// ------------------------------------------------------------------
-	struct Plane {
-		int ax, ay; // chart axis indices
-	};
-	auto planeFor = [](const glm::vec3& n, Plane& p) {
-		const glm::vec3 a = glm::abs(n);
-		if (a.x >= a.y && a.x >= a.z)      p = { 2, 1 }; // X dominant
-		else if (a.y >= a.z)               p = { 0, 2 }; // Y dominant
-		else                               p = { 0, 1 }; // Z dominant
-	};
-
-	// Face normals + planes.
-	std::vector<glm::vec3> faceNormal(triCount, glm::vec3(0.0f, 1.0f, 0.0f));
-	std::vector<Plane> facePlane(triCount, Plane{ 0, 1 });
-	for (uint32_t t = 0; t < triCount; ++t) {
-		const uint32_t i0 = upload.indices[t * 3 + 0];
-		const uint32_t i1 = upload.indices[t * 3 + 1];
-		const uint32_t i2 = upload.indices[t * 3 + 2];
-		const glm::vec3& p0 = upload.vertices[i0].pos;
-		const glm::vec3& p1 = upload.vertices[i1].pos;
-		const glm::vec3& p2 = upload.vertices[i2].pos;
-		glm::vec3 fn = glm::cross(p1 - p0, p2 - p0);
-		const float fnLen = glm::length(fn);
-		if (fnLen > 1e-12f) {
-			faceNormal[t] = fn / fnLen;
-			planeFor(faceNormal[t], facePlane[t]);
-		}
-	}
-
-	// Position-deduped vertices for adjacency (welded meshes share indices
-	// already; unwelded ones still connect through coincident corners).
-	std::unordered_map<uint64_t, uint32_t> posCanonical;
-	posCanonical.reserve(upload.vertices.size() * 2);
-	std::vector<uint32_t> canonical(upload.vertices.size(), 0);
-	for (size_t v = 0; v < upload.vertices.size(); ++v) {
-		const glm::vec3& p = upload.vertices[v].pos;
-		const uint64_t key = uint64_t(int32_t(p.x * 8192.0f))
-			| (uint64_t(uint32_t(int32_t(p.y * 8192.0f))) << 21)
-			| (uint64_t(uint32_t(int32_t(p.z * 8192.0f))) << 42);
-		// 21-bit signed quantization (~1/8192 m grid, +/-256 m range).
-		const int32_t qx = int32_t(std::clamp(p.x * 8192.0f, -1048576.0f, 1048575.0f));
-		const int32_t qy = int32_t(std::clamp(p.y * 8192.0f, -1048576.0f, 1048575.0f));
-		const int32_t qz = int32_t(std::clamp(p.z * 8192.0f, -1048576.0f, 1048575.0f));
-		(void)key;
-		const uint64_t key2 = uint64_t(uint32_t(qx))
-			| (uint64_t(uint32_t(qy)) << 21)
-			| (uint64_t(uint32_t(qz)) << 42);
-		auto [it, inserted] = posCanonical.insert({ key2, uint32_t(v) });
-		canonical[v] = it->second;
-	}
-	// Edge -> triangle adjacency (undirected, canonical corner ids).
-	std::unordered_map<uint64_t, std::vector<uint32_t>> edges;
-	edges.reserve(size_t(triCount) * 3);
-	for (uint32_t t = 0; t < triCount; ++t) {
-		const uint32_t c0 = canonical[upload.indices[t * 3 + 0]];
-		const uint32_t c1 = canonical[upload.indices[t * 3 + 1]];
-		const uint32_t c2 = canonical[upload.indices[t * 3 + 2]];
-		const uint64_t e0 = uint64_t(std::min(c0, c1)) | (uint64_t(std::max(c0, c1)) << 32);
-		const uint64_t e1 = uint64_t(std::min(c1, c2)) | (uint64_t(std::max(c1, c2)) << 32);
-		const uint64_t e2 = uint64_t(std::min(c2, c0)) | (uint64_t(std::max(c2, c0)) << 32);
-		edges[e0].push_back(t);
-		edges[e1].push_back(t);
-		edges[e2].push_back(t);
-	}
-	auto neighborsOf = [&](uint32_t t, std::vector<uint32_t>& outN) {
-		outN.clear();
-		const uint32_t c0 = canonical[upload.indices[t * 3 + 0]];
-		const uint32_t c1 = canonical[upload.indices[t * 3 + 1]];
-		const uint32_t c2 = canonical[upload.indices[t * 3 + 2]];
-		const uint64_t e0 = uint64_t(std::min(c0, c1)) | (uint64_t(std::max(c0, c1)) << 32);
-		const uint64_t e1 = uint64_t(std::min(c1, c2)) | (uint64_t(std::max(c1, c2)) << 32);
-		const uint64_t e2 = uint64_t(std::min(c2, c0)) | (uint64_t(std::max(c2, c0)) << 32);
-		for (uint64_t e : { e0, e1, e2 })
-			for (uint32_t nb : edges[e])
-				if (nb != t)
-					outN.push_back(nb);
-	};
-
-	// Chart cap: projected area beyond this splits (keeps charts packable).
-	constexpr float kChartSplitNormalDot = 0.80f; // ~37 deg agreement
-	constexpr uint64_t kChartMaxTexels = 256u * 256;
-
-	struct Chart {
-		Plane plane{ 0, 1 };
-		glm::vec3 refNormal{ 0.0f, 1.0f, 0.0f };
-		glm::vec2 pMin{ 0.0f };  // projected bbox (meters)
-		glm::vec2 pMax{ 0.0f };
-		uint64_t texels = 0;
-		std::vector<uint32_t> tris;
-		uint32_t x0 = 0, y0 = 0, w = 0, h = 0; // shelf placement
-	};
-	std::vector<Chart> charts;
-	std::vector<uint32_t> chartOf(triCount, 0xFFFFFFFFu);
-	// Vertex -> owning chart (canonical ids; first claim wins). Chart
-	// seams approximate: a vertex shared by two charts maps through its
-	// first chart, so the other chart's seam triangle samples this
-	// chart's margin — a diluted, mild artifact the bake dilation keeps
-	// plausible. NO vertex duplication: the mesh's vertex count and
-	// index buffer are untouched.
-	std::vector<uint32_t> vertexChartOf(upload.vertices.size(), 0xFFFFFFFFu);
-	std::vector<uint32_t> frontier;
-	std::vector<uint32_t> nbBuf;
-	for (uint32_t seed = 0; seed < triCount; ++seed) {
-		if (chartOf[seed] != 0xFFFFFFFFu)
-			continue;
-		const uint32_t chartIdx = uint32_t(charts.size());
-		Chart& ch = charts.emplace_back();
-		ch.plane = facePlane[seed];
-		ch.refNormal = faceNormal[seed];
-		frontier.clear();
-		frontier.push_back(seed);
-		while (!frontier.empty()) {
-			const uint32_t t = frontier.back();
-			frontier.pop_back();
-			if (chartOf[t] != 0xFFFFFFFFu)
-				continue;
-			// Plane + normal agreement keeps the shared projection sane.
-			if (facePlane[t].ax != ch.plane.ax || facePlane[t].ay != ch.plane.ay)
-				continue;
-			if (glm::dot(faceNormal[t], ch.refNormal) < kChartSplitNormalDot)
-				continue;
-			chartOf[t] = chartIdx;
-			ch.tris.push_back(t);
-			// Claim the triangle's vertices for this chart (first chart
-			// to touch a vertex owns its lightmap UV).
-			for (int k = 0; k < 3; ++k) {
-				const uint32_t c = canonical[upload.indices[t * 3 + k]];
-				if (vertexChartOf[c] == 0xFFFFFFFFu)
-					vertexChartOf[c] = chartIdx;
-			}
-			// Extend the projected bbox with this triangle.
-			for (int k = 0; k < 3; ++k) {
-				const glm::vec3& p =
-					upload.vertices[upload.indices[t * 3 + k]].pos;
-				const glm::vec2 q(p[ch.plane.ax], p[ch.plane.ay]);
-				if (ch.tris.size() == 1 && k == 0) {
-					ch.pMin = ch.pMax = q;
-				} else {
-					ch.pMin = glm::min(ch.pMin, q);
-					ch.pMax = glm::max(ch.pMax, q);
-				}
-			}
-			const glm::vec2 ext = glm::max(ch.pMax - ch.pMin, glm::vec2(1e-4f));
-			ch.texels = uint64_t(ext.x * float(opts.texelsPerMeter) + 1.0f)
-				* uint64_t(ext.y * float(opts.texelsPerMeter) + 1.0f);
-			if (ch.texels <= kChartMaxTexels) {
-				neighborsOf(t, nbBuf);
-				for (uint32_t nb : nbBuf)
-					if (chartOf[nb] == 0xFFFFFFFFu)
-						frontier.push_back(nb);
-			}
-			// Over-cap charts stop growing (their bbox already includes
-			// the offending triangle: the split is approximate, not
-			// exact-area; acceptable for a v1 unwrapper).
-		}
-	}
-	// Chart rect sizes from projected bboxes (+ inner margins). No shelf
-	// pack here and NO failure modes: the ATLAS packs chart rects (a mesh
-	// owns many small rects), and the chart-size cap keeps every rect
-	// small, so no mesh can bust a region budget.
-	uint64_t meshTexelTotal = 0;
-	for (Chart& ch : charts) {
-		const glm::vec2 ext = glm::max(ch.pMax - ch.pMin, glm::vec2(1e-4f));
-		ch.w = std::max<uint32_t>(uint32_t(std::ceil(ext.x * float(opts.texelsPerMeter))) + 2u * margin, 2u * margin + 1u);
-		ch.h = std::max<uint32_t>(uint32_t(std::ceil(ext.y * float(opts.texelsPerMeter))) + 2u * margin, 2u * margin + 1u);
-		meshTexelTotal += uint64_t(ch.w) * ch.h;
-	}
-	// Per-mesh TOTAL budget: a mesh with thousands of chart rects
-	// produces an unbounded bake-point count otherwise (GBs before the
-	// atlas rounds ever run). Checked BEFORE rasterization so the
-	// failing call costs only the (cheap) topology pass; the cook halves
-	// the density and retries.
-	if (opts.maxChartTexelsTotal > 0
-		&& meshTexelTotal > opts.maxChartTexelsTotal) {
-		err = "GenerateLightmapCharts: mesh chart texels exceed budget "
-			"(lower --lm-density)";
-		return false;
-	}
-
-	// Chart-UV for a triangle corner (continuous projection over the
-	// chart bbox; clamped to [0,1] over the chart's inner rect).
-	auto chartUv = [&](const Chart& c, const glm::vec3& p) -> glm::vec2 {
-		const glm::vec2 q(p[c.plane.ax], p[c.plane.ay]);
-		const glm::vec2 ext = glm::max(c.pMax - c.pMin, glm::vec2(1e-6f));
-		return glm::clamp((q - c.pMin) / ext, glm::vec2(0.0f), glm::vec2(1.0f));
-	};
-
-	// Per-ORIGINAL-vertex output: owning chart + chart-local uv (the cook
-	// maps these to atlas space AFTER the atlas pack, via AtlasUv).
-	// NOTE: first-chart-wins — seam corners shared by two charts get ONE
-	// uv here, which is why the per-triangle view below exists.
-	out.charts.resize(charts.size());
-	out.vertexChart.assign(upload.vertices.size(), 0xFFFFFFFFu);
-	out.chartLocalUv.assign(upload.vertices.size(), glm::vec2(0.0f));
-	for (size_t v = 0; v < upload.vertices.size(); ++v) {
-		const uint32_t chartIdx = vertexChartOf[canonical[v]];
-		if (chartIdx == 0xFFFFFFFFu)
-			continue; // unclaimed (degenerate tri corner): (0,0), no chart
-		const Chart& c = charts[chartIdx];
-		out.vertexChart[v] = chartIdx;
-		out.chartLocalUv[v] = chartUv(c, upload.vertices[v].pos);
-	}
-
-	// Per-triangle output (seam-correct): every triangle's corners in the
-	// triangle's OWN chart projection, original triangle order. A seam
-	// triangle (corners shared with a neighboring chart) still gets all
-	// three corners inside its own chart rect — the cook stamps these
-	// per-corner and duplicates seam vertices, so no triangle ever
-	// interpolates across two atlas rects.
-	out.triChart.assign(triCount, 0xFFFFFFFFu);
-	out.cornerChartUv.assign(size_t(triCount) * 3, glm::vec2(0.0f));
-	for (uint32_t t = 0; t < triCount; ++t) {
-		const uint32_t chartIdx = chartOf[t];
-		if (chartIdx == 0xFFFFFFFFu)
-			continue; // degenerate (zero-area): keeps (0,0)
-		const Chart& c = charts[chartIdx];
-		out.triChart[t] = chartIdx;
-		for (int k = 0; k < 3; ++k) {
-			const glm::vec3& p =
-				upload.vertices[upload.indices[t * 3 + k]].pos;
-			out.cornerChartUv[size_t(t) * 3 + k] = chartUv(c, p);
-		}
-	}
-
-	// Bake texels per chart: rasterize every chart triangle over the
-	// chart's inner region. Texel ownership: first writer wins (a flat
-	// w*h claim map — overlapping triangles of the same chart must NOT
-	// push duplicate texels, or big-chart meshes explode quadratically);
-	// shared-edge texels carry the first triangle's interpolation
-	// (sub-texel difference, invisible after the dilation pass). uv is
-	// in the chart's rect coords ([margin, size-margin) texels).
-	for (uint32_t ci = 0; ci < charts.size(); ++ci) {
-		const Chart& c = charts[ci];
-		SgLightmapChartResult::Chart& oc = out.charts[ci];
-		oc.width = c.w;
-		oc.height = c.h;
-		const uint32_t iw = std::max<uint32_t>(c.w - 2u * margin, 1u);
-		const uint32_t ih = std::max<uint32_t>(c.h - 2u * margin, 1u);
-		std::vector<uint32_t> claim(size_t(iw) * ih, 0xFFFFFFFFu);
-		for (uint32_t t : c.tris) {
-			const uint32_t i0 = upload.indices[t * 3 + 0];
-			const uint32_t i1 = upload.indices[t * 3 + 1];
-			const uint32_t i2 = upload.indices[t * 3 + 2];
-			const glm::vec3& p0 = upload.vertices[i0].pos;
-			const glm::vec3& p1 = upload.vertices[i1].pos;
-			const glm::vec3& p2 = upload.vertices[i2].pos;
-			const glm::vec3& n0 = upload.vertices[i0].normal;
-			const glm::vec3& n1 = upload.vertices[i1].normal;
-			const glm::vec3& n2 = upload.vertices[i2].normal;
-			const glm::vec2 u0 = chartUv(c, p0);
-			const glm::vec2 u1 = chartUv(c, p1);
-			const glm::vec2 u2 = chartUv(c, p2);
-			const glm::vec2 e0 = u1 - u0;
-			const glm::vec2 e1 = u2 - u0;
-			const float det = e0.x * e1.y - e0.y * e1.x;
-			if (std::abs(det) < 1e-12f)
-				continue;
-			// Triangle's uv bbox -> texel bounds inside the chart.
-			const glm::vec2 tMin = glm::min(u0, glm::min(u1, u2));
-			const glm::vec2 tMax = glm::max(u0, glm::max(u1, u2));
-			uint32_t tx0 = std::min(uint32_t(std::max(0.0f, tMin.x * float(iw) - 0.5f)), iw - 1u);
-			uint32_t tx1 = std::min(uint32_t(std::min(float(iw), tMax.x * float(iw) + 0.5f)), iw - 1u);
-			uint32_t ty0 = std::min(uint32_t(std::max(0.0f, tMin.y * float(ih) - 0.5f)), ih - 1u);
-			uint32_t ty1 = std::min(uint32_t(std::min(float(ih), tMax.y * float(ih) + 0.5f)), ih - 1u);
-			for (uint32_t y = ty0; y <= ty1; ++y) {
-				for (uint32_t x = tx0; x <= tx1; ++x) {
-					const size_t idx = size_t(y) * iw + x;
-					if (claim[idx] != 0xFFFFFFFFu)
-						continue; // first writer owns this texel
-					const float u = (float(x) + 0.5f) / float(iw);
-					const float v = (float(y) + 0.5f) / float(ih);
-					const glm::vec2 d(u - u0.x, v - u0.y);
-					const float b1 = (d.x * e1.y - d.y * e1.x) / det;
-					const float b2 = (e0.x * d.y - e0.y * d.x) / det;
-					const float b0 = 1.0f - b1 - b2;
-					if (b0 < -1e-4f || b1 < -1e-4f || b2 < -1e-4f)
-						continue;
-					claim[idx] = 1u;
-					SgLightmapTexel tx{};
-					tx.position = p0 * b0 + p1 * b1 + p2 * b2;
-					tx.normal = glm::normalize(n0 * b0 + n1 * b1 + n2 * b2);
-					// Rect-local texel coords + margin offset.
-					tx.uv = glm::vec2(float(margin + x) + 0.5f,
-						float(margin + y) + 0.5f);
-					oc.texels.push_back(tx);
-				}
-			}
-		}
-	}
-	return true;
-}
-
-// ---------------------------------------------------------------------------
-// Xatlas brute-force chart + pack (see lightmap.h)
+// Xatlas chart + pack (see lightmap.h) — the only chart source
 // ---------------------------------------------------------------------------
 
 namespace {
 
 // Inter-rect separation when stacking xatlas levels into a shared atlas
-// (matches PackRects' kPackSep: gutter + sep + gutter island padding).
+// (island-to-island padding is gutter + sep + gutter).
 constexpr uint32_t kXatlasStackSep = 2;
-
-struct XatlasTriKey {
-	uint64_t a = 0, b = 0, c = 0;
-	bool operator==(const XatlasTriKey& o) const {
-		return a == o.a && b == o.b && c == o.c;
-	}
-};
-struct XatlasTriKeyHash {
-	size_t operator()(const XatlasTriKey& k) const noexcept {
-		// 64-bit FNV-1a over the sorted triple.
-		size_t h = 1469598103934665603ull;
-		h ^= k.a;
-		h *= 1099511628211ull;
-		h ^= k.b;
-		h *= 1099511628211ull;
-		h ^= k.c;
-		h *= 1099511628211ull;
-		return h;
-	}
-};
-
-// Position quantization for face matching (same 21-bit grid as the
-// planar path: ~1/8192 m cells, +/-256 m range). xatlas welds colocal
-// input vertices internally (output xref need not equal the face's own
-// indices on unwelded soup), so faces match by POSITION triple —
-// well inside one quantization cell of each other — never by index.
-inline uint64_t XatlasQuantPos(const glm::vec3& p) {
-	const int32_t qx =
-		int32_t(std::clamp(p.x * 8192.0f, -1048576.0f, 1048575.0f));
-	const int32_t qy =
-		int32_t(std::clamp(p.y * 8192.0f, -1048576.0f, 1048575.0f));
-	const int32_t qz =
-		int32_t(std::clamp(p.z * 8192.0f, -1048576.0f, 1048575.0f));
-	return uint64_t(uint32_t(qx)) | (uint64_t(uint32_t(qy)) << 21)
-		| (uint64_t(uint32_t(qz)) << 42);
-}
 
 } // namespace
 
@@ -1211,11 +551,15 @@ bool GenerateLightmapChartsXatlas(
 		err = "GenerateLightmapChartsXatlas: no meshes";
 		return false;
 	}
-	if (!(opts.texelsPerMeter > 0.0f) || opts.gutterTexels == 0
+	if (!(opts.metersPerTexel > 0.0f) || opts.gutterTexels == 0
 		|| opts.gutterTexels > 4) {
 		err = "GenerateLightmapChartsXatlas: bad options";
 		return false;
 	}
+	// Meters-per-texel request -> xatlas texels/m (floor 2 texels/m =
+	// meters-per-texel ceiling 0.5).
+	const float texelsPerUnit = std::max(
+		1.0f / std::max(opts.metersPerTexel, 1e-4f), 2.0f);
 	const uint32_t margin = opts.gutterTexels;
 
 	// Valid jobs (meshes with triangles); out.meshes stays parallel to the
@@ -1275,10 +619,9 @@ bool GenerateLightmapChartsXatlas(
 	xatlas::ChartOptions co;
 	co.fixWinding = true;
 	xatlas::PackOptions po;
-	po.texelsPerUnit = std::max(opts.texelsPerMeter, 1e-3f);
+	po.texelsPerUnit = texelsPerUnit;
 	// Pack gap: our per-chart margin ring must land in EMPTY pack space on
-	// both sides (margin + sep + margin island-to-island, same budget as
-	// the shelf packer's gutter + kPackSep + gutter).
+	// both sides (margin + sep + margin island-to-island).
 	po.padding = margin + kXatlasStackSep;
 	po.bilinear = true;
 	po.bruteForce = true; // ALWAYS: this path exists for best packing.
@@ -1298,14 +641,14 @@ bool GenerateLightmapChartsXatlas(
 		err = "GenerateLightmapChartsXatlas: xatlas mesh count mismatch";
 		return false;
 	}
-
-	// Per job: map output triangles back to input triangles through
-	// QUANTIZED POSITION triples (output order is chart-major, NOT input
-	// order; winding may be fixed and corners rotated; xatlas welds
-	// colocal vertices so xref need not equal the face's own indices —
-	// position matching is immune to all three). Faces xatlas dropped
-	// (degenerates) simply stay uncharted (0xFFFFFFFF), like the planar
-	// path's zero-area handling — never a whole-mesh failure.
+	// Per job: xatlas output is SOURCE-FACE indexed — indexArray[t*3+k]
+	// is the output vertex for input triangle t, corner k (xatlas writes
+	// each charted face back through mapFaceToSourceFace; faces it
+	// dropped keep their slots but point at vertices with atlasIndex
+	// < 0, uv (0,0)). fixWinding mirrors texcoords instead of
+	// reordering indices, so the corner correspondence is exact. Vertex
+	// splitting stays inside xatlas (vertexCount >= input); the cook's
+	// per-corner stamping duplicates seam corners (StampLightmapUvs).
 	for (size_t ji = 0; ji < jobs.size(); ++ji) {
 		const Job& job = jobs[ji];
 		const StaticMeshUpload& upload = *job.up;
@@ -1317,103 +660,14 @@ bool GenerateLightmapChartsXatlas(
 			mo.ok = false;
 			continue;
 		}
-		// Quantized positions per input vertex (weld-stable keys).
-		std::vector<uint64_t> qpos(upload.vertices.size(), 0);
-		for (size_t v = 0; v < upload.vertices.size(); ++v)
-			qpos[v] = XatlasQuantPos(upload.vertices[v].pos);
-		// Sorted-triple -> input triangles (first wins; exact-duplicate
-		// faces share UVs anyway).
-		std::unordered_map<XatlasTriKey, std::vector<uint32_t>,
-			XatlasTriKeyHash> faceMap;
-		faceMap.reserve(size_t(triCount) * 2);
-		for (uint32_t t = 0; t < triCount; ++t) {
-			uint64_t ix[3] = { qpos[upload.indices[t * 3 + 0]],
-				qpos[upload.indices[t * 3 + 1]],
-				qpos[upload.indices[t * 3 + 2]] };
-			std::sort(ix, ix + 3);
-			faceMap[{ ix[0], ix[1], ix[2] }].push_back(t);
-		}
-		std::vector<char> assigned(triCount, 0);
 		std::vector<uint32_t> triChart(triCount, 0xFFFFFFFFu);
 		std::vector<glm::vec2> cornerAtlasUv(size_t(triCount) * 3,
 			glm::vec2(0.0f));
-		const uint32_t outTris = xm.indexCount / 3;
-		for (uint32_t ot = 0; ot < outTris; ++ot) {
-			const uint32_t ov[3] = { xm.indexArray[ot * 3 + 0],
-				xm.indexArray[ot * 3 + 1], xm.indexArray[ot * 3 + 2] };
-			if (ov[0] >= xm.vertexCount || ov[1] >= xm.vertexCount
-				|| ov[2] >= xm.vertexCount)
-				continue;
-			const uint32_t xr[3] = { xm.vertexArray[ov[0]].xref,
-				xm.vertexArray[ov[1]].xref, xm.vertexArray[ov[2]].xref };
-			if (xr[0] >= qpos.size() || xr[1] >= qpos.size()
-				|| xr[2] >= qpos.size())
-				continue;
-			uint64_t key[3] = { qpos[xr[0]], qpos[xr[1]], qpos[xr[2]] };
-			std::sort(key, key + 3);
-			auto it = faceMap.find({ key[0], key[1], key[2] });
-			if (it == faceMap.end())
-				continue;
-			uint32_t t = 0xFFFFFFFFu;
-			for (uint32_t cand : it->second) {
-				if (!assigned[cand]) {
-					t = cand;
-					break;
-				}
-			}
-			if (t == 0xFFFFFFFFu)
-				continue; // exact-duplicate face already placed
-			assigned[t] = 1;
-			// Bind output corners to input corners: EXACT index match
-			// first (rotation/winding independent and correct for
-			// needle/degenerate triangles whose corners share a
-			// quantized position), weld-stable position second (xatlas
-			// welds colocal vertices, so xref may name a canonical
-			// duplicate instead of the face's own index), arbitrary
-			// leftover last (should not happen; keeps the triangle
-			// inside its chart rather than dropping it).
-			const uint64_t want[3] = { qpos[xr[0]], qpos[xr[1]],
-				qpos[xr[2]] };
-			bool used[3] = { false, false, false };
-			for (int k = 0; k < 3; ++k) {
-				int pick = -1;
-				for (int p = 0; p < 3; ++p) {
-					if (!used[p]
-						&& upload.indices[size_t(t) * 3 + p] == xr[k]) {
-						pick = p;
-						break;
-					}
-				}
-				if (pick < 0) {
-					for (int p = 0; p < 3; ++p) {
-						if (!used[p]
-							&& qpos[upload.indices[size_t(t) * 3 + p]]
-								== want[k]) {
-							pick = p;
-							break;
-						}
-					}
-				}
-				if (pick < 0) {
-					for (int p = 0; p < 3; ++p) {
-						if (!used[p]) {
-							pick = p;
-							break;
-						}
-					}
-				}
-				if (pick < 0)
-					continue;
-				used[pick] = true;
-				cornerAtlasUv[size_t(t) * 3 + pick] =
-					glm::vec2(xm.vertexArray[ov[k]].uv[0],
-						xm.vertexArray[ov[k]].uv[1]);
-			}
-		}
 		// Chart ownership from the chart face arrays (per-mesh chart
-		// ids; faceArray holds ORIGINAL face numbers — invalid faces
-		// appear in no chart and stay uncharted, like the planar
-		// path's zero-area handling).
+		// ids; faceArray holds ORIGINAL face numbers — faces xatlas
+		// dropped appear in no chart and stay uncharted — never a
+		// whole-mesh failure). Chart ids are dense 0..chartCount-1
+		// already.
 		const uint32_t chartCount = xm.chartCount;
 		for (uint32_t c = 0; c < chartCount; ++c) {
 			const xatlas::Chart& ch = xm.chartArray[c];
@@ -1425,9 +679,33 @@ bool GenerateLightmapChartsXatlas(
 					triChart[face] = c;
 			}
 		}
-		// Chart ids from the face arrays are dense 0..chartCount-1
-		// already; unassigned triangles stay 0xFFFFFFFF
-		// (degenerate/uncharted, same convention as planar).
+		// Atlas UVs straight from the output: indexArray is indexed by
+		// source face/corner, so slot t*3+k carries exactly input
+		// corner k's chart UV. Dropped faces (atlasIndex < 0) fall
+		// back to uncharted (0xFFFFFFFF).
+		const uint32_t outTris = xm.indexCount / 3;
+		const uint32_t directTris = std::min(triCount, outTris);
+		for (uint32_t t = 0; t < directTris; ++t) {
+			if (triChart[t] == 0xFFFFFFFFu)
+				continue;
+			bool valid = true;
+			for (uint32_t k = 0; k < 3; ++k) {
+				const uint32_t ov = xm.indexArray[size_t(t) * 3 + k];
+				if (ov >= xm.vertexCount) {
+					valid = false;
+					break;
+				}
+				const xatlas::Vertex& xv = xm.vertexArray[ov];
+				if (xv.atlasIndex < 0) {
+					valid = false;
+					break;
+				}
+				cornerAtlasUv[size_t(t) * 3 + k] =
+					glm::vec2(xv.uv[0], xv.uv[1]);
+			}
+			if (!valid)
+				triChart[t] = 0xFFFFFFFFu;
+		}
 		std::vector<glm::vec2> cMin(chartCount,
 			glm::vec2(std::numeric_limits<float>::max()));
 		std::vector<glm::vec2> cMax(chartCount,
@@ -1500,7 +778,7 @@ bool GenerateLightmapChartsXatlas(
 			}
 		}
 		// Per-vertex outputs (first chart to touch a vertex wins) +
-		// per-triangle seam-correct view (same contract as planar).
+		// per-triangle seam-correct view.
 		mo.chart.vertexChart.assign(upload.vertices.size(), 0xFFFFFFFFu);
 		mo.chart.chartLocalUv.assign(upload.vertices.size(),
 			glm::vec2(0.0f));
@@ -1519,9 +797,8 @@ bool GenerateLightmapChartsXatlas(
 		}
 		mo.chart.triChart = triChart;
 		mo.chart.cornerChartUv = std::move(cornerLocal);
-		mo.chart.usedAuthoredUv2 = false;
-		// Bake texels per chart (same rasterizer contract as the planar
-		// path: first-writer-owns claim map, rect-local uv + margin).
+		// Bake texels per chart (first-writer-owns claim map,
+		// rect-local uv + margin).
 		for (uint32_t ci = 0; ci < mo.chart.charts.size(); ++ci) {
 			const auto& r = mo.rects[ci];
 			SgLightmapChartResult::Chart& oc = mo.chart.charts[ci];
@@ -1589,7 +866,7 @@ bool GenerateLightmapChartsXatlas(
 		}
 		mo.ok = true;
 	}
-	out.atlasWidth = xa->width + 1u; // +1 sampling pad (PackRects parity)
+	out.atlasWidth = xa->width + 1u; // +1 sampling pad
 	out.atlasHeight = xa->height + 1u;
 	xatlas::Destroy(xa);
 	return true;
@@ -1622,20 +899,22 @@ bool AppendXatlasLevelToAtlas(SgLightmapAtlas& atlas,
 		for (const auto& r : mo.rects) {
 			const float w = r.maxX - r.minX;
 			const float h = r.maxY - r.minY;
-			if (r.minX + w > float(atlasWidthCap) + 1e-3f) {
-				err = "AppendXatlasLevelToAtlas: chart wider than the atlas "
-					"(lower --lm-density)";
-				return false;
-			}
+		if (r.minX + w > float(atlasWidthCap) + 1e-3f) {
+			err = "AppendXatlasLevelToAtlas: chart wider than the atlas "
+				"(raise --lm-meters-per-texel or --lm-atlas-width)";
+			return false;
+		}
 			needH = std::max(needH, offY + (r.maxY - 0.0f));
 			newW = std::max(newW, uint32_t(std::ceil(r.maxX)));
 		}
 	}
-	// +1 sampling pad, like PackRects.
-	uint32_t finalH = std::min(uint32_t(std::ceil(needH)) + 1u, maxHeight + 1u);
-	if (float(finalH - 1u) < needH - 1e-3f) {
+	// +1 sampling pad, rounded up to a 4-texel multiple (BC6H 4x4
+	// blocks: the atlas IS the GPU texture, so its dims must be
+	// block-aligned for the compressed payload).
+	uint32_t finalH = (uint32_t(std::ceil(needH)) + 1u + 3u) & ~3u;
+	if (finalH > maxHeight) {
 		err = "AppendXatlasLevelToAtlas: atlas height overflow "
-			"(lower --lm-density or raise the budget)";
+			"(raise --lm-meters-per-texel or --lm-max-height)";
 		return false;
 	}
 	newW = std::min(newW + 1u, atlasWidthCap);
@@ -1669,6 +948,270 @@ bool AppendXatlasLevelToAtlas(SgLightmapAtlas& atlas,
 			p.coeffs.assign(size_t(w) * h * preferredLobes,
 				glm::vec3(0.0f));
 			atlas.payloads.push_back(std::move(p));
+		}
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Frostbite-style LOD chart transfer (see lightmap.h)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Closest point on triangle (Ericson, Real-Time Collision Detection
+// 5.1.5) with barycentric output for attribute interpolation.
+inline glm::vec3 ClosestPointOnTriangle(const glm::vec3& p,
+	const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
+	glm::vec3& bary) {
+	const glm::vec3 ab = b - a, ac = c - a, ap = p - a;
+	const float d1 = glm::dot(ab, ap), d2 = glm::dot(ac, ap);
+	if (d1 <= 0.0f && d2 <= 0.0f) {
+		bary = glm::vec3(1.0f, 0.0f, 0.0f);
+		return a;
+	}
+	const glm::vec3 bp = p - b;
+	const float d3 = glm::dot(ab, bp), d4 = glm::dot(ac, bp);
+	if (d3 >= 0.0f && d4 <= d3) {
+		bary = glm::vec3(0.0f, 1.0f, 0.0f);
+		return b;
+	}
+	const float vc = d1 * d4 - d3 * d2;
+	if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+		const float v = d1 / (d1 - d3);
+		bary = glm::vec3(1.0f - v, v, 0.0f);
+		return a + v * ab;
+	}
+	const glm::vec3 cp = p - c;
+	const float d5 = glm::dot(ab, cp), d6 = glm::dot(ac, cp);
+	if (d6 >= 0.0f && d5 <= d6) {
+		bary = glm::vec3(0.0f, 0.0f, 1.0f);
+		return c;
+	}
+	const float vb = d5 * d2 - d1 * d6;
+	if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+		const float w = d2 / (d2 - d6);
+		bary = glm::vec3(1.0f - w, 0.0f, w);
+		return a + w * ac;
+	}
+	const float va = d3 * d6 - d5 * d4;
+	if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
+		const float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+		bary = glm::vec3(0.0f, 1.0f - w, w);
+		return b + w * (c - b);
+	}
+	const float denom = 1.0f / (va + vb + vc);
+	const float v = vb * denom, w = vc * denom;
+	bary = glm::vec3(1.0f - v - w, v, w);
+	return a + ab * v + ac * w;
+}
+
+} // namespace
+
+bool TransferLightmapCharts(const StaticMeshUpload& reference,
+	const SgLightmapChartResult& refCharts,
+	const StaticMeshUpload& target, SgLightmapChartResult& out,
+	std::string& err) {
+	out = SgLightmapChartResult{};
+	const uint32_t refTris = uint32_t(reference.indices.size() / 3);
+	const uint32_t tgtTris = uint32_t(target.indices.size() / 3);
+	if (refTris == 0 || reference.vertices.empty()) {
+		err = "TransferLightmapCharts: empty reference";
+		return false;
+	}
+	if (tgtTris == 0 || target.vertices.empty()) {
+		err = "TransferLightmapCharts: empty target";
+		return false;
+	}
+	if (refCharts.triChart.size() != refTris
+		|| refCharts.cornerChartUv.size() != size_t(refTris) * 3) {
+		err = "TransferLightmapCharts: reference chart data size mismatch";
+		return false;
+	}
+	// Charted reference triangles (positions, per-corner chart-local
+	// uvs, AABB for fast rejects). Uncharted faces (dropped/degenerate)
+	// never receive projections.
+	struct RefTri {
+		uint32_t chart = 0;
+		glm::vec3 p[3] = {};
+		glm::vec2 uv[3] = {};
+		glm::vec3 aabbMin = {};
+		glm::vec3 aabbMax = {};
+	};
+	std::vector<RefTri> ref;
+	ref.reserve(refTris);
+	for (uint32_t t = 0; t < refTris; ++t) {
+		const uint32_t chart = refCharts.triChart[t];
+		if (chart == 0xFFFFFFFFu)
+			continue;
+		RefTri rt;
+		rt.chart = chart;
+		for (int k = 0; k < 3; ++k) {
+			const uint32_t ix = reference.indices[size_t(t) * 3 + k];
+			if (ix >= reference.vertices.size()) {
+				err = "TransferLightmapCharts: reference index out of "
+					"range";
+				return false;
+			}
+			rt.p[k] = reference.vertices[ix].pos;
+			rt.uv[k] = refCharts.cornerChartUv[size_t(t) * 3 + k];
+		}
+		rt.aabbMin = glm::min(rt.p[0], glm::min(rt.p[1], rt.p[2]));
+		rt.aabbMax = glm::max(rt.p[0], glm::max(rt.p[1], rt.p[2]));
+		ref.push_back(rt);
+	}
+	if (ref.empty()) {
+		err = "TransferLightmapCharts: reference has no charted "
+			"triangles";
+		return false;
+	}
+	// Closest point on the charted reference surface. restrictChart
+	// (0xFFFFFFFF = any chart) confines the search for seam-spanning
+	// target corners.
+	auto closestOnRef = [&](const glm::vec3& q, uint32_t restrictChart,
+		uint32_t& chartOut, glm::vec2& uvOut, float& dist2Out) {
+		float best = std::numeric_limits<float>::max();
+		bool hit = false;
+		for (const RefTri& rt : ref) {
+			if (restrictChart != 0xFFFFFFFFu && rt.chart != restrictChart)
+				continue;
+			const float dx = std::max({ rt.aabbMin.x - q.x,
+				q.x - rt.aabbMax.x, 0.0f });
+			const float dy = std::max({ rt.aabbMin.y - q.y,
+				q.y - rt.aabbMax.y, 0.0f });
+			const float dz = std::max({ rt.aabbMin.z - q.z,
+				q.z - rt.aabbMax.z, 0.0f });
+			if (dx * dx + dy * dy + dz * dz >= best)
+				continue;
+			glm::vec3 bary;
+			const glm::vec3 p = ClosestPointOnTriangle(
+				q, rt.p[0], rt.p[1], rt.p[2], bary);
+			const glm::vec3 d = q - p;
+			const float d2 = glm::dot(d, d);
+			if (d2 >= best)
+				continue;
+			best = d2;
+			chartOut = rt.chart;
+			uvOut = rt.uv[0] * bary.x + rt.uv[1] * bary.y
+				+ rt.uv[2] * bary.z;
+			hit = true;
+		}
+		dist2Out = best;
+		return hit;
+	};
+	// Per target vertex: (chart, uv, dist2) of its closest charted
+	// point on the reference surface.
+	const size_t vCount = target.vertices.size();
+	std::vector<uint32_t> vChart(vCount, 0xFFFFFFFFu);
+	std::vector<glm::vec2> vUv(vCount, glm::vec2(0.0f));
+	std::vector<float> vDist2(vCount,
+		std::numeric_limits<float>::max());
+	for (size_t v = 0; v < vCount; ++v) {
+		uint32_t chart = 0xFFFFFFFFu;
+		glm::vec2 uv(0.0f);
+		float d2 = 0.0f;
+		if (closestOnRef(target.vertices[v].pos, 0xFFFFFFFFu, chart,
+				uv, d2)) {
+			vChart[v] = chart;
+			vUv[v] = uv;
+			vDist2[v] = d2;
+		}
+	}
+	// Per target triangle: ONE chart + per-corner uvs inside it. All
+	// three corners in the same chart keeps their projections; the
+	// majority wins otherwise (closest projection when all three
+	// differ); off-chart corners re-project RESTRICTED to the chosen
+	// chart — they sit on the target triangle whose remaining corners
+	// are in it, so the restricted closest point lands at the seam,
+	// mirroring how the chart unwrapper splits corners. Corners that
+	// reach only uncharted reference geometry keep the in-chart corner
+	// uv average (rare; the sweep-repair canary catches it).
+	out.triChart.assign(tgtTris, 0xFFFFFFFFu);
+	out.cornerChartUv.assign(size_t(tgtTris) * 3, glm::vec2(0.0f));
+	for (uint32_t t = 0; t < tgtTris; ++t) {
+		uint32_t ix[3] = { target.indices[size_t(t) * 3 + 0],
+			target.indices[size_t(t) * 3 + 1],
+			target.indices[size_t(t) * 3 + 2] };
+		if (ix[0] >= vCount || ix[1] >= vCount || ix[2] >= vCount)
+			continue;
+		bool allHit = true;
+		for (int k = 0; k < 3; ++k)
+			allHit = allHit && vChart[ix[k]] != 0xFFFFFFFFu;
+		if (!allHit)
+			continue; // uncharted reference region
+		const uint32_t c[3] = { vChart[ix[0]], vChart[ix[1]],
+			vChart[ix[2]] };
+		uint32_t chart;
+		if (c[0] == c[1] && c[1] == c[2]) {
+			chart = c[0];
+		} else if (c[0] == c[1] || c[0] == c[2]) {
+			chart = c[0];
+		} else if (c[1] == c[2]) {
+			chart = c[1];
+		} else {
+			chart = c[0];
+			float best = vDist2[ix[0]];
+			if (vDist2[ix[1]] < best) {
+				best = vDist2[ix[1]];
+				chart = c[1];
+			}
+			if (vDist2[ix[2]] < best) {
+				best = vDist2[ix[2]];
+				chart = c[2];
+			}
+		}
+		glm::vec2 uv[3] = { vUv[ix[0]], vUv[ix[1]], vUv[ix[2]] };
+		bool inChart[3] = { c[0] == chart, c[1] == chart,
+			c[2] == chart };
+		glm::vec2 inSum(0.0f);
+		uint32_t inCount = 0;
+		for (int k = 0; k < 3; ++k) {
+			if (inChart[k]) {
+				inSum += uv[k];
+				++inCount;
+			}
+		}
+		bool valid = true;
+		for (int k = 0; k < 3; ++k) {
+			if (inChart[k])
+				continue;
+			uint32_t rc = 0xFFFFFFFFu;
+			glm::vec2 ruv(0.0f);
+			float rd2 = 0.0f;
+			if (closestOnRef(target.vertices[ix[k]].pos, chart, rc, ruv,
+					rd2)) {
+				uv[k] = ruv;
+			} else if (inCount != 0) {
+				uv[k] = inSum / float(inCount);
+			} else {
+				valid = false; // no contact with the chosen chart
+				break;
+			}
+		}
+		if (!valid)
+			continue;
+		out.triChart[t] = chart;
+		for (int k = 0; k < 3; ++k)
+			out.cornerChartUv[size_t(t) * 3 + k] = uv[k];
+	}
+	// Rects/charts ride the reference (StampLightmapUvs stamps chart-local
+	// uvs + ids and derives the atlas transforms from the chunk rects;
+	// nothing target-specific is needed). The
+	// per-vertex first-wins view follows the per-corner data (same
+	// contract as every other chart path).
+	out.charts = refCharts.charts;
+	out.vertexChart.assign(vCount, 0xFFFFFFFFu);
+	out.chartLocalUv.assign(vCount, glm::vec2(0.0f));
+	for (uint32_t t = 0; t < tgtTris; ++t) {
+		if (out.triChart[t] == 0xFFFFFFFFu)
+			continue;
+		for (int k = 0; k < 3; ++k) {
+			const uint32_t v = target.indices[size_t(t) * 3 + k];
+			if (v < vCount && out.vertexChart[v] == 0xFFFFFFFFu) {
+				out.vertexChart[v] = out.triChart[t];
+				out.chartLocalUv[v] =
+					out.cornerChartUv[size_t(t) * 3 + k];
+			}
 		}
 	}
 	return true;
@@ -1713,75 +1256,6 @@ glm::vec2 SgLightmapAtlas::AtlasTexel(uint32_t chunk, uint32_t margin,
 		+ glm::clamp(chartLocalUv.x, 0.0f, 1.0f) * innerW,
 		c.rectMin[1] + float(margin)
 		+ glm::clamp(chartLocalUv.y, 0.0f, 1.0f) * innerH);
-}
-
-bool SgLightmapAtlas::PackRects(const std::vector<RectRequest>& requests,
-	uint32_t atlasWidth, uint32_t maxHeight) {
-	chunks.clear();
-	payloads.clear();
-	width = 0;
-	height = 0;
-	if (requests.empty() || atlasWidth == 0)
-		return false;
-	for (const RectRequest& r : requests)
-		if (!LightmapLobeCountValid(r.lobeCount) || r.size.x == 0 || r.size.y == 0)
-			return false;
-	chunks.resize(requests.size());
-	std::vector<uint32_t> order(requests.size());
-	for (uint32_t i = 0; i < requests.size(); ++i)
-		order[i] = i;
-	std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
-		if (requests[a].size.y != requests[b].size.y)
-			return requests[a].size.y > requests[b].size.y;
-		return requests[a].size.x > requests[b].size.x;
-	});
-	// Inter-rect separation (texels): charts carry their own inner gutter
-	// (gutterTexels per side, see SgLightmapChartOptions), so a fixed gap
-	// here is what keeps bilinear at one chart's content edge from ever
-	// touching the NEXT chart's content. gutter + sep + gutter = the
-	// island-to-island padding (1 + 2 + 1 = 4 texels at gutter 1).
-	// Packing flush (sep 0) relied on both gutters alone, which is fine
-	// for large charts but wastes half the atlas on the tiny ornament
-	// charts (12k+ on sponza): per-chart gutter scales with chart COUNT,
-	// the pack gap is paid once between rects.
-	constexpr uint32_t kPackSep = 2;
-	uint32_t rowX = 0, rowY = 0, rowH = 0;
-	for (uint32_t idx : order) {
-		const uint32_t w = requests[idx].size.x;
-		const uint32_t h = requests[idx].size.y;
-		if (w > atlasWidth)
-			return false;
-		if (rowX > 0 && rowX + kPackSep + w > atlasWidth) {
-			rowX = 0;
-			rowY += rowH + kPackSep;
-			rowH = 0;
-		}
-		if (rowY + h > maxHeight)
-			return false;
-		SgLightmapChunk& c = chunks[idx];
-		c.rectMin[0] = float(rowX);
-		c.rectMin[1] = float(rowY);
-		c.rectMax[0] = float(rowX + w);
-		c.rectMax[1] = float(rowY + h);
-		c.lobeCount = requests[idx].lobeCount;
-		c.meshKey = requests[idx].meshKey;
-		rowX += w + kPackSep;
-		rowH = std::max(rowH, h);
-		width = std::max(width, rowX > kPackSep ? rowX - kPackSep : rowX);
-		height = std::max(height, rowY + rowH);
-	}
-	// One texel of padding at the pack edges keeps bilinear clamps from
-	// touching neighbor chunks; empty texels stay zero.
-	height = std::min(height + 1u, maxHeight);
-	width = std::min(width + 1u, atlasWidth);
-	payloads.resize(requests.size());
-	for (size_t i = 0; i < requests.size(); ++i) {
-		payloads[i].width = requests[i].size.x;
-		payloads[i].height = requests[i].size.y;
-		payloads[i].coeffs.assign(size_t(requests[i].size.x)
-			* requests[i].size.y * requests[i].lobeCount, glm::vec3(0.0f));
-	}
-	return true;
 }
 
 bool SgLightmapAtlas::Sample(uint32_t chunkIdx, const glm::vec2& uv,
@@ -1845,18 +1319,190 @@ void SgLightmapAtlas::PackGpuLayers(std::vector<uint16_t> out[kLightmapLayerCoun
 }
 
 size_t SgLightmapAtlas::GpuBytes() const {
-	return size_t(width) * height * kLightmapLayerCount * 8; // 9 RGBA16F texels
+	if (compression != SgLightmapCompression::Uncompressed)
+		return size_t(width) * height * bc6hLobes; // BC6H: 8 bits/texel/lobe
+	return size_t(width) * height * kLightmapLayerCount * 8; // 9 RGBA16F
+}
+
+bool SgLightmapAtlas::CompressToBc6h(bool optFill, std::string& err) {
+	if (width == 0 || height == 0 || chunks.empty() || payloads.empty()) {
+		err = "CompressToBc6h: empty atlas";
+		return false;
+	}
+	if ((width & 3u) || (height & 3u)) {
+		err = "CompressToBc6h: atlas dims must be multiples of 4 "
+			"(BC6H 4x4 blocks)";
+		return false;
+	}
+	uint32_t lobes = 0;
+	for (const SgLightmapChunk& c : chunks)
+		lobes = std::max(lobes, std::min(c.lobeCount,
+			kLightmapBc6hTextureCount));
+	if (lobes == 0) {
+		err = "CompressToBc6h: no lobes";
+		return false;
+	}
+
+	// Texel ownership: -1 = invalid (separator/gutter, never sampled),
+	// otherwise the owning chunk (rects are disjoint by packer
+	// construction; dilation fills every rect texel, so rect coverage
+	// == valid content).
+	const size_t texels = size_t(width) * height;
+	std::vector<int32_t> owner(texels, -1);
+	for (size_t ci = 0; ci < chunks.size(); ++ci) {
+		const SgLightmapChunk& c = chunks[ci];
+		const SgLightmapAtlas::ChunkPayload& p = payloads[ci];
+		const int ox = int(c.rectMin[0]);
+		const int oy = int(c.rectMin[1]);
+		if (ox < 0 || oy < 0 || ox + int(p.width) > int(width)
+			|| oy + int(p.height) > int(height)
+			|| p.coeffs.size() != size_t(p.width) * p.height * c.lobeCount) {
+			err = "CompressToBc6h: chunk rect/payload out of bounds";
+			return false;
+		}
+		for (uint32_t y = 0; y < p.height; ++y)
+			for (uint32_t x = 0; x < p.width; ++x)
+				owner[size_t(oy + int(y)) * width + size_t(ox + int(x))]
+					= int32_t(ci);
+	}
+
+	// One BC6H image per lobe: texel = the lobe's amplitude (RGB half).
+	// Chunks with fewer lobes contribute zero (the shader never reads
+	// above their count). The DirectXTex block encoder is expensive
+	// (~14 modes x partitions x refinement per block), so the per-lobe
+	// assembly+encode jobs run on a thread per lobe (each is
+	// independent: own halves scratch, own output vector; the results
+	// concatenate lobe-major afterwards).
+	bc6hBlocks.clear();
+	struct LobeJob {
+		std::vector<uint16_t> halves;
+		std::vector<uint8_t> blocks;
+		bool ok = false;
+	};
+	std::vector<LobeJob> jobs(lobes);
+	std::vector<std::thread> threads;
+	const uint32_t hwThreads = std::max(
+		std::thread::hardware_concurrency(), 1u);
+	const uint32_t maxThreads = std::min(lobes, hwThreads);
+	std::atomic<uint32_t> nextLobe{ 0 };
+	for (uint32_t t = 0; t < maxThreads; ++t) {
+		threads.emplace_back([&]() {
+			for (uint32_t lobe = nextLobe++; lobe < lobes;
+					lobe = nextLobe++) {
+				LobeJob& job = jobs[lobe];
+				job.halves.assign(texels * 3, 0);
+				uint16_t* halves = job.halves.data();
+				for (size_t ci = 0; ci < chunks.size(); ++ci) {
+					const uint32_t n = std::min(chunks[ci].lobeCount,
+						kLightmapBc6hTextureCount);
+					if (lobe >= n)
+						continue;
+					const SgLightmapChunk& c = chunks[ci];
+					const SgLightmapAtlas::ChunkPayload& p = payloads[ci];
+					const int ox = int(c.rectMin[0]);
+					const int oy = int(c.rectMin[1]);
+					for (uint32_t y = 0; y < p.height; ++y) {
+						const glm::vec3* src = &p.coeffs[size_t(y)
+							* p.width * n + lobe];
+						uint16_t* dst = &halves[(size_t(oy + int(y))
+							* width + size_t(ox)) * 3];
+						for (uint32_t x = 0; x < p.width; ++x) {
+							const glm::vec3& a = src[size_t(x) * n];
+							dst[x * 3 + 0] = PackHalf(a.r);
+							dst[x * 3 + 1] = PackHalf(a.g);
+							dst[x * 3 + 2] = PackHalf(a.b);
+						}
+					}
+				}
+				// Frostbite prefill (bc6hopt): replace INVALID texels
+				// with the average of the VALID ones within each 4x4
+				// block. Uncovered zeros expand a block's endpoint box
+				// and cost precision on the covered content; the block
+				// average keeps the endpoints tight around the content.
+				// Fully-invalid blocks stay zero (min == max == 0 —
+				// lossless).
+				if (optFill) {
+					for (uint32_t by = 0; by < height / 4; ++by) {
+						for (uint32_t bx = 0; bx < width / 4; ++bx) {
+							glm::dvec3 acc(0.0);
+							uint32_t valid = 0;
+							for (uint32_t y = 0; y < 4; ++y)
+								for (uint32_t x = 0; x < 4; ++x) {
+									const size_t i =
+										size_t(by * 4 + y) * width
+										+ size_t(bx * 4 + x);
+									if (owner[i] < 0)
+										continue;
+									++valid;
+									for (uint32_t ch = 0; ch < 3; ++ch)
+										acc[ch] +=
+											UnpackHalf(halves[i * 3 + ch]);
+								}
+							if (valid == 0 || valid == 16)
+								continue;
+							const glm::vec3 avg(
+								float(acc[0] / double(valid)),
+								float(acc[1] / double(valid)),
+								float(acc[2] / double(valid)));
+							const uint16_t packed[3] = {
+								PackHalf(avg[0]), PackHalf(avg[1]),
+								PackHalf(avg[2]) };
+							for (uint32_t y = 0; y < 4; ++y)
+								for (uint32_t x = 0; x < 4; ++x) {
+									const size_t i =
+										size_t(by * 4 + y) * width
+										+ size_t(bx * 4 + x);
+									if (owner[i] >= 0)
+										continue;
+									std::memcpy(&halves[i * 3], packed,
+										3 * sizeof(uint16_t));
+								}
+						}
+					}
+				}
+				Bc6hEncodeImage(halves, width, height, job.blocks);
+				job.ok = true;
+			}
+		});
+	}
+	for (std::thread& t : threads)
+		t.join();
+	size_t totalBytes = 0;
+	for (const LobeJob& job : jobs) {
+		if (!job.ok) {
+			err = "CompressToBc6h: lobe encode job failed";
+			return false;
+		}
+		totalBytes += job.blocks.size();
+	}
+	bc6hBlocks.reserve(totalBytes);
+	for (LobeJob& job : jobs)
+		bc6hBlocks.insert(bc6hBlocks.end(), job.blocks.begin(),
+			job.blocks.end());
+	bc6hLobes = lobes;
+	compression = optFill ? SgLightmapCompression::Bc6HOpt
+		: SgLightmapCompression::Bc6H;
+	return true;
 }
 
 bool SgLightmapAtlas::WriteFile(const std::string& path, std::string& err) const {
+	const bool bc6h = compression != SgLightmapCompression::Uncompressed;
 	SglmFileHeader hdr{};
 	hdr.atlasWidth = width;
 	hdr.atlasHeight = height;
 	hdr.chunkCount = uint32_t(chunks.size());
+	hdr.payloadKind = bc6h
+		? (compression == SgLightmapCompression::Bc6HOpt ? 2u : 1u) : 0u;
+	hdr.bc6hLobes = bc6h ? bc6hLobes : 0u;
+	hdr.bc6hBlockBytes = bc6h ? uint32_t(bc6hBlocks.size()) : 0u;
+	if (bc6h && ((width & 3u) || (height & 3u))) {
+		err = "SgLightmapAtlas: BC6H write needs 4-aligned atlas dims";
+		return false;
+	}
 
-	// Post-header section: chunk table (fixed stride) + payloads.
+	// Post-header section: chunk table + (half payloads | BC6H blocks).
 	std::vector<uint8_t> section;
-	section.reserve(chunks.size() * 32 + 1024);
+	section.reserve(chunks.size() * 32 + (bc6h ? bc6hBlocks.size() : 1024));
 	auto putU32 = [&](uint32_t v) {
 		uint8_t b[4];
 		std::memcpy(b, &v, 4);
@@ -1875,6 +1521,9 @@ bool SgLightmapAtlas::WriteFile(const std::string& path, std::string& err) const
 		putF32(c.rectMax[0]);
 		putF32(c.rectMax[1]);
 	}
+	if (bc6h) {
+		section.insert(section.end(), bc6hBlocks.begin(), bc6hBlocks.end());
+	} else {
 	// Payloads: fixed kLightmapMaxLobes stride per texel keeps the reader
 	// simple; unused lobes store zero halves.
 	for (size_t ci = 0; ci < chunks.size(); ++ci) {
@@ -1897,6 +1546,7 @@ bool SgLightmapAtlas::WriteFile(const std::string& path, std::string& err) const
 				dst[(i * kLightmapMaxLobes + l) * 3 + 2] = PackHalf(a.b);
 			}
 		}
+	}
 	}
 
 	// Section complete (chunk table + payloads; lightmap UVs live in the
@@ -1965,28 +1615,44 @@ bool SgLightmapAtlas::WriteFile(const std::string& path, std::string& err) const
 
 bool SgLightmapAtlas::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) {
 	SglmFileHeader hdr{};
-	if (bytes.size() < sizeof(hdr)) {
+	if (bytes.size() < kSglmHeaderBytesV1V2) {
 		err = "sglm: file too small";
 		return false;
 	}
-	std::memcpy(&hdr, bytes.data(), sizeof(hdr));
+	// v1/v2 files carry the 28-byte header; v3 appends the BC6H tail.
+	std::memcpy(&hdr, bytes.data(),
+		bytes.size() < sizeof(hdr) ? bytes.size() : sizeof(hdr));
 	if (std::memcmp(hdr.magic, "SGLM", 4) != 0) {
 		err = "sglm: bad magic";
 		return false;
 	}
-	if (hdr.version != 1 && hdr.version != kSglmVersion) {
+	const uint32_t headerSize = hdr.version >= 3
+		? uint32_t(sizeof(hdr)) : kSglmHeaderBytesV1V2;
+	if (hdr.version != 1 && hdr.version != 2 && hdr.version != 3) {
 		err = "sglm: unsupported version " + std::to_string(hdr.version);
 		return false;
 	}
+	if (bytes.size() < headerSize) {
+		err = "sglm: file too small";
+		return false;
+	}
+	const bool bc6h = hdr.version >= 3 && hdr.payloadKind >= 1;
 	if (hdr.atlasWidth == 0 || hdr.atlasHeight == 0
 		|| hdr.chunkCount == 0 || hdr.chunkCount > 1048576
-		|| hdr.payloadBytes == 0) {
+		|| hdr.payloadBytes == 0
+		|| (bc6h && (hdr.bc6hLobes == 0
+			|| hdr.bc6hLobes > kLightmapBc6hTextureCount
+			|| hdr.bc6hBlockBytes == 0))) {
 		err = "sglm: bad header";
 		return false;
 	}
+	if (bc6h && ((hdr.atlasWidth & 3u) || (hdr.atlasHeight & 3u))) {
+		err = "sglm: BC6H payload with non-4-aligned dims";
+		return false;
+	}
 	std::vector<uint8_t> section;
-	const std::span<const uint8_t> stored(bytes.data() + sizeof(hdr),
-		bytes.size() - sizeof(hdr));
+	const std::span<const uint8_t> stored(bytes.data() + headerSize,
+		bytes.size() - headerSize);
 	if (hdr.compressed == 2) {
 		// Segmented LZ4 (v2): u32 segCount + (u64 raw, u64 comp) table +
 		// segCount blocks. Raw sizes must tile payloadBytes exactly.
@@ -2059,6 +1725,65 @@ bool SgLightmapAtlas::ReadFromMemory(std::span<const uint8_t> bytes, std::string
 			return err = "sglm: bad lobe count", false;
 	}
 	payloads.resize(hdr.chunkCount);
+
+	if (bc6h) {
+		// v3 BC6H body: chunk table + lobe-major block images. The blocks
+		// are kept verbatim for the GPU upload; the chunk payloads are
+		// DECODED back out of them (approximated, for the CPU views —
+		// Sample/PNG dumps/editor inspection — never re-uploaded).
+		const size_t blockBytes = size_t(width / 4) * (height / 4) * 16;
+		if (section.size() - off != blockBytes * hdr.bc6hLobes) {
+			err = "sglm: BC6H block size mismatch";
+			return false;
+		}
+		bc6hBlocks.assign(section.begin() + ptrdiff_t(off), section.end());
+		bc6hLobes = hdr.bc6hLobes;
+		compression = hdr.payloadKind == 2
+			? SgLightmapCompression::Bc6HOpt
+			: SgLightmapCompression::Bc6H;
+		std::vector<uint16_t> halves;
+		for (size_t ci = 0; ci < chunks.size(); ++ci) {
+			const SgLightmapChunk& c = chunks[ci];
+			ChunkPayload& p = payloads[ci];
+			p.width = uint32_t(std::max(c.rectMax[0] - c.rectMin[0], 1.0f));
+			p.height = uint32_t(std::max(c.rectMax[1] - c.rectMin[1], 1.0f));
+			const int ox = int(c.rectMin[0]);
+			const int oy = int(c.rectMin[1]);
+			if (ox < 0 || oy < 0 || ox + int(p.width) > int(width)
+				|| oy + int(p.height) > int(height)) {
+				err = "sglm: chunk rect out of atlas bounds";
+				return false;
+			}
+			const uint32_t n = c.lobeCount;
+			p.coeffs.assign(size_t(p.width) * p.height * n,
+				glm::vec3(0.0f));
+		}
+		for (uint32_t lobe = 0; lobe < hdr.bc6hLobes; ++lobe) {
+			Bc6hDecodeImage(bc6hBlocks.data() + lobe * blockBytes,
+				width, height, halves);
+			for (size_t ci = 0; ci < chunks.size(); ++ci) {
+				const SgLightmapChunk& c = chunks[ci];
+				if (lobe >= c.lobeCount)
+					continue;
+				ChunkPayload& p = payloads[ci];
+				const int ox = int(c.rectMin[0]);
+				const int oy = int(c.rectMin[1]);
+				for (uint32_t y = 0; y < p.height; ++y) {
+					glm::vec3* dst = &p.coeffs[size_t(y) * p.width
+						* c.lobeCount + lobe];
+					const uint16_t* src = &halves[(size_t(oy + int(y))
+						* width + size_t(ox)) * 3];
+					for (uint32_t x = 0; x < p.width; ++x)
+						dst[size_t(x) * c.lobeCount] = glm::vec3(
+							UnpackHalf(src[x * 3 + 0]),
+							UnpackHalf(src[x * 3 + 1]),
+							UnpackHalf(src[x * 3 + 2]));
+				}
+			}
+		}
+		return true;
+	}
+
 	for (size_t ci = 0; ci < chunks.size(); ++ci) {
 		uint32_t dims[2]{};
 		if (!take(dims, sizeof(dims)))
@@ -2081,6 +1806,9 @@ bool SgLightmapAtlas::ReadFromMemory(std::span<const uint8_t> bytes, std::string
 					UnpackHalf(raw[(i * kLightmapMaxLobes + l) * 3 + 1]),
 					UnpackHalf(raw[(i * kLightmapMaxLobes + l) * 3 + 2]));
 	}
+	compression = SgLightmapCompression::Uncompressed;
+	bc6hLobes = 0;
+	bc6hBlocks.clear();
 	return true;
 }
 
