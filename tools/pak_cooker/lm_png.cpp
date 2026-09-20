@@ -204,7 +204,8 @@ inline float HalfToFloat(uint16_t h) {
 }
 
 bool WriteLightmapPinkPng(const smvk::gi::SgLightmapAtlas& atlas,
-	const std::string& path, std::string& err) {
+	const std::vector<char>& hasBakePoints, const std::string& path,
+	std::string& err) {
 	using namespace smvk::gi;
 	if (atlas.width == 0 || atlas.height == 0 || atlas.chunks.empty()) {
 		err = "empty atlas";
@@ -256,32 +257,16 @@ bool WriteLightmapPinkPng(const smvk::gi::SgLightmapAtlas& atlas,
 		}
 	}
 
-	// Paint the true loaded lightmap; corrupt (non-finite) texels in
-	// the AS-LOADED image turn pink per texel.
-	std::vector<uint8_t> px(size_t(w) * h * 4);
-	static const uint8_t kPink[4] = { 255, 0, 255, 255 };
-	uint32_t corruptTexels = 0;
-	for (size_t i = 0; i < size_t(w) * h; ++i) {
-		const float r = lm[i * 3 + 0], g = lm[i * 3 + 1],
-			b = lm[i * 3 + 2];
-		if (!std::isfinite(r) || !std::isfinite(g)
-			|| !std::isfinite(b)) {
-			std::memcpy(&px[i * 4], kPink, 4);
-			++corruptTexels;
-			continue;
-		}
-		px[i * 4 + 0] = DisplayByte(r);
-		px[i * 4 + 1] = DisplayByte(g);
-		px[i * 4 + 2] = DisplayByte(b);
-		px[i * 4 + 3] = 255;
-	}
-
-	// Empty rects (RAW payload all-zero — the bake produced nothing,
-	// sub-texel sliver overhead; measured pre-compression because
-	// BC6H blocks shared with a lit neighbor can decode a zero rect to
-	// non-zero) paint solid pink over the loaded content.
-	size_t skipped = 0, emptyChunks = 0;
+	// Chunk classification: bounds + unbaked (zero BAKE POINTS — the
+	// chart rasterized nothing; the payload stays zero with nothing
+	// to dilate). Chunks that baked but traced zero light are
+	// legitimate darkness, not faults: hasBakePoints (cook's per-chart
+	// texel counts) separates them; a size-mismatched mask falls back
+	// to the payload-zero heuristic.
+	const bool haveMask = hasBakePoints.size() == atlas.chunks.size();
+	size_t skipped = 0, unbakedChunks = 0;
 	std::vector<char> inBounds(atlas.chunks.size(), 0);
+	std::vector<char> isUnbaked(atlas.chunks.size(), 0);
 	for (size_t ci = 0; ci < atlas.chunks.size(); ++ci) {
 		const SgLightmapChunk& c = atlas.chunks[ci];
 		const SgLightmapAtlas::ChunkPayload& p = atlas.payloads[ci];
@@ -297,15 +282,76 @@ bool WriteLightmapPinkPng(const smvk::gi::SgLightmapAtlas& atlas,
 			continue;
 		}
 		inBounds[ci] = 1;
+		if (haveMask && hasBakePoints[ci] == 0) {
+			isUnbaked[ci] = 1;
+			++unbakedChunks;
+			continue;
+		}
 		bool anyNonZero = false;
 		for (const glm::vec3& a : p.coeffs)
 			if (a.x != 0.0f || a.y != 0.0f || a.z != 0.0f) {
 				anyNonZero = true;
 				break;
 			}
-		if (anyNonZero)
+		if (!haveMask && !anyNonZero) {
+			isUnbaked[ci] = 1;
+			++unbakedChunks;
+		}
+	}
+
+	// Paint the true loaded lightmap; corrupt (non-finite) texels in
+	// the AS-LOADED image turn pink per texel. Compressed atlases
+	// paint the full decoded image (every texel is loaded, prefill
+	// halo included); uncompressed atlases paint the editor clear
+	// color outside the chunk rects — the atlas dump's background, so
+	// the two PNGs stay byte-comparable.
+	std::vector<uint8_t> px(size_t(w) * h * 4);
+	static const uint8_t kPink[4] = { 255, 0, 255, 255 };
+	uint32_t corruptTexels = 0;
+	const auto paintTexel = [&](size_t i) {
+		const float r = lm[i * 3 + 0], g = lm[i * 3 + 1],
+			b = lm[i * 3 + 2];
+		if (!std::isfinite(r) || !std::isfinite(g)
+			|| !std::isfinite(b)) {
+			std::memcpy(&px[i * 4], kPink, 4);
+			++corruptTexels;
+			return;
+		}
+		px[i * 4 + 0] = DisplayByte(r);
+		px[i * 4 + 1] = DisplayByte(g);
+		px[i * 4 + 2] = DisplayByte(b);
+		px[i * 4 + 3] = 255;
+	};
+	if (atlas.compression != SgLightmapCompression::Uncompressed) {
+		for (size_t i = 0; i < size_t(w) * h; ++i)
+			paintTexel(i);
+	} else {
+		const uint8_t bg[4] = { DisplayByte(0.02f), DisplayByte(0.02f),
+			DisplayByte(0.03f), 255 };
+		for (size_t i = 0; i < size_t(w) * h; ++i)
+			std::memcpy(&px[i * 4], bg, 4);
+		for (size_t ci = 0; ci < atlas.chunks.size(); ++ci) {
+			if (!inBounds[ci])
+				continue;
+			const SgLightmapChunk& c = atlas.chunks[ci];
+			const SgLightmapAtlas::ChunkPayload& p = atlas.payloads[ci];
+			const int ox = int(c.rectMin[0]);
+			const int oy = int(c.rectMin[1]);
+			for (uint32_t y = 0; y < p.height; ++y)
+				for (uint32_t x = 0; x < p.width; ++x)
+					paintTexel(size_t(oy + int(y)) * w
+						+ size_t(ox + int(x)));
+		}
+	}
+
+	// Unbaked rects paint solid pink over the loaded content.
+	for (size_t ci = 0; ci < atlas.chunks.size(); ++ci) {
+		if (!inBounds[ci] || !isUnbaked[ci])
 			continue;
-		++emptyChunks;
+		const SgLightmapChunk& c = atlas.chunks[ci];
+		const SgLightmapAtlas::ChunkPayload& p = atlas.payloads[ci];
+		const int ox = int(c.rectMin[0]);
+		const int oy = int(c.rectMin[1]);
 		for (uint32_t y = 0; y < p.height; ++y) {
 			uint8_t* row = &px[(size_t(oy + int(y)) * w
 				+ size_t(ox)) * 4];
@@ -353,7 +399,7 @@ bool WriteLightmapPinkPng(const smvk::gi::SgLightmapAtlas& atlas,
 		err = "stbi_write_png failed for " + path;
 		return false;
 	}
-	std::cerr << "[LM-PNG] pink: " << emptyChunks << " empty, "
+	std::cerr << "[LM-PNG] pink: " << unbakedChunks << " unbaked, "
 		<< corruptTexels << " corrupt texels, " << overlapPairs
 		<< " overlapping pairs, " << skipped << " skipped\n" << std::flush;
 	return true;

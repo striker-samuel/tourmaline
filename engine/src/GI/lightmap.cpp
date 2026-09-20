@@ -540,6 +540,93 @@ namespace {
 // (island-to-island padding is gutter + sep + gutter).
 constexpr uint32_t kXatlasStackSep = 2;
 
+// ---------------------------------------------------------------------------
+// Conservative chart rasterization (claim map): a texel is claimed
+// when its UNIT square overlaps the triangle, not only when its center
+// lies inside — thin sub-texel geometry (Sponza column stripes,
+// fillets, bevels) owns no texel centers, claims nothing under a
+// center test and bakes an empty payload that renders pitch black.
+// Edge distances are measured in texel space with unit inward edge
+// normals: a center no further than -kConsHalfDiag (half the texel
+// square diagonal) from every edge guarantees the square overlaps the
+// triangle, or over-covers by at most half a texel — conservative,
+// never misses. Bake points carry CLAMPED uv-space barycentrics so
+// rays anchor ON the triangle (nearest surface point) even for
+// over-covered border texels.
+// ---------------------------------------------------------------------------
+struct ConservativeRasterTri {
+	glm::vec2 a, b, c;        // corners in inner-texel units
+	glm::vec2 nab, nbc, nca;  // unit inward edge normals (texel space)
+	glm::vec2 u0, e0, e1;     // uv-space barycentric frame
+	float det = 0.0f;
+};
+
+inline constexpr float kConsHalfDiag = 0.70710678f;
+
+static bool MakeConservativeRasterTri(const glm::vec2& u0, const glm::vec2& u1,
+	const glm::vec2& u2, float iw, float ih, ConservativeRasterTri& out) {
+	out.u0 = u0;
+	out.e0 = u1 - u0;
+	out.e1 = u2 - u0;
+	out.det = out.e0.x * out.e1.y - out.e0.y * out.e1.x;
+	if (std::abs(out.det) < 1e-12f)
+		return false;
+	out.a = glm::vec2(u0.x * iw, u0.y * ih);
+	out.b = glm::vec2(u1.x * iw, u1.y * ih);
+	out.c = glm::vec2(u2.x * iw, u2.y * ih);
+	const auto edgeNormal = [](const glm::vec2& p, const glm::vec2& q,
+		const glm::vec2& r) {
+		const glm::vec2 e = q - p;
+		const float el = std::sqrt(e.x * e.x + e.y * e.y);
+		if (el < 1e-12f)
+			return glm::vec2(0.0f);
+		glm::vec2 n(-e.y / el, e.x / el);
+		if (glm::dot(n, r - p) < 0.0f)
+			n = -n;
+		return n;
+	};
+	out.nab = edgeNormal(out.a, out.b, out.c);
+	out.nbc = edgeNormal(out.b, out.c, out.a);
+	out.nca = edgeNormal(out.c, out.a, out.b);
+	return true;
+}
+
+// cx/cy = texel center in inner-texel units (x + 0.5, y + 0.5).
+// baryOut = clamped uv-space barycentrics of the center for
+// position/normal interpolation.
+static bool ClaimTexelConservative(const ConservativeRasterTri& tri,
+	float cx, float cy, float iw, float ih, float baryOut[3]) {
+	const glm::vec2 pt(cx, cy);
+	const auto overEdge = [](const glm::vec2& n, const glm::vec2& o,
+		const glm::vec2& p) {
+		// Degenerate (zero-length) edge: no constraint.
+		return (n.x == 0.0f && n.y == 0.0f)
+			? true : glm::dot(n, p - o) >= -kConsHalfDiag;
+	};
+	if (!overEdge(tri.nab, tri.a, pt) || !overEdge(tri.nbc, tri.b, pt)
+		|| !overEdge(tri.nca, tri.c, pt))
+		return false;
+	const float u = cx / iw, v = cy / ih;
+	const glm::vec2 d(u - tri.u0.x, v - tri.u0.y);
+	float b1 = (d.x * tri.e1.y - d.y * tri.e1.x) / tri.det;
+	float b2 = (tri.e0.x * d.y - tri.e0.y * d.x) / tri.det;
+	float b0 = 1.0f - b1 - b2;
+	// Clamp onto the triangle: conservative claims can sit outside the
+	// uv footprint, extrapolated ray origins would float off-surface.
+	b0 = std::max(b0, 0.0f);
+	b1 = std::max(b1, 0.0f);
+	b2 = std::max(b2, 0.0f);
+	const float s = b0 + b1 + b2;
+	if (s <= 1e-12f) {
+		baryOut[0] = baryOut[1] = baryOut[2] = 1.0f / 3.0f;
+	} else {
+		baryOut[0] = b0 / s;
+		baryOut[1] = b1 / s;
+		baryOut[2] = b2 / s;
+	}
+	return true;
+}
+
 } // namespace
 
 bool GenerateLightmapChartsXatlas(
@@ -817,49 +904,48 @@ bool GenerateLightmapChartsXatlas(
 					n1 = upload.vertices[i1].normal;
 					n2 = upload.vertices[i2].normal;
 				}
-				const glm::vec2 u0 = mo.chart.cornerChartUv[size_t(t) * 3 + 0];
-				const glm::vec2 u1 = mo.chart.cornerChartUv[size_t(t) * 3 + 1];
-				const glm::vec2 u2 = mo.chart.cornerChartUv[size_t(t) * 3 + 2];
-				const glm::vec2 e0 = u1 - u0;
-				const glm::vec2 e1 = u2 - u0;
-				const float det = e0.x * e1.y - e0.y * e1.x;
-				if (std::abs(det) < 1e-12f)
-					continue;
-				const glm::vec2 tMin = glm::min(u0, glm::min(u1, u2));
-				const glm::vec2 tMax = glm::max(u0, glm::max(u1, u2));
-				uint32_t tx0 = std::min(uint32_t(std::max(0.0f,
-					tMin.x * float(iw) - 0.5f)), iw - 1u);
-				uint32_t tx1 = std::min(uint32_t(std::min(float(iw),
-					tMax.x * float(iw) + 0.5f)), iw - 1u);
-				uint32_t ty0 = std::min(uint32_t(std::max(0.0f,
-					tMin.y * float(ih) - 0.5f)), ih - 1u);
-				uint32_t ty1 = std::min(uint32_t(std::min(float(ih),
-					tMax.y * float(ih) + 0.5f)), ih - 1u);
-				for (uint32_t y = ty0; y <= ty1; ++y) {
-					for (uint32_t x = tx0; x <= tx1; ++x) {
-						const size_t idx = size_t(y) * iw + x;
-						if (claim[idx] != 0xFFFFFFFFu)
-							continue;
-						const float u = (float(x) + 0.5f) / float(iw);
-						const float v = (float(y) + 0.5f) / float(ih);
-						const glm::vec2 d(u - u0.x, v - u0.y);
-						const float b1 = (d.x * e1.y - d.y * e1.x) / det;
-						const float b2 = (e0.x * d.y - e0.y * d.x) / det;
-						const float b0 = 1.0f - b1 - b2;
-						if (b0 < -1e-4f || b1 < -1e-4f || b2 < -1e-4f)
-							continue;
-						claim[idx] = 1u;
-						if (deferTexels)
-							continue;
-						SgLightmapTexel tx{};
-						tx.position = p0 * b0 + p1 * b1 + p2 * b2;
-						tx.normal = glm::normalize(n0 * b0 + n1 * b1 + n2 * b2);
-						tx.uv = glm::vec2(float(margin + x) + 0.5f,
-							float(margin + y) + 0.5f);
-						oc.texels.push_back(tx);
-					}
+			const glm::vec2 u0 = mo.chart.cornerChartUv[size_t(t) * 3 + 0];
+			const glm::vec2 u1 = mo.chart.cornerChartUv[size_t(t) * 3 + 1];
+			const glm::vec2 u2 = mo.chart.cornerChartUv[size_t(t) * 3 + 2];
+			ConservativeRasterTri crt;
+			if (!MakeConservativeRasterTri(u0, u1, u2, float(iw), float(ih),
+					crt))
+				continue;
+			const glm::vec2 tMin = glm::min(u0, glm::min(u1, u2));
+			const glm::vec2 tMax = glm::max(u0, glm::max(u1, u2));
+			// Conservative window: bbox +/- the half-texel pad of the
+			// old center test PLUS the half-diagonal claim tolerance.
+			uint32_t tx0 = std::min(uint32_t(std::max(0.0f,
+				tMin.x * float(iw) - 1.5f)), iw - 1u);
+			uint32_t tx1 = std::min(uint32_t(std::min(float(iw),
+				tMax.x * float(iw) + 1.5f)), iw - 1u);
+			uint32_t ty0 = std::min(uint32_t(std::max(0.0f,
+				tMin.y * float(ih) - 1.5f)), ih - 1u);
+			uint32_t ty1 = std::min(uint32_t(std::min(float(ih),
+				tMax.y * float(ih) + 1.5f)), ih - 1u);
+			for (uint32_t y = ty0; y <= ty1; ++y) {
+				for (uint32_t x = tx0; x <= tx1; ++x) {
+					const size_t idx = size_t(y) * iw + x;
+					if (claim[idx] != 0xFFFFFFFFu)
+						continue;
+					float bary[3];
+					if (!ClaimTexelConservative(crt, float(x) + 0.5f,
+							float(y) + 0.5f, float(iw), float(ih), bary))
+						continue;
+					claim[idx] = 1u;
+					if (deferTexels)
+						continue;
+					SgLightmapTexel tx{};
+					tx.position = p0 * bary[0] + p1 * bary[1]
+						+ p2 * bary[2];
+					tx.normal = glm::normalize(n0 * bary[0] + n1 * bary[1]
+						+ n2 * bary[2]);
+					tx.uv = glm::vec2(float(margin + x) + 0.5f,
+						float(margin + y) + 0.5f);
+					oc.texels.push_back(tx);
 				}
 			}
+		}
 			// Shrink the rect to the chart's rasterized footprint.
 			// xatlas reserves the chart's conservative rasterized
 			// coverage (bilinear-expanded + padding dilate) — NOT its
@@ -896,10 +982,11 @@ bool GenerateLightmapChartsXatlas(
 				oc.width = uint32_t(nx1 - nx0);
 				oc.height = uint32_t(ny1 - ny0);
 			} else {
-				// No claimed texels (sub-texel sliver): keep the payload
-				// minimal around the first charted triangle's centroid
-				// — inside that triangle's rasterized footprint, so the
-				// rect stays inside the packer's reserved region.
+				// No claimed texels even with the conservative claim
+				// (sub-texel sliver): keep the payload minimal around
+				// the first charted triangle's centroid — inside that
+				// triangle's rasterized footprint, so the rect stays
+				// inside the packer's reserved region.
 				glm::vec2 centroid(0.5f, 0.5f);
 				for (uint32_t t = 0; t < triCount; ++t) {
 					if (triChart[t] != ci)
@@ -920,6 +1007,31 @@ bool GenerateLightmapChartsXatlas(
 				rect.minY = cy - float(margin);
 				rect.maxY = cy + float(margin) + 1.0f;
 				oc.width = oc.height = 2u * margin + 1u;
+				// Emit ONE on-surface texel at the first charted
+				// triangle's centroid: without it the payload stays
+				// all-zero (nothing to bake, nothing to dilate) and
+				// the sliver renders pitch black.
+				if (!deferTexels) {
+					for (uint32_t t = 0; t < triCount; ++t) {
+						if (triChart[t] != ci)
+							continue;
+						const uint32_t i0 = upload.indices[t * 3 + 0];
+						const uint32_t i1 = upload.indices[t * 3 + 1];
+						const uint32_t i2 = upload.indices[t * 3 + 2];
+						SgLightmapTexel tx{};
+						tx.position = (upload.vertices[i0].pos
+							+ upload.vertices[i1].pos
+							+ upload.vertices[i2].pos) / 3.0f;
+						tx.normal = glm::normalize(
+							upload.vertices[i0].normal
+							+ upload.vertices[i1].normal
+							+ upload.vertices[i2].normal);
+						tx.uv = glm::vec2(float(margin) + 0.5f,
+							float(margin) + 0.5f);
+						oc.texels.push_back(tx);
+						break;
+					}
+				}
 			}
 		}
 		// Rebuild the chart-local corner uvs against the shrunken rects
@@ -1024,47 +1136,82 @@ bool RasterizeLightmapPackTexels(
 				const glm::vec3& n0 = upload.vertices[i0].normal;
 				const glm::vec3& n1 = upload.vertices[i1].normal;
 				const glm::vec3& n2 = upload.vertices[i2].normal;
-				const glm::vec2 u0 = mo.chart.cornerChartUv[size_t(t) * 3 + 0];
-				const glm::vec2 u1 = mo.chart.cornerChartUv[size_t(t) * 3 + 1];
-				const glm::vec2 u2 = mo.chart.cornerChartUv[size_t(t) * 3 + 2];
-				const glm::vec2 e0 = u1 - u0;
-				const glm::vec2 e1 = u2 - u0;
-				const float det = e0.x * e1.y - e0.y * e1.x;
-				if (std::abs(det) < 1e-12f)
-					continue;
-				const glm::vec2 tMin = glm::min(u0, glm::min(u1, u2));
-				const glm::vec2 tMax = glm::max(u0, glm::max(u1, u2));
-				uint32_t tx0 = std::min(uint32_t(std::max(0.0f,
-					tMin.x * float(iw) - 0.5f)), iw - 1u);
-				uint32_t tx1 = std::min(uint32_t(std::min(float(iw),
-					tMax.x * float(iw) + 0.5f)), iw - 1u);
-				uint32_t ty0 = std::min(uint32_t(std::max(0.0f,
-					tMin.y * float(ih) - 0.5f)), ih - 1u);
-				uint32_t ty1 = std::min(uint32_t(std::min(float(ih),
-					tMax.y * float(ih) + 0.5f)), ih - 1u);
-				for (uint32_t y = ty0; y <= ty1; ++y) {
-					for (uint32_t x = tx0; x <= tx1; ++x) {
-						const size_t idx = size_t(y) * iw + x;
-						if (claim[idx] != 0xFFFFFFFFu)
-							continue;
-						const float u = (float(x) + 0.5f) / float(iw);
-						const float v = (float(y) + 0.5f) / float(ih);
-						const glm::vec2 d(u - u0.x, v - u0.y);
-						const float b1 = (d.x * e1.y - d.y * e1.x) / det;
-						const float b2 = (e0.x * d.y - e0.y * d.x) / det;
-						const float b0 = 1.0f - b1 - b2;
-						if (b0 < -1e-4f || b1 < -1e-4f || b2 < -1e-4f)
-							continue;
-						claim[idx] = 1u;
-						SgLightmapTexel tx{};
-						tx.position = p0 * b0 + p1 * b1 + p2 * b2;
-						tx.normal = glm::normalize(n0 * b0 + n1 * b1 + n2 * b2);
-						tx.uv = glm::vec2(float(margin + x) + 0.5f,
-							float(margin + y) + 0.5f);
-						oc.texels.push_back(tx);
-					}
+			const glm::vec2 u0 = mo.chart.cornerChartUv[size_t(t) * 3 + 0];
+			const glm::vec2 u1 = mo.chart.cornerChartUv[size_t(t) * 3 + 1];
+			const glm::vec2 u2 = mo.chart.cornerChartUv[size_t(t) * 3 + 2];
+			ConservativeRasterTri crt;
+			if (!MakeConservativeRasterTri(u0, u1, u2, float(iw), float(ih),
+					crt))
+				continue;
+			const glm::vec2 tMin = glm::min(u0, glm::min(u1, u2));
+			const glm::vec2 tMax = glm::max(u0, glm::max(u1, u2));
+			// Conservative window: bbox +/- the half-texel pad of the
+			// old center test PLUS the half-diagonal claim tolerance.
+			uint32_t tx0 = std::min(uint32_t(std::max(0.0f,
+				tMin.x * float(iw) - 1.5f)), iw - 1u);
+			uint32_t tx1 = std::min(uint32_t(std::min(float(iw),
+				tMax.x * float(iw) + 1.5f)), iw - 1u);
+			uint32_t ty0 = std::min(uint32_t(std::max(0.0f,
+				tMin.y * float(ih) - 1.5f)), ih - 1u);
+			uint32_t ty1 = std::min(uint32_t(std::min(float(ih),
+				tMax.y * float(ih) + 1.5f)), ih - 1u);
+			for (uint32_t y = ty0; y <= ty1; ++y) {
+				for (uint32_t x = tx0; x <= tx1; ++x) {
+					const size_t idx = size_t(y) * iw + x;
+					if (claim[idx] != 0xFFFFFFFFu)
+						continue;
+					float bary[3];
+					if (!ClaimTexelConservative(crt, float(x) + 0.5f,
+							float(y) + 0.5f, float(iw), float(ih), bary))
+						continue;
+					claim[idx] = 1u;
+					SgLightmapTexel tx{};
+					tx.position = p0 * bary[0] + p1 * bary[1]
+						+ p2 * bary[2];
+					tx.normal = glm::normalize(n0 * bary[0] + n1 * bary[1]
+						+ n2 * bary[2]);
+					tx.uv = glm::vec2(float(margin + x) + 0.5f,
+						float(margin + y) + 0.5f);
+					oc.texels.push_back(tx);
 				}
 			}
+		}
+		// Conservative claim still missed (degenerate sub-texel
+		// sliver): emit ONE on-surface texel at the first charted
+		// triangle's centroid so the chunk bakes + dilates instead of
+		// rendering pitch black.
+		if (oc.texels.empty()) {
+			for (uint32_t t = 0; t < triCount; ++t) {
+				if (mo.chart.triChart[t] != ci)
+					continue;
+				const uint32_t i0 = upload.indices[t * 3 + 0];
+				const uint32_t i1 = upload.indices[t * 3 + 1];
+				const uint32_t i2 = upload.indices[t * 3 + 2];
+				if (i0 >= upload.vertices.size()
+					|| i1 >= upload.vertices.size()
+					|| i2 >= upload.vertices.size())
+					continue;
+				const glm::vec2 uvAvg =
+					(mo.chart.cornerChartUv[size_t(t) * 3 + 0]
+					+ mo.chart.cornerChartUv[size_t(t) * 3 + 1]
+					+ mo.chart.cornerChartUv[size_t(t) * 3 + 2]) / 3.0f;
+				const int cx = std::clamp(
+					int(std::floor(uvAvg.x * float(iw))), 0, int(iw) - 1);
+				const int cy = std::clamp(
+					int(std::floor(uvAvg.y * float(ih))), 0, int(ih) - 1);
+				SgLightmapTexel tx{};
+				tx.position = (upload.vertices[i0].pos
+					+ upload.vertices[i1].pos
+					+ upload.vertices[i2].pos) / 3.0f;
+				tx.normal = glm::normalize(upload.vertices[i0].normal
+					+ upload.vertices[i1].normal
+					+ upload.vertices[i2].normal);
+				tx.uv = glm::vec2(float(margin + cx) + 0.5f,
+					float(margin + cy) + 0.5f);
+				oc.texels.push_back(tx);
+				break;
+			}
+		}
 		}
 	}
 	return true;

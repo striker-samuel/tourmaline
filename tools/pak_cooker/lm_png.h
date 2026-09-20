@@ -45,8 +45,13 @@ bool WriteLightmapChartsPng(const smvk::gi::SgLightmapAtlas& atlas,
 // is compressed, the RGBA16F layer content when not), the same
 // display mapping as the atlas dump — with fault classes stamped
 // solid bright pink (255, 0, 255) at a glance:
-//   * empty rects (raw payload all-zero = zero baked texels: sub-texel
-//     slivers that rasterized nothing, pure atlas overhead),
+//   * unbaked rects (zero BAKE POINTS — the chart rasterized nothing,
+//     sub-texel slivers the conservative claim still missed; the
+//     payload stays zero with nothing to dilate). Chunks that BAKED
+//     but traced zero light (occluded at low ray counts) are
+//     legitimate darkness and stay unpinked — hasBakePoints (from the
+//     cook's per-chart texel counts, parallel to atlas.chunks; empty
+//     falls back to the payload-zero heuristic) separates the two,
 //   * corrupt texels (non-finite amplitude in the AS-LOADED image,
 //     painted per texel),
 //   * rect-overlap intersections (pairwise chunk-rect intersections;
@@ -58,6 +63,7 @@ bool WriteLightmapChartsPng(const smvk::gi::SgLightmapAtlas& atlas,
 // skip-not-fatal policy as the other dumps. Returns false + err on IO
 // failure.
 bool WriteLightmapPinkPng(const smvk::gi::SgLightmapAtlas& atlas,
-	const std::string& path, std::string& err);
+	const std::vector<char>& hasBakePoints, const std::string& path,
+	std::string& err);
 
 } // namespace pakcook

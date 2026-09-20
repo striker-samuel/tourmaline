@@ -2533,15 +2533,23 @@ int main(int argc, char** argv) {
 			}
 		}
 		// Bright-pink fault map (<scene>_pink.png, --lm-debug-pink on):
-		// empty/corrupt/overlapping chunk rects in solid (255,0,255)
-		// over the chart-id layout. Non-fatal.
+		// the true loaded lightmap with unbaked/corrupt/overlapping
+		// rects in solid (255,0,255). Baked-but-dark chunks (zero
+		// traced light) are content, not faults: the mask carries the
+		// per-chart bake-point counts. Non-fatal.
 		if (args.lmDebugPink) {
 			std::filesystem::path pinkPath =
 				std::filesystem::path(args.contentDir) / "gi"
 				/ (sceneId + "_pink.png");
+			std::vector<char> bakedPoints(atlas.chunks.size(), 0);
+			for (size_t i = 0; i < work.size(); ++i)
+				for (uint32_t c = 0; c < work[i].chart.charts.size()
+					&& work[i].chunkBase + c < bakedPoints.size(); ++c)
+					bakedPoints[work[i].chunkBase + c] =
+						work[i].chart.charts[c].texels.empty() ? 0 : 1;
 			std::string perr;
 			if (pakcook::WriteLightmapPinkPng(atlas,
-					pinkPath.generic_string(), perr)) {
+					bakedPoints, pinkPath.generic_string(), perr)) {
 				std::cerr << "  [LM] pink png " << pinkPath.generic_string()
 					<< " (" << std::filesystem::file_size(pinkPath)
 					<< " B)\n" << std::flush;
