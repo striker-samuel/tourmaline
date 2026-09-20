@@ -714,22 +714,34 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 		uint32_t bigUv2Tris = 0;
 		const size_t vertBase = c.off;
 		const size_t idxBase = vertBase + (size_t)vc * sizeof(smvk::StaticVertex);
+		// Vertex-attribute probe shared by the classic-index walk and
+		// the meshlet walk below: EVERY attribute must come from the
+		// SAME final vertex (the meshlet audit's whole point).
+		auto atlasAt = [&](size_t v) -> std::pair<float, float> {
+			const uint8_t* p = c.img.data() + vertBase
+				+ v * sizeof(smvk::StaticVertex);
+			float cu, cv;
+			uint32_t cid;
+			memcpy(&cu, p + 36, 4);
+			memcpy(&cv, p + 40, 4);
+			memcpy(&cid, p + 72, 4);
+			if (cid != 0xFFFFFFFFu && (size_t)cid < lmXf.size() / 4) {
+				const float* xf = lmXf.data() + (size_t)cid * 4;
+				return { cu * xf[0] + xf[2], cv * xf[1] + xf[3] };
+			}
+			return { cu, cv };
+		};
+		// Canonical (sorted) triangle key for set comparison.
+		auto triKey = [](uint32_t a, uint32_t b, uint32_t d) {
+			uint32_t mn = std::min({ a, b, d });
+			uint32_t mx = std::max({ a, b, d });
+			uint32_t mid = a + b + d - mn - mx;
+			return uint64_t(mn) * 4294967296ull + uint64_t(mid) * 65536ull
+				+ mx;
+		};
+		std::unordered_set<uint64_t> classicTris;
 		if (lmChunk != 0xFFFFFFFFu && idxBase + (size_t)ic * 4 <= c.img.size()) {
-			auto atlasAt = [&](size_t v) -> std::pair<float, float> {
-				const uint8_t* p = c.img.data() + vertBase
-					+ v * sizeof(smvk::StaticVertex);
-				float cu, cv;
-				uint32_t cid;
-				memcpy(&cu, p + 36, 4);
-				memcpy(&cv, p + 40, 4);
-				memcpy(&cid, p + 72, 4);
-				if (cid != 0xFFFFFFFFu && (size_t)cid < lmXf.size() / 4) {
-					const float* xf = lmXf.data() + (size_t)cid * 4;
-					return { cu * xf[0] + xf[2], cv * xf[1] + xf[3] };
-				}
-				return { cu, cv };
-			};
-			for (uint32_t t = 0; t + 2 < ic / 3; ++t) {
+			for (uint32_t t = 0; t * 3 + 3 <= ic; ++t) {
 				uint32_t ix[3] = {};
 				memcpy(ix, c.img.data() + idxBase + (size_t)t * 12, 12);
 				const auto a = atlasAt(ix[0]);
@@ -743,6 +755,7 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 					maxUv2Span = span;
 				if (span > 0.45f)
 					++bigUv2Tris;
+				classicTris.insert(triKey(ix[0], ix[1], ix[2]));
 			}
 		}
 		// Vertex/index payloads (sizeof(StaticVertex) per vert, 4 B per index).
@@ -758,6 +771,145 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 			std::cout << "    [truncated mesh blob: " << e->path << "]\n";
 			continue;
 		}
+		// ---- meshlet-walk audit: localIndex -> window -> global ----
+		// Reproduces the runtime indirection exactly (gfx_filter
+		// AppendMeshlet / BuildMeshletIndirectCommands):
+		//   local   = triangles[triangleOffset + k]
+		//   global  = vertices[vertexOffset + local]
+		// then EVERY attribute (uv1/chartId here) must come from that
+		// same global vertex. Verifies the serialized trailer against
+		// the vertex payload it ships with:
+		//   mlbadlocal: meshlet-local id >= vertexCount (corrupt tri)
+		//   mloob:      window id >= vertex count (STALE windows
+		//               referencing a pre-seam-dup vertex layout — the
+		//               "meshlets built before lightmap split" bug)
+		//   mlbigtris:  atlas-uv2 sweep over the meshlet topology
+		//               (>0.45 = a meshlet triangle sampling a distant
+		//               atlas region)
+		//   mlsetdiff:  symmetric triangle-set difference vs the
+		//               classic index buffer (healthy: only degenerate
+		//               classic tris dropped by the builder)
+		uint32_t mlBadLocal = 0, mlOob = 0, mlBigTris = 0,
+			mlSetDiff = 0;
+		bool mlTruncated = false;
+		if (meshlets > 0) {
+			// Trailer layout mirrors the serializer: meshlet records
+			// (4 u32 + bound vec3+f + cone vec3+vec3+f = 60 B), then
+			// the u32 window, then the u8 triangle bytes.
+			struct MlRec {
+				uint32_t vertexOffset, vertexCount, triangleOffset,
+					triangleCount;
+			};
+			std::vector<MlRec> recs(meshlets);
+			for (uint32_t m = 0; m < meshlets && c.ok; ++m) {
+				recs[m].vertexOffset = c.u32();
+				recs[m].vertexCount = c.u32();
+				recs[m].triangleOffset = c.u32();
+				recs[m].triangleCount = c.u32();
+				for (int f = 0; f < 3; ++f) (void)c.f32(); // center
+				(void)c.f32();                            // radius
+				for (int f = 0; f < 3; ++f) (void)c.f32(); // apex
+				for (int f = 0; f < 3; ++f) (void)c.f32(); // axis
+				(void)c.f32();                            // cutoff
+			}
+			std::vector<uint32_t> window;
+			std::vector<uint8_t> mlTris;
+			if (c.ok) {
+				const uint32_t wc = c.u32();
+				if (c.ok && wc <= 64 * 1024 * 1024
+					&& c.off + (size_t)wc * 4 <= c.img.size()) {
+					window.resize(wc);
+					if (wc)
+						memcpy(window.data(), c.img.data() + c.off,
+							(size_t)wc * 4);
+					c.off += (size_t)wc * 4;
+				} else {
+					c.ok = false;
+				}
+			}
+			if (c.ok) {
+				const uint32_t tc = c.u32();
+				if (c.ok && tc <= 64 * 1024 * 1024
+					&& c.off + tc <= c.img.size()) {
+					mlTris.resize(tc);
+					if (tc)
+						memcpy(mlTris.data(), c.img.data() + c.off, tc);
+					c.off += tc;
+				} else {
+					c.ok = false;
+				}
+			}
+			if (!c.ok) {
+				mlTruncated = true;
+			} else {
+				std::unordered_set<uint64_t> mlTriSet;
+				for (const MlRec& m : recs) {
+					for (uint32_t t = 0; t < m.triangleCount; ++t) {
+						const size_t base =
+							(size_t)m.triangleOffset + (size_t)t * 3;
+						if (base + 3 > mlTris.size()) {
+							++mlBadLocal;
+							continue;
+						}
+						uint32_t g[3];
+						bool bad = false;
+						for (int k = 0; k < 3; ++k) {
+							const uint32_t local = mlTris[base + k];
+							if (local >= m.vertexCount) {
+								bad = true;
+								break;
+							}
+							const size_t w =
+								(size_t)m.vertexOffset + local;
+							if (w >= window.size()) {
+								bad = true;
+								break;
+							}
+							g[k] = window[w];
+							if (g[k] >= vc) {
+								bad = true;
+								++mlOob; // window id past the vertex
+								         // payload: stale windows
+								break;
+							}
+						}
+						if (bad) {
+							++mlBadLocal;
+							continue;
+						}
+						mlTriSet.insert(triKey(g[0], g[1], g[2]));
+						if (lmChunk != 0xFFFFFFFFu) {
+							const auto a = atlasAt(g[0]);
+							const auto b = atlasAt(g[1]);
+							const auto d = atlasAt(g[2]);
+							const float duv0 = std::abs(a.first - b.first)
+								+ std::abs(a.second - b.second);
+							const float duv1 = std::abs(a.first - d.first)
+								+ std::abs(a.second - d.second);
+							const float duv2 = std::abs(b.first - d.first)
+								+ std::abs(b.second - d.second);
+							if (std::max({ duv0, duv1, duv2 }) > 0.45f)
+								++mlBigTris;
+						}
+					}
+				}
+				// Symmetric set difference: classic-tris missing from
+				// the meshlet walk + meshlet tris absent classically.
+				if (lmChunk != 0xFFFFFFFFu) {
+					for (uint64_t key : classicTris)
+						if (mlTriSet.count(key) == 0)
+							++mlSetDiff;
+					for (uint64_t key : mlTriSet)
+						if (classicTris.count(key) == 0)
+							++mlSetDiff;
+				}
+			}
+		}
+		if (mlTruncated) {
+			std::cout << "    [truncated meshlet trailer: " << e->path
+				<< "]\n";
+			continue;
+		}
 		std::cout << "    mesh " << uri
 			<< " verts=" << vc << " idx=" << ic
 			<< " lod{g=" << groupId << " i=" << lodIndex << " n=" << candidates
@@ -769,6 +921,11 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 			std::cout << " charts=" << lmXforms
 				<< " uv2span=" << maxUv2Span
 				<< " bigtris=" << bigUv2Tris;
+		if (meshlets > 0)
+			std::cout << " mlbigtris=" << mlBigTris
+				<< " mlsetdiff=" << mlSetDiff
+				<< " mlbadlocal=" << mlBadLocal
+				<< " mloob=" << mlOob;
 		std::cout << "\n";
 	}
 
