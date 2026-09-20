@@ -1935,6 +1935,10 @@ int main(int argc, char** argv) {
 				args.lmAtlasWidth, 256) + 3u) & ~3u;
 			SgLightmapXatlasOptions xopts;
 			xopts.gutterTexels = lmGutter;
+			// Layout-first: convergence probes pack + shrink only
+			// (rects decide fit). The winning level is rasterized once
+			// below, before the expensive GI bake consumes its texels.
+			xopts.deferTexelRaster = true;
 			auto buildXinputs = [&]() {
 				std::vector<SgLightmapXatlasMeshInput> ins;
 				ins.reserve(work.size());
@@ -2013,6 +2017,16 @@ int main(int argc, char** argv) {
 							return false;
 					}
 				}
+				// Post-shrink AABBs of concave charts are expected to
+				// overlap (xatlas only promises dilated-coverage
+				// disjointness): repack big->small into disjoint
+				// placements before measuring fit.
+				if (!RepackXatlasLevel(lv, atlasW, kMaxAtlasH, xerr)) {
+					std::cerr << "  [LM] xatlas probe " << worldDensity
+						<< " texels/m repack failed: " << xerr << "\n"
+						<< std::flush;
+					return false;
+				}
 				if (work.empty() || !xatlasProbeFits(lv))
 					return false;
 				bestLevel = std::move(lv);
@@ -2049,6 +2063,13 @@ int main(int argc, char** argv) {
 					return 1;
 				}
 				xatlasDropUnchartable(bestLevel);
+				if (!RepackXatlasLevel(bestLevel, atlasW, kMaxAtlasH,
+						xerr)) {
+					std::cerr << "[LM] atlas overflow (" << xerr
+						<< "; raise --lm-meters-per-texel, --lm-atlas-width"
+						<< " or --lm-max-height)\n";
+					return 1;
+				}
 				while (!xatlasProbeFits(bestLevel)) {
 					if (++round > 32 || work.empty()) {
 						std::cerr << "[LM] atlas overflow ("
@@ -2073,6 +2094,14 @@ int main(int argc, char** argv) {
 						work.erase(work.begin() + ptrdiff_t(worst));
 						bestLevel.meshes.erase(
 							bestLevel.meshes.begin() + ptrdiff_t(worst));
+						std::string rerr;
+						if (!RepackXatlasLevel(bestLevel, atlasW, kMaxAtlasH,
+								rerr)) {
+							std::cerr << "[LM] atlas overflow (" << rerr
+								<< "; raise --lm-meters-per-texel,"
+								" --lm-atlas-width or --lm-max-height)\n";
+							return 1;
+						}
 					}
 					fitDensity = 1.0f;
 				} else {
@@ -2091,9 +2120,27 @@ int main(int argc, char** argv) {
 					}
 				}
 			}
-			// Land the winning level in the real atlas (deterministic
-			// re-stack of the kept rects) and hand charts to the bake.
+			// Finalize layout BEFORE the expensive GI work: the winning
+			// (layout-only) level was already repacked big->small into
+			// disjoint rects during probing. Rasterize it once into
+			// those final rects, gate the repacked rects pairwise,
+			// then land it in the real atlas (deterministic re-stack)
+			// and hand charts to the bake.
 			{
+				std::string rerr;
+				if (!RasterizeLightmapPackTexels(buildXinputs(), bestLevel,
+						lmGutter, rerr)) {
+					std::cerr << "[LM] winning level rasterize failed: "
+						<< rerr << "\n";
+					return 1;
+				}
+				std::string overlapErr;
+				if (!CheckXatlasLevelRectsForOverlap(bestLevel,
+						&overlapErr)) {
+					std::cerr << "[LM] winning level rect overlap: "
+						<< overlapErr << "\n";
+					return 1;
+				}
 				atlas = SgLightmapAtlas{};
 				std::vector<uint32_t> keys;
 				keys.reserve(work.size());
@@ -2105,6 +2152,11 @@ int main(int argc, char** argv) {
 						args.lmLobes, atlasW, kMaxAtlasH, bases, aerr)) {
 					std::cerr << "[LM] atlas convergence regressed: "
 						<< aerr << "\n";
+					return 1;
+				}
+				if (!CheckAtlasChunksForOverlap(atlas, &overlapErr)) {
+					std::cerr << "[LM] atlas chunk overlap after Append: "
+						<< overlapErr << "\n";
 					return 1;
 				}
 				// Fixed atlas width (xatlas's own canvas can be narrower;
@@ -2437,6 +2489,266 @@ int main(int argc, char** argv) {
 			} else {
 				std::cerr << "[LM] charts png write failed: " << perr
 					<< "\n" << std::flush;
+			}
+		}
+		// Chart transform debug dump (<scene>_charts_debug.txt): every
+		// chunk's texel-space transform (exactly what the VS applies
+		// after the normalize pass) + bake-point/tri counts, plus an
+		// overlap audit of the chunk rects — xatlas packs the per-chart
+		// bitmaps disjoint, so rect intersections mean two payloads
+		// write the same atlas texels (last writer wins, both charts
+		// sample the shared region = the "overlapped charts" artifact).
+		// Non-fatal; the console keeps only the summary line.
+		{
+			std::filesystem::path dbgPath =
+				std::filesystem::path(args.contentDir) / "gi"
+				/ (sceneId + "_charts_debug.txt");
+			std::ofstream dbg(dbgPath);
+			uint32_t ringPairs = 0, contentPairs = 0;
+			if (dbg) {
+				dbg << "# " << sceneId << " chart transform debug (cook)\n"
+					<< "# atlas " << atlas.width << "x" << atlas.height
+					<< " chunks " << atlas.chunks.size() << " gutter "
+					<< lmGutter << "\n"
+					<< "# atlas texel = chartUv * s + o (divide by the"
+						" final dims for uv)\n";
+
+				// chunk -> (mesh work idx, local chart, tri count).
+				const uint32_t gw = lmGutter;
+				std::vector<uint32_t> ownerMesh(atlas.chunks.size(),
+					0xFFFFFFFFu);
+				std::vector<uint32_t> ownerChart(atlas.chunks.size(), 0);
+				std::vector<uint32_t> chartTris(atlas.chunks.size(), 0);
+				for (size_t i = 0; i < work.size(); ++i) {
+					const SgLightmapChartResult& cr = work[i].chart;
+					std::vector<uint32_t> tris(cr.charts.size(), 0);
+					for (uint32_t t : cr.triChart)
+						if (t < tris.size())
+							++tris[t];
+					for (uint32_t c = 0; c < cr.charts.size(); ++c) {
+						ownerMesh[work[i].chunkBase + c] = uint32_t(i);
+						ownerChart[work[i].chunkBase + c] = c;
+						chartTris[work[i].chunkBase + c] = tris[c];
+					}
+				}
+				// Per-chunk world area from the owning mesh's charted
+				// triangles (node-local positions through the world
+				// transform): density = claimed texels per m^2 exposes
+				// texel-density variance within and across meshes.
+				std::vector<double> chartArea(atlas.chunks.size(), 0.0);
+				for (size_t i = 0; i < work.size(); ++i) {
+					const SgLightmapChartResult& cr = work[i].chart;
+					const smvk::StaticMeshUpload* up =
+						cluster->GetRetainedUpload(work[i].handle);
+					if (!up || up->indices.size() < 3)
+						continue;
+					const glm::mat4& g =
+						cluster->scene.globalTransform[work[i].node];
+					const size_t triCount = up->indices.size() / 3;
+					for (size_t t = 0; t < triCount
+						&& t < cr.triChart.size(); ++t) {
+						const uint32_t lc = cr.triChart[t];
+						if (lc >= cr.charts.size())
+							continue;
+						const uint32_t chunk =
+							work[i].chunkBase + lc;
+						if (chunk >= chartArea.size())
+							continue;
+						const uint32_t i0 = up->indices[t * 3 + 0];
+						const uint32_t i1 = up->indices[t * 3 + 1];
+						const uint32_t i2 = up->indices[t * 3 + 2];
+						if (i0 >= up->vertices.size()
+							|| i1 >= up->vertices.size()
+							|| i2 >= up->vertices.size())
+							continue;
+						const glm::vec3 a =
+							glm::vec3(g * glm::vec4(
+								up->vertices[i0].pos, 1.0f));
+						const glm::vec3 b =
+							glm::vec3(g * glm::vec4(
+								up->vertices[i1].pos, 1.0f));
+						const glm::vec3 cc =
+							glm::vec3(g * glm::vec4(
+								up->vertices[i2].pos, 1.0f));
+						chartArea[chunk] += 0.5 * double(glm::length(
+							glm::cross(b - a, cc - a)));
+					}
+				}
+				auto line = [&](uint32_t ci) {
+					const SgLightmapChunk& c = atlas.chunks[ci];
+					const glm::vec2 o = atlas.AtlasTexel(ci, gw,
+						glm::vec2(0.0f, 0.0f));
+					const glm::vec2 e = atlas.AtlasTexel(ci, gw,
+						glm::vec2(1.0f, 1.0f));
+					const size_t texels = ownerMesh[ci] < work.size()
+						? work[ownerMesh[ci]].chart
+							.charts[ownerChart[ci]].texels.size()
+						: 0;
+					const double area = chartArea[ci];
+					const double dens = area > 1e-9
+						? double(texels) / area : 0.0;
+					const double reserved = double(
+						std::max(c.rectMax[0] - c.rectMin[0], 0.0f))
+						* double(std::max(
+							c.rectMax[1] - c.rectMin[1], 0.0f));
+					const double fill = reserved > 0.0
+						? double(texels) / reserved : 0.0;
+					dbg << "chunk " << ci << " node " << c.meshKey
+						<< " chart " << ownerChart[ci]
+						<< " rect [" << c.rectMin[0] << "," << c.rectMin[1]
+						<< " " << c.rectMax[0] << "," << c.rectMax[1] << "]"
+						<< " s=(" << (e.x - o.x) << "," << (e.y - o.y)
+						<< ") o=(" << o.x << "," << o.y << ")"
+						<< " texels " << texels
+						<< " tris " << chartTris[ci]
+						<< " area_m2 " << area
+						<< " dens_per_m2 " << dens
+						<< " fill " << fill
+						<< " lobes " << c.lobeCount;
+				};
+
+				// Sweep-line rect overlap audit. For each pair, also
+				// intersect the charts' actual bake-point footprints
+				// (rect-local uv -> atlas texel): rect overlaps with
+				// ZERO shared texels mean the uvs are fine and only
+				// the bbox-derived rects are fatter than the packed
+				// footprints; shared texels mean real uv corruption.
+				std::vector<uint32_t> byY(atlas.chunks.size());
+				for (uint32_t i = 0; i < byY.size(); ++i)
+					byY[i] = i;
+				std::sort(byY.begin(), byY.end(),
+					[&](uint32_t a, uint32_t b) {
+						return atlas.chunks[a].rectMin[1]
+							< atlas.chunks[b].rectMin[1];
+					});
+				auto texelSet = [&](uint32_t ci) {
+					std::unordered_set<uint64_t> set;
+					const SgLightmapChunk& c = atlas.chunks[ci];
+					const uint32_t mi = ownerMesh[ci];
+					if (mi >= work.size())
+						return set;
+					for (const SgLightmapTexel& t :
+							work[mi].chart.charts[ownerChart[ci]].texels) {
+						const int tx = int(c.rectMin[0]) + int(t.uv.x);
+						const int ty = int(c.rectMin[1]) + int(t.uv.y);
+						set.insert(uint64_t(uint32_t(tx))
+							* atlas.height + uint32_t(ty));
+					}
+					return set;
+				};
+				std::vector<uint32_t> active;
+				for (uint32_t ci : byY) {
+					const SgLightmapChunk& c = atlas.chunks[ci];
+					active.erase(std::remove_if(active.begin(),
+							active.end(), [&](uint32_t a) {
+								return atlas.chunks[a].rectMax[1]
+									<= c.rectMin[1];
+							}), active.end());
+					for (uint32_t a : active) {
+						const SgLightmapChunk& s = atlas.chunks[a];
+						if (!(s.rectMin[0] < c.rectMax[0]
+								&& c.rectMin[0] < s.rectMax[0]))
+							continue;
+						++ringPairs;
+						const float ix0 = std::max(s.rectMin[0],
+							c.rectMin[0]);
+						const float iy0 = std::max(s.rectMin[1],
+							c.rectMin[1]);
+						const float ix1 = std::min(s.rectMax[0],
+							c.rectMax[0]);
+						const float iy1 = std::min(s.rectMax[1],
+							c.rectMax[1]);
+						const bool content = ix0 + float(gw) < ix1 - float(gw)
+							&& iy0 + float(gw) < iy1 - float(gw);
+						if (content)
+							++contentPairs;
+						uint64_t shared = 0;
+						{
+							const std::unordered_set<uint64_t> aSet =
+								texelSet(a);
+							const uint32_t mi = ownerMesh[ci];
+							if (mi < work.size()) {
+								const SgLightmapChunk& cc = atlas.chunks[ci];
+								for (const SgLightmapTexel& t : work[mi]
+										.chart.charts[ownerChart[ci]]
+										.texels) {
+									const int tx = int(cc.rectMin[0])
+										+ int(t.uv.x);
+									const int ty = int(cc.rectMin[1])
+										+ int(t.uv.y);
+									if (aSet.count(uint64_t(uint32_t(tx))
+											* atlas.height
+											+ uint32_t(ty)))
+										++shared;
+								}
+							}
+						}
+						dbg << "pair " << a << " " << ci << " "
+							<< (content ? "CONTENT" : "ring")
+							<< " inter [" << ix0 << "," << iy0
+							<< " " << ix1 << "," << iy1 << "]"
+							<< " sharedTexels " << shared << "\n";
+						dbg << "  A "; line(a); dbg << "\n";
+						dbg << "  B "; line(ci); dbg << "\n";
+					}
+					active.push_back(ci);
+				}
+				dbg << "overlap summary: " << ringPairs << " ring "
+					<< contentPairs << " content\n";
+				dbg << "chunks:\n";
+				for (uint32_t ci = 0; ci < atlas.chunks.size(); ++ci) {
+					line(ci);
+					dbg << "\n";
+				}
+				// Per-mesh density rollup: min/max/mean claimed-texel
+				// density over the mesh's chunks. Uniform charting gives
+				// one density per mesh (worldScale * curveScale path);
+				// spread inside a mesh points at non-uniform node scale
+				// (anisotropic world density), clamping, or chart-size
+				// quantization on tiny charts.
+				dbg << "mesh density:\n";
+				for (size_t i = 0; i < work.size(); ++i) {
+					double mn = std::numeric_limits<double>::max();
+					double mx = 0.0, sum = 0.0, area = 0.0;
+					uint64_t tex = 0;
+					uint32_t n = 0;
+					for (uint32_t c = 0;
+						c < work[i].chart.charts.size(); ++c) {
+						const uint32_t chunk = work[i].chunkBase + c;
+						if (chunk >= chartArea.size())
+							continue;
+						const size_t t = work[i].chart.charts[c]
+							.texels.size();
+						const double a = chartArea[chunk];
+						if (a <= 1e-9)
+							continue;
+						const double d = double(t) / a;
+						mn = std::min(mn, d);
+						mx = std::max(mx, d);
+						sum += d;
+						area += a;
+						tex += t;
+						++n;
+					}
+					dbg << "mesh node " << work[i].node
+						<< " worldScale " << work[i].worldScale
+						<< " curveScale " << work[i].curveScale
+						<< " chunks " << n << " area_m2 " << area
+						<< " texels " << tex;
+					if (n > 0)
+						dbg << " densMean " << (sum / double(n))
+							<< " densMin " << mn << " densMax " << mx
+							<< " spread "
+							<< (mn > 0.0 ? mx / mn : 0.0);
+					dbg << "\n";
+				}
+				std::cerr << "  [LM] chart rect audit: " << ringPairs
+					<< " ring / " << contentPairs
+					<< " content overlapping pairs; transforms in "
+					<< dbgPath.generic_string() << "\n" << std::flush;
+			} else {
+				std::cerr << "[LM] chart debug dump open failed: "
+					<< dbgPath.generic_string() << "\n" << std::flush;
 			}
 		}
 			// Name the atlas inside the (single) cooked cluster so the

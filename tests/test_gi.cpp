@@ -1179,6 +1179,177 @@ void TestLmXatlasCharts() {
 	}
 }
 
+// Layout-first / deferred rasterize: convergence probes pack + shrink
+// only (texels empty), the winner rasterizes once before the bake.
+// Layout must already be final + disjoint at probe time; rasterizing
+// must fill texels without moving rects; Append must emit disjoint
+// chunks (GPU packing has no ownership check).
+void TestLmDeferRasterize() {
+	using namespace smvk;
+	StaticMeshUpload quad;
+	{
+		auto vert = [](float x, float z) {
+			StaticVertex v{};
+			v.pos = { x, 0.0f, z };
+			v.color = { 1, 1, 1, 1 };
+			v.normal = { 0.0f, 1.0f, 0.0f };
+			return v;
+		};
+		quad.vertices = {
+			vert(-1.0f, -1.0f), vert(0.0f, -1.0f),
+			vert(0.0f, 0.0f), vert(-1.0f, 0.0f),
+		};
+		quad.indices = { 0, 2, 1, 0, 3, 2 };
+	}
+	gi::SgLightmapXatlasMeshInput in{};
+	in.upload = &quad;
+	in.meshKey = 7;
+	std::vector<gi::SgLightmapXatlasMeshInput> ins = { in };
+	gi::SgLightmapXatlasOptions xopts{};
+	xopts.metersPerTexel = 1.0f / 32.0f;
+	xopts.gutterTexels = 2;
+	xopts.deferTexelRaster = true;
+	gi::SgLightmapXatlasLevel lvl;
+	std::string err;
+	Check(gi::GenerateLightmapChartsXatlas(ins, xopts, lvl, err),
+		"lm.defer.pack.ok");
+	Check(lvl.meshes.size() == 1 && lvl.meshes[0].ok,
+		"lm.defer.pack.meshok");
+	if (lvl.meshes.size() == 1 && lvl.meshes[0].ok) {
+		bool texelsEmpty = true;
+		for (const auto& c : lvl.meshes[0].chart.charts)
+			texelsEmpty = texelsEmpty && c.texels.empty();
+		Check(texelsEmpty, "lm.defer.pack.texels.empty");
+		Check(!lvl.meshes[0].rects.empty(), "lm.defer.pack.rects");
+		std::string oerr;
+		Check(gi::CheckXatlasLevelRectsForOverlap(lvl, &oerr),
+			"lm.defer.pack.nooverlap");
+		// Winner rasterize: fills texels, rects must not move.
+		auto rectsBefore = lvl.meshes[0].rects;
+		Check(gi::RasterizeLightmapPackTexels(ins, lvl, 2, err),
+			"lm.defer.raster.ok");
+		Check(lvl.meshes[0].rects.size() == rectsBefore.size(),
+			"lm.defer.raster.rectcount");
+		bool rectsSame = lvl.meshes[0].rects.size() == rectsBefore.size();
+		for (size_t i = 0; rectsSame && i < rectsBefore.size(); ++i) {
+			rectsSame = rectsSame
+				&& lvl.meshes[0].rects[i].minX == rectsBefore[i].minX
+				&& lvl.meshes[0].rects[i].minY == rectsBefore[i].minY
+				&& lvl.meshes[0].rects[i].maxX == rectsBefore[i].maxX
+				&& lvl.meshes[0].rects[i].maxY == rectsBefore[i].maxY;
+		}
+		Check(rectsSame, "lm.defer.raster.rects.stable");
+		bool texelsFull = true;
+		for (const auto& c : lvl.meshes[0].chart.charts)
+			texelsFull = texelsFull && !c.texels.empty();
+		Check(texelsFull, "lm.defer.raster.texels");
+		Check(gi::CheckXatlasLevelRectsForOverlap(lvl, &oerr),
+			"lm.defer.raster.nooverlap");
+		// Append: chunks disjoint (second gate).
+		gi::SgLightmapAtlas atlas;
+		std::vector<uint32_t> bases;
+		std::vector<uint32_t> keys = { 7 };
+		Check(gi::AppendXatlasLevelToAtlas(atlas, lvl, keys, 9u,
+				1024, 1024, bases, err),
+			"lm.defer.append.ok");
+		Check(gi::CheckAtlasChunksForOverlap(atlas, &oerr),
+			"lm.defer.chunks.nooverlap");
+	}
+}
+
+// Repack: post-shrink AABBs of concave charts are expected to overlap
+// (xatlas only promises dilated-coverage disjointness). RepackXatlasLevel
+// forgets the canvas placement and shelf-packs big->small into disjoint
+// rects, preserving sizes; chart-local uvs are placement-independent.
+void TestLmRepackDisjoint() {
+	gi::SgLightmapXatlasLevel lvl;
+	lvl.meshes.resize(1);
+	auto& mo = lvl.meshes[0];
+	mo.ok = true;
+	auto addChart = [&](float minX, float minY, float w, float h) {
+		gi::SgLightmapXatlasMeshOutput::Rect r;
+		r.minX = minX;
+		r.minY = minY;
+		r.maxX = minX + w;
+		r.maxY = minY + h;
+		mo.rects.push_back(r);
+		gi::SgLightmapChartResult::Chart c;
+		c.width = uint32_t(w);
+		c.height = uint32_t(h);
+		mo.chart.charts.push_back(std::move(c));
+	};
+	// Three overlapping AABBs: big 20x10, medium 10x10, small 6x6.
+	addChart(0.0f, 0.0f, 20.0f, 10.0f);
+	addChart(5.0f, 3.0f, 10.0f, 10.0f);
+	addChart(8.0f, 2.0f, 6.0f, 6.0f);
+	lvl.atlasWidth = 30;
+	lvl.atlasHeight = 20;
+	std::string oerr;
+	Check(!gi::CheckXatlasLevelRectsForOverlap(lvl, &oerr),
+		"lm.repack.pre.overlap");
+	std::string err;
+	Check(gi::RepackXatlasLevel(lvl, 64, 64, err), "lm.repack.ok");
+	Check(gi::CheckXatlasLevelRectsForOverlap(lvl, &oerr),
+		"lm.repack.nooverlap");
+	// Sizes preserved exactly (only placement moves).
+	Check(mo.rects.size() == 3, "lm.repack.count");
+	bool sizesOk = mo.rects.size() == 3;
+	{
+		bool seen20x10 = false, seen10x10 = false, seen6x6 = false;
+		for (const auto& r : mo.rects) {
+			const float w = r.maxX - r.minX, h = r.maxY - r.minY;
+			if (w == 20.0f && h == 10.0f)
+				seen20x10 = true;
+			else if (w == 10.0f && h == 10.0f)
+				seen10x10 = true;
+			else if (w == 6.0f && h == 6.0f)
+				seen6x6 = true;
+			else
+				sizesOk = false;
+		}
+		sizesOk = sizesOk && seen20x10 && seen10x10 && seen6x6;
+	}
+	Check(sizesOk, "lm.repack.sizes");
+	// Big first: the 20-wide chart must start at the origin row.
+	bool bigFirst = false;
+	for (const auto& r : mo.rects) {
+		if (r.maxX - r.minX == 20.0f && r.maxY - r.minY == 10.0f)
+			bigFirst = (r.minX == 0.0f && r.minY == 0.0f);
+	}
+	Check(bigFirst, "lm.repack.bigfirst");
+	// Chart payload dims track the rect spans.
+	bool dimsOk = true;
+	for (size_t i = 0; i < mo.rects.size(); ++i) {
+		dimsOk = dimsOk
+			&& mo.chart.charts[i].width
+				== uint32_t(mo.rects[i].maxX - mo.rects[i].minX)
+			&& mo.chart.charts[i].height
+				== uint32_t(mo.rects[i].maxY - mo.rects[i].minY);
+	}
+	Check(dimsOk, "lm.repack.dims");
+	// Repacked level appends cleanly with disjoint chunks.
+	gi::SgLightmapAtlas atlas;
+	std::vector<uint32_t> bases;
+	std::vector<uint32_t> keys = { 1 };
+	Check(gi::AppendXatlasLevelToAtlas(atlas, lvl, keys, 9u, 64, 64, bases,
+			err),
+		"lm.repack.append.ok");
+	Check(gi::CheckAtlasChunksForOverlap(atlas, &oerr),
+		"lm.repack.chunks.nooverlap");
+	// Oversize chart fails with a useful error.
+	gi::SgLightmapXatlasLevel tooWide;
+	tooWide.meshes.resize(1);
+	tooWide.meshes[0].ok = true;
+	gi::SgLightmapXatlasMeshOutput::Rect wr{ 0, 0, 100, 4 };
+	tooWide.meshes[0].rects.push_back(wr);
+	gi::SgLightmapChartResult::Chart wc;
+	wc.width = 100;
+	wc.height = 4;
+	tooWide.meshes[0].chart.charts.push_back(std::move(wc));
+	Check(!gi::RepackXatlasLevel(tooWide, 64, 64, err),
+		"lm.repack.toowide.fail");
+}
+
 // Frostbite-style chart transfer (TransferLightmapCharts): a charted
 // reference (the LOD1 stand-in) projects onto tessellated targets of
 // the same surface — every triangle lands in ONE chart with a
@@ -1872,6 +2043,8 @@ int main() {
 	smvk::gi::TestFp16Pack();
 	smvk::gi::TestLightmapCurvatureScale();
 	smvk::gi::TestLmXatlasCharts();
+	smvk::gi::TestLmDeferRasterize();
+	smvk::gi::TestLmRepackDisjoint();
 	smvk::gi::TestLmChartTransfer();
 	smvk::gi::TestStaticBakeLights();
 	smvk::gi::TestGiMalformedScene();

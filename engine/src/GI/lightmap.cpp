@@ -758,7 +758,11 @@ bool GenerateLightmapChartsXatlas(
 			else
 				triChart[t] = 0xFFFFFFFFu;
 		}
-		// Chart-local corner UVs: (atlasUv - innerMin) / innerSize.
+		// Chart-local corner UVs, PROVISIONAL: computed against the
+		// bbox-derived rects. The rasterization below maps triangles
+		// into those rects; the rects then shrink to the rasterized
+		// footprint (see the shrink pass) and these uvs are REBUILT
+		// against the shrunken rects before the mesh output is final.
 		std::vector<glm::vec2> cornerLocal(size_t(triCount) * 3,
 			glm::vec2(0.0f));
 		for (uint32_t t = 0; t < triCount; ++t) {
@@ -777,8 +781,169 @@ bool GenerateLightmapChartsXatlas(
 					glm::vec2(0.0f), glm::vec2(1.0f));
 			}
 		}
-		// Per-vertex outputs (first chart to touch a vertex wins) +
-		// per-triangle seam-correct view.
+		mo.chart.triChart = triChart;
+		mo.chart.cornerChartUv = cornerLocal; // provisional (raster input)
+		// Bake texels per chart (first-writer-owns claim map,
+		// rect-local uv + margin). With deferTexelRaster the coverage
+		// claim + footprint shrink still run (they finalize the layout),
+		// but attribute fetch + texel push are skipped — the winning
+		// level is rasterized once via RasterizeLightmapPackTexels
+		// before the expensive GI bake.
+		const bool deferTexels = opts.deferTexelRaster;
+		for (uint32_t ci = 0; ci < mo.chart.charts.size(); ++ci) {
+			const auto& r = mo.rects[ci];
+			SgLightmapChartResult::Chart& oc = mo.chart.charts[ci];
+			oc.width = std::max<uint32_t>(
+				uint32_t(std::ceil(r.maxX - r.minX)), 2u * margin + 1u);
+			oc.height = std::max<uint32_t>(
+				uint32_t(std::ceil(r.maxY - r.minY)), 2u * margin + 1u);
+			const uint32_t iw = std::max<uint32_t>(oc.width - 2u * margin, 1u);
+			const uint32_t ih =
+				std::max<uint32_t>(oc.height - 2u * margin, 1u);
+			std::vector<uint32_t> claim(size_t(iw) * ih, 0xFFFFFFFFu);
+			for (uint32_t t = 0; t < triCount; ++t) {
+				if (triChart[t] != ci)
+					continue;
+				const uint32_t i0 = upload.indices[t * 3 + 0];
+				const uint32_t i1 = upload.indices[t * 3 + 1];
+				const uint32_t i2 = upload.indices[t * 3 + 2];
+				glm::vec3 p0(0.0f), p1(0.0f), p2(0.0f);
+				glm::vec3 n0(0.0f, 1.0f, 0.0f), n1 = n0, n2 = n0;
+				if (!deferTexels) {
+					p0 = upload.vertices[i0].pos;
+					p1 = upload.vertices[i1].pos;
+					p2 = upload.vertices[i2].pos;
+					n0 = upload.vertices[i0].normal;
+					n1 = upload.vertices[i1].normal;
+					n2 = upload.vertices[i2].normal;
+				}
+				const glm::vec2 u0 = mo.chart.cornerChartUv[size_t(t) * 3 + 0];
+				const glm::vec2 u1 = mo.chart.cornerChartUv[size_t(t) * 3 + 1];
+				const glm::vec2 u2 = mo.chart.cornerChartUv[size_t(t) * 3 + 2];
+				const glm::vec2 e0 = u1 - u0;
+				const glm::vec2 e1 = u2 - u0;
+				const float det = e0.x * e1.y - e0.y * e1.x;
+				if (std::abs(det) < 1e-12f)
+					continue;
+				const glm::vec2 tMin = glm::min(u0, glm::min(u1, u2));
+				const glm::vec2 tMax = glm::max(u0, glm::max(u1, u2));
+				uint32_t tx0 = std::min(uint32_t(std::max(0.0f,
+					tMin.x * float(iw) - 0.5f)), iw - 1u);
+				uint32_t tx1 = std::min(uint32_t(std::min(float(iw),
+					tMax.x * float(iw) + 0.5f)), iw - 1u);
+				uint32_t ty0 = std::min(uint32_t(std::max(0.0f,
+					tMin.y * float(ih) - 0.5f)), ih - 1u);
+				uint32_t ty1 = std::min(uint32_t(std::min(float(ih),
+					tMax.y * float(ih) + 0.5f)), ih - 1u);
+				for (uint32_t y = ty0; y <= ty1; ++y) {
+					for (uint32_t x = tx0; x <= tx1; ++x) {
+						const size_t idx = size_t(y) * iw + x;
+						if (claim[idx] != 0xFFFFFFFFu)
+							continue;
+						const float u = (float(x) + 0.5f) / float(iw);
+						const float v = (float(y) + 0.5f) / float(ih);
+						const glm::vec2 d(u - u0.x, v - u0.y);
+						const float b1 = (d.x * e1.y - d.y * e1.x) / det;
+						const float b2 = (e0.x * d.y - e0.y * d.x) / det;
+						const float b0 = 1.0f - b1 - b2;
+						if (b0 < -1e-4f || b1 < -1e-4f || b2 < -1e-4f)
+							continue;
+						claim[idx] = 1u;
+						if (deferTexels)
+							continue;
+						SgLightmapTexel tx{};
+						tx.position = p0 * b0 + p1 * b1 + p2 * b2;
+						tx.normal = glm::normalize(n0 * b0 + n1 * b1 + n2 * b2);
+						tx.uv = glm::vec2(float(margin + x) + 0.5f,
+							float(margin + y) + 0.5f);
+						oc.texels.push_back(tx);
+					}
+				}
+			}
+			// Shrink the rect to the chart's rasterized footprint.
+			// xatlas reserves the chart's conservative rasterized
+			// coverage (bilinear-expanded + padding dilate) — NOT its
+			// vertex-uv BBOX — so other charts pack inside a sparse
+			// chart's bbox, and a bbox-fat payload would overwrite
+			// their texels (the "overlapped charts" artifact; the bake
+			// footprints themselves never intersect, only the fat
+			// rects did). Footprint bbox + margin stays inside the
+			// packer's reserved region (padding >= margin + raster
+			// slack), so shrunken rects cannot intersect either.
+			int32_t fx0 = INT32_MAX, fy0 = INT32_MAX, fx1 = -1, fy1 = -1;
+			for (uint32_t y = 0; y < ih; ++y)
+				for (uint32_t x = 0; x < iw; ++x)
+					if (claim[size_t(y) * iw + x] != 0xFFFFFFFFu) {
+						fx0 = std::min(fx0, int32_t(x));
+						fy0 = std::min(fy0, int32_t(y));
+						fx1 = std::max(fx1, int32_t(x));
+						fy1 = std::max(fy1, int32_t(y));
+					}
+			auto& rect = mo.rects[ci];
+			if (fx1 >= 0) {
+				const float nx0 = rect.minX + float(fx0);
+				const float ny0 = rect.minY + float(fy0);
+				const float nx1 = rect.minX + float(margin) + float(fx1)
+					+ 1.0f + float(margin);
+				const float ny1 = rect.minY + float(margin) + float(fy1)
+					+ 1.0f + float(margin);
+				for (SgLightmapTexel& t : oc.texels)
+					t.uv -= glm::vec2(float(fx0), float(fy0));
+				rect.minX = nx0;
+				rect.minY = ny0;
+				rect.maxX = nx1;
+				rect.maxY = ny1;
+				oc.width = uint32_t(nx1 - nx0);
+				oc.height = uint32_t(ny1 - ny0);
+			} else {
+				// No claimed texels (sub-texel sliver): keep the payload
+				// minimal around the first charted triangle's centroid
+				// — inside that triangle's rasterized footprint, so the
+				// rect stays inside the packer's reserved region.
+				glm::vec2 centroid(0.5f, 0.5f);
+				for (uint32_t t = 0; t < triCount; ++t) {
+					if (triChart[t] != ci)
+						continue;
+					centroid = (cornerAtlasUv[size_t(t) * 3 + 0]
+						+ cornerAtlasUv[size_t(t) * 3 + 1]
+						+ cornerAtlasUv[size_t(t) * 3 + 2]) / 3.0f;
+					break;
+				}
+				const float cx = std::clamp(std::floor(centroid.x),
+					rect.minX + float(margin),
+					rect.maxX - float(margin) - 1.0f);
+				const float cy = std::clamp(std::floor(centroid.y),
+					rect.minY + float(margin),
+					rect.maxY - float(margin) - 1.0f);
+				rect.minX = cx - float(margin);
+				rect.maxX = cx + float(margin) + 1.0f;
+				rect.minY = cy - float(margin);
+				rect.maxY = cy + float(margin) + 1.0f;
+				oc.width = oc.height = 2u * margin + 1u;
+			}
+		}
+		// Rebuild the chart-local corner uvs against the shrunken rects
+		// (the stamped uvs must address the footprint-tight inner rects)
+		// and derive the per-vertex outputs (first chart to touch a
+		// vertex wins; seam corners duplicate per triangle at STAMP
+		// time — per-vertex is the LOD-transfer view).
+		for (uint32_t t = 0; t < triCount; ++t) {
+			if (triChart[t] == 0xFFFFFFFFu)
+				continue;
+			const auto& r = mo.rects[triChart[t]];
+			const glm::vec2 innerMin(r.minX + float(margin),
+				r.minY + float(margin));
+			const glm::vec2 innerSize = glm::max(
+				glm::vec2(r.maxX - r.minX - 2.0f * float(margin),
+					r.maxY - r.minY - 2.0f * float(margin)),
+				glm::vec2(1e-6f));
+			for (int k = 0; k < 3; ++k) {
+				cornerLocal[size_t(t) * 3 + k] = glm::clamp(
+					(cornerAtlasUv[size_t(t) * 3 + k] - innerMin) / innerSize,
+					glm::vec2(0.0f), glm::vec2(1.0f));
+			}
+		}
+		mo.chart.cornerChartUv = std::move(cornerLocal);
 		mo.chart.vertexChart.assign(upload.vertices.size(), 0xFFFFFFFFu);
 		mo.chart.chartLocalUv.assign(upload.vertices.size(),
 			glm::vec2(0.0f));
@@ -791,31 +956,68 @@ bool GenerateLightmapChartsXatlas(
 					&& mo.chart.vertexChart[v] == 0xFFFFFFFFu) {
 					mo.chart.vertexChart[v] = triChart[t];
 					mo.chart.chartLocalUv[v] =
-						cornerLocal[size_t(t) * 3 + k];
+						mo.chart.cornerChartUv[size_t(t) * 3 + k];
 				}
 			}
 		}
-		mo.chart.triChart = triChart;
-		mo.chart.cornerChartUv = std::move(cornerLocal);
-		// Bake texels per chart (first-writer-owns claim map,
-		// rect-local uv + margin).
-		for (uint32_t ci = 0; ci < mo.chart.charts.size(); ++ci) {
-			const auto& r = mo.rects[ci];
+		mo.ok = true;
+	}
+	out.atlasWidth = xa->width + 1u; // +1 sampling pad
+	out.atlasHeight = xa->height + 1u;
+	xatlas::Destroy(xa);
+	return true;
+}
+
+bool RasterizeLightmapPackTexels(
+	const std::vector<SgLightmapXatlasMeshInput>& meshes,
+	SgLightmapXatlasLevel& level, uint32_t gutterTexels, std::string& err) {
+	if (meshes.size() != level.meshes.size()) {
+		err = "RasterizeLightmapPackTexels: mesh/level size mismatch";
+		return false;
+	}
+	if (gutterTexels == 0 || gutterTexels > 4) {
+		err = "RasterizeLightmapPackTexels: bad gutter";
+		return false;
+	}
+	// Layout is final at this point (post-shrink rects + rebuilt
+	// chart-local uvs); rasterize bake texels directly into the final
+	// rects — no provisional uv shift fixup.
+	const uint32_t margin = gutterTexels;
+	for (size_t mi = 0; mi < meshes.size(); ++mi) {
+		const SgLightmapXatlasMeshInput& in = meshes[mi];
+		SgLightmapXatlasMeshOutput& mo = level.meshes[mi];
+		if (!mo.ok || !in.upload)
+			continue;
+		const StaticMeshUpload& upload = *in.upload;
+		const uint32_t triCount = uint32_t(upload.indices.size() / 3);
+		if (mo.chart.triChart.size() != triCount
+			|| mo.chart.cornerChartUv.size() != size_t(triCount) * 3
+			|| mo.chart.charts.size() != mo.rects.size()) {
+			err = "RasterizeLightmapPackTexels: level/upload mismatch";
+			return false;
+		}
+		for (size_t ci = 0; ci < mo.rects.size(); ++ci) {
 			SgLightmapChartResult::Chart& oc = mo.chart.charts[ci];
-			oc.width = std::max<uint32_t>(
-				uint32_t(r.maxX - r.minX), 2u * margin + 1u);
-			oc.height = std::max<uint32_t>(
-				uint32_t(r.maxY - r.minY), 2u * margin + 1u);
-			const uint32_t iw = std::max<uint32_t>(oc.width - 2u * margin, 1u);
-			const uint32_t ih =
-				std::max<uint32_t>(oc.height - 2u * margin, 1u);
+			if (!oc.texels.empty())
+				continue; // already rasterized (non-deferred path)
+			const uint32_t w = oc.width, h = oc.height;
+			if (w < 2 * margin + 1 || h < 2 * margin + 1) {
+				err = "RasterizeLightmapPackTexels: chart smaller than gutter";
+				return false;
+			}
+			const uint32_t iw = std::max<uint32_t>(w - 2u * margin, 1u);
+			const uint32_t ih = std::max<uint32_t>(h - 2u * margin, 1u);
 			std::vector<uint32_t> claim(size_t(iw) * ih, 0xFFFFFFFFu);
 			for (uint32_t t = 0; t < triCount; ++t) {
-				if (triChart[t] != ci)
+				if (mo.chart.triChart[t] != ci)
 					continue;
 				const uint32_t i0 = upload.indices[t * 3 + 0];
 				const uint32_t i1 = upload.indices[t * 3 + 1];
 				const uint32_t i2 = upload.indices[t * 3 + 2];
+				if (i0 >= upload.vertices.size()
+					|| i1 >= upload.vertices.size()
+					|| i2 >= upload.vertices.size())
+					continue;
 				const glm::vec3& p0 = upload.vertices[i0].pos;
 				const glm::vec3& p1 = upload.vertices[i1].pos;
 				const glm::vec3& p2 = upload.vertices[i2].pos;
@@ -864,11 +1066,263 @@ bool GenerateLightmapChartsXatlas(
 				}
 			}
 		}
-		mo.ok = true;
 	}
-	out.atlasWidth = xa->width + 1u; // +1 sampling pad
-	out.atlasHeight = xa->height + 1u;
-	xatlas::Destroy(xa);
+	return true;
+}
+
+static bool RectsOverlap(float aMinX, float aMinY, float aMaxX, float aMaxY,
+	float bMinX, float bMinY, float bMaxX, float bMaxY) {
+	return aMinX < bMaxX && bMinX < aMaxX && aMinY < bMaxY && bMinY < aMaxY;
+}
+
+bool CheckXatlasLevelRectsForOverlap(const SgLightmapXatlasLevel& level,
+	std::string* err) {
+	struct Entry {
+		float minX, minY, maxX, maxY;
+		size_t mesh, chart;
+	};
+	std::vector<Entry> rects;
+	for (size_t mi = 0; mi < level.meshes.size(); ++mi) {
+		const auto& mo = level.meshes[mi];
+		if (!mo.ok)
+			continue;
+		for (size_t c = 0; c < mo.rects.size(); ++c) {
+			const auto& r = mo.rects[c];
+			rects.push_back({ r.minX, r.minY, r.maxX, r.maxY, mi, c });
+		}
+	}
+	for (size_t i = 0; i < rects.size(); ++i) {
+		for (size_t j = i + 1; j < rects.size(); ++j) {
+			const auto& a = rects[i];
+			const auto& b = rects[j];
+			if (RectsOverlap(a.minX, a.minY, a.maxX, a.maxY, b.minX, b.minY,
+					b.maxX, b.maxY)) {
+				if (err) {
+					char buf[256];
+					std::snprintf(buf, sizeof(buf),
+						"CheckXatlasLevelRectsForOverlap: mesh %llu chart %llu "
+						"[%g,%g %g,%g] overlaps mesh %llu chart %llu "
+						"[%g,%g %g,%g]",
+						(unsigned long long)a.mesh, (unsigned long long)a.chart,
+						a.minX, a.minY, a.maxX, a.maxY,
+						(unsigned long long)b.mesh, (unsigned long long)b.chart,
+						b.minX, b.minY, b.maxX, b.maxY);
+					*err = buf;
+				}
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+bool CheckAtlasChunksForOverlap(const SgLightmapAtlas& atlas,
+	std::string* err) {
+	for (size_t i = 0; i < atlas.chunks.size(); ++i) {
+		const auto& a = atlas.chunks[i];
+		for (size_t j = i + 1; j < atlas.chunks.size(); ++j) {
+			const auto& b = atlas.chunks[j];
+			if (RectsOverlap(a.rectMin[0], a.rectMin[1], a.rectMax[0],
+					a.rectMax[1], b.rectMin[0], b.rectMin[1], b.rectMax[0],
+					b.rectMax[1])) {
+				if (err) {
+					char buf[256];
+					std::snprintf(buf, sizeof(buf),
+						"CheckAtlasChunksForOverlap: chunk %llu "
+						"[%g,%g %g,%g] overlaps chunk %llu "
+						"[%g,%g %g,%g]",
+						(unsigned long long)i, a.rectMin[0], a.rectMin[1],
+						a.rectMax[0], a.rectMax[1], (unsigned long long)j,
+						b.rectMin[0], b.rectMin[1], b.rectMax[0], b.rectMax[1]);
+					*err = buf;
+				}
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+bool RepackXatlasLevel(SgLightmapXatlasLevel& level, uint32_t atlasWidthCap,
+	uint32_t maxHeight, std::string& err) {
+	if (atlasWidthCap == 0 || maxHeight == 0) {
+		err = "RepackXatlasLevel: bad atlas caps";
+		return false;
+	}
+	// Collect every chart rect (size = footprint + 2*margin, integral).
+	struct Item {
+		size_t mesh = 0;
+		size_t chart = 0;
+		uint32_t w = 0;
+		uint32_t h = 0;
+	};
+	std::vector<Item> items;
+	for (size_t mi = 0; mi < level.meshes.size(); ++mi) {
+		const auto& mo = level.meshes[mi];
+		if (!mo.ok)
+			continue;
+		for (size_t c = 0; c < mo.rects.size(); ++c) {
+			const auto& r = mo.rects[c];
+			const uint32_t w = std::max<uint32_t>(
+				uint32_t(std::ceil(r.maxX - r.minX)), 1u);
+			const uint32_t h = std::max<uint32_t>(
+				uint32_t(std::ceil(r.maxY - r.minY)), 1u);
+			if (w > atlasWidthCap) {
+				err = "RepackXatlasLevel: chart wider than the atlas "
+					"(raise --lm-meters-per-texel or --lm-atlas-width)";
+				return false;
+			}
+			items.push_back({ mi, c, w, h });
+		}
+	}
+	// Big first, grouped by height: tallest first, widest first within
+	// a height (deterministic, mesh/chart tiebreak). Same-height runs
+	// stay consecutive so the placement marker below can share rows.
+	std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) {
+		if (a.h != b.h)
+			return a.h > b.h;
+		if (a.w != b.w)
+			return a.w > b.w;
+		if (a.mesh != b.mesh)
+			return a.mesh < b.mesh;
+		return a.chart < b.chart;
+	});
+	// MaxRects placer (no rotation): rects go in big->small, grouped by
+	// height. Placement is a circular first-fit brute-force over the
+	// free list: while consecutive items share a height, the scan
+	// resumes at the marker noting where the last same-height insertion
+	// fit (same-height followers land in the same rows); a new height
+	// resets the marker to 0 and the search restarts from the top.
+	// Beats a plain shelf on mixed chart sizes (thousands of tiny
+	// charts plus a few huge ones) because small rects backfill beside
+	// tall ones instead of stranding row height. Chart-local uvs are
+	// placement-independent, so only rect.min/max move; sizes are
+	// preserved exactly. Integer coords; each placement is inflated by
+	// the 2-texel separator (same separator as the vertical LOD
+	// stacking, and the gutter context the OIDN denoise pass expects)
+	// so packed rects never touch.
+	const float sep = float(kXatlasStackSep);
+	struct Free {
+		float x, y, w, h;
+	};
+	std::vector<Free> free;
+	free.push_back({ 0.0f, 0.0f, float(atlasWidthCap), float(maxHeight) });
+	float maxX = 0.0f, maxY = 0.0f;
+	struct Placement {
+		size_t mesh, chart;
+		float px, py;
+	};
+	std::vector<Placement> placed;
+	placed.reserve(items.size());
+	size_t marker = 0;
+	uint32_t prevH = 0;
+	bool havePrev = false;
+	for (const Item& it : items) {
+		const float w = float(it.w) + sep, h = float(it.h) + sep;
+		if (!havePrev || it.h != prevH) {
+			marker = 0;
+			prevH = it.h;
+			havePrev = true;
+		}
+		// Circular first-fit brute force from the marker.
+		size_t best = SIZE_MAX;
+		for (size_t k = 0; k < free.size(); ++k) {
+			const size_t f = (marker + k) % free.size();
+			const Free& fr = free[f];
+			if (w <= fr.w + 1e-3f && h <= fr.h + 1e-3f) {
+				best = f;
+				break;
+			}
+		}
+		if (best == SIZE_MAX) {
+			uint64_t area = 0;
+			for (const Item& a : items)
+				area += uint64_t(a.w) * a.h;
+			char buf[256];
+			std::snprintf(buf, sizeof(buf),
+				"RepackXatlasLevel: atlas height overflow "
+				"(no fit for %ux%u item %llu/%llu, totalArea %llu, "
+				"freeRects %llu, cap %ux%u)",
+				it.w, it.h, (unsigned long long)(&it - items.data()),
+				(unsigned long long)items.size(), area,
+				(unsigned long long)free.size(), atlasWidthCap, maxHeight);
+			err = buf;
+			return false;
+		}
+		const Free chosen = free[best];
+		placed.push_back({ it.mesh, it.chart, chosen.x, chosen.y });
+		maxX = std::max(maxX, chosen.x + float(it.w));
+		maxY = std::max(maxY, chosen.y + float(it.h));
+		// Split the leftover L into right (placed-height tall) + bottom
+		// (full chosen width). The bottom piece must stay full-width:
+		// a full-height right strip would permanently fragment the
+		// width below into narrow vertical columns that wide charts
+		// can never use (observed: 1.5M texels stranded in a 16M
+		// atlas). This is the standard MaxRects guillotine split.
+		const float rightW = chosen.w - w;
+		const float bottomH = chosen.h - h;
+		std::vector<Free> pieces;
+		if (rightW > sep * 0.5f && bottomH > sep * 0.5f) {
+			pieces.push_back({ chosen.x + w, chosen.y, rightW, h });
+			pieces.push_back({ chosen.x, chosen.y + h, chosen.w, bottomH });
+		} else if (rightW > sep * 0.5f) {
+			pieces.push_back({ chosen.x + w, chosen.y, rightW, chosen.h });
+		} else if (bottomH > sep * 0.5f) {
+			pieces.push_back({ chosen.x, chosen.y + h, chosen.w, bottomH });
+		}
+		// Splice the leftovers in place of the consumed rect so the
+		// marker lands on the first leftover piece: the next
+		// same-height item resumes filling this row.
+		free.erase(free.begin() + ptrdiff_t(best));
+		free.insert(free.begin() + ptrdiff_t(best), pieces.begin(),
+			pieces.end());
+		marker = best;
+		// Prune free rects contained in another (keeps the list short
+		// and placements deterministic).
+		for (size_t a = 0; a < free.size();) {
+			bool contained = false;
+			for (size_t b = 0; b < free.size(); ++b) {
+				if (a == b)
+					continue;
+				if (free[a].x + 1e-3f >= free[b].x
+					&& free[a].y + 1e-3f >= free[b].y
+					&& free[a].x + free[a].w
+						<= free[b].x + free[b].w + 1e-3f
+					&& free[a].y + free[a].h
+						<= free[b].y + free[b].h + 1e-3f) {
+					contained = true;
+					break;
+				}
+			}
+			if (contained)
+				free.erase(free.begin() + ptrdiff_t(a));
+			else
+				++a;
+		}
+		marker = free.empty() ? 0 : std::min(marker, free.size() - 1);
+	}
+	const float totalH = items.empty() ? 0.0f : maxY;
+	if (uint32_t(std::ceil(totalH)) + 1u > maxHeight) {
+		err = "RepackXatlasLevel: atlas height overflow "
+			"(raise --lm-meters-per-texel or --lm-max-height)";
+		return false;
+	}
+	for (const Placement& p : placed) {
+		auto& r = level.meshes[p.mesh].rects[p.chart];
+		const float w = std::ceil(r.maxX - r.minX);
+		const float h = std::ceil(r.maxY - r.minY);
+		r.minX = p.px;
+		r.minY = p.py;
+		r.maxX = p.px + w;
+		r.maxY = p.py + h;
+		// Keep the chart payload dims in sync with the rect span.
+		auto& ch = level.meshes[p.mesh].chart.charts[p.chart];
+		ch.width = uint32_t(w);
+		ch.height = uint32_t(h);
+	}
+	level.atlasWidth = items.empty()
+		? 0u : std::min(uint32_t(std::ceil(maxX)) + 1u, atlasWidthCap);
+	level.atlasHeight = items.empty() ? 0u : uint32_t(std::ceil(totalH)) + 1u;
 	return true;
 }
 
@@ -884,6 +1338,19 @@ bool AppendXatlasLevelToAtlas(SgLightmapAtlas& atlas,
 	if (atlasWidthCap == 0 || maxHeight == 0) {
 		err = "AppendXatlasLevelToAtlas: bad atlas caps";
 		return false;
+	}
+	// Layout gate: input rects must already be disjoint (caller runs
+	// RepackXatlasLevel after the footprint-shrink; raw xatlas-canvas
+	// AABBs of concave charts are expected to overlap). GPU packing has
+	// no ownership check, so an overlap here would destructively
+	// overwrite payload texels downstream.
+	{
+		std::string overlapErr;
+		if (!CheckXatlasLevelRectsForOverlap(level, &overlapErr)) {
+			err = "AppendXatlasLevelToAtlas: overlapping input rects "
+				"(repack the level first; " + overlapErr + ")";
+			return false;
+		}
 	}
 	// Vertical stacking origin: fresh atlas starts at 0, appends continue
 	// past the +1 sampling pad with the pack separator (content of the
@@ -931,9 +1398,9 @@ bool AppendXatlasLevelToAtlas(SgLightmapAtlas& atlas,
 		for (size_t c = 0; c < mo.rects.size(); ++c) {
 			const auto& r = mo.rects[c];
 			const uint32_t w = std::max<uint32_t>(
-				uint32_t(r.maxX - r.minX), 1u);
+				uint32_t(std::ceil(r.maxX - r.minX)), 1u);
 			const uint32_t h = std::max<uint32_t>(
-				uint32_t(r.maxY - r.minY), 1u);
+				uint32_t(std::ceil(r.maxY - r.minY)), 1u);
 			SgLightmapChunk chunk;
 			chunk.lobeCount = preferredLobes;
 			chunk.meshKey = meshKey;
@@ -948,6 +1415,15 @@ bool AppendXatlasLevelToAtlas(SgLightmapAtlas& atlas,
 			p.coeffs.assign(size_t(w) * h * preferredLobes,
 				glm::vec3(0.0f));
 			atlas.payloads.push_back(std::move(p));
+		}
+	}
+	// Stacking gate: vertical LOD appends must keep chunk rects disjoint.
+	{
+		std::string overlapErr;
+		if (!CheckAtlasChunksForOverlap(atlas, &overlapErr)) {
+			err = "AppendXatlasLevelToAtlas: emitted chunks overlap ("
+				+ overlapErr + ")";
+			return false;
 		}
 	}
 	return true;

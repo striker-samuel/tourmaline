@@ -1113,6 +1113,12 @@ int main(int argc, char** argv) {
 			std::cout << "  [lm-probe] xatlas chart failed: " << xerr << "\n";
 			return 1;
 		}
+		// Post-shrink AABBs can overlap (concave charts); repack
+		// big->small into disjoint placements before Append.
+		if (!RepackXatlasLevel(lvl, 4096, 4096, xerr)) {
+			std::cout << "  [lm-probe] repack failed: " << xerr << "\n";
+			return 1;
+		}
 		std::vector<uint32_t> bases;
 		if (!AppendXatlasLevelToAtlas(atlas, lvl, keys, 12u,
 				4096, 4096, bases, xerr)) {

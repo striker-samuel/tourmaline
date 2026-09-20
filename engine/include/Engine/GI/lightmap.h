@@ -365,6 +365,13 @@ struct SgLightmapXatlasOptions {
 	// to xatlas's texelsPerUnit internally (floored at 2 texels/m).
 	float metersPerTexel = 0.25f;
 	uint32_t gutterTexels = 1;    // inner margin per chart rect (1..4)
+	// Layout-only pack: run xatlas + footprint-shrink and finalize
+	// rects/cornerChartUv/triChart, but leave Chart.texels empty.
+	// Convergence probes use this (rects alone decide fit); the winning
+	// level is rasterized once via RasterizeLightmapPackTexels before
+	// the expensive GI bake. Default false preserves the old
+	// pack+rasterize behavior.
+	bool deferTexelRaster = false;
 };
 
 struct SgLightmapXatlasMeshInput {
@@ -381,7 +388,12 @@ struct SgLightmapXatlasMeshOutput {
 	struct Rect {
 		float minX = 0.0f, minY = 0.0f, maxX = 0.0f, maxY = 0.0f;
 	};
-	std::vector<Rect> rects; // packed atlas-texel rects (include margins)
+	// Packed atlas-texel rects: the chart's RASTERIZED FOOTPRINT bbox
+	// + margin (not the vertex-uv bbox — xatlas reserves only the
+	// dilated rasterized coverage, so tight AABBs of concave/sparse
+	// charts can still overlap each other). Includes margins.
+	// After RepackXatlasLevel the rects are disjoint (see below).
+	std::vector<Rect> rects;
 };
 
 struct SgLightmapXatlasLevel {
@@ -395,6 +407,53 @@ bool GenerateLightmapChartsXatlas(
 	const std::vector<SgLightmapXatlasMeshInput>& meshes,
 	const SgLightmapXatlasOptions& opts, SgLightmapXatlasLevel& out,
 	std::string& err);
+
+// Fills Chart.texels for a layout-only level produced with
+// SgLightmapXatlasOptions::deferTexelRaster. Rasterizes each chart's
+// triangles directly into its FINAL footprint-tight rect (no provisional
+// uv shift fixup): the layout/transform is final before the expensive GI
+// bake consumes the texels. Meshes must be parallel to the inputs that
+// produced the level (same order/count); ok=false entries are skipped.
+// Returns false with err set on input/level mismatch.
+bool RasterizeLightmapPackTexels(
+	const std::vector<SgLightmapXatlasMeshInput>& meshes,
+	SgLightmapXatlasLevel& level, uint32_t gutterTexels, std::string& err);
+
+// Pairwise rectangle overlap gates. The GPU packing stage has no
+// ownership check: chunks copy sequentially into the same atlas pixels,
+// so a later overlapping chunk destructively overwrites the earlier one.
+// Intended invariant: xatlas dilated coverage disjoint -> REPACKED
+// footprint-tight rects disjoint -> vertically stacked LOD levels
+// disjoint -> payload copies safe. Note the footprint-shrink yields the
+// tight AABB of each chart's rasterized footprint, NOT the footprint
+// itself: for concave/diagonal/sparse charts the AABBs can overlap while
+// the dilated coverages are disjoint (expected xatlas behavior). Call
+// RepackXatlasLevel to establish rect disjointness, the level gate on
+// the repacked rects BEFORE Append, and the atlas gate on chunk
+// rectMin/rectMax AFTER Append, to localize any overlap to repacking vs
+// LOD stacking vs later UV stamping.
+// Strict rect intersection (even margin-ring touch) fails; err details
+// the first overlapping pair.
+bool CheckXatlasLevelRectsForOverlap(const SgLightmapXatlasLevel& level,
+	std::string* err = nullptr);
+bool CheckAtlasChunksForOverlap(const SgLightmapAtlas& atlas,
+	std::string* err = nullptr);
+
+// Repacks a level's post-shrink footprint-tight rects into disjoint
+// placements within atlasWidthCap (tallest charts first, widest first
+// within a height; circular first-fit placement with a resume marker
+// per height run and the 2-texel inter-rect separator; deterministic).
+// Forgets the original xatlas canvas
+// placement: each chart keeps its size (footprint + 2*margin) and its
+// chart-local cornerChartUv, only rect.min/max move. Updates
+// level.atlasWidth/atlasHeight to the packed extent (+1 sampling pad).
+// Must run after GenerateLightmapChartsXatlas and before
+// RasterizeLightmapPackTexels/AppendXatlasLevelToAtlas (both are
+// placement-agnostic: texel uvs are rect-local, xforms derive from the
+// final rects). Returns false with err set when a chart is wider than
+// the cap or the packed height exceeds maxHeight.
+bool RepackXatlasLevel(SgLightmapXatlasLevel& level, uint32_t atlasWidthCap,
+	uint32_t maxHeight, std::string& err);
 
 // Stacks one xatlas level into a shared atlas at the next free row
 // (2-texel inter-rect gap, same separator as PackRects). Fresh atlases

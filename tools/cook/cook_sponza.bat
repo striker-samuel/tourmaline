@@ -21,11 +21,14 @@ rem height grows with the content up to --lm-max-height 8192 (2048x8192
 rem = 16M texels, ~1.1 GiB of RGBA16F layers at the cap) — no texel
 rem budget anymore, the density search only runs if the height cap
 rem overflows. 0.03125 m/texel = the old 32 texels/m default.
-rem --lods on cooks the sibling chain AFTER the lightmap bake
-rem (CookLodSiblings): siblings inherit the stamped atlas UVs, chart ids
-rem keep collapses inside one lightmap chart, and every level is audited
-rem for parameterization drift (see [LM-LOD] lines; log-only by default).
-build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.gltf --out-pak F:\content\paks\sponza.pak --meshlets on --lods on --verify on --lightmap on --lm-meters-per-texel 0.03125
+rem Payload compression defaults to bc6hopt (Frostbite invalid-texel
+rem prefill + BC6H blocks, one texture per lobe, ~8x smaller GPU
+rem footprint than RGBA16F; --lm-compress uncompressed opts out).
+rem --lods on is frostbite: siblings cook BEFORE the bake and inherit
+rem the LOD0 atlas layout through UV transfer (one bake, one atlas).
+rem See tools/cook/cook_sponza_fast.bat for the low-quality iteration
+rem variant (coarse density, 5 lobes, uncompressed, no LODs/meshlets).
+build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.gltf --out-pak F:\content\paks\sponza.pak --meshlets on --lods on --verify on --lightmap on --lm-meters-per-texel 0.25
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak build\Debug\content\paks\sponza.pak
 if errorlevel 1 goto fail
