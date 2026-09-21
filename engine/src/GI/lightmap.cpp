@@ -655,7 +655,6 @@ bool GenerateLightmapChartsXatlas(
 		size_t inputIdx = 0;
 		const StaticMeshUpload* up = nullptr;
 		std::vector<glm::vec3> posScaled;
-		std::vector<glm::vec3> nrm;
 	};
 	std::vector<Job> jobs;
 	out.meshes.resize(meshes.size());
@@ -669,13 +668,8 @@ bool GenerateLightmapChartsXatlas(
 		j.up = in.upload;
 		const float s = (in.densityScale > 1e-6f) ? in.densityScale : 1.0f;
 		j.posScaled.reserve(in.upload->vertices.size());
-		j.nrm.reserve(in.upload->vertices.size());
-		for (const StaticVertex& v : in.upload->vertices) {
+		for (const StaticVertex& v : in.upload->vertices)
 			j.posScaled.push_back(v.pos * s);
-			const float l = glm::length(v.normal);
-			j.nrm.push_back(l > 1e-6f ? v.normal / l
-			                          : glm::vec3(0.0f, 1.0f, 0.0f));
-		}
 		jobs.push_back(std::move(j));
 	}
 	if (jobs.empty()) {
@@ -689,8 +683,15 @@ bool GenerateLightmapChartsXatlas(
 		decl.vertexCount = uint32_t(j.posScaled.size());
 		decl.vertexPositionData = j.posScaled.data();
 		decl.vertexPositionStride = sizeof(glm::vec3);
-		decl.vertexNormalData = j.nrm.data();
-		decl.vertexNormalStride = sizeof(glm::vec3);
+		// NO vertex normals: with HasNormals set, xatlas's isNormalSeam
+		// turns EVERY edge whose per-vertex normals disagree into a
+		// hard chart seam — flat-shaded assets (sponza) shatter into
+		// per-face/micro charts, and the minimum-size charts oversample
+		// micro geometry ~45x (the visible texel-density islands).
+		// Without normals the chartifier compares FACE normals
+		// (computed from positions): charts cut where the SURFACE
+		// bends, not where the shading attribute splits.
+		decl.vertexNormalData = nullptr;
 		decl.indexData = j.up->indices.data();
 		decl.indexCount = uint32_t(j.up->indices.size());
 		decl.indexFormat = xatlas::IndexFormat::UInt32;
@@ -705,6 +706,19 @@ bool GenerateLightmapChartsXatlas(
 	}
 	xatlas::ChartOptions co;
 	co.fixWinding = true;
+	// Lightmap chart tuning (defaults are tuned for texture-atlas charts:
+	// maxCost 2.0 with normalDeviationWeight 2.0 ACCUMULATES per face and
+	// cuts smooth columns mid-bend into chart strips — the "infinite
+	// charts" shatter). Lightmaps want whole smooth surfaces as ONE
+	// chart (seam count dominates quality): crease crossing is CHEAP
+	// (a fluted column's ridges merge into one whole-column chart),
+	// while the 0.3 deviation accumulation still cuts a chart ~20
+	// faces past a hard 90° wall corner. maxCost 3x default headroom,
+	// 4 seed/grow iterations produce better-shaped charts.
+	co.normalDeviationWeight = 0.3f;
+	co.normalSeamWeight = 1.0f;
+	co.maxCost = 6.0f;
+	co.maxIterations = 4;
 	xatlas::PackOptions po;
 	po.texelsPerUnit = texelsPerUnit;
 	// Pack gap: our per-chart margin ring must land in EMPTY pack space on
@@ -872,10 +886,10 @@ bool GenerateLightmapChartsXatlas(
 		mo.chart.cornerChartUv = cornerLocal; // provisional (raster input)
 		// Bake texels per chart (first-writer-owns claim map,
 		// rect-local uv + margin). With deferTexelRaster the coverage
-		// claim + footprint shrink still run (they finalize the layout),
-		// but attribute fetch + texel push are skipped — the winning
-		// level is rasterized once via RasterizeLightmapPackTexels
-		// before the expensive GI bake.
+		// claim still runs (it detects zero-claim charts for the
+		// sliver fallback below), but attribute fetch + texel push
+		// are skipped — the winning level is rasterized once via
+		// RasterizeLightmapPackTexels before the expensive GI bake.
 		const bool deferTexels = opts.deferTexelRaster;
 		for (uint32_t ci = 0; ci < mo.chart.charts.size(); ++ci) {
 			const auto& r = mo.rects[ci];
@@ -946,16 +960,23 @@ bool GenerateLightmapChartsXatlas(
 				}
 			}
 		}
-			// Shrink the rect to the chart's rasterized footprint.
-			// xatlas reserves the chart's conservative rasterized
-			// coverage (bilinear-expanded + padding dilate) — NOT its
-			// vertex-uv BBOX — so other charts pack inside a sparse
-			// chart's bbox, and a bbox-fat payload would overwrite
-			// their texels (the "overlapped charts" artifact; the bake
-			// footprints themselves never intersect, only the fat
-			// rects did). Footprint bbox + margin stays inside the
-			// packer's reserved region (padding >= margin + raster
-			// slack), so shrunken rects cannot intersect either.
+			// NO footprint shrink: the rect stays the chart's UV BBOX
+			// + margin. The old shrink (rect = rasterized footprint +
+			// margin) existed to keep bbox-fat rects inside xatlas's
+			// reserved coverage under the ORIGINAL canvas placement —
+			// with the repack owning disjointness, that constraint is
+			// gone, and the shrink COMPRESSED every sparse chart's
+			// parameterization into its footprint (per-chart density
+			// = footprint/bbox — wildly non-uniform, the visible
+			// texel-density seams). Keeping the bbox rect preserves
+			// the unwrapper's own density: every corner uv lies
+			// inside its chart's bbox by construction, so the clamp
+			// in the corner-uv rebuild is a no-op safety net, and
+			// unclaimed gap texels inside a sparse chart are never
+			// sampled (conservative claim covers everything the
+			// geometry addresses; they only cost atlas space).
+			// Only the zero-claim case (degenerate sub-texel chart)
+			// still collapses the rect to the sliver fallback.
 			int32_t fx0 = INT32_MAX, fy0 = INT32_MAX, fx1 = -1, fy1 = -1;
 			for (uint32_t y = 0; y < ih; ++y)
 				for (uint32_t x = 0; x < iw; ++x)
@@ -966,27 +987,11 @@ bool GenerateLightmapChartsXatlas(
 						fy1 = std::max(fy1, int32_t(y));
 					}
 			auto& rect = mo.rects[ci];
-			if (fx1 >= 0) {
-				const float nx0 = rect.minX + float(fx0);
-				const float ny0 = rect.minY + float(fy0);
-				const float nx1 = rect.minX + float(margin) + float(fx1)
-					+ 1.0f + float(margin);
-				const float ny1 = rect.minY + float(margin) + float(fy1)
-					+ 1.0f + float(margin);
-				for (SgLightmapTexel& t : oc.texels)
-					t.uv -= glm::vec2(float(fx0), float(fy0));
-				rect.minX = nx0;
-				rect.minY = ny0;
-				rect.maxX = nx1;
-				rect.maxY = ny1;
-				oc.width = uint32_t(nx1 - nx0);
-				oc.height = uint32_t(ny1 - ny0);
-			} else {
+			if (fx1 < 0) {
 				// No claimed texels even with the conservative claim
-				// (sub-texel sliver): keep the payload minimal around
-				// the first charted triangle's centroid — inside that
-				// triangle's rasterized footprint, so the rect stays
-				// inside the packer's reserved region.
+				// (degenerate sub-texel chart): keep the payload
+				// minimal around the first charted triangle's
+				// centroid.
 				glm::vec2 centroid(0.5f, 0.5f);
 				for (uint32_t t = 0; t < triCount; ++t) {
 					if (triChart[t] != ci)
@@ -1034,11 +1039,13 @@ bool GenerateLightmapChartsXatlas(
 				}
 			}
 		}
-		// Rebuild the chart-local corner uvs against the shrunken rects
-		// (the stamped uvs must address the footprint-tight inner rects)
-		// and derive the per-vertex outputs (first chart to touch a
-		// vertex wins; seam corners duplicate per triangle at STAMP
-		// time — per-vertex is the LOD-transfer view).
+		// Rebuild the chart-local corner uvs against the FINAL rects
+		// (identical to the provisional mapping for claimed charts —
+		// the bbox rect is unchanged — and the collapsed sliver rect
+		// for zero-claim charts) and derive the per-vertex outputs
+		// (first chart to touch a vertex wins; seam corners duplicate
+		// per triangle at STAMP time — per-vertex is the LOD-transfer
+		// view).
 		for (uint32_t t = 0; t < triCount; ++t) {
 			if (triChart[t] == 0xFFFFFFFFu)
 				continue;

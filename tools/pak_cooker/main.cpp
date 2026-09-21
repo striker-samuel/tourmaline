@@ -740,6 +740,108 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 				+ mx;
 		};
 		std::unordered_set<uint64_t> classicTris;
+		// ---- texel-distance uniformity audit ----
+		// Per triangle: atlas-uv area / world area (geometric-mean
+		// scale, dimensionless per meter^2). Uniform charting gives one
+		// scale for every triangle of the scene; sparse charts whose
+		// footprint-shrink compresses distant geometry into a few
+		// texels, and clamped seam corners, show up as outliers. Each
+		// outlier triangle is attributed to its chart + whether any
+		// corner sits on the chart-local [0,1] clamp boundary (the
+		// shrink-rebuild clamp) so the mechanism reads directly:
+		// clamped outliers = footprint compression, non-clamped = a
+		// genuinely different-density chart (sliver inner region).
+		struct DensTri {
+			uint32_t chart;
+			float scale;
+			bool clamped;
+		};
+		std::vector<DensTri> densTris;
+		uint32_t densDegenerateUv = 0, densClampVerts = 0;
+		std::unordered_map<uint32_t, uint32_t> chartOut, chartDeg;
+		if (lmChunk != 0xFFFFFFFFu && idxBase + (size_t)ic * 4 <= c.img.size()) {
+			auto posAt = [&](size_t v) {
+				float p[3];
+				memcpy(p, c.img.data() + vertBase
+					+ v * sizeof(smvk::StaticVertex), 12);
+				return glm::vec3(p[0], p[1], p[2]);
+			};
+			auto chartLocalAt = [&](size_t v) {
+				const uint8_t* p = c.img.data() + vertBase
+					+ v * sizeof(smvk::StaticVertex);
+				float cu, cv;
+				uint32_t cid;
+				memcpy(&cu, p + 36, 4);
+				memcpy(&cv, p + 40, 4);
+				memcpy(&cid, p + 72, 4);
+				return std::tuple<float, float, uint32_t>(cu, cv, cid);
+			};
+			for (uint32_t t = 0; t * 3 + 3 <= ic; ++t) {
+				uint32_t ix[3] = {};
+				memcpy(ix, c.img.data() + idxBase + (size_t)t * 12, 12);
+				const glm::vec3 p0 = posAt(ix[0]);
+				const glm::vec3 p1 = posAt(ix[1]);
+				const glm::vec3 p2 = posAt(ix[2]);
+				const float worldA = 0.5f * glm::length(
+					glm::cross(p1 - p0, p2 - p0));
+				uint32_t chart = 0xFFFFFFFFu;
+				bool clamped = false;
+				for (int k = 0; k < 3; ++k) {
+					const auto [cu, cv, cid] = chartLocalAt(ix[k]);
+					if (cid != 0xFFFFFFFFu && chart == 0xFFFFFFFFu)
+						chart = cid;
+					if (cu <= 1e-4f || cu >= 1.0f - 1e-4f
+						|| cv <= 1e-4f || cv >= 1.0f - 1e-4f) {
+						clamped = true;
+						++densClampVerts;
+					}
+				}
+				const auto a0 = atlasAt(ix[0]);
+				const auto a1 = atlasAt(ix[1]);
+				const auto a2 = atlasAt(ix[2]);
+				const float uvA = 0.5f * std::abs(
+					(a1.first - a0.first) * (a2.second - a0.second)
+					- (a2.first - a0.first) * (a1.second - a0.second));
+				if (worldA < 1e-12f)
+					continue;
+				if (uvA <= 0.0f) {
+					++densDegenerateUv; // fully-clamped triangle:
+					                    // zero atlas area on real
+					                    // geometry
+					if (chart != 0xFFFFFFFFu)
+						++chartDeg[chart];
+					continue;
+				}
+				densTris.push_back({ chart,
+					std::sqrt(uvA / worldA), clamped });
+			}
+		}
+		float densMed = 0.0f, densP90 = 0.0f, densMax = 0.0f;
+		uint32_t densOut = 0, densOutClamped = 0;
+		uint32_t worstChart = 0xFFFFFFFFu, worstChartOut = 0;
+		if (!densTris.empty()) {
+			std::vector<float> densScales;
+			densScales.reserve(densTris.size());
+			for (const DensTri& d : densTris)
+				densScales.push_back(d.scale);
+			std::sort(densScales.begin(), densScales.end());
+			densMed = densScales[densScales.size() / 2];
+			densP90 = densScales[(densScales.size() * 9) / 10];
+			densMax = densScales.back();
+			std::unordered_map<uint32_t, uint32_t> chartOutAll;
+			for (const DensTri& d : densTris) {
+				if (d.scale > densMed * 8.0f || d.scale < densMed / 8.0f) {
+					++densOut;
+					if (d.clamped)
+						++densOutClamped;
+					if (d.chart != 0xFFFFFFFFu
+						&& ++chartOutAll[d.chart] > worstChartOut) {
+						worstChartOut = chartOutAll[d.chart];
+						worstChart = d.chart;
+					}
+				}
+			}
+		}
 		if (lmChunk != 0xFFFFFFFFu && idxBase + (size_t)ic * 4 <= c.img.size()) {
 			for (uint32_t t = 0; t * 3 + 3 <= ic; ++t) {
 				uint32_t ix[3] = {};
@@ -920,7 +1022,15 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 		if (lmChunk != 0xFFFFFFFFu)
 			std::cout << " charts=" << lmXforms
 				<< " uv2span=" << maxUv2Span
-				<< " bigtris=" << bigUv2Tris;
+				<< " bigtris=" << bigUv2Tris
+				<< " densmed=" << densMed
+				<< " densp90=" << densP90
+				<< " densmax=" << densMax
+				<< " densout=" << densOut
+				<< " outclamp=" << densOutClamped
+				<< " degenuv=" << densDegenerateUv
+				<< " worstchart=" << (worstChart == 0xFFFFFFFFu
+					? -1 : int(worstChart)) << "/" << worstChartOut;
 		if (meshlets > 0)
 			std::cout << " mlbigtris=" << mlBigTris
 				<< " mlsetdiff=" << mlSetDiff

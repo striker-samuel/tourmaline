@@ -388,10 +388,12 @@ struct SgLightmapXatlasMeshOutput {
 	struct Rect {
 		float minX = 0.0f, minY = 0.0f, maxX = 0.0f, maxY = 0.0f;
 	};
-	// Packed atlas-texel rects: the chart's RASTERIZED FOOTPRINT bbox
-	// + margin (not the vertex-uv bbox — xatlas reserves only the
-	// dilated rasterized coverage, so tight AABBs of concave/sparse
-	// charts can still overlap each other). Includes margins.
+	// Packed atlas-texel rects: the chart's UV BBOX + margin (the
+	// unwrapper's own parameterization density, no footprint
+	// compression). Historically these were the rasterized-footprint
+	// bbox + margin — the compression it induced per sparse chart was
+	// the visible texel-density seam; RepackXatlasLevel owns
+	// disjointness now, so the bbox rect is safe. Includes margins.
 	// After RepackXatlasLevel the rects are disjoint (see below).
 	std::vector<Rect> rects;
 };
