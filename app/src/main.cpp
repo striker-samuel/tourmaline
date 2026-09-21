@@ -147,6 +147,7 @@ void PrintUsage(const char* prog) {
 	extDesc.camTarget = glm::vec3(0.0f, 1.0f, 0.0f);
 	extDesc.farClip = 2000.0f;
 	extDesc.coordFix = 0;
+	extDesc.authoredView = false;
 	if (gltfPath && gltfPath[0] != '\0') {
 		extPathStr = gltfPath;
 		extIdStr = stemOf(extPathStr);
@@ -173,6 +174,47 @@ void PrintUsage(const char* prog) {
 		extDesc.pakPath = extPathStr.c_str();
 		std::cerr << "Scene: pak '" << extPathStr
 			<< "' (id '" << extIdStr << "')\n";
+	}
+
+	// Known scenes keep their curated viewpoint + tight far clip instead
+	// of the generic whole-bounds orbit framing (see SceneRenderer):
+	// the curated close-up keeps LOD distances in meters and the cascade
+	// splits tight, while the generic path parks the camera radius*2.2
+	// away with farClip 2000 (lowest LOD everywhere, blurry EVSM).
+	// Paths stay as given on the command line; only the view + import
+	// basis are adopted. Env overrides (VULKANTOY_CAM_POS/FWD) still win
+	// in Configure, and unknown stems keep the generic defaults above.
+	if (const auto known = app::SceneRegistry::Find(extIdStr)) {
+		extDesc.camPos = known->camPos;
+		extDesc.camTarget = known->camTarget;
+		extDesc.farClip = known->farClip;
+		extDesc.coordFix = known->coordFix;
+		extDesc.preTransform = known->preTransform;
+		extDesc.authoredView = true;
+		if (known->builtin)
+			extDesc.builtin = known->builtin;
+		std::cerr << "Scene: curated view '" << known->id
+			<< "' (farClip " << known->farClip << ")\n";
+	}
+	else {
+		// Stem case differs (e.g. --gltf Sponza.gltf): retry lowercase.
+		std::string lower = extIdStr;
+		for (char& c : lower)
+			c = (char)::tolower((unsigned char)c);
+		if (lower != extIdStr) {
+			if (const auto known = app::SceneRegistry::Find(lower)) {
+				extDesc.camPos = known->camPos;
+				extDesc.camTarget = known->camTarget;
+				extDesc.farClip = known->farClip;
+				extDesc.coordFix = known->coordFix;
+				extDesc.preTransform = known->preTransform;
+				extDesc.authoredView = true;
+				if (known->builtin)
+					extDesc.builtin = known->builtin;
+				std::cerr << "Scene: curated view '" << known->id
+					<< "' (farClip " << known->farClip << ")\n";
+			}
+		}
 	}
 
 	app::SceneRenderer renderer;

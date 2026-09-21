@@ -474,6 +474,10 @@ const SceneDesc& SceneRegistry::Sponza() {
 		/*camPos=*/glm::vec3(0.0f, 1.0f, 0.0f),
 		/*camTarget=*/glm::vec3(1.0f, 1.0f, 0.0f),
 		/*farClip=*/50.0f,
+		/*coordFix=*/0,
+		/*preTransform=*/glm::mat4(1.0f),
+		/*builtin=*/nullptr,
+		/*authoredView=*/true,
 	};
 	return sponza;
 }
@@ -492,6 +496,9 @@ const SceneDesc& SceneRegistry::Bistro() {
 			+ glm::vec3(-0.986f, 0.012f, -0.167f),
 		/*farClip=*/200.0f,
 		/*coordFix=*/0,
+		/*preTransform=*/glm::mat4(1.0f),
+		/*builtin=*/nullptr,
+		/*authoredView=*/true,
 	};
 	return bistro;
 }
@@ -519,6 +526,9 @@ const SceneDesc& SceneRegistry::Scanlands() {
 		/*camTarget=*/glm::vec3(-20.0f, 15.0f, 20.0f),
 		/*farClip=*/600.0f,
 		/*coordFix=*/0,
+		/*preTransform=*/glm::mat4(1.0f),
+		/*builtin=*/nullptr,
+		/*authoredView=*/true,
 	};
 	return scanlands;
 }
@@ -540,6 +550,9 @@ const SceneDesc& SceneRegistry::BistroNiagara() {
 		/*camTarget=*/glm::vec3(0.0f, 2.0f, 0.0f),
 		/*farClip=*/200.0f,
 		/*coordFix=*/0,
+		/*preTransform=*/glm::mat4(1.0f),
+		/*builtin=*/nullptr,
+		/*authoredView=*/true,
 	};
 	return bistroNiagara;
 }
@@ -559,6 +572,7 @@ const SceneDesc& SceneRegistry::LayersCube() {
 		/*coordFix=*/1,
 		/*preTransform=*/glm::mat4(1.0f),
 		/*builtin=*/"layers-cube",
+		/*authoredView=*/true,
 	};
 	return layersCube;
 }
@@ -1868,10 +1882,15 @@ bool SceneRenderer::Initialize() {
 				m_fpDemo.FitToBounds(bounds.mn, bounds.mx);
 				std::cerr << "[Scene] bounds min=(" << bounds.mn.x << "," << bounds.mn.y << "," << bounds.mn.z
 					<< ") max=(" << bounds.mx.x << "," << bounds.mx.y << "," << bounds.mx.z << ")\n";
-				// External scenes have no authored viewpoint: frame the
-				// bounds (orbit-style default). Explicit VULKANTOY_CAM_POS/
+				// Curated scenes (SceneDesc::authoredView, adopted from the
+				// registry by the entry point) keep their close-up
+				// viewpoint: it was already applied in Configure and keeps
+				// LOD distances in meters + cascade splits tight. Only
+				// truly unknown external scenes frame the whole bounds
+				// (orbit-style default). Explicit VULKANTOY_CAM_POS/
 				// FWD pins win (bench determinism).
-				if (m_sceneOverride && !std::getenv("VULKANTOY_CAM_POS") &&
+				if (m_sceneOverride && !m_scene.authoredView
+					&& !std::getenv("VULKANTOY_CAM_POS") &&
 					!std::getenv("VULKANTOY_CAM_FWD")) {
 					const glm::vec3 center = (bounds.mn + bounds.mx) * 0.5f;
 					const float radius =
@@ -1885,8 +1904,21 @@ bool SceneRenderer::Initialize() {
 						std::cos(pitch) * std::cos(yaw));
 					m_cameraPositioner.lookAt(eye, center,
 						glm::vec3(0.0f, 1.0f, 0.0f));
+					// Fit the shadow far clip to the framed view: the
+					// generic 2000 m default stretches the cascade splits
+					// over empty space (cascade 0 covers ~100 m -> blurry
+					// EVSM/PCF at the mesh). Keep it covering the orbit
+					// distance plus the scene diameter, clamped sane.
+					{
+						const float fitted = dist + radius * 2.0f;
+						m_scene.farClip = std::clamp(fitted, 50.0f, 10000.0f);
+					}
 					std::cerr << "[Scene] pak camera framed: dist=" << dist
-						<< "\n";
+						<< " farClip=" << m_scene.farClip << "\n";
+				}
+				else if (m_sceneOverride && m_scene.authoredView) {
+					std::cerr << "[Scene] curated view kept (farClip="
+						<< m_scene.farClip << ")\n";
 				}
 			}
 		}

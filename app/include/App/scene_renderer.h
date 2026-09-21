@@ -88,6 +88,15 @@ struct SceneDesc {
 	// Procedural builtin scene tag (nullptr = load gltf/pak). Currently
 	// supported: "layers-cube" (vertex-painted layered-material test cube).
 	const char* builtin = nullptr;
+	// True when camPos/camTarget/farClip are a curated viewpoint for this
+	// scene (all SceneRegistry rows). The external-override entry point
+	// (app/src/main.cpp, always SetSceneOverride(true)) adopts the
+	// registry row matching the pak/gltf stem so known scenes keep their
+	// close-up view + tight far clip (cascade resolution, LOD distances);
+	// only truly unknown scenes fall back to whole-bounds orbit framing
+	// (which parks the camera radius*2.2 away with a generic far clip —
+	// the "spawns far / lowest LOD / blurry EVSM" combo).
+	bool authoredView = false;
 };
 
 struct SceneRegistry {
