@@ -1542,11 +1542,13 @@ void TestLmChartTransfer() {
 				"lm.xfer.span.ok");
 			// All triangles single-chart + in-range. NOTE: target
 			// triangles hovering in the synthetic GAP between the two
-			// charts legitimately collapse to a degenerate uv (all
-			// corners re-project onto the nearest chart edge — that
-			// geometry does not exist on the reference); real LOD
-			// chains have no gaps, so the span test checks the
-			// re-projection path stays in-range, not the uv area.
+			// charts get the degenerate RESCUE: planar barycentric
+			// extrapolation onto the closest reference triangle,
+			// clamped to [0,1] — distinct corners on the rect edge
+			// instead of collapsing onto one point (that geometry does
+			// not exist on the reference; real LOD chains have no
+			// gaps, so the span test checks the re-projection path
+			// stays in-range, not the uv area).
 			const uint32_t tris = uint32_t(t.indices.size() / 3);
 			bool allCharted = true, uvOk = true;
 			for (uint32_t tr = 0; tr < tris; ++tr) {

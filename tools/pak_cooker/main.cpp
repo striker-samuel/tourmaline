@@ -2611,8 +2611,9 @@ int main(int argc, char** argv) {
 				}
 				SgLightmapChartResult xfer;
 				std::string terr;
+				SgLightmapTransferStats tstat;
 				if (!TransferLightmapCharts(*srcUpload, w.chart, *up,
-						xfer, terr)) {
+						xfer, terr, &tstat)) {
 					std::cerr << "  [LM] transfer failed node " << w.node
 						<< " pool " << th.index() << ": " << terr
 						<< " (inherited chart uvs)\n" << std::flush;
@@ -2621,6 +2622,14 @@ int main(int argc, char** argv) {
 						m->lmChunk = lobes;
 					continue;
 				}
+				std::cerr << "  [LM] transfer node " << w.node
+					<< " pool " << th.index() << ": tris " << tstat.trisTotal
+					<< " same " << tstat.trisSameChart
+					<< " vote " << tstat.trisVote
+					<< " rescued " << tstat.trisRescued
+					<< " degenerate " << tstat.trisDegenerate
+					<< " uncharted " << tstat.trisUncharted << "\n"
+					<< std::flush;
 			std::vector<uint32_t> dummy;
 			std::vector<glm::vec4> xferXforms;
 			uint32_t unch = 0;

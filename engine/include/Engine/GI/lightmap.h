@@ -497,10 +497,26 @@ bool AppendXatlasLevelToAtlas(SgLightmapAtlas& atlas,
 // reference's (rects parallel); triChart/cornerChartUv are target-
 // sized. All positions are in the SAME space (both uploads are
 // node-local: siblings and base render under one node transform).
+// Transfer diagnostics (optional out-param): how each target triangle
+// resolved. trisDegenerate counts triangles that STILL have zero
+// atlas-uv area on real geometry after the rescue (their reference
+// triangle parameterizes degenerately) — the smear/black artifact
+// source; everything else is healthy bookkeeping.
+struct SgLightmapTransferStats {
+	uint32_t trisTotal = 0;      // target triangles
+	uint32_t trisUncharted = 0;  // a corner reached no charted reference
+	uint32_t trisSameChart = 0;  // all corners projected into one chart
+	uint32_t trisVote = 0;       // majority/nearest vote + restricted
+	                             // re-projection of off-chart corners
+	uint32_t trisRescued = 0;    // degenerate uv -> re-projected onto
+	                             // the closest reference triangle
+	uint32_t trisDegenerate = 0; // degenerate even after the rescue
+};
+
 bool TransferLightmapCharts(const StaticMeshUpload& reference,
 	const SgLightmapChartResult& refCharts,
 	const StaticMeshUpload& target, SgLightmapChartResult& out,
-	std::string& err);
+	std::string& err, SgLightmapTransferStats* stats = nullptr);
 
 // Curvature-driven density scale for lightmap charting (cook side):
 // estimates the mesh's SMOOTH bending rate from shared-edge dihedral

@@ -1654,7 +1654,7 @@ inline glm::vec3 ClosestPointOnTriangle(const glm::vec3& p,
 bool TransferLightmapCharts(const StaticMeshUpload& reference,
 	const SgLightmapChartResult& refCharts,
 	const StaticMeshUpload& target, SgLightmapChartResult& out,
-	std::string& err) {
+	std::string& err, SgLightmapTransferStats* stats) {
 	out = SgLightmapChartResult{};
 	const uint32_t refTris = uint32_t(reference.indices.size() / 3);
 	const uint32_t tgtTris = uint32_t(target.indices.size() / 3);
@@ -1710,12 +1710,15 @@ bool TransferLightmapCharts(const StaticMeshUpload& reference,
 	}
 	// Closest point on the charted reference surface. restrictChart
 	// (0xFFFFFFFF = any chart) confines the search for seam-spanning
-	// target corners.
+	// target corners. triOut receives the winning reference triangle
+	// (index into the local ref list) for the degenerate rescue below.
 	auto closestOnRef = [&](const glm::vec3& q, uint32_t restrictChart,
-		uint32_t& chartOut, glm::vec2& uvOut, float& dist2Out) {
+		uint32_t& chartOut, glm::vec2& uvOut, float& dist2Out,
+		uint32_t& triOut) {
 		float best = std::numeric_limits<float>::max();
 		bool hit = false;
-		for (const RefTri& rt : ref) {
+		for (size_t ri = 0; ri < ref.size(); ++ri) {
+			const RefTri& rt = ref[ri];
 			if (restrictChart != 0xFFFFFFFFu && rt.chart != restrictChart)
 				continue;
 			const float dx = std::max({ rt.aabbMin.x - q.x,
@@ -1737,27 +1740,31 @@ bool TransferLightmapCharts(const StaticMeshUpload& reference,
 			chartOut = rt.chart;
 			uvOut = rt.uv[0] * bary.x + rt.uv[1] * bary.y
 				+ rt.uv[2] * bary.z;
+			triOut = uint32_t(ri);
 			hit = true;
 		}
 		dist2Out = best;
 		return hit;
 	};
-	// Per target vertex: (chart, uv, dist2) of its closest charted
-	// point on the reference surface.
+	// Per target vertex: (chart, uv, dist2, ref triangle) of its
+	// closest charted point on the reference surface.
 	const size_t vCount = target.vertices.size();
 	std::vector<uint32_t> vChart(vCount, 0xFFFFFFFFu);
 	std::vector<glm::vec2> vUv(vCount, glm::vec2(0.0f));
 	std::vector<float> vDist2(vCount,
 		std::numeric_limits<float>::max());
+	std::vector<uint32_t> vRefTri(vCount, 0xFFFFFFFFu);
 	for (size_t v = 0; v < vCount; ++v) {
 		uint32_t chart = 0xFFFFFFFFu;
 		glm::vec2 uv(0.0f);
 		float d2 = 0.0f;
+		uint32_t rt = 0;
 		if (closestOnRef(target.vertices[v].pos, 0xFFFFFFFFu, chart,
-				uv, d2)) {
+				uv, d2, rt)) {
 			vChart[v] = chart;
 			vUv[v] = uv;
 			vDist2[v] = d2;
+			vRefTri[v] = rt;
 		}
 	}
 	// Per target triangle: ONE chart + per-corner uvs inside it. All
@@ -1771,7 +1778,9 @@ bool TransferLightmapCharts(const StaticMeshUpload& reference,
 	// uv average (rare; the sweep-repair canary catches it).
 	out.triChart.assign(tgtTris, 0xFFFFFFFFu);
 	out.cornerChartUv.assign(size_t(tgtTris) * 3, glm::vec2(0.0f));
+	SgLightmapTransferStats st{};
 	for (uint32_t t = 0; t < tgtTris; ++t) {
+		++st.trisTotal;
 		uint32_t ix[3] = { target.indices[size_t(t) * 3 + 0],
 			target.indices[size_t(t) * 3 + 1],
 			target.indices[size_t(t) * 3 + 2] };
@@ -1780,17 +1789,22 @@ bool TransferLightmapCharts(const StaticMeshUpload& reference,
 		bool allHit = true;
 		for (int k = 0; k < 3; ++k)
 			allHit = allHit && vChart[ix[k]] != 0xFFFFFFFFu;
-		if (!allHit)
+		if (!allHit) {
+			++st.trisUncharted;
 			continue; // uncharted reference region
+		}
 		const uint32_t c[3] = { vChart[ix[0]], vChart[ix[1]],
 			vChart[ix[2]] };
 		uint32_t chart;
 		if (c[0] == c[1] && c[1] == c[2]) {
 			chart = c[0];
+			++st.trisSameChart;
 		} else if (c[0] == c[1] || c[0] == c[2]) {
 			chart = c[0];
+			++st.trisVote;
 		} else if (c[1] == c[2]) {
 			chart = c[1];
+			++st.trisVote;
 		} else {
 			chart = c[0];
 			float best = vDist2[ix[0]];
@@ -1802,6 +1816,7 @@ bool TransferLightmapCharts(const StaticMeshUpload& reference,
 				best = vDist2[ix[2]];
 				chart = c[2];
 			}
+			++st.trisVote;
 		}
 		glm::vec2 uv[3] = { vUv[ix[0]], vUv[ix[1]], vUv[ix[2]] };
 		bool inChart[3] = { c[0] == chart, c[1] == chart,
@@ -1821,11 +1836,23 @@ bool TransferLightmapCharts(const StaticMeshUpload& reference,
 			uint32_t rc = 0xFFFFFFFFu;
 			glm::vec2 ruv(0.0f);
 			float rd2 = 0.0f;
+			uint32_t rtri = 0;
 			if (closestOnRef(target.vertices[ix[k]].pos, chart, rc, ruv,
-					rd2)) {
+					rd2, rtri)) {
 				uv[k] = ruv;
 			} else if (inCount != 0) {
-				uv[k] = inSum / float(inCount);
+				// Nearest IN-CHART corner's uv (never the average: two
+				// averaged corners collapse onto the SAME point and
+				// the triangle's uv area goes to zero — the degenerate
+				// smear/black artifact).
+				int nearest = -1;
+				float bestD2 = std::numeric_limits<float>::max();
+				for (int j = 0; j < 3; ++j)
+					if (inChart[j] && vDist2[ix[j]] < bestD2) {
+						bestD2 = vDist2[ix[j]];
+						nearest = j;
+					}
+				uv[k] = nearest >= 0 ? uv[nearest] : inSum / float(inCount);
 			} else {
 				valid = false; // no contact with the chosen chart
 				break;
@@ -1833,6 +1860,77 @@ bool TransferLightmapCharts(const StaticMeshUpload& reference,
 		}
 		if (!valid)
 			continue;
+		// Degenerate rescue: the sibling triangle has real area but its
+		// uv collapsed (chart-straddling corners pile onto the same
+		// restricted re-projection point). Re-parameterize all three
+		// corners against ONE reference triangle (each corner's
+		// closest, nearest-first, until one works) via PLANAR BARYCENTRIC
+		// EXTRAPOLATION on its plane — closest-point-per-corner
+		// saturates at the triangle boundary and collapses straddling
+		// corners onto the same reference vertex; extrapolated barys
+		// keep the corners distinct and track the sibling's shape
+		// (values beyond the rect clamp to its edge at sampling, same
+		// as every other out-of-chart corner). Single chart by
+		// construction: no cross-rect smear.
+		const glm::vec3 wp[3] = { target.vertices[ix[0]].pos,
+			target.vertices[ix[1]].pos, target.vertices[ix[2]].pos };
+		const float worldA = 0.5f * glm::length(
+			glm::cross(wp[1] - wp[0], wp[2] - wp[0]));
+		const float uvA = 0.5f * std::abs(
+			(uv[1].x - uv[0].x) * (uv[2].y - uv[0].y)
+			- (uv[2].x - uv[0].x) * (uv[1].y - uv[0].y));
+		if (worldA > 1e-12f && uvA < 1e-9f) {
+			int order[3] = { 0, 1, 2 };
+			std::sort(order, order + 3, [&](int a, int b) {
+				return vDist2[ix[a]] < vDist2[ix[b]];
+			});
+			bool rescuedOk = false;
+			for (int j = 0; j < 3 && !rescuedOk; ++j) {
+				const uint32_t rtIdx = vRefTri[ix[order[j]]];
+				if (rtIdx == 0xFFFFFFFFu || rtIdx >= ref.size())
+					continue;
+				const RefTri& rt = ref[rtIdx];
+				const glm::vec3 v0 = rt.p[1] - rt.p[0];
+				const glm::vec3 v1 = rt.p[2] - rt.p[0];
+				const float d00 = glm::dot(v0, v0);
+				const float d01 = glm::dot(v0, v1);
+				const float d11 = glm::dot(v1, v1);
+				const float denom = d00 * d11 - d01 * d01;
+				if (!(std::abs(denom) > 1e-20f))
+					continue; // degenerate reference triangle
+				glm::vec2 ruv[3];
+				for (int k = 0; k < 3; ++k) {
+					const glm::vec3 v2 = wp[k] - rt.p[0];
+					const float d20 = glm::dot(v2, v0);
+					const float d21 = glm::dot(v2, v1);
+					const float b1 = (d11 * d20 - d01 * d21) / denom;
+					const float b2 = (d00 * d21 - d01 * d20) / denom;
+					const float b0 = 1.0f - b1 - b2;
+					ruv[k] = rt.uv[0] * b0 + rt.uv[1] * b1
+						+ rt.uv[2] * b2;
+				}
+				const float rA = 0.5f * std::abs(
+					(ruv[1].x - ruv[0].x) * (ruv[2].y - ruv[0].y)
+					- (ruv[2].x - ruv[0].x) * (ruv[1].y - ruv[0].y));
+				if (rA <= 1e-12f)
+					continue; // this reference parameterization is
+					          // collapsed too
+				// Clamp the extrapolated uvs to the chart rect: sampling
+				// clamps chart-local uv to [0,1] anyway (AtlasTexel /
+				// PackChartUv), and per-axis clamping keeps straddling
+				// corners DISTINCT on the rect edge (vs collapsing onto
+				// one point).
+				for (int k = 0; k < 3; ++k)
+					uv[k] = glm::clamp(ruv[k], glm::vec2(0.0f),
+						glm::vec2(1.0f));
+				chart = rt.chart;
+				rescuedOk = true;
+			}
+			if (rescuedOk)
+				++st.trisRescued;
+			else
+				++st.trisDegenerate;
+		}
 		out.triChart[t] = chart;
 		for (int k = 0; k < 3; ++k)
 			out.cornerChartUv[size_t(t) * 3 + k] = uv[k];
@@ -1857,6 +1955,8 @@ bool TransferLightmapCharts(const StaticMeshUpload& reference,
 			}
 		}
 	}
+	if (stats)
+		*stats = st;
 	return true;
 }
 
