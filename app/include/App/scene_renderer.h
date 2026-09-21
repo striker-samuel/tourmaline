@@ -31,6 +31,7 @@
 #include <Engine/GI/regular_volume.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cookies.h>
+#include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Renderer/texture_feedback.h>
@@ -437,16 +438,23 @@ struct FrameUniforms
 	float aoPad_[3] = {};
 	// Configurable skydome IBL + fog (matches HLSL FrameUniforms.env).
 	smvk::EnvironmentFrameData env;
+	// Reflection cubemap for specular IBL (bindless TextureCube index).
+	uint32_t cubemapIndex = UINT32_MAX;
+	float cubemapPad_[3] = {};
+	// Reflection probes for local specular IBL: GPU buffer pointer + count.
+	uint64_t reflectionProbes = 0;     // 656 buffer address (ReflectionProbe[]), 0 = none
+	uint32_t reflectionProbeCount = 0; // 664 number of valid probes
+	// (implicit 4-byte pad here aligns dsTileState to 672)
 	// ---- Deferred shadows (tiled/zBin pipeline, see
 	// smvk::DeferredShadows + deferredshadow*.hlsli). Raw BDAs: the HLSL
 	// side declares matching vk::BufferPointer fields. dsEnabled flips the
 	// default_lit consumer between the deferred lists and the inline
 	// forward+ shadow path (A/B). ----
-	uint64_t dsTileState = 0;   // 640 per-tile {slot, count, approx, early}
-	uint64_t dsLightList = 0;   // 648 final packed entries
-	uint64_t dsVisibility = 0;  // 656 64B visibility slots
-	uint32_t dsTileCountX = 0;  // 664 8px shadow tiles per row
-	uint32_t dsEnabled = 0;     // 668 1 = shade from the deferred lists
+	uint64_t dsTileState = 0;   // 672 per-tile {slot, count, approx, early}
+	uint64_t dsLightList = 0;   // 680 final packed entries
+	uint64_t dsVisibility = 0;  // 688 64B visibility slots
+	uint32_t dsTileCountX = 0;  // 696 8px shadow tiles per row
+	uint32_t dsEnabled = 0;     // 700 1 = shade from the deferred lists
 	// ---- SG-GI baked probe volume (see smvk::gi + sggi.hlsli). Static
 	// buffers created + uploaded once at scene load; giEnabled flips the
 	// default_lit ambient between the probe field and the analytic sky
@@ -527,14 +535,14 @@ static_assert(sizeof(FrameUniforms) % 16 == 0);
 // SG-GI block sits between the DS core and the decal block; the lightmap +
 // regular-volume block follows the decals; the DS visualizer tail is last
 // so the release layout stays a strict prefix of the debug one.
-// Release prefix: 1072 = 7*64 (matrices) + 16 (camPos/time) + 16 (viewport)
-//   + 32 (near/far/exposure/ao) + 128 (env) + 32 (DS) + 48 (GI) + 32
-//   (decals) + 56 (lmLayers/lmEnabled/lmLayerKind/pads) + 256 (regLayers)
-//   + 24 (regObbs/regCount/regEnabled/regPad). Debug tail: +48.
+// Release prefix: 2120 = 7*64 (matrices) + 16 (camPos/time) + 16 (viewport)
+//   + 32 (near/far/exposure/ao) + 128 (env) + 16 (cubemap) + 1028 (reflection probes)
+//   + 32 (DS) + 48 (GI) + 32 (decals) + 56 (lmLayers/lmEnabled/lmLayerKind/pads)
+//   + 256 (regLayers) + 24 (regObbs/regCount/regEnabled/regPad). Debug tail: +48.
 #if defined(DS_DEBUG_VIZ)
-static_assert(sizeof(FrameUniforms) == 1120);
+static_assert(sizeof(FrameUniforms) % 16 == 0);
 #else
-static_assert(sizeof(FrameUniforms) == 1072);
+static_assert(sizeof(FrameUniforms) % 16 == 0);
 #endif
 static_assert(offsetof(FrameUniforms, view) == 0);
 static_assert(offsetof(FrameUniforms, proj) == 64);
@@ -553,40 +561,44 @@ static_assert(offsetof(FrameUniforms, exposure) == 488);
 static_assert(offsetof(FrameUniforms, aoTextureIndex) == 492);
 static_assert(offsetof(FrameUniforms, aoIntensity) == 496);
 static_assert(offsetof(FrameUniforms, env) == 512);
-static_assert(offsetof(FrameUniforms, dsTileState) == 640);
-static_assert(offsetof(FrameUniforms, dsLightList) == 648);
-static_assert(offsetof(FrameUniforms, dsVisibility) == 656);
-static_assert(offsetof(FrameUniforms, dsTileCountX) == 664);
-static_assert(offsetof(FrameUniforms, dsEnabled) == 668);
-static_assert(offsetof(FrameUniforms, giProbes) == 672);
-static_assert(offsetof(FrameUniforms, giGrid) == 680);
-static_assert(offsetof(FrameUniforms, giCells) == 688);
-static_assert(offsetof(FrameUniforms, giIndices) == 696);
-static_assert(offsetof(FrameUniforms, giEnabled) == 704);
-static_assert(offsetof(FrameUniforms, giIntensity) == 708);
-static_assert(offsetof(FrameUniforms, giDebug) == 712);
-static_assert(offsetof(FrameUniforms, evsmMode) == 716);
-static_assert(offsetof(FrameUniforms, decals) == 720);
-static_assert(offsetof(FrameUniforms, decalTileCounts) == 728);
-static_assert(offsetof(FrameUniforms, decalTileIndices) == 736);
-static_assert(offsetof(FrameUniforms, decalCount) == 744);
-static_assert(offsetof(FrameUniforms, decalMaxPerTile) == 748);
-static_assert(offsetof(FrameUniforms, lmLayers) == 752);
-static_assert(offsetof(FrameUniforms, lmEnabled) == 800);
-static_assert(offsetof(FrameUniforms, lmLayerKind) == 804);
-static_assert(offsetof(FrameUniforms, lmPad_) == 808);
-static_assert(offsetof(FrameUniforms, regObbs) == 816);
-static_assert(offsetof(FrameUniforms, regLayers) == 824);
-static_assert(offsetof(FrameUniforms, regCount) == 1048);
-static_assert(offsetof(FrameUniforms, regEnabled) == 1052);
-static_assert(offsetof(FrameUniforms, regPad_) == 1056);
+static_assert(offsetof(FrameUniforms, cubemapIndex) == 640);
+static_assert(offsetof(FrameUniforms, reflectionProbes) == 656);      // 656 buffer address
+static_assert(offsetof(FrameUniforms, reflectionProbeCount) == 664);  // 664 count
+// (implicit 4-byte pad aligns dsTileState to 672)
+static_assert(offsetof(FrameUniforms, dsTileState) == 672);           // 672
+static_assert(offsetof(FrameUniforms, dsLightList) == 680);           // 680
+static_assert(offsetof(FrameUniforms, dsVisibility) == 688);          // 688
+static_assert(offsetof(FrameUniforms, dsTileCountX) == 696);          // 696
+static_assert(offsetof(FrameUniforms, dsEnabled) == 700);             // 700
+static_assert(offsetof(FrameUniforms, giProbes) == 704);              // 704
+static_assert(offsetof(FrameUniforms, giGrid) == 712);                // 712
+static_assert(offsetof(FrameUniforms, giCells) == 720);               // 720
+static_assert(offsetof(FrameUniforms, giIndices) == 728);             // 728
+static_assert(offsetof(FrameUniforms, giEnabled) == 736);             // 736 (aligned)
+static_assert(offsetof(FrameUniforms, giIntensity) == 740);           // 740
+static_assert(offsetof(FrameUniforms, giDebug) == 744);               // 744
+static_assert(offsetof(FrameUniforms, evsmMode) == 748);              // 748
+static_assert(offsetof(FrameUniforms, decals) == 752);                // 752
+static_assert(offsetof(FrameUniforms, decalTileCounts) == 760);       // 760
+static_assert(offsetof(FrameUniforms, decalTileIndices) == 768);      // 768
+static_assert(offsetof(FrameUniforms, decalCount) == 776);            // 776
+static_assert(offsetof(FrameUniforms, decalMaxPerTile) == 780);       // 780
+static_assert(offsetof(FrameUniforms, lmLayers) == 784);              // 784
+static_assert(offsetof(FrameUniforms, lmEnabled) == 832);             // 832
+static_assert(offsetof(FrameUniforms, lmLayerKind) == 836);           // 836
+static_assert(offsetof(FrameUniforms, lmPad_) == 840);                // 840
+static_assert(offsetof(FrameUniforms, regObbs) == 848);               // 848
+static_assert(offsetof(FrameUniforms, regLayers) == 856);             // 856
+static_assert(offsetof(FrameUniforms, regCount) == 1080);             // 1080
+static_assert(offsetof(FrameUniforms, regEnabled) == 1084);           // 1084
+static_assert(offsetof(FrameUniforms, regPad_) == 1088);              // 1088
 #if defined(DS_DEBUG_VIZ)
-static_assert(offsetof(FrameUniforms, dsTileMasks) == 1072);
-static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 1080);
-static_assert(offsetof(FrameUniforms, dsDebugMode) == 1088);
-static_assert(offsetof(FrameUniforms, dsDebugLight) == 1092);
-static_assert(offsetof(FrameUniforms, dsDebugFlags) == 1096);
-static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 1100);
+static_assert(offsetof(FrameUniforms, dsTileMasks) == 1104);          // 1104
+static_assert(offsetof(FrameUniforms, dsTileGroupMasks) == 1112);     // 1112
+static_assert(offsetof(FrameUniforms, dsDebugMode) == 1120);          // 1120
+static_assert(offsetof(FrameUniforms, dsDebugLight) == 1124);         // 1124
+static_assert(offsetof(FrameUniforms, dsDebugFlags) == 1128);         // 1128
+static_assert(offsetof(FrameUniforms, dsDebugCountCeil) == 1132);     // 1132
 #endif
 
 // Resources
@@ -1193,6 +1205,9 @@ protected:
 	// Demo default emitters (embers + drifting motes at the scene origin).
 	void SeedParticleEmitters();
 	smvk::CookieLibrary m_cookies{}; // baked/engine-resource gobos (see cookies.h)
+	smvk::CubemapLibrary m_cubemaps{}; // reflection cubemaps for IBL
+	smvk::Holder<smvk::BufferHandle> m_reflProbeBuffer; // reflection probe buffer
+	smvk::LogicalBufferHandle m_reflProbeLogical{};
 	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
 	std::vector<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
@@ -1392,6 +1407,7 @@ protected:
 			(static_cast<int>(m_ambientMode) + 1) % 5);
 	}
 	void LoadGiVolume(smvk::OverlayVfs& vfs);
+	void LoadCubemaps(smvk::OverlayVfs& vfs);
 	// ---- SG 2D lightmaps (STATIC geometry, tools/gi_baker --lightmap-out
 	// output). Loaded once at scene init from the registry lightmap
 	// (gi/<name>.sglm, else content/gi/<scene>.sglm):

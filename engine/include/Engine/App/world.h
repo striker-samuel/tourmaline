@@ -192,6 +192,7 @@ namespace smvk {
 		void ResolveAndFixup_clusters();
 
 		smvk::StaticMesh* GetMesh(uint32_t meshIndex);
+		const smvk::StaticMesh* GetMesh(uint32_t meshIndex) const;
 		smvk::Material* GetMaterial(uint32_t materialIndex);
 		// LOD marker for tooling (LOD0 + cooked "/lodN" siblings with
 		// world-scaled simplifier error). Null when the index is out of range.
@@ -288,6 +289,15 @@ namespace smvk {
 		// above (bootstrap computes nodes the first time they're seen).
 		uint32_t LodIndexForNode(NodeId node, uint32_t worldMesh,
 			const LodFrameInputs& inputs) const;
+		// View distance used by LodIndexForNode: closest approach from the
+		// eye to the instance's LOD0 world sphere (0 when inside/touching).
+		// Node origins can sit meters from the visible surface (Sponza
+		// cooks the whole building onto ONE node), so an origin distance
+		// would select coarser LODs for nearby surfaces. Conservative:
+		// siblings only shrink the surface. Falls back to the origin
+		// distance when bounds are unavailable.
+		float LodDistanceForNode(NodeId node, uint32_t worldMesh,
+			const glm::vec3& eye) const;
 		// Drops every cached decision (parameter tweak / scene edit).
 		void InvalidateLodCache();
 		// Cache storage (lazily sized to the node count; reset by

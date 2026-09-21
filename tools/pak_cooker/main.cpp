@@ -16,6 +16,15 @@
 //              --lm-curve-target 7.0 --lm-curve-max 2.5
 //              --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]
 //
+// --cubemap on bakes preconvolved SPECULAR cubemaps DURING the cook (same
+// CPU path-tracer capture as tools/cubemap_baker, GGX importance-sampled
+// mip chains via Engine/Renderer/cubemap_prefilter.h — roughness = mip /
+// (levels-1)) and embeds them as Texture blobs at
+// textures/cubemaps/<name>[_N].ktx2 (PakBackend serves them by VFS path,
+// so CubemapLibrary::Load finds them with no code change). Probes and
+// lightmaps carry all diffuse + low-frequency specular; these cubes own
+// the high-frequency specular path only.
+//
 // --lightmap on bakes 2D SG lightmaps DURING the cook (sun + static spot
 // NEE + analytic sky on open-sky rays, real materials, transmissive
 // pass-through — see Engine/GI/bake.h), fills each mesh's texCoord2 with
@@ -70,6 +79,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <limits>
 #include <cstdio>
 #include <cstring>
@@ -85,6 +95,10 @@
 #include <unordered_set>
 #include <vector>
 
+#include <volk.h>
+
+#include "ktx.h"
+
 #include <Engine/App/cluster.h>
 #include <Engine/App/static_merge.h>
 #include <Engine/Asset/tour.h>
@@ -96,6 +110,9 @@
 #include <Engine/GI/bake.h>
 #include <Engine/GI/lightmap.h>
 #include <Engine/Flintbase/flintbase_backend.h>
+#include <Engine/Renderer/cubemap.h>
+#include <Engine/Renderer/cubemap_prefilter.h>
+#include <Engine/Utils/thread_pool.h>
 #include <gltf_import/gltf.h>
 #include <Engine/Vfs/vfs.h>
 
@@ -196,6 +213,11 @@ struct Args {
 	// Off by default (extra full-atlas PNG write + O(n^2) overlap
 	// pass on tens of thousands of chunks).
 	bool lmDebugPink = false;
+	// Cross-chart seam stitching (post-bake): boundary texels blend
+	// toward same-normal sibling-chunk texels so duplicated seam
+	// vertices sample one value on both sides; margins re-dilate after.
+	// On by default (boundary-only, deterministic); off for A/B.
+	bool lmStitch = true;
 	// ---- Curvature-weighted density (banding fix on curved shapes) ----
 	// Target normal-turn per texel on smoothly bending surfaces: meshes
 	// bending faster than the target chart at up to --lm-curve-max times
@@ -234,6 +256,24 @@ struct Args {
 	// registers gi/<name>.sggi names into the clusters (bake the matching
 	// volumes with GiBaker --out). Runtime resolves by name.
 	std::vector<std::string> giProbes;
+	// ---- Preconvolved specular cubemaps (--cubemap on) ----
+	// Captures the scene with the CPU path tracer at one or more points
+	// (same transport as CubemapBaker), GGX-prefilters each capture for
+	// the HIGH-frequency specular path (probes/lightmaps already carry
+	// all diffuse + low-frequency specular), and embeds the KTX2 cubes
+	// as Texture blobs at textures/cubemaps/<name>.ktx2 — served by
+	// PakBackend through the VFS, so CubemapLibrary::Load finds them
+	// with no code change. Empty cubemapName defaults to the out-pak
+	// stem (sponza.pak -> "sponza", mirroring gi/<scene>.sglm).
+	bool cubemap = false;
+	std::string cubemapName;
+	uint32_t cubemapSize = 128;   // base face width (HDR RGBA32F)
+	uint32_t cubemapRays = 128;   // GGX importance samples per output texel
+	uint32_t cubemapBounces = 3;  // diffuse path depth after the first hit
+	std::vector<std::string> cubemapPos; // repeatable "x,y,z" (empty =
+	                                     // bounds center at cubemapHeight)
+	float cubemapHeight = 1.5f;
+	float cubemapGrid = 8.0f;     // grid spacing in meters (0 = single probe at center)
 	// Read-only inspection: open an existing pak and print its manifest
 	// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
 	std::string dumpPak;
@@ -459,6 +499,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		if (!need(v)) return false;
 		out.lmDebugPink = (v == "on" || v == "1" || v == "true");
 	}
+	else if (a == "--lm-stitch") {
+		std::string v;
+		if (!need(v)) return false;
+		out.lmStitch = (v == "on" || v == "1" || v == "true");
+	}
 		else if (a == "--lm-curve-target") {
 			std::string v;
 			if (!need(v)) return false;
@@ -532,6 +577,52 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.giProbes.push_back(v);
 		}
+		else if (a == "--cubemap") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemap = (v == "on" || v == "1" || v == "true");
+			out.explicitSet.insert("cubemap");
+		}
+		else if (a == "--cubemap-name") {
+			if (!need(out.cubemapName)) return false;
+			out.explicitSet.insert("cubemapName");
+		}
+		else if (a == "--cubemap-size") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapSize = std::clamp<uint32_t>(
+				static_cast<uint32_t>(std::stoul(v)), 4, 1024);
+			out.explicitSet.insert("cubemapSize");
+		}
+		else if (a == "--cubemap-rays") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapRays = std::max<uint32_t>(
+				static_cast<uint32_t>(std::stoul(v)), 1);
+			out.explicitSet.insert("cubemapRays");
+		}
+		else if (a == "--cubemap-bounces") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapBounces = std::min<uint32_t>(
+				static_cast<uint32_t>(std::stoul(v)), 8);
+			out.explicitSet.insert("cubemapBounces");
+		}
+		else if (a == "--cubemap-pos") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapPos.push_back(v);
+		}
+		else if (a == "--cubemap-height") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapHeight = std::stof(v);
+		}
+		else if (a == "--cubemap-grid") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapGrid = std::stof(v);
+		}
 		else if (a == "--dump-pak") {
 			if (!need(out.dumpPak)) return false;
 		}
@@ -581,6 +672,7 @@ void Usage() {
 			<< "           --lm-denoise on|off (DEPRECATED)"
 			<< " --lm-denoise-quality high|balanced (DEPRECATED)\n"
 		<< "           --lm-debug-pink on|off\n"
+		<< "           --lm-stitch on|off\n"
 		<< "           --lm-curve-target 7.0 --lm-curve-max 2.5\n"
 		<< "           --lm-exclude tree,linden,ivy,glass --lm-exclude-small 0.5\n"
 		<< "           --spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
@@ -588,6 +680,19 @@ void Usage() {
 		<< "          (gi/<name>.sggi, baked separately) into the pak; the\n"
 		<< "          lightmap atlas registers itself on --lightmap. Runtime\n"
 		<< "          resolves GI by these names (one per kind for now).\n"
+		<< "          [--cubemap on|off --cubemap-name <name>\n"
+		<< "           --cubemap-size 128 --cubemap-rays 128 --cubemap-bounces 3\n"
+		<< "           --cubemap-pos x,y,z (repeatable) --cubemap-height 1.5\n"
+		<< "           --cubemap-grid 8.0]:\n"
+		<< "          preconvolved SPECULAR cubemaps baked into the pak\n"
+		<< "          (GGX importance-sampled mip chains, roughness = mip /\n"
+		<< "          (levels-1); probes/lightmaps own diffuse + low-freq\n"
+		<< "          specular). One capture per --cubemap-pos (default:\n"
+		<< "          scene-bounds center at +height). If --cubemap-grid > 0,\n"
+		<< "          captures a 3D grid of probes at that spacing (meters)\n"
+		<< "          within the scene bounds; embedded as Texture blobs at\n"
+		<< "          textures/cubemaps/<name>[_N].ktx2 (name defaults to the\n"
+		<< "          out-pak stem). Needs exactly one cooked scene, like --lightmap.\n"
 		<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
 		<< "lightmap UVs + per-mesh chunk id; atlas written to\n"
 		<< "<contentDir>/gi/<scene>.sglm). Sources: sun + static spots + real\n"
@@ -740,6 +845,48 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 				+ mx;
 		};
 		std::unordered_set<uint64_t> classicTris;
+		// ---- chart-id slice audit (stale-id detector) ----
+		// The runtime resolves xforms[chartOffset + chartId] with NO
+		// bounds check (gfxfilter.hlsli): a vertex whose chartId is
+		// neither 0xFFFFFFFF nor inside its own mesh's xform slice
+		// samples another mesh's transform (or OOB garbage) — isolated
+		// triangles in wrong rects + black regions, positions perfect.
+		// The atlasAt probe above bounds-checks and silently falls
+		// back, so this fault is invisible to the sweep/density
+		// audits: count it explicitly. chartidmax = max non-FFFFFFFF
+		// chartId over ALL vertices; oobslice = triangle corners with
+		// a stamped-looking id past the mesh's own xform count.
+		uint32_t chartIdMax = 0;
+		bool haveChartId = false;
+		uint32_t oobSlice = 0;
+		if (vertBase + (size_t)vc * sizeof(smvk::StaticVertex)
+			<= c.img.size()) {
+			for (uint32_t v = 0; v < vc; ++v) {
+				uint32_t cid;
+				memcpy(&cid, c.img.data() + vertBase
+					+ v * sizeof(smvk::StaticVertex) + 72, 4);
+				if (cid != 0xFFFFFFFFu) {
+					haveChartId = true;
+					chartIdMax = std::max(chartIdMax, cid);
+				}
+			}
+		}
+		if (lmChunk != 0xFFFFFFFFu && idxBase + (size_t)ic * 4 <= c.img.size()) {
+			for (uint32_t t = 0; t * 3 + 3 <= ic; ++t) {
+				uint32_t ix[3] = {};
+				memcpy(ix, c.img.data() + idxBase + (size_t)t * 12, 12);
+				for (int k = 0; k < 3; ++k) {
+					if (ix[k] >= vc)
+						continue;
+					uint32_t cid;
+					memcpy(&cid, c.img.data() + vertBase
+						+ ix[k] * sizeof(smvk::StaticVertex) + 72, 4);
+					if (cid != 0xFFFFFFFFu
+						&& (size_t)cid >= lmXf.size() / 4)
+						++oobSlice;
+				}
+			}
+		}
 		// ---- texel-distance uniformity audit ----
 		// Per triangle: atlas-uv area / world area (geometric-mean
 		// scale, dimensionless per meter^2). Uniform charting gives one
@@ -1030,7 +1177,9 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 				<< " outclamp=" << densOutClamped
 				<< " degenuv=" << densDegenerateUv
 				<< " worstchart=" << (worstChart == 0xFFFFFFFFu
-					? -1 : int(worstChart)) << "/" << worstChartOut;
+					? -1 : int(worstChart)) << "/" << worstChartOut
+				<< " chartidmax=" << (haveChartId ? int(chartIdMax) : -1)
+				<< " oobslice=" << oobSlice;
 		if (meshlets > 0)
 			std::cout << " mlbigtris=" << mlBigTris
 				<< " mlsetdiff=" << mlSetDiff
@@ -1542,6 +1691,294 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 	return fallbackLobes;
 }
 
+// ---- Preconvolved specular cubemaps (--cubemap on) ------------------------
+// KTX2 encode of one preconvolved chain into memory bytes (same layout the
+// CubemapBaker writes to disk: RGBA32F cube, full mip chain, linear
+// transfer — the runtime must sample it without an sRGB decode).
+bool WriteCubemapKtx2ToMemory(const smvk::CubemapMipChains& chains,
+	uint32_t w, uint32_t h, uint32_t levels, std::vector<uint8_t>& out,
+	std::string& err) {
+	ktxTextureCreateInfo ci{};
+	ci.vkFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
+	ci.baseWidth = w;
+	ci.baseHeight = h;
+	ci.baseDepth = 1;
+	ci.numDimensions = 2;
+	ci.numLevels = levels;
+	ci.numLayers = 1;
+	ci.numFaces = smvk::kCubemapFaceCount;
+	ci.isArray = KTX_FALSE;
+	ci.generateMipmaps = KTX_FALSE; // mips are pre-baked into the payload
+
+	ktxTexture2* tex = nullptr;
+	KTX_error_code res = ktxTexture2_Create(
+		&ci, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &tex);
+	if (res != KTX_SUCCESS || !tex) {
+		err = std::string("ktxTexture2_Create: ") + ktxErrorString(res);
+		return false;
+	}
+	struct Guard {
+		ktxTexture2* t;
+		~Guard() { if (t) ktxTexture2_Destroy(t); }
+	} guard{ tex };
+
+	res = ktxTexture2_SetOETF(tex, KHR_DF_TRANSFER_LINEAR);
+	if (res != KTX_SUCCESS) {
+		err = std::string("ktxTexture2_SetOETF: ") + ktxErrorString(res);
+		return false;
+	}
+	for (uint32_t level = 0; level < levels; ++level) {
+		for (uint32_t face = 0; face < smvk::kCubemapFaceCount; ++face) {
+			const auto* src = reinterpret_cast<const ktx_uint8_t*>(
+				chains[face][level].data());
+			const ktx_size_t srcLen = static_cast<ktx_size_t>(
+				chains[face][level].size() * sizeof(float));
+			res = ktxTexture_SetImageFromMemory(ktxTexture(tex),
+				level, 0, face, src, srcLen);
+			if (res != KTX_SUCCESS) {
+				err = std::string("ktxTexture_SetImageFromMemory: ")
+					+ ktxErrorString(res);
+				return false;
+			}
+		}
+	}
+	ktx_uint8_t* mem = nullptr;
+	ktx_size_t memLen = 0;
+	res = ktxTexture_WriteToMemory(ktxTexture(tex), &mem, &memLen);
+	if (res != KTX_SUCCESS || !mem || !memLen) {
+		err = std::string("ktxTexture_WriteToMemory: ")
+			+ ktxErrorString(res);
+		return false;
+	}
+	out.assign(mem, mem + memLen);
+	std::free(mem);
+	return true;
+}
+
+// Bakes one GGX-preconvolved specular capture per position (same CPU
+// path-tracer transport as tools/cubemap_baker: TraceIncoming on hits,
+// analytic sky on primary misses, textured albedo) and returns
+// (vfsPath, ktxBytes) pairs for pak embedding. False on error (logged).
+bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
+	std::vector<std::pair<std::string, std::vector<uint8_t>>>& out) {
+	using namespace smvk::gi;
+	const auto t0 = std::chrono::steady_clock::now();
+
+	// Texture averages so captures see textured albedo (what the skybox
+	// shows), mirroring the lightmap block.
+	GiSceneBuildOptions buildOpts{};
+	{
+		uint32_t averaged = 0;
+		for (const auto& [uri, handle] : cluster.ListTextureUris()) {
+			const std::vector<uint8_t>* src = cluster.GetTextureSource(uri);
+			if (!src || src->empty())
+				continue;
+			std::optional<glm::vec3> avg =
+				GiAverageKtxTexel(std::span<const uint8_t>(*src));
+			if (!avg)
+				continue;
+			buildOpts.texelAvg[handle.index()] = *avg;
+			++averaged;
+		}
+		std::cerr << "  [CUBE] textures averaged: " << averaged << " / "
+			<< cluster.ListTextureUris().size() << "\n" << std::flush;
+	}
+	// Same import basis change as CubemapBaker/GiBaker: cook imports at
+	// coordFix 0 read punctual aims with the conjugated -Z axis.
+	buildOpts.punctualAimAxis = GltfPunctualAimAxis(0);
+	buildOpts.env.sunAzimuthDeg = args.sunAzimuth;
+	buildOpts.env.sunElevationDeg = args.sunElevation;
+	buildOpts.env.sunIntensity = args.sunIntensity;
+	buildOpts.env.skyIntensity = args.skyIntensity;
+	// uniformAlbedo stays off: captures show real materials.
+
+	GiTraceScene traceScene;
+	std::string terr;
+	// buildOpts.staticLights (default on) harvests the scene's
+	// STATIC-flagged cooked lights into traceScene.spots/sun here.
+	BuildTraceSceneFromCluster(cluster, buildOpts, traceScene, terr);
+	if (!terr.empty()) {
+		std::cerr << "[CUBE] trace scene failed: " << terr << std::endl;
+		return false;
+	}
+	for (const std::string& spec : args.spots) {
+		GiTraceSpot spot{};
+		float innerDeg = 0.0f, outerDeg = 0.0f, candela = 0.0f;
+		glm::vec3 col(1.0f);
+		if (std::sscanf(spec.c_str(),
+				"%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f",
+				&spot.position.x, &spot.position.y, &spot.position.z,
+				&spot.direction.x, &spot.direction.y, &spot.direction.z,
+				&innerDeg, &outerDeg, &spot.range,
+				&col.r, &col.g, &col.b, &candela) != 13) {
+			std::cerr << "Bad --spot (want px,py,pz,dx,dy,dz,innerDeg,"
+				"outerDeg,range,r,g,b,candela): " << spec << "\n";
+			return false;
+		}
+		spot.color = col * candela;
+		spot.cosInner = std::cos(glm::radians(std::min(innerDeg, outerDeg)));
+		spot.cosOuter = std::cos(glm::radians(std::max(innerDeg, outerDeg)));
+		traceScene.spots.push_back(spot);
+	}
+	std::cerr << "  [CUBE] trace scene: " << traceScene.Bvh().TriangleCount()
+		<< " tris, " << traceScene.materials.size() << " materials, "
+		<< traceScene.spots.size() << " spots\n" << std::flush;
+	if (traceScene.Bvh().TriangleCount() == 0) {
+		std::cerr << "[CUBE] no trace geometry (empty scene)" << std::endl;
+		return false;
+	}
+
+	// Capture positions: explicit --cubemap-pos list, else the
+	// scene-bounds center raised by --cubemap-height (CubemapBaker rule).
+	// If --cubemap-grid > 0, generate a 3D grid of probes within the scene bounds.
+	std::vector<glm::vec3> positions;
+	for (const std::string& spec : args.cubemapPos) {
+		glm::vec3 p{};
+		if (std::sscanf(spec.c_str(), "%f,%f,%f", &p.x, &p.y, &p.z) != 3) {
+			std::cerr << "Bad --cubemap-pos (want x,y,z): " << spec << "\n";
+			return false;
+		}
+		positions.push_back(p);
+	}
+	if (positions.empty()) {
+		glm::vec3 bmin(1e30f), bmax(-1e30f);
+		for (uint32_t k = 0; k < traceScene.Bvh().TriangleCount(); ++k) {
+			glm::vec3 v0, v1, v2;
+			traceScene.Bvh().TriangleVertices(k, v0, v1, v2);
+			bmin = glm::min(bmin, glm::min(v0, glm::min(v1, v2)));
+			bmax = glm::max(bmax, glm::max(v0, glm::max(v1, v2)));
+		}
+		
+		if (args.cubemapGrid > 0.0f) {
+			// Generate 3D grid of probe positions
+			const float spacing = args.cubemapGrid;
+			const float yBase = bmin.y + args.cubemapHeight;
+			
+			int nx = std::max(1, int(std::ceil((bmax.x - bmin.x) / spacing)));
+			int ny = std::max(1, int(std::ceil((bmax.y - bmin.y) / spacing)));
+			int nz = std::max(1, int(std::ceil((bmax.z - bmin.z) / spacing)));
+			
+			std::cerr << "  [CUBE] generating " << nx << "x" << ny << "x" << nz
+				<< " grid at " << spacing << "m spacing = " << (nx * ny * nz) << " probes\n";
+			
+			for (int iz = 0; iz < nz; ++iz) {
+				for (int iy = 0; iy < ny; ++iy) {
+					for (int ix = 0; ix < nx; ++ix) {
+						float x = bmin.x + (ix + 0.5f) * spacing;
+						float y = yBase + iy * spacing;
+						float z = bmin.z + (iz + 0.5f) * spacing;
+						
+						// Clamp to bounds
+						x = std::clamp(x, bmin.x, bmax.x);
+						y = std::clamp(y, bmin.y, bmax.y);
+						z = std::clamp(z, bmin.z, bmax.z);
+						
+						positions.emplace_back(x, y, z);
+					}
+				}
+			}
+		} else {
+			// Single probe at bounds center (original behavior)
+			const glm::vec3 c = (bmin + bmax) * 0.5f;
+			positions.push_back(glm::vec3(c.x, bmin.y + args.cubemapHeight, c.z));
+			std::cerr << "  [CUBE] no --cubemap-pos: capturing at bounds center ("
+				<< positions.back().x << "," << positions.back().y << ","
+				<< positions.back().z << ")\n" << std::flush;
+		}
+	}
+
+	std::string base = args.cubemapName;
+	if (base.empty())
+		base = std::filesystem::path(args.outPak).stem().generic_string();
+	if (base.empty())
+		base = "sky";
+
+	const uint32_t S = args.cubemapSize;
+	const uint32_t levels = smvk::CubemapFullMipCount(S);
+	smvk::ThreadPool pool(0);
+
+	for (size_t cap = 0; cap < positions.size(); ++cap) {
+		const glm::vec3 origin = positions[cap];
+		const std::string captureName = positions.size() == 1
+			? base : base + "_" + std::to_string(cap);
+
+		// Trace 6 HDR base faces (one deterministic sample per texel;
+		// per-texel seeds independent of thread scheduling).
+		smvk::CubemapBaseFaces faces;
+		for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f)
+			faces[f].assign(size_t(S) * S * 4, 0.0f);
+		std::vector<std::future<void>> futures;
+		for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f) {
+			futures.push_back(pool.enqueue([&, f] {
+				for (uint32_t y = 0; y < S; ++y) {
+					for (uint32_t x = 0; x < S; ++x) {
+						const float u = (float(x) + 0.5f) / float(S);
+						const float v = (float(y) + 0.5f) / float(S);
+						const smvk::CubemapDir d = smvk::FaceUvToDirection(
+							smvk::CubemapFace(f), u, v);
+						glm::vec3 dir(d.x, d.y, d.z);
+						dir = glm::normalize(dir);
+						const uint64_t seed = (uint64_t(cap + 1) << 48)
+							^ (uint64_t(f) << 40)
+							^ (uint64_t(y) * 4099ull + uint64_t(x) * 130963ull + 1ull);
+						smvk::gi::Pcg32 rng(seed);
+						glm::vec3 L;
+						smvk::gi::TriangleBvh::Hit h;
+						if (!traceScene.Bvh().Raycast(origin, dir, 1.0e5f, h)) {
+							L = traceScene.SkyRadiance(dir);
+						} else {
+							L = traceScene.TraceIncoming(origin, dir, rng,
+								args.cubemapBounces);
+						}
+						float* px = &faces[f][(size_t(y) * S + x) * 4];
+						px[0] = L.x;
+						px[1] = L.y;
+						px[2] = L.z;
+						px[3] = 1.0f;
+					}
+				}
+			}));
+		}
+		for (auto& fu : futures)
+			fu.get();
+
+		// GGX-preconvolve into the specular mip chain (one face per
+		// worker; roughness = level / (levels - 1)).
+		smvk::CubemapMipChains chains;
+		chains.resize(smvk::kCubemapFaceCount);
+		futures.clear();
+		for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f) {
+			futures.push_back(pool.enqueue([&, f] {
+				smvk::PrefilterCubemapFaceGGX(faces, S,
+					smvk::CubemapFace(f), levels, args.cubemapRays,
+					chains[f]);
+			}));
+		}
+		for (auto& fu : futures)
+			fu.get();
+
+		std::vector<uint8_t> ktx;
+		std::string werr;
+		if (!WriteCubemapKtx2ToMemory(chains, S, S, levels, ktx, werr)) {
+			std::cerr << "[CUBE] encode failed '" << captureName << "': "
+				<< werr << std::endl;
+			return false;
+		}
+		const std::string vfsPath = smvk::CubemapVfsPath(captureName);
+		std::cerr << "  [CUBE] baked " << vfsPath << "  " << S << "x" << S
+			<< "x6 ggx-levels=" << levels << " rays=" << args.cubemapRays
+			<< " origin=(" << origin.x << "," << origin.y << "," << origin.z
+			<< ")  " << ktx.size() << " B\n" << std::flush;
+		out.emplace_back(vfsPath, std::move(ktx));
+	}
+
+	const double secs = std::chrono::duration<double>(
+		std::chrono::steady_clock::now() - t0).count();
+	std::cerr << "  [CUBE] preconvolved cubemaps: captures=" << positions.size()
+		<< " seconds=" << secs << "\n" << std::flush;
+	return true;
+}
+
 int main(int argc, char** argv) {
 	Args args;
 	if (!ParseArgs(argc, argv, args)) {
@@ -1672,6 +2109,11 @@ int main(int argc, char** argv) {
 				"(bake is per-scene): pass --scene-index N" << std::endl;
 			return 2;
 		}
+		if (toCook.size() > 1 && args.cubemap) {
+			std::cerr << "--cubemap needs exactly one cooked scene "
+				"(bake is per-scene): pass --scene-index N" << std::endl;
+			return 2;
+		}
 		if (toCook.size() > 1 && !args.tour.empty()) {
 			std::cerr << "--tour needs exactly one cooked scene "
 				"(tour ids are scene-local): pass --scene-index N" << std::endl;
@@ -1772,6 +2214,10 @@ int main(int argc, char** argv) {
 			use("sunElevation", args.sunElevation, k.sunElevation);
 			use("sunIntensity", args.sunIntensity, k.sunIntensity);
 			use("skyIntensity", args.skyIntensity, k.skyIntensity);
+			use("cubemap", args.cubemap, k.cubemap);
+			use("cubemapName", args.cubemapName, k.cubemapName);
+			use("cubemapSize", args.cubemapSize, k.cubemapSize);
+			use("cubemapRays", args.cubemapRays, k.cubemapRays);
 			if (!k.lmExcludeKw.empty() &&
 				!args.explicitSet.contains("lmExclude")) {
 				if (!args.lmExclude.empty())
@@ -2553,6 +2999,24 @@ int main(int argc, char** argv) {
 				std::cerr << "[LM] bake failed\n";
 				return 1;
 			}
+			// Seam stitch (post-bake, payloads at final lobe counts):
+			// chart-boundary texels blend toward same-normal baked
+			// texels of sibling chunks so duplicated seam vertices
+			// sample one value on both sides; margins re-dilate after.
+			if (args.lmStitch) {
+				uint64_t stitched = 0;
+				std::string serr;
+				if (!StitchSgLightmapSeams(
+						std::span<const SgLightmapChunkBatch>(batches),
+						0.5f, &stitched, serr)) {
+					std::cerr << "[LM] seam stitch failed: " << serr
+						<< " (continuing on unstitched payloads)\n"
+						<< std::flush;
+				} else {
+					std::cerr << "  [LM] seam stitch: " << stitched
+						<< " boundary texels blended\n" << std::flush;
+				}
+			}
 		}
 
 		// NOTE: the OIDN denoise pass lives AFTER the stamp + transfer
@@ -3153,6 +3617,19 @@ int main(int argc, char** argv) {
 	}
 
 	// ---------------------------------------------------------------------------
+	// Preconvolved specular cubemaps (--cubemap on): capture + GGX
+	// prefilter into KTX2 cubes, embedded as Texture blobs below (after
+	// SerializeClusters, before Finalize). Runs after the lightmap block
+	// so the trace scene sees the same imported cluster; independent of
+	// --lightmap (works on unstamped uploads either way).
+	// ---------------------------------------------------------------------------
+	std::vector<std::pair<std::string, std::vector<uint8_t>>> cubemapKtx;
+	if (args.cubemap) {
+		if (!BakePreconvolvedCubemaps(*cluster, args, cubemapKtx))
+			return 1;
+	}
+
+	// ---------------------------------------------------------------------------
 	// Meshlet restore (post-lightmap): with --lightmap on, meshlets were
 	// deliberately NOT built anywhere earlier in this cook
 	// (importMeshletCfg disabled the importer and merged-block paths);
@@ -3282,6 +3759,21 @@ int main(int argc, char** argv) {
 		std::cerr << "Serialize failed: " << err << std::endl;
 		return 1;
 	}
+	// Preconvolved cubemaps ride as Texture blobs under their VFS paths
+	// (PakBackend serves them; CubemapLibrary::Load resolves them). Added
+	// after the cluster serialize so the cook stages above never see
+	// synthetic textures in the asset pool.
+	for (auto& [vfsPath, ktx] : cubemapKtx) {
+		std::vector<uint8_t> payload = smvk::BuildTexturePayload(
+			vfsPath, -1, -1, -1, -1, std::span<const uint8_t>(ktx));
+		if (!writer.AddBlob(smvk::PakAssetKind::Texture, vfsPath,
+				std::move(payload))) {
+			std::cerr << "Cubemap AddBlob failed: " << vfsPath << std::endl;
+			return 1;
+		}
+		std::cout << "Embedded cubemap " << vfsPath
+			<< " (" << ktx.size() << " B ktx2)\n";
+	}
 	std::vector<uint8_t> pak = writer.Finalize();
 
 	{
@@ -3306,6 +3798,7 @@ int main(int argc, char** argv) {
 		<< " textures=" << stats.textures << " (" << stats.textureBytes << " B)"
 		<< " nodes=" << stats.nodes << " lights=" << stats.lights
 		<< " gi=" << stats.giBindings
+		<< " cubemaps=" << cubemapKtx.size()
 		<< " pak=" << pak.size() << " B"
 		<< " staticRoots=" << stats.staticRoots
 		<< " meshleted=" << stats.meshesWithMeshlets << "/" << stats.meshletCount

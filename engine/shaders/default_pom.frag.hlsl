@@ -407,7 +407,7 @@ PSOut mainPS(PSIn IN)
 
     float3 R = reflect(-V, N);
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, shadingRoughness);
-    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env)
+    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get())
         * occlusion * ao;
 
     float3 color = direct + ambient + ambientSpec;

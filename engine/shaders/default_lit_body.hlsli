@@ -937,7 +937,7 @@ PSOut mainPS(PSIn IN)
     // Specular IBL: reflection-vector env sample weighted by Fresnel.
     float3 R = reflect(-V, N);
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, shadingRoughness);
-    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env) * occlusion * ao;
+    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get()) * occlusion * ao;
 
     // ---------------------------------------------------------------
     // Baked ambient: exactly ONE source per pixel, by priority:

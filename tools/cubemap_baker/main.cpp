@@ -4,7 +4,8 @@
 //                [--in-vfs models/X/x.gltf]
 //                [--out-dir engine/resources] [--name sky]
 //                [--position x,y,z]... [--height 1.5]
-//                [--size 256] [--mips on|off] [--bounces 3]
+//                [--size 256] [--mips on|off] [--prefilter box|ggx]
+//                [--prefilter-rays 128] [--bounces 3]
 //                [--sun-azimuth 30] [--sun-elevation 55] [--sun-intensity 10000]
 //                [--sky-intensity 600] [--test-pattern]
 //                [--pak <host path>] [--verify on|off] [--threads 0]
@@ -65,6 +66,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/GI/bake.h>
 #include <Engine/Renderer/cubemap.h>
+#include <Engine/Renderer/cubemap_prefilter.h>
 #include <gltf_import/gltf.h>
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/Vfs/vfs.h>
@@ -81,6 +83,12 @@ struct Args {
 	float height = 1.5f;  // used when no --position: bbox center raised by height
 	uint32_t size = smvk::kCubemapDefaultSize;
 	bool mips = true;
+	// Mip-chain filter for HDR captures: "box" (legacy 2x2 average) or
+	// "ggx" (GGX importance-sampled specular prefilter, roughness =
+	// level / (levels-1) — the high-frequency specular IBL path;
+	// probes/lightmaps own diffuse + low-frequency specular).
+	std::string prefilter = "box";
+	uint32_t prefilterRays = 128; // GGX samples per output texel
 	uint32_t bounces = 3;
 	float sunAzimuth = 30.0f;
 	float sunElevation = 55.0f;
@@ -151,6 +159,17 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.mips = (v == "on" || v == "1" || v == "true");
 		}
+		else if (a == "--prefilter") {
+			std::string v;
+			if (!need(v)) return false;
+			out.prefilter = (v == "ggx") ? "ggx" : "box";
+		}
+		else if (a == "--prefilter-rays") {
+			std::string v;
+			if (!need(v)) return false;
+			out.prefilterRays = std::max<uint32_t>(
+				static_cast<uint32_t>(std::stoul(v)), 1);
+		}
 		else if (a == "--bounces") {
 			std::string v;
 			if (!need(v)) return false;
@@ -219,11 +238,16 @@ void Usage() {
 	std::cout << "CubemapBaker --content-dir content --scene sponza\n"
 		<< "         [--in-vfs models/X/x.gltf] [--out-dir engine/resources]\n"
 		<< "         [--name sky] [--position x,y,z]... [--height 1.5]\n"
-		<< "         [--size 256] [--mips on|off] [--bounces 3]\n"
+		<< "         [--size 256] [--mips on|off] [--prefilter box|ggx]\n"
+		<< "         [--prefilter-rays 128] [--bounces 3]\n"
 		<< "         [--sun-azimuth 30] [--sun-elevation 55]\n"
 		<< "         [--sun-intensity 10000] [--sky-intensity 600]\n"
 		<< "         [--test-pattern] [--pak <host path>] [--verify on|off]\n"
-		<< "         [--threads 0]\n";
+		<< "         [--threads 0]\n"
+		<< "         --prefilter ggx preconvolves the mip chain for the\n"
+		<< "         high-frequency specular path (GGX importance sampling,\n"
+		<< "         roughness = level/(levels-1)); box keeps the legacy\n"
+		<< "         2x2 average chain.\n";
 }
 
 std::optional<std::string> SceneGltf(const std::string& id) {
@@ -662,11 +686,33 @@ int main(int argc, char** argv) {
 
 			std::vector<std::vector<std::vector<float>>> chains;
 			chains.reserve(smvk::kCubemapFaceCount);
-			for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f) {
-				if (args.mips)
-					chains.push_back(BuildFloatMipChain(faces[f], S, S));
-				else
-					chains.push_back({ faces[f] });
+			const bool ggx = args.mips && args.prefilter == "ggx";
+			if (ggx) {
+				// GGX specular prefilter (one face per worker; the
+				// capture futures above already joined, so the pool
+				// is free).
+				smvk::CubemapBaseFaces base;
+				for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f)
+					base[f] = faces[f];
+				chains.resize(smvk::kCubemapFaceCount);
+				futures.clear();
+				for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f) {
+					futures.push_back(pool.enqueue([&, f] {
+						smvk::PrefilterCubemapFaceGGX(base, S,
+							smvk::CubemapFace(f), expectedLevels,
+							args.prefilterRays, chains[f]);
+					}));
+				}
+				for (auto& fu : futures)
+					fu.get();
+			}
+			else {
+				for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f) {
+					if (args.mips)
+						chains.push_back(BuildFloatMipChain(faces[f], S, S));
+					else
+						chains.push_back({ faces[f] });
+				}
 			}
 
 			std::string werr;
@@ -678,6 +724,7 @@ int main(int argc, char** argv) {
 			baked.push_back(Baked{ vfsPath, file, sizeOnDisk });
 			std::cout << "baked " << vfsPath << "  " << S << "x" << S
 				<< "x6  levels=" << expectedLevels
+				<< " filter=" << (ggx ? "ggx" : "box")
 				<< "  origin=(" << origin.x << "," << origin.y << "," << origin.z << ")"
 				<< "  " << sizeOnDisk << " B" << std::endl;
 		}

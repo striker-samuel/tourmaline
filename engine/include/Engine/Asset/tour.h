@@ -69,6 +69,13 @@ struct TourCook {
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
 	float skyIntensity = 600.0f;
+	// Preconvolved specular cubemaps (PakCooker --cubemap stage: GGX
+	// mip chains embedded as textures/cubemaps/<name>.ktx2; empty name
+	// defaults to the out-pak stem).
+	bool cubemap = false;
+	std::string cubemapName;
+	uint32_t cubemapSize = 128;
+	uint32_t cubemapRays = 128;
 };
 
 enum class Verb : uint8_t {

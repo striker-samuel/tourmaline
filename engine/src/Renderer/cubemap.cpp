@@ -195,4 +195,97 @@ bool CubemapLibrary::Load(ResourceManager& ctx, const OverlayVfs& vfs,
 	return true;
 }
 
+bool ReflectionProbeLibrary::Load(ResourceManager& ctx, const OverlayVfs& vfs,
+	const std::string& name, const glm::vec3& position,
+	float influenceRadius, float fadeRadius,
+	const std::string& vfsPath, uint32_t fallbackSize) {
+	auto it = probes.find(name);
+	if (it != probes.end() && it->second.valid)
+		return true;
+
+	const std::string path = vfsPath.empty() ? CubemapVfsPath(name) : vfsPath;
+	const std::string debugName = "refl_probe_" + name;
+
+	ReflectionProbe probe{};
+	probe.position = position;
+	probe.influenceRadius = influenceRadius;
+	probe.fadeRadius = fadeRadius;
+
+	if (auto bytes = vfs.TryRead(path)) {
+		auto tex = LoadKtxTextureMemory(ctx, bytes->data(), bytes->size(), debugName);
+		if (!tex.empty() && ctx.IsCubemapTexture(tex)) {
+			probe.entry.size = ctx.GetTextureCubemapSize(tex);
+			probe.entry.baked = true;
+			probe.entry.bindless = static_cast<int32_t>(ctx.GetTextureBindlessIndex(tex));
+			probe.entry.mipLevels = ctx.GetTextureMipLevels(tex);
+			probe.entry.texture = std::move(tex);
+			probe.valid = true;
+			std::cout << "[refl_probe] '" << name << "' loaded from baked file: "
+				<< path << " (" << probe.entry.size << "px, pos=" << position.x << "," << position.y << "," << position.z
+				<< ", radius=" << influenceRadius << "+" << fadeRadius << ")" << std::endl;
+		} else if (!tex.empty()) {
+			std::cerr << "[refl_probe] '" << name << "' decoded but is not a cubemap: " << path << std::endl;
+		} else {
+			std::cerr << "[refl_probe] baked file failed to decode: " << path << std::endl;
+		}
+	}
+
+	if (!probe.valid) {
+		// Procedural fallback
+		const uint32_t S = std::max(1u, fallbackSize);
+		std::vector<std::vector<uint8_t>> facePx;
+		facePx.reserve(kCubemapFaceCount);
+		const void* faces[kCubemapFaceCount] = {};
+		for (uint32_t f = 0; f < kCubemapFaceCount; ++f) {
+			facePx.push_back(GenerateCubemapFacePixels(CubemapFace(f), S));
+			faces[f] = facePx.back().data();
+		}
+		auto tex = CreateCubemapTexture(ctx, faces, S, false, debugName.c_str());
+		if (tex.empty()) {
+			std::cerr << "[refl_probe] '" << name << "' unavailable (no baked file, procedural upload failed)" << std::endl;
+			return false;
+		}
+		probe.entry.size = S;
+		probe.entry.baked = false;
+		probe.entry.bindless = static_cast<int32_t>(ctx.GetTextureBindlessIndex(tex));
+		probe.entry.mipLevels = 1;
+		probe.entry.texture = std::move(tex);
+		probe.valid = true;
+		std::cout << "[refl_probe] '" << name << "' procedural fallback (" << S << "px)" << std::endl;
+	}
+
+	probes[name] = std::move(probe);
+	return true;
+}
+
+const ReflectionProbe* ReflectionProbeLibrary::Nearest(const glm::vec3& worldPos) const {
+	const ReflectionProbe* best = nullptr;
+	float bestDist2 = FLT_MAX;
+	for (const auto& [_, probe] : probes) {
+		if (!probe.valid) continue;
+		glm::vec3 diff = worldPos - probe.position;
+		float dist2 = glm::dot(diff, diff);
+		if (dist2 < bestDist2) {
+			bestDist2 = dist2;
+			best = &probe;
+		}
+	}
+	return best;
+}
+
+std::vector<const ReflectionProbe*> ReflectionProbeLibrary::SortedByDistance(const glm::vec3& worldPos) const {
+	std::vector<const ReflectionProbe*> result;
+	result.reserve(probes.size());
+	for (const auto& [_, probe] : probes) {
+		if (probe.valid) result.push_back(&probe);
+	}
+	std::sort(result.begin(), result.end(),
+		[&](const ReflectionProbe* a, const ReflectionProbe* b) {
+			glm::vec3 diffA = worldPos - a->position;
+			glm::vec3 diffB = worldPos - b->position;
+			return glm::dot(diffA, diffA) < glm::dot(diffB, diffB);
+		});
+	return result;
+}
+
 } // namespace smvk

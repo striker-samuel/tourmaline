@@ -36,7 +36,7 @@ void PrintUsage(const char* prog) {
 } // namespace
 
 	int main(int argc, const char* argv[]) {
-	const char* pakPath = "content/paks/bistro.pak";
+	const char* pakPath = "content/paks/sponza.pak";
 	const char* gltfPath = nullptr;
 	int sceneIndex = 0;
 	bool minimal = false;

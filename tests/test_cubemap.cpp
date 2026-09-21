@@ -12,6 +12,7 @@
 #include <iostream>
 
 #include <Engine/Renderer/cubemap.h>
+#include <Engine/Renderer/cubemap_prefilter.h>
 
 namespace {
 
@@ -103,6 +104,130 @@ void TestVfsPath() {
 		"cubemap.vfspath");
 }
 
+void TestDirectionRoundtrip() {
+	// FaceUvToDirection -> DirectionToFaceUv must recover the face and
+	// the uv (what the prefilter's bilinear source fetch depends on).
+	bool ok = true;
+	for (int f = 0; f < 6; ++f) {
+		for (int yi = 0; yi <= 8 && ok; ++yi) {
+			for (int xi = 0; xi <= 8 && ok; ++xi) {
+				const float u = (float(xi) + 0.5f) / 9.0f;
+				const float v = (float(yi) + 0.5f) / 9.0f;
+				const smvk::CubemapDir d = smvk::FaceUvToDirection(
+					smvk::CubemapFace(f), u, v);
+				smvk::CubemapFace rf = smvk::CubemapFace::Px;
+				float ru = 0.0f, rv = 0.0f;
+				if (!smvk::DirectionToFaceUv(glm::vec3(d.x, d.y, d.z), rf, ru, rv))
+					ok = false;
+				if (int(rf) != f)
+					ok = false;
+				if (std::abs(ru - u) > 1e-4f || std::abs(rv - v) > 1e-4f)
+					ok = false;
+			}
+		}
+	}
+	Check(ok, "cubemap.dir-roundtrip");
+	{
+		smvk::CubemapFace rf = smvk::CubemapFace::Px;
+		float ru = 0.0f, rv = 0.0f;
+		Check(!smvk::DirectionToFaceUv(glm::vec3(0.0f), rf, ru, rv),
+			"cubemap.dir-degenerate-guarded");
+	}
+}
+
+void TestPrefilterUniform() {
+	// Uniform capture: every prefiltered level must reproduce the
+	// constant (the NdotL-weighted average of a constant field), and
+	// mip 0 must be an exact copy of the base.
+	const uint32_t S = 8;
+	smvk::CubemapBaseFaces base;
+	for (int f = 0; f < 6; ++f) {
+		base[f].assign(size_t(S) * S * 4, 0.0f);
+		for (size_t i = 0; i < size_t(S) * S; ++i) {
+			base[f][i * 4 + 0] = 2.0f;
+			base[f][i * 4 + 1] = 1.0f;
+			base[f][i * 4 + 2] = 0.5f;
+			base[f][i * 4 + 3] = 1.0f;
+		}
+	}
+	smvk::CubemapMipChains chains;
+	smvk::PrefilterCubemapGGX(base, S, 0, 32, chains);
+	Check(chains.size() == 6, "cubemap.prefilter.faces");
+	Check(chains[0].size() == smvk::CubemapFullMipCount(S), "cubemap.prefilter.levels");
+	bool ok = true;
+	for (int f = 0; f < 6 && ok; ++f) {
+		uint32_t w = S;
+		for (size_t m = 0; m < chains[f].size() && ok; ++m) {
+			if (chains[f][m].size() != size_t(w) * w * 4)
+				ok = false;
+			for (size_t i = 0; i < size_t(w) * w && ok; ++i) {
+				const float* p = &chains[f][m][i * 4];
+				if (std::abs(p[0] - 2.0f) > 1e-3f
+					|| std::abs(p[1] - 1.0f) > 1e-3f
+					|| std::abs(p[2] - 0.5f) > 1e-3f
+					|| std::abs(p[3] - 1.0f) > 1e-6f)
+					ok = false;
+			}
+			w = std::max(1u, w / 2);
+		}
+	}
+	Check(ok, "cubemap.prefilter.uniform-exact");
+}
+
+void TestPrefilterDeterminism() {
+	// Checker capture: two runs must produce bit-identical chains
+	// (bake determinism across thread schedules) and the roughest mip
+	// must differ from the sharp one (convolution actually spreads).
+	const uint32_t S = 8;
+	smvk::CubemapBaseFaces base;
+	for (int f = 0; f < 6; ++f) {
+		base[f].assign(size_t(S) * S * 4, 0.0f);
+		for (uint32_t y = 0; y < S; ++y)
+			for (uint32_t x = 0; x < S; ++x) {
+				float* p = &base[f][(size_t(y) * S + x) * 4];
+				const float c = ((x + y + f) % 2 == 0) ? 4.0f : 0.25f;
+				p[0] = p[1] = p[2] = c;
+				p[3] = 1.0f;
+			}
+	}
+	smvk::CubemapMipChains a, b;
+	smvk::PrefilterCubemapGGX(base, S, 0, 64, a);
+	smvk::PrefilterCubemapGGX(base, S, 0, 64, b);
+	bool same = a.size() == b.size();
+	for (size_t f = 0; same && f < a.size(); ++f) {
+		if (a[f].size() != b[f].size())
+			same = false;
+		for (size_t m = 0; same && m < a[f].size(); ++m)
+			same = a[f][m] == b[f][m];
+	}
+	Check(same, "cubemap.prefilter.deterministic");
+	// Sharp vs roughest: the checker contrast must wash out.
+	double sharpVar = 0.0, roughVar = 0.0, sharpMean = 0.0, roughMean = 0.0;
+	{
+		const auto& s0 = a[0][0];
+		size_t n0 = s0.size() / 4;
+		for (size_t i = 0; i < n0; ++i)
+			sharpMean += s0[i * 4];
+		sharpMean /= double(n0);
+		for (size_t i = 0; i < n0; ++i) {
+			const double d = s0[i * 4] - sharpMean;
+			sharpVar += d * d;
+		}
+		sharpVar /= double(n0);
+		const auto& rL = a[0].back();
+		size_t nL = rL.size() / 4;
+		for (size_t i = 0; i < nL; ++i)
+			roughMean += rL[i * 4];
+		roughMean /= double(std::max<size_t>(nL, 1));
+		for (size_t i = 0; i < nL; ++i) {
+			const double d = rL[i * 4] - roughMean;
+			roughVar += d * d;
+		}
+		roughVar /= double(std::max<size_t>(nL, 1));
+	}
+	Check(roughVar < sharpVar, "cubemap.prefilter.rough-blurs");
+}
+
 void TestRhiHelpers() {
 	Check(smvk::IsCubemapLayerCount(6), "cubemap.rhi.layers6");
 	Check(smvk::IsCubemapLayerCount(12), "cubemap.rhi.layers12");
@@ -128,6 +253,9 @@ int main() {
 	TestFaceDominance();
 	TestProceduralFaces();
 	TestVfsPath();
+	TestDirectionRoundtrip();
+	TestPrefilterUniform();
+	TestPrefilterDeterminism();
 	TestRhiHelpers();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;

@@ -28,6 +28,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <glm/glm.hpp>
+
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Vfs/vfs.h>
 
@@ -126,6 +128,36 @@ struct CubemapEntry {
 	bool baked = false;
 	uint32_t size = 0;
 	uint32_t mipLevels = 1;
+};
+
+// Reflection probe: cubemap + position + influence radius for blending.
+struct ReflectionProbe {
+	glm::vec3 position{ 0.0f };
+	float influenceRadius = 10.0f;        // distance where probe has full weight
+	float fadeRadius = 5.0f;              // additional distance for falloff
+	CubemapEntry entry;                   // the cubemap data
+	bool valid = false;
+};
+
+// Named reflection probe set. Load() resolves one probe per name through VFS.
+struct ReflectionProbeLibrary {
+	std::unordered_map<std::string, ReflectionProbe> probes;
+
+	// Loads `name` from `vfsPath` (or CubemapVfsPath(name) when empty)
+	// through the overlay. Expects a .ktx2 cubemap file.
+	// `position` = world-space probe center, `influenceRadius` = full-weight distance,
+	// `fadeRadius` = falloff distance (weight goes to 0 at influence+fade).
+	bool Load(ResourceManager& ctx, const OverlayVfs& vfs,
+		const std::string& name, const glm::vec3& position,
+		float influenceRadius = 10.0f, float fadeRadius = 5.0f,
+		const std::string& vfsPath = {},
+		uint32_t fallbackSize = kCubemapDefaultSize);
+
+	// Get the nearest probe to a world position (returns null if none loaded).
+	const ReflectionProbe* Nearest(const glm::vec3& worldPos) const;
+
+	// Get all probes sorted by distance to worldPos (closest first).
+	std::vector<const ReflectionProbe*> SortedByDistance(const glm::vec3& worldPos) const;
 };
 
 // Named cubemap set for skybox/IBL captures. Load() is idempotent per

@@ -289,6 +289,23 @@ bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
 	const SgLightmapBakeConfig& config, SgLightmapBakeStats& stats,
 	GiBakeProgress progress = nullptr);
 
+// Cross-chart seam stitching (run after BakeSgLightmapChunks, before
+// denoise/compress): duplicated vertices at chart seams share the same
+// surface point, but their chunks were fit INDEPENDENTLY (own
+// Monte-Carlo noise, own dilation), so the two sides of a seam sample
+// different values — the visible island-boundary discontinuity, worst
+// on curved surfaces. Every baked texel on a chunk's inner boundary
+// lerps toward the average of same-normal baked texels of SIBLING
+// chunks (same mesh group, same lobe count — per-count bases differ,
+// so cross-count blends would mix bases) within ~2.5 local texel
+// sizes, then the touched chunks' margins re-dilate from the stitched
+// boundaries. Interior texels are untouched; thin double-sided
+// surfaces are protected by the normal gate. blend in (0,1];
+// outBlended receives the boundary-texel count that found foreign
+// neighbors (null ok). Deterministic.
+bool StitchSgLightmapSeams(std::span<const SgLightmapChunkBatch> batches,
+	float blend, uint64_t* outBlended, std::string& err);
+
 // Chart result of the xatlas chart + pack path (GenerateLightmapChartsXatlas)
 // and the Frostbite-style LOD transfer (TransferLightmapCharts). The ATLAS
 // packs charts (not mesh regions — a mesh owns many chart rects). Each

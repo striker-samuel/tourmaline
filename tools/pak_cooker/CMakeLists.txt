@@ -12,6 +12,8 @@ target_link_libraries(PakCooker
     PRIVATE
         engine
         gltf_import
+        volk
+        KTX::ktx
 )
 
 set_target_properties(PakCooker PROPERTIES
@@ -50,6 +52,14 @@ elseif(VULKANTOY_OIDN)
         "- lightmap denoising is DISABLED. Extract the oidn-<ver>.x64.windows "
         "release zip into external/oidn and reconfigure.")
 endif()
+
+# KTX is a shared lib on this setup: stage it next to PakCooker.exe
+# (the --cubemap stage encodes KTX2 in-process, like CubemapBaker).
+add_custom_command(TARGET PakCooker POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:KTX::ktx>"
+        "$<TARGET_FILE_DIR:PakCooker>"
+)
 
 # OptickCore is SHARED: stage its DLL next to PakCooker.exe
 add_custom_command(TARGET PakCooker POST_BUILD

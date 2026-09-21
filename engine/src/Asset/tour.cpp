@@ -35,16 +35,22 @@ std::string Quote(const std::string& s) {
 }
 
 // Tokenize one line: whitespace split, double-quote grouping with
-// backslash escapes, '//' comment starts outside quotes.
+// backslash escapes, '//' comment starts outside quotes. An explicitly
+// quoted empty string ("") yields one empty token (so cook lines with
+// empty quoted values, e.g. -lmExcludeKw "" / -cubemapName "", round-trip
+// instead of swallowing the next flag).
 std::vector<std::string> Tokenize(const std::string& line) {
 	std::vector<std::string> toks;
 	std::string cur;
 	bool inQ = false;
 	bool esc = false;
+	bool tokActive = false; // any chars or quote pairing for the
+	                        // current token (preserves "")
 	for (size_t i = 0; i < line.size(); ++i) {
 		const char c = line[i];
 		if (esc) {
 			cur.push_back(c);
+			tokActive = true;
 			esc = false;
 			continue;
 		}
@@ -54,20 +60,23 @@ std::vector<std::string> Tokenize(const std::string& line) {
 		}
 		if (c == '"') {
 			inQ = !inQ;
+			tokActive = true;
 			continue;
 		}
 		if (!inQ && c == '/' && i + 1 < line.size() && line[i + 1] == '/')
 			break;
 		if (!inQ && std::isspace((unsigned char)c)) {
-			if (!cur.empty()) {
+			if (tokActive) {
 				toks.push_back(cur);
 				cur.clear();
+				tokActive = false;
 			}
 			continue;
 		}
 		cur.push_back(c);
+		tokActive = true;
 	}
-	if (!cur.empty())
+	if (tokActive)
 		toks.push_back(cur);
 	return toks;
 }
@@ -271,6 +280,10 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			<< " -sunElevation " << k.sunElevation
 			<< " -sunIntensity " << k.sunIntensity
 			<< " -skyIntensity " << k.skyIntensity
+			<< " -cubemap " << (k.cubemap ? "on" : "off")
+			<< " -cubemapName " << Quote(k.cubemapName)
+			<< " -cubemapSize " << k.cubemapSize
+			<< " -cubemapRays " << k.cubemapRays
 			<< ";\n";
 	}
 	if (!f.good()) {
@@ -546,6 +559,16 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 					k.sunIntensity = std::stof(v);
 				else if (get("-skyIntensity", v))
 					k.skyIntensity = std::stof(v);
+				else if (get("-cubemap", v))
+					k.cubemap = (v == "on" || v == "1");
+				else if (get("-cubemapName", v))
+					k.cubemapName = v;
+				else if (get("-cubemapSize", v))
+					k.cubemapSize = std::max<uint32_t>(
+						uint32_t(std::stoul(v)), 4);
+				else if (get("-cubemapRays", v))
+					k.cubemapRays = std::max<uint32_t>(
+						uint32_t(std::stoul(v)), 1);
 			}
 			continue;
 		}

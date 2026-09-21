@@ -1995,6 +1995,10 @@ bool SceneRenderer::Initialize() {
 		// grids from tools/gi_baker --regular-out. Missing manifest is
 		// the normal state (no bake yet) - non-fatal.
 		LoadGiRegularVolumes(contentVfs);
+		// Reflection cubemaps for specular IBL (cubemap_baker output):
+		// replaces the analytic sky specular with captured environment.
+		// Missing file is non-fatal (falls back to analytic sky).
+		LoadCubemaps(contentVfs);
 		// Single-source isolation modes degrade when their source did not
 		// load (All/SkyIbl need nothing): keeps them from being silently
 		// empty — the UI/env selector keeps working after.
@@ -2332,6 +2336,40 @@ void SceneRenderer::Shutdown() {
 		std::cerr << "[GI] loaded '" << vfsPath << "': probes="
 			<< m_giVolume.probes.size() << " levels=" << m_giVolume.levelCount
 			<< " gpu=" << (m_giVolume.GpuBytes() / 1024) << " KiB\n";
+	}
+
+	// ---------------------------------------------------------------------------
+	// Reflection cubemaps for specular IBL (tools/cubemap_baker output).
+	// Loads content/textures/cubemaps/<scene>.ktx2 through the app VFS.
+	// A missing file is non-fatal (falls back to analytic sky).
+	// ---------------------------------------------------------------------------
+	void SceneRenderer::LoadCubemaps(smvk::OverlayVfs& vfs) {
+		m_cubemaps.entries.clear();
+		
+		// Try to load a scene-specific cubemap first, then fall back to "sky"
+		std::vector<std::string> cubemapNames = { 
+			std::string(m_scene.id ? m_scene.id : ""),
+			"sky"
+		};
+		
+		for (const auto& name : cubemapNames) {
+			if (name.empty())
+				continue;
+			
+			if (m_cubemaps.Load(*m_context, vfs, name)) {
+				const auto* entry = m_cubemaps.Find(name);
+				if (entry && entry->bindless >= 0) {
+					std::cerr << "[Cubemap] loaded '" << name << "' (bindless=" << entry->bindless
+						<< ", size=" << entry->size << "x" << entry->size
+						<< ", mips=" << entry->mipLevels << ")\n";
+					// Use the first successfully loaded cubemap
+					break;
+				}
+			} else {
+				std::cerr << "[Cubemap] no baked cubemap '" << name
+					<< "' - using analytic sky specular (bake with tools/cubemap_baker/CubemapBaker)\n";
+			}
+		}
 	}
 
 	// ---------------------------------------------------------------------------
@@ -2733,6 +2771,56 @@ void SceneRenderer::Shutdown() {
 		// covered pixels take the baked field alone). Direct light /
 		// sky dome / shadows are unaffected.
 		data.env.fogEndAndFlags.w = IblWanted() ? 1.0f : 0.0f;
+
+		// Reflection cubemap for specular IBL (global fallback)
+		if (!m_cubemaps.entries.empty()) {
+			// Use the first loaded cubemap
+			for (const auto& [name, entry] : m_cubemaps.entries) {
+				if (entry.bindless >= 0) {
+					data.cubemapIndex = static_cast<uint32_t>(entry.bindless);
+					break;
+				}
+			}
+		} else {
+			data.cubemapIndex = UINT32_MAX;
+		}
+
+		// Reflection probes for local specular IBL - create buffer on first use
+		if (m_reflProbeBuffer.empty()) {
+			m_reflProbeBuffer = m_context->CreateBuffer(
+				32 * sizeof(glm::vec4) * 3, // ReflectionProbe = 3 vec4
+				smvk::BufferType_Storage,
+				"reflection probes"
+			);
+			m_reflProbeLogical = m_rendergraph->AddExternalBuffer(m_reflProbeBuffer, "reflection probes");
+		}
+		
+		data.reflectionProbes = m_context->GetBufferDeviceAddress(m_reflProbeBuffer);
+		data.reflectionProbeCount = 0;
+		
+		if (data.cubemapIndex != UINT32_MAX) {
+			// Scene bounds center as probe position
+			const ::Aabb bounds = m_world->ComputeSceneBounds();
+			glm::vec3 sceneCenter = (bounds.mn + bounds.mx) * 0.5f;
+			float sceneRadius = glm::length(bounds.mx - bounds.mn) * 0.5f;
+			
+			// Upload single probe
+			struct ReflProbe {
+				glm::vec4 posInfluence;
+				glm::vec4 fadeCubemap;
+				glm::vec4 pad;
+			};
+			ReflProbe probe;
+			probe.posInfluence = glm::vec4(sceneCenter, sceneRadius * 2.0f);
+			probe.fadeCubemap = glm::vec4(sceneRadius * 0.5f, static_cast<float>(data.cubemapIndex), 0.0f, 0.0f);
+			probe.pad = glm::vec4(0.0f);
+			
+			m_context->UploadDataToBuffer(m_reflProbeBuffer, &probe, sizeof(ReflProbe),
+				smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment),
+				smvk::AccessFlags::ShaderRead);
+			
+			data.reflectionProbeCount = 1;
+		}
 
 		// Deferred shadows: consumer-side BDAs + the frame's on/off flag.
 		// DsActive() is the single gate shared with the phase-1 upload and

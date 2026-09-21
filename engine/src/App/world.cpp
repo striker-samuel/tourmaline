@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <immintrin.h>
 #include <intrin.h>
 
@@ -13,6 +14,7 @@
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Renderer/mesh.h>
+#include <Engine/Renderer/renderview.h>
 
 namespace smvk {
 
@@ -463,6 +465,18 @@ namespace smvk {
 		return loc.cluster->staticMeshes.get(loc.handle);
 	}
 
+	const StaticMesh* World::GetMesh(uint32_t meshIndex) const
+	{
+		if (meshIndex >= meshLocations.size())
+			return nullptr;
+
+		const MeshLocation& loc = meshLocations[meshIndex];
+		if (loc.cluster == nullptr || !loc.handle.valid())
+			return nullptr;
+
+		return loc.cluster->staticMeshes.get(loc.handle);
+	}
+
 	Material* World::GetMaterial(uint32_t materialIndex)
 	{
 		if (materialIndex >= materialLocations.size())
@@ -564,14 +578,34 @@ namespace smvk {
 			const bool hasOld = nodeLodStamp_[n] != 0;
 			if (parityDue || !hasOld) {
 				nodeLod_[n] = static_cast<uint8_t>(SelectLodIndex(worldMesh,
-					glm::length(glm::vec3(scene.globalTransform[n][3])
-						- lodInputs_.eye),
+					LodDistanceForNode(node, worldMesh, lodInputs_.eye),
 					lodInputs_.viewportHeight, lodInputs_.fovY,
 					lodInputs_.pixelBudget));
 				nodeLodStamp_[n] = inputs.frameId;
 			}
 		}
 		return nodeLod_[n];
+	}
+
+	float World::LodDistanceForNode(NodeId node, uint32_t worldMesh,
+		const glm::vec3& eye) const {
+		const auto originDistance = [&]() {
+			if (node < 0 || (uint32_t)node >= scene.globalTransform.size())
+				return 0.0f;
+			return glm::length(
+				glm::vec3(scene.globalTransform[(uint32_t)node][3]) - eye);
+		};
+		const StaticMesh* m = GetMesh(worldMesh);
+		if (!m || node < 0 || (uint32_t)node >= scene.globalTransform.size())
+			return originDistance();
+		glm::vec3 c{ 0.0f };
+		float r = 0.0f;
+		MeshBoundsToWorld(scene.globalTransform[(uint32_t)node],
+			m->geometry.aabbMin, m->geometry.aabbMax, c, r);
+		if (!(r > 0.0f) || !std::isfinite(c.x + c.y + c.z)
+			|| !std::isfinite(r))
+			return originDistance();
+		return std::max(0.0f, glm::length(c - eye) - r);
 	}
 
 	static void EnsureLodChainsCached(const World& w) {

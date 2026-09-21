@@ -81,6 +81,14 @@ struct MeshOptConfig {
 	// LodSeamLock above; only consulted when a lightmap chart table is
 	// passed to BuildLodChainForUpload).
 	LodSeamLock lodSeamLock = LodSeamLock::Attribute;
+	// Albedo-UV awareness for the default sibling path (see
+	// BuildLodChainForUpload). Carrying texCoord in the error metric
+	// protects UV-seam topology (split verts at identical positions, where
+	// the field genuinely disagrees) and penalizes parameterization
+	// distortion there; smooth mappings are largely unaffected by design
+	// (the metric preserves the attribute function). Untextured meshes
+	// (zero UVs) are unaffected. Set false to force positions-only.
+	bool lodUvAware = true;
 };
 
 struct MeshOptStats {
@@ -183,6 +191,12 @@ bool OptimizeStaticMeshUpload(
 // lightmap chart (see LodSeamLock). Mutually exclusive with
 // preserveCoverage in practice (Blend/MASK meshes are never lightmapped;
 // coverage wins if both are set).
+//
+ // Otherwise — the common case, including the frostbite pre-bake cook where
+ // lightmap charts don't exist yet — the albedo texCoord rides the error
+ // metric when MeshOptConfig::lodUvAware (default true), protecting UV-seam
+ // topology and biasing collapses toward UV-preserving ones. Untextured
+ // (zero-UV) meshes are unaffected.
 bool BuildLodChainForUpload(
 	const StaticMeshUpload& lod0,
 	const MeshOptConfig& config,
@@ -285,6 +299,9 @@ inline uint32_t SelectLodIndexForDistance(const float* errorsByLod, uint32_t cou
 // several nodes use the max — conservative, mirrors gltfpack quality).
 // LOD0 entries keep simplifyError == 0. Also stamps candidateCount on the
 // whole chain (kept size incl. LOD0). No-op when no LODs were cooked.
+// Idempotent: re-running divides out the previously applied scale first
+// (tracked per sibling on the Cluster, cook-time only), so pipelines that
+// finalize more than once keep single-scaled errors.
 void FinalizeLodWorldErrors(Cluster& cluster);
 
 // ---------------------------------------------------------------------------

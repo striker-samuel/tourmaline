@@ -13,8 +13,10 @@
 #include <cstring>
 #include <future>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 
 #include <Engine/Asset/compression.h>
@@ -2590,7 +2592,7 @@ static void BuildTexelOf(const std::vector<SgLightmapTexel>& texels,
 // Shared payload tail: amplitude denoise (over baked texels only) +
 // gutter/hole dilation. Runs after the coeffs hold the fit at the
 // chunk's lobeCount stride.
-static void FinishChunkPayload(SgLightmapAtlas::ChunkPayload& out,
+static void DilateChunkPayload(SgLightmapAtlas::ChunkPayload& out,
 	const std::vector<uint32_t>& texelOf, uint32_t lobeCount) {
 	const uint32_t w = out.width;
 	const uint32_t h = out.height;
@@ -2598,6 +2600,61 @@ static void FinishChunkPayload(SgLightmapAtlas::ChunkPayload& out,
 
 	// Gutter + hole dilation: every texel that did not bake takes the
 	// average of its valid 4-neighbours (Jacobi passes until stable).
+	// Re-runnable: call again after mutating valid texels (e.g. the
+	// seam stitch) to re-flood the margins from the new values.
+	std::vector<char> valid(total, 0);
+	for (size_t i = 0; i < total; ++i)
+		valid[i] = texelOf[i] != 0xFFFFFFFFu ? 1 : 0;
+
+	for (int pass = 0; pass < 16; ++pass) {
+		bool anyFill = false;
+		std::vector<glm::vec3> fill(total * lobeCount);
+		std::vector<char> fillMask(total, 0);
+		for (uint32_t y = 0; y < h; ++y)
+			for (uint32_t x = 0; x < w; ++x) {
+				const size_t v = size_t(y) * w + x;
+				if (valid[v])
+					continue;
+				glm::vec3 acc[kLightmapMaxLobes] = {};
+				int cnt = 0;
+				static const int kDx[4] = { 1, -1, 0, 0 };
+				static const int kDy[4] = { 0, 0, 1, -1 };
+				for (int k = 0; k < 4; ++k) {
+					const int nx = int(x) + kDx[k];
+					const int ny = int(y) + kDy[k];
+					if (nx < 0 || ny < 0 || nx >= int(w) || ny >= int(h))
+						continue;
+					const size_t u = size_t(ny) * w + size_t(nx);
+					if (!valid[u])
+						continue;
+					for (uint32_t l = 0; l < lobeCount; ++l)
+						acc[l] += out.coeffs[u * lobeCount + l];
+					++cnt;
+				}
+				if (cnt > 0) {
+					for (uint32_t l = 0; l < lobeCount; ++l)
+						fill[v * lobeCount + l] = acc[l] / float(cnt);
+					fillMask[v] = 1;
+					anyFill = true;
+				}
+			}
+		for (size_t i = 0; i < total; ++i)
+			if (fillMask[i]) {
+				for (uint32_t l = 0; l < lobeCount; ++l)
+					out.coeffs[i * lobeCount + l] = fill[i * lobeCount + l];
+				valid[i] = 1;
+			}
+		if (!anyFill)
+			break;
+	}
+}
+
+static void FinishChunkPayload(SgLightmapAtlas::ChunkPayload& out,
+	const std::vector<uint32_t>& texelOf, uint32_t lobeCount) {
+	const uint32_t w = out.width;
+	const uint32_t h = out.height;
+	const size_t total = size_t(w) * h;
+
 	std::vector<char> valid(total, 0);
 	for (size_t i = 0; i < total; ++i)
 		valid[i] = texelOf[i] != 0xFFFFFFFFu ? 1 : 0;
@@ -2644,47 +2701,7 @@ static void FinishChunkPayload(SgLightmapAtlas::ChunkPayload& out,
 					out.coeffs[i * lobeCount + l] = smooth[i * lobeCount + l];
 	}
 
-	for (int pass = 0; pass < 16; ++pass) {
-		bool anyFill = false;
-		std::vector<glm::vec3> fill(total * lobeCount);
-		std::vector<char> fillMask(total, 0);
-		for (uint32_t y = 0; y < h; ++y)
-			for (uint32_t x = 0; x < w; ++x) {
-				const size_t v = size_t(y) * w + x;
-				if (valid[v])
-					continue;
-				glm::vec3 acc[kLightmapMaxLobes] = {};
-				int cnt = 0;
-				static const int kDx[4] = { 1, -1, 0, 0 };
-				static const int kDy[4] = { 0, 0, 1, -1 };
-				for (int k = 0; k < 4; ++k) {
-					const int nx = int(x) + kDx[k];
-					const int ny = int(y) + kDy[k];
-					if (nx < 0 || ny < 0 || nx >= int(w) || ny >= int(h))
-						continue;
-					const size_t u = size_t(ny) * w + size_t(nx);
-					if (!valid[u])
-						continue;
-					for (uint32_t l = 0; l < lobeCount; ++l)
-						acc[l] += out.coeffs[u * lobeCount + l];
-					++cnt;
-				}
-				if (cnt > 0) {
-					for (uint32_t l = 0; l < lobeCount; ++l)
-						fill[v * lobeCount + l] = acc[l] / float(cnt);
-					fillMask[v] = 1;
-					anyFill = true;
-				}
-			}
-		for (size_t i = 0; i < total; ++i)
-			if (fillMask[i]) {
-				for (uint32_t l = 0; l < lobeCount; ++l)
-					out.coeffs[i * lobeCount + l] = fill[i * lobeCount + l];
-				valid[i] = 1;
-			}
-		if (!anyFill)
-			break;
-	}
+	DilateChunkPayload(out, texelOf, lobeCount);
 }
 
 // Core: trace + fit every covered texel of ONE chunk payload, using the
@@ -3156,6 +3173,233 @@ bool BakeSgLightmapChunks(const GiTraceScene& scene, uint32_t lobeCount,
 			stats.seconds, (unsigned long long)stats.samplesClamped);
 		progress(line);
 	}
+	return true;
+}
+
+bool StitchSgLightmapSeams(std::span<const SgLightmapChunkBatch> batches,
+	float blend, uint64_t* outBlended, std::string& err) {
+	if (!(blend > 0.0f) || !(blend <= 1.0f)) {
+		err = "StitchSgLightmapSeams: blend must be in (0,1]";
+		return false;
+	}
+	if (outBlended)
+		*outBlended = 0;
+	// Normal gate: only same-facing surfaces blend (protects thin
+	// double-sided geometry: curtain front/back, column opposites).
+	constexpr float kNormalGate = 0.7f;
+	// Search radius per boundary texel, in its own chunk's world texel
+	// sizes; grid cells sized to the run's largest so the sphere never
+	// spans more than ~2 cells per axis.
+	constexpr float kRadiusTexels = 2.5f;
+	constexpr float kCellTexels = 4.0f;
+
+	struct Chunk {
+		const SgLightmapChunkBatch* b = nullptr;
+		std::vector<uint32_t> texelOf;
+		float texSize = 0.0f;
+		std::vector<size_t> boundary; // payload texel indices
+		uint32_t lobes = 0;
+	};
+	// World texel-size fallback chain for single-texel chunks (no
+	// measurable extent): mesh median, then global median, then 0.1.
+	auto chunkTexSize = [](const SgLightmapChunkBatch& b,
+		const std::vector<uint32_t>& texelOf) {
+		glm::vec3 bbMin(std::numeric_limits<float>::max());
+		glm::vec3 bbMax(std::numeric_limits<float>::lowest());
+		size_t n = 0;
+		for (uint32_t i : texelOf) {
+			if (i == 0xFFFFFFFFu)
+				continue;
+			const glm::vec3& p = (*b.texels)[i].position;
+			bbMin = glm::min(bbMin, p);
+			bbMax = glm::max(bbMax, p);
+			++n;
+		}
+		if (n < 2)
+			return 0.0f;
+		return glm::length(bbMax - bbMin) / std::sqrt(float(n));
+	};
+	std::vector<float> allSizes;
+	for (const SgLightmapChunkBatch& b : batches) {
+		if (!b.payload || !b.texels || b.payload->width == 0
+			|| b.payload->height == 0)
+			continue;
+		std::vector<uint32_t> tof(
+			size_t(b.payload->width) * b.payload->height);
+		BuildTexelOf(*b.texels, b.payload->width, b.payload->height, tof);
+		const float s = chunkTexSize(b, tof);
+		if (s > 0.0f)
+			allSizes.push_back(s);
+	}
+	std::sort(allSizes.begin(), allSizes.end());
+	const float globalMedian = allSizes.empty()
+		? 0.1f : allSizes[allSizes.size() / 2];
+
+	struct Texel {
+		glm::vec3 pos, nrm;
+		SgLightmapAtlas::ChunkPayload* payload = nullptr;
+		size_t cell = 0; // payload texel index
+		uint32_t lobes = 0;
+		size_t chunk = 0; // index into the run's chunks
+	};
+	uint64_t blendedTotal = 0;
+	size_t bi = 0;
+	while (bi < batches.size()) {
+		// Contiguous same-meshKey run (mesh-major cook order), valid
+		// payloads only — mirrors the bake grouping; seams stitch
+		// within a mesh.
+		size_t bj = bi;
+		while (bj < batches.size()
+			&& batches[bj].meshKey == batches[bi].meshKey
+			&& batches[bj].payload && batches[bj].texels
+			&& batches[bj].payload->width != 0
+			&& batches[bj].payload->height != 0)
+			++bj;
+		if (bj == bi) {
+			++bi;
+			continue;
+		}
+		std::vector<Chunk> chunks;
+		chunks.reserve(bj - bi);
+		for (size_t k = bi; k < bj; ++k) {
+			const SgLightmapChunkBatch& b = batches[k];
+			Chunk c;
+			c.b = &b;
+			const uint32_t w = b.payload->width, h = b.payload->height;
+			c.texelOf.assign(size_t(w) * h, 0xFFFFFFFFu);
+			BuildTexelOf(*b.texels, w, h, c.texelOf);
+			c.texSize = chunkTexSize(b, c.texelOf);
+			const size_t total = size_t(w) * h;
+			c.lobes = total > 0
+				? uint32_t(b.payload->coeffs.size() / total) : 0;
+			if (c.lobes == 0 || !LightmapLobeCountValid(c.lobes))
+				continue;
+			static const int kDx[4] = { 1, -1, 0, 0 };
+			static const int kDy[4] = { 0, 0, 1, -1 };
+			for (uint32_t y = 0; y < h; ++y)
+				for (uint32_t x = 0; x < w; ++x) {
+					const size_t v = size_t(y) * w + x;
+					if (c.texelOf[v] == 0xFFFFFFFFu)
+						continue;
+					for (int d = 0; d < 4; ++d) {
+						const int nx = int(x) + kDx[d];
+						const int ny = int(y) + kDy[d];
+						if (nx < 0 || ny < 0 || nx >= int(w)
+							|| ny >= int(h)
+							|| c.texelOf[size_t(ny) * w + size_t(nx)]
+								== 0xFFFFFFFFu) {
+							c.boundary.push_back(v);
+							break;
+						}
+					}
+				}
+			chunks.push_back(std::move(c));
+		}
+		if (chunks.size() >= 2) {
+			std::vector<float> sizes;
+			for (const Chunk& c : chunks)
+				if (c.texSize > 0.0f)
+					sizes.push_back(c.texSize);
+			std::sort(sizes.begin(), sizes.end());
+			const float meshMedian = sizes.empty()
+				? globalMedian : sizes[sizes.size() / 2];
+			for (Chunk& c : chunks)
+				if (!(c.texSize > 0.0f))
+					c.texSize = meshMedian > 0.0f
+						? meshMedian : globalMedian;
+			float maxSize = 0.0f;
+			for (const Chunk& c : chunks)
+				maxSize = std::max(maxSize, c.texSize);
+			const float cell = std::max(maxSize * kCellTexels, 1e-6f);
+			// All baked texels of the run as blend sources; snapshot
+			// the coefficients so reads are pre-stitch (order-free).
+			std::vector<Texel> entries;
+			std::vector<std::vector<glm::vec3>> snaps(chunks.size());
+			for (size_t ci = 0; ci < chunks.size(); ++ci) {
+				const Chunk& c = chunks[ci];
+				snaps[ci] = c.b->payload->coeffs;
+				for (size_t v = 0; v < c.texelOf.size(); ++v) {
+					const uint32_t ti = c.texelOf[v];
+					if (ti == 0xFFFFFFFFu)
+						continue;
+					Texel e;
+					e.pos = (*c.b->texels)[ti].position;
+					e.nrm = (*c.b->texels)[ti].normal;
+					e.payload = c.b->payload;
+					e.cell = v;
+					e.lobes = c.lobes;
+					e.chunk = ci;
+					entries.push_back(e);
+				}
+			}
+			std::map<std::tuple<int, int, int>, std::vector<size_t>> grid;
+			for (size_t ei = 0; ei < entries.size(); ++ei) {
+				const glm::vec3& p = entries[ei].pos;
+				grid[{ int(std::floor(p.x / cell)),
+					int(std::floor(p.y / cell)),
+					int(std::floor(p.z / cell)) }].push_back(ei);
+			}
+			for (size_t ci = 0; ci < chunks.size(); ++ci) {
+				Chunk& c = chunks[ci];
+				const float radius = c.texSize * kRadiusTexels;
+				const float r2 = radius * radius;
+				bool touched = false;
+				for (size_t v : c.boundary) {
+					const uint32_t ti = c.texelOf[v];
+					const glm::vec3& p = (*c.b->texels)[ti].position;
+					const glm::vec3& n = (*c.b->texels)[ti].normal;
+					const int x0 = int(std::floor((p.x - radius) / cell));
+					const int x1 = int(std::floor((p.x + radius) / cell));
+					const int y0 = int(std::floor((p.y - radius) / cell));
+					const int y1 = int(std::floor((p.y + radius) / cell));
+					const int z0 = int(std::floor((p.z - radius) / cell));
+					const int z1 = int(std::floor((p.z + radius) / cell));
+					std::vector<size_t> cand;
+					for (int gx = x0; gx <= x1; ++gx)
+						for (int gy = y0; gy <= y1; ++gy)
+							for (int gz = z0; gz <= z1; ++gz) {
+								const auto it = grid.find({ gx, gy, gz });
+								if (it == grid.end())
+									continue;
+								for (size_t ei : it->second) {
+									const Texel& e = entries[ei];
+									if (e.chunk == ci
+										|| e.lobes != c.lobes
+										|| glm::dot(e.nrm, n) <= kNormalGate)
+										continue;
+									const glm::vec3 d = e.pos - p;
+									if (glm::dot(d, d) < r2)
+										cand.push_back(ei);
+								}
+							}
+					if (cand.empty())
+						continue;
+					std::sort(cand.begin(), cand.end());
+					glm::vec3 acc[kLightmapMaxLobes] = {};
+					for (size_t ei : cand) {
+						const Texel& e = entries[ei];
+						const std::vector<glm::vec3>& snap =
+							snaps[e.chunk];
+						for (uint32_t l = 0; l < c.lobes; ++l)
+							acc[l] += snap[e.cell * c.lobes + l];
+					}
+					const float inv = 1.0f / float(cand.size());
+					for (uint32_t l = 0; l < c.lobes; ++l) {
+						glm::vec3& dst =
+							c.b->payload->coeffs[v * c.lobes + l];
+						dst = dst * (1.0f - blend) + acc[l] * inv * blend;
+					}
+					touched = true;
+					++blendedTotal;
+				}
+				if (touched)
+					DilateChunkPayload(*c.b->payload, c.texelOf, c.lobes);
+			}
+		}
+		bi = bj;
+	}
+	if (outBlended)
+		*outBlended = blendedTotal;
 	return true;
 }
 

@@ -1197,7 +1197,12 @@ namespace smvk {
 		// Kept a separate binding so Texture2D[]-typed code keeps
 		// compiling with 3D views in the pool.
 		kBinding_VolumeTextures = 5,
-		kBinding_NumBindings = 6 // this should be # of all other
+		// Reflection cubemaps for specular IBL: sampled-image array whose
+		// descriptors mirror the SAME bindless slots as kBinding_Textures
+		// — a TextureCube view is reachable through either binding at its
+		// slot index. HLSL: TextureCube cubemaps[] (common.hlsli).
+		kBinding_Cubemaps = 6,
+		kBinding_NumBindings = 7 // this should be # of all other
 	};
 
 	struct QueueFamilyIndices {

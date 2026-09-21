@@ -298,6 +298,33 @@ bool BuildLodChainForUpload(
 		cutoutAttrPtr = cutoutAttrs.data();
 	}
 
+	// Default-path albedo-UV awareness (see header): when neither the
+	// cutout nor the lightmap-chart path applies, texCoord still rides the
+	// error metric, protecting UV-seam topology and biasing collapses
+	// toward UV-preserving ones. Same weights as the cutout path but
+	// WITHOUT LockBorder (general meshes must simplify borders).
+	// Non-finite UVs fall back to positions-only; all-zero UVs (untextured
+	// meshes) leave the attribute quadrics empty and behave positions-only.
+	std::vector<float> uvAttrs;
+	bool useUvAttrs = false;
+	if (!preserveCoverage && !lmVertexChart && config.lodUvAware) {
+		uvAttrs.resize(vcount * 2);
+		bool finite = true;
+		for (size_t i = 0; i < vcount; ++i) {
+			const float u = lod0.vertices[i].texCoord.x;
+			const float v = lod0.vertices[i].texCoord.y;
+			if (!std::isfinite(u) || !std::isfinite(v)) {
+				finite = false;
+				break;
+			}
+			uvAttrs[i * 2 + 0] = u;
+			uvAttrs[i * 2 + 1] = v;
+		}
+		useUvAttrs = finite;
+		if (!useUvAttrs)
+			uvAttrs.clear();
+	}
+
 	// Lightmap-aware attributes (stamped mesh + chart table): chart id
 	// (+1 so 0 = uncharted) + chart-local uv. The chart term is the ONLY
 	// rejector for the seam-twin collapse — seam corners are position-
@@ -400,6 +427,21 @@ bool BuildLodChainForUpload(
 				positions, vcount, sizeof(StaticVertex),
 				lmAttrs.data(), sizeof(float) * 3,
 				kLmAttrWeights, 3, lmLockPtr,
+				targetIndices, targetError, config.lodSimplifyOptions,
+				&relativeError);
+		}
+		else if (useUvAttrs) {
+			// Default: albedo-UV-aware positions+UV simplify (no border
+			// lock — general meshes must simplify borders). The reported
+			// error is the combined position+UV distortion in relative
+			// units, converted to local units below like every path.
+			static const float kUvAttrWeights[2] = { 0.5f, 0.5f };
+			resultCount = meshopt_simplifyWithAttributes(
+				dest.data(),
+				lod0.indices.data(), icount,
+				positions, vcount, sizeof(StaticVertex),
+				uvAttrs.data(), sizeof(float) * 2,
+				kUvAttrWeights, 2, nullptr,
 				targetIndices, targetError, config.lodSimplifyOptions,
 				&relativeError);
 		}
@@ -571,9 +613,18 @@ void FinalizeLodWorldErrors(Cluster& cluster) {
 			continue;
 		auto sit = maxScaleByMesh.find(*poolIdx);
 		const float nodeScale = (sit != maxScaleByMesh.end()) ? sit->second : 1.0f;
+		// Idempotent re-scale: sibling errors are stored world-scaled, so
+		// divide out the scale a previous run baked in before applying
+		// the current one. Without this, cook pipelines that finalize
+		// twice (frostbite pre-bake sibling cook + post-bake sibling pass)
+		// compound the node scale — for Sponza's 0.008 root that shrinks
+		// every error 125x per extra run and the renderer drops to the
+		// coarsest LOD centimeters from the camera.
+		const float prevScale = cluster.GetLodFinalizedScale(uri);
 		LodInfo scaled = lod;
-		scaled.simplifyError = lod.simplifyError * nodeScale;
+		scaled.simplifyError = lod.simplifyError / prevScale * nodeScale;
 		cluster.RegisterMeshLod(uri, scaled);
+		cluster.SetLodFinalizedScale(uri, nodeScale);
 	}
 }
 

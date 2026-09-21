@@ -1398,6 +1398,76 @@ void TestLmRepackDisjoint() {
 	}
 }
 
+// Seam stitching (StitchSgLightmapSeams): boundary texels of sibling
+// chunks blend toward same-normal foreign texels; interiors, opposite
+// normals and lobe-count mismatches are untouched.
+void TestLmSeamStitch() {
+	// Two 7x7 payloads (lobeCount 5), 4x4 claimed blocks: boundary =
+	// all but the center 2x2. A sits at x in [0.1,0.4], B adjacent at
+	// x in [0.41,0.71] (0.01 gap, well inside 2.5x the 0.1 texel size).
+	auto makeChunk = [](float x0, const glm::vec3& fill,
+		const glm::vec3& nrm, std::vector<gi::SgLightmapTexel>& texels) {
+		gi::SgLightmapAtlas::ChunkPayload p;
+		p.width = p.height = 7;
+		p.coeffs.assign(size_t(7) * 7 * 5, glm::vec3(0.0f));
+		texels.clear();
+		for (uint32_t y = 0; y < 4; ++y)
+			for (uint32_t x = 0; x < 4; ++x) {
+				gi::SgLightmapTexel t{};
+				t.position = glm::vec3(x0 + 0.1f * float(x), 0.0f,
+					0.1f * float(y));
+				t.normal = nrm;
+				t.uv = glm::vec2(1.5f + float(x), 1.5f + float(y));
+				texels.push_back(t);
+				for (uint32_t l = 0; l < 5; ++l)
+					p.coeffs[(size_t(1 + y) * 7 + (1 + x)) * 5 + l] = fill;
+			}
+		return p;
+	};
+	std::vector<gi::SgLightmapTexel> texA, texB;
+	gi::SgLightmapAtlas::ChunkPayload payA =
+		makeChunk(0.1f, glm::vec3(10.0f), glm::vec3(0, 1, 0), texA);
+	gi::SgLightmapAtlas::ChunkPayload payB =
+		makeChunk(0.41f, glm::vec3(0.0f), glm::vec3(0, 1, 0), texB);
+	gi::SgLightmapChunkBatch bA{ &payA, &texA, 1, nullptr };
+	gi::SgLightmapChunkBatch bB{ &payB, &texB, 1, nullptr };
+	std::vector<gi::SgLightmapChunkBatch> batches = { bA, bB };
+	std::string err;
+	uint64_t blended = 0;
+	Check(gi::StitchSgLightmapSeams(batches, 0.5f, &blended, err),
+		"lm.stitch.ok");
+	Check(blended > 0, "lm.stitch.blended");
+	// Boundary texels met halfway (10 -> 5, 0 -> 5); the center 2x2 of
+	// each block is interior and must be untouched.
+	auto amp = [](const gi::SgLightmapAtlas::ChunkPayload& p,
+		uint32_t x, uint32_t y) {
+		return p.coeffs[(size_t(y) * 7 + x) * 5].x;
+	};
+	Check(std::abs(amp(payA, 4, 2) - 5.0f) < 1e-4f, "lm.stitch.a.edge");
+	Check(std::abs(amp(payB, 1, 2) - 5.0f) < 1e-4f, "lm.stitch.b.edge");
+	Check(std::abs(amp(payA, 2, 2) - 10.0f) < 1e-4f,
+		"lm.stitch.a.interior");
+	Check(std::abs(amp(payB, 2, 2) - 0.0f) < 1e-4f,
+		"lm.stitch.b.interior");
+	// Opposite normals: no blending (thin double-sided guard).
+	std::vector<gi::SgLightmapTexel> texC, texD;
+	gi::SgLightmapAtlas::ChunkPayload payC =
+		makeChunk(0.1f, glm::vec3(10.0f), glm::vec3(0, 1, 0), texC);
+	gi::SgLightmapAtlas::ChunkPayload payD =
+		makeChunk(0.41f, glm::vec3(0.0f), glm::vec3(0, -1, 0), texD);
+	std::vector<gi::SgLightmapChunkBatch> batches2 = {
+		{ &payC, &texC, 2, nullptr }, { &payD, &texD, 2, nullptr } };
+	blended = 0;
+	Check(gi::StitchSgLightmapSeams(batches2, 0.5f, &blended, err),
+		"lm.stitch.flip.ok");
+	Check(blended == 0, "lm.stitch.flip.none");
+	Check(std::abs(amp(payC, 4, 2) - 10.0f) < 1e-4f,
+		"lm.stitch.flip.untouched");
+	// Bad blend factor fails cleanly.
+	Check(!gi::StitchSgLightmapSeams(batches, 0.0f, &blended, err),
+		"lm.stitch.badblend.fail");
+}
+
 // Frostbite-style chart transfer (TransferLightmapCharts): a charted
 // reference (the LOD1 stand-in) projects onto tessellated targets of
 // the same surface — every triangle lands in ONE chart with a
@@ -2095,6 +2165,7 @@ int main() {
 	smvk::gi::TestLmXatlasCharts();
 	smvk::gi::TestLmDeferRasterize();
 	smvk::gi::TestLmRepackDisjoint();
+	smvk::gi::TestLmSeamStitch();
 	smvk::gi::TestLmChartTransfer();
 	smvk::gi::TestStaticBakeLights();
 	smvk::gi::TestGiMalformedScene();

@@ -63,17 +63,74 @@ float3 EvaluateIrradiance(float3 N, EnvironmentFrameData env)
 
 // Cheap specular env: horizon<->zenith by reflection Y, dielectrics get
 // F0-weighted reflections, rougher surfaces fade out.
-float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrameData env)
+// Uses reflection probes (nearest by world position) if available,
+// otherwise falls back to global cubemapIndex, then analytic sky.
+float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrameData env,
+    float3 worldPos, FrameUniforms frame)
 {
     float ibl = max(env.ground.w, 0.0f) * env.fogEndAndFlags.w;
     if (ibl <= 0.0f)
         return float3(0.0f, 0.0f, 0.0f);
-    float3 zenith = env.skyZenith.rgb;
-    float3 horizon = env.skyHorizon.rgb;
-    float3 groundCol = env.ground.rgb;
-    float3 skyPart = lerp(horizon, zenith, pow(saturate(R.y), 1.5f));
-    float3 gndPart = lerp(horizon, groundCol, saturate(-R.y * 2.0f));
-    float3 envCol = R.y >= 0.0f ? skyPart : gndPart;
+    
+    float3 envCol;
+    bool foundProbe = false;
+    
+    // Find nearest reflection probe within influence radius
+    float bestWeight = 0.0f;
+    uint bestProbeIndex = 0xffffffffu;
+    
+    if (frame.reflectionProbeCount > 0) {
+        ReflectionProbeBuffer probeBuf = frame.reflectionProbes.Get();
+        [loop]
+        for (uint i = 0; i < frame.reflectionProbeCount; ++i) {
+            ReflectionProbe probe = probeBuf.probes[i];
+            float3 probePos = probe.posInfluence.xyz;
+            float influenceRadius = probe.posInfluence.w;
+            float fadeRadius = probe.fadeCubemap.x;
+            uint cubemapIdx = (uint)probe.fadeCubemap.y;
+            
+            if (cubemapIdx == 0xffffffffu) continue;
+            
+            float dist = length(worldPos - probePos);
+            float weight = 0.0f;
+            if (dist <= influenceRadius) {
+                weight = 1.0f;
+            } else if (dist <= influenceRadius + fadeRadius) {
+                weight = 1.0f - (dist - influenceRadius) / fadeRadius;
+            }
+            
+            if (weight > bestWeight) {
+                bestWeight = weight;
+                bestProbeIndex = i;
+            }
+        }
+        
+        if (bestWeight > 0.0f && bestProbeIndex != 0xffffffffu) {
+            // Sample the nearest probe's cubemap
+            uint cubemapIdx = (uint)probeBuf.probes[bestProbeIndex].fadeCubemap.y;
+            TextureCube cubemap = cubemaps[NonUniformResourceIndex(cubemapIdx)];
+            envCol = cubemap.Sample(samplers[0], R).rgb;
+            foundProbe = true;
+        }
+    }
+    
+    if (!foundProbe && frame.cubemapIndex != 0xffffffffu) {
+        // Fallback to global cubemap
+        TextureCube cubemap = cubemaps[NonUniformResourceIndex(frame.cubemapIndex)];
+        envCol = cubemap.Sample(samplers[0], R).rgb;
+        foundProbe = true;
+    }
+    
+    if (!foundProbe) {
+        // Fallback to analytic sky
+        float3 zenith = env.skyZenith.rgb;
+        float3 horizon = env.skyHorizon.rgb;
+        float3 groundCol = env.ground.rgb;
+        float3 skyPart = lerp(horizon, zenith, pow(saturate(R.y), 1.5f));
+        float3 gndPart = lerp(horizon, groundCol, saturate(-R.y * 2.0f));
+        envCol = R.y >= 0.0f ? skyPart : gndPart;
+    }
+    
     float gloss = 1.0f - clamp(roughness, 0.0f, 1.0f);
     return envCol * ibl * F * (gloss * gloss * 0.9f + 0.1f);
 }

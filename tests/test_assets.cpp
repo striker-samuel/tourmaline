@@ -464,6 +464,33 @@ smvk::StaticMeshUpload MakeGrid(int n) {
 	return u;
 }
 
+// Flat grid with adversarial checker UVs: geometrically a perfect plane
+// (positions-only simplify would nuke it for ~zero error) but every edge
+// spans the full texture, so any collapse destroys the parameterization.
+smvk::StaticMeshUpload MakeCheckerGrid(int n) {
+	smvk::StaticMeshUpload u;
+	for (int iy = 0; iy <= n; ++iy)
+		for (int ix = 0; ix <= n; ++ix) {
+			smvk::StaticVertex v{};
+			v.pos = { (float)ix, (float)iy, 0.0f };
+			v.color = { 1, 1, 1, 1 };
+			const float c = ((ix + iy) & 1) ? 1.0f : 0.0f;
+			v.texCoord = { c, c };
+			v.normal = { 0, 0, 1 };
+			v.tangent = { 1, 0, 0, 1 };
+			u.vertices.push_back(v);
+		}
+	auto at = [n](int ix, int iy) { return (uint32_t)(iy * (n + 1) + ix); };
+	for (int iy = 0; iy < n; ++iy)
+		for (int ix = 0; ix < n; ++ix) {
+			u.indices.insert(u.indices.end(), { at(ix, iy), at(ix + 1, iy), at(ix, iy + 1) });
+			u.indices.insert(u.indices.end(), { at(ix + 1, iy), at(ix + 1, iy + 1), at(ix, iy + 1) });
+		}
+	u.aabbMin = { 0, 0, 0 };
+	u.aabbMax = { (float)n, (float)n, 0 };
+	return u;
+}
+
 void TestLodChain() {
 	// LOD chain on a tessellated grid: ratios must yield a strictly
 	// coarser chain with finite, non-negative local errors.
@@ -577,6 +604,33 @@ void TestLodChain() {
 	std::vector<smvk::CookedLod> deg;
 	Check(!smvk::BuildLodChainForUpload(empty, cfg, deg), "lod.empty.false");
 
+	// Albedo-UV awareness: the default sibling path carries texCoord in
+	// the error metric (MeshOptConfig::lodUvAware, on by default). On a
+	// flat checker-UV sheet the position error is ~zero either way, but
+	// the UV term must inflate the reported error vs positions-only; the
+	// flag-off path must reproduce the positions-only result.
+	{
+		smvk::MeshOptConfig uvCfg;
+		uvCfg.generateLods = true;
+		uvCfg.lodRatios = { 0.6f };
+		uvCfg.lodTargetError = 0.05f;
+		auto checker = MakeCheckerGrid(8);
+		std::vector<smvk::CookedLod> uvChain;
+		Check(smvk::BuildLodChainForUpload(checker, uvCfg, uvChain),
+			"lod.uv.valid");
+		smvk::MeshOptConfig posCfg = uvCfg;
+		posCfg.lodUvAware = false;
+		std::vector<smvk::CookedLod> posChain;
+		Check(smvk::BuildLodChainForUpload(checker, posCfg, posChain),
+			"lod.uv.posonly.valid");
+		Check(!uvChain.empty() && !posChain.empty(), "lod.uv.nonempty");
+		if (!uvChain.empty() && !posChain.empty()) {
+			Check(uvChain[0].localError > posChain[0].localError * 1.1f,
+				"lod.uv.inflates");
+			Check(posChain[0].localError < 1e-3f, "lod.uv.posonly.zeroerr");
+		}
+	}
+
 	// URI helpers round-trip (views + arenas, no std::string round-trip).
 	const std::string base = "models/q.gltf#mesh.0/prim.0";
 	const smvk::StringViewT sib = smvk::LodSiblingUri(base, 2);
@@ -636,6 +690,63 @@ void TestLodChain() {
 		Check(got && fabsf(got->simplifyError - 1.5f) < 1e-4f, "lod.finalize.maxscale");
 		auto got0 = cluster->GetMeshLod(uri);
 		Check(got0 && got0->simplifyError == 0.0f, "lod.finalize.lod0.zero");
+	}
+
+	// Finalize idempotence (Sponza regression): the frostbite pipeline
+	// finalizes twice (pre-bake sibling cook + post-bake sibling pass).
+	// A second run must keep single-scaled errors — compounding the node
+	// scale shrinks Sponza's 0.008-root errors 125x per extra run and the
+	// renderer drops to the coarsest LOD centimeters from the camera.
+	{
+		using namespace smvk;
+		auto cluster = std::make_unique<Cluster>(nullptr);
+		cluster->SetCookMode(true);
+		auto q = MakeQuad();
+		const auto h = cluster->UploadStaticMesh(q);
+		const std::string uri = "models/sponza/Sponza.gltf#mesh.0/prim.0";
+		cluster->RegisterMeshUri(uri, h);
+		LodInfo lod0;
+		lod0.groupId = 0;
+		lod0.lodIndex = 0;
+		lod0.candidateCount = 2;
+		lod0.triCount = 2;
+		cluster->RegisterMeshLod(uri, lod0);
+		const auto h1 = cluster->UploadStaticMesh(q);
+		const smvk::StringViewT uri1 = LodSiblingUri(uri, 1);
+		cluster->RegisterMeshUri(uri1, h1);
+		LodInfo lod1;
+		lod1.groupId = 0;
+		lod1.lodIndex = 1;
+		lod1.candidateCount = 2;
+		lod1.simplifyError = 2.5f; // local units; world = 2.5 * 0.008
+		lod1.triCount = 1;
+		cluster->RegisterMeshLod(uri1, lod1);
+
+		const int root = addNode(cluster->scene, -1, 0);
+		const int n1 = addNode(cluster->scene, root, 1);
+		cluster->scene.meshForNode[n1] = h.index();
+		cluster->scene.localTransform[n1] =
+			glm::scale(glm::mat4(1.0f), glm::vec3(0.008f));
+		markAsChanged(cluster->scene, root);
+		recalculateGlobalTransforms(cluster->scene);
+		FinalizeLodWorldErrors(*cluster);
+		auto once = cluster->GetMeshLod(uri1);
+		Check(once && fabsf(once->simplifyError - 0.02f) < 1e-6f,
+			"lod.finalize.once");
+		// Second run (post-bake pass): must not compound the scale.
+		FinalizeLodWorldErrors(*cluster);
+		auto twice = cluster->GetMeshLod(uri1);
+		Check(twice && fabsf(twice->simplifyError - 0.02f) < 1e-6f,
+			"lod.finalize.idempotent");
+		// Changed transforms still re-scale from the local error.
+		cluster->scene.localTransform[n1] =
+			glm::scale(glm::mat4(1.0f), glm::vec3(0.016f));
+		markAsChanged(cluster->scene, root);
+		recalculateGlobalTransforms(cluster->scene);
+		FinalizeLodWorldErrors(*cluster);
+		auto rescaled = cluster->GetMeshLod(uri1);
+		Check(rescaled && fabsf(rescaled->simplifyError - 0.04f) < 1e-6f,
+			"lod.finalize.rescale");
 	}
 }
 
@@ -771,6 +882,20 @@ void TestLodSelection() {
 		in.frameId = 5;
 		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
 		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.halfrate.invalidate");
+
+		// Closest-approach distance (Sponza regression): node n1 sits at
+		// the origin scaled 3x over a 2x2 quad, so the LOD0 world sphere
+		// is center (3,3,0) radius ~4.24 — not the node origin.
+		{
+			const float d = world.LodDistanceForNode(rn, 0,
+				glm::vec3(0.0f, 100.0f, 0.0f));
+			Check(d > 90.0f && d < 100.0f, "lod.dist.sphere");
+			Check(world.LodDistanceForNode(rn, 0, glm::vec3(3.0f, 3.0f, 0.0f))
+				== 0.0f, "lod.dist.inside");
+			// Unknown mesh falls back to the origin distance (100m).
+			Check(world.LodDistanceForNode(rn, 999,
+				glm::vec3(0.0f, 100.0f, 0.0f)) == 100.0f, "lod.dist.fallback");
+		}
 
 		// Uncooked chains (LOD0 alone, no "/lodN" siblings) never downgrade
 		// shading: level 0 is the only level and stays full-lit. A fresh

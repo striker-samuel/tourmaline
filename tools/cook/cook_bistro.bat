@@ -24,9 +24,12 @@ rem overflows. 0.25 m/texel = 4 texels/m coarse full-scene density.
 rem Payload compression defaults to bc6hopt (Frostbite invalid-texel
 rem prefill + BC6H blocks, one texture per lobe, ~8x smaller GPU
 rem footprint than RGBA16F; --lm-compress uncompressed opts out).
+rem --cubemap on bakes GGX-preconvolved specular cubemaps INTO the pak
+rem (textures/cubemaps/bistro.ktx2, high-frequency specular only;
+rem probes/lightmaps own diffuse + low-freq specular).
 rem --lods on is frostbite: siblings cook BEFORE the bake and inherit
 rem the LOD0 atlas layout through UV transfer (one bake, one atlas).
-build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/Bistro/bistro.gltf --out-pak F:\content\paks\bistro.pak --meshlets on --lods on --verify on --lightmap on --lm-meters-per-texel 0.25
+build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/Bistro/bistro.gltf --out-pak F:\content\paks\bistro.pak --meshlets on --lods on --verify on --lightmap on --lm-meters-per-texel 0.25 --cubemap on --cubemap-size 128 --cubemap-rays 128
 if errorlevel 1 goto fail
 copy /y F:\content\paks\bistro.pak build\Debug\content\paks\bistro.pak
 if errorlevel 1 goto fail

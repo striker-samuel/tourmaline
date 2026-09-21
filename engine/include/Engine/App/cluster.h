@@ -169,6 +169,15 @@ namespace smvk {
 		std::optional<LodInfo> GetMeshLod(StringViewT uri) const;
 		// All LOD markers for cook post-passes (see FinalizeLodWorldErrors).
 		std::vector<std::pair<StringViewT, LodInfo>> ListMeshLods() const;
+		// World scale already baked into a "/lodN" sibling's simplifyError
+		// by FinalizeLodWorldErrors (cook-time only, never serialized).
+		// Lets the finalize pass divide out a previous application before
+		// scaling, so repeated runs (e.g. the frostbite pre-bake sibling
+		// cook plus the post-bake sibling pass) stay single-scaled instead
+		// of compounding. Returns 1.0 when the uri was never finalized.
+		float GetLodFinalizedScale(StringViewT uri) const;
+		void SetLodFinalizedScale(StringViewT uri, float scale);
+		void ClearLodFinalizedScales();
 
 		// Per-mesh cooked meshlets (see Asset/meshlet.h). Stamped by the
 		// importer when meshlet cooking is enabled, persisted in MeshBlobs,
@@ -207,6 +216,10 @@ namespace smvk {
 		UriMap<std::vector<uint8_t>> textureSources_;
 		UriMap<LodInfo> meshLods_;
 		UriMap<CookedMeshlets> meshMeshlets_;
+		// Cook-time only (never serialized): world scale baked into each
+		// sibling LOD's simplifyError by the last FinalizeLodWorldErrors
+		// run, keyed by normalized uri string. See GetLodFinalizedScale.
+		std::unordered_map<std::string, float> lodFinalizedScale_;
 		bool retainUploads_ = false;
 		std::unordered_map<uint32_t, StaticMeshUpload> retainedUploads_;
 		// Per-cluster static mesh allocations keyed by the local staticMeshes

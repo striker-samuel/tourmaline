@@ -2395,6 +2395,9 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		// 3D volume textures (SG probe grids): same slot space as
 		// kBinding_Textures; UpdateDescriptors mirrors 3D views here.
 		getDSLBinding(kBinding_VolumeTextures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_VOLUME_TEXTURES, stageFlags),
+		// Reflection cubemaps for specular IBL: same slot space as
+		// kBinding_Textures; UpdateDescriptors mirrors cube views here.
+		getDSLBinding(kBinding_Cubemaps, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
 	};
 
 	const uint32_t flags =
@@ -6294,6 +6297,7 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 		VkDescriptorImageInfo info;
 		bool storageCapable = false;
 		bool isVolume = false; // 3D view: mirror write into binding 5
+		bool isCubemap = false; // Cube view: mirror write into binding 6
 	};
 
 	std::vector<PendingImageWrite> imageWrites;
@@ -6324,6 +6328,13 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 		// them (Texture2D[] code simply never gets that slot bound).
 		pending.isVolume =
 			view->viewType == ImageViewType::View3D;
+
+		// Cube views get a second descriptor write at the same slot in
+		// kBinding_Cubemaps so TextureCube-typed shaders can reach
+		// them (Texture2D[] code simply never gets that slot bound).
+		pending.isCubemap =
+			view->viewType == ImageViewType::ViewCube
+			|| view->viewType == ImageViewType::ViewCubeArray;
 
 		// STORAGE descriptors require STORAGE usage on the image
 		// (VUID-00339): only Storage-capable images get the binding-2
@@ -6443,6 +6454,23 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 			};
 			write.dstSet = defaultDescriptorSets_[frame];
 			write.dstBinding = smvk::Bindings::kBinding_VolumeTextures;
+			write.dstArrayElement = pending.slot;
+			write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			write.descriptorCount = 1;
+			write.pImageInfo = &pending.info;
+			writes.push_back(write);
+		}
+
+		// Reflection cubemaps for specular IBL: same slot, binding 6. See
+		// kBinding_Cubemaps — TextureCube-typed consumers read these.
+		for (const auto& pending : imageWrites) {
+			if (!pending.isCubemap)
+				continue;
+			VkWriteDescriptorSet write{
+				VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET
+			};
+			write.dstSet = defaultDescriptorSets_[frame];
+			write.dstBinding = smvk::Bindings::kBinding_Cubemaps;
 			write.dstArrayElement = pending.slot;
 			write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 			write.descriptorCount = 1;
