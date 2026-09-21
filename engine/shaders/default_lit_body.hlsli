@@ -973,7 +973,15 @@ PSOut mainPS(PSIn IN)
         {
             const uint lmLobes = IN.lmChunk;
             const float lmScale = max(frame.giIntensity, 0.0f);
-            const float3 lmE = SgLmDiffuseIrradiance(lmAmps, lmLobes, N) * lmScale;
+            // Lightmap evaluation uses the GEOMETRIC normal (geomN),
+            // never the normal-mapped N: the amplitudes were fit
+            // per-texel for the surface's own orientation, and the SG
+            // reconstruction is only constrained around that
+            // hemisphere — per-pixel normal-map tilts read it in
+            // poorly-constrained directions and present flat surfaces
+            // as curved/domed. Normal maps stay in force for the
+            // direct sun/spot terms and the env specular below.
+            const float3 lmE = SgLmDiffuseIrradiance(lmAmps, lmLobes, geomN) * lmScale;
             giSource = 1u;
             bakedE = lmE;
             if (!isBlendMat)
@@ -981,7 +989,7 @@ PSOut mainPS(PSIn IN)
             const float lmRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
             if (lmRoughW > 0.0f)
             {
-                const float3 lmSpec = SgLmSpecular(lmAmps, lmLobes, N, V,
+                const float3 lmSpec = SgLmSpecular(lmAmps, lmLobes, geomN, V,
                     shadingRoughness, Fenv) * lmScale * occlusion * ao;
                 ambientSpec = lerp(ambientSpec, lmSpec, lmRoughW);
             }
