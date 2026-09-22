@@ -36,7 +36,11 @@ static_assert(sizeof(LineDebugPush) == 80, "LineDebugPush must be 80 bytes");
 struct GfxConfig {
 	smvk::gfx::CullFlags cullFlags =
 		smvk::gfx::CullFlagBit_Backface | smvk::gfx::CullFlagBit_Frustum
-		| smvk::gfx::CullFlagBit_Degenerate | smvk::gfx::CullFlagBit_HzbOcclusion;
+		| smvk::gfx::CullFlagBit_Degenerate | smvk::gfx::CullFlagBit_HzbOcclusion
+		// MASK draws stay out of the HZB occlusion test by default: the
+		// cutout pyramid poison over-culls foliage visible through its own
+		// holes (sky-through flicker). Checkbox in the culling panel.
+		| smvk::gfx::CullFlagBit_HzbSkipMasked;
 };
 
 struct GfxRenderer : public smvk::IFrameRenderer {

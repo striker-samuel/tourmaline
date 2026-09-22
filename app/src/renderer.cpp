@@ -1109,6 +1109,11 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 		if (b.draw < v.drawConstants.size() && b.cluster < gfx.clusters.size()) {
 			const Draw& dc = v.drawConstants[b.draw];
 			const Cluster& c = gfx.clusters[b.cluster];
+			// Mirror the GPU's MASK exclusion (GFX_CULL_HZBSKIPMASKED):
+			// with the flag on, masked batches never test the pyramid, so
+			// the audit must not report them as occlusion kills/misses.
+			const bool occExcluded = (v.cullFlags & CullFlagBit_HzbSkipMasked) != 0
+				&& (dc.drawSet & DrawSetBit_Masked) != 0;
 			tris = c.triCount;
 			mesh = dc.mesh;
 			const float bs = std::max({
@@ -1130,7 +1135,7 @@ void GfxRenderer::DumpIndirectAudit(smvk::ResourceManager& ctx, uint32_t slot) {
 			if (!f.behindCamera && haveHzb)
 				level = HzbMipForRect(rx * 2.0f, ry * 2.0f, hz.mipCount);
 			mirrorOk = true;
-			verdict = haveHzb && HzbOccluded(hzb.data(),
+			verdict = haveHzb && !occExcluded && HzbOccluded(hzb.data(),
 				hz.width, hz.height, hz.mipCount, f, &stored);
 		}
 		const bool killed = (cmds[i].indexCount == 0);

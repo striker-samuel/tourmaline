@@ -52,6 +52,16 @@ typedef enum CullFlagBits {
 	// HZB occlusion (T4): per-cluster sphere test against the MIN-reduced
 	// depth pyramid. Facing-agnostic: applies to two-sided draws too.
 	CullFlagBit_HzbOcclusion = 0x40,
+	// Exclude MASK (alpha-tested) draws from the HZB occlusion test.
+	// The MIN-reduced pyramid stores the NEAREST sub-texel per coarse
+	// texel, so a single leaf texel of a cutout card poisons the whole
+	// texel "near" — dense masked foliage (its own worst occluder) then
+	// culls the clusters that are still visible through its cutout holes
+	// (sky-through flicker), and masked clusters are the smallest, so
+	// their bound spheres land on the coarsest mips where the poison has
+	// the most reach. With this flag masked draws can only be culled by
+	// the geometric tests (frustum/backface/degenerate/small-prim).
+	CullFlagBit_HzbSkipMasked = 0x200,
 	// Contribution (T4): reject clusters whose screen footprint is below
 	// TemporalView::minimumContribution px^2 (0 = disabled).
 	CullFlagBit_Contribution = 0x80,

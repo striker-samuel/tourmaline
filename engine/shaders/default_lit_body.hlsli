@@ -1030,7 +1030,15 @@ PSOut mainPS(PSIn IN)
             ambientSpec = envSpec * envVis;
             if (!isBlendMat)
                 ambient += kD * baseColor * (regE / PI) * occlusion * ao;
-            const float regRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
+            // Grid/volume SG specular crossover is deliberately HIGH
+            // (0.45, vs the lightmap's 0.15): these lobes are ambient-
+            // resolution fits (~30 degree blobs) with the sun smeared
+            // across a whole lobe, so their specular estimate grossly
+            // over-blurs the sun for anything smoother than genuinely
+            // rough — a chrome ball's rim lit like a searchlight. The
+            // GGX-prefiltered cubemap owns smooth + mid; the SG owns
+            // rough glow only.
+            const float regRoughW = saturate((shadingRoughness - 0.45f) / 0.25f);
             if (regRoughW > 0.0f)
             {
                 const float3 regSpec = SgGiSpecular(regAmps, R, shadingRoughness)
@@ -1056,9 +1064,14 @@ PSOut mainPS(PSIn IN)
             // as emissive glow once alpha-blended over the background.
             if (!isBlendMat)
                 ambient += kD * baseColor * (giE / PI) * occlusion * ao;
-            // Rough glossy reflections; very smooth surfaces keep the
-            // analytic sky env only (broad lobes cannot do mirrors).
-            const float roughW = saturate((shadingRoughness - 0.15f) / 0.25f);
+            // Same high crossover as the regular grids above (0.45): the
+            // volume lobes are ambient-resolution fits — the sun rides
+            // them as a broad smear, so anything smoother than genuinely
+            // rough keeps the prefiltered cubemap (broad lobes cannot do
+            // mirrors, and their blurred-sun estimate rims smooth metals
+            // like a searchlight). The per-texel lightmap fit keeps its
+            // own lower crossover.
+            const float roughW = saturate((shadingRoughness - 0.45f) / 0.25f);
             if (roughW > 0.0f)
             {
                 const float3 giSpecular =

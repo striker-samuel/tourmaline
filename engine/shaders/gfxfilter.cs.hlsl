@@ -82,6 +82,15 @@ bool ClusterOccluded(uint clusterIdx, uint drawIdx)
     bool wantOcc = (flags & GFX_CULL_OCCLUSION) != 0;
     bool wantCon = (flags & GFX_CULL_CONTRIBUTION) != 0;
 
+    // MASK draws can be excluded from the occlusion test: the MIN-reduced
+    // pyramid stores the NEAREST sub-texel per coarse texel, so one leaf
+    // texel of a cutout card poisons the whole texel "near" — dense masked
+    // foliage then culls clusters still visible through its own cutout
+    // holes. Contribution (if enabled) still applies either way.
+    if (wantOcc && (flags & GFX_CULL_HZBSKIPMASKED) != 0
+        && (pcF.draws.Get().draws[drawIdx].misc.z & GFX_DRAWSET_MASKED) != 0)
+        wantOcc = false;
+
     if (!wantOcc && !wantCon)
         return false;
 

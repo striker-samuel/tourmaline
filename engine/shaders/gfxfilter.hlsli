@@ -12,6 +12,7 @@
 #define GFX_CULL_OCCLUSION   0x40 // T4: HZB sphere test (facing-agnostic)
 #define GFX_CULL_CONTRIBUTION 0x80 // T4: footprint below minContribution
 #define GFX_CULL_FLIPWINDING 0x100
+#define GFX_CULL_HZBSKIPMASKED 0x200 // T4: exclude MASK draws from the HZB test
 
 // Conservative culling guard band (px, internal resolution) for the main
 // view. The SMAA T2x projection jitter swings clip edges by +/-0.25 px per

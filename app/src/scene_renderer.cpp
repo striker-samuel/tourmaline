@@ -9120,11 +9120,16 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						m_gfxRenderer.config.cullFlags = b
 						? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_FlipWinding
 						: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_FlipWinding;
-					b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_HzbOcclusion) != 0;
-					if (ImGui::Checkbox("HZB occlusion (T4)", &b))
-						m_gfxRenderer.config.cullFlags = b
-						? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_HzbOcclusion
-						: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_HzbOcclusion;
+				b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_HzbOcclusion) != 0;
+				if (ImGui::Checkbox("HZB occlusion (T4)", &b))
+					m_gfxRenderer.config.cullFlags = b
+					? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_HzbOcclusion
+					: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_HzbOcclusion;
+				b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_HzbSkipMasked) != 0;
+				if (ImGui::Checkbox("Exclude MASK from HZB test", &b))
+					m_gfxRenderer.config.cullFlags = b
+					? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_HzbSkipMasked
+					: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_HzbSkipMasked;
 					ImGui::Checkbox("HZB occluder depth (big crudest-LOD)", &m_hizOccluderDepth);
 					ImGui::SliderFloat("Occluder min px", &m_hizOccluderMinPixels, 0.0f, 128.0f);
 					ImGui::SliderFloat("Occluder min radius m", &m_hizOccluderMinRadius, 0.0f, 5.0f);
@@ -9731,16 +9736,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						const bool depthOk = m_hizOccluderDepth
 							? m_viewportResources.hizDepth.bindlessIndex != UINT32_MAX
 							: m_viewportResources.forwardPlus.depthBindlessIndex != UINT32_MAX;
-						ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s src=%s",
-							hw, hh, hm, depthOk ? "ok" : "INVALID", occOn ? "on" : "OFF",
-							cullingFrozen ? "FROZEN" : "live",
-							m_hizOccluderDepth ? "occluder" : "full");
-						if (!occOn)
-							ImGui::TextDisabled("HZB flag OFF: no occlusion culls possible.");
-						else if (hm == 0)
-							ImGui::TextDisabled("HZB empty: occlusion test disabled (extent 0?).");
-						else if (!depthOk)
-							ImGui::TextDisabled("Depth bindless INVALID: HZB reads garbage.");
+					ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s src=%s",
+						hw, hh, hm, depthOk ? "ok" : "INVALID", occOn ? "on" : "OFF",
+						cullingFrozen ? "FROZEN" : "live",
+						m_hizOccluderDepth ? "occluder" : "full");
+					if (!occOn)
+						ImGui::TextDisabled("HZB flag OFF: no occlusion culls possible.");
+					else if (hm == 0)
+						ImGui::TextDisabled("HZB empty: occlusion test disabled (extent 0?).");
+					else if (!depthOk)
+						ImGui::TextDisabled("Depth bindless INVALID: HZB reads garbage.");
+					if ((m_gfxRenderer.config.cullFlags
+							& smvk::gfx::CullFlagBit_HzbSkipMasked) != 0)
+						ImGui::TextDisabled("MASK draws excluded from the HZB test (cutout poison guard).");
 					}
 				}
 			if (ImGui::CollapsingHeader("LODs", ImGuiTreeNodeFlags_DefaultOpen)) {
