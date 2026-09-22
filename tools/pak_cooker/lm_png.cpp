@@ -9,7 +9,9 @@
 
 #include <Engine/GI/bc6h.h>
 
-#define STB_IMAGE_WRITE_IMPLEMENTATION
+// NOTE: no STB_IMAGE_WRITE_IMPLEMENTATION here — cube_png.cpp owns it in
+// every binary that compiles this file (PakCooker). This TU uses the
+// header declarations only.
 #include <stb_image_write.h>
 
 namespace pakcook {

@@ -1,6 +1,6 @@
 project(PakCooker)
 
-add_executable(PakCooker main.cpp lm_denoise.cpp lm_png.cpp)
+add_executable(PakCooker main.cpp lm_denoise.cpp lm_png.cpp cube_png.cpp)
 
 target_compile_definitions(PakCooker PRIVATE ENGINE_VULKAN)
 

@@ -386,6 +386,25 @@ void TestOctreeFloorBvh() {
 	Check(ok, "cubemap.octree-floor-bvh");
 }
 
+void TestOctreeSeekLight() {
+	// Single cell (maxDepth 0): the emit must relocate from the dark
+	// center (sideways/down blocked for x<1) to the open +X face.
+	smvk::CubemapOctreeOptions oo{};
+	oo.maxDepth = 0;
+	oo.maxProbes = 32;
+	smvk::CubemapOcclusionRay wall =
+		[](const glm::vec3& o, const glm::vec3& d, float) {
+			return (d.y < 0.5f) && (o.x < 1.0f);
+		};
+	std::vector<smvk::CubemapPlacedProbe> out;
+	std::string log;
+	const size_t n = smvk::BuildOctreeProbePositions(
+		glm::vec3(-8, 0, -8), glm::vec3(8, 8, 8), oo, wall, out, log);
+	bool ok = n == 1 && out.size() == 1
+		&& std::abs(out[0].position.x - 8.0f) < 1e-4f;
+	Check(ok, "cubemap.octree-seek-relocates");
+}
+
 void TestRhiHelpers() {
 	Check(smvk::IsCubemapLayerCount(6), "cubemap.rhi.layers6");
 	Check(smvk::IsCubemapLayerCount(12), "cubemap.rhi.layers12");
@@ -417,6 +436,7 @@ int main() {
 	TestOctreeBudget();
 	TestOctreeDegenerate();
 	TestOctreeFloorBvh();
+	TestOctreeSeekLight();
 	TestDirectionRoundtrip();
 	TestPrefilterUniform();
 	TestPrefilterDeterminism();

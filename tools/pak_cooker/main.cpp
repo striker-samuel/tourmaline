@@ -119,6 +119,7 @@
 
 #include "lm_denoise.h"
 #include "lm_png.h"
+#include "cube_png.h"
 
 namespace {
 
@@ -284,6 +285,11 @@ struct Args {
 	float cubemapOctreeMax = 8.0f;   // open cells larger than this subdivide (coverage)
 	float cubemapOctreeMin = 2.0f;   // detail floor: never subdivide below this
 	uint32_t cubemapOctreeDepth = 4; // octree depth cap (root = 0)
+	// Debug PNGs next to the pak inputs (like the lightmap chart PNGs):
+	// per-capture face strips (+ mip sheets) + a top-down probe map.
+	// Loose files under <contentDir>/textures/cubemaps/, never in the pak.
+	bool cubemapPng = true;
+	bool cubemapPngMips = true;
 	// NOTE: captures store sky-relative colors (radiance / skyIntensity);
 	// the shader applies the runtime iblIntensity, so there is no
 	// bake-time intensity knob by design.
@@ -657,6 +663,16 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			out.cubemapOctreeDepth = std::clamp<uint32_t>(
 				static_cast<uint32_t>(std::stoul(v)), 1, 6);
 		}
+		else if (a == "--cubemap-png") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapPng = (v == "on" || v == "1" || v == "true");
+		}
+		else if (a == "--cubemap-png-mips") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapPngMips = (v == "on" || v == "1" || v == "true");
+		}
 		else if (a == "--cubemap-ibl-intensity") {
 			// Removed: captures store sky-relative colors by design (the
 			// shader applies the runtime iblIntensity). Reject explicitly
@@ -727,7 +743,8 @@ void Usage() {
 		<< "           --cubemap-pos x,y,z (repeatable) --cubemap-height 1.5\n"
 		<< "           --cubemap-grid 8.0 --cubemap-octree on\n"
 		<< "           --cubemap-octree-max 8.0 --cubemap-octree-min 2.0\n"
-		<< "           --cubemap-octree-depth 4]:\n"
+		<< "           --cubemap-octree-depth 4\n"
+		<< "           --cubemap-png on|off --cubemap-png-mips on|off]:\n"
 		<< "          preconvolved SPECULAR cubemaps baked into the pak\n"
 		<< "          (GGX importance-sampled mip chains, roughness = mip /\n"
 		<< "          (levels-1); probes/lightmaps own diffuse + low-freq\n"
@@ -746,7 +763,11 @@ void Usage() {
 		<< "          (positions + radii) next to the KTX blobs; embedded as\n"
 		<< "          Texture blobs at\n"
 		<< "          textures/cubemaps/<name>[_N].ktx2 (name defaults to the\n"
-		<< "          out-pak stem). Needs exactly one cooked scene, like --lightmap.\n"
+		<< "          out-pak stem). Debug PNGs (<name>_N.png faces,\n"
+		<< "          <name>_N_mips.png prefilter stack, <name>_probes.png\n"
+		<< "          top-down placement map) land loose in\n"
+		<< "          <contentDir>/textures/cubemaps/. Needs exactly one\n"
+		<< "          cooked scene, like --lightmap.\n"
 		<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
 		<< "lightmap UVs + per-mesh chunk id; atlas written to\n"
 		<< "<contentDir>/gi/<scene>.sglm). Sources: sun + static spots + real\n"
@@ -1877,6 +1898,37 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	std::cerr << "  [CUBE] trace scene: " << traceScene.Bvh().TriangleCount()
 		<< " tris, " << traceScene.materials.size() << " materials, "
 		<< traceScene.spots.size() << " spots\n" << std::flush;
+	// Albedo audit: black captures almost always mean black trace albedo
+	// (every bounce dies on arrival). Print the first materials + the dark
+	// count so a broken average/import shows up here, not in the PNGs.
+	{
+		size_t darkMats = 0;
+		for (size_t mi = 0; mi < traceScene.materials.size(); ++mi) {
+			const auto& m = traceScene.materials[mi];
+			const float luma = 0.2126f * m.albedo.x + 0.7152f * m.albedo.y
+				+ 0.0722f * m.albedo.z;
+			if (luma < 1e-4f)
+				++darkMats;
+			if (mi < 10) {
+				std::cerr << "  [CUBE] mat[" << mi << "] albedo=("
+					<< m.albedo.x << "," << m.albedo.y << "," << m.albedo.z
+					<< ") emissive=(" << m.emissive.x << "," << m.emissive.y
+					<< "," << m.emissive.z << ")\n";
+			}
+		}
+		std::cerr << "  [CUBE] materials dark(<1e-4): " << darkMats << "/"
+			<< traceScene.materials.size() << std::flush;
+		std::vector<std::pair<uint32_t, glm::vec3>> avgs(
+			buildOpts.texelAvg.begin(), buildOpts.texelAvg.end());
+		std::sort(avgs.begin(), avgs.end(),
+			[](const auto& a, const auto& b) { return a.first < b.first; });
+		std::cerr << " texelAvg=" << avgs.size() << "\n" << std::flush;
+		for (size_t i = 0; i < std::min<size_t>(avgs.size(), 5); ++i) {
+			std::cerr << "  [CUBE] texelAvg[" << avgs[i].first << "]=("
+				<< avgs[i].second.x << "," << avgs[i].second.y << ","
+				<< avgs[i].second.z << ")\n" << std::flush;
+		}
+	}
 	if (traceScene.Bvh().TriangleCount() == 0) {
 		std::cerr << "[CUBE] no trace geometry (empty scene)" << std::endl;
 		return false;
@@ -2041,6 +2093,17 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	const uint32_t levels = smvk::CubemapFullMipCount(S);
 	smvk::ThreadPool pool(0);
 
+	// Debug PNG outputs (loose, next to the pak inputs — never in the pak).
+	// Faces strips (+ mip sheets) per capture, then one top-down map.
+	std::filesystem::path cubePngDir =
+		std::filesystem::path(args.contentDir) / "textures/cubemaps";
+	if (args.cubemap && args.cubemapPng) {
+		std::error_code dcEc;
+		std::filesystem::create_directories(cubePngDir, dcEc);
+	}
+	std::vector<glm::vec3> pngMeans;
+	pngMeans.reserve(positions.size());
+
 	for (size_t cap = 0; cap < positions.size(); ++cap) {
 		const glm::vec3 origin = positions[cap];
 		const std::string captureName = positions.size() == 1
@@ -2122,6 +2185,37 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			<< " origin=(" << origin.x << "," << origin.y << "," << origin.z
 			<< ")  " << ktx.size() << " B\n" << std::flush;
 		out.emplace_back(vfsPath, std::move(ktx));
+
+		// Debug PNGs from the same preconvolved chains the KTX encodes
+		// (comparing these against the runtime view separates bake/encode
+		// faults from load/sample faults). Non-fatal by design.
+		glm::vec3 capMean = pakcook::CubemapCaptureMean(chains, S);
+		pngMeans.push_back(capMean);
+		if (pakcook::CubemapMeanLuma(capMean) < 1e-6f) {
+			std::cerr << "  [CUBE] WARNING baked '" << captureName
+				<< "' mean ~0 (origin embedded or fully occluded?) - check "
+				<< captureName << ".png\n" << std::flush;
+		}
+		if (args.cubemapPng) {
+			std::string perr;
+			const std::string facesPath =
+				(cubePngDir / (captureName + ".png")).generic_string();
+			if (pakcook::WriteCubemapFacesPng(chains, S, 1.0f, facesPath, perr)) {
+				std::cerr << "  [CUBE] png " << facesPath
+					<< " (mean luma "
+					<< pakcook::CubemapMeanLuma(capMean) << ")\n" << std::flush;
+			} else {
+				std::cerr << "  [CUBE] png write failed: " << perr << "\n" << std::flush;
+			}
+			if (args.cubemapPngMips) {
+				const std::string mipsPath =
+					(cubePngDir / (captureName + "_mips.png")).generic_string();
+				if (!pakcook::WriteCubemapMipsPng(chains, S, 1.0f, mipsPath, perr)) {
+					std::cerr << "  [CUBE] mips png write failed: " << perr
+						<< "\n" << std::flush;
+				}
+			}
+		}
 	}
 
 	// Multi-probe placement manifest: the runtime cannot guess grid
@@ -2151,6 +2245,39 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			std::vector<uint8_t>(text.begin(), text.end()));
 		std::cerr << "  [CUBE] manifest " << manifestPath << "  probes="
 			<< rows.size() << "\n" << std::flush;
+	}
+
+	// Top-down placement map (positions + mean colors + influence rings):
+	// "is there a cubemap near X?" without launching the app. Non-fatal.
+	if (args.cubemapPng && !positions.empty()
+		&& pngMeans.size() == positions.size()) {
+		glm::vec3 mmin(1e30f), mmax(-1e30f);
+		for (const glm::vec3& p : positions) {
+			mmin = glm::min(mmin, p);
+			mmax = glm::max(mmax, p);
+		}
+		// Pad degenerate spans so single probes still map.
+		for (int a = 0; a < 3; ++a) {
+			if (mmax[a] - mmin[a] < 2.0f) {
+				mmin[a] -= 1.0f;
+				mmax[a] += 1.0f;
+			}
+		}
+		std::vector<float> influences;
+		influences.reserve(positions.size());
+		for (size_t i = 0; i < positions.size(); ++i)
+			influences.push_back(
+				radii.size() == positions.size() ? radii[i].x : 10.0f);
+		const std::string mapPath =
+			(cubePngDir / (base + "_probes.png")).generic_string();
+		std::string merr;
+		if (pakcook::WriteCubemapProbesPng(positions, pngMeans, influences,
+				mmin, mmax, mapPath, merr)) {
+			std::cerr << "  [CUBE] probes map " << mapPath << "\n" << std::flush;
+		} else {
+			std::cerr << "  [CUBE] probes map write failed: " << merr
+				<< "\n" << std::flush;
+		}
 	}
 
 	const double secs = std::chrono::duration<double>(

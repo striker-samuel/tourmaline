@@ -25,13 +25,16 @@ rem Payload compression defaults to bc6hopt (Frostbite invalid-texel
 rem prefill + BC6H blocks, one texture per lobe, ~8x smaller GPU
 rem footprint than RGBA16F; --lm-compress uncompressed opts out).
 rem --cubemap on bakes GGX-preconvolved specular cubemaps INTO the pak
-rem (textures/cubemaps/sponza.ktx2, high-frequency specular only;
-rem probes/lightmaps own diffuse + low-freq specular).
+rem (textures/cubemaps/sponza[_N].ktx2 + .cubemanifest, high-frequency
+rem specular only; probes/lightmaps own diffuse + low-freq specular).
+rem --cubemap-octree on = sparse adaptive placement (open volumes coarse,
+rem near-surface cells refine, 32-probe budget); --cubemap-png on writes
+rem face/mip/probe-map debug PNGs loose next to the pak inputs.
 rem --lods on is frostbite: siblings cook BEFORE the bake and inherit
 rem the LOD0 atlas layout through UV transfer (one bake, one atlas).
 rem See tools/cook/cook_sponza_fast.bat for the low-quality iteration
 rem variant (coarse density, 5 lobes, uncompressed, no LODs/meshlets).
-build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.gltf --out-pak F:\content\paks\sponza.pak --cubemap on --meshlets on --lods on --verify on --lightmap on --lm-meters-per-texel 0.25 --cubemap on  --cubemap-size 128 --cubemap-rays 128 --cubemap-grid 8.0
+build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.gltf --out-pak F:\content\paks\sponza.pak --cubemap on --cubemap-png on --meshlets on --lods on --verify on --lightmap on --lm-meters-per-texel 0.25 --cubemap on  --cubemap-size 128 --cubemap-rays 512 --cubemap-grid 0 --cubemap-octree on --cubemap-octree-max 8.0 --cubemap-octree-min 2.0 --cubemap-octree-depth 4
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak build\Debug\content\paks\sponza.pak
 if errorlevel 1 goto fail

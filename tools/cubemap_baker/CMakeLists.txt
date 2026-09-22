@@ -1,6 +1,11 @@
 project(CubemapBaker)
 
-add_executable(CubemapBaker main.cpp)
+# cube_png.cpp is shared with PakCooker (same debug-PNG module, same stb
+# declarations; the STB implementation lives in PakCooker's lm_png.cpp,
+# so CubemapBaker needs its own TU with the implementation).
+add_executable(CubemapBaker main.cpp ../pak_cooker/cube_png.cpp)
+
+target_include_directories(CubemapBaker PRIVATE ../pak_cooker ${CMAKE_SOURCE_DIR}/app/vendor)
 
 target_compile_definitions(CubemapBaker PRIVATE ENGINE_VULKAN)
 

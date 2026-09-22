@@ -25,6 +25,34 @@ const glm::vec3 kAxes[6] = {
 	{ 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 },
 };
 
+// 14 openness directions: 6 axial + 8 box diagonals.
+void OpennessDirs(glm::vec3 out[14]) {
+	for (int i = 0; i < 6; ++i)
+		out[i] = kAxes[i];
+	int k = 6;
+	for (int sx = -1; sx <= 1; sx += 2)
+		for (int sy = -1; sy <= 1; sy += 2)
+			for (int sz = -1; sz <= 1; sz += 2)
+				out[k++] = glm::normalize(
+					glm::vec3(float(sx), float(sy), float(sz)));
+}
+
+// Fraction of openness rays escaping to openDist (1 = open sky all
+// around, 0 = buried). Null predicate scores 0 (keeps the center).
+float Openness(const glm::vec3& p, float openDist,
+	const CubemapOcclusionRay& occluded) {
+	if (!occluded || openDist <= 0.0f)
+		return 0.0f;
+	glm::vec3 dirs[14];
+	OpennessDirs(dirs);
+	uint32_t free = 0;
+	for (const glm::vec3& d : dirs) {
+		if (!occluded(p, d, openDist))
+			++free;
+	}
+	return float(free) / 14.0f;
+}
+
 // True when the point is buried in solid: every axial ray blocked within
 // embedDist. Corridor/air points always survive (an axis escapes); only
 // clearly-embedded centers are dropped.
@@ -128,15 +156,38 @@ size_t BuildOctreeProbePositions(const glm::vec3& bmin, const glm::vec3& bmax,
 		}
 	}
 
-	// Emit coarse-first, dropping embedded centers. Radii scale with the
-	// emitting cell so coarse air cells cover volumes and fine surface
-	// cells stay tight.
+	// Emit coarse-first, dropping embedded centers. Each leaf emits at
+	// its most open interior point (center + 6 face centers by openness):
+	// cell coverage only tells you the probe OWNS a volume, the point
+	// decides what it SEES. Radii scale with the emitting cell so coarse
+	// air cells cover volumes and fine surface cells stay tight.
+	const float openDist = glm::length(bmax - bmin);
+	size_t relocated = 0;
 	for (const Cell& c : emitted) {
-		const glm::vec3 p = CellCenter(c);
-		if (IsEmbedded(p, opts.embedDist, occluded)) {
+		const glm::vec3 ctr = CellCenter(c);
+		glm::vec3 best = ctr;
+		if (occluded) {
+			float bestScore = Openness(ctr, openDist, occluded);
+			glm::vec3 cand[6] = {
+				{ c.mn.x, ctr.y, ctr.z }, { c.mx.x, ctr.y, ctr.z },
+				{ ctr.x, c.mn.y, ctr.z }, { ctr.x, c.mx.y, ctr.z },
+				{ ctr.x, ctr.y, c.mn.z }, { ctr.x, ctr.y, c.mx.z },
+			};
+			for (const glm::vec3& q : cand) {
+				const float s = Openness(q, openDist, occluded);
+				if (s > bestScore) {
+					bestScore = s;
+					best = q;
+				}
+			}
+			if (glm::dot(best - ctr, best - ctr) > 1e-6f)
+				++relocated;
+		}
+		if (IsEmbedded(best, opts.embedDist, occluded)) {
 			++droppedEmbedded;
 			continue;
 		}
+		const glm::vec3 p = best;
 		const float halfDiag = glm::length(CellHalf(c));
 		CubemapPlacedProbe pr{};
 		pr.position = p;
@@ -151,8 +202,8 @@ size_t BuildOctreeProbePositions(const glm::vec3& bmin, const glm::vec3& bmax,
 	}
 
 	std::snprintf(buf, sizeof(buf),
-		"[octree] cells subdivided=%zu emitted=%zu kept=%zu droppedEmbedded=%zu (maxCell=%.2g minCell=%.2g depth<=%u budget=%u)\n",
-		subdivided, emitted.size(), out.size(), droppedEmbedded,
+		"[octree] cells subdivided=%zu emitted=%zu kept=%zu droppedEmbedded=%zu relocated=%zu (maxCell=%.2g minCell=%.2g depth<=%u budget=%u)\n",
+		subdivided, emitted.size(), out.size(), droppedEmbedded, relocated,
 		(double)maxCell, (double)minCell, opts.maxDepth, budget);
 	log += buf;
 	for (uint32_t d = 0; d < 16; ++d) {

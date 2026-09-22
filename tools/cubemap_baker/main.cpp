@@ -71,6 +71,7 @@
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/cubemap_prefilter.h>
+#include "../pak_cooker/cube_png.h"
 #include <gltf_import/gltf.h>
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/Vfs/vfs.h>
@@ -108,6 +109,10 @@ struct Args {
 	float octreeMax = 8.0f;   // open cells larger than this subdivide (coverage)
 	float octreeMin = 2.0f;   // detail floor: never subdivide below this
 	uint32_t octreeDepth = 4; // octree depth cap (root = 0)
+	// Debug PNGs next to the KTX outputs (like the pak cooker's chart
+	// PNGs): per-capture face strips (+ mip sheets) + a top-down probe map.
+	bool png = true;
+	bool pngMips = true;
 	std::string pak; // empty = no pak
 	bool verify = true;
 	uint32_t threads = 0; // 0 = hardware concurrency
@@ -234,6 +239,16 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			out.octreeDepth = std::clamp<uint32_t>(
 				static_cast<uint32_t>(std::stoul(v)), 1, 6);
 		}
+		else if (a == "--png") {
+			std::string v;
+			if (!need(v)) return false;
+			out.png = (v == "on" || v == "1" || v == "true");
+		}
+		else if (a == "--png-mips") {
+			std::string v;
+			if (!need(v)) return false;
+			out.pngMips = (v == "on" || v == "1" || v == "true");
+		}
 		else if (a == "--pak") {
 			if (!need(out.pak)) return false;
 		}
@@ -278,6 +293,7 @@ void Usage() {
 		<< "         [--threads 0]\n"
 		<< "         [--octree] [--octree-max 8.0] [--octree-min 2.0]\n"
 		<< "         [--octree-depth 4]\n"
+		<< "         [--png on|off] [--png-mips on|off]\n"
 		<< "         --prefilter ggx preconvolves the mip chain for the\n"
 		<< "         high-frequency specular path (GGX importance sampling,\n"
 		<< "         roughness = level/(levels-1)); box keeps the legacy\n"
@@ -707,6 +723,18 @@ int main(int argc, char** argv) {
 
 		smvk::ThreadPool pool(args.threads ? args.threads : std::thread::hardware_concurrency());
 
+		// Debug PNG outputs next to the KTX files (like the pak cooker's
+		// chart PNGs): per-capture face strips (+ mip sheets), then one
+		// top-down probe map. Non-fatal by design.
+		const std::filesystem::path cubePngDir =
+			std::filesystem::path(args.outDir) / "textures/cubemaps";
+		if (args.png) {
+			std::error_code dcEc;
+			std::filesystem::create_directories(cubePngDir, dcEc);
+		}
+		std::vector<glm::vec3> pngMeans;
+		pngMeans.reserve(positions.size());
+
 		baked.reserve(positions.size());
 		for (size_t cap = 0; cap < positions.size(); ++cap) {
 			const glm::vec3 origin = positions[cap];
@@ -806,6 +834,35 @@ int main(int argc, char** argv) {
 				<< " filter=" << (ggx ? "ggx" : "box")
 				<< "  origin=(" << origin.x << "," << origin.y << "," << origin.z << ")"
 				<< "  " << sizeOnDisk << " B" << std::endl;
+
+			// Debug PNGs from the same chains the KTX encodes (comparing
+			// these against the runtime view separates bake/encode faults
+			// from load/sample faults). Non-fatal by design.
+			glm::vec3 capMean = pakcook::CubemapCaptureMean(chains, S);
+			pngMeans.push_back(capMean);
+			if (pakcook::CubemapMeanLuma(capMean) < 1e-6f) {
+				std::cerr << "WARNING baked '" << captureName
+					<< "' mean ~0 (origin embedded or fully occluded?) - check "
+					<< captureName << ".png" << std::endl;
+			}
+			if (args.png) {
+				std::string perr;
+				const std::string facesPath =
+					(cubePngDir / (captureName + ".png")).generic_string();
+				if (pakcook::WriteCubemapFacesPng(chains, S, 1.0f, facesPath, perr)) {
+					std::cout << "baked(png) " << facesPath
+						<< " (mean luma "
+						<< pakcook::CubemapMeanLuma(capMean) << ")" << std::endl;
+				} else {
+					std::cerr << "FAILED png write: " << perr << std::endl;
+				}
+				if (args.pngMips) {
+					const std::string mipsPath =
+						(cubePngDir / (captureName + "_mips.png")).generic_string();
+					if (!pakcook::WriteCubemapMipsPng(chains, S, 1.0f, mipsPath, perr))
+						std::cerr << "FAILED mips png write: " << perr << std::endl;
+				}
+			}
 		}
 
 		// Multi-probe placement manifest (grid mode): the runtime cannot
@@ -841,6 +898,38 @@ int main(int argc, char** argv) {
 			baked.push_back(Baked{
 				smvk::CubemapManifestVfsPath(args.name), mfile,
 				text.size(), true });
+		}
+
+		// Top-down placement map (positions + mean colors + influence
+		// rings): "is there a cubemap near X?" without launching the app.
+		// Non-fatal by design.
+		if (args.png && !positions.empty()
+			&& pngMeans.size() == positions.size()) {
+			glm::vec3 mmin(1e30f), mmax(-1e30f);
+			for (const glm::vec3& p : positions) {
+				mmin = glm::min(mmin, p);
+				mmax = glm::max(mmax, p);
+			}
+			for (int a = 0; a < 3; ++a) {
+				if (mmax[a] - mmin[a] < 2.0f) {
+					mmin[a] -= 1.0f;
+					mmax[a] += 1.0f;
+				}
+			}
+			std::vector<float> influences;
+			influences.reserve(positions.size());
+			for (size_t i = 0; i < positions.size(); ++i)
+				influences.push_back(
+					radii.size() == positions.size() ? radii[i].x : 10.0f);
+			const std::string mapPath =
+				(cubePngDir / (args.name + "_probes.png")).generic_string();
+			std::string merr;
+			if (pakcook::WriteCubemapProbesPng(positions, pngMeans, influences,
+					mmin, mmax, mapPath, merr)) {
+				std::cout << "baked(probes-map) " << mapPath << std::endl;
+			} else {
+				std::cerr << "FAILED probes map write: " << merr << std::endl;
+			}
 		}
 
 		const auto t1 = std::chrono::steady_clock::now();

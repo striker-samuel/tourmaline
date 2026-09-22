@@ -12,6 +12,12 @@
 //     pixels are).
 //   - Solid-embedded leaf centers are dropped (same 6-axial-rays rule as
 //     the grid occupancy cull).
+//   - Emission is light-seeking, not cell-centered: each leaf tries its
+//     center + 6 face centers and keeps the point with the best sky
+//     openness (14-ray escape fraction). Cell coverage tells you the probe
+//     owns a volume; only an open point inside it captures anything worth
+//     sampling — a center buried behind a column would smear darkness over
+//     bright pixels that the cell nominally covers.
 //   - Growth is budget-aware: subdividing a mixed leaf nets +7 leaves, so
 //     subdivision stops when the budget (maxProbes, the runtime scan
 //     budget) is exhausted — remaining mixed leaves emit coarse, which
