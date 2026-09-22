@@ -145,6 +145,51 @@ void TestManifestRoundtrip() {
 		&& bad.empty(), "cubemap.manifest-reject-empty");
 }
 
+void TestManifestPin() {
+	// Optional 7th 'pin' token: roundtrips, unknown tags rejected, and
+	// pinned rows survive >32 truncation (artist probes win ties).
+	std::vector<smvk::CubemapManifestEntry> in(2);
+	in[0].vfsPath = "textures/cubemaps/ball_0.ktx2";
+	in[0].position = glm::vec3(0.0f, 0.25f, 0.0f);
+	in[0].influenceRadius = 1.5f;
+	in[0].fadeRadius = 0.75f;
+	in[0].pinned = true;
+	in[1].vfsPath = "textures/cubemaps/sponza_0.ktx2";
+	in[1].position = glm::vec3(2.0f, 2.0f, 2.0f);
+	const std::string text = smvk::CubemapManifestSerialize(in);
+	std::vector<smvk::CubemapManifestEntry> out;
+	std::string err;
+	Check(smvk::CubemapManifestParse(text, out, err), "cubemap.manifest-pin-parse");
+	Check(out.size() == 2 && out[0].pinned && !out[1].pinned,
+		"cubemap.manifest-pin-roundtrip");
+	// Old 6-token rows still parse (pinned = false).
+	std::vector<smvk::CubemapManifestEntry> legacy;
+	Check(smvk::CubemapManifestParse(
+		"textures/cubemaps/a.ktx2 1 2 3 4 5\n", legacy, err)
+		&& legacy.size() == 1 && !legacy[0].pinned,
+		"cubemap.manifest-pin-legacy");
+	// Unknown trailing token is rejected, never silently dropped.
+	std::vector<smvk::CubemapManifestEntry> badTok;
+	Check(!smvk::CubemapManifestParse(
+		"textures/cubemaps/a.ktx2 1 2 3 4 5 banana\n", badTok, err)
+		&& badTok.empty(), "cubemap.manifest-pin-reject-tag");
+	// Truncation keeps pinned rows even when they are LAST in the file.
+	std::vector<smvk::CubemapManifestEntry> many(33);
+	for (size_t i = 0; i < many.size(); ++i) {
+		many[i].vfsPath = "textures/cubemaps/m_" + std::to_string(i) + ".ktx2";
+		many[i].position = glm::vec3(float(i), 0.0f, 0.0f);
+		many[i].influenceRadius = 4.0f;
+		many[i].fadeRadius = 2.0f;
+	}
+	many.back().pinned = true;
+	const std::string manyText = smvk::CubemapManifestSerialize(many);
+	std::vector<smvk::CubemapManifestEntry> trunc;
+	Check(smvk::CubemapManifestParse(manyText, trunc, err)
+		&& trunc.size() == 32 && trunc[0].pinned
+		&& trunc[0].vfsPath == many.back().vfsPath,
+		"cubemap.manifest-pin-survives-truncation");
+}
+
 void TestDirectionRoundtrip() {
 	// FaceUvToDirection -> DirectionToFaceUv must recover the face and
 	// the uv (what the prefilter's bilinear source fetch depends on).
@@ -449,6 +494,7 @@ int main() {
 	TestProceduralFaces();
 	TestVfsPath();
 	TestManifestRoundtrip();
+	TestManifestPin();
 	TestOctreeOpenSpace();
 	TestOctreeAllSolid();
 	TestOctreeBudget();

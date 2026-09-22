@@ -56,10 +56,11 @@ std::string CubemapManifestSerialize(const std::vector<CubemapManifestEntry>& en
 	std::string out;
 	char buf[256];
 	for (const auto& e : entries) {
-		std::snprintf(buf, sizeof(buf), "%s %.6g %.6g %.6g %.6g %.6g\n",
+		std::snprintf(buf, sizeof(buf), "%s %.6g %.6g %.6g %.6g %.6g%s\n",
 			e.vfsPath.c_str(),
 			(double)e.position.x, (double)e.position.y, (double)e.position.z,
-			(double)e.influenceRadius, (double)e.fadeRadius);
+			(double)e.influenceRadius, (double)e.fadeRadius,
+			e.pinned ? " pin" : "");
 		out += buf;
 	}
 	return out;
@@ -88,11 +89,18 @@ bool CubemapManifestParse(std::string_view text,
 		line.remove_prefix(first);
 		CubemapManifestEntry e{};
 		char path[224] = {};
+		char tag[16] = {};
 		float x = 0, y = 0, z = 0, inf = 0, fade = 0;
 		const std::string tmp(line);
-		if (std::sscanf(tmp.c_str(), "%223s %f %f %f %f %f",
-				path, &x, &y, &z, &inf, &fade) != 6) {
-			err = "line " + std::to_string(lineNo) + ": want '<vfsPath> x y z influence fade'";
+		const int fields = std::sscanf(tmp.c_str(), "%223s %f %f %f %f %f %15s",
+			path, &x, &y, &z, &inf, &fade, tag);
+		if (fields != 6 && fields != 7) {
+			err = "line " + std::to_string(lineNo) + ": want '<vfsPath> x y z influence fade [pin]'";
+			out.clear();
+			return false;
+		}
+		if (fields == 7 && std::strcmp(tag, "pin") != 0) {
+			err = "line " + std::to_string(lineNo) + ": unknown trailing token '" + tag + "' (want 'pin')";
 			out.clear();
 			return false;
 		}
@@ -105,6 +113,7 @@ bool CubemapManifestParse(std::string_view text,
 		e.position = glm::vec3(x, y, z);
 		e.influenceRadius = inf;
 		e.fadeRadius = fade;
+		e.pinned = (fields == 7);
 		out.push_back(std::move(e));
 	}
 	if (out.empty()) {
@@ -113,7 +122,10 @@ bool CubemapManifestParse(std::string_view text,
 	}
 	if (out.size() > 32) {
 		err = "manifest lists " + std::to_string(out.size()) + " probes (runtime consumes 32)";
-		// Not fatal: the runtime clamps to 32. Still report success.
+		// Not fatal: pinned rows survive truncation (artist-placed probes
+		// must not lose to bulk order), the rest clamp to 32.
+		std::stable_partition(out.begin(), out.end(),
+			[](const CubemapManifestEntry& e) { return e.pinned; });
 		out.resize(32);
 	}
 	return true;

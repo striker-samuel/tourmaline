@@ -285,6 +285,13 @@ struct Args {
 	float cubemapOctreeMax = 8.0f;   // open cells larger than this subdivide (coverage)
 	float cubemapOctreeMin = 2.0f;   // detail floor: never subdivide below this
 	uint32_t cubemapOctreeDepth = 4; // octree depth cap (root = 0)
+	// Artist-pinned extra probes (repeatable "x,y,z"): appended AFTER
+	// grid/octree placement and marked 'pin' in the manifest so the
+	// runtime sorts them first — a pinned probe wins weight ties, e.g. a
+	// capture exactly at the chrome ball. Unlike --cubemap-pos these never
+	// replace the automatic placement, they add to it.
+	std::vector<std::string> cubemapExtraPos;
+	float cubemapExtraRadius = 1.5f; // pinned-probe influence (fade = half)
 	// Debug PNGs next to the pak inputs (like the lightmap chart PNGs):
 	// per-capture face strips (+ mip sheets) + a top-down probe map.
 	// Loose files under <contentDir>/textures/cubemaps/, never in the pak.
@@ -663,6 +670,16 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			out.cubemapOctreeDepth = std::clamp<uint32_t>(
 				static_cast<uint32_t>(std::stoul(v)), 1, 6);
 		}
+		else if (a == "--cubemap-extra-pos") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapExtraPos.push_back(v);
+		}
+		else if (a == "--cubemap-extra-radius") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapExtraRadius = std::max(0.25f, std::stof(v));
+		}
 		else if (a == "--cubemap-png") {
 			std::string v;
 			if (!need(v)) return false;
@@ -744,6 +761,8 @@ void Usage() {
 		<< "           --cubemap-grid 8.0 --cubemap-octree on\n"
 		<< "           --cubemap-octree-max 8.0 --cubemap-octree-min 2.0\n"
 		<< "           --cubemap-octree-depth 4\n"
+		<< "           --cubemap-extra-pos x,y,z (repeatable, pinned)\n"
+		<< "           --cubemap-extra-radius 1.5\n"
 		<< "           --cubemap-png on|off --cubemap-png-mips on|off]:\n"
 		<< "          preconvolved SPECULAR cubemaps baked into the pak\n"
 		<< "          (GGX importance-sampled mip chains, roughness = mip /\n"
@@ -759,6 +778,10 @@ void Usage() {
 		<< "          (open volumes stay coarse, near-surface cells refine\n"
 		<< "          to --cubemap-octree-min at depth --cubemap-octree-depth,\n"
 		<< "          embedded centers drop, growth stops at 32 probes).\n"
+		<< "          --cubemap-extra-pos appends artist-PINNED probes after\n"
+		<< "          placement (manifest 'pin' rows sort first at load, so\n"
+		<< "          they win weight ties — e.g. a capture at the chrome\n"
+		<< "          ball; influence --cubemap-extra-radius, fade half).\n"
 		<< "          Multi captures write textures/cubemaps/<name>.cubemanifest\n"
 		<< "          (positions + radii) next to the KTX blobs; embedded as\n"
 		<< "          Texture blobs at\n"
@@ -2074,9 +2097,40 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	if (base.empty())
 		base = "sky";
 
-	// Runtime budget: the lit shader scans at most 32 probe rows per pixel
-	// (see SceneRenderer::LoadCubemaps + environment.hlsli). Captures past
-	// 32 still cost bake time + ~2 MB pak each and are never consumed.
+	// Artist-pinned extra probes (--cubemap-extra-pos): appended AFTER
+	// placement, flagged 'pin' in the manifest so the runtime sorts them
+	// first — a pinned probe wins weight ties (e.g. the capture exactly at
+	// the chrome ball). Radii default tight: a pin is a deliberate local
+	// reflection source, not coverage. NOTE: the trace scene never
+	// contains runtime-injected props (the chrome ball is an app-side
+	// node), so a pin at the ball captures the ATRIUM AROUND it — exactly
+	// what a mirror ball should reflect.
+	std::vector<char> pinned;
+	for (const std::string& spec : args.cubemapExtraPos) {
+		glm::vec3 p{};
+		if (std::sscanf(spec.c_str(), "%f,%f,%f",
+				&p.x, &p.y, &p.z) != 3) {
+			std::cerr << "Bad --cubemap-extra-pos (want x,y,z): "
+				<< spec << "\n";
+			return false;
+		}
+		if (!positions.empty() && radii.size() != positions.size())
+			radii.resize(positions.size(), glm::vec2(10.0f, 5.0f));
+		positions.push_back(p);
+		radii.emplace_back(args.cubemapExtraRadius,
+			args.cubemapExtraRadius * 0.5f);
+		pinned.push_back(1);
+		std::cerr << "  [CUBE] pinned extra probe (" << p.x << "," << p.y
+			<< "," << p.z << ") r=" << args.cubemapExtraRadius << "\n"
+			<< std::flush;
+	}
+	// Placement-derived rows come first and are never pinned.
+	pinned.insert(pinned.begin(), positions.size() - pinned.size(), 0);
+
+	// Runtime budget: the lit shader walks at most 32 probe entries per
+	// pixel (tile lists; see environment.hlsli). Captures past 32 still
+	// cost bake time + ~2 MB pak each; the manifest truncation keeps the
+	// pinned rows, the rest clamp.
 	if (positions.empty()) {
 		std::cerr << "  [CUBE] WARNING: no capture positions survived"
 			" (all grid points embedded?) - no cubemaps baked\n" << std::flush;
@@ -2084,9 +2138,10 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	}
 	if (positions.size() > 32) {
 		std::cerr << "  [CUBE] WARNING: " << positions.size()
-			<< " captures exceed the 32-probe runtime budget (only the first"
-			<< " 32 manifest rows are consumed) - increase --cubemap-grid"
-			<< " spacing to cover the scene with fewer, wider probes\n" << std::flush;
+			<< " captures exceed the 32-probe runtime budget (manifest"
+			<< " truncation keeps pinned rows) - increase --cubemap-grid"
+			<< " spacing or --cubemap-octree-max to cover the scene with"
+			<< " fewer, wider probes\n" << std::flush;
 	}
 
 	const uint32_t S = args.cubemapSize;
@@ -2226,8 +2281,10 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// centers a global probe on the scene bounds itself).
 	if (positions.size() > 1) {
 		// Radii ride the parallel radii[] vector (filled per branch:
-		// explicit 10/5, grid tight to the spacing, octree per-cell), so
-		// the manifest matches what the placement chose.
+		// explicit 10/5, grid tight to the spacing, octree per-cell,
+		// pinned extras tight to --cubemap-extra-radius), and the pinned[]
+		// flags mark the artist rows, so the manifest matches what the
+		// placement chose.
 		std::vector<smvk::CubemapManifestEntry> rows;
 		rows.reserve(positions.size());
 		for (size_t cap = 0; cap < positions.size(); ++cap) {
@@ -2237,6 +2294,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			e.position = positions[cap];
 			e.influenceRadius = radii.size() == positions.size() ? radii[cap].x : 10.0f;
 			e.fadeRadius = radii.size() == positions.size() ? radii[cap].y : 5.0f;
+			e.pinned = cap < pinned.size() && pinned[cap] != 0;
 			rows.push_back(std::move(e));
 		}
 		const std::string text = smvk::CubemapManifestSerialize(rows);
@@ -2244,7 +2302,8 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		out.emplace_back(manifestPath,
 			std::vector<uint8_t>(text.begin(), text.end()));
 		std::cerr << "  [CUBE] manifest " << manifestPath << "  probes="
-			<< rows.size() << "\n" << std::flush;
+			<< rows.size() << " pinned=" << args.cubemapExtraPos.size()
+			<< "\n" << std::flush;
 	}
 
 	// Top-down placement map (positions + mean colors + influence rings):

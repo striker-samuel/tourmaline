@@ -117,8 +117,14 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
     // is widest-influence first and nothing beats weight 1.0 (ties keep
     // the first entry), so break on full weight — exact, and usually the
     // first tile entry.
+    // Index space: lights [0, fpLightCount), probes [fpLightCount,
+    // fpLightCount + frame.probeEntries). The bound MUST include the
+    // probe tail — a lights-only bound skips every probe entry and the
+    // walk silently degrades to the global fallback cubemap. Scenes with
+    // zero lights (sponza) still walk: entryTotal > 0 via the tail.
+    const uint entryTotal = fpLightCount + frame.probeEntries;
     bool tileFresh = useBaked && tileIdx != 0xffffffffu && tileIdx < (uint)MAX_FP_TILES
-        && frame.probeTileFresh != 0u && fpLightCount > 0u;
+        && frame.probeTileFresh != 0u && entryTotal > 0u;
     if (tileFresh) {
         uint perTile = min(fpMaxPerTile, (uint)MAX_FP_PER_TILE);
         uint stride = max(fpMaxPerTile, 1u);
@@ -126,7 +132,7 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
         [loop]
         for (uint s = 0; s < listCount; ++s) {
             uint li = fpTileIndices.Get().indices[tileIdx * stride + s];
-            if (li >= fpLightCount)
+            if (li >= entryTotal)
                 continue;
             ForwardPlusLight L = fpLights.Get().lights[li];
             if (L.type != kForwardPlusProbe)

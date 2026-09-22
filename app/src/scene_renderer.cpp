@@ -2366,6 +2366,11 @@ void SceneRenderer::Shutdown() {
 		};
 
 		bool fileBakeFound = false;
+		// Pinned manifest rows ('pin', cook --cubemap-extra-pos) that loaded:
+		// they sort before every auto-placed probe (ties keep the first
+		// entry, so an artist-placed capture — e.g. at the chrome ball —
+		// wins against overlapping coverage probes).
+		size_t pinnedLoaded = 0;
 		for (const auto& base : cubemapBases) {
 			if (base.empty())
 				continue;
@@ -2388,7 +2393,11 @@ void SceneRenderer::Shutdown() {
 						<< mErr << "\n";
 					continue;
 				}
+				// Pinned rows first (stable: file order within groups).
+				std::stable_partition(rows.begin(), rows.end(),
+					[](const smvk::CubemapManifestEntry& e) { return e.pinned; });
 				size_t loaded = 0;
+				pinnedLoaded = 0;
 				m_cubemapProbes.reserve(rows.size());
 				for (const auto& row : rows) {
 					// Derive the library name from the KTX basename so the
@@ -2426,16 +2435,22 @@ void SceneRenderer::Shutdown() {
 						static_cast<float>(entry->bindless),
 						static_cast<float>(entry->mipLevels), 0.0f);
 					m_cubemapProbes.push_back(p);
+					if (row.pinned)
+						++pinnedLoaded;
 					++loaded;
 				}
 				if (loaded == 0) {
 					std::cerr << "[Cubemap] manifest '" << base
 						<< "' loaded 0 probes - trying next candidate\n";
 					m_cubemapProbes.clear();
+					pinnedLoaded = 0;
 					continue;
 				}
 				std::cerr << "[Cubemap] loaded manifest '" << base << "': "
-					<< loaded << "/" << rows.size() << " probes\n";
+					<< loaded << "/" << rows.size() << " probes"
+					<< (pinnedLoaded > 0
+						? " (" + std::to_string(pinnedLoaded) + " pinned first)"
+						: "") << "\n";
 				fileBakeFound = true;
 				break;
 			}
@@ -2520,12 +2535,18 @@ void SceneRenderer::Shutdown() {
 			}
 		}
 
-		// Widest influence first: the lit-shader probe walk breaks at the
-		// first full-weight entry (exact), and tile overflow keeps the
-		// earliest upload slots — widest-first is right for both. (Probe
-		// data rides the FP light buffer as type-2 entries, appended
-		// post-selection in UpdateForwardPlusLights; no probe buffer.)
-		std::sort(m_cubemapProbes.begin(), m_cubemapProbes.end(),
+		// Order: pinned rows first (artist-placed captures win weight
+		// ties — ties keep the first entry), then widest influence within
+		// each block (the lit-shader probe walk breaks at the first
+		// full-weight entry, and tile overflow keeps the earliest upload
+		// slots). Probe data rides the FP light buffer as type-2 entries,
+		// appended post-selection in UpdateForwardPlusLights.
+		const size_t pinSplit = std::min(pinnedLoaded, m_cubemapProbes.size());
+		std::sort(m_cubemapProbes.begin(), m_cubemapProbes.begin() + pinSplit,
+			[](const CubemapProbeGpu& a, const CubemapProbeGpu& b) {
+				return a.posInfluence.w > b.posInfluence.w;
+			});
+		std::sort(m_cubemapProbes.begin() + pinSplit, m_cubemapProbes.end(),
 			[](const CubemapProbeGpu& a, const CubemapProbeGpu& b) {
 				return a.posInfluence.w > b.posInfluence.w;
 			});
@@ -2942,7 +2963,8 @@ void SceneRenderer::Shutdown() {
 		data.cubemapDebug = static_cast<uint32_t>(std::clamp(m_cubemapDebug, 0, 2));
 		data.cubemapLodBias = m_cubemapLodBias;
 		data.probeTileFresh = ProbeTileListsWanted() ? 1u : 0u;
-		data.probePad2_[0] = data.probePad2_[1] = 0;
+		data.probeEntries = ProbeEntryCount();
+		data.probePad_ = 0;
 		if (m_cubemapEnabled && !m_cubemaps.entries.empty()) {
 			// Global fallback = first loaded entry (matches the probe
 			// cache's global-probe choice in LoadCubemaps).
@@ -6256,17 +6278,17 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	const bool decalListsNeeded = DecalsActive() && m_decalFrameCount > 0;
 	// Reflection probes ride the light buffer tail as type-2 entries: the
 	// SAME forward+ cull dispatch buckets them, so when probes are loaded
-	// the dispatch runs even under deferred shadows. The DS override then
-	// covers lights+probes (the light leg re-culls lights as dead work;
-	// the DS lists own the lights — negligible next to the depth preload).
+	// the dispatch runs even under deferred shadows. The cull MUST see the
+	// full [0, lights+probes) range — the probe tail lives at [L, L+P) and
+	// the cull reads buffer indices from 0, so a lights-only count never
+	// files a single probe (every consumer then degrades to the global
+	// fallback cubemap). Under DS the light leg re-culls lights as dead
+	// work (negligible next to the depth preload); the DS lists own the
+	// lights either way.
 	const bool probeListsWanted = ProbeTileListsWanted();
 	rfPB = bench_clk::now();
-	if (m_passes.forwardPlusCull && (!dsOn || decalListsNeeded || probeListsWanted)) {
-		uint32_t cullCount = UINT32_MAX;
-		if (dsOn)
-			cullCount = fpLightCount + ProbeEntryCount();
-		m_fpRenderer.AppendTileCull(fc, cullCount);
-	}
+	if (m_passes.forwardPlusCull && (!dsOn || decalListsNeeded || probeListsWanted))
+		m_fpRenderer.AppendTileCull(fc, fpLightCount + ProbeEntryCount());
 	if (dsOn)
 		AppendDeferredShadowPhases(fb.frameIndex,
 			frameUniformsAddress, fpLightsAddress, spotShadowBufferAddress,

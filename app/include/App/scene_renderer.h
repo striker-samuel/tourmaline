@@ -449,11 +449,13 @@ struct FrameUniforms
 	uint32_t cubemapDebug = 0;          // 652 0 off, 1 cubemap-only, 2 probe weight
 	// Reflection probes for local specular IBL ride the Forward+ light
 	// buffer as type-2 entries (see smvk::kForwardPlusProbe) — no probe
-	// storage buffer, no parallel tile lists. Specular knobs only here
-	// (16 bytes, dsTileState stays at 672).
+	// storage buffer, no parallel tile lists. probeEntries is the tail
+	// length: the shader's index bound is fpLightCount + probeEntries
+	// (lights [0,L), probes [L,L+P) — a lights-only bound skips probes).
 	float cubemapLodBias = 0.0f;       // 656 added to roughness LOD (UI)
 	uint32_t probeTileFresh = 0;       // 660 1 = tile cull filed probe entries
-	uint32_t probePad2_[2] = {};       // 664 16-align tail
+	uint32_t probeEntries = 0;         // 664 type-2 tail length
+	uint32_t probePad_ = 0;            // 668 16-align tail
 	// ---- Deferred shadows (tiled/zBin pipeline, see
 	// smvk::DeferredShadows + deferredshadow*.hlsli). Raw BDAs: the HLSL
 	// side declares matching vk::BufferPointer fields. dsEnabled flips the
@@ -578,7 +580,8 @@ static_assert(offsetof(FrameUniforms, cubemapDebug) == 652);
 // rides ForwardPlusLight type-2 entries (see smvk::kForwardPlusProbe).
 static_assert(offsetof(FrameUniforms, cubemapLodBias) == 656);        // 656 LOD bias
 static_assert(offsetof(FrameUniforms, probeTileFresh) == 660);        // 660 fresh bit
-static_assert(offsetof(FrameUniforms, probePad2_) == 664);            // 664 pad
+static_assert(offsetof(FrameUniforms, probeEntries) == 664);        // 664 tail length
+static_assert(offsetof(FrameUniforms, probePad_) == 668);           // 668 pad
 static_assert(offsetof(FrameUniforms, dsTileState) == 672);           // 672
 static_assert(offsetof(FrameUniforms, dsLightList) == 680);           // 680
 static_assert(offsetof(FrameUniforms, dsVisibility) == 688);          // 688

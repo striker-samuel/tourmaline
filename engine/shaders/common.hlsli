@@ -368,10 +368,13 @@ struct FrameUniforms
     // buffer (see kForwardPlusProbe above) — no probe storage buffer, no
     // parallel tile lists. probeTileFresh tells the lit shader the tile
     // cull filed probe entries this frame (0 = stale -> global cubemap
-    // fallback; there is no probe buffer left to scan).
+    // fallback); probeEntries is the type-2 tail length, so the specular
+    // walk's index bound is fpLightCount + probeEntries (lights [0,L),
+    // probes [L,L+P) — a lights-only bound would skip every probe).
     float cubemapLodBias; // 656 added to the roughness-derived cubemap LOD (UI)
     uint probeTileFresh;  // 660 1 = tile lists hold probe entries this frame
-    uint2 probePad2;      // 664 (16-align tail)
+    uint probeEntries;    // 664 type-2 entries in the light-buffer tail
+    uint probePad;        // 668 (16-align tail)
 
     // ---- Deferred shadows (tiled/zBin pipeline, see deferredshadow*.hlsli).
     // Consumer-side view of this frame's per-flight buffers; the app

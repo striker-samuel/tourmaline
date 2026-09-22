@@ -117,12 +117,17 @@ std::string CubemapVfsPath(const std::string& name);
 // bakes need no manifest (the runtime centers a global probe itself).
 std::string CubemapManifestVfsPath(const std::string& name);
 
-// One manifest row: which KTX to load + where its probe lives.
+// One manifest row: which KTX to load + where its probe lives. A row may
+// carry an optional 7th "pin" token (written by --cubemap-extra-pos):
+// pinned rows sort before all others at load, so an artist-placed probe
+// wins weight ties against overlapping baked probes (ties keep the first
+// row). Old 6-token rows parse with pinned=false.
 struct CubemapManifestEntry {
 	std::string vfsPath;
 	glm::vec3 position{ 0.0f };
 	float influenceRadius = 10.0f;
 	float fadeRadius = 5.0f;
+	bool pinned = false;
 };
 
 // Serializes entries to the manifest text format (one row per line).
