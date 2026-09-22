@@ -121,16 +121,6 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
         foundProbe = true;
     }
     
-    // Normalize cubemap radiance to match analytic specular IBL scale.
-    // Analytic path uses 0..1 sky colors * iblIntensity (env.ground.w).
-    // Cubemap is baked in absolute radiance (skyIntensity=env.skyZenith.w).
-    // Normalize by skyIntensity/iblIntensity ratio.
-    if (foundProbe) {
-        float skyIntensity = env.skyZenith.w;
-        float iblIntensity = max(env.ground.w, 1e-4f);
-        envCol *= iblIntensity / max(skyIntensity, 1e-4f);
-    }
-    
     if (!foundProbe) {
         // Fallback to analytic sky
         float3 zenith = env.skyZenith.rgb;

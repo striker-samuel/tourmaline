@@ -31,7 +31,7 @@ rem --lods on is frostbite: siblings cook BEFORE the bake and inherit
 rem the LOD0 atlas layout through UV transfer (one bake, one atlas).
 rem See tools/cook/cook_sponza_fast.bat for the low-quality iteration
 rem variant (coarse density, 5 lobes, uncompressed, no LODs/meshlets).
-build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.gltf --out-pak F:\content\paks\sponza.pak --cubemap on --meshlets on --lods on --verify on --lightmap on --lm-meters-per-texel 0.25 --cubemap on --cubemap-size 128 --cubemap-rays 128
+build\Release\PakCooker.exe --content-dir F:\content --in-vfs models/sponza/Sponza.gltf --out-pak F:\content\paks\sponza.pak --cubemap on --meshlets on --lods on --verify on --lightmap on --lm-meters-per-texel 0.25 --cubemap on  --cubemap-size 128 --cubemap-rays 128 --cubemap-grid 8.0
 if errorlevel 1 goto fail
 copy /y F:\content\paks\sponza.pak build\Debug\content\paks\sponza.pak
 if errorlevel 1 goto fail

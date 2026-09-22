@@ -274,6 +274,7 @@ struct Args {
 	                                     // bounds center at cubemapHeight)
 	float cubemapHeight = 1.5f;
 	float cubemapGrid = 8.0f;     // grid spacing in meters (0 = single probe at center)
+	float cubemapIblIntensity = 20.0f; // IBL intensity to bake at (match analytic IBL)
 	// Read-only inspection: open an existing pak and print its manifest
 	// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
 	std::string dumpPak;
@@ -623,6 +624,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.cubemapGrid = std::stof(v);
 		}
+		else if (a == "--cubemap-ibl-intensity") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapIblIntensity = std::stof(v);
+		}
 		else if (a == "--dump-pak") {
 			if (!need(out.dumpPak)) return false;
 		}
@@ -683,7 +689,7 @@ void Usage() {
 		<< "          [--cubemap on|off --cubemap-name <name>\n"
 		<< "           --cubemap-size 128 --cubemap-rays 128 --cubemap-bounces 3\n"
 		<< "           --cubemap-pos x,y,z (repeatable) --cubemap-height 1.5\n"
-		<< "           --cubemap-grid 8.0]:\n"
+		<< "           --cubemap-grid 8.0 --cubemap-ibl-intensity 20.0]:\n"
 		<< "          preconvolved SPECULAR cubemaps baked into the pak\n"
 		<< "          (GGX importance-sampled mip chains, roughness = mip /\n"
 		<< "          (levels-1); probes/lightmaps own diffuse + low-freq\n"
@@ -1902,7 +1908,11 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		const std::string captureName = positions.size() == 1
 			? base : base + "_" + std::to_string(cap);
 
-		// Trace 6 HDR base faces (one deterministic sample per texel;
+		// Scale cubemap radiance to IBL space (iblIntensity / skyIntensity).
+	// SkyRadiance returns 0..1 * skyIntensity; analytic IBL uses iblIntensity.
+	const float cubemapScale = args.cubemapIblIntensity / std::max(args.skyIntensity, 1e-4f);
+
+	// Trace 6 HDR base faces (one deterministic sample per texel;
 		// per-texel seeds independent of thread scheduling).
 		smvk::CubemapBaseFaces faces;
 		for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f)
@@ -1930,6 +1940,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 							L = traceScene.TraceIncoming(origin, dir, rng,
 								args.cubemapBounces);
 						}
+						L *= cubemapScale;
 						float* px = &faces[f][(size_t(y) * S + x) * 4];
 						px[0] = L.x;
 						px[1] = L.y;
