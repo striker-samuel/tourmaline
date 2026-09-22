@@ -84,16 +84,18 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
     vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices,
     vk::BufferPointer<ForwardPlusLightBuffer> fpLights)
 {
-    // Specular gate: iblIntensity (ground.w) ONLY. Deliberately NOT the
-    // fogEndAndFlags.w diffuse-isolation flag (ambient modes): smooth
-    // surfaces cannot do mirrors from the broad baked lobes, so they keep
-    // env reflections in every mode (see the lightmap/probe specular code
-    // that lerps toward this). Gating this to zero would turn every chrome
-    // ball black in Probes/Lightmaps/Off modes. The cubemap toggle rides
-    // useBaked below (off = analytic sky, never black).
+    // Intensity split: iblIntensity (ground.w) is the ANALYTIC fallback's
+    // intensity only. Baked samples are TRUE radiance (physical units,
+    // matching the direct sun view of the same surface) scaled by the
+    // cubemap panel's own intensity — applying ibl to baked content
+    // crushed sun-lit reflections by skyIntensity/ibl (~30x here: a
+    // mirror showed the sun-lit wall far darker than looking at it).
+    // Also deliberately NOT the fogEndAndFlags.w diffuse-isolation flag
+    // (ambient modes): smooth surfaces cannot do mirrors from the broad
+    // baked lobes, so they keep env reflections in every mode. The
+    // cubemap toggle rides useBaked below (off = analytic sky, never
+    // black).
     float ibl = max(env.ground.w, 0.0f);
-    if (ibl <= 0.0f)
-        return float3(0.0f, 0.0f, 0.0f);
     // Baked-cubemap kill switch (UI): off falls back to the analytic sky,
     // never to black — probe-covered pixels must not go dark just because
     // the bake is disabled.
@@ -127,11 +129,16 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
         && frame.probeTileFresh != 0u && entryTotal > 0u;
     if (tileFresh) {
         uint perTile = min(fpMaxPerTile, (uint)MAX_FP_PER_TILE);
-        uint stride = max(fpMaxPerTile, 1u);
-        uint listCount = min(fpTileCounts.Get().counts[tileIdx], perTile);
+        uint stride = perTile + (uint)MAX_FP_PROBE_TILE_SLOTS;
+        // Probes pack the dedicated tail slots (immune to light saturation
+        // — a packed light budget must never flip specular to the global
+        // fallback). counts packs the TRUE counts: lights low 16, probes
+        // high 16.
+        uint listCount = min(fpTileCounts.Get().counts[tileIdx] >> 16,
+            (uint)MAX_FP_PROBE_TILE_SLOTS);
         [loop]
         for (uint s = 0; s < listCount; ++s) {
-            uint li = fpTileIndices.Get().indices[tileIdx * stride + s];
+            uint li = fpTileIndices.Get().indices[tileIdx * stride + perTile + s];
             if (li >= entryTotal)
                 continue;
             ForwardPlusLight L = fpLights.Get().lights[li];
@@ -175,7 +182,10 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
     }
 
     if (!foundProbe) {
-        // Fallback to analytic sky
+        // Fallback to analytic sky. ibl gates THIS path only (the baked
+        // paths above carry their own intensity).
+        if (ibl <= 0.0f)
+            return float3(0.0f, 0.0f, 0.0f);
         float3 zenith = env.skyZenith.rgb;
         float3 horizon = env.skyHorizon.rgb;
         float3 groundCol = env.ground.rgb;
@@ -183,25 +193,52 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
         float3 gndPart = lerp(horizon, groundCol, saturate(-R.y * 2.0f));
         envCol = R.y >= 0.0f ? skyPart : gndPart;
     } else {
-        // Baked cubemap: UI intensity. Convention: bakes store sky-relative
-        // colors (cook divides out skyIntensity), so the shader applies ibl
-        // uniformly to baked and analytic paths below — the IBL slider
-        // scales both, and no bake-time intensity is frozen in.
+        // Baked cubemap: TRUE radiance x the cubemap panel intensity. The
+        // capture stores physical units (no /skyIntensity at bake), so a
+        // mirror reflecting a sun-lit wall matches looking at that wall
+        // directly — the IBL slider never touches baked content.
         envCol *= max(frame.cubemapIntensity, 0.0f);
     }
 
     // Debug views (UI): raw cubemap without Fresnel/roughness weighting,
     // or the probe blend weight as heat.
     if (cubeDbg == 1u && foundProbe) {
-        return envCol * ibl;
+        return envCol;
     }
     if (cubeDbg == 2u) {
         float w = foundProbe ? bestWeight : 0.0f;
-        return float3(w, 1.0f - abs(w - 0.5f) * 2.0f * 0.5f, 1.0f - w) * ibl;
+        return float3(w, 1.0f - abs(w - 0.5f) * 2.0f * 0.5f, 1.0f - w);
     }
 
     float gloss = 1.0f - clamp(roughness, 0.0f, 1.0f);
+    if (foundProbe)
+        return envCol * F * (gloss * gloss * 0.9f + 0.1f);
     return envCol * ibl * F * (gloss * gloss * 0.9f + 0.1f);
+}
+
+// Specular-visibility proxy from the baked GI (Lagarde-style occlusion):
+// the pixel's baked irradiance vs the UNOCCCLUDED sun+sky reference in
+// the same transport units approximates how much environment the surface
+// can actually see. Without it, shaded metals under roofs mirror the full
+// sunlit courtyard from the probe capture ("crazy luminous" gold trim) —
+// geometry they cannot see through. giScale normalizes the UI GI-intensity
+// multiplier back out of the baked term. Surfaces with no baked source
+// keep 1 (callers decide).
+float SpecularOcclusionFromGI(float3 bakedE, float giScale, float3 N,
+    EnvironmentFrameData env)
+{
+    const float3 kLum = float3(0.2126, 0.7152, 0.0722);
+    const float3 e = bakedE * (1.0 / max(giScale, 1e-4));
+    // Unoccluded reference: direct sun (when N faces it) + sky hemisphere,
+    // rebuilt in the bake's transport units from the env block
+    // (sunIntensity rides sunColor.w, skyIntensity skyZenith.w).
+    float3 sunDir = normalize(env.sunDirection.xyz + 1e-9);
+    float ndl = max(dot(N, sunDir), 0.0);
+    float3 sunE = env.sunColor.rgb * max(env.sunColor.w, 0.0) * ndl;
+    float3 skyMean = (env.skyZenith.rgb + env.skyHorizon.rgb + env.ground.rgb) / 3.0;
+    float3 skyE = skyMean * max(env.skyZenith.w, 0.0) * 0.5;
+    const float refL = max(dot(sunE + skyE, kLum), 1e-3);
+    return saturate(dot(e, kLum) / refL);
 }
 
 // Distance fog factor in 0..1 from view depth (linear eye depth, metres),

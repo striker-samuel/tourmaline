@@ -154,10 +154,12 @@ compile_shaders(
     "${APP_DIR}"
 )
 
-# Ensure shaders are actually part of the build
+# compile_shaders() already emits the ALL target "App_shaders" over these
+# outputs. Do NOT add a second ALL target over the same .spv files — two
+# independent custom targets writing identical outputs race in MSBuild
+# (MSB8066 "exited with code 1" on one of them, ~every shader change).
 if(COMPILED_SHADER_OUTPUTS)
-    add_custom_target(compile_shaders_target ALL DEPENDS ${COMPILED_SHADER_OUTPUTS})
-    add_dependencies(App compile_shaders_target)
+    add_dependencies(App App_shaders)
 else()
     message(WARNING "No shaders found to compile!")
 endif()

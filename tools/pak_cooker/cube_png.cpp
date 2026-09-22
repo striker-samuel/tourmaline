@@ -17,9 +17,11 @@ namespace pakcook {
 namespace {
 
 // Display chain mirrors lm_png.cpp (Reinhard + pow 1/2.2 + sRGB store)
-// so cubemap and lightmap debug PNGs read the same. exposure folds the
-// cook's fixed LDR exposure in first (captures are sky-relative; 1.0
-// puts the sky mid-gray and clips only the sun disc).
+// so cubemap and lightmap debug PNGs read the same. exposure folds a
+// display scaling in first: captures store TRUE radiance (sun-lit walls
+// ~sunIntensity, sky ~skyIntensity), so the cook passes
+// 1/skyIntensity to keep the strips in the old readable range (sky
+// mid-gray, sun disc clipping).
 inline float SrgbEncode(float c) {
 	c = std::clamp(c, 0.0f, 1.0f);
 	return c <= 0.0031308f

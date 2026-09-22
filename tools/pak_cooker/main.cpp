@@ -272,6 +272,12 @@ struct Args {
 	uint32_t cubemapSize = 128;   // base face width (HDR RGBA32F)
 	uint32_t cubemapRays = 128;   // GGX importance samples per output texel
 	uint32_t cubemapBounces = 3;  // diffuse path depth after the first hit
+	// Transport samples per capture texel: the NEE sun/spot term is
+	// analytic (clean at 1 spp), but the bounce field is a Monte-Carlo
+	// path estimate — 1 spp reads as speckle, not GI, and the capture
+	// stops representing the (multi-ray, denoised) lightmapped scene.
+	// 8 spp smooths the bounce term at ~8x capture cost.
+	uint32_t cubemapSpp = 8;
 	std::vector<std::string> cubemapPos; // repeatable "x,y,z" (empty =
 	                                     // bounds center at cubemapHeight)
 	float cubemapHeight = 1.5f;
@@ -297,9 +303,9 @@ struct Args {
 	// Loose files under <contentDir>/textures/cubemaps/, never in the pak.
 	bool cubemapPng = true;
 	bool cubemapPngMips = true;
-	// NOTE: captures store sky-relative colors (radiance / skyIntensity);
-	// the shader applies the runtime iblIntensity, so there is no
-	// bake-time intensity knob by design.
+	// NOTE: captures store TRUE radiance (physical units); the runtime's
+	// baked path scales by the cubemap panel intensity only, matching the
+	// direct sun view. No bake-time intensity knob by design.
 	// Read-only inspection: open an existing pak and print its manifest
 	// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
 	std::string dumpPak;
@@ -625,7 +631,12 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.cubemapRays = std::max<uint32_t>(
 				static_cast<uint32_t>(std::stoul(v)), 1);
-			out.explicitSet.insert("cubemapRays");
+		}
+		else if (a == "--cubemap-spp") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapSpp = std::clamp<uint32_t>(
+				static_cast<uint32_t>(std::stoul(v)), 1, 64);
 		}
 		else if (a == "--cubemap-bounces") {
 			std::string v;
@@ -691,11 +702,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			out.cubemapPngMips = (v == "on" || v == "1" || v == "true");
 		}
 		else if (a == "--cubemap-ibl-intensity") {
-			// Removed: captures store sky-relative colors by design (the
-			// shader applies the runtime iblIntensity). Reject explicitly
+			// Removed: captures store true radiance by design (the runtime
+			// scales with the cubemap panel intensity). Reject explicitly
 			// rather than silently ignoring a stale script flag.
 			std::cerr << "--cubemap-ibl-intensity was removed (captures are"
-				" sky-relative; use the runtime IBL intensity)\n";
+				" true radiance; use the runtime cubemap intensity)\n";
 			return false;
 		}
 		else if (a == "--dump-pak") {
@@ -763,13 +774,15 @@ void Usage() {
 		<< "           --cubemap-octree-depth 4\n"
 		<< "           --cubemap-extra-pos x,y,z (repeatable, pinned)\n"
 		<< "           --cubemap-extra-radius 1.5\n"
+		<< "           --cubemap-spp 8\n"
 		<< "           --cubemap-png on|off --cubemap-png-mips on|off]:\n"
 		<< "          preconvolved SPECULAR cubemaps baked into the pak\n"
 		<< "          (GGX importance-sampled mip chains, roughness = mip /\n"
 		<< "          (levels-1); probes/lightmaps own diffuse + low-freq\n"
-		<< "          specular). Captures store sky-relative colors (the\n"
-		<< "          shader applies the runtime IBL intensity, so bakes\n"
-		<< "          track the IBL slider with no recook). One capture per\n"
+		<< "          specular). Captures store true radiance (the runtime\n"
+		<< "          scales them with the cubemap panel intensity, so a\n"
+		<< "          mirror matches the sun-lit scene; no bake-time\n"
+		<< "          intensity is frozen in). One capture per\n"
 		<< "          --cubemap-pos (default:\n"
 		<< "          scene-bounds center at +height). If --cubemap-grid > 0,\n"
 		<< "          captures a uniform 3D grid of probes at that spacing\n"
@@ -782,6 +795,9 @@ void Usage() {
 		<< "          placement (manifest 'pin' rows sort first at load, so\n"
 		<< "          they win weight ties — e.g. a capture at the chrome\n"
 		<< "          ball; influence --cubemap-extra-radius, fade half).\n"
+		<< "          --cubemap-spp averages N transport paths per texel so\n"
+		<< "          the bounce field is coherent GI (1 spp = speckle),\n"
+		<< "          matching the multi-ray lightmap look.\n"
 		<< "          Multi captures write textures/cubemaps/<name>.cubemanifest\n"
 		<< "          (positions + radii) next to the KTX blobs; embedded as\n"
 		<< "          Texture blobs at\n"
@@ -2164,15 +2180,21 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		const std::string captureName = positions.size() == 1
 			? base : base + "_" + std::to_string(cap);
 
-		// Store sky-relative colors (1 / skyIntensity): the shader applies
-		// iblIntensity uniformly to baked and analytic specular alike, so
-		// the runtime IBL slider scales both and no bake-time intensity is
-		// frozen into the capture. (Baking at IBL scale instead would apply
-		// iblIntensity twice — once frozen, once in-shader.)
-		const float cubemapScale = 1.0f / std::max(args.skyIntensity, 1e-4f);
+		// Store TRUE radiance (no /skyIntensity): the runtime's baked path
+		// scales only by the cubemap panel intensity, so a mirror
+		// reflecting a sun-lit wall matches looking at that wall directly.
+		// (The old /skyIntensity + ibl convention crushed sun-lit
+		// reflections by skyIntensity/ibl, ~30x.) Debug PNGs divide by
+		// skyIntensity at DISPLAY time so the strips keep the old look.
+		const float cubemapScale = 1.0f;
+		const float pngDisplayExposure =
+			1.0f / std::max(args.skyIntensity, 1e-4f);
 
-	// Trace 6 HDR base faces (one deterministic sample per texel;
-		// per-texel seeds independent of thread scheduling).
+	// Trace 6 HDR base faces. Per texel: --cubemap-spp transport paths,
+	// averaged — the NEE sun/spot term is analytic (clean at 1 spp), but
+	// the bounce field is a Monte-Carlo estimate and 1 spp reads as
+	// speckle instead of the GI the lightmapped scene shows. Per-texel
+	// seeds stay deterministic (spp continues the same rng stream).
 		smvk::CubemapBaseFaces faces;
 		for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f)
 			faces[f].assign(size_t(S) * S * 4, 0.0f);
@@ -2191,15 +2213,17 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 							^ (uint64_t(f) << 40)
 							^ (uint64_t(y) * 4099ull + uint64_t(x) * 130963ull + 1ull);
 						smvk::gi::Pcg32 rng(seed);
-						glm::vec3 L;
-						smvk::gi::TriangleBvh::Hit h;
-						if (!traceScene.Bvh().Raycast(origin, dir, 1.0e5f, h)) {
-							L = traceScene.SkyRadiance(dir);
-						} else {
-							L = traceScene.TraceIncoming(origin, dir, rng,
-								args.cubemapBounces);
+						glm::vec3 L(0.0f);
+						for (uint32_t s = 0; s < args.cubemapSpp; ++s) {
+							smvk::gi::TriangleBvh::Hit h;
+							if (!traceScene.Bvh().Raycast(origin, dir, 1.0e5f, h)) {
+								L += traceScene.SkyRadiance(dir);
+							} else {
+								L += traceScene.TraceIncoming(origin, dir, rng,
+									args.cubemapBounces);
+							}
 						}
-						L *= cubemapScale;
+						L *= cubemapScale / float(args.cubemapSpp);
 						float* px = &faces[f][(size_t(y) * S + x) * 4];
 						px[0] = L.x;
 						px[1] = L.y;
@@ -2255,7 +2279,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			std::string perr;
 			const std::string facesPath =
 				(cubePngDir / (captureName + ".png")).generic_string();
-			if (pakcook::WriteCubemapFacesPng(chains, S, 1.0f, facesPath, perr)) {
+			if (pakcook::WriteCubemapFacesPng(chains, S, pngDisplayExposure, facesPath, perr)) {
 				std::cerr << "  [CUBE] png " << facesPath
 					<< " (mean luma "
 					<< pakcook::CubemapMeanLuma(capMean) << ")\n" << std::flush;
@@ -2265,7 +2289,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			if (args.cubemapPngMips) {
 				const std::string mipsPath =
 					(cubePngDir / (captureName + "_mips.png")).generic_string();
-				if (!pakcook::WriteCubemapMipsPng(chains, S, 1.0f, mipsPath, perr)) {
+				if (!pakcook::WriteCubemapMipsPng(chains, S, pngDisplayExposure, mipsPath, perr)) {
 					std::cerr << "  [CUBE] mips png write failed: " << perr
 						<< "\n" << std::flush;
 				}

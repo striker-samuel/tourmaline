@@ -25,11 +25,11 @@
 // same mapping, so captures cannot drift from it). A primary-miss ray
 // returns the analytic sky gradient (SkyRadiance); a primary hit returns
 // the sun-bounce field (TraceIncoming, NEE sun at every vertex including
-// the primary hit). Captures store sky-relative colors (radiance /
-// skyIntensity, like PakCooker --cubemap): the shader applies the runtime
-// iblIntensity, so bakes track the IBL slider with no recook. Secondary
-// sky after bounces is not tracked (minor indoors; the sky through windows
-// after one bounce is second-order).
+// the primary hit, --spp paths averaged). Captures store TRUE radiance
+// (like PakCooker --cubemap): the runtime scales by the cubemap panel
+// intensity, so a mirror reflecting a sun-lit wall matches looking at
+// that wall directly. Secondary sky after bounces is not tracked (minor
+// indoors; the sky through windows after one bounce is second-order).
 //
 // --test-pattern skips the scene import and writes an RGBA8 test cubemap
 // with the shared GenerateCubemapFacePixels math (face order/orientation
@@ -95,6 +95,7 @@ struct Args {
 	std::string prefilter = "box";
 	uint32_t prefilterRays = 128; // GGX samples per output texel
 	uint32_t bounces = 3;
+	uint32_t spp = 8;             // transport paths per capture texel (bounce GI)
 	float sunAzimuth = 30.0f;
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
@@ -197,6 +198,12 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 				return false;
 			}
 		}
+		else if (a == "--spp") {
+			std::string v;
+			if (!need(v)) return false;
+			out.spp = std::clamp<uint32_t>(
+				static_cast<uint32_t>(std::stoul(v)), 1, 64);
+		}
 		else if (a == "--sun-azimuth") {
 			std::string v;
 			if (!need(v)) return false;
@@ -293,6 +300,7 @@ void Usage() {
 		<< "         [--threads 0]\n"
 		<< "         [--octree] [--octree-max 8.0] [--octree-min 2.0]\n"
 		<< "         [--octree-depth 4]\n"
+		<< "         [--spp 8]\n"
 		<< "         [--png on|off] [--png-mips on|off]\n"
 		<< "         --prefilter ggx preconvolves the mip chain for the\n"
 		<< "         high-frequency specular path (GGX importance sampling,\n"
@@ -744,10 +752,14 @@ int main(int argc, char** argv) {
 			const std::string vfsPath = smvk::CubemapVfsPath(captureName);
 			const std::filesystem::path file = HostPath(args.outDir, vfsPath);
 
-			// Store sky-relative colors (1 / skyIntensity, same convention
-			// as PakCooker --cubemap): the shader applies the runtime
-			// iblIntensity, so bakes track the IBL slider with no recook.
-			const float cubemapScale = 1.0f / std::max(args.skyIntensity, 1e-4f);
+			// Store TRUE radiance (same convention as PakCooker --cubemap):
+			// the runtime's baked path scales by the cubemap panel
+			// intensity, so a mirror reflecting a sun-lit wall matches
+			// looking at that wall directly. Debug PNGs divide by
+			// skyIntensity at display time to keep the readable look.
+			const float cubemapScale = 1.0f;
+			const float pngDisplayExposure =
+				1.0f / std::max(args.skyIntensity, 1e-4f);
 
 			// Trace 6 HDR faces (one deterministic sample per texel).
 			std::vector<float> faces[smvk::kCubemapFaceCount];
@@ -765,21 +777,27 @@ int main(int argc, char** argv) {
 								smvk::CubemapFace(f), u, v);
 							glm::vec3 dir(d.x, d.y, d.z);
 							dir = glm::normalize(dir);
-							// Deterministic per-texel seed: independent of
-							// thread scheduling (same seed -> same pixels).
-							const uint64_t seed = (uint64_t(cap + 1) << 48)
-								^ (uint64_t(f) << 40)
-								^ (uint64_t(y) * 4099ull + uint64_t(x) * 130963ull + 1ull);
-							smvk::gi::Pcg32 rng(seed);
-							glm::vec3 L;
+						// Deterministic per-texel seed: independent of
+						// thread scheduling (same seed -> same pixels).
+						const uint64_t seed = (uint64_t(cap + 1) << 48)
+							^ (uint64_t(f) << 40)
+							^ (uint64_t(y) * 4099ull + uint64_t(x) * 130963ull + 1ull);
+						smvk::gi::Pcg32 rng(seed);
+						// spp averaged transport paths: the NEE sun/spot
+						// term is analytic, but the bounce field is a
+						// Monte-Carlo estimate — 1 spp reads as speckle,
+						// not the GI the lightmapped scene shows.
+						glm::vec3 L(0.0f);
+						for (uint32_t s = 0; s < args.spp; ++s) {
 							smvk::gi::TriangleBvh::Hit h;
 							if (!traceScene.Bvh().Raycast(origin, dir, 1.0e5f, h)) {
-								L = traceScene.SkyRadiance(dir);
+								L += traceScene.SkyRadiance(dir);
 							} else {
-								L = traceScene.TraceIncoming(origin, dir, rng, args.bounces);
+								L += traceScene.TraceIncoming(origin, dir, rng, args.bounces);
 							}
-							L *= cubemapScale;
-							float* px = &faces[f][(size_t(y) * S + x) * 4];
+						}
+						L *= cubemapScale / float(args.spp);
+						float* px = &faces[f][(size_t(y) * S + x) * 4];
 							px[0] = L.x;
 							px[1] = L.y;
 							px[2] = L.z;
@@ -849,7 +867,7 @@ int main(int argc, char** argv) {
 				std::string perr;
 				const std::string facesPath =
 					(cubePngDir / (captureName + ".png")).generic_string();
-				if (pakcook::WriteCubemapFacesPng(chains, S, 1.0f, facesPath, perr)) {
+				if (pakcook::WriteCubemapFacesPng(chains, S, pngDisplayExposure, facesPath, perr)) {
 					std::cout << "baked(png) " << facesPath
 						<< " (mean luma "
 						<< pakcook::CubemapMeanLuma(capMean) << ")" << std::endl;
@@ -859,7 +877,7 @@ int main(int argc, char** argv) {
 				if (args.pngMips) {
 					const std::string mipsPath =
 						(cubePngDir / (captureName + "_mips.png")).generic_string();
-					if (!pakcook::WriteCubemapMipsPng(chains, S, 1.0f, mipsPath, perr))
+					if (!pakcook::WriteCubemapMipsPng(chains, S, pngDisplayExposure, mipsPath, perr))
 						std::cerr << "FAILED mips png write: " << perr << std::endl;
 				}
 			}

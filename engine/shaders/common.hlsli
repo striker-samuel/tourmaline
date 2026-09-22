@@ -250,6 +250,15 @@ struct SpotShadowBuffer
 #define MAX_FP_LIGHTS 1024
 #define MAX_FP_TILES 32768
 #define MAX_FP_PER_TILE 128
+// Dedicated per-tile slots for type-2 probe entries (specular IBL): the
+// tile index lists pack lights at [0..perTile) and probes at
+// [perTile..perTile+MAX_FP_PROBE_TILE_SLOTS) with ONE stride
+// (perTile + slots, matches the C++ allocation), so light-saturated
+// tiles can never pop their probes (a chrome ball flipping to the global
+// fallback cubemap just because a light grid came on). Probe overflow
+// beyond the slots pops instead (first-come = upload order, pinned
+// probes first).
+#define MAX_FP_PROBE_TILE_SLOTS 4
 
 struct ForwardPlusLightBuffer
 {

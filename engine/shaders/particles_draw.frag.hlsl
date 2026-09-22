@@ -114,8 +114,10 @@ float4 mainPS(ParticleVsOut IN) : SV_Target
             {
                 uint tileIdx = ty * pcDraw.fpTileCountX + tx;
                 uint perTile = min(pcDraw.fpMaxPerTile, (uint)MAX_FP_PER_TILE);
-                uint stride = max(pcDraw.fpMaxPerTile, 1u);
-                uint tcount = min(pcDraw.fpTileCounts.Get().counts[tileIdx], perTile);
+                uint stride = perTile + (uint)MAX_FP_PROBE_TILE_SLOTS;
+                // counts packs lights (low 16) + probes (high 16, dedicated
+                // tail slots) — particles shade lights only, so mask.
+                uint tcount = min(pcDraw.fpTileCounts.Get().counts[tileIdx] & 0xFFFFu, perTile);
                 for (uint s = 0; s < tcount; ++s)
                 {
                     uint li = pcDraw.fpTileIndices.Get().indices[tileIdx * stride + s];

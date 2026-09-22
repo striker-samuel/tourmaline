@@ -1836,7 +1836,7 @@ bool SceneRenderer::Initialize() {
 			smvk::MaterialCreateInfo chromeCi{};
 			chromeCi.baseColorFactor = glm::vec4(1.0f);
 			chromeCi.metallicFactor = 1.0f;
-			chromeCi.roughnessFactor = 0.0f;
+			chromeCi.roughnessFactor = .13f;
 			chromeCi.emissiveFactor = glm::vec3(0.0f);
 			chromeCi.alphaMode = smvk::AlphaMode::Opaque;
 			chromeCi.shadingModel = smvk::ShadingModel::DefaultLit;
@@ -8769,8 +8769,9 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						ImGui::TextDisabled("No cubemap: specular IBL uses the analytic sky."
 							" Bake with PakCooker --cubemap on (grid writes a .cubemanifest).");
 					ImGui::TextDisabled("Specular IBL is independent of the ambient-source isolation"
-						" (N cycles isolate diffuse only); its switches are this panel"
-						" (toggle/intensity) plus the Environment IBL intensity.");
+						" (N cycles isolate diffuse only). Baked cubemaps are TRUE radiance scaled"
+						" only by this panel's intensity (mirrors match the sun-lit scene); the"
+						" Environment IBL intensity scales the analytic-sky fallback only.");
 					ImGui::TextDisabled("Probes upload once per scene load (see [Cubemap] log lines);"
 						" intensity/debug/LOD apply instantly.");
 				}

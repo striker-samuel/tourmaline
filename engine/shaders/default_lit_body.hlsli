@@ -881,14 +881,15 @@ PSOut mainPS(PSIn IN)
         {
             uint tileIdx = ty * pc.fpTileCountX + tx;
             uint perTile = min(pc.fpMaxPerTile, (uint)MAX_FP_PER_TILE);
-            uint stride = max(pc.fpMaxPerTile, 1u);
-            // Hard cap: a tile can pass more lights than the list holds
-            // (big depth discontinuities). counts[] stores the true count
-            // (debug value) but shading walks only the first perTile list
+            uint stride = perTile + (uint)MAX_FP_PROBE_TILE_SLOTS;
+            // Hard cap: a tile can pass more lights than the light slots
+            // hold (big depth discontinuities). counts[] packs the true
+            // counts (low 16 = lights, high 16 = probes in their dedicated
+            // tail slots) but shading walks only the first perTile light
             // entries — overflow lights pop instead of the old
             // walk-every-light fallback (accepted trade-off; spots are
             // written to the light buffer first so they keep their slots).
-            uint tcount = min(pc.fpTileCounts.Get().counts[tileIdx], perTile);
+            uint tcount = min(pc.fpTileCounts.Get().counts[tileIdx] & 0xFFFFu, perTile);
             for (uint s = 0; s < tcount; ++s)
             {
                 uint li = pc.fpTileIndices.Get().indices[tileIdx * stride + s];
@@ -937,6 +938,9 @@ PSOut mainPS(PSIn IN)
     // Specular IBL: reflection-vector env sample weighted by Fresnel.
     // Tile index for the bucketed probe path (same 16px tiling as the FP
     // light/decal lists; 0xffffffffu = no tile -> global probe scan).
+    // envVis (GI-visibility proxy) damps the env where the surface cannot
+    // actually see the environment its probe captured — set by whichever
+    // baked source covers the pixel below; 1 when none does.
     float3 R = reflect(-V, N);
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, shadingRoughness);
     uint specTileIdx = 0xffffffffu;
@@ -947,8 +951,10 @@ PSOut mainPS(PSIn IN)
         if (stx < pc.fpTileCountX)
             specTileIdx = sty * pc.fpTileCountX + stx;
     }
-    float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
+    float3 envSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
         pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights) * occlusion * ao;
+    float envVis = 1.0f;
+    float3 ambientSpec = envSpec;
 
     // ---------------------------------------------------------------
     // Baked ambient: exactly ONE source per pixel, by priority:
@@ -995,6 +1001,11 @@ PSOut mainPS(PSIn IN)
             const float3 lmE = SgLmDiffuseIrradiance(lmAmps, lmLobes, geomN) * lmScale;
             giSource = 1u;
             bakedE = lmE;
+            // Spec occlusion from the baked field (same normal the
+            // lightmap was fit for): gold trim under roofs must not
+            // mirror the sunlit courtyard it cannot see.
+            envVis = SpecularOcclusionFromGI(lmE, lmScale, geomN, frame.env);
+            ambientSpec = envSpec * envVis;
             if (!isBlendMat)
                 ambient += kD * baseColor * (lmE / PI) * occlusion * ao;
             const float lmRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
@@ -1015,6 +1026,8 @@ PSOut mainPS(PSIn IN)
             const float3 regE = SgGiDiffuseIrradiance(regAmps, N) * regScale;
             giSource = 2u;
             bakedE = regE;
+            envVis = SpecularOcclusionFromGI(regE, regScale, N, frame.env);
+            ambientSpec = envSpec * envVis;
             if (!isBlendMat)
                 ambient += kD * baseColor * (regE / PI) * occlusion * ao;
             const float regRoughW = saturate((shadingRoughness - 0.15f) / 0.25f);
@@ -1036,6 +1049,8 @@ PSOut mainPS(PSIn IN)
             const float3 giE = SgGiDiffuseIrradiance(giAmps, N) * giScale;
             giSource = 3u;
             bakedE = giE;
+            envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env);
+            ambientSpec = envSpec * envVis;
             // Same convention as the direct sun term: albedo/PI * E.
             // Skipped for Blend (see above): probe diffuse on glass reads
             // as emissive glow once alpha-blended over the background.

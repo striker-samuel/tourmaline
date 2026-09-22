@@ -123,10 +123,25 @@ void mainCS(uint3 groupId : SV_GroupID)
     float nearestDist = nearP / max(maxD, 1e-6f);   // closest surface
     float farthestDist = nearP / max(minD, 1e-6f);  // farthest (sky -> huge)
 
-    // ---- Cull lights ----
+    // ---- Cull lights + probes (split per-tile slots) ----
+    // One pass over the mixed entry range: type != probe packs the LIGHT
+    // slots [0..perTile), type == probe packs the PROBE slots
+    // [perTile..perTile+MAX_FP_PROBE_TILE_SLOTS) — stride
+    // perTile + MAX_FP_PROBE_TILE_SLOTS matches the C++ allocation.
+    // Split slots are load-bearing: sharing one [0..perTile) budget let
+    // light-saturated tiles pop their probes, flipping specular IBL to
+    // the global fallback cubemap (chrome ball "breaks" when a light grid
+    // comes on). Overflow now only ever pops within its own class:
+    // lights beyond perTile (first-come = spots-first buffer order, the
+    // accepted Forward+ trade-off), probes beyond the tail slots
+    // (first-come = upload order, pinned probes first).
+    // counts packs both TRUE (unclamped) values: low 16 = lights, high
+    // 16 = probes.
     uint lightCount = min(pcCull.lightCount, (uint)MAX_FP_LIGHTS);
     uint maxPerTile = min(pcCull.maxLightsPerTile, (uint)MAX_FP_PER_TILE);
-    uint count = 0;
+    const uint stride = maxPerTile + (uint)MAX_FP_PROBE_TILE_SLOTS;
+    uint lcount = 0;
+    uint pcount = 0;
 
     float4x4 view = frame.view;
     for (uint li = 0; li < lightCount; ++li)
@@ -161,19 +176,20 @@ void mainCS(uint3 groupId : SV_GroupID)
         if (outside)
             continue;
 
-        // Stride is the runtime maxLightsPerTile (matches the C++ allocation
-        // tiles * maxLightsPerTile), NOT the MAX_FP_PER_TILE type bound.
-        if (count < maxPerTile)
-            pcCull.tileIndices.Get().indices[tileIdx * maxPerTile + count] = li;
-        count++;
+        if (L.type == kForwardPlusProbe) {
+            if (pcount < (uint)MAX_FP_PROBE_TILE_SLOTS)
+                pcCull.tileIndices.Get().indices[tileIdx * stride + maxPerTile + pcount] = li;
+            pcount++;
+        } else {
+            if (lcount < maxPerTile)
+                pcCull.tileIndices.Get().indices[tileIdx * stride + lcount] = li;
+            lcount++;
+        }
     }
 
-    // Store the TRUE (unclamped) count as a debug/stat value: tiles
-    // spanning big depth discontinuities can pass more lights than the
-    // list holds. The list keeps only the first maxPerTile; the shading
-    // pass iterates min(count, maxPerTile) entries, so overflow lights
-    // pop off — an accepted trade-off (no walk-every-light fallback).
-    pcCull.tileCounts.Get().counts[tileIdx] = count;
+    // Packed TRUE (unclamped) counts: lights low 16 bits, probes high 16.
+    // The light loops mask the low word, the specular walk shifts.
+    pcCull.tileCounts.Get().counts[tileIdx] = (lcount & 0xFFFFu) | (pcount << 16);
 
     // ---- Cull decals (same conservative bounding-sphere test as the
     // lights: tile side planes + depth range). Decals share the light

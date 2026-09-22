@@ -106,6 +106,12 @@ static constexpr int32_t kForwardPlusProbe = 2;
 // FP_PROBE_RESERVE in the app): lights are capped early so appended
 // probes can never truncate a selected shadow spot.
 static constexpr uint32_t kForwardPlusMaxProbes = 32;
+// Dedicated per-tile probe slots in the tile index buffer (shader
+// MAX_FP_PROBE_TILE_SLOTS): stride per tile is maxLightsPerTile + this,
+// lights pack [0..maxLightsPerTile), probes the tail slots — light
+// saturation can never pop probes from a tile. Must stay in sync with
+// common.hlsli.
+static constexpr uint32_t kForwardPlusProbeTileSlots = 4;
 
 // Builds a probe entry for the upload tail (upload order stays
 // widest-influence-first so tile overflow keeps the widest probes).
@@ -361,7 +367,9 @@ struct ForwardPlus {
 		if (counts.empty())
 			return false;
 		Holder<BufferHandle> indices = ctx.CreateBuffer(
-			sizeof(uint32_t) * tiles * d.maxLightsPerTile, BufferType_Storage,
+			sizeof(uint32_t) * tiles
+				* (d.maxLightsPerTile + kForwardPlusProbeTileSlots),
+			BufferType_Storage,
 			"forwardplus tileIndices");
 		if (indices.empty())
 			return false;
