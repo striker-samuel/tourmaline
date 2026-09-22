@@ -1,6 +1,10 @@
-// Forward+ tile light culling (point/spot; directional stays on CSM path)
-// + decal culling + reflection-probe bucketing (projected splats and
-// specular-IBL probes share the light tiling).
+// Forward+ tile light culling (point/spot/probe; directional stays on CSM
+// path) + decal culling (projected splats share the light tiling).
+//
+// Reflection probes ride the light buffer as type-2 entries
+// (kForwardPlusProbe: position = center, range = influence + fade): the
+// generic sphere leg below culls them with zero special cases, and the
+// lit shader's type filter picks them back out of the same tile lists.
 //
 // One thread group per tile ([1,1,1], dispatched tileCountX x tileCountY).
 // Each tile:
@@ -15,9 +19,6 @@
 //      cone lights never lose their slots),
 //   5. sphere-tests every decal (ForwardPlusDecal bounding sphere) the
 //      same way and writes parallel per-tile decal lists.
-//   6. sphere-tests every reflection probe (outer sphere = influence +
-//      fade, upload order widest-first) and writes parallel per-tile probe
-//      index lists for the lit shader's bucketed specular IBL.
 //
 // Depth buffer conventions (must match app):
 //   - infinite reversed-Z projection, clear 0 (far), GreaterEqual.
@@ -177,10 +178,12 @@ void mainCS(uint3 groupId : SV_GroupID)
     // ---- Cull decals (same conservative bounding-sphere test as the
     // lights: tile side planes + depth range). Decals share the light
     // tiling; the counts store is UNCONDITIONAL (fresh 0 with no decals)
-    // so the shading pass never iterates stale entries. The app pushes
-    // lightCount = 0 when the deferred-shadow pipeline owns the light
-    // lists — the decal leg below still runs, so decals stay alive in
-    // both shading paths.
+    // so the shading pass never iterates stale entries. Under deferred
+    // shadows the app pushes lights+probes (the DS lists own the lights,
+    // the light leg re-culls them as dead work) — the decal leg below
+    // still runs, so decals stay alive in both shading paths. Reflection
+    // probes need no leg of their own: they ride the light leg above as
+    // type-2 entries (position = center, range = influence + fade).
     uint decalCount = min(frame.decalCount, (uint)MAX_FP_DECALS);
     uint decalPerTile = min(frame.decalMaxPerTile, (uint)MAX_FP_DECALS_PER_TILE);
     uint dcount = 0;
@@ -219,60 +222,4 @@ void mainCS(uint3 groupId : SV_GroupID)
         dcount++;
     }
     frame.decalTileCounts.Get().counts[tileIdx] = dcount;
-
-    // ---- Cull reflection probes (specular IBL bucketing; see
-    // environment.hlsli tile path). Same conservative outer-sphere test
-    // (influence + fade) against the tile side planes + depth range, so any
-    // probe that can contribute weight > 0 to a pixel of this tile is kept:
-    // a tile miss in the lit shader then implies a global miss, and the lit
-    // shader skips its fallback scan. Upload order is widest-influence
-    // first, so the global probe (if any) lands at list slot 0 and the lit
-    // shader's break-on-full-weight usually fires on the first entry.
-    // The counts store is UNCONDITIONAL (fresh 0 with no probes), and the
-    // app only treats the lists as fresh when it dispatched this frame
-    // (FrameUniforms.probeMaxPerTile > 0).
-    uint probeStride = min(frame.probeMaxPerTile, (uint)MAX_FP_PROBES_PER_TILE);
-    uint probeTotal = min(frame.reflectionProbeCount, (uint)MAX_FP_PROBES);
-    uint pcount = 0;
-    if (probeStride > 0u && probeTotal > 0u)
-    {
-        ReflectionProbeBuffer probeBuf = frame.reflectionProbes.Get();
-        for (uint pi = 0; pi < probeTotal; ++pi)
-        {
-            ReflectionProbe pr = probeBuf.probes[pi];
-            float radius = max(pr.posInfluence.w + max(pr.fadeCubemap.x, 0.0f), 0.0f);
-            if (radius <= 0.0f)
-                continue;
-            if ((uint)pr.fadeCubemap.y == 0xffffffffu)
-                continue;
-
-            float3 cView = mul(view, float4(pr.posInfluence.xyz, 1.0f)).xyz;
-            if (cView.z > radius)
-                continue;
-            if (-cView.z + radius < nearestDist)
-                continue;
-            if (-cView.z - radius > farthestDist)
-                continue;
-
-            bool pOutside = false;
-            [unroll]
-            for (int p = 0; p < 4; ++p)
-            {
-                if (dot(planes[p], cView) < -radius)
-                {
-                    pOutside = true;
-                    break;
-                }
-            }
-            if (pOutside)
-                continue;
-
-            // Stride is frame.probeMaxPerTile (matches the builder's
-            // tiles * maxProbesPerTile allocation).
-            if (pcount < probeStride)
-                frame.probeTileIndices.Get().indices[tileIdx * probeStride + pcount] = pi;
-            pcount++;
-        }
-    }
-    frame.probeTileCounts.Get().counts[tileIdx] = pcount;
 }

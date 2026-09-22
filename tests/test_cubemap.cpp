@@ -14,6 +14,7 @@
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/cubemap_prefilter.h>
+#include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/GI/triangle_bvh.h>
 
 namespace {
@@ -405,6 +406,23 @@ void TestOctreeSeekLight() {
 	Check(ok, "cubemap.octree-seek-relocates");
 }
 
+void TestProbeLightPacking() {
+	// Probes ride the FP light buffer tail as type-2 entries: packing must
+	// be exact (bindless/mips bit-exact in float) and the layout frozen.
+	Check(sizeof(smvk::ForwardPlusLight) == 96, "cubemap.probe-pack.size");
+	const auto L = smvk::MakeProbeLightEntry(
+		glm::vec3(1, 2, 3), 6.0f, 2.0f, 500, 8);
+	Check(L.type == smvk::kForwardPlusProbe, "cubemap.probe-pack.type");
+	Check(L.range == 8.0f, "cubemap.probe-pack.range");
+	bool ok = L.direction.x == 2.0f
+		&& static_cast<uint32_t>(L.direction.y) == 500u
+		&& static_cast<uint32_t>(L.direction.z) == 8u;
+	Check(ok, "cubemap.probe-pack.direction");
+	Check(L.intensity == 0.0f && L.shadowTile == -1
+		&& L.shadowMapIndex == -1 && L.cookieIndex == -1,
+		"cubemap.probe-pack.inert");
+}
+
 void TestRhiHelpers() {
 	Check(smvk::IsCubemapLayerCount(6), "cubemap.rhi.layers6");
 	Check(smvk::IsCubemapLayerCount(12), "cubemap.rhi.layers12");
@@ -437,6 +455,7 @@ int main() {
 	TestOctreeDegenerate();
 	TestOctreeFloorBvh();
 	TestOctreeSeekLight();
+	TestProbeLightPacking();
 	TestDirectionRoundtrip();
 	TestPrefilterUniform();
 	TestPrefilterDeterminism();

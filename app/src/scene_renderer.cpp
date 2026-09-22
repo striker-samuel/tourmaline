@@ -353,6 +353,11 @@ static smvk::CascadedShadowMapDesc MakeShadowDesc() {
 // -----------------------------------------------------------------------------
 static constexpr uint32_t FP_TILE_SIZE = 16;
 static constexpr uint32_t FP_MAX_LIGHTS = 1024;
+// Probe entries ride the light buffer tail (see smvk::kForwardPlusProbe),
+// so light building caps early: appended probes can never truncate a
+// selected shadow spot, and the flight-slice stride still fits.
+static constexpr uint32_t FP_PROBE_RESERVE = smvk::kForwardPlusMaxProbes;
+static constexpr uint32_t FP_MAX_BUILD_LIGHTS = FP_MAX_LIGHTS - FP_PROBE_RESERVE;
 // Hard per-tile list cap. Overflow lights pop (accepted): the shading pass
 // walks only the first FP_MAX_PER_TILE list entries per tile. Spots are
 // written to the light buffer before the point grid so the few expensive
@@ -363,12 +368,6 @@ static constexpr uint32_t FP_MAX_PER_TILE = 8;
 // with the shader defines MAX_FP_DECALS / MAX_FP_DECALS_PER_TILE.
 static constexpr uint32_t FP_MAX_DECALS = 256;
 static constexpr uint32_t FP_MAX_DECALS_PER_TILE = 16;
-// Reflection probes share the tiling (parallel per-tile lists, see
-// ForwardPlusProbeTile*): global probe cap (upload order widest-first) +
-// per-tile list cap. Must stay in sync with the shader defines
-// MAX_FP_PROBES / MAX_FP_PROBES_PER_TILE.
-static constexpr uint32_t FP_MAX_PROBES = 32;
-static constexpr uint32_t FP_MAX_PROBES_PER_TILE = 8;
 
 static smvk::ForwardPlusDesc MakeForwardPlusDesc() {
 	smvk::ForwardPlusDesc d{};
@@ -377,8 +376,6 @@ static smvk::ForwardPlusDesc MakeForwardPlusDesc() {
 	d.maxLightsPerTile = FP_MAX_PER_TILE;
 	d.maxDecals = FP_MAX_DECALS;
 	d.maxDecalsPerTile = FP_MAX_DECALS_PER_TILE;
-	d.maxProbes = FP_MAX_PROBES;
-	d.maxProbesPerTile = FP_MAX_PROBES_PER_TILE;
 	d.name = "forwardplus";
 	return d;
 }
@@ -2354,7 +2351,6 @@ void SceneRenderer::Shutdown() {
 	void SceneRenderer::LoadCubemaps(smvk::OverlayVfs& vfs) {
 		m_cubemaps.entries.clear();
 		m_cubemapProbes.clear();
-		m_cubemapProbesDirty = true;
 
 		// Clamp sampler for TextureCube sampling (cube seams must not wrap;
 		// linear min/mag + linear mips for the GGX-prefiltered chains).
@@ -2524,43 +2520,15 @@ void SceneRenderer::Shutdown() {
 			}
 		}
 
-		// PERF: widest influence first. The lit-shader probe loop breaks at
-		// the first full-weight row (exact: nothing beats weight 1.0, ties
-		// keep the first row), so the common inside-a-probe case costs one
-		// 32-byte iteration instead of a full scan.
+		// Widest influence first: the lit-shader probe walk breaks at the
+		// first full-weight entry (exact), and tile overflow keeps the
+		// earliest upload slots — widest-first is right for both. (Probe
+		// data rides the FP light buffer as type-2 entries, appended
+		// post-selection in UpdateForwardPlusLights; no probe buffer.)
 		std::sort(m_cubemapProbes.begin(), m_cubemapProbes.end(),
 			[](const CubemapProbeGpu& a, const CubemapProbeGpu& b) {
 				return a.posInfluence.w > b.posInfluence.w;
 			});
-
-		RefreshReflectionProbes();
-	}
-
-	// (Re)creates the reflection-probe storage buffer from the cached
-	// m_cubemapProbes rows and uploads it once. Per-frame code only reads
-	// the BDA + count — no scene-bounds walk, no upload in the hot loop.
-	void SceneRenderer::RefreshReflectionProbes() {
-		if (!m_cubemapProbesDirty && !m_reflProbeBuffer.empty())
-			return;
-		m_cubemapProbesDirty = false;
-		if (m_cubemapProbes.empty()) {
-			// No probes: keep the buffer around (FrameUniforms carries count
-			// 0) but publish no rows.
-			return;
-		}
-		const size_t rows = std::min<size_t>(m_cubemapProbes.size(), 32);
-		if (m_reflProbeBuffer.empty()) {
-			m_reflProbeBuffer = m_context->CreateBuffer(
-				32 * sizeof(CubemapProbeGpu),
-				smvk::BufferType_Storage,
-				"reflection probes"
-			);
-			m_reflProbeLogical = m_rendergraph->AddExternalBuffer(m_reflProbeBuffer, "reflection probes");
-		}
-		m_context->UploadDataToBuffer(m_reflProbeBuffer, m_cubemapProbes.data(),
-			rows * sizeof(CubemapProbeGpu),
-			smvk::PipelineStage(smvk::PipelineStageBit_Fragment),
-			smvk::AccessFlags::ShaderRead);
 	}
 
 	// ---------------------------------------------------------------------------
@@ -2963,16 +2931,18 @@ void SceneRenderer::Shutdown() {
 		// sky dome / shadows are unaffected.
 		data.env.fogEndAndFlags.w = IblWanted() ? 1.0f : 0.0f;
 
-		// Reflection cubemap for specular IBL (global fallback) + probes.
-		// The probe rows are cached + uploaded once per scene load
-		// (LoadCubemaps/RefreshReflectionProbes) — this frame only publishes
-		// the BDA + count + the UI knobs. Disabled UI (or nothing loaded)
+		// Reflection cubemap for specular IBL (global fallback) + knobs.
+		// Probe data rides the FP light buffer as type-2 entries (see
+		// UpdateForwardPlusLights); this frame only publishes the knobs +
+		// the tile-list freshness bit. Disabled UI (or nothing loaded)
 		// publishes "none" so shaders take the analytic sky path.
 		data.cubemapIndex = UINT32_MAX;
 		data.cubemapSampler = m_cubemapSampler;
 		data.cubemapIntensity = m_cubemapEnabled ? m_cubemapIntensity : 0.0f;
 		data.cubemapDebug = static_cast<uint32_t>(std::clamp(m_cubemapDebug, 0, 2));
 		data.cubemapLodBias = m_cubemapLodBias;
+		data.probeTileFresh = ProbeTileListsWanted() ? 1u : 0u;
+		data.probePad2_[0] = data.probePad2_[1] = 0;
 		if (m_cubemapEnabled && !m_cubemaps.entries.empty()) {
 			// Global fallback = first loaded entry (matches the probe
 			// cache's global-probe choice in LoadCubemaps).
@@ -2982,38 +2952,6 @@ void SceneRenderer::Shutdown() {
 					break;
 				}
 			}
-		}
-		if (m_reflProbeBuffer.empty() || !m_cubemapEnabled || m_cubemapProbes.empty()) {
-			data.reflectionProbes = 0;
-			data.reflectionProbeCount = 0;
-		} else {
-			data.reflectionProbes = m_context->GetBufferDeviceAddress(m_reflProbeBuffer);
-			// PERF clamp: the lit shader scans up to this many 32-byte rows
-			// per pixel (widest influence first + break on full weight, so
-			// the common case costs one row). Lower on weak GPUs.
-			data.reflectionProbeCount = static_cast<uint32_t>(
-				std::min<size_t>({ m_cubemapProbes.size(),
-					static_cast<size_t>(std::clamp(m_cubemapMaxProbes, 1, 32)), 32 }));
-		}
-		// ---- Forward+ tiled reflection probes (bucketed specular IBL) ----
-		// Contract with the cull + shading shaders (see forwardplus.cs.hlsl
-		// + environment.hlsli): probeMaxPerTile > 0 only when the tile-cull
-		// dispatch runs this frame (ProbeTileListsWanted gates both), so the
-		// tile lists are always fresh when consumed. The BDAs ride along
-		// whenever the builder is valid (stale lists are never read: the
-		// lit shader falls back to the global scan on stride 0).
-		data.probeTileCounts = 0;
-		data.probeTileIndices = 0;
-		data.probeMaxPerTile = 0;
-		data.probePad_[0] = data.probePad_[1] = data.probePad_[2] = 0;
-		if (m_viewportResources.forwardPlus.Valid()) {
-			data.probeTileCounts =
-				m_viewportResources.forwardPlus.ProbeTileCountsAddress(*m_context);
-			data.probeTileIndices =
-				m_viewportResources.forwardPlus.ProbeTileIndicesAddress(*m_context);
-			if (ProbeTileListsWanted())
-				data.probeMaxPerTile =
-					m_viewportResources.forwardPlus.desc.maxProbesPerTile;
 		}
 
 		// Deferred shadows: consumer-side BDAs + the frame's on/off flag.
@@ -3809,7 +3747,7 @@ void SceneRenderer::Shutdown() {
 		// Cooked authored lights win over the procedural grid when present.
 		if (CookedLightsActive()) {
 			for (const auto& cl : m_cookedLights.pointSpots) {
-				if (lights.size() >= FP_MAX_LIGHTS)
+				if (lights.size() >= FP_MAX_BUILD_LIGHTS)
 					break;
 				lights.push_back(cl);
 				m_debugLights.push_back({ glm::vec3(cl.position),
@@ -3822,8 +3760,8 @@ void SceneRenderer::Shutdown() {
 			const int gz = std::max(1, m_fpDemo.gridZ);
 			const uint32_t gridCount = (uint32_t)gx * (uint32_t)gy * (uint32_t)gz;
 			const uint32_t spotReserve = (uint32_t)std::max(0, m_fpDemo.spotCount);
-			const uint32_t pointCount = (FP_MAX_LIGHTS > spotReserve)
-				? std::min(gridCount, FP_MAX_LIGHTS - spotReserve)
+			const uint32_t pointCount = (FP_MAX_BUILD_LIGHTS > spotReserve)
+				? std::min(gridCount, FP_MAX_BUILD_LIGHTS - spotReserve)
 				: 0;
 
 		// Orbiting spots to exercise the cone path (written first â€”
@@ -3842,7 +3780,7 @@ void SceneRenderer::Shutdown() {
 		const float orbitY = useFit
 			? fitCenter.y + std::max(1.0f, fitExtent.y * 0.35f)
 			: 7.0f;
-		for (int s = 0; s < m_fpDemo.spotCount && lights.size() < FP_MAX_LIGHTS; ++s) {
+		for (int s = 0; s < m_fpDemo.spotCount && lights.size() < FP_MAX_BUILD_LIGHTS; ++s) {
 			smvk::ForwardPlusLight l{};
 			float a = time_since_start_s * 0.4f * m_fpDemo.speed + s * 6.2831853f / std::max(1, m_fpDemo.spotCount);
 			l.position = { orbitC.x + std::cos(a) * orbitRX, orbitY, orbitC.z + std::sin(a) * orbitRZ };
@@ -3889,7 +3827,7 @@ void SceneRenderer::Shutdown() {
 		}
 		const float ox = (useFit ? fitCenter.x : 0.0f) - (gx - 1) * 0.5f * effSX;
 		const float oz = (useFit ? fitCenter.z : 0.0f) - (gz - 1) * 0.5f * effSZ;
-			for (uint32_t i = 0; i < pointCount && lights.size() < FP_MAX_LIGHTS; ++i) {
+			for (uint32_t i = 0; i < pointCount && lights.size() < FP_MAX_BUILD_LIGHTS; ++i) {
 				const uint32_t ix = i % (uint32_t)gx;
 				const uint32_t iy = (i / (uint32_t)gx) % (uint32_t)gy;
 				const uint32_t iz = i / ((uint32_t)gx * (uint32_t)gy);
@@ -4026,6 +3964,40 @@ void SceneRenderer::Shutdown() {
 			0,
 			currentFrame * FP_FRAME_STRIDE
 		);
+	}
+
+	// ---- Reflection probes as FP light entries (type kForwardPlusProbe) ----
+	// Appended AFTER every light consumer above (spot selection, DS zBins
+	// + masks, telemetry, debug UI): the tile cull sphere-tests the full
+	// [0, L+P) range while every light path keeps its lights-only count,
+	// so probes can neither steal shadow slots nor leak into DS lists.
+	// Upload order is the cache's widest-first order, so tile overflow
+	// keeps the widest probes.
+	{
+		const uint32_t probeEntries = ProbeEntryCount();
+		if (probeEntries > 0
+			&& lights.size() + probeEntries <= FP_MAX_LIGHTS) {
+			std::vector<smvk::ForwardPlusLight> gpu;
+			gpu.reserve(probeEntries);
+			for (uint32_t i = 0; i < probeEntries; ++i) {
+				const CubemapProbeGpu& pr = m_cubemapProbes[i];
+				gpu.push_back(smvk::MakeProbeLightEntry(
+					glm::vec3(pr.posInfluence.x, pr.posInfluence.y, pr.posInfluence.z),
+					pr.posInfluence.w, pr.fadeCubemap.x,
+					static_cast<uint32_t>(pr.fadeCubemap.y),
+					static_cast<uint32_t>(pr.fadeCubemap.z)));
+			}
+			m_context->UploadDataToBuffer(
+				m_resources.fpLightsBuffer,
+				gpu.data(),
+				sizeof(smvk::ForwardPlusLight) * gpu.size(),
+				smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment | smvk::PipelineStageBit_Compute),
+				smvk::AccessFlags::ShaderRead,
+				0,
+				currentFrame * FP_FRAME_STRIDE
+					+ lights.size() * sizeof(smvk::ForwardPlusLight)
+			);
+		}
 	}
 
 	// zBins + Tile Light Masks + counter reset (same flight slice the
@@ -6282,14 +6254,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 	// the per-tile decal lists, so splats work in BOTH shading paths).
 	const bool dsOn = DsActive();
 	const bool decalListsNeeded = DecalsActive() && m_decalFrameCount > 0;
-	// Reflection probes bucket like decals: their tile lists are refreshed
-	// by the SAME forward+ cull dispatch, so when probes are loaded the
-	// dispatch runs even under deferred shadows (lightCount 0; the probe
-	// leg still fills the per-tile probe lists for bucketed specular IBL).
+	// Reflection probes ride the light buffer tail as type-2 entries: the
+	// SAME forward+ cull dispatch buckets them, so when probes are loaded
+	// the dispatch runs even under deferred shadows. The DS override then
+	// covers lights+probes (the light leg re-culls lights as dead work;
+	// the DS lists own the lights — negligible next to the depth preload).
 	const bool probeListsWanted = ProbeTileListsWanted();
 	rfPB = bench_clk::now();
-	if (m_passes.forwardPlusCull && (!dsOn || decalListsNeeded || probeListsWanted))
-		m_fpRenderer.AppendTileCull(fc, dsOn ? 0u : UINT32_MAX);
+	if (m_passes.forwardPlusCull && (!dsOn || decalListsNeeded || probeListsWanted)) {
+		uint32_t cullCount = UINT32_MAX;
+		if (dsOn)
+			cullCount = fpLightCount + ProbeEntryCount();
+		m_fpRenderer.AppendTileCull(fc, cullCount);
+	}
 	if (dsOn)
 		AppendDeferredShadowPhases(fb.frameIndex,
 			frameUniformsAddress, fpLightsAddress, spotShadowBufferAddress,
@@ -7571,13 +7548,15 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		decalRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
 		mainPass.AddBufferHint(m_resources.decalsLogical, decalRead);
 	}
-	// Probe tile lists are read by Main in BOTH shading paths, exactly like
-	// the decal lists: probeListsWanted gates the dispatch and the
-	// FrameUniforms stride together, so fresh lists are always present here.
-	if (probeListsWanted) {
-		smvk::ForwardPlus::AddProbeTileReadHints(mainPass,
-			m_viewportResources.forwardPlus.probeTileCountsLogical,
-			m_viewportResources.forwardPlus.probeTileIndicesLogical);
+	// Probe entries live in the shared light tile lists: under DS the main
+	// fragment shader still samples them for specular IBL, so the tile
+	// buffers need the cull->Main edge here too (probeListsWanted gates
+	// the dispatch and the freshness bit together). The FP path already
+	// adds the same edge above.
+	if (probeListsWanted && dsOn) {
+		smvk::ForwardPlus::AddTileReadHints(mainPass,
+			m_viewportResources.forwardPlus.tileCountsLogical,
+			m_viewportResources.forwardPlus.tileIndicesLogical);
 	}
 		{
 			smvk::BufferSyncRequest fpLightRead{};
@@ -8717,9 +8696,6 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					ImGui::Checkbox("Cubemap specular IBL", &m_cubemapEnabled);
 					ImGui::SliderFloat("Cubemap intensity", &m_cubemapIntensity, 0.0f, 4.0f, "%.2f");
 					ImGui::SliderFloat("Cubemap LOD bias", &m_cubemapLodBias, -2.0f, 4.0f, "%.2f");
-					ImGui::SliderInt("Max probes / pixel", &m_cubemapMaxProbes, 1, 32);
-					if (m_cubemapMaxProbes < 1) m_cubemapMaxProbes = 1;
-					if (m_cubemapMaxProbes > 32) m_cubemapMaxProbes = 32;
 					ImGui::Checkbox("Probe locations overlay", &m_cubemapShowProbes);
 					if (m_cubemapShowProbes)
 						ImGui::SliderFloat("Overlay max dist (m)", &m_cubemapOverlayMaxDist, 5.0f, 300.0f, "%.0f");
@@ -8736,24 +8712,20 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 						if (entry.bindless >= 0 && !entry.texture.empty())
 							(entry.baked ? bakedCount : procCount)++;
 					}
-					ImGui::Text("Cubemaps: %u (baked %u, procedural %u)  Probes: %u / %d scanned  Sampler: %u",
+					ImGui::Text("Cubemaps: %u (baked %u, procedural %u)  Probes: %u (light tail)  Sampler: %u",
 						(unsigned)m_cubemaps.entries.size(),
 						(unsigned)bakedCount, (unsigned)procCount,
-						(unsigned)m_cubemapProbes.size(),
-						std::clamp(m_cubemapMaxProbes, 1, 32), m_cubemapSampler);
+						(unsigned)ProbeEntryCount(), m_cubemapSampler);
 					{
-						const int scanned = (int)std::min<size_t>(m_cubemapProbes.size(),
-							static_cast<size_t>(std::clamp(m_cubemapMaxProbes, 1, 32)));
 						const bool tiled = ProbeTileListsWanted();
-						ImGui::Text("Tiled probes: %s (stride %u, tiles %ux%u)",
-							tiled ? "fresh" : "stale (global scan)",
-							tiled ? m_viewportResources.forwardPlus.desc.maxProbesPerTile : 0,
+						ImGui::Text("Tiled probes: %s (stride %u shared, tiles %ux%u)",
+							tiled ? "fresh" : "stale (global cubemap)",
+							FP_MAX_PER_TILE,
 							m_viewportResources.forwardPlus.tileCountX,
 							m_viewportResources.forwardPlus.tileCountY);
-						ImGui::TextDisabled("Probe rows are 32 B; pixels scan their tile's list"
-							" (widest-first, stop at full weight). Stale lists fall back to"
-							" the global scan (worst %d rows = %d B/px).",
-							scanned, scanned * 32);
+						ImGui::TextDisabled("Probes ride the FP light buffer tail (type 2); pixels"
+							" filter them out of the same tile walk the lights use."
+							" Stale lists fall back to the global cubemap.");
 					}
 					for (const auto& [name, entry] : m_cubemaps.entries) {
 						ImGui::BulletText("%s: %upx mips=%u bindless=%d %s",
@@ -9965,7 +9937,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 			char ccap[160];
 			snprintf(ccap, sizeof(ccap), "Cubemap probes: %u drawn (<= %.0fm, %s)",
 				cdrawn, cmaxDist,
-				ProbeTileListsWanted() ? "tile lists fresh" : "tile lists STALE (global scan)");
+				ProbeTileListsWanted() ? "light-tail tiling fresh" : "tiling STALE (global cubemap)");
 			cdl->AddText(ImVec2(8.0f + 1.0f, 58.0f + 1.0f), IM_COL32(0, 0, 0, 200), ccap);
 			cdl->AddText(ImVec2(8.0f, 58.0f), IM_COL32_WHITE, ccap);
 		}

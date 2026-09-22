@@ -63,17 +63,26 @@ float3 EvaluateIrradiance(float3 N, EnvironmentFrameData env)
 
 // Cheap specular env: horizon<->zenith by reflection Y, dielectrics get
 // F0-weighted reflections, rougher surfaces fade out.
-// Probe selection is tile-bucketed when the Forward+ cull filed per-tile
-// probe lists (tileIdx != 0xffffffffu and probeMaxPerTile > 0): the pixel
-// then scans only its tile's handful of entries. Otherwise (stale lists)
-// it falls back to the global widest-first scan with break-on-full-weight.
-// Either way the baked chains are GGX-preconvolved (roughness =
-// mip/(mips-1)), so sampling selects the LOD from the material roughness
-// (+ the UI LOD bias); the clamp sampler avoids cube-seam wrap bleeding.
-// tileIdx is the caller's 16px-tile index (same tiling as the FP light
-// lists), or 0xffffffffu when the caller has no tile (global scan).
+// Probe selection walks the caller's Forward+ tile list and filters
+// type-2 (kForwardPlusProbe) light entries packed as position = center,
+// range = influence + fade, direction = (fade, cubemapIndex, mipLevels) —
+// the same tile walk the direct-light loop does, so specular rides the
+// light bucketing with no second list set. The FP inputs arrive as plain
+// parameters (NOT via pc: this header is also included by pass TUs like
+// volumetric/sky that have no push constants). tileIdx is the caller's
+// 16px tile (0xffffffffu = no tile); probeTileFresh (FrameUniforms,
+// app-gated on the cull dispatch) selects fresh tile lists vs the global
+// cubemap fallback — there is no probe buffer left to scan, so a stale
+// tile path would just re-walk garbage.
+// The baked chains are GGX-preconvolved (roughness = mip/(mips-1)), so
+// sampling selects the LOD from the material roughness (+ the UI LOD
+// bias); the clamp sampler avoids cube-seam wrap bleeding.
 float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrameData env,
-    float3 worldPos, FrameUniforms frame, uint tileIdx)
+    float3 worldPos, FrameUniforms frame, uint tileIdx,
+    uint fpLightCount, uint fpMaxPerTile,
+    vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts,
+    vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices,
+    vk::BufferPointer<ForwardPlusLightBuffer> fpLights)
 {
     // Specular gate: iblIntensity (ground.w) ONLY. Deliberately NOT the
     // fogEndAndFlags.w diffuse-isolation flag (ambient modes): smooth
@@ -97,32 +106,37 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
     float3 envCol = float3(0.0f, 0.0f, 0.0f);
     bool foundProbe = false;
     float bestWeight = 0.0f;
-    uint bestProbeIndex = 0xffffffffu;
+    uint bestCubemapIdx = 0xffffffffu;
+    float bestMips = 1.0f;
 
-    // Tile-bucketed fast path. The cull's outer-sphere test is conservative
-    // (influence + fade vs tile frustum + depth range), so a tile miss
-    // implies a global miss: when the lists are fresh and the tile finds
-    // nothing, the pixel takes the analytic sky directly with no fallback
-    // scan. Overflow (count > perTile) drops far locals — the accepted
-    // Forward+ trade-off, same as lights/decals.
+    // Tile-bucketed probe scan. The cull's outer-sphere test is
+    // conservative (influence + fade vs tile frustum + depth range), so a
+    // tile miss implies a global miss: when the lists are fresh and the
+    // tile holds no contributing probe, the pixel takes the analytic sky
+    // (then the global cubemap below) with no fallback scan. Upload order
+    // is widest-influence first and nothing beats weight 1.0 (ties keep
+    // the first entry), so break on full weight — exact, and usually the
+    // first tile entry.
     bool tileFresh = useBaked && tileIdx != 0xffffffffu && tileIdx < (uint)MAX_FP_TILES
-        && frame.probeMaxPerTile > 0u && frame.reflectionProbeCount > 0u;
+        && frame.probeTileFresh != 0u && fpLightCount > 0u;
     if (tileFresh) {
-        ReflectionProbeBuffer probeBuf = frame.reflectionProbes.Get();
-        uint perTile = min(frame.probeMaxPerTile, (uint)MAX_FP_PROBES_PER_TILE);
-        uint stride = max(frame.probeMaxPerTile, 1u);
-        uint listCount = min(frame.probeTileCounts.Get().counts[tileIdx], perTile);
+        uint perTile = min(fpMaxPerTile, (uint)MAX_FP_PER_TILE);
+        uint stride = max(fpMaxPerTile, 1u);
+        uint listCount = min(fpTileCounts.Get().counts[tileIdx], perTile);
         [loop]
         for (uint s = 0; s < listCount; ++s) {
-            uint pi = frame.probeTileIndices.Get().indices[tileIdx * stride + s];
-            if (pi >= frame.reflectionProbeCount)
+            uint li = fpTileIndices.Get().indices[tileIdx * stride + s];
+            if (li >= fpLightCount)
                 continue;
-            ReflectionProbe probe = probeBuf.probes[pi];
-            if ((uint)probe.fadeCubemap.y == 0xffffffffu)
+            ForwardPlusLight L = fpLights.Get().lights[li];
+            if (L.type != kForwardPlusProbe)
+                continue; // direct light: the light loop owns it
+            uint cubemapIdx = (uint)L.direction.y;
+            if (cubemapIdx == 0xffffffffu)
                 continue;
-            float dist = length(worldPos - probe.posInfluence.xyz);
-            float influenceRadius = probe.posInfluence.w;
-            float fadeRadius = probe.fadeCubemap.x;
+            float influenceRadius = max(L.range - L.direction.x, 0.0f);
+            float fadeRadius = max(L.direction.x, 0.0f);
+            float dist = length(worldPos - L.position);
             float weight = 0.0f;
             if (dist <= influenceRadius) {
                 weight = 1.0f;
@@ -131,63 +145,15 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
             }
             if (weight > bestWeight) {
                 bestWeight = weight;
-                bestProbeIndex = pi;
+                bestCubemapIdx = cubemapIdx;
+                bestMips = max(L.direction.z, 1.0f);
                 if (bestWeight >= 1.0f)
                     break;
             }
         }
-        if (bestWeight > 0.0f && bestProbeIndex != 0xffffffffu) {
-            ReflectionProbe best = probeBuf.probes[bestProbeIndex];
-            uint cubemapIdx = (uint)best.fadeCubemap.y;
-            float mips = max(best.fadeCubemap.z, 1.0f);
-            float lod = clamp(roughness * (mips - 1.0f) + lodBias, 0.0f, mips - 1.0f);
-            TextureCube cubemap = cubemaps[NonUniformResourceIndex(cubemapIdx)];
-            envCol = cubemap.SampleLevel(cubeSampler, R, lod).rgb;
-            foundProbe = true;
-        }
-    }
-
-    // Find nearest reflection probe within influence radius.
-    // PERF: this global scan runs per lit pixel over BDA-backed rows, so it
-    // is frame-rate memory bandwidth — it only runs when the tile lists are
-    // stale (probeMaxPerTile == 0). Rows are 32 bytes, widest-influence
-    // first, break at the first full-weight probe (exact: nothing beats
-    // weight 1.0, ties keep the first row).
-    if (!tileFresh && !foundProbe && useBaked && frame.reflectionProbeCount > 0) {
-        ReflectionProbeBuffer probeBuf = frame.reflectionProbes.Get();
-        [loop]
-        for (uint i = 0; i < frame.reflectionProbeCount; ++i) {
-            ReflectionProbe probe = probeBuf.probes[i];
-            float3 probePos = probe.posInfluence.xyz;
-            float influenceRadius = probe.posInfluence.w;
-            float fadeRadius = probe.fadeCubemap.x;
-            uint cubemapIdx = (uint)probe.fadeCubemap.y;
-
-            if (cubemapIdx == 0xffffffffu) continue;
-
-            float dist = length(worldPos - probePos);
-            float weight = 0.0f;
-            if (dist <= influenceRadius) {
-                weight = 1.0f;
-            } else if (fadeRadius > 0.0f && dist <= influenceRadius + fadeRadius) {
-                weight = 1.0f - (dist - influenceRadius) / fadeRadius;
-            }
-
-            if (weight > bestWeight) {
-                bestWeight = weight;
-                bestProbeIndex = i;
-                if (bestWeight >= 1.0f)
-                    break;
-            }
-        }
-
-        if (bestWeight > 0.0f && bestProbeIndex != 0xffffffffu) {
-            // Sample the nearest probe's GGX chain at the roughness LOD.
-            ReflectionProbe best = probeBuf.probes[bestProbeIndex];
-            uint cubemapIdx = (uint)best.fadeCubemap.y;
-            float mips = max(best.fadeCubemap.z, 1.0f);
-            float lod = clamp(roughness * (mips - 1.0f) + lodBias, 0.0f, mips - 1.0f);
-            TextureCube cubemap = cubemaps[NonUniformResourceIndex(cubemapIdx)];
+        if (bestWeight > 0.0f && bestCubemapIdx != 0xffffffffu) {
+            float lod = clamp(roughness * (bestMips - 1.0f) + lodBias, 0.0f, bestMips - 1.0f);
+            TextureCube cubemap = cubemaps[NonUniformResourceIndex(bestCubemapIdx)];
             envCol = cubemap.SampleLevel(cubeSampler, R, lod).rgb;
             foundProbe = true;
         }
