@@ -111,6 +111,7 @@
 #include <Engine/GI/lightmap.h>
 #include <Engine/Flintbase/flintbase_backend.h>
 #include <Engine/Renderer/cubemap.h>
+#include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/cubemap_prefilter.h>
 #include <Engine/Utils/thread_pool.h>
 #include <gltf_import/gltf.h>
@@ -274,6 +275,15 @@ struct Args {
 	                                     // bounds center at cubemapHeight)
 	float cubemapHeight = 1.5f;
 	float cubemapGrid = 8.0f;     // grid spacing in meters (0 = single probe at center)
+	// Sparse adaptive octree placement (Engine/Renderer/cubemap_placement):
+	// occupancy-driven subdivision instead of a uniform lattice — open
+	// volumes stay coarse, near-surface cells refine, embedded centers
+	// drop, growth stops at the 32-probe runtime budget. Wins over --grid
+	// when set (explicit --cubemap-pos still wins over both).
+	bool cubemapOctree = false;
+	float cubemapOctreeMax = 8.0f;   // open cells larger than this subdivide (coverage)
+	float cubemapOctreeMin = 2.0f;   // detail floor: never subdivide below this
+	uint32_t cubemapOctreeDepth = 4; // octree depth cap (root = 0)
 	// NOTE: captures store sky-relative colors (radiance / skyIntensity);
 	// the shader applies the runtime iblIntensity, so there is no
 	// bake-time intensity knob by design.
@@ -626,6 +636,27 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			if (!need(v)) return false;
 			out.cubemapGrid = std::stof(v);
 		}
+		else if (a == "--cubemap-octree") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapOctree = (v == "on" || v == "1" || v == "true");
+		}
+		else if (a == "--cubemap-octree-max") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapOctreeMax = std::max(0.5f, std::stof(v));
+		}
+		else if (a == "--cubemap-octree-min") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapOctreeMin = std::max(0.25f, std::stof(v));
+		}
+		else if (a == "--cubemap-octree-depth") {
+			std::string v;
+			if (!need(v)) return false;
+			out.cubemapOctreeDepth = std::clamp<uint32_t>(
+				static_cast<uint32_t>(std::stoul(v)), 1, 6);
+		}
 		else if (a == "--cubemap-ibl-intensity") {
 			// Removed: captures store sky-relative colors by design (the
 			// shader applies the runtime iblIntensity). Reject explicitly
@@ -694,7 +725,9 @@ void Usage() {
 		<< "          [--cubemap on|off --cubemap-name <name>\n"
 		<< "           --cubemap-size 128 --cubemap-rays 128 --cubemap-bounces 3\n"
 		<< "           --cubemap-pos x,y,z (repeatable) --cubemap-height 1.5\n"
-		<< "           --cubemap-grid 8.0]:\n"
+		<< "           --cubemap-grid 8.0 --cubemap-octree on\n"
+		<< "           --cubemap-octree-max 8.0 --cubemap-octree-min 2.0\n"
+		<< "           --cubemap-octree-depth 4]:\n"
 		<< "          preconvolved SPECULAR cubemaps baked into the pak\n"
 		<< "          (GGX importance-sampled mip chains, roughness = mip /\n"
 		<< "          (levels-1); probes/lightmaps own diffuse + low-freq\n"
@@ -703,8 +736,15 @@ void Usage() {
 		<< "          track the IBL slider with no recook). One capture per\n"
 		<< "          --cubemap-pos (default:\n"
 		<< "          scene-bounds center at +height). If --cubemap-grid > 0,\n"
-		<< "          captures a 3D grid of probes at that spacing (meters)\n"
-		<< "          within the scene bounds; embedded as Texture blobs at\n"
+		<< "          captures a uniform 3D grid of probes at that spacing\n"
+		<< "          (meters) within the scene bounds; --cubemap-octree on\n"
+		<< "          replaces the lattice with sparse adaptive placement\n"
+		<< "          (open volumes stay coarse, near-surface cells refine\n"
+		<< "          to --cubemap-octree-min at depth --cubemap-octree-depth,\n"
+		<< "          embedded centers drop, growth stops at 32 probes).\n"
+		<< "          Multi captures write textures/cubemaps/<name>.cubemanifest\n"
+		<< "          (positions + radii) next to the KTX blobs; embedded as\n"
+		<< "          Texture blobs at\n"
 		<< "          textures/cubemaps/<name>[_N].ktx2 (name defaults to the\n"
 		<< "          out-pak stem). Needs exactly one cooked scene, like --lightmap.\n"
 		<< "--lightmap on: bakes 2D SG lightmaps into the pak (per-vertex\n"
@@ -1844,8 +1884,10 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 
 	// Capture positions: explicit --cubemap-pos list, else the
 	// scene-bounds center raised by --cubemap-height (CubemapBaker rule).
-	// If --cubemap-grid > 0, generate a 3D grid of probes within the scene bounds.
+	// If --cubemap-octree is on, sparse adaptive placement wins over the
+	// uniform --cubemap-grid lattice (see cubemap_placement.h).
 	std::vector<glm::vec3> positions;
+	std::vector<glm::vec2> radii; // parallel to positions: x = influence, y = fade
 	for (const std::string& spec : args.cubemapPos) {
 		glm::vec3 p{};
 		if (std::sscanf(spec.c_str(), "%f,%f,%f", &p.x, &p.y, &p.z) != 3) {
@@ -1853,6 +1895,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			return false;
 		}
 		positions.push_back(p);
+		radii.emplace_back(10.0f, 5.0f);
 	}
 	if (positions.empty()) {
 		glm::vec3 bmin(1e30f), bmax(-1e30f);
@@ -1863,7 +1906,34 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			bmax = glm::max(bmax, glm::max(v0, glm::max(v1, v2)));
 		}
 		
-		if (args.cubemapGrid > 0.0f) {
+		if (args.cubemapOctree) {
+			// Sparse adaptive octree: coverage-bounded open cells +
+			// surface-near refinement, embedded centers dropped, growth
+			// capped at the runtime probe budget (cubemap_placement.h).
+			smvk::CubemapOctreeOptions oo{};
+			oo.maxCellSize = args.cubemapOctreeMax;
+			oo.minCellSize = args.cubemapOctreeMin;
+			oo.maxDepth = args.cubemapOctreeDepth;
+			oo.embedDist = 0.3f;
+			oo.maxProbes = 32;
+			auto& bvh = traceScene.Bvh();
+			smvk::CubemapOcclusionRay occ =
+				[&](const glm::vec3& o, const glm::vec3& d, float m) {
+					smvk::gi::TriangleBvh::Hit h{};
+					return bvh.Raycast(o, d, m, h);
+				};
+			std::vector<smvk::CubemapPlacedProbe> placed;
+			std::string olog;
+			smvk::BuildOctreeProbePositions(bmin, bmax, oo, occ, placed, olog);
+			std::cerr << olog << std::flush;
+			positions.reserve(placed.size());
+			radii.reserve(placed.size());
+			for (const auto& p : placed) {
+				positions.push_back(p.position);
+				radii.emplace_back(p.influenceRadius, p.fadeRadius);
+			}
+		}
+		else if (args.cubemapGrid > 0.0f) {
 			// Generate 3D grid of probe positions
 			const float spacing = args.cubemapGrid;
 			const float yBase = bmin.y + args.cubemapHeight;
@@ -1888,6 +1958,9 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 						z = std::clamp(z, bmin.z, bmax.z);
 
 						positions.emplace_back(x, y, z);
+						// Tight radii on purpose (see manifest block): fat
+						// spheres make each pixel scan ~15 neighbors.
+						radii.emplace_back(spacing * 0.5f, spacing * 0.25f);
 					}
 				}
 			}
@@ -1902,12 +1975,15 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			{
 				std::vector<glm::vec3> open;
 				open.reserve(positions.size());
+				std::vector<glm::vec2> openRadii;
+				openRadii.reserve(radii.size());
 				size_t dropped = 0;
 				const glm::vec3 axes[6] = {
 					{ 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 },
 					{ 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 },
 				};
-				for (const glm::vec3& p : positions) {
+				for (size_t oi = 0; oi < positions.size(); ++oi) {
+					const glm::vec3& p = positions[oi];
 					bool embedded = true;
 					for (const glm::vec3& a : axes) {
 						smvk::gi::TriangleBvh::Hit h{};
@@ -1922,9 +1998,11 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 							<< p.x << "," << p.y << "," << p.z << ")\n";
 					} else {
 						open.push_back(p);
+						openRadii.push_back(radii[oi]);
 					}
 				}
 				positions.swap(open);
+				radii.swap(openRadii);
 				std::cerr << "  [CUBE] grid occupancy: kept " << positions.size()
 					<< ", dropped " << dropped << " embedded\n" << std::flush;
 			}
@@ -2053,14 +2131,9 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// SceneRenderer::LoadCubemaps. Single captures need none (the runtime
 	// centers a global probe on the scene bounds itself).
 	if (positions.size() > 1) {
-		// Tight radii on purpose: the lit shader scans every covering
-		// probe (and the tile cull files all of them), so fat spheres make
-		// each pixel pay for ~15 neighbors. influence = half the grid
-		// spacing covers each point ~3-4x with a small fade for the seams.
-		// Explicit --cubemap-pos lists keep the broad 10/5 defaults.
-		const bool gridded = args.cubemapPos.empty() && args.cubemapGrid > 0.0f;
-		const float influence = gridded ? args.cubemapGrid * 0.5f : 10.0f;
-		const float fade = gridded ? args.cubemapGrid * 0.25f : 5.0f;
+		// Radii ride the parallel radii[] vector (filled per branch:
+		// explicit 10/5, grid tight to the spacing, octree per-cell), so
+		// the manifest matches what the placement chose.
 		std::vector<smvk::CubemapManifestEntry> rows;
 		rows.reserve(positions.size());
 		for (size_t cap = 0; cap < positions.size(); ++cap) {
@@ -2068,8 +2141,8 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			smvk::CubemapManifestEntry e{};
 			e.vfsPath = smvk::CubemapVfsPath(captureName);
 			e.position = positions[cap];
-			e.influenceRadius = influence;
-			e.fadeRadius = fade;
+			e.influenceRadius = radii.size() == positions.size() ? radii[cap].x : 10.0f;
+			e.fadeRadius = radii.size() == positions.size() ? radii[cap].y : 5.0f;
 			rows.push_back(std::move(e));
 		}
 		const std::string text = smvk::CubemapManifestSerialize(rows);
@@ -2077,7 +2150,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		out.emplace_back(manifestPath,
 			std::vector<uint8_t>(text.begin(), text.end()));
 		std::cerr << "  [CUBE] manifest " << manifestPath << "  probes="
-			<< rows.size() << " influence=" << influence << " fade=" << fade << "\n" << std::flush;
+			<< rows.size() << "\n" << std::flush;
 	}
 
 	const double secs = std::chrono::duration<double>(

@@ -12,7 +12,9 @@
 #include <iostream>
 
 #include <Engine/Renderer/cubemap.h>
+#include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/cubemap_prefilter.h>
+#include <Engine/GI/triangle_bvh.h>
 
 namespace {
 
@@ -266,6 +268,124 @@ void TestPrefilterDeterminism() {
 	Check(roughVar < sharpVar, "cubemap.prefilter.rough-blurs");
 }
 
+void TestOctreeOpenSpace() {
+	// Empty world: pure coverage subdivision down to maxCellSize.
+	smvk::CubemapOctreeOptions oo{};
+	oo.maxCellSize = 8.0f;
+	oo.minCellSize = 2.0f;
+	oo.maxDepth = 4;
+	oo.maxProbes = 32;
+	smvk::CubemapOcclusionRay open =
+		[](const glm::vec3&, const glm::vec3&, float) { return false; };
+	std::vector<smvk::CubemapPlacedProbe> a, b;
+	std::string log;
+	Check(smvk::BuildOctreeProbePositions(
+		glm::vec3(0, 0, 0), glm::vec3(16, 8, 16), oo, open, a, log) == 8,
+		"cubemap.octree-open-count");
+	bool ok = a.size() == 8;
+	for (const auto& p : a) {
+		ok = ok && p.position.x >= 0.0f && p.position.x <= 16.0f
+			&& p.position.y >= 0.0f && p.position.y <= 8.0f
+			&& p.position.z >= 0.0f && p.position.z <= 16.0f
+			&& p.influenceRadius > 0.0f && p.fadeRadius >= 0.0f;
+	}
+	Check(ok, "cubemap.octree-open-bounds");
+	// Deterministic across runs (bake must not depend on scheduling).
+	smvk::BuildOctreeProbePositions(
+		glm::vec3(0, 0, 0), glm::vec3(16, 8, 16), oo, open, b, log);
+	bool same = a.size() == b.size();
+	for (size_t i = 0; same && i < a.size(); ++i)
+		same = a[i].position == b[i].position
+			&& a[i].influenceRadius == b[i].influenceRadius
+			&& a[i].fadeRadius == b[i].fadeRadius;
+	Check(same, "cubemap.octree-deterministic");
+}
+
+void TestOctreeAllSolid() {
+	// Every ray blocked: everything subdivides, every center drops.
+	smvk::CubemapOctreeOptions oo{};
+	oo.maxCellSize = 8.0f;
+	oo.minCellSize = 2.0f;
+	oo.maxDepth = 4;
+	oo.maxProbes = 32;
+	smvk::CubemapOcclusionRay solid =
+		[](const glm::vec3&, const glm::vec3&, float) { return true; };
+	std::vector<smvk::CubemapPlacedProbe> out;
+	std::string log;
+	Check(smvk::BuildOctreeProbePositions(
+		glm::vec3(0, 0, 0), glm::vec3(16, 8, 16), oo, solid, out, log) == 0
+		&& out.empty(), "cubemap.octree-all-solid-empty");
+}
+
+void TestOctreeBudget() {
+	// Huge open world: growth must respect the budget AND stay complete
+	// (no tail truncation — every emitted cell is kept, so the partition
+	// covers the root with no holes). Conservative growth may leave a few
+	// slots unused; completeness is what matters.
+	smvk::CubemapOctreeOptions oo{};
+	oo.maxCellSize = 8.0f;
+	oo.minCellSize = 2.0f;
+	oo.maxDepth = 6;
+	oo.maxProbes = 32;
+	smvk::CubemapOcclusionRay open =
+		[](const glm::vec3&, const glm::vec3&, float) { return false; };
+	std::vector<smvk::CubemapPlacedProbe> out;
+	std::string log;
+	const size_t n = smvk::BuildOctreeProbePositions(
+		glm::vec3(0, 0, 0), glm::vec3(64, 64, 64), oo, open, out, log);
+	bool ok = n <= 32 && n >= 8 && out.size() == n;
+	uint32_t maxD = 0, minD = 99;
+	for (const auto& p : out) {
+		maxD = std::max(maxD, p.depth);
+		minD = std::min(minD, p.depth);
+	}
+	// Subdivision happened (detail below root) and coarse coverage survived.
+	ok = ok && maxD >= 2 && minD <= 1;
+	Check(ok, "cubemap.octree-budget");
+}
+
+void TestOctreeDegenerate() {
+	// Flat/empty bounds: single fallback probe, never zero output.
+	smvk::CubemapOctreeOptions oo{};
+	smvk::CubemapOcclusionRay open =
+		[](const glm::vec3&, const glm::vec3&, float) { return false; };
+	std::vector<smvk::CubemapPlacedProbe> out;
+	std::string log;
+	Check(smvk::BuildOctreeProbePositions(
+		glm::vec3(1, 2, 3), glm::vec3(1, 2, 3), oo, open, out, log) == 1
+		&& out.size() == 1, "cubemap.octree-degenerate");
+}
+
+void TestOctreeFloorBvh() {
+	// Real BVH: 10x10 floor quad at y=0, bounds above it. Probes must be
+	// kept in the air (down-ray blocked alone never embeds) and stay in
+	// budget and in bounds.
+	std::vector<glm::vec3> pos = {
+		{ -5, 0, -5 }, { 5, 0, -5 }, { 5, 0, 5 }, { -5, 0, 5 },
+	};
+	std::vector<uint32_t> idx = { 0, 1, 2, 0, 2, 3 };
+	smvk::gi::TriangleBvh bvh;
+	bvh.Build(pos, idx);
+	smvk::CubemapOctreeOptions oo{};
+	oo.maxCellSize = 8.0f;
+	oo.minCellSize = 1.0f;
+	oo.maxDepth = 4;
+	oo.maxProbes = 32;
+	smvk::CubemapOcclusionRay occ =
+		[&](const glm::vec3& o, const glm::vec3& d, float m) {
+			smvk::gi::TriangleBvh::Hit h{};
+			return bvh.Raycast(o, d, m, h);
+		};
+	std::vector<smvk::CubemapPlacedProbe> out;
+	std::string log;
+	const size_t n = smvk::BuildOctreeProbePositions(
+		glm::vec3(-5, 0, -5), glm::vec3(5, 4, 5), oo, occ, out, log);
+	bool ok = n > 0 && n <= 32 && out.size() == n;
+	for (const auto& p : out)
+		ok = ok && p.position.y >= 0.0f;
+	Check(ok, "cubemap.octree-floor-bvh");
+}
+
 void TestRhiHelpers() {
 	Check(smvk::IsCubemapLayerCount(6), "cubemap.rhi.layers6");
 	Check(smvk::IsCubemapLayerCount(12), "cubemap.rhi.layers12");
@@ -292,6 +412,11 @@ int main() {
 	TestProceduralFaces();
 	TestVfsPath();
 	TestManifestRoundtrip();
+	TestOctreeOpenSpace();
+	TestOctreeAllSolid();
+	TestOctreeBudget();
+	TestOctreeDegenerate();
+	TestOctreeFloorBvh();
 	TestDirectionRoundtrip();
 	TestPrefilterUniform();
 	TestPrefilterDeterminism();

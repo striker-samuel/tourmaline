@@ -69,6 +69,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/GI/bake.h>
 #include <Engine/Renderer/cubemap.h>
+#include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/cubemap_prefilter.h>
 #include <gltf_import/gltf.h>
 #include <Engine/Utils/thread_pool.h>
@@ -98,6 +99,15 @@ struct Args {
 	float sunIntensity = 10000.0f;
 	float skyIntensity = 600.0f;
 	bool testPattern = false;
+	// Sparse adaptive octree placement (Engine/Renderer/cubemap_placement):
+	// occupancy-driven subdivision instead of one center capture — open
+	// volumes stay coarse, near-surface cells refine, embedded centers
+	// drop, growth stops at the 32-probe runtime budget. Wins over the
+	// single center capture when set (explicit --position still wins).
+	bool octree = false;
+	float octreeMax = 8.0f;   // open cells larger than this subdivide (coverage)
+	float octreeMin = 2.0f;   // detail floor: never subdivide below this
+	uint32_t octreeDepth = 4; // octree depth cap (root = 0)
 	std::string pak; // empty = no pak
 	bool verify = true;
 	uint32_t threads = 0; // 0 = hardware concurrency
@@ -205,6 +215,25 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		else if (a == "--test-pattern") {
 			out.testPattern = true;
 		}
+		else if (a == "--octree") {
+			out.octree = true;
+		}
+		else if (a == "--octree-max") {
+			std::string v;
+			if (!need(v)) return false;
+			out.octreeMax = std::max(0.5f, std::stof(v));
+		}
+		else if (a == "--octree-min") {
+			std::string v;
+			if (!need(v)) return false;
+			out.octreeMin = std::max(0.25f, std::stof(v));
+		}
+		else if (a == "--octree-depth") {
+			std::string v;
+			if (!need(v)) return false;
+			out.octreeDepth = std::clamp<uint32_t>(
+				static_cast<uint32_t>(std::stoul(v)), 1, 6);
+		}
 		else if (a == "--pak") {
 			if (!need(out.pak)) return false;
 		}
@@ -247,6 +276,8 @@ void Usage() {
 		<< "         [--sun-intensity 10000] [--sky-intensity 600]\n"
 		<< "         [--test-pattern] [--pak <host path>] [--verify on|off]\n"
 		<< "         [--threads 0]\n"
+		<< "         [--octree] [--octree-max 8.0] [--octree-min 2.0]\n"
+		<< "         [--octree-depth 4]\n"
 		<< "         --prefilter ggx preconvolves the mip chain for the\n"
 		<< "         high-frequency specular path (GGX importance sampling,\n"
 		<< "         roughness = level/(levels-1)); box keeps the legacy\n"
@@ -619,8 +650,12 @@ int main(int argc, char** argv) {
 			<< " tris, " << traceScene.materials.size() << " materials\n";
 
 		// Default capture point: scene-bounds center at mid height when no
-		// --position was given.
+		// --position was given. --octree replaces the single center with
+		// sparse adaptive placement (cubemap_placement.h).
 		std::vector<glm::vec3> positions = args.positions;
+		std::vector<glm::vec2> radii; // parallel to positions when multi
+		for (size_t ei = 0; ei < positions.size(); ++ei)
+			radii.emplace_back(10.0f, 5.0f);
 		if (positions.empty()) {
 			glm::vec3 bmin(1e30f), bmax(-1e30f);
 			for (uint32_t k = 0; k < traceScene.Bvh().TriangleCount(); ++k) {
@@ -629,11 +664,36 @@ int main(int argc, char** argv) {
 				bmin = glm::min(bmin, glm::min(v0, glm::min(v1, v2)));
 				bmax = glm::max(bmax, glm::max(v0, glm::max(v1, v2)));
 			}
-			const glm::vec3 c = (bmin + bmax) * 0.5f;
-			positions.push_back(glm::vec3(c.x, bmin.y + args.height, c.z));
-			std::cout << "  no --position: capturing at bounds center ("
-				<< positions.back().x << "," << positions.back().y << ","
-				<< positions.back().z << ")\n";
+			if (args.octree) {
+				smvk::CubemapOctreeOptions oo{};
+				oo.maxCellSize = args.octreeMax;
+				oo.minCellSize = args.octreeMin;
+				oo.maxDepth = args.octreeDepth;
+				oo.embedDist = 0.3f;
+				oo.maxProbes = 32;
+				auto& bvh = traceScene.Bvh();
+				smvk::CubemapOcclusionRay occ =
+					[&](const glm::vec3& o, const glm::vec3& d, float m) {
+						smvk::gi::TriangleBvh::Hit h{};
+						return bvh.Raycast(o, d, m, h);
+					};
+				std::vector<smvk::CubemapPlacedProbe> placed;
+				std::string olog;
+				smvk::BuildOctreeProbePositions(bmin, bmax, oo, occ, placed, olog);
+				std::cout << olog << std::flush;
+				positions.reserve(placed.size());
+				radii.reserve(placed.size());
+				for (const auto& p : placed) {
+					positions.push_back(p.position);
+					radii.emplace_back(p.influenceRadius, p.fadeRadius);
+				}
+			} else {
+				const glm::vec3 c = (bmin + bmax) * 0.5f;
+				positions.push_back(glm::vec3(c.x, bmin.y + args.height, c.z));
+				std::cout << "  no --position: capturing at bounds center ("
+					<< positions.back().x << "," << positions.back().y << ","
+					<< positions.back().z << ")\n";
+			}
 		}
 
 		// Runtime budget: the lit shader scans at most 32 probe rows per
@@ -761,8 +821,8 @@ int main(int argc, char** argv) {
 				smvk::CubemapManifestEntry e{};
 				e.vfsPath = smvk::CubemapVfsPath(captureName);
 				e.position = positions[cap];
-				e.influenceRadius = 10.0f;
-				e.fadeRadius = 5.0f;
+				e.influenceRadius = radii.size() == positions.size() ? radii[cap].x : 10.0f;
+				e.fadeRadius = radii.size() == positions.size() ? radii[cap].y : 5.0f;
 				rows.push_back(std::move(e));
 			}
 			const std::string text = smvk::CubemapManifestSerialize(rows);
