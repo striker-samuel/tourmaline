@@ -1137,15 +1137,22 @@ protected:
 	// ---- Shader LODs (per-level shading programs) -------------------
 	// Runtime LOD switch: pixel budget for the projected simplifier error
 	// (~1px = conservative, higher = more aggressive). Disabled = always LOD0.
-	// Per-node decisions are cached in the World and refreshed on a
-	// staggered-halves cadence (half the nodes per frame — see World::
-	// LodIndexForNode); m_lodFrameInputs.frameId is the monotonic key.
+	// Per-node decisions are cached in the World and refreshed EVERY frame
+	// (full rate, the default; halfrate parity opt-out — see World::
+	// LodIndexForNode and m_lodFullRate); m_lodFrameInputs.frameId is the
+	// monotonic key. Selection is hysteretic around the budget
+	// (kLodSelectHysteresis), so switch distances don't flip siblings
+	// frame to frame while the camera moves.
 	bool m_lodEnabled = true;
 	smvk::LodFrameInputs m_lodFrameInputs{};
 	float m_lodPixelBudget = 1.0f;      // mirrors m_lodFrameInputs.pixelBudget
 	float m_lodViewportHeight = 1080.0f; // mirrors m_lodFrameInputs.viewportHeight
 	uint64_t m_lodFrameId = 0;         // monotonic per-frame counter
 	float m_lodBudgetApplied = -1.0f;  // budget at last InvalidateLodCache
+	// LOD refresh cadence: true (default) = every node recomputes every
+	// frame; false = the World's halfrate parity split (perf A/B; also
+	// VULKANTOY_LODFULL=0 at startup).
+	bool m_lodFullRate = true;
 	uint64_t m_lodDraws = 0;     // direct draws this frame
 	uint64_t m_lodSwitched = 0;  // ... served by LOD1+
 	uint32_t m_lodChainMeshes = 0; // world meshes with a cooked chain (per frame)

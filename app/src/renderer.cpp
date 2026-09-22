@@ -811,10 +811,15 @@ uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGra
 			if (worldMesh < lodMeshMap_.size()
 				&& lodIdx < lodMeshMap_[worldMesh].size())
 				gfxMesh = lodMeshMap_[worldMesh][lodIdx];
-			else if (worldMesh < meshMap_.size())
-				gfxMesh = meshMap_[worldMesh];
 			if (gfxMesh == UINT32_MAX)
-				return; // that LOD not filterable: direct path draws it
+				return; // not filterable at this LOD (unregistered, or the
+				// runtime chain outgrew the registered one): the direct
+				// path draws it. GfxMeshForLod reports the same value for
+				// the same (mesh, lodIdx), so the filtered and direct
+				// legs agree — the instance rasterizes exactly once.
+				// (The old meshMap_ fallback pushed LOD0's gfx mesh here
+				// while the direct legs skipped on the selected sibling:
+				// double-draw of mismatched geometry.)
 			// Mesh-level sphere pre-cull on CONSERVATIVE bounds: LOD
 			// siblings may have tighter/smaller AABBs than LOD0, so
 			// culling on the selected sibling alone drops instances the

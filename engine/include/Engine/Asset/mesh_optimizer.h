@@ -265,32 +265,61 @@ inline float LodSwitchDistance(float simplifyErrorWorld, float viewportHeightPx,
 	return simplifyErrorWorld * viewportHeightPx / (2.0f * t * maxPixelError);
 }
 
+// Hysteresis band around the pixel budget for LOD switching: coarsen only
+// onto a level whose projected error is under budget*(1-h), refine only off
+// a current level whose error is over budget*(1+h). Without the band, a
+// node sitting at a switch distance flips between siblings on every
+// refresh (visible flicker while the camera moves — worst on cutout
+// foliage, whose coarse levels lose alpha coverage). 0 = plain threshold.
+inline constexpr float kLodSelectHysteresis = 0.2f;
+
 // Pick the coarsest LOD whose projected error is within budget.
 // `errorsByLod` is ordered LOD0..N (LOD0 error must be 0); entries with
 // non-finite/negative error are treated as unusable (skipped, never picked
 // beyond the last good one). Returns 0 when nothing coarser is in budget.
+// currentLod + hysteresis add a sticky band anchored on the caller's live
+// level: inside the band the current level is served; coarsening needs the
+// tight budget, refining needs the loose one. hysteresis = 0 (any
+// currentLod) is bit-identical to the stateless threshold walk, so cook
+// tooling and one-shot queries keep the old semantics by default.
 inline uint32_t SelectLodIndexForDistance(const float* errorsByLod, uint32_t count,
-	float distance, float viewportHeightPx, float fovYRadians, float maxPixelError) {
+	float distance, float viewportHeightPx, float fovYRadians, float maxPixelError,
+	uint32_t currentLod = 0, float hysteresis = 0.0f) {
 	if (!errorsByLod || count == 0)
 		return 0;
 	if (!(distance > 0.0f) || !(maxPixelError >= 0.0f))
 		return 0;
-	uint32_t best = 0;
+	if (currentLod >= count)
+		currentLod = 0; // stale level beyond the chain (post-edit): fresh pick
+	const float tightBudget = maxPixelError * (1.0f - hysteresis);
+	const float looseBudget = maxPixelError * (1.0f + hysteresis);
+	uint32_t tight = 0; // last level safely inside the coarsen budget
+	uint32_t loose = 0; // last level inside the refine budget
 	for (uint32_t i = 1; i < count; ++i) {
 		const float e = errorsByLod[i];
 		if (!(e >= 0.0f) || !std::isfinite(e))
 			break; // broken chain: stop at the last good LOD
 		if (e <= 0.0f) {
-			best = i; // zero-error sibling: always safe, keep going coarser
+			tight = i; // zero-error sibling: always safe, keep going coarser
+			loose = i;
 			continue;
 		}
 		const float px = LodProjectedPixelError(e, distance, viewportHeightPx, fovYRadians);
-		if (px <= maxPixelError)
-			best = i;
+		if (px <= tightBudget) {
+			tight = i;
+			loose = i;
+		}
+		else if (px <= looseBudget) {
+			loose = i;
+		}
 		else
 			break; // errors grow coarser; further LODs only project larger
 	}
-	return (best < count) ? best : count - 1;
+	if (loose < currentLod)
+		return loose;   // current clearly out of budget: refine off it
+	if (tight > currentLod)
+		return tight;   // a strictly safer coarse level exists: coarsen onto it
+	return currentLod; // inside the hysteresis band (or no move): sticky
 }
 
 // Cook-time post-pass: after the scene's global transforms are final,

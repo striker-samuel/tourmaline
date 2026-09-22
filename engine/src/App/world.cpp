@@ -12,6 +12,7 @@
 
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/cluster_serializer.h>
+#include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/renderview.h>
@@ -545,7 +546,8 @@ namespace smvk {
 	}
 
 	// ---------------------------------------------------------------------------
-	// Halfrate LOD cache (staggered halves; see world.h).
+	// Per-node LOD decision cache (full rate by default, halfrate parity
+	// opt-out; see world.h).
 	// ---------------------------------------------------------------------------
 
 	void World::InvalidateLodCache() {
@@ -574,13 +576,18 @@ namespace smvk {
 			return 0; // node outside the graph
 		const bool computedThisFrame = nodeLodStamp_[n] == inputs.frameId;
 		if (!computedThisFrame) {
-			const bool parityDue = (lodTick_ & 1) == (n & 1);
+			// Full rate (default): every node recomputes every frame.
+			// Halfrate: parity split — half the nodes per frame.
+			const bool refreshDue = lodFullRate
+				|| (lodTick_ & 1) == (n & 1);
 			const bool hasOld = nodeLodStamp_[n] != 0;
-			if (parityDue || !hasOld) {
+			if (refreshDue || !hasOld) {
+				// Hysteresis anchors on the node's live level: the stale
+				// cached value is the current state the band makes sticky.
 				nodeLod_[n] = static_cast<uint8_t>(SelectLodIndex(worldMesh,
 					LodDistanceForNode(node, worldMesh, lodInputs_.eye),
 					lodInputs_.viewportHeight, lodInputs_.fovY,
-					lodInputs_.pixelBudget));
+					lodInputs_.pixelBudget, nodeLod_[n]));
 				nodeLodStamp_[n] = inputs.frameId;
 			}
 		}
@@ -665,7 +672,8 @@ namespace smvk {
 	}
 
 	uint32_t World::SelectLodIndex(uint32_t meshIndex, float distance,
-		float viewportHeightPx, float fovYRadians, float maxPixelError) const {
+		float viewportHeightPx, float fovYRadians, float maxPixelError,
+		uint32_t currentLod) const {
 		if (!(distance > 0.0f) || !(maxPixelError >= 0.0f))
 			return 0;
 		EnsureLodChainsCached(*this);
@@ -682,7 +690,8 @@ namespace smvk {
 		for (uint32_t i = 0; i < n; ++i)
 			errors[i] = chain.levels[i].error;
 		return SelectLodIndexForDistance(errors, n, distance,
-			viewportHeightPx, fovYRadians, maxPixelError);
+			viewportHeightPx, fovYRadians, maxPixelError, currentLod,
+			kLodSelectHysteresis);
 	}
 
 	// Scene-wide lightmap chart transform table: every StaticMesh's

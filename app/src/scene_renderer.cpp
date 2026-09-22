@@ -922,6 +922,12 @@ bool SceneRenderer::Initialize() {
 			if (std::atoi(lodEnv) == 0)
 				m_lodEnabled = false;
 		}
+		// Headless LOD cadence kill (VULKANTOY_LODFULL=0 restores the old
+		// halfrate refresh: parity-split, 1-frame-stale decisions).
+		if (const char* lodFullEnv = std::getenv("VULKANTOY_LODFULL")) {
+			if (std::atoi(lodFullEnv) == 0)
+				m_lodFullRate = false;
+		}
 		// Headless shader-LOD kill (VULKANTOY_SHADERLOD=0 keeps the
 		// farthest level full-lit) for A/B shading-cost runs.
 		if (const char* lodShEnv = std::getenv("VULKANTOY_SHADERLOD")) {
@@ -4801,9 +4807,12 @@ void SceneRenderer::Shutdown() {
 	// world translation to the render camera; the world-space simplifier
 	// error of each cooked sibling projects to pixels via
 	// LodProjectedPixelError() and the coarsest in-budget LOD wins.
-	// Decisions are cached per node in the World and refreshed on a
-	// staggered-halves cadence (half the nodes per frame; see World::
-	// LodIndexForNode) â€” this is the "make LOD update halfrate" hook.
+	// Decisions are cached per node in the World and refreshed EVERY frame
+	// by default (halfrate parity opt-out; see World::LodIndexForNode and
+	// m_lodFullRate). Selection is hysteretic around the pixel budget
+	// (kLodSelectHysteresis): a node keeps its level while the projected
+	// error stays inside the budget band, so switch distances don't flip
+	// siblings frame to frame while the camera moves.
 	uint32_t SceneRenderer::LodIndexForNode(NodeId node, uint32_t worldMesh) const {
 		if (!m_lodEnabled || !m_world)
 			return 0;
@@ -5805,7 +5814,7 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		fc.extent = renderExtent;
 		// Error-driven LOD frame inputs (shared with every consumer: the
 		// prepass, main pass and the gfx filter all read the same struct;
-		// the World's halfrate parity cache keys on frameId).
+		// the World's per-node decision cache keys on frameId).
 		ResetLodStats();
 		m_lodFrameId = m_lodFrameId + 1; // monotonic (fb.frameIndex wraps)
 		m_lodViewportHeight = static_cast<float>(renderExtent.height);
@@ -5814,9 +5823,12 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		m_lodFrameInputs.viewportHeight = m_lodViewportHeight;
 		m_lodFrameInputs.fovY = glm::radians(kCameraFovYDegrees);
 		m_lodFrameInputs.pixelBudget = m_lodPixelBudget;
-		if (m_world && m_lodBudgetApplied != m_lodPixelBudget) {
-			m_world->InvalidateLodCache(); // budget tweak: refresh all nodes
-			m_lodBudgetApplied = m_lodPixelBudget;
+		if (m_world) {
+			m_world->SetLodFullRate(m_lodFullRate);
+			if (m_lodBudgetApplied != m_lodPixelBudget) {
+				m_world->InvalidateLodCache(); // budget tweak: refresh all nodes
+				m_lodBudgetApplied = m_lodPixelBudget;
+			}
 		}
 		fc.lodEnabled = m_lodEnabled;
 		fc.lodInputs = m_lodFrameInputs;
@@ -9128,9 +9140,19 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					}
 				}
 			if (ImGui::CollapsingHeader("LODs ï¿½ error-driven switches", ImGuiTreeNodeFlags_DefaultOpen)) {
-				ImGui::Checkbox("Enable LODs (L)", &m_lodEnabled);
-				ImGui::SliderFloat("Pixel budget (px)", &m_lodPixelBudget, 0.25f, 8.0f, "%.2f");
-				ImGui::Checkbox("Vertex-lit farthest LOD (shader LODs)", &m_lodShaderEnabled);
+			ImGui::Checkbox("Enable LODs (L)", &m_lodEnabled);
+			ImGui::SliderFloat("Pixel budget (px)", &m_lodPixelBudget, 0.25f, 8.0f, "%.2f");
+			ImGui::Checkbox("Full-rate LOD updates", &m_lodFullRate);
+			ImGui::SameLine();
+			ImGui::TextDisabled("(?)");
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip(
+					"On (default): every node re-evaluates its LOD every frame.\n"
+					"Off: halfrate refresh - half the nodes per frame, decisions\n"
+					"up to 1 frame stale (the old default). Selection is hysteretic\n"
+					"around the pixel budget either way, so levels don't flip-flop\n"
+					"at switch distances.");
+			ImGui::Checkbox("Vertex-lit farthest LOD (shader LODs)", &m_lodShaderEnabled);
 				ImGui::SameLine();
 				ImGui::TextDisabled("(?)");
 				if (ImGui::IsItemHovered())
@@ -9726,8 +9748,13 @@ void SceneRenderer::RenderFrame(smvk::Framebuffer& fb) {
 					m_lodChainMeshes, m_lodChainLods,
 					(unsigned long long)m_lodDraws, (unsigned long long)m_lodSwitched,
 					(unsigned long long)m_lodShaderDraws);
-				ImGui::TextDisabled("Transition = projected simplifier error (world err * H / "
-					"(2*tan(fov/2)*dist) <= budget). LOD0 stays in the GPU filter; LOD1+ draws direct.");
+			ImGui::TextDisabled("Transition = projected simplifier error (world err * H / "
+				"(2*tan(fov/2)*dist) <= budget), hysteretic around the budget. "
+				"Every level registers its own gfx mesh: the selected LOD draws "
+				"through the HZB-culled indirect ranges.");
+			ImGui::TextDisabled("Refresh: %s (VULKANTOY_LODFULL=0 restores halfrate).",
+				m_lodFullRate ? "full-rate, every node per frame"
+					: "halfrate parity split");
 				ImGui::TextDisabled("Shader LODs: farthest level shades vertex-lit (F5: white).");
 				if (!m_lodEnabled)
 					ImGui::TextDisabled("LODs OFF ï¿½ always LOD0.");

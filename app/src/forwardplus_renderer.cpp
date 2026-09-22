@@ -170,9 +170,10 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base) {
 				// Error-driven LOD (same budget as the main view): the
 				// prepass fills the depth the tile cull + Main test
 				// against, so it must rasterize the same LOD Main draws.
-				// Halfrate cache: World::LodIndexForNode refreshes half the
-				// nodes per frame (parity split) — the prepass, main pass
-				// and filter all share one decision per node per frame.
+				// Decision cache: World::LodIndexForNode refreshes every
+				// node per frame by default (halfrate parity opt-out) —
+				// the prepass, main pass and filter all share one decision
+				// per node per frame.
 				smvk::StaticMesh* meshDesc = nullptr;
 				if (lodEnabled) {
 					const uint32_t lod = world->LodIndexForNode(item.node,

@@ -786,6 +786,53 @@ void TestLodSelection() {
 		Check(SelectLodIndexForDistance(nullptr, 0, 500.0f, h, fov, 1.0f) == 0,
 			"lod.sel.empty");
 	}
+	// Hysteresis band (currentLod + hysteresis): coarsen needs the tight
+	// budget*(1-h), refine needs the loose budget*(1+h); inside the band
+	// the current level is sticky.
+	{
+		const float errors[] = { 0.0f, 0.01f, 0.05f };
+		constexpr float hys = 0.2f;
+		// Distances where LOD1 projects exactly 0.9 / 1.1 / 1.3 px
+		// (LOD2 stays far out of budget at all of them).
+		const float d09 = LodSwitchDistance(0.01f, h, fov, 0.9f);
+		const float d11 = LodSwitchDistance(0.01f, h, fov, 1.1f);
+		const float d13 = LodSwitchDistance(0.01f, h, fov, 1.3f);
+		// Stateless walk picks LOD1 wherever it is in budget (0.9px);
+		// the banded walk needs the 0.8px tight bar to coarsen off LOD0.
+		Check(SelectLodIndexForDistance(errors, 3, d09, h, fov, 1.0f) == 1,
+			"lod.hyst.stateless.09");
+		Check(SelectLodIndexForDistance(errors, 3, d09, h, fov, 1.0f, 0, hys) == 0,
+			"lod.hyst.fresh.tightbar");
+		Check(SelectLodIndexForDistance(errors, 3, d11, h, fov, 1.0f) == 0,
+			"lod.hyst.stateless.11");
+		// Already at LOD1: sticky inside the band (0.8 < px <= 1.2), refine
+		// only past the loose bar.
+		Check(SelectLodIndexForDistance(errors, 3, d09, h, fov, 1.0f, 1, hys) == 1,
+			"lod.hyst.sticky");
+		Check(SelectLodIndexForDistance(errors, 3, d11, h, fov, 1.0f, 1, hys) == 1,
+			"lod.hyst.sticky.loose");
+		Check(SelectLodIndexForDistance(errors, 3, d13, h, fov, 1.0f, 1, hys) == 0,
+			"lod.hyst.refine");
+		// h = 0 is the stateless result for any current level.
+		for (uint32_t cur = 0; cur < 3; ++cur) {
+			Check(SelectLodIndexForDistance(errors, 3, 50.0f, h, fov, 1.0f, cur, 0.0f) == 1,
+				"lod.hyst.zero.mid");
+			Check(SelectLodIndexForDistance(errors, 3, 5.0f, h, fov, 1.0f, cur, 0.0f) == 0,
+				"lod.hyst.zero.near");
+			Check(SelectLodIndexForDistance(errors, 3, 500.0f, h, fov, 1.0f, cur, 0.0f) == 2,
+				"lod.hyst.zero.far");
+		}
+		// Zero-error siblings pass both bars (always safe); a stale level
+		// beyond a broken chain refines back to the last good LOD.
+		{
+			const float ez[] = { 0.0f, 0.0f, 0.05f };
+			Check(SelectLodIndexForDistance(ez, 3, 5.0f, h, fov, 1.0f, 0, hys) == 1,
+				"lod.hyst.zeroerr");
+			const float eb[] = { 0.0f, 0.01f, -1.0f };
+			Check(SelectLodIndexForDistance(eb, 3, 5000.0f, h, fov, 1.0f, 2, hys) == 1,
+				"lod.hyst.broken.refine");
+		}
+	}
 	// World chain resolution over cooked "/lodN" siblings (headless: cook
 	// cluster registered with a World, no GPU involved).
 	{
@@ -833,6 +880,19 @@ void TestLodSelection() {
 		Check(world.SelectLodIndex(0, 100.0f, h, fov, 1.0f) == 0, "lod.world.near");
 		Check(world.SelectLodIndex(0, 5000.0f, h, fov, 1.0f) == 1, "lod.world.far");
 		Check(world.GetLodMesh(0, 1) != nullptr, "lod.world.mesh");
+		// Hysteresis through the World (sibling world error 1.5): 1.1 px is
+		// inside the loose side of the band but over the plain bar — the
+		// stateless pick is LOD0, the band keeps LOD1; 1.3 px refines.
+		{
+			const float dW11 = LodSwitchDistance(1.5f, h, fov, 1.1f);
+			const float dW13 = LodSwitchDistance(1.5f, h, fov, 1.3f);
+			Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f) == 0,
+				"lod.world.hyst.stateless");
+			Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f, 1) == 1,
+				"lod.world.hyst.sticky");
+			Check(world.SelectLodIndex(0, dW13, h, fov, 1.0f, 1) == 0,
+				"lod.world.hyst.refine");
+		}
 
 		// ---- Shader LODs (level = geometry + shading program) ----------
 		// The farthest level of a cooked chain carries the vertex-lit
@@ -843,7 +903,7 @@ void TestLodSelection() {
 		Check(world.LodShaderAt(0, 2) == LodShader::Lit, "lod.shader.oob");
 		Check(world.LodChainLength(0) == 2, "lod.shader.chainlen");
 
-		// ---- Halfrate LOD cache (staggered halves) ----------------------
+		// ---- Decision cache cadence ------------------------------------
 		// Node n1 sits at the origin scaled 3x; drive the eye instead of
 		// the node: far eye (5000m) -> LOD1 in budget, near eye (100m)
 		// -> LOD0 (err 1.5 projects ~19.5px).
@@ -854,6 +914,34 @@ void TestLodSelection() {
 		in.viewportHeight = h;
 		in.fovY = fov;
 		in.pixelBudget = 1.0f;
+		// Full rate (DEFAULT): every node recomputes every frame.
+		in.frameId = 1;
+		in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
+		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.fullrate.bootstrap");
+		in.frameId = 2;
+		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
+		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.fullrate.refresh");
+		// Frame 3 recomputes too (the halfrate mode below serves the
+		// stale LOD0 here): the far eye wins immediately.
+		in.frameId = 3;
+		in.eye = glm::vec3(0.0f, 5000.0f, 0.0f);
+		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.fullrate.everyframe");
+		// Same frame, different eye: the stamped decision is served to
+		// every consumer (filter/prepass/main consistency within a frame).
+		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
+		Check(world.LodIndexForNode(rn, 0, in) == 1, "lod.fullrate.sameframe");
+		// Invalidate forces a recompute on the very next call.
+		world.InvalidateLodCache();
+		in.frameId = 4;
+		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
+		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.fullrate.invalidate");
+		// Halfrate opt-out (SetLodFullRate(false), the pre-fullrate
+		// behavior): parity split serves 1-frame-stale decisions on
+		// off-parity frames. Same eye swings as above — far/near errors
+		// (0.39px / 19.5px) sit far outside the hysteresis band, so the
+		// band never changes these outcomes.
+		world.SetLodFullRate(false);
+		world.InvalidateLodCache();
 		// Frame 1 (tick 1, odd): even node not due yet, bootstrap computes
 		// anyway — far inputs select LOD1.
 		in.frameId = 1;
@@ -882,6 +970,7 @@ void TestLodSelection() {
 		in.frameId = 5;
 		in.eye = glm::vec3(0.0f, 100.0f, 0.0f);
 		Check(world.LodIndexForNode(rn, 0, in) == 0, "lod.halfrate.invalidate");
+		world.SetLodFullRate(true);
 
 		// Closest-approach distance (Sponza regression): node n1 sits at
 		// the origin scaled 3x over a 2x2 quad, so the LOD0 world sphere

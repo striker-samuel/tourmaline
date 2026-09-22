@@ -28,8 +28,8 @@ namespace smvk {
 
 	// Per-frame inputs for error-driven LOD selection (see World::
 	// LodIndexForNode). frameId is renderer-supplied and MONOTONIC (the
-	// RHI ring index is NOT — it wraps); it keys the halfrate parity
-	// split and the per-node decision stamps.
+	// RHI ring index is NOT — it wraps); it keys the per-node decision
+	// stamps (and the halfrate parity tick when full rate is off).
 	struct LodFrameInputs {
 		uint64_t frameId = 0;
 		glm::vec3 eye{ 0.0f };
@@ -235,9 +235,13 @@ namespace smvk {
 		// Error-driven selection: coarsest LOD whose projected screen error
 		// (LodProjectedPixelError over each entry's simplifyError) stays
 		// within maxPixelError at `distance`. Returns 0 (full mesh) when no
-		// chain was cooked or nothing coarser is in budget.
+		// chain was cooked or nothing coarser is in budget. currentLod
+		// anchors the hysteresis band (kLodSelectHysteresis): levels within
+		// the band of the current one are sticky, so switch distances don't
+		// flip siblings frame to frame.
 		uint32_t SelectLodIndex(uint32_t meshIndex, float distance,
-			float viewportHeightPx, float fovYRadians, float maxPixelError) const;
+			float viewportHeightPx, float fovYRadians, float maxPixelError,
+			uint32_t currentLod = 0) const;
 
 		// Cached LOD chains parallel to meshLocations (see RebuildLodChains).
 		// Mutable so const hot paths (LodChainLength/SelectLodIndex) can
@@ -276,17 +280,19 @@ namespace smvk {
 		// Convenience over meshLocations[i] / lodChains (LOD sibling).
 		uint32_t ChartOffsetFor(uint32_t meshIndex, uint32_t lodIndex) const;
 
-		// ---- Halfrate LOD updates (staggered halves) ------------------
-		// Per-node LOD decisions are cached and refreshed on a parity
-		// split: on tick T, only nodes with (node & 1) == (tick & 1)
-		// recompute; every other node serves its last decision (1 frame
-		// stale at worst). All passes inside one frame observe the SAME
-		// value for a node (the first computation of a refresh frame wins
-		// and is stamped), so filter/direct splits stay consistent even
-		// when queried with different eyes (debug cull override).
-		// Cached per-node LOD index for this frame's inputs. Same frameId
-		// → same value for a node; refresh cadence is the parity split
-		// above (bootstrap computes nodes the first time they're seen).
+		// ---- Per-node LOD decision cache -------------------------------
+		// Decisions are cached per node and refreshed EVERY FRAME (full
+		// rate, the default) or on a parity split (halfrate opt-out via
+		// SetLodFullRate(false): on tick T only nodes with (node & 1) ==
+		// (tick & 1) recompute; every other node serves its last decision,
+		// 1 frame stale at worst). All passes inside one frame observe the
+		// SAME value for a node (the first computation of a refresh frame
+		// wins and is stamped), so filter/direct splits stay consistent
+		// even when queried with different eyes (debug cull override).
+		// Selection is hysteretic around the pixel budget (see
+		// kLodSelectHysteresis): the node keeps its level while the
+		// projected error stays inside the band, anchored on the cached
+		// current level.
 		uint32_t LodIndexForNode(NodeId node, uint32_t worldMesh,
 			const LodFrameInputs& inputs) const;
 		// View distance used by LodIndexForNode: closest approach from the
@@ -300,6 +306,12 @@ namespace smvk {
 			const glm::vec3& eye) const;
 		// Drops every cached decision (parameter tweak / scene edit).
 		void InvalidateLodCache();
+		// Full-rate LOD refresh (default): every node recomputes every
+		// frame. false = the halfrate parity split above (perf A/B).
+		// Config, not cache: InvalidateLodCache never touches it.
+		void SetLodFullRate(bool on) { lodFullRate = on; }
+		bool LodFullRate() const { return lodFullRate; }
+		bool lodFullRate = true;
 		// Cache storage (lazily sized to the node count; reset by
 		// ResolveAndFixup_clusters).
 		mutable std::vector<uint8_t> nodeLod_;
